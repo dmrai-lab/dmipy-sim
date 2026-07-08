@@ -1,0 +1,32 @@
+name: Publish to PyPI
+
+# Publishes when a GitHub Release is published. Uses PyPI Trusted Publishing
+# (OIDC) — no API token is stored. One-time setup on PyPI: add a trusted
+# publisher for project "dmipy-sim" with owner=dmrai-lab, repo=dmipy-sim,
+# workflow=publish.yml, environment=pypi (a "pending publisher" works before
+# the first release).
+on:
+  release:
+    types: [published]
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write   # required for trusted publishing
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Build sdist + wheel
+        run: |
+          python -m pip install --upgrade build
+          python -m build
+      - name: Check metadata
+        run: |
+          python -m pip install --upgrade twine
+          python -m twine check dist/*
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1

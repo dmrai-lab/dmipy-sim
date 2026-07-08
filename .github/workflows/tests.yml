@@ -1,0 +1,46 @@
+name: Tests
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ master, main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies (CPU JAX only)
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest pytest-cov
+          # Base install pulls plain (CPU) jax; the [cuda12] extra is NOT installed,
+          # so GitHub's CPU runners resolve JAX's CPU backend.
+          pip install -e ".[dev]"
+
+      - name: Run tests (CPU)
+        run: |
+          # GitHub runners have no GPU, so pin JAX to CPU and deselect the
+          # slow / GPU-only Monte Carlo tests (mark heavy tests with @pytest.mark.gpu
+          # or @pytest.mark.slow as they are identified).
+          JAX_PLATFORMS=cpu pytest tests/ -q --tb=short -m "not slow and not gpu"
+
+      - name: Upload coverage
+        if: matrix.python-version == '3.12'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: .coverage
+          if-no-files-found: ignore

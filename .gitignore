@@ -1,0 +1,20 @@
+__pycache__/
+*.pyc
+*.egg-info/
+*.png
+.pytest_cache/
+dist/
+build/
+.venv/
+
+# python / build / test caches
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+build/
+dist/
+
+# Public AxonDeepSeg SEM dataset — fetched on demand, never committed (see em_data/README.md)
+tests/fixtures/em_data/axondeepseg_sem.zip
+tests/fixtures/em_data/axondeepseg_sem/

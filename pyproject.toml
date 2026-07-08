@@ -1,0 +1,74 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dmipy-sim"
+version = "2.0.0"
+description = "dmipy-sim: GPU Monte-Carlo diffusion-MRI simulator (the forward-truth engine)"
+readme = "README.md"
+license = {text = "AGPL-3.0-only OR LicenseRef-Commercial"}  # dual-licensed; see LICENSING.md
+authors = [
+    { name = "Rutger Fick", email = "fick.rutger@gmail.com" }
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: GNU Affero General Public License v3",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering",
+]
+requires-python = ">=3.10"
+dependencies = [
+    "jax>=0.6.2",
+    "numpy>=2.0",
+]
+
+[project.optional-dependencies]
+# GPU support: installs jax-cuda12-plugin and all nvidia-*-cu12 wheels.
+# After installing, the venv's activate script must export LD_LIBRARY_PATH
+# so the dynamic linker can resolve transitive CUDA library dependencies
+# (e.g. libcusparse.so.12 → libnvJitLink.so.12). See README for details.
+cuda12 = [
+    "jax[cuda12]>=0.6.2",
+]
+dev = [
+    "pytest>=7.0",
+]
+# The cross-engine flagship example (examples/canonical_wm_parity_from_sim.py) additionally
+# needs the analytical engine dmipy-fit. It is an OPTIONAL example dependency only -- the
+# dmipy-sim package itself never imports dmipy-fit (the fit -> sim dependency is one-directional).
+examples = [
+    "dmipy-fit>=2.0,<3",
+]
+fixture-gen = [
+    "disimpy",
+]
+# Pulseq (.seq) interoperability: from_pulseq / to_pulseq (dmipy_sim.sequences.pulseq).
+# Install isolated from the numpy/jax stack:  pip install --no-deps pypulseq
+pulseq = [
+    "pypulseq>=1.5.0",
+]
+
+[project.urls]
+Homepage = "https://dmipy.org"
+Repository = "https://github.com/dmrai-lab/dmipy-sim"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["dmipy_sim*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+markers = [
+    "slow: marks tests that take > 30 s (deselect with -m 'not slow')",
+    "gpu: marks tests that require a CUDA GPU (deselect on CPU CI with -m 'not gpu')",
+]
+# Pass --heavy to run all MC tests at 10× walkers (1 000 000) for systematic
+# bias measurement.  Example:
+#   LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH \
+#   pytest --heavy tests/test_step16_exterior_relaxivity.py

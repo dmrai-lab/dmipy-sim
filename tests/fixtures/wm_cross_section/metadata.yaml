@@ -1,0 +1,9 @@
+domain_side_m: 3.716912227447177e-05
+n_axons: 50
+packing_fraction: 0.5499999999999999
+pixel_size_m: 6.451789171569773e-08
+source: Synthetic cross-section from Gamma(radius) + Normal(g-ratio) via pack_cylinders
+  RSA
+vf_extra: 0.45000000000000023
+vf_intra: 0.26689132537494054
+vf_myelin: 0.2831086746250593

@@ -1,0 +1,740 @@
+{
+  "_schema": {
+    "description": "Per-vendor/per-model MR scanner deliverability constants (gradient, RF, safety) with full citation provenance. Mirrors dmipy_sim biophysical_constants schema.",
+    "entry_fields": [
+      "value",
+      "unit",
+      "field_T",
+      "context",
+      "source_key",
+      "location",
+      "confidence"
+    ],
+    "confidence_levels": {
+      "cited": "value backed by a primary/authoritative source (vendor spec sheet, peer-reviewed methods paper, or IEC standard clause)",
+      "widely-quoted": "value is consistently reported but its primary authoritative source is unclear or coil/patient-dependent",
+      "NEEDS VERIFICATION": "no authoritative public source found; typically service-manual-confidential"
+    },
+    "compiled": "2026-06-26"
+  },
+  "citations": {
+    "siemens_prisma_web": {
+      "key": "siemens_prisma_web",
+      "authors": "Siemens Healthineers",
+      "title": "MAGNETOM Prisma - 3T MRI Scanner (product / technical-details page; XR gradients 80 mT/m @ 200 T/m/s)",
+      "journal_or_publisher": "Siemens Healthineers",
+      "year": 2024,
+      "doi_or_url": "https://www.siemens-healthineers.com/magnetic-resonance-imaging/3t-mri-scanner/magnetom-prisma"
+    },
+    "mcnab2013": {
+      "key": "mcnab2013",
+      "authors": "McNab JA, Edlow BL, Witzel T, Huang SY, Bhat H, Heberlein K, Feiweier T, Liu K, Keil B, Cohen-Adad J, Tisdall MD, Folkerth RD, Kinney HC, Wald LL",
+      "title": "The Human Connectome Project and beyond: initial applications of 300 mT/m gradients",
+      "journal_or_publisher": "NeuroImage",
+      "year": 2013,
+      "doi_or_url": "10.1016/j.neuroimage.2013.05.074"
+    },
+    "huang2021_connectome2": {
+      "key": "huang2021_connectome2",
+      "authors": "Huang SY, Witzel T, Keil B, Scholz A, Davids M, Dietz P, Rummert E, Ramb R, Kirsch JE, Yendiki A, Fan Q, Tian Q, Ramos-Llorden G, Lee H-H, Nummenmaa A, Bilgic B, Setsompop K, Wang F, Avram AV, Komlosh M, Benjamini D, Magdoom KN, Pathak S, Schneider W, Novikov DS, Fieremans E, Tounekti S, Mekkaoui C, Augustinack J, Berger D, Shapson-Coe A, Lichtman J, Basser PJ, Wald LL, Rosen BR",
+      "title": "Connectome 2.0: developing the next-generation ultra-high gradient strength human MRI scanner for bridging studies of the micro-, meso- and macro-connectome",
+      "journal_or_publisher": "NeuroImage",
+      "year": 2021,
+      "doi_or_url": "10.1016/j.neuroimage.2021.118530"
+    },
+    "jones2018": {
+      "key": "jones2018",
+      "authors": "Jones DK, Alexander DC, Bowtell R, Cercignani M, Dell'Acqua F, McHugh DJ, Miller KL, Palombo M, Parker GJM, Rudrapatna US, Tax CMW",
+      "title": "Microstructural imaging of the human brain with a 'super-scanner': 10 key advantages of ultra-strong gradients for diffusion MRI",
+      "journal_or_publisher": "NeuroImage (vol 182, pp 8-38)",
+      "year": 2018,
+      "doi_or_url": "10.1016/j.neuroimage.2018.05.047"
+    },
+    "siemens_terra_web": {
+      "key": "siemens_terra_web",
+      "authors": "Siemens Healthineers",
+      "title": "MAGNETOM Terra - 7T MRI Scanner (XR gradients 80 mT/m @ 200 T/m/s); product brochure",
+      "journal_or_publisher": "Siemens Healthineers",
+      "year": 2024,
+      "doi_or_url": "https://cdn0.scrvt.com/39b415fb07de4d9656c7b516d8e2d907/1800000007347695/09e057fa3e98/siemens-healthineers-mr_magnetom_terra_brochure_1800000007347695.pdf"
+    },
+    "ge_premier_spec": {
+      "key": "ge_premier_spec",
+      "authors": "GE Healthcare",
+      "title": "SIGNA Premier System Specifications (FDA Cleared spec sheet); SuperG gradients 80 mT/m @ 200 T/m/s; RF 15 kW/channel body, 4.5 kW head; max B1 19 uT at 75 kg",
+      "journal_or_publisher": "GE Healthcare",
+      "year": 2017,
+      "doi_or_url": "https://nyspi.org/sites/default/files/inline-files/SIGNA%20Premier_Spec%20Sheet_FDA%20Cleared_Final%20071717.pdf"
+    },
+    "philips_ingenia_web": {
+      "key": "philips_ingenia_web",
+      "authors": "Philips Healthcare",
+      "title": "Ingenia 3.0T MR system (Omega HP gradients 45 mT/m @ 200 T/m/s); product page",
+      "journal_or_publisher": "Philips",
+      "year": 2024,
+      "doi_or_url": "https://www.usa.philips.com/healthcare/product/HC889226/ingenia-30t-mr-system"
+    },
+    "iec60601_2_33_ed3_2": {
+      "key": "iec60601_2_33_ed3_2",
+      "authors": "International Electrotechnical Commission (IEC)",
+      "title": "IEC 60601-2-33: Medical electrical equipment - Part 2-33: Particular requirements for the basic safety and essential performance of magnetic resonance equipment for medical diagnosis. Consolidated Edition 3.2 (Edition 3.0 2010-03 + Amd1 2013-04 + Amd2 2015-06).",
+      "journal_or_publisher": "IEC, Geneva",
+      "year": 2015,
+      "doi_or_url": "https://webstore.iec.ch/publication/22705"
+    },
+    "hebrank2000_safe": {
+      "key": "hebrank2000_safe",
+      "authors": "Hebrank FX, Gebhardt M",
+      "title": "SAFE-Model - A new method for predicting peripheral nerve stimulations in MRI",
+      "journal_or_publisher": "Proc. Intl. Soc. Mag. Reson. Med. (ISMRM) 8, p. 2007, Denver",
+      "year": 2000,
+      "doi_or_url": "https://cds.ismrm.org/ismrm-2000/PDF7/2007.PDF"
+    },
+    "pulseq_spec": {
+      "key": "pulseq_spec",
+      "authors": "Pulseq developers (Layton KJ, Kroboth S, Jia F, Littin S, Yu H, Leupold J, Nielsen J-F, Stoecker T, Zaitsev M, et al.)",
+      "title": "Pulseq open file format specification (v1.5.x); DEFINITIONS block default raster times (Siemens IDEA-standard values)",
+      "journal_or_publisher": "pulseq.github.io",
+      "year": 2024,
+      "doi_or_url": "https://pulseq.github.io/specification.pdf"
+    },
+    "mriq_b1rms": {
+      "key": "mriq_b1rms",
+      "authors": "Elster AD (mriquestions.com)",
+      "title": "B1+rms vs SAR; SAR limits (secondary summary of IEC 60601-2-33)",
+      "journal_or_publisher": "Questions and Answers in MRI (mriquestions.com)",
+      "year": 2023,
+      "doi_or_url": "https://mriquestions.com/sar-limits.html"
+    },
+    "siemens_terra_x_web": {
+      "key": "siemens_terra_x_web",
+      "authors": "Siemens Healthineers",
+      "title": "MAGNETOM Terra.X - 7T MRI Scanner (industry-leading gradients 135 mT/m @ 250 T/m/s); product page",
+      "journal_or_publisher": "Siemens Healthineers",
+      "year": 2024,
+      "doi_or_url": "https://www.siemens-healthineers.com/magnetic-resonance-imaging/7t-mri-scanner/magnetom-terra-x"
+    },
+    "ge_signa_magnus_fda": {
+      "key": "ge_signa_magnus_fda",
+      "authors": "GE HealthCare",
+      "title": "GE HealthCare Receives FDA Clearance for Head-Only SIGNA MAGNUS 3.0T MRI System (HyperG gradient coil 300 mT/m @ 750 T/m/s)",
+      "journal_or_publisher": "GE HealthCare (press release, FDA 510(k) clearance)",
+      "year": 2024,
+      "doi_or_url": "https://investor.gehealthcare.com/news-releases/news-release-details/ge-healthcare-receives-fda-clearance-head-only-signa-magnus-30t"
+    }
+  },
+  "scanners": {
+    "siemens_magnetom_prisma_3T": {
+      "vendor": "Siemens Healthineers",
+      "model": "MAGNETOM Prisma (XR gradients)",
+      "field_T": 3.0,
+      "gradient": {
+        "max_amplitude": {
+          "value": 80,
+          "unit": "mT/m",
+          "field_T": 3.0,
+          "context": "per axis, XR gradient system",
+          "source_key": "siemens_prisma_web",
+          "location": "Technical details / gradient performance",
+          "confidence": "cited"
+        },
+        "max_slew_rate": {
+          "value": 200,
+          "unit": "T/m/s",
+          "field_T": 3.0,
+          "context": "per axis, XR gradient system (PNS-limited in practice)",
+          "source_key": "siemens_prisma_web",
+          "location": "Technical details / gradient performance",
+          "confidence": "cited"
+        },
+        "gradient_raster_time": {
+          "value": 10,
+          "unit": "us",
+          "field_T": 3.0,
+          "context": "Siemens IDEA standard gradient raster (GradientRasterTime 1e-5 s)",
+          "source_key": "pulseq_spec",
+          "location": "DEFINITIONS block, GradientRasterTime 1e-05",
+          "confidence": "cited"
+        }
+      },
+      "rf": {
+        "rf_raster_time": {
+          "value": 1,
+          "unit": "us",
+          "field_T": 3.0,
+          "context": "Siemens IDEA standard RF raster (RadiofrequencyRasterTime 1e-6 s)",
+          "source_key": "pulseq_spec",
+          "location": "DEFINITIONS block, RadiofrequencyRasterTime 1e-06",
+          "confidence": "cited"
+        },
+        "adc_dwell_raster_time": {
+          "value": 0.1,
+          "unit": "us",
+          "field_T": 3.0,
+          "context": "ADC raster (AdcRasterTime 1e-7 s)",
+          "source_key": "pulseq_spec",
+          "location": "DEFINITIONS block, AdcRasterTime 1e-07",
+          "confidence": "cited"
+        },
+        "peak_B1_body_coil": {
+          "value": null,
+          "unit": "uT",
+          "field_T": 3.0,
+          "context": "whole-body transmit coil peak B1; widely quoted ~13-15 uT at 3T but coil/patient-dependent and not published by Siemens for Prisma",
+          "source_key": "mriq_b1rms",
+          "location": "n/a",
+          "confidence": "NEEDS VERIFICATION"
+        },
+        "rf_dead_time": {
+          "value": null,
+          "unit": "us",
+          "field_T": 3.0,
+          "context": "RF transmit dead time; vendor/sequence-dependent (pulseq default rfDeadTime ~100 us on Siemens but not a Prisma hardware spec)",
+          "source_key": "pulseq_spec",
+          "location": "n/a",
+          "confidence": "NEEDS VERIFICATION"
+        },
+        "rf_ringdown_time": {
+          "value": null,
+          "unit": "us",
+          "field_T": 3.0,
+          "context": "RF ringdown/coil settle time; vendor/sequence-dependent",
+          "source_key": "pulseq_spec",
+          "location": "n/a",
+          "confidence": "NEEDS VERIFICATION"
+        }
+      }
+    },
+    "siemens_magnetom_connectom_3T": {
+      "vendor": "Siemens Healthineers",
+      "model": "MAGNETOM Connectom (Connectome 1.0; Skyra-based AS302 gradient)",
+      "field_T": 3.0,
+      "gradient": {
+        "max_amplitude": {
+          "value": 300,
+          "unit": "mT/m",
+          "field_T": 3.0,
+          "context": "whole-body AS302 gradient coil, research system (MGH/CMRR HCP)",
+          "source_key": "mcnab2013",
+          "location": "Methods - scanner description ('300 mT/m', AS302)",
+          "confidence": "cited"
+        },
+        "max_slew_rate": {
+          "value": 200,
+          "unit": "T/m/s",
+          "field_T": 3.0,
+          "context": "AS302; de-rated to 62.5 T/m/s during diffusion encoding to respect PNS",
+          "source_key": "mcnab2013",
+          "location": "Methods ('200 T/m/s ... de-rated to 62.5 T/m/s during the diffusion encoding')",
+          "confidence": "cited"
+        },
+        "gradient_raster_time": {
+          "value": 10,
+          "unit": "us",
+          "field_T": 3.0,
+          "context": "Siemens IDEA standard gradient raster",
+          "source_key": "pulseq_spec",
+          "location": "DEFINITIONS block, GradientRasterTime 1e-05",
+          "confidence": "widely-quoted"
+        },
+        "max_slew_rate_diffusion": {
+          "value": 62.5,
+          "unit": "T/m/s",
+          "field_T": 3.0,
+          "context": "AS302 slew DE-RATED to 62.5 T/m/s during diffusion encoding to respect PNS (the binding limit for diffusion sequences; the 200 T/m/s hardware figure is not usable here)",
+          "source_key": "mcnab2013",
+          "location": "Methods ('200 T/m/s ... de-rated to 62.5 T/m/s during the diffusion encoding')",
+          "confidence": "cited"
+        }
+      },
+      "rf": {
+        "rf_raster_time": {
+          "value": 1,
+          "unit": "us",
+          "field_T": 3.0,
+          "context": "Siemens IDEA standard RF raster",
+          "source_key": "pulseq_spec",
+          "location": "DEFINITIONS block, RadiofrequencyRasterTime 1e-06",
+          "confidence": "widely-quoted"
+        }
+      },
+      "notes": "Diffusion-encoding slew is PNS-limited to 62.5 T/m/s, well below the 200 T/m/s hardware max (McNab 2013). See Jones 2018 (super-scanner) for the wider context of 300 mT/m systems."
+    },
+    "siemens_magnetom_connectom_2_0_3T": {
+      "vendor": "Siemens Healthineers / MGH",
+      "model": "Connectome 2.0 (next-gen head-only research system; target specs)",
+      "field_T": 3.0,
+      "gradient": {
+        "max_amplitude": {
+          "value": 500,
+          "unit": "mT/m",
+          "field_T": 3.0,
+          "context": "TARGET spec; 3-layer head-only gradient coil, 44 cm inner diameter",
+          "source_key": "huang2021_connectome2",
+          "location": "Design section ('500 mT m-1')",
+          "confidence": "cited"
+        },
+        "max_slew_rate": {
+          "value": 600,
+          "unit": "T/m/s",
+          "field_T": 3.0,
+          "context": "TARGET spec; head-only coil optimized to minimize PNS",
+          "source_key": "huang2021_connectome2",
+          "location": "Design section ('600 T m-1 s-1')",
+          "confidence": "cited"
+        },
+        "gradient_coil_inner_diameter": {
+          "value": 44,
+          "unit": "cm",
+          "field_T": 3.0,
+          "context": "head-only 3-layer gradient coil inner diameter",
+          "source_key": "huang2021_connectome2",
+          "location": "Design section ('44 cm')",
+          "confidence": "cited"
+        }
+      },
+      "notes": "These are DESIGN TARGETS published in 2021, not measured production specs; the head-only geometry is what permits the high slew without exceeding PNS."
+    },
+    "siemens_magnetom_terra_7T": {
+      "vendor": "Siemens Healthineers",
+      "model": "MAGNETOM Terra (original; XR gradients)",
+      "field_T": 7.0,
+      "gradient": {
+        "max_amplitude": {
+          "value": 80,
+          "unit": "mT/m",
+          "field_T": 7.0,
+          "context": "per axis, XR gradient system",
+          "source_key": "siemens_terra_web",
+          "location": "Brochure / technical specs",
+          "confidence": "cited"
+        },
+        "max_slew_rate": {
+          "value": 200,
+          "unit": "T/m/s",
+          "field_T": 7.0,
+          "context": "per axis, XR gradient system",
+          "source_key": "siemens_terra_web",
+          "location": "Brochure / technical specs",
+          "confidence": "cited"
+        },
+        "gradient_raster_time": {
+          "value": 10,
+          "unit": "us",
+          "field_T": 7.0,
+          "context": "Siemens IDEA standard gradient raster",
+          "source_key": "pulseq_spec",
+          "location": "DEFINITIONS block, GradientRasterTime 1e-05",
+          "confidence": "widely-quoted"
+        }
+      },
+      "rf": {
+        "rf_raster_time": {
+          "value": 1,
+          "unit": "us",
+          "field_T": 7.0,
+          "context": "Siemens IDEA standard RF raster",
+          "source_key": "pulseq_spec",
+          "location": "DEFINITIONS block, RadiofrequencyRasterTime 1e-06",
+          "confidence": "widely-quoted"
+        },
+        "peak_B1_head_coil": {
+          "value": null,
+          "unit": "uT",
+          "field_T": 7.0,
+          "context": "typically a Nova Medical 1Tx32Rx or 8Tx32Rx pTx head coil; peak B1 is coil-, pTx-config- and RF-shim-dependent; widely quoted ~15-20 uT but no single authoritative number",
+          "source_key": "siemens_terra_web",
+          "location": "n/a",
+          "confidence": "NEEDS VERIFICATION"
+        }
+      },
+      "notes": "Newer MAGNETOM Terra.X reaches 135 mT/m @ 250 T/m/s (separate model). Terra has no body transmit coil; transmit is via the head coil (1Tx or 8Tx pTx)."
+    },
+    "ge_signa_premier_3T": {
+      "vendor": "GE Healthcare",
+      "model": "SIGNA Premier (SuperG gradients)",
+      "field_T": 3.0,
+      "gradient": {
+        "max_amplitude": {
+          "value": 80,
+          "unit": "mT/m",
+          "field_T": 3.0,
+          "context": "peak amplitude, SuperG water-cooled gradient coil, 70 cm bore",
+          "source_key": "ge_premier_spec",
+          "location": "Spec sheet, 'Gradients' page - Peak amplitude 80 mT/m",
+          "confidence": "cited"
+        },
+        "max_slew_rate": {
+          "value": 200,
+          "unit": "T/m/s",
+          "field_T": 3.0,
+          "context": "peak slew rate, SuperG",
+          "source_key": "ge_premier_spec",
+          "location": "Spec sheet, 'Gradients' page - Peak slew-rate 200 T/m/s",
+          "confidence": "cited"
+        },
+        "gradient_amplifier_peak": {
+          "value": 2.4,
+          "unit": "MW",
+          "field_T": 3.0,
+          "context": "SuperG gradient amplifier output power; peak current/voltage 1034 A / 2324 V",
+          "source_key": "ge_premier_spec",
+          "location": "Spec sheet, 'Gradient Amplifier & Coil'",
+          "confidence": "cited"
+        }
+      },
+      "rf": {
+        "rf_amplifier_body": {
+          "value": 15,
+          "unit": "kW",
+          "field_T": 3.0,
+          "context": "per channel, two liquid-cooled solid-state amps (30 kW peak total) driving 70 cm whole-body transmit coil",
+          "source_key": "ge_premier_spec",
+          "location": "Spec sheet, 'RF Transmit Architecture'",
+          "confidence": "cited"
+        },
+        "rf_amplifier_head": {
+          "value": 4.5,
+          "unit": "kW",
+          "field_T": 3.0,
+          "context": "head transmit amplifier",
+          "source_key": "ge_premier_spec",
+          "location": "Spec sheet, RF amplifier multiple output",
+          "confidence": "cited"
+        },
+        "peak_B1_body_coil": {
+          "value": 19,
+          "unit": "uT",
+          "field_T": 3.0,
+          "context": "maximum B1 field with 70 cm whole-body transmit coil, at 75 kg patient load",
+          "source_key": "ge_premier_spec",
+          "location": "Spec sheet, 'Maximum B1 field with whole body RF coil: 19 uT at 75 kg'",
+          "confidence": "cited"
+        }
+      },
+      "notes": "Peak B1 (19 uT) is explicitly stated at a 75 kg load; it scales down with patient mass/loading."
+    },
+    "philips_ingenia_3T": {
+      "vendor": "Philips Healthcare",
+      "model": "Ingenia 3.0T (Omega HP gradients; representative Philips 3T, dStream)",
+      "field_T": 3.0,
+      "gradient": {
+        "max_amplitude": {
+          "value": 45,
+          "unit": "mT/m",
+          "field_T": 3.0,
+          "context": "per axis, Omega HP gradient system",
+          "source_key": "philips_ingenia_web",
+          "location": "Product page / gradient specs",
+          "confidence": "widely-quoted"
+        },
+        "max_slew_rate": {
+          "value": 200,
+          "unit": "T/m/s",
+          "field_T": 3.0,
+          "context": "per axis, Omega HP",
+          "source_key": "philips_ingenia_web",
+          "location": "Product page / gradient specs",
+          "confidence": "widely-quoted"
+        }
+      },
+      "rf": {},
+      "notes": "Philips publishes gradient figures across configurations; the 45 mT/m / 200 T/m/s Omega HP figure is consistent across Ingenia/Achieva dStream 3T pages but the exact primary spec sheet was not pinned to a single PDF clause. Higher-end Philips gradients (e.g. 80 mT/m on some configs) exist - confirm per installed configuration."
+    },
+    "siemens_magnetom_terra_x_7T": {
+      "vendor": "Siemens Healthineers",
+      "model": "MAGNETOM Terra.X (XR gradients)",
+      "field_T": 7.0,
+      "gradient": {
+        "max_amplitude": {
+          "value": 135,
+          "unit": "mT/m",
+          "field_T": 7.0,
+          "context": "whole-body XR gradient, 7T (successor to Terra's 80 mT/m)",
+          "source_key": "siemens_terra_x_web",
+          "location": "Product page ('135 mT/m and 250 T/m/s ... benchmark in 7T')",
+          "confidence": "cited"
+        },
+        "max_slew_rate": {
+          "value": 250,
+          "unit": "T/m/s",
+          "field_T": 7.0,
+          "context": "whole-body XR gradient, 7T (PNS-limited in practice)",
+          "source_key": "siemens_terra_x_web",
+          "location": "Product page ('135 mT/m and 250 T/m/s')",
+          "confidence": "cited"
+        },
+        "gradient_raster_time": {
+          "value": 10,
+          "unit": "us",
+          "field_T": 7.0,
+          "context": "Siemens IDEA standard gradient raster",
+          "source_key": "pulseq_spec",
+          "location": "DEFINITIONS block, GradientRasterTime 1e-05",
+          "confidence": "widely-quoted"
+        }
+      },
+      "rf": {
+        "rf_raster_time": {
+          "value": 1,
+          "unit": "us",
+          "field_T": 7.0,
+          "context": "Siemens IDEA standard RF raster",
+          "source_key": "pulseq_spec",
+          "location": "DEFINITIONS block, RadiofrequencyRasterTime 1e-06",
+          "confidence": "widely-quoted"
+        },
+        "peak_B1_head_coil": {
+          "value": null,
+          "unit": "uT",
+          "field_T": 7.0,
+          "context": "7T transmit peak B1 is coil- and pTx/RF-shim-config-dependent (Nova 1Tx vs 8Tx); not a single published number",
+          "source_key": "siemens_terra_x_web",
+          "location": "n/a",
+          "confidence": "NEEDS VERIFICATION"
+        }
+      }
+    },
+    "ge_signa_magnus_3T": {
+      "vendor": "GE HealthCare",
+      "model": "SIGNA MAGNUS (head-only, HyperG gradient coil)",
+      "field_T": 3.0,
+      "gradient": {
+        "max_amplitude": {
+          "value": 300,
+          "unit": "mT/m",
+          "field_T": 3.0,
+          "context": "head-only asymmetric HyperG coil; FDA-cleared 2024-11-13; whole-body Premier is 80 mT/m",
+          "source_key": "ge_signa_magnus_fda",
+          "location": "Press release ('300 millitesla per meter ... and 750 tesla per meter per second')",
+          "confidence": "cited"
+        },
+        "max_slew_rate": {
+          "value": 750,
+          "unit": "T/m/s",
+          "field_T": 3.0,
+          "context": "HyperG head-only asymmetric design invokes LESS PNS, so more of the slew is usable than a whole-body coil (minimal diffusion derating)",
+          "source_key": "ge_signa_magnus_fda",
+          "location": "Press release ('... 750 tesla per meter per second (T/m/s)')",
+          "confidence": "cited"
+        },
+        "gradient_raster_time": {
+          "value": 10,
+          "unit": "us",
+          "field_T": 3.0,
+          "context": "typical 10 us gradient raster (GE), not pinned to a primary spec clause",
+          "source_key": "ge_signa_magnus_fda",
+          "location": "n/a",
+          "confidence": "NEEDS VERIFICATION"
+        }
+      },
+      "rf": {
+        "peak_B1_body_coil": {
+          "value": null,
+          "unit": "uT",
+          "field_T": 3.0,
+          "context": "head transmit peak B1 not published for MAGNUS; coil/patient-load-dependent (cf. Premier 19 uT @75 kg body coil)",
+          "source_key": "ge_signa_magnus_fda",
+          "location": "n/a",
+          "confidence": "NEEDS VERIFICATION"
+        }
+      }
+    }
+  },
+  "safety": {
+    "standard": "IEC 60601-2-33 (Consolidated Edition 3.2, 2015-06)",
+    "source_key": "iec60601_2_33_ed3_2",
+    "sar": {
+      "averaging_window_volume_coil": {
+        "value": 6,
+        "unit": "min",
+        "context": "SAR is averaged over any 6-minute period for whole-body, partial-body and head (volume transmit coils)",
+        "source_key": "iec60601_2_33_ed3_2",
+        "location": "Clause 201.12.4.103; Table 201.105",
+        "confidence": "cited"
+      },
+      "averaging_window_local": {
+        "value": 10,
+        "unit": "s",
+        "context": "short-term/local SAR averaging; short-term SAR over any 10 s shall not exceed 2x the stated 6-min averaged limit",
+        "source_key": "iec60601_2_33_ed3_2",
+        "location": "Clause 201.12.4.103; Table 201.106",
+        "confidence": "cited"
+      },
+      "whole_body_normal": {
+        "value": 2,
+        "unit": "W/kg",
+        "context": "Normal Operating Mode, whole-body average",
+        "source_key": "iec60601_2_33_ed3_2",
+        "location": "Table 201.105",
+        "confidence": "cited"
+      },
+      "whole_body_first_level": {
+        "value": 4,
+        "unit": "W/kg",
+        "context": "First-Level Controlled Operating Mode, whole-body average",
+        "source_key": "iec60601_2_33_ed3_2",
+        "location": "Table 201.105",
+        "confidence": "cited"
+      },
+      "head_normal": {
+        "value": 3.2,
+        "unit": "W/kg",
+        "context": "Normal Operating Mode, head average (volume coil); same 3.2 limit applies in First-Level mode for head",
+        "source_key": "iec60601_2_33_ed3_2",
+        "location": "Table 201.105",
+        "confidence": "cited"
+      },
+      "head_first_level": {
+        "value": 3.2,
+        "unit": "W/kg",
+        "context": "First-Level Controlled Operating Mode, head average (volume coil)",
+        "source_key": "iec60601_2_33_ed3_2",
+        "location": "Table 201.105",
+        "confidence": "cited"
+      },
+      "local_head_normal": {
+        "value": 10,
+        "unit": "W/kg",
+        "context": "Normal Operating Mode, local SAR in head (local transmit coil), 10 g averaging",
+        "source_key": "iec60601_2_33_ed3_2",
+        "location": "Table 201.106",
+        "confidence": "cited"
+      },
+      "local_head_first_level": {
+        "value": 20,
+        "unit": "W/kg",
+        "context": "First-Level Controlled Operating Mode, local SAR in head (local transmit coil)",
+        "source_key": "iec60601_2_33_ed3_2",
+        "location": "Table 201.106",
+        "confidence": "cited"
+      },
+      "local_trunk_normal": {
+        "value": 10,
+        "unit": "W/kg",
+        "context": "Normal Operating Mode, local SAR in trunk",
+        "source_key": "iec60601_2_33_ed3_2",
+        "location": "Table 201.106",
+        "confidence": "cited"
+      },
+      "local_trunk_first_level": {
+        "value": 20,
+        "unit": "W/kg",
+        "context": "First-Level Controlled Operating Mode, local SAR in trunk",
+        "source_key": "iec60601_2_33_ed3_2",
+        "location": "Table 201.106",
+        "confidence": "cited"
+      },
+      "local_extremities_normal": {
+        "value": 20,
+        "unit": "W/kg",
+        "context": "Normal Operating Mode, local SAR in extremities",
+        "source_key": "iec60601_2_33_ed3_2",
+        "location": "Table 201.106",
+        "confidence": "cited"
+      },
+      "local_extremities_first_level": {
+        "value": 40,
+        "unit": "W/kg",
+        "context": "First-Level Controlled Operating Mode, local SAR in extremities",
+        "source_key": "iec60601_2_33_ed3_2",
+        "location": "Table 201.106",
+        "confidence": "cited"
+      },
+      "partial_body_normal": {
+        "value": null,
+        "unit": "W/kg",
+        "context": "Partial-body scales with exposed mass ratio r: SAR_limit = (10 - 8*r) W/kg in Normal mode",
+        "source_key": "iec60601_2_33_ed3_2",
+        "location": "Table 201.105 (partial body formula)",
+        "confidence": "cited"
+      },
+      "partial_body_first_level": {
+        "value": null,
+        "unit": "W/kg",
+        "context": "Partial-body: SAR_limit = (10 - 6*r) W/kg in First-Level Controlled mode",
+        "source_key": "iec60601_2_33_ed3_2",
+        "location": "Table 201.105 (partial body formula)",
+        "confidence": "cited"
+      },
+      "second_level_controlled": {
+        "value": null,
+        "unit": "W/kg",
+        "context": "Second-Level Controlled mode: above First-Level limits, requires ethics/IRB approval; no fixed IEC numeric ceiling",
+        "source_key": "iec60601_2_33_ed3_2",
+        "location": "Clause 201.12.4.103",
+        "confidence": "cited"
+      },
+      "temperature_derating": {
+        "value": 0.25,
+        "unit": "W/kg per degC",
+        "context": "all SAR limits assume ambient <= 25 degC; derate by ~0.25 W/kg for each degC above 25 (see Fig 201.103, Table 201.104)",
+        "source_key": "iec60601_2_33_ed3_2",
+        "location": "Figure 201.103, Table 201.104",
+        "confidence": "cited"
+      }
+    },
+    "b1_rms": {
+      "definition": {
+        "value": null,
+        "unit": "uT",
+        "context": "B1+rms is the RMS of the B1+ field over a defined averaging period (commonly stated as 10 s); IEC 60601-2-33 mandates that B1+rms be a user-selectable/displayed output (MR Equipment Output Conditioning, MROC) so it can be matched to MR-Conditional implant labeling. It is patient-mass-independent. There is NO single fixed numeric IEC ceiling for B1+rms; the limit is set by the implant's MR-Conditional label.",
+        "source_key": "iec60601_2_33_ed3_2",
+        "location": "Clause 201.12.4.103 / FPO output display requirements; see also mriquestions B1+rms",
+        "confidence": "cited"
+      }
+    },
+    "dbdt_pns": {
+      "basis": {
+        "value": null,
+        "unit": "T/s",
+        "context": "Gradient output (dB/dt) is limited so as not to exceed the peripheral-nerve-stimulation (PNS) threshold. IEC 60601-2-33 expresses the limit via the rheobase/chronaxie stimulation model: Normal mode <= 80% of mean PNS threshold; First-Level <= 100% of mean PNS threshold; cardiac stimulation must always be avoided (Fig 201.102).",
+        "source_key": "iec60601_2_33_ed3_2",
+        "location": "Clause 201.12.4.105; Figure 201.102; Annex AA",
+        "confidence": "cited"
+      },
+      "pns_threshold_model": {
+        "value": null,
+        "unit": "n/a",
+        "context": "Annex AA gives the strength-duration (rheobase/chronaxie) PNS threshold formulation and the dB/dt response-value convolution model (Figs AA.3-AA.7).",
+        "source_key": "iec60601_2_33_ed3_2",
+        "location": "Annex AA (Figures AA.3-AA.8)",
+        "confidence": "cited"
+      }
+    },
+    "safe_model": {
+      "architecture": {
+        "value": null,
+        "unit": "n/a",
+        "context": "SAFE = Stimulation Approximation by Filtering and Evaluation. The gradient G(t) is differentiated (dG/dt), then split into >=2 (optionally 3) parallel low-pass filter branches with time constants tau1, tau2 (tau3 optional), each rectified, weighted by scale factors a1,a2,a3 and summed to form Stim(t); stimulation predicted if Stim(t) > Stim_lim. Empirical, vendor-implemented as a dB/dt watchdog.",
+        "source_key": "hebrank2000_safe",
+        "location": "Hebrank & Gebhardt 2000, Fig 1 and text",
+        "confidence": "cited"
+      },
+      "weight_constraint": {
+        "value": 1.0,
+        "unit": "dimensionless",
+        "context": "the weighting scale factors are normalized: a1 + a2 + a3 = 1.0",
+        "source_key": "hebrank2000_safe",
+        "location": "Hebrank & Gebhardt 2000, Results",
+        "confidence": "cited"
+      },
+      "time_constant_range": {
+        "value": null,
+        "unit": "ms",
+        "context": "filter time constants stated to lie in the ~5..15 ms range in the abstract; the specific per-filter tau1/tau2/tau3 values and per-coil scale factors a1/a2/a3 are NOT published (vendor-calibrated per gradient coil).",
+        "source_key": "hebrank2000_safe",
+        "location": "Hebrank & Gebhardt 2000, Results ('5..15 ms with a1+a2+a3 = 1.0')",
+        "confidence": "cited"
+      },
+      "coefficients": {
+        "value": null,
+        "unit": "n/a",
+        "context": "Exact SAFE tau and a coefficients per gradient coil are vendor-confidential; only the architecture and normalization are published.",
+        "source_key": "hebrank2000_safe",
+        "location": "n/a",
+        "confidence": "NEEDS VERIFICATION"
+      }
+    }
+  }
+}
