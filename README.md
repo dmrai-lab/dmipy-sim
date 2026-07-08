@@ -13,6 +13,28 @@ dmipy-sim and dmipy-fit share **one** pulse-sequence and substrate interface —
 simulator and the analytical models eat the same `Waveform` and the same substrate, with no
 conversion layer.
 
+## Quickstart — a diffusion signal in a few lines
+
+Free (Gaussian) diffusion under a PGSE waveform reproduces the textbook Stejskal–Tanner law
+`S/S0 = exp(-b·D)` — a one-line sanity check that the install works:
+
+```python
+import numpy as np
+from dmipy_sim import simulate, pgse, set_b, FreeDiffusion
+
+D = 2e-9   # m^2/s
+for b in [0, 1e9, 2e9]:                       # b in s/m^2  (1e9 s/m^2 = 1000 s/mm^2 = 1 ms/µm^2)
+    wf = set_b(pgse(delta=0.01, DELTA=0.04, G_magnitude=0.05, bvecs=[[1, 0, 0]], n_t=300), b)
+    S  = float(np.asarray(simulate(n_walkers=50_000, diffusivity=D, waveform=wf,
+                                    geometry=FreeDiffusion(), seed=0, require_gpu=False)).ravel()[0])
+    print(f"b={b/1e9:.0f} ms/µm²   S/S0={S:.3f}   (exp(-bD)={np.exp(-b*D):.3f})")
+# b=0 → 1.000   b=1 → 0.131 (exp -bD 0.135)   b=2 → 0.021 (0.018)
+```
+
+Swap `FreeDiffusion()` for a `Cylinder`/`Sphere`/`PackedCylinders` to see restriction, or add
+`surface_relaxivity_t2=` / `permeability=` to the geometry — see below. (`require_gpu=False`
+just silences the CPU-fallback warning; drop it on a GPU.)
+
 ## What's here
 
 | | Entry point | Notes |
