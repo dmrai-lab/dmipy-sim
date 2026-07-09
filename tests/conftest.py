@@ -35,3 +35,29 @@ def load_fixture(name):
     if not path.exists():
         pytest.skip(f"Fixture '{name}' missing — run scripts/generate_fixtures.py")
     return np.load(path)
+
+
+# Test modules dominated by heavy CPU Monte-Carlo (measured per file: tens of seconds to minutes
+# each). Mark every test in them `slow` so the default CI selection (-m "not slow and not gpu")
+# stays fast (~1 min): it keeps the primitive / geometry / waveform unit tests plus a packed-myelin
+# MC smoke and the fast permeability checks, while the heavy statistical MC-validation runs in the
+# nightly / offline `slow` job. (Analytical parity on the dmipy-fit side is covered separately by
+# committed MC fixtures there, with no live Monte Carlo.)
+_SLOW_MC_MODULES = {
+    "test_cylinder", "test_ellipsoid", "test_sphere", "test_mixture", "test_myelin",
+    "test_box_1d", "test_free_1d", "test_free_3d", "test_free_ogse", "test_general_waveform",
+    "test_packed_cylinders", "test_packed_spheres",
+    "test_packed_cylinders_permeability", "test_ellipsoid_permeability",
+    "test_sphere_permeability", "test_permeability_crossing",
+    "test_compartment_tagging", "test_t2", "test_sh_convolution",
+    "test_karger_mc_parity", "test_t2_walker_parity",
+}
+
+
+def pytest_collection_modifyitems(config, items):
+    slow = pytest.mark.slow
+    for item in items:
+        mod = getattr(item, "module", None)
+        name = mod.__name__.rsplit(".", 1)[-1] if mod is not None else ""
+        if name in _SLOW_MC_MODULES:
+            item.add_marker(slow)
