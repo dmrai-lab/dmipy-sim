@@ -90,6 +90,15 @@ wf   = set_b(pgse(delta=0.01, DELTA=0.04, G_magnitude=0.2, bvecs=[[1, 0, 0]], n_
 sig  = simulate(n_walkers=100_000, diffusivity=2e-9, waveform=wf, geometry=geom, seed=0)
 ```
 
+## Examples
+
+- **[Flagship — canonical white matter](examples/canonical_wm_flagship.ipynb)**
+  ([Open in Colab](https://colab.research.google.com/github/dmrai-lab/dmipy-sim/blob/main/examples/canonical_wm_flagship.ipynb))
+  — build a histology-calibrated packed-myelinated-cylinder substrate, run the Monte-Carlo
+  forward with surface relaxivity, and check it against the analytical model in dmipy-fit.
+- **[Validation ladders](examples/validation/)** — surface relaxivity and permeability from 1-D
+  to 3-D vs exact analytics, and the extra-axonal tortuosity scale sweep.
+
 ## Relationship to disimpy / MISST / Camino, and citation
 
 The core engine — Brownian walk, specular reflection, phase accumulation — follows the same
