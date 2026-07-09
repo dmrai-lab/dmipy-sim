@@ -35,6 +35,7 @@ cuda12 = [
 ]
 dev = [
     "pytest>=7.0",
+    "matplotlib>=3.5",   # physics/validation tests plot diagnostics (Agg backend)
 ]
 # The cross-engine flagship example (examples/canonical_wm_parity_from_sim.py) additionally
 # needs the analytical engine dmipy-fit. It is an OPTIONAL example dependency only -- the

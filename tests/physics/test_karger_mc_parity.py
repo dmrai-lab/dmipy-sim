@@ -23,7 +23,14 @@ from dmipy_sim import simulate, PackedSpheres, set_b
 from dmipy_sim.geometries import Sphere
 from dmipy_sim.waveforms import pgse
 
-from dmipy_fit.signal_models.exchange_models import _karger_formula
+import pytest
+# Cross-engine parity: MC (this repo) vs the analytical Kärger formula in dmipy-fit. dmipy-fit is
+# NOT a dependency of dmipy-sim, so skip the whole module at collection when it is absent —
+# otherwise a bare import errors on a standalone dmipy-sim checkout / CI.
+_karger_formula = pytest.importorskip(
+    "dmipy_fit.signal_models.exchange_models",
+    reason="cross-engine Kärger parity needs the analytical engine dmipy-fit",
+)._karger_formula
 
 
 # ---------------------------------------------------------------------------
