@@ -1,0 +1,13 @@
+g_ratio:
+  clip:
+  - 0.5
+  - 0.95
+  distribution: normal
+  mean: 0.6974385515597104
+  std: 0.04969745556904436
+inner_radius:
+  alpha: 9.621532891359132
+  beta_m: 1.5155625413934553e-07
+  distribution: gamma
+  mean_m: 1.4582034840928969e-06
+  std_m: 4.701062197228007e-07
