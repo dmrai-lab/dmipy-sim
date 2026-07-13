@@ -27,10 +27,12 @@ import pytest
 # Cross-engine parity: MC (this repo) vs the analytical Kärger formula in dmipy-fit. dmipy-fit is
 # NOT a dependency of dmipy-sim, so skip the whole module at collection when it is absent —
 # otherwise a bare import errors on a standalone dmipy-sim checkout / CI.
-_karger_formula = pytest.importorskip(
+_exchange_models = pytest.importorskip(
     "dmipy_fit.signal_models.exchange_models",
     reason="cross-engine Kärger parity needs the analytical engine dmipy-fit",
-)._karger_formula
+)
+_karger_formula = _exchange_models._karger_formula
+_karger_propagator_ste = _exchange_models._karger_propagator_ste
 
 
 # ---------------------------------------------------------------------------
@@ -305,6 +307,37 @@ def _run_pgste_karger_test(kappa_surf, b_values, n_walkers, atol):
                  f"  E_mc      = {E_mc}\n"
                  f"  E_analyt. = {E_analytical}\n"
                  f"  diff      = {E_mc - E_analytical}"),
+    )
+
+    # Also exercise the matrix-exponential STE propagator (the path
+    # X0GeneralizedKarger takes once per-compartment relaxation is present) against
+    # the same MC signal, so the analytic engine's per-lobe timing is covered too.
+    # The two encoding lobes are each δ long (transverse total 2δ) with the storage
+    # window TM in between; the second-lobe transverse time is dt6 = δ (read from
+    # the geometry, not reconstructed from TE). Feed the MC-measured per-compartment
+    # attenuations as effective diffusivities (D_eff = R/b over the two lobes) and
+    # let the propagator handle exchange over the full 2δ + TM history.
+    E_prop = np.empty_like(E_mc)
+    for i, bv in enumerate(b_values):
+        bv = float(bv)
+        if bv < 1e3:
+            E_prop[i] = 0.5                      # b0: no diffusion, keeps the STE 0.5
+            continue
+        D1_eff = float(R1[i]) / bv
+        D2_eff = float(R2[i]) / bv
+        M_TE = _karger_propagator_ste(
+            D1_eff, D2_eff, 1e10, 1e10, 1e10, 1e10, kappa, F,
+            bv / 2.0, bv / 2.0, DELTA_SHORT, TM_STE, 0.0, DELTA_SHORT)
+        E_prop[i] = float(np.sum(M_TE))
+
+    npt.assert_allclose(
+        E_mc, E_prop, atol=atol,
+        err_msg=(f"PGSTE Kärger STE-propagator mismatch (κ_surf={kappa_surf:.1e} "
+                 f"m/s, κ={kappa:.3f} s⁻¹, dt6=δ={DELTA_SHORT:.4f} s):\n"
+                 f"  b       = {b_values * 1e-6} s/mm²\n"
+                 f"  E_mc    = {E_mc}\n"
+                 f"  E_prop. = {E_prop}\n"
+                 f"  diff    = {E_mc - E_prop}"),
     )
 
 
