@@ -25,6 +25,7 @@ def simulate(
     geometry=None,
     seed: int = 123,
     T2: float = None,
+    T1: float = None,
     return_positions: bool = False,
     return_compartments=False,
     return_walker_signals: bool = False,
@@ -50,7 +51,15 @@ def simulate(
         Master PRNG seed (split into per-walker keys internally).
     T2 : float, optional
         Transverse relaxation time in seconds. When set, accumulated
-        per-walker inside the scan body as -dt/T2 each step.
+        per-walker inside the scan body as ``-chi_t*dt/T2`` each step, where
+        ``chi_t`` is the waveform's transverse-coherence flag (1 transverse,
+        0 stored longitudinally). A plain spin echo has ``chi_t ≡ 1``.
+    T1 : float, optional
+        Longitudinal relaxation time in seconds. When set, accumulated
+        per-walker as ``-(1-chi_t)*dt/T1`` each step — i.e. only during the
+        longitudinal-storage intervals (the ``chi_perp == 0`` block of a
+        stimulated echo, e.g. the mixing time of a PGSTE). With an all-
+        transverse waveform (spin echo) T1 never acts.
     return_positions : bool, optional
         If True, also return final walker positions as a (n_walkers, 3) array.
         Default False.
@@ -132,7 +141,7 @@ def simulate(
             try:
                 return simulate(
                     n_walkers, diffusivity=diffusivity, waveform=waveform,
-                    geometry=geometry, seed=seed, T2=T2,
+                    geometry=geometry, seed=seed, T2=T2, T1=T1,
                     return_positions=return_positions,
                     return_compartments=return_compartments,
                     return_walker_signals=return_walker_signals, r0=r0,
@@ -157,7 +166,7 @@ def simulate(
         return _simulate_in_walker_batches(
             n_walkers, walker_batch_size, seed=seed,
             diffusivity=diffusivity, waveform=waveform, geometry=geometry,
-            T2=T2, r0=r0,
+            T2=T2, T1=T1, r0=r0,
             return_positions=return_positions,
             return_compartments=return_compartments,
             return_walker_signals=return_walker_signals)
@@ -178,11 +187,18 @@ def simulate(
     def _ens_np(sw, phi):
         return jnp.sum(sw[:, None] * jnp.cos(phi), axis=0) / jnp.sum(sw)
 
-    # Transpose G for scan: (n_t, n_measurements, 3).  Magnetisation is fully
-    # transverse throughout (ideal instantaneous pulses), so the scan iterates
-    # over the gradient samples alone — every step_fn receives g_t = inputs.
+    # Transpose G for scan: (n_t, n_measurements, 3).  Each step also receives a
+    # scalar transverse-coherence flag chi_t: 1 where the magnetisation is
+    # transverse (T2 + surface relaxivity act), 0 where it is stored
+    # longitudinally (only T1 acts).  A waveform with no chi_perp schedule is a
+    # spin echo (chi_t == 1 throughout).  step_fn receives inputs = (g_t, chi_t).
     G_scan = jnp.transpose(G, (1, 0, 2))
-    scan_inputs = G_scan
+    chi_perp = getattr(waveform, 'chi_perp', None)
+    if chi_perp is not None:
+        chi_perp_scan = jnp.asarray(chi_perp, dtype=jnp.float32).reshape(n_t)
+    else:
+        chi_perp_scan = jnp.ones((n_t,), dtype=jnp.float32)
+    scan_inputs = (G_scan, chi_perp_scan)
 
     # Build per-walker PRNG keys
     master_key = jax.random.PRNGKey(seed)
@@ -218,7 +234,7 @@ def simulate(
 
     if is_myelin:
         # MyelinatedCylinder: extended carry state (r, phi, log_w, compartment_id, key)
-        step_fn = make_myelin_step_fn(geometry, dt)
+        step_fn = make_myelin_step_fn(geometry, dt, T1=T1)
         compartments0 = geometry._init_compartments  # (n_walkers,) int32
         spin_w = jnp.asarray(geometry.water_fractions, jnp.float32)[compartments0]
 
@@ -277,7 +293,7 @@ def simulate(
             raise NotImplementedError(
                 "simulate(r0=...) is unsupported for PackedMyelinatedCylinders; it "
                 "initialises walkers (and their compartments) from `seed` via init_positions.")
-        step_fn = make_packed_myelin_step_fn(geometry, dt)
+        step_fn = make_packed_myelin_step_fn(geometry, dt, T1=T1)
         compartments0 = geometry._init_compartments        # encoded: 0=extra, 1..N=intra, >N=myelin
 
         def _to3(cid):                                     # -> 0=intra, 1=myelin, 2=extra
@@ -289,8 +305,8 @@ def simulate(
         def simulate_walker(r0_w, key_w, comp0):
             phi0 = jnp.zeros(n_measurements, dtype=jnp.float32)
 
-            def emit(carry, g_t):
-                nc, _ = step_fn(carry, g_t)
+            def emit(carry, inputs):
+                nc, _ = step_fn(carry, inputs)
                 return nc, _to3(nc[4])                     # nc[4] = compartment_id
             (r_ic_f, _r_uw_f, phi_all, log_w, comp_f, _), comp_seq_w = jax.lax.scan(
                 emit, (r0_w, r0_w, phi0, jnp.float32(0.0), comp0, key_w), scan_inputs)
@@ -306,8 +322,8 @@ def simulate(
     else:
         # Standard geometry path
         # Build scan body for this geometry and diffusivity
-        # T2 is passed in so it is accumulated per-walker inside the scan
-        step_fn, has_weight = make_step_fn(geometry, diffusivity, dt, T2=T2)
+        # T2/T1 are passed in so they are accumulated per-walker inside the scan
+        step_fn, has_weight = make_step_fn(geometry, diffusivity, dt, T2=T2, T1=T1)
         spin_w = jnp.ones((n_walkers,), dtype=jnp.float32)
 
         if track_comp:
@@ -414,8 +430,13 @@ def simulate(
                 # Signal: Re(<exp(i*phi)>) = <cos(phi)>
                 signals = _ens_np(spin_w, all_phi)  # (n_measurements,)
 
-    # T2 is accumulated per-walker inside the scan body (make_step_fn /
+    # T2/T1 are accumulated per-walker inside the scan body (make_step_fn /
     # make_myelin_step_fn); nothing further to apply here.
+
+    # Stimulated-echo readout: the stimulated echo stores half the
+    # magnetisation, an idealized 0.5 amplitude factor.
+    if getattr(waveform, 'stimulated_echo', False):
+        signals = signals * jnp.float32(0.5)
 
     # Build return tuple
     result = [np.array(signals)]
@@ -444,7 +465,7 @@ def simulate(
 
 
 def _simulate_in_walker_batches(n_walkers, walker_batch_size, *, seed,
-                                diffusivity, waveform, geometry, T2, r0,
+                                diffusivity, waveform, geometry, T2, T1, r0,
                                 return_positions, return_compartments,
                                 return_walker_signals):
     """Run simulate() over walker chunks and recombine (see simulate's
@@ -465,7 +486,7 @@ def _simulate_in_walker_batches(n_walkers, walker_batch_size, *, seed,
               f"({int(100 * end / n_walkers)}%)...", flush=True)
         out = simulate(
             n_walkers=nb, diffusivity=diffusivity, waveform=waveform,
-            geometry=geometry, seed=seed + 1 + b, T2=T2,
+            geometry=geometry, seed=seed + 1 + b, T2=T2, T1=T1,
             r0=(None if r0 is None else r0[start:end]),
             return_positions=return_positions,
             return_compartments=return_compartments,
@@ -606,6 +627,14 @@ def simulate_cpmg(n_walkers, diffusivity, waveform, geometry, *,
     def _ens_np(sw, phi):
         return jnp.sum(sw[:, None] * jnp.cos(phi), axis=0) / jnp.sum(sw)
     G_scan = jnp.transpose(G, (1, 0, 2))   # (n_t, n_measurements, 3)
+    # CPMG is a spin-echo train: magnetisation is transverse throughout, so the
+    # coherence flag is 1 at every step (step_fn receives inputs = (g_t, chi_t)).
+    chi_perp = getattr(waveform, 'chi_perp', None)
+    if chi_perp is not None:
+        chi_perp_scan = jnp.asarray(chi_perp, dtype=jnp.float32).reshape(n_t)
+    else:
+        chi_perp_scan = jnp.ones((n_t,), dtype=jnp.float32)
+    scan_inputs = (G_scan, chi_perp_scan)
 
     master_key = jax.random.PRNGKey(seed)
     pos_key, walker_key = jax.random.split(master_key)
@@ -615,25 +644,25 @@ def simulate_cpmg(n_walkers, diffusivity, waveform, geometry, *,
     step_fn, has_weight = make_step_fn(geometry, diffusivity, dt, T2=T2)
 
     if has_weight:
-        def step_emit(carry, g_t):
-            new_carry, _ = step_fn(carry, g_t)
+        def step_emit(carry, inputs):
+            new_carry, _ = step_fn(carry, inputs)
             _, phi, log_w, _ = new_carry
             return new_carry, jnp.exp(log_w) * jnp.cos(phi)   # (n_measurements,)
 
         def walk(r0_w, key_w):
             phi0 = jnp.zeros(n_measurements, dtype=jnp.float32)
             _, s_trace = jax.lax.scan(
-                step_emit, (r0_w, phi0, jnp.float32(0.0), key_w), G_scan)
+                step_emit, (r0_w, phi0, jnp.float32(0.0), key_w), scan_inputs)
             return s_trace                                    # (n_t, n_measurements)
     else:
-        def step_emit(carry, g_t):
-            new_carry, _ = step_fn(carry, g_t)
+        def step_emit(carry, inputs):
+            new_carry, _ = step_fn(carry, inputs)
             _, phi, _ = new_carry
             return new_carry, jnp.cos(phi)
 
         def walk(r0_w, key_w):
             phi0 = jnp.zeros(n_measurements, dtype=jnp.float32)
-            _, s_trace = jax.lax.scan(step_emit, (r0_w, phi0, key_w), G_scan)
+            _, s_trace = jax.lax.scan(step_emit, (r0_w, phi0, key_w), scan_inputs)
             return s_trace
 
     all_traces = jax.vmap(walk, in_axes=(0, 0))(r0, walker_keys)   # (n_walkers, n_t, n_meas)
