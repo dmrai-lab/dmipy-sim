@@ -97,11 +97,15 @@ def surface_sub_steps(geometry, diffusivity: float, dt: float, frac: float = 8.0
     return max(1, int(np.ceil(dt / dt_phys_max)))
 
 
-def make_step_fn(geometry, diffusivity: float, dt: float, T2: float = None):
+def make_step_fn(geometry, diffusivity: float, dt: float, T2: float = None,
+                 T1: float = None):
     """Return (step_fn, has_weight) for one simulation timestep.
 
-    Magnetisation is assumed fully transverse throughout (instantaneous ideal
-    pulses); transverse T2 and surface relaxivity therefore act every step.
+    Each step consumes ``(g_t, chi_t)``: the gradient sample and a binary
+    transverse-coherence flag.  When ``chi_t == 1`` the magnetisation is
+    transverse (T2 decay and surface relaxivity act); when ``chi_t == 0`` it is
+    stored longitudinally (only T1 acts — no T2 loss, no surface-relaxivity
+    loss).  A plain spin echo passes ``chi_t ≡ 1``.
 
     Parameters
     ----------
@@ -116,17 +120,22 @@ def make_step_fn(geometry, diffusivity: float, dt: float, T2: float = None):
         Time step in seconds.
     T2 : float, optional
         Transverse relaxation time in seconds. When set, accumulates
-        -dt / T2 into log_weight each step.
+        ``-chi_t * dt / T2`` into log_weight each step.
+    T1 : float, optional
+        Longitudinal relaxation time in seconds. When set, accumulates
+        ``-(1 - chi_t) * dt / T1`` into log_weight each step (only the stored,
+        longitudinal intervals relax by T1).
 
     Returns
     -------
     step_fn : callable
-        Without weight (no surface relaxation, no permeability, no T2):
-            carry = (r, phi, key);  step_fn(carry, g_t) -> (carry, None)
-        With weight (surface relaxation, permeability, or T2 set):
-            carry = (r, phi, log_weight, key);  step_fn(carry, g_t) -> (carry, None)
+        Without weight (no surface relaxation, no permeability, no T2, no T1):
+            carry = (r, phi, key);  step_fn(carry, (g_t, chi_t)) -> (carry, None)
+        With weight (surface relaxation, permeability, T2, or T1 set):
+            carry = (r, phi, log_weight, key);
+            step_fn(carry, (g_t, chi_t)) -> (carry, None)
     has_weight : bool
-        True when geometry has surface_relaxivity_t2, permeability, or T2 set.
+        True when geometry has surface_relaxivity_t2, permeability, T2, or T1 set.
     """
     step_l   = jnp.float32(jnp.sqrt(6.0 * diffusivity * dt))
     gamma_dt = jnp.float32(GAMMA * dt)
@@ -135,11 +144,14 @@ def make_step_fn(geometry, diffusivity: float, dt: float, T2: float = None):
     has_surf = getattr(geometry, 'surface_relaxivity_t2', None) is not None
     has_perm = getattr(geometry, 'permeability',          None) is not None
     has_t2   = T2 is not None
-    has_weight = has_surf or has_perm or has_t2
+    has_t1   = T1 is not None
+    has_weight = has_surf or has_perm or has_t2 or has_t1
 
-    # Pre-compute scalar relaxation constant at closure time (not inside scan)
+    # Pre-compute scalar relaxation constants at closure time (not inside scan)
     if has_t2:
         inv_T2 = jnp.float32(1.0 / T2)
+    if has_t1:
+        inv_T1 = jnp.float32(1.0 / T1)
 
     if has_perm:
         kappa_over_D = jnp.float32(geometry.permeability / diffusivity)
@@ -157,7 +169,8 @@ def make_step_fn(geometry, diffusivity: float, dt: float, T2: float = None):
         gamma_dt_sub = jnp.float32(GAMMA * dt_sub)
         dt_sub_f32   = jnp.float32(dt_sub)
 
-        def step_fn(carry, g_t):
+        def step_fn(carry, inputs):
+            g_t, chi_t = inputs
 
             def _sub(c, _):
                 r, phi, log_weight, key = c
@@ -169,8 +182,12 @@ def make_step_fn(geometry, diffusivity: float, dt: float, T2: float = None):
                 r_new, dlog_w = permeate(r, step, kappa_over_D,
                                          rho_over_D, subkey_perm)
 
+                # Surface relaxivity accrues only while transverse (chi_t == 1).
+                dlog_w = dlog_w * chi_t
                 if has_t2:
-                    dlog_w = dlog_w - dt_sub_f32 * inv_T2
+                    dlog_w = dlog_w - dt_sub_f32 * inv_T2 * chi_t
+                if has_t1:
+                    dlog_w = dlog_w - dt_sub_f32 * inv_T1 * (jnp.float32(1.0) - chi_t)
 
                 phi_new = phi + gamma_dt_sub * jnp.dot(g_t, r_new)
                 return (r_new, phi_new, log_weight + dlog_w, key), None
@@ -193,7 +210,9 @@ def make_step_fn(geometry, diffusivity: float, dt: float, T2: float = None):
         gamma_dt_sub = jnp.float32(GAMMA * dt_sub)
         dt_sub_f32   = jnp.float32(dt_sub)
 
-        def step_fn(carry, g_t):
+        def step_fn(carry, inputs):
+            g_t, chi_t = inputs
+
             def _sub(c, _):
                 r, phi, log_weight, key = c
                 key, subkey = jax.random.split(key)
@@ -202,19 +221,24 @@ def make_step_fn(geometry, diffusivity: float, dt: float, T2: float = None):
                 step = unit_noise * step_l_sub
 
                 r_new, dlog_w = reflect_with_log_weight(r, step, rho_over_D)
+                # Surface relaxivity accrues only while transverse (chi_t == 1).
+                dlog_w = dlog_w * chi_t
                 if has_t2:
-                    dlog_w = dlog_w - dt_sub_f32 * inv_T2
+                    dlog_w = dlog_w - dt_sub_f32 * inv_T2 * chi_t
+                if has_t1:
+                    dlog_w = dlog_w - dt_sub_f32 * inv_T1 * (jnp.float32(1.0) - chi_t)
                 phi_new = phi + gamma_dt_sub * jnp.dot(g_t, r_new)
                 return (r_new, phi_new, log_weight + dlog_w, key), None
 
             carry_out, _ = jax.lax.scan(_sub, carry, None, length=n_sub)
             return carry_out, None
 
-    elif has_t2:
-        # No surface relaxation, no permeability — but T2 requires log_weight carry
+    elif has_t2 or has_t1:
+        # No surface relaxation, no permeability — but T2/T1 require log_weight carry
         reflect = geometry.reflect
 
-        def step_fn(carry, g_t):
+        def step_fn(carry, inputs):
+            g_t, chi_t = inputs
             r, phi, log_weight, key = carry
 
             key, subkey = jax.random.split(key)
@@ -224,7 +248,11 @@ def make_step_fn(geometry, diffusivity: float, dt: float, T2: float = None):
 
             r_new = reflect(r, step)
 
-            dlog_w  = -dt_f32 * inv_T2
+            dlog_w = jnp.float32(0.0)
+            if has_t2:
+                dlog_w = dlog_w - dt_f32 * inv_T2 * chi_t
+            if has_t1:
+                dlog_w = dlog_w - dt_f32 * inv_T1 * (jnp.float32(1.0) - chi_t)
             dphi    = gamma_dt * jnp.dot(g_t, r_new)
             phi_new = phi + dphi
 
@@ -233,7 +261,8 @@ def make_step_fn(geometry, diffusivity: float, dt: float, T2: float = None):
     else:
         reflect = geometry.reflect
 
-        def step_fn(carry, g_t):
+        def step_fn(carry, inputs):
+            g_t, _chi_t = inputs
             r, phi, key = carry
 
             key, subkey = jax.random.split(key)
@@ -251,31 +280,42 @@ def make_step_fn(geometry, diffusivity: float, dt: float, T2: float = None):
     return step_fn, has_weight
 
 
-def make_myelin_step_fn(geometry, dt: float):
+def make_myelin_step_fn(geometry, dt: float, T1: float = None):
     """Return step_fn for MyelinatedCylinder geometry.
 
     Carry state: (r, phi, log_w, compartment_id, key)
     All compartment branching uses jnp.where (JAX-compatible).
 
+    Each step consumes ``(g_t, chi_t)``: when ``chi_t == 1`` the magnetisation is
+    transverse (per-compartment T2 acts); when ``chi_t == 0`` it is stored
+    longitudinally (only T1 acts).
+
     Handles:
       - Anisotropic diffusion in myelin (radial vs tangential)
       - Dual-boundary permeability (inner + outer)
-      - Per-compartment T2 relaxation folded into log_w
+      - Per-compartment T2 relaxation folded into log_w (transverse intervals)
+      - Longitudinal T1 relaxation folded into log_w (stored intervals)
 
     Parameters
     ----------
     geometry : MyelinatedCylinder
     dt : float
         Time step in seconds.
+    T1 : float, optional
+        Longitudinal relaxation time in seconds. When set, accumulates
+        ``-(1 - chi_t) * dt / T1`` into log_w on the stored intervals.
 
     Returns
     -------
     step_fn : callable
-        (carry, g_t) -> (carry, None)
+        (carry, (g_t, chi_t)) -> (carry, None)
         carry = (r, phi, log_w, compartment_id, key)
     """
     gamma_dt = jnp.float32(GAMMA * dt)
     dt_f32 = jnp.float32(dt)
+    has_t1 = T1 is not None
+    if has_t1:
+        inv_T1 = jnp.float32(1.0 / T1)
 
     # Pre-compute step lengths per compartment
     D_intra = jnp.float32(geometry.D_intra)
@@ -326,7 +366,8 @@ def make_myelin_step_fn(geometry, dt: float):
         t2_extra  = jnp.float32(geometry.T2_extra  if geometry.T2_extra  is not None else 1e6)
         T2_arr = jnp.array([t2_intra, t2_myelin, t2_extra], dtype=jnp.float32)
 
-    def step_fn(carry, g_t):
+    def step_fn(carry, inputs):
+        g_t, chi_t = inputs
         r, phi, log_w, compartment_id, key = carry
 
         key, subkey_step, subkey_perm = jax.random.split(key, 3)
@@ -485,9 +526,12 @@ def make_myelin_step_fn(geometry, dt: float):
         # Transform back to lab frame (skip matmul for identity — GPU bug)
         r_new = r_new_c if _is_identity_R else R_inv @ r_new_c
 
-        # --- Per-compartment transverse (T2) relaxation ---
+        # --- Per-compartment transverse (T2) relaxation, gated by chi_t ---
         if has_t2:
-            dlog_w = dlog_w - dt_f32 / T2_arr[new_compartment_id]
+            dlog_w = dlog_w - dt_f32 / T2_arr[new_compartment_id] * chi_t
+        # --- Longitudinal (T1) relaxation on the stored intervals ---
+        if has_t1:
+            dlog_w = dlog_w - dt_f32 * inv_T1 * (jnp.float32(1.0) - chi_t)
 
         # --- Phase accumulation ---
         dphi = gamma_dt * jnp.dot(g_t, r_new)
@@ -747,7 +791,7 @@ def make_packed_myelin_traj_step_fn(geometry, dt: float):
     return step_fn
 
 
-def make_packed_myelin_step_fn(geometry, dt: float):
+def make_packed_myelin_step_fn(geometry, dt: float, T1: float = None):
     """Fused forward SIGNAL step for PackedMyelinatedCylinders (transverse, instant pulses).
 
     Wraps the validated per-compartment walk (:func:`make_packed_myelin_traj_step_fn`) and adds,
@@ -773,6 +817,10 @@ def make_packed_myelin_step_fn(geometry, dt: float):
         t2_myelin = jnp.float32(np.asarray(geometry._T2_myelin_jax).ravel()[0])
         t2_extra = jnp.float32(np.asarray(geometry._T2_extra_jax).ravel()[0])
 
+    has_t1 = T1 is not None
+    if has_t1:
+        inv_T1 = jnp.float32(1.0 / T1)
+
     rho_i = float(np.max(np.asarray(geometry._rho_inner_jax))) \
         if hasattr(geometry, '_rho_inner_jax') else 0.0
     rho_o = float(np.max(np.asarray(geometry._rho_outer_jax))) \
@@ -794,7 +842,9 @@ def make_packed_myelin_step_fn(geometry, dt: float):
     gamma_dt_sub = jnp.float32(GAMMA * dt_sub)
     dt_sub_f32 = jnp.float32(dt_sub)
 
-    def step_fn(carry, g_t):
+    def step_fn(carry, inputs):
+        g_t, chi_t = inputs
+
         def _sub(c, _):
             r_ic, r_uw, phi, log_w, cid, key = c
             (r_ic_new, key_new, dlog_step, cid_new), _ = traj_step(
@@ -811,9 +861,14 @@ def make_packed_myelin_step_fn(geometry, dt: float):
                 is_extra = cid_new == jnp.int32(0)
                 is_myelin = cid_new > jnp.int32(N_max)
                 T2 = jnp.where(is_extra, t2_extra, jnp.where(is_myelin, t2_myelin, t2_intra))
-                dlog = dlog - dt_sub_f32 / T2
+                # Transverse decay only while chi_t == 1 (stored intervals: no T2 loss).
+                dlog = dlog - dt_sub_f32 / T2 * chi_t
+            if has_t1:
+                # Longitudinal decay only on the stored intervals (chi_t == 0).
+                dlog = dlog - dt_sub_f32 * inv_T1 * (jnp.float32(1.0) - chi_t)
             if rho > 0.0:
-                dlog = dlog + rho_over_D * dlog_step
+                # Surface relaxivity accrues only while transverse (chi_t == 1).
+                dlog = dlog + rho_over_D * dlog_step * chi_t
             return (r_ic_new, r_uw_new, phi_new, log_w + dlog, cid_new, key_new), None
 
         carry_out, _ = jax.lax.scan(_sub, carry, None, length=n_sub)
