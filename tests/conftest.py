@@ -51,6 +51,7 @@ _SLOW_MC_MODULES = {
     "test_sphere_permeability", "test_permeability_crossing",
     "test_compartment_tagging", "test_t2", "test_sh_convolution",
     "test_karger_mc_parity", "test_t2_walker_parity",
+    "test_mesh_mc",
 }
 
 

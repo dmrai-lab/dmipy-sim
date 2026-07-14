@@ -23,6 +23,7 @@ from .geometries import (FreeDiffusion, Box1D, Sphere, Cylinder, MyelinatedCylin
                          PackedMyelinatedCylinders,
                          pack_myelinated_cylinders,
                          PermeableSlab1D)
+from .mesh import Mesh, load_ply
 from .constants import GAMMA
 from .noise import add_rician_noise, add_rician_noise_batch, add_nc_chi_noise, estimate_sigma
 from .sh_convolution import (
@@ -44,6 +45,7 @@ __all__ = [
     "PackedSpheres", "pack_spheres",
     "PackedMyelinatedCylinders", "pack_myelinated_cylinders",
     "PermeableSlab1D",
+    "Mesh", "load_ply",
     "GAMMA",
     "add_rician_noise", "add_rician_noise_batch", "add_nc_chi_noise", "estimate_sigma",
     # SH convolution
