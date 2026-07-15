@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dmipy-sim"
-version = "2.0.0"
+version = "2.1.0"
 description = "dmipy-sim: GPU Monte-Carlo diffusion-MRI simulator (the forward-truth engine)"
 readme = "README.md"
 license = {text = "AGPL-3.0-only OR LicenseRef-Commercial"}  # dual-licensed; see LICENSING.md
