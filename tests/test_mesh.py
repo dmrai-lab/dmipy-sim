@@ -122,7 +122,23 @@ def test_compartment_property_parsing():
 def test_compartment_unsupported_key_raises():
     V, F = _icosphere(2)
     with pytest.raises(NotImplementedError):
-        Mesh(V, F, intra={"diffusivity": 1e-9})     # per-compartment D is a later layer
+        Mesh(V, F, intra={"T1": 1.0})               # T1 is not applied in the forward walk
+
+
+def test_compartment_bulk_parsing():
+    """Per-compartment bulk D/T2 parsing (fast; no Monte-Carlo)."""
+    V, F = _icosphere(2)
+    m = Mesh(V, F, intra={"D": 1e-9, "T2": 0.02}, extra={"D": 2e-9, "T2": 0.08})
+    assert m._has_bulk_comp
+    npt.assert_allclose(np.asarray(m._D_comp_jax), [1e-9, 2e-9], rtol=1e-6)
+    npt.assert_allclose(np.asarray(m._inv_T2_comp_jax), [1 / 0.02, 1 / 0.08], rtol=1e-6)
+    assert m._D_comp_max == 2e-9
+    assert Mesh(V, F)._has_bulk_comp is False        # ordinary mesh: scalar path
+    with pytest.raises(ValueError):                  # one-sided D not allowed
+        Mesh(V, F, intra={"D": 1e-9})
+    with pytest.raises(NotImplementedError):         # unequal D across a permeable wall
+        Mesh(V, F, intra={"D": 1e-9}, extra={"D": 2e-9}, permeability=2e-5)
+    Mesh(V, F, intra={"D": 1e-9}, extra={"D": 1e-9}, permeability=2e-5)   # equal D: OK
 
 
 def test_return_positions_full():

@@ -128,22 +128,42 @@ def make_step_fn(geometry, diffusivity: float, dt: float, T2: float = None):
     has_weight : bool
         True when geometry has surface_relaxivity_t2, permeability, or T2 set.
     """
-    step_l   = jnp.float32(jnp.sqrt(6.0 * diffusivity * dt))
     gamma_dt = jnp.float32(GAMMA * dt)
     dt_f32   = jnp.float32(dt)
 
+    # Optional per-compartment bulk properties (a Mesh may carry per-compartment D
+    # and/or T2). They are None for ordinary geometries, in which case the resolvers
+    # below collapse to the single-diffusivity / single-T2 scalars (identical path).
+    _D_arr     = getattr(geometry, '_D_comp_jax', None)       # (2,) or None
+    _invT2_arr = getattr(geometry, '_inv_T2_comp_jax', None)  # (2,) or None
+    _classify  = (geometry.classify_position
+                  if (_D_arr is not None or _invT2_arr is not None) else None)
+    _D0 = diffusivity if diffusivity is not None else getattr(geometry, '_D_comp_max', None)
+
     has_surf = getattr(geometry, 'surface_relaxivity_t2', None) is not None
     has_perm = getattr(geometry, 'permeability',          None) is not None
-    has_t2   = T2 is not None
+    has_t2   = (T2 is not None) or (_invT2_arr is not None)   # per-compartment T2 also needs log_w
     has_weight = has_surf or has_perm or has_t2
 
-    # Pre-compute scalar relaxation constant at closure time (not inside scan)
-    if has_t2:
-        inv_T2 = jnp.float32(1.0 / T2)
+    _inv_T2 = jnp.float32(1.0 / T2) if T2 is not None else jnp.float32(0.0)
+
+    def _step_l(r, dt_local):
+        """Step length at r over dt_local — per-compartment D if present, else single."""
+        if _D_arr is not None:
+            return jnp.sqrt(6.0 * _D_arr[_classify(r)] * dt_local)
+        return jnp.sqrt(6.0 * _D0 * dt_local)
+
+    def _t2_decrement(r, dt_local):
+        """T2 log-weight decrement for a step ending at r (per-compartment if present)."""
+        if _invT2_arr is not None:
+            return dt_local * _invT2_arr[_classify(r)]
+        return dt_local * _inv_T2
 
     if has_perm:
-        kappa_over_D = jnp.float32(geometry.permeability / diffusivity)
-        rho_over_D   = (jnp.float32(geometry.surface_relaxivity_t2 / diffusivity)
+        # D is single when permeable (unequal-D across a permeable wall is rejected
+        # at Mesh construction), so κ/D uses the single diffusivity _D0.
+        kappa_over_D = jnp.float32(geometry.permeability / float(_D0))
+        rho_over_D   = (jnp.float32(geometry.surface_relaxivity_t2 / float(_D0))
                         if has_surf else jnp.float32(0.0))
         permeate = geometry.permeate
 
@@ -151,9 +171,8 @@ def make_step_fn(geometry, diffusivity: float, dt: float, T2: float = None):
         # steps), so sub-step the permeable walk to step_l ≈ R/25 even when the
         # waveform dt is large.  Phase + relaxation accumulate per fine sub-step
         # (more accurate than one big step); G is held fixed across the group.
-        n_sub        = permeable_sub_steps(geometry, diffusivity, dt)
+        n_sub        = permeable_sub_steps(geometry, float(_D0), dt)
         dt_sub       = dt / n_sub
-        step_l_sub   = jnp.float32(jnp.sqrt(6.0 * diffusivity * dt_sub))
         gamma_dt_sub = jnp.float32(GAMMA * dt_sub)
         dt_sub_f32   = jnp.float32(dt_sub)
 
@@ -164,13 +183,13 @@ def make_step_fn(geometry, diffusivity: float, dt: float, T2: float = None):
                 key, subkey_step, subkey_perm = jax.random.split(key, 3)
                 noise = jax.random.normal(subkey_step, (3,), dtype=jnp.float32)
                 unit_noise = noise / jnp.linalg.norm(noise)
-                step = unit_noise * step_l_sub
+                step = unit_noise * _step_l(r, dt_sub_f32)
 
                 r_new, dlog_w = permeate(r, step, kappa_over_D,
                                          rho_over_D, subkey_perm)
 
                 if has_t2:
-                    dlog_w = dlog_w - dt_sub_f32 * inv_T2
+                    dlog_w = dlog_w - _t2_decrement(r_new, dt_sub_f32)
 
                 phi_new = phi + gamma_dt_sub * jnp.dot(g_t, r_new)
                 return (r_new, phi_new, log_weight + dlog_w, key), None
@@ -179,17 +198,20 @@ def make_step_fn(geometry, diffusivity: float, dt: float, T2: float = None):
             return carry_out, None
 
     elif has_surf:
-        rho_over_D              = jnp.float32(geometry.surface_relaxivity_t2 / diffusivity)
+        rho_nom = jnp.float32(geometry.surface_relaxivity_t2)
         reflect_with_log_weight = geometry.reflect_with_log_weight
+
+        def _rho_over_D(r):
+            Dc = _D_arr[_classify(r)] if _D_arr is not None else _D0
+            return rho_nom / Dc
 
         # Surface relaxivity accrues via the boundary local time (accumulated reflection
         # overshoot). A single coarse step under-counts grazing wall contact, so sub-step
         # to step_l ~ pore/8 (the extra-axonal pore, coarser than permeability's R/25 since
         # the confined intra lumen is already exact). n_sub -> 1 once dt already resolves it;
         # phase / T2 / local-time accumulate per fine sub-step.
-        n_sub        = surface_sub_steps(geometry, diffusivity, dt)
+        n_sub        = surface_sub_steps(geometry, float(_D0), dt)
         dt_sub       = dt / n_sub
-        step_l_sub   = jnp.float32(jnp.sqrt(6.0 * diffusivity * dt_sub))
         gamma_dt_sub = jnp.float32(GAMMA * dt_sub)
         dt_sub_f32   = jnp.float32(dt_sub)
 
@@ -199,11 +221,11 @@ def make_step_fn(geometry, diffusivity: float, dt: float, T2: float = None):
                 key, subkey = jax.random.split(key)
                 noise = jax.random.normal(subkey, (3,), dtype=jnp.float32)
                 unit_noise = noise / jnp.linalg.norm(noise)
-                step = unit_noise * step_l_sub
+                step = unit_noise * _step_l(r, dt_sub_f32)
 
-                r_new, dlog_w = reflect_with_log_weight(r, step, rho_over_D)
+                r_new, dlog_w = reflect_with_log_weight(r, step, _rho_over_D(r))
                 if has_t2:
-                    dlog_w = dlog_w - dt_sub_f32 * inv_T2
+                    dlog_w = dlog_w - _t2_decrement(r_new, dt_sub_f32)
                 phi_new = phi + gamma_dt_sub * jnp.dot(g_t, r_new)
                 return (r_new, phi_new, log_weight + dlog_w, key), None
 
@@ -211,7 +233,8 @@ def make_step_fn(geometry, diffusivity: float, dt: float, T2: float = None):
             return carry_out, None
 
     elif has_t2:
-        # No surface relaxation, no permeability — but T2 requires log_weight carry
+        # No surface relaxation, no permeability — but T2 (incl. per-compartment T2)
+        # requires the log_weight carry.
         reflect = geometry.reflect
 
         def step_fn(carry, g_t):
@@ -220,17 +243,19 @@ def make_step_fn(geometry, diffusivity: float, dt: float, T2: float = None):
             key, subkey = jax.random.split(key)
             noise = jax.random.normal(subkey, (3,), dtype=jnp.float32)
             unit_noise = noise / jnp.linalg.norm(noise)
-            step = unit_noise * step_l
+            step = unit_noise * _step_l(r, dt_f32)
 
             r_new = reflect(r, step)
 
-            dlog_w  = -dt_f32 * inv_T2
+            dlog_w  = -_t2_decrement(r_new, dt_f32)
             dphi    = gamma_dt * jnp.dot(g_t, r_new)
             phi_new = phi + dphi
 
             return (r_new, phi_new, log_weight + dlog_w, key), None
 
     else:
+        # No weight at all. (A Mesh with only per-compartment D lands here — the
+        # step length is still resolved per compartment via _step_l.)
         reflect = geometry.reflect
 
         def step_fn(carry, g_t):
@@ -239,7 +264,7 @@ def make_step_fn(geometry, diffusivity: float, dt: float, T2: float = None):
             key, subkey = jax.random.split(key)
             noise = jax.random.normal(subkey, (3,), dtype=jnp.float32)
             unit_noise = noise / jnp.linalg.norm(noise)
-            step = unit_noise * step_l
+            step = unit_noise * _step_l(r, dt_f32)
 
             r_new = reflect(r, step)
 

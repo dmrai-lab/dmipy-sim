@@ -125,7 +125,14 @@ meshes:
   aggregate step carries the fractional intra/extra occupancy); scalars reproduce
   the symmetric behaviour bit-for-bit. **Caveat:** asymmetric κ breaks detailed
   balance — it's a *pump* (net flux, non-equilibrium), not passive exchange.
-  Per-compartment bulk D / T2 is a later layer (per-step, not a wall effect).
+- **Per-compartment bulk D / T2** via the same `intra=`/`extra=` dicts
+  (`{"D":…, "T2":…}`) — a per-*step* effect resolved in `make_step_fn`: the step
+  length uses the current compartment's D and the log-weight its 1/T2 (via the
+  geometry's `_D_comp_jax` / `_inv_T2_comp_jax` + `classify_position`; absent →
+  scalar path, unchanged). Both sides required if either is given. Unequal D across
+  a **permeable** wall is rejected (diffusivity-discontinuity interface). T1 isn't
+  applied in the forward walk, so per-compartment T1 is out of scope. There is ONE
+  step builder — do **not** add a per-geometry copy; extend the resolvers.
 - **Resolution:** diffusion & surface relaxivity hit the noise floor at coarse
   resolution; permeability needs `edge/feature ≲ 0.04`. `Mesh.quality_report()` and a
   construction warning flag a too-coarse mesh.
