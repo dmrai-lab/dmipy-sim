@@ -1,10 +1,19 @@
 # dmipy-sim
 
-A **JAX Monte-Carlo diffusion-MRI simulator** — the numerical ground-truth companion to
-[dmipy-fit](https://github.com/dmrai-lab/dmipy-fit). Spins random-walk through geometric
-substrates and accumulate phase under **arbitrary free gradient waveforms** `G(t)`, with
-**surface relaxivity** and **membrane permeability** baked into the walk. Everything is
-vmap/scan JAX and runs on CPU or any CUDA-12 GPU.
+**Diffusion Microstructure Imaging in Python** — the Monte-Carlo **forward** engine: random-walk
+spins through explicit tissue geometry, accumulating phase under **arbitrary free gradient
+waveforms** `G(t)`, to generate the ground-truth signal. **Surface relaxivity** and **membrane
+permeability** are baked into the walk; everything is vmap/scan JAX and runs on CPU or any
+CUDA-12 GPU.
+
+> One shared tissue-and-sequence description, read from both directions by two engines:
+> **[dmipy-fit](https://github.com/dmrai-lab/dmipy-fit)** · the analytical **inverse** (*fit*
+> signals → tissue) &nbsp;·&nbsp; **dmipy-sim** · the Monte-Carlo **forward** engine (*simulate*
+> tissue → signals) *(you are here)* &nbsp;·&nbsp; **[dmipy](https://github.com/dmrai-lab/dmipy)**
+> · umbrella + docs.
+>
+> Docs: **[dmipy.org](https://dmipy.org)** &nbsp;·&nbsp; coming from the 2019 toolbox?
+> [What's changed in 2.x](https://dmipy.org/migrating/)
 
 The free waveform is the base representation: `G(t)` of shape `(n_measurements, n_t, 3)` is
 the ground truth, and PGSE/OGSE/CPMG/STE/PTE are factory constructors, not fundamental
@@ -139,17 +148,12 @@ signal = simulate(n_walkers=50_000, diffusivity=2e-9, waveform=wf, geometry=mesh
 - **[Validation ladders](examples/validation/)** — surface relaxivity and permeability from 1-D
   to 3-D vs exact analytics, and the extra-axonal tortuosity scale sweep.
 
-## Relationship to disimpy / MISST / Camino, and citation
+## Lineage
 
-The core engine — Brownian walk, specular reflection, phase accumulation — follows the same
-physics as [disimpy](https://github.com/kerkelae/disimpy) (Kerkelä 2020), MISST, and Camino,
-and is validated against analytical and MISST reference signals for sphere/cylinder.
-Contributions here: membrane permeability (Powles), surface relaxivity (Brownstein–Tarr,
-interior + exterior), B-tensor encoding, packed ensembles, the free-waveform pulse-sequence
-interface shared with dmipy-fit, and the JAX (vmap/scan) backend.
-
-> For basic MC functionality cite disimpy/MISST; for the extensions cite dmipy-sim / the
-> dmrai ecosystem. Kerkelä L, Nery F, Hall M, Clark C (2020), *disimpy*, JOSS 5(52), 2527.
+dmipy-sim shares the standard Brownian-walk Monte-Carlo lineage (disimpy / MISST / Camino) and
+extends well past it — membrane permeability, interior + exterior surface relaxivity,
+per-compartment properties, B-tensor encoding, arbitrary meshes, and the free-waveform interface
+shared with dmipy-fit, all on a JAX (vmap/scan) backend.
 
 ## Physics as the specification
 
