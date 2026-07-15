@@ -27,11 +27,11 @@ R = 5e-6
 SEED = 123
 
 
-def _pgse(nb, n_t, TE=40e-3):
+def _pgse(nb, n_t, TE=40e-3, axis=0):
     dt = TE / (n_t - 1)
     G = np.zeros((1, n_t, 3), np.float32)
-    G[0, 1:int(0.4 * n_t), 0] = 1.0
-    G[0, -int(0.4 * n_t):-1, 0] = -1.0
+    G[0, 1:int(0.4 * n_t), axis] = 1.0
+    G[0, -int(0.4 * n_t):-1, axis] = -1.0
     Gt = jnp.tile(jnp.array(G), (nb, 1, 1))
     return set_b(Waveform(G=Gt, dt=dt, echo_idx=n_t - 1), np.linspace(1, 2e9, nb))
 
@@ -96,3 +96,26 @@ def test_periodic_tube_matches_infinite_cylinder():
                                 Cylinder(radius=r, orientation=np.array([0., 0., 1.])), seed=SEED))
     npt.assert_allclose(s_mesh, s_cyl, atol=0.02,
                         err_msg="periodic tube mesh vs analytic infinite Cylinder")
+
+
+def test_orientation_signal_parity():
+    """Orienting the substrate in the bore must be equivalent to rotating the
+    acquisition: a tube whose axis is placed along lab-x, probed with a gradient
+    perpendicular to lab-x, matches the same tube along mesh-z probed
+    perpendicular to mesh-z (both are the identical perpendicular measurement)."""
+    r, L = 4e-6, 12e-6
+    V, F = _open_tube(r, L)
+    vmin = [-r - 2e-6, -r - 2e-6, 0.0]; vmax = [r + 2e-6, r + 2e-6, L]
+
+    g_ref = Mesh(V, F, periodic=(False, False, True),
+                 voxel_min=vmin, voxel_max=vmax, feature_radius=r)
+    s_ref = np.asarray(simulate(3000, D, _pgse(8, 400, axis=0), g_ref, seed=SEED))
+
+    # same tube, axis oriented along lab-x; probe perpendicular = lab-z
+    g_rot = Mesh(V, F, periodic=(False, False, True),
+                 voxel_min=vmin, voxel_max=vmax, feature_radius=r,
+                 orientation=[1.0, 0.0, 0.0])
+    s_rot = np.asarray(simulate(3000, D, _pgse(8, 400, axis=2), g_rot, seed=SEED))
+
+    npt.assert_allclose(s_rot, s_ref, atol=0.02,
+                        err_msg="oriented substrate != rotated acquisition")

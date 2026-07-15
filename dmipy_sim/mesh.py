@@ -38,6 +38,7 @@ fine mesh (edge length ``<~ 0.04`` of the local feature radius).
 """
 
 import itertools
+import warnings
 from collections import defaultdict
 
 import jax
@@ -45,6 +46,29 @@ import jax.numpy as jnp
 import numpy as np
 
 from .geometries import Geometry
+
+# Above this median-edge / feature-radius ratio the surface is too coarsely
+# tessellated for membrane permeability to reach the MC noise floor (its faceting
+# bias falls ~O(h^2); measured: ratio 0.075 -> ~8x noise, 0.038 -> at noise floor).
+# Restricted diffusion and surface relaxivity are unaffected at these ratios.
+_PERM_EDGE_RATIO_MAX = 0.05
+
+
+def _rotation_from_z(axis):
+    """Rotation matrix R (mesh->lab) with R @ [0,0,1] = axis / |axis|.
+
+    The in-plane (azimuthal) choice is arbitrary; pass an explicit ``R`` instead
+    for meshes whose in-plane orientation matters.
+    """
+    a = np.asarray(axis, float)
+    a = a / np.linalg.norm(a)
+    z = np.array([0.0, 0.0, 1.0])
+    v = np.cross(z, a)
+    c = float(np.dot(z, a))
+    if np.linalg.norm(v) < 1e-12:                 # parallel or anti-parallel
+        return np.eye(3) if c > 0 else np.diag([1.0, -1.0, -1.0])
+    vx = np.array([[0, -v[2], v[1]], [v[2], 0, -v[0]], [-v[1], v[0], 0]])
+    return np.eye(3) + vx + vx @ vx * (1.0 / (1.0 + c))   # Rodrigues
 
 
 def _smooth_vertex_normals(V, F):
@@ -118,6 +142,14 @@ class Mesh(Geometry):
         Surface relaxivity ρ₂ (m/s).  Applies a Brownstein–Tarr weight at the wall.
     permeability : float, optional
         Membrane permeability κ (m/s).  None → impermeable.
+    orientation : (3,) array-like, optional
+        Direction, in the scanner frame (B0 = +z), along which the mesh's native
+        +z axis (e.g. a periodic / fibre axis) is placed in the bore.  Applied as
+        an acquisition rotation (the gradient is rotated into the mesh frame in
+        ``simulate``), so the walk itself is unchanged.  The in-plane rotation is
+        arbitrary — pass ``R`` for meshes whose in-plane orientation matters.
+    R : (3, 3) array-like, optional
+        Explicit mesh→lab rotation matrix (mutually exclusive with ``orientation``).
     cell_size : float, optional
         Acceleration-grid cell size.  Defaults to ``4 * step`` (safe for the 27-cell
         neighbourhood).  Larger = fewer/denser cells; must be ≥ the maximum step.
@@ -125,7 +157,8 @@ class Mesh(Geometry):
 
     def __init__(self, vertices, faces, *, periodic=False, voxel_min=None,
                  voxel_max=None, feature_radius=None, surface_relaxivity_t2=None,
-                 permeability=None, cell_size=None, cap=None):
+                 permeability=None, orientation=None, R=None,
+                 cell_size=None, cap=None):
         V = np.asarray(vertices, np.float64)
         F = np.asarray(faces, np.int64)
         self.vertices = V
@@ -149,6 +182,44 @@ class Mesh(Geometry):
         self.surface_relaxivity_t2 = (float(surface_relaxivity_t2)
                                       if surface_relaxivity_t2 is not None else None)
         self.permeability = float(permeability) if permeability is not None else None
+
+        # ---- placement in the scanner frame (B0 = +z convention) ----
+        # The mesh, its grid and periodic box live in the mesh's NATIVE frame and
+        # the walk runs entirely there.  `orientation`/`R` declare how that frame
+        # is placed in the lab/scanner frame (B0 = +z); simulate() then rotates the
+        # ACQUISITION (gradient vectors -- and later B0) into the mesh frame,
+        # exactly the "rotate the waveform, not the geometry" convention used by the
+        # mesoscopic orchestration.  This keeps the (validated) walk untouched and
+        # makes the placement a pure acquisition rotation.  Default: mesh frame IS
+        # the scanner frame (native +z, e.g. a periodic/fibre axis, along B0 = +z).
+        self.orientation = orientation
+        if R is not None:
+            Rm = np.asarray(R, np.float64).reshape(3, 3)
+        elif orientation is not None:
+            Rm = _rotation_from_z(orientation)
+        else:
+            Rm = None
+        # mesh->lab rotation; None when unoriented (simulate skips the hook).
+        self._orient_R = None if Rm is None else np.ascontiguousarray(Rm, np.float32)
+
+        # ---- surface-resolution diagnostics + permeability coarseness warning ----
+        _e = V[F]
+        edge = np.concatenate([
+            np.linalg.norm(_e[:, 1] - _e[:, 0], axis=1),
+            np.linalg.norm(_e[:, 2] - _e[:, 1], axis=1),
+            np.linalg.norm(_e[:, 0] - _e[:, 2], axis=1)])
+        self.edge_median = float(np.median(edge))
+        self.edge_p90 = float(np.percentile(edge, 90))
+        self.edge_feature_ratio = self.edge_median / self.radius
+        if self.permeability is not None and self.edge_feature_ratio > _PERM_EDGE_RATIO_MAX:
+            warnings.warn(
+                f"Mesh is likely too coarse for MC-noise-accurate PERMEABILITY: "
+                f"median edge / feature_radius = {self.edge_feature_ratio:.3f} "
+                f"(need <~ {_PERM_EDGE_RATIO_MAX}). The permeability faceting bias "
+                f"falls ~O(h^2); restricted diffusion and surface relaxivity are "
+                f"unaffected. Use a finer / less-decimated mesh for permeability, or "
+                f"call .quality_report() for details.",
+                stacklevel=2)
 
         step_l = self.radius / (25.0 if self.permeability is not None else 6.0)
         self.cell_size = float(cell_size) if cell_size is not None else 4.0 * step_l
@@ -367,6 +438,57 @@ class Mesh(Geometry):
             out.append(pts[lab == want])
             need = n_walkers - sum(len(a) for a in out)
         return jnp.asarray(np.concatenate(out)[:n_walkers], jnp.float32)
+
+    def quality_report(self, verbose=True):
+        """Surface-resolution diagnostics + per-effect accuracy verdict.
+
+        Returns a dict; also prints a table when ``verbose``.  Uses trimesh (if
+        installed) to add watertight / component info.  The key number is
+        ``edge_feature_ratio`` = median edge / feature_radius: permeability needs
+        it ``<~ 0.05`` to reach the MC noise floor; diffusion and surface
+        relaxivity are fine at much coarser ratios.
+        """
+        ratio = self.edge_feature_ratio
+        perm_ok = ratio <= _PERM_EDGE_RATIO_MAX
+        rep = {
+            "n_vertices": int(len(self.vertices)),
+            "n_faces": int(len(self.faces)),
+            "n_ghost_faces": int(self.n_ghost),
+            "feature_radius": self.radius,
+            "edge_median": self.edge_median,
+            "edge_p90": self.edge_p90,
+            "edge_feature_ratio": ratio,
+            "grid_dims": tuple(int(x) for x in self.dims),
+            "grid_max_occupancy": int(self.max_occ),
+            "grid_overflow": int(self.overflow),
+            "periodic": self.periodic,
+            "diffusion_noise_floor": True,
+            "relaxivity_noise_floor": True,
+            "permeability_noise_floor": bool(perm_ok),
+        }
+        try:
+            import trimesh
+            tm = trimesh.Trimesh(vertices=self.vertices, faces=self.faces, process=False)
+            rep["watertight"] = bool(tm.is_watertight)
+            rep["n_components"] = int(tm.body_count)
+        except Exception:
+            pass
+        if verbose:
+            print(f"Mesh quality report")
+            print(f"  vertices/faces        : {rep['n_vertices']:,} / {rep['n_faces']:,}"
+                  + (f"  (+{rep['n_ghost_faces']:,} periodic ghosts)" if self.n_ghost else ""))
+            if "watertight" in rep:
+                print(f"  watertight/components : {rep['watertight']} / {rep['n_components']}")
+            print(f"  feature_radius        : {self.radius*1e6:.3f} um")
+            print(f"  edge median / p90     : {self.edge_median*1e6:.3f} / {self.edge_p90*1e6:.3f} um")
+            print(f"  edge/feature ratio    : {ratio:.3f}  (permeability needs <~ {_PERM_EDGE_RATIO_MAX})")
+            print(f"  grid dims / max-occ   : {rep['grid_dims']} / {rep['grid_max_occupancy']}"
+                  + (f"  OVERFLOW={rep['grid_overflow']}" if self.overflow else ""))
+            print(f"  MC-noise-floor accuracy:")
+            print(f"    restricted diffusion : YES")
+            print(f"    surface relaxivity   : YES")
+            print(f"    permeability         : {'YES' if perm_ok else 'NO -- mesh too coarse; use a finer mesh'}")
+        return rep
 
     @classmethod
     def from_ply(cls, path, scale=1.0, recenter=False, **kwargs):

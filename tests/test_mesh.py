@@ -5,6 +5,8 @@ test_mesh_mc.py, which is marked slow.  These tests are quick (small N, tiny mes
 so they run on every PR.  Meshes are generated on the fly with trimesh — the big
 research PLYs are a manual stress test, never committed to the suite.
 """
+import warnings
+
 import numpy as np
 import numpy.testing as npt
 import jax
@@ -105,6 +107,45 @@ def test_periodic_ghosts_created():
                     feature_radius=4e-6)
     assert closed.n_ghost == 0
     assert periodic.n_ghost > 0                  # z-seam triangles replicated
+
+
+def test_permeability_coarseness_warning_and_report():
+    # coarse mesh + permeability -> loud warning; quality_report flags it
+    Vc, Fc = _icosphere(2)                        # edge/feature ~0.3 (coarse)
+    with pytest.warns(UserWarning, match="coarse"):
+        gc = Mesh(Vc, Fc, permeability=2e-5)
+    rep = gc.quality_report(verbose=False)
+    assert rep["permeability_noise_floor"] is False
+    assert rep["diffusion_noise_floor"] is True and rep["relaxivity_noise_floor"] is True
+    assert rep["edge_feature_ratio"] > 0.05
+    # fine mesh -> no permeability warning
+    Vf, Ff = _icosphere(5)                        # edge/feature ~0.04 (fine)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        gf = Mesh(Vf, Ff, permeability=2e-5)
+    assert gf.quality_report(verbose=False)["permeability_noise_floor"] is True
+    # coarse mesh WITHOUT permeability -> no warning (diffusion/relaxivity fine)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        Mesh(Vc, Fc)
+
+
+def test_orientation_is_acquisition_rotation():
+    """Placement in the bore is applied as an acquisition rotation, so the walk
+    stays in the mesh's native frame (unchanged containment) and `orientation`
+    only records the mesh->lab rotation used to rotate the gradient in simulate."""
+    V, F = _open_tube(r=4e-6, L=12e-6)
+    kw = dict(periodic=(False, False, True),
+              voxel_min=[-6e-6, -6e-6, 0.0], voxel_max=[6e-6, 6e-6, 12e-6],
+              feature_radius=4e-6)
+    g_plain = Mesh(V, F, **kw)
+    g_orient = Mesh(V, F, orientation=[1.0, 0.0, 0.0], **kw)
+    assert g_plain._orient_R is None
+    assert g_orient._orient_R is not None                 # mesh->lab rotation stored
+    # walk is native-frame in both -> radial confinement about the mesh-z axis
+    _, pos = simulate(400, D, _short_wf(1, 120), g_orient, seed=1, return_positions=True)
+    pos = np.asarray(pos)
+    assert (np.linalg.norm(pos[:, :2], axis=1) < 4e-6 * 1.03).mean() > 0.99
 
 
 def test_periodic_tube_confinement_and_zwrap():
