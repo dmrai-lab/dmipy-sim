@@ -12,7 +12,9 @@ _apply_gpu_mem_cap()
 from .core import simulate, simulate_mixture, simulate_cpmg
 from .gpu import (gpu_available, check_gpu, free_gpu_memory, gpu_session,
                   list_gpu_processes)
-from .viz import plot_waveform, plot_sequence_comparison
+from .viz import (plot_waveform, plot_sequence_comparison,
+                  plot_mesh_section, plot_walkers_3d, plot_cell_surface, plot_mesh_3d,
+                  seed_in_cell, walk_paths, plot_trajectories, save_rotation)
 from .waveforms import (Waveform, pgse, ogse, cpmg, trapezoidal_ogse, b_trapezoidal_ogse,
                         set_b, calc_b, calc_btensor, btensor_invariants, ste, pte,
                         rotate_waveform, tile_waveform)
@@ -23,6 +25,7 @@ from .geometries import (FreeDiffusion, Box1D, Sphere, Cylinder, MyelinatedCylin
                          PackedMyelinatedCylinders,
                          pack_myelinated_cylinders,
                          PermeableSlab1D)
+from .mesh import Mesh, load_ply
 from .constants import GAMMA
 from .noise import add_rician_noise, add_rician_noise_batch, add_nc_chi_noise, estimate_sigma
 from .sh_convolution import (
@@ -44,6 +47,7 @@ __all__ = [
     "PackedSpheres", "pack_spheres",
     "PackedMyelinatedCylinders", "pack_myelinated_cylinders",
     "PermeableSlab1D",
+    "Mesh", "load_ply",
     "GAMMA",
     "add_rician_noise", "add_rician_noise_batch", "add_nc_chi_noise", "estimate_sigma",
     # SH convolution

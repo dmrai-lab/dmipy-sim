@@ -36,6 +36,12 @@ cuda12 = [
 dev = [
     "pytest>=7.0",
     "matplotlib>=3.5",   # physics/validation tests plot diagnostics (Agg backend)
+    "trimesh>=4.0",      # mesh tests load/generate PLY meshes (dmipy_sim.mesh)
+]
+# Triangular-mesh loading (dmipy_sim.load_ply / Mesh.from_ply). The Mesh geometry
+# itself needs only numpy/jax; trimesh is only required to READ mesh files.
+mesh = [
+    "trimesh>=4.0",
 ]
 # The cross-engine flagship example (examples/canonical_wm_parity_from_sim.py) additionally
 # needs the analytical engine dmipy-fit. It is an OPTIONAL example dependency only -- the
