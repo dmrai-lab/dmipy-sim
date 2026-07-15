@@ -610,8 +610,8 @@ def simulate_cpmg(n_walkers, diffusivity, waveform, geometry, *,
     Walks the spin ensemble once through the full CPMG train (ideal instantaneous
     180° refocusing is encoded as the sign flips of ``waveform.G``) and samples the
     ensemble signal ``Re<exp(iφ)·exp(log_w)>`` at each echo time.  This is the
-    ordinary forward model — not trajectory replay: one walk, no saved trajectories,
-    no coherence-pathway bank.  Build ``waveform`` with :func:`dmipy_sim.cpmg`
+    ordinary forward model: one pass through the train, nothing cached or reused.
+    Build ``waveform`` with :func:`dmipy_sim.cpmg`
     (which sets ``echo_indices``).
 
     Parameters
