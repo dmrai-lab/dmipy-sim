@@ -454,7 +454,37 @@ def plot_cell_surface(mesh, index=0, units=1e6, unit_label='µm', ax=None, save=
     return ax
 
 
-def walk_paths(mesh, n_walkers, n_steps, diffusivity, dt, seed=0, intra=True):
+def _split_cells(mesh):
+    """Connected components of the mesh, largest first (needs trimesh)."""
+    try:
+        import trimesh
+    except ImportError as exc:
+        raise ImportError("cell extraction needs trimesh (pip install dmipy-sim[mesh]).") from exc
+    tm = trimesh.Trimesh(vertices=np.asarray(mesh.vertices), faces=np.asarray(mesh.faces),
+                         process=False)
+    return sorted(tm.split(only_watertight=False), key=lambda c: len(c.vertices), reverse=True)
+
+
+def seed_in_cell(cell, n_walkers, seed=0):
+    """Sample ``n_walkers`` positions strictly inside a single cell (a trimesh
+    component), by rejection with a ray-cast parity test (robust on the wavy,
+    concave cell walls where a nearest-normal side test misfires).  Returns
+    (n, 3) metres."""
+    from .geometries import _is_inside_batch
+    V = np.asarray(cell.vertices, float)
+    F = np.asarray(cell.faces, np.int64)
+    lo, hi = V.min(0), V.max(0)
+    rng = np.random.default_rng(seed)
+    out, need = [], n_walkers
+    while need > 0:
+        p = rng.uniform(lo, hi, (max(need * 8, 2048), 3))
+        inside = np.asarray(_is_inside_batch(p, V, F))       # +X ray parity
+        out.append(p[inside])
+        need = n_walkers - sum(len(a) for a in out)
+    return np.concatenate(out)[:n_walkers]
+
+
+def walk_paths(mesh, n_walkers, n_steps, diffusivity, dt, seed=0, intra=True, r0=None):
     """Record plain reflecting random-walk paths for visualisation.
 
     A diffusion-only walk (no gradient, no phase) that just steps the geometry's
@@ -467,7 +497,10 @@ def walk_paths(mesh, n_walkers, n_steps, diffusivity, dt, seed=0, intra=True):
     import jax.numpy as jnp
     key = jax.random.PRNGKey(seed)
     k0, kw = jax.random.split(key)
-    r0 = mesh.init_positions(n_walkers, k0, intra=intra)
+    if r0 is None:
+        r0 = mesh.init_positions(n_walkers, k0, intra=intra)
+    else:
+        r0 = jnp.asarray(r0, jnp.float32)
     step_l = jnp.float32(np.sqrt(6.0 * diffusivity * dt))
 
     def one(r, k):
@@ -524,6 +557,62 @@ def plot_trajectories(mesh, paths, axis='z', offset=0.0, slab=None, wrap=True,
             ax.plot(p[:, pax[0]] * units, p[:, pax[1]] * units, lw=0.8, alpha=0.8)
     kind = f'|{axis}-{offset*units:.0f}|<{slab*units:.1f}{unit_label} slab' if np.isfinite(slab) else 'projected'
     ax.set_title(ax.get_title() + f'  ·  {len(P)} walker paths ({kind})')
+    if save:
+        ax.figure.savefig(save, dpi=130, bbox_inches='tight')
+    return ax
+
+
+def plot_mesh_3d(mesh, cells=(0,), paths=None, wrap=True, alpha=0.13,
+                 cell_color=_MESH_WALL, units=1e6, unit_label='µm', ax=None, save=None):
+    """True 3D view: selected cells drawn as transparent surfaces with walker
+    paths scribbling inside them — the honest confinement view for a 3D substrate
+    (no plane slice, no projection).
+
+    Parameters
+    ----------
+    mesh : Mesh
+    cells : iterable of int
+        Indices (largest-first) of connected cells to render transparently.
+    paths : (n_walkers, n_t, 3) array, optional
+        Walker paths from :func:`walk_paths` (ideally seeded inside a rendered
+        cell via :func:`seed_in_cell`).  On a periodic mesh pass ``wrap=True`` so
+        the continuous path folds back into the box and stays within the cell.
+    alpha : float
+        Cell-surface transparency.
+    Returns the matplotlib Axes.
+    """
+    _require_mpl()
+    comps = _split_cells(mesh)
+    if ax is None:
+        fig = plt.figure(figsize=(7, 7))
+        ax = fig.add_subplot(111, projection='3d')
+    for ci in cells:
+        c = comps[min(ci, len(comps) - 1)]
+        V = np.asarray(c.vertices) * units
+        ax.plot_trisurf(V[:, 0], V[:, 1], np.asarray(c.faces), V[:, 2],
+                        color=cell_color, alpha=alpha, edgecolor='none', linewidth=0,
+                        shade=True)
+    if paths is not None:
+        P = np.array(paths, float)
+        if wrap:
+            vmin = np.asarray(mesh.vmin); L = np.asarray(mesh.vmax) - vmin
+            per = getattr(mesh, 'periodic', (False, False, False))
+            for a in range(3):
+                if per[a]:
+                    P[:, :, a] = vmin[a] + np.mod(P[:, :, a] - vmin[a], L[a])
+            # break each polyline at periodic wrap seams so it doesn't streak
+            L_arr = L
+            for p in P:
+                seg = p.copy()
+                jump = np.any(np.abs(np.diff(seg, axis=0)) > 0.5 * L_arr, axis=1)
+                seg[1:][jump] = np.nan
+                ax.plot(seg[:, 0] * units, seg[:, 1] * units, seg[:, 2] * units,
+                        lw=0.9, alpha=0.9)
+        else:
+            for p in P:
+                ax.plot(p[:, 0] * units, p[:, 1] * units, p[:, 2] * units, lw=0.9, alpha=0.9)
+    ax.set_xlabel(f'x ({unit_label})'); ax.set_ylabel(f'y ({unit_label})')
+    ax.set_zlabel(f'z ({unit_label})')
     if save:
         ax.figure.savefig(save, dpi=130, bbox_inches='tight')
     return ax

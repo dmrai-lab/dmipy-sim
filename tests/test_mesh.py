@@ -163,6 +163,13 @@ def test_viz_functions_render(tmp_path):
     paths = walk_paths(g, 20, 25, diffusivity=D, dt=2e-4, seed=0)
     assert paths.shape == (20, 26, 3)
     p = tmp_path / "traj.png"; plot_trajectories(g, paths, save=str(p)); assert p.exists()
+    # true-3D view: transparent cell + paths seeded inside it
+    from dmipy_sim import plot_mesh_3d, seed_in_cell
+    from dmipy_sim.viz import _split_cells
+    cell = _split_cells(g)[0]
+    s = np.asarray(seed_in_cell(cell, 20, seed=0)); assert s.shape == (20, 3)
+    paths2 = walk_paths(g, 6, 20, diffusivity=D, dt=2e-4, seed=1, r0=s[:6])
+    p = tmp_path / "m3d.png"; plot_mesh_3d(g, cells=(0,), paths=paths2, save=str(p)); assert p.exists()
     plt.close("all")
 
 
