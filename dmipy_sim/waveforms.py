@@ -854,7 +854,7 @@ def cpmg(n_echoes, TE, G_magnitude, bvecs, n_t_per_echo=100):
     A plain :class:`Waveform` for the multi-echo spin-echo: a 90° excitation at
     ``t=0`` and ``n_echoes`` ideal 180° refocusing pulses at ``(k+½)·TE``, with
     echoes forming at ``k·TE``.  Magnetisation is fully transverse throughout
-    (ideal instantaneous pulses) — there is no coherence-pathway / EPG machinery
+    (ideal instantaneous pulses) — there is no coherence-pathway machinery
     here; this is a gradient+RF schedule for visualisation
     (:mod:`dmipy_sim.pedagogy`) and for the final-echo :func:`simulate` sample.
 

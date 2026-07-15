@@ -9,8 +9,8 @@ out (dephasing), a 180 refocusing it into an echo.
 ``d phi = gamma * G(t).r(t) * dt`` and refocus when a 180 conjugates the accumulated phase.
 Whether the refocusing pulse is a real shaped B1 or an idealised hard pulse of constant
 nutation is immaterial to that story, so this module uses idealised rotations (Rodrigues about
-the in-plane B1 axis) and draws a sinc-like placeholder glyph for the RF. No Bloch field solve,
-no susceptibility, no pulse design -- it runs on the standard ``pgse`` / ``ogse`` waveforms that
+the in-plane B1 axis) and draws a sinc-like placeholder glyph for the RF. No field solve and
+no pulse design -- it runs on the standard ``pgse`` / ``ogse`` waveforms that
 dmipy-sim and dmipy-fit share.
 
     replay_with_history(geometry, waveform, D)  -> history          # walk once, keep M(t)
@@ -47,7 +47,7 @@ def _rf_increment(M, flip, ax):
 def _walk_record(geometry, diffusivity, n_t, dt, n_walkers, seed):
     """Walk ``n_walkers`` spins on ``geometry`` and return their positions r(t) and
     compartment id at each of ``n_t`` steps.  Scoped to visualisation (a small ensemble,
-    one sequence) -- it is NOT a reusable trajectory-replay primitive."""
+    one sequence) -- it is NOT a reusable / cached primitive."""
     import jax
     import jax.numpy as jnp
 
@@ -274,7 +274,7 @@ def _draw_player(ax, history):
     ONE gradient track (Gx/Gy/Gz on a shared amplitude scale), the echo marked at the end, and
     a vertical playhead that sweeps in time. Returns the playhead ``Line2D`` (moved per frame).
 
-    This is the transverse-only counterpart of the full Bloch pulse-program player: no finite
+    This is the transverse-only counterpart of a full pulse-program player: no finite
     B1(t) envelope (pulses are instantaneous), no longitudinal-storage / crusher windows.
     """
     G = np.asarray(history['G'])
