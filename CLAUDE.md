@@ -1,9 +1,15 @@
 # dmipy-sim — Agent Guide
 
-JAX Monte-Carlo diffusion-MRI simulator: walkers random-walk through a geometry, a
-gradient phase `φ = γ∫G·r dt` accumulates, and the signal is `mean(exp(log_w)·cos φ)`.
-It is the numerical forward model paired with the analytic inverse in
-[dmipy-fit](https://github.com/dmrai-lab/dmipy-fit).
+**Read this file, not the whole tree.** dmipy-sim is built to be *operated by agents* (any
+vendor); this guide is the operational contract — the mental model, entry points, copy-paste
+tasks, and where to look for the rest.
+
+JAX Monte-Carlo diffusion-MRI simulator: walkers random-walk through a geometry, a gradient
+phase `φ = γ∫G·r dt` accumulates, and the signal is `mean(exp(log_w)·cos φ)`. It is the
+**forward** model of the dmipy framework; the **analytical inverse** (model fitting) is
+[dmipy-fit](https://github.com/dmrai-lab/dmipy-fit) (see its `CLAUDE.md`). **You describe the
+tissue once**: both engines consume the same `AcquisitionScheme`, and `simulate()` accepts one
+directly. The dependency is one-directional (**fit → sim**); sim never imports fit.
 
 **Physics is the specification.** Correctness is defined by the test suite —
 analytical solutions, eigenfunction series, Brownstein–Tarr relations, MISST reference
@@ -31,6 +37,45 @@ JAX_PLATFORMS=cpu pytest tests/ -q -m "not slow and not gpu"   # fast: every PR
 When adding physics, assert against an **analytical** result or a **MISST** fixture
 (`tests/fixtures/misst_*.npy`). Isolate faceting/discretisation bias by running a mesh
 and the analytic geometry of the same shape through the identical waveform/seed/N.
+
+## Common tasks (copy-paste)
+
+**Forward signal** (b-values SI, s/m²; diffusivity m²/s; lengths m):
+```python
+from dmipy_sim import simulate, pgse, set_b, Cylinder
+wf   = set_b(pgse(delta=0.01, DELTA=0.04, G_magnitude=0.2, bvecs=[[1,0,0]], n_t=300), 1e9)
+geom = Cylinder(radius=5e-6, orientation=(0,0,1))
+sig  = simulate(n_walkers=100_000, diffusivity=2e-9, waveform=wf, geometry=geom, seed=0)
+```
+
+**Surface relaxivity / permeability** — substrate properties baked into the walk (one walk
+per ρ/κ):
+```python
+Cylinder(radius=5e-6, orientation=(0,0,1), surface_relaxivity_t2=1e-6)  # ρ (m/s)
+Cylinder(radius=5e-6, orientation=(0,0,1), permeability=2e-5)           # κ (m/s), Powles
+```
+
+**Load a mesh** (needs `[mesh]` extra):
+```python
+from dmipy_sim import Mesh
+mesh = Mesh.from_ply("substrate.ply", scale=1e-5, periodic=True,
+                     voxel_min=[-10e-6]*3, voxel_max=[10e-6]*3, feature_radius=1.7e-6)
+mesh.quality_report()                       # per-effect resolution verdict
+```
+
+**Trajectory export → select walkers that permeated:**
+```python
+_, pos, origin, comp = simulate(N, D, wf, Mesh(V, F, permeability=2e-5), seed=0,
+                                return_positions='full', return_compartments='full')
+permeated = (comp != comp[:, :1]).any(axis=1)   # pos: (n_walkers, n_timesteps, 3)
+```
+
+**Visualise** a mesh + walkers (see `dmipy_sim.viz`): `plot_mesh_3d`, `plot_mesh_section`,
+`walk_paths` + `plot_trajectories`, `save_rotation` → gallery in `examples/mesh_viz/`.
+
+**Cross-engine parity**: build a `dmipy_fit` `AcquisitionScheme` and pass it straight to
+`simulate(..., waveform=scheme)` — the analytic model and this MC then see the identical
+acquisition; assert to `max(0.02, 1/√N)`.
 
 ## Module map (`dmipy_sim/`)
 
