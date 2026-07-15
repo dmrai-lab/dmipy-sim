@@ -54,6 +54,7 @@ just silences the CPU-fallback warning; drop it on a GPU.)
 | `Sphere`, `Cylinder`, `Ellipsoid` | closed wall | ✓ | ✓ |
 | `PackedCylinders`, `PackedSpheres` | periodic ensemble | ✓ | ✓ |
 | `MyelinatedCylinder`, `PackedMyelinatedCylinders` | multi-wall myelin geometry | ✓ | ✓ dual-wall |
+| `Mesh` (load a `.ply`) | arbitrary closed **or** 3-D-periodic triangular mesh | ✓ | ✓ |
 
 ## Surface relaxivity & permeability
 
@@ -90,8 +91,47 @@ wf   = set_b(pgse(delta=0.01, DELTA=0.04, G_magnitude=0.2, bvecs=[[1, 0, 0]], n_
 sig  = simulate(n_walkers=100_000, diffusivity=2e-9, waveform=wf, geometry=geom, seed=0)
 ```
 
+## Meshes — load a `.ply` substrate
+
+Run an arbitrary triangular surface mesh (e.g. a dense multi-cell microstructure
+exported as PLY by a substrate generator) with the same physics as the analytic
+geometries. The mesh is spatially accelerated (a uniform grid culls triangles per
+step, so ~10⁶-triangle meshes are tractable) and can be closed or 3-D periodic.
+
+```python
+from dmipy_sim import Mesh, simulate
+
+# load a mesh, scaling normalised coords -> metres, as a 3-D-periodic pack
+mesh = Mesh.from_ply("substrate.ply", scale=1e-5,
+                     periodic=True, voxel_min=[-10e-6]*3, voxel_max=[10e-6]*3,
+                     feature_radius=1.7e-6, permeability=2e-5)
+mesh.quality_report()                       # per-effect resolution verdict
+signal = simulate(n_walkers=50_000, diffusivity=2e-9, waveform=wf, geometry=mesh)
+```
+
+- **Placement in the bore:** pass `orientation=` (or a rotation `R=`) to align the
+  mesh's axis with B0 = +z — applied as an acquisition rotation, so the walk is
+  unchanged.
+- **Accuracy:** restricted diffusion and surface relaxivity reach the MC noise
+  floor; permeability needs a fine tessellation (its faceting bias falls `O(h²)`),
+  and `quality_report()` / a construction warning flag a mesh that's too coarse.
+- **Loading** needs the optional extra: `pip install "dmipy-sim[mesh]"` (trimesh).
+- **Visualise** the substrate and walkers with `dmipy_sim.viz`
+  (`plot_mesh_3d`, `plot_mesh_section`, `plot_cell_surface`, `walk_paths` +
+  `plot_trajectories`, `save_rotation`) — see the rendered gallery in
+  [`examples/mesh_viz/`](examples/mesh_viz/).
+
+<p align="center">
+  <img src="examples/mesh_viz/mesh_3d_spin.gif" width="360"
+       alt="walker paths confined inside a transparent mesh cell">
+</p>
+
 ## Examples
 
+- **[Mesh loading + visualisation](examples/mesh_ply_and_viz.ipynb)**
+  ([Open in Colab](https://colab.research.google.com/github/dmrai-lab/dmipy-sim/blob/main/examples/mesh_ply_and_viz.ipynb))
+  — build/load a mesh substrate, run diffusion + surface relaxivity + permeability,
+  select walkers that permeated (`return_positions='full'`), and render the viewer.
 - **[Flagship — canonical white matter](examples/canonical_wm_flagship.ipynb)**
   ([Open in Colab](https://colab.research.google.com/github/dmrai-lab/dmipy-sim/blob/main/examples/canonical_wm_flagship.ipynb))
   — build a histology-calibrated packed-myelinated-cylinder substrate, run the Monte-Carlo
