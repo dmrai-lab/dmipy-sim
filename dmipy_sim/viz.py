@@ -481,20 +481,49 @@ def walk_paths(mesh, n_walkers, n_steps, diffusivity, dt, seed=0, intra=True):
     return np.asarray(jnp.transpose(traj, (1, 0, 2)))        # (n_walkers, n_steps+1, 3)
 
 
-def plot_trajectories(mesh, paths, axis='z', offset=0.0, units=1e6, unit_label='µm',
-                      ax=None, save=None, max_paths=40):
-    """Overlay walker paths on a mesh cross-section (projected to the plane's
-    in-plane coordinates).  ``paths`` is ``(n_walkers, n_t, 3)`` from
-    :func:`walk_paths`.  Returns the matplotlib Axes."""
+def plot_trajectories(mesh, paths, axis='z', offset=0.0, slab=None, wrap=True,
+                      units=1e6, unit_label='µm', ax=None, save=None, max_paths=40):
+    """Overlay walker paths on a mesh cross-section.
+
+    ``paths`` is ``(n_walkers, n_t, 3)`` from :func:`walk_paths` (continuous /
+    unfolded positions).
+
+    Important for a fair picture of confinement: a path is 3D, but the drawn cell
+    walls are a single ``offset`` slice.  On a periodic and/or elongated substrate
+    a walker roams along the free axis and across periodic images, so flattening
+    the whole path onto one slice makes an in-cell walker look like it crosses
+    walls.  Therefore, by default:
+
+    * ``wrap=True`` folds continuous positions back into the periodic box (per the
+      mesh's periodic axes), and
+    * ``slab`` (default: feature_radius) keeps only the path points whose
+      out-of-plane coordinate is within ``slab`` of the plane, drawn as points —
+      so what you see genuinely sits in this slice and inside the cells.
+
+    Pass ``slab=None`` and ``wrap=False`` to draw the raw projected polylines.
+    Returns the matplotlib Axes.
+    """
     _require_mpl()
     ai = _AXES[axis]
     pax = [i for i in range(3) if i != ai]
     ax = plot_mesh_section(mesh, axis=axis, offset=offset, units=units,
                            unit_label=unit_label, ax=ax)
-    P = np.asarray(paths)
-    for p in P[:max_paths]:
-        ax.plot(p[:, pax[0]] * units, p[:, pax[1]] * units, lw=0.8, alpha=0.8)
-    ax.set_title(ax.get_title() + f'  ·  {min(len(P), max_paths)} walker paths')
+    P = np.array(paths, float)[:max_paths]
+    if wrap:
+        vmin = np.asarray(mesh.vmin); L = np.asarray(mesh.vmax) - vmin
+        for a in range(3):
+            if getattr(mesh, 'periodic', (False, False, False))[a]:
+                P[:, :, a] = vmin[a] + np.mod(P[:, :, a] - vmin[a], L[a])
+    if slab is None:
+        slab = getattr(mesh, 'radius', np.inf)
+    for p in P:
+        if np.isfinite(slab):
+            m = np.abs(p[:, ai] - offset) < slab
+            ax.scatter(p[m, pax[0]] * units, p[m, pax[1]] * units, s=4, alpha=0.8)
+        else:
+            ax.plot(p[:, pax[0]] * units, p[:, pax[1]] * units, lw=0.8, alpha=0.8)
+    kind = f'|{axis}-{offset*units:.0f}|<{slab*units:.1f}{unit_label} slab' if np.isfinite(slab) else 'projected'
+    ax.set_title(ax.get_title() + f'  ·  {len(P)} walker paths ({kind})')
     if save:
         ax.figure.savefig(save, dpi=130, bbox_inches='tight')
     return ax
