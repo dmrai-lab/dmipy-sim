@@ -18,3 +18,6 @@ dist/
 # Public AxonDeepSeg SEM dataset — fetched on demand, never committed (see em_data/README.md)
 tests/fixtures/em_data/axondeepseg_sem.zip
 tests/fixtures/em_data/axondeepseg_sem/
+
+# Committed mesh-viz gallery images (the global *.png ignore above would otherwise drop them)
+!examples/mesh_viz/*.png
