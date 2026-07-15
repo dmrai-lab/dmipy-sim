@@ -99,6 +99,18 @@ def test_load_ply_roundtrip(tmp_path):
     assert isinstance(g, Mesh) and g.C > 0
 
 
+def test_return_positions_full():
+    V, F = _icosphere(3)
+    g = Mesh(V, F)
+    wf = _short_wf(2, 100)
+    sig, pos = simulate(300, D, wf, g, seed=1, return_positions='full')
+    assert pos.shape == (300, 100, 3)                     # per-timestep positions
+    sig2, fin = simulate(300, D, wf, g, seed=1, return_positions=True)
+    npt.assert_allclose(pos[:, -1, :], np.asarray(fin), atol=1e-9)   # last step == final
+    npt.assert_array_equal(np.asarray(sig), np.asarray(sig2))        # identical physics
+    assert (np.linalg.norm(pos.reshape(-1, 3), axis=1) < R * 1.02).mean() > 0.99
+
+
 def test_periodic_ghosts_created():
     V, F = _open_tube()
     closed = Mesh(V, F)

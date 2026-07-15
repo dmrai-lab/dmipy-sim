@@ -51,9 +51,12 @@ def simulate(
     T2 : float, optional
         Transverse relaxation time in seconds. When set, accumulated
         per-walker inside the scan body as -dt/T2 each step.
-    return_positions : bool, optional
-        If True, also return final walker positions as a (n_walkers, 3) array.
-        Default False.
+    return_positions : {False, True, 'full'}, optional
+        False (default): no positions.  True: final walker positions,
+        (n_walkers, 3).  'full': per-timestep positions, (n_walkers, n_timesteps,
+        3) — trajectory export for visualisation/analysis (e.g. combine with
+        return_compartments='full' to select walkers that permeated).  Supported
+        for standard geometries including Mesh; not the myelin step-fn paths.
     return_compartments : {False, 'final', 'full'}, optional
         Controls compartment-ID output.  Default False (no change to return
         value).
@@ -114,6 +117,11 @@ def simulate(
         raise ValueError(
             "return_compartments must be False, 'final', or 'full'; "
             f"got {return_compartments!r}")
+    if return_positions not in (False, True, 'full'):
+        raise ValueError(
+            "return_positions must be False, True, or 'full'; "
+            f"got {return_positions!r}")
+    want_pos_full = return_positions == 'full'
 
     # GPU guard — never silently fall back to CPU for a heavy run (CLAUDE rule).
     from .gpu import check_gpu
@@ -208,6 +216,11 @@ def simulate(
     # Check if this is a MyelinatedCylinder or LabelMap2D (custom step function path)
     is_myelin = getattr(geometry, '_is_myelinated', False)
     is_packed_myelin = getattr(geometry, '_is_packed_myelinated', False)
+
+    if want_pos_full and (is_myelin or is_packed_myelin):
+        raise NotImplementedError(
+            "return_positions='full' is supported for standard geometries "
+            "(including Mesh), not MyelinatedCylinder / PackedMyelinatedCylinders.")
 
     # -----------------------------------------------------------------------
     # Compartment origin: determined from initial positions.
@@ -319,7 +332,47 @@ def simulate(
         step_fn, has_weight = make_step_fn(geometry, diffusivity, dt, T2=T2)
         spin_w = jnp.ones((n_walkers,), dtype=jnp.float32)
 
-        if track_comp:
+        if want_pos_full:
+            # Per-timestep position export (additive path; existing True/'final'
+            # scans are untouched).  Emits r at every step, plus the compartment
+            # id when tracking — e.g. to select walkers that permeated and plot
+            # only their trajectories.  pos_seq: (n_walkers, n_timesteps, 3).
+            classify_fn = geometry.classify_position
+            if has_weight:
+                def simulate_walker(r0_w, key_w):
+                    phi0 = jnp.zeros(n_measurements, dtype=jnp.float32)
+
+                    def body(carry, inp):
+                        (rn, pn, ln, kn), _ = step_fn(carry, inp)
+                        return (rn, pn, ln, kn), ((rn, classify_fn(rn)) if track_comp else rn)
+                    (r_final, phi_all, log_w, _), ys = jax.lax.scan(
+                        body, (r0_w, phi0, jnp.float32(0.0), key_w), scan_inputs)
+                    return r_final, phi_all, log_w, ys
+
+                final_r, all_phi, all_log_w, ys = jax.vmap(
+                    simulate_walker, in_axes=(0, 0))(r0, walker_keys)
+                signals = _ens(spin_w, all_log_w, all_phi)
+            else:
+                def simulate_walker(r0_w, key_w):
+                    phi0 = jnp.zeros(n_measurements, dtype=jnp.float32)
+
+                    def body(carry, inp):
+                        (rn, pn, kn), _ = step_fn(carry, inp)
+                        return (rn, pn, kn), ((rn, classify_fn(rn)) if track_comp else rn)
+                    (r_final, phi_all, _), ys = jax.lax.scan(
+                        body, (r0_w, phi0, key_w), scan_inputs)
+                    return r_final, phi_all, ys
+
+                final_r, all_phi, ys = jax.vmap(
+                    simulate_walker, in_axes=(0, 0))(r0, walker_keys)
+                signals = _ens_np(spin_w, all_phi)
+            if track_comp:
+                pos_seq, comp_seq = ys          # (n_w, n_t, 3), (n_w, n_t)
+                comp_final = comp_seq[:, -1]
+            else:
+                pos_seq = ys
+
+        elif track_comp:
             # Need a classify_position closure for the scan body
             classify_fn = geometry.classify_position
 
@@ -429,7 +482,9 @@ def simulate(
     # Build return tuple
     result = [np.array(signals)]
 
-    if return_positions:
+    if return_positions == 'full':
+        result.append(np.array(pos_seq))        # (n_walkers, n_timesteps, 3)
+    elif return_positions:
         result.append(np.array(final_r))
 
     if track_comp:
