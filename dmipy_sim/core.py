@@ -168,6 +168,15 @@ def simulate(
     G = waveform.G          # (n_measurements, n_t, 3)
     dt = waveform.dt
     echo_idx = waveform.echo_idx
+
+    # Substrate placement in the bore (e.g. Mesh with orientation/R): the walk runs
+    # in the geometry's native frame, so rotate the ACQUISITION into that frame
+    # instead of rotating the geometry.  A gradient g in the lab (B0=+z) frame is
+    # g_mesh = R^T g for a mesh->lab rotation R, i.e. G_mesh = G @ R.
+    _orient_R = getattr(geometry, '_orient_R', None)
+    if _orient_R is not None:
+        G = G @ jnp.asarray(_orient_R, G.dtype)
+
     n_measurements, n_t, _ = G.shape
 
     # Spin-density-weighted ensemble signal Re(<w_spin . exp(log_w) . e^{i phi}>)/Σw_spin.
