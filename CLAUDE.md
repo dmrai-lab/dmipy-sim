@@ -115,6 +115,17 @@ meshes:
   permeation** (one Powles decision at the first hit, then a multi-bounce reflection).
 - **`orientation=`/`R=`** place the mesh in the bore (B0 = +z) as an *acquisition
   rotation* — the walk stays in the mesh frame.
+- **Compartment (intra/extra) wall properties.** The membrane can relax and permit
+  crossing differently by side/direction — the side is known at the collision
+  (`sign(step·outward_normal)`). `intra={"surface_relaxivity_t2": ρ_i}`,
+  `extra={"surface_relaxivity_t2": ρ_e}` → side-dependent ρ; `permeability={
+  "intra_to_extra": κ_out, "extra_to_intra": κ_in}` → direction-dependent κ (scalar
+  = symmetric, the default). Stored as a nominal value × per-side/-direction
+  multipliers applied in `reflect_with_log_weight` / `permeate` (per sub-step, so an
+  aggregate step carries the fractional intra/extra occupancy); scalars reproduce
+  the symmetric behaviour bit-for-bit. **Caveat:** asymmetric κ breaks detailed
+  balance — it's a *pump* (net flux, non-equilibrium), not passive exchange.
+  Per-compartment bulk D / T2 is a later layer (per-step, not a wall effect).
 - **Resolution:** diffusion & surface relaxivity hit the noise floor at coarse
   resolution; permeability needs `edge/feature ≲ 0.04`. `Mesh.quality_report()` and a
   construction warning flag a too-coarse mesh.
