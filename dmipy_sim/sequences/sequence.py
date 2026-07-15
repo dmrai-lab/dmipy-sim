@@ -415,8 +415,8 @@ class Sequence:
 
         The 180 refocusing pulse is placed at ``echo_idx`` (default TE/2, the only
         position at which static field refocuses at the echo).  An off-centre 180
-        is a *misaligned* spin echo — static field (susceptibility/off-resonance)
-        then refocuses at ``2·t_180 ≠ TE`` — so it is GUARDED: a non-TE/2
+        is a *misaligned* spin echo — the static field then refocuses at
+        ``2·t_180 ≠ TE`` — so it is GUARDED: a non-TE/2
         ``echo_idx`` raises unless ``allow_offcenter_180=True`` is passed
         deliberately (and even then warns).
 
@@ -424,8 +424,8 @@ class Sequence:
         ----------
         G : (n_t, 3) or (1, n_t, 3) array, T/m
             The EFFECTIVE gradient (180 sign flip folded in, so q(TE)=0
-            self-refocuses).  The emergent Bloch builder un-folds the post-180
-            part about ``echo_idx`` to recover the physical gradient + the 180.
+            self-refocuses).  This builder un-folds the post-180 part about
+            ``echo_idx`` to recover the physical gradient + the 180.
         dt : float — time step (s).
         echo_idx : int or None — sample index of the 180.  Default TE/2.  Pass the
             design's own ``echo_idx`` so the un-fold is exact (for a TE/2 design it
@@ -453,7 +453,7 @@ class Sequence:
                     "from_btensor_waveform: echo_idx={} places the 180 at {:.2f} ms, "
                     "not TE/2={:.2f} ms. A spin echo refocuses static field at "
                     "2·t_180={:.2f} ms, so an off-centre 180 does NOT refocus "
-                    "susceptibility/off-resonance at the echo TE={:.2f} ms — the 180 "
+                    "the static field at the echo TE={:.2f} ms — the 180 "
                     "is misaligned with the readout."
                 ).format(echo_idx, echo_idx * dt * 1e3, te2 * dt * 1e3,
                          2 * echo_idx * dt * 1e3, float(TE_[0]) * 1e3)
