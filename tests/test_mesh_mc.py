@@ -98,6 +98,21 @@ def test_periodic_tube_matches_infinite_cylinder():
                         err_msg="periodic tube mesh vs analytic infinite Cylinder")
 
 
+def test_positions_full_selects_permeated_walkers():
+    """return_positions='full' + return_compartments='full' on a permeable mesh
+    yields per-step positions and compartment ids, so walkers that permeated can
+    be selected and their trajectories visualised."""
+    V, F = _ico(3)
+    g = Mesh(V, F, permeability=2e-5)
+    wf = _pgse(2, 120, TE=15e-3)
+    _, pos, origin, comp = simulate(800, D, wf, g, seed=SEED,
+                                    return_positions='full', return_compartments='full')
+    assert pos.shape == (800, 120, 3)
+    assert comp.shape == (800, 120)
+    permeated = (comp != comp[:, :1]).any(axis=1)
+    assert int(permeated.sum()) > 0                       # some walkers crossed the membrane
+
+
 def test_orientation_signal_parity():
     """Orienting the substrate in the bore must be equivalent to rotating the
     acquisition: a tube whose axis is placed along lab-x, probed with a gradient
