@@ -841,8 +841,8 @@ def make_packed_myelin_step_fn(geometry, dt: float, T1: float = None):
         walk returns the unit ``rho/D = 1`` boundary local-time term).
 
     Carry: ``(r_incell, r_unwrapped, phi, log_w, compartment_id, key)``; inputs: ``g_t`` (n_meas, 3).
-    Mirrors the phase / T2 / rho conventions of ``apply_waveform_with_relaxation`` exactly, so the
-    fused forward and the (private) trajectory-replay path are the same signal by construction.
+    Phase, per-compartment T2 and surface-relaxivity conventions match the rest of the forward
+    model, so the signal is consistent across the engine by construction.
     """
     L = jnp.float32(geometry._cell_size)
     N_max = geometry.N_max
