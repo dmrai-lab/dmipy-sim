@@ -148,17 +148,12 @@ signal = simulate(n_walkers=50_000, diffusivity=2e-9, waveform=wf, geometry=mesh
 - **[Validation ladders](examples/validation/)** — surface relaxivity and permeability from 1-D
   to 3-D vs exact analytics, and the extra-axonal tortuosity scale sweep.
 
-## Relationship to disimpy / MISST / Camino, and citation
+## Lineage
 
-The core engine — Brownian walk, specular reflection, phase accumulation — follows the same
-physics as [disimpy](https://github.com/kerkelae/disimpy) (Kerkelä 2020), MISST, and Camino,
-and is validated against analytical and MISST reference signals for sphere/cylinder.
-Contributions here: membrane permeability (Powles), surface relaxivity (Brownstein–Tarr,
-interior + exterior), B-tensor encoding, packed ensembles, the free-waveform pulse-sequence
-interface shared with dmipy-fit, and the JAX (vmap/scan) backend.
-
-> For basic MC functionality cite disimpy/MISST; for the extensions cite dmipy-sim / the
-> dmrai ecosystem. Kerkelä L, Nery F, Hall M, Clark C (2020), *disimpy*, JOSS 5(52), 2527.
+dmipy-sim shares the standard Brownian-walk Monte-Carlo lineage (disimpy / MISST / Camino) and
+extends well past it — membrane permeability, interior + exterior surface relaxivity,
+per-compartment properties, B-tensor encoding, arbitrary meshes, and the free-waveform interface
+shared with dmipy-fit, all on a JAX (vmap/scan) backend.
 
 ## Physics as the specification
 
