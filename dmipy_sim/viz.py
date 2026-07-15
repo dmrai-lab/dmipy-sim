@@ -280,3 +280,238 @@ def plot_sequence_comparison(waveforms, titles=None, meas_idx=0,
 
     fig.tight_layout()
     return fig
+
+
+# ---------------------------------------------------------------------------
+# Mesh substrate observability
+# ---------------------------------------------------------------------------
+
+_AXES = {'x': 0, 'y': 1, 'z': 2}
+_MESH_WALL = '#1f3a5f'
+_MESH_INTRA = '#e6550d'
+_MESH_EXTRA = '#3182bd'
+
+
+def _mesh_slice_segments(vertices, faces, axis_idx, offset):
+    """In-plane line segments where each triangle crosses the plane.
+
+    Robust triangle-plane slice (captures the open cross-sections that a
+    closed-loop contour tracer drops on clipped / periodic meshes).  Returns
+    ``(segments, plane_axes)`` where segments is a list of (2, 2) arrays in the
+    two in-plane coordinates and plane_axes are their global axis indices.
+    """
+    V = np.asarray(vertices, float)
+    F = np.asarray(faces, int)
+    plane_axes = [i for i in range(3) if i != axis_idx]
+    tz = V[F][:, :, axis_idx] - offset                       # (nF, 3)
+    straddle = (tz.min(1) < 0) & (tz.max(1) > 0)
+    tri = V[F][straddle]
+    tzz = tz[straddle]
+    segs = []
+    for tv, zz in zip(tri, tzz):
+        pts = []
+        for i, j in ((0, 1), (1, 2), (2, 0)):
+            if zz[i] * zz[j] < 0:
+                t = zz[i] / (zz[i] - zz[j])
+                pts.append(tv[i, plane_axes] + t * (tv[j, plane_axes] - tv[i, plane_axes]))
+        if len(pts) == 2:
+            segs.append(np.array(pts))
+    return segs, plane_axes
+
+
+def _walker_compartments(mesh, walkers):
+    import jax
+    return np.asarray(jax.vmap(mesh.classify_position)(np.asarray(walkers, np.float32)))
+
+
+def plot_mesh_section(mesh, axis='z', offset=0.0, walkers=None, compartments=None,
+                      slab=None, units=1e6, unit_label='µm', ax=None, save=None):
+    """Cross-section of a :class:`~dmipy_sim.Mesh` through a plane, drawing every
+    cell wall, with optional walker positions overlaid.
+
+    Parameters
+    ----------
+    mesh : Mesh
+        The mesh geometry (uses its ``vertices`` / ``faces``, in the mesh frame).
+    axis : {'x', 'y', 'z'}
+        Plane normal.  The section is drawn in the other two coordinates.
+    offset : float
+        Plane position along ``axis`` (metres).
+    walkers : (n, 3) array, optional
+        Walker positions to overlay (those within ``slab`` of the plane).
+    compartments : (n,) int array, optional
+        0 = intra, 1 = extra, colouring the overlaid walkers.  Computed from the
+        mesh if omitted.
+    slab : float, optional
+        Half-thickness (metres) of the walker slab around the plane.  Defaults to
+        the mesh feature radius / 4.
+    units, unit_label : float, str
+        Axis scaling for display (default metres -> µm).
+    ax : matplotlib Axes, optional
+    save : str, optional
+        If given, save the figure to this path.
+
+    Returns
+    -------
+    matplotlib Axes
+    """
+    _require_mpl()
+    from matplotlib.collections import LineCollection
+    ai = _AXES[axis]
+    segs, pax = _mesh_slice_segments(mesh.vertices, mesh.faces, ai, offset)
+    if ax is None:
+        _, ax = plt.subplots(figsize=(6.5, 6.5))
+    ax.add_collection(LineCollection([s * units for s in segs],
+                                     colors=_MESH_WALL, linewidths=0.5))
+    if walkers is not None and len(walkers):
+        w = np.asarray(walkers, float)
+        if slab is None:
+            slab = getattr(mesh, 'radius', 1.0) / 4.0
+        keep = np.abs(w[:, ai] - offset) < slab
+        wk = w[keep]
+        if compartments is None:
+            comp = _walker_compartments(mesh, wk)
+        else:
+            comp = np.asarray(compartments)[keep]
+        for c, col, lab in ((0, _MESH_INTRA, 'intra'), (1, _MESH_EXTRA, 'extra')):
+            m = comp == c
+            if m.any():
+                ax.scatter(wk[m, pax[0]] * units, wk[m, pax[1]] * units,
+                           s=5, c=col, alpha=0.7, label=lab)
+        ax.legend(loc='upper right', fontsize=8, framealpha=0.9)
+    lo = np.asarray(mesh.vmin)[pax] * units
+    hi = np.asarray(mesh.vmax)[pax] * units
+    ax.set_xlim(lo[0], hi[0]); ax.set_ylim(lo[1], hi[1])
+    ax.set_aspect('equal')
+    names = 'xyz'
+    ax.set_xlabel(f'{names[pax[0]]} ({unit_label})')
+    ax.set_ylabel(f'{names[pax[1]]} ({unit_label})')
+    ax.set_title(f'{axis}={offset*units:.2f} {unit_label} section — {len(segs)} cell-wall segments')
+    if save:
+        ax.figure.savefig(save, dpi=130, bbox_inches='tight')
+    return ax
+
+
+def plot_walkers_3d(mesh, walkers, compartments=None, sub_box=None, units=1e6,
+                    unit_label='µm', ax=None, save=None):
+    """3D scatter of walker positions coloured by compartment (0 intra / 1 extra).
+
+    ``sub_box`` (metres) restricts to ``|coord| < sub_box`` about the origin so a
+    dense pack stays legible.  Returns the matplotlib Axes.
+    """
+    _require_mpl()
+    w = np.asarray(walkers, float)
+    comp = _walker_compartments(mesh, w) if compartments is None else np.asarray(compartments)
+    if sub_box is not None:
+        keep = np.all(np.abs(w) < sub_box, axis=1)
+        w, comp = w[keep], comp[keep]
+    if ax is None:
+        fig = plt.figure(figsize=(6.5, 6))
+        ax = fig.add_subplot(111, projection='3d')
+    for c, col, lab, al in ((0, _MESH_INTRA, 'intra', 0.5), (1, _MESH_EXTRA, 'extra', 0.3)):
+        m = comp == c
+        if m.any():
+            ax.scatter(w[m, 0] * units, w[m, 1] * units, w[m, 2] * units,
+                       s=4, c=col, alpha=al, label=lab)
+    ax.set_xlabel(f'x ({unit_label})'); ax.set_ylabel(f'y ({unit_label})')
+    ax.set_zlabel(f'z ({unit_label})')
+    ax.legend(loc='upper left', fontsize=8)
+    if save:
+        ax.figure.savefig(save, dpi=130, bbox_inches='tight')
+    return ax
+
+
+def plot_cell_surface(mesh, index=0, units=1e6, unit_label='µm', ax=None, save=None,
+                      color=_MESH_EXTRA):
+    """Render a single connected cell of the mesh as a 3D surface.
+
+    ``index`` selects the cell by descending size (0 = largest).  Requires
+    trimesh (the ``mesh`` extra) to split the mesh into connected components.
+    Returns the matplotlib Axes.
+    """
+    _require_mpl()
+    try:
+        import trimesh
+    except ImportError as exc:
+        raise ImportError("plot_cell_surface needs trimesh (pip install dmipy-sim[mesh]).") from exc
+    tm = trimesh.Trimesh(vertices=np.asarray(mesh.vertices), faces=np.asarray(mesh.faces),
+                         process=False)
+    comps = tm.split(only_watertight=False)
+    comps = sorted(comps, key=lambda c: len(c.vertices), reverse=True)
+    c = comps[min(index, len(comps) - 1)]
+    V = np.asarray(c.vertices) * units
+    Fc = np.asarray(c.faces)
+    if ax is None:
+        fig = plt.figure(figsize=(6, 6))
+        ax = fig.add_subplot(111, projection='3d')
+    ax.plot_trisurf(V[:, 0], V[:, 1], Fc, V[:, 2],
+                    color=color, alpha=0.85, edgecolor='none', linewidth=0)
+    ax.set_xlabel(f'x ({unit_label})'); ax.set_ylabel(f'y ({unit_label})')
+    ax.set_zlabel(f'z ({unit_label})')
+    ax.set_title(f'cell {index} — {len(c.faces):,} faces')
+    if save:
+        ax.figure.savefig(save, dpi=130, bbox_inches='tight')
+    return ax
+
+
+def walk_paths(mesh, n_walkers, n_steps, diffusivity, dt, seed=0, intra=True):
+    """Record plain reflecting random-walk paths for visualisation.
+
+    A diffusion-only walk (no gradient, no phase) that just steps the geometry's
+    ``reflect`` and stores every position — a lightweight path recorder for
+    plotting, independent of the signal-simulation path.
+
+    Returns an array of shape ``(n_walkers, n_steps + 1, 3)`` (metres).
+    """
+    import jax
+    import jax.numpy as jnp
+    key = jax.random.PRNGKey(seed)
+    k0, kw = jax.random.split(key)
+    r0 = mesh.init_positions(n_walkers, k0, intra=intra)
+    step_l = jnp.float32(np.sqrt(6.0 * diffusivity * dt))
+
+    def one(r, k):
+        noise = jax.random.normal(k, (n_walkers, 3), dtype=jnp.float32)
+        step = noise / jnp.linalg.norm(noise, axis=1, keepdims=True) * step_l
+        r_new = jax.vmap(mesh.reflect)(r, step)
+        return r_new, r_new
+    keys = jax.random.split(kw, n_steps)
+    _, traj = jax.lax.scan(one, r0, keys)                    # (n_steps, n_walkers, 3)
+    traj = jnp.concatenate([r0[None], traj], axis=0)         # (n_steps+1, n_walkers, 3)
+    return np.asarray(jnp.transpose(traj, (1, 0, 2)))        # (n_walkers, n_steps+1, 3)
+
+
+def plot_trajectories(mesh, paths, axis='z', offset=0.0, units=1e6, unit_label='µm',
+                      ax=None, save=None, max_paths=40):
+    """Overlay walker paths on a mesh cross-section (projected to the plane's
+    in-plane coordinates).  ``paths`` is ``(n_walkers, n_t, 3)`` from
+    :func:`walk_paths`.  Returns the matplotlib Axes."""
+    _require_mpl()
+    ai = _AXES[axis]
+    pax = [i for i in range(3) if i != ai]
+    ax = plot_mesh_section(mesh, axis=axis, offset=offset, units=units,
+                           unit_label=unit_label, ax=ax)
+    P = np.asarray(paths)
+    for p in P[:max_paths]:
+        ax.plot(p[:, pax[0]] * units, p[:, pax[1]] * units, lw=0.8, alpha=0.8)
+    ax.set_title(ax.get_title() + f'  ·  {min(len(P), max_paths)} walker paths')
+    if save:
+        ax.figure.savefig(save, dpi=130, bbox_inches='tight')
+    return ax
+
+
+def save_rotation(ax3d, path, n_frames=48, elev=22, fps=16):
+    """Save a spinning view of a 3D Axes as an animated GIF (azimuth sweep).
+
+    Uses the Pillow writer (no ffmpeg needed).  Returns the output path.
+    """
+    _require_mpl()
+    from matplotlib import animation
+    fig = ax3d.figure
+
+    def update(i):
+        ax3d.view_init(elev=elev, azim=i * 360.0 / n_frames)
+        return ()
+    anim = animation.FuncAnimation(fig, update, frames=n_frames, blit=False)
+    anim.save(path, writer=animation.PillowWriter(fps=fps))
+    return path

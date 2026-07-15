@@ -148,6 +148,24 @@ def test_orientation_is_acquisition_rotation():
     assert (np.linalg.norm(pos[:, :2], axis=1) < 4e-6 * 1.03).mean() > 0.99
 
 
+def test_viz_functions_render(tmp_path):
+    import matplotlib
+    matplotlib.use("Agg")
+    from dmipy_sim import (plot_mesh_section, plot_walkers_3d, plot_cell_surface,
+                           walk_paths, plot_trajectories)
+    import matplotlib.pyplot as plt
+    V, F = _icosphere(3)
+    g = Mesh(V, F)
+    w = np.asarray(g.init_positions(300, jax.random.PRNGKey(0), intra=True))
+    p = tmp_path / "sec.png"; plot_mesh_section(g, walkers=w, save=str(p)); assert p.exists()
+    p = tmp_path / "w3d.png"; plot_walkers_3d(g, w, sub_box=5e-6, save=str(p)); assert p.exists()
+    p = tmp_path / "cell.png"; plot_cell_surface(g, save=str(p)); assert p.exists()
+    paths = walk_paths(g, 20, 25, diffusivity=D, dt=2e-4, seed=0)
+    assert paths.shape == (20, 26, 3)
+    p = tmp_path / "traj.png"; plot_trajectories(g, paths, save=str(p)); assert p.exists()
+    plt.close("all")
+
+
 def test_periodic_tube_confinement_and_zwrap():
     """Smoke: walkers stay radially inside an open periodic tube and wrap in z."""
     V, F = _open_tube(r=4e-6, L=12e-6)

@@ -12,7 +12,9 @@ _apply_gpu_mem_cap()
 from .core import simulate, simulate_mixture, simulate_cpmg
 from .gpu import (gpu_available, check_gpu, free_gpu_memory, gpu_session,
                   list_gpu_processes)
-from .viz import plot_waveform, plot_sequence_comparison
+from .viz import (plot_waveform, plot_sequence_comparison,
+                  plot_mesh_section, plot_walkers_3d, plot_cell_surface,
+                  walk_paths, plot_trajectories, save_rotation)
 from .waveforms import (Waveform, pgse, ogse, cpmg, trapezoidal_ogse, b_trapezoidal_ogse,
                         set_b, calc_b, calc_btensor, btensor_invariants, ste, pte,
                         rotate_waveform, tile_waveform)
