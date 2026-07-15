@@ -201,14 +201,14 @@ class Mesh(Geometry):
         # reflect_with_log_weight / permeate.  Bulk diffusivity and T2 remain single
         # (set on simulate()); per-compartment D/T2 is a later layer.
         intra = dict(intra or {}); extra = dict(extra or {})
-        _allowed = {"surface_relaxivity_t2"}
+        _allowed = {"surface_relaxivity_t2", "D", "T2"}
         for _side, _d in (("intra", intra), ("extra", extra)):
             _bad = set(_d) - _allowed
             if _bad:
                 raise NotImplementedError(
-                    f"Mesh {_side}={sorted(_bad)}: per-compartment {sorted(_bad)} is a later "
-                    f"layer. This first layer supports only 'surface_relaxivity_t2' (a wall "
-                    f"effect); set bulk diffusivity / T2 on simulate().")
+                    f"Mesh {_side}={sorted(_bad)}: supported per-compartment properties are "
+                    f"{sorted(_allowed)}. (T1 is not applied in the forward walk; per-compartment "
+                    f"T1 is out of scope.)")
         rho_i = intra.get("surface_relaxivity_t2", surface_relaxivity_t2)
         rho_e = extra.get("surface_relaxivity_t2", surface_relaxivity_t2)
         rho_i = float(rho_i) if rho_i is not None else 0.0
@@ -231,6 +231,31 @@ class Mesh(Geometry):
         self.permeability = k_nom if k_nom > 0 else None
         self._kappa_mult_out = jnp.float32(k_out / k_nom if k_nom > 0 else 1.0)
         self._kappa_mult_in = jnp.float32(k_in / k_nom if k_nom > 0 else 1.0)
+
+        # ---- per-compartment BULK diffusivity / T2 (a per-step effect) ----
+        # index convention: 0 = intra, 1 = extra (matches classify_position).
+        def _pair(key, unit):
+            vi, ve = intra.get(key), extra.get(key)
+            if vi is None and ve is None:
+                return None
+            if vi is None or ve is None:
+                raise ValueError(f"per-compartment '{key}' needs a value for BOTH intra and "
+                                 f"extra (got intra={vi}, extra={ve}).")
+            return (float(vi), float(ve))
+        D_pair = _pair("D", "m^2/s")
+        T2_pair = _pair("T2", "s")
+        if D_pair is not None and self.permeability is not None and D_pair[0] != D_pair[1]:
+            raise NotImplementedError(
+                "per-compartment D across a PERMEABLE wall is unequal-D at an interface "
+                "(a diffusivity-discontinuity problem not yet handled). Use equal D with "
+                "permeability, or an impermeable wall for distinct intra/extra D.")
+        self._D_comp = D_pair
+        self._T2_comp = T2_pair
+        self._has_bulk_comp = (D_pair is not None) or (T2_pair is not None)
+        self._D_comp_jax = jnp.asarray(D_pair, jnp.float32) if D_pair is not None else None
+        self._inv_T2_comp_jax = (jnp.asarray([1.0 / T2_pair[0], 1.0 / T2_pair[1]], jnp.float32)
+                                 if T2_pair is not None else None)
+        self._D_comp_max = max(D_pair) if D_pair is not None else None
 
         # ---- placement in the scanner frame (B0 = +z convention) ----
         # The mesh, its grid and periodic box live in the mesh's NATIVE frame and

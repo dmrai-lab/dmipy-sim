@@ -136,6 +136,31 @@ def test_directional_permeability():
     assert f_out < f_sym < f_in
 
 
+def test_per_compartment_t2():
+    """Equal per-compartment T2 reproduces the single global T2 bit-for-bit; a short
+    intra T2 strongly attenuates walkers seeded intra."""
+    V, F = _ico(4)
+    wf = _pgse(5, 250, TE=40e-3)
+    s_global = np.asarray(simulate(4000, D, wf, Mesh(V, F), seed=SEED, T2=0.05))
+    s_comp = np.asarray(simulate(4000, D, wf, Mesh(V, F, intra={"T2": 0.05},
+                                                   extra={"T2": 0.05}), seed=SEED))
+    npt.assert_array_equal(s_global, s_comp)
+    s_short = np.asarray(simulate(4000, D, wf, Mesh(V, F, intra={"T2": 0.02},
+                                                    extra={"T2": 0.20}), seed=SEED))
+    assert s_short[0] < 0.5                     # seeded intra + short intra T2
+
+
+def test_per_compartment_diffusivity():
+    """Distinct intra/extra D (impermeable) runs with diffusivity=None and gives a
+    materially different, monotone signal depending on which compartment is fast."""
+    V, F = _ico(4)
+    wf = _pgse(5, 250, TE=40e-3)
+    s1 = np.asarray(simulate(4000, None, wf, Mesh(V, F, intra={"D": 1e-9}, extra={"D": 3e-9}), seed=SEED))
+    s2 = np.asarray(simulate(4000, None, wf, Mesh(V, F, intra={"D": 3e-9}, extra={"D": 1e-9}), seed=SEED))
+    assert np.all(np.diff(s1) <= 1e-6) and np.all(np.diff(s2) <= 1e-6)   # monotone
+    assert np.sqrt(np.mean((s1 - s2) ** 2)) > 0.02                        # clearly different
+
+
 def test_positions_full_selects_permeated_walkers():
     """return_positions='full' + return_compartments='full' on a permeable mesh
     yields per-step positions and compartment ids, so walkers that permeated can
