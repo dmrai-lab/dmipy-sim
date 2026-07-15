@@ -99,6 +99,32 @@ def test_load_ply_roundtrip(tmp_path):
     assert isinstance(g, Mesh) and g.C > 0
 
 
+def test_compartment_property_parsing():
+    """intra/extra + directional-κ parsing (fast; no Monte-Carlo). Symmetric inputs
+    reduce to unit multipliers; asymmetric inputs set nominal=max and ratio mults."""
+    V, F = _icosphere(2)
+    # scalar ρ == symmetric intra=extra dict (nominal + unit multipliers)
+    m_scalar = Mesh(V, F, surface_relaxivity_t2=5e-6)
+    m_sym = Mesh(V, F, intra={"surface_relaxivity_t2": 5e-6}, extra={"surface_relaxivity_t2": 5e-6})
+    assert m_scalar.surface_relaxivity_t2 == m_sym.surface_relaxivity_t2 == 5e-6
+    assert float(m_scalar._rho_mult_intra) == 1.0 and float(m_scalar._rho_mult_extra) == 1.0
+    # asymmetric ρ: nominal = max, multipliers = per-side ratios
+    m_asym = Mesh(V, F, intra={"surface_relaxivity_t2": 5e-6}, extra={"surface_relaxivity_t2": 1e-6})
+    assert m_asym.surface_relaxivity_t2 == 5e-6
+    npt.assert_allclose([float(m_asym._rho_mult_intra), float(m_asym._rho_mult_extra)], [1.0, 0.2], atol=1e-6)
+    # κ: scalar symmetric; dict direction-dependent
+    assert Mesh(V, F, permeability=2e-5).permeability == 2e-5
+    mk = Mesh(V, F, permeability={"intra_to_extra": 4e-5, "extra_to_intra": 1e-5})
+    assert mk.permeability == 4e-5
+    npt.assert_allclose([float(mk._kappa_mult_out), float(mk._kappa_mult_in)], [1.0, 0.25], atol=1e-6)
+
+
+def test_compartment_unsupported_key_raises():
+    V, F = _icosphere(2)
+    with pytest.raises(NotImplementedError):
+        Mesh(V, F, intra={"diffusivity": 1e-9})     # per-compartment D is a later layer
+
+
 def test_return_positions_full():
     V, F = _icosphere(3)
     g = Mesh(V, F)

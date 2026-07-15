@@ -98,6 +98,44 @@ def test_periodic_tube_matches_infinite_cylinder():
                         err_msg="periodic tube mesh vs analytic infinite Cylinder")
 
 
+def test_side_dependent_surface_relaxivity():
+    """Symmetric ρ (intra=extra) reproduces the scalar bit-for-bit; with walkers
+    seeded intra, an intra-side-only ρ attenuates them while an extra-side-only ρ
+    (which they never approach from) leaves them essentially unweighted."""
+    V, F = _ico(4)
+    wf = _pgse(4, 300, TE=40e-3)
+    rho = 5e-6
+    s_scalar = np.asarray(simulate(3000, D, wf, Mesh(V, F, surface_relaxivity_t2=rho), seed=SEED))
+    s_dict = np.asarray(simulate(3000, D, wf, Mesh(V, F, intra={"surface_relaxivity_t2": rho},
+                                                   extra={"surface_relaxivity_t2": rho}), seed=SEED))
+    npt.assert_array_equal(s_scalar, s_dict)
+    s_in = np.asarray(simulate(3000, D, wf, Mesh(V, F, intra={"surface_relaxivity_t2": rho},
+                                                 extra={"surface_relaxivity_t2": 0.0}), seed=SEED))
+    s_ex = np.asarray(simulate(3000, D, wf, Mesh(V, F, intra={"surface_relaxivity_t2": 0.0},
+                                                 extra={"surface_relaxivity_t2": rho}), seed=SEED))
+    assert s_in[0] < 0.99 and s_ex[0] > 0.999
+
+
+def test_directional_permeability():
+    """Symmetric κ (dict) reproduces the scalar; a rectifying (direction-dependent)
+    κ drives net flux — outflow-only empties cells, inflow-only retains them."""
+    V, F = _ico(3)
+    wf = _pgse(4, 150, TE=15e-3)
+    s_scalar = np.asarray(simulate(1500, D, wf, Mesh(V, F, permeability=2e-5), seed=1))
+    s_dict = np.asarray(simulate(1500, D, wf, Mesh(V, F, permeability={
+        "intra_to_extra": 2e-5, "extra_to_intra": 2e-5}), seed=1))
+    npt.assert_array_equal(s_scalar, s_dict)             # symmetric dict == scalar
+
+    def frac_in(perm):
+        _, pos = simulate(1500, D, _pgse(1, 150, TE=15e-3), Mesh(V, F, permeability=perm),
+                          seed=1, return_positions=True)
+        return (np.linalg.norm(np.asarray(pos), axis=1) < R).mean()
+    f_sym = frac_in(2e-5)
+    f_out = frac_in({"intra_to_extra": 4e-5, "extra_to_intra": 0.0})    # only leaks out
+    f_in = frac_in({"intra_to_extra": 0.0, "extra_to_intra": 4e-5})     # only leaks in
+    assert f_out < f_sym < f_in
+
+
 def test_positions_full_selects_permeated_walkers():
     """return_positions='full' + return_compartments='full' on a permeable mesh
     yields per-step positions and compartment ids, so walkers that permeated can

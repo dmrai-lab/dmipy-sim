@@ -139,9 +139,20 @@ class Mesh(Geometry):
         and the grid.  Defaults to half the smallest box side; **pass the real cell
         radius for packed substrates**, otherwise the step may be too coarse.
     surface_relaxivity_t2 : float, optional
-        Surface relaxivity ρ₂ (m/s).  Applies a Brownstein–Tarr weight at the wall.
-    permeability : float, optional
-        Membrane permeability κ (m/s).  None → impermeable.
+        Surface relaxivity ρ₂ (m/s), symmetric (same on both sides of the wall).
+        Applies a Brownstein–Tarr weight at the wall. For a side-dependent ρ, use
+        ``intra=``/``extra=`` instead.
+    permeability : float or dict, optional
+        Membrane permeability κ (m/s).  A float is symmetric (same both directions,
+        the default). A dict ``{"intra_to_extra": κ_out, "extra_to_intra": κ_in}``
+        makes it direction-dependent — note asymmetric κ is a *pump* (net flux, not
+        passive equilibrium). None → impermeable.
+    intra, extra : dict, optional
+        Per-compartment surface properties for the intra (inside a cell) and extra
+        sides — currently ``surface_relaxivity_t2`` only, e.g.
+        ``intra={"surface_relaxivity_t2": 5e-6}, extra={"surface_relaxivity_t2": 1e-6}``:
+        a spin hitting the wall from inside vs outside then takes a different
+        relaxivity weight.  (Per-compartment diffusivity/T2 is a later layer.)
     orientation : (3,) array-like, optional
         Direction, in the scanner frame (B0 = +z), along which the mesh's native
         +z axis (e.g. a periodic / fibre axis) is placed in the bore.  Applied as
@@ -157,7 +168,7 @@ class Mesh(Geometry):
 
     def __init__(self, vertices, faces, *, periodic=False, voxel_min=None,
                  voxel_max=None, feature_radius=None, surface_relaxivity_t2=None,
-                 permeability=None, orientation=None, R=None,
+                 permeability=None, intra=None, extra=None, orientation=None, R=None,
                  cell_size=None, cap=None):
         V = np.asarray(vertices, np.float64)
         F = np.asarray(faces, np.int64)
@@ -179,9 +190,47 @@ class Mesh(Geometry):
         self.radius = float(feature_radius)              # read by core sub-step auto-tune
         self.reject_escape = True                        # impermeable-leak safety net
 
-        self.surface_relaxivity_t2 = (float(surface_relaxivity_t2)
-                                      if surface_relaxivity_t2 is not None else None)
-        self.permeability = float(permeability) if permeability is not None else None
+        # ---- compartment (intra / extra) surface properties ----
+        # The membrane between the intra (inside a cell) and extra compartments can
+        # relax spins and let them cross with DIFFERENT strength depending on the
+        # side/direction of the collision — the side is already known at the wall
+        # (sign of the outward-normal · step).  This first layer supports a
+        # side-dependent surface relaxivity ρ and a direction-dependent
+        # permeability κ; internally each is stored as a nominal value (read by the
+        # engine's step builder) times a per-side/-direction multiplier applied in
+        # reflect_with_log_weight / permeate.  Bulk diffusivity and T2 remain single
+        # (set on simulate()); per-compartment D/T2 is a later layer.
+        intra = dict(intra or {}); extra = dict(extra or {})
+        _allowed = {"surface_relaxivity_t2"}
+        for _side, _d in (("intra", intra), ("extra", extra)):
+            _bad = set(_d) - _allowed
+            if _bad:
+                raise NotImplementedError(
+                    f"Mesh {_side}={sorted(_bad)}: per-compartment {sorted(_bad)} is a later "
+                    f"layer. This first layer supports only 'surface_relaxivity_t2' (a wall "
+                    f"effect); set bulk diffusivity / T2 on simulate().")
+        rho_i = intra.get("surface_relaxivity_t2", surface_relaxivity_t2)
+        rho_e = extra.get("surface_relaxivity_t2", surface_relaxivity_t2)
+        rho_i = float(rho_i) if rho_i is not None else 0.0
+        rho_e = float(rho_e) if rho_e is not None else 0.0
+        rho_nom = max(rho_i, rho_e)
+        self.surface_relaxivity_t2 = rho_nom if rho_nom > 0 else None   # nominal (engine reads this)
+        self._rho_mult_intra = jnp.float32(rho_i / rho_nom if rho_nom > 0 else 1.0)
+        self._rho_mult_extra = jnp.float32(rho_e / rho_nom if rho_nom > 0 else 1.0)
+
+        # permeability: scalar κ (symmetric, default) OR
+        # dict(intra_to_extra=…, extra_to_intra=…) for a direction-dependent (rectifying) wall.
+        if isinstance(permeability, dict):
+            k_out = float(permeability.get("intra_to_extra", 0.0))   # leaving a cell
+            k_in = float(permeability.get("extra_to_intra", 0.0))    # entering a cell
+        elif permeability is not None:
+            k_out = k_in = float(permeability)
+        else:
+            k_out = k_in = 0.0
+        k_nom = max(k_out, k_in)
+        self.permeability = k_nom if k_nom > 0 else None
+        self._kappa_mult_out = jnp.float32(k_out / k_nom if k_nom > 0 else 1.0)
+        self._kappa_mult_in = jnp.float32(k_in / k_nom if k_nom > 0 else 1.0)
 
         # ---- placement in the scanner frame (B0 = +z convention) ----
         # The mesh, its grid and periodic box live in the mesh's NATIVE frame and
@@ -378,10 +427,14 @@ class Mesh(Geometry):
             vm = (ts > self._EPS) & (ts < rem); ts = jnp.where(vm, ts, jnp.inf)
             idx = jnp.argmin(ts); d = ts[idx]; hit = d < jnp.inf
             n = self._smooth_normal(vnf, nrmf, u, v, idx, dh)
+            # side of the collision: dh·(outward face normal) > 0 -> spin leaving a
+            # cell (intra side), < 0 -> entering (extra side).
+            rho_mult = jnp.where(jnp.dot(dh, nrmf[idx]) > 0,
+                                 self._rho_mult_intra, self._rho_mult_extra)
             r_hit = r0 + d * dh
             d_ref = dh - 2 * jnp.dot(dh, n) * n; d_ref /= jnp.linalg.norm(d_ref)
             cos_a = -jnp.dot(dh, n)
-            d_perp = jnp.where(hit, (rem - d) * cos_a, jnp.float32(0.0))
+            d_perp = jnp.where(hit, rho_mult * (rem - d) * cos_a, jnp.float32(0.0))
             return (jnp.where(hit, r_hit + self._NUDGE * n, r0),
                     jnp.where(hit, d_ref, dh),
                     jnp.where(hit, rem - d - self._NUDGE, rem)), d_perp
@@ -406,10 +459,15 @@ class Mesh(Geometry):
             vm = (ts > self._EPS) & (ts < rem); ts = jnp.where(vm, ts, jnp.inf)
             idx = jnp.argmin(ts); d = ts[idx]; hit = d < jnp.inf
             n = self._smooth_normal(vnf, nrmf, u, v, idx, dh)
+            # crossing direction: dh·(outward normal) > 0 -> leaving a cell
+            # (intra->extra), < 0 -> entering (extra->intra).
+            outward = jnp.dot(dh, nrmf[idx]) > 0
+            kappa_mult = jnp.where(outward, self._kappa_mult_out, self._kappa_mult_in)
+            rho_mult = jnp.where(outward, self._rho_mult_intra, self._rho_mult_extra)
             cos_a = -jnp.dot(dh, n)
             d_perp = (rem - d) * cos_a
             first_hit = hit & (~decided)
-            p_t = jnp.minimum(1.0, 2.0 * jnp.float32(kappa_over_D) * d_perp)
+            p_t = jnp.minimum(1.0, 2.0 * jnp.float32(kappa_over_D) * kappa_mult * d_perp)
             transmit = first_hit & (u_rand < p_t)
             r_hit = r0 + d * dh
             d_ref = dh - 2.0 * jnp.dot(dh, n) * n; d_ref /= jnp.linalg.norm(d_ref)
@@ -417,7 +475,7 @@ class Mesh(Geometry):
             r_new = jnp.where(do_reflect, r_hit + self._NUDGE * n, r0 + rem * dh)
             d_new = jnp.where(do_reflect, d_ref, dh)
             rem_new = jnp.where(do_reflect, rem - d - self._NUDGE, jnp.float32(0.0))
-            dperp_refl = jnp.where(first_hit & ~transmit, d_perp, jnp.float32(0.0))
+            dperp_refl = jnp.where(first_hit & ~transmit, rho_mult * d_perp, jnp.float32(0.0))
             return (r_new, d_new, rem_new, decided | first_hit,
                     dlogw - 2.0 * jnp.float32(rho_over_D) * dperp_refl), None
         (rf, df, remf, _, dlogw), _ = jax.lax.scan(
