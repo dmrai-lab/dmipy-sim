@@ -15,7 +15,7 @@ from .gpu import (gpu_available, check_gpu, free_gpu_memory, gpu_session,
 from .viz import (plot_waveform, plot_sequence_comparison,
                   plot_mesh_section, plot_walkers_3d, plot_cell_surface, plot_mesh_3d,
                   seed_in_cell, walk_paths, plot_trajectories, save_rotation)
-from .waveforms import (Waveform, pgse, ogse, cpmg, trapezoidal_ogse, b_trapezoidal_ogse,
+from .waveforms import (Waveform, pgse, pgste, ogse, cpmg, trapezoidal_ogse, b_trapezoidal_ogse,
                         set_b, calc_b, calc_btensor, btensor_invariants, ste, pte,
                         rotate_waveform, tile_waveform)
 from .geometries import (FreeDiffusion, Box1D, Sphere, Cylinder, MyelinatedCylinder,
@@ -38,7 +38,7 @@ from .sh_convolution import (
 __all__ = [
     "simulate", "simulate_mixture", "simulate_cpmg",
     "gpu_available", "check_gpu", "free_gpu_memory", "gpu_session", "list_gpu_processes",
-    "Waveform", "pgse", "ogse", "cpmg", "trapezoidal_ogse", "b_trapezoidal_ogse",
+    "Waveform", "pgse", "pgste", "ogse", "cpmg", "trapezoidal_ogse", "b_trapezoidal_ogse",
     "set_b", "calc_b", "calc_btensor", "btensor_invariants", "ste", "pte",
     "rotate_waveform", "tile_waveform",
     "FreeDiffusion", "Box1D", "Sphere", "Cylinder", "MyelinatedCylinder",

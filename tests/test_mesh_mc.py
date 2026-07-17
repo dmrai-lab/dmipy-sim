@@ -17,7 +17,7 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-from dmipy_sim import simulate, Sphere, Cylinder, Mesh, set_b
+from dmipy_sim import simulate, Sphere, Cylinder, Mesh, set_b, pgse, pgste
 from dmipy_sim.waveforms import Waveform
 
 trimesh = pytest.importorskip("trimesh")
@@ -148,6 +148,25 @@ def test_per_compartment_t2():
     s_short = np.asarray(simulate(4000, D, wf, Mesh(V, F, intra={"T2": 0.02},
                                                     extra={"T2": 0.20}), seed=SEED))
     assert s_short[0] < 0.5                     # seeded intra + short intra T2
+
+
+def test_per_compartment_t1_pgste_gating():
+    """Per-compartment T1 acts only during longitudinal storage (chi_t = 0), via the
+    PGSTE coherence gating: a short intra T1 attenuates walkers stored intra through
+    the mixing time, while under a spin echo (chi_t ≡ 1) T1 never acts."""
+    V, F = _ico(4)
+    # PGSTE with a long mixing time -> a chi_perp=0 storage block where T1 acts
+    wf_ste = set_b(pgste(delta=5e-3, TM=100e-3, G_magnitude=0.05, bvecs=[[1, 0, 0]], n_t=400), 1e9)
+    s_t1 = np.asarray(simulate(3000, D, wf_ste, Mesh(V, F, intra={"T1": 0.3}, extra={"T1": 3.0}), seed=SEED))
+    s_no = np.asarray(simulate(3000, D, wf_ste, Mesh(V, F), seed=SEED))
+    assert s_t1[0] < 0.95 * s_no[0]                 # short intra T1 attenuates during TM
+
+    # spin echo: chi_t ≡ 1 -> the T1 term is identically zero, so per-compartment T1
+    # leaves the signal identical to the no-T1 mesh.
+    wf_se = set_b(pgse(delta=5e-3, DELTA=0.05, G_magnitude=0.05, bvecs=[[1, 0, 0]], n_t=400), 1e9)
+    a = np.asarray(simulate(3000, D, wf_se, Mesh(V, F, intra={"T1": 0.3}, extra={"T1": 3.0}), seed=SEED))
+    b = np.asarray(simulate(3000, D, wf_se, Mesh(V, F), seed=SEED))
+    npt.assert_array_equal(a, b)
 
 
 def test_per_compartment_diffusivity():

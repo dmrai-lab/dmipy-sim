@@ -33,9 +33,48 @@ def _require_mpl():
 
 
 def _q_from_waveform(wf):
-    """Return q(t) array of shape (n_meas, n_t, 3) in m⁻¹."""
+    """Return q(t) array of shape (n_meas, n_t, 3) in m⁻¹.
+
+    Uses the simulation (bipolar) gradient ``wf.G`` so that q is the *effective*
+    dephasing wavevector: with a 180° refocus baked into the sign convention, |q|
+    ramps up over the first lobe and back to ~0 at the echo, as it physically
+    should for a (stationary-spin-refocusing) spin/stimulated echo."""
     G = np.array(wf.G)                              # (n_meas, n_t, 3)
     return np.cumsum(G * wf.dt, axis=1) * GAMMA     # (n_meas, n_t, 3)
+
+
+def _display_G(wf):
+    """Physical scanner gradient for display, shape (n_meas, n_t, 3).
+
+    Returns ``wf.G_display`` (the same-sign second lobe a real scanner delivers,
+    since the 180° performs the phase flip) when present, else falls back to the
+    simulation gradient ``wf.G``. Plotting the physical gradient is why a PGSE
+    shows two lobes of the *same* polarity rather than the bipolar pair used
+    internally by the phase integral."""
+    G = wf.G_display if getattr(wf, 'G_display', None) is not None else wf.G
+    return np.array(G)
+
+
+def _shade_storage(ax, wf, t_plot):
+    """Shade the longitudinal-storage (mixing-time T_M) interval where the
+    transverse-coherence mask ``chi_perp`` is 0: the magnetisation is stored
+    along z, so only T1 acts (no T2 loss, no surface relaxivity). Labels the
+    widest such interval with T_M. No-op for all-transverse waveforms."""
+    chi = getattr(wf, 'chi_perp', None)
+    if chi is None:
+        return
+    stored = np.asarray(chi).astype(float) < 0.5
+    if not stored.any():
+        return
+    idx = np.flatnonzero(stored)
+    runs = np.split(idx, np.flatnonzero(np.diff(idx) > 1) + 1)
+    for run in runs:
+        ax.axvspan(t_plot[run[0]], t_plot[run[-1]], color='0.85',
+                   alpha=0.6, lw=0, zorder=0)
+    widest = max(runs, key=len)
+    tc = 0.5 * (t_plot[widest[0]] + t_plot[widest[-1]])
+    ax.text(tc, 0.93, 'stored (T$_M$)', transform=ax.get_xaxis_transform(),
+            ha='center', va='top', fontsize=7, color='0.45', zorder=1)
 
 
 def _active_axes(arr_nt3):
@@ -106,10 +145,16 @@ def _draw_rf_panel(ax, wf, t_plot):
 
 
 def _draw_G_panel(ax, wf, t_plot, meas_idx, show_ylabel=True):
-    """Populate the G(t) axis."""
-    G_all = np.array(wf.G)          # (n_meas, n_t, 3)
+    """Populate the physical-gradient G(t) axis.
+
+    Draws the physical scanner gradient (:func:`_display_G`): a spin echo shows two
+    lobes of the *same* polarity, because the 180° refocus does the sign flip. The
+    longitudinal-storage (T_M) window, if any, is shaded."""
+    G_all = _display_G(wf)          # (n_meas, n_t, 3), physical scanner gradient
     n_meas = G_all.shape[0]
     G_hi = G_all[meas_idx]          # (n_t, 3)
+
+    _shade_storage(ax, wf, t_plot)
 
     # All measurements at low alpha (fan)
     if n_meas > 1:
@@ -118,9 +163,10 @@ def _draw_G_panel(ax, wf, t_plot, meas_idx, show_ylabel=True):
                 ax.plot(t_plot, G_all[m, :, i], color=_COLORS[i],
                         alpha=0.06, lw=0.6)
 
-    # Highlighted measurement
+    # Highlighted measurement: filled lobes + outline
     active = _active_axes(G_hi)
     for i in active:
+        ax.fill_between(t_plot, 0, G_hi[:, i], color=_COLORS[i], alpha=0.22, lw=0)
         ax.plot(t_plot, G_hi[:, i], color=_COLORS[i], lw=1.6,
                 label=f'G$_{_LABELS[i]}$')
 
@@ -145,6 +191,8 @@ def _draw_q_panel(ax, wf, t_plot, meas_idx, show_ylabel=True, t_unit='ms'):
     n_meas = q_all.shape[0]
     q_hi = q_all[meas_idx]          # (n_t, 3)
     G_hi = np.array(wf.G)[meas_idx]
+
+    _shade_storage(ax, wf, t_plot)
 
     # Fan
     if n_meas > 1:
@@ -180,7 +228,10 @@ def _draw_q_panel(ax, wf, t_plot, meas_idx, show_ylabel=True, t_unit='ms'):
 
 
 def plot_waveform(wf, meas_idx=0, title=None, t_unit='ms', figsize=(9, 5)):
-    """Plot a single waveform: RF timeline, G(t), q(t).
+    """Plot a single waveform: RF timeline, physical gradient G(t), effective q(t).
+
+    The gradient panel shows the physical scanner gradient (same-sign lobes; the
+    180° performs the phase flip) and shades any longitudinal-storage (T_M) window.
 
     Parameters
     ----------
@@ -227,9 +278,11 @@ def plot_sequence_comparison(waveforms, titles=None, meas_idx=0,
                               t_unit='ms', figsize=(14, 6)):
     """Plot N sequences side-by-side: 3 rows × N columns.
 
-    Row 0 — RF event timeline
-    Row 1 — G(t) with x/y/z components
-    Row 2 — q(t) with x/y/z components + |q|
+    Row 0 — RF event timeline (90°/180° flips, echo)
+    Row 1 — physical gradient G(t) (same-sign lobes; the 180° does the flip),
+            with the longitudinal-storage T_M window shaded
+    Row 2 — effective dephasing q(t) with x/y/z components + |q| (returns to ~0
+            at the echo)
 
     Parameters
     ----------

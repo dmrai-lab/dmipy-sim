@@ -148,11 +148,17 @@ class Mesh(Geometry):
         makes it direction-dependent — note asymmetric κ is a *pump* (net flux, not
         passive equilibrium). None → impermeable.
     intra, extra : dict, optional
-        Per-compartment surface properties for the intra (inside a cell) and extra
-        sides — currently ``surface_relaxivity_t2`` only, e.g.
-        ``intra={"surface_relaxivity_t2": 5e-6}, extra={"surface_relaxivity_t2": 1e-6}``:
-        a spin hitting the wall from inside vs outside then takes a different
-        relaxivity weight.  (Per-compartment diffusivity/T2 is a later layer.)
+        Per-compartment properties for the intra (inside a cell) and extra sides.
+        Supported keys:
+        ``surface_relaxivity_t2`` — a wall effect; a spin hitting the wall from
+        inside vs outside takes a different relaxivity weight (may be set on one
+        side only).
+        ``D`` (m²/s), ``T2`` (s), ``T1`` (s) — per-compartment bulk properties (a
+        per-step effect: the walker's step uses its compartment's D, and its
+        log-weight that compartment's 1/T2 · χ + 1/T1 · (1−χ)); if given, a value
+        is required for BOTH sides. T1 only acts during longitudinal storage
+        (χ=0, e.g. a PGSTE mixing time). Unequal ``D`` across a permeable wall is
+        rejected (diffusivity-discontinuity interface).
     orientation : (3,) array-like, optional
         Direction, in the scanner frame (B0 = +z), along which the mesh's native
         +z axis (e.g. a periodic / fibre axis) is placed in the bore.  Applied as
@@ -201,14 +207,13 @@ class Mesh(Geometry):
         # reflect_with_log_weight / permeate.  Bulk diffusivity and T2 remain single
         # (set on simulate()); per-compartment D/T2 is a later layer.
         intra = dict(intra or {}); extra = dict(extra or {})
-        _allowed = {"surface_relaxivity_t2", "D", "T2"}
+        _allowed = {"surface_relaxivity_t2", "D", "T2", "T1"}
         for _side, _d in (("intra", intra), ("extra", extra)):
             _bad = set(_d) - _allowed
             if _bad:
                 raise NotImplementedError(
                     f"Mesh {_side}={sorted(_bad)}: supported per-compartment properties are "
-                    f"{sorted(_allowed)}. (T1 is not applied in the forward walk; per-compartment "
-                    f"T1 is out of scope.)")
+                    f"{sorted(_allowed)}.")
         rho_i = intra.get("surface_relaxivity_t2", surface_relaxivity_t2)
         rho_e = extra.get("surface_relaxivity_t2", surface_relaxivity_t2)
         rho_i = float(rho_i) if rho_i is not None else 0.0
@@ -232,9 +237,11 @@ class Mesh(Geometry):
         self._kappa_mult_out = jnp.float32(k_out / k_nom if k_nom > 0 else 1.0)
         self._kappa_mult_in = jnp.float32(k_in / k_nom if k_nom > 0 else 1.0)
 
-        # ---- per-compartment BULK diffusivity / T2 (a per-step effect) ----
+        # ---- per-compartment BULK diffusivity / T2 / T1 (per-step effects) ----
         # index convention: 0 = intra, 1 = extra (matches classify_position).
-        def _pair(key, unit):
+        # T2 acts while transverse; T1 acts only during longitudinal storage — both
+        # are gated by the waveform's coherence flag chi_t in make_step_fn.
+        def _pair(key):
             vi, ve = intra.get(key), extra.get(key)
             if vi is None and ve is None:
                 return None
@@ -242,8 +249,9 @@ class Mesh(Geometry):
                 raise ValueError(f"per-compartment '{key}' needs a value for BOTH intra and "
                                  f"extra (got intra={vi}, extra={ve}).")
             return (float(vi), float(ve))
-        D_pair = _pair("D", "m^2/s")
-        T2_pair = _pair("T2", "s")
+        D_pair = _pair("D")
+        T2_pair = _pair("T2")
+        T1_pair = _pair("T1")
         if D_pair is not None and self.permeability is not None and D_pair[0] != D_pair[1]:
             raise NotImplementedError(
                 "per-compartment D across a PERMEABLE wall is unequal-D at an interface "
@@ -251,10 +259,13 @@ class Mesh(Geometry):
                 "permeability, or an impermeable wall for distinct intra/extra D.")
         self._D_comp = D_pair
         self._T2_comp = T2_pair
-        self._has_bulk_comp = (D_pair is not None) or (T2_pair is not None)
+        self._T1_comp = T1_pair
+        self._has_bulk_comp = any(p is not None for p in (D_pair, T2_pair, T1_pair))
         self._D_comp_jax = jnp.asarray(D_pair, jnp.float32) if D_pair is not None else None
         self._inv_T2_comp_jax = (jnp.asarray([1.0 / T2_pair[0], 1.0 / T2_pair[1]], jnp.float32)
                                  if T2_pair is not None else None)
+        self._inv_T1_comp_jax = (jnp.asarray([1.0 / T1_pair[0], 1.0 / T1_pair[1]], jnp.float32)
+                                 if T1_pair is not None else None)
         self._D_comp_max = max(D_pair) if D_pair is not None else None
 
         # ---- placement in the scanner frame (B0 = +z convention) ----

@@ -62,9 +62,22 @@ class Waveform:
         Time-step indices of the successive echoes for a multi-echo train (e.g.
         CPMG). None → single echo at ``echo_idx``. :func:`dmipy_sim.simulate_cpmg`
         samples the signal at each of these indices from a single walk.
-
-    Magnetisation is treated as fully transverse throughout (ideal
-    instantaneous pulses), so there is no χ_⊥ schedule or longitudinal storage.
+    chi_perp : np.ndarray, optional
+        Per-time-point transverse-coherence mask of shape ``(n_t,)`` (bool or
+        float in {0, 1}).  ``1`` marks intervals where the magnetisation is
+        transverse (T2 decay and surface relaxivity act); ``0`` marks intervals
+        where it is stored longitudinally (only T1 acts, no T2 loss, no surface-
+        relaxivity loss).  Under the scoped constraints (ideal, instantaneous,
+        perfect 90°/180° pulses) this is a simple binary schedule.
+        None → all-transverse (a spin echo, χ_⊥ ≡ 1 for the whole waveform).
+    TM : float, optional
+        Mixing time in seconds — the duration of the longitudinal-storage
+        interval (the ``chi_perp == 0`` block of a stimulated echo).  None for
+        sequences with no storage interval.
+    stimulated_echo : bool
+        True for a stimulated-echo readout: the stimulated echo stores half the
+        magnetisation, an idealized 0.5 amplitude factor applied to the signal.
+        Default False (spin echo, full amplitude).
     """
     G: jnp.ndarray
     dt: float
@@ -72,6 +85,9 @@ class Waveform:
     rf_events: list = None   # [{'t_s': float, 'label': str, 'flip_deg': int}, ...]
     G_display: np.ndarray = None
     echo_indices: np.ndarray = None
+    chi_perp: np.ndarray = None
+    TM: float = None
+    stimulated_echo: bool = False
 
 
 def pgse(delta, DELTA, G_magnitude, bvecs, n_t,
@@ -145,6 +161,105 @@ def pgse(delta, DELTA, G_magnitude, bvecs, n_t,
                     echo_idx=n_t - 1,
                     rf_events=rf_events,
                     G_display=G_disp)
+
+
+def pgste(delta, TM, G_magnitude, bvecs, n_t, slew_rate=DEFAULT_SLEW_RATE):
+    """Build a PGSTE (pulsed-gradient stimulated echo) waveform.
+
+    Structure over the total duration ``2*delta + TM``::
+
+        [0,            delta)          : +G  — dephasing gradient lobe (transverse)
+        [delta,        delta+TM)       : 0   — mixing time TM (longitudinal storage)
+        [delta+TM,     2*delta+TM)     : -G  — rephasing gradient lobe (transverse)
+
+    During the mixing time the magnetisation is stored along the longitudinal
+    axis: the gradient is off, no transverse (T2) or surface-relaxivity loss
+    accrues, and only T1 acts.  This is encoded by the binary transverse-
+    coherence mask ``chi_perp = [ones | zeros(TM) | ones]`` carried on the
+    returned :class:`Waveform` (see its ``chi_perp`` attribute) and consumed by
+    :func:`dmipy_sim.simulate`.  The walkers keep diffusing throughout, so the
+    effective diffusion time spans the two lobes and the mixing time.
+
+    The stimulated echo stores half the magnetisation, an idealized 0.5
+    amplitude factor; the returned waveform sets ``stimulated_echo=True`` so that
+    :func:`dmipy_sim.simulate` scales the signal by 0.5.
+
+    Slew-limited (realizable, trapezoidal lobes) by default; pass
+    ``slew_rate=np.inf`` for the idealized instantaneous (square) limit
+    (``None`` is rejected).  Pulses are treated as ideal and instantaneous
+    (no flip-angle / RF-shape parameters).  b is set later via :func:`set_b`.
+
+    Parameters
+    ----------
+    delta : float
+        Duration of each gradient lobe in seconds.
+    TM : float
+        Mixing time in seconds (duration of longitudinal storage).
+    G_magnitude : float or array of shape (n_measurements,)
+        Gradient amplitude in T/m.  Use set_b() to scale to target b-values.
+    bvecs : array of shape (n_measurements, 3)
+        Unit gradient direction vectors.
+    n_t : int
+        Number of time points.  Total duration = 2*delta + TM.
+    slew_rate : float
+        Maximum slew rate in T/m/s, or np.inf for square lobes.
+
+    Returns
+    -------
+    Waveform
+        With ``chi_perp`` set (binary transverse/longitudinal mask), ``TM=TM``
+        and ``stimulated_echo=True``.
+    """
+    bvecs = np.asarray(bvecs, dtype=np.float32)
+    n_measurements = bvecs.shape[0]
+    G_mag = np.broadcast_to(np.asarray(G_magnitude, dtype=np.float32),
+                            (n_measurements,))
+
+    T_total = 2.0 * delta + TM
+    dt = T_total / (n_t - 1)
+
+    # Integer-based indexing (as in pgse) to avoid floating-point boundary drift.
+    n_pulse = max(1, round(delta / dt))
+    n_TM = round(TM / dt)
+    i_recall = n_pulse + n_TM                    # start of the second (rephasing) lobe
+
+    _, square = _resolve_slew(slew_rate)
+    G_peak = float(np.max(np.abs(G_mag)))
+    n_rise = _lobe_n_rise(square, G_peak, slew_rate, dt, n_pulse)
+
+    # Bipolar convention: the second lobe is -G so the phase integral refocuses
+    # at the echo without explicitly modelling the pulses.  G_display uses the
+    # same-sign second lobe (physical scanner convention).
+    G_grad = np.zeros((n_measurements, n_t, 3), dtype=np.float32)
+    G_disp = np.zeros((n_measurements, n_t, 3), dtype=np.float32)
+    for m in range(n_measurements):
+        gpos = G_mag[m] * bvecs[m]
+        _fill_lobe(G_grad, m, 0, n_pulse, gpos, n_rise)
+        _fill_lobe(G_grad, m, i_recall, min(n_pulse, n_t - i_recall), -gpos, n_rise)
+        _fill_lobe(G_disp, m, 0, n_pulse, gpos, n_rise)
+        _fill_lobe(G_disp, m, i_recall, min(n_pulse, n_t - i_recall), gpos, n_rise)
+
+    # Binary transverse-coherence mask: transverse during the two lobes,
+    # longitudinal (stored) during the mixing time.
+    chi_perp = np.ones(n_t, dtype=bool)
+    chi_perp[n_pulse:i_recall] = False
+
+    # Ideal instantaneous pulse markers (visualisation only): 90° excitation,
+    # 90° store (into z) at the end of the first lobe, 90° recall (back to
+    # transverse) at the start of the second lobe.
+    rf_events = [
+        {'t_s': 0.0,               'label': 'Mz→Mxy',  'flip_deg': 90},
+        {'t_s': n_pulse * dt,      'label': 'store',    'flip_deg': 90},
+        {'t_s': i_recall * dt,     'label': 'recall',   'flip_deg': 90},
+    ]
+
+    return Waveform(G=jnp.array(G_grad), dt=float(dt),
+                    echo_idx=n_t - 1,
+                    rf_events=rf_events,
+                    G_display=G_disp,
+                    chi_perp=chi_perp,
+                    TM=float(TM),
+                    stimulated_echo=True)
 
 
 def ogse(frequency, T_total, G_magnitude, bvecs, n_t, kind='cosine'):
@@ -651,7 +766,10 @@ def set_b(waveform, b_target):
                     dt=waveform.dt,
                     echo_idx=waveform.echo_idx,
                     rf_events=waveform.rf_events,
-                    G_display=G_disp)
+                    G_display=G_disp,
+                    chi_perp=waveform.chi_perp,
+                    TM=waveform.TM,
+                    stimulated_echo=waveform.stimulated_echo)
 
 
 def rotate_waveform(waveform, R=None, *, theta=None):
@@ -694,7 +812,10 @@ def rotate_waveform(waveform, R=None, *, theta=None):
     return Waveform(G=jnp.array(G_rot, dtype=jnp.float32),
                     dt=waveform.dt,
                     echo_idx=waveform.echo_idx,
-                    rf_events=waveform.rf_events)
+                    rf_events=waveform.rf_events,
+                    chi_perp=waveform.chi_perp,
+                    TM=waveform.TM,
+                    stimulated_echo=waveform.stimulated_echo)
 
 
 def tile_waveform(waveform, n_copies):
@@ -721,7 +842,10 @@ def tile_waveform(waveform, n_copies):
     return Waveform(G=jnp.array(G_tiled, dtype=jnp.float32),
                     dt=waveform.dt,
                     echo_idx=waveform.echo_idx,
-                    rf_events=waveform.rf_events)
+                    rf_events=waveform.rf_events,
+                    chi_perp=waveform.chi_perp,
+                    TM=waveform.TM,
+                    stimulated_echo=waveform.stimulated_echo)
 
 
 def cpmg(n_echoes, TE, G_magnitude, bvecs, n_t_per_echo=100):

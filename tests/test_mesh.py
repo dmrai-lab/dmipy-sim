@@ -122,7 +122,7 @@ def test_compartment_property_parsing():
 def test_compartment_unsupported_key_raises():
     V, F = _icosphere(2)
     with pytest.raises(NotImplementedError):
-        Mesh(V, F, intra={"T1": 1.0})               # T1 is not applied in the forward walk
+        Mesh(V, F, intra={"kurtosis": 1.0})         # not a supported per-compartment property
 
 
 def test_compartment_bulk_parsing():
