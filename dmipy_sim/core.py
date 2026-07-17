@@ -30,6 +30,8 @@ def simulate(
     return_compartments=False,
     return_walker_signals: bool = False,
     r0=None,
+    mt_transverse_rate: float = None,
+    mt_longitudinal_rate: float = None,
     walker_batch_size: int = None,
     require_gpu=None,
     _allow_oom_backoff: bool = True,
@@ -153,6 +155,8 @@ def simulate(
                     return_positions=return_positions,
                     return_compartments=return_compartments,
                     return_walker_signals=return_walker_signals, r0=r0,
+                    mt_transverse_rate=mt_transverse_rate,
+                    mt_longitudinal_rate=mt_longitudinal_rate,
                     walker_batch_size=bs, require_gpu=require_gpu,
                     _allow_oom_backoff=False)
             except (XlaRuntimeError, RuntimeError) as exc:
@@ -175,6 +179,8 @@ def simulate(
             n_walkers, walker_batch_size, seed=seed,
             diffusivity=diffusivity, waveform=waveform, geometry=geometry,
             T2=T2, T1=T1, r0=r0,
+            mt_transverse_rate=mt_transverse_rate,
+            mt_longitudinal_rate=mt_longitudinal_rate,
             return_positions=return_positions,
             return_compartments=return_compartments,
             return_walker_signals=return_walker_signals)
@@ -365,7 +371,9 @@ def simulate(
         # Standard geometry path
         # Build scan body for this geometry and diffusivity
         # T2/T1 are passed in so they are accumulated per-walker inside the scan
-        step_fn, has_weight = make_step_fn(geometry, diffusivity, dt, T2=T2, T1=T1)
+        step_fn, has_weight = make_step_fn(geometry, diffusivity, dt, T2=T2, T1=T1,
+                                           mt_transverse_rate=mt_transverse_rate,
+                                           mt_longitudinal_rate=mt_longitudinal_rate)
         spin_w = jnp.ones((n_walkers,), dtype=jnp.float32)
 
         if want_pos_full:
@@ -551,7 +559,8 @@ def simulate(
 def _simulate_in_walker_batches(n_walkers, walker_batch_size, *, seed,
                                 diffusivity, waveform, geometry, T2, T1, r0,
                                 return_positions, return_compartments,
-                                return_walker_signals):
+                                return_walker_signals,
+                                mt_transverse_rate=None, mt_longitudinal_rate=None):
     """Run simulate() over walker chunks and recombine (see simulate's
     ``walker_batch_size``).  The signal is a plain walker-mean, so it recombines
     as a size-weighted mean; per-walker outputs (positions, compartments, walker
@@ -572,6 +581,8 @@ def _simulate_in_walker_batches(n_walkers, walker_batch_size, *, seed,
             n_walkers=nb, diffusivity=diffusivity, waveform=waveform,
             geometry=geometry, seed=seed + 1 + b, T2=T2, T1=T1,
             r0=(None if r0 is None else r0[start:end]),
+            mt_transverse_rate=mt_transverse_rate,
+            mt_longitudinal_rate=mt_longitudinal_rate,
             return_positions=return_positions,
             return_compartments=return_compartments,
             return_walker_signals=return_walker_signals,

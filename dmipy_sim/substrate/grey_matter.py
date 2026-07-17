@@ -85,6 +85,11 @@ class GreyMatterSubstrate:
     # diffuse).  None -> 1.0 = the mass-conservation upper bound (all iron clustered).
     iron_clustered_fraction: float = None
 
+    # -- magnetization transfer (quantitative-MT two-pool; 0 -> no MT) --
+    mt_bound_fraction: float = 0.0     # f = M0b/(M0a+M0b), macromolecular pool fraction
+    mt_exchange_rate: float = 0.0      # fundamental R (1/s); k_f = R·f, k_r = R·(1-f)
+    mt_r1_bound: float = 1.0           # bound-pool R1b (1/s), fixed convention
+
     # -- scale --
     field_T: float = 3.0
 
@@ -137,6 +142,9 @@ class GreyMatterSubstrate:
             iron_concentration=c['iron_concentration'],
             chi_per_iron=c['chi_per_iron'],
             iron_clustered_fraction=clustered,
+            mt_bound_fraction=c['mt_bound_fraction'],
+            mt_exchange_rate=c['mt_exchange_rate'],
+            mt_r1_bound=c['mt_r1_bound'],
             field_T=field_T,
         )
         kw.update(overrides)
@@ -165,6 +173,43 @@ class GreyMatterSubstrate:
         The MC walk additionally applies motional narrowing, so the simulated
         attenuation is at or below this static value."""
         return _YABLONSKIY_STATIC_K * GAMMA * self.field_T * self.delta_chi_effective
+
+    # ── derived magnetization transfer (two-rate reduction) ────────────────────
+    @property
+    def mt_transverse_rate(self) -> float:
+        """Transverse MT rate R2_MT = k_f = R·f (free→bound sink) [1/s].
+
+        In the fast-dephasing-bound-pool limit (T2b ~ 10 µs) any magnetization that
+        exchanges into the bound pool is lost, so the free-pool transverse relaxation
+        gains exactly k_f.  Gated by chi_t — a stimulated echo pauses it during T_M."""
+        return self.mt_exchange_rate * self.mt_bound_fraction
+
+    def mt_longitudinal_rate(self, T_M: float) -> float:
+        """Effective longitudinal MT rate over a stimulated-echo mixing time T_M [1/s].
+
+        Solves the 2×2 longitudinal Bloch–McConnell system for the decay of the STORED
+        free-pool magnetization (bound pool at equilibrium) and returns the extra rate
+        above the free-pool R1 that reproduces that decay over T_M.  Strongly reduced
+        below k_f by back-exchange (k_r ≫ R1b): almost everything that enters the bound
+        pool returns.  This is the ``mt_longitudinal_rate`` to pass to ``simulate``;
+        the full two-pool model (a bound-pool carry) is the future upgrade of this
+        single-effective-rate reduction.  Returns 0 when no MT.
+        """
+        f, R = self.mt_bound_fraction, self.mt_exchange_rate
+        kf = R * f
+        if kf <= 0.0 or T_M <= 0.0:
+            return 0.0
+        kr = R * (1.0 - f)
+        R1a = 1.0 / self.T1
+        R1b = self.mt_r1_bound
+        m11, m22 = -(R1a + kf), -(R1b + kr)       # M = [[m11, kr], [kf, m22]]
+        tr = m11 + m22
+        disc = math.sqrt((m11 - m22) ** 2 + 4.0 * kf * kr)
+        lp, lm = 0.5 * (tr + disc), 0.5 * (tr - disc)
+        # stored free-pool fraction δa(T_M) = [expm(M·T_M)]_00 for initial [1, 0]
+        da = (math.exp(lp * T_M) * (m11 - lm)
+              - math.exp(lm * T_M) * (m11 - lp)) / (lp - lm)
+        return -math.log(da) / T_M - R1a          # extra rate above R1a
 
     # ── derived soma geometry ─────────────────────────────────────────────────
     @property

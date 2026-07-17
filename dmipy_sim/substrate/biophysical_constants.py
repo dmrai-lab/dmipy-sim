@@ -1115,6 +1115,110 @@ BIOPHYSICAL_CONSTANTS = {
                 'GM. Yablonskiy & Haacke 1994 (10.1002/mrm.1910320610) give the '
                 'static-dephasing theory linking Δχ·volume-fraction to R2′.',
     },
+
+    # ── Magnetization transfer (quantitative-MT two-pool) ──────────────────────
+    # The incidental MT of a diffusion sequence (no MT-prep pulses) reduces to two
+    # gated rates: R2_MT = k_f (free->bound, transverse sink; gated by chi_t) and an
+    # effective longitudinal cross-relaxation rate during storage (gated by 1-chi_t),
+    # both derived from these qMT constants (k_f = R·f, k_r = R·(1-f)).
+    'gm_mt_bound_fraction': {
+        'default': {
+            'value': 0.05, 'unit': 'dimensionless (M0b/(M0a+M0b))', 'field_T': 3.0,
+            'species': 'bovine (ex-vivo)',
+            'method': 'quantitative-MT two-pool fit (3T, 37°C)',
+            'source_key': 'stanisz2005',
+            'location': 'Table 2, GM row, M0B = 5.0%.',
+        },
+        'alternatives': [
+            {
+                'value': 0.067, 'unit': 'dimensionless (MPF)', 'field_T': 3.0,
+                'species': 'human', 'method': 'macromolecular proton fraction mapping',
+                'source_key': 'yarnykh2016',
+                'location': 'Human 3T whole-brain GM MPF = 6.7% (WM 12.8%).',
+            },
+        ],
+        'citation': {
+            'key': 'stanisz2005',
+            'authors': 'Stanisz GJ, Odrobina EE, Pun J, Escaravage M, Graham SJ, '
+                       'Bronskill MJ',
+            'title': 'T1, T2 relaxation and magnetization transfer in tissue at 3T',
+            'journal': 'Magnetic Resonance in Medicine', 'year': 2005,
+            'doi': '10.1002/mrm.20605',
+        },
+        'description': 'Bound (macromolecular) proton pool fraction of grey matter.',
+        'note': 'Stanisz is ex-vivo bovine; in-vivo human MPF is ~6-7% (Yarnykh). The '
+                'robust cross-convention quantity is k_f = R·f ~ 1-2 /s.',
+    },
+    'gm_mt_exchange_rate': {
+        'default': {
+            'value': 40.0, 'unit': '1/s (fundamental R; k_f=R·f, k_r=R·(1-f))',
+            'field_T': 3.0, 'species': 'bovine (ex-vivo)',
+            'method': 'quantitative-MT two-pool fit',
+            'source_key': 'stanisz2005',
+            'location': 'Table 2, GM row, R = 40 s⁻¹ (WM 23 s⁻¹).',
+        },
+        'alternatives': [
+            {
+                'value': 19.0, 'unit': '1/s (fundamental R)', 'field_T': 3.0,
+                'species': 'human', 'method': 'single-point MPF reconstruction',
+                'source_key': 'yarnykh2016',
+                'location': 'R fixed at 19 s⁻¹ (model-dependent normalisation).',
+            },
+        ],
+        'citation': {
+            'key': 'stanisz2005',
+            'authors': 'Stanisz GJ, Odrobina EE, Pun J, Escaravage M, Graham SJ, '
+                       'Bronskill MJ',
+            'title': 'T1, T2 relaxation and magnetization transfer in tissue at 3T',
+            'journal': 'Magnetic Resonance in Medicine', 'year': 2005,
+            'doi': '10.1002/mrm.20605',
+        },
+        'description': 'Fundamental two-pool exchange rate constant R for grey matter; '
+                       'k_f = R·f (free->bound) ~2 /s, k_r = R·(1-f) ~38 /s.',
+        'note': 'R is model-dependent (Yarnykh fixes 19); the convention-robust quantity '
+                'is k_f = R·f. Transverse MT rate R2_MT = k_f.',
+    },
+    'gm_mt_T2_bound': {
+        'default': {
+            'value': 9.1e-6, 'unit': 's', 'field_T': 3.0, 'species': 'bovine (ex-vivo)',
+            'method': 'quantitative-MT two-pool fit',
+            'source_key': 'stanisz2005',
+            'location': 'Table 2, GM row, T2B = 9.1 µs (WM 10.0 µs).',
+        },
+        'alternatives': [],
+        'citation': {
+            'key': 'stanisz2005',
+            'authors': 'Stanisz GJ, Odrobina EE, Pun J, Escaravage M, Graham SJ, '
+                       'Bronskill MJ',
+            'title': 'T1, T2 relaxation and magnetization transfer in tissue at 3T',
+            'journal': 'Magnetic Resonance in Medicine', 'year': 2005,
+            'doi': '10.1002/mrm.20605',
+        },
+        'description': 'Bound-pool transverse relaxation time (~10 µs) — so short that any '
+                       'magnetization exchanging into the bound pool is a transverse sink.',
+        'note': 'Sets the fast-dephasing-sink limit: R2_MT = k_f exactly.',
+    },
+    'gm_mt_r1_bound': {
+        'default': {
+            'value': 1.0, 'unit': '1/s', 'field_T': None, 'species': 'convention',
+            'method': 'fixed convention (not a GM measurement)',
+            'source_key': 'henkelman1993',
+            'location': 'Bound-pool R1b conventionally fixed to ~1 s⁻¹.',
+        },
+        'alternatives': [],
+        'citation': {
+            'key': 'henkelman1993',
+            'authors': 'Henkelman RM, Huang X, Xiang QS, Stanisz GJ, Swanson SD, '
+                       'Bronskill MJ',
+            'title': 'Quantitative interpretation of magnetization transfer',
+            'journal': 'Magnetic Resonance in Medicine', 'year': 1993,
+            'doi': '10.1002/mrm.1910290607',
+        },
+        'description': 'Bound-pool longitudinal relaxation rate.',
+        'note': 'FLAGGED NEEDS VERIFICATION: a fixed convention, not a GM measurement; '
+                'results are insensitive to it because k_r (~38/s) >> R1b. It sets the '
+                'back-exchange reduction of the longitudinal MT loss.',
+    },
 }
 
 
@@ -1262,4 +1366,8 @@ def canonical_grey_matter(field_T=3.0):
         # susceptibility (iron)
         'iron_concentration': get_value('gm_iron_concentration'),
         'chi_per_iron': get_value('gm_chi_per_iron'),
+        # magnetization transfer (quantitative-MT two-pool)
+        'mt_bound_fraction': get_value('gm_mt_bound_fraction', field_T, allow_nearest=True),
+        'mt_exchange_rate': get_value('gm_mt_exchange_rate', field_T, allow_nearest=True),
+        'mt_r1_bound': get_value('gm_mt_r1_bound'),
     }

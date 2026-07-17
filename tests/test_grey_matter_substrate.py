@@ -88,3 +88,26 @@ def test_uncalibrated_is_mass_conservation_upper_bound():
     gm = GreyMatterSubstrate.canonical(field_T=3.0, calibrate_r2prime=False)
     assert gm.iron_clustered_fraction is None
     assert gm.delta_chi_effective == pytest.approx(gm.delta_chi_tissue)
+
+
+def test_mt_transverse_rate_is_kf():
+    gm = GreyMatterSubstrate.canonical(field_T=3.0)
+    assert gm.mt_transverse_rate == pytest.approx(gm.mt_exchange_rate * gm.mt_bound_fraction)
+    # cited GM: R=40, f=0.05 -> k_f = 2.0/s
+    assert gm.mt_transverse_rate == pytest.approx(2.0, rel=1e-6)
+
+
+def test_mt_longitudinal_rate_reduced_by_back_exchange():
+    # k_r >> R1b, so the stored-magnetization loss is far below the naive k_f
+    gm = GreyMatterSubstrate.canonical(field_T=3.0, T1=1.820)   # Stanisz cross-check
+    kf = gm.mt_transverse_rate
+    r1_mt = gm.mt_longitudinal_rate(0.035)
+    assert 0.0 < r1_mt < kf                       # reduced below k_f
+    # research: ~3.8% loss over T_M=35 ms
+    assert 1.0 - np.exp(-r1_mt * 0.035) == pytest.approx(0.038, abs=0.005)
+
+
+def test_mt_longitudinal_zero_without_mt():
+    gm = GreyMatterSubstrate.canonical(field_T=3.0, mt_bound_fraction=0.0)
+    assert gm.mt_transverse_rate == 0.0
+    assert gm.mt_longitudinal_rate(0.035) == 0.0
