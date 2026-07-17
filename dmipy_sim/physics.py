@@ -98,8 +98,7 @@ def surface_sub_steps(geometry, diffusivity: float, dt: float, frac: float = 8.0
 
 
 def make_step_fn(geometry, diffusivity: float, dt: float, T2: float = None,
-                 T1: float = None, mt_transverse_rate: float = None,
-                 mt_longitudinal_rate: float = None):
+                 T1: float = None):
     """Return (step_fn, has_weight) for one simulation timestep.
 
     Each step consumes ``(g_t, chi_t)``: the gradient sample and a binary
@@ -154,24 +153,10 @@ def make_step_fn(geometry, diffusivity: float, dt: float, T2: float = None,
                   if any(a is not None for a in (_D_arr, _invT2_arr, _invT1_arr)) else None)
     _D0 = diffusivity if diffusivity is not None else getattr(geometry, '_D_comp_max', None)
 
-    # Magnetization transfer (two-rate model) — bulk tissue channels folded into the
-    # gated relaxation decrements: the transverse MT rate (bound-pool exchange sink,
-    # R2_MT ≈ k_f) accrues only while transverse (gated by chi_t, like every transverse
-    # channel), and the longitudinal MT rate (cross-relaxation during storage, R1_MT)
-    # accrues only while stored (gated by 1-chi_t, like T1) — so PGSTE pauses the
-    # transverse MT during T_M but still pays the longitudinal MT.  For a diffusion
-    # sequence with no MT-saturation pulses this two-rate form is the exact reduction of
-    # the two-pool Bloch-McConnell model; a future two-pool model replaces these scalar
-    # rates with an explicit bound-pool carry (see _t1_decrement hook).
-    _r2_mt = jnp.float32(mt_transverse_rate)   if mt_transverse_rate   else jnp.float32(0.0)
-    _r1_mt = jnp.float32(mt_longitudinal_rate) if mt_longitudinal_rate else jnp.float32(0.0)
-    has_mt_t = bool(mt_transverse_rate)
-    has_mt_l = bool(mt_longitudinal_rate)
-
     has_surf = getattr(geometry, 'surface_relaxivity_t2', None) is not None
     has_perm = getattr(geometry, 'permeability',          None) is not None
-    has_t2   = (T2 is not None) or (_invT2_arr is not None) or has_mt_t  # transverse decrement
-    has_t1   = (T1 is not None) or (_invT1_arr is not None) or has_mt_l  # longitudinal decrement
+    has_t2   = (T2 is not None) or (_invT2_arr is not None)   # per-compartment T2 also needs log_w
+    has_t1   = (T1 is not None) or (_invT1_arr is not None)   # per-compartment T1 also needs log_w
     has_weight = has_surf or has_perm or has_t2 or has_t1
 
     _inv_T2 = jnp.float32(1.0 / T2) if T2 is not None else jnp.float32(0.0)
@@ -202,19 +187,18 @@ def make_step_fn(geometry, diffusivity: float, dt: float, T2: float = None,
         return jnp.sqrt(6.0 * _D0 * dt_local)
 
     def _t2_decrement(r, dt_local):
-        """Transverse log-weight decrement for a step ending at r (per-compartment T2 if
-        present) PLUS the bulk transverse MT rate.  The caller gates this by chi_t (only
-        accrues while transverse)."""
-        base = _invT2_arr[_classify(r)] if _invT2_arr is not None else _inv_T2
-        return dt_local * (base + _r2_mt)
+        """T2 log-weight decrement for a step ending at r (per-compartment if present).
+        The caller gates this by chi_t (only accrues while transverse)."""
+        if _invT2_arr is not None:
+            return dt_local * _invT2_arr[_classify(r)]
+        return dt_local * _inv_T2
 
     def _t1_decrement(r, dt_local):
-        """Longitudinal log-weight decrement for a step ending at r (per-compartment T1 if
-        present) PLUS the bulk longitudinal MT rate (cross-relaxation during storage).  The
-        caller gates this by (1 - chi_t) (only accrues during longitudinal storage).
-        Two-pool hook: replace ``_r1_mt`` here with an explicit bound-pool carry."""
-        base = _invT1_arr[_classify(r)] if _invT1_arr is not None else _inv_T1
-        return dt_local * (base + _r1_mt)
+        """T1 log-weight decrement for a step ending at r (per-compartment if present).
+        The caller gates this by (1 - chi_t) (only accrues during longitudinal storage)."""
+        if _invT1_arr is not None:
+            return dt_local * _invT1_arr[_classify(r)]
+        return dt_local * _inv_T1
 
     if has_perm:
         # D is single when permeable (unequal-D across a permeable wall is rejected
