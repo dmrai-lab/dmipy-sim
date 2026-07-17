@@ -162,6 +162,24 @@ def make_step_fn(geometry, diffusivity: float, dt: float, T2: float = None,
     _inv_T2 = jnp.float32(1.0 / T2) if T2 is not None else jnp.float32(0.0)
     _inv_T1 = jnp.float32(1.0 / T1) if T1 is not None else jnp.float32(0.0)
 
+    # Off-resonance (susceptibility) field carried by the substrate — a first-class
+    # transverse phase channel, co-equal with surface relaxivity / permeability.  When
+    # present it adds γ·ΔBz(r)·dt to the phase each step, gated by susc_sign_t = s(t)·chi_t
+    # (the third scan input): the sequence echo sign s(t) refocuses the static part and
+    # chi_t pauses it during longitudinal storage.  None -> the term compiles away.
+    _off = getattr(geometry, 'off_resonance', None)
+    _delta_bz = (_off.delta_bz_fn() if (_off is not None and hasattr(_off, 'delta_bz_fn'))
+                 else _off)
+    has_susc = _delta_bz is not None
+
+    def _phase(g_t, r_new, susc_sign_t, gdt):
+        """Gradient phase + optional static off-resonance phase for a step with γ·dt=gdt.
+        The off-resonance term is a scalar broadcast over all measurements."""
+        dphi = gdt * jnp.dot(g_t, r_new)
+        if has_susc:
+            dphi = dphi + susc_sign_t * gdt * _delta_bz(r_new)
+        return dphi
+
     def _step_l(r, dt_local):
         """Step length at r over dt_local — per-compartment D if present, else single."""
         if _D_arr is not None:
@@ -200,7 +218,7 @@ def make_step_fn(geometry, diffusivity: float, dt: float, T2: float = None,
         dt_sub_f32   = jnp.float32(dt_sub)
 
         def step_fn(carry, inputs):
-            g_t, chi_t = inputs
+            g_t, chi_t, susc_sign_t = inputs
 
             def _sub(c, _):
                 r, phi, log_weight, key = c
@@ -219,7 +237,7 @@ def make_step_fn(geometry, diffusivity: float, dt: float, T2: float = None,
                 if has_t1:
                     dlog_w = dlog_w - _t1_decrement(r_new, dt_sub_f32) * (jnp.float32(1.0) - chi_t)
 
-                phi_new = phi + gamma_dt_sub * jnp.dot(g_t, r_new)
+                phi_new = phi + _phase(g_t, r_new, susc_sign_t, gamma_dt_sub)
                 return (r_new, phi_new, log_weight + dlog_w, key), None
 
             carry_out, _ = jax.lax.scan(_sub, carry, None, length=n_sub)
@@ -244,7 +262,7 @@ def make_step_fn(geometry, diffusivity: float, dt: float, T2: float = None,
         dt_sub_f32   = jnp.float32(dt_sub)
 
         def step_fn(carry, inputs):
-            g_t, chi_t = inputs
+            g_t, chi_t, susc_sign_t = inputs
 
             def _sub(c, _):
                 r, phi, log_weight, key = c
@@ -260,7 +278,7 @@ def make_step_fn(geometry, diffusivity: float, dt: float, T2: float = None,
                     dlog_w = dlog_w - _t2_decrement(r_new, dt_sub_f32) * chi_t
                 if has_t1:
                     dlog_w = dlog_w - _t1_decrement(r_new, dt_sub_f32) * (jnp.float32(1.0) - chi_t)
-                phi_new = phi + gamma_dt_sub * jnp.dot(g_t, r_new)
+                phi_new = phi + _phase(g_t, r_new, susc_sign_t, gamma_dt_sub)
                 return (r_new, phi_new, log_weight + dlog_w, key), None
 
             carry_out, _ = jax.lax.scan(_sub, carry, None, length=n_sub)
@@ -272,7 +290,7 @@ def make_step_fn(geometry, diffusivity: float, dt: float, T2: float = None,
         reflect = geometry.reflect
 
         def step_fn(carry, inputs):
-            g_t, chi_t = inputs
+            g_t, chi_t, susc_sign_t = inputs
             r, phi, log_weight, key = carry
 
             key, subkey = jax.random.split(key)
@@ -287,8 +305,7 @@ def make_step_fn(geometry, diffusivity: float, dt: float, T2: float = None,
                 dlog_w = dlog_w - _t2_decrement(r_new, dt_f32) * chi_t
             if has_t1:
                 dlog_w = dlog_w - _t1_decrement(r_new, dt_f32) * (jnp.float32(1.0) - chi_t)
-            dphi    = gamma_dt * jnp.dot(g_t, r_new)
-            phi_new = phi + dphi
+            phi_new = phi + _phase(g_t, r_new, susc_sign_t, gamma_dt)
 
             return (r_new, phi_new, log_weight + dlog_w, key), None
 
@@ -298,7 +315,7 @@ def make_step_fn(geometry, diffusivity: float, dt: float, T2: float = None,
         reflect = geometry.reflect
 
         def step_fn(carry, inputs):
-            g_t, _chi_t = inputs
+            g_t, _chi_t, susc_sign_t = inputs
             r, phi, key = carry
 
             key, subkey = jax.random.split(key)
@@ -308,8 +325,7 @@ def make_step_fn(geometry, diffusivity: float, dt: float, T2: float = None,
 
             r_new = reflect(r, step)
 
-            dphi    = gamma_dt * jnp.dot(g_t, r_new)
-            phi_new = phi + dphi
+            phi_new = phi + _phase(g_t, r_new, susc_sign_t, gamma_dt)
 
             return (r_new, phi_new, key), None
 
@@ -403,7 +419,7 @@ def make_myelin_step_fn(geometry, dt: float, T1: float = None):
         T2_arr = jnp.array([t2_intra, t2_myelin, t2_extra], dtype=jnp.float32)
 
     def step_fn(carry, inputs):
-        g_t, chi_t = inputs
+        g_t, chi_t = inputs[0], inputs[1]   # off-resonance (inputs[2]) not modelled for myelin
         r, phi, log_w, compartment_id, key = carry
 
         key, subkey_step, subkey_perm = jax.random.split(key, 3)
@@ -879,7 +895,7 @@ def make_packed_myelin_step_fn(geometry, dt: float, T1: float = None):
     dt_sub_f32 = jnp.float32(dt_sub)
 
     def step_fn(carry, inputs):
-        g_t, chi_t = inputs
+        g_t, chi_t = inputs[0], inputs[1]   # off-resonance (inputs[2]) not modelled for myelin
 
         def _sub(c, _):
             r_ic, r_uw, phi, log_w, cid, key = c

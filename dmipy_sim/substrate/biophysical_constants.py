@@ -783,6 +783,338 @@ BIOPHYSICAL_CONSTANTS = {
                 'the already-tortuosity-reduced number appropriate for a Zeppelin '
                 'fitted without an explicit substrate. Do not mix the two.',
     },
+
+    # ══ GREY MATTER ═════════════════════════════════════════════════════════════
+    # Cortical grey-matter substrate: packed somata in extracellular space, with the
+    # static susceptibility field of non-heme (ferritin) iron stored in glial cells.
+    # Consumed by canonical_grey_matter() / GreyMatterSubstrate.  Every value is the
+    # field's experimental choice; species/prep caveats are noted per entry.
+
+    'gm_soma_diameter': {
+        'default': {
+            'value': 20.0e-6, 'unit': 'm', 'field_T': None, 'species': 'human',
+            'method': 'SANDI diffusion-MRI apparent soma radius (Connectom 3T)',
+            'source_key': 'palombo2020',
+            'location': 'Apparent soma radius R_soma ~10±3 µm (diameter ~20 µm); '
+                        'model-effective, not histological. Corrigendum PMC8636689 '
+                        'revised the parameter maps.',
+        },
+        'alternatives': [],
+        'citation': {
+            'key': 'palombo2020',
+            'authors': 'Palombo M, Ianus A, Guerreri M, Nunes D, Alexander DC, '
+                       'Shemesh N, Zhang H',
+            'title': 'SANDI: A compartment-based model for non-invasive apparent soma '
+                     'and neurite imaging by diffusion MRI',
+            'journal': 'NeuroImage', 'year': 2020,
+            'doi': '10.1016/j.neuroimage.2020.116835',
+        },
+        'description': 'Cortical soma (cell-body) diameter — the diffusion-MRI '
+                       'apparent value; histological somata span ~10 µm (stellate) '
+                       'to 20+ µm (pyramidal).',
+        'note': 'Model-effective (SANDI) quantity, NOT a direct histological diameter. '
+                'CV of the diameter law is taken from the ±3 µm spread (gm_soma_diameter_cv).',
+    },
+    'gm_soma_diameter_cv': {
+        'default': {
+            'value': 0.30, 'unit': 'dimensionless (std/mean of diameter)',
+            'field_T': None, 'species': 'human',
+            'method': 'spread of SANDI apparent soma radius (±3 µm on ~10 µm)',
+            'source_key': 'palombo2020',
+            'location': 'R_soma ~10±3 µm -> CV ~0.3',
+        },
+        'alternatives': [],
+        'citation': {
+            'key': 'palombo2020',
+            'authors': 'Palombo M, Ianus A, Guerreri M, Nunes D, Alexander DC, '
+                       'Shemesh N, Zhang H',
+            'title': 'SANDI: A compartment-based model for non-invasive apparent soma '
+                     'and neurite imaging by diffusion MRI',
+            'journal': 'NeuroImage', 'year': 2020,
+            'doi': '10.1016/j.neuroimage.2020.116835',
+        },
+        'description': 'Coefficient of variation of the soma-diameter Gamma law.',
+        'note': 'Approximate; sets the polydispersity of the packed somata.',
+    },
+    'gm_cell_volume_fraction': {
+        'default': {
+            'value': 0.15, 'unit': 'dimensionless (soma volume fraction)',
+            'field_T': None, 'species': 'human/rodent',
+            'method': 'NEEDS VERIFICATION — textbook estimate; no clean primary EM value',
+            'source_key': 'braitenberg1998',
+            'location': 'Somata ~10-20% of cortical tissue volume; neuropil ~80-90%. '
+                        'Santuy 2018 FIB-SEM is neuropil-only (excludes somata).',
+        },
+        'alternatives': [],
+        'citation': {
+            'key': 'braitenberg1998',
+            'authors': 'Braitenberg V, Schüz A',
+            'title': 'Cortex: Statistics and Geometry of Neuronal Connectivity',
+            'journal': 'Springer', 'year': 1998,
+            'doi': '10.1007/978-3-662-03733-1',
+        },
+        'description': 'Cell-body (soma) packing fraction of cortical grey matter.',
+        'note': 'FLAGGED NEEDS VERIFICATION: no clean primary EM soma volume fraction '
+                'was found; ~10-20% is a textbook estimate. The remainder after '
+                'f_cell + f_ecs is neurite (neuropil) volume.',
+    },
+    'gm_ecs_fraction': {
+        'default': {
+            'value': 0.20, 'unit': 'dimensionless (ECS volume fraction α)',
+            'field_T': None, 'species': 'rat (applied to mammalian cortex)',
+            'method': 'real-time iontophoresis (RTI-TMA+)',
+            'source_key': 'sykova2008',
+            'location': 'Review: "…a typical value of 20%" for ECS volume fraction α.',
+        },
+        'alternatives': [],
+        'citation': {
+            'key': 'sykova2008',
+            'authors': 'Syková E, Nicholson C',
+            'title': 'Diffusion in brain extracellular space',
+            'journal': 'Physiological Reviews', 'year': 2008,
+            'doi': '10.1152/physrev.00027.2007',
+        },
+        'description': 'Extracellular-space volume fraction of in-vivo cortex (~0.2).',
+        'note': 'Mostly rat RTI-TMA+; α ranges 0.15-0.30. Applied to mammalian cortex.',
+    },
+    'gm_glia_number_fraction': {
+        'default': {
+            'value': 0.50, 'unit': 'dimensionless (glia / all somata)',
+            'field_T': None, 'species': 'human',
+            'method': 'isotropic fractionator (whole-brain neuron:glia ≈ 1:1)',
+            'source_key': 'azevedo2009',
+            'location': 'Whole brain 86.1B neurons vs 84.6B non-neuronal -> ~1:1; '
+                        'cortical GM glia:neuron < 2.',
+        },
+        'alternatives': [],
+        'citation': {
+            'key': 'azevedo2009',
+            'authors': 'Azevedo FAC, Carvalho LRB, Grinberg LT, Farfel JM, '
+                       'Ferretti REL, Leite REP, Jacob Filho W, Lent R, '
+                       'Herculano-Houzel S',
+            'title': 'Equal numbers of neuronal and nonneuronal cells make the human '
+                     'brain an isometrically scaled-up primate brain',
+            'journal': 'Journal of Comparative Neurology', 'year': 2009,
+            'doi': '10.1002/cne.21974',
+        },
+        'description': 'Fraction of cortical somata that are glia — the iron-bearing '
+                       'subpopulation onto which the susceptibility field is anchored.',
+        'note': 'Iron is stored mainly in oligodendrocytes (+ microglia/astrocytes); '
+                'this fraction sets which somata carry the perturber field.',
+    },
+    'gm_D_intra': {
+        'default': {
+            'value': 3.0e-9, 'unit': 'm^2/s', 'field_T': None, 'species': 'human',
+            'method': 'SANDI (soma diffusivity fixed to free water at 37°C)',
+            'source_key': 'palombo2020',
+            'location': 'Soma intra-cellular diffusivity set to free-water 3.0 µm²/ms.',
+        },
+        'alternatives': [
+            {
+                'value': 2.5e-9, 'unit': 'm^2/s', 'field_T': None, 'species': 'rat',
+                'method': 'NEXI neurite intrinsic diffusivity', 'source_key': 'jelescu2022',
+                'location': 'Neurite D_i ~2.2-2.5 µm²/ms (rat cortex).',
+            },
+        ],
+        'citation': {
+            'key': 'palombo2020',
+            'authors': 'Palombo M, Ianus A, Guerreri M, Nunes D, Alexander DC, '
+                       'Shemesh N, Zhang H',
+            'title': 'SANDI: A compartment-based model for non-invasive apparent soma '
+                     'and neurite imaging by diffusion MRI',
+            'journal': 'NeuroImage', 'year': 2020,
+            'doi': '10.1016/j.neuroimage.2020.116835',
+        },
+        'description': 'Intrinsic intracellular diffusivity in grey matter.',
+        'note': 'SANDI fixes soma D to free water; NEXI neurite D_i is a bit lower (~2.5).',
+    },
+    'gm_membrane_permeability': {
+        'default': {
+            'value': 1.0e-5, 'unit': 'm/s', 'field_T': None, 'species': 'human/rat',
+            'method': 'NEXI / SMEX transmembrane exchange (t_ex -> permeability)',
+            'source_key': 'jelescu2022',
+            'location': 'GM neurite exchange t_ex ~10-50 ms (human 13-42; rat 15-60), '
+                        'permeability P ~2-33 µm/s.',
+        },
+        'alternatives': [
+            {
+                'value': 2.4e-5, 'unit': 'm/s', 'field_T': None, 'species': 'human',
+                'method': 'NEXI (t_ex ~42 ms)', 'source_key': 'uhl2024',
+                'location': 'Uhl Table 3 (human cortex t_ex 42.3 ms).',
+            },
+        ],
+        'citation': {
+            'key': 'jelescu2022',
+            'authors': 'Jelescu IO, de Skowronski A, Geffroy F, Palombo M, Novikov DS',
+            'title': 'Neurite Exchange Imaging (NEXI): A minimal model of diffusion in '
+                     'grey matter with inter-compartment water exchange',
+            'journal': 'NeuroImage', 'year': 2022,
+            'doi': '10.1016/j.neuroimage.2022.119277',
+        },
+        'description': 'Transmembrane water permeability of GM neurites (NEXI regime).',
+        'note': 'Derived from the reported exchange time t_ex; soma/glia exchange is '
+                '~100x slower (τ_i ~0.5-0.75 s, Yang 2018).',
+    },
+    'gm_rho2': {
+        'default': {
+            'value': 0.0, 'unit': 'm/s', 'field_T': None, 'species': 'n/a',
+            'method': 'NO verified GM value; default off',
+            'source_key': 'barakovic2023',
+            'location': 'No transverse surface relaxivity has been measured for GM '
+                        'neuronal membranes; the WM myelinated-axon value ρ2 ~1.16 '
+                        'µm/s (Barakovic) is the only analogue and is an extrapolation.',
+        },
+        'alternatives': [
+            {
+                'value': 1.16e-6, 'unit': 'm/s', 'field_T': None, 'species': 'human (WM)',
+                'method': 'surface-based relaxation model calibrated to histology',
+                'source_key': 'barakovic2023',
+                'location': 'Results §4.1, Fig 5 (WM myelinated axons) — EXTRAPOLATION to GM.',
+            },
+        ],
+        'citation': {
+            'key': 'barakovic2023',
+            'authors': 'Barakovic M, Pizzolato M, Tax CMW, et al.',
+            'title': 'Estimating axon radius using diffusion-relaxation MRI: calibrating '
+                     'a surface-based relaxation model with histology',
+            'journal': 'Frontiers in Neuroscience', 'year': 2023,
+            'doi': '10.3389/fnins.2023.1209521',
+        },
+        'description': 'Transverse surface relaxivity of GM cell membranes.',
+        'note': 'FLAGGED: no primary GM value exists; default 0 (off) so the '
+                'susceptibility demonstration is not confounded. The WM value is an '
+                'extrapolation only.',
+    },
+    'gm_T2': {
+        'default': {
+            'value': 0.080, 'unit': 's', 'field_T': 3.0, 'species': 'human',
+            'method': 'in-vivo relaxometry (3T)',
+            'source_key': 'wansapura1999',
+            'location': 'Cortical GM T2 ~80 ms in vivo at 3T (PFC ~69-71 ms).',
+        },
+        'alternatives': [
+            {
+                'value': 0.099, 'unit': 's', 'field_T': 3.0, 'species': 'bovine (ex-vivo)',
+                'method': 'CPMG/NNLS', 'source_key': 'stanisz2005',
+                'location': 'Stanisz Table 1 (ex-vivo bovine, 37°C) — sits above human in vivo.',
+            },
+        ],
+        'citation': {
+            'key': 'wansapura1999',
+            'authors': 'Wansapura JP, Holland SK, Dunn RS, Ball WS',
+            'title': 'NMR relaxation times in the human brain at 3.0 Tesla',
+            'journal': 'Journal of Magnetic Resonance Imaging', 'year': 1999,
+            'doi': '10.1002/(SICI)1522-2586(199904)9:4<531::AID-JMRI4>3.0.CO;2-L',
+        },
+        'description': 'Cortical grey-matter transverse relaxation time at 3T.',
+        'note': 'In-vivo human 3T. Stanisz 2005 (ex-vivo bovine) reads ~99 ms.',
+    },
+    'gm_T1': {
+        'default': {
+            'value': 1.330, 'unit': 's', 'field_T': 3.0, 'species': 'human',
+            'method': 'in-vivo relaxometry (3T)',
+            'source_key': 'wansapura1999',
+            'location': 'Cortical GM T1 ~1331 ms in vivo at 3T.',
+        },
+        'alternatives': [
+            {
+                'value': 1.820, 'unit': 's', 'field_T': 3.0, 'species': 'bovine (ex-vivo)',
+                'method': 'inversion recovery', 'source_key': 'stanisz2005',
+                'location': 'Stanisz Table 1 (ex-vivo bovine, 37°C).',
+            },
+        ],
+        'citation': {
+            'key': 'wansapura1999',
+            'authors': 'Wansapura JP, Holland SK, Dunn RS, Ball WS',
+            'title': 'NMR relaxation times in the human brain at 3.0 Tesla',
+            'journal': 'Journal of Magnetic Resonance Imaging', 'year': 1999,
+            'doi': '10.1002/(SICI)1522-2586(199904)9:4<531::AID-JMRI4>3.0.CO;2-L',
+        },
+        'description': 'Cortical grey-matter longitudinal relaxation time at 3T.',
+        'note': 'In-vivo human 3T. Stanisz 2005 (ex-vivo bovine) reads ~1820 ms.',
+    },
+    'gm_iron_concentration': {
+        'default': {
+            'value': 30.0, 'unit': 'µg(Fe)/g wet tissue', 'field_T': None,
+            'species': 'human',
+            'method': 'colorimetric non-haem iron assay (post-mortem)',
+            'source_key': 'hallgren1958',
+            'location': 'Frontal/motor cortex ~30 µg/g wet (2.92 mg/100g ×10). '
+                        'NB Hallgren reports mg/100g wet; ×10 for µg/g.',
+        },
+        'alternatives': [
+            {
+                'value': 213.0, 'unit': 'µg(Fe)/g wet tissue', 'field_T': None,
+                'species': 'human', 'method': 'same (deep GM, adult plateau)',
+                'source_key': 'hallgren1958',
+                'location': 'Globus pallidus 213 µg/g (max); putamen 133; caudate 93.',
+            },
+        ],
+        'citation': {
+            'key': 'hallgren1958',
+            'authors': 'Hallgren B, Sourander P',
+            'title': 'The effect of age on the non-haemin iron in the human brain',
+            'journal': 'Journal of Neurochemistry', 'year': 1958,
+            'doi': '10.1111/j.1471-4159.1958.tb12607.x',
+        },
+        'description': 'Non-heme (ferritin) iron concentration in cortical grey matter.',
+        'note': 'Cortex ~29-50 µg/g; deep GM far higher (GP 213). UNIT: Hallgren '
+                'reports mg/100g WET -> ×10 = µg/g wet. Do not confuse with Hametner '
+                '2018 (µg/g DRY, ~3-4× higher).',
+    },
+    'gm_chi_per_iron': {
+        'default': {
+            'value': 0.89e-9, 'unit': 'SI Δχ per (µg Fe / g wet)', 'field_T': None,
+            'species': 'human',
+            'method': 'QSM vs ICP-MS iron calibration (post-mortem, 3T)',
+            'source_key': 'langkammer2012',
+            'location': 'Regression slope 0.89 ppb (SI) per µg Fe/g wet in GM.',
+        },
+        'alternatives': [
+            {
+                'value': 1.11e-9, 'unit': 'SI Δχ per (µg Fe / g wet)', 'field_T': None,
+                'species': 'human', 'method': 'QSM vs iron', 'source_key': 'zheng2013',
+                'location': '1.11 ppb per µg/mL.',
+            },
+        ],
+        'citation': {
+            'key': 'langkammer2012',
+            'authors': 'Langkammer C, Schweser F, Krebs N, Deistung A, Goessler W, '
+                       'Scheurer E, Sommer K, Reishofer G, Yen K, Fazekas F, '
+                       'Ropele S, Reichenbach JR',
+            'title': 'Quantitative susceptibility mapping (QSM) as a means to measure '
+                     'brain iron? A post mortem validation study',
+            'journal': 'NeuroImage', 'year': 2012,
+            'doi': '10.1016/j.neuroimage.2012.05.049',
+        },
+        'description': 'Iron-concentration-to-susceptibility slope. Δχ_tissue = '
+                       'iron_concentration × this. Cortex (~30 µg/g) -> Δχ ~0.027 ppm; '
+                       'globus pallidus (~213) -> ~0.19 ppm SI.',
+        'note': 'ppb throughout is SI (dimensionless volume susceptibility ×1e-9). '
+                'Literature slope spans ~0.56-1.40 ppb/(µg/g).',
+    },
+    'gm_R2prime_cortex': {
+        'default': {
+            'value': 3.0, 'unit': '1/s', 'field_T': 3.0, 'species': 'human',
+            'method': 'multi-method R2′ (reversible transverse relaxation)',
+            'source_key': 'ni2015',
+            'location': 'Cortical R2′ ~2.7-3.8 s⁻¹ at 3T (young adults).',
+        },
+        'alternatives': [],
+        'citation': {
+            'key': 'ni2015',
+            'authors': 'Ni W, Christen T, Zun Z, Zaharchuk G',
+            'title': 'Comparison of R2′ measurement methods in the normal brain at 3 tesla',
+            'journal': 'Magnetic Resonance in Medicine', 'year': 2015,
+            'doi': '10.1002/mrm.25232',
+        },
+        'description': 'Cortical GM reversible transverse relaxation rate R2′ at 3T — '
+                       'the susceptibility (static-dephasing) sanity-check target the '
+                       'perturber substrate should reproduce.',
+        'note': 'Cortex iron-attributable static dephasing is SMALL (~3/s), unlike deep '
+                'GM. Yablonskiy & Haacke 1994 (10.1002/mrm.1910320610) give the '
+                'static-dephasing theory linking Δχ·volume-fraction to R2′.',
+    },
 }
 
 
@@ -888,4 +1220,46 @@ def canonical_white_matter(field_T=3.0):
         # membrane / surface
         'rho2': get_value('rho2_axon_membrane', field_T, allow_nearest=True),
         'kappa': get_value('kappa_membrane', field_T, allow_nearest=True),
+    }
+
+
+def canonical_grey_matter(field_T=3.0):
+    """Curated, field-matched cortical grey-matter constant set.
+
+    Returns a flat dict of the physical ground-truth values consumed by
+    :class:`GreyMatterSubstrate` (packed somata + glial-iron susceptibility field).
+    Every value is sourced from :data:`BIOPHYSICAL_CONSTANTS` so the citations and
+    per-value caveats travel with it.  ``field_T`` selects the relaxation values
+    (default 3 T).
+
+    Caveats that ride with these values (see the entries):
+    * ``f_cell`` (soma volume fraction) is a textbook estimate — flagged NEEDS
+      VERIFICATION; no clean primary EM value exists.
+    * ``rho2`` defaults to 0 (no verified GM surface relaxivity) so the
+      susceptibility demonstration is unconfounded.
+    * Iron is the STATIC-tissue susceptibility source; the discrete-perturber
+      representation is the standard tool for clustered/deep-GM/pathological iron.
+      Normal cortical iron is weak (R2′ ~3/s, gm_R2prime_cortex) and partly
+      mesoscopically smooth — treat the packed-glia perturber field as the
+      cell-clustering upper bound and calibrate against R2′.
+    """
+    return {
+        # volume fractions
+        'f_cell': get_value('gm_cell_volume_fraction'),
+        'f_ecs': get_value('gm_ecs_fraction'),
+        # soma geometry
+        'soma_diameter_mean': get_value('gm_soma_diameter'),
+        'soma_diameter_cv': get_value('gm_soma_diameter_cv'),
+        # glia (iron-bearing subpopulation)
+        'glia_number_fraction': get_value('gm_glia_number_fraction'),
+        # diffusion / membrane
+        'D_intra': get_value('gm_D_intra'),
+        'kappa': get_value('gm_membrane_permeability'),
+        'rho2': get_value('gm_rho2'),
+        # relaxation (field-matched)
+        'T2': get_value('gm_T2', field_T, allow_nearest=True),
+        'T1': get_value('gm_T1', field_T, allow_nearest=True),
+        # susceptibility (iron)
+        'iron_concentration': get_value('gm_iron_concentration'),
+        'chi_per_iron': get_value('gm_chi_per_iron'),
     }

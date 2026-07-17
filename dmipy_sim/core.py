@@ -215,7 +215,22 @@ def simulate(
         chi_perp_scan = jnp.asarray(chi_perp, dtype=jnp.float32).reshape(n_t)
     else:
         chi_perp_scan = jnp.ones((n_t,), dtype=jnp.float32)
-    scan_inputs = (G_scan, chi_perp_scan)
+
+    # Third scan input susc_sign_t = s(t)·chi_t gates the substrate's static
+    # off-resonance (susceptibility) phase: the sequence echo sign s(t)
+    # (refocus_sign) refocuses the static field and chi_t pauses it during
+    # longitudinal storage.  The off-resonance field is a first-class substrate
+    # property (geometry.off_resonance), co-equal with surface relaxivity /
+    # permeability; make_step_fn reads it and applies γ·ΔBz·dt.  Absent -> zeros
+    # (the phase term compiles away in make_step_fn), so the tuple arity is uniform.
+    _has_off_res = getattr(geometry, 'off_resonance', None) is not None
+    if _has_off_res:
+        from .susceptibility import refocus_sign
+        s_scan = jnp.asarray(refocus_sign(waveform), dtype=jnp.float32).reshape(n_t)
+        susc_sign_scan = s_scan * chi_perp_scan
+    else:
+        susc_sign_scan = jnp.zeros((n_t,), dtype=jnp.float32)
+    scan_inputs = (G_scan, chi_perp_scan, susc_sign_scan)
 
     # Build per-walker PRNG keys
     master_key = jax.random.PRNGKey(seed)
@@ -237,6 +252,11 @@ def simulate(
         raise NotImplementedError(
             "return_positions='full' is supported for standard geometries "
             "(including Mesh), not MyelinatedCylinder / PackedMyelinatedCylinders.")
+
+    if _has_off_res and (is_myelin or is_packed_myelin):
+        raise NotImplementedError(
+            "an off-resonance (susceptibility) field is only supported on the standard "
+            "step-fn path, not the myelin geometries (which have their own field model).")
 
     # -----------------------------------------------------------------------
     # Compartment origin: determined from initial positions.
@@ -692,13 +712,15 @@ def simulate_cpmg(n_walkers, diffusivity, waveform, geometry, *,
         return jnp.sum(sw[:, None] * jnp.cos(phi), axis=0) / jnp.sum(sw)
     G_scan = jnp.transpose(G, (1, 0, 2))   # (n_t, n_measurements, 3)
     # CPMG is a spin-echo train: magnetisation is transverse throughout, so the
-    # coherence flag is 1 at every step (step_fn receives inputs = (g_t, chi_t)).
+    # coherence flag is 1 at every step.  step_fn receives inputs =
+    # (g_t, chi_t, susc_sign_t); CPMG models no off-resonance field so the third
+    # channel is zero (the phase term compiles away in make_step_fn).
     chi_perp = getattr(waveform, 'chi_perp', None)
     if chi_perp is not None:
         chi_perp_scan = jnp.asarray(chi_perp, dtype=jnp.float32).reshape(n_t)
     else:
         chi_perp_scan = jnp.ones((n_t,), dtype=jnp.float32)
-    scan_inputs = (G_scan, chi_perp_scan)
+    scan_inputs = (G_scan, chi_perp_scan, jnp.zeros((n_t,), dtype=jnp.float32))
 
     master_key = jax.random.PRNGKey(seed)
     pos_key, walker_key = jax.random.split(master_key)

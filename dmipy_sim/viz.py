@@ -686,3 +686,97 @@ def save_rotation(ax3d, path, n_frames=48, elev=22, fps=16):
     anim = animation.FuncAnimation(fig, update, frames=n_frames, blit=False)
     anim.save(path, writer=animation.PillowWriter(fps=fps))
     return path
+
+
+# ── Susceptibility observability ──────────────────────────────────────────────
+def _dbz_grid_np(sources, X, Z, y0=0.0):
+    """ΔBz (Tesla) on an x-z grid at y=y0 — numpy dipole sum over the perturbers."""
+    c, a = sources.centers, sources.radii                      # (P,3), (P,)
+    coeff = (np.asarray(sources.delta_chi) * sources.B0 / 3.0) * a ** 3
+    pts = np.stack([X.ravel(), np.full(X.size, y0), Z.ravel()], axis=1)   # (M,3)
+    d = pts[:, None, :] - c[None, :, :]
+    dist2 = np.maximum(np.sum(d * d, -1), a[None, :] ** 2)
+    cos2 = d[:, :, 2] ** 2 / dist2
+    return np.sum(coeff[None, :] * (3 * cos2 - 1) / dist2 ** 1.5, axis=1).reshape(X.shape)
+
+
+def plot_susceptibility_sources(sources, box=None, cell_centers=None, cell_radii=None,
+                                units=1e6, unit_label='µm', figsize=(13.5, 4.6),
+                                save=None):
+    """Observability for a :class:`SusceptibilitySources` field and its substrate.
+
+    Three panels: (A) the ΔBz field in the x–z plane (which contains B0=z) with the
+    classic (3cos²θ−1) dipole bowtie, plus cell and perturber cross-sections;
+    (B) the x–y layout (⊥ B0); (C) a 3-D scatter of cell vs perturber centres.
+    ``cell_centers``/``cell_radii`` (the diffusing substrate, e.g. from a
+    PackedSpheres) are optional context.  Returns the matplotlib Figure.
+    """
+    _require_mpl()
+    from matplotlib.patches import Circle
+    u = units
+    pc, pr = sources.centers, sources.radii
+    if box is None:
+        box = float(np.max(np.abs(pc)) + 2 * np.max(pr))
+    cc = None if cell_centers is None else np.asarray(cell_centers).reshape(-1, 3)
+    cr = (None if cell_radii is None else
+          np.broadcast_to(np.asarray(cell_radii, float), (0 if cc is None else len(cc),)))
+
+    def _xz_circles(ax, centers, radii, y0, **kw):
+        for c, rad in zip(centers, np.broadcast_to(radii, (len(centers),))):
+            dy = abs(c[1] - y0)
+            if dy < rad:
+                rr = np.sqrt(rad ** 2 - dy ** 2)
+                ax.add_patch(Circle((c[0] * u, c[2] * u), rr * u, **kw))
+
+    def _xy_circles(ax, centers, radii, **kw):
+        for c, rad in zip(centers, np.broadcast_to(radii, (len(centers),))):
+            if abs(c[2]) < rad:
+                rr = np.sqrt(rad ** 2 - c[2] ** 2)
+                ax.add_patch(Circle((c[0] * u, c[1] * u), rr * u, **kw))
+
+    fig = plt.figure(figsize=figsize)
+
+    # (A) x-z field slice
+    axA = fig.add_subplot(1, 3, 1)
+    g = np.linspace(-box, box, 240)
+    X, Z = np.meshgrid(g, g)
+    Bz = _dbz_grid_np(sources, X, Z) * 1e9      # nT
+    vmax = np.percentile(np.abs(Bz), 99) or 1.0
+    im = axA.imshow(Bz, extent=[-box * u, box * u, -box * u, box * u], origin='lower',
+                    cmap='RdBu_r', vmin=-vmax, vmax=vmax, aspect='equal')
+    if cc is not None:
+        _xz_circles(axA, cc, cr, 0.0, fill=False, ec='k', lw=1.4)
+    _xz_circles(axA, pc, pr, 0.0, fill=False, ec='#2ca02c', lw=1.2)
+    axA.set_title("A  $\\Delta B_z$ in x–z (contains $B_0$)")
+    axA.set_xlabel(f"x ({unit_label})"); axA.set_ylabel(f"z = $B_0$ ({unit_label})")
+    cb = fig.colorbar(im, ax=axA, fraction=0.046, pad=0.04)
+    cb.set_label("$\\Delta B_z$ (nT)", fontsize=8)
+
+    # (B) x-y layout
+    axB = fig.add_subplot(1, 3, 2)
+    if cc is not None:
+        _xy_circles(axB, cc, cr, facecolor='#7fb3d5', ec='#1b3a5b', lw=1.2, alpha=0.9)
+    _xy_circles(axB, pc, pr, facecolor='#d95f0e', ec='k', lw=0.6, alpha=0.9)
+    axB.set_xlim(-box * u, box * u); axB.set_ylim(-box * u, box * u)
+    axB.set_aspect('equal')
+    axB.set_title("B  x–y layout (⊥ $B_0$)")
+    axB.set_xlabel(f"x ({unit_label})"); axB.set_ylabel(f"y ({unit_label})")
+
+    # (C) 3D scatter
+    axC = fig.add_subplot(1, 3, 3, projection='3d')
+    if cc is not None:
+        axC.scatter(cc[:, 0] * u, cc[:, 1] * u, cc[:, 2] * u, s=25, c='#1f77b4',
+                    alpha=0.6, label='cells')
+    axC.scatter(pc[:, 0] * u, pc[:, 1] * u, pc[:, 2] * u, s=15, c='#d95f0e',
+                alpha=0.85, label='perturbers')
+    axC.set_title("C  layout in the voxel")
+    axC.set_xlabel("x"); axC.set_ylabel("y"); axC.set_zlabel("z=$B_0$")
+    axC.legend(fontsize=7, loc='upper left')
+
+    fig.suptitle(f"Susceptibility field: {sources.n_perturbers} perturbers "
+                 f"(Δχ={np.mean(sources.delta_chi):.1e}, $B_0$={sources.B0:g} T)",
+                 fontsize=10.5)
+    fig.tight_layout(rect=[0, 0, 1, 0.94])
+    if save:
+        fig.savefig(save, dpi=140, bbox_inches='tight')
+    return fig

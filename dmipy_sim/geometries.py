@@ -12,6 +12,13 @@ import numpy as np
 
 
 class Geometry(ABC):
+    # Optional substrate off-resonance (susceptibility) field, co-equal with
+    # surface_relaxivity_t2 / permeability: a SusceptibilitySources (or any object
+    # exposing ``delta_bz_fn() -> (r -> ΔBz)``, or a bare JAX ``delta_bz(r)``
+    # callable).  When set, make_step_fn adds the transverse phase γ·ΔBz(r)·dt each
+    # step, gated by the sequence echo + longitudinal storage.  None -> no field.
+    off_resonance = None
+
     @abstractmethod
     def init_positions(self, n_walkers: int, key: jax.Array) -> jnp.ndarray:
         """Return initial walker positions of shape (n_walkers, 3), float32."""
@@ -32,7 +39,14 @@ class Geometry(ABC):
 
 
 class FreeDiffusion(Geometry):
-    """Unbounded free diffusion — walkers move without any reflection."""
+    """Unbounded free diffusion — walkers move without any reflection.
+
+    Accepts an optional ``off_resonance`` field (susceptibility perturbers) — useful
+    for isolating pure static-dephasing in an unrestricted medium.
+    """
+
+    def __init__(self, off_resonance=None):
+        self.off_resonance = off_resonance
 
     def init_positions(self, n_walkers, key):
         return jnp.zeros((n_walkers, 3), dtype=jnp.float32)
@@ -2372,7 +2386,8 @@ class PackedSpheres(Geometry):
     """
 
     def __init__(self, radii, centers, L,
-                 surface_relaxivity_t2=None, permeability=None):
+                 surface_relaxivity_t2=None, permeability=None,
+                 off_resonance=None):
         radii   = np.asarray(radii,   dtype=np.float64).ravel()
         centers = np.asarray(centers, dtype=np.float64)
         if centers.shape != (len(radii), 3):
@@ -2388,6 +2403,10 @@ class PackedSpheres(Geometry):
         self.permeability = (
             float(permeability) if permeability is not None else None
         )
+        # Off-resonance (susceptibility) field — co-equal substrate property; the
+        # GM iron/vasculature perturbers live in the extracellular space around these
+        # cells.  See make_step_fn / SusceptibilitySources.
+        self.off_resonance = off_resonance
 
         self._L_float   = float(L)
         self._radii_np  = radii.copy()
