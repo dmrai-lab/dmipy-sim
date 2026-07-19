@@ -6,11 +6,12 @@ waveforms** `G(t)`, to generate the ground-truth signal. **Surface relaxivity** 
 permeability** are baked into the walk; everything is vmap/scan JAX and runs on CPU or any
 CUDA-12 GPU.
 
-> One shared tissue-and-sequence description, read from both directions by two engines:
-> **[dmipy-fit](https://github.com/dmrai-lab/dmipy-fit)** · the analytical **inverse** (*fit*
-> signals → tissue) &nbsp;·&nbsp; **dmipy-sim** · the Monte-Carlo **forward** engine (*simulate*
-> tissue → signals) *(you are here)* &nbsp;·&nbsp; **[dmipy](https://github.com/dmrai-lab/dmipy)**
-> · umbrella + docs.
+> One shared `G(t)` + substrate across the whole loop — **design** the sequence, **simulate** the
+> signal, **fit** the tissue:
+> **[dmipy-design](https://github.com/dmrai-lab/dmipy-design)** · deliverable sequence **design**
+> &nbsp;·&nbsp; **dmipy-sim** · Monte-Carlo **forward** *(you are here)* &nbsp;·&nbsp;
+> **[dmipy-fit](https://github.com/dmrai-lab/dmipy-fit)** · analytical **inverse** &nbsp;·&nbsp;
+> **[dmipy](https://github.com/dmrai-lab/dmipy)** · umbrella + docs.
 >
 > Docs: **[dmipy.org](https://dmipy.org)** &nbsp;·&nbsp; coming from the 2019 toolbox?
 > [What's changed in 2.x](https://dmipy.org/migrating/)
