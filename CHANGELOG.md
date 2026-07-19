@@ -1,5 +1,22 @@
 # Changelog
 
+## 2.2.0
+
+**T1 relaxation & PGSTE coherence gating** on the direct `simulate(...)` path — the longitudinal
+sibling of the in-scan T2 / surface-relaxivity pattern.
+
+### Added
+- **`simulate(..., T1=…)`** — longitudinal relaxation in the walk. Magnetisation is either
+  transverse (T2 and surface relaxivity accrue) or stored along the field (only T1 acts).
+- **PGSTE** (`pgste(...)` constructor) — a pulsed-gradient stimulated echo: `[+G | gradient-off
+  mixing time TM | −G]`, storing magnetisation longitudinally during TM, so over TM there is **no**
+  T2 loss and **no** surface-relaxivity loss, only T1. Ideal instantaneous perfect pulses only.
+- **`Waveform`** gains `chi_perp` (a per-time-point binary transverse-coherence mask: 1 transverse,
+  0 stored), `TM`, and `stimulated_echo`, propagated through `set_b` / `rotate_waveform` /
+  `tile_waveform`.
+- `physics.py` step functions accept `T1` and consume `(g_t, chi_t)` per step — adding
+  `−(1−chi_t)·dt/T1` alongside `−chi_t·dt/T2` and gating surface relaxivity by `chi_t`.
+
 ## 2.1.0
 
 **Triangular-mesh substrates.** The forward engine now walks arbitrary meshes with the same
