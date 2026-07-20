@@ -147,7 +147,10 @@ def _build_crusher(crusher, dt, n_t):
 
 def simulate_bloch(n_walkers, diffusivity, waveform, geometry, rf_events, *,
                    T2=None, T1=None, M0=1.0, off_resonance_hz=0.0, seed=0,
-                   echo_steps=None, return_mz=False, crusher=None, require_gpu=None):
+                   echo_steps=None, return_mz=False, crusher=None,
+                   kappa_MT=0.0, dwell_time=0.0, T2_bound=1e-5, T1_bound=1.0,
+                   off_resonance_bound=0.0, sub_steps=None, return_bound_frac=False,
+                   require_gpu=None):
     """Forward vector-Bloch signal for a sequence of RF pulses on ``waveform.G``.
 
     Parameters
@@ -181,6 +184,18 @@ def simulate_bloch(n_walkers, diffusivity, waveform, geometry, rf_events, *,
     if require_gpu and not gpu_available():
         raise RuntimeError("simulate_bloch(require_gpu=True) but no CUDA device is "
                            "visible to JAX.")
+
+    # Magnetization transfer: dispatch to the fused walk+Bloch path (binding at the
+    # walls during the walk, bound-pool relaxation blended in).  kappa_MT == 0 keeps
+    # the plain forward path below byte-identical.
+    if kappa_MT > 0.0:
+        return _simulate_bloch_mt(
+            n_walkers, diffusivity, waveform, geometry, rf_events,
+            T2=T2, T1=T1, M0=M0, off_resonance_hz=off_resonance_hz, seed=seed,
+            echo_steps=echo_steps, return_mz=return_mz, crusher=crusher,
+            kappa_MT=kappa_MT, dwell_time=dwell_time, T2_bound=T2_bound,
+            T1_bound=T1_bound, off_resonance_bound=off_resonance_bound,
+            sub_steps=sub_steps, return_bound_frac=return_bound_frac)
 
     if hasattr(waveform, 'waveform'):
         waveform = waveform.waveform
@@ -236,3 +251,156 @@ def simulate_bloch(n_walkers, diffusivity, waveform, geometry, rf_events, *,
         mz = np.asarray(jnp.mean(M_final[:, :, 2], axis=0))
         return signals, mz
     return signals
+
+
+# ── magnetization transfer: fused forward walk + binding + Bloch ────────────────
+def _geom_radius(geometry):
+    """A characteristic feature radius (m) for the binding sub-step auto-tune."""
+    for attr in ('radius', 'inner_radius', '_feature_radius'):
+        v = getattr(geometry, attr, None)
+        if v is not None:
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                pass
+    return None
+
+
+def _make_bloch_mt_step_fn(geometry, D, dt, n_sub, T2, T1, M0, off_res_global,
+                           kappa_MT, dwell_time, T2_bound, T1_bound, off_res_bound):
+    """Per-timestep fused body: an ``n_sub`` binding sub-walk over ``dt`` (stick /
+    freeze / dwell at the walls, recording the bound occupancy ``bf``), then the
+    Bloch operators ONCE for ``dt`` with relaxation blended toward the bound pool by
+    ``bf`` -- RF rotates the walker whatever its state, so saturation transfer is
+    emergent.  Carry ``(r, M, key, u_crush, bound_rem)``; scan output ``(Mxy, bf)``.
+    """
+    dt_sub = dt / n_sub
+    step_len = jnp.float32(np.sqrt(6.0 * D * dt_sub))
+    kappa_over_D = jnp.float32(kappa_MT / D)
+    dwell_steps_mean = jnp.float32(dwell_time / dt_sub)
+    invT2_free = jnp.float32(1.0 / T2) if T2 is not None else jnp.float32(0.0)
+    invT1_free = jnp.float32(1.0 / T1) if T1 is not None else jnp.float32(0.0)
+    invT2_bound = jnp.float32(1.0 / T2_bound)
+    invT1_bound = jnp.float32(1.0 / T1_bound)
+    M0f = jnp.float32(M0)
+    dt_f = jnp.float32(dt)
+    gamma_dt = jnp.float32(GAMMA * dt)
+    global_carrier = jnp.float32(2.0 * np.pi * float(off_res_global) * dt)
+    bound_carrier = jnp.float32(2.0 * np.pi * float(off_res_bound) * dt)
+    reflect_lw = geometry.reflect_with_log_weight
+
+    def inner(c, _):
+        r, key, bound_rem, bound_acc = c
+        key, step_key, stick_key, dwell_key = jax.random.split(key, 4)
+        is_bound = bound_rem > jnp.float32(0.0)
+        noise = jax.random.normal(step_key, (3,), dtype=jnp.float32)
+        unit = noise / jnp.linalg.norm(noise)
+        # rho_over_D = 1 -> dlog = -2 Sum d_perp; the binding local time is -dlog
+        r_free, dlog = reflect_lw(r, unit * step_len, jnp.float32(1.0))
+        local_time = -dlog
+        p_stick = jnp.minimum(jnp.float32(1.0), kappa_over_D * local_time)
+        newly = (~is_bound) & (jax.random.uniform(stick_key, dtype=jnp.float32) < p_stick)
+        u_dwell = jax.random.uniform(dwell_key, dtype=jnp.float32)
+        dwell_draw = -jnp.log(jnp.maximum(u_dwell, jnp.float32(1e-20))) * dwell_steps_mean
+        r_next = jnp.where(is_bound, r, r_free)                 # frozen while bound
+        bound_rem_next = jnp.where(is_bound, bound_rem - jnp.float32(1.0),
+                                   jnp.where(newly, dwell_draw, jnp.float32(0.0)))
+        bound_acc = bound_acc + jnp.where(is_bound, jnp.float32(1.0), jnp.float32(0.0))
+        return (r_next, key, bound_rem_next, bound_acc), None
+
+    def step_fn(carry, inputs):
+        r, M, key, uc, bound_rem = carry
+        g_t, rf_dflip, rf_axis, rf_carrier, crush_rate = inputs
+        (r_new, key, bound_rem_new, bound_acc), _ = jax.lax.scan(
+            inner, (r, key, bound_rem, jnp.float32(0.0)), None, length=n_sub)
+        bf = bound_acc / jnp.float32(n_sub)                     # bound occupancy this dt
+
+        M = _rf_increment_jax(M, rf_dflip, rf_axis)             # RF rotates all spins
+        invT2 = (1.0 - bf) * invT2_free + bf * invT2_bound      # blend rate by occupancy
+        invT1 = (1.0 - bf) * invT1_free + bf * invT1_bound
+        E2, E1 = jnp.exp(-dt_f * invT2), jnp.exp(-dt_f * invT1)
+        dphi = (gamma_dt * (g_t @ r_new) + global_carrier + rf_carrier
+                + crush_rate * uc + bf * bound_carrier)         # (n_meas,)
+        c, s = jnp.cos(dphi), jnp.sin(dphi)
+        Mx = (c * M[:, 0] - s * M[:, 1]) * E2
+        My = (s * M[:, 0] + c * M[:, 1]) * E2
+        Mz = M0f + (M[:, 2] - M0f) * E1
+        return (r_new, jnp.stack([Mx, My, Mz], axis=1), key, uc, bound_rem_new), \
+               (Mx + 1j * My, bf)
+
+    return step_fn
+
+
+def _simulate_bloch_mt(n_walkers, diffusivity, waveform, geometry, rf_events, *,
+                       T2, T1, M0, off_resonance_hz, seed, echo_steps, return_mz,
+                       crusher, kappa_MT, dwell_time, T2_bound, T1_bound,
+                       off_resonance_bound, sub_steps, return_bound_frac):
+    """MT forward path (see ``simulate_bloch``).  Returns ``signals`` then, in order,
+    ``mz`` (if ``return_mz``) and the walker-mean ``bound_frac`` time series (n_t,)
+    (if ``return_bound_frac``)."""
+    if dwell_time <= 0.0:
+        raise ValueError("dwell_time must be > 0 when kappa_MT > 0 (MT on).")
+    if not hasattr(geometry, 'reflect_with_log_weight'):
+        raise TypeError(f"{type(geometry).__name__} has no reflect_with_log_weight; MT "
+                        "binding needs the boundary-local-time channel "
+                        "(Sphere / Cylinder / Box1D / Ellipsoid / Mesh).")
+    D = float(diffusivity)
+    if hasattr(waveform, 'waveform'):
+        waveform = waveform.waveform
+    G = np.asarray(waveform.G, dtype=np.float64)
+    dt = float(waveform.dt)
+    _orient_R = getattr(geometry, '_orient_R', None)
+    if _orient_R is not None:
+        G = G @ np.asarray(_orient_R, dtype=np.float64)
+    n_meas, n_t, _ = G.shape
+
+    # binding is trajectory-altering (freezes walkers), so it needs the finer R/25
+    # sub-step (divisor 6*25^2 = 3750), not reflection's R/6.
+    if sub_steps is None:
+        R = _geom_radius(geometry)
+        sub_steps = (1 if R is None else
+                     max(1, int(np.ceil(dt / (R ** 2 / (3750.0 * D))))))
+
+    dflip, axis, carrier = _build_rf_schedule(rf_events, dt, n_t)
+    crush_rate, has_crush = _build_crusher(crusher, dt, n_t)
+    G_scan = jnp.asarray(np.transpose(G, (1, 0, 2)), dtype=jnp.float32)
+    scan_inputs = (G_scan,
+                   jnp.asarray(dflip, dtype=jnp.float32),
+                   jnp.asarray(axis, dtype=jnp.float32),
+                   jnp.asarray(carrier, dtype=jnp.float32),
+                   jnp.asarray(crush_rate, dtype=jnp.float32))
+
+    master_key = jax.random.PRNGKey(seed)
+    pos_key, walker_key = jax.random.split(master_key)
+    walker_keys = jax.random.split(walker_key, n_walkers)
+    r0 = geometry.init_positions(n_walkers, pos_key)
+    uw = (jax.random.uniform(jax.random.fold_in(master_key, 0xC0FFEE), (n_walkers,),
+                             dtype=jnp.float32) if has_crush
+          else jnp.zeros((n_walkers,), dtype=jnp.float32))
+
+    step_fn = _make_bloch_mt_step_fn(geometry, D, dt, int(sub_steps), T2, T1,
+                                     float(M0), float(off_resonance_hz), float(kappa_MT),
+                                     float(dwell_time), float(T2_bound), float(T1_bound),
+                                     float(off_resonance_bound))
+    M_init = jnp.zeros((n_meas, 3), dtype=jnp.float32).at[:, 2].set(jnp.float32(M0))
+
+    def simulate_walker(r0_w, key_w, uw_w):
+        (_, M_f, _, _, _), (xy_seq, bf_seq) = jax.lax.scan(
+            step_fn, (r0_w, M_init, key_w, uw_w, jnp.float32(0.0)), scan_inputs)
+        return M_f, xy_seq, bf_seq
+
+    M_final, xy_seq, bf_seq = jax.vmap(simulate_walker, in_axes=(0, 0, 0))(
+        r0, walker_keys, uw)                        # (n_w,n_meas,3) (n_w,n_t,n_meas) (n_w,n_t)
+
+    if echo_steps is not None:
+        echoes = jnp.mean(xy_seq, axis=0)[jnp.asarray(echo_steps, dtype=int)]
+        signals = np.asarray(echoes.T)              # (n_meas, n_echo)
+    else:
+        signals = np.asarray(jnp.mean(M_final[:, :, 0] + 1j * M_final[:, :, 1], axis=0))
+
+    out = [signals]
+    if return_mz:
+        out.append(np.asarray(jnp.mean(M_final[:, :, 2], axis=0)))
+    if return_bound_frac:
+        out.append(np.asarray(jnp.mean(bf_seq, axis=0)))    # (n_t,)
+    return out[0] if len(out) == 1 else tuple(out)
