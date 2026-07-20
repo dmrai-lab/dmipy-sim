@@ -85,11 +85,14 @@ def _build_rf_schedule(rf_events, dt, n_t):
     return dflip, axis, carrier
 
 
-def _make_bloch_step_fn(geometry, D, dt, T2, T1, M0, off_resonance_hz):
+def _make_bloch_step_fn(geometry, D, dt, T2, T1, M0, off_resonance_hz, rho=0.0):
     """Per-timestep forward Bloch scan body (per walker; M is (n_meas, 3)).
 
     Carry ``(r, M, key, u_crush)``; ``u_crush`` is the walker's fixed macroscopic
     voxel coordinate in [0,1), used only inside crusher windows (0 otherwise).
+    ``rho`` (m/s) is the transverse surface relaxivity: at each wall contact ``Mxy``
+    is attenuated by ``exp((rho/D) * dlog)`` with ``dlog`` the boundary local time
+    (rho/D=1 channel) -- the walk is unchanged, so rho=0 keeps the plain path exact.
     """
     gamma_dt = jnp.float32(GAMMA * dt)
     step_len = jnp.float32(np.sqrt(6.0 * D * dt))
@@ -97,7 +100,10 @@ def _make_bloch_step_fn(geometry, D, dt, T2, T1, M0, off_resonance_hz):
     E1 = jnp.float32(np.exp(-dt / T1)) if T1 is not None else jnp.float32(1.0)
     M0f = jnp.float32(M0)
     global_carrier = jnp.float32(2.0 * np.pi * float(off_resonance_hz) * dt)
+    rho_over_D = jnp.float32(rho / D)
+    has_surf = rho > 0.0 and hasattr(geometry, 'reflect_with_log_weight')
     reflect = geometry.reflect
+    reflect_lw = getattr(geometry, 'reflect_with_log_weight', None)
 
     def step_fn(carry, inputs):
         r, M, key, uc = carry                               # r:(3,)  M:(n_meas,3)  uc:()
@@ -106,7 +112,12 @@ def _make_bloch_step_fn(geometry, D, dt, T2, T1, M0, off_resonance_hz):
         key, subkey = jax.random.split(key)
         noise = jax.random.normal(subkey, (3,), dtype=jnp.float32)
         unit = noise / jnp.linalg.norm(noise)
-        r_new = reflect(r, unit * step_len)
+        if has_surf:
+            r_new, dlog = reflect_lw(r, unit * step_len, jnp.float32(1.0))
+            surf = jnp.exp(rho_over_D * dlog)               # transverse wall attenuation
+        else:
+            r_new = reflect(r, unit * step_len)
+            surf = jnp.float32(1.0)
 
         M = _rf_increment_jax(M, rf_dflip, rf_axis)         # RF rotation (0 -> identity)
 
@@ -117,8 +128,8 @@ def _make_bloch_step_fn(geometry, D, dt, T2, T1, M0, off_resonance_hz):
         dphi = (gamma_dt * (g_t @ r_new) + global_carrier + rf_carrier
                 + crush_rate * uc)                          # (n_meas,)
         c, s = jnp.cos(dphi), jnp.sin(dphi)
-        Mx = (c * M[:, 0] - s * M[:, 1]) * E2
-        My = (s * M[:, 0] + c * M[:, 1]) * E2
+        Mx = (c * M[:, 0] - s * M[:, 1]) * E2 * surf
+        My = (s * M[:, 0] + c * M[:, 1]) * E2 * surf
         Mz = M0f + (M[:, 2] - M0f) * E1                     # recover toward equilibrium
         return (r_new, jnp.stack([Mx, My, Mz], axis=1), key, uc), (Mx + 1j * My)
 
@@ -148,6 +159,7 @@ def _build_crusher(crusher, dt, n_t):
 def simulate_bloch(n_walkers, diffusivity, waveform, geometry, rf_events, *,
                    T2=None, T1=None, M0=1.0, off_resonance_hz=0.0, seed=0,
                    echo_steps=None, return_mz=False, crusher=None,
+                   surface_relaxivity=0.0,
                    kappa_MT=0.0, dwell_time=0.0, T2_bound=1e-5, T1_bound=1.0,
                    off_resonance_bound=0.0, sub_steps=None, return_bound_frac=False,
                    require_gpu=None):
@@ -193,6 +205,7 @@ def simulate_bloch(n_walkers, diffusivity, waveform, geometry, rf_events, *,
             n_walkers, diffusivity, waveform, geometry, rf_events,
             T2=T2, T1=T1, M0=M0, off_resonance_hz=off_resonance_hz, seed=seed,
             echo_steps=echo_steps, return_mz=return_mz, crusher=crusher,
+            surface_relaxivity=surface_relaxivity,
             kappa_MT=kappa_MT, dwell_time=dwell_time, T2_bound=T2_bound,
             T1_bound=T1_bound, off_resonance_bound=off_resonance_bound,
             sub_steps=sub_steps, return_bound_frac=return_bound_frac)
@@ -228,7 +241,8 @@ def simulate_bloch(n_walkers, diffusivity, waveform, geometry, rf_events, *,
         uw = jnp.zeros((n_walkers,), dtype=jnp.float32)
 
     step_fn = _make_bloch_step_fn(geometry, float(diffusivity), dt,
-                                  T2, T1, float(M0), float(off_resonance_hz))
+                                  T2, T1, float(M0), float(off_resonance_hz),
+                                  rho=float(surface_relaxivity))
     M_init = jnp.zeros((n_meas, 3), dtype=jnp.float32).at[:, 2].set(jnp.float32(M0))
 
     want_echo = echo_steps is not None
@@ -267,7 +281,8 @@ def _geom_radius(geometry):
 
 
 def _make_bloch_mt_step_fn(geometry, D, dt, n_sub, T2, T1, M0, off_res_global,
-                           kappa_MT, dwell_time, T2_bound, T1_bound, off_res_bound):
+                           kappa_MT, dwell_time, T2_bound, T1_bound, off_res_bound,
+                           rho=0.0):
     """Per-timestep fused body: an ``n_sub`` binding sub-walk over ``dt`` (stick /
     freeze / dwell at the walls, recording the bound occupancy ``bf``), then the
     Bloch operators ONCE for ``dt`` with relaxation blended toward the bound pool by
@@ -287,10 +302,11 @@ def _make_bloch_mt_step_fn(geometry, D, dt, n_sub, T2, T1, M0, off_res_global,
     gamma_dt = jnp.float32(GAMMA * dt)
     global_carrier = jnp.float32(2.0 * np.pi * float(off_res_global) * dt)
     bound_carrier = jnp.float32(2.0 * np.pi * float(off_res_bound) * dt)
+    rho_over_D = jnp.float32(rho / D)
     reflect_lw = geometry.reflect_with_log_weight
 
     def inner(c, _):
-        r, key, bound_rem, bound_acc = c
+        r, key, bound_rem, bound_acc, dlog_acc = c
         key, step_key, stick_key, dwell_key = jax.random.split(key, 4)
         is_bound = bound_rem > jnp.float32(0.0)
         noise = jax.random.normal(step_key, (3,), dtype=jnp.float32)
@@ -306,14 +322,19 @@ def _make_bloch_mt_step_fn(geometry, D, dt, n_sub, T2, T1, M0, off_res_global,
         bound_rem_next = jnp.where(is_bound, bound_rem - jnp.float32(1.0),
                                    jnp.where(newly, dwell_draw, jnp.float32(0.0)))
         bound_acc = bound_acc + jnp.where(is_bound, jnp.float32(1.0), jnp.float32(0.0))
-        return (r_next, key, bound_rem_next, bound_acc), None
+        # MUTUAL EXCLUSIVITY: a stuck/bound contact leaves the free pool, so it does
+        # NOT also accrue surface relaxivity -- only surviving free contacts feed rho.
+        dlog_acc = dlog_acc + jnp.where(is_bound | newly, jnp.float32(0.0), dlog)
+        return (r_next, key, bound_rem_next, bound_acc, dlog_acc), None
 
     def step_fn(carry, inputs):
         r, M, key, uc, bound_rem = carry
         g_t, rf_dflip, rf_axis, rf_carrier, crush_rate = inputs
-        (r_new, key, bound_rem_new, bound_acc), _ = jax.lax.scan(
-            inner, (r, key, bound_rem, jnp.float32(0.0)), None, length=n_sub)
+        (r_new, key, bound_rem_new, bound_acc, dlog_acc), _ = jax.lax.scan(
+            inner, (r, key, bound_rem, jnp.float32(0.0), jnp.float32(0.0)),
+            None, length=n_sub)
         bf = bound_acc / jnp.float32(n_sub)                     # bound occupancy this dt
+        surf = jnp.exp(rho_over_D * dlog_acc)                   # free-pool wall relaxivity
 
         M = _rf_increment_jax(M, rf_dflip, rf_axis)             # RF rotates all spins
         invT2 = (1.0 - bf) * invT2_free + bf * invT2_bound      # blend rate by occupancy
@@ -322,8 +343,8 @@ def _make_bloch_mt_step_fn(geometry, D, dt, n_sub, T2, T1, M0, off_res_global,
         dphi = (gamma_dt * (g_t @ r_new) + global_carrier + rf_carrier
                 + crush_rate * uc + bf * bound_carrier)         # (n_meas,)
         c, s = jnp.cos(dphi), jnp.sin(dphi)
-        Mx = (c * M[:, 0] - s * M[:, 1]) * E2
-        My = (s * M[:, 0] + c * M[:, 1]) * E2
+        Mx = (c * M[:, 0] - s * M[:, 1]) * E2 * surf
+        My = (s * M[:, 0] + c * M[:, 1]) * E2 * surf
         Mz = M0f + (M[:, 2] - M0f) * E1
         return (r_new, jnp.stack([Mx, My, Mz], axis=1), key, uc, bound_rem_new), \
                (Mx + 1j * My, bf)
@@ -333,8 +354,8 @@ def _make_bloch_mt_step_fn(geometry, D, dt, n_sub, T2, T1, M0, off_res_global,
 
 def _simulate_bloch_mt(n_walkers, diffusivity, waveform, geometry, rf_events, *,
                        T2, T1, M0, off_resonance_hz, seed, echo_steps, return_mz,
-                       crusher, kappa_MT, dwell_time, T2_bound, T1_bound,
-                       off_resonance_bound, sub_steps, return_bound_frac):
+                       crusher, surface_relaxivity, kappa_MT, dwell_time, T2_bound,
+                       T1_bound, off_resonance_bound, sub_steps, return_bound_frac):
     """MT forward path (see ``simulate_bloch``).  Returns ``signals`` then, in order,
     ``mz`` (if ``return_mz``) and the walker-mean ``bound_frac`` time series (n_t,)
     (if ``return_bound_frac``)."""
@@ -381,7 +402,7 @@ def _simulate_bloch_mt(n_walkers, diffusivity, waveform, geometry, rf_events, *,
     step_fn = _make_bloch_mt_step_fn(geometry, D, dt, int(sub_steps), T2, T1,
                                      float(M0), float(off_resonance_hz), float(kappa_MT),
                                      float(dwell_time), float(T2_bound), float(T1_bound),
-                                     float(off_resonance_bound))
+                                     float(off_resonance_bound), rho=float(surface_relaxivity))
     M_init = jnp.zeros((n_meas, 3), dtype=jnp.float32).at[:, 2].set(jnp.float32(M0))
 
     def simulate_walker(r0_w, key_w, uw_w):
