@@ -2,13 +2,17 @@
 
 This describes the *physical tissue* the Monte-Carlo engine walks in: geometry
 (axon-diameter Gamma law, g-ratio, volume fractions), diffusivity (intra / extra /
-myelin / CSF), transverse relaxation (T2), and the membrane/surface properties
-(surface relaxivity, permeability).  The engine consumes it directly; it *is* the
-substrate definition.  Contract: there is ONE source for every physical constant,
-and it is this dataclass (with the cited ``biophysical_constants`` catalogue).
+myelin / CSF), relaxation (T2, T1), a magnetization-transfer bound pool, and the
+membrane/surface properties (surface relaxivity, permeability).  The engine
+consumes it directly; it *is* the substrate definition.  Contract: there is ONE
+source for every physical constant, and it is this dataclass (with the cited
+``biophysical_constants`` catalogue).
 
-Magnetisation is transverse throughout (ideal instantaneous pulses), so there is no
-longitudinal (T1) or susceptibility (Delta_chi / B0) physics here.
+Longitudinal (T1) relaxation and a magnetization-transfer bound pool (``kappa_MT``,
+``dwell_time``, ``T2_bound``, ``T1_bound``, ``off_resonance_bound``; see
+``dmipy_sim.mt``) are configured here -- consumed by the coherence-gated walk and
+the vector-Bloch forward path.  Susceptibility (Delta_chi / B0) is deliberately out
+of scope for this public engine.
 """
 from __future__ import annotations
 
@@ -58,15 +62,40 @@ class Substrate:
     D_myelin: float = 0.0
     D_csf: float = 3.0e-9
 
-    # -- transverse relaxation (s; field-matched apparent values) --
+    # -- relaxation (s; field-matched apparent values) --
     T2_intra: float = 0.050
     T2_extra: float = 0.055
     T2_myelin: float = 0.010
     T2_csf: float = 2.0
+    # longitudinal (T1) relaxation (s); consumed by the coherence-gated walk and the
+    # vector-Bloch forward path (values from the private WM substrate; Stanisz 2005).
+    T1_intra: float = 1.2
+    T1_extra: float = 1.0
+    T1_myelin: float = 0.44
+    T1_csf: float = 4.0
 
     # -- membrane / surface --
     rho2: float = 1.16e-6         # transverse surface relaxivity (m/s)
     kappa: float = 1.0e-5         # axolemma permeability (m/s)
+
+    # -- magnetization transfer (bound / semisolid pool); OFF by default --
+    # kappa_MT is the MT surface REACTIVITY (m/s): a free spin sticks at a wall hit
+    # of penetration d_perp with p = min(1, 2 (kappa_MT/D) d_perp) -- the same
+    # impact-angle boundary-local-time rule as rho2/kappa (see dmipy_sim.mt).
+    # k_f = kappa_MT * (S/V); k_r = 1/dwell_time; f_bound = k_f/(k_f+k_r).
+    # A stuck spin freezes and relaxes with (T2_bound, T1_bound, off_resonance_bound);
+    # it is released after a mean dwell_time. kappa_MT=0 -> MT disabled (default).
+    kappa_MT: float = 0.0         # MT surface reactivity (m/s); 0 = MT off
+    dwell_time: float = 0.0       # mean bound-pool residence time (s); >0 iff MT on
+    T2_bound: float = 1.0e-5      # bound-pool T2 (~10 us; Stanisz 2005)
+    T1_bound: float = 1.0         # bound-pool T1 (s; Stanisz 2005)
+    off_resonance_bound: float = 0.0   # bound-pool centre offset (Hz)
+    # OPTIONAL side-dependent MT on the myelin sheath: relative reactivity for free
+    # water binding from the intra (inner wall) vs extra (outer wall) side, e.g.
+    # {"intra":1.0,"extra":0.0} = only intra water binds.  None -> symmetric (both
+    # 1.0).  The per-side exchange RATE already differs via geometry (S/V) at a
+    # single reactivity; this knob additionally scales the material reactivity.
+    mt_side: dict = None
 
     # -- myelin water content: fraction of the myelin sheath VOLUME that is water
     #    (~0.40; West2018).  NOT the myelin water fraction / MWF signal (~0.15).
@@ -95,11 +124,28 @@ class Substrate:
         for n in ('gamma_shape_diameter', 'gamma_scale_diameter',
                   'D_intra', 'D_extra',
                   'D_csf', 'T2_intra', 'T2_extra', 'T2_myelin', 'T2_csf',
+                  'T1_intra', 'T1_extra', 'T1_myelin', 'T1_csf',
                   'field_T'):
             positive(n, getattr(self, n))
         # non-negative
-        for n in ('D_myelin', 'rho2', 'kappa', 'M0'):
+        for n in ('D_myelin', 'rho2', 'kappa', 'M0',
+                  'kappa_MT', 'dwell_time', 'T2_bound', 'T1_bound'):
             non_negative(n, getattr(self, n))
+        # MT codependency: an active reactivity needs a finite bound-pool residence
+        if self.kappa_MT > 0.0 and self.dwell_time <= 0.0:
+            raise ValueError(
+                "kappa_MT > 0 (MT on) requires dwell_time > 0 (finite bound-pool "
+                f"residence); got kappa_MT={self.kappa_MT:.2e}, dwell_time={self.dwell_time}.")
+        if self.kappa_MT > 0.0:
+            positive('T2_bound', self.T2_bound)
+            positive('T1_bound', self.T1_bound)
+        if self.mt_side is not None:
+            bad = set(self.mt_side) - {'intra', 'extra'}
+            if bad:
+                raise ValueError(f"mt_side keys must be 'intra'/'extra'; got {sorted(bad)}")
+            for k in ('intra', 'extra'):
+                if k in self.mt_side:
+                    non_negative(f"mt_side['{k}']", self.mt_side[k])
         # bounded intervals
         in_open_interval('g_ratio', self.g_ratio, 0.0, 1.0)
         in_closed_interval('f_axon', self.f_axon, 0.0, 1.0)
@@ -287,6 +333,57 @@ class Substrate:
         if self.lambda_perp_extra_override is not None:
             return self.lambda_perp_extra_override
         return self.D_extra * (1.0 - self.v_ic)
+
+    # ── magnetization transfer (exchange bookkeeping) ─────────────────────────
+    @property
+    def mt_on(self) -> bool:
+        """True when MT is active (a positive surface reactivity is set)."""
+        return self.kappa_MT > 0.0 and self.dwell_time > 0.0
+
+    @property
+    def mt_side_mults(self) -> tuple:
+        """(intra, extra) relative MT reactivity multipliers; (1.0, 1.0) if unset."""
+        ms = self.mt_side or {}
+        return float(ms.get('intra', 1.0)), float(ms.get('extra', 1.0))
+
+    def mt_forward_rate(self, S_over_V: float) -> float:
+        """Forward (free->bound) exchange rate k_f = kappa_MT * (S/V), s^-1.
+
+        ``S_over_V`` is the surface-to-volume ratio of the reactive (binding)
+        surface for the geometry in use (e.g. 2/R for a cylinder cross-section,
+        computed by the caller).  Exact analogue of 1/T2_surf = rho * (S/V).
+        """
+        from ..mt import forward_rate
+        return forward_rate(self.kappa_MT, S_over_V)
+
+    def mt_backward_rate(self) -> float:
+        """Backward (bound->free) exchange rate k_r = 1/dwell_time, s^-1."""
+        from ..mt import backward_rate
+        return backward_rate(self.dwell_time)
+
+    def mt_bound_fraction(self, S_over_V: float) -> float:
+        """Equilibrium bound-pool fraction f_b = k_f/(k_f+k_r) for this geometry."""
+        from ..mt import bound_fraction
+        return bound_fraction(self.kappa_MT, self.dwell_time, S_over_V)
+
+    @classmethod
+    def with_mt(cls, f_bound: float, k_forward: float, S_over_V: float,
+                *, T2_bound: float = 1.0e-5, T1_bound: float = 1.0,
+                off_resonance_bound: float = 0.0, field_T: float = 3.0,
+                **overrides) -> "Substrate":
+        """Canonical substrate with MT set from the macroscopic (f_bound, k) knobs.
+
+        Converts the target equilibrium bound fraction ``f_bound`` and forward
+        exchange rate ``k_forward`` (s^-1) into the microscopic (kappa_MT,
+        dwell_time) for a surface of ratio ``S_over_V`` (1/m).
+        """
+        from ..mt import kappa_MT_from_forward_rate, dwell_time_from_fraction
+        kappa_MT = kappa_MT_from_forward_rate(k_forward, S_over_V)
+        dwell_time = dwell_time_from_fraction(f_bound, k_forward)
+        overrides.update(kappa_MT=kappa_MT, dwell_time=dwell_time,
+                         T2_bound=T2_bound, T1_bound=T1_bound,
+                         off_resonance_bound=off_resonance_bound)
+        return cls.canonical(field_T=field_T, **overrides)
 
     def as_dict(self) -> dict:
         return asdict(self)
