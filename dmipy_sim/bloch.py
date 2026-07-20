@@ -86,7 +86,11 @@ def _build_rf_schedule(rf_events, dt, n_t):
 
 
 def _make_bloch_step_fn(geometry, D, dt, T2, T1, M0, off_resonance_hz):
-    """Per-timestep forward Bloch scan body (per walker; M is (n_meas, 3))."""
+    """Per-timestep forward Bloch scan body (per walker; M is (n_meas, 3)).
+
+    Carry ``(r, M, key, u_crush)``; ``u_crush`` is the walker's fixed macroscopic
+    voxel coordinate in [0,1), used only inside crusher windows (0 otherwise).
+    """
     gamma_dt = jnp.float32(GAMMA * dt)
     step_len = jnp.float32(np.sqrt(6.0 * D * dt))
     E2 = jnp.float32(np.exp(-dt / T2)) if T2 is not None else jnp.float32(1.0)
@@ -96,8 +100,8 @@ def _make_bloch_step_fn(geometry, D, dt, T2, T1, M0, off_resonance_hz):
     reflect = geometry.reflect
 
     def step_fn(carry, inputs):
-        r, M, key = carry                                   # r:(3,)  M:(n_meas,3)
-        g_t, rf_dflip, rf_axis, rf_carrier = inputs         # g_t:(n_meas,3)
+        r, M, key, uc = carry                               # r:(3,)  M:(n_meas,3)  uc:()
+        g_t, rf_dflip, rf_axis, rf_carrier, crush_rate = inputs   # g_t:(n_meas,3)
 
         key, subkey = jax.random.split(key)
         noise = jax.random.normal(subkey, (3,), dtype=jnp.float32)
@@ -106,20 +110,44 @@ def _make_bloch_step_fn(geometry, D, dt, T2, T1, M0, off_resonance_hz):
 
         M = _rf_increment_jax(M, rf_dflip, rf_axis)         # RF rotation (0 -> identity)
 
-        # free-precession phase, per measurement: gradient + global + pulse carrier
-        dphi = gamma_dt * (g_t @ r_new) + global_carrier + rf_carrier   # (n_meas,)
+        # free-precession phase, per measurement: gradient + global + pulse carrier +
+        # the emergent voxel-scale crusher (a per-walker macroscopic phase during a
+        # crusher window; the ensemble spread over >> 2 pi dephases the transverse
+        # residual while leaving the longitudinally-stored magnetisation untouched).
+        dphi = (gamma_dt * (g_t @ r_new) + global_carrier + rf_carrier
+                + crush_rate * uc)                          # (n_meas,)
         c, s = jnp.cos(dphi), jnp.sin(dphi)
         Mx = (c * M[:, 0] - s * M[:, 1]) * E2
         My = (s * M[:, 0] + c * M[:, 1]) * E2
         Mz = M0f + (M[:, 2] - M0f) * E1                     # recover toward equilibrium
-        return (r_new, jnp.stack([Mx, My, Mz], axis=1), key), (Mx + 1j * My)
+        return (r_new, jnp.stack([Mx, My, Mz], axis=1), key, uc), (Mx + 1j * My)
 
     return step_fn
 
 
+def _build_crusher(crusher, dt, n_t):
+    """Per-step crusher phase rate (rad/step) for a per-walker u in [0,1).
+
+    ``crusher`` = ``{'windows_s': [(t0,t1), ...], 'n_cycles': float}`` or None.  Over a
+    window of ``n_win`` steps the rate is ``2 pi n_cycles / n_win``, so a walker at
+    macroscopic coordinate ``u`` accrues ``2 pi n_cycles u`` across the window and the
+    ensemble (u ~ U[0,1)) dephases over ``n_cycles`` turns -- the voxel-scale spoiler.
+    """
+    rate = np.zeros(n_t, dtype=np.float64)
+    if crusher is None:
+        return rate, False
+    n_cycles = float(crusher.get('n_cycles', 16.0))
+    for (t0, t1) in crusher.get('windows_s', []):
+        i0, i1 = int(round(t0 / dt)), int(round(t1 / dt))
+        i0, i1 = max(0, i0), min(n_t, i1)
+        if i1 > i0:
+            rate[i0:i1] = 2.0 * np.pi * n_cycles / (i1 - i0)
+    return rate, True
+
+
 def simulate_bloch(n_walkers, diffusivity, waveform, geometry, rf_events, *,
                    T2=None, T1=None, M0=1.0, off_resonance_hz=0.0, seed=0,
-                   echo_steps=None, return_mz=False, require_gpu=None):
+                   echo_steps=None, return_mz=False, crusher=None, require_gpu=None):
     """Forward vector-Bloch signal for a sequence of RF pulses on ``waveform.G``.
 
     Parameters
@@ -164,16 +192,25 @@ def simulate_bloch(n_walkers, diffusivity, waveform, geometry, rf_events, *,
     n_meas, n_t, _ = G.shape
 
     dflip, axis, carrier = _build_rf_schedule(rf_events, dt, n_t)
+    crush_rate, has_crush = _build_crusher(crusher, dt, n_t)
     G_scan = jnp.asarray(np.transpose(G, (1, 0, 2)), dtype=jnp.float32)   # (n_t,n_meas,3)
     scan_inputs = (G_scan,
                    jnp.asarray(dflip, dtype=jnp.float32),
                    jnp.asarray(axis, dtype=jnp.float32),
-                   jnp.asarray(carrier, dtype=jnp.float32))
+                   jnp.asarray(carrier, dtype=jnp.float32),
+                   jnp.asarray(crush_rate, dtype=jnp.float32))
 
+    # pos_key / walker_key keep the SAME 2-way split as core.simulate (identical walk
+    # for parity); the crusher's per-walker macro coordinate is an independent stream.
     master_key = jax.random.PRNGKey(seed)
     pos_key, walker_key = jax.random.split(master_key)
     walker_keys = jax.random.split(walker_key, n_walkers)
     r0 = geometry.init_positions(n_walkers, pos_key)        # (n_walkers, 3)
+    if has_crush:
+        uw = jax.random.uniform(jax.random.fold_in(master_key, 0xC0FFEE), (n_walkers,),
+                                dtype=jnp.float32)
+    else:
+        uw = jnp.zeros((n_walkers,), dtype=jnp.float32)
 
     step_fn = _make_bloch_step_fn(geometry, float(diffusivity), dt,
                                   T2, T1, float(M0), float(off_resonance_hz))
@@ -181,17 +218,18 @@ def simulate_bloch(n_walkers, diffusivity, waveform, geometry, rf_events, *,
 
     want_echo = echo_steps is not None
 
-    def simulate_walker(r0_w, key_w):
-        (r_f, M_f, _), xy_seq = jax.lax.scan(step_fn, (r0_w, M_init, key_w), scan_inputs)
+    def simulate_walker(r0_w, key_w, uw_w):
+        (r_f, M_f, _, _), xy_seq = jax.lax.scan(
+            step_fn, (r0_w, M_init, key_w, uw_w), scan_inputs)
         return (M_f, xy_seq) if want_echo else M_f
 
     if want_echo:
-        M_final, xy_seq = jax.vmap(simulate_walker, in_axes=(0, 0))(r0, walker_keys)
+        M_final, xy_seq = jax.vmap(simulate_walker, in_axes=(0, 0, 0))(r0, walker_keys, uw)
         # xy_seq: (n_walkers, n_t, n_meas) complex -> walker-mean at the echo steps
         echoes = jnp.mean(xy_seq, axis=0)[jnp.asarray(echo_steps, dtype=int)]   # (n_echo,n_meas)
         signals = np.asarray(echoes.T)                     # (n_meas, n_echo)
     else:
-        M_final = jax.vmap(simulate_walker, in_axes=(0, 0))(r0, walker_keys)     # (n_w,n_meas,3)
+        M_final = jax.vmap(simulate_walker, in_axes=(0, 0, 0))(r0, walker_keys, uw)  # (n_w,n_meas,3)
         signals = np.asarray(jnp.mean(M_final[:, :, 0] + 1j * M_final[:, :, 1], axis=0))
 
     if return_mz:
