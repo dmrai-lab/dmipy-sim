@@ -34,6 +34,7 @@ from .sh_convolution import (
     watson_odf_sh,
     isotropic_odf_sh,
 )
+from . import mt
 
 __all__ = [
     "simulate", "simulate_mixture", "simulate_cpmg",
@@ -55,4 +56,6 @@ __all__ = [
     "apply_odf",
     "watson_odf_sh",
     "isotropic_odf_sh",
+    # magnetization transfer (physics + analytic oracle)
+    "mt",
 ]
