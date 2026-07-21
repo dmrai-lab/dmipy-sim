@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased — magnetization transfer (mt-staging)
+
+**Emergent magnetization transfer on a new forward vector-Bloch engine** (single pass; no
+replay, no susceptibility — both deliberately out of scope for the public engine).
+
+### Added
+- **`dmipy_sim.mt`** — host-side MT physics + analytic two-pool Bloch–McConnell oracle:
+  impact-angle `stick_probability`, `(κ_MT,dwell)↔(f_b,k_f)` conversions, `mt_z_spectrum`.
+- **`simulate_bloch`** (`bloch.py`) — forward vector-Bloch engine carrying `M=(Mx,My,Mz)`
+  through RF pulses + gradient + T1/T2 in one scan, alongside the (unchanged) scalar
+  engine. Emergent spin-echo / CPMG refocusing and off-resonance carrier; opt-in MT
+  binding (stick / freeze / exponential dwell at the walls) with bound-pool
+  `T2_bound`/`T1_bound` blended by occupancy → emergent Z-spectrum / saturation transfer,
+  active during longitudinal storage; emergent voxel-scale crusher.
+- **`pulse_sequence.py`** — `BlochSequence`, `gradient_echo`/`spin_echo` readouts,
+  `prepend_mt_prep` (off-resonance MT-prep saturation block), `run_bloch_sequence`.
+- **`Substrate`** MT config (`kappa_MT`, `dwell_time`, `T2_bound`, `T1_bound`,
+  `off_resonance_bound`, `mt_side`) + `Substrate.with_mt`; plus the previously-missing
+  per-compartment `T1_*` fields.
+- `examples/three_observables.py` — the surface-relaxivity / MT / Z-spectrum figure.
+
 ## 2.2.0
 
 **T1 relaxation & PGSTE coherence gating** on the direct `simulate(...)` path — the longitudinal
