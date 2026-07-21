@@ -283,13 +283,22 @@ def _geom_radius(geometry):
 def _make_bloch_mt_step_fn(geometry, D, dt, n_sub, T2, T1, M0, off_res_global,
                            kappa_MT, dwell_time, T2_bound, T1_bound, off_res_bound,
                            rho=0.0):
-    """Per-timestep fused body: an ``n_sub`` binding sub-walk over ``dt`` (stick /
-    freeze / dwell at the walls, recording the bound occupancy ``bf``), then the
-    Bloch operators ONCE for ``dt`` with relaxation blended toward the bound pool by
-    ``bf`` -- RF rotates the walker whatever its state, so saturation transfer is
-    emergent.  Carry ``(r, M, key, u_crush, bound_rem)``; scan output ``(Mxy, bf)``.
+    """Per-timestep fused body: an ``n_sub`` binding sub-walk over ``dt``, evolving the
+    walker's magnetization STATE-RESOLVED at the sub-step level.  Each sub-step the
+    walker is free or bound; the RF nutates it either way (both pools feel B1, as in
+    the two-pool Bloch--McConnell system), off-resonance precession and relaxation are
+    applied with the walker's CURRENT-state rates (bound -> short-``T2_bound`` -> the
+    tipped transverse dephases -> emergent saturation), and the single magnetization
+    carries across bind/release = exact longitudinal + transverse exchange (no blend).
+    Fine sub-stepping resolves the nutation/precession/relaxation Trotter split, so the
+    ensemble converges to the exact two-pool ODE at the Monte-Carlo noise floor.  The
+    gradient (diffusion-encoding) phase and crusher stay at the dt level (unchanged for
+    the pure-diffusion path).  Carry ``(r, M, key, u_crush, bound_rem)``; scan output
+    ``(Mxy, bf)``.  The final ``bound_rem`` flags which walkers are bound at readout, so
+    the driver can report the observable FREE-pool signal (the bound pool is MR-dark).
     """
     dt_sub = dt / n_sub
+    inv_nsub = jnp.float32(1.0 / n_sub)
     step_len = jnp.float32(np.sqrt(6.0 * D * dt_sub))
     kappa_over_D = jnp.float32(kappa_MT / D)
     dwell_steps_mean = jnp.float32(dwell_time / dt_sub)
@@ -298,56 +307,63 @@ def _make_bloch_mt_step_fn(geometry, D, dt, n_sub, T2, T1, M0, off_res_global,
     invT2_bound = jnp.float32(1.0 / T2_bound)
     invT1_bound = jnp.float32(1.0 / T1_bound)
     M0f = jnp.float32(M0)
-    dt_f = jnp.float32(dt)
+    dt_sub_f = jnp.float32(dt_sub)
     gamma_dt = jnp.float32(GAMMA * dt)
     global_carrier = jnp.float32(2.0 * np.pi * float(off_res_global) * dt)
     bound_carrier = jnp.float32(2.0 * np.pi * float(off_res_bound) * dt)
     rho_over_D = jnp.float32(rho / D)
     reflect_lw = geometry.reflect_with_log_weight
 
-    def inner(c, _):
-        r, key, bound_rem, bound_acc, dlog_acc = c
-        key, step_key, stick_key, dwell_key = jax.random.split(key, 4)
-        is_bound = bound_rem > jnp.float32(0.0)
-        noise = jax.random.normal(step_key, (3,), dtype=jnp.float32)
-        unit = noise / jnp.linalg.norm(noise)
-        # rho_over_D = 1 -> dlog = -2 Sum d_perp; the binding local time is -dlog
-        r_free, dlog = reflect_lw(r, unit * step_len, jnp.float32(1.0))
-        local_time = -dlog
-        p_stick = jnp.minimum(jnp.float32(1.0), kappa_over_D * local_time)
-        newly = (~is_bound) & (jax.random.uniform(stick_key, dtype=jnp.float32) < p_stick)
-        u_dwell = jax.random.uniform(dwell_key, dtype=jnp.float32)
-        dwell_draw = -jnp.log(jnp.maximum(u_dwell, jnp.float32(1e-20))) * dwell_steps_mean
-        r_next = jnp.where(is_bound, r, r_free)                 # frozen while bound
-        bound_rem_next = jnp.where(is_bound, bound_rem - jnp.float32(1.0),
-                                   jnp.where(newly, dwell_draw, jnp.float32(0.0)))
-        bound_acc = bound_acc + jnp.where(is_bound, jnp.float32(1.0), jnp.float32(0.0))
-        # MUTUAL EXCLUSIVITY: a stuck/bound contact leaves the free pool, so it does
-        # NOT also accrue surface relaxivity -- only surviving free contacts feed rho.
-        dlog_acc = dlog_acc + jnp.where(is_bound | newly, jnp.float32(0.0), dlog)
-        return (r_next, key, bound_rem_next, bound_acc, dlog_acc), None
-
     def step_fn(carry, inputs):
         r, M, key, uc, bound_rem = carry
         g_t, rf_dflip, rf_axis, rf_carrier, crush_rate = inputs
-        (r_new, key, bound_rem_new, bound_acc, dlog_acc), _ = jax.lax.scan(
-            inner, (r, key, bound_rem, jnp.float32(0.0), jnp.float32(0.0)),
-            None, length=n_sub)
-        bf = bound_acc / jnp.float32(n_sub)                     # bound occupancy this dt
-        surf = jnp.exp(rho_over_D * dlog_acc)                   # free-pool wall relaxivity
+        flip_sub = rf_dflip * inv_nsub                          # RF flip per sub-step
+        # off-resonance precession per sub-step (free pools + optional bound offset)
+        carr_free_sub = (global_carrier + rf_carrier) * inv_nsub
+        carr_bound_sub = bound_carrier * inv_nsub
 
-        M = _rf_increment_jax(M, rf_dflip, rf_axis)             # RF rotates all spins
-        invT2 = (1.0 - bf) * invT2_free + bf * invT2_bound      # blend rate by occupancy
-        invT1 = (1.0 - bf) * invT1_free + bf * invT1_bound
-        E2, E1 = jnp.exp(-dt_f * invT2), jnp.exp(-dt_f * invT1)
-        dphi = (gamma_dt * (g_t @ r_new) + global_carrier + rf_carrier
-                + crush_rate * uc + bf * bound_carrier)         # (n_meas,)
-        c, s = jnp.cos(dphi), jnp.sin(dphi)
-        Mx = (c * M[:, 0] - s * M[:, 1]) * E2 * surf
-        My = (s * M[:, 0] + c * M[:, 1]) * E2 * surf
-        Mz = M0f + (M[:, 2] - M0f) * E1
-        return (r_new, jnp.stack([Mx, My, Mz], axis=1), key, uc, bound_rem_new), \
-               (Mx + 1j * My, bf)
+        def inner(c, _):
+            r, M, key, bound_rem = c
+            key, step_key, stick_key, dwell_key = jax.random.split(key, 4)
+            is_bound = bound_rem > jnp.float32(0.0)
+            noise = jax.random.normal(step_key, (3,), dtype=jnp.float32)
+            unit = noise / jnp.linalg.norm(noise)
+            # rho_over_D = 1 -> dlog = -2 Sum d_perp; the binding local time is -dlog
+            r_free, dlog = reflect_lw(r, unit * step_len, jnp.float32(1.0))
+            local_time = -dlog
+            p_stick = jnp.minimum(jnp.float32(1.0), kappa_over_D * local_time)
+            newly = (~is_bound) & (jax.random.uniform(stick_key, dtype=jnp.float32) < p_stick)
+            u_dwell = jax.random.uniform(dwell_key, dtype=jnp.float32)
+            dwell_draw = -jnp.log(jnp.maximum(u_dwell, jnp.float32(1e-20))) * dwell_steps_mean
+            r_next = jnp.where(is_bound, r, r_free)             # frozen while bound
+            bound_rem_next = jnp.where(is_bound, bound_rem - jnp.float32(1.0),
+                                       jnp.where(newly, dwell_draw, jnp.float32(0.0)))
+            # --- spin evolution for THIS sub-step, resolved by state ---
+            M = _rf_increment_jax(M, flip_sub, rf_axis)         # nutation (both pools)
+            dphi = carr_free_sub + jnp.where(is_bound, carr_bound_sub, jnp.float32(0.0))
+            c, s = jnp.cos(dphi), jnp.sin(dphi)
+            invT2 = jnp.where(is_bound, invT2_bound, invT2_free)
+            invT1 = jnp.where(is_bound, invT1_bound, invT1_free)
+            E2, E1 = jnp.exp(-dt_sub_f * invT2), jnp.exp(-dt_sub_f * invT1)
+            # surface relaxivity only on surviving FREE contacts (mutual exclusivity)
+            surf = jnp.where(is_bound | newly, jnp.float32(1.0),
+                             jnp.exp(rho_over_D * dlog))
+            Mx = (c * M[:, 0] - s * M[:, 1]) * E2 * surf
+            My = (s * M[:, 0] + c * M[:, 1]) * E2 * surf
+            Mz = M0f + (M[:, 2] - M0f) * E1
+            return (r_next, jnp.stack([Mx, My, Mz], axis=1), key, bound_rem_next), \
+                   jnp.where(is_bound, jnp.float32(1.0), jnp.float32(0.0))
+
+        (r_new, M_sub, key, bound_rem_new), bacc = jax.lax.scan(
+            inner, (r, M, key, bound_rem), None, length=n_sub)
+        bf = jnp.mean(bacc)                                     # bound occupancy this dt
+        # dt-level diffusion-encoding gradient phase + crusher (unchanged path)
+        dphi_g = gamma_dt * (g_t @ r_new) + crush_rate * uc
+        cg, sg = jnp.cos(dphi_g), jnp.sin(dphi_g)
+        Mx = cg * M_sub[:, 0] - sg * M_sub[:, 1]
+        My = sg * M_sub[:, 0] + cg * M_sub[:, 1]
+        M_out = jnp.stack([Mx, My, M_sub[:, 2]], axis=1)
+        return (r_new, M_out, key, uc, bound_rem_new), (Mx + 1j * My, bf)
 
     return step_fn
 
@@ -406,12 +422,13 @@ def _simulate_bloch_mt(n_walkers, diffusivity, waveform, geometry, rf_events, *,
     M_init = jnp.zeros((n_meas, 3), dtype=jnp.float32).at[:, 2].set(jnp.float32(M0))
 
     def simulate_walker(r0_w, key_w, uw_w):
-        (_, M_f, _, _, _), (xy_seq, bf_seq) = jax.lax.scan(
+        (_, M_f, _, _, bound_rem_f), (xy_seq, bf_seq) = jax.lax.scan(
             step_fn, (r0_w, M_init, key_w, uw_w, jnp.float32(0.0)), scan_inputs)
-        return M_f, xy_seq, bf_seq
+        return M_f, xy_seq, bf_seq, bound_rem_f
 
-    M_final, xy_seq, bf_seq = jax.vmap(simulate_walker, in_axes=(0, 0, 0))(
-        r0, walker_keys, uw)                        # (n_w,n_meas,3) (n_w,n_t,n_meas) (n_w,n_t)
+    M_final, xy_seq, bf_seq, bound_rem_final = jax.vmap(
+        simulate_walker, in_axes=(0, 0, 0))(r0, walker_keys, uw)
+    # (n_w,n_meas,3) (n_w,n_t,n_meas) (n_w,n_t) (n_w,)
 
     if echo_steps is not None:
         echoes = jnp.mean(xy_seq, axis=0)[jnp.asarray(echo_steps, dtype=int)]
@@ -421,6 +438,11 @@ def _simulate_bloch_mt(n_walkers, diffusivity, waveform, geometry, rf_events, *,
 
     out = [signals]
     if return_mz:
+        # Ensemble-mean Mz over all walkers: each walker is a unit spin toggling between
+        # the free and bound environments, so the mean over the whole population is the
+        # observable longitudinal magnetization and matches the two-pool oracle's Mz_a to
+        # the Monte-Carlo noise floor (the state-resolved sub-step evolution above supplies
+        # the exact saturation; no occupancy blend).
         out.append(np.asarray(jnp.mean(M_final[:, :, 2], axis=0)))
     if return_bound_frac:
         out.append(np.asarray(jnp.mean(bf_seq, axis=0)))    # (n_t,)
