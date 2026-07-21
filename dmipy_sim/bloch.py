@@ -298,20 +298,25 @@ def _make_bloch_mt_step_fn(geometry, D, dt, n_sub, T2, T1, M0, off_res_global,
     the driver can report the observable FREE-pool signal (the bound pool is MR-dark).
     """
     dt_sub = dt / n_sub
-    inv_nsub = jnp.float32(1.0 / n_sub)
+    # Geometry / binding constants stay float32 (the walk); the magnetisation evolution
+    # runs in float64 (_F) because the off-resonance phase accumulated over the sub-step
+    # scan is large (dw * t_sat ~ 10^2-10^3 rad) and float32 loses it over ~10^5-10^6 tiny
+    # increments -- an accumulation error, not physics (float64 is step-count-exact).
+    _F = jnp.float64
+    inv_nsub = _F(1.0 / n_sub)
     step_len = jnp.float32(np.sqrt(6.0 * D * dt_sub))
     kappa_over_D = jnp.float32(kappa_MT / D)
     dwell_steps_mean = jnp.float32(dwell_time / dt_sub)
-    invT2_free = jnp.float32(1.0 / T2) if T2 is not None else jnp.float32(0.0)
-    invT1_free = jnp.float32(1.0 / T1) if T1 is not None else jnp.float32(0.0)
-    invT2_bound = jnp.float32(1.0 / T2_bound)
-    invT1_bound = jnp.float32(1.0 / T1_bound)
-    M0f = jnp.float32(M0)
-    dt_sub_f = jnp.float32(dt_sub)
-    gamma_dt = jnp.float32(GAMMA * dt)
-    global_carrier = jnp.float32(2.0 * np.pi * float(off_res_global) * dt)
-    bound_carrier = jnp.float32(2.0 * np.pi * float(off_res_bound) * dt)
-    rho_over_D = jnp.float32(rho / D)
+    invT2_free = _F(1.0 / T2) if T2 is not None else _F(0.0)
+    invT1_free = _F(1.0 / T1) if T1 is not None else _F(0.0)
+    invT2_bound = _F(1.0 / T2_bound)
+    invT1_bound = _F(1.0 / T1_bound)
+    M0f = _F(M0)
+    dt_sub_f = _F(dt_sub)
+    gamma_dt = _F(GAMMA * dt)
+    global_carrier = _F(2.0 * np.pi * float(off_res_global) * dt)
+    bound_carrier = _F(2.0 * np.pi * float(off_res_bound) * dt)
+    rho_over_D = _F(rho / D)
     reflect_lw = geometry.reflect_with_log_weight
 
     def step_fn(carry, inputs):
@@ -339,18 +344,47 @@ def _make_bloch_mt_step_fn(geometry, D, dt, n_sub, T2, T1, M0, off_res_global,
             bound_rem_next = jnp.where(is_bound, bound_rem - jnp.float32(1.0),
                                        jnp.where(newly, dwell_draw, jnp.float32(0.0)))
             # --- spin evolution for THIS sub-step, resolved by state ---
-            M = _rf_increment_jax(M, flip_sub, rf_axis)         # nutation (both pools)
-            dphi = carr_free_sub + jnp.where(is_bound, carr_bound_sub, jnp.float32(0.0))
-            c, s = jnp.cos(dphi), jnp.sin(dphi)
+            # Strang split (symmetric, O(dt_sub^2)): half relaxation, one EXACT rotation
+            # about the effective field, half relaxation.  The rotation solves
+            # dM/dt = omega_eff x M exactly with omega_eff = (w1 cos ax, w1 sin ax, dw)
+            # (rotation vector k = omega_eff*dt_sub), fusing RF nutation and off-resonance
+            # precession; symmetrising the relaxation removes the rotation/relaxation split
+            # error that matters for the fast bound pool (dt_sub*R2_bound ~ O(0.05)).
             invT2 = jnp.where(is_bound, invT2_bound, invT2_free)
             invT1 = jnp.where(is_bound, invT1_bound, invT1_free)
-            E2, E1 = jnp.exp(-dt_sub_f * invT2), jnp.exp(-dt_sub_f * invT1)
-            # surface relaxivity only on surviving FREE contacts (mutual exclusivity)
-            surf = jnp.where(is_bound | newly, jnp.float32(1.0),
+            E2h = jnp.exp(-0.5 * dt_sub_f * invT2)
+            E1h = jnp.exp(-0.5 * dt_sub_f * invT1)
+            mx = M[:, 0] * E2h                                   # first half-relaxation
+            my = M[:, 1] * E2h
+            mz = M0f + (M[:, 2] - M0f) * E1h
+            dphi = carr_free_sub + jnp.where(is_bound, carr_bound_sub, _F(0.0))
+            kx = flip_sub * jnp.cos(rf_axis).astype(_F)
+            ky = flip_sub * jnp.sin(rf_axis).astype(_F)
+            kz = dphi
+            th2 = kx * kx + ky * ky + kz * kz
+            th = jnp.sqrt(th2)
+            ca = jnp.cos(th)
+            # Rodrigues coefficients in numerically STABLE form: the naive (1 - cos th)/th^2
+            # suffers catastrophic cancellation for the small per-sub-step angles here, so use
+            # the exact half-angle identity (1 - cos th)/th^2 = 1/2 (sin(th/2)/(th/2))^2 and
+            # sinc for sin(th)/th -- both cancellation-free (evaluated in float64, _F).
+            sb = jnp.where(th > _F(1e-12), jnp.sin(th) / th, _F(1.0))
+            half = _F(0.5) * th
+            sh = jnp.where(half > _F(1e-12), jnp.sin(half) / half, _F(1.0))
+            cb = _F(0.5) * sh * sh
+            kdotM = kx * mx + ky * my + kz * mz                  # (n_meas,)
+            crx = ky * mz - kz * my                              # (k x M)
+            cry = kz * mx - kx * mz
+            crz = kx * my - ky * mx
+            Rx = ca * mx + sb * crx + cb * kx * kdotM            # Rodrigues rotation
+            Ry = ca * my + sb * cry + cb * ky * kdotM
+            Rz = ca * mz + sb * crz + cb * kz * kdotM
+            # second half-relaxation + surface relaxivity (discrete free-contact weight)
+            surf = jnp.where(is_bound | newly, _F(1.0),
                              jnp.exp(rho_over_D * dlog))
-            Mx = (c * M[:, 0] - s * M[:, 1]) * E2 * surf
-            My = (s * M[:, 0] + c * M[:, 1]) * E2 * surf
-            Mz = M0f + (M[:, 2] - M0f) * E1
+            Mx = Rx * E2h * surf
+            My = Ry * E2h * surf
+            Mz = M0f + (Rz - M0f) * E1h
             return (r_next, jnp.stack([Mx, My, Mz], axis=1), key, bound_rem_next), \
                    jnp.where(is_bound, jnp.float32(1.0), jnp.float32(0.0))
 
@@ -375,6 +409,10 @@ def _simulate_bloch_mt(n_walkers, diffusivity, waveform, geometry, rf_events, *,
     """MT forward path (see ``simulate_bloch``).  Returns ``signals`` then, in order,
     ``mz`` (if ``return_mz``) and the walker-mean ``bound_frac`` time series (n_t,)
     (if ``return_bound_frac``)."""
+    # The magnetisation evolution runs in float64 (the off-resonance phase accumulated over
+    # the sub-step scan is large and float32 loses it); enable x64 for this path.  The walk /
+    # geometry stay float32.  This is a global JAX toggle but only the MT path relies on it.
+    jax.config.update("jax_enable_x64", True)
     if dwell_time <= 0.0:
         raise ValueError("dwell_time must be > 0 when kappa_MT > 0 (MT on).")
     if not hasattr(geometry, 'reflect_with_log_weight'):
@@ -419,7 +457,7 @@ def _simulate_bloch_mt(n_walkers, diffusivity, waveform, geometry, rf_events, *,
                                      float(M0), float(off_resonance_hz), float(kappa_MT),
                                      float(dwell_time), float(T2_bound), float(T1_bound),
                                      float(off_resonance_bound), rho=float(surface_relaxivity))
-    M_init = jnp.zeros((n_meas, 3), dtype=jnp.float32).at[:, 2].set(jnp.float32(M0))
+    M_init = jnp.zeros((n_meas, 3), dtype=jnp.float64).at[:, 2].set(jnp.float64(M0))
 
     def simulate_walker(r0_w, key_w, uw_w):
         (_, M_f, _, _, bound_rem_f), (xy_seq, bf_seq) = jax.lax.scan(
