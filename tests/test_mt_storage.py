@@ -36,7 +36,15 @@ def _stored_mz(TM, *, with_mt):
     wf = SimpleNamespace(G=np.zeros((1, n_t, 3)), dt=dt)
     kw = dict(T2=80e-3, T1=T1A, M0=1.0, return_mz=True, seed=4)
     if with_mt:
-        kw.update(kappa_MT=KAPPA_MT, dwell_time=DWELL, T2_bound=1e-5, T1_bound=T1B)
+        # equilibrate_binding='off': this coverage test's oracle idealises a CLEAN 180
+        # inversion of BOTH pools (s0 = -M0a, -M0b).  Physically a hard pulse cannot invert
+        # the broad (10 us-T2b) bound pool -- its nutation dephases mid-pulse -- so the
+        # idealised oracle only matches when no bound pool exists at the inversion and the
+        # bound pool is then populated by the inverted free spins during storage (all-free
+        # start).  With the default burn-in the pre-populated bound pool is NOT inverted and
+        # the idealisation breaks; that regime needs a finite-pulse oracle (future work).
+        kw.update(kappa_MT=KAPPA_MT, dwell_time=DWELL, T2_bound=1e-5, T1_bound=T1B,
+                  equilibrate_binding='off')
     _, mz = simulate_bloch(4000, D, wf, Sphere(radius=R), INVERT, **kw)
     return float(mz[0])
 
