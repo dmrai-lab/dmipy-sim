@@ -64,9 +64,14 @@ def test_transverse_exchange_matches_oracle():
     echo = list(range(1, n_t))
     geom = Sphere(radius=R)
 
+    # equilibrate_binding='off': the oracle excites the FREE pool only (s0=[1,0,0,...]),
+    # which the all-free start matches.  With the default pre-equilibrated bound pool, the
+    # 90 would excite-and-kill (~10 us T2b) the bound spins too, lowering the initial free
+    # transverse below the oracle's -- so this exchange-dynamics check pins the all-free IC.
     S_mt = np.abs(simulate_bloch(12000, D, _zero_wf(n_t, dt), geom, EXC, T2=T2a,
                                  kappa_MT=kappa_MT, dwell_time=dwell, T2_bound=T2b,
-                                 T1_bound=1.0, seed=5, echo_steps=echo)[0])
+                                 T1_bound=1.0, seed=5, echo_steps=echo,
+                                 equilibrate_binding='off')[0])
     S0 = np.abs(simulate_bloch(12000, D, _zero_wf(n_t, dt), geom, EXC, T2=T2a,
                                seed=5, echo_steps=echo)[0])       # no MT -> plain T2a
     ratio_mc = S_mt / S0

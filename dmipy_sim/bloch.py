@@ -27,6 +27,8 @@ transfer bound pool blends onto this same per-step update in later work.
 """
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 import jax
 import jax.numpy as jnp
@@ -162,7 +164,7 @@ def simulate_bloch(n_walkers, diffusivity, waveform, geometry, rf_events, *,
                    surface_relaxivity=0.0,
                    kappa_MT=0.0, dwell_time=0.0, T2_bound=1e-5, T1_bound=1.0,
                    off_resonance_bound=0.0, sub_steps=None, return_bound_frac=False,
-                   require_gpu=None):
+                   equilibrate_binding="auto", require_gpu=None):
     """Forward vector-Bloch signal for a sequence of RF pulses on ``waveform.G``.
 
     Parameters
@@ -186,6 +188,17 @@ def simulate_bloch(n_walkers, diffusivity, waveform, geometry, rf_events, *,
         a CPMG echo train.  Returns ``(n_meas, n_echo)`` complex when given.
     return_mz : bool
         Also return the final walker-mean ``Mz`` (n_meas,).
+    equilibrate_binding : {'auto', 'burnin', 'fast', 'off'}
+        (MT only, ``kappa_MT > 0``.)  How to reach the thermal-equilibrium bound-pool
+        occupancy ``k_f/(k_f+k_r)`` BEFORE the sequence -- the macromolecular pool exists
+        before the pulse, so an all-free start under-fills it and biases the transfer
+        whenever ``1/k_f`` is not ``<<`` the sequence duration.  ``'burnin'`` (the ``'auto'``
+        default when MT is on) runs an adaptive RF-off burn-in until the occupancy plateaus
+        (geometry-agnostic).  ``'fast'`` seeds the equilibrium occupancy directly (mid-air,
+        no walk) -- allowed only when it is provably position-invariant (no gradient, or an
+        MR-dark bound pool) with a known S/V, else it warns and falls back to ``'burnin'``.
+        ``'off'`` keeps the legacy all-free start (correct only if you equilibrate yourself,
+        e.g. a burn-in block inside the waveform).
 
     Returns
     -------
@@ -208,7 +221,8 @@ def simulate_bloch(n_walkers, diffusivity, waveform, geometry, rf_events, *,
             surface_relaxivity=surface_relaxivity,
             kappa_MT=kappa_MT, dwell_time=dwell_time, T2_bound=T2_bound,
             T1_bound=T1_bound, off_resonance_bound=off_resonance_bound,
-            sub_steps=sub_steps, return_bound_frac=return_bound_frac)
+            sub_steps=sub_steps, return_bound_frac=return_bound_frac,
+            equilibrate_binding=equilibrate_binding)
 
     if hasattr(waveform, 'waveform'):
         waveform = waveform.waveform
@@ -278,6 +292,80 @@ def _geom_radius(geometry):
             except (TypeError, ValueError):
                 pass
     return None
+
+
+def _surface_to_volume(geometry):
+    """Surface-to-volume ratio (1/m) used only for the fast (mid-air) equilibrium init's
+    occupancy ``P_eq = k_f/(k_f+k_r)``, ``k_f = kappa_MT*(S/V)``.  Only closed analytic
+    shapes are handled exactly; None otherwise, so the fast path is refused and the caller
+    falls back to the geometry-agnostic burn-in (which needs no S/V)."""
+    name = type(geometry).__name__
+    R = _geom_radius(geometry)
+    if R is not None and R > 0.0:
+        if name == 'Sphere':
+            return 3.0 / R
+        if name == 'Cylinder':
+            return 2.0 / R                      # infinite cylinder, lateral wall
+    return None
+
+
+def _resolve_equilibrate_mode(equilibrate_binding, G, T2, T2_bound, geometry):
+    """Map the ``equilibrate_binding`` request to a concrete mode ('off'|'burnin'|'fast'),
+    demoting 'fast' to 'burnin' (with a warning) whenever the mid-air bound positions would
+    not be position-invariant.  Mid-air init is safe only when the bound spins never carry
+    position-dependent signal: either no gradient at all (G==0), or an MR-dark bound pool
+    (T2_bound << T2) so bound transverse dephases before any echo -- and S/V must be known
+    for the occupancy."""
+    eb = equilibrate_binding
+    if eb in (None, False, 'off'):
+        return 'off'
+    if eb in ('auto', True, 'burnin'):
+        return 'burnin'                         # safe, geometry-agnostic default when MT on
+    if eb == 'fast':
+        if _surface_to_volume(geometry) is None:
+            warnings.warn("equilibrate_binding='fast' needs a known surface-to-volume "
+                          "(analytic Sphere/Cylinder); falling back to 'burnin'.", stacklevel=3)
+            return 'burnin'
+        no_gradient = not bool(np.any(G))
+        dark = (T2 is None) or (float(T2_bound) <= 0.02 * float(T2))
+        if not (no_gradient or dark):
+            warnings.warn("equilibrate_binding='fast' is unsafe: a gradient is present and "
+                          "the bound pool is not MR-dark (T2_bound not << T2), so the mid-air "
+                          "bound positions would bias the signal; falling back to 'burnin'.",
+                          stacklevel=3)
+            return 'burnin'
+        return 'fast'
+    raise ValueError(f"equilibrate_binding must be 'auto'|'burnin'|'fast'|'off', got {eb!r}")
+
+
+def _equilibrate_burnin(step_fn, r0, walker_keys, uw, M_init, n_meas, dt, dwell_time,
+                        tol=0.01, max_chunks=40):
+    """Adaptive RF-off / gradient-off burn-in: evolve the walk in chunks until the bound-pool
+    occupancy plateaus (relative change between chunks < ``tol``), so the binding reaches its
+    thermal equilibrium before the sequence.  Geometry-agnostic (needs no S/V) and self-adapts
+    to the slow long-dwell regime.  Returns equilibrated positions, per-walker residual bound
+    counter (sub-steps), advanced keys, the plateau occupancy, and a converged flag."""
+    n_walkers = r0.shape[0]
+    n_chunk = int(max(4, round(float(dwell_time) / dt)))       # ~one dwell (turnover unit)
+    z1 = jnp.zeros((n_chunk,), jnp.float32)
+    burn_inputs = (jnp.zeros((n_chunk, n_meas, 3), jnp.float32), z1, z1, z1, z1)  # G,dflip,axis,carrier,crush
+
+    def chunk_walker(r_w, key_w, uw_w, brem_w):
+        (r_f, _, key_f, _, brem_f), (_, bf_seq) = jax.lax.scan(
+            step_fn, (r_w, M_init, key_w, uw_w, brem_w), burn_inputs)
+        return r_f, key_f, brem_f, jnp.mean(bf_seq)
+
+    chunk = jax.jit(jax.vmap(chunk_walker, in_axes=(0, 0, 0, 0)))
+    r, keys, brem = r0, walker_keys, jnp.zeros((n_walkers,), dtype=jnp.float32)
+    occ_prev, converged = -1.0, False
+    for _ in range(max_chunks):
+        r, keys, brem, bf = chunk(r, keys, uw, brem)
+        occ = float(jnp.mean(bf))
+        if occ_prev >= 0.0 and abs(occ - occ_prev) <= tol * max(occ, 1e-6):
+            occ_prev, converged = occ, True
+            break
+        occ_prev = occ
+    return r, brem, keys, occ_prev, converged
 
 
 def _make_bloch_mt_step_fn(geometry, D, dt, n_sub, T2, T1, M0, off_res_global,
@@ -405,7 +493,8 @@ def _make_bloch_mt_step_fn(geometry, D, dt, n_sub, T2, T1, M0, off_res_global,
 def _simulate_bloch_mt(n_walkers, diffusivity, waveform, geometry, rf_events, *,
                        T2, T1, M0, off_resonance_hz, seed, echo_steps, return_mz,
                        crusher, surface_relaxivity, kappa_MT, dwell_time, T2_bound,
-                       T1_bound, off_resonance_bound, sub_steps, return_bound_frac):
+                       T1_bound, off_resonance_bound, sub_steps, return_bound_frac,
+                       equilibrate_binding="auto"):
     """MT forward path (see ``simulate_bloch``).  Returns ``signals`` then, in order,
     ``mz`` (if ``return_mz``) and the walker-mean ``bound_frac`` time series (n_t,)
     (if ``return_bound_frac``)."""
@@ -458,15 +547,47 @@ def _simulate_bloch_mt(n_walkers, diffusivity, waveform, geometry, rf_events, *,
                                      float(dwell_time), float(T2_bound), float(T1_bound),
                                      float(off_resonance_bound), rho=float(surface_relaxivity))
     M_init = jnp.zeros((n_meas, 3), dtype=jnp.float64).at[:, 2].set(jnp.float64(M0))
+    dwell_steps_mean = float(dwell_time) / (dt / int(sub_steps))   # residual dwell in sub-steps
 
-    def simulate_walker(r0_w, key_w, uw_w):
+    # ── bound-pool initial condition (the thermal-equilibrium occupancy k_f/(k_f+k_r)) ──
+    mode = _resolve_equilibrate_mode(equilibrate_binding, G, T2, T2_bound, geometry)
+    S_V = _surface_to_volume(geometry)
+    P_eq = (kappa_MT * S_V) / (kappa_MT * S_V + 1.0 / dwell_time) if S_V is not None else None
+    converged = True
+    if mode == 'fast':
+        ek = jax.random.fold_in(master_key, 0xB0117E)
+        u_state, u_dwell = jax.random.uniform(ek, (2, n_walkers), dtype=jnp.float32)
+        bound_rem0 = jnp.where(u_state < jnp.float32(P_eq),
+                               -jnp.log(jnp.maximum(u_dwell, jnp.float32(1e-20)))
+                               * jnp.float32(dwell_steps_mean), jnp.float32(0.0))
+        run_keys = walker_keys
+    elif mode == 'burnin':
+        r0, bound_rem0, run_keys, occ_burn, converged = _equilibrate_burnin(
+            step_fn, r0, walker_keys, uw, M_init, n_meas, dt, dwell_time)
+    else:  # 'off' -- legacy all-free start
+        bound_rem0 = jnp.zeros((n_walkers,), dtype=jnp.float32)
+        run_keys = walker_keys
+
+    def simulate_walker(r0_w, key_w, uw_w, brem0_w):
         (_, M_f, _, _, bound_rem_f), (xy_seq, bf_seq) = jax.lax.scan(
-            step_fn, (r0_w, M_init, key_w, uw_w, jnp.float32(0.0)), scan_inputs)
+            step_fn, (r0_w, M_init, key_w, uw_w, brem0_w), scan_inputs)
         return M_f, xy_seq, bf_seq, bound_rem_f
 
     M_final, xy_seq, bf_seq, bound_rem_final = jax.vmap(
-        simulate_walker, in_axes=(0, 0, 0))(r0, walker_keys, uw)
+        simulate_walker, in_axes=(0, 0, 0, 0))(r0, run_keys, uw, bound_rem0)
     # (n_w,n_meas,3) (n_w,n_t,n_meas) (n_w,n_t) (n_w,)
+
+    # ── equilibration self-check: warn rather than silently return a biased signal ──
+    if mode != 'off':
+        occ_run = float(jnp.mean(bf_seq))
+        if mode == 'burnin' and not converged:
+            warnings.warn("equilibrate_binding: bound-pool occupancy did not plateau within "
+                          "the burn-in cap (long-dwell / heterogeneous substrate?); the MT "
+                          "signal may be under-equilibrated.", stacklevel=2)
+        if P_eq is not None and abs(occ_run - P_eq) > max(0.05 * P_eq, 0.01):
+            warnings.warn(f"equilibrate_binding='{mode}': bound occupancy during the sequence "
+                          f"({occ_run:.3f}) differs from equilibrium k_f/(k_f+k_r)={P_eq:.3f}; "
+                          f"the MT bound pool may be off-equilibrium.", stacklevel=2)
 
     if echo_steps is not None:
         echoes = jnp.mean(xy_seq, axis=0)[jnp.asarray(echo_steps, dtype=int)]
