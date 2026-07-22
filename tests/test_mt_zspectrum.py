@@ -42,12 +42,17 @@ def _mz(offset_hz, *, with_mt):
 
 
 def test_emergent_zspectrum_matches_oracle():
-    offsets = np.array([0.0, 500.0, 1000.0])
+    # Include off-resonance WINGS (a few kHz), where the bound-pool exchange rate k_f
+    # actually shapes the Z-spectrum -- a near-resonance-only check is insensitive to k_f
+    # and misses discretisation errors in the saturation transfer.  With the float64
+    # magnetisation evolution + effective-field rotation, the emergent MC matches the
+    # two-pool oracle to the Monte-Carlo noise floor across the whole spectrum.
+    offsets = np.array([0.0, 500.0, 1000.0, 3000.0, 8000.0])
     mc = np.array([_mz(o, with_mt=True) for o in offsets])
     Z = mt.mt_z_spectrum(offsets, w1_hz=W1_HZ, t_sat=T_SAT, T1a=T1a, T2a=T2a,
                          T1b=T1b, T2b=T2b, k_f=k_f, k_r=k_r)
     rel = np.abs(mc - Z) / np.maximum(np.abs(Z), 0.05)
-    assert np.max(rel) < 0.10, f"MC {np.round(mc,3)} vs oracle {np.round(Z,3)}"
+    assert np.max(rel) < 0.04, f"MC {np.round(mc,3)} vs oracle {np.round(Z,3)}"
 
 
 def test_mt_dip_shape_and_specificity():
