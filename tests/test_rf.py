@@ -107,3 +107,42 @@ def test_deliverability_reads_scanner_limits():
     stiff = B1Pulse.hard(90, 1e-4, 1e-6)          # 0.1 ms 90 -> tens of uT peak -> not
     assert stiff.peak_b1 > peak_lim
     assert stiff.is_deliverable(model) is False
+
+
+# ── adiabatic / composite constructors (B1-robust) ────────────────────────────
+def test_adiabatic_hs_inverts_across_b1_range():
+    p = B1Pulse.adiabatic_hs(6e-3, 1e-4, peak_b1=19e-6, mu=2.0)
+    for b1 in (0.7, 1.0, 1.3):
+        _, Mz = bloch_simulate(p, df_hz=0.0, b1_scale=b1)
+        assert float(Mz[0]) < -0.9                       # robust inversion
+    # a hard 180° of the same peak fails off-nominal
+    _, Mz07 = bloch_simulate(B1Pulse.adiabatic_hs(6e-3, 1e-4, peak_b1=19e-6, mu=2.0), df_hz=0.0, b1_scale=0.7)
+    assert float(Mz07[0]) < -0.9
+
+
+def test_adiabatic_half_passage_is_b1_insensitive_excitation():
+    p = B1Pulse.adiabatic_half_passage(3e-3, 1e-5, peak_b1=19e-6)
+    for b1 in (0.6, 1.0, 1.5):
+        Mxy, Mz = bloch_simulate(p, df_hz=0.0, b1_scale=b1)
+        assert abs(complex(Mxy[0])) > 0.95               # flat, near-full transverse
+        assert abs(float(Mz[0])) < 0.2
+
+
+def test_bir4_tunable_and_b1_insensitive():
+    inv = B1Pulse.bir4(180, 4e-3, 1e-5, peak_b1=19e-6)
+    for b1 in (0.6, 1.0, 1.4):
+        _, Mz = bloch_simulate(inv, df_hz=0.0, b1_scale=b1)
+        assert float(Mz[0]) < -0.85                      # B1-insensitive inversion
+    # tunable: flip ≈ 2·(phase jump) = flip_deg; a 90 leaves M near the transverse plane
+    exc = B1Pulse.bir4(90, 4e-3, 1e-5, peak_b1=19e-6)
+    _, Mz90 = bloch_simulate(exc, df_hz=0.0, b1_scale=1.0)
+    assert -0.4 < float(Mz90[0]) < 0.4                   # ~90° from +z
+
+
+def test_composite_beats_hard_off_nominal():
+    comp = B1Pulse.composite([(90, 0), (180, 90), (90, 0)], 1e-5, peak_b1=19e-6)
+    hard = B1Pulse.hard(180, comp.duration, 1e-5)
+    _, mz_c = bloch_simulate(comp, df_hz=0.0, b1_scale=0.7)
+    _, mz_h = bloch_simulate(hard, df_hz=0.0, b1_scale=0.7)
+    assert float(mz_c[0]) < float(mz_h[0])               # composite inverts better at B1⁺=0.7
+    assert comp.label == "composite"
