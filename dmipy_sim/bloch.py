@@ -87,7 +87,8 @@ def _build_rf_schedule(rf_events, dt, n_t):
     return dflip, axis, carrier
 
 
-def _make_bloch_step_fn(geometry, D, dt, T2, T1, M0, off_resonance_hz, rho=0.0):
+def _make_bloch_step_fn(geometry, D, dt, T2, T1, M0, off_resonance_hz, rho=0.0,
+                        field_fn=None):
     """Per-timestep forward Bloch scan body (per walker; M is (n_meas, 3)).
 
     Carry ``(r, M, key, u_crush)``; ``u_crush`` is the walker's fixed macroscopic
@@ -95,6 +96,10 @@ def _make_bloch_step_fn(geometry, D, dt, T2, T1, M0, off_resonance_hz, rho=0.0):
     ``rho`` (m/s) is the transverse surface relaxivity: at each wall contact ``Mxy``
     is attenuated by ``exp((rho/D) * dlog)`` with ``dlog`` the boundary local time
     (rho/D=1 channel) -- the walk is unchanged, so rho=0 keeps the plain path exact.
+    ``field_fn`` (optional) maps the walker position ``r -> ΔBz`` (Tesla): a
+    susceptibility-induced off-resonance field, added to the z-precession as
+    ``gamma * ΔBz(r) * dt`` -- refocused by the sequence's own 180 pulse.  None keeps
+    the plain path exact.
     """
     gamma_dt = jnp.float32(GAMMA * dt)
     step_len = jnp.float32(np.sqrt(6.0 * D * dt))
@@ -129,6 +134,8 @@ def _make_bloch_step_fn(geometry, D, dt, T2, T1, M0, off_resonance_hz, rho=0.0):
         # residual while leaving the longitudinally-stored magnetisation untouched).
         dphi = (gamma_dt * (g_t @ r_new) + global_carrier + rf_carrier
                 + crush_rate * uc)                          # (n_meas,)
+        if field_fn is not None:
+            dphi = dphi + gamma_dt * field_fn(r_new)        # susceptibility off-resonance
         c, s = jnp.cos(dphi), jnp.sin(dphi)
         Mx = (c * M[:, 0] - s * M[:, 1]) * E2 * surf
         My = (s * M[:, 0] + c * M[:, 1]) * E2 * surf
@@ -164,7 +171,7 @@ def simulate_bloch(n_walkers, diffusivity, waveform, geometry, rf_events, *,
                    surface_relaxivity=0.0,
                    kappa_MT=0.0, dwell_time=0.0, T2_bound=1e-5, T1_bound=1.0,
                    off_resonance_bound=0.0, sub_steps=None, return_bound_frac=False,
-                   equilibrate_binding="auto", require_gpu=None):
+                   equilibrate_binding="auto", susceptibility=None, require_gpu=None):
     """Forward vector-Bloch signal for a sequence of RF pulses on ``waveform.G``.
 
     Parameters
@@ -222,7 +229,7 @@ def simulate_bloch(n_walkers, diffusivity, waveform, geometry, rf_events, *,
             kappa_MT=kappa_MT, dwell_time=dwell_time, T2_bound=T2_bound,
             T1_bound=T1_bound, off_resonance_bound=off_resonance_bound,
             sub_steps=sub_steps, return_bound_frac=return_bound_frac,
-            equilibrate_binding=equilibrate_binding)
+            equilibrate_binding=equilibrate_binding, susceptibility=susceptibility)
 
     if hasattr(waveform, 'waveform'):
         waveform = waveform.waveform
@@ -254,9 +261,13 @@ def simulate_bloch(n_walkers, diffusivity, waveform, geometry, rf_events, *,
     else:
         uw = jnp.zeros((n_walkers,), dtype=jnp.float32)
 
+    field_fn = None
+    if susceptibility is not None:
+        field_fn = (susceptibility.delta_bz_fn()
+                    if hasattr(susceptibility, "delta_bz_fn") else susceptibility)
     step_fn = _make_bloch_step_fn(geometry, float(diffusivity), dt,
                                   T2, T1, float(M0), float(off_resonance_hz),
-                                  rho=float(surface_relaxivity))
+                                  rho=float(surface_relaxivity), field_fn=field_fn)
     M_init = jnp.zeros((n_meas, 3), dtype=jnp.float32).at[:, 2].set(jnp.float32(M0))
 
     want_echo = echo_steps is not None
@@ -370,7 +381,7 @@ def _equilibrate_burnin(step_fn, r0, walker_keys, uw, M_init, n_meas, dt, dwell_
 
 def _make_bloch_mt_step_fn(geometry, D, dt, n_sub, T2, T1, M0, off_res_global,
                            kappa_MT, dwell_time, T2_bound, T1_bound, off_res_bound,
-                           rho=0.0):
+                           rho=0.0, field_fn=None):
     """Per-timestep fused body: an ``n_sub`` binding sub-walk over ``dt``, evolving the
     walker's magnetization STATE-RESOLVED at the sub-step level.  Each sub-step the
     walker is free or bound; the RF nutates it either way (both pools feel B1, as in
@@ -402,6 +413,7 @@ def _make_bloch_mt_step_fn(geometry, D, dt, n_sub, T2, T1, M0, off_res_global,
     M0f = _F(M0)
     dt_sub_f = _F(dt_sub)
     gamma_dt = _F(GAMMA * dt)
+    gamma_dt_sub = _F(GAMMA * dt_sub)                          # susceptibility precession / sub-step
     global_carrier = _F(2.0 * np.pi * float(off_res_global) * dt)
     bound_carrier = _F(2.0 * np.pi * float(off_res_bound) * dt)
     rho_over_D = _F(rho / D)
@@ -446,6 +458,8 @@ def _make_bloch_mt_step_fn(geometry, D, dt, n_sub, T2, T1, M0, off_res_global,
             my = M[:, 1] * E2h
             mz = M0f + (M[:, 2] - M0f) * E1h
             dphi = carr_free_sub + jnp.where(is_bound, carr_bound_sub, _F(0.0))
+            if field_fn is not None:                            # susceptibility off-resonance
+                dphi = dphi + gamma_dt_sub * field_fn(r_next).astype(_F)  # at the spin's position
             kx = flip_sub * jnp.cos(rf_axis).astype(_F)
             ky = flip_sub * jnp.sin(rf_axis).astype(_F)
             kz = dphi
@@ -494,7 +508,7 @@ def _simulate_bloch_mt(n_walkers, diffusivity, waveform, geometry, rf_events, *,
                        T2, T1, M0, off_resonance_hz, seed, echo_steps, return_mz,
                        crusher, surface_relaxivity, kappa_MT, dwell_time, T2_bound,
                        T1_bound, off_resonance_bound, sub_steps, return_bound_frac,
-                       equilibrate_binding="auto"):
+                       equilibrate_binding="auto", susceptibility=None):
     """MT forward path (see ``simulate_bloch``).  Returns ``signals`` then, in order,
     ``mz`` (if ``return_mz``) and the walker-mean ``bound_frac`` time series (n_t,)
     (if ``return_bound_frac``)."""
@@ -542,10 +556,15 @@ def _simulate_bloch_mt(n_walkers, diffusivity, waveform, geometry, rf_events, *,
                              dtype=jnp.float32) if has_crush
           else jnp.zeros((n_walkers,), dtype=jnp.float32))
 
+    field_fn = None
+    if susceptibility is not None:
+        field_fn = (susceptibility.delta_bz_fn()
+                    if hasattr(susceptibility, "delta_bz_fn") else susceptibility)
     step_fn = _make_bloch_mt_step_fn(geometry, D, dt, int(sub_steps), T2, T1,
                                      float(M0), float(off_resonance_hz), float(kappa_MT),
                                      float(dwell_time), float(T2_bound), float(T1_bound),
-                                     float(off_resonance_bound), rho=float(surface_relaxivity))
+                                     float(off_resonance_bound), rho=float(surface_relaxivity),
+                                     field_fn=field_fn)
     M_init = jnp.zeros((n_meas, 3), dtype=jnp.float64).at[:, 2].set(jnp.float64(M0))
     dwell_steps_mean = float(dwell_time) / (dt / int(sub_steps))   # residual dwell in sub-steps
 
