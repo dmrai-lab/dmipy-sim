@@ -12,7 +12,7 @@ _apply_gpu_mem_cap()
 from .core import simulate, simulate_mixture, simulate_cpmg
 from .bloch import simulate_bloch
 from .pulse_sequence import (BlochSequence, gradient_echo, spin_echo,
-                             prepend_mt_prep, run_bloch_sequence)
+                             prepend_mt_prep, run_bloch_sequence, emergent_z_spectrum)
 from .gpu import (gpu_available, check_gpu, free_gpu_memory, gpu_session,
                   list_gpu_processes)
 from .viz import (plot_waveform, plot_sequence_comparison,
@@ -43,7 +43,7 @@ __all__ = [
     "simulate", "simulate_mixture", "simulate_cpmg",
     "simulate_bloch",
     "BlochSequence", "gradient_echo", "spin_echo", "prepend_mt_prep",
-    "run_bloch_sequence",
+    "run_bloch_sequence", "emergent_z_spectrum",
     "gpu_available", "check_gpu", "free_gpu_memory", "gpu_session", "list_gpu_processes",
     "Waveform", "pgse", "pgste", "ogse", "cpmg", "trapezoidal_ogse", "b_trapezoidal_ogse",
     "set_b", "calc_b", "calc_btensor", "btensor_invariants", "ste", "pte",
