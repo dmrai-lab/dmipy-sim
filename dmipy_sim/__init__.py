@@ -42,6 +42,7 @@ from .sh_convolution import (
     isotropic_odf_sh,
 )
 from . import mt
+from .rf import B1Pulse, bloch_simulate, slice_profile
 
 __all__ = [
     "simulate", "simulate_mixture", "simulate_cpmg",
@@ -72,4 +73,6 @@ __all__ = [
     "isotropic_odf_sh",
     # magnetization transfer (physics + analytic oracle)
     "mt",
+    # continuous RF pulses: complex B1(t) envelope + Bloch forward
+    "B1Pulse", "bloch_simulate", "slice_profile",
 ]
