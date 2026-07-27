@@ -9,7 +9,9 @@ NOT an idealised flip angle, and NOT the transverse-coherence mask a ``Waveform`
 carries (``Waveform.chi_perp``, which describes a pulse's *effect* — which intervals are
 transverse vs longitudinal). ``B1Pulse`` describes the pulse you actually play on the
 coil, with the same status the ``G(t)`` array has for gradients: it is the ground truth,
-and the constructors (hard / windowed-sinc / from_samples) are conveniences on top of it.
+and the constructors are conveniences on top of it — simple shapes (hard / windowed_sinc /
+from_samples) and B1-robust ones (adiabatic_hs, adiabatic_half_passage, bir4, composite) that
+also serve as warm starts for dmipy-design's RF optimiser.
 
 Deliverability is the RF mirror of the gradient slew/amplitude limits: the peak |B1|,
 the B1+rms / SAR proxy, and the transmit raster are read from
@@ -168,6 +170,76 @@ class B1Pulse:
         amp = flip / area if area > 0 else 0.0
         b1 = (env * amp).astype(np.complex128) * np.exp(1j * np.deg2rad(phase_deg))
         return cls(b1=b1, dt=dt, label=label, flip_deg=float(flip_deg))
+
+    # ── adiabatic / composite shapes (B1-robust) ──────────────────────────────
+    @classmethod
+    def adiabatic_hs(cls, duration, dt, *, peak_b1, mu=4.0, beta=5.3, label="adiabatic_hs"):
+        """Hyperbolic-secant adiabatic full passage (Silver, Joseph & Hoult 1985).
+
+        ``B1(t) = peak_b1 · sech(βτ)^(1+iμ)`` over ``τ = 2t/T − 1 ∈ [−1, 1]``: a sech amplitude
+        with a tanh frequency sweep of bandwidth ``≈ 2μβ/(πT)``.  A B1-robust inversion /
+        refocusing pulse — the magnetisation follows the swept effective field to −z regardless
+        of ``B1⁺`` (above the adiabatic threshold).  ``peak_b1`` is the peak amplitude (Tesla);
+        raise it or lengthen ``duration`` for stronger adiabaticity."""
+        n = max(3, int(round(float(duration) / float(dt))))
+        tau = np.linspace(-1.0, 1.0, n)
+        sech = 1.0 / np.cosh(beta * tau)
+        b1 = peak_b1 * sech * np.exp(1j * mu * np.log(sech + 1e-300))
+        return cls(b1=b1.astype(np.complex128), dt=dt, label=label, flip_deg=180.0)
+
+    @classmethod
+    def adiabatic_half_passage(cls, duration, dt, *, peak_b1, beta=6.0, kappa=np.arctan(20.0),
+                               sweep_hz=1.0e4, label="ahp"):
+        """Adiabatic half-passage: a B1-insensitive 90° excitation (+z → transverse).
+
+        Amplitude ramps ``0 → peak_b1`` (tanh) while the frequency sweeps ``+sweep_hz → 0``
+        (tan), so the effective field rotates from +z into the transverse plane and the
+        magnetisation follows it — B1-insensitively.  Half of an adiabatic full passage; the
+        building block of BIR-4."""
+        n = max(3, int(round(float(duration) / float(dt))))
+        tau = np.linspace(0.0, 1.0, n)
+        amp = peak_b1 * np.tanh(beta * tau)
+        freq = sweep_hz * np.tan(kappa * (1.0 - tau)) / np.tan(kappa)
+        phase = np.cumsum(2.0 * np.pi * freq * float(dt))
+        return cls(b1=(amp * np.exp(1j * phase)).astype(np.complex128), dt=dt, label=label,
+                   flip_deg=90.0)
+
+    @classmethod
+    def bir4(cls, flip_deg, duration, dt, *, peak_b1, beta=6.0, kappa=np.arctan(20.0),
+             sweep_hz=1.0e4, label="bir4"):
+        """BIR-4: a B1-insensitive rotation by an ARBITRARY angle (Garwood & Ke 1991).
+
+        Four adiabatic half-passages (``adiabatic_half_passage`` shape) with the frequency sweep
+        sign-alternated across segments and two phase jumps of ``φ = flip_deg/2`` on the middle
+        two segments; the net flip is ``≈ flip_deg`` and it is held across a wide ``B1⁺`` range
+        (unlike a full passage, which only inverts).  ``peak_b1`` is the peak amplitude (T)."""
+        n = max(8, int(round(float(duration) / float(dt))))
+        q = n // 4
+        tau = np.linspace(0.0, 1.0, q)
+        amp0 = np.tanh(beta * tau)
+        fr0 = sweep_hz * np.tan(kappa * (1.0 - tau)) / np.tan(kappa)
+        fm = (1.0, -1.0, 1.0, -1.0)
+        phi = np.deg2rad(float(flip_deg) / 2.0)
+        pj = (0.0, phi, phi, 0.0)
+        amp = np.concatenate([amp0[::-1] if k % 2 else amp0 for k in range(4)])
+        fr = np.concatenate([(fr0[::-1] if k % 2 else fr0) * fm[k] for k in range(4)])
+        jump = np.concatenate([np.full(q, pj[k]) for k in range(4)])
+        gph = np.cumsum(2.0 * np.pi * fr * float(dt))
+        b1 = peak_b1 * amp * np.exp(1j * (gph + jump))
+        return cls(b1=b1.astype(np.complex128), dt=dt, label=label, flip_deg=float(flip_deg))
+
+    @classmethod
+    def composite(cls, segments, dt, *, peak_b1, label="composite"):
+        """Composite pulse: a sequence of constant-amplitude hard sub-pulses.
+
+        ``segments`` is a list of ``(flip_deg, phase_deg)``; each is a hard pulse at ``peak_b1``
+        with duration ``|flip| / (γ·peak_b1)``, concatenated.  Robustness comes from the phase
+        pattern (e.g. Levitt's ``[(90, 0), (180, 90), (90, 0)]`` inversion)."""
+        parts = []
+        for flip_deg, phase_deg in segments:
+            dur = abs(np.deg2rad(float(flip_deg))) / (GAMMA * float(peak_b1))
+            parts.append(cls.hard(flip_deg, dur, dt, phase_deg=phase_deg).b1)
+        return cls(b1=np.concatenate(parts).astype(np.complex128), dt=dt, label=label)
 
     # ── deliverability (read limits from scanner_constants) ───────────────────
     def deliverability(self, model, *, coil="body", tol=1.02):
