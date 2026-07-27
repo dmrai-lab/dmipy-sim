@@ -18,7 +18,7 @@ import numpy as np
 from .bloch import simulate_bloch
 
 __all__ = ["BlochSequence", "gradient_echo", "spin_echo", "prepend_mt_prep",
-           "run_bloch_sequence"]
+           "run_bloch_sequence", "emergent_z_spectrum"]
 
 
 @dataclass
@@ -128,3 +128,59 @@ def run_bloch_sequence(seq, n_walkers, diffusivity, geometry, *, seed=0, **kw):
     wf = SimpleNamespace(G=np.asarray(seq.G), dt=float(seq.dt))
     return simulate_bloch(n_walkers, diffusivity, wf, geometry, seq.rf_events,
                           seed=seed, echo_steps=seq.echo_steps, crusher=seq.crusher, **kw)
+
+
+# ── turnkey emergent Z-spectrum sweep ─────────────────────────────────────────────
+def emergent_z_spectrum(offsets_hz, geometry, *, n_walkers, diffusivity, w1_hz, t_sat, dt,
+                        T2, kappa_MT, dwell_time, T1=1.0, T2_bound=1e-5, T1_bound=1.0,
+                        equilibrate_binding="auto", seed=0):
+    """Emergent CW-saturation Z-spectrum from the forward vector-Bloch engine.
+
+    For each off-resonance ``offset`` (Hz), apply a continuous-wave saturation pulse of
+    nutation ``w1_hz`` (= gamma*B1/2pi) and duration ``t_sat`` (s) to the MT-binding
+    substrate, then read the walker-mean longitudinal magnetization ``Mz`` (normalised to
+    ``M0=1``).  The broad, short-``T2_bound`` bound pool saturates over a wide offset range
+    while the narrow free-water line is spared -> the emergent MT dip.  No super-Lorentzian
+    lineshape is imposed; the dip is produced by real short-``T2_bound`` spins.
+
+    This is the *emergent* (Monte-Carlo) counterpart of the analytic two-pool oracle
+    :func:`dmipy_sim.mt.mt_z_spectrum`; the two agree to the MC noise floor once the bound
+    pool is burned in (``equilibrate_binding`` other than ``'off'``).  Fine ``dt`` is
+    required so the carrier ``2*pi*offset*dt`` does not alias.
+
+    Parameters
+    ----------
+    offsets_hz : array-like
+        Saturation offsets from the free-water resonance (Hz).
+    geometry : Sphere | Cylinder | ...
+        Any MT-capable geometry (the wall the spins bind to).
+    n_walkers, diffusivity : int, float
+        Walker count and free-water diffusivity (m^2/s).
+    w1_hz, t_sat, dt : float
+        CW saturation nutation rate (Hz), duration (s), and timestep (s).
+    T2, T1 : float
+        Free-pool relaxation times (s).
+    kappa_MT, dwell_time, T2_bound, T1_bound : float
+        MT wall reactivity (m/s), bound dwell time (s, = 1/k_r), and bound-pool T2/T1 (s).
+    equilibrate_binding : {'auto', 'burnin', 'fast', 'off'}
+        Bound-pool initialisation; see :func:`dmipy_sim.simulate_bloch`.
+
+    Returns
+    -------
+    numpy.ndarray
+        ``Mz`` of the free pool at each offset, shape ``(len(offsets_hz),)``.
+    """
+    offsets = np.atleast_1d(np.asarray(offsets_hz, dtype=float))
+    n_t = int(round(float(t_sat) / float(dt))) + 1
+    wf = SimpleNamespace(G=np.zeros((1, n_t, 3)), dt=float(dt))
+    flip = 360.0 * float(w1_hz) * float(t_sat)              # CW total flip over the window
+    mz = np.empty(offsets.shape, dtype=float)
+    for i, off in enumerate(offsets):
+        rf = [{'t_s': float(t_sat) / 2, 'flip_deg': flip, 'axis_deg': 0.0,
+               'duration_s': float(t_sat), 'offset_hz': float(off)}]
+        _, m = simulate_bloch(n_walkers, diffusivity, wf, geometry, rf,
+                              T2=T2, T1=T1, kappa_MT=kappa_MT, dwell_time=dwell_time,
+                              T2_bound=T2_bound, T1_bound=T1_bound, return_mz=True,
+                              equilibrate_binding=equilibrate_binding, seed=seed)
+        mz[i] = float(m[0])
+    return mz
