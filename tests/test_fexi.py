@@ -22,7 +22,7 @@ def test_fexi_builds_and_carries_b_detect():
     seq = fexi(delta=5e-3, t_mix=30e-3, dt=2e-4, g_filter=0.15, g_detect=[0.0, 0.4], Delta=12e-3)
     assert seq.family == "fexi" and seq.complex_signal
     flips = sorted(e['flip_deg'] for e in seq.rf_events)
-    assert flips == [90.0, 90.0, 90.0, 180.0, 180.0]              # 3×90 (STE) + 2×180 (PGSE blocks)
+    assert flips == [90.0, 90.0, 90.0]                            # 3×90 (STE); bipolar blocks, no 180
     assert seq.crusher is not None and seq.b_detect.shape == (2,)
     assert seq.b_detect[0] == 0.0 and seq.b_detect[1] > 1e8       # a real detection weighting
 
