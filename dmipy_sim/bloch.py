@@ -35,6 +35,7 @@ import jax.numpy as jnp
 
 from .constants import GAMMA
 from .gpu import gpu_available
+from .physics import permeable_sub_steps
 
 __all__ = ["simulate_bloch"]
 
@@ -109,8 +110,63 @@ def _make_bloch_step_fn(geometry, D, dt, T2, T1, M0, off_resonance_hz, rho=0.0,
     global_carrier = jnp.float32(2.0 * np.pi * float(off_resonance_hz) * dt)
     rho_over_D = jnp.float32(rho / D)
     has_surf = rho > 0.0 and hasattr(geometry, 'reflect_with_log_weight')
+    has_perm = (float(getattr(geometry, 'permeability', None) or 0.0) > 0.0
+                and hasattr(geometry, 'permeate'))
     reflect = geometry.reflect
     reflect_lw = getattr(geometry, 'reflect_with_log_weight', None)
+
+    def _apply(r_new, phi_grad, surf, M, rf_dflip, rf_axis, rf_carrier, crush_rate, uc):
+        """RF rotation, then free-precession + relaxation (shared across walk variants).
+
+        ``phi_grad`` (n_meas,) is the gradient phase accumulated over the step; the other
+        carriers — global off-resonance, pulse carrier, the emergent voxel-scale crusher
+        (a per-walker macroscopic phase that dephases the transverse residual while leaving
+        the longitudinally-stored magnetisation untouched), and an optional susceptibility
+        field — are added here at the dt grid."""
+        M = _rf_increment_jax(M, rf_dflip, rf_axis)         # RF rotation (0 -> identity)
+        dphi = phi_grad + global_carrier + rf_carrier + crush_rate * uc     # (n_meas,)
+        if field_fn is not None:
+            dphi = dphi + gamma_dt * field_fn(r_new)        # susceptibility off-resonance
+        c, s = jnp.cos(dphi), jnp.sin(dphi)
+        Mx = (c * M[:, 0] - s * M[:, 1]) * E2 * surf
+        My = (s * M[:, 0] + c * M[:, 1]) * E2 * surf
+        Mz = M0f + (M[:, 2] - M0f) * E1                     # recover toward equilibrium
+        return jnp.stack([Mx, My, Mz], axis=1), (Mx + 1j * My)
+
+    if has_perm:
+        # Membrane crossing (Powles) is step-size sensitive, so sub-step the permeable
+        # walk to step_l ~ R/25 within each waveform dt; the gradient phase accumulates
+        # per fine sub-step. Same crossing physics as the scalar core.simulate walk, now
+        # carried on the vector-Bloch M -- so a longitudinally-stored pool that EXCHANGES
+        # across membranes during a mixing time is modelled correctly (e.g. FEXI).
+        kappa_over_D = jnp.float32(geometry.permeability / D)
+        permeate = geometry.permeate
+        n_sub = permeable_sub_steps(geometry, float(D), dt)
+        step_len_sub = jnp.float32(np.sqrt(6.0 * D * dt / n_sub))
+        gamma_dt_sub = jnp.float32(GAMMA * dt / n_sub)
+
+        def step_fn(carry, inputs):
+            r, M, key, uc = carry                           # r:(3,)  M:(n_meas,3)  uc:()
+            g_t, rf_dflip, rf_axis, rf_carrier, crush_rate = inputs
+
+            def _sub(c, _):
+                r, phi, logw, key = c
+                key, sk_step, sk_perm = jax.random.split(key, 3)
+                noise = jax.random.normal(sk_step, (3,), dtype=jnp.float32)
+                unit = noise / jnp.linalg.norm(noise)
+                r_new, dlog_w = permeate(r, unit * step_len_sub, kappa_over_D,
+                                         rho_over_D, sk_perm)   # dlog_w already scaled by rho/D
+                phi_new = phi + gamma_dt_sub * (g_t @ r_new)    # (n_meas,)
+                return (r_new, phi_new, logw + dlog_w, key), None
+
+            init = (r, jnp.zeros(M.shape[0], jnp.float32), jnp.float32(0.0), key)
+            (r_new, phi_grad, logw, key), _ = jax.lax.scan(_sub, init, None, length=n_sub)
+            surf = jnp.exp(logw)                            # transverse wall attenuation (1 if rho=0)
+            M_new, xy = _apply(r_new, phi_grad, surf, M, rf_dflip, rf_axis, rf_carrier,
+                               crush_rate, uc)
+            return (r_new, M_new, key, uc), xy
+
+        return step_fn
 
     def step_fn(carry, inputs):
         r, M, key, uc = carry                               # r:(3,)  M:(n_meas,3)  uc:()
@@ -126,21 +182,9 @@ def _make_bloch_step_fn(geometry, D, dt, T2, T1, M0, off_resonance_hz, rho=0.0,
             r_new = reflect(r, unit * step_len)
             surf = jnp.float32(1.0)
 
-        M = _rf_increment_jax(M, rf_dflip, rf_axis)         # RF rotation (0 -> identity)
-
-        # free-precession phase, per measurement: gradient + global + pulse carrier +
-        # the emergent voxel-scale crusher (a per-walker macroscopic phase during a
-        # crusher window; the ensemble spread over >> 2 pi dephases the transverse
-        # residual while leaving the longitudinally-stored magnetisation untouched).
-        dphi = (gamma_dt * (g_t @ r_new) + global_carrier + rf_carrier
-                + crush_rate * uc)                          # (n_meas,)
-        if field_fn is not None:
-            dphi = dphi + gamma_dt * field_fn(r_new)        # susceptibility off-resonance
-        c, s = jnp.cos(dphi), jnp.sin(dphi)
-        Mx = (c * M[:, 0] - s * M[:, 1]) * E2 * surf
-        My = (s * M[:, 0] + c * M[:, 1]) * E2 * surf
-        Mz = M0f + (M[:, 2] - M0f) * E1                     # recover toward equilibrium
-        return (r_new, jnp.stack([Mx, My, Mz], axis=1), key, uc), (Mx + 1j * My)
+        M_new, xy = _apply(r_new, gamma_dt * (g_t @ r_new), surf, M, rf_dflip, rf_axis,
+                           rf_carrier, crush_rate, uc)
+        return (r_new, M_new, key, uc), xy
 
     return step_fn
 
