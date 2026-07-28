@@ -75,8 +75,8 @@ def spin_echo(TE, dt, *, n_meas=1, exc_axis_deg=90.0):
                          family="se", notes="90 - 180@TE/2 - echo (emergent refocusing)")
 
 
-def fexi(delta, t_mix, dt, *, g_filter, g_detect, delta_detect=None,
-         direction=(1., 0., 0.), crush_cycles=32.0, exc_axis_deg=0.0):
+def fexi(delta, t_mix, dt, *, g_filter, g_detect, Delta=None, delta_detect=None,
+         Delta_detect=None, direction=(1., 0., 0.), crush_cycles=32.0, exc_axis_deg=0.0):
     """FEXI (filter-exchange) stimulated-echo diffusion sequence.
 
     A double-diffusion-encoding stimulated echo for measuring water exchange (Lasič et al.
@@ -86,16 +86,19 @@ def fexi(delta, t_mix, dt, *, g_filter, g_detect, delta_detect=None,
     second self-refocused **detection** block measures the apparent diffusivity. As ``t_mix``
     grows, the filtered ADC recovers toward equilibrium at the exchange rate (AXR).
 
-    Structure (each block a self-refocused bipolar pair — the "PGSTE with 2 lobes each side"):
+    Structure — each encoding block is a **PGSE** (two same-sign lobes straddling a 180°), the
+    "PGSTE with 2 lobes each side":
 
-        90 ─ [+g_f −g_f] ─ 90(store) ─·crusher·─ t_mix ─ 90(recall) ─ [+g_d −g_d] ─ echo
-             └─ filter ─┘             └── longitudinal storage; EXCHANGE ──┘  └ detection ┘
+        90 ─[+g_f ─180─ +g_f]─ 90(store) ─·crusher·─ t_mix ─ 90(recall) ─[+g_d ─180─ +g_d]─ echo
+             └──── filter ────┘            └── longitudinal storage; EXCHANGE ──┘  └── detection ──┘
 
-    Unlike PGSTE, each block refocuses ``q→0`` before the store, so the mixing time carries no
-    diffusion encoding — it is pure exchange weighting. Runs through :func:`simulate_bloch`
-    (the crusher + stimulated-echo storage select the filtered pathway — a scalar ``chi_perp``
-    walk cannot); exchange needs a **permeable** substrate. Returns a :class:`BlochSequence`
-    with the per-measurement detection b-value on ``.b_detect`` (s/m²).
+    The 180° refocuses each block to ``q→0`` before the store, so — unlike PGSTE — the mixing
+    time carries no diffusion encoding (pure exchange weighting). PGSE (not bipolar) blocks are
+    used deliberately: a velocity-compensated bipolar pair is insensitive to restricted diffusion
+    and would not separate a slow pool (σ→0). Runs through :func:`simulate_bloch` (the crusher +
+    stimulated-echo storage select the filtered pathway — a scalar ``chi_perp`` walk cannot);
+    exchange needs a **permeable** substrate. Returns a :class:`BlochSequence` with the
+    per-measurement detection b-value on ``.b_detect`` (s/m²).
 
     Parameters
     ----------
@@ -110,8 +113,13 @@ def fexi(delta, t_mix, dt, *, g_filter, g_detect, delta_detect=None,
     g_detect : float or array
         Detection gradient amplitude(s) (T/m); an array gives one measurement per value (e.g.
         ``[0, g]`` to fit an ADC).
-    delta_detect : float, optional
-        Detection lobe duration (s); defaults to ``delta``.
+    Delta : float, optional
+        Filter lobe **separation** (leading edge to leading edge, s); the diffusion time. A gap
+        ``Delta − delta`` is inserted between the two lobes — needed for restriction/ADC contrast
+        (a contiguous bipolar pair, the default ``Delta = delta``, has too short a diffusion time
+        to separate a restricted pool). Typical FEXI ``δ/Δ ≈ 4/15 ms``.
+    delta_detect, Delta_detect : float, optional
+        Detection lobe duration / separation (s); default to ``delta`` / ``Delta``.
     direction : (3,) array
         Gradient direction (filter and detection share it).
     crush_cycles : float
@@ -123,33 +131,47 @@ def fexi(delta, t_mix, dt, *, g_filter, g_detect, delta_detect=None,
     d = d / np.linalg.norm(d)
     g_detect = np.atleast_1d(np.asarray(g_detect, dtype=np.float64))
     n_meas = g_detect.shape[0]
-    ndf = int(round(delta / dt))
-    ndd = int(round((delta if delta_detect is None else delta_detect) / dt))
+    Delta = delta if Delta is None else Delta
+    dd = delta if delta_detect is None else delta_detect
+    Dd = Delta if Delta_detect is None else Delta_detect
+    ndf = int(round(delta / dt)); ngf = max(1, int(round((Delta - delta) / dt)))
+    ndd = int(round(dd / dt)); ngd = max(1, int(round((Dd - dd) / dt)))
     nmix = int(round(t_mix / dt))
-    i_store = 2 * ndf
+    # PGSE blocks: two SAME-sign lobes straddling a 180° at the gap centre (restriction-
+    # sensitive — a bipolar pair is velocity-compensated and would not separate a restricted
+    # pool). The 180 refocuses q → 0, so the block is self-contained and the mixing time
+    # carries no diffusion encoding.
+    i_180f = ndf + ngf // 2                  # filter refocusing 180
+    i_store = 2 * ndf + ngf
     i_recall = i_store + nmix
-    n_t = i_recall + 2 * ndd + 1
+    i_180d = i_recall + ndd + ngd // 2       # detection refocusing 180
+    n_t = i_recall + 2 * ndd + ngd + 1
 
     G = np.zeros((n_meas, n_t, 3), dtype=np.float64)
     for m in range(n_meas):
-        G[m, 0:ndf] = g_filter * d
-        G[m, ndf:2 * ndf] = -g_filter * d
-        G[m, i_recall:i_recall + ndd] = g_detect[m] * d
-        G[m, i_recall + ndd:i_recall + 2 * ndd] = -g_detect[m] * d
+        G[m, 0:ndf] = g_filter * d                                  # filter lobe 1
+        G[m, ndf + ngf:2 * ndf + ngf] = g_filter * d                # filter lobe 2 (same sign)
+        G[m, i_recall:i_recall + ndd] = g_detect[m] * d             # detection lobe 1
+        G[m, i_recall + ndd + ngd:i_recall + 2 * ndd + ngd] = g_detect[m] * d
 
-    rf = [{'t_s': i * dt, 'flip_deg': 90.0, 'axis_deg': exc_axis_deg,
-           'duration_s': 0.0, 'offset_hz': 0.0} for i in (0, i_store, i_recall)]
+    rf = [{'t_s': 0.0, 'flip_deg': 90.0, 'axis_deg': exc_axis_deg, 'duration_s': 0.0, 'offset_hz': 0.0},
+          {'t_s': i_180f * dt, 'flip_deg': 180.0, 'axis_deg': 0.0, 'duration_s': 0.0, 'offset_hz': 0.0},
+          {'t_s': i_store * dt, 'flip_deg': 90.0, 'axis_deg': exc_axis_deg, 'duration_s': 0.0, 'offset_hz': 0.0},
+          {'t_s': i_recall * dt, 'flip_deg': 90.0, 'axis_deg': exc_axis_deg, 'duration_s': 0.0, 'offset_hz': 0.0},
+          {'t_s': i_180d * dt, 'flip_deg': 180.0, 'axis_deg': 0.0, 'duration_s': 0.0, 'offset_hz': 0.0}]
     crusher = {'windows_s': [((i_store + 1) * dt, (i_recall - 1) * dt)],
                'n_cycles': float(crush_cycles)}
 
-    # detection b per measurement: q = γ·∫G dt over the (self-refocused) detection block
+    # detection b per measurement: over the detection block alone (q starts at 0 at recall and
+    # sign-folds at the detection 180) — the filter block is a separate, refocused encoding.
+    sgn_d = np.where(np.arange(n_t - i_recall) < (i_180d - i_recall), 1.0, -1.0)
     b_detect = np.empty(n_meas)
     for m in range(n_meas):
-        qd = GAMMA * np.cumsum(G[m, i_recall:, :], axis=0) * dt
+        qd = GAMMA * np.cumsum(sgn_d[:, None] * G[m, i_recall:, :], axis=0) * dt
         b_detect[m] = float(np.sum(qd ** 2) * dt)
 
     seq = BlochSequence(G=G, dt=dt, rf_events=rf, complex_signal=True, crusher=crusher,
-                        family="fexi", notes="filter - store - t_mix (exchange) - recall - detect")
+                        family="fexi", notes="PGSE filter - store - t_mix (exchange) - recall - PGSE detect")
     seq.b_detect = b_detect
     return seq
 
