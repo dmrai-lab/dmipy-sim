@@ -48,7 +48,7 @@ _SLOW_MC_MODULES = {
     "test_box_1d", "test_free_1d", "test_free_3d", "test_free_ogse", "test_general_waveform",
     "test_packed_cylinders", "test_packed_spheres",
     "test_packed_cylinders_permeability", "test_ellipsoid_permeability",
-    "test_sphere_permeability", "test_permeability_crossing",
+    "test_sphere_permeability", "test_permeability_crossing", "test_bloch_permeation",
     "test_compartment_tagging", "test_t2", "test_sh_convolution",
     "test_karger_mc_parity", "test_t2_walker_parity",
     "test_mesh_mc",
