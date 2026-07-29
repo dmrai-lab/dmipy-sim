@@ -23,9 +23,16 @@ requires-python = ">=3.10"
 dependencies = [
     "jax>=0.6.2",
     "numpy>=2.0",
+    "scipy>=1.10",   # susceptibility field-map sampling + replay compression (DCT / low-rank KL)
 ]
 
 [project.optional-dependencies]
+# Replay packs (.rpk) + substrate bank. safetensors is required to read/write packs
+# (no code in the container = safe); huggingface_hub is only needed for remote pull/publish.
+bank = [
+    "safetensors>=0.4",
+    "huggingface_hub>=0.20",
+]
 # GPU support: installs jax-cuda12-plugin and all nvidia-*-cu12 wheels.
 # After installing, the venv's activate script must export LD_LIBRARY_PATH
 # so the dynamic linker can resolve transitive CUDA library dependencies
