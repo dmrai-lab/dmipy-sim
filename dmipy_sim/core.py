@@ -747,6 +747,9 @@ def simulate_trajectories(
     save_relaxation_data: bool = False,
     require_gpu=None,
     r0=None,
+    kappa_MT: float = 0.0,
+    dwell_time: float = 0.0,
+    equilibrate_binding="auto",
 ) -> tuple:
     """Walk the spins ONCE and save positions at every saved time step — the
     producer for the replay path (:mod:`dmipy_sim.trajectories`).
@@ -800,6 +803,17 @@ def simulate_trajectories(
     r0 : array-like of shape (n_walkers, 3), optional
         Caller-supplied seed positions (e.g. extra-axonal water outside a mesh).
         When provided, ``geometry.init_positions()`` is skipped.
+    kappa_MT : float
+        Magnetization-transfer surface reactivity (m/s) for the PackedMyelinated-
+        Cylinders + ``save_relaxation_data`` path.  ``0`` (default) leaves the walk
+        byte-for-byte identical to the pre-MT path (RNG stream + positions unchanged);
+        ``> 0`` binds free water at the myelin walls and returns a 7th ``bound_frac``
+        channel.  (For analytic geometries use :func:`dmipy_sim.simulate_mt_trajectories`.)
+    dwell_time : float
+        Mean bound-pool residence time (s); must be ``> 0`` when ``kappa_MT > 0``.
+    equilibrate_binding : {'auto', 'burnin', 'off'}
+        How the bound pool reaches thermal-equilibrium occupancy before t=0 (MT only);
+        see :func:`dmipy_sim.mt.resolve_equilibrate_mode`.
 
     Returns
     -------
@@ -827,6 +841,10 @@ def simulate_trajectories(
         compartment ID (always 0 for single-compartment; 0/1/2 for packed
         myelin).  Consumed by ``apply_waveform_with_relaxation`` with
         ``T2_per_comp``/``T1_per_comp``.
+    bound_frac : np.ndarray, shape (n_walkers, n_t), float16
+        ONLY for the packed-myelin path with ``kappa_MT > 0`` — appended as a 7th
+        return value.  Per-save MT bound-pool occupancy, consumed by
+        ``apply_waveform_bloch(bound_frac=...)`` to blend the bound pool.
     """
     # GPU guard — never silently fall back to CPU for a heavy walk (CLAUDE rule).
     from .gpu import check_gpu
@@ -936,7 +954,12 @@ def simulate_trajectories(
         # + permeability only, rho/D=1 at all walls).  comp_id is the encoded id
         # (0=extra, 1..N_max=intra, >N_max=myelin); compress to 0/1/2 at save.
         N_max_pm = geometry.N_max
-        step_fn_traj_pm = make_packed_myelin_traj_step_fn(geometry, dt_sim)
+        # Magnetization transfer (kappa_MT > 0): the step fn binds free water at the
+        # myelin walls and records the per-save bound occupancy.  kappa_MT == 0 keeps
+        # the pre-MT walk bit-for-bit (RNG stream + positions unchanged).
+        _mt_on_pm = kappa_MT > 0.0
+        step_fn_traj_pm = make_packed_myelin_traj_step_fn(
+            geometry, dt_sim, kappa_MT=kappa_MT, dwell_time=dwell_time)
 
         def _compress_comp_pm(comp_id):
             return jnp.where(comp_id == jnp.int32(0), jnp.int8(0),
@@ -946,22 +969,41 @@ def simulate_trajectories(
         def _inner_pm(carry, _):
             return step_fn_traj_pm(carry, None)
 
-        def outer_step_pm(carry, _):
-            r, key, comp_id = carry
-            # dlog_accum resets each save so the emitted value is the per-save delta.
-            inner_init = (r, key, jnp.float32(0.0), comp_id)
-            (r_final, key_final, dlog_accum, comp_final), _ = jax.lax.scan(
-                _inner_pm, inner_init, None, length=sub_steps)
-            return (r_final, key_final, comp_final), \
-                   (r_final, dlog_accum, _compress_comp_pm(comp_final))
+        if not _mt_on_pm:
+            # ── pre-MT path (4-element carry) — UNCHANGED, kept bit-for-bit ──
+            def outer_step_pm(carry, _):
+                r, key, comp_id = carry
+                # dlog_accum resets each save so the emitted value is the per-save delta.
+                inner_init = (r, key, jnp.float32(0.0), comp_id)
+                (r_final, key_final, dlog_accum, comp_final), _ = jax.lax.scan(
+                    _inner_pm, inner_init, None, length=sub_steps)
+                return (r_final, key_final, comp_final), \
+                       (r_final, dlog_accum, _compress_comp_pm(comp_final))
 
-        def simulate_one_walker_pm(r0_w, key_w, comp0_w):
-            (_, _, _), (positions, dlog_boundary, comp_types) = jax.lax.scan(
-                outer_step_pm, (r0_w, key_w, comp0_w), None, length=n_t)
-            return positions, dlog_boundary, comp_types
+            def simulate_one_walker_pm(r0_w, key_w, comp0_w, brem0_w):  # brem0 unused
+                (_, _, _), (positions, dlog_boundary, comp_types) = jax.lax.scan(
+                    outer_step_pm, (r0_w, key_w, comp0_w), None, length=n_t)
+                z = jnp.zeros_like(dlog_boundary)                       # placeholder bound_frac
+                return positions, dlog_boundary, comp_types, z
+        else:
+            # ── MT path (6-element carry): bound_rem persists across saves ──
+            def outer_step_pm(carry, _):
+                r, key, comp_id, bound_rem = carry
+                inner_init = (r, key, jnp.float32(0.0), comp_id, bound_rem, jnp.float32(0.0))
+                (r_final, key_final, dlog_accum, comp_final, bound_rem_f, bound_acc), _ = \
+                    jax.lax.scan(_inner_pm, inner_init, None, length=sub_steps)
+                bound_frac = bound_acc / jnp.float32(sub_steps)
+                return (r_final, key_final, comp_final, bound_rem_f), \
+                       (r_final, dlog_accum, _compress_comp_pm(comp_final), bound_frac)
+
+            def simulate_one_walker_pm(r0_w, key_w, comp0_w, brem0_w):
+                (_, _, _, _), (positions, dlog_boundary, comp_types, bound_frac) = \
+                    jax.lax.scan(outer_step_pm, (r0_w, key_w, comp0_w, brem0_w),
+                                 None, length=n_t)
+                return positions, dlog_boundary, comp_types, bound_frac
 
         simulate_batch_pm = jax.jit(
-            jax.vmap(simulate_one_walker_pm, in_axes=(0, 0, 0)))
+            jax.vmap(simulate_one_walker_pm, in_axes=(0, 0, 0, 0)))
 
     if save_relaxation_data and not is_packed_myelin_geom:
         if has_permeability:
@@ -1042,9 +1084,49 @@ def simulate_trajectories(
     comp0_all = (jnp.asarray(geometry._init_compartments)
                  if (save_relaxation_data and is_packed_myelin_geom) else None)
 
+    # ── MT bound-pool equilibration (packed myelin, kappa_MT > 0) ──
+    # An all-free start under-fills the macromolecular pool and biases the transfer;
+    # equilibrate the bound occupancy (and spatial state) to f_b BEFORE t=0 and discard
+    # the preamble.  kappa_MT == 0 leaves brem0_all at zero and skips this entirely.
+    _mt_on = kappa_MT > 0.0 and save_relaxation_data and is_packed_myelin_geom
+    brem0_all = jnp.zeros((n_walkers,), dtype=jnp.float32)
+    if _mt_on:
+        from . import mt as _mt
+        if dwell_time <= 0.0:
+            raise ValueError("dwell_time must be > 0 when kappa_MT > 0.")
+        _mode = _mt.resolve_equilibrate_mode(equilibrate_binding, geometry)
+        if _mode == 'burnin':
+            _n_chunk = max(4, int(round(float(dwell_time) / float(dt_sim))))
+
+            def _burn_walker(r_w, key_w, comp_w, brem_w):
+                (r_f, key_f, _da, comp_f, brem_f, bacc), _ = jax.lax.scan(
+                    _inner_pm, (r_w, key_w, jnp.float32(0.0), comp_w, brem_w,
+                                jnp.float32(0.0)), None, length=_n_chunk)
+                return r_f, key_f, comp_f, brem_f, bacc / jnp.float32(_n_chunk)
+            _burn = jax.jit(jax.vmap(_burn_walker, in_axes=(0, 0, 0, 0)))
+
+            _r, _k, _c = r0_all, walker_keys_all, comp0_all
+            _brem = brem0_all
+            _occ_prev, _converged = -1.0, False
+            for _ in range(40):
+                _r, _k, _c, _brem, _bf = _burn(_r, _k, _c, _brem)
+                _occ = float(jnp.mean(_bf))
+                if _occ_prev >= 0.0 and abs(_occ - _occ_prev) <= 0.01 * max(_occ, 1e-6):
+                    _occ_prev, _converged = _occ, True
+                    break
+                _occ_prev = _occ
+            r0_all, walker_keys_all, comp0_all, brem0_all = _r, _k, _c, _brem
+            print(f"  [mt] equilibrate 'burnin': <bound>={_occ_prev:.4f}", flush=True)
+            if not _converged:
+                import warnings
+                warnings.warn("equilibrate_binding: bound occupancy did not plateau within "
+                              "the burn-in cap; the saved walk may be under-equilibrated.",
+                              stacklevel=2)
+
     all_batches = []
     all_dlog_batches = [] if save_relaxation_data else None
     all_comp_batches = [] if save_relaxation_data else None
+    all_bound_batches = [] if _mt_on else None
     n_batches = (n_walkers + walker_batch_size - 1) // walker_batch_size
 
     for batch_idx in range(n_batches):
@@ -1058,16 +1140,19 @@ def simulate_trajectories(
         current_keys = walker_keys_all[start:end]
         if save_relaxation_data and is_packed_myelin_geom:
             current_comp0 = comp0_all[start:end]
+            current_brem0 = brem0_all[start:end]
 
         success = False
         while not success:
             try:
                 if save_relaxation_data and is_packed_myelin_geom:
-                    pos_f32, dlog_f32, comp_f32 = simulate_batch_pm(
-                        current_r0, current_keys, current_comp0)
+                    pos_f32, dlog_f32, comp_f32, bfrac_f32 = simulate_batch_pm(
+                        current_r0, current_keys, current_comp0, current_brem0)
                     all_batches.append(np.array(pos_f32).astype(np.float16))
                     all_dlog_batches.append(np.array(dlog_f32).astype(np.float16))
                     all_comp_batches.append(np.array(comp_f32).astype(np.int8))
+                    if _mt_on:
+                        all_bound_batches.append(np.array(bfrac_f32).astype(np.float16))
                 elif save_relaxation_data:
                     pos_f32, dlog_f32, comp_f32 = simulate_batch_relax(current_r0, current_keys)
                     all_batches.append(np.array(pos_f32).astype(np.float16))
@@ -1090,15 +1175,18 @@ def simulate_trajectories(
                     sub_pos_list = []
                     sub_dlog_list = [] if save_relaxation_data else None
                     sub_comp_list = [] if save_relaxation_data else None
+                    sub_bound_list = [] if _mt_on else None
                     for ss in range(0, batch_size, new_sub_batch):
                         se = min(ss + new_sub_batch, batch_size)
                         if save_relaxation_data and is_packed_myelin_geom:
-                            sp, sd, sc = simulate_batch_pm(
+                            sp, sd, sc, sbf = simulate_batch_pm(
                                 current_r0[ss:se], current_keys[ss:se],
-                                current_comp0[ss:se])
+                                current_comp0[ss:se], current_brem0[ss:se])
                             sub_pos_list.append(np.array(sp).astype(np.float16))
                             sub_dlog_list.append(np.array(sd).astype(np.float16))
                             sub_comp_list.append(np.array(sc).astype(np.int8))
+                            if _mt_on:
+                                sub_bound_list.append(np.array(sbf).astype(np.float16))
                         elif save_relaxation_data:
                             sp, sd, sc = simulate_batch_relax(
                                 current_r0[ss:se], current_keys[ss:se])
@@ -1114,6 +1202,8 @@ def simulate_trajectories(
                     if save_relaxation_data:
                         all_dlog_batches.append(np.concatenate(sub_dlog_list, axis=0))
                         all_comp_batches.append(np.concatenate(sub_comp_list, axis=0))
+                        if _mt_on:
+                            all_bound_batches.append(np.concatenate(sub_bound_list, axis=0))
                     success = True
                 else:
                     raise
@@ -1122,5 +1212,10 @@ def simulate_trajectories(
     if save_relaxation_data:
         dlog_boundary_unit = np.concatenate(all_dlog_batches, axis=0)  # (n_walkers, n_t) float16
         comp_traj = np.concatenate(all_comp_batches, axis=0)           # (n_walkers, n_t)
+        if _mt_on:
+            # 7th channel: per-save MT bound-pool occupancy (packed myelin, kappa_MT>0).
+            bound_frac = np.concatenate(all_bound_batches, axis=0)     # (n_walkers, n_t) float16
+            return (trajectories, dt_actual, sub_steps, dt_sim,
+                    dlog_boundary_unit, comp_traj, bound_frac)
         return trajectories, dt_actual, sub_steps, dt_sim, dlog_boundary_unit, comp_traj
     return trajectories, dt_actual, sub_steps, dt_sim

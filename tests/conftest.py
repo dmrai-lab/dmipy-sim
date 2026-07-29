@@ -53,6 +53,7 @@ _SLOW_MC_MODULES = {
     "test_karger_mc_parity", "test_t2_walker_parity",
     "test_mesh_mc",
     "test_replay_parity",
+    "test_replay_fields_mt",
 }
 
 

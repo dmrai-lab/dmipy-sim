@@ -578,16 +578,31 @@ def make_myelin_step_fn(geometry, dt: float, T1: float = None):
     return step_fn
 
 
-def make_packed_myelin_traj_step_fn(geometry, dt: float):
+def make_packed_myelin_traj_step_fn(geometry, dt: float,
+                                    kappa_MT: float = 0.0, dwell_time: float = 0.0,
+                                    mt_side_intra: float = 1.0, mt_side_extra: float = 1.0):
     """Stripped PackedMyelinatedCylinders step for trajectory saving.
 
     Runs geometry + permeability only (no T2/T1, rho=1 at all walls).
-    Carry: (r, key, dlog_accum, comp_id)
+    Carry: (r, key, dlog_accum, comp_id, bound_rem, bound_acc)
     Returns: (carry, None)
     dlog_accum accumulates -2*d_perp per boundary hit (rho/D=1).
+
+    Magnetization transfer (``kappa_MT`` > 0): free water (intra/extra) that hits a
+    myelin wall STICKS with p = min(1, (kappa_MT/D)*(-dlog_boundary)) -- the same
+    impact-angle boundary-local-time rule as everywhere else -- then FREEZES for an
+    exponential dwell (mean ``dwell_time``) and is released.  ``bound_acc`` counts
+    frozen sub-steps -> per-save bound occupancy.  Mutually exclusive with surface
+    relaxivity (a stuck encounter is removed from the rho channel, dlog_accum).
+    Myelin water (D=0) never contacts a wall, so it cannot bind.  **kappa_MT = 0
+    reproduces the pre-MT walk bit-for-bit (RNG stream and positions unchanged).**
     """
     dt_f32 = jnp.float32(dt)
     N_max  = geometry.N_max
+    mt_on = kappa_MT > 0.0
+    kappa_intra_f = jnp.float32(kappa_MT * mt_side_intra)   # inner-wall reactivity (intra water)
+    kappa_extra_f = jnp.float32(kappa_MT * mt_side_extra)   # outer-wall reactivity (extra water)
+    dwell_steps_mean = jnp.float32(dwell_time / dt) if dwell_time > 0 else jnp.float32(0.0)
 
     # Pre-extract JAX arrays (same geometry setup as the generic packed step fns)
     L          = geometry._L_jax
@@ -611,9 +626,14 @@ def make_packed_myelin_traj_step_fn(geometry, dt: float):
     step_myelin_arr = jnp.sqrt(jnp.float32(6.0) * D_myelin * dt_f32)
 
     def step_fn(carry, _):
-        r, key, dlog_accum, compartment_id = carry
-
-        key, subkey_step, subkey_perm = jax.random.split(key, 3)
+        # Carry contract is 4-element by default (unchanged for every non-MT caller) and
+        # 6-element only when MT is on — so kappa_MT=0 stays byte-for-byte the pre-MT walk.
+        if mt_on:
+            r, key, dlog_accum, compartment_id, bound_rem, bound_acc = carry
+            key, subkey_step, subkey_perm, stick_key, dwell_key = jax.random.split(key, 5)
+        else:
+            r, key, dlog_accum, compartment_id = carry
+            key, subkey_step, subkey_perm = jax.random.split(key, 3)
         noise = jax.random.normal(subkey_step, (3,), dtype=jnp.float32)
         unit_noise = noise / jnp.linalg.norm(noise)
 
@@ -822,6 +842,34 @@ def make_packed_myelin_traj_step_fn(geometry, dt: float):
                        jnp.where(new_myelin, geometry.N_max + k_cyl + 1,
                                              new_compartment_id)))
 
+        if mt_on:
+            # ── MT surface binding at the myelin walls ────────────────────────
+            is_bound   = bound_rem > jnp.float32(0.0)
+            local_time = -dlog_boundary            # >= 0: myelin-wall local time this step
+            # free-water diffusivity of the walker's pool (myelin water can't bind)
+            D_bind = jnp.where(is_intra, D_intra[k_cyl],
+                     jnp.where(is_extra, D_extra[k_cyl], jnp.float32(1.0)))
+            # SIDE-dependent reactivity: an intra walker only ever contacts the INNER
+            # myelin wall, an extra walker only the OUTER wall, so the walker's pool
+            # selects the side (myelin water -> 0, cannot bind).
+            kappa_bind = jnp.where(is_intra, kappa_intra_f,
+                         jnp.where(is_extra, kappa_extra_f, jnp.float32(0.0)))
+            p_stick = jnp.minimum(jnp.float32(1.0),
+                                  kappa_bind * local_time / jnp.maximum(D_bind, jnp.float32(1e-30)))
+            u_stick = jax.random.uniform(stick_key, dtype=jnp.float32)
+            newly   = (~is_bound) & (u_stick < p_stick)
+            u_dwell = jax.random.uniform(dwell_key, dtype=jnp.float32)
+            dwell_draw = -jnp.log(jnp.maximum(u_dwell, jnp.float32(1e-20))) * dwell_steps_mean
+            # frozen while bound: hold position + compartment; mutual exclusivity ->
+            # a stuck (or bound) encounter contributes NO surface-relaxivity dlog.
+            r_out    = jnp.where(is_bound, r, r_new)
+            comp_out = jnp.where(is_bound, compartment_id, comp_id_new)
+            dlog_contrib  = jnp.where(is_bound | newly, jnp.float32(0.0), dlog_boundary)
+            bound_rem_out = jnp.where(is_bound, bound_rem - jnp.float32(1.0),
+                                      jnp.where(newly, dwell_draw, jnp.float32(0.0)))
+            bound_acc_out = bound_acc + jnp.where(is_bound, jnp.float32(1.0), jnp.float32(0.0))
+            return (r_out, key, dlog_accum + dlog_contrib, comp_out,
+                    bound_rem_out, bound_acc_out), None
         return (r_new, key, dlog_accum + dlog_boundary, comp_id_new), None
 
     return step_fn

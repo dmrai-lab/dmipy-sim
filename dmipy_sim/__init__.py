@@ -12,7 +12,11 @@ _apply_gpu_mem_cap()
 from .core import simulate, simulate_mixture, simulate_cpmg, simulate_trajectories
 from .trajectories import (unwrap_periodic, apply_waveform_to_trajectories,
                            apply_waveform_jax, apply_waveform_with_relaxation,
-                           apply_waveform_with_relaxation_jax)
+                           apply_waveform_with_relaxation_jax,
+                           apply_waveform_bloch, apply_waveform_bloch_jax,
+                           finite_180_longitudinal_dwell, pre_pulse_gradient_phase,
+                           pathway_sign_se)
+from .mt_walk import simulate_mt_trajectories
 from .bloch import simulate_bloch
 from .pulse_sequence import (BlochSequence, gradient_echo, spin_echo,
                              prepend_mt_prep, run_bloch_sequence, emergent_z_spectrum)
@@ -52,6 +56,10 @@ __all__ = [
     # replay path: walk-once producer + scalar replay operators
     "unwrap_periodic", "apply_waveform_to_trajectories", "apply_waveform_jax",
     "apply_waveform_with_relaxation", "apply_waveform_with_relaxation_jax",
+    # replay path: vector-Bloch + susceptibility + MT + refocusing helpers
+    "apply_waveform_bloch", "apply_waveform_bloch_jax",
+    "finite_180_longitudinal_dwell", "pre_pulse_gradient_phase", "pathway_sign_se",
+    "simulate_mt_trajectories",
     "simulate_bloch",
     "BlochSequence", "gradient_echo", "spin_echo", "prepend_mt_prep",
     "run_bloch_sequence", "emergent_z_spectrum",
