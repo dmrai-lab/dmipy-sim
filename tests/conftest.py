@@ -54,6 +54,11 @@ _SLOW_MC_MODULES = {
     "test_mesh_mc",
     "test_replay_parity",
     "test_replay_fields_mt",
+    # Replay-pack (.rpk) compression + bank: each rebuilds a JAX-CPU master walk fixture
+    # (tens of seconds to compile+run) plus auto-K fidelity sweeps and the spec conformance
+    # subprocess — minutes total. Kept out of the default fast selection.
+    "test_compression",
+    "test_bank",
 }
 
 
