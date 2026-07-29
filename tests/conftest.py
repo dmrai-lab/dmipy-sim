@@ -52,6 +52,7 @@ _SLOW_MC_MODULES = {
     "test_compartment_tagging", "test_t2", "test_sh_convolution",
     "test_karger_mc_parity", "test_t2_walker_parity",
     "test_mesh_mc",
+    "test_replay_parity",
 }
 
 

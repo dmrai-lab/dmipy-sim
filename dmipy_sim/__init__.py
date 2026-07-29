@@ -9,7 +9,10 @@ Shares one pulse-sequence and substrate interface with ``dmipy-fit``.
 from ._gpu_config import apply_gpu_mem_cap as _apply_gpu_mem_cap, configure  # noqa: E402
 _apply_gpu_mem_cap()
 
-from .core import simulate, simulate_mixture, simulate_cpmg
+from .core import simulate, simulate_mixture, simulate_cpmg, simulate_trajectories
+from .trajectories import (unwrap_periodic, apply_waveform_to_trajectories,
+                           apply_waveform_jax, apply_waveform_with_relaxation,
+                           apply_waveform_with_relaxation_jax)
 from .bloch import simulate_bloch
 from .pulse_sequence import (BlochSequence, gradient_echo, spin_echo,
                              prepend_mt_prep, run_bloch_sequence, emergent_z_spectrum)
@@ -45,7 +48,10 @@ from . import mt
 from .rf import B1Pulse, bloch_simulate, slice_profile
 
 __all__ = [
-    "simulate", "simulate_mixture", "simulate_cpmg",
+    "simulate", "simulate_mixture", "simulate_cpmg", "simulate_trajectories",
+    # replay path: walk-once producer + scalar replay operators
+    "unwrap_periodic", "apply_waveform_to_trajectories", "apply_waveform_jax",
+    "apply_waveform_with_relaxation", "apply_waveform_with_relaxation_jax",
     "simulate_bloch",
     "BlochSequence", "gradient_echo", "spin_echo", "prepend_mt_prep",
     "run_bloch_sequence", "emergent_z_spectrum",

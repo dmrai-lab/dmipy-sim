@@ -14,7 +14,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from .physics import (make_step_fn, make_myelin_step_fn, make_packed_myelin_step_fn)
+from .physics import (make_step_fn, make_myelin_step_fn, make_packed_myelin_step_fn,
+                      make_packed_myelin_traj_step_fn)
 from .waveforms import Waveform
 
 
@@ -733,3 +734,393 @@ def simulate_cpmg(n_walkers, diffusivity, waveform, geometry, *,
     signal_trace = jnp.mean(all_traces, axis=0)                    # (n_t, n_meas)
     echo_signals = signal_trace[echo_indices]                     # (n_echoes, n_meas)
     return np.array(echo_signals)
+
+
+def simulate_trajectories(
+    n_walkers: int,
+    diffusivity: float,
+    geometry,
+    T_max: float,
+    dt_save: float,
+    seed: int = 42,
+    walker_batch_size: int = 50_000,
+    save_relaxation_data: bool = False,
+    require_gpu=None,
+    r0=None,
+) -> tuple:
+    """Walk the spins ONCE and save positions at every saved time step — the
+    producer for the replay path (:mod:`dmipy_sim.trajectories`).
+
+    Unlike :func:`simulate`, this applies NO gradient waveform: it stores
+    ``r(t)`` for all walkers so any waveform / relaxation hypothesis can be
+    applied post-hoc via
+    :func:`~dmipy_sim.trajectories.apply_waveform_to_trajectories` or
+    :func:`~dmipy_sim.trajectories.apply_waveform_with_relaxation`.  This is the
+    walk-once half of the replay invariant (positions depend only on
+    ``geometry, diffusivity, seed`` — see the module CLAUDE guide).
+
+    Sub-stepping: for small geometries a coarse ``dt_save`` produces a step_l
+    comparable to the geometry size, biasing reflection.  ``sub_steps =
+    ceil(dt_save / dt_phys_max)`` is auto-tuned so ``step_l < R/6`` per inner
+    step (``dt_phys_max = R² / (216·D)`` for reflection; ``R² / (3750·D)`` — i.e.
+    ``step_l ≈ R/25`` — when the geometry is permeable, since membrane crossing
+    is step-size sensitive).  Only the position after each group of ``sub_steps``
+    inner steps is saved, so storage is always ``(n_walkers, n_t, 3)`` at
+    ``dt_save`` granularity.
+
+    Parameters
+    ----------
+    n_walkers : int
+        Total number of walkers.
+    diffusivity : float
+        Diffusion coefficient in m²/s.
+    geometry : Geometry
+        Boundary geometry.  Provides ``init_positions(n, key)`` and
+        ``reflect(r, step)``; for ``save_relaxation_data`` also
+        ``reflect_with_log_weight`` (surface local time) and/or ``permeate``.
+    T_max : float
+        Total simulation duration in seconds.
+    dt_save : float
+        Time step between saved positions in seconds.
+    seed : int
+        Master PRNG seed.
+    walker_batch_size : int
+        Number of walkers per GPU batch.  Reduce if OOM (the batch loop also
+        auto-halves on an OOM exception).
+    save_relaxation_data : bool
+        If True, also save per-step boundary log-weight (with rho/D=1) and a
+        per-step compartment channel for each walker — enabling replay of
+        surface relaxivity (rho) and per-compartment T2/T1 without re-simulating.
+        Requires the geometry to have ``reflect_with_log_weight`` (Cylinder,
+        Sphere, Box1D, Ellipsoid, PackedCylinders/Spheres, Mesh).  For
+        FreeDiffusion (no boundaries), ``dlog_boundary_unit`` is all zeros.
+    require_gpu : {None, True, False}
+        GPU guard against a silent CPU fallback.  ``True`` raises if no GPU is
+        visible; ``False`` opts out; ``None`` (default) warns for large CPU runs.
+    r0 : array-like of shape (n_walkers, 3), optional
+        Caller-supplied seed positions (e.g. extra-axonal water outside a mesh).
+        When provided, ``geometry.init_positions()`` is skipped.
+
+    Returns
+    -------
+    trajectories : np.ndarray, shape (n_walkers, n_t, 3), float16
+        Walker positions in metres at each saved time step.
+    dt_actual : float
+        Saved time step (= T_max / (n_t - 1)).
+    sub_steps : int
+        Number of physics sub-steps per saved point.
+    dt_sim : float
+        Actual simulation time step (= dt_actual / sub_steps).
+    dlog_boundary_unit : np.ndarray, shape (n_walkers, n_t), float16
+        Only when ``save_relaxation_data=True``.  Per-step accumulated boundary
+        log-weight assuming rho/D = 1, i.e.
+        ``dlog_boundary_unit[w, t] = -2 * sum_k(d_perp_k)`` over the boundary
+        hits in the ``sub_steps`` inner steps of saved step t.  Non-positive.
+        Replay surface relaxivity rho via
+        ``log_w[m,w] += (rho/D) * sum_t(chi_perp[m,t] * dlog_boundary_unit[w,t])``.
+    comp_traj : np.ndarray, shape (n_walkers, n_t)
+        Only when ``save_relaxation_data=True``.  For PERMEABLE 2-compartment
+        geometries (Sphere/Cylinder with permeability): float16 FRACTIONAL
+        OCCUPANCY of compartment 1 (outside) over each saved interval — the mean
+        of the sub-step compartment ids (resolves intra-save membrane crossings).
+        For all OTHER geometries (impermeable, surface relaxivity): int8 discrete
+        compartment ID (always 0 for single-compartment; 0/1/2 for packed
+        myelin).  Consumed by ``apply_waveform_with_relaxation`` with
+        ``T2_per_comp``/``T1_per_comp``.
+    """
+    # GPU guard — never silently fall back to CPU for a heavy walk (CLAUDE rule).
+    from .gpu import check_gpu
+    check_gpu(n_walkers, require_gpu, what="simulate_trajectories")
+
+    n_t = int(round(T_max / dt_save)) + 1
+    dt_actual = T_max / (n_t - 1)
+
+    # --- Sub-stepping: guarantee step_l < R/6 for accurate reflection ---
+    R_geom = getattr(geometry, 'radius', None)
+    if R_geom is None:
+        R_geom = getattr(geometry, 'sphere_radius', None)
+    if R_geom is None:
+        _radii = getattr(geometry, '_radii_np', None)
+        if _radii is not None and len(_radii) > 0:
+            R_geom = float(np.min(_radii))
+    if R_geom is None:
+        _inner_radii = getattr(geometry, '_inner_radii_np', None)
+        if _inner_radii is not None and len(_inner_radii) > 0:
+            R_geom = (float(np.min(_inner_radii[_inner_radii > 0]))
+                      if np.any(_inner_radii > 0) else None)
+    if R_geom is None:
+        # Free diffusion or unknown: no sub-stepping needed
+        sub_steps = 1
+    else:
+        # Impermeable reflection is exact at any step, so step_l = R/6 suffices
+        # (divisor 216 = 6·6²).  Membrane crossing is step-size sensitive
+        # (over-permeates at coarse steps), so use a finer step_l ≈ R/25 when
+        # permeability is active (divisor 3750 = 6·25²).
+        _has_perm = getattr(geometry, 'permeability', None) is not None
+        _divisor = 3750.0 if _has_perm else 216.0
+        dt_phys_max = float(R_geom) ** 2 / (_divisor * diffusivity)
+        sub_steps = max(1, int(np.ceil(dt_actual / dt_phys_max)))
+
+    dt_sim = dt_actual / sub_steps
+    step_l_sim = jnp.float32(jnp.sqrt(6.0 * diffusivity * dt_sim))
+
+    print(f"  sub_steps={sub_steps}, dt_sim={dt_sim*1e6:.3f} µs, "
+          f"step_l={float(step_l_sim)*1e6:.4f} µm"
+          + (f", step_l/R={float(step_l_sim)/float(R_geom):.4f}" if R_geom else ""),
+          flush=True)
+
+    permeability = getattr(geometry, 'permeability', None)
+    has_permeability = permeability is not None
+    has_reflect_with_log_weight = hasattr(geometry, 'reflect_with_log_weight')
+
+    # ── Standard path (position-only) ─────────────────────────────────────────
+    if has_permeability:
+        kappa_over_D = jnp.float32(float(permeability) / diffusivity)
+        permeate = geometry.permeate
+
+        def inner_step(carry, _):
+            r, key = carry
+            key, step_key, perm_key = jax.random.split(key, 3)
+            noise = jax.random.normal(step_key, (3,), dtype=jnp.float32)
+            unit_noise = noise / jnp.linalg.norm(noise)
+            step = unit_noise * step_l_sim
+            r_new, _dlog_w = permeate(r, step, kappa_over_D, jnp.float32(0.0), perm_key)
+            return (r_new, key), None
+    else:
+        reflect = geometry.reflect
+
+        def inner_step(carry, _):
+            r, key = carry
+            key, subkey = jax.random.split(key)
+            noise = jax.random.normal(subkey, (3,), dtype=jnp.float32)
+            unit_noise = noise / jnp.linalg.norm(noise)
+            step = unit_noise * step_l_sim
+            r_new = reflect(r, step)
+            return (r_new, key), None
+
+    def outer_step(carry, _):
+        carry_final, _ = jax.lax.scan(inner_step, carry, None, length=sub_steps)
+        r_final = carry_final[0]
+        return carry_final, r_final
+
+    def simulate_one_walker(r0_w, key_w):
+        (_, _), positions = jax.lax.scan(outer_step, (r0_w, key_w), None, length=n_t)
+        return positions  # (n_t, 3)
+
+    # ── Compartment ID detection (relaxation path only) ─────────────────────
+    # Permeable Cylinder (has _R and radius): 0=inside, 1=outside.  Permeable
+    # Sphere (radius, no _R): 0=inside, 1=outside.  Everything else: always 0.
+    if save_relaxation_data:
+        if has_permeability and hasattr(geometry, '_R') and hasattr(geometry, 'radius'):
+            R_val = jnp.float32(float(geometry.radius))
+            _R_jax = jnp.array(geometry._R, dtype=jnp.float32)
+            _is_id_R = bool(np.allclose(np.array(geometry._R), np.eye(3)))
+
+            def _get_comp_id(r):
+                r_c = r if _is_id_R else _R_jax @ r
+                return jnp.int8(jnp.where(jnp.linalg.norm(r_c[:2]) < R_val, 0, 1))
+        elif has_permeability and hasattr(geometry, 'radius'):
+            R_val = jnp.float32(float(geometry.radius))
+
+            def _get_comp_id(r):
+                return jnp.int8(jnp.where(jnp.linalg.norm(r) < R_val, 0, 1))
+        else:
+            def _get_comp_id(r):
+                return jnp.int8(0)
+
+    # ── Relaxation-data path (position + boundary log-weight with rho/D=1) ────
+    is_packed_myelin_geom = getattr(geometry, '_is_packed_myelinated', False)
+
+    if save_relaxation_data and is_packed_myelin_geom:
+        # PackedMyelinatedCylinders: use the stripped trajectory step fn (geometry
+        # + permeability only, rho/D=1 at all walls).  comp_id is the encoded id
+        # (0=extra, 1..N_max=intra, >N_max=myelin); compress to 0/1/2 at save.
+        N_max_pm = geometry.N_max
+        step_fn_traj_pm = make_packed_myelin_traj_step_fn(geometry, dt_sim)
+
+        def _compress_comp_pm(comp_id):
+            return jnp.where(comp_id == jnp.int32(0), jnp.int8(0),
+                   jnp.where(comp_id <= jnp.int32(N_max_pm), jnp.int8(1),
+                             jnp.int8(2)))
+
+        def _inner_pm(carry, _):
+            return step_fn_traj_pm(carry, None)
+
+        def outer_step_pm(carry, _):
+            r, key, comp_id = carry
+            # dlog_accum resets each save so the emitted value is the per-save delta.
+            inner_init = (r, key, jnp.float32(0.0), comp_id)
+            (r_final, key_final, dlog_accum, comp_final), _ = jax.lax.scan(
+                _inner_pm, inner_init, None, length=sub_steps)
+            return (r_final, key_final, comp_final), \
+                   (r_final, dlog_accum, _compress_comp_pm(comp_final))
+
+        def simulate_one_walker_pm(r0_w, key_w, comp0_w):
+            (_, _, _), (positions, dlog_boundary, comp_types) = jax.lax.scan(
+                outer_step_pm, (r0_w, key_w, comp0_w), None, length=n_t)
+            return positions, dlog_boundary, comp_types
+
+        simulate_batch_pm = jax.jit(
+            jax.vmap(simulate_one_walker_pm, in_axes=(0, 0, 0)))
+
+    if save_relaxation_data and not is_packed_myelin_geom:
+        if has_permeability:
+            kappa_over_D_relax = jnp.float32(float(permeability) / diffusivity)
+            permeate_relax = geometry.permeate
+
+            def inner_step_relax(carry, _):
+                r, key, dlog_accum, comp_sum = carry
+                key, step_key, perm_key = jax.random.split(key, 3)
+                noise = jax.random.normal(step_key, (3,), dtype=jnp.float32)
+                unit_noise = noise / jnp.linalg.norm(noise)
+                step = unit_noise * step_l_sim
+                r_new, dlog_w_unit = permeate_relax(
+                    r, step, kappa_over_D_relax, jnp.float32(1.0), perm_key)
+                # Per-sub-step compartment id -> fractional occupancy (resolves
+                # intra-save crossings without a finer dt_save).
+                comp_sum = comp_sum + _get_comp_id(r_new).astype(jnp.float32)
+                return (r_new, key, dlog_accum + dlog_w_unit, comp_sum), None
+
+        elif has_reflect_with_log_weight:
+            reflect_with_log_weight = geometry.reflect_with_log_weight
+
+            def inner_step_relax(carry, _):
+                r, key, dlog_accum, comp_sum = carry
+                key, subkey = jax.random.split(key)
+                noise = jax.random.normal(subkey, (3,), dtype=jnp.float32)
+                unit_noise = noise / jnp.linalg.norm(noise)
+                step = unit_noise * step_l_sim
+                r_new, dlog_w_unit = reflect_with_log_weight(r, step, jnp.float32(1.0))
+                comp_sum = comp_sum + _get_comp_id(r_new).astype(jnp.float32)
+                return (r_new, key, dlog_accum + dlog_w_unit, comp_sum), None
+
+        else:
+            # FreeDiffusion: no boundaries → dlog_boundary_unit is always 0.
+            reflect_free = geometry.reflect
+
+            def inner_step_relax(carry, _):
+                r, key, dlog_accum, comp_sum = carry
+                key, subkey = jax.random.split(key)
+                noise = jax.random.normal(subkey, (3,), dtype=jnp.float32)
+                unit_noise = noise / jnp.linalg.norm(noise)
+                step = unit_noise * step_l_sim
+                r_new = reflect_free(r, step)
+                comp_sum = comp_sum + _get_comp_id(r_new).astype(jnp.float32)
+                return (r_new, key, dlog_accum, comp_sum), None
+
+        def outer_step_relax(carry, _):
+            r, key = carry
+            inner_init = (r, key, jnp.float32(0.0), jnp.float32(0.0))
+            (r_final, key_final, dlog_accum, comp_sum), _ = jax.lax.scan(
+                inner_step_relax, inner_init, None, length=sub_steps)
+            # Fractional occupancy of compartment 1 over the saved interval.  For
+            # single-compartment geometries this is identically 0.
+            comp_occ = comp_sum / jnp.float32(sub_steps)
+            return (r_final, key_final), (r_final, dlog_accum, comp_occ)
+
+        def simulate_one_walker_relax(r0_w, key_w):
+            (_, _), (positions, dlog_boundary, comp_ids) = jax.lax.scan(
+                outer_step_relax, (r0_w, key_w), None, length=n_t)
+            return positions, dlog_boundary, comp_ids
+
+        simulate_batch_relax = jax.jit(
+            jax.vmap(simulate_one_walker_relax, in_axes=(0, 0)))
+
+    simulate_batch = jax.jit(jax.vmap(simulate_one_walker, in_axes=(0, 0)))
+
+    master_key = jax.random.PRNGKey(seed)
+    pos_key, walker_key = jax.random.split(master_key)
+
+    if r0 is not None:
+        r0_all = jnp.asarray(r0, dtype=jnp.float32)
+        if r0_all.shape != (n_walkers, 3):
+            raise ValueError(f"r0 must have shape ({n_walkers}, 3), got {r0_all.shape}")
+    else:
+        r0_all = geometry.init_positions(n_walkers, pos_key)   # (n_walkers, 3)
+    walker_keys_all = jax.random.split(walker_key, n_walkers)
+
+    comp0_all = (jnp.asarray(geometry._init_compartments)
+                 if (save_relaxation_data and is_packed_myelin_geom) else None)
+
+    all_batches = []
+    all_dlog_batches = [] if save_relaxation_data else None
+    all_comp_batches = [] if save_relaxation_data else None
+    n_batches = (n_walkers + walker_batch_size - 1) // walker_batch_size
+
+    for batch_idx in range(n_batches):
+        start = batch_idx * walker_batch_size
+        end = min(start + walker_batch_size, n_walkers)
+        batch_size = end - start
+        pct = int(100 * end / n_walkers)
+        print(f"  Simulating walkers {start}–{end - 1} ({pct}% done)...", flush=True)
+
+        current_r0 = r0_all[start:end]
+        current_keys = walker_keys_all[start:end]
+        if save_relaxation_data and is_packed_myelin_geom:
+            current_comp0 = comp0_all[start:end]
+
+        success = False
+        while not success:
+            try:
+                if save_relaxation_data and is_packed_myelin_geom:
+                    pos_f32, dlog_f32, comp_f32 = simulate_batch_pm(
+                        current_r0, current_keys, current_comp0)
+                    all_batches.append(np.array(pos_f32).astype(np.float16))
+                    all_dlog_batches.append(np.array(dlog_f32).astype(np.float16))
+                    all_comp_batches.append(np.array(comp_f32).astype(np.int8))
+                elif save_relaxation_data:
+                    pos_f32, dlog_f32, comp_f32 = simulate_batch_relax(current_r0, current_keys)
+                    all_batches.append(np.array(pos_f32).astype(np.float16))
+                    all_dlog_batches.append(np.array(dlog_f32).astype(np.float16))
+                    # Permeable: fractional occupancy (float16); else discrete (int8).
+                    all_comp_batches.append(np.array(comp_f32).astype(
+                        np.float16 if has_permeability else np.int8))
+                else:
+                    positions_f32 = np.array(simulate_batch(current_r0, current_keys))
+                    all_batches.append(positions_f32.astype(np.float16))
+                success = True
+            except Exception as e:
+                err_str = str(e)
+                if ("OOM" in err_str or "out of memory" in err_str.lower()
+                        or "RESOURCE_EXHAUSTED" in err_str):
+                    new_sub_batch = batch_size // 2
+                    if new_sub_batch < 1000:
+                        raise RuntimeError(f"Batch size too small after OOM: {e}") from e
+                    print(f"  OOM: halving sub-batch to {new_sub_batch}", flush=True)
+                    sub_pos_list = []
+                    sub_dlog_list = [] if save_relaxation_data else None
+                    sub_comp_list = [] if save_relaxation_data else None
+                    for ss in range(0, batch_size, new_sub_batch):
+                        se = min(ss + new_sub_batch, batch_size)
+                        if save_relaxation_data and is_packed_myelin_geom:
+                            sp, sd, sc = simulate_batch_pm(
+                                current_r0[ss:se], current_keys[ss:se],
+                                current_comp0[ss:se])
+                            sub_pos_list.append(np.array(sp).astype(np.float16))
+                            sub_dlog_list.append(np.array(sd).astype(np.float16))
+                            sub_comp_list.append(np.array(sc).astype(np.int8))
+                        elif save_relaxation_data:
+                            sp, sd, sc = simulate_batch_relax(
+                                current_r0[ss:se], current_keys[ss:se])
+                            sub_pos_list.append(np.array(sp).astype(np.float16))
+                            sub_dlog_list.append(np.array(sd).astype(np.float16))
+                            sub_comp_list.append(np.array(sc).astype(
+                                np.float16 if has_permeability else np.int8))
+                        else:
+                            sp = np.array(simulate_batch(
+                                current_r0[ss:se], current_keys[ss:se]))
+                            sub_pos_list.append(sp.astype(np.float16))
+                    all_batches.append(np.concatenate(sub_pos_list, axis=0))
+                    if save_relaxation_data:
+                        all_dlog_batches.append(np.concatenate(sub_dlog_list, axis=0))
+                        all_comp_batches.append(np.concatenate(sub_comp_list, axis=0))
+                    success = True
+                else:
+                    raise
+
+    trajectories = np.concatenate(all_batches, axis=0)  # (n_walkers, n_t, 3) float16
+    if save_relaxation_data:
+        dlog_boundary_unit = np.concatenate(all_dlog_batches, axis=0)  # (n_walkers, n_t) float16
+        comp_traj = np.concatenate(all_comp_batches, axis=0)           # (n_walkers, n_t)
+        return trajectories, dt_actual, sub_steps, dt_sim, dlog_boundary_unit, comp_traj
+    return trajectories, dt_actual, sub_steps, dt_sim
