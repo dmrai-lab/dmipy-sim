@@ -48,6 +48,16 @@ from .sh_convolution import (
 )
 from . import mt
 from .rf import B1Pulse, bloch_simulate, slice_profile
+# Replay-pack compression codecs (scipy-only, always importable) + the .rpk bank
+# (safetensors-backed, the optional [bank] extra; guarded so `import dmipy_sim` still
+# works without safetensors).
+from . import compression
+try:
+    from .bank import (build_replay_pack, ReplayPack, write_rpk, read_rpk,
+                       master_from_walk, build_to_floor)
+    _BANK_AVAILABLE = True
+except ImportError:  # safetensors not installed — replay packs need the [bank] extra
+    _BANK_AVAILABLE = False
 
 __all__ = [
     "simulate", "simulate_mixture", "simulate_cpmg", "simulate_trajectories",
@@ -86,4 +96,10 @@ __all__ = [
     "mt",
     # continuous RF pulses: complex B1(t) envelope + Bloch forward
     "B1Pulse", "bloch_simulate", "slice_profile",
+    # replay packs (.rpk): master-walk compression + creation
+    "compression",
 ]
+
+if _BANK_AVAILABLE:
+    __all__ += ["build_replay_pack", "ReplayPack", "write_rpk", "read_rpk",
+                "master_from_walk", "build_to_floor"]
