@@ -426,7 +426,12 @@ def relaxation_logweight(comp, T2_per_comp, T1_per_comp, dt, chi=None):
     all-ones = spin-echo, T2 only); otherwise `chi`·(1/T2) + (1-`chi`)·(1/T1)."""
     comp = np.asarray(comp)
     invT2 = np.where(np.asarray(T2_per_comp) > 0, 1.0 / np.maximum(np.asarray(T2_per_comp, float), 1e-30), 0.0)
-    invT1 = np.where(np.asarray(T1_per_comp) > 0, 1.0 / np.maximum(np.asarray(T1_per_comp, float), 1e-30), 0.0)
+    # A pack may carry T2 but no T1 (transverse-only) -> T1_per_comp is None; treat as no
+    # longitudinal relaxation (rate 0), matching the T2 compartment shape.
+    if T1_per_comp is None:
+        invT1 = np.zeros_like(invT2)
+    else:
+        invT1 = np.where(np.asarray(T1_per_comp) > 0, 1.0 / np.maximum(np.asarray(T1_per_comp, float), 1e-30), 0.0)
     if np.issubdtype(comp.dtype, np.floating) and not np.array_equal(comp, np.round(comp)):
         f = np.clip(comp, 0.0, 1.0)                  # occupancy of compartment 1 (2-comp)
         r2 = (1.0 - f) * invT2[0] + f * invT2[1]
