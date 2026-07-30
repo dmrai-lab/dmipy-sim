@@ -15,6 +15,21 @@ import jax.numpy as jnp
 from dmipy_sim import simulate, Ellipsoid, Sphere, set_b
 from dmipy_sim.waveforms import Waveform, pgse
 from .conftest import D, N_WALKERS, SEED
+from .substrates import get_prewalk, spec_for_waveform
+
+
+def _prolate_prewalk(wf):
+    """Shared prewalk for the prolate ellipsoid (semiaxes 2,2,10 µm), seed=SEED,
+    on this waveform's grid. The b-value is a replay knob, so the
+    signal-above-free test and the short-axis (gradient ∥x) leg of the
+    axis-dependence test — identical geometry, D, seed, N, grid, and gradient
+    direction — share ONE walk. The long-axis (∥z) leg uses seed=SEED+1, a
+    different walk, so it stays a plain simulate(). Gradient-only: no relaxation
+    channels stored."""
+    semiaxes = np.array([2e-6, 2e-6, 10e-6])
+    return get_prewalk(spec_for_waveform(
+        "ellipsoid_2_2_10um", lambda: Ellipsoid(semiaxes),
+        wf, D=D, seed=SEED, n_walkers=N_WALKERS, save_relaxation_data=False))
 
 
 def _disimpy_example_waveform(n_t=1000):
@@ -105,7 +120,7 @@ def test_ellipsoid_signal_above_free():
     wf = set_b(pgse(delta=0.2e-3, DELTA=40e-3, G_magnitude=1.0,
                     bvecs=bvecs, n_t=1000), b_values)
 
-    S_ellipsoid = simulate(N_WALKERS, D, wf, Ellipsoid(semiaxes), seed=SEED)
+    S_ellipsoid = _prolate_prewalk(wf).replay(wf)
     S_free      = simulate(N_WALKERS, D, wf, FreeDiffusion(),     seed=SEED + 1)
 
     assert np.all(S_ellipsoid >= S_free - 0.01), (
@@ -130,7 +145,7 @@ def test_ellipsoid_anisotropic_axis_dependence():
                       bvecs=np.array([[0., 0., 1.]]), n_t=1000),
                  np.array([b]))
 
-    S_x = simulate(N_WALKERS, D, wf_x, Ellipsoid(semiaxes), seed=SEED)
+    S_x = _prolate_prewalk(wf_x).replay(wf_x)
     S_z = simulate(N_WALKERS, D, wf_z, Ellipsoid(semiaxes), seed=SEED + 1)
 
     # Short-axis gradient (x, 2µm) → more restriction → higher signal
