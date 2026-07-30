@@ -18,6 +18,19 @@ import numpy.testing as npt
 
 from dmipy_sim import simulate, pgse, Box1D, FreeDiffusion, set_b
 from .conftest import D, N_WALKERS, SEED
+from .substrates import get_prewalk, spec_for_waveform
+
+
+def _box10_prewalk(wf):
+    """Shared prewalk for Box1D(L=10µm), seed=SEED, N_WALKERS, on this waveform's
+    grid. The b-value and gradient DIRECTION (∥x restricted vs ∥y free) are replay
+    knobs, so the above-free, monotonic-decay, and perpendicular-gradient tests —
+    identical geometry, D, seed, N, grid — share ONE walk. The b≈0 test uses a
+    smaller ensemble (10k) and the confinement test different box sizes, so those
+    stay plain simulate(). Gradient-only: no relaxation channels stored."""
+    return get_prewalk(spec_for_waveform(
+        "box_10.0um", lambda: Box1D(10e-6),
+        wf, D=D, seed=SEED, n_walkers=N_WALKERS, save_relaxation_data=False))
 
 
 def test_box_1d_signal_at_b0_is_one():
@@ -40,7 +53,7 @@ def test_box_1d_restricted_signal_above_free():
     wf = set_b(pgse(delta=delta, DELTA=DELTA, G_magnitude=1.0,
                     bvecs=bvecs, n_t=n_t), b_values)
 
-    S_box  = simulate(N_WALKERS, D, wf, Box1D(L), seed=SEED)
+    S_box  = _box10_prewalk(wf).replay(wf)
     S_free = simulate(N_WALKERS, D, wf, FreeDiffusion(), seed=SEED + 1)
 
     assert np.all(S_box >= S_free - 0.01), (
@@ -55,7 +68,7 @@ def test_box_1d_monotonically_decreasing():
     bvecs = np.tile([1., 0., 0.], (30, 1))
     wf = set_b(pgse(delta=0.2e-3, DELTA=40e-3, G_magnitude=1.0,
                     bvecs=bvecs, n_t=1000), b_values)
-    S = simulate(N_WALKERS, D, wf, Box1D(L), seed=SEED)
+    S = _box10_prewalk(wf).replay(wf)
     assert np.all(np.diff(S) <= 0.005), (
         "Box1D signal should be monotonically non-increasing with b-value")
 
@@ -85,7 +98,7 @@ def test_box_1d_perpendicular_gradient_is_free():
     wf = set_b(pgse(delta=0.2e-3, DELTA=40e-3, G_magnitude=1.0,
                     bvecs=bvecs, n_t=1000), b_values)
 
-    S_box  = simulate(N_WALKERS, D, wf, Box1D(L), seed=SEED)
+    S_box  = _box10_prewalk(wf).replay(wf)
     E_free = np.exp(-b_values * D)
 
     npt.assert_allclose(S_box, E_free, atol=0.01,
