@@ -10,6 +10,21 @@ import numpy.testing as npt
 from dmipy_sim import simulate, simulate_mixture, FreeDiffusion, Sphere, set_b
 from dmipy_sim.waveforms import pgse
 from .conftest import D, N_WALKERS, SEED
+from .substrates import get_prewalk, spec_for_waveform
+
+
+def _free_prewalk(wf):
+    """Shared prewalk for FreeDiffusion, D, seed=SEED, N_WALKERS on this
+    waveform's grid. Three tests use the identical plain FreeDiffusion reference
+    signal (weighted-sum S1, between-compartments S_free, fraction-limit
+    S_direct) on the same grid, so they share ONE walk and replay it (bit-
+    identical to simulate per test_replay_parity, so the atol=1e-6 mixture
+    assertions still hold). simulate_mixture(...) and the Sphere references
+    (which vary D per test) stay as plain calls. Gradient-only: no relaxation
+    channels stored."""
+    return get_prewalk(spec_for_waveform(
+        "free", FreeDiffusion, wf, D=D, seed=SEED, n_walkers=N_WALKERS,
+        save_relaxation_data=False))
 
 
 def _waveform(n_b=20):
@@ -24,7 +39,7 @@ def test_mixture_is_weighted_sum():
     wf, _ = _waveform()
     f1, f2 = 0.7, 0.3
 
-    S1 = simulate(N_WALKERS, D,        wf, FreeDiffusion(), seed=SEED)
+    S1 = _free_prewalk(wf).replay(wf)
     S2 = simulate(N_WALKERS, D * 0.5,  wf, Sphere(5e-6),   seed=SEED + 1)
 
     S_mix = simulate_mixture([
@@ -44,7 +59,7 @@ def test_mixture_between_compartments():
     wf, _ = _waveform()
     f1, f2 = 0.5, 0.5
 
-    S_free     = simulate(N_WALKERS, D, wf, FreeDiffusion(), seed=SEED)
+    S_free     = _free_prewalk(wf).replay(wf)
     S_sphere   = simulate(N_WALKERS, D, wf, Sphere(5e-6),   seed=SEED + 1)
     S_mix      = simulate_mixture([
         {'fraction': f1, 'n_walkers': N_WALKERS, 'diffusivity': D,
@@ -63,7 +78,7 @@ def test_mixture_fraction_limit():
     """f=1.0 for a single compartment must reproduce simulate() exactly."""
     wf, _ = _waveform()
 
-    S_direct = simulate(N_WALKERS, D, wf, FreeDiffusion(), seed=SEED)
+    S_direct = _free_prewalk(wf).replay(wf)
     S_mix    = simulate_mixture([
         {'fraction': 1.0, 'n_walkers': N_WALKERS, 'diffusivity': D,
          'geometry': FreeDiffusion()},
