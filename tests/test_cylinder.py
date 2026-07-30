@@ -13,6 +13,18 @@ import jax.numpy as jnp
 from dmipy_sim import simulate, Cylinder, FreeDiffusion, set_b
 from dmipy_sim.waveforms import Waveform
 from .conftest import D, N_WALKERS, SEED, load_fixture
+from .substrates import get_prewalk, spec_for_waveform
+
+
+def _cyl_z_prewalk(wf):
+    """Shared prewalk for the r=5µm cylinder with its axis along z, on this
+    waveform's grid. Orientation/D/seed/N are fixed; the b-value and gradient
+    DIRECTION (∥z vs ⊥x) are replay knobs, so the parallel-gradient and
+    perpendicular-gradient tests (same grid) share ONE walk. Gradient-only, so
+    no relaxation channels are stored."""
+    return get_prewalk(spec_for_waveform(
+        "cyl_r5.0um_z", lambda: Cylinder(radius=5e-6, orientation=[0, 0, 1.0]),
+        wf, D=D, seed=SEED, n_walkers=N_WALKERS, save_relaxation_data=False))
 
 
 def _build_disimpy_waveform(T, n_t_raw, pulse_start, pulse_end, n_t=1000):
@@ -85,9 +97,7 @@ def test_cylinder_parallel_gradient_is_free():
     wf = set_b(pgse(delta=0.2e-3, DELTA=40e-3, G_magnitude=1.0,
                     bvecs=bvecs, n_t=1000), b_values)
 
-    signals = simulate(N_WALKERS, D, wf,
-                       Cylinder(radius=5e-6, orientation=[0, 0, 1.0]),
-                       seed=SEED)
+    signals = _cyl_z_prewalk(wf).replay(wf)
     expected = np.exp(-b_values * D)
 
     npt.assert_allclose(signals, expected, atol=0.02,
@@ -102,8 +112,7 @@ def test_cylinder_signal_above_free_perp():
     wf = set_b(pgse(delta=0.2e-3, DELTA=40e-3, G_magnitude=1.0,
                     bvecs=bvecs, n_t=1000), b_values)
 
-    S_cyl  = simulate(N_WALKERS, D, wf,
-                      Cylinder(radius=5e-6, orientation=[0, 0, 1.0]), seed=SEED)
+    S_cyl  = _cyl_z_prewalk(wf).replay(wf)
     S_free = simulate(N_WALKERS, D, wf, FreeDiffusion(), seed=SEED + 1)
 
     assert np.all(S_cyl >= S_free - 0.01), (
