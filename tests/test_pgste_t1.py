@@ -8,19 +8,29 @@ simulation therefore yields
 
     S ≈ 0.5 · exp(-b·D) · exp(-TM/T1).
 
-These tests exercise the direct simulate() path on FreeDiffusion (CPU-fast).
+REPLAY: T1 (gated by the waveform's chi_perp schedule) and the 0.5 stimulated-echo
+factor are replay knobs. Each waveform grid (per TM) is walked once (shared, disk-cached)
+and replayed with/without T1 — so calls sharing a grid collapse to one walk.
 """
 
 import numpy as np
 import numpy.testing as npt
 
-from dmipy_sim import simulate, FreeDiffusion, set_b, calc_b
+from dmipy_sim import FreeDiffusion, set_b, calc_b
 from dmipy_sim.waveforms import pgse, pgste
 from .conftest import D, SEED
+from .substrates import get_prewalk, spec_for_waveform
 
 # Local walker count: FreeDiffusion is cheap per walker, so this test stays fast
 # (it is not marked slow) while keeping the MC noise floor ~1/sqrt(N) small.
 N = 40_000
+
+
+def _free(wf):
+    """Shared free-diffusion prewalk matching this waveform's grid (chi_perp/T1/0.5 are
+    replay knobs, so distinct grids — per TM — are the only distinct walks)."""
+    return get_prewalk(spec_for_waveform("free", FreeDiffusion, wf,
+                                         D=D, seed=SEED, n_walkers=N))
 
 
 def _pgste_at_b(delta, TM, b, n_t=600):
@@ -38,7 +48,7 @@ def test_pgste_signal_equals_half_diffusion_times_t1():
     wf = _pgste_at_b(delta=5e-3, TM=TM, b=b)
     b_eff = calc_b(wf)[0]
 
-    S = simulate(N, D, wf, FreeDiffusion(), seed=SEED, T1=T1, require_gpu=False)
+    S = _free(wf).replay(wf, T1=T1)
     expected = 0.5 * np.exp(-b_eff * D) * np.exp(-TM / T1)
 
     atol_mc = 1.0 / np.sqrt(N)
@@ -54,8 +64,7 @@ def test_pgste_t1_decay_monotonic_in_mixing_time():
     signals = []
     for TM in (10e-3, 40e-3, 80e-3):
         wf = _pgste_at_b(delta=5e-3, TM=TM, b=b)
-        signals.append(float(simulate(N, D, wf, FreeDiffusion(), seed=SEED,
-                                      T1=T1, require_gpu=False)[0]))
+        signals.append(float(_free(wf).replay(wf, T1=T1)[0]))
 
     for lo, hi in zip(signals[1:], signals[:-1]):
         assert lo <= hi + 1e-3, (
@@ -73,7 +82,7 @@ def test_pgste_without_t1_is_half_diffusion_attenuation():
     wf = _pgste_at_b(delta=5e-3, TM=40e-3, b=b)
     b_eff = calc_b(wf)[0]
 
-    S = simulate(N, D, wf, FreeDiffusion(), seed=SEED, require_gpu=False)
+    S = _free(wf).replay(wf)
     expected = 0.5 * np.exp(-b_eff * D)
 
     atol_mc = 1.0 / np.sqrt(N)
@@ -92,8 +101,9 @@ def test_pgse_unaffected_by_t1():
     wf = set_b(pgse(delta=5e-3, DELTA=45e-3, G_magnitude=1.0, bvecs=bvecs, n_t=600),
                np.array([1.0e9]))
 
-    S_no_t1 = simulate(N, D, wf, FreeDiffusion(), seed=SEED, require_gpu=False)
-    S_t1 = simulate(N, D, wf, FreeDiffusion(), seed=SEED, T1=1.0, require_gpu=False)
+    pw = _free(wf)
+    S_no_t1 = pw.replay(wf)
+    S_t1 = pw.replay(wf, T1=1.0)
 
     npt.assert_allclose(
         S_t1, S_no_t1, atol=1e-5,
