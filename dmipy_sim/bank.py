@@ -378,7 +378,7 @@ class ReplayPack:
             if _wp:                                    # lowrank / dct: per-walker + log-weights
                 logw = None
                 if relaxation and "comp_rle_vals" in self.arrays and pc.get("T2"):
-                    logw = _cx.relaxation_logweight(self._comp(), pc["T2"], pc["T1"], self.dt)
+                    logw = _cx.relaxation_logweight(self._comp(), pc["T2"], pc.get("T1"), self.dt)
                 if rho:
                     blt = self.boundary_local_time()
                     if blt is not None:
@@ -401,8 +401,9 @@ class ReplayPack:
         walker_preserving = nw == wp.get("n_walkers") and self.cx.get("walker_preserving")
         comp = self._comp() if (relaxation and walker_preserving) else None
         if comp is not None and pc.get("T2"):
-            kw.update(comp_traj=comp, T2_per_comp=np.asarray(pc["T2"]),
-                      T1_per_comp=np.asarray(pc["T1"]))
+            kw.update(comp_traj=comp, T2_per_comp=np.asarray(pc["T2"]))
+            if pc.get("T1") is not None:   # T2-only packs carry T1=None
+                kw["T1_per_comp"] = np.asarray(pc["T1"])
         blt = self.boundary_local_time() if walker_preserving else None
         if rho and blt is not None:
             kw.update(dlog_boundary_unit=np.asarray(blt),
