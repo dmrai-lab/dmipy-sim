@@ -60,6 +60,7 @@ _SLOW_MC_MODULES = {
     "test_compression",
     "test_bank",
     "test_bank_stage",
+    "test_engine_dispatch",
 }
 
 

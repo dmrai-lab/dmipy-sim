@@ -19,6 +19,156 @@ from .physics import (make_step_fn, make_myelin_step_fn, make_packed_myelin_step
 from .waveforms import Waveform
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# ENGINE ROUTING TABLE (Phase 5)
+# ═══════════════════════════════════════════════════════════════════════════
+# simulate(engine=) selects the backend that turns a walk into a signal:
+#
+#   "fused"  — the inline single-pass jax.lax.scan step-kernels in this module.
+#              The validation ORACLE and the universal fallback; byte-for-byte
+#              the pre-replay engine (nothing below the routing block changed).
+#   "replay" — walk ONCE (simulate_trajectories(save_relaxation_data=…)) then
+#              apply_waveform_with_relaxation (gradient phase + scalar/per-comp
+#              T2 + T1 + surface relaxivity).  This mirrors the private
+#              packed-myelin unification, generalised to the geometries Phase-1
+#              proved equivalent at the MC-noise floor (test_replay_parity).
+#   "auto"   — default; replay where validated-equivalent AND the suite stays
+#              green, else transparently fused.
+#
+# "auto" routing decided EMPIRICALLY by keeping the full suite green:
+#
+#   geometry \ effect    | gradient | scalar T2 | T1 | surface ρ  → engine
+#   ---------------------+----------+-----------+----+-----------------------
+#   FreeDiffusion        |  REPLAY  |  REPLAY   | R  |    n/a
+#   Box1D                |  REPLAY  |  REPLAY   | R  |  REPLAY
+#   Sphere               |  REPLAY  |  REPLAY   | R  |  REPLAY
+#   Cylinder             |  REPLAY  |  REPLAY   | R  |  REPLAY
+#   Ellipsoid            |  REPLAY  |  REPLAY   | R  |  REPLAY
+#   PackedCylinders      |  REPLAY  |  REPLAY   | R  |  REPLAY
+#   PackedSpheres        |  REPLAY  |  REPLAY   | R  |  REPLAY
+#   Mesh (impermeable)   |  REPLAY  |  REPLAY   | R  |  REPLAY
+#   ---------------------+----------+-----------+----+-----------------------
+#   MyelinatedCylinder   |  FUSED  (dedicated fused step kernel; no replay walk)
+#   PackedMyelinatedCyl. |  FUSED  (fused single-reflection kernel is NOT
+#                         position-parity with the multi-bounce replay walk —
+#                         the private repo unified these by REPLACING the fused
+#                         kernel; the public repo keeps both, so rerouting would
+#                         shift test_packed_myelinated_cylinders)
+#   permeability (any)   |  FUSED  (membrane crossing is single-pass walk
+#                         semantics; scalar replay has no Mz reservoir for
+#                         exchange across a longitudinal-storage mixing time)
+#   per-comp D/T2 Mesh   |  FUSED  (intra/extra dicts resolved per-step in
+#                         make_step_fn; not wired into the replay operator here)
+#
+# Fused-only REQUESTS (any geometry) — replay raises NotImplementedError, auto
+# falls back to fused: return_positions, return_compartments,
+# return_walker_signals (single-pass internals).  simulate_cpmg / simulate_
+# mixture / simulate_bloch stay fused (out of Phase-5 scope).
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Geometry families "auto" is allowed to route to replay (see table above).  A
+# geometry qualifies only if it is one of these AND _replay_gap() returns None.
+_REPLAY_AUTO_GEOM_NAMES = frozenset({
+    "FreeDiffusion", "Box1D", "Sphere", "Cylinder", "Ellipsoid",
+    "PackedCylinders", "PackedSpheres", "Mesh",
+})
+
+
+def _replay_gap(geometry, *, return_positions, return_compartments,
+                return_walker_signals, diffusivity):
+    """Return a string naming why the replay backend cannot serve this run
+    exactly, or ``None`` when replay is a valid substitute for the fused engine.
+
+    This is the single source of truth for both ``engine='replay'`` (raises with
+    the reason) and ``engine='auto'`` (falls back to fused)."""
+    if return_positions is not False:
+        return "return_positions is a fused single-pass internal (no replay equivalent)"
+    if return_compartments is not False:
+        return "return_compartments is a fused single-pass internal (no replay equivalent)"
+    if return_walker_signals:
+        return "return_walker_signals is a fused single-pass internal (no replay equivalent)"
+    if getattr(geometry, '_is_myelinated', False):
+        return "MyelinatedCylinder uses a dedicated fused step kernel (no replay walk)"
+    if getattr(geometry, '_is_packed_myelinated', False):
+        return ("PackedMyelinatedCylinders fused single-reflection kernel is not "
+                "position-parity with the multi-bounce replay walk")
+    if getattr(geometry, 'permeability', None) is not None:
+        return ("membrane permeability is single-pass walk semantics "
+                "(fused-only; scalar replay has no exchange reservoir)")
+    if (getattr(geometry, '_D_comp_jax', None) is not None or
+            getattr(geometry, '_inv_T2_comp_jax', None) is not None):
+        return "per-compartment D/T2 geometry (Mesh intra/extra) is fused-only in replay"
+    if diffusivity is None:
+        return "replay needs an explicit diffusivity for the sub-step auto-tune"
+    return None
+
+
+def _replay_auto_allowed(geometry):
+    """Whether ``engine='auto'`` may route this geometry to replay.  Restricted
+    to the families proven suite-green; a stricter gate than _replay_gap()."""
+    return type(geometry).__name__ in _REPLAY_AUTO_GEOM_NAMES
+
+
+def _simulate_via_replay(n_walkers, diffusivity, waveform, geometry, *, seed,
+                         T2, T1, r0, require_gpu, walker_batch_size):
+    """Signal via the replay backend: walk once, then apply the waveform +
+    relaxation.  The producer walk depends only on (geometry, diffusivity,
+    seed) — the replay invariant — so it reproduces the fused ``simulate()`` to
+    the MC-noise floor on the supported matrix (see the routing table).
+
+    Handles gradient phase, scalar T2, T1 (chi_perp-gated longitudinal storage),
+    surface relaxivity (ρ replayed off the recorded unit boundary local time),
+    and the stimulated-echo 0.5 factor.  Assumes ``_replay_gap()`` already
+    cleared the run (no permeability / myelin / per-comp / extra-output)."""
+    from .trajectories import apply_waveform_with_relaxation
+
+    G = np.asarray(waveform.G, dtype=np.float32)          # (n_meas, n_t, 3)
+    dt = float(waveform.dt)
+    n_t = G.shape[1]
+    T_max = dt * (n_t - 1)
+
+    # Acquisition rotation: place the substrate in the bore by rotating G into
+    # the geometry's native frame (walk stays native), exactly as fused does.
+    _orient_R = getattr(geometry, '_orient_R', None)
+    if _orient_R is not None:
+        G = G @ np.asarray(_orient_R, dtype=np.float32)
+
+    # Transverse-coherence schedule (spin echo = all ones; PGSTE zeros the TM).
+    chi_perp = getattr(waveform, 'chi_perp', None)
+    chi = (np.asarray(chi_perp, dtype=np.float64).reshape(n_t)
+           if chi_perp is not None else np.ones(n_t, dtype=np.float64))
+
+    # Surface relaxivity is a wall effect recorded (with ρ/D = 1) during the
+    # walk and multiplied by ρ/D at replay — only then do we need the boundary
+    # local-time channel.  Scalar T2/T1 are walker-independent replay knobs.
+    rho = getattr(geometry, 'surface_relaxivity_t2', None)
+    has_surf = (rho is not None and float(rho) > 0.0
+                and hasattr(geometry, 'reflect_with_log_weight'))
+
+    st_kwargs = dict(seed=seed, require_gpu=require_gpu,
+                     save_relaxation_data=has_surf)
+    if r0 is not None:
+        st_kwargs['r0'] = r0
+    if walker_batch_size is not None:
+        st_kwargs['walker_batch_size'] = walker_batch_size
+
+    out = simulate_trajectories(n_walkers, diffusivity, geometry, T_max, dt,
+                                **st_kwargs)
+    if has_surf:
+        traj, dt_traj, _sub, _dtsim, dlog, _comp = out
+    else:
+        traj, dt_traj, _sub, _dtsim = out
+        dlog = None
+
+    signals = apply_waveform_with_relaxation(
+        traj, dt_traj, G, dt, chi_perp=chi,
+        dlog_boundary_unit=dlog, T2=T2, T1=T1,
+        rho=(float(rho) if has_surf else None),
+        D=(float(diffusivity) if has_surf else None),
+        stimulated_echo=bool(getattr(waveform, 'stimulated_echo', False)))
+    return np.asarray(signals, dtype=np.float32)
+
+
 def simulate(
     n_walkers: int,
     diffusivity=None,
@@ -33,6 +183,7 @@ def simulate(
     r0=None,
     walker_batch_size: int = None,
     require_gpu=None,
+    engine: str = "auto",
     _allow_oom_backoff: bool = True,
 ):
     """Run Monte Carlo diffusion simulation.
@@ -108,6 +259,24 @@ def simulate(
         GPU guard against a silent CPU fallback.  ``True`` raises if no GPU is
         visible; ``False`` opts out (e.g. a CPU float64 reference check);
         ``None`` (default) warns when a large run is about to use the CPU.
+    engine : {'auto', 'replay', 'fused'}, optional
+        Which backend computes the signal (default ``'auto'``).  See the
+        ENGINE ROUTING TABLE at the top of this module.
+
+        - ``'fused'`` — the inline single-pass ``jax.lax.scan`` step-kernels in
+          this file (the validation oracle / universal fallback; byte-for-byte
+          the pre-replay code).
+        - ``'replay'`` — walk once with :func:`simulate_trajectories` then apply
+          the waveform + relaxation with
+          :func:`~dmipy_sim.trajectories.apply_waveform_with_relaxation`
+          (gradient phase + scalar/per-comp T2 + T1 + surface relaxivity).
+          Raises :class:`NotImplementedError` (naming the gap) for a path the
+          replay backend cannot serve exactly — MyelinatedCylinder /
+          PackedMyelinatedCylinders, membrane permeability, per-compartment
+          D/T2 meshes, or the ``return_positions``/``return_compartments``/
+          ``return_walker_signals`` single-pass internals.
+        - ``'auto'`` — route to replay where it is validated-equivalent AND
+          keeps the test suite green, else fall back to fused (transparent).
 
     Returns
     -------
@@ -131,7 +300,40 @@ def simulate(
         raise ValueError(
             "return_positions must be False, True, or 'full'; "
             f"got {return_positions!r}")
+    if engine not in ("auto", "replay", "fused"):
+        raise ValueError(
+            f"engine must be 'auto', 'replay', or 'fused'; got {engine!r}")
     want_pos_full = return_positions == 'full'
+
+    # ── Engine routing (Phase 5) ────────────────────────────────────────────
+    # Decide replay vs fused BEFORE the fused-only OOM/batch machinery so the
+    # fused code path below stays byte-for-byte the pre-replay engine.  The
+    # replay backend produces a bare signal array only; every extra-output /
+    # single-pass-internal request is a fused-only gap.
+    if engine != "fused":
+        _wf_r = waveform.waveform if hasattr(waveform, 'waveform') else waveform
+        _gap = _replay_gap(
+            geometry, return_positions=return_positions,
+            return_compartments=return_compartments,
+            return_walker_signals=return_walker_signals,
+            diffusivity=diffusivity)
+        if engine == "replay":
+            if _gap is not None:
+                raise NotImplementedError(
+                    f"engine='replay' cannot serve this run: {_gap}. "
+                    "Use engine='fused' (or 'auto').")
+            return _simulate_via_replay(
+                n_walkers, diffusivity, _wf_r, geometry, seed=seed,
+                T2=T2, T1=T1, r0=r0, require_gpu=require_gpu,
+                walker_batch_size=walker_batch_size)
+        # engine == "auto": replay only where validated-equivalent AND green.
+        if _gap is None and _replay_auto_allowed(geometry):
+            return _simulate_via_replay(
+                n_walkers, diffusivity, _wf_r, geometry, seed=seed,
+                T2=T2, T1=T1, r0=r0, require_gpu=require_gpu,
+                walker_batch_size=walker_batch_size)
+        # else: fall through to the fused engine (pin so recursion stays fused).
+        engine = "fused"
 
     # GPU guard — never silently fall back to CPU for a heavy run (CLAUDE rule).
     from .gpu import check_gpu
@@ -155,7 +357,7 @@ def simulate(
                     return_compartments=return_compartments,
                     return_walker_signals=return_walker_signals, r0=r0,
                     walker_batch_size=bs, require_gpu=require_gpu,
-                    _allow_oom_backoff=False)
+                    engine="fused", _allow_oom_backoff=False)
             except (XlaRuntimeError, RuntimeError) as exc:
                 m = str(exc)
                 if not ('RESOURCE_EXHAUSTED' in m or 'out of memory' in m.lower()):
@@ -557,7 +759,7 @@ def _simulate_in_walker_batches(n_walkers, walker_batch_size, *, seed,
             return_compartments=return_compartments,
             return_walker_signals=return_walker_signals,
             walker_batch_size=None, require_gpu=False,
-            _allow_oom_backoff=False)
+            engine="fused", _allow_oom_backoff=False)
 
         items = list(out) if isinstance(out, tuple) else [out]
         sig = np.asarray(items.pop(0))
