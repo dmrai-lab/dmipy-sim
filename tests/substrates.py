@@ -141,6 +141,22 @@ class Prewalk:
             traj, self.dt, G, dt_wf, chi_perp=chi_perp, T2=T2, T1=T1,
             stimulated_echo=stimulated_echo, **kw)
 
+    def surface_b0_signal(self, TE, rho, *, n_walkers=None):
+        """b≈0 spin-echo signal ``E(TE) = <exp((ρ/D)·Σ_{t≤TE} dlog_boundary_unit)>``,
+        the quantity a surface-relaxivity T2 fit measures (diffusion weighting is
+        negligible at b≈0, and constant across TE so it never affects the T2 slope).
+
+        The walk is truncated at ``TE`` — so ONE long prewalk serves an entire TE sweep,
+        and (ρ being a replay knob off the boundary channel) all ρ share that walk.
+        Returns ``(E, actual_TE)``. Requires ``save_relaxation_data=True``.
+        """
+        if self.dlog is None:
+            raise ValueError("surface_b0_signal needs a walk with save_relaxation_data=True")
+        n_t = min(self.traj.shape[1], int(round(float(TE) / self.dt)) + 1)
+        dl = self.dlog[:, :n_t] if n_walkers is None else self.dlog[:n_walkers, :n_t]
+        logw = (float(rho) / self.D) * np.asarray(dl, dtype=np.float64).sum(axis=1)
+        return float(np.mean(np.exp(logw))), (n_t - 1) * self.dt
+
 
 _MEM: dict[str, Prewalk] = {}
 

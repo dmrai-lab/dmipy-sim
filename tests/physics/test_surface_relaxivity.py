@@ -44,6 +44,7 @@ import jax.numpy as jnp
 
 from dmipy_sim import simulate, Box1D, Cylinder, Sphere, set_b
 from dmipy_sim.waveforms import pgse
+from ..substrates import get_prewalk, PrewalkSpec
 
 
 # ---------------------------------------------------------------------------
@@ -88,33 +89,56 @@ def _fit_t2(TE_values, signals):
     return -1.0 / slope
 
 
+# One prewalk to this T_max serves every ρ's TE sweep for a given (shape, R, D, N):
+# surface relaxivity ρ is a REPLAY knob (applied off the stored boundary channel) and each
+# echo time is a truncation of the single long walk. So the ~170 heavy walks this module
+# used to do collapse to ~one per (shape, R, D, N). The save grid is coarse; the physics
+# sub-steps are auto-tuned finer (step_l < R/6) inside simulate_trajectories.
+_PREWALK_T_MAX = 2.0        # s — global TE cap (matches the old per-call cap)
+_PREWALK_DT_SAVE = 5e-3     # s — 401 saves to 2 s; fine enough to truncate any TE
+
+
+def _plain_prewalk(geometry, D, n_walkers, seed):
+    """A ρ-FREE prewalk of the same shape/size as ``geometry`` (ρ is applied at replay,
+    never baked into the walk — that would double-count). Walked once to 2 s and shared
+    across all ρ and, by subsampling, smaller N."""
+    if isinstance(geometry, Box1D):
+        R = float(geometry.length); key = f"box_{R*1e6:.4f}um"
+        factory = lambda: Box1D(length=R)                       # noqa: E731
+    elif isinstance(geometry, Cylinder):
+        R = float(geometry.radius); key = f"cyl_{R*1e6:.4f}um_z"
+        factory = lambda: Cylinder(radius=R, orientation=[0, 0, 1.])  # noqa: E731
+    elif isinstance(geometry, Sphere):
+        R = float(geometry.radius); key = f"sph_{R*1e6:.4f}um"
+        factory = lambda: Sphere(radius=R)                      # noqa: E731
+    else:
+        raise TypeError(f"unsupported geometry {type(geometry).__name__}")
+    spec = PrewalkSpec(geom_key=f"{key}_D{D:.3e}", geom_factory=factory, D=D, seed=seed,
+                       n_walkers=n_walkers, T_max=_PREWALK_T_MAX, dt_save=_PREWALK_DT_SAVE,
+                       save_relaxation_data=True)
+    return get_prewalk(spec)
+
+
 def _measure_t2(geometry, T2_theory, D=D_DEFAULT, n_walkers=N_WALKERS_T2,
                 n_te=6, seed=SEED):
-    """Run b≈0 simulations at n_te echo times spanning 0.5–3×T2_theory.
-
-    The step size is chosen so that σ = √(6·D·dt) ≤ R_DEFAULT/5 at all TEs.
-    The TE range is capped at 2.0 s so that long T2 geometries (ρ=1µm/s,
-    T2=5 s) do not require impractically many steps.
-
-    Returns (T2_fit, actual_TEs, signals).
+    """REPLAY: walk the ρ-free substrate ONCE (shared across ρ, disk-cached) and replay
+    each of n_te echo times (spanning 0.5–3×T2_theory, capped at 2 s) as a truncation with
+    surface relaxivity applied off the stored boundary channel. ρ is read from
+    ``geometry.surface_relaxivity_t2``. Returns (T2_fit, actual_TEs, signals).
     """
-    # Cap TE range to keep simulations tractable.
-    # At ρ=1µm/s, T2_theory can be up to 5 s; cap TE_max at 2 s to keep
-    # dt = TE/n_t within physical bounds.
-    TE_max = min(3.0 * T2_theory, 2.0)
+    rho = float(getattr(geometry, "surface_relaxivity_t2", 0.0) or 0.0)
+    pw = _plain_prewalk(geometry, D, n_walkers, seed)
+
+    TE_max = min(3.0 * T2_theory, _PREWALK_T_MAX)
     TE_min = min(0.5 * T2_theory, TE_max * 0.15)
     TE_targets = np.linspace(TE_min, TE_max, n_te)
 
     actual_TEs = []
     signals = []
     for TE_t in TE_targets:
-        # Choose n_t so that σ/R_DEFAULT ≤ 0.20 at this TE.
-        dt_max = (0.20 * R_DEFAULT) ** 2 / (6 * D)
-        n_t = max(500, int(np.ceil(TE_t / dt_max)))
-        wf, actual_TE = _b0_waveform(TE_t, n_t=n_t)
+        E, actual_TE = pw.surface_b0_signal(TE_t, rho, n_walkers=n_walkers)
         actual_TEs.append(actual_TE)
-        s = simulate(n_walkers, D, wf, geometry, seed=seed)
-        signals.append(float(s[0]))
+        signals.append(E)
     T2_fit = _fit_t2(np.array(actual_TEs), np.array(signals))
     return T2_fit, np.array(actual_TEs), np.array(signals)
 
