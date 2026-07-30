@@ -81,14 +81,19 @@ acquisition; assert to `max(0.02, 1/√N)`.
 
 | File | Role |
 |------|------|
-| `core.py` | `simulate`, `simulate_mixture`, `simulate_cpmg`; sub-step auto-tune; `return_positions` (`True`/`'full'`) and `return_compartments` (`'final'`/`'full'`) |
+| `core.py` | `simulate` (`engine="auto"/"replay"/"fused"` — routes through walk-once+replay by default, fused kept as oracle/fallback; see routing table atop the file), `simulate_mixture`, `simulate_cpmg`, `simulate_trajectories` (the walk-once producer for replay); sub-step auto-tune; `return_positions` (`True`/`'full'`) and `return_compartments` (`'final'`/`'full'`) |
 | `geometries.py` | `FreeDiffusion`, `Box1D`, `Sphere`, `Cylinder`, `Ellipsoid`, `PackedCylinders/Spheres`, `MyelinatedCylinder`, `PackedMyelinatedCylinders`, packing helpers |
 | `mesh.py` | `Mesh` (grid-accelerated, closed or 3-D periodic triangular mesh) + `load_ply` |
 | `susceptibility.py` | off-resonance field providers (`SusceptibilitySources` iron/vasculature, `MyelinSusceptibility` hollow-cylinder, `GridSusceptibility` k-space dipole on a voxel source); each exposes a pure-JAX `delta_bz_fn()` that plugs into `simulate_bloch(..., susceptibility=)` as a per-step z-precession |
 | `mesh_shapes.py` | procedural myelin meshes + analytic grid sources (`myelinated_cylinder`, `undulating_myelin`, `half_bare_myelin`, `grid_axes`, `voxelize_shell`) — the susceptibility test/validation substrates |
 | `physics.py` | per-timestep `jax.lax.scan` bodies (`make_step_fn`, …) — boundary + phase + `log_w`, pure JAX |
-| `mt.py` | magnetization-transfer host physics: impact-angle `stick_probability`, `(κ_MT,dwell)↔(f_b,k_f)` conversions, two-pool Bloch–McConnell oracle (`bloch_mcconnell_*`, `mt_z_spectrum`) |
-| `bloch.py` | **forward vector-Bloch engine** `simulate_bloch` — carries `M=(Mx,My,Mz)` through RF + gradient + relaxation in ONE forward pass (no replay); opt-in MT binding + bound-pool blend + off-resonance + emergent voxel-scale crusher + **membrane permeability** (sub-stepped Powles crossing, so exchange across a longitudinal-storage mixing time is captured — e.g. FEXI) |
+| `trajectories.py` | **replay operators** — apply a waveform/relaxation/susceptibility/RF to a stored walk: `apply_waveform_to_trajectories`, `apply_waveform_jax`, `apply_waveform_with_relaxation[_jax]` (gradient + T2/T1 + surface ρ + provider susceptibility), `apply_waveform_bloch[_jax]` (vector-Bloch + MT bound pool), `unwrap_periodic`, `pathway_sign_se` |
+| `mt.py` | magnetization-transfer host physics: impact-angle `stick_probability`, `(κ_MT,dwell)↔(f_b,k_f)` conversions, two-pool Bloch–McConnell oracle (`bloch_mcconnell_*`, `mt_z_spectrum`); + `surface_to_volume`, `equilibrate_burnin_plateau` |
+| `mt_walk.py` | `simulate_mt_trajectories` — the binding walk-once producer, records per-save `bound_frac` for MT replay |
+| `bloch.py` | **forward vector-Bloch engine** `simulate_bloch` — carries `M=(Mx,My,Mz)` through RF + gradient + relaxation in ONE forward pass; opt-in MT binding + bound-pool blend + off-resonance + emergent voxel-scale crusher + **membrane permeability** (sub-stepped Powles crossing, so exchange across a longitudinal-storage mixing time is captured — e.g. FEXI). (Its vector replay counterpart is `trajectories.apply_waveform_bloch`.) |
+| `compression.py` | replay-pack codecs (`lowrank`/`temporal_dct`/`gaussian`/`marginal`, channel RLE/quantized-RLE/sparse-CSR), fidelity vs split-half MC floor (`measure_fidelity`, `auto_select_modes`), mode-space replay (signal without reconstructing the walk). scipy-only, always importable |
+| `bank.py` | replay packs + substrate bank (the optional **`[bank]`** extra): `build_replay_pack`/`build_to_floor`, `ReplayPack`, `write_rpk`/`read_rpk` (safetensors, spec `1.2`), `master_from_walk`, `stage_pack`/`pull`/`publish[_dir]`. Conformant to the open replay-pack-spec |
+| `bank_card.py` | HuggingFace-renderable per-substrate cards (`substrate_card`, `write_card`) + the C0–C4 tier legend |
 | `pulse_sequence.py` | `BlochSequence`, `gradient_echo`/`spin_echo` readouts, `prepend_mt_prep` (off-resonance MT-prep saturation block), `run_bloch_sequence`, `emergent_z_spectrum` (turnkey CW-saturation Z-spectrum sweep; emergent counterpart of `mt.mt_z_spectrum`) |
 | `waveforms.py` | `Waveform`, `pgse/ogse/cpmg/…`, `set_b`, b-tensor helpers |
 | `gpu.py`, `_gpu_config.py` | GPU guard/session, device-memory cap |
