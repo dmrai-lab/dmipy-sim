@@ -39,6 +39,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import shutil
+from pathlib import Path
 
 import numpy as np
 
@@ -56,6 +59,10 @@ except ImportError as _e:  # pragma: no cover
 # Container schema version. The open spec is at "1.2" (the private bank still writes the
 # stale "1.1"); public writes 1.2. Readers accept any 1.x (minor bumps are additive).
 RPK_SCHEMA_VERSION = "1.2"
+
+# The PUBLIC substrate bank (a HuggingFace Hub *dataset* repo whose file tree is the
+# catalogue). The private bank uses a personal repo; public packs live under the org.
+DEFAULT_REPO = "dmrai-lab/substrate-bank"
 
 
 # ----------------------------------------------------------------------------- io
@@ -90,7 +97,7 @@ def read_rpk(path) -> "ReplayPack":
 
 # --------------------------------------------------------- master normalisation
 def master_from_walk(result, *, D, T2_per_comp=None, T1_per_comp=None, w=None,
-                     cell_size=None, R=None, seed=0):
+                     cell_size=None, R=None, mt_params=None, seed=0):
     """Assemble a master dict for :func:`build_replay_pack` from a
     :func:`dmipy_sim.simulate_trajectories` return tuple (walk → dict → pack).
 
@@ -119,6 +126,8 @@ def master_from_walk(result, *, D, T2_per_comp=None, T1_per_comp=None, w=None,
         m["cell_size"] = float(cell_size)
     if R is not None:
         m["R"] = np.asarray(R)
+    if mt_params is not None:                  # C4 parametric two-pool qMT pool descriptor
+        m["mt_params"] = dict(mt_params)
     return m
 
 
@@ -149,6 +158,7 @@ def _master_arrays(src) -> dict:
                 dlog_b=g("dlog_b"), bfrac=g("bfrac"),
                 cell_size=f("cell_size"), R=g("R"), D_intra=f("D_intra"),
                 T2_per_comp=g("T2_per_comp"), T1_per_comp=g("T1_per_comp"),
+                mt_params=(m.get("mt_params") if isinstance(m.get("mt_params"), dict) else None),
                 n_walkers=int(traj.shape[0]),
                 seed=int(np.asarray(m.get("seed", 0))))
 
@@ -232,6 +242,11 @@ def build_replay_pack(src, *, id, method="lowrank", envelope=None, tol=2.0, K=No
                              magnetization_transfer=channels["mt"],
                              diffusivity_fixed=True, acquisition=_envelope_summary(env)),
         fidelity=fid, provenance=provenance or {}, license=license, citation=citation)
+    if m.get("mt_params") is not None:              # C4 parametric two-pool qMT (pool-level knob)
+        meta["mt"] = {k: (float(v) if isinstance(v, (int, float, np.floating)) else v)
+                      for k, v in m["mt_params"].items()}
+        # SPEC §7/§10: C4 is satisfied by the `mt` pool descriptor (no bound_fraction channel).
+        meta["replay_envelope"]["magnetization_transfer"] = True
     pack = ReplayPack(arrays, meta, source=out_path)
     if out_path is not None:
         write_rpk(out_path, arrays, meta)
@@ -438,7 +453,176 @@ class ReplayPack:
             "rotate-waveform / RH-response helpers from sh_convolution). Rotate the "
             "waveform with dmipy_sim.rotate_waveform and use dmipy_sim.apply_odf directly.")
 
+    # ------------------------------------------------------------- C4 MT (two-pool qMT)
+    def _mt(self):
+        mtp = self.meta.get("mt")
+        if mtp is None:
+            raise ValueError(f"pack {self.meta.get('id')} carries no MT tier")
+        f_b = float(mtp["f_bound"]); k_f = float(mtp["k_forward"])
+        k_r = k_f * (1.0 - f_b) / f_b if f_b > 0 else 0.0
+        return mtp, k_f, k_r
+
+    def mt_zspectrum(self, offsets_hz, *, w1_hz=1.5, t_sat=1.0):
+        """Steady-state MT Z-spectrum (free-pool Mz vs saturation offset, Hz) from the
+        geometry-derived two-pool qMT parameters. `w1_hz`=γB1/2π, `t_sat`=sat duration.
+        Reuses the :mod:`dmipy_sim.mt` Bloch–McConnell oracle."""
+        from .mt import mt_z_spectrum
+        mtp, k_f, k_r = self._mt()
+        return mt_z_spectrum(np.asarray(offsets_hz, float), w1_hz=w1_hz, t_sat=t_sat,
+                             T1a=mtp["T1_free"], T2a=mtp["T2_free"],
+                             T1b=mtp["T1_bound"], T2b=mtp["T2_bound"], k_f=k_f, k_r=k_r)
+
+    def mtr(self, *, offset_hz=1.0e4, w1_hz=1.5, t_sat=1.0):
+        """MT ratio (1 − M_sat/M0): free-pool signal loss from an off-resonance saturation
+        pulse — the standard MT contrast, from the geometry-derived pool. The Z-spectrum is
+        normalised to M0, so MTR = 1 − Mz(offset)."""
+        s_off = float(np.atleast_1d(self.mt_zspectrum([offset_hz], w1_hz=w1_hz, t_sat=t_sat))[0])
+        return 1.0 - s_off
+
     def __repr__(self):
         f = self.fidelity or {}
         return (f"<ReplayPack {self.meta.get('id','?')} {self.method} K={self.cx.get('K','?')} "
                 f"n_t={self.n_t} err={f.get('err_max','?')} licence={self.license}>")
+
+
+# --------------------------------------------------------- catalogue / croissant
+def write_croissant(meta: dict, path, repo_url=None):
+    """Write a Croissant (schema.org/Dataset + MLCommons) sidecar for a pack, carrying
+    its licence, citation and provenance for dataset-search discoverability (SPEC §12)."""
+    cr = {
+        "@context": {"@vocab": "https://schema.org/", "cr": "http://mlcommons.org/croissant/"},
+        "@type": "Dataset", "name": meta.get("id"),
+        "description": f"dmipy-sim replay pack: compressed Monte-Carlo master walk "
+                       f"({meta.get('compression',{}).get('method')} K="
+                       f"{meta.get('compression',{}).get('K')}) with replay envelope "
+                       f"{meta.get('replay_envelope',{})}.",
+        "license": meta.get("license"), "citeAs": meta.get("citation"),
+        "cr:provenance": meta.get("provenance", {}),
+        "cr:replayEnvelope": meta.get("replay_envelope", {}),
+        "cr:fidelity": meta.get("fidelity", {}),
+        "distribution": [{"@type": "cr:FileObject", "name": f"{meta.get('id')}.rpk",
+                          "encodingFormat": "application/octet-stream",
+                          "contentUrl": (f"{repo_url}/{meta.get('id')}.rpk" if repo_url else None)}],
+    }
+    Path(path).write_text(json.dumps(cr, indent=2))
+    return path
+
+
+def stage_pack(rpk_path, staging_dir, artifact_id):
+    """Assemble the local mirror of the HF dataset repo: copy the .rpk under its id
+    path, write its croissant sidecar + human-readable substrate card, and refresh
+    manifest.json + SHA256SUMS + README.md. This is the whole publish step short of the
+    network upload — feed the result to :func:`publish_dir`."""
+    staging = Path(staging_dir)
+    dst = staging / f"{artifact_id}.rpk"
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(rpk_path, dst)
+    pack = read_rpk(dst)
+    write_croissant(pack.meta, staging / f"{artifact_id}.croissant.jsonld")
+    from .bank_card import write_card                     # human-readable substrate card
+    write_card(pack.meta, str(staging / f"{artifact_id}.md"))
+    _refresh_catalog(staging)
+    return dst
+
+
+def _refresh_catalog(staging: Path):
+    """(Re)build manifest.json (the catalogue index) and SHA256SUMS from the .rpk tree.
+    Idempotent — deterministic in the current tree, independent of call count."""
+    staging = Path(staging)
+    entries, sums = [], []
+    for rpk in sorted(staging.rglob("*.rpk")):
+        rel = rpk.relative_to(staging).as_posix()
+        h = sha256(rpk)
+        try:
+            pk = read_rpk(rpk); meta = pk.meta
+        except Exception:
+            meta = {}
+        entries.append(dict(id=meta.get("id", rel[:-4]), file=rel, sha256=h,
+                            bytes=rpk.stat().st_size, license=meta.get("license"),
+                            replay_envelope=meta.get("replay_envelope"),
+                            fidelity=meta.get("fidelity", {}).get("err_max"),
+                            compression=meta.get("compression")))
+        sums.append(f"{h}  {rel}")
+    (staging / "manifest.json").write_text(json.dumps(
+        dict(schema=f"dmipy-sim substrate-bank/{RPK_SCHEMA_VERSION}",
+             n_entries=len(entries), entries=entries), indent=2))
+    (staging / "SHA256SUMS").write_text("\n".join(sums) + "\n")
+    _write_bank_readme(staging, entries)
+    return staging / "manifest.json"
+
+
+def _write_bank_readme(staging: Path, entries: list):
+    """Repo-level dataset card (README.md): what the bank is + an index of substrates,
+    each linking its own substrate card. HF renders this as the dataset landing page."""
+    _tier = [("gradient", "C0"), ("bulk_relaxation", "C1"), ("surface_relaxivity", "C2"),
+             ("field", "C3"), ("magnetization_transfer", "C4")]
+    rows = []
+    for e in entries:
+        env = e.get("replay_envelope") or {}
+        tiers = " ".join(cx for k, cx in _tier if env.get(k))
+        aid = e.get("id", "")
+        rows.append(f"| [`{aid}`]({aid}.md) | {tiers or '—'} | "
+                    f"{e.get('bytes', 0)/1e6:.2f} MB | {e.get('license', '')} |")
+    L = ["---", "license: cc-by-4.0",
+         "tags:", "  - diffusion-mri", "  - monte-carlo", "  - replay-pack", "  - microstructure",
+         "pretty_name: dmrai-lab substrate bank", "---", "",
+         "# dmrai-lab substrate bank", "",
+         "Compressed Monte-Carlo **replay packs** (`.rpk`) for diffusion-MRI microstructure. "
+         "Each pack is one master walk on a substrate plus the physics channels needed to "
+         "**replay** any acquisition inside its certified envelope — *one walk, every "
+         "acquisition* — in the open [Replay Pack Specification]"
+         "(https://github.com/dmrai-lab/replay-pack-spec) format.", "",
+         "```python", "from dmipy_sim import bank",
+         'pack = bank.pull("<id>", repo_id="dmrai-lab/substrate-bank")',
+         "S = pack.replay(waveform, relaxation=True)", "```", "",
+         "## Substrates", "",
+         "| Substrate | Replay tiers | Size | License |", "|---|---|---|---|"]
+    L += sorted(rows)
+    L += ["", "Each substrate links to its own **substrate card** with geometry, provenance, "
+          "fidelity and load/replay instructions. Tier legend: C0 gradient · C1 bulk relaxation "
+          "· C2 surface relaxivity · C3 field · C4 magnetization transfer.", ""]
+    (staging / "README.md").write_text("\n".join(L))
+
+
+# --------------------------------------------------------------------- remote
+def _cache_dir() -> Path:
+    d = Path(os.environ.get("DMRAI_BANK_CACHE", Path.home() / ".cache" / "dmrai-bank"))
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def pull(artifact_id, repo_id=DEFAULT_REPO, revision="main", expected_sha256=None, local_path=None):
+    """Resolve `artifact_id` → download (cached) → hash-verify → ReplayPack.
+    `local_path` bypasses the network (open a staged/local `.rpk` directly)."""
+    if local_path is not None:
+        path = Path(local_path)
+    else:
+        try:
+            from huggingface_hub import hf_hub_download
+        except ImportError as e:  # pragma: no cover
+            raise ImportError("remote pull needs `huggingface_hub`, or pass local_path=") from e
+        path = Path(hf_hub_download(repo_id=repo_id, filename=f"{artifact_id}.rpk",
+                                    repo_type="dataset", revision=revision, cache_dir=str(_cache_dir())))
+    if expected_sha256 is not None and sha256(path) != expected_sha256:
+        raise ValueError(f"hash mismatch for {artifact_id}")
+    return read_rpk(path)
+
+
+def publish_dir(staging_dir, repo_id=DEFAULT_REPO, create=True, private=True):
+    """Upload a staged bank mirror (rpk + croissant + manifest + SHA256SUMS + cards + README)
+    in one commit. Requires an ambient HuggingFace write token (`hf auth login`). Repos are
+    created PRIVATE by default (flip to public on the Hub when ready). Returns the repo URL."""
+    from huggingface_hub import HfApi, create_repo
+    if create:
+        create_repo(repo_id, repo_type="dataset", private=private, exist_ok=True)
+    HfApi().upload_folder(folder_path=str(staging_dir), repo_id=repo_id, repo_type="dataset")
+    return f"https://huggingface.co/datasets/{repo_id}"
+
+
+def publish(local_file, artifact_id, repo_id=DEFAULT_REPO, private=True):
+    """Upload a single .rpk (one commit). Requires an ambient HuggingFace write token."""
+    from huggingface_hub import HfApi, create_repo
+    create_repo(repo_id, repo_type="dataset", private=private, exist_ok=True)
+    HfApi().upload_file(path_or_fileobj=local_file, path_in_repo=f"{artifact_id}.rpk",
+                        repo_id=repo_id, repo_type="dataset")
+    return f"{repo_id}:{artifact_id}"

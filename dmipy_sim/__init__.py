@@ -56,7 +56,9 @@ from .rf import B1Pulse, bloch_simulate, slice_profile
 from . import compression
 try:
     from .bank import (build_replay_pack, ReplayPack, write_rpk, read_rpk,
-                       master_from_walk, build_to_floor)
+                       master_from_walk, build_to_floor,
+                       stage_pack, pull, publish, publish_dir)
+    from .bank_card import substrate_card, write_card
     _BANK_AVAILABLE = True
 except ImportError:  # safetensors not installed — replay packs need the [bank] extra
     _BANK_AVAILABLE = False
@@ -105,4 +107,7 @@ __all__ = [
 
 if _BANK_AVAILABLE:
     __all__ += ["build_replay_pack", "ReplayPack", "write_rpk", "read_rpk",
-                "master_from_walk", "build_to_floor"]
+                "master_from_walk", "build_to_floor",
+                # substrate-bank staging / HuggingFace pull-publish / cards (Phase 4)
+                "stage_pack", "pull", "publish", "publish_dir",
+                "substrate_card", "write_card"]
