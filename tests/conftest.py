@@ -54,6 +54,7 @@ _SLOW_MC_MODULES = {
     "test_mesh_mc",
     "test_replay_parity",
     "test_replay_fields_mt",
+    "test_engine_dispatch",
 }
 
 
