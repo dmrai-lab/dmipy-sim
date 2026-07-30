@@ -60,6 +60,7 @@ _SLOW_MC_MODULES = {
     # subprocess — minutes total. Kept out of the default fast selection.
     "test_compression",
     "test_bank",
+    "test_bank_stage",
 }
 
 
