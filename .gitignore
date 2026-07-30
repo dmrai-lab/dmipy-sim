@@ -21,3 +21,4 @@ tests/fixtures/em_data/axondeepseg_sem/
 
 # Committed mesh-viz gallery images (the global *.png ignore above would otherwise drop them)
 !examples/mesh_viz/*.png
+tests/_walkcache/
