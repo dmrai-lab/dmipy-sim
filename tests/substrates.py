@@ -14,7 +14,7 @@ This module provides:
   operator reuses cached walks, while a change to the walk kernels invalidates them —
   the walk/replay dependency split).
 - :class:`Prewalk` — the saved walk with a :meth:`Prewalk.replay` helper wrapping
-  ``apply_waveform_with_relaxation``.
+  ``replay``.
 - :func:`spec_for_waveform` — derive a spec whose grid matches a waveform exactly (so
   the replay introduces no resampling error).
 
@@ -36,7 +36,7 @@ from typing import Callable
 import numpy as np
 
 from dmipy_sim import simulate_trajectories
-from dmipy_sim.trajectories import apply_waveform_with_relaxation
+from dmipy_sim.trajectories import replay
 
 # Walk-relevant engine modules: a change to any of these invalidates cached walks.
 # Replay-only modules (trajectories.py, waveforms.py) are deliberately EXCLUDED — editing
@@ -127,7 +127,7 @@ class Prewalk:
             if self.dlog is None:
                 raise ValueError("rho replay needs a walk with save_relaxation_data=True")
             dlog = self.dlog if n_walkers is None else self.dlog[:n_walkers]
-            kw.update(rho=rho, D=self.D, dlog_boundary_unit=dlog)
+            kw.update(surface_relaxivity=rho, D=self.D, dlog_boundary_unit=dlog)
         if T2_per_comp is not None or T1_per_comp is not None:
             if self.comp is None:
                 raise ValueError("per-compartment replay needs save_relaxation_data=True")
@@ -137,7 +137,7 @@ class Prewalk:
                 kw["T2_per_comp"] = T2_per_comp
             if T1_per_comp is not None:
                 kw["T1_per_comp"] = T1_per_comp
-        return apply_waveform_with_relaxation(
+        return replay(
             traj, self.dt, G, dt_wf, chi_perp=chi_perp, T2=T2, T1=T1,
             stimulated_echo=stimulated_echo, **kw)
 
