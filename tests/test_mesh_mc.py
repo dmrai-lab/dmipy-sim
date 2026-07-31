@@ -179,21 +179,20 @@ def test_per_compartment_t1_pgste_gating():
     PGSTE coherence gating: a short intra T1 attenuates walkers stored intra through
     the mixing time, while under a spin echo (chi_t ≡ 1) T1 never acts."""
     V, F = _ico(4)
-    # PGSTE with a long mixing time -> a chi_perp=0 storage block where T1 acts
-    # Per-compartment T1 is a fused-only physics property; pin engine="fused" so the
-    # bit-identical SE comparison below is not split across the replay/fused engines by
-    # engine="auto" (a per-comp-T1 mesh routes to fused, a plain mesh to replay — which
-    # differ at the MC-noise floor, not bit-for-bit).
+    # PGSTE with a long mixing time -> a chi_perp=0 storage block where T1 acts.
+    # Per-compartment T1 is a replay knob (applied off the saved compartment channel), so
+    # this runs through the default engine="auto" (which routes both meshes to replay); the
+    # SE comparison below is bit-identical because both go through the same engine.
     wf_ste = set_b(pgste(delta=5e-3, TM=100e-3, G_magnitude=0.05, bvecs=[[1, 0, 0]], n_t=400), 1e9)
-    s_t1 = np.asarray(simulate(3000, D, wf_ste, Mesh(V, F, intra={"T1": 0.3}, extra={"T1": 3.0}), seed=SEED, engine="fused"))
-    s_no = np.asarray(simulate(3000, D, wf_ste, Mesh(V, F), seed=SEED, engine="fused"))
+    s_t1 = np.asarray(simulate(3000, D, wf_ste, Mesh(V, F, intra={"T1": 0.3}, extra={"T1": 3.0}), seed=SEED))
+    s_no = np.asarray(simulate(3000, D, wf_ste, Mesh(V, F), seed=SEED))
     assert s_t1[0] < 0.95 * s_no[0]                 # short intra T1 attenuates during TM
 
     # spin echo: chi_t ≡ 1 -> the T1 term is identically zero, so per-compartment T1
     # leaves the signal identical to the no-T1 mesh.
     wf_se = set_b(pgse(delta=5e-3, DELTA=0.05, G_magnitude=0.05, bvecs=[[1, 0, 0]], n_t=400), 1e9)
-    a = np.asarray(simulate(3000, D, wf_se, Mesh(V, F, intra={"T1": 0.3}, extra={"T1": 3.0}), seed=SEED, engine="fused"))
-    b = np.asarray(simulate(3000, D, wf_se, Mesh(V, F), seed=SEED, engine="fused"))
+    a = np.asarray(simulate(3000, D, wf_se, Mesh(V, F, intra={"T1": 0.3}, extra={"T1": 3.0}), seed=SEED))
+    b = np.asarray(simulate(3000, D, wf_se, Mesh(V, F), seed=SEED))
     npt.assert_array_equal(a, b)
 
 
