@@ -505,8 +505,8 @@ def _replay_complex(pos, dt, G, *, w=None, susceptibility=None, eps_P=None,
 
     Public susceptibility is PROVIDER-driven: pass a :mod:`dmipy_sim.susceptibility`
     provider (or a bare ``r -> ΔBz`` callable) as ``susceptibility=`` and it is applied via
-    :func:`dmipy_sim.trajectories.apply_waveform_with_relaxation` (no packed field maps)."""
-    from .trajectories import apply_waveform_with_relaxation
+    :func:`dmipy_sim.trajectories.replay` (no packed field maps)."""
+    from .trajectories import replay as _replay
     Nt = pos.shape[1]; nw = pos.shape[0]
     ww = np.ones(nw) if w is None else np.asarray(w, float)
     num = np.zeros(G.shape[0], np.complex128); den = float(ww.sum())
@@ -516,10 +516,10 @@ def _replay_complex(pos, dt, G, *, w=None, susceptibility=None, eps_P=None,
         if comp is not None and T2pc is not None:
             kw.update(comp_traj=comp[s:e], T2_per_comp=T2pc, T1_per_comp=T1pc)
         if dlog_b is not None and rho:
-            kw.update(dlog_boundary_unit=dlog_b[s:e], rho=float(rho), D=float(D))
+            kw.update(dlog_boundary_unit=dlog_b[s:e], surface_relaxivity=float(rho), D=float(D))
         if susceptibility is not None:
             kw.update(susceptibility=susceptibility, eps_P=eps_P)
-        phi, logw, _ = apply_waveform_with_relaxation(pos[s:e].astype(np.float32), dt, G, dt, **kw)
+        phi, logw, _ = _replay(pos[s:e].astype(np.float32), dt, G, dt, **kw)
         phi = np.asarray(phi); logw = np.asarray(logw)
         if logw.shape[-1] == 1:
             logw = np.broadcast_to(logw, phi.shape)
