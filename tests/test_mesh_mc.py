@@ -19,6 +19,7 @@ import pytest
 
 from dmipy_sim import simulate, Sphere, Cylinder, Mesh, set_b, pgse, pgste
 from dmipy_sim.waveforms import Waveform
+from .substrates import get_prewalk, spec_for_waveform
 
 trimesh = pytest.importorskip("trimesh")
 
@@ -41,6 +42,27 @@ def _ico(sub, r=R):
     return np.asarray(m.vertices, float), np.asarray(m.faces, int)
 
 
+# ── Shared prewalks (walk once per (geometry, N, grid); apply ρ / T2 at replay) ──
+# The icosphere Mesh(V,F) and analytic Sphere(R) are re-walked by several tests that
+# differ only in replay knobs (surface relaxivity ρ, global/per-compartment T2). We walk
+# the PLAIN geometry once (ρ/T2 are replay knobs, never baked into the walk) and replay
+# each acquisition — collapsing the diffusion + surface-relaxivity mesh/sphere walks to
+# one each, and the three per-compartment-T2 walks to one. save_relaxation_data=True so
+# the cached walk carries the boundary channel (ρ replay) and compartment tags (per-comp
+# T2 replay). See tests/substrates.py.
+def _mesh_prewalk(sub, wf, n_walkers):
+    V, F = _ico(sub)
+    return get_prewalk(spec_for_waveform(
+        f"mesh_ico{sub}_r5um", lambda: Mesh(V, F), wf,
+        D=D, seed=SEED, n_walkers=n_walkers, save_relaxation_data=True))
+
+
+def _sphere_prewalk(wf, n_walkers):
+    return get_prewalk(spec_for_waveform(
+        "sph_r5um", lambda: Sphere(radius=R), wf,
+        D=D, seed=SEED, n_walkers=n_walkers, save_relaxation_data=True))
+
+
 def _open_tube(r, L, nt=48, nz=40):
     th = np.linspace(0, 2 * np.pi, nt, endpoint=False)
     zs = np.linspace(0, L, nz)
@@ -55,20 +77,20 @@ def _open_tube(r, L, nt=48, nz=40):
 
 
 def test_diffusion_matches_analytic_sphere():
-    V, F = _ico(4)
     wf = _pgse(8, 400)
-    s_mesh = np.asarray(simulate(3000, D, wf, Mesh(V, F), seed=SEED))
-    s_ana = np.asarray(simulate(3000, D, wf, Sphere(radius=R), seed=SEED))
+    # Shared plain walks (grid = wf, N=3000); reused by the surface-relaxivity test.
+    s_mesh = np.asarray(_mesh_prewalk(4, wf, 3000).replay(wf))
+    s_ana = np.asarray(_sphere_prewalk(wf, 3000).replay(wf))
     npt.assert_allclose(s_mesh, s_ana, atol=0.02,
                         err_msg="mesh sphere diffusion vs analytic Sphere")
 
 
 def test_surface_relaxivity_matches_analytic_sphere():
-    V, F = _ico(4)
     wf = _pgse(8, 400)
     rho = 5e-6
-    s_mesh = np.asarray(simulate(3000, D, wf, Mesh(V, F, surface_relaxivity_t2=rho), seed=SEED))
-    s_ana = np.asarray(simulate(3000, D, wf, Sphere(radius=R, surface_relaxivity_t2=rho), seed=SEED))
+    # SAME plain walks as test_diffusion (one cached walk each); ρ applied at replay.
+    s_mesh = np.asarray(_mesh_prewalk(4, wf, 3000).replay(wf, rho=rho))
+    s_ana = np.asarray(_sphere_prewalk(wf, 3000).replay(wf, rho=rho))
     npt.assert_allclose(s_mesh, s_ana, atol=0.02,
                         err_msg="mesh surface relaxivity vs analytic Sphere")
 
@@ -139,14 +161,16 @@ def test_directional_permeability():
 def test_per_compartment_t2():
     """Equal per-compartment T2 reproduces the single global T2 bit-for-bit; a short
     intra T2 strongly attenuates walkers seeded intra."""
-    V, F = _ico(4)
     wf = _pgse(5, 250, TE=40e-3)
-    s_global = np.asarray(simulate(4000, D, wf, Mesh(V, F), seed=SEED, T2=0.05))
-    s_comp = np.asarray(simulate(4000, D, wf, Mesh(V, F, intra={"T2": 0.05},
-                                                   extra={"T2": 0.05}), seed=SEED))
-    npt.assert_array_equal(s_global, s_comp)
-    s_short = np.asarray(simulate(4000, D, wf, Mesh(V, F, intra={"T2": 0.02},
-                                                    extra={"T2": 0.20}), seed=SEED))
+    # ONE plain walk (N=4000, its own grid — different from the N=3000 walks above);
+    # global and per-compartment T2 are replay knobs (index 0=intra, 1=extra).
+    pw = _mesh_prewalk(4, wf, 4000)
+    s_global = np.asarray(pw.replay(wf, T2=0.05))
+    s_comp = np.asarray(pw.replay(wf, T2_per_comp=[0.05, 0.05]))
+    # Same walk, physically identical decay; scalar vs per-compartment [T2,T2] differ only
+    # by floating-point reduction order (a scalar sum vs a per-walker matmul).
+    npt.assert_allclose(s_global, s_comp, rtol=0, atol=1e-9)
+    s_short = np.asarray(pw.replay(wf, T2_per_comp=[0.02, 0.20]))
     assert s_short[0] < 0.5                     # seeded intra + short intra T2
 
 
