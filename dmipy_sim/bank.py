@@ -30,7 +30,8 @@ Generate::
 Consume (CPU-only)::
 
     pack   = bank.read_rpk("sphere.rpk")
-    signal = pack.replay(waveform, relaxation=True)          # any acquisition
+    signal = pack.replay(waveform, T2=[0.05])                # any acquisition; add
+                                                             # surface_relaxivity=... for C2
 
 ``safetensors`` is a hard dependency of this module (the ``[bank]`` extra); ``scipy`` is
 a core dependency.
@@ -359,82 +360,80 @@ class ReplayPack:
                                   backend=backend, precision=precision, n_walkers=n_walkers, seed=seed)
         return S if complex_signal else S.real
 
-    def replay(self, waveform, *, susceptibility=None, eps_P=None,
-               relaxation=True, rho=0.0, complex_signal=False, n_walkers=None, seed=0,
-               backend="numpy", precision="float64"):
-        """Replay a waveform on the CPU. `waveform` has `.G` (n_meas,n_t,3) and `.dt`
-        (or pass a raw G array). Per-compartment relaxation is applied when `relaxation`
-        and the pack carries the compartment map; surface relaxivity when `rho>0` and the
-        pack carries the boundary channel. Susceptibility off-resonance is applied when a
-        `susceptibility=` provider (a :mod:`dmipy_sim.susceptibility` provider or a bare
-        ``r -> ΔBz`` callable) is passed — `eps_P` is the SE refocusing pathway sign (see
-        :func:`dmipy_sim.trajectories.pathway_sign_se`). Returns the (complex or magnitude)
-        signal (n_meas,).
+    def replay(self, sequence, *, T2=None, T1=None, surface_relaxivity=None,
+               susceptibility=None, eps_P=None, weights=None, complex_signal=None,
+               n_walkers=None, seed=0):
+        """Replay an acquisition on the pre-walked substrate (CPU).
 
-        Pure-gradient / relaxation replay (no susceptibility) on a walker-preserving pack
-        takes the fast mode-space path (no trajectory reconstruction) when the waveform is
-        on the save grid; susceptibility (nonlinear-in-position field lookup) or an off-grid
-        waveform fall back to reconstruct-then-contract via the Phase-1/2 replay ops.
+        ``sequence`` is either a **gradient** :class:`~dmipy_sim.waveforms.Waveform`
+        (``.G`` ``(n_meas, n_t, 3)``, optional ``.dt`` / ``.chi_perp`` /
+        ``.stimulated_echo``) — or a raw ``G`` array — dispatched to
+        :func:`dmipy_sim.trajectories.replay`; **or** a
+        :class:`~dmipy_sim.pulse_sequence.BlochSequence` (carrying ``rf_events`` /
+        ``echo_steps``), dispatched to the vector-Bloch
+        :func:`dmipy_sim.trajectories.replay_bloch`. Dispatch is by *type*
+        (``isinstance(sequence, BlochSequence)``), because a ``Waveform`` also exposes an
+        ``rf_events`` attribute.
+
+        Relaxation and surface relaxivity are applied **when the caller passes them**:
+
+        * ``T2`` / ``T1`` — a scalar is uniform relaxation; an array is per-compartment
+          (indexed by the pack's stored compartment map, :meth:`_comp`).
+        * ``surface_relaxivity`` (m/s) — replayed against the pack's boundary channel
+          (:meth:`boundary_local_time`), scaled by the walk diffusivity.
+
+        Susceptibility off-resonance is applied when a ``susceptibility=`` provider (a
+        :mod:`dmipy_sim.susceptibility` provider or a bare ``r -> ΔBz`` callable) is passed;
+        for the gradient path ``eps_P`` is the spin-echo refocusing pathway sign (see
+        :func:`dmipy_sim.trajectories.pathway_sign_se`) — the Bloch path refocuses
+        emergently and ignores it.
+
+        Returns the ``(n_meas,)`` signal (or ``(n_meas, n_echo)`` for a BlochSequence with
+        ``echo_steps``). The gradient path is real (magnitude) by default and complex when
+        ``complex_signal=True``; the Bloch path is complex (``Mx + i·My``) by default and
+        real when ``complex_signal=False``.
         """
-        G = np.asarray(getattr(waveform, "G", waveform), np.float64)
-        dt_wf = getattr(waveform, "dt", self.dt)
-        Nt = G.shape[1]
-        wp = self.meta.get("walk_params", {}); pc = self.meta.get("per_comp", {})
-        w = self.arrays.get("spin_weights")
-        # ---- fast path: mode-space phase + separable relaxation/surface log-weights ----
-        # Everything except susceptibility (nonlinear field lookup) replays WITHOUT
-        # reconstructing the trajectory: φ in the K-mode space (compression.mode_space_phi)
-        # times a per-walker log-weight summed from the compartment map (relaxation) and the
-        # boundary channel (surface). Needs a walker-preserving pack and a waveform on the
-        # save grid; a susceptibility provider or an off-grid waveform take the general path.
-        _wp = bool(self.cx.get("walker_preserving"))
-        _fast_method = self.method in ("lowrank", "temporal_dct", "gaussian", "marginal")
-        if (susceptibility is None) and _fast_method and Nt == self.n_t and (n_walkers is None or not _wp):
-            if _wp:                                    # lowrank / dct: per-walker + log-weights
-                logw = None
-                if relaxation and "comp_rle_vals" in self.arrays and pc.get("T2"):
-                    logw = _cx.relaxation_logweight(self._comp(), pc["T2"], pc.get("T1"), self.dt)
-                if rho:
-                    blt = self.boundary_local_time()
-                    if blt is not None:
-                        sl = _cx.surface_logweight(blt, float(rho) / float(wp.get("diffusivity")))
-                        logw = sl if logw is None else logw + sl
-                S = _cx.mode_space_signal(self.arrays, self._decode_meta, G, self.dt,
-                                          logw=logw, weights=w, backend=backend, precision=precision)
-            else:                                      # distributional: gradient-only, resample n_walkers
-                S = _cx.mode_space_signal(self.arrays, self._decode_meta, G, self.dt,
-                                          backend=backend, precision=precision,
-                                          n_walkers=n_walkers, seed=seed)
-            return S if complex_signal else S.real
-        # general path: reconstruct the trajectory + contract (relaxation / surface / susc)
-        from .trajectories import replay as _replay
-        traj = np.asarray(self.reconstruct_walkers(n_walkers, seed), np.float32)
-        nw = traj.shape[0]
-        G = G.astype(np.float32)
-        kw = dict(chi_perp=np.ones(Nt, np.float32))
-        walker_preserving = nw == wp.get("n_walkers") and self.cx.get("walker_preserving")
-        comp = self._comp() if (relaxation and walker_preserving) else None
-        if comp is not None and pc.get("T2"):
-            kw.update(comp_traj=comp, T2_per_comp=np.asarray(pc["T2"]))
-            if pc.get("T1") is not None:   # T2-only packs carry T1=None
-                kw["T1_per_comp"] = np.asarray(pc["T1"])
-        blt = self.boundary_local_time() if walker_preserving else None
-        if rho and blt is not None:
-            kw.update(dlog_boundary_unit=np.asarray(blt),
-                      surface_relaxivity=float(rho), D=float(wp.get("diffusivity")))
-        if susceptibility is not None:
-            kw.update(susceptibility=susceptibility, eps_P=eps_P)
-        if not (kw.keys() - {"chi_perp"}):            # pure gradient, no extra physics
-            return np.asarray(_replay(traj, self.dt, G, dt_wf))
+        from .pulse_sequence import BlochSequence
+        from .trajectories import replay as _replay, replay_bloch as _replay_bloch
+        traj = self.reconstruct_walkers(n_walkers, seed)
+        D = float(self.meta["walk_params"]["diffusivity"])
+        per = lambda v: v if np.ndim(v) else None       # array -> per-compartment; scalar -> None
+        T2pc, T1pc = per(T2), per(T1)
+        T2s = None if T2pc is not None else T2
+        T1s = None if T1pc is not None else T1
+        comp = self._comp() if (T2pc is not None or T1pc is not None) else None
+        surf = surface_relaxivity
+        dlog = self.boundary_local_time() if surf else None
+        Dsurf = D if surf else None
+        w = weights if weights is not None else self.arrays.get("spin_weights")
+        G = np.asarray(getattr(sequence, "G", sequence), np.float64)
+        dt_wf = getattr(sequence, "dt", self.dt)
+
+        if isinstance(sequence, BlochSequence):
+            S = _replay_bloch(traj, self.dt, G, dt_wf, sequence.rf_events,
+                              T2=T2s, T1=T1s, comp_traj=comp,
+                              T2_per_comp=T2pc, T1_per_comp=T1pc,
+                              susceptibility=susceptibility, surface_relaxivity=surf, D=Dsurf,
+                              dlog_boundary_unit=dlog, echo_steps=sequence.echo_steps,
+                              weights=w)
+            S = np.asarray(S)
+            return S.real if complex_signal is False else S
+
+        # ---- gradient (Waveform) path ----
+        chi = getattr(sequence, "chi_perp", None)
+        ste = bool(getattr(sequence, "stimulated_echo", False))
+        kw = dict(chi_perp=chi, T2=T2s, T1=T1s, comp_traj=comp,
+                  T2_per_comp=T2pc, T1_per_comp=T1pc,
+                  surface_relaxivity=surf, D=Dsurf, dlog_boundary_unit=dlog,
+                  susceptibility=susceptibility, eps_P=eps_P, stimulated_echo=ste)
         if complex_signal:
-            phi, logw, _ = _replay(
-                traj, self.dt, G, dt_wf, return_walker_signals=True, **kw)
+            phi, logw, _ = _replay(traj, self.dt, G, dt_wf, return_walker_signals=True, **kw)
             phi = np.asarray(phi); logw = np.asarray(logw)
             if logw.shape[-1] == 1:
                 logw = np.broadcast_to(logw, phi.shape)
+            nw = np.asarray(traj).shape[0]
             ww = np.ones(nw) if w is None else np.asarray(w, float)
-            sig = (np.exp(logw) * np.exp(1j * phi) * (ww / ww.sum())[None, :]).sum(1)
-            return sig
+            return (np.exp(logw) * np.exp(1j * phi) * (ww / ww.sum())[None, :]).sum(1)
         return np.asarray(_replay(traj, self.dt, G, dt_wf, **kw))
 
     def replay_dispersed(self, *args, **kwargs):
@@ -573,7 +572,7 @@ def _write_bank_readme(staging: Path, entries: list):
          "(https://github.com/dmrai-lab/replay-pack-spec) format.", "",
          "```python", "from dmipy_sim import bank",
          'pack = bank.pull("<id>", repo_id="dmrai-lab/substrate-bank")',
-         "S = pack.replay(waveform, relaxation=True)", "```", "",
+         "S = pack.replay(waveform, T2=[0.05])", "```", "",
          "## Substrates", "",
          "| Substrate | Replay tiers | Size | License |", "|---|---|---|---|"]
     L += sorted(rows)

@@ -129,7 +129,7 @@ def substrate_card(meta: dict) -> str:
           "",
           "# C0/C1/C2 — build any waveform G on the pack's time grid (n_meas, pack.n_t, 3),",
           "# e.g. PGSE perpendicular vs parallel to the fibre axis (recovers the anisotropy):",
-          "S = pack.replay(waveform, relaxation=True)          # C1; add rho=... for C2 surface"]
+          "S = pack.replay(waveform, T2=[0.05])                # C1; add surface_relaxivity=... for C2"]
     if env.get("field"):
         L += ["# C3 field — provider-driven off-resonance at replay (any B0 / direction / χ):",
               "S = pack.replay(waveform, susceptibility=provider, eps_P=eps_P)"]
