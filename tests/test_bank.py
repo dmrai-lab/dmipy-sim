@@ -16,7 +16,7 @@ from dmipy_sim import simulate_trajectories
 from dmipy_sim.geometries import FreeDiffusion
 from dmipy_sim import bank
 from dmipy_sim import compression as cx
-from dmipy_sim.trajectories import apply_waveform_to_trajectories
+from dmipy_sim.trajectories import replay as _replay
 from dmipy_sim.constants import GAMMA
 
 SPEC_CONFORMANCE = "/home/rutger/dmrai-ws/replay-pack-spec/examples/conformance_check.py"
@@ -80,7 +80,7 @@ def test_write_read_roundtrip(master, env, tmp_path):
         G = np.stack([_pgse(Nt, dt, b, [1, 0, 0]) for b in (1e9, 3e9)])
     S_pack = np.asarray(p.replay(WF, relaxation=False))
     traj = np.asarray(p.reconstruct_walkers(), np.float32)
-    S_ref = np.asarray(apply_waveform_to_trajectories(traj, dt, WF.G, dt))
+    S_ref = np.asarray(_replay(traj, dt, WF.G, dt))
     assert np.abs(S_pack - S_ref).max() < 1e-6
 
 
@@ -92,7 +92,7 @@ def test_pack_matches_raw_engine(master, env, tmp_path):
     class WF:
         G = np.stack([_pgse(Nt, dt, b, d) for d in ([1, 0, 0], [0, 0, 1]) for b in (1e9, 2e9)])
     S_pack = np.asarray(p.replay(WF, relaxation=False))
-    S_raw = np.asarray(apply_waveform_to_trajectories(master["traj"].astype(np.float32), dt, WF.G, dt))
+    S_raw = np.asarray(_replay(master["traj"].astype(np.float32), dt, WF.G, dt))
     assert np.abs(S_pack - S_raw).max() < 5e-3           # lossless to ~floor (1/sqrt(3000)=0.018)
 
 
@@ -146,8 +146,8 @@ def test_mode_space_gradient_matches_dense(master, env, tmp_path):
 
 def test_fast_relaxation_matches_dense_engine(master, env, tmp_path):
     """Combined fast path (mode-space φ + relaxation log-weight from the compartment map)
-    == the dense engine (reconstruct + apply_waveform_with_relaxation), to precision."""
-    from dmipy_sim.trajectories import apply_waveform_with_relaxation
+    == the dense engine (reconstruct + replay), to precision."""
+    from dmipy_sim.trajectories import replay as _replay_dense
     out = tmp_path / "free.rpk"
     p = bank.build_replay_pack(master, id="test/free", method="lowrank", K=48,
                                license="CC-BY-4.0", citation="test", envelope=env, out_path=str(out))
@@ -157,7 +157,7 @@ def test_fast_relaxation_matches_dense_engine(master, env, tmp_path):
     S_fast = np.asarray(p.replay(WF, relaxation=True, complex_signal=True))
     # dense reference: reconstruct + engine relaxation
     traj = np.asarray(p.reconstruct_walkers(), np.float32)
-    phi, logw, _ = apply_waveform_with_relaxation(
+    phi, logw, _ = _replay_dense(
         traj, dt, np.asarray(WF.G, np.float32), dt, chi_perp=np.ones(Nt, np.float32),
         comp_traj=p._comp(), T2_per_comp=np.asarray(master["T2_per_comp"]),
         T1_per_comp=np.asarray(master["T1_per_comp"]), return_walker_signals=True)

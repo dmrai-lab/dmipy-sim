@@ -392,8 +392,7 @@ class ReplayPack:
                                           n_walkers=n_walkers, seed=seed)
             return S if complex_signal else S.real
         # general path: reconstruct the trajectory + contract (relaxation / surface / susc)
-        from .trajectories import (apply_waveform_with_relaxation,
-                                   apply_waveform_to_trajectories)
+        from .trajectories import replay as _replay
         traj = np.asarray(self.reconstruct_walkers(n_walkers, seed), np.float32)
         nw = traj.shape[0]
         G = G.astype(np.float32)
@@ -407,13 +406,13 @@ class ReplayPack:
         blt = self.boundary_local_time() if walker_preserving else None
         if rho and blt is not None:
             kw.update(dlog_boundary_unit=np.asarray(blt),
-                      rho=float(rho), D=float(wp.get("diffusivity")))
+                      surface_relaxivity=float(rho), D=float(wp.get("diffusivity")))
         if susceptibility is not None:
             kw.update(susceptibility=susceptibility, eps_P=eps_P)
         if not (kw.keys() - {"chi_perp"}):            # pure gradient, no extra physics
-            return np.asarray(apply_waveform_to_trajectories(traj, self.dt, G, dt_wf))
+            return np.asarray(_replay(traj, self.dt, G, dt_wf))
         if complex_signal:
-            phi, logw, _ = apply_waveform_with_relaxation(
+            phi, logw, _ = _replay(
                 traj, self.dt, G, dt_wf, return_walker_signals=True, **kw)
             phi = np.asarray(phi); logw = np.asarray(logw)
             if logw.shape[-1] == 1:
@@ -421,7 +420,7 @@ class ReplayPack:
             ww = np.ones(nw) if w is None else np.asarray(w, float)
             sig = (np.exp(logw) * np.exp(1j * phi) * (ww / ww.sum())[None, :]).sum(1)
             return sig
-        return np.asarray(apply_waveform_with_relaxation(traj, self.dt, G, dt_wf, **kw))
+        return np.asarray(_replay(traj, self.dt, G, dt_wf, **kw))
 
     def replay_dispersed(self, *args, **kwargs):
         """Analytical orientation-dispersion overlay (ODF-weighted superposition of the
