@@ -128,7 +128,7 @@ def test_pull_local_path_roundtrips_and_replays(rpk_path, tmp_path, env):
 
     class WF:
         G = np.stack([_pgse(Nt, dt, b, [1, 0, 0]) for b in (0.0, 1e9)])
-    S = np.asarray(pack.replay(WF, relaxation=True))
+    S = np.asarray(pack.replay(WF, T2=pack.meta["per_comp"]["T2"], T1=pack.meta["per_comp"]["T1"]))
     assert S.shape == (2,)
     assert 0.5 < abs(S[0]) < 0.85          # b=0 is T2-weighted (TE=16ms, T2=50ms)
     assert abs(S[1]) < abs(S[0])           # b>0 attenuates further

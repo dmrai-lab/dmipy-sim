@@ -78,7 +78,7 @@ def test_write_read_roundtrip(master, env, tmp_path):
     Nt = master["traj"].shape[1]; dt = master["dt_traj"]
     class WF:
         G = np.stack([_pgse(Nt, dt, b, [1, 0, 0]) for b in (1e9, 3e9)])
-    S_pack = np.asarray(p.replay(WF, relaxation=False))
+    S_pack = np.asarray(p.replay(WF))
     traj = np.asarray(p.reconstruct_walkers(), np.float32)
     S_ref = np.asarray(_replay(traj, dt, WF.G, dt))
     assert np.abs(S_pack - S_ref).max() < 1e-6
@@ -91,7 +91,7 @@ def test_pack_matches_raw_engine(master, env, tmp_path):
     Nt = master["traj"].shape[1]; dt = master["dt_traj"]
     class WF:
         G = np.stack([_pgse(Nt, dt, b, d) for d in ([1, 0, 0], [0, 0, 1]) for b in (1e9, 2e9)])
-    S_pack = np.asarray(p.replay(WF, relaxation=False))
+    S_pack = np.asarray(p.replay(WF))
     S_raw = np.asarray(_replay(master["traj"].astype(np.float32), dt, WF.G, dt))
     assert np.abs(S_pack - S_raw).max() < 5e-3           # lossless to ~floor (1/sqrt(3000)=0.018)
 
@@ -103,7 +103,7 @@ def test_relaxation_channel_replays(master, env, tmp_path):
     Nt = master["traj"].shape[1]; dt = master["dt_traj"]
     class WF:
         G = np.stack([_pgse(Nt, dt, 0.0, [1, 0, 0])])     # b=0 -> pure relaxation weight
-    S = np.asarray(p.replay(WF, relaxation=True))
+    S = np.asarray(p.replay(WF, T2=master["T2_per_comp"], T1=master["T1_per_comp"]))
     # b0 signal is T2-weighted (< 1): exp(-TE/T2) with TE=20ms, T2=50ms ~ 0.67
     assert 0.5 < abs(S[0]) < 0.85
 
@@ -120,7 +120,7 @@ def test_distributional_is_gradient_only(master, env, tmp_path):
     Nt = master["traj"].shape[1]; dt = master["dt_traj"]
     class WF:
         G = np.stack([_pgse(Nt, dt, 1e9, [1, 0, 0])])
-    S = np.asarray(p.replay(WF, n_walkers=5000, relaxation=False))
+    S = np.asarray(p.replay(WF, n_walkers=5000))
     assert S.shape == (1,) and 0 <= abs(S[0]) <= 1.001
 
 
@@ -140,8 +140,8 @@ def test_mode_space_gradient_matches_dense(master, env, tmp_path):
     phi = GAMMA * dt * np.einsum("ntd,mtd->mn", traj, np.asarray(WF.G, np.float64))
     S_dense = np.exp(1j * phi).mean(1)
     assert np.abs(S_fast - S_dense).max() < 1e-9      # identity, machine precision
-    # replay() auto-takes the fast path for pure gradient; non-complex returns Re<exp(iφ)>
-    assert np.abs(np.asarray(p.replay(WF, relaxation=False)) - S_dense.real).max() < 1e-9
+    # replay() with no relaxation args is a pure gradient replay; non-complex returns Re<exp(iφ)>
+    assert np.abs(np.asarray(p.replay(WF)) - S_dense.real).max() < 1e-9
 
 
 def test_fast_relaxation_matches_dense_engine(master, env, tmp_path):
@@ -154,7 +154,8 @@ def test_fast_relaxation_matches_dense_engine(master, env, tmp_path):
     Nt = master["traj"].shape[1]; dt = master["dt_traj"]
     class WF:
         G = np.stack([_pgse(Nt, dt, b, [1, 0, 0]) for b in (0.0, 1e9, 2e9)])
-    S_fast = np.asarray(p.replay(WF, relaxation=True, complex_signal=True))
+    S_fast = np.asarray(p.replay(WF, T2=master["T2_per_comp"], T1=master["T1_per_comp"],
+                                 complex_signal=True))
     # dense reference: reconstruct + engine relaxation
     traj = np.asarray(p.reconstruct_walkers(), np.float32)
     phi, logw, _ = _replay_dense(
@@ -185,6 +186,32 @@ def test_replay_dispersed_deferred(master, env):
                                license="CC-BY-4.0", citation="test", envelope=env)
     with pytest.raises(NotImplementedError):
         p.replay_dispersed()
+
+
+def test_replay_bloch_sequence_dispatch(master, env, tmp_path):
+    """A BlochSequence dispatches replay() to the vector-Bloch engine (isinstance, NOT
+    hasattr('rf_events') — a Waveform has that too) and matches a direct replay_bloch(...)
+    on the reconstructed walkers, bit-for-bit."""
+    from dmipy_sim.pulse_sequence import BlochSequence
+    from dmipy_sim.trajectories import replay_bloch
+    out = tmp_path / "free.rpk"
+    p = bank.build_replay_pack(master, id="test/free", method="lowrank", K=48,
+                               license="CC-BY-4.0", citation="test", envelope=env, out_path=str(out))
+    Nt = master["traj"].shape[1]; dt = master["dt_traj"]; TE = dt * (Nt - 1)
+    G = np.stack([_pgse(Nt, dt, b, [1, 0, 0]) for b in (0.0, 1e9, 2e9)])   # PHYSICAL lobes
+    rf = [{'t_s': 0.0, 'flip_deg': 90.0, 'axis_deg': 0.0, 'duration_s': 0.0, 'offset_hz': 0.0},
+          {'t_s': TE / 2.0, 'flip_deg': 180.0, 'axis_deg': 0.0, 'duration_s': 0.0, 'offset_hz': 0.0}]
+    seq = BlochSequence(G=G, dt=dt, rf_events=rf, complex_signal=True, family="se")
+    S = np.asarray(p.replay(seq, T2=master["T2_per_comp"], T1=master["T1_per_comp"]))
+    assert S.shape == (3,) and np.iscomplexobj(S)          # Bloch path -> complex Mx+iMy
+    # direct engine call, same reconstructed walkers + same per-comp relaxation
+    traj = p.reconstruct_walkers()
+    S_ref = np.asarray(replay_bloch(
+        traj, dt, G, dt, rf, comp_traj=p._comp(),
+        T2_per_comp=np.asarray(master["T2_per_comp"]),
+        T1_per_comp=np.asarray(master["T1_per_comp"]),
+        echo_steps=seq.echo_steps, weights=p.arrays.get("spin_weights")))
+    assert np.abs(S - S_ref).max() < 1e-9
 
 
 @pytest.mark.skipif(not os.path.exists(SPEC_CONFORMANCE),
