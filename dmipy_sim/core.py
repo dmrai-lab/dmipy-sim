@@ -28,7 +28,7 @@ from .waveforms import Waveform
 #              The validation ORACLE and the universal fallback; byte-for-byte
 #              the pre-replay engine (nothing below the routing block changed).
 #   "replay" — walk ONCE (simulate_trajectories(save_relaxation_data=…)) then
-#              apply_waveform_with_relaxation (gradient phase + scalar/per-comp
+#              replay (gradient phase + scalar/per-comp
 #              T2 + T1 + surface relaxivity).  This mirrors the private
 #              packed-myelin unification, generalised to the geometries Phase-1
 #              proved equivalent at the MC-noise floor (test_replay_parity).
@@ -123,7 +123,7 @@ def _simulate_via_replay(n_walkers, diffusivity, waveform, geometry, *, seed,
     surface relaxivity (ρ replayed off the recorded unit boundary local time),
     and the stimulated-echo 0.5 factor.  Assumes ``_replay_gap()`` already
     cleared the run (no permeability / myelin / per-comp / extra-output)."""
-    from .trajectories import apply_waveform_with_relaxation
+    from .trajectories import replay
 
     G = np.asarray(waveform.G, dtype=np.float32)          # (n_meas, n_t, 3)
     dt = float(waveform.dt)
@@ -180,10 +180,10 @@ def _simulate_via_replay(n_walkers, diffusivity, waveform, geometry, *, seed,
         if T1_comp is not None:
             relax_kw['T1_per_comp'] = np.asarray(T1_comp, dtype=np.float64)
     if has_surf:
-        relax_kw.update(dlog_boundary_unit=dlog, rho=float(rho),
+        relax_kw.update(dlog_boundary_unit=dlog, surface_relaxivity=float(rho),
                         D=float(diffusivity))
 
-    signals = apply_waveform_with_relaxation(
+    signals = replay(
         traj, dt_traj, G, dt, chi_perp=chi,
         stimulated_echo=bool(getattr(waveform, 'stimulated_echo', False)),
         **relax_kw)
@@ -289,7 +289,7 @@ def simulate(
           the pre-replay code).
         - ``'replay'`` — walk once with :func:`simulate_trajectories` then apply
           the waveform + relaxation with
-          :func:`~dmipy_sim.trajectories.apply_waveform_with_relaxation`
+          :func:`~dmipy_sim.trajectories.replay`
           (gradient phase + scalar/per-comp T2 + T1 + surface relaxivity).
           Raises :class:`NotImplementedError` (naming the gap) for a path the
           replay backend cannot serve exactly — MyelinatedCylinder /
@@ -980,8 +980,7 @@ def simulate_trajectories(
     Unlike :func:`simulate`, this applies NO gradient waveform: it stores
     ``r(t)`` for all walkers so any waveform / relaxation hypothesis can be
     applied post-hoc via
-    :func:`~dmipy_sim.trajectories.apply_waveform_to_trajectories` or
-    :func:`~dmipy_sim.trajectories.apply_waveform_with_relaxation`.  This is the
+    :func:`~dmipy_sim.trajectories.replay`.  This is the
     walk-once half of the replay invariant (positions depend only on
     ``geometry, diffusivity, seed`` — see the module CLAUDE guide).
 
@@ -1062,12 +1061,12 @@ def simulate_trajectories(
         of the sub-step compartment ids (resolves intra-save membrane crossings).
         For all OTHER geometries (impermeable, surface relaxivity): int8 discrete
         compartment ID (always 0 for single-compartment; 0/1/2 for packed
-        myelin).  Consumed by ``apply_waveform_with_relaxation`` with
+        myelin).  Consumed by ``replay`` with
         ``T2_per_comp``/``T1_per_comp``.
     bound_frac : np.ndarray, shape (n_walkers, n_t), float16
         ONLY for the packed-myelin path with ``kappa_MT > 0`` — appended as a 7th
         return value.  Per-save MT bound-pool occupancy, consumed by
-        ``apply_waveform_bloch(bound_frac=...)`` to blend the bound pool.
+        ``replay_bloch(bound_frac=...)`` to blend the bound pool.
     """
     # GPU guard — never silently fall back to CPU for a heavy walk (CLAUDE rule).
     from .gpu import check_gpu

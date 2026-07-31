@@ -22,7 +22,7 @@ and the free-pool boundary local time ``dlog_boundary_unit`` (for surface
 relaxivity of the free pool at replay).
 
 The bound spins' relaxation / RF (the actual MT saturation transfer) is applied at
-REPLAY by :func:`dmipy_sim.trajectories.apply_waveform_bloch`, consuming
+REPLAY by :func:`dmipy_sim.trajectories.replay_bloch`, consuming
 ``bound_frac`` -- positions while bound are irrelevant to the MT observables (a
 bound spin has ~zero transverse via its huge R2b).  This is the replay counterpart
 of the fused forward path ``bloch.simulate_bloch(kappa_MT=...)``.

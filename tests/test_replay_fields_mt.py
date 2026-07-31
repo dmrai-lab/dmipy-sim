@@ -19,15 +19,15 @@ import pytest
 
 import dmipy_sim as d
 from dmipy_sim import (simulate_bloch, simulate_trajectories, simulate_mt_trajectories,
-                       apply_waveform_bloch, apply_waveform_bloch_jax,
-                       apply_waveform_with_relaxation,
+                       replay_bloch, replay_bloch_jax,
+                       replay,
                        finite_180_longitudinal_dwell, pathway_sign_se,
                        SusceptibilitySources, mt)
 
 
 # ── (a) vector-Bloch replay vs the forward engine: emergent SE refocusing ────────
 def test_bloch_replay_matches_forward_spin_echo():
-    """apply_waveform_bloch replays a spin echo (with a gradient) off one walk and
+    """replay_bloch replays a spin echo (with a gradient) off one walk and
     matches the fused simulate_bloch forward to the noise floor.  Refocusing is
     emergent (the 180 conjugates the accumulated gradient phase)."""
     D, N, seed = 1.5e-9, 4000, 7
@@ -43,7 +43,7 @@ def test_bloch_replay_matches_forward_spin_echo():
     traj, dt_tr, subs, _ = simulate_trajectories(N, D, geom, TE, dt, seed=seed,
                                                  require_gpu=False)
     assert subs == 1                                       # bit-identical walk to forward
-    rep = apply_waveform_bloch(traj, dt_tr, G, dt, rf, T2=T2)
+    rep = replay_bloch(traj, dt_tr, G, dt, rf, T2=T2)
     assert abs(np.real(fwd[0]) - np.real(rep[0])) < 5e-3
 
 
@@ -67,10 +67,10 @@ def test_susceptibility_replay_gre_and_se():
 
     f_gre = simulate_bloch(N, D, wf0, geom, rf_gre, T2=T2, seed=seed,
                            susceptibility=prov, require_gpu=False)
-    r_gre = apply_waveform_bloch(traj, dt_tr, Z, dt, rf_gre, T2=T2, susceptibility=prov)
+    r_gre = replay_bloch(traj, dt_tr, Z, dt, rf_gre, T2=T2, susceptibility=prov)
     f_se = simulate_bloch(N, D, wf0, geom, rf_se, T2=T2, seed=seed,
                           susceptibility=prov, require_gpu=False)
-    r_se = apply_waveform_bloch(traj, dt_tr, Z, dt, rf_se, T2=T2, susceptibility=prov)
+    r_se = replay_bloch(traj, dt_tr, Z, dt, rf_se, T2=T2, susceptibility=prov)
 
     # forward vs replay parity (same provider, bit-identical walk)
     assert abs(abs(f_gre[0]) - abs(r_gre[0])) < 8e-3
@@ -82,7 +82,7 @@ def test_susceptibility_replay_gre_and_se():
 
 # ── (b') scalar-path susceptibility replay: eps_P refocuses the static field ─────
 def test_scalar_susceptibility_replay_eps_p_refocus():
-    """apply_waveform_with_relaxation replays a susceptibility provider: with eps_P=None
+    """replay replays a susceptibility provider: with eps_P=None
     (FID / GRE) the static field dephases the signal, and the SE pathway sign eps_P
     (flip at TE/2) refocuses it."""
     D, N, seed = 1.5e-9, 4000, 7
@@ -94,18 +94,18 @@ def test_scalar_susceptibility_replay_eps_p_refocus():
     prov = SusceptibilitySources(centers=[[0, 0, 0]], radii=[3e-6],
                                  delta_chi=8e-6, B0=3.0)
     Z = np.zeros((1, n_t, 3)); chi = np.ones((1, n_t))
-    gre = apply_waveform_with_relaxation(traj, dt_tr, Z, dt, chi,
-                                         susceptibility=prov, eps_P=None)
+    gre = replay(traj, dt_tr, Z, dt, chi_perp=chi,
+                        susceptibility=prov, eps_P=None)
     eps = pathway_sign_se(n_t, dt, TE)[None, :]
-    se = apply_waveform_with_relaxation(traj, dt_tr, Z, dt, chi,
-                                        susceptibility=prov, eps_P=eps)
+    se = replay(traj, dt_tr, Z, dt, chi_perp=chi,
+                       susceptibility=prov, eps_P=eps)
     assert se[0] > gre[0] + 0.1                    # SE refocuses the static dephasing
     assert abs(gre[0]) < 0.05                       # GRE strongly dephased
 
 
 # ── (c) MT replay Z-spectrum vs the analytic two-pool oracle ─────────────────────
 def test_mt_replay_zspectrum_matches_oracle():
-    """Emergent MT Z-spectrum by replay (simulate_mt_trajectories + apply_waveform_bloch
+    """Emergent MT Z-spectrum by replay (simulate_mt_trajectories + replay_bloch
     bound-pool blend) vs the analytic mt.mt_z_spectrum oracle.  RF rotates the bound spins
     too, so the saturation transfer is emergent; the broad short-T2b pool produces the dip."""
     D, N, seed, R = 1.5e-9, 2000, 3, 5e-6
@@ -130,7 +130,7 @@ def test_mt_replay_zspectrum_matches_oracle():
     for i, off in enumerate(offsets):
         rf = [{'t_s': t_sat / 2, 'flip_deg': flip, 'axis_deg': 0.0,
                'duration_s': t_sat, 'offset_hz': float(off)}]
-        Ml, _ = apply_waveform_bloch(traj, dt_tr, Z, dt, rf, T2=T2, T1=T1,
+        Ml, _ = replay_bloch(traj, dt_tr, Z, dt, rf, T2=T2, T1=T1,
                                      bound_frac=bfrac, T2_bound=T2b, T1_bound=T1b,
                                      return_walker_signals=True)
         rep[i] = float(np.mean(Ml[2]))
@@ -170,7 +170,7 @@ def test_simulate_trajectories_packed_myelin_mt_channel():
 
 # ── JAX vectorisation parity (hard pulses) ───────────────────────────────────────
 def test_bloch_replay_jax_matches_numpy():
-    """apply_waveform_bloch_jax reproduces the numpy primitive for hard pulses."""
+    """replay_bloch_jax reproduces the numpy primitive for hard pulses."""
     D, N, seed = 1.5e-9, 2000, 5
     TE, dt = 12e-3, 0.15e-3
     n_t = int(round(TE / dt)) + 1
@@ -180,8 +180,8 @@ def test_bloch_replay_jax_matches_numpy():
                                               require_gpu=False)
     rf = [{'t_s': 0.0, 'flip_deg': 90.0, 'axis_deg': 90.0, 'duration_s': 0.0},
           {'t_s': TE / 2, 'flip_deg': 180.0, 'axis_deg': 0.0, 'duration_s': 0.0}]
-    num = apply_waveform_bloch(traj, dt_tr, G, dt, rf, T2=T2)
-    jx = apply_waveform_bloch_jax(traj, dt_tr, G, dt, rf, T2=T2)
+    num = replay_bloch(traj, dt_tr, G, dt, rf, T2=T2)
+    jx = replay_bloch_jax(traj, dt_tr, G, dt, rf, T2=T2)
     assert abs(np.real(num[0]) - np.real(jx[0])) < 2e-3
 
 

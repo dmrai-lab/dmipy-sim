@@ -2,7 +2,7 @@
 
 Phase-1 replay foundation.  For each geometry we walk the spins ONCE with
 ``simulate_trajectories(save_relaxation_data=True)`` and then apply
-``apply_waveform_to_trajectories`` / ``apply_waveform_with_relaxation`` post-hoc,
+``replay`` (pure-gradient and with relaxation) post-hoc,
 asserting the result equals the fused forward engine (``core.simulate``) — the
 validation oracle — for
 
@@ -26,9 +26,7 @@ import numpy.testing as npt
 import pytest
 
 import dmipy_sim as d
-from dmipy_sim import (simulate, simulate_trajectories,
-                       apply_waveform_to_trajectories,
-                       apply_waveform_with_relaxation)
+from dmipy_sim import (simulate, simulate_trajectories, replay)
 
 D = 2e-9          # m²/s
 SEED = 7
@@ -125,7 +123,7 @@ _ALL = ["free", "box1d", "sphere", "cylinder", "mesh"]
 def test_replay_pure_gradient_matches_simulate(_replay_case):
     """(a) Phase-only replay == fused simulate() (no relaxation)."""
     c = _replay_case
-    S_rep = np.asarray(apply_waveform_to_trajectories(
+    S_rep = np.asarray(replay(
         c["traj"], c["dt_traj"], c["G"], c["wf"].dt)).ravel()
     npt.assert_allclose(
         S_rep, c["S_a"], atol=_tol(c["n"]),
@@ -136,7 +134,7 @@ def test_replay_pure_gradient_matches_simulate(_replay_case):
 def test_replay_scalar_T2_matches_simulate(_replay_case):
     """(b) Scalar-T2 replay == fused simulate(T2=...)."""
     c = _replay_case
-    S_rep = np.asarray(apply_waveform_with_relaxation(
+    S_rep = np.asarray(replay(
         c["traj"], c["dt_traj"], c["G"], c["wf"].dt,
         chi_perp=c["chi"], T2=T2)).ravel()
     npt.assert_allclose(
@@ -152,7 +150,7 @@ def test_replay_per_compartment_T2_matches_simulate(_replay_case):
     per-compartment values it must collapse onto the scalar-T2 oracle.
     """
     c = _replay_case
-    S_rep = np.asarray(apply_waveform_with_relaxation(
+    S_rep = np.asarray(replay(
         c["traj"], c["dt_traj"], c["G"], c["wf"].dt,
         chi_perp=c["chi"], comp_traj=c["comp"], T2_per_comp=[T2, T2])).ravel()
     npt.assert_allclose(
@@ -167,9 +165,9 @@ def test_replay_surface_relaxivity_matches_simulate(_replay_case):
     c = _replay_case
     if c["S_d"] is None:
         pytest.skip(f"{c['name']} has no boundary — surface relaxivity N/A")
-    S_rep = np.asarray(apply_waveform_with_relaxation(
+    S_rep = np.asarray(replay(
         c["traj"], c["dt_traj"], c["G"], c["wf"].dt, chi_perp=c["chi"],
-        dlog_boundary_unit=c["dlog"], rho=RHO, D=D)).ravel()
+        dlog_boundary_unit=c["dlog"], surface_relaxivity=RHO, D=D)).ravel()
     npt.assert_allclose(
         S_rep, c["S_d"], atol=_tol(c["n"]),
         err_msg=f"[{c['name']}] surface-relaxivity replay must match "
