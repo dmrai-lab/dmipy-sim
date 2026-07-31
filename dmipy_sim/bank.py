@@ -97,8 +97,24 @@ def read_rpk(path) -> "ReplayPack":
 
 
 # --------------------------------------------------------- master normalisation
+def compartment_labels(geometry):
+    """Id-ordered compartment names for a geometry's saved ``comp_traj`` (position k names
+    compartment id k), or ``None`` for single-compartment / unknown geometries.
+
+    The integer id -> physical-compartment convention is owned by the geometry, so this is
+    the one place it is written down. Pass the result to :func:`master_from_walk` as
+    ``comp_labels=`` so the pack is self-describing and ``pack.replay(T2={...})`` works.
+    """
+    name = type(geometry).__name__
+    if name == "Mesh":
+        return ["intra", "extra"]                 # mesh.py: classify_position 0=intra, 1=extra
+    if name == "PackedMyelinatedCylinders":
+        return ["intra", "myelin", "extra"]       # core.py _to3: 0=intra, 1=myelin, 2=extra
+    return None
+
+
 def master_from_walk(result, *, D, T2_per_comp=None, T1_per_comp=None, w=None,
-                     cell_size=None, R=None, mt_params=None, seed=0):
+                     cell_size=None, R=None, mt_params=None, comp_labels=None, seed=0):
     """Assemble a master dict for :func:`build_replay_pack` from a
     :func:`dmipy_sim.simulate_trajectories` return tuple (walk → dict → pack).
 
@@ -129,6 +145,8 @@ def master_from_walk(result, *, D, T2_per_comp=None, T1_per_comp=None, w=None,
         m["R"] = np.asarray(R)
     if mt_params is not None:                  # C4 parametric two-pool qMT pool descriptor
         m["mt_params"] = dict(mt_params)
+    if comp_labels is not None:                # id-ordered names for the compartment channel
+        m["comp_labels"] = list(comp_labels)
     return m
 
 
@@ -160,6 +178,7 @@ def _master_arrays(src) -> dict:
                 cell_size=f("cell_size"), R=g("R"), D_intra=f("D_intra"),
                 T2_per_comp=g("T2_per_comp"), T1_per_comp=g("T1_per_comp"),
                 mt_params=(m.get("mt_params") if isinstance(m.get("mt_params"), dict) else None),
+                comp_labels=(list(m["comp_labels"]) if m.get("comp_labels") is not None else None),
                 n_walkers=int(traj.shape[0]),
                 seed=int(np.asarray(m.get("seed", 0))))
 
@@ -233,7 +252,8 @@ def build_replay_pack(src, *, id, method="lowrank", envelope=None, tol=2.0, K=No
                          cell_size=m.get("cell_size")),
         per_comp=dict(T2=(None if m.get("T2_per_comp") is None else np.asarray(m["T2_per_comp"]).tolist()),
                       T1=(None if m.get("T1_per_comp") is None else np.asarray(m["T1_per_comp"]).tolist()),
-                      R=(None if m.get("R") is None else np.asarray(m["R"]).tolist())),
+                      R=(None if m.get("R") is None else np.asarray(m["R"]).tolist()),
+                      labels=(list(m["comp_labels"]) if m.get("comp_labels") is not None else None)),
         # explicit, self-describing tier flags (Replay Pack Specification §7/§10).
         # field=False: public susceptibility is provider-driven, not a stored channel.
         replay_envelope=dict(gradient=True,
@@ -314,6 +334,27 @@ class ReplayPack:
     citation = property(lambda self: self.meta.get("citation"))
     fidelity = property(lambda self: self.meta.get("fidelity"))
     replay_envelope = property(lambda self: self.meta.get("replay_envelope"))
+    # id-ordered compartment names (position k = compartment id k in the walk), or None.
+    comp_labels = property(lambda self: self.meta.get("per_comp", {}).get("labels"))
+
+    def _resolve_per_comp(self, v, what):
+        """A dict ``{name: value}`` -> positional array in the pack's compartment order.
+        Scalars / arrays pass through unchanged (array = positional per-compartment)."""
+        if not isinstance(v, dict):
+            return v
+        labels = self.comp_labels
+        if not labels:
+            raise ValueError(
+                f"{what}=<dict> needs the pack's compartment label map, but this pack has "
+                f"none. Pass a positional array (index k = compartment id k), or rebuild the "
+                f"pack with master_from_walk(..., comp_labels=compartment_labels(geometry)).")
+        missing = [lab for lab in labels if lab not in v]
+        unknown = [k for k in v if k not in labels]
+        if missing or unknown:
+            raise ValueError(
+                f"{what} dict keys {sorted(v)} must match the pack compartments {labels} "
+                f"(missing={missing}, unknown={unknown}).")
+        return np.asarray([float(v[lab]) for lab in labels], dtype=float)
 
     def reconstruct_walkers(self, n_walkers=None, seed=0):
         return _cx.decode(self.arrays, self._decode_meta, n_walkers=n_walkers, seed=seed)
@@ -378,7 +419,9 @@ class ReplayPack:
         Relaxation and surface relaxivity are applied **when the caller passes them**:
 
         * ``T2`` / ``T1`` — a scalar is uniform relaxation; an array is per-compartment
-          (indexed by the pack's stored compartment map, :meth:`_comp`).
+          (positional, index k = compartment id k in :meth:`_comp`); a dict
+          ``{name: value}`` is resolved to that positional order via the pack's stored
+          label map (:attr:`comp_labels`), so it is order-independent and self-describing.
         * ``surface_relaxivity`` (m/s) — replayed against the pack's boundary channel
           (:meth:`boundary_local_time`), scaled by the walk diffusivity.
 
@@ -397,6 +440,8 @@ class ReplayPack:
         from .trajectories import replay as _replay, replay_bloch as _replay_bloch
         traj = self.reconstruct_walkers(n_walkers, seed)
         D = float(self.meta["walk_params"]["diffusivity"])
+        T2 = self._resolve_per_comp(T2, "T2")           # {name: value} -> positional (label order)
+        T1 = self._resolve_per_comp(T1, "T1")
         per = lambda v: v if np.ndim(v) else None       # array -> per-compartment; scalar -> None
         T2pc, T1pc = per(T2), per(T1)
         T2s = None if T2pc is not None else T2
