@@ -95,9 +95,12 @@ def _replay_gap(geometry, *, return_positions, return_compartments,
     if getattr(geometry, 'permeability', None) is not None:
         return ("membrane permeability is single-pass walk semantics "
                 "(fused-only; scalar replay has no exchange reservoir)")
-    if (getattr(geometry, '_D_comp_jax', None) is not None or
-            getattr(geometry, '_inv_T2_comp_jax', None) is not None):
-        return "per-compartment D/T2 geometry (Mesh intra/extra) is fused-only in replay"
+    if getattr(geometry, '_D_comp_jax', None) is not None:
+        # Per-compartment D changes the STEP LENGTH per compartment, so it alters the walk
+        # itself — not a replay knob. (Per-compartment T2/T1 ARE replay knobs: they gate
+        # only log_w and are applied off the saved compartment channel — see
+        # _simulate_via_replay.)
+        return "per-compartment diffusivity (Mesh intra/extra D) alters the walk (fused-only)"
     if diffusivity is None:
         return "replay needs an explicit diffusivity for the sub-step auto-tune"
     return None
@@ -145,8 +148,17 @@ def _simulate_via_replay(n_walkers, diffusivity, waveform, geometry, *, seed,
     has_surf = (rho is not None and float(rho) > 0.0
                 and hasattr(geometry, 'reflect_with_log_weight'))
 
+    # Per-compartment T2/T1 (Mesh intra/extra dicts) are pure replay knobs: they gate only
+    # log_w and are applied off the saved compartment channel (comp_traj, index 0=intra /
+    # 1=extra, matching the geometry's _T2_comp/_T1_comp ordering). Requesting them forces
+    # save_relaxation_data so the compartment channel is recorded.
+    T2_comp = getattr(geometry, '_T2_comp', None)
+    T1_comp = getattr(geometry, '_T1_comp', None)
+    has_per_comp = T2_comp is not None or T1_comp is not None
+
+    save_relax = has_surf or has_per_comp
     st_kwargs = dict(seed=seed, require_gpu=require_gpu,
-                     save_relaxation_data=has_surf)
+                     save_relaxation_data=save_relax)
     if r0 is not None:
         st_kwargs['r0'] = r0
     if walker_batch_size is not None:
@@ -154,18 +166,27 @@ def _simulate_via_replay(n_walkers, diffusivity, waveform, geometry, *, seed,
 
     out = simulate_trajectories(n_walkers, diffusivity, geometry, T_max, dt,
                                 **st_kwargs)
-    if has_surf:
-        traj, dt_traj, _sub, _dtsim, dlog, _comp = out
+    if save_relax:
+        traj, dt_traj, _sub, _dtsim, dlog, comp = out
     else:
         traj, dt_traj, _sub, _dtsim = out
-        dlog = None
+        dlog = comp = None
+
+    relax_kw = dict(T2=T2, T1=T1)
+    if has_per_comp:                                   # per-compartment overrides scalar
+        relax_kw['comp_traj'] = comp
+        if T2_comp is not None:
+            relax_kw['T2_per_comp'] = np.asarray(T2_comp, dtype=np.float64)
+        if T1_comp is not None:
+            relax_kw['T1_per_comp'] = np.asarray(T1_comp, dtype=np.float64)
+    if has_surf:
+        relax_kw.update(dlog_boundary_unit=dlog, rho=float(rho),
+                        D=float(diffusivity))
 
     signals = apply_waveform_with_relaxation(
         traj, dt_traj, G, dt, chi_perp=chi,
-        dlog_boundary_unit=dlog, T2=T2, T1=T1,
-        rho=(float(rho) if has_surf else None),
-        D=(float(diffusivity) if has_surf else None),
-        stimulated_echo=bool(getattr(waveform, 'stimulated_echo', False)))
+        stimulated_echo=bool(getattr(waveform, 'stimulated_echo', False)),
+        **relax_kw)
     return np.asarray(signals, dtype=np.float32)
 
 
