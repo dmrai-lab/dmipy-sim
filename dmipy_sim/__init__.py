@@ -10,10 +10,8 @@ from ._gpu_config import apply_gpu_mem_cap as _apply_gpu_mem_cap, configure  # n
 _apply_gpu_mem_cap()
 
 from .core import simulate, simulate_mixture, simulate_cpmg, simulate_trajectories
-from .trajectories import (unwrap_periodic, apply_waveform_to_trajectories,
-                           apply_waveform_jax, apply_waveform_with_relaxation,
-                           apply_waveform_with_relaxation_jax,
-                           apply_waveform_bloch, apply_waveform_bloch_jax,
+from .trajectories import (unwrap_periodic, replay, replay_jax,
+                           replay_bloch, replay_bloch_jax,
                            finite_180_longitudinal_dwell, pre_pulse_gradient_phase,
                            pathway_sign_se)
 from .mt_walk import simulate_mt_trajectories
@@ -54,10 +52,9 @@ from .rf import B1Pulse, bloch_simulate, slice_profile
 __all__ = [
     "simulate", "simulate_mixture", "simulate_cpmg", "simulate_trajectories",
     # replay path: walk-once producer + scalar replay operators
-    "unwrap_periodic", "apply_waveform_to_trajectories", "apply_waveform_jax",
-    "apply_waveform_with_relaxation", "apply_waveform_with_relaxation_jax",
+    "unwrap_periodic", "replay", "replay_jax",
     # replay path: vector-Bloch + susceptibility + MT + refocusing helpers
-    "apply_waveform_bloch", "apply_waveform_bloch_jax",
+    "replay_bloch", "replay_bloch_jax",
     "finite_180_longitudinal_dwell", "pre_pulse_gradient_phase", "pathway_sign_se",
     "simulate_mt_trajectories",
     "simulate_bloch",
