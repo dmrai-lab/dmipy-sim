@@ -230,3 +230,40 @@ def test_rpk_passes_spec_conformance(master, env, tmp_path):
     assert r.returncode == 0, f"conformance checker failed:\n{report}"
     assert "CONFORMANT" in report, report
     assert "C0-Gradient" in report and "C1-BulkRelax" in report and "C2-Surface" in report, report
+
+
+def test_compartment_label_map_and_dict_replay(master, env):
+    """A pack can store an id-ordered compartment label map so per-compartment T2/T1 are
+    addressable by name: pack.replay(T2={'intra':..,'extra':..}) resolves to the pack's
+    positional order and equals the positional array; unlabeled packs reject dicts."""
+    from dmipy_sim import compartment_labels
+    from dmipy_sim.geometries import Sphere
+    assert compartment_labels(Sphere(5e-6)) is None            # single-comp / unknown -> None
+    tri = pytest.importorskip("trimesh")
+    from dmipy_sim import Mesh
+    ico = tri.creation.icosphere(subdivisions=1, radius=6e-6)
+    assert compartment_labels(Mesh(np.asarray(ico.vertices, float),
+                                   np.asarray(ico.faces, int))) == ["intra", "extra"]
+
+    m = dict(master); m["T2_per_comp"] = np.asarray([0.05, 0.05]); m["comp_labels"] = ["intra", "extra"]
+    p = bank.build_replay_pack(m, id="test/lab", method="lowrank", K=32,
+                               license="CC-BY-4.0", citation="test", envelope=env)
+    assert p.comp_labels == ["intra", "extra"]
+    Nt = master["traj"].shape[1]; dt = master["dt_traj"]
+
+    class WF:
+        G = np.stack([_pgse(Nt, dt, 1e9, [1, 0, 0])])
+
+    S_dict = np.asarray(p.replay(WF, T2={"intra": 0.02, "extra": 0.2}))
+    S_list = np.asarray(p.replay(WF, T2=[0.02, 0.2]))
+    np.testing.assert_allclose(S_dict, S_list)                 # dict == positional (label order)
+    with pytest.raises(ValueError):                            # missing a compartment
+        p.replay(WF, T2={"intra": 0.02})
+    with pytest.raises(ValueError):                            # unknown compartment
+        p.replay(WF, T2={"foo": 0.02, "bar": 0.1})
+
+    p0 = bank.build_replay_pack(dict(master), id="test/nolab", method="lowrank", K=32,
+                                license="CC-BY-4.0", citation="test", envelope=env)
+    assert p0.comp_labels is None
+    with pytest.raises(ValueError):                            # dict without a label map -> helpful error
+        p0.replay(WF, T2={"intra": 0.02})
