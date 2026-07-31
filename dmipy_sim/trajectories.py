@@ -595,11 +595,11 @@ def pre_pulse_gradient_phase(trajectories, dt_traj, G, dt_wf, cutoff_wf_idx):
     return GAMMA * dt_traj * (G_flat @ traj_flat.T)  # (n_meas, n_walkers)
 
 
-def replay_bloch(trajectories, dt_traj, G, dt_wf, rf_events,
+def replay_bloch(trajectory, dt_traj, G, dt_wf, rf_events, *,
                          T2=None, T1=None, comp_traj=None,
                          T2_per_comp=None, T1_per_comp=None,
                          susceptibility=None, extra_phase_per_step=None,
-                         dlog_boundary_unit=None, rho=None, D=None,
+                         dlog_boundary_unit=None, surface_relaxivity=None, D=None,
                          echo_steps=None, echo_per_walker=False,
                          weights=None, return_walker_signals=False,
                          b1_scale=None, slice_offsets=None, slice_gradient=0.0,
@@ -647,8 +647,8 @@ def replay_bloch(trajectories, dt_traj, G, dt_wf, rf_events,
     """
     G = np.asarray(G, dtype=np.float64)
     n_meas, n_t_wf, _ = G.shape
-    n_w, n_t, _ = trajectories.shape
-    traj = trajectories.astype(np.float64)
+    n_w, n_t, _ = trajectory.shape
+    traj = trajectory.astype(np.float64)
 
     # ── resample G to the trajectory grid (nearest within window, 0 outside) ──
     t_wf = np.arange(n_t_wf, dtype=np.float64) * dt_wf
@@ -697,17 +697,18 @@ def replay_bloch(trajectories, dt_traj, G, dt_wf, rf_events,
     # extra_phase_per_step lets a caller pass a pre-baked γ·ΔBz·dt array directly.
     if susceptibility is not None and extra_phase_per_step is None:
         field_fn = _resolve_field_fn(susceptibility)
-        extra_phase_per_step = GAMMA * dt_traj * _sample_delta_bz(field_fn, trajectories)
+        extra_phase_per_step = GAMMA * dt_traj * _sample_delta_bz(field_fn, trajectory)
     has_susc = extra_phase_per_step is not None
     if has_susc:
         dphi_susc = np.asarray(extra_phase_per_step, np.float64)        # (n_w, n_t)
 
     # ── surface relaxivity: per-step transverse attenuation at wall contacts ──
-    has_surf = rho is not None and dlog_boundary_unit is not None and float(rho) != 0.0
+    has_surf = (surface_relaxivity is not None and dlog_boundary_unit is not None
+                and float(surface_relaxivity) != 0.0)
     if has_surf:
         if D is None:
-            raise ValueError("D required when rho is not None.")
-        surf = np.exp((float(rho) / float(D)) * np.asarray(dlog_boundary_unit, np.float64))
+            raise ValueError("D required when surface_relaxivity is not None.")
+        surf = np.exp((float(surface_relaxivity) / float(D)) * np.asarray(dlog_boundary_unit, np.float64))
 
     # ── RF events → per-step incremental B1 rotations ──
     # A finite pulse (duration_s > 0) is spread over its REAL duration as partial B1
@@ -812,11 +813,11 @@ def replay_bloch(trajectories, dt_traj, G, dt_wf, rf_events,
     return signals
 
 
-def replay_bloch_jax(trajectories, dt_traj, G, dt_wf, rf_events,
+def replay_bloch_jax(trajectory, dt_traj, G, dt_wf, rf_events, *,
                              T2=None, T1=None, comp_traj=None,
                              T2_per_comp=None, T1_per_comp=None,
                              susceptibility=None, extra_phase_per_step=None,
-                             dlog_boundary_unit=None, rho=None, D=None,
+                             dlog_boundary_unit=None, surface_relaxivity=None, D=None,
                              echo_steps=None):
     """GPU/JAX vectorisation of :func:`replay_bloch` (hard-pulse rotations).
 
@@ -830,8 +831,8 @@ def replay_bloch_jax(trajectories, dt_traj, G, dt_wf, rf_events,
         raise RuntimeError("JAX not available; use replay_bloch.")
     G = np.asarray(G, np.float64)
     n_meas, n_t_wf, _ = G.shape
-    n_w, n_t, _ = trajectories.shape
-    traj = trajectories.astype(np.float64)
+    n_w, n_t, _ = trajectory.shape
+    traj = trajectory.astype(np.float64)
 
     t_wf = np.arange(n_t_wf) * dt_wf
     t_tr = np.arange(n_t) * dt_traj
@@ -846,14 +847,15 @@ def replay_bloch_jax(trajectories, dt_traj, G, dt_wf, rf_events,
              else np.full((n_w, n_t), 0.0 if T1 is None else 1.0 / T1))
     E2 = jnp.asarray(np.exp(-dt_traj * invT2).T)         # (n_t, n_w)
     E1 = jnp.asarray(np.exp(-dt_traj * invT1).T)
-    if rho is not None and dlog_boundary_unit is not None and float(rho) != 0.0:
-        surf = jnp.asarray(np.exp((float(rho) / float(D))
+    if (surface_relaxivity is not None and dlog_boundary_unit is not None
+            and float(surface_relaxivity) != 0.0):
+        surf = jnp.asarray(np.exp((float(surface_relaxivity) / float(D))
                                   * np.asarray(dlog_boundary_unit, float)).T)
     else:
         surf = jnp.ones((n_t, n_w))
     if susceptibility is not None and extra_phase_per_step is None:
         field_fn = _resolve_field_fn(susceptibility)
-        extra_phase_per_step = GAMMA * dt_traj * _sample_delta_bz(field_fn, trajectories)
+        extra_phase_per_step = GAMMA * dt_traj * _sample_delta_bz(field_fn, trajectory)
     dphi_susc = (jnp.asarray(np.asarray(extra_phase_per_step, float).T)
                  if extra_phase_per_step is not None else jnp.zeros((n_t, n_w)))
 
