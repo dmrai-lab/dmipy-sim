@@ -120,25 +120,38 @@ def _plain_prewalk(geometry, D, n_walkers, seed):
 
 
 def _measure_t2(geometry, T2_theory, D=D_DEFAULT, n_walkers=N_WALKERS_T2,
-                n_te=6, seed=SEED):
-    """REPLAY: walk the ρ-free substrate ONCE (shared across ρ, disk-cached) and replay
-    each of n_te echo times (spanning 0.5–3×T2_theory, capped at 2 s) as a truncation with
-    surface relaxivity applied off the stored boundary channel. ρ is read from
-    ``geometry.surface_relaxivity_t2``. Returns (T2_fit, actual_TEs, signals).
-    """
-    rho = float(getattr(geometry, "surface_relaxivity_t2", 0.0) or 0.0)
-    pw = _plain_prewalk(geometry, D, n_walkers, seed)
+                n_te=6, seed=SEED, fused=False):
+    """T2 from a b≈0 decay fit over n_te echo times (0.5–3×T2_theory, capped at 2 s).
 
+    REPLAY (default): walk the ρ-free substrate ONCE (shared across ρ, disk-cached) and
+    replay each echo time as a truncation with surface relaxivity off the stored boundary
+    channel — accurate for R ≳ 8 µm.
+
+    ``fused=True``: the direct ``simulate()`` path on the ρ-baked geometry. Required for the
+    small-R end of the S/V-scaling sweep (R ≤ 4 µm), where the recorded boundary local time
+    of the replay walk under-resolves the surface decay (worst for the 1-D slab: it
+    over-estimated T2 by ~70 % at R=2 µm). Returns (T2_fit, actual_TEs, signals).
+    """
     TE_max = min(3.0 * T2_theory, _PREWALK_T_MAX)
     TE_min = min(0.5 * T2_theory, TE_max * 0.15)
     TE_targets = np.linspace(TE_min, TE_max, n_te)
 
     actual_TEs = []
     signals = []
-    for TE_t in TE_targets:
-        E, actual_TE = pw.surface_b0_signal(TE_t, rho, n_walkers=n_walkers)
-        actual_TEs.append(actual_TE)
-        signals.append(E)
+    if fused:
+        for TE_t in TE_targets:
+            dt_max = (0.20 * R_DEFAULT) ** 2 / (6 * D)
+            n_t = max(500, int(np.ceil(TE_t / dt_max)))
+            wf, actual_TE = _b0_waveform(TE_t, n_t=n_t)
+            actual_TEs.append(actual_TE)
+            signals.append(float(simulate(n_walkers, D, wf, geometry, seed=seed)[0]))
+    else:
+        rho = float(getattr(geometry, "surface_relaxivity_t2", 0.0) or 0.0)
+        pw = _plain_prewalk(geometry, D, n_walkers, seed)
+        for TE_t in TE_targets:
+            E, actual_TE = pw.surface_b0_signal(TE_t, rho, n_walkers=n_walkers)
+            actual_TEs.append(actual_TE)
+            signals.append(E)
     T2_fit = _fit_t2(np.array(actual_TEs), np.array(signals))
     return T2_fit, np.array(actual_TEs), np.array(signals)
 
@@ -270,7 +283,7 @@ def test_sv_scaling_cylinder():
         t2_theories.append(T2_theory)
 
         T2_fit, _, _ = _measure_t2(
-            geom, T2_theory, n_walkers=N_WALKERS_SV)
+            geom, T2_theory, n_walkers=N_WALKERS_SV, fused=True)
         t2_fits.append(T2_fit)
 
     t2_fits = np.array(t2_fits)
@@ -294,7 +307,7 @@ def test_sv_scaling_sphere():
         T2_theory = geom.volume() / (rho * geom.surface_area())
 
         T2_fit, _, _ = _measure_t2(
-            geom, T2_theory, n_walkers=N_WALKERS_SV)
+            geom, T2_theory, n_walkers=N_WALKERS_SV, fused=True)
         t2_fits.append(T2_fit)
 
     t2_fits = np.array(t2_fits)
@@ -318,7 +331,7 @@ def test_sv_scaling_box1d():
         T2_theory = geom.volume() / (rho * geom.surface_area())
 
         T2_fit, _, _ = _measure_t2(
-            geom, T2_theory, n_walkers=N_WALKERS_SV)
+            geom, T2_theory, n_walkers=N_WALKERS_SV, fused=True)
         t2_fits.append(T2_fit)
 
     t2_fits = np.array(t2_fits)
@@ -460,7 +473,7 @@ def test_sv_scaling_figure():
             geom = geom_fn(R)
             T2_theory = t2_fn(geom, rho)
             t2_theories.append(T2_theory)
-            T2_fit, _, _ = _measure_t2(geom, T2_theory, n_walkers=N_WALKERS_SV)
+            T2_fit, _, _ = _measure_t2(geom, T2_theory, n_walkers=N_WALKERS_SV, fused=True)
             t2_fits.append(T2_fit)
 
         log_R = np.log(radii)
