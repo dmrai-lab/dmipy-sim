@@ -1080,6 +1080,11 @@ def simulate_trajectories(
     if R_geom is None:
         R_geom = getattr(geometry, 'sphere_radius', None)
     if R_geom is None:
+        # Box1D (slab) confines over its width -> use `length` as the sub-step scale;
+        # without this the auto-tune fell through to sub_steps=1 (step_l = sqrt(6 D dt_save),
+        # far coarser than a small slab), garbling the recorded boundary local time at small R.
+        R_geom = getattr(geometry, 'length', None)
+    if R_geom is None:
         _radii = getattr(geometry, '_radii_np', None)
         if _radii is not None and len(_radii) > 0:
             R_geom = float(np.min(_radii))
