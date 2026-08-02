@@ -125,12 +125,14 @@ def _measure_t2(geometry, T2_theory, D=D_DEFAULT, n_walkers=N_WALKERS_T2,
 
     REPLAY (default): walk the ρ-free substrate ONCE (shared across ρ, disk-cached) and
     replay each echo time as a truncation with surface relaxivity off the stored boundary
-    channel — accurate for R ≳ 8 µm.
+    channel. Accurate across the full R sweep (down to sub-µm): the producer sub-step
+    auto-tune resolves each geometry's confinement scale (step_l < R/6), so the recorded
+    boundary local time matches the fused walk. (Before the Box1D `length` scale was added
+    to that auto-tune, the 1-D slab fell through to sub_steps=1 and over-estimated T2 by
+    ~70 % at R=2 µm — that path is now correct.)
 
-    ``fused=True``: the direct ``simulate()`` path on the ρ-baked geometry. Required for the
-    small-R end of the S/V-scaling sweep (R ≤ 4 µm), where the recorded boundary local time
-    of the replay walk under-resolves the surface decay (worst for the 1-D slab: it
-    over-estimated T2 by ~70 % at R=2 µm). Returns (T2_fit, actual_TEs, signals).
+    ``fused=True``: the direct ``simulate()`` path on the ρ-baked geometry — the parity
+    oracle. Returns (T2_fit, actual_TEs, signals).
     """
     TE_max = min(3.0 * T2_theory, _PREWALK_T_MAX)
     TE_min = min(0.5 * T2_theory, TE_max * 0.15)
@@ -283,7 +285,7 @@ def test_sv_scaling_cylinder():
         t2_theories.append(T2_theory)
 
         T2_fit, _, _ = _measure_t2(
-            geom, T2_theory, n_walkers=N_WALKERS_SV, fused=True)
+            geom, T2_theory, n_walkers=N_WALKERS_SV)
         t2_fits.append(T2_fit)
 
     t2_fits = np.array(t2_fits)
@@ -307,7 +309,7 @@ def test_sv_scaling_sphere():
         T2_theory = geom.volume() / (rho * geom.surface_area())
 
         T2_fit, _, _ = _measure_t2(
-            geom, T2_theory, n_walkers=N_WALKERS_SV, fused=True)
+            geom, T2_theory, n_walkers=N_WALKERS_SV)
         t2_fits.append(T2_fit)
 
     t2_fits = np.array(t2_fits)
@@ -331,7 +333,7 @@ def test_sv_scaling_box1d():
         T2_theory = geom.volume() / (rho * geom.surface_area())
 
         T2_fit, _, _ = _measure_t2(
-            geom, T2_theory, n_walkers=N_WALKERS_SV, fused=True)
+            geom, T2_theory, n_walkers=N_WALKERS_SV)
         t2_fits.append(T2_fit)
 
     t2_fits = np.array(t2_fits)
@@ -473,7 +475,7 @@ def test_sv_scaling_figure():
             geom = geom_fn(R)
             T2_theory = t2_fn(geom, rho)
             t2_theories.append(T2_theory)
-            T2_fit, _, _ = _measure_t2(geom, T2_theory, n_walkers=N_WALKERS_SV, fused=True)
+            T2_fit, _, _ = _measure_t2(geom, T2_theory, n_walkers=N_WALKERS_SV)
             t2_fits.append(T2_fit)
 
         log_R = np.log(radii)
