@@ -235,6 +235,127 @@ def replay_jax(
     return signals
 
 
+def _resample_G_to_traj(G, dt_wf, dt_traj, n_t_traj):
+    """Resample a waveform (n_meas, n_t_wf, 3) onto the trajectory time grid (identical
+    convention to replay()'s raw path: linear interp, zero outside the waveform window)."""
+    G = np.asarray(G, np.float64)
+    n_meas, n_t_wf, _ = G.shape
+    if abs(dt_wf - dt_traj) / max(abs(dt_traj), 1e-30) <= 1e-9:
+        if n_t_wf == n_t_traj:
+            return G
+        if n_t_wf > n_t_traj:
+            return G[:, :n_t_traj, :]
+        out = np.zeros((n_meas, n_t_traj, 3)); out[:, :n_t_wf, :] = G
+        return out
+    t_wf = np.arange(n_t_wf) * dt_wf
+    t_traj = np.arange(n_t_traj) * dt_traj
+    out = np.zeros((n_meas, n_t_traj, 3))
+    for m in range(n_meas):
+        for ax in range(3):
+            out[m, :, ax] = np.interp(t_traj, t_wf, G[m, :, ax], left=0.0, right=0.0)
+    return out
+
+
+def _replay_compressed(master, G, dt_wf, *, chi_perp, T2, T1, surface_relaxivity, D,
+                       stimulated_echo, comp_traj, T2_per_comp, T1_per_comp,
+                       return_walker_signals, susceptibility, eps_P):
+    """Replay a COMPRESSED master (IR modes from simulate_trajectories(compress=K)).
+
+    The gradient phase is computed in mode space (compression.mode_space_phi: contract the
+    stored temporal-DCT position bands against DCT(G)) — the (N, n_t, 3) trajectory is NEVER
+    reconstructed. Surface relaxivity uses the stored cumulative endpoint (ungated / full
+    walk) or the decoded per-save boundary channel (chi-gated). Per-compartment T2/T1 use
+    the raw compartment channel carried in the master. Susceptibility is unsupported (its
+    off-resonance phase is nonlinear in position — see docs/replay_compression.md)."""
+    from . import compression as _cx
+    if susceptibility is not None:
+        raise NotImplementedError(
+            "susceptibility replay from a compressed master is unsupported: the off-resonance "
+            "phase samples a field nonlinearly in position and does not commute with the DCT. "
+            "Replay susceptibility from a raw walk (see docs/replay_compression.md).")
+
+    K = int(master["K"]); n_t = int(master["n_t"]); dt_traj = float(master["dt_traj"])
+    pos_modes = np.asarray(master["pos_modes"], np.float64)          # (N, K, 3)
+    N = pos_modes.shape[0]
+    meta = {"method": "temporal_dct", "K": K, "n_t": n_t}
+
+    # ── Gradient phase in mode space (no trajectory reconstruction) ──────────────
+    G_traj = _resample_G_to_traj(G, dt_wf, dt_traj, n_t)             # (n_meas, n_t, 3)
+    n_meas = G_traj.shape[0]
+    phi = _cx.mode_space_phi({"dct_coeffs": pos_modes}, meta, G_traj, dt_traj).T  # (n_meas, N)
+
+    # ── chi_perp on the trajectory grid (nearest-neighbour, as in the raw path) ──
+    ungated = chi_perp is None
+    if ungated:
+        chi_r = np.ones((1, n_t))
+    else:
+        chi = np.asarray(chi_perp, np.float64)
+        n_t_wf = chi.shape[-1]
+        t_traj = np.arange(n_t) * dt_traj
+        dt_wf_eff = (np.arange(n_t_wf)[-1] * dt_wf) / max(n_t_wf - 1, 1) if n_t_wf > 1 else dt_traj
+        idx = np.round(t_traj / max(dt_wf_eff, 1e-30)).astype(int)
+        inr = (idx >= 0) & (idx < n_t_wf); idxc = np.clip(idx, 0, n_t_wf - 1)
+        if chi.ndim == 2:
+            chi_r = np.stack([np.where(inr, chi[m][idxc], 0.0) for m in range(chi.shape[0])])
+        else:
+            chi_r = np.where(inr, chi[idxc], 0.0)[None, :]
+
+    # ── Relaxation / surface log-weights ─────────────────────────────────────────
+    log_w_scalar = np.zeros(n_meas); log_w_pw = np.zeros((n_meas, 1))
+
+    def _inv_rate_at_step(inv_arr, comp):
+        comp = np.asarray(comp)
+        if np.issubdtype(comp.dtype, np.floating):
+            f = comp.astype(np.float64)
+            return inv_arr[0] + f * (inv_arr[1] - inv_arr[0])
+        return inv_arr[comp]
+
+    if T2_per_comp is not None:
+        comp = comp_traj if comp_traj is not None else master.get("comp_traj")
+        if comp is None:
+            raise ValueError("comp_traj required when T2_per_comp is provided.")
+        inv = _inv_rate_at_step(1.0 / np.asarray(T2_per_comp, np.float64), comp)
+        log_w_pw = log_w_pw - dt_traj * (chi_r @ inv.T)
+    elif T2 is not None:
+        log_w_scalar -= (dt_traj / T2) * chi_r.sum(1)
+
+    if T1_per_comp is not None:
+        comp = comp_traj if comp_traj is not None else master.get("comp_traj")
+        if comp is None:
+            raise ValueError("comp_traj required when T1_per_comp is provided.")
+        inv = _inv_rate_at_step(1.0 / np.asarray(T1_per_comp, np.float64), comp)
+        log_w_pw = log_w_pw - dt_traj * ((1.0 - chi_r) @ inv.T)
+    elif T1 is not None:
+        log_w_scalar -= (dt_traj / T1) * (n_t - chi_r.sum(1))
+
+    if surface_relaxivity is not None:
+        if D is None:
+            raise ValueError("D must be provided when surface_relaxivity is not None.")
+        if "blt_endpoint" not in master:
+            raise ValueError("compressed master lacks the boundary channel "
+                             "(re-run simulate_trajectories with save_relaxation_data=True).")
+        if ungated:
+            # (ρ/D)·Σ_t ℓ_t = (ρ/D)·B(T) — the stored endpoint; no reconstruction.
+            surf = (surface_relaxivity / D) * np.asarray(master["blt_endpoint"], np.float64)
+            log_w_pw = log_w_pw + surf[None, :]
+        else:
+            # chi-gated surface needs per-save ℓ(t): reconstruct the (N, n_t) boundary
+            # channel (ONE channel — 1/3 the positions; a mode-space contraction that
+            # avoids this is a follow-up). Positions are still never reconstructed.
+            blt = _cx.decode_boundary_dct(
+                {"blt_dct_coeffs": master["blt_modes"], "blt_endpoint": master["blt_endpoint"]},
+                {"n_t": n_t, "K": K}).astype(np.float64)
+            log_w_pw = log_w_pw + (surface_relaxivity / D) * (chi_r @ blt.T)
+
+    log_w_total = log_w_scalar[:, None] + log_w_pw                  # (n_meas, N) or (n_meas, 1)
+    signals = np.mean(np.exp(log_w_total) * np.cos(phi), axis=1)
+    if stimulated_echo:
+        signals = signals * 0.5
+    if return_walker_signals:
+        return phi, log_w_total, signals
+    return signals
+
+
 def replay(
     trajectory,
     dt_traj: float,
@@ -357,7 +478,21 @@ def replay(
     chi_perp resampling uses nearest-neighbour (via round indexing) on the
     trajectory grid — appropriate since chi_perp is a binary step function not
     suited to linear interpolation.  G is resampled linearly.
+
+    Compressed master: if ``trajectory`` is the dict returned by
+    ``simulate_trajectories(compress=K)`` (IR-basis modes), the gradient phase is
+    replayed in mode space (never reconstructing positions) and the surface/relaxation
+    weights come from the stored boundary/compartment channels — see
+    :func:`_replay_compressed`.  ``dt_traj`` is then taken from the master.
     """
+    if isinstance(trajectory, dict) and trajectory.get("compressed"):
+        return _replay_compressed(
+            trajectory, G, dt_wf, chi_perp=chi_perp, T2=T2, T1=T1,
+            surface_relaxivity=surface_relaxivity, D=D, stimulated_echo=stimulated_echo,
+            comp_traj=comp_traj, T2_per_comp=T2_per_comp, T1_per_comp=T1_per_comp,
+            return_walker_signals=return_walker_signals, susceptibility=susceptibility,
+            eps_P=eps_P)
+
     G = np.asarray(G, dtype=np.float32)
     n_meas, n_t_wf, _ = G.shape
     n_walkers, n_t_traj, _ = trajectory.shape

@@ -43,17 +43,36 @@ numpy fidelity scorer (`measure_fidelity`, `auto_select_modes`) — depends only
 numpy+scipy. `tests/test_compression.py` locks the algebraic identities and the real-walk
 per-TE fidelity.
 
-## Remaining wiring (next commits)
+## Wiring status
 
-1. **Producer streaming.** In `simulate_trajectories`' batch loop, when producing for
-   replay, DCT each batch on-device and append `(batch, K, 3)` + boundary `(batch, K+1)` +
-   compartment RLE, instead of the raw `(batch, n_t, 3)` float16. `temporal_dct` is
-   per-walker separable, so it streams per batch (unlike `lowrank`'s global SVD). This is
-   what removes the host-RAM blowup.
-2. **Replay routing.** When a pack is compressed, `replay` / `replay_jax` compute the phase
-   via `mode_space_signal` (positions modes) and add the surface/relaxation log-weight from
-   the decoded boundary/compartment channels — no raw trajectory.
+1. **Producer streaming — DONE** (`simulate_trajectories(compress=K)`). DCTs each batch
+   on-device and pulls only `(batch, K, 3)` positions + `(batch, K+1)` boundary; the raw
+   trajectory never hits the host. `temporal_dct` is per-walker separable, so it streams per
+   batch (unlike `lowrank`'s global SVD).
+2. **Replay routing — DONE** (`replay()` dispatches a compressed master to
+   `_replay_compressed`). Gradient phase via `mode_space_phi` (positions never
+   reconstructed); ungated surface relaxivity from the stored endpoint `B(T)` (exact, no
+   reconstruction); per-compartment T2/T1 from the carried compartment channel. Verified vs
+   raw `replay()`: gradient `max|ΔS|=2.6e-4`, ungated surface exact to 8e-8.
+
+## Remaining (next commits)
+
 3. **K selection.** `auto_select_modes` against the acquisition envelope, stored in the pack
    metadata so the fidelity is self-certifying.
 4. **Fused parity.** The ladder + S/V suites stay as the fused oracle; add a compressed-replay
    vs fused parity test across the envelope.
+
+### Deferred within pieces 1–2 (documented, not blocking)
+
+- **TE truncation from a compressed master** — evaluate `B(TE)` / the phase at `TE<T_max`
+  from modes (single-index IDCT), so one compressed walk serves a TE sweep like the raw
+  prewalk does. Today compressed replay is at the full walk length.
+- **chi-gated surface without reconstruction** — the gated path currently decodes the
+  boundary channel to `(N, n_t)` (one channel, 1/3 of positions); a mode-space contraction
+  (`endpoint·(χ·Δramp) + modes·(χ·ΔΦ)`) would avoid it. Ungated already avoids it (endpoint).
+- **Compartment-channel compression** — kept raw int8; RLE per batch is the follow-up.
+- **`replay_jax` compressed path** — piece 2 wired the NumPy `replay()`; the JAX path
+  (dmipy-design's differentiable gradient replay) mode-space kernel exists
+  (`compression._jax_signal_kernels`) but isn't dispatched yet.
+- **Susceptibility** — unsupported from a compressed master (nonlinear field sampling);
+  `_replay_compressed` raises. Replay susceptibility from a raw walk.
