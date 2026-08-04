@@ -24,6 +24,16 @@ fatal for the longest-TE truncation. Storing the endpoint exactly and DCT-ing on
 small, end-vanishing residual drops the per-TE error ~100× at the same K+1 storage. (A
 T2 slope-fit over a mid-window hides this — the honest metric is per-TE signal error.)
 
+**MT rides the boundary channel too (design decision).** Magnetization transfer is driven
+by the same impact-angle / boundary-local-time estimate as surface relaxivity, and the
+emergent bound fraction matches the two-pool oracle from that channel alone (`f_b=0.278`
+vs `k_f/(k_f+k_r)=0.286`). The full emergent wall-sticking (freeze-during-dwell) has **no
+observed signal impact** in the regimes tested (DW-attenuation coupling <0.2% across
+`T2_bound` 5–200 ms) — it is a physics-completeness nicety parked for later, not a signal
+requirement. So **MT is a separable boundary-channel log-weight**, same as surface
+relaxivity: compressed replay applies it off `boundary_dct` with an MT saturation rate in
+place of ρ/D — no bound-pool trajectory / vector-Bloch needed for the mean MT signal.
+
 ## What's here
 
 `compression.py` — the codecs (`encode_temporal_dct`, `encode_boundary_dct`,
