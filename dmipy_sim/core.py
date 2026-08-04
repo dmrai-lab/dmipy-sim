@@ -973,6 +973,7 @@ def simulate_trajectories(
     kappa_MT: float = 0.0,
     dwell_time: float = 0.0,
     equilibrate_binding="auto",
+    compress: int = None,
 ) -> tuple:
     """Walk the spins ONCE and save positions at every saved time step — the
     producer for the replay path (:mod:`dmipy_sim.trajectories`).
@@ -1356,6 +1357,43 @@ def simulate_trajectories(
     all_bound_batches = [] if _mt_on else None
     n_batches = (n_walkers + walker_batch_size - 1) // walker_batch_size
 
+    # ── IR-basis streaming compression (piece 1) ────────────────────────────────
+    # When compress=K, DCT each batch's positions/boundary channel ON DEVICE and pull
+    # only (batch, K, 3) / (batch, K+1) to the host — the raw (batch, n_t, 3) trajectory
+    # never leaves the GPU, so the producer's host-RAM footprint drops ~n_t/K. The DCT is
+    # a matmul against the SAME orthonormal DCT-II basis compression.py uses (built from
+    # scipy so the stored modes decode/mode-space-replay bit-consistently).
+    _compress = compress is not None
+    _cx = {"K": int(compress) if _compress else 0, "Phi": None, "ramp": None, "n_t": None}
+    all_blt_endpoints = [] if (_compress and save_relaxation_data) else None
+    if _compress and is_packed_myelin_geom:
+        raise NotImplementedError(
+            "compress= is not yet wired for packed-myelin walks (extra MT bound channel); "
+            "piece 1 covers the generic reflect/surface-relaxivity producer.")
+
+    def _dct_basis(n_t):
+        from scipy.fft import dct as _sdct
+        # dct(I, axis=0)[k, n] = DCT-II coeff k of basis vector e_n  ->  Phi @ x == dct(x)
+        Phi = _sdct(np.eye(n_t, dtype=np.float64), type=2, norm="ortho", axis=0)[:_cx["K"]]
+        return jnp.asarray(Phi, jnp.float32)
+
+    def _compress_pos(pos_dev):                      # (b, n_t, 3) device -> (b, K, 3) host
+        if _cx["Phi"] is None:
+            _cx["n_t"] = int(pos_dev.shape[1]); _cx["Phi"] = _dct_basis(_cx["n_t"])
+        return np.asarray(jnp.einsum("kt,btd->bkd", _cx["Phi"], pos_dev)).astype(np.float32)
+
+    def _compress_blt(dlog_dev):                     # (b, n_t) -> endpoint (b,), modes (b, K)
+        n_t = int(dlog_dev.shape[1])
+        if _cx["Phi"] is None:
+            _cx["n_t"] = n_t; _cx["Phi"] = _dct_basis(n_t)
+        if _cx["ramp"] is None:
+            _cx["ramp"] = jnp.linspace(jnp.float32(0.0), jnp.float32(1.0), n_t)
+        B = jnp.cumsum(dlog_dev, axis=1)
+        endpoint = B[:, -1]
+        resid = B - endpoint[:, None] * _cx["ramp"][None, :]      # 0 at both ends
+        modes = jnp.einsum("kt,bt->bk", _cx["Phi"], resid)
+        return np.asarray(endpoint).astype(np.float32), np.asarray(modes).astype(np.float32)
+
     for batch_idx in range(n_batches):
         start = batch_idx * walker_batch_size
         end = min(start + walker_batch_size, n_walkers)
@@ -1382,19 +1420,36 @@ def simulate_trajectories(
                         all_bound_batches.append(np.array(bfrac_f32).astype(np.float16))
                 elif save_relaxation_data:
                     pos_f32, dlog_f32, comp_f32 = simulate_batch_relax(current_r0, current_keys)
-                    all_batches.append(np.array(pos_f32).astype(np.float16))
-                    all_dlog_batches.append(np.array(dlog_f32).astype(np.float16))
+                    if _compress:
+                        all_batches.append(_compress_pos(pos_f32))
+                        _end, _bmodes = _compress_blt(dlog_f32)
+                        all_blt_endpoints.append(_end)
+                        all_dlog_batches.append(_bmodes)
+                    else:
+                        all_batches.append(np.array(pos_f32).astype(np.float16))
+                        all_dlog_batches.append(np.array(dlog_f32).astype(np.float16))
                     # Permeable: fractional occupancy (float16); else discrete (int8).
                     all_comp_batches.append(np.array(comp_f32).astype(
                         np.float16 if has_permeability else np.int8))
                 else:
-                    positions_f32 = np.array(simulate_batch(current_r0, current_keys))
-                    all_batches.append(positions_f32.astype(np.float16))
+                    if _compress:
+                        all_batches.append(_compress_pos(simulate_batch(current_r0, current_keys)))
+                    else:
+                        positions_f32 = np.array(simulate_batch(current_r0, current_keys))
+                        all_batches.append(positions_f32.astype(np.float16))
                 success = True
             except Exception as e:
                 err_str = str(e)
                 if ("OOM" in err_str or "out of memory" in err_str.lower()
                         or "RESOURCE_EXHAUSTED" in err_str):
+                    if _compress:
+                        # The compressed path already keeps peak device memory low; a
+                        # further sub-batch split here would need to compress each sub-slice
+                        # too. Not wired yet — surface a clear message instead of raw OOM.
+                        raise RuntimeError(
+                            "compress= hit GPU OOM within a walker batch; lower "
+                            "walker_batch_size (the compressed sub-batch fallback is not "
+                            "yet implemented).") from e
                     new_sub_batch = batch_size // 2
                     if new_sub_batch < 1000:
                         raise RuntimeError(f"Batch size too small after OOM: {e}") from e
@@ -1434,6 +1489,22 @@ def simulate_trajectories(
                     success = True
                 else:
                     raise
+
+    if _compress:
+        # Compressed master: IR modes instead of the raw trajectory. Decode with
+        # compression.decode / replay via compression.mode_space_signal (piece 2 wires
+        # this into replay() directly). `pos_modes` are the temporal-DCT bands.
+        master = {
+            "compressed": True, "method": "temporal_dct", "K": _cx["K"],
+            "n_t": int(_cx["n_t"]), "dt_traj": dt_actual,
+            "sub_steps": sub_steps, "dt_sim": dt_sim,
+            "pos_modes": np.concatenate(all_batches, axis=0),        # (N, K, 3) f32
+        }
+        if save_relaxation_data:
+            master["blt_endpoint"] = np.concatenate(all_blt_endpoints, axis=0)  # (N,)
+            master["blt_modes"] = np.concatenate(all_dlog_batches, axis=0)      # (N, K)
+            master["comp_traj"] = np.concatenate(all_comp_batches, axis=0)      # (N, n_t)
+        return master
 
     trajectories = np.concatenate(all_batches, axis=0)  # (n_walkers, n_t, 3) float16
     if save_relaxation_data:
