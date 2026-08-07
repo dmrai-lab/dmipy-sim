@@ -66,6 +66,11 @@ Repository = "https://github.com/dmrai-lab/dmipy-sim"
 where = ["."]
 include = ["dmipy_sim*"]
 
+# Ship non-Python runtime data files (e.g. sequences/scanner_constants.json) inside the wheel;
+# packages.find selects the .py packages but data files must be declared explicitly.
+[tool.setuptools.package-data]
+"*" = ["*.json"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
