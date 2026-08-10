@@ -23,7 +23,8 @@ requires-python = ">=3.10"
 dependencies = [
     "jax>=0.6.2",
     "numpy>=2.0",
-    "scipy>=1.10",   # susceptibility field-map sampling + replay compression (DCT / low-rank KL)
+    "scipy>=1.10",       # replay: DCT/low-rank compression + compiled-scheme forward; susceptibility field-map sampling
+    "safetensors>=0.4",  # replay: .rpk container I/O (dmipy_sim.replay)
 ]
 
 [project.optional-dependencies]
@@ -72,6 +73,11 @@ Repository = "https://github.com/dmrai-lab/dmipy-sim"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["dmipy_sim*"]
+
+# Ship non-Python runtime data files (e.g. sequences/scanner_constants.json) inside the wheel;
+# packages.find selects the .py packages but data files must be declared explicitly.
+[tool.setuptools.package-data]
+"*" = ["*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
