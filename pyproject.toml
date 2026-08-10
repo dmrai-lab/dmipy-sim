@@ -23,6 +23,8 @@ requires-python = ">=3.10"
 dependencies = [
     "jax>=0.6.2",
     "numpy>=2.0",
+    "scipy>=1.10",       # replay: DCT in the compiled-scheme forward (dmipy_sim.replay)
+    "safetensors>=0.4",  # replay: .rpk container I/O (dmipy_sim.replay)
 ]
 
 [project.optional-dependencies]
