@@ -55,6 +55,7 @@ __all__ = [
     "stick_probability",
     "forward_rate", "backward_rate", "bound_fraction",
     "kappa_MT_from_forward_rate", "dwell_time_from_fraction",
+    "surface_to_volume", "resolve_equilibrate_mode", "equilibrate_burnin_plateau",
     "two_pool_generator", "evolve_two_pool",
     "bloch_mcconnell_transverse", "bloch_mcconnell_longitudinal",
     "mt_z_spectrum",
@@ -119,6 +120,69 @@ def dwell_time_from_fraction(f_bound, k_f):
         raise ValueError(f"k_f must be > 0, got {k_f}")
     k_r = k_f * (1.0 - f_bound) / f_bound
     return 1.0 / k_r
+
+
+# ── bound-pool equilibration for the MT walk generator ──────────────────────────
+# Shared by ``mt_walk.simulate_mt_trajectories`` (and the packed-myelin MT walk in
+# ``core.simulate_trajectories``).  The saved walk carries no RF/gradient (those are
+# replay knobs), so equilibration is purely of the bound-pool OCCUPANCY (and the
+# equilibrated spatial state): an all-free start under-fills the macromolecular pool
+# and biases the transfer whenever ``1/k_f`` is not ``<<`` the walk duration.  These
+# mirror the forward engine's ``bloch._surface_to_volume`` / ``_resolve_equilibrate_mode``
+# / ``_equilibrate_burnin`` but need no G/T2_bound 'fast'-safety demotion (no readout yet).
+def surface_to_volume(geometry):
+    """S/V (1/m) for the analytic closed shapes used by the 'fast' equilibrium seed;
+    None otherwise, so the caller falls back to the geometry-agnostic burn-in."""
+    from .physics import _geometry_radius
+    name = type(geometry).__name__
+    R = _geometry_radius(geometry)
+    if R is not None and R > 0.0:
+        if name == "Sphere":
+            return 3.0 / R
+        if name == "Cylinder":
+            return 2.0 / R                       # infinite cylinder, lateral wall
+    return None
+
+
+def resolve_equilibrate_mode(equilibrate_binding, geometry):
+    """Map ``equilibrate_binding`` -> 'off' | 'burnin' | 'fast' for MT walk generation.
+
+    'auto' (the default when MT is on) -> 'burnin' (safe, geometry-agnostic).  'fast'
+    needs a known S/V, else it warns and falls back to 'burnin'.
+    """
+    import warnings
+    eb = equilibrate_binding
+    if eb in (None, False, "off"):
+        return "off"
+    if eb in ("auto", True, "burnin"):
+        return "burnin"
+    if eb == "fast":
+        if surface_to_volume(geometry) is None:
+            warnings.warn("equilibrate_binding='fast' needs a known surface-to-volume "
+                          "(analytic Sphere/Cylinder); falling back to 'burnin'.", stacklevel=2)
+            return "burnin"
+        return "fast"
+    raise ValueError(f"equilibrate_binding must be 'auto'|'burnin'|'fast'|'off', got {eb!r}")
+
+
+def equilibrate_burnin_plateau(chunk_fn, r0, keys, brem0, tol=0.01, max_chunks=40):
+    """Adaptive occupancy-plateau burn-in (geometry-agnostic).
+
+    ``chunk_fn(r, keys, brem)`` advances the whole ensemble one chunk (~one dwell) and
+    returns ``(r, keys, brem, mean_occupancy)``; iterate until the ensemble bound
+    occupancy stops changing (relative change < ``tol``), then DISCARD the preamble and
+    return the equilibrated ``(r, keys, brem, occupancy, converged)``.
+    """
+    r, k, brem = r0, keys, brem0
+    occ_prev, converged = -1.0, False
+    for _ in range(int(max_chunks)):
+        r, k, brem, occ = chunk_fn(r, k, brem)
+        occ = float(occ)
+        if occ_prev >= 0.0 and abs(occ - occ_prev) <= tol * max(occ, 1e-6):
+            occ_prev, converged = occ, True
+            break
+        occ_prev = occ
+    return r, k, brem, occ_prev, converged
 
 
 # ── analytic two-pool Bloch--McConnell oracle ───────────────────────────────────
