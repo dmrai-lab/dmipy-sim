@@ -25,7 +25,7 @@ import numpy as np
 from . import compression as _cx
 from .replay import ReplayPack, read_rpk, write_rpk
 
-__all__ = ["build_replay_pack", "build_to_floor", "frame_from_axis", "frame_from_bundles",
+__all__ = ["build_replay_pack", "build_to_floor", "replay_susc", "frame_from_axis", "frame_from_bundles",
            "read_rpk", "write_rpk", "RPK_SCHEMA_VERSION"]
 
 RPK_SCHEMA_VERSION = "1.1"
@@ -51,8 +51,11 @@ def _master_arrays(src) -> dict:
     return dict(traj=traj, dt_traj=float(np.asarray(m["dt_traj"])),
                 T_max=float(np.asarray(m["T_max"])), comp=g("comp"), comp0=g("comp0"),
                 w=g("w"), dlog_b=g("dlog_b"), bfrac=g("bfrac"),
-                # susceptibility (field) channels are surfaced so the assembler can reject them
-                # (that tier is not built by the public bank yet); see build_replay_pack.
+                # static field-grid susceptibility channel (dict of grids + world origin + chi)
+                susc_field_basis=(m.get("susc_field_basis") if isinstance(m, dict) else None),
+                susc_grid_origin=(np.asarray(m["susc_grid_origin"]) if "susc_grid_origin" in m else None),
+                susc_chi_iso=scal("susc_chi_iso"), delta_chi_a=scal("delta_chi_a"),
+                # analytic phasor maps / per-walker basis are NOT assembled publicly (grid form only)
                 PhiC=g("PhiC"), PhiS=g("PhiS"), Phi0=g("Phi0"), susc_basis=g("susc_basis"),
                 mt_params=m.get("mt_params") if isinstance(m, dict) else None,
                 cell_size=scal("cell_size"), R=g("R"), D_intra=scal("D_intra"),
@@ -140,6 +143,106 @@ def _surface_fidelity(m, arrays, chan_meta, env):
     return dict(err=float(err), floor=float(floor))
 
 
+def _susc_grid_fidelity(m, arrays, gm, decoded_pos, dt, env):
+    """Certify the static field-grid tier (SE + GRE): the STORED f16 grid sampled at the DECODED
+    trajectory vs the RAW f64 grid at the FULL-resolution trajectory (folds in f16 quantisation AND
+    the position-codec error), against the split-half MC floor of the raw signal. Returns dict or None."""
+    from .constants import GAMMA
+    from .susceptibility_field import assemble_field, sample_grid
+    fb = m.get("susc_field_basis")
+    if fb is None or "susc_grid_iso_local" not in arrays:
+        return None
+    origin = np.asarray(gm["origin"], float); vs = np.asarray(gm["voxel_size"], float)
+    raw_traj = np.asarray(m["traj"], np.float64); n_w, n_t = raw_traj.shape[0], raw_traj.shape[1]
+    w = np.asarray(m["w"], np.float64) if m.get("w") is not None else np.ones(n_w)
+    braw = {"iso_local": np.asarray(fb["iso_local"], np.float64), "iso_P": np.asarray(fb["iso_P"], np.float64),
+            "aniso_G": (np.asarray(fb["aniso_G"], np.float64) if fb.get("aniso_G") is not None else None),
+            "shape": tuple(fb["shape"]), "voxel_size": vs}
+    bsto = {"iso_local": np.asarray(arrays["susc_grid_iso_local"], np.float64),
+            "iso_P": np.asarray(arrays["susc_grid_iso_P"], np.float64),
+            "aniso_G": (np.asarray(arrays["susc_grid_aniso_G"], np.float64) if "susc_grid_aniso_G" in arrays else None),
+            "shape": tuple(gm["shape"]), "voxel_size": vs}
+    chi_i = float(m.get("susc_chi_iso") or 1.06e-6)
+    ca = float(m.get("delta_chi_a") or 0.0) if gm.get("has_aniso") else 0.0
+    se = np.sign(0.5 * (n_t - 1) - np.arange(n_t)).astype(float); gre = np.ones(n_t)
+    perm = np.random.RandomState(0).permutation(n_w); A, B = perm[:n_w // 2], perm[n_w // 2:]
+    wmean = lambda c, idx: float(np.sum(w[idx] * c[idx]) / np.sum(w[idx]))
+    err = floor = 0.0
+    for B0 in (env.get("B0_list") or [3.0, 7.0]):
+        for th in (env.get("theta_deg") or [0, 90]):
+            t = np.deg2rad(float(th)); d = [np.sin(t), 0.0, np.cos(t)]
+            s_raw = sample_grid(assemble_field(braw, d, B0=B0, chi_iso=chi_i, chi_aniso=ca), raw_traj, origin, vs)
+            s_dec = sample_grid(assemble_field(bsto, d, B0=B0, chi_iso=chi_i, chi_aniso=ca), decoded_pos, origin, vs)
+            for gate in (se, gre):
+                cr = np.cos(GAMMA * dt * (s_raw * gate[None, :]).sum(1))
+                cd = np.cos(GAMMA * dt * (s_dec * gate[None, :]).sum(1))
+                err = max(err, abs(wmean(cr, slice(None)) - wmean(cd, slice(None))))
+                floor = max(floor, abs(wmean(cr, A) - wmean(cr, B)))
+    return dict(err=float(err), floor=float(floor))
+
+
+# --------------------------------------------------------------- susceptibility replay (consume)
+def _pack_positions(pack):
+    """Reconstruct the (n_w, n_t, 3) trajectory from a pack's position codec."""
+    cx = pack.meta.get("compression", {})
+    meta = {"method": cx.get("method", "temporal_dct"), "K": int(cx.get("K", 0)),
+            "n_t": int(cx.get("n_t") or pack.n_t)}
+    wp = _cx.is_walker_preserving(meta["method"])
+    return _cx.decode(pack.arrays, meta, n_walkers=(pack.n_walkers if wp else None))
+
+
+def _se_gate(n_t, dt, refocus_time):
+    """Transverse-phase gate s(t): +1 before a 180 at ``refocus_time`` (s), -1 after; balanced so a
+    static field refocuses exactly (sum s = 0). ``None`` -> gradient echo (s == +1)."""
+    if refocus_time is None:
+        return np.ones(n_t)
+    t = np.arange(n_t) * dt
+    s = np.sign(refocus_time - t).astype(float)
+    d = int(round(s.sum()))
+    if d != 0:
+        side = np.where(s == np.sign(d))[0]
+        s[side[np.argsort(-np.abs(t[side] - refocus_time))[:abs(d)]]] = 0.0
+    return s
+
+
+def replay_susc(pack, waveform, *, b0_dir=(0.0, 0.0, 1.0), B0=0.0, chi_iso=0.0, chi_aniso=0.0,
+                refocus_time=None, relaxation=True, complex_signal=False):
+    """Replay a gradient waveform on a static field-grid pack WITH susceptibility (the C3 consume
+    path). Reconstructs the trajectory, accrues the gradient phase and the susceptibility phase
+    (``assemble_field`` for ``(b0_dir,B0,chi_iso,chi_aniso)`` sampled along the walk, gated by the SE
+    ``refocus_time``) in the SAME complex mean so the diffusion x susceptibility cross-term is kept,
+    plus optional per-compartment relaxation. ``waveform`` has ``.G`` (n_meas,n_t,3) and ``.dt``;
+    returns the (complex or magnitude) signal (n_meas,)."""
+    from .constants import GAMMA
+    from .susceptibility_field import assemble_field, sample_grid
+    if "susc_grid_iso_local" not in pack.arrays:
+        raise ValueError("pack has no static field-grid susceptibility channel (susc_grid_*).")
+    G = np.asarray(getattr(waveform, "G", waveform), np.float64)
+    dt = float(getattr(waveform, "dt", pack.dt))
+    pos = np.asarray(_pack_positions(pack), np.float64)                 # (n_w, n_t, 3)
+    n_w, n_t = pos.shape[0], pos.shape[1]
+    w = np.asarray(pack.arrays.get("spin_weights", np.ones(n_w)), np.float64)
+    gm = pack.meta["compression"]["channels"]["susceptibility_grid"]
+    basis = {"iso_local": np.asarray(pack.arrays["susc_grid_iso_local"], np.float64),
+             "iso_P": np.asarray(pack.arrays["susc_grid_iso_P"], np.float64),
+             "aniso_G": (np.asarray(pack.arrays["susc_grid_aniso_G"], np.float64)
+                         if "susc_grid_aniso_G" in pack.arrays else None),
+             "shape": tuple(gm["shape"]), "voxel_size": np.asarray(gm["voxel_size"], float)}
+    dB = sample_grid(assemble_field(basis, b0_dir, B0=B0, chi_iso=chi_iso, chi_aniso=chi_aniso),
+                     pos, np.asarray(gm["origin"], float), gm["voxel_size"], periodic=False)  # (n_w,n_t)
+    phi_x = GAMMA * dt * (dB * _se_gate(n_t, dt, refocus_time)[None, :]).sum(1)                # (n_w,)
+    phi_G = GAMMA * dt * np.einsum("mtj,wtj->mw", G, pos)                                       # (n_meas,n_w)
+    logw = np.zeros(n_w)
+    ch = (pack.meta.get("compression", {}).get("channels", {}) or {})
+    if relaxation and "comp_rle_vals" in pack.arrays and pack.meta.get("per_comp", {}).get("T2"):
+        comp = _cx.decode_compartment(pack.arrays, ch.get("compartment", {}))
+        pc = pack.meta["per_comp"]
+        logw = _cx.relaxation_logweight(comp, pc["T2"], pc.get("T1"), dt)
+    ew = w * np.exp(logw)
+    S = (ew[None, :] * np.exp(1j * (phi_G + phi_x[None, :]))).sum(1) / w.sum()
+    return S if complex_signal else np.abs(S)
+
+
 # --------------------------------------------------------------- pack generation
 def build_replay_pack(src, *, id, method="temporal_dct", envelope=None, tol=2.0, K=None,
                       err_target=None, sigma_star=None,
@@ -164,9 +267,9 @@ def build_replay_pack(src, *, id, method="temporal_dct", envelope=None, tol=2.0,
     m = _master_arrays(src)
     if m.get("PhiC") is not None or m.get("susc_basis") is not None:
         raise NotImplementedError(
-            "the susceptibility (field) replay tier is not assembled by the public bank yet "
-            "(it needs the per-walker susceptibility-basis channel and its Q(H) contraction); "
-            "build a gradient / relaxation / surface / MT pack, or use the private assembler.")
+            "the analytic phasor-map (PhiC) and per-walker (susc_basis) susceptibility forms are "
+            "not assembled publicly; use the STATIC FIELD-GRID form (master key 'susc_field_basis', "
+            "e.g. from dmipy_sim.mesh_axon.mesh_axon_master).")
     env = envelope or _cx.default_envelope()
     X = np.asarray(m["traj"], np.float64)
     dt = float(m["dt_traj"])
@@ -187,6 +290,22 @@ def build_replay_pack(src, *, id, method="temporal_dct", envelope=None, tol=2.0,
     chan_meta = {}                                   # per-channel codec params
     channels = {"gradient": True, "susceptibility": False, "T1T2": False, "rho": False,
                 "mt": (m.get("bfrac") is not None) or (m.get("mt_params") is not None)}
+    # STATIC field-grid susceptibility channel: store the geometry-only field-basis grids ONCE
+    # (a substrate property); replay assembles the field for any (B0,dir,chi) and samples it along
+    # the pos-codec-decoded trajectory (replay_susc). O(N_vox) not O(N_w*N_t) and SE-exact (a static
+    # field at a frozen point cancels under the SE gate to machine precision). f16 grids: O(1) geometry.
+    if m.get("susc_field_basis") is not None:
+        fb = m["susc_field_basis"]
+        arrays["susc_grid_iso_local"] = np.asarray(fb["iso_local"], np.float16)
+        arrays["susc_grid_iso_P"] = np.asarray(fb["iso_P"], np.float16)
+        if fb.get("aniso_G") is not None:
+            arrays["susc_grid_aniso_G"] = np.asarray(fb["aniso_G"], np.float16)
+        chan_meta["susceptibility_grid"] = dict(
+            origin=np.asarray(m["susc_grid_origin"], float).tolist(),
+            voxel_size=np.asarray(fb["voxel_size"], float).tolist(),
+            shape=[int(s) for s in fb["shape"]], has_aniso=(fb.get("aniso_G") is not None),
+            chi_iso=(m.get("susc_chi_iso")), delta_chi_a=(m.get("delta_chi_a")))
+        channels["susceptibility"] = True
     if wp_method:
         # compartment map (RLE / quantized-RLE) -> per-compartment T1/T2; surface/MT opt-in.
         if m.get("comp") is not None and m.get("T2_per_comp") is not None:
@@ -215,6 +334,19 @@ def build_replay_pack(src, *, id, method="temporal_dct", envelope=None, tol=2.0,
             fid = dict(fid, err_surface=_cf["err"], floor_surface=_cf["floor"],
                        err_max=max(float(fid.get("err_max", 0.0)), _cf["err"]),
                        floor_max=max(float(fid.get("floor_max", 0.0)), _cf["floor"]))
+            fid["within_2x_floor"] = bool(fid["err_max"] <= 2.0 * fid["floor_max"])
+            if sigma_star is not None:
+                fid["meets_target"] = bool(fid["err_max"] <= sigma_star and fid["floor_max"] <= sigma_star)
+
+    # Field tier (C3) fidelity: certify the stored f16 grid sampled at the decoded trajectory
+    # reproduces the raw-grid/true-trajectory susceptibility signal (SE + GRE, split-half floor).
+    if channels["susceptibility"] and m.get("susc_field_basis") is not None:
+        _dpos = _cx.decode(pos_arrays, pos_meta, n_walkers=(X.shape[0] if wp_method else None))
+        _gf = _susc_grid_fidelity(m, arrays, chan_meta["susceptibility_grid"], _dpos, dt, env)
+        if _gf is not None:
+            fid = dict(fid, err_susc_se=_gf["err"], floor_susc_se=_gf["floor"],
+                       err_max=max(float(fid.get("err_max", 0.0)), _gf["err"]),
+                       floor_max=max(float(fid.get("floor_max", 0.0)), _gf["floor"]))
             fid["within_2x_floor"] = bool(fid["err_max"] <= 2.0 * fid["floor_max"])
             if sigma_star is not None:
                 fid["meets_target"] = bool(fid["err_max"] <= sigma_star and fid["floor_max"] <= sigma_star)
