@@ -43,6 +43,8 @@ from .sh_convolution import (
 )
 from . import mt
 from .rf import B1Pulse, bloch_simulate, slice_profile
+from .replay import (ReplayPack, read_rpk, write_rpk, compile_scheme, replay_signal,
+                     replay_signal_jax, surface_logweight)
 
 __all__ = [
     "simulate", "simulate_mixture", "simulate_cpmg",
@@ -74,5 +76,5 @@ __all__ = [
     # magnetization transfer (physics + analytic oracle)
     "mt",
     # continuous RF pulses: complex B1(t) envelope + Bloch forward
-    "B1Pulse", "bloch_simulate", "slice_profile",
+    "B1Pulse", "ReplayPack", "read_rpk", "write_rpk", "compile_scheme", "replay_signal", "replay_signal_jax", "bloch_simulate", "slice_profile",
 ]
