@@ -1,5 +1,29 @@
 # Changelog
 
+## Unreleased — replay-pack bank (producer side)
+
+**Produce and freeze replay packs in the public engine** — walk once, compress, self-certify,
+write a `.rpk`. The consumer/decode side (`replay.py` + `compression.py` + `trajectories.py`)
+already landed; this adds the pack assembler.
+
+### Added
+- **`dmipy_sim.bank`** — `build_replay_pack` (compress a master walk with a `compression` codec,
+  carry the gradient / bulk-relaxation / surface-relaxivity / MT tiers the certified envelope
+  needs, measure the replay fidelity against the split-half Monte-Carlo floor, and write a
+  `.rpk`), `build_to_floor` (size the walker count so the floor meets a target σ*), and the
+  substrate frames `frame_from_axis` / `frame_from_bundles`.
+- **`ReplayPack`** gains producer-metadata accessors (`.fidelity`, `.method`, `.license`,
+  `.citation`, `.replay_envelope`, `.provenance`, `.id`) — one class for both produce and consume.
+  A `temporal_dct` pack carries `dct_coeffs`, so it is directly consumable by the lean
+  `compile_scheme` / `replay_signal` forward the fit/design side already uses.
+- `examples/substrate_bank/build_canonical_restricted.py` — build canonical single-cylinder /
+  single-sphere restricted-diffusion packs (the substrate-commons reference producer).
+
+### Not yet
+- The **susceptibility (field)** replay tier (needs the per-walker susceptibility-basis channel
+  and its Q(H) contraction); a master carrying it is rejected with a clear error. The HuggingFace
+  **bank federation** (publish / pull / staging) is a separate follow-up.
+
 ## Unreleased — magnetization transfer (mt-staging)
 
 **Emergent magnetization transfer on a new forward vector-Bloch engine** (single pass; no
