@@ -96,6 +96,21 @@ class ReplayPack:
         wp = self.meta.get("walk_params", {})
         return float(self.meta.get("dt") or wp.get("dt_traj") or wp.get("dt"))
 
+    # ---- producer metadata (present on packs written by dmipy_sim.bank.build_replay_pack) ----
+    @property
+    def id(self):
+        return self.meta.get("id")
+
+    @property
+    def method(self):
+        return self.meta.get("compression", {}).get("method")
+
+    license = property(lambda self: self.meta.get("license"))
+    citation = property(lambda self: self.meta.get("citation"))
+    fidelity = property(lambda self: self.meta.get("fidelity"))
+    replay_envelope = property(lambda self: self.meta.get("replay_envelope"))
+    provenance = property(lambda self: self.meta.get("provenance"))
+
 
 # ------------------------------- compiled-scheme forward -------------------------------
 def compile_scheme(G, dt, K, gyromagnetic_ratio=GAMMA):
