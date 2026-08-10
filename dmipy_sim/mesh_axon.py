@@ -40,12 +40,13 @@ def _rejection_seeds(pred, box_min, box_max, n, seed, oversample=4):
     return pts[:n], float(acc) / float(tried)
 
 
-def mesh_axon_master(bundle, *, n_walkers=30_000, n_myelin=3000, n_t=100, T_max=36e-3,
-                     D0=0.6e-9, field_res=0.1e-6, feature_radius_intra=None, seed=0,
+def mesh_axon_master(bundle, *, n_walkers=30_000, n_myelin=3000, n_t=1600, T_max=36e-3,
+                     D0=0.6e-9, field_res=0.131e-6, feature_radius_intra=None, seed=0,
                      require_gpu=None, walker_batch_size=20_000,
                      chi_iso=1.06e-6, delta_chi_a=0.0, myelin_water_proton_density=0.4,
                      T2=(0.055, 0.05, 0.01), T1=(1.0, 1.2, 0.44),
-                     include_aniso=True, mask_supersample=2, verbose=True):
+                     include_aniso=False, mask_supersample=4, field_crop_margin=1.5e-6,
+                     verbose=True):
     """Walk one axon and return a master-walk dict (bank ``_master_arrays`` schema) with the static
     field-grid susceptibility channel. ``n_walkers`` intra-axonal diffusers + ``n_myelin`` frozen
     myelin walkers; ``field_res`` is the susceptibility field-grid voxel size (m)."""
@@ -109,11 +110,22 @@ def mesh_axon_master(bundle, *, n_walkers=30_000, n_myelin=3000, n_t=100, T_max=
     basis, origin, vs = mesh_field_basis(bundle.inner, bundle.outer, box_min, box_max,
                                          res=field_res, include_aniso=include_aniso,
                                          mask_supersample=mask_supersample)
-    out["susc_field_basis"] = {"iso_local": np.asarray(basis["iso_local"], np.float32),
-                               "iso_P": np.asarray(basis["iso_P"], np.float32),
-                               "aniso_G": (np.asarray(basis["aniso_G"], np.float32)
-                                           if basis.get("aniso_G") is not None else None),
-                               "shape": tuple(int(s) for s in basis["shape"]),
+    # The basis is SOLVED on the full padded box (domain-converged), but only the region the
+    # walkers occupy needs STORING -- crop to the axon + margin so packs stay shareable.
+    il, iP, aG = basis["iso_local"], basis["iso_P"], basis.get("aniso_G")
+    if field_crop_margin:
+        lo = np.maximum(0, np.floor((Vo.min(0) - field_crop_margin - origin) / vs).astype(int))
+        hi = np.minimum(np.array(il.shape), np.ceil((Vo.max(0) + field_crop_margin - origin) / vs).astype(int) + 1)
+        sl = tuple(slice(int(lo[a]), int(hi[a])) for a in range(3))
+        il = il[sl]; iP = iP[(slice(None),) + sl]
+        aG = None if aG is None else aG[(slice(None),) + sl]
+        origin = origin + lo * vs
+        if verbose:
+            print(f"[mesh_axon] field grid cropped {basis['shape']} -> {il.shape} for storage", flush=True)
+    out["susc_field_basis"] = {"iso_local": np.asarray(il, np.float32),
+                               "iso_P": np.asarray(iP, np.float32),
+                               "aniso_G": (None if aG is None else np.asarray(aG, np.float32)),
+                               "shape": tuple(int(s) for s in il.shape),
                                "voxel_size": np.asarray(vs, float)}
     out["susc_grid_origin"] = np.asarray(origin, float)
     if verbose:

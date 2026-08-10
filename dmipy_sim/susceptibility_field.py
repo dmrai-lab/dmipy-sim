@@ -414,18 +414,30 @@ def mesh_field_basis(inner, outer, box_min, box_max, *, res=0.1e-6, include_anis
     pts = np.stack([XX.ravel(), YY.ravel(), ZZ.ravel()], axis=1)
 
     in_in = mesh_inside(inner[0], inner[1], pts, clip_axis=clip_axis).reshape(N)   # for the SDF/director
+    in_out = mesh_inside(outer[0], outer[1], pts, clip_axis=clip_axis).reshape(N)
+    binary = (in_out & ~in_in)
     SS = max(1, int(mask_supersample))
     if SS == 1:
-        in_out = mesh_inside(outer[0], outer[1], pts, clip_axis=clip_axis).reshape(N)
-        myelin_mask = (in_out & ~in_in).astype(float)
-    else:                                                          # partial-volume (anti-aliased) mask
-        Nf = N * SS; vsf = side / Nf
-        axf = [box_min[a] + (np.arange(Nf[a]) + 0.5) * vsf[a] for a in range(3)]
-        Xf, Yf, Zf = np.meshgrid(*axf, indexing="ij")
-        ptsf = np.stack([Xf.ravel(), Yf.ravel(), Zf.ravel()], axis=1)
-        mye_f = (mesh_inside(outer[0], outer[1], ptsf, clip_axis=clip_axis)
-                 & ~mesh_inside(inner[0], inner[1], ptsf, clip_axis=clip_axis)).astype(float)
-        myelin_mask = mye_f.reshape(N[0], SS, N[1], SS, N[2], SS).mean(axis=(1, 3, 5))
+        myelin_mask = binary.astype(float)
+    else:
+        # Partial-volume (anti-aliased) occupancy. Essential: with a hard binary source the
+        # non-decaying dipole kernel rings into the lumen (measured against the analytic hollow
+        # cylinder: 2.6% of chi*B0 where the exact answer is 0; PV-4 reduces that to ~0.1% while
+        # keeping the annulus amplitude at 1.00x analytic). Only voxels ON the boundary can have
+        # fractional occupancy, so supersample just those -- exact, and ~100x cheaper than the
+        # whole grid.
+        myelin_mask = binary.astype(float)
+        edge = ndimage.binary_dilation(binary) ^ ndimage.binary_erosion(binary)
+        ei = np.flatnonzero(edge.ravel())
+        if ei.size:
+            sub = (np.arange(SS) + 0.5) / SS - 0.5                  # sub-voxel offsets in [-0.5,0.5)
+            ox, oy, oz = np.meshgrid(sub * vs[0], sub * vs[1], sub * vs[2], indexing="ij")
+            off = np.stack([ox.ravel(), oy.ravel(), oz.ravel()], axis=1)      # (SS^3, 3)
+            base = pts[ei]                                                    # (n_edge, 3) voxel centres
+            q = (base[:, None, :] + off[None, :, :]).reshape(-1, 3)
+            occ = (mesh_inside(outer[0], outer[1], q, clip_axis=clip_axis)
+                   & ~mesh_inside(inner[0], inner[1], q, clip_axis=clip_axis))
+            myelin_mask.ravel()[ei] = occ.reshape(len(ei), -1).mean(axis=1)
     sdf = (ndimage.distance_transform_edt(~in_in, sampling=tuple(vs))
            - ndimage.distance_transform_edt(in_in, sampling=tuple(vs)))
     radial_dir = radial_from_sdf(sdf, vs)
