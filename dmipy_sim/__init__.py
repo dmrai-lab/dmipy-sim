@@ -52,11 +52,15 @@ from . import mt
 from .rf import B1Pulse, bloch_simulate, slice_profile
 from .replay import (ReplayPack, read_rpk, write_rpk, compile_scheme, replay_signal,
                      replay_signal_jax, surface_logweight)
+from . import bank
+from .bank import build_replay_pack, build_to_floor, frame_from_axis, frame_from_bundles
 
 __all__ = [
     "simulate", "simulate_mixture", "simulate_cpmg", "simulate_trajectories",
     # replay path: walk-once producer + scalar replay operators
     "unwrap_periodic", "replay_jax",
+    # replay pack assembler (producer side of the substrate bank)
+    "build_replay_pack", "build_to_floor", "frame_from_axis", "frame_from_bundles",
     # replay path: vector-Bloch + susceptibility + MT + refocusing helpers
     "replay_bloch", "replay_bloch_jax",
     "finite_180_longitudinal_dwell", "pre_pulse_gradient_phase", "pathway_sign_se",
