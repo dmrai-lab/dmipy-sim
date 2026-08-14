@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from .susceptibility_field import mesh_field_basis, mesh_inside
+from .susceptibility_field import mesh_contains, mesh_field_basis
 
 INTRA, MYELIN = 1, 2                      # compartment ids (0 = extra, unused here)
 
@@ -79,12 +79,18 @@ def mesh_axon_master(bundle, *, n_walkers=30_000, n_myelin=None, n_t=1600, T_max
         print(f"[mesh_axon] {bundle.summary()} | fr_intra={fr_i/1e-6:.3f}um "
               f"n_intra={n_walkers} n_myelin={n_myelin}", flush=True)
 
-    # Containment via the exact global nearest-surface test (mesh_inside), NOT the Mesh's
-    # cell-gather classify: for a thin axon in a large box the gather is empty almost everywhere and
-    # returns an arbitrary side, which would seed most walkers in free space (silently unrestricted)
-    # and corrupt the volume fractions. Seeds are therefore passed explicitly via r0=.
-    inside_in = lambda p: mesh_inside(Vi, Fi, p, clip_axis=2)
-    inside_out = lambda p: mesh_inside(Vo, Fo, p, clip_axis=2)
+    # Containment via the EXACT parity test (mesh_contains), NOT the Mesh's cell-gather classify: for a
+    # thin axon in a large box the gather is empty almost everywhere and returns an arbitrary side, which
+    # would seed most walkers in free space (silently unrestricted) and corrupt the volume fractions.
+    # Seeds are therefore passed explicitly via r0=.
+    #
+    # Nor the fast nearest-surface test (mesh_inside) on its own: over a padded box it accepts points far
+    # outside a tortuous lumen (13.6% of its acceptances on axon06, median 10.2 um from a wall bounding a
+    # <=1.24 um radius), because nearest-surface sidedness is only a near-field test. Those walkers are
+    # unrestricted free water labelled intra, which biases both the intra signal and f_intra. mesh_contains
+    # uses mesh_inside to propose candidates and then ray casts each one, so this stays affordable.
+    inside_in = lambda p: mesh_contains(Vi, Fi, p)
+    inside_out = lambda p: mesh_contains(Vo, Fo, p)
 
     # Uniform-density design: measure both volume fractions on a common point set FIRST, then split the
     # spin budget in proportion. A walker then represents the same tissue volume in either pool, and the

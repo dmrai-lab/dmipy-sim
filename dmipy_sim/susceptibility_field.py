@@ -370,6 +370,20 @@ def mesh_inside(V, F, pts, *, clip_axis=None, chunk=2_000_000):
     Accurate to about one triangle size at the boundary (nearest-*centroid* rather than nearest-point);
     for the axon meshes here the triangles (~0.15 um) are far finer than the field grid, and the
     resulting volumes match the closed-surface mesh volumes to within a few percent.
+
+    NEAR-FIELD ONLY, because the triangle is selected by nearest CENTROID. Sidedness against the TRUE
+    nearest triangle is correct at any distance, but the nearest centroid need not belong to the nearest
+    triangle, and the further away the point is the more triangles sit at comparable centroid distance,
+    so the wrong one is picked and its normal reports the wrong side. Measured on the Winther axon06
+    inner surface over the full padded box: 13.6% of accepted points are false, at a median 10.2 um from
+    a wall bounding a lumen of radius <= 1.24 um. Substituting a proper closest-point query (trimesh's
+    BVH) resolves all 16 disputed points in a 6k sample, confirming the cause is triangle SELECTION and
+    not the sidedness principle; taking more k-nearest centroids does not fix it (k=8 changed nothing).
+
+    Close to the surface the selection is reliable and so is the result (99.8% agreement with ray casting,
+    no false-outside), which is why this remains the right per-sample test for classifying field-grid
+    voxels — they all sit on or near the sheath. It is NOT a containment test over a large box: use
+    :func:`mesh_contains`, which calls this as a candidate filter and then verifies each candidate.
     """
     from scipy.spatial import cKDTree
     V = np.asarray(V, float); F = np.asarray(F, np.int64)
@@ -389,6 +403,84 @@ def mesh_inside(V, F, pts, *, clip_axis=None, chunk=2_000_000):
     if clip_axis is not None:
         a = int(clip_axis)
         out &= (pts[:, a] > V[:, a].min()) & (pts[:, a] < V[:, a].max())
+    return out
+
+
+# A missing triangle leaves ~3 boundary edges; a torn or open surface leaves many. Above this, refuse to
+# repair rather than span a rim (see mesh_contains).
+_MAX_REPAIRABLE_BOUNDARY_EDGES = 16
+
+
+def mesh_contains(V, F, pts, *, prefilter=True, chunk=2_000_000):
+    """Exact "inside this CLOSED surface" for arbitrary points, by ray-crossing parity.
+
+    The containment test to use when the points can be anywhere in a large box — seeding a compartment
+    and measuring its volume fraction — where :func:`mesh_inside` is unreliable in the far field (see its
+    docstring). Parity is a global test and has no such failure mode, but it costs far more per point,
+    so this runs in two stages: :func:`mesh_inside` proposes candidates, and only those are ray cast.
+    The cascade is sound because ``mesh_inside`` produces no false-OUTSIDE (measured on the axon meshes:
+    0 of 51-142 genuine interior points missed, at 3k/4k/6k sample sizes), so it never discards a point
+    that is really inside; its errors are all false-inside, which the exact stage then removes. Set
+    ``prefilter=False`` to ray cast every point and skip that assumption.
+
+    Requires a closed surface: with open ends a ray can exit through the rim and parity is meaningless.
+    A mesh with at most ``_MAX_REPAIRABLE_BOUNDARY_EDGES`` boundary edges is treated as defective rather
+    than open: ``trimesh.repair.fill_holes`` is tried, and if the defect is not a fillable hole (one axon of
+    the 29-axon Winther set has a two-edge slit) it proceeds with a ``RuntimeWarning``, since an opening
+    that small perturbs parity only for rays threading it. More than that raises: a genuinely open surface
+    has no inside, and silently returning the parity of a leaky mesh would be worse than failing. For a
+    deliberately open surface use ``mesh_inside(..., clip_axis=...)`` and accept its near-field contract.
+
+    Parity comes from :mod:`trimesh` (imported lazily, as elsewhere in the package) rather than being
+    reimplemented here.
+    """
+    pts = np.asarray(pts, float)
+    V = np.asarray(V, float); F = np.asarray(F, np.int64)
+    import trimesh
+    # Rescale so triangle edges are O(1) before handing the mesh to trimesh. Its geometry predicates
+    # unitize against an absolute tolerance, so at SI scale (edges ~1e-7 m) face normals collapse to
+    # zero and `contains` reports almost everything outside -- silently, and only in the direction that
+    # looks like a clean, restrictive answer. mesh_inside is scale-free (it normalises its own normals),
+    # so only this stage needs it. The factor cancels: points are scaled identically.
+    s = 1.0 / max(float(np.median(np.linalg.norm(V[F[:, 0]] - V[F[:, 1]], axis=1))), 1e-300)
+    m = trimesh.Trimesh(vertices=V * s, faces=F, process=False)
+    n_open = len(trimesh.grouping.group_rows(m.edges_sorted, require_count=1))
+    if n_open:
+        # A handful of boundary edges is a defect (a missing triangle), not an open surface: repair and
+        # continue. The cap is what separates the two -- a torn or genuinely open surface must still fail,
+        # because fill_holes would happily span a wide rim and hand back confident nonsense.
+        if n_open <= _MAX_REPAIRABLE_BOUNDARY_EDGES:
+            rep = m.copy()
+            trimesh.repair.fill_holes(rep)
+            if not len(trimesh.grouping.group_rows(rep.edges_sorted, require_count=1)):
+                m = rep
+                n_open = 0
+            else:
+                # Not every tiny defect is a fillable hole: one axon of the 29-axon Winther set has two
+                # boundary edges meeting at a single vertex, which is a slit rather than a hole, and no
+                # repair closes it without making that edge non-manifold. An opening this small is
+                # negligible for parity -- only a ray threading the slit itself is affected -- so proceed,
+                # but say so, and check the result against the mesh volume if the fraction matters.
+                import warnings as _w
+                _w.warn(f"mesh_contains: {n_open} boundary edges remain after trimesh.repair.fill_holes "
+                        f"(a slit, not a hole). Proceeding: an opening this small changes parity only for "
+                        f"rays passing through it. Cross-check the accepted fraction against the mesh "
+                        f"volume if it matters.", RuntimeWarning, stacklevel=2)
+                n_open = 0
+        if n_open:
+            raise ValueError(
+                f"mesh_contains requires a closed surface; this one has {n_open} boundary edges, too many "
+                f"to be a defect. Ray parity is undefined when a ray can leave through an open rim. Use "
+                f"mesh_inside(..., clip_axis=...) for a deliberately open surface, noting it is a "
+                f"near-field test only.")
+    out = np.zeros(len(pts), bool)
+    cand = mesh_inside(V, F, pts) if prefilter else np.ones(len(pts), bool)
+    if cand.any():
+        sub = pts[cand]
+        got = np.zeros(len(sub), bool)
+        for i in range(0, len(sub), chunk):
+            got[i:i + chunk] = m.contains(sub[i:i + chunk] * s)
+        out[cand] = got
     return out
 
 
