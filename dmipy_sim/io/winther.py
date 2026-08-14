@@ -41,6 +41,18 @@ def _load_ply(path, scale):
     does, and validate the index range; trimesh is then used only for geometry (volume/watertight).
     """
     import trimesh
+    with open(path, "rb") as fb:                      # header is ASCII even in a binary PLY
+        raw = []
+        for bline in fb:
+            raw.append(bline.decode("ascii", "replace"))
+            if raw[-1].strip() == "end_header":
+                break
+    if not any(l.startswith("format ascii") for l in raw):
+        # A binary PLY states its index type truthfully, so the mis-declaration this function guards
+        # against cannot bite; use the standard reader.
+        mesh = trimesh.load(str(path), process=False, force="mesh")
+        V = np.asarray(mesh.vertices, np.float64) * float(scale)
+        return V, np.asarray(mesh.faces, np.int64), trimesh.Trimesh(V, mesh.faces, process=False)
     with open(path) as fh:
         header = []
         for line in fh:
