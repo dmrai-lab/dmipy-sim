@@ -67,7 +67,12 @@ class ReplayPack:
 
     @property
     def dct_coeffs(self):
-        return self.arrays["dct_coeffs"]                       # (n_walkers, K, 3)
+        """(n_walkers, K, n_axes) position coefficients, read from the axis-per-tensor layout.
+
+        Raises on a pre-layout pack rather than guessing: see compression.read_position_coeffs.
+        """
+        from .compression import read_position_coeffs
+        return read_position_coeffs(self.arrays, dtype=np.float32)
 
     @property
     def spin_weights(self):
@@ -148,7 +153,8 @@ def replay_signal(pack, W, *, rho_over_D=0.0, chi_hat=None, complex_signal=False
     (a per-walker signal loss decaying the whole signal, including ``b=0``); ``chi_hat`` coherence-gates it.
     """
     a = pack.arrays if isinstance(pack, ReplayPack) else pack
-    C = np.asarray(a["dct_coeffs"], np.float64)
+    from .compression import read_position_coeffs
+    C = read_position_coeffs(a, dtype=np.float64)
     N_w, K, _ = C.shape
     w0 = np.asarray(a.get("spin_weights", np.ones(N_w)), np.float64)
     phi = C.reshape(N_w, K * 3) @ W                            # (N_w, n_meas)
