@@ -57,7 +57,7 @@ def encode_temporal_dct(X, K):
     """Keep the lowest K orthonormal DCT-II temporal bands of each path (per axis)."""
     Nw, Nt, _ = X.shape
     C = _dct(np.asarray(X, np.float64), axis=1, type=2, norm="ortho")[:, :K, :]
-    arrays = {"dct_coeffs": C.astype(np.float32)}
+    arrays = pack_position_arrays(C, np.float32)
     meta = {"method": "temporal_dct", "K": int(K), "n_t": int(Nt)}
     nbytes = Nw * 3 * K * _F16
     return arrays, meta, nbytes
@@ -200,7 +200,7 @@ def decode_boundary_local_time(arrays, meta):
     return out
 
 
-def encode_boundary_dct(dlog, K=16):
+def encode_boundary_dct(dlog, K=16, dtype=np.float32):
     """IR-basis codec for the boundary-local-time channel: DETREND-then-DCT of the CUMULATIVE
     local time B(t)=cumsum(ell). ell(t) is spiky+dense, but its running integral B(t) is
     smooth. B is ~linear (roughly constant contact rate), and a bare DCT of a ramp has a
@@ -217,9 +217,15 @@ def encode_boundary_dct(dlog, K=16):
     ramp = np.linspace(0.0, 1.0, nt)[None, :]
     resid = B - endpoint[:, None] * ramp                      # 0 at both ends, small+smooth
     C = _dct(resid, axis=1, type=2, norm="ortho")[:, :K]      # (N_w, K)
-    arrays = {"blt_dct_coeffs": C.astype(np.float32),
+    # ``dtype`` sets the coefficient precision. It defaults to f32 so the codec keeps its
+    # lossless-at-K=n_t contract; packs pass f16 (halves the tier at measurably identical ensemble
+    # error) via build_replay_pack's ``blt_dtype``. The ENDPOINT is always f32 -- it is the exact
+    # cumulative total the rho attenuation reads directly, where f16's ~3 significant digits would be
+    # a real error rather than a rounding one.
+    arrays = {"blt_dct_coeffs": C.astype(dtype),
               "blt_endpoint": endpoint.astype(np.float32)}
-    meta = {"channel": "boundary_local_time", "mode": "dct", "n_t": int(nt), "K": int(K)}
+    meta = {"channel": "boundary_local_time", "mode": "dct", "n_t": int(nt), "K": int(K),
+            "dtype": np.dtype(dtype).name}
     return arrays, meta
 
 
@@ -300,11 +306,64 @@ def _sample_coeffs(arrays, meta, n_walkers=None, seed=0):
     raise ValueError(f"unknown method {method!r}")
 
 
+# ---------------------------------------------------------------- position layout (axis-addressable)
+# Positions are stored as ONE TENSOR PER SPATIAL AXIS -- pos_x/pos_y/pos_z, each (n_walkers, K) --
+# rather than a single (n_walkers, K, 3). safetensors gives every tensor its own byte range, so this
+# makes an axis subset a contiguous read that COMPOSES with the walker-prefix read used for precision
+# tiers: (axes you need) x (walkers you need) = one contiguous range per axis.
+#
+# The old (n_w, K, 3) layout cannot express this: the spatial axis has stride 1, so selecting one axis
+# is a strided gather. Measured on a 174 MiB pack, `get_slice("dct_coeffs")[:, :, 0:1]` took 169.8 ms
+# against 16.3 ms to read the WHOLE tensor -- 10x slower than not optimising at all.
+#
+# Which axes a consumer actually needs is set by the geometry: a slab restricts one direction (the other
+# two are free and analytic), a cylinder two, a sphere three. Nothing is deleted -- the archive keeps all
+# three, so b-tensor / rotating-waveform users fetch everything and lose nothing.
+POSITION_AXES = ("pos_x", "pos_y", "pos_z")
+
+
+def pack_position_arrays(C, dtype=np.float32):
+    """(n_w, K, 3) coefficients -> {'pos_x','pos_y','pos_z'}, each (n_w, K)."""
+    C = np.asarray(C)
+    return {POSITION_AXES[i]: np.ascontiguousarray(C[:, :, i]).astype(dtype)
+            for i in range(C.shape[2])}
+
+
+def has_axis_layout(arrays):
+    return POSITION_AXES[0] in arrays
+
+
+def read_position_coeffs(arrays, axes=None, dtype=np.float64):
+    """Coefficients as (n_w, K, n_axes) from either layout.
+
+    ``axes`` selects spatial components by index (default all present). Reading a subset is the point of
+    the layout: pass e.g. ``axes=(0,)`` for a slab or ``(0, 1)`` for a cylinder's transverse plane.
+    """
+    if has_axis_layout(arrays):
+        present = [i for i, k in enumerate(POSITION_AXES) if k in arrays]
+        want = list(present if axes is None else axes)
+        missing = [i for i in want if i not in present]
+        if missing:
+            raise KeyError(f"pack does not carry position axes {missing} "
+                           f"(has {[POSITION_AXES[i] for i in present]}); it was written with a reduced "
+                           f"axis set and cannot serve this encoding")
+        return np.stack([np.asarray(arrays[POSITION_AXES[i]], dtype) for i in want], axis=2)
+    # No legacy (n_w, K, 3) fallback by design. A dataset with two position layouts forces every
+    # consumer to carry a compatibility branch, and that branch is where silent errors live -- a reader
+    # that guesses the wrong convention returns plausible numbers. Fail loudly instead; convert the pack.
+    raise KeyError(
+        f"pack has no position axes {POSITION_AXES}; found {sorted(arrays)}. Packs written before the "
+        f"axis-per-tensor layout store a single (n_walkers, K, 3) 'dct_coeffs'; re-encode them with "
+        f"pack_position_arrays(). This reader does not accept mixed layouts -- a dataset with two "
+        f"position layouts forces every consumer to carry a compatibility branch, and that branch is "
+        f"where silent errors live.")
+
+
 def decode(arrays, meta, n_walkers=None, seed=0):
     """Reconstruct positions (n_walkers, n_t, 3) from a pack's stored arrays."""
     method = meta["method"]; Nt = int(meta["n_t"])
     if method == "temporal_dct":
-        C = np.asarray(arrays["dct_coeffs"], np.float64)
+        C = read_position_coeffs(arrays)
         return _idct(C, axis=1, type=2, norm="ortho", n=Nt).astype(np.float64)
     modes = np.asarray(arrays["modes"], np.float64)
     mean = np.asarray(arrays.get("mean", np.zeros(modes.shape[1])), np.float64)
@@ -330,7 +389,7 @@ def mode_space_phi(arrays, meta, G, dt, n_walkers=None, seed=0):
     method = meta.get("method", "temporal_dct")
     G = np.asarray(G, np.float64); n_meas = G.shape[0]
     if method == "temporal_dct":
-        C = np.asarray(arrays["dct_coeffs"], np.float64)          # (N_w, K, 3)
+        C = read_position_coeffs(arrays, dtype=np.float64)         # (N_w, K, n_axes)
         K = C.shape[1]
         Ghat = _dct(G, axis=1, type=2, norm="ortho")[:, :K, :]    # (n_meas, K, 3)
         return (GAMMA * dt) * np.einsum("wkd,mkd->wm", C, Ghat)

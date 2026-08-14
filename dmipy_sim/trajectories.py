@@ -282,7 +282,8 @@ def _replay_compressed(master, G, dt_wf, *, chi_perp, T2, T1, surface_relaxivity
     # ── Gradient phase in mode space (no trajectory reconstruction) ──────────────
     G_traj = _resample_G_to_traj(G, dt_wf, dt_traj, n_t)             # (n_meas, n_t, 3)
     n_meas = G_traj.shape[0]
-    phi = _cx.mode_space_phi({"dct_coeffs": pos_modes}, meta, G_traj, dt_traj).T  # (n_meas, N)
+    phi = _cx.mode_space_phi(_cx.pack_position_arrays(pos_modes, np.float64),
+                             meta, G_traj, dt_traj).T                     # (n_meas, N)
 
     # ── chi_perp on the trajectory grid (nearest-neighbour, as in the raw path) ──
     ungated = chi_perp is None

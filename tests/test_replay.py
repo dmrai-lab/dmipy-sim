@@ -3,6 +3,7 @@
 attenuates. Uses a synthetic pack (no simulator walk needed), so it is self-contained."""
 import numpy as np
 import numpy.testing as npt
+from dmipy_sim.compression import read_position_coeffs, pack_position_arrays
 import pytest
 
 from scipy.fft import dct, idct
@@ -21,7 +22,8 @@ def _synth_pack(seed=0):
     traj = np.cumsum(rng.normal(0, 3e-7, size=(N_W, N_T, 3)), axis=1)
     traj -= traj.mean(1, keepdims=True)
     C = dct(traj, type=2, norm="ortho", axis=1)[:, :K, :]      # (N_W, K, 3)
-    arrays = {"dct_coeffs": C.astype(np.float32),
+    from dmipy_sim.compression import pack_position_arrays
+    arrays = {**pack_position_arrays(C, np.float32),
               "spin_weights": np.ones(N_W, np.float32)}
     meta = {"n_t": N_T, "dt": DT, "walk_params": {"n_t": N_T, "dt_traj": DT}}
     return arrays, meta, traj
@@ -41,7 +43,8 @@ def test_replay_equals_direct_phase():
     W = compile_scheme(G, DT, K, GAMMA)
     E = replay_signal(pack, W)
     # direct reference: reconstruct r = idct(C) (== the K-truncated trajectory), integrate the phase
-    r = idct(np.asarray(arrays["dct_coeffs"], float), type=2, norm="ortho", axis=1, n=N_T)
+    from dmipy_sim.compression import read_position_coeffs
+    r = idct(read_position_coeffs(arrays), type=2, norm="ortho", axis=1, n=N_T)
     phi = GAMMA * DT * np.einsum("mtc,wtc->mw", G, r)                   # (n_meas, N_W)
     E_direct = np.abs(np.cos(phi).mean(1) + 1j * 0) if False else np.abs(np.exp(1j * phi).mean(1))
     npt.assert_allclose(E, E_direct, atol=1e-10)
@@ -54,7 +57,8 @@ def test_rpk_roundtrip(tmp_path):
     pk = read_rpk(p)
     assert pk.n_t == N_T and pk.K == K and pk.n_walkers == N_W
     npt.assert_allclose(pk.dt, DT)
-    npt.assert_allclose(np.asarray(pk.dct_coeffs), np.asarray(arrays["dct_coeffs"]))
+    from dmipy_sim.compression import read_position_coeffs
+    npt.assert_allclose(np.asarray(pk.dct_coeffs), read_position_coeffs(arrays, dtype=np.float32))
 
 
 def test_jax_twin_matches_and_differentiable():
@@ -64,11 +68,12 @@ def test_jax_twin_matches_and_differentiable():
     G = np.stack([_pgse(a, 10e-3, 30e-3) for a in (0.03, 0.08)])
     W = compile_scheme(G, DT, K, GAMMA)
     E_np = replay_signal(arrays, W)
-    E_jx = np.abs(np.asarray(replay_signal_jax(arrays["dct_coeffs"], arrays["spin_weights"], W)))
+    C3 = read_position_coeffs(arrays, dtype=np.float32)
+    E_jx = np.abs(np.asarray(replay_signal_jax(C3, arrays["spin_weights"], W)))
     npt.assert_allclose(E_jx, E_np, atol=2e-5)
     # differentiable in the compiled scheme (hence in the waveform): grad is finite
     def loss(Wj):
-        return jnp.abs(replay_signal_jax(jnp.asarray(arrays["dct_coeffs"]),
+        return jnp.abs(replay_signal_jax(jnp.asarray(read_position_coeffs(arrays, dtype=np.float32)),
                                          jnp.asarray(arrays["spin_weights"]), Wj)).sum()
     g = jax.grad(loss)(jnp.asarray(W))
     assert np.all(np.isfinite(np.asarray(g))) and np.abs(np.asarray(g)).max() > 0
@@ -76,7 +81,7 @@ def test_jax_twin_matches_and_differentiable():
 
 def test_surface_knob_attenuates():
     arrays, meta, _ = _synth_pack()
-    N_W_ = arrays["dct_coeffs"].shape[0]
+    N_W_ = arrays["pos_x"].shape[0]
     # synthetic boundary-local-time channel: real packs store dlog (<=0, an attenuation) at rho/D=1, so
     # the DC coefficient is negative; replay multiplies by rho/D>0 -> exp(<0) -> signal loss.
     blt = np.zeros((N_W_, 16), np.float32)

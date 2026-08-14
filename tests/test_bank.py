@@ -59,8 +59,9 @@ def test_pack_compresses_within_floor_and_declares_tiers(pack):
     assert env["gradient"] and env["bulk_relaxation"] and env["surface_relaxivity"]
     assert not env["field"] and not env["magnetization_transfer"]
     assert pack.method == "temporal_dct" and pack.license == "CC-BY-4.0"
-    # a temporal_dct pack must carry dct_coeffs (what the lean fit/design forward reads) + channels
-    assert "dct_coeffs" in pack.arrays
+    # a temporal_dct pack carries one position tensor per axis (what the lean fit/design forward
+    # reads, via compression.read_position_coeffs) + the per-walker channels
+    assert all(k in pack.arrays for k in ("pos_x", "pos_y", "pos_z"))
     assert any(k.startswith("comp_rle") for k in pack.arrays)   # compartment tier
     assert any(k.startswith("blt_") for k in pack.arrays)       # surface tier
 
