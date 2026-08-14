@@ -121,3 +121,38 @@ def test_pulseq_timing_extracts_spin_echo_budget():
     assert abs(tm['TE'] - 0.0352) < 6e-4
     assert 0.0 < tm['t_readout_pre_echo'] < tm['readout_duration']
     assert abs(tm['t_readout_pre_echo'] - 0.0111) < 6e-4
+
+
+def test_stimulated_echo_state_survives_the_round_trip():
+    """TM and stimulated_echo must round-trip; neither is recoverable from the gradient waveform.
+
+    A PGSTE's mixing time is a gap with no gradient on it, so a bridge that carries only G loses it
+    silently: the waveform still round-trips, the b-value (the existing check above) still round-trips,
+    and nothing raises -- but the reimported sequence is a spin echo. Anything branching on
+    TM/stimulated_echo (the T1 term in the step function, pathway signs, replay envelope summaries) then
+    takes the wrong branch for the rest of the run.
+    """
+    from dmipy_sim.waveforms import pgste
+
+    w = pgste(delta=5e-3, TM=20e-3, G_magnitude=0.04, bvecs=[[1, 0, 0]], n_t=400)
+    assert w.TM is not None and w.stimulated_echo, "precondition: pgste must set the STE state"
+
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "ste.seq")
+        to_pulseq(w, 0, filename=path)
+        back = from_pulseq(path)
+
+    assert back.TM == pytest.approx(w.TM), "mixing time lost on round-trip"
+    assert back.stimulated_echo is True, "stimulated-echo flag lost on round-trip"
+
+
+def test_spin_echo_round_trip_does_not_invent_a_mixing_time():
+    """The converse: a PGSE must return TM=None rather than a default, and a .seq carrying no dmipy_*
+    definitions must not acquire stimulated-echo state it never had."""
+    w = pgse(delta=5e-3, DELTA=20e-3, G_magnitude=0.04, bvecs=[[1, 0, 0]], n_t=400)
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "se.seq")
+        to_pulseq(w, 0, filename=path)
+        back = from_pulseq(path)
+    assert back.TM is None
+    assert back.stimulated_echo is False

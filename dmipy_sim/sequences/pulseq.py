@@ -166,6 +166,13 @@ def to_pulseq(waveform, m=0, *, system=None, filename=None,
     seq.set_definition('dmipy_echo_idx', int(waveform.echo_idx))
     seq.set_definition('dmipy_n_t', int(G.shape[0]))
     seq.set_definition('dmipy_rf_events', _encode_rf_events(waveform.rf_events))
+    # Stimulated-echo state. TM is not recoverable from the gradient waveform -- the mixing time is a gap
+    # with no gradient on it -- so without carrying it explicitly a PGSTE/STE round-trips as a spin echo:
+    # same G, same b-value, nothing raised, but the T1-weighted longitudinal period is gone.
+    if waveform.TM is not None:
+        seq.set_definition('dmipy_TM', float(waveform.TM))
+    if waveform.stimulated_echo:
+        seq.set_definition('dmipy_stimulated_echo', 1)
 
     if filename:
         seq.write(filename)
@@ -243,8 +250,11 @@ def from_pulseq(src, *, dt=None):
         echo_idx = (int(round((float(ta[-1]) - t0) / dt)) if ta.size else n_t - 1)
     echo_idx = int(np.clip(echo_idx, 0, n_t - 1))
 
+    TM = float(defs['dmipy_TM']) if 'dmipy_TM' in defs else None
+    stimulated_echo = bool(int(defs.get('dmipy_stimulated_echo', 0)))
+
     return Waveform(G=jnp.asarray(G[None]), dt=dt, echo_idx=echo_idx,
-                    rf_events=rf_events)
+                    rf_events=rf_events, TM=TM, stimulated_echo=stimulated_echo)
 
 
 def pulseq_timing(src):
