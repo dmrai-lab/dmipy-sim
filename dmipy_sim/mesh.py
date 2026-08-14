@@ -40,6 +40,7 @@ fine mesh (edge length ``<~ 0.04`` of the local feature radius).
 import itertools
 import warnings
 from collections import defaultdict
+from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
@@ -177,6 +178,64 @@ def load_ply(path, scale=1.0, recenter=False):
     if recenter:
         V = V - 0.5 * (V.min(0) + V.max(0))
     return V * scale, F
+
+
+class _MeshArrays(NamedTuple):
+    """The mesh's JAX geometry arrays, bundled as a pytree.
+
+    Passing this bundle as an *argument* to a jitted function makes jax treat the arrays as runtime device
+    buffers rather than baking them into the compiled executable as constants. For a large-bounding-box mesh
+    the grid array (CELL) alone can be gigabytes, which as a captured constant blows up the executable and
+    exhausts memory on load; as an argument it is just data living in device memory.
+    """
+    NRM: jnp.ndarray
+    CENT: jnp.ndarray
+    CELL: jnp.ndarray
+    dims_arr: jnp.ndarray
+    GMIN: jnp.ndarray
+    CS: jnp.ndarray
+    VMIN: jnp.ndarray
+    L: jnp.ndarray
+    PER: jnp.ndarray
+    OFF: jnp.ndarray
+
+
+def _wrap_arr(A, r):
+    w = A.VMIN + jnp.mod(r - A.VMIN, A.L)
+    return jnp.where(A.PER > 0, w, r)
+
+
+def _gather_arr(A, r_w):
+    c = jnp.clip(jnp.floor((r_w - A.GMIN) / A.CS).astype(jnp.int32), 0, A.dims_arr - 1)
+    nb = jnp.clip(c[None, :] + A.OFF, 0, A.dims_arr - 1)
+    # dims taken from the traced array, not as static Python ints, so nothing is baked in
+    cids = (nb[:, 0] * A.dims_arr[1] + nb[:, 1]) * A.dims_arr[2] + nb[:, 2]
+    cand = A.CELL[cids].reshape(-1)
+    valid = cand >= 0
+    return jnp.where(valid, cand, 0), valid
+
+
+def _classify_arr(A, r):
+    """Interior (0) / exterior (1) from the array bundle.
+
+    Single source of truth for both ``Mesh.classify_position`` and the ``init_positions`` seeding jit.
+    Sidedness comes from the nearest surface triangle in the local 27-cell gather. A point with **no**
+    triangle anywhere in that gather cannot be enclosed by a wall, so it is exterior. Without that guard
+    the ``argmin`` over an all-``inf`` distance array silently falls back to a far-away triangle whose
+    outward normal gives a *random* sign, and empty space near a thin feature is misclassified as interior
+    -- which poisons ``init_positions``, seeding "intra" walkers into open space where they diffuse freely.
+    The cell size scales with the feature radius, so a wall is always within the gather of a genuine
+    interior point; the guard is exact whenever the enclosed feature is no larger than the gather
+    neighbourhood (true for axon/tube meshes).
+    """
+    r_w = _wrap_arr(A, r)
+    ci, valid = _gather_arr(A, r_w)
+    cent = A.CENT[ci]; nrm = A.NRM[ci]
+    dist = jnp.where(valid, jnp.linalg.norm(r_w[None] - cent, axis=1), jnp.inf)
+    idx = jnp.argmin(dist)
+    side = jnp.dot(r_w - cent[idx], nrm[idx])
+    inside = (side < 0) & valid.any()          # no nearby wall => not enclosed => exterior
+    return jnp.where(inside, jnp.int32(0), jnp.int32(1))
 
 
 class Mesh(Geometry):
@@ -445,6 +504,9 @@ class Mesh(Geometry):
         self._NUDGE = jnp.float32(1e-4 * step_l)
         self._OFF = jnp.asarray([[dx, dy, dz] for dx in (-1, 0, 1)
                                  for dy in (-1, 0, 1) for dz in (-1, 0, 1)], jnp.int32)
+        self._A = _MeshArrays(NRM=self._NRM, CENT=self._CENT, CELL=self._CELL,
+                              dims_arr=self._dims_arr, GMIN=self._GMIN, CS=self._CS,
+                              VMIN=self._VMIN, L=self._L, PER=self._PER, OFF=self._OFF)
 
     # ------------------------------------------------------------------
     def _wrap(self, r):
@@ -471,14 +533,11 @@ class Mesh(Geometry):
         return jnp.where(ok, t, jnp.inf), u, v
 
     def classify_position(self, r):
-        """Compartment tag: 0 = interior (inside a cell), 1 = exterior."""
-        r_w = self._wrap(r)
-        ci, valid = self._gather(r_w)
-        cent = self._CENT[ci]; nrm = self._NRM[ci]
-        dist = jnp.where(valid, jnp.linalg.norm(r_w[None] - cent, axis=1), jnp.inf)
-        idx = jnp.argmin(dist)
-        side = jnp.dot(r_w - cent[idx], nrm[idx])
-        return jnp.where(side < 0, jnp.int32(0), jnp.int32(1))
+        """Compartment tag: 0 = interior (inside a cell), 1 = exterior.
+
+        Delegates to :func:`_classify_arr` so the seeding jit and this method cannot diverge.
+        """
+        return _classify_arr(self._A, r)
 
     def _smooth_normal(self, vnf, nrmf, u, v, idx, d_hat):
         bu, bv = u[idx], v[idx]
@@ -585,11 +644,13 @@ class Mesh(Geometry):
         """Seed walkers inside (intra=True) or outside the cells by grid rejection."""
         rng = np.random.default_rng(int(jax.random.randint(key, (), 0, 2**30)))
         want = 0 if intra else 1
-        classify = jax.jit(jax.vmap(self.classify_position))
+        # Pass the array bundle as a jit ARGUMENT (not closed over) so the grid array is a runtime
+        # device buffer, never baked into the executable as a multi-GB constant.
+        classify = jax.jit(jax.vmap(_classify_arr, in_axes=(None, 0)))
         out, need = [], n_walkers
         while need > 0:
             pts = rng.uniform(self.vmin, self.vmax, (max(need * 4, 1024), 3)).astype(np.float32)
-            lab = np.asarray(classify(jnp.asarray(pts)))
+            lab = np.asarray(classify(self._A, jnp.asarray(pts)))
             out.append(pts[lab == want])
             need = n_walkers - sum(len(a) for a in out)
         return jnp.asarray(np.concatenate(out)[:n_walkers], jnp.float32)
