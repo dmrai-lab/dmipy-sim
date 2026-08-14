@@ -83,6 +83,55 @@ def _smooth_vertex_normals(V, F):
     return vn
 
 
+
+def _parse_ascii_ply(path):
+    """Vertices/faces from an ASCII PLY, ignoring the declared index type.
+
+    Returns ``(None, None)`` for anything that is not a plain ascii PLY with float x/y/z vertices and a
+    triangle face list -- the caller then keeps whatever the general loader produced.
+    """
+    try:
+        with open(path, "rb") as fh:
+            raw = fh.read()
+        head_end = raw.find(b"end_header")
+        if head_end < 0:
+            return None, None
+        header = raw[:head_end].decode("ascii", "replace").splitlines()
+        if not any(l.strip() == "format ascii 1.0" for l in header):
+            return None, None
+        n_v = n_f = None
+        for line in header:
+            t = line.split()
+            if len(t) == 3 and t[0] == "element" and t[1] == "vertex":
+                n_v = int(t[2])
+            elif len(t) == 3 and t[0] == "element" and t[1] == "face":
+                n_f = int(t[2])
+        if not n_v or not n_f:
+            return None, None
+        body = raw[raw.find(b"\n", head_end) + 1:].decode("ascii", "replace").split()
+        # vertices: 3 floats each (properties beyond x/y/z are not handled -> bail out via length check)
+        need_v = 3 * n_v
+        vals = body[:need_v]
+        if len(vals) < need_v:
+            return None, None
+        V = np.asarray(vals, dtype=np.float64).reshape(n_v, 3)
+        rest = body[need_v:]
+        faces, i = [], 0
+        for _ in range(n_f):
+            if i >= len(rest):
+                return None, None
+            k = int(rest[i]); i += 1
+            if k != 3:
+                return None, None                      # only triangles
+            faces.append(rest[i:i + 3]); i += 3
+        F = np.asarray(faces, dtype=np.int64)
+        if F.max() >= n_v:
+            return None, None
+        return V, F
+    except Exception:
+        return None, None
+
+
 def load_ply(path, scale=1.0, recenter=False):
     """Load vertices and faces from a mesh file (PLY/STL/OBJ/...).
 
@@ -113,6 +162,18 @@ def load_ply(path, scale=1.0, recenter=False):
     m = trimesh.load(path, process=False)
     V = np.asarray(m.vertices, np.float64)
     F = np.asarray(m.faces, np.int64)
+    # An ASCII PLY may declare a face-index type too small for its own vertex count -- MATLAB's plywrite
+    # emits `property list uchar ushort vertex_indices` even past 65535 vertices. The decimal text holds
+    # the true indices, but a reader that honours the declared type masks them to 16 bits, silently
+    # rewiring every face above the limit: the mesh keeps a plausible bounding box while its volume and
+    # surface area become meaningless. Detect it (no face reaches the upper vertices) and re-parse.
+    if len(V) > 65536 and F.size and int(F.max()) == 65535:
+        Vf, Ff = _parse_ascii_ply(path)
+        if Vf is not None and int(Ff.max()) > 65535:
+            warnings.warn(f"{path}: face indices were truncated to 16 bits by the declared PLY type "
+                 f"(max index {int(F.max())} for {len(V)} vertices); re-parsed the ASCII payload "
+                 f"(max index now {int(Ff.max())}).")
+            V, F = Vf.astype(np.float64), Ff.astype(np.int64)
     if recenter:
         V = V - 0.5 * (V.min(0) + V.max(0))
     return V * scale, F
