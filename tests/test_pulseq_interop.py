@@ -196,10 +196,11 @@ def test_mixing_time_is_derived_from_the_pulses_not_from_a_stored_value():
 def test_native_rf_export_is_scanner_shaped_and_costs_time_when_there_is_no_gap():
     """Native RF export emits real pulses and the PHYSICAL gradient, and says what that costs.
 
-    A pulse needs a slot with no gradient on it. pgse-slew-limited leaves one, so export is free and the
-    round trip is exact. OGSE leaves none -- every pulse sits on live gradient -- so each must interrupt
-    it, lengthening the sequence. That is what the sequence costs on a scanner, so it is warned about
-    rather than hidden, and asserted here rather than assumed.
+    Whether a pulse has somewhere to go is a property of the sequence, not of its family. pgse
+    slew-limited ramps to zero around both pulses, so export is free and the round trip exact. OGSE
+    oscillates continuously and leaves no gap at either pulse, so each must be inserted and the sequence
+    lengthens -- what it would cost on a scanner, warned about rather than hidden, and asserted here
+    rather than assumed.
     """
     from dmipy_sim.waveforms import pgse, ogse
 
@@ -237,3 +238,30 @@ def test_native_rf_export_is_scanner_shaped_and_costs_time_when_there_is_no_gap(
     g1 = np.asarray(back_t.G)[0, :, 0]
     assert np.count_nonzero(g1) >= np.count_nonzero(g0) - 2 * n_pulses, \
         "inserting a pulse must not delete gradient samples"
+
+
+def test_a_gradient_free_train_inserts_nothing():
+    """A CPMG is a 90 and a train of 180s; with no gradient of its own every pulse already has a slot.
+
+    Guards against treating "many pulses" as "must lengthen": the cost comes from the gradient being on,
+    not from the number of pulses. Adding the optional constant diffusion gradient -- which is never off --
+    is what forces room to be made for all five.
+    """
+    from dmipy_sim.waveforms import cpmg
+
+    plain = cpmg(n_echoes=4, TE=10e-3, G_magnitude=0.0, bvecs=[[1, 0, 0]], n_t_per_echo=50)
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        seq = to_pulseq(plain, 0)
+        assert not [x for x in w if issubclass(x.category, RuntimeWarning)], \
+            "a gradient-free echo train costs nothing to export natively"
+    n0 = np.asarray(plain.G).shape[1]
+    assert int(seq.definitions["dmipy_n_t"]) == n0
+    assert len(plain.rf_events) == 5                      # the pulses are there; they simply fit
+
+    weighted = cpmg(n_echoes=4, TE=10e-3, G_magnitude=0.04, bvecs=[[1, 0, 0]], n_t_per_echo=50)
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        seq_w = to_pulseq(weighted, 0)
+        assert [x for x in w if issubclass(x.category, RuntimeWarning)]
+    assert int(seq_w.definitions["dmipy_n_t"]) == n0 + 5

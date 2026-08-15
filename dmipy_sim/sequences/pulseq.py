@@ -182,12 +182,12 @@ def to_pulseq(waveform, m=0, *, system=None, filename=None,
     gamma_hz = float(getattr(sys, 'gamma', GAMMA_HZ))
     seq = pp.Sequence(system=sys)
 
-    # A finite pulse needs a slot with no gradient on it. Where the constructor leaves one -- pgse
-    # slew-limited, pgste -- the pulse costs nothing and the sequence keeps its duration and sample count.
-    # Where it does not, the pulse must INTERRUPT the gradient, which lengthens the sequence by its
-    # duration. That is not an artefact of the export: a scanner has to make the same room, and a design
-    # with no dead time genuinely cannot play its RF for free. Measured on the constructors here: ogse and
-    # cpmg place every pulse on live gradient, pgse-square its excitation.
+    # A finite pulse needs a slot with no gradient on it. Whether one exists is a property of the
+    # SEQUENCE, not of the sequence family: pgse slew-limited and pgste ramp to zero around every pulse, so
+    # export costs nothing; ogse oscillates continuously and has no gap at either pulse; pgse-square starts
+    # at full amplitude so its excitation has none. A CPMG is a 90 plus a train of 180s and carries no
+    # gradient of its own -- G=0 inserts freely -- but the constant diffusion-weighting gradient the
+    # constructor can add is never off, and then every pulse in the train needs room made for it.
     Ghz = G * gamma_hz                                # Hz/m
     ev = sorted(waveform.rf_events or [], key=lambda e: float(e['t_s']))
     ks = [int(np.clip(round(float(e['t_s']) / dt), 0, max(len(Ghz) - 1, 0))) for e in ev]
