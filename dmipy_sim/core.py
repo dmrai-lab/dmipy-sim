@@ -476,7 +476,11 @@ def simulate(
         else:
             # Standard geometry: vmap classify_position over initial positions
             classify_fn = geometry.classify_position
-            comp_origin_jax = jax.vmap(classify_fn)(r0)  # (n_walkers,) int32
+            # Initial labels are the one place an exact test is affordable and necessary: there is no
+            # previous label to carry, so an undecidable point must be resolved rather than defaulted.
+            exact_fn = getattr(geometry, 'classify_positions_exact', None)
+            comp_origin_jax = (exact_fn(r0) if exact_fn is not None
+                               else jax.vmap(classify_fn)(r0))     # (n_walkers,) int32
 
     if is_myelin:
         # MyelinatedCylinder: extended carry state (r, phi, log_w, compartment_id, key)
@@ -613,8 +617,12 @@ def simulate(
                 pos_seq = ys
 
         elif track_comp:
-            # Need a classify_position closure for the scan body
+            # Need a classify_position closure for the scan body. Where the geometry can say that a
+            # position is undecidable (no wall within reach), prefer carrying the previous label: the
+            # walker cannot have crossed a boundary it was never near, and re-deriving would make its
+            # compartment depend on the local mesh resolution. See Mesh.classify_position_carry.
             classify_fn = geometry.classify_position
+            carry_fn = getattr(geometry, 'classify_position_carry', None)
 
             if has_weight:
                 # carry = (r, phi, log_weight, compartment_current, key)
@@ -623,7 +631,8 @@ def simulate(
                     # Run the original step_fn with its expected carry format
                     orig_carry = (r, phi, log_weight, key)
                     (r_new, phi_new, log_new, key_new), _ = step_fn(orig_carry, inputs)
-                    comp_new = classify_fn(r_new)
+                    comp_new = (carry_fn(r_new, comp_cur) if carry_fn is not None
+                                else classify_fn(r_new))
                     return (r_new, phi_new, log_new, comp_new, key_new), comp_new
 
                 if return_compartments == 'full':
@@ -658,7 +667,8 @@ def simulate(
                     r, phi, comp_cur, key = carry
                     orig_carry = (r, phi, key)
                     (r_new, phi_new, key_new), _ = step_fn(orig_carry, inputs)
-                    comp_new = classify_fn(r_new)
+                    comp_new = (carry_fn(r_new, comp_cur) if carry_fn is not None
+                                else classify_fn(r_new))
                     return (r_new, phi_new, comp_new, key_new), comp_new
 
                 if return_compartments == 'full':

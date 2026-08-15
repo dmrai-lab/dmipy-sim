@@ -686,6 +686,36 @@ class Mesh(Geometry):
             self._n_gather_undecided = n_resolved
         return jnp.asarray(np.concatenate(out)[:n_walkers], jnp.float32)
 
+    def classify_position_carry(self, r, comp_prev):
+        """Compartment label, keeping ``comp_prev`` wherever the gather cannot decide.
+
+        A walker whose 27-cell gather is empty has no wall within reach, so it cannot have crossed one
+        since the previous step -- its compartment is whatever it already was. Re-deriving the label from
+        local geometry instead makes the walker's compartment depend on how finely its own fibre happens
+        to be meshed: deep inside a thick fibre the gather is empty, the raw classifier defaults to
+        exterior, and an intra-axonal walker reads as extra-axonal for as long as it stays away from the
+        wall (measured: 19.6% of interior points on a real axon bundle, 66% on a subdivided tube).
+
+        Compartment is a state that changes at crossings, not a property to be re-measured every step, so
+        carrying it is both cheaper and more correct. Only the initial labels need an exact test.
+        """
+        return jnp.where(_gather_is_populated(self._A, r),
+                         _classify_arr(self._A, r), comp_prev).astype(jnp.int32)
+
+    def classify_positions_exact(self, pts):
+        """Initial labels, resolving undecidable points with exact parity (setup-time, host-side)."""
+        pts = np.asarray(pts, float)
+        lab = np.array(jax.jit(jax.vmap(_classify_arr, in_axes=(None, 0)))(
+            self._A, jnp.asarray(pts, jnp.float32)))
+        undecided = ~np.asarray(jax.jit(jax.vmap(_gather_is_populated, in_axes=(None, 0)))(
+            self._A, jnp.asarray(pts, jnp.float32)))
+        if undecided.any():
+            from .susceptibility_field import mesh_contains
+            inside = mesh_contains(np.asarray(self.vertices, float),
+                                   np.asarray(self.faces, np.int64), pts[undecided])
+            lab[undecided] = np.where(inside, 0, 1)
+        return jnp.asarray(lab, jnp.int32)
+
     def quality_report(self, verbose=True):
         """Surface-resolution diagnostics + per-effect accuracy verdict.
 
