@@ -37,6 +37,12 @@ def mean_inv_diameter_4(alpha, scale_diameter, volume_weighted=True):
 class Substrate:
     """Physical ground truth for the canonical white-matter substrate.
 
+    The Gamma diameter law (``gamma_shape_diameter``, ``gamma_scale_diameter``) describes the **OUTER
+    (fibre) diameter, myelin included** -- the quantity histology reports (Aboitiz 1992). The lumen follows
+    as ``d_inner = g_ratio * d_outer``. Reading it as an axon diameter instead leaves every derived property
+    self-consistent while changing the fibre size by 1/g, so the convention is pinned by
+    ``tests/test_substrate_convention.py`` rather than by comment alone.
+
     Conventions match the historical UnifiedWhiteMatterParameters:
     * ``f_axon`` is the total axon (lumen + myelin sheath) packing fraction; at
       g-ratio g the intra-axonal lumen is ``g**2 * f_axon`` and the sheath is
