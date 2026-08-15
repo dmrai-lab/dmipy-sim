@@ -7,6 +7,8 @@ the bridge.
 import os
 import tempfile
 
+import warnings
+
 import numpy as np
 import pytest
 
@@ -53,12 +55,16 @@ def test_roundtrip_square_incurs_expected_ramp_cost():
     """A SQUARE (infinite-slew) pgse cannot be represented exactly by Pulseq
     (which must ramp the edges) -- the b-value shifts by a few percent.  This is
     correct physics (Pulseq describes realizable gradients), not a bridge bug, so
-    we assert it stays bounded rather than exact."""
+    we assert it stays bounded rather than exact.
+
+    Exported with native_rf=False so this measures the RASTER cost alone. With native RF the excitation of
+    a square waveform lands on live gradient and must interrupt it, which adds its own duration -- a real
+    and separately-tested cost, but not the one this test is about."""
     wf = pgse(delta=0.01, DELTA=0.04, G_magnitude=0.05, bvecs=BVEC, n_t=200,
               slew_rate=np.inf)   # explicitly the idealized square waveform
     with tempfile.TemporaryDirectory() as d:
         p = os.path.join(d, "sq.seq")
-        to_pulseq(wf, filename=p)
+        to_pulseq(wf, filename=p, native_rf=False)
         wf2 = from_pulseq(p)
     rel = abs(_b(wf2) - _b(wf)) / _b(wf)
     assert rel < 0.05            # bounded edge-ramp cost, not exact
@@ -121,3 +127,141 @@ def test_pulseq_timing_extracts_spin_echo_budget():
     assert abs(tm['TE'] - 0.0352) < 6e-4
     assert 0.0 < tm['t_readout_pre_echo'] < tm['readout_duration']
     assert abs(tm['t_readout_pre_echo'] - 0.0111) < 6e-4
+
+
+def test_stimulated_echo_state_survives_the_round_trip():
+    """TM and stimulated_echo must round-trip, DERIVED from the RF schedule rather than stored.
+
+    A PGSTE's mixing time is a gap with no gradient on it, so a bridge that inspects only G loses it
+    silently: the waveform still round-trips, the b-value (the existing check above) still round-trips,
+    and nothing raises -- but the reimported sequence is a spin echo. Anything branching on
+    TM/stimulated_echo (the T1 term in the step function, pathway signs, replay envelope summaries) then
+    takes the wrong branch for the rest of the run.
+
+    It is recovered from the pulses, which are what define a stimulated echo: storage and recall 90s, with
+    TM the gap between them. That holds for any sequence whose RF is described, not only for files we
+    wrote, and leaves no stored copy to disagree with the schedule.
+    """
+    from dmipy_sim.waveforms import pgste
+
+    w = pgste(delta=5e-3, TM=20e-3, G_magnitude=0.04, bvecs=[[1, 0, 0]], n_t=400)
+    assert w.TM is not None and w.stimulated_echo, "precondition: pgste must set the STE state"
+
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "ste.seq")
+        to_pulseq(w, 0, filename=path)
+        back = from_pulseq(path)
+
+    assert back.TM == pytest.approx(w.TM), "mixing time lost on round-trip"
+    assert back.stimulated_echo is True, "stimulated-echo flag lost on round-trip"
+
+
+def test_spin_echo_round_trip_does_not_invent_a_mixing_time():
+    """The converse: a 90/180 spin echo must yield TM=None rather than a default."""
+    w = pgse(delta=5e-3, DELTA=20e-3, G_magnitude=0.04, bvecs=[[1, 0, 0]], n_t=400)
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "se.seq")
+        to_pulseq(w, 0, filename=path)
+        back = from_pulseq(path)
+    assert back.TM is None
+    assert back.stimulated_echo is False
+
+
+def test_mixing_time_is_derived_from_the_pulses_not_from_a_stored_value():
+    """The derivation must read the schedule, not a cached number.
+
+    Pinned by feeding a schedule directly: a stored value could agree with the waveform by construction
+    while the rule that produced it is wrong, so the rule is exercised on its own. Covers both the labelled
+    form and the bare flip-angle pattern a foreign file would present.
+    """
+    from dmipy_sim.sequences.pulseq import _ste_from_rf_schedule
+
+    labelled = [{'t_s': 0.0, 'flip_deg': 90, 'label': 'Mz→Mxy'},
+                {'t_s': 5e-3, 'flip_deg': 90, 'label': 'store'},
+                {'t_s': 25e-3, 'flip_deg': 90, 'label': 'recall'}]
+    tm, ste_ = _ste_from_rf_schedule(labelled)
+    assert ste_ and tm == pytest.approx(20e-3)
+
+    # same pulses, no labels -- the flip-angle pattern alone must still give the mixing time
+    bare = [{'t_s': e['t_s'], 'flip_deg': e['flip_deg']} for e in labelled]
+    tm2, ste2 = _ste_from_rf_schedule(bare)
+    assert ste2 and tm2 == pytest.approx(20e-3)
+
+    # a spin echo is not a stimulated echo
+    se = [{'t_s': 0.0, 'flip_deg': 90}, {'t_s': 12e-3, 'flip_deg': 180}]
+    assert _ste_from_rf_schedule(se) == (None, False)
+    assert _ste_from_rf_schedule([]) == (None, False)
+
+
+def test_native_rf_export_is_scanner_shaped_and_costs_time_when_there_is_no_gap():
+    """Native RF export emits real pulses and the PHYSICAL gradient, and says what that costs.
+
+    Whether a pulse has somewhere to go is a property of the sequence, not of its family. pgse
+    slew-limited ramps to zero around both pulses, so export is free and the round trip exact. OGSE
+    oscillates continuously and leaves no gap at either pulse, so each must be inserted and the sequence
+    lengthens -- what it would cost on a scanner, warned about rather than hidden, and asserted here
+    rather than assumed.
+    """
+    from dmipy_sim.waveforms import pgse, ogse
+
+    free = pgse(delta=5e-3, DELTA=20e-3, G_magnitude=0.04, bvecs=[[1, 0, 0]], n_t=400)
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        seq = to_pulseq(free, 0)
+        assert not [x for x in w if issubclass(x.category, RuntimeWarning)], \
+            "pulses sit in gradient gaps here, so native export should cost nothing"
+    back = from_pulseq(seq)
+    assert abs(_b(back) - _b(free)) <= 2e-3 * _b(free)
+
+    # real RF blocks, not one excitation plus metadata
+    flips = sorted({round(float(e["flip_deg"])) for e in (back.rf_events or [])})
+    assert flips == [90, 180], f"expected a 90/180 schedule read from the blocks, got {flips}"
+
+    # OGSE has no gradient-free sample at either pulse, so both must be inserted. Assert the CONSEQUENCE
+    # -- the exported sequence is longer by one sample per inserted pulse -- rather than the wording of the
+    # warning, so the test survives rephrasing but not a silent change of behaviour.
+    tight = ogse(frequency=100.0, T_total=40e-3, G_magnitude=0.04, bvecs=[[1, 0, 0]], n_t=400)
+    n_pulses = len(tight.rf_events or [])
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        seq_t = to_pulseq(tight, 0)
+        assert any(issubclass(x.category, RuntimeWarning) for x in w), \
+            "inserting RF changes the timing; that must be announced"
+    assert int(seq_t.definitions["dmipy_n_t"]) == 400 + n_pulses, \
+        "each inserted pulse must lengthen the exported sequence by its own duration"
+
+    back_t = from_pulseq(seq_t)
+    assert np.asarray(back_t.G).shape[1] == 400 + n_pulses
+
+    # the gradient is paused, not notched: every original sample survives, in order
+    g0 = np.asarray(tight.G_display if tight.G_display is not None else tight.G)[0, :, 0]
+    g1 = np.asarray(back_t.G)[0, :, 0]
+    assert np.count_nonzero(g1) >= np.count_nonzero(g0) - 2 * n_pulses, \
+        "inserting a pulse must not delete gradient samples"
+
+
+def test_a_gradient_free_train_inserts_nothing():
+    """A CPMG is a 90 and a train of 180s; with no gradient of its own every pulse already has a slot.
+
+    Guards against treating "many pulses" as "must lengthen": the cost comes from the gradient being on,
+    not from the number of pulses. Adding the optional constant diffusion gradient -- which is never off --
+    is what forces room to be made for all five.
+    """
+    from dmipy_sim.waveforms import cpmg
+
+    plain = cpmg(n_echoes=4, TE=10e-3, G_magnitude=0.0, bvecs=[[1, 0, 0]], n_t_per_echo=50)
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        seq = to_pulseq(plain, 0)
+        assert not [x for x in w if issubclass(x.category, RuntimeWarning)], \
+            "a gradient-free echo train costs nothing to export natively"
+    n0 = np.asarray(plain.G).shape[1]
+    assert int(seq.definitions["dmipy_n_t"]) == n0
+    assert len(plain.rf_events) == 5                      # the pulses are there; they simply fit
+
+    weighted = cpmg(n_echoes=4, TE=10e-3, G_magnitude=0.04, bvecs=[[1, 0, 0]], n_t_per_echo=50)
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        seq_w = to_pulseq(weighted, 0)
+        assert [x for x in w if issubclass(x.category, RuntimeWarning)]
+    assert int(seq_w.definitions["dmipy_n_t"]) == n0 + 5
