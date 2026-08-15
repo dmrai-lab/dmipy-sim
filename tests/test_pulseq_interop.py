@@ -7,6 +7,8 @@ the bridge.
 import os
 import tempfile
 
+import warnings
+
 import numpy as np
 import pytest
 
@@ -53,12 +55,16 @@ def test_roundtrip_square_incurs_expected_ramp_cost():
     """A SQUARE (infinite-slew) pgse cannot be represented exactly by Pulseq
     (which must ramp the edges) -- the b-value shifts by a few percent.  This is
     correct physics (Pulseq describes realizable gradients), not a bridge bug, so
-    we assert it stays bounded rather than exact."""
+    we assert it stays bounded rather than exact.
+
+    Exported with native_rf=False so this measures the RASTER cost alone. With native RF the excitation of
+    a square waveform lands on live gradient and must interrupt it, which adds its own duration -- a real
+    and separately-tested cost, but not the one this test is about."""
     wf = pgse(delta=0.01, DELTA=0.04, G_magnitude=0.05, bvecs=BVEC, n_t=200,
               slew_rate=np.inf)   # explicitly the idealized square waveform
     with tempfile.TemporaryDirectory() as d:
         p = os.path.join(d, "sq.seq")
-        to_pulseq(wf, filename=p)
+        to_pulseq(wf, filename=p, native_rf=False)
         wf2 = from_pulseq(p)
     rel = abs(_b(wf2) - _b(wf)) / _b(wf)
     assert rel < 0.05            # bounded edge-ramp cost, not exact
@@ -185,3 +191,34 @@ def test_mixing_time_is_derived_from_the_pulses_not_from_a_stored_value():
     se = [{'t_s': 0.0, 'flip_deg': 90}, {'t_s': 12e-3, 'flip_deg': 180}]
     assert _ste_from_rf_schedule(se) == (None, False)
     assert _ste_from_rf_schedule([]) == (None, False)
+
+
+def test_native_rf_export_is_scanner_shaped_and_costs_time_when_there_is_no_gap():
+    """Native RF export emits real pulses and the PHYSICAL gradient, and says what that costs.
+
+    A pulse needs a slot with no gradient on it. pgse-slew-limited leaves one, so export is free and the
+    round trip is exact. OGSE leaves none -- every pulse sits on live gradient -- so each must interrupt
+    it, lengthening the sequence. That is what the sequence costs on a scanner, so it is warned about
+    rather than hidden, and asserted here rather than assumed.
+    """
+    from dmipy_sim.waveforms import pgse, ogse
+
+    free = pgse(delta=5e-3, DELTA=20e-3, G_magnitude=0.04, bvecs=[[1, 0, 0]], n_t=400)
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        seq = to_pulseq(free, 0)
+        assert not [x for x in w if issubclass(x.category, RuntimeWarning)], \
+            "pulses sit in gradient gaps here, so native export should cost nothing"
+    back = from_pulseq(seq)
+    assert abs(_b(back) - _b(free)) <= 2e-3 * _b(free)
+
+    # real RF blocks, not one excitation plus metadata
+    flips = sorted({round(float(e["flip_deg"])) for e in (back.rf_events or [])})
+    assert flips == [90, 180], f"expected a 90/180 schedule read from the blocks, got {flips}"
+
+    tight = ogse(frequency=100.0, T_total=40e-3, G_magnitude=0.04, bvecs=[[1, 0, 0]], n_t=400)
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        to_pulseq(tight, 0)
+        assert any(issubclass(x.category, RuntimeWarning) and "live gradient" in str(x.message) for x in w), \
+            "OGSE has no dead time; interrupting the gradient must be announced"
