@@ -478,8 +478,15 @@ def mesh_contains(V, F, pts, *, prefilter=True, chunk=2_000_000):
     if cand.any():
         sub = pts[cand]
         got = np.zeros(len(sub), bool)
-        for i in range(0, len(sub), chunk):
-            got[i:i + chunk] = m.contains(sub[i:i + chunk] * s)
+        try:
+            for i in range(0, len(sub), chunk):
+                got[i:i + chunk] = m.contains(sub[i:i + chunk] * s)
+        except ModuleNotFoundError as exc:      # trimesh's ray engine is an EXTRA, not a hard dependency
+            raise ModuleNotFoundError(
+                f"mesh_contains needs trimesh's ray-casting extras ({exc.name} is missing). A bare "
+                f"'pip install trimesh' imports fine and only fails here, inside the containment call. "
+                f"Install pip install 'dmipy-sim[mesh]' (or 'trimesh[easy]')."
+            ) from exc
         out[cand] = got
     return out
 

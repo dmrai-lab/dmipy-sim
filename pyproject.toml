@@ -44,12 +44,16 @@ cuda12 = [
 dev = [
     "pytest>=7.0",
     "matplotlib>=3.5",   # physics/validation tests plot diagnostics (Agg backend)
-    "trimesh>=4.0",      # mesh tests load/generate PLY meshes (dmipy_sim.mesh)
+    # trimesh[easy] rather than bare trimesh: susceptibility_field.mesh_contains uses ray parity, whose
+    # engine needs rtree, and trimesh.repair.fill_holes needs networkx. Both are trimesh EXTRAS, so a bare
+    # install imports fine and then raises ModuleNotFoundError deep inside a containment call.
+    "trimesh[easy]>=4.0",   # mesh tests load/generate PLY meshes (dmipy_sim.mesh)
 ]
-# Triangular-mesh loading (dmipy_sim.load_ply / Mesh.from_ply). The Mesh geometry
-# itself needs only numpy/jax; trimesh is only required to READ mesh files.
+# Triangular-mesh loading (dmipy_sim.load_ply / Mesh.from_ply) and exact containment
+# (susceptibility_field.mesh_contains). The Mesh geometry itself needs only numpy/jax; trimesh is required
+# to READ mesh files, and its [easy] extras (rtree, networkx) for ray parity and hole repair.
 mesh = [
-    "trimesh>=4.0",
+    "trimesh[easy]>=4.0",
 ]
 # The cross-engine flagship example (examples/canonical_wm_parity_from_sim.py) additionally
 # needs the analytical engine dmipy-fit. It is an OPTIONAL example dependency only -- the
