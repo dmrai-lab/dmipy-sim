@@ -104,3 +104,36 @@ def test_mesh_contains_prefilter_is_transparent():
     V, F = np.asarray(m.vertices), np.asarray(m.faces)
     P = np.random.default_rng(2).uniform(lo, hi, (1500, 3))
     assert (mesh_contains(V, F, P) == mesh_contains(V, F, P, prefilter=False)).all()
+
+
+def test_a_bundle_of_many_meshes_is_not_mistaken_for_an_open_surface():
+    """Defects accumulate with component count; openness does not. A threshold on the ABSOLUTE number of
+    boundary edges therefore rejects large multi-component substrates purely for being large.
+
+    Measured on a real 366-strand axon bundle: 22 boundary edges across 2.08M edges (1.1e-05), i.e. cleaner
+    per strand than a single-axon mesh that is accepted -- yet an absolute cap of 16 refused it. Half a
+    tube, genuinely open, sits at 3.3e-01. Four orders of magnitude apart.
+    """
+    tubes = []
+    for i in range(40):
+        t = trimesh.creation.cylinder(radius=0.4, height=6.0, sections=16)
+        t.apply_translation([2.0 * (i % 8), 2.0 * (i // 8), 0.0])
+        tubes.append(t)
+    V = np.vstack([np.asarray(t.vertices) for t in tubes])
+    F, off = [], 0
+    for t in tubes:
+        F.append(np.asarray(t.faces) + off)
+        off += len(t.vertices)
+    F = np.vstack(F)
+
+    # nick one triangle out of each of seven tubes: 21 boundary edges of defect, not an opening
+    F = np.delete(F, [5, 200, 400, 600, 900, 1200, 1500], axis=0)
+    n_open = len(trimesh.grouping.group_rows(
+        trimesh.Trimesh(vertices=V, faces=F, process=False).edges_sorted, require_count=1))
+    assert n_open > 16, f"test geometry must exceed the old absolute cap to be meaningful (got {n_open})"
+
+    lo, hi = V.min(0) - 1.0, V.max(0) + 1.0
+    P = np.random.default_rng(5).uniform(lo, hi, (1200, 3))
+    got = mesh_contains(V, F, P)          # must not raise
+    ref = trimesh.Trimesh(vertices=V, faces=F, process=False).contains(P)
+    assert (got == ref).sum() >= len(P) - 8
