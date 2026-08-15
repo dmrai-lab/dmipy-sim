@@ -406,9 +406,17 @@ def mesh_inside(V, F, pts, *, clip_axis=None, chunk=2_000_000):
     return out
 
 
-# A missing triangle leaves ~3 boundary edges; a torn or open surface leaves many. Above this, refuse to
-# repair rather than span a rim (see mesh_contains).
-_MAX_REPAIRABLE_BOUNDARY_EDGES = 16
+# Separating "a defect" from "an open surface" has to scale with the mesh, because defects accumulate with
+# component count while openness does not. Measured: a 366-strand axon bundle carries 22 boundary edges of
+# 2.08M (1.1e-05) -- cleaner per strand than a single Winther axon that is accepted -- while half a tube,
+# genuinely open, carries 64 of 192 (3.3e-01). An absolute cap cannot separate those as meshes grow.
+#
+# The threshold is set by what it must REJECT, with margin: an open surface exposes a rim, which is a
+# fraction of order 1e-1 of its edges, so 1e-2 rejects that by ~30x while accepting defect rates several
+# orders of magnitude below it. The absolute floor keeps small meshes (a one-triangle hole in a 144-edge
+# cylinder) on the defect side, where a fraction alone would be too strict.
+_MAX_BOUNDARY_EDGE_FRACTION = 1e-2
+_MIN_REPAIRABLE_BOUNDARY_EDGES = 16
 
 
 def mesh_contains(V, F, pts, *, prefilter=True, chunk=2_000_000):
@@ -424,8 +432,8 @@ def mesh_contains(V, F, pts, *, prefilter=True, chunk=2_000_000):
     ``prefilter=False`` to ray cast every point and skip that assumption.
 
     Requires a closed surface: with open ends a ray can exit through the rim and parity is meaningless.
-    A mesh with at most ``_MAX_REPAIRABLE_BOUNDARY_EDGES`` boundary edges is treated as defective rather
-    than open: ``trimesh.repair.fill_holes`` is tried, and if the defect is not a fillable hole (one axon of
+    A mesh whose boundary edges are a negligible FRACTION of its edges (``_MAX_BOUNDARY_EDGE_FRACTION``,
+    with a small absolute floor for tiny meshes) is treated as defective rather than open: ``trimesh.repair.fill_holes`` is tried, and if the defect is not a fillable hole (one axon of
     the 29-axon Winther set has a two-edge slit) it proceeds with a ``RuntimeWarning``, since an opening
     that small perturbs parity only for rays threading it. More than that raises: a genuinely open surface
     has no inside, and silently returning the parity of a leaky mesh would be worse than failing. For a
@@ -449,7 +457,9 @@ def mesh_contains(V, F, pts, *, prefilter=True, chunk=2_000_000):
         # A handful of boundary edges is a defect (a missing triangle), not an open surface: repair and
         # continue. The cap is what separates the two -- a torn or genuinely open surface must still fail,
         # because fill_holes would happily span a wide rim and hand back confident nonsense.
-        if n_open <= _MAX_REPAIRABLE_BOUNDARY_EDGES:
+        allowed = max(_MIN_REPAIRABLE_BOUNDARY_EDGES,
+                      int(_MAX_BOUNDARY_EDGE_FRACTION * len(m.edges_sorted)))
+        if n_open <= allowed:
             rep = m.copy()
             trimesh.repair.fill_holes(rep)
             if not len(trimesh.grouping.group_rows(rep.edges_sorted, require_count=1)):
@@ -469,8 +479,8 @@ def mesh_contains(V, F, pts, *, prefilter=True, chunk=2_000_000):
                 n_open = 0
         if n_open:
             raise ValueError(
-                f"mesh_contains requires a closed surface; this one has {n_open} boundary edges, too many "
-                f"to be a defect. Ray parity is undefined when a ray can leave through an open rim. Use "
+                f"mesh_contains requires a closed surface; this one has {n_open} boundary edges "
+                f"({n_open/max(len(m.edges_sorted),1):.2e} of all edges), too many to be a defect. Ray parity is undefined when a ray can leave through an open rim. Use "
                 f"mesh_inside(..., clip_axis=...) for a deliberately open surface, noting it is a "
                 f"near-field test only.")
     out = np.zeros(len(pts), bool)
