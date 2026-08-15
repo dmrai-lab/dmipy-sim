@@ -215,6 +215,15 @@ def _gather_arr(A, r_w):
     return jnp.where(valid, cand, 0), valid
 
 
+def _gather_is_populated(A, r):
+    """Does the 27-cell gather around ``r`` contain any triangle at all?
+
+    The classifier's answer is only meaningful where this is true. Exposed because "no wall nearby" and
+    "outside" are different statements, and conflating them is what makes the failure silent.
+    """
+    return _gather_arr(A, _wrap_arr(A, r))[1].any()
+
+
 def _classify_arr(A, r):
     """Interior (0) / exterior (1) from the array bundle.
 
@@ -224,9 +233,16 @@ def _classify_arr(A, r):
     the ``argmin`` over an all-``inf`` distance array silently falls back to a far-away triangle whose
     outward normal gives a *random* sign, and empty space near a thin feature is misclassified as interior
     -- which poisons ``init_positions``, seeding "intra" walkers into open space where they diffuse freely.
-    The cell size scales with the feature radius, so a wall is always within the gather of a genuine
-    interior point; the guard is exact whenever the enclosed feature is no larger than the gather
-    neighbourhood (true for axon/tube meshes).
+    THE GUARD'S VALIDITY CONDITION IS ON THE OBJECT, NOT THE MESH. It holds only while every genuine
+    interior point has a wall inside its gather -- i.e. while the enclosed feature is no wider than the
+    gather neighbourhood. But the cell size scales with the TRIANGLE size, not the object size, so a
+    finely-meshed thick fibre breaks it: measured on a 366-strand axon bundle (median edge 0.371 um -> cell
+    0.124 um -> gather reach ~0.19 um, lumen radii ~1-2 um), 19.6% of genuinely interior points are
+    reported EXTERIOR, and 99.4% of those have an empty gather. Deep interior reads as outside.
+
+    Use :func:`_gather_is_populated` to tell "outside" from "cannot tell", and resolve the latter with an
+    exact test (:func:`dmipy_sim.susceptibility_field.mesh_contains`). :meth:`Mesh.init_positions` does
+    exactly that. Per-step compartment tracking in the walk does NOT yet -- see dmrai-lab/dmipy-sim#33.
     """
     r_w = _wrap_arr(A, r)
     ci, valid = _gather_arr(A, r_w)
@@ -647,12 +663,27 @@ class Mesh(Geometry):
         # Pass the array bundle as a jit ARGUMENT (not closed over) so the grid array is a runtime
         # device buffer, never baked into the executable as a multi-GB constant.
         classify = jax.jit(jax.vmap(_classify_arr, in_axes=(None, 0)))
-        out, need = [], n_walkers
+        populated = jax.jit(jax.vmap(_gather_is_populated, in_axes=(None, 0)))
+        out, need, n_resolved = [], n_walkers, 0
         while need > 0:
             pts = rng.uniform(self.vmin, self.vmax, (max(need * 4, 1024), 3)).astype(np.float32)
-            lab = np.asarray(classify(self._A, jnp.asarray(pts)))
+            jpts = jnp.asarray(pts)
+            lab = np.array(classify(self._A, jpts))     # copy: a jax-backed view is read-only
+            # Where the gather is empty the label is not a verdict, it is a default. Seeding on it biases
+            # an intra pool towards the wall (deep points rejected) and lets deep intra points into an
+            # extra pool (they read as outside). Resolve those exactly instead -- affordable here because
+            # seeding is setup-time and the undecided points are a minority.
+            undecided = ~np.asarray(populated(self._A, jpts))
+            if undecided.any():
+                from .susceptibility_field import mesh_contains
+                inside = mesh_contains(np.asarray(self.vertices, float),
+                                       np.asarray(self.faces, np.int64), pts[undecided].astype(float))
+                lab[undecided] = np.where(inside, 0, 1)
+                n_resolved += int(undecided.sum())
             out.append(pts[lab == want])
             need = n_walkers - sum(len(a) for a in out)
+        if n_resolved:
+            self._n_gather_undecided = n_resolved
         return jnp.asarray(np.concatenate(out)[:n_walkers], jnp.float32)
 
     def quality_report(self, verbose=True):
