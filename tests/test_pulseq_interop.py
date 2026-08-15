@@ -124,13 +124,17 @@ def test_pulseq_timing_extracts_spin_echo_budget():
 
 
 def test_stimulated_echo_state_survives_the_round_trip():
-    """TM and stimulated_echo must round-trip; neither is recoverable from the gradient waveform.
+    """TM and stimulated_echo must round-trip, DERIVED from the RF schedule rather than stored.
 
-    A PGSTE's mixing time is a gap with no gradient on it, so a bridge that carries only G loses it
+    A PGSTE's mixing time is a gap with no gradient on it, so a bridge that inspects only G loses it
     silently: the waveform still round-trips, the b-value (the existing check above) still round-trips,
     and nothing raises -- but the reimported sequence is a spin echo. Anything branching on
     TM/stimulated_echo (the T1 term in the step function, pathway signs, replay envelope summaries) then
     takes the wrong branch for the rest of the run.
+
+    It is recovered from the pulses, which are what define a stimulated echo: storage and recall 90s, with
+    TM the gap between them. That holds for any sequence whose RF is described, not only for files we
+    wrote, and leaves no stored copy to disagree with the schedule.
     """
     from dmipy_sim.waveforms import pgste
 
@@ -147,8 +151,7 @@ def test_stimulated_echo_state_survives_the_round_trip():
 
 
 def test_spin_echo_round_trip_does_not_invent_a_mixing_time():
-    """The converse: a PGSE must return TM=None rather than a default, and a .seq carrying no dmipy_*
-    definitions must not acquire stimulated-echo state it never had."""
+    """The converse: a 90/180 spin echo must yield TM=None rather than a default."""
     w = pgse(delta=5e-3, DELTA=20e-3, G_magnitude=0.04, bvecs=[[1, 0, 0]], n_t=400)
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, "se.seq")
@@ -156,3 +159,29 @@ def test_spin_echo_round_trip_does_not_invent_a_mixing_time():
         back = from_pulseq(path)
     assert back.TM is None
     assert back.stimulated_echo is False
+
+
+def test_mixing_time_is_derived_from_the_pulses_not_from_a_stored_value():
+    """The derivation must read the schedule, not a cached number.
+
+    Pinned by feeding a schedule directly: a stored value could agree with the waveform by construction
+    while the rule that produced it is wrong, so the rule is exercised on its own. Covers both the labelled
+    form and the bare flip-angle pattern a foreign file would present.
+    """
+    from dmipy_sim.sequences.pulseq import _ste_from_rf_schedule
+
+    labelled = [{'t_s': 0.0, 'flip_deg': 90, 'label': 'Mz→Mxy'},
+                {'t_s': 5e-3, 'flip_deg': 90, 'label': 'store'},
+                {'t_s': 25e-3, 'flip_deg': 90, 'label': 'recall'}]
+    tm, ste_ = _ste_from_rf_schedule(labelled)
+    assert ste_ and tm == pytest.approx(20e-3)
+
+    # same pulses, no labels -- the flip-angle pattern alone must still give the mixing time
+    bare = [{'t_s': e['t_s'], 'flip_deg': e['flip_deg']} for e in labelled]
+    tm2, ste2 = _ste_from_rf_schedule(bare)
+    assert ste2 and tm2 == pytest.approx(20e-3)
+
+    # a spin echo is not a stimulated echo
+    se = [{'t_s': 0.0, 'flip_deg': 90}, {'t_s': 12e-3, 'flip_deg': 180}]
+    assert _ste_from_rf_schedule(se) == (None, False)
+    assert _ste_from_rf_schedule([]) == (None, False)

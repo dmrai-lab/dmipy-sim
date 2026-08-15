@@ -125,6 +125,31 @@ def _event_times(arr):
 
 
 # -- export: Waveform -> .seq -------------------------------------------------
+
+def _ste_from_rf_schedule(rf_events):
+    """``(TM, stimulated_echo)`` derived from the RF schedule itself.
+
+    A stimulated echo is defined by its pulses, not by a label: magnetisation is tipped down, STORED along
+    z by a second 90 degrees, and RECALLED by a third, so the mixing time is the gap between the storage and
+    recall pulses. That is already in the schedule the bridge carries, so deriving it beats writing the
+    value into a private definition -- one less thing that can disagree with the waveform it describes, and
+    it works for any sequence whose RF is described, not only for files we wrote.
+
+    Falls back to the flip-angle pattern when the pulses are unlabelled: three 90-degree pulses, TM between
+    the second and third. A 90/180 spin echo yields ``(None, False)``.
+    """
+    if not rf_events:
+        return None, False
+    ev = sorted(rf_events, key=lambda e: float(e.get('t_s', 0.0)))
+    by_label = {str(e.get('label', '')).lower(): e for e in ev}
+    if 'store' in by_label and 'recall' in by_label:
+        return float(by_label['recall']['t_s']) - float(by_label['store']['t_s']), True
+    nineties = [e for e in ev if abs(float(e.get('flip_deg', 0.0)) - 90.0) < 1e-3]
+    if len(nineties) >= 3:
+        return float(nineties[2]['t_s']) - float(nineties[1]['t_s']), True
+    return None, False
+
+
 def to_pulseq(waveform, m=0, *, system=None, filename=None,
               excitation_flip_deg=90.0):
     """Export measurement ``m`` of a :class:`dmipy_sim.waveforms.Waveform` to a
@@ -166,13 +191,6 @@ def to_pulseq(waveform, m=0, *, system=None, filename=None,
     seq.set_definition('dmipy_echo_idx', int(waveform.echo_idx))
     seq.set_definition('dmipy_n_t', int(G.shape[0]))
     seq.set_definition('dmipy_rf_events', _encode_rf_events(waveform.rf_events))
-    # Stimulated-echo state. TM is not recoverable from the gradient waveform -- the mixing time is a gap
-    # with no gradient on it -- so without carrying it explicitly a PGSTE/STE round-trips as a spin echo:
-    # same G, same b-value, nothing raised, but the T1-weighted longitudinal period is gone.
-    if waveform.TM is not None:
-        seq.set_definition('dmipy_TM', float(waveform.TM))
-    if waveform.stimulated_echo:
-        seq.set_definition('dmipy_stimulated_echo', 1)
 
     if filename:
         seq.write(filename)
@@ -250,8 +268,10 @@ def from_pulseq(src, *, dt=None):
         echo_idx = (int(round((float(ta[-1]) - t0) / dt)) if ta.size else n_t - 1)
     echo_idx = int(np.clip(echo_idx, 0, n_t - 1))
 
-    TM = float(defs['dmipy_TM']) if 'dmipy_TM' in defs else None
-    stimulated_echo = bool(int(defs.get('dmipy_stimulated_echo', 0)))
+    # TM / stimulated-echo state come from the RF schedule rather than a stored value: the pulses ARE the
+    # definition, so a file that describes its RF describes its mixing time, and there is no second copy to
+    # fall out of sync with the first.
+    TM, stimulated_echo = _ste_from_rf_schedule(rf_events)
 
     return Waveform(G=jnp.asarray(G[None]), dt=dt, echo_idx=echo_idx,
                     rf_events=rf_events, TM=TM, stimulated_echo=stimulated_echo)
