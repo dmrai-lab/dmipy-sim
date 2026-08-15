@@ -194,10 +194,13 @@ def to_pulseq(waveform, m=0, *, system=None, filename=None,
     inserted = [k for k in ks if k < len(Ghz) and np.any(np.abs(Ghz[k]) > 0)]
     if inserted and native_rf:
         warnings.warn(
-            f"to_pulseq: {len(inserted)} RF pulse(s) fall on live gradient, so each interrupts it and adds "
-            f"{dt*1e6:.1f} us; the exported sequence is {len(inserted)*dt*1e3:.3f} ms longer than the "
-            f"waveform and its b-value/TE shift accordingly. This is what the sequence costs on a scanner. "
-            f"Use native_rf=False for an exact round trip that keeps the RF as metadata instead.",
+            f"to_pulseq: {len(inserted)} RF pulse(s) fall where the gradient is still on, so there is no "
+            f"free slot to play them in. Each is INSERTED, pausing the gradient and resuming it unchanged, "
+            f"which lengthens the sequence by {dt*1e6:.1f} us per pulse "
+            f"({len(inserted)*dt*1e3:.3f} ms total), and TE with it. No part of a lobe is dropped, but each "
+            f"cut must ramp the gradient down and back up, costing roughly 0.6% of the encoding area per "
+            f"cut. Both are what a sequence with no dead time costs on a scanner. Use native_rf=False for "
+            f"an exact round trip that keeps the RF as metadata instead.",
             RuntimeWarning, stacklevel=2)
 
     def _grad_block(a, b):
@@ -235,27 +238,49 @@ def to_pulseq(waveform, m=0, *, system=None, filename=None,
         return seq
 
     prev = 0
+    n_inserted = 0          # samples of extra time the pulses cost
+    inserted_before_echo = 0
+    echo0 = int(getattr(waveform, 'echo_idx', len(Ghz) - 1) or 0)
     for e, k in zip(ev, ks):
         k = int(np.clip(k, 0, len(Ghz) - 1))
         _grad_block(prev, k)
+        # Where the pulse lands on a gradient-free sample it takes that slot, and the sequence keeps its
+        # duration exactly. Where it does not, the pulse is INSERTED: the gradient resumes from the sample
+        # it was paused at, so no part of a lobe is deleted -- the sequence, and TE with it, get longer
+        # instead. Consuming the sample would notch the lobe and silently change b, which is not a cost a
+        # scanner pays either. Cutting a live gradient is still not free: Pulseq needs each arbitrary
+        # gradient to start and end at zero, so every cut ramps down and back up, costing ~0.6% of the
+        # encoding area per cut (measured: ogse 2 cuts -> 1.2%, cpmg 5 cuts -> 3.5%). A scanner pays that
+        # too, and more, since its ramps are slew-limited rather than one sample wide.
+        free_slot = not np.any(np.abs(Ghz[k]) > 0)
         flip = float(e.get('flip_deg', 90.0))
         # 'use' is what lets a reader classify the pulse without our labels: pypulseq reports excitation
         # and refocusing events separately, which is exactly the distinction the effective gradient needs.
         use = 'refocusing' if abs(flip - 180.0) < 1.0 else 'excitation'
         seq.add_block(pp.make_block_pulse(flip_angle=np.deg2rad(flip), duration=dt,
                                           system=sys, use=use))
-        prev = k + 1
+        if free_slot:
+            prev = k + 1
+        else:
+            prev = k
+            n_inserted += 1
+            if k <= echo0:
+                inserted_before_echo += 1
     _grad_block(prev, len(Ghz))
     seq.add_block(pp.make_adc(num_samples=1, duration=dt, system=sys))
 
-    _write_defs(seq, waveform, dt, len(Ghz))
+    # Describe the sequence as EXPORTED, not as it was before the pulses needed room. Writing the original
+    # length would tell the reader to squeeze the longer sequence back onto the old grid, undoing the
+    # insertion and eating the very gradient area it was meant to protect.
+    _write_defs(seq, waveform, dt, len(Ghz) + n_inserted,
+                echo_idx=echo0 + inserted_before_echo)
 
     if filename:
         seq.write(filename)
     return seq
 
 
-def _write_defs(seq, waveform, dt, n_t):
+def _write_defs(seq, waveform, dt, n_t, echo_idx=None):
     """dt / n_t / echo index / RF schedule in [DEFINITIONS].
 
     Conveniences for our own round trip, not the physics: TM, the storage window and the effective-gradient
@@ -263,7 +288,8 @@ def _write_defs(seq, waveform, dt, n_t):
     sequence right.
     """
     seq.set_definition('dmipy_dt', dt)
-    seq.set_definition('dmipy_echo_idx', int(waveform.echo_idx))
+    seq.set_definition('dmipy_echo_idx',
+                       int(waveform.echo_idx if echo_idx is None else echo_idx))
     seq.set_definition('dmipy_n_t', int(n_t))
     seq.set_definition('dmipy_rf_events', _encode_rf_events(waveform.rf_events))
 
@@ -386,17 +412,19 @@ def from_pulseq(src, *, dt=None):
         if arr.ndim == 2 and arr.shape[1] >= 2:
             tt, aa = arr[0], arr[1]
             # waveforms_and_times() lists samples only WITHIN gradient events; between events the gradient
-            # is zero by definition. Interpolating the bare list therefore draws a straight line across
-            # every gap -- which silently fills a diffusion gap or a stimulated echo's whole storage period
-            # with gradient that is not there. Make the zeros explicit at each gap edge before sampling.
-            gaps = np.where(np.diff(tt) > 1.5 * raster)[0]
-            if gaps.size:
-                eps = 0.5 * raster
-                tt = np.concatenate([tt, tt[gaps] + eps, tt[gaps + 1] - eps])
-                aa = np.concatenate([aa, np.zeros(gaps.size), np.zeros(gaps.size)])
-                order = np.argsort(tt)
-                tt, aa = tt[order], aa[order]
-            G[:, ci] = np.interp(t_grid + t0, tt, aa, left=0.0, right=0.0) / gamma_hz
+            # is zero by definition. Interpolating the bare list draws a straight line across every gap --
+            # filling a diffusion gap, or a stimulated echo's whole storage period, with gradient that is
+            # not there. Mask the gaps instead of inserting zeros near their edges: an inserted zero makes
+            # the interpolator ramp down to it, shaving area off the end of every segment.
+            tq = t_grid + t0
+            vals = np.interp(tq, tt, aa, left=0.0, right=0.0)
+            live = np.zeros(tq.shape, bool)
+            edges = np.where(np.diff(tt) > 1.5 * raster)[0]
+            starts = np.concatenate([[tt[0]], tt[edges + 1]]) if tt.size else np.zeros(0)
+            ends = np.concatenate([tt[edges], [tt[-1]]]) if tt.size else np.zeros(0)
+            for a0, b0 in zip(starts, ends):
+                live |= (tq >= a0 - 0.5 * raster) & (tq <= b0 + 0.5 * raster)
+            G[:, ci] = np.where(live, vals, 0.0) / gamma_hz
 
     # RF schedule, read from the blocks themselves so a file that describes its RF is understood whoever
     # wrote it. The stored dmipy_rf_events is a fallback for older files that carry only the excitation.

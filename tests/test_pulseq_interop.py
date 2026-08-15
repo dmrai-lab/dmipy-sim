@@ -216,9 +216,24 @@ def test_native_rf_export_is_scanner_shaped_and_costs_time_when_there_is_no_gap(
     flips = sorted({round(float(e["flip_deg"])) for e in (back.rf_events or [])})
     assert flips == [90, 180], f"expected a 90/180 schedule read from the blocks, got {flips}"
 
+    # OGSE has no gradient-free sample at either pulse, so both must be inserted. Assert the CONSEQUENCE
+    # -- the exported sequence is longer by one sample per inserted pulse -- rather than the wording of the
+    # warning, so the test survives rephrasing but not a silent change of behaviour.
     tight = ogse(frequency=100.0, T_total=40e-3, G_magnitude=0.04, bvecs=[[1, 0, 0]], n_t=400)
+    n_pulses = len(tight.rf_events or [])
     with warnings.catch_warnings(record=True) as w:
         warnings.simplefilter("always")
-        to_pulseq(tight, 0)
-        assert any(issubclass(x.category, RuntimeWarning) and "live gradient" in str(x.message) for x in w), \
-            "OGSE has no dead time; interrupting the gradient must be announced"
+        seq_t = to_pulseq(tight, 0)
+        assert any(issubclass(x.category, RuntimeWarning) for x in w), \
+            "inserting RF changes the timing; that must be announced"
+    assert int(seq_t.definitions["dmipy_n_t"]) == 400 + n_pulses, \
+        "each inserted pulse must lengthen the exported sequence by its own duration"
+
+    back_t = from_pulseq(seq_t)
+    assert np.asarray(back_t.G).shape[1] == 400 + n_pulses
+
+    # the gradient is paused, not notched: every original sample survives, in order
+    g0 = np.asarray(tight.G_display if tight.G_display is not None else tight.G)[0, :, 0]
+    g1 = np.asarray(back_t.G)[0, :, 0]
+    assert np.count_nonzero(g1) >= np.count_nonzero(g0) - 2 * n_pulses, \
+        "inserting a pulse must not delete gradient samples"
