@@ -243,3 +243,50 @@ def test_precision_tiers_flag_unshuffled_packs_as_unusable():
                            envelope=_lean_env(), K=64, license="CC-BY-4.0", citation="test")
     pt = pk.meta["compression"]["precision_tiers"]
     assert pt["usable"] is False and "NOT DECLARED SHUFFLED" in pt["note"]
+
+
+def test_replay_susc_can_restrict_to_one_compartment():
+    """A per-pool observable must be reachable from the public API.
+
+    The packs carry a compartment channel so intra-axonal signal can be asked for separately -- that is
+    what a study reports and what a fit targets. Before this, answering it meant decoding the channel and
+    rebuilding the phase sum by hand against private helpers, so the most natural use of a pack was the one
+    the API did not support.
+
+    Built on the suite's existing `_susc_master`, relabelling half its walkers so there are two pools to
+    separate; the pack machinery is otherwise untouched.
+    """
+    m = _susc_master()
+    n_w = m["comp"].shape[0]
+    m["comp"] = m["comp"].copy()
+    m["comp"][n_w // 2:, :] = 1                       # two pools: ids 0 and 1
+    m["comp0"] = m["comp"][:, 0].astype(np.int64)
+    m["T2_per_comp"] = np.array([0.08, 0.02])
+    m["T1_per_comp"] = np.array([1.0, 0.5])
+
+    env = dict(_lean_env(), B0_list=[7.0], theta_deg=[0, 90])
+    pk = build_replay_pack(m, id="test/slab-susc-comp", method="temporal_dct", envelope=env,
+                           K=64, susc_path_K=32, license="CC-BY-4.0", citation="test")
+    nt, dt = pk.n_t, pk.dt
+
+    class W:
+        G = np.zeros((1, nt, 3))
+    W.dt = dt
+
+    kw = dict(b0_dir=[0.0, 0.0, 1.0], B0=7.0, chi_iso=1.06e-6,
+              refocus_time=(nt - 1) * dt / 2, relaxation=False, complex_signal=True)
+    everything = bank.replay_susc(pk, W, **kw)
+    pool0 = bank.replay_susc(pk, W, compartment=0, **kw)
+    pool1 = bank.replay_susc(pk, W, compartment=1, **kw)
+
+    assert np.isfinite(complex(pool0[0])) and np.isfinite(complex(pool1[0]))
+    assert complex(pool0[0]) != complex(pool1[0]), "the two pools must not give the same answer"
+    assert complex(pool0[0]) != complex(everything[0]), "compartment= had no effect"
+
+    # a boolean mask must select the same walkers as the id does
+    mask = np.zeros(n_w, bool); mask[:n_w // 2] = True
+    assert complex(bank.replay_susc(pk, W, compartment=mask, **kw)[0]) == pytest.approx(
+        complex(pool0[0]), rel=1e-9)
+
+    with pytest.raises(ValueError, match="matched no walkers"):
+        bank.replay_susc(pk, W, compartment=99, **kw)
