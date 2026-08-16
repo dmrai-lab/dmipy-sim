@@ -450,13 +450,22 @@ def _se_gate(n_t, dt, refocus_time):
 
 
 def replay_susc(pack, waveform, *, b0_dir=(0.0, 0.0, 1.0), B0=0.0, chi_iso=0.0, chi_aniso=0.0,
-                refocus_time=None, relaxation=True, complex_signal=False):
+                refocus_time=None, relaxation=True, complex_signal=False, compartment=None):
     """Replay a gradient waveform on a static field-grid pack WITH susceptibility (the C3 consume
     path). Reconstructs the trajectory, accrues the gradient phase and the susceptibility phase
     (``assemble_field`` for ``(b0_dir,B0,chi_iso,chi_aniso)`` sampled along the walk, gated by the SE
     ``refocus_time``) in the SAME complex mean so the diffusion x susceptibility cross-term is kept,
     plus optional per-compartment relaxation. ``waveform`` has ``.G`` (n_meas,n_t,3) and ``.dt``;
-    returns the (complex or magnitude) signal (n_meas,)."""
+    returns the (complex or magnitude) signal (n_meas,).
+
+    ``compartment`` restricts the ensemble average to one pool: an ``int`` compartment id (as stored in
+    the pack's compartment channel -- 1 intra, 2 myelin for the mesh-axon packs), or a boolean mask over
+    walkers. The default ``None`` averages over everything.
+
+    This exists because the interesting comparisons are usually per-pool. An intra-axonal observable is
+    what a study reports and what a fit targets, and the packs carry a compartment channel precisely so
+    that question can be asked -- but without this argument the only way to ask it was to decode the
+    channel and rebuild the phase sum by hand, against private helpers."""
     from .constants import GAMMA
     from .susceptibility_field import assemble_field, sample_grid
     chans = (pack.meta.get("compression", {}).get("channels", {}) or {})
@@ -493,7 +502,23 @@ def replay_susc(pack, waveform, *, b0_dir=(0.0, 0.0, 1.0), B0=0.0, chi_iso=0.0, 
         pc = pack.meta["per_comp"]
         logw = _cx.relaxation_logweight(comp, pc["T2"], pc.get("T1"), dt)
     ew = w * np.exp(logw)
-    S = (ew[None, :] * np.exp(1j * (phi_G + phi_x[None, :]))).sum(1) / w.sum()
+    if compartment is not None:
+        sel = np.asarray(compartment)
+        if sel.dtype != bool:
+            comp_ids = _cx.decode_compartment(pack.arrays, ch.get("compartment", {}))
+            comp_ids = np.asarray(comp_ids)
+            comp_ids = comp_ids[:, 0] if comp_ids.ndim == 2 else comp_ids
+            sel = comp_ids.astype(int) == int(sel)
+        if sel.shape[0] != n_w:
+            raise ValueError(f"compartment mask has {sel.shape[0]} entries for {n_w} walkers")
+        if not sel.any():
+            raise ValueError(f"compartment selection matched no walkers (ids present: "
+                             f"{sorted(set(np.asarray(_cx.decode_compartment(pack.arrays, ch.get('compartment', {}))).ravel().tolist()))})")
+        ew = np.where(sel, ew, 0.0)
+        norm = w[sel].sum()
+    else:
+        norm = w.sum()
+    S = (ew[None, :] * np.exp(1j * (phi_G + phi_x[None, :]))).sum(1) / norm
     return S if complex_signal else np.abs(S)
 
 
