@@ -71,11 +71,27 @@ def test_coaxial_lumen_null_requires_partial_volume():
 
 
 def test_coaxial_annulus_matches_analytic_amplitude_and_structure():
-    """Inside the sheath at theta=90: dB/B0 = chi[-1/6 + (1/2)(R_i^2/r^2)cos(2phi)]."""
+    """Inside the sheath at theta=90: dB/B0 = chi[-1/6 - (1/2)(R_i^2/r^2)cos(2phi)].
+
+    The sign on the cos(2phi) term is MINUS, and the comparison below is signed. An annulus is a solid
+    cylinder of radius R_o minus one of radius R_i, and inside the sheath we are OUTSIDE the removed core,
+    so the subtracted term is that core's EXTERNAL field, +chi/2 (R_i^2/r^2)cos(2phi) -- subtracting it
+    leaves a minus. Verified numerically link by link: the solid interior is -0.1649 chi*B0 against the
+    textbook -1/6; the core's external field correlates +0.9997 with the 2-D dipole form; and
+    annulus == solid - core holds to 2.3e-16.
+
+    This assertion used to compare abs(corr), which cannot tell a field from its negative -- and the
+    reference carried a + here, so a perfectly inverted sheath field passed at |corr| 0.9995. The lumen
+    null is sign-agnostic (zero has no sign) and the solid-cylinder test only probes a UNIFORM interior,
+    so this is the only oracle covering the spatial STRUCTURE of the sheath field, which is what dephases
+    intra-axonal spins.
+    """
     _, _, r, phi = _grid()
     dB = _field(_source("annulus", ss=4), [1.0, 0.0, 0.0])
-    ana = CHI * B0 * (-1 / 6 + 0.5 * (R_I ** 2 / np.maximum(r, 1e-12) ** 2) * np.cos(2 * phi))
+    ana = CHI * B0 * (-1 / 6 - 0.5 * (R_I ** 2 / np.maximum(r, 1e-12) ** 2) * np.cos(2 * phi))
     ann = (r >= 1.05 * R_I) & (r < 0.95 * R_O)                # inset off the staircased edge
     a = ana[ann] - ana[ann].mean(); g = dB[ann] - dB[ann].mean()
     assert abs(g.std() / a.std() - 1.0) < 0.05, g.std() / a.std()
-    assert abs(np.corrcoef(a, g)[0, 1]) > 0.99
+    # SIGNED: an inverted field must fail, so no abs() here and the slope must be +1
+    assert np.corrcoef(a, g)[0, 1] > 0.99, np.corrcoef(a, g)[0, 1]
+    assert abs(np.polyfit(a, g, 1)[0] - 1.0) < 0.05, np.polyfit(a, g, 1)[0]
