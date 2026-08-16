@@ -311,7 +311,7 @@ class Mesh(Geometry):
     def __init__(self, vertices, faces, *, periodic=False, voxel_min=None,
                  voxel_max=None, feature_radius=None, surface_relaxivity_t2=None,
                  permeability=None, intra=None, extra=None, orientation=None, R=None,
-                 cell_size=None, cap=None):
+                 cell_size=None, cap=None, max_bounces=10):
         V = np.asarray(vertices, np.float64)
         F = np.asarray(faces, np.int64)
         self.vertices = V
@@ -518,6 +518,9 @@ class Mesh(Geometry):
         _scale = float(np.min(self.L))
         self._EPS = jnp.float32(1e-7 * _scale)
         self._NUDGE = jnp.float32(1e-4 * step_l)
+        # minimum sine of the angle the outgoing ray must make with the triangle it left
+        self._GRAZE = jnp.float32(1e-4)
+        self._MAX_BOUNCES = int(max_bounces)
         self._OFF = jnp.asarray([[dx, dy, dz] for dx in (-1, 0, 1)
                                  for dy in (-1, 0, 1) for dz in (-1, 0, 1)], jnp.int32)
         self._A = _MeshArrays(NRM=self._NRM, CENT=self._CENT, CELL=self._CELL,
@@ -563,6 +566,36 @@ class Mesh(Geometry):
         return n
 
     # ------------------------------------------------------------------
+    def _bounce(self, vnf, nrmf, u, v, idx, dh):
+        """Outgoing direction, smooth normal and geometric normal for one collision.
+
+        The smooth (vertex-interpolated) normal is what lets a coarse mesh reflect like the curved
+        surface it stands for, so it sets the reflection. But it is an interpolation and can sit far from
+        the plane actually hit: 85 degrees at the rim of a capped cylinder, where one vertex is shared by
+        the wall and the flat cap. Real data is mostly better behaved and still not clean -- axon06-inner
+        of the Winther set runs a median of 3.1 degrees but reaches 179.9, with 0.01% of its 159k
+        triangle corners pointing the wrong side of their own face.
+
+        Reflecting off such a normal can send the ray BELOW the triangle it just bounced off; the walker
+        then travels into the wall and out the far side. It is a per-COLLISION escape, so it does not
+        shrink with the timestep, and sub-stepping makes it worse by resolving more collisions. Grazing
+        hits make it the common case rather than a corner case: there dot(dh, n) is small, the outgoing
+        ray lies almost in the surface, and a few degrees of normal error is enough to tip it through.
+
+        The geometric normal therefore gets the final say on which side the walker ends up -- the
+        outgoing ray is lifted back above the triangle's own plane. On a capped cylinder with the escape
+        guard off this takes retention from 64.7% to 94.7% (coarse) and 72.2% to 99.2% (fine); reflecting
+        off the geometric normal alone scores the same, i.e. the correction removes the whole effect.
+        """
+        n = self._smooth_normal(vnf, nrmf, u, v, idx, dh)
+        nf = jnp.where(jnp.dot(dh, nrmf[idx]) > 0, -nrmf[idx], nrmf[idx])
+        d_ref = dh - 2.0 * jnp.dot(dh, n) * n
+        d_ref /= jnp.linalg.norm(d_ref)
+        c = jnp.dot(d_ref, nf)
+        d_ref = jnp.where(c < self._GRAZE, d_ref + (self._GRAZE - c) * nf, d_ref)
+        d_ref /= jnp.linalg.norm(d_ref)
+        return d_ref, n, nf
+
     def reflect(self, r, step):
         r_w = self._wrap(r)
         ci, valid = self._gather(r_w)
@@ -571,17 +604,30 @@ class Mesh(Geometry):
 
         def one(carry, _):
             r0, dh, rem = carry
+            # Candidates are gathered once, around the step's START, and reused for every bounce. That is
+            # sound only because `physics.collision_sub_steps` caps a sub-step at a fraction of a cell:
+            # the whole bounce polyline is then contained in the 27-cell neighbourhood already gathered.
+            # Measured: re-gathering per bounce moves retention by 0.0 points, and costs a gather per
+            # bounce instead of one per step. Without the sub-step cap it would NOT be sound.
             ts, u, v = self._mt(r0, dh, tri, valid)
             vm = (ts > self._EPS) & (ts < rem); ts = jnp.where(vm, ts, jnp.inf)
             idx = jnp.argmin(ts); d = ts[idx]; hit = d < jnp.inf
-            n = self._smooth_normal(vnf, nrmf, u, v, idx, dh)
+            d_ref, n, nf = self._bounce(vnf, nrmf, u, v, idx, dh)
             r_hit = r0 + d * dh
-            d_ref = dh - 2 * jnp.dot(dh, n) * n; d_ref /= jnp.linalg.norm(d_ref)
-            return (jnp.where(hit, r_hit + self._NUDGE * n, r0),
+            # Nudge along the GEOMETRIC normal: it is perpendicular to the triangle just hit, so it
+            # provably clears it, which the interpolated normal does not.
+            return (jnp.where(hit, r_hit + self._NUDGE * nf, r0),
                     jnp.where(hit, d_ref, dh),
-                    jnp.where(hit, rem - d - self._NUDGE, rem)), None
-        (rf, df, remf), _ = jax.lax.scan(one, (r_w, d_hat, step_l), None, length=10)
-        r_out = r + (rf + df * jnp.maximum(remf, 0.0) - r_w)
+                    jnp.where(hit, rem - d - self._NUDGE, rem)), hit
+        (rf, df, remf), hits = jax.lax.scan(one, (r_w, d_hat, step_l), None,
+                                            length=self._MAX_BOUNCES)
+        # Flying the leftover path is only safe if the final iteration found NO hit -- that is precisely
+        # the statement that nothing lies within `rem` of here, so the free flight was already tested. If
+        # it DID hit, the bounce budget ran out mid-step and the leftover is untested: flying it walks the
+        # walker straight through whatever it was about to bounce off. Stop at the last verified position
+        # instead. That loses a sliver of path length, which shrinks with dt; an escape does not.
+        exhausted = hits[-1]
+        r_out = r + (rf + df * jnp.where(exhausted, 0.0, jnp.maximum(remf, 0.0)) - r_w)
         if self.reject_escape:
             r_out = jnp.where(self.classify_position(r) == self.classify_position(r_out),
                               r_out, r)
@@ -598,21 +644,24 @@ class Mesh(Geometry):
             ts, u, v = self._mt(r0, dh, tri, valid)
             vm = (ts > self._EPS) & (ts < rem); ts = jnp.where(vm, ts, jnp.inf)
             idx = jnp.argmin(ts); d = ts[idx]; hit = d < jnp.inf
-            n = self._smooth_normal(vnf, nrmf, u, v, idx, dh)
+            d_ref, n, nf = self._bounce(vnf, nrmf, u, v, idx, dh)
             # side of the collision: dh·(outward face normal) > 0 -> spin leaving a
             # cell (intra side), < 0 -> entering (extra side).
             rho_mult = jnp.where(jnp.dot(dh, nrmf[idx]) > 0,
                                  self._rho_mult_intra, self._rho_mult_extra)
             r_hit = r0 + d * dh
-            d_ref = dh - 2 * jnp.dot(dh, n) * n; d_ref /= jnp.linalg.norm(d_ref)
+            # relaxation still weights by the SMOOTH normal: it is the surface the walker physically
+            # met. Only the side it ends up on is decided geometrically.
             cos_a = -jnp.dot(dh, n)
             d_perp = jnp.where(hit, rho_mult * (rem - d) * cos_a, jnp.float32(0.0))
-            return (jnp.where(hit, r_hit + self._NUDGE * n, r0),
+            return (jnp.where(hit, r_hit + self._NUDGE * nf, r0),
                     jnp.where(hit, d_ref, dh),
-                    jnp.where(hit, rem - d - self._NUDGE, rem)), d_perp
-        (rf, df, remf), dperps = jax.lax.scan(one, (r_w, d_hat, step_l), None, length=10)
+                    jnp.where(hit, rem - d - self._NUDGE, rem)), (d_perp, hit)
+        (rf, df, remf), (dperps, hits) = jax.lax.scan(one, (r_w, d_hat, step_l), None,
+                                                      length=self._MAX_BOUNCES)
         dlog_w = -2.0 * jnp.float32(rho_over_D) * jnp.sum(dperps)
-        r_out = r + (rf + df * jnp.maximum(remf, 0.0) - r_w)
+        # see `reflect`: the leftover path may only be flown if the last bounce found nothing
+        r_out = r + (rf + df * jnp.where(hits[-1], 0.0, jnp.maximum(remf, 0.0)) - r_w)
         if self.reject_escape:
             escaped = self.classify_position(r) != self.classify_position(r_out)
             return jnp.where(escaped, r, r_out), jnp.where(escaped, jnp.float32(0.0), dlog_w)
@@ -630,7 +679,7 @@ class Mesh(Geometry):
             ts, u, v = self._mt(r0, dh, tri, valid)
             vm = (ts > self._EPS) & (ts < rem); ts = jnp.where(vm, ts, jnp.inf)
             idx = jnp.argmin(ts); d = ts[idx]; hit = d < jnp.inf
-            n = self._smooth_normal(vnf, nrmf, u, v, idx, dh)
+            d_ref, n, nf = self._bounce(vnf, nrmf, u, v, idx, dh)
             # crossing direction: dh·(outward normal) > 0 -> leaving a cell
             # (intra->extra), < 0 -> entering (extra->intra).
             outward = jnp.dot(dh, nrmf[idx]) > 0
@@ -642,17 +691,18 @@ class Mesh(Geometry):
             p_t = jnp.minimum(1.0, 2.0 * jnp.float32(kappa_over_D) * kappa_mult * d_perp)
             transmit = first_hit & (u_rand < p_t)
             r_hit = r0 + d * dh
-            d_ref = dh - 2.0 * jnp.dot(dh, n) * n; d_ref /= jnp.linalg.norm(d_ref)
             do_reflect = hit & ~transmit
-            r_new = jnp.where(do_reflect, r_hit + self._NUDGE * n, r0 + rem * dh)
+            r_new = jnp.where(do_reflect, r_hit + self._NUDGE * nf, r0 + rem * dh)
             d_new = jnp.where(do_reflect, d_ref, dh)
             rem_new = jnp.where(do_reflect, rem - d - self._NUDGE, jnp.float32(0.0))
             dperp_refl = jnp.where(first_hit & ~transmit, rho_mult * d_perp, jnp.float32(0.0))
             return (r_new, d_new, rem_new, decided | first_hit,
-                    dlogw - 2.0 * jnp.float32(rho_over_D) * dperp_refl), None
-        (rf, df, remf, _, dlogw), _ = jax.lax.scan(
-            one, (r_w, d_hat, step_l, False, jnp.float32(0.0)), None, length=10)
-        r_out = r + (rf + df * jnp.maximum(remf, 0.0) - r_w)
+                    dlogw - 2.0 * jnp.float32(rho_over_D) * dperp_refl), do_reflect
+        (rf, df, remf, _, dlogw), refls = jax.lax.scan(
+            one, (r_w, d_hat, step_l, False, jnp.float32(0.0)), None, length=self._MAX_BOUNCES)
+        # see `reflect`. A transmitted walker already zeroed `rem`, so only a still-bouncing final
+        # iteration means the budget ran out with untested path left.
+        r_out = r + (rf + df * jnp.where(refls[-1], 0.0, jnp.maximum(remf, 0.0)) - r_w)
         return r_out, dlogw
 
     # ------------------------------------------------------------------

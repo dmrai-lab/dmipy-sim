@@ -69,6 +69,32 @@ def _surface_char_radius(geometry):
     return _geometry_radius(geometry)
 
 
+def collision_sub_steps(geometry, diffusivity: float, dt: float, frac: float = 0.9) -> int:
+    """Sub-steps so one displacement cannot outrun the collision candidate lookup.
+
+    Collision detection is an exact segment-triangle test, but only against the triangles in the 27-cell
+    gather around the step's START. A step longer than a cell can therefore leave that box and cross a
+    triangle that was never a candidate -- the walker passes through a wall it was never tested against.
+
+    Measured on a closed cylinder at the default waveform resolution (step 1.039 um): at cell 0.533 um
+    (step/cell 1.95) 2.0% of walkers leak per step, and refining the mesh to cell 0.250 um (step/cell 4.16)
+    takes it to 8.7%. Compounded over a walk that is 45% and 90% of the ensemble. The failure is invisible
+    without an independent containment check and gets WORSE as the mesh improves, since the cell size
+    scales with the triangle size while the step does not.
+
+    Step length falls as 1/sqrt(n), so n = (L / (frac*cell))^2 keeps each sub-step inside the gather.
+    ``frac`` under 1 leaves margin for a walker sitting at the far edge of its own cell.
+
+    Returns 1 for geometries with no cell grid, and self-limits to 1 once dt already resolves the cell.
+    """
+    cs = getattr(geometry, "cell_size", None)
+    if cs is None or not np.isfinite(cs) or cs <= 0:
+        return 1
+    L = float(np.sqrt(6.0 * float(diffusivity) * float(dt)))
+    ratio = L / (float(frac) * float(cs))
+    return int(max(1, np.ceil(ratio ** 2))) if ratio > 1.0 else 1
+
+
 def surface_sub_steps(geometry, diffusivity: float, dt: float, frac: float = 8.0) -> int:
     """Fine sub-steps so a surface-relaxivity walk resolves the boundary local time.
 
@@ -270,48 +296,58 @@ def make_step_fn(geometry, diffusivity: float, dt: float, T2: float = None,
         # No surface relaxation, no permeability — but T2/T1 (incl. per-compartment)
         # require the log_weight carry.
         reflect = geometry.reflect
+        # Sub-step so a displacement cannot outrun the collision candidate lookup (see
+        # collision_sub_steps). Without it a step spanning several grid cells crosses triangles that were
+        # never candidates and the walker leaves an impermeable mesh silently.
+        n_col = collision_sub_steps(geometry, float(_D0), dt)
+        dt_col = jnp.float32(dt / n_col)
+        gamma_dt_col = jnp.float32(GAMMA * dt / n_col)
 
         def step_fn(carry, inputs):
             g_t, chi_t = inputs
-            r, phi, log_weight, key = carry
 
-            key, subkey = jax.random.split(key)
-            noise = jax.random.normal(subkey, (3,), dtype=jnp.float32)
-            unit_noise = noise / jnp.linalg.norm(noise)
-            step = unit_noise * _step_l(r, dt_f32)
+            def _sub(c, _):
+                r, phi, log_weight, key = c
+                key, subkey = jax.random.split(key)
+                noise = jax.random.normal(subkey, (3,), dtype=jnp.float32)
+                unit_noise = noise / jnp.linalg.norm(noise)
+                step = unit_noise * _step_l(r, dt_col)
+                r_new = reflect(r, step)
+                dlog = jnp.float32(0.0)
+                if has_t2:
+                    dlog = dlog - _t2_decrement(r_new, dt_col) * chi_t
+                if has_t1:
+                    dlog = dlog - _t1_decrement(r_new, dt_col) * (jnp.float32(1.0) - chi_t)
+                return (r_new, phi + gamma_dt_col * jnp.dot(g_t, r_new),
+                        log_weight + dlog, key), None
 
-            r_new = reflect(r, step)
-
-            dlog_w = jnp.float32(0.0)
-            if has_t2:
-                dlog_w = dlog_w - _t2_decrement(r_new, dt_f32) * chi_t
-            if has_t1:
-                dlog_w = dlog_w - _t1_decrement(r_new, dt_f32) * (jnp.float32(1.0) - chi_t)
-            dphi    = gamma_dt * jnp.dot(g_t, r_new)
-            phi_new = phi + dphi
-
-            return (r_new, phi_new, log_weight + dlog_w, key), None
+            carry_out, _ = jax.lax.scan(_sub, carry, None, length=n_col)
+            return carry_out, None
 
     else:
         # No weight at all. (A Mesh with only per-compartment D lands here — the
         # step length is still resolved per compartment via _step_l.)
         reflect = geometry.reflect
+        # Same collision-lookup constraint as the branch above: a step longer than a grid cell can cross a
+        # triangle that was never a candidate, and the walker leaves an impermeable mesh with nothing raised.
+        n_col = collision_sub_steps(geometry, float(_D0), dt)
+        dt_col = jnp.float32(dt / n_col)
+        gamma_dt_col = jnp.float32(GAMMA * dt / n_col)
 
         def step_fn(carry, inputs):
             g_t, _chi_t = inputs
-            r, phi, key = carry
 
-            key, subkey = jax.random.split(key)
-            noise = jax.random.normal(subkey, (3,), dtype=jnp.float32)
-            unit_noise = noise / jnp.linalg.norm(noise)
-            step = unit_noise * _step_l(r, dt_f32)
+            def _sub(c, _):
+                r, phi, key = c
+                key, subkey = jax.random.split(key)
+                noise = jax.random.normal(subkey, (3,), dtype=jnp.float32)
+                unit_noise = noise / jnp.linalg.norm(noise)
+                step = unit_noise * _step_l(r, dt_col)
+                r_new = reflect(r, step)
+                return (r_new, phi + gamma_dt_col * jnp.dot(g_t, r_new), key), None
 
-            r_new = reflect(r, step)
-
-            dphi    = gamma_dt * jnp.dot(g_t, r_new)
-            phi_new = phi + dphi
-
-            return (r_new, phi_new, key), None
+            carry_out, _ = jax.lax.scan(_sub, carry, None, length=n_col)
+            return carry_out, None
 
     return step_fn, has_weight
 

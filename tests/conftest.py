@@ -52,6 +52,10 @@ _SLOW_MC_MODULES = {
     "test_compartment_tagging", "test_t2", "test_sh_convolution",
     "test_karger_mc_parity", "test_t2_walker_parity",
     "test_mesh_mc",
+    # Six mesh MC walks (three grid resolutions x two assertions). Collision sub-stepping makes each
+    # one several times what it would otherwise cost, which is the point of it -- but it belongs in the
+    # nightly job, not the ~1 min lane.
+    "test_mesh_acceleration_invariance",
     "test_replay_parity",
     "test_replay_fields_mt",
     "test_engine_dispatch",
