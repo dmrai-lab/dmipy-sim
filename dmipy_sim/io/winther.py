@@ -70,7 +70,7 @@ def _load_ply(path, scale):
     return V, F, trimesh.Trimesh(V, F, process=False)
 
 
-def load_winther_bundle(inner_ply, outer_ply, *, scale=_UM, g_ratio=0.7, pad=1.0e-6,
+def load_winther_bundle(inner_ply, outer_ply, *, scale=_UM, g_ratio=None, pad=1.0e-6,
                         fibre_tangent=(0.0, 0.0, 1.0), axon_id=None):
     """Build a :class:`CactusBundle` (single fibre) from one axon's inner + outer surface PLYs.
 
@@ -96,13 +96,27 @@ def load_winther_bundle(inner_ply, outer_ply, *, scale=_UM, g_ratio=0.7, pad=1.0
         warnings.warn(f"winther axon {axon_id or ''}: mesh not watertight "
                       f"(inner={mi.is_watertight}, outer={mo.is_watertight}); volume fractions "
                       f"use |mesh.volume| and may be approximate.", stacklevel=2)
+    # g-ratio is a PROPERTY OF THE MESHES, not an input. Both volumes are already in hand, and for a tube
+    # V ∝ r²L, so g = r_in/r_out = sqrt(V_in/V_out). Taking it as an argument let a caller's default be
+    # written into pack provenance and substrate cards while the geometry said otherwise, with nothing to
+    # notice: the shipped default 0.7 happens to match this dataset (whose outer surfaces are constructed
+    # from the inner at a fixed g), but is meaningless for a bundle, where g varies fibre to fibre.
+    g_measured = float(np.sqrt(vol_in / vol_out)) if vol_out > 0 else float("nan")
+    if g_ratio is not None and np.isfinite(g_measured) and abs(float(g_ratio) - g_measured) > 0.02:
+        import warnings
+        warnings.warn(
+            f"winther axon {axon_id or ''}: supplied g_ratio={float(g_ratio):.3f} disagrees with the "
+            f"meshes' own {g_measured:.3f} (from V_in/V_out). Using the measured value; drop the argument "
+            f"to silence this.", stacklevel=2)
+    g_out = g_measured if np.isfinite(g_measured) else (0.7 if g_ratio is None else float(g_ratio))
+
     f_intra = vol_in / box_vol
     f_myelin = max(0.0, (vol_out - vol_in) / box_vol)
     f_extra = max(0.0, 1.0 - vol_out / box_vol)
 
     return CactusBundle(
         inner=(Vi, Fi), outer=(Vo, Fo), box_min=box_min, box_max=box_max,
-        g_ratio=float(g_ratio), f_intra=float(f_intra), f_myelin=float(f_myelin),
+        g_ratio=float(g_out), f_intra=float(f_intra), f_myelin=float(f_myelin),
         f_extra=float(f_extra), n_fibres=1, fibre_axis=fibre_axis,
         run_dir=str(os.path.dirname(str(inner_ply))),
         fibre_tangents=np.asarray([fibre_tangent], float))
