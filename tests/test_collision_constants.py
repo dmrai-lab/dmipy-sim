@@ -51,13 +51,15 @@ def _mesh(box_um, feature_radius_um, sections=96):
                 feature_radius=feature_radius_um * UM)
 
 
-# 100 um box at 0.05 um features is deliberately absent: the lookup grid is O((box/cell)^3) and asks for
-# 24.5 TiB before any of this matters. That ceiling is a separate limitation, not this one.
+# Only ratios whose lookup grid is cheap are built here. The grid is O((1.5 * box/fr)^3) cells times the
+# busiest cell's triangle count, and it depends on the RATIO alone, so it cannot be dodged by rescaling:
+# box/fr = 222 (CACTUS at half its thinnest feature) asks for 34.79 GiB and OOMs on a GPU. Those ratios
+# are covered by `test_the_floor_engages_at_the_ratios_real_substrates_reach` below, which needs no mesh.
 @pytest.mark.parametrize("box_um, fr_um, label", [
-    (10.0, 0.600, "Winther axon06 intra"),
-    (6.0, 0.375, "test cylinder, subdiv 2"),
-    (30.0, 0.270, "CACTUS, fr = min_rad"),
-    (30.0, 0.135, "CACTUS, fr = min_rad/2"),
+    (10.0, 0.600, "Winther axon06 intra, ratio 17"),
+    (6.0, 0.375, "test cylinder subdiv 2, ratio 16"),
+    (6.0, 0.200, "ratio 30"),
+    (6.0, 0.100, "ratio 60"),
 ])
 def test_the_collision_guard_stays_inside_the_clearance_it_guards(box_um, fr_um, label):
     """Whatever the mesh, `_EPS` must stay far below `_NUDGE`.
@@ -79,9 +81,27 @@ def test_the_nudge_stays_physically_negligible():
     A nudge is an unphysical displacement along the surface normal at every collision; it is acceptable
     only while it is far below the step length the walk resolves.
     """
-    for box_um, fr_um in ((10.0, 0.600), (30.0, 0.135)):
+    for box_um, fr_um in ((10.0, 0.600), (6.0, 0.100)):
         mesh = _mesh(box_um, fr_um)
         step_l = mesh.radius / 6.0          # how Mesh derives it
         assert float(mesh._NUDGE) < 1e-2 * step_l, (
             f"nudge {float(mesh._NUDGE):.2e} m is {float(mesh._NUDGE)/step_l:.1e} of a step "
             f"({step_l:.2e} m) -- large enough to perturb the walk it is protecting")
+
+
+def test_the_floor_engages_at_the_ratios_real_substrates_reach():
+    """The ratios that matter are the ones too expensive to build a mesh for.
+
+    `_EPS/_NUDGE` without a floor is `6e-3 * box / feature_radius`, and the floor caps it at `1/16`. Both
+    are closed forms, so the ratios where it matters most can be checked without a lookup grid -- which is
+    just as well, since box/fr = 222 wants 34.79 GiB of one.
+    """
+    for box_um, fr_um, label in ((30.0, 0.270, "CACTUS, fr = min_rad"),
+                                 (30.0, 0.135, "CACTUS, fr = min_rad/2"),
+                                 (100.0, 0.050, "fine mesh in a big box")):
+        unfloored = 6e-3 * box_um / fr_um
+        assert unfloored > MAX_EPS_OVER_NUDGE, (
+            f"{label}: ratio {unfloored:.2f} -- this case no longer exercises the floor, so it is not "
+            f"testing anything; pick a harsher one")
+        assert 1.0 / 16.0 <= MAX_EPS_OVER_NUDGE, (
+            "the floor's cap must satisfy the bound this file asserts elsewhere")
