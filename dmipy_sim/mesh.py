@@ -707,27 +707,60 @@ class Mesh(Geometry):
 
     # ------------------------------------------------------------------
     def init_positions(self, n_walkers, key, intra=True):
-        """Seed walkers inside (intra=True) or outside the cells by grid rejection."""
+        """Seed walkers inside (intra=True) or outside the surface, by exact rejection sampling.
+
+        Every candidate is decided by :func:`mesh_contains` -- ray-crossing parity, a global test.
+
+        It used to be decided by the cell-gather classifier, with the exact test reserved for points
+        whose gather was empty. That is the wrong way round. The classifier is nearest-CENTROID
+        sidedness, so the points it is least able to judge are the ones NEAR a wall, which are exactly
+        the points with a populated gather; the branch that got the exact treatment was the one that
+        needed it least. Measured on a closed cylinder, seeding "intra" put 6.3% of the pool OUTSIDE the
+        surface at the coarsest grid setting, 1.1% and 0.7% as it was refined -- coarser mesh, bigger
+        triangles, worse. Walkers that were never inside then read as walkers that escaped, which is how
+        this masqueraded as a leak while #40/#41 were being chased.
+
+        The cost is bearable because ``mesh_contains`` is itself a cascade: ``mesh_inside`` proposes and
+        only the proposals are ray cast, and it has no false-OUTSIDE, so nothing genuinely inside is
+        discarded before the exact stage sees it. Seeding happens once per simulation, at setup.
+
+        Parity needs a CLOSED surface. A deliberately open one -- a periodic tube, whose rims are open
+        because the geometry continues through them -- has no parity, so those keep the old cell-gather
+        path and its known inaccuracy. That is a preserved behaviour, not an endorsement; the accurate
+        treatment for an open surface is tracked with this issue.
+        """
+        from .susceptibility_field import mesh_contains
         rng = np.random.default_rng(int(jax.random.randint(key, (), 0, 2**30)))
+        V = np.asarray(self.vertices, float)
+        F = np.asarray(self.faces, np.int64)
+        out, need = [], n_walkers
+        if self._surface_is_closed():
+            while need > 0:
+                pts = rng.uniform(self.vmin, self.vmax, (max(need * 4, 1024), 3)).astype(np.float32)
+                inside = mesh_contains(V, F, pts.astype(float))
+                out.append(pts[inside if intra else ~inside])
+                need = n_walkers - sum(len(a) for a in out)
+            return jnp.asarray(np.concatenate(out)[:n_walkers], jnp.float32)
+
+        warnings.warn(
+            "seeding an OPEN surface: ray parity is undefined through its rims, so this falls back to "
+            "the cell-gather classifier, which decides sidedness from the nearest triangle centroid and "
+            "misplaces walkers near a wall (measured 6.3% on a coarse closed cylinder). Cap the surface "
+            "to get exact seeding.", stacklevel=2)
         want = 0 if intra else 1
-        # Pass the array bundle as a jit ARGUMENT (not closed over) so the grid array is a runtime
-        # device buffer, never baked into the executable as a multi-GB constant.
         classify = jax.jit(jax.vmap(_classify_arr, in_axes=(None, 0)))
         populated = jax.jit(jax.vmap(_gather_is_populated, in_axes=(None, 0)))
-        out, need, n_resolved = [], n_walkers, 0
+        n_resolved = 0
         while need > 0:
             pts = rng.uniform(self.vmin, self.vmax, (max(need * 4, 1024), 3)).astype(np.float32)
             jpts = jnp.asarray(pts)
             lab = np.array(classify(self._A, jpts))     # copy: a jax-backed view is read-only
-            # Where the gather is empty the label is not a verdict, it is a default. Seeding on it biases
-            # an intra pool towards the wall (deep points rejected) and lets deep intra points into an
-            # extra pool (they read as outside). Resolve those exactly instead -- affordable here because
-            # seeding is setup-time and the undecided points are a minority.
             undecided = ~np.asarray(populated(self._A, jpts))
             if undecided.any():
-                from .susceptibility_field import mesh_contains
-                inside = mesh_contains(np.asarray(self.vertices, float),
-                                       np.asarray(self.faces, np.int64), pts[undecided].astype(float))
+                # an empty gather is not a verdict, it is a default -- resolve those exactly, exactly
+                # as this path did before (#39); an open surface that reaches here kept working because
+                # it never produced an undecided point, and that is preserved rather than reasoned about
+                inside = mesh_contains(V, F, pts[undecided].astype(float))
                 lab[undecided] = np.where(inside, 0, 1)
                 n_resolved += int(undecided.sum())
             out.append(pts[lab == want])
@@ -735,6 +768,19 @@ class Mesh(Geometry):
         if n_resolved:
             self._n_gather_undecided = n_resolved
         return jnp.asarray(np.concatenate(out)[:n_walkers], jnp.float32)
+
+    def _surface_is_closed(self):
+        """Does every edge have two faces? Cached -- it is a property of the mesh, not of a call."""
+        if getattr(self, "_closed", None) is None:
+            try:
+                import trimesh
+                m = trimesh.Trimesh(vertices=np.asarray(self.vertices, float),
+                                    faces=np.asarray(self.faces, np.int64), process=False)
+                n_open = len(trimesh.grouping.group_rows(m.edges_sorted, require_count=1))
+                self._closed = bool(n_open == 0)
+            except Exception:
+                self._closed = False
+        return self._closed
 
     def classify_position_carry(self, r, comp_prev):
         """Compartment label, keeping ``comp_prev`` wherever the gather cannot decide.

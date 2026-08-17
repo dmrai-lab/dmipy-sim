@@ -109,7 +109,9 @@ def test_seeding_fills_the_lumen_rather_than_hugging_the_wall():
     mesh, _, _ = _mesh_for(V, F)
 
     pts = np.asarray(mesh.init_positions(1500, jax.random.PRNGKey(3), intra=True), float)
-    assert tri.contains(pts).mean() > 0.97, "seeds must actually be inside the tube"
+    # exact, not "mostly": seeding decides containment by ray parity, so a seed outside is a bug
+    assert tri.contains(pts).all(), (
+        f"{100*(~tri.contains(pts)).mean():.2f}% of the intra pool is outside the tube")
 
     # radial distance from the tube axis, in units of the radius
     frac = np.linalg.norm(pts[:, :2], axis=1) / 3.0
@@ -126,5 +128,26 @@ def test_exterior_seeding_does_not_swallow_the_interior():
     mesh, _, _ = _mesh_for(V, F)
 
     pts = np.asarray(mesh.init_positions(1500, jax.random.PRNGKey(4), intra=False), float)
-    assert tri.contains(pts).mean() < 0.02, (
+    assert not tri.contains(pts).any(), (
         f"{100*tri.contains(pts).mean():.1f}% of the exterior pool is actually inside the tube")
+
+
+def test_seeding_is_exact_at_every_grid_resolution():
+    """The complementary failure: the points the classifier is TRUSTED on are the ones it judges worst.
+
+    The empty-gather case above is a point too deep to see a wall. This is the opposite end -- a point
+    near enough that its gather IS populated, where the classifier's verdict was taken as final. It
+    decides sidedness from the nearest triangle CENTROID, which is a poor stand-in for the surface when
+    triangles are large, so the error grows as the mesh gets coarser: seeding "intra" on a closed
+    cylinder put 6.27% of the pool outside at 384 triangles, 1.13% at 1536 and 0.73% at 6144.
+
+    Grid resolution is a speed knob. It must not decide whether a seed is inside its own surface.
+    """
+    for subdivisions in (0, 1, 2):
+        V, F, tri = _thick_finely_meshed_tube(height=24.0, subdivisions=subdivisions)
+        mesh, _, _ = _mesh_for(V, F)
+        pts = np.asarray(mesh.init_positions(600, jax.random.PRNGKey(5), intra=True), float)
+        outside = ~tri.contains(pts)
+        assert not outside.any(), (
+            f"subdivision {subdivisions} ({len(F)} triangles): {100*outside.mean():.2f}% of the intra "
+            f"pool was seeded OUTSIDE the surface")
