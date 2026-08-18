@@ -516,8 +516,25 @@ class Mesh(Geometry):
         self._L = jnp.asarray(self.L, jnp.float32)
         self._PER = jnp.asarray([1.0 if p else 0.0 for p in self.periodic], jnp.float32)
         _scale = float(np.min(self.L))
+        # Smallest length the float32 coordinates can still resolve. A candidate collision closer than
+        # this is numerical noise -- in practice the walker re-detecting the triangle it just left -- so
+        # the segment test discards it. Domain-scaled because float32 precision is relative.
         self._EPS = jnp.float32(1e-7 * _scale)
-        self._NUDGE = jnp.float32(1e-4 * step_l)
+        # ...which means the post-collision nudge has to CLEAR that noise floor by a wide margin. It is
+        # what stands between the walker and the wall it just bounced off; if it is comparable to _EPS,
+        # the guard that rejects the re-hit also rejects a genuine wall lying just ahead, and the walker
+        # passes through. The two were scaled independently -- _EPS to the box, the nudge to the step --
+        # so refining a mesh shrank the nudge while _EPS stayed put and the leak grew: _EPS/nudge ran
+        # 0.075 at 384 triangles and 0.160 at 6144, and escape tracked it. Measured at 20,000 walkers,
+        # scaling _EPS by 100 (the same squeeze, from the other side) escapes 24% of the ensemble.
+        # The floor keeps that ratio bounded whatever the mesh does. 16x, not more: the nudge is an
+        # unphysical outward displacement applied at EVERY collision, so buying margin with it has a
+        # price. 16 puts the ratio at 1/16 = 0.0625 -- an order of magnitude under the 1.33 that leaks,
+        # and tighter than the 0.16 that already measures 0 escapes in 4,000 -- while keeping the
+        # displacement at 2.6e-3 of a step on the tightest real geometry (CACTUS: 30 um box, 0.135 um
+        # features). A 64x floor would have bounded the ratio just as well and cost 1% of a step there,
+        # which is trading one bias for another.
+        self._NUDGE = jnp.float32(max(1e-4 * step_l, 16.0 * float(self._EPS)))
         # minimum sine of the angle the outgoing ray must make with the triangle it left
         self._GRAZE = jnp.float32(1e-4)
         self._MAX_BOUNCES = int(max_bounces)
