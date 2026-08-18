@@ -36,7 +36,7 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 
-from .physics import _geometry_radius
+from .physics import _geometry_radius, mt_sub_steps as _mt_sub_steps
 from . import mt as _mt
 
 
@@ -97,15 +97,14 @@ def simulate_mt_trajectories(
     n_t = int(round(T_max / dt_save)) + 1
     dt_actual = T_max / (n_t - 1)
 
-    # sub-step auto-tune: binding freezes walkers (trajectory-altering, like
-    # permeability), so use the finer R/25 rule (divisor 6*25^2=3750), not R/6.
+    # sub-step auto-tune: see physics.mt_sub_steps. The geometry criterion is dispatched to the one the
+    # engine already uses for that class of geometry -- collision-lookup resolution for a mesh, R/8
+    # local-time accuracy for an analytic shape -- plus a dwell-resolution floor. The previous R/25 rule
+    # was inherited from permeability, was geometric where the binding physics is not, and for a mesh keyed
+    # off feature_radius (mesh resolution) rather than any pore.
     R_geom = _geometry_radius(geometry)
     if sub_steps is None:
-        if R_geom is None:
-            sub_steps = 1
-        else:
-            dt_phys_max = float(R_geom) ** 2 / (3750.0 * diffusivity)
-            sub_steps = max(1, int(np.ceil(dt_actual / dt_phys_max)))
+        sub_steps = _mt_sub_steps(geometry, diffusivity, dt_actual, dwell_time)
     dt_sim = dt_actual / sub_steps
     step_l = jnp.float32(jnp.sqrt(6.0 * diffusivity * dt_sim))
 
