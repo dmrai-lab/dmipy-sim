@@ -82,9 +82,10 @@ def test_a_permeable_mesh_keeps_the_fine_rule():
 def test_the_observables_are_converged_at_the_collision_criterion():
     """Refining 4x beyond the collision criterion must not move the walk's observables.
 
-    `simulate_trajectories` takes no sub_steps argument -- the count comes from the auto-tune, which reads
-    `geometry.radius` and nothing else. Setting that attribute after construction varies the STEP alone and
-    leaves the acceleration grid (built in __init__) untouched, which is the controlled comparison wanted.
+    `simulate_trajectories` takes no sub_steps argument, so the step is varied through the attribute the rule
+    actually reads. For a MESH that is now `cell_size`, not `radius` -- this change is what moved it. Setting
+    `radius` here would silently leave every run at the same step and compare a configuration against
+    itself, which is how this test first passed while asserting nothing.
     """
     from dmipy_sim.core import simulate_trajectories
     mesh = _mesh_sphere()
@@ -92,16 +93,24 @@ def test_the_observables_are_converged_at_the_collision_criterion():
     n_coll = collision_sub_steps(mesh, D, dt_save)
 
     out = {}
+    steps = {}
     for mult in (1, 4):
         target = n_coll * mult
-        mesh.radius = float(np.sqrt(216.0 * D * dt_save / target))
+        # n = ceil((L/(0.9*cell))^2), L = sqrt(6 D dt) -> invert for a target n
+        L = float(np.sqrt(6.0 * D * dt_save))
+        mesh.cell_size = float(L / (0.9 * np.sqrt(target)))
         o = simulate_trajectories(n, D, mesh, T_max=T_max, dt_save=dt_save, seed=3,
                                   save_relaxation_data=True, require_gpu=False)
+        steps[mult] = int(o[2])
         tr = np.asarray(o[0], np.float64)
         disp = tr[:, -1, :] - tr[:, 0, :]
         out[mult] = (float((disp ** 2).sum(axis=1).mean() / (6.0 * T_max)),
                      float(-np.asarray(o[4], np.float64).sum(axis=1).mean()))
 
+    # guard the lever itself: if the two runs used the same sub-step count this test proves nothing
+    assert steps[4] >= 3 * steps[1], (
+        f"refinement did not take effect (sub_steps {steps[1]} -> {steps[4]}); the step is driven by "
+        f"cell_size for a mesh, so a lever on the wrong attribute makes this test vacuous")
     d_rel = abs(out[4][0] - out[1][0]) / out[1][0]
     lt_rel = abs(out[4][1] - out[1][1]) / out[1][1]
     assert d_rel < 0.05, f"apparent D moved {100*d_rel:.2f}% refining 4x past the collision criterion"
