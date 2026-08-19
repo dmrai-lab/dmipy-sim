@@ -20,7 +20,8 @@ trimesh = pytest.importorskip("trimesh")
 
 from dmipy_sim.io.cactus import load_cactus_bundle
 from dmipy_sim.mesh_bundle import (bundle_mt_params, kappa_MT_for_voxel_f_bound, wm_mt_parameters,
-                                   mesh_bundle_master, _exterior_seeds, _min_radius)
+                                   mesh_bundle_master, _rejection_seeds, containment_predicates,
+                                   _min_radius)
 
 UM = 1e-6
 
@@ -112,12 +113,10 @@ def test_extra_pool_seeds_avoid_the_axon_interiors(tmp_path):
     process and 1 inside in another. Tolerating the wall itself (a seed may legitimately sit a float away
     from it) while forbidding anything DEEP is the property actually worth asserting.
     """
-    from dmipy_sim.mesh import Mesh
     b = _bundle_dir(tmp_path)
-    Vo, Fo = b.outer
-    mesh_out = Mesh(Vo, Fo, periodic=False, voxel_min=b.box_min, voxel_max=b.box_max,
-                    feature_radius=_min_radius(Vo, Fo))
-    pts = _exterior_seeds(mesh_out, b.box_min, b.box_max, 400, seed=0)
+    _, inside_out = containment_predicates(b, "exact")
+    pts, frac = _rejection_seeds(lambda q: ~inside_out(q), b.box_min, b.box_max, 400, seed=0)
+    assert 0.0 < frac < 1.0, f"measured extra fraction {frac}"
 
     r_out, axes_x, half_h = 2.0 * UM, (-2.5 * UM, 2.5 * UM), 10.0 * UM
     depth = np.full(len(pts), -np.inf)
@@ -158,3 +157,37 @@ def test_emergent_mt_stores_a_per_walker_channel(tmp_path):
     # a frozen myelin walker never moves, so it never strikes a wall and never binds
     assert np.all(m["bfrac"][m["comp0"] == 2] == 0.0)
     assert mesh_bundle_master(b, mt="parametric", **kw).get("bfrac") is None
+
+
+# ---------------------------------------------------------------- uniform density
+@pytest.mark.slow
+def test_the_ensemble_is_unweighted(tmp_path):
+    """Uniform-density seeding plus myelin thinning must leave every walker weighing the same.
+
+    Weighting a pool instead (volume fraction / count) is the alternative design, and it costs effective
+    sample size: an unequally weighted mean has fewer effective samples than walkers, so it reaches a given
+    Monte-Carlo floor with more compute. Equal weights are the point of thinning, not a nicety.
+    """
+    b = _bundle_dir(tmp_path)
+    m = mesh_bundle_master(b, n_walkers=600, T_max=1e-3, n_t=10, seed=0, field=False,
+                           containment="exact", n_probe=20_000, require_gpu=False, verbose=False)
+    w = m["w"]
+    assert w.min() > 0
+    assert w.max() / w.min() == pytest.approx(1.0, abs=0.02), f"weight spread {w.max()/w.min():.4f}"
+
+
+@pytest.mark.slow
+def test_a_walker_prefix_is_a_valid_sub_ensemble(tmp_path):
+    """Precision tiers read the first n rows, so the pools must be interleaved, not stacked.
+
+    Stacked pool-by-pool, a prefix read returns a substrate with no intra and no myelin at all -- silently,
+    with a plausible-looking signal.
+    """
+    b = _bundle_dir(tmp_path)
+    m = mesh_bundle_master(b, n_walkers=900, T_max=1e-3, n_t=10, seed=0, field=False,
+                           containment="exact", n_probe=20_000, require_gpu=False, verbose=False)
+    ids = m["comp0"]
+    assert len(set(ids.tolist())) >= 2, "test substrate must have several pools"
+    prefix = ids[:len(ids) // 4]
+    for pool in set(ids.tolist()):
+        assert (prefix == pool).any(), f"pool {pool} absent from the first quarter of the ensemble"

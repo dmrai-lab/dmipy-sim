@@ -176,18 +176,53 @@ class BoxedMesh:
 
 
 # ---------------------------------------------------------------- C4: MT
-def _free_pool_geometry(bundle):
-    """Per-pool ``(S/V, volume)`` for the two free-water pools, from the meshes themselves."""
+def _box_clipped_area(V, F, box_min, box_max):
+    """Surface area of ``(V, F)`` restricted to the box, via an UNCAPPED clip.
+
+    Uncapped on purpose: the faces a clip introduces on the cut planes are not real surface, and counting
+    them would inflate S. Uses :mod:`trimesh` rather than reimplementing polygon clipping.
+    """
     import trimesh
-    A_in = float(trimesh.Trimesh(*bundle.inner, process=False).area)     # vertices already in metres
-    A_out = float(trimesh.Trimesh(*bundle.outer, process=False).area)
-    V_box = float(np.prod(bundle.box_side))
-    V_i, V_e = bundle.f_intra * V_box, bundle.f_extra * V_box
-    pools = {"intra": (A_in / V_i, V_i)} if V_i > 0 else {}
-    if V_e > 0:
+    m = trimesh.Trimesh(np.asarray(V, float), np.asarray(F, np.int64), process=False)
+    lo, hi = np.asarray(box_min, float), np.asarray(box_max, float)
+    for k in range(3):
+        for origin, normal in ((lo, np.eye(3)[k]), (hi, -np.eye(3)[k])):
+            if len(m.faces) == 0:
+                return 0.0
+            m = trimesh.intersections.slice_mesh_plane(m, plane_normal=normal, plane_origin=origin,
+                                                      cap=False)
+    return float(m.area)
+
+
+def _free_pool_geometry(bundle, *, containment="fast", n_probe=200_000, seed=99):
+    """Per-pool ``(S/V, volume)`` for the free-water pools, with S and V over the SAME region.
+
+    Both quantities are taken in-box. That is not pedantry: CACTUS fibres are finite and their end caps
+    overrun the periodic cell, so only 94.7% of the inner surface and 93.0% of the outer lie inside the
+    volume the walkers actually sample. Dividing the FULL mesh area by an in-box volume overstates the intra
+    S/V by 15% -- and since ``k_f = kappa_MT * (S/V)``, that made the analytic bound fraction unreachable:
+    the measured boundary local time came out at 0.851 of the mismatched prediction and 0.982 of this one.
+
+    Volumes are sampled with the containment predicates rather than taken from the loader's mesh-volume
+    fractions, which use a different reference again (cross-section times fibre extent, to strip that same
+    overhang). Sampling keeps the denominator in the same units as the numerator and as the seeding.
+    """
+    inside_in, inside_out = containment_predicates(bundle, containment)
+    lo, hi = np.asarray(bundle.box_min, float), np.asarray(bundle.box_max, float)
+    V_box = float(np.prod(hi - lo))
+    q = np.random.default_rng(seed).uniform(lo, hi, (int(n_probe), 3))
+    pin, pout = inside_in(q), inside_out(q)
+    V_i = float(pin.mean()) * V_box
+    V_e = float((~pout).mean()) * V_box
+    A_in = _box_clipped_area(*bundle.inner, lo, hi)
+    A_out = _box_clipped_area(*bundle.outer, lo, hi)
+    pools = {}
+    if V_i > 0:
+        pools["intra"] = (A_in / V_i, V_i)
+    if V_e > 0 and getattr(bundle, "has_extra_substrate", True):
         pools["extra"] = (A_out / V_e, V_e)
     if not pools:
-        raise ValueError("no free-water volume: both intra and extra fractions are zero")
+        raise ValueError("no free-water volume: both intra and extra fractions sampled as zero")
     return pools
 
 
@@ -204,6 +239,9 @@ def bundle_mt_params(bundle, kappa_MT, dwell_time):
     well-mixed answer and wrong here: measured against an emergent binding walk on an 8-strand CACTUS subset,
     the bundle-average predicted f_bound = 0.0042 where the intra pool's own S/V predicted 0.0349 against a
     measured 0.0388 (11% agreement). The average was 8x low.
+
+    S/V comes from :func:`_free_pool_geometry`, which takes area and volume over the same in-box region --
+    see there for why the obvious full-area version is 15% out on a bundle whose fibres overrun the cell.
 
     ``f_bound_voxel`` is the volume-weighted mean, which is the thing comparable to a qMT measurement of a
     voxel. Note the weighting counts only the free pools: a frozen myelin-water pool has D = 0, never strikes
@@ -269,44 +307,104 @@ def wm_mt_parameters(bundle, *, field_T=3.0, f_bound=None, exchange_rate_R=None)
     return kappa_MT_for_voxel_f_bound(bundle, M0B, dwell_time), dwell_time
 
 
+# ---------------------------------------------------------------- seeding
+def _rejection_seeds(pred, box_min, box_max, n, seed, oversample=4):
+    """Uniform points in the box accepted by ``pred(pts) -> bool[]``.
+
+    Returns ``(pts[:n], acceptance_fraction)`` -- and that fraction IS the compartment's volume fraction of
+    the box, measured on the same points that seeded it rather than taken from a separate mesh-volume
+    estimate.
+    """
+    rng = np.random.default_rng(seed)
+    keep, tried, acc = [], 0, 0
+    while acc < n:
+        q = rng.uniform(box_min, box_max, (max(oversample * (n - acc), 20000), 3))
+        m = pred(q); tried += len(q); acc += int(m.sum())
+        keep.append(q[m])
+    return np.vstack(keep)[:n], float(acc) / float(tried)
+
+
+def containment_predicates(bundle, mode="fast"):
+    """``(inside_inner, inside_outer)`` predicates for host-side points.
+
+    ``'exact'`` is ray-crossing parity (:func:`mesh_contains`) -- the reference, and the only sound choice
+    for a thin object in a large box, where a nearest-surface test accepts points far outside a tortuous
+    lumen. It costs about 21 ms PER POINT on a 366-fibre bundle without an embree backend, so seeding ~90k
+    walkers with it takes hours: that is what it is, not a tuning knob.
+
+    ``'fast'`` is the grid-based nearest-surface test (:func:`mesh_inside`), ~1000x quicker and effectively
+    fixed-cost. Its documented failure is a FAR field, which a densely packed bundle does not have -- every
+    point sits within about a micron of some surface. Measured on the 366-fibre CACTUS bundle at ICVF 0.61,
+    it disagrees with parity on well under 1% of points. Validate with
+    :func:`compare_containment` on any new substrate before trusting it: on a sparse one it will be wrong.
+    """
+    from .susceptibility_field import mesh_contains, mesh_inside
+    fn = mesh_contains if mode == "exact" else mesh_inside
+    if mode not in ("fast", "exact"):
+        raise ValueError(f"containment must be 'fast' or 'exact', got {mode!r}")
+    Vi, Fi = bundle.inner
+    Vo, Fo = bundle.outer
+    return (lambda q: np.asarray(fn(Vi, Fi, np.asarray(q, float))),
+            lambda q: np.asarray(fn(Vo, Fo, np.asarray(q, float))))
+
+
+def compare_containment(bundle, n=5000, seed=11):
+    """Disagreement between the fast and exact containment tests, per surface.
+
+    Run this before seeding a NEW substrate with ``containment='fast'``: the fast test's validity is a
+    property of how densely the box is filled, not of the code.
+    """
+    from .susceptibility_field import mesh_contains, mesh_inside
+    rng = np.random.default_rng(seed)
+    q = rng.uniform(bundle.box_min, bundle.box_max, (int(n), 3))
+    out = {}
+    for name, (V, F) in (("inner", bundle.inner), ("outer", bundle.outer)):
+        fast = np.asarray(mesh_inside(V, F, q)); exact = np.asarray(mesh_contains(V, F, q))
+        out[name] = dict(disagreement=float((fast != exact).mean()),
+                         false_inside=int((fast & ~exact).sum()),
+                         false_outside=int((~fast & exact).sum()),
+                         frac_fast=float(fast.mean()), frac_exact=float(exact.mean()))
+    return out
+
+
 # ---------------------------------------------------------------- the master walk
 def mesh_bundle_master(bundle, *, n_walkers=30_000, params=None, T_max=0.04, dt_save=None, n_t=80,
-                       seed=0, feature_radius_intra=None, feature_radius_extra=None, n_myelin=256,
+                       seed=0, feature_radius_intra=None, feature_radius_extra=None,
                        require_gpu=None, walker_batch_size=50_000, field=False, field_res=0.2e-6,
                        include_extra=None, mt=False, kappa_MT=None, dwell_time=None,
+                       myelin_water_proton_density=None, containment="fast", n_probe=200_000,
                        nominal_T2=None, nominal_T1=None, nominal_delta_chi_a=None, verbose=True):
     """Walk the pools of ``bundle`` and return a master-walk dict (``bank._master_arrays`` schema).
 
+    **Uniform density.** ``n_walkers`` is the TOTAL spin count, seeded at uniform density through the box:
+    the volume fractions are MEASURED on one common probe set and the budget split in proportion, so a
+    walker represents the same tissue volume wherever it sits. Myelin's lower water content is then applied
+    by THINNING -- keep a random ``myelin_water_proton_density`` fraction of the sheath spins and drop the
+    rest -- so every surviving spin matches the others in both volume and water content and the ensemble is
+    unweighted. An exact count is kept rather than a Bernoulli draw, which would add binomial noise to a
+    quantity known exactly.
+
+    This matters beyond tidiness: unequal per-walker weights reduce the effective sample size of the
+    weighted mean, so an unweighted ensemble reaches a given Monte-Carlo floor with fewer walkers.
+
     Parameters
     ----------
-    n_walkers : int
-        Total walkers, including the frozen myelin pool; the diffusing remainder is split between intra and
-        extra by volume fraction.
-    T_max, dt_save, n_t : float, float, int
-        Walk length and save grid; ``dt_save`` defaults to ``T_max / n_t``. Together these set the replay
-        envelope: ``T_max`` is the longest replayable TE and ``dt_save`` the finest replayable waveform
-        feature. Both are baked in -- everything else about the acquisition is not.
-    include_extra : bool, optional
-        Defaults to the substrate's own ``has_extra_substrate``: a packed bundle's extra-axonal space carries
-        structure, an isolated axon's surroundings are free water and carry none.
+    T_max, dt_save, n_t
+        Walk length and save grid (``dt_save`` defaults to ``T_max / n_t``). These set the replay envelope:
+        ``T_max`` is the longest replayable TE, ``dt_save`` the finest replayable waveform feature. Both are
+        baked in; nothing else about the acquisition is.
+    containment : {'fast', 'exact'}
+        See :func:`containment_predicates`. ``'fast'`` is sound on a densely packed bundle and about 1000x
+        quicker; check a new substrate with :func:`compare_containment` first.
     kappa_MT, dwell_time : float, optional
-        Left None (the default), both are derived from the catalogued white-matter qMT observables for this
-        substrate's own geometry -- see :func:`wm_mt_parameters`. There is no meaningful default for
-        ``kappa_MT`` alone, since it is a reactivity whose effect depends entirely on the surface it acts on.
+        Both None (the default) derives them from the catalogued white-matter qMT observables for this
+        geometry -- see :func:`wm_mt_parameters`.
     mt : bool or {'parametric', 'emergent'}
-        C4 tier. ``'parametric'`` (True) stores :func:`bundle_mt_params` and leaves ``kappa_MT``/
-        ``dwell_time`` replayable. ``'emergent'`` instead walks the diffusing pools with
-        :func:`dmipy_sim.mt_walk.simulate_mt_trajectories`, so walkers bind and freeze at the walls and a
-        per-walker ``bfrac`` channel is stored -- physically complete, but it BAKES those two parameters into
-        the pack, since a frozen walker's trajectory depends on them.
-    field : bool
-        C3 tier: store the static myelin susceptibility field basis (geometry only), which replay samples
-        along the reconstructed trajectory for any B0/orientation/susceptibility.
+        ``'parametric'`` stores :func:`bundle_mt_params` and leaves the MT parameters replayable;
+        ``'emergent'`` walks with binding, which BAKES them in, and stores a per-walker ``bfrac``.
     nominal_T2, nominal_T1, nominal_delta_chi_a : optional
-        Reference values written into the pack for certification and provenance only -- each is a REPLAY
-        knob, so leaving them None costs nothing physical. Supplying ``nominal_T2`` lets
-        ``build_replay_pack`` certify the C1 tier, which is otherwise skipped for want of a value to
-        certify against. Order is (extra, intra, myelin), matching the compartment ids.
+        Reference values for certification/provenance only -- each is a replay knob, so None costs nothing
+        physical. ``nominal_T2`` lets ``build_replay_pack`` certify the C1 tier. Order (extra, intra, myelin).
     """
     from .mesh import Mesh
     from .core import simulate_trajectories
@@ -319,13 +417,13 @@ def mesh_bundle_master(bundle, *, n_walkers=30_000, params=None, T_max=0.04, dt_
         dt_save = T_max / n_t
     if include_extra is None:
         include_extra = bool(getattr(bundle, "has_extra_substrate", True))
+    rho_m = float(p["myelin_water_proton_density"] if myelin_water_proton_density is None
+                  else myelin_water_proton_density)
     mt_mode = None
     if mt:
         mt_mode = "parametric" if mt is True else str(mt)
         if mt_mode not in ("parametric", "emergent"):
             raise ValueError(f"mt must be False, 'parametric' or 'emergent', got {mt!r}")
-        # Default to the catalogued white-matter qMT observables converted for THIS geometry, rather than a
-        # pair of bare constants: kappa_MT is only meaningful relative to a substrate's own S/V.
         if kappa_MT is None or dwell_time is None:
             k_lit, d_lit = wm_mt_parameters(bundle)
             kappa_MT = k_lit if kappa_MT is None else kappa_MT
@@ -338,74 +436,103 @@ def mesh_bundle_master(bundle, *, n_walkers=30_000, params=None, T_max=0.04, dt_
     Vo, Fo = bundle.outer
     fr_i = feature_radius_intra or _min_radius(Vi, Fi)
     fr_e = feature_radius_extra or _min_radius(Vo, Fo)
+    inside_in, inside_out = containment_predicates(bundle, containment)
 
-    f_i, f_e = bundle.f_intra, bundle.f_extra
-    n_diff = max(1, n_walkers - n_myelin)
-    if include_extra:
-        n_intra = max(1, int(round(n_diff * f_i / (f_i + f_e))))
-        n_extra = max(1, n_diff - n_intra)
-    else:
-        n_intra, n_extra = n_diff, 0
+    # ---- split the spin budget by MEASURED volume fractions, on one common probe set ----
+    rng0 = np.random.default_rng(seed + 99)
+    probe = rng0.uniform(bundle.box_min, bundle.box_max, (int(n_probe), 3))
+    pin, pout = inside_in(probe), inside_out(probe)
+    f_i_pre = float(pin.mean())
+    f_m_pre = float((pout & ~pin).mean())
+    f_e_pre = float((~pout).mean()) if include_extra else 0.0
+    tot = f_i_pre + f_m_pre + f_e_pre
+    n_intra = max(1, int(round(n_walkers * f_i_pre / tot)))
+    n_myelin_seeded = max(1, int(round(n_walkers * f_m_pre / tot)))
+    n_extra = max(1, int(round(n_walkers * f_e_pre / tot))) if include_extra else 0
     if verbose:
-        print(f"[bundle] pools: intra={n_intra} extra={n_extra} myelin={n_myelin} | "
-              f"fr_intra={fr_i/1e-6:.3f}um fr_extra={fr_e/1e-6:.3f}um | mt={mt_mode} | "
+        print(f"[bundle] uniform density ({containment} containment, {int(n_probe):,} probes): "
+              f"f_intra={f_i_pre:.4f} f_myelin={f_m_pre:.4f} f_extra={f_e_pre:.4f} -> "
+              f"n_intra={n_intra} n_myelin={n_myelin_seeded} n_extra={n_extra}", flush=True)
+        print(f"[bundle] fr_intra={fr_i/1e-6:.3f}um fr_extra={fr_e/1e-6:.3f}um | mt={mt_mode} | "
               f"{bundle.summary()}", flush=True)
 
-    # No surface_relaxivity_t2: the trajectory path records the boundary channel at rho/D = 1 on its own,
-    # and setting a magnitude here as well double-counts it (see the module note).
     mesh_in = Mesh(Vi, Fi, periodic=False, voxel_min=bundle.box_min, voxel_max=bundle.box_max,
                    feature_radius=fr_i)
     mesh_out = Mesh(Vo, Fo, periodic=False, voxel_min=bundle.box_min, voxel_max=bundle.box_max,
                     feature_radius=fr_e)
 
-    def _walk(n, D, geom, sd, r0=None):
-        """One pool, through the plain or the binding walk. Returns (traj, dlog_b, bfrac|None)."""
+    def _walk(n, D, geom, sd, r0):
+        """One pool, plain or binding walk -> (traj, dlog_b, bfrac|None), float32.
+
+        float32 rather than float64: positions are stored float16 on device, so upcasting past float32
+        inflates the master 4x for no information.
+        """
         if mt_mode == "emergent":
             from .mt_walk import simulate_mt_trajectories
-            o = simulate_mt_trajectories(n, D, geom, T_max, dt_save, kappa_MT, dwell_time,
-                                         seed=sd, walker_batch_size=walker_batch_size,
-                                         require_gpu=require_gpu)
-            # (traj, dt, sub_steps, dt_sim, bound_frac, dlog_boundary_unit)
-            return (np.asarray(o[0], np.float64), np.asarray(o[5], np.float64),
-                    np.asarray(o[4], np.float64))
-        kw = dict(save_relaxation_data=True, seed=sd, require_gpu=require_gpu,
-                  walker_batch_size=walker_batch_size)
-        if r0 is not None:
-            kw["r0"] = r0
-        o = simulate_trajectories(n, D, geom, T_max=T_max, dt_save=dt_save, **kw)
-        return np.asarray(o[0], np.float64), np.asarray(o[4], np.float64), None
+            o = simulate_mt_trajectories(n, D, geom, T_max, dt_save, kappa_MT, dwell_time, seed=sd,
+                                         walker_batch_size=walker_batch_size, require_gpu=require_gpu)
+            return (np.asarray(o[0], np.float32), np.asarray(o[5], np.float32),
+                    np.asarray(o[4], np.float32))
+        o = simulate_trajectories(n, D, geom, T_max=T_max, dt_save=dt_save, seed=sd, r0=r0,
+                                  save_relaxation_data=True, require_gpu=require_gpu,
+                                  walker_batch_size=walker_batch_size)
+        return np.asarray(o[0], np.float32), np.asarray(o[4], np.float32), None
 
-    # ---- intra pool: restricted inside the inner wall (Mesh seeds its own interior exactly) ----
-    tr_i, dlog_i, bf_i = _walk(n_intra, p["D_intra"], mesh_in, seed)
+    # ---- intra: restricted inside the inner wall. Seeds passed explicitly, never left to the cell-gather
+    # classifier, which calls a deep-interior point exterior wherever its 27-cell gather is empty (49.3% of
+    # intra volume here) and would hug the seeds to the wall. ----
+    r0_i, f_i = _rejection_seeds(inside_in, bundle.box_min, bundle.box_max, n_intra, seed)
+    tr_i, dlog_i, bf_i = _walk(n_intra, p["D_intra"], mesh_in, seed, r0_i)
     n_t_actual = tr_i.shape[1]
 
-    # ---- extra pool: hindered outside the outer wall, inside reflecting voxel walls ----
+    # ---- extra: hindered outside the outer wall, inside reflecting voxel walls ----
     if n_extra > 0:
-        r0_e = _exterior_seeds(mesh_out, bundle.box_min, bundle.box_max, n_extra, seed)
+        r0_e, f_e = _rejection_seeds(lambda q: ~inside_out(q), bundle.box_min, bundle.box_max,
+                                     n_extra, seed + 7)
         tr_e, dlog_e, bf_e = _walk(n_extra, p["D_extra"],
-                                   BoxedMesh(mesh_out, bundle.box_min, bundle.box_max),
-                                   seed + 7, r0=r0_e)
+                                   BoxedMesh(mesh_out, bundle.box_min, bundle.box_max), seed + 7, r0_e)
     else:
-        tr_e = np.zeros((0, n_t_actual, 3)); dlog_e = np.zeros((0, n_t_actual)); bf_e = None
+        f_e = 0.0
+        tr_e = np.zeros((0, n_t_actual, 3), np.float32); dlog_e = np.zeros((0, n_t_actual), np.float32)
+        bf_e = None
 
-    # ---- myelin pool: frozen shell water (D = 0), so its trajectory is its seed ----
-    r0_m = _shell_seeds(mesh_out, mesh_in, bundle.box_min, bundle.box_max, n_myelin, seed)
-    tr_m = np.repeat(r0_m[:, None, :], n_t_actual, axis=1)
-    dlog_m = np.zeros((n_myelin, n_t_actual))
+    # ---- myelin: frozen sheath water (D = 0), so its trajectory is its seed ----
+    r0_m, f_m = _rejection_seeds(lambda q: inside_out(q) & ~inside_in(q),
+                                 bundle.box_min, bundle.box_max, n_myelin_seeded, seed + 1)
+    n_myelin = max(1, int(round(rho_m * n_myelin_seeded)))
+    pick = np.random.default_rng(seed + 7).permutation(n_myelin_seeded)[:n_myelin]
+    r0_m = r0_m[np.sort(pick)]
+    if verbose:
+        print(f"[bundle] myelin water content by thinning: kept {n_myelin}/{n_myelin_seeded} "
+              f"(rho={rho_m}) -> unweighted ensemble", flush=True)
+    tr_m = np.repeat(r0_m[:, None, :].astype(np.float32), n_t_actual, axis=1)
+    dlog_m = np.zeros((n_myelin, n_t_actual), np.float32)
 
-    # ---- stack in comp-id order: extra, intra, myelin ----
+    # ---- stack (extra, intra, myelin) ----
     traj = np.concatenate([tr_e, tr_i, tr_m], axis=0)
     dlog_b = np.concatenate([dlog_e, dlog_i, dlog_m], axis=0)
     ids = np.concatenate([np.full(n_extra, EXTRA), np.full(n_intra, INTRA),
                           np.full(n_myelin, MYELIN)]).astype(np.int8)
-    comp = np.repeat(ids[:, None], n_t_actual, axis=1)
 
-    rho_m = p["myelin_water_proton_density"]
-    w = np.concatenate([
-        np.full(n_extra, (f_e * 1.0) / n_extra) if n_extra > 0 else np.zeros(0),
-        np.full(n_intra, (bundle.f_intra * 1.0) / n_intra),
-        np.full(n_myelin, (bundle.f_myelin * rho_m) / n_myelin),
-    ]).astype(np.float64)
+    # Per-walker weight = (volume represented) x (proton density). Under the uniform-density design the
+    # volume per walker is the same in every pool, and thinning has already applied the myelin density, so
+    # all weights coincide -- the spread is reported precisely so a regression away from 1.000 is visible.
+    vol_e = (f_e / n_extra) if n_extra > 0 else 0.0
+    vol_i = f_i / n_intra
+    vol_m = f_m / n_myelin_seeded          # volume per SEEDED sheath spin: what the survivors represent
+    w = np.concatenate([np.full(n_extra, vol_e), np.full(n_intra, vol_i),
+                        np.full(n_myelin, vol_m)]).astype(np.float64)
+    if verbose:
+        spread = float(w.max() / w.min()) if w.min() > 0 else float("nan")
+        print(f"[bundle] measured fractions: intra={f_i:.4f} myelin={f_m:.4f} extra={f_e:.4f} | "
+              f"weight spread max/min={spread:.4f} (1.0000 = unweighted)", flush=True)
+
+    # ---- deterministic shuffle so any walker PREFIX is a valid sub-ensemble ----
+    # Precision tiers read the first n rows of the walker-leading arrays. Stacked pool-by-pool those rows
+    # are all extra-axonal, so a prefix read would silently return a substrate with no intra and no myelin.
+    order = np.random.default_rng(int(seed) + 991).permutation(traj.shape[0])
+    traj, dlog_b, ids, w = traj[order], dlog_b[order], ids[order], w[order]
+    comp = np.repeat(ids[:, None], n_t_actual, axis=1)
 
     out = dict(
         traj=traj, dt_traj=float(dt_save), T_max=float(T_max),
@@ -413,13 +540,11 @@ def mesh_bundle_master(bundle, *, n_walkers=30_000, params=None, T_max=0.04, dt_
         R=np.eye(3), D_intra=float(p["D_intra"]),
         n_walkers=int(traj.shape[0]), seed=int(seed),
     )
-    # Nominal (provenance/certification) relaxation, omitted entirely when not supplied.
     if nominal_T2 is not None:
         out["T2_per_comp"] = np.asarray(nominal_T2, float)
     if nominal_T1 is not None:
         out["T1_per_comp"] = np.asarray(nominal_T1, float)
 
-    # ---- intrinsic orientation frame: per-population mean axes, not a global average ----
     tang = getattr(bundle, "fibre_tangents", None)
     if tang is None or len(tang) == 0:
         tang = np.eye(3)[None, bundle.fibre_axis]
@@ -427,21 +552,11 @@ def mesh_bundle_master(bundle, *, n_walkers=30_000, params=None, T_max=0.04, dt_
     if ori is not None:
         out["substrate_frame"] = ori["frame"].tolist()
         out["orientation"] = {k: v for k, v in ori.items() if k != "frame"}
-        if verbose:
-            ca = ori["crossing_angle_deg"]
-            print(f"[bundle] orientation: {ori['n_populations']} population(s), counts={ori['counts']}"
-                  + (f", crossing angle {ca}deg" if ca is not None else ""), flush=True)
 
-    # ---- C3 field: the static myelin susceptibility field basis (geometry only) ----
     if field:
         from .susceptibility_field import mesh_field_basis
-        if verbose:
-            print(f"[bundle] building susceptibility field basis (res={field_res/1e-6:.2f}um)...",
-                  flush=True)
         basis, origin, vs = mesh_field_basis(bundle.inner, bundle.outer, bundle.box_min, bundle.box_max,
                                              res=field_res, include_aniso=True)
-        if nominal_delta_chi_a is not None:
-            out["delta_chi_a"] = float(nominal_delta_chi_a)
         out["susc_field_basis"] = {
             "iso_local": np.asarray(basis["iso_local"], np.float32),
             "iso_P": np.asarray(basis["iso_P"], np.float32),
@@ -450,32 +565,25 @@ def mesh_bundle_master(bundle, *, n_walkers=30_000, params=None, T_max=0.04, dt_
             "shape": tuple(int(s) for s in basis["shape"]),
             "voxel_size": np.asarray(vs, float)}
         out["susc_grid_origin"] = np.asarray(origin, float)
-        if verbose:
-            print(f"[bundle] susc field-grid channel: shape={basis['shape']}", flush=True)
+        if nominal_delta_chi_a is not None:
+            out["delta_chi_a"] = float(nominal_delta_chi_a)
 
-    # ---- C4 MT ----
     if mt_mode == "parametric":
         out["mt_params"] = bundle_mt_params(bundle, kappa_MT, dwell_time)
         if verbose:
             m = out["mt_params"]
-            print(f"[bundle] MT two-pool (parametric, per compartment): voxel f_bound="
-                  f"{m['f_bound_voxel']:.4f}; "
-                  + ", ".join(f"{k}: f_b {m['f_bound'][k]:.4f} k_f {m['k_forward'][k]:.2f}/s "
-                              f"S/V {m['S_over_V'][k]:.3e}/m" for k in m['f_bound']), flush=True)
+            print(f"[bundle] MT (parametric, per compartment): voxel f_bound={m['f_bound_voxel']:.4f}; "
+                  + ", ".join(f"{k}: f_b {m['f_bound'][k]:.4f} k_f {m['k_forward'][k]:.2f}/s"
+                              for k in m["f_bound"]), flush=True)
     elif mt_mode == "emergent":
-        # The frozen myelin pool never binds (it does not move, so it never strikes a wall).
         bf = np.concatenate([
-            bf_e if bf_e is not None else np.zeros((0, n_t_actual)),
-            bf_i,
-            np.zeros((n_myelin, n_t_actual)),
-        ])
+            bf_e if bf_e is not None else np.zeros((0, n_t_actual), np.float32),
+            bf_i, np.zeros((n_myelin, n_t_actual), np.float32)])[order]
         out["bfrac"] = bf.astype(np.float32)
         out["mt_params"] = bundle_mt_params(bundle, kappa_MT, dwell_time)
         if verbose:
-            occ = float(bf[:len(bf) - n_myelin].mean()) if len(bf) > n_myelin else 0.0
-            print(f"[bundle] MT emergent: mean bound occupancy over the diffusing pools {occ:.4f} "
-                  f"(per-pool parametric prediction, voxel "
-                  f"{out['mt_params']['f_bound_voxel']:.4f}: "
-                  f"{ {k: round(v, 4) for k, v in out['mt_params']['f_bound'].items()} })", flush=True)
+            occ = float(bf[ids != MYELIN].mean())
+            print(f"[bundle] MT emergent: bound occupancy over the diffusing pools {occ:.4f} "
+                  f"(per-pool analytic voxel {out['mt_params']['f_bound_voxel']:.4f})", flush=True)
 
     return out
