@@ -151,3 +151,61 @@ def test_seeding_is_exact_at_every_grid_resolution():
         assert not outside.any(), (
             f"subdivision {subdivisions} ({len(F)} triangles): {100*outside.mean():.2f}% of the intra "
             f"pool was seeded OUTSIDE the surface")
+
+
+# ---------------------------------------------------------------------------
+# The walk's consumer of the same answer: reject_escape
+# ---------------------------------------------------------------------------
+
+def test_reject_escape_does_not_discard_steps_inside_the_lumen():
+    """A step between two genuinely interior points must survive, however deep it goes.
+
+    `reject_escape` is the impermeable-leak net, and it fired on a label *change*. Deep interior reads
+    exterior here, so a step crossing the gather frontier -- with no wall within reach of either end --
+    looked like a wall crossing and was discarded in both directions. That seals the near-wall shell off
+    from the bulk, and since the boundary local time is generated entirely within one step of the surface,
+    it starves the channel that surface relaxation and MT binding both read: a mesh sphere reached 67% of
+    the analytic local time and an MT bound fraction of 0.2296 against an analytic 0.3333.
+    """
+    V, F, tri = _thick_finely_meshed_tube()
+    mesh, lo, hi = _mesh_for(V, F)
+
+    rng = np.random.default_rng(1)
+    P = rng.uniform(lo, hi, (4000, 3))
+    interior = tri.contains(P)
+    populated = np.asarray(jax.jit(jax.vmap(_gather_is_populated, in_axes=(None, 0)))(
+        mesh._A, P.astype(np.float32)))
+
+    # near-wall interior -> deep interior: the frontier crossing, both ends genuinely inside
+    near = P[interior & populated]
+    deep = P[interior & ~populated]
+    assert len(near) > 20 and len(deep) > 20, "geometry must supply both near-wall and deep interior"
+    n = min(len(near), len(deep), 200)
+    esc = np.asarray(jax.jit(jax.vmap(mesh._escaped))(
+        near[:n].astype(np.float32), deep[:n].astype(np.float32)))
+    assert not esc.any(), (
+        f"{esc.sum()}/{n} steps between two interior points rejected as escapes")
+
+
+def test_reject_escape_still_catches_a_wall_crossing():
+    """The net must survive the fix: an interior->exterior step across the wall is still an escape.
+
+    Gating on decidability necessarily narrows the guard, so this pins the half that has to keep working.
+    A walker that has just tunnelled is within one step of the wall it passed through, so its gather is
+    populated and the label comparison is still meaningful.
+    """
+    V, F, tri = _thick_finely_meshed_tube()
+    mesh, lo, hi = _mesh_for(V, F)
+
+    # radial pairs straddling the wall, well inside the tube's height so the caps are not involved
+    rng = np.random.default_rng(2)
+    th = rng.uniform(0, 2 * np.pi, 200)
+    z = rng.uniform(-5.0, 5.0, 200)
+    radial = np.stack([np.cos(th), np.sin(th), np.zeros_like(th)], axis=1)
+    inside = radial * 2.7 + np.stack([np.zeros_like(z), np.zeros_like(z), z], axis=1)
+    outside = radial * 3.3 + np.stack([np.zeros_like(z), np.zeros_like(z), z], axis=1)
+    assert tri.contains(inside).all() and not tri.contains(outside).any(), "pairs must straddle the wall"
+
+    esc = np.asarray(jax.jit(jax.vmap(mesh._escaped))(
+        inside.astype(np.float32), outside.astype(np.float32)))
+    assert esc.all(), f"only {esc.sum()}/{len(esc)} genuine wall crossings flagged as escapes"

@@ -575,6 +575,27 @@ class Mesh(Geometry):
         """
         return _classify_arr(self._A, r)
 
+    def _escaped(self, r, r_out):
+        """Did this step cross a wall that the collision search failed to catch?
+
+        The leak safety net, and it may only fire where the classifier can actually tell. `_classify_arr`
+        calls a point with an empty 27-cell gather *exterior* -- correct for open space, but inside a pore
+        wider than the gather the deep interior reads exterior too (see `_classify_arr`: 19.6% of genuinely
+        interior points on a real axon bundle). Comparing the raw labels then flags the *gather frontier*
+        as a crossing and rejects the step in BOTH directions, sealing the near-wall shell off from the
+        bulk: measured 18.3% of steps discarded at r/R=0.8 on an R=2um mesh sphere with no wall within
+        reach. That starves the boundary-local-time channel, which is what surface relaxation and MT
+        binding are built from -- the mesh sphere reached only 67% of the analytic local time and an
+        equilibrium bound fraction of 0.2296 against 0.3333.
+
+        Gating on `_gather_is_populated` is not merely conservative, it is the physical statement: a walker
+        with no triangle anywhere in its gather has no wall within reach, so it cannot have crossed one.
+        Genuine escapes stay caught, because a walker that just passed through a wall is by construction
+        within one step of it and so still has a populated gather.
+        """
+        decidable = _gather_is_populated(self._A, r) & _gather_is_populated(self._A, r_out)
+        return decidable & (self.classify_position(r) != self.classify_position(r_out))
+
     def _smooth_normal(self, vnf, nrmf, u, v, idx, d_hat):
         bu, bv = u[idx], v[idx]
         ns = (1 - bu - bv) * vnf[idx, 0] + bu * vnf[idx, 1] + bv * vnf[idx, 2]
@@ -646,8 +667,7 @@ class Mesh(Geometry):
         exhausted = hits[-1]
         r_out = r + (rf + df * jnp.where(exhausted, 0.0, jnp.maximum(remf, 0.0)) - r_w)
         if self.reject_escape:
-            r_out = jnp.where(self.classify_position(r) == self.classify_position(r_out),
-                              r_out, r)
+            r_out = jnp.where(self._escaped(r, r_out), r, r_out)
         return r_out
 
     def reflect_with_log_weight(self, r, step, rho_over_D):
@@ -680,7 +700,7 @@ class Mesh(Geometry):
         # see `reflect`: the leftover path may only be flown if the last bounce found nothing
         r_out = r + (rf + df * jnp.where(hits[-1], 0.0, jnp.maximum(remf, 0.0)) - r_w)
         if self.reject_escape:
-            escaped = self.classify_position(r) != self.classify_position(r_out)
+            escaped = self._escaped(r, r_out)
             return jnp.where(escaped, r, r_out), jnp.where(escaped, jnp.float32(0.0), dlog_w)
         return r_out, dlog_w
 
