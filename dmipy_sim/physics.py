@@ -95,6 +95,71 @@ def collision_sub_steps(geometry, diffusivity: float, dt: float, frac: float = 0
     return int(max(1, np.ceil(ratio ** 2))) if ratio > 1.0 else 1
 
 
+def mt_sub_steps(geometry, diffusivity: float, dt: float, dwell_time: float,
+                 frac: float = 8.0, dwell_frac: float = 20.0) -> int:
+    """Sub-steps for an emergent-MT (surface-binding) walk.
+
+    MT's free->bound rate is not imposed; it emerges from the boundary local time accumulated at wall
+    encounters, and the per-encounter probability is ``min(1, (kappa_MT/D) * local_time)``. So what the
+    step size has to resolve is *the local time*, and -- on a mesh -- the *encounters themselves*. It does
+    NOT have to resolve a crossing, which is what permeability's much finer rule is for.
+
+    The rule this replaces was ``step_l = R/25``, justified as "binding freezes walkers
+    (trajectory-altering, like permeability)". Three things were wrong with that:
+
+    * It is geometric, while the binding physics is not. The linearisation needs ``p_stick << 1``; at
+      canonical parameters ``p_stick ~ 1e-5``, four orders below where it would matter. MCMRSimulator --
+      which implements the same emergent model -- derives its binding timestep purely from the binding
+      rate and the dwell time, with no length scale, and does NOT tighten its geometric term when MT is
+      enabled (its permeability term is likewise geometry-free, so the heritage was geometry-free at
+      source).
+    * For a Mesh, ``_geometry_radius`` returns ``feature_radius`` -- a MESH-RESOLUTION parameter, not a
+      pore. The same physical sphere therefore demanded 38 sub-steps as an analytic geometry and 6610 as a
+      mesh, and refining the mesh multiplied the cost quadratically for no physical reason.
+    * Measured, it bought nothing on the analytic side: on the canonical well-mixed sphere the emergent
+      equilibrium bound fraction sits within 0.43% of the analytic ``k_f/(k_f+k_r)`` at EVERY setting from
+      1 to 38 sub-steps, with no trend, at 8.9x the wall time.
+
+    So the geometry criterion is dispatched to whichever one the engine already uses for this class of
+    geometry, rather than inventing a third:
+
+    * **Mesh-like** (anything with a ``cell_size``): :func:`collision_sub_steps`. A step that outruns the
+      27-cell collision lookup misses wall encounters outright, and a missed encounter contributes no
+      local time -- so the binding rate is under-counted, not merely noisy, and it fails SILENTLY to a
+      plausible-looking number rather than raising. Measured on an R=2um mesh sphere (cell 0.10um,
+      f_b=0.3333): n_sub=4 gives a bound fraction of exactly 0.0000 -- at step_l=0.245um the search misses
+      the wall entirely, so nothing ever binds -- n_sub=8 is 12.1% low, and it converges from n_sub=16
+      (-0.36%, -0.71% at the 30 this rule picks, -0.06% at 40). It is the collision criterion, not R/25,
+      that sets where this converges, which is also why the rule must never fall below it.
+    * **Analytic**: ``step_l = R/frac`` with ``frac=8``, the same boundary-local-time accuracy target
+      surface relaxivity uses (~0.1 pp bias) -- reflection is exact at any step, so only the local-time
+      estimator's bias matters. Written out here rather than delegating to
+      :func:`surface_sub_steps` so that disabling surface sub-stepping (``surface_substep_frac=0``, used
+      for long qualitative CPMG forwards) cannot silently disable MT's.
+
+    Plus a floor so the rule is physics-aware and not purely geometric: release is tested once per
+    sub-step, so the dwell must span ``dwell_frac`` of them. It does not bind at realistic parameters
+    (~15,000 sub-steps per dwell for a CACTUS-scale mesh) and costs nothing when it does not.
+
+    Residual known bias, deliberately not chased: a fractional dwell remainder is rounded up to a whole
+    sub-step, biasing ``bound_frac`` high by ~``0.5*dt_sim/dwell_time`` per binding event -- 0.002% to
+    0.02% at realistic parameters, 0.33% with a 0.1 ms dwell. MCMRSimulator avoids it by releasing on a
+    continuous fraction of a step; not worth the complexity here at that magnitude.
+    """
+    if getattr(geometry, 'cell_size', None):
+        n = collision_sub_steps(geometry, diffusivity, dt)
+    else:
+        R = _geometry_radius(geometry)
+        if R is None:
+            n = 1
+        else:
+            dt_phys_max = (R / float(frac)) ** 2 / (6.0 * diffusivity)
+            n = max(1, int(np.ceil(dt / dt_phys_max)))
+    if dwell_time and dwell_time > 0:
+        n = max(n, int(np.ceil(dt * float(dwell_frac) / float(dwell_time))))
+    return max(1, int(n))
+
+
 def surface_sub_steps(geometry, diffusivity: float, dt: float, frac: float = 8.0) -> int:
     """Fine sub-steps so a surface-relaxivity walk resolves the boundary local time.
 
