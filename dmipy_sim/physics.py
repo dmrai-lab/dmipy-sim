@@ -160,6 +160,40 @@ def mt_sub_steps(geometry, diffusivity: float, dt: float, dwell_time: float,
     return max(1, int(n))
 
 
+def walk_sub_steps(geometry, diffusivity: float, dt: float) -> int:
+    """Sub-steps for a plain diffusion walk (no MT, no surface tier of its own).
+
+    For an ANALYTIC pore this is the historical ``step_l = R/6`` (``R/25`` when the wall is permeable, since
+    the crossing probability is step-size sensitive and over-permeates at coarse steps). Reflection off an
+    analytic surface is exact at any step, so the criterion only has to keep a step from skipping the pore.
+
+    For a MESH it is :func:`collision_sub_steps` instead, because ``R/6`` is not a physical criterion there:
+    ``_geometry_radius`` returns ``feature_radius``, a MESH-RESOLUTION parameter, so the rule tightened as a
+    mesh was refined while the pore stayed the size it always was. What actually bounds a mesh step is the
+    27-cell collision lookup -- outrun it and the wall is missed entirely. This is the same substitution
+    :func:`mt_sub_steps` makes for the binding walk, for the same reason.
+
+    Measured on the 366-fibre CACTUS bundle (feature_radius 0.186um, cell 0.124um, dt_save 0.1ms, D=2e-9):
+    the old rule asked for 1256 sub-steps, the collision criterion for 97, and across 97 -> 314 the apparent
+    perpendicular diffusivity scatters +/-1.3% with no trend, the accumulated boundary local time moves
+    +0.16%, and containment is flat (97.45% -> 97.02%). So the observables are converged at 97 and the extra
+    13x was buying nothing.
+
+    A PERMEABLE mesh deliberately keeps the fine analytic rule: the crossing probability
+    ``p = 2(kappa/D) d_perp`` is step-size sensitive in a way the collision criterion says nothing about, and
+    that regime has not been measured here.
+    """
+    has_perm = getattr(geometry, 'permeability', None) is not None
+    if getattr(geometry, 'cell_size', None) and not has_perm:
+        return collision_sub_steps(geometry, diffusivity, dt)
+    R = _geometry_radius(geometry)
+    if R is None:
+        return 1
+    divisor = 3750.0 if has_perm else 216.0
+    dt_phys_max = float(R) ** 2 / (divisor * diffusivity)
+    return max(1, int(np.ceil(dt / dt_phys_max)))
+
+
 def surface_sub_steps(geometry, diffusivity: float, dt: float, frac: float = 8.0) -> int:
     """Fine sub-steps so a surface-relaxivity walk resolves the boundary local time.
 
