@@ -419,17 +419,25 @@ _MAX_BOUNDARY_EDGE_FRACTION = 1e-2
 _MIN_REPAIRABLE_BOUNDARY_EDGES = 16
 
 
-def mesh_contains(V, F, pts, *, prefilter=True, chunk=2_000_000):
+def mesh_contains(V, F, pts, *, prefilter=False, chunk=2_000_000):
     """Exact "inside this CLOSED surface" for arbitrary points, by ray-crossing parity.
 
     The containment test to use when the points can be anywhere in a large box — seeding a compartment
     and measuring its volume fraction — where :func:`mesh_inside` is unreliable in the far field (see its
     docstring). Parity is a global test and has no such failure mode, but it costs far more per point,
     so this runs in two stages: :func:`mesh_inside` proposes candidates, and only those are ray cast.
-    The cascade is sound because ``mesh_inside`` produces no false-OUTSIDE (measured on the axon meshes:
-    0 of 51-142 genuine interior points missed, at 3k/4k/6k sample sizes), so it never discards a point
-    that is really inside; its errors are all false-inside, which the exact stage then removes. Set
-    ``prefilter=False`` to ray cast every point and skip that assumption.
+    The prefilter is OFF by default, because that soundness argument does not hold in general. It rests on
+    ``mesh_inside`` producing no false-OUTSIDE -- measured on single axons (0 of 51-142 interior points missed,
+    at 3k/4k/6k sample sizes) and FALSE on a dense multi-body bundle: on the 366-fibre CACTUS outer surface it
+    misses 1.67% of genuine interior points (33 of 1977). Because the proposal gate sits UPSTREAM of the ray
+    cast, every one of those is inherited -- the cascade returned exactly the same 33 false-OUTSIDEs as the
+    fast test alone, so the "exact" stage never saw them. The consequence is not subtle: seeding a compartment
+    on that answer put 3.8% of a nominally extra-axonal pool inside a fibre, which after the fact is
+    indistinguishable from walkers leaking through an impermeable wall.
+
+    ``prefilter=True`` restores the cascade for the case it was written for -- a thin structure in a big box,
+    where it is a large speed-up and its assumption holds. Spot-check it against a rescaled-parity reference
+    before trusting it on a new substrate.
 
     Requires a closed surface: with open ends a ray can exit through the rim and parity is meaningless.
     A mesh whose boundary edges are a negligible FRACTION of its edges (``_MAX_BOUNDARY_EDGE_FRACTION``,

@@ -535,6 +535,17 @@ class Mesh(Geometry):
         # features). A 64x floor would have bounded the ratio just as well and cost 1% of a step there,
         # which is trading one bias for another.
         self._NUDGE = jnp.float32(max(1e-4 * step_l, 16.0 * float(self._EPS)))
+        # Floor for the ADAPTIVE nudge (see the bounce body): even in the tightest crevice the walker must be
+        # displaced by something float32 can represent at these coordinates, or it stays on the surface and
+        # the next collision is discarded as ts <= _EPS.
+        self._MIN_NUDGE = jnp.float32(8.0 * float(self._EPS))
+        # Opt-in near-surface confinement guards. Both OFF by default: together they cut crossings 2.8x on a
+        # CACTUS bundle (39 -> 14 per 3000 walkers over 20 ms, 3.5 sigma) at no cost in boundary local time
+        # (0.519x vs 0.522x of (S/V)D, i.e. unchanged), but they do NOT reach zero, and an impermeable wall
+        # that leaks 0.47% is still wrong. Enabling them is a strict improvement; relying on them for
+        # airtightness is not. See dmipy-sim#61.
+        self.adaptive_nudge = False
+        self.net_cross_check = False
         # minimum sine of the angle the outgoing ray must make with the triangle it left
         self._GRAZE = jnp.float32(1e-4)
         self._MAX_BOUNCES = int(max_bounces)
@@ -670,6 +681,22 @@ class Mesh(Geometry):
             r_out = jnp.where(self._escaped(r, r_out), r, r_out)
         return r_out
 
+    def _net_crosses(self, r_w, r_out, tri, valid):
+        """Does the straight line from a step's START to its FINAL position pierce a wall?
+
+        Rejecting such a step enforces the confinement invariant on the NET displacement, which catches what a
+        per-bounce test cannot: the post-collision nudge landing a walker inside a NEIGHBOURING body in a tight
+        crevice, and a hit at ts <= _EPS being discarded for a walker sitting on a surface.
+
+        It has false positives by construction -- on a faceted multi-bounce path the start-to-end chord can cut
+        a corner legitimately -- so the cost has to be measured, not assumed.
+        """
+        seg = r_out - r_w
+        n = jnp.linalg.norm(seg)
+        safe = jnp.maximum(n, jnp.float32(1e-30))
+        ts, _u, _v = self._mt(r_w, seg / safe, tri, valid)
+        return jnp.any((ts > self._EPS) & (ts < n - self._EPS)) & (n > self._EPS)
+
     def reflect_with_log_weight(self, r, step, rho_over_D):
         r_w = self._wrap(r)
         ci, valid = self._gather(r_w)
@@ -691,9 +718,24 @@ class Mesh(Geometry):
             # met. Only the side it ends up on is decided geometrically.
             cos_a = -jnp.dot(dh, n)
             d_perp = jnp.where(hit, rho_mult * (rem - d) * cos_a, jnp.float32(0.0))
-            return (jnp.where(hit, r_hit + self._NUDGE * nf, r0),
+            # ADAPTIVE nudge. A fixed nudge is a compromise with no good value: too small and it falls below
+            # float32 resolution so the walker stays ON the surface and the next hit is discarded by the
+            # `ts > _EPS` guard; too large and in a tight crevice it lands the walker inside a NEIGHBOURING
+            # body. Measured on a CACTUS bundle (clean seeds, 5 ms, crossings per 3000 walkers): 4.8e-13 m
+            # -> 4.70%, 4.8e-12 -> 0.37%, 4.8e-11 (shipped) -> 0.27%, 4.8e-9 -> 1.33%. A minimum, not a
+            # plateau, so no constant is safe.
+            # Instead cap it at a fraction of the clearance actually available along the outgoing normal,
+            # which is what the crevice case violates, while keeping the float32 floor that the on-surface
+            # case needs.
+            if self.adaptive_nudge:
+                ts_n, _un, _vn = self._mt(r_hit, nf, tri, valid)
+                clear = jnp.min(jnp.where(ts_n > self._EPS, ts_n, jnp.inf))
+                nudge = jnp.minimum(self._NUDGE, jnp.maximum(0.25 * clear, self._MIN_NUDGE))
+            else:
+                nudge = self._NUDGE
+            return (jnp.where(hit, r_hit + nudge * nf, r0),
                     jnp.where(hit, d_ref, dh),
-                    jnp.where(hit, rem - d - self._NUDGE, rem)), (d_perp, hit)
+                    jnp.where(hit, rem - d - nudge, rem)), (d_perp, hit)
         (rf, df, remf), (dperps, hits) = jax.lax.scan(one, (r_w, d_hat, step_l), None,
                                                       length=self._MAX_BOUNCES)
         dlog_w = -2.0 * jnp.float32(rho_over_D) * jnp.sum(dperps)
@@ -701,6 +743,8 @@ class Mesh(Geometry):
         r_out = r + (rf + df * jnp.where(hits[-1], 0.0, jnp.maximum(remf, 0.0)) - r_w)
         if self.reject_escape:
             escaped = self._escaped(r, r_out)
+            if self.net_cross_check:
+                escaped = escaped | self._net_crosses(r_w, r_w + (r_out - r), tri, valid)
             return jnp.where(escaped, r, r_out), jnp.where(escaped, jnp.float32(0.0), dlog_w)
         return r_out, dlog_w
 
