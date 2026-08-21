@@ -1133,6 +1133,10 @@ def simulate_trajectories(
 
     dt_sim = dt_actual / sub_steps
     step_l_sim = jnp.float32(jnp.sqrt(6.0 * diffusivity * dt_sim))
+    # Same soundness bound as in physics.make_step_fn -- the guard has to live here too, because a permeable
+    # mesh now routes through the REPLAY backend (see _replay_gap) and so never reaches make_step_fn.
+    from .physics import _warn_if_step_outruns_the_lookup as _warn_step
+    _warn_step(geometry, diffusivity, dt_actual, sub_steps, "trajectory walk")
 
     print(f"  sub_steps={sub_steps}, dt_sim={dt_sim*1e6:.3f} µs, "
           f"step_l={float(step_l_sim)*1e6:.4f} µm"

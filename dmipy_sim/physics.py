@@ -247,6 +247,34 @@ def surface_sub_steps(geometry, diffusivity: float, dt: float, frac: float = 8.0
     return max(1, int(np.ceil(dt / dt_phys_max)))
 
 
+def _warn_if_step_outruns_the_lookup(geometry, diffusivity, dt, n_sub, what):
+    """Warn when a sub-step is longer than the collision lookup can serve on a mesh.
+
+    The candidate lookup gathers only the 27 cells around a step's START, so a step longer than a cell crosses
+    triangles that were never candidates and the wall is missed outright. On the reflecting path
+    `reject_escape` catches most of that; on the PERMEABLE path nothing does, because a compartment change is
+    legitimate there.
+
+    Measured on a permeable mesh sphere (R=5 um, subdivisions=4, cell 30.2 nm) at kappa=1e-14, where no walker
+    may legitimately cross, per 1 ms: step/cell 0.25 -> 0.00% escaped, 0.89 -> 0.00%, 1.79 -> 0.05%,
+    3.31 -> 4.85%, 6.63 -> 26.2%. The engine's own rules stay below 1 cell, so this fires only when a caller
+    overrides `sub_steps` (or sets `cell_size`) into unsound territory -- which is silent otherwise, and cost
+    a long detour to diagnose once (dmrai-lab/dmipy-sim#65).
+    """
+    cell = getattr(geometry, 'cell_size', None)
+    if not cell:
+        return
+    step_l = float(np.sqrt(6.0 * diffusivity * dt / max(n_sub, 1)))
+    ratio = step_l / float(cell)
+    if ratio > 0.9:
+        warnings.warn(
+            f"{what}: sub-step length {step_l:.3e} m is {ratio:.2f} x the collision-lookup cell "
+            f"({float(cell):.3e} m). A step longer than a cell crosses triangles that were never gathered as "
+            f"candidates, so walls are missed: measured 4.85% of walkers lost per ms at 3.3 cells and 26% at "
+            f"6.6 cells on a permeable mesh sphere. Increase sub_steps (or do not override it).",
+            UserWarning, stacklevel=3)
+
+
 def make_step_fn(geometry, diffusivity: float, dt: float, T2: float = None,
                  T1: float = None, sub_steps: int = None):
     """Return (step_fn, has_weight) for one simulation timestep.
@@ -351,6 +379,7 @@ def make_step_fn(geometry, diffusivity: float, dt: float, T2: float = None,
         # waveform dt is large.  Phase + relaxation accumulate per fine sub-step
         # (more accurate than one big step); G is held fixed across the group.
         n_sub        = sub_steps if sub_steps else permeable_sub_steps(geometry, float(_D0), dt)
+        _warn_if_step_outruns_the_lookup(geometry, float(_D0), dt, n_sub, 'permeable walk')
         dt_sub       = dt / n_sub
         gamma_dt_sub = jnp.float32(GAMMA * dt_sub)
         dt_sub_f32   = jnp.float32(dt_sub)
@@ -395,6 +424,7 @@ def make_step_fn(geometry, diffusivity: float, dt: float, T2: float = None,
         # the confined intra lumen is already exact). n_sub -> 1 once dt already resolves it;
         # phase / T2 / local-time accumulate per fine sub-step.
         n_sub        = sub_steps if sub_steps else surface_sub_steps(geometry, float(_D0), dt)
+        _warn_if_step_outruns_the_lookup(geometry, float(_D0), dt, n_sub, 'surface walk')
         dt_sub       = dt / n_sub
         gamma_dt_sub = jnp.float32(GAMMA * dt_sub)
         dt_sub_f32   = jnp.float32(dt_sub)
@@ -436,6 +466,7 @@ def make_step_fn(geometry, diffusivity: float, dt: float, T2: float = None,
         # at b=2000, a 0.0088 gap against 0.0004 for the permeable cases. `walk_sub_steps` delegates to the
         # collision rule for a mesh and applies R/6 for an analytic pore, which is what both other paths use.
         n_col = sub_steps if sub_steps else walk_sub_steps(geometry, float(_D0), dt)
+        _warn_if_step_outruns_the_lookup(geometry, float(_D0), dt, n_col, 'mesh walk')
         dt_col = jnp.float32(dt / n_col)
         gamma_dt_col = jnp.float32(GAMMA * dt / n_col)
 
@@ -473,6 +504,7 @@ def make_step_fn(geometry, diffusivity: float, dt: float, T2: float = None,
         # at b=2000, a 0.0088 gap against 0.0004 for the permeable cases. `walk_sub_steps` delegates to the
         # collision rule for a mesh and applies R/6 for an analytic pore, which is what both other paths use.
         n_col = sub_steps if sub_steps else walk_sub_steps(geometry, float(_D0), dt)
+        _warn_if_step_outruns_the_lookup(geometry, float(_D0), dt, n_col, 'mesh walk')
         dt_col = jnp.float32(dt / n_col)
         gamma_dt_col = jnp.float32(GAMMA * dt / n_col)
 
