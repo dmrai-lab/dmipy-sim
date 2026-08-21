@@ -148,3 +148,39 @@ def test_a_walled_geometry_without_a_recognised_scale_warns():
     with _w.catch_warnings():
         _w.simplefilter("error")
         assert walk_sub_steps(Unbounded(), 2e-9, 3e-3) == 1
+
+
+def test_the_step_cell_assertion_actually_guards():
+    """The helper must FAIL on a step that outruns the lookup, or it guards nothing.
+
+    An assertion that cannot fail is worse than none: it costs runtime and buys confidence it has not earned.
+    So this drives it from both sides -- the engine's own sub-stepping must pass, and the step that produced a
+    90% walker loss (and a wrongly-filed permeability bug, dmrai-lab/dmipy-sim#65) must be rejected.
+    """
+    import trimesh as _tm
+    from dmipy_sim.mesh import Mesh
+    from dmipy_sim.mesh_bundle import _min_radius
+    from dmipy_sim.physics import permeable_sub_steps
+    from tests.conftest import assert_step_resolves_the_collision_lookup
+
+    UM = 1e-6
+    sph = _tm.creation.icosphere(subdivisions=4, radius=5.0)
+    V = (np.asarray(sph.vertices, np.float64) * UM).astype(np.float32)
+    F = np.asarray(sph.faces, np.int64)
+    mesh = Mesh(V, F, periodic=False, voxel_min=V.min(0) - UM, voxel_max=V.max(0) + UM,
+                feature_radius=_min_radius(V, F), permeability=2e-5)
+
+    # what the engine itself picks must pass
+    dt = 1e-4
+    n = permeable_sub_steps(mesh, 2e-9, dt)
+    step_engine = float(np.sqrt(6 * 2e-9 * dt / n))
+    assert step_engine < float(mesh.cell_size), "the engine's own step should be under one cell"
+    assert_step_resolves_the_collision_lookup(mesh, step_engine)
+
+    # the step that caused #65 -- derived from the PORE radius rather than feature_radius -- must be rejected
+    step_pore = float(np.sqrt(6 * 2e-9 * (5e-6) ** 2 / (3750 * 2e-9)))
+    with pytest.raises(AssertionError, match="collision-lookup cell"):
+        assert_step_resolves_the_collision_lookup(mesh, step_pore)
+
+    # an analytic pore has no lookup to outrun, so it passes trivially rather than erroring
+    assert_step_resolves_the_collision_lookup(Sphere(radius=5e-6), 1.0)

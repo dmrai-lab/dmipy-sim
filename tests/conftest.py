@@ -69,3 +69,32 @@ def pytest_collection_modifyitems(config, items):
         name = mod.__name__.rsplit(".", 1)[-1] if mod is not None else ""
         if name in _SLOW_MC_MODULES:
             item.add_marker(slow)
+
+def assert_step_resolves_the_collision_lookup(geometry, step_length, *, bound=0.9):
+    """Fail unless a hand-picked step is short enough for the mesh's collision lookup to cover it.
+
+    The candidate lookup gathers only the 27 cells around a step's START, so a step longer than a cell crosses
+    triangles that were never candidates and the wall is simply missed. Any mesh test that asserts a
+    confinement, escape or exchange number is measuring the LOOKUP rather than the physics once that bound is
+    broken -- and it breaks silently.
+
+    Measured on a permeable mesh sphere (R=5 um, subdivisions=4) at a permeability where no walker may
+    legitimately cross, per 1 ms: step/cell 0.25 -> 0.00% escaped, 0.89 -> 0.00%, 1.79 -> 0.05%,
+    3.31 -> 4.85%, 6.63 -> 26.2%. A 200 nm step against a 30.2 nm cell (ratio 6.6) once read as a 90% walker
+    loss and was filed as a permeability bug (dmrai-lab/dmipy-sim#65) before being traced to the step choice;
+    the engine's own rule for that mesh is 7.55 nm, i.e. 0.25 cells, and leaks nothing.
+
+    The trap is that `_geometry_radius` returns `feature_radius` for a Mesh -- a MESHING parameter -- so a step
+    derived from the PORE size can be far coarser than anything the engine would pick. Hence: assert, do not
+    assume.
+
+    A geometry with no ``cell_size`` (analytic pores) has no lookup to outrun and passes trivially.
+    """
+    cell = getattr(geometry, "cell_size", None)
+    if not cell:
+        return
+    ratio = float(step_length) / float(cell)
+    assert ratio <= bound, (
+        f"step {float(step_length):.3e} m is {ratio:.2f} x the collision-lookup cell "
+        f"({float(cell):.3e} m); the bound is {bound}. Above it the walk misses walls and any confinement or "
+        f"exchange number measured here is an artefact of the lookup, not physics. Use more sub-steps.")
