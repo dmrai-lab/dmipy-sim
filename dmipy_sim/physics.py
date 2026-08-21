@@ -248,7 +248,7 @@ def surface_sub_steps(geometry, diffusivity: float, dt: float, frac: float = 8.0
 
 
 def make_step_fn(geometry, diffusivity: float, dt: float, T2: float = None,
-                 T1: float = None):
+                 T1: float = None, sub_steps: int = None):
     """Return (step_fn, has_weight) for one simulation timestep.
 
     Each step consumes ``(g_t, chi_t)``: the gradient sample and a binary
@@ -259,6 +259,12 @@ def make_step_fn(geometry, diffusivity: float, dt: float, T2: float = None,
 
     Parameters
     ----------
+    sub_steps : int, optional
+        Override the per-branch sub-step auto-tune with this exact count. Each branch otherwise picks its own
+        rule -- ``permeable_sub_steps`` (R/25, because the crossing probability is step-size sensitive),
+        ``surface_sub_steps`` (pore/8) or ``walk_sub_steps`` (R/6) -- so two runs of the SAME geometry that
+        differ only in whether permeability is set are also run at different time resolutions, and their
+        difference is not purely physics. Pass this to compare like with like, or to run a convergence sweep.
     geometry : Geometry instance
         Provides reflect(r, step).  If geometry.surface_relaxivity_t2 is set,
         also provides reflect_with_log_weight(r, step, rho_over_D).
@@ -344,7 +350,7 @@ def make_step_fn(geometry, diffusivity: float, dt: float, T2: float = None,
         # steps), so sub-step the permeable walk to step_l ≈ R/25 even when the
         # waveform dt is large.  Phase + relaxation accumulate per fine sub-step
         # (more accurate than one big step); G is held fixed across the group.
-        n_sub        = permeable_sub_steps(geometry, float(_D0), dt)
+        n_sub        = sub_steps if sub_steps else permeable_sub_steps(geometry, float(_D0), dt)
         dt_sub       = dt / n_sub
         gamma_dt_sub = jnp.float32(GAMMA * dt_sub)
         dt_sub_f32   = jnp.float32(dt_sub)
@@ -388,7 +394,7 @@ def make_step_fn(geometry, diffusivity: float, dt: float, T2: float = None,
         # to step_l ~ pore/8 (the extra-axonal pore, coarser than permeability's R/25 since
         # the confined intra lumen is already exact). n_sub -> 1 once dt already resolves it;
         # phase / T2 / local-time accumulate per fine sub-step.
-        n_sub        = surface_sub_steps(geometry, float(_D0), dt)
+        n_sub        = sub_steps if sub_steps else surface_sub_steps(geometry, float(_D0), dt)
         dt_sub       = dt / n_sub
         gamma_dt_sub = jnp.float32(GAMMA * dt_sub)
         dt_sub_f32   = jnp.float32(dt_sub)
@@ -423,7 +429,13 @@ def make_step_fn(geometry, diffusivity: float, dt: float, T2: float = None,
         # Sub-step so a displacement cannot outrun the collision candidate lookup (see
         # collision_sub_steps). Without it a step spanning several grid cells crosses triangles that were
         # never candidates and the walker leaves an impermeable mesh silently.
-        n_col = collision_sub_steps(geometry, float(_D0), dt)
+        # `walk_sub_steps`, NOT `collision_sub_steps`. The collision criterion is keyed to `cell_size` and
+        # so returns 1 for every ANALYTIC geometry, meaning a fused impermeable Sphere/Cylinder/PackedSpheres
+        # /Box1D walk did not sub-step at all -- while the permeable branch used R/25 and the replay backend
+        # used R/6 for the same substrate. Measured on PackedSpheres R=5 um: fused 0.02857 vs replay 0.01975
+        # at b=2000, a 0.0088 gap against 0.0004 for the permeable cases. `walk_sub_steps` delegates to the
+        # collision rule for a mesh and applies R/6 for an analytic pore, which is what both other paths use.
+        n_col = sub_steps if sub_steps else walk_sub_steps(geometry, float(_D0), dt)
         dt_col = jnp.float32(dt / n_col)
         gamma_dt_col = jnp.float32(GAMMA * dt / n_col)
 
@@ -454,7 +466,13 @@ def make_step_fn(geometry, diffusivity: float, dt: float, T2: float = None,
         reflect = geometry.reflect
         # Same collision-lookup constraint as the branch above: a step longer than a grid cell can cross a
         # triangle that was never a candidate, and the walker leaves an impermeable mesh with nothing raised.
-        n_col = collision_sub_steps(geometry, float(_D0), dt)
+        # `walk_sub_steps`, NOT `collision_sub_steps`. The collision criterion is keyed to `cell_size` and
+        # so returns 1 for every ANALYTIC geometry, meaning a fused impermeable Sphere/Cylinder/PackedSpheres
+        # /Box1D walk did not sub-step at all -- while the permeable branch used R/25 and the replay backend
+        # used R/6 for the same substrate. Measured on PackedSpheres R=5 um: fused 0.02857 vs replay 0.01975
+        # at b=2000, a 0.0088 gap against 0.0004 for the permeable cases. `walk_sub_steps` delegates to the
+        # collision rule for a mesh and applies R/6 for an analytic pore, which is what both other paths use.
+        n_col = sub_steps if sub_steps else walk_sub_steps(geometry, float(_D0), dt)
         dt_col = jnp.float32(dt / n_col)
         gamma_dt_col = jnp.float32(GAMMA * dt / n_col)
 
