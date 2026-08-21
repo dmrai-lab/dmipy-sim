@@ -186,6 +186,12 @@ class BoxedMesh:
         mirrored = self._mirror(r_out)
         moved = jnp.any(mirrored != r_out)
         crossed = self.mesh.classify_position(mirrored) != self.mesh.classify_position(r_in)
+        if getattr(self.mesh, "box_reflect", False):
+            # The inner Mesh now reflects at the voxel faces INSIDE its bounce loop, which is the design fix
+            # this mirror was a stand-in for (see Mesh.box_reflect). Mirroring on top would be redundant at
+            # best -- a confined walker never leaves the box, so there is nothing to mirror -- and it is the
+            # very operation that placed walkers inside fibres without crossing a wall. So: do nothing.
+            return r_out
         return jnp.where(moved & crossed, r_out, mirrored)
 
     def init_positions(self, n_walkers, key, intra=True):

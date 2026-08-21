@@ -337,7 +337,11 @@ class Mesh(Geometry):
         # CACTUS bundle over 20 ms: BoxedMesh leaks 19.17% of extra-axonal walkers into fibres (47.4% before
         # its mirror veto). Treating the faces as ordinary specular walls in the same loop makes teleportation
         # impossible by construction, which is what that class's own docstring asks for.
-        self.box_reflect = False
+        # DEFAULT ON. The alternative (mesh_bundle.BoxedMesh mirroring the position after the step) applies a
+        # reflection of space with no collision test, which places walkers inside bodies: measured 18.03% of
+        # extra-axonal walkers per 200 ms on a 358-fibre CACTUS bundle. Voxel faces belong in the same ordered
+        # bounce loop as the triangles. Applies only to NON-periodic axes; see `_box_face_hit`.
+        self.box_reflect = True
         # Barycentric slack in the ray-triangle inside test. 0.0 reproduces the exact (non-watertight)
         # bounds; see `_mt` for the measurement that motivates a non-zero value.
         self.bary_tol = 0.0
@@ -364,7 +368,9 @@ class Mesh(Geometry):
         # range -- the measured tunnelling mechanism. The thing that actually must be ignored is one specific
         # facet, and it is known by INDEX, so exclude it by identity and leave every other wall live at any
         # distance. Then a walker stepping into a neighbouring wall can never have that hit discarded.
-        self.rest_facet_exclusion = False
+        # DEFAULT ON. 63.3 +- 3.3 -> 50.0 +- 1.4 crossings (3.7 sigma) with no local-time cost, and it
+        # supersedes the state-conditional floor below (this path never consults it).
+        self.rest_facet_exclusion = True
         # MC/DC's state-conditional floor, OPT-IN. It is their fix and defensible, but under the unified
         # crossing metric it is not a measurable win on its own (63.0 +- 2.9 shipped vs 63.3 +- 3.3 with it),
         # and enabling it by default would silently change the accepted-hit threshold for every existing mesh
@@ -381,7 +387,12 @@ class Mesh(Geometry):
         # The relaxation weight keeps using the SMOOTH normal either way -- it is the best local estimate of
         # surface orientation, and it is what the surface channel (C2 relaxivity, C4 MT) is built from. So
         # confinement and physics are taken from the object each describes correctly.
-        self.reflect_mode = "smooth"
+        # DEFAULT 'geometric'. Measured on CACTUS (3000 walkers, 3 seeds): crossings 63.0 +- 2.9 -> 7.0 +- 0.8
+        # and boundary local time 0.9668 -> 0.9880 of analytic (S/V)D -- better confinement AND better surface
+        # physics. Validated to cost nothing in curvature: flawless sphere local time 1.0011x vs 1.0006x
+        # (fine mesh) and 1.0432x vs 1.0430x (coarse), long-time lattice ADC 0.7815 +- 0.0085 vs
+        # 0.7807 +- 0.0041 (fine) and 0.8080 +- 0.0077 vs 0.8112 +- 0.0121 (coarse).
+        self.reflect_mode = "geometric"
         self._REST_THR = jnp.float32(8.0 * 4.8e-11)
         self._BLO = jnp.asarray(self.vmin, jnp.float32)
         self._BHI = jnp.asarray(self.vmax, jnp.float32)
@@ -601,7 +612,11 @@ class Mesh(Geometry):
         self.adaptive_nudge = False
         self.net_cross_check = False
         # minimum sine of the angle the outgoing ray must make with the triangle it left
-        self._GRAZE = jnp.float32(1e-4)
+        # DEFAULT 6e-2, not 1e-4. With a geometric reflection normal the outgoing cosine against the facet is
+        # already non-negative, so this only lifts genuinely grazing incidences (shallower than ~3.4 deg), and
+        # it buys 7.7 +- 1.2 -> 3.0 +- 0.8 crossings (~3.9 sigma). At the old 1e-4 the lift produced rays
+        # essentially parallel to the wall, which on concave geometry is how walkers ended up inside.
+        self._GRAZE = jnp.float32(6e-2)
         self._MAX_BOUNCES = int(max_bounces)
         self._OFF = jnp.asarray([[dx, dy, dz] for dx in (-1, 0, 1)
                                  for dy in (-1, 0, 1) for dz in (-1, 0, 1)], jnp.int32)
@@ -801,6 +816,10 @@ class Mesh(Geometry):
         safe = jnp.where(jnp.abs(dh) < jnp.float32(1e-30), jnp.float32(1e-30), dh)
         t = jnp.where(dh > 0, (self._BHI - r0) / safe, (self._BLO - r0) / safe)
         t = jnp.where(jnp.abs(dh) < jnp.float32(1e-30), jnp.inf, t)
+        # A PERIODIC axis has no wall at its faces -- they are wrap boundaries, and reflecting there confines
+        # the walk to one cell. Measured when this was missed: long-time ADC in a periodic sphere lattice
+        # collapsed from 0.78 D to 0.276 D, because every walker was trapped in its own cell.
+        t = jnp.where(self._PER > 0, jnp.inf, t)
         # `t >= 0`, NOT `t > _EPS`. A plane has no on-surface ambiguity to protect against: only the face being
         # approached is selected, so a walker sitting exactly ON a face and moving outward must reflect at
         # t=0 rather than have the hit discarded. With `> _EPS` it instead flies out, and once outside
