@@ -20,6 +20,8 @@ from dmipy_sim.mesh import Mesh
 from dmipy_sim.mesh_bundle import BoxedMesh, _min_radius
 from dmipy_sim.susceptibility_field import mesh_contains
 
+from tests.conftest import assert_step_resolves_the_collision_lookup
+
 UM = 1e-6
 D = 2e-9
 DT = 1.042e-6
@@ -60,6 +62,9 @@ def _seed_outside(V, F, lo, hi, n, seed=11):
 
 
 def _run(geom, r0, n_sub, seed=3):
+    # Every confinement number below is meaningless if the step outruns the collision lookup; see the helper's
+    # docstring for the measured ratios and the issue it cost. Checked on the inner Mesh when wrapped.
+    assert_step_resolves_the_collision_lookup(getattr(geom, "mesh", geom), STEP)
     step = jax.jit(jax.vmap(lambda r, s: geom.reflect_with_log_weight(r, s, jnp.float32(1.0))))
     rg = np.random.default_rng(seed)
     r = r0.astype(np.float32)
