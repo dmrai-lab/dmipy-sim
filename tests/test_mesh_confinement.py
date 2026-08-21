@@ -116,7 +116,9 @@ def test_box_faces_must_bounce_not_mirror(lattice):
     makes that impossible by construction.
     """
     V, F, lo, hi, r0 = lattice
-    mirrored = BoxedMesh(_mesh(V, F, lo, hi), lo, hi)
+    # box_reflect is now the DEFAULT, so the mirror arm has to switch it off explicitly -- otherwise the
+    # inner mesh already confines the walker, BoxedMesh._box short-circuits, and this compares new with new.
+    mirrored = BoxedMesh(_mesh(V, F, lo, hi, box_reflect=False), lo, hi)
     in_loop = _mesh(V, F, lo, hi, box_reflect=True)
 
     n_mirror = _crossed(V, F, _run(mirrored, r0, 3000)[0])
@@ -145,7 +147,9 @@ def test_smooth_normal_can_reflect_into_the_wall_and_facet_normal_cannot(lattice
     V, F, lo, hi, r0 = lattice_rough
 
     def pre_lift_cos(mode):
-        m = _mesh(V, F, lo, hi, box_reflect=True, reflect_mode=mode)
+        # _GRAZE pinned to the old value in both arms: the point here is the NORMAL, and the default is now
+        # 6e-2, which would otherwise confound the comparison.
+        m = _mesh(V, F, lo, hi, box_reflect=True, reflect_mode=mode, _GRAZE=jnp.float32(1e-4))
         step = jax.jit(jax.vmap(lambda r, s: m.reflect_with_log_weight(r, s, jnp.float32(1.0))))
         rg = np.random.default_rng(0)
         r = r0.astype(np.float32)
