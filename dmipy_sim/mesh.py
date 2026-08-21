@@ -916,7 +916,16 @@ class Mesh(Geometry):
         def one(carry, i):
             r0, dh, rem, decided, dlogw = carry
             ts, u, v = self._mt(r0, dh, tri, valid)
-            vm = (ts > self._hit_floor(i > 0)) & (ts < rem); ts = jnp.where(vm, ts, jnp.inf)
+            # Deliberately NOT `_hit_floor` here: this commit is about IMPERMEABLE confinement and does not
+            # touch permeation. The semantics differ anyway -- this loop carries a `decided` flag, so a t~0 hit
+            # on the membrane a walker has just crossed would consume the step's single crossing decision and
+            # mask a genuine hit later in the same step. Whether a state-conditional floor helps permeation is
+            # untested and belongs in its own change.
+            #
+            # (An earlier revision of this comment blamed the floor for the two failing sphere residence-time
+            # tests. That was wrong: they fail identically at 6310a89, before any of this work, and they
+            # exercise the analytic `Sphere` geometry rather than a mesh, so nothing here can reach them.)
+            vm = (ts > self._EPS) & (ts < rem); ts = jnp.where(vm, ts, jnp.inf)
             idx = jnp.argmin(ts); d = ts[idx]; hit = d < jnp.inf
             d_ref, n, nf = self._bounce(vnf, nrmf, u, v, idx, dh)
             # crossing direction: dh·(outward normal) > 0 -> leaving a cell
