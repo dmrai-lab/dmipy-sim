@@ -7,6 +7,8 @@ on first call via jax.jit applied in core.py.
 
 import jax
 import jax.numpy as jnp
+import warnings
+
 import numpy as np
 
 from .constants import GAMMA
@@ -21,6 +23,14 @@ def _geometry_radius(geometry):
     R = getattr(geometry, 'radius', None)
     if R is None:
         R = getattr(geometry, 'sphere_radius', None)
+    if R is None:
+        # A slab (Box1D) confines over its WIDTH and exposes `length`, not `radius`. Without this clause the
+        # search falls through to None, the caller takes it as "no scale to resolve" and runs ONE sub-step at
+        # step_l = sqrt(6 D dt_save) -- 6 um for a 2 um slab at dt_save=3 ms -- which garbles the recorded
+        # boundary local time and inflates a fitted surface T2 by 42% (2 um slab, rho=1e-6: 1.42 s against a
+        # Brownstein-Tarr 1.0 s). This clause existed in the core.py auto-tune before it was refactored here
+        # in 6d585fc and was dropped in the move; `tests/test_compression.py` caught it.
+        R = getattr(geometry, 'length', None)
     if R is None:
         radii = getattr(geometry, '_radii_np', None)
         if radii is not None and len(radii) > 0:
@@ -188,6 +198,21 @@ def walk_sub_steps(geometry, diffusivity: float, dt: float) -> int:
         return collision_sub_steps(geometry, diffusivity, dt)
     R = _geometry_radius(geometry)
     if R is None:
+        # No scale found means "nothing to resolve", which is right for free diffusion and WRONG for anything
+        # with walls -- and it fails silently, at one sub-step, with the boundary channel garbled. That is how
+        # a dropped `length` clause went unnoticed for a whole release (see `_geometry_radius`). A confined
+        # geometry advertises finite volume and surface area, so say so rather than guessing.
+        try:
+            confined = float(geometry.surface_area) > 0 and 0 < float(geometry.volume) < float('inf')
+        except Exception:
+            confined = False
+        if confined:
+            warnings.warn(
+                f"{type(geometry).__name__} exposes walls (finite surface_area and volume) but no length "
+                f"scale that walk_sub_steps recognises, so the walk runs at ONE sub-step "
+                f"(step_l = sqrt(6*D*dt)). Boundary local time, and any surface T2 fitted from it, will be "
+                f"wrong if that step is comparable to the pore. Expose `radius` (or `length`) on the "
+                f"geometry, or pass sub_steps explicitly.", UserWarning, stacklevel=3)
         return 1
     divisor = 3750.0 if has_perm else 216.0
     dt_phys_max = float(R) ** 2 / (divisor * diffusivity)

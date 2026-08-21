@@ -106,3 +106,45 @@ def test_the_observables_are_converged_at_the_collision_criterion():
     lt_rel = abs(out[4][1] - out[1][1]) / out[1][1]
     assert d_rel < 0.05, f"apparent D moved {100*d_rel:.2f}% refining 4x past the collision criterion"
     assert lt_rel < 0.05, f"boundary local time moved {100*lt_rel:.2f}% refining 4x"
+
+
+def test_a_slab_is_sub_stepped_by_its_width():
+    """`Box1D` exposes `length`, not `radius`, and losing that clause fails SILENTLY.
+
+    Regression for 6d585fc, which refactored the core.py auto-tune into `physics.walk_sub_steps` and dropped
+    its `length` fallback. `_geometry_radius` then returned None for a slab, the caller read that as "no scale
+    to resolve", and every Box1D walk ran at ONE sub-step: step_l = sqrt(6*D*dt) = 6 um for a 2 um slab at
+    dt_save = 3 ms. Nothing raised; the boundary local time was simply garbled, inflating a fitted surface T2
+    to 1.42 s against a Brownstein-Tarr 1.0 s. `tests/test_compression.py` caught it as a walk sanity check.
+    """
+    from dmipy_sim import Box1D
+    from dmipy_sim.physics import _geometry_radius, walk_sub_steps
+
+    L, D, dt = 2e-6, 2e-9, 3e-3
+    g = Box1D(length=L)
+    assert _geometry_radius(g) == L, "the slab width is the scale to resolve"
+    n = walk_sub_steps(g, D, dt)
+    step = float(np.sqrt(6 * D * dt / n))
+    assert n > 1, "a slab must be sub-stepped"
+    # the documented analytic rule is step_l = R/6 (divisor 216 = 6*6^2)
+    assert step / L == pytest.approx(1 / 6, rel=0.05), f"step_l/L = {step / L:.4f}, expected ~1/6"
+
+
+def test_a_walled_geometry_without_a_recognised_scale_warns():
+    """One sub-step is right for free diffusion and wrong for anything with walls, so it must not be silent."""
+    from dmipy_sim.physics import walk_sub_steps
+
+    class WalledButUnrecognised:
+        surface_area = 1e-11
+        volume = 1e-17                      # finite walls, but no radius/length/_radii_np
+
+    with pytest.warns(UserWarning, match="no length scale"):
+        assert walk_sub_steps(WalledButUnrecognised(), 2e-9, 3e-3) == 1
+
+    class Unbounded:                        # free diffusion: one sub-step, no warning
+        pass
+
+    import warnings as _w
+    with _w.catch_warnings():
+        _w.simplefilter("error")
+        assert walk_sub_steps(Unbounded(), 2e-9, 3e-3) == 1
