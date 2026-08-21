@@ -365,6 +365,11 @@ class Mesh(Geometry):
         # facet, and it is known by INDEX, so exclude it by identity and leave every other wall live at any
         # distance. Then a walker stepping into a neighbouring wall can never have that hit discarded.
         self.rest_facet_exclusion = False
+        # MC/DC's state-conditional floor, OPT-IN. It is their fix and defensible, but under the unified
+        # crossing metric it is not a measurable win on its own (63.0 +- 2.9 shipped vs 63.3 +- 3.3 with it),
+        # and enabling it by default would silently change the accepted-hit threshold for every existing mesh
+        # caller. `rest_facet_exclusion` supersedes it anyway: that path never consults the floor.
+        self.state_conditional_floor = False
         # Which normal the OUTGOING direction is mirrored about.
         #   'smooth'    -- vertex-interpolated, so a coarse mesh diffuses like the curved surface it samples.
         #                  Physically motivated, but it is not the plane the walker is actually behind, so the
@@ -636,6 +641,8 @@ class Mesh(Geometry):
         "a spin that's bouncing ignores collision at 0 (is in a wall)" ... "if we are not bouncing, all
         collisions counts."
         """
+        if not self.state_conditional_floor:
+            return self._EPS                     # shipped behaviour: one floor, applied unconditionally
         return jnp.where(bouncing, self._EPS, jnp.float32(0.0))
 
     def _mt(self, r0, d_hat, tri, valid):

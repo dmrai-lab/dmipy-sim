@@ -202,6 +202,10 @@ def test_only_the_resting_facet_is_ignored_not_every_close_wall(lattice):
     m = _mesh(V, F, lo, hi, box_reflect=True, rest_facet_exclusion=True)
     tri = m._TRIS[m._gather(jnp.asarray(np.array([2.0, 2.0, 2.0]) * UM, jnp.float32))[0]]
     assert tri.shape[-2:] == (3, 3)
-    # the floor is only applied to the resting facet, so it is not a global distance threshold
+    # Default: one floor, applied unconditionally -- shipped behaviour, unchanged by this work.
+    assert float(m._hit_floor(False)) == float(m._EPS) == float(m._hit_floor(True))
+    # Opt in to MC/DC's version and a FRESH step accepts a hit at any positive distance, while a continuing
+    # bounce still suppresses the facet it is resting on.
+    m.state_conditional_floor = True
     assert float(m._hit_floor(False)) == 0.0, "a fresh step must accept a hit at any positive distance"
     assert float(m._hit_floor(True)) > 0.0, "mid-bounce still needs the resting facet suppressed"
