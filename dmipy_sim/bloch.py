@@ -36,7 +36,8 @@ import jax.numpy as jnp
 from .constants import GAMMA
 from .gpu import gpu_available
 from .geometries import initial_positions
-from .physics import permeable_sub_steps
+from .physics import (permeable_sub_steps, walk_sub_steps,
+                      _warn_if_step_outruns_the_lookup)
 
 __all__ = ["simulate_bloch"]
 
@@ -90,7 +91,7 @@ def _build_rf_schedule(rf_events, dt, n_t):
 
 
 def _make_bloch_step_fn(geometry, D, dt, T2, T1, M0, off_resonance_hz, rho=0.0,
-                        field_fn=None):
+                        field_fn=None, sub_steps=None):
     """Per-timestep forward Bloch scan body (per walker; M is (n_meas, 3)).
 
     Carry ``(r, M, key, u_crush)``; ``u_crush`` is the walker's fixed macroscopic
@@ -104,7 +105,6 @@ def _make_bloch_step_fn(geometry, D, dt, T2, T1, M0, off_resonance_hz, rho=0.0,
     the plain path exact.
     """
     gamma_dt = jnp.float32(GAMMA * dt)
-    step_len = jnp.float32(np.sqrt(6.0 * D * dt))
     E2 = jnp.float32(np.exp(-dt / T2)) if T2 is not None else jnp.float32(1.0)
     E1 = jnp.float32(np.exp(-dt / T1)) if T1 is not None else jnp.float32(1.0)
     M0f = jnp.float32(M0)
@@ -116,7 +116,8 @@ def _make_bloch_step_fn(geometry, D, dt, T2, T1, M0, off_resonance_hz, rho=0.0,
     reflect = geometry.reflect
     reflect_lw = getattr(geometry, 'reflect_with_log_weight', None)
 
-    def _apply(r_new, phi_grad, surf, M, rf_dflip, rf_axis, rf_carrier, crush_rate, uc):
+    def _apply(r_new, phi_grad, surf, M, rf_dflip, rf_axis, rf_carrier, crush_rate, uc,
+               phi_field=None):
         """RF rotation, then free-precession + relaxation (shared across walk variants).
 
         ``phi_grad`` (n_meas,) is the gradient phase accumulated over the step; the other
@@ -126,7 +127,9 @@ def _make_bloch_step_fn(geometry, D, dt, T2, T1, M0, off_resonance_hz, rho=0.0,
         field — are added here at the dt grid."""
         M = _rf_increment_jax(M, rf_dflip, rf_axis)         # RF rotation (0 -> identity)
         dphi = phi_grad + global_carrier + rf_carrier + crush_rate * uc     # (n_meas,)
-        if field_fn is not None:
+        if phi_field is not None:
+            dphi = dphi + phi_field                         # accumulated per sub-step by the caller
+        elif field_fn is not None:
             dphi = dphi + gamma_dt * field_fn(r_new)        # susceptibility off-resonance
         c, s = jnp.cos(dphi), jnp.sin(dphi)
         Mx = (c * M[:, 0] - s * M[:, 1]) * E2 * surf
@@ -169,22 +172,51 @@ def _make_bloch_step_fn(geometry, D, dt, T2, T1, M0, off_resonance_hz, rho=0.0,
 
         return step_fn
 
+    # Sub-step the walk, by the SAME rule the scalar engine uses (`physics.make_step_fn`'s no-weight
+    # branch), so `simulate_bloch` and `core.simulate` resolve the same collisions by construction
+    # rather than by coincidence.
+    #
+    # This path took one displacement per waveform step no matter what `sub_steps` said -- the argument
+    # was accepted, documented, and dropped. Analytic geometries did not care, because their reflect is
+    # exact at any step length. A mesh cannot be: a step longer than the collision-lookup cell crosses
+    # triangles that were never candidates and the walker simply leaves. Measured on a 2 um icosphere at
+    # b=2e9 (narrow-pulse PGSE, square limit): this path returned 0.05052 where `core.simulate` on the
+    # identical geometry and waveform gave 0.96305 and an analytic `Sphere` 0.96442 -- the
+    # free-diffusion answer (0.01867), silently.
+    #
+    # `n_sub == 1` reproduces the old single-displacement path BIT-IDENTICALLY: the key is split once
+    # per waveform step either way, and `gamma_dt_sub == gamma_dt`. So nothing that was already resolved
+    # moves, and the susceptibility phase (now accumulated per sub-step, where it used to be evaluated
+    # once at the step's end position) is likewise unchanged at n_sub == 1 and strictly better above it.
+    n_sub = sub_steps if sub_steps else walk_sub_steps(geometry, float(D), dt)
+    _warn_if_step_outruns_the_lookup(geometry, float(D), dt, n_sub, 'Bloch walk')
+    step_len_sub = jnp.float32(np.sqrt(6.0 * D * dt / n_sub))
+    gamma_dt_sub = jnp.float32(GAMMA * dt / n_sub)
+
     def step_fn(carry, inputs):
         r, M, key, uc = carry                               # r:(3,)  M:(n_meas,3)  uc:()
         g_t, rf_dflip, rf_axis, rf_carrier, crush_rate = inputs   # g_t:(n_meas,3)
 
-        key, subkey = jax.random.split(key)
-        noise = jax.random.normal(subkey, (3,), dtype=jnp.float32)
-        unit = noise / jnp.linalg.norm(noise)
-        if has_surf:
-            r_new, dlog = reflect_lw(r, unit * step_len, jnp.float32(1.0))
-            surf = jnp.exp(rho_over_D * dlog)               # transverse wall attenuation
-        else:
-            r_new = reflect(r, unit * step_len)
-            surf = jnp.float32(1.0)
+        def _sub(c, _):
+            r, phi, phi_f, logw, key = c
+            key, subkey = jax.random.split(key)
+            noise = jax.random.normal(subkey, (3,), dtype=jnp.float32)
+            unit = noise / jnp.linalg.norm(noise)
+            if has_surf:
+                r_new, dlog = reflect_lw(r, unit * step_len_sub, jnp.float32(1.0))
+            else:
+                r_new, dlog = reflect(r, unit * step_len_sub), jnp.float32(0.0)
+            phi_f_new = (phi_f + gamma_dt_sub * field_fn(r_new)
+                         if field_fn is not None else phi_f)
+            return (r_new, phi + gamma_dt_sub * (g_t @ r_new), phi_f_new,
+                    logw + dlog, key), None
 
-        M_new, xy = _apply(r_new, gamma_dt * (g_t @ r_new), surf, M, rf_dflip, rf_axis,
-                           rf_carrier, crush_rate, uc)
+        init = (r, jnp.zeros(M.shape[0], jnp.float32), jnp.float32(0.0), jnp.float32(0.0), key)
+        (r_new, phi_grad, phi_field, logw, key), _ = jax.lax.scan(_sub, init, None, length=n_sub)
+        # rho/D applied to the SUMMED local time, matching the single-step form exactly
+        surf = jnp.exp(rho_over_D * logw) if has_surf else jnp.float32(1.0)
+        M_new, xy = _apply(r_new, phi_grad, surf, M, rf_dflip, rf_axis, rf_carrier, crush_rate, uc,
+                           phi_field=(phi_field if field_fn is not None else None))
         return (r_new, M_new, key, uc), xy
 
     return step_fn
@@ -251,6 +283,14 @@ def simulate_bloch(n_walkers, diffusivity, waveform, geometry, rf_events, *,
         MR-dark bound pool) with a known S/V, else it warns and falls back to ``'burnin'``.
         ``'off'`` keeps the legacy all-free start (correct only if you equilibrate yourself,
         e.g. a burn-in block inside the waveform).
+    sub_steps : int, optional
+        Fine sub-steps per waveform step; overrides the per-geometry auto-tune (which follows
+        the scalar engine's rule -- ``walk_sub_steps``, or ``permeable_sub_steps`` on a
+        permeable geometry).  A mesh NEEDS this: a sub-step longer than the collision-lookup
+        cell crosses triangles that were never gathered as candidates, so walls are missed
+        and the walker leaves.  Setting it to 1 on a mesh reproduces the pre-#69 behaviour,
+        which returned the free-diffusion signal for a restricted pore; the runtime guard
+        warns when the resulting step outruns the lookup.
     r0 : array-like of shape (n_walkers, 3), optional
         Explicit start positions in metres.  Default: ``geometry.init_positions(n, key)``,
         which on a mesh means ``intra=True`` -- INSIDE the surface.  Pass this whenever the
@@ -318,7 +358,8 @@ def simulate_bloch(n_walkers, diffusivity, waveform, geometry, rf_events, *,
                     if hasattr(susceptibility, "delta_bz_fn") else susceptibility)
     step_fn = _make_bloch_step_fn(geometry, float(diffusivity), dt,
                                   T2, T1, float(M0), float(off_resonance_hz),
-                                  rho=float(surface_relaxivity), field_fn=field_fn)
+                                  rho=float(surface_relaxivity), field_fn=field_fn,
+                                  sub_steps=sub_steps)
     M_init = jnp.zeros((n_meas, 3), dtype=jnp.float32).at[:, 2].set(jnp.float32(M0))
 
     want_echo = echo_steps is not None
