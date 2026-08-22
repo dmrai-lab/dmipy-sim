@@ -17,6 +17,7 @@ import numpy as np
 from .physics import (make_step_fn, make_myelin_step_fn, make_packed_myelin_step_fn,
                       make_packed_myelin_traj_step_fn)
 from .waveforms import Waveform
+from .geometries import initial_positions
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -460,10 +461,7 @@ def simulate(
 
     # Initial positions — use caller-supplied r0 or let geometry place walkers
     _r0_user_supplied = r0 is not None
-    if r0 is None:
-        r0 = geometry.init_positions(n_walkers, pos_key)  # (n_walkers, 3)
-    else:
-        r0 = jnp.array(r0, dtype=jnp.float32)           # (n_walkers, 3)
+    r0 = initial_positions(geometry, n_walkers, pos_key, r0)   # (n_walkers, 3)
 
     # Check if this is a MyelinatedCylinder or LabelMap2D (custom step function path)
     is_myelin = getattr(geometry, '_is_myelinated', False)
@@ -873,7 +871,8 @@ def simulate_mixture(compartments, waveform, seed=123):
 
 
 def simulate_cpmg(n_walkers, diffusivity, waveform, geometry, *,
-                  T2=None, seed=123, walker_batch_size=None, require_gpu=None):
+                  T2=None, seed=123, r0=None, sub_steps=None,
+                  walker_batch_size=None, require_gpu=None):
     """Multi-echo CPMG signal from a SINGLE diffusion walk.
 
     Walks the spin ensemble once through the full CPMG train (ideal instantaneous
@@ -893,6 +892,14 @@ def simulate_cpmg(n_walkers, diffusivity, waveform, geometry, *,
     geometry : Geometry
     T2 : float, optional
         Transverse relaxation time (s), accumulated per-walker in the walk.
+    r0 : array-like of shape (n_walkers, 3), optional
+        Explicit start positions in metres.  Default: ``geometry.init_positions(n, key)``,
+        which on a mesh means ``intra=True`` -- INSIDE the surface.  Pass this whenever the
+        pool you want is not the geometry's inside; a fibre bundle's extra-axonal pool is
+        the case that occurs, and getting it wrong silently walks the intra pool instead.
+        See :func:`dmipy_sim.geometries.initial_positions`.
+    sub_steps : int, optional
+        Fine sub-steps per waveform step; overrides the per-geometry auto-tune.
     seed, walker_batch_size, require_gpu : see :func:`simulate`.
 
     Returns
@@ -951,7 +958,7 @@ def simulate_cpmg(n_walkers, diffusivity, waveform, geometry, *,
     master_key = jax.random.PRNGKey(seed)
     pos_key, walker_key = jax.random.split(master_key)
     walker_keys = jax.random.split(walker_key, n_walkers)
-    r0 = geometry.init_positions(n_walkers, pos_key)
+    r0 = initial_positions(geometry, n_walkers, pos_key, r0)
 
     step_fn, has_weight = make_step_fn(geometry, diffusivity, dt, T2=T2, sub_steps=sub_steps)
 
@@ -1329,12 +1336,7 @@ def simulate_trajectories(
     master_key = jax.random.PRNGKey(seed)
     pos_key, walker_key = jax.random.split(master_key)
 
-    if r0 is not None:
-        r0_all = jnp.asarray(r0, dtype=jnp.float32)
-        if r0_all.shape != (n_walkers, 3):
-            raise ValueError(f"r0 must have shape ({n_walkers}, 3), got {r0_all.shape}")
-    else:
-        r0_all = geometry.init_positions(n_walkers, pos_key)   # (n_walkers, 3)
+    r0_all = initial_positions(geometry, n_walkers, pos_key, r0)   # (n_walkers, 3)
     walker_keys_all = jax.random.split(walker_key, n_walkers)
 
     comp0_all = (jnp.asarray(geometry._init_compartments)

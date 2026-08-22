@@ -786,7 +786,12 @@ class Mesh(Geometry):
             # bounce instead of one per step. Without the sub-step cap it would NOT be sound.
             ts, u, v = self._mt(r0, dh, tri, valid)
             vm = (ts > self._hit_floor(i > 0)) & (ts < rem); ts = jnp.where(vm, ts, jnp.inf)
-            idx = jnp.argmin(ts); d = ts[idx]; hit = d < jnp.inf
+            # int32 explicitly: argmin returns int64 once anything in the process enables x64
+            # (`bloch._simulate_bloch_mt` flips that global toggle for its float64 magnetisation
+            # and never restores it), and the scan carry below is pinned int32 -- a mismatch JAX
+            # rejects at trace time. Any mesh walk after an MT Bloch call in the same process hit
+            # it. The facet index needs 31 bits for 2e9 triangles, so int32 costs nothing.
+            idx = jnp.argmin(ts).astype(jnp.int32); d = ts[idx]; hit = d < jnp.inf
             d_ref, n, nf = self._bounce(vnf, nrmf, u, v, idx, dh)
             r_hit = r0 + d * dh
             # Nudge along the GEOMETRIC normal: it is perpendicular to the triangle just hit, so it
@@ -875,7 +880,12 @@ class Mesh(Geometry):
                 same = jnp.arange(ts.shape[0]) == last
                 vm = (ts > 0.0) & (ts < rem) & jnp.logical_not(same & (ts < self._REST_THR))
             ts = jnp.where(vm, ts, jnp.inf)
-            idx = jnp.argmin(ts); d = ts[idx]; hit = d < jnp.inf
+            # int32 explicitly: argmin returns int64 once anything in the process enables x64
+            # (`bloch._simulate_bloch_mt` flips that global toggle for its float64 magnetisation
+            # and never restores it), and the scan carry below is pinned int32 -- a mismatch JAX
+            # rejects at trace time. Any mesh walk after an MT Bloch call in the same process hit
+            # it. The facet index needs 31 bits for 2e9 triangles, so int32 costs nothing.
+            idx = jnp.argmin(ts).astype(jnp.int32); d = ts[idx]; hit = d < jnp.inf
             d_ref, n, nf = self._bounce(vnf, nrmf, u, v, idx, dh)
             # side of the collision: dh·(outward face normal) > 0 -> spin leaving a
             # cell (intra side), < 0 -> entering (extra side).
@@ -952,7 +962,12 @@ class Mesh(Geometry):
             # tests. That was wrong: they fail identically at 6310a89, before any of this work, and they
             # exercise the analytic `Sphere` geometry rather than a mesh, so nothing here can reach them.)
             vm = (ts > self._EPS) & (ts < rem); ts = jnp.where(vm, ts, jnp.inf)
-            idx = jnp.argmin(ts); d = ts[idx]; hit = d < jnp.inf
+            # int32 explicitly: argmin returns int64 once anything in the process enables x64
+            # (`bloch._simulate_bloch_mt` flips that global toggle for its float64 magnetisation
+            # and never restores it), and the scan carry below is pinned int32 -- a mismatch JAX
+            # rejects at trace time. Any mesh walk after an MT Bloch call in the same process hit
+            # it. The facet index needs 31 bits for 2e9 triangles, so int32 costs nothing.
+            idx = jnp.argmin(ts).astype(jnp.int32); d = ts[idx]; hit = d < jnp.inf
             d_ref, n, nf = self._bounce(vnf, nrmf, u, v, idx, dh)
             # crossing direction: dh·(outward normal) > 0 -> leaving a cell
             # (intra->extra), < 0 -> entering (extra->intra).

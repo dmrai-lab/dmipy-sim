@@ -35,6 +35,7 @@ import jax.numpy as jnp
 
 from .constants import GAMMA
 from .gpu import gpu_available
+from .geometries import initial_positions
 from .physics import permeable_sub_steps
 
 __all__ = ["simulate_bloch"]
@@ -210,7 +211,7 @@ def _build_crusher(crusher, dt, n_t):
 
 
 def simulate_bloch(n_walkers, diffusivity, waveform, geometry, rf_events, *,
-                   T2=None, T1=None, M0=1.0, off_resonance_hz=0.0, seed=0,
+                   T2=None, T1=None, M0=1.0, off_resonance_hz=0.0, seed=0, r0=None,
                    echo_steps=None, return_mz=False, crusher=None,
                    surface_relaxivity=0.0,
                    kappa_MT=0.0, dwell_time=0.0, T2_bound=1e-5, T1_bound=1.0,
@@ -250,6 +251,12 @@ def simulate_bloch(n_walkers, diffusivity, waveform, geometry, rf_events, *,
         MR-dark bound pool) with a known S/V, else it warns and falls back to ``'burnin'``.
         ``'off'`` keeps the legacy all-free start (correct only if you equilibrate yourself,
         e.g. a burn-in block inside the waveform).
+    r0 : array-like of shape (n_walkers, 3), optional
+        Explicit start positions in metres.  Default: ``geometry.init_positions(n, key)``,
+        which on a mesh means ``intra=True`` -- INSIDE the surface.  Pass this whenever the
+        pool you want is not the geometry's inside; a fibre bundle's extra-axonal pool is
+        the case that occurs, and getting it wrong silently walks the intra pool instead.
+        See :func:`dmipy_sim.geometries.initial_positions`.
 
     Returns
     -------
@@ -267,7 +274,7 @@ def simulate_bloch(n_walkers, diffusivity, waveform, geometry, rf_events, *,
     if kappa_MT > 0.0:
         return _simulate_bloch_mt(
             n_walkers, diffusivity, waveform, geometry, rf_events,
-            T2=T2, T1=T1, M0=M0, off_resonance_hz=off_resonance_hz, seed=seed,
+            T2=T2, T1=T1, M0=M0, off_resonance_hz=off_resonance_hz, seed=seed, r0=r0,
             echo_steps=echo_steps, return_mz=return_mz, crusher=crusher,
             surface_relaxivity=surface_relaxivity,
             kappa_MT=kappa_MT, dwell_time=dwell_time, T2_bound=T2_bound,
@@ -298,7 +305,7 @@ def simulate_bloch(n_walkers, diffusivity, waveform, geometry, rf_events, *,
     master_key = jax.random.PRNGKey(seed)
     pos_key, walker_key = jax.random.split(master_key)
     walker_keys = jax.random.split(walker_key, n_walkers)
-    r0 = geometry.init_positions(n_walkers, pos_key)        # (n_walkers, 3)
+    r0 = initial_positions(geometry, n_walkers, pos_key, r0)   # (n_walkers, 3)
     if has_crush:
         uw = jax.random.uniform(jax.random.fold_in(master_key, 0xC0FFEE), (n_walkers,),
                                 dtype=jnp.float32)
@@ -549,7 +556,7 @@ def _make_bloch_mt_step_fn(geometry, D, dt, n_sub, T2, T1, M0, off_res_global,
 
 
 def _simulate_bloch_mt(n_walkers, diffusivity, waveform, geometry, rf_events, *,
-                       T2, T1, M0, off_resonance_hz, seed, echo_steps, return_mz,
+                       T2, T1, M0, off_resonance_hz, seed, r0, echo_steps, return_mz,
                        crusher, surface_relaxivity, kappa_MT, dwell_time, T2_bound,
                        T1_bound, off_resonance_bound, sub_steps, return_bound_frac,
                        equilibrate_binding="auto", susceptibility=None):
@@ -595,7 +602,7 @@ def _simulate_bloch_mt(n_walkers, diffusivity, waveform, geometry, rf_events, *,
     master_key = jax.random.PRNGKey(seed)
     pos_key, walker_key = jax.random.split(master_key)
     walker_keys = jax.random.split(walker_key, n_walkers)
-    r0 = geometry.init_positions(n_walkers, pos_key)
+    r0 = initial_positions(geometry, n_walkers, pos_key, r0)
     uw = (jax.random.uniform(jax.random.fold_in(master_key, 0xC0FFEE), (n_walkers,),
                              dtype=jnp.float32) if has_crush
           else jnp.zeros((n_walkers,), dtype=jnp.float32))
