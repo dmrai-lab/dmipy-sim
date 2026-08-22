@@ -108,7 +108,7 @@ def fibre_mean_tangents(run_dir):
 
 
 def load_cactus_bundle(run_dir, *, g_ratio=None, scale=_UM, side_um=None,
-                       require_pairs=True, volume_reference=None):
+                       require_pairs=True, volume_reference=None, on_open_surface="warn"):
     """Load a CACTUS run directory into a :class:`CactusBundle`.
 
     Parameters
@@ -127,6 +127,12 @@ def load_cactus_bundle(run_dir, *, g_ratio=None, scale=_UM, side_um=None,
     require_pairs : bool
         Use only fibres having BOTH surfaces. A fibre with an outer but no inner mesh would have its whole
         interior assigned to myelin, which is why this defaults to True.
+    on_open_surface : {'warn', 'raise', 'drop'}
+        What to do about a surface that is not watertight. CACTUS output contains some: measured on the
+        366-fibre prod bundle, 24 of 732 surfaces are open. That is not cosmetic -- an open surface cannot
+        confine a walker, and 10.8% of extra-axonal walkers ended up inside a fibre within 10 ms, at a median
+        depth of 0.24 um, having crossed no triangle at all. Use ``'drop'`` for any walk that relies on
+        impermeable walls.
     volume_reference : {'box', 'fibre_extent'}, optional
         See :func:`dmipy_sim.io.mesh_substrate.load_mesh_substrate`. Defaults to ``'fibre_extent'`` here:
         CACTUS fibres are finite and their end caps over-run the periodic cell along the fibre axis, so
@@ -166,5 +172,5 @@ def load_cactus_bundle(run_dir, *, g_ratio=None, scale=_UM, side_um=None,
         inner_plys, outer_plys, box=("periodic", float(side) * scale), scale=scale,
         g_ratio=g_ratio, volume_reference=volume_reference,
         fibre_tangents=fibre_mean_tangents(run_dir),
-        has_extra_substrate=True, run_dir=run_dir,
+        has_extra_substrate=True, run_dir=run_dir, on_open_surface=on_open_surface,
         label=f"cactus:{os.path.basename(os.path.normpath(run_dir))}")

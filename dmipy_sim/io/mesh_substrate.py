@@ -81,7 +81,7 @@ def resolve_box(spec, outer_V, *, scale=1.0):
 
 def load_mesh_substrate(inner_plys, outer_plys, *, box, scale=_UM, g_ratio=None,
                         volume_reference=None, fibre_tangents=None, has_extra_substrate=None,
-                        run_dir="", label=""):
+                        run_dir="", label="", on_open_surface="warn"):
     """Load paired inner/outer surface PLYs into a :class:`CactusBundle`.
 
     Parameters
@@ -114,29 +114,51 @@ def load_mesh_substrate(inner_plys, outer_plys, *, box, scale=_UM, g_ratio=None,
     inner_plys = [str(p) for p in ([inner_plys] if isinstance(inner_plys, (str, bytes)) else inner_plys)]
     outer_plys = [str(p) for p in ([outer_plys] if isinstance(outer_plys, (str, bytes)) else outer_plys)]
 
+    if on_open_surface not in ("warn", "raise", "drop"):
+        raise ValueError(f"on_open_surface must be 'warn', 'raise' or 'drop', got {on_open_surface!r}")
     inner_meshes, outer_meshes = [], []
     vol_inner = vol_outer = 0.0        # m^3
-    open_surfaces = []
+    open_surfaces, dropped = [], []
     for paths, meshes, tag in ((inner_plys, inner_meshes, "inner"),
                                (outer_plys, outer_meshes, "outer")):
         for p in paths:
             V, F = load_ply(p, scale=scale)
-            meshes.append((V, F))
             vol, watertight = _volume_and_watertight(V, F)
+            if not watertight:
+                open_surfaces.append(p)
+                if on_open_surface == "drop":
+                    # An open surface cannot confine a walker, and its volume is not well defined either,
+                    # so it contributes to neither the geometry nor the fractions.
+                    dropped.append(p)
+                    continue
+            meshes.append((V, F))
             if tag == "inner":
                 vol_inner += vol
             else:
                 vol_outer += vol
-            if not watertight:
-                open_surfaces.append(p)
+    if dropped:
+        warnings.warn(
+            f"{label or 'substrate'}: dropped {len(dropped)} non-watertight surface(s) so the remaining "
+            f"walls are airtight (e.g. {dropped[0]}). Volume fractions and S/V are of what REMAINS.",
+            stacklevel=2)
 
     if not outer_meshes:
         raise ValueError("no outer surfaces loaded; an outer (myelin) surface defines the fibre volume")
     if open_surfaces:
+        msg = (f"{label or 'substrate'}: {len(open_surfaces)} of {len(inner_plys) + len(outer_plys)} "
+               f"surfaces are not watertight (e.g. {open_surfaces[0]})")
+        if on_open_surface == "raise":
+            raise ValueError(
+                msg + ". An open surface has no inside, so an IMPERMEABLE wall cannot confine a walker: "
+                "measured on a CACTUS bundle whose 24 of 732 surfaces were open, 10.8% of extra-axonal "
+                "walkers ended up inside a fibre within 10 ms, at a median depth of 0.24 um, having crossed "
+                "no triangle at all. Pass on_open_surface='drop' to exclude the defective surfaces, or "
+                "'warn' to accept an unconfined walk.")
         warnings.warn(
-            f"{label or 'substrate'}: {len(open_surfaces)} of {len(inner_plys) + len(outer_plys)} surfaces "
-            f"are not watertight (e.g. {open_surfaces[0]}); volume fractions use |mesh.volume| and "
-            f"containment by ray parity is undefined through the rims (dmipy-sim#50).", stacklevel=2)
+            msg + "; volume fractions use |mesh.volume| and containment by ray parity is undefined through "
+            "the rims (dmipy-sim#50). A walk on this substrate is NOT confined -- walkers pass through the "
+            "openings without crossing a triangle, so an impermeable wall does not hold them. Prefer "
+            "on_open_surface='drop'.", stacklevel=2)
 
     inner = _concat(inner_meshes)
     outer = _concat(outer_meshes)

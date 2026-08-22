@@ -92,6 +92,16 @@ markers = [
     "slow: marks tests that take > 30 s (deselect with -m 'not slow')",
     "gpu: marks tests that require a CUDA GPU (deselect on CPU CI with -m 'not gpu')",
 ]
+filterwarnings = [
+    # A sub-step longer than the collision-lookup cell means the walk misses walls, so any confinement,
+    # escape or exchange number measured past that bound is an artefact of the lookup rather than physics.
+    # It is a warning at runtime (a caller may knowingly trade accuracy for speed) and an ERROR here, so no
+    # test can quietly assert a number from the unsound regime. Measured on a permeable mesh sphere per 1 ms:
+    # step/cell 0.25 -> 0.00% escaped, 1.79 -> 0.05%, 3.31 -> 4.85%, 6.63 -> 26.2%. A 6.6-cell step once read
+    # as a 90% walker loss and was filed as a permeability bug (dmrai-lab/dmipy-sim#65) before being traced
+    # to the step choice.
+    "error:.*collision-lookup cell.*:UserWarning",
+]
 # Pass --heavy to run all MC tests at 10× walkers (1 000 000) for systematic
 # bias measurement.  Example:
 #   LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH \

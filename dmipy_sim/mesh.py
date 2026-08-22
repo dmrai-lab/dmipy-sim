@@ -331,6 +331,71 @@ class Mesh(Geometry):
             feature_radius = 0.5 * float(np.min(sides[sides > 0]))
         self.radius = float(feature_radius)              # read by core sub-step auto-tune
         self.reject_escape = True                        # impermeable-leak safety net
+        # Reflect at the voxel faces INSIDE the bounce loop (dmipy-sim#61). The alternative --
+        # `mesh_bundle.BoxedMesh`, which mirrors the position after the step -- applies a reflection of space
+        # with no collision test, so it can teleport a walker across a fibre wall. Measured on the 358-fibre
+        # CACTUS bundle over 20 ms: BoxedMesh leaks 19.17% of extra-axonal walkers into fibres (47.4% before
+        # its mirror veto). Treating the faces as ordinary specular walls in the same loop makes teleportation
+        # impossible by construction, which is what that class's own docstring asks for.
+        # DEFAULT ON. The alternative (mesh_bundle.BoxedMesh mirroring the position after the step) applies a
+        # reflection of space with no collision test, which places walkers inside bodies: measured 18.03% of
+        # extra-axonal walkers per 200 ms on a 358-fibre CACTUS bundle. Voxel faces belong in the same ordered
+        # bounce loop as the triangles. Applies only to NON-periodic axes; see `_box_face_hit`.
+        self.box_reflect = True
+        # Barycentric slack in the ray-triangle inside test. 0.0 reproduces the exact (non-watertight)
+        # bounds; see `_mt` for the measurement that motivates a non-zero value.
+        self.bary_tol = 0.0
+        # MC/DC layer 3: a hit within `edge_margin` (barycentric) of a facet EDGE or VERTEX has no
+        # well-defined normal, so reflecting off the interpolated one is arbitrary. MC/DC refuses to:
+        # `if (col_location == on_edge || on_vertex) bounced_direction = -step`. Back-scatter is retro-
+        # reflection rather than specular, but at a seam any choice is arbitrary and this one cannot send the
+        # walker through the wall. On 0.25 um CACTUS facets, margin 1e-4 in barycentric units is ~2.5e-11 m,
+        # comparable to _NUDGE, so it fires on a narrow band of hits and costs little in physics.
+        self.edge_backscatter = False
+        self.edge_margin = 1e-4
+        # How to bounce when the hit is within `edge_margin` of a facet seam.
+        #   'backscatter' -- MC/DC's choice, d_ref = -dh. Cannot escape, but retro-reflection is unphysical
+        #                    and costs displacement preferentially at walls, i.e. it biases local time.
+        #   'geometric'   -- ours: specular off the facet's GEOMETRIC normal, which is exact for a plane even
+        #                    where the vertex-interpolated normal is ill-conditioned. Preserves step length
+        #                    and the outward sense, so it should bias the boundary channel less. If it sends
+        #                    the walker at the neighbouring facet, the same bounce loop catches that next.
+        self.edge_mode = "backscatter"
+        # REST-FACET EXCLUSION (ours; an improvement on MC/DC's `Walker::bouncing` + distance epsilon).
+        # After a bounce the walker sits `_NUDGE` off the facet it just hit, and a nearly-tangential outgoing
+        # ray can re-hit that same facet at a tiny positive t purely through float32 error. MC/DC suppresses
+        # this with a distance floor, which necessarily also suppresses genuine hits on OTHER facets at short
+        # range -- the measured tunnelling mechanism. The thing that actually must be ignored is one specific
+        # facet, and it is known by INDEX, so exclude it by identity and leave every other wall live at any
+        # distance. Then a walker stepping into a neighbouring wall can never have that hit discarded.
+        # DEFAULT ON. 63.3 +- 3.3 -> 50.0 +- 1.4 crossings (3.7 sigma) with no local-time cost, and it
+        # supersedes the state-conditional floor below (this path never consults it).
+        self.rest_facet_exclusion = True
+        # MC/DC's state-conditional floor, OPT-IN. It is their fix and defensible, but under the unified
+        # crossing metric it is not a measurable win on its own (63.0 +- 2.9 shipped vs 63.3 +- 3.3 with it),
+        # and enabling it by default would silently change the accepted-hit threshold for every existing mesh
+        # caller. `rest_facet_exclusion` supersedes it anyway: that path never consults the floor.
+        self.state_conditional_floor = False
+        # Which normal the OUTGOING direction is mirrored about.
+        #   'smooth'    -- vertex-interpolated, so a coarse mesh diffuses like the curved surface it samples.
+        #                  Physically motivated, but it is not the plane the walker is actually behind, so the
+        #                  reflected ray can point below the facet -- which is what `_GRAZE` exists to patch,
+        #                  and the _GRAZE sweep improving monotonically with size is evidence for this cause.
+        #   'geometric' -- mirror about the FACET normal. The facet is the wall the walker cannot pass, so this
+        #                  is the confinement truth and needs no _GRAZE rescue. Cost: faceted rather than
+        #                  smooth curvature, i.e. slightly wrong tortuosity on a coarse mesh.
+        # The relaxation weight keeps using the SMOOTH normal either way -- it is the best local estimate of
+        # surface orientation, and it is what the surface channel (C2 relaxivity, C4 MT) is built from. So
+        # confinement and physics are taken from the object each describes correctly.
+        # DEFAULT 'geometric'. Measured on CACTUS (3000 walkers, 3 seeds): crossings 63.0 +- 2.9 -> 7.0 +- 0.8
+        # and boundary local time 0.9668 -> 0.9880 of analytic (S/V)D -- better confinement AND better surface
+        # physics. Validated to cost nothing in curvature: flawless sphere local time 1.0011x vs 1.0006x
+        # (fine mesh) and 1.0432x vs 1.0430x (coarse), long-time lattice ADC 0.7815 +- 0.0085 vs
+        # 0.7807 +- 0.0041 (fine) and 0.8080 +- 0.0077 vs 0.8112 +- 0.0121 (coarse).
+        self.reflect_mode = "geometric"
+        self._REST_THR = jnp.float32(8.0 * 4.8e-11)
+        self._BLO = jnp.asarray(self.vmin, jnp.float32)
+        self._BHI = jnp.asarray(self.vmax, jnp.float32)
 
         # ---- compartment (intra / extra) surface properties ----
         # The membrane between the intra (inside a cell) and extra compartments can
@@ -535,8 +600,23 @@ class Mesh(Geometry):
         # features). A 64x floor would have bounded the ratio just as well and cost 1% of a step there,
         # which is trading one bias for another.
         self._NUDGE = jnp.float32(max(1e-4 * step_l, 16.0 * float(self._EPS)))
+        # Floor for the ADAPTIVE nudge (see the bounce body): even in the tightest crevice the walker must be
+        # displaced by something float32 can represent at these coordinates, or it stays on the surface and
+        # the next collision is discarded as ts <= _EPS.
+        self._MIN_NUDGE = jnp.float32(8.0 * float(self._EPS))
+        # Opt-in near-surface confinement guards. Both OFF by default: together they cut crossings 2.8x on a
+        # CACTUS bundle (39 -> 14 per 3000 walkers over 20 ms, 3.5 sigma) at no cost in boundary local time
+        # (0.519x vs 0.522x of (S/V)D, i.e. unchanged), but they do NOT reach zero, and an impermeable wall
+        # that leaks 0.47% is still wrong. Enabling them is a strict improvement; relying on them for
+        # airtightness is not. See dmipy-sim#61.
+        self.adaptive_nudge = False
+        self.net_cross_check = False
         # minimum sine of the angle the outgoing ray must make with the triangle it left
-        self._GRAZE = jnp.float32(1e-4)
+        # DEFAULT 6e-2, not 1e-4. With a geometric reflection normal the outgoing cosine against the facet is
+        # already non-negative, so this only lifts genuinely grazing incidences (shallower than ~3.4 deg), and
+        # it buys 7.7 +- 1.2 -> 3.0 +- 0.8 crossings (~3.9 sigma). At the old 1e-4 the lift produced rays
+        # essentially parallel to the wall, which on concave geometry is how walkers ended up inside.
+        self._GRAZE = jnp.float32(6e-2)
         self._MAX_BOUNCES = int(max_bounces)
         self._OFF = jnp.asarray([[dx, dy, dz] for dx in (-1, 0, 1)
                                  for dy in (-1, 0, 1) for dz in (-1, 0, 1)], jnp.int32)
@@ -558,14 +638,59 @@ class Mesh(Geometry):
         valid = cand >= 0
         return jnp.where(valid, cand, 0), valid
 
+    def _hit_floor(self, bouncing):
+        """Lower bound on an accepted hit distance, conditioned on whether the walker is MID-BOUNCE.
+
+        A fresh step and a continuing bounce need different answers, and one constant cannot serve both. On a
+        continuing bounce the walker sits `_NUDGE` off the facet it just hit, so a hit at t~0 is that same
+        facet and must be discarded. On a FRESH step the walker also sits `_NUDGE` off a facet -- from the
+        previous step -- but now a hit at t~0 is a genuine collision with a wall it is moving INTO, and
+        discarding it walks the walker straight through.
+
+        Applying `_EPS` unconditionally (as this engine did) drops exactly that case. Measured on the CACTUS
+        bundle: leaked walkers sat at d = -4.8e-11 m (one nudge) before the step, with the crossing 1.1e-10 m
+        in -- `_NUDGE`/cos(theta) -- and every crossed triangle already in the gather.
+
+        This follows MC/DC (Rafael-Patino et al.), the reference implementation for mesh diffusion and the
+        source of the CACTUS substrates, which keys the same rejection on a `Walker::bouncing` status:
+        "a spin that's bouncing ignores collision at 0 (is in a wall)" ... "if we are not bouncing, all
+        collisions counts."
+        """
+        if not self.state_conditional_floor:
+            return self._EPS                     # shipped behaviour: one floor, applied unconditionally
+        return jnp.where(bouncing, self._EPS, jnp.float32(0.0))
+
     def _mt(self, r0, d_hat, tri, valid):
+        """Moller-Trumbore, with the inside test widened by ``self.bary_tol`` and a guard on ``det``.
+
+        Exact barycentric bounds in float32 are NOT watertight. A ray crossing an edge shared by two
+        triangles can be rejected by BOTH -- rounding places it marginally outside each -- so the wall has a
+        seam along every edge, and a near-parallel ray drives ``det`` to zero so ``t, u, v`` become garbage
+        (previously an unguarded division). Either way the hit is silently dropped and the walker flies
+        straight through a wall that was in the gather all along.
+
+        Measured on the 358-fibre CACTUS bundle over 20 ms: of 63 leaked walkers, 58 genuinely crossed a
+        triangle, every one of those triangles WAS in the walker's gather (0 absent, so the grid is sound),
+        and 43 of 58 crossings sat within 1% of the step start -- at 1.1e-10 m, which is `_NUDGE`/cos(theta).
+        The walker is parked at nudge distance off a facet, steps back toward it, and the intersection is
+        missed near the facet edge. This is also why the parity guard changed nothing: parity is built on this
+        same routine and inherits the same blind spot.
+
+        Widening the bounds makes adjacent triangles overlap slightly, so an edge-crossing ray hits at least
+        one of them. That is conservative for confinement -- a spurious hit just reflects the walker -- which
+        is the right way to be wrong about an impermeable wall.
+        """
         A = tri[:, 0]; E1 = tri[:, 1] - A; E2 = tri[:, 2] - A; T = r0[None] - A
         P = jnp.cross(jnp.broadcast_to(d_hat, E2.shape), E2); det = (P * E1).sum(1)
         Q = jnp.cross(T, E1)
-        t = (Q * E2).sum(1) / det
-        u = (P * T).sum(1) / det
-        v = (Q * jnp.broadcast_to(d_hat, E2.shape)).sum(1) / det
-        ok = (u >= 0) & (u <= 1) & (v >= 0) & (u + v <= 1) & valid
+        tiny = jnp.float32(1e-30)
+        safe = jnp.where(jnp.abs(det) < tiny, tiny, det)
+        t = (Q * E2).sum(1) / safe
+        u = (P * T).sum(1) / safe
+        v = (Q * jnp.broadcast_to(d_hat, E2.shape)).sum(1) / safe
+        b = jnp.float32(self.bary_tol)
+        ok = ((u >= -b) & (u <= 1 + b) & (v >= -b) & (u + v <= 1 + b)
+              & (jnp.abs(det) > tiny) & valid)
         return jnp.where(ok, t, jnp.inf), u, v
 
     def classify_position(self, r):
@@ -627,11 +752,23 @@ class Mesh(Geometry):
         """
         n = self._smooth_normal(vnf, nrmf, u, v, idx, dh)
         nf = jnp.where(jnp.dot(dh, nrmf[idx]) > 0, -nrmf[idx], nrmf[idx])
-        d_ref = dh - 2.0 * jnp.dot(dh, n) * n
+        n_ref = nf if self.reflect_mode == "geometric" else n
+        d_ref = dh - 2.0 * jnp.dot(dh, n_ref) * n_ref
         d_ref /= jnp.linalg.norm(d_ref)
         c = jnp.dot(d_ref, nf)
         d_ref = jnp.where(c < self._GRAZE, d_ref + (self._GRAZE - c) * nf, d_ref)
         d_ref /= jnp.linalg.norm(d_ref)
+        if self.edge_backscatter:
+            # barycentric distance to the nearest edge; w = 1-u-v is the third coordinate
+            bu, bv = u[idx], v[idx]
+            edge = jnp.minimum(jnp.minimum(bu, bv), 1.0 - bu - bv) < jnp.float32(self.edge_margin)
+            if self.edge_mode == "geometric":
+                d_geo = dh - 2.0 * jnp.dot(dh, nf) * nf
+                d_geo = d_geo / jnp.linalg.norm(d_geo)
+                alt = d_geo
+            else:
+                alt = -dh
+            d_ref = jnp.where(edge, alt, d_ref)
         return d_ref, n, nf
 
     def reflect(self, r, step):
@@ -640,7 +777,7 @@ class Mesh(Geometry):
         tri = self._TRIS[ci]; vnf = self._VN[ci]; nrmf = self._NRM[ci]
         step_l = jnp.linalg.norm(step); d_hat = step / step_l
 
-        def one(carry, _):
+        def one(carry, i):
             r0, dh, rem = carry
             # Candidates are gathered once, around the step's START, and reused for every bounce. That is
             # sound only because `physics.collision_sub_steps` caps a sub-step at a fraction of a cell:
@@ -648,8 +785,13 @@ class Mesh(Geometry):
             # Measured: re-gathering per bounce moves retention by 0.0 points, and costs a gather per
             # bounce instead of one per step. Without the sub-step cap it would NOT be sound.
             ts, u, v = self._mt(r0, dh, tri, valid)
-            vm = (ts > self._EPS) & (ts < rem); ts = jnp.where(vm, ts, jnp.inf)
-            idx = jnp.argmin(ts); d = ts[idx]; hit = d < jnp.inf
+            vm = (ts > self._hit_floor(i > 0)) & (ts < rem); ts = jnp.where(vm, ts, jnp.inf)
+            # int32 explicitly: argmin returns int64 once anything in the process enables x64
+            # (`bloch._simulate_bloch_mt` flips that global toggle for its float64 magnetisation
+            # and never restores it), and the scan carry below is pinned int32 -- a mismatch JAX
+            # rejects at trace time. Any mesh walk after an MT Bloch call in the same process hit
+            # it. The facet index needs 31 bits for 2e9 triangles, so int32 costs nothing.
+            idx = jnp.argmin(ts).astype(jnp.int32); d = ts[idx]; hit = d < jnp.inf
             d_ref, n, nf = self._bounce(vnf, nrmf, u, v, idx, dh)
             r_hit = r0 + d * dh
             # Nudge along the GEOMETRIC normal: it is perpendicular to the triangle just hit, so it
@@ -657,8 +799,8 @@ class Mesh(Geometry):
             return (jnp.where(hit, r_hit + self._NUDGE * nf, r0),
                     jnp.where(hit, d_ref, dh),
                     jnp.where(hit, rem - d - self._NUDGE, rem)), hit
-        (rf, df, remf), hits = jax.lax.scan(one, (r_w, d_hat, step_l), None,
-                                            length=self._MAX_BOUNCES)
+        (rf, df, remf), hits = jax.lax.scan(one, (r_w, d_hat, step_l),
+                                            jnp.arange(self._MAX_BOUNCES))
         # Flying the leftover path is only safe if the final iteration found NO hit -- that is precisely
         # the statement that nothing lies within `rem` of here, so the free flight was already tested. If
         # it DID hit, the bounce budget ran out mid-step and the leftover is untested: flying it walks the
@@ -670,37 +812,133 @@ class Mesh(Geometry):
             r_out = jnp.where(self._escaped(r, r_out), r, r_out)
         return r_out
 
+    def _box_face_hit(self, r0, dh, rem):
+        """Distance along ``dh`` to the nearest voxel face within ``rem``, and that face's inward normal.
+
+        The six faces are axis-aligned planes, so this is one division per axis -- no triangle test. Only the
+        face being APPROACHED on each axis can be hit, which is the one selected by the sign of ``dh``.
+        """
+        safe = jnp.where(jnp.abs(dh) < jnp.float32(1e-30), jnp.float32(1e-30), dh)
+        t = jnp.where(dh > 0, (self._BHI - r0) / safe, (self._BLO - r0) / safe)
+        t = jnp.where(jnp.abs(dh) < jnp.float32(1e-30), jnp.inf, t)
+        # A PERIODIC axis has no wall at its faces -- they are wrap boundaries, and reflecting there confines
+        # the walk to one cell. Measured when this was missed: long-time ADC in a periodic sphere lattice
+        # collapsed from 0.78 D to 0.276 D, because every walker was trapped in its own cell.
+        t = jnp.where(self._PER > 0, jnp.inf, t)
+        # `t >= 0`, NOT `t > _EPS`. A plane has no on-surface ambiguity to protect against: only the face being
+        # approached is selected, so a walker sitting exactly ON a face and moving outward must reflect at
+        # t=0 rather than have the hit discarded. With `> _EPS` it instead flies out, and once outside
+        # `(hi - r0)/dh` is negative and excluded, so it can never come back -- a one-way trap that stranded
+        # 0.4% of walkers outside the box.
+        t = jnp.where((t >= 0.0) & (t < rem), t, jnp.inf)
+        ax = jnp.argmin(t)
+        n = jnp.zeros(3, jnp.float32).at[ax].set(-jnp.sign(dh[ax]))
+        return t[ax], n, ax
+
+    def _net_side_changed(self, r_w, r_out, tri, valid):
+        """Did the NET displacement change which side of the surface the walker is on? By PARITY.
+
+        The confinement invariant has to hold for the net displacement, not just per bounce: the
+        post-collision nudge can land a walker inside a NEIGHBOURING body in a tight crevice, and a hit at
+        ``ts <= _EPS`` is discarded for a walker sitting on a surface. Both leave the walker across a wall it
+        never legitimately crossed.
+
+        Parity rather than presence. Counting crossings strictly inside the segment and asking whether the
+        count is ODD is immune to the endpoint ambiguity that defeats a presence test: a walker that starts ON
+        a surface and reflects back crosses it 0 or 2 times, while one that tunnels crosses exactly once. A
+        presence test (``any``) cannot tell those apart, so it both misses tunnelling whose crossing sits within
+        _EPS of an endpoint and rejects legitimate reflections -- measured at only a 2.8x reduction, never zero.
+
+        Sound because the segment is at most one step long and the gather reaches 1.5 cells, so every triangle
+        it can cross is in ``tri``.
+        """
+        seg = r_out - r_w
+        n = jnp.linalg.norm(seg)
+        safe = jnp.maximum(n, jnp.float32(1e-30))
+        ts, _u, _v = self._mt(r_w, seg / safe, tri, valid)
+        crossings = jnp.sum(jnp.where((ts > 0.0) & (ts < n), 1, 0))
+        return (crossings % 2 == 1) & (n > 0.0)
+
     def reflect_with_log_weight(self, r, step, rho_over_D):
         r_w = self._wrap(r)
+        if self.box_reflect:
+            # Recovery for a walker that is already outside (float32 excursion, or state inherited from a
+            # previous configuration). Clamping to the face moves it by at most that excursion, so unlike a
+            # mirror it cannot carry the walker across a fibre wall.
+            r_w = jnp.clip(r_w, self._BLO, self._BHI)
         ci, valid = self._gather(r_w)
         tri = self._TRIS[ci]; vnf = self._VN[ci]; nrmf = self._NRM[ci]
         step_l = jnp.linalg.norm(step); d_hat = step / step_l
 
-        def one(carry, _):
-            r0, dh, rem = carry
+        def one(carry, i):
+            r0, dh, rem, last = carry
             ts, u, v = self._mt(r0, dh, tri, valid)
-            vm = (ts > self._EPS) & (ts < rem); ts = jnp.where(vm, ts, jnp.inf)
-            idx = jnp.argmin(ts); d = ts[idx]; hit = d < jnp.inf
+            # i > 0 means the walker is mid-bounce; see `_hit_floor`
+            vm = (ts > self._hit_floor(i > 0)) & (ts < rem)
+            if self.rest_facet_exclusion:
+                # ignore ONLY the facet just bounced off, and only at grazing range; see __init__
+                same = jnp.arange(ts.shape[0]) == last
+                vm = (ts > 0.0) & (ts < rem) & jnp.logical_not(same & (ts < self._REST_THR))
+            ts = jnp.where(vm, ts, jnp.inf)
+            # int32 explicitly: argmin returns int64 once anything in the process enables x64
+            # (`bloch._simulate_bloch_mt` flips that global toggle for its float64 magnetisation
+            # and never restores it), and the scan carry below is pinned int32 -- a mismatch JAX
+            # rejects at trace time. Any mesh walk after an MT Bloch call in the same process hit
+            # it. The facet index needs 31 bits for 2e9 triangles, so int32 costs nothing.
+            idx = jnp.argmin(ts).astype(jnp.int32); d = ts[idx]; hit = d < jnp.inf
             d_ref, n, nf = self._bounce(vnf, nrmf, u, v, idx, dh)
             # side of the collision: dh·(outward face normal) > 0 -> spin leaving a
             # cell (intra side), < 0 -> entering (extra side).
             rho_mult = jnp.where(jnp.dot(dh, nrmf[idx]) > 0,
                                  self._rho_mult_intra, self._rho_mult_extra)
+            # A voxel face competes with the triangles in the SAME ordered loop, so whichever the walker
+            # reaches first acts first and no reflection is ever applied without a collision test. Box faces
+            # carry no surface log-weight -- only the axon walls do -- so the surface channel stays
+            # myelin-only, exactly as when the mirror lived outside the loop.
+            if self.box_reflect:
+                d_bx, n_bx, ax_bx = self._box_face_hit(r0, dh, rem)
+                use_box = d_bx < d
+                d = jnp.where(use_box, d_bx, d)
+                hit = hit | (d_bx < jnp.inf)
+                d_ref = jnp.where(use_box, dh.at[ax_bx].multiply(-1.0), d_ref)
+                nf = jnp.where(use_box, n_bx, nf)
+                n = jnp.where(use_box, n_bx, n)
+            else:
+                use_box = False
             r_hit = r0 + d * dh
             # relaxation still weights by the SMOOTH normal: it is the surface the walker physically
             # met. Only the side it ends up on is decided geometrically.
             cos_a = -jnp.dot(dh, n)
-            d_perp = jnp.where(hit, rho_mult * (rem - d) * cos_a, jnp.float32(0.0))
-            return (jnp.where(hit, r_hit + self._NUDGE * nf, r0),
+            d_perp = jnp.where(hit & jnp.logical_not(use_box),
+                               rho_mult * (rem - d) * cos_a, jnp.float32(0.0))
+            # ADAPTIVE nudge. A fixed nudge is a compromise with no good value: too small and it falls below
+            # float32 resolution so the walker stays ON the surface and the next hit is discarded by the
+            # `ts > _EPS` guard; too large and in a tight crevice it lands the walker inside a NEIGHBOURING
+            # body. Measured on a CACTUS bundle (clean seeds, 5 ms, crossings per 3000 walkers): 4.8e-13 m
+            # -> 4.70%, 4.8e-12 -> 0.37%, 4.8e-11 (shipped) -> 0.27%, 4.8e-9 -> 1.33%. A minimum, not a
+            # plateau, so no constant is safe.
+            # Instead cap it at a fraction of the clearance actually available along the outgoing normal,
+            # which is what the crevice case violates, while keeping the float32 floor that the on-surface
+            # case needs.
+            if self.adaptive_nudge:
+                ts_n, _un, _vn = self._mt(r_hit, nf, tri, valid)
+                clear = jnp.min(jnp.where(ts_n > self._EPS, ts_n, jnp.inf))
+                nudge = jnp.minimum(self._NUDGE, jnp.maximum(0.25 * clear, self._MIN_NUDGE))
+            else:
+                nudge = self._NUDGE
+            return (jnp.where(hit, r_hit + nudge * nf, r0),
                     jnp.where(hit, d_ref, dh),
-                    jnp.where(hit, rem - d - self._NUDGE, rem)), (d_perp, hit)
-        (rf, df, remf), (dperps, hits) = jax.lax.scan(one, (r_w, d_hat, step_l), None,
-                                                      length=self._MAX_BOUNCES)
+                    jnp.where(hit, rem - d - nudge, rem),
+                    jnp.where(hit, idx, last)), (d_perp, hit)
+        (rf, df, remf, _lastf), (dperps, hits) = jax.lax.scan(
+            one, (r_w, d_hat, step_l, jnp.int32(-1)), jnp.arange(self._MAX_BOUNCES))
         dlog_w = -2.0 * jnp.float32(rho_over_D) * jnp.sum(dperps)
         # see `reflect`: the leftover path may only be flown if the last bounce found nothing
         r_out = r + (rf + df * jnp.where(hits[-1], 0.0, jnp.maximum(remf, 0.0)) - r_w)
         if self.reject_escape:
             escaped = self._escaped(r, r_out)
+            if self.net_cross_check:
+                escaped = escaped | self._net_side_changed(r_w, r_w + (r_out - r), tri, valid)
             return jnp.where(escaped, r, r_out), jnp.where(escaped, jnp.float32(0.0), dlog_w)
         return r_out, dlog_w
 
@@ -711,11 +949,25 @@ class Mesh(Geometry):
         step_l = jnp.linalg.norm(step); d_hat = step / step_l
         u_rand = jax.random.uniform(perm_key, dtype=jnp.float32)
 
-        def one(carry, _):
+        def one(carry, i):
             r0, dh, rem, decided, dlogw = carry
             ts, u, v = self._mt(r0, dh, tri, valid)
+            # Deliberately NOT `_hit_floor` here: this commit is about IMPERMEABLE confinement and does not
+            # touch permeation. The semantics differ anyway -- this loop carries a `decided` flag, so a t~0 hit
+            # on the membrane a walker has just crossed would consume the step's single crossing decision and
+            # mask a genuine hit later in the same step. Whether a state-conditional floor helps permeation is
+            # untested and belongs in its own change.
+            #
+            # (An earlier revision of this comment blamed the floor for the two failing sphere residence-time
+            # tests. That was wrong: they fail identically at 6310a89, before any of this work, and they
+            # exercise the analytic `Sphere` geometry rather than a mesh, so nothing here can reach them.)
             vm = (ts > self._EPS) & (ts < rem); ts = jnp.where(vm, ts, jnp.inf)
-            idx = jnp.argmin(ts); d = ts[idx]; hit = d < jnp.inf
+            # int32 explicitly: argmin returns int64 once anything in the process enables x64
+            # (`bloch._simulate_bloch_mt` flips that global toggle for its float64 magnetisation
+            # and never restores it), and the scan carry below is pinned int32 -- a mismatch JAX
+            # rejects at trace time. Any mesh walk after an MT Bloch call in the same process hit
+            # it. The facet index needs 31 bits for 2e9 triangles, so int32 costs nothing.
+            idx = jnp.argmin(ts).astype(jnp.int32); d = ts[idx]; hit = d < jnp.inf
             d_ref, n, nf = self._bounce(vnf, nrmf, u, v, idx, dh)
             # crossing direction: dh·(outward normal) > 0 -> leaving a cell
             # (intra->extra), < 0 -> entering (extra->intra).
@@ -736,7 +988,7 @@ class Mesh(Geometry):
             return (r_new, d_new, rem_new, decided | first_hit,
                     dlogw - 2.0 * jnp.float32(rho_over_D) * dperp_refl), do_reflect
         (rf, df, remf, _, dlogw), refls = jax.lax.scan(
-            one, (r_w, d_hat, step_l, False, jnp.float32(0.0)), None, length=self._MAX_BOUNCES)
+            one, (r_w, d_hat, step_l, False, jnp.float32(0.0)), jnp.arange(self._MAX_BOUNCES))
         # see `reflect`. A transmitted walker already zeroed `rem`, so only a still-bouncing final
         # iteration means the budget ran out with untested path left.
         r_out = r + (rf + df * jnp.where(refls[-1], 0.0, jnp.maximum(remf, 0.0)) - r_w)

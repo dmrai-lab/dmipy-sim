@@ -110,6 +110,15 @@ _CITATION_SPIJKERMAN2017 = {
 }
 
 
+_CITATION_STANISZ2005 = {
+    'key': 'stanisz2005',
+    'authors': 'Stanisz GJ, Odrobina EE, Pun J, Escaravage M, Graham SJ, Bronskill MJ, Henkelman RM',
+    'title': 'T1, T2 relaxation and magnetization transfer in tissue at 3T',
+    'journal': 'Magnetic Resonance in Medicine',
+    'year': 2005,
+    'doi': '10.1002/mrm.20605',
+}
+
 BIOPHYSICAL_CONSTANTS = {
     'D_water_37C': {
         'default': {
@@ -286,6 +295,83 @@ BIOPHYSICAL_CONSTANTS = {
                 'MacKay 1.5T; Barakovic 3T (~50 ms); Wiggermann 7T (~47 ms IE pool, '
                 'intra/extra not separately resolved -- both set to the IE value).',
     },
+    # ---- quantitative MT (two-pool) ----------------------------------------------------------------
+    # The two parameters an EMERGENT MT walk needs are kappa_MT (surface reactivity, m/s) and dwell_time
+    # (s), neither of which is measured directly. What qMT reports is the macromolecular pool fraction M0B
+    # and the fundamental exchange rate R, from which the pseudo-first-order rates follow as
+    # k_f = R*M0B and k_r = R*M0A (M0A = 1 - M0B); detailed balance k_f*M0A = k_r*M0B then holds and
+    # f_bound = k_f/(k_f + k_r) recovers M0B. Convert with mt.kappa_MT_from_forward_rate (which needs the
+    # substrate's own S/V, so kappa_MT is geometry-dependent) and mt.dwell_time_from_fraction.
+    'mt_bound_pool_fraction': {
+        'default': {
+            'value': 0.139,
+            'unit': 'dimensionless',
+            'field_T': 3.0,
+            'species': 'bovine',
+            'method': 'quantitative MT, super-Lorentzian lineshape, in vitro at 37 C',
+            'source_key': 'stanisz2005',
+            'location': 'Table 2, white matter row: M0B = 13.9 +/- 2.8 %',
+        },
+        'alternatives': [
+            {
+                'value': 0.050,
+                'unit': 'dimensionless',
+                'field_T': 3.0,
+                'species': 'bovine',
+                'method': 'quantitative MT, in vitro at 37 C (GREY matter)',
+                'source_key': 'stanisz2005',
+                'location': 'Table 2, gray matter row: M0B = 5.0 +/- 0.5 %',
+            },
+        ],
+    },
+
+    'mt_exchange_rate': {
+        'default': {
+            'value': 23.0,
+            'unit': '1/s',
+            'field_T': 3.0,
+            'species': 'bovine',
+            'method': 'quantitative MT, super-Lorentzian lineshape, in vitro at 37 C',
+            'source_key': 'stanisz2005',
+            'location': 'Table 2, white matter row: R = 23 +/- 4 s^-1. This is the FUNDAMENTAL rate '
+                        'constant, not a pseudo-first-order rate: k_f = R*M0B, k_r = R*M0A.',
+        },
+        'alternatives': [
+            {
+                'value': 40.0,
+                'unit': '1/s',
+                'field_T': 3.0,
+                'species': 'bovine',
+                'method': 'quantitative MT, in vitro at 37 C (GREY matter)',
+                'source_key': 'stanisz2005',
+                'location': 'Table 2, gray matter row: R = 40 +/- 1 s^-1',
+            },
+        ],
+    },
+
+    'T2_bound_pool': {
+        'default': {
+            'value': 1.0e-5,
+            'unit': 's',
+            'field_T': 3.0,
+            'species': 'bovine',
+            'method': 'quantitative MT, super-Lorentzian lineshape, in vitro at 37 C',
+            'source_key': 'stanisz2005',
+            'location': 'Table 2, white matter row: T2B = 10.0 +/- 1.0 us',
+        },
+        'alternatives': [
+            {
+                'value': 9.1e-6,
+                'unit': 's',
+                'field_T': 3.0,
+                'species': 'bovine',
+                'method': 'quantitative MT, in vitro at 37 C (GREY matter)',
+                'source_key': 'stanisz2005',
+                'location': 'Table 2, gray matter row: T2B = 9.1 +/- 0.2 us',
+            },
+        ],
+    },
+
     'T2_myelin': {
         'default': {
             'value': 0.015,
@@ -888,4 +974,11 @@ def canonical_white_matter(field_T=3.0):
         # membrane / surface
         'rho2': get_value('rho2_axon_membrane', field_T, allow_nearest=True),
         'kappa': get_value('kappa_membrane', field_T, allow_nearest=True),
+        # quantitative MT (two-pool). These are the MEASURED qMT observables, not the walk's
+        # (kappa_MT, dwell_time) -- kappa_MT depends on the substrate's own S/V, so it cannot live in a
+        # tissue table. Convert with mt.kappa_MT_from_forward_rate / mt.dwell_time_from_fraction, or
+        # Substrate.with_mt(f_bound, k_forward, S_over_V).
+        'mt_bound_pool_fraction': get_value('mt_bound_pool_fraction', field_T, allow_nearest=True),
+        'mt_exchange_rate': get_value('mt_exchange_rate', field_T, allow_nearest=True),
+        'T2_bound': get_value('T2_bound_pool', field_T, allow_nearest=True),
     }
