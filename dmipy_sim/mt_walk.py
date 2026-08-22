@@ -38,6 +38,7 @@ import jax.numpy as jnp
 
 from .physics import _geometry_radius, mt_sub_steps as _mt_sub_steps
 from . import mt as _mt
+from .geometries import initial_positions
 
 
 def simulate_mt_trajectories(
@@ -200,12 +201,7 @@ def simulate_mt_trajectories(
 
     master_key = jax.random.PRNGKey(seed)
     pos_key, walker_key = jax.random.split(master_key)
-    if r0 is None:
-        r0_all = geometry.init_positions(n_walkers, pos_key)
-    else:
-        r0_all = jnp.asarray(r0, jnp.float32)
-        if r0_all.shape != (n_walkers, 3):
-            raise ValueError(f"r0 has shape {r0_all.shape}, expected {(n_walkers, 3)}")
+    r0_all = initial_positions(geometry, n_walkers, pos_key, r0)
     walker_keys = jax.random.split(walker_key, n_walkers)
 
     # ── bound-pool equilibration ──
