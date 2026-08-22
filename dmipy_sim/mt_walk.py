@@ -49,6 +49,7 @@ def simulate_mt_trajectories(
     kappa_MT: float,
     dwell_time: float,
     seed: int = 42,
+    r0=None,
     walker_batch_size: int = 50_000,
     sub_steps: int = None,
     equilibrate_binding="auto",
@@ -62,6 +63,23 @@ def simulate_mt_trajectories(
         As in :func:`dmipy_sim.core.simulate_trajectories`.  ``geometry`` must
         provide ``reflect_with_log_weight(r, step, rho_over_D)`` and
         ``init_positions(n, key)``.
+    r0 : array (n_walkers, 3), optional
+        Explicit start positions.  Default: ``geometry.init_positions(n, key)``,
+        which for a mesh means ``intra=True`` -- INSIDE the surface.
+
+        Pass this whenever the pool you want is not the geometry's inside.  A
+        bundle's extra-axonal pool is the case that matters: its geometry is the
+        OUTER surface and the walkers belong outside it, so leaving the seeding
+        to the default put them inside the axons instead, i.e. it re-simulated
+        the intra pool with ``D_extra`` and labelled the result "extra".  The
+        plain driver has always taken ``r0`` for exactly this reason; this
+        driver did not, so the emergent-MT path silently dropped it.
+
+        What that cost, measured on CACTUS bundle_00000: wall contact per unit
+        free time came out at 0.54x the extra pool's analytic ``(S/V)*D``, which
+        is what starved the bound pool (ensemble f_bound 0.0924 against 0.1390).
+        The walk itself was never wrong -- MT local time tracked the plain walk
+        to 0.97x -- the walkers were in the wrong compartment.
     kappa_MT : float
         MT surface reactivity (m/s).  0 disables binding (pure diffusion walk).
     dwell_time : float
@@ -182,7 +200,12 @@ def simulate_mt_trajectories(
 
     master_key = jax.random.PRNGKey(seed)
     pos_key, walker_key = jax.random.split(master_key)
-    r0_all = geometry.init_positions(n_walkers, pos_key)
+    if r0 is None:
+        r0_all = geometry.init_positions(n_walkers, pos_key)
+    else:
+        r0_all = jnp.asarray(r0, jnp.float32)
+        if r0_all.shape != (n_walkers, 3):
+            raise ValueError(f"r0 has shape {r0_all.shape}, expected {(n_walkers, 3)}")
     walker_keys = jax.random.split(walker_key, n_walkers)
 
     # ── bound-pool equilibration ──

@@ -503,7 +503,8 @@ def mesh_bundle_master(bundle, *, n_walkers=30_000, params=None, T_max=0.04, dt_
         if mt_mode == "emergent":
             from .mt_walk import simulate_mt_trajectories
             o = simulate_mt_trajectories(n, D, geom, T_max, dt_save, kappa_MT, dwell_time, seed=sd,
-                                         walker_batch_size=walker_batch_size, require_gpu=require_gpu)
+                                         r0=r0, walker_batch_size=walker_batch_size,
+                                         require_gpu=require_gpu)
             return (np.asarray(o[0], np.float32), np.asarray(o[5], np.float32),
                     np.asarray(o[4], np.float32))
         o = simulate_trajectories(n, D, geom, T_max=T_max, dt_save=dt_save, seed=sd, r0=r0,
