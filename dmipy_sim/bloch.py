@@ -489,11 +489,28 @@ def _make_bloch_mt_step_fn(geometry, D, dt, n_sub, T2, T1, M0, off_res_global,
     the driver can report the observable FREE-pool signal (the bound pool is MR-dark).
     """
     dt_sub = dt / n_sub
-    # Geometry / binding constants stay float32 (the walk); the magnetisation evolution
-    # runs in float64 (_F) because the off-resonance phase accumulated over the sub-step
-    # scan is large (dw * t_sat ~ 10^2-10^3 rad) and float32 loses it over ~10^5-10^6 tiny
-    # increments -- an accumulation error, not physics (float64 is step-count-exact).
-    _F = jnp.float64
+    # Everything here is float32.  This used to be float64, which required flipping JAX's
+    # `jax_enable_x64` PROCESS-WIDE (there is no other way to get float64 in JAX -- an explicitly
+    # requested float64 array silently truncates to float32 without the flag) and never restoring
+    # it, so every computation traced afterwards changed precision.  That broke `Mesh`, whose
+    # bounce-loop carries were int32 while `argmin` returns int64 under x64, and made test outcomes
+    # depend on run order.
+    #
+    # The stated reason was that the off-resonance phase reaches 10^2-10^3 rad over ~10^5-10^6
+    # sub-steps and float32 loses it.  It does not: the phase is never accumulated into a growing
+    # scalar, it is applied as a per-sub-step Rodrigues increment, so there is no large-plus-small
+    # addition to lose.  Measured on the Z-spectrum saturation this rationale points at (CW off
+    # resonance, t_sat 25 ms, offsets to 8 kHz = 1257 rad, 3 seeds, walk bit-identical between the
+    # two because every RNG draw is explicitly float32):
+    #
+    #   offset      0 Hz    500    1000    3000    8000
+    #   |f32-f64|  0.0020  0.0013  0.0014  0.0020  0.0014
+    #   seed spread 0.0079  0.0048  0.0022  0.0020  0.0016
+    #
+    # The precision difference is under the Monte-Carlo noise at every offset and 4x under it at the
+    # worst.  The Rodrigues coefficients below are already in cancellation-free half-angle form,
+    # which is what actually keeps the small per-sub-step angles accurate.  See #70.
+    _F = jnp.float32
     inv_nsub = _F(1.0 / n_sub)
     step_len = jnp.float32(np.sqrt(6.0 * D * dt_sub))
     kappa_over_D = jnp.float32(kappa_MT / D)
@@ -604,10 +621,6 @@ def _simulate_bloch_mt(n_walkers, diffusivity, waveform, geometry, rf_events, *,
     """MT forward path (see ``simulate_bloch``).  Returns ``signals`` then, in order,
     ``mz`` (if ``return_mz``) and the walker-mean ``bound_frac`` time series (n_t,)
     (if ``return_bound_frac``)."""
-    # The magnetisation evolution runs in float64 (the off-resonance phase accumulated over
-    # the sub-step scan is large and float32 loses it); enable x64 for this path.  The walk /
-    # geometry stay float32.  This is a global JAX toggle but only the MT path relies on it.
-    jax.config.update("jax_enable_x64", True)
     if dwell_time <= 0.0:
         raise ValueError("dwell_time must be > 0 when kappa_MT > 0 (MT on).")
     if not hasattr(geometry, 'reflect_with_log_weight'):
@@ -657,7 +670,7 @@ def _simulate_bloch_mt(n_walkers, diffusivity, waveform, geometry, rf_events, *,
                                      float(dwell_time), float(T2_bound), float(T1_bound),
                                      float(off_resonance_bound), rho=float(surface_relaxivity),
                                      field_fn=field_fn)
-    M_init = jnp.zeros((n_meas, 3), dtype=jnp.float64).at[:, 2].set(jnp.float64(M0))
+    M_init = jnp.zeros((n_meas, 3), dtype=jnp.float32).at[:, 2].set(jnp.float32(M0))
     dwell_steps_mean = float(dwell_time) / (dt / int(sub_steps))   # residual dwell in sub-steps
 
     # ── bound-pool initial condition (the thermal-equilibrium occupancy k_f/(k_f+k_r)) ──
