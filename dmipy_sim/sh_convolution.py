@@ -342,6 +342,47 @@ def rank1_residual(lam):
     return float(np.sqrt(max(np.sum(s[1:] ** 2), 0.0)) / np.linalg.norm(lam))
 
 
+def coupled_spectrum_at(response, g_dir, b0_dir, l_g=8, l_b=6, n_theta=48, n_phi=96):
+    """Build ``Lambda`` for the *exact* geometry a scanner requests -- no table, no interpolation.
+
+    ``Lambda`` is a scanner-side object: it depends on the gradient and field directions but
+    not on the orientation distribution or the voxel, so it is built once per measurement and
+    then composed against every FOD in a phantom (:func:`apply_odf_coupled`).  That split is
+    what the Gaunt route buys -- the alternative, integrating over the sphere per voxel, repeats
+    the response evaluation for every voxel.
+
+    ``response`` is called as ``response(dirs)`` with ``dirs`` an ``(n, 3)`` array of fibre
+    directions and must return the replayed signal for a substrate pointing each way, i.e. the
+    pack evaluated at the counter-rotated ``(g, B0)``.
+
+    The projection is on the **sphere**, not on a ``(u, v)`` tensor grid: for a given
+    ``(g, B0)`` the two invariants are constrained to an ellipse rather than the square, so
+    ``{P_l1(u) P_l2(v)}`` is not orthogonal there and a least-squares solve is required.  The
+    family is also rank-deficient when ``g`` is parallel to ``B0`` (then ``u == v``), which is a
+    common acquisition geometry -- hence ``lstsq`` and never ``solve``.  Degeneracy is harmless:
+    the minimum-norm solution still reconstructs the response exactly.
+
+    Returns ``(Lambda, residual, rank)``.  ``residual`` is the relative L2 misfit of the
+    truncated expansion and is the honest per-measurement error indicator: the composition
+    error tracks it.
+    """
+    from .gaunt import sphere_quadrature
+    g = np.asarray(g_dir, np.float64); g = g / np.linalg.norm(g)
+    b = np.asarray(b0_dir, np.float64); b = b / np.linalg.norm(b)
+    dirs, w = sphere_quadrature(n_theta, n_phi)
+    E = np.asarray(response(dirs), np.float64)
+    n1, n2 = l_g // 2 + 1, l_b // 2 + 1
+    B = np.stack([eval_legendre(2 * i, dirs @ g) * eval_legendre(2 * j, dirs @ b)
+                  for i in range(n1) for j in range(n2)], axis=1)
+    sw = np.sqrt(w)
+    A, y = B * sw[:, None], E * sw
+    lam, *_ = np.linalg.lstsq(A, y, rcond=None)
+    sv = np.linalg.svd(A, compute_uv=False)
+    rank = int((sv > sv[0] * 1e-10).sum())
+    resid = float(np.linalg.norm(A @ lam - y) / max(np.linalg.norm(y), 1e-300))
+    return lam.reshape(n1, n2), resid, rank
+
+
 def apply_odf_coupled(lam, odf_sh, g_dir, b0_dir, l_fod=8, l_g=8, l_b=6):
     """Compose a two-axis response over an orientation distribution (paper Eq. 19).
 

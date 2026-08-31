@@ -157,3 +157,41 @@ def test_rank1_residual_detects_separability():
     assert rank1_residual(np.outer(a, b)) < 1e-12
     mixed = np.outer(a, b); mixed[2, 3] += 0.5
     assert rank1_residual(mixed) > 0.05
+
+
+# --- Lambda built at the exact requested geometry (scanner-side, no interpolation) -------
+
+def _phys_response(g, b):
+    """A response that is a genuine function of (n.g, n.B0) and is NOT separable, and is not
+    built in the product-Legendre basis -- so projecting it is not a circular test."""
+    def f(dirs):
+        u, v = dirs @ g, dirs @ b
+        return np.exp(-1.3 * u ** 2) * np.exp(-0.65 * (1 - v ** 2) ** 2) \
+            * (1 + 0.35 * u ** 2 * v ** 2)
+    return f
+
+
+@pytest.mark.parametrize("ang", [0.0, 0.35, 0.79, 1.20, np.pi / 2, 2.36, np.pi])
+def test_lambda_built_at_requested_geometry_reproduces_the_integral(ang):
+    from dmipy_sim.sh_convolution import coupled_spectrum_at
+    g = np.array([0, 0, 1.0])
+    b = np.array([np.sin(ang), 0, np.cos(ang)])
+    lam, resid, rank = coupled_spectrum_at(_phys_response(g, b), g, b, l_g=LG, l_b=LB)
+
+    dirs, w = sphere_quadrature(64, 128)
+    rng = np.random.default_rng(0)
+    f = rng.standard_normal(n_sh_coeffs(LMAX)) * 0.3
+    f[0] = 1.0 / (2 * np.sqrt(np.pi))
+    brute = np.sum(w * (real_sh(LMAX, dirs) @ f) * _phys_response(g, b)(dirs))
+    got = apply_odf_coupled(lam, f, g, b, l_fod=LMAX, l_g=LG, l_b=LB)
+    # the composition error tracks the projection residual, which is the truncation
+    npt.assert_allclose(got, brute, rtol=max(20 * resid, 1e-9))
+
+
+def test_product_basis_is_rank_deficient_when_g_parallel_b0():
+    """u == v collapses the family -- a common acquisition geometry, so lstsq not solve."""
+    from dmipy_sim.sh_convolution import coupled_spectrum_at
+    g = b = np.array([0, 0, 1.0])
+    lam, resid, rank = coupled_spectrum_at(_phys_response(g, b), g, b, l_g=LG, l_b=LB)
+    assert rank < lam.size, "expected degeneracy at g || B0"
+    assert resid < 1e-6, "minimum-norm solution must still reconstruct the response"
