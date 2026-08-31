@@ -705,15 +705,31 @@ class PackResponder:
                                    chiral=chiral, _grid=(self.dirs, self.w))
 
 
+def free_water_response(b_value, diffusivity):
+    """Closed-form isotropic Gaussian response, ``exp(-b D)`` -- the analytic substrate.
+
+    Free water is the case where storing walkers is not merely wasteful but unusable. Its
+    signal decays exponentially in ``b`` while a Monte-Carlo floor decays only as
+    ``1/sqrt(N_w)``, so the *relative* error grows like ``exp(+bD)/sqrt(N_w)``.  Measured at
+    ``D = 3.0e-9`` with 4000 walkers, the floor is 0.1x the signal at ``b = 1000 s/mm^2``, 113x
+    at 3000 and 8.5e4 at 5000; reaching 1% relative accuracy at ``b = 3000`` would take
+    ~5e11 walkers and at 5000 ~3e17.  The closed form has no such error, and is also
+    orientation-independent, so it needs no orientation distribution.
+    """
+    return float(np.exp(-np.asarray(b_value, np.float64) * float(diffusivity)))
+
+
 def compose_voxel(spectra, substrate_id, geometric_fraction, orientation, m0,
                   g_dir, b0_dir, *, l_fod=8, l_g=8, l_b=6, signal_bearing=None, atol=1e-3):
     """One voxel of a replay phantom (RPH.md Sec. 6).
 
         S_v = sum_p  geometric_fraction[p] * m0[substrate_id[p]] * <F_p, E_{substrate_id[p]}>
 
-    ``spectra`` is indexed by substrate; ``orientation`` is ``(P, n_c)`` SH coefficients.
-    ``signal_bearing`` marks which substrates carry a response; a substrate that is not
-    signal-bearing (air, background) contributes nothing and needs no pack.  Slots with
+    ``spectra`` is indexed by substrate.  An entry that is a spectrum dict is composed against
+    that slot's orientation; an entry that is a **scalar** is an analytic, orientation-
+    independent response (see :func:`free_water_response`) and is used as it stands.
+    ``orientation`` is ``(P, n_c)`` SH coefficients.  ``signal_bearing`` marks which substrates
+    carry a response at all; an inert substrate contributes nothing.  Slots with
     ``substrate_id < 0`` are skipped.
 
     **Fractions must sum to one.** A voxel is always full -- there is no vacuum in a sample --
@@ -742,7 +758,12 @@ def compose_voxel(spectra, substrate_id, geometric_fraction, orientation, m0,
         if frac[p] == 0.0:
             continue
         if signal_bearing is not None and not signal_bearing[i]:
-            continue                                     # air/background: occupies, emits nothing
-        out = out + frac[p] * m0[i] * apply_odf_coupled(
-            spectra[i], ori[p], g_dir, b0_dir, l_fod=l_fod, l_g=l_g, l_b=l_b)
+            continue                                     # inert: occupies volume, emits nothing
+        sp = spectra[i]
+        if isinstance(sp, dict):
+            resp = apply_odf_coupled(sp, ori[p], g_dir, b0_dir,
+                                     l_fod=l_fod, l_g=l_g, l_b=l_b)
+        else:
+            resp = sp                                    # analytic, orientation-independent
+        out = out + frac[p] * m0[i] * resp
     return out

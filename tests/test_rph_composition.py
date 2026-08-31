@@ -206,3 +206,45 @@ def test_unconverted_mrtrix_error_hides_when_g_is_parallel_to_b0(lam):
 
     assert rel(np.array([0, 0, 1.0])) < 1e-12, "aligned geometry hides the error"
     assert rel(G) > 1e-3, "off-axis geometry must expose it"
+
+
+# --- analytic substrates: free water at a CSF boundary -------------------------------------
+
+def test_free_water_is_the_closed_form_and_orientation_independent():
+    from dmipy_sim.sh_convolution import free_water_response
+    D = 3.0e-9
+    for b in (1e9, 3e9):
+        npt.assert_allclose(free_water_response(b, D), np.exp(-b * D), rtol=1e-15)
+    # it takes no orientation at all -- there is nothing for an ODF to change
+    assert free_water_response(1e9, D) == free_water_response(1e9, D)
+
+
+def test_csf_boundary_voxel_mixes_a_pack_with_an_analytic_substrate(lam):
+    """A WM/CSF boundary: one pack-backed slot, one analytic slot, one inert."""
+    from dmipy_sim.sh_convolution import compose_voxel, free_water_response
+    fw = free_water_response(1e9, 3.0e-9)
+    spectra = [lam, fw, None]                       # 0 WM pack, 1 free water, 2 inert
+    m0 = np.array([0.70, 1.00, 0.0])
+    bearing = np.array([True, True, False])
+    sh = np.stack([watson_odf_sh(6.0, mu=[0, 0, 1.], lmax=LMAX),
+                   np.zeros(n_sh_coeffs(LMAX)),     # analytic slot needs no orientation
+                   np.zeros(n_sh_coeffs(LMAX))])
+    kw = dict(l_fod=LMAX, l_g=LG, l_b=LB, signal_bearing=bearing)
+
+    got = compose_voxel(spectra, np.array([0, 1, 2]), [0.5, 0.4, 0.1], sh, m0, G, B0, **kw)
+    wm = np.real(apply_odf_coupled(lam, sh[0], G, B0, l_fod=LMAX, l_g=LG, l_b=LB))
+    npt.assert_allclose(np.real(got), 0.5 * 0.70 * wm + 0.4 * 1.00 * fw, rtol=1e-12)
+
+
+def test_analytic_slot_ignores_its_orientation(lam):
+    """Free water is isotropic; changing its ODF must not change the voxel."""
+    from dmipy_sim.sh_convolution import compose_voxel, free_water_response
+    spectra = [lam, free_water_response(1e9, 3.0e-9)]
+    m0 = np.array([0.70, 1.00])
+    kw = dict(l_fod=LMAX, l_g=LG, l_b=LB, signal_bearing=np.array([True, True]))
+    base = np.stack([watson_odf_sh(6.0, mu=[0, 0, 1.], lmax=LMAX), np.zeros(n_sh_coeffs(LMAX))])
+    tilt = base.copy()
+    tilt[1] = watson_odf_sh(8.0, mu=[1, 0, 0.], lmax=LMAX)
+    a = compose_voxel(spectra, np.array([0, 1]), [0.6, 0.4], base, m0, G, B0, **kw)
+    b = compose_voxel(spectra, np.array([0, 1]), [0.6, 0.4], tilt, m0, G, B0, **kw)
+    npt.assert_allclose(np.real(a), np.real(b), rtol=1e-14)
