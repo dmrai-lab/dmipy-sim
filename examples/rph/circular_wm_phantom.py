@@ -117,6 +117,13 @@ def replay_rph(path, responder, g_dir, b0_dir, b_value, l_g=8, l_b=6):
     return vi, out, meta, resid
 
 
+def amplitude_for_b(profile, dt, b_target):
+    """Gradient amplitude [T/m] giving ``b_target`` [s/m^2] for a unit-amplitude profile."""
+    from dmipy_sim.constants import GAMMA
+    q = GAMMA * np.cumsum(np.asarray(profile, np.float64)) * dt
+    return float(np.sqrt(b_target / (np.sum(q * q) * dt)))
+
+
 if __name__ == "__main__":
     import time, os
     pk = read_rpk(PACK)
@@ -140,11 +147,15 @@ if __name__ == "__main__":
     out = os.path.join(here, "circular_wm_standalone.rph")
 
     backend = os.environ.get("RPH_BACKEND", "numpy")
-    R = PackResponder(pk, prof, b0, amplitude=0.05, B0=3.0, chi_iso=-9.4e-6,
+    B_VALUE = 1e9                                     # s/m^2  == 1000 s/mm^2
+    amp = amplitude_for_b(prof, dt, B_VALUE)
+    print(f"  acquisition: b = {B_VALUE/1e6:.0f} s/mm^2 at TE = {T*1e3:.0f} ms "
+          f"(amplitude {amp:.3f} T/m)")
+    R = PackResponder(pk, prof, b0, amplitude=amp, B0=3.0, chi_iso=-9.4e-6,
                       chi_aniso=-1.0e-7, refocus_time=0.5 * T, n_theta=32, n_phi=64,
                       backend=backend)
     for nm, g in (("g || x", [1, 0, 0.]), ("g || y", [0, 1, 0.]), ("g at 55deg", [np.sin(.96), 0, np.cos(.96)])):
         t0 = time.time()
-        vi, S, _, resid = replay_rph(out, R, np.asarray(g, float), b0, 1e9)
+        vi, S, _, resid = replay_rph(out, R, np.asarray(g, float), b0, B_VALUE)
         print(f"  {nm:>11}: |S| {np.abs(S).min():.4f}..{np.abs(S).max():.4f}  "
               f"resid {resid:.1e}  {time.time()-t0:.2f} s for {len(vi)} voxels")
