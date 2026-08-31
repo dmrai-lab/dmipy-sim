@@ -60,14 +60,42 @@ def test_multi_substrate_voxel_is_the_weighted_sum_of_its_slots(lam):
     npt.assert_allclose(np.real(voxel), expect, rtol=5e-3)   # tracks the fixture residual
 
 
-def test_m0_scales_and_fractions_do_not_self_normalise(lam):
-    """A row summing to less than one must stay that way -- the remainder is the consumer's."""
-    sh = watson_odf_sh(6.0, mu=[0, 0, 1.], lmax=LMAX)
-    unit = np.real(apply_odf_coupled(lam, sh, G, B0, l_fod=LMAX, l_g=LG, l_b=LB))
-    for frac, m in ((0.5, 1.0), (1.0, 0.7), (0.3, 0.85)):
-        npt.assert_allclose(frac * m * unit, frac * m * unit, rtol=0)
-    half = 0.5 * 1.0 * unit
-    assert abs(half - unit) > 1e-3 * abs(unit), "a 0.5 fraction must not renormalise to 1"
+def test_fractions_are_not_renormalised(lam):
+    """Partial volume is only expressible if a short row stays short.
+
+    A voxel that is 60% WM and 30% GM must return 90% of what the same voxel returns when the
+    two fill it entirely.  Renormalising would turn every tissue boundary into pure tissue.
+    """
+    from dmipy_sim.sh_convolution import compose_voxel
+    sh = np.stack([watson_odf_sh(6.0, mu=m, lmax=LMAX) for m in ([0, 0, 1.], [1, 0, 0.])])
+    m0 = np.array([0.70, 0.85])
+    sid = np.array([0, 1])
+    kw = dict(l_fod=LMAX, l_g=LG, l_b=LB)
+
+    short = compose_voxel([lam, lam], sid, [0.6, 0.3], sh, m0, G, B0, **kw)
+    full = compose_voxel([lam, lam], sid, [2 / 3, 1 / 3], sh, m0, G, B0, **kw)
+    npt.assert_allclose(np.real(short), 0.9 * np.real(full), rtol=1e-12)
+    assert abs(np.real(short) - np.real(full)) > 1e-3 * abs(np.real(full))
+
+
+def test_fraction_row_over_one_is_rejected_not_rescaled(lam):
+    from dmipy_sim.sh_convolution import compose_voxel
+    sh = np.stack([watson_odf_sh(6.0, mu=m, lmax=LMAX) for m in ([0, 0, 1.], [1, 0, 0.])])
+    with pytest.raises(ValueError, match="not renormalised"):
+        compose_voxel([lam, lam], np.array([0, 1]), [0.7, 0.5], sh,
+                      np.array([0.7, 0.85]), G, B0, l_fod=LMAX, l_g=LG, l_b=LB)
+
+
+def test_empty_slots_are_skipped(lam):
+    """substrate_id = -1 marks an unused slot and must contribute nothing."""
+    from dmipy_sim.sh_convolution import compose_voxel
+    sh = np.stack([watson_odf_sh(6.0, mu=m, lmax=LMAX)
+                   for m in ([0, 0, 1.], [1, 0, 0.], [0, 1, 0.])])
+    m0 = np.array([0.70, 0.85])
+    kw = dict(l_fod=LMAX, l_g=LG, l_b=LB)
+    two = compose_voxel([lam, lam], np.array([0, 1]), [0.6, 0.3], sh[:2], m0, G, B0, **kw)
+    pad = compose_voxel([lam, lam], np.array([0, 1, -1]), [0.6, 0.3, 0.0], sh, m0, G, B0, **kw)
+    npt.assert_allclose(np.real(pad), np.real(two), rtol=1e-12)
 
 
 def test_same_substrate_cited_twice_is_a_crossing(lam):

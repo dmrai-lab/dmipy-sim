@@ -703,3 +703,44 @@ class PackResponder:
         return coupled_spectrum_at(lambda d: self.evaluate(g_dir), g_dir, self.b0,
                                    l_g=l_g, l_b=l_b, n_theta=None, n_phi=None,
                                    chiral=chiral, _grid=(self.dirs, self.w))
+
+
+def compose_voxel(spectra, substrate_id, geometric_fraction, orientation, m0,
+                  g_dir, b0_dir, *, l_fod=8, l_g=8, l_b=6, peaks=False, atol=1e-6):
+    """One voxel of a replay phantom (RPH.md Sec. 6).
+
+        S_v = sum_p  geometric_fraction[p] * m0[substrate_id[p]] * <F_p, E_{substrate_id[p]}>
+
+    ``spectra`` is indexed by substrate; ``orientation`` is ``(P, n_c)`` SH coefficients, or
+    ``(P, 3)`` unit directions when ``peaks``.  Slots with ``substrate_id < 0`` are skipped.
+
+    The fractions are **not normalised**, and a row summing to more than one is rejected rather
+    than rescaled.  That is what lets a phantom express partial volume: a voxel that is 60%
+    white matter and 30% grey matter returns 90% of a full voxel's signal, because the
+    remaining 10% is not there.  Dividing by the row sum would turn every boundary voxel into
+    pure tissue and make partial volume inexpressible -- which is precisely what a phantom is
+    built to exercise.
+    """
+    sid = np.asarray(substrate_id)
+    frac = np.asarray(geometric_fraction, np.float64)
+    ori = np.asarray(orientation)
+    m0 = np.asarray(m0, np.float64)
+    live = sid >= 0
+    total = float(frac[live].sum())
+    if total > 1.0 + atol:
+        raise ValueError(
+            f"geometric_fraction sums to {total:.6g} > 1 for this voxel. The fractions are "
+            f"volume shares and are not renormalised; fix the phantom rather than relying on "
+            f"the composition to rescale them (RPH.md Sec. 3).")
+    out = 0.0
+    for p in np.flatnonzero(live):
+        if frac[p] == 0.0:
+            continue
+        lam = spectra[int(sid[p])]
+        if peaks:
+            raise NotImplementedError(
+                "peaks mode composes by evaluating the response at the direction; pass the "
+                "responder rather than a spectrum")
+        out = out + frac[p] * m0[int(sid[p])] * apply_odf_coupled(
+            lam, ori[p], g_dir, b0_dir, l_fod=l_fod, l_g=l_g, l_b=l_b)
+    return out
