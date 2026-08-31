@@ -296,40 +296,7 @@ def isotropic_odf_sh(lmax=8):
 # Two-axis (susceptibility-aware) composition -- paper Sec. 2.6
 # ---------------------------------------------------------------------------
 
-def coupled_spectrum(E, u_nodes, v_nodes, l_g=8, l_b=6):
-    """Coupled angular spectrum ``Lambda_{l1 l2}`` of a two-axis response.
-
-    ``E`` is the response sampled on the tensor grid ``u_nodes x v_nodes`` of the two
-    invariants ``u = n.g`` and ``v = n.B0`` (shape ``(len(u_nodes), len(v_nodes))``, or with
-    a trailing measurement axis).  ``u_nodes``/``v_nodes`` must be Gauss-Legendre nodes on
-    [-1, 1]; use :func:`invariant_grid` to build them together with their weights.
-
-    Separability of the physics is the rank-one case; nothing here assumes it.  Use
-    :func:`rank1_residual` to report how far a given substrate departs from it.
-    """
-    from .gaunt import _CACHE  # noqa: F401  (kept for cache-warm symmetry)
-    E = np.asarray(E, np.float64)
-    u = np.asarray(u_nodes, np.float64); v = np.asarray(v_nodes, np.float64)
-    _, wu = roots_legendre(u.size)
-    _, wv = roots_legendre(v.size)
-    n1, n2 = l_g // 2 + 1, l_b // 2 + 1
-    Pu = np.stack([eval_legendre(2 * i, u) for i in range(n1)])      # (n1, nu)
-    Pv = np.stack([eval_legendre(2 * j, v) for j in range(n2)])      # (n2, nv)
-    norm1 = np.array([(4 * i + 1) / 2.0 for i in range(n1)])
-    norm2 = np.array([(4 * j + 1) / 2.0 for j in range(n2)])
-    lam = np.einsum("iu,jv,uv...,u,v->ij...", Pu, Pv, E, wu, wv, optimize=True)
-    return lam * norm1[:, None] * norm2[None, :] if lam.ndim == 2 else \
-        lam * norm1[:, None, None] * norm2[None, :, None]
-
-
-def invariant_grid(n_u=24, n_v=24):
-    """Gauss-Legendre nodes/weights in the two invariants ``(n.g, n.B0)``."""
-    u, wu = roots_legendre(n_u)
-    v, wv = roots_legendre(n_v)
-    return u, v, wu, wv
-
-
-def separability(response, g_dir, b0_dir, l_g=8, l_b=6, n_theta=48, n_phi=96, n_als=200):
+def separability(response, g_dir, b0_dir, l_g=8, l_b=6, n_theta=48, n_phi=96, n_als=30):
     """How far a response is from the separable model ``E = A(n.g) * Xi(n.B0)``.
 
     Separability -- susceptibility acting as a magnitude weight on the diffusion attenuation,
@@ -367,7 +334,8 @@ def separability(response, g_dir, b0_dir, l_g=8, l_b=6, n_theta=48, n_phi=96, n_
     ee = np.stack([Pu[i] * Pv[j] for i in range(n1) for j in range(n2)], axis=1)
     E_ee = fit(ee)                                   # best even--even zonal approximation
 
-    # best rank one within that block: alternating least squares on A(u) and Xi(v)
+    # best rank one within that block: alternating least squares on A(u) and Xi(v).
+    # Converges by ~20 sweeps on the responses tested; the default leaves margin.
     a = np.ones(n1); a[0] = 1.0
     for _ in range(n_als):
         Xa = (Pu.T @ a)                              # A(u) on the grid

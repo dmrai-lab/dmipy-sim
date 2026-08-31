@@ -12,8 +12,7 @@ from scipy.special import eval_legendre
 
 from dmipy_sim.gaunt import (real_sh, sphere_quadrature, assert_orthonormal,
                              gaunt_table, n_sh_coeffs, sh_block)
-from dmipy_sim.sh_convolution import (apply_odf, apply_odf_coupled, coupled_spectrum,
-                                      coupled_spectrum_at, invariant_grid,
+from dmipy_sim.sh_convolution import (apply_odf, apply_odf_coupled, coupled_spectrum_at,
                                       separability, isotropic_odf_sh, watson_odf_sh)
 
 LMAX, LG, LB = 8, 8, 6
@@ -154,17 +153,6 @@ def test_uniform_fod_leaves_the_diagonal_coupling(name, g, b):
     expect = sum(lam_m[i, i] * eval_legendre(2 * i, g @ b) / (4 * i + 1)
                  for i in range(min(n1, n2)))
     npt.assert_allclose(got, expect, rtol=1e-10)
-
-
-def test_coupled_spectrum_round_trips():
-    """Projecting a known Lambda off its own (u, v) samples must recover it."""
-    rng = np.random.default_rng(4)
-    n1, n2 = LG // 2 + 1, LB // 2 + 1
-    lam = rng.standard_normal((n1, n2)) * np.exp(-0.6 * np.arange(n1))[:, None]
-    u, v, _, _ = invariant_grid(24, 24)
-    E = sum(lam[i, j] * eval_legendre(2 * i, u)[:, None] * eval_legendre(2 * j, v)[None, :]
-            for i in range(n1) for j in range(n2))
-    npt.assert_allclose(coupled_spectrum(E, u, v, l_g=LG, l_b=LB), lam, atol=1e-10)
 
 
 def test_separability_measures_the_function_not_the_coefficients():
