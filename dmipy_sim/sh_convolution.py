@@ -370,13 +370,20 @@ def coupled_spectrum_at(response, g_dir, b0_dir, l_g=8, l_b=6, n_theta=48, n_phi
     g = np.asarray(g_dir, np.float64); g = g / np.linalg.norm(g)
     b = np.asarray(b0_dir, np.float64); b = b / np.linalg.norm(b)
     dirs, w = sphere_quadrature(n_theta, n_phi)
-    E = np.asarray(response(dirs), np.float64)
+    E = np.asarray(response(dirs))
     n1, n2 = l_g // 2 + 1, l_b // 2 + 1
     B = np.stack([eval_legendre(2 * i, dirs @ g) * eval_legendre(2 * j, dirs @ b)
                   for i in range(n1) for j in range(n2)], axis=1)
     sw = np.sqrt(w)
+    # a replayed response is complex; the fit is linear, so solve both parts and keep the
+    # phase rather than silently discarding it
     A, y = B * sw[:, None], E * sw
-    lam, *_ = np.linalg.lstsq(A, y, rcond=None)
+    if np.iscomplexobj(y):
+        lr, *_ = np.linalg.lstsq(A, y.real, rcond=None)
+        li, *_ = np.linalg.lstsq(A, y.imag, rcond=None)
+        lam = lr + 1j * li
+    else:
+        lam, *_ = np.linalg.lstsq(A, y, rcond=None)
     sv = np.linalg.svd(A, compute_uv=False)
     rank = int((sv > sv[0] * 1e-10).sum())
     resid = float(np.linalg.norm(A @ lam - y) / max(np.linalg.norm(y), 1e-300))
@@ -414,3 +421,133 @@ def apply_odf_coupled(lam, odf_sh, g_dir, b0_dir, l_fod=8, l_g=8, l_b=6):
                             f[:nf], Yg[sh_block(l1)], Yb[sh_block(l2)])
             out = out + lam[i, j] * w * blk
     return out
+
+
+def _rotations_from_axis(axis, dirs):
+    """Stack of rotations taking ``axis`` to each row of ``dirs`` (Rodrigues, vectorised)."""
+    a = np.asarray(axis, np.float64); a = a / np.linalg.norm(a)
+    n = np.asarray(dirs, np.float64)
+    n = n / np.linalg.norm(n, axis=1, keepdims=True)
+    v = np.cross(a, n)                                   # (N, 3)
+    c = n @ a                                            # (N,)
+    R = np.broadcast_to(np.eye(3), (n.shape[0], 3, 3)).copy()
+    K = np.zeros((n.shape[0], 3, 3))
+    K[:, 0, 1], K[:, 0, 2] = -v[:, 2], v[:, 1]
+    K[:, 1, 0], K[:, 1, 2] = v[:, 2], -v[:, 0]
+    K[:, 2, 0], K[:, 2, 1] = -v[:, 1], v[:, 0]
+    ok = c > -1.0 + 1e-12
+    denom = np.where(ok, 1.0 + c, 1.0)[:, None, None]
+    R = R + K + (K @ K) / denom
+    if (~ok).any():                                      # antipodal: pi about any perpendicular
+        p = np.eye(3)[np.argmin(np.abs(a))]
+        p = p - (p @ a) * a; p /= np.linalg.norm(p)
+        R[~ok] = 2.0 * np.outer(p, p) - np.eye(3)
+    return R
+
+
+def pack_response(pack, profile, g_dir, b0_dir, *, amplitude=1.0, B0=3.0,
+                  chi_iso=0.0, chi_aniso=0.0, refocus_time=None,
+                  fibre_axis=(0., 0., 1.), relaxation=True, chunk=256):
+    """Response callable for :func:`coupled_spectrum_at`, backed by a real replay pack.
+
+    Returns ``response(dirs) -> (n_dirs,)`` complex signal: the pack replayed as though its
+    substrate pointed along each ``dirs`` row, which by pose covariance is the pack replayed at
+    the counter-rotated ``(g, B0)``.
+
+    Nothing is reconstructed.  The gradient phase is linear in position and the susceptibility
+    field is linear in its stored basis, so both reduce to per-walker constants obtained by
+    contracting the stored coefficients once:
+
+        q_w   = gamma dt amp * sum_k profile_k * C_{w,k,:}      (a 3-vector per walker)
+        Psi_w = gamma dt     * sum_k gate_k * B_{w,c,k}         (13 per walker)
+
+    after which each orientation costs ``phi_G = g' . q_w`` and
+    ``phi_chi = chi_iso B0 (Psi_0 - Q(b0').Psi_P) + chi_aniso B0 Q(b0').Psi_G`` -- the ``Q(H)``
+    contraction being quadratic in the field direction, so the field orientation factors out of
+    the walk exactly as it does in Eq. (15).  The two phases are summed *before* the ensemble
+    average, so the diffusion x susceptibility cross-term is kept: that is what makes the
+    resulting coupled spectrum able to depart from rank one.
+    """
+    from scipy.fft import dct
+    from .compression import read_position_coeffs, decode_compartment, relaxation_logweight
+    from .constants import GAMMA
+    from .susceptibility_field import _q_of_H
+
+    arrays, meta = pack.arrays, pack.meta
+    comp_meta = meta.get("compression", {})
+    chans = comp_meta.get("channels", {}) or {}
+    pm = chans.get("susceptibility_path")
+    if pm is None:
+        raise ValueError("pack_response needs the susc_path channel (C3 path route); this pack "
+                         "carries none. Grid-route packs must decode positions instead.")
+    dt = float(pack.dt)
+    n_t = int(pm["n_t"])
+    prof = np.asarray(profile, np.float64)
+    if prof.size != n_t:
+        raise ValueError(f"profile has {prof.size} samples, pack walk has n_t={n_t}")
+
+    C = read_position_coeffs(arrays, dtype=np.float64)                 # (n_w, K, 3)
+    n_w, K = C.shape[0], C.shape[1]
+    prof_hat = dct(prof, type=2, norm="ortho")[:K]
+    q = (GAMMA * dt * amplitude) * np.einsum("k,wkd->wd", prof_hat, C)  # (n_w, 3)
+
+    Cs = np.asarray(arrays["susc_path_dct"], np.float64)               # (n_w, 12, Ks)
+    names = list(pm["channels"])
+    if pm.get("iso_P_zz") == "implied":                                # linear -> apply on coeffs
+        i_loc, i_xx, i_yy = (names.index(s) for s in ("iso_local", "iso_P_xx", "iso_P_yy"))
+        zz = 3.0 * Cs[:, i_loc] - Cs[:, i_xx] - Cs[:, i_yy]
+        at = names.index("iso_P_xy")
+        Cs = np.insert(Cs, at, zz, axis=1)
+        names = names[:at] + ["iso_P_zz"] + names[at:]
+    Ks = Cs.shape[2]
+    gate = _se_gate_local(n_t, dt, refocus_time)
+    gate_hat = dct(gate, type=2, norm="ortho")[:Ks]
+    Psi = (GAMMA * dt) * np.einsum("k,wck->wc", gate_hat, Cs)          # (n_w, n_ch)
+    i_p = names.index("iso_P_xx")
+    Psi0, PsiP = Psi[:, names.index("iso_local")], Psi[:, i_p:i_p + 6]
+    has_aniso = "aniso_G_xx" in names
+    PsiG = Psi[:, names.index("aniso_G_xx"):][:, :6] if has_aniso else None
+
+    w0 = np.asarray(arrays.get("spin_weights", np.ones(n_w)), np.float64)
+    ew = w0.copy()
+    if relaxation and "comp_rle_vals" in arrays and meta.get("per_comp", {}).get("T2"):
+        comp = decode_compartment(arrays, chans.get("compartment", {}))
+        pc = meta["per_comp"]
+        ew = ew * np.exp(relaxation_logweight(comp, pc["T2"], pc.get("T1"), dt))
+    norm = w0.sum()
+
+    g = np.asarray(g_dir, np.float64); g /= np.linalg.norm(g)
+    b = np.asarray(b0_dir, np.float64); b /= np.linalg.norm(b)
+
+    def response(dirs):
+        dirs = np.asarray(dirs, np.float64).reshape(-1, 3)
+        out = np.empty(dirs.shape[0], np.complex128)
+        for s in range(0, dirs.shape[0], chunk):
+            R = _rotations_from_axis(fibre_axis, dirs[s:s + chunk])     # (n, 3, 3)
+            gp = np.einsum("nji,j->ni", R, g)                           # R^T g
+            bp = np.einsum("nji,j->ni", R, b)                           # R^T B0
+            phi = gp @ q.T                                              # (n, n_w)
+            Q = np.stack([bp[:, 0] ** 2, bp[:, 1] ** 2, bp[:, 2] ** 2,
+                          2 * bp[:, 0] * bp[:, 1], 2 * bp[:, 0] * bp[:, 2],
+                          2 * bp[:, 1] * bp[:, 2]], axis=1)             # (n, 6)
+            if chi_iso:
+                phi = phi + chi_iso * B0 * (Psi0[None, :] - Q @ PsiP.T)
+            if chi_aniso and PsiG is not None:
+                phi = phi + chi_aniso * B0 * (Q @ PsiG.T)
+            out[s:s + chunk] = (ew[None, :] * np.exp(1j * phi)).sum(1) / norm
+        return out
+
+    return response
+
+
+def _se_gate_local(n_t, dt, refocus_time):
+    """Transverse-phase gate; mirrors bank._se_gate (kept local to avoid a bank import cycle)."""
+    if refocus_time is None:
+        return np.ones(n_t)
+    t = np.arange(n_t) * dt
+    s = np.sign(refocus_time - t).astype(float)
+    d = int(round(s.sum()))
+    if d != 0:
+        side = np.where(s == np.sign(d))[0]
+        s[side[np.argsort(-np.abs(t[side] - refocus_time))[:abs(d)]]] = 0.0
+    return s

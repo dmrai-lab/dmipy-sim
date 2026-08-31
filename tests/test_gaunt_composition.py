@@ -195,3 +195,57 @@ def test_product_basis_is_rank_deficient_when_g_parallel_b0():
     lam, resid, rank = coupled_spectrum_at(_phys_response(g, b), g, b, l_g=LG, l_b=LB)
     assert rank < lam.size, "expected degeneracy at g || B0"
     assert resid < 1e-6, "minimum-norm solution must still reconstruct the response"
+
+
+# --- wiring to a real pack ---------------------------------------------------------------
+
+_WINTHER = "/home/rutger/dmrai-ws/winther-data/hf_release_winther_g6/packs/axon06.rpk"
+
+
+@pytest.mark.skipif(not __import__("os").path.exists(_WINTHER),
+                    reason="needs the Winther susceptibility pack")
+def test_pack_response_runs_in_coefficient_space_and_is_orientation_dependent():
+    """The pack bridge must never reconstruct a trajectory, and must show real anisotropy."""
+    from dmipy_sim.replay import read_rpk
+    from dmipy_sim.sh_convolution import pack_response
+    pk = read_rpk(_WINTHER)
+    pm = pk.meta["compression"]["channels"]["susceptibility_path"]
+    n_t, dt = int(pm["n_t"]), pk.dt
+    t = np.arange(n_t) * dt; T = n_t * dt
+    prof = ((t < 0.2 * T).astype(float) - ((t >= 0.5 * T) & (t < 0.7 * T)).astype(float))
+    r = pack_response(pk, prof, [1, 0, 0], [0, 0, 1], amplitude=0.05, B0=3.0,
+                      chi_iso=-9.4e-6, chi_aniso=-1.0e-7, refocus_time=0.5 * T)
+    par = abs(r(np.array([[1., 0, 0]]))[0])      # fibre along the gradient -> free -> low
+    perp = abs(r(np.array([[0, 0, 1.]]))[0])     # fibre across it -> restricted -> high
+    assert perp > par, f"expected restriction perpendicular to the fibre ({perp} vs {par})"
+
+
+@pytest.mark.skipif(not __import__("os").path.exists(_WINTHER),
+                    reason="needs the Winther susceptibility pack")
+def test_real_axon_is_chiral_so_two_invariants_do_not_span_it():
+    """A realistic axon is NOT mirror-symmetric, which bounds the (u, v) model.
+
+    E can depend on ``n`` through ``n.g`` and ``n.B0`` alone only if the substrate is achiral;
+    otherwise it also sees the triple product ``n.(g x B0)``, which flips sign under mirroring
+    and which no function of the two invariants can represent.  This pins the effect rather
+    than the fit, so a later change to the projection cannot quietly hide it.
+    """
+    from dmipy_sim.replay import read_rpk
+    from dmipy_sim.sh_convolution import pack_response
+    pk = read_rpk(_WINTHER)
+    pm = pk.meta["compression"]["channels"]["susceptibility_path"]
+    n_t, dt = int(pm["n_t"]), pk.dt
+    t = np.arange(n_t) * dt; T = n_t * dt
+    prof = ((t < 0.2 * T).astype(float) - ((t >= 0.5 * T) & (t < 0.7 * T)).astype(float))
+    n = np.array([[0, 0, 1.0]])
+    thg, thb, dphi = 1.3, 0.7, 2.0
+    g = np.array([np.sin(thg), 0, np.cos(thg)])
+    kw = dict(amplitude=0.05, B0=3.0, chi_iso=-9.4e-6, chi_aniso=-1.0e-7,
+              refocus_time=0.5 * T, chunk=8)
+    out = []
+    for sgn in (+1, -1):
+        b = np.array([np.sin(thb) * np.cos(dphi), sgn * np.sin(thb) * np.sin(dphi),
+                      np.cos(thb)])
+        out.append(abs(pack_response(pk, prof, g, b, **kw)(n)[0]))
+    # same (u, v, c), opposite triple product -- a mirror pair
+    assert abs(out[0] - out[1]) / np.mean(out) > 1e-2
