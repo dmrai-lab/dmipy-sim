@@ -706,20 +706,22 @@ class PackResponder:
 
 
 def compose_voxel(spectra, substrate_id, geometric_fraction, orientation, m0,
-                  g_dir, b0_dir, *, l_fod=8, l_g=8, l_b=6, peaks=False, atol=1e-6):
+                  g_dir, b0_dir, *, l_fod=8, l_g=8, l_b=6, signal_bearing=None, atol=1e-3):
     """One voxel of a replay phantom (RPH.md Sec. 6).
 
         S_v = sum_p  geometric_fraction[p] * m0[substrate_id[p]] * <F_p, E_{substrate_id[p]}>
 
-    ``spectra`` is indexed by substrate; ``orientation`` is ``(P, n_c)`` SH coefficients, or
-    ``(P, 3)`` unit directions when ``peaks``.  Slots with ``substrate_id < 0`` are skipped.
+    ``spectra`` is indexed by substrate; ``orientation`` is ``(P, n_c)`` SH coefficients.
+    ``signal_bearing`` marks which substrates carry a response; a substrate that is not
+    signal-bearing (air, background) contributes nothing and needs no pack.  Slots with
+    ``substrate_id < 0`` are skipped.
 
-    The fractions are **not normalised**, and a row summing to more than one is rejected rather
-    than rescaled.  That is what lets a phantom express partial volume: a voxel that is 60%
-    white matter and 30% grey matter returns 90% of a full voxel's signal, because the
-    remaining 10% is not there.  Dividing by the row sum would turn every boundary voxel into
-    pure tissue and make partial volume inexpressible -- which is precisely what a phantom is
-    built to exercise.
+    **Fractions must sum to one.** A voxel is always full -- there is no vacuum in a sample --
+    so a row that sums to less is not a voxel with a void in it, it is a voxel whose remainder
+    was not modelled, and composing it would return a signal that is quietly too low.  Anything
+    that is not tissue is declared as a substrate: background air is a non-signal-bearing
+    substrate with ``m0 = 0``, and free water is a substrate with its own pack.  Partial volume
+    is carried by the *ratio* of the fractions, which needs no slack in the sum.
     """
     sid = np.asarray(substrate_id)
     frac = np.asarray(geometric_fraction, np.float64)
@@ -727,20 +729,20 @@ def compose_voxel(spectra, substrate_id, geometric_fraction, orientation, m0,
     m0 = np.asarray(m0, np.float64)
     live = sid >= 0
     total = float(frac[live].sum())
-    if total > 1.0 + atol:
+    if abs(total - 1.0) > atol:
         raise ValueError(
-            f"geometric_fraction sums to {total:.6g} > 1 for this voxel. The fractions are "
-            f"volume shares and are not renormalised; fix the phantom rather than relying on "
-            f"the composition to rescale them (RPH.md Sec. 3).")
+            f"geometric_fraction sums to {total:.6g}, not 1 (tol {atol:g}). A voxel is always "
+            f"full: declare what occupies the rest -- background air as a non-signal-bearing "
+            f"substrate with m0=0, free water as a substrate with its own pack -- rather than "
+            f"leaving a remainder, which would return a signal that is quietly too low "
+            f"(RPH.md Sec. 3).")
     out = 0.0
     for p in np.flatnonzero(live):
+        i = int(sid[p])
         if frac[p] == 0.0:
             continue
-        lam = spectra[int(sid[p])]
-        if peaks:
-            raise NotImplementedError(
-                "peaks mode composes by evaluating the response at the direction; pass the "
-                "responder rather than a spectrum")
-        out = out + frac[p] * m0[int(sid[p])] * apply_odf_coupled(
-            lam, ori[p], g_dir, b0_dir, l_fod=l_fod, l_g=l_g, l_b=l_b)
+        if signal_bearing is not None and not signal_bearing[i]:
+            continue                                     # air/background: occupies, emits nothing
+        out = out + frac[p] * m0[i] * apply_odf_coupled(
+            spectra[i], ori[p], g_dir, b0_dir, l_fod=l_fod, l_g=l_g, l_b=l_b)
     return out
