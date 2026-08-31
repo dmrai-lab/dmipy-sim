@@ -192,8 +192,9 @@ def test_product_basis_is_rank_deficient_when_g_parallel_b0():
     """u == v collapses the family -- a common acquisition geometry, so lstsq not solve."""
     from dmipy_sim.sh_convolution import coupled_spectrum_at
     g = b = np.array([0, 0, 1.0])
-    lam, resid, rank = coupled_spectrum_at(_phys_response(g, b), g, b, l_g=LG, l_b=LB)
-    assert rank < lam.size, "expected degeneracy at g || B0"
+    lam, resid, rank = coupled_spectrum_at(_phys_response(g, b), g, b, l_g=LG, l_b=LB,
+                                           chiral=False)
+    assert rank < len(lam["terms"]), "expected degeneracy at g || B0"
     assert resid < 1e-6, "minimum-norm solution must still reconstruct the response"
 
 
@@ -249,3 +250,61 @@ def test_real_axon_is_chiral_so_two_invariants_do_not_span_it():
         out.append(abs(pack_response(pk, prof, g, b, **kw)(n)[0]))
     # same (u, v, c), opposite triple product -- a mirror pair
     assert abs(out[0] - out[1]) / np.mean(out) > 1e-2
+
+
+@pytest.mark.skipif(not __import__("os").path.exists(_WINTHER),
+                    reason="needs the Winther susceptibility pack")
+def test_chiral_sector_closes_the_gap_on_a_real_axon():
+    """The (u, v) family plateaus on a handed substrate; adding n.(g x B0) closes it.
+
+    Both the projection residual and the composed signal are checked, because a better fit
+    that did not improve the composition would mean the extra sector was absorbing noise.
+    """
+    from dmipy_sim.replay import read_rpk
+    from dmipy_sim.sh_convolution import pack_response, coupled_spectrum_at, watson_odf_sh
+    pk = read_rpk(_WINTHER)
+    pm = pk.meta["compression"]["channels"]["susceptibility_path"]
+    n_t, dt = int(pm["n_t"]), pk.dt
+    t = np.arange(n_t) * dt; T = n_t * dt
+    prof = ((t < 0.2 * T).astype(float) - ((t >= 0.5 * T) & (t < 0.7 * T)).astype(float))
+    g = np.array([np.sin(0.96), 0, np.cos(0.96)])
+    b = np.array([0, 0, 1.0])
+    resp = pack_response(pk, prof, g, b, amplitude=0.05, B0=3.0, chi_iso=-9.4e-6,
+                        chi_aniso=-1.0e-7, refocus_time=0.5 * T, chunk=256)
+    # the FOD must be TILTED off B0: an orientation distribution axisymmetric about the field
+    # annihilates the w-odd part, so an on-axis Watson would pass this test without testing it
+    f = watson_odf_sh(6.0, mu=[0.6, 0.5, 0.62], lmax=LMAX)
+    dirs, w = sphere_quadrature(32, 64)
+    brute = np.sum(w * (real_sh(LMAX, dirs) @ f) * np.real(resp(dirs)))
+
+    out = {}
+    for chiral in (False, True):
+        lam, resid, _ = coupled_spectrum_at(resp, g, b, l_g=8, l_b=6, n_theta=32, n_phi=64,
+                                            chiral=chiral)
+        got = np.real(apply_odf_coupled(lam, f, g, b, l_fod=LMAX, l_g=8, l_b=6))
+        out[chiral] = (resid, abs(got - brute) / abs(brute))
+    assert out[True][0] < 0.6 * out[False][0], f"chiral sector must cut the residual: {out}"
+    assert out[True][1] < 0.05 * out[False][1], f"and the composition error with it: {out}"
+
+
+@pytest.mark.skipif(not __import__("os").path.exists(_WINTHER),
+                    reason="needs the Winther susceptibility pack")
+def test_chiral_sector_is_inert_for_a_field_symmetric_fod():
+    """An FOD axisymmetric about B0 kills the w-odd part -- the sector must cost nothing there."""
+    from dmipy_sim.replay import read_rpk
+    from dmipy_sim.sh_convolution import pack_response, coupled_spectrum_at, watson_odf_sh
+    pk = read_rpk(_WINTHER)
+    pm = pk.meta["compression"]["channels"]["susceptibility_path"]
+    n_t, dt = int(pm["n_t"]), pk.dt
+    t = np.arange(n_t) * dt; T = n_t * dt
+    prof = ((t < 0.2 * T).astype(float) - ((t >= 0.5 * T) & (t < 0.7 * T)).astype(float))
+    g = np.array([np.sin(0.96), 0, np.cos(0.96)]); b = np.array([0, 0, 1.0])
+    resp = pack_response(pk, prof, g, b, amplitude=0.05, B0=3.0, chi_iso=-9.4e-6,
+                        chi_aniso=-1.0e-7, refocus_time=0.5 * T, chunk=256)
+    f = watson_odf_sh(6.0, mu=[0, 0, 1.], lmax=LMAX)          # symmetric about B0
+    vals = []
+    for chiral in (False, True):
+        lam, _, _ = coupled_spectrum_at(resp, g, b, l_g=8, l_b=6, n_theta=32, n_phi=64,
+                                        chiral=chiral)
+        vals.append(np.real(apply_odf_coupled(lam, f, g, b, l_fod=LMAX, l_g=8, l_b=6)))
+    npt.assert_allclose(vals[1], vals[0], rtol=1e-6)

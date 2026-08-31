@@ -342,7 +342,8 @@ def rank1_residual(lam):
     return float(np.sqrt(max(np.sum(s[1:] ** 2), 0.0)) / np.linalg.norm(lam))
 
 
-def coupled_spectrum_at(response, g_dir, b0_dir, l_g=8, l_b=6, n_theta=48, n_phi=96):
+def coupled_spectrum_at(response, g_dir, b0_dir, l_g=8, l_b=6, n_theta=48, n_phi=96,
+                        chiral=True):
     """Build ``Lambda`` for the *exact* geometry a scanner requests -- no table, no interpolation.
 
     ``Lambda`` is a scanner-side object: it depends on the gradient and field directions but
@@ -371,9 +372,20 @@ def coupled_spectrum_at(response, g_dir, b0_dir, l_g=8, l_b=6, n_theta=48, n_phi
     b = np.asarray(b0_dir, np.float64); b = b / np.linalg.norm(b)
     dirs, w = sphere_quadrature(n_theta, n_phi)
     E = np.asarray(response(dirs))
-    n1, n2 = l_g // 2 + 1, l_b // 2 + 1
-    B = np.stack([eval_legendre(2 * i, dirs @ g) * eval_legendre(2 * j, dirs @ b)
-                  for i in range(n1) for j in range(n2)], axis=1)
+    u, v = dirs @ g, dirs @ b
+    terms = [(l1, l2, 0) for l1 in range(l_g + 1) for l2 in range(l_b + 1)
+             if (l1 + l2) % 2 == 0]
+    kv = np.cross(g, b)
+    s_k = float(np.linalg.norm(kv))
+    if chiral and s_k > 1e-12:
+        khat = kv / s_k
+        wt = dirs @ khat
+        terms += [(l1, l2, 1) for l1 in range(l_g + 1) for l2 in range(l_b + 1)
+                  if (l1 + l2) % 2 == 1]
+    else:
+        wt = np.zeros(dirs.shape[0])
+    B = np.stack([eval_legendre(l1, u) * eval_legendre(l2, v) * (wt ** p)
+                  for l1, l2, p in terms], axis=1)
     sw = np.sqrt(w)
     # a replayed response is complex; the fit is linear, so solve both parts and keep the
     # phase rather than silently discarding it
@@ -387,39 +399,66 @@ def coupled_spectrum_at(response, g_dir, b0_dir, l_g=8, l_b=6, n_theta=48, n_phi
     sv = np.linalg.svd(A, compute_uv=False)
     rank = int((sv > sv[0] * 1e-10).sum())
     resid = float(np.linalg.norm(A @ lam - y) / max(np.linalg.norm(y), 1e-300))
-    return lam.reshape(n1, n2), resid, rank
+    out = {"terms": terms, "coeffs": lam, "l_g": int(l_g), "l_b": int(l_b),
+           "chiral": bool(chiral and s_k > 1e-12)}
+    return out, resid, rank
 
 
 def apply_odf_coupled(lam, odf_sh, g_dir, b0_dir, l_fod=8, l_g=8, l_b=6):
-    """Compose a two-axis response over an orientation distribution (paper Eq. 19).
+    """Compose a response over an orientation distribution (paper Eq. 19).
 
-    ``lam`` is ``Lambda_{l1 l2}`` from :func:`coupled_spectrum`; ``odf_sh`` the FOD in the
-    compact even-order orthonormal real SH layout; ``g_dir``/``b0_dir`` unit vectors.
-    Returns the composed signal.
+    ``lam`` is either the dict returned by :func:`coupled_spectrum_at` -- terms ``(l1, l2, p)``
+    with ``p=1`` marking the chiral sector -- or, for backward compatibility, a dense
+    ``(n1, n2)`` array of even-order zonal coefficients indexed by ``(2i, 2j)``.
 
-    With ``Lambda`` supported on ``l2 = 0`` (no susceptibility) this reduces exactly to
-    :func:`apply_odf`.
+    The ``p=0`` terms contract through the three-index Gaunt coefficients.  The ``p=1`` terms
+    carry the extra zonal factor ``P_1(n . k)`` with ``k = (g x B0)/|g x B0|`` and so contract
+    through a four-index table -- the same construction with one more harmonic.  That sector is
+    what represents a handed substrate, whose response sees the triple product
+    ``n . (g x B0)`` and is therefore not a function of the two invariants alone.
+
+    Reduces exactly to :func:`apply_odf` when only ``(l1, 0, 0)`` terms are populated.
     """
     from .gaunt import gaunt_table, real_sh, sh_block, n_sh_coeffs
-    lam = np.asarray(lam, np.float64)
-    f = np.asarray(odf_sh, np.float64)
+    f = np.asarray(odf_sh)
     nf = n_sh_coeffs(l_fod)
     if f.size < nf:
-        f = np.concatenate([f, np.zeros(nf - f.size)])
-    G = gaunt_table(l_fod, l_g, l_b)
-    Yg = real_sh(l_g, np.asarray(g_dir, np.float64)[None, :] /
-                 np.linalg.norm(g_dir))[0]
-    Yb = real_sh(l_b, np.asarray(b0_dir, np.float64)[None, :] /
-                 np.linalg.norm(b0_dir))[0]
+        f = np.concatenate([f, np.zeros(nf - f.size, f.dtype)])
+    f = f[:nf]
+    g = np.asarray(g_dir, np.float64); g = g / np.linalg.norm(g)
+    b = np.asarray(b0_dir, np.float64); b = b / np.linalg.norm(b)
+
+    if isinstance(lam, dict):
+        terms, coeffs = lam["terms"], np.asarray(lam["coeffs"])
+        lg, lb = int(lam["l_g"]), int(lam["l_b"])
+    else:                                              # legacy dense even-order array
+        arr = np.asarray(lam)
+        terms = [(2 * i, 2 * j, 0) for i in range(arr.shape[0]) for j in range(arr.shape[1])]
+        coeffs = arr.ravel()
+        lg, lb = 2 * (arr.shape[0] - 1), 2 * (arr.shape[1] - 1)
+
+    need_chiral = any(p for _, _, p in terms)
+    G3 = gaunt_table(l_fod, lg, lb, full_g=True, full_b=True)
+    Yg = real_sh(lg, g[None, :], full=True)[0]
+    Yb = real_sh(lb, b[None, :], full=True)[0]
+    if need_chiral:
+        kv = np.cross(g, b); s_k = np.linalg.norm(kv)
+        khat = kv / s_k if s_k > 1e-12 else np.array([0., 0., 1.])
+        G4 = gaunt_table(l_fod, lg, lb, full_g=True, full_b=True, l_k=1)
+        Yk = real_sh(1, khat[None, :], full=True)[0][sh_block(1, True)]
+
     out = 0.0
-    for i in range(lam.shape[0]):
-        l1 = 2 * i
-        for j in range(lam.shape[1]):
-            l2 = 2 * j
-            w = (4 * np.pi) ** 2 / ((2 * l1 + 1) * (2 * l2 + 1))
-            blk = np.einsum("abc,a,b,c->", G[:nf, sh_block(l1), sh_block(l2)],
-                            f[:nf], Yg[sh_block(l1)], Yb[sh_block(l2)])
-            out = out + lam[i, j] * w * blk
+    for (l1, l2, p), c in zip(terms, coeffs):
+        if c == 0:
+            continue
+        wgt = (4 * np.pi) ** 2 / ((2 * l1 + 1) * (2 * l2 + 1))
+        b1 = sh_block(l1, True); b2 = sh_block(l2, True)
+        if p == 0:
+            blk = np.einsum("abc,a,b,c->", G3[:nf, b1, b2], f, Yg[b1], Yb[b2])
+        else:
+            wgt *= 4 * np.pi / 3.0                     # the extra P_1(n.k) factor
+            blk = np.einsum("abcd,a,b,c,d->", G4[:nf, b1, b2, :], f, Yg[b1], Yb[b2], Yk)
+        out = out + c * wgt * blk
     return out
 
 

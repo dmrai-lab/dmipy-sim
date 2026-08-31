@@ -47,29 +47,37 @@ __all__ = ["real_sh", "sphere_quadrature", "assert_orthonormal", "gaunt_table",
            "n_sh_coeffs", "sh_block"]
 
 
-def n_sh_coeffs(lmax):
-    """Number of coefficients in the compact even-order layout up to ``lmax``."""
-    return sum(2 * l + 1 for l in range(0, lmax + 1, 2))
+def n_sh_coeffs(lmax, full=False):
+    """Coefficients in the compact layout up to ``lmax`` (even orders only unless ``full``).
+
+    ``full=True`` keeps odd orders too.  It is needed wherever the two acquisition directions
+    are expanded: antipodal symmetry of the response constrains ``l1 + l2`` to be even, which
+    admits odd--odd pairs such as ``P_1 P_1`` -- weaker than requiring each order even.
+    """
+    step = 1 if full else 2
+    return sum(2 * l + 1 for l in range(0, lmax + 1, step))
 
 
-def sh_block(l):
-    """Slice of the compact even-order array holding order ``l`` (``m = -l..+l``)."""
+def sh_block(l, full=False):
+    """Slice of the compact array holding order ``l`` (``m = -l..+l``)."""
+    if full:
+        return slice(l * l, l * l + 2 * l + 1)
     M = l // 2
     start = M * (2 * M - 1) if M > 0 else 0
     return slice(start, start + 2 * l + 1)
 
 
-def real_sh(lmax, dirs):
-    """Orthonormal real spherical harmonics, even orders, compact layout.
+def real_sh(lmax, dirs, full=False):
+    """Orthonormal real spherical harmonics in the compact layout.
 
-    ``dirs`` is ``(n, 3)`` unit Cartesian; returns ``(n, n_sh_coeffs(lmax))``.
+    ``dirs`` is ``(n, 3)`` unit Cartesian; returns ``(n, n_sh_coeffs(lmax, full))``.
     """
     d = np.asarray(dirs, np.float64).reshape(-1, 3)
     x = np.clip(d[:, 2], -1.0, 1.0)
     phi = np.arctan2(d[:, 1], d[:, 0])
-    out = np.empty((d.shape[0], n_sh_coeffs(lmax)), np.float64)
-    for l in range(0, lmax + 1, 2):
-        blk = sh_block(l)
+    out = np.empty((d.shape[0], n_sh_coeffs(lmax, full)), np.float64)
+    for l in range(0, lmax + 1, 1 if full else 2):
+        blk = sh_block(l, full)
         col = out[:, blk]
         col[:, l] = np.sqrt((2 * l + 1) / (4 * np.pi)) * lpmv(0, l, x)
         for m in range(1, l + 1):
@@ -118,7 +126,8 @@ def assert_orthonormal(Y, w, atol=1e-10):
 _CACHE = {}
 
 
-def gaunt_table(l_fod, l_g, l_b, n_theta=None, n_phi=None, atol=1e-10):
+def gaunt_table(l_fod, l_g, l_b, n_theta=None, n_phi=None, atol=1e-10,
+                full_g=False, full_b=False, l_k=None):
     """``G[a, b, c] = \\int Y_a Y_b Y_c dn`` for the three truncation orders.
 
     Indices ``a``, ``b``, ``c`` run over the compact even-order layouts of ``l_fod``,
@@ -129,20 +138,28 @@ def gaunt_table(l_fod, l_g, l_b, n_theta=None, n_phi=None, atol=1e-10):
     The angular-momentum selection rules (``|l1-l2| <= L <= l1+l2``, ``l1+l2+L`` even,
     ``m`` additive) leave it sparse; they are not imposed here, they simply come out.
     """
-    key = (int(l_fod), int(l_g), int(l_b), n_theta, n_phi)
+    key = (int(l_fod), int(l_g), int(l_b), n_theta, n_phi, bool(full_g), bool(full_b),
+           None if l_k is None else int(l_k))
     if key in _CACHE:
         return _CACHE[key]
-    L = max(l_fod, l_g, l_b)
-    # degree of the integrand is l_fod + l_g + l_b; the rule must be exact for it
-    deg = l_fod + l_g + l_b
+    L = max(l_fod, l_g, l_b, l_k or 0)
+    # degree of the integrand; the rule must be exact for it
+    deg = l_fod + l_g + l_b + (l_k or 0)
     nt = int(n_theta or (deg // 2 + 2))
     npx = int(n_phi or (2 * deg + 4))
     dirs, w = sphere_quadrature(nt, npx)
-    Y = real_sh(L, dirs)
-    assert_orthonormal(Y, w, atol=atol)
-    G = np.einsum("qa,qb,qc,q->abc",
-                  Y[:, :n_sh_coeffs(l_fod)], Y[:, :n_sh_coeffs(l_g)],
-                  Y[:, :n_sh_coeffs(l_b)], w, optimize=True)
+    Yfull = real_sh(L, dirs, full=True)
+    assert_orthonormal(Yfull, w, atol=atol)
+    Yeven = real_sh(L, dirs, full=False)
+    A = Yeven[:, :n_sh_coeffs(l_fod)]
+    B = (Yfull if full_g else Yeven)[:, :n_sh_coeffs(l_g, full_g)]
+    C = (Yfull if full_b else Yeven)[:, :n_sh_coeffs(l_b, full_b)]
+    if l_k is None:
+        G = np.einsum("qa,qb,qc,q->abc", A, B, C, w, optimize=True)
+    else:
+        # chiral sector: one extra zonal factor about k = (g x B0)/|g x B0|
+        D = Yfull[:, sh_block(l_k, True)]
+        G = np.einsum("qa,qb,qc,qd,q->abcd", A, B, C, D, w, optimize=True)
     G[np.abs(G) < 1e-12] = 0.0
     G.flags.writeable = False
     _CACHE[key] = G
