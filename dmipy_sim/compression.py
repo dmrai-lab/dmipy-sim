@@ -40,13 +40,13 @@ from __future__ import annotations
 import numpy as np
 
 try:
-    from scipy.fft import dct as _dct, idct as _idct
+    from scipy.fft import dct as _dct, idct as _idct, dst as _dst, idst as _idst
 except ImportError as _e:  # pragma: no cover
     raise ImportError("dmipy_sim.compression needs scipy (pip install scipy)") from _e
 
 from .constants import GAMMA
 
-WALKER_PRESERVING = ("temporal_dct", "lowrank")
+WALKER_PRESERVING = ("bridge_dst", "temporal_dct", "lowrank")
 DISTRIBUTIONAL = ("gaussian", "marginal")
 ALL_METHODS = WALKER_PRESERVING + DISTRIBUTIONAL
 _F16, _F32 = 2, 4
@@ -61,6 +61,67 @@ def encode_temporal_dct(X, K):
     meta = {"method": "temporal_dct", "K": int(K), "n_t": int(Nt)}
     nbytes = Nw * 3 * K * _F16
     return arrays, meta, nbytes
+
+
+def encode_bridge_dst(X, K):
+    """Endpoints plus a Brownian bridge, expanded on the sine basis (per axis).
+
+    Splits each path the way the gradient phase reads it -- into the two endpoints and a
+    residual pinned at both -- and keeps the lowest ``K`` DST-I bands of the residual:
+
+        r(t) = r(0) + (t/T)[r(T) - r(0)] + u(t),    u(0) = u(T) = 0
+
+    Stored per axis as ``[r(0), r(T)-r(0), beta_1..beta_K]``, so the layout stays one tensor per
+    spatial axis and the first two entries are the coefficients the gradient moments pair with.
+
+    Three properties, none of which is a compression claim. The gradient phase becomes
+    ``r(0).M0 + (r(T)-r(0)).M1/T + sum_k beta_k Ghat_k``, so refocusing and velocity
+    compensation annihilate the first two columns exactly.  Both endpoints are held exactly
+    rather than to the truncation error, so a stored walk can be continued from where it ended.
+    And the sine basis is the variance-optimal one for what remains: the discrete Brownian
+    bridge has covariance ``min(m,n) - mn/N`` whose inverse is the Dirichlet Laplacian, so its
+    Karhunen-Loeve eigenvectors are exactly the DST-I vectors.
+
+    Accuracy is indistinguishable from ``temporal_dct``, and that is a theorem rather than a
+    coincidence: the difference operator maps the cosine basis onto the sine basis exactly,
+    ``c_k(n) - c_k(n-1) = -2 sin(pi k / 2N) s_{k-1}(n)``, so a cosine expansion of the path is a
+    sine expansion of its increments and the two truncate to the same subspaces.
+    """
+    X = np.asarray(X, np.float64)
+    Nw, Nt, _ = X.shape
+    a = X[:, 0, :]
+    v = X[:, -1, :] - X[:, 0, :]
+    tau = np.arange(Nt) / (Nt - 1.0)
+    u = X - (a[:, None, :] + v[:, None, :] * tau[None, :, None])
+    K = int(min(K, Nt - 2))
+    B = _dst(u[:, 1:-1, :], axis=1, type=1, norm="ortho")[:, :K, :]
+    C = np.concatenate([a[:, None, :], v[:, None, :], B], axis=1)   # (Nw, K+2, 3)
+    arrays = pack_position_arrays(C, np.float32)
+    meta = {"method": "bridge_dst", "K": K, "n_t": int(Nt)}
+    return arrays, meta, Nw * 3 * (K + 2) * _F16
+
+
+def decode_bridge_dst(arrays, meta):
+    """Reconstruct positions from endpoints plus sine bands."""
+    Nt = int(meta["n_t"])
+    C = read_position_coeffs(arrays, dtype=np.float64)
+    a, v, B = C[:, 0, :], C[:, 1, :], C[:, 2:, :]
+    tau = np.arange(Nt) / (Nt - 1.0)
+    u = np.zeros((C.shape[0], Nt, 3))
+    if B.shape[1]:
+        u[:, 1:-1, :] = _idst(B, axis=1, type=1, norm="ortho", n=Nt - 2)
+    return a[:, None, :] + v[:, None, :] * tau[None, :, None] + u
+
+
+def bridge_moment_rows(G, n_t):
+    """Sequence-side rows the two endpoint coefficients pair with: ``(M0, M1/T)``.
+
+    ``M0 = sum_n G_n`` is the refocusing condition and ``M1 = sum_n tau_n G_n`` the
+    velocity-compensation one, so a motion-compensated waveform makes both vanish.
+    """
+    G = np.asarray(G, np.float64)
+    tau = np.arange(n_t) / (n_t - 1.0)
+    return G.sum(1), (G * tau[None, :, None]).sum(1)
 
 
 def _kl(X):
@@ -108,7 +169,8 @@ def encode_marginal(X, K, Q=256, _cache=None):
     return arrays, meta, nbytes
 
 
-ENCODERS = {"temporal_dct": encode_temporal_dct, "lowrank": encode_lowrank,
+ENCODERS = {"bridge_dst": encode_bridge_dst,
+            "temporal_dct": encode_temporal_dct, "lowrank": encode_lowrank,
             "gaussian": encode_gaussian, "marginal": encode_marginal}
 
 
@@ -280,7 +342,7 @@ CHANNEL_DECODERS = {"bound_fraction": decode_bound_fraction,
                     "compartment": decode_compartment}
 
 
-def encode(X, method="temporal_dct", K=32, **kw):
+def encode(X, method="bridge_dst", K=32, **kw):
     if method not in ENCODERS:
         raise ValueError(f"unknown method {method!r}; choose from {list(ENCODERS)}")
     return ENCODERS[method](X, K, **kw)
@@ -362,6 +424,8 @@ def read_position_coeffs(arrays, axes=None, dtype=np.float64):
 def decode(arrays, meta, n_walkers=None, seed=0):
     """Reconstruct positions (n_walkers, n_t, 3) from a pack's stored arrays."""
     method = meta["method"]; Nt = int(meta["n_t"])
+    if method == "bridge_dst":
+        return decode_bridge_dst(arrays, meta)
     if method == "temporal_dct":
         C = read_position_coeffs(arrays)
         return _idct(C, axis=1, type=2, norm="ortho", n=Nt).astype(np.float64)
@@ -370,6 +434,22 @@ def decode(arrays, meta, n_walkers=None, seed=0):
     A = _sample_coeffs(arrays, meta, n_walkers, seed)
     X = A @ modes + mean
     return X.reshape(X.shape[0], Nt, 3)
+
+
+def rank_of(method, n_t):
+    """Number of coefficients per axis at which ``method`` is an exact rewrite of the walk.
+
+    ``n_t`` for ``temporal_dct`` (a full orthonormal transform); ``n_t - 2`` for ``bridge_dst``,
+    which spends two coefficients on the endpoints and expands the pinned residual on the
+    remaining ``n_t - 2`` interior samples -- so the representation is exactly rank-preserving,
+    not merely close to it.
+    """
+    return int(n_t) - 2 if method == "bridge_dst" else int(n_t)
+
+
+def is_lossless_at(method, K, n_t):
+    """Whether ``method`` at ``K`` bands reproduces the walk exactly (to storage precision)."""
+    return method in ("bridge_dst", "temporal_dct") and int(K) >= rank_of(method, n_t)
 
 
 def is_walker_preserving(method):
@@ -383,11 +463,21 @@ def mode_space_phi(arrays, meta, G, dt, n_walkers=None, seed=0):
 
     * ``temporal_dct`` (orthonormal DCT bands C): phi = gamma*dt * sum_{k<K,d} C_{k,d} Ghat_{k,d},
       Ghat = DCT(G) truncated to the same K bands.
+    * ``bridge_dst`` (endpoints + sine bands): the first two coefficients pair with the
+      gradient moments, phi = gamma*dt * [r(0).M0 + (r(T)-r(0)).M1 + sum_k beta_k Ghat_k],
+      so a motion-compensated waveform zeroes the first two columns exactly.
     * ``lowrank``/``gaussian``/``marginal`` (KL modes V): phi = A.c(G) + phi0, with
       c(G) = gamma*dt (V.vec(G)) a K-vector per measurement.
     """
     method = meta.get("method", "temporal_dct")
     G = np.asarray(G, np.float64); n_meas = G.shape[0]
+    if method == "bridge_dst":
+        C = read_position_coeffs(arrays, dtype=np.float64)          # (N_w, K+2, n_axes)
+        n_t = int(meta["n_t"]); K = C.shape[1] - 2
+        M0, M1 = bridge_moment_rows(G, n_t)                         # (n_meas, 3) each
+        Ghat = _dst(G[:, 1:-1, :], axis=1, type=1, norm="ortho")[:, :K, :]
+        W = np.concatenate([M0[:, None, :], M1[:, None, :], Ghat], axis=1)
+        return (GAMMA * dt) * np.einsum("wkd,mkd->wm", C, W)
     if method == "temporal_dct":
         C = read_position_coeffs(arrays, dtype=np.float64)         # (N_w, K, n_axes)
         K = C.shape[1]
@@ -525,7 +615,7 @@ def measure_fidelity(traj, dt_traj, decoded_pos, env=None, w=None, logw=None):
                 within_2x_floor=bool(err_all <= 2 * floor_all), per_family=per_fam)
 
 
-def auto_select_modes(X, traj, dt_traj, method="temporal_dct", env=None, tol=2.0,
+def auto_select_modes(X, traj, dt_traj, method="bridge_dst", env=None, tol=2.0,
                       err_target=None, K_grid=(8, 16, 32, 48, 64, 96, 128),
                       w=None, logw=None, verbose=False):
     """Smallest K whose decoded replay error meets the target (err_target absolute, else

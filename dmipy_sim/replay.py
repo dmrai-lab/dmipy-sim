@@ -118,14 +118,26 @@ class ReplayPack:
 
 
 # ------------------------------- compiled-scheme forward -------------------------------
-def compile_scheme(G, dt, K, gyromagnetic_ratio=GAMMA):
-    """Compile an acquisition into its temporal-basis projection ``W`` (3K, n_meas).
+def compile_scheme(G, dt, K, gyromagnetic_ratio=GAMMA, method="temporal_dct", n_t=None):
+    """Compile an acquisition into its temporal-basis projection ``W``.
 
     ``G`` is the gradient waveform on the pack save grid, shape ``(n_meas, n_t, 3)`` [T/m]; ``dt`` the save
-    interval [s]; ``K`` the pack's DCT-mode count. Reusable across every pack on this grid (fitting) and
+    interval [s]; ``K`` the pack's retained-mode count; ``method`` the pack's position codec.
+    Shape is ``(3K, n_meas)`` for ``temporal_dct`` and ``(3(K+2), n_meas)`` for ``bridge_dst``,
+    whose first two rows per axis are the gradient moments. Reusable across every pack on this grid (fitting) and
     every fit iteration; in design it is recomputed per candidate waveform (cheap: an FFT + scale)."""
-    from scipy.fft import dct
+    from scipy.fft import dct, dst
     G = np.asarray(G, np.float64)
+    if method == "bridge_dst":
+        # first two rows per axis are the gradient moments -- the columns a motion-compensated
+        # waveform annihilates -- followed by the sine bands of the pinned residual
+        from .compression import bridge_moment_rows
+        n_t = int(n_t or G.shape[1])
+        M0, M1 = bridge_moment_rows(G, n_t)
+        Ghat = dst(G[:, 1:-1, :], type=1, norm="ortho", axis=1)[:, :K, :]
+        W = np.concatenate([M0[:, None, :], M1[:, None, :], Ghat], axis=1)  # (n_meas, K+2, 3)
+        n_meas = W.shape[0]
+        return (gyromagnetic_ratio * dt * W).reshape(n_meas, (K + 2) * 3).T
     Ghat = dct(G, type=2, norm="ortho", axis=1)[:, :K, :]      # (n_meas, K, 3)
     n_meas = Ghat.shape[0]
     return (gyromagnetic_ratio * dt * Ghat).reshape(n_meas, K * 3).T   # (3K, n_meas)

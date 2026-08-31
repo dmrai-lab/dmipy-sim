@@ -589,7 +589,7 @@ def _select_boundary_codec(m, dlog, env, tol, dtype, verbose=False):
     return a, mm
 
 
-def build_replay_pack(src, *, id, method="temporal_dct", envelope=None, tol=2.0, K=None,
+def build_replay_pack(src, *, id, method="bridge_dst", envelope=None, tol=2.0, K=None,
                       err_target=None, sigma_star=None,
                       license, citation, provenance=None, surface_relaxivity=False,
                       blt_temporal_K=None, blt_dtype=np.float16, susc_path_K=None, mt=False,
@@ -597,10 +597,13 @@ def build_replay_pack(src, *, id, method="temporal_dct", envelope=None, tol=2.0,
     """Compress a master walk and assemble a self-certifying replay pack.
 
     ``src`` is a raw master dict / ``.npz`` (see :func:`_master_arrays`). The position ensemble is
-    compressed by ``method`` (default ``temporal_dct``); ``K`` (mode count) is chosen automatically
+    compressed by ``method`` (default ``bridge_dst``: endpoints plus a Brownian bridge on the
+    sine basis, which holds both endpoints exactly and pairs its first two coefficients with the
+    gradient moments, at the same accuracy as ``temporal_dct`` -- see
+    :func:`compression.encode_bridge_dst`); ``K`` (mode count) is chosen automatically
     to keep the *measured* replay error within ``tol``x the Monte-Carlo floor over ``envelope``
     (default :func:`compression.default_envelope`) unless given. Walker-preserving methods
-    (``temporal_dct``, ``lowrank``) carry the full per-walker channel space; distributional methods
+    (``bridge_dst``, ``temporal_dct``, ``lowrank``) carry the full per-walker channel space; distributional methods
     (``gaussian``/``marginal``) are gradient-only.
 
     Tiers assembled: **gradient** (always), **bulk relaxation** (from the compartment map +
@@ -648,8 +651,9 @@ def build_replay_pack(src, *, id, method="temporal_dct", envelope=None, tol=2.0,
         # advertised: shipping grid arrays next to lossy positions would offer a replay route whose
         # accuracy silently depends on a property the pack no longer has. Path wins when present;
         # the grid is then published as a separate per-substrate companion artefact, not per walker.
-        # temporal_dct at K=n_t is an exact rewrite; other codecs are not lossless at any K.
-        _pos_lossless = (method == "temporal_dct") and int(K) >= int(X.shape[1])
+        # A full-rank walker-preserving codec is an exact rewrite; the rank is n_t for
+        # temporal_dct and n_t-2 for bridge_dst, which stores two endpoints outside the bands.
+        _pos_lossless = _cx.is_lossless_at(method, int(K), int(X.shape[1]))
         _grid_in_pack = (not susc_path_K) or _pos_lossless
         if _grid_in_pack:
             arrays["susc_grid_iso_local"] = np.asarray(fb["iso_local"], np.float16)
@@ -779,7 +783,7 @@ def build_replay_pack(src, *, id, method="temporal_dct", envelope=None, tol=2.0,
 
 
 def build_to_floor(make_model, *, id, envelope=None, sigma_star=1e-3, pilot_n=8000,
-                   safety=1.4, max_n=400000, walk=None, method="temporal_dct", verbose=True, **bp):
+                   safety=1.4, max_n=400000, walk=None, method="bridge_dst", verbose=True, **bp):
     """Adaptive floor-targeting generation policy (the bank default).
 
     Size the walker count so the split-half Monte-Carlo floor <= ``sigma_star``, then build a pack
