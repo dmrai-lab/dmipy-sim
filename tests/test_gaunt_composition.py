@@ -13,12 +13,26 @@ from scipy.special import eval_legendre
 from dmipy_sim.gaunt import (real_sh, sphere_quadrature, assert_orthonormal,
                              gaunt_table, n_sh_coeffs, sh_block)
 from dmipy_sim.sh_convolution import (apply_odf, apply_odf_coupled, coupled_spectrum,
-                                      invariant_grid, rank1_residual, isotropic_odf_sh)
+                                      coupled_spectrum_at, invariant_grid,
+                                      separability, isotropic_odf_sh, watson_odf_sh)
 
 LMAX, LG, LB = 8, 8, 6
 GEOMS = [("aligned", [0, 0, 1.], [0, 0, 1.]),
          ("oblique", [np.sin(0.96), 0, np.cos(0.96)], [0, 0, 1.]),
          ("skew", [.6, .5, .62], [-.3, .8, .52])]
+
+
+def _as_spectrum(mat, l_g, l_b, col0=None):
+    """Even-order (2i, 2j) matrix -> the (l1, l2, p) spectrum dict apply_odf_coupled takes."""
+    m = np.asarray(mat, np.float64)
+    if col0 is not None:
+        m = m.copy(); m[:, 0] = col0
+    terms, coeffs = [], []
+    for i in range(m.shape[0]):
+        for j in range(m.shape[1]):
+            terms.append((2 * i, 2 * j, 0)); coeffs.append(m[i, j])
+    return {"terms": terms, "coeffs": np.array(coeffs), "l_g": l_g, "l_b": l_b,
+            "chiral": False}
 
 
 def _unit(v):
@@ -61,11 +75,11 @@ def test_contraction_equals_brute_force_sphere_integral(name, g, b):
     """A deliberately NON-separable Lambda, against direct quadrature on the sphere."""
     rng = np.random.default_rng(0)
     n1, n2 = LG // 2 + 1, LB // 2 + 1
-    lam = (rng.standard_normal((n1, n2))
-           * np.exp(-0.8 * np.arange(n1))[:, None]
-           * np.exp(-0.8 * np.arange(n2))[None, :])
-    lam[0, 0] = 1.0
-    assert rank1_residual(lam) > 0.05, "test fixture must not be separable"
+    lam_m = (rng.standard_normal((n1, n2))
+             * np.exp(-0.8 * np.arange(n1))[:, None]
+             * np.exp(-0.8 * np.arange(n2))[None, :])
+    lam_m[0, 0] = 1.0
+    lam = _as_spectrum(lam_m, LG, LB)
 
     f = rng.standard_normal(n_sh_coeffs(LMAX)) * 0.3
     f[0] = 1.0 / (2 * np.sqrt(np.pi))
@@ -73,7 +87,7 @@ def test_contraction_equals_brute_force_sphere_integral(name, g, b):
 
     dirs, w = sphere_quadrature(48, 96)
     F = real_sh(LMAX, dirs) @ f
-    E = sum(lam[i, j] * eval_legendre(2 * i, dirs @ g) * eval_legendre(2 * j, dirs @ b)
+    E = sum(lam_m[i, j] * eval_legendre(2 * i, dirs @ g) * eval_legendre(2 * j, dirs @ b)
             for i in range(n1) for j in range(n2))
     brute = np.sum(w * F * E)
     got = apply_odf_coupled(lam, f, g, b, l_fod=LMAX, l_g=LG, l_b=LB)
@@ -89,6 +103,7 @@ def test_no_susceptibility_reduces_to_ordinary_convolution(name, g, b):
     a[0] = 1.0
     lam = np.zeros((n1, LB // 2 + 1))
     lam[:, 0] = a                                    # P_0(v) = 1  ->  no B0 dependence
+    lam = _as_spectrum(lam, LG, LB)
 
     f = rng.standard_normal(n_sh_coeffs(LMAX)) * 0.3
     f[0] = 1.0 / (2 * np.sqrt(np.pi))
@@ -107,7 +122,7 @@ def test_matches_apply_odf_on_the_z_axis():
     rng = np.random.default_rng(2)
     n1 = LG // 2 + 1
     a = rng.standard_normal(n1) * np.exp(-0.7 * np.arange(n1)); a[0] = 1.0
-    lam = np.zeros((n1, LB // 2 + 1)); lam[:, 0] = a
+    lam = _as_spectrum(np.zeros((n1, LB // 2 + 1)), LG, LB, col0=a)
     f = rng.standard_normal(n_sh_coeffs(LMAX)) * 0.3
     f[0] = 1.0 / (2 * np.sqrt(np.pi))
     got = apply_odf_coupled(lam, f, [0, 0, 1.], [0, 0, 1.], l_fod=LMAX, l_g=LG, l_b=LB)
@@ -130,12 +145,13 @@ def test_uniform_fod_leaves_the_diagonal_coupling(name, g, b):
     """
     rng = np.random.default_rng(3)
     n1, n2 = LG // 2 + 1, LB // 2 + 1
-    lam = rng.standard_normal((n1, n2)) * 0.2
-    lam[0, 0] = 1.0
+    lam_m = rng.standard_normal((n1, n2)) * 0.2
+    lam_m[0, 0] = 1.0
+    lam = _as_spectrum(lam_m, LG, LB)
     g, b = _unit(g), _unit(b)
     got = apply_odf_coupled(lam, isotropic_odf_sh(LMAX), g, b,
                             l_fod=LMAX, l_g=LG, l_b=LB)
-    expect = sum(lam[i, i] * eval_legendre(2 * i, g @ b) / (4 * i + 1)
+    expect = sum(lam_m[i, i] * eval_legendre(2 * i, g @ b) / (4 * i + 1)
                  for i in range(min(n1, n2)))
     npt.assert_allclose(got, expect, rtol=1e-10)
 
@@ -151,12 +167,22 @@ def test_coupled_spectrum_round_trips():
     npt.assert_allclose(coupled_spectrum(E, u, v, l_g=LG, l_b=LB), lam, atol=1e-10)
 
 
-def test_rank1_residual_detects_separability():
-    a = np.array([1.0, 0.4, 0.1, 0.02, 0.005])
-    b = np.array([1.0, 0.3, 0.05, 0.01])
-    assert rank1_residual(np.outer(a, b)) < 1e-12
-    mixed = np.outer(a, b); mixed[2, 3] += 0.5
-    assert rank1_residual(mixed) > 0.05
+def test_separability_measures_the_function_not_the_coefficients():
+    """Separable in, zero out; chiral or odd content in, a real departure out."""
+    g = _unit([np.sin(0.96), 0, np.cos(0.96)]); b = _unit([0, 0, 1.])
+    k = np.cross(g, b); k = k / np.linalg.norm(k)
+
+    def sep_resp(d):                       # A(u) * Xi(v), exactly separable
+        return (1 + 0.4 * eval_legendre(2, d @ g)) * (1 - 0.3 * eval_legendre(2, d @ b))
+
+    def chi_resp(d):                       # plus a chiral term
+        return sep_resp(d) + 0.3 * (d @ k) * (d @ g)
+
+    s0 = separability(sep_resp, g, b, l_g=LG, l_b=LB)
+    assert s0["total"] < 1e-8, s0
+    s1 = separability(chi_resp, g, b, l_g=LG, l_b=LB)
+    assert s1["non_separable_sector"] > 0.05, s1
+
 
 
 # --- Lambda built at the exact requested geometry (scanner-side, no interpolation) -------

@@ -329,17 +329,59 @@ def invariant_grid(n_u=24, n_v=24):
     return u, v, wu, wv
 
 
-def rank1_residual(lam):
-    """``||Lambda - rank1(Lambda)|| / ||Lambda||`` -- how far the response is from separable.
+def separability(response, g_dir, b0_dir, l_g=8, l_b=6, n_theta=48, n_phi=96, n_als=200):
+    """How far a response is from the separable model ``E = A(n.g) * Xi(n.B0)``.
 
-    Zero means susceptibility acts as a magnitude weight multiplying the diffusion
-    attenuation (the assumption of the analytic operator).  A non-zero value is a measured
-    property of the substrate: the gradient and susceptibility phases add *inside* the
-    ensemble average, so the expectation need not factor.
+    Separability -- susceptibility acting as a magnitude weight on the diffusion attenuation,
+    which is what the analytic operator assumes -- needs the response to lie in the rank-one
+    even--even zonal sector.  Two things take it out of there: the chiral sector, and odd--odd
+    ``p=0`` pairs (a physical ``A`` is even in ``n.g`` and ``Xi`` even in ``n.B0``, so a
+    separable response has no odd content at all).
+
+    Measured in ``L^2`` on the sphere, **not** on the coefficients.  The zonal family is not
+    orthogonal there, so coefficient norms are not energies -- near-degenerate columns produce
+    large cancelling coefficients and would report a departure that is not in the function.
+
+    Returns fractions of ``||E||``: ``'non_separable_sector'`` (energy the even--even zonal
+    block cannot reach), ``'rank1'`` (departure from rank one within that block), and
+    ``'total'`` (distance to the best separable approximation).
     """
-    lam = np.asarray(lam, np.float64)
-    s = np.linalg.svd(lam, compute_uv=False)
-    return float(np.sqrt(max(np.sum(s[1:] ** 2), 0.0)) / np.linalg.norm(lam))
+    from .gaunt import sphere_quadrature
+    g = np.asarray(g_dir, np.float64); g = g / np.linalg.norm(g)
+    b = np.asarray(b0_dir, np.float64); b = b / np.linalg.norm(b)
+    dirs, w = sphere_quadrature(n_theta, n_phi)
+    E = np.asarray(response(dirs))
+    if np.iscomplexobj(E):
+        E = np.abs(E)
+    sw = np.sqrt(w)
+    u, v = dirs @ g, dirs @ b
+    n1, n2 = l_g // 2 + 1, l_b // 2 + 1
+    Pu = np.stack([eval_legendre(2 * i, u) for i in range(n1)])
+    Pv = np.stack([eval_legendre(2 * j, v) for j in range(n2)])
+
+    def fit(cols):
+        A = cols * sw[:, None]
+        c, *_ = np.linalg.lstsq(A, E * sw, rcond=None)
+        return cols @ c
+
+    ee = np.stack([Pu[i] * Pv[j] for i in range(n1) for j in range(n2)], axis=1)
+    E_ee = fit(ee)                                   # best even--even zonal approximation
+
+    # best rank one within that block: alternating least squares on A(u) and Xi(v)
+    a = np.ones(n1); a[0] = 1.0
+    for _ in range(n_als):
+        Xa = (Pu.T @ a)                              # A(u) on the grid
+        M = (Pv * Xa[None, :]).T * sw[:, None]
+        cb, *_ = np.linalg.lstsq(M, E_ee * sw, rcond=None)
+        Xb = Pv.T @ cb
+        M = (Pu * Xb[None, :]).T * sw[:, None]
+        a, *_ = np.linalg.lstsq(M, E_ee * sw, rcond=None)
+    E_sep = (Pu.T @ a) * (Pv.T @ cb)
+
+    nE = np.linalg.norm(E * sw)
+    return {"non_separable_sector": float(np.linalg.norm((E - E_ee) * sw) / nE),
+            "rank1": float(np.linalg.norm((E_ee - E_sep) * sw) / nE),
+            "total": float(np.linalg.norm((E - E_sep) * sw) / nE)}
 
 
 def coupled_spectrum_at(response, g_dir, b0_dir, l_g=8, l_b=6, n_theta=48, n_phi=96,
@@ -407,9 +449,8 @@ def coupled_spectrum_at(response, g_dir, b0_dir, l_g=8, l_b=6, n_theta=48, n_phi
 def apply_odf_coupled(lam, odf_sh, g_dir, b0_dir, l_fod=8, l_g=8, l_b=6):
     """Compose a response over an orientation distribution (paper Eq. 19).
 
-    ``lam`` is either the dict returned by :func:`coupled_spectrum_at` -- terms ``(l1, l2, p)``
-    with ``p=1`` marking the chiral sector -- or, for backward compatibility, a dense
-    ``(n1, n2)`` array of even-order zonal coefficients indexed by ``(2i, 2j)``.
+    ``lam`` is the dict returned by :func:`coupled_spectrum_at`: terms ``(l1, l2, p)`` with
+    ``p=1`` marking the chiral sector.
 
     The ``p=0`` terms contract through the three-index Gaunt coefficients.  The ``p=1`` terms
     carry the extra zonal factor ``P_1(n . k)`` with ``k = (g x B0)/|g x B0|`` and so contract
@@ -428,14 +469,8 @@ def apply_odf_coupled(lam, odf_sh, g_dir, b0_dir, l_fod=8, l_g=8, l_b=6):
     g = np.asarray(g_dir, np.float64); g = g / np.linalg.norm(g)
     b = np.asarray(b0_dir, np.float64); b = b / np.linalg.norm(b)
 
-    if isinstance(lam, dict):
-        terms, coeffs = lam["terms"], np.asarray(lam["coeffs"])
-        lg, lb = int(lam["l_g"]), int(lam["l_b"])
-    else:                                              # legacy dense even-order array
-        arr = np.asarray(lam)
-        terms = [(2 * i, 2 * j, 0) for i in range(arr.shape[0]) for j in range(arr.shape[1])]
-        coeffs = arr.ravel()
-        lg, lb = 2 * (arr.shape[0] - 1), 2 * (arr.shape[1] - 1)
+    terms, coeffs = lam["terms"], np.asarray(lam["coeffs"])
+    lg, lb = int(lam["l_g"]), int(lam["l_b"])
 
     need_chiral = any(p for _, _, p in terms)
     G3 = gaunt_table(l_fod, lg, lb, full_g=True, full_b=True)
