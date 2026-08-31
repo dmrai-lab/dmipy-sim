@@ -1,0 +1,159 @@
+"""Susceptibility-aware FOD composition (paper Sec. 2.6): Gaunt table + two-axis contraction.
+
+The tests that matter here are the ones a cursory suite would miss.  A non-orthonormal
+spherical-harmonic basis breaks the addition theorem the contraction rests on, but the
+resulting error *vanishes exactly when g is parallel to B0* -- so every geometry test below
+is run off-axis and skew as well as aligned.
+"""
+import numpy as np
+import numpy.testing as npt
+import pytest
+from scipy.special import eval_legendre
+
+from dmipy_sim.gaunt import (real_sh, sphere_quadrature, assert_orthonormal,
+                             gaunt_table, n_sh_coeffs, sh_block)
+from dmipy_sim.sh_convolution import (apply_odf, apply_odf_coupled, coupled_spectrum,
+                                      invariant_grid, rank1_residual, isotropic_odf_sh)
+
+LMAX, LG, LB = 8, 8, 6
+GEOMS = [("aligned", [0, 0, 1.], [0, 0, 1.]),
+         ("oblique", [np.sin(0.96), 0, np.cos(0.96)], [0, 0, 1.]),
+         ("skew", [.6, .5, .62], [-.3, .8, .52])]
+
+
+def _unit(v):
+    v = np.asarray(v, float)
+    return v / np.linalg.norm(v)
+
+
+def test_basis_is_orthonormal():
+    dirs, w = sphere_quadrature(32, 64)
+    assert assert_orthonormal(real_sh(LMAX, dirs), w) < 1e-10
+
+
+def test_assert_orthonormal_rejects_a_bad_basis():
+    """The guardrail must actually fire -- rescale m!=0 like the legacy MRtrix basis."""
+    dirs, w = sphere_quadrature(32, 64)
+    Y = real_sh(LMAX, dirs).copy()
+    for l in range(2, LMAX + 1, 2):
+        blk = sh_block(l)
+        cols = np.arange(blk.start, blk.stop)
+        Y[:, cols[cols != blk.start + l]] /= np.sqrt(2.0)      # m != 0
+    with pytest.raises(ValueError, match="not orthonormal"):
+        assert_orthonormal(Y, w)
+
+
+def test_gaunt_matches_closed_form_monopole():
+    G = gaunt_table(4, 4, 4)
+    npt.assert_allclose(G[0, 0, 0], 1.0 / (2 * np.sqrt(np.pi)), rtol=1e-12)
+
+
+def test_gaunt_is_sparse_by_selection_rules():
+    G = gaunt_table(LMAX, LG, LB)
+    assert np.count_nonzero(G) / G.size < 0.15
+    # parity: l1 + l2 + L odd must vanish (all even here, so check a triangle violation)
+    L, l1, l2 = 8, 2, 2                       # |l1-l2|=0 <= L=8 > l1+l2=4 -> forbidden
+    assert np.abs(G[sh_block(L), sh_block(l1), sh_block(l2)]).max() < 1e-12
+
+
+@pytest.mark.parametrize("name,g,b", GEOMS)
+def test_contraction_equals_brute_force_sphere_integral(name, g, b):
+    """A deliberately NON-separable Lambda, against direct quadrature on the sphere."""
+    rng = np.random.default_rng(0)
+    n1, n2 = LG // 2 + 1, LB // 2 + 1
+    lam = (rng.standard_normal((n1, n2))
+           * np.exp(-0.8 * np.arange(n1))[:, None]
+           * np.exp(-0.8 * np.arange(n2))[None, :])
+    lam[0, 0] = 1.0
+    assert rank1_residual(lam) > 0.05, "test fixture must not be separable"
+
+    f = rng.standard_normal(n_sh_coeffs(LMAX)) * 0.3
+    f[0] = 1.0 / (2 * np.sqrt(np.pi))
+    g, b = _unit(g), _unit(b)
+
+    dirs, w = sphere_quadrature(48, 96)
+    F = real_sh(LMAX, dirs) @ f
+    E = sum(lam[i, j] * eval_legendre(2 * i, dirs @ g) * eval_legendre(2 * j, dirs @ b)
+            for i in range(n1) for j in range(n2))
+    brute = np.sum(w * F * E)
+    got = apply_odf_coupled(lam, f, g, b, l_fod=LMAX, l_g=LG, l_b=LB)
+    npt.assert_allclose(got, brute, rtol=1e-10)
+
+
+@pytest.mark.parametrize("name,g,b", GEOMS)
+def test_no_susceptibility_reduces_to_ordinary_convolution(name, g, b):
+    """Lambda supported on l2=0 must reproduce the single-axis Funk-Hecke path."""
+    rng = np.random.default_rng(1)
+    n1 = LG // 2 + 1
+    a = rng.standard_normal(n1) * np.exp(-0.7 * np.arange(n1))
+    a[0] = 1.0
+    lam = np.zeros((n1, LB // 2 + 1))
+    lam[:, 0] = a                                    # P_0(v) = 1  ->  no B0 dependence
+
+    f = rng.standard_normal(n_sh_coeffs(LMAX)) * 0.3
+    f[0] = 1.0 / (2 * np.sqrt(np.pi))
+    g, b = _unit(g), _unit(b)
+
+    dirs, w = sphere_quadrature(48, 96)
+    F = real_sh(LMAX, dirs) @ f
+    E = sum(a[i] * eval_legendre(2 * i, dirs @ g) for i in range(n1))
+    brute = np.sum(w * F * E)
+    got = apply_odf_coupled(lam, f, g, b, l_fod=LMAX, l_g=LG, l_b=LB)
+    npt.assert_allclose(got, brute, rtol=1e-10)
+
+
+def test_matches_apply_odf_on_the_z_axis():
+    """The l2=0 contraction must equal the existing apply_odf for a z-aligned gradient."""
+    rng = np.random.default_rng(2)
+    n1 = LG // 2 + 1
+    a = rng.standard_normal(n1) * np.exp(-0.7 * np.arange(n1)); a[0] = 1.0
+    lam = np.zeros((n1, LB // 2 + 1)); lam[:, 0] = a
+    f = rng.standard_normal(n_sh_coeffs(LMAX)) * 0.3
+    f[0] = 1.0 / (2 * np.sqrt(np.pi))
+    got = apply_odf_coupled(lam, f, [0, 0, 1.], [0, 0, 1.], l_fod=LMAX, l_g=LG, l_b=LB)
+    ref = apply_odf(a, f, lmax=LMAX)
+    npt.assert_allclose(got, ref, rtol=1e-10)
+
+
+@pytest.mark.parametrize("name,g,b", GEOMS)
+def test_uniform_fod_leaves_the_diagonal_coupling(name, g, b):
+    """A uniform F does NOT reduce the response to Lambda_00.
+
+    By the addition theorem ``int P_l1(n.g) P_l2(n.B0) dn = delta_{l1l2} 4pi/(2l+1)
+    P_l(g.B0)``, so a uniform orientation distribution leaves
+
+        S = sum_l Lambda_{ll} P_l(g.B0) / (2l+1),
+
+    i.e. the diagonal of the coupled spectrum, weighted by the angle between the gradient
+    and the field.  Only the separate spherical mean over *gradient directions* collapses
+    the susceptibility weight to a scalar.
+    """
+    rng = np.random.default_rng(3)
+    n1, n2 = LG // 2 + 1, LB // 2 + 1
+    lam = rng.standard_normal((n1, n2)) * 0.2
+    lam[0, 0] = 1.0
+    g, b = _unit(g), _unit(b)
+    got = apply_odf_coupled(lam, isotropic_odf_sh(LMAX), g, b,
+                            l_fod=LMAX, l_g=LG, l_b=LB)
+    expect = sum(lam[i, i] * eval_legendre(2 * i, g @ b) / (4 * i + 1)
+                 for i in range(min(n1, n2)))
+    npt.assert_allclose(got, expect, rtol=1e-10)
+
+
+def test_coupled_spectrum_round_trips():
+    """Projecting a known Lambda off its own (u, v) samples must recover it."""
+    rng = np.random.default_rng(4)
+    n1, n2 = LG // 2 + 1, LB // 2 + 1
+    lam = rng.standard_normal((n1, n2)) * np.exp(-0.6 * np.arange(n1))[:, None]
+    u, v, _, _ = invariant_grid(24, 24)
+    E = sum(lam[i, j] * eval_legendre(2 * i, u)[:, None] * eval_legendre(2 * j, v)[None, :]
+            for i in range(n1) for j in range(n2))
+    npt.assert_allclose(coupled_spectrum(E, u, v, l_g=LG, l_b=LB), lam, atol=1e-10)
+
+
+def test_rank1_residual_detects_separability():
+    a = np.array([1.0, 0.4, 0.1, 0.02, 0.005])
+    b = np.array([1.0, 0.3, 0.05, 0.01])
+    assert rank1_residual(np.outer(a, b)) < 1e-12
+    mixed = np.outer(a, b); mixed[2, 3] += 0.5
+    assert rank1_residual(mixed) > 0.05

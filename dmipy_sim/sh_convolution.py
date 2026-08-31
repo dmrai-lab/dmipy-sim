@@ -290,3 +290,86 @@ def isotropic_odf_sh(lmax=8):
     odf_sh = np.zeros(_n_sh_coeffs(lmax), dtype=np.float64)
     odf_sh[0] = 1.0 / (2.0 * np.sqrt(np.pi))
     return odf_sh
+
+
+# ---------------------------------------------------------------------------
+# Two-axis (susceptibility-aware) composition -- paper Sec. 2.6
+# ---------------------------------------------------------------------------
+
+def coupled_spectrum(E, u_nodes, v_nodes, l_g=8, l_b=6):
+    """Coupled angular spectrum ``Lambda_{l1 l2}`` of a two-axis response.
+
+    ``E`` is the response sampled on the tensor grid ``u_nodes x v_nodes`` of the two
+    invariants ``u = n.g`` and ``v = n.B0`` (shape ``(len(u_nodes), len(v_nodes))``, or with
+    a trailing measurement axis).  ``u_nodes``/``v_nodes`` must be Gauss-Legendre nodes on
+    [-1, 1]; use :func:`invariant_grid` to build them together with their weights.
+
+    Separability of the physics is the rank-one case; nothing here assumes it.  Use
+    :func:`rank1_residual` to report how far a given substrate departs from it.
+    """
+    from .gaunt import _CACHE  # noqa: F401  (kept for cache-warm symmetry)
+    E = np.asarray(E, np.float64)
+    u = np.asarray(u_nodes, np.float64); v = np.asarray(v_nodes, np.float64)
+    _, wu = roots_legendre(u.size)
+    _, wv = roots_legendre(v.size)
+    n1, n2 = l_g // 2 + 1, l_b // 2 + 1
+    Pu = np.stack([eval_legendre(2 * i, u) for i in range(n1)])      # (n1, nu)
+    Pv = np.stack([eval_legendre(2 * j, v) for j in range(n2)])      # (n2, nv)
+    norm1 = np.array([(4 * i + 1) / 2.0 for i in range(n1)])
+    norm2 = np.array([(4 * j + 1) / 2.0 for j in range(n2)])
+    lam = np.einsum("iu,jv,uv...,u,v->ij...", Pu, Pv, E, wu, wv, optimize=True)
+    return lam * norm1[:, None] * norm2[None, :] if lam.ndim == 2 else \
+        lam * norm1[:, None, None] * norm2[None, :, None]
+
+
+def invariant_grid(n_u=24, n_v=24):
+    """Gauss-Legendre nodes/weights in the two invariants ``(n.g, n.B0)``."""
+    u, wu = roots_legendre(n_u)
+    v, wv = roots_legendre(n_v)
+    return u, v, wu, wv
+
+
+def rank1_residual(lam):
+    """``||Lambda - rank1(Lambda)|| / ||Lambda||`` -- how far the response is from separable.
+
+    Zero means susceptibility acts as a magnitude weight multiplying the diffusion
+    attenuation (the assumption of the analytic operator).  A non-zero value is a measured
+    property of the substrate: the gradient and susceptibility phases add *inside* the
+    ensemble average, so the expectation need not factor.
+    """
+    lam = np.asarray(lam, np.float64)
+    s = np.linalg.svd(lam, compute_uv=False)
+    return float(np.sqrt(max(np.sum(s[1:] ** 2), 0.0)) / np.linalg.norm(lam))
+
+
+def apply_odf_coupled(lam, odf_sh, g_dir, b0_dir, l_fod=8, l_g=8, l_b=6):
+    """Compose a two-axis response over an orientation distribution (paper Eq. 19).
+
+    ``lam`` is ``Lambda_{l1 l2}`` from :func:`coupled_spectrum`; ``odf_sh`` the FOD in the
+    compact even-order orthonormal real SH layout; ``g_dir``/``b0_dir`` unit vectors.
+    Returns the composed signal.
+
+    With ``Lambda`` supported on ``l2 = 0`` (no susceptibility) this reduces exactly to
+    :func:`apply_odf`.
+    """
+    from .gaunt import gaunt_table, real_sh, sh_block, n_sh_coeffs
+    lam = np.asarray(lam, np.float64)
+    f = np.asarray(odf_sh, np.float64)
+    nf = n_sh_coeffs(l_fod)
+    if f.size < nf:
+        f = np.concatenate([f, np.zeros(nf - f.size)])
+    G = gaunt_table(l_fod, l_g, l_b)
+    Yg = real_sh(l_g, np.asarray(g_dir, np.float64)[None, :] /
+                 np.linalg.norm(g_dir))[0]
+    Yb = real_sh(l_b, np.asarray(b0_dir, np.float64)[None, :] /
+                 np.linalg.norm(b0_dir))[0]
+    out = 0.0
+    for i in range(lam.shape[0]):
+        l1 = 2 * i
+        for j in range(lam.shape[1]):
+            l2 = 2 * j
+            w = (4 * np.pi) ** 2 / ((2 * l1 + 1) * (2 * l2 + 1))
+            blk = np.einsum("abc,a,b,c->", G[:nf, sh_block(l1), sh_block(l2)],
+                            f[:nf], Yg[sh_block(l1)], Yb[sh_block(l2)])
+            out = out + lam[i, j] * w * blk
+    return out
