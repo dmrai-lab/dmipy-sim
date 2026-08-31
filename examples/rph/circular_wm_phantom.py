@@ -39,22 +39,34 @@ def circular_wm(n=N, r_in=R_IN, r_out=R_OUT, lmax=LMAX, kappa=KAPPA):
             np.asarray(sh, np.float32)[:, None, :])
 
 
-def write_rph(path, pack_path, pack_id, arrays, lmax=LMAX, n=N):
+def write_rph(path, pack_path, pack_id, arrays, m0, *, embed=True, lmax=LMAX, n=N):
+    """Write a .rph. ``embed`` puts the pack's arrays under ``substrate0/`` so the phantom is a
+    standalone artifact -- nothing to resolve, nothing to go missing."""
     from safetensors.numpy import save_file
     import hashlib
     h = hashlib.sha256(open(pack_path, "rb").read()).hexdigest()
-    vi, pid, pf, sh = arrays
+    vi, sid, gf, sh = arrays
+    tensors = {"voxel_index": vi, "substrate_id": sid,
+               "geometric_fraction": gf, "odf_sh": sh}
+    sub = {"id": pack_id, "m0": float(m0), "sha256": h, "embedded": bool(embed)}
+    if embed:
+        pk = read_rpk(pack_path)
+        for k, v in pk.arrays.items():
+            tensors[f"substrate0/{k}"] = np.ascontiguousarray(v)
+        sub["pack_meta"] = pk.meta
+    else:
+        sub["uri"] = pack_path
     meta = {
-        "rph_schema_version": "0.1.0",
+        "rph_schema_version": "0.2.0",
         "id": "phantoms/circular-wm/annulus-30",
-        "packs": [{"id": pack_id, "sha256": h, "uri": pack_path}],
-        "grid": {"shape": [n, n], "voxel_size_m": [1e-3, 1e-3], "frame": "phantom"},
-        "sh": {"basis": "real", "convention": "orthonormal", "lmax": lmax},
+        "grid": {"shape": [n, n, 1], "voxel_size_m": [1e-3, 1e-3, 1e-3], "frame": "phantom"},
+        "orientation": {"mode": "odf_sh", "lmax": lmax, "basis": "real",
+                        "convention": "orthonormal"},
+        "substrates": [sub],
         "license": "CC-BY-4.0",
         "citation": "dmipy-sim replay phantom prototype",
     }
-    save_file({"voxel_index": vi, "pack_id": pid, "pack_fraction": pf, "odf_sh": sh},
-              str(path), metadata={"rph": json.dumps(meta)})
+    save_file(tensors, str(path), metadata={"rph": json.dumps(meta)})
     return meta
 
 
@@ -63,17 +75,19 @@ def replay_rph(path, responder, g_dir, b0_dir, l_g=8, l_b=6):
     from safetensors import safe_open
     with safe_open(str(path), framework="numpy") as f:
         meta = json.loads(f.metadata()["rph"])
-        vi, pid = f.get_tensor("voxel_index"), f.get_tensor("pack_id")
-        pf, sh = f.get_tensor("pack_fraction"), f.get_tensor("odf_sh")
-    lmax = int(meta["sh"]["lmax"])
+        vi, pid = f.get_tensor("voxel_index"), f.get_tensor("substrate_id")
+        pf, sh = f.get_tensor("geometric_fraction"), f.get_tensor("odf_sh")
+    lmax = int(meta["orientation"]["lmax"])
+    m0 = np.array([s["m0"] for s in meta["substrates"]], float)
     lam, resid, _ = responder.spectrum_at(g_dir, l_g=l_g, l_b=l_b)
     out = np.zeros(len(vi), np.complex128)
     for v in range(len(vi)):
         for p in range(pid.shape[1]):
             if pid[v, p] < 0 or pf[v, p] == 0:
                 continue
-            out[v] += pf[v, p] * apply_odf_coupled(lam, sh[v, p], g_dir, b0_dir,
-                                                   l_fod=lmax, l_g=l_g, l_b=l_b)
+            out[v] += (pf[v, p] * m0[pid[v, p]]
+                       * apply_odf_coupled(lam, sh[v, p], g_dir, b0_dir,
+                                           l_fod=lmax, l_g=l_g, l_b=l_b))
     return vi, out, meta, resid
 
 
@@ -87,10 +101,13 @@ if __name__ == "__main__":
     b0 = np.array([0, 0, 1.0])
 
     arrays = circular_wm()
-    out = os.path.join(os.path.dirname(os.path.abspath(__file__)), "circular_wm.rph")
-    meta = write_rph(out, PACK, "winther/g6/axon06", arrays)
-    print(f"wrote {out}  ({os.path.getsize(out)/1024:.0f} kB, {len(arrays[0])} voxels, "
-          f"1 pack of {os.path.getsize(PACK)/1e6:.0f} MB)")
+    here = os.path.dirname(os.path.abspath(__file__))
+    for embed in (False, True):
+        out = os.path.join(here, f"circular_wm{'_standalone' if embed else ''}.rph")
+        write_rph(out, PACK, "winther/g6/axon06", arrays, m0=0.70, embed=embed)
+        print(f"  {'embedded ' if embed else 'referenced'}: {os.path.getsize(out)/1e6:8.2f} MB"
+              f"   ({len(arrays[0])} voxels, pack is {os.path.getsize(PACK)/1e6:.0f} MB)")
+    out = os.path.join(here, "circular_wm_standalone.rph")
 
     backend = os.environ.get("RPH_BACKEND", "numpy")
     R = PackResponder(pk, prof, b0, amplitude=0.05, B0=3.0, chi_iso=-9.4e-6,
