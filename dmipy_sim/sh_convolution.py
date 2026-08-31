@@ -385,7 +385,7 @@ def separability(response, g_dir, b0_dir, l_g=8, l_b=6, n_theta=48, n_phi=96, n_
 
 
 def coupled_spectrum_at(response, g_dir, b0_dir, l_g=8, l_b=6, n_theta=48, n_phi=96,
-                        chiral=True):
+                        chiral=True, _grid=None):
     """Build ``Lambda`` for the *exact* geometry a scanner requests -- no table, no interpolation.
 
     ``Lambda`` is a scanner-side object: it depends on the gradient and field directions but
@@ -412,7 +412,7 @@ def coupled_spectrum_at(response, g_dir, b0_dir, l_g=8, l_b=6, n_theta=48, n_phi
     from .gaunt import sphere_quadrature
     g = np.asarray(g_dir, np.float64); g = g / np.linalg.norm(g)
     b = np.asarray(b0_dir, np.float64); b = b / np.linalg.norm(b)
-    dirs, w = sphere_quadrature(n_theta, n_phi)
+    dirs, w = _grid if _grid is not None else sphere_quadrature(n_theta, n_phi)
     E = np.asarray(response(dirs))
     u, v = dirs @ g, dirs @ b
     terms = [(l1, l2, 0) for l1 in range(l_g + 1) for l2 in range(l_b + 1)
@@ -625,3 +625,113 @@ def _se_gate_local(n_t, dt, refocus_time):
         side = np.where(s == np.sign(d))[0]
         s[side[np.argsort(-np.abs(t[side] - refocus_time))[:abs(d)]]] = 0.0
     return s
+
+
+class PackResponder:
+    """Pack + field direction + gradient profile, with everything direction-independent hoisted.
+
+    Building ``Lambda`` per measurement re-did work that does not depend on the gradient
+    direction: ``q_w`` follows the gradient *profile*, ``Psi_w`` the refocusing gate, and
+    ``Q(R^T B0)`` -- hence the whole susceptibility phase -- only ``B0`` and the quadrature.  At
+    fixed ``B0`` that phase is identical for every gradient direction in a shell.  This object
+    computes it once and reuses it, which is what makes a shell affordable.
+
+    ``backend='jax'`` runs the remaining kernel -- an elementwise map and a reduction over
+    (directions x walkers) -- on an accelerator.  Correctness is identical; only the timing
+    differs.
+    """
+
+    def __init__(self, pack, profile, b0_dir, *, amplitude=1.0, B0=3.0, chi_iso=0.0,
+                 chi_aniso=0.0, refocus_time=None, fibre_axis=(0., 0., 1.),
+                 relaxation=True, n_theta=32, n_phi=64, backend="numpy", chunk=512):
+        from scipy.fft import dct
+        from .gaunt import sphere_quadrature
+        from .compression import read_position_coeffs, decode_compartment, relaxation_logweight
+        from .constants import GAMMA
+
+        arrays, meta = pack.arrays, pack.meta
+        chans = (meta.get("compression", {}).get("channels", {}) or {})
+        pm = chans.get("susceptibility_path")
+        if pm is None:
+            raise ValueError("PackResponder needs the susc_path channel (C3 path route)")
+        dt = float(pack.dt)
+        n_t = int(pm["n_t"])
+        prof = np.asarray(profile, np.float64)
+        if prof.size != n_t:
+            raise ValueError(f"profile has {prof.size} samples, pack walk has n_t={n_t}")
+
+        C = read_position_coeffs(arrays, dtype=np.float64)
+        n_w, K = C.shape[0], C.shape[1]
+        self.q = (GAMMA * dt * amplitude) * np.einsum(
+            "k,wkd->wd", dct(prof, type=2, norm="ortho")[:K], C)          # profile, not direction
+
+        Cs = np.asarray(arrays["susc_path_dct"], np.float64)
+        names = list(pm["channels"])
+        if pm.get("iso_P_zz") == "implied":
+            i_loc, i_xx, i_yy = (names.index(s) for s in ("iso_local", "iso_P_xx", "iso_P_yy"))
+            zz = 3.0 * Cs[:, i_loc] - Cs[:, i_xx] - Cs[:, i_yy]
+            at = names.index("iso_P_xy")
+            Cs = np.insert(Cs, at, zz, axis=1)
+            names = names[:at] + ["iso_P_zz"] + names[at:]
+        gate = dct(_se_gate_local(n_t, dt, refocus_time), type=2, norm="ortho")[:Cs.shape[2]]
+        Psi = (GAMMA * dt) * np.einsum("k,wck->wc", gate, Cs)             # gate, not direction
+
+        self.dirs, self.w = sphere_quadrature(n_theta, n_phi)
+        self.b0 = np.asarray(b0_dir, np.float64) / np.linalg.norm(b0_dir)
+        self.R = _rotations_from_axis(fibre_axis, self.dirs)
+        bp = np.einsum("nji,j->ni", self.R, self.b0)
+        Q = np.stack([bp[:, 0] ** 2, bp[:, 1] ** 2, bp[:, 2] ** 2,
+                      2 * bp[:, 0] * bp[:, 1], 2 * bp[:, 0] * bp[:, 2],
+                      2 * bp[:, 1] * bp[:, 2]], axis=1)
+        i_p = names.index("iso_P_xx")
+        phi_chi = np.zeros((self.dirs.shape[0], n_w))
+        if chi_iso:
+            phi_chi += chi_iso * B0 * (Psi[:, names.index("iso_local")][None, :]
+                                       - Q @ Psi[:, i_p:i_p + 6].T)
+        if chi_aniso and "aniso_G_xx" in names:
+            ia = names.index("aniso_G_xx")
+            phi_chi += chi_aniso * B0 * (Q @ Psi[:, ia:ia + 6].T)
+        # the shared factor: exp(i phi_chi) is the same for every gradient direction at fixed B0
+        self.Echi = np.exp(1j * phi_chi.astype(np.float32))
+
+        w0 = np.asarray(arrays.get("spin_weights", np.ones(n_w)), np.float64)
+        ew = w0.copy()
+        if relaxation and "comp_rle_vals" in arrays and meta.get("per_comp", {}).get("T2"):
+            comp = decode_compartment(arrays, chans.get("compartment", {}))
+            pc = meta["per_comp"]
+            ew = ew * np.exp(relaxation_logweight(comp, pc["T2"], pc.get("T1"), dt))
+        self.norm = float(w0.sum())
+        self.backend, self.chunk = backend, int(chunk)
+        if backend == "jax":
+            import jax, jax.numpy as jnp
+            self._jq = jnp.asarray(self.q, jnp.float32)
+            self._jE = jnp.asarray(self.Echi * ew[None, :].astype(np.float32))
+
+            @jax.jit
+            def _kern(gp, q, Ew):
+                return (Ew * jnp.exp(1j * (gp @ q.T))).sum(1)
+            self._kern = _kern
+            self._jnp = jnp
+        else:
+            self.ew = ew
+
+    def evaluate(self, g_dir):
+        """Replayed signal on the responder's quadrature grid for one gradient direction."""
+        g = np.asarray(g_dir, np.float64); g = g / np.linalg.norm(g)
+        gp = np.einsum("nji,j->ni", self.R, g)
+        if self.backend == "jax":
+            jnp = self._jnp
+            out = self._kern(jnp.asarray(gp, jnp.float32), self._jq, self._jE)
+            return np.asarray(out) / self.norm
+        out = np.empty(self.dirs.shape[0], np.complex128)
+        for s in range(0, self.dirs.shape[0], self.chunk):
+            pg = (gp[s:s + self.chunk] @ self.q.T).astype(np.float32)
+            out[s:s + self.chunk] = ((self.ew[None, :] * self.Echi[s:s + self.chunk])
+                                     * np.exp(1j * pg)).sum(1)
+        return out / self.norm
+
+    def spectrum_at(self, g_dir, l_g=8, l_b=6, chiral=True):
+        """``Lambda`` for one gradient direction, projected on this responder's own grid."""
+        return coupled_spectrum_at(lambda d: self.evaluate(g_dir), g_dir, self.b0,
+                                   l_g=l_g, l_b=l_b, n_theta=None, n_phi=None,
+                                   chiral=chiral, _grid=(self.dirs, self.w))

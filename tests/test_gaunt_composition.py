@@ -334,3 +334,22 @@ def test_chiral_sector_is_inert_for_a_field_symmetric_fod():
                                         chiral=chiral)
         vals.append(np.real(apply_odf_coupled(lam, f, g, b, l_fod=LMAX, l_g=8, l_b=6)))
     npt.assert_allclose(vals[1], vals[0], rtol=1e-6)
+
+
+@pytest.mark.skipif(not __import__("os").path.exists(_WINTHER),
+                    reason="needs the Winther susceptibility pack")
+def test_pack_responder_hoisting_matches_the_unhoisted_path():
+    """Hoisting the direction-independent work must not change the answer."""
+    from dmipy_sim.replay import read_rpk
+    from dmipy_sim.sh_convolution import PackResponder, pack_response
+    pk = read_rpk(_WINTHER)
+    pm = pk.meta["compression"]["channels"]["susceptibility_path"]
+    n_t, dt = int(pm["n_t"]), pk.dt
+    t = np.arange(n_t) * dt; T = n_t * dt
+    prof = ((t < 0.2 * T).astype(float) - ((t >= 0.5 * T) & (t < 0.7 * T)).astype(float))
+    b = np.array([0, 0, 1.0]); g = np.array([np.sin(0.96), 0, np.cos(0.96)])
+    kw = dict(amplitude=0.05, B0=3.0, chi_iso=-9.4e-6, chi_aniso=-1.0e-7,
+              refocus_time=0.5 * T)
+    R = PackResponder(pk, prof, b, **kw, n_theta=32, n_phi=64)
+    ref = pack_response(pk, prof, g, b, **kw, chunk=256)(R.dirs)
+    npt.assert_allclose(R.evaluate(g), ref, rtol=2e-6, atol=1e-9)
