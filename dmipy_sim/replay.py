@@ -93,7 +93,15 @@ class ReplayPack:
 
     @property
     def blt_dct(self):
-        return self.arrays.get("blt_dct")                      # (n_walkers, Kb) or None
+        raise AttributeError(
+            "blt_dct is retired: C2 is stored in the bridge form as 'blt_bridge_dst' plus the "
+            "exact endpoints 'blt_start'/'blt_endpoint'. Use pack.arrays for the tensors, or "
+            "compression.decode_boundary_bridge for the per-save series.")
+
+    @property
+    def boundary_local_time(self):
+        """The C2 channel's exact cumulative total per walker, or None if the pack has no C2."""
+        return self.arrays.get("blt_endpoint")
 
     @property
     def K(self):
@@ -175,18 +183,32 @@ def compile_scheme(G, dt, K, gyromagnetic_ratio=GAMMA, *, n_t=None, method=None)
         return (gyromagnetic_ratio * dt * W).reshape(n_meas, (K + 2) * 3).T
 
 
-def surface_logweight(blt_dct, rho_over_D, n_t, chi_hat=None):
-    """Per-walker surface log-weight ``(rho/D) * sum_t chi(t) ell_i(t)`` from the boundary-local-time DCT
-    coefficients ``blt_dct`` (n_walkers, Kb). Un-gated (``chi_hat=None``): exact total contact
-    ``sqrt(n_t) * beta0`` (the DC coefficient). Coherence-gated: contract with ``chi_hat`` = DCT of the
-    occupancy schedule (Parseval)."""
-    blt = np.asarray(blt_dct, np.float64)
+def surface_logweight(arrays, rho_over_D, chan_meta=None, chi_hat=None):
+    """Per-walker surface log-weight ``(rho/D) * sum_t chi(t) ell_i(t)`` from the C2 channel.
+
+    C2 is stored in the bridge form (``blt_bridge_dst`` + the two exact endpoints), so the
+    UNGATED total contact is ``blt_endpoint`` read directly -- it is the exact cumulative
+    ``L(T)``, not something reconstructed from bands, which is the whole reason the endpoint is
+    held exactly. A coherence gate needs the per-save series, so that branch decodes.
+
+    Takes the pack's ``arrays`` rather than one tensor: the channel is three tensors now, and a
+    signature that accepted just the coefficient block invited passing the wrong one.
+    """
+    from .compression import decode_boundary_bridge
+    if "blt_bridge_dst" not in arrays:
+        raise ValueError(
+            "surface relaxivity was requested but this pack carries no C2 channel "
+            "(no 'blt_bridge_dst'). A pack written before the C2 bridge form stored "
+            "'blt_dct_coeffs', which is retired -- re-encode it. Returning the signal without "
+            "the requested attenuation would be a plausible wrong number.")
     if chi_hat is None:
-        s = np.sqrt(n_t) * blt[:, 0]
-    else:
-        chi_hat = np.asarray(chi_hat, np.float64)[: blt.shape[1]]
-        s = blt[:, : chi_hat.shape[0]] @ chi_hat
-    return rho_over_D * s
+        return float(rho_over_D) * np.asarray(arrays["blt_endpoint"], np.float64)
+    meta = dict(chan_meta or {})
+    meta.setdefault("n_t", int(np.asarray(chi_hat).shape[0]))
+    meta.setdefault("K", int(np.asarray(arrays["blt_bridge_dst"]).shape[1]))
+    ell = np.asarray(decode_boundary_bridge(arrays, meta), np.float64)
+    chi = np.asarray(chi_hat, np.float64)[: ell.shape[1]]
+    return float(rho_over_D) * (ell[:, : chi.shape[0]] @ chi)
 
 
 def replay_signal(pack, W, *, rho_over_D=0.0, chi_hat=None, complex_signal=False):
@@ -212,10 +234,13 @@ def replay_signal(pack, W, *, rho_over_D=0.0, chi_hat=None, complex_signal=False
     w0 = np.asarray(a.get("spin_weights", np.ones(N_w)), np.float64)
     phi = C.reshape(N_w, K * 3) @ W                            # (N_w, n_meas)
     w_eff = w0
-    blt = a.get("blt_dct")
-    if blt is not None and rho_over_D:
-        n_t = pack.n_t if isinstance(pack, ReplayPack) else None
-        w_eff = w0 * np.exp(surface_logweight(blt, rho_over_D, n_t, chi_hat))
+    if rho_over_D:
+        # asked for, so it must happen: a missing C2 channel raises inside surface_logweight
+        # rather than being skipped. The previous form looked up a key the bridge rename
+        # retired, so `rho_over_D` was silently ignored and callers got an unattenuated signal.
+        cm = ((pack.meta.get("compression", {}).get("channels", {}) or {}).get("boundary_local_time")
+              if isinstance(pack, ReplayPack) else None)
+        w_eff = w0 * np.exp(surface_logweight(a, rho_over_D, cm, chi_hat))
     S = (w_eff[:, None] * np.exp(1j * phi)).sum(0) / w0.sum()
     return S if complex_signal else np.abs(S)
 
