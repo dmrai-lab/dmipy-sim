@@ -191,3 +191,30 @@ def test_c1_carries_the_mt_bound_pool_as_a_column_on_an_independent_axis():
     # and C1 refuses to exist without its exclusive geometric axis
     with pytest.raises(ValueError, match="needs the 'comp' column"):
         cx.encode_occupancy({"bound": bound})
+
+
+def test_c1_rejects_a_pre_columns_pack_loudly():
+    """A pre-columns pack keeps `comp_rle_*` under its original name and with unchanged bytes, so
+    nothing stops it being READ -- only its metadata says what the track means. That is exactly the
+    case a bare KeyError would turn into a puzzle, so the refusal has to name the layout change."""
+    rng = np.random.default_rng(31)
+    comp = (np.cumsum(rng.random((12, 80)) < 0.05, axis=1) % 3).astype(np.int16)
+    arrays, meta = cx.encode_occupancy({"comp": comp})
+
+    # the metadata a pack written before the fold carries: one track, flags at the top level
+    for stale in ({"channel": "compartment", "fractional": False, "n_t": 80},
+                  {"channel": "compartment", "fractional": True, "Q": 256, "scale": 1.0,
+                   "n_t": 80}):
+        assert not cx.is_current_c1(stale)
+        with pytest.raises(ValueError, match="predates the occupancy-column layout"):
+            cx.decode_occupancy(arrays, stale)          # arrays are fine; the DECLARATION is stale
+
+    assert cx.is_current_c1(meta)
+    npt.assert_array_equal(cx.decode_occupancy(arrays, meta)["comp"], comp)
+
+    # a bound column cannot sneak in under the stale shape either -- it has nowhere to be declared
+    b = (rng.random((12, 80)) < 0.3).astype(np.float64)
+    a2, m2 = cx.encode_occupancy({"comp": comp, "bound": b})
+    assert "bound_rle_vals" in a2 and "bfrac_rle_vals" not in a2
+    with pytest.raises(ValueError, match="predates the occupancy-column layout"):
+        cx.decode_occupancy(a2, {"channel": "compartment", "fractional": False, "n_t": 80})
