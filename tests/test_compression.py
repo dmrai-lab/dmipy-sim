@@ -12,23 +12,23 @@ from dmipy_sim.constants import GAMMA
 
 
 # --------------------------------------------------------------- position codec
-def test_temporal_dct_full_K_is_exact_roundtrip():
+def test_position_codec_full_rank_is_exact_roundtrip():
     rng = np.random.default_rng(0)
     X = np.cumsum(rng.standard_normal((50, 200, 3)) * 1e-7, axis=1)   # smooth-ish paths
-    arrays, meta, _ = cx.encode_temporal_dct(X, K=200)
+    arrays, meta, _ = cx.encode_bridge_dst(X, K=198)   # rank = n_t - 2
     Xr = cx.decode(arrays, meta)
     assert np.allclose(Xr, X, atol=1e-6)
 
 
 def test_mode_space_phi_equals_raw_at_full_K():
-    """phi in the DCT basis == raw gamma*dt*sum_t G.r exactly (Parseval, orthonormal DCT)."""
+    """phi in the stored basis == raw gamma*dt*sum_t G.r at full rank."""
     rng = np.random.default_rng(1)
     N, n_t, M = 40, 128, 6
     X = np.cumsum(rng.standard_normal((N, n_t, 3)) * 1e-7, axis=1)
     G = rng.standard_normal((M, n_t, 3)) * 0.1
     dt = 1e-4
     phi_raw = (GAMMA * dt) * np.einsum("mtd,ntd->nm", G, X)
-    arrays, meta, _ = cx.encode_temporal_dct(X, K=n_t)
+    arrays, meta, _ = cx.encode_bridge_dst(X, K=n_t - 2)
     phi_mode = cx.mode_space_phi(arrays, meta, G, dt)
     assert np.allclose(phi_mode, phi_raw, rtol=1e-6, atol=1e-6)
 
@@ -40,7 +40,7 @@ def test_mode_space_signal_matches_raw_reduction():
     G = rng.standard_normal((M, n_t, 3)) * 0.1
     dt = 1e-4
     S_raw = cx._replay_complex_np(X, dt, G)
-    arrays, meta, _ = cx.encode_temporal_dct(X, K=n_t)
+    arrays, meta, _ = cx.encode_bridge_dst(X, K=n_t - 2)
     S_mode = cx.mode_space_signal(arrays, meta, G, dt)
     assert np.allclose(S_mode, S_raw, atol=1e-9)
 

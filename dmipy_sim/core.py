@@ -1374,7 +1374,7 @@ def simulate_trajectories(
     # a matmul against the SAME orthonormal DCT-II basis compression.py uses (built from
     # scipy so the stored modes decode/mode-space-replay bit-consistently).
     _compress = compress is not None
-    _cx = {"K": int(compress) if _compress else 0, "Phi": None, "ramp": None, "n_t": None}
+    _cx = {"K": int(compress) if _compress else 0, "Phi": None, "Psi": None, "ramp": None, "n_t": None}
     all_blt_endpoints = [] if (_compress and save_relaxation_data) else None
     if _compress and is_packed_myelin_geom:
         raise NotImplementedError(
@@ -1387,10 +1387,28 @@ def simulate_trajectories(
         Phi = _sdct(np.eye(n_t, dtype=np.float64), type=2, norm="ortho", axis=0)[:_cx["K"]]
         return jnp.asarray(Phi, jnp.float32)
 
-    def _compress_pos(pos_dev):                      # (b, n_t, 3) device -> (b, K, 3) host
-        if _cx["Phi"] is None:
-            _cx["n_t"] = int(pos_dev.shape[1]); _cx["Phi"] = _dct_basis(_cx["n_t"])
-        return np.asarray(jnp.einsum("kt,btd->bkd", _cx["Phi"], pos_dev)).astype(np.float32)
+    def _sine_basis(n_t):
+        from scipy.fft import dst as _sdst
+        # dst(I, axis=0)[k, n] over the INTERIOR: Psi @ u_int == dst-I(u_int)
+        Psi = _sdst(np.eye(n_t - 2, dtype=np.float64), type=1, norm="ortho",
+                    axis=0)[:_cx["K"]]
+        return jnp.asarray(Psi, jnp.float32)
+
+    def _compress_pos(pos_dev):                  # (b, n_t, 3) device -> (b, K+2, 3) host
+        """Positions in the same representation build_replay_pack writes: two exact endpoints
+        then sine bands of the pinned residual.  Producing DCT bands here instead would put a
+        second, differently-meaning C0 layout into masters that the reader cannot distinguish
+        by shape."""
+        n_t = int(pos_dev.shape[1])
+        if _cx["Psi"] is None:
+            _cx["n_t"] = n_t; _cx["Psi"] = _sine_basis(n_t)
+        a = pos_dev[:, 0, :]
+        v = pos_dev[:, -1, :] - a
+        tau = jnp.linspace(jnp.float32(0.0), jnp.float32(1.0), n_t)
+        u = pos_dev - (a[:, None, :] + v[:, None, :] * tau[None, :, None])
+        B = jnp.einsum("kt,btd->bkd", _cx["Psi"], u[:, 1:-1, :])
+        return np.asarray(jnp.concatenate([a[:, None, :], v[:, None, :], B],
+                                          axis=1)).astype(np.float32)
 
     def _compress_blt(dlog_dev):                     # (b, n_t) -> endpoint (b,), modes (b, K)
         n_t = int(dlog_dev.shape[1])
@@ -1503,9 +1521,9 @@ def simulate_trajectories(
     if _compress:
         # Compressed master: IR modes instead of the raw trajectory. Decode with
         # compression.decode / replay via compression.mode_space_signal (piece 2 wires
-        # this into replay() directly). `pos_modes` are the temporal-DCT bands.
+        # this into replay() directly). `pos_modes` are [r(0), r(T)-r(0), sine bands].
         master = {
-            "compressed": True, "method": "temporal_dct", "K": _cx["K"],
+            "compressed": True, "method": "bridge_dst", "K": _cx["K"],
             "n_t": int(_cx["n_t"]), "dt_traj": dt_actual,
             "sub_steps": sub_steps, "dt_sim": dt_sim,
             "pos_modes": np.concatenate(all_batches, axis=0),        # (N, K, 3) f32

@@ -18,6 +18,13 @@ def walk():
     return x + rng.uniform(-2e-5, 2e-5, (N_W, 1, 3))
 
 
+def _dct_truncate(x, K):
+    """Reference band truncation, computed here so no retired codec has to stay in the library."""
+    c = dct(x, type=2, norm="ortho", axis=1).copy()
+    c[:, K:] = 0
+    return idct(c, type=2, norm="ortho", axis=1)
+
+
 def _deliverable(n_meas=N_M, n_t=N_T, seed=1):
     """Slew-limited waveforms that vanish at both ends, as a real gradient system must."""
     rng = np.random.default_rng(seed)
@@ -51,9 +58,8 @@ def test_endpoints_are_exact_at_every_truncation(walk):
         r = cx.decode(a, m)
         npt.assert_allclose(r[:, 0, :], walk[:, 0, :], atol=1e-11)
         npt.assert_allclose(r[:, -1, :], walk[:, -1, :], atol=1e-11)
-        # the DCT codec's endpoint error is the same size as its interior error
-        ad, md, _ = cx.encode_temporal_dct(walk, K)
-        rd = cx.decode(ad, md)
+        # a band codec's endpoint error is the size of its interior error, not smaller
+        rd = _dct_truncate(walk, K)
         assert np.abs(rd[:, -1, :] - walk[:, -1, :]).max() > 1e-9
 
 
@@ -115,13 +121,64 @@ def test_sine_basis_is_the_bridge_karhunen_loeve_basis():
                         rtol=1e-10)
 
 
-def test_accuracy_matches_temporal_dct_on_deliverable_waveforms(walk):
-    """Equal-budget comparison: the duality says neither should win."""
+def test_accuracy_matches_a_band_truncation_at_equal_budget(walk):
+    """The duality says neither basis should win; this pins that it does not lose either."""
     G, dt = _deliverable(), 1e-4
-    ref = np.exp(1j * (GAMMA * dt) * np.einsum("mtd,ntd->nm", G, walk)).mean(0)
+    phi = lambda r: (GAMMA * dt) * np.einsum("mtd,ntd->nm", G, r)
+    ref = np.exp(1j * phi(walk)).mean(0)
     for K in (8, 16, 32):
         ab, mb, _ = cx.encode_bridge_dst(walk, K - 2)          # same coefficient budget
-        ad, md, _ = cx.encode_temporal_dct(walk, K)
         eb = np.abs(np.exp(1j * cx.mode_space_phi(ab, mb, G, dt)).mean(0) - ref).max()
-        ed = np.abs(np.exp(1j * cx.mode_space_phi(ad, md, G, dt)).mean(0) - ref).max()
-        assert eb < 5 * max(ed, 1e-12), f"K={K}: bridge {eb:.2e} vs dct {ed:.2e}"
+        ed = np.abs(np.exp(1j * phi(_dct_truncate(walk, K))).mean(0) - ref).max()
+        assert eb < 5 * max(ed, 1e-12), f"K={K}: bridge {eb:.2e} vs bands {ed:.2e}"
+
+
+# --- the ways this could go quietly wrong --------------------------------------------------
+
+def test_retired_codecs_are_refused_not_decoded(walk):
+    """A retired pack stores different quantities under the same tensor names."""
+    a, m, _ = cx.encode_bridge_dst(walk, 16)
+    for bad in ("temporal_dct", "lowrank", "gaussian", "marginal"):
+        with pytest.raises(ValueError, match="no longer read"):
+            cx.decode(a, dict(m, method=bad))
+        with pytest.raises(ValueError, match="no longer read"):
+            cx.mode_space_phi(a, dict(m, method=bad), _deliverable(), 1e-4)
+
+
+def test_missing_method_is_refused_rather_than_assumed(walk):
+    a, m, _ = cx.encode_bridge_dst(walk, 16)
+    with pytest.raises(ValueError, match="declares no position codec"):
+        cx.mode_space_phi(a, {k: v for k, v in m.items() if k != "method"},
+                          _deliverable(), 1e-4)
+
+
+def test_stored_width_is_not_K(walk):
+    """K+2 multiplied cleanly against a K+2-band scheme and meant nothing; it must not."""
+    from dmipy_sim.replay import ReplayPack, replay_signal
+    K = 16
+    a, m, _ = cx.encode_bridge_dst(walk, K)
+    pk = ReplayPack(a, {"compression": {"method": "bridge_dst", "K": K},
+                        "n_t": N_T, "dt": 1e-4})
+    assert pk.K == K and pk.n_coeffs == K + 2
+    G = _deliverable()
+    good = compile_scheme(G, 1e-4, pk.K, n_t=N_T)
+    replay_signal(pk, good)                                   # the correct call
+    wrong = compile_scheme(G, 1e-4, pk.n_coeffs, n_t=N_T)     # passing the stored width
+    with pytest.raises(ValueError, match="compiled scheme has"):
+        replay_signal(pk, wrong)
+
+
+def test_declared_and_stored_K_cannot_drift(walk):
+    from dmipy_sim.replay import ReplayPack
+    a, m, _ = cx.encode_bridge_dst(walk, 16)
+    pk = ReplayPack(a, {"compression": {"method": "bridge_dst", "K": 8}, "n_t": N_T})
+    with pytest.raises(ValueError, match="declares K=8 but stores"):
+        pk.K
+
+
+def test_dct_coeffs_accessor_is_gone(walk):
+    from dmipy_sim.replay import ReplayPack
+    a, m, _ = cx.encode_bridge_dst(walk, 16)
+    pk = ReplayPack(a, {"compression": {"method": "bridge_dst", "K": 16}, "n_t": N_T})
+    with pytest.raises(AttributeError, match="dct_coeffs is gone"):
+        pk.dct_coeffs

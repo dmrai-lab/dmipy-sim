@@ -3,7 +3,7 @@
 :func:`build_replay_pack` turns a **master walk** (from
 :func:`dmipy_sim.core.simulate_trajectories`, ``save_relaxation_data=True``) into a compressed,
 self-describing replay pack: the position ensemble is compressed by a :mod:`dmipy_sim.compression`
-codec (default ``temporal_dct``), the tier channels the certified envelope needs are carried
+codec (``bridge_dst``), the tier channels the certified envelope needs are carried
 (bulk relaxation via the compartment map, surface relaxivity via the boundary-local-time channel,
 magnetization transfer via the bound-fraction channel), and the pack MEASURES its own replay
 fidelity against the split-half Monte-Carlo floor before it is written. The result is a single
@@ -429,7 +429,7 @@ def susc_path_field(b, b0_dir, *, B0, chi_iso, chi_aniso=0.0, has_aniso=False):
 def _pack_positions(pack):
     """Reconstruct the (n_w, n_t, 3) trajectory from a pack's position codec."""
     cx = pack.meta.get("compression", {})
-    meta = {"method": cx.get("method", "temporal_dct"), "K": int(cx.get("K", 0)),
+    meta = {"method": _cx.require_position_method(cx.get("method")), "K": int(cx.get("K", 0)),
             "n_t": int(cx.get("n_t") or pack.n_t)}
     wp = _cx.is_walker_preserving(meta["method"])
     return _cx.decode(pack.arrays, meta, n_walkers=(pack.n_walkers if wp else None))
@@ -589,7 +589,7 @@ def _select_boundary_codec(m, dlog, env, tol, dtype, verbose=False):
     return a, mm
 
 
-def build_replay_pack(src, *, id, method="bridge_dst", envelope=None, tol=2.0, K=None,
+def build_replay_pack(src, *, id, method=_cx.POSITION_METHOD, envelope=None, tol=2.0, K=None,
                       err_target=None, sigma_star=None,
                       license, citation, provenance=None, surface_relaxivity=False,
                       blt_temporal_K=None, blt_dtype=np.float16, susc_path_K=None, mt=False,
@@ -603,7 +603,7 @@ def build_replay_pack(src, *, id, method="bridge_dst", envelope=None, tol=2.0, K
     :func:`compression.encode_bridge_dst`); ``K`` (mode count) is chosen automatically
     to keep the *measured* replay error within ``tol``x the Monte-Carlo floor over ``envelope``
     (default :func:`compression.default_envelope`) unless given. Walker-preserving methods
-    (``bridge_dst``, ``temporal_dct``, ``lowrank``) carry the full per-walker channel space; distributional methods
+    (``bridge_dst``) carry the full per-walker channel space; distributional methods
     (``gaussian``/``marginal``) are gradient-only.
 
     Tiers assembled: **gradient** (always), **bulk relaxation** (from the compartment map +
@@ -613,6 +613,7 @@ def build_replay_pack(src, *, id, method="bridge_dst", envelope=None, tol=2.0, K
     susceptibility-basis channel + Q(H) contraction) — a master carrying ``susc_basis``/``PhiC`` is
     rejected. Returns a :class:`dmipy_sim.replay.ReplayPack`; writes it to ``out_path`` if given.
     """
+    _cx.require_position_method(method)
     m = _master_arrays(src)
     if m.get("PhiC") is not None or m.get("susc_basis") is not None:
         raise NotImplementedError(
@@ -652,7 +653,7 @@ def build_replay_pack(src, *, id, method="bridge_dst", envelope=None, tol=2.0, K
         # accuracy silently depends on a property the pack no longer has. Path wins when present;
         # the grid is then published as a separate per-substrate companion artefact, not per walker.
         # A full-rank walker-preserving codec is an exact rewrite; the rank is n_t for
-        # temporal_dct and n_t-2 for bridge_dst, which stores two endpoints outside the bands.
+        # n_t-2 for bridge_dst, which stores two endpoints outside the bands.
         _pos_lossless = _cx.is_lossless_at(method, int(K), int(X.shape[1]))
         _grid_in_pack = (not susc_path_K) or _pos_lossless
         if _grid_in_pack:
