@@ -1104,18 +1104,15 @@ def simulate_trajectories(
         if _inner_radii is not None and len(_inner_radii) > 0:
             R_geom = (float(np.min(_inner_radii[_inner_radii > 0]))
                       if np.any(_inner_radii > 0) else None)
-    if R_geom is None:
+    if R_geom is None and not getattr(geometry, 'cell_size', None):
         # Free diffusion or unknown: no sub-stepping needed
         sub_steps = 1
     else:
-        # Impermeable reflection is exact at any step, so step_l = R/6 suffices
-        # (divisor 216 = 6·6²).  Membrane crossing is step-size sensitive
-        # (over-permeates at coarse steps), so use a finer step_l ≈ R/25 when
-        # permeability is active (divisor 3750 = 6·25²).
-        _has_perm = getattr(geometry, 'permeability', None) is not None
-        _divisor = 3750.0 if _has_perm else 216.0
-        dt_phys_max = float(R_geom) ** 2 / (_divisor * diffusivity)
-        sub_steps = max(1, int(np.ceil(dt_actual / dt_phys_max)))
+        # See physics.walk_sub_steps: step_l = R/6 for an analytic pore (R/25 when permeable, since
+        # crossing is step-size sensitive), but the COLLISION criterion for a mesh -- R/6 there is keyed to
+        # feature_radius, a meshing parameter, and asked for 13x more sub-steps than the observables need.
+        from .physics import walk_sub_steps as _walk_sub_steps
+        sub_steps = _walk_sub_steps(geometry, diffusivity, dt_actual)
 
     dt_sim = dt_actual / sub_steps
     step_l_sim = jnp.float32(jnp.sqrt(6.0 * diffusivity * dt_sim))
