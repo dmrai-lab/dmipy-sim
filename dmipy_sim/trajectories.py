@@ -344,8 +344,9 @@ def _replay_compressed(master, G, dt_wf, *, chi_perp, T2, T1, surface_relaxivity
             # chi-gated surface needs per-save ℓ(t): reconstruct the (N, n_t) boundary
             # channel (ONE channel — 1/3 the positions; a mode-space contraction that
             # avoids this is a follow-up). Positions are still never reconstructed.
-            blt = _cx.decode_boundary_dct(
-                {"blt_dct_coeffs": master["blt_modes"], "blt_endpoint": master["blt_endpoint"]},
+            blt = _cx.decode_boundary_bridge(
+                {"blt_bridge_dst": master["blt_modes"], "blt_start": master["blt_start"],
+                 "blt_endpoint": master["blt_endpoint"]},
                 {"n_t": n_t, "K": K}).astype(np.float64)
             log_w_pw = log_w_pw + (surface_relaxivity / D) * (chi_r @ blt.T)
 

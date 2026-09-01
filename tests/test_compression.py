@@ -5,6 +5,7 @@ substrate and checks the boundary-DCT codec reproduces the surface-relaxivity T2
 property that lets the replay path store compressed modes instead of raw trajectories.
 """
 import numpy as np
+import numpy.testing as npt
 import pytest
 
 from dmipy_sim import compression as cx
@@ -46,15 +47,15 @@ def test_mode_space_signal_matches_raw_reduction():
 
 
 # --------------------------------------------------------------- boundary codec
-def test_boundary_dct_full_K_recovers_per_save_ell():
+def test_boundary_bridge_full_K_recovers_per_save_ell():
     rng = np.random.default_rng(3)
     ell = -np.abs(rng.standard_normal((30, 150))) * 1e-6     # <=0 per-save local time
-    arrays, meta = cx.encode_boundary_dct(ell, K=150)
-    ell_r = cx.decode_boundary_dct(arrays, meta)
+    arrays, meta = cx.encode_boundary_bridge(ell, K=150)
+    ell_r = cx.decode_boundary_bridge(arrays, meta)
     assert np.allclose(ell_r, ell, atol=1e-9)
 
 
-def test_boundary_dct_preserves_cumulative_at_low_K():
+def test_boundary_bridge_preserves_cumulative_at_low_K():
     """The cumulative B(t)=cumsum(ell) is smooth (an integral of a wall-contact density) ->
     few modes reproduce it -- that is what the surface log-weight sum_t ell depends on."""
     rng = np.random.default_rng(4)
@@ -66,8 +67,8 @@ def test_boundary_dct_preserves_cumulative_at_low_K():
     dens = amp * (1.0 + 0.4 * np.sin(2 * np.pi * t + ph)) * 1e-9
     ell = -dens
     B = np.cumsum(ell, axis=1)
-    arrays, meta = cx.encode_boundary_dct(ell, K=16)
-    B_r = np.cumsum(cx.decode_boundary_dct(arrays, meta), axis=1)
+    arrays, meta = cx.encode_boundary_bridge(ell, K=16)
+    B_r = np.cumsum(cx.decode_boundary_bridge(arrays, meta), axis=1)
     # endpoint is stored exactly; the residual modes must reproduce B(t) at EVERY t (every TE
     # truncation of the surface weight), not just the ends
     rel = np.abs(B_r - B).max() / np.abs(B[:, -1]).max()
@@ -108,8 +109,8 @@ def test_boundary_dct_replays_surface_signal_below_mc_floor():
         return np.exp((rho / D) * np.cumsum(dl, axis=1)).mean(0)
 
     E_raw = survival(dlog)
-    arrays, meta = cx.encode_boundary_dct(dlog, K=8)
-    E_codec = survival(cx.decode_boundary_dct(arrays, meta))
+    arrays, meta = cx.encode_boundary_bridge(dlog, K=8)
+    E_codec = survival(cx.decode_boundary_bridge(arrays, meta))
     mc_floor = 1.0 / np.sqrt(N)
     assert np.abs(E_codec - E_raw).max() < mc_floor, np.abs(E_codec - E_raw).max()
 
@@ -119,5 +120,45 @@ def test_boundary_dct_replays_surface_signal_below_mc_floor():
     assert abs(T2_raw - R / (2 * rho)) / (R / (2 * rho)) < 0.05
 
     # storage: K+1 floats/walker vs raw dlog
-    comp = arrays["blt_dct_coeffs"].nbytes + arrays["blt_endpoint"].nbytes
+    comp = (arrays["blt_bridge_dst"].nbytes + arrays["blt_start"].nbytes
+            + arrays["blt_endpoint"].nbytes)
     assert comp < 0.2 * dlog.astype(np.float16).nbytes
+
+
+def test_boundary_bridge_endpoints_are_exact_at_every_K_so_segments_chain():
+    """C2's basis is chosen for exactness, not error: a truncated DCT-II residual does not vanish
+    at t=T, so the reconstruction misses the stored total by percent at every K, and chaining
+    segment endpoints inherits that drift. The sine form is identically zero at both ends."""
+    from scipy.fft import dct, idct
+    rng = np.random.default_rng(11)
+    ell = np.abs(rng.standard_normal((200, 258))) * 1e-6
+    B = np.cumsum(ell, axis=1)
+    nt = B.shape[1]
+
+    ep, ramp = B[:, -1], np.linspace(0.0, 1.0, nt)[None, :]
+    for K in (4, 8, 16, 64):
+        # f64 storage so the comparison is about the BASIS, not the container's rounding
+        arrays, meta = cx.encode_boundary_bridge(ell, K=K, dtype=np.float64)
+        Br = np.cumsum(cx.decode_boundary_bridge(arrays, meta), axis=1)
+        # exact up to the f32 endpoint container (both endpoints are always stored f32)
+        e_bridge = np.abs(Br[:, -1] - ep).max() / ep.mean()
+        npt.assert_allclose(Br[:, 0], B[:, 0], rtol=1e-5, atol=1e-18)
+
+        # the retired cosine form on the same residual, same K, same endpoint float
+        C = dct(B - ep[:, None] * ramp, type=2, norm="ortho", axis=1)[:, :K]
+        B_dct = idct(C, type=2, norm="ortho", axis=1, n=nt) + ep[:, None] * ramp
+        e_dct = np.abs(B_dct[:, -1] - ep).max() / ep.mean()
+
+        assert e_bridge < 1e-5                       # zero basis error; only f32 rounding left
+        assert e_dct > 100 * e_bridge                # the cosine form is nowhere near
+
+
+def test_boundary_bridge_rejects_a_stale_cosine_pack_loudly():
+    """The array name changed with the basis, so a stale pack cannot be silently decoded as if its
+    cosine bands were sine bands (which would return a plausible but wrong attenuation)."""
+    rng = np.random.default_rng(12)
+    arrays, meta = cx.encode_boundary_bridge(np.abs(rng.standard_normal((10, 64))) * 1e-6, K=8)
+    stale = {"blt_dct_coeffs": arrays["blt_bridge_dst"], "blt_endpoint": arrays["blt_endpoint"]}
+    with pytest.raises(KeyError):
+        cx.decode_boundary_bridge(stale, meta)
+    assert cx._RETIRED_BOUNDARY["dct"]

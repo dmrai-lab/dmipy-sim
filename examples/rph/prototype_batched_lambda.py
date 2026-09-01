@@ -36,7 +36,7 @@ b = np.array([0,0,1.0]); dirs, w = sphere_quadrature(32,64)
 # --- shared, direction-independent (currently rebuilt per measurement) -------------
 C = read_position_coeffs(pk.arrays, dtype=np.float64); K = C.shape[1]
 q = (GAMMA*dt*0.05)*np.einsum('k,wkd->wd', dct(prof,type=2,norm='ortho')[:K], C)
-Cs = np.asarray(pk.arrays['susc_path_dct'], np.float64)
+Cs, _ = __import__('dmipy_sim.bank', fromlist=['x']).susc_path_coeffs(pk.arrays, pm)
 names = list(pm['channels']); i_loc,i_xx,i_yy = (names.index(s) for s in ('iso_local','iso_P_xx','iso_P_yy'))
 zz = 3*Cs[:,i_loc]-Cs[:,i_xx]-Cs[:,i_yy]; at = names.index('iso_P_xy')
 Cs = np.insert(Cs, at, zz, axis=1); names = names[:at]+['iso_P_zz']+names[at:]

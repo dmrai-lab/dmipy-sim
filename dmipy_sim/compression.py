@@ -58,6 +58,12 @@ _RETIRED = {
     "marginal": "coefficient quantiles",
 }
 
+# C2 shares C0's fate: the cumulative local time moved from detrended DCT-II bands
+# (``blt_dct_coeffs``) to the bridge form (``blt_bridge_dst`` + ``blt_start``). The array NAME
+# changed deliberately -- a stale pack then fails to find its channel instead of decoding sine
+# bands as cosine ones and returning a plausible wrong attenuation.
+_RETIRED_BOUNDARY = {"dct": "detrended cosine bands of the cumulative local time"}
+
 
 def require_position_method(method):
     """Raise unless ``method`` is the one C0 representation this build reads.
@@ -201,7 +207,7 @@ def decode_bound_fraction(arrays, meta):
 def encode_boundary_local_time(dlog, nlevels=4096):
     """DENSITY-AWARE per-step codec: sparse CSR (isolated fibres) or dense int8 (packed
     WM). Lossless to the value quant. NOTE: caps at ~2x when contacts are dense (small R);
-    prefer ``encode_boundary_dct`` for the smooth cumulative representation."""
+    prefer ``encode_boundary_bridge`` for the smooth cumulative representation."""
     A = np.asarray(dlog, np.float64)
     nw, nt = A.shape
     scale = float(np.abs(A).max()) + 1e-30
@@ -243,42 +249,65 @@ def decode_boundary_local_time(arrays, meta):
     return out
 
 
-def encode_boundary_dct(dlog, K=16, dtype=np.float32):
-    """IR-basis codec for the boundary-local-time channel: DETREND-then-DCT of the CUMULATIVE
-    local time B(t)=cumsum(ell). ell(t) is spiky+dense, but its running integral B(t) is
-    smooth. B is ~linear (roughly constant contact rate), and a bare DCT of a ramp has a
-    Gibbs endpoint error that exceeds the MC floor at small K -- fatal for the longest-TE
-    truncation. So store the EXACT endpoint B(T) (1 float/walker) and DCT only the residual
-    B(t) - (t/T)*B(T), which vanishes at both ends and is tiny+smooth: K~8 bands take every
-    TE truncation / per-save gate (ell = diff(B)) to ~100x below the MC floor. Stores
-    (N_w, K+1) float32; ratio ~ n_t/K, which GROWS with walk length -- this is what makes
-    surface-relaxivity replay memory-viable at high n_t (record once, sub-micron)."""
+def encode_boundary_bridge(dlog, K=16, dtype=np.float32):
+    """Bridge codec for the boundary-local-time channel: the CUMULATIVE local time B(t)=cumsum(ell)
+    stored as its two exact endpoints plus SINE bands of the pinned residual -- the same form C0
+    uses for positions, on the same segment grid.
+
+    ell(t) is spiky and dense; its running integral B(t) is smooth and ~linear (roughly constant
+    contact rate). Detrending by the chord B(0) + tau*(B(T)-B(0)) leaves a residual vanishing at
+    BOTH ends, which is what makes DST-I the basis rather than DCT-II.
+
+    **The basis is chosen for exactness, not for error.** Measured on a reflecting slab (4000
+    walkers, n_t=1024), worst-over-t error in B(t) is a wash -- DST-I beats DCT-II by only 1.0-1.3x
+    at K=4..64, and the coefficient slopes are indistinguishable (-0.96 vs -0.99). What differs is
+    the endpoint. A truncated DCT-II residual does NOT vanish at t=T, so the reconstruction misses
+    the stored total by 1.6%-6.4% of B(T) at EVERY K; the sine form is identically zero there by
+    construction, so B(0) and B(T) come back exact at every K:
+
+        K                  4        8        16       32       64
+        DCT-II endpoint    6.4e-2   4.5e-2   3.1e-2   2.5e-2   1.6e-2
+        DST-I  endpoint    0        0        0        0        0
+
+    That is the property the segment algebra needs. Splitting into S segments and chaining their
+    endpoints drifts by ~1.5e-2 under DCT-II regardless of S, and by <1e-16 under the sine form --
+    so a pack can be cut at a segment boundary, or two segments merged, without the surface channel
+    accumulating error the way a band codec does. ``blt_endpoint`` remains the exact total B(T) that
+    the ungated rho attenuation reads directly.
+
+    Stores (N_w, K) sine bands + two floats per walker; ratio ~ n_t/K, which GROWS with walk length.
+    Lossless at K = n_t - 2 (the interior dimension), NOT at K = n_t.
+    """
     A = np.asarray(dlog, np.float64)
     nw, nt = A.shape
     B = np.cumsum(A, axis=1)                                   # (N_w, n_t) smooth
-    endpoint = B[:, -1].copy()                                 # exact total local time
-    ramp = np.linspace(0.0, 1.0, nt)[None, :]
-    resid = B - endpoint[:, None] * ramp                      # 0 at both ends, small+smooth
-    C = _dct(resid, axis=1, type=2, norm="ortho")[:, :K]      # (N_w, K)
-    # ``dtype`` sets the coefficient precision. It defaults to f32 so the codec keeps its
-    # lossless-at-K=n_t contract; packs pass f16 (halves the tier at measurably identical ensemble
-    # error) via build_replay_pack's ``blt_dtype``. The ENDPOINT is always f32 -- it is the exact
-    # cumulative total the rho attenuation reads directly, where f16's ~3 significant digits would be
-    # a real error rather than a rounding one.
-    arrays = {"blt_dct_coeffs": C.astype(dtype),
+    a = B[:, 0].copy()                                         # exact B(0)
+    endpoint = B[:, -1].copy()                                 # exact total local time B(T)
+    tau = np.linspace(0.0, 1.0, nt)[None, :]
+    resid = B - (a[:, None] + (endpoint - a)[:, None] * tau)   # exactly 0 at BOTH ends
+    K = int(min(K, nt - 2))
+    C = _dst(resid[:, 1:-1], axis=1, type=1, norm="ortho")[:, :K]
+    # ``dtype`` sets the band precision; packs pass f16 via build_replay_pack's ``blt_dtype``. The
+    # two ENDPOINTS are always f32 -- they are the exact quantities the rho attenuation and the
+    # segment chaining read, where f16's ~3 significant digits would be a real error, not a rounding.
+    arrays = {"blt_bridge_dst": C.astype(dtype),
+              "blt_start": a.astype(np.float32),
               "blt_endpoint": endpoint.astype(np.float32)}
-    meta = {"channel": "boundary_local_time", "mode": "dct", "n_t": int(nt), "K": int(K),
+    meta = {"channel": "boundary_local_time", "mode": "bridge_dst", "n_t": int(nt), "K": int(K),
             "dtype": np.dtype(dtype).name}
     return arrays, meta
 
 
-def decode_boundary_dct(arrays, meta):
-    """Reconstruct per-save ell(t) = diff(B) from the stored endpoint + residual DCT bands."""
+def decode_boundary_bridge(arrays, meta):
+    """Reconstruct per-save ell(t) = diff(B) from the two endpoints + the pinned sine bands."""
     nt = int(meta["n_t"])
-    C = np.asarray(arrays["blt_dct_coeffs"], np.float64)
+    C = np.asarray(arrays["blt_bridge_dst"], np.float64)
+    a = np.asarray(arrays["blt_start"], np.float64)
     endpoint = np.asarray(arrays["blt_endpoint"], np.float64)
-    ramp = np.linspace(0.0, 1.0, nt)[None, :]
-    B = _idct(C, axis=1, type=2, norm="ortho", n=nt) + endpoint[:, None] * ramp
+    tau = np.linspace(0.0, 1.0, nt)[None, :]
+    u = np.zeros((C.shape[0], nt), np.float64)
+    u[:, 1:-1] = _idst(C, axis=1, type=1, norm="ortho", n=nt - 2)
+    B = u + (a[:, None] + (endpoint - a)[:, None] * tau)
     ell = np.diff(B, axis=1, prepend=B[:, :1] * 0.0)          # per-save increments
     return ell.astype(np.float32)
 
@@ -316,7 +345,7 @@ def decode_compartment(arrays, meta):
 CHANNEL_ENCODERS = {POSITION_METHOD: encode_bridge_dst}
 CHANNEL_DECODERS = {"bound_fraction": decode_bound_fraction,
                     "boundary_local_time": decode_boundary_local_time,
-                    "boundary_dct": decode_boundary_dct,
+                    "boundary_bridge": decode_boundary_bridge,
                     "compartment": decode_compartment}
 
 

@@ -202,11 +202,11 @@ against a split-half floor of 1.9e-2 -- 2 to 5 thousand times the truncation err
 66 B/walker** is the right setting, and it keeps the tier flat in walk length.
 
 Two defaulting problems produce the 574 B outcome and both need fixing:
-1. `encode_boundary_local_time` chooses only between *sparse* and *dense*; `encode_boundary_dct` is
+1. `encode_boundary_local_time` chooses only between *sparse* and *dense*; `encode_boundary_bridge` is
    opt-in via `blt_temporal_K`. For a long mesh substrate the default therefore takes the expensive,
-   n_t-scaling branch. The producer must pass `blt_temporal_K` (or the encoder should consider the DCT
+   n_t-scaling branch. The producer must pass `blt_temporal_K` (or the encoder should consider the bridge
    branch in its size comparison).
-2. `encode_boundary_dct` writes float32, while the canonical packs store `blt_dct` as float16 -- which is
+2. `encode_boundary_bridge` writes float32, while the canonical packs store `blt_bridge_dst` as float16 -- which is
    where the 2x difference between 130 B and 260 B comes from. f16 is demonstrably sufficient here.
 
 ### Revised per-walker budget
@@ -215,7 +215,7 @@ Two defaulting problems produce the 574 B outcome and both need fixing:
 |---|---|---|
 | positions, K=64 | 768 B | 384 B |
 | `susc_path_dct`, 7x32 | 896 B | 448 B |
-| **C2 `blt_dct`, K=32 f16** | **66 B** | **66 B** |
+| **C2 `blt_bridge_dst`, K=32 f16** | **66 B** | **66 B** |
 | compartment RLE + weights | ~18 B | ~18 B |
 | **total** | **~1.75 KB** | **~0.92 KB** |
 

@@ -140,7 +140,9 @@ def test_susc_path_channel_drops_zz_via_trace_identity_and_certifies_at_its_capa
     # the identity holds for this basis, so zz is implied -> 6 stored channels, not 7
     assert pm["iso_P_zz"] == "implied" and pm["n_ch"] == 6
     assert pm["max_refocus_pulses"] == K // 2
-    assert pk.arrays["susc_path_dct"].dtype == np.float16
+    # default container is int8 with a per-(channel, band) scale -- half of f16 at full K
+    assert pk.arrays["susc_path_dct"].dtype == np.int8 and pm["bits"] == 8
+    assert pk.arrays["susc_path_scale"].shape == (pm["n_ch"], K)
     # decode restores all 7 channels in canonical order
     b, names = bank.susc_path_decode(pk.arrays, pm)
     assert names[:4] == ["iso_local", "iso_P_xx", "iso_P_yy", "iso_P_zz"] and b.shape[1] == 7
@@ -171,7 +173,7 @@ def test_susc_path_lossless_at_K_equals_nt():
     m = _susc_master()
     fb, origin = m["susc_field_basis"], m["susc_grid_origin"]
     traj = m["traj"][:200]
-    a, pm = bank.susc_path_encode(fb, traj, origin, K=N_T, dtype=np.float64)
+    a, pm = bank.susc_path_encode(fb, traj, origin, K=N_T, bits=None, dtype=np.float64)
     b, _ = bank.susc_path_decode(a, pm)
     d = [1.0, 0.0, 0.0]
     ref = sample_grid(assemble_field(fb, d, B0=7.0, chi_iso=1.06e-6), traj, origin,
@@ -215,8 +217,8 @@ def test_c2_codec_is_chosen_by_cost_not_left_to_the_expensive_default():
                            envelope=_lean_env(), K=64, surface_relaxivity=True,
                            license="CC-BY-4.0", citation="test")
     cm = pk.meta["compression"]["channels"]["boundary_local_time"]
-    assert cm["mode"] == "dct" and cm["dtype"] == "float16"
-    per_walker = sum(np.asarray(pk.arrays[k]).nbytes for k in ("blt_dct_coeffs", "blt_endpoint")) / N_W
+    assert cm["mode"] == "bridge_dst" and cm["dtype"] == "float16"
+    per_walker = sum(np.asarray(pk.arrays[k]).nbytes for k in ("blt_bridge_dst", "blt_start", "blt_endpoint")) / N_W
     assert per_walker < 300                     # sparse CSR on this walk costs far more
     assert pk.fidelity["err_surface"] <= 2.0 * pk.fidelity["floor_surface"] + 1e-9
 
@@ -290,3 +292,44 @@ def test_replay_susc_can_restrict_to_one_compartment():
 
     with pytest.raises(ValueError, match="matched no walkers"):
         bank.replay_susc(pk, W, compartment=99, **kw)
+
+
+def test_susc_path_bit_depth_is_the_cheap_axis_not_K():
+    """int8 at full K beats f16 at half K on the SIGNAL, at the same bytes, keeping the capability.
+
+    The C3 spectrum is nearly white above DC, so truncating K is a brick-wall approximation to the
+    gate-weighted bit allocation; keeping every band at 8 bits is the graded version. Both options
+    below occupy the same space, so this is a fair swap and not merely "more bits is better".
+    """
+    from scipy.fft import dct
+    from dmipy_sim.constants import GAMMA
+    m = _susc_master()
+    fb, origin, traj = m["susc_field_basis"], m["susc_grid_origin"], m["traj"][:400]
+    n_t, dt, K = traj.shape[1], m["dt_traj"], 64
+
+    a8, pm8 = bank.susc_path_encode(fb, traj, origin, K=K, bits=8)
+    aR, pmR = bank.susc_path_encode(fb, traj, origin, K=K, bits=None, dtype=np.float64)
+    a16, pm16 = bank.susc_path_encode(fb, traj, origin, K=K // 2, bits=None, dtype=np.float16)
+    assert a8["susc_path_dct"].nbytes + a8["susc_path_scale"].nbytes < aR["susc_path_dct"].nbytes
+    assert a8["susc_path_dct"].nbytes <= a16["susc_path_dct"].nbytes    # same or less space
+
+    def err(arr, pm, n_pulses):                     # worst signal error over a direction sweep
+        b = bank.susc_path_decode(arr, pm)[0]
+        ref = bank.susc_path_decode(aR, pmR)[0]
+        g = bank._cpmg_gate(n_t, n_pulses)
+        out = 0.0
+        for d in ([0, 0, 1], [1, 0, 0], [0.3, 0.5, 0.8]):
+            d = np.asarray(d, float) / np.linalg.norm(d)
+            kw = dict(B0=7.0, chi_iso=1.06e-6)
+            p_a = GAMMA * dt * (bank.susc_path_field(b, d, **kw) * g).sum(1)
+            p_r = GAMMA * dt * (bank.susc_path_field(ref, d, **kw) * g).sum(1)
+            out = max(out, abs(abs(np.exp(1j * p_a).mean()) - abs(np.exp(1j * p_r).mean())))
+        return out
+
+    # at the pack's declared capability (K//2 refocusing pulses) the truncated store has no bands
+    # left to represent the gate, while the quantised full-K store still does
+    assert err(a8, pm8, K // 2) < err(a16, pm16, K // 2)
+    assert err(a8, pm8, 1) < 1e-2
+
+    with pytest.raises(ValueError, match="bits must be"):
+        bank.susc_path_encode(fb, traj, origin, K=K, bits=6)

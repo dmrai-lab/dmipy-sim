@@ -36,7 +36,7 @@ place of ρ/D — no bound-pool trajectory / vector-Bloch needed for the mean MT
 
 ## What's here
 
-`compression.py` — the codecs (`encode_temporal_dct`, `encode_boundary_dct`,
+`compression.py` — the codecs (`encode_bridge_dst`, `encode_boundary_bridge`,
 `encode_compartment`, …), mode-space replay (`mode_space_phi`, `mode_space_signal`), the
 separable log-weights (`surface_logweight`, `relaxation_logweight`), and a self-contained
 numpy fidelity scorer (`measure_fidelity`, `auto_select_modes`) — depends only on

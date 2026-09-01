@@ -533,14 +533,8 @@ def pack_response(pack, profile, g_dir, b0_dir, *, amplitude=1.0, B0=3.0,
     prof_hat = dct(prof, type=2, norm="ortho")[:K]
     q = (GAMMA * dt * amplitude) * np.einsum("k,wkd->wd", prof_hat, C)  # (n_w, 3)
 
-    Cs = np.asarray(arrays["susc_path_dct"], np.float64)               # (n_w, 12, Ks)
-    names = list(pm["channels"])
-    if pm.get("iso_P_zz") == "implied":                                # linear -> apply on coeffs
-        i_loc, i_xx, i_yy = (names.index(s) for s in ("iso_local", "iso_P_xx", "iso_P_yy"))
-        zz = 3.0 * Cs[:, i_loc] - Cs[:, i_xx] - Cs[:, i_yy]
-        at = names.index("iso_P_xy")
-        Cs = np.insert(Cs, at, zz, axis=1)
-        names = names[:at] + ["iso_P_zz"] + names[at:]
+    from .bank import susc_path_coeffs
+    Cs, names = susc_path_coeffs(arrays, pm)                           # (n_w, 13, Ks), dequantised
     Ks = Cs.shape[2]
     gate = _se_gate_local(n_t, dt, refocus_time)
     gate_hat = dct(gate, type=2, norm="ortho")[:Ks]
@@ -633,14 +627,8 @@ class PackResponder:
         self.q = (GAMMA * dt * amplitude) * np.einsum(
             "k,wkd->wd", dct(prof, type=2, norm="ortho")[:K], C)          # profile, not direction
 
-        Cs = np.asarray(arrays["susc_path_dct"], np.float64)
-        names = list(pm["channels"])
-        if pm.get("iso_P_zz") == "implied":
-            i_loc, i_xx, i_yy = (names.index(s) for s in ("iso_local", "iso_P_xx", "iso_P_yy"))
-            zz = 3.0 * Cs[:, i_loc] - Cs[:, i_xx] - Cs[:, i_yy]
-            at = names.index("iso_P_xy")
-            Cs = np.insert(Cs, at, zz, axis=1)
-            names = names[:at] + ["iso_P_zz"] + names[at:]
+        from .bank import susc_path_coeffs
+        Cs, names = susc_path_coeffs(arrays, pm)                        # dequantised, zz re-inserted
         gate = dct(_se_gate_local(n_t, dt, refocus_time), type=2, norm="ortho")[:Cs.shape[2]]
         Psi = (GAMMA * dt) * np.einsum("k,wck->wc", gate, Cs)             # gate, not direction
 
