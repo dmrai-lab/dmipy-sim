@@ -545,14 +545,14 @@ def replay_susc(pack, waveform, *, b0_dir=(0.0, 0.0, 1.0), B0=0.0, chi_iso=0.0, 
     logw = np.zeros(n_w)
     ch = (pack.meta.get("compression", {}).get("channels", {}) or {})
     if relaxation and "comp_rle_vals" in pack.arrays and pack.meta.get("per_comp", {}).get("T2"):
-        comp = _cx.decode_compartment(pack.arrays, ch.get("compartment", {}))
+        comp = _cx.decode_occupancy(pack.arrays, ch["compartment"])["comp"]
         pc = pack.meta["per_comp"]
         logw = _cx.relaxation_logweight(comp, pc["T2"], pc.get("T1"), dt)
     ew = w * np.exp(logw)
     if compartment is not None:
         sel = np.asarray(compartment)
         if sel.dtype != bool:
-            comp_ids = _cx.decode_compartment(pack.arrays, ch.get("compartment", {}))
+            comp_ids = _cx.decode_occupancy(pack.arrays, ch["compartment"])["comp"]
             comp_ids = np.asarray(comp_ids)
             comp_ids = comp_ids[:, 0] if comp_ids.ndim == 2 else comp_ids
             sel = comp_ids.astype(int) == int(sel)
@@ -560,7 +560,7 @@ def replay_susc(pack, waveform, *, b0_dir=(0.0, 0.0, 1.0), B0=0.0, chi_iso=0.0, 
             raise ValueError(f"compartment mask has {sel.shape[0]} entries for {n_w} walkers")
         if not sel.any():
             raise ValueError(f"compartment selection matched no walkers (ids present: "
-                             f"{sorted(set(np.asarray(_cx.decode_compartment(pack.arrays, ch.get('compartment', {}))).ravel().tolist()))})")
+                             f"{sorted(set(np.asarray(_cx.decode_occupancy(pack.arrays, ch['compartment'])['comp']).ravel().tolist()))})")
         ew = np.where(sel, ew, 0.0)
         norm = w[sel].sum()
     else:
@@ -728,15 +728,25 @@ def build_replay_pack(src, *, id, method=_cx.POSITION_METHOD, envelope=None, tol
                                        K=int(susc_path_K), bits=susc_path_bits)
             arrays.update(_a); chan_meta["susceptibility_path"] = _pm
     if wp_method:
-        # compartment map (RLE / quantized-RLE) -> per-compartment T1/T2; surface/MT opt-in.
+        # C1 (occupancy): the geometric compartment plus, when the walk bound spins, the MT bound
+        # pool as a SECOND COLUMN on an independent axis -- not a channel of its own. Replay weights
+        # the per-pool rates by occupancy either way; what makes MT a distinct tier is the replay
+        # side (vector-Bloch RF, bound-pool knobs, equilibrium start), not the storage.
         if m.get("comp") is not None and m.get("T2_per_comp") is not None:
-            _a, _cm = _cx.encode_compartment(np.asarray(m["comp"]))
+            _cols = {"comp": np.asarray(m["comp"])}
+            if mt and m.get("bfrac") is not None:
+                _cols["bound"] = np.asarray(m["bfrac"]); channels["mt"] = True
+            _a, _cm = _cx.encode_occupancy(_cols)
             arrays.update(_a); chan_meta["compartment"] = _cm
             if m.get("w") is not None:
                 arrays["spin_weights"] = np.asarray(m["w"], np.float32)
             channels["T1T2"] = True
+        elif mt and m.get("bfrac") is not None:
+            raise ValueError("an MT (C4) pack carries its bound pool as a C1 occupancy column, so "
+                             "it needs the compartment channel too: pass master['comp'] and "
+                             "['T2_per_comp'] alongside ['bfrac'].")
         # dense per-walker physics channels get their own codecs (compression.py):
-        # boundary local time -> sparse/dense or (temporal_K) cumulative-DCT; bound_frac -> RLE.
+        # boundary local time -> sparse/dense or the cumulative bridge.
         if surface_relaxivity and m.get("dlog_b") is not None:
             if blt_temporal_K:
                 _a, _mm = _cx.encode_boundary_bridge(np.asarray(m["dlog_b"]), K=int(blt_temporal_K),
@@ -745,9 +755,6 @@ def build_replay_pack(src, *, id, method=_cx.POSITION_METHOD, envelope=None, tol
                 _a, _mm = _select_boundary_codec(m, np.asarray(m["dlog_b"]), env, tol,
                                                  blt_dtype, verbose)
             arrays.update(_a); chan_meta["boundary_local_time"] = _mm; channels["rho"] = True
-        if mt and m.get("bfrac") is not None:
-            _a, _mm = _cx.encode_bound_fraction(np.asarray(m["bfrac"]), Q=256)
-            arrays.update(_a); chan_meta["bound_fraction"] = _mm; channels["mt"] = True
 
     # Surface tier (C2) fidelity: certify the boundary channel reproduces the surface-relaxivity
     # signal from its stored coeffs, vs the raw boundary local time.

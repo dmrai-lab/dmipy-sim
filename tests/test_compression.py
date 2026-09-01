@@ -79,16 +79,16 @@ def test_boundary_bridge_preserves_cumulative_at_low_K():
 def test_compartment_rle_lossless_integer():
     rng = np.random.default_rng(5)
     comp = (rng.random((20, 300)) < 0.02).cumsum(1) % 3      # piecewise-constant-ish
-    arrays, meta = cx.encode_compartment(comp.astype(np.int16))
-    dec = cx.decode_compartment(arrays, meta)
+    arrays, meta = cx.encode_occupancy({"comp": comp.astype(np.int16)})
+    dec = cx.decode_occupancy(arrays, meta)["comp"]
     assert np.array_equal(dec.astype(np.int16), comp.astype(np.int16))
 
 
 def test_bound_fraction_roundtrip_within_quant():
     rng = np.random.default_rng(6)
     b = np.clip(rng.random((15, 200)), 0, 1)
-    arrays, meta = cx.encode_bound_fraction(b, Q=256)
-    dec = cx.decode_bound_fraction(arrays, meta)
+    arrays, meta = cx.encode_occupancy({"comp": np.zeros_like(b, np.int16), "bound": b}, Q=256)
+    dec = cx.decode_occupancy(arrays, meta)["bound"]
     assert np.abs(dec - b).max() < 1.0 / 255 + 1e-6
 
 
@@ -162,3 +162,32 @@ def test_boundary_bridge_rejects_a_stale_cosine_pack_loudly():
     with pytest.raises(KeyError):
         cx.decode_boundary_bridge(stale, meta)
     assert cx._RETIRED_BOUNDARY["dct"]
+
+
+def test_c1_carries_the_mt_bound_pool_as_a_column_on_an_independent_axis():
+    """MT needs no channel of its own: binding is an occupancy on an axis independent of the
+    geometric compartment, and C1 already stores occupancy. A walker can be intra-axonal AND
+    bound, so the two are separate columns whose product is the joint simplex."""
+    rng = np.random.default_rng(21)
+    n_w, n_t = 40, 300
+    comp = (np.cumsum(rng.random((n_w, n_t)) < 0.01, axis=1) % 3).astype(np.int16)
+    bound = np.repeat(rng.random((n_w, n_t // 10)) < 0.3, 10, axis=1).astype(np.float64)
+
+    arrays, meta = cx.encode_occupancy({"comp": comp, "bound": bound})
+    got = cx.decode_occupancy(arrays, meta)
+    assert sorted(got) == ["bound", "comp"]
+    npt.assert_array_equal(got["comp"], comp)                    # label axis is lossless
+    assert np.abs(got["bound"] - bound).max() <= 1.0 / 255       # fraction axis to the quant step
+
+    # the two axes are genuinely independent -- both states co-occur, which a single label
+    # (or a single fraction) could not represent
+    assert ((comp == 1) & (bound > 0.5)).any() and ((comp == 2) & (bound > 0.5)).any()
+
+    # run lengths on the bound column ARE the dwell times, so C1 keeps the realised exchange
+    # statistics rather than a summarising mean rate
+    d = next(c for c in meta["columns"] if c["name"] == "bound")
+    assert d["kind"] == "fraction" and arrays["bound_rle_lens"].max() >= 10
+
+    # and C1 refuses to exist without its exclusive geometric axis
+    with pytest.raises(ValueError, match="needs the 'comp' column"):
+        cx.encode_occupancy({"bound": bound})

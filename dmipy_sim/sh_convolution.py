@@ -511,7 +511,7 @@ def pack_response(pack, profile, g_dir, b0_dir, *, amplitude=1.0, B0=3.0,
     resulting coupled spectrum able to depart from rank one.
     """
     from scipy.fft import dct
-    from .compression import read_position_coeffs, decode_compartment, relaxation_logweight
+    from .compression import read_position_coeffs, decode_occupancy, relaxation_logweight
     from .constants import GAMMA
     from .susceptibility_field import _q_of_H
 
@@ -547,7 +547,7 @@ def pack_response(pack, profile, g_dir, b0_dir, *, amplitude=1.0, B0=3.0,
     w0 = np.asarray(arrays.get("spin_weights", np.ones(n_w)), np.float64)
     ew = w0.copy()
     if relaxation and "comp_rle_vals" in arrays and meta.get("per_comp", {}).get("T2"):
-        comp = decode_compartment(arrays, chans.get("compartment", {}))
+        comp = decode_occupancy(arrays, chans["compartment"])["comp"]
         pc = meta["per_comp"]
         ew = ew * np.exp(relaxation_logweight(comp, pc["T2"], pc.get("T1"), dt))
     norm = w0.sum()
@@ -608,7 +608,7 @@ class PackResponder:
                  relaxation=True, n_theta=32, n_phi=64, backend="numpy", chunk=512):
         from scipy.fft import dct
         from .gaunt import sphere_quadrature
-        from .compression import read_position_coeffs, decode_compartment, relaxation_logweight
+        from .compression import read_position_coeffs, decode_occupancy, relaxation_logweight
         from .constants import GAMMA
 
         arrays, meta = pack.arrays, pack.meta
@@ -653,7 +653,7 @@ class PackResponder:
         w0 = np.asarray(arrays.get("spin_weights", np.ones(n_w)), np.float64)
         ew = w0.copy()
         if relaxation and "comp_rle_vals" in arrays and meta.get("per_comp", {}).get("T2"):
-            comp = decode_compartment(arrays, chans.get("compartment", {}))
+            comp = decode_occupancy(arrays, chans["compartment"])["comp"]
             pc = meta["per_comp"]
             ew = ew * np.exp(relaxation_logweight(comp, pc["T2"], pc.get("T1"), dt))
         self.norm = float(w0.sum())

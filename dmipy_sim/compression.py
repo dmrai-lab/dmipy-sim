@@ -18,7 +18,8 @@ two physical redundancies:
 
 The physics channels get their own codecs (positions are smooth+low-rank; these are not):
 
-  * ``compartment`` / ``bound_fraction`` — piecewise-constant per walker -> row RLE.
+  * ``compartment`` (C1) — named occupancy columns, piecewise-constant per walker -> row
+    RLE. The MT bound pool is one of these columns, not a channel of its own.
   * ``boundary_local_time`` (surface relaxivity ell(t), rho/D=1) — two codecs:
       - ``boundary_local_time`` : DENSITY-AWARE sparse-CSR / dense-int8 of the *per-step*
         signal. Lossless to the value quant; but the per-step signal is dense at small R
@@ -184,26 +185,6 @@ def rle_decode_rows(vals, lens, counts, n_t):
 
 
 # ------------------------------------------- per-walker physics-channel codecs
-def encode_bound_fraction(bfrac, Q=256):
-    """(arrays, meta) for the bound_fraction channel: quantize [0,1] -> {0..Q-1}, RLE rows."""
-    b = np.clip(np.asarray(bfrac, np.float64), 0.0, 1.0)
-    q = np.rint(b * (Q - 1)).astype(np.int32)
-    vals, lens, counts, n_t = rle_encode_rows(q)
-    val_dtype = np.uint8 if Q <= 256 else np.int32
-    len_dtype = np.uint16 if n_t < 65535 else np.int32
-    arrays = {"bfrac_rle_vals": vals.astype(val_dtype),
-              "bfrac_rle_lens": lens.astype(len_dtype),
-              "bfrac_rle_counts": np.asarray(counts, np.int32)}
-    return arrays, {"channel": "bound_fraction", "Q": int(Q), "n_t": int(n_t)}
-
-
-def decode_bound_fraction(arrays, meta):
-    q = rle_decode_rows(np.asarray(arrays["bfrac_rle_vals"]),
-                        np.asarray(arrays["bfrac_rle_lens"]),
-                        np.asarray(arrays["bfrac_rle_counts"]), int(meta["n_t"]))
-    return (q.astype(np.float32) / float(meta["Q"] - 1))
-
-
 def encode_boundary_local_time(dlog, nlevels=4096):
     """DENSITY-AWARE per-step codec: sparse CSR (isolated fibres) or dense int8 (packed
     WM). Lossless to the value quant. NOTE: caps at ~2x when contacts are dense (small R);
@@ -312,41 +293,96 @@ def decode_boundary_bridge(arrays, meta):
     return ell.astype(np.float32)
 
 
-def encode_compartment(comp, Q=256):
-    """Compartment codec. Integer labels -> lossless row RLE; fractional per-save occupancy
-    (permeable) -> quantize to Q levels over [0, scale] and RLE (faithful to fractions)."""
-    A = np.asarray(comp)
-    is_frac = not np.array_equal(A, np.round(A))
-    if not is_frac:
+# C1 is a set of named OCCUPANCY COLUMNS, not a single label track. At each save a walker has an
+# occupancy over the declared pools summing to 1, and replay weights the per-pool rates by it:
+# R(t) = sum_c f_c(t) R_c. Every case is that one form -- an integer compartment label is one-hot,
+# a permeable crossing is a fraction on the geometric axis, and MT binding is a fraction on an
+# INDEPENDENT axis (a walker can be intra-axonal and bound). Storing the axes as separate columns
+# is the compact encoding of the joint simplex: f_bound = b, f_geom = (1-b)*[comp == geom].
+#
+# This is why magnetization transfer needs no channel of its own. The bound pool is a column here;
+# what makes MT a distinct capability tier is the REPLAY side -- RF as vector-Bloch rotations, the
+# bound-pool knobs, and the equilibrium-start requirement -- not the storage. Compare C0 and C2,
+# which now share a byte-identical bridge layout and remain separate tiers for the same reason.
+_EXCLUSIVE_COLUMN = "comp"          # the geometric axis: mutually exclusive, may be an int label
+
+
+def _encode_occupancy_column(x, name, Q):
+    """One C1 column -> RLE arrays under ``{name}_rle_*`` + its descriptor.
+
+    Integer labels on the exclusive axis are RLE'd losslessly; everything else is an occupancy in
+    [0, scale] quantized to Q levels then RLE'd (integer RLE would lossily int-cast the fractions).
+    Occupancy is piecewise constant with long runs either way, which is what makes RLE the codec --
+    and the run lengths are physically meaningful: on the bound column they ARE the dwell times, so
+    C1 carries the realised exchange statistics rather than a summarising mean rate.
+    """
+    A = np.asarray(x)
+    if name == _EXCLUSIVE_COLUMN and np.array_equal(A, np.round(A)):
         vals, lens, counts, n_t = rle_encode_rows(A.astype(np.int32))
-        arrays = {"comp_rle_vals": vals.astype(np.int16),
-                  "comp_rle_lens": lens.astype(np.int32),
-                  "comp_rle_counts": np.asarray(counts, np.int32)}
-        return arrays, {"channel": "compartment", "fractional": False, "n_t": int(n_t)}
+        return ({f"{name}_rle_vals": vals.astype(np.int16),
+                 f"{name}_rle_lens": lens.astype(np.int32),
+                 f"{name}_rle_counts": np.asarray(counts, np.int32)},
+                {"name": name, "kind": "label", "n_t": int(n_t)})
     scale = float(np.nanmax(np.abs(A))) or 1.0
     q = np.rint(np.clip(A, 0.0, scale) / scale * (Q - 1)).astype(np.int32)
     vals, lens, counts, n_t = rle_encode_rows(q)
-    arrays = {"comp_rle_vals": vals.astype(np.uint8 if Q <= 256 else np.int32),
-              "comp_rle_lens": lens.astype(np.uint16 if n_t < 65535 else np.int32),
-              "comp_rle_counts": np.asarray(counts, np.int32)}
-    return arrays, {"channel": "compartment", "fractional": True, "Q": int(Q),
-                    "scale": scale, "n_t": int(n_t)}
+    return ({f"{name}_rle_vals": vals.astype(np.uint8 if Q <= 256 else np.int32),
+             f"{name}_rle_lens": lens.astype(np.uint16 if n_t < 65535 else np.int32),
+             f"{name}_rle_counts": np.asarray(counts, np.int32)},
+            {"name": name, "kind": "fraction", "Q": int(Q), "scale": scale, "n_t": int(n_t)})
 
 
-def decode_compartment(arrays, meta):
-    q = rle_decode_rows(np.asarray(arrays["comp_rle_vals"]),
-                        np.asarray(arrays["comp_rle_lens"]),
-                        np.asarray(arrays["comp_rle_counts"]), int(meta["n_t"]))
-    if meta.get("fractional"):
-        return (q.astype(np.float32) / float(meta["Q"] - 1)) * float(meta.get("scale", 1.0))
-    return q.astype(np.int16)
+def _decode_occupancy_column(arrays, d):
+    name = d["name"]
+    q = rle_decode_rows(np.asarray(arrays[f"{name}_rle_vals"]),
+                        np.asarray(arrays[f"{name}_rle_lens"]),
+                        np.asarray(arrays[f"{name}_rle_counts"]), int(d["n_t"]))
+    if d["kind"] == "label":
+        return q.astype(np.int16)
+    return (q.astype(np.float32) / float(d["Q"] - 1)) * float(d.get("scale", 1.0))
+
+
+def encode_occupancy(columns, Q=256):
+    """C1 codec. ``columns`` maps a pool-axis name to its (N_w, N_t) track.
+
+    ``comp`` is the exclusive geometric axis (integer labels, or a fraction for a permeable
+    crossing); any other name is an occupancy in [0,1] on an independent axis -- ``bound`` for the
+    MT macromolecular pool. Column order is not significant; the descriptors carry the names.
+    """
+    if _EXCLUSIVE_COLUMN not in columns:
+        raise ValueError(f"C1 needs the {_EXCLUSIVE_COLUMN!r} column; got {sorted(columns)}")
+    arrays, cols = {}, []
+    for name, x in columns.items():
+        a, d = _encode_occupancy_column(x, name, Q)
+        arrays.update(a); cols.append(d)
+    n_t = {d["n_t"] for d in cols}
+    if len(n_t) != 1:
+        raise ValueError(f"C1 columns disagree on n_t: {[(d['name'], d['n_t']) for d in cols]}")
+    return arrays, {"channel": "compartment", "columns": cols, "n_t": cols[0]["n_t"]}
+
+
+def decode_occupancy(arrays, meta):
+    """-> {name: track}. ``comp`` is int16 labels (or a float fraction); others are float [0,1]."""
+    if "columns" not in meta:
+        raise ValueError(
+            "this pack's C1 metadata predates the occupancy-column layout (no 'columns' key; it "
+            "carries the single-track form with 'fractional'/'Q' at the top level). C1 is now a set "
+            "of named columns -- the geometric axis under 'comp' plus, for an MT pack, the bound "
+            "pool under 'bound' (retiring the separate bound_fraction channel and its bfrac_rle_* "
+            "keys). The stored arrays are readable but their meaning is declared differently, so "
+            "the pack must be re-encoded from its master rather than reinterpreted here.")
+    return {d["name"]: _decode_occupancy_column(arrays, d) for d in meta["columns"]}
+
+
+def is_current_c1(meta):
+    """True if a pack's C1 channel metadata is in the occupancy-column layout."""
+    return isinstance(meta, dict) and "columns" in meta
 
 
 CHANNEL_ENCODERS = {POSITION_METHOD: encode_bridge_dst}
-CHANNEL_DECODERS = {"bound_fraction": decode_bound_fraction,
-                    "boundary_local_time": decode_boundary_local_time,
+CHANNEL_DECODERS = {"boundary_local_time": decode_boundary_local_time,
                     "boundary_bridge": decode_boundary_bridge,
-                    "compartment": decode_compartment}
+                    "compartment": decode_occupancy}
 
 
 def encode(X, method=POSITION_METHOD, K=32, **kw):
