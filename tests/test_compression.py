@@ -5,6 +5,7 @@ substrate and checks the boundary-DCT codec reproduces the surface-relaxivity T2
 property that lets the replay path store compressed modes instead of raw trajectories.
 """
 import numpy as np
+import numpy.testing as npt
 import pytest
 
 from dmipy_sim import compression as cx
@@ -12,23 +13,23 @@ from dmipy_sim.constants import GAMMA
 
 
 # --------------------------------------------------------------- position codec
-def test_temporal_dct_full_K_is_exact_roundtrip():
+def test_position_codec_full_rank_is_exact_roundtrip():
     rng = np.random.default_rng(0)
     X = np.cumsum(rng.standard_normal((50, 200, 3)) * 1e-7, axis=1)   # smooth-ish paths
-    arrays, meta, _ = cx.encode_temporal_dct(X, K=200)
+    arrays, meta, _ = cx.encode_bridge_dst(X, K=198)   # rank = n_t - 2
     Xr = cx.decode(arrays, meta)
     assert np.allclose(Xr, X, atol=1e-6)
 
 
 def test_mode_space_phi_equals_raw_at_full_K():
-    """phi in the DCT basis == raw gamma*dt*sum_t G.r exactly (Parseval, orthonormal DCT)."""
+    """phi in the stored basis == raw gamma*dt*sum_t G.r at full rank."""
     rng = np.random.default_rng(1)
     N, n_t, M = 40, 128, 6
     X = np.cumsum(rng.standard_normal((N, n_t, 3)) * 1e-7, axis=1)
     G = rng.standard_normal((M, n_t, 3)) * 0.1
     dt = 1e-4
     phi_raw = (GAMMA * dt) * np.einsum("mtd,ntd->nm", G, X)
-    arrays, meta, _ = cx.encode_temporal_dct(X, K=n_t)
+    arrays, meta, _ = cx.encode_bridge_dst(X, K=n_t - 2)
     phi_mode = cx.mode_space_phi(arrays, meta, G, dt)
     assert np.allclose(phi_mode, phi_raw, rtol=1e-6, atol=1e-6)
 
@@ -40,21 +41,21 @@ def test_mode_space_signal_matches_raw_reduction():
     G = rng.standard_normal((M, n_t, 3)) * 0.1
     dt = 1e-4
     S_raw = cx._replay_complex_np(X, dt, G)
-    arrays, meta, _ = cx.encode_temporal_dct(X, K=n_t)
+    arrays, meta, _ = cx.encode_bridge_dst(X, K=n_t - 2)
     S_mode = cx.mode_space_signal(arrays, meta, G, dt)
     assert np.allclose(S_mode, S_raw, atol=1e-9)
 
 
 # --------------------------------------------------------------- boundary codec
-def test_boundary_dct_full_K_recovers_per_save_ell():
+def test_boundary_bridge_full_K_recovers_per_save_ell():
     rng = np.random.default_rng(3)
     ell = -np.abs(rng.standard_normal((30, 150))) * 1e-6     # <=0 per-save local time
-    arrays, meta = cx.encode_boundary_dct(ell, K=150)
-    ell_r = cx.decode_boundary_dct(arrays, meta)
+    arrays, meta = cx.encode_boundary_bridge(ell, K=150)
+    ell_r = cx.decode_boundary_bridge(arrays, meta)
     assert np.allclose(ell_r, ell, atol=1e-9)
 
 
-def test_boundary_dct_preserves_cumulative_at_low_K():
+def test_boundary_bridge_preserves_cumulative_at_low_K():
     """The cumulative B(t)=cumsum(ell) is smooth (an integral of a wall-contact density) ->
     few modes reproduce it -- that is what the surface log-weight sum_t ell depends on."""
     rng = np.random.default_rng(4)
@@ -66,8 +67,8 @@ def test_boundary_dct_preserves_cumulative_at_low_K():
     dens = amp * (1.0 + 0.4 * np.sin(2 * np.pi * t + ph)) * 1e-9
     ell = -dens
     B = np.cumsum(ell, axis=1)
-    arrays, meta = cx.encode_boundary_dct(ell, K=16)
-    B_r = np.cumsum(cx.decode_boundary_dct(arrays, meta), axis=1)
+    arrays, meta = cx.encode_boundary_bridge(ell, K=16)
+    B_r = np.cumsum(cx.decode_boundary_bridge(arrays, meta), axis=1)
     # endpoint is stored exactly; the residual modes must reproduce B(t) at EVERY t (every TE
     # truncation of the surface weight), not just the ends
     rel = np.abs(B_r - B).max() / np.abs(B[:, -1]).max()
@@ -78,16 +79,16 @@ def test_boundary_dct_preserves_cumulative_at_low_K():
 def test_compartment_rle_lossless_integer():
     rng = np.random.default_rng(5)
     comp = (rng.random((20, 300)) < 0.02).cumsum(1) % 3      # piecewise-constant-ish
-    arrays, meta = cx.encode_compartment(comp.astype(np.int16))
-    dec = cx.decode_compartment(arrays, meta)
+    arrays, meta = cx.encode_occupancy({"comp": comp.astype(np.int16)})
+    dec = cx.decode_occupancy(arrays, meta)["comp"]
     assert np.array_equal(dec.astype(np.int16), comp.astype(np.int16))
 
 
 def test_bound_fraction_roundtrip_within_quant():
     rng = np.random.default_rng(6)
     b = np.clip(rng.random((15, 200)), 0, 1)
-    arrays, meta = cx.encode_bound_fraction(b, Q=256)
-    dec = cx.decode_bound_fraction(arrays, meta)
+    arrays, meta = cx.encode_occupancy({"comp": np.zeros_like(b, np.int16), "bound": b}, Q=256)
+    dec = cx.decode_occupancy(arrays, meta)["bound"]
     assert np.abs(dec - b).max() < 1.0 / 255 + 1e-6
 
 
@@ -108,8 +109,8 @@ def test_boundary_dct_replays_surface_signal_below_mc_floor():
         return np.exp((rho / D) * np.cumsum(dl, axis=1)).mean(0)
 
     E_raw = survival(dlog)
-    arrays, meta = cx.encode_boundary_dct(dlog, K=8)
-    E_codec = survival(cx.decode_boundary_dct(arrays, meta))
+    arrays, meta = cx.encode_boundary_bridge(dlog, K=8)
+    E_codec = survival(cx.decode_boundary_bridge(arrays, meta))
     mc_floor = 1.0 / np.sqrt(N)
     assert np.abs(E_codec - E_raw).max() < mc_floor, np.abs(E_codec - E_raw).max()
 
@@ -119,5 +120,101 @@ def test_boundary_dct_replays_surface_signal_below_mc_floor():
     assert abs(T2_raw - R / (2 * rho)) / (R / (2 * rho)) < 0.05
 
     # storage: K+1 floats/walker vs raw dlog
-    comp = arrays["blt_dct_coeffs"].nbytes + arrays["blt_endpoint"].nbytes
+    comp = (arrays["blt_bridge_dst"].nbytes + arrays["blt_start"].nbytes
+            + arrays["blt_endpoint"].nbytes)
     assert comp < 0.2 * dlog.astype(np.float16).nbytes
+
+
+def test_boundary_bridge_endpoints_are_exact_at_every_K_so_segments_chain():
+    """C2's basis is chosen for exactness, not error: a truncated DCT-II residual does not vanish
+    at t=T, so the reconstruction misses the stored total by percent at every K, and chaining
+    segment endpoints inherits that drift. The sine form is identically zero at both ends."""
+    from scipy.fft import dct, idct
+    rng = np.random.default_rng(11)
+    ell = np.abs(rng.standard_normal((200, 258))) * 1e-6
+    B = np.cumsum(ell, axis=1)
+    nt = B.shape[1]
+
+    ep, ramp = B[:, -1], np.linspace(0.0, 1.0, nt)[None, :]
+    for K in (4, 8, 16, 64):
+        # f64 storage so the comparison is about the BASIS, not the container's rounding
+        arrays, meta = cx.encode_boundary_bridge(ell, K=K, dtype=np.float64)
+        Br = np.cumsum(cx.decode_boundary_bridge(arrays, meta), axis=1)
+        # exact up to the f32 endpoint container (both endpoints are always stored f32)
+        e_bridge = np.abs(Br[:, -1] - ep).max() / ep.mean()
+        npt.assert_allclose(Br[:, 0], B[:, 0], rtol=1e-5, atol=1e-18)
+
+        # the retired cosine form on the same residual, same K, same endpoint float
+        C = dct(B - ep[:, None] * ramp, type=2, norm="ortho", axis=1)[:, :K]
+        B_dct = idct(C, type=2, norm="ortho", axis=1, n=nt) + ep[:, None] * ramp
+        e_dct = np.abs(B_dct[:, -1] - ep).max() / ep.mean()
+
+        assert e_bridge < 1e-5                       # zero basis error; only f32 rounding left
+        assert e_dct > 100 * e_bridge                # the cosine form is nowhere near
+
+
+def test_boundary_bridge_rejects_a_stale_cosine_pack_loudly():
+    """The array name changed with the basis, so a stale pack cannot be silently decoded as if its
+    cosine bands were sine bands (which would return a plausible but wrong attenuation)."""
+    rng = np.random.default_rng(12)
+    arrays, meta = cx.encode_boundary_bridge(np.abs(rng.standard_normal((10, 64))) * 1e-6, K=8)
+    stale = {"blt_dct_coeffs": arrays["blt_bridge_dst"], "blt_endpoint": arrays["blt_endpoint"]}
+    with pytest.raises(KeyError):
+        cx.decode_boundary_bridge(stale, meta)
+    assert cx._RETIRED_BOUNDARY["dct"]
+
+
+def test_c1_carries_the_mt_bound_pool_as_a_column_on_an_independent_axis():
+    """MT needs no channel of its own: binding is an occupancy on an axis independent of the
+    geometric compartment, and C1 already stores occupancy. A walker can be intra-axonal AND
+    bound, so the two are separate columns whose product is the joint simplex."""
+    rng = np.random.default_rng(21)
+    n_w, n_t = 40, 300
+    comp = (np.cumsum(rng.random((n_w, n_t)) < 0.01, axis=1) % 3).astype(np.int16)
+    bound = np.repeat(rng.random((n_w, n_t // 10)) < 0.3, 10, axis=1).astype(np.float64)
+
+    arrays, meta = cx.encode_occupancy({"comp": comp, "bound": bound})
+    got = cx.decode_occupancy(arrays, meta)
+    assert sorted(got) == ["bound", "comp"]
+    npt.assert_array_equal(got["comp"], comp)                    # label axis is lossless
+    assert np.abs(got["bound"] - bound).max() <= 1.0 / 255       # fraction axis to the quant step
+
+    # the two axes are genuinely independent -- both states co-occur, which a single label
+    # (or a single fraction) could not represent
+    assert ((comp == 1) & (bound > 0.5)).any() and ((comp == 2) & (bound > 0.5)).any()
+
+    # run lengths on the bound column ARE the dwell times, so C1 keeps the realised exchange
+    # statistics rather than a summarising mean rate
+    d = next(c for c in meta["columns"] if c["name"] == "bound")
+    assert d["kind"] == "fraction" and arrays["bound_rle_lens"].max() >= 10
+
+    # and C1 refuses to exist without its exclusive geometric axis
+    with pytest.raises(ValueError, match="needs the 'comp' column"):
+        cx.encode_occupancy({"bound": bound})
+
+
+def test_c1_rejects_a_pre_columns_pack_loudly():
+    """A pre-columns pack keeps `comp_rle_*` under its original name and with unchanged bytes, so
+    nothing stops it being READ -- only its metadata says what the track means. That is exactly the
+    case a bare KeyError would turn into a puzzle, so the refusal has to name the layout change."""
+    rng = np.random.default_rng(31)
+    comp = (np.cumsum(rng.random((12, 80)) < 0.05, axis=1) % 3).astype(np.int16)
+    arrays, meta = cx.encode_occupancy({"comp": comp})
+
+    # the metadata a pack written before the fold carries: one track, flags at the top level
+    for stale in ({"channel": "compartment", "fractional": False, "n_t": 80},
+                  {"channel": "compartment", "fractional": True, "Q": 256, "scale": 1.0,
+                   "n_t": 80}):
+        assert not cx.is_current_c1(stale)
+        with pytest.raises(ValueError, match="predates the occupancy-column layout"):
+            cx.decode_occupancy(arrays, stale)          # arrays are fine; the DECLARATION is stale
+
+    assert cx.is_current_c1(meta)
+    npt.assert_array_equal(cx.decode_occupancy(arrays, meta)["comp"], comp)
+
+    # a bound column cannot sneak in under the stale shape either -- it has nowhere to be declared
+    b = (rng.random((12, 80)) < 0.3).astype(np.float64)
+    a2, m2 = cx.encode_occupancy({"comp": comp, "bound": b})
+    assert "bound_rle_vals" in a2 and "bfrac_rle_vals" not in a2
+    with pytest.raises(ValueError, match="predates the occupancy-column layout"):
+        cx.decode_occupancy(a2, {"channel": "compartment", "fractional": False, "n_t": 80})

@@ -30,8 +30,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install pytest pytest-cov
           # Base install pulls plain (CPU) jax; the [cuda12] extra is NOT installed,
-          # so GitHub's CPU runners resolve JAX's CPU backend.
-          pip install -e ".[dev]"
+          # so GitHub's CPU runners resolve JAX's CPU backend. [interop] adds dipy, which
+          # nothing in the package imports -- it is the ORACLE the normative SH basis is
+          # checked against (RPH.md Sec. 4.1). Without it those tests skip and the claim
+          # goes unverified, so CI installs it even though [dev] deliberately does not.
+          pip install -e ".[dev,interop]"
 
       - name: Run tests (CPU)
         run: |
@@ -63,6 +66,6 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install pytest
-          pip install -e ".[dev]"
+          pip install -e ".[dev,interop]"
       - name: Run full suite including slow MC (CPU)
         run: JAX_PLATFORMS=cpu pytest tests/ -q --tb=short -m "not gpu"

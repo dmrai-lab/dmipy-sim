@@ -271,13 +271,14 @@ def _replay_compressed(master, G, dt_wf, *, chi_perp, T2, T1, surface_relaxivity
     if susceptibility is not None:
         raise NotImplementedError(
             "susceptibility replay from a compressed master is unsupported: the off-resonance "
-            "phase samples a field nonlinearly in position and does not commute with the DCT. "
+            "phase samples a field nonlinearly in position and does not commute with the basis. "
             "Replay susceptibility from a raw walk (see docs/replay_compression.md).")
 
     K = int(master["K"]); n_t = int(master["n_t"]); dt_traj = float(master["dt_traj"])
-    pos_modes = np.asarray(master["pos_modes"], np.float64)          # (N, K, 3)
+    _cx.require_position_method(master.get("method", "bridge_dst"))
+    pos_modes = np.asarray(master["pos_modes"], np.float64)          # (N, K+2, 3)
     N = pos_modes.shape[0]
-    meta = {"method": "temporal_dct", "K": K, "n_t": n_t}
+    meta = {"method": master.get("method", "bridge_dst"), "K": K, "n_t": n_t}
 
     # ── Gradient phase in mode space (no trajectory reconstruction) ──────────────
     G_traj = _resample_G_to_traj(G, dt_wf, dt_traj, n_t)             # (n_meas, n_t, 3)
@@ -343,8 +344,9 @@ def _replay_compressed(master, G, dt_wf, *, chi_perp, T2, T1, surface_relaxivity
             # chi-gated surface needs per-save ℓ(t): reconstruct the (N, n_t) boundary
             # channel (ONE channel — 1/3 the positions; a mode-space contraction that
             # avoids this is a follow-up). Positions are still never reconstructed.
-            blt = _cx.decode_boundary_dct(
-                {"blt_dct_coeffs": master["blt_modes"], "blt_endpoint": master["blt_endpoint"]},
+            blt = _cx.decode_boundary_bridge(
+                {"blt_bridge_dst": master["blt_modes"], "blt_start": master["blt_start"],
+                 "blt_endpoint": master["blt_endpoint"]},
                 {"n_t": n_t, "K": K}).astype(np.float64)
             log_w_pw = log_w_pw + (surface_relaxivity / D) * (chi_r @ blt.T)
 

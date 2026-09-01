@@ -66,18 +66,30 @@ class ReplayPack:
         self.source = source
 
     @property
-    def dct_coeffs(self):
-        """(n_walkers, K, n_axes) position coefficients, read from the axis-per-tensor layout.
+    def position_coeffs(self):
+        """``(n_walkers, K+2, n_axes)``: two exact endpoints, then ``K`` sine bands per axis.
 
-        Raises on a pre-layout pack rather than guessing: see compression.read_position_coeffs.
+        The leading two entries are NOT bands -- they are ``r(0)`` and ``r(T)-r(0)`` -- so this
+        array must never be handed to a band-basis contraction.  Raises on a pre-layout pack
+        rather than guessing: see compression.read_position_coeffs.
         """
-        from .compression import read_position_coeffs
+        from .compression import read_position_coeffs, require_position_method
+        require_position_method(self.method)
         return read_position_coeffs(self.arrays, dtype=np.float32)
+
+    @property
+    def dct_coeffs(self):
+        raise AttributeError(
+            "ReplayPack.dct_coeffs is gone. Positions are stored as bridge_dst -- two exact "
+            "endpoints followed by sine bands -- so the name described the wrong basis and the "
+            "array it returned would be contracted against the wrong one. Use "
+            "ReplayPack.position_coeffs, and compile the scheme with replay.compile_scheme, "
+            "which emits the matching layout.")
 
     @property
     def spin_weights(self):
         w = self.arrays.get("spin_weights")
-        return np.ones(self.dct_coeffs.shape[0]) if w is None else w
+        return np.ones(self.position_coeffs.shape[0]) if w is None else w
 
     @property
     def blt_dct(self):
@@ -85,11 +97,30 @@ class ReplayPack:
 
     @property
     def K(self):
-        return int(self.dct_coeffs.shape[1])
+        """Retained sine bands -- NOT the stored coefficient count, which is ``K + 2``.
+
+        Reading the width off the array instead would hand ``K + 2`` to compile_scheme, whose
+        output would then be the right shape to multiply and the wrong thing to multiply by.
+        Declared and stored are cross-checked so they cannot drift apart.
+        """
+        k = int(self.meta.get("compression", {}).get("K", -1))
+        stored = int(self.position_coeffs.shape[1])
+        if k < 0:
+            raise ValueError("pack declares no compression.K; refusing to infer it from the "
+                             "array width, which counts the two endpoints as well")
+        if stored != k + 2:
+            raise ValueError(f"pack declares K={k} but stores {stored} coefficients per axis; "
+                             f"expected {k + 2} (two endpoints + K bands)")
+        return k
+
+    @property
+    def n_coeffs(self):
+        """Stored coefficients per axis, ``K + 2``."""
+        return int(self.position_coeffs.shape[1])
 
     @property
     def n_walkers(self):
-        return int(self.dct_coeffs.shape[0])
+        return int(self.position_coeffs.shape[0])
 
     @property
     def n_t(self):
@@ -118,17 +149,30 @@ class ReplayPack:
 
 
 # ------------------------------- compiled-scheme forward -------------------------------
-def compile_scheme(G, dt, K, gyromagnetic_ratio=GAMMA):
-    """Compile an acquisition into its temporal-basis projection ``W`` (3K, n_meas).
+def compile_scheme(G, dt, K, gyromagnetic_ratio=GAMMA, *, n_t=None, method=None):
+    """Compile an acquisition into its temporal-basis projection ``W``.
 
     ``G`` is the gradient waveform on the pack save grid, shape ``(n_meas, n_t, 3)`` [T/m]; ``dt`` the save
-    interval [s]; ``K`` the pack's DCT-mode count. Reusable across every pack on this grid (fitting) and
+    interval [s]; ``K`` the pack's retained-mode count; ``method`` the pack's position codec.
+    Shape is ``(3(K+2), n_meas)``: the first two rows per axis are the gradient moments
+    ``M0`` and ``M1``, which a motion-compensated waveform makes vanish, followed by the sine
+    bands.  ``method`` is accepted only to let a caller assert the pack's codec; a retired one
+    raises rather than selecting a different basis. Reusable across every pack on this grid (fitting) and
     every fit iteration; in design it is recomputed per candidate waveform (cheap: an FFT + scale)."""
-    from scipy.fft import dct
+    from scipy.fft import dst
+    from .compression import require_position_method
+    require_position_method(method or "bridge_dst")
     G = np.asarray(G, np.float64)
-    Ghat = dct(G, type=2, norm="ortho", axis=1)[:, :K, :]      # (n_meas, K, 3)
-    n_meas = Ghat.shape[0]
-    return (gyromagnetic_ratio * dt * Ghat).reshape(n_meas, K * 3).T   # (3K, n_meas)
+    if True:
+        # first two rows per axis are the gradient moments -- the columns a motion-compensated
+        # waveform annihilates -- followed by the sine bands of the pinned residual
+        from .compression import bridge_moment_rows
+        n_t = int(n_t or G.shape[1])
+        M0, M1 = bridge_moment_rows(G, n_t)
+        Ghat = dst(G[:, 1:-1, :], type=1, norm="ortho", axis=1)[:, :K, :]
+        W = np.concatenate([M0[:, None, :], M1[:, None, :], Ghat], axis=1)  # (n_meas, K+2, 3)
+        n_meas = W.shape[0]
+        return (gyromagnetic_ratio * dt * W).reshape(n_meas, (K + 2) * 3).T
 
 
 def surface_logweight(blt_dct, rho_over_D, n_t, chi_hat=None):
@@ -154,8 +198,17 @@ def replay_signal(pack, W, *, rho_over_D=0.0, chi_hat=None, complex_signal=False
     """
     a = pack.arrays if isinstance(pack, ReplayPack) else pack
     from .compression import read_position_coeffs
+    from .compression import require_position_method
+    if isinstance(pack, ReplayPack):
+        require_position_method(pack.method)
     C = read_position_coeffs(a, dtype=np.float64)
     N_w, K, _ = C.shape
+    if W.shape[0] != K * 3:
+        raise ValueError(
+            f"compiled scheme has {W.shape[0]} rows for {K * 3} stored coefficients "
+            f"({K} per axis = 2 endpoints + {K - 2} bands). Compile with "
+            f"compile_scheme(G, dt, pack.K, n_t=pack.n_t) -- passing the stored width instead "
+            f"of pack.K produces a scheme that multiplies cleanly and means nothing.")
     w0 = np.asarray(a.get("spin_weights", np.ones(N_w)), np.float64)
     phi = C.reshape(N_w, K * 3) @ W                            # (N_w, n_meas)
     w_eff = w0
@@ -167,12 +220,15 @@ def replay_signal(pack, W, *, rho_over_D=0.0, chi_hat=None, complex_signal=False
     return S if complex_signal else np.abs(S)
 
 
-def replay_signal_jax(dct_coeffs, spin_weights, W, *, blt_dct=None, rho_over_D=0.0, n_t=None, chi_hat=None):
+def replay_signal_jax(position_coeffs, spin_weights, W, *, blt_dct=None, rho_over_D=0.0,
+                      n_t=None, chi_hat=None):
     """JAX/autodiff twin of :func:`replay_signal` — differentiable in the compiled scheme ``W`` (hence in
-    the waveform ``G`` that produced it) and jittable. Returns the complex signal (take ``abs`` for
+    the waveform ``G`` that produced it) and jittable. ``position_coeffs`` is
+    ``(n_walkers, K+2, n_axes)`` -- two endpoints then sine bands -- and ``W`` must come from
+    :func:`compile_scheme`, which emits the matching row order. Returns the complex signal (take ``abs`` for
     magnitude). This is the forward a gradient-based waveform/B1 optimizer differentiates through."""
     import jax.numpy as jnp
-    C = jnp.asarray(dct_coeffs)
+    C = jnp.asarray(position_coeffs)
     N_w, K, _ = C.shape
     phi = C.reshape(N_w, K * 3) @ jnp.asarray(W)
     w0 = jnp.asarray(spin_weights)

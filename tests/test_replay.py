@@ -21,11 +21,11 @@ def _synth_pack(seed=0):
     # low-frequency-ish trajectories (bounded ~micron scale), so K modes capture them
     traj = np.cumsum(rng.normal(0, 3e-7, size=(N_W, N_T, 3)), axis=1)
     traj -= traj.mean(1, keepdims=True)
-    C = dct(traj, type=2, norm="ortho", axis=1)[:, :K, :]      # (N_W, K, 3)
-    from dmipy_sim.compression import pack_position_arrays
-    arrays = {**pack_position_arrays(C, np.float32),
-              "spin_weights": np.ones(N_W, np.float32)}
-    meta = {"n_t": N_T, "dt": DT, "walk_params": {"n_t": N_T, "dt_traj": DT}}
+    from dmipy_sim.compression import encode_bridge_dst
+    arrays, cmeta, _ = encode_bridge_dst(traj, K)              # (N_W, K+2, 3) per axis
+    arrays["spin_weights"] = np.ones(N_W, np.float32)
+    meta = {"n_t": N_T, "dt": DT, "walk_params": {"n_t": N_T, "dt_traj": DT},
+            "compression": {"method": cmeta["method"], "K": K}}
     return arrays, meta, traj
 
 
@@ -40,11 +40,11 @@ def test_replay_equals_direct_phase():
     arrays, meta, traj = _synth_pack()
     pack = ReplayPack(arrays, meta)
     G = np.stack([_pgse(a, 10e-3, 30e-3) for a in (0.02, 0.05, 0.1)])   # (3, N_T, 3)
-    W = compile_scheme(G, DT, K, GAMMA)
+    W = compile_scheme(G, DT, K, GAMMA, n_t=N_T)
     E = replay_signal(pack, W)
-    # direct reference: reconstruct r = idct(C) (== the K-truncated trajectory), integrate the phase
-    from dmipy_sim.compression import read_position_coeffs
-    r = idct(read_position_coeffs(arrays), type=2, norm="ortho", axis=1, n=N_T)
+    # direct reference: reconstruct the truncated trajectory and integrate the phase
+    from dmipy_sim.compression import decode
+    r = decode(arrays, {"method": "bridge_dst", "n_t": N_T})
     phi = GAMMA * DT * np.einsum("mtc,wtc->mw", G, r)                   # (n_meas, N_W)
     E_direct = np.abs(np.cos(phi).mean(1) + 1j * 0) if False else np.abs(np.exp(1j * phi).mean(1))
     npt.assert_allclose(E, E_direct, atol=1e-10)
@@ -58,7 +58,7 @@ def test_rpk_roundtrip(tmp_path):
     assert pk.n_t == N_T and pk.K == K and pk.n_walkers == N_W
     npt.assert_allclose(pk.dt, DT)
     from dmipy_sim.compression import read_position_coeffs
-    npt.assert_allclose(np.asarray(pk.dct_coeffs), read_position_coeffs(arrays, dtype=np.float32))
+    npt.assert_allclose(np.asarray(pk.position_coeffs), read_position_coeffs(arrays, dtype=np.float32))
 
 
 def test_jax_twin_matches_and_differentiable():
@@ -66,7 +66,7 @@ def test_jax_twin_matches_and_differentiable():
     import jax.numpy as jnp
     arrays, meta, _ = _synth_pack()
     G = np.stack([_pgse(a, 10e-3, 30e-3) for a in (0.03, 0.08)])
-    W = compile_scheme(G, DT, K, GAMMA)
+    W = compile_scheme(G, DT, K, GAMMA, n_t=N_T)
     E_np = replay_signal(arrays, W)
     C3 = read_position_coeffs(arrays, dtype=np.float32)
     E_jx = np.abs(np.asarray(replay_signal_jax(C3, arrays["spin_weights"], W)))
@@ -89,7 +89,7 @@ def test_surface_knob_attenuates():
     arrays = {**arrays, "blt_dct": blt}
     pack = ReplayPack(arrays, meta)
     G = _pgse(0.0, 10e-3, 30e-3)[None]                                  # b0
-    W = compile_scheme(G, DT, K, GAMMA)
+    W = compile_scheme(G, DT, K, GAMMA, n_t=N_T)
     E0 = replay_signal(pack, W)[0]
     Er = replay_signal(pack, W, rho_over_D=0.05)[0]                     # modest rho/D -> O(1) log-weight
     assert E0 == pytest.approx(1.0, abs=1e-9)                           # b0, no surface -> 1

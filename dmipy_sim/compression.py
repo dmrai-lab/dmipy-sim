@@ -5,10 +5,11 @@ replay observable is a functional of the stored walk, and the walk compresses al
 two physical redundancies:
 
   * TEMPORAL — a deliverable gradient waveform is band-limited, so only the low-order
-    temporal content of a path is ever probed. ``temporal_dct`` keeps the lowest ``K``
-    orthonormal DCT bands of each path: lossless for any acquisition inside that band,
-    and it PRESERVES walker identity (so the per-walker relaxation / boundary / MT
-    channels stay aligned and replay too).
+    temporal content of a path is ever probed. ``bridge_dst`` -- the only C0 representation --
+    splits each path into its two exact endpoints and a residual pinned at both, keeping the
+    lowest ``K`` sine bands of the residual: lossless for any acquisition inside that band, and
+    it PRESERVES walker identity (so the per-walker relaxation / boundary / MT channels stay
+    aligned and replay too).
   * ENSEMBLE — walkers are exchangeable samples. ``lowrank`` keeps ``K`` Karhunen-
     Loeve modes + exact per-walker coefficients (walker-preserving, storage ~ N_w).
     ``gaussian`` / ``marginal`` store only a coefficient DISTRIBUTION and resample at
@@ -17,7 +18,8 @@ two physical redundancies:
 
 The physics channels get their own codecs (positions are smooth+low-rank; these are not):
 
-  * ``compartment`` / ``bound_fraction`` — piecewise-constant per walker -> row RLE.
+  * ``compartment`` (C1) — named occupancy columns, piecewise-constant per walker -> row
+    RLE. The MT bound pool is one of these columns, not a channel of its own.
   * ``boundary_local_time`` (surface relaxivity ell(t), rho/D=1) — two codecs:
       - ``boundary_local_time`` : DENSITY-AWARE sparse-CSR / dense-int8 of the *per-step*
         signal. Lossless to the value quant; but the per-step signal is dense at small R
@@ -40,76 +42,124 @@ from __future__ import annotations
 import numpy as np
 
 try:
-    from scipy.fft import dct as _dct, idct as _idct
+    from scipy.fft import dct as _dct, idct as _idct, dst as _dst, idst as _idst
 except ImportError as _e:  # pragma: no cover
     raise ImportError("dmipy_sim.compression needs scipy (pip install scipy)") from _e
 
 from .constants import GAMMA
 
-WALKER_PRESERVING = ("temporal_dct", "lowrank")
-DISTRIBUTIONAL = ("gaussian", "marginal")
-ALL_METHODS = WALKER_PRESERVING + DISTRIBUTIONAL
+POSITION_METHOD = "bridge_dst"          # the only C0 representation; see encode_bridge_dst
+WALKER_PRESERVING = (POSITION_METHOD,)
+ALL_METHODS = WALKER_PRESERVING
+
+_RETIRED = {
+    "temporal_dct": "cosine bands of the whole path",
+    "lowrank": "KL modes over the flattened path",
+    "gaussian": "a fitted coefficient distribution",
+    "marginal": "coefficient quantiles",
+}
+
+# C2 shares C0's fate: the cumulative local time moved from detrended DCT-II bands
+# (``blt_dct_coeffs``) to the bridge form (``blt_bridge_dst`` + ``blt_start``). The array NAME
+# changed deliberately -- a stale pack then fails to find its channel instead of decoding sine
+# bands as cosine ones and returning a plausible wrong attenuation.
+_RETIRED_BOUNDARY = {"dct": "detrended cosine bands of the cumulative local time"}
+
+
+def require_position_method(method):
+    """Raise unless ``method`` is the one C0 representation this build reads.
+
+    There is deliberately no fallback. A retired codec stores different quantities under the
+    same tensor names -- ``bridge_dst`` puts the two endpoints where a band codec puts its two
+    lowest bands -- so decoding one as the other yields plausible numbers rather than an error.
+    Refusing is the only safe response; the pack must be re-encoded from its master.
+    """
+    if method == POSITION_METHOD:
+        return method
+    if method in _RETIRED:
+        raise ValueError(
+            f"position codec {method!r} ({_RETIRED[method]}) is no longer read. Positions are "
+            f"stored as {POSITION_METHOD!r}: two exact endpoints followed by sine bands of the "
+            f"pinned residual. The first two coefficients per axis are NOT bands, so decoding "
+            f"this pack with the current reader would return plausible but wrong values. "
+            f"Re-encode the pack from its master with build_replay_pack().")
+    if method is None:
+        raise ValueError(
+            f"pack declares no position codec. It must declare "
+            f"compression.method = {POSITION_METHOD!r}; refusing to assume it, since a pack "
+            f"written by an older build stores different quantities under the same names.")
+    raise ValueError(f"unknown position codec {method!r}; expected {POSITION_METHOD!r}")
 _F16, _F32 = 2, 4
 
 
 # --------------------------------------------------------------------- encoders
-def encode_temporal_dct(X, K):
-    """Keep the lowest K orthonormal DCT-II temporal bands of each path (per axis)."""
+
+def encode_bridge_dst(X, K):
+    """Endpoints plus a Brownian bridge, expanded on the sine basis (per axis).
+
+    Splits each path the way the gradient phase reads it -- into the two endpoints and a
+    residual pinned at both -- and keeps the lowest ``K`` DST-I bands of the residual:
+
+        r(t) = r(0) + (t/T)[r(T) - r(0)] + u(t),    u(0) = u(T) = 0
+
+    Stored per axis as ``[r(0), r(T)-r(0), beta_1..beta_K]``, so the layout stays one tensor per
+    spatial axis and the first two entries are the coefficients the gradient moments pair with.
+
+    Three properties, none of which is a compression claim. The gradient phase becomes
+    ``r(0).M0 + (r(T)-r(0)).M1/T + sum_k beta_k Ghat_k``, so refocusing and velocity
+    compensation annihilate the first two columns exactly.  Both endpoints are held exactly
+    rather than to the truncation error, so a stored walk can be continued from where it ended.
+    And the sine basis is the variance-optimal one for what remains: the discrete Brownian
+    bridge has covariance ``min(m,n) - mn/N`` whose inverse is the Dirichlet Laplacian, so its
+    Karhunen-Loeve eigenvectors are exactly the DST-I vectors.
+
+    Accuracy is indistinguishable from ``temporal_dct``, and that is a theorem rather than a
+    coincidence: the difference operator maps the cosine basis onto the sine basis exactly,
+    ``c_k(n) - c_k(n-1) = -2 sin(pi k / 2N) s_{k-1}(n)``, so a cosine expansion of the path is a
+    sine expansion of its increments and the two truncate to the same subspaces.
+    """
+    X = np.asarray(X, np.float64)
     Nw, Nt, _ = X.shape
-    C = _dct(np.asarray(X, np.float64), axis=1, type=2, norm="ortho")[:, :K, :]
+    a = X[:, 0, :]
+    v = X[:, -1, :] - X[:, 0, :]
+    tau = np.arange(Nt) / (Nt - 1.0)
+    u = X - (a[:, None, :] + v[:, None, :] * tau[None, :, None])
+    K = int(min(K, Nt - 2))
+    B = _dst(u[:, 1:-1, :], axis=1, type=1, norm="ortho")[:, :K, :]
+    C = np.concatenate([a[:, None, :], v[:, None, :], B], axis=1)   # (Nw, K+2, 3)
     arrays = pack_position_arrays(C, np.float32)
-    meta = {"method": "temporal_dct", "K": int(K), "n_t": int(Nt)}
-    nbytes = Nw * 3 * K * _F16
-    return arrays, meta, nbytes
+    meta = {"method": "bridge_dst", "K": K, "n_t": int(Nt)}
+    return arrays, meta, Nw * 3 * (K + 2) * _F16
 
 
-def _kl(X):
-    Nw, Nt, _ = X.shape
-    Xf = np.asarray(X, np.float64).reshape(Nw, 3 * Nt)
-    mean = Xf.mean(0, keepdims=True)
-    U, s, Vt = np.linalg.svd(Xf - mean, full_matrices=False)
-    return Xf, mean, U, s, Vt, Nt
+def decode_bridge_dst(arrays, meta):
+    """Reconstruct positions from endpoints plus sine bands."""
+    Nt = int(meta["n_t"])
+    C = read_position_coeffs(arrays, dtype=np.float64)
+    a, v, B = C[:, 0, :], C[:, 1, :], C[:, 2:, :]
+    tau = np.arange(Nt) / (Nt - 1.0)
+    u = np.zeros((C.shape[0], Nt, 3))
+    if B.shape[1]:
+        u[:, 1:-1, :] = _idst(B, axis=1, type=1, norm="ortho", n=Nt - 2)
+    return a[:, None, :] + v[:, None, :] * tau[None, :, None] + u
 
 
-def encode_lowrank(X, K, _cache=None):
-    Xf, mean, U, s, Vt, Nt = _cache or _kl(X)
-    K = min(K, s.shape[0])
-    A = (U[:, :K] * s[:K])
-    arrays = {"modes": Vt[:K].astype(np.float32), "mean": mean[0].astype(np.float32),
-              "coeffs": A.astype(np.float16)}
-    meta = {"method": "lowrank", "K": int(K), "n_t": int(Nt)}
-    nbytes = X.shape[0] * K * _F16 + K * 3 * Nt * _F16 + 3 * Nt * _F16
-    return arrays, meta, nbytes
+def bridge_moment_rows(G, n_t):
+    """Sequence-side rows the two endpoint coefficients pair with: ``(M0, M1/T)``.
+
+    ``M0 = sum_n G_n`` is the refocusing condition and ``M1 = sum_n tau_n G_n`` the
+    velocity-compensation one, so a motion-compensated waveform makes both vanish.
+    """
+    G = np.asarray(G, np.float64)
+    tau = np.arange(n_t) / (n_t - 1.0)
+    return G.sum(1), (G * tau[None, :, None]).sum(1)
 
 
-def encode_gaussian(X, K, _cache=None):
-    Xf, mean, U, s, Vt, Nt = _cache or _kl(X)
-    K = min(K, s.shape[0])
-    A = (U[:, :K] * s[:K])
-    cov = np.cov(A, rowvar=False) if K > 1 else np.array([[A.var()]])
-    arrays = {"modes": Vt[:K].astype(np.float32), "mean": mean[0].astype(np.float32),
-              "coeff_mean": A.mean(0).astype(np.float32), "coeff_cov": cov.astype(np.float32)}
-    meta = {"method": "gaussian", "K": int(K), "n_t": int(Nt),
-            "n_walkers": int(X.shape[0])}
-    nbytes = (K * 3 * Nt + K * K + 3 * Nt) * _F32
-    return arrays, meta, nbytes
 
 
-def encode_marginal(X, K, Q=256, _cache=None):
-    Xf, mean, U, s, Vt, Nt = _cache or _kl(X)
-    K = min(K, s.shape[0])
-    A = (U[:, :K] * s[:K])
-    qs = np.linspace(0, 1, Q)
-    arrays = {"modes": Vt[:K].astype(np.float32), "mean": mean[0].astype(np.float32),
-              "coeff_quantiles": np.quantile(A, qs, axis=0).astype(np.float32)}
-    meta = {"method": "marginal", "K": int(K), "n_t": int(Nt), "Q": int(Q),
-            "n_walkers": int(X.shape[0])}
-    nbytes = (K * 3 * Nt + K * Q + 3 * Nt) * _F32
-    return arrays, meta, nbytes
 
 
-ENCODERS = {"temporal_dct": encode_temporal_dct, "lowrank": encode_lowrank,
-            "gaussian": encode_gaussian, "marginal": encode_marginal}
+ENCODERS = {POSITION_METHOD: encode_bridge_dst}
 
 
 # ------------------------------------------------------- run-length row coding
@@ -135,30 +185,10 @@ def rle_decode_rows(vals, lens, counts, n_t):
 
 
 # ------------------------------------------- per-walker physics-channel codecs
-def encode_bound_fraction(bfrac, Q=256):
-    """(arrays, meta) for the bound_fraction channel: quantize [0,1] -> {0..Q-1}, RLE rows."""
-    b = np.clip(np.asarray(bfrac, np.float64), 0.0, 1.0)
-    q = np.rint(b * (Q - 1)).astype(np.int32)
-    vals, lens, counts, n_t = rle_encode_rows(q)
-    val_dtype = np.uint8 if Q <= 256 else np.int32
-    len_dtype = np.uint16 if n_t < 65535 else np.int32
-    arrays = {"bfrac_rle_vals": vals.astype(val_dtype),
-              "bfrac_rle_lens": lens.astype(len_dtype),
-              "bfrac_rle_counts": np.asarray(counts, np.int32)}
-    return arrays, {"channel": "bound_fraction", "Q": int(Q), "n_t": int(n_t)}
-
-
-def decode_bound_fraction(arrays, meta):
-    q = rle_decode_rows(np.asarray(arrays["bfrac_rle_vals"]),
-                        np.asarray(arrays["bfrac_rle_lens"]),
-                        np.asarray(arrays["bfrac_rle_counts"]), int(meta["n_t"]))
-    return (q.astype(np.float32) / float(meta["Q"] - 1))
-
-
 def encode_boundary_local_time(dlog, nlevels=4096):
     """DENSITY-AWARE per-step codec: sparse CSR (isolated fibres) or dense int8 (packed
     WM). Lossless to the value quant. NOTE: caps at ~2x when contacts are dense (small R);
-    prefer ``encode_boundary_dct`` for the smooth cumulative representation."""
+    prefer ``encode_boundary_bridge`` for the smooth cumulative representation."""
     A = np.asarray(dlog, np.float64)
     nw, nt = A.shape
     scale = float(np.abs(A).max()) + 1e-30
@@ -200,111 +230,168 @@ def decode_boundary_local_time(arrays, meta):
     return out
 
 
-def encode_boundary_dct(dlog, K=16, dtype=np.float32):
-    """IR-basis codec for the boundary-local-time channel: DETREND-then-DCT of the CUMULATIVE
-    local time B(t)=cumsum(ell). ell(t) is spiky+dense, but its running integral B(t) is
-    smooth. B is ~linear (roughly constant contact rate), and a bare DCT of a ramp has a
-    Gibbs endpoint error that exceeds the MC floor at small K -- fatal for the longest-TE
-    truncation. So store the EXACT endpoint B(T) (1 float/walker) and DCT only the residual
-    B(t) - (t/T)*B(T), which vanishes at both ends and is tiny+smooth: K~8 bands take every
-    TE truncation / per-save gate (ell = diff(B)) to ~100x below the MC floor. Stores
-    (N_w, K+1) float32; ratio ~ n_t/K, which GROWS with walk length -- this is what makes
-    surface-relaxivity replay memory-viable at high n_t (record once, sub-micron)."""
+def encode_boundary_bridge(dlog, K=16, dtype=np.float32):
+    """Bridge codec for the boundary-local-time channel: the CUMULATIVE local time B(t)=cumsum(ell)
+    stored as its two exact endpoints plus SINE bands of the pinned residual -- the same form C0
+    uses for positions, on the same segment grid.
+
+    ell(t) is spiky and dense; its running integral B(t) is smooth and ~linear (roughly constant
+    contact rate). Detrending by the chord B(0) + tau*(B(T)-B(0)) leaves a residual vanishing at
+    BOTH ends, which is what makes DST-I the basis rather than DCT-II.
+
+    **The basis is chosen for exactness, not for error.** Measured on a reflecting slab (4000
+    walkers, n_t=1024), worst-over-t error in B(t) is a wash -- DST-I beats DCT-II by only 1.0-1.3x
+    at K=4..64, and the coefficient slopes are indistinguishable (-0.96 vs -0.99). What differs is
+    the endpoint. A truncated DCT-II residual does NOT vanish at t=T, so the reconstruction misses
+    the stored total by 1.6%-6.4% of B(T) at EVERY K; the sine form is identically zero there by
+    construction, so B(0) and B(T) come back exact at every K:
+
+        K                  4        8        16       32       64
+        DCT-II endpoint    6.4e-2   4.5e-2   3.1e-2   2.5e-2   1.6e-2
+        DST-I  endpoint    0        0        0        0        0
+
+    That is the property the segment algebra needs. Splitting into S segments and chaining their
+    endpoints drifts by ~1.5e-2 under DCT-II regardless of S, and by <1e-16 under the sine form --
+    so a pack can be cut at a segment boundary, or two segments merged, without the surface channel
+    accumulating error the way a band codec does. ``blt_endpoint`` remains the exact total B(T) that
+    the ungated rho attenuation reads directly.
+
+    Stores (N_w, K) sine bands + two floats per walker; ratio ~ n_t/K, which GROWS with walk length.
+    Lossless at K = n_t - 2 (the interior dimension), NOT at K = n_t.
+    """
     A = np.asarray(dlog, np.float64)
     nw, nt = A.shape
     B = np.cumsum(A, axis=1)                                   # (N_w, n_t) smooth
-    endpoint = B[:, -1].copy()                                 # exact total local time
-    ramp = np.linspace(0.0, 1.0, nt)[None, :]
-    resid = B - endpoint[:, None] * ramp                      # 0 at both ends, small+smooth
-    C = _dct(resid, axis=1, type=2, norm="ortho")[:, :K]      # (N_w, K)
-    # ``dtype`` sets the coefficient precision. It defaults to f32 so the codec keeps its
-    # lossless-at-K=n_t contract; packs pass f16 (halves the tier at measurably identical ensemble
-    # error) via build_replay_pack's ``blt_dtype``. The ENDPOINT is always f32 -- it is the exact
-    # cumulative total the rho attenuation reads directly, where f16's ~3 significant digits would be
-    # a real error rather than a rounding one.
-    arrays = {"blt_dct_coeffs": C.astype(dtype),
+    a = B[:, 0].copy()                                         # exact B(0)
+    endpoint = B[:, -1].copy()                                 # exact total local time B(T)
+    tau = np.linspace(0.0, 1.0, nt)[None, :]
+    resid = B - (a[:, None] + (endpoint - a)[:, None] * tau)   # exactly 0 at BOTH ends
+    K = int(min(K, nt - 2))
+    C = _dst(resid[:, 1:-1], axis=1, type=1, norm="ortho")[:, :K]
+    # ``dtype`` sets the band precision; packs pass f16 via build_replay_pack's ``blt_dtype``. The
+    # two ENDPOINTS are always f32 -- they are the exact quantities the rho attenuation and the
+    # segment chaining read, where f16's ~3 significant digits would be a real error, not a rounding.
+    arrays = {"blt_bridge_dst": C.astype(dtype),
+              "blt_start": a.astype(np.float32),
               "blt_endpoint": endpoint.astype(np.float32)}
-    meta = {"channel": "boundary_local_time", "mode": "dct", "n_t": int(nt), "K": int(K),
+    meta = {"channel": "boundary_local_time", "mode": "bridge_dst", "n_t": int(nt), "K": int(K),
             "dtype": np.dtype(dtype).name}
     return arrays, meta
 
 
-def decode_boundary_dct(arrays, meta):
-    """Reconstruct per-save ell(t) = diff(B) from the stored endpoint + residual DCT bands."""
+def decode_boundary_bridge(arrays, meta):
+    """Reconstruct per-save ell(t) = diff(B) from the two endpoints + the pinned sine bands."""
     nt = int(meta["n_t"])
-    C = np.asarray(arrays["blt_dct_coeffs"], np.float64)
+    C = np.asarray(arrays["blt_bridge_dst"], np.float64)
+    a = np.asarray(arrays["blt_start"], np.float64)
     endpoint = np.asarray(arrays["blt_endpoint"], np.float64)
-    ramp = np.linspace(0.0, 1.0, nt)[None, :]
-    B = _idct(C, axis=1, type=2, norm="ortho", n=nt) + endpoint[:, None] * ramp
+    tau = np.linspace(0.0, 1.0, nt)[None, :]
+    u = np.zeros((C.shape[0], nt), np.float64)
+    u[:, 1:-1] = _idst(C, axis=1, type=1, norm="ortho", n=nt - 2)
+    B = u + (a[:, None] + (endpoint - a)[:, None] * tau)
     ell = np.diff(B, axis=1, prepend=B[:, :1] * 0.0)          # per-save increments
     return ell.astype(np.float32)
 
 
-def encode_compartment(comp, Q=256):
-    """Compartment codec. Integer labels -> lossless row RLE; fractional per-save occupancy
-    (permeable) -> quantize to Q levels over [0, scale] and RLE (faithful to fractions)."""
-    A = np.asarray(comp)
-    is_frac = not np.array_equal(A, np.round(A))
-    if not is_frac:
+# C1 is a set of named OCCUPANCY COLUMNS, not a single label track. At each save a walker has an
+# occupancy over the declared pools summing to 1, and replay weights the per-pool rates by it:
+# R(t) = sum_c f_c(t) R_c. Every case is that one form -- an integer compartment label is one-hot,
+# a permeable crossing is a fraction on the geometric axis, and MT binding is a fraction on an
+# INDEPENDENT axis (a walker can be intra-axonal and bound). Storing the axes as separate columns
+# is the compact encoding of the joint simplex: f_bound = b, f_geom = (1-b)*[comp == geom].
+#
+# This is why magnetization transfer needs no channel of its own. The bound pool is a column here;
+# what makes MT a distinct capability tier is the REPLAY side -- RF as vector-Bloch rotations, the
+# bound-pool knobs, and the equilibrium-start requirement -- not the storage. Compare C0 and C2,
+# which now share a byte-identical bridge layout and remain separate tiers for the same reason.
+_EXCLUSIVE_COLUMN = "comp"          # the geometric axis: mutually exclusive, may be an int label
+
+
+def _encode_occupancy_column(x, name, Q):
+    """One C1 column -> RLE arrays under ``{name}_rle_*`` + its descriptor.
+
+    Integer labels on the exclusive axis are RLE'd losslessly; everything else is an occupancy in
+    [0, scale] quantized to Q levels then RLE'd (integer RLE would lossily int-cast the fractions).
+    Occupancy is piecewise constant with long runs either way, which is what makes RLE the codec --
+    and the run lengths are physically meaningful: on the bound column they ARE the dwell times, so
+    C1 carries the realised exchange statistics rather than a summarising mean rate.
+    """
+    A = np.asarray(x)
+    if name == _EXCLUSIVE_COLUMN and np.array_equal(A, np.round(A)):
         vals, lens, counts, n_t = rle_encode_rows(A.astype(np.int32))
-        arrays = {"comp_rle_vals": vals.astype(np.int16),
-                  "comp_rle_lens": lens.astype(np.int32),
-                  "comp_rle_counts": np.asarray(counts, np.int32)}
-        return arrays, {"channel": "compartment", "fractional": False, "n_t": int(n_t)}
+        return ({f"{name}_rle_vals": vals.astype(np.int16),
+                 f"{name}_rle_lens": lens.astype(np.int32),
+                 f"{name}_rle_counts": np.asarray(counts, np.int32)},
+                {"name": name, "kind": "label", "n_t": int(n_t)})
     scale = float(np.nanmax(np.abs(A))) or 1.0
     q = np.rint(np.clip(A, 0.0, scale) / scale * (Q - 1)).astype(np.int32)
     vals, lens, counts, n_t = rle_encode_rows(q)
-    arrays = {"comp_rle_vals": vals.astype(np.uint8 if Q <= 256 else np.int32),
-              "comp_rle_lens": lens.astype(np.uint16 if n_t < 65535 else np.int32),
-              "comp_rle_counts": np.asarray(counts, np.int32)}
-    return arrays, {"channel": "compartment", "fractional": True, "Q": int(Q),
-                    "scale": scale, "n_t": int(n_t)}
+    return ({f"{name}_rle_vals": vals.astype(np.uint8 if Q <= 256 else np.int32),
+             f"{name}_rle_lens": lens.astype(np.uint16 if n_t < 65535 else np.int32),
+             f"{name}_rle_counts": np.asarray(counts, np.int32)},
+            {"name": name, "kind": "fraction", "Q": int(Q), "scale": scale, "n_t": int(n_t)})
 
 
-def decode_compartment(arrays, meta):
-    q = rle_decode_rows(np.asarray(arrays["comp_rle_vals"]),
-                        np.asarray(arrays["comp_rle_lens"]),
-                        np.asarray(arrays["comp_rle_counts"]), int(meta["n_t"]))
-    if meta.get("fractional"):
-        return (q.astype(np.float32) / float(meta["Q"] - 1)) * float(meta.get("scale", 1.0))
-    return q.astype(np.int16)
+def _decode_occupancy_column(arrays, d):
+    name = d["name"]
+    q = rle_decode_rows(np.asarray(arrays[f"{name}_rle_vals"]),
+                        np.asarray(arrays[f"{name}_rle_lens"]),
+                        np.asarray(arrays[f"{name}_rle_counts"]), int(d["n_t"]))
+    if d["kind"] == "label":
+        return q.astype(np.int16)
+    return (q.astype(np.float32) / float(d["Q"] - 1)) * float(d.get("scale", 1.0))
 
 
-CHANNEL_ENCODERS = {"bound_fraction": encode_bound_fraction,
-                    "boundary_local_time": encode_boundary_local_time,
-                    "boundary_dct": encode_boundary_dct,
-                    "compartment": encode_compartment}
-CHANNEL_DECODERS = {"bound_fraction": decode_bound_fraction,
-                    "boundary_local_time": decode_boundary_local_time,
-                    "boundary_dct": decode_boundary_dct,
-                    "compartment": decode_compartment}
+def encode_occupancy(columns, Q=256):
+    """C1 codec. ``columns`` maps a pool-axis name to its (N_w, N_t) track.
+
+    ``comp`` is the exclusive geometric axis (integer labels, or a fraction for a permeable
+    crossing); any other name is an occupancy in [0,1] on an independent axis -- ``bound`` for the
+    MT macromolecular pool. Column order is not significant; the descriptors carry the names.
+    """
+    if _EXCLUSIVE_COLUMN not in columns:
+        raise ValueError(f"C1 needs the {_EXCLUSIVE_COLUMN!r} column; got {sorted(columns)}")
+    arrays, cols = {}, []
+    for name, x in columns.items():
+        a, d = _encode_occupancy_column(x, name, Q)
+        arrays.update(a); cols.append(d)
+    n_t = {d["n_t"] for d in cols}
+    if len(n_t) != 1:
+        raise ValueError(f"C1 columns disagree on n_t: {[(d['name'], d['n_t']) for d in cols]}")
+    return arrays, {"channel": "compartment", "columns": cols, "n_t": cols[0]["n_t"]}
 
 
-def encode(X, method="temporal_dct", K=32, **kw):
+def decode_occupancy(arrays, meta):
+    """-> {name: track}. ``comp`` is int16 labels (or a float fraction); others are float [0,1]."""
+    if "columns" not in meta:
+        raise ValueError(
+            "this pack's C1 metadata predates the occupancy-column layout (no 'columns' key; it "
+            "carries the single-track form with 'fractional'/'Q' at the top level). C1 is now a set "
+            "of named columns -- the geometric axis under 'comp' plus, for an MT pack, the bound "
+            "pool under 'bound' (retiring the separate bound_fraction channel and its bfrac_rle_* "
+            "keys). The stored arrays are readable but their meaning is declared differently, so "
+            "the pack must be re-encoded from its master rather than reinterpreted here.")
+    return {d["name"]: _decode_occupancy_column(arrays, d) for d in meta["columns"]}
+
+
+def is_current_c1(meta):
+    """True if a pack's C1 channel metadata is in the occupancy-column layout."""
+    return isinstance(meta, dict) and "columns" in meta
+
+
+CHANNEL_ENCODERS = {POSITION_METHOD: encode_bridge_dst}
+CHANNEL_DECODERS = {"boundary_local_time": decode_boundary_local_time,
+                    "boundary_bridge": decode_boundary_bridge,
+                    "compartment": decode_occupancy}
+
+
+def encode(X, method=POSITION_METHOD, K=32, **kw):
     if method not in ENCODERS:
         raise ValueError(f"unknown method {method!r}; choose from {list(ENCODERS)}")
     return ENCODERS[method](X, K, **kw)
 
 
 # --------------------------------------------------------------------- decoder
-def _sample_coeffs(arrays, meta, n_walkers=None, seed=0):
-    method = meta["method"]; rng = np.random.default_rng(seed)
-    if method == "lowrank":
-        A = np.asarray(arrays["coeffs"], np.float64)
-        if n_walkers is not None and n_walkers != A.shape[0]:
-            raise ValueError("lowrank preserves its stored walker count only")
-        return A
-    K = np.asarray(arrays["modes"]).shape[0]
-    n = n_walkers or int(meta.get("n_walkers", 100_000))
-    if method == "gaussian":
-        L = np.linalg.cholesky(np.asarray(arrays["coeff_cov"], np.float64) + 1e-30 * np.eye(K))
-        return rng.standard_normal((n, K)) @ L.T + np.asarray(arrays["coeff_mean"], np.float64)
-    if method == "marginal":
-        quant = np.asarray(arrays["coeff_quantiles"], np.float64)
-        qs = np.linspace(0, 1, quant.shape[0]); u = rng.random((n, K))
-        return np.stack([np.interp(u[:, k], qs, quant[:, k]) for k in range(K)], axis=1)
-    raise ValueError(f"unknown method {method!r}")
-
 
 # ---------------------------------------------------------------- position layout (axis-addressable)
 # Positions are stored as ONE TENSOR PER SPATIAL AXIS -- pos_x/pos_y/pos_z, each (n_walkers, K) --
@@ -361,19 +448,28 @@ def read_position_coeffs(arrays, axes=None, dtype=np.float64):
 
 def decode(arrays, meta, n_walkers=None, seed=0):
     """Reconstruct positions (n_walkers, n_t, 3) from a pack's stored arrays."""
-    method = meta["method"]; Nt = int(meta["n_t"])
-    if method == "temporal_dct":
-        C = read_position_coeffs(arrays)
-        return _idct(C, axis=1, type=2, norm="ortho", n=Nt).astype(np.float64)
-    modes = np.asarray(arrays["modes"], np.float64)
-    mean = np.asarray(arrays.get("mean", np.zeros(modes.shape[1])), np.float64)
-    A = _sample_coeffs(arrays, meta, n_walkers, seed)
-    X = A @ modes + mean
-    return X.reshape(X.shape[0], Nt, 3)
+    require_position_method(meta["method"])
+    return decode_bridge_dst(arrays, meta)
+
+
+def rank_of(method=POSITION_METHOD, n_t=None):
+    """Number of coefficients per axis at which ``method`` is an exact rewrite of the walk.
+
+``n_t - 2``: ``bridge_dst`` spends two coefficients on the endpoints and expands the pinned residual on the
+    remaining ``n_t - 2`` interior samples -- so the representation is exactly rank-preserving,
+    not merely close to it.
+    """
+    require_position_method(method)
+    return int(n_t) - 2
+
+
+def is_lossless_at(method, K, n_t):
+    """Whether ``method`` at ``K`` bands reproduces the walk exactly (to storage precision)."""
+    return method == POSITION_METHOD and int(K) >= rank_of(method, n_t)
 
 
 def is_walker_preserving(method):
-    return method in WALKER_PRESERVING
+    return method == POSITION_METHOD
 
 
 # ------------------------------------------------------------ mode-space replay
@@ -381,25 +477,21 @@ def mode_space_phi(arrays, meta, G, dt, n_walkers=None, seed=0):
     """Gradient phase phi_i (N_w, n_meas) in the compressed basis, WITHOUT reconstructing
     the trajectory. Linear in position, so it commutes with every position codec:
 
-    * ``temporal_dct`` (orthonormal DCT bands C): phi = gamma*dt * sum_{k<K,d} C_{k,d} Ghat_{k,d},
-      Ghat = DCT(G) truncated to the same K bands.
-    * ``lowrank``/``gaussian``/``marginal`` (KL modes V): phi = A.c(G) + phi0, with
+    The first two coefficients pair with the gradient moments,
+    phi = gamma*dt * [r(0).M0 + (r(T)-r(0)).M1 + sum_k beta_k Ghat_k] with Ghat the sine bands
+    of G, so a motion-compensated waveform zeroes the first two columns exactly.
       c(G) = gamma*dt (V.vec(G)) a K-vector per measurement.
     """
-    method = meta.get("method", "temporal_dct")
-    G = np.asarray(G, np.float64); n_meas = G.shape[0]
-    if method == "temporal_dct":
-        C = read_position_coeffs(arrays, dtype=np.float64)         # (N_w, K, n_axes)
-        K = C.shape[1]
-        Ghat = _dct(G, axis=1, type=2, norm="ortho")[:, :K, :]    # (n_meas, K, 3)
-        return (GAMMA * dt) * np.einsum("wkd,mkd->wm", C, Ghat)
-    Gf = G.reshape(n_meas, -1)
-    modes = np.asarray(arrays["modes"], np.float64)
-    mean = np.asarray(arrays.get("mean", np.zeros(modes.shape[1])), np.float64)
-    A = _sample_coeffs(arrays, meta, n_walkers, seed)
-    c = (GAMMA * dt) * (modes @ Gf.T)
-    phi0 = (GAMMA * dt) * (Gf @ mean)
-    return A @ c + phi0[None, :]
+    require_position_method(meta.get("method"))
+    G = np.asarray(G, np.float64)
+    C = read_position_coeffs(arrays, dtype=np.float64)              # (N_w, K+2, n_axes)
+    n_t = int(meta["n_t"]); K = C.shape[1] - 2
+    if G.shape[1] != n_t:
+        raise ValueError(f"waveform has {G.shape[1]} samples, pack walk has n_t={n_t}")
+    M0, M1 = bridge_moment_rows(G, n_t)                             # (n_meas, 3) each
+    Ghat = _dst(G[:, 1:-1, :], axis=1, type=1, norm="ortho")[:, :K, :]
+    W = np.concatenate([M0[:, None, :], M1[:, None, :], Ghat], axis=1)
+    return (GAMMA * dt) * np.einsum("wkd,mkd->wm", C, W)
 
 
 def mode_space_signal(arrays, meta, G, dt, logw=None, weights=None,
@@ -525,13 +617,14 @@ def measure_fidelity(traj, dt_traj, decoded_pos, env=None, w=None, logw=None):
                 within_2x_floor=bool(err_all <= 2 * floor_all), per_family=per_fam)
 
 
-def auto_select_modes(X, traj, dt_traj, method="temporal_dct", env=None, tol=2.0,
+def auto_select_modes(X, traj, dt_traj, method=POSITION_METHOD, env=None, tol=2.0,
                       err_target=None, K_grid=(8, 16, 32, 48, 64, 96, 128),
                       w=None, logw=None, verbose=False):
     """Smallest K whose decoded replay error meets the target (err_target absolute, else
     tol * split-half floor). Returns (K, fidelity_report); falls back to the largest K."""
     env = env or default_envelope()
-    cache = _kl(X) if method in ("lowrank", "gaussian", "marginal") else None
+    require_position_method(method)
+    cache = None
     best = None
     for K in K_grid:
         arrays, meta, _ = (ENCODERS[method](X, K, _cache=cache) if cache

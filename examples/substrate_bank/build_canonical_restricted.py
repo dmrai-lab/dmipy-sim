@@ -65,16 +65,17 @@ def pack_id(shape, diameter, D0):
     return f"canonical/D0-{D0*1e9:.2f}e-9/{shape}/d{diameter*1e6:06.2f}um"
 
 
-def build_pack(shape, diameter, D0, *, out_dir=None, sigma_star=5e-3, K=128, method="temporal_dct",
+def build_pack(shape, diameter, D0, *, out_dir=None, sigma_star=5e-3, K=128,
+               method="bridge_dst",
                envelope=None, citation="Substrate Commons canonical restricted-shape reference dataset",
                license="CC-BY-4.0", verbose=True, **walk_kw):
     """Walk + freeze one canonical pack. Returns ``(ReplayPack, out_path_or_None)``.
 
-    Codec is ``temporal_dct`` (K lowest DCT temporal bands per path) — a walker-preserving,
-    SVD-FREE compression. NB: the ``lowrank`` codec's full ``numpy.linalg.svd`` is pathologically
-    slow on this aarch64/OpenBLAS build (a (5000,1200) SVD does not finish in 2 min while an
-    equivalent GEMM is <1 s), so ``temporal_dct`` is the default here; it is near-lossless for the
-    signal (err ≪ MC floor) on a single smooth restricted pore. ``K`` is the number of DCT bands."""
+    Codec is ``bridge_dst``: two exact endpoints per axis followed by ``K`` sine bands of the
+    pinned residual (the Brownian bridge).  Walker-preserving and SVD-FREE -- which matters
+    here, since ``numpy.linalg.svd`` is pathologically slow on this aarch64/OpenBLAS build (a
+    (5000,1200) SVD does not finish in 2 min while an equivalent GEMM is <1 s).  ``K`` is the
+    number of retained sine bands; the stored width per axis is ``K + 2``."""
     m = walk_restricted_master(shape, diameter, D0, verbose=verbose, **walk_kw)
     if envelope is None:
         envelope = restricted_envelope()

@@ -3,7 +3,7 @@
 :func:`build_replay_pack` turns a **master walk** (from
 :func:`dmipy_sim.core.simulate_trajectories`, ``save_relaxation_data=True``) into a compressed,
 self-describing replay pack: the position ensemble is compressed by a :mod:`dmipy_sim.compression`
-codec (default ``temporal_dct``), the tier channels the certified envelope needs are carried
+codec (``bridge_dst``), the tier channels the certified envelope needs are carried
 (bulk relaxation via the compartment map, surface relaxivity via the boundary-local-time channel,
 magnetization transfer via the bound-fraction channel), and the pack MEASURES its own replay
 fidelity against the split-half Monte-Carlo floor before it is written. The result is a single
@@ -28,7 +28,7 @@ from .replay import ReplayPack, read_rpk, write_rpk
 __all__ = ["build_replay_pack", "build_to_floor", "replay_susc", "frame_from_axis", "frame_from_bundles",
            "read_rpk", "write_rpk", "RPK_SCHEMA_VERSION"]
 
-RPK_SCHEMA_VERSION = "1.1"
+RPK_SCHEMA_VERSION = "0.3"
 
 
 # --------------------------------------------------------------- master-walk normalisation
@@ -122,14 +122,14 @@ def _surface_fidelity(m, arrays, chan_meta, env):
     STORED boundary channel vs the RAW per-step boundary local time, over a rho battery, against
     the split-half MC floor of the raw surface signal. Returns ``dict(err, floor)`` or None."""
     raw = m.get("dlog_b")
-    has_stored = any(k in arrays for k in ("blt_dct_coeffs", "blt_dense_q", "blt_counts"))
+    has_stored = any(k in arrays for k in ("blt_bridge_dst", "blt_dense_q", "blt_counts"))
     if raw is None or not has_stored:
         return None
     raw = np.asarray(raw, np.float64); n_w = raw.shape[0]
     w = np.asarray(m["w"], np.float64) if m.get("w") is not None else np.ones(n_w)
     D = float(m.get("D_intra") or 0.0) or 1.0
-    if "blt_dct_coeffs" in arrays:
-        decoded = _cx.decode_boundary_dct(arrays, chan_meta)
+    if "blt_bridge_dst" in arrays:
+        decoded = _cx.decode_boundary_bridge(arrays, chan_meta)
     else:
         decoded = _cx.decode_boundary_local_time(arrays, chan_meta)
     perm = np.random.RandomState(0).permutation(n_w); A, B = perm[:n_w // 2], perm[n_w // 2:]
@@ -331,7 +331,7 @@ def _susc_path_fidelity(m, arrays, pm, gm, env):
     return dict(err=float(err), floor=float(floor), n_pulses_certified=n_p)
 
 
-def susc_path_encode(fb, traj, origin, *, K=32, dtype=np.float16, atol_trace=1e-6):
+def susc_path_encode(fb, traj, origin, *, K=32, bits=8, dtype=np.float16, atol_trace=1e-6):
     """Encode the off-resonance field ALONG each walker's path as K temporal DCT-II coefficients.
 
     The obstacle to compressing susceptibility is that phi_chi = gamma*int s(t)*dB(r(t)) dt is
@@ -359,6 +359,28 @@ def susc_path_encode(fb, traj, origin, *, K=32, dtype=np.float16, atol_trace=1e-
 
     So ``max_refocus_pulses = K//2`` is recorded in the metadata; a consumer replaying a denser train
     than that is outside the pack's certified range. Do not read K as "the field is accurate to X".
+
+    **Bit depth, not K, is the cheap axis.** Above the DC term b_c(t) is nearly white (band variance
+    falls only ~1 decade over 63 bands, slope ~-0.6, against -2 for a trajectory), so the DCT here is
+    NOT doing energy compaction -- it earns its place because it is the basis in which the *gate* is
+    sparse, and truncation is therefore a brick-wall approximation to the gate-weighted allocation.
+    The graded version is to keep every band and spend fewer bits on each. Measured on three Winther
+    axons, 48 knob settings x CPMG{1,4,16,32}, worst-case signal error against the f16 pack:
+
+        12ch x K=32 f16    27.6 MB   1.4e-04 (CPMG1)  1.2e-03 (CPMG16)  1.5e-02 (CPMG32) <- capability lost
+        12ch x K=64 int8   27.6 MB   1.2e-03           1.4e-05           1.7e-05
+        12ch x K=64 6-bit  20.7 MB   1.9e-02  <- exceeds the MC floor on axon08; not safe
+
+    So ``bits=8`` is the default: half the size of f16 with the declared refocusing capability intact.
+    Cross-channel decorrelation was also tested and REJECTED -- the 12 channels are correlated (rank 4
+    holds 97% of the energy) but a rank-6 KLT at matched bytes is 4.9e-02, two orders worse than band
+    truncation, because the gate weights frequencies and is blind to channel identity. Bits belong in
+    frequency, never across channels.
+
+    ``bits`` selects the integer container: 8 -> int8, 16 -> int16, each with a per-(channel, band)
+    scale in ``susc_path_scale``. ``bits=None`` stores raw floats at ``dtype`` (the only mode that can
+    satisfy the lossless-at-K=n_t contract). Sub-byte depths are not offered: they would need explicit
+    bit-packing to actually save bytes, and 6-bit measured unsafe anyway.
     """
     from scipy.fft import dct
     from .susceptibility_field import sample_grid
@@ -388,8 +410,40 @@ def susc_path_encode(fb, traj, origin, *, K=32, dtype=np.float16, atol_trace=1e-
                               type=2, norm="ortho", axis=1)[:, :K]
     meta = dict(channel="susc_path_dct", K=K, n_t=int(n_t), n_ch=len(grids), channels=names,
                 iso_P_zz=("implied" if drop_zz else "stored"), trace_residual=trace_res,
-                dtype=np.dtype(dtype).name, max_refocus_pulses=K // 2)
-    return {"susc_path_dct": np.asarray(coeffs, dtype)}, meta
+                max_refocus_pulses=K // 2)
+    if bits is None:
+        meta["bits"] = None; meta["dtype"] = np.dtype(dtype).name
+        return {"susc_path_dct": np.asarray(coeffs, dtype)}, meta
+    if bits not in (8, 16):
+        raise ValueError("susc_path bits must be 8, 16, or None (got %r); sub-byte depths need "
+                         "bit-packing to save bytes and 6-bit measured above the MC floor" % (bits,))
+    itype = np.int8 if bits == 8 else np.int16
+    lim = 2 ** (bits - 1) - 1
+    scale = np.abs(coeffs).max(axis=0) / lim                     # (n_ch, K), per channel AND band
+    scale[scale == 0] = 1.0
+    q = np.clip(np.rint(coeffs / scale), -lim, lim).astype(itype)
+    meta["bits"] = int(bits); meta["dtype"] = np.dtype(itype).name
+    return {"susc_path_dct": q, "susc_path_scale": np.asarray(scale, np.float32)}, meta
+
+
+def susc_path_coeffs(arrays, meta):
+    """Dequantised C3 coefficients with ``iso_P_zz`` re-inserted -- ``(n_w, n_ch_full, K)``.
+
+    The ONE place that undoes the storage container. ``susc_path_dct`` may be an integer array whose
+    scale lives in ``susc_path_scale`` (see :func:`susc_path_encode`), so reading it raw yields
+    integers ~1e3 off with no error -- every consumer goes through here. The zz identity is applied
+    in coefficient space; the DCT is linear, so this is identical to applying it after the transform.
+    """
+    C = np.asarray(arrays["susc_path_dct"], np.float64)
+    if "susc_path_scale" in arrays:
+        C = C * np.asarray(arrays["susc_path_scale"], np.float64)[None]
+    names = list(meta["channels"])
+    if meta.get("iso_P_zz") == "implied":
+        i_loc, i_xx, i_yy = (names.index(n) for n in ("iso_local", "iso_P_xx", "iso_P_yy"))
+        at = names.index("iso_P_xy")
+        C = np.insert(C, at, 3.0 * C[:, i_loc] - C[:, i_xx] - C[:, i_yy], axis=1)
+        names = names[:at] + ["iso_P_zz"] + names[at:]
+    return C, names
 
 
 def susc_path_decode(arrays, meta, *, n_w=None):
@@ -399,19 +453,12 @@ def susc_path_decode(arrays, meta, *, n_w=None):
     (iso_local, iso_P_xx..yz, [aniso_G_xx..yz]) so the Q(H) contraction indexes it directly.
     """
     from scipy.fft import idct
-    C = np.asarray(arrays["susc_path_dct"], np.float64)
+    C, names = susc_path_coeffs(arrays, meta)
     if n_w is not None:
         C = C[:int(n_w)]
     n_t = int(meta["n_t"])
     b = idct(C, type=2, norm="ortho", axis=2, n=n_t) if C.shape[2] == n_t else \
         idct(np.pad(C, ((0, 0), (0, 0), (0, n_t - C.shape[2]))), type=2, norm="ortho", axis=2)
-    names = list(meta["channels"])
-    if meta.get("iso_P_zz") == "implied":
-        i_loc = names.index("iso_local")
-        i_xx, i_yy = names.index("iso_P_xx"), names.index("iso_P_yy")
-        zz = 3.0 * b[:, i_loc] - b[:, i_xx] - b[:, i_yy]
-        b = np.insert(b, names.index("iso_P_xy"), zz, axis=1)
-        names = names[:names.index("iso_P_xy")] + ["iso_P_zz"] + names[names.index("iso_P_xy"):]
     return b, names
 
 
@@ -429,7 +476,7 @@ def susc_path_field(b, b0_dir, *, B0, chi_iso, chi_aniso=0.0, has_aniso=False):
 def _pack_positions(pack):
     """Reconstruct the (n_w, n_t, 3) trajectory from a pack's position codec."""
     cx = pack.meta.get("compression", {})
-    meta = {"method": cx.get("method", "temporal_dct"), "K": int(cx.get("K", 0)),
+    meta = {"method": _cx.require_position_method(cx.get("method")), "K": int(cx.get("K", 0)),
             "n_t": int(cx.get("n_t") or pack.n_t)}
     wp = _cx.is_walker_preserving(meta["method"])
     return _cx.decode(pack.arrays, meta, n_walkers=(pack.n_walkers if wp else None))
@@ -498,14 +545,14 @@ def replay_susc(pack, waveform, *, b0_dir=(0.0, 0.0, 1.0), B0=0.0, chi_iso=0.0, 
     logw = np.zeros(n_w)
     ch = (pack.meta.get("compression", {}).get("channels", {}) or {})
     if relaxation and "comp_rle_vals" in pack.arrays and pack.meta.get("per_comp", {}).get("T2"):
-        comp = _cx.decode_compartment(pack.arrays, ch.get("compartment", {}))
+        comp = _cx.decode_occupancy(pack.arrays, ch["compartment"])["comp"]
         pc = pack.meta["per_comp"]
         logw = _cx.relaxation_logweight(comp, pc["T2"], pc.get("T1"), dt)
     ew = w * np.exp(logw)
     if compartment is not None:
         sel = np.asarray(compartment)
         if sel.dtype != bool:
-            comp_ids = _cx.decode_compartment(pack.arrays, ch.get("compartment", {}))
+            comp_ids = _cx.decode_occupancy(pack.arrays, ch["compartment"])["comp"]
             comp_ids = np.asarray(comp_ids)
             comp_ids = comp_ids[:, 0] if comp_ids.ndim == 2 else comp_ids
             sel = comp_ids.astype(int) == int(sel)
@@ -513,7 +560,7 @@ def replay_susc(pack, waveform, *, b0_dir=(0.0, 0.0, 1.0), B0=0.0, chi_iso=0.0, 
             raise ValueError(f"compartment mask has {sel.shape[0]} entries for {n_w} walkers")
         if not sel.any():
             raise ValueError(f"compartment selection matched no walkers (ids present: "
-                             f"{sorted(set(np.asarray(_cx.decode_compartment(pack.arrays, ch.get('compartment', {}))).ravel().tolist()))})")
+                             f"{sorted(set(np.asarray(_cx.decode_occupancy(pack.arrays, ch['compartment'])['comp']).ravel().tolist()))})")
         ew = np.where(sel, ew, 0.0)
         norm = w[sel].sum()
     else:
@@ -570,7 +617,7 @@ def _select_boundary_codec(m, dlog, env, tol, dtype, verbose=False):
     """
     cands = []
     for K in (8, 16, 32, 64):
-        a, mm = _cx.encode_boundary_dct(dlog, K=int(K), dtype=dtype)
+        a, mm = _cx.encode_boundary_bridge(dlog, K=int(K), dtype=dtype)
         cf = _surface_fidelity(m, a, mm, env)
         nb = sum(int(np.asarray(v).nbytes) for v in a.values()) / max(len(dlog), 1)
         cands.append((nb, K, a, mm, cf))
@@ -589,18 +636,21 @@ def _select_boundary_codec(m, dlog, env, tol, dtype, verbose=False):
     return a, mm
 
 
-def build_replay_pack(src, *, id, method="temporal_dct", envelope=None, tol=2.0, K=None,
+def build_replay_pack(src, *, id, method=_cx.POSITION_METHOD, envelope=None, tol=2.0, K=None,
                       err_target=None, sigma_star=None,
                       license, citation, provenance=None, surface_relaxivity=False,
-                      blt_temporal_K=None, blt_dtype=np.float16, susc_path_K=None, mt=False,
+                      blt_temporal_K=None, blt_dtype=np.float16, susc_path_K=None, susc_path_bits=8, mt=False,
                       out_path=None, verbose=False):
     """Compress a master walk and assemble a self-certifying replay pack.
 
     ``src`` is a raw master dict / ``.npz`` (see :func:`_master_arrays`). The position ensemble is
-    compressed by ``method`` (default ``temporal_dct``); ``K`` (mode count) is chosen automatically
+    compressed by ``method`` (default ``bridge_dst``: endpoints plus a Brownian bridge on the
+    sine basis, which holds both endpoints exactly and pairs its first two coefficients with the
+    gradient moments, at the same accuracy as ``temporal_dct`` -- see
+    :func:`compression.encode_bridge_dst`); ``K`` (mode count) is chosen automatically
     to keep the *measured* replay error within ``tol``x the Monte-Carlo floor over ``envelope``
     (default :func:`compression.default_envelope`) unless given. Walker-preserving methods
-    (``temporal_dct``, ``lowrank``) carry the full per-walker channel space; distributional methods
+    (``bridge_dst``) carry the full per-walker channel space; distributional methods
     (``gaussian``/``marginal``) are gradient-only.
 
     Tiers assembled: **gradient** (always), **bulk relaxation** (from the compartment map +
@@ -610,6 +660,7 @@ def build_replay_pack(src, *, id, method="temporal_dct", envelope=None, tol=2.0,
     susceptibility-basis channel + Q(H) contraction) — a master carrying ``susc_basis``/``PhiC`` is
     rejected. Returns a :class:`dmipy_sim.replay.ReplayPack`; writes it to ``out_path`` if given.
     """
+    _cx.require_position_method(method)
     m = _master_arrays(src)
     if m.get("PhiC") is not None or m.get("susc_basis") is not None:
         raise NotImplementedError(
@@ -648,8 +699,9 @@ def build_replay_pack(src, *, id, method="temporal_dct", envelope=None, tol=2.0,
         # advertised: shipping grid arrays next to lossy positions would offer a replay route whose
         # accuracy silently depends on a property the pack no longer has. Path wins when present;
         # the grid is then published as a separate per-substrate companion artefact, not per walker.
-        # temporal_dct at K=n_t is an exact rewrite; other codecs are not lossless at any K.
-        _pos_lossless = (method == "temporal_dct") and int(K) >= int(X.shape[1])
+        # A full-rank walker-preserving codec is an exact rewrite; the rank is n_t for
+        # n_t-2 for bridge_dst, which stores two endpoints outside the bands.
+        _pos_lossless = _cx.is_lossless_at(method, int(K), int(X.shape[1]))
         _grid_in_pack = (not susc_path_K) or _pos_lossless
         if _grid_in_pack:
             arrays["susc_grid_iso_local"] = np.asarray(fb["iso_local"], np.float16)
@@ -673,29 +725,36 @@ def build_replay_pack(src, *, id, method="temporal_dct", envelope=None, tol=2.0,
         if susc_path_K:
             _a, _pm = susc_path_encode(fb, np.asarray(m["traj"], np.float64),
                                        np.asarray(m["susc_grid_origin"], float),
-                                       K=int(susc_path_K), dtype=np.float16)
+                                       K=int(susc_path_K), bits=susc_path_bits)
             arrays.update(_a); chan_meta["susceptibility_path"] = _pm
     if wp_method:
-        # compartment map (RLE / quantized-RLE) -> per-compartment T1/T2; surface/MT opt-in.
+        # C1 (occupancy): the geometric compartment plus, when the walk bound spins, the MT bound
+        # pool as a SECOND COLUMN on an independent axis -- not a channel of its own. Replay weights
+        # the per-pool rates by occupancy either way; what makes MT a distinct tier is the replay
+        # side (vector-Bloch RF, bound-pool knobs, equilibrium start), not the storage.
         if m.get("comp") is not None and m.get("T2_per_comp") is not None:
-            _a, _cm = _cx.encode_compartment(np.asarray(m["comp"]))
+            _cols = {"comp": np.asarray(m["comp"])}
+            if mt and m.get("bfrac") is not None:
+                _cols["bound"] = np.asarray(m["bfrac"]); channels["mt"] = True
+            _a, _cm = _cx.encode_occupancy(_cols)
             arrays.update(_a); chan_meta["compartment"] = _cm
             if m.get("w") is not None:
                 arrays["spin_weights"] = np.asarray(m["w"], np.float32)
             channels["T1T2"] = True
+        elif mt and m.get("bfrac") is not None:
+            raise ValueError("an MT (C4) pack carries its bound pool as a C1 occupancy column, so "
+                             "it needs the compartment channel too: pass master['comp'] and "
+                             "['T2_per_comp'] alongside ['bfrac'].")
         # dense per-walker physics channels get their own codecs (compression.py):
-        # boundary local time -> sparse/dense or (temporal_K) cumulative-DCT; bound_frac -> RLE.
+        # boundary local time -> sparse/dense or the cumulative bridge.
         if surface_relaxivity and m.get("dlog_b") is not None:
             if blt_temporal_K:
-                _a, _mm = _cx.encode_boundary_dct(np.asarray(m["dlog_b"]), K=int(blt_temporal_K),
+                _a, _mm = _cx.encode_boundary_bridge(np.asarray(m["dlog_b"]), K=int(blt_temporal_K),
                                                  dtype=blt_dtype)
             else:
                 _a, _mm = _select_boundary_codec(m, np.asarray(m["dlog_b"]), env, tol,
                                                  blt_dtype, verbose)
             arrays.update(_a); chan_meta["boundary_local_time"] = _mm; channels["rho"] = True
-        if mt and m.get("bfrac") is not None:
-            _a, _mm = _cx.encode_bound_fraction(np.asarray(m["bfrac"]), Q=256)
-            arrays.update(_a); chan_meta["bound_fraction"] = _mm; channels["mt"] = True
 
     # Surface tier (C2) fidelity: certify the boundary channel reproduces the surface-relaxivity
     # signal from its stored coeffs, vs the raw boundary local time.
@@ -779,7 +838,7 @@ def build_replay_pack(src, *, id, method="temporal_dct", envelope=None, tol=2.0,
 
 
 def build_to_floor(make_model, *, id, envelope=None, sigma_star=1e-3, pilot_n=8000,
-                   safety=1.4, max_n=400000, walk=None, method="temporal_dct", verbose=True, **bp):
+                   safety=1.4, max_n=400000, walk=None, method="bridge_dst", verbose=True, **bp):
     """Adaptive floor-targeting generation policy (the bank default).
 
     Size the walker count so the split-half Monte-Carlo floor <= ``sigma_star``, then build a pack

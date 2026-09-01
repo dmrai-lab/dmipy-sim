@@ -49,6 +49,16 @@ dev = [
     # install imports fine and then raises ModuleNotFoundError deep inside a containment call.
     "trimesh[easy]>=4.0",   # mesh tests load/generate PLY meshes (dmipy_sim.mesh)
 ]
+
+# ORACLE-ONLY, and deliberately NOT in `dev`. Nothing in dmipy_sim imports dipy -- the normative
+# spherical-harmonic basis (RPH.md Sec. 4.1) is implemented here as `gaunt.real_sh`. But "real SH"
+# alone pins no convention: MRtrix/legacy-Tournier is not orthonormal and Descoteaux is a signed
+# m -> -m permutation, so the claim that our basis IS dipy's non-legacy `tournier` can only be
+# checked against dipy itself. Those few tests skip without it; CI installs this extra so the
+# normative claim is verified rather than assumed, while `[dev]` stays free of it.
+interop = [
+    "dipy>=1.8",
+]
 # Triangular-mesh loading (dmipy_sim.load_ply / Mesh.from_ply) and exact containment
 # (susceptibility_field.mesh_contains). The Mesh geometry itself needs only numpy/jax; trimesh is required
 # to READ mesh files, and its [easy] extras (rtree, networkx) for ray parity and hole repair.
