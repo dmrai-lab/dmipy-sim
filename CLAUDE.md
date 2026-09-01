@@ -83,6 +83,7 @@ acquisition; assert to `max(0.02, 1/√N)`.
 |------|------|
 | `core.py` | `simulate`, `simulate_mixture`, `simulate_cpmg`; sub-step auto-tune; `return_positions` (`True`/`'full'`) and `return_compartments` (`'final'`/`'full'`) |
 | `geometries.py` | `FreeDiffusion`, `Box1D`, `Sphere`, `Cylinder`, `Ellipsoid`, `PackedCylinders/Spheres`, `MyelinatedCylinder`, `PackedMyelinatedCylinders`, packing helpers |
+| `curved_tube.py` | `CurvedTube`, `MultiShellCurvedTube`, `PackedCurvedTubes` — sphere-swept polyline fibres (curving strands, e.g. DiSCo). Intra-axonal space is the Minkowski sum of a centerline polyline with a ball, so it is smooth at every joint (no kink/gap/overlap of chained straight cylinders) and carries the local orientation along the strand. Analytic and impermeable — no mesh, no grid — so far cheaper than walking the equivalent triangulated tube |
 | `mesh.py` | `Mesh` (grid-accelerated, closed or 3-D periodic triangular mesh) + `load_ply` |
 | `susceptibility.py` | off-resonance field providers (`SusceptibilitySources` iron/vasculature, `MyelinSusceptibility` hollow-cylinder, `GridSusceptibility` k-space dipole on a voxel source); each exposes a pure-JAX `delta_bz_fn()` that plugs into `simulate_bloch(..., susceptibility=)` as a per-step z-precession |
 | `mesh_shapes.py` | procedural myelin meshes + analytic grid sources (`myelinated_cylinder`, `undulating_myelin`, `half_bare_myelin`, `grid_axes`, `voxelize_shell`) — the susceptibility test/validation substrates |
