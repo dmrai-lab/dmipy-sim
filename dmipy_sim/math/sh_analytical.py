@@ -90,13 +90,15 @@ def watson_sh(mu_cart, kappa, l_max=8):
     Returns SH coefficients in Tournier (MRtrix) real ordering, legacy=False,
     shape ((l_max+1)(l_max+2)//2,).
     """
-    from dipy.reconst.shm import real_sh_tournier
+    # Evaluated with this package's own basis rather than dipy's. RPH.md fixes the normative basis
+    # as dipy's non-legacy `tournier`, and `gaunt.real_sh` IS that basis -- pinned to it at atol=1e-12
+    # by test_required_basis_is_dipy_tournier_non_legacy. Calling dipy here would make it a runtime
+    # dependency for a function we already implement; keeping dipy as the test ORACLE and our own
+    # implementation in the package is the right split, and it keeps dipy a dev extra.
+    from ..gaunt import real_sh
 
     mu_cart = np.asarray(mu_cart, dtype=np.float64)
-    sph = cart2sphere(mu_cart)          # [r, theta, phi]
-    theta_mu, phi_mu = float(sph[1]), float(sph[2])
-
-    Y_mu = real_sh_tournier(l_max, theta_mu, phi_mu, legacy=False)[0][0]
+    Y_mu = real_sh(l_max, (mu_cart / np.linalg.norm(mu_cart))[None, :])[0]
     r = watson_zonal_ratios(kappa, l_max)
 
     n_coef = (l_max + 1) * (l_max + 2) // 2

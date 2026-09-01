@@ -28,7 +28,7 @@ from .replay import ReplayPack, read_rpk, write_rpk
 __all__ = ["build_replay_pack", "build_to_floor", "replay_susc", "frame_from_axis", "frame_from_bundles",
            "read_rpk", "write_rpk", "RPK_SCHEMA_VERSION"]
 
-RPK_SCHEMA_VERSION = "1.1"
+RPK_SCHEMA_VERSION = "0.3"
 
 
 # --------------------------------------------------------------- master-walk normalisation

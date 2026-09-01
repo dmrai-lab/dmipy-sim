@@ -130,6 +130,9 @@ def test_three_peaks_are_distinguishable(lam):
 # --- the SH basis (RPH.md Sec. 4.1) --------------------------------------------------------
 
 def _dipy(name, lmax, dirs):
+    # skip rather than error where dipy is absent: it is a dev-extra, test-only dependency (see
+    # pyproject), so a lean install runs the rest of the suite instead of reporting 13 failures
+    pytest.importorskip("dipy", reason="dipy (dev extra) pins the normative SH basis")
     from dipy.reconst.shm import real_sh_tournier, real_sh_descoteaux
     th = np.arccos(np.clip(dirs[:, 2], -1, 1)); ph = np.arctan2(dirs[:, 1], dirs[:, 0])
     if name == "mrtrix":
