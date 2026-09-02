@@ -184,11 +184,13 @@ def test_save_false_returns_4_tuple():
     assert len(out) == 4
     traj, dt_actual, sub_steps, dt_sim = out
     assert traj.shape == (2_000, n_t, 3)
-    assert traj.dtype == np.float16
+    # f32 by default since #78: the walk is f32, the pack is f32, and the .rpk spec
+    # permits only float32/float64 for `positions`. f16 is opt-in via storage_dtype.
+    assert traj.dtype == np.float32
 
 
 def test_save_true_returns_6_tuple_shapes_dtypes():
-    """save_relaxation_data adds dlog_boundary_unit (float16) + comp_traj (int8)."""
+    """save_relaxation_data adds dlog_boundary_unit (storage_dtype) + comp_traj (int8)."""
     wf = _WF_STD
     dt = float(wf.dt); n_t = wf.G.shape[1]
     out = simulate_trajectories(2_000, D, d.Cylinder(radius=R, orientation=[0, 0, 1]),
@@ -196,8 +198,8 @@ def test_save_true_returns_6_tuple_shapes_dtypes():
                                 save_relaxation_data=True, require_gpu=False)
     assert len(out) == 6
     traj, dt_actual, sub_steps, dt_sim, dlog, comp = out
-    assert traj.shape == (2_000, n_t, 3) and traj.dtype == np.float16
-    assert dlog.shape == (2_000, n_t) and dlog.dtype == np.float16
+    assert traj.shape == (2_000, n_t, 3) and traj.dtype == np.float32
+    assert dlog.shape == (2_000, n_t) and dlog.dtype == np.float32
     assert comp.shape == (2_000, n_t)
     # Impermeable Cylinder: comp is discrete int8, all zeros; dlog <= 0.
     assert comp.dtype == np.int8
