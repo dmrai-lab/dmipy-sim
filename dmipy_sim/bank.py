@@ -636,6 +636,47 @@ def _select_boundary_codec(m, dlog, env, tol, dtype, verbose=False):
     return a, mm
 
 
+def preflight_master(m, *, surface_relaxivity=False, mt=False, susc_path_K=None,
+                     sigma_star=None, K=None):
+    """Check a master walk against the tiers a build intends to assemble. Returns a list of
+    problems, empty if it will work.
+
+    Every one of these is knowable from metadata, yet each cost a full walk to discover:
+
+    * the CACTUS master emits the per-walker ``susc_basis`` unless the producer asks for
+      ``field_store='grid'``; ``build_replay_pack`` then refuses the master outright -- AFTER the
+      walk, because the walk happens inside ``_master_arrays``.
+    * a master carrying ``susc_field_basis=None`` silently yields a pack with no field tier, so
+      the pack looks fine and is missing a capability. Presence of the KEY is not enough; the
+      value is what matters.
+    * an auto-selected ``K`` is sized against this walk's own floor. For a pack that will later be
+      merged with others, the floor falls as 1/sqrt(N) while codec error does not, so a K that
+      passes here can make compression the dominant error in the union.
+
+    Call it before walking where possible, or at least before encoding.
+    """
+    bad = []
+    if m.get("PhiC") is not None or m.get("susc_basis") is not None:
+        bad.append("master carries the private susceptibility forms (susc_basis/PhiC), which are "
+                   "refused here; rebuild the master with field_store='grid', or drop them and "
+                   "rely on susc_field_basis")
+    if susc_path_K and m.get("susc_field_basis") is None:
+        bad.append("susc_path_K was requested but susc_field_basis is None, so the field tier (C3) "
+                   "cannot be assembled and the pack would be silently missing it "
+                   "(field_store='grid' is what produces it)")
+    if surface_relaxivity and m.get("dlog_b") is None:
+        bad.append("surface_relaxivity=True but the master has no dlog_b (C2 channel)")
+    if mt and m.get("bfrac") is None and m.get("mt_params") is None:
+        bad.append("mt=True but the master has neither bfrac nor mt_params")
+    if m.get("comp") is not None and m.get("T2_per_comp") is None:
+        bad.append("master has a compartment map but no T2_per_comp, so C1 will not be assembled")
+    if sigma_star is not None and K is None:
+        bad.append(f"sigma_star={sigma_star:g} with K unpinned: K is auto-selected against THIS "
+                   f"walk's floor, which is the wrong reference for a pack that will be merged "
+                   f"or compared to an absolute target. Pin K.")
+    return bad
+
+
 def build_replay_pack(src, *, id, method=_cx.POSITION_METHOD, envelope=None, tol=2.0, K=None,
                       err_target=None, sigma_star=None,
                       license, citation, provenance=None, surface_relaxivity=False,

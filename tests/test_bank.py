@@ -333,3 +333,31 @@ def test_susc_path_bit_depth_is_the_cheap_axis_not_K():
 
     with pytest.raises(ValueError, match="bits must be"):
         bank.susc_path_encode(fb, traj, origin, K=K, bits=6)
+
+
+def test_preflight_catches_what_otherwise_costs_a_full_walk():
+    """Each of these was discovered only AFTER a 29-minute walk, and each is knowable from the
+    master's metadata. The expensive ones are the two susceptibility cases: `build_replay_pack`
+    walks inside `_master_arrays`, so its own refusal comes too late to be cheap, and a master
+    whose `susc_field_basis` is None yields a pack that is silently missing the field tier."""
+    from dmipy_sim.bank import preflight_master
+
+    # the private per-walker form is refused by the builder -- but only after the walk
+    assert any("field_store='grid'" in p
+               for p in preflight_master({"susc_basis": np.zeros(3)}))
+
+    # the key EXISTS but is None: presence is not enough, and this one is silent (no exception,
+    # just a pack with no C3), which is strictly worse than the refusal above
+    probs = preflight_master({"susc_field_basis": None}, susc_path_K=64)
+    assert any("cannot be assembled" in p for p in probs)
+    assert not preflight_master({"susc_field_basis": {"iso_local": 1}}, susc_path_K=64, K=48)
+
+    # requested tiers whose channels are absent
+    assert any("dlog_b" in p for p in preflight_master({}, surface_relaxivity=True))
+    assert any("bfrac" in p for p in preflight_master({}, mt=True))
+    assert any("T2_per_comp" in p for p in preflight_master({"comp": np.zeros(3)}))
+
+    # an auto-selected K is sized against THIS walk's floor; for a shard destined to be merged
+    # the union's floor is lower and the codec error does not shrink, so K must be pinned
+    assert any("Pin K" in p for p in preflight_master({}, sigma_star=5e-3))
+    assert not any("Pin K" in p for p in preflight_master({}, sigma_star=5e-3, K=48))
