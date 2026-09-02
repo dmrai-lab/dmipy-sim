@@ -194,9 +194,25 @@ def walk_sub_steps(geometry, diffusivity: float, dt: float) -> int:
     that regime has not been measured here.
     """
     has_perm = getattr(geometry, 'permeability', None) is not None
-    if getattr(geometry, 'cell_size', None) and not has_perm:
-        return collision_sub_steps(geometry, diffusivity, dt)
     R = _geometry_radius(geometry)
+    n_coll = 1
+    if getattr(geometry, 'cell_size', None) and not has_perm:
+        n_coll = collision_sub_steps(geometry, diffusivity, dt)
+        # A cell grid is not the same thing as a mesh. For a MESH the collision criterion
+        # REPLACES R/6, because `_geometry_radius` there returns `feature_radius` -- a
+        # meshing parameter, not a pore size (that is the point of the substitution above).
+        # For an ANALYTIC geometry that merely carries a spatial index (PackedCurvedTubes
+        # buckets tube SEGMENTS so a step tests ~50 candidates instead of millions), R is a
+        # real physical radius and the two criteria bound DIFFERENT failures, so both apply:
+        #   * cell   -- a step must not outrun the 27-cell candidate gather (wall never tested)
+        #   * R/6    -- a step must not break single-reflection-per-step (the analytic
+        #               reflection math itself; see CurvedTube's class docstring)
+        # Keying this branch on `cell_size` alone silently dropped the R/6 rule for
+        # PackedCurvedTubes: on the DiSCo substrate (R_min 0.72um, cell 6.5um) it asked for
+        # 1 sub-step where the analytic rule asks for 106, i.e. step/R ~ 1.7 -- walkers
+        # stepping straight through tube walls.
+        if getattr(geometry, 'radius_is_mesh_feature', False) or R is None:
+            return n_coll
     if R is None:
         # No scale found means "nothing to resolve", which is right for free diffusion and WRONG for anything
         # with walls -- and it fails silently, at one sub-step, with the boundary channel garbled. That is how
@@ -216,7 +232,7 @@ def walk_sub_steps(geometry, diffusivity: float, dt: float) -> int:
         return 1
     divisor = 3750.0 if has_perm else 216.0
     dt_phys_max = float(R) ** 2 / (divisor * diffusivity)
-    return max(1, int(np.ceil(dt / dt_phys_max)))
+    return max(n_coll, max(1, int(np.ceil(dt / dt_phys_max))))
 
 
 def surface_sub_steps(geometry, diffusivity: float, dt: float, frac: float = 8.0) -> int:
