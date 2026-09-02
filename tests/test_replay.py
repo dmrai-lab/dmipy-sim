@@ -79,18 +79,43 @@ def test_jax_twin_matches_and_differentiable():
     assert np.all(np.isfinite(np.asarray(g))) and np.abs(np.asarray(g)).max() > 0
 
 
-def test_surface_knob_attenuates():
+def test_surface_knob_uses_the_real_c2_channel_and_refuses_without_one():
+    """The rho knob must read the pack's ACTUAL C2 channel, not a key that no longer exists.
+
+    The previous version of this test fabricated a `blt_dct` array and injected it, so it kept
+    passing after C2 moved to the bridge form -- while `replay_signal` looked up the retired key,
+    found nothing, and SILENTLY ignored rho_over_D. A caller asking for surface relaxivity got an
+    unattenuated signal and no error. So: build the channel with the real encoder, and check both
+    that the knob bites and that a pack without C2 refuses rather than skipping.
+    """
+    from dmipy_sim.compression import encode_boundary_bridge, decode_boundary_bridge, surface_logweight
+    from dmipy_sim.replay import surface_logweight as replay_slw
     arrays, meta, _ = _synth_pack()
-    N_W_ = arrays["pos_x"].shape[0]
-    # synthetic boundary-local-time channel: real packs store dlog (<=0, an attenuation) at rho/D=1, so
-    # the DC coefficient is negative; replay multiplies by rho/D>0 -> exp(<0) -> signal loss.
-    blt = np.zeros((N_W_, 16), np.float32)
-    blt[:, 0] = -np.abs(np.random.default_rng(1).normal(1.0, 0.2, N_W_))
-    arrays = {**arrays, "blt_dct": blt}
+    n_w = arrays["pos_x"].shape[0]
+    rng = np.random.default_rng(1)
+    dlog = -np.abs(rng.normal(0, 1e-6, (n_w, N_T)))          # engine convention: <= 0
+    a2, cm = encode_boundary_bridge(dlog, K=16)
+    arrays = {**arrays, **a2}
     pack = ReplayPack(arrays, meta)
-    G = _pgse(0.0, 10e-3, 30e-3)[None]                                  # b0
+
+    G = _pgse(0.0, 10e-3, 30e-3)[None]                        # b0
     W = compile_scheme(G, DT, K, GAMMA, n_t=N_T)
     E0 = replay_signal(pack, W)[0]
-    Er = replay_signal(pack, W, rho_over_D=0.05)[0]                     # modest rho/D -> O(1) log-weight
-    assert E0 == pytest.approx(1.0, abs=1e-9)                           # b0, no surface -> 1
-    assert Er < 1.0                                                     # surface decays even b0
+    Er = replay_signal(pack, W, rho_over_D=5e3)[0]
+    assert E0 == pytest.approx(1.0, abs=1e-9)
+    assert Er < 0.99 * E0, f"rho knob did not bite: {Er} vs {E0}"
+
+    # the endpoint path must equal summing the decoded per-save series
+    npt.assert_allclose(replay_slw(arrays, 5e3, cm),
+                        surface_logweight(decode_boundary_bridge(arrays, cm), 5e3), rtol=1e-6)
+
+    # a pack with no C2 must RAISE when rho is requested, not silently return the bare signal
+    bare = {k: v for k, v in arrays.items() if not k.startswith("blt_")}
+    with pytest.raises(ValueError, match="no C2 channel"):
+        replay_signal(bare, W, rho_over_D=5e3)
+
+
+def test_blt_dct_attribute_is_retired_loudly():
+    arrays, meta, _ = _synth_pack()
+    with pytest.raises(AttributeError, match="retired"):
+        ReplayPack(arrays, meta).blt_dct

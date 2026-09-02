@@ -308,6 +308,13 @@ class Mesh(Geometry):
         neighbourhood).  Larger = fewer/denser cells; must be ≥ the maximum step.
     """
 
+    # `self.radius` is `feature_radius` -- a MESH-RESOLUTION parameter, not a physical
+    # pore size. It therefore does NOT bound a step the way an analytic radius does, and
+    # physics.walk_sub_steps must use the collision criterion INSTEAD of R/6 here (see #59).
+    # Analytic geometries that merely carry a spatial index (PackedCurvedTubes) leave this
+    # False, so both criteria apply to them.
+    radius_is_mesh_feature = True
+
     def __init__(self, vertices, faces, *, periodic=False, voxel_min=None,
                  voxel_max=None, feature_radius=None, surface_relaxivity_t2=None,
                  permeability=None, intra=None, extra=None, orientation=None, R=None,
@@ -330,6 +337,8 @@ class Mesh(Geometry):
             sides = self.vmax - self.vmin
             feature_radius = 0.5 * float(np.min(sides[sides > 0]))
         self.radius = float(feature_radius)              # read by core sub-step auto-tune
+        # NB: `radius` here is a MESHING parameter, not a pore size -- see
+        # `radius_is_mesh_feature` on the class and physics.walk_sub_steps.
         self.reject_escape = True                        # impermeable-leak safety net
         # Reflect at the voxel faces INSIDE the bounce loop (dmipy-sim#61). The alternative --
         # `mesh_bundle.BoxedMesh`, which mirrors the position after the step -- applies a reflection of space

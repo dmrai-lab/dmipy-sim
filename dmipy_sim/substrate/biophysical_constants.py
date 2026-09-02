@@ -481,6 +481,352 @@ BIOPHYSICAL_CONSTANTS = {
         },
         'description': 'T2 relaxation time of CSF',
     },
+    'T1_intra_axonal': {
+        'default': {
+            'value': 1.2,
+            'unit': 's',
+            'field_T': 3.0,
+            'species': 'human',
+            'method': 'IR-EPI T1 mapping',
+            'source_key': 'wright2008',
+            'location': 'Table 2, WM row at 3T, T1 = 1084 +/- 45 ms (IR-EPI)',
+        },
+        'alternatives': [
+            {
+                'value': 1.35,
+                'unit': 's',
+                'field_T': 7.0,
+                'species': 'human',
+                'method': 'biexponential IR-FSE, long (aqueous/IE) T1 component',
+                'source_key': 'rioux2015',
+                'location': 'Long/aqueous (intra+extra-cellular, "IE") T1 = 1349 +/- 18 ms '
+                            'at 7T. Excludes the fast myelin pool (modelled separately), so it '
+                            'is the per-compartment IE target. Intra/extra not separately '
+                            'resolved -- IE value used for both. Within-study cross-check: '
+                            'Wright 2008 (this entry\'s 3T source) also reports WM T1 at 7T.',
+            },
+        ],
+        'citation': {
+            'key': 'wright2008',
+            'authors': 'Wright PJ, Mougin OE, Totman JJ, et al.',
+            'title': 'Water proton T1 measurements in brain tissue at 7, 3, and 1.5 T '
+                     'using IR-EPI, IR-TSE, and MPRAGE: results and optimization',
+            'journal': 'Magnetic Resonance Materials in Physics, Biology and Medicine (MAGMA)',
+            'year': 2008,
+            'doi': '10.1007/s10334-008-0104-8',  # CrossRef-verified 2026-06-10 (was 10.1002/mrm.21513 = Setsompop 2008)
+        },
+        'description': 'T1 relaxation time of white matter at 3T',
+        'note': 'Used as proxy for intra-axonal T1; true compartment-specific T1 '
+                'requires multi-compartment T1 mapping',
+    },
+    'T1_myelin': {
+        'default': {
+            'value': 0.440,
+            'unit': 's',
+            'field_T': 3.0,
+            'species': 'human',
+            'method': 'mcDESPOT multi-component T1-T2 estimation, in vivo 3T Siemens Tim Trio',
+            'source_key': 'deoni2014',
+            'location': 'Discussion: "Values obtained herein are 440 +/- 21 ms using the '
+                        'default boundaries and 442 +/- 20 ms using the expanded T1,M boundaries." '
+                        'In vivo fitted T1,M (myelin water component) with search bounds [300, 650] ms.',
+        },
+        'alternatives': [
+            {
+                'value': 0.387,
+                'unit': 's',
+                'field_T': 1.5,
+                'species': 'human',
+                'method': 'mcDESPOT, in vivo 1.5T',
+                'source_key': 'deoni2010',
+                'location': 'Results/Table: frontal WM T1,M = 387 +/- 26 ms at 1.5T',
+                'citation': {
+                    'key': 'deoni2010',
+                    'authors': 'Deoni SCL',
+                    'title': 'Correction of main and transmit magnetic field (B0 and B1) '
+                             'inhomogeneity effects in multicomponent-driven equilibrium '
+                             'single-pulse observation of T1 and T2',
+                    'journal': 'Magnetic Resonance in Medicine',
+                    'year': 2011,
+                    'doi': '10.1002/mrm.22578',
+                },
+            },
+            {
+                'value': 0.55,
+                'unit': 's',
+                'field_T': 7.0,
+                'species': 'human',
+                'method': 'MP2RAGE T1 relaxogram, short (myelin-associated) component',
+                'source_key': 'kauppinen2025',
+                'location': 'Short (myelin-associated) T1 relaxogram component ~540 ms at 7T '
+                            '(120/260/540 ms at 1.5/3/7T). CONTESTED/method-dependent: the '
+                            'IR-FSE short component is ~57 ms (Rioux 2015) -- a different pool. '
+                            'Low-medium confidence; an alternative is keeping ~0.44 s.',
+            },
+        ],
+        'citation': {
+            'key': 'deoni2014',
+            'authors': 'Deoni SCL, Kolind SH',
+            'title': 'Investigating the stability of mcDESPOT myelin water fraction values '
+                     'derived using a stochastic region contraction approach',
+            'journal': 'Magnetic Resonance in Medicine',
+            'year': 2015,
+            'doi': '10.1002/mrm.25108',  # CrossRef-verified 2026-06-10 (was 10.1002/mrm.25141 = Corum 2015)
+        },
+        'description': 'T1 relaxation time of myelin water at 3T, in vivo human WM',
+        'note': 'T1 is field-dependent; myelin water T1 is substantially shorter than '
+                'intra/extra-axonal T1. The former "lancashire2015" attribution was a '
+                'phantom reference and has been corrected to Deoni & Kolind 2015 MRM. '
+                'The Barakovic 2023 alternative ("~300 ms") was also incorrect — that '
+                'paper reports intra-axonal T1a (650–760 ms), not myelin water T1.',
+    },
+    'T1_extra_axonal': {
+        'default': {
+            'value': 1.0,
+            'unit': 's',
+            'field_T': 3.0,
+            'species': 'human',
+            'method': 'mcDESPOT simulation ground truth (combined intra+extra-axonal IE compartment)',
+            'source_key': 'deoni2012',
+            'location': 'Methods "Simulation Methods": T1,IE ground truth = 965 ms. '
+                        'Results "Simulation Results": fitted T1,IE = 979 +/- 18 ms. '
+                        'Note: literature does not separately resolve T1_intra vs T1_extra; '
+                        'both are treated as a single IE compartment.',
+        },
+        'alternatives': [
+            {
+                'value': 1.084,
+                'unit': 's',
+                'field_T': 3.0,
+                'species': 'human',
+                'method': 'IR-EPI T1 mapping, whole WM (not compartment-resolved)',
+                'source_key': 'wright2008',
+                'location': 'Table 2, WM at 3T, T1 = 1084 +/- 45 ms — used as proxy for '
+                             'intra/extra-axonal T1 in the absence of compartment-specific data',
+            },
+            {
+                'value': 1.35,
+                'unit': 's',
+                'field_T': 7.0,
+                'species': 'human',
+                'method': 'biexponential IR-FSE, long (aqueous/IE) T1 component',
+                'source_key': 'rioux2015',
+                'location': 'Long/aqueous (IE) T1 = 1349 +/- 18 ms at 7T (Rioux 2015); same '
+                            'combined IE pool as intra -- no measured intra/extra split at 7T.',
+            },
+        ],
+        'citation': {
+            'key': 'deoni2012',
+            'authors': 'Deoni SCL, Matthews L, Kolind SH',
+            'title': 'One component? Two components? Three? The effect of including a '
+                     'nonexchanging "free" water component in multicomponent driven equilibrium '
+                     'single pulse observation of T1 and T2',
+            'journal': 'Magnetic Resonance in Medicine',
+            'year': 2013,
+            'doi': '10.1002/mrm.24429',  # CrossRef-verified 2026-06-10 (was 10.1002/mrm.24619 = Beeman 2013)
+            'pmcid': 'PMC3711852',
+        },
+        'description': 'T1 relaxation time of extra-axonal (hindered) water in WM at 3T. '
+                       'No direct compartment-specific measurement exists; value from '
+                       'mcDESPOT IE-compartment simulation ground truth (Deoni 2012).',
+        'note': 'The literature treats intra- and extra-axonal water as a single long-T2 '
+                'compartment (IE). A value of ~1.0 s is consistent with the Deoni 2012 '
+                'simulation ground truth (965 ms) and the WM T1 map of Wright 2008 '
+                '(1084 ms). Use 1.0 s as the default; the small difference from T1_intra '
+                '(1.4 s corrected for surface relaxivity) reflects that T1_extra has no '
+                'surface relaxivity correction.',
+    },
+    'T1_csf': {
+        'default': {
+            'value': 4.0,
+            'unit': 's',
+            'field_T': 3.0,
+            'species': 'human',
+            'method': 'T1 mapping',
+            'source_key': 'rooney2007',
+            'location': 'Table 1, CSF row at 3T, T1 = 4300 +/- 200 ms',
+        },
+        'alternatives': [
+            {
+                'value': 4.3,
+                'unit': 's',
+                'field_T': 7.0,
+                'species': 'human',
+                'method': 'Look-Locker adiabatic-IR (same subjects, 0.2-7T)',
+                'source_key': 'rooney2007',
+                'location': 'CSF T1 is field-INDEPENDENT at 4.3 +/- 0.2 s across 0.2-7T '
+                            '(Rooney 2007) -- the one relaxation value that does not change '
+                            'with B0; the 7T entry equals the 3T one by physics, not fallback.',
+            },
+        ],
+        'citation': {
+            'key': 'rooney2007',
+            'authors': 'Rooney WD, Johnson G, Li X, et al.',
+            'title': 'Magnetic field and tissue dependencies of human brain longitudinal '
+                     '1H2O relaxation in vivo',
+            'journal': 'Magnetic Resonance in Medicine',
+            'year': 2007,
+            'doi': '10.1002/mrm.21122',
+        },
+        'description': 'T1 relaxation time of CSF',
+    },
+    'D_myelin_radial': {
+        'default': {
+            'value': 0.2e-9,
+            'unit': 'm^2/s',
+            'field_T': None,
+            'species': 'human',
+            'method': 'restricted diffusion across myelin lamellae',
+            'source_key': 'mackay1994',
+            'location': 'Myelin water is strongly restricted radially across the '
+                        'lipid bilayers; radial diffusivity ~0.2 µm²/ms.',
+        },
+        'alternatives': [],
+        'citation': _CITATION_MACKAY1994,
+        'description': 'Radial (across-lamellae) diffusivity of myelin water in the '
+                       'sheath compartment of the canonical substrate.',
+        'note': 'Myelin water has very short T2 (~10 ms at 3T) and is near-invisible '
+                'at clinical TE, but still carries volume; included for completeness '
+                'in the MC substrate.',
+    },
+    'D_myelin_tangential': {
+        'default': {
+            'value': 1.0e-9,
+            'unit': 'm^2/s',
+            'field_T': None,
+            'species': 'human',
+            'method': 'tangential diffusion along myelin lamellae',
+            'source_key': 'mackay1994',
+            'location': 'Tangential (along-lamellae) myelin-water diffusivity '
+                        '~1.0 µm²/ms, larger than radial.',
+        },
+        'alternatives': [],
+        'citation': _CITATION_MACKAY1994,
+        'description': 'Tangential (along-lamellae) diffusivity of myelin water in '
+                       'the sheath compartment of the canonical substrate.',
+        'note': 'Pairs with D_myelin_radial; the myelin sheath is an anisotropic '
+                'annular compartment.',
+    },
+    'delta_chi_a_myelin': {
+        'default': {
+            'value': -0.1e-6,
+            'unit': 'SI (dimensionless)',
+            'field_T': None,   # susceptibility is field-independent
+            'species': 'human',
+            'method': 'GRE phase imaging + susceptibility tensor model',
+            'source_key': 'liu2010',
+            'location': 'Table 1 / Eq. 12: Δχ_a ≈ −0.1 ppm relative to water',
+        },
+        'alternatives': [
+            {
+                'value': -0.1e-6,
+                'unit': 'SI (dimensionless)',
+                'field_T': 3.0,
+                'species': 'human',
+                'method': 'GRE phase + hollow-cylinder model',
+                'source_key': 'wharton2012',
+                'location': 'Table 1: Δχ_a = −0.1 ppm used in model fits',
+                'citation': {
+                    'key': 'wharton2012',
+                    'authors': 'Wharton S, Bowtell R',
+                    'title': 'Fiber orientation-dependent white matter contrast in gradient '
+                             'echo MRI',
+                    'journal': 'Proceedings of the National Academy of Sciences',
+                    'year': 2012,
+                    'doi': '10.1073/pnas.1211075109',
+                },
+            },
+            {
+                'value': -0.08e-6,
+                'unit': 'SI (dimensionless)',
+                'field_T': 7.0,
+                'species': 'human',
+                'method': 'Multi-echo GRE phase at 7T + susceptibility tensor imaging',
+                'source_key': 'he2009',
+                'location': 'Fig. 3, WM susceptibility anisotropy estimate',
+                'citation': {
+                    'key': 'he2009',
+                    'authors': 'He X, Yablonskiy DA',
+                    'title': 'Biophysical mechanisms of phase contrast in gradient echo MRI',
+                    'journal': 'Proceedings of the National Academy of Sciences',
+                    'year': 2009,
+                    'doi': '10.1073/pnas.0903111106',
+                },
+            },
+            {
+                'value': -0.1e-6,
+                'unit': 'SI (dimensionless)',
+                'field_T': 7.0,
+                'species': 'human',
+                'method': 'Susceptibility tensor imaging (STI) at 7T',
+                'source_key': 'liu2010_sti',
+                'location': 'Fig. 5, principal susceptibility values in WM tracts; '
+                            'Δχ = χ_∥ − χ_⊥ ≈ −0.1 ppm',
+                'citation': {
+                    'key': 'liu2010_sti',
+                    'authors': 'Liu C',
+                    'title': 'Susceptibility tensor imaging',
+                    'journal': 'Magnetic Resonance in Medicine',
+                    'year': 2010,
+                    'doi': '10.1002/mrm.22391',
+                },
+            },
+        ],
+        'citation': {
+            'key': 'liu2010',
+            'authors': 'Liu C',
+            'title': 'Susceptibility tensor imaging',
+            'journal': 'Magnetic Resonance in Medicine',
+            'year': 2010,
+            'doi': '10.1002/mrm.22391',
+        },
+        'description': (
+            'Susceptibility anisotropy of myelinated white matter: difference '
+            'between susceptibility parallel and perpendicular to the fibre axis, '
+            'Δχ_a = χ_∥ − χ_⊥.  Negative because myelin is more diamagnetic along '
+            'the axon than perpendicular to it (phospholipid bilayer geometry).  '
+            'In SI units (dimensionless); 1 ppm = 1×10⁻⁶.  '
+            'Enters the hollow-cylinder dipolar field as: '
+            'ΔB_ea = (Δχ_a·B₀·sin²θ/2)·b²(1−g²)/r²·cos(2φ).'
+        ),
+        'note': (
+            'Sign convention: negative Δχ_a means fibres parallel to B₀ are '
+            'slightly less diamagnetic than fibres perpendicular to B₀.  '
+            'The range −0.08 to −0.12 ppm spans most published estimates; '
+            '−0.1 ppm is the community default.  '
+            'Value is field-strength independent (susceptibility is a static '
+            'tissue property); the field strength B₀ appears explicitly in the '
+            'field formula, not here.'
+        ),
+    },
+    'rho1_axon_membrane': {
+        'default': {
+            'value': 8.7e-8,
+            'unit': 'm/s',
+            'field_T': None,   # surface relaxivity is a membrane material property, treated field-independent (calibrated ex vivo)
+            'species': 'human',
+            'method': 'diffusion-relaxation MRI calibrated against histology (ex vivo corpus callosum)',
+            'source_key': 'barakovic2023',
+            'location': 'Brownstein-Tarr T1 surface relaxivity fit; 1/T1a = 1/T1c + 2*rho1/r. '
+                        'In vivo 3T correction: T1_apparent=1.2s (Wright 2008), R=1.46um gives '
+                        'T1_bulk_intra = 1/(1/1.2 - 2*rho1/R) ~ 1.40 s. '
+                        'Practically relevant for PGSTE sequences (mixing time TM); '
+                        'negligible for PGSE where T1 >> Delta.',
+        },
+        'alternatives': [],
+        'citation': {
+            'key': 'barakovic2023',
+            'authors': 'Barakovic M, Pizzolato M, Tax CMW, Rudrapatna U, Magon S, '
+                       'Dyrby TB, Granziera C, Thiran JP, Jones DK, Canales-Rodriguez EJ',
+            'title': 'Estimating axon radius using diffusion-relaxation MRI: calibrating '
+                     'a surface-based relaxation model with histology',
+            'journal': 'Frontiers in Neuroscience',
+            'year': 2023,
+            'doi': '10.3389/fnins.2023.1209521',
+        },
+        'description': 'T1 surface relaxivity of the axon membrane (axolemma). '
+                       'Use paired with corrected T1_bulk_intra (~1.40 s), not T1_apparent.',
+    },
     'kappa_membrane': {
         'default': {
             'value': 1e-5,
@@ -971,8 +1317,21 @@ def canonical_white_matter(field_T=3.0):
         'T2_extra': get_value('T2_extra_axonal', field_T, allow_nearest=True),
         'T2_myelin': get_value('T2_myelin', field_T, allow_nearest=True),
         'T2_csf': get_value('T2_csf', field_T, allow_nearest=True),
+        # longitudinal: read by any C1 replay that turns per-compartment T1 (the pack's
+        # `per_comp.T1`), and by the two-pool MT descriptor's bound-pool recovery
+        'T1_intra': get_value('T1_intra_axonal', field_T, allow_nearest=True),
+        'T1_extra': get_value('T1_extra_axonal', field_T, allow_nearest=True),
+        'T1_myelin': get_value('T1_myelin', field_T, allow_nearest=True),
+        'T1_csf': get_value('T1_csf', field_T, allow_nearest=True),
         # membrane / surface
         'rho2': get_value('rho2_axon_membrane', field_T, allow_nearest=True),
+        'rho1': get_value('rho1_axon_membrane', field_T, allow_nearest=True),
+        # myelin is a radially-layered lamellar stack, so diffusion within it is anisotropic
+        'D_myelin_radial': get_value('D_myelin_radial'),
+        'D_myelin_tangential': get_value('D_myelin_tangential'),
+        # C3: myelin's susceptibility anisotropy -- the delta_chi_a knob of the field basis
+        'delta_chi_a': get_value('delta_chi_a_myelin'),
+        'gamma_proton': get_value('gamma_proton'),
         'kappa': get_value('kappa_membrane', field_T, allow_nearest=True),
         # quantitative MT (two-pool). These are the MEASURED qMT observables, not the walk's
         # (kappa_MT, dwell_time) -- kappa_MT depends on the substrate's own S/V, so it cannot live in a

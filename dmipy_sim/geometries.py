@@ -1679,6 +1679,13 @@ class PackedCylinders(Geometry):
     [-L/2, L/2)² after every timestep.
     """
 
+    # `classify_position` returns 0=extra and 1..N = the cylinder the walker is in,
+    # i.e. an OBJECT id, not a pool id. core.simulate_trajectories collapses it to a
+    # two-pool label for `comp_traj` (0=extra, 1=intra) -- both because relaxation is
+    # per-pool, not per-cylinder, and because an object id overflows the int8 channel
+    # above 127 cylinders.
+    classify_returns_object_id = True
+
     def __init__(self, radii, centers, L, orientation=(0., 0., 1.),
                  surface_relaxivity_t2=None, permeability=None):
         radii   = np.asarray(radii,   dtype=np.float64).ravel()
@@ -2392,6 +2399,13 @@ class PackedSpheres(Geometry):
         Minimum clear gap between any two sphere surfaces (including periodic
         images), metres.
     """
+
+    # `classify_position` returns 0=extra and 1..N = the sphere the walker is in,
+    # i.e. an OBJECT id, not a pool id. core.simulate_trajectories collapses it to a
+    # two-pool label for `comp_traj` (0=extra, 1=intra) -- both because relaxation is
+    # per-pool, not per-sphere, and because an object id overflows the int8 channel
+    # above 127 spheres.
+    classify_returns_object_id = True
 
     def __init__(self, radii, centers, L,
                  surface_relaxivity_t2=None, permeability=None):

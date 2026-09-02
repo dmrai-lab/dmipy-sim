@@ -289,6 +289,14 @@ def simulate(
         uses an independent sub-seed, so the ensemble signal is statistically
         identical to a single-shot run (not bit-identical).  Default None
         (all walkers at once).
+    storage_dtype : np.dtype, default ``np.float32``
+        Dtype of the returned position / boundary / occupancy channels. f32 matches the
+        walk, the pack (`compression.pack_position_arrays`) and the `.rpk` spec, which
+        permits only float32/float64 for `positions`. ``np.float16`` halves peak RAM on
+        large walks, but a micron-scale coordinate in metres is SUBNORMAL in f16 (flat
+        ~6e-8 m quantum), which biases inside/outside classification one way -- ~3% of a
+        confined population at R=0.5um. Use ``comp_traj`` for compartment counting, not
+        re-classified positions. See issue #78.
     require_gpu : {None, True, False}, optional
         GPU guard against a silent CPU fallback.  ``True`` raises if no GPU is
         visible; ``False`` opts out (e.g. a CPU float64 reference check);
@@ -1001,6 +1009,7 @@ def simulate_trajectories(
     save_relaxation_data: bool = False,
     sub_steps: int = None,
     require_gpu=None,
+    storage_dtype=np.float32,
     r0=None,
     kappa_MT: float = 0.0,
     dwell_time: float = 0.0,
@@ -1072,7 +1081,7 @@ def simulate_trajectories(
 
     Returns
     -------
-    trajectories : np.ndarray, shape (n_walkers, n_t, 3), float16
+    trajectories : np.ndarray, shape (n_walkers, n_t, 3), ``storage_dtype``
         Walker positions in metres at each saved time step.
     dt_actual : float
         Saved time step (= T_max / (n_t - 1)).
@@ -1080,7 +1089,7 @@ def simulate_trajectories(
         Number of physics sub-steps per saved point.
     dt_sim : float
         Actual simulation time step (= dt_actual / sub_steps).
-    dlog_boundary_unit : np.ndarray, shape (n_walkers, n_t), float16
+    dlog_boundary_unit : np.ndarray, shape (n_walkers, n_t), ``storage_dtype``
         Only when ``save_relaxation_data=True``.  Per-step accumulated boundary
         log-weight assuming rho/D = 1, i.e.
         ``dlog_boundary_unit[w, t] = -2 * sum_k(d_perp_k)`` over the boundary
@@ -1096,7 +1105,7 @@ def simulate_trajectories(
         compartment ID (always 0 for single-compartment; 0/1/2 for packed
         myelin).  Consumed by ``replay`` with
         ``T2_per_comp``/``T1_per_comp``.
-    bound_frac : np.ndarray, shape (n_walkers, n_t), float16
+    bound_frac : np.ndarray, shape (n_walkers, n_t), ``storage_dtype``
         ONLY for the packed-myelin path with ``kappa_MT > 0`` — appended as a 7th
         return value.  Per-save MT bound-pool occupancy, consumed by
         ``replay_bloch(bound_frac=...)`` to blend the bound pool.
@@ -1188,9 +1197,25 @@ def simulate_trajectories(
         (_, _), positions = jax.lax.scan(outer_step, (r0_w, key_w), None, length=n_t)
         return positions  # (n_t, 3)
 
+    # ── Storage dtype for the returned channels ─────────────────────────────
+    # f32 by DEFAULT. The walk is f32, the pack is f32 (compression.pack_position_arrays)
+    # and SPEC 5.1 requires float32/float64 for `positions`, so f16 used to be the only
+    # non-f32 link in the chain -- and a biased one: f16's smallest normal is 6.1e-5, so a
+    # micron-scale coordinate in METRES is subnormal, with a flat ~6e-8 m quantum (12.5% of
+    # a 0.5 um coordinate). A compartment is populated up to its wall and empty beyond, so
+    # that quantum can only EJECT walkers, never recruit them: 3.1% of a confined population
+    # at R=0.5um, scaling as ~1/R. The signal never noticed (|dS| <= 1.3e-5) but compartment
+    # counting did. Pass storage_dtype=np.float16 to halve peak RAM on large walks, knowing
+    # positions are then unfit for inside/outside classification -- use `comp_traj` instead,
+    # which is computed here at f32 and stored as int8.
+    _sdt = np.dtype(storage_dtype).type
+    if _sdt not in (np.float16, np.float32, np.float64):
+        raise ValueError(f"storage_dtype must be float16/32/64, got {storage_dtype!r}")
+
     # ── Compartment ID detection (relaxation path only) ─────────────────────
     # Permeable Cylinder (has _R and radius): 0=inside, 1=outside.  Permeable
-    # Sphere (radius, no _R): 0=inside, 1=outside.  Everything else: always 0.
+    # Sphere (radius, no _R): 0=inside, 1=outside.  Then any geometry exposing
+    # `classify_position`.  Only a geometry with none of these is a constant 0.
     if save_relaxation_data:
         if has_permeability and hasattr(geometry, '_R') and hasattr(geometry, 'radius'):
             R_val = jnp.float32(float(geometry.radius))
@@ -1205,6 +1230,23 @@ def simulate_trajectories(
 
             def _get_comp_id(r):
                 return jnp.int8(jnp.where(jnp.linalg.norm(r) < R_val, 0, 1))
+        elif getattr(geometry, 'classify_returns_object_id', False):
+            # PackedCylinders / PackedSpheres: 0=extra, 1..N = the object the walker is in.
+            # Collapse to two pools -- relaxation is per-pool, and an object id would
+            # overflow int8 above 127 objects.
+            #
+            # Before this branch they fell through to the constant below, so `comp_traj` was
+            # identically 0 and anyone wanting per-compartment occupancy had to re-derive it
+            # from the stored positions -- exactly the classification f16 positions get
+            # wrong (issue #78). Classifying at walk time in f32 is exact, and int8 costs
+            # 1 byte/save against 12 for f32 positions.
+            #
+            # NOTE the convention: this follows the geometry's own (and the .rpk spec's)
+            # `0 = extra-cellular / free`. The permeable Cylinder/Sphere branches above use
+            # the OPPOSITE convention (0 = intra) and are deliberately left alone here --
+            # flipping them would silently change existing relaxation replays. See #78.
+            def _get_comp_id(r):
+                return jnp.int8(jnp.minimum(geometry.classify_position(r), 1))
         else:
             def _get_comp_id(r):
                 return jnp.int8(0)
@@ -1467,11 +1509,11 @@ def simulate_trajectories(
                 if save_relaxation_data and is_packed_myelin_geom:
                     pos_f32, dlog_f32, comp_f32, bfrac_f32 = simulate_batch_pm(
                         current_r0, current_keys, current_comp0, current_brem0)
-                    all_batches.append(np.array(pos_f32).astype(np.float16))
-                    all_dlog_batches.append(np.array(dlog_f32).astype(np.float16))
+                    all_batches.append(np.array(pos_f32).astype(_sdt))
+                    all_dlog_batches.append(np.array(dlog_f32).astype(_sdt))
                     all_comp_batches.append(np.array(comp_f32).astype(np.int8))
                     if _mt_on:
-                        all_bound_batches.append(np.array(bfrac_f32).astype(np.float16))
+                        all_bound_batches.append(np.array(bfrac_f32).astype(_sdt))
                 elif save_relaxation_data:
                     pos_f32, dlog_f32, comp_f32 = simulate_batch_relax(current_r0, current_keys)
                     if _compress:
@@ -1481,17 +1523,17 @@ def simulate_trajectories(
                         all_blt_endpoints.append(_end)
                         all_dlog_batches.append(_bmodes)
                     else:
-                        all_batches.append(np.array(pos_f32).astype(np.float16))
-                        all_dlog_batches.append(np.array(dlog_f32).astype(np.float16))
-                    # Permeable: fractional occupancy (float16); else discrete (int8).
+                        all_batches.append(np.array(pos_f32).astype(_sdt))
+                        all_dlog_batches.append(np.array(dlog_f32).astype(_sdt))
+                    # Permeable: fractional occupancy; else discrete (int8).
                     all_comp_batches.append(np.array(comp_f32).astype(
-                        np.float16 if has_permeability else np.int8))
+                        _sdt if has_permeability else np.int8))
                 else:
                     if _compress:
                         all_batches.append(_compress_pos(simulate_batch(current_r0, current_keys)))
                     else:
                         positions_f32 = np.array(simulate_batch(current_r0, current_keys))
-                        all_batches.append(positions_f32.astype(np.float16))
+                        all_batches.append(positions_f32.astype(_sdt))
                 success = True
             except Exception as e:
                 err_str = str(e)
@@ -1519,22 +1561,22 @@ def simulate_trajectories(
                             sp, sd, sc, sbf = simulate_batch_pm(
                                 current_r0[ss:se], current_keys[ss:se],
                                 current_comp0[ss:se], current_brem0[ss:se])
-                            sub_pos_list.append(np.array(sp).astype(np.float16))
-                            sub_dlog_list.append(np.array(sd).astype(np.float16))
+                            sub_pos_list.append(np.array(sp).astype(_sdt))
+                            sub_dlog_list.append(np.array(sd).astype(_sdt))
                             sub_comp_list.append(np.array(sc).astype(np.int8))
                             if _mt_on:
-                                sub_bound_list.append(np.array(sbf).astype(np.float16))
+                                sub_bound_list.append(np.array(sbf).astype(_sdt))
                         elif save_relaxation_data:
                             sp, sd, sc = simulate_batch_relax(
                                 current_r0[ss:se], current_keys[ss:se])
-                            sub_pos_list.append(np.array(sp).astype(np.float16))
-                            sub_dlog_list.append(np.array(sd).astype(np.float16))
+                            sub_pos_list.append(np.array(sp).astype(_sdt))
+                            sub_dlog_list.append(np.array(sd).astype(_sdt))
                             sub_comp_list.append(np.array(sc).astype(
-                                np.float16 if has_permeability else np.int8))
+                                _sdt if has_permeability else np.int8))
                         else:
                             sp = np.array(simulate_batch(
                                 current_r0[ss:se], current_keys[ss:se]))
-                            sub_pos_list.append(sp.astype(np.float16))
+                            sub_pos_list.append(sp.astype(_sdt))
                     all_batches.append(np.concatenate(sub_pos_list, axis=0))
                     if save_relaxation_data:
                         all_dlog_batches.append(np.concatenate(sub_dlog_list, axis=0))

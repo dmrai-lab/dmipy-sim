@@ -193,3 +193,50 @@ def test_the_step_cell_assertion_actually_guards():
 
     # an analytic pore has no lookup to outrun, so it passes trivially rather than erroring
     assert_step_resolves_the_collision_lookup(Sphere(radius=5e-6), 1.0)
+
+
+def _disco_like_tubes(r_min_um=0.718, r_max_um=2.99, n_seg=40):
+    """A PackedCurvedTubes pack shaped like the DiSCo substrate: a RANGE of tube radii,
+    so the segment-bucket `cell_size` (4*Rmin/6 + 2*Rmax ~ 6.5um) is many times the
+    finest tube radius (0.72um) that actually bounds the reflection."""
+    from dmipy_sim.curved_tube import PackedCurvedTubes
+    z = np.linspace(0.0, 200.0, n_seg) * UM
+    zero = np.zeros_like(z)
+    cls, radii = [], []
+    for k, r_um in enumerate((r_min_um, r_max_um)):
+        cls.append(np.stack([zero + k * 20.0 * UM, zero, z], axis=1))
+        radii.append(r_um * UM)
+    return PackedCurvedTubes(cls, radii, interior=False)
+
+
+def test_an_analytic_pack_with_a_spatial_index_keeps_the_R_over_6_rule():
+    """A cell grid is not a mesh. PackedCurvedTubes buckets tube SEGMENTS purely to cut
+    the candidate set; its `radius` is a real tube radius, so R/6 still bounds the step
+    (single-reflection-per-step -- see CurvedTube's docstring). Keying the collision
+    substitution on `cell_size` alone dropped R/6 here and returned 1 sub-step at
+    step/R ~ 1.7, i.e. walkers stepping through tube walls."""
+    pk = _disco_like_tubes()
+    dt = 53.5e-3 / 128                      # the DiSCo dt_save
+    D0 = 0.6e-9                             # the DiSCo diffusivity
+    assert not getattr(pk, "radius_is_mesh_feature", False)
+    assert pk.cell_size > 4 * pk.radius, "test pack no longer has the coarse-cell/fine-tube shape"
+    n = walk_sub_steps(pk, D0, dt)
+    assert n == _old_rule_at(pk, dt, D0), f"analytic R/6 rule not applied (got {n})"
+    step_l = float(np.sqrt(6.0 * D0 * dt / n))
+    assert step_l / pk.radius < 1.0 / 6.0 + 1e-6, f"step/R = {step_l/pk.radius:.4f}, must be <= 1/6"
+
+
+def test_the_collision_criterion_still_applies_to_an_analytic_pack():
+    """Both criteria bound DIFFERENT failures, so the analytic pack takes the tighter:
+    R/6 for the reflection math, the cell for the 27-cell candidate gather. With a cell
+    made artificially tiny the collision rule must win."""
+    pk = _disco_like_tubes()
+    dt = 53.5e-3 / 128
+    D0 = 0.6e-9
+    pk.cell_size = 0.02 * UM                # far finer than R/6 would ask for
+    assert walk_sub_steps(pk, D0, dt) == collision_sub_steps(pk, D0, dt) > _old_rule_at(pk, dt, D0)
+
+
+def _old_rule_at(geometry, dt, diffusivity, divisor=216.0):
+    R = _geometry_radius(geometry)
+    return max(1, int(np.ceil(dt / (float(R) ** 2 / (divisor * diffusivity)))))
