@@ -115,3 +115,81 @@ def test_the_observables_are_converged_at_the_collision_criterion():
     lt_rel = abs(out[4][1] - out[1][1]) / out[1][1]
     assert d_rel < 0.05, f"apparent D moved {100*d_rel:.2f}% refining 4x past the collision criterion"
     assert lt_rel < 0.05, f"boundary local time moved {100*lt_rel:.2f}% refining 4x"
+
+
+def test_a_slab_is_sub_stepped_by_its_width():
+    """`Box1D` exposes `length`, not `radius`, and losing that clause fails SILENTLY.
+
+    Regression for 6d585fc, which refactored the core.py auto-tune into `physics.walk_sub_steps` and dropped
+    its `length` fallback. `_geometry_radius` then returned None for a slab, the caller read that as "no scale
+    to resolve", and every Box1D walk ran at ONE sub-step: step_l = sqrt(6*D*dt) = 6 um for a 2 um slab at
+    dt_save = 3 ms. Nothing raised; the boundary local time was simply garbled, inflating a fitted surface T2
+    to 1.42 s against a Brownstein-Tarr 1.0 s. `tests/test_compression.py` caught it as a walk sanity check.
+    """
+    from dmipy_sim import Box1D
+    from dmipy_sim.physics import _geometry_radius, walk_sub_steps
+
+    L, D, dt = 2e-6, 2e-9, 3e-3
+    g = Box1D(length=L)
+    assert _geometry_radius(g) == L, "the slab width is the scale to resolve"
+    n = walk_sub_steps(g, D, dt)
+    step = float(np.sqrt(6 * D * dt / n))
+    assert n > 1, "a slab must be sub-stepped"
+    # the documented analytic rule is step_l = R/6 (divisor 216 = 6*6^2)
+    assert step / L == pytest.approx(1 / 6, rel=0.05), f"step_l/L = {step / L:.4f}, expected ~1/6"
+
+
+def test_a_walled_geometry_without_a_recognised_scale_warns():
+    """One sub-step is right for free diffusion and wrong for anything with walls, so it must not be silent."""
+    from dmipy_sim.physics import walk_sub_steps
+
+    class WalledButUnrecognised:
+        surface_area = 1e-11
+        volume = 1e-17                      # finite walls, but no radius/length/_radii_np
+
+    with pytest.warns(UserWarning, match="no length scale"):
+        assert walk_sub_steps(WalledButUnrecognised(), 2e-9, 3e-3) == 1
+
+    class Unbounded:                        # free diffusion: one sub-step, no warning
+        pass
+
+    import warnings as _w
+    with _w.catch_warnings():
+        _w.simplefilter("error")
+        assert walk_sub_steps(Unbounded(), 2e-9, 3e-3) == 1
+
+
+def test_the_step_cell_assertion_actually_guards():
+    """The helper must FAIL on a step that outruns the lookup, or it guards nothing.
+
+    An assertion that cannot fail is worse than none: it costs runtime and buys confidence it has not earned.
+    So this drives it from both sides -- the engine's own sub-stepping must pass, and the step that produced a
+    90% walker loss (and a wrongly-filed permeability bug, dmrai-lab/dmipy-sim#65) must be rejected.
+    """
+    import trimesh as _tm
+    from dmipy_sim.mesh import Mesh
+    from dmipy_sim.mesh_bundle import _min_radius
+    from dmipy_sim.physics import permeable_sub_steps
+    from tests.conftest import assert_step_resolves_the_collision_lookup
+
+    UM = 1e-6
+    sph = _tm.creation.icosphere(subdivisions=4, radius=5.0)
+    V = (np.asarray(sph.vertices, np.float64) * UM).astype(np.float32)
+    F = np.asarray(sph.faces, np.int64)
+    mesh = Mesh(V, F, periodic=False, voxel_min=V.min(0) - UM, voxel_max=V.max(0) + UM,
+                feature_radius=_min_radius(V, F), permeability=2e-5)
+
+    # what the engine itself picks must pass
+    dt = 1e-4
+    n = permeable_sub_steps(mesh, 2e-9, dt)
+    step_engine = float(np.sqrt(6 * 2e-9 * dt / n))
+    assert step_engine < float(mesh.cell_size), "the engine's own step should be under one cell"
+    assert_step_resolves_the_collision_lookup(mesh, step_engine)
+
+    # the step that caused #65 -- derived from the PORE radius rather than feature_radius -- must be rejected
+    step_pore = float(np.sqrt(6 * 2e-9 * (5e-6) ** 2 / (3750 * 2e-9)))
+    with pytest.raises(AssertionError, match="collision-lookup cell"):
+        assert_step_resolves_the_collision_lookup(mesh, step_pore)
+
+    # an analytic pore has no lookup to outrun, so it passes trivially rather than erroring
+    assert_step_resolves_the_collision_lookup(Sphere(radius=5e-6), 1.0)

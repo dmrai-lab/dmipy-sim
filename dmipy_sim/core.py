@@ -17,6 +17,7 @@ import numpy as np
 from .physics import (make_step_fn, make_myelin_step_fn, make_packed_myelin_step_fn,
                       make_packed_myelin_traj_step_fn)
 from .waveforms import Waveform
+from .geometries import initial_positions
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -75,7 +76,7 @@ _REPLAY_AUTO_GEOM_NAMES = frozenset({
 
 
 def _replay_gap(geometry, *, return_positions, return_compartments,
-                return_walker_signals, diffusivity):
+                return_walker_signals, diffusivity, T2_probe=None, T1_probe=None):
     """Return a string naming why the replay backend cannot serve this run
     exactly, or ``None`` when replay is a valid substitute for the fused engine.
 
@@ -93,8 +94,17 @@ def _replay_gap(geometry, *, return_positions, return_compartments,
         return ("PackedMyelinatedCylinders fused single-reflection kernel is not "
                 "position-parity with the multi-bounce replay walk")
     if getattr(geometry, 'permeability', None) is not None:
-        return ("membrane permeability is single-pass walk semantics "
-                "(fused-only; scalar replay has no exchange reservoir)")
+        # Permeability shapes the WALK, like geometry and diffusivity -- it is not a replay knob, and the
+        # recorded trajectory already contains every crossing that happened. Replay then applies the gradient
+        # off positions, scalar T2/T1 off elapsed time and rho off the unit boundary local time, none of which
+        # depend on kappa. So a permeable walk is as replayable as an impermeable one.
+        #
+        # The one genuine gap is PER-COMPARTMENT T2/T1 under exchange: those are applied off the saved
+        # compartment channel, which is sampled at dt_save while crossings happen at sub-step resolution, so
+        # the compartment attribution of a crossing walker is quantised. Scalar relaxation has no such issue.
+        if isinstance(T2_probe, dict) or isinstance(T1_probe, dict):
+            return ("per-compartment T2/T1 under membrane exchange needs sub-step compartment "
+                    "attribution, which the saved channel quantises to dt_save (fused-only)")
     if getattr(geometry, '_D_comp_jax', None) is not None:
         # Per-compartment D changes the STEP LENGTH per compartment, so it alters the walk
         # itself — not a replay knob. (Per-compartment T2/T1 ARE replay knobs: they gate
@@ -113,7 +123,7 @@ def _replay_auto_allowed(geometry):
 
 
 def _simulate_via_replay(n_walkers, diffusivity, waveform, geometry, *, seed,
-                         T2, T1, r0, require_gpu, walker_batch_size):
+                         T2, T1, r0, require_gpu, walker_batch_size, sub_steps=None):
     """Signal via the replay backend: walk once, then apply the waveform +
     relaxation.  The producer walk depends only on (geometry, diffusivity,
     seed) — the replay invariant — so it reproduces the fused ``simulate()`` to
@@ -164,6 +174,8 @@ def _simulate_via_replay(n_walkers, diffusivity, waveform, geometry, *, seed,
     if walker_batch_size is not None:
         st_kwargs['walker_batch_size'] = walker_batch_size
 
+    if sub_steps:
+        st_kwargs['sub_steps'] = sub_steps
     out = simulate_trajectories(n_walkers, diffusivity, geometry, T_max, dt,
                                 **st_kwargs)
     if save_relax:
@@ -205,6 +217,7 @@ def simulate(
     walker_batch_size: int = None,
     require_gpu=None,
     engine: str = "auto",
+    sub_steps: int = None,
     _allow_oom_backoff: bool = True,
 ):
     """Run Monte Carlo diffusion simulation.
@@ -337,7 +350,7 @@ def simulate(
             geometry, return_positions=return_positions,
             return_compartments=return_compartments,
             return_walker_signals=return_walker_signals,
-            diffusivity=diffusivity)
+            diffusivity=diffusivity, T2_probe=T2, T1_probe=T1)
         if engine == "replay":
             if _gap is not None:
                 raise NotImplementedError(
@@ -346,13 +359,13 @@ def simulate(
             return _simulate_via_replay(
                 n_walkers, diffusivity, _wf_r, geometry, seed=seed,
                 T2=T2, T1=T1, r0=r0, require_gpu=require_gpu,
-                walker_batch_size=walker_batch_size)
+                walker_batch_size=walker_batch_size, sub_steps=sub_steps)
         # engine == "auto": replay only where validated-equivalent AND green.
         if _gap is None and _replay_auto_allowed(geometry):
             return _simulate_via_replay(
                 n_walkers, diffusivity, _wf_r, geometry, seed=seed,
                 T2=T2, T1=T1, r0=r0, require_gpu=require_gpu,
-                walker_batch_size=walker_batch_size)
+                walker_batch_size=walker_batch_size, sub_steps=sub_steps)
         # else: fall through to the fused engine (pin so recursion stays fused).
         engine = "fused"
 
@@ -378,7 +391,7 @@ def simulate(
                     return_compartments=return_compartments,
                     return_walker_signals=return_walker_signals, r0=r0,
                     walker_batch_size=bs, require_gpu=require_gpu,
-                    engine="fused", _allow_oom_backoff=False)
+                    engine="fused", sub_steps=sub_steps, _allow_oom_backoff=False)
             except (XlaRuntimeError, RuntimeError) as exc:
                 m = str(exc)
                 if not ('RESOURCE_EXHAUSTED' in m or 'out of memory' in m.lower()):
@@ -448,10 +461,7 @@ def simulate(
 
     # Initial positions — use caller-supplied r0 or let geometry place walkers
     _r0_user_supplied = r0 is not None
-    if r0 is None:
-        r0 = geometry.init_positions(n_walkers, pos_key)  # (n_walkers, 3)
-    else:
-        r0 = jnp.array(r0, dtype=jnp.float32)           # (n_walkers, 3)
+    r0 = initial_positions(geometry, n_walkers, pos_key, r0)   # (n_walkers, 3)
 
     # Check if this is a MyelinatedCylinder or LabelMap2D (custom step function path)
     is_myelin = getattr(geometry, '_is_myelinated', False)
@@ -573,7 +583,8 @@ def simulate(
         # Standard geometry path
         # Build scan body for this geometry and diffusivity
         # T2/T1 are passed in so they are accumulated per-walker inside the scan
-        step_fn, has_weight = make_step_fn(geometry, diffusivity, dt, T2=T2, T1=T1)
+        step_fn, has_weight = make_step_fn(geometry, diffusivity, dt, T2=T2, T1=T1,
+                                       sub_steps=sub_steps)
         spin_w = jnp.ones((n_walkers,), dtype=jnp.float32)
 
         if want_pos_full:
@@ -790,7 +801,7 @@ def _simulate_in_walker_batches(n_walkers, walker_batch_size, *, seed,
             return_compartments=return_compartments,
             return_walker_signals=return_walker_signals,
             walker_batch_size=None, require_gpu=False,
-            engine="fused", _allow_oom_backoff=False)
+            engine="fused", sub_steps=sub_steps, _allow_oom_backoff=False)
 
         items = list(out) if isinstance(out, tuple) else [out]
         sig = np.asarray(items.pop(0))
@@ -851,6 +862,7 @@ def simulate_mixture(compartments, waveform, seed=123):
             waveform=waveform,
             geometry=comp['geometry'],
             seed=seed + i,
+            sub_steps=sub_steps,
         )
         weighted = comp['fraction'] * s
         signal = weighted if signal is None else signal + weighted
@@ -859,7 +871,8 @@ def simulate_mixture(compartments, waveform, seed=123):
 
 
 def simulate_cpmg(n_walkers, diffusivity, waveform, geometry, *,
-                  T2=None, seed=123, walker_batch_size=None, require_gpu=None):
+                  T2=None, seed=123, r0=None, sub_steps=None,
+                  walker_batch_size=None, require_gpu=None):
     """Multi-echo CPMG signal from a SINGLE diffusion walk.
 
     Walks the spin ensemble once through the full CPMG train (ideal instantaneous
@@ -879,6 +892,14 @@ def simulate_cpmg(n_walkers, diffusivity, waveform, geometry, *,
     geometry : Geometry
     T2 : float, optional
         Transverse relaxation time (s), accumulated per-walker in the walk.
+    r0 : array-like of shape (n_walkers, 3), optional
+        Explicit start positions in metres.  Default: ``geometry.init_positions(n, key)``,
+        which on a mesh means ``intra=True`` -- INSIDE the surface.  Pass this whenever the
+        pool you want is not the geometry's inside; a fibre bundle's extra-axonal pool is
+        the case that occurs, and getting it wrong silently walks the intra pool instead.
+        See :func:`dmipy_sim.geometries.initial_positions`.
+    sub_steps : int, optional
+        Fine sub-steps per waveform step; overrides the per-geometry auto-tune.
     seed, walker_batch_size, require_gpu : see :func:`simulate`.
 
     Returns
@@ -937,9 +958,9 @@ def simulate_cpmg(n_walkers, diffusivity, waveform, geometry, *,
     master_key = jax.random.PRNGKey(seed)
     pos_key, walker_key = jax.random.split(master_key)
     walker_keys = jax.random.split(walker_key, n_walkers)
-    r0 = geometry.init_positions(n_walkers, pos_key)
+    r0 = initial_positions(geometry, n_walkers, pos_key, r0)
 
-    step_fn, has_weight = make_step_fn(geometry, diffusivity, dt, T2=T2)
+    step_fn, has_weight = make_step_fn(geometry, diffusivity, dt, T2=T2, sub_steps=sub_steps)
 
     if has_weight:
         def step_emit(carry, inputs):
@@ -978,6 +999,7 @@ def simulate_trajectories(
     seed: int = 42,
     walker_batch_size: int = 50_000,
     save_relaxation_data: bool = False,
+    sub_steps: int = None,
     require_gpu=None,
     r0=None,
     kappa_MT: float = 0.0,
@@ -1104,7 +1126,9 @@ def simulate_trajectories(
         if _inner_radii is not None and len(_inner_radii) > 0:
             R_geom = (float(np.min(_inner_radii[_inner_radii > 0]))
                       if np.any(_inner_radii > 0) else None)
-    if R_geom is None and not getattr(geometry, 'cell_size', None):
+    if sub_steps:
+        pass                                  # caller pinned it; see simulate(sub_steps=...)
+    elif R_geom is None and not getattr(geometry, 'cell_size', None):
         # Free diffusion or unknown: no sub-stepping needed
         sub_steps = 1
     else:
@@ -1116,6 +1140,10 @@ def simulate_trajectories(
 
     dt_sim = dt_actual / sub_steps
     step_l_sim = jnp.float32(jnp.sqrt(6.0 * diffusivity * dt_sim))
+    # Same soundness bound as in physics.make_step_fn -- the guard has to live here too, because a permeable
+    # mesh now routes through the REPLAY backend (see _replay_gap) and so never reaches make_step_fn.
+    from .physics import _warn_if_step_outruns_the_lookup as _warn_step
+    _warn_step(geometry, diffusivity, dt_actual, sub_steps, "trajectory walk")
 
     print(f"  sub_steps={sub_steps}, dt_sim={dt_sim*1e6:.3f} µs, "
           f"step_l={float(step_l_sim)*1e6:.4f} µm"
@@ -1308,12 +1336,7 @@ def simulate_trajectories(
     master_key = jax.random.PRNGKey(seed)
     pos_key, walker_key = jax.random.split(master_key)
 
-    if r0 is not None:
-        r0_all = jnp.asarray(r0, dtype=jnp.float32)
-        if r0_all.shape != (n_walkers, 3):
-            raise ValueError(f"r0 must have shape ({n_walkers}, 3), got {r0_all.shape}")
-    else:
-        r0_all = geometry.init_positions(n_walkers, pos_key)   # (n_walkers, 3)
+    r0_all = initial_positions(geometry, n_walkers, pos_key, r0)   # (n_walkers, 3)
     walker_keys_all = jax.random.split(walker_key, n_walkers)
 
     comp0_all = (jnp.asarray(geometry._init_compartments)
