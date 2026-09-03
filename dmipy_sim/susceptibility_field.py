@@ -47,6 +47,7 @@ echo, so this choice is physically inert for SE/STE signals.
 
 from __future__ import annotations
 
+import warnings
 import numpy as np
 
 # Symmetric 3x3 tensor stored as 6 components in this fixed order.
@@ -419,7 +420,25 @@ _MAX_BOUNDARY_EDGE_FRACTION = 1e-2
 _MIN_REPAIRABLE_BOUNDARY_EDGES = 16
 
 
-def mesh_contains(V, F, pts, *, prefilter=False, chunk=2_000_000):
+def _warn_if_bruteforce_ray_engine(mesh):
+    """trimesh chooses its ray backend at import and says nothing either way.
+
+    With the native ``embreex`` it uses a BVH; without it, a pure-NumPy engine that tests every
+    ray against every triangle. The two differ by ~3 orders of magnitude, and the fallback is
+    silent -- which is how a 650 ms/point containment test hid inside a walk for a day. It is not
+    always fixable by installing the extension: ``embreex`` publishes no aarch64 wheels, so on ARM
+    the slow engine is permanent. Say so, once, rather than let the caller discover it as an OOM.
+    """
+    if type(mesh.ray).__module__.endswith("ray_triangle"):
+        warnings.warn(
+            "trimesh has no native ray backend (embreex/pyembree), so `contains` is running its "
+            "pure-NumPy engine: every ray is tested against EVERY triangle, costing ~O(points x "
+            "triangles) in both time and memory (measured on a 1.6M-triangle bundle: ~650 ms and "
+            "~84 MB per point). Prefer `mesh_contains(..., method='grid')`, which is exact and "
+            "bins triangles by their xy footprint instead.", RuntimeWarning, stacklevel=3)
+
+
+def mesh_contains(V, F, pts, *, method="grid", prefilter=False, chunk=2_000_000):
     """Exact "inside this CLOSED surface" for arbitrary points, by ray-crossing parity.
 
     The containment test to use when the points can be anywhere in a large box — seeding a compartment
@@ -450,6 +469,8 @@ def mesh_contains(V, F, pts, *, prefilter=False, chunk=2_000_000):
     Parity comes from :mod:`trimesh` (imported lazily, as elsewhere in the package) rather than being
     reimplemented here.
     """
+    if method not in ("grid", "trimesh"):
+        raise ValueError(f"method must be 'grid' or 'trimesh', got {method!r}")
     pts = np.asarray(pts, float)
     V = np.asarray(V, float); F = np.asarray(F, np.int64)
     import trimesh
@@ -491,6 +512,13 @@ def mesh_contains(V, F, pts, *, prefilter=False, chunk=2_000_000):
                 f"({n_open/max(len(m.edges_sorted),1):.2e} of all edges), too many to be a defect. Ray parity is undefined when a ray can leave through an open rim. Use "
                 f"mesh_inside(..., clip_axis=...) for a deliberately open surface, noting it is a "
                 f"near-field test only.")
+    if method == "grid":
+        # `m` is the surface the gate accepted (holes filled), and scaled by `s`; the grid path is
+        # scale-free so either is fine, but it must see the REPAIRED faces, not the caller's.
+        return mesh_contains_fast(np.asarray(m.vertices, float) / s,
+                                  np.asarray(m.faces, np.int64), pts)
+
+    _warn_if_bruteforce_ray_engine(m)
     out = np.zeros(len(pts), bool)
     cand = mesh_inside(V, F, pts) if prefilter else np.ones(len(pts), bool)
     if cand.any():
@@ -561,3 +589,140 @@ def mesh_field_basis(inner, outer, box_min, box_max, *, res=0.1e-6, include_anis
     basis = field_basis(myelin_mask, radial_dir, vs, include_aniso=include_aniso,
                         kspace_lowpass=kspace_lowpass)
     return basis, box_min, vs
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+def _xy_bins(tri, n_bins):
+    """CSR (offsets, tri_ids, lo, inv) binning triangles by their xy footprint.
+
+    A vertical (+z) ray from ``p`` can only hit a triangle whose xy AABB contains ``p.xy``, so
+    binning in xy alone is both complete and conservative -- no intersection can be missed, which
+    is what makes the acceleration exact rather than heuristic.
+    """
+    lo = tri[:, :, :2].min(axis=(0, 1))
+    hi = tri[:, :, :2].max(axis=(0, 1))
+    span = np.maximum(hi - lo, 1e-30)
+    inv = n_bins / (span * (1.0 + 1e-9))
+    t_lo = np.floor((tri[:, :, :2].min(axis=1) - lo) * inv).astype(np.int64)
+    t_hi = np.floor((tri[:, :, :2].max(axis=1) - lo) * inv).astype(np.int64)
+    np.clip(t_lo, 0, n_bins - 1, out=t_lo)
+    np.clip(t_hi, 0, n_bins - 1, out=t_hi)
+
+    wi = t_hi[:, 0] - t_lo[:, 0] + 1
+    wj = t_hi[:, 1] - t_lo[:, 1] + 1
+    counts = wi * wj
+    total = int(counts.sum())
+    tri_ids = np.repeat(np.arange(len(tri), dtype=np.int64), counts)
+    start = np.cumsum(counts) - counts
+    off = np.arange(total, dtype=np.int64) - np.repeat(start, counts)
+    wj_r = np.repeat(wj, counts)
+    bi = np.repeat(t_lo[:, 0], counts) + off // wj_r
+    bj = np.repeat(t_lo[:, 1], counts) + off % wj_r
+    key = bi * n_bins + bj
+
+    order = np.argsort(key, kind="stable")
+    key = key[order]; tri_ids = tri_ids[order]
+    offsets = np.searchsorted(key, np.arange(n_bins * n_bins + 1))
+    return offsets, tri_ids, lo, inv
+
+
+def _parity_vertical(tri, pts, offsets, tri_ids, lo, inv, n_bins, tol):
+    """Crossing parity of a +z ray, testing only the triangles in each point's xy bin.
+
+    Returns ``(inside, ambiguous)``. A point is ambiguous when the ray passes within ``tol`` of a
+    triangle edge in projection: the shared edge of two coplanar-adjacent faces is then counted
+    twice or not at all, and parity is unreliable. Those points are re-cast from a jittered origin
+    rather than silently trusted -- the failure is a flipped bit, not a small error.
+    """
+    n = len(pts)
+    inside = np.zeros(n, bool)
+    ambig = np.zeros(n, bool)
+    b = np.floor((pts[:, :2] - lo) * inv).astype(np.int64)
+    np.clip(b, 0, n_bins - 1, out=b)
+    key = b[:, 0] * n_bins + b[:, 1]
+
+    order = np.argsort(key, kind="stable")
+    ks = key[order]
+    edges = np.flatnonzero(np.r_[True, ks[1:] != ks[:-1]])
+    for e0, e1 in zip(edges, np.r_[edges[1:], len(ks)]):
+        k = ks[e0]
+        s, t = offsets[k], offsets[k + 1]
+        if s == t:
+            continue                                   # no triangle overhead: outside
+        idx = order[e0:e1]
+        T = tri[tri_ids[s:t]]                          # (m, 3, 3)
+        P = pts[idx]                                   # (q, 3)
+        ax, ay, az = T[:, 0, 0], T[:, 0, 1], T[:, 0, 2]
+        bx, by, bz = T[:, 1, 0], T[:, 1, 1], T[:, 1, 2]
+        cx, cy, cz = T[:, 2, 0], T[:, 2, 1], T[:, 2, 2]
+        d = (by - cy) * (ax - cx) + (cx - bx) * (ay - cy)      # 2 x signed xy area
+        # relative to the typical face: an absolute floor cannot distinguish a vertical
+        # face (never crossed by a vertical ray) from a merely small one.
+        ok = np.abs(d) > 1e-12 * np.median(np.abs(d)) if len(d) else np.zeros(0, bool)
+        dd = np.where(ok, d, 1.0)
+        px = P[:, 0][:, None]; py = P[:, 1][:, None]; pz = P[:, 2][:, None]
+        l1 = ((by - cy) * (px - cx) + (cx - bx) * (py - cy)) / dd
+        l2 = ((cy - ay) * (px - cx) + (ax - cx) * (py - cy)) / dd
+        l3 = 1.0 - l1 - l2
+        hit = (l1 >= 0.0) & (l2 >= 0.0) & (l3 >= 0.0) & ok[None, :]
+        z = l1 * az + l2 * bz + l3 * cz
+        cross = hit & (z > pz)
+        inside[idx] = (cross.sum(axis=1) % 2) == 1
+        near = (np.minimum(np.minimum(np.abs(l1), np.abs(l2)), np.abs(l3)) < tol) & ok[None, :]
+        ambig[idx] = (near & (z > pz - tol)).any(axis=1)
+    return inside, ambig
+
+
+def mesh_contains_fast(V, F, pts, *, n_bins=256, tol=1e-9, max_retries=6, seed=0):
+    """Exact "inside this CLOSED surface", accelerated by an xy bin index instead of a ray engine.
+
+    Same ray-parity semantics as :func:`mesh_contains`, and the same answers -- what changes is
+    only WHICH triangles are tested. trimesh picks its ray backend at import: the native
+    ``embreex`` when present, else a pure-NumPy engine that tests every ray against every
+    triangle, with no warning either way. On this 1.57M-triangle bundle that engine measured
+    ~650 ms and ~84 MB PER POINT, so seeding 6,000 walkers would need ~4 h and ~2 TB. And it is
+    not installable everywhere -- ``embreex`` publishes no aarch64 wheels -- so the cliff is
+    silent, platform-dependent, and permanent on ARM.
+
+    A +z ray from ``p`` can only meet a triangle whose xy footprint contains ``p.xy``, so binning
+    triangles by that footprint is complete: no intersection is missed, and the acceleration is
+    exact rather than approximate. Each point then tests the ~100 triangles over its own bin
+    instead of all 1.57M.
+
+    Points whose ray grazes an edge in projection are re-cast from a jittered origin. That case is
+    not a rounding error -- a shared edge counted twice or zero times flips the parity bit outright
+    -- so it is detected and retried rather than trusted.
+    """
+    V = np.asarray(V, float); F = np.asarray(F, np.int64)
+    pts = np.asarray(pts, float)
+    if len(pts) == 0:
+        return np.zeros(0, bool)
+    # Work in units of the median edge, exactly as `mesh_contains` does before handing trimesh a
+    # mesh. Substrate coordinates are in METRES, so a triangle's doubled xy area is ~1e-14 there;
+    # the barycentric divide then amplifies rounding, and an absolute degeneracy threshold cannot
+    # tell a vertical face from a small one. Rescaling makes both O(1) and the predicates honest.
+    scale = 1.0 / max(float(np.median(np.linalg.norm(V[F[:, 0]] - V[F[:, 1]], axis=1))), 1e-300)
+    tri = V[F] * scale
+    pts = pts * scale
+    offsets, tri_ids, lo, inv = _xy_bins(tri, n_bins)
+
+    inside, ambig = _parity_vertical(tri, pts, offsets, tri_ids, lo, inv, n_bins, tol)
+    if ambig.any():
+        rng = np.random.default_rng(seed)
+        jit = float(np.median(np.linalg.norm(tri[:, 0] - tri[:, 1], axis=1)))
+        for _ in range(max_retries):
+            j = np.flatnonzero(ambig)
+            if j.size == 0:
+                break
+            q = pts[j].copy()
+            q[:, :2] += rng.normal(0.0, 1e-3 * jit, (len(j), 2))
+            ins_j, amb_j = _parity_vertical(tri, q, offsets, tri_ids, lo, inv, n_bins, tol)
+            inside[j] = ins_j
+            ambig[j] = amb_j
+        if ambig.any():
+            warnings.warn(
+                f"{int(ambig.sum())} of {len(pts)} points still graze a triangle edge after "
+                f"{max_retries} jittered re-casts; their inside/outside is unreliable. That "
+                f"usually means degenerate or duplicated faces rather than bad luck.",
+                RuntimeWarning, stacklevel=2)
+    return inside
