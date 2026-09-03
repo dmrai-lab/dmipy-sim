@@ -21,6 +21,7 @@ from collections import defaultdict
 
 import jax
 import jax.numpy as jnp
+from ._boundary import keep_side_radial, ray_quadric_t, specular, off_wall
 import numpy as np
 
 from .geometries import Geometry
@@ -95,10 +96,11 @@ class CurvedTube(Geometry):
         # mirror the radial overshoot back inside, then nudge just inside the wall
         r_ref = r_new - (2.0 * (d - R) + NUDGE) * n
         r_out = jnp.where(d > R, r_ref, r_new)
-        # safety clamp: if a sharp joint left it outside, project onto the wall inside
-        Q2, d2 = self._nearest(r_out)
-        n2 = (r_out - Q2) / (d2 + jnp.float32(1e-30))
-        r_out = jnp.where(d2 >= R, Q2 + (R - NUDGE) * n2, r_out)
+        # safety clamp: if a sharp joint left it outside, put it back inside the wall.
+        # `Q2 + (R - NUDGE) * n2` is exactly keep_side_radial's correction written out --
+        # same rule, so it uses the same implementation and the same tie handling.
+        Q2, _ = self._nearest(r_out)
+        r_out, _ = keep_side_radial(r_out, r_out - Q2, R, True, NUDGE)
         return r_out
 
 
@@ -138,8 +140,14 @@ class MultiShellCurvedTube(CurvedTube):
         Q, d = self._nearest(r_new)
         n = (r_new - Q) / (d + jnp.float32(1e-30))
         dt = d
-        dt = jnp.where(d > hi, 2.0 * hi - d - NUDGE, dt)   # mirror at the band's outer wall
-        dt = jnp.where(d < lo, 2.0 * lo - d + NUDGE, dt)   # mirror at the band's inner wall
+        dt = jnp.where(d >= hi, 2.0 * hi - d - NUDGE, dt)  # mirror at the band's outer wall
+        dt = jnp.where(d <= lo, 2.0 * lo - d + NUDGE, dt)  # mirror at the band's inner wall
+        # Equality counts as the wrong side for BOTH neighbours (see _boundary): a walker
+        # landing exactly on r_in or r_out belongs to neither band, and the strict `>` / `<`
+        # used here previously left that tie unresolved -- the same defect that let walkers
+        # change compartment without moving in the analytic geometries (#86). A mirror alone
+        # also has no guarantee, so clamp the result into [lo, hi] explicitly.
+        dt = jnp.clip(dt, lo + NUDGE, jnp.where(jnp.isfinite(hi), hi - NUDGE, dt))
         return Q + dt * n
 
     def init_positions(self, n_walkers, key, shell="intra"):
@@ -273,7 +281,11 @@ class PackedCurvedTubes(Geometry):
             Qh = Q[i]; dh = d[i]; rh = rr[i]
             n = (r_new - Qh) / (dh + jnp.float32(1e-30))
             r_ref = Qh + (2.0 * rh - dh - NUDGE) * n       # mirror back inside the tube
-            return jnp.where(dh > rh, r_ref, r_new)
+            r_int = jnp.where(dh >= rh, r_ref, r_new)      # equality is the wrong side
+            # the mirror can still land outside off a sharp joint; the shared rule is the
+            # guarantee, and it resolves the on-surface tie the same way everywhere
+            r_int, _ = keep_side_radial(r_int, r_int - Qh, rh, True, NUDGE)
+            return r_int
         # Proper specular reflection off the FIRST tube the step-ray enters: find the
         # entry point along the step, reflect the RADIAL component of the remaining
         # displacement (keeping the axial component), like the exact PackedCylinders.
@@ -286,15 +298,21 @@ class PackedCurvedTubes(Geometry):
         rp = (r - Ai) - ((r - Ai) @ u) * u                  # start, radial to axis
         sp = step - (step @ u) * u                          # step, radial to axis
         aa = sp @ sp + jnp.float32(1e-30); bb = 2.0 * (rp @ sp); cc = rp @ rp - rh * rh
-        disc = jnp.maximum(bb * bb - 4.0 * aa * cc, jnp.float32(0.0))
-        tau = jnp.clip((-bb - jnp.sqrt(disc)) / (2.0 * aa), 0.0, 1.0)   # first surface crossing
+        # `aa t^2 + bb t + cc = 0` is the shared quadric with B = bb/2
+        tau, _, _ = ray_quadric_t(aa, jnp.float32(0.5) * bb, cc)
+        tau = jnp.clip(tau, 0.0, 1.0)                                   # first surface crossing
         entry = r + tau * step
         rem = (1.0 - tau) * step                            # displacement left after entry
         rem_ax = (rem @ u) * u                              # axial part continues
         rem_p = rem - rem_ax                                # radial part is reflected
         ne = (entry - Ai) - ((entry - Ai) @ u) * u
         nhat = ne / (jnp.linalg.norm(ne) + jnp.float32(1e-30))          # outward radial normal
-        r_ref = entry + rem_ax + (rem_p - 2.0 * (rem_p @ nhat) * nhat) + NUDGE * nhat
+        # shared rules: specular on the radial part, nudge off the wall on the outside
+        r_ref = off_wall(entry, nhat, False, NUDGE) + rem_ax + specular(rem_p, nhat)
+        # ... and the guarantee: an exterior walker must not end up inside the tube it
+        # just bounced off. The mirror alone has no such guarantee near a joint.
+        Qe = Ai + jnp.clip(((r_ref - Ai) @ u), 0.0, jnp.sqrt(AB2[i])) * u
+        r_ref, _ = keep_side_radial(r_ref, r_ref - Qe, rh, False, NUDGE)
         return jnp.where(inside.any(), r_ref, r_new)
 
     def init_positions(self, n_walkers, key):

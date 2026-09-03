@@ -11,6 +11,8 @@ Tests cover:
 """
 
 import sys
+import jax
+import jax.numpy as jnp
 import numpy as np
 import numpy.testing as npt
 import pytest
@@ -304,3 +306,37 @@ def test_packed_cylinders_mc_mixture_vs_callaghan():
             f"weights={np.round(weights, 3)}"
         )
     )
+
+
+def test_impermeable_wall_grants_no_compartment_change():
+    """A walker whose step lands exactly on |q| = R must not change compartment (#86).
+
+    At kappa = 0 no crossing is ever granted, so any walker that ends up on the far side of
+    a membrane got there by relabelling, not by physics.  The mechanism is float32: a step
+    whose exit time marginally exceeds the step length fires no collision (correctly -- it
+    does not reach the wall), the straight step is taken, and the endpoint rounds onto the
+    surface, where the strict `dist2 < R**2` test reads "outside".  Measured at 0.675% of
+    intra walkers over 30k steps on a dense gamma packing before the carried-side sentinel.
+
+    This builds the rounding case directly rather than waiting for a long walk to hit it.
+    """
+    R = 1.0e-6
+    g = PackedCylinders(centers=np.array([[0.0, 0.0]]), radii=np.array([R]),
+                        L=10e-6, orientation=[0, 0, 1.0], permeability=0.0)
+    step_fn = jax.jit(jax.vmap(
+        lambda p, s, k: g.permeate(p, s, jnp.float32(0.0), jnp.float32(0.0), k, jnp.int8(-1)),
+        in_axes=(0, 0, 0)))
+
+    n = 4000
+    d = (np.float32(R) * (1.0 - 10.0 ** (-(4 + np.linspace(0, 4, n))))).astype(np.float32)
+    p = np.zeros((n, 3), np.float32); p[:, 0] = d
+    s = np.zeros((n, 3), np.float32); s[:, 0] = np.float32(R) - d   # lands on the wall
+    keys = jax.random.split(jax.random.PRNGKey(0), n)
+
+    r_new, _dlog, crossed, illegal = step_fn(jnp.asarray(p), jnp.asarray(s), keys)
+
+    assert not np.asarray(crossed).any(), "an impermeable wall granted a crossing"
+    assert np.asarray(illegal).any(), "the rounding case did not reproduce"
+    q = np.linalg.norm(np.asarray(r_new)[:, :2], axis=1)
+    assert (q < R).all(), (
+        f"{int((q >= R).sum())}/{n} intra walkers ended outside their axon at kappa=0")
