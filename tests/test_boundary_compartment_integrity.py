@@ -206,7 +206,9 @@ def test_the_sentinel_does_not_seal_the_membrane():
     walk and lives in `test_permeable_crossings`, marked slow. This is the one-bit version:
     an impermeable wall grants nothing, a permeable one grants something.
     """
-    n, n_steps, kappa_open = 1500, 1500, 1.0e-3
+    # kappa chosen so crossings appear in few steps: p_transmit = 2 (kappa/D) d_perp
+    # = 0.2 per wall hit, so a short walk suffices and the guard stays cheap.
+    n, n_steps, kappa_open = 1200, 700, 1.0e-2
     D, step = 2.0e-9, SUB_STEP
 
     def crossings(kappa):
