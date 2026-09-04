@@ -439,7 +439,7 @@ def mesh_bundle_master(bundle, *, n_walkers=30_000, params=None, T_max=0.04, dt_
         Reference values for certification/provenance only -- each is a replay knob, so None costs nothing
         physical. ``nominal_T2`` lets ``build_replay_pack`` certify the C1 tier. Order (extra, intra, myelin).
     """
-    from .mesh import Mesh
+    from .geometry.mesh import Mesh
     from .core import simulate_trajectories
     from .substrate.biophysical_constants import canonical_white_matter
 

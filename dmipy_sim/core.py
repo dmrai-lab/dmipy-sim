@@ -17,7 +17,7 @@ import numpy as np
 from .physics import (make_step_fn, make_myelin_step_fn, make_packed_myelin_step_fn,
                       make_packed_myelin_traj_step_fn)
 from .waveforms import Waveform
-from .geometries import initial_positions
+from .geometry import initial_positions
 
 
 # ═══════════════════════════════════════════════════════════════════════════

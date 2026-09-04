@@ -523,7 +523,7 @@ def seed_in_cell(cell, n_walkers, seed=0):
     component), by rejection with a ray-cast parity test (robust on the wavy,
     concave cell walls where a nearest-normal side test misfires).  Returns
     (n, 3) metres."""
-    from .geometries import _is_inside_batch
+    from .geometry.base import _is_inside_batch
     V = np.asarray(cell.vertices, float)
     F = np.asarray(cell.faces, np.int64)
     lo, hi = V.min(0), V.max(0)
