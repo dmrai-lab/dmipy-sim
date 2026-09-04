@@ -23,6 +23,8 @@ trimesh = pytest.importorskip("trimesh")
 
 from dmipy_sim.mesh import Mesh, _classify_arr, _gather_is_populated
 
+from ._containment import inside as contains
+
 
 def _thick_finely_meshed_tube(radius=3.0, height=20.0, sections=96, subdivisions=1):
     """A tube far wider than its own triangles -- the regime where the guard's assumption fails.
@@ -50,7 +52,7 @@ def test_deep_interior_points_have_an_empty_gather():
     mesh, lo, hi = _mesh_for(V, F)
 
     P = np.random.default_rng(0).uniform(lo, hi, (3000, 3)).astype(np.float32)
-    interior = tri.contains(P.astype(float))
+    interior = contains(tri, P.astype(float))
     populated = np.asarray(jax.jit(jax.vmap(_gather_is_populated, in_axes=(None, 0)))(mesh._A, P))
 
     assert interior.sum() > 200, "test geometry must have a substantial interior"
@@ -66,7 +68,7 @@ def test_the_classifier_calls_those_points_exterior():
     mesh, lo, hi = _mesh_for(V, F)
 
     P = np.random.default_rng(1).uniform(lo, hi, (3000, 3)).astype(np.float32)
-    interior = tri.contains(P.astype(float))
+    interior = contains(tri, P.astype(float))
     lab = np.asarray(jax.jit(jax.vmap(_classify_arr, in_axes=(None, 0)))(mesh._A, P))
 
     missed = interior & (lab == 1)
@@ -92,7 +94,7 @@ def test_refining_the_mesh_makes_the_classifier_worse():
         V, F, tri = _thick_finely_meshed_tube(subdivisions=subdiv)
         mesh, lo, hi = _mesh_for(V, F)
         P = np.random.default_rng(2).uniform(lo, hi, (2000, 3)).astype(np.float32)
-        interior = tri.contains(P.astype(float))
+        interior = contains(tri, P.astype(float))
         lab = np.asarray(jax.jit(jax.vmap(_classify_arr, in_axes=(None, 0)))(mesh._A, P))
         fracs.append((interior & (lab == 1)).sum() / max(interior.sum(), 1))
     assert fracs[1] > fracs[0], (
@@ -110,8 +112,8 @@ def test_seeding_fills_the_lumen_rather_than_hugging_the_wall():
 
     pts = np.asarray(mesh.init_positions(1500, jax.random.PRNGKey(3), intra=True), float)
     # exact, not "mostly": seeding decides containment by ray parity, so a seed outside is a bug
-    assert tri.contains(pts).all(), (
-        f"{100*(~tri.contains(pts)).mean():.2f}% of the intra pool is outside the tube")
+    assert contains(tri, pts).all(), (
+        f"{100*(~contains(tri, pts)).mean():.2f}% of the intra pool is outside the tube")
 
     # radial distance from the tube axis, in units of the radius
     frac = np.linalg.norm(pts[:, :2], axis=1) / 3.0
@@ -128,8 +130,8 @@ def test_exterior_seeding_does_not_swallow_the_interior():
     mesh, _, _ = _mesh_for(V, F)
 
     pts = np.asarray(mesh.init_positions(1500, jax.random.PRNGKey(4), intra=False), float)
-    assert not tri.contains(pts).any(), (
-        f"{100*tri.contains(pts).mean():.1f}% of the exterior pool is actually inside the tube")
+    assert not contains(tri, pts).any(), (
+        f"{100*contains(tri, pts).mean():.1f}% of the exterior pool is actually inside the tube")
 
 
 def test_seeding_is_exact_at_every_grid_resolution():
@@ -147,7 +149,7 @@ def test_seeding_is_exact_at_every_grid_resolution():
         V, F, tri = _thick_finely_meshed_tube(height=24.0, subdivisions=subdivisions)
         mesh, _, _ = _mesh_for(V, F)
         pts = np.asarray(mesh.init_positions(600, jax.random.PRNGKey(5), intra=True), float)
-        outside = ~tri.contains(pts)
+        outside = ~contains(tri, pts)
         assert not outside.any(), (
             f"subdivision {subdivisions} ({len(F)} triangles): {100*outside.mean():.2f}% of the intra "
             f"pool was seeded OUTSIDE the surface")
@@ -172,7 +174,7 @@ def test_reject_escape_does_not_discard_steps_inside_the_lumen():
 
     rng = np.random.default_rng(1)
     P = rng.uniform(lo, hi, (4000, 3))
-    interior = tri.contains(P)
+    interior = contains(tri, P)
     populated = np.asarray(jax.jit(jax.vmap(_gather_is_populated, in_axes=(None, 0)))(
         mesh._A, P.astype(np.float32)))
 
@@ -204,7 +206,7 @@ def test_reject_escape_still_catches_a_wall_crossing():
     radial = np.stack([np.cos(th), np.sin(th), np.zeros_like(th)], axis=1)
     inside = radial * 2.7 + np.stack([np.zeros_like(z), np.zeros_like(z), z], axis=1)
     outside = radial * 3.3 + np.stack([np.zeros_like(z), np.zeros_like(z), z], axis=1)
-    assert tri.contains(inside).all() and not tri.contains(outside).any(), "pairs must straddle the wall"
+    assert contains(tri, inside).all() and not contains(tri, outside).any(), "pairs must straddle the wall"
 
     esc = np.asarray(jax.jit(jax.vmap(mesh._escaped))(
         inside.astype(np.float32), outside.astype(np.float32)))

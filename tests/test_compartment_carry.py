@@ -21,6 +21,8 @@ from dmipy_sim import simulate, set_b
 from dmipy_sim.mesh import Mesh
 from dmipy_sim.waveforms import pgse
 
+from ._containment import inside as contains
+
 D = 1.0e-9
 
 
@@ -51,7 +53,7 @@ def test_initial_labels_are_exact_not_defaulted():
     pts = np.asarray(mesh.init_positions(1200, jax.random.PRNGKey(0), intra=True), float)
     lab = np.asarray(mesh.classify_positions_exact(pts))
 
-    truth = tri.contains(pts / UM)      # tri is in unit coordinates
+    truth = contains(tri, pts / UM)      # tri is in unit coordinates
     assert truth.mean() > 0.97, "precondition: seeds should be inside"
     assert (lab[truth] == 0).mean() > 0.98, (
         f"only {100*(lab[truth]==0).mean():.1f}% of genuinely interior seeds labelled interior")
@@ -73,7 +75,7 @@ def test_labels_agree_with_exact_containment_at_the_end_of_the_walk():
     pos = [a for a in arrs if a.ndim == 2 and a.shape[-1] == 3][-1]
     comp = [a for a in arrs if a.ndim == 1 and a.dtype.kind in "iu"][-1]
 
-    inside = tri.contains(pos / UM)
+    inside = contains(tri, pos / UM)
     assert inside.sum() > 100, "precondition: some walkers must end inside"
     assert (comp[inside] == 0).mean() > 0.98, (
         f"only {100*(comp[inside]==0).mean():.1f}% of walkers that ARE inside are labelled interior")
@@ -100,7 +102,7 @@ def test_label_accuracy_does_not_depend_on_mesh_refinement():
         arrs = [np.asarray(a) for a in out]
         pos = [a for a in arrs if a.ndim == 2 and a.shape[-1] == 3][-1]
         comp = [a for a in arrs if a.ndim == 1 and a.dtype.kind in "iu"][-1]
-        inside = tri.contains(pos / UM)
+        inside = contains(tri, pos / UM)
         accs.append(float((comp[inside] == 0).mean()) if inside.any() else 1.0)
 
     assert min(accs) > 0.95, f"label accuracy for interior walkers: {accs}"

@@ -33,6 +33,8 @@ from dmipy_sim import set_b, simulate
 from dmipy_sim.mesh import Mesh
 from dmipy_sim.waveforms import pgse
 
+from ._containment import inside as contains
+
 UM = 1e-6
 D = 1.0e-9
 SEED = 4242
@@ -72,7 +74,7 @@ def walkers():
     np.random.seed(SAMPLE_SEED)
     pts = trimesh.sample.volume_mesh(base, 4 * N_WALKERS)[:N_WALKERS]
     assert len(pts) == N_WALKERS, "volume sampler under-filled"
-    assert base.contains(pts).all()
+    assert contains(base, pts).all()
     return pts
 
 
