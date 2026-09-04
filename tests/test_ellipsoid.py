@@ -48,29 +48,13 @@ def _disimpy_example_waveform(n_t=1000):
     return Waveform(G=jnp.array(G_interp), dt=float(dt_new), echo_idx=n_t - 1)
 
 
-def test_ellipsoid_walkers_contained():
-    """Final walker positions must be strictly inside the ellipsoid and at
-    least one walker must have reached the boundary (verifying reflection).
-
-    Matches disimpy's test_ellipsoid_diffusion containment check:
-      max_pos = max(||trajectories||)
-      assert max_pos < radius
-      assert_almost_equal(max_pos, radius)
-
-    Uses an isotropic ellipsoid (semiaxes=[r,r,r]) so containment reduces
-    to ||r|| < radius. Checked on final positions only.
-    """
-    radius = 5e-6
-    semiaxes = np.ones(3) * radius
-    wf = set_b(_disimpy_example_waveform(), np.array([1e9]))
-    _, pos = simulate(10_000, D, wf, Ellipsoid(semiaxes), seed=SEED,
-                      return_positions=True)
-    norms = np.linalg.norm(pos, axis=1)
-    max_pos = float(np.max(norms))
-    assert max_pos < radius, (
-        f"Walker escaped ellipsoid: max |r|={max_pos:.3e} > radius={radius:.3e}")
-    assert max_pos > 0.99 * radius, (
-        f"No walker reached boundary (max |r|={max_pos:.3e}); reflection may not be working")
+# NOTE: `test_ellipsoid_walkers_contained*` was removed (#88). It asserted two things:
+# containment (max |r| < R) and that walkers reach the wall. Containment is now covered
+# deterministically and exhaustively by `tests/test_wall_impacts.py`, which sweeps offset x
+# direction x step length -- including the step-spans-the-object case this walk could not
+# reach -- in milliseconds rather than minutes. "Walkers reach the wall" is a far weaker
+# statement than the MISST signal comparisons kept in this file: a restricted signal is
+# itself proof that walkers are hitting walls.
 
 
 def test_ellipsoid_isotropic_matches_sphere():

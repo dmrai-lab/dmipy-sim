@@ -68,6 +68,9 @@ class PackedCylinders(Geometry):
     [-L/2, L/2)² after every timestep.
     """
 
+    supports_permeability = True   #: has a membrane a walker can cross
+    carries_side = True            #: `permeate` accepts the walker's own side
+
     # `classify_position` returns 0=extra and 1..N = the cylinder the walker is in,
     # i.e. an OBJECT id, not a pool id. core.simulate_trajectories collapses it to a
     # two-pool label for `comp_traj` (0=extra, 1=intra) -- both because relaxation is
@@ -162,269 +165,28 @@ class PackedCylinders(Geometry):
         return jnp.array(r_lab, dtype=jnp.float32)
 
     def reflect(self, r, step):
-        """Specular exterior reflection off the nearest cylinder + periodic wrap.
+        """Impermeable wall interaction -- the kappa = 0 case of :meth:`permeate`.
 
-        Applies one reflection per timestep (valid when step_length ≪ min_gap).
-        Finds the nearest intersecting cylinder via a vectorised ray-circle
-        intersection test across all N cylinders, then reflects specularly.
-        Periodic boundary conditions are enforced via a minimum-image convention
-        during intersection testing and a final modular wrap of the position.
+        NOT a separate algorithm. It used to be one, and the copies drifted: this method
+        expelled 100% of intra-cylinder walkers while `permeate(kappa=0)` confined them, and
+        the two were bit-identical on the extra side (#88). At kappa = 0 nothing may cross,
+        so a walker reflects on whichever side of the wall it starts -- one rule, one
+        implementation. XLA folds the constant and drops the dead transmit branch, so this
+        costs exactly what the hand-written version did (0.11 ms / 40k walkers, measured).
+
+        The key is unused: at kappa = 0 the transmit probability is identically zero, so the
+        draw cannot change the outcome.
         """
-        L          = self._L_jax
-        centers_2d = self._centers_jax    # (N, 2)
-        radii_arr  = self._radii_jax      # (N,)
-        EPS        = self._eps_detect
-        NUDGE      = self._nudge
-
-        # ── Transform to cylinder frame (orientation → z free axis) ──────────
-        if self._is_identity_rotation:
-            r_c    = r
-            step_c = step
-        else:
-            r_c    = self._R @ r
-            step_c = self._R @ step
-
-        r2      = r_c[:2]      # (2,) current position in cross-section
-        step_xy = step_c[:2]   # (2,) proposed xy displacement
-        step_z  = step_c[2]    # scalar, free direction
-
-        step_l_xy = jnp.linalg.norm(step_xy)
-        d_hat_xy  = jnp.where(
-            step_l_xy > jnp.float32(0.0),
-            step_xy / step_l_xy,
-            jnp.zeros(2, dtype=jnp.float32))
-
-        # ── Vectorised ray-circle entry test across all N cylinders ───────────
-        # Minimum-image relative positions q_i = r2 - c_i  (N, 2)
-        q_all = r2[None, :] - centers_2d
-        q_all = q_all - L * jnp.floor(q_all / L + jnp.float32(0.5))
-
-        # t_entry = -dp - sqrt(dp² - (|q|² - R²))
-        # Positive when the ray points toward the cylinder and enters it.
-        t_all, _, disc_all = ray_sphere_t(q_all, d_hat_xy, radii_arr)   # entry root, (N,)
-
-        valid = (
-            (disc_all > jnp.float32(0.0))
-            & (t_all  > EPS)
-            & (t_all  < step_l_xy)
-            & (step_l_xy > jnp.float32(0.0))
-        )
-        t_valid = jnp.where(valid, t_all, jnp.float32(jnp.inf))
-
-        # Nearest intersecting cylinder
-        i_min   = jnp.argmin(t_valid)
-        t_min   = t_valid[i_min]
-        any_hit = jnp.isfinite(t_min)
-
-        # Guard against t_min=inf causing NaN in the (discarded) hit branch
-        t_safe  = jnp.where(any_hit, t_min, jnp.float32(0.0))
-
-        c_hit = centers_2d[i_min]   # (2,)
-        R_hit = radii_arr[i_min]    # scalar
-
-        # Outward normal at the hit point (min-image frame)
-        q_c   = r2 - c_hit
-        q_c   = q_c - L * jnp.floor(q_c / L + jnp.float32(0.5))
-        q_hit = q_c + t_safe * d_hat_xy
-        n_out = q_hit / R_hit       # unit outward normal (away from cylinder axis)
-
-        # Specular reflection of direction unit vector
-        d_refl = specular(d_hat_xy, n_out)
-        # Guard: when step_l_xy==0, d_hat_xy=zeros → d_refl=zeros → norm=0 → NaN.
-        # In XLA/vmap, NaN in the false branch of jnp.where can contaminate the
-        # selected branch through fused select lowering.  Replace with zeros
-        # (safe: remaining==0 when step_l_xy==0, so r2_reflected uses this as
-        # d_refl * 0 anyway).
-        d_refl_norm = jnp.linalg.norm(d_refl)
-        d_refl = jnp.where(
-            d_refl_norm > jnp.float32(0.0),
-            d_refl / jnp.maximum(d_refl_norm, jnp.float32(1e-30)),
-            jnp.zeros(2, dtype=jnp.float32)
-        )
-
-        # Position after reflection: hit point nudged outward + remaining travel
-        r2_hit    = r2 + t_safe * d_hat_xy
-        r2_nudge  = off_wall(r2_hit, n_out, False, NUDGE)
-        remaining = jnp.maximum(step_l_xy - t_safe - NUDGE, jnp.float32(0.0))
-
-        r2_reflected = r2_nudge + d_refl * remaining
-        r2_straight  = r2 + step_xy
-
-        xy_final = jnp.where(any_hit, r2_reflected, r2_straight)
-
-
-
-        # ── No periodic wrap here ─────────────────────────────────────────────
-        # Positions are kept UNFOLDED (true lab-frame coordinates).  All
-        # boundary detection uses minimum-image convention and is correct for
-        # any unfolded position.  Wrapping the position here would cause the
-        # phase integral γ·G·r(t) to use the wrapped coordinate, which
-        # aliases displacements > L/2 and drastically underestimates the
-        # effective b-value for walkers that cross the box boundary.
-
-        # ── Safety clamp: project walker out if it ended up inside a cylinder ─
-        # Fold xy_final into [-L/2, L/2) ONLY for the detection step.  Large
-        # unfolded coordinates cause catastrophic cancellation in the raw
-        # min-image arithmetic (q = xy_final - c - L*n), which can exceed NUDGE
-        # precision.  Folding first keeps the numbers small and the computation
-        # accurate.  The actual correction is then applied to the UNFOLDED
-        # xy_final as a small additive offset.
-        xy_folded = xy_final - L * jnp.floor(xy_final / L + jnp.float32(0.5))
-        q_f  = xy_folded[None, :] - centers_2d                        # (N, 2) — bounded
-        q_f  = q_f - L * jnp.floor(q_f / L + jnp.float32(0.5))       # min-image
-        d2_f = jnp.sum(q_f ** 2, axis=1)                              # (N,)
-        pen  = jnp.where(d2_f < radii_arr ** 2,
-                         d2_f / (radii_arr ** 2),
-                         jnp.float32(1.0))
-        k_cl       = jnp.argmin(pen)
-        inside_any = pen[k_cl] < jnp.float32(1.0)
-
-        R_cl  = radii_arr[k_cl]
-        q_cl  = q_f[k_cl]              # min-image displacement (accurate, small)
-        d_cl  = jnp.linalg.norm(q_cl)
-        safe_d_cl = jnp.maximum(d_cl, NUDGE)
-        # Scalar jnp.where → correction is zero when not inside (no array-branch
-        # select, which can mis-fire in vmap with large batches).
-        clamp_scale = jnp.where(inside_any,
-                                (R_cl + NUDGE) / safe_d_cl,
-                                jnp.float32(1.0))
-        xy_final = xy_final + q_cl * (clamp_scale - jnp.float32(1.0))
-
-        # ── Reconstruct lab-frame position ───────────────────────────────────
-        z_final   = r_c[2] + step_z
-        r_c_new   = jnp.stack([xy_final[0], xy_final[1], z_final])
-        if self._is_identity_rotation:
-            return r_c_new
-        return self._R_inv @ r_c_new
+        return self.permeate(r, step, jnp.float32(0.0), jnp.float32(0.0),
+                             jax.random.PRNGKey(0))[0]
 
     def reflect_with_log_weight(self, r, step, rho_over_D):
-        """Specular exterior reflection + surface-relaxation log-weight decrement.
+        """Impermeable wall interaction that also accrues surface relaxation.
 
-        Identical to reflect() but also computes the perpendicular penetration
-        depth at the cylinder wall and returns a magnetisation log-weight
-        decrement:
-
-            Δlog_w = -2 · ρ_over_D · d_perp
-
-        where d_perp = (step_l_xy − t_entry) · cos(α) is the length the walker
-        would have penetrated into the cylinder wall, and cos(α) = √disc / R at
-        the hit point.  This is the same Brownstein-Tarr formula as for the
-        interior Cylinder geometry, now applied to the extra-axonal side.  The
-        analytical ground truth for a single cylinder of radius R in a periodic
-        box of side L is:
-
-            T2_surface = (L² − πR²) / (2πR · ρ₂)   [fast-diffusion limit]
-
-        Parameters
-        ----------
-        r : (3,) float32, current walker position (lab frame)
-        step : (3,) float32, proposed displacement (lab frame)
-        rho_over_D : float32, ρ₂/D baked in by make_step_fn
-
-        Returns
-        -------
-        r_new : (3,) float32, new position (lab frame)
-        dlog_w : float32, log-weight decrement (≤ 0)
+        The kappa = 0 case of :meth:`permeate` with rho > 0 -- see :meth:`reflect`.
         """
-        L          = self._L_jax
-        centers_2d = self._centers_jax
-        radii_arr  = self._radii_jax
-        EPS        = self._eps_detect
-        NUDGE      = self._nudge
-
-        if self._is_identity_rotation:
-            r_c    = r
-            step_c = step
-        else:
-            r_c    = self._R @ r
-            step_c = self._R @ step
-        r2      = r_c[:2]
-        step_xy = step_c[:2]
-        step_z  = step_c[2]
-
-        step_l_xy = jnp.linalg.norm(step_xy)
-        d_hat_xy  = jnp.where(
-            step_l_xy > jnp.float32(0.0),
-            step_xy / step_l_xy,
-            jnp.zeros(2, dtype=jnp.float32))
-
-        # ── Vectorised ray-circle entry test ─────────────────────────────────
-        q_all    = r2[None, :] - centers_2d
-        q_all    = q_all - L * jnp.floor(q_all / L + jnp.float32(0.5))
-        t_all, _, disc_all = ray_sphere_t(q_all, d_hat_xy, radii_arr)   # entry root, (N,)
-
-        valid    = (
-            (disc_all > jnp.float32(0.0))
-            & (t_all  > EPS)
-            & (t_all  < step_l_xy)
-            & (step_l_xy > jnp.float32(0.0))
-        )
-        t_valid  = jnp.where(valid, t_all, jnp.float32(jnp.inf))
-
-        i_min   = jnp.argmin(t_valid)
-        t_min   = t_valid[i_min]
-        any_hit = jnp.isfinite(t_min)
-        t_safe  = jnp.where(any_hit, t_min, jnp.float32(0.0))
-
-        c_hit = centers_2d[i_min]
-        R_hit = radii_arr[i_min]
-
-        q_c   = r2 - c_hit
-        q_c   = q_c - L * jnp.floor(q_c / L + jnp.float32(0.5))
-        q_hit = q_c + t_safe * d_hat_xy
-        n_out = q_hit / R_hit
-
-        d_refl     = specular(d_hat_xy, n_out)
-        d_refl_norm = jnp.linalg.norm(d_refl)
-        d_refl     = jnp.where(
-            d_refl_norm > jnp.float32(0.0),
-            d_refl / jnp.maximum(d_refl_norm, jnp.float32(1e-30)),
-            jnp.zeros(2, dtype=jnp.float32)
-        )
-        r2_hit    = r2 + t_safe * d_hat_xy
-        r2_nudge  = off_wall(r2_hit, n_out, False, NUDGE)
-        remaining = step_l_xy - t_safe          # before NUDGE, for d_perp
-
-        r2_reflected = r2_nudge + d_refl * jnp.maximum(remaining - NUDGE, jnp.float32(0.0))
-        r2_straight  = r2 + step_xy
-        xy_final     = jnp.where(any_hit, r2_reflected, r2_straight)
-
-        # ── No periodic wrap (keep unfolded position for correct phase) ──────
-        # See reflect() for rationale.
-
-        # ── Safety clamp (fold-first for float32 stability) ──────────────────
-        xy_folded = xy_final - L * jnp.floor(xy_final / L + jnp.float32(0.5))
-        q_f  = xy_folded[None, :] - centers_2d
-        q_f  = q_f - L * jnp.floor(q_f / L + jnp.float32(0.5))
-        d2_f = jnp.sum(q_f ** 2, axis=1)
-        pen  = jnp.where(d2_f < radii_arr ** 2,
-                         d2_f / (radii_arr ** 2), jnp.float32(1.0))
-        k_cl       = jnp.argmin(pen)
-        inside_any = pen[k_cl] < jnp.float32(1.0)
-        R_cl  = radii_arr[k_cl]
-        q_cl  = q_f[k_cl]
-        d_cl  = jnp.linalg.norm(q_cl)
-        safe_d_cl = jnp.maximum(d_cl, NUDGE)
-        clamp_scale = jnp.where(inside_any,
-                                (R_cl + NUDGE) / safe_d_cl,
-                                jnp.float32(1.0))
-        xy_final = xy_final + q_cl * (clamp_scale - jnp.float32(1.0))
-
-        # ── Reconstruct lab-frame position ───────────────────────────────────
-        z_final   = r_c[2] + step_z
-        r_c_new   = jnp.stack([xy_final[0], xy_final[1], z_final])
-        if self._is_identity_rotation:
-            r_new = r_c_new
-        else:
-            r_new = self._R_inv @ r_c_new
-
-        # ── Surface relaxation: d_perp = (step_l - t_entry) · cos(α) ─────────
-        # cos(α) = √disc / R at the entry point (same formula as interior Cylinder)
-        disc_hit  = disc_all[i_min]
-        cos_alpha = jnp.sqrt(jnp.maximum(disc_hit, jnp.float32(0.0))) / R_hit
-        d_perp    = jnp.where(any_hit, remaining * cos_alpha, jnp.float32(0.0))
-        dlog_w    = -2.0 * jnp.float32(rho_over_D) * d_perp
-        return r_new, dlog_w
+        return self.permeate(r, step, jnp.float32(0.0), rho_over_D,
+                             jax.random.PRNGKey(0))[:2]
 
     def permeate(self, r, step, kappa_over_D, rho_over_D, perm_key, side=None):
         """Probabilistic membrane crossing (Powles 2004) + optional relaxivity.
@@ -732,6 +494,8 @@ class PackedSpheres(Geometry):
         images), metres.
     """
 
+    supports_permeability = True   #: has a membrane a walker can cross
+
     # `classify_position` returns 0=extra and 1..N = the sphere the walker is in,
     # i.e. an OBJECT id, not a pool id. core.simulate_trajectories collapses it to a
     # two-pool label for `comp_traj` (0=extra, 1=intra) -- both because relaxation is
@@ -811,185 +575,28 @@ class PackedSpheres(Geometry):
         return jnp.array(pts_out, dtype=jnp.float32)
 
     def reflect(self, r, step):
-        """Specular exterior reflection off the nearest sphere + periodic wrap.
+        """Impermeable wall interaction -- the kappa = 0 case of :meth:`permeate`.
 
-        Finds the nearest intersecting sphere via vectorised ray-sphere
-        intersection (entry root: walker coming from outside).  One reflection
-        per timestep (valid when step_length ≪ min_gap).  Positions are kept
-        unfolded; minimum-image convention is used for boundary detection.
+        NOT a separate algorithm. It used to be one, and the copies drifted: this method
+        expelled 100% of intra-sphere walkers while `permeate(kappa=0)` confined them, and
+        the two were bit-identical on the extra side (#88). At kappa = 0 nothing may cross,
+        so a walker reflects on whichever side of the wall it starts -- one rule, one
+        implementation. XLA folds the constant and drops the dead transmit branch, so this
+        costs exactly what the hand-written version did (0.11 ms / 40k walkers, measured).
+
+        The key is unused: at kappa = 0 the transmit probability is identically zero, so the
+        draw cannot change the outcome.
         """
-        L         = self._L_jax
-        centers   = self._centers_jax    # (N, 3)
-        radii_arr = self._radii_jax      # (N,)
-        EPS       = self._eps_detect
-        NUDGE     = self._nudge
-
-        step_l = jnp.linalg.norm(step)
-        d_hat  = jnp.where(
-            step_l > jnp.float32(0.0),
-            step / step_l,
-            jnp.zeros(3, dtype=jnp.float32))
-
-        # ── Vectorised ray-sphere entry test (N spheres) ───────────────────────
-        # Minimum-image displacement from each sphere centre to walker
-        q_all = r[None, :] - centers                                 # (N, 3)
-        q_all = q_all - L * jnp.floor(q_all / L + jnp.float32(0.5))
-
-        t_all, _, disc_all = ray_sphere_t(q_all, d_hat, radii_arr)     # entry root, (N,)
-
-        valid = (
-            (disc_all > jnp.float32(0.0))
-            & (t_all  > EPS)
-            & (t_all  < step_l)
-            & (step_l > jnp.float32(0.0))
-        )
-        t_valid = jnp.where(valid, t_all, jnp.float32(jnp.inf))
-
-        i_min   = jnp.argmin(t_valid)
-        t_min   = t_valid[i_min]
-        any_hit = jnp.isfinite(t_min)
-        t_safe  = jnp.where(any_hit, t_min, jnp.float32(0.0))
-
-        c_hit = centers[i_min]     # (3,)
-        R_hit = radii_arr[i_min]   # scalar
-
-        # Outward normal at hit point (min-image frame)
-        q_c   = r - c_hit
-        q_c   = q_c - L * jnp.floor(q_c / L + jnp.float32(0.5))
-        q_hit = q_c + t_safe * d_hat
-        n_out = q_hit / R_hit      # unit outward normal
-
-        # Specular reflection of direction
-        d_refl      = specular(d_hat, n_out)
-        d_refl_norm = jnp.linalg.norm(d_refl)
-        d_refl      = jnp.where(
-            d_refl_norm > jnp.float32(0.0),
-            d_refl / jnp.maximum(d_refl_norm, jnp.float32(1e-30)),
-            jnp.zeros(3, dtype=jnp.float32)
-        )
-
-        # Position after reflection: nudge outward + remaining travel
-        r_hit     = r + t_safe * d_hat
-        r_nudge   = off_wall(r_hit, n_out, False, NUDGE)
-        remaining = jnp.maximum(step_l - t_safe - NUDGE, jnp.float32(0.0))
-
-        r_reflected = r_nudge + d_refl * remaining
-        r_straight  = r + step
-
-        r_out = jnp.where(any_hit, r_reflected, r_straight)
-
-        # ── No periodic wrap (keep unfolded for correct phase) ─────────────────
-        # ── Safety clamp: push walker out if it ended up inside any sphere ─────
-        r_folded = r_out - L * jnp.floor(r_out / L + jnp.float32(0.5))
-        q_f      = r_folded[None, :] - centers                          # (N, 3)
-        q_f      = q_f - L * jnp.floor(q_f / L + jnp.float32(0.5))
-        d3_f     = jnp.sum(q_f ** 2, axis=1)                            # (N,)
-        pen      = jnp.where(d3_f < radii_arr ** 2,
-                             d3_f / (radii_arr ** 2),
-                             jnp.float32(1.0))
-        k_cl       = jnp.argmin(pen)
-        inside_any = pen[k_cl] < jnp.float32(1.0)
-        R_cl      = radii_arr[k_cl]
-        q_cl      = q_f[k_cl]
-        d_cl      = jnp.linalg.norm(q_cl)
-        safe_d_cl = jnp.maximum(d_cl, NUDGE)
-        clamp_scale = jnp.where(inside_any,
-                                (R_cl + NUDGE) / safe_d_cl,
-                                jnp.float32(1.0))
-        r_out = r_out + q_cl * (clamp_scale - jnp.float32(1.0))
-
-        return r_out
+        return self.permeate(r, step, jnp.float32(0.0), jnp.float32(0.0),
+                             jax.random.PRNGKey(0))[0]
 
     def reflect_with_log_weight(self, r, step, rho_over_D):
-        """Specular exterior reflection + surface-relaxation log-weight.
+        """Impermeable wall interaction that also accrues surface relaxation.
 
-        Same as reflect() but also accumulates the Brownstein-Tarr weight:
-
-            Δlog_w = -2 · rho_over_D · d_perp
-
-        where d_perp = (step_l - t_entry) · cos(α)  and  cos(α) = √disc / R.
-
-        T2_surface = V_extra / (κ · S_total)  [exact, fast-diffusion limit].
+        The kappa = 0 case of :meth:`permeate` with rho > 0 -- see :meth:`reflect`.
         """
-        L         = self._L_jax
-        centers   = self._centers_jax
-        radii_arr = self._radii_jax
-        EPS       = self._eps_detect
-        NUDGE     = self._nudge
-
-        step_l = jnp.linalg.norm(step)
-        d_hat  = jnp.where(
-            step_l > jnp.float32(0.0),
-            step / step_l,
-            jnp.zeros(3, dtype=jnp.float32))
-
-        # ── Vectorised ray-sphere entry test ───────────────────────────────────
-        q_all    = r[None, :] - centers
-        q_all    = q_all - L * jnp.floor(q_all / L + jnp.float32(0.5))
-        t_all, _, disc_all = ray_sphere_t(q_all, d_hat, radii_arr)      # entry root, (N,)
-
-        valid    = (
-            (disc_all > jnp.float32(0.0))
-            & (t_all  > EPS)
-            & (t_all  < step_l)
-            & (step_l > jnp.float32(0.0))
-        )
-        t_valid  = jnp.where(valid, t_all, jnp.float32(jnp.inf))
-
-        i_min   = jnp.argmin(t_valid)
-        t_min   = t_valid[i_min]
-        any_hit = jnp.isfinite(t_min)
-        t_safe  = jnp.where(any_hit, t_min, jnp.float32(0.0))
-
-        c_hit = centers[i_min]
-        R_hit = radii_arr[i_min]
-
-        q_c   = r - c_hit
-        q_c   = q_c - L * jnp.floor(q_c / L + jnp.float32(0.5))
-        q_hit = q_c + t_safe * d_hat
-        n_out = q_hit / R_hit
-
-        d_refl      = specular(d_hat, n_out)
-        d_refl_norm = jnp.linalg.norm(d_refl)
-        d_refl      = jnp.where(
-            d_refl_norm > jnp.float32(0.0),
-            d_refl / jnp.maximum(d_refl_norm, jnp.float32(1e-30)),
-            jnp.zeros(3, dtype=jnp.float32)
-        )
-
-        r_hit     = r + t_safe * d_hat
-        r_nudge   = off_wall(r_hit, n_out, False, NUDGE)
-        remaining = step_l - t_safe        # before NUDGE, for d_perp
-
-        r_reflected = r_nudge + d_refl * jnp.maximum(remaining - NUDGE,
-                                                       jnp.float32(0.0))
-        r_straight  = r + step
-        r_out       = jnp.where(any_hit, r_reflected, r_straight)
-
-        # ── Safety clamp ───────────────────────────────────────────────────────
-        r_folded = r_out - L * jnp.floor(r_out / L + jnp.float32(0.5))
-        q_f      = r_folded[None, :] - centers
-        q_f      = q_f - L * jnp.floor(q_f / L + jnp.float32(0.5))
-        d3_f     = jnp.sum(q_f ** 2, axis=1)
-        pen      = jnp.where(d3_f < radii_arr ** 2,
-                             d3_f / (radii_arr ** 2), jnp.float32(1.0))
-        k_cl       = jnp.argmin(pen)
-        inside_any = pen[k_cl] < jnp.float32(1.0)
-        R_cl      = radii_arr[k_cl]
-        q_cl      = q_f[k_cl]
-        d_cl      = jnp.linalg.norm(q_cl)
-        safe_d_cl = jnp.maximum(d_cl, NUDGE)
-        clamp_scale = jnp.where(inside_any,
-                                (R_cl + NUDGE) / safe_d_cl,
-                                jnp.float32(1.0))
-        r_out = r_out + q_cl * (clamp_scale - jnp.float32(1.0))
-
-        # ── d_perp = remaining · cos(α),  cos(α) = √disc / R ─────────────────
-        disc_hit  = disc_all[i_min]
-        cos_alpha = jnp.sqrt(jnp.maximum(disc_hit, jnp.float32(0.0))) / R_hit
-        d_perp    = jnp.where(any_hit, remaining * cos_alpha, jnp.float32(0.0))
-        dlog_w    = -jnp.float32(2.0) * jnp.float32(rho_over_D) * d_perp
-        return r_out, dlog_w
+        return self.permeate(r, step, jnp.float32(0.0), rho_over_D,
+                             jax.random.PRNGKey(0))[:2]
 
     def permeate(self, r, step, kappa_over_D, rho_over_D, perm_key):
         """Probabilistic membrane crossing (Powles 2004) + optional relaxivity.
