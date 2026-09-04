@@ -185,7 +185,17 @@ def _phys_response(g, b):
     return f
 
 
-@pytest.mark.parametrize("ang", [0.0, 0.35, 0.79, 1.20, np.pi / 2, 2.36, np.pi])
+# Five angles, not seven. Three are algebraically distinct -- 0 (g parallel B0, where the
+# product basis is rank deficient), pi/2 (perpendicular) and pi (antiparallel) -- and the
+# rest sample one continuous generic case, so 0.79 and 2.36 keep a representative either
+# side of pi/2 while 0.35 and 1.20 added no distinct path. This is redundancy, not coverage:
+# an angle-dependent error is still caught by the two generics.
+#
+# The cost is NOT the test harness. Measured per case: `coupled_spectrum_at` 20.6 s,
+# `apply_odf_coupled` 3.0 s, the brute-force reference integral 0.35 s, and the 8,192-point
+# quadrature plus its SH basis 0.03 s. The function under test dominates its own test by
+# ~60x over the reference it is checked against -- logged in #91 as a library finding.
+@pytest.mark.parametrize("ang", [0.0, 0.79, np.pi / 2, 2.36, np.pi])
 def test_lambda_built_at_requested_geometry_reproduces_the_integral(ang):
     from dmipy_sim.sh_convolution import coupled_spectrum_at
     g = np.array([0, 0, 1.0])
