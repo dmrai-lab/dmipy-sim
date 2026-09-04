@@ -28,15 +28,15 @@ from .viz import (plot_waveform, plot_sequence_comparison,
 from .waveforms import (Waveform, pgse, pgste, ogse, cpmg, trapezoidal_ogse, b_trapezoidal_ogse,
                         set_b, calc_b, calc_btensor, btensor_invariants, ste, pte,
                         rotate_waveform, tile_waveform)
-from .geometries import (FreeDiffusion, Box1D, Sphere, Cylinder, MyelinatedCylinder,
+from .geometry import (FreeDiffusion, Box1D, Sphere, Cylinder, MyelinatedCylinder,
                          Ellipsoid,
                          PackedCylinders, pack_cylinders,
                          PackedSpheres, pack_spheres,
                          PackedMyelinatedCylinders,
                          pack_myelinated_cylinders,
                          PermeableSlab1D)
-from .curved_tube import CurvedTube, MultiShellCurvedTube, PackedCurvedTubes
-from .mesh import Mesh, load_ply
+from .geometry.curved_tube import CurvedTube, MultiShellCurvedTube, PackedCurvedTubes
+from .geometry.mesh import Mesh, load_ply
 from .susceptibility import (SusceptibilitySources, MyelinSusceptibility,
                              GridSusceptibility, dipole_field,
                              myelin_susceptibility_tensor, radial_from_sdf, sample_grid)

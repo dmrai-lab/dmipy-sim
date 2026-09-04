@@ -32,11 +32,11 @@ import warnings
 import numpy as np
 import jax
 import jax.numpy as jnp
-from ._boundary import bind_probability
+from .geometry._boundary import bind_probability
 
 from .constants import GAMMA
 from .gpu import gpu_available
-from .geometries import initial_positions
+from .geometry import initial_positions
 from .physics import (permeable_sub_steps, walk_sub_steps,
                       _warn_if_step_outruns_the_lookup)
 

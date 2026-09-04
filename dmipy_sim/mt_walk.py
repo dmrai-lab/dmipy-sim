@@ -35,11 +35,11 @@ from __future__ import annotations
 import numpy as np
 import jax
 import jax.numpy as jnp
-from ._boundary import bind_probability
+from .geometry._boundary import bind_probability
 
 from .physics import _geometry_radius, mt_sub_steps as _mt_sub_steps
 from . import mt as _mt
-from .geometries import initial_positions
+from .geometry import initial_positions
 
 
 def simulate_mt_trajectories(
