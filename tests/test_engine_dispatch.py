@@ -161,12 +161,39 @@ def test_auto_default_reproduces_fused(_case):
         err_msg=f"[{c['name']}] auto default must reproduce fused")
 
 
-def test_replay_raises_on_permeability():
-    """(3) engine='replay' raises NotImplementedError for membrane permeability."""
+def test_replay_serves_a_permeable_walk():
+    """(3) Permeability is NOT a replay gap, and this pins which half of the contract is which.
+
+    This test used to assert the opposite. `d86c609` deliberately made permeable walks replayable and
+    the test was never updated, so it sat red asserting a contract the engine had abandoned. The
+    reasoning (in `_replay_gap`) is that kappa shapes the WALK, and the recorded trajectory already
+    contains every crossing that happened; replay then applies the gradient off positions, scalar
+    T2/T1 off elapsed time and rho off boundary local time, none of which depend on kappa.
+    """
     geom = d.Cylinder(radius=R, orientation=[0, 0, 1], permeability=2e-5)
-    with pytest.raises(NotImplementedError, match="permeability"):
+    S = np.asarray(simulate(2_000, D, _WF, geom, seed=SEED, engine="replay",
+                            require_gpu=False)).ravel()
+    assert np.all(np.isfinite(S)) and np.all(S <= 1.0 + 1e-6)
+
+
+def test_replay_raises_on_per_compartment_relaxation_under_exchange():
+    """(3) The gap that REPLACED the blanket permeability refusal -- and was untested until now.
+
+    Per-compartment T2/T1 are applied off the saved compartment channel, sampled at dt_save, while
+    crossings happen at sub-step resolution. Under exchange the compartment attribution of a crossing
+    walker is therefore quantised, so this combination is fused-only. Scalar relaxation is unaffected,
+    which the companion assertion below pins -- otherwise this test would still pass if the guard
+    over-refused and rejected every permeable run.
+    """
+    geom = d.Cylinder(radius=R, orientation=[0, 0, 1], permeability=2e-5)
+    with pytest.raises(NotImplementedError, match="per-compartment T2/T1"):
         simulate(2_000, D, _WF, geom, seed=SEED, engine="replay",
-                 require_gpu=False)
+                 T2={"intra": 60e-3, "extra": 80e-3}, require_gpu=False)
+
+    # scalar T2 on the same permeable geometry must still be served by replay
+    S = np.asarray(simulate(2_000, D, _WF, geom, seed=SEED, engine="replay",
+                            T2=70e-3, require_gpu=False)).ravel()
+    assert np.all(np.isfinite(S))
 
 
 def test_replay_raises_on_return_compartments():
