@@ -85,11 +85,17 @@ def test_labels_agree_with_exact_containment_at_the_end_of_the_walk():
 def test_label_accuracy_does_not_depend_on_mesh_refinement():
     """The signature of the defect: a re-derived label degrades as the mesh is refined, because the gather
     shrinks while the object does not. A carried label must not."""
+    # 300 walkers, not 1000. The assertions are a fraction against a 0.95 floor (measured
+    # ~0.99) and a 0.05 refinement gap: with ~200 interior walkers the sampling noise on
+    # each accuracy is ~0.7% and on their difference ~1%, so both thresholds keep an order
+    # of magnitude of margin. Walkers were never the binding cost anyway -- measured, this
+    # test is ~14 s of JIT per mesh and it compiles twice by design, since comparing two
+    # refinements is the property. 1000 -> 250 moved it 25.0 s -> 16.4 s.
     accs = []
     for subdiv in (0, 2):
         mesh, tri = _thick_tube(subdivisions=subdiv)
         wf = set_b(pgse(delta=5e-3, DELTA=15e-3, G_magnitude=0.05, bvecs=[[1, 0, 0]], n_t=200), 5e8)
-        out = simulate(1000, D, wf, mesh, seed=11, return_compartments='final',
+        out = simulate(300, D, wf, mesh, seed=11, return_compartments='final',
                        return_positions=True, require_gpu=False)
         arrs = [np.asarray(a) for a in out]
         pos = [a for a in arrs if a.ndim == 2 and a.shape[-1] == 3][-1]
