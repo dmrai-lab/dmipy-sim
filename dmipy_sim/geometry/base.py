@@ -78,10 +78,20 @@ class Geometry(ABC):
                     f"{type(self).__name__} does not carry a compartment side; a position "
                     f"exactly on its wall cannot be resolved. Omit `side`.")
             out = self.permeate(*args, side) if side is not None else self.permeate(*args)
-            if len(out) == 4:                      # geometry carries the compartment
+            if len(out) == 4:                      # geometry reports crossing itself
                 return WallHit(out[0], out[1], out[2], out[3])
+            # Otherwise DERIVE it. Reporting `crossed=False` because the geometry does not
+            # return the flag is a lie about the physics: measured on PermeableSlab1D,
+            # 256/256 walkers ended on the far side of the membrane while `crossed` said
+            # none had. A crossing IS a change of compartment, so ask the classifier --
+            # which is exact, and the only honest answer available without changing six
+            # `permeate` signatures. Costs one `classify_position` per call, on the
+            # permeable path only.
             zero = jnp.zeros((), bool)
-            return WallHit(out[0], out[1], zero, zero)
+            if not hasattr(self, "classify_position"):
+                return WallHit(out[0], out[1], zero, zero)
+            crossed = self.classify_position(out[0]) != self.classify_position(r)
+            return WallHit(out[0], out[1], crossed, zero)
 
         # impermeable: relaxation path if it exists and is asked for, else a plain bounce
         zero_b = jnp.zeros((), bool)
