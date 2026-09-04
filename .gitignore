@@ -23,3 +23,4 @@ tests/fixtures/em_data/axondeepseg_sem/
 !examples/mesh_viz/*.png
 !examples/rph/*.png
 examples/rph/*.rph
+.jax_cache/
