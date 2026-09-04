@@ -131,13 +131,17 @@ def test_nc_chi_l1_matches_rician():
 # The noise floor grows with coil count — this is physically correct for SOS.
 
 def test_nc_chi_second_moment():
-    """NC-chi second moment E[r²] = ν² + 2·L·σ² (L independent noise channels)."""
+    """NC-chi second moment E[r²] = ν² + 2·L·σ² (L independent noise channels).
+
+    One call on a length-N signal, not N calls on a length-1 signal. The estimate is over
+    the same number of samples either way -- the loop was not buying statistics, it was
+    paying per-call overhead 2,000 times, and at 125 s it was the slowest test in the suite
+    (see #91). Vectorised it is ~1.4 s for the same claim.
+    """
     nu, sigma, n_coils = 0.5, 0.05, 4
-    signal = np.full(1, nu, dtype=np.float32)
-    results = np.array([
-        add_nc_chi_noise(signal, sigma, n_coils, seed=s)
-        for s in range(2000)
-    ]).ravel()
+    n_samples = 2000
+    signal = np.full(n_samples, nu, dtype=np.float32)
+    results = np.asarray(add_nc_chi_noise(signal, sigma, n_coils, seed=0)).ravel()
     em2 = float(np.mean(results ** 2))
     expected = nu ** 2 + 2 * n_coils * sigma ** 2
     np.testing.assert_allclose(em2, expected, rtol=0.03,
