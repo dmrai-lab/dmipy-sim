@@ -4,6 +4,8 @@ Holds the ABC every geometry implements, the two geometries with no curved wall
 (free diffusion, a 1-D box), and the frame helpers shared across the package.
 """
 from abc import ABC, abstractmethod
+
+from ._boundary import WallHit
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -35,6 +37,69 @@ class Geometry(ABC):
     @abstractmethod
     def init_positions(self, n_walkers: int, key: jax.Array) -> jnp.ndarray:
         """Return initial walker positions of shape (n_walkers, 3), float32."""
+
+    #: Does this geometry have a membrane a walker can cross? Absence of a `permeate`
+    #: method used to be the signal, which meant "cannot cross" and "not implemented yet"
+    #: were indistinguishable and a silent `reflect` fallback was the failure mode.
+    supports_permeability = False
+
+    #: Does `permeate` accept a carried `side` (the walker's own compartment)? Only the
+    #: geometries where a position alone cannot decide sidedness need it -- see #86.
+    carries_side = False
+
+    def interact(self, r, step, *, kappa_over_D=0.0, rho_over_D=0.0,
+                 key=None, side=None):
+        """One wall interaction, for every geometry: reflect, or cross if granted.
+
+        This is the single entry point the engine should use. `reflect`,
+        `reflect_with_log_weight` and `permeate` are the same function at different argument
+        values -- and measured, not even an optimisation: `reflect` and `permeate(kappa=0)`
+        both cost 0.11 ms / 40k walkers, because XLA folds the constant and drops the dead
+        transmit branch. Keeping them apart is what let them drift into four separate bugs
+        (#88): packed geometries expelled intra walkers, analytic ones absorbed exterior
+        walkers, `Mesh.reflect` silently lost box reflection, and mesh surface local time
+        disagreed with itself by 0.07%.
+
+        Returns a :class:`WallHit`, so a caller reads ``.r`` instead of unpacking a tuple
+        whose length depended on which arguments were passed.
+        """
+        kappa_is_zero = isinstance(kappa_over_D, (int, float)) and kappa_over_D == 0.0
+        if not kappa_is_zero and not self.supports_permeability:
+            raise NotImplementedError(
+                f"{type(self).__name__} has no membrane: it cannot be given "
+                f"kappa_over_D != 0. Build it with a permeable geometry, or pass "
+                f"kappa_over_D=0 for a purely reflecting wall.")
+
+        if self.supports_permeability:
+            k = key if key is not None else jax.random.PRNGKey(0)
+            args = (r, step, kappa_over_D, rho_over_D, k)
+            if side is not None and not self.carries_side:
+                raise NotImplementedError(
+                    f"{type(self).__name__} does not carry a compartment side; a position "
+                    f"exactly on its wall cannot be resolved. Omit `side`.")
+            out = self.permeate(*args, side) if side is not None else self.permeate(*args)
+            if len(out) == 4:                      # geometry reports crossing itself
+                return WallHit(out[0], out[1], out[2], out[3])
+            # Otherwise DERIVE it. Reporting `crossed=False` because the geometry does not
+            # return the flag is a lie about the physics: measured on PermeableSlab1D,
+            # 256/256 walkers ended on the far side of the membrane while `crossed` said
+            # none had. A crossing IS a change of compartment, so ask the classifier --
+            # which is exact, and the only honest answer available without changing six
+            # `permeate` signatures. Costs one `classify_position` per call, on the
+            # permeable path only.
+            zero = jnp.zeros((), bool)
+            if not hasattr(self, "classify_position"):
+                return WallHit(out[0], out[1], zero, zero)
+            crossed = self.classify_position(out[0]) != self.classify_position(r)
+            return WallHit(out[0], out[1], crossed, zero)
+
+        # impermeable: relaxation path if it exists and is asked for, else a plain bounce
+        zero_b = jnp.zeros((), bool)
+        if hasattr(self, "reflect_with_log_weight"):
+            r_new, dlog_w = self.reflect_with_log_weight(r, step, rho_over_D)
+            return WallHit(r_new, dlog_w, zero_b, zero_b)
+        return WallHit(self.reflect(r, step), jnp.zeros((), jnp.float32), zero_b, zero_b)
+
 
     @abstractmethod
     def reflect(self, r: jnp.ndarray, step: jnp.ndarray) -> jnp.ndarray:

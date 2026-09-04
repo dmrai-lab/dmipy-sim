@@ -309,6 +309,8 @@ class Mesh(Geometry):
         neighbourhood).  Larger = fewer/denser cells; must be ≥ the maximum step.
     """
 
+    supports_permeability = True   #: has a membrane a walker can cross
+
     # `self.radius` is `feature_radius` -- a MESH-RESOLUTION parameter, not a physical
     # pore size. It therefore does NOT bound a step the way an analytic radius does, and
     # physics.walk_sub_steps must use the collision criterion INSTEAD of R/6 here (see #59).
@@ -781,46 +783,124 @@ class Mesh(Geometry):
             d_ref = jnp.where(edge, alt, d_ref)
         return d_ref, n, nf
 
-    def reflect(self, r, step):
+    def _wall(self, r, step, kappa_over_D, rho_over_D, perm_key):
+        """The one wall interaction: bounce, or cross if the membrane grants it.
+
+        `reflect`, `reflect_with_log_weight` and `permeate` were three copies of this loop,
+        and they had drifted apart in BOTH directions -- six of eleven features were present
+        in some and missing from others (#88):
+
+            rest_facet_exclusion, box_reflect, adaptive_nudge   only in reflect_with_log_weight
+            kappa_mult, crossed                                 only in permeate
+            rho_mult                                            missing from reflect
+
+        So an impermeable mesh walk through `reflect` silently had no voxel-face reflection
+        and no adaptive nudge, and a permeable walk had neither of those either. This is the
+        union: every feature, once, so a fix lands in one place and no caller gets a
+        quietly-reduced version of the physics.
+
+        Returns ``(r_new, dlog_w, crossed)``. At ``kappa_over_D = 0`` no crossing is ever
+        granted, so this is exactly a reflection -- see :meth:`reflect`.
+        """
         r_w = self._wrap(r)
         ci, valid = self._gather(r_w)
         tri = self._TRIS[ci]; vnf = self._VN[ci]; nrmf = self._NRM[ci]
-        step_l = jnp.linalg.norm(step); d_hat = step / step_l
+        step_l = jnp.linalg.norm(step)
+        d_hat = jnp.where(step_l > 0, step / jnp.maximum(step_l, self._EPS),
+                          jnp.zeros(3, jnp.float32))
+        u_rand = jax.random.uniform(perm_key, dtype=jnp.float32)
 
         def one(carry, i):
-            r0, dh, rem = carry
-            # Candidates are gathered once, around the step's START, and reused for every bounce. That is
-            # sound only because `physics.collision_sub_steps` caps a sub-step at a fraction of a cell:
-            # the whole bounce polyline is then contained in the 27-cell neighbourhood already gathered.
-            # Measured: re-gathering per bounce moves retention by 0.0 points, and costs a gather per
-            # bounce instead of one per step. Without the sub-step cap it would NOT be sound.
+            r0, dh, rem, decided, dlogw, crossed, last = carry
             ts, u, v = self._mt(r0, dh, tri, valid)
-            vm = (ts > self._hit_floor(i > 0)) & (ts < rem); ts = jnp.where(vm, ts, jnp.inf)
-            # int32 explicitly: argmin returns int64 once anything in the process enables x64
-            # (`bloch._simulate_bloch_mt` flips that global toggle for its float64 magnetisation
-            # and never restores it), and the scan carry below is pinned int32 -- a mismatch JAX
-            # rejects at trace time. Any mesh walk after an MT Bloch call in the same process hit
-            # it. The facet index needs 31 bits for 2e9 triangles, so int32 costs nothing.
+            vm = (ts > self._hit_floor(i > 0)) & (ts < rem)
+            if self.rest_facet_exclusion:
+                # ignore ONLY the facet just bounced off, and only at grazing range
+                same = jnp.arange(ts.shape[0]) == last
+                vm = (ts > 0.0) & (ts < rem) & jnp.logical_not(same & (ts < self._REST_THR))
+            ts = jnp.where(vm, ts, jnp.inf)
+            # int32 explicitly: argmin returns int64 once anything enables x64 (bloch MT does
+            # and never restores it), and the scan carry is pinned int32.
             idx = jnp.argmin(ts).astype(jnp.int32); d = ts[idx]; hit = d < jnp.inf
             d_ref, n, nf = self._bounce(vnf, nrmf, u, v, idx, dh)
+
+            # side of the collision: dh . (outward face normal) > 0 -> leaving a cell
+            outward = jnp.dot(dh, nrmf[idx]) > 0
+            kappa_mult = jnp.where(outward, self._kappa_mult_out, self._kappa_mult_in)
+            rho_mult = jnp.where(outward, self._rho_mult_intra, self._rho_mult_extra)
+
+            # A voxel face competes with the triangles in the SAME ordered loop, so whichever
+            # the walker reaches first acts first. Box faces carry no surface log-weight and
+            # are never permeable -- only the mesh walls are.
+            if self.box_reflect:
+                d_bx, n_bx, ax_bx = self._box_face_hit(r0, dh, rem)
+                use_box = d_bx < d
+                d = jnp.where(use_box, d_bx, d)
+                hit = hit | (d_bx < jnp.inf)
+                d_ref = jnp.where(use_box, dh.at[ax_bx].multiply(-1.0), d_ref)
+                nf = jnp.where(use_box, n_bx, nf)
+                n = jnp.where(use_box, n_bx, n)
+            else:
+                use_box = jnp.zeros((), bool)
+
+            cos_a = -jnp.dot(dh, n)
+            d_perp = (rem - d) * cos_a
+            first_hit = hit & (~decided) & jnp.logical_not(use_box)
+            p_t = transmit_probability(jnp.float32(kappa_over_D) * kappa_mult, d_perp)
+            transmit = first_hit & (u_rand < p_t)
             r_hit = r0 + d * dh
-            # Nudge along the GEOMETRIC normal: it is perpendicular to the triangle just hit, so it
-            # provably clears it, which the interpolated normal does not.
-            return (jnp.where(hit, off_wall(r_hit, nf, False, self._NUDGE), r0),
-                    jnp.where(hit, d_ref, dh),
-                    jnp.where(hit, rem - d - self._NUDGE, rem)), hit
-        (rf, df, remf), hits = jax.lax.scan(one, (r_w, d_hat, step_l),
-                                            jnp.arange(self._MAX_BOUNCES))
-        # Flying the leftover path is only safe if the final iteration found NO hit -- that is precisely
-        # the statement that nothing lies within `rem` of here, so the free flight was already tested. If
-        # it DID hit, the bounce budget ran out mid-step and the leftover is untested: flying it walks the
-        # walker straight through whatever it was about to bounce off. Stop at the last verified position
-        # instead. That loses a sliver of path length, which shrinks with dt; an escape does not.
-        exhausted = hits[-1]
-        r_out = r + (rf + df * jnp.where(exhausted, 0.0, jnp.maximum(remf, 0.0)) - r_w)
+            do_reflect = hit & ~transmit
+
+            # ADAPTIVE nudge: cap the step off the wall at a fraction of the clearance
+            # actually available along the outgoing normal, keeping the float32 floor that
+            # the on-surface case needs. A fixed nudge has no safe constant -- measured on a
+            # CACTUS bundle, crossings per 3000 walkers went 4.70% / 0.37% / 0.27% / 1.33%
+            # for 4.8e-13 / 4.8e-12 / 4.8e-11 / 4.8e-9 m: a minimum, not a plateau.
+            if self.adaptive_nudge:
+                ts_n, _un, _vn = self._mt(r_hit, nf, tri, valid)
+                clear = jnp.min(jnp.where(ts_n > self._EPS, ts_n, jnp.inf))
+                nudge = jnp.minimum(self._NUDGE, jnp.maximum(0.25 * clear, self._MIN_NUDGE))
+            else:
+                nudge = self._NUDGE
+
+            r_new = jnp.where(do_reflect, off_wall(r_hit, nf, False, nudge), r0 + rem * dh)
+            d_new = jnp.where(do_reflect, d_ref, dh)
+            rem_new = jnp.where(do_reflect, rem - d - nudge, jnp.float32(0.0))
+            dperp_refl = jnp.where(first_hit & ~transmit, rho_mult * d_perp, jnp.float32(0.0))
+            return (r_new, d_new, rem_new, decided | first_hit,
+                    dlogw - 2.0 * jnp.float32(rho_over_D) * dperp_refl,
+                    crossed | transmit, idx), do_reflect
+
+        init = (r_w, d_hat, step_l, jnp.zeros((), bool), jnp.float32(0.0),
+                jnp.zeros((), bool), jnp.int32(-1))
+        (rf, df, remf, _, dlogw, crossed_f, _last), refls = jax.lax.scan(
+            one, init, jnp.arange(self._MAX_BOUNCES))
+        # Flying the leftover path is only safe if the final iteration found NO hit -- that is
+        # precisely the statement that nothing lies within `rem` of here. If it DID hit, the
+        # bounce budget ran out mid-step and the leftover is untested.
+        r_out = r + (rf + df * jnp.where(refls[-1], 0.0, jnp.maximum(remf, 0.0)) - r_w)
         if self.reject_escape:
-            r_out = jnp.where(self._escaped(r, r_out), r, r_out)
-        return r_out
+            # a GRANTED crossing is an escape from the starting compartment and must be kept;
+            # everything else that changed side did so without permission
+            r_out = jnp.where(crossed_f, r_out,
+                              jnp.where(self._escaped(r, r_out), r, r_out))
+        return r_out, dlogw, crossed_f
+
+    def reflect(self, r, step):
+        """Impermeable wall interaction -- the kappa = 0 case of :meth:`_wall`."""
+        return self._wall(r, step, jnp.float32(0.0), jnp.float32(0.0),
+                          jax.random.PRNGKey(0))[0]
+
+    def reflect_with_log_weight(self, r, step, rho_over_D):
+        """Impermeable wall interaction that also accrues surface relaxation."""
+        r_out, dlogw, _ = self._wall(r, step, jnp.float32(0.0), rho_over_D,
+                                     jax.random.PRNGKey(0))
+        return r_out, dlogw
+
+    def permeate(self, r, step, kappa_over_D, rho_over_D, perm_key):
+        """Wall interaction with a permeable membrane (Powles crossing)."""
+        r_out, dlogw, _ = self._wall(r, step, kappa_over_D, rho_over_D, perm_key)
+        return r_out, dlogw
 
     def _box_face_hit(self, r0, dh, rem):
         """Distance along ``dh`` to the nearest voxel face within ``rem``, and that face's inward normal.
@@ -868,157 +948,6 @@ class Mesh(Geometry):
         ts, _u, _v = self._mt(r_w, seg / safe, tri, valid)
         crossings = jnp.sum(jnp.where((ts > 0.0) & (ts < n), 1, 0))
         return (crossings % 2 == 1) & (n > 0.0)
-
-    def reflect_with_log_weight(self, r, step, rho_over_D):
-        r_w = self._wrap(r)
-        if self.box_reflect:
-            # Recovery for a walker that is already outside (float32 excursion, or state inherited from a
-            # previous configuration). Clamping to the face moves it by at most that excursion, so unlike a
-            # mirror it cannot carry the walker across a fibre wall.
-            r_w = jnp.clip(r_w, self._BLO, self._BHI)
-        ci, valid = self._gather(r_w)
-        tri = self._TRIS[ci]; vnf = self._VN[ci]; nrmf = self._NRM[ci]
-        step_l = jnp.linalg.norm(step); d_hat = step / step_l
-
-        def one(carry, i):
-            r0, dh, rem, last = carry
-            ts, u, v = self._mt(r0, dh, tri, valid)
-            # i > 0 means the walker is mid-bounce; see `_hit_floor`
-            vm = (ts > self._hit_floor(i > 0)) & (ts < rem)
-            if self.rest_facet_exclusion:
-                # ignore ONLY the facet just bounced off, and only at grazing range; see __init__
-                same = jnp.arange(ts.shape[0]) == last
-                vm = (ts > 0.0) & (ts < rem) & jnp.logical_not(same & (ts < self._REST_THR))
-            ts = jnp.where(vm, ts, jnp.inf)
-            # int32 explicitly: argmin returns int64 once anything in the process enables x64
-            # (`bloch._simulate_bloch_mt` flips that global toggle for its float64 magnetisation
-            # and never restores it), and the scan carry below is pinned int32 -- a mismatch JAX
-            # rejects at trace time. Any mesh walk after an MT Bloch call in the same process hit
-            # it. The facet index needs 31 bits for 2e9 triangles, so int32 costs nothing.
-            idx = jnp.argmin(ts).astype(jnp.int32); d = ts[idx]; hit = d < jnp.inf
-            d_ref, n, nf = self._bounce(vnf, nrmf, u, v, idx, dh)
-            # side of the collision: dh·(outward face normal) > 0 -> spin leaving a
-            # cell (intra side), < 0 -> entering (extra side).
-            rho_mult = jnp.where(jnp.dot(dh, nrmf[idx]) > 0,
-                                 self._rho_mult_intra, self._rho_mult_extra)
-            # A voxel face competes with the triangles in the SAME ordered loop, so whichever the walker
-            # reaches first acts first and no reflection is ever applied without a collision test. Box faces
-            # carry no surface log-weight -- only the axon walls do -- so the surface channel stays
-            # myelin-only, exactly as when the mirror lived outside the loop.
-            if self.box_reflect:
-                d_bx, n_bx, ax_bx = self._box_face_hit(r0, dh, rem)
-                use_box = d_bx < d
-                d = jnp.where(use_box, d_bx, d)
-                hit = hit | (d_bx < jnp.inf)
-                d_ref = jnp.where(use_box, dh.at[ax_bx].multiply(-1.0), d_ref)
-                nf = jnp.where(use_box, n_bx, nf)
-                n = jnp.where(use_box, n_bx, n)
-            else:
-                use_box = False
-            r_hit = r0 + d * dh
-            # relaxation still weights by the SMOOTH normal: it is the surface the walker physically
-            # met. Only the side it ends up on is decided geometrically.
-            cos_a = -jnp.dot(dh, n)
-            d_perp = jnp.where(hit & jnp.logical_not(use_box),
-                               rho_mult * (rem - d) * cos_a, jnp.float32(0.0))
-            # ADAPTIVE nudge. A fixed nudge is a compromise with no good value: too small and it falls below
-            # float32 resolution so the walker stays ON the surface and the next hit is discarded by the
-            # `ts > _EPS` guard; too large and in a tight crevice it lands the walker inside a NEIGHBOURING
-            # body. Measured on a CACTUS bundle (clean seeds, 5 ms, crossings per 3000 walkers): 4.8e-13 m
-            # -> 4.70%, 4.8e-12 -> 0.37%, 4.8e-11 (shipped) -> 0.27%, 4.8e-9 -> 1.33%. A minimum, not a
-            # plateau, so no constant is safe.
-            # Instead cap it at a fraction of the clearance actually available along the outgoing normal,
-            # which is what the crevice case violates, while keeping the float32 floor that the on-surface
-            # case needs.
-            if self.adaptive_nudge:
-                ts_n, _un, _vn = self._mt(r_hit, nf, tri, valid)
-                clear = jnp.min(jnp.where(ts_n > self._EPS, ts_n, jnp.inf))
-                nudge = jnp.minimum(self._NUDGE, jnp.maximum(0.25 * clear, self._MIN_NUDGE))
-            else:
-                nudge = self._NUDGE
-            return (jnp.where(hit, off_wall(r_hit, nf, False, nudge), r0),
-                    jnp.where(hit, d_ref, dh),
-                    jnp.where(hit, rem - d - nudge, rem),
-                    jnp.where(hit, idx, last)), (d_perp, hit)
-        (rf, df, remf, _lastf), (dperps, hits) = jax.lax.scan(
-            one, (r_w, d_hat, step_l, jnp.int32(-1)), jnp.arange(self._MAX_BOUNCES))
-        dlog_w = -2.0 * jnp.float32(rho_over_D) * jnp.sum(dperps)
-        # see `reflect`: the leftover path may only be flown if the last bounce found nothing
-        r_out = r + (rf + df * jnp.where(hits[-1], 0.0, jnp.maximum(remf, 0.0)) - r_w)
-        if self.reject_escape:
-            escaped = self._escaped(r, r_out)
-            if self.net_cross_check:
-                escaped = escaped | self._net_side_changed(r_w, r_w + (r_out - r), tri, valid)
-            return jnp.where(escaped, r, r_out), jnp.where(escaped, jnp.float32(0.0), dlog_w)
-        return r_out, dlog_w
-
-    def permeate(self, r, step, kappa_over_D, rho_over_D, perm_key):
-        r_w = self._wrap(r)
-        ci, valid = self._gather(r_w)
-        tri = self._TRIS[ci]; vnf = self._VN[ci]; nrmf = self._NRM[ci]
-        step_l = jnp.linalg.norm(step); d_hat = step / step_l
-        u_rand = jax.random.uniform(perm_key, dtype=jnp.float32)
-
-        def one(carry, i):
-            r0, dh, rem, decided, dlogw, crossed = carry
-            ts, u, v = self._mt(r0, dh, tri, valid)
-            # Deliberately NOT `_hit_floor` here: this commit is about IMPERMEABLE confinement and does not
-            # touch permeation. The semantics differ anyway -- this loop carries a `decided` flag, so a t~0 hit
-            # on the membrane a walker has just crossed would consume the step's single crossing decision and
-            # mask a genuine hit later in the same step. Whether a state-conditional floor helps permeation is
-            # untested and belongs in its own change.
-            #
-            # (An earlier revision of this comment blamed the floor for the two failing sphere residence-time
-            # tests. That was wrong: they fail identically at 6310a89, before any of this work, and they
-            # exercise the analytic `Sphere` geometry rather than a mesh, so nothing here can reach them.)
-            vm = (ts > self._EPS) & (ts < rem); ts = jnp.where(vm, ts, jnp.inf)
-            # int32 explicitly: argmin returns int64 once anything in the process enables x64
-            # (`bloch._simulate_bloch_mt` flips that global toggle for its float64 magnetisation
-            # and never restores it), and the scan carry below is pinned int32 -- a mismatch JAX
-            # rejects at trace time. Any mesh walk after an MT Bloch call in the same process hit
-            # it. The facet index needs 31 bits for 2e9 triangles, so int32 costs nothing.
-            idx = jnp.argmin(ts).astype(jnp.int32); d = ts[idx]; hit = d < jnp.inf
-            d_ref, n, nf = self._bounce(vnf, nrmf, u, v, idx, dh)
-            # crossing direction: dh·(outward normal) > 0 -> leaving a cell
-            # (intra->extra), < 0 -> entering (extra->intra).
-            outward = jnp.dot(dh, nrmf[idx]) > 0
-            kappa_mult = jnp.where(outward, self._kappa_mult_out, self._kappa_mult_in)
-            rho_mult = jnp.where(outward, self._rho_mult_intra, self._rho_mult_extra)
-            cos_a = -jnp.dot(dh, n)
-            d_perp = (rem - d) * cos_a
-            first_hit = hit & (~decided)
-            p_t = transmit_probability(jnp.float32(kappa_over_D) * kappa_mult, d_perp)
-            transmit = first_hit & (u_rand < p_t)
-            r_hit = r0 + d * dh
-            do_reflect = hit & ~transmit
-            r_new = jnp.where(do_reflect, off_wall(r_hit, nf, False, self._NUDGE),
-                              r0 + rem * dh)
-            d_new = jnp.where(do_reflect, d_ref, dh)
-            rem_new = jnp.where(do_reflect, rem - d - self._NUDGE, jnp.float32(0.0))
-            dperp_refl = jnp.where(first_hit & ~transmit, rho_mult * d_perp, jnp.float32(0.0))
-            return (r_new, d_new, rem_new, decided | first_hit,
-                    dlogw - 2.0 * jnp.float32(rho_over_D) * dperp_refl,
-                    crossed | transmit), do_reflect
-        (rf, df, remf, _, dlogw, crossed_f), refls = jax.lax.scan(
-            one, (r_w, d_hat, step_l, False, jnp.float32(0.0), False),
-            jnp.arange(self._MAX_BOUNCES))
-        # see `reflect`. A transmitted walker already zeroed `rem`, so only a still-bouncing final
-        # iteration means the budget ran out with untested path left.
-        r_out = r + (rf + df * jnp.where(refls[-1], 0.0, jnp.maximum(remf, 0.0)) - r_w)
-        if self.reject_escape:
-            # `reflect` and `reflect_with_log_weight` have always ended with this net; `permeate`
-            # was the one boundary path without it, and it was the only one that leaked: on an
-            # identical mesh, `reflect` confined 2000 walkers perfectly over 30k steps while
-            # `permeate(kappa=0)` lost 0.250%, ending 12-29 sub-steps BEYOND the surface -- a
-            # missed collision, not a mislabelling.
-            #
-            # It cannot be applied unconditionally here: at kappa > 0 a GRANTED crossing is an
-            # escape from the starting compartment and must be kept. Gating on `crossed` is the
-            # same invariant the analytic geometries enforce via `keep_side_*(..., active=)` --
-            # a compartment change is legal only where a crossing was granted.
-            r_out = jnp.where(crossed_f, r_out,
-                              jnp.where(self._escaped(r, r_out), r, r_out))
-        return r_out, dlogw
 
     # ------------------------------------------------------------------
     def init_positions(self, n_walkers, key, intra=True):

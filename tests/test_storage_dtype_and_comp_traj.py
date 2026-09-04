@@ -102,16 +102,30 @@ def _mixed_r0(geom, n_intra, n_extra, seed=0):
     return np.concatenate([_intra_r0(geom, n_intra, seed), extra]).astype(np.float32)
 
 
-def test_impermeable_pack_is_extra_only_so_a_constant_zero_is_correct():
-    """Guard against "fixing" this the wrong way. With `permeability=None` the reflection
-    keeps walkers OUT of the cylinders -- intra-seeded walkers are ejected on the first
-    step -- so the geometry represents extra-axonal water only and comp_traj == 0 is the
-    complete, correct answer, not the #78 defect."""
+def test_impermeable_pack_confines_intra_walkers_and_comp_traj_says_so():
+    """An impermeable wall confines BOTH sides, so an intra-seeded pack stays intra.
+
+    This test previously asserted the opposite -- that `permeability=None` ejects
+    intra-seeded walkers on the first step, so "the geometry represents extra-axonal water
+    only and comp_traj == 0 is the complete, correct answer". That documented a bug as a
+    feature. At kappa = 0 nothing crosses, so a walker reflects on whichever side of the
+    wall it starts; measured, the old `reflect` expelled 4000/4000 intra walkers while
+    `permeate(kappa=0)` confined all of them, and the two were bit-identical on the extra
+    side. Same algorithm, silently wrong on one side (#88).
+
+    `reflect` is now the kappa = 0 case of the one wall interaction, so comp_traj reports a
+    real intra history rather than a constant zero standing in for ejection.
+    """
     geom = _small_pack(permeability=None)
     out = simulate_trajectories(n_walkers=64, diffusivity=D, geometry=geom, T_max=2e-3,
                                 dt_save=1e-3, seed=0, require_gpu=False,
                                 r0=_intra_r0(geom, 64), save_relaxation_data=True)
-    assert (out[5] == 0).all()
+    comp = np.asarray(out[5])
+    assert (comp != 0).all(), (
+        f"{int((comp == 0).sum())}/{comp.size} intra-seeded samples read as extra-axonal: "
+        f"an impermeable wall let walkers out")
+    # and the label must not wander between cylinders either
+    assert (comp == comp[:, :1]).all(), "a walker changed which cylinder it is in"
 
 
 def test_permeable_pack_reports_a_real_compartment_history():

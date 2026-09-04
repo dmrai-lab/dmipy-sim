@@ -82,11 +82,11 @@ acquisition; assert to `max(0.02, 1/√N)`.
 | File | Role |
 |------|------|
 | `core.py` | `simulate`, `simulate_mixture`, `simulate_cpmg`; sub-step auto-tune; `return_positions` (`True`/`'full'`) and `return_compartments` (`'final'`/`'full'`) |
-| `geometries.py` | `FreeDiffusion`, `Box1D`, `Sphere`, `Cylinder`, `Ellipsoid`, `PackedCylinders/Spheres`, `MyelinatedCylinder`, `PackedMyelinatedCylinders`, packing helpers |
-| `curved_tube.py` | `CurvedTube`, `MultiShellCurvedTube`, `PackedCurvedTubes` — sphere-swept polyline fibres (curving strands, e.g. DiSCo). Intra-axonal space is the Minkowski sum of a centerline polyline with a ball, so it is smooth at every joint (no kink/gap/overlap of chained straight cylinders) and carries the local orientation along the strand. Analytic and impermeable — no mesh, no grid — so far cheaper than walking the equivalent triangulated tube |
-| `mesh.py` | `Mesh` (grid-accelerated, closed or 3-D periodic triangular mesh) + `load_ply` |
+| `geometry/` | the substrate package: `base` (ABC, `interact`, FreeDiffusion, Box1D), `analytic` (Sphere, Cylinder, Ellipsoid, PermeableSlab1D/Shell), `packed`, `myelin`, `packing`, `curved_tube`, `mesh`, `mesh_shapes`, and **`_boundary`** — the one implementation of each boundary rule. `dmipy_sim.geometries` is a compat shim. |
+| `geometry/curved_tube.py` | `CurvedTube`, `MultiShellCurvedTube`, `PackedCurvedTubes` — sphere-swept polyline fibres (curving strands, e.g. DiSCo). Intra-axonal space is the Minkowski sum of a centerline polyline with a ball, so it is smooth at every joint (no kink/gap/overlap of chained straight cylinders) and carries the local orientation along the strand. Analytic and impermeable — no mesh, no grid — so far cheaper than walking the equivalent triangulated tube |
+| `geometry/mesh.py` | `Mesh` (grid-accelerated, closed or 3-D periodic triangular mesh) + `load_ply` |
 | `susceptibility.py` | off-resonance field providers (`SusceptibilitySources` iron/vasculature, `MyelinSusceptibility` hollow-cylinder, `GridSusceptibility` k-space dipole on a voxel source); each exposes a pure-JAX `delta_bz_fn()` that plugs into `simulate_bloch(..., susceptibility=)` as a per-step z-precession |
-| `mesh_shapes.py` | procedural myelin meshes + analytic grid sources (`myelinated_cylinder`, `undulating_myelin`, `half_bare_myelin`, `grid_axes`, `voxelize_shell`) — the susceptibility test/validation substrates |
+| `geometry/mesh_shapes.py` | procedural myelin meshes + analytic grid sources (`myelinated_cylinder`, `undulating_myelin`, `half_bare_myelin`, `grid_axes`, `voxelize_shell`) — the susceptibility test/validation substrates |
 | `physics.py` | per-timestep `jax.lax.scan` bodies (`make_step_fn`, …) — boundary + phase + `log_w`, pure JAX |
 | `mt.py` | magnetization-transfer host physics: impact-angle `stick_probability`, `(κ_MT,dwell)↔(f_b,k_f)` conversions, two-pool Bloch–McConnell oracle (`bloch_mcconnell_*`, `mt_z_spectrum`) |
 | `bloch.py` | **forward vector-Bloch engine** `simulate_bloch` — carries `M=(Mx,My,Mz)` through RF + gradient + relaxation in ONE forward pass (no replay); opt-in MT binding + bound-pool blend + off-resonance + emergent voxel-scale crusher + **membrane permeability** (sub-stepped Powles crossing, so exchange across a longitudinal-storage mixing time is captured — e.g. FEXI) |
@@ -99,12 +99,27 @@ acquisition; assert to `max(0.02, 1/√N)`.
 
 ## Geometry contract (duck-typed by `simulate`/`make_step_fn`)
 
-A geometry provides `init_positions(n, key)` and `reflect(r, step)` (pure JAX), and
-optionally `reflect_with_log_weight(r, step, ρ/D)` (surface relaxivity),
-`permeate(r, step, κ/D, ρ/D, key)` (Powles crossing), `classify_position(r)`
-(compartment tag), and a `radius`/feature scale for the sub-step auto-tune. Set
-`surface_relaxivity_t2=` / `permeability=` on the geometry; they are baked into the
-walk (one walk per ρ/κ).
+A geometry provides `init_positions(n, key)`, `classify_position(r)` (compartment tag),
+a `radius`/feature scale for the sub-step auto-tune, and **one wall interaction**:
+
+```python
+hit = geom.interact(r, step, kappa_over_D=0.0, rho_over_D=0.0, key=None, side=None)
+hit.r  hit.dlog_w  hit.crossed  hit.illegal      # a WallHit NamedTuple (a pytree)
+```
+
+`interact` is defined once on `Geometry` and is the entry point callers should use.
+`reflect(r, step)`, `reflect_with_log_weight(r, step, ρ/D)` and
+`permeate(r, step, κ/D, ρ/D, key)` still exist, but they are **the same function at
+different argument values** — `reflect` IS the κ=0 case — and each geometry now has a
+single implementation behind them. They were three copies once, and the copies drifted
+into four separate bugs (#88): packed geometries expelled intra-axonal walkers, analytic
+ones absorbed exterior walkers, `Mesh.reflect` silently lost box reflection and adaptive
+nudging, and mesh surface local time disagreed with itself by 0.07%. **Do not add a
+per-geometry variant** — extend the one implementation.
+
+Set `supports_permeability = True` on a geometry with a membrane; `interact` raises on
+κ>0 otherwise rather than silently reflecting. Set `surface_relaxivity_t2=` /
+`permeability=` on the geometry; they are baked into the walk (one walk per ρ/κ).
 
 ## Meshes (`mesh.py`)
 

@@ -122,31 +122,13 @@ def test_sphere_misst_config2():
                         err_msg="Sphere Config2 (delta≈1ms) vs MISST")
 
 
-def test_sphere_walkers_contained():
-    """Final walker positions must be strictly inside the sphere, and at least
-    one walker must have reached the boundary (verifying reflection fires).
-
-    Matches disimpy's test_sphere_diffusion containment check:
-      max_pos = np.max(np.linalg.norm(trajectories, axis=2))
-      assert max_pos < radius
-      assert_almost_equal(max_pos, radius)
-    We check final positions only (no trajectory output), so use a generous
-    n_walkers (10 000) to ensure boundary proximity is observed.
-    """
-    from dmipy_sim.waveforms import pgse
-    radius = 5e-6
-    wf = set_b(pgse(delta=8e-3, DELTA=50e-3, G_magnitude=1.0,
-                    bvecs=np.array([[1., 0., 0.]]), n_t=1000),
-               np.array([1e9]))
-    _, pos = simulate(10_000, D, wf, Sphere(radius), seed=SEED,
-                      return_positions=True)
-    norms = np.linalg.norm(pos, axis=1)
-    max_pos = float(np.max(norms))
-    assert max_pos < radius, f"Walker escaped sphere: max |r|={max_pos:.3e} > radius={radius:.3e}"
-    # At least one walker should have come close to the boundary (within 1%)
-    assert max_pos > 0.99 * radius, (
-        f"No walker reached boundary (max |r|={max_pos:.3e}); reflection may not be working"
-    )
+# NOTE: `test_sphere_walkers_contained*` was removed (#88). It asserted two things:
+# containment (max |r| < R) and that walkers reach the wall. Containment is now covered
+# deterministically and exhaustively by `tests/test_wall_impacts.py`, which sweeps offset x
+# direction x step length -- including the step-spans-the-object case this walk could not
+# reach -- in milliseconds rather than minutes. "Walkers reach the wall" is a far weaker
+# statement than the MISST signal comparisons kept in this file: a restricted signal is
+# itself proof that walkers are hitting walls.
 
 
 def test_sphere_signal_above_free():

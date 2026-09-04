@@ -26,6 +26,9 @@ side is fixed, and equality counts as the wrong side for BOTH compartments -- an
 walker must be strictly inside, an exterior walker strictly outside. That is what makes
 the rule total: there is no coordinate for which it declines to decide.
 """
+from typing import NamedTuple
+
+import jax
 import jax.numpy as jnp
 
 # Plain Python floats, NOT jnp scalars. A module-level jnp value is a DEVICE buffer created
@@ -197,3 +200,72 @@ def bind_probability(kappa_over_D, local_time):
     two rules are easy to conflate, which is reason to name both rather than neither.
     """
     return jnp.minimum(jnp.float32(1.0), kappa_over_D * local_time)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# The wall-interaction contract.
+#
+# `reflect`, `reflect_with_log_weight` and `permeate` were the same function at different
+# argument values, written out 36 times across the geometries (18 / 10 / 8) with 23 lines
+# of engine dispatch to choose between them. Measured, they are not even an optimisation:
+# `reflect` and `permeate(kappa=0)` both cost 0.11 ms / 40k walkers, because XLA constant-
+# folds kappa = 0 and drops the dead transmit branch.
+#
+# Keeping them apart is what let them drift. `PackedCylinders.reflect` expelled 100% of
+# intra-axonal walkers at kappa = 0 -- where nothing may cross, so a walker must reflect
+# whichever side it is on -- while `permeate(kappa=0)` confined them correctly, and the two
+# were bit-identical on the extra-axonal side. Same algorithm, silently wrong on one side.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class WallHit(NamedTuple):
+    """Outcome of one wall interaction.
+
+    A NamedTuple so it is a JAX pytree: it passes through `scan`/`vmap` unchanged, and a
+    caller that only wants the position writes `.r` instead of unpacking a tuple whose
+    length used to depend on which arguments were passed.
+    """
+    r: jnp.ndarray        #: new position
+    dlog_w: jnp.ndarray   #: surface log-weight increment (<= 0; exactly 0 when rho = 0)
+    crossed: jnp.ndarray  #: bool -- a crossing was GRANTED (never true at kappa <= 0)
+    illegal: jnp.ndarray  #: bool -- the compartment sentinel fired and corrected the step
+
+
+def no_hit(r_new):
+    """A `WallHit` for a step that met no wall (free diffusion, or a missed gather)."""
+    f = jnp.zeros((), jnp.float32)
+    b = jnp.zeros((), bool)
+    return WallHit(r_new, f, b, b)
+
+
+def bounce_loop(hit_once, r0, d_hat, step_l, max_bounces):
+    """Run a single-collision rule to exhaustion: reflect, continue, repeat.
+
+    A step longer than the chord of the object needs more than one reflection. Handle only
+    the first and fly the remainder and the walker exits the far side -- measured at 58x the
+    radius on a 1 um cylinder, and invisible on a 5 um one, which is why it survived until
+    an impact table swept step length against object size (#88).
+
+    ``hit_once(r, d, remaining, decided) -> (r, d, remaining, decided, dlog_w, crossed)``
+    resolves ONE collision. It receives ``decided`` so that the crossing decision is made at
+    most once per step (the single-event approximation applies to permeation, not to
+    reflection), while reflections keep going until the path is spent.
+
+    Returns ``(r_final, dlog_w, crossed)``. The leftover path is flown only if the last
+    iteration found no hit -- which is exactly the statement that nothing lies within
+    ``remaining`` of there, so it has already been tested. If it DID hit, the budget ran out
+    mid-step and the remainder is untested: stopping loses a sliver of path length, flying it
+    walks the walker through whatever it was about to bounce off.
+    """
+    def body(carry, _):
+        r, d, rem, decided, dlogw, crossed = carry
+        r_n, d_n, rem_n, dec_n, dlw, cr = hit_once(r, d, rem, decided)
+        return (r_n, d_n, rem_n, dec_n, dlogw + dlw, crossed | cr), (rem_n < rem)
+
+    init = (r0, d_hat, step_l, jnp.zeros((), bool), jnp.zeros((), jnp.float32),
+            jnp.zeros((), bool))
+    (r_f, d_f, rem_f, _dec, dlogw, crossed), hit_any = jax.lax.scan(
+        body, init, jnp.arange(max_bounces))
+    r_out = r_f + d_f * jnp.where(hit_any[-1], jnp.float32(0.0),
+                                  jnp.maximum(rem_f, jnp.float32(0.0)))
+    return r_out, dlogw, crossed

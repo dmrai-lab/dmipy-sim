@@ -110,44 +110,13 @@ def test_cylinder_signal_above_free_perp():
         f"Cylinder signal should be >= free. Max violation: {np.max(S_free - S_cyl):.4f}")
 
 
-def test_cylinder_walkers_contained_multiple_radii():
-    """Final walker cross-section norms must lie inside the cylinder for
-    radii 1 µm, 5 µm, 1 mm.
-
-    Matches disimpy's test_cylinder_diffusion containment loop:
-      for radius in [1e-6, 5e-6, 1e-3]:
-          substrate = substrates.cylinder(radius=radius, orientation=[1,0,0])
-          ...
-          max_pos = max(||trajectories[..., 1:]||)  # y,z components only
-          assert max_pos < radius
-          assert_almost_equal(max_pos, radius)
-
-    With orientation=[1,0,0] (cylinder axis along x), restriction acts in
-    the y-z plane; we check max(sqrt(y²+z²)) < radius and > 0.99*radius.
-    """
-    from dmipy_sim.waveforms import pgse
-    bvecs = np.array([[1., 0., 0.]])   # gradient along x (⊥ to axis=[1,0,0])
-    for radius in [1e-6, 5e-6, 1e-3]:
-        n_t = 1000
-        # Use a moderate diffusion time so walkers explore the geometry
-        wf = set_b(pgse(delta=8e-3, DELTA=50e-3, G_magnitude=1.0,
-                        bvecs=bvecs, n_t=n_t), np.array([1e9]))
-        _, pos = simulate(5_000, D, wf,
-                          Cylinder(radius=radius, orientation=[1.0, 0.0, 0.0]),
-                          seed=SEED, return_positions=True)
-        # Cross-section norm: y-z plane (axis is x)
-        cross_norms = np.linalg.norm(pos[:, 1:], axis=1)
-        max_cross = float(np.max(cross_norms))
-        # Allow 3×NUDGE (= 3e-4 × radius) above the boundary: the safety clamp
-        # projects to R−NUDGE in the 2-D cylinder frame, but the R_inv matrix
-        # multiply back to lab frame introduces float32 rounding that can add up
-        # to ~2×NUDGE at small radii (< 5 µm) on GPU.
-        assert max_cross < radius * (1 + 3e-4), (
-            f"r={radius:.0e}: walker escaped cylinder: "
-            f"max cross-section norm={max_cross:.3e}")
-        assert max_cross > 0.99 * radius, (
-            f"r={radius:.0e}: no walker reached boundary "
-            f"(max={max_cross:.3e}); reflection may not be working")
+# NOTE: `test_cylinder_walkers_contained*` was removed (#88). It asserted two things:
+# containment (max |r| < R) and that walkers reach the wall. Containment is now covered
+# deterministically and exhaustively by `tests/test_wall_impacts.py`, which sweeps offset x
+# direction x step length -- including the step-spans-the-object case this walk could not
+# reach -- in milliseconds rather than minutes. "Walkers reach the wall" is a far weaker
+# statement than the MISST signal comparisons kept in this file: a restricted signal is
+# itself proof that walkers are hitting walls.
 
 
 def test_cylinder_orientation_sign_invariance():
