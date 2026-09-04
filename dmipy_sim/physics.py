@@ -7,6 +7,7 @@ on first call via jax.jit applied in core.py.
 
 import jax
 import jax.numpy as jnp
+from ._boundary import transmit_probability, bind_probability
 import warnings
 
 import numpy as np
@@ -686,14 +687,12 @@ def make_myelin_step_fn(geometry, dt: float, T1: float = None):
         # d_perp approximation: distance past the boundary
         d_perp_inner = jnp.abs(r_new_xy_norm - R_in)
         kappa_over_D_inner = kappa_inner / jnp.maximum(D_leaving, jnp.float32(1e-30))
-        p_inner = jnp.minimum(jnp.float32(1.0),
-                              jnp.float32(2.0) * kappa_over_D_inner * d_perp_inner)
+        p_inner = transmit_probability(kappa_over_D_inner, d_perp_inner)
 
         # --- Permeability at outer boundary ---
         d_perp_outer = jnp.abs(r_new_xy_norm - R_out)
         kappa_over_D_outer = kappa_outer / jnp.maximum(D_leaving, jnp.float32(1e-30))
-        p_outer = jnp.minimum(jnp.float32(1.0),
-                              jnp.float32(2.0) * kappa_over_D_outer * d_perp_outer)
+        p_outer = transmit_probability(kappa_over_D_outer, d_perp_outer)
 
         # Split perm_key for inner and outer draws
         perm_key1, perm_key2 = jax.random.split(subkey_perm)
@@ -923,10 +922,8 @@ def make_packed_myelin_traj_step_fn(geometry, dt: float,
         kappa_over_D_inner = kap_i / jnp.maximum(D_leaving, jnp.float32(1e-30))
         kappa_over_D_outer = kap_o / jnp.maximum(D_leaving, jnp.float32(1e-30))
 
-        p_inner = jnp.minimum(jnp.float32(1.0),
-                              jnp.float32(2.0) * kappa_over_D_inner * d_perp_inner)
-        p_outer = jnp.minimum(jnp.float32(1.0),
-                              jnp.float32(2.0) * kappa_over_D_outer * d_perp_outer)
+        p_inner = transmit_probability(kappa_over_D_inner, d_perp_inner)
+        p_outer = transmit_probability(kappa_over_D_outer, d_perp_outer)
 
         perm_key1, perm_key2 = jax.random.split(subkey_perm)
         u_i = jax.random.uniform(perm_key1, dtype=jnp.float32)
@@ -1080,8 +1077,8 @@ def make_packed_myelin_traj_step_fn(geometry, dt: float,
             # selects the side (myelin water -> 0, cannot bind).
             kappa_bind = jnp.where(is_intra, kappa_intra_f,
                          jnp.where(is_extra, kappa_extra_f, jnp.float32(0.0)))
-            p_stick = jnp.minimum(jnp.float32(1.0),
-                                  kappa_bind * local_time / jnp.maximum(D_bind, jnp.float32(1e-30)))
+            p_stick = bind_probability(
+                kappa_bind / jnp.maximum(D_bind, jnp.float32(1e-30)), local_time)
             u_stick = jax.random.uniform(stick_key, dtype=jnp.float32)
             newly   = (~is_bound) & (u_stick < p_stick)
             u_dwell = jax.random.uniform(dwell_key, dtype=jnp.float32)

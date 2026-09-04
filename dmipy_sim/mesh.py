@@ -44,6 +44,7 @@ from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
+from ._boundary import specular, transmit_probability, off_wall
 import numpy as np
 
 from .geometries import Geometry
@@ -762,7 +763,7 @@ class Mesh(Geometry):
         n = self._smooth_normal(vnf, nrmf, u, v, idx, dh)
         nf = jnp.where(jnp.dot(dh, nrmf[idx]) > 0, -nrmf[idx], nrmf[idx])
         n_ref = nf if self.reflect_mode == "geometric" else n
-        d_ref = dh - 2.0 * jnp.dot(dh, n_ref) * n_ref
+        d_ref = specular(dh, n_ref)
         d_ref /= jnp.linalg.norm(d_ref)
         c = jnp.dot(d_ref, nf)
         d_ref = jnp.where(c < self._GRAZE, d_ref + (self._GRAZE - c) * nf, d_ref)
@@ -772,7 +773,7 @@ class Mesh(Geometry):
             bu, bv = u[idx], v[idx]
             edge = jnp.minimum(jnp.minimum(bu, bv), 1.0 - bu - bv) < jnp.float32(self.edge_margin)
             if self.edge_mode == "geometric":
-                d_geo = dh - 2.0 * jnp.dot(dh, nf) * nf
+                d_geo = specular(dh, nf)
                 d_geo = d_geo / jnp.linalg.norm(d_geo)
                 alt = d_geo
             else:
@@ -805,7 +806,7 @@ class Mesh(Geometry):
             r_hit = r0 + d * dh
             # Nudge along the GEOMETRIC normal: it is perpendicular to the triangle just hit, so it
             # provably clears it, which the interpolated normal does not.
-            return (jnp.where(hit, r_hit + self._NUDGE * nf, r0),
+            return (jnp.where(hit, off_wall(r_hit, nf, False, self._NUDGE), r0),
                     jnp.where(hit, d_ref, dh),
                     jnp.where(hit, rem - d - self._NUDGE, rem)), hit
         (rf, df, remf), hits = jax.lax.scan(one, (r_w, d_hat, step_l),
@@ -935,7 +936,7 @@ class Mesh(Geometry):
                 nudge = jnp.minimum(self._NUDGE, jnp.maximum(0.25 * clear, self._MIN_NUDGE))
             else:
                 nudge = self._NUDGE
-            return (jnp.where(hit, r_hit + nudge * nf, r0),
+            return (jnp.where(hit, off_wall(r_hit, nf, False, nudge), r0),
                     jnp.where(hit, d_ref, dh),
                     jnp.where(hit, rem - d - nudge, rem),
                     jnp.where(hit, idx, last)), (d_perp, hit)
@@ -959,7 +960,7 @@ class Mesh(Geometry):
         u_rand = jax.random.uniform(perm_key, dtype=jnp.float32)
 
         def one(carry, i):
-            r0, dh, rem, decided, dlogw = carry
+            r0, dh, rem, decided, dlogw, crossed = carry
             ts, u, v = self._mt(r0, dh, tri, valid)
             # Deliberately NOT `_hit_floor` here: this commit is about IMPERMEABLE confinement and does not
             # touch permeation. The semantics differ anyway -- this loop carries a `decided` flag, so a t~0 hit
@@ -986,21 +987,37 @@ class Mesh(Geometry):
             cos_a = -jnp.dot(dh, n)
             d_perp = (rem - d) * cos_a
             first_hit = hit & (~decided)
-            p_t = jnp.minimum(1.0, 2.0 * jnp.float32(kappa_over_D) * kappa_mult * d_perp)
+            p_t = transmit_probability(jnp.float32(kappa_over_D) * kappa_mult, d_perp)
             transmit = first_hit & (u_rand < p_t)
             r_hit = r0 + d * dh
             do_reflect = hit & ~transmit
-            r_new = jnp.where(do_reflect, r_hit + self._NUDGE * nf, r0 + rem * dh)
+            r_new = jnp.where(do_reflect, off_wall(r_hit, nf, False, self._NUDGE),
+                              r0 + rem * dh)
             d_new = jnp.where(do_reflect, d_ref, dh)
             rem_new = jnp.where(do_reflect, rem - d - self._NUDGE, jnp.float32(0.0))
             dperp_refl = jnp.where(first_hit & ~transmit, rho_mult * d_perp, jnp.float32(0.0))
             return (r_new, d_new, rem_new, decided | first_hit,
-                    dlogw - 2.0 * jnp.float32(rho_over_D) * dperp_refl), do_reflect
-        (rf, df, remf, _, dlogw), refls = jax.lax.scan(
-            one, (r_w, d_hat, step_l, False, jnp.float32(0.0)), jnp.arange(self._MAX_BOUNCES))
+                    dlogw - 2.0 * jnp.float32(rho_over_D) * dperp_refl,
+                    crossed | transmit), do_reflect
+        (rf, df, remf, _, dlogw, crossed_f), refls = jax.lax.scan(
+            one, (r_w, d_hat, step_l, False, jnp.float32(0.0), False),
+            jnp.arange(self._MAX_BOUNCES))
         # see `reflect`. A transmitted walker already zeroed `rem`, so only a still-bouncing final
         # iteration means the budget ran out with untested path left.
         r_out = r + (rf + df * jnp.where(refls[-1], 0.0, jnp.maximum(remf, 0.0)) - r_w)
+        if self.reject_escape:
+            # `reflect` and `reflect_with_log_weight` have always ended with this net; `permeate`
+            # was the one boundary path without it, and it was the only one that leaked: on an
+            # identical mesh, `reflect` confined 2000 walkers perfectly over 30k steps while
+            # `permeate(kappa=0)` lost 0.250%, ending 12-29 sub-steps BEYOND the surface -- a
+            # missed collision, not a mislabelling.
+            #
+            # It cannot be applied unconditionally here: at kappa > 0 a GRANTED crossing is an
+            # escape from the starting compartment and must be kept. Gating on `crossed` is the
+            # same invariant the analytic geometries enforce via `keep_side_*(..., active=)` --
+            # a compartment change is legal only where a crossing was granted.
+            r_out = jnp.where(crossed_f, r_out,
+                              jnp.where(self._escaped(r, r_out), r, r_out))
         return r_out, dlogw
 
     # ------------------------------------------------------------------

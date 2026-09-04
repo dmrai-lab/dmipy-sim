@@ -35,6 +35,7 @@ from __future__ import annotations
 import numpy as np
 import jax
 import jax.numpy as jnp
+from ._boundary import bind_probability
 
 from .physics import _geometry_radius, mt_sub_steps as _mt_sub_steps
 from . import mt as _mt
@@ -165,7 +166,7 @@ def simulate_mt_trajectories(
         r_free, dlog_free, local_time = _move(r, step)   # dlog_free <= 0, local_time >= 0
 
         # stick decision (only if currently free); dwell drawn as exp residence
-        p_stick = jnp.minimum(jnp.float32(1.0), kappa_over_D * local_time)
+        p_stick = bind_probability(kappa_over_D, local_time)
         u_stick = jax.random.uniform(stick_key, dtype=jnp.float32)
         newly = (~is_bound) & (u_stick < p_stick)
         u_dwell = jax.random.uniform(dwell_key, dtype=jnp.float32)

@@ -59,6 +59,10 @@ _SLOW_MC_MODULES = {
     "test_replay_parity",
     "test_replay_fields_mt",
     "test_engine_dispatch",
+    # Crossing-RATE validation against the closed two-compartment exchange law: six walks of
+    # 6000 walkers x 10000 sub-steps. The cheap sealed-wall detector that guards the same
+    # property lives in the fast lane, in test_boundary_compartment_integrity.
+    "test_permeable_crossings",
 }
 
 

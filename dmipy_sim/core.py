@@ -422,7 +422,7 @@ def simulate(
             T2=T2, T1=T1, r0=r0,
             return_positions=return_positions,
             return_compartments=return_compartments,
-            return_walker_signals=return_walker_signals)
+            return_walker_signals=return_walker_signals, sub_steps=sub_steps)
 
     # Accept AcquisitionScheme (any object with .waveform) or raw Waveform
     if hasattr(waveform, 'waveform'):
@@ -784,7 +784,7 @@ def simulate(
 def _simulate_in_walker_batches(n_walkers, walker_batch_size, *, seed,
                                 diffusivity, waveform, geometry, T2, T1, r0,
                                 return_positions, return_compartments,
-                                return_walker_signals):
+                                return_walker_signals, sub_steps=None):
     """Run simulate() over walker chunks and recombine (see simulate's
     ``walker_batch_size``).  The signal is a plain walker-mean, so it recombines
     as a size-weighted mean; per-walker outputs (positions, compartments, walker
@@ -837,7 +837,7 @@ def _simulate_in_walker_batches(n_walkers, walker_batch_size, *, seed,
     return tuple(result)
 
 
-def simulate_mixture(compartments, waveform, seed=123):
+def simulate_mixture(compartments, waveform, seed=123, sub_steps=None):
     """Run a two- (or multi-) compartment simulation with no exchange.
 
     Each compartment is simulated independently; the final signal is the
@@ -998,6 +998,9 @@ def simulate_cpmg(n_walkers, diffusivity, waveform, geometry, *,
     return np.array(echo_signals)
 
 
+LAST_ILLEGAL_CROSSINGS = 0   # illegal crossings rejected by the last simulate_trajectories
+
+
 def simulate_trajectories(
     n_walkers: int,
     diffusivity: float,
@@ -1015,6 +1018,7 @@ def simulate_trajectories(
     dwell_time: float = 0.0,
     equilibrate_binding="auto",
     compress: int = None,
+    enforce_compartment: bool = False,
 ) -> tuple:
     """Walk the spins ONCE and save positions at every saved time step — the
     producer for the replay path (:mod:`dmipy_sim.trajectories`).
@@ -1159,43 +1163,121 @@ def simulate_trajectories(
           + (f", step_l/R={float(step_l_sim)/float(R_geom):.4f}" if R_geom else ""),
           flush=True)
 
+    # ── Reject geometries whose boundaries this path cannot represent ────────
+    # A multi-compartment geometry is stepped by a fused kernel that CARRIES the compartment
+    # id; the generic position-only walk below has no such state and would fall through to a
+    # `reflect` that cannot express the boundaries. Both used to do so silently -- a
+    # MyelinatedCylinder came back confined to R_inner (myelin and extra water absent) and a
+    # PackedMyelinatedCylinders came back at 1.02x free diffusion through 1 um axons. The
+    # replay-support check already knew this (see _replay_unsupported_reason); it just was
+    # not enforced on the entry point the pack builders actually call.
+    if getattr(geometry, '_is_myelinated', False):
+        raise NotImplementedError(
+            "simulate_trajectories cannot walk a MyelinatedCylinder: its three compartments "
+            "need the fused kernel physics.make_myelin_step_fn, which carries the "
+            "compartment id. Use simulate(...) instead.")
+    if getattr(geometry, '_is_packed_myelinated', False) and not save_relaxation_data:
+        raise NotImplementedError(
+            "simulate_trajectories on PackedMyelinatedCylinders requires "
+            "save_relaxation_data=True, which routes to the fused kernel "
+            "physics.make_packed_myelin_traj_step_fn. The position-only path has no "
+            "compartment state and would return an unrestricted walk.")
+
     permeability = getattr(geometry, 'permeability', None)
     has_permeability = permeability is not None
     has_reflect_with_log_weight = hasattr(geometry, 'reflect_with_log_weight')
 
     # ── Standard path (position-only) ─────────────────────────────────────────
+    _carries_side = False   # set below only where the geometry accepts a carried side
     if has_permeability:
         kappa_over_D = jnp.float32(float(permeability) / diffusivity)
         permeate = geometry.permeate
 
+        # Does this geometry support carried-compartment bookkeeping? If so the walker OWNS its
+        # side and only a granted crossing changes it. Deriving the compartment from the position
+        # each step is what allows a walker whose step merely ROUNDS onto the surface to change
+        # compartment without moving -- measured at 0.675% of intra walkers per 30k steps on a
+        # dense packing at kappa = 0, and ~10% over a production walk. The sentinel inside
+        # `permeate` ejects such a walker back to its own side; this carries the label.
+        # Modelled on MC/DC's deportation check, which compares the final position against the
+        # walker's `initial_location` and re-runs it (dynamicsSimulation.finalPositionCheck).
+        import inspect as _inspect
+        _carries_side = "side" in _inspect.signature(permeate).parameters
+
         def inner_step(carry, _):
-            r, key = carry
+            r, key, side, bad = carry
             key, step_key, perm_key = jax.random.split(key, 3)
             noise = jax.random.normal(step_key, (3,), dtype=jnp.float32)
             unit_noise = noise / jnp.linalg.norm(noise)
             step = unit_noise * step_l_sim
-            r_new, _dlog_w = permeate(r, step, kappa_over_D, jnp.float32(0.0), perm_key)
-            return (r_new, key), None
+            if _carries_side:
+                r_new, _dlog_w, crossed, illegal = permeate(
+                    r, step, kappa_over_D, jnp.float32(0.0), perm_key, side)
+                # a granted crossing is the ONLY thing that flips the carried side
+                side = jnp.where(crossed, -side, side)
+                bad = bad + illegal.astype(jnp.int32)
+            else:
+                r_new, _dlog_w = permeate(r, step, kappa_over_D, jnp.float32(0.0), perm_key)
+            return (r_new, key, side, bad), None
     else:
         reflect = geometry.reflect
 
         def inner_step(carry, _):
-            r, key = carry
+            r, key, side, bad = carry
             key, subkey = jax.random.split(key)
             noise = jax.random.normal(subkey, (3,), dtype=jnp.float32)
             unit_noise = noise / jnp.linalg.norm(noise)
             step = unit_noise * step_l_sim
             r_new = reflect(r, step)
-            return (r_new, key), None
+            return (r_new, key, side, bad), None
+
+    # ── Universal compartment sentinel ───────────────────────────────────────
+    # `permeate(..., side=)` gives PackedCylinders an exact ejection, but every other
+    # geometry re-derives the compartment from the position and shares the same defect: an
+    # adversarial probe that steps walkers EXACTLY onto a wall (bisecting to the boundary
+    # with the geometry's own classifier) flips 23-81% of them on every analytic geometry,
+    # against 0% once a side is carried.
+    #
+    # At kappa <= 0 the rule needs no geometry knowledge: an impermeable wall grants no
+    # crossings, so ANY change of compartment label is illegal and the move that caused it
+    # can be rejected outright. One check therefore covers spheres, cylinders, ellipsoids,
+    # packed spheres, slabs, shells and meshes alike. At kappa > 0 a label change may be a
+    # genuine crossing, so there a geometry must opt in through the `side` API instead.
+    #
+    # Rejecting rather than ejecting costs a walker one step of displacement, at a measured
+    # rate of ~1e-7 per walker-step -- unmeasurable against the walk, and strictly better
+    # than silently relabelling the walker.
+    # Cost is why this is opt-in rather than the default: a classify_position per sub-step
+    # roughly DOUBLES the walk (+88% measured on Sphere, +69% on PackedCylinders), and walk
+    # time is the entire cost of the engine. The geometries that carry the largest risk --
+    # dense packings, where the rate scales with surface-to-volume -- instead get an exact
+    # O(1) sentinel inside their own step for +0.8%, so they are protected by default and
+    # do not need this. Use it to validate a geometry that has no in-step sentinel yet.
+    _cls_fn = getattr(geometry, "classify_position", None)
+    _use_guard = (bool(enforce_compartment) and _cls_fn is not None and not _carries_side
+                  and (not has_permeability or float(permeability) <= 0.0))
+    if enforce_compartment and _cls_fn is None:
+        raise ValueError("enforce_compartment=True needs geometry.classify_position")
+    if _use_guard:
+        _inner_raw = inner_step
+
+        def inner_step(carry, _):
+            r_old = carry[0]
+            carry, out = _inner_raw(carry, _)
+            r_new = carry[0]
+            keep = _cls_fn(r_new) == _cls_fn(r_old)
+            bad = carry[3] + jnp.where(keep, 0, 1)
+            return (jnp.where(keep, r_new, r_old),) + carry[1:3] + (bad,), out
 
     def outer_step(carry, _):
         carry_final, _ = jax.lax.scan(inner_step, carry, None, length=sub_steps)
         r_final = carry_final[0]
         return carry_final, r_final
 
-    def simulate_one_walker(r0_w, key_w):
-        (_, _), positions = jax.lax.scan(outer_step, (r0_w, key_w), None, length=n_t)
-        return positions  # (n_t, 3)
+    def simulate_one_walker(r0_w, key_w, side_w):
+        (_, _, side_f, bad_f), positions = jax.lax.scan(
+            outer_step, (r0_w, key_w, side_w, jnp.int32(0)), None, length=n_t)
+        return positions, side_f, bad_f  # (n_t, 3), carried side, illegal-crossing count
 
     # ── Storage dtype for the returned channels ─────────────────────────────
     # f32 by DEFAULT. The walk is f32, the pack is f32 (compression.pack_position_arrays)
@@ -1316,64 +1398,108 @@ def simulate_trajectories(
             permeate_relax = geometry.permeate
 
             def inner_step_relax(carry, _):
-                r, key, dlog_accum, comp_sum = carry
+                r, key, dlog_accum, comp_sum, side, bad = carry
                 key, step_key, perm_key = jax.random.split(key, 3)
                 noise = jax.random.normal(step_key, (3,), dtype=jnp.float32)
                 unit_noise = noise / jnp.linalg.norm(noise)
                 step = unit_noise * step_l_sim
-                r_new, dlog_w_unit = permeate_relax(
-                    r, step, kappa_over_D_relax, jnp.float32(1.0), perm_key)
+                if _carries_side:
+                    r_new, dlog_w_unit, crossed, illegal = permeate_relax(
+                        r, step, kappa_over_D_relax, jnp.float32(1.0), perm_key, side)
+                    side = jnp.where(crossed, -side, side)
+                    bad = bad + illegal.astype(jnp.int32)
+                    # Label from the CARRIED side, not from the position. This is the
+                    # channel `comp_traj` is built from, so re-deriving it here would put
+                    # the relabelling straight back in even with the sentinel correcting
+                    # the coordinate. Convention matches `classify_returns_object_id`
+                    # (0 = extra, 1 = intra), which is what `_get_comp_id` collapses to.
+                    comp_id = jnp.where(side < 0, jnp.float32(1.0), jnp.float32(0.0))
+                else:
+                    r_new, dlog_w_unit = permeate_relax(
+                        r, step, kappa_over_D_relax, jnp.float32(1.0), perm_key)
+                    comp_id = _get_comp_id(r_new).astype(jnp.float32)
                 # Per-sub-step compartment id -> fractional occupancy (resolves
                 # intra-save crossings without a finer dt_save).
-                comp_sum = comp_sum + _get_comp_id(r_new).astype(jnp.float32)
-                return (r_new, key, dlog_accum + dlog_w_unit, comp_sum), None
+                comp_sum = comp_sum + comp_id
+                return (r_new, key, dlog_accum + dlog_w_unit, comp_sum, side, bad), None
 
         elif has_reflect_with_log_weight:
             reflect_with_log_weight = geometry.reflect_with_log_weight
 
             def inner_step_relax(carry, _):
-                r, key, dlog_accum, comp_sum = carry
+                r, key, dlog_accum, comp_sum, side, bad = carry
                 key, subkey = jax.random.split(key)
                 noise = jax.random.normal(subkey, (3,), dtype=jnp.float32)
                 unit_noise = noise / jnp.linalg.norm(noise)
                 step = unit_noise * step_l_sim
                 r_new, dlog_w_unit = reflect_with_log_weight(r, step, jnp.float32(1.0))
                 comp_sum = comp_sum + _get_comp_id(r_new).astype(jnp.float32)
-                return (r_new, key, dlog_accum + dlog_w_unit, comp_sum), None
+                return (r_new, key, dlog_accum + dlog_w_unit, comp_sum, side, bad), None
 
         else:
             # FreeDiffusion: no boundaries → dlog_boundary_unit is always 0.
             reflect_free = geometry.reflect
 
             def inner_step_relax(carry, _):
-                r, key, dlog_accum, comp_sum = carry
+                r, key, dlog_accum, comp_sum, side, bad = carry
                 key, subkey = jax.random.split(key)
                 noise = jax.random.normal(subkey, (3,), dtype=jnp.float32)
                 unit_noise = noise / jnp.linalg.norm(noise)
                 step = unit_noise * step_l_sim
                 r_new = reflect_free(r, step)
                 comp_sum = comp_sum + _get_comp_id(r_new).astype(jnp.float32)
-                return (r_new, key, dlog_accum, comp_sum), None
+                return (r_new, key, dlog_accum, comp_sum, side, bad), None
 
         def outer_step_relax(carry, _):
-            r, key = carry
-            inner_init = (r, key, jnp.float32(0.0), jnp.float32(0.0))
-            (r_final, key_final, dlog_accum, comp_sum), _ = jax.lax.scan(
+            r, key, side, bad = carry
+            inner_init = (r, key, jnp.float32(0.0), jnp.float32(0.0), side, bad)
+            (r_final, key_final, dlog_accum, comp_sum, side_f, bad_f), _ = jax.lax.scan(
                 inner_step_relax, inner_init, None, length=sub_steps)
             # Fractional occupancy of compartment 1 over the saved interval.  For
             # single-compartment geometries this is identically 0.
             comp_occ = comp_sum / jnp.float32(sub_steps)
-            return (r_final, key_final), (r_final, dlog_accum, comp_occ)
+            return (r_final, key_final, side_f, bad_f), (r_final, dlog_accum, comp_occ)
 
-        def simulate_one_walker_relax(r0_w, key_w):
-            (_, _), (positions, dlog_boundary, comp_ids) = jax.lax.scan(
-                outer_step_relax, (r0_w, key_w), None, length=n_t)
-            return positions, dlog_boundary, comp_ids
+        def simulate_one_walker_relax(r0_w, key_w, side_w):
+            (_, _, _side_f, bad_f), (positions, dlog_boundary, comp_ids) = jax.lax.scan(
+                outer_step_relax, (r0_w, key_w, side_w, jnp.int32(0)), None, length=n_t)
+            return positions, dlog_boundary, comp_ids, bad_f
 
-        simulate_batch_relax = jax.jit(
-            jax.vmap(simulate_one_walker_relax, in_axes=(0, 0)))
+        _simulate_batch_relax_raw = jax.jit(
+            jax.vmap(simulate_one_walker_relax, in_axes=(0, 0, 0)))
 
-    simulate_batch = jax.jit(jax.vmap(simulate_one_walker, in_axes=(0, 0)))
+        def simulate_batch_relax(r0_b, keys_b):
+            pos, dlog, comp, bad_f = _simulate_batch_relax_raw(r0_b, keys_b, _side0(r0_b))
+            _illegal_crossings[0] += int(jnp.sum(bad_f))
+            return pos, dlog, comp
+
+    _simulate_batch_raw = jax.jit(jax.vmap(simulate_one_walker, in_axes=(0, 0, 0)))
+
+    # Seed each walker's carried compartment ONCE, from its t=0 position, and let only a
+    # granted crossing change it thereafter (MC/DC's `initial_location`). The wrapper keeps
+    # the (r0, keys) -> positions signature every call site below already uses.
+    _illegal_crossings = [0]
+
+    if (_carries_side and hasattr(geometry, "classify_position")
+            and getattr(geometry, "classify_returns_object_id", False)):
+        # `classify_returns_object_id` pins the convention this depends on: 0 = extra,
+        # 1..N = the object the walker is in. The permeable Cylinder/Sphere classifiers use
+        # the OPPOSITE convention (0 = intra), so gating on the flag rather than on the
+        # method's mere existence is what keeps the seed from being inverted.
+        _cls = geometry.classify_position
+
+        def _side0(r_b):
+            # -1 = intra (inside some object), +1 = extra. Matches `side < 0 == intra`.
+            ids = jax.vmap(_cls)(r_b)
+            return jnp.where(ids > 0, jnp.int8(-1), jnp.int8(1))
+    else:
+        def _side0(r_b):
+            return jnp.zeros((r_b.shape[0],), dtype=jnp.int8)
+
+    def simulate_batch(r0_b, keys_b):
+        positions, _side_f, bad_f = _simulate_batch_raw(r0_b, keys_b, _side0(r0_b))
+        _illegal_crossings[0] += int(jnp.sum(bad_f))
+        return positions
 
     master_key = jax.random.PRNGKey(seed)
     pos_key, walker_key = jax.random.split(master_key)
@@ -1586,6 +1712,23 @@ def simulate_trajectories(
                     success = True
                 else:
                     raise
+
+    # ── Illegal-crossing report ─────────────────────────────────────────────
+    # A step that leaves the walker on the far side of a membrane WITHOUT a granted crossing
+    # is illegal by definition. The sentinel in `permeate` already ejected it back, so this is
+    # a diagnostic rather than a loss -- but a nonzero count is the engine silently relabelling
+    # walkers, and the number belongs in the open where it can be seen.
+    # Returned via a module global rather than the return tuple, whose shape is load-bearing
+    # for every existing caller.
+    global LAST_ILLEGAL_CROSSINGS
+    LAST_ILLEGAL_CROSSINGS = _illegal_crossings[0]
+    if LAST_ILLEGAL_CROSSINGS:
+        import warnings
+        warnings.warn(
+            f"{LAST_ILLEGAL_CROSSINGS} walker-steps ended on the wrong side of a membrane "
+            f"without a granted crossing (permeability={permeability!r}); each was rejected "
+            f"and the walker returned to its own compartment. "
+            f"See dmipy_sim.core.LAST_ILLEGAL_CROSSINGS.", RuntimeWarning, stacklevel=2)
 
     if _compress:
         # Compressed master: IR modes instead of the raw trajectory. Decode with

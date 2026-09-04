@@ -32,6 +32,7 @@ import warnings
 import numpy as np
 import jax
 import jax.numpy as jnp
+from ._boundary import bind_probability
 
 from .constants import GAMMA
 from .gpu import gpu_available
@@ -545,7 +546,7 @@ def _make_bloch_mt_step_fn(geometry, D, dt, n_sub, T2, T1, M0, off_res_global,
             # rho_over_D = 1 -> dlog = -2 Sum d_perp; the binding local time is -dlog
             r_free, dlog = reflect_lw(r, unit * step_len, jnp.float32(1.0))
             local_time = -dlog
-            p_stick = jnp.minimum(jnp.float32(1.0), kappa_over_D * local_time)
+            p_stick = bind_probability(kappa_over_D, local_time)
             newly = (~is_bound) & (jax.random.uniform(stick_key, dtype=jnp.float32) < p_stick)
             u_dwell = jax.random.uniform(dwell_key, dtype=jnp.float32)
             dwell_draw = -jnp.log(jnp.maximum(u_dwell, jnp.float32(1e-20))) * dwell_steps_mean

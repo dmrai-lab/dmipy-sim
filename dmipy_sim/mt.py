@@ -78,6 +78,8 @@ def stick_probability(d_perp, kappa_MT, D):
     kappa_MT : float          MT surface reactivity (m/s), >= 0.
     D : float                 local diffusivity (m^2/s), > 0.
     """
+    # identical to `_boundary.transmit_probability`; kept as a host-side (numpy) entry
+    # point for the analytic oracles, which run off-device.
     return np.minimum(1.0, 2.0 * (kappa_MT / D) * np.asarray(d_perp, dtype=float))
 
 
