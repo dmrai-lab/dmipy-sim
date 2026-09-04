@@ -28,8 +28,15 @@ export `LD_LIBRARY_PATH` to the venv's `nvidia/*/lib` dirs (see README).
 JAX_PLATFORMS=cpu pytest tests/ -q -m "not slow and not gpu"   # fast: every PR
 ```
 
-- Fast tier: primitives, geometry/waveform units, MC smoke — ~1 min on CPU, runs on
-  every push/PR (`.github/workflows/tests.yml`).
+- Fast tier: primitives, geometry/waveform units, MC smoke — **~6 min on GPU** (405 tests,
+  measured; CPU is several times slower, which is what CI pays). Runs on every push/PR
+  (`.github/workflows/tests.yml`). Two things keep it there and are easy to undo by accident:
+  the JAX **persistent compilation cache** (`tests/conftest.py`, cached across CI runs) — the
+  suite is compile-bound, since every `jax.jit` is built inside a function body over a fresh
+  closure so jit's in-memory cache never hits (#93) — and doing **no work at import time**.
+  Anything built as a `parametrize` argument or by a module-level `importorskip` runs during
+  COLLECTION, on every invocation, including runs that deselect it; one such import cost 87 s
+  of the suite's 96 s collection (#91). Build fixtures on first USE.
 - `@pytest.mark.slow`: heavy statistical MC validation (auto-marked per module in
   `tests/conftest.py::_SLOW_MC_MODULES`) — runs weekly / `workflow_dispatch`.
   Add a new heavy MC module's name to that set. `--heavy` bumps `N_WALKERS` to 1e6.
