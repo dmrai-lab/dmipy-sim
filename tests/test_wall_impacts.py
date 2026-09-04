@@ -39,14 +39,18 @@ from dmipy_sim.geometry import Sphere, Cylinder, Ellipsoid, PackedCylinders, Pac
 R = 5.0e-6
 
 
-def _pack(n, radius, L, dim, seed=1):
-    rng = np.random.default_rng(seed)
-    cen, tries = [], 0
-    while len(cen) < n and tries < 300_000:
-        p = rng.uniform(-L / 2, L / 2, dim); tries += 1
-        if all(np.linalg.norm((p - c) - L * np.round((p - c) / L)) >= 2.2 * radius for c in cen):
-            cen.append(p)
-    return np.array(cen)
+def _lattice(n_side, radius, dim=2):
+    """Deterministic non-overlapping centres on a square lattice.
+
+    Replaces rejection sampling, which was both slow and WRONG here: asking for 12 cylinders
+    of R = 5 um at 2.2 R separation inside a 30 um box is geometrically impossible, so the
+    sampler burned 300,000 rejected draws (13.7 s) and silently returned 4. A lattice gives
+    the requested count, instantly, reproducibly, and states the box size it needs.
+    """
+    pitch = 3.0 * radius                     # comfortably clear of 2.2 R
+    offs = (np.arange(n_side) - (n_side - 1) / 2.0) * pitch
+    grid = np.meshgrid(*([offs] * dim), indexing="ij")
+    return np.stack([g.ravel() for g in grid], axis=1), n_side * pitch
 
 
 def _radial(name):
@@ -54,7 +58,7 @@ def _radial(name):
     if name == "PackedCylinders":
         # a packing has objects at arbitrary centres, so "distance from the wall" is measured
         # against the nearest one under the minimum image, not against the origin
-        def _f(p, centers=_PACK_CENTERS, L=30e-6):
+        def _f(p, centers=_PACK_CENTERS, L=_PACK_L):
             q = np.atleast_2d(p)[:, None, :2] - centers[None, :, :]
             q -= L * np.floor(q / L + 0.5)
             return np.linalg.norm(q, axis=2).min(axis=1)
@@ -64,11 +68,28 @@ def _radial(name):
     return lambda p: np.linalg.norm(np.atleast_2d(p), axis=1)
 
 
+_PACK_L = None
 _NAMES = ["Sphere", "Cylinder", "PackedCylinders"]
 _PACK_CENTERS = None
 
 
+_CACHE = {}
+
+
 def _build(name):
+    """Build once per module run, then reuse.
+
+    Not at collection time -- that is what puts device buffers in a session another module's
+    `jax.clear_caches()` later frees. Building on first use and caching keeps that safety
+    while paying `PackedCylinders.__init__` (14.4 s, measured) once instead of five times.
+    """
+    if name in _CACHE:
+        return _CACHE[name]
+    _CACHE[name] = _build_uncached(name)
+    return _CACHE[name]
+
+
+def _build_uncached(name):
     """Construct on demand -- see the device-array note at the top of this file.
 
     Building at parametrize time puts these geometries' jnp arrays on the device at
@@ -76,10 +97,11 @@ def _build(name):
     alone and fails in a full run with "Array has been deleted". That is exactly what
     happened, in this file, after the note above was written and not acted on.
     """
-    global _PACK_CENTERS
+    global _PACK_CENTERS, _PACK_L
     if name == "PackedCylinders":
-        c2 = _pack(12, R, 30e-6, 2); _PACK_CENTERS = c2
-        return PackedCylinders(centers=c2, radii=np.full(len(c2), R), L=30e-6,
+        c2, _PACK_L = _lattice(3, R, 2)      # 9 cylinders, box sized to fit them
+        _PACK_CENTERS = c2
+        return PackedCylinders(centers=c2, radii=np.full(len(c2), R), L=_PACK_L,
                                orientation=[0, 0, 1.0], permeability=0.0)
     if name == "Sphere":
         return Sphere(radius=R, permeability=0.0)
