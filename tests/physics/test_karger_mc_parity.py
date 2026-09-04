@@ -23,16 +23,41 @@ from dmipy_sim import simulate, PackedSpheres, set_b
 from dmipy_sim.geometries import Sphere
 from dmipy_sim.waveforms import pgse, pgste
 
+import importlib.util
+
 import pytest
+
 # Cross-engine parity: MC (this repo) vs the analytical Kärger formula in dmipy-fit. dmipy-fit is
-# NOT a dependency of dmipy-sim, so skip the whole module at collection when it is absent —
-# otherwise a bare import errors on a standalone dmipy-sim checkout / CI.
-_exchange_models = pytest.importorskip(
-    "dmipy_fit.signal_models.exchange_models",
-    reason="cross-engine Kärger parity needs the analytical engine dmipy-fit",
-)
-_karger_formula = _exchange_models._karger_formula
-_karger_propagator_ste = _exchange_models._karger_propagator_ste
+# NOT a dependency of dmipy-sim, so skip the whole module when it is absent — otherwise a bare
+# import errors on a standalone dmipy-sim checkout / CI.
+#
+# The skip decision uses find_spec, which LOCATES dmipy-fit without executing it. Importing
+# exchange_models pulls dipy and cost 87 s measured -- and as a module-level importorskip that
+# was paid at COLLECTION, by every pytest invocation in either tier, including the fast-tier
+# runs that deselect this whole module. It is ~95% of the suite's total collection time (#91).
+# The real import is deferred to first use below, so only a run that actually executes one of
+# these tests pays it.
+_REASON = "cross-engine Kärger parity needs the analytical engine dmipy-fit"
+if importlib.util.find_spec("dmipy_fit") is None:
+    pytest.skip(_REASON, allow_module_level=True)
+
+_MODELS = []
+
+
+def _models():
+    """Import exchange_models on FIRST USE (see above); still skips if it is unimportable."""
+    if not _MODELS:
+        _MODELS.append(pytest.importorskip(
+            "dmipy_fit.signal_models.exchange_models", reason=_REASON))
+    return _MODELS[0]
+
+
+def _karger_formula(*args, **kwargs):
+    return _models()._karger_formula(*args, **kwargs)
+
+
+def _karger_propagator_ste(*args, **kwargs):
+    return _models()._karger_propagator_ste(*args, **kwargs)
 
 
 # ---------------------------------------------------------------------------

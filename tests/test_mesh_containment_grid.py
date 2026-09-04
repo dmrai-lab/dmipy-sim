@@ -7,24 +7,39 @@ the ray-engine oracle, and to ANALYTIC truth where the oracle itself is unreliab
 """
 import numpy as np
 import pytest
-import trimesh
+
+# Guarded like every other mesh module in the suite: trimesh ships in the [dev] extra, but a
+# bare top-level import turns its absence into a COLLECTION ERROR, which pytest treats as fatal
+# and which therefore takes down the whole run -- not just this file. importorskip degrades to
+# a skip instead (#91).
+trimesh = pytest.importorskip("trimesh")
 
 from dmipy_sim.susceptibility_field import mesh_contains, mesh_contains_fast, mesh_inside
 
 
-def _prims():
-    return [
-        ("icosphere", trimesh.creation.icosphere(subdivisions=4, radius=1.0)),
-        ("box", trimesh.creation.box(extents=(1.0, 2.0, 3.0))),
-        ("torus", trimesh.creation.torus(major_radius=1.0, minor_radius=0.35)),
-        ("two_bodies", trimesh.util.concatenate([
-            trimesh.creation.icosphere(subdivisions=3).apply_translation([-1.2, 0, 0]),
-            trimesh.creation.icosphere(subdivisions=3).apply_translation([1.2, 0, 0])])),
-    ]
+# Built on FIRST USE, never at import/collection time. As a `parametrize` argument this ran at
+# collection -- and because the decorator called it twice (once for the params, once for the
+# ids) it built all four primitives TWICE, subdivision-4 icosphere included, before a single
+# test ran. Every pytest invocation paid that, including runs that deselect this module (#91).
+_PRIMS = {}
 
 
-@pytest.mark.parametrize("name,mesh", _prims(), ids=[n for n, _ in _prims()])
-def test_it_agrees_with_the_ray_engine_on_closed_primitives(name, mesh):
+def _prim(name):
+    if not _PRIMS:
+        _PRIMS.update({
+            "icosphere": trimesh.creation.icosphere(subdivisions=4, radius=1.0),
+            "box": trimesh.creation.box(extents=(1.0, 2.0, 3.0)),
+            "torus": trimesh.creation.torus(major_radius=1.0, minor_radius=0.35),
+            "two_bodies": trimesh.util.concatenate([
+                trimesh.creation.icosphere(subdivisions=3).apply_translation([-1.2, 0, 0]),
+                trimesh.creation.icosphere(subdivisions=3).apply_translation([1.2, 0, 0])]),
+        })
+    return _PRIMS[name]
+
+
+@pytest.mark.parametrize("name", ["icosphere", "box", "torus", "two_bodies"])
+def test_it_agrees_with_the_ray_engine_on_closed_primitives(name):
+    mesh = _prim(name)
     V = np.asarray(mesh.vertices, float)
     F = np.asarray(mesh.faces, np.int64)
     lo, hi = V.min(0) - 0.2, V.max(0) + 0.2
