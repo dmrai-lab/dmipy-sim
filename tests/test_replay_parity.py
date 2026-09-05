@@ -14,10 +14,10 @@ validation oracle — for
 
 SAME seed / N / waveform go through both paths.  The generic geometries walk via
 a different (sub-stepped) scan than the fused engine, so parity is at the MC
-noise floor: tolerance ``max(0.02, 1/sqrt(N))``.  The waveforms are sized so the
-producer's sub-step auto-tune leaves ``sub_steps == 1`` (fused single-step is
-already accurate), making (a)–(c) essentially bit-identical and isolating (d) to
-the boundary-local-time statistics.
+noise floor: tolerance ``max(0.02, 1/sqrt(N))``.  The waveforms are sized so that
+``physics.resolve_sub_steps`` asks for MORE than one sub-step on every walled
+geometry, so the comparison exercises the shared sub-step dispatch rather than a
+single-step special case (the fixture asserts this).
 
 Heavy MC — auto-marked ``slow`` via ``tests/conftest.py::_SLOW_MC_MODULES``.
 """
@@ -48,14 +48,15 @@ def _pgse(delta, DELTA, n_t, b, G_magnitude=0.2):
 
 # ── Geometry specs ──────────────────────────────────────────────────────────
 # Each: (base geom, surface-relaxivity geom or None, n_walkers, waveform).
-# Non-mesh geometries are cheap → fine dt (sub_steps==1) + moderate N.
+# Coarse dt, so the auto-tune sub-steps every walled geometry (R/6 -> 4, pore/8 -> 7 at R=5um).
 _N_STD = 20_000
-_WF_STD = _pgse(delta=8e-3, DELTA=32e-3, n_t=800, b=1.0e9)
+_WF_STD = _pgse(delta=8e-3, DELTA=32e-3, n_t=200, b=1.0e9)
 
-# Mesh MC is far heavier per step on CPU → short TE / small n_t (still sub_steps==1
-# so the fused engine stays accurate) and a small walker count.
+# Mesh MC is far heavier per step on CPU -> short TE / small n_t and a small walker count; the
+# feature radius sets the lookup cell fine enough that the collision criterion sub-steps too.
 _N_MESH = 3_000
 _WF_MESH = _pgse(delta=1.5e-3, DELTA=6e-3, n_t=160, b=0.5e9, G_magnitude=0.3)
+_MESH_FEATURE = 1e-6
 
 
 def _std_specs():
@@ -77,8 +78,8 @@ def _mesh_spec():
     m = trimesh.creation.icosphere(subdivisions=2, radius=R)
     V = np.asarray(m.vertices, np.float64)
     F = np.asarray(m.faces, np.int32)
-    return (d.Mesh(V, F),
-            d.Mesh(V, F, intra={"surface_relaxivity_t2": RHO}),
+    return (d.Mesh(V, F, feature_radius=_MESH_FEATURE),
+            d.Mesh(V, F, feature_radius=_MESH_FEATURE, intra={"surface_relaxivity_t2": RHO}),
             _N_MESH, _WF_MESH)
 
 
@@ -105,6 +106,9 @@ def _replay_case(request):
     out = simulate_trajectories(n, D, geom, T_max, dt, seed=SEED,
                                 save_relaxation_data=True, require_gpu=False)
     traj, dt_traj, sub_steps, dt_sim, dlog, comp = out
+    if name != "free":
+        assert sub_steps > 1, (f"[{name}] the producer took {sub_steps} sub-step; this parity "
+                               f"must exercise the shared sub-step dispatch")
 
     S_a = np.asarray(simulate(n, D, wf, geom, seed=SEED, require_gpu=False)).ravel()
     S_b = np.asarray(simulate(n, D, wf, geom, seed=SEED, T2=T2, require_gpu=False)).ravel()

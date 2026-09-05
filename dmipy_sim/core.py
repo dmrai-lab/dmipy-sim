@@ -1025,14 +1025,12 @@ def simulate_trajectories(
     walk-once half of the replay invariant (positions depend only on
     ``geometry, diffusivity, seed`` — see the module CLAUDE guide).
 
-    Sub-stepping: for small geometries a coarse ``dt_save`` produces a step_l
-    comparable to the geometry size, biasing reflection.  ``sub_steps =
-    ceil(dt_save / dt_phys_max)`` is auto-tuned so ``step_l < R/6`` per inner
-    step (``dt_phys_max = R² / (216·D)`` for reflection; ``R² / (3750·D)`` — i.e.
-    ``step_l ≈ R/25`` — when the geometry is permeable, since membrane crossing
-    is step-size sensitive).  Only the position after each group of ``sub_steps``
-    inner steps is saved, so storage is always ``(n_walkers, n_t, 3)`` at
-    ``dt_save`` granularity.
+    Sub-stepping: :func:`dmipy_sim.physics.resolve_sub_steps` chooses the fine
+    sub-steps per saved step from the geometry's length scales and the channels
+    recorded (the surface criterion when ``save_relaxation_data``, the binding
+    criterion when ``kappa_MT > 0``), the same dispatch the fused engine uses.  Only
+    the position after each group of ``sub_steps`` inner steps is saved, so storage
+    is always ``(n_walkers, n_t, 3)`` at ``dt_save`` granularity.
 
     Parameters
     ----------
@@ -1116,22 +1114,14 @@ def simulate_trajectories(
     n_t = int(round(T_max / dt_save)) + 1
     dt_actual = T_max / (n_t - 1)
 
-    # --- Sub-stepping: guarantee step_l < R/6 for accurate reflection ---
-    from .physics import length_scales_of as _length_scales_of
-    _ls = _length_scales_of(geometry)
-    R_geom = _ls.min_feature
-    if sub_steps:
-        pass                                  # caller pinned it; see simulate(sub_steps=...)
-    elif R_geom is None and not _ls.lookup_cell:
-        # Free diffusion or unknown: no sub-stepping needed
-        sub_steps = 1
-    else:
-        # See physics.walk_sub_steps: step_l = R/6 for an analytic pore (R/25 when permeable, since
-        # crossing is step-size sensitive), but the COLLISION criterion for a mesh -- R/6 there is keyed to
-        # feature_radius, a meshing parameter, and asked for 13x more sub-steps than the observables need.
-        from .physics import walk_sub_steps as _walk_sub_steps
-        sub_steps = _walk_sub_steps(geometry, diffusivity, dt_actual)
-
+    # --- Sub-stepping: one dispatch for every driver (physics.resolve_sub_steps) ---
+    # A walk that records the boundary local time is resolved at the surface criterion too, so a
+    # replayed rho reproduces the fused engine's; MT binding adds its own.
+    from .physics import resolve_sub_steps as _resolve_sub_steps, length_scales_of as _length_scales_of
+    R_geom = _length_scales_of(geometry).min_feature
+    sub_steps = _resolve_sub_steps(
+        geometry, diffusivity, dt_actual, surface=bool(save_relaxation_data),
+        mt_dwell_time=(dwell_time if kappa_MT > 0.0 else None), override=sub_steps)
     dt_sim = dt_actual / sub_steps
     step_l_sim = jnp.float32(jnp.sqrt(6.0 * diffusivity * dt_sim))
     # Same soundness bound as in physics.make_step_fn -- the guard has to live here too, because a permeable

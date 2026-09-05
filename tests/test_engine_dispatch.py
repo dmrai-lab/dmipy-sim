@@ -14,8 +14,10 @@ kept as the validation oracle + fallback.  This module asserts the selector:
       return_compartments), and ``engine='auto'`` falls those back to fused.
 
 SAME seed / N / waveform go through both engines.  The replay producer walks
-with a (sub-stepped) scan and stores positions in float16, so parity is at the
-MC-noise floor, not bit-identical.  Heavy MC -> auto-marked ``slow`` via
+with a separate scan, so parity is at the MC-noise floor, not bit-identical.  The
+waveforms are coarse enough that ``physics.resolve_sub_steps`` asks for more than
+one sub-step on every walled geometry (asserted in the fixture), so both engines
+exercise the shared dispatch.  Heavy MC -> auto-marked ``slow`` via
 ``tests/conftest.py::_SLOW_MC_MODULES``.
 """
 import numpy as np
@@ -44,11 +46,12 @@ def _pgse(delta, DELTA, n_t, b, G_magnitude=0.2):
                bvecs=[[1.0, 0.0, 0.0]], n_t=n_t, slew_rate=np.inf), b)
 
 
-_WF = _pgse(delta=8e-3, DELTA=32e-3, n_t=400, b=1.0e9)
-# Mesh MC is much heavier per step on CPU -> short TE / small n_t (still
-# sub_steps == 1) and fewer walkers.
+_WF = _pgse(delta=8e-3, DELTA=32e-3, n_t=200, b=1.0e9)
+# Mesh MC is much heavier per step on CPU -> short TE / small n_t and fewer walkers; the feature
+# radius sets a lookup cell fine enough that the collision criterion sub-steps too.
 _WF_MESH = _pgse(delta=1.5e-3, DELTA=6e-3, n_t=140, b=0.5e9, G_magnitude=0.3)
 _N_MESH = 3_000
+_MESH_FEATURE = 1e-6
 
 
 def _packed_cyl():
@@ -68,14 +71,14 @@ def _mesh():
     trimesh = pytest.importorskip("trimesh")
     m = trimesh.creation.icosphere(subdivisions=2, radius=R)
     return d.Mesh(np.asarray(m.vertices, np.float64),
-                  np.asarray(m.faces, np.int32))
+                  np.asarray(m.faces, np.int32), feature_radius=_MESH_FEATURE)
 
 
 def _mesh_rho():
     trimesh = pytest.importorskip("trimesh")
     m = trimesh.creation.icosphere(subdivisions=2, radius=R)
     return d.Mesh(np.asarray(m.vertices, np.float64),
-                  np.asarray(m.faces, np.int32),
+                  np.asarray(m.faces, np.int32), feature_radius=_MESH_FEATURE,
                   intra={"surface_relaxivity_t2": RHO})
 
 
@@ -83,8 +86,8 @@ def _mesh_rho():
 def _supported_specs():
     return {
         "free":     (d.FreeDiffusion(), None, N, _WF),
-        "box1d":    (d.Box1D(length=10e-6),
-                     d.Box1D(length=10e-6, surface_relaxivity_t2=RHO), N, _WF),
+        "box1d":    (d.Box1D(length=6e-6),
+                     d.Box1D(length=6e-6, surface_relaxivity_t2=RHO), N, _WF),
         "sphere":   (d.Sphere(radius=R),
                      d.Sphere(radius=R, surface_relaxivity_t2=RHO), N, _WF),
         "cylinder": (d.Cylinder(radius=R, orientation=[0, 0, 1]),
@@ -105,6 +108,11 @@ _SUPPORTED = ["free", "box1d", "sphere", "cylinder", "ellipsoid",
 def _case(request):
     name = request.param
     geom, geom_rho, n, wf = _supported_specs()[name]
+    if name != "free":
+        from dmipy_sim.physics import resolve_sub_steps
+        n_sub = resolve_sub_steps(geom, D, float(wf.dt))
+        assert n_sub > 1, (f"[{name}] the dispatch asks for {n_sub} sub-step; this parity must "
+                           f"exercise sub-stepping")
     sf = np.asarray(simulate(n, D, wf, geom, seed=SEED, engine="fused",
                              require_gpu=False)).ravel()
     return dict(name=name, geom=geom, geom_rho=geom_rho, n=n, wf=wf, S_fused=sf)
