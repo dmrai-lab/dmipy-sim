@@ -220,6 +220,24 @@ def test_permeability_none_matches_impermeable():
 SUB_STEPS_MATCHED = 120
 
 
+# One matched-sub-step walk per kappa, shared by the tests below. `test_permeability_increases_
+# signal_at_high_b` and `test_permeability_signal_monotone_in_kappa` each ran the SAME two walks --
+# kappa=None and kappa=KAPPA_MED, both at N_WALKERS x SUB_STEPS_MATCHED with the same seed and
+# waveform -- so two 100,000-walker walks were computed twice to be looked at twice. They were
+# already consuming identical samples; caching just stops paying for them twice. Assertions
+# unchanged. Populated on first USE, never at import/collection (#91).
+_MATCHED = {}
+
+
+def _matched_signal(kappa):
+    """Signal for a single-sphere pack at `kappa` (None = impermeable), matched sub-steps."""
+    if kappa not in _MATCHED:
+        geom = _single_sphere_packed(permeability=kappa)
+        _MATCHED[kappa] = np.asarray(simulate(N_WALKERS, D, _pgse_wf(100e-3), geom,
+                                              seed=SEED, sub_steps=SUB_STEPS_MATCHED))
+    return _MATCHED[kappa]
+
+
 def test_permeability_increases_signal_at_high_b():
     """Signal with κ>0 must be above impermeable at b=2000 s/mm², at a MATCHED step.
 
@@ -239,11 +257,8 @@ def test_permeability_increases_signal_at_high_b():
     -- larger than the effect. There is no numerical drift: free diffusion tracks exp(-b*D) to within ~1 MC
     floor at every sub_steps from 1 to 480 with no trend, and a Sphere holds to 6e-4.)
     """
-    wf        = _pgse_wf(100e-3)
-    geom_imp  = _single_sphere_packed(permeability=None)
-    geom_perm = _single_sphere_packed(permeability=KAPPA_MED)
-    S_imp     = simulate(N_WALKERS, D, wf, geom_imp,  seed=SEED, sub_steps=SUB_STEPS_MATCHED)
-    S_perm    = simulate(N_WALKERS, D, wf, geom_perm, seed=SEED, sub_steps=SUB_STEPS_MATCHED)
+    S_imp  = _matched_signal(None)
+    S_perm = _matched_signal(KAPPA_MED)
     assert float(S_perm[3]) > float(S_imp[3]) + 0.002, (
         f"S_perm={S_perm[3]:.4f} must be above S_imp={S_imp[3]:.4f} "
         f"at b=2000 s/mm² (permeable walkers enter spheres → more restricted)")
@@ -310,16 +325,13 @@ def test_permeability_signal_monotone_in_kappa():
 
     Higher κ → more walkers enter spheres → more restricted → higher signal.
     """
-    wf      = _pgse_wf(100e-3)
     kappas  = [0.0, 1e-6, 1e-5]
     signals = []
     for kappa in kappas:
-        perm = kappa if kappa > 0 else None
-        geom = _single_sphere_packed(permeability=perm)
         # matched sub-steps: see SUB_STEPS_MATCHED. The kappa=0 arm otherwise runs at R/6 and every kappa>0
         # arm at R/25, so the first non-zero kappa moved the signal by a discretisation step change and this
         # test read it as non-monotone exchange.
-        S    = simulate(N_WALKERS, D, wf, geom, seed=SEED, sub_steps=SUB_STEPS_MATCHED)
+        S = _matched_signal(kappa if kappa > 0 else None)   # two of these are the walks above
         signals.append(float(S[3]))   # b=2000 s/mm²
     for i in range(len(signals) - 1):
         assert signals[i] <= signals[i + 1] + 1e-3, (
