@@ -116,6 +116,12 @@ and **one wall interaction**. Capability flags (`supports_permeability`, `carrie
 class with defaults, so the engine reads them directly; `tests/test_api_surface.py` fails on any
 new `getattr(geometry, …)` probe.
 
+**Sub-steps** come from one dispatch, `physics.resolve_sub_steps(geometry, D, dt, surface=,
+mt_dwell_time=, override=)` — the maximum of the reflection (R/6, R/25 permeable), collision-lookup,
+surface-local-time (pore/8) and binding criteria that apply. Every driver (`make_step_fn`,
+`simulate_trajectories`, `simulate_bloch`, `simulate_mt_trajectories`, the packed-myelin kernel)
+calls it; the returned step functions carry the count as `.n_sub`. Do not pick a rule per call site.
+
 ```python
 hit = geom.interact(r, step, kappa_over_D=0.0, rho_over_D=0.0, key=None, side=None)
 hit.r  hit.dlog_w  hit.crossed  hit.illegal      # a WallHit NamedTuple (a pytree)

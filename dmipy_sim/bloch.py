@@ -37,8 +37,7 @@ from .geometry._boundary import bind_probability
 from .constants import GAMMA
 from .gpu import gpu_available
 from .geometry import initial_positions
-from .physics import (permeable_sub_steps, walk_sub_steps,
-                      _warn_if_step_outruns_the_lookup)
+from .physics import resolve_sub_steps, _warn_if_step_outruns_the_lookup
 
 __all__ = ["simulate_bloch"]
 
@@ -146,7 +145,8 @@ def _make_bloch_step_fn(geometry, D, dt, T2, T1, M0, off_resonance_hz, rho=0.0,
         # across membranes during a mixing time is modelled correctly (e.g. FEXI).
         kappa_over_D = jnp.float32(geometry.permeability / D)
         permeate = geometry.permeate
-        n_sub = permeable_sub_steps(geometry, float(D), dt)
+        n_sub = resolve_sub_steps(geometry, float(D), dt, surface=rho > 0.0, override=sub_steps)
+        _warn_if_step_outruns_the_lookup(geometry, float(D), dt, n_sub, 'Bloch walk')
         step_len_sub = jnp.float32(np.sqrt(6.0 * D * dt / n_sub))
         gamma_dt_sub = jnp.float32(GAMMA * dt / n_sub)
 
@@ -171,25 +171,10 @@ def _make_bloch_step_fn(geometry, D, dt, T2, T1, M0, off_resonance_hz, rho=0.0,
                                crush_rate, uc)
             return (r_new, M_new, key, uc), xy
 
+        step_fn.n_sub = n_sub
         return step_fn
 
-    # Sub-step the walk, by the SAME rule the scalar engine uses (`physics.make_step_fn`'s no-weight
-    # branch), so `simulate_bloch` and `core.simulate` resolve the same collisions by construction
-    # rather than by coincidence.
-    #
-    # This path took one displacement per waveform step no matter what `sub_steps` said -- the argument
-    # was accepted, documented, and dropped. Analytic geometries did not care, because their reflect is
-    # exact at any step length. A mesh cannot be: a step longer than the collision-lookup cell crosses
-    # triangles that were never candidates and the walker simply leaves. Measured on a 2 um icosphere at
-    # b=2e9 (narrow-pulse PGSE, square limit): this path returned 0.05052 where `core.simulate` on the
-    # identical geometry and waveform gave 0.96305 and an analytic `Sphere` 0.96442 -- the
-    # free-diffusion answer (0.01867), silently.
-    #
-    # `n_sub == 1` reproduces the old single-displacement path BIT-IDENTICALLY: the key is split once
-    # per waveform step either way, and `gamma_dt_sub == gamma_dt`. So nothing that was already resolved
-    # moves, and the susceptibility phase (now accumulated per sub-step, where it used to be evaluated
-    # once at the step's end position) is likewise unchanged at n_sub == 1 and strictly better above it.
-    n_sub = sub_steps if sub_steps else walk_sub_steps(geometry, float(D), dt)
+    n_sub = resolve_sub_steps(geometry, float(D), dt, surface=has_surf, override=sub_steps)
     _warn_if_step_outruns_the_lookup(geometry, float(D), dt, n_sub, 'Bloch walk')
     step_len_sub = jnp.float32(np.sqrt(6.0 * D * dt / n_sub))
     gamma_dt_sub = jnp.float32(GAMMA * dt / n_sub)
@@ -220,6 +205,7 @@ def _make_bloch_step_fn(geometry, D, dt, T2, T1, M0, off_resonance_hz, rho=0.0,
                            phi_field=(phi_field if field_fn is not None else None))
         return (r_new, M_new, key, uc), xy
 
+    step_fn.n_sub = n_sub
     return step_fn
 
 
@@ -285,13 +271,11 @@ def simulate_bloch(n_walkers, diffusivity, waveform, geometry, rf_events, *,
         ``'off'`` keeps the legacy all-free start (correct only if you equilibrate yourself,
         e.g. a burn-in block inside the waveform).
     sub_steps : int, optional
-        Fine sub-steps per waveform step; overrides the per-geometry auto-tune (which follows
-        the scalar engine's rule -- ``walk_sub_steps``, or ``permeable_sub_steps`` on a
-        permeable geometry).  A mesh NEEDS this: a sub-step longer than the collision-lookup
-        cell crosses triangles that were never gathered as candidates, so walls are missed
-        and the walker leaves.  Setting it to 1 on a mesh reproduces the pre-#69 behaviour,
-        which returned the free-diffusion signal for a restricted pore; the runtime guard
-        warns when the resulting step outruns the lookup.
+        Fine sub-steps per waveform step; pins the count :func:`dmipy_sim.physics.resolve_sub_steps`
+        otherwise chooses from the geometry's length scales (the same dispatch the scalar engine
+        uses). A mesh needs more than one: a sub-step longer than the collision-lookup cell crosses
+        triangles that were never gathered as candidates, and the runtime guard warns when the
+        resulting step outruns the lookup.
     r0 : array-like of shape (n_walkers, 3), optional
         Explicit start positions in metres.  Default: ``geometry.init_positions(n, key)``,
         which on a mesh means ``intra=True`` -- INSIDE the surface.  Pass this whenever the
@@ -386,19 +370,14 @@ def simulate_bloch(n_walkers, diffusivity, waveform, geometry, rf_events, *,
 
 
 # ── magnetization transfer: fused forward walk + binding + Bloch ────────────────
-def _geom_radius(geometry):
-    """A characteristic feature radius (m) for the binding sub-step auto-tune."""
-    from .physics import _geometry_radius
-    return _geometry_radius(geometry)
-
-
 def _surface_to_volume(geometry):
     """Surface-to-volume ratio (1/m) used only for the fast (mid-air) equilibrium init's
     occupancy ``P_eq = k_f/(k_f+k_r)``, ``k_f = kappa_MT*(S/V)``.  Only closed analytic
     shapes are handled exactly; None otherwise, so the fast path is refused and the caller
     falls back to the geometry-agnostic burn-in (which needs no S/V)."""
+    from .physics import _geometry_radius
     name = type(geometry).__name__
-    R = _geom_radius(geometry)
+    R = _geometry_radius(geometry)
     if R is not None and R > 0.0:
         if name == 'Sphere':
             return 3.0 / R
@@ -632,12 +611,8 @@ def _simulate_bloch_mt(n_walkers, diffusivity, waveform, geometry, rf_events, *,
         G = G @ np.asarray(_orient_R, dtype=np.float64)
     n_meas, n_t, _ = G.shape
 
-    # binding is trajectory-altering (freezes walkers), so it needs the finer R/25
-    # sub-step (divisor 6*25^2 = 3750), not reflection's R/6.
-    if sub_steps is None:
-        R = _geom_radius(geometry)
-        sub_steps = (1 if R is None else
-                     max(1, int(np.ceil(dt / (R ** 2 / (3750.0 * D))))))
+    sub_steps = resolve_sub_steps(geometry, D, dt, surface=float(surface_relaxivity) > 0.0,
+                                  mt_dwell_time=dwell_time, override=sub_steps)
 
     dflip, axis, carrier = _build_rf_schedule(rf_events, dt, n_t)
     crush_rate, has_crush = _build_crusher(crusher, dt, n_t)

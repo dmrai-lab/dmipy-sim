@@ -250,15 +250,19 @@ def surface_sub_steps(geometry, diffusivity: float, dt: float, frac: float = 8.0
     self-limiting (→1 once the waveform dt already resolves the pore).
 
     The resolution is controllable per geometry via the ``surface_substep_frac``
-    attribute (overrides ``frac``); set it to ``0`` (or None) to DISABLE sub-stepping
-    (single step, fast). Disabling is appropriate for a qualitative long-echo-time
-    forward (e.g. a full CPMG train), where resolving the pore over the whole train is
-    prohibitively expensive and the surface rate is validated separately.
+    attribute (overrides ``frac``); ``0`` removes this criterion (the reflection and lookup
+    criteria of :func:`resolve_sub_steps` still apply). A mesh declares no pore -- its
+    ``min_feature`` is a meshing parameter -- so this criterion is 1 there and the lookup
+    criterion bounds the step.
     """
     g_frac = getattr(geometry, 'surface_substep_frac', None)
     if g_frac is not None:
         frac = g_frac
     if not frac or frac <= 0:
+        return 1
+    ls = length_scales_of(geometry)
+    if ls.is_mesh_feature and ls.surface_pore is None:
+        # a meshing parameter is not a pore; the lookup criterion bounds a mesh step
         return 1
     Rc = _surface_char_radius(geometry)
     if Rc is None:
@@ -296,6 +300,37 @@ def _warn_if_step_outruns_the_lookup(geometry, diffusivity, dt, n_sub, what):
             UserWarning, stacklevel=3)
 
 
+def resolve_sub_steps(geometry, diffusivity: float, dt: float, *, surface: bool = False,
+                      mt_dwell_time=None, override=None) -> int:
+    """Fine sub-steps per waveform (or save) step for a walk on ``geometry``.
+
+    Every driver -- the fused scan (:func:`make_step_fn`, :func:`make_packed_myelin_step_fn`),
+    the trajectory producer (:func:`~dmipy_sim.core.simulate_trajectories`), the vector-Bloch
+    engine and the MT walker -- takes its count from here, so one substrate is walked at one
+    resolution whichever way it is driven. The count is the maximum over the criteria that apply:
+
+    * reflection, ``step_l <= min_feature / 6`` (:func:`walk_sub_steps`), or ``min_feature / 25``
+      when the wall is permeable, since the crossing probability is step-size sensitive; not applied
+      when ``min_feature`` is a meshing parameter;
+    * collision lookup, ``step_l <= 0.9 * lookup_cell`` (:func:`collision_sub_steps`), for a
+      spatially indexed geometry;
+    * surface local time, ``step_l <= surface_pore / 8`` (:func:`surface_sub_steps`), when
+      ``surface`` -- the walk records or applies a boundary local time;
+    * binding, :func:`mt_sub_steps`, when ``mt_dwell_time`` is given.
+
+    ``override`` pins the count. An unbounded walk resolves to 1.
+    """
+    if override:
+        return int(override)
+    n = walk_sub_steps(geometry, diffusivity, dt)
+    n = max(n, collision_sub_steps(geometry, diffusivity, dt))
+    if surface:
+        n = max(n, surface_sub_steps(geometry, diffusivity, dt))
+    if mt_dwell_time is not None:
+        n = max(n, mt_sub_steps(geometry, diffusivity, dt, mt_dwell_time))
+    return max(1, int(n))
+
+
 def make_step_fn(geometry, diffusivity: float, dt: float, T2: float = None,
                  T1: float = None, sub_steps: int = None):
     """Return (step_fn, has_weight) for one simulation timestep.
@@ -309,11 +344,9 @@ def make_step_fn(geometry, diffusivity: float, dt: float, T2: float = None,
     Parameters
     ----------
     sub_steps : int, optional
-        Override the per-branch sub-step auto-tune with this exact count. Each branch otherwise picks its own
-        rule -- ``permeable_sub_steps`` (R/25, because the crossing probability is step-size sensitive),
-        ``surface_sub_steps`` (pore/8) or ``walk_sub_steps`` (R/6) -- so two runs of the SAME geometry that
-        differ only in whether permeability is set are also run at different time resolutions, and their
-        difference is not purely physics. Pass this to compare like with like, or to run a convergence sweep.
+        Pin the sub-step count; otherwise :func:`resolve_sub_steps` chooses it from the geometry's
+        length scales and the effects in play. The returned ``step_fn`` carries the count as
+        ``step_fn.n_sub``.
     geometry : Geometry instance
         Provides reflect(r, step).  If geometry.surface_relaxivity_t2 is set,
         also provides reflect_with_log_weight(r, step, rho_over_D).
@@ -342,12 +375,6 @@ def make_step_fn(geometry, diffusivity: float, dt: float, T2: float = None,
     has_weight : bool
         True when geometry has surface_relaxivity_t2, permeability, T2, or T1 set.
     """
-    gamma_dt = jnp.float32(GAMMA * dt)
-    dt_f32   = jnp.float32(dt)
-
-    # Optional per-compartment bulk properties (a Mesh may carry per-compartment D
-    # and/or T2). They are None for ordinary geometries, in which case the resolvers
-    # below collapse to the single-diffusivity / single-T2 scalars (identical path).
     # Optional per-compartment bulk properties (a Mesh may carry per-compartment D,
     # T2 and/or T1). None for ordinary geometries -> the resolvers collapse to the
     # single-diffusivity / single-T2 / single-T1 scalars (identical path).
@@ -366,6 +393,12 @@ def make_step_fn(geometry, diffusivity: float, dt: float, T2: float = None,
 
     _inv_T2 = jnp.float32(1.0 / T2) if T2 is not None else jnp.float32(0.0)
     _inv_T1 = jnp.float32(1.0 / T1) if T1 is not None else jnp.float32(0.0)
+
+    n_sub = resolve_sub_steps(geometry, float(_D0), dt, surface=has_surf, override=sub_steps)
+    _warn_if_step_outruns_the_lookup(geometry, float(_D0), dt, n_sub, 'walk')
+    dt_sub       = dt / n_sub
+    gamma_dt_sub = jnp.float32(GAMMA * dt_sub)
+    dt_sub_f32   = jnp.float32(dt_sub)
 
     def _step_l(r, dt_local):
         """Step length at r over dt_local — per-compartment D if present, else single."""
@@ -395,16 +428,7 @@ def make_step_fn(geometry, diffusivity: float, dt: float, T2: float = None,
                         if has_surf else jnp.float32(0.0))
         permeate = geometry.permeate
 
-        # Membrane crossing is step-size sensitive (over-permeates at coarse
-        # steps), so sub-step the permeable walk to step_l ≈ R/25 even when the
-        # waveform dt is large.  Phase + relaxation accumulate per fine sub-step
-        # (more accurate than one big step); G is held fixed across the group.
-        n_sub        = sub_steps if sub_steps else permeable_sub_steps(geometry, float(_D0), dt)
-        _warn_if_step_outruns_the_lookup(geometry, float(_D0), dt, n_sub, 'permeable walk')
-        dt_sub       = dt / n_sub
-        gamma_dt_sub = jnp.float32(GAMMA * dt_sub)
-        dt_sub_f32   = jnp.float32(dt_sub)
-
+        # Phase + relaxation accumulate per fine sub-step; G is held fixed across the group.
         def step_fn(carry, inputs):
             g_t, chi_t = inputs
 
@@ -440,16 +464,7 @@ def make_step_fn(geometry, diffusivity: float, dt: float, T2: float = None,
             return rho_nom / Dc
 
         # Surface relaxivity accrues via the boundary local time (accumulated reflection
-        # overshoot). A single coarse step under-counts grazing wall contact, so sub-step
-        # to step_l ~ pore/8 (the extra-axonal pore, coarser than permeability's R/25 since
-        # the confined intra lumen is already exact). n_sub -> 1 once dt already resolves it;
-        # phase / T2 / local-time accumulate per fine sub-step.
-        n_sub        = sub_steps if sub_steps else surface_sub_steps(geometry, float(_D0), dt)
-        _warn_if_step_outruns_the_lookup(geometry, float(_D0), dt, n_sub, 'surface walk')
-        dt_sub       = dt / n_sub
-        gamma_dt_sub = jnp.float32(GAMMA * dt_sub)
-        dt_sub_f32   = jnp.float32(dt_sub)
-
+        # overshoot); phase / T2 / local time accumulate per fine sub-step.
         def step_fn(carry, inputs):
             g_t, chi_t = inputs
 
@@ -477,19 +492,6 @@ def make_step_fn(geometry, diffusivity: float, dt: float, T2: float = None,
         # No surface relaxation, no permeability — but T2/T1 (incl. per-compartment)
         # require the log_weight carry.
         reflect = geometry.reflect
-        # Sub-step so a displacement cannot outrun the collision candidate lookup (see
-        # collision_sub_steps). Without it a step spanning several grid cells crosses triangles that were
-        # never candidates and the walker leaves an impermeable mesh silently.
-        # `walk_sub_steps`, NOT `collision_sub_steps`. The collision criterion is keyed to `cell_size` and
-        # so returns 1 for every ANALYTIC geometry, meaning a fused impermeable Sphere/Cylinder/PackedSpheres
-        # /Box1D walk did not sub-step at all -- while the permeable branch used R/25 and the replay backend
-        # used R/6 for the same substrate. Measured on PackedSpheres R=5 um: fused 0.02857 vs replay 0.01975
-        # at b=2000, a 0.0088 gap against 0.0004 for the permeable cases. `walk_sub_steps` delegates to the
-        # collision rule for a mesh and applies R/6 for an analytic pore, which is what both other paths use.
-        n_col = sub_steps if sub_steps else walk_sub_steps(geometry, float(_D0), dt)
-        _warn_if_step_outruns_the_lookup(geometry, float(_D0), dt, n_col, 'mesh walk')
-        dt_col = jnp.float32(dt / n_col)
-        gamma_dt_col = jnp.float32(GAMMA * dt / n_col)
 
         def step_fn(carry, inputs):
             g_t, chi_t = inputs
@@ -499,35 +501,23 @@ def make_step_fn(geometry, diffusivity: float, dt: float, T2: float = None,
                 key, subkey = jax.random.split(key)
                 noise = jax.random.normal(subkey, (3,), dtype=jnp.float32)
                 unit_noise = noise / jnp.linalg.norm(noise)
-                step = unit_noise * _step_l(r, dt_col)
+                step = unit_noise * _step_l(r, dt_sub_f32)
                 r_new = reflect(r, step)
                 dlog = jnp.float32(0.0)
                 if has_t2:
-                    dlog = dlog - _t2_decrement(r_new, dt_col) * chi_t
+                    dlog = dlog - _t2_decrement(r_new, dt_sub_f32) * chi_t
                 if has_t1:
-                    dlog = dlog - _t1_decrement(r_new, dt_col) * (jnp.float32(1.0) - chi_t)
-                return (r_new, phi + gamma_dt_col * jnp.dot(g_t, r_new),
+                    dlog = dlog - _t1_decrement(r_new, dt_sub_f32) * (jnp.float32(1.0) - chi_t)
+                return (r_new, phi + gamma_dt_sub * jnp.dot(g_t, r_new),
                         log_weight + dlog, key), None
 
-            carry_out, _ = jax.lax.scan(_sub, carry, None, length=n_col)
+            carry_out, _ = jax.lax.scan(_sub, carry, None, length=n_sub)
             return carry_out, None
 
     else:
         # No weight at all. (A Mesh with only per-compartment D lands here — the
         # step length is still resolved per compartment via _step_l.)
         reflect = geometry.reflect
-        # Same collision-lookup constraint as the branch above: a step longer than a grid cell can cross a
-        # triangle that was never a candidate, and the walker leaves an impermeable mesh with nothing raised.
-        # `walk_sub_steps`, NOT `collision_sub_steps`. The collision criterion is keyed to `cell_size` and
-        # so returns 1 for every ANALYTIC geometry, meaning a fused impermeable Sphere/Cylinder/PackedSpheres
-        # /Box1D walk did not sub-step at all -- while the permeable branch used R/25 and the replay backend
-        # used R/6 for the same substrate. Measured on PackedSpheres R=5 um: fused 0.02857 vs replay 0.01975
-        # at b=2000, a 0.0088 gap against 0.0004 for the permeable cases. `walk_sub_steps` delegates to the
-        # collision rule for a mesh and applies R/6 for an analytic pore, which is what both other paths use.
-        n_col = sub_steps if sub_steps else walk_sub_steps(geometry, float(_D0), dt)
-        _warn_if_step_outruns_the_lookup(geometry, float(_D0), dt, n_col, 'mesh walk')
-        dt_col = jnp.float32(dt / n_col)
-        gamma_dt_col = jnp.float32(GAMMA * dt / n_col)
 
         def step_fn(carry, inputs):
             g_t, _chi_t = inputs
@@ -537,13 +527,14 @@ def make_step_fn(geometry, diffusivity: float, dt: float, T2: float = None,
                 key, subkey = jax.random.split(key)
                 noise = jax.random.normal(subkey, (3,), dtype=jnp.float32)
                 unit_noise = noise / jnp.linalg.norm(noise)
-                step = unit_noise * _step_l(r, dt_col)
+                step = unit_noise * _step_l(r, dt_sub_f32)
                 r_new = reflect(r, step)
-                return (r_new, phi + gamma_dt_col * jnp.dot(g_t, r_new), key), None
+                return (r_new, phi + gamma_dt_sub * jnp.dot(g_t, r_new), key), None
 
-            carry_out, _ = jax.lax.scan(_sub, carry, None, length=n_col)
+            carry_out, _ = jax.lax.scan(_sub, carry, None, length=n_sub)
             return carry_out, None
 
+    step_fn.n_sub = n_sub
     return step_fn, has_weight
 
 
@@ -1135,17 +1126,12 @@ def make_packed_myelin_step_fn(geometry, dt: float, T1: float = None):
     rho_i = float(np.max(np.asarray(geometry._rho_inner_jax)))
     rho_o = float(np.max(np.asarray(geometry._rho_outer_jax)))
     rho = max(rho_i, rho_o)
-    # Surface relaxivity accumulates the boundary local time (wall-contact overshoot); a
-    # single coarse step under-counts grazing contact for the fast extra-axonal walkers, so
-    # sub-step to the extra-axonal pore scale (step_l ~ pore/8; n_sub -> 1 once the waveform
-    # dt already resolves it). Phase / T2 / local-time accumulate per fine sub-step.
+    # Phase / T2 / local time accumulate per fine sub-step.
+    D_ref = float(max(np.max(np.asarray(geometry._D_intra_jax)),
+                      np.max(np.asarray(geometry._D_extra_jax))))
     if rho > 0.0:
-        D_ref = float(max(np.max(np.asarray(geometry._D_intra_jax)),
-                          np.max(np.asarray(geometry._D_extra_jax))))
         rho_over_D = jnp.float32(rho / D_ref)
-        n_sub = surface_sub_steps(geometry, D_ref, dt)
-    else:
-        n_sub = 1
+    n_sub = resolve_sub_steps(geometry, D_ref, dt, surface=rho > 0.0)
     dt_sub = dt / n_sub
     traj_step = make_packed_myelin_traj_step_fn(geometry, dt_sub)
     gamma_dt_sub = jnp.float32(GAMMA * dt_sub)
@@ -1183,4 +1169,5 @@ def make_packed_myelin_step_fn(geometry, dt: float, T1: float = None):
         carry_out, _ = jax.lax.scan(_sub, carry, None, length=n_sub)
         return carry_out, None
 
+    step_fn.n_sub = n_sub
     return step_fn
