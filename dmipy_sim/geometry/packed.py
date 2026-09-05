@@ -9,7 +9,7 @@ import numpy as np
 
 from ._boundary import (keep_side_radial, ray_sphere_t, specular,
                         transmit_probability, off_wall, step_off_wall)
-from .base import Geometry, _rotation_to_z
+from .base import Geometry, LengthScales, _rotation_to_z
 
 
 class PackedCylinders(Geometry):
@@ -117,6 +117,10 @@ class PackedCylinders(Geometry):
         self._nudge      = jnp.float32(1e-4 * min_r)
 
         self.min_gap = self._compute_min_gap(centers, radii, float(L))
+
+    @property
+    def length_scales(self):
+        return LengthScales(min_feature=float(np.min(self._radii_np)), min_gap=self.min_gap)
 
     @staticmethod
     def _compute_min_gap(centers, radii, L):
@@ -534,6 +538,10 @@ class PackedSpheres(Geometry):
         self._nudge      = jnp.float32(1e-4 * min_r)
 
         self.min_gap = self._compute_min_gap(centers, radii, float(L))
+
+    @property
+    def length_scales(self):
+        return LengthScales(min_feature=float(np.min(self._radii_np)), min_gap=self.min_gap)
 
     @staticmethod
     def _compute_min_gap(centers, radii, L):

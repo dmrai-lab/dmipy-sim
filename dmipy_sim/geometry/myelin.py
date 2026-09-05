@@ -8,7 +8,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from ._boundary import keep_side_radial, specular, off_wall, step_off_wall
-from .base import Geometry, _rotation_to_z
+from .base import Geometry, LengthScales, _rotation_to_z
 
 
 class MyelinatedCylinder(Geometry):
@@ -60,6 +60,10 @@ class MyelinatedCylinder(Geometry):
 
     # Marker: this geometry provides its own step function (not make_step_fn)
     _is_myelinated = True
+
+    @property
+    def length_scales(self):
+        return LengthScales(min_feature=self.inner_radius)
 
     def __init__(self, inner_radius, outer_radius, orientation,
                  D_intra, D_extra, D_myelin=0.0,
@@ -292,7 +296,7 @@ class MyelinatedCylinder(Geometry):
                 f"compartment must be 'intra', 'myelin', or 'extra'; got {compartment!r}")
 
 
-class PackedMyelinatedCylinders:
+class PackedMyelinatedCylinders(Geometry):
     """Periodic RVE with N_actual myelinated cylinders — three-compartment.
 
     Combines ``PackedCylinders`` (periodic, multi-cylinder substrate) with
@@ -344,6 +348,20 @@ class PackedMyelinatedCylinders:
     """
 
     _is_packed_myelinated = True
+
+    @property
+    def length_scales(self):
+        """Smallest lumen for the step rules; the extra-axonal pore ``A_ext / P_ext`` for the
+        surface-relaxivity rule, since that is the pore the fast, grazing extra-axonal walkers
+        occupy."""
+        N = self.N_actual
+        inner = self._inner_radii_np[:N]; outer = self._outer_radii_np[:N]
+        area_ext = self._L_float ** 2 - float(np.sum(np.pi * outer ** 2))
+        perim = float(np.sum(2.0 * np.pi * outer))
+        pore = area_ext / perim if (perim > 0 and area_ext > 0) else None
+        nz = inner[inner > 0]
+        return LengthScales(min_feature=float(np.min(nz)) if nz.size else None,
+                            surface_pore=pore, min_gap=self.min_gap)
 
     def __init__(
         self,
@@ -647,6 +665,21 @@ class PackedMyelinatedCylinders:
 
         self._init_compartments = jnp.array(compartments, dtype=jnp.int32)
         return jnp.array(r_lab, dtype=jnp.float32)
+
+    def classify_position(self, r: jnp.ndarray) -> jnp.ndarray:
+        """Encoded compartment id from position: 0 = extra, ``k+1`` = lumen of axon ``k``,
+        ``N_max+k+1`` = sheath of axon ``k`` (minimum image in the periodic cell)."""
+        L = self._L_jax
+        r_c = r if self._is_identity_rotation else self._R @ r
+        q = r_c[None, :2] - self._centers_jax                          # (N_max, 2)
+        q = q - L * jnp.floor(q / L + jnp.float32(0.5))
+        d2 = jnp.sum(q * q, axis=1)
+        k = jnp.argmin(jnp.where(self._outer_radii_jax > 0, d2, jnp.inf)).astype(jnp.int32)
+        in_lumen = d2[k] < self._inner_radii_jax[k] ** 2
+        in_sheath = (~in_lumen) & (d2[k] < self._outer_radii_jax[k] ** 2)
+        return jnp.where(in_lumen, k + jnp.int32(1),
+                         jnp.where(in_sheath, jnp.int32(self.N_max) + k + jnp.int32(1),
+                                   jnp.int32(0)))
 
     def reflect(self, r, step):
         """Not a usable boundary rule for this geometry -- raises.

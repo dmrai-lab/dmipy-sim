@@ -106,8 +106,15 @@ acquisition; assert to `max(0.02, 1/√N)`.
 
 ## Geometry contract (duck-typed by `simulate`/`make_step_fn`)
 
-A geometry provides `init_positions(n, key)`, `classify_position(r)` (compartment tag),
-a `radius`/feature scale for the sub-step auto-tune, and **one wall interaction**:
+A geometry subclasses `geometry.base.Geometry` and provides `init_positions(n, key)`,
+`classify_position(r)` (compartment tag), `length_scales` (a `LengthScales` tuple:
+`min_feature`, `surface_pore`, `lookup_cell`, `is_mesh_feature`, `min_gap` — what the sub-step
+rules divide; read it via `physics.length_scales_of`, never by probing `radius`/`cell_size`),
+and **one wall interaction**. Capability flags (`supports_permeability`, `carries_side`,
+`classify_returns_object_id`, …) and wall/bulk attributes (`permeability`,
+`surface_relaxivity_t2`, `_orient_R`, per-compartment `_D_comp_jax`…) are declared on the base
+class with defaults, so the engine reads them directly; `tests/test_api_surface.py` fails on any
+new `getattr(geometry, …)` probe.
 
 ```python
 hit = geom.interact(r, step, kappa_over_D=0.0, rho_over_D=0.0, key=None, side=None)

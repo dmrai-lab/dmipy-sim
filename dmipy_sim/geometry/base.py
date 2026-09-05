@@ -4,11 +4,44 @@ Holds the ABC every geometry implements, the two geometries with no curved wall
 (free diffusion, a 1-D box), and the frame helpers shared across the package.
 """
 from abc import ABC, abstractmethod
+from typing import NamedTuple, Optional
 
 from ._boundary import WallHit
 import jax
 import jax.numpy as jnp
 import numpy as np
+
+
+class LengthScales(NamedTuple):
+    """The length scales the engine sizes a walk against, declared once per geometry.
+
+    Attributes
+    ----------
+    min_feature : float or None
+        The smallest confining scale a step must not skip: a pore radius, a slab width, the
+        smallest object in a packing. The R/6 (reflection), R/25 (membrane crossing) and R/8
+        (surface local time) sub-step rules divide this. ``None`` for an unbounded walk.
+    surface_pore : float or None
+        The pore the relaxing walkers occupy, for the surface-relaxivity sub-step rule, where
+        it differs from ``min_feature`` (a packed substrate's extra-axonal pore, ~1/(S_ext/V)).
+        ``None`` means "same as ``min_feature``".
+    lookup_cell : float or None
+        The collision-lookup cell of a spatially indexed geometry (triangle mesh, segment grid).
+        A sub-step longer than this outruns the candidate gather and misses walls, so it bounds
+        the step independently of any pore size. ``None`` when there is no spatial index.
+    is_mesh_feature : bool
+        True when ``min_feature`` is a meshing parameter (a ``feature_radius``) rather than a
+        physical pore, so the pore-based rules do not apply to it (see
+        :func:`~dmipy_sim.physics.walk_sub_steps`).
+    min_gap : float or None
+        The narrowest clearance between two objects of a packing, periodic images included.
+        Declared for the packed geometries; not yet consumed by the sub-step rules.
+    """
+    min_feature: Optional[float] = None
+    surface_pore: Optional[float] = None
+    lookup_cell: Optional[float] = None
+    is_mesh_feature: bool = False
+    min_gap: Optional[float] = None
 
 
 def initial_positions(geometry, n_walkers, key, r0=None):
@@ -34,9 +67,24 @@ def initial_positions(geometry, n_walkers, key, r0=None):
 
 
 class Geometry(ABC):
+    """A substrate the walk moves through: where a walker may be and what a wall does to it.
+
+    Every property the engine reads is declared here with its default, so a geometry that lacks
+    a capability inherits the default and a misspelt attribute raises rather than being read as
+    absent. Subclasses implement :meth:`init_positions`, :meth:`reflect`, :attr:`length_scales`
+    and, where they have compartments, :meth:`classify_position`.
+    """
+
     @abstractmethod
     def init_positions(self, n_walkers: int, key: jax.Array) -> jnp.ndarray:
         """Return initial walker positions of shape (n_walkers, 3), float32."""
+
+    @property
+    @abstractmethod
+    def length_scales(self) -> LengthScales:
+        """The scales the walk is sized against -- see :class:`LengthScales`."""
+
+    # ---- capability flags (class attributes; a subclass overrides what it supports) ----
 
     #: Does this geometry have a membrane a walker can cross? Absence of a `permeate`
     #: method used to be the signal, which meant "cannot cross" and "not implemented yet"
@@ -46,6 +94,59 @@ class Geometry(ABC):
     #: Does `permeate` accept a carried `side` (the walker's own compartment)? Only the
     #: geometries where a position alone cannot decide sidedness need it -- see #86.
     carries_side = False
+
+    #: Stepped by the dedicated three-compartment kernel `physics.make_myelin_step_fn`
+    #: (`MyelinatedCylinder`) rather than by `reflect`.
+    _is_myelinated = False
+
+    #: Stepped by `physics.make_packed_myelin_traj_step_fn` / `make_packed_myelin_step_fn`.
+    _is_packed_myelinated = False
+
+    #: `classify_position` returns an OBJECT id (0 = extra, 1..N = the object the walker is
+    #: in) rather than a pool id. `core.simulate_trajectories` collapses it to two pools.
+    classify_returns_object_id = False
+
+    #: `length_scales.min_feature` is a meshing parameter, not a pore (mirrors the field on
+    #: `LengthScales`).
+    radius_is_mesh_feature = False
+
+    # ---- wall / bulk properties (instance attributes; None = not set) ----
+
+    #: Membrane permeability kappa (m/s), or None for a reflecting wall.
+    permeability = None
+    #: Transverse surface relaxivity rho (m/s), or None.
+    surface_relaxivity_t2 = None
+    #: Per-geometry override of the surface-relaxivity sub-step target `pore / frac`;
+    #: 0 or a negative value disables surface sub-stepping (see `physics.surface_sub_steps`).
+    surface_substep_frac = None
+    #: Acquisition rotation (geometry frame -> lab, 3x3) applied to G by the engine, or None.
+    _orient_R = None
+    #: Per-compartment bulk properties resolved per step by `physics.make_step_fn`
+    #: (a Mesh with `intra=`/`extra=` dicts); None -> the scalar path.
+    _D_comp_jax = None
+    _inv_T2_comp_jax = None
+    _inv_T1_comp_jax = None
+    _D_comp_max = None
+    _T2_comp = None
+    _T1_comp = None
+
+    # ---- compartment labelling ----
+
+    def classify_position(self, r) -> jnp.ndarray:
+        """Compartment id (int32) of position ``r``. The default is a single pool, id 0."""
+        return jnp.int32(0)
+
+    def classify_position_carry(self, r, comp_prev):
+        """Compartment label given the previous one; by default re-derived from ``r``.
+
+        A geometry whose classifier can be undecidable at some positions overrides this to keep
+        ``comp_prev`` there.
+        """
+        return self.classify_position(r)
+
+    def classify_positions_exact(self, pts):
+        """Exact labels for a batch of host-side points; the default vmaps `classify_position`."""
+        return jax.vmap(self.classify_position)(jnp.asarray(pts, jnp.float32))
 
     def interact(self, r, step, *, kappa_over_D=0.0, rho_over_D=0.0,
                  key=None, side=None):
@@ -119,6 +220,10 @@ class Geometry(ABC):
 class FreeDiffusion(Geometry):
     """Unbounded free diffusion — walkers move without any reflection."""
 
+    @property
+    def length_scales(self):
+        return LengthScales()               # nothing to resolve
+
     def init_positions(self, n_walkers, key):
         return jnp.zeros((n_walkers, 3), dtype=jnp.float32)
 
@@ -152,6 +257,10 @@ class Box1D(Geometry):
         self.surface_relaxivity_t2 = (
             float(surface_relaxivity_t2) if surface_relaxivity_t2 is not None else None
         )
+
+    @property
+    def length_scales(self):
+        return LengthScales(min_feature=self.length)     # a slab confines over its width
 
     def volume(self) -> float:
         """Volume per unit cross-section area = slab thickness (m)."""

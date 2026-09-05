@@ -47,7 +47,7 @@ import jax.numpy as jnp
 from ._boundary import specular, transmit_probability, off_wall
 import numpy as np
 
-from .base import Geometry
+from .base import Geometry, LengthScales
 
 # Above this median-edge / feature-radius ratio the surface is too coarsely
 # tessellated for membrane permeability to reach the MC noise floor (its faceting
@@ -647,6 +647,12 @@ class Mesh(Geometry):
         self._A = _MeshArrays(NRM=self._NRM, CENT=self._CENT, CELL=self._CELL,
                               dims_arr=self._dims_arr, GMIN=self._GMIN, CS=self._CS,
                               VMIN=self._VMIN, L=self._L, PER=self._PER, OFF=self._OFF)
+
+    @property
+    def length_scales(self):
+        # `feature_radius` is a meshing parameter; the collision-lookup cell bounds a mesh step.
+        return LengthScales(min_feature=self.radius, lookup_cell=self.cell_size,
+                            is_mesh_feature=True)
 
     # ------------------------------------------------------------------
     def _wrap(self, r):

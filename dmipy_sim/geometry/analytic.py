@@ -10,7 +10,7 @@ import numpy as np
 from ._boundary import (bounce_loop, keep_side_radial, keep_side_planar, keep_side_quadric,
                         ray_sphere_t, ray_quadric_t, specular,
                         transmit_probability, off_wall, step_off_wall)
-from .base import Geometry, _rotation_to_z
+from .base import Geometry, LengthScales, _rotation_to_z
 
 
 class Sphere(Geometry):
@@ -45,6 +45,10 @@ class Sphere(Geometry):
         self.permeability = (
             float(permeability) if permeability is not None else None
         )
+
+    @property
+    def length_scales(self):
+        return LengthScales(min_feature=self.radius)
 
     def volume(self) -> float:
         """Volume of the sphere: (4/3)·π·R³ (m³)."""
@@ -194,6 +198,10 @@ class Cylinder(Geometry):
         self.permeability = (
             float(permeability) if permeability is not None else None
         )
+
+    @property
+    def length_scales(self):
+        return LengthScales(min_feature=self.radius)
 
     def init_positions(self, n_walkers, key):
         """Uniform sampling in circular cross-section."""
@@ -368,6 +376,10 @@ class Ellipsoid(Geometry):
         self.permeability = (
             float(permeability) if permeability is not None else None
         )
+
+    @property
+    def length_scales(self):
+        return LengthScales(min_feature=float(np.min(self.semiaxes)))   # the tightest semi-axis
 
     def init_positions(self, n_walkers, key):
         """Uniform sampling inside ellipsoid.
@@ -664,8 +676,11 @@ class PermeableSlab1D(Geometry):
         self.permeability = float(permeability)
         self.surface_relaxivity_t2 = (float(surface_relaxivity_t2)
                                       if surface_relaxivity_t2 is not None else None)
-        # length scale for permeable_sub_steps (resolve the membrane crossing)
-        self.radius = float(length) / 2.0
+        self.radius = float(length) / 2.0     # one compartment's width
+
+    @property
+    def length_scales(self):
+        return LengthScales(min_feature=self.length / 2.0)     # one compartment's width
 
     def volume(self) -> float:
         return self.length / 2.0          # per compartment (V/S -> tau = L/(2 kappa) one-sided)
@@ -752,9 +767,13 @@ class PermeableShell(Geometry):
         self.kind = kind
         self.surface_relaxivity_t2 = (float(surface_relaxivity_t2)
                                       if surface_relaxivity_t2 is not None else None)
-        self.radius = float(r_inner)          # sub-step length scale
+        self.radius = float(r_inner)
         o = np.asarray(orientation, dtype=np.float64); self._o = o / np.linalg.norm(o)
         self._axis = jnp.array(self._o, dtype=jnp.float32)
+
+    @property
+    def length_scales(self):
+        return LengthScales(min_feature=self.r_inner)
 
     def _radial(self, r):
         """Radial vector used for the membranes (full r for sphere, perpendicular for cyl)."""

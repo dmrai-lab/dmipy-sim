@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import numpy as np
 
+from .geometry.base import Geometry
+
 # comp ids (match the packed-myelin convention: 0=extra, 1=intra, 2=myelin)
 EXTRA, INTRA, MYELIN = 0, 1, 2
 
@@ -134,7 +136,7 @@ def _shell_seeds(mesh_out, mesh_in, box_min, box_max, n, seed):
     return np.vstack(keep)[:n]
 
 
-class BoxedMesh:
+class BoxedMesh(Geometry):
     """A :class:`dmipy_sim.mesh.Mesh` wrapped in REFLECTING voxel walls.
 
     CACTUS bundles are finite and non-periodic, so an extra-axonal walker would simply leave the box, and the
@@ -149,11 +151,17 @@ class BoxedMesh:
         self.mesh = mesh
         self._lo = jnp.asarray(box_min, jnp.float32)
         self._hi = jnp.asarray(box_max, jnp.float32)
-        self.radius = mesh.radius                       # the sub-step auto-tune reads this
-        self.cell_size = getattr(mesh, "cell_size", None)   # ...and collision_sub_steps reads this
+        self.radius = mesh.radius
+        self.cell_size = mesh.cell_size
         self.permeability = mesh.permeability
         self.surface_relaxivity_t2 = mesh.surface_relaxivity_t2
         self.reject_escape = True
+
+    @property
+    def length_scales(self):
+        return self.mesh.length_scales              # the box adds no scale of its own
+
+    radius_is_mesh_feature = True
 
     def _mirror(self, r):
         """Raw specular mirror of a position back into the box."""

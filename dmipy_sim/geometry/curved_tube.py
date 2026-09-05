@@ -24,7 +24,7 @@ import jax.numpy as jnp
 from ._boundary import keep_side_radial, ray_quadric_t, specular, off_wall
 import numpy as np
 
-from .base import Geometry
+from .base import Geometry, LengthScales
 
 
 class CurvedTube(Geometry):
@@ -41,6 +41,10 @@ class CurvedTube(Geometry):
         seglen2 = np.maximum(((B - A) ** 2).sum(1), 1e-30)
         self._AB2 = jnp.asarray(seglen2, jnp.float32)    # (M,)
         self._seglen = np.sqrt(seglen2)
+
+    @property
+    def length_scales(self):
+        return LengthScales(min_feature=self.radius)
 
     # ---- containment / geometry ----
     def _nearest(self, r):
@@ -231,6 +235,11 @@ class PackedCurvedTubes(Geometry):
         cand = self._CELL[cids].reshape(-1)
         valid = cand >= 0
         return jnp.where(valid, cand, 0), valid
+
+    @property
+    def length_scales(self):
+        # a real tube radius (the R/6 rule applies) and a segment grid (the lookup rule applies)
+        return LengthScales(min_feature=self._Rmin, lookup_cell=self.cell_size)
 
     def inside_any(self, P, chunk=50000):
         """(n,3) → (n,) bool: is each point inside ANY tube (dist-to-segment < r_out)?
