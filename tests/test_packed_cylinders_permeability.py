@@ -37,7 +37,7 @@ import numpy.testing as npt
 from dmipy_sim import simulate, PackedCylinders, Cylinder, set_b
 from dmipy_sim.waveforms import pgse
 
-from tests.conftest import D, N_WALKERS, SEED
+from tests.conftest import D, N_WALKERS, N_EXACT, SEED
 
 R          = 5e-6    # m
 L          = 20e-6   # m
@@ -97,8 +97,9 @@ def test_permeability_none_matches_impermeable():
         L=L,
         orientation=[0., 0., 1.],
     )
-    S_default  = simulate(N_WALKERS, D, wf, geom_default,  seed=SEED)
-    S_explicit = simulate(N_WALKERS, D, wf, geom_explicit, seed=SEED)
+    # exact-equality assertion -> scale-free; see N_EXACT in conftest (#93)
+    S_default  = simulate(N_EXACT, D, wf, geom_default,  seed=SEED)
+    S_explicit = simulate(N_EXACT, D, wf, geom_explicit, seed=SEED)
     npt.assert_array_equal(S_default, S_explicit,
         err_msg="permeability=None must give identical signal to default")
 

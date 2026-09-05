@@ -38,6 +38,18 @@ D = 2e-9          # m²/s
 N_WALKERS = 100_000   # overridden to 1_000_000 when --heavy is passed
 SEED = 123
 
+# For assertions that are EXACT equality (npt.assert_array_equal), not a statistical comparison.
+# Those tests check that two code paths which must be identical -- `permeability=None` vs the
+# default, `T2=None` vs omitting the kwarg -- produce bit-identical output. Given a fixed seed the
+# walk is deterministic, so if the paths agree, every N passes; if they diverge, the divergence is
+# deterministic too and shows in the walkers that reach the branch. There is no sampling error to
+# average down, so a statistical N buys nothing and costs two full-size walks per test.
+#
+# 5,000 is not a new judgement: tests/test_permeability_crossing.py already runs exactly this
+# assertion at N_ORDINAL = 5_000. This makes the other copies consistent with it. Deliberately NOT
+# scaled by --heavy -- a bigger N cannot make an exact equality any more exact.
+N_EXACT = 5_000
+
 def pytest_addoption(parser):
     parser.addoption(
         "--heavy",

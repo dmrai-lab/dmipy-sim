@@ -36,7 +36,7 @@ import numpy.testing as npt
 from dmipy_sim import simulate, Ellipsoid, set_b
 from dmipy_sim.waveforms import pgse
 
-from tests.conftest import D, N_WALKERS, SEED
+from tests.conftest import D, N_WALKERS, N_EXACT, SEED
 
 A          = 3e-6   # m  — short semi-axis
 C_AXIS     = 9e-6   # m  — long semi-axis
@@ -81,8 +81,9 @@ def test_permeability_none_matches_impermeable():
     wf           = _pgse_wf(100e-3)
     geom_default = Ellipsoid(semiaxes=SEMIAXES)
     geom_none    = Ellipsoid(semiaxes=SEMIAXES, permeability=None)
-    S_default    = simulate(N_WALKERS, D, wf, geom_default, seed=SEED)
-    S_none       = simulate(N_WALKERS, D, wf, geom_none,    seed=SEED)
+    # exact-equality assertion -> scale-free; see N_EXACT in conftest (#93)
+    S_default    = simulate(N_EXACT, D, wf, geom_default, seed=SEED)
+    S_none       = simulate(N_EXACT, D, wf, geom_none,    seed=SEED)
     npt.assert_array_equal(S_default, S_none,
         err_msg="permeability=None must give identical signal to default")
 

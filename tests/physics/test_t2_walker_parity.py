@@ -17,6 +17,7 @@ from dmipy_sim.waveforms import pgse
 # ── Simulation constants ────────────────────────────────────────────────────
 D         = 2e-9          # m²/s — standard test value
 N_WALKERS = 100_000
+from tests.conftest import N_EXACT   # scale-free size for exact-equality assertions (#93)
 SEED      = 42
 T2        = 80e-3         # 80 ms — realistic white matter value
 
@@ -48,8 +49,9 @@ def test_t2_walker_matches_analytical():
 def test_no_t2_unaffected():
     """Omitting T2 must give the same result as simulate() without the kwarg."""
     wf = _make_waveform(np.array([1e9]))
-    S_plain = simulate(N_WALKERS, D, wf, FreeDiffusion(), seed=SEED)
-    S_none  = simulate(N_WALKERS, D, wf, FreeDiffusion(), seed=SEED, T2=None)
+    # exact-equality assertion -> scale-free; see N_EXACT in conftest (#93)
+    S_plain = simulate(N_EXACT, D, wf, FreeDiffusion(), seed=SEED)
+    S_none  = simulate(N_EXACT, D, wf, FreeDiffusion(), seed=SEED, T2=None)
     npt.assert_array_equal(
         S_plain, S_none,
         err_msg="simulate(..., T2=None) must equal simulate() without the kwarg",

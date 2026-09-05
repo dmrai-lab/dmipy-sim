@@ -9,7 +9,7 @@ import numpy.testing as npt
 
 from dmipy_sim import simulate, FreeDiffusion, set_b
 from dmipy_sim.waveforms import pgse
-from .conftest import D, N_WALKERS, SEED
+from .conftest import D, N_WALKERS, N_EXACT, SEED
 
 
 def _waveform_b0(n_b=1):
@@ -80,7 +80,8 @@ def test_no_t2_unaffected():
     wf = set_b(pgse(delta=1e-3, DELTA=40e-3, G_magnitude=1.0,
                     bvecs=bvecs, n_t=500), b_values)
 
-    S1 = simulate(N_WALKERS, D, wf, FreeDiffusion(), seed=SEED)
-    S2 = simulate(N_WALKERS, D, wf, FreeDiffusion(), seed=SEED, T2=None)
+    # exact-equality assertion -> scale-free; see N_EXACT in conftest (#93)
+    S1 = simulate(N_EXACT, D, wf, FreeDiffusion(), seed=SEED)
+    S2 = simulate(N_EXACT, D, wf, FreeDiffusion(), seed=SEED, T2=None)
 
     npt.assert_array_equal(S1, S2)
