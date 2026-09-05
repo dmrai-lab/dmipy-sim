@@ -255,6 +255,18 @@ def _classify_arr(A, r):
     return jnp.where(inside, jnp.int32(0), jnp.int32(1))
 
 
+# Hoisted to MODULE scope on purpose. jax.jit caches compiled programs on the identity of the
+# function object it wraps, so a `jax.jit(...)` built inside a function body is a fresh object on
+# every call and can never hit that cache -- `classify_positions_exact` below rebuilt both of these
+# per call, recompiling every time. Both close over nothing (the mesh arrives as an argument, with
+# in_axes=None), so one shared program serves every Mesh; distinct `_A` shapes still retrace, which
+# is correct. jax.jit does no device work until called, so this costs nothing at import, and
+# jax.clear_caches() stays safe: it drops compiled code, not the wrapper (see gpu.py).
+_classify_batch = jax.jit(jax.vmap(_classify_arr, in_axes=(None, 0)))
+_populated_batch = jax.jit(jax.vmap(_gather_is_populated, in_axes=(None, 0)))
+
+
+
 class Mesh(Geometry):
     """Reflecting/permeable triangular-mesh geometry (see module docstring).
 
@@ -992,8 +1004,7 @@ class Mesh(Geometry):
             "misplaces walkers near a wall (measured 6.3% on a coarse closed cylinder). Cap the surface "
             "to get exact seeding.", stacklevel=2)
         want = 0 if intra else 1
-        classify = jax.jit(jax.vmap(_classify_arr, in_axes=(None, 0)))
-        populated = jax.jit(jax.vmap(_gather_is_populated, in_axes=(None, 0)))
+        classify, populated = _classify_batch, _populated_batch
         n_resolved = 0
         while need > 0:
             pts = rng.uniform(self.vmin, self.vmax, (max(need * 4, 1024), 3)).astype(np.float32)
@@ -1045,10 +1056,9 @@ class Mesh(Geometry):
     def classify_positions_exact(self, pts):
         """Initial labels, resolving undecidable points with exact parity (setup-time, host-side)."""
         pts = np.asarray(pts, float)
-        lab = np.array(jax.jit(jax.vmap(_classify_arr, in_axes=(None, 0)))(
-            self._A, jnp.asarray(pts, jnp.float32)))
-        undecided = ~np.asarray(jax.jit(jax.vmap(_gather_is_populated, in_axes=(None, 0)))(
-            self._A, jnp.asarray(pts, jnp.float32)))
+        jpts = jnp.asarray(pts, jnp.float32)
+        lab = np.array(_classify_batch(self._A, jpts))
+        undecided = ~np.asarray(_populated_batch(self._A, jpts))
         if undecided.any():
             from ..susceptibility_field import mesh_contains
             inside = mesh_contains(np.asarray(self.vertices, float),

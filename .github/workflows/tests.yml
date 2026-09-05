@@ -36,6 +36,24 @@ jobs:
           # goes unverified, so CI installs it even though [dev] deliberately does not.
           pip install -e ".[dev,interop]"
 
+      # The suite is COMPILE-bound, not compute-bound: every jax.jit in the package is built
+      # inside a function body over a fresh closure, so jit's in-memory cache can never hit
+      # and the same programs are recompiled all run (#91, #93). JAX's persistent cache keys
+      # on the HLO instead, and restoring it across runs is what makes that win real on CI:
+      # measured locally, the full fast tier went 1,030 s cold -> 670 s warm.
+      #
+      # The key carries the Python version and a hash of the sources that shape the compiled
+      # programs, so a change to the engine or geometries invalidates it rather than serving
+      # a stale executable. `restore-keys` lets an edited run start from the nearest previous
+      # cache and re-fill only what actually changed.
+      - name: Restore JAX compilation cache
+        uses: actions/cache@v4
+        with:
+          path: .jax_cache
+          key: jax-${{ matrix.python-version }}-${{ hashFiles('dmipy_sim/**/*.py') }}
+          restore-keys: |
+            jax-${{ matrix.python-version }}-
+
       - name: Run tests (CPU)
         run: |
           # GitHub runners have no GPU, so pin JAX to CPU and deselect the

@@ -30,16 +30,33 @@ L = 5.0e-6
 
 
 def _walk(geom, r, n_steps, seed=5):
+    """One isotropic fixed-length walk through `geom.permeate`, run entirely on device.
+
+    This was a Python loop: `n_steps` host-side numpy draws, each followed by a host->device
+    transfer and a separate dispatch -- 10,000 round trips for the longest walk here, which cost
+    far more than the physics. It is now one `lax.scan`, so the whole walk is a single dispatch.
+
+    The step law is unchanged (isotropic direction, fixed length STEP, same `permeate` call with
+    the same kappa/D and zero rho). What changes is the SOURCE of the random numbers -- numpy's
+    generator becomes JAX's -- so the specific realisation differs and the measured values in the
+    calibration note above were re-measured against it. That is a different sample of the same
+    process, not a different process.
+    """
     kod = jnp.float32(float(geom.permeability) / D)
-    f = jax.jit(jax.vmap(lambda p, s, k: geom.permeate(p, s, kod, jnp.float32(0.0), k)[0],
-                         in_axes=(0, 0, 0)))
-    rng = np.random.default_rng(seed)
     m = r.shape[0]
-    for i in range(n_steps):
-        d = rng.normal(size=(m, 3)); d /= np.linalg.norm(d, axis=1, keepdims=True)
-        r = f(r, jnp.asarray(d * STEP, jnp.float32),
-              jax.random.split(jax.random.PRNGKey(i), m))
-    return r
+
+    def body(pos, key):
+        k_dir, k_perm = jax.random.split(key)
+        d = jax.random.normal(k_dir, (m, 3), dtype=jnp.float32)
+        d = d / jnp.linalg.norm(d, axis=1, keepdims=True)
+        step = (d * jnp.float32(STEP)).astype(jnp.float32)
+        pos = jax.vmap(lambda p, s, k: geom.permeate(p, s, kod, jnp.float32(0.0), k)[0],
+                       in_axes=(0, 0, 0))(pos, step, jax.random.split(k_perm, m))
+        return pos, None
+
+    keys = jax.random.split(jax.random.PRNGKey(seed), n_steps)
+    r_final, _ = jax.lax.scan(body, r, keys)
+    return r_final
 
 
 # Calibrated, not assumed. The full exponential f_A = 1/2 + 1/2 exp(-4 kappa t / L) cannot
@@ -47,24 +64,45 @@ def _walk(geom, r, n_steps, seed=5):
 # and tau = L/(4 kappa) is then tens of ms while 10k sub-steps span 0.33 ms. So the check is
 # the SHORT-TIME limit of that same law, f_B -> 2 kappa T / L, which is where the walk is.
 #
-# Measured (6000 walkers, 10000 steps, L = 5 um):
+# Re-measured after the walk moved to lax.scan with JAX's RNG (6000 walkers, 10000 steps,
+# L = 5 um) -- same process, different realisation:
 #     kappa 0        f_B 0.00000   crossings   0
-#     kappa 2.5e-5   f_B 0.00367   theory 0.00333   ratio 1.10   crossings 22
-#     kappa 5.0e-5   f_B 0.00633   theory 0.00667   ratio 0.95   crossings 38
-# Ratio scatter is Poisson on those counts (~20%), so the band below is set from the data.
+#     kappa 2.5e-5   f_B 0.00383   theory 0.00333   ratio 1.15   crossings 23
+#     kappa 5.0e-5   f_B 0.00717   theory 0.00667   ratio 1.08   crossings 43
+# Ratio scatter is Poisson on those counts (~20%), so the band below is set from the data. A seed
+# sweep at kappa=2.5e-5 (seeds 5/11/23) gives 1.15 / 0.95 / 1.25 -- the band is comfortable, not
+# fitted to one lucky draw, and it is the SAME band the numpy-RNG version used.
 
 _T_STEP = STEP ** 2 / (6.0 * D)          # <r^2> = 6 D t for a fixed-length 3-D step
+
+
+# One walk per (kappa, n, n_steps), shared by every test that wants it. The rate test and the
+# linearity test below asked for the SAME two walks -- same kappas, walker count, step count and
+# seed -- and each ran them itself, so the module walked 6000 walkers x 10000 steps four times to
+# look at two results. Caching is not a statistical compromise here: the two tests were already
+# consuming identical samples, they just each paid to generate them. Assertions are untouched.
+#
+# Populated on first USE, never at import/collection (#91).
+_WALKS = {}
+
+
+def _slab_walk(kappa, n, n_steps, seed=5):
+    """(r0, final positions) for a PermeableSlab1D walk, computed once per distinct request."""
+    key = (kappa, n, n_steps, seed)
+    if key not in _WALKS:
+        geom = PermeableSlab1D(length=L, permeability=kappa)
+        r0 = geom.init_positions(n, jax.random.PRNGKey(0))
+        _WALKS[key] = (np.asarray(r0), np.asarray(_walk(geom, r0, n_steps, seed)))
+    return _WALKS[key]
 
 
 @pytest.mark.parametrize("kappa", [2.5e-5, 5.0e-5])
 def test_slab_crossing_rate_matches_short_time_exchange(kappa):
     """Crossing RATE against theory -- catches a sealed wall and a leaky one alike."""
     n, n_steps = 6000, 10000
-    geom = PermeableSlab1D(length=L, permeability=kappa)
-    r0 = geom.init_positions(n, jax.random.PRNGKey(0))      # all start in compartment A
-    assert float((np.asarray(r0)[:, 0] < L / 2).mean()) == 1.0
+    r0, rf = _slab_walk(kappa, n, n_steps)                  # all start in compartment A
+    assert float((r0[:, 0] < L / 2).mean()) == 1.0
 
-    rf = np.asarray(_walk(geom, r0, n_steps))
     f_B = float((rf[:, 0] >= L / 2).mean())
 
     T = n_steps * _T_STEP
@@ -85,9 +123,7 @@ def test_crossing_rate_is_linear_in_permeability():
     n, n_steps = 6000, 10000
     f = {}
     for kappa in (2.5e-5, 5.0e-5):
-        geom = PermeableSlab1D(length=L, permeability=kappa)
-        r0 = geom.init_positions(n, jax.random.PRNGKey(0))
-        rf = np.asarray(_walk(geom, r0, n_steps))
+        _r0, rf = _slab_walk(kappa, n, n_steps)             # the rate test's walks, reused
         f[kappa] = float((rf[:, 0] >= L / 2).mean())
     assert f[2.5e-5] > 0
     slope = f[5.0e-5] / f[2.5e-5]
@@ -97,9 +133,7 @@ def test_crossing_rate_is_linear_in_permeability():
 def test_impermeable_slab_is_exactly_conserved():
     """The same geometry at kappa = 0 must grant nothing -- the other end of the same rule."""
     n, n_steps = 4000, 6000
-    geom = PermeableSlab1D(length=L, permeability=0.0)
-    r0 = geom.init_positions(n, jax.random.PRNGKey(0))
-    rf = np.asarray(_walk(geom, r0, n_steps))
+    _r0, rf = _slab_walk(0.0, n, n_steps)
     assert float((rf[:, 0] < L / 2).mean()) == 1.0, "walkers crossed an impermeable membrane"
 
 
@@ -108,9 +142,7 @@ def test_crossing_count_rises_monotonically_with_permeability():
     n, n_steps = 3000, 4000
     fracs = []
     for kappa in (0.0, 1e-5, 5e-5, 2e-4):
-        geom = PermeableSlab1D(length=L, permeability=kappa)
-        r0 = geom.init_positions(n, jax.random.PRNGKey(0))
-        rf = np.asarray(_walk(geom, r0, n_steps))
+        _r0, rf = _slab_walk(kappa, n, n_steps)
         fracs.append(float((rf[:, 0] >= L / 2).mean()))     # fraction that reached B
     assert fracs[0] == 0.0, f"kappa=0 leaked: {fracs[0]}"
     assert all(b > a for a, b in zip(fracs, fracs[1:])), f"not monotonic in kappa: {fracs}"

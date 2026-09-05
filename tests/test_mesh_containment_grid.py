@@ -7,24 +7,39 @@ the ray-engine oracle, and to ANALYTIC truth where the oracle itself is unreliab
 """
 import numpy as np
 import pytest
-import trimesh
+
+# Guarded like every other mesh module in the suite: trimesh ships in the [dev] extra, but a
+# bare top-level import turns its absence into a COLLECTION ERROR, which pytest treats as fatal
+# and which therefore takes down the whole run -- not just this file. importorskip degrades to
+# a skip instead (#91).
+trimesh = pytest.importorskip("trimesh")
 
 from dmipy_sim.susceptibility_field import mesh_contains, mesh_contains_fast, mesh_inside
 
 
-def _prims():
-    return [
-        ("icosphere", trimesh.creation.icosphere(subdivisions=4, radius=1.0)),
-        ("box", trimesh.creation.box(extents=(1.0, 2.0, 3.0))),
-        ("torus", trimesh.creation.torus(major_radius=1.0, minor_radius=0.35)),
-        ("two_bodies", trimesh.util.concatenate([
-            trimesh.creation.icosphere(subdivisions=3).apply_translation([-1.2, 0, 0]),
-            trimesh.creation.icosphere(subdivisions=3).apply_translation([1.2, 0, 0])])),
-    ]
+# Built on FIRST USE, never at import/collection time. As a `parametrize` argument this ran at
+# collection -- and because the decorator called it twice (once for the params, once for the
+# ids) it built all four primitives TWICE, subdivision-4 icosphere included, before a single
+# test ran. Every pytest invocation paid that, including runs that deselect this module (#91).
+_PRIMS = {}
 
 
-@pytest.mark.parametrize("name,mesh", _prims(), ids=[n for n, _ in _prims()])
-def test_it_agrees_with_the_ray_engine_on_closed_primitives(name, mesh):
+def _prim(name):
+    if not _PRIMS:
+        _PRIMS.update({
+            "icosphere": trimesh.creation.icosphere(subdivisions=4, radius=1.0),
+            "box": trimesh.creation.box(extents=(1.0, 2.0, 3.0)),
+            "torus": trimesh.creation.torus(major_radius=1.0, minor_radius=0.35),
+            "two_bodies": trimesh.util.concatenate([
+                trimesh.creation.icosphere(subdivisions=3).apply_translation([-1.2, 0, 0]),
+                trimesh.creation.icosphere(subdivisions=3).apply_translation([1.2, 0, 0])]),
+        })
+    return _PRIMS[name]
+
+
+@pytest.mark.parametrize("name", ["icosphere", "box", "torus", "two_bodies"])
+def test_it_agrees_with_the_ray_engine_on_closed_primitives(name):
+    mesh = _prim(name)
     V = np.asarray(mesh.vertices, float)
     F = np.asarray(mesh.faces, np.int64)
     lo, hi = V.min(0) - 0.2, V.max(0) + 0.2
@@ -56,8 +71,23 @@ def test_it_has_no_false_outside_on_a_dense_multi_body_mesh():
     proposal gate, so any interior point it missed was never ray cast and stayed 'outside'. That
     seeded 3.8% of a nominally extra-axonal pool inside fibres. The grid path must never do it.
     """
+    # subdivisions=2, not 3. Measured: the reference (`trimesh.contains`) is 80.2 s of this
+    # test's 85 s at subdivisions=3 and 30.8 s at 2, while the code under test is 1.35 s and
+    # 0.22 s -- the third-party ray caster dominated a test that is not about it. Coarsening
+    # the spheres changes neither the arrangement nor the point count, and the flaw this
+    # test must keep detecting is still found 210 times (222 at subdivisions=3).
+    #
+    # Two cheaper ideas were tried and REJECTED, both because they removed the coverage:
+    #   * analytic ground truth (|p - centre| < inradius) instead of `trimesh.contains` --
+    #     the bodies OVERLAP, and `concatenate` does not boolean them, so ray parity counts
+    #     crossings through both surfaces and disagrees with an analytic union on 154 of
+    #     4000 points. Parity is the mesh's own semantics; the analytic union is not.
+    #   * non-overlapping lattice placement, to make those two agree -- then `mesh_inside`
+    #     stops missing interior points entirely and the test goes vacuous. The flaw needs a
+    #     point deep inside one body whose nearest facet belongs to a neighbour pointing the
+    #     other way, which only overlap produces.
     rng = np.random.default_rng(2)
-    parts = [trimesh.creation.icosphere(subdivisions=3, radius=0.30).apply_translation(c)
+    parts = [trimesh.creation.icosphere(subdivisions=2, radius=0.30).apply_translation(c)
              for c in rng.uniform(-1, 1, (40, 3))]
     m = trimesh.util.concatenate(parts)
     V = np.asarray(m.vertices, float); F = np.asarray(m.faces, np.int64)
@@ -67,7 +97,10 @@ def test_it_has_no_false_outside_on_a_dense_multi_body_mesh():
     false_outside = int((truth & ~fast).sum())
     assert false_outside == 0, f"{false_outside} genuinely-inside points reported outside"
     # and the fast heuristic really does have the flaw, so the test is not vacuous
-    assert int((truth & ~np.asarray(mesh_inside(V, F, pts))).sum()) > 0
+    missed = int((truth & ~np.asarray(mesh_inside(V, F, pts))).sum())
+    assert missed > 50, (
+        f"mesh_inside missed only {missed} interior points; this test detects the flaw by "
+        f"a wide margin (210 at these settings) or not meaningfully at all")
 
 
 def test_the_default_path_is_the_grid_and_trimesh_stays_reachable():

@@ -1,8 +1,35 @@
 """Shared test constants and fixture loader."""
 
+import os
+from pathlib import Path
+
 import numpy as np
 import pytest
-from pathlib import Path
+
+# ── Persistent XLA compilation cache ────────────────────────────────────────────────────
+# MUST be configured before anything triggers a JAX computation, hence the position here.
+#
+# Both test tiers are compile-bound, not compute-bound (#91, #93). Measured on one
+# `simulate_bloch` call, the cost is independent of problem size -- 400 walkers x 201 steps
+# takes 7.98 s while 25 walkers x 21 steps takes 5.09 s -- because every call re-traces and
+# recompiles. The cause is that every `jax.jit` in the package is built INSIDE a function
+# body over a fresh closure, so jit's in-memory cache keys on a new object each time and can
+# never hit.
+#
+# The persistent cache keys on the HLO instead of the Python object, so it hits anyway:
+#
+#     repeat call, same process     7.9 s -> 1.6 s   (5x)
+#     first call, NEW process      21.1 s -> 7.8 s   (2.7x, cache warm on disk)
+#
+# Set DMIPY_JAX_CACHE=0 to disable, or DMIPY_JAX_CACHE=<dir> to relocate it. CI can persist
+# the directory between runs to get the cross-process win on the first test too.
+_cache = os.environ.get("DMIPY_JAX_CACHE", "")
+if _cache != "0":
+    import jax
+    _dir = _cache or str(Path(__file__).parent.parent / ".jax_cache")
+    jax.config.update("jax_compilation_cache_dir", _dir)
+    jax.config.update("jax_persistent_cache_min_compile_time_secs", 0.5)
+    jax.config.update("jax_persistent_cache_min_entry_size_bytes", 0)
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
 
@@ -10,6 +37,18 @@ FIXTURE_DIR = Path(__file__).parent / "fixtures"
 D = 2e-9          # m²/s
 N_WALKERS = 100_000   # overridden to 1_000_000 when --heavy is passed
 SEED = 123
+
+# For assertions that are EXACT equality (npt.assert_array_equal), not a statistical comparison.
+# Those tests check that two code paths which must be identical -- `permeability=None` vs the
+# default, `T2=None` vs omitting the kwarg -- produce bit-identical output. Given a fixed seed the
+# walk is deterministic, so if the paths agree, every N passes; if they diverge, the divergence is
+# deterministic too and shows in the walkers that reach the branch. There is no sampling error to
+# average down, so a statistical N buys nothing and costs two full-size walks per test.
+#
+# 5,000 is not a new judgement: tests/test_permeability_crossing.py already runs exactly this
+# assertion at N_ORDINAL = 5_000. This makes the other copies consistent with it. Deliberately NOT
+# scaled by --heavy -- a bigger N cannot make an exact equality any more exact.
+N_EXACT = 5_000
 
 def pytest_addoption(parser):
     parser.addoption(

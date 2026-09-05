@@ -47,6 +47,22 @@ from dmipy_sim.waveforms import pgse
 
 from tests.conftest import D, N_WALKERS, SEED
 
+# Every test in this module makes an ORDINAL or IDENTITY claim -- monotone in kappa, A < B,
+# "approaches free diffusion", or an exact `assert_array_equal` -- none of which needs the
+# absolute accuracy that N_WALKERS = 100,000 buys. All comparisons share `seed=SEED`, so the
+# walks are correlated and the DIFFERENCES carry far less noise than 0.32% per signal.
+#
+# Measured on the monotonicity sweep, which is the tightest claim here:
+#     N=100,000  62.9 s  monotone, min gap between adjacent signals +3.04e-02
+#     N= 20,000  46.1 s  monotone, min gap                          +2.89e-02
+#     N=  5,000  42.3 s  monotone, min gap                          +3.00e-02
+# The gap deciding the ordering is 30x the 1e-3 slack the assertion allows, and it is stable
+# at every N -- so the ordering is not what the walkers were buying.
+#
+# NOT applied to the modules that compare against an ANALYTIC reference to 1-2% (test_cylinder,
+# test_free_1d, test_box_1d, ...): those genuinely need ~90,000 walkers at 3 sigma. See #93.
+N_ORDINAL = 5_000
+
 R   = 5e-6   # m
 KAPPA_MED  = 1e-5  # m/s  — exchange time τ = R/(2κ) ≈ 250 ms
 KAPPA_HIGH = 1e-2  # m/s  — exchange time τ ≈ 0.25 ms (fast exchange)
@@ -88,8 +104,8 @@ def test_permeability_none_matches_impermeable():
     wf = _pgse_wf(100e-3)
     geom_default = Cylinder(radius=R, orientation=[0, 0, 1])
     geom_none    = Cylinder(radius=R, orientation=[0, 0, 1], permeability=None)
-    S_default = simulate(N_WALKERS, D, wf, geom_default, seed=SEED)
-    S_none    = simulate(N_WALKERS, D, wf, geom_none,    seed=SEED)
+    S_default = simulate(N_ORDINAL, D, wf, geom_default, seed=SEED)
+    S_none    = simulate(N_ORDINAL, D, wf, geom_none,    seed=SEED)
     npt.assert_array_equal(S_default, S_none,
         err_msg="permeability=None must give identical signal to default")
 
@@ -108,8 +124,8 @@ def test_permeability_reduces_signal_at_high_b():
     wf = _pgse_wf(100e-3)
     geom_imp  = Cylinder(radius=R, orientation=[0, 0, 1])
     geom_perm = Cylinder(radius=R, orientation=[0, 0, 1], permeability=KAPPA_MED)
-    S_imp  = simulate(N_WALKERS, D, wf, geom_imp,  seed=SEED)
-    S_perm = simulate(N_WALKERS, D, wf, geom_perm, seed=SEED)
+    S_imp  = simulate(N_ORDINAL, D, wf, geom_imp,  seed=SEED)
+    S_perm = simulate(N_ORDINAL, D, wf, geom_perm, seed=SEED)
     # b=2000 s/mm² is index 3 in our b_values array
     assert float(S_perm[3]) < float(S_imp[3]) - 0.05, (
         f"S_perm={S_perm[3]:.4f} must be below S_imp={S_imp[3]:.4f} at b=2000 s/mm²")
@@ -133,7 +149,7 @@ def test_permeability_high_kappa_approaches_free_diffusion():
     wf = _pgse_wf(TE, n_t=2000)
 
     geom_perm = Cylinder(radius=R, orientation=[0, 0, 1], permeability=KAPPA_HIGH)
-    S_perm = simulate(N_WALKERS, D, wf, geom_perm, seed=SEED)
+    S_perm = simulate(N_ORDINAL, D, wf, geom_perm, seed=SEED)
 
     # free-diffusion reference at b=500 s/mm²
     b_val = 500e6  # s/m²
@@ -162,8 +178,8 @@ def test_permeability_with_relaxivity_reduces_signal():
     geom_perm_rho = Cylinder(radius=R, orientation=[0, 0, 1],
                              permeability=KAPPA_MED,
                              surface_relaxivity_t2=RHO)
-    S_perm     = simulate(N_WALKERS, D, wf, geom_perm,     seed=SEED)
-    S_perm_rho = simulate(N_WALKERS, D, wf, geom_perm_rho, seed=SEED)
+    S_perm     = simulate(N_ORDINAL, D, wf, geom_perm,     seed=SEED)
+    S_perm_rho = simulate(N_ORDINAL, D, wf, geom_perm_rho, seed=SEED)
     # Check at b=0 (only relaxivity reduces signal; diffusion doesn't matter)
     assert float(S_perm_rho[0]) < float(S_perm[0]) - 0.02, (
         f"Relaxivity+permeability {S_perm_rho[0]:.4f} must be below "
@@ -186,7 +202,7 @@ def test_permeability_signal_monotone_in_kappa():
     for kappa in kappas:
         perm = kappa if kappa > 0 else None
         geom = Cylinder(radius=R, orientation=[0, 0, 1], permeability=perm)
-        S = simulate(N_WALKERS, D, wf, geom, seed=SEED)
+        S = simulate(N_ORDINAL, D, wf, geom, seed=SEED)
         signals.append(float(S[3]))  # b=2000 s/mm²
     for i in range(len(signals) - 1):
         assert signals[i] >= signals[i + 1] - 1e-3, (

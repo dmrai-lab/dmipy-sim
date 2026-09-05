@@ -240,15 +240,24 @@ class PackedCurvedTubes(Geometry):
         P = np.asarray(P, np.float32)
         out = np.empty(P.shape[0], bool)
 
-        @jax.jit
-        def _batch(Pb):
-            def one(p):
-                cand, valid = self._gather(p)
-                A = self._A[cand]; AB = self._AB[cand]; AB2 = self._AB2[cand]; rr = self._rout[cand]
-                t = jnp.clip(((p[None, :] - A) * AB).sum(1) / AB2, 0.0, 1.0)
-                d = jnp.linalg.norm(p[None, :] - (A + t[:, None] * AB), axis=1)
-                return (valid & (d < rr)).any()
-            return jax.vmap(one)(Pb)
+        # Built ONCE per instance, not per call. jax.jit caches compiled programs on the identity of
+        # the function object it wraps, so a jit defined in this method body was a fresh object every
+        # call and recompiled every time -- and `sample_outside` calls this in a rejection LOOP, so
+        # that was a recompile per iteration. The closure captures this instance's segment arrays,
+        # which are fixed at construction, so caching per instance (not module-wide) is the correct
+        # scope. Measured on the same pattern in mesh.py: ~1.4 s per call -> 0.0002 s once hoisted.
+        _batch = getattr(self, "_inside_any_batch", None)
+        if _batch is None:
+            @jax.jit
+            def _batch(Pb):
+                def one(p):
+                    cand, valid = self._gather(p)
+                    A = self._A[cand]; AB = self._AB[cand]; AB2 = self._AB2[cand]; rr = self._rout[cand]
+                    t = jnp.clip(((p[None, :] - A) * AB).sum(1) / AB2, 0.0, 1.0)
+                    d = jnp.linalg.norm(p[None, :] - (A + t[:, None] * AB), axis=1)
+                    return (valid & (d < rr)).any()
+                return jax.vmap(one)(Pb)
+            self._inside_any_batch = _batch
 
         for i in range(0, P.shape[0], chunk):
             out[i:i + chunk] = np.asarray(_batch(jnp.asarray(P[i:i + chunk])))
