@@ -112,7 +112,7 @@ def _make_bloch_step_fn(geometry, D, dt, T2, T1, M0, off_resonance_hz, rho=0.0,
     global_carrier = jnp.float32(2.0 * np.pi * float(off_resonance_hz) * dt)
     rho_over_D = jnp.float32(rho / D)
     has_surf = rho > 0.0 and hasattr(geometry, 'reflect_with_log_weight')
-    has_perm = (float(getattr(geometry, 'permeability', None) or 0.0) > 0.0
+    has_perm = (float(geometry.permeability or 0.0) > 0.0
                 and hasattr(geometry, 'permeate'))
     reflect = geometry.reflect
     reflect_lw = getattr(geometry, 'reflect_with_log_weight', None)
@@ -327,7 +327,7 @@ def simulate_bloch(n_walkers, diffusivity, waveform, geometry, rf_events, *,
         waveform = waveform.waveform
     G = np.asarray(waveform.G, dtype=np.float64)            # (n_meas, n_t, 3)
     dt = float(waveform.dt)
-    _orient_R = getattr(geometry, '_orient_R', None)
+    _orient_R = geometry._orient_R
     if _orient_R is not None:
         G = G @ np.asarray(_orient_R, dtype=np.float64)
     n_meas, n_t, _ = G.shape
@@ -388,14 +388,8 @@ def simulate_bloch(n_walkers, diffusivity, waveform, geometry, rf_events, *,
 # ── magnetization transfer: fused forward walk + binding + Bloch ────────────────
 def _geom_radius(geometry):
     """A characteristic feature radius (m) for the binding sub-step auto-tune."""
-    for attr in ('radius', 'inner_radius', '_feature_radius'):
-        v = getattr(geometry, attr, None)
-        if v is not None:
-            try:
-                return float(v)
-            except (TypeError, ValueError):
-                pass
-    return None
+    from .physics import _geometry_radius
+    return _geometry_radius(geometry)
 
 
 def _surface_to_volume(geometry):
@@ -633,7 +627,7 @@ def _simulate_bloch_mt(n_walkers, diffusivity, waveform, geometry, rf_events, *,
         waveform = waveform.waveform
     G = np.asarray(waveform.G, dtype=np.float64)
     dt = float(waveform.dt)
-    _orient_R = getattr(geometry, '_orient_R', None)
+    _orient_R = geometry._orient_R
     if _orient_R is not None:
         G = G @ np.asarray(_orient_R, dtype=np.float64)
     n_meas, n_t, _ = G.shape

@@ -15,22 +15,21 @@ import numpy as np
 from .constants import GAMMA
 
 
-def _geometry_radius(geometry):
-    """Smallest geometric radius (m) of a geometry, or None if not applicable.
+def length_scales_of(geometry):
+    """The geometry's :class:`~dmipy_sim.geometry.base.LengthScales`.
 
-    Used to size the walk's sub-steps against the geometry's smallest
-    length scale (see make_step_fn).
+    Shipped geometries declare them. An object that is not a :class:`Geometry` is read through
+    the legacy attributes (``radius``, ``sphere_radius``, ``length``, ``_radii_np``,
+    ``_inner_radii_np``, ``cell_size``, ``radius_is_mesh_feature``), here and nowhere else.
     """
+    ls = getattr(geometry, 'length_scales', None)
+    if ls is not None:
+        return ls
+    from .geometry.base import LengthScales
     R = getattr(geometry, 'radius', None)
     if R is None:
         R = getattr(geometry, 'sphere_radius', None)
     if R is None:
-        # A slab (Box1D) confines over its WIDTH and exposes `length`, not `radius`. Without this clause the
-        # search falls through to None, the caller takes it as "no scale to resolve" and runs ONE sub-step at
-        # step_l = sqrt(6 D dt_save) -- 6 um for a 2 um slab at dt_save=3 ms -- which garbles the recorded
-        # boundary local time and inflates a fitted surface T2 by 42% (2 um slab, rho=1e-6: 1.42 s against a
-        # Brownstein-Tarr 1.0 s). This clause existed in the core.py auto-tune before it was refactored here
-        # in 6d585fc and was dropped in the move; `tests/test_compression.py` caught it.
         R = getattr(geometry, 'length', None)
     if R is None:
         radii = getattr(geometry, '_radii_np', None)
@@ -40,7 +39,15 @@ def _geometry_radius(geometry):
         inner = getattr(geometry, '_inner_radii_np', None)
         if inner is not None and len(inner) > 0 and np.any(inner > 0):
             R = float(np.min(inner[inner > 0]))
-    return float(R) if R is not None else None
+    cell = getattr(geometry, 'cell_size', None)
+    return LengthScales(min_feature=None if R is None else float(R),
+                        lookup_cell=None if not cell else float(cell),
+                        is_mesh_feature=bool(getattr(geometry, 'radius_is_mesh_feature', False)))
+
+
+def _geometry_radius(geometry):
+    """Smallest confining length scale (m), or None -- ``length_scales_of(geometry).min_feature``."""
+    return length_scales_of(geometry).min_feature
 
 
 def permeable_sub_steps(geometry, diffusivity: float, dt: float) -> int:
@@ -66,18 +73,11 @@ def _surface_char_radius(geometry):
     step_l relative to the pore the RELAXING walkers occupy. This is NOT the
     smallest axon (permeability's scale): confined intra-axonal walkers fully
     sample the inner wall and are accurate at any step, so the binding scale is
-    the LARGER extra-axonal pore, ~ 1 / (S_ext/V). For a packed substrate we take
-    that pore; otherwise fall back to the geometric radius.
+    the LARGER extra-axonal pore, ~ 1 / (S_ext/V), declared by the geometry as
+    ``length_scales.surface_pore``; otherwise the confining scale is used.
     """
-    outer = getattr(geometry, '_outer_radii_np', None)
-    cell = getattr(geometry, '_cell_size', None)
-    if outer is not None and cell is not None:
-        outer = np.asarray(outer, float); outer = outer[outer > 0]
-        area_ext = float(cell) ** 2 - float(np.sum(np.pi * outer ** 2))
-        perim = float(np.sum(2.0 * np.pi * outer))
-        if perim > 0 and area_ext > 0:
-            return area_ext / perim                 # 1 / (S_ext/V) = extra-axonal pore
-    return _geometry_radius(geometry)
+    ls = length_scales_of(geometry)
+    return ls.surface_pore if ls.surface_pore is not None else ls.min_feature
 
 
 def collision_sub_steps(geometry, diffusivity: float, dt: float, frac: float = 0.9) -> int:
@@ -98,7 +98,7 @@ def collision_sub_steps(geometry, diffusivity: float, dt: float, frac: float = 0
 
     Returns 1 for geometries with no cell grid, and self-limits to 1 once dt already resolves the cell.
     """
-    cs = getattr(geometry, "cell_size", None)
+    cs = length_scales_of(geometry).lookup_cell
     if cs is None or not np.isfinite(cs) or cs <= 0:
         return 1
     L = float(np.sqrt(6.0 * float(diffusivity) * float(dt)))
@@ -157,7 +157,7 @@ def mt_sub_steps(geometry, diffusivity: float, dt: float, dwell_time: float,
     0.02% at realistic parameters, 0.33% with a 0.1 ms dwell. MCMRSimulator avoids it by releasing on a
     continuous fraction of a step; not worth the complexity here at that magnitude.
     """
-    if getattr(geometry, 'cell_size', None):
+    if length_scales_of(geometry).lookup_cell:
         n = collision_sub_steps(geometry, diffusivity, dt)
     else:
         R = _geometry_radius(geometry)
@@ -195,9 +195,10 @@ def walk_sub_steps(geometry, diffusivity: float, dt: float) -> int:
     that regime has not been measured here.
     """
     has_perm = getattr(geometry, 'permeability', None) is not None
-    R = _geometry_radius(geometry)
+    ls = length_scales_of(geometry)
+    R = ls.min_feature
     n_coll = 1
-    if getattr(geometry, 'cell_size', None) and not has_perm:
+    if ls.lookup_cell and not has_perm:
         n_coll = collision_sub_steps(geometry, diffusivity, dt)
         # A cell grid is not the same thing as a mesh. For a MESH the collision criterion
         # REPLACES R/6, because `_geometry_radius` there returns `feature_radius` -- a
@@ -212,7 +213,7 @@ def walk_sub_steps(geometry, diffusivity: float, dt: float) -> int:
         # PackedCurvedTubes: on the DiSCo substrate (R_min 0.72um, cell 6.5um) it asked for
         # 1 sub-step where the analytic rule asks for 106, i.e. step/R ~ 1.7 -- walkers
         # stepping straight through tube walls.
-        if getattr(geometry, 'radius_is_mesh_feature', False) or R is None:
+        if ls.is_mesh_feature or R is None:
             return n_coll
     if R is None:
         # No scale found means "nothing to resolve", which is right for free diffusion and WRONG for anything
@@ -220,7 +221,10 @@ def walk_sub_steps(geometry, diffusivity: float, dt: float) -> int:
         # a dropped `length` clause went unnoticed for a whole release (see `_geometry_radius`). A confined
         # geometry advertises finite volume and surface area, so say so rather than guessing.
         try:
-            confined = float(geometry.surface_area) > 0 and 0 < float(geometry.volume) < float('inf')
+            sa, vol = geometry.surface_area, geometry.volume
+            sa = sa() if callable(sa) else sa
+            vol = vol() if callable(vol) else vol
+            confined = float(sa) > 0 and 0 < float(vol) < float('inf')
         except Exception:
             confined = False
         if confined:
@@ -278,7 +282,7 @@ def _warn_if_step_outruns_the_lookup(geometry, diffusivity, dt, n_sub, what):
     overrides `sub_steps` (or sets `cell_size`) into unsound territory -- which is silent otherwise, and cost
     a long detour to diagnose once (dmrai-lab/dmipy-sim#65).
     """
-    cell = getattr(geometry, 'cell_size', None)
+    cell = length_scales_of(geometry).lookup_cell
     if not cell:
         return
     step_l = float(np.sqrt(6.0 * diffusivity * dt / max(n_sub, 1)))
@@ -347,15 +351,15 @@ def make_step_fn(geometry, diffusivity: float, dt: float, T2: float = None,
     # Optional per-compartment bulk properties (a Mesh may carry per-compartment D,
     # T2 and/or T1). None for ordinary geometries -> the resolvers collapse to the
     # single-diffusivity / single-T2 / single-T1 scalars (identical path).
-    _D_arr     = getattr(geometry, '_D_comp_jax', None)        # (2,) or None
-    _invT2_arr = getattr(geometry, '_inv_T2_comp_jax', None)   # (2,) or None
-    _invT1_arr = getattr(geometry, '_inv_T1_comp_jax', None)   # (2,) or None
+    _D_arr     = geometry._D_comp_jax        # (2,) or None
+    _invT2_arr = geometry._inv_T2_comp_jax   # (2,) or None
+    _invT1_arr = geometry._inv_T1_comp_jax   # (2,) or None
     _classify  = (geometry.classify_position
                   if any(a is not None for a in (_D_arr, _invT2_arr, _invT1_arr)) else None)
-    _D0 = diffusivity if diffusivity is not None else getattr(geometry, '_D_comp_max', None)
+    _D0 = diffusivity if diffusivity is not None else geometry._D_comp_max
 
-    has_surf = getattr(geometry, 'surface_relaxivity_t2', None) is not None
-    has_perm = getattr(geometry, 'permeability',          None) is not None
+    has_surf = geometry.surface_relaxivity_t2 is not None
+    has_perm = geometry.permeability          is not None
     has_t2   = (T2 is not None) or (_invT2_arr is not None)   # per-compartment T2 also needs log_w
     has_t1   = (T1 is not None) or (_invT1_arr is not None)   # per-compartment T1 also needs log_w
     has_weight = has_surf or has_perm or has_t2 or has_t1
@@ -1118,7 +1122,7 @@ def make_packed_myelin_step_fn(geometry, dt: float, T1: float = None):
     L = jnp.float32(geometry._cell_size)
     N_max = geometry.N_max
 
-    has_t2 = getattr(geometry, '_has_t2', False)
+    has_t2 = geometry._has_t2
     if has_t2:
         t2_intra = jnp.float32(np.asarray(geometry._T2_intra_jax).ravel()[0])
         t2_myelin = jnp.float32(np.asarray(geometry._T2_myelin_jax).ravel()[0])
@@ -1128,10 +1132,8 @@ def make_packed_myelin_step_fn(geometry, dt: float, T1: float = None):
     if has_t1:
         inv_T1 = jnp.float32(1.0 / T1)
 
-    rho_i = float(np.max(np.asarray(geometry._rho_inner_jax))) \
-        if hasattr(geometry, '_rho_inner_jax') else 0.0
-    rho_o = float(np.max(np.asarray(geometry._rho_outer_jax))) \
-        if hasattr(geometry, '_rho_outer_jax') else 0.0
+    rho_i = float(np.max(np.asarray(geometry._rho_inner_jax)))
+    rho_o = float(np.max(np.asarray(geometry._rho_outer_jax)))
     rho = max(rho_i, rho_o)
     # Surface relaxivity accumulates the boundary local time (wall-contact overshoot); a
     # single coarse step under-counts grazing contact for the fast extra-axonal walkers, so

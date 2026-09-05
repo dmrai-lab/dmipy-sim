@@ -54,7 +54,7 @@ def _walk_record(geometry, diffusivity, n_t, dt, n_walkers, seed):
     # Packed myelinated cylinders carry their own per-compartment (intra/myelin/extra) walk
     # with per-compartment diffusivity + permeability, so use the dedicated trajectory step
     # function rather than the single-diffusivity generic reflect below.
-    if getattr(geometry, '_is_packed_myelinated', False):
+    if geometry._is_packed_myelinated:
         from .physics import make_packed_myelin_traj_step_fn
         step_fn = make_packed_myelin_traj_step_fn(geometry, dt)
         N_max = geometry.N_max
@@ -79,7 +79,7 @@ def _walk_record(geometry, diffusivity, n_t, dt, n_walkers, seed):
 
     step_l = jnp.float32(np.sqrt(6.0 * diffusivity * dt))
     reflect = geometry.reflect
-    has_perm = getattr(geometry, 'permeability', None) is not None
+    has_perm = geometry.permeability is not None
 
     def step(carry, _):
         r, key = carry
@@ -103,11 +103,7 @@ def _walk_record(geometry, diffusivity, n_t, dt, n_walkers, seed):
     pk, wk = jax.random.split(mk)
     r0 = geometry.init_positions(n_walkers, pk)
     traj = np.asarray(jax.vmap(one)(r0, jax.random.split(wk, n_walkers)))  # (n_w, n_t, 3)
-    if hasattr(geometry, 'classify_position'):
-        comp = np.asarray(jax.vmap(jax.vmap(geometry.classify_position))(jnp.asarray(traj)))
-        comp = comp.astype(int)
-    else:
-        comp = np.zeros(traj.shape[:2], dtype=int)
+    comp = np.asarray(jax.vmap(jax.vmap(geometry.classify_position))(jnp.asarray(traj))).astype(int)
     return traj, comp
 
 

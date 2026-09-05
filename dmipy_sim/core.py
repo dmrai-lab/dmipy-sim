@@ -88,12 +88,12 @@ def _replay_gap(geometry, *, return_positions, return_compartments,
         return "return_compartments is a fused single-pass internal (no replay equivalent)"
     if return_walker_signals:
         return "return_walker_signals is a fused single-pass internal (no replay equivalent)"
-    if getattr(geometry, '_is_myelinated', False):
+    if geometry._is_myelinated:
         return "MyelinatedCylinder uses a dedicated fused step kernel (no replay walk)"
-    if getattr(geometry, '_is_packed_myelinated', False):
+    if geometry._is_packed_myelinated:
         return ("PackedMyelinatedCylinders fused single-reflection kernel is not "
                 "position-parity with the multi-bounce replay walk")
-    if getattr(geometry, 'permeability', None) is not None:
+    if geometry.permeability is not None:
         # Permeability shapes the WALK, like geometry and diffusivity -- it is not a replay knob, and the
         # recorded trajectory already contains every crossing that happened. Replay then applies the gradient
         # off positions, scalar T2/T1 off elapsed time and rho off the unit boundary local time, none of which
@@ -105,7 +105,7 @@ def _replay_gap(geometry, *, return_positions, return_compartments,
         if isinstance(T2_probe, dict) or isinstance(T1_probe, dict):
             return ("per-compartment T2/T1 under membrane exchange needs sub-step compartment "
                     "attribution, which the saved channel quantises to dt_save (fused-only)")
-    if getattr(geometry, '_D_comp_jax', None) is not None:
+    if geometry._D_comp_jax is not None:
         # Per-compartment D changes the STEP LENGTH per compartment, so it alters the walk
         # itself — not a replay knob. (Per-compartment T2/T1 ARE replay knobs: they gate
         # only log_w and are applied off the saved compartment channel — see
@@ -142,7 +142,7 @@ def _simulate_via_replay(n_walkers, diffusivity, waveform, geometry, *, seed,
 
     # Acquisition rotation: place the substrate in the bore by rotating G into
     # the geometry's native frame (walk stays native), exactly as fused does.
-    _orient_R = getattr(geometry, '_orient_R', None)
+    _orient_R = geometry._orient_R
     if _orient_R is not None:
         G = G @ np.asarray(_orient_R, dtype=np.float32)
 
@@ -154,7 +154,7 @@ def _simulate_via_replay(n_walkers, diffusivity, waveform, geometry, *, seed,
     # Surface relaxivity is a wall effect recorded (with ρ/D = 1) during the
     # walk and multiplied by ρ/D at replay — only then do we need the boundary
     # local-time channel.  Scalar T2/T1 are walker-independent replay knobs.
-    rho = getattr(geometry, 'surface_relaxivity_t2', None)
+    rho = geometry.surface_relaxivity_t2
     has_surf = (rho is not None and float(rho) > 0.0
                 and hasattr(geometry, 'reflect_with_log_weight'))
 
@@ -162,8 +162,8 @@ def _simulate_via_replay(n_walkers, diffusivity, waveform, geometry, *, seed,
     # log_w and are applied off the saved compartment channel (comp_traj, index 0=intra /
     # 1=extra, matching the geometry's _T2_comp/_T1_comp ordering). Requesting them forces
     # save_relaxation_data so the compartment channel is recorded.
-    T2_comp = getattr(geometry, '_T2_comp', None)
-    T1_comp = getattr(geometry, '_T1_comp', None)
+    T2_comp = geometry._T2_comp
+    T1_comp = geometry._T1_comp
     has_per_comp = T2_comp is not None or T1_comp is not None
 
     save_relax = has_surf or has_per_comp
@@ -435,7 +435,7 @@ def simulate(
     # in the geometry's native frame, so rotate the ACQUISITION into that frame
     # instead of rotating the geometry.  A gradient g in the lab (B0=+z) frame is
     # g_mesh = R^T g for a mesh->lab rotation R, i.e. G_mesh = G @ R.
-    _orient_R = getattr(geometry, '_orient_R', None)
+    _orient_R = geometry._orient_R
     if _orient_R is not None:
         G = G @ jnp.asarray(_orient_R, G.dtype)
 
@@ -472,8 +472,8 @@ def simulate(
     r0 = initial_positions(geometry, n_walkers, pos_key, r0)   # (n_walkers, 3)
 
     # Check if this is a MyelinatedCylinder or LabelMap2D (custom step function path)
-    is_myelin = getattr(geometry, '_is_myelinated', False)
-    is_packed_myelin = getattr(geometry, '_is_packed_myelinated', False)
+    is_myelin = geometry._is_myelinated
+    is_packed_myelin = geometry._is_packed_myelinated
 
     if want_pos_full and (is_myelin or is_packed_myelin):
         raise NotImplementedError(
@@ -496,9 +496,7 @@ def simulate(
             classify_fn = geometry.classify_position
             # Initial labels are the one place an exact test is affordable and necessary: there is no
             # previous label to carry, so an undecidable point must be resolved rather than defaulted.
-            exact_fn = getattr(geometry, 'classify_positions_exact', None)
-            comp_origin_jax = (exact_fn(r0) if exact_fn is not None
-                               else jax.vmap(classify_fn)(r0))     # (n_walkers,) int32
+            comp_origin_jax = geometry.classify_positions_exact(r0)       # (n_walkers,) int32
 
     if is_myelin:
         # MyelinatedCylinder: extended carry state (r, phi, log_w, compartment_id, key)
@@ -640,8 +638,7 @@ def simulate(
             # position is undecidable (no wall within reach), prefer carrying the previous label: the
             # walker cannot have crossed a boundary it was never near, and re-deriving would make its
             # compartment depend on the local mesh resolution. See Mesh.classify_position_carry.
-            classify_fn = geometry.classify_position
-            carry_fn = getattr(geometry, 'classify_position_carry', None)
+            carry_fn = geometry.classify_position_carry
 
             if has_weight:
                 # carry = (r, phi, log_weight, compartment_current, key)
@@ -650,8 +647,7 @@ def simulate(
                     # Run the original step_fn with its expected carry format
                     orig_carry = (r, phi, log_weight, key)
                     (r_new, phi_new, log_new, key_new), _ = step_fn(orig_carry, inputs)
-                    comp_new = (carry_fn(r_new, comp_cur) if carry_fn is not None
-                                else classify_fn(r_new))
+                    comp_new = carry_fn(r_new, comp_cur)
                     return (r_new, phi_new, log_new, comp_new, key_new), comp_new
 
                 if return_compartments == 'full':
@@ -686,8 +682,7 @@ def simulate(
                     r, phi, comp_cur, key = carry
                     orig_carry = (r, phi, key)
                     (r_new, phi_new, key_new), _ = step_fn(orig_carry, inputs)
-                    comp_new = (carry_fn(r_new, comp_cur) if carry_fn is not None
-                                else classify_fn(r_new))
+                    comp_new = carry_fn(r_new, comp_cur)
                     return (r_new, phi_new, comp_new, key_new), comp_new
 
                 if return_compartments == 'full':
@@ -1122,26 +1117,12 @@ def simulate_trajectories(
     dt_actual = T_max / (n_t - 1)
 
     # --- Sub-stepping: guarantee step_l < R/6 for accurate reflection ---
-    R_geom = getattr(geometry, 'radius', None)
-    if R_geom is None:
-        R_geom = getattr(geometry, 'sphere_radius', None)
-    if R_geom is None:
-        # Box1D (slab) confines over its width -> use `length` as the sub-step scale;
-        # without this the auto-tune fell through to sub_steps=1 (step_l = sqrt(6 D dt_save),
-        # far coarser than a small slab), garbling the recorded boundary local time at small R.
-        R_geom = getattr(geometry, 'length', None)
-    if R_geom is None:
-        _radii = getattr(geometry, '_radii_np', None)
-        if _radii is not None and len(_radii) > 0:
-            R_geom = float(np.min(_radii))
-    if R_geom is None:
-        _inner_radii = getattr(geometry, '_inner_radii_np', None)
-        if _inner_radii is not None and len(_inner_radii) > 0:
-            R_geom = (float(np.min(_inner_radii[_inner_radii > 0]))
-                      if np.any(_inner_radii > 0) else None)
+    from .physics import length_scales_of as _length_scales_of
+    _ls = _length_scales_of(geometry)
+    R_geom = _ls.min_feature
     if sub_steps:
         pass                                  # caller pinned it; see simulate(sub_steps=...)
-    elif R_geom is None and not getattr(geometry, 'cell_size', None):
+    elif R_geom is None and not _ls.lookup_cell:
         # Free diffusion or unknown: no sub-stepping needed
         sub_steps = 1
     else:
@@ -1171,19 +1152,19 @@ def simulate_trajectories(
     # PackedMyelinatedCylinders came back at 1.02x free diffusion through 1 um axons. The
     # replay-support check already knew this (see _replay_unsupported_reason); it just was
     # not enforced on the entry point the pack builders actually call.
-    if getattr(geometry, '_is_myelinated', False):
+    if geometry._is_myelinated:
         raise NotImplementedError(
             "simulate_trajectories cannot walk a MyelinatedCylinder: its three compartments "
             "need the fused kernel physics.make_myelin_step_fn, which carries the "
             "compartment id. Use simulate(...) instead.")
-    if getattr(geometry, '_is_packed_myelinated', False) and not save_relaxation_data:
+    if geometry._is_packed_myelinated and not save_relaxation_data:
         raise NotImplementedError(
             "simulate_trajectories on PackedMyelinatedCylinders requires "
             "save_relaxation_data=True, which routes to the fused kernel "
             "physics.make_packed_myelin_traj_step_fn. The position-only path has no "
             "compartment state and would return an unrestricted walk.")
 
-    permeability = getattr(geometry, 'permeability', None)
+    permeability = geometry.permeability
     has_permeability = permeability is not None
     has_reflect_with_log_weight = hasattr(geometry, 'reflect_with_log_weight')
 
@@ -1253,11 +1234,9 @@ def simulate_trajectories(
     # dense packings, where the rate scales with surface-to-volume -- instead get an exact
     # O(1) sentinel inside their own step for +0.8%, so they are protected by default and
     # do not need this. Use it to validate a geometry that has no in-step sentinel yet.
-    _cls_fn = getattr(geometry, "classify_position", None)
-    _use_guard = (bool(enforce_compartment) and _cls_fn is not None and not _carries_side
+    _cls_fn = geometry.classify_position
+    _use_guard = (bool(enforce_compartment) and not _carries_side
                   and (not has_permeability or float(permeability) <= 0.0))
-    if enforce_compartment and _cls_fn is None:
-        raise ValueError("enforce_compartment=True needs geometry.classify_position")
     if _use_guard:
         _inner_raw = inner_step
 
@@ -1312,7 +1291,7 @@ def simulate_trajectories(
 
             def _get_comp_id(r):
                 return jnp.int8(jnp.where(jnp.linalg.norm(r) < R_val, 0, 1))
-        elif getattr(geometry, 'classify_returns_object_id', False):
+        elif geometry.classify_returns_object_id:
             # PackedCylinders / PackedSpheres: 0=extra, 1..N = the object the walker is in.
             # Collapse to two pools -- relaxation is per-pool, and an object id would
             # overflow int8 above 127 objects.
@@ -1334,7 +1313,7 @@ def simulate_trajectories(
                 return jnp.int8(0)
 
     # ── Relaxation-data path (position + boundary log-weight with rho/D=1) ────
-    is_packed_myelin_geom = getattr(geometry, '_is_packed_myelinated', False)
+    is_packed_myelin_geom = geometry._is_packed_myelinated
 
     if save_relaxation_data and is_packed_myelin_geom:
         # PackedMyelinatedCylinders: use the stripped trajectory step fn (geometry
@@ -1480,8 +1459,7 @@ def simulate_trajectories(
     # the (r0, keys) -> positions signature every call site below already uses.
     _illegal_crossings = [0]
 
-    if (_carries_side and hasattr(geometry, "classify_position")
-            and getattr(geometry, "classify_returns_object_id", False)):
+    if _carries_side and geometry.classify_returns_object_id:
         # `classify_returns_object_id` pins the convention this depends on: 0 = extra,
         # 1..N = the object the walker is in. The permeable Cylinder/Sphere classifiers use
         # the OPPOSITE convention (0 = intra), so gating on the flag rather than on the
