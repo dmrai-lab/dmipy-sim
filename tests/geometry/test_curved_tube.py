@@ -18,7 +18,7 @@ import pytest
 
 from dmipy_sim import Cylinder, simulate, set_b
 from dmipy_sim.geometry.curved_tube import CurvedTube, MultiShellCurvedTube
-from dmipy_sim.waveforms import pgse
+from dmipy_sim.acquisition.waveforms import pgse
 
 D = 2.0e-9
 R = 5.0e-6

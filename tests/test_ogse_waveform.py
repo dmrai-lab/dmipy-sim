@@ -9,7 +9,7 @@ integer number of periods, leaving a DC component and a frequency-shifted peak).
 import numpy as np
 import pytest
 
-from dmipy_sim.waveforms import ogse, trapezoidal_ogse
+from dmipy_sim.acquisition.waveforms import ogse, trapezoidal_ogse
 from dmipy_sim.constants import GAMMA
 
 BVECS = np.array([[1.0, 0.0, 0.0]])

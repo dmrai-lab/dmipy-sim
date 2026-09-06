@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from ..waveforms import apply_rf_schedule
+from ..acquisition.waveforms import apply_rf_schedule
 
 from ..math.gradient_conversions import g_from_b, q_from_b
 from ..constants import GAMMA, DEFAULT_SLEW_RATE, resolve_slew as _resolve_slew
@@ -49,20 +49,20 @@ class Sequence:
       * family flags -- ``sequence_type`` and the physical markers each family
         sets (``_effective_gradient``, ``TM``, ``ste_flip_angles``,
         ``oscillation_frequency``, ``cpmg_*`` ...).
-      * the :class:`dmipy_sim.waveforms.Waveform` readout attributes -- ``echo_idx``,
+      * the :class:`dmipy_sim.acquisition.waveforms.Waveform` readout attributes -- ``echo_idx``,
         ``echo_indices``, ``rf_events``, ``G_display``, ``chi_perp``, ``TM``,
         ``stimulated_echo`` -- so a ``Sequence`` is accepted wherever a ``Waveform`` is
         (``simulate`` in either engine, ``simulate_cpmg``, ``to_pulseq``, ``viz``).
 
     Every constructor finishes with a numeric scaling of ``G`` so that the declared
-    ``bvalues`` equal :func:`dmipy_sim.waveforms.b_from_gradient` of the waveform it built.
+    ``bvalues`` equal :func:`dmipy_sim.acquisition.waveforms.b_from_gradient` of the waveform it built.
     """
 
     def __init__(self, G, dt, bvalues, gradient_directions, qvalues,
                  gradient_strengths, delta, Delta, TE):
         self.G = np.asarray(G, dtype=np.float32)
         self.dt = float(dt)
-        # Waveform readout protocol (see dmipy_sim.waveforms.Waveform)
+        # Waveform readout protocol (see dmipy_sim.acquisition.waveforms.Waveform)
         self.echo_idx = int(self.G.shape[1] - 1)
         self.echo_indices = None
         self.rf_events = None
@@ -176,7 +176,7 @@ class Sequence:
 
         seq = cls(G_arr, dt, bvalues, gradient_directions, qvalues,
                   gradient_strengths, delta_, Delta_, TE_)
-        # ideal instantaneous 90/180 markers, as dmipy_sim.waveforms.pgse places them
+        # ideal instantaneous 90/180 markers, as dmipy_sim.acquisition.waveforms.pgse places them
         t_180 = float(np.mean(Delta_ + delta_ + eps_)) / 2.0
         seq.rf_events = [{'t_s': 0.0, 'label': 'Mz→Mxy', 'flip_deg': 90},
                          {'t_s': t_180, 'label': 'refocus', 'flip_deg': 180}]

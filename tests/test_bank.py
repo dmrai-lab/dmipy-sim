@@ -169,7 +169,7 @@ def test_susc_path_keeps_zz_when_trace_identity_is_broken():
 
 def test_susc_path_lossless_at_K_equals_nt():
     """At K=n_t the channel is an exact rewrite of the field along the path (no truncation)."""
-    from dmipy_sim.susceptibility_field import assemble_field, sample_grid
+    from dmipy_sim.fields.susceptibility_field import assemble_field, sample_grid
     m = _susc_master()
     fb, origin = m["susc_field_basis"], m["susc_grid_origin"]
     traj = m["traj"][:200]

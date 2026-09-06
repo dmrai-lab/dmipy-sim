@@ -18,7 +18,7 @@ import jax.numpy as jnp
 
 from dmipy_sim.geometry.mesh import Mesh
 from dmipy_sim.replay.builders.mesh_bundle import BoxedMesh, _min_radius
-from dmipy_sim.susceptibility_field import mesh_contains
+from dmipy_sim.fields.susceptibility_field import mesh_contains
 
 from tests.conftest import assert_step_resolves_the_collision_lookup
 

@@ -14,7 +14,7 @@ import numpy.testing as npt
 import jax.numpy as jnp
 
 from dmipy_sim import simulate, FreeDiffusion, Sphere, set_b
-from dmipy_sim.waveforms import pgse, ogse, Waveform, calc_b
+from dmipy_sim.acquisition.waveforms import pgse, ogse, Waveform, calc_b
 from .conftest import D, N_WALKERS, SEED
 
 

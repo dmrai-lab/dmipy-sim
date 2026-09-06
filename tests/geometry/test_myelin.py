@@ -21,7 +21,7 @@ import jax
 import jax.numpy as jnp
 
 from dmipy_sim import simulate, Cylinder, FreeDiffusion, MyelinatedCylinder, set_b
-from dmipy_sim.waveforms import pgse, Waveform, tile_waveform
+from dmipy_sim.acquisition.waveforms import pgse, Waveform, tile_waveform
 
 
 # ─── Helpers ────────────────────────────────────────────────────────────────

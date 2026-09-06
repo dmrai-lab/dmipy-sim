@@ -11,7 +11,7 @@ import numpy.testing as npt
 import jax.numpy as jnp
 
 from dmipy_sim import simulate, Cylinder, FreeDiffusion, set_b
-from dmipy_sim.waveforms import Waveform
+from dmipy_sim.acquisition.waveforms import Waveform
 from tests.conftest import D, N_WALKERS, SEED, load_fixture
 
 
@@ -79,7 +79,7 @@ def test_cylinder_misst_config2():
 
 def test_cylinder_parallel_gradient_is_free():
     """Gradient along cylinder axis → walkers diffuse freely → exp(-bD)."""
-    from dmipy_sim.waveforms import pgse
+    from dmipy_sim.acquisition.waveforms import pgse
     b_values = np.linspace(1e8, 3e9, 20)
     bvecs = np.tile([0., 0., 1.], (20, 1))  # gradient along z = cylinder axis
     wf = set_b(pgse(delta=0.2e-3, DELTA=40e-3, G_magnitude=1.0,
@@ -96,7 +96,7 @@ def test_cylinder_parallel_gradient_is_free():
 
 def test_cylinder_signal_above_free_perp():
     """Perpendicular gradient → restricted; signal must exceed free diffusion."""
-    from dmipy_sim.waveforms import pgse
+    from dmipy_sim.acquisition.waveforms import pgse
     b_values = np.linspace(1e8, 3e9, 20)
     bvecs = np.tile([1., 0., 0.], (20, 1))  # gradient ⊥ cylinder axis
     wf = set_b(pgse(delta=0.2e-3, DELTA=40e-3, G_magnitude=1.0,

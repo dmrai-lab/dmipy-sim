@@ -16,7 +16,7 @@ import numpy.testing as npt
 import jax.numpy as jnp
 
 from dmipy_sim import simulate, Sphere, set_b
-from dmipy_sim.waveforms import Waveform, calc_b
+from dmipy_sim.acquisition.waveforms import Waveform, calc_b
 from tests.conftest import D, N_WALKERS, SEED, load_fixture
 
 
@@ -134,7 +134,7 @@ def test_sphere_misst_config2():
 def test_sphere_signal_above_free():
     """Restricted sphere signal must be >= free diffusion at same b-values."""
     from dmipy_sim import FreeDiffusion
-    from dmipy_sim.waveforms import pgse
+    from dmipy_sim.acquisition.waveforms import pgse
     b_values = np.linspace(1e8, 3e9, 20)
     bvecs = np.tile([1., 0., 0.], (20, 1))
     wf = set_b(pgse(delta=0.2e-3, DELTA=40e-3, G_magnitude=1.0,

@@ -43,7 +43,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from dmipy_sim import simulate, pgse, Box1D, Cylinder, Sphere
-from dmipy_sim.waveforms import Waveform, calc_b
+from dmipy_sim.acquisition.waveforms import Waveform, calc_b
 import jax.numpy as jnp
 
 # ── Constants ────────────────────────────────────────────────────────────────

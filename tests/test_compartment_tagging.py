@@ -21,7 +21,7 @@ from dmipy_sim.geometry import (
     Box1D,
     Ellipsoid,
 )
-from dmipy_sim.waveforms import Waveform
+from dmipy_sim.acquisition.waveforms import Waveform
 
 
 # ---------------------------------------------------------------------------

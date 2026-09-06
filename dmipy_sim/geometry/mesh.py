@@ -243,7 +243,7 @@ def _classify_arr(A, r):
     reported EXTERIOR, and 99.4% of those have an empty gather. Deep interior reads as outside.
 
     Use :func:`_gather_is_populated` to tell "outside" from "cannot tell", and resolve the latter with an
-    exact test (:func:`dmipy_sim.susceptibility_field.mesh_contains`). :meth:`Mesh.init_positions` does
+    exact test (:func:`dmipy_sim.fields.susceptibility_field.mesh_contains`). :meth:`Mesh.init_positions` does
     exactly that. Per-step compartment tracking in the walk does NOT yet -- see dmrai-lab/dmipy-sim#33.
     """
     r_w = _wrap_arr(A, r)
@@ -1017,7 +1017,7 @@ class Mesh(Geometry):
         path and its known inaccuracy. That is a preserved behaviour, not an endorsement; the accurate
         treatment for an open surface is tracked with this issue.
         """
-        from ..susceptibility_field import mesh_contains
+        from ..fields.susceptibility_field import mesh_contains
         if intra is not None:
             warnings.warn("init_positions(intra=...) is spelled pool='intra' / pool='extra', and the pool a "
                           "driver seeds is the geometry's constructor argument Mesh(pool=...)",
@@ -1100,7 +1100,7 @@ class Mesh(Geometry):
         lab = np.array(_classify_batch(self._A, jpts))
         undecided = ~np.asarray(_populated_batch(self._A, jpts))
         if undecided.any():
-            from ..susceptibility_field import mesh_contains
+            from ..fields.susceptibility_field import mesh_contains
             inside = mesh_contains(np.asarray(self.vertices, float),
                                    np.asarray(self.faces, np.int64), pts[undecided])
             lab[undecided] = np.where(inside, 1, 0)

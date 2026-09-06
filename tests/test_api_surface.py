@@ -23,13 +23,13 @@ _SRC = Path(dmipy_sim.__file__).parent
 
 # Submodules imported by dmipy-fit / dmipy-design, so they must keep resolving.
 _DOWNSTREAM_MODULES = [
-    "dmipy_sim.replay.replay", "dmipy_sim.constants", "dmipy_sim.waveforms", "dmipy_sim.replay.sh_convolution",
-    "dmipy_sim.replay.gaunt", "dmipy_sim.geometries", "dmipy_sim.replay.compression", "dmipy_sim.rf",
+    "dmipy_sim.replay.replay", "dmipy_sim.constants", "dmipy_sim.acquisition.waveforms", "dmipy_sim.replay.sh_convolution",
+    "dmipy_sim.replay.gaunt", "dmipy_sim.geometries", "dmipy_sim.replay.compression", "dmipy_sim.acquisition.rf",
     "dmipy_sim.replay.bank", "dmipy_sim.pulse_sequence", "dmipy_sim.sequences", "dmipy_sim.sequences.pulseq",
     "dmipy_sim.substrate", "dmipy_sim.substrate.biophysical_constants", "dmipy_sim.substrate.substrate",
     "dmipy_sim.geometry", "dmipy_sim.geometry.mesh", "dmipy_sim.geometry.curved_tube",
     "dmipy_sim.replay.phantom", "dmipy_sim.replay.trajectories", "dmipy_sim.physics", "dmipy_sim.bloch",
-    "dmipy_sim.mt", "dmipy_sim.mt_walk", "dmipy_sim.susceptibility", "dmipy_sim.susceptibility_field",
+    "dmipy_sim.mt", "dmipy_sim.mt_walk", "dmipy_sim.fields.susceptibility", "dmipy_sim.fields.susceptibility_field",
     # the engine package (#88 step 4); the flat names above stay as warning shims for one release
     "dmipy_sim.engine", "dmipy_sim.engine.core", "dmipy_sim.engine.physics", "dmipy_sim.engine.bloch",
     "dmipy_sim.engine.pulse_sequence", "dmipy_sim.engine.mt", "dmipy_sim.engine.mt_walk",
@@ -39,6 +39,10 @@ _DOWNSTREAM_MODULES = [
     "dmipy_sim.replay.bank", "dmipy_sim.replay.phantom", "dmipy_sim.replay.sh_convolution", "dmipy_sim.replay.gaunt",
     "dmipy_sim.replay._replay_kernel", "dmipy_sim.replay.builders.mesh_axon", "dmipy_sim.replay.builders.mesh_bundle",
     "dmipy_sim.mesh_axon", "dmipy_sim.mesh_bundle", "dmipy_sim._replay_kernel",
+    # acquisition / fields / viz packages (#88 step 5, part 2); dmipy_sim.viz is the package re-exporting viz.py
+    "dmipy_sim.acquisition.waveforms", "dmipy_sim.acquisition.rf", "dmipy_sim.acquisition.noise",
+    "dmipy_sim.fields.susceptibility", "dmipy_sim.fields.susceptibility_field",
+    "dmipy_sim.viz", "dmipy_sim.viz.viz", "dmipy_sim.viz.pedagogy", "dmipy_sim.noise", "dmipy_sim.pedagogy",
 ]
 
 

@@ -1,7 +1,7 @@
 """Closed-form RF reference cases -- the analogue of the LTE bang-bang / known-max-b
 sanity anchors used to validate the gradient (NOW) waveforms.
 
-These check the B1(t) Bloch forward (dmipy_sim.rf.bloch_simulate) against analytic
+These check the B1(t) Bloch forward (dmipy_sim.acquisition.rf.bloch_simulate) against analytic
 results that are *known* independently of the simulator:
 
   1. rectangular (hard) pulse: exact rotation about the tilted effective field, for
@@ -12,7 +12,7 @@ results that are *known* independently of the simulator:
 import numpy as np
 import pytest
 
-from dmipy_sim.rf import B1Pulse, bloch_simulate
+from dmipy_sim.acquisition.rf import B1Pulse, bloch_simulate
 from dmipy_sim.constants import GAMMA
 
 

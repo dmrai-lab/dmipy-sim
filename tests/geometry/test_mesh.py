@@ -14,7 +14,7 @@ import jax.numpy as jnp
 import pytest
 
 from dmipy_sim import simulate, Sphere, Mesh, load_ply, set_b
-from dmipy_sim.waveforms import Waveform
+from dmipy_sim.acquisition.waveforms import Waveform
 
 trimesh = pytest.importorskip("trimesh")
 
@@ -222,7 +222,7 @@ def test_viz_helpers_that_touch_geometry_still_resolve(tmp_path):
     physics (#91).
     """
     from dmipy_sim import seed_in_cell
-    from dmipy_sim.viz import _split_cells
+    from dmipy_sim.viz.viz import _split_cells
 
     V, F = _icosphere(2)
     g = Mesh(V, F)

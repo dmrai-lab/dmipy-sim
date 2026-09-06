@@ -10,7 +10,7 @@ import pytest
 
 from dmipy_sim import simulate_trajectories, Cylinder, Box1D
 from dmipy_sim.replay.trajectories import replay
-from dmipy_sim.waveforms import pgse, set_b
+from dmipy_sim.acquisition.waveforms import pgse, set_b
 
 N = 4000
 MC = 1.0 / np.sqrt(N)          # Monte-Carlo floor

@@ -42,7 +42,7 @@ dmipy-core dmipy/utils/spherical_convolution.py (validated convention)
 from __future__ import annotations
 
 import numpy as np
-from ..waveforms import rotate_waveform
+from ..acquisition.waveforms import rotate_waveform
 from ._replay_kernel import se_gate
 from scipy.special import eval_legendre, roots_legendre
 

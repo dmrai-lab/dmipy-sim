@@ -59,15 +59,15 @@ def _refocusing_residual(G, dt):
 
 
 def _calc_b_from_waveform(G, dt):
-    """b per measurement, ``(n_m, n_t, 3) -> (n_m,)``: :func:`dmipy_sim.waveforms.b_from_gradient`."""
-    from ..waveforms import b_from_gradient
+    """b per measurement, ``(n_m, n_t, 3) -> (n_m,)``: :func:`dmipy_sim.acquisition.waveforms.b_from_gradient`."""
+    from ..acquisition.waveforms import b_from_gradient
     return b_from_gradient(G, dt)
 
 
 def _btensor_from_waveform(G, dt):
     """B-tensor per measurement, ``(n_m, n_t, 3) -> (n_m, 3, 3)``:
-    :func:`dmipy_sim.waveforms.btensor_from_gradient`."""
-    from ..waveforms import btensor_from_gradient
+    :func:`dmipy_sim.acquisition.waveforms.btensor_from_gradient`."""
+    from ..acquisition.waveforms import btensor_from_gradient
     return btensor_from_gradient(G, dt)
 
 

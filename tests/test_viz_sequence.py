@@ -15,7 +15,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from dmipy_sim import pgse, pgste, set_b
-from dmipy_sim import viz
+from dmipy_sim.viz import viz
 
 
 def test_display_gradient_is_same_sign_while_sim_gradient_is_bipolar():

@@ -160,7 +160,7 @@ def _susc_grid_fidelity(m, arrays, gm, decoded_pos, dt, env):
     trajectory vs the RAW f64 grid at the FULL-resolution trajectory (folds in f16 quantisation AND
     the position-codec error), against the split-half MC floor of the raw signal. Returns dict or None."""
     from ..constants import GAMMA
-    from ..susceptibility_field import assemble_field, sample_grid
+    from ..fields.susceptibility_field import assemble_field, sample_grid
     fb = m.get("susc_field_basis")
     if fb is None or "susc_grid_iso_local" not in arrays:
         return None
@@ -227,7 +227,7 @@ def _susc_path_bloch_fidelity(m, arrays, pm, gm, env, n_sub=8000):
     the comparison floor is the split-half floor OF THAT SUBSAMPLE, so the verdict stays self-consistent.
     """
     from ..constants import GAMMA
-    from ..susceptibility_field import assemble_field, sample_grid
+    from ..fields.susceptibility_field import assemble_field, sample_grid
     from .trajectories import replay_bloch
     fb = m.get("susc_field_basis")
     if fb is None or "susc_path_dct" not in arrays:
@@ -299,7 +299,7 @@ def _susc_path_fidelity(m, arrays, pm, gm, env):
     gate bandwidth, so certifying on SE alone would pass a pack that fails the trains it advertises.
     """
     from ..constants import GAMMA
-    from ..susceptibility_field import assemble_field, sample_grid
+    from ..fields.susceptibility_field import assemble_field, sample_grid
     fb = m.get("susc_field_basis")
     if fb is None or "susc_path_dct" not in arrays:
         return None
@@ -394,7 +394,7 @@ def susc_path_encode(fb, traj, origin, *, K=32, bits=8, dtype=np.float16, atol_t
     bit-packing to actually save bytes, and 6-bit measured unsafe anyway.
     """
     from scipy.fft import dct
-    from ..susceptibility_field import sample_grid
+    from ..fields.susceptibility_field import sample_grid
     traj = np.asarray(traj, np.float64)
     n_w, n_t = traj.shape[0], traj.shape[1]
     vs = np.asarray(fb["voxel_size"], float)
@@ -475,7 +475,7 @@ def susc_path_decode(arrays, meta, *, n_w=None):
 
 def susc_path_field(b, b0_dir, *, B0, chi_iso, chi_aniso=0.0, has_aniso=False):
     """Contract decoded path channels into dB(t) for one (B0, direction, chi) -- mirrors assemble_field."""
-    from ..susceptibility_field import _q_of_H
+    from ..fields.susceptibility_field import _q_of_H
     q = _q_of_H(b0_dir)
     dB = chi_iso * B0 * (b[:, 0] - np.einsum("c,cwt->wt", q, np.swapaxes(b[:, 1:7], 0, 1)))
     if has_aniso and chi_aniso and b.shape[1] >= 13:
@@ -511,7 +511,7 @@ def replay_susc(pack, waveform, *, b0_dir=(0.0, 0.0, 1.0), B0=0.0, chi_iso=0.0, 
     that question can be asked -- but without this argument the only way to ask it was to decode the
     channel and rebuild the phase sum by hand, against private helpers."""
     from ..constants import GAMMA
-    from ..susceptibility_field import assemble_field, sample_grid
+    from ..fields.susceptibility_field import assemble_field, sample_grid
     chans = (pack.meta.get("compression", {}).get("channels", {}) or {})
     pm = chans.get("susceptibility_path")
     has_grid = "susc_grid_iso_local" in pack.arrays

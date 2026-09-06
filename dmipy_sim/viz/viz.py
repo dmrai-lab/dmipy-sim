@@ -16,7 +16,7 @@ try:
 except ImportError:
     _MPL_AVAILABLE = False
 
-from .constants import GAMMA
+from ..constants import GAMMA
 
 # x / y / z colour palette
 _COLORS = ['#2196F3', '#4CAF50', '#F44336']   # blue, green, red
@@ -523,7 +523,7 @@ def seed_in_cell(cell, n_walkers, seed=0):
     component), by rejection with a ray-cast parity test (robust on the wavy,
     concave cell walls where a nearest-normal side test misfires).  Returns
     (n, 3) metres."""
-    from .susceptibility_field import mesh_contains
+    from ..fields.susceptibility_field import mesh_contains
     V = np.asarray(cell.vertices, float)
     F = np.asarray(cell.faces, np.int64)
     lo, hi = V.min(0), V.max(0)

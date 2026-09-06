@@ -31,7 +31,7 @@ trimesh = pytest.importorskip("trimesh")
 
 from dmipy_sim import set_b, simulate
 from dmipy_sim.geometry.mesh import Mesh
-from dmipy_sim.waveforms import pgse
+from dmipy_sim.acquisition.waveforms import pgse
 
 from tests._containment import inside as contains
 

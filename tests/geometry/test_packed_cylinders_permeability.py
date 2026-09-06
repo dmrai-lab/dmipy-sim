@@ -35,7 +35,7 @@ import numpy as np
 import numpy.testing as npt
 
 from dmipy_sim import simulate, PackedCylinders, Cylinder, set_b
-from dmipy_sim.waveforms import pgse
+from dmipy_sim.acquisition.waveforms import pgse
 
 from tests.conftest import D, N_WALKERS, N_EXACT, SEED
 

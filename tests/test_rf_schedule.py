@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
-from dmipy_sim.waveforms import Waveform, rf_schedule_coherence, apply_rf_schedule
+from dmipy_sim.acquisition.waveforms import Waveform, rf_schedule_coherence, apply_rf_schedule
 from dmipy_sim.sequences import Sequence
 
 

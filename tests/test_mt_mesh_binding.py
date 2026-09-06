@@ -97,7 +97,7 @@ def test_the_mt_driver_walks_the_pool_its_seeds_name():
     ensemble before the first saved step) and `dt_save` is set so one step displaces ~0.035 um against
     R=2 um, i.e. containment cannot flip by diffusion alone.
     """
-    from dmipy_sim.susceptibility_field import mesh_contains
+    from dmipy_sim.fields.susceptibility_field import mesh_contains
     import jax
 
     mesh, _ = _mesh_sphere(subdivisions=2)

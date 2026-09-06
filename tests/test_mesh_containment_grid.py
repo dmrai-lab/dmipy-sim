@@ -14,7 +14,7 @@ import pytest
 # a skip instead (#91).
 trimesh = pytest.importorskip("trimesh")
 
-from dmipy_sim.susceptibility_field import mesh_contains, mesh_contains_fast, mesh_inside
+from dmipy_sim.fields.susceptibility_field import mesh_contains, mesh_contains_fast, mesh_inside
 
 
 # Built on FIRST USE, never at import/collection time. As a `parametrize` argument this ran at

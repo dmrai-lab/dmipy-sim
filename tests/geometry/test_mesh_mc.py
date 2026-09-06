@@ -18,7 +18,7 @@ import jax.numpy as jnp
 import pytest
 
 from dmipy_sim import simulate, Sphere, Cylinder, Mesh, set_b, pgse, pgste
-from dmipy_sim.waveforms import Waveform
+from dmipy_sim.acquisition.waveforms import Waveform
 
 trimesh = pytest.importorskip("trimesh")
 

@@ -13,7 +13,7 @@ import dmipy_sim as d
 
 def test_one_axis_to_z_rotation():
     from dmipy_sim.geometry.base import _rotation_to_z
-    from dmipy_sim.susceptibility import _axis_to_z_rotation
+    from dmipy_sim.fields.susceptibility import _axis_to_z_rotation
     rng = np.random.default_rng(0)
     for axis in list(rng.normal(size=(20, 3))) + [np.array([0, 0, 1.0]), np.array([0, 0, -1.0]),
                                                   np.array([1e-9, 0, 1.0])]:
@@ -56,7 +56,7 @@ def test_retired_knobs_are_gone():
 
 def test_seed_in_cell_uses_the_exact_containment_test():
     from dmipy_sim.geometry import mesh_shapes
-    from dmipy_sim.susceptibility_field import mesh_contains
+    from dmipy_sim.fields.susceptibility_field import mesh_contains
     V, F = mesh_shapes.icosphere(3e-6, subdivisions=2)
     m = d.Mesh(V, F, feature_radius=1e-6)
     pts = d.seed_in_cell(m, 500, seed=0)

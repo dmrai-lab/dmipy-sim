@@ -8,7 +8,7 @@ import numpy as np
 import numpy.testing as npt
 
 from dmipy_sim import simulate, simulate_mixture, FreeDiffusion, Sphere, set_b
-from dmipy_sim.waveforms import pgse
+from dmipy_sim.acquisition.waveforms import pgse
 from .conftest import D, N_WALKERS, SEED
 
 
