@@ -21,7 +21,7 @@ from dmipy_sim import (
     simulate, PackedMyelinatedCylinders, pack_myelinated_cylinders,
     set_b,
 )
-from dmipy_sim.waveforms import pgse
+from dmipy_sim.acquisition.waveforms import pgse
 
 
 SEED = 42

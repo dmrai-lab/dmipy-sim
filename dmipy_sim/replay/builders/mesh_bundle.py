@@ -386,7 +386,7 @@ def containment_predicates(bundle, mode="fast"):
     it disagrees with parity on well under 1% of points. Validate with
     :func:`compare_containment` on any new substrate before trusting it: on a sparse one it will be wrong.
     """
-    from ...susceptibility_field import mesh_contains, mesh_inside
+    from ...fields.susceptibility_field import mesh_contains, mesh_inside
     fn = mesh_contains if mode == "exact" else mesh_inside
     if mode not in ("fast", "exact"):
         raise ValueError(f"containment must be 'fast' or 'exact', got {mode!r}")
@@ -402,7 +402,7 @@ def compare_containment(bundle, n=5000, seed=11):
     Run this before seeding a NEW substrate with ``containment='fast'``: the fast test's validity is a
     property of how densely the box is filled, not of the code.
     """
-    from ...susceptibility_field import mesh_contains, mesh_inside
+    from ...fields.susceptibility_field import mesh_contains, mesh_inside
     rng = np.random.default_rng(seed)
     q = rng.uniform(bundle.box_min, bundle.box_max, (int(n), 3))
     out = {}
@@ -603,7 +603,7 @@ def mesh_bundle_master(bundle, *, n_walkers=30_000, params=None, T_max=0.04, dt_
         out["orientation"] = {k: v for k, v in ori.items() if k != "frame"}
 
     if field:
-        from ...susceptibility_field import mesh_field_basis
+        from ...fields.susceptibility_field import mesh_field_basis
         basis, origin, vs = mesh_field_basis(bundle.inner, bundle.outer, bundle.box_min, bundle.box_max,
                                              res=field_res, include_aniso=True)
         out["susc_field_basis"] = {

@@ -24,10 +24,10 @@ from .engine.pulse_sequence import (BlochSequence, gradient_echo, spin_echo,
                              prepend_mt_prep, run_bloch_sequence, emergent_z_spectrum)
 from .engine.gpu import (gpu_available, check_gpu, free_gpu_memory, gpu_session,
                   list_gpu_processes)
-from .viz import (plot_waveform, plot_sequence_comparison,
+from .viz.viz import (plot_waveform, plot_sequence_comparison,
                   plot_mesh_section, plot_walkers_3d, plot_cell_surface, plot_mesh_3d,
                   seed_in_cell, walk_paths, plot_trajectories, save_rotation)
-from .waveforms import (Waveform, pgse, pgste, ogse, cpmg, trapezoidal_ogse, b_trapezoidal_ogse,
+from .acquisition.waveforms import (Waveform, pgse, pgste, ogse, cpmg, trapezoidal_ogse, b_trapezoidal_ogse,
                         set_b, calc_b, calc_btensor, btensor_invariants, ste, pte,
                         rotate_waveform, tile_waveform)
 from .geometry import (FreeDiffusion, Box1D, Sphere, Cylinder, MyelinatedCylinder,
@@ -39,12 +39,12 @@ from .geometry import (FreeDiffusion, Box1D, Sphere, Cylinder, MyelinatedCylinde
                          PermeableSlab1D)
 from .geometry.curved_tube import CurvedTube, MultiShellCurvedTube, PackedCurvedTubes
 from .geometry.mesh import Mesh, load_ply
-from .susceptibility import (SusceptibilitySources, MyelinSusceptibility,
+from .fields.susceptibility import (SusceptibilitySources, MyelinSusceptibility,
                              GridSusceptibility, dipole_field,
                              myelin_susceptibility_tensor, radial_from_sdf, sample_grid)
 from .geometry import mesh_shapes
 from .constants import GAMMA
-from .noise import add_rician_noise, add_rician_noise_batch, add_nc_chi_noise, estimate_sigma
+from .acquisition.noise import add_rician_noise, add_rician_noise_batch, add_nc_chi_noise, estimate_sigma
 from .replay.sh_convolution import (
     compute_fiber_response,
     apply_odf,
@@ -52,7 +52,7 @@ from .replay.sh_convolution import (
     isotropic_odf_sh,
 )
 from .engine import mt
-from .rf import B1Pulse, bloch_simulate, slice_profile
+from .acquisition.rf import B1Pulse, bloch_simulate, slice_profile
 from .replay.replay import (ReplayPack, read_rpk, write_rpk, compile_scheme, replay_signal,
                      replay_signal_jax, surface_logweight)
 from .replay import bank

@@ -43,7 +43,7 @@ import matplotlib.pyplot as plt
 import jax.numpy as jnp
 
 from dmipy_sim import simulate, Box1D, Cylinder, Sphere, set_b
-from dmipy_sim.waveforms import pgse
+from dmipy_sim.acquisition.waveforms import pgse
 
 
 # ---------------------------------------------------------------------------

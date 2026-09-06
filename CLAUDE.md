@@ -85,7 +85,7 @@ _, pos, origin, comp = simulate(N, D, wf, Mesh(V, F, permeability=2e-5), seed=0,
 permeated = (comp != comp[:, :1]).any(axis=1)   # pos: (n_walkers, n_timesteps, 3)
 ```
 
-**Visualise** a mesh + walkers (see `dmipy_sim.viz`): `plot_mesh_3d`, `plot_mesh_section`,
+**Visualise** a mesh + walkers (see `dmipy_sim.viz.viz`): `plot_mesh_3d`, `plot_mesh_section`,
 `walk_paths` + `plot_trajectories`, `save_rotation` → gallery in `examples/mesh_viz/`.
 
 **Cross-engine parity**: build a `dmipy_fit` `AcquisitionScheme` and pass it straight to
@@ -99,7 +99,10 @@ The engine lives in `dmipy_sim/engine/` (`core`, `physics`, `bloch`, `pulse_sequ
 `phantom`, `sh_convolution`, `gaunt`, `_replay_kernel`, and `builders/` = `mesh_axon`, `mesh_bundle`; step 5). `dmipy_sim.replay`
 stays a first-class path: the package re-exports `replay/replay.py` (`ReplayPack`, `compile_scheme`, `replay_signal*`). The other
 old flat paths (`dmipy_sim.core`, `dmipy_sim.bank`, …) are shims that warn `DeprecationWarning` and go away next release;
-new code imports `dmipy_sim.engine.<module>` / `dmipy_sim.replay.<module>` (or the public names from `dmipy_sim`).
+the acquisition side is `dmipy_sim/acquisition/` (`waveforms`, `rf`, `noise`; `sequences/` stays its own package), the
+off-resonance fields `dmipy_sim/fields/` (`susceptibility`, `susceptibility_field`), and plotting `dmipy_sim/viz/` (`viz`,
+`pedagogy`; `dmipy_sim.viz` is the package re-exporting `viz.py`). New code imports the packaged path (or the public names
+from `dmipy_sim`).
 
 | File | Role |
 |------|------|
@@ -108,19 +111,19 @@ new code imports `dmipy_sim.engine.<module>` / `dmipy_sim.replay.<module>` (or t
 | `geometry/` | the substrate package: `base` (ABC, `interact`, FreeDiffusion, Box1D), `analytic` (Sphere, Cylinder, Ellipsoid, PermeableSlab1D/Shell), `packed`, `myelin`, `packing`, `curved_tube`, `mesh`, `mesh_shapes`, and **`_boundary`** — the one implementation of each boundary rule. `dmipy_sim.geometries` (and the root `mesh`, `mesh_shapes`, `curved_tube`, `_boundary` modules) are compat shims that warn `DeprecationWarning`; they go away next release. |
 | `geometry/curved_tube.py` | `CurvedTube`, `MultiShellCurvedTube`, `PackedCurvedTubes` — sphere-swept polyline fibres (curving strands, e.g. DiSCo). Intra-axonal space is the Minkowski sum of a centerline polyline with a ball, so it is smooth at every joint (no kink/gap/overlap of chained straight cylinders) and carries the local orientation along the strand. Analytic and impermeable — no mesh, no grid — so far cheaper than walking the equivalent triangulated tube |
 | `geometry/mesh.py` | `Mesh` (grid-accelerated, closed or 3-D periodic triangular mesh) + `load_ply` |
-| `susceptibility.py` | off-resonance field providers (`SusceptibilitySources` iron/vasculature, `MyelinSusceptibility` hollow-cylinder, `GridSusceptibility` k-space dipole on a voxel source); each exposes a pure-JAX `delta_bz_fn()` that plugs into `simulate_bloch(..., susceptibility=)` as a per-step z-precession |
+| `fields/susceptibility.py` | off-resonance field providers (`SusceptibilitySources` iron/vasculature, `MyelinSusceptibility` hollow-cylinder, `GridSusceptibility` k-space dipole on a voxel source); each exposes a pure-JAX `delta_bz_fn()` that plugs into `simulate_bloch(..., susceptibility=)` as a per-step z-precession |
 | `geometry/mesh_shapes.py` | procedural myelin meshes + analytic grid sources (`myelinated_cylinder`, `undulating_myelin`, `half_bare_myelin`, `grid_axes`, `voxelize_shell`) — the susceptibility test/validation substrates |
 | `engine/physics.py` | per-timestep `jax.lax.scan` bodies (`make_step_fn`, …) — boundary + phase + `log_w`, pure JAX |
 | `replay/_replay_kernel.py` | **the** replay primitives: `resample_gradient` (waveform → walk grid), `gradient_phase` / `phase_increments` (`γ dt Σ G·r`), `se_gate` (spin-echo sign), each with a `_jax` twin (`gradient_phase` is a chunked `einsum`, so the host replay never holds a float64 copy of the walk and does not pay BLAS's skinny-gemm path; the `_jax` twins pin `Precision.HIGHEST`, since TF32 on a GPU biased the Bloch replay signal by 10-20%). `trajectories.replay*`, `replay_bloch*`, `bank`, `sh_convolution` read them; `trajectories.replay_bloch` (numpy, the reference) and `replay_bloch_jax` (the engine: `lax.scan`, one measurement at a time) take the same arguments and share `_bloch_replay_terms` — finite/shaped pulses, carriers, slice-select, B1+, MT blend, weights, per-walker echoes all live there once; `compression.bridge_projection` is the one mode-space projection behind `mode_space_phi` and `replay.compile_scheme` |
 | `engine/mt.py` | magnetization-transfer host physics: impact-angle `stick_probability`, `(κ_MT,dwell)↔(f_b,k_f)` conversions, two-pool Bloch–McConnell oracle (`bloch_mcconnell_*`, `mt_z_spectrum`); **owns** `surface_to_volume`, `resolve_equilibrate_mode`, `equilibrate_burnin_plateau` for both MT drivers (`bloch.simulate_bloch`, `mt_walk.simulate_mt_trajectories`); the MT walk at `κ_MT = 0` is the plain walk to the bit and stores float32 |
 | `engine/bloch.py` | **forward vector-Bloch engine** `simulate_bloch` — carries `M=(Mx,My,Mz)` through RF + gradient + relaxation in ONE forward pass (no replay); opt-in MT binding + bound-pool blend + off-resonance + emergent voxel-scale crusher + **membrane permeability** (sub-stepped Powles crossing, so exchange across a longitudinal-storage mixing time is captured — e.g. FEXI) |
 | `engine/pulse_sequence.py` | `BlochSequence`, `gradient_echo`/`spin_echo` readouts, `prepend_mt_prep` (off-resonance MT-prep saturation block), `run_bloch_sequence`, `emergent_z_spectrum` (turnkey CW-saturation Z-spectrum sweep; emergent counterpart of `mt.mt_z_spectrum`) |
-| `waveforms.py` | `Waveform`, `pgse/ogse/cpmg/…`, `set_b`; **the** b / B-tensor integrals `b_from_gradient`, `btensor_from_gradient` (rectangular q, trapezoidal ∫; `calc_b`/`calc_btensor` and `sequences` read them) |
+| `acquisition/waveforms.py` | `Waveform`, `pgse/ogse/cpmg/…`, `set_b`; **the** b / B-tensor integrals `b_from_gradient`, `btensor_from_gradient` (rectangular q, trapezoidal ∫; `calc_b`/`calc_btensor` and `sequences` read them) |
 | `sequences/` | `Sequence` = a `Waveform` (same readout attributes: `echo_idx`, `echo_indices`, `rf_events`, `chi_perp`, …) plus per-measurement encoding (`bvalues`, `gradient_directions`, `delta`, `Delta`, `TE`, family flags) for dmipy-fit; every `from_X` constructor ends with an exact numeric scaling so `bvalues == b_from_gradient(G, dt)`; `pulseq` import/export |
 | `engine/gpu.py`, `engine/_gpu_config.py` | GPU guard/session, device-memory cap |
-| `noise.py` | Rician / nc-χ measurement noise |
+| `acquisition/noise.py` | Rician / nc-χ measurement noise |
 | `replay/sh_convolution.py` | SH convolution for orientation distributions |
-| `viz.py` | waveform plots + **mesh observability** (below) |
+| `viz/viz.py` | waveform plots + **mesh observability** (below) |
 
 ## Geometry contract (duck-typed by `simulate`/`make_step_fn`)
 

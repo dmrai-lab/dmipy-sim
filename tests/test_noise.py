@@ -1,4 +1,4 @@
-"""Tests for dmipy_sim.noise — Rician and NC-chi measurement noise.
+"""Tests for dmipy_sim.acquisition.noise — Rician and NC-chi measurement noise.
 
 Validation approach: use the exact second-moment identity for the
 Rice distribution:
@@ -12,7 +12,7 @@ We use N = 200_000 which gives SE < 0.1% for σ = 0.05.
 import numpy as np
 import pytest
 
-from dmipy_sim.noise import (
+from dmipy_sim.acquisition.noise import (
     add_rician_noise,
     add_rician_noise_batch,
     add_nc_chi_noise,

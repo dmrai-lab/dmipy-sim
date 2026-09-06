@@ -15,7 +15,7 @@ import pytest
 pytest.importorskip("pypulseq")
 import pypulseq as pp
 
-from dmipy_sim.waveforms import trapezoidal_ogse, pgse, calc_b, Waveform
+from dmipy_sim.acquisition.waveforms import trapezoidal_ogse, pgse, calc_b, Waveform
 from dmipy_sim.sequences import (
     from_pulseq, to_pulseq, make_system, PULSEQ_SYSTEMS)
 from dmipy_sim.constants import GAMMA
@@ -142,7 +142,7 @@ def test_stimulated_echo_state_survives_the_round_trip():
     TM the gap between them. That holds for any sequence whose RF is described, not only for files we
     wrote, and leaves no stored copy to disagree with the schedule.
     """
-    from dmipy_sim.waveforms import pgste
+    from dmipy_sim.acquisition.waveforms import pgste
 
     w = pgste(delta=5e-3, TM=20e-3, G_magnitude=0.04, bvecs=[[1, 0, 0]], n_t=400)
     assert w.TM is not None and w.stimulated_echo, "precondition: pgste must set the STE state"
@@ -202,7 +202,7 @@ def test_native_rf_export_is_scanner_shaped_and_costs_time_when_there_is_no_gap(
     lengthens -- what it would cost on a scanner, warned about rather than hidden, and asserted here
     rather than assumed.
     """
-    from dmipy_sim.waveforms import pgse, ogse
+    from dmipy_sim.acquisition.waveforms import pgse, ogse
 
     free = pgse(delta=5e-3, DELTA=20e-3, G_magnitude=0.04, bvecs=[[1, 0, 0]], n_t=400)
     with warnings.catch_warnings(record=True) as w:
@@ -247,7 +247,7 @@ def test_a_gradient_free_train_inserts_nothing():
     not from the number of pulses. Adding the optional constant diffusion gradient -- which is never off --
     is what forces room to be made for all five.
     """
-    from dmipy_sim.waveforms import cpmg
+    from dmipy_sim.acquisition.waveforms import cpmg
 
     plain = cpmg(n_echoes=4, TE=10e-3, G_magnitude=0.0, bvecs=[[1, 0, 0]], n_t_per_echo=50)
     with warnings.catch_warnings(record=True) as w:

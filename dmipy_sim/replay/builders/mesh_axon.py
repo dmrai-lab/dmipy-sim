@@ -3,7 +3,7 @@ susceptibility field-grid channel — the producer for a Winther-style susceptib
 
 Walks the intra-axonal water inside the inner (axonal) surface, represents the myelin water as a
 FROZEN pool (D=0) seeded in the sheath and weighted by its water content, builds the geometry-only
-susceptibility field basis once (:func:`dmipy_sim.susceptibility_field.mesh_field_basis`), and returns
+susceptibility field basis once (:func:`dmipy_sim.fields.susceptibility_field.mesh_field_basis`), and returns
 a master-walk dict for :func:`dmipy_sim.replay.bank.build_replay_pack` (``field_store='grid'``). No extra-
 axonal pool (an isolated axon's surroundings are free water carrying no substrate information) and no
 magnetization transfer — the minimal physical axon: restricted intra + static internal gradients.
@@ -19,7 +19,7 @@ log = logging.getLogger(__name__)
 
 import numpy as np
 
-from ...susceptibility_field import mesh_contains, mesh_field_basis
+from ...fields.susceptibility_field import mesh_contains, mesh_field_basis
 from .mesh_bundle import _min_radius, _rejection_seeds
 
 INTRA, MYELIN = 1, 2                      # compartment ids (0 = extra, unused here)

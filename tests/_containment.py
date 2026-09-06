@@ -14,7 +14,7 @@ an external reference keep calling `.contains` directly -- that comparison is th
 """
 import numpy as np
 
-from dmipy_sim.susceptibility_field import mesh_contains_fast
+from dmipy_sim.fields.susceptibility_field import mesh_contains_fast
 
 
 def inside(tri, pts):

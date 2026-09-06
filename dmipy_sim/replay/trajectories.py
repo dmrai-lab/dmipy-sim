@@ -37,7 +37,7 @@ _GAMMA_JAX = float(GAMMA)  # rad/(s·T) — exactly GAMMA, so the JAX and NumPy
 def _resolve_field_fn(susceptibility):
     """Return the pure-JAX ``r -> ΔBz`` callable of a susceptibility provider.
 
-    Accepts a :mod:`dmipy_sim.susceptibility` provider (exposes ``delta_bz_fn()``)
+    Accepts a :mod:`dmipy_sim.fields.susceptibility` provider (exposes ``delta_bz_fn()``)
     or a bare ``r -> ΔBz`` callable.  ``None`` returns ``None``.
     """
     if susceptibility is None:
@@ -340,7 +340,7 @@ def replay(
     replay over pre-saved boundary hit data.
 
     Susceptibility off-resonance (opt-in) is replayed by sampling a public
-    :mod:`dmipy_sim.susceptibility` provider's ``delta_bz_fn(r)`` along the stored
+    :mod:`dmipy_sim.fields.susceptibility` provider's ``delta_bz_fn(r)`` along the stored
     positions and adding ``γ·dt·Σ_t ε_P(t)·ΔBz(r(t))`` to the gradient phase.  The
     provider bakes in B0 / fibre orientation / χ, so one walk replays any field by
     re-evaluating a different provider (no re-simulation).  ``eps_P`` is the pathway
@@ -804,7 +804,7 @@ def replay_bloch(trajectory, dt_traj, G, dt_wf, rf_events, *,
         MT-prep saturation pulse saturate the broad bound pool).
     T2, T1 / T2_per_comp, T1_per_comp, comp_traj : as in replay.
     susceptibility : provider or callable, optional
-        A :mod:`dmipy_sim.susceptibility` provider (``delta_bz_fn()``) or a bare
+        A :mod:`dmipy_sim.fields.susceptibility` provider (``delta_bz_fn()``) or a bare
         ``r -> ΔBz`` callable; sampled along the walk and added to the free precession
         every step as ``γ·ΔBz(r(t))·dt`` — refocused emergently by the sequence's 180°.
         Mutually exclusive with ``extra_phase_per_step`` (which is the pre-baked

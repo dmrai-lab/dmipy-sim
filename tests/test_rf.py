@@ -1,8 +1,8 @@
-"""Tests for the continuous B1(t) RF representation (dmipy_sim.rf)."""
+"""Tests for the continuous B1(t) RF representation (dmipy_sim.acquisition.rf)."""
 import numpy as np
 import pytest
 
-from dmipy_sim.rf import B1Pulse, bloch_simulate, slice_profile
+from dmipy_sim.acquisition.rf import B1Pulse, bloch_simulate, slice_profile
 from dmipy_sim.constants import GAMMA
 from dmipy_sim.sequences import scanner_constants as scc
 

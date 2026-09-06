@@ -18,7 +18,7 @@ import numpy.testing as npt
 import pytest
 
 from dmipy_sim import simulate, simulate_mixture, FreeDiffusion, pack_cylinders, PackedCylinders, set_b, Cylinder
-from dmipy_sim.waveforms import pgse
+from dmipy_sim.acquisition.waveforms import pgse
 from tests.conftest import D, N_WALKERS, SEED
 
 

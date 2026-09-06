@@ -10,7 +10,7 @@ matplotlib = pytest.importorskip("matplotlib")
 matplotlib.use("Agg")
 
 from dmipy_sim import Cylinder, FreeDiffusion, pgse, cpmg, set_b, calc_b
-from dmipy_sim import pedagogy as ped
+from dmipy_sim.viz import pedagogy as ped
 
 NW = 5000
 

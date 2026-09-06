@@ -15,7 +15,7 @@ import numpy as np
 import numpy.testing as npt
 
 from dmipy_sim import simulate, FreeDiffusion, set_b, calc_b
-from dmipy_sim.waveforms import pgse, pgste
+from dmipy_sim.acquisition.waveforms import pgse, pgste
 from .conftest import D, SEED
 
 # Local walker count: FreeDiffusion is cheap per walker, so this test stays fast

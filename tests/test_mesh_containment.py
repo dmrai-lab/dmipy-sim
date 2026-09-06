@@ -11,7 +11,7 @@ import pytest
 
 trimesh = pytest.importorskip("trimesh")
 
-from dmipy_sim.susceptibility_field import mesh_contains, mesh_inside
+from dmipy_sim.fields.susceptibility_field import mesh_contains, mesh_inside
 
 
 def _thin_tube_in_a_big_box(scale=1.0, radius=1.5, bend=1.2):

@@ -1,4 +1,4 @@
-"""Analytic oracles for the mesh/grid susceptibility field (dmipy_sim.susceptibility_field).
+"""Analytic oracles for the mesh/grid susceptibility field (dmipy_sim.fields.susceptibility_field).
 
 The k-space dipole field is validated against closed-form infinite-cylinder solutions, which is what
 pins the ABSOLUTE field amplitude. The lumen null test is the sharp one: for a coaxial (hollow)
@@ -12,7 +12,7 @@ Geometry here is analytic (no meshes), so the tests are fast and CPU-only.
 import numpy as np
 import pytest
 
-from dmipy_sim.susceptibility_field import field_basis, assemble_field
+from dmipy_sim.fields.susceptibility_field import field_basis, assemble_field
 
 CHI, B0 = 1.06e-6, 7.0                      # myelin-water susceptibility contrast, 7T
 R_I, R_O = 1.3773e-6, 1.9676e-6             # g-ratio 0.7 coaxial axon

@@ -13,7 +13,7 @@ import numpy.testing as npt
 import jax.numpy as jnp
 
 from dmipy_sim import simulate, Ellipsoid, Sphere, set_b
-from dmipy_sim.waveforms import Waveform, pgse
+from dmipy_sim.acquisition.waveforms import Waveform, pgse
 from tests.conftest import D, N_WALKERS, SEED
 
 

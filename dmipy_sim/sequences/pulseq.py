@@ -154,7 +154,7 @@ def _ste_from_rf_schedule(rf_events):
 
 def to_pulseq(waveform, m=0, *, system=None, filename=None,
               excitation_flip_deg=90.0, native_rf=True):
-    """Export measurement ``m`` of a :class:`dmipy_sim.waveforms.Waveform` to a
+    """Export measurement ``m`` of a :class:`dmipy_sim.acquisition.waveforms.Waveform` to a
     pypulseq ``Sequence`` (written to ``filename`` if given).
 
     The full gradient G(t) is emitted as one arbitrary-gradient block (exact, on
@@ -359,7 +359,7 @@ def _longitudinal_mask(rf_events, t_grid):
 # -- import: .seq -> Waveform -------------------------------------------------
 def from_pulseq(src, *, dt=None):
     """Read a Pulseq ``.seq`` (path or ``pypulseq.Sequence``) and rasterise it to
-    a Monte-Carlo-simulable :class:`dmipy_sim.waveforms.Waveform` (single
+    a Monte-Carlo-simulable :class:`dmipy_sim.acquisition.waveforms.Waveform` (single
     measurement, shape (1, n_t, 3) in T/m).
 
     Gradients are rasterised exactly (piecewise-linear interpolation onto the
@@ -369,7 +369,7 @@ def from_pulseq(src, *, dt=None):
     excitation/refocusing when only times are available.
     """
     pp = _require_pypulseq()
-    from ..waveforms import Waveform
+    from ..acquisition.waveforms import Waveform
     import jax.numpy as jnp
 
     if isinstance(src, pp.Sequence):

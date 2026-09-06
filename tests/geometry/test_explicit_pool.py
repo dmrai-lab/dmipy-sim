@@ -9,7 +9,7 @@ import pytest
 
 import dmipy_sim as d
 from dmipy_sim.geometry import mesh_shapes
-from dmipy_sim.susceptibility_field import mesh_contains
+from dmipy_sim.fields.susceptibility_field import mesh_contains
 
 
 def _mesh(pool="intra"):

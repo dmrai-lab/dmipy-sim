@@ -21,7 +21,7 @@ import numpy.testing as npt
 
 from dmipy_sim import simulate, PackedSpheres, set_b
 from dmipy_sim.geometry import Sphere
-from dmipy_sim.waveforms import pgse, pgste
+from dmipy_sim.acquisition.waveforms import pgse, pgste
 
 import importlib.util
 

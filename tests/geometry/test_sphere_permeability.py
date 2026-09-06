@@ -39,7 +39,7 @@ import numpy.testing as npt
 import pytest
 
 from dmipy_sim import simulate, Sphere, set_b
-from dmipy_sim.waveforms import pgse
+from dmipy_sim.acquisition.waveforms import pgse
 
 from tests.conftest import D, N_WALKERS, N_EXACT, SEED
 
