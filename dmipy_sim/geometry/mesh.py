@@ -884,7 +884,8 @@ class Mesh(Geometry):
             r_new = jnp.where(do_reflect, off_wall(r_hit, nf, False, nudge), r0 + rem * dh)
             d_new = jnp.where(do_reflect, d_ref, dh)
             rem_new = jnp.where(do_reflect, rem - d - nudge, jnp.float32(0.0))
-            dperp_refl = jnp.where(first_hit & ~transmit, rho_mult * d_perp, jnp.float32(0.0))
+            dperp_refl = jnp.where(do_reflect & jnp.logical_not(use_box), rho_mult * d_perp,
+                                   jnp.float32(0.0))
             return (r_new, d_new, rem_new, decided | first_hit,
                     dlogw - 2.0 * jnp.float32(rho_over_D) * dperp_refl,
                     crossed | transmit, idx), do_reflect

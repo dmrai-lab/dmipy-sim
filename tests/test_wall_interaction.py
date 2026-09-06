@@ -167,6 +167,45 @@ def _all_geometries():
     ]
 
 
+def _sample_positions(name, geom, n, rng):
+    """Points on BOTH sides of the wall, in the region the geometry is defined on."""
+    r0 = np.asarray(geom.init_positions(n, jax.random.PRNGKey(4)), np.float32)   # inside
+    if name in ("PermeableSlab1D", "PermeableShell"):
+        # closed two-compartment geometries: the outer wall bounds everything, so sample both
+        # compartments by their own seeding + a shift into the far compartment
+        if name == "PermeableSlab1D":
+            far = r0.copy(); far[:, 0] += np.float32(geom.length / 2.0)
+        else:
+            far = r0 * np.float32(1.4)                       # r_inner 3um -> up to 4.2 < r_outer 5um
+        return np.concatenate([r0, far])
+    return np.concatenate([r0, r0 * np.float32(1.6)])        # exterior copies
+
+
+@pytest.mark.parametrize("name", [n for n, p in _ALL_NAMES if p])
+def test_reflect_equals_permeate_at_zero_permeability_everywhere(name):
+    """`reflect`, `reflect_with_log_weight(rho)` and `permeate(kappa=0, rho)` are one function."""
+    geom, _ = _build_any(name)
+    n = 1500
+    rng = np.random.default_rng(5)
+    r = jnp.asarray(_sample_positions(name, geom, n, rng))
+    d = rng.normal(size=(r.shape[0], 3)); d /= np.linalg.norm(d, axis=1, keepdims=True)
+    s_ = jnp.asarray((d * 0.35 * R).astype(np.float32))       # comparable to the object: bounces happen
+    keys = jax.random.split(jax.random.PRNGKey(0), r.shape[0])
+    rho = jnp.float32(3.0e3)
+
+    a = jax.jit(jax.vmap(geom.reflect, in_axes=(0, 0)))(r, s_)
+    b_r, b_w = jax.jit(jax.vmap(lambda p, x: geom.reflect_with_log_weight(p, x, rho)))(r, s_)
+    c_r, c_w = jax.jit(jax.vmap(lambda p, x, k: geom.permeate(
+        p, x, jnp.float32(0.0), rho, k)[:2], in_axes=(0, 0, 0)))(r, s_, keys)
+    for lab, x in (("reflect_with_log_weight", b_r), ("permeate(kappa=0)", c_r)):
+        diff = np.abs(np.asarray(a) - np.asarray(x)).max(axis=1)
+        assert int((diff > 0).sum()) == 0, (
+            f"{name}: reflect and {lab} disagree on {int((diff > 0).sum())}/{r.shape[0]} walkers "
+            f"(max |diff| = {diff.max():.2e} m). They are the same physics.")
+    np.testing.assert_array_equal(np.asarray(b_w), np.asarray(c_w),
+                                  err_msg=f"{name}: surface log-weight differs between the two impermeable calls")
+
+
 @pytest.mark.parametrize("name", [g[0] for g in _ALL_NAMES])
 def test_interact_is_available_on_every_geometry(name):
     geom, permeable = _build_any(name)

@@ -288,14 +288,8 @@ class Box1D(Geometry):
         return jnp.concatenate([x, yz], axis=1)
 
     def reflect(self, r, step):
-        L = jnp.float32(self.length)
-        x_new = r[0] + step[0]
-        # Fold back using modular reflection: map into [0, 2L] then mirror
-        x_new = jnp.mod(x_new, 2 * L)
-        x_new = jnp.where(x_new > L, 2 * L - x_new, x_new)
-        y_new = r[1] + step[1]
-        z_new = r[2] + step[2]
-        return jnp.array([x_new, y_new, z_new], dtype=jnp.float32)
+        """Wall interaction without surface relaxation -- :meth:`reflect_with_log_weight` at rho = 0."""
+        return self.reflect_with_log_weight(r, step, jnp.float32(0.0))[0]
 
     def reflect_with_log_weight(self, r, step, rho_over_D):
         """Reflect off slab walls and accumulate surface-relaxation log-weight.
