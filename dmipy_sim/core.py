@@ -475,9 +475,9 @@ def simulate(
 
     if is_myelin:
         # MyelinatedCylinder: extended carry state (r, phi, log_w, compartment_id, key)
-        step_fn = make_myelin_step_fn(geometry, dt, T1=T1)
-        compartments0 = geometry._init_compartments  # (n_walkers,) int32, kernel code
-        spin_w = jnp.asarray(geometry.water_fractions, jnp.float32)[compartments0]
+        step_fn = make_myelin_step_fn(geometry, dt, T1=T1, sub_steps=sub_steps)
+        compartments0 = geometry._init_compartments  # (n_walkers,) int32, pool id
+        spin_w = jnp.asarray(geometry._water_fraction_by_pool, jnp.float32)[compartments0]
 
         if track_comp:
             comp_origin_jax = geometry.pool_of(compartments0)   # kernel code -> pool id

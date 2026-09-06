@@ -29,7 +29,8 @@ def _mesh_rho():
 
 
 def _packed_myelin():
-    c, L, _ = d.pack_cylinders([1e-6] * 4, target_vf=0.3, seed=0)
+    _, _, c = d.pack_myelinated_cylinders([1e-6] * 4, 0.7, 0.5, seed=0)
+    L = float(np.sqrt(np.pi * 4 * (1e-6 / 0.7) ** 2 / 0.5))
     return d.PackedMyelinatedCylinders([1e-6] * 4, 0.7, c, L, N_max=8, rho_inner=1e-6)
 
 

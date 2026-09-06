@@ -54,10 +54,12 @@ def _all_geometries():
                                     PermeableSlab1D, PermeableShell, PackedCylinders, PackedSpheres,
                                     MyelinatedCylinder, PackedMyelinatedCylinders, CurvedTube,
                                     MultiShellCurvedTube, PackedCurvedTubes, Mesh,
-                                    pack_cylinders, pack_spheres)
+                                    pack_cylinders, pack_spheres, pack_myelinated_cylinders)
     R = 1e-6
     c2, L2, _ = pack_cylinders([R] * 4, target_vf=0.3, seed=0)
     c3, L3, _ = pack_spheres([R] * 4, target_vf=0.1, seed=0)
+    L4 = float(np.sqrt(np.pi * 4 * (R / 0.7) ** 2 / 0.5))
+    _, _, c4 = pack_myelinated_cylinders([R] * 4, 0.7, None, cell_size=L4, seed=0)
     V, F = mesh_shapes.icosphere(5e-6, subdivisions=2)
     cl = np.stack([np.zeros(8), np.zeros(8), np.linspace(0, 2e-5, 8)], axis=1)
     return {
@@ -71,7 +73,7 @@ def _all_geometries():
         "PackedCylinders": PackedCylinders([R] * 4, c2, L2),
         "PackedSpheres": PackedSpheres([R] * 4, c3, L3),
         "MyelinatedCylinder": MyelinatedCylinder(3e-6, 5e-6, (0, 0, 1), 2e-9, 2e-9),
-        "PackedMyelinatedCylinders": PackedMyelinatedCylinders([R] * 4, 0.7, c2, L2, N_max=8),
+        "PackedMyelinatedCylinders": PackedMyelinatedCylinders([R] * 4, 0.7, c4, L4, N_max=8),
         "CurvedTube": CurvedTube(cl, radius=2e-6),
         "MultiShellCurvedTube": MultiShellCurvedTube(cl, r_in=2e-6, r_out=3e-6),
         "PackedCurvedTubes": PackedCurvedTubes([cl], [2e-6]),

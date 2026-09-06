@@ -468,602 +468,210 @@ def make_step_fn(geometry, diffusivity: float, dt: float, T2: float = None,
     return step_fn, has_weight
 
 
-def make_myelin_step_fn(geometry, dt: float, T1: float = None):
-    """Return step_fn for MyelinatedCylinder geometry.
+def _pool_and_axon(geometry, comp_id):
+    """Decode an encoded compartment id into ``(pool, k)``: 0 extra, ``k+1`` lumen of axon k,
+    ``N_max+k+1`` sheath of axon k. Extra walkers carry the nearest axon as ``k``."""
+    pool = geometry.pool_of(comp_id)
+    k = jnp.where(pool == 1, comp_id - 1,
+                  jnp.where(pool == 2, comp_id - jnp.int32(geometry.N_max) - 1, jnp.int32(0)))
+    return pool, jnp.maximum(k, 0).astype(jnp.int32)
 
-    Carry state: (r, phi, log_w, compartment_id, key)
-    All compartment branching uses jnp.where (JAX-compatible).
 
-    Each step consumes ``(g_t, chi_t)``: when ``chi_t == 1`` the magnetisation is
-    transverse (per-compartment T2 acts); when ``chi_t == 0`` it is stored
-    longitudinally (only T1 acts).
+def _encode_compartment(geometry, pool, k):
+    return jnp.where(pool == 0, jnp.int32(0),
+                     jnp.where(pool == 1, k + 1, jnp.int32(geometry.N_max) + k + 1)).astype(jnp.int32)
 
-    Handles:
-      - Anisotropic diffusion in myelin (radial vs tangential)
-      - Dual-boundary permeability (inner + outer)
-      - Per-compartment T2 relaxation folded into log_w (transverse intervals)
-      - Longitudinal T1 relaxation folded into log_w (stored intervals)
 
-    Parameters
-    ----------
-    geometry : MyelinatedCylinder
-    dt : float
-        Time step in seconds.
-    T1 : float, optional
-        Longitudinal relaxation time in seconds. When set, accumulates
-        ``-(1 - chi_t) * dt / T1`` into log_w on the stored intervals.
+def make_myelin_substep(geometry, dt: float, rho_weights=None):
+    """The one displacement-and-wall rule for the concentric-cylinder substrates.
 
-    Returns
-    -------
-    step_fn : callable
-        (carry, (g_t, chi_t)) -> (carry, None)
-        carry = (r, phi, log_w, compartment_id, key)
+    Serves :class:`MyelinatedCylinder` (one axon, open extra-axonal space) and
+    :class:`PackedMyelinatedCylinders` (a periodic pack); the wall physics is
+    :func:`dmipy_sim.geometry.myelin.concentric_wall_kernel`. Each pool steps with its own
+    diffusivity (the axon's, indexed by the carried compartment); the axial coordinate is free.
+
+    Returns ``sub(r, step_key, u, comp_id) -> (r_new, comp_id_new, chan, dlog_rho)`` where
+    ``chan`` holds the four unit boundary local-time channels of the wall kernel and ``dlog_rho``
+    the surface log-weight increment under ``rho_weights`` (``(N_max, 4)``; zero when None).
     """
-    gamma_dt = jnp.float32(GAMMA * dt)
     dt_f32 = jnp.float32(dt)
-    has_t1 = T1 is not None
-    if has_t1:
-        inv_T1 = jnp.float32(1.0 / T1)
+    N_max = geometry.N_max
+    L = geometry._L_jax if geometry._is_packed_myelinated else None
+    D_i, D_m, D_e = geometry._D_intra_jax, geometry._D_myelin_jax, geometry._D_extra_jax
+    step_i = jnp.sqrt(jnp.float32(6.0) * D_i * dt_f32)
+    step_m = jnp.sqrt(jnp.float32(6.0) * D_m * dt_f32)
+    step_e = jnp.sqrt(jnp.float32(6.0) * D_e * dt_f32)
+    D_max = float(max(np.max(np.asarray(D_i)), np.max(np.asarray(D_m)), np.max(np.asarray(D_e))))
+    step_max = float(np.sqrt(6.0 * D_max * dt))
+    if rho_weights is None:
+        rho_weights = jnp.zeros((N_max, 4), jnp.float32)
+    from .geometry.myelin import concentric_wall_kernel
+    wall = concentric_wall_kernel(
+        geometry._centers_jax, geometry._inner_radii_jax, geometry._outer_radii_jax, L,
+        D_i, D_m, D_e, geometry._kappa_inner_jax, geometry._kappa_outer_jax, rho_weights,
+        geometry._eps, geometry._nudge, step_max, geometry.min_gap)
+    R_mat, R_inv = geometry._R, geometry._R_inv
+    ident = bool(np.allclose(np.array(R_mat), np.eye(3)))
 
-    # Pre-compute step lengths per compartment
-    D_intra = jnp.float32(geometry.D_intra)
-    D_myelin = jnp.float32(geometry.D_myelin)
-    D_extra = jnp.float32(geometry.D_extra)
+    def sub(r, step_key, u, comp_id):
+        pool, k = _pool_and_axon(geometry, comp_id)
+        noise = jax.random.normal(step_key, (3,), dtype=jnp.float32)
+        unit = noise / jnp.linalg.norm(noise)
+        step_l = jnp.where(pool == 1, step_i[k], jnp.where(pool == 2, step_m[k], step_e[k]))
+        r_c = r if ident else R_mat @ r
+        s_c = unit * step_l
+        l_xy = jnp.linalg.norm(s_c[:2])
+        d_hat = jnp.where(l_xy > 0, s_c[:2] / jnp.maximum(l_xy, jnp.float32(1e-30)),
+                          jnp.zeros(2, jnp.float32))
+        xy_new, pool_new, k_new, chan, dlog_rho, _ = wall(r_c[:2], d_hat, l_xy, pool, k, u)
+        if L is not None:
+            xy_new = xy_new - L * jnp.floor(xy_new / L + jnp.float32(0.5))      # stay in the cell
+        r_c_new = jnp.stack([xy_new[0], xy_new[1], r_c[2] + s_c[2]])
+        r_new = r_c_new if ident else R_inv @ r_c_new
+        return r_new, _encode_compartment(geometry, pool_new, k_new), chan, dlog_rho
 
-    step_l_intra = jnp.sqrt(jnp.float32(6.0) * D_intra * dt_f32)
-    step_l_extra = jnp.sqrt(jnp.float32(6.0) * D_extra * dt_f32)
-    # Myelin diffuses isotropically (single D_myelin; 0 -> stuck pool, canonical default).
-    step_l_myelin = jnp.sqrt(jnp.float32(6.0) * D_myelin * dt_f32)
+    sub.max_bounces = wall.max_bounces
+    sub.n_cand = wall.n_cand
+    return sub
 
-    R_in = jnp.float32(geometry.inner_radius)
-    R_out = jnp.float32(geometry.outer_radius)
-    EPS = jnp.float32(1e-7 * geometry.inner_radius)
-    NUDGE = jnp.float32(1e-4 * geometry.inner_radius)
 
-    R_mat = geometry._R
-    R_inv = geometry._R_inv
-    # GPU batch-matmul bug: vmap(R_mat @ r) with R_mat == I gives wrong
-    # results on GPU (XLA dot_general identity-matrix bug).  Resolve at
-    # closure-creation time so the buggy path is never compiled.
-    _is_identity_R = bool(np.allclose(np.array(R_mat), np.eye(3)))
+def make_myelin_step_fn(geometry, dt: float, T1: float = None, sub_steps: int = None):
+    """Fused forward step for :class:`MyelinatedCylinder`.
 
-    # Permeability
-    has_perm_inner = geometry.kappa_inner is not None
-    has_perm_outer = geometry.kappa_outer is not None
+    Carry ``(r, phi, log_w, compartment_id, key)`` with the compartment a pool id (0 extra,
+    1 intra, 2 myelin); inputs ``(g_t, chi_t)``. Per-pool T2 accrues while transverse
+    (``chi_t == 1``), T1 while stored. Sub-stepped by :func:`resolve_sub_steps`; the count is
+    exposed as ``step_fn.n_sub``.
+    """
+    D_max = float(max(geometry.D_intra, geometry.D_myelin, geometry.D_extra))
+    n_sub = resolve_sub_steps(geometry, D_max, dt, override=sub_steps)
+    dt_sub = dt / n_sub
+    gamma_dt_sub = jnp.float32(GAMMA * dt_sub)
+    dt_sub_f32 = jnp.float32(dt_sub)
+    sub = make_myelin_substep(geometry, dt_sub)
 
-    # D values per compartment for permeability formula: D of compartment being LEFT
-    D_arr = jnp.array([D_intra, D_myelin, D_extra], dtype=jnp.float32)
-
-    if has_perm_inner:
-        kappa_inner = jnp.float32(geometry.kappa_inner)
-    else:
-        kappa_inner = jnp.float32(0.0)
-
-    if has_perm_outer:
-        kappa_outer = jnp.float32(geometry.kappa_outer)
-    else:
-        kappa_outer = jnp.float32(0.0)
-
-    # T2 per compartment (magnetisation fully transverse throughout)
-    has_t2 = (geometry.T2_intra is not None or
-              geometry.T2_myelin is not None or
-              geometry.T2_extra is not None)
+    has_t2 = any(t is not None for t in (geometry.T2_intra, geometry.T2_myelin, geometry.T2_extra))
     if has_t2:
-        t2_intra  = jnp.float32(geometry.T2_intra  if geometry.T2_intra  is not None else 1e6)
-        t2_myelin = jnp.float32(geometry.T2_myelin if geometry.T2_myelin is not None else 1e6)
-        t2_extra  = jnp.float32(geometry.T2_extra  if geometry.T2_extra  is not None else 1e6)
-        T2_arr = jnp.array([t2_intra, t2_myelin, t2_extra], dtype=jnp.float32)
+        _big = 1e6
+        inv_t2_by_pool = jnp.array([1.0 / (geometry.T2_extra or _big), 1.0 / (geometry.T2_intra or _big),
+                                    1.0 / (geometry.T2_myelin or _big)], jnp.float32)
+    has_t1 = T1 is not None
+    inv_T1 = jnp.float32(1.0 / T1) if has_t1 else jnp.float32(0.0)
 
     def step_fn(carry, inputs):
         g_t, chi_t = inputs
-        r, phi, log_w, compartment_id, key = carry
 
-        key, subkey_step, subkey_perm = jax.random.split(key, 3)
-        noise = jax.random.normal(subkey_step, (3,), dtype=jnp.float32)
+        def _sub(c, _):
+            r, phi, log_w, comp, key = c
+            key, k_step, k_perm = jax.random.split(key, 3)
+            u = jax.random.uniform(k_perm, dtype=jnp.float32)
+            r_new, comp_new, _, _ = sub(r, k_step, u, comp)
+            dlog = jnp.float32(0.0)
+            if has_t2:
+                dlog = dlog - dt_sub_f32 * inv_t2_by_pool[comp_new] * chi_t
+            if has_t1:
+                dlog = dlog - dt_sub_f32 * inv_T1 * (jnp.float32(1.0) - chi_t)
+            return (r_new, phi + gamma_dt_sub * jnp.dot(g_t, r_new), log_w + dlog, comp_new, key), None
 
-        # Transform to cylinder frame (skip matmul for identity — GPU bug)
-        r_c = r if _is_identity_R else R_mat @ r
+        carry_out, _ = jax.lax.scan(_sub, carry, None, length=n_sub)
+        return carry_out, None
 
-        # --- Compartment-dependent step generation ---
-
-        # Intra-axonal: isotropic
-        unit_noise_iso = noise / jnp.linalg.norm(noise)
-        step_intra_c = unit_noise_iso * step_l_intra
-
-        # Extra-axonal: isotropic
-        step_extra_c = unit_noise_iso * step_l_extra
-
-        # Myelin: isotropic step (D_myelin; 0 -> no displacement, a stuck pool).
-        step_myelin_c = unit_noise_iso * step_l_myelin
-
-        # Select step based on compartment
-        # compartment_id: 0=intra, 1=myelin, 2=extra
-        step_c = jnp.where(compartment_id == 0, step_intra_c,
-                    jnp.where(compartment_id == 1, step_myelin_c, step_extra_c))
-
-        # --- Proposed new position in cylinder frame ---
-        r_new_c = r_c + step_c
-
-        # --- Dual-boundary reflection and permeability ---
-        r_new_xy = r_new_c[:2]
-        r_new_xy_norm = jnp.linalg.norm(r_new_xy)
-
-        new_compartment_id = compartment_id
-        dlog_w = jnp.float32(0.0)
-
-        # D of compartment being LEFT (for permeability formula)
-        D_leaving = D_arr[compartment_id]
-
-        # --- Inner boundary check ---
-        # Walker in intra (0) crossing outward past R_in -> could enter myelin
-        # Walker in myelin (1) crossing inward past R_in -> could enter intra
-        crosses_inner_outward = (compartment_id == 0) & (r_new_xy_norm >= R_in)
-        crosses_inner_inward = (compartment_id == 1) & (r_new_xy_norm < R_in)
-        crosses_inner = crosses_inner_outward | crosses_inner_inward
-
-        # --- Outer boundary check ---
-        # Walker in myelin (1) crossing outward past R_out -> could enter extra
-        # Walker in extra (2) crossing inward past R_out -> could enter myelin
-        crosses_outer_outward = (compartment_id == 1) & (r_new_xy_norm >= R_out)
-        crosses_outer_inward = (compartment_id == 2) & (r_new_xy_norm < R_out)
-        crosses_outer = crosses_outer_outward | crosses_outer_inward
-
-        # --- Permeability at inner boundary ---
-        # d_perp approximation: distance past the boundary
-        d_perp_inner = jnp.abs(r_new_xy_norm - R_in)
-        kappa_over_D_inner = kappa_inner / jnp.maximum(D_leaving, jnp.float32(1e-30))
-        p_inner = transmit_probability(kappa_over_D_inner, d_perp_inner)
-
-        # --- Permeability at outer boundary ---
-        d_perp_outer = jnp.abs(r_new_xy_norm - R_out)
-        kappa_over_D_outer = kappa_outer / jnp.maximum(D_leaving, jnp.float32(1e-30))
-        p_outer = transmit_probability(kappa_over_D_outer, d_perp_outer)
-
-        # Split perm_key for inner and outer draws
-        perm_key1, perm_key2 = jax.random.split(subkey_perm)
-        u_inner = jax.random.uniform(perm_key1, dtype=jnp.float32)
-        u_outer = jax.random.uniform(perm_key2, dtype=jnp.float32)
-
-        transmit_inner = crosses_inner & (u_inner < p_inner)
-        transmit_outer = crosses_outer & (u_outer < p_outer)
-
-        # --- Handle inner boundary crossing ---
-        # If transmit: walker passes through -> update compartment
-        # If reflect: push walker back to its side of R_in
-        safe_new_xy_norm = jnp.maximum(r_new_xy_norm, jnp.float32(1e-20))
-        r_new_xy_hat = r_new_xy / safe_new_xy_norm
-
-        # Inner boundary: SPECULAR reflection (mirror across R_in to 2*R_in - d),
-        # matching make_packed_myelin_traj_step_fn and Cylinder.reflect.  A clamp to
-        # R_in +- NUDGE lets walkers hug the wall and under-hinders transport; the
-        # mirror works for both crossing directions (d>R_in -> back inside;
-        # d<R_in -> back outside) without a direction branch.
-        reflect_inner_r = jnp.float32(2.0) * R_in - r_new_xy_norm
-        r_reflected_inner_xy = r_new_xy_hat * reflect_inner_r
-
-        # Inner transmit: new compartment
-        new_comp_inner_transmit = jnp.where(crosses_inner_outward,
-                                             jnp.int32(1),   # intra -> myelin
-                                             jnp.int32(0))   # myelin -> intra
-
-        # Apply inner boundary decision
-        inner_reflect = crosses_inner & ~transmit_inner
-        r_new_xy = jnp.where(inner_reflect, r_reflected_inner_xy, r_new_xy)
-        new_compartment_id = jnp.where(transmit_inner, new_comp_inner_transmit,
-                                        new_compartment_id)
-
-        # --- Handle outer boundary crossing ---
-        # Recalculate r_new_xy_norm after potential inner reflection
-        r_new_xy_norm2 = jnp.linalg.norm(r_new_xy)
-        safe_new_xy_norm2 = jnp.maximum(r_new_xy_norm2, jnp.float32(1e-20))
-        r_new_xy_hat2 = r_new_xy / safe_new_xy_norm2
-
-        # Outer boundary: SPECULAR reflection (mirror across R_out to 2*R_out - d),
-        # matching the trajectory path; a clamp to R_out +- NUDGE under-hinders the
-        # (dominant) extra-axonal pool.
-        reflect_outer_r = jnp.float32(2.0) * R_out - r_new_xy_norm2
-        r_reflected_outer_xy = r_new_xy_hat2 * reflect_outer_r
-
-        # Outer transmit: new compartment
-        new_comp_outer_transmit = jnp.where(crosses_outer_outward,
-                                             jnp.int32(2),   # myelin -> extra
-                                             jnp.int32(1))   # extra -> myelin
-
-        outer_reflect = crosses_outer & ~transmit_outer
-        r_new_xy = jnp.where(outer_reflect, r_reflected_outer_xy, r_new_xy)
-        new_compartment_id = jnp.where(transmit_outer, new_comp_outer_transmit,
-                                        new_compartment_id)
-
-        # --- Reconstruct 3D position ---
-        r_new_c = jnp.array([r_new_xy[0], r_new_xy[1], r_new_c[2]], dtype=jnp.float32)
-
-        # Safety clamp: ensure walker is in correct compartment region
-        final_r_xy_norm = jnp.linalg.norm(r_new_c[:2])
-        safe_final = jnp.maximum(final_r_xy_norm, jnp.float32(1e-20))
-        final_xy_hat = r_new_c[:2] / safe_final
-
-        # Compartment 0: must be inside R_in
-        r_new_c = r_new_c.at[:2].set(
-            jnp.where((new_compartment_id == 0) & (final_r_xy_norm >= R_in),
-                      final_xy_hat * (R_in - NUDGE), r_new_c[:2]))
-
-        # Compartment 1: must be between R_in and R_out
-        final_r_xy_norm2 = jnp.linalg.norm(r_new_c[:2])
-        safe_final2 = jnp.maximum(final_r_xy_norm2, jnp.float32(1e-20))
-        final_xy_hat2 = r_new_c[:2] / safe_final2
-        r_new_c = r_new_c.at[:2].set(
-            jnp.where((new_compartment_id == 1) & (final_r_xy_norm2 < R_in),
-                      final_xy_hat2 * (R_in + NUDGE), r_new_c[:2]))
-        final_r_xy_norm3 = jnp.linalg.norm(r_new_c[:2])
-        safe_final3 = jnp.maximum(final_r_xy_norm3, jnp.float32(1e-20))
-        final_xy_hat3 = r_new_c[:2] / safe_final3
-        r_new_c = r_new_c.at[:2].set(
-            jnp.where((new_compartment_id == 1) & (final_r_xy_norm3 >= R_out),
-                      final_xy_hat3 * (R_out - NUDGE), r_new_c[:2]))
-
-        # Compartment 2: must be outside R_out
-        final_r_xy_norm4 = jnp.linalg.norm(r_new_c[:2])
-        safe_final4 = jnp.maximum(final_r_xy_norm4, jnp.float32(1e-20))
-        final_xy_hat4 = r_new_c[:2] / safe_final4
-        r_new_c = r_new_c.at[:2].set(
-            jnp.where((new_compartment_id == 2) & (final_r_xy_norm4 < R_out),
-                      final_xy_hat4 * (R_out + NUDGE), r_new_c[:2]))
-
-        # Transform back to lab frame (skip matmul for identity — GPU bug)
-        r_new = r_new_c if _is_identity_R else R_inv @ r_new_c
-
-        # --- Per-compartment transverse (T2) relaxation, gated by chi_t ---
-        if has_t2:
-            dlog_w = dlog_w - dt_f32 / T2_arr[new_compartment_id] * chi_t
-        # --- Longitudinal (T1) relaxation on the stored intervals ---
-        if has_t1:
-            dlog_w = dlog_w - dt_f32 * inv_T1 * (jnp.float32(1.0) - chi_t)
-
-        # --- Phase accumulation ---
-        dphi = gamma_dt * jnp.dot(g_t, r_new)
-        phi_new = phi + dphi
-
-        return (r_new, phi_new, log_w + dlog_w, new_compartment_id, key), None
-
+    step_fn.n_sub = n_sub
     return step_fn
 
 
 def make_packed_myelin_traj_step_fn(geometry, dt: float,
                                     kappa_MT: float = 0.0, dwell_time: float = 0.0,
                                     mt_side_intra: float = 1.0, mt_side_extra: float = 1.0):
-    """Stripped PackedMyelinatedCylinders step for trajectory saving.
+    """Trajectory step for PackedMyelinatedCylinders: geometry + permeability, no relaxation.
 
-    Runs geometry + permeability only (no T2/T1, rho=1 at all walls).
-    Carry: (r, key, dlog_accum, comp_id, bound_rem, bound_acc)
-    Returns: (carry, None)
-    dlog_accum accumulates -2*d_perp per boundary hit (rho/D=1).
+    Carry ``(r, key, dlog_accum, comp_id)`` -- or ``(r, key, dlog_accum, comp_id, bound_rem,
+    bound_acc)`` when ``kappa_MT > 0``; ``step_fn(carry, None) -> (carry, None)``. ``dlog_accum``
+    accumulates the unit boundary local time (``-2 d_perp`` per reflection, i.e. ``rho/D = 1``) so
+    a replay can apply any surface relaxivity. ``comp_id`` is the encoded compartment (0 extra,
+    ``1..N_max`` lumen of axon k, ``N_max+1..2N_max`` its sheath).
 
-    Magnetization transfer (``kappa_MT`` > 0): free water (intra/extra) that hits a
-    myelin wall STICKS with p = min(1, (kappa_MT/D)*(-dlog_boundary)) -- the same
-    impact-angle boundary-local-time rule as everywhere else -- then FREEZES for an
-    exponential dwell (mean ``dwell_time``) and is released.  ``bound_acc`` counts
-    frozen sub-steps -> per-save bound occupancy.  Mutually exclusive with surface
-    relaxivity (a stuck encounter is removed from the rho channel, dlog_accum).
-    Myelin water (D=0) never contacts a wall, so it cannot bind.  **kappa_MT = 0
-    reproduces the pre-MT walk bit-for-bit (RNG stream and positions unchanged).**
+    Magnetization transfer (``kappa_MT > 0``): free water that reflects off a myelin wall binds
+    with probability ``min(1, (kappa_MT/D) * local_time)``, freezes for an exponential dwell of
+    mean ``dwell_time`` and is released; ``bound_acc`` counts frozen sub-steps. An intra walker
+    only ever meets the inner wall and an extra walker the outer one, so the walker's pool selects
+    the side reactivity (``mt_side_intra`` / ``mt_side_extra``); myelin water cannot bind. A bound
+    or binding encounter contributes nothing to ``dlog_accum``.
     """
-    dt_f32 = jnp.float32(dt)
-    N_max  = geometry.N_max
     mt_on = kappa_MT > 0.0
-    kappa_intra_f = jnp.float32(kappa_MT * mt_side_intra)   # inner-wall reactivity (intra water)
-    kappa_extra_f = jnp.float32(kappa_MT * mt_side_extra)   # outer-wall reactivity (extra water)
+    kappa_intra_f = jnp.float32(kappa_MT * mt_side_intra)
+    kappa_extra_f = jnp.float32(kappa_MT * mt_side_extra)
     dwell_steps_mean = jnp.float32(dwell_time / dt) if dwell_time > 0 else jnp.float32(0.0)
-
-    # Pre-extract JAX arrays (same geometry setup as the generic packed step fns)
-    L          = geometry._L_jax
-    inner_r    = geometry._inner_radii_jax    # (N_max,)
-    outer_r    = geometry._outer_radii_jax    # (N_max,)
-    centers_2d = geometry._centers_jax        # (N_max, 2)
-    D_intra    = geometry._D_intra_jax        # (N_max,)
-    D_myelin   = geometry._D_myelin_jax       # (N_max,)
-    D_extra    = geometry._D_extra_jax        # (N_max,)
-    kappa_inner = geometry._kappa_inner_jax   # (N_max,)
-    kappa_outer = geometry._kappa_outer_jax   # (N_max,)
-
-    R_mat    = geometry._R
-    R_inv    = geometry._R_inv
-    _is_identity_R = bool(np.allclose(np.array(R_mat), np.eye(3)))
-    NUDGE    = geometry._nudge
-
-    # Step-size arrays: sqrt(6*D*dt)
-    step_intra_arr  = jnp.sqrt(jnp.float32(6.0) * D_intra  * dt_f32)
-    step_extra_arr  = jnp.sqrt(jnp.float32(6.0) * D_extra  * dt_f32)
-    step_myelin_arr = jnp.sqrt(jnp.float32(6.0) * D_myelin * dt_f32)
+    sub = make_myelin_substep(geometry, dt)
+    D_intra, D_extra = geometry._D_intra_jax, geometry._D_extra_jax
 
     def step_fn(carry, _):
-        # Carry contract is 4-element by default (unchanged for every non-MT caller) and
-        # 6-element only when MT is on — so kappa_MT=0 stays byte-for-byte the pre-MT walk.
         if mt_on:
-            r, key, dlog_accum, compartment_id, bound_rem, bound_acc = carry
-            key, subkey_step, subkey_perm, stick_key, dwell_key = jax.random.split(key, 5)
+            r, key, dlog_accum, comp_id, bound_rem, bound_acc = carry
+            key, k_step, k_perm, stick_key, dwell_key = jax.random.split(key, 5)
         else:
-            r, key, dlog_accum, compartment_id = carry
-            key, subkey_step, subkey_perm = jax.random.split(key, 3)
-        noise = jax.random.normal(subkey_step, (3,), dtype=jnp.float32)
-        unit_noise = noise / jnp.linalg.norm(noise)
+            r, key, dlog_accum, comp_id = carry
+            key, k_step, k_perm = jax.random.split(key, 3)
+        u = jax.random.uniform(k_perm, dtype=jnp.float32)
+        r_new, comp_new, chan, _ = sub(r, k_step, u, comp_id)
+        dlog_boundary = jnp.sum(chan)
+        if not mt_on:
+            return (r_new, key, dlog_accum + dlog_boundary, comp_new), None
 
-        # ── Compartment classification ────────────────────────────────────────
-        is_extra  = compartment_id == jnp.int32(0)
-        is_intra  = (compartment_id >= jnp.int32(1)) & (compartment_id <= jnp.int32(N_max))
-        is_myelin = compartment_id > jnp.int32(N_max)
+        pool, k = _pool_and_axon(geometry, comp_id)
+        is_intra, is_extra = pool == 1, pool == 0
+        is_bound = bound_rem > jnp.float32(0.0)
+        local_time = jnp.where(is_intra, -chan[0], jnp.where(is_extra, -chan[3], jnp.float32(0.0)))
+        D_bind = jnp.where(is_intra, D_intra[k], jnp.where(is_extra, D_extra[k], jnp.float32(1.0)))
+        kappa_bind = jnp.where(is_intra, kappa_intra_f,
+                               jnp.where(is_extra, kappa_extra_f, jnp.float32(0.0)))
+        p_stick = bind_probability(kappa_bind / jnp.maximum(D_bind, jnp.float32(1e-30)), local_time)
+        newly = (~is_bound) & (jax.random.uniform(stick_key, dtype=jnp.float32) < p_stick)
+        u_dwell = jax.random.uniform(dwell_key, dtype=jnp.float32)
+        dwell_draw = -jnp.log(jnp.maximum(u_dwell, jnp.float32(1e-20))) * dwell_steps_mean
+        r_out = jnp.where(is_bound, r, r_new)
+        comp_out = jnp.where(is_bound, comp_id, comp_new)
+        dlog_contrib = jnp.where(is_bound | newly, jnp.float32(0.0), dlog_boundary)
+        bound_rem_out = jnp.where(is_bound, bound_rem - jnp.float32(1.0),
+                                  jnp.where(newly, dwell_draw, jnp.float32(0.0)))
+        bound_acc_out = bound_acc + jnp.where(is_bound, jnp.float32(1.0), jnp.float32(0.0))
+        return (r_out, key, dlog_accum + dlog_contrib, comp_out, bound_rem_out, bound_acc_out), None
 
-        k_intra  = compartment_id - jnp.int32(1)
-        k_myelin = compartment_id - jnp.int32(N_max + 1)
-        k_cyl    = jnp.where(is_intra, k_intra,
-                   jnp.where(is_myelin, k_myelin, jnp.int32(0)))
-        k_cyl    = jnp.maximum(k_cyl, jnp.int32(0))
-
-        # ── Step length selection ─────────────────────────────────────────────
-        sl_intra  = step_intra_arr[k_cyl]
-        sl_myelin = step_myelin_arr[k_cyl]
-        sl_extra  = step_extra_arr[k_cyl]
-        step_l    = jnp.where(is_intra, sl_intra,
-                    jnp.where(is_myelin, sl_myelin, sl_extra))
-
-        # ── Transform to cylinder frame ───────────────────────────────────────
-        r_c     = r if _is_identity_R else R_mat @ r
-        step_c  = unit_noise * step_l
-        r_new_c = r_c + step_c
-
-        r_new_xy = r_new_c[:2]
-        step_z   = step_c[2]
-
-        # ── Cylinder-specific geometry ────────────────────────────────────────
-        c_k   = centers_2d[k_cyl]
-        R_in  = inner_r[k_cyl]
-        R_out = outer_r[k_cyl]
-        kap_i = kappa_inner[k_cyl]
-        kap_o = kappa_outer[k_cyl]
-
-        # ── Min-image position relative to cylinder centre ────────────────────
-        q_new  = r_new_xy - c_k
-        q_new  = q_new - L * jnp.floor(q_new / L + jnp.float32(0.5))
-        r_new_xy_norm = jnp.linalg.norm(q_new)
-
-        new_compartment_id = compartment_id
-        dlog_boundary      = jnp.float32(0.0)
-
-        # ── Boundary crossing detection ───────────────────────────────────────
-        crosses_inner_out = is_intra  & (r_new_xy_norm >= R_in)
-        crosses_inner_in  = is_myelin & (r_new_xy_norm  < R_in)
-        crosses_outer_out = is_myelin & (r_new_xy_norm >= R_out)
-        crosses_outer_in  = is_extra  & (r_new_xy_norm  < R_out)
-
-        crosses_inner = crosses_inner_out | crosses_inner_in
-        crosses_outer = crosses_outer_out | crosses_outer_in
-
-        # ── Permeability (actual kappa; rho/D=1 for dlog accumulation) ───────
-        D_leaving = jnp.where(is_intra,  D_intra[k_cyl],
-                    jnp.where(is_myelin, D_myelin[k_cyl], D_extra[k_cyl]))
-
-        d_perp_inner = jnp.abs(r_new_xy_norm - R_in)
-        d_perp_outer = jnp.abs(r_new_xy_norm - R_out)
-
-        kappa_over_D_inner = kap_i / jnp.maximum(D_leaving, jnp.float32(1e-30))
-        kappa_over_D_outer = kap_o / jnp.maximum(D_leaving, jnp.float32(1e-30))
-
-        p_inner = transmit_probability(kappa_over_D_inner, d_perp_inner)
-        p_outer = transmit_probability(kappa_over_D_outer, d_perp_outer)
-
-        perm_key1, perm_key2 = jax.random.split(subkey_perm)
-        u_i = jax.random.uniform(perm_key1, dtype=jnp.float32)
-        u_o = jax.random.uniform(perm_key2, dtype=jnp.float32)
-
-        transmit_inner = crosses_inner & (u_i < p_inner)
-        transmit_outer = crosses_outer & (u_o < p_outer)
-
-        # ── Inner boundary handling ───────────────────────────────────────────
-        safe_norm = jnp.maximum(r_new_xy_norm, jnp.float32(1e-20))
-        r_hat     = q_new / safe_norm
-
-        refl_r_inner = jnp.float32(2.0) * R_in - r_new_xy_norm
-        q_reflected_inner = r_hat * refl_r_inner
-
-        new_comp_inner = jnp.where(crosses_inner_out,
-                                    jnp.int32(N_max + k_cyl + 1),   # intra -> myelin
-                                    jnp.int32(k_cyl + 1))            # myelin -> intra
-
-        inner_reflect = crosses_inner & ~transmit_inner
-        q_new = jnp.where(inner_reflect, q_reflected_inner, q_new)
-        new_compartment_id = jnp.where(transmit_inner, new_comp_inner, new_compartment_id)
-
-        # dlog with rho/D = 1 (unit boundary log-weight)
-        dlog_boundary = dlog_boundary + jnp.where(
-            inner_reflect,
-            -jnp.float32(2.0) * d_perp_inner,
-            jnp.float32(0.0))
-
-        # ── Outer boundary handling ───────────────────────────────────────────
-        r_new_xy_norm2 = jnp.linalg.norm(q_new)
-        safe_norm2     = jnp.maximum(r_new_xy_norm2, jnp.float32(1e-20))
-        r_hat2         = q_new / safe_norm2
-
-        refl_r_outer = jnp.float32(2.0) * R_out - r_new_xy_norm2
-        q_reflected_outer = r_hat2 * refl_r_outer
-
-        new_comp_outer = jnp.where(crosses_outer_out,
-                                    jnp.int32(0),                    # myelin -> extra
-                                    jnp.int32(N_max + k_cyl + 1))   # extra -> myelin
-
-        outer_reflect = crosses_outer & ~transmit_outer
-        q_new = jnp.where(outer_reflect, q_reflected_outer, q_new)
-        new_compartment_id = jnp.where(transmit_outer, new_comp_outer, new_compartment_id)
-
-        dlog_boundary = dlog_boundary + jnp.where(
-            outer_reflect,
-            -jnp.float32(2.0) * d_perp_outer,
-            jnp.float32(0.0))
-
-        # ── Reconstruct absolute position + periodic wrap ─────────────────────
-        xy_abs = q_new + c_k
-        xy_abs = xy_abs - L * jnp.floor(xy_abs / L + jnp.float32(0.5))
-
-        # ── Extra-axonal safety clamp against ALL cylinders ───────────────────
-        q_f  = xy_abs[None, :] - centers_2d
-        q_f  = q_f - L * jnp.floor(q_f / L + jnp.float32(0.5))
-        d2_f = jnp.sum(q_f ** 2, axis=1)
-        pen  = jnp.where(outer_r > jnp.float32(0.0),
-                         jnp.where(d2_f < outer_r ** 2,
-                                   d2_f / (outer_r ** 2 + jnp.float32(1e-30)),
-                                   jnp.float32(1.0)),
-                         jnp.float32(1.0))
-        k_cl       = jnp.argmin(pen)
-        inside_any = pen[k_cl] < jnp.float32(1.0)
-
-        c_cl   = centers_2d[k_cl]
-        R_cl   = outer_r[k_cl]
-        q_cl   = xy_abs - c_cl
-        q_cl   = q_cl - L * jnp.floor(q_cl / L + jnp.float32(0.5))
-        d_cl   = jnp.linalg.norm(q_cl)
-        c_near = xy_abs - q_cl
-        # Specular reflection off the nearest cylinder's outer wall (mirror to
-        # 2*R_cl - d_cl); this is the extra-axonal reflection (the cyl-0 outer
-        # logic above only handles cylinder 0).  Reflecting matches the
-        # interior/outer reflection geometry, so the -2*d_perp surface-local-time
-        # estimator below keeps the Brownstein-Tarr calibration.
-        d_refl = jnp.float32(2.0) * R_cl - d_cl
-        xy_reflected = c_near + q_cl * d_refl / jnp.maximum(d_cl, NUDGE)
-        xy_abs = jnp.where(is_extra & inside_any, xy_reflected, xy_abs)
-
-        # Exterior surface local time: record the outer-wall contact for the
-        # reflected extra walker.
-        dlog_boundary = dlog_boundary + jnp.where(
-            is_extra & inside_any,
-            -jnp.float32(2.0) * jnp.maximum(R_cl - d_cl, jnp.float32(0.0)),
-            jnp.float32(0.0))
-
-        # ── Safety clamps for intra and myelin walkers ────────────────────────
-        q_eff = xy_abs - c_k
-        q_eff = q_eff - L * jnp.floor(q_eff / L + jnp.float32(0.5))
-        d_eff = jnp.linalg.norm(q_eff)
-        safe_d_eff = jnp.maximum(d_eff, jnp.float32(1e-20))
-        q_eff_hat  = q_eff / safe_d_eff
-        xy_abs = jnp.where(is_intra & (new_compartment_id == compartment_id) & (d_eff >= R_in),
-                           c_k + q_eff_hat * (R_in - NUDGE),
-                           xy_abs)
-
-        q_myl = xy_abs - c_k
-        q_myl = q_myl - L * jnp.floor(q_myl / L + jnp.float32(0.5))
-        d_myl = jnp.linalg.norm(q_myl)
-        safe_d_myl = jnp.maximum(d_myl, jnp.float32(1e-20))
-        q_myl_hat  = q_myl / safe_d_myl
-        xy_abs = jnp.where(is_myelin & (new_compartment_id == compartment_id) & (d_myl < R_in),
-                           c_k + q_myl_hat * (R_in + NUDGE), xy_abs)
-        q_myl2 = xy_abs - c_k
-        q_myl2 = q_myl2 - L * jnp.floor(q_myl2 / L + jnp.float32(0.5))
-        d_myl2 = jnp.linalg.norm(q_myl2)
-        safe_d_myl2 = jnp.maximum(d_myl2, jnp.float32(1e-20))
-        q_myl2_hat  = q_myl2 / safe_d_myl2
-        xy_abs = jnp.where(is_myelin & (new_compartment_id == compartment_id) & (d_myl2 >= R_out),
-                           c_k + q_myl2_hat * (R_out - NUDGE), xy_abs)
-
-        # ── Reconstruct 3D and rotate back ────────────────────────────────────
-        z_final = r_c[2] + step_z
-        r_c_new = jnp.stack([xy_abs[0], xy_abs[1], z_final])
-        r_new   = r_c_new if _is_identity_R else R_inv @ r_c_new
-
-        # ── Update comp_id from new position ─────────────────────────────────
-        # Use the same cylinder k_cyl as the step for comp_id assignment
-        r_c_new_xy   = (r_new if _is_identity_R else R_mat @ r_new)[:2]
-        q_new_abs    = r_c_new_xy - c_k
-        q_new_abs    = q_new_abs - L * jnp.floor(q_new_abs / L + jnp.float32(0.5))
-        dist_sq      = jnp.dot(q_new_abs, q_new_abs)
-        inner_r_sq_k = inner_r[k_cyl] ** 2
-        outer_r_sq_k = outer_r[k_cyl] ** 2
-        new_intra    = dist_sq < inner_r_sq_k
-        new_myelin   = (~new_intra) & (dist_sq < outer_r_sq_k)
-        # Extra-axonal walkers have NO owning cylinder: k_cyl is a dummy 0, so
-        # reclassifying them against cylinder 0's annulus spuriously absorbs
-        # near-wall extra walkers into "myelin of cylinder 0" (where D=0 freezes
-        # them permanently -- they then carry the short myelin T2 and stop
-        # diffusing).  An extra walker's compartment changes ONLY through the
-        # explicit transmit_outer permeation above; with the canonical
-        # impermeable myelin (kappa=0) it stays extra.  Guard the position-based
-        # reclassification to intra/myelin walkers, whose k_cyl IS meaningful.
-        comp_id_new  = jnp.where(is_extra, new_compartment_id,
-                       jnp.where(new_intra,  k_cyl + 1,
-                       jnp.where(new_myelin, geometry.N_max + k_cyl + 1,
-                                             new_compartment_id)))
-
-        if mt_on:
-            # ── MT surface binding at the myelin walls ────────────────────────
-            is_bound   = bound_rem > jnp.float32(0.0)
-            local_time = -dlog_boundary            # >= 0: myelin-wall local time this step
-            # free-water diffusivity of the walker's pool (myelin water can't bind)
-            D_bind = jnp.where(is_intra, D_intra[k_cyl],
-                     jnp.where(is_extra, D_extra[k_cyl], jnp.float32(1.0)))
-            # SIDE-dependent reactivity: an intra walker only ever contacts the INNER
-            # myelin wall, an extra walker only the OUTER wall, so the walker's pool
-            # selects the side (myelin water -> 0, cannot bind).
-            kappa_bind = jnp.where(is_intra, kappa_intra_f,
-                         jnp.where(is_extra, kappa_extra_f, jnp.float32(0.0)))
-            p_stick = bind_probability(
-                kappa_bind / jnp.maximum(D_bind, jnp.float32(1e-30)), local_time)
-            u_stick = jax.random.uniform(stick_key, dtype=jnp.float32)
-            newly   = (~is_bound) & (u_stick < p_stick)
-            u_dwell = jax.random.uniform(dwell_key, dtype=jnp.float32)
-            dwell_draw = -jnp.log(jnp.maximum(u_dwell, jnp.float32(1e-20))) * dwell_steps_mean
-            # frozen while bound: hold position + compartment; mutual exclusivity ->
-            # a stuck (or bound) encounter contributes NO surface-relaxivity dlog.
-            r_out    = jnp.where(is_bound, r, r_new)
-            comp_out = jnp.where(is_bound, compartment_id, comp_id_new)
-            dlog_contrib  = jnp.where(is_bound | newly, jnp.float32(0.0), dlog_boundary)
-            bound_rem_out = jnp.where(is_bound, bound_rem - jnp.float32(1.0),
-                                      jnp.where(newly, dwell_draw, jnp.float32(0.0)))
-            bound_acc_out = bound_acc + jnp.where(is_bound, jnp.float32(1.0), jnp.float32(0.0))
-            return (r_out, key, dlog_accum + dlog_contrib, comp_out,
-                    bound_rem_out, bound_acc_out), None
-        return (r_new, key, dlog_accum + dlog_boundary, comp_id_new), None
-
+    step_fn.max_bounces = sub.max_bounces
     return step_fn
 
 
 def make_packed_myelin_step_fn(geometry, dt: float, T1: float = None):
-    """Fused forward SIGNAL step for PackedMyelinatedCylinders (transverse, instant pulses).
+    """Fused forward signal step for PackedMyelinatedCylinders.
 
-    Wraps the validated per-compartment walk (:func:`make_packed_myelin_traj_step_fn`) and adds,
-    in the SAME forward scan (no trajectory storage / replay):
+    The walk of :func:`make_packed_myelin_traj_step_fn` with, in the same scan, the gradient
+    phase on the continuous (periodic-unwrapped) position, per-axon per-pool T2, surface
+    relaxivity from the per-axon inner / outer wall values, and T1 on the stored intervals.
 
-      * gradient phase ``phi += GAMMA*dt * (G(t) . r)`` accumulated on the CONTINUOUS lab-frame
-        position -- the packed cell is periodic, so the in-cell walk is unwrapped here on the fly
-        via the per-step min-image displacement (identical to ``unwrap_periodic``);
-      * per-compartment transverse relaxation ``log_w += -dt / T2[intra|myelin|extra]``;
-      * surface relaxivity ``log_w += (rho/D) * dlog_unit`` (rho from the geometry walls; the
-        walk returns the unit ``rho/D = 1`` boundary local-time term).
-
-    Carry: ``(r_incell, r_unwrapped, phi, log_w, compartment_id, key)``; inputs: ``g_t`` (n_meas, 3).
-    Phase, per-compartment T2 and surface-relaxivity conventions match the rest of the forward
-    model, so the signal is consistent across the engine by construction.
+    Carry ``(r_incell, r_unwrapped, phi, log_w, compartment_id, key)``; inputs ``(g_t, chi_t)``.
+    Sub-stepped by :func:`resolve_sub_steps`; the count is ``step_fn.n_sub``.
     """
     L = jnp.float32(geometry._cell_size)
-    N_max = geometry.N_max
+    D_i, D_m, D_e = geometry._D_intra_jax, geometry._D_myelin_jax, geometry._D_extra_jax
+    rho_i, rho_o = geometry._rho_inner_jax, geometry._rho_outer_jax
+    has_rho = bool(np.max(np.asarray(rho_i)) > 0 or np.max(np.asarray(rho_o)) > 0)
+
+    def _over(rho, D):
+        return jnp.where(D > 0, rho / jnp.maximum(D, jnp.float32(1e-30)), jnp.float32(0.0))
+    rho_weights = (jnp.stack([_over(rho_i, D_i), _over(rho_i, D_m), _over(rho_o, D_m), _over(rho_o, D_e)],
+                             axis=1) if has_rho else None)                       # (N_max, 4)
 
     has_t2 = geometry._has_t2
     if has_t2:
-        t2_intra = jnp.float32(np.asarray(geometry._T2_intra_jax).ravel()[0])
-        t2_myelin = jnp.float32(np.asarray(geometry._T2_myelin_jax).ravel()[0])
-        t2_extra = jnp.float32(np.asarray(geometry._T2_extra_jax).ravel()[0])
-
+        inv_t2 = [jnp.float32(1.0) / geometry._T2_extra_jax, jnp.float32(1.0) / geometry._T2_intra_jax,
+                  jnp.float32(1.0) / geometry._T2_myelin_jax]                    # by pool, per axon
     has_t1 = T1 is not None
-    if has_t1:
-        inv_T1 = jnp.float32(1.0 / T1)
+    inv_T1 = jnp.float32(1.0 / T1) if has_t1 else jnp.float32(0.0)
 
-    rho_i = float(np.max(np.asarray(geometry._rho_inner_jax)))
-    rho_o = float(np.max(np.asarray(geometry._rho_outer_jax)))
-    rho = max(rho_i, rho_o)
-    # Phase / T2 / local time accumulate per fine sub-step.
-    D_ref = float(max(np.max(np.asarray(geometry._D_intra_jax)),
-                      np.max(np.asarray(geometry._D_extra_jax))))
-    if rho > 0.0:
-        rho_over_D = jnp.float32(rho / D_ref)
-    n_sub = resolve_sub_steps(geometry, D_ref, dt, surface=rho > 0.0)
+    D_ref = float(max(np.max(np.asarray(D_i)), np.max(np.asarray(D_e))))
+    n_sub = resolve_sub_steps(geometry, D_ref, dt, surface=has_rho)
     dt_sub = dt / n_sub
-    traj_step = make_packed_myelin_traj_step_fn(geometry, dt_sub)
+    sub = make_myelin_substep(geometry, dt_sub, rho_weights=rho_weights)
     gamma_dt_sub = jnp.float32(GAMMA * dt_sub)
     dt_sub_f32 = jnp.float32(dt_sub)
 
@@ -1072,32 +680,29 @@ def make_packed_myelin_step_fn(geometry, dt: float, T1: float = None):
 
         def _sub(c, _):
             r_ic, r_uw, phi, log_w, cid, key = c
-            (r_ic_new, key_new, dlog_step, cid_new), _ = traj_step(
-                (r_ic, key, jnp.float32(0.0), cid), None)
+            key, k_step, k_perm = jax.random.split(key, 3)
+            u = jax.random.uniform(k_perm, dtype=jnp.float32)
+            r_ic_new, cid_new, _, dlog_rho = sub(r_ic, k_step, u, cid)
             # continuous displacement: remove the periodic wrap jump in the (x, y) cell plane
             dr = r_ic_new - r_ic
             dxy = dr[:2] - L * jnp.round(dr[:2] / L)
-            dr = jnp.array([dxy[0], dxy[1], dr[2]], dtype=jnp.float32)
-            r_uw_new = r_uw + dr
-            phi_new = phi + gamma_dt_sub * (g_t @ r_uw_new)          # (n_meas,)
+            r_uw_new = r_uw + jnp.array([dxy[0], dxy[1], dr[2]], dtype=jnp.float32)
+            phi_new = phi + gamma_dt_sub * (g_t @ r_uw_new)
 
             dlog = jnp.float32(0.0)
             if has_t2:
-                is_extra = cid_new == jnp.int32(0)
-                is_myelin = cid_new > jnp.int32(N_max)
-                T2 = jnp.where(is_extra, t2_extra, jnp.where(is_myelin, t2_myelin, t2_intra))
-                # Transverse decay only while chi_t == 1 (stored intervals: no T2 loss).
-                dlog = dlog - dt_sub_f32 / T2 * chi_t
+                pool, k = _pool_and_axon(geometry, cid_new)
+                inv = jnp.where(pool == 0, inv_t2[0][k], jnp.where(pool == 1, inv_t2[1][k], inv_t2[2][k]))
+                dlog = dlog - dt_sub_f32 * inv * chi_t
             if has_t1:
-                # Longitudinal decay only on the stored intervals (chi_t == 0).
                 dlog = dlog - dt_sub_f32 * inv_T1 * (jnp.float32(1.0) - chi_t)
-            if rho > 0.0:
-                # Surface relaxivity accrues only while transverse (chi_t == 1).
-                dlog = dlog + rho_over_D * dlog_step * chi_t
-            return (r_ic_new, r_uw_new, phi_new, log_w + dlog, cid_new, key_new), None
+            if has_rho:
+                dlog = dlog + dlog_rho * chi_t
+            return (r_ic_new, r_uw_new, phi_new, log_w + dlog, cid_new, key), None
 
         carry_out, _ = jax.lax.scan(_sub, carry, None, length=n_sub)
         return carry_out, None
 
     step_fn.n_sub = n_sub
+    step_fn.max_bounces = sub.max_bounces
     return step_fn

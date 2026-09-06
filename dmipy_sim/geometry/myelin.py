@@ -7,8 +7,151 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from ._boundary import keep_side_radial, specular, off_wall, step_off_wall
+from ._boundary import (keep_side_radial, specular, off_wall, ray_sphere_t, transmit_probability,
+                        bounce_loop)
 from .base import Geometry, LengthScales, _rotation_to_z
+
+_TINY = 1e-30
+_POOL_AFTER_CROSSING = (0, 2, 1, 0, 2)   #: pool after crossing code 1..4 (index 0 unused)
+
+
+def concentric_wall_kernel(centers, inner, outer, L, D_intra, D_myelin, D_extra,
+                           kappa_inner, kappa_outer, rho_weights, eps, nudge, step_max, min_gap):
+    """The wall interaction of a concentric-cylinder substrate, in its cross-section plane.
+
+    Axon ``k`` is the pair of coaxial circles ``|q - c_k| = inner_k`` (the axon membrane) and
+    ``|q - c_k| = outer_k`` (the myelin / extra-axonal boundary); ``outer_k == 0`` marks a padding
+    slot. A walker's pool -- 0 extra, 1 intra (lumen), 2 myelin (annulus) -- is carried state that
+    changes only where a crossing is granted. The rule is the one every other geometry uses
+    (:mod:`._boundary`): ray-traced hits, ``d_perp = remaining * |cos alpha|`` at the hit, one
+    Powles crossing decision per step, specular multi-bounce reflection off the wall the ray
+    actually meets, and a strict side sentinel at the start and end of the step.
+
+    The bounce budget and the candidate count are derived from the worst case a walker can meet:
+    a step ``step_max`` zig-zagging across the narrowest passage -- the smallest gap between two
+    outer walls, the thinnest sheath, or the shortest chord a nudged grazing ray can make on the
+    smallest lumen (``2 sqrt(2 nudge R)``) -- needs ``step_max / passage + 1`` reflections, and the
+    walls within reach of one step are those of at most ``pi (1 + step_max / R_min)`` disjoint
+    disks.
+
+    Returns ``wall(xy, d_hat, step_l, pool, k, u)`` giving ``(xy_new, pool_new, k_new, chan,
+    dlog_rho, crossed)``: the end position, the pool and owning / nearest axon after the step,
+    the four boundary local-time channels ``-2 d_perp`` (inner wall met from the lumen, inner wall
+    met from the sheath, outer wall met from the sheath, outer wall met from outside), the surface
+    log-weight increment with ``rho_weights[k] = (rho_in/D_in, rho_in/D_my, rho_out/D_my,
+    rho_out/D_ex)`` applied per hit, and whether a crossing was granted.
+    """
+    N = int(inner.shape[0])
+    outer_np = np.asarray(outer, np.float64); inner_np = np.asarray(inner, np.float64)
+    real_np = outer_np > 0
+    R_in_min = float(np.min(inner_np[real_np]))
+    thick_min = float(np.min((outer_np - inner_np)[real_np]))
+    chord_floor = 2.0 * np.sqrt(2.0 * float(nudge) * R_in_min)
+    passage = min(float(min_gap), thick_min, chord_floor)
+    max_bounces = int(np.clip(np.ceil(float(step_max) / passage) + 1, 2, 32))
+    n_cand = int(min(N, max(8, np.ceil(np.pi * (1.0 + float(step_max) / R_in_min)) + 2)))
+
+    real = outer > 0
+    ar = jnp.arange(n_cand)
+    f32 = jnp.float32
+    nudge = f32(nudge); eps = f32(eps)
+
+    def _wrap(q):
+        return q if L is None else q - L * jnp.floor(q / L + f32(0.5))
+
+    def _pin(xy, q, R_in, R_out, pool):
+        """Strict side of the walls of ``pool`` around the axon at offset ``q``."""
+        xy, _ = keep_side_radial(xy, q, R_in, True, nudge, active=pool == 1)
+        xy, _ = keep_side_radial(xy, q, R_in, False, nudge, active=pool == 2)
+        xy, _ = keep_side_radial(xy, q, R_out, True, nudge, active=pool == 2)
+        xy, _ = keep_side_radial(xy, q, R_out, False, nudge, active=pool == 0)
+        return xy
+
+    def wall(xy, d_hat, step_l, pool, k, u):
+        q_all = _wrap(xy[None, :] - centers)                                   # (N, 2)
+        dist_wall = jnp.where(real, jnp.sqrt(jnp.sum(q_all * q_all, -1)) - outer, jnp.inf)
+        k0 = jnp.where(pool == 0, jnp.argmin(dist_wall).astype(jnp.int32), k)
+        xy = _pin(xy, q_all[k0], inner[k0], outer[k0], pool)                  # the carried pool rules
+
+        if n_cand < N:
+            _, idx = jax.lax.top_k(-dist_wall, n_cand)                         # walls within reach
+        else:
+            idx = ar
+        c_c, in_c, out_c = centers[idx], inner[idx], outer[idx]
+        real_c = out_c > 0
+        ki_c, ko_c = kappa_inner[idx], kappa_outer[idx]
+        Di_c, Dm_c, De_c = D_intra[idx], D_myelin[idx], D_extra[idx]
+        w_c = rho_weights[idx]                                                 # (n_cand, 4)
+
+        def hit_once(p, d, rem, decided):
+            q = _wrap(p[None, :] - c_c)
+            d2 = jnp.sum(q * q, -1)
+            pen = jnp.where(real_c, d2 / jnp.maximum(out_c * out_c, _TINY), jnp.inf)
+            kc = jnp.argmin(pen)
+            in_out = pen[kc] < f32(1.0)                                        # inside an outer wall
+            R_in = in_c[kc]
+            in_lum = in_out & (d2[kc] < R_in * R_in)
+            pool_c = jnp.where(in_lum, 1, jnp.where(in_out, 2, 0))
+            # outer walls: the owner's from inside (exit root), every other from outside (entry)
+            t_en, t_ex, disc_o = ray_sphere_t(q, d, out_c)
+            own = (ar == kc) & in_out
+            t_o = jnp.where(own, t_ex, t_en)
+            t_o = jnp.where(real_c & (disc_o > 0) & (t_o > eps) & (t_o < rem), t_o, jnp.inf)
+            ko = jnp.argmin(t_o)
+            t_o_min = t_o[ko]
+            # the owner's inner wall: exit root from the lumen, entry root from the sheath
+            t_en_i, t_ex_i, disc_i = ray_sphere_t(q[kc], d, R_in)
+            t_i = jnp.where(in_lum, t_ex_i, t_en_i)
+            t_i = jnp.where(in_out & (R_in > 0) & (disc_i > 0) & (t_i > eps) & (t_i < rem),
+                            t_i, jnp.inf)
+            hit_in = t_i < t_o_min
+            t_hit = jnp.minimum(t_i, t_o_min)
+            any_hit = jnp.isfinite(t_hit) & (rem > 0)
+            t_safe = jnp.where(any_hit, t_hit, f32(0.0))
+            kh = jnp.where(hit_in, kc, ko)
+            R_hit = jnp.where(hit_in, R_in, out_c[kh])
+            disc_h = jnp.where(hit_in, disc_i, disc_o[kh])
+            raw = q[kh] + t_safe * d
+            n_out = raw / jnp.maximum(jnp.linalg.norm(raw), _TINY)
+            rem_a = rem - t_safe
+            d_perp = jnp.where(any_hit, rem_a * jnp.sqrt(jnp.maximum(disc_h, f32(0.0)))
+                               / jnp.maximum(R_hit, _TINY), f32(0.0))
+            stay_in = jnp.where(hit_in, in_lum, own[kh])
+            kap = jnp.where(hit_in, ki_c[kh], ko_c[kh])
+            D_leave = jnp.where(pool_c == 1, Di_c[kc], jnp.where(pool_c == 2, Dm_c[kc], De_c[kh]))
+            first = any_hit & (~decided)
+            transmit = first & (u < transmit_probability(kap / jnp.maximum(D_leave, _TINY), d_perp))
+            d_refl = specular(d, n_out)
+            d_refl = d_refl / jnp.maximum(jnp.linalg.norm(d_refl), _TINY)
+            q_off = off_wall(R_hit * n_out, n_out, stay_in, nudge)
+            q_off, _ = keep_side_radial(q_off, q_off, R_hit, stay_in, nudge, active=~transmit)
+            reflecting = any_hit & (~transmit)
+            p_new = jnp.where(reflecting, p + (q_off - q[kh]), p + rem * d)
+            d_new = jnp.where(reflecting, d_refl, d)
+            rem_new = jnp.where(reflecting, jnp.maximum(rem_a - nudge, f32(0.0)), f32(0.0))
+            sel = jnp.stack([reflecting & hit_in & (pool_c == 1), reflecting & hit_in & (pool_c == 2),
+                             reflecting & (~hit_in) & (pool_c == 2),
+                             reflecting & (~hit_in) & (pool_c == 0)]).astype(f32)
+            chan = (f32(-2.0) * d_perp) * sel
+            dlog_rho = jnp.sum(chan * w_c[kh])
+            code = jnp.where(transmit, jnp.where(hit_in, jnp.where(in_lum, f32(1.0), f32(2.0)),
+                                                 jnp.where(pool_c == 2, f32(3.0), f32(4.0))), f32(0.0))
+            dlw = jnp.concatenate([chan, dlog_rho[None], code[None]])
+            return p_new, d_new, rem_new, decided | first, dlw, transmit
+
+        xy_f, dlw, crossed = bounce_loop(hit_once, xy, d_hat, step_l, max_bounces,
+                                         dlog_init=jnp.zeros(6, f32))
+        code = jnp.round(dlw[5]).astype(jnp.int32)
+        pool_new = jnp.where(crossed, jnp.asarray(_POOL_AFTER_CROSSING, jnp.int32)[code], pool)
+        q_all_f = _wrap(xy_f[None, :] - centers)
+        dist_f = jnp.where(real, jnp.sqrt(jnp.sum(q_all_f * q_all_f, -1)) - outer, jnp.inf)
+        k_new = jnp.argmin(dist_f).astype(jnp.int32)                         # owner, or nearest
+        xy_f = _pin(xy_f, q_all_f[k_new], inner[k_new], outer[k_new], pool_new)
+        return xy_f, pool_new, k_new, dlw[:4], dlw[4], crossed
+
+    wall.max_bounces = max_bounces
+    wall.n_cand = n_cand
+    return wall
 
 
 class MyelinatedCylinder(Geometry):
@@ -87,6 +230,9 @@ class MyelinatedCylinder(Geometry):
             from ..substrate.biophysical_constants import get_default_value
             water_fractions = (1.0, float(get_default_value('myelin_water_proton_density')), 1.0)
         self.water_fractions = tuple(float(w) for w in water_fractions)
+        #: proton-density weight indexed by POOL id (0 extra, 1 intra, 2 myelin)
+        self._water_fraction_by_pool = (self.water_fractions[2], self.water_fractions[0],
+                                        self.water_fractions[1])
 
         orientation = np.asarray(orientation, dtype=np.float64)
         self.orientation = (orientation / np.linalg.norm(orientation)).astype(
@@ -95,6 +241,21 @@ class MyelinatedCylinder(Geometry):
         self._R = jnp.array(_R_np, dtype=jnp.float32)
         self._R_inv = jnp.array(_R_np.T, dtype=jnp.float32)
         self._is_identity_rotation = bool(np.allclose(_R_np, np.eye(3)))
+
+        # The same per-axon array layout as PackedMyelinatedCylinders, with one axon at the
+        # origin and no periodic cell, so both are stepped by the one kernel in `physics`.
+        self.N_max = 1
+        self._centers_jax = jnp.zeros((1, 2), jnp.float32)
+        self._inner_radii_jax = jnp.array([self.inner_radius], jnp.float32)
+        self._outer_radii_jax = jnp.array([self.outer_radius], jnp.float32)
+        self._D_intra_jax = jnp.array([self.D_intra], jnp.float32)
+        self._D_myelin_jax = jnp.array([self.D_myelin], jnp.float32)
+        self._D_extra_jax = jnp.array([self.D_extra], jnp.float32)
+        self._kappa_inner_jax = jnp.array([self.kappa_inner or 0.0], jnp.float32)
+        self._kappa_outer_jax = jnp.array([self.kappa_outer or 0.0], jnp.float32)
+        self._eps = jnp.float32(1e-7 * self.inner_radius)
+        self._nudge = jnp.float32(1e-4 * self.inner_radius)
+        self.min_gap = float('inf')
 
     def init_positions(self, n_walkers, key):
         """Distribute walkers proportional to volume * water_fraction per compartment.
@@ -141,7 +302,7 @@ class MyelinatedCylinder(Geometry):
             xy_intra = np.concatenate(pts, axis=0)[:n_intra].astype(np.float32)
             positions[idx:idx + n_intra, 0] = xy_intra[:, 0]
             positions[idx:idx + n_intra, 1] = xy_intra[:, 1]
-            compartments[idx:idx + n_intra] = 0
+            compartments[idx:idx + n_intra] = 1
             idx += n_intra
 
         # Myelin: uniform in annulus R_in <= r < R_out
@@ -154,7 +315,7 @@ class MyelinatedCylinder(Geometry):
             xy_myelin = np.concatenate(pts, axis=0)[:n_myelin].astype(np.float32)
             positions[idx:idx + n_myelin, 0] = xy_myelin[:, 0]
             positions[idx:idx + n_myelin, 1] = xy_myelin[:, 1]
-            compartments[idx:idx + n_myelin] = 1
+            compartments[idx:idx + n_myelin] = 2
             idx += n_myelin
 
         # Extra-axonal: uniform in annulus R_out <= r < R_extra
@@ -167,7 +328,7 @@ class MyelinatedCylinder(Geometry):
             xy_extra = np.concatenate(pts, axis=0)[:n_extra].astype(np.float32)
             positions[idx:idx + n_extra, 0] = xy_extra[:, 0]
             positions[idx:idx + n_extra, 1] = xy_extra[:, 1]
-            compartments[idx:idx + n_extra] = 2
+            compartments[idx:idx + n_extra] = 0
             idx += n_extra
 
         # Positions are in cylinder frame (xy = cross-section, z = axis).
@@ -195,11 +356,6 @@ class MyelinatedCylinder(Geometry):
             "stepped by the fused kernel physics.make_myelin_step_fn, which carries the "
             "compartment id. Use simulate(...) (which dispatches to that kernel) rather "
             "than a generic reflect/trajectory walk.")
-    #: The fused kernel (`physics.make_myelin_step_fn`) carries its own compartment code
-    #: (0 intra, 1 myelin, 2 extra -- the order of `water_fractions` and the per-compartment
-    #: D/T2 arrays); this maps that code to the pool id every geometry reports.
-    _KERNEL_TO_POOL = (1, 2, 0)
-
     def classify_position(self, r: jnp.ndarray) -> jnp.ndarray:
         """Compartment id from the radial distance in the cross-section: 1 intra
         (|r_xy| < R_inner), 2 myelin (R_inner <= |r_xy| < R_outer), 0 extra."""
@@ -212,9 +368,9 @@ class MyelinatedCylinder(Geometry):
         return jnp.where(in_intra, jnp.int32(1),
                jnp.where(in_myelin, jnp.int32(2), jnp.int32(0)))
 
-    def pool_of(self, kernel_code):
-        """Pool id (0 extra, 1 intra, 2 myelin) of a kernel compartment code."""
-        return jnp.asarray(self._KERNEL_TO_POOL, jnp.int32)[kernel_code]
+    def pool_of(self, compartment_id):
+        """The fused kernel carries pool ids (0 extra, 1 intra, 2 myelin) directly."""
+        return jnp.asarray(compartment_id, jnp.int32)
 
     def volume(self, compartment: str, L: float = 1.0) -> float:
         """Volume of a compartment per unit length L (m³).
@@ -513,6 +669,11 @@ class PackedMyelinatedCylinders(Geometry):
 
         # Minimum gap (diagnostic, uses outer radii)
         self.min_gap = self._compute_min_gap()
+        if self.min_gap < 0.0:
+            raise ValueError(
+                f"PackedMyelinatedCylinders: sheaths overlap (closest outer walls are {-self.min_gap:.3g} m "
+                "inside each other). Place the axons with pack_myelinated_cylinders(inner_radii, g_ratios, "
+                "...), which packs the OUTER radii, rather than pack_cylinders on the inner radii.")
 
     def _compute_min_gap(self):
         """Minimum clear gap between outer boundaries (actual cylinders only)."""

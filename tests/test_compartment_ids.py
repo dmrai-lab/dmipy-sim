@@ -77,8 +77,9 @@ def test_myelin_kernels_report_pool_ids():
     mc = d.MyelinatedCylinder(3e-6, 5e-6, (0, 0, 1), 2e-9, 2e-9)
     assert [int(mc.classify_position(jnp.asarray([x, 0, 0], jnp.float32))) for x in (0.0, 4e-6, 6e-6)] \
         == [INTRA, MYELIN, EXTRA]
-    assert [int(v) for v in mc.pool_of(jnp.arange(3))] == [INTRA, MYELIN, EXTRA]   # kernel 0/1/2
-    c, L, _ = d.pack_cylinders([1e-6] * 3, target_vf=0.3, seed=0)
+    assert [int(v) for v in mc.pool_of(jnp.arange(3))] == [EXTRA, INTRA, MYELIN]   # carries pool ids
+    L = float(np.sqrt(np.pi * 3 * (1e-6 / 0.7) ** 2 / 0.5))
+    _, _, c = d.pack_myelinated_cylinders([1e-6] * 3, 0.7, None, cell_size=L, seed=0)
     pm = d.PackedMyelinatedCylinders([1e-6] * 3, 0.7, c, L, N_max=4)
     enc = jnp.asarray([0, 1, 3, 5, 8])
     assert [int(v) for v in pm.pool_of(enc)] == [EXTRA, INTRA, INTRA, MYELIN, MYELIN]
@@ -89,7 +90,8 @@ def test_myelin_kernels_report_pool_ids():
 
 def test_simulate_and_simulate_trajectories_report_the_same_ids():
     """The same PackedMyelinatedCylinders labels its walkers the same way on both entry points."""
-    c, L, _ = d.pack_cylinders([1e-6] * 3, target_vf=0.3, seed=0)
+    L = float(np.sqrt(np.pi * 3 * (1e-6 / 0.7) ** 2 / 0.5))
+    _, _, c = d.pack_myelinated_cylinders([1e-6] * 3, 0.7, None, cell_size=L, seed=0)
     pm = d.PackedMyelinatedCylinders([1e-6] * 3, 0.7, c, L, N_max=4)
     wf = d.set_b(d.pgse(delta=2e-3, DELTA=4e-3, G_magnitude=0.05, bvecs=[[1, 0, 0]], n_t=30,
                         slew_rate=np.inf), 5e8)
