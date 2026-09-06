@@ -17,6 +17,7 @@ from .trajectories import (unwrap_periodic, replay_jax,
                            finite_180_longitudinal_dwell, pre_pulse_gradient_phase,
                            pathway_sign_se)
 from .mt_walk import simulate_mt_trajectories
+from .persistent_walk import PersistentWalk
 from .bloch import simulate_bloch
 from .pulse_sequence import (BlochSequence, gradient_echo, spin_echo,
                              prepend_mt_prep, run_bloch_sequence, emergent_z_spectrum)
@@ -65,7 +66,7 @@ __all__ = [
     # replay path: vector-Bloch + susceptibility + MT + refocusing helpers
     "replay_bloch", "replay_bloch_jax",
     "finite_180_longitudinal_dwell", "pre_pulse_gradient_phase", "pathway_sign_se",
-    "simulate_mt_trajectories",
+    "simulate_mt_trajectories", "PersistentWalk",
     "simulate_bloch",
     "BlochSequence", "gradient_echo", "spin_echo", "prepend_mt_prep",
     "run_bloch_sequence", "emergent_z_spectrum",

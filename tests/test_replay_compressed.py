@@ -30,7 +30,7 @@ def test_compressed_gradient_replay_matches_raw():
     mst = simulate_trajectories(N, D, Cylinder(radius=R, orientation=[0, 0, 1.]),
                                 compress=32, **kw)
     assert isinstance(mst, dict) and mst["compressed"]
-    traj, dt = np.asarray(raw[0]), raw[1]
+    traj, dt = np.asarray(raw.positions), raw.dt
     G = _grad_battery(traj.shape[1])
     S_raw = np.asarray(replay(traj, dt, G, dt))
     S_cmp = np.asarray(replay(mst, mst["dt_traj"], G, dt))
@@ -44,7 +44,7 @@ def test_compressed_surface_replay_matches_raw():
     kw = dict(T_max=0.4, dt_save=2e-3, seed=7, save_relaxation_data=True, require_gpu=False)
     raw = simulate_trajectories(N, D, Box1D(length=R), **kw)
     mst = simulate_trajectories(N, D, Box1D(length=R), compress=8, **kw)
-    traj, dt, dlog = np.asarray(raw[0]), raw[1], np.asarray(raw[4])
+    traj, dt, dlog = np.asarray(raw.positions), raw.dt, np.asarray(raw.boundary_local_time)
     G0 = np.zeros((1, traj.shape[1], 3))              # b0: pure surface-relaxivity decay
     S_raw = float(np.asarray(replay(traj, dt, G0, dt, surface_relaxivity=rho, D=D,
                                     dlog_boundary_unit=dlog))[0])

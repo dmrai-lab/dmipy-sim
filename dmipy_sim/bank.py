@@ -22,6 +22,8 @@ from __future__ import annotations
 
 import numpy as np
 
+from .persistent_walk import PersistentWalk
+
 from . import compression as _cx
 from ._replay_kernel import se_gate, gradient_phase
 from .replay import ReplayPack, read_rpk, write_rpk
@@ -34,15 +36,20 @@ RPK_SCHEMA_VERSION = "0.3"
 
 # --------------------------------------------------------------- master-walk normalisation
 def _master_arrays(src) -> dict:
-    """Normalise a raw master walk (dict or ``.npz``) to the common master dict consumed by
-    :func:`build_replay_pack`. ``src`` must expose at least ``traj`` (n_walkers, n_t, 3),
-    ``dt_traj`` and ``T_max``; the tier channels (``comp``/``T2_per_comp``/``T1_per_comp`` for
-    bulk relaxation, ``dlog_b`` for surface relaxivity, ``bfrac`` for MT) are optional."""
+    """Normalise a master walk to the dict consumed by :func:`build_replay_pack`.
+
+    ``src`` is a :class:`~dmipy_sim.persistent_walk.PersistentWalk` (what ``simulate_trajectories`` and
+    ``simulate_mt_trajectories`` return), or a dict / ``.npz`` exposing at least ``traj``
+    (n_walkers, n_t, 3), ``dt_traj`` and ``T_max`` (``PersistentWalk.bank_dict(**metadata)`` writes one);
+    the tier channels (``comp``/``T2_per_comp``/``T1_per_comp`` for bulk relaxation, ``dlog_b`` for
+    surface relaxivity, ``bfrac`` for MT) are optional."""
+    if isinstance(src, PersistentWalk):
+        src = src.bank_dict()
     if not (isinstance(src, dict) or hasattr(src, "files")):
         raise TypeError(
-            "build_replay_pack expects a master-walk dict / .npz (the output of "
-            "simulate_trajectories(..., save_relaxation_data=True), assembled into a dict with "
-            "keys traj/dt_traj/T_max[/comp/T2_per_comp/T1_per_comp/dlog_b/bfrac]); "
+            "build_replay_pack expects a PersistentWalk (the output of simulate_trajectories(..., "
+            "save_relaxation_data=True)) or a master-walk dict / .npz with keys "
+            "traj/dt_traj/T_max[/comp/T2_per_comp/T1_per_comp/dlog_b/bfrac]; "
             f"got {type(src).__name__}.")
     keys = src.files if hasattr(src, "files") else src.keys()
     m = {k: src[k] for k in keys}

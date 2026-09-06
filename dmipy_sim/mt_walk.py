@@ -40,6 +40,7 @@ from .geometry._boundary import bind_probability
 from .physics import _geometry_radius, resolve_sub_steps
 from . import mt as _mt
 from .geometry import initial_positions
+from .persistent_walk import PersistentWalk
 
 
 def simulate_mt_trajectories(
@@ -105,13 +106,11 @@ def simulate_mt_trajectories(
 
     Returns
     -------
-    trajectories : (n_walkers, n_t, 3)   positions at each saved step.
-    dt_actual : float                    saved time step.
-    sub_steps : int                      fine sub-steps per saved step.
-    dt_sim : float                       fine sub-step size.
-    bound_frac : (n_walkers, n_t)        fractional bound occupancy per save.
-    dlog_boundary_unit : (n_walkers, n_t)  free-pool boundary local time
-        (rho/D=1), i.e. -2*Sum d_perp over the FREE sub-steps of each save.
+    PersistentWalk
+        ``positions`` (n_walkers, n_t, 3), ``dt``, ``sub_steps``, ``dt_sim``, ``bound_frac``
+        (n_walkers, n_t) fractional bound occupancy per save, and ``boundary_local_time``
+        (n_walkers, n_t), the free-pool boundary local time (rho/D = 1, ``-2 * sum d_perp`` over the
+        FREE sub-steps of each save).
     """
     from .gpu import check_gpu
     check_gpu(n_walkers, require_gpu, what="simulate_mt_trajectories")
@@ -269,7 +268,6 @@ def simulate_mt_trajectories(
         dlog_b.append(np.asarray(d).astype(storage_dtype))
         bfrac_b.append(np.asarray(bf).astype(storage_dtype))
 
-    trajectories = np.concatenate(pos_b, axis=0)
-    dlog_boundary_unit = np.concatenate(dlog_b, axis=0)
-    bound_frac = np.concatenate(bfrac_b, axis=0)
-    return trajectories, dt_actual, sub_steps, dt_sim, bound_frac, dlog_boundary_unit
+    return PersistentWalk(np.concatenate(pos_b, axis=0), float(dt_actual), int(sub_steps), float(dt_sim),
+                      boundary_local_time=np.concatenate(dlog_b, axis=0),
+                      bound_frac=np.concatenate(bfrac_b, axis=0), seed=int(seed))

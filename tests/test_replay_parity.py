@@ -105,7 +105,8 @@ def _replay_case(request):
 
     out = simulate_trajectories(n, D, geom, T_max, dt, seed=SEED,
                                 save_relaxation_data=True, require_gpu=False)
-    traj, dt_traj, sub_steps, dt_sim, dlog, comp = out
+    traj, dt_traj, sub_steps, dt_sim = out.positions, out.dt, out.sub_steps, out.dt_sim
+    dlog, comp = out.boundary_local_time, out.compartment
     if name != "free":
         assert sub_steps > 1, (f"[{name}] the producer took {sub_steps} sub-step; this parity "
                                f"must exercise the shared sub-step dispatch")
@@ -185,8 +186,8 @@ def test_save_false_returns_4_tuple():
     dt = float(wf.dt); n_t = wf.G.shape[1]
     out = simulate_trajectories(2_000, D, d.Sphere(radius=R),
                                 dt * (n_t - 1), dt, seed=SEED, require_gpu=False)
-    assert len(out) == 4
-    traj, dt_actual, sub_steps, dt_sim = out
+    assert not (out.has_surface or out.has_compartments or out.has_binding)
+    traj, dt_actual, sub_steps, dt_sim = out.positions, out.dt, out.sub_steps, out.dt_sim
     assert traj.shape == (2_000, n_t, 3)
     # f32 by default since #78: the walk is f32, the pack is f32, and the .rpk spec
     # permits only float32/float64 for `positions`. f16 is opt-in via storage_dtype.
@@ -200,8 +201,9 @@ def test_save_true_returns_6_tuple_shapes_dtypes():
     out = simulate_trajectories(2_000, D, d.Cylinder(radius=R, orientation=[0, 0, 1]),
                                 dt * (n_t - 1), dt, seed=SEED,
                                 save_relaxation_data=True, require_gpu=False)
-    assert len(out) == 6
-    traj, dt_actual, sub_steps, dt_sim, dlog, comp = out
+    assert out.has_surface and out.has_compartments and not out.has_binding
+    traj, dt_actual, sub_steps, dt_sim = out.positions, out.dt, out.sub_steps, out.dt_sim
+    dlog, comp = out.boundary_local_time, out.compartment
     assert traj.shape == (2_000, n_t, 3) and traj.dtype == np.float32
     assert dlog.shape == (2_000, n_t) and dlog.dtype == np.float32
     assert comp.shape == (2_000, n_t)
