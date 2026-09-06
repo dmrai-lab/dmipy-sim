@@ -134,6 +134,15 @@ sheath, or the shortest nudged grazing chord), not fixed. Per-axon `T2_*`, `rho_
 `kappa_inner/outer` and `D_*` are indexed by the walker's axon; `rho` is applied per hit with the
 diffusivity of the pool the walker is in.
 
+**Packed substrates** (`PackedCylinders`, `PackedSpheres`) are stepped by
+`geometry.packed.packed_wall_kernel`: the same ray-traced multi-bounce rule, tested against the
+objects within reach of the step (`packed_candidate_count`), with the budget
+`packed_bounce_budget` derived from the narrowest passage (`min_gap` or the nudged grazing
+chord). **Every wall encounter is its own Powles trial** with an independent uniform: summed over
+a step that is `κ/D` times the boundary local time the reflections record, so transmission does
+not depend on how many walls a sub-step meets and no gap-based sub-step rule is needed. A
+single-hit rule at outer packing 0.45 ended 90% of extra-axonal walkers inside a cylinder.
+
 **Sub-steps** come from one dispatch, `physics.resolve_sub_steps(geometry, D, dt, surface=,
 mt_dwell_time=, override=)` — the maximum of the reflection (R/6, R/25 permeable), collision-lookup,
 surface-local-time (pore/8) and binding criteria that apply. Every driver (`make_step_fn`,
