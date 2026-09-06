@@ -13,6 +13,9 @@ myelin-water contrast chi_iso = +1.06e-6 (isotropic), myelin frozen with short T
 myelin-water proton density.
 """
 from __future__ import annotations
+import logging
+
+log = logging.getLogger(__name__)
 
 import numpy as np
 
@@ -58,8 +61,8 @@ def mesh_axon_master(bundle, *, n_walkers=30_000, n_myelin=None, n_t=1600, T_max
     fr_i = feature_radius_intra or _min_radius(Vi, Fi)
     box_min, box_max = bundle.box_min, bundle.box_max
     if verbose:
-        print(f"[mesh_axon] {bundle.summary()} | fr_intra={fr_i/1e-6:.3f}um "
-              f"n_intra={n_walkers} n_myelin={n_myelin}", flush=True)
+        log.info(f"[mesh_axon] {bundle.summary()} | fr_intra={fr_i/1e-6:.3f}um "
+              f"n_intra={n_walkers} n_myelin={n_myelin}")
 
     # Containment via the EXACT parity test (mesh_contains), NOT the Mesh's cell-gather classify: for a
     # thin axon in a large box the gather is empty almost everywhere and returns an arbitrary side, which
@@ -87,8 +90,8 @@ def mesh_axon_master(bundle, *, n_walkers=30_000, n_myelin=None, n_t=1600, T_max
         n_intra_target = max(1, int(round(n_walkers * frac_i)))
         n_myelin = max(1, int(n_walkers - n_intra_target))
         if verbose:
-            print(f"[mesh_axon] uniform density: f_intra={fi_pre:.4f} f_myelin={fm_pre:.4f} "
-                  f"-> n_intra={n_intra_target} n_myelin={n_myelin} (total {n_walkers})", flush=True)
+            log.info(f"[mesh_axon] uniform density: f_intra={fi_pre:.4f} f_myelin={fm_pre:.4f} "
+                  f"-> n_intra={n_intra_target} n_myelin={n_myelin} (total {n_walkers})")
         n_walkers = n_intra_target
 
     # ---- intra pool: restricted inside the inner (axon) wall ----
@@ -121,15 +124,14 @@ def mesh_axon_master(bundle, *, n_walkers=30_000, n_myelin=None, n_t=1600, T_max
         r0_m = r0_m[np.sort(pick)]
         n_myelin = n_keep
         if verbose:
-            print(f"[mesh_axon] water content by thinning: kept {n_myelin}/{n_myelin_seeded} myelin spins "
-                  f"(rho={rho_m}) -> unweighted ensemble", flush=True)
+            log.info(f"[mesh_axon] water content by thinning: kept {n_myelin}/{n_myelin_seeded} myelin spins "
+                  f"(rho={rho_m}) -> unweighted ensemble")
     elif water_content != "weight":
         raise ValueError(f"water_content must be 'thin' or 'weight', got {water_content!r}")
     tr_m = np.repeat(r0_m[:, None, :], n_t_actual, axis=1)
     if verbose:
-        print(f"[mesh_axon] measured volume fractions: intra={f_i:.4f} myelin={f_shell:.4f} "
-              f"(bundle mesh-volume estimate: intra={bundle.f_intra:.4f} myelin={bundle.f_myelin:.4f})",
-              flush=True)
+        log.info(f"[mesh_axon] measured volume fractions: intra={f_i:.4f} myelin={f_shell:.4f} "
+              f"(bundle mesh-volume estimate: intra={bundle.f_intra:.4f} myelin={bundle.f_myelin:.4f})")
 
     # ---- stack (intra, myelin) ----
     traj = np.concatenate([tr_i, tr_m], axis=0)
@@ -148,8 +150,8 @@ def mesh_axon_master(bundle, *, n_walkers=30_000, n_myelin=None, n_t=1600, T_max
     w = np.concatenate([np.full(len(tr_i), vol_i), np.full(n_myelin, w_m)]).astype(np.float64)
     if verbose:
         spread = w.max() / w.min() if w.min() > 0 else float("nan")
-        print(f"[mesh_axon] weight per spin: intra={vol_i:.3e} myelin={w_m:.3e} "
-              f"(max/min={spread:.3f}; 1.000 = unweighted ensemble)", flush=True)
+        log.info(f"[mesh_axon] weight per spin: intra={vol_i:.3e} myelin={w_m:.3e} "
+              f"(max/min={spread:.3f}; 1.000 = unweighted ensemble)")
 
     # ---- DETERMINISTIC SHUFFLE: make any walker PREFIX a valid sub-ensemble ----
     # Precision tiers are served by reading the first n rows of the walker-leading arrays (a single
@@ -160,9 +162,9 @@ def mesh_axon_master(bundle, *, n_walkers=30_000, n_myelin=None, n_t=1600, T_max
     traj, dlog_b, comp, ids, w = traj[order], dlog_b[order], comp[order], ids[order], w[order]
     if verbose:
         pre = min(2000, len(ids))
-        print(f"[mesh_axon] shuffled walkers (seed {int(seed)+991}); first {pre} rows are "
+        log.info(f"[mesh_axon] shuffled walkers (seed {int(seed)+991}); first {pre} rows are "
               f"{100.0*np.mean(ids[:pre] == MYELIN):.1f}% myelin vs "
-              f"{100.0*np.mean(ids == MYELIN):.1f}% overall", flush=True)
+              f"{100.0*np.mean(ids == MYELIN):.1f}% overall")
 
     out = dict(
         traj=traj, dt_traj=dt_traj, T_max=float(T_max), comp=comp, comp0=ids.copy(), w=w,
@@ -176,7 +178,7 @@ def mesh_axon_master(bundle, *, n_walkers=30_000, n_myelin=None, n_t=1600, T_max
 
     # ---- C3 static susceptibility field-grid channel ----
     if verbose:
-        print(f"[mesh_axon] building susceptibility field basis (res={field_res/1e-6:.3f}um)...", flush=True)
+        log.info(f"[mesh_axon] building susceptibility field basis (res={field_res/1e-6:.3f}um)...")
     # kspace_lowpass=None by default, for two reasons established by the oracle calibration:
     #  (a) with a partial-volume source the window is unnecessary and marginally worse (lumen null
     #      0.098% -> 0.073% of chi*B0 when removed; sheath amplitude unchanged at 0.999x analytic);
@@ -199,7 +201,7 @@ def mesh_axon_master(bundle, *, n_walkers=30_000, n_myelin=None, n_t=1600, T_max
         aG = None if aG is None else aG[(slice(None),) + sl]
         origin = origin + lo * vs
         if verbose:
-            print(f"[mesh_axon] field grid cropped {basis['shape']} -> {il.shape} for storage", flush=True)
+            log.info(f"[mesh_axon] field grid cropped {basis['shape']} -> {il.shape} for storage")
     out["susc_field_basis"] = {"iso_local": np.asarray(il, np.float32),
                                "iso_P": np.asarray(iP, np.float32),
                                "aniso_G": (None if aG is None else np.asarray(aG, np.float32)),
@@ -207,5 +209,5 @@ def mesh_axon_master(bundle, *, n_walkers=30_000, n_myelin=None, n_t=1600, T_max
                                "voxel_size": np.asarray(vs, float)}
     out["susc_grid_origin"] = np.asarray(origin, float)
     if verbose:
-        print(f"[mesh_axon] susc field-grid: shape={basis['shape']}  comps={np.unique(comp)}", flush=True)
+        log.info(f"[mesh_axon] susc field-grid: shape={basis['shape']}  comps={np.unique(comp)}")
     return out

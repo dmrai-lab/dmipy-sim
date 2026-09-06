@@ -16,6 +16,9 @@ Substrate-agnostic by construction: it takes a loaded :class:`dmipy_sim.io.cactu
 (``has_extra_substrate=False``) automatically drops the extra pool.
 """
 from __future__ import annotations
+import logging
+
+log = logging.getLogger(__name__)
 
 import numpy as np
 
@@ -474,8 +477,8 @@ def mesh_bundle_master(bundle, *, n_walkers=30_000, params=None, T_max=0.04, dt_
             kappa_MT = k_lit if kappa_MT is None else kappa_MT
             dwell_time = d_lit if dwell_time is None else dwell_time
             if verbose:
-                print(f"[bundle] MT from catalogued WM qMT (Stanisz 2005 @3T): "
-                      f"kappa_MT={kappa_MT:.4e} m/s, dwell={dwell_time*1e3:.2f} ms", flush=True)
+                log.info(f"[bundle] MT from catalogued WM qMT (Stanisz 2005 @3T): "
+                      f"kappa_MT={kappa_MT:.4e} m/s, dwell={dwell_time*1e3:.2f} ms")
 
     Vi, Fi = bundle.inner
     Vo, Fo = bundle.outer
@@ -495,11 +498,11 @@ def mesh_bundle_master(bundle, *, n_walkers=30_000, params=None, T_max=0.04, dt_
     n_myelin_seeded = max(1, int(round(n_walkers * f_m_pre / tot)))
     n_extra = max(1, int(round(n_walkers * f_e_pre / tot))) if include_extra else 0
     if verbose:
-        print(f"[bundle] uniform density ({containment} containment, {int(n_probe):,} probes): "
+        log.info(f"[bundle] uniform density ({containment} containment, {int(n_probe):,} probes): "
               f"f_intra={f_i_pre:.4f} f_myelin={f_m_pre:.4f} f_extra={f_e_pre:.4f} -> "
-              f"n_intra={n_intra} n_myelin={n_myelin_seeded} n_extra={n_extra}", flush=True)
-        print(f"[bundle] fr_intra={fr_i/1e-6:.3f}um fr_extra={fr_e/1e-6:.3f}um | mt={mt_mode} | "
-              f"{bundle.summary()}", flush=True)
+              f"n_intra={n_intra} n_myelin={n_myelin_seeded} n_extra={n_extra}")
+        log.info(f"[bundle] fr_intra={fr_i/1e-6:.3f}um fr_extra={fr_e/1e-6:.3f}um | mt={mt_mode} | "
+              f"{bundle.summary()}")
 
     mesh_in = Mesh(Vi, Fi, periodic=False, voxel_min=bundle.box_min, voxel_max=bundle.box_max,
                    feature_radius=fr_i)
@@ -549,8 +552,8 @@ def mesh_bundle_master(bundle, *, n_walkers=30_000, params=None, T_max=0.04, dt_
     pick = np.random.default_rng(seed + 7).permutation(n_myelin_seeded)[:n_myelin]
     r0_m = r0_m[np.sort(pick)]
     if verbose:
-        print(f"[bundle] myelin water content by thinning: kept {n_myelin}/{n_myelin_seeded} "
-              f"(rho={rho_m}) -> unweighted ensemble", flush=True)
+        log.info(f"[bundle] myelin water content by thinning: kept {n_myelin}/{n_myelin_seeded} "
+              f"(rho={rho_m}) -> unweighted ensemble")
     tr_m = np.repeat(r0_m[:, None, :].astype(np.float32), n_t_actual, axis=1)
     dlog_m = np.zeros((n_myelin, n_t_actual), np.float32)
 
@@ -570,8 +573,8 @@ def mesh_bundle_master(bundle, *, n_walkers=30_000, params=None, T_max=0.04, dt_
                         np.full(n_myelin, vol_m)]).astype(np.float64)
     if verbose:
         spread = float(w.max() / w.min()) if w.min() > 0 else float("nan")
-        print(f"[bundle] measured fractions: intra={f_i:.4f} myelin={f_m:.4f} extra={f_e:.4f} | "
-              f"weight spread max/min={spread:.4f} (1.0000 = unweighted)", flush=True)
+        log.info(f"[bundle] measured fractions: intra={f_i:.4f} myelin={f_m:.4f} extra={f_e:.4f} | "
+              f"weight spread max/min={spread:.4f} (1.0000 = unweighted)")
 
     # ---- deterministic shuffle so any walker PREFIX is a valid sub-ensemble ----
     # Precision tiers read the first n rows of the walker-leading arrays. Stacked pool-by-pool those rows
@@ -618,9 +621,9 @@ def mesh_bundle_master(bundle, *, n_walkers=30_000, params=None, T_max=0.04, dt_
         out["mt_params"] = bundle_mt_params(bundle, kappa_MT, dwell_time)
         if verbose:
             m = out["mt_params"]
-            print(f"[bundle] MT (parametric, per compartment): voxel f_bound={m['f_bound_voxel']:.4f}; "
+            log.info(f"[bundle] MT (parametric, per compartment): voxel f_bound={m['f_bound_voxel']:.4f}; "
                   + ", ".join(f"{k}: f_b {m['f_bound'][k]:.4f} k_f {m['k_forward'][k]:.2f}/s"
-                              for k in m["f_bound"]), flush=True)
+                              for k in m["f_bound"]))
     elif mt_mode == "emergent":
         bf = np.concatenate([
             bf_e if bf_e is not None else np.zeros((0, n_t_actual), np.float32),
@@ -629,7 +632,7 @@ def mesh_bundle_master(bundle, *, n_walkers=30_000, params=None, T_max=0.04, dt_
         out["mt_params"] = bundle_mt_params(bundle, kappa_MT, dwell_time)
         if verbose:
             occ = float(bf[ids != MYELIN].mean())
-            print(f"[bundle] MT emergent: bound occupancy over the diffusing pools {occ:.4f} "
-                  f"(per-pool analytic voxel {out['mt_params']['f_bound_voxel']:.4f})", flush=True)
+            log.info(f"[bundle] MT emergent: bound occupancy over the diffusing pools {occ:.4f} "
+                  f"(per-pool analytic voxel {out['mt_params']['f_bound_voxel']:.4f})")
 
     return out
