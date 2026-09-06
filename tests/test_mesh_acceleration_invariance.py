@@ -84,8 +84,8 @@ def _run(subdivisions, r0_um):
     F = np.asarray(tri.faces, np.int64)
     e = np.linalg.norm(V[F[:, 0]] - V[F[:, 1]], axis=1)
     mesh = Mesh(V, F, periodic=False, voxel_min=V.min(0) - 2 * UM, voxel_max=V.max(0) + 2 * UM,
-                feature_radius=0.5 * float(np.median(e)))
-    mesh.reject_escape = False        # measure the collision response, not the safety net
+                feature_radius=0.5 * float(np.median(e)),
+                reject_escape=False)  # measure the collision response, not the safety net
 
     wf = set_b(pgse(delta=5e-3, DELTA=15e-3, G_magnitude=0.05, bvecs=[[1, 0, 0]], n_t=200), 5e8)
     r0 = np.ascontiguousarray(r0_um * UM, dtype=np.float32)
