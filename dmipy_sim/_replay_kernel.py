@@ -27,6 +27,8 @@ try:
 except ImportError:  # pragma: no cover
     _JAX = False
 
+_FULL = jax.lax.Precision.HIGHEST if _JAX else None     # no TF32 in a phase contraction
+
 _SAME_GRID_RTOL = 1e-9
 
 
@@ -81,20 +83,39 @@ def resample_gradient_jax(G, dt_wf, dt_traj, n_t_traj):
     return G_t.transpose(0, 2, 1)
 
 
-def gradient_phase(G_traj, traj, dt):
+_PHASE_CHUNK_BYTES = 256 * 2 ** 20     # float64 working copy of the trajectory per chunk
+
+
+def gradient_phase(G_traj, traj, dt, chunk_bytes=_PHASE_CHUNK_BYTES):
     """``gamma * dt * sum_t G[m, t] . r[w, t]`` -> ``(n_meas, n_walkers)`` float64, with ``G_traj``
-    already on the walk grid (:func:`resample_gradient`)."""
-    G_traj = np.asarray(G_traj, np.float64)
-    traj = np.asarray(traj, np.float64)
-    n_meas = G_traj.shape[0]
+    already on the walk grid (:func:`resample_gradient`).
+
+    The contraction runs in float64 over walker chunks of at most ``chunk_bytes`` each, so a stored
+    walk of 1e5 walkers by 1e3 steps (2.4 GB as float64) is never materialised whole. Each
+    walker's phase is its own dot product, so the chunking changes nothing beyond float64 rounding.
+    It is an ``einsum`` and not a matmul because the operands are a handful of measurement rows
+    against a transposed walk: BLAS gemm on that shape ran 30x slower than einsum's own kernel here.
+    """
+    G_flat = np.asarray(G_traj, np.float64).reshape(np.shape(G_traj)[0], -1)
     n_w = traj.shape[0]
-    return (GAMMA * float(dt)) * (G_traj.reshape(n_meas, -1) @ traj.reshape(n_w, -1).T)
+    row = int(np.prod(traj.shape[1:]))
+    out = np.empty((G_flat.shape[0], n_w))
+    step = max(1, int(chunk_bytes // (8 * row)))
+    for a in range(0, n_w, step):                      # one float64 chunk alive at a time
+        out[:, a:a + step] = np.einsum('mr,wr->mw', G_flat,
+                                       np.asarray(traj[a:a + step], np.float64).reshape(-1, row))
+    return (GAMMA * float(dt)) * out
 
 
 def gradient_phase_jax(G_traj, traj, dt):
-    """:func:`gradient_phase` for traced operands (float32)."""
+    """:func:`gradient_phase` for traced operands (float32).
+
+    The contraction is pinned to full float32 precision: on a GPU the default lets XLA run a
+    float32 matmul at TF32 (10 mantissa bits), which on a phase of hundreds of radians is an
+    error of order 0.1 rad per walker and biases the signal by 10-20%.
+    """
     return (float(GAMMA) * float(dt)) * jnp.einsum('mtx,wtx->mw', G_traj.astype(jnp.float32),
-                                                   traj.astype(jnp.float32))
+                                                   traj.astype(jnp.float32), precision=_FULL)
 
 
 def phase_increments(G_m, traj, dt):
@@ -111,8 +132,10 @@ def phase_increment(g_t, r_t, dt):
 
 
 def phase_increments_jax(G_m, traj, dt):
-    """:func:`phase_increments` for traced operands."""
-    return (float(GAMMA) * float(dt)) * jnp.einsum('td,wtd->tw', jnp.asarray(G_m), jnp.asarray(traj))
+    """:func:`phase_increments` for traced operands, at full float32 precision (see
+    :func:`gradient_phase_jax`)."""
+    return (float(GAMMA) * float(dt)) * jnp.einsum('td,wtd->tw', jnp.asarray(G_m), jnp.asarray(traj),
+                                                   precision=_FULL)
 
 
 def se_gate(n_t, dt, refocus_time):
