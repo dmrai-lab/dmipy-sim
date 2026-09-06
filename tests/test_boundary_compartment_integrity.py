@@ -35,9 +35,9 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from dmipy_sim.geometries import (Sphere, Cylinder, Ellipsoid, PackedCylinders,
+from dmipy_sim.geometry import (Sphere, Cylinder, Ellipsoid, PackedCylinders,
                                   PackedSpheres, PermeableSlab1D, PermeableShell)
-from dmipy_sim.curved_tube import CurvedTube, MultiShellCurvedTube
+from dmipy_sim.geometry.curved_tube import CurvedTube, MultiShellCurvedTube
 
 SUB_STEP = 2.0e-8          # a representative engine sub-step (20 nm)
 N_WALK   = 1500

@@ -8,8 +8,6 @@ fit implementation bit-for-bit.
 import numpy as np
 from warnings import warn
 
-from ..constants import GAMMA
-
 _TE_FLOOR_ATOL = 1e-9
 _REFOCUS_ATOL = 1e-3
 

@@ -17,27 +17,9 @@ from __future__ import annotations
 import numpy as np
 
 from .susceptibility_field import mesh_contains, mesh_field_basis
+from .mesh_bundle import _min_radius, _rejection_seeds
 
 INTRA, MYELIN = 1, 2                      # compartment ids (0 = extra, unused here)
-
-
-def _min_radius(V, F):
-    """Cheap feature radius: half the median mesh edge length (sets the sub-step)."""
-    e = np.linalg.norm(V[F[:, 0]] - V[F[:, 1]], axis=1)
-    return 0.5 * float(np.median(e))
-
-
-def _rejection_seeds(pred, box_min, box_max, n, seed, oversample=4):
-    """Uniform points in the box accepted by ``pred(pts) -> bool[]`` (rejection sampling).
-    Also returns the measured acceptance fraction = that compartment's volume fraction of the box."""
-    rng = np.random.default_rng(seed)
-    keep, tried, acc = [], 0, 0
-    while acc < n:
-        p = rng.uniform(box_min, box_max, (max(oversample * (n - acc), 20000), 3))
-        m = pred(p); tried += len(p); acc += int(m.sum())
-        keep.append(p[m])
-    pts = np.vstack(keep)
-    return pts[:n], float(acc) / float(tried)
 
 
 def mesh_axon_master(bundle, *, n_walkers=30_000, n_myelin=None, n_t=1600, T_max=36e-3,

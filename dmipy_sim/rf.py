@@ -27,7 +27,7 @@ al., Nat. Mach. Intell. 2021) designs: a complex envelope on a ~10 us raster,
 peak-B1/SAR constrained, scored by a Bloch-simulated magnetisation profile.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 import numpy as np
 
 from .constants import GAMMA                       # rad / (s * T)

@@ -366,14 +366,6 @@ class GridSusceptibility:
 
 
 def _axis_to_z_rotation(axis):
-    """Rotation mapping unit ``axis`` -> +z (identity when already +z)."""
-    axis = np.asarray(axis, float)
-    axis = axis / np.linalg.norm(axis)
-    z = np.array([0.0, 0.0, 1.0])
-    v = np.cross(axis, z)
-    s = np.linalg.norm(v)
-    c = float(np.dot(axis, z))
-    if s < 1e-12:
-        return np.eye(3) if c > 0 else np.diag([1.0, -1.0, -1.0])
-    vx = np.array([[0, -v[2], v[1]], [v[2], 0, -v[0]], [-v[1], v[0], 0]])
-    return np.eye(3) + vx + vx @ vx * ((1 - c) / (s * s))
+    """Rotation mapping unit ``axis`` -> +z: :func:`dmipy_sim.geometry.base._rotation_to_z`."""
+    from .geometry.base import _rotation_to_z
+    return _rotation_to_z(axis)

@@ -228,7 +228,6 @@ def _replay_compressed(master, G, dt_wf, *, chi_perp, T2, T1, surface_relaxivity
     K = int(master["K"]); n_t = int(master["n_t"]); dt_traj = float(master["dt_traj"])
     _cx.require_position_method(master.get("method", "bridge_dst"))
     pos_modes = np.asarray(master["pos_modes"], np.float64)          # (N, K+2, 3)
-    N = pos_modes.shape[0]
     meta = {"method": master.get("method", "bridge_dst"), "K": K, "n_t": n_t}
 
     # ── Gradient phase in mode space (no trajectory reconstruction) ──────────────

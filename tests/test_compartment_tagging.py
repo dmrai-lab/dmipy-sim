@@ -14,7 +14,7 @@ import jax.numpy as jnp
 import pytest
 
 from dmipy_sim import simulate, Cylinder, Sphere
-from dmipy_sim.geometries import (
+from dmipy_sim.geometry import (
     MyelinatedCylinder,
     PackedCylinders,
     pack_cylinders,

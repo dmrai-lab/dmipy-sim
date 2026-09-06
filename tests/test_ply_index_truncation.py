@@ -8,7 +8,7 @@ surface area become meaningless (measured on a real axon: volume 3.5x too small,
 import numpy as np
 import pytest
 
-from dmipy_sim.mesh import load_ply
+from dmipy_sim.geometry.mesh import load_ply
 
 N_V = 70000          # > 65536, so uint16 indices cannot address the whole mesh
 

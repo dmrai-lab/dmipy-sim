@@ -331,44 +331,6 @@ class Box1D(Geometry):
         return r_out, dlog_w
 
 
-def _is_inside_batch(pts, vertices, faces, batch_size=2000):
-    """Return bool (N,) array: True if each point is inside the closed mesh.
-
-    Shoots a +X ray from each point and counts triangle intersections (Möller-
-    Trumbore).  Odd count = inside (Jordan curve theorem generalisation).
-
-    Processes points in batches of `batch_size` to bound peak memory to roughly
-    batch_size × N_tri × 3 × 8 bytes ≈ 30 MB for batch_size=2000, N_tri=600.
-    """
-    tris = vertices[faces]        # (N_tri, 3, 3)
-    A    = tris[:, 0, :]          # (N_tri, 3)
-    E1   = tris[:, 1, :] - A      # (N_tri, 3)
-    E2   = tris[:, 2, :] - A      # (N_tri, 3)
-
-    d  = np.array([1.0, 0.0, 0.0])           # +X ray direction
-    P  = np.cross(d[None, :], E2)            # (N_tri, 3)  constant for +X
-    det = (P * E1).sum(axis=1)               # (N_tri,)
-
-    inside = np.zeros(len(pts), dtype=bool)
-    with np.errstate(divide='ignore', invalid='ignore'):
-        for i in range(0, len(pts), batch_size):
-            batch = pts[i : i + batch_size]          # (B, 3)
-            T     = batch[:, None, :] - A[None, :, :]   # (B, N_tri, 3)
-            u     = (P[None] * T).sum(axis=2) / det     # (B, N_tri)
-            Q     = np.cross(T, E1[None])               # (B, N_tri, 3)
-            v     = (Q * d[None, None, :]).sum(axis=2) / det  # (B, N_tri)
-            t_val = (Q * E2[None]).sum(axis=2) / det          # (B, N_tri)
-            # det≈0 (ray ∥ triangle) → u/v/t = ±inf or nan;
-            # inf > 1.0 → False, nan comparisons → False — all correctly excluded.
-            valid = (
-                (t_val > 0.0)
-                & (u >= 0.0) & (u <= 1.0)
-                & (v >= 0.0) & (u + v <= 1.0)
-            )
-            inside[i : i + batch_size] = (valid.sum(axis=1) % 2) == 1
-    return inside
-
-
 def _rotation_to_z(v):
     """Compute 3x3 rotation matrix R such that R @ v = [0, 0, 1].
 

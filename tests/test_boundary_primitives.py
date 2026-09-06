@@ -24,7 +24,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from dmipy_sim._boundary import (keep_side_radial, keep_side_planar, keep_side_quadric,
+from dmipy_sim.geometry._boundary import (keep_side_radial, keep_side_planar, keep_side_quadric,
                                  ray_sphere_t, ray_quadric_t, specular,
                                  transmit_probability, off_wall, step_off_wall)
 

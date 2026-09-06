@@ -539,7 +539,6 @@ class Mesh(Geometry):
         tri_v = V[F]
         tri_vn = vn[F]
         tmin, tmax = tri_v.min(1), tri_v.max(1)
-        base = np.arange(len(F))
         all_tri, all_vn = [tri_v], [tri_vn]
 
         # ghost replication across periodic faces/edges/corners
@@ -628,13 +627,10 @@ class Mesh(Geometry):
         # displaced by something float32 can represent at these coordinates, or it stays on the surface and
         # the next collision is discarded as ts <= _EPS.
         self._MIN_NUDGE = jnp.float32(8.0 * float(self._EPS))
-        # Opt-in near-surface confinement guards. Both OFF by default: together they cut crossings 2.8x on a
-        # CACTUS bundle (39 -> 14 per 3000 walkers over 20 ms, 3.5 sigma) at no cost in boundary local time
-        # (0.519x vs 0.522x of (S/V)D, i.e. unchanged), but they do NOT reach zero, and an impermeable wall
-        # that leaks 0.47% is still wrong. Enabling them is a strict improvement; relying on them for
-        # airtightness is not. See dmipy-sim#61.
+        # Opt-in near-surface confinement guard, OFF by default: it cuts crossings on a CACTUS bundle at no
+        # cost in boundary local time but does not reach zero, so it is an improvement to enable, not a
+        # guarantee to rely on. See dmipy-sim#61.
         self.adaptive_nudge = False
-        self.net_cross_check = False
         # minimum sine of the angle the outgoing ray must make with the triangle it left
         # DEFAULT 6e-2, not 1e-4. With a geometric reflection normal the outgoing cosine against the facet is
         # already non-negative, so this only lifts genuinely grazing incidences (shallower than ~3.4 deg), and
@@ -944,30 +940,6 @@ class Mesh(Geometry):
         n = jnp.zeros(3, jnp.float32).at[ax].set(-jnp.sign(dh[ax]))
         return t[ax], n, ax
 
-    def _net_side_changed(self, r_w, r_out, tri, valid):
-        """Did the NET displacement change which side of the surface the walker is on? By PARITY.
-
-        The confinement invariant has to hold for the net displacement, not just per bounce: the
-        post-collision nudge can land a walker inside a NEIGHBOURING body in a tight crevice, and a hit at
-        ``ts <= _EPS`` is discarded for a walker sitting on a surface. Both leave the walker across a wall it
-        never legitimately crossed.
-
-        Parity rather than presence. Counting crossings strictly inside the segment and asking whether the
-        count is ODD is immune to the endpoint ambiguity that defeats a presence test: a walker that starts ON
-        a surface and reflects back crosses it 0 or 2 times, while one that tunnels crosses exactly once. A
-        presence test (``any``) cannot tell those apart, so it both misses tunnelling whose crossing sits within
-        _EPS of an endpoint and rejects legitimate reflections -- measured at only a 2.8x reduction, never zero.
-
-        Sound because the segment is at most one step long and the gather reaches 1.5 cells, so every triangle
-        it can cross is in ``tri``.
-        """
-        seg = r_out - r_w
-        n = jnp.linalg.norm(seg)
-        safe = jnp.maximum(n, jnp.float32(1e-30))
-        ts, _u, _v = self._mt(r_w, seg / safe, tri, valid)
-        crossings = jnp.sum(jnp.where((ts > 0.0) & (ts < n), 1, 0))
-        return (crossings % 2 == 1) & (n > 0.0)
-
     # ------------------------------------------------------------------
     def init_positions(self, n_walkers, key, intra=True):
         """Seed walkers inside (intra=True) or outside the surface, by exact rejection sampling.
@@ -1108,7 +1080,7 @@ class Mesh(Geometry):
         except Exception:
             pass
         if verbose:
-            print(f"Mesh quality report")
+            print("Mesh quality report")
             print(f"  vertices/faces        : {rep['n_vertices']:,} / {rep['n_faces']:,}"
                   + (f"  (+{rep['n_ghost_faces']:,} periodic ghosts)" if self.n_ghost else ""))
             if "watertight" in rep:
@@ -1118,9 +1090,9 @@ class Mesh(Geometry):
             print(f"  edge/feature ratio    : {ratio:.3f}  (permeability needs <~ {_PERM_EDGE_RATIO_MAX})")
             print(f"  grid dims / max-occ   : {rep['grid_dims']} / {rep['grid_max_occupancy']}"
                   + (f"  OVERFLOW={rep['grid_overflow']}" if self.overflow else ""))
-            print(f"  MC-noise-floor accuracy:")
-            print(f"    restricted diffusion : YES")
-            print(f"    surface relaxivity   : YES")
+            print("  MC-noise-floor accuracy:")
+            print("    restricted diffusion : YES")
+            print("    surface relaxivity   : YES")
             print(f"    permeability         : {'YES' if perm_ok else 'NO -- mesh too coarse; use a finer mesh'}")
         return rep
 

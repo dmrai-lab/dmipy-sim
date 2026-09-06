@@ -16,7 +16,7 @@ trimesh = pytest.importorskip("trimesh")
 jax = pytest.importorskip("jax")
 import jax.numpy as jnp
 
-from dmipy_sim.mesh import Mesh
+from dmipy_sim.geometry.mesh import Mesh
 from dmipy_sim.mesh_bundle import BoxedMesh, _min_radius
 from dmipy_sim.susceptibility_field import mesh_contains
 

@@ -165,7 +165,6 @@ def compute_fiber_response(geometry, acquisition_scheme, n_walkers,
     # Construct E at all GL nodes: E[-x] = E[x]
     # gl_nodes is sorted ascending; negative nodes come first
     E_all = np.concatenate([E_unique[::-1], E_unique], axis=0)  # shape (n_angles, n_meas)
-    thetas = np.arccos(gl_nodes)  # for return value
 
     # Compute Legendre coefficients via GL quadrature (exact for polynomials ≤ 2n-1):
     # f_l = (2l+1)/2 * sum_k w_k E(x_k) P_l(x_k)
@@ -520,7 +519,6 @@ def pack_response(pack, profile, g_dir, b0_dir, *, amplitude=1.0, B0=3.0,
     from scipy.fft import dct
     from .compression import read_position_coeffs, decode_occupancy, relaxation_logweight
     from .constants import GAMMA
-    from .susceptibility_field import _q_of_H
 
     arrays, meta = pack.arrays, pack.meta
     comp_meta = meta.get("compression", {})

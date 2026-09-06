@@ -550,7 +550,7 @@ class PermeableSlab1D(Geometry):
                              jax.random.PRNGKey(0))[:2]
 
     def permeate(self, r, step, kappa_over_D, rho_over_D, perm_key):
-        L = jnp.float32(self.length); xm = jnp.float32(self.length / 2.0)
+        xm = jnp.float32(self.length / 2.0)
         x = r[0]; x_new = x + step[0]
         crossed = (x - xm) * (x_new - xm) < 0.0
         d_perp = jnp.where(crossed, jnp.abs(x_new - xm), jnp.float32(0.0))
@@ -668,13 +668,7 @@ class PermeableShell(Geometry):
         n = rad_hit / jnp.maximum(jnp.linalg.norm(rad_hit), EPS)   # outward radial normal
         remaining = step_l - t_hit
         cos_a = jnp.abs(jnp.dot(d, n))
-        d_perp_tangent = remaining * cos_a
-        # radial (normal-coordinate) penetration of the endpoint past the curved membrane:
-        rad_end = self._radial(r + step)
-        Rk = jnp.where(hit_in, Rin, Rout)
-        d_perp_radial = jnp.abs(jnp.linalg.norm(rad_end) - Rk)
-        d_perp = jnp.where(getattr(self, '_dperp_mode', 'tangent') == 'radial',
-                           d_perp_radial, d_perp_tangent)
+        d_perp = remaining * cos_a                     # the one penetration-depth estimator
 
         p = transmit_probability(kappa_over_D, d_perp)
         u = jax.random.uniform(perm_key, dtype=jnp.float32)

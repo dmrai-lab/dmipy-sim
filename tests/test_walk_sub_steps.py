@@ -14,7 +14,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from dmipy_sim.geometries import Sphere
+from dmipy_sim.geometry import Sphere
 from dmipy_sim.physics import collision_sub_steps, walk_sub_steps, _geometry_radius
 
 trimesh = pytest.importorskip("trimesh")
@@ -24,7 +24,7 @@ D = 2e-9
 
 
 def _mesh_sphere(radius_um=2.0, subdivisions=3, **kw):
-    from dmipy_sim.mesh import Mesh
+    from dmipy_sim.geometry.mesh import Mesh
     ico = trimesh.creation.icosphere(subdivisions=subdivisions, radius=radius_um)
     V = np.asarray(ico.vertices, float) * UM
     F = np.asarray(ico.faces, np.int64)
@@ -167,7 +167,7 @@ def test_the_step_cell_assertion_actually_guards():
     90% walker loss (and a wrongly-filed permeability bug, dmrai-lab/dmipy-sim#65) must be rejected.
     """
     import trimesh as _tm
-    from dmipy_sim.mesh import Mesh
+    from dmipy_sim.geometry.mesh import Mesh
     from dmipy_sim.mesh_bundle import _min_radius
     from dmipy_sim.physics import permeable_sub_steps
     from tests.conftest import assert_step_resolves_the_collision_lookup
@@ -199,7 +199,7 @@ def _disco_like_tubes(r_min_um=0.718, r_max_um=2.99, n_seg=40):
     """A PackedCurvedTubes pack shaped like the DiSCo substrate: a RANGE of tube radii,
     so the segment-bucket `cell_size` (4*Rmin/6 + 2*Rmax ~ 6.5um) is many times the
     finest tube radius (0.72um) that actually bounds the reflection."""
-    from dmipy_sim.curved_tube import PackedCurvedTubes
+    from dmipy_sim.geometry.curved_tube import PackedCurvedTubes
     z = np.linspace(0.0, 200.0, n_seg) * UM
     zero = np.zeros_like(z)
     cls, radii = [], []

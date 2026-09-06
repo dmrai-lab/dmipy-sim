@@ -49,7 +49,7 @@ def test_submodule_imports(name):
 # ── every exported geometry, built small ─────────────────────────────────────────────────
 # Built inside the test, never at collection: a geometry holds device buffers.
 def _all_geometries():
-    from dmipy_sim import mesh_shapes
+    from dmipy_sim.geometry import mesh_shapes
     from dmipy_sim.geometry import (FreeDiffusion, Box1D, Sphere, Cylinder, Ellipsoid,
                                     PermeableSlab1D, PermeableShell, PackedCylinders, PackedSpheres,
                                     MyelinatedCylinder, PackedMyelinatedCylinders, CurvedTube,

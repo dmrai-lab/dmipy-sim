@@ -8,7 +8,7 @@ import numpy as np
 import numpy.testing as npt
 import pytest
 
-from dmipy_sim.geometries import (
+from dmipy_sim.geometry import (
     Box1D,
     Cylinder,
     Sphere,

@@ -23,7 +23,7 @@ def _sphere_rho():
 
 
 def _mesh_rho():
-    from dmipy_sim import mesh_shapes
+    from dmipy_sim.geometry import mesh_shapes
     V, F = mesh_shapes.icosphere(2e-6, subdivisions=2)
     return d.Mesh(V, F, feature_radius=0.4e-6, intra={"surface_relaxivity_t2": 1e-6})
 

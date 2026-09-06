@@ -213,7 +213,7 @@ def test_viz_helpers_that_touch_geometry_still_resolve(tmp_path):
 
     Matplotlib is not physics and rasterising it asserts nothing about the simulator. What
     IS worth protecting is that these helpers still reach into the geometry modules: they
-    use DEFERRED imports (`from .geometry.base import _is_inside_batch` inside a function
+    use DEFERRED imports (`from .susceptibility_field import mesh_contains` inside a function
     body) which importing `viz` does not exercise and which a package move silently breaks.
     That happened in #89, and the render test caught it -- at 50 s, for something these two
     calls catch in half a second.

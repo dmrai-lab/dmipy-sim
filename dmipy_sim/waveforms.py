@@ -414,8 +414,6 @@ def trapezoidal_ogse(N, delta, DELTA, G_magnitude, bvecs, n_t,
     n_rise = min(max(0, round(rise_time / dt)), n_lobe // 2)
     n_DELTA = round(DELTA / dt)   # start of block 2
 
-    G = np.zeros((n_measurements, n_t, 3), dtype=np.float32)
-
     def _fill_block(G, m, block_start, signs):
         """Fill N lobes into G[m] starting at block_start, with per-lobe signs."""
         for k in range(N):

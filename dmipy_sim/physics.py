@@ -7,7 +7,7 @@ on first call via jax.jit applied in core.py.
 
 import jax
 import jax.numpy as jnp
-from .geometry._boundary import transmit_probability, bind_probability
+from .geometry._boundary import bind_probability
 import warnings
 
 import numpy as np
