@@ -20,6 +20,7 @@ from dataclasses import dataclass, asdict
 import math
 
 from .biophysical_constants import canonical_white_matter, get_default_value
+from ..compartments import Compartments, Pool
 
 
 def mean_inv_diameter_4(alpha, scale_diameter, volume_weighted=True):
@@ -283,6 +284,17 @@ class Substrate:
                                  self.g_ratio * self.gamma_scale_diameter,
                                  volume_weighted=True)
         return self.rho2 * sv
+
+    @property
+    def compartments(self) -> Compartments:
+        """The three pools as a `Compartments`: bulk D/T2/T1 and water fraction per pool (extra and
+        intra water 1.0, myelin ``myelin_water_proton_density``) -- what a geometry's
+        ``compartments=`` takes."""
+        return Compartments(
+            extra=Pool(D=self.D_extra, T2=self.T2_extra, T1=self.T1_extra, water_fraction=1.0),
+            intra=Pool(D=self.D_intra, T2=self.T2_intra, T1=self.T1_intra, water_fraction=1.0),
+            myelin=Pool(D=self.D_myelin, T2=self.T2_myelin, T1=self.T1_myelin,
+                        water_fraction=self.myelin_water_proton_density))
 
     @property
     def T2_intra_bulk(self) -> float:

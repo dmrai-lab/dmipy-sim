@@ -9,7 +9,10 @@ import numpy as np
 
 from ._boundary import (keep_side_radial, specular, off_wall, ray_sphere_t, transmit_probability,
                         bounce_loop)
+import warnings
+
 from .base import Geometry, LengthScales, _rotation_to_z
+from ..compartments import Compartments, Pool
 
 _TINY = 1e-30
 _POOL_AFTER_CROSSING = (0, 2, 1, 0, 2)   #: pool after crossing code 1..4 (index 0 unused)
@@ -154,6 +157,30 @@ def concentric_wall_kernel(centers, inner, outer, L, D_intra, D_myelin, D_extra,
     return wall
 
 
+
+def _pool_scalars(compartments, legacy, what, per_axon=False):
+    """Resolve per-pool T2 from ``compartments`` or the legacy ``T2_intra/T2_myelin/T2_extra`` kwargs.
+
+    ``legacy`` maps pool name -> the kwarg value. Scalars through the kwargs warn (the spelling is
+    ``compartments=``); per-axon arrays (``per_axon``) stay kwargs, since they are per object, not
+    per pool. Giving a property both ways raises. Returns ``(Compartments, {name: value})``.
+    """
+    comps = Compartments.coerce(compartments)
+    given = {n: v for n, v in legacy.items() if v is not None}
+    if given:
+        scalars = {n: v for n, v in given.items() if np.ndim(v) == 0}
+        if scalars:
+            warnings.warn(f"{what}(" + ", ".join(f"T2_{n}=" for n in scalars) + ") is spelled "
+                          f"{what}(compartments=Compartments(" + ", ".join(f"{n}=Pool(T2=...)" for n in scalars)
+                          + ")); the T2_* kwargs go away next release" + (" for scalars" if per_axon else ""),
+                          DeprecationWarning, stacklevel=3)
+        both = [n for n in given if n in comps and comps[n].T2 is not None]
+        if both:
+            raise ValueError(f"T2 of {both} given both through compartments= and T2_{both[0]}=")
+    out = {n: (comps[n].T2 if n in comps else None) for n in ("extra", "intra", "myelin")}
+    out.update(given)
+    return comps, out
+
 class MyelinatedCylinder(Geometry):
     """Three-compartment myelinated cylinder: intra-axonal, myelin sheath, extra-axonal.
 
@@ -187,12 +214,13 @@ class MyelinatedCylinder(Geometry):
         Permeability at inner boundary (m/s). Default None (impermeable).
     kappa_outer : float, optional
         Permeability at outer boundary (m/s). Default None (impermeable).
-    T2_intra : float, optional
-        T2 relaxation time for intra-axonal compartment (s).
-    T2_myelin : float, optional
-        T2 relaxation time for myelin compartment (s).
-    T2_extra : float, optional
-        T2 relaxation time for extra-axonal compartment (s).
+    compartments : Compartments or {name: Pool | dict}, optional
+        Per-pool ``T2`` (s) and, optionally, ``D`` / ``water_fraction`` for ``extra``, ``intra``
+        and ``myelin``: ``Compartments(intra=Pool(T2=0.05), myelin=Pool(T2=0.01), extra=Pool(T2=0.08))``.
+        A pool's ``D`` or ``water_fraction`` must agree with the ``D_*`` / ``water_fractions``
+        kwargs when both are given.
+    T2_intra, T2_myelin, T2_extra : float, optional
+        The previous spelling of the pools' ``T2``; accepted with a ``DeprecationWarning``.
     water_fractions : tuple of 3 floats, optional
         Relative water content (proton density) per compartment (intra, myelin,
         extra). ``None`` (default) uses the biophysical table: myelin =
@@ -212,9 +240,25 @@ class MyelinatedCylinder(Geometry):
                  D_intra, D_extra, D_myelin=0.0,
                  kappa_inner=None, kappa_outer=None,
                  T2_intra=None, T2_myelin=None, T2_extra=None,
-                 water_fractions=None):
+                 water_fractions=None, compartments=None):
         if outer_radius <= inner_radius:
             raise ValueError("outer_radius must be > inner_radius")
+        self.compartments, t2 = _pool_scalars(compartments,
+                                              dict(extra=T2_extra, intra=T2_intra, myelin=T2_myelin),
+                                              "MyelinatedCylinder")
+        T2_extra, T2_intra, T2_myelin = t2["extra"], t2["intra"], t2["myelin"]
+        for name, kw in (("extra", D_extra), ("intra", D_intra), ("myelin", D_myelin)):
+            if name in self.compartments and self.compartments[name].D is not None \
+                    and self.compartments[name].D != float(kw):
+                raise ValueError(f"D of the {name} pool given twice: D_{name}={kw} and Pool(D={self.compartments[name].D})")
+        wf_pools = [self.compartments[n].water_fraction if n in self.compartments else None
+                    for n in ("intra", "myelin", "extra")]
+        if any(w is not None for w in wf_pools):
+            if water_fractions is not None:
+                raise ValueError("water fractions given twice: water_fractions= and Pool(water_fraction=)")
+            if any(w is None for w in wf_pools):
+                raise ValueError("Pool(water_fraction=) must be set on all three pools or none")
+            water_fractions = tuple(wf_pools)
 
         self.inner_radius = float(inner_radius)
         self.outer_radius = float(outer_radius)
@@ -495,8 +539,12 @@ class PackedMyelinatedCylinders(Geometry):
     D_intra, D_myelin, D_extra : float or array-like (N_actual,)
         Diffusivities in m^2/s.  Scalar is broadcast to all cylinders.  ``D_myelin``
         defaults to 0 (stuck myelin water; set > 0 to let it diffuse).
-    T2_intra, T2_myelin, T2_extra : float or array-like (N_actual,) or None
-        T2 relaxation times in seconds.  None = no T2.
+    compartments : Compartments or {name: Pool | dict}, optional
+        Per-pool ``T2`` (s) shared by all cylinders (``Compartments(intra=Pool(T2=...), ...)``); a
+        pool's ``D`` must agree with the scalar ``D_*`` kwarg when both are given.
+    T2_intra, T2_myelin, T2_extra : array-like (N_actual,) or None
+        Per-cylinder T2 relaxation times in seconds (a per-object property, so it stays a kwarg);
+        a scalar here is the previous spelling of ``compartments`` and warns. None = no T2.
     kappa_inner, kappa_outer : float or array-like (N_actual,) or None
         Inner/outer wall permeabilities in m/s.  None / 0.0 = impermeable.
     rho_inner, rho_outer : float or array-like (N_actual,) or None
@@ -538,7 +586,16 @@ class PackedMyelinatedCylinders(Geometry):
         kappa_outer=0.0,
         rho_inner=0.0,
         rho_outer=0.0,
+        compartments=None,
     ):
+        self.compartments, t2 = _pool_scalars(compartments,
+                                              dict(extra=T2_extra, intra=T2_intra, myelin=T2_myelin),
+                                              "PackedMyelinatedCylinders", per_axon=True)
+        T2_extra, T2_intra, T2_myelin = t2["extra"], t2["intra"], t2["myelin"]
+        for name, kw in (("extra", D_extra), ("intra", D_intra), ("myelin", D_myelin)):
+            if name in self.compartments and self.compartments[name].D is not None:
+                if np.ndim(kw) or float(kw) != self.compartments[name].D:
+                    raise ValueError(f"D of the {name} pool given twice: D_{name}= and Pool(D=)")
         inner_radii = np.asarray(inner_radii, dtype=np.float64).ravel()
         N_actual = len(inner_radii)
         g_ratios = np.broadcast_to(

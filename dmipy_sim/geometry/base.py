@@ -7,6 +7,7 @@ from abc import ABC, abstractmethod
 from typing import NamedTuple, Optional
 
 from ._boundary import WallHit
+from ..compartments import Compartments
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -132,6 +133,9 @@ class Geometry(ABC):
     _D_comp_max = None
     _T2_comp = None
     _T1_comp = None
+    #: Per-pool tissue properties (`dmipy_sim.compartments.Compartments`, keyed extra/intra/myelin);
+    #: empty when the geometry was given none. The ONE spelling of per-compartment D/T2/T1/rho.
+    compartments = Compartments()
 
     # ---- compartment labelling ----
     #

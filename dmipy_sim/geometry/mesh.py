@@ -48,6 +48,7 @@ from ._boundary import specular, transmit_probability, off_wall
 import numpy as np
 
 from .base import Geometry, LengthScales
+from ..compartments import Compartments, Pool
 
 # Above this median-edge / feature-radius ratio the surface is too coarsely
 # tessellated for membrane permeability to reach the MC noise floor (its faceting
@@ -310,18 +311,18 @@ class Mesh(Geometry):
         the default). A dict ``{"intra_to_extra": κ_out, "extra_to_intra": κ_in}``
         makes it direction-dependent — note asymmetric κ is a *pump* (net flux, not
         passive equilibrium). None → impermeable.
+    compartments : Compartments or {"intra": Pool | dict, "extra": Pool | dict}, optional
+        Per-compartment properties of the ``intra`` (inside a cell, id 1) and ``extra`` (id 0)
+        pools, e.g. ``Compartments(intra=Pool(T2=0.05, D=1.7e-9), extra=Pool(T2=0.08, D=1.7e-9))``.
+        ``surface_relaxivity_t2`` is a wall effect seen from that pool's side: a spin hitting the
+        wall from inside vs outside takes a different relaxivity weight (may be set on one pool
+        only). ``D`` (m²/s), ``T2`` (s), ``T1`` (s) are bulk properties resolved per step (the
+        walker's step uses its compartment's D, its log-weight that compartment's
+        1/T2 · χ + 1/T1 · (1−χ)); if given, a value is required for BOTH pools. T1 only acts
+        during longitudinal storage (χ=0, e.g. a PGSTE mixing time). Unequal ``D`` across a
+        permeable wall is rejected (diffusivity-discontinuity interface).
     intra, extra : dict, optional
-        Per-compartment properties for the intra (inside a cell) and extra sides.
-        Supported keys:
-        ``surface_relaxivity_t2`` — a wall effect; a spin hitting the wall from
-        inside vs outside takes a different relaxivity weight (may be set on one
-        side only).
-        ``D`` (m²/s), ``T2`` (s), ``T1`` (s) — per-compartment bulk properties (a
-        per-step effect: the walker's step uses its compartment's D, and its
-        log-weight that compartment's 1/T2 · χ + 1/T1 · (1−χ)); if given, a value
-        is required for BOTH sides. T1 only acts during longitudinal storage
-        (χ=0, e.g. a PGSTE mixing time). Unequal ``D`` across a permeable wall is
-        rejected (diffusivity-discontinuity interface).
+        The previous spelling of ``compartments``; accepted with a ``DeprecationWarning``.
     pool : {"intra", "extra"}
         The pool a driver seeds when it is given no ``r0``: inside the surface (``"intra"``, id 1)
         or outside it (``"extra"``, id 0). Stated at construction so that "which pool did this run
@@ -365,8 +366,8 @@ class Mesh(Geometry):
 
     def __init__(self, vertices, faces, *, periodic=False, voxel_min=None,
                  voxel_max=None, feature_radius=None, surface_relaxivity_t2=None,
-                 permeability=None, intra=None, extra=None, orientation=None, R=None,
-                 cell_size=None, cap=None, max_bounces=None, pool="intra", reject_escape=True,
+                 permeability=None, compartments=None, intra=None, extra=None, orientation=None,
+                 R=None, cell_size=None, cap=None, max_bounces=None, pool="intra", reject_escape=True,
                  box_reflect=True, adaptive_nudge=False):
         V = np.asarray(vertices, np.float64)
         F = np.asarray(faces, np.int64)
@@ -474,16 +475,33 @@ class Mesh(Geometry):
         # engine's step builder) times a per-side/-direction multiplier applied in
         # reflect_with_log_weight / permeate.  Bulk diffusivity and T2 remain single
         # (set on simulate()); per-compartment D/T2 is a later layer.
-        intra = dict(intra or {}); extra = dict(extra or {})
         _allowed = {"surface_relaxivity_t2", "D", "T2", "T1"}
-        for _side, _d in (("intra", intra), ("extra", extra)):
-            _bad = set(_d) - _allowed
-            if _bad:
-                raise NotImplementedError(
-                    f"Mesh {_side}={sorted(_bad)}: supported per-compartment properties are "
-                    f"{sorted(_allowed)}.")
-        rho_i = intra.get("surface_relaxivity_t2", surface_relaxivity_t2)
-        rho_e = extra.get("surface_relaxivity_t2", surface_relaxivity_t2)
+        if intra is not None or extra is not None:
+            warnings.warn("Mesh(intra=, extra=) is spelled Mesh(compartments=Compartments(intra=Pool(...), "
+                          "extra=Pool(...))); the dicts go away next release.", DeprecationWarning,
+                          stacklevel=2)
+            if compartments is not None:
+                raise ValueError("give the per-compartment properties through compartments= OR "
+                                 "intra=/extra=, not both")
+            for _side, _d in (("intra", intra or {}), ("extra", extra or {})):
+                _bad = set(_d) - _allowed
+                if _bad:
+                    raise NotImplementedError(
+                        f"Mesh {_side}={sorted(_bad)}: supported per-compartment properties are "
+                        f"{sorted(_allowed)}.")
+            compartments = {k: v for k, v in (("intra", intra), ("extra", extra)) if v}
+        comps = Compartments.coerce(compartments)
+        if "myelin" in comps:
+            raise ValueError("a Mesh has two pools, extra (0) and intra (1); it has no myelin pool")
+        for _p in comps.values():
+            if _p.water_fraction is not None:
+                raise NotImplementedError("Mesh pools carry D/T2/T1/surface_relaxivity_t2; a per-pool "
+                                          "water_fraction is not applied by the mesh engine")
+        self.compartments = comps
+        intra = comps["intra"] if "intra" in comps else Pool()
+        extra = comps["extra"] if "extra" in comps else Pool()
+        rho_i = intra.surface_relaxivity_t2 if intra.surface_relaxivity_t2 is not None else surface_relaxivity_t2
+        rho_e = extra.surface_relaxivity_t2 if extra.surface_relaxivity_t2 is not None else surface_relaxivity_t2
         rho_i = float(rho_i) if rho_i is not None else 0.0
         rho_e = float(rho_e) if rho_e is not None else 0.0
         rho_nom = max(rho_i, rho_e)
@@ -510,7 +528,7 @@ class Mesh(Geometry):
         # T2 acts while transverse; T1 acts only during longitudinal storage — both
         # are gated by the waveform's coherence flag chi_t in make_step_fn.
         def _pair(key):
-            vi, ve = intra.get(key), extra.get(key)
+            vi, ve = getattr(intra, key), getattr(extra, key)
             if vi is None and ve is None:
                 return None
             if vi is None or ve is None:
