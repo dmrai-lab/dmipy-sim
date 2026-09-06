@@ -100,6 +100,10 @@ class Geometry(ABC):
 
     #: Stepped by `physics.make_packed_myelin_traj_step_fn` / `make_packed_myelin_step_fn`.
     _is_packed_myelinated = False
+    #: The replay producer's walk of this geometry is the fused engine's walk (position parity to
+    #: the MC-noise floor, tests/test_replay_parity.py), so ``simulate(engine="auto")`` may serve a
+    #: signal from a persistent walk. Declared by the geometry, never inferred from its class name.
+    replay_parity = False
 
     #: `classify_position` returns an OBJECT id (0 = extra, 1..N = the object the walker is
     #: in) rather than a pool id. `core.simulate_trajectories` collapses it to two pools.
@@ -224,6 +228,7 @@ class Geometry(ABC):
 
 class FreeDiffusion(Geometry):
     """Unbounded free diffusion — walkers move without any reflection."""
+    replay_parity = True
 
     @property
     def length_scales(self):
@@ -256,6 +261,7 @@ class Box1D(Geometry):
         is the perpendicular overshoot depth at the wall.
         T2_surface = d / (2·ρ)  (V/S = d/2 for a slab).  Default None.
     """
+    replay_parity = True
 
     def __init__(self, length: float, surface_relaxivity_t2=None):
         self.length = float(length)

@@ -345,6 +345,7 @@ class Mesh(Geometry):
         still holds a triangle is the right one. ``quality_report()`` and
         :meth:`memory_estimate` show the consequence.
     """
+    replay_parity = True
 
     supports_permeability = True   #: has a membrane a walker can cross
 
