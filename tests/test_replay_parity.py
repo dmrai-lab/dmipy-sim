@@ -1,7 +1,7 @@
 """Replay parity: walk-once + replay operators reproduce the fused ``simulate()``.
 
 Phase-1 replay foundation.  For each geometry we walk the spins ONCE with
-``simulate_trajectories(save_relaxation_data=True)`` and then apply
+``simulate_trajectories()`` and then apply
 ``replay`` (pure-gradient and with relaxation) post-hoc,
 asserting the result equals the fused forward engine (``core.simulate``) — the
 validation oracle — for
@@ -103,8 +103,7 @@ def _replay_case(request):
     G = np.asarray(wf.G, np.float32)
     chi = np.ones(n_t)
 
-    out = simulate_trajectories(n, D, geom, T_max, dt, seed=SEED,
-                                save_relaxation_data=True, require_gpu=False)
+    out = simulate_trajectories(n, D, geom, T_max, dt, seed=SEED, require_gpu=False)
     traj, dt_traj, sub_steps, dt_sim = out.positions, out.dt, out.sub_steps, out.dt_sim
     dlog, comp = out.boundary_local_time, out.compartment
     if name != "free":
@@ -181,11 +180,11 @@ def test_replay_surface_relaxivity_matches_simulate(_replay_case):
 
 
 def test_save_false_returns_4_tuple():
-    """Without save_relaxation_data, simulate_trajectories returns a 4-tuple."""
+    """A positions-only walk (tiers=()) carries no channels."""
     wf = _WF_STD
     dt = float(wf.dt); n_t = wf.G.shape[1]
     out = simulate_trajectories(2_000, D, d.Sphere(radius=R),
-                                dt * (n_t - 1), dt, seed=SEED, require_gpu=False)
+                                dt * (n_t - 1), dt, seed=SEED, require_gpu=False, tiers=())
     assert not (out.has_surface or out.has_compartments or out.has_binding)
     traj, dt_actual, sub_steps, dt_sim = out.positions, out.dt, out.sub_steps, out.dt_sim
     assert traj.shape == (2_000, n_t, 3)
@@ -195,12 +194,11 @@ def test_save_false_returns_4_tuple():
 
 
 def test_save_true_returns_6_tuple_shapes_dtypes():
-    """save_relaxation_data adds dlog_boundary_unit (storage_dtype) + comp_traj (int8)."""
+    """The default walk records the boundary local time (storage_dtype) and the compartment channel."""
     wf = _WF_STD
     dt = float(wf.dt); n_t = wf.G.shape[1]
     out = simulate_trajectories(2_000, D, d.Cylinder(radius=R, orientation=[0, 0, 1]),
-                                dt * (n_t - 1), dt, seed=SEED,
-                                save_relaxation_data=True, require_gpu=False)
+                                dt * (n_t - 1), dt, seed=SEED, require_gpu=False)
     assert out.has_surface and out.has_compartments and not out.has_binding
     traj, dt_actual, sub_steps, dt_sim = out.positions, out.dt, out.sub_steps, out.dt_sim
     dlog, comp = out.boundary_local_time, out.compartment

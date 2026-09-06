@@ -911,4 +911,4 @@ class PackedMyelinatedCylinders(Geometry):
             "PackedMyelinatedCylinders has no single-surface reflect: it is stepped by the "
             "fused kernel physics.make_packed_myelin_traj_step_fn, which carries the "
             "compartment id. Use simulate(...) or simulate_trajectories(..., "
-            "save_relaxation_data=True), which dispatch to that kernel.")
+            "tiers=\"all\"), which dispatch to that kernel.")

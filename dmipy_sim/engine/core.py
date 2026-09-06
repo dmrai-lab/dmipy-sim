@@ -162,14 +162,14 @@ def _simulate_via_replay(n_walkers, diffusivity, waveform, geometry, *, seed,
     # Per-compartment T2/T1 (Mesh intra/extra dicts) are pure replay knobs: they gate only
     # log_w and are applied off the saved compartment channel (comp_traj, indexed by pool id:
     # 0 extra, 1 intra, matching the geometry's _T2_comp/_T1_comp ordering). Requesting them
-    # forces save_relaxation_data so the compartment channel is recorded.
+    # forces record so the compartment channel is recorded.
     T2_comp = geometry._T2_comp
     T1_comp = geometry._T1_comp
     has_per_comp = T2_comp is not None or T1_comp is not None
 
     save_relax = has_surf or has_per_comp
     st_kwargs = dict(seed=seed, require_gpu=require_gpu,
-                     save_relaxation_data=save_relax)
+                     tiers=("all" if save_relax else ()))
     if r0 is not None:
         st_kwargs['r0'] = r0
     if walker_batch_size is not None:
@@ -815,6 +815,16 @@ def simulate_cpmg(n_walkers, diffusivity, waveform, geometry, *,
 
 
 
+
+def _record_channels(tiers):
+    """Whether a walk records its surface / compartment channels: ``"all"`` yes, ``()`` no."""
+    if tiers == "all":
+        return True
+    if tiers is None or (isinstance(tiers, (tuple, list, set, frozenset)) and len(tiers) == 0):
+        return False
+    raise ValueError(f"tiers must be 'all' (record every channel the geometry supports) or () "
+                     f"(positions only), got {tiers!r}")
+
 def simulate_trajectories(
     n_walkers: int,
     diffusivity: float,
@@ -823,7 +833,7 @@ def simulate_trajectories(
     dt_save: float,
     seed: int = 42,
     walker_batch_size: int = 50_000,
-    save_relaxation_data: bool = False,
+    tiers="all",
     sub_steps: int = None,
     require_gpu=None,
     storage_dtype=np.float32,
@@ -846,7 +856,7 @@ def simulate_trajectories(
 
     Sub-stepping: :func:`dmipy_sim.engine.physics.resolve_sub_steps` chooses the fine
     sub-steps per saved step from the geometry's length scales and the channels
-    recorded (the surface criterion when ``save_relaxation_data``, the binding
+    recorded (the surface criterion when the surface channel is recorded, the binding
     criterion when ``kappa_MT > 0``), the same dispatch the fused engine uses.  Only
     the position after each group of ``sub_steps`` inner steps is saved, so storage
     is always ``(n_walkers, n_t, 3)`` at ``dt_save`` granularity.
@@ -859,7 +869,7 @@ def simulate_trajectories(
         Diffusion coefficient in m²/s.
     geometry : Geometry
         Boundary geometry.  Provides ``init_positions(n, key)`` and
-        ``reflect(r, step)``; for ``save_relaxation_data`` also
+        ``reflect(r, step)``; for the recorded channels also
         ``reflect_with_log_weight`` (surface local time) and/or ``permeate``.
     T_max : float
         Total simulation duration in seconds.
@@ -870,13 +880,12 @@ def simulate_trajectories(
     walker_batch_size : int
         Number of walkers per GPU batch.  Reduce if OOM (the batch loop also
         auto-halves on an OOM exception).
-    save_relaxation_data : bool
-        If True, also save per-step boundary log-weight (with rho/D=1) and a
-        per-step compartment channel for each walker — enabling replay of
-        surface relaxivity (rho) and per-compartment T2/T1 without re-simulating.
-        Requires the geometry to have ``reflect_with_log_weight`` (Cylinder,
-        Sphere, Box1D, Ellipsoid, PackedCylinders/Spheres, Mesh).  For
-        FreeDiffusion (no boundaries), ``dlog_boundary_unit`` is all zeros.
+    tiers : {"all", ()}
+        Which replay tiers the walk records beyond the positions. ``"all"`` (default) records every
+        channel the geometry supports -- the boundary local time (surface relaxivity, rho/D = 1) and
+        the compartment occupancy (per-compartment T2/T1); with ``kappa_MT > 0`` also the bound
+        fraction. ``()`` records positions only, a cheaper walk (no surface sub-step criterion) for a
+        gradient-only replay. FreeDiffusion records an all-zero boundary channel.
     require_gpu : {None, True, False}
         GPU guard against a silent CPU fallback.  ``True`` raises if no GPU is
         visible; ``False`` opts out; ``None`` (default) warns for large CPU runs.
@@ -885,7 +894,7 @@ def simulate_trajectories(
         When provided, ``geometry.init_positions()`` is skipped.
     kappa_MT : float
         Magnetization-transfer surface reactivity (m/s) for the PackedMyelinated-
-        Cylinders + ``save_relaxation_data`` path.  ``0`` (default) leaves the walk
+        Cylinders path.  ``0`` (default) leaves the walk
         byte-for-byte identical to the pre-MT path (RNG stream + positions unchanged);
         ``> 0`` binds free water at the myelin walls and returns a 7th ``bound_frac``
         channel.  (For analytic geometries use :func:`dmipy_sim.simulate_mt_trajectories`.)
@@ -899,7 +908,7 @@ def simulate_trajectories(
     -------
     PersistentWalk
         ``positions`` (n_walkers, n_t, 3) in ``storage_dtype``, ``dt`` (= T_max / (n_t - 1)),
-        ``sub_steps``, ``dt_sim``; with ``save_relaxation_data`` also ``boundary_local_time``
+        ``sub_steps``, ``dt_sim``; with the default ``tiers="all"`` also ``boundary_local_time``
         (n_walkers, n_t), the per-step boundary log-weight at rho/D = 1 (``-2 * sum d_perp`` over
         the step's wall hits, non-positive), and ``compartment`` (n_walkers, n_t); with
         ``kappa_MT > 0`` also ``bound_frac``. ``illegal_crossings`` counts the rejected wrong-side
@@ -909,6 +918,7 @@ def simulate_trajectories(
     # GPU guard — never silently fall back to CPU for a heavy walk (CLAUDE rule).
     from .gpu import check_gpu
     check_gpu(n_walkers, require_gpu, what="simulate_trajectories")
+    record = _record_channels(tiers)
 
     n_t = int(round(T_max / dt_save)) + 1
     dt_actual = T_max / (n_t - 1)
@@ -919,7 +929,7 @@ def simulate_trajectories(
     from .physics import resolve_sub_steps as _resolve_sub_steps, length_scales_of as _length_scales_of
     R_geom = _length_scales_of(geometry).min_feature
     sub_steps = _resolve_sub_steps(
-        geometry, diffusivity, dt_actual, surface=bool(save_relaxation_data),
+        geometry, diffusivity, dt_actual, surface=bool(record),
         mt_dwell_time=(dwell_time if kappa_MT > 0.0 else None), override=sub_steps)
     dt_sim = dt_actual / sub_steps
     step_l_sim = jnp.float32(jnp.sqrt(6.0 * diffusivity * dt_sim))
@@ -945,10 +955,10 @@ def simulate_trajectories(
             "simulate_trajectories cannot walk a MyelinatedCylinder: its three compartments "
             "need the fused kernel physics.make_myelin_step_fn, which carries the "
             "compartment id. Use simulate(...) instead.")
-    if geometry._is_packed_myelinated and not save_relaxation_data:
+    if geometry._is_packed_myelinated and not record:
         raise NotImplementedError(
-            "simulate_trajectories on PackedMyelinatedCylinders requires "
-            "save_relaxation_data=True, which routes to the fused kernel "
+            "simulate_trajectories on PackedMyelinatedCylinders requires the recorded channels "
+            "(tiers='all'), which route to the fused kernel "
             "physics.make_packed_myelin_traj_step_fn. The position-only path has no "
             "compartment state and would return an unrestricted walk.")
 
@@ -1074,7 +1084,7 @@ def simulate_trajectories(
     # ── Relaxation-data path (position + boundary log-weight with rho/D=1) ────
     is_packed_myelin_geom = geometry._is_packed_myelinated
 
-    if save_relaxation_data and is_packed_myelin_geom:
+    if record and is_packed_myelin_geom:
         # PackedMyelinatedCylinders: use the stripped trajectory step fn (geometry
         # + permeability only, rho/D=1 at all walls).  comp_id is the encoded id
         # (0=extra, 1..N_max=intra, >N_max=myelin); compress to 0/1/2 at save.
@@ -1128,7 +1138,7 @@ def simulate_trajectories(
             geometry, ("traj_packed_myelin", n_t, sub_steps, float(dt_sim), kappa_MT, dwell_time),
             lambda: jax.jit(jax.vmap(simulate_one_walker_pm, in_axes=(0, 0, 0, 0))))
 
-    if save_relaxation_data and not is_packed_myelin_geom:
+    if record and not is_packed_myelin_geom:
         if has_permeability:
             kappa_over_D_relax = jnp.float32(float(permeability) / diffusivity)
             permeate_relax = geometry.permeate
@@ -1244,13 +1254,13 @@ def simulate_trajectories(
     walker_keys_all = jax.random.split(walker_key, n_walkers)
 
     comp0_all = (jnp.asarray(geometry._init_compartments)
-                 if (save_relaxation_data and is_packed_myelin_geom) else None)
+                 if (record and is_packed_myelin_geom) else None)
 
     # ── MT bound-pool equilibration (packed myelin, kappa_MT > 0) ──
     # An all-free start under-fills the macromolecular pool and biases the transfer;
     # equilibrate the bound occupancy (and spatial state) to f_b BEFORE t=0 and discard
     # the preamble.  kappa_MT == 0 leaves brem0_all at zero and skips this entirely.
-    _mt_on = kappa_MT > 0.0 and save_relaxation_data and is_packed_myelin_geom
+    _mt_on = kappa_MT > 0.0 and record and is_packed_myelin_geom
     brem0_all = jnp.zeros((n_walkers,), dtype=jnp.float32)
     if _mt_on:
         from . import mt as _mt
@@ -1286,8 +1296,8 @@ def simulate_trajectories(
                               stacklevel=2)
 
     all_batches = []
-    all_dlog_batches = [] if save_relaxation_data else None
-    all_comp_batches = [] if save_relaxation_data else None
+    all_dlog_batches = [] if record else None
+    all_comp_batches = [] if record else None
     all_bound_batches = [] if _mt_on else None
     n_batches = (n_walkers + walker_batch_size - 1) // walker_batch_size
 
@@ -1299,8 +1309,8 @@ def simulate_trajectories(
     # scipy so the stored modes decode/mode-space-replay bit-consistently).
     _compress = compress is not None
     _cx = {"K": int(compress) if _compress else 0, "Phi": None, "Psi": None, "ramp": None, "n_t": None}
-    all_blt_endpoints = [] if (_compress and save_relaxation_data) else None
-    all_blt_starts = [] if (_compress and save_relaxation_data) else None
+    all_blt_endpoints = [] if (_compress and record) else None
+    all_blt_starts = [] if (_compress and record) else None
     if _compress and is_packed_myelin_geom:
         raise NotImplementedError(
             "compress= is not yet wired for packed-myelin walks (extra MT bound channel); "
@@ -1361,14 +1371,14 @@ def simulate_trajectories(
 
         current_r0 = r0_all[start:end]
         current_keys = walker_keys_all[start:end]
-        if save_relaxation_data and is_packed_myelin_geom:
+        if record and is_packed_myelin_geom:
             current_comp0 = comp0_all[start:end]
             current_brem0 = brem0_all[start:end]
 
         success = False
         while not success:
             try:
-                if save_relaxation_data and is_packed_myelin_geom:
+                if record and is_packed_myelin_geom:
                     pos_f32, dlog_f32, comp_f32, bfrac_f32 = simulate_batch_pm(
                         current_r0, current_keys, current_comp0, current_brem0)
                     all_batches.append(np.array(pos_f32).astype(_sdt))
@@ -1376,7 +1386,7 @@ def simulate_trajectories(
                     all_comp_batches.append(np.array(comp_f32).astype(np.int8))
                     if _mt_on:
                         all_bound_batches.append(np.array(bfrac_f32).astype(_sdt))
-                elif save_relaxation_data:
+                elif record:
                     pos_f32, dlog_f32, comp_f32 = simulate_batch_relax(current_r0, current_keys)
                     if _compress:
                         all_batches.append(_compress_pos(pos_f32))
@@ -1414,12 +1424,12 @@ def simulate_trajectories(
                         raise RuntimeError(f"Batch size too small after OOM: {e}") from e
                     log.info(f"  OOM: halving sub-batch to {new_sub_batch}")
                     sub_pos_list = []
-                    sub_dlog_list = [] if save_relaxation_data else None
-                    sub_comp_list = [] if save_relaxation_data else None
+                    sub_dlog_list = [] if record else None
+                    sub_comp_list = [] if record else None
                     sub_bound_list = [] if _mt_on else None
                     for ss in range(0, batch_size, new_sub_batch):
                         se = min(ss + new_sub_batch, batch_size)
-                        if save_relaxation_data and is_packed_myelin_geom:
+                        if record and is_packed_myelin_geom:
                             sp, sd, sc, sbf = simulate_batch_pm(
                                 current_r0[ss:se], current_keys[ss:se],
                                 current_comp0[ss:se], current_brem0[ss:se])
@@ -1428,7 +1438,7 @@ def simulate_trajectories(
                             sub_comp_list.append(np.array(sc).astype(np.int8))
                             if _mt_on:
                                 sub_bound_list.append(np.array(sbf).astype(_sdt))
-                        elif save_relaxation_data:
+                        elif record:
                             sp, sd, sc = simulate_batch_relax(
                                 current_r0[ss:se], current_keys[ss:se])
                             sub_pos_list.append(np.array(sp).astype(_sdt))
@@ -1440,7 +1450,7 @@ def simulate_trajectories(
                                 current_r0[ss:se], current_keys[ss:se]))
                             sub_pos_list.append(sp.astype(_sdt))
                     all_batches.append(np.concatenate(sub_pos_list, axis=0))
-                    if save_relaxation_data:
+                    if record:
                         all_dlog_batches.append(np.concatenate(sub_dlog_list, axis=0))
                         all_comp_batches.append(np.concatenate(sub_comp_list, axis=0))
                         if _mt_on:
@@ -1473,7 +1483,7 @@ def simulate_trajectories(
             "sub_steps": sub_steps, "dt_sim": dt_sim,
             "pos_modes": np.concatenate(all_batches, axis=0),        # (N, K, 3) f32
         }
-        if save_relaxation_data:
+        if record:
             master["blt_endpoint"] = np.concatenate(all_blt_endpoints, axis=0)  # (N,)
             master["blt_start"] = np.concatenate(all_blt_starts, axis=0)        # (N,)
             master["blt_modes"] = np.concatenate(all_dlog_batches, axis=0)      # (N, K)
@@ -1482,7 +1492,7 @@ def simulate_trajectories(
 
     walk = PersistentWalk(np.concatenate(all_batches, axis=0), float(dt_actual), int(sub_steps),
                       float(dt_sim), illegal_crossings=illegal, seed=int(seed))
-    if save_relaxation_data:
+    if record:
         walk = PersistentWalk(walk.positions, walk.dt, walk.sub_steps, walk.dt_sim,
                           boundary_local_time=np.concatenate(all_dlog_batches, axis=0),
                           compartment=np.concatenate(all_comp_batches, axis=0),

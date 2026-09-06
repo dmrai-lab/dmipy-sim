@@ -170,7 +170,7 @@ def simulate_mt_trajectories(
             key, step_key, stick_key, dwell_key = jax.random.split(key, 4)
         else:
             # the plain walk's stream: one draw per sub-step, so kappa_MT = 0 reproduces
-            # simulate_trajectories(save_relaxation_data=True) to the bit
+            # simulate_trajectories() to the bit
             key, step_key = jax.random.split(key)
         is_bound = bound_rem > jnp.float32(0.0)
 

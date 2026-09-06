@@ -29,7 +29,7 @@ def test_the_constructor_pool_is_what_a_driver_seeds():
     assert _inside(V, F, m_in.init_positions(300, k)).all()
     assert not _inside(V, F, m_out.init_positions(300, k)).any()
     # a driver with no r0 walks the declared pool
-    w = d.simulate_trajectories(200, 2e-9, m_out, 1e-3, 5e-4, seed=0, save_relaxation_data=True, require_gpu=False)
+    w = d.simulate_trajectories(200, 2e-9, m_out, 1e-3, 5e-4, seed=0, require_gpu=False)
     assert (w.compartment[:, 0] == 0).all()
     with pytest.raises(ValueError, match="pool must be"):
         d.Mesh(V, F, pool="myelin")

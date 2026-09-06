@@ -7,7 +7,7 @@ and surface relaxivity.
 The replay invariant (see ``core.simulate_trajectories``): walker positions
 ``r(t)`` and boundary events depend ONLY on ``(geometry, diffusivity, seed)`` —
 never on ``G(t)``, T2, T1 or ρ.  Those gate ``log_w``/phase only, so
-``simulate_trajectories(..., save_relaxation_data=True)`` walks once and the
+``simulate_trajectories(...)`` walks once and the
 ``replay*`` functions below replay many acquisition/relaxation
 hypotheses off that one walk.
 """
@@ -288,7 +288,7 @@ def _replay_compressed(master, G, dt_wf, *, chi_perp, T2, T1, surface_relaxivity
             raise ValueError("D must be provided when surface_relaxivity is not None.")
         if "blt_endpoint" not in master:
             raise ValueError("compressed master lacks the boundary channel "
-                             "(re-run simulate_trajectories with save_relaxation_data=True).")
+                             "(re-run simulate_trajectories with tiers=\"all\").")
         if ungated:
             # (ρ/D)·Σ_t ℓ_t = (ρ/D)·B(T) — the stored endpoint; no reconstruction.
             surf = (surface_relaxivity / D) * np.asarray(master["blt_endpoint"], np.float64)
@@ -389,7 +389,7 @@ def replay(
         ``None`` (default) uses all-ones (no gating) — a pure gradient replay.
     dlog_boundary_unit : np.ndarray, shape (n_walkers, n_t_traj), or None
         Per-step accumulated boundary log-weight with surface_relaxivity/D = 1, as
-        returned by simulate_trajectories(save_relaxation_data=True).  Required when
+        returned by simulate_trajectories().  Required when
         surface_relaxivity is not None.  Non-positive (boundary hits reduce signal).
     T2 : float or None
         Transverse relaxation time constant in seconds.
@@ -403,7 +403,7 @@ def replay(
         If True, multiply signal by 0.5 for PGSTE cos(phi1) storage factor.
     comp_traj : np.ndarray, shape (n_walkers, n_t_traj), or None
         Per-walker compartment ID at each trajectory time step, as returned by
-        simulate_trajectories(save_relaxation_data=True).  Required when
+        simulate_trajectories().  Required when
         T2_per_comp or T1_per_comp is provided.  An integer array indexes the
         per-compartment arrays directly; a float array is the fractional
         occupancy of pool 1 (the enclosed pool) in a 2-compartment permeable geometry.
@@ -537,7 +537,7 @@ def replay(
         if dlog_boundary_unit is None:
             raise ValueError(
                 "dlog_boundary_unit must be provided when surface_relaxivity is not None.  "
-                "Re-run simulate_trajectories with save_relaxation_data=True.")
+                "Re-run simulate_trajectories with tiers=\"all\".")
         dlog_bnd = np.asarray(dlog_boundary_unit, dtype=np.float64)  # (n_walkers, n_t_traj)
         log_w_surf = (surface_relaxivity / D) * (chi_r @ dlog_bnd.T) # (n_meas, n_walkers)
         log_w_per_walker = log_w_per_walker + log_w_surf

@@ -17,8 +17,17 @@ from dmipy_sim.replay.bank import _master_arrays
 D = 2e-9
 
 
-def test_plain_walk_carries_no_channels_and_the_step_description():
+def test_the_default_walk_records_every_tier_the_geometry_supports():
     w = d.simulate_trajectories(64, D, d.Sphere(3e-6), 2e-3, 5e-4, seed=1, require_gpu=False)
+    assert w.has_surface and w.has_compartments and not w.has_binding
+    free = d.simulate_trajectories(64, D, d.FreeDiffusion(), 2e-3, 5e-4, seed=1, require_gpu=False)
+    assert free.has_surface and (free.boundary_local_time == 0).all()      # no walls: an all-zero channel
+    with pytest.raises(ValueError, match="tiers must be"):
+        d.simulate_trajectories(64, D, d.Sphere(3e-6), 2e-3, 5e-4, seed=1, require_gpu=False, tiers="surface")
+
+
+def test_a_positions_only_walk_carries_no_channels_and_the_step_description():
+    w = d.simulate_trajectories(64, D, d.Sphere(3e-6), 2e-3, 5e-4, seed=1, require_gpu=False, tiers=())
     assert isinstance(w, d.PersistentWalk)
     assert w.positions.shape == (64, 5, 3) and w.positions.dtype == np.float32
     assert w.storage_dtype == np.float32 and w.n_walkers == 64 and w.n_t == 5
@@ -32,7 +41,7 @@ def test_plain_walk_carries_no_channels_and_the_step_description():
 
 def test_relaxation_walk_carries_surface_and_compartment_channels():
     w = d.simulate_trajectories(64, D, d.Sphere(3e-6, surface_relaxivity_t2=1e-6), 2e-3, 5e-4,
-                                seed=1, save_relaxation_data=True, require_gpu=False)
+                                seed=1, require_gpu=False)
     assert w.has_surface and w.has_compartments and not w.has_binding
     assert w.boundary_local_time.shape == (64, 5) and (w.boundary_local_time <= 0).all()
     assert w.compartment.shape == (64, 5) and (w.compartment == 1).all()     # all inside the sphere
@@ -42,7 +51,7 @@ def test_relaxation_walk_carries_surface_and_compartment_channels():
 
 def test_the_two_producers_return_the_same_shape_of_object():
     g = d.Sphere(2e-6, surface_relaxivity_t2=1e-6)
-    plain = d.simulate_trajectories(50, D, g, 2e-3, 5e-4, seed=3, save_relaxation_data=True, require_gpu=False)
+    plain = d.simulate_trajectories(50, D, g, 2e-3, 5e-4, seed=3, require_gpu=False)
     mt = d.simulate_mt_trajectories(50, D, g, 2e-3, 5e-4, kappa_MT=0.0, dwell_time=0.0,
                                     equilibrate_binding="off", seed=3, require_gpu=False)
     assert isinstance(mt, d.PersistentWalk) and mt.has_binding and mt.has_surface
@@ -52,8 +61,7 @@ def test_the_two_producers_return_the_same_shape_of_object():
 
 
 def test_the_bank_reads_a_persistent_walk_directly():
-    w = d.simulate_trajectories(40, D, d.Cylinder(2e-6, (0, 0, 1)), 2e-3, 5e-4, seed=2,
-                                save_relaxation_data=True, require_gpu=False)
+    w = d.simulate_trajectories(40, D, d.Cylinder(2e-6, (0, 0, 1)), 2e-3, 5e-4, seed=2, require_gpu=False)
     m = _master_arrays(w)
     assert m["traj"] is w.positions and m["dt_traj"] == w.dt and m["T_max"] == pytest.approx(w.T_max)
     assert m["dlog_b"] is w.boundary_local_time and m["comp"] is w.compartment and m["bfrac"] is None

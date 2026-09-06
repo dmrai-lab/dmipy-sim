@@ -41,7 +41,7 @@ def test_bloch_replay_matches_forward_spin_echo():
 
     fwd = simulate_bloch(N, D, wf, geom, rf, T2=T2, seed=seed, require_gpu=False)
     walk = simulate_trajectories(N, D, geom, TE, dt, seed=seed,
-                                                 require_gpu=False)
+                                                 require_gpu=False, tiers=())
     traj, dt_tr, subs = walk.positions, walk.dt, walk.sub_steps
     assert subs == 1                                       # bit-identical walk to forward
     rep = replay_bloch(traj, dt_tr, G, dt, rf, T2=T2)
@@ -57,7 +57,7 @@ def test_susceptibility_replay_gre_and_se():
     n_t = int(round(TE / dt)) + 1
     geom, T2 = d.Sphere(radius=8e-6), 120e-3
     walk = simulate_trajectories(N, D, geom, TE, dt, seed=seed,
-                                                 require_gpu=False)
+                                                 require_gpu=False, tiers=())
     traj, dt_tr, subs = walk.positions, walk.dt, walk.sub_steps
     assert subs == 1
     prov = SusceptibilitySources(centers=[[0, 0, 0]], radii=[3e-6],
@@ -92,7 +92,7 @@ def test_scalar_susceptibility_replay_eps_p_refocus():
     n_t = int(round(TE / dt)) + 1
     geom = d.Sphere(radius=8e-6)
     walk = simulate_trajectories(N, D, geom, TE, dt, seed=seed,
-                                              require_gpu=False)
+                                              require_gpu=False, tiers=())
     traj, dt_tr = walk.positions, walk.dt
     prov = SusceptibilitySources(centers=[[0, 0, 0]], radii=[3e-6],
                                  delta_chi=8e-6, B0=3.0)
@@ -155,16 +155,16 @@ def test_simulate_trajectories_packed_myelin_mt_channel():
     D, N, T, dt, seed = 2e-9, 400, 8e-3, 0.4e-3, 1
 
     base = simulate_trajectories(N, D, d.PackedMyelinatedCylinders(**geom_kw), T, dt,
-                                 seed=seed, save_relaxation_data=True, require_gpu=False)
+                                 seed=seed, require_gpu=False)
     off = simulate_trajectories(N, D, d.PackedMyelinatedCylinders(**geom_kw), T, dt,
-                                seed=seed, save_relaxation_data=True, require_gpu=False,
+                                seed=seed, require_gpu=False,
                                 kappa_MT=0.0)
     assert base.bound_frac is None and off.bound_frac is None
     assert np.array_equal(base.positions, off.positions)                      # positions bit-identical
     assert np.array_equal(base.boundary_local_time, off.boundary_local_time)                      # dlog bit-identical
 
     on = simulate_trajectories(N, D, d.PackedMyelinatedCylinders(**geom_kw), T, dt,
-                               seed=seed, save_relaxation_data=True, require_gpu=False,
+                               seed=seed, require_gpu=False,
                                kappa_MT=5e-5, dwell_time=3e-3)
     assert on.has_binding
     bf = np.asarray(on.bound_frac, dtype=float)
@@ -181,7 +181,7 @@ def test_bloch_replay_jax_matches_numpy():
     G = np.zeros((1, n_t, 3)); G[0, :, 0] = 0.015
     geom, T2 = d.Sphere(radius=8e-6), 100e-3
     walk = simulate_trajectories(N, D, geom, TE, dt, seed=seed,
-                                              require_gpu=False)
+                                              require_gpu=False, tiers=())
     traj, dt_tr = walk.positions, walk.dt
     rf = [{'t_s': 0.0, 'flip_deg': 90.0, 'axis_deg': 90.0, 'duration_s': 0.0},
           {'t_s': TE / 2, 'flip_deg': 180.0, 'axis_deg': 0.0, 'duration_s': 0.0}]

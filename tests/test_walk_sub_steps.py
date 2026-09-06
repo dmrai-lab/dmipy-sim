@@ -99,8 +99,7 @@ def test_the_observables_are_converged_at_the_collision_criterion():
         # n = ceil((L/(0.9*cell))^2), L = sqrt(6 D dt) -> invert for a target n
         L = float(np.sqrt(6.0 * D * dt_save))
         mesh.cell_size = float(L / (0.9 * np.sqrt(target)))
-        o = simulate_trajectories(n, D, mesh, T_max=T_max, dt_save=dt_save, seed=3,
-                                  save_relaxation_data=True, require_gpu=False)
+        o = simulate_trajectories(n, D, mesh, T_max=T_max, dt_save=dt_save, seed=3, require_gpu=False)
         steps[mult] = int(o.sub_steps)
         tr = np.asarray(o.positions, np.float64)
         disp = tr[:, -1, :] - tr[:, 0, :]
