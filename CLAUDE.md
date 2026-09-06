@@ -121,8 +121,18 @@ free pool, enclosed pools are positive — 1 intra (the lumen / inside a closed 
 Packed geometries (`classify_returns_object_id`) return 1..N for the object a walker is in.
 `geometry.classify_position(r)` is the one source; `comp_traj`, `return_compartments`, per-compartment
 `T2_per_comp`/`intra=`/`extra=` arrays are all indexed by that id (a `Mesh(intra={"T2":…}, extra={"T2":…})`
-stores `(T2_extra, T2_intra)`). The myelin kernels carry their own code internally and map it with
-`geometry.pool_of(...)` at the API boundary.
+stores `(T2_extra, T2_intra)`). `PackedMyelinatedCylinders` carries an encoded id (`k+1` lumen of
+axon k, `N_max+k+1` its sheath) and maps it with `geometry.pool_of(...)` at the API boundary.
+
+**Myelinated substrates** (`MyelinatedCylinder`, `PackedMyelinatedCylinders`) are stepped by one
+kernel, `physics.make_myelin_substep`, whose wall physics is
+`geometry.myelin.concentric_wall_kernel`: ray-traced hits on the axon membrane and the sheath
+boundary, `d_perp = remaining·|cos α|`, one Powles decision per step, multi-bounce reflection,
+strict side sentinels. The bounce budget and the number of candidate axons are derived per kernel
+build from the worst case (a step zig-zagging across the narrowest passage: `min_gap`, the thinnest
+sheath, or the shortest nudged grazing chord), not fixed. Per-axon `T2_*`, `rho_inner/outer`,
+`kappa_inner/outer` and `D_*` are indexed by the walker's axon; `rho` is applied per hit with the
+diffusivity of the pool the walker is in.
 
 **Sub-steps** come from one dispatch, `physics.resolve_sub_steps(geometry, D, dt, surface=,
 mt_dwell_time=, override=)` — the maximum of the reflection (R/6, R/25 permeable), collision-lookup,

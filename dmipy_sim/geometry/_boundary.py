@@ -238,7 +238,7 @@ def no_hit(r_new):
     return WallHit(r_new, f, b, b)
 
 
-def bounce_loop(hit_once, r0, d_hat, step_l, max_bounces):
+def bounce_loop(hit_once, r0, d_hat, step_l, max_bounces, dlog_init=None):
     """Run a single-collision rule to exhaustion: reflect, continue, repeat.
 
     A step longer than the chord of the object needs more than one reflection. Handle only
@@ -256,14 +256,18 @@ def bounce_loop(hit_once, r0, d_hat, step_l, max_bounces):
     ``remaining`` of there, so it has already been tested. If it DID hit, the budget ran out
     mid-step and the remainder is untested: stopping loses a sliver of path length, flying it
     walks the walker through whatever it was about to bounce off.
+
+    ``dlog_init`` is the zero of the ``dlog_w`` accumulator: a scalar by default, or an array
+    when ``hit_once`` reports several channels per hit (one per wall, say) -- they are summed
+    elementwise across the bounces.
     """
     def body(carry, _):
         r, d, rem, decided, dlogw, crossed = carry
         r_n, d_n, rem_n, dec_n, dlw, cr = hit_once(r, d, rem, decided)
         return (r_n, d_n, rem_n, dec_n, dlogw + dlw, crossed | cr), (rem_n < rem)
 
-    init = (r0, d_hat, step_l, jnp.zeros((), bool), jnp.zeros((), jnp.float32),
-            jnp.zeros((), bool))
+    dlog0 = jnp.zeros((), jnp.float32) if dlog_init is None else dlog_init
+    init = (r0, d_hat, step_l, jnp.zeros((), bool), dlog0, jnp.zeros((), bool))
     (r_f, d_f, rem_f, _dec, dlogw, crossed), hit_any = jax.lax.scan(
         body, init, jnp.arange(max_bounces))
     r_out = r_f + d_f * jnp.where(hit_any[-1], jnp.float32(0.0),
