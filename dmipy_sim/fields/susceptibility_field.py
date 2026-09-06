@@ -71,6 +71,78 @@ class FieldGrid(NamedTuple):
     chi_iso: float
     delta_chi_a: float = 0.0
 
+
+def field_grid_of(geometry, *, res=0.1e-6, chi_iso=0.0, delta_chi_a=0.0, include_aniso=None,
+                  box=None, margin=None, n_z=4, mask_supersample=4, kspace_lowpass=0.5):
+    """The :class:`FieldGrid` of an analytic myelinated substrate, for a pack's field tier.
+
+    Rasterises the sheath of a :class:`~dmipy_sim.geometry.MyelinatedCylinder` or
+    :class:`~dmipy_sim.geometry.PackedMyelinatedCylinders` (every voxel's myelin occupancy, partial
+    volume at the two walls from ``mask_supersample``^2 sub-samples, and the radial director toward the
+    nearest axon) onto a voxel grid of pitch ``res`` and calls :func:`field_basis`, exactly as
+    :func:`mesh_field_basis` does for a meshed axon -- so a myelinated cylinder's pack carries the
+    same C3 channel as a mesh pack and is replayed by the same code.
+
+    The grid is the geometry's periodic cell for a packed substrate (the FFT solve is periodic, so
+    the images are exact), or ``box = (lo, hi)`` (2-vectors, metres) for a single cylinder, default
+    ``margin`` (default ``4 * outer_radius``) beyond the sheath; the field is invariant along the
+    axis, so ``n_z`` voxels carry it (periodic in z). The basis is in the geometry frame (axis = z):
+    give ``b0_dir`` at replay in that frame.
+    """
+    from ..geometry.myelin import MyelinatedCylinder, PackedMyelinatedCylinders
+    if isinstance(geometry, MyelinatedCylinder):
+        centers = np.zeros((1, 2)); inner = np.array([geometry.inner_radius]); outer = np.array([geometry.outer_radius])
+        periodic = False
+        if box is None:
+            m = 4.0 * float(outer[0]) if margin is None else float(margin)
+            half = float(outer[0]) + m
+            box = (np.array([-half, -half]), np.array([half, half]))
+        lo, hi = (np.asarray(box[0], float), np.asarray(box[1], float))
+    elif isinstance(geometry, PackedMyelinatedCylinders):
+        N = geometry.N_actual
+        centers = np.asarray(geometry._centers_np[:N], float)
+        inner = np.asarray(geometry._inner_radii_np[:N], float); outer = np.asarray(geometry._outer_radii_np[:N], float)
+        periodic = True
+        L = float(geometry._L_float)
+        if box is not None:
+            raise ValueError("a packed substrate's field grid is its periodic cell; box= does not apply")
+        lo, hi = np.array([-L / 2, -L / 2]), np.array([L / 2, L / 2])
+    else:
+        raise TypeError(f"field_grid_of takes a MyelinatedCylinder or PackedMyelinatedCylinders, got "
+                        f"{type(geometry).__name__}; a mesh substrate uses mesh_field_basis")
+    if include_aniso is None:
+        include_aniso = float(delta_chi_a) != 0.0
+    side = hi - lo
+    n_xy = np.maximum(2, np.round(side / res).astype(int))
+    vs_xy = side / n_xy
+    vs = np.array([vs_xy[0], vs_xy[1], float(vs_xy.mean())])
+    # voxel centres; the sheath occupancy by SS x SS in-plane sub-samples of every voxel
+    SS = max(1, int(mask_supersample))
+    off = (np.arange(SS) + 0.5) / SS - 0.5
+    xs = lo[0] + (np.arange(n_xy[0]) + 0.5) * vs[0]
+    ys = lo[1] + (np.arange(n_xy[1]) + 0.5) * vs[1]
+    X, Y = np.meshgrid(xs, ys, indexing="ij")
+    occ = np.zeros(X.shape); rad = np.zeros(X.shape + (2,)); dmin = np.full(X.shape, np.inf)
+    for c, a, b in zip(centers, inner, outer):
+        dx, dy = X - c[0], Y - c[1]
+        if periodic:
+            dx -= side[0] * np.round(dx / side[0]); dy -= side[1] * np.round(dy / side[1])
+        r = np.hypot(dx, dy)
+        near = r < dmin                                               # nearest axon owns the director
+        rad[near] = np.stack([dx, dy], -1)[near] / np.maximum(r[near], 1e-30)[:, None]
+        dmin = np.minimum(dmin, r)
+        for ox in off:
+            for oy in off:
+                rr = np.hypot(dx + ox * vs[0], dy + oy * vs[1])
+                occ += ((rr > a) & (rr < b)) / (SS * SS)
+    occ = np.clip(occ, 0.0, 1.0)
+    mask = np.repeat(occ[:, :, None], int(n_z), axis=2)
+    radial = np.zeros(mask.shape + (3,)); radial[..., 0] = rad[:, :, None, 0]; radial[..., 1] = rad[:, :, None, 1]
+    basis = field_basis(mask, radial, vs, include_aniso=bool(include_aniso),
+                        kspace_lowpass=(None if periodic else kspace_lowpass))
+    origin = np.array([lo[0], lo[1], -0.5 * int(n_z) * vs[2]])
+    return FieldGrid(basis, origin, float(chi_iso), float(delta_chi_a))
+
 def _unit(v, axis=-1, eps=1e-30):
     v = np.asarray(v, float)
     n = np.linalg.norm(v, axis=axis, keepdims=True)
