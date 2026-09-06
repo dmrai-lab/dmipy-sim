@@ -27,7 +27,7 @@ import pytest
 
 import dmipy_sim as d
 from dmipy_sim import simulate, simulate_trajectories
-from dmipy_sim.trajectories import replay
+from dmipy_sim.replay.trajectories import replay
 
 D = 2e-9          # m²/s
 SEED = 7

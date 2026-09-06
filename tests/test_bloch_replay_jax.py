@@ -9,7 +9,7 @@ phase, surface relaxivity, per-compartment relaxation, weights and per-walker ec
 import numpy as np
 import pytest
 
-from dmipy_sim.trajectories import replay_bloch, replay_bloch_jax
+from dmipy_sim.replay.trajectories import replay_bloch, replay_bloch_jax
 
 DT = 1e-4
 N_T, N_W = 120, 64

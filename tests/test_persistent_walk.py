@@ -12,7 +12,7 @@ import pytest
 
 import dmipy_sim as d
 from dmipy_sim.engine import core
-from dmipy_sim.bank import _master_arrays
+from dmipy_sim.replay.bank import _master_arrays
 
 D = 2e-9
 

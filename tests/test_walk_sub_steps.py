@@ -168,7 +168,7 @@ def test_the_step_cell_assertion_actually_guards():
     """
     import trimesh as _tm
     from dmipy_sim.geometry.mesh import Mesh
-    from dmipy_sim.mesh_bundle import _min_radius
+    from dmipy_sim.replay.builders.mesh_bundle import _min_radius
     from dmipy_sim.engine.physics import permeable_sub_steps
     from tests.conftest import assert_step_resolves_the_collision_lookup
 

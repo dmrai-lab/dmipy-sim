@@ -352,7 +352,7 @@ def radial_from_sdf(sdf, voxel_size):
 # ---------------------------------------------------------------------------
 # Mesh -> field-grid: voxelise a myelin sheath (inner/outer surface meshes) and
 # build its geometry-only susceptibility field basis. This is the producer side of
-# the static field-grid replay channel (dmipy_sim.bank): store the basis once, then
+# the static field-grid replay channel (dmipy_sim.replay.bank): store the basis once, then
 # replay any (B0, direction, chi) by contracting + sampling along the walk.
 # ---------------------------------------------------------------------------
 def mesh_inside(V, F, pts, *, clip_axis=None, chunk=2_000_000):

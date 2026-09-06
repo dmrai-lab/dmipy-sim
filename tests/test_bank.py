@@ -1,4 +1,4 @@
-"""Replay-pack assembler (dmipy_sim.bank): build_replay_pack + build_to_floor.
+"""Replay-pack assembler (dmipy_sim.replay.bank): build_replay_pack + build_to_floor.
 
 Produces a self-certifying .rpk from a master walk, on a SYNTHETIC master (reflecting-slab
 random walk built in numpy — no simulator, fast tier). Checks: the pack compresses within the
@@ -12,7 +12,7 @@ import pytest
 
 from dmipy_sim import (build_replay_pack, build_to_floor, read_rpk,
                        compile_scheme, replay_signal)
-from dmipy_sim import bank
+from dmipy_sim.replay import bank
 from dmipy_sim.constants import GAMMA
 
 N_W, N_T, DT, D0, L = 3000, 200, 5e-4, 2e-9, 6e-6
@@ -63,7 +63,7 @@ def test_pack_compresses_within_floor_and_declares_tiers(pack):
     # a pack carries its positions as one tensor per spatial axis (pos_x/pos_y/pos_z), so
     # an axis subset is a contiguous read that composes with the walker-prefix read; `.position_coeffs`
     # assembles them for consumers that want all three.
-    from dmipy_sim.compression import POSITION_AXES, has_axis_layout
+    from dmipy_sim.replay.compression import POSITION_AXES, has_axis_layout
     assert has_axis_layout(pack.arrays) and all(k in pack.arrays for k in POSITION_AXES)
     assert np.asarray(pack.position_coeffs).shape[2] == 3
     assert any(k.startswith("comp_rle") for k in pack.arrays)   # compartment tier
@@ -340,7 +340,7 @@ def test_preflight_catches_what_otherwise_costs_a_full_walk():
     master's metadata. The expensive ones are the two susceptibility cases: `build_replay_pack`
     walks inside `_master_arrays`, so its own refusal comes too late to be cheap, and a master
     whose `susc_field_basis` is None yields a pack that is silently missing the field tier."""
-    from dmipy_sim.bank import preflight_master
+    from dmipy_sim.replay.bank import preflight_master
 
     # the private per-walker form is refused by the builder -- but only after the walk
     assert any("field_store='grid'" in p

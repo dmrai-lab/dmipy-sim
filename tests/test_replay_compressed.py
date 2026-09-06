@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 
 from dmipy_sim import simulate_trajectories, Cylinder, Box1D
-from dmipy_sim.trajectories import replay
+from dmipy_sim.replay.trajectories import replay
 from dmipy_sim.waveforms import pgse, set_b
 
 N = 4000

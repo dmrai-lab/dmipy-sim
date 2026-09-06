@@ -95,8 +95,11 @@ acquisition; assert to `max(0.02, 1/√N)`.
 ## Module map (`dmipy_sim/`)
 
 The engine lives in `dmipy_sim/engine/` (`core`, `physics`, `bloch`, `pulse_sequence`, `mt`, `mt_walk`, `gpu`,
-`_gpu_config`; #88 step 4). The old flat paths (`dmipy_sim.core`, …) are shims that warn `DeprecationWarning` and go
-away next release; new code imports `dmipy_sim.engine.<module>` (or the public names from `dmipy_sim`).
+`_gpu_config`; #88 step 4) and the replay side in `dmipy_sim/replay/` (`trajectories`, `compression`, `replay`, `bank`,
+`phantom`, `sh_convolution`, `gaunt`, `_replay_kernel`, and `builders/` = `mesh_axon`, `mesh_bundle`; step 5). `dmipy_sim.replay`
+stays a first-class path: the package re-exports `replay/replay.py` (`ReplayPack`, `compile_scheme`, `replay_signal*`). The other
+old flat paths (`dmipy_sim.core`, `dmipy_sim.bank`, …) are shims that warn `DeprecationWarning` and go away next release;
+new code imports `dmipy_sim.engine.<module>` / `dmipy_sim.replay.<module>` (or the public names from `dmipy_sim`).
 
 | File | Role |
 |------|------|
@@ -108,7 +111,7 @@ away next release; new code imports `dmipy_sim.engine.<module>` (or the public n
 | `susceptibility.py` | off-resonance field providers (`SusceptibilitySources` iron/vasculature, `MyelinSusceptibility` hollow-cylinder, `GridSusceptibility` k-space dipole on a voxel source); each exposes a pure-JAX `delta_bz_fn()` that plugs into `simulate_bloch(..., susceptibility=)` as a per-step z-precession |
 | `geometry/mesh_shapes.py` | procedural myelin meshes + analytic grid sources (`myelinated_cylinder`, `undulating_myelin`, `half_bare_myelin`, `grid_axes`, `voxelize_shell`) — the susceptibility test/validation substrates |
 | `engine/physics.py` | per-timestep `jax.lax.scan` bodies (`make_step_fn`, …) — boundary + phase + `log_w`, pure JAX |
-| `_replay_kernel.py` | **the** replay primitives: `resample_gradient` (waveform → walk grid), `gradient_phase` / `phase_increments` (`γ dt Σ G·r`), `se_gate` (spin-echo sign), each with a `_jax` twin (`gradient_phase` is a chunked `einsum`, so the host replay never holds a float64 copy of the walk and does not pay BLAS's skinny-gemm path; the `_jax` twins pin `Precision.HIGHEST`, since TF32 on a GPU biased the Bloch replay signal by 10-20%). `trajectories.replay*`, `replay_bloch*`, `bank`, `sh_convolution` read them; `trajectories.replay_bloch` (numpy, the reference) and `replay_bloch_jax` (the engine: `lax.scan`, one measurement at a time) take the same arguments and share `_bloch_replay_terms` — finite/shaped pulses, carriers, slice-select, B1+, MT blend, weights, per-walker echoes all live there once; `compression.bridge_projection` is the one mode-space projection behind `mode_space_phi` and `replay.compile_scheme` |
+| `replay/_replay_kernel.py` | **the** replay primitives: `resample_gradient` (waveform → walk grid), `gradient_phase` / `phase_increments` (`γ dt Σ G·r`), `se_gate` (spin-echo sign), each with a `_jax` twin (`gradient_phase` is a chunked `einsum`, so the host replay never holds a float64 copy of the walk and does not pay BLAS's skinny-gemm path; the `_jax` twins pin `Precision.HIGHEST`, since TF32 on a GPU biased the Bloch replay signal by 10-20%). `trajectories.replay*`, `replay_bloch*`, `bank`, `sh_convolution` read them; `trajectories.replay_bloch` (numpy, the reference) and `replay_bloch_jax` (the engine: `lax.scan`, one measurement at a time) take the same arguments and share `_bloch_replay_terms` — finite/shaped pulses, carriers, slice-select, B1+, MT blend, weights, per-walker echoes all live there once; `compression.bridge_projection` is the one mode-space projection behind `mode_space_phi` and `replay.compile_scheme` |
 | `engine/mt.py` | magnetization-transfer host physics: impact-angle `stick_probability`, `(κ_MT,dwell)↔(f_b,k_f)` conversions, two-pool Bloch–McConnell oracle (`bloch_mcconnell_*`, `mt_z_spectrum`); **owns** `surface_to_volume`, `resolve_equilibrate_mode`, `equilibrate_burnin_plateau` for both MT drivers (`bloch.simulate_bloch`, `mt_walk.simulate_mt_trajectories`); the MT walk at `κ_MT = 0` is the plain walk to the bit and stores float32 |
 | `engine/bloch.py` | **forward vector-Bloch engine** `simulate_bloch` — carries `M=(Mx,My,Mz)` through RF + gradient + relaxation in ONE forward pass (no replay); opt-in MT binding + bound-pool blend + off-resonance + emergent voxel-scale crusher + **membrane permeability** (sub-stepped Powles crossing, so exchange across a longitudinal-storage mixing time is captured — e.g. FEXI) |
 | `engine/pulse_sequence.py` | `BlochSequence`, `gradient_echo`/`spin_echo` readouts, `prepend_mt_prep` (off-resonance MT-prep saturation block), `run_bloch_sequence`, `emergent_z_spectrum` (turnkey CW-saturation Z-spectrum sweep; emergent counterpart of `mt.mt_z_spectrum`) |
@@ -116,7 +119,7 @@ away next release; new code imports `dmipy_sim.engine.<module>` (or the public n
 | `sequences/` | `Sequence` = a `Waveform` (same readout attributes: `echo_idx`, `echo_indices`, `rf_events`, `chi_perp`, …) plus per-measurement encoding (`bvalues`, `gradient_directions`, `delta`, `Delta`, `TE`, family flags) for dmipy-fit; every `from_X` constructor ends with an exact numeric scaling so `bvalues == b_from_gradient(G, dt)`; `pulseq` import/export |
 | `engine/gpu.py`, `engine/_gpu_config.py` | GPU guard/session, device-memory cap |
 | `noise.py` | Rician / nc-χ measurement noise |
-| `sh_convolution.py` | SH convolution for orientation distributions |
+| `replay/sh_convolution.py` | SH convolution for orientation distributions |
 | `viz.py` | waveform plots + **mesh observability** (below) |
 
 ## Geometry contract (duck-typed by `simulate`/`make_step_fn`)

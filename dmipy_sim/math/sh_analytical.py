@@ -95,7 +95,7 @@ def watson_sh(mu_cart, kappa, l_max=8):
     # by test_required_basis_is_dipy_tournier_non_legacy. Calling dipy here would make it a runtime
     # dependency for a function we already implement; keeping dipy as the test ORACLE and our own
     # implementation in the package is the right split, and it keeps dipy a dev extra.
-    from ..gaunt import real_sh
+    from ..replay.gaunt import real_sh
 
     mu_cart = np.asarray(mu_cart, dtype=np.float64)
     Y_mu = real_sh(l_max, (mu_cart / np.linalg.norm(mu_cart))[None, :])[0]
