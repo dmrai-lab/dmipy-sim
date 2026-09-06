@@ -130,8 +130,7 @@ class Sphere(Geometry):
             d_new  = jnp.where(reflecting, d_refl, dd)
             rem_n  = jnp.where(reflecting, jnp.maximum(rem - NUDGE, jnp.float32(0.0)),
                                jnp.float32(0.0))
-            dlw = jnp.where(reflecting & first,
-                            -jnp.float32(2.0) * rho_over_D * d_perp, jnp.float32(0.0))
+            dlw = jnp.where(reflecting, -jnp.float32(2.0) * rho_over_D * d_perp, jnp.float32(0.0))
             return r_new, d_new, rem_n, decided | first, dlw, transmit
 
         r_out, dlog_w, crossed = bounce_loop(hit_once, r, d_hat, step_l, self._MAX_BOUNCES)
@@ -284,8 +283,7 @@ class Cylinder(Geometry):
             d2_new  = jnp.where(reflecting, d_refl, d2)
             rem_new = jnp.where(reflecting, jnp.maximum(rem - NUDGE, jnp.float32(0.0)),
                                 jnp.float32(0.0))
-            dlw = jnp.where(reflecting & first,
-                            -jnp.float32(2.0) * rho_over_D * d_perp, jnp.float32(0.0))
+            dlw = jnp.where(reflecting, -jnp.float32(2.0) * rho_over_D * d_perp, jnp.float32(0.0))
             return r2_new, d2_new, rem_new, decided | first, dlw, transmit
 
         xy_final, dlog_w, crossed = bounce_loop(hit_once, r_c[:2], d_hat_xy, step_l_xy,
@@ -396,226 +394,69 @@ class Ellipsoid(Geometry):
         return jnp.array(positions, dtype=jnp.float32)
 
     def reflect(self, r, step):
-        """Specular reflection off ellipsoid boundary with multiple reflections.
-
-        Uses the same unit-direction + scalar-remaining convention as Sphere,
-        implemented via jax.lax.scan (10 fixed iterations).
-
-        Line-ellipsoid intersection: ray r0 + t*d_hat intersects the ellipsoid
-        x²/a² + y²/b² + z²/c² = 1 when:
-          A*t² + 2*B*t + C = 0
-          A = d·D·d,  B = r0·D·d,  C = r0·D·r0 - 1
-          D = diag(1/a², 1/b², 1/c²)
-        Forward root: t = (-B + sqrt(B²-A*C)) / A
-
-        Outward normal at r_hit: n ∝ D·r_hit, normalised.
-        """
-        semi = self._semi_f32                             # (3,)  [a, b, c]
-        inv_semi_sq = 1.0 / (semi * semi)                # (3,)  [1/a², 1/b², 1/c²]
-        # Two-level epsilon: see Sphere.reflect for rationale.
-        # Use smallest semiaxis to scale so all directions are safe.
-        _min_semi   = float(np.min(self.semiaxes))
-        EPS_detect  = jnp.float32(1e-7 * _min_semi)
-        NUDGE       = jnp.float32(1e-4 * _min_semi)
-
-        step_l = jnp.linalg.norm(step)
-        d_hat  = step / step_l
-
-        def _one_reflection(carry, _):
-            r0, d_hat, remaining = carry
-
-            # Quadratic coefficients for line-ellipsoid intersection
-            A    = jnp.dot(d_hat * inv_semi_sq, d_hat)
-            B    = jnp.dot(r0   * inv_semi_sq, d_hat)
-            C    = jnp.dot(r0   * inv_semi_sq, r0) - 1.0
-            _, d, disc = ray_quadric_t(A, B, C)      # exit root: forward to the surface
-
-            intersects = (d > EPS_detect) & (d < remaining)
-
-            r_hit   = r0 + d * d_hat
-            # Outward normal: gradient of f(x)=x·D·x at r_hit, normalised
-            n_raw   = r_hit * inv_semi_sq
-            n_out   = n_raw / jnp.linalg.norm(n_raw)
-            d_refl  = specular(d_hat, n_out)
-            d_refl  = d_refl / jnp.linalg.norm(d_refl)
-            r_nudge = off_wall(r_hit, n_out, True, NUDGE)
-
-            r0_new   = jnp.where(intersects, r_nudge,  r0)
-            dhat_new = jnp.where(intersects, d_refl,   d_hat)
-            rem_new  = jnp.where(intersects, remaining - d - NUDGE, remaining)
-
-            return (r0_new, dhat_new, rem_new), None
-
-        (r_f, d_hat_f, rem_f), _ = jax.lax.scan(
-            _one_reflection, (r, d_hat, step_l), None, length=10
-        )
-        r_out = r_f + d_hat_f * jnp.maximum(rem_f, 0.0)
-        # Safety clamp: project back inside if escaped (use normalised coords)
-        q_norm = jnp.linalg.norm(r_out * jnp.sqrt(inv_semi_sq))  # = sqrt(sum(r²/a²))
-        r_out  = jnp.where(q_norm >= 1.0, r_out * (1.0 - NUDGE / _min_semi) / q_norm, r_out)
-        return r_out
+        """Impermeable wall interaction -- the kappa = 0 case of :meth:`permeate`."""
+        return self.permeate(r, step, jnp.float32(0.0), jnp.float32(0.0),
+                             jax.random.PRNGKey(0))[0]
 
     def reflect_with_log_weight(self, r, step, rho_over_D):
-        """Reflect and accumulate surface-relaxation log-weight for the ellipsoid.
-
-        At each collision, d_perp = (remaining - d) * cos(α) where
-        cos(α) = dot(d_hat, n_out) at the hit point, with the ellipsoid outward
-        normal n_out ∝ r_hit * D_inv (diagonal scaling matrix).
-
-        Returns (r_new, dlog_w) where dlog_w = -2 * rho_over_D * sum(d_perp).
-        For a sphere (a=b=c=R), S/V = 3/R → T2_surface = R/(3ρ).
-        """
-        semi = self._semi_f32
-        inv_semi_sq = 1.0 / (semi * semi)
-        _min_semi   = float(np.min(self.semiaxes))
-        EPS_detect  = jnp.float32(1e-7 * _min_semi)
-        NUDGE       = jnp.float32(1e-4 * _min_semi)
-
-        step_l = jnp.linalg.norm(step)
-        d_hat  = step / step_l
-
-        def _one_reflection(carry, _):
-            r0, d_hat, remaining = carry
-
-            A    = jnp.dot(d_hat * inv_semi_sq, d_hat)
-            B    = jnp.dot(r0   * inv_semi_sq, d_hat)
-            C    = jnp.dot(r0   * inv_semi_sq, r0) - 1.0
-            _, d, disc = ray_quadric_t(A, B, C)      # exit root: forward to the surface
-
-            intersects = (d > EPS_detect) & (d < remaining)
-
-            r_hit   = r0 + d * d_hat
-            n_raw   = r_hit * inv_semi_sq
-            n_out   = n_raw / jnp.linalg.norm(n_raw)
-            d_refl  = specular(d_hat, n_out)
-            d_refl  = d_refl / jnp.linalg.norm(d_refl)
-            r_nudge = off_wall(r_hit, n_out, True, NUDGE)
-
-            r0_new   = jnp.where(intersects, r_nudge,  r0)
-            dhat_new = jnp.where(intersects, d_refl,   d_hat)
-            rem_new  = jnp.where(intersects, remaining - d - NUDGE, remaining)
-
-            # cos(α) = dot(d_hat, n_out) at hit point; d_perp = (remaining-d)*cos(α)
-            cos_alpha = jnp.dot(d_hat, n_out)
-            d_perp = jnp.where(intersects,
-                               (remaining - d) * cos_alpha,
-                               jnp.float32(0.0))
-
-            return (r0_new, dhat_new, rem_new), d_perp
-
-        (r_f, d_hat_f, rem_f), d_perps = jax.lax.scan(
-            _one_reflection, (r, d_hat, step_l), None, length=10
-        )
-        r_out = r_f + d_hat_f * jnp.maximum(rem_f, 0.0)
-        q_norm = jnp.linalg.norm(r_out * jnp.sqrt(inv_semi_sq))
-        r_out  = jnp.where(q_norm >= 1.0, r_out * (1.0 - NUDGE / _min_semi) / q_norm, r_out)
-
-        dlog_w = -2.0 * jnp.float32(rho_over_D) * jnp.sum(d_perps)
-        return r_out, dlog_w
+        """Impermeable wall interaction that also accrues surface relaxation."""
+        return self.permeate(r, step, jnp.float32(0.0), rho_over_D,
+                             jax.random.PRNGKey(0))[:2]
 
     def permeate(self, r, step, kappa_over_D, rho_over_D, perm_key):
-        """Probabilistic membrane crossing (Powles 2004) + optional relaxivity.
+        """Wall interaction on the ellipsoid: reflect, or cross if the membrane grants it.
 
-        Same protocol as Sphere.permeate but for a general ellipsoid.
-        Intersection uses the ellipsoid quadratic A·t² + 2B·t + C = 0 with
-        D = diag(1/a², 1/b², 1/c²):
-
-            A = d̂·D·d̂,  B = r·D·d̂,  C = r·D·r − 1
-
-        Inside  (C < 0): forward root  t = (−B + √(B²−A·C)) / A
-        Outside (C ≥ 0): backward root t = (−B − √(B²−A·C)) / A
-
-        cos(α) = |d̂·n_out| at the hit point, n_out ∝ r_hit·D (normalised).
-        d_perp = remaining · cos(α).
-
-        Single-event-per-step approximation.  Requires σ/min_semi < 0.1.
-
-        Parameters
-        ----------
-        r          : (3,) float32, current position
-        step       : (3,) float32, proposed displacement
-        kappa_over_D : float32, κ/D
-        rho_over_D   : float32, ρ/D  (0.0 if no surface relaxivity)
-        perm_key   : JAX PRNGKey
-
-        Returns
-        -------
-        r_new  : (3,) float32
-        dlog_w : float32
+        The surface is the quadric ``r.D.r = 1`` with ``D = diag(1/a², 1/b², 1/c²)``; the ray
+        ``r + t d`` meets it where ``A t² + 2 B t + C = 0`` (``A = d.D.d``, ``B = r.D.d``,
+        ``C = r.D.r − 1``), the outward normal at the hit is ``D r_hit`` normalised, and the
+        penetration depth is ``remaining · |d · n|``. Multi-bounce, with the crossing decision
+        made at most once per step, like :meth:`Sphere.permeate`.
         """
-        semi        = self._semi_f32                     # (3,) [a, b, c]
-        inv_semi_sq = jnp.float32(1.0) / (semi * semi)  # (3,) [1/a², 1/b², 1/c²]
+        semi        = self._semi_f32
+        inv_semi_sq = jnp.float32(1.0) / (semi * semi)
         _min_semi   = float(np.min(self.semiaxes))
         EPS         = jnp.float32(1e-7 * _min_semi)
         NUDGE       = jnp.float32(1e-4 * _min_semi)
-
+        rel_nudge   = NUDGE / jnp.float32(_min_semi)
         step_l = jnp.linalg.norm(step)
-        d_hat  = step / step_l
+        d_hat  = jnp.where(step_l > 0, step / jnp.maximum(step_l, EPS), jnp.zeros(3, jnp.float32))
+        u = jax.random.uniform(perm_key, dtype=jnp.float32)
 
-        # ── Ellipsoid quadratic ──────────────────────────────────────────
-        A      = jnp.dot(d_hat * inv_semi_sq, d_hat)
-        B      = jnp.dot(r     * inv_semi_sq, d_hat)
-        C      = jnp.dot(r     * inv_semi_sq, r) - jnp.float32(1.0)
-        t_entry, t_exit, disc_raw = ray_quadric_t(A, B, C)
-        disc_A = jnp.maximum(disc_raw, jnp.float32(0.0))
+        def _Q(x):
+            return jnp.dot(x * inv_semi_sq, x)
 
-        # ── Side detection and root selection ────────────────────────────
-        inside  = C < jnp.float32(0.0)                             # r·D·r < 1
-        t_hit   = jnp.where(inside, t_exit, t_entry)
-        any_hit  = (
-            (disc_raw > jnp.float32(0.0))
-            & (t_hit  > EPS)
-            & (t_hit  < step_l)
-            & (step_l > jnp.float32(0.0))
-        )
-        t_safe = jnp.where(any_hit, t_hit, jnp.float32(0.0))
+        def hit_once(rr, dd, remaining, decided):
+            A = jnp.dot(dd * inv_semi_sq, dd)
+            B = jnp.dot(rr * inv_semi_sq, dd)
+            C = _Q(rr) - jnp.float32(1.0)
+            t_entry, t_exit, disc = ray_quadric_t(A, B, C)
+            inside = C < jnp.float32(0.0)
+            t_hit  = jnp.where(inside, t_exit, t_entry)
+            any_hit = (disc > 0) & (t_hit > EPS) & (t_hit < remaining) & (remaining > 0)
+            t_safe = jnp.where(any_hit, t_hit, jnp.float32(0.0))
+            r_hit  = rr + t_safe * dd
+            n_raw  = r_hit * inv_semi_sq
+            n_out  = n_raw / jnp.maximum(jnp.linalg.norm(n_raw), jnp.float32(1e-30))
+            rem    = remaining - t_safe
+            d_perp = jnp.where(any_hit, rem * jnp.abs(jnp.dot(dd, n_out)), jnp.float32(0.0))
+            first    = any_hit & (~decided)
+            transmit = first & (u < transmit_probability(kappa_over_D, d_perp))
+            d_refl = specular(dd, n_out)
+            d_refl = d_refl / jnp.maximum(jnp.linalg.norm(d_refl), jnp.float32(1e-30))
+            r_off  = off_wall(r_hit, n_out, inside, NUDGE)
+            r_off, _ = keep_side_quadric(r_off, _Q(r_off), inside, rel_nudge, active=~transmit)
+            reflecting = any_hit & (~transmit)
+            r_new  = jnp.where(reflecting, r_off, rr + remaining * dd)
+            d_new  = jnp.where(reflecting, d_refl, dd)
+            rem_n  = jnp.where(reflecting, jnp.maximum(rem - NUDGE, jnp.float32(0.0)),
+                               jnp.float32(0.0))
+            dlw = jnp.where(reflecting, -jnp.float32(2.0) * rho_over_D * d_perp, jnp.float32(0.0))
+            return r_new, d_new, rem_n, decided | first, dlw, transmit
 
-        # ── Hit geometry ─────────────────────────────────────────────────
-        r_hit   = r + t_safe * d_hat
-        n_raw   = r_hit * inv_semi_sq
-        n_out   = n_raw / jnp.linalg.norm(n_raw)           # outward normal
-        remaining = step_l - t_safe
-
-        # cos(α) = |d̂·n_out|; always positive for both inside and outside walkers
-        cos_alpha = jnp.abs(jnp.dot(d_hat, n_out))
-        d_perp    = jnp.where(any_hit, remaining * cos_alpha, jnp.float32(0.0))
-
-        # ── Permeability decision ─────────────────────────────────────────
-        p_transmit = transmit_probability(kappa_over_D, d_perp)
-        u        = jax.random.uniform(perm_key, dtype=jnp.float32)
-        transmit = any_hit & (u < p_transmit)
-
-        # ── Reflected: specular, nudge back to same side ─────────────────
-        d_refl    = specular(d_hat, n_out)
-        d_refl    = d_refl / jnp.linalg.norm(d_refl)
-        r_refl = step_off_wall(r_hit, n_out, inside, d_refl, remaining, NUDGE)
-
-        # ── Transmitted: straight through ────────────────────────────────
-        r_straight = r + step
-
-        # ── Combine ───────────────────────────────────────────────────────
-        r_hit_result = jnp.where(transmit, r_straight, r_refl)
-        r_out        = jnp.where(any_hit,  r_hit_result, r + step)
-
-        # ── Compartment sentinel: no granted crossing => no change of side ────────
-        # Same defect as the sphere, on the quadric r.D.r = 1 instead of |r| = R: a step
-        # landing exactly on the surface fires no collision and the strict `C < 0` test then
-        # reads the other compartment. Measured on a plain random walk at kappa = 0: 0.063%
-        # (interior) and 0.248% (exterior) of walkers per 30k steps.
-        #
-        # Scaling r by sqrt(target/Q) moves it along the ray from the centre onto the level
-        # set Q = target, which is the ellipsoid's own radial direction. `inside` is the side
-        # at the START of the step and `transmit` the only way to leave it.
-        _Q = jnp.dot(r_out * inv_semi_sq, r_out)           # 1.0 exactly on the surface
-        r_out, _ = keep_side_quadric(r_out, _Q, inside,
-                                     NUDGE / jnp.float32(_min_semi), active=~transmit)
-
-        # ── Relaxivity weight on reflection only ──────────────────────────
-        dlog_w = jnp.where(
-            any_hit & ~transmit,
-            -jnp.float32(2.0) * rho_over_D * d_perp,
-            jnp.float32(0.0))
-
+        r_out, dlog_w, crossed = bounce_loop(hit_once, r, d_hat, step_l, self._MAX_BOUNCES)
+        # The side is the one at the START of the step; only a granted crossing may change it.
+        inside0 = _Q(r) < jnp.float32(1.0)
+        r_out, _ = keep_side_quadric(r_out, _Q(r_out), inside0, rel_nudge, active=~crossed)
         return r_out, dlog_w
 
     def classify_position(self, r: jnp.ndarray) -> jnp.ndarray:
@@ -699,21 +540,14 @@ class PermeableSlab1D(Geometry):
         return jnp.where(xf > L, 2.0 * L - xf, xf)
 
     def reflect(self, r, step):
-        # fully-reflecting fallback: bounce at the membrane and fold at outer walls
-        L = jnp.float32(self.length); xm = jnp.float32(self.length / 2.0)
-        x = r[0]; x_new = x + step[0]
-        crossed = (x - xm) * (x_new - xm) < 0.0
-        x1 = jnp.where(crossed, 2.0 * xm - x_new, x_new)
-        return jnp.array([self._fold(x1), r[1] + step[1], r[2] + step[2]])
+        """Impermeable wall interaction -- the kappa = 0 case of :meth:`permeate`."""
+        return self.permeate(r, step, jnp.float32(0.0), jnp.float32(0.0),
+                             jax.random.PRNGKey(0))[0]
 
     def reflect_with_log_weight(self, r, step, rho_over_D):
-        L = jnp.float32(self.length); xm = jnp.float32(self.length / 2.0)
-        x = r[0]; x_new = x + step[0]
-        crossed = (x - xm) * (x_new - xm) < 0.0
-        d_perp = jnp.where(crossed, jnp.abs(x_new - xm), jnp.float32(0.0))
-        x1 = jnp.where(crossed, 2.0 * xm - x_new, x_new)
-        r_out = jnp.array([self._fold(x1), r[1] + step[1], r[2] + step[2]])
-        return r_out, -2.0 * rho_over_D * d_perp
+        """Impermeable wall interaction that also accrues surface relaxation."""
+        return self.permeate(r, step, jnp.float32(0.0), rho_over_D,
+                             jax.random.PRNGKey(0))[:2]
 
     def permeate(self, r, step, kappa_over_D, rho_over_D, perm_key):
         L = jnp.float32(self.length); xm = jnp.float32(self.length / 2.0)
@@ -880,7 +714,10 @@ class PermeableShell(Geometry):
     def permeate(self, r, step, kappa_over_D, rho_over_D, perm_key):
         return self._permeate_impl(r, step, kappa_over_D, rho_over_D, perm_key)
 
+    def reflect_with_log_weight(self, r, step, rho_over_D):
+        """Impermeable wall interaction that also accrues surface relaxation at the membrane."""
+        return self._permeate_impl(r, step, jnp.float32(0.0), rho_over_D, jax.random.PRNGKey(0))
+
     def reflect(self, r, step):
-        r_out, _ = self._permeate_impl(r, step, jnp.float32(0.0), jnp.float32(0.0),
-                                       jax.random.PRNGKey(0))
-        return r_out
+        return self._permeate_impl(r, step, jnp.float32(0.0), jnp.float32(0.0),
+                                   jax.random.PRNGKey(0))[0]

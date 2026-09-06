@@ -65,11 +65,15 @@ def _radial(name):
         return _f
     if name == "Cylinder":
         return lambda p: np.linalg.norm(np.atleast_2d(p)[:, :2], axis=1)
+    if name == "Ellipsoid":
+        # the quadric radius sqrt(r.D.r), scaled by R so the wall sits at R like the others
+        return lambda p: R * np.sqrt(np.sum((np.atleast_2d(p) / _SEMI) ** 2, axis=1))
     return lambda p: np.linalg.norm(np.atleast_2d(p), axis=1)
 
 
 _PACK_L = None
-_NAMES = ["Sphere", "Cylinder", "PackedCylinders"]
+_SEMI = np.array([R, 0.6 * R, 0.8 * R])          # ellipsoid semi-axes; the +x wall is at R
+_NAMES = ["Sphere", "Cylinder", "Ellipsoid", "PackedCylinders"]
 _PACK_CENTERS = None
 
 
@@ -105,6 +109,8 @@ def _build_uncached(name):
                                orientation=[0, 0, 1.0], permeability=0.0)
     if name == "Sphere":
         return Sphere(radius=R, permeability=0.0)
+    if name == "Ellipsoid":
+        return Ellipsoid(semiaxes=_SEMI, permeability=0.0)
     return Cylinder(radius=R, orientation=[0, 0, 1.0], permeability=0.0)
 
 
@@ -138,6 +144,48 @@ def _impacts(name):
                 out.append((f"{oname}/{dname}/{aname}", start.astype(np.float32),
                             (d / np.linalg.norm(d) * dist).astype(np.float32)))
     return out
+
+
+def _exterior_impacts(name):
+    """(start, step) pairs: a walker OUTSIDE, placed `off` beyond the wall on +x, aimed in."""
+    out = []
+    for oname, off in OFFSETS:
+        for dname, dist in DISTANCES:
+            for aname, deg in ANGLES:
+                c = (np.array([_PACK_CENTERS[0][0], _PACK_CENTERS[0][1], 0.0])
+                     if name == "PackedCylinders" else np.zeros(3))
+                start = c + np.array([R + off, 0.0, 0.0], np.float64)
+                th = np.deg2rad(deg)
+                d = np.array([-np.cos(th), np.sin(th), 0.0])          # aimed at the wall
+                out.append((f"{oname}/{dname}/{aname}", start.astype(np.float32),
+                            (d / np.linalg.norm(d) * dist).astype(np.float32)))
+    return out
+
+
+@pytest.mark.parametrize("name", _NAMES)
+def test_impermeable_wall_never_lets_a_walker_in(name):
+    """The exterior twin: a walker outside an impermeable wall stays outside -- it is neither
+    absorbed by a clamp nor teleported inside. Path length is conserved as for interior impacts."""
+    geom = _build(name)
+    if name == "PackedCylinders":
+        pytest.skip("a packed exterior walker meets the NEIGHBOURING objects too; covered by the "
+                    "confinement tests on the packed geometries")
+    rad = _radial(name)
+    cases = _exterior_impacts(name)
+    starts = jnp.asarray(np.stack([c[1] for c in cases]))
+    steps = jnp.asarray(np.stack([c[2] for c in cases]))
+    out = np.asarray(jax.jit(jax.vmap(lambda p, s: geom.interact(p, s).r))(starts, steps))
+    r_end = rad(out)
+    entered = r_end < R * (1 - 1e-6)
+    if entered.any():
+        rows = "\n".join(
+            f"      {cases[i][0]:34} |step|={np.linalg.norm(cases[i][2])/R:6.2f} R  "
+            f"-> ended at {r_end[i]/R:8.3f} R"
+            for i in np.flatnonzero(entered)[:12])
+        pytest.fail(f"{name}: {entered.sum()}/{len(cases)} exterior impacts ended INSIDE:\n{rows}")
+    moved = np.linalg.norm(out - np.asarray(starts), axis=1)
+    asked = np.linalg.norm(np.asarray(steps), axis=1)
+    assert not (moved > asked * (1 + 1e-4) + 1e-12).any(), f"{name}: an exterior reflection added distance"
 
 
 @pytest.mark.parametrize("name", _NAMES)
