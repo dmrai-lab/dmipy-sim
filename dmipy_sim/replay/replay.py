@@ -59,13 +59,166 @@ def read_rpk(path):
 
 
 class ReplayPack:
-    """A loaded replay pack: the channel ``arrays`` plus ``meta``. Convenience accessors mirror the
-    walk parameters needed to replay (``n_t``, ``dt``, ``K``, ``n_walkers``)."""
+    """A replay pack: the channel ``arrays`` plus ``meta``, with ``load`` / ``save`` and the one
+    consume path, :meth:`replay`. Accessors mirror the walk parameters (``n_t``, ``dt``, ``K``,
+    ``n_walkers``) and the tiers carried (``has_relaxation``, ``has_surface``, ``has_field``)."""
 
     def __init__(self, arrays, meta, source=None):
         self.arrays = dict(arrays)
         self.meta = dict(meta)
         self.source = source
+
+    @classmethod
+    def load(cls, path):
+        """Read a ``.rpk`` file."""
+        return read_rpk(path)
+
+    def save(self, path):
+        """Write this pack to a ``.rpk`` file."""
+        write_rpk(path, {k: v for k, v in self.arrays.items() if v is not None}, self.meta)
+        self.source = str(path)
+        return path
+
+    # ---- tiers carried ----
+    @property
+    def has_relaxation(self):
+        """C1: a compartment channel plus per-pool T2 in the metadata."""
+        return "comp_rle_vals" in self.arrays and bool(self.meta.get("per_comp", {}).get("T2"))
+
+    @property
+    def has_surface(self):
+        """C2: the boundary local time in the bridge form."""
+        return "blt_bridge_dst" in self.arrays
+
+    @property
+    def has_field(self):
+        """C3: a susceptibility path channel or the static field grid."""
+        ch = (self.meta.get("compression", {}).get("channels", {}) or {})
+        return ch.get("susceptibility_path") is not None or "susc_grid_iso_local" in self.arrays
+
+    @property
+    def diffusivity(self):
+        """The walk's diffusivity (m^2/s) when the producer recorded it."""
+        return self.meta.get("walk_params", {}).get("diffusivity")
+
+    def positions(self):
+        """The ``(n_walkers, n_t, 3)`` trajectory decoded from the position codec (float64)."""
+        from .compression import decode, is_walker_preserving, require_position_method
+        cx = self.meta.get("compression", {})
+        meta = {"method": require_position_method(cx.get("method")), "K": int(cx.get("K", 0)),
+                "n_t": int(cx.get("n_t") or self.n_t)}
+        wp = is_walker_preserving(meta["method"])
+        return np.asarray(decode(self.arrays, meta, n_walkers=(self.n_walkers if wp else None)), np.float64)
+
+    def replay(self, waveform, *, relaxation="auto", rho=None, D=None, B0=None, b0_dir=(0.0, 0.0, 1.0),
+               chi_iso=None, chi_aniso=0.0, refocus_time="auto", compartment=None, complex_signal=False):
+        """The signal of ``waveform`` on this pack, with every tier the pack carries and the request asks for.
+
+        ``waveform`` is a :class:`~dmipy_sim.acquisition.waveforms.Waveform` / :class:`~dmipy_sim.sequences.Sequence`
+        (``G`` (n_meas, n_t_wf, 3) in T/m, ``dt``), or a bare ``G`` already on the pack's save grid; it
+        is resampled onto the pack grid (``n_t`` samples of ``dt``, zero outside the waveform).
+
+        * **gradient** (C0): always, in mode space from the position coefficients -- unless a field is
+          requested, when the trajectory is decoded and the two phases accrue in one complex mean so
+          their cross-term is kept.
+        * **bulk relaxation** (C1): ``relaxation="auto"`` applies the pack's per-pool T2 (and T1 under
+          the waveform's coherence gate) when the pack carries them; ``True`` requires them; ``False``
+          skips them.
+        * **surface relaxivity** (C2): ``rho`` (m/s) with the walk's diffusivity ``D`` (the pack's
+          recorded value unless given); requires the boundary local time.
+        * **field** (C3): ``B0`` (T) with ``b0_dir`` and the susceptibility ``chi_iso`` / ``chi_aniso``
+          (default: the pack's nominal values); ``refocus_time="auto"`` reads the 180 from the
+          waveform's RF schedule (``None`` = gradient echo); requires the field tier.
+
+        ``compartment`` restricts the ensemble mean to one pool id (or a boolean walker mask).
+        A tier that is requested but not carried raises rather than returning a plausible number.
+        """
+        from .compression import (read_position_coeffs, require_position_method, decode_occupancy,
+                                  relaxation_logweight)
+        from ._replay_kernel import resample_gradient, gradient_phase, se_gate
+        require_position_method(self.method)
+        G = np.asarray(getattr(waveform, "G", waveform), np.float64)
+        if G.ndim == 2:
+            G = G[None]
+        dt_wf = float(getattr(waveform, "dt", self.dt))
+        n_t, dt = self.n_t, self.dt
+        G = resample_gradient(G, dt_wf, dt, n_t)                                  # (n_meas, n_t, 3)
+        chi = getattr(waveform, "chi_perp", None)
+        if chi is not None:
+            chi = np.asarray(chi, np.float64).reshape(-1)
+            if chi.shape[0] != n_t:                                               # nearest sample of the walk grid
+                idx = np.clip(np.rint(np.arange(n_t) * dt / dt_wf).astype(int), 0, chi.shape[0] - 1)
+                chi = chi[idx]
+        ch = (self.meta.get("compression", {}).get("channels", {}) or {})
+        n_w = self.n_walkers
+        w = np.asarray(self.spin_weights, np.float64)
+
+        logw = np.zeros(n_w)
+        if relaxation not in ("auto", True, False):
+            raise ValueError("relaxation must be 'auto', True or False")
+        if relaxation is True and not self.has_relaxation:
+            raise ValueError("relaxation was requested but the pack carries no bulk-relaxation tier (C1: a "
+                             "compartment channel plus per-pool T2); build it from a walk with tiers='all' "
+                             "and compartments=")
+        if relaxation in ("auto", True) and self.has_relaxation:
+            comp = decode_occupancy(self.arrays, ch["compartment"])["comp"]
+            pc = self.meta["per_comp"]
+            logw = logw + relaxation_logweight(comp, pc["T2"], pc.get("T1"), dt, chi)
+        if rho is not None and float(rho) != 0.0:
+            D_walk = self.diffusivity if D is None else D
+            if D_walk is None:
+                raise ValueError("rho needs the walk's diffusivity: the pack did not record it, pass D=")
+            logw = logw + surface_logweight(self.arrays, float(rho) / float(D_walk),
+                                            ch.get("boundary_local_time"), chi)      # raises without C2
+
+        if B0 is None:
+            C = read_position_coeffs(self.arrays, dtype=np.float64)
+            W = compile_scheme(G, dt, self.K, n_t=n_t)
+            phi = C.reshape(n_w, self.n_coeffs * 3) @ W                              # (n_w, n_meas)
+        else:
+            if not self.has_field:
+                raise ValueError("B0 was given but the pack carries no field tier (C3); build it with field=FieldGrid(...)")
+            from .bank import susc_path_decode, susc_path_field
+            from ..fields.susceptibility_field import assemble_field, sample_grid
+            gm = ch["susceptibility_grid"]
+            chi_i = float(gm.get("chi_iso") or 0.0) if chi_iso is None else float(chi_iso)
+            pos = self.positions()
+            pm = ch.get("susceptibility_path")
+            if pm is not None:
+                b, _ = susc_path_decode(self.arrays, pm, n_w=n_w)
+                dB = susc_path_field(b, b0_dir, B0=float(B0), chi_iso=chi_i, chi_aniso=chi_aniso,
+                                     has_aniso=bool(gm.get("has_aniso")))
+            else:
+                basis = {"iso_local": np.asarray(self.arrays["susc_grid_iso_local"], np.float64),
+                         "iso_P": np.asarray(self.arrays["susc_grid_iso_P"], np.float64),
+                         "aniso_G": (np.asarray(self.arrays["susc_grid_aniso_G"], np.float64)
+                                     if "susc_grid_aniso_G" in self.arrays else None),
+                         "shape": tuple(gm["shape"]), "voxel_size": np.asarray(gm["voxel_size"], float)}
+                dB = sample_grid(assemble_field(basis, b0_dir, B0=float(B0), chi_iso=chi_i, chi_aniso=chi_aniso),
+                                 pos, np.asarray(gm["origin"], float), gm["voxel_size"], periodic=False)
+            if refocus_time == "auto":
+                refocus_time = _refocus_time_of(waveform)
+            phi_x = GAMMA * dt * (dB * se_gate(n_t, dt, refocus_time)[None, :]).sum(1)    # (n_w,)
+            phi = gradient_phase(G, pos, dt).T + phi_x[:, None]                                # (n_w, n_meas)
+
+        ew = w * np.exp(logw)
+        norm = w.sum()
+        if compartment is not None:
+            sel = np.asarray(compartment)
+            if sel.dtype != bool:
+                if "compartment" not in ch:
+                    raise ValueError("compartment= by id needs the pack's compartment channel")
+                ids = np.asarray(decode_occupancy(self.arrays, ch["compartment"])["comp"])
+                ids = ids[:, 0] if ids.ndim == 2 else ids
+                sel = ids.astype(int) == int(sel)
+            if sel.shape[0] != n_w:
+                raise ValueError(f"compartment mask has {sel.shape[0]} entries for {n_w} walkers")
+            if not sel.any():
+                raise ValueError("compartment selection matched no walkers")
+            ew = np.where(sel, ew, 0.0)
+            norm = w[sel].sum()
+        S = (ew[:, None] * np.exp(1j * phi)).sum(0) / norm
+        return S if complex_signal else np.abs(S)
 
     @cached_property
     def position_coeffs(self):
@@ -159,6 +312,16 @@ class ReplayPack:
     fidelity = property(lambda self: self.meta.get("fidelity"))
     replay_envelope = property(lambda self: self.meta.get("replay_envelope"))
     provenance = property(lambda self: self.meta.get("provenance"))
+
+
+
+def _refocus_time_of(waveform):
+    """The time of the waveform's 180 (the first refocusing pulse of its RF schedule), or ``None``
+    for a schedule without one (a gradient echo)."""
+    for e in (getattr(waveform, "rf_events", None) or []):
+        if int(round(float(e.get("flip_deg", 0)))) == 180:
+            return float(e["t_s"])
+    return None
 
 
 # ------------------------------- compiled-scheme forward -------------------------------

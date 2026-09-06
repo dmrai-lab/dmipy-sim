@@ -139,3 +139,12 @@ def test_permeable_mesh_with_per_compartment_T2_replays_the_fused_engine():
     assert abs(s_f[0] - s_r[0]) < max(0.02, 3.0 / np.sqrt(N)), f"fused {s_f[0]:.4f} vs replay {s_r[0]:.4f}"
     # and the intra T2 actually acted: a walk that started inside decays toward exp(-TE/T2_intra)
     assert s_f[0] < 0.9
+
+
+@pytest.mark.parametrize("sub_steps", [43, 97, 200])
+def test_the_discrete_label_is_rounded_not_truncated(sub_steps):
+    """The occupancy is comp_sum / sub_steps; XLA may compute it as comp_sum * (1 / sub_steps), which for
+    some counts is 0.99999994. Truncating that to int8 labelled every intra walker "extra" at 97 sub-steps."""
+    out = d.simulate_trajectories(32, D, d.Cylinder(3e-6, (0, 0, 1)), T_max=2e-3, dt_save=5e-4, seed=0,
+                                  require_gpu=False, sub_steps=sub_steps)
+    assert (np.asarray(out.compartment) == 1).all()

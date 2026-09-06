@@ -1397,9 +1397,12 @@ def simulate_trajectories(
                     else:
                         all_batches.append(np.array(pos_f32).astype(_sdt))
                         all_dlog_batches.append(np.array(dlog_f32).astype(_sdt))
-                    # Permeable: fractional occupancy; else discrete (int8).
-                    all_comp_batches.append(np.array(comp_f32).astype(
-                        _sdt if has_permeability else np.int8))
+                    # Permeable: fractional occupancy; else a discrete label, ROUNDED: the occupancy
+                    # is comp_sum / sub_steps and XLA may form it as comp_sum * (1/sub_steps), which
+                    # for some sub-step counts is 0.99999994 -- truncating that to int8 labelled every
+                    # intra walker "extra" (measured at sub_steps = 97).
+                    all_comp_batches.append(np.array(comp_f32).astype(_sdt) if has_permeability
+                                            else np.rint(np.array(comp_f32)).astype(np.int8))
                 else:
                     if _compress:
                         all_batches.append(_compress_pos(simulate_batch(current_r0, current_keys)))
@@ -1443,8 +1446,8 @@ def simulate_trajectories(
                                 current_r0[ss:se], current_keys[ss:se])
                             sub_pos_list.append(np.array(sp).astype(_sdt))
                             sub_dlog_list.append(np.array(sd).astype(_sdt))
-                            sub_comp_list.append(np.array(sc).astype(
-                                _sdt if has_permeability else np.int8))
+                            sub_comp_list.append(np.array(sc).astype(_sdt) if has_permeability
+                                                 else np.rint(np.array(sc)).astype(np.int8))
                         else:
                             sp = np.array(simulate_batch(
                                 current_r0[ss:se], current_keys[ss:se]))
@@ -1490,12 +1493,13 @@ def simulate_trajectories(
             master["comp_traj"] = np.concatenate(all_comp_batches, axis=0)      # (N, n_t)
         return master
 
+    D_walk = None if diffusivity is None else float(diffusivity)
     walk = PersistentWalk(np.concatenate(all_batches, axis=0), float(dt_actual), int(sub_steps),
-                      float(dt_sim), illegal_crossings=illegal, seed=int(seed))
+                      float(dt_sim), illegal_crossings=illegal, seed=int(seed), diffusivity=D_walk)
     if record:
         walk = PersistentWalk(walk.positions, walk.dt, walk.sub_steps, walk.dt_sim,
                           boundary_local_time=np.concatenate(all_dlog_batches, axis=0),
                           compartment=np.concatenate(all_comp_batches, axis=0),
                           bound_frac=(np.concatenate(all_bound_batches, axis=0) if _mt_on else None),
-                          illegal_crossings=illegal, seed=int(seed))
+                          illegal_crossings=illegal, seed=int(seed), diffusivity=D_walk)
     return walk
