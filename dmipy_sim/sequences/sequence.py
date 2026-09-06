@@ -20,7 +20,7 @@ from ..math.gradient_conversions import g_from_b, q_from_b
 from ..constants import GAMMA, DEFAULT_SLEW_RATE, resolve_slew as _resolve_slew
 from ._helpers import (
     _trap_profile, _trap_cosine_profile, _calc_b_from_waveform,
-    _btensor_from_waveform, _refocusing_residual, _resolve_te,
+    _btensor_from_waveform, _refocusing_residual, _resolve_te, _scale_to_b,
     unify_length_reference_delta_Delta, check_acquisition_scheme,
     _REFOCUS_ATOL,
 )
@@ -47,12 +47,27 @@ class Sequence:
       * family flags -- ``sequence_type`` and the physical markers each family
         sets (``_effective_gradient``, ``TM``, ``ste_flip_angles``,
         ``oscillation_frequency``, ``cpmg_*`` ...).
+      * the :class:`dmipy_sim.waveforms.Waveform` readout attributes -- ``echo_idx``,
+        ``echo_indices``, ``rf_events``, ``G_display``, ``chi_perp``, ``TM``,
+        ``stimulated_echo`` -- so a ``Sequence`` is accepted wherever a ``Waveform`` is
+        (``simulate`` in either engine, ``simulate_cpmg``, ``to_pulseq``, ``viz``).
+
+    Every constructor finishes with a numeric scaling of ``G`` so that the declared
+    ``bvalues`` equal :func:`dmipy_sim.waveforms.b_from_gradient` of the waveform it built.
     """
 
     def __init__(self, G, dt, bvalues, gradient_directions, qvalues,
                  gradient_strengths, delta, Delta, TE):
         self.G = np.asarray(G, dtype=np.float32)
         self.dt = float(dt)
+        # Waveform readout protocol (see dmipy_sim.waveforms.Waveform)
+        self.echo_idx = int(self.G.shape[1] - 1)
+        self.echo_indices = None
+        self.rf_events = None
+        self.G_display = None
+        self.chi_perp = None
+        self.TM = None
+        self.stimulated_echo = False
         self.bvalues = np.asarray(bvalues, dtype=np.float64)
         self.gradient_directions = np.asarray(gradient_directions, dtype=np.float64)
         self.qvalues = None if qvalues is None else np.asarray(qvalues, dtype=np.float64)
@@ -79,7 +94,8 @@ class Sequence:
                    for m in range(self.number_of_measurements))
 
     def to_gradient_array(self, n_t=1000):
-        """Return ``(G, dt)`` on an n_t grid for a uniform-PGSE scheme."""
+        """Return ``(G, dt)`` of the square (instantaneous) PGSE with this scheme's b-values,
+        directions, delta and Delta on an ``n_t`` grid -- :meth:`from_pgse` at infinite slew."""
         if self.delta is None or self.Delta is None or self.gradient_strengths is None:
             raise ValueError(
                 "to_gradient_array() requires delta, Delta, and gradient_strengths.")
@@ -88,18 +104,9 @@ class Sequence:
             raise ValueError("to_gradient_array() requires uniform delta.")
         if (np.max(self.Delta) - np.min(self.Delta)) > delta_tol:
             raise ValueError("to_gradient_array() requires uniform Delta.")
-        delta = float(self.delta[0]); Delta = float(self.Delta[0])
-        T_total = Delta + delta
-        dt = T_total / (n_t - 1)
-        n_pulse = max(1, round(delta / dt)); n_Delta = round(Delta / dt)
-        n_m = self.number_of_measurements
-        G = np.zeros((n_m, n_t, 3), dtype=np.float32)
-        for m in range(n_m):
-            g_vec = (self.gradient_strengths[m] *
-                     self.gradient_directions[m]).astype(np.float32)
-            G[m, :n_pulse, :] = g_vec
-            G[m, n_Delta:n_Delta + n_pulse, :] = -g_vec
-        return G, float(dt)
+        sq = Sequence.from_pgse(self.bvalues, self.gradient_directions, float(self.delta[0]),
+                                float(self.Delta[0]), n_t=n_t, slew_rate=np.inf)
+        return sq.G, sq.dt
 
     def instantaneous(self):
         """Idealised instantaneous (infinite-slew / square) limit of this sequence.
@@ -148,13 +155,12 @@ class Sequence:
         T_total = float(np.max(Delta_ + delta_ + eps_))
         dt = T_total / (n_t - 1)
         TE_, te_auto = _resolve_te(TE, T_total, n_m)
-        G_arr = np.zeros((n_m, n_t, 3), dtype=np.float32)
+        G_arr = np.zeros((n_m, n_t, 3), dtype=np.float64)
         if square:
             for m in range(n_m):
                 n_pulse = max(1, round(float(delta_[m]) / dt))
                 n_Delta = round(float(Delta_[m]) / dt)
-                g_vec = (gradient_strengths[m] *
-                         gradient_directions[m]).astype(np.float32)
+                g_vec = gradient_strengths[m] * gradient_directions[m]
                 G_arr[m, :n_pulse, :] = g_vec
                 G_arr[m, n_Delta:n_Delta + n_pulse, :] = -g_vec
         else:
@@ -162,14 +168,16 @@ class Sequence:
             for m in range(n_m):
                 prof = (_trap_profile(t_grid, 0.0, delta_[m], eps_[m]) -
                         _trap_profile(t_grid, Delta_[m], delta_[m], eps_[m]))
-                Gm = (gradient_strengths[m] * prof)[:, None] * gradient_directions[m]
-                b_m = _calc_b_from_waveform(Gm[None].astype(np.float32), dt)[0]
-                if b_m > 0:
-                    Gm *= np.sqrt(bvalues[m] / b_m)
-                G_arr[m] = Gm.astype(np.float32)
+                G_arr[m] = (gradient_strengths[m] * prof)[:, None] * gradient_directions[m]
+        # the declared b IS the numeric b of the waveform the walk integrates
+        G_arr = _scale_to_b(G_arr, dt, bvalues)
 
         seq = cls(G_arr, dt, bvalues, gradient_directions, qvalues,
                   gradient_strengths, delta_, Delta_, TE_)
+        # ideal instantaneous 90/180 markers, as dmipy_sim.waveforms.pgse places them
+        t_180 = float(np.mean(Delta_ + delta_ + eps_)) / 2.0
+        seq.rf_events = [{'t_s': 0.0, 'label': 'Mz→Mxy', 'flip_deg': 90},
+                         {'t_s': t_180, 'label': 'refocus', 'flip_deg': 180}]
         seq._carry(sequence_type='pgse', _minimum_te=T_total, _te_auto=te_auto,
                    _refocus_gap=float(np.min(Delta_ - delta_ - eps_)),
                    _effective_gradient=True)
@@ -204,16 +212,22 @@ class Sequence:
                         g_from_b(np.maximum(bvalues, 1.0), delta_lobe, Delta_lobe), 0.0)
         qvals = np.where(bvalues > 0,
                          q_from_b(np.maximum(bvalues, 1.0), delta_lobe, Delta_lobe), 0.0)
-        G_arr = np.zeros((n_echoes, n_t_total, 3), dtype=np.float32)
+        G_arr = np.zeros((n_echoes, n_t_total, 3), dtype=np.float64)
         for m in range(n_echoes):
-            lobe = (gstr[m] * gradient_directions[m]).astype(np.float32)
+            lobe = gstr[m] * gradient_directions[m]
             for k in range(n_echoes):
                 base = k * n_t_per_echo
                 G_arr[m, base:base + n_half, :] = lobe
                 G_arr[m, base + n_half:base + n_t_per_echo, :] = -lobe
+        G_arr = _scale_to_b(G_arr, dt, bvalues)
 
         seq = cls(G_arr, dt, bvalues, gradient_directions, qvals,
                   gstr, delta_lobe, Delta_lobe, TE_)
+        # echo k forms at the end of its interval; the 180s sit at (k + 1/2) TE
+        seq.echo_indices = (np.arange(1, n_echoes + 1) * n_t_per_echo - 1).astype(int)
+        seq.rf_events = ([{'t_s': 0.0, 'label': 'Mz→Mxy', 'flip_deg': 90}] +
+                         [{'t_s': (k + 0.5) * TE_echo, 'label': 'refocus', 'flip_deg': 180}
+                          for k in range(n_echoes)])
         seq._carry(sequence_type='cpmg', refocused=True, cpmg_n_echoes=n_echoes,
                    cpmg_TE=TE_echo, cpmg_beta_deg=float(beta_deg),
                    n_t_per_echo=int(n_t_per_echo))
@@ -281,7 +295,7 @@ class Sequence:
         else:
             T_total = float(np.max(2.0 * sigma + gap))
         dt = T_total / (n_t - 1)
-        G_arr = np.zeros((n_m, n_t, 3), dtype=np.float32)
+        G_arr = np.zeros((n_m, n_t, 3), dtype=np.float64)
         t_full = np.arange(n_t) * dt
         for m in range(n_m):
             if bvalues[m] <= 0 or G_mag[m] == 0:
@@ -290,30 +304,27 @@ class Sequence:
                 n_sig = max(1, round(sigma[m] / dt))
                 t = np.arange(n_sig) * dt
                 g_t = G_mag[m] * np.cos(2.0 * np.pi * osc_freq[m] * t)
-                G_arr[m, :n_sig, :] = (g_t[:, None] *
-                                       gradient_directions[m]).astype(np.float32)
+                G_arr[m, :n_sig, :] = g_t[:, None] * gradient_directions[m]
             else:
-                sg, fm, sr, tgt = (float(sigma[m]), osc_freq[m],
-                                   float(slew_rate), bvalues[m])
+                sg, fm, sr = float(sigma[m]), osc_freq[m], float(slew_rate)
+                # the slew-limited trapezoidal ramps depend on the amplitude, so iterate the
+                # profile to the requested b before the exact scaling below
                 g_amp = G_mag[m]
-                Gm = None
                 for _ in range(6):
                     pre = _trap_cosine_profile(t_full, sg, fm, sr, g_amp)
                     post = _trap_cosine_profile(t_full - (sg + gap), sg, fm, sr, g_amp)
                     Gm = (pre - post)[:, None] * gradient_directions[m]
-                    b_m = _calc_b_from_waveform(Gm[None].astype(np.float32), dt)[0]
-                    if b_m <= 0:
+                    b_m = _calc_b_from_waveform(Gm[None], dt)[0]
+                    if b_m <= 0 or abs(b_m - bvalues[m]) <= 1e-6 * bvalues[m]:
                         break
-                    if abs(b_m - tgt) <= 1e-3 * tgt:
-                        break
-                    g_amp *= np.sqrt(tgt / b_m)
-                G_arr[m] = Gm.astype(np.float32)
+                    g_amp *= np.sqrt(bvalues[m] / b_m)
+                G_arr[m] = Gm
+        # the declared b IS the numeric b of the waveform the walk integrates
+        G_arr = _scale_to_b(G_arr, dt, bvalues)
 
         TE_, te_auto = _resolve_te(TE, T_total, n_m)
         qvalues = G_mag * gamma * sigma / (2.0 * np.pi)
         gradient_strengths = G_mag
-        # NB: the scheme reports the REQUESTED b-values (matching fit.from_ogse,
-        # which computes the numeric b but stores the target); STE/PTE store numeric.
 
         seq = cls(G_arr, dt, bvalues, gradient_directions, qvalues,
                   gradient_strengths, None, None, TE_)

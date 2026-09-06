@@ -487,6 +487,28 @@ def b_trapezoidal_ogse(N, delta, DELTA, G, rise_time):
     return float(b1 + b2)
 
 
+def b_from_gradient(G, dt):
+    """b (s/m²) per measurement from a gradient array ``(n_measurements, n_t, 3)`` and its step.
+
+    ``q(t)`` accumulates by the rectangular (left-point) rule, matching the phase accumulation of
+    the walk (``dphi = GAMMA dt G[t] . r``); ``b = ∫ |q|² dt`` by the trapezoidal rule. This is
+    the one b integral of the package: :func:`calc_b`, :meth:`Sequence.btensor` and every
+    constructor's numeric scaling read it.
+    """
+    G = np.asarray(G, dtype=np.float64)
+    q = np.cumsum(G * float(dt), axis=1) * GAMMA        # (n_m, n_t, 3)
+    return np.trapezoid(np.sum(q ** 2, axis=2), dx=float(dt), axis=1).astype(np.float64)
+
+
+def btensor_from_gradient(G, dt):
+    """B-tensor ``B_ij = ∫ q_i q_j dt`` per measurement, ``(n_measurements, 3, 3)``, by the same
+    rules as :func:`b_from_gradient`, so ``trace(B) == b`` to float64 precision."""
+    G = np.asarray(G, dtype=np.float64)
+    q = np.cumsum(G * float(dt), axis=1) * GAMMA
+    qq = q[:, :, :, None] * q[:, :, None, :]
+    return np.trapezoid(qq, dx=float(dt), axis=1).astype(np.float64)
+
+
 def calc_b(waveform):
     """Compute b-values for each measurement in a Waveform (s/m²).
 
@@ -508,12 +530,7 @@ def calc_b(waveform):
     -------
     b_values : np.ndarray of shape (n_measurements,)
     """
-    G = np.array(waveform.G)  # (n_measurements, n_t, 3)
-    dt = waveform.dt
-    q = np.cumsum(G * dt, axis=1) * GAMMA  # (n_measurements, n_t, 3)
-    q_sq = np.sum(q ** 2, axis=2)          # (n_measurements, n_t)
-    b = np.trapezoid(q_sq, dx=dt, axis=1)      # (n_measurements,)
-    return b.astype(np.float64)
+    return b_from_gradient(waveform.G, waveform.dt)
 
 
 def calc_btensor(waveform):
@@ -533,14 +550,7 @@ def calc_btensor(waveform):
     B : np.ndarray, shape (n_measurements, 3, 3), float64
         B-tensor in s/m².
     """
-    G = np.array(waveform.G)               # (n_meas, n_t, 3)
-    dt = waveform.dt
-    q = np.cumsum(G * dt, axis=1) * GAMMA  # (n_meas, n_t, 3)
-    # B_ij = ∫ q_i(t) q_j(t) dt — trapezoidal rule, consistent with calc_b
-    # so that trace(calc_btensor(wf)) == calc_b(wf) to float64 precision.
-    qq = q[:, :, :, None] * q[:, :, None, :]   # (n_meas, n_t, 3, 3)
-    B = np.trapezoid(qq, dx=dt, axis=1)         # (n_meas, 3, 3)
-    return B.astype(np.float64)
+    return btensor_from_gradient(waveform.G, waveform.dt)
 
 
 def btensor_invariants(B):
