@@ -208,6 +208,9 @@ meshes:
 - **Resolution:** diffusion & surface relaxivity hit the noise floor at coarse
   resolution; permeability needs `edge/feature ≲ 0.04`. `Mesh.quality_report()` and a
   construction warning flag a too-coarse mesh.
+- **Collision-response flags** are constructor kwargs with the validated defaults (`reject_escape=True`,
+  `box_reflect=True`, `adaptive_nudge=False`), documented in `Mesh.__init__`; nothing is set on the instance after
+  construction. They are measurement switches for the engine's tests, not physics.
 - **No mesh files in the repo** — tests generate meshes on the fly (icosphere / open
   tube); large research PLYs are a manual stress test only.
 

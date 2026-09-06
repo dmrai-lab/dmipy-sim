@@ -327,6 +327,13 @@ class Mesh(Geometry):
         or outside it (``"extra"``, id 0). Stated at construction so that "which pool did this run
         walk?" is answered by the geometry, not by a default hidden in the seeding call. A fibre
         bundle's extra-axonal water is ``Mesh(outer_surface, pool="extra")``.
+    reject_escape, box_reflect, adaptive_nudge : bool
+        Collision-response flags, all with the validated default (True, True, False): re-eject a
+        walker that ends a step across an impermeable wall; treat the non-periodic voxel faces as
+        specular walls inside the bounce loop (the alternative, mirroring after the step, put 18-19%
+        of a bundle's extra-axonal walkers inside fibres); an opt-in near-surface nudge that cuts
+        crossings further but does not reach zero. They are measurement switches for the engine's
+        own tests, not physics -- a signal you can only get by changing one is not a signal.
     orientation : (3,) array-like, optional
         Direction, in the scanner frame (B0 = +z), along which the mesh's native
         +z axis (e.g. a periodic / fibre axis) is placed in the bore.  Applied as
@@ -358,7 +365,8 @@ class Mesh(Geometry):
     def __init__(self, vertices, faces, *, periodic=False, voxel_min=None,
                  voxel_max=None, feature_radius=None, surface_relaxivity_t2=None,
                  permeability=None, intra=None, extra=None, orientation=None, R=None,
-                 cell_size=None, cap=None, max_bounces=None, pool="intra"):
+                 cell_size=None, cap=None, max_bounces=None, pool="intra", reject_escape=True,
+                 box_reflect=True, adaptive_nudge=False):
         V = np.asarray(vertices, np.float64)
         F = np.asarray(faces, np.int64)
         self.vertices = V
@@ -388,7 +396,7 @@ class Mesh(Geometry):
         self.radius = float(feature_radius)              # read by core sub-step auto-tune
         # NB: `radius` here is a MESHING parameter, not a pore size -- see
         # `radius_is_mesh_feature` on the class and physics.walk_sub_steps.
-        self.reject_escape = True                        # impermeable-leak safety net
+        self.reject_escape = bool(reject_escape)         # impermeable-leak safety net
         # Reflect at the voxel faces INSIDE the bounce loop (dmipy-sim#61). The alternative --
         # `mesh_bundle.BoxedMesh`, which mirrors the position after the step -- applies a reflection of space
         # with no collision test, so it can teleport a walker across a fibre wall. Measured on the 358-fibre
@@ -399,7 +407,7 @@ class Mesh(Geometry):
         # reflection of space with no collision test, which places walkers inside bodies: measured 18.03% of
         # extra-axonal walkers per 200 ms on a 358-fibre CACTUS bundle. Voxel faces belong in the same ordered
         # bounce loop as the triangles. Applies only to NON-periodic axes; see `_box_face_hit`.
-        self.box_reflect = True
+        self.box_reflect = bool(box_reflect)
         # Barycentric slack in the ray-triangle inside test. 0.0 reproduces the exact (non-watertight)
         # bounds; see `_mt` for the measurement that motivates a non-zero value.
         self.bary_tol = 0.0
@@ -648,7 +656,7 @@ class Mesh(Geometry):
         # Opt-in near-surface confinement guard, OFF by default: it cuts crossings on a CACTUS bundle at no
         # cost in boundary local time but does not reach zero, so it is an improvement to enable, not a
         # guarantee to rely on. See dmipy-sim#61.
-        self.adaptive_nudge = False
+        self.adaptive_nudge = bool(adaptive_nudge)
         # minimum sine of the angle the outgoing ray must make with the triangle it left
         # DEFAULT 6e-2, not 1e-4. With a geometric reflection normal the outgoing cosine against the facet is
         # already non-negative, so this only lifts genuinely grazing incidences (shallower than ~3.4 deg), and
