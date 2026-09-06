@@ -174,6 +174,7 @@ class PackedCylinders(Geometry):
     walkers near the opposite edge.  The final position is wrapped into
     [-L/2, L/2)² after every timestep.
     """
+    replay_parity = True
 
     supports_permeability = True   #: has a membrane a walker can cross
     carries_side = True            #: `permeate` accepts the walker's own side
@@ -414,6 +415,7 @@ class PackedSpheres(Geometry):
         Minimum clear gap between any two sphere surfaces (including periodic
         images), metres. It sizes the bounce budget of the wall kernel.
     """
+    replay_parity = True
 
     supports_permeability = True   #: has a membrane a walker can cross
 

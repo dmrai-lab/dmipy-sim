@@ -24,53 +24,13 @@ from .persistent_walk import PersistentWalk
 # ENGINE ROUTING TABLE (Phase 5)
 # ═══════════════════════════════════════════════════════════════════════════
 # simulate(engine=) selects the backend that turns a walk into a signal:
-#
-#   "fused"  — the inline single-pass jax.lax.scan step-kernels in this module.
-#              The validation ORACLE and the universal fallback; byte-for-byte
-#              the pre-replay engine (nothing below the routing block changed).
-#   "replay" — walk ONCE (simulate_trajectories(save_relaxation_data=…)) then
-#              replay (gradient phase + scalar/per-comp
-#              T2 + T1 + surface relaxivity).  This mirrors the private
-#              packed-myelin unification, generalised to the geometries Phase-1
-#              proved equivalent at the MC-noise floor (test_replay_parity).
-#   "auto"   — default; replay where validated-equivalent AND the suite stays
-#              green, else transparently fused.
-#
-# "auto" routing decided EMPIRICALLY by keeping the full suite green:
-#
-#   geometry \ effect    | gradient | scalar T2 | T1 | surface ρ  → engine
-#   ---------------------+----------+-----------+----+-----------------------
-#   FreeDiffusion        |  REPLAY  |  REPLAY   | R  |    n/a
-#   Box1D                |  REPLAY  |  REPLAY   | R  |  REPLAY
-#   Sphere               |  REPLAY  |  REPLAY   | R  |  REPLAY
-#   Cylinder             |  REPLAY  |  REPLAY   | R  |  REPLAY
-#   Ellipsoid            |  REPLAY  |  REPLAY   | R  |  REPLAY
-#   PackedCylinders      |  REPLAY  |  REPLAY   | R  |  REPLAY
-#   PackedSpheres        |  REPLAY  |  REPLAY   | R  |  REPLAY
-#   Mesh (impermeable)   |  REPLAY  |  REPLAY   | R  |  REPLAY
-#   ---------------------+----------+-----------+----+-----------------------
-#   MyelinatedCylinder   |  FUSED  (dedicated fused step kernel; no replay walk)
-#   PackedMyelinatedCyl. |  FUSED  (fused single-reflection kernel is NOT
-#                         position-parity with the multi-bounce replay walk —
-#                         the private repo unified these by REPLACING the fused
-#                         kernel; the public repo keeps both, so rerouting would
-#                         shift test_packed_myelinated_cylinders)
-#   per-comp D Mesh      |  FUSED  (the step length depends on the compartment, so the
-#                         walk itself does; per-comp T2/T1 replay off the occupancy channel)
-#
-# Fused-only REQUESTS (any geometry) — replay raises NotImplementedError, auto
-# falls back to fused: return_positions, return_compartments,
-# return_walker_signals (single-pass internals).  simulate_cpmg / simulate_
-# mixture / simulate_bloch stay fused (out of Phase-5 scope).
-# ═══════════════════════════════════════════════════════════════════════════
-
-# Geometry families "auto" is allowed to route to replay (see table above).  A
-# geometry qualifies only if it is one of these AND _replay_gap() returns None.
-_REPLAY_AUTO_GEOM_NAMES = frozenset({
-    "FreeDiffusion", "Box1D", "Sphere", "Cylinder", "Ellipsoid",
-    "PackedCylinders", "PackedSpheres", "Mesh",
-})
-
+#   "fused"  -- the single-pass jax.lax.scan step kernels in this module (the validation oracle).
+#   "replay" -- walk once (simulate_trajectories -> PersistentWalk), then apply the waveform,
+#               scalar / per-compartment T2, T1 and surface relaxivity to the stored walk.
+#   "auto"   -- the default: replay when `geometry.replay_parity` (the producer's walk IS the fused
+#               walk, validated in tests/test_replay_parity.py) and _replay_gap() finds nothing the
+#               replay cannot serve (single-pass outputs, per-compartment D, a missing diffusivity);
+#               otherwise fused. The capability is declared on the geometry, never read off its name.
 
 _BATCH_CACHE_ATTR = "_batch_cache"   # per-geometry {key: jitted batch function}, on the object
 
@@ -158,12 +118,6 @@ def _replay_gap(geometry, *, return_positions, return_compartments,
     if diffusivity is None:
         return "replay needs an explicit diffusivity for the sub-step auto-tune"
     return None
-
-
-def _replay_auto_allowed(geometry):
-    """Whether ``engine='auto'`` may route this geometry to replay.  Restricted
-    to the families proven suite-green; a stricter gate than _replay_gap()."""
-    return type(geometry).__name__ in _REPLAY_AUTO_GEOM_NAMES
 
 
 def _simulate_via_replay(n_walkers, diffusivity, waveform, geometry, *, seed,
@@ -400,8 +354,8 @@ def simulate(
                 n_walkers, diffusivity, _wf_r, geometry, seed=seed,
                 T2=T2, T1=T1, r0=r0, require_gpu=require_gpu,
                 walker_batch_size=walker_batch_size, sub_steps=sub_steps)
-        # engine == "auto": replay only where validated-equivalent AND green.
-        if _gap is None and _replay_auto_allowed(geometry):
+        # engine == "auto": replay only where the walk is the fused walk and nothing is missing.
+        if _gap is None and geometry.replay_parity:
             return _simulate_via_replay(
                 n_walkers, diffusivity, _wf_r, geometry, seed=seed,
                 T2=T2, T1=T1, r0=r0, require_gpu=require_gpu,

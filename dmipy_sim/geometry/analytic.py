@@ -31,6 +31,7 @@ class Sphere(Geometry):
         inside or outside the sphere at any time.  Default None (fully
         reflecting wall).  Exchange time τ = R / (3κ).
     """
+    replay_parity = True
 
     @property
     def _MAX_BOUNCES(self):
@@ -173,6 +174,7 @@ class Cylinder(Geometry):
         Enables bidirectional exchange — walkers may be inside or outside
         the cylinder at any time.  Default None (fully reflecting wall).
     """
+    replay_parity = True
 
     @property
     def _MAX_BOUNCES(self):
@@ -352,6 +354,7 @@ class Ellipsoid(Geometry):
     The ellipsoid surface is defined by x²/a² + y²/b² + z²/c² = 1.
     When a = b = c = r the geometry is identical to Sphere(r).
     """
+    replay_parity = True
 
     @property
     def _MAX_BOUNCES(self):
