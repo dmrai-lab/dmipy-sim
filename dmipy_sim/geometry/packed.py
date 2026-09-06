@@ -11,6 +11,7 @@ import numpy as np
 from ._boundary import (keep_side_radial, ray_sphere_t, specular, transmit_probability, off_wall,
                         bounce_loop, bounce_budget)
 from .base import Geometry, LengthScales, _rotation_to_z
+from .packing import periodic_min_gap
 
 _TINY = 1e-30
 
@@ -236,19 +237,7 @@ class PackedCylinders(Geometry):
     @staticmethod
     def _compute_min_gap(centers, radii, L):
         """Minimum clear gap between any two cylinder surfaces (periodic)."""
-        N       = len(radii)
-        min_gap = float('inf')
-        # Between distinct cylinder pairs
-        for i in range(N):
-            for j in range(i + 1, N):
-                dq  = centers[i] - centers[j]
-                dq -= L * np.round(dq / L)
-                gap = np.linalg.norm(dq) - radii[i] - radii[j]
-                min_gap = min(min_gap, gap)
-        # Each cylinder vs its own periodic images (nearest image is at distance L)
-        for i in range(N):
-            min_gap = min(min_gap, L - 2.0 * radii[i])
-        return float(min_gap)
+        return periodic_min_gap(centers, radii, L)
 
     def init_positions(self, n_walkers, key):
         """Uniform placement in the periodic box, outside all cylinder cross-sections."""
@@ -479,17 +468,7 @@ class PackedSpheres(Geometry):
     @staticmethod
     def _compute_min_gap(centers, radii, L):
         """Minimum clear gap between any two sphere surfaces (periodic, 3D)."""
-        N       = len(radii)
-        min_gap = float('inf')
-        for i in range(N):
-            for j in range(i + 1, N):
-                dq  = centers[i] - centers[j]
-                dq -= L * np.round(dq / L)
-                gap = np.linalg.norm(dq) - radii[i] - radii[j]
-                min_gap = min(min_gap, gap)
-        for i in range(N):
-            min_gap = min(min_gap, L - 2.0 * radii[i])
-        return float(min_gap)
+        return periodic_min_gap(centers, radii, L)
 
     def init_positions(self, n_walkers, key):
         """Uniform placement in the periodic cube, outside all spheres."""
