@@ -238,6 +238,26 @@ def no_hit(r_new):
     return WallHit(r_new, f, b, b)
 
 
+def bounce_budget(R_min, nudge, min_gap, step_max):
+    """Reflections one step of length ``step_max`` can need: ``step / passage + 1``.
+
+    The passage is the narrowest thing the step can zig-zag across -- the smallest clear gap
+    between two walls, or the shortest chord a ray nudged ``nudge`` off the smallest object can
+    make when it grazes it, ``2 sqrt(2 nudge R_min)`` (a grazing reflection keeps its angle, so
+    every following chord is that long too). Clipped to ``[2, 32]``.
+
+    This is the loop's cap for the worst lane, not a tuning constant: a fixed-length scan costs
+    every lane the same, so the budget is spent on the most adversarial walker and the average
+    one pays for it. (A ``while`` that exits when the batch is done was measured 2.6x slower on a
+    sphere and 5x on a mesh under ``vmap``, at identical output -- the dynamic trip count defeats
+    XLA's fusion of the outer scan.)
+    """
+    import numpy as _np
+    chord_floor = 2.0 * _np.sqrt(2.0 * float(nudge) * float(R_min))
+    passage = min(float(min_gap), chord_floor)
+    return int(_np.clip(_np.ceil(float(step_max) / passage) + 1, 2, 32))
+
+
 def bounce_loop(hit_once, r0, d_hat, step_l, max_bounces, dlog_init=None, decided_init=None):
     """Run a single-collision rule to exhaustion: reflect, continue, repeat.
 
