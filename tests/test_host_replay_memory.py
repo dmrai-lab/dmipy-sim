@@ -10,9 +10,9 @@ import tracemalloc
 import numpy as np
 import pytest
 
-from dmipy_sim._replay_kernel import GAMMA, gradient_phase
-from dmipy_sim.compression import pack_position_arrays
-from dmipy_sim.replay import ReplayPack
+from dmipy_sim.replay._replay_kernel import GAMMA, gradient_phase
+from dmipy_sim.replay.compression import pack_position_arrays
+from dmipy_sim.replay.replay import ReplayPack
 
 
 def _pack(n_w=50, K=8):
@@ -62,7 +62,7 @@ def test_phase_working_memory_is_the_chunk_not_the_walk():
 
 def test_replay_of_a_stored_walk_agrees_with_the_direct_sum():
     """The public entry point rides on the chunked contraction: the same signal either way."""
-    from dmipy_sim.trajectories import replay
+    from dmipy_sim.replay.trajectories import replay
     rng = np.random.default_rng(3)
     n_w, n_t = 300, 60
     dt = 1e-4

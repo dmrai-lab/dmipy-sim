@@ -3,11 +3,11 @@
 attenuates. Uses a synthetic pack (no simulator walk needed), so it is self-contained."""
 import numpy as np
 import numpy.testing as npt
-from dmipy_sim.compression import read_position_coeffs, pack_position_arrays
+from dmipy_sim.replay.compression import read_position_coeffs, pack_position_arrays
 import pytest
 
 from scipy.fft import dct, idct
-from dmipy_sim.replay import (read_rpk, write_rpk, compile_scheme, replay_signal,
+from dmipy_sim.replay.replay import (read_rpk, write_rpk, compile_scheme, replay_signal,
                               replay_signal_jax, ReplayPack)
 from dmipy_sim.constants import GAMMA
 
@@ -21,7 +21,7 @@ def _synth_pack(seed=0):
     # low-frequency-ish trajectories (bounded ~micron scale), so K modes capture them
     traj = np.cumsum(rng.normal(0, 3e-7, size=(N_W, N_T, 3)), axis=1)
     traj -= traj.mean(1, keepdims=True)
-    from dmipy_sim.compression import encode_bridge_dst
+    from dmipy_sim.replay.compression import encode_bridge_dst
     arrays, cmeta, _ = encode_bridge_dst(traj, K)              # (N_W, K+2, 3) per axis
     arrays["spin_weights"] = np.ones(N_W, np.float32)
     meta = {"n_t": N_T, "dt": DT, "walk_params": {"n_t": N_T, "dt_traj": DT},
@@ -43,7 +43,7 @@ def test_replay_equals_direct_phase():
     W = compile_scheme(G, DT, K, GAMMA, n_t=N_T)
     E = replay_signal(pack, W)
     # direct reference: reconstruct the truncated trajectory and integrate the phase
-    from dmipy_sim.compression import decode
+    from dmipy_sim.replay.compression import decode
     r = decode(arrays, {"method": "bridge_dst", "n_t": N_T})
     phi = GAMMA * DT * np.einsum("mtc,wtc->mw", G, r)                   # (n_meas, N_W)
     E_direct = np.abs(np.cos(phi).mean(1) + 1j * 0) if False else np.abs(np.exp(1j * phi).mean(1))
@@ -57,7 +57,7 @@ def test_rpk_roundtrip(tmp_path):
     pk = read_rpk(p)
     assert pk.n_t == N_T and pk.K == K and pk.n_walkers == N_W
     npt.assert_allclose(pk.dt, DT)
-    from dmipy_sim.compression import read_position_coeffs
+    from dmipy_sim.replay.compression import read_position_coeffs
     npt.assert_allclose(np.asarray(pk.position_coeffs), read_position_coeffs(arrays, dtype=np.float32))
 
 
@@ -88,9 +88,9 @@ def test_surface_knob_uses_the_real_c2_channel_and_refuses_without_one():
     unattenuated signal and no error. So: build the channel with the real encoder, and check both
     that the knob bites and that a pack without C2 refuses rather than skipping.
     """
-    from dmipy_sim.compression import (encode_boundary_bridge, decode_boundary_bridge,
+    from dmipy_sim.replay.compression import (encode_boundary_bridge, decode_boundary_bridge,
                                        surface_logweight_series as surface_logweight)
-    from dmipy_sim.replay import surface_logweight as replay_slw
+    from dmipy_sim.replay.replay import surface_logweight as replay_slw
     arrays, meta, _ = _synth_pack()
     n_w = arrays["pos_x"].shape[0]
     rng = np.random.default_rng(1)

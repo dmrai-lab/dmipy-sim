@@ -4,7 +4,7 @@ import numpy as np
 import numpy.testing as npt
 import pytest
 
-from dmipy_sim.phantom import read_rph, write_rph, ReplayPhantom, SUBSTRATE_KINDS
+from dmipy_sim.replay.phantom import read_rph, write_rph, ReplayPhantom, SUBSTRATE_KINDS
 
 
 def _minimal(tmp_path, fracs, embed=None, rpk=None):

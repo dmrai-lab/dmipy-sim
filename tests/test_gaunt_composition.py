@@ -10,9 +10,9 @@ import numpy.testing as npt
 import pytest
 from scipy.special import eval_legendre
 
-from dmipy_sim.gaunt import (real_sh, sphere_quadrature, assert_orthonormal,
+from dmipy_sim.replay.gaunt import (real_sh, sphere_quadrature, assert_orthonormal,
                              gaunt_table, n_sh_coeffs, sh_block)
-from dmipy_sim.sh_convolution import (apply_odf, apply_odf_coupled, coupled_spectrum_at,
+from dmipy_sim.replay.sh_convolution import (apply_odf, apply_odf_coupled, coupled_spectrum_at,
                                       separability, isotropic_odf_sh, watson_odf_sh)
 
 LMAX, LG, LB = 8, 8, 6
@@ -197,7 +197,7 @@ def _phys_response(g, b):
 # ~60x over the reference it is checked against -- logged in #91 as a library finding.
 @pytest.mark.parametrize("ang", [0.0, 0.79, np.pi / 2, 2.36, np.pi])
 def test_lambda_built_at_requested_geometry_reproduces_the_integral(ang):
-    from dmipy_sim.sh_convolution import coupled_spectrum_at
+    from dmipy_sim.replay.sh_convolution import coupled_spectrum_at
     g = np.array([0, 0, 1.0])
     b = np.array([np.sin(ang), 0, np.cos(ang)])
     lam, resid, rank = coupled_spectrum_at(_phys_response(g, b), g, b, l_g=LG, l_b=LB)
@@ -214,7 +214,7 @@ def test_lambda_built_at_requested_geometry_reproduces_the_integral(ang):
 
 def test_product_basis_is_rank_deficient_when_g_parallel_b0():
     """u == v collapses the family -- a common acquisition geometry, so lstsq not solve."""
-    from dmipy_sim.sh_convolution import coupled_spectrum_at
+    from dmipy_sim.replay.sh_convolution import coupled_spectrum_at
     g = b = np.array([0, 0, 1.0])
     lam, resid, rank = coupled_spectrum_at(_phys_response(g, b), g, b, l_g=LG, l_b=LB,
                                            chiral=False)
@@ -234,8 +234,8 @@ def _winther_is_current():
     import os
     if not os.path.exists(_WINTHER):
         return False
-    from dmipy_sim.replay import read_rpk
-    from dmipy_sim.compression import is_current_c1, POSITION_METHOD
+    from dmipy_sim.replay.replay import read_rpk
+    from dmipy_sim.replay.compression import is_current_c1, POSITION_METHOD
     m = read_rpk(_WINTHER).meta.get("compression", {})
     return (m.get("method") == POSITION_METHOD
             and is_current_c1((m.get("channels") or {}).get("compartment", {})))
@@ -247,8 +247,8 @@ _CURRENT = _winther_is_current()
 @pytest.mark.skipif(not _CURRENT, reason="needs a current-format Winther susceptibility pack")
 def test_pack_response_runs_in_coefficient_space_and_is_orientation_dependent():
     """The pack bridge must never reconstruct a trajectory, and must show real anisotropy."""
-    from dmipy_sim.replay import read_rpk
-    from dmipy_sim.sh_convolution import pack_response
+    from dmipy_sim.replay.replay import read_rpk
+    from dmipy_sim.replay.sh_convolution import pack_response
     pk = read_rpk(_WINTHER)
     pm = pk.meta["compression"]["channels"]["susceptibility_path"]
     n_t, dt = int(pm["n_t"]), pk.dt
@@ -268,8 +268,8 @@ def _winther_is_current():
     import os
     if not os.path.exists(_WINTHER):
         return False
-    from dmipy_sim.replay import read_rpk
-    from dmipy_sim.compression import is_current_c1, POSITION_METHOD
+    from dmipy_sim.replay.replay import read_rpk
+    from dmipy_sim.replay.compression import is_current_c1, POSITION_METHOD
     m = read_rpk(_WINTHER).meta.get("compression", {})
     return (m.get("method") == POSITION_METHOD
             and is_current_c1((m.get("channels") or {}).get("compartment", {})))
@@ -287,8 +287,8 @@ def test_real_axon_is_chiral_so_two_invariants_do_not_span_it():
     and which no function of the two invariants can represent.  This pins the effect rather
     than the fit, so a later change to the projection cannot quietly hide it.
     """
-    from dmipy_sim.replay import read_rpk
-    from dmipy_sim.sh_convolution import pack_response
+    from dmipy_sim.replay.replay import read_rpk
+    from dmipy_sim.replay.sh_convolution import pack_response
     pk = read_rpk(_WINTHER)
     pm = pk.meta["compression"]["channels"]["susceptibility_path"]
     n_t, dt = int(pm["n_t"]), pk.dt
@@ -315,8 +315,8 @@ def _winther_is_current():
     import os
     if not os.path.exists(_WINTHER):
         return False
-    from dmipy_sim.replay import read_rpk
-    from dmipy_sim.compression import is_current_c1, POSITION_METHOD
+    from dmipy_sim.replay.replay import read_rpk
+    from dmipy_sim.replay.compression import is_current_c1, POSITION_METHOD
     m = read_rpk(_WINTHER).meta.get("compression", {})
     return (m.get("method") == POSITION_METHOD
             and is_current_c1((m.get("channels") or {}).get("compartment", {})))
@@ -332,8 +332,8 @@ def test_chiral_sector_closes_the_gap_on_a_real_axon():
     Both the projection residual and the composed signal are checked, because a better fit
     that did not improve the composition would mean the extra sector was absorbing noise.
     """
-    from dmipy_sim.replay import read_rpk
-    from dmipy_sim.sh_convolution import pack_response, coupled_spectrum_at, watson_odf_sh
+    from dmipy_sim.replay.replay import read_rpk
+    from dmipy_sim.replay.sh_convolution import pack_response, coupled_spectrum_at, watson_odf_sh
     pk = read_rpk(_WINTHER)
     pm = pk.meta["compression"]["channels"]["susceptibility_path"]
     n_t, dt = int(pm["n_t"]), pk.dt
@@ -366,8 +366,8 @@ def _winther_is_current():
     import os
     if not os.path.exists(_WINTHER):
         return False
-    from dmipy_sim.replay import read_rpk
-    from dmipy_sim.compression import is_current_c1, POSITION_METHOD
+    from dmipy_sim.replay.replay import read_rpk
+    from dmipy_sim.replay.compression import is_current_c1, POSITION_METHOD
     m = read_rpk(_WINTHER).meta.get("compression", {})
     return (m.get("method") == POSITION_METHOD
             and is_current_c1((m.get("channels") or {}).get("compartment", {})))
@@ -379,8 +379,8 @@ _CURRENT = _winther_is_current()
 @pytest.mark.skipif(not _CURRENT, reason="needs a current-format Winther susceptibility pack")
 def test_chiral_sector_is_inert_for_a_field_symmetric_fod():
     """An FOD axisymmetric about B0 kills the w-odd part -- the sector must cost nothing there."""
-    from dmipy_sim.replay import read_rpk
-    from dmipy_sim.sh_convolution import pack_response, coupled_spectrum_at, watson_odf_sh
+    from dmipy_sim.replay.replay import read_rpk
+    from dmipy_sim.replay.sh_convolution import pack_response, coupled_spectrum_at, watson_odf_sh
     pk = read_rpk(_WINTHER)
     pm = pk.meta["compression"]["channels"]["susceptibility_path"]
     n_t, dt = int(pm["n_t"]), pk.dt
@@ -405,8 +405,8 @@ def _winther_is_current():
     import os
     if not os.path.exists(_WINTHER):
         return False
-    from dmipy_sim.replay import read_rpk
-    from dmipy_sim.compression import is_current_c1, POSITION_METHOD
+    from dmipy_sim.replay.replay import read_rpk
+    from dmipy_sim.replay.compression import is_current_c1, POSITION_METHOD
     m = read_rpk(_WINTHER).meta.get("compression", {})
     return (m.get("method") == POSITION_METHOD
             and is_current_c1((m.get("channels") or {}).get("compartment", {})))
@@ -418,8 +418,8 @@ _CURRENT = _winther_is_current()
 @pytest.mark.skipif(not _CURRENT, reason="needs a current-format Winther susceptibility pack")
 def test_pack_responder_hoisting_matches_the_unhoisted_path():
     """Hoisting the direction-independent work must not change the answer."""
-    from dmipy_sim.replay import read_rpk
-    from dmipy_sim.sh_convolution import PackResponder, pack_response
+    from dmipy_sim.replay.replay import read_rpk
+    from dmipy_sim.replay.sh_convolution import PackResponder, pack_response
     pk = read_rpk(_WINTHER)
     pm = pk.meta["compression"]["channels"]["susceptibility_path"]
     n_t, dt = int(pm["n_t"]), pk.dt
@@ -441,9 +441,9 @@ def test_pack_response_on_a_freshly_built_pack_stays_in_coefficient_space():
     import sys, os
     sys.path.insert(0, os.path.dirname(__file__))
     from test_bank import _susc_master, _lean_env
-    from dmipy_sim.bank import build_replay_pack
-    from dmipy_sim.sh_convolution import pack_response
-    from dmipy_sim import compression as cx
+    from dmipy_sim.replay.bank import build_replay_pack
+    from dmipy_sim.replay.sh_convolution import pack_response
+    from dmipy_sim.replay import compression as cx
 
     env = dict(_lean_env(), B0_list=[3.0], theta_deg=[0, 90])
     pk = build_replay_pack(_susc_master(), id="test/slab-packresp", method="bridge_dst",

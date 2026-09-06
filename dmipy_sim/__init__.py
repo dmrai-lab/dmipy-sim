@@ -11,8 +11,8 @@ _apply_gpu_mem_cap()
 
 from .engine.core import simulate, simulate_mixture, simulate_cpmg, simulate_trajectories
 # NB: the scalar trajectory-replay entrypoint is `dmipy_sim.trajectories.replay`, NOT a bare
-# top-level `replay` — the name `dmipy_sim.replay` is the .rpk pack-forward module (see below).
-from .trajectories import (unwrap_periodic, replay_jax,
+# top-level `replay` — the name `dmipy_sim.replay.replay` is the .rpk pack-forward module (see below).
+from .replay.trajectories import (unwrap_periodic, replay_jax,
                            replay_bloch, replay_bloch_jax,
                            finite_180_longitudinal_dwell, pre_pulse_gradient_phase,
                            pathway_sign_se)
@@ -45,7 +45,7 @@ from .susceptibility import (SusceptibilitySources, MyelinSusceptibility,
 from .geometry import mesh_shapes
 from .constants import GAMMA
 from .noise import add_rician_noise, add_rician_noise_batch, add_nc_chi_noise, estimate_sigma
-from .sh_convolution import (
+from .replay.sh_convolution import (
     compute_fiber_response,
     apply_odf,
     watson_odf_sh,
@@ -53,10 +53,10 @@ from .sh_convolution import (
 )
 from .engine import mt
 from .rf import B1Pulse, bloch_simulate, slice_profile
-from .replay import (ReplayPack, read_rpk, write_rpk, compile_scheme, replay_signal,
+from .replay.replay import (ReplayPack, read_rpk, write_rpk, compile_scheme, replay_signal,
                      replay_signal_jax, surface_logweight)
-from . import bank
-from .bank import build_replay_pack, build_to_floor, frame_from_axis, frame_from_bundles
+from .replay import bank
+from .replay.bank import build_replay_pack, build_to_floor, frame_from_axis, frame_from_bundles
 
 __all__ = [
     "simulate", "simulate_mixture", "simulate_cpmg", "simulate_trajectories",

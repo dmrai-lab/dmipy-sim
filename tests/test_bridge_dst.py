@@ -4,9 +4,9 @@ import numpy.testing as npt
 import pytest
 from scipy.fft import dct, idct, dst, idst
 
-from dmipy_sim import compression as cx
+from dmipy_sim.replay import compression as cx
 from dmipy_sim.constants import GAMMA
-from dmipy_sim.replay import compile_scheme
+from dmipy_sim.replay.replay import compile_scheme
 
 N_W, N_T, N_M = 60, 128, 8
 
@@ -154,7 +154,7 @@ def test_missing_method_is_refused_rather_than_assumed(walk):
 
 def test_stored_width_is_not_K(walk):
     """K+2 multiplied cleanly against a K+2-band scheme and meant nothing; it must not."""
-    from dmipy_sim.replay import ReplayPack, replay_signal
+    from dmipy_sim.replay.replay import ReplayPack, replay_signal
     K = 16
     a, m, _ = cx.encode_bridge_dst(walk, K)
     pk = ReplayPack(a, {"compression": {"method": "bridge_dst", "K": K},
@@ -169,7 +169,7 @@ def test_stored_width_is_not_K(walk):
 
 
 def test_declared_and_stored_K_cannot_drift(walk):
-    from dmipy_sim.replay import ReplayPack
+    from dmipy_sim.replay.replay import ReplayPack
     a, m, _ = cx.encode_bridge_dst(walk, 16)
     pk = ReplayPack(a, {"compression": {"method": "bridge_dst", "K": 8}, "n_t": N_T})
     with pytest.raises(ValueError, match="declares K=8 but stores"):
@@ -177,7 +177,7 @@ def test_declared_and_stored_K_cannot_drift(walk):
 
 
 def test_dct_coeffs_accessor_is_gone(walk):
-    from dmipy_sim.replay import ReplayPack
+    from dmipy_sim.replay.replay import ReplayPack
     a, m, _ = cx.encode_bridge_dst(walk, 16)
     pk = ReplayPack(a, {"compression": {"method": "bridge_dst", "K": 16}, "n_t": N_T})
     with pytest.raises(AttributeError, match="dct_coeffs is gone"):

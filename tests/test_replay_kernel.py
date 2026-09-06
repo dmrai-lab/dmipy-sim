@@ -1,7 +1,7 @@
 """One gradient phase, one gate, one MT walk.
 
 Every route from a stored walk to a signal integrates `gamma dt sum_t G(t) . r(t)` through
-`dmipy_sim._replay_kernel`. Synthetic trajectories with a closed-form phase -- a stationary
+`dmipy_sim.replay._replay_kernel`. Synthetic trajectories with a closed-form phase -- a stationary
 walker, a constant velocity, a single sine mode -- go through each route and must return that
 phase to 1e-8 of the waveform's first moment (the pack routes to the float32 their coefficients
 are stored in). The
@@ -12,12 +12,12 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
-from dmipy_sim import trajectories as T
-from dmipy_sim import compression as cx
-from dmipy_sim._replay_kernel import (resample_gradient, gradient_phase, phase_increments,
+from dmipy_sim.replay import trajectories as T
+from dmipy_sim.replay import compression as cx
+from dmipy_sim.replay._replay_kernel import (resample_gradient, gradient_phase, phase_increments,
                                       se_gate)
 from dmipy_sim.constants import GAMMA
-from dmipy_sim.replay import compile_scheme, replay_signal, replay_signal_jax
+from dmipy_sim.replay.replay import compile_scheme, replay_signal, replay_signal_jax
 
 N_T, DT = 200, 1e-4
 T_TOTAL = (N_T - 1) * DT
@@ -91,7 +91,7 @@ def test_every_route_returns_the_closed_form_phase(case):
 def test_jax_routes_agree_with_numpy():
     jax = pytest.importorskip("jax")
     import jax.numpy as jnp
-    from dmipy_sim._replay_kernel import gradient_phase_jax, resample_gradient_jax, phase_increments_jax
+    from dmipy_sim.replay._replay_kernel import gradient_phase_jax, resample_gradient_jax, phase_increments_jax
     _, traj, phi_exact = _synthetic_trajectories()[2]
     G = _bipolar()
     # float32 arithmetic: a relative 1e-5 of the phase scale
@@ -146,7 +146,7 @@ def test_compiled_scheme_and_mode_space_read_one_projection():
 def test_replay_signal_jax_takes_the_host_surface_logweight():
     jax = pytest.importorskip("jax")
     import jax.numpy as jnp
-    from dmipy_sim.replay import surface_logweight
+    from dmipy_sim.replay.replay import surface_logweight
     traj = _synthetic_trajectories()[2][1]
     arrays, meta, _ = cx.encode_bridge_dst(traj, K=16)
     n_w = traj.shape[0]
@@ -166,7 +166,7 @@ def test_replay_signal_jax_takes_the_host_surface_logweight():
 
 # ── one spin-echo gate ────────────────────────────────────────────────────────────────────
 def test_one_spin_echo_gate():
-    from dmipy_sim import bank, sh_convolution
+    from dmipy_sim.replay import bank, sh_convolution
     assert bank.se_gate is se_gate and sh_convolution.se_gate is se_gate
     assert not hasattr(bank, "_se_gate") and not hasattr(sh_convolution, "_se_gate_local")
     s = se_gate(N_T, DT, T_TOTAL / 2)

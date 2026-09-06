@@ -12,7 +12,7 @@ directly:
 Myelin water is effectively stuck (``D ~= 0``), so it is a frozen short-T2 pool that needs no walk. The two
 concatenated multi-surface meshes feed two independent :class:`dmipy_sim.mesh.Mesh` walks -- intra restricted
 by the inner wall, extra hindered by the outer -- assembled by
-:func:`dmipy_sim.mesh_axon.mesh_axon_master`.
+:func:`dmipy_sim.replay.builders.mesh_axon.mesh_axon_master`.
 
 Geometry loading is shared with every other inner/outer mesh dataset; see
 :mod:`dmipy_sim.io.mesh_substrate` for why, and :mod:`dmipy_sim.io.winther` for the single-axon sibling.

@@ -29,7 +29,7 @@ _COMP_COLOR = {0: '#2ca02c', 1: '#1f77b4', 2: '#ff7f0e'}
 _COMP_NAME = {0: 'extra-axonal', 1: 'intra-axonal', 2: 'myelin'}
 
 
-from .trajectories import _rf_increment  # the one Rodrigues RF rotation
+from .replay.trajectories import _rf_increment  # the one Rodrigues RF rotation
 
 
 # ── viz-scoped walk recorder (positions + compartment id over time) ──────────

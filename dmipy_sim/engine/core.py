@@ -134,7 +134,7 @@ def _simulate_via_replay(n_walkers, diffusivity, waveform, geometry, *, seed,
     surface relaxivity (ρ replayed off the recorded unit boundary local time),
     and the stimulated-echo 0.5 factor.  Assumes ``_replay_gap()`` already
     cleared the run (no permeability / myelin / per-comp / extra-output)."""
-    from ..trajectories import replay
+    from ..replay.trajectories import replay
 
     G = np.asarray(waveform.G, dtype=np.float32)          # (n_meas, n_t, 3)
     dt = float(waveform.dt)
@@ -835,7 +835,7 @@ def simulate_trajectories(
     enforce_compartment: bool = False,
 ) -> PersistentWalk:
     """Walk the spins ONCE and save positions at every saved time step — the
-    producer for the replay path (:mod:`dmipy_sim.trajectories`).
+    producer for the replay path (:mod:`dmipy_sim.replay.trajectories`).
 
     Unlike :func:`simulate`, this applies NO gradient waveform: it stores
     ``r(t)`` for all walkers so any waveform / relaxation hypothesis can be

@@ -8,7 +8,7 @@ import numpy as np
 import numpy.testing as npt
 import pytest
 
-from dmipy_sim import compression as cx
+from dmipy_sim.replay import compression as cx
 from dmipy_sim.constants import GAMMA
 
 

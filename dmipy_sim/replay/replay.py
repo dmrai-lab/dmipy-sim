@@ -30,7 +30,7 @@ from functools import cached_property
 
 import numpy as np
 
-from .constants import GAMMA
+from ..constants import GAMMA
 
 __all__ = ["ReplayPack", "read_rpk", "write_rpk",
            "compile_scheme", "replay_signal", "replay_signal_jax", "surface_logweight"]
@@ -145,7 +145,7 @@ class ReplayPack:
         wp = self.meta.get("walk_params", {})
         return float(self.meta.get("dt") or wp.get("dt_traj") or wp.get("dt"))
 
-    # ---- producer metadata (present on packs written by dmipy_sim.bank.build_replay_pack) ----
+    # ---- producer metadata (present on packs written by dmipy_sim.replay.bank.build_replay_pack) ----
     @property
     def id(self):
         return self.meta.get("id")

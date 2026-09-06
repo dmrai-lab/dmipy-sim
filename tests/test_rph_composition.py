@@ -9,8 +9,8 @@ import numpy.testing as npt
 import pytest
 from scipy.special import eval_legendre
 
-from dmipy_sim.gaunt import sphere_quadrature, real_sh, sh_block, n_sh_coeffs
-from dmipy_sim.sh_convolution import apply_odf_coupled, coupled_spectrum_at, watson_odf_sh
+from dmipy_sim.replay.gaunt import sphere_quadrature, real_sh, sh_block, n_sh_coeffs
+from dmipy_sim.replay.sh_convolution import apply_odf_coupled, coupled_spectrum_at, watson_odf_sh
 
 LMAX, LG, LB = 8, 8, 6
 G = np.array([np.sin(0.96), 0.0, np.cos(0.96)])
@@ -62,7 +62,7 @@ def test_multi_substrate_voxel_is_the_weighted_sum_of_its_slots(lam):
 
 def test_fractions_must_sum_to_one(lam):
     """A voxel is always full; a short row is an unmodelled remainder, not a void."""
-    from dmipy_sim.sh_convolution import compose_voxel
+    from dmipy_sim.replay.sh_convolution import compose_voxel
     sh = np.stack([watson_odf_sh(6.0, mu=m, lmax=LMAX) for m in ([0, 0, 1.], [1, 0, 0.])])
     m0 = np.array([0.70, 0.85])
     kw = dict(l_fod=LMAX, l_g=LG, l_b=LB)
@@ -79,7 +79,7 @@ def test_background_occupies_volume_but_emits_nothing(lam):
     The tissue-only voxel and the voxel padded with background must differ by exactly the
     tissue fraction -- which is what makes partial volume at a boundary come out right.
     """
-    from dmipy_sim.sh_convolution import compose_voxel
+    from dmipy_sim.replay.sh_convolution import compose_voxel
     sh = np.stack([watson_odf_sh(6.0, mu=m, lmax=LMAX)
                    for m in ([0, 0, 1.], [1, 0, 0.], [0, 1, 0.])])
     m0 = np.array([0.70, 0.85, 0.0])                 # substrate 2 is background air
@@ -214,7 +214,7 @@ def test_unconverted_mrtrix_error_hides_when_g_is_parallel_to_b0(lam):
 # --- analytic substrates: free water at a CSF boundary -------------------------------------
 
 def test_free_water_is_the_closed_form_and_orientation_independent():
-    from dmipy_sim.sh_convolution import free_water_response
+    from dmipy_sim.replay.sh_convolution import free_water_response
     D = 3.0e-9
     for b in (1e9, 3e9):
         npt.assert_allclose(free_water_response(b, D), np.exp(-b * D), rtol=1e-15)
@@ -224,7 +224,7 @@ def test_free_water_is_the_closed_form_and_orientation_independent():
 
 def test_csf_boundary_voxel_mixes_a_pack_with_an_analytic_substrate(lam):
     """A WM/CSF boundary: one pack-backed slot, one analytic slot, one inert."""
-    from dmipy_sim.sh_convolution import compose_voxel, free_water_response
+    from dmipy_sim.replay.sh_convolution import compose_voxel, free_water_response
     fw = free_water_response(1e9, 3.0e-9)
     spectra = [lam, fw, None]                       # 0 WM pack, 1 free water, 2 inert
     m0 = np.array([0.70, 1.00, 0.0])
@@ -241,7 +241,7 @@ def test_csf_boundary_voxel_mixes_a_pack_with_an_analytic_substrate(lam):
 
 def test_analytic_slot_ignores_its_orientation(lam):
     """Free water is isotropic; changing its ODF must not change the voxel."""
-    from dmipy_sim.sh_convolution import compose_voxel, free_water_response
+    from dmipy_sim.replay.sh_convolution import compose_voxel, free_water_response
     spectra = [lam, free_water_response(1e9, 3.0e-9)]
     m0 = np.array([0.70, 1.00])
     kw = dict(l_fod=LMAX, l_g=LG, l_b=LB, signal_bearing=np.array([True, True]))
