@@ -12,6 +12,9 @@ never on ``G(t)``, T2, T1 or ρ.  Those gate ``log_w``/phase only, so
 hypotheses off that one walk.
 """
 
+import functools
+from typing import NamedTuple
+
 import numpy as np
 
 from .constants import GAMMA
@@ -586,20 +589,6 @@ def _rf_increment(M, flip, ax):
     return np.stack([Mx2, My2, Mz2])
 
 
-def _rf_matrix(event):
-    """3x3 hard-RF rotation matrix (rotation by flip_deg about (cos ax, sin ax, 0))."""
-    flip = np.deg2rad(float(event.get('flip_deg', 180.0)))
-    ax = np.deg2rad(float(event.get('axis_deg', 0.0)))
-    ux, uy = np.cos(ax), np.sin(ax)
-    c, s = np.cos(flip), np.sin(flip)
-    omc = 1.0 - c
-    return np.array([
-        [c + ux * ux * omc, ux * uy * omc, uy * s],
-        [ux * uy * omc, c + uy * uy * omc, -ux * s],
-        [-uy * s, ux * s, c],
-    ], dtype=np.float64)
-
-
 def finite_180_longitudinal_dwell(phi_pre, tau_180, phi_B1=0.0):
     r"""Per-walker longitudinal dwell during a finite 180° refocusing pulse.
 
@@ -651,16 +640,144 @@ def pre_pulse_gradient_phase(trajectories, dt_traj, G, dt_wf, cutoff_wf_idx):
     return gradient_phase(G_pre, trajectories, dt_traj)               # (n_meas, n_walkers)
 
 
+_BLOCH_PHASE_TABLE_BYTES = 512 * 2 ** 20      # device budget for one batch of per-step phase tables
+
+
+class _BlochTerms(NamedTuple):
+    """Per-step operator terms of a vector-Bloch replay, in the order the propagator applies them:
+    RF sub-rotations, free precession, transverse wall attenuation, relaxation."""
+    G_tr: np.ndarray            # (n_meas, n_t, 3) gradient on the walk grid
+    flips: np.ndarray           # (n_t, n_ev) RF rotation per step and event slot, rad (0 = none)
+    axes: np.ndarray            # (n_t, n_ev) B1 phase of each slot, rad
+    b1: object                  # transmit scale: float, or (n_w,) per walker
+    dphi_extra: object          # (n_t, n_w) precession beyond the gradient, or None
+    surf: object                # (n_t, n_w) transverse wall factor per step, or None
+    E2: np.ndarray              # (n_t, n_w) or (n_t, 1) transverse relaxation factor
+    E1: np.ndarray              # (n_t, n_w) or (n_t, 1) longitudinal relaxation factor
+    weights: object             # (n_w,) normalised ensemble weights, or None (plain mean)
+
+
+def _bloch_replay_terms(trajectory, dt_traj, G, dt_wf, rf_events, *, T2, T1, comp_traj,
+                        T2_per_comp, T1_per_comp, susceptibility, extra_phase_per_step,
+                        dlog_boundary_unit, surface_relaxivity, D, b1_scale, slice_offsets,
+                        slice_gradient, bound_frac, T2_bound, T1_bound, off_resonance_bound,
+                        weights):
+    """Resolve the sequence and substrate inputs of :func:`replay_bloch` into per-step terms.
+
+    Both Bloch replays consume this; the numpy loop and the JAX scan then differ only in how they
+    iterate the identical operator, which is what makes the numpy one the reference.
+
+    RF events are laid out on the walk grid: a hard pulse is one rotation at its step, a finite
+    pulse of ``duration_s`` is spread over ``round(duration/dt)`` steps centred on ``t_s`` with the
+    total flip split evenly (or by ``b1_envelope`` when given). Its carrier ``offset_hz`` adds a
+    uniform precession over those steps and, with ``slice_offsets``/``slice_gradient``, a per-walker
+    slice-select off-resonance. An MT ``bound_frac`` blends the relaxation rates toward the bound
+    pool's per step and adds the bound pool's off-resonance precession by occupancy.
+    """
+    G = np.asarray(G, np.float64)
+    n_meas = G.shape[0]
+    n_w, n_t, _ = trajectory.shape
+    G_tr = resample_gradient(G, dt_wf, dt_traj, n_t)                  # (n_meas, n_t, 3)
+
+    def rate(per_comp, scalar):
+        if per_comp is not None:
+            if comp_traj is None:
+                raise ValueError("comp_traj is required with per-compartment relaxation.")
+            return (1.0 / np.asarray(per_comp, np.float64))[np.asarray(comp_traj)].T    # (n_t, n_w)
+        return np.full((n_t, 1), 0.0 if scalar is None else 1.0 / float(scalar))
+    invT2 = rate(T2_per_comp, T2)
+    invT1 = rate(T1_per_comp, T1)
+
+    dphi_extra = None
+    def add(term):
+        nonlocal dphi_extra
+        dphi_extra = term if dphi_extra is None else dphi_extra + term
+
+    if bound_frac is not None:
+        if T2_bound is None or T1_bound is None:
+            raise ValueError("T2_bound and T1_bound are required when bound_frac is set.")
+        bf = np.asarray(bound_frac, np.float64).T                          # (n_t, n_w)
+        invT2 = (1.0 - bf) * invT2 + bf * (1.0 / float(T2_bound))
+        invT1 = (1.0 - bf) * invT1 + bf * (1.0 / float(T1_bound))
+        if float(off_resonance_bound) != 0.0:
+            add(bf * (2.0 * np.pi * float(off_resonance_bound) * dt_traj))
+    E2 = np.exp(-dt_traj * invT2)
+    E1 = np.exp(-dt_traj * invT1)
+
+    if susceptibility is not None and extra_phase_per_step is None:
+        extra_phase_per_step = GAMMA * dt_traj * _sample_delta_bz(_resolve_field_fn(susceptibility),
+                                                                  trajectory)
+    if extra_phase_per_step is not None:
+        add(np.asarray(extra_phase_per_step, np.float64).T)
+
+    surf = None
+    if (surface_relaxivity is not None and dlog_boundary_unit is not None
+            and float(surface_relaxivity) != 0.0):
+        if D is None:
+            raise ValueError("D required when surface_relaxivity is not None.")
+        surf = np.exp((float(surface_relaxivity) / float(D)) * np.asarray(dlog_boundary_unit, np.float64).T)
+
+    slots = {}                                     # step -> [(flip, axis), ...] in event order
+    rf_active = np.zeros(n_t, bool)
+    rf_offset_dphi = np.zeros(n_t)
+    for e in rf_events:
+        i0 = int(round(float(e['t_s']) / dt_traj))
+        dur = float(e.get('duration_s', 0.0) or 0.0)
+        nsub = max(1, int(round(dur / dt_traj))) if dur > 0.0 else 1
+        i_start = max(0, i0 - nsub // 2)
+        total = np.deg2rad(float(e.get('flip_deg', 180.0)))
+        ax = np.deg2rad(float(e.get('axis_deg', 0.0)))
+        off_dphi = 2.0 * np.pi * float(e.get('offset_hz', 0.0) or 0.0) * dt_traj
+        env = e.get('b1_envelope', None)
+        if env is not None and nsub > 1:                                 # shaped pulse
+            env = np.asarray(env, np.float64)
+            env = np.interp(np.linspace(0.0, 1.0, nsub), np.linspace(0.0, 1.0, len(env)), env)
+            dflips = total * env / (env.sum() + 1e-30)                   # preserve the total flip
+        else:
+            dflips = np.full(nsub, total / nsub)
+        for j in range(nsub):
+            i = min(i_start + j, n_t - 1)
+            slots.setdefault(i, []).append((float(dflips[j]), ax))
+            rf_active[i] = True
+            rf_offset_dphi[i] += off_dphi
+    n_ev = max([len(v) for v in slots.values()] + [1])
+    flips = np.zeros((n_t, n_ev))
+    axes = np.zeros((n_t, n_ev))
+    for i, lst in slots.items():
+        for j, (f, a) in enumerate(lst):
+            flips[i, j], axes[i, j] = f, a
+    if np.any(rf_offset_dphi != 0.0):
+        add(rf_offset_dphi[:, None])
+    if slice_offsets is not None and float(slice_gradient) != 0.0:
+        slice_dphi = GAMMA * float(slice_gradient) * np.asarray(slice_offsets, np.float64) * dt_traj
+        add(rf_active[:, None].astype(np.float64) * slice_dphi[None, :])
+
+    b1 = 1.0 if b1_scale is None else np.asarray(b1_scale, np.float64)
+    wn = None
+    if weights is not None:
+        wn = np.asarray(weights, np.float64)
+        wn = wn / wn.sum()
+    return _BlochTerms(G_tr, flips, axes, b1, dphi_extra, surf, E2, E1, wn)
+
+
+def _bloch_replay_output(sig_last, M_last, echo_out, echo_steps, return_walker_signals):
+    if echo_steps is not None:
+        return echo_out
+    if return_walker_signals:
+        return M_last, sig_last
+    return sig_last
+
+
 def replay_bloch(trajectory, dt_traj, G, dt_wf, rf_events, *,
-                         T2=None, T1=None, comp_traj=None,
-                         T2_per_comp=None, T1_per_comp=None,
-                         susceptibility=None, extra_phase_per_step=None,
-                         dlog_boundary_unit=None, surface_relaxivity=None, D=None,
-                         echo_steps=None, echo_per_walker=False,
-                         weights=None, return_walker_signals=False,
-                         b1_scale=None, slice_offsets=None, slice_gradient=0.0,
-                         bound_frac=None, T2_bound=None, T1_bound=None,
-                         off_resonance_bound=0.0):
+                 T2=None, T1=None, comp_traj=None,
+                 T2_per_comp=None, T1_per_comp=None,
+                 susceptibility=None, extra_phase_per_step=None,
+                 dlog_boundary_unit=None, surface_relaxivity=None, D=None,
+                 echo_steps=None, echo_per_walker=False,
+                 weights=None, return_walker_signals=False,
+                 b1_scale=None, slice_offsets=None, slice_gradient=0.0,
+                 bound_frac=None, T2_bound=None, T1_bound=None,
+                 off_resonance_bound=0.0):
     """Emergent per-walker vector-Bloch replay on the stored (field-independent) walk.
 
     Propagates each walker's magnetisation ``M = (Mx, My, Mz)`` through the ACTUAL
@@ -668,6 +785,10 @@ def replay_bloch(trajectory, dt_traj, G, dt_wf, rf_events, *,
     precession ``dφ = γ·G(t)·r_w(t)·dt``, per-comp T2/T1, surface relaxivity, an
     optional susceptibility off-resonance field, and an optional MT bound-pool blend.
     The forward-engine counterpart is :func:`dmipy_sim.bloch.simulate_bloch`.
+
+    This is the numpy REFERENCE: a Python loop over measurements and steps written so each
+    operator is one readable line. :func:`replay_bloch_jax` is the same operator as a jitted
+    scan and takes the same arguments; use it for anything beyond a few thousand walkers.
 
     Coherence pathways / refocusing are EMERGENT: the 180° rotation conjugates the
     accumulated phase, so the spin echo forms by itself — there is no ``eps_P`` sign.
@@ -694,242 +815,162 @@ def replay_bloch(trajectory, dt_traj, G, dt_wf, rf_events, *,
         relaxation RATE is blended toward the bound-pool ``T2_bound``/``T1_bound`` (and
         ``off_resonance_bound``) by that occupancy.  RF rotates bound spins too, so MT
         saturation transfer is EMERGENT.  None → no MT.
+    b1_scale : float or (n_w,) array, optional
+        Transmit (B1+) scale of every flip; per walker for an inhomogeneous transmit field.
+    slice_offsets, slice_gradient : (n_w,) m and T/m, optional
+        Slice-select off-resonance ``γ·G_slice·z_w`` applied during RF pulses only.
+    weights : (n_w,) array, optional
+        Ensemble weights of the walker mean.
+    echo_steps, echo_per_walker : record ``Mxy`` at these walk steps, per walker if asked.
 
     Returns
     -------
     signals : (n_meas,) complex   walker-mean ``Mx + i My`` at the last step, or
-        ``(n_meas, n_echo)`` when ``echo_steps`` is given, or ``(M_final, signals)``
-        with the per-walker (3, n_w) final magnetisation when ``return_walker_signals``.
+        ``(n_meas, n_echo)`` (``(n_meas, n_echo, n_w)`` with ``echo_per_walker``) when
+        ``echo_steps`` is given, or ``(M_final, signals)`` with the per-walker (3, n_w) final
+        magnetisation of the last measurement when ``return_walker_signals``.
     """
-    G = np.asarray(G, dtype=np.float64)
-    n_meas, n_t_wf, _ = G.shape
+    tm = _bloch_replay_terms(trajectory, dt_traj, G, dt_wf, rf_events, T2=T2, T1=T1,
+                             comp_traj=comp_traj, T2_per_comp=T2_per_comp, T1_per_comp=T1_per_comp,
+                             susceptibility=susceptibility, extra_phase_per_step=extra_phase_per_step,
+                             dlog_boundary_unit=dlog_boundary_unit,
+                             surface_relaxivity=surface_relaxivity, D=D, b1_scale=b1_scale,
+                             slice_offsets=slice_offsets, slice_gradient=slice_gradient,
+                             bound_frac=bound_frac, T2_bound=T2_bound, T1_bound=T1_bound,
+                             off_resonance_bound=off_resonance_bound, weights=weights)
+    n_meas = tm.G_tr.shape[0]
     n_w, n_t, _ = trajectory.shape
-    traj = trajectory.astype(np.float64)
-    G_tr = resample_gradient(G, dt_wf, dt_traj, n_t)                  # (n_meas, n_t, 3)
-
-    # ── per-walker decay factors per step ──
-    if T2_per_comp is not None:
-        invT2 = (1.0 / np.asarray(T2_per_comp, np.float64))[comp_traj]   # (n_w, n_t)
-    else:
-        invT2 = np.full((n_w, n_t), 0.0 if T2 is None else 1.0 / T2)
-    if T1_per_comp is not None:
-        invT1 = (1.0 / np.asarray(T1_per_comp, np.float64))[comp_traj]
-    else:
-        invT1 = np.full((n_w, n_t), 0.0 if T1 is None else 1.0 / T1)
-
-    # ── magnetization transfer: blend to the bound-pool relaxation by occupancy ──
-    # bound_frac[w,t] in [0,1] is the time fraction walker w spent bound during step t
-    # (from simulate_mt_trajectories).  A bound spin relaxes with the very short
-    # T2_bound / T1_bound; blending the RATE by occupancy is exact for the fully
-    # bound/free steps (frac 0 or 1) and a linear interpolation for partial saves.  RF
-    # still rotates bound spins (the loop rotates ALL walkers), so MT saturation and its
-    # exchange transfer to the free pool are EMERGENT — no bound-pool lineshape imposed.
-    has_mt = bound_frac is not None
-    if has_mt:
-        if T2_bound is None or T1_bound is None:
-            raise ValueError("T2_bound and T1_bound are required when bound_frac is set.")
-        bf = np.asarray(bound_frac, np.float64)                 # (n_w, n_t)
-        invT2 = (1.0 - bf) * invT2 + bf * (1.0 / float(T2_bound))
-        invT1 = (1.0 - bf) * invT1 + bf * (1.0 / float(T1_bound))
-
-    E2 = np.exp(-dt_traj * invT2)        # (n_w, n_t)
-    E1 = np.exp(-dt_traj * invT1)
-
-    # bound-pool off-resonance: a per-step transverse phase for the bound occupancy.
-    dphi_bound = None
-    if has_mt and float(off_resonance_bound) != 0.0:
-        dphi_bound = bf * (2.0 * np.pi * float(off_resonance_bound) * dt_traj)
-
-    # ── susceptibility: per-step transverse phase increment (refocusing emergent) ──
-    # The 180° rotation conjugates the accumulated phase, so SE refocusing of the static
-    # field needs no eps_P — it is automatic.  A provider is sampled along the walk;
-    # extra_phase_per_step lets a caller pass a pre-baked γ·ΔBz·dt array directly.
-    if susceptibility is not None and extra_phase_per_step is None:
-        field_fn = _resolve_field_fn(susceptibility)
-        extra_phase_per_step = GAMMA * dt_traj * _sample_delta_bz(field_fn, trajectory)
-    has_susc = extra_phase_per_step is not None
-    if has_susc:
-        dphi_susc = np.asarray(extra_phase_per_step, np.float64)        # (n_w, n_t)
-
-    # ── surface relaxivity: per-step transverse attenuation at wall contacts ──
-    has_surf = (surface_relaxivity is not None and dlog_boundary_unit is not None
-                and float(surface_relaxivity) != 0.0)
-    if has_surf:
-        if D is None:
-            raise ValueError("D required when surface_relaxivity is not None.")
-        surf = np.exp((float(surface_relaxivity) / float(D)) * np.asarray(dlog_boundary_unit, np.float64))
-
-    # ── RF events → per-step incremental B1 rotations ──
-    # A finite pulse (duration_s > 0) is spread over its REAL duration as partial B1
-    # rotations, one per trajectory step, with the free precession (gradient + static
-    # susceptibility off-resonance) acting BETWEEN them — so imperfect, off-resonant
-    # flips EMERGE.  duration_s = 0 is the instantaneous hard-pulse limit (one step).
-    rf_at = {}
-    rf_active = np.zeros(n_t, dtype=bool)
-    rf_offset_dphi = np.zeros(n_t, dtype=np.float64)
-    for e in rf_events:
-        i0 = int(round(float(e['t_s']) / dt_traj))
-        dur = float(e.get('duration_s', 0.0) or 0.0)
-        nsub = max(1, int(round(dur / dt_traj))) if dur > 0.0 else 1
-        # CENTRE the pulse on its nominal time t_s (the echo refocuses about the pulse
-        # centre), so a finite 180 at TE/2 still refocuses at TE.  The excitation (t_s=0)
-        # clamps to run forward from 0.
-        i_start = max(0, i0 - nsub // 2)
-        total = np.deg2rad(float(e.get('flip_deg', 180.0)))
-        ax = np.deg2rad(float(e.get('axis_deg', 0.0)))
-        off_hz = float(e.get('offset_hz', 0.0) or 0.0)         # carrier off-resonance
-        off_dphi = 2.0 * np.pi * off_hz * dt_traj
-        env = e.get('b1_envelope', None)
-        if env is not None and nsub > 1:                       # shaped pulse
-            env = np.asarray(env, dtype=np.float64)
-            env = np.interp(np.linspace(0.0, 1.0, nsub),
-                            np.linspace(0.0, 1.0, len(env)), env)
-            dflips = total * env / (env.sum() + 1e-30)         # preserve total flip
-        else:
-            dflips = np.full(nsub, total / nsub)               # flat rectangle
-        for j in range(nsub):
-            i = min(i_start + j, n_t - 1)
-            rf_at.setdefault(i, []).append((float(dflips[j]), ax))
-            rf_active[i] = True
-            rf_offset_dphi[i] += off_dphi
-    has_rf_offset = bool(np.any(rf_offset_dphi != 0.0))
-
-    # spin weights for the ensemble average (None = uniform)
-    if weights is None:
-        wmean = lambda v: np.mean(v)
-    else:
-        wn = np.asarray(weights, np.float64); wsum = wn.sum()
-        wmean = lambda v: (v * wn).sum() / wsum
-
-    # B1+ transmit inhomogeneity: per-walker actual-flip multiplier (1.0 = ideal)
-    b1s = 1.0 if b1_scale is None else np.asarray(b1_scale, np.float64)
-    # slice-select off-resonance: a spin at slice position z sees Δω = γ·Gss·z during a
-    # pulse, so the slice profile emerges.  slice_offsets (n_w,) in metres.
-    has_slice = slice_offsets is not None and float(slice_gradient) != 0.0
-    if has_slice:
-        slice_dphi = (GAMMA * float(slice_gradient)
-                      * np.asarray(slice_offsets, np.float64) * dt_traj)   # (n_w,)
-
+    wmean = (lambda v: np.mean(v)) if tm.weights is None else (lambda v: (v * tm.weights).sum())
     echo_set = None if echo_steps is None else set(int(e) for e in echo_steps)
-    signals = np.empty(n_meas, dtype=np.complex128)
+    signals = np.empty(n_meas, np.complex128)
     echo_out = None
-    M_last = None
+    M = None
     for m in range(n_meas):
-        M = np.zeros((3, n_w), dtype=np.float64)
-        M[2] = 1.0                                   # equilibrium along +z
+        M = np.zeros((3, n_w))
+        M[2] = 1.0                                              # equilibrium along +z
         rec = []
         for t in range(n_t):
-            if t in rf_at:
-                for dflip, ax in rf_at[t]:           # partial B1 rotation(s) this step
-                    M = _rf_increment(M, dflip * b1s, ax)   # b1s scales actual flip (B1+)
-            # free precession EVERY step (incl. RF steps): the spin precesses during the
-            # pulse dt too, keeping dephase/rephase intervals symmetric (essential CPMG).
-            dphi = phase_increment(G_tr[m, t], traj[:, t, :], dt_traj)   # (n_w,)
-            if has_susc:
-                dphi = dphi + dphi_susc[:, t]
-            if dphi_bound is not None:               # bound-pool off-resonance
-                dphi = dphi + dphi_bound[:, t]
-            if has_rf_offset:                        # off-resonance RF carrier (MT-prep)
-                dphi = dphi + rf_offset_dphi[t]
-            if has_slice and rf_active[t]:           # slice-select off-resonance in pulse
-                dphi = dphi + slice_dphi
+            for f, a in zip(tm.flips[t], tm.axes[t]):
+                if f != 0.0:
+                    M = _rf_increment(M, f * tm.b1, a)
+            dphi = phase_increment(tm.G_tr[m, t], trajectory[:, t, :], dt_traj)   # (n_w,)
+            if tm.dphi_extra is not None:
+                dphi = dphi + tm.dphi_extra[t]
             c, s = np.cos(dphi), np.sin(dphi)
             Mx = c * M[0] - s * M[1]
             My = s * M[0] + c * M[1]
-            M = np.stack([Mx, My, M[2]])
-            if has_surf:                             # transverse wall attenuation
-                M = np.stack([M[0] * surf[:, t], M[1] * surf[:, t], M[2]])
-            # uniform per-step relaxation (each step gets exactly one dt of decay)
-            M = np.stack([M[0] * E2[:, t], M[1] * E2[:, t], M[2] * E1[:, t]])
+            if tm.surf is not None:
+                Mx, My = Mx * tm.surf[t], My * tm.surf[t]
+            M = np.stack([Mx * tm.E2[t], My * tm.E2[t], M[2] * tm.E1[t]])
             if echo_set is not None and t in echo_set:
-                rec.append((M[0] + 1j * M[1]).copy() if echo_per_walker
-                           else wmean(M[0] + 1j * M[1]))
+                mxy = M[0] + 1j * M[1]
+                rec.append(mxy.copy() if echo_per_walker else wmean(mxy))
         signals[m] = wmean(M[0] + 1j * M[1])
-        M_last = M
         if echo_set is not None:
-            if echo_per_walker:
-                if echo_out is None:
-                    echo_out = np.empty((n_meas, len(rec), n_w), dtype=np.complex128)
-                echo_out[m] = np.asarray(rec)
-            else:
-                if echo_out is None:
-                    echo_out = np.empty((n_meas, len(rec)), dtype=np.complex128)
-                echo_out[m] = rec
-    if echo_steps is not None:
-        return echo_out                              # (n_meas, n_echo)
-    if return_walker_signals:
-        return M_last, signals                       # M_last: (3, n_w)
-    return signals
+            if echo_out is None:
+                echo_out = np.empty((n_meas, len(rec)) + ((n_w,) if echo_per_walker else ()),
+                                    np.complex128)
+            echo_out[m] = np.asarray(rec)
+    return _bloch_replay_output(signals, M, echo_out, echo_steps, return_walker_signals)
 
 
 def replay_bloch_jax(trajectory, dt_traj, G, dt_wf, rf_events, *,
-                             T2=None, T1=None, comp_traj=None,
-                             T2_per_comp=None, T1_per_comp=None,
-                             susceptibility=None, extra_phase_per_step=None,
-                             dlog_boundary_unit=None, surface_relaxivity=None, D=None,
-                             echo_steps=None):
-    """GPU/JAX vectorisation of :func:`replay_bloch` (hard-pulse rotations).
+                     T2=None, T1=None, comp_traj=None,
+                     T2_per_comp=None, T1_per_comp=None,
+                     susceptibility=None, extra_phase_per_step=None,
+                     dlog_boundary_unit=None, surface_relaxivity=None, D=None,
+                     echo_steps=None, echo_per_walker=False,
+                     weights=None, return_walker_signals=False,
+                     b1_scale=None, slice_offsets=None, slice_gradient=0.0,
+                     bound_frac=None, T2_bound=None, T1_bound=None,
+                     off_resonance_bound=0.0, phase_table_bytes=_BLOCH_PHASE_TABLE_BYTES):
+    """:func:`replay_bloch` as a jitted ``lax.scan`` over the walk, vectorised over measurements.
 
-    Same physics and outputs as the numpy primitive for hard (instantaneous) pulses,
-    evaluated with a jitted ``lax.scan`` over time.  Returns ``echo_out`` (n_meas,
-    n_echo) when ``echo_steps`` is given, else ``signals`` (n_meas,) complex at the
-    last step.  (MT bound-pool blend, finite-pulse spreading and slice-select are not
-    vectorised here — use the numpy path for those.)
+    Same arguments, same per-step operator and same outputs as the numpy reference, including
+    finite and shaped pulses, off-resonance carriers, slice-select, per-walker B1+, the MT
+    bound-pool blend, weights and per-walker echo readout. Arithmetic is float32 on the device,
+    so signals agree with the reference to about 1e-5 of the phase scale.
+
+    Each measurement needs an ``(n_t, n_w)`` float32 phase table on the device; measurements are
+    batched so that the tables of one batch stay within ``phase_table_bytes``, and a single
+    measurement whose table exceeds it runs alone. The batch size is thus set by the largest walk
+    the call can meet, never by a fixed count.
     """
     if not _JAX_AVAILABLE:
         raise RuntimeError("JAX not available; use replay_bloch.")
-    G = np.asarray(G, np.float64)
-    n_meas, n_t_wf, _ = G.shape
+    tm = _bloch_replay_terms(trajectory, dt_traj, G, dt_wf, rf_events, T2=T2, T1=T1,
+                             comp_traj=comp_traj, T2_per_comp=T2_per_comp, T1_per_comp=T1_per_comp,
+                             susceptibility=susceptibility, extra_phase_per_step=extra_phase_per_step,
+                             dlog_boundary_unit=dlog_boundary_unit,
+                             surface_relaxivity=surface_relaxivity, D=D, b1_scale=b1_scale,
+                             slice_offsets=slice_offsets, slice_gradient=slice_gradient,
+                             bound_frac=bound_frac, T2_bound=T2_bound, T1_bound=T1_bound,
+                             off_resonance_bound=off_resonance_bound, weights=weights)
     n_w, n_t, _ = trajectory.shape
-    traj = trajectory.astype(np.float64)
-    G_tr = resample_gradient(G, dt_wf, dt_traj, n_t)                  # (n_meas, n_t, 3)
+    f32 = jnp.float32
+    zeros_t = np.zeros((n_t, 1))
+    arrays = (jnp.asarray(trajectory, f32), jnp.asarray(tm.flips, f32), jnp.asarray(tm.axes, f32),
+              jnp.asarray(tm.b1, f32),
+              jnp.asarray(tm.dphi_extra if tm.dphi_extra is not None else zeros_t, f32),
+              jnp.asarray(tm.surf if tm.surf is not None else zeros_t + 1.0, f32),
+              jnp.asarray(tm.E2, f32), jnp.asarray(tm.E1, f32),
+              jnp.asarray(tm.weights if tm.weights is not None else np.full(n_w, 1.0 / n_w), f32))
+    echo_idx = None if echo_steps is None else tuple(int(e) for e in echo_steps)
+    n_meas = tm.G_tr.shape[0]
+    per_batch = max(1, int(phase_table_bytes // (4 * n_t * n_w)))
+    G_tr = jnp.asarray(tm.G_tr, f32)
+    parts = [_bloch_scan_batch(G_tr[a:a + per_batch], *arrays, dt=float(dt_traj), echo_idx=echo_idx,
+                               per_walker=bool(echo_per_walker))
+             for a in range(0, n_meas, per_batch)]
+    M_last = parts[-1][0][-1]
+    rec = np.concatenate([np.asarray(p[1], np.complex128) for p in parts])
+    last = np.concatenate([np.asarray(p[2], np.complex128) for p in parts])
+    echo_out = None if echo_idx is None else rec
+    return _bloch_replay_output(last, np.asarray(M_last, np.float64), echo_out,
+                                echo_steps, return_walker_signals)
 
-    invT2 = ((1.0 / np.asarray(T2_per_comp, float))[comp_traj] if T2_per_comp is not None
-             else np.full((n_w, n_t), 0.0 if T2 is None else 1.0 / T2))
-    invT1 = ((1.0 / np.asarray(T1_per_comp, float))[comp_traj] if T1_per_comp is not None
-             else np.full((n_w, n_t), 0.0 if T1 is None else 1.0 / T1))
-    E2 = jnp.asarray(np.exp(-dt_traj * invT2).T)         # (n_t, n_w)
-    E1 = jnp.asarray(np.exp(-dt_traj * invT1).T)
-    if (surface_relaxivity is not None and dlog_boundary_unit is not None
-            and float(surface_relaxivity) != 0.0):
-        surf = jnp.asarray(np.exp((float(surface_relaxivity) / float(D))
-                                  * np.asarray(dlog_boundary_unit, float)).T)
-    else:
-        surf = jnp.ones((n_t, n_w))
-    if susceptibility is not None and extra_phase_per_step is None:
-        field_fn = _resolve_field_fn(susceptibility)
-        extra_phase_per_step = GAMMA * dt_traj * _sample_delta_bz(field_fn, trajectory)
-    dphi_susc = (jnp.asarray(np.asarray(extra_phase_per_step, float).T)
-                 if extra_phase_per_step is not None else jnp.zeros((n_t, n_w)))
 
-    # per-step RF rotation matrices (identity off-pulse; hard pulses only)
-    Rs = np.broadcast_to(np.eye(3), (n_t, 3, 3)).copy()
-    for e in rf_events:
-        idx = max(0, min(int(round(float(e['t_s']) / dt_traj)), n_t - 1))
-        Rs[idx] = _rf_matrix(e)
-    Rs = jnp.asarray(Rs)
+def _bloch_rotate(M, flip, ax):
+    """:func:`_rf_increment` on traced operands."""
+    ux, uy = jnp.cos(ax), jnp.sin(ax)
+    c, s = jnp.cos(flip), jnp.sin(flip)
+    omc = 1.0 - c
+    Mx, My, Mz = M[0], M[1], M[2]
+    return jnp.stack([(c + ux * ux * omc) * Mx + (ux * uy * omc) * My + (uy * s) * Mz,
+                      (ux * uy * omc) * Mx + (c + uy * uy * omc) * My + (-ux * s) * Mz,
+                      (-uy * s) * Mx + (ux * s) * My + c * Mz])
 
-    echo_idx = (np.asarray(sorted(int(e) for e in echo_steps))
-                if echo_steps is not None else None)
 
-    def run_meas(Gm):                                    # Gm: (n_t, 3)
-        dphi_grad = phase_increments_jax(Gm, traj, dt_traj)            # (n_t, n_w)
-        dphi = dphi_grad + dphi_susc                     # (n_t, n_w)
+if _JAX_AVAILABLE:
+    @functools.partial(jax.jit, static_argnames=("dt", "echo_idx", "per_walker"))
+    def _bloch_scan_batch(G_b, traj, flips, axes, b1, dphi_extra, surf, E2, E1, wn, *, dt, echo_idx,
+                          per_walker):
+        """One batch of measurements of :func:`replay_bloch_jax`: ``vmap`` over ``G_b``
+        ``(n_b, n_t, 3)`` of a ``lax.scan`` over the walk. Module-level and jitted on array
+        arguments, so the executable is reused by every call of the same shapes."""
+        n_w = traj.shape[0]
+        n_ev = flips.shape[1]
 
-        def step(M, x):
-            Rt, dphi_t, e2, e1, sf = x
-            M = Rt @ M
-            c, s = jnp.cos(dphi_t), jnp.sin(dphi_t)
-            Mx = (c * M[0] - s * M[1]) * sf * e2
-            My = (s * M[0] + c * M[1]) * sf * e2
-            M = jnp.stack([Mx, My, M[2] * e1])
-            return M, jnp.mean(M[0] + 1j * M[1])
-        M0 = jnp.stack([jnp.zeros(n_w), jnp.zeros(n_w), jnp.ones(n_w)])
-        _, sig_t = jax.lax.scan(step, M0, (Rs, dphi, E2, E1, surf))
-        return sig_t                                     # (n_t,) mean Mxy per step
+        def readout(M):
+            mxy = M[0] + 1j * M[1]
+            return mxy if per_walker else jnp.sum(mxy * wn)
 
-    sig_all = jax.vmap(run_meas)(jnp.asarray(G_tr))      # (n_meas, n_t)
-    sig_all = np.asarray(sig_all)
-    if echo_idx is not None:
-        return sig_all[:, echo_idx]
-    return sig_all[:, -1]
+        def run_meas(Gm):
+            dphi = phase_increments_jax(Gm, traj, dt) + dphi_extra            # (n_t, n_w)
+
+            def step(M, x):
+                fl, ax, dphi_t, e2, e1, sf = x
+                for j in range(n_ev):
+                    M = _bloch_rotate(M, fl[j] * b1, ax[j])
+                c, s = jnp.cos(dphi_t), jnp.sin(dphi_t)
+                Mx = (c * M[0] - s * M[1]) * sf * e2
+                My = (s * M[0] + c * M[1]) * sf * e2
+                M = jnp.stack([Mx, My, M[2] * e1])
+                return M, readout(M)
+            M0 = jnp.stack([jnp.zeros(n_w, traj.dtype), jnp.zeros(n_w, traj.dtype),
+                            jnp.ones(n_w, traj.dtype)])
+            M_last, out_t = jax.lax.scan(step, M0, (flips, axes, dphi, E2, E1, surf))
+            rec = out_t[-1] if echo_idx is None else out_t[jnp.asarray(echo_idx)]
+            last = jnp.sum(out_t[-1] * wn) if per_walker else out_t[-1]
+            return M_last, rec, last
+        return jax.vmap(run_meas)(G_b)

@@ -26,6 +26,7 @@ per-walker reweight by ``exp((rho/D) * sum_t chi(t) ell_i(t))``, optionally cohe
 occupancy schedule ``chi`` (:func:`surface_logweight`).
 """
 import json
+from functools import cached_property
 
 import numpy as np
 
@@ -66,13 +67,16 @@ class ReplayPack:
         self.meta = dict(meta)
         self.source = source
 
-    @property
+    @cached_property
     def position_coeffs(self):
         """``(n_walkers, K+2, n_axes)``: two exact endpoints, then ``K`` sine bands per axis.
 
         The leading two entries are NOT bands -- they are ``r(0)`` and ``r(T)-r(0)`` -- so this
         array must never be handed to a band-basis contraction.  Raises on a pre-layout pack
         rather than guessing: see compression.read_position_coeffs.
+
+        Stacked from the per-axis tensors once; a pack's arrays do not change after loading, and
+        ``K``, ``n_walkers`` and ``n_coeffs`` all read this block.
         """
         from .compression import read_position_coeffs, require_position_method
         require_position_method(self.method)
