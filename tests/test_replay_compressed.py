@@ -41,7 +41,7 @@ def test_compressed_gradient_replay_matches_raw():
 
 def test_compressed_surface_replay_matches_raw():
     D, rho, R = 2e-9, 1e-6, 2e-6
-    kw = dict(T_max=0.4, dt_save=2e-3, seed=7, save_relaxation_data=True, require_gpu=False)
+    kw = dict(T_max=0.4, dt_save=2e-3, seed=7, require_gpu=False)
     raw = simulate_trajectories(N, D, Box1D(length=R), **kw)
     mst = simulate_trajectories(N, D, Box1D(length=R), compress=8, **kw)
     traj, dt, dlog = np.asarray(raw.positions), raw.dt, np.asarray(raw.boundary_local_time)

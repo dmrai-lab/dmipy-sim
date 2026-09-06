@@ -93,9 +93,9 @@ def test_packed_myelin_kernel_takes_the_dispatched_count():
 def test_trajectory_producers_take_the_dispatched_count():
     g = _sphere_rho()
     T_max, dt_save = 5 * DT, DT
-    n_plain = d.simulate_trajectories(64, D, g, T_max, dt_save, seed=0, require_gpu=False).sub_steps
+    n_plain = d.simulate_trajectories(64, D, g, T_max, dt_save, seed=0, require_gpu=False, tiers=()).sub_steps
     assert n_plain == resolve_sub_steps(g, D, dt_save)
-    out = d.simulate_trajectories(64, D, g, T_max, dt_save, seed=0, save_relaxation_data=True,
+    out = d.simulate_trajectories(64, D, g, T_max, dt_save, seed=0,
                                   require_gpu=False)
     assert out.sub_steps == resolve_sub_steps(g, D, dt_save, surface=True)
     assert out.sub_steps > n_plain, "recording the boundary local time resolves the surface criterion"

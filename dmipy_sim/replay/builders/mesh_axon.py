@@ -97,8 +97,7 @@ def mesh_axon_master(bundle, *, n_walkers=30_000, n_myelin=None, n_t=1600, T_max
     # ---- intra pool: restricted inside the inner (axon) wall ----
     r0_i, f_i = _rejection_seeds(inside_in, box_min, box_max, n_walkers, seed)
     mesh_in = Mesh(Vi, Fi, periodic=False, voxel_min=box_min, voxel_max=box_max, feature_radius=fr_i)
-    oi = simulate_trajectories(n_walkers, D0, mesh_in, T_max=T_max, dt_save=T_max / n_t,
-                               save_relaxation_data=True, seed=seed, r0=r0_i,
+    oi = simulate_trajectories(n_walkers, D0, mesh_in, T_max=T_max, dt_save=T_max / n_t, seed=seed, r0=r0_i,
                                require_gpu=require_gpu, walker_batch_size=walker_batch_size)
     tr_i = np.asarray(oi.positions, np.float64); dt_traj = float(oi.dt); n_t_actual = tr_i.shape[1]
     # Boundary local time (C2). The membrane is impermeable, so there is no EXCHANGE tier -- but the

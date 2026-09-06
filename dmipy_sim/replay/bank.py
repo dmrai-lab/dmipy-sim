@@ -1,7 +1,7 @@
 """Replay-pack assembler — walk once, compress, self-certify, freeze into a ``.rpk``.
 
 :func:`build_replay_pack` turns a **master walk** (from
-:func:`dmipy_sim.engine.core.simulate_trajectories`, ``save_relaxation_data=True``) into a compressed,
+:func:`dmipy_sim.engine.core.simulate_trajectories`) into a compressed,
 self-describing replay pack: the position ensemble is compressed by a :mod:`dmipy_sim.replay.compression`
 codec (``bridge_dst``), the tier channels the certified envelope needs are carried
 (bulk relaxation via the compartment map, surface relaxivity via the boundary-local-time channel,
@@ -51,7 +51,7 @@ def _master_arrays(src) -> dict:
     if not (isinstance(src, dict) or hasattr(src, "files")):
         raise TypeError(
             "build_replay_pack expects a PersistentWalk (the output of simulate_trajectories(..., "
-            "save_relaxation_data=True)) or a master-walk dict / .npz with keys "
+            "tiers=\"all\")) or a master-walk dict / .npz with keys "
             "traj/dt_traj/T_max[/comp/T2_per_comp/T1_per_comp/dlog_b/bfrac]; "
             f"got {type(src).__name__}.")
     keys = src.files if hasattr(src, "files") else src.keys()

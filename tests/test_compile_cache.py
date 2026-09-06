@@ -99,8 +99,8 @@ def test_the_cache_dies_with_the_geometry():
 def test_the_replay_producer_caches_too():
     g = d.Sphere(3e-6, surface_relaxivity_t2=1e-6)
     for seed in (0, 1):
-        d.simulate_trajectories(400, D, g, 2e-3, 5e-4, seed=seed, require_gpu=False)
-        d.simulate_trajectories(400, D, g, 2e-3, 5e-4, seed=seed, save_relaxation_data=True,
+        d.simulate_trajectories(400, D, g, 2e-3, 5e-4, seed=seed, require_gpu=False, tiers=())
+        d.simulate_trajectories(400, D, g, 2e-3, 5e-4, seed=seed,
                                 require_gpu=False)
     keys = [k[0][0] for k in _entries(g)]
     assert set(keys) == {"traj", "traj_relax"}, keys

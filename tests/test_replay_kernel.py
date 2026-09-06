@@ -179,7 +179,7 @@ def test_one_spin_echo_gate():
 def test_mt_walk_at_zero_binding_is_the_plain_walk_to_the_bit():
     g = d.Sphere(2e-6, surface_relaxivity_t2=1e-6)
     kw = dict(seed=3, require_gpu=False)
-    plain = d.simulate_trajectories(200, 2e-9, g, 2e-3, 5e-4, save_relaxation_data=True, **kw)
+    plain = d.simulate_trajectories(200, 2e-9, g, 2e-3, 5e-4, **kw)
     mt = d.simulate_mt_trajectories(200, 2e-9, g, 2e-3, 5e-4, kappa_MT=0.0, dwell_time=0.0,
                                     equilibrate_binding="off", **kw)
     assert mt.positions.dtype == np.float32 and mt.bound_frac.dtype == np.float32
