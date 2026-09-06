@@ -40,7 +40,7 @@ def test_permeability_1d_slab():
 
 @pytest.mark.parametrize("kind,feq_th", [("cylinder", 0.25), ("sphere", 0.125)])
 def test_permeability_shell(kind, feq_th):
-    from dmipy_sim.geometries import PermeableShell
+    from dmipy_sim.geometry import PermeableShell
     R = 10e-6
     geom = PermeableShell(R, 2 * R, KAPPA, kind=kind)
     tau_ex = ladder._tau_shell(R, 2 * R, KAPPA, kind)

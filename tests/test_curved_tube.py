@@ -17,7 +17,7 @@ import numpy as np
 import pytest
 
 from dmipy_sim import Cylinder, simulate, set_b
-from dmipy_sim.curved_tube import CurvedTube, MultiShellCurvedTube
+from dmipy_sim.geometry.curved_tube import CurvedTube, MultiShellCurvedTube
 from dmipy_sim.waveforms import pgse
 
 D = 2.0e-9

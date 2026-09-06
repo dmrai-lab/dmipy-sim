@@ -21,7 +21,7 @@ import pytest
 
 trimesh = pytest.importorskip("trimesh")
 
-from dmipy_sim.mesh import Mesh, _classify_arr, _gather_is_populated
+from dmipy_sim.geometry.mesh import Mesh, _classify_arr, _gather_is_populated
 
 from ._containment import inside as contains
 

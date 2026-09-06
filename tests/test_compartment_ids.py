@@ -16,7 +16,7 @@ EXTRA, INTRA, MYELIN = 0, 1, 2
 
 
 def _geometries():
-    from dmipy_sim import mesh_shapes
+    from dmipy_sim.geometry import mesh_shapes
     c, L, _ = d.pack_cylinders([1e-6] * 4, target_vf=0.3, seed=0)
     cs, Ls, _ = d.pack_spheres([1e-6] * 4, target_vf=0.1, seed=0)
     V, F = mesh_shapes.icosphere(3e-6, subdivisions=2)
@@ -130,7 +130,7 @@ def test_comp_traj_is_the_geometrys_own_label(name):
 @pytest.mark.slow
 def test_permeable_mesh_with_per_compartment_T2_replays_the_fused_engine():
     """Per-compartment T2 on a permeable mesh: the occupancy channel and the T2 array share the id."""
-    from dmipy_sim import mesh_shapes
+    from dmipy_sim.geometry import mesh_shapes
     V, F = mesh_shapes.icosphere(3e-6, subdivisions=3)
     m = d.Mesh(V, F, feature_radius=0.5e-6, permeability=2e-5, intra={"T2": 0.03}, extra={"T2": 0.3})
     wf = d.set_b(d.pgse(delta=3e-3, DELTA=9e-3, G_magnitude=0.1, bvecs=[[1, 0, 0]], n_t=120,

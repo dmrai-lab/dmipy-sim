@@ -281,7 +281,7 @@ def simulate_bloch(n_walkers, diffusivity, waveform, geometry, rf_events, *,
         which on a mesh means ``intra=True`` -- INSIDE the surface.  Pass this whenever the
         pool you want is not the geometry's inside; a fibre bundle's extra-axonal pool is
         the case that occurs, and getting it wrong silently walks the intra pool instead.
-        See :func:`dmipy_sim.geometries.initial_positions`.
+        See :func:`dmipy_sim.geometry.initial_positions`.
 
     Returns
     -------

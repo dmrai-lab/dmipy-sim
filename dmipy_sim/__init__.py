@@ -40,7 +40,7 @@ from .geometry.mesh import Mesh, load_ply
 from .susceptibility import (SusceptibilitySources, MyelinSusceptibility,
                              GridSusceptibility, dipole_field,
                              myelin_susceptibility_tensor, radial_from_sdf, sample_grid)
-from . import mesh_shapes
+from .geometry import mesh_shapes
 from .constants import GAMMA
 from .noise import add_rician_noise, add_rician_noise_batch, add_nc_chi_noise, estimate_sigma
 from .sh_convolution import (

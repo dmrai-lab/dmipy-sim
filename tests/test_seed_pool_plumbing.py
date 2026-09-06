@@ -133,7 +133,7 @@ def test_simulate_cpmg_starts_where_r0_says(sphere, seeds):
 
 
 def test_r0_with_the_wrong_shape_is_rejected(sphere):
-    from dmipy_sim.geometries import initial_positions
+    from dmipy_sim.geometry import initial_positions
 
     assert initial_positions(sphere, 8, jax.random.PRNGKey(0), None).shape == (8, 3)
     assert initial_positions(sphere, 8, jax.random.PRNGKey(0), np.zeros((8, 3))).shape == (8, 3)

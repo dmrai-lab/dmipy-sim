@@ -29,18 +29,7 @@ _COMP_COLOR = {0: '#2ca02c', 1: '#1f77b4', 2: '#ff7f0e'}
 _COMP_NAME = {0: 'extra-axonal', 1: 'intra-axonal', 2: 'myelin'}
 
 
-# ── idealised RF rotation (Rodrigues about the in-plane B1 axis) ─────────────
-def _rf_increment(M, flip, ax):
-    """Rotate M (3, N) by ``flip`` rad about the in-plane axis ``ax`` rad = (cos,sin,0)."""
-    ux, uy = np.cos(ax), np.sin(ax)
-    c, s = np.cos(flip), np.sin(flip)
-    omc = 1.0 - c
-    Mx, My, Mz = M[0], M[1], M[2]
-    return np.stack([
-        (c + ux*ux*omc)*Mx + (ux*uy*omc)*My + (uy*s)*Mz,
-        (ux*uy*omc)*Mx + (c + uy*uy*omc)*My + (-ux*s)*Mz,
-        (-uy*s)*Mx + (ux*s)*My + c*Mz,
-    ])
+from .trajectories import _rf_increment  # the one Rodrigues RF rotation
 
 
 # ── viz-scoped walk recorder (positions + compartment id over time) ──────────
@@ -57,7 +46,6 @@ def _walk_record(geometry, diffusivity, n_t, dt, n_walkers, seed):
     if geometry._is_packed_myelinated:
         from .physics import make_packed_myelin_traj_step_fn
         step_fn = make_packed_myelin_traj_step_fn(geometry, dt)
-        N_max = geometry.N_max
         pk, wk = jax.random.split(jax.random.PRNGKey(seed))
         r0 = geometry.init_positions(n_walkers, pk)
         comp0 = geometry._init_compartments        # encoded: 0=extra, 1..N=intra, >N=myelin
@@ -382,7 +370,6 @@ def _magnitude_walk(geometry, waveform, rho, T2_per_comp, n_walkers, seed, want_
     dt = float(waveform.dt)
     n_t = G.shape[0]
     step_fn = make_packed_myelin_traj_step_fn(geometry, dt)
-    N_max = geometry.N_max
     pk, wk = jax.random.split(jax.random.PRNGKey(seed))
     r0 = geometry.init_positions(n_walkers, pk)
     comp0 = geometry._init_compartments
@@ -541,7 +528,6 @@ def magnitude_movie(geometry, waveform, save, *, rho, T2_per_comp, n_walkers=400
 
     # --- walk: per-walker (compartment_id, cumulative surface local time) over time ---
     step_fn = make_packed_myelin_traj_step_fn(geometry, dt)
-    N_max = geometry.N_max
     pk, wk = jax.random.split(jax.random.PRNGKey(seed))
     r0 = geometry.init_positions(n_walkers, pk)
     comp0 = geometry._init_compartments
@@ -644,7 +630,6 @@ def magnitude_spatial_movie(geometry, waveform, save, *, rho, T2_per_comp, n_wal
     rf_events = _rf_events_for(waveform)
 
     step_fn = make_packed_myelin_traj_step_fn(geometry, dt)
-    N_max = geometry.N_max
     pk, wk = jax.random.split(jax.random.PRNGKey(seed))
     r0 = geometry.init_positions(n_walkers, pk)
     comp0 = geometry._init_compartments

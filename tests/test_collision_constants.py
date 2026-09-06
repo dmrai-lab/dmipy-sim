@@ -29,7 +29,7 @@ import pytest
 
 trimesh = pytest.importorskip("trimesh")
 
-from dmipy_sim.mesh import Mesh
+from dmipy_sim.geometry.mesh import Mesh
 
 UM = 1e-6
 # The guard must stay well inside the clearance. 1/8 is a generous ceiling on the 1/16 the floor gives,

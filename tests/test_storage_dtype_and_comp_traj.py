@@ -17,7 +17,7 @@ import numpy as np
 import pytest
 
 from dmipy_sim import simulate_trajectories
-from dmipy_sim.geometries import Cylinder, PackedCylinders, pack_cylinders
+from dmipy_sim.geometry import Cylinder, PackedCylinders, pack_cylinders
 
 UM = 1e-6
 D = 0.6e-9

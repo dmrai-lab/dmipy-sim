@@ -35,7 +35,6 @@ Provenance compiled 2026-06-26 by an automated literature/standards sweep; every
 """
 
 import json
-import warnings
 from pathlib import Path
 
 with open(Path(__file__).with_name("scanner_constants.json")) as _f:

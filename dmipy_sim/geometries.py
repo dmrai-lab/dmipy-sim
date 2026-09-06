@@ -4,8 +4,11 @@ Kept because downstream imports this path directly (`dmipy-fit`, `dmipy-design`)
 because moving 3,548 lines should not be a breaking change. New code should import from
 ``dmipy_sim.geometry``; this module is a re-export and will not gain anything new.
 """
-from .geometry.base import (Geometry, FreeDiffusion, Box1D, initial_positions,  # noqa: F401
-                            _rotation_to_z, _is_inside_batch)
+import warnings as _w
+_w.warn("dmipy_sim.geometries moved to dmipy_sim.geometry; this shim goes away in the next release.",
+        DeprecationWarning, stacklevel=2)
+from .geometry.base import (Geometry, FreeDiffusion, Box1D, initial_positions,  # noqa: F401,E402
+                            _rotation_to_z)
 from .geometry.analytic import (Sphere, Cylinder, Ellipsoid,  # noqa: F401
                                 PermeableSlab1D, PermeableShell)
 from .geometry.packed import PackedCylinders, PackedSpheres  # noqa: F401

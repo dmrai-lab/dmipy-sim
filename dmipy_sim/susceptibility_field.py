@@ -304,7 +304,7 @@ def sample_grid(grid, positions, origin, voxel_size, periodic=False, order=1):
         World coordinate of the voxel **corner** of index ``(0,0,0)`` (metres); the
         voxel spans ``[origin, origin+voxel_size)`` with its centre at
         ``origin + 0.5*voxel_size`` — the convention returned by
-        :func:`dmipy_sim.mesh_shapes.grid_axes`.
+        :func:`dmipy_sim.geometry.mesh_shapes.grid_axes`.
     voxel_size : float or (3,) array
         Voxel edge length(s), metres.
     periodic : bool or (bool,bool,bool)

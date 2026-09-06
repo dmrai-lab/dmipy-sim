@@ -16,7 +16,6 @@ import numpy as np
 
 from .physics import (make_step_fn, make_myelin_step_fn, make_packed_myelin_step_fn,
                       make_packed_myelin_traj_step_fn)
-from .waveforms import Waveform
 from .geometry import initial_positions
 
 
@@ -70,6 +69,17 @@ _REPLAY_AUTO_GEOM_NAMES = frozenset({
     "FreeDiffusion", "Box1D", "Sphere", "Cylinder", "Ellipsoid",
     "PackedCylinders", "PackedSpheres", "Mesh",
 })
+
+
+def _ensemble_signal(spin_w, phi, log_w=None):
+    """Spin-density-weighted ensemble signal ``Re<w exp(log_w) e^{i phi}> / sum w``.
+
+    ``spin_w`` is the per-walker proton-density weight (myelin water < 1); homogeneous placement plus
+    this weight avoids per-geometry placement re-weighting. ``log_w`` (per walker) is the relaxation and
+    surface log-weight; ``None`` when nothing wrote it.
+    """
+    amp = spin_w if log_w is None else spin_w * jnp.exp(log_w)
+    return jnp.sum(amp[:, None] * jnp.cos(phi), axis=0) / jnp.sum(spin_w)
 
 
 def _replay_gap(geometry, *, return_positions, return_compartments,
@@ -275,14 +285,6 @@ def simulate(
         uses an independent sub-seed, so the ensemble signal is statistically
         identical to a single-shot run (not bit-identical).  Default None
         (all walkers at once).
-    storage_dtype : np.dtype, default ``np.float32``
-        Dtype of the returned position / boundary / occupancy channels. f32 matches the
-        walk, the pack (`compression.pack_position_arrays`) and the `.rpk` spec, which
-        permits only float32/float64 for `positions`. ``np.float16`` halves peak RAM on
-        large walks, but a micron-scale coordinate in metres is SUBNORMAL in f16 (flat
-        ~6e-8 m quantum), which biases inside/outside classification one way -- ~3% of a
-        confined population at R=0.5um. Use ``comp_traj`` for compartment counting, not
-        re-classified positions. See issue #78.
     require_gpu : {None, True, False}, optional
         GPU guard against a silent CPU fallback.  ``True`` raises if no GPU is
         visible; ``False`` opts out (e.g. a CPU float64 reference check);
@@ -426,13 +428,6 @@ def simulate(
 
     n_measurements, n_t, _ = G.shape
 
-    # Spin-density-weighted ensemble signal Re(<w_spin . exp(log_w) . e^{i phi}>)/Σw_spin.
-    # w_spin is the per-walker n(r0) proton-density weight (myelin < 1); homogeneous
-    # placement + this weight avoids per-geometry placement re-weighting.
-    def _ens(sw, logw, phi):
-        return jnp.sum(sw[:, None] * jnp.exp(logw[:, None]) * jnp.cos(phi), axis=0) / jnp.sum(sw)
-    def _ens_np(sw, phi):
-        return jnp.sum(sw[:, None] * jnp.cos(phi), axis=0) / jnp.sum(sw)
 
     # Transpose G for scan: (n_t, n_measurements, 3).  Each step also receives a
     # scalar transverse-coherence flag chi_t: 1 where the magnetisation is
@@ -497,7 +492,7 @@ def simulate(
                 simulate_batch = jax.vmap(simulate_walker, in_axes=(0, 0, 0))
                 final_r, all_phi, all_log_w, comp_final, comp_seq = simulate_batch(
                     r0, walker_keys, compartments0)
-                signals = _ens(spin_w, all_log_w, all_phi)
+                signals = _ensemble_signal(spin_w, all_phi, all_log_w)
 
             else:  # 'final'
                 def simulate_walker(r0_w, key_w, comp0):
@@ -510,7 +505,7 @@ def simulate(
                 simulate_batch = jax.vmap(simulate_walker, in_axes=(0, 0, 0))
                 final_r, all_phi, all_log_w, comp_final = simulate_batch(
                     r0, walker_keys, compartments0)
-                signals = _ens(spin_w, all_log_w, all_phi)
+                signals = _ensemble_signal(spin_w, all_phi, all_log_w)
 
         else:
             def simulate_walker(r0_w, key_w, comp0):
@@ -522,7 +517,7 @@ def simulate(
 
             simulate_batch = jax.vmap(simulate_walker, in_axes=(0, 0, 0))
             final_r, all_phi, all_log_w = simulate_batch(r0, walker_keys, compartments0)
-            signals = _ens(spin_w, all_log_w, all_phi)
+            signals = _ensemble_signal(spin_w, all_phi, all_log_w)
 
     elif is_packed_myelin:
         # Fused forward: the SAME per-compartment walk as the trajectory step fn, with
@@ -550,7 +545,7 @@ def simulate(
 
         final_r, all_phi, all_log_w, _comp_final_enc, _comp_seq = jax.vmap(
             simulate_walker, in_axes=(0, 0, 0))(r0, walker_keys, compartments0)
-        signals = _ens(spin_w, all_log_w, all_phi)
+        signals = _ensemble_signal(spin_w, all_phi, all_log_w)
         if track_comp:
             comp_origin_jax = _to3(compartments0)
             comp_final = _to3(_comp_final_enc)
@@ -587,7 +582,7 @@ def simulate(
 
         final_r, all_phi, all_log_w, comp_final, pos_seq, comp_seq = jax.vmap(
             simulate_walker, in_axes=(0, 0, 0))(r0, walker_keys, comp_origin_jax)
-        signals = _ens(spin_w, all_log_w, all_phi) if has_weight else _ens_np(spin_w, all_phi)
+        signals = _ensemble_signal(spin_w, all_phi, all_log_w) if has_weight else _ensemble_signal(spin_w, all_phi)
 
     # T2/T1 are accumulated per-walker inside the scan body (make_step_fn /
     # make_myelin_step_fn); nothing further to apply here.
@@ -749,7 +744,7 @@ def simulate_cpmg(n_walkers, diffusivity, waveform, geometry, *,
         which on a mesh means ``intra=True`` -- INSIDE the surface.  Pass this whenever the
         pool you want is not the geometry's inside; a fibre bundle's extra-axonal pool is
         the case that occurs, and getting it wrong silently walks the intra pool instead.
-        See :func:`dmipy_sim.geometries.initial_positions`.
+        See :func:`dmipy_sim.geometry.initial_positions`.
     sub_steps : int, optional
         Fine sub-steps per waveform step; overrides the per-geometry auto-tune.
     seed, walker_batch_size, require_gpu : see :func:`simulate`.
@@ -790,13 +785,6 @@ def simulate_cpmg(n_walkers, diffusivity, waveform, geometry, *,
     dt = waveform.dt
     n_measurements, n_t, _ = G.shape
 
-    # Spin-density-weighted ensemble signal Re(<w_spin . exp(log_w) . e^{i phi}>)/Σw_spin.
-    # w_spin is the per-walker n(r0) proton-density weight (myelin < 1); homogeneous
-    # placement + this weight avoids per-geometry placement re-weighting.
-    def _ens(sw, logw, phi):
-        return jnp.sum(sw[:, None] * jnp.exp(logw[:, None]) * jnp.cos(phi), axis=0) / jnp.sum(sw)
-    def _ens_np(sw, phi):
-        return jnp.sum(sw[:, None] * jnp.cos(phi), axis=0) / jnp.sum(sw)
     G_scan = jnp.transpose(G, (1, 0, 2))   # (n_t, n_measurements, 3)
     # CPMG is a spin-echo train: magnetisation is transverse throughout, so the
     # coherence flag is 1 at every step (step_fn receives inputs = (g_t, chi_t)).

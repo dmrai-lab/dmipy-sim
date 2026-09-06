@@ -265,7 +265,6 @@ class MyelinatedCylinder(Geometry):
         """
         R_in = self.inner_radius
         R_out = self.outer_radius
-        wf = list(self.water_fractions)
 
         # Volumes (per unit length)
         vol_intra = np.pi * R_in**2

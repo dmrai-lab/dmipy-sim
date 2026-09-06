@@ -23,7 +23,7 @@ import pytest
 
 trimesh = pytest.importorskip("trimesh")
 
-from dmipy_sim.mesh import Mesh
+from dmipy_sim.geometry.mesh import Mesh
 from dmipy_sim.mt_walk import simulate_mt_trajectories
 from dmipy_sim.physics import collision_sub_steps
 

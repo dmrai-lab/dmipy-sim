@@ -26,7 +26,7 @@ import pytest
 
 import dmipy_sim as d
 from dmipy_sim import simulate
-from dmipy_sim.geometries import pack_cylinders, pack_spheres
+from dmipy_sim.geometry import pack_cylinders, pack_spheres
 
 D = 2e-9          # m^2/s
 SEED = 11

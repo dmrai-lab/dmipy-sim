@@ -22,7 +22,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from dmipy_sim.geometries import PermeableSlab1D, Cylinder
+from dmipy_sim.geometry import PermeableSlab1D, Cylinder
 
 D = 2.0e-9
 STEP = 2.0e-8

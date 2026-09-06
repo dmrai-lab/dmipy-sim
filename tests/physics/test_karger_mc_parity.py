@@ -20,7 +20,7 @@ import numpy as np
 import numpy.testing as npt
 
 from dmipy_sim import simulate, PackedSpheres, set_b
-from dmipy_sim.geometries import Sphere
+from dmipy_sim.geometry import Sphere
 from dmipy_sim.waveforms import pgse, pgste
 
 import importlib.util

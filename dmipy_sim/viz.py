@@ -523,7 +523,7 @@ def seed_in_cell(cell, n_walkers, seed=0):
     component), by rejection with a ray-cast parity test (robust on the wavy,
     concave cell walls where a nearest-normal side test misfires).  Returns
     (n, 3) metres."""
-    from .geometry.base import _is_inside_batch
+    from .susceptibility_field import mesh_contains
     V = np.asarray(cell.vertices, float)
     F = np.asarray(cell.faces, np.int64)
     lo, hi = V.min(0), V.max(0)
@@ -531,7 +531,7 @@ def seed_in_cell(cell, n_walkers, seed=0):
     out, need = [], n_walkers
     while need > 0:
         p = rng.uniform(lo, hi, (max(need * 8, 2048), 3))
-        inside = np.asarray(_is_inside_batch(p, V, F))       # +X ray parity
+        inside = np.asarray(mesh_contains(V, F, p))           # ray-crossing parity
         out.append(p[inside])
         need = n_walkers - sum(len(a) for a in out)
     return np.concatenate(out)[:n_walkers]
