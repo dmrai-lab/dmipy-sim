@@ -37,14 +37,15 @@ def test_one_ensemble_signal():
 
 
 def test_one_rf_increment_and_one_mesh_helper_set():
-    from dmipy_sim import pedagogy, trajectories, mesh_axon, mesh_bundle
+    from dmipy_sim.viz import pedagogy
+    from dmipy_sim.replay import trajectories
+    from dmipy_sim.replay.builders import mesh_axon, mesh_bundle
     assert pedagogy._rf_increment is trajectories._rf_increment
     assert mesh_axon._min_radius is mesh_bundle._min_radius
     assert mesh_axon._rejection_seeds is mesh_bundle._rejection_seeds
 
 
 def test_retired_knobs_are_gone():
-    from dmipy_sim import mesh_shapes as _ms  # noqa: F401  (import path still resolves)
     from dmipy_sim.geometry import mesh_shapes
     V, F = mesh_shapes.icosphere(2e-6, subdivisions=1)
     m = d.Mesh(V, F, feature_radius=1e-6)
@@ -64,13 +65,10 @@ def test_seed_in_cell_uses_the_exact_containment_test():
     assert mesh_contains(np.asarray(V, float), np.asarray(F, np.int64), pts).all()
 
 
-@pytest.mark.parametrize("shim", ["geometries", "mesh", "mesh_shapes", "curved_tube", "_boundary"])
-def test_compat_shims_warn(shim):
-    import importlib, sys
-    name = f"dmipy_sim.{shim}"
-    sys.modules.pop(name, None)
-    with warnings.catch_warnings(record=True) as rec:
-        warnings.simplefilter("always")
-        mod = importlib.import_module(name)
-    assert any(issubclass(w.category, DeprecationWarning) for w in rec), f"{name} did not warn"
-    assert mod is not None
+@pytest.mark.parametrize("flat", ["geometries", "mesh", "mesh_shapes", "curved_tube", "_boundary", "core", "physics",
+                                  "bank", "trajectories", "waveforms", "pulse_sequence", "susceptibility", "pedagogy"])
+def test_no_flat_path_shims(flat):
+    """The old flat module paths are gone, not deprecated: only the packaged paths exist."""
+    import importlib
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module(f"dmipy_sim.{flat}")

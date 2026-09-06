@@ -15,9 +15,10 @@ The substrate geometry is stored canonically (cylinder axis = +z), so at replay 
 import os
 import numpy as np
 
-from dmipy_sim import simulate_trajectories, bank
-from dmipy_sim.geometries import Cylinder, Sphere
-from dmipy_sim import compression as cx
+from dmipy_sim import simulate_trajectories
+from dmipy_sim.replay import bank
+from dmipy_sim.geometry import Cylinder, Sphere
+from dmipy_sim.replay import compression as cx
 
 
 def walk_restricted_master(shape, diameter, D0, *, T_max=200e-3, n_t=2000, n_walkers=100_000,

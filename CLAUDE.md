@@ -94,21 +94,18 @@ acquisition; assert to `max(0.02, 1/√N)`.
 
 ## Module map (`dmipy_sim/`)
 
-The engine lives in `dmipy_sim/engine/` (`core`, `physics`, `bloch`, `pulse_sequence`, `mt`, `mt_walk`, `gpu`,
-`_gpu_config`; #88 step 4) and the replay side in `dmipy_sim/replay/` (`trajectories`, `compression`, `replay`, `bank`,
-`phantom`, `sh_convolution`, `gaunt`, `_replay_kernel`, and `builders/` = `mesh_axon`, `mesh_bundle`; step 5). `dmipy_sim.replay`
-stays a first-class path: the package re-exports `replay/replay.py` (`ReplayPack`, `compile_scheme`, `replay_signal*`). The other
-old flat paths (`dmipy_sim.core`, `dmipy_sim.bank`, …) are shims that warn `DeprecationWarning` and go away next release;
-the acquisition side is `dmipy_sim/acquisition/` (`waveforms`, `rf`, `noise`; `sequences/` stays its own package), the
-off-resonance fields `dmipy_sim/fields/` (`susceptibility`, `susceptibility_field`), and plotting `dmipy_sim/viz/` (`viz`,
-`pedagogy`; `dmipy_sim.viz` is the package re-exporting `viz.py`). New code imports the packaged path (or the public names
-from `dmipy_sim`).
+Layered packages (#88): `geometry/` (substrates), `engine/` (`core`, `physics`, `bloch`, `pulse_sequence`, `mt`, `mt_walk`,
+`gpu`, `_gpu_config`), `replay/` (`trajectories`, `compression`, `replay`, `bank`, `phantom`, `sh_convolution`, `gaunt`,
+`_replay_kernel`, `builders/` = `mesh_axon`, `mesh_bundle`), `acquisition/` (`waveforms`, `rf`, `noise`), `fields/`
+(`susceptibility`, `susceptibility_field`), `viz/` (`viz`, `pedagogy`), plus `sequences/`, `substrate/`, `io/`, `math/` and the
+level-0 modules `constants`, `compartments`, `persistent_walk`. `dmipy_sim.replay` and `dmipy_sim.viz` are packages that
+re-export their same-named module. There are NO flat-path shims: import the packaged path or the public names from `dmipy_sim`.
 
 | File | Role |
 |------|------|
 | `engine/core.py` | `simulate`, `simulate_mixture`, `simulate_cpmg`; sub-step auto-tune; `engine=` (`auto` default): replay when the geometry declares `replay_parity` (its producer walk IS the fused walk, test_replay_parity) and `_replay_gap` finds nothing fused-only, else fused — a capability on the geometry, never a class-name table; `return_positions` (`True`/`'full'`) and `return_compartments` (`'final'`/`'full'`). **Compile cache**: every fused scan and the replay producer keep their jitted batch function on the geometry (`geometry._batch_cache`, via `core.cached_batch`), keyed on the geometry's scalar state and the baked configuration; waveform samples, positions, keys and labels are traced arguments, so a sweep over b / seed / direction on one geometry compiles once, and a knob set on the geometry after a walk builds a new program. `simulate_trajectories` (the replay producer) returns a **`PersistentWalk`** |
 | `persistent_walk.py` | `PersistentWalk`: what both trajectory producers return — `positions`, `dt`, `sub_steps`, `dt_sim` always; `boundary_local_time`, `compartment`, `bound_frac` present or `None` by what was recorded (`has_surface`/`has_compartments`/`has_binding`); `illegal_crossings` on the object; `.bank_dict(**metadata)` is the bank's input dict. Never a tuple whose length depends on flags |
-| `geometry/` | the substrate package: `base` (ABC, `interact`, FreeDiffusion, Box1D), `analytic` (Sphere, Cylinder, Ellipsoid, PermeableSlab1D/Shell), `packed`, `myelin`, `packing`, `curved_tube`, `mesh`, `mesh_shapes`, and **`_boundary`** — the one implementation of each boundary rule. `dmipy_sim.geometries` (and the root `mesh`, `mesh_shapes`, `curved_tube`, `_boundary` modules) are compat shims that warn `DeprecationWarning`; they go away next release. |
+| `geometry/` | the substrate package: `base` (ABC, `interact`, FreeDiffusion, Box1D), `analytic` (Sphere, Cylinder, Ellipsoid, PermeableSlab1D/Shell), `packed`, `myelin`, `packing`, `curved_tube`, `mesh`, `mesh_shapes`, and **`_boundary`** — the one implementation of each boundary rule. |
 | `geometry/curved_tube.py` | `CurvedTube`, `MultiShellCurvedTube`, `PackedCurvedTubes` — sphere-swept polyline fibres (curving strands, e.g. DiSCo). Intra-axonal space is the Minkowski sum of a centerline polyline with a ball, so it is smooth at every joint (no kink/gap/overlap of chained straight cylinders) and carries the local orientation along the strand. Analytic and impermeable — no mesh, no grid — so far cheaper than walking the equivalent triangulated tube |
 | `geometry/mesh.py` | `Mesh` (grid-accelerated, closed or 3-D periodic triangular mesh) + `load_ply` |
 | `fields/susceptibility.py` | off-resonance field providers (`SusceptibilitySources` iron/vasculature, `MyelinSusceptibility` hollow-cylinder, `GridSusceptibility` k-space dipole on a voxel source); each exposes a pure-JAX `delta_bz_fn()` that plugs into `simulate_bloch(..., susceptibility=)` as a per-step z-precession |

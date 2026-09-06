@@ -17,7 +17,7 @@ import argparse
 import numpy as np
 
 from dmipy_sim import Sphere, emergent_z_spectrum
-from dmipy_sim import mt
+from dmipy_sim.engine import mt
 
 # well-mixed sphere (R^2/D mixing time << 1/k_f), broad bound pool (T2b ~ 10 us)
 R, D = 2e-6, 2e-9

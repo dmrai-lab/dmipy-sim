@@ -47,7 +47,7 @@ dev = [
     # trimesh[easy] rather than bare trimesh: susceptibility_field.mesh_contains uses ray parity, whose
     # engine needs rtree, and trimesh.repair.fill_holes needs networkx. Both are trimesh EXTRAS, so a bare
     # install imports fine and then raises ModuleNotFoundError deep inside a containment call.
-    "trimesh[easy]>=4.0",   # mesh tests load/generate PLY meshes (dmipy_sim.mesh)
+    "trimesh[easy]>=4.0",   # mesh tests load/generate PLY meshes (dmipy_sim.geometry.mesh)
 ]
 
 # ORACLE-ONLY, and deliberately NOT in `dev`. Nothing in dmipy_sim imports dipy -- the normative

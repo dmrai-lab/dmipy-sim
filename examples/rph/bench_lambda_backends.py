@@ -26,8 +26,8 @@ Run with the GPU venv and its library path:
 import time, sys
 import numpy as np
 from dmipy_sim.replay import read_rpk
-from dmipy_sim.sh_convolution import PackResponder, pack_response, apply_odf_coupled, watson_odf_sh
-from dmipy_sim.gaunt import sphere_quadrature, real_sh
+from dmipy_sim.replay.sh_convolution import PackResponder, pack_response, apply_odf_coupled, watson_odf_sh
+from dmipy_sim.replay.gaunt import sphere_quadrature, real_sh
 pk = read_rpk('/home/rutger/dmrai-ws/winther-data/hf_release_winther_g6/packs/axon06.rpk')
 pm = pk.meta['compression']['channels']['susceptibility_path']
 n_t, dt = int(pm['n_t']), pk.dt; t = np.arange(n_t)*dt; T = n_t*dt

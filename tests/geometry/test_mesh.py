@@ -1,4 +1,4 @@
-"""Fast unit / smoke tests for the triangular-mesh geometry (dmipy_sim.mesh).
+"""Fast unit / smoke tests for the triangular-mesh geometry (dmipy_sim.geometry.mesh).
 
 Heavy Monte-Carlo accuracy checks (mesh vs analytic to the MC noise floor) live in
 test_mesh_mc.py, which is marked slow.  These tests are quick (small N, tiny meshes)

@@ -23,7 +23,7 @@ from scipy.special import jv, yv, spherical_jn, spherical_yn
 from scipy.optimize import brentq
 
 from dmipy_sim import simulate, Waveform, PermeableSlab1D
-from dmipy_sim.geometries import PermeableShell
+from dmipy_sim.geometry import PermeableShell
 
 D = 2e-9            # m^2/s
 NW = 500_000        # walkers (raise for tighter statistics)

@@ -21,28 +21,24 @@ from dmipy_sim.geometry._boundary import WallHit
 
 _SRC = Path(dmipy_sim.__file__).parent
 
-# Submodules imported by dmipy-fit / dmipy-design, so they must keep resolving.
+# Every module path of the package; downstream (dmipy-fit / dmipy-design) imports a subset of these.
 _DOWNSTREAM_MODULES = [
     "dmipy_sim.replay.replay", "dmipy_sim.constants", "dmipy_sim.acquisition.waveforms", "dmipy_sim.replay.sh_convolution",
-    "dmipy_sim.replay.gaunt", "dmipy_sim.geometries", "dmipy_sim.replay.compression", "dmipy_sim.acquisition.rf",
-    "dmipy_sim.replay.bank", "dmipy_sim.pulse_sequence", "dmipy_sim.sequences", "dmipy_sim.sequences.pulseq",
+    "dmipy_sim.replay.gaunt", "dmipy_sim.replay.compression", "dmipy_sim.acquisition.rf",
+    "dmipy_sim.replay.bank", "dmipy_sim.sequences", "dmipy_sim.sequences.pulseq",
     "dmipy_sim.substrate", "dmipy_sim.substrate.biophysical_constants", "dmipy_sim.substrate.substrate",
     "dmipy_sim.geometry", "dmipy_sim.geometry.mesh", "dmipy_sim.geometry.curved_tube",
-    "dmipy_sim.replay.phantom", "dmipy_sim.replay.trajectories", "dmipy_sim.physics", "dmipy_sim.bloch",
-    "dmipy_sim.mt", "dmipy_sim.mt_walk", "dmipy_sim.fields.susceptibility", "dmipy_sim.fields.susceptibility_field",
-    # the engine package (#88 step 4); the flat names above stay as warning shims for one release
+    "dmipy_sim.replay.phantom", "dmipy_sim.replay.trajectories",
+    "dmipy_sim.fields.susceptibility", "dmipy_sim.fields.susceptibility_field",
+    # the engine package
     "dmipy_sim.engine", "dmipy_sim.engine.core", "dmipy_sim.engine.physics", "dmipy_sim.engine.bloch",
     "dmipy_sim.engine.pulse_sequence", "dmipy_sim.engine.mt", "dmipy_sim.engine.mt_walk",
     "dmipy_sim.engine.gpu", "dmipy_sim.engine._gpu_config",
-    # the replay package (#88 step 5); dmipy_sim.replay is the package and keeps replay.py's surface
-    "dmipy_sim.replay.replay", "dmipy_sim.replay.trajectories", "dmipy_sim.replay.compression",
-    "dmipy_sim.replay.bank", "dmipy_sim.replay.phantom", "dmipy_sim.replay.sh_convolution", "dmipy_sim.replay.gaunt",
+    # the replay package; dmipy_sim.replay is the package and keeps replay.py's surface
     "dmipy_sim.replay._replay_kernel", "dmipy_sim.replay.builders.mesh_axon", "dmipy_sim.replay.builders.mesh_bundle",
-    "dmipy_sim.mesh_axon", "dmipy_sim.mesh_bundle", "dmipy_sim._replay_kernel",
-    # acquisition / fields / viz packages (#88 step 5, part 2); dmipy_sim.viz is the package re-exporting viz.py
-    "dmipy_sim.acquisition.waveforms", "dmipy_sim.acquisition.rf", "dmipy_sim.acquisition.noise",
-    "dmipy_sim.fields.susceptibility", "dmipy_sim.fields.susceptibility_field",
-    "dmipy_sim.viz", "dmipy_sim.viz.viz", "dmipy_sim.viz.pedagogy", "dmipy_sim.noise", "dmipy_sim.pedagogy",
+    # acquisition / fields / viz; dmipy_sim.viz is the package re-exporting viz.py
+    "dmipy_sim.acquisition.noise",
+    "dmipy_sim.viz", "dmipy_sim.viz.viz", "dmipy_sim.viz.pedagogy",
 ]
 
 
@@ -194,8 +190,8 @@ def test_duck_typed_objects_still_read_through_the_legacy_attributes():
 
 
 # ── the engine reads the protocol, not attribute probes ──────────────────────────────────
-_ENGINE_MODULES = ["core.py", "physics.py", "bloch.py", "mt_walk.py", "mt.py", "pedagogy.py",
-                   "mesh_bundle.py"]
+_ENGINE_MODULES = ["engine/core.py", "engine/physics.py", "engine/bloch.py", "engine/mt_walk.py", "engine/mt.py", "viz/pedagogy.py",
+                   "replay/builders/mesh_bundle.py"]
 # Probes that remain, and why. Every other property is a declared attribute.
 _ALLOWED_PROBES = {
     # physics.length_scales_of: the ONE reader of legacy attributes for non-Geometry objects
@@ -222,3 +218,18 @@ def test_engine_probes_no_undeclared_geometry_attribute():
     assert not undeclared, (
         f"the engine probes geometry attributes by name: {undeclared}. Declare them on "
         f"dmipy_sim.geometry.base.Geometry (or in LengthScales) and read them directly.")
+
+
+def test_every_loaded_dmipy_sim_module_comes_from_this_package_tree():
+    """An editable install of another checkout registers a meta-path finder that resolves any
+    ``dmipy_sim.<name>`` the imported package lacks from THAT checkout, so a module deleted here
+    can silently import from elsewhere and a test of its absence passes vacuously. Every loaded
+    dmipy_sim module must live under the package that was imported."""
+    import sys
+    root = Path(dmipy_sim.__file__).parent.resolve()
+    for name in _DOWNSTREAM_MODULES:
+        importlib.import_module(name)
+    strays = {n: getattr(m, "__file__", None) for n, m in list(sys.modules.items())
+              if n.startswith("dmipy_sim") and getattr(m, "__file__", None)
+              and not Path(m.__file__).resolve().is_relative_to(root)}
+    assert not strays, f"modules loaded from outside {root}: {strays}"

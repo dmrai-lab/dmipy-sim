@@ -24,7 +24,7 @@ import warnings
 
 import numpy as np
 
-from ..mesh import load_ply
+from ..geometry.mesh import load_ply
 
 _UM = 1e-6
 
