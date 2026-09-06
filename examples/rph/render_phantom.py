@@ -14,7 +14,7 @@ from matplotlib.colors import ListedColormap
 from circular_wm_phantom import (circular_wm, write_rph, replay_rph, amplitude_for_b,
                                  PACK, N, R_IN, R_OUT)
 from dmipy_sim.replay import read_rpk
-from dmipy_sim.sh_convolution import PackResponder
+from dmipy_sim.replay.sh_convolution import PackResponder
 
 vi, sid, frac, sh = circular_wm()
 pk = read_rpk(PACK)

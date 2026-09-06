@@ -164,7 +164,7 @@ def load_cactus_bundle(run_dir, *, g_ratio=None, scale=_UM, side_um=None,
     side = side_um if side_um is not None else _box_side_um(run_dir)
     if side is None:
         # No config header: fall back to the meshes' own largest extent, in mesh units.
-        from ..mesh import load_ply
+        from ..geometry.mesh import load_ply
         V0, _ = load_ply(outer_plys[0], scale=1.0)
         side = float((V0.max(0) - V0.min(0)).max())
 

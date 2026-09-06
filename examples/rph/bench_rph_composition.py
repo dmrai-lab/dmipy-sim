@@ -1,8 +1,8 @@
 import time
 import numpy as np
 from dmipy_sim.replay import read_rpk
-from dmipy_sim.gaunt import sphere_quadrature, real_sh
-from dmipy_sim.sh_convolution import (pack_response, coupled_spectrum_at,
+from dmipy_sim.replay.gaunt import sphere_quadrature, real_sh
+from dmipy_sim.replay.sh_convolution import (pack_response, coupled_spectrum_at,
                                       apply_odf_coupled, watson_odf_sh)
 PACK = '/home/rutger/dmrai-ws/winther-data/hf_release_winther_g6/packs/axon06.rpk'
 pk = read_rpk(PACK)

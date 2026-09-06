@@ -31,8 +31,8 @@ for _v in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
 import numpy as np
 from scipy.optimize import curve_fit
 
-from dmipy_sim.geometries import pack_spheres, PackedSpheres
-from dmipy_sim.pulse_sequence import fexi, run_bloch_sequence   # <- library constructor (no handroll)
+from dmipy_sim.geometry import pack_spheres, PackedSpheres
+from dmipy_sim.engine.pulse_sequence import fexi, run_bloch_sequence   # <- library constructor (no handroll)
 
 # ---- substrate: uniform-D packed spheres (3D restriction gives the intra/extra ADC contrast) ----
 D = 2e-9                                        # bulk diffusivity (m^2/s)

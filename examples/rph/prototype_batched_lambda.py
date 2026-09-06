@@ -23,9 +23,9 @@ import time
 import numpy as np
 from scipy.fft import dct
 from dmipy_sim.replay import read_rpk
-from dmipy_sim.gaunt import sphere_quadrature
-from dmipy_sim.sh_convolution import _rotations_from_axis, _se_gate_local
-from dmipy_sim.compression import read_position_coeffs
+from dmipy_sim.replay.gaunt import sphere_quadrature
+from dmipy_sim.replay.sh_convolution import _rotations_from_axis, _se_gate_local
+from dmipy_sim.replay.compression import read_position_coeffs
 from dmipy_sim.constants import GAMMA
 pk = read_rpk('/home/rutger/dmrai-ws/winther-data/hf_release_winther_g6/packs/axon06.rpk')
 pm = pk.meta['compression']['channels']['susceptibility_path']
@@ -36,7 +36,7 @@ b = np.array([0,0,1.0]); dirs, w = sphere_quadrature(32,64)
 # --- shared, direction-independent (currently rebuilt per measurement) -------------
 C = read_position_coeffs(pk.arrays, dtype=np.float64); K = C.shape[1]
 q = (GAMMA*dt*0.05)*np.einsum('k,wkd->wd', dct(prof,type=2,norm='ortho')[:K], C)
-Cs, _ = __import__('dmipy_sim.bank', fromlist=['x']).susc_path_coeffs(pk.arrays, pm)
+Cs, _ = __import__('dmipy_sim.replay.bank', fromlist=['x']).susc_path_coeffs(pk.arrays, pm)
 names = list(pm['channels']); i_loc,i_xx,i_yy = (names.index(s) for s in ('iso_local','iso_P_xx','iso_P_yy'))
 zz = 3*Cs[:,i_loc]-Cs[:,i_xx]-Cs[:,i_yy]; at = names.index('iso_P_xy')
 Cs = np.insert(Cs, at, zz, axis=1); names = names[:at]+['iso_P_zz']+names[at:]

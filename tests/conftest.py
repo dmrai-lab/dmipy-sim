@@ -6,6 +6,22 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+# ── one dmipy_sim, this one ─────────────────────────────────────────────────────────────────
+# A `pip install -e` of ANOTHER checkout leaves a setuptools editable finder on sys.meta_path that
+# maps the name `dmipy_sim` to that checkout. It answers for any `dmipy_sim.<name>` the package
+# imported here lacks, so a module deleted in this tree quietly imports from the other one (and its
+# stale code with it). Drop every such finder that does not point at this tree; the API-surface
+# test checks afterwards that every loaded dmipy_sim module lives under this package.
+import pathlib as _pathlib
+import sys as _sys
+import dmipy_sim as _dmipy_sim
+_ROOT = _pathlib.Path(_dmipy_sim.__file__).parent.resolve()
+for _f in list(_sys.meta_path):
+    _mapping = getattr(_sys.modules.get(getattr(_f, "__module__", ""), None), "MAPPING", None)
+    if isinstance(_mapping, dict) and "dmipy_sim" in _mapping \
+            and _pathlib.Path(_mapping["dmipy_sim"]).resolve() != _ROOT:
+        _sys.meta_path.remove(_f)
+
 # ── Persistent XLA compilation cache ────────────────────────────────────────────────────
 # MUST be configured before anything triggers a JAX computation, hence the position here.
 #

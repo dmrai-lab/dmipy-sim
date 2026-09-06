@@ -12,8 +12,8 @@ import json
 import numpy as np
 
 from dmipy_sim.replay import read_rpk
-from dmipy_sim.gaunt import n_sh_coeffs
-from dmipy_sim.sh_convolution import (PackResponder, apply_odf_coupled,
+from dmipy_sim.replay.gaunt import n_sh_coeffs
+from dmipy_sim.replay.sh_convolution import (PackResponder, apply_odf_coupled,
                                       compose_voxel, free_water_response,
                                       watson_odf_sh)
 
