@@ -61,19 +61,26 @@ def _refocusing_residual(G, dt):
 
 
 def _calc_b_from_waveform(G, dt):
-    """b = gamma^2 ∫ |q(t)|^2 dt with q(t) = gamma ∫ G dt'.  Shapes (n_m,n_t,3)->(n_m,)."""
-    G_f64 = np.asarray(G, dtype=np.float64)
-    q = np.cumsum(G_f64 * dt, axis=1) * GAMMA   # (n_m, n_t, 3) rad/m
-    q_sq = np.sum(q ** 2, axis=2)               # (n_m, n_t)
-    b = np.trapezoid(q_sq, dx=dt, axis=1)       # (n_m,) s/m^2
-    return b.astype(np.float64)
+    """b per measurement, ``(n_m, n_t, 3) -> (n_m,)``: :func:`dmipy_sim.waveforms.b_from_gradient`."""
+    from ..waveforms import b_from_gradient
+    return b_from_gradient(G, dt)
 
 
 def _btensor_from_waveform(G, dt):
-    """B_ij = gamma^2 ∫ q_i q_j dt for each measurement.  (n_m,n_t,3) -> (n_m,3,3)."""
+    """B-tensor per measurement, ``(n_m, n_t, 3) -> (n_m, 3, 3)``:
+    :func:`dmipy_sim.waveforms.btensor_from_gradient`."""
+    from ..waveforms import btensor_from_gradient
+    return btensor_from_gradient(G, dt)
+
+
+def _scale_to_b(G, dt, bvalues):
+    """Scale each measurement of ``G`` so its numeric b equals ``bvalues`` exactly (b ∝ G²).
+    Measurements with b = 0 or an all-zero gradient are left as they are."""
     G = np.asarray(G, dtype=np.float64)
-    q = np.cumsum(G * dt, axis=1) * GAMMA       # (n_m, n_t, 3) rad/m
-    return np.einsum('mti,mtj->mij', q, q) * dt
+    b_num = _calc_b_from_waveform(G, dt)
+    b_t = np.broadcast_to(np.asarray(bvalues, dtype=np.float64), b_num.shape)
+    scale = np.where((b_num > 0) & (b_t > 0), np.sqrt(np.where(b_num > 0, b_t / np.where(b_num > 0, b_num, 1.0), 1.0)), 1.0)
+    return (G * scale[:, None, None]).astype(np.float32)
 
 
 def _resolve_te(TE, t_total_min, n_m):

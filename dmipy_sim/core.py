@@ -415,7 +415,6 @@ def simulate(
         waveform = waveform.waveform
     G = waveform.G          # (n_measurements, n_t, 3)
     dt = waveform.dt
-    echo_idx = waveform.echo_idx
 
     # Substrate placement in the bore (e.g. Mesh with orientation/R): the walk runs
     # in the geometry's native frame, so rotate the ACQUISITION into that frame

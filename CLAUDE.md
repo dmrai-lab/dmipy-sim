@@ -98,7 +98,8 @@ acquisition; assert to `max(0.02, 1/√N)`.
 | `mt.py` | magnetization-transfer host physics: impact-angle `stick_probability`, `(κ_MT,dwell)↔(f_b,k_f)` conversions, two-pool Bloch–McConnell oracle (`bloch_mcconnell_*`, `mt_z_spectrum`) |
 | `bloch.py` | **forward vector-Bloch engine** `simulate_bloch` — carries `M=(Mx,My,Mz)` through RF + gradient + relaxation in ONE forward pass (no replay); opt-in MT binding + bound-pool blend + off-resonance + emergent voxel-scale crusher + **membrane permeability** (sub-stepped Powles crossing, so exchange across a longitudinal-storage mixing time is captured — e.g. FEXI) |
 | `pulse_sequence.py` | `BlochSequence`, `gradient_echo`/`spin_echo` readouts, `prepend_mt_prep` (off-resonance MT-prep saturation block), `run_bloch_sequence`, `emergent_z_spectrum` (turnkey CW-saturation Z-spectrum sweep; emergent counterpart of `mt.mt_z_spectrum`) |
-| `waveforms.py` | `Waveform`, `pgse/ogse/cpmg/…`, `set_b`, b-tensor helpers |
+| `waveforms.py` | `Waveform`, `pgse/ogse/cpmg/…`, `set_b`; **the** b / B-tensor integrals `b_from_gradient`, `btensor_from_gradient` (rectangular q, trapezoidal ∫; `calc_b`/`calc_btensor` and `sequences` read them) |
+| `sequences/` | `Sequence` = a `Waveform` (same readout attributes: `echo_idx`, `echo_indices`, `rf_events`, `chi_perp`, …) plus per-measurement encoding (`bvalues`, `gradient_directions`, `delta`, `Delta`, `TE`, family flags) for dmipy-fit; every `from_X` constructor ends with an exact numeric scaling so `bvalues == b_from_gradient(G, dt)`; `pulseq` import/export |
 | `gpu.py`, `_gpu_config.py` | GPU guard/session, device-memory cap |
 | `noise.py` | Rician / nc-χ measurement noise |
 | `sh_convolution.py` | SH convolution for orientation distributions |
