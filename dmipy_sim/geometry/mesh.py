@@ -285,8 +285,9 @@ class Mesh(Geometry):
     feature_radius : float, optional
         Characteristic feature size (e.g. a cell/pore radius), used to size the
         diffusion sub-step (``step ~ feature_radius/6``, or ``/25`` when permeable)
-        and the grid.  Defaults to half the smallest box side; **pass the real cell
-        radius for packed substrates**, otherwise the step may be too coarse.
+        and, through it, the grid.  Defaults to half the smallest box side, which is
+        the pore of a closed cell and far too large for a bundle in a big box: **pass
+        the real cell radius for packed substrates**, otherwise the step is too coarse.
     surface_relaxivity_t2 : float, optional
         Surface relaxivity ρ₂ (m/s), symmetric (same on both sides of the wall).
         Applies a Brownstein–Tarr weight at the wall. For a side-dependent ρ, use
@@ -317,8 +318,14 @@ class Mesh(Geometry):
     R : (3, 3) array-like, optional
         Explicit mesh→lab rotation matrix (mutually exclusive with ``orientation``).
     cell_size : float, optional
-        Acceleration-grid cell size.  Defaults to ``4 * step`` (safe for the 27-cell
-        neighbourhood).  Larger = fewer/denser cells; must be ≥ the maximum step.
+        Acceleration-grid cell size.  Defaults to three 90th-percentile edge lengths,
+        clipped to ``[step, 4 * step]``: a cell holds a few triangles rather than a
+        few hundred, and the collision rule then bounds the sub-step at ``0.9 cell``.
+        The walk's cost per waveform step is independent of the cell (candidates per
+        cell scale as ``(cell / edge)^2``, sub-steps as ``(step / cell)^2``); the
+        gather's device memory scales with the candidates, so the smallest cell that
+        still holds a triangle is the right one. ``quality_report()`` and
+        :meth:`memory_estimate` show the consequence.
     """
 
     supports_permeability = True   #: has a membrane a walker can cross
@@ -348,6 +355,14 @@ class Mesh(Geometry):
         self.vmax = np.asarray(voxel_max, np.float64) if voxel_max is not None else bbmax.copy()
         self.L = self.vmax - self.vmin
 
+        # ---- surface-resolution statistics (they size the defaults below) ----
+        _e = V[F]
+        edge = np.concatenate([
+            np.linalg.norm(_e[:, 1] - _e[:, 0], axis=1),
+            np.linalg.norm(_e[:, 2] - _e[:, 1], axis=1),
+            np.linalg.norm(_e[:, 0] - _e[:, 2], axis=1)])
+        self.edge_median = float(np.median(edge))
+        self.edge_p90 = float(np.percentile(edge, 90))
         if feature_radius is None:
             sides = self.vmax - self.vmin
             feature_radius = 0.5 * float(np.min(sides[sides > 0]))
@@ -512,14 +527,7 @@ class Mesh(Geometry):
         # mesh->lab rotation; None when unoriented (simulate skips the hook).
         self._orient_R = None if Rm is None else np.ascontiguousarray(Rm, np.float32)
 
-        # ---- surface-resolution diagnostics + permeability coarseness warning ----
-        _e = V[F]
-        edge = np.concatenate([
-            np.linalg.norm(_e[:, 1] - _e[:, 0], axis=1),
-            np.linalg.norm(_e[:, 2] - _e[:, 1], axis=1),
-            np.linalg.norm(_e[:, 0] - _e[:, 2], axis=1)])
-        self.edge_median = float(np.median(edge))
-        self.edge_p90 = float(np.percentile(edge, 90))
+        # ---- permeability coarseness warning ----
         self.edge_feature_ratio = self.edge_median / self.radius
         if self.permeability is not None and self.edge_feature_ratio > _PERM_EDGE_RATIO_MAX:
             warnings.warn(
@@ -532,7 +540,13 @@ class Mesh(Geometry):
                 stacklevel=2)
 
         step_l = self.radius / (25.0 if self.permeability is not None else 6.0)
-        self.cell_size = float(cell_size) if cell_size is not None else 4.0 * step_l
+        if cell_size is None:
+            # a few triangles per cell, never finer than the step (the collision rule would then
+            # ask for sub-steps below the R/6 rule) and never coarser than the previous 4 step.
+            # At 4 step a 20k-triangle sphere gathered 1091 triangles per cell and asked 18.5 GiB
+            # for 4000 walkers; at the step it gathers a few tens.
+            cell_size = float(np.clip(3.0 * self.edge_p90, step_l, 4.0 * step_l))
+        self.cell_size = float(cell_size)
         self.margin = self.cell_size
 
         vn = _smooth_vertex_normals(V, F)
@@ -1053,6 +1067,18 @@ class Mesh(Geometry):
             lab[undecided] = np.where(inside, 1, 0)
         return jnp.asarray(lab, jnp.int32)
 
+    @property
+    def gather_bytes_per_walker(self):
+        """Bytes one walker's 27-cell candidate gather holds per sub-step: the triangle vertices,
+        vertex normals and face normals of ``27 C`` triangles in float32."""
+        return int(27 * self.C * (9 + 9 + 3) * 4)
+
+    def memory_estimate(self, n_walkers):
+        """Rough peak device memory (bytes) of a walk with ``n_walkers``: two live copies of the
+        gather (the gather and the segment-test intermediates), plus the positions. Compare with
+        the device's memory before choosing ``walker_batch_size``."""
+        return int(2 * n_walkers * self.gather_bytes_per_walker + n_walkers * 3 * 4 * 8)
+
     def quality_report(self, verbose=True):
         """Surface-resolution diagnostics + per-effect accuracy verdict.
 
@@ -1075,6 +1101,8 @@ class Mesh(Geometry):
             "grid_dims": tuple(int(x) for x in self.dims),
             "grid_max_occupancy": int(self.max_occ),
             "grid_overflow": int(self.overflow),
+            "candidates_per_cell": int(self.C),
+            "gather_bytes_per_walker": int(self.gather_bytes_per_walker),
             "periodic": self.periodic,
             "diffusion_noise_floor": True,
             "relaxivity_noise_floor": True,
@@ -1098,6 +1126,9 @@ class Mesh(Geometry):
             print(f"  edge/feature ratio    : {ratio:.3f}  (permeability needs <~ {_PERM_EDGE_RATIO_MAX})")
             print(f"  grid dims / max-occ   : {rep['grid_dims']} / {rep['grid_max_occupancy']}"
                   + (f"  OVERFLOW={rep['grid_overflow']}" if self.overflow else ""))
+            print(f"  gather per walker     : 27 x {self.C} triangles = "
+                  f"{self.gather_bytes_per_walker / 1e6:.2f} MB  "
+                  f"(~{self.memory_estimate(10_000) / 1e9:.1f} GB for 10k walkers)")
             print("  MC-noise-floor accuracy:")
             print("    restricted diffusion : YES")
             print("    surface relaxivity   : YES")
