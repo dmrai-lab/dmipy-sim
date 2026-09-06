@@ -7,8 +7,8 @@ since the per-walker mean recombines exactly as a size-weighted mean.
 import numpy as np
 import pytest
 
-from dmipy_sim import gpu
-from dmipy_sim.gpu import gpu_available, check_gpu, free_gpu_memory, list_gpu_processes
+from dmipy_sim.engine import gpu
+from dmipy_sim.engine.gpu import gpu_available, check_gpu, free_gpu_memory, list_gpu_processes
 
 
 def test_gpu_available_is_bool():

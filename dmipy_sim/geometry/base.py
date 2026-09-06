@@ -33,7 +33,7 @@ class LengthScales(NamedTuple):
     is_mesh_feature : bool
         True when ``min_feature`` is a meshing parameter (a ``feature_radius``) rather than a
         physical pore, so the pore-based rules do not apply to it (see
-        :func:`~dmipy_sim.physics.walk_sub_steps`).
+        :func:`~dmipy_sim.engine.physics.walk_sub_steps`).
     min_gap : float or None
         The narrowest clearance between two objects of a packing, periodic images included.
         Declared for the packed geometries; not yet consumed by the sub-step rules.

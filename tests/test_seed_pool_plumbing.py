@@ -31,7 +31,7 @@ import pytest
 import jax
 
 from dmipy_sim import Sphere, cpmg, pgse, set_b, simulate_cpmg
-from dmipy_sim.bloch import simulate_bloch
+from dmipy_sim.engine.bloch import simulate_bloch
 
 R = 2e-6
 D = 2e-9

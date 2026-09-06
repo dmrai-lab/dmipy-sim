@@ -109,7 +109,7 @@ def _case(request):
     name = request.param
     geom, geom_rho, n, wf = _supported_specs()[name]
     if name != "free":
-        from dmipy_sim.physics import resolve_sub_steps
+        from dmipy_sim.engine.physics import resolve_sub_steps
         n_sub = resolve_sub_steps(geom, D, float(wf.dt))
         assert n_sub > 1, (f"[{name}] the dispatch asks for {n_sub} sub-step; this parity must "
                            f"exercise sub-stepping")

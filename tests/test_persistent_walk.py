@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
-from dmipy_sim import core
+from dmipy_sim.engine import core
 from dmipy_sim.bank import _master_arrays
 
 D = 2e-9

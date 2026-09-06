@@ -1,7 +1,7 @@
 """Replay-pack assembler — walk once, compress, self-certify, freeze into a ``.rpk``.
 
 :func:`build_replay_pack` turns a **master walk** (from
-:func:`dmipy_sim.core.simulate_trajectories`, ``save_relaxation_data=True``) into a compressed,
+:func:`dmipy_sim.engine.core.simulate_trajectories`, ``save_relaxation_data=True``) into a compressed,
 self-describing replay pack: the position ensemble is compressed by a :mod:`dmipy_sim.compression`
 codec (``bridge_dst``), the tier channels the certified envelope needs are carried
 (bulk relaxation via the compartment map, surface relaxivity via the boundary-local-time channel,

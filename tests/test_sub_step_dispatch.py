@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
-from dmipy_sim.physics import (resolve_sub_steps, walk_sub_steps, surface_sub_steps,
+from dmipy_sim.engine.physics import (resolve_sub_steps, walk_sub_steps, surface_sub_steps,
                                permeable_sub_steps, collision_sub_steps, mt_sub_steps,
                                make_step_fn, make_packed_myelin_step_fn)
 
@@ -67,7 +67,7 @@ def test_disabling_the_surface_criterion_keeps_the_reflection_criterion():
                                   lambda: d.Cylinder(2e-6, (0, 0, 1), permeability=1e-5),
                                   lambda: d.Sphere(2e-6), _mesh_rho])
 def test_fused_and_bloch_kernels_take_the_dispatched_count(make):
-    from dmipy_sim.bloch import _make_bloch_step_fn
+    from dmipy_sim.engine.bloch import _make_bloch_step_fn
     g = make()
     rho = g.surface_relaxivity_t2 or 0.0
     want = resolve_sub_steps(g, D, DT, surface=rho > 0.0)

@@ -15,7 +15,7 @@ import numpy as np
 import pytest
 
 from dmipy_sim.geometry import Sphere
-from dmipy_sim.physics import collision_sub_steps, walk_sub_steps, _geometry_radius
+from dmipy_sim.engine.physics import collision_sub_steps, walk_sub_steps, _geometry_radius
 
 trimesh = pytest.importorskip("trimesh")
 
@@ -87,7 +87,7 @@ def test_the_observables_are_converged_at_the_collision_criterion():
     `radius` here would silently leave every run at the same step and compare a configuration against
     itself, which is how this test first passed while asserting nothing.
     """
-    from dmipy_sim.core import simulate_trajectories
+    from dmipy_sim.engine.core import simulate_trajectories
     mesh = _mesh_sphere()
     dt_save, T_max, n = 2e-5, 5e-3, 3000
     n_coll = collision_sub_steps(mesh, D, dt_save)
@@ -127,7 +127,7 @@ def test_a_slab_is_sub_stepped_by_its_width():
     to 1.42 s against a Brownstein-Tarr 1.0 s. `tests/test_compression.py` caught it as a walk sanity check.
     """
     from dmipy_sim import Box1D
-    from dmipy_sim.physics import _geometry_radius, walk_sub_steps
+    from dmipy_sim.engine.physics import _geometry_radius, walk_sub_steps
 
     L, D, dt = 2e-6, 2e-9, 3e-3
     g = Box1D(length=L)
@@ -141,7 +141,7 @@ def test_a_slab_is_sub_stepped_by_its_width():
 
 def test_a_walled_geometry_without_a_recognised_scale_warns():
     """One sub-step is right for free diffusion and wrong for anything with walls, so it must not be silent."""
-    from dmipy_sim.physics import walk_sub_steps
+    from dmipy_sim.engine.physics import walk_sub_steps
 
     class WalledButUnrecognised:
         surface_area = 1e-11
@@ -169,7 +169,7 @@ def test_the_step_cell_assertion_actually_guards():
     import trimesh as _tm
     from dmipy_sim.geometry.mesh import Mesh
     from dmipy_sim.mesh_bundle import _min_radius
-    from dmipy_sim.physics import permeable_sub_steps
+    from dmipy_sim.engine.physics import permeable_sub_steps
     from tests.conftest import assert_step_resolves_the_collision_lookup
 
     UM = 1e-6

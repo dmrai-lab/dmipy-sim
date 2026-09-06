@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
-from dmipy_sim import core
+from dmipy_sim.engine import core
 from dmipy_sim.geometry.analytic import PermeableShell, PermeableSlab1D
 
 D = 2e-9

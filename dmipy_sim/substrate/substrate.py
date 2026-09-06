@@ -10,7 +10,7 @@ source for every physical constant, and it is this dataclass (with the cited
 
 Longitudinal (T1) relaxation and a magnetization-transfer bound pool (``kappa_MT``,
 ``dwell_time``, ``T2_bound``, ``T1_bound``, ``off_resonance_bound``; see
-``dmipy_sim.mt``) are configured here -- consumed by the coherence-gated walk and
+``dmipy_sim.engine.mt``) are configured here -- consumed by the coherence-gated walk and
 the vector-Bloch forward path.  Susceptibility (Delta_chi / B0) is deliberately out
 of scope for this public engine.
 """
@@ -88,7 +88,7 @@ class Substrate:
     # -- magnetization transfer (bound / semisolid pool); OFF by default --
     # kappa_MT is the MT surface REACTIVITY (m/s): a free spin sticks at a wall hit
     # of penetration d_perp with p = min(1, 2 (kappa_MT/D) d_perp) -- the same
-    # impact-angle boundary-local-time rule as rho2/kappa (see dmipy_sim.mt).
+    # impact-angle boundary-local-time rule as rho2/kappa (see dmipy_sim.engine.mt).
     # k_f = kappa_MT * (S/V); k_r = 1/dwell_time; f_bound = k_f/(k_f+k_r).
     # A stuck spin freezes and relaxes with (T2_bound, T1_bound, off_resonance_bound);
     # it is released after a mean dwell_time. kappa_MT=0 -> MT disabled (default).
@@ -371,17 +371,17 @@ class Substrate:
         surface for the geometry in use (e.g. 2/R for a cylinder cross-section,
         computed by the caller).  Exact analogue of 1/T2_surf = rho * (S/V).
         """
-        from ..mt import forward_rate
+        from ..engine.mt import forward_rate
         return forward_rate(self.kappa_MT, S_over_V)
 
     def mt_backward_rate(self) -> float:
         """Backward (bound->free) exchange rate k_r = 1/dwell_time, s^-1."""
-        from ..mt import backward_rate
+        from ..engine.mt import backward_rate
         return backward_rate(self.dwell_time)
 
     def mt_bound_fraction(self, S_over_V: float) -> float:
         """Equilibrium bound-pool fraction f_b = k_f/(k_f+k_r) for this geometry."""
-        from ..mt import bound_fraction
+        from ..engine.mt import bound_fraction
         return bound_fraction(self.kappa_MT, self.dwell_time, S_over_V)
 
     @classmethod
@@ -395,7 +395,7 @@ class Substrate:
         exchange rate ``k_forward`` (s^-1) into the microscopic (kappa_MT,
         dwell_time) for a surface of ratio ``S_over_V`` (1/m).
         """
-        from ..mt import kappa_MT_from_forward_rate, dwell_time_from_fraction
+        from ..engine.mt import kappa_MT_from_forward_rate, dwell_time_from_fraction
         kappa_MT = kappa_MT_from_forward_rate(k_forward, S_over_V)
         dwell_time = dwell_time_from_fraction(f_bound, k_forward)
         overrides.update(kappa_MT=kappa_MT, dwell_time=dwell_time,

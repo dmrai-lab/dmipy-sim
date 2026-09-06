@@ -44,7 +44,7 @@ def _walk_record(geometry, diffusivity, n_t, dt, n_walkers, seed):
     # with per-compartment diffusivity + permeability, so use the dedicated trajectory step
     # function rather than the single-diffusivity generic reflect below.
     if geometry._is_packed_myelinated:
-        from .physics import make_packed_myelin_traj_step_fn
+        from .engine.physics import make_packed_myelin_traj_step_fn
         step_fn = make_packed_myelin_traj_step_fn(geometry, dt)
         pk, wk = jax.random.split(jax.random.PRNGKey(seed))
         r0 = geometry.init_positions(n_walkers, pk)
@@ -363,7 +363,7 @@ def _magnitude_walk(geometry, waveform, rho, T2_per_comp, n_walkers, seed, want_
     origin pool (0 extra, 1 intra, 2 myelin), and (optionally) its position track."""
     import jax
     import jax.numpy as jnp
-    from .physics import make_packed_myelin_traj_step_fn
+    from .engine.physics import make_packed_myelin_traj_step_fn
 
     G = np.asarray(waveform.G)
     G = G[0] if G.ndim == 3 else G
@@ -518,7 +518,7 @@ def magnitude_movie(geometry, waveform, save, *, rho, T2_per_comp, n_walkers=400
     import matplotlib.pyplot as plt
     from matplotlib.gridspec import GridSpec
     from matplotlib.animation import FuncAnimation
-    from .physics import make_packed_myelin_traj_step_fn
+    from .engine.physics import make_packed_myelin_traj_step_fn
 
     G = np.asarray(waveform.G)
     G = G[0] if G.ndim == 3 else G
@@ -621,7 +621,7 @@ def magnitude_spatial_movie(geometry, waveform, save, *, rho, T2_per_comp, n_wal
     import matplotlib.pyplot as plt
     from matplotlib.gridspec import GridSpec
     from matplotlib.animation import FuncAnimation
-    from .physics import make_packed_myelin_traj_step_fn
+    from .engine.physics import make_packed_myelin_traj_step_fn
 
     G = np.asarray(waveform.G)
     G = G[0] if G.ndim == 3 else G

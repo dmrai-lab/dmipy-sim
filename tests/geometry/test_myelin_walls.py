@@ -155,7 +155,7 @@ def test_bounce_budget_and_candidates_follow_the_worst_case():
     assert w_gap.n_cand == 2 and w_small.n_cand == 1
     c, L = _pack([R] * 30, 0.7, 0.5, seed=0)
     pm = d.PackedMyelinatedCylinders([R] * 30, 0.7, c, L, N_max=64)
-    from dmipy_sim.physics import make_myelin_substep
+    from dmipy_sim.engine.physics import make_myelin_substep
     sub = make_myelin_substep(pm, 1e-6)
     assert 8 <= sub.n_cand <= 64
 

@@ -1,14 +1,14 @@
 """MT analytic oracle + parameter plumbing (Piece A of the MT staging ladder).
 
 Pure numpy/scipy (no Monte-Carlo) so they run fast on CPU.  These pin the two-pool
-Bloch--McConnell oracle (``dmipy_sim.mt``) that the forward vector-Bloch engine
+Bloch--McConnell oracle (``dmipy_sim.engine.mt``) that the forward vector-Bloch engine
 (later pieces) validates its emergent MC exchange against, plus the ``Substrate`` MT
 configuration (kappa_MT/dwell_time <-> f_bound/k_forward conversions).
 """
 import numpy as np
 import pytest
 
-from dmipy_sim import mt
+from dmipy_sim.engine import mt
 from dmipy_sim.substrate import Substrate
 
 

@@ -30,6 +30,10 @@ _DOWNSTREAM_MODULES = [
     "dmipy_sim.geometry", "dmipy_sim.geometry.mesh", "dmipy_sim.geometry.curved_tube",
     "dmipy_sim.phantom", "dmipy_sim.trajectories", "dmipy_sim.physics", "dmipy_sim.bloch",
     "dmipy_sim.mt", "dmipy_sim.mt_walk", "dmipy_sim.susceptibility", "dmipy_sim.susceptibility_field",
+    # the engine package (#88 step 4); the flat names above stay as warning shims for one release
+    "dmipy_sim.engine", "dmipy_sim.engine.core", "dmipy_sim.engine.physics", "dmipy_sim.engine.bloch",
+    "dmipy_sim.engine.pulse_sequence", "dmipy_sim.engine.mt", "dmipy_sim.engine.mt_walk",
+    "dmipy_sim.engine.gpu", "dmipy_sim.engine._gpu_config",
 ]
 
 
@@ -161,7 +165,7 @@ def test_length_scales_match_the_geometry_definition():
 
 def test_duck_typed_objects_still_read_through_the_legacy_attributes():
     """An object that is not a Geometry is sized from its legacy attributes, in one place."""
-    from dmipy_sim.physics import length_scales_of
+    from dmipy_sim.engine.physics import length_scales_of
 
     class Slab:
         length = 3e-6

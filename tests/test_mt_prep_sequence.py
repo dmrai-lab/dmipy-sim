@@ -1,6 +1,6 @@
 """Sequence builder + emergent voxel-scale crusher (Piece C of the MT staging ladder).
 
-Pins the lean forward-native ``dmipy_sim.pulse_sequence`` (readout builders, the
+Pins the lean forward-native ``dmipy_sim.engine.pulse_sequence`` (readout builders, the
 MT-prep saturation block, the crusher) against the forward engine.  MT *binding* is
 Piece D; here the substrate has no bound pool, so an off-resonance saturation pulse
 mainly demonstrates the plumbing + free-water specificity (the broad bound-pool dip
@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 
 from dmipy_sim import FreeDiffusion
-from dmipy_sim.pulse_sequence import (BlochSequence, gradient_echo, spin_echo,
+from dmipy_sim.engine.pulse_sequence import (BlochSequence, gradient_echo, spin_echo,
                                       prepend_mt_prep, run_bloch_sequence)
 
 D = 2e-9

@@ -14,9 +14,16 @@ import pytest
 import dmipy_sim as d
 
 PKG = pathlib.Path(d.__file__).parent
-ENGINE_MODULES = ["core.py", "mt_walk.py", "bank.py", "mesh_bundle.py", "mesh_axon.py", "compression.py",
-                  "physics.py", "trajectories.py", "bloch.py", "replay.py", "mt.py", "gpu.py", "_gpu_config.py"]
-GPU_MODULES = ["gpu.py", "_gpu_config.py"]
+ENGINE_MODULES = ["engine/core.py", "engine/mt_walk.py", "engine/physics.py", "engine/bloch.py", "engine/mt.py",
+                  "engine/gpu.py", "engine/_gpu_config.py",
+                  "bank.py", "mesh_bundle.py", "mesh_axon.py", "compression.py", "trajectories.py", "replay.py"]
+GPU_MODULES = ["engine/gpu.py", "engine/_gpu_config.py"]
+
+
+def test_the_scanned_modules_are_real_modules_not_shims():
+    """A moved module leaves a one-line shim at its old path; scanning the shim would pass vacuously."""
+    for m in ENGINE_MODULES + GPU_MODULES:
+        assert (PKG / m).read_text().count("\n") > 20, f"{m} is a shim or missing; point the scan at the real module"
 
 
 def _statements(src, token):
