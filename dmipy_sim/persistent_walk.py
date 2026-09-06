@@ -41,6 +41,9 @@ class PersistentWalk:
         rejected back into their compartment. Non-zero means the engine relabelled walkers.
     seed : int or None
         The producer's master seed.
+    diffusivity : float or None
+        The free diffusivity the walk was run with (m^2/s); what a surface-relaxivity replay divides
+        rho by.
     """
     positions: np.ndarray
     dt: float
@@ -51,6 +54,7 @@ class PersistentWalk:
     bound_frac: Optional[np.ndarray] = None
     illegal_crossings: int = 0
     seed: Optional[int] = None
+    diffusivity: Optional[float] = None
 
     @property
     def n_walkers(self):
@@ -89,6 +93,7 @@ class PersistentWalk:
         :func:`replay.bank.build_replay_pack`, which builds this itself."""
         out = dict(traj=self.positions, dt_traj=float(self.dt), T_max=self.T_max,
                    comp=self.compartment, dlog_b=self.boundary_local_time, bfrac=self.bound_frac,
-                   n_walkers=self.n_walkers, seed=0 if self.seed is None else int(self.seed))
+                   n_walkers=self.n_walkers, seed=0 if self.seed is None else int(self.seed),
+                   D_intra=self.diffusivity)
         out.update(extra)
         return out

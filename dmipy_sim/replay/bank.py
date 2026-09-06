@@ -485,85 +485,17 @@ def susc_path_field(b, b0_dir, *, B0, chi_iso, chi_aniso=0.0, has_aniso=False):
 
 # --------------------------------------------------------------- susceptibility replay (consume)
 def _pack_positions(pack):
-    """Reconstruct the (n_w, n_t, 3) trajectory from a pack's position codec."""
-    cx = pack.meta.get("compression", {})
-    meta = {"method": _cx.require_position_method(cx.get("method")), "K": int(cx.get("K", 0)),
-            "n_t": int(cx.get("n_t") or pack.n_t)}
-    wp = _cx.is_walker_preserving(meta["method"])
-    return _cx.decode(pack.arrays, meta, n_walkers=(pack.n_walkers if wp else None))
+    """The pack's decoded trajectory (see :meth:`ReplayPack.positions`)."""
+    return pack.positions()
 
 
 def replay_susc(pack, waveform, *, b0_dir=(0.0, 0.0, 1.0), B0=0.0, chi_iso=0.0, chi_aniso=0.0,
                 refocus_time=None, relaxation=True, complex_signal=False, compartment=None):
-    """Replay a gradient waveform on a static field-grid pack WITH susceptibility (the C3 consume
-    path). Reconstructs the trajectory, accrues the gradient phase and the susceptibility phase
-    (``assemble_field`` for ``(b0_dir,B0,chi_iso,chi_aniso)`` sampled along the walk, gated by the SE
-    ``refocus_time``) in the SAME complex mean so the diffusion x susceptibility cross-term is kept,
-    plus optional per-compartment relaxation. ``waveform`` has ``.G`` (n_meas,n_t,3) and ``.dt``;
-    returns the (complex or magnitude) signal (n_meas,).
-
-    ``compartment`` restricts the ensemble average to one pool: an ``int`` compartment id (as stored in
-    the pack's compartment channel -- 1 intra, 2 myelin for the mesh-axon packs), or a boolean mask over
-    walkers. The default ``None`` averages over everything.
-
-    This exists because the interesting comparisons are usually per-pool. An intra-axonal observable is
-    what a study reports and what a fit targets, and the packs carry a compartment channel precisely so
-    that question can be asked -- but without this argument the only way to ask it was to decode the
-    channel and rebuild the phase sum by hand, against private helpers."""
-    from ..constants import GAMMA
-    from ..fields.susceptibility_field import assemble_field, sample_grid
-    chans = (pack.meta.get("compression", {}).get("channels", {}) or {})
-    pm = chans.get("susceptibility_path")
-    has_grid = "susc_grid_iso_local" in pack.arrays
-    if pm is None and not has_grid:
-        raise ValueError("pack carries no susceptibility channel (neither susc_path_dct nor susc_grid_*).")
-    G = np.asarray(getattr(waveform, "G", waveform), np.float64)
-    dt = float(getattr(waveform, "dt", pack.dt))
-    pos = np.asarray(_pack_positions(pack), np.float64)                 # (n_w, n_t, 3)
-    n_w, n_t = pos.shape[0], pos.shape[1]
-    w = np.asarray(pack.arrays.get("spin_weights", np.ones(n_w)), np.float64)
-    gm = chans["susceptibility_grid"]
-    if pm is not None:
-        # PATH route (preferred): the field was sampled along the full-resolution walk at build time,
-        # so it does not depend on the position codec being lossless.
-        b, _ = susc_path_decode(pack.arrays, pm, n_w=n_w)
-        dB = susc_path_field(b, b0_dir, B0=B0, chi_iso=chi_iso, chi_aniso=chi_aniso,
-                             has_aniso=bool(gm.get("has_aniso")))
-    else:
-        basis = {"iso_local": np.asarray(pack.arrays["susc_grid_iso_local"], np.float64),
-                 "iso_P": np.asarray(pack.arrays["susc_grid_iso_P"], np.float64),
-                 "aniso_G": (np.asarray(pack.arrays["susc_grid_aniso_G"], np.float64)
-                             if "susc_grid_aniso_G" in pack.arrays else None),
-                 "shape": tuple(gm["shape"]), "voxel_size": np.asarray(gm["voxel_size"], float)}
-        dB = sample_grid(assemble_field(basis, b0_dir, B0=B0, chi_iso=chi_iso, chi_aniso=chi_aniso),
-                         pos, np.asarray(gm["origin"], float), gm["voxel_size"], periodic=False)
-    phi_x = GAMMA * dt * (dB * se_gate(n_t, dt, refocus_time)[None, :]).sum(1)                # (n_w,)
-    phi_G = gradient_phase(G, pos, dt)                                                          # (n_meas,n_w)
-    logw = np.zeros(n_w)
-    ch = (pack.meta.get("compression", {}).get("channels", {}) or {})
-    if relaxation and "comp_rle_vals" in pack.arrays and pack.meta.get("per_comp", {}).get("T2"):
-        comp = _cx.decode_occupancy(pack.arrays, ch["compartment"])["comp"]
-        pc = pack.meta["per_comp"]
-        logw = _cx.relaxation_logweight(comp, pc["T2"], pc.get("T1"), dt)
-    ew = w * np.exp(logw)
-    if compartment is not None:
-        sel = np.asarray(compartment)
-        if sel.dtype != bool:
-            comp_ids = _cx.decode_occupancy(pack.arrays, ch["compartment"])["comp"]
-            comp_ids = np.asarray(comp_ids)
-            comp_ids = comp_ids[:, 0] if comp_ids.ndim == 2 else comp_ids
-            sel = comp_ids.astype(int) == int(sel)
-        if sel.shape[0] != n_w:
-            raise ValueError(f"compartment mask has {sel.shape[0]} entries for {n_w} walkers")
-        if not sel.any():
-            raise ValueError(f"compartment selection matched no walkers (ids present: "
-                             f"{sorted(set(np.asarray(_cx.decode_occupancy(pack.arrays, ch['compartment'])['comp']).ravel().tolist()))})")
-        ew = np.where(sel, ew, 0.0)
-        norm = w[sel].sum()
-    else:
-        norm = w.sum()
-    S = (ew[None, :] * np.exp(1j * (phi_G + phi_x[None, :]))).sum(1) / norm
-    return S if complex_signal else np.abs(S)
+    """``pack.replay(waveform, B0=..., ...)``: the field-tier replay, kept under its old name.
+    ``relaxation=True`` here means "apply the pack's per-pool T2 when it carries them"."""
+    return pack.replay(waveform, relaxation=("auto" if relaxation else False), B0=B0, b0_dir=b0_dir,
+                       chi_iso=chi_iso, chi_aniso=chi_aniso, refocus_time=refocus_time,
+                       compartment=compartment, complex_signal=complex_signal)
 
 
 # --------------------------------------------------------------- pack generation
