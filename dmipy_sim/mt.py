@@ -129,9 +129,9 @@ def dwell_time_from_fraction(f_bound, k_f):
 # ``core.simulate_trajectories``).  The saved walk carries no RF/gradient (those are
 # replay knobs), so equilibration is purely of the bound-pool OCCUPANCY (and the
 # equilibrated spatial state): an all-free start under-fills the macromolecular pool
-# and biases the transfer whenever ``1/k_f`` is not ``<<`` the walk duration.  These
-# mirror the forward engine's ``bloch._surface_to_volume`` / ``_resolve_equilibrate_mode``
-# / ``_equilibrate_burnin`` but need no G/T2_bound 'fast'-safety demotion (no readout yet).
+# and biases the transfer whenever ``1/k_f`` is not ``<<`` the walk duration. The three
+# helpers below are the ONE implementation; the forward vector-Bloch engine (``bloch``) and
+# the MT trajectory producer (``mt_walk``) both read them.
 def surface_to_volume(geometry):
     """S/V (1/m) for the analytic closed shapes used by the 'fast' equilibrium seed;
     None otherwise, so the caller falls back to the geometry-agnostic burn-in."""
@@ -146,11 +146,15 @@ def surface_to_volume(geometry):
     return None
 
 
-def resolve_equilibrate_mode(equilibrate_binding, geometry):
-    """Map ``equilibrate_binding`` -> 'off' | 'burnin' | 'fast' for MT walk generation.
+def resolve_equilibrate_mode(equilibrate_binding, geometry, *, G=None, T2=None, T2_bound=None):
+    """Map ``equilibrate_binding`` -> 'off' | 'burnin' | 'fast' for every MT driver.
 
-    'auto' (the default when MT is on) -> 'burnin' (safe, geometry-agnostic).  'fast'
-    needs a known S/V, else it warns and falls back to 'burnin'.
+    'auto' (the default when MT is on) -> 'burnin' (safe, geometry-agnostic). 'fast' seeds the
+    equilibrium occupancy mid-air, so it needs a known S/V, else it warns and falls back to
+    'burnin'. A driver with a readout passes ``G``, ``T2`` and ``T2_bound``: mid-air bound
+    positions are position-invariant only when no gradient is on (``G == 0``) or the bound pool
+    is MR-dark (``T2_bound << T2``), so 'fast' is demoted to 'burnin' otherwise. A driver that
+    only records positions (the MT trajectory producer) has no readout and passes none.
     """
     import warnings
     eb = equilibrate_binding
@@ -161,8 +165,17 @@ def resolve_equilibrate_mode(equilibrate_binding, geometry):
     if eb == "fast":
         if surface_to_volume(geometry) is None:
             warnings.warn("equilibrate_binding='fast' needs a known surface-to-volume "
-                          "(analytic Sphere/Cylinder); falling back to 'burnin'.", stacklevel=2)
+                          "(analytic Sphere/Cylinder); falling back to 'burnin'.", stacklevel=3)
             return "burnin"
+        if G is not None:
+            no_gradient = not bool(np.any(np.asarray(G)))
+            dark = (T2 is None) or (T2_bound is not None and float(T2_bound) <= 0.02 * float(T2))
+            if not (no_gradient or dark):
+                warnings.warn("equilibrate_binding='fast' is unsafe: a gradient is present and "
+                              "the bound pool is not MR-dark (T2_bound not << T2), so the mid-air "
+                              "bound positions would bias the signal; falling back to 'burnin'.",
+                              stacklevel=3)
+                return "burnin"
         return "fast"
     raise ValueError(f"equilibrate_binding must be 'auto'|'burnin'|'fast'|'off', got {eb!r}")
 

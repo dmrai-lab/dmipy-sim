@@ -15,6 +15,8 @@ hypotheses off that one walk.
 import numpy as np
 
 from .constants import GAMMA
+from ._replay_kernel import (resample_gradient, resample_gradient_jax, gradient_phase,
+                             gradient_phase_jax, phase_increment, phase_increments_jax)
 
 # JAX optional — dmipy-sim does not hard-require JAX for the NumPy replay path.
 try:
@@ -189,39 +191,9 @@ def replay_jax(
             "Install jax or use replay for NumPy."
         )
 
-    n_meas, n_t_wf, _ = G.shape
     n_walkers, n_t_traj, _ = trajectory.shape
-
-    # --- Resample G to trajectory time grid if time steps differ ---
-    if dt_wf is None or abs(dt_wf - dt_traj) / max(abs(dt_traj), 1e-30) < 1e-9:
-        # Same time step: align by length
-        if n_t_wf == n_t_traj:
-            G_r = G.astype(jnp.float32)
-        elif n_t_wf > n_t_traj:
-            G_r = G[:, :n_t_traj, :].astype(jnp.float32)
-        else:
-            pad = jnp.zeros((n_meas, n_t_traj - n_t_wf, 3), dtype=jnp.float32)
-            G_r = jnp.concatenate([G.astype(jnp.float32), pad], axis=1)
-    else:
-        # Linear interpolation of G to trajectory time grid
-        t_wf   = jnp.arange(n_t_wf,   dtype=jnp.float32) * float(dt_wf)
-        t_traj = jnp.arange(n_t_traj, dtype=jnp.float32) * float(dt_traj)
-
-        # vmap over measurements (axis 0 of G) and axes (axis 2)
-        def interp_one(g_1d):
-            # left/right=0: no gradient outside the waveform window.
-            return jnp.interp(t_traj, t_wf, g_1d, left=0.0, right=0.0)
-
-        interp_ax   = jax.vmap(interp_one)          # over 3 axes
-        interp_meas = jax.vmap(interp_ax)           # over n_meas
-
-        G_t   = G.astype(jnp.float32).transpose(0, 2, 1)   # (n_meas, 3, n_t_wf)
-        G_r_t = interp_meas(G_t)                            # (n_meas, 3, n_t_traj)
-        G_r   = G_r_t.transpose(0, 2, 1)                   # (n_meas, n_t_traj, 3)
-
-    # --- Phase accumulation: phi[m, w] ---
-    traj_f32 = trajectory.astype(jnp.float32)
-    phi = _GAMMA_JAX * float(dt_traj) * jnp.einsum('mtx,wtx->mw', G_r, traj_f32)
+    G_r = resample_gradient_jax(G, dt_wf, dt_traj, n_t_traj)
+    phi = gradient_phase_jax(G_r, trajectory, dt_traj)                 # (n_meas, n_walkers)
 
     # --- Weighted average ---
     if weights is None:
@@ -233,27 +205,6 @@ def replay_jax(
     if stimulated_echo:
         signals = signals * jnp.float32(0.5)
     return signals
-
-
-def _resample_G_to_traj(G, dt_wf, dt_traj, n_t_traj):
-    """Resample a waveform (n_meas, n_t_wf, 3) onto the trajectory time grid (identical
-    convention to replay()'s raw path: linear interp, zero outside the waveform window)."""
-    G = np.asarray(G, np.float64)
-    n_meas, n_t_wf, _ = G.shape
-    if abs(dt_wf - dt_traj) / max(abs(dt_traj), 1e-30) <= 1e-9:
-        if n_t_wf == n_t_traj:
-            return G
-        if n_t_wf > n_t_traj:
-            return G[:, :n_t_traj, :]
-        out = np.zeros((n_meas, n_t_traj, 3)); out[:, :n_t_wf, :] = G
-        return out
-    t_wf = np.arange(n_t_wf) * dt_wf
-    t_traj = np.arange(n_t_traj) * dt_traj
-    out = np.zeros((n_meas, n_t_traj, 3))
-    for m in range(n_meas):
-        for ax in range(3):
-            out[m, :, ax] = np.interp(t_traj, t_wf, G[m, :, ax], left=0.0, right=0.0)
-    return out
 
 
 def _replay_compressed(master, G, dt_wf, *, chi_perp, T2, T1, surface_relaxivity, D,
@@ -281,7 +232,7 @@ def _replay_compressed(master, G, dt_wf, *, chi_perp, T2, T1, surface_relaxivity
     meta = {"method": master.get("method", "bridge_dst"), "K": K, "n_t": n_t}
 
     # ── Gradient phase in mode space (no trajectory reconstruction) ──────────────
-    G_traj = _resample_G_to_traj(G, dt_wf, dt_traj, n_t)             # (n_meas, n_t, 3)
+    G_traj = resample_gradient(G, dt_wf, dt_traj, n_t)                # (n_meas, n_t, 3)
     n_meas = G_traj.shape[0]
     phi = _cx.mode_space_phi(_cx.pack_position_arrays(pos_modes, np.float64),
                              meta, G_traj, dt_traj).T                     # (n_meas, N)
@@ -496,7 +447,7 @@ def replay(
             return_walker_signals=return_walker_signals, susceptibility=susceptibility,
             eps_P=eps_P)
 
-    G = np.asarray(G, dtype=np.float32)
+    G = np.asarray(G, dtype=np.float64)
     n_meas, n_t_wf, _ = G.shape
     n_walkers, n_t_traj, _ = trajectory.shape
 
@@ -506,27 +457,7 @@ def replay(
 
     per_meas_chi = chi_perp.ndim == 2  # (n_meas, n_t_wf) vs (n_t_wf,)
 
-    # ── Resample G to trajectory grid ────────────────────────────────────────
-    rel_dt_diff = abs(dt_wf - dt_traj) / max(abs(dt_traj), 1e-30)
-    if rel_dt_diff > 1e-9:
-        t_wf   = np.arange(n_t_wf,   dtype=np.float64) * dt_wf
-        t_traj = np.arange(n_t_traj, dtype=np.float64) * dt_traj
-        G_traj = np.zeros((n_meas, n_t_traj, 3), dtype=np.float32)
-        for m in range(n_meas):
-            for ax in range(3):
-                # left/right=0: no gradient outside the waveform window --
-                # avoids extrapolating G[-1] across a trajectory tail past the
-                # waveform end.
-                G_traj[m, :, ax] = np.interp(t_traj, t_wf, G[m, :, ax],
-                                             left=0.0, right=0.0)
-    else:
-        if n_t_wf == n_t_traj:
-            G_traj = G
-        elif n_t_wf > n_t_traj:
-            G_traj = G[:, :n_t_traj, :]
-        else:
-            G_traj = np.zeros((n_meas, n_t_traj, 3), dtype=np.float32)
-            G_traj[:, :n_t_wf, :] = G
+    G_traj = resample_gradient(G, dt_wf, dt_traj, n_t_traj)          # (n_meas, n_t_traj, 3)
 
     # ── Resample chi_perp to trajectory grid (nearest-neighbour) ─────────────
     t_wf   = np.arange(n_t_wf,   dtype=np.float64) * dt_wf
@@ -548,10 +479,7 @@ def replay(
         chi_r_1d = _resample_chi(chi_perp)
         chi_r = chi_r_1d[np.newaxis, :]  # (1, n_t_traj) — broadcast over measurements
 
-    # ── Phase accumulation ─────────────────────────────────────────────────────
-    G_flat    = G_traj.reshape(n_meas, n_t_traj * 3).astype(np.float64)
-    traj_flat = trajectory.reshape(n_walkers, n_t_traj * 3).astype(np.float64)
-    phi = GAMMA * dt_traj * (G_flat @ traj_flat.T)  # (n_meas, n_walkers)
+    phi = gradient_phase(G_traj, trajectory, dt_traj)                 # (n_meas, n_walkers)
 
     # ── T2/T1 log-weights — scalar (walker-independent) and per-walker ────────
     log_w_scalar = np.zeros(n_meas, dtype=np.float64)          # (n_meas,)
@@ -716,21 +644,12 @@ def pre_pulse_gradient_phase(trajectories, dt_traj, G, dt_wf, cutoff_wf_idx):
     Feed the result to :func:`finite_180_longitudinal_dwell`.  Susceptibility
     off-resonance adds to this azimuth separately (only the pre-pulse ε=+1 part).
     """
-    G = np.asarray(G, dtype=np.float32)
-    n_meas, n_t_wf, _ = G.shape
     n_walkers, n_t_traj, _ = trajectories.shape
     cutoff_traj = int(round(cutoff_wf_idx * dt_wf / dt_traj))
     cutoff_traj = max(0, min(cutoff_traj, n_t_traj))
-    t_wf = np.arange(n_t_wf, dtype=np.float64) * dt_wf
-    t_traj = np.arange(n_t_traj, dtype=np.float64) * dt_traj
-    G_pre = np.zeros((n_meas, n_t_traj, 3), dtype=np.float64)
-    for m in range(n_meas):
-        for ax in range(3):
-            G_pre[m, :, ax] = np.interp(t_traj, t_wf, G[m, :, ax], left=0.0, right=0.0)
+    G_pre = resample_gradient(G, dt_wf, dt_traj, n_t_traj).copy()
     G_pre[:, cutoff_traj:, :] = 0.0
-    G_flat = G_pre.reshape(n_meas, n_t_traj * 3)
-    traj_flat = trajectories.reshape(n_walkers, n_t_traj * 3).astype(np.float64)
-    return GAMMA * dt_traj * (G_flat @ traj_flat.T)  # (n_meas, n_walkers)
+    return gradient_phase(G_pre, trajectories, dt_traj)               # (n_meas, n_walkers)
 
 
 def replay_bloch(trajectory, dt_traj, G, dt_wf, rf_events, *,
@@ -787,14 +706,7 @@ def replay_bloch(trajectory, dt_traj, G, dt_wf, rf_events, *,
     n_meas, n_t_wf, _ = G.shape
     n_w, n_t, _ = trajectory.shape
     traj = trajectory.astype(np.float64)
-
-    # ── resample G to the trajectory grid (nearest within window, 0 outside) ──
-    t_wf = np.arange(n_t_wf, dtype=np.float64) * dt_wf
-    t_tr = np.arange(n_t, dtype=np.float64) * dt_traj
-    G_tr = np.zeros((n_meas, n_t, 3), dtype=np.float64)
-    for m in range(n_meas):
-        for ax in range(3):
-            G_tr[m, :, ax] = np.interp(t_tr, t_wf, G[m, :, ax], left=0.0, right=0.0)
+    G_tr = resample_gradient(G, dt_wf, dt_traj, n_t)                  # (n_meas, n_t, 3)
 
     # ── per-walker decay factors per step ──
     if T2_per_comp is not None:
@@ -913,7 +825,7 @@ def replay_bloch(trajectory, dt_traj, G, dt_wf, rf_events, *,
                     M = _rf_increment(M, dflip * b1s, ax)   # b1s scales actual flip (B1+)
             # free precession EVERY step (incl. RF steps): the spin precesses during the
             # pulse dt too, keeping dephase/rephase intervals symmetric (essential CPMG).
-            dphi = GAMMA * dt_traj * (traj[:, t, :] @ G_tr[m, t])   # (n_w,)
+            dphi = phase_increment(G_tr[m, t], traj[:, t, :], dt_traj)   # (n_w,)
             if has_susc:
                 dphi = dphi + dphi_susc[:, t]
             if dphi_bound is not None:               # bound-pool off-resonance
@@ -971,13 +883,7 @@ def replay_bloch_jax(trajectory, dt_traj, G, dt_wf, rf_events, *,
     n_meas, n_t_wf, _ = G.shape
     n_w, n_t, _ = trajectory.shape
     traj = trajectory.astype(np.float64)
-
-    t_wf = np.arange(n_t_wf) * dt_wf
-    t_tr = np.arange(n_t) * dt_traj
-    G_tr = np.zeros((n_meas, n_t, 3))
-    for m in range(n_meas):
-        for ax in range(3):
-            G_tr[m, :, ax] = np.interp(t_tr, t_wf, G[m, :, ax], left=0.0, right=0.0)
+    G_tr = resample_gradient(G, dt_wf, dt_traj, n_t)                  # (n_meas, n_t, 3)
 
     invT2 = ((1.0 / np.asarray(T2_per_comp, float))[comp_traj] if T2_per_comp is not None
              else np.full((n_w, n_t), 0.0 if T2 is None else 1.0 / T2))
@@ -1008,8 +914,7 @@ def replay_bloch_jax(trajectory, dt_traj, G, dt_wf, rf_events, *,
                 if echo_steps is not None else None)
 
     def run_meas(Gm):                                    # Gm: (n_t, 3)
-        dphi_grad = _GAMMA_JAX * dt_traj * jnp.einsum('td,wtd->tw',
-                                                      jnp.asarray(Gm), jnp.asarray(traj))
+        dphi_grad = phase_increments_jax(Gm, traj, dt_traj)            # (n_t, n_w)
         dphi = dphi_grad + dphi_susc                     # (n_t, n_w)
 
         def step(M, x):

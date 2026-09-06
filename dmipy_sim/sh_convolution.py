@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import numpy as np
 from .waveforms import rotate_waveform
+from ._replay_kernel import se_gate
 from scipy.special import eval_legendre, roots_legendre
 
 
@@ -542,7 +543,7 @@ def pack_response(pack, profile, g_dir, b0_dir, *, amplitude=1.0, B0=3.0,
     from .bank import susc_path_coeffs
     Cs, names = susc_path_coeffs(arrays, pm)                           # (n_w, 13, Ks), dequantised
     Ks = Cs.shape[2]
-    gate = _se_gate_local(n_t, dt, refocus_time)
+    gate = se_gate(n_t, dt, refocus_time)
     gate_hat = dct(gate, type=2, norm="ortho")[:Ks]
     Psi = (GAMMA * dt) * np.einsum("k,wck->wc", gate_hat, Cs)          # (n_w, n_ch)
     i_p = names.index("iso_P_xx")
@@ -580,19 +581,6 @@ def pack_response(pack, profile, g_dir, b0_dir, *, amplitude=1.0, B0=3.0,
         return out
 
     return response
-
-
-def _se_gate_local(n_t, dt, refocus_time):
-    """Transverse-phase gate; mirrors bank._se_gate (kept local to avoid a bank import cycle)."""
-    if refocus_time is None:
-        return np.ones(n_t)
-    t = np.arange(n_t) * dt
-    s = np.sign(refocus_time - t).astype(float)
-    d = int(round(s.sum()))
-    if d != 0:
-        side = np.where(s == np.sign(d))[0]
-        s[side[np.argsort(-np.abs(t[side] - refocus_time))[:abs(d)]]] = 0.0
-    return s
 
 
 class PackResponder:
@@ -635,7 +623,7 @@ class PackResponder:
 
         from .bank import susc_path_coeffs
         Cs, names = susc_path_coeffs(arrays, pm)                        # dequantised, zz re-inserted
-        gate = dct(_se_gate_local(n_t, dt, refocus_time), type=2, norm="ortho")[:Cs.shape[2]]
+        gate = dct(se_gate(n_t, dt, refocus_time), type=2, norm="ortho")[:Cs.shape[2]]
         Psi = (GAMMA * dt) * np.einsum("k,wck->wc", gate, Cs)             # gate, not direction
 
         self.dirs, self.w = sphere_quadrature(n_theta, n_phi)

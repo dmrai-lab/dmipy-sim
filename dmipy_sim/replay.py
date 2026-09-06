@@ -21,8 +21,9 @@ whether the acquisition is fixed and the substrate varies (fitting) or the subst
 waveform varies (design) — in the latter it is differentiable in ``G``, so it drives gradient-based
 waveform/B1 optimization. A JAX twin (:func:`replay_signal_jax`) supplies the autodiff/GPU path.
 
-Surface relaxivity is exact, via the stored boundary local time (``blt_dct``): a per-walker reweight by
-``exp((rho/D) * sum_t chi(t) ell_i(t))``, optionally coherence-gated by an occupancy schedule ``chi``.
+Surface relaxivity is exact, via the stored boundary local time (the C2 channel, bridge form): a
+per-walker reweight by ``exp((rho/D) * sum_t chi(t) ell_i(t))``, optionally coherence-gated by an
+occupancy schedule ``chi`` (:func:`surface_logweight`).
 """
 import json
 
@@ -167,20 +168,12 @@ def compile_scheme(G, dt, K, gyromagnetic_ratio=GAMMA, *, n_t=None, method=None)
     bands.  ``method`` is accepted only to let a caller assert the pack's codec; a retired one
     raises rather than selecting a different basis. Reusable across every pack on this grid (fitting) and
     every fit iteration; in design it is recomputed per candidate waveform (cheap: an FFT + scale)."""
-    from scipy.fft import dst
-    from .compression import require_position_method
+    from .compression import require_position_method, bridge_projection
     require_position_method(method or "bridge_dst")
     G = np.asarray(G, np.float64)
-    if True:
-        # first two rows per axis are the gradient moments -- the columns a motion-compensated
-        # waveform annihilates -- followed by the sine bands of the pinned residual
-        from .compression import bridge_moment_rows
-        n_t = int(n_t or G.shape[1])
-        M0, M1 = bridge_moment_rows(G, n_t)
-        Ghat = dst(G[:, 1:-1, :], type=1, norm="ortho", axis=1)[:, :K, :]
-        W = np.concatenate([M0[:, None, :], M1[:, None, :], Ghat], axis=1)  # (n_meas, K+2, 3)
-        n_meas = W.shape[0]
-        return (gyromagnetic_ratio * dt * W).reshape(n_meas, (K + 2) * 3).T
+    W = bridge_projection(G, int(n_t or G.shape[1]), K)              # (n_meas, K+2, 3)
+    n_meas = W.shape[0]
+    return (gyromagnetic_ratio * dt * W).reshape(n_meas, (K + 2) * 3).T
 
 
 def surface_logweight(arrays, rho_over_D, chan_meta=None, chi_hat=None):
@@ -194,7 +187,7 @@ def surface_logweight(arrays, rho_over_D, chan_meta=None, chi_hat=None):
     Takes the pack's ``arrays`` rather than one tensor: the channel is three tensors now, and a
     signature that accepted just the coefficient block invited passing the wrong one.
     """
-    from .compression import decode_boundary_bridge
+    from .compression import decode_boundary_bridge, surface_logweight_series
     if "blt_bridge_dst" not in arrays:
         raise ValueError(
             "surface relaxivity was requested but this pack carries no C2 channel "
@@ -208,7 +201,7 @@ def surface_logweight(arrays, rho_over_D, chan_meta=None, chi_hat=None):
     meta.setdefault("K", int(np.asarray(arrays["blt_bridge_dst"]).shape[1]))
     ell = np.asarray(decode_boundary_bridge(arrays, meta), np.float64)
     chi = np.asarray(chi_hat, np.float64)[: ell.shape[1]]
-    return float(rho_over_D) * (ell[:, : chi.shape[0]] @ chi)
+    return surface_logweight_series(ell[:, : chi.shape[0]], rho_over_D, chi)
 
 
 def replay_signal(pack, W, *, rho_over_D=0.0, chi_hat=None, complex_signal=False):
@@ -245,22 +238,20 @@ def replay_signal(pack, W, *, rho_over_D=0.0, chi_hat=None, complex_signal=False
     return S if complex_signal else np.abs(S)
 
 
-def replay_signal_jax(position_coeffs, spin_weights, W, *, blt_dct=None, rho_over_D=0.0,
-                      n_t=None, chi_hat=None):
-    """JAX/autodiff twin of :func:`replay_signal` — differentiable in the compiled scheme ``W`` (hence in
-    the waveform ``G`` that produced it) and jittable. ``position_coeffs`` is
+def replay_signal_jax(position_coeffs, spin_weights, W, *, surface_logw=None):
+    """JAX/autodiff twin of :func:`replay_signal` -- differentiable in the compiled scheme ``W``
+    (hence in the waveform ``G`` that produced it) and jittable. ``position_coeffs`` is
     ``(n_walkers, K+2, n_axes)`` -- two endpoints then sine bands -- and ``W`` must come from
-    :func:`compile_scheme`, which emits the matching row order. Returns the complex signal (take ``abs`` for
-    magnitude). This is the forward a gradient-based waveform/B1 optimizer differentiates through."""
+    :func:`compile_scheme`, which emits the matching row order.
+
+    ``surface_logw`` is the per-walker surface log-weight from :func:`surface_logweight` (it does
+    not depend on ``W``, so it is computed once on the host and passed in). Returns the complex
+    signal (take ``abs`` for magnitude). This is the forward a gradient-based waveform/B1
+    optimizer differentiates through."""
     import jax.numpy as jnp
     C = jnp.asarray(position_coeffs)
     N_w, K, _ = C.shape
     phi = C.reshape(N_w, K * 3) @ jnp.asarray(W)
     w0 = jnp.asarray(spin_weights)
-    w_eff = w0
-    if blt_dct is not None and rho_over_D:
-        blt = jnp.asarray(blt_dct)
-        s = (jnp.sqrt(n_t) * blt[:, 0] if chi_hat is None
-             else blt[:, : jnp.asarray(chi_hat).shape[0]] @ jnp.asarray(chi_hat))
-        w_eff = w0 * jnp.exp(rho_over_D * s)
+    w_eff = w0 if surface_logw is None else w0 * jnp.exp(jnp.asarray(surface_logw))
     return (w_eff[:, None] * jnp.exp(1j * phi)).sum(0) / w0.sum()

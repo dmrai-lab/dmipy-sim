@@ -88,7 +88,8 @@ def test_surface_knob_uses_the_real_c2_channel_and_refuses_without_one():
     unattenuated signal and no error. So: build the channel with the real encoder, and check both
     that the knob bites and that a pack without C2 refuses rather than skipping.
     """
-    from dmipy_sim.compression import encode_boundary_bridge, decode_boundary_bridge, surface_logweight
+    from dmipy_sim.compression import (encode_boundary_bridge, decode_boundary_bridge,
+                                       surface_logweight_series as surface_logweight)
     from dmipy_sim.replay import surface_logweight as replay_slw
     arrays, meta, _ = _synth_pack()
     n_w = arrays["pos_x"].shape[0]

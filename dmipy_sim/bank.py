@@ -23,6 +23,7 @@ from __future__ import annotations
 import numpy as np
 
 from . import compression as _cx
+from ._replay_kernel import se_gate, gradient_phase
 from .replay import ReplayPack, read_rpk, write_rpk
 
 __all__ = ["build_replay_pack", "build_to_floor", "replay_susc", "frame_from_axis", "frame_from_bundles",
@@ -137,8 +138,8 @@ def _surface_fidelity(m, arrays, chan_meta, env):
     err = floor = 0.0
     for rho in (env.get("rho_list") or [1e-5, 3e-5, 1e-4]):
         rd = float(rho) / D
-        sl_raw = _cx.surface_logweight(raw, rd)
-        sl_dec = _cx.surface_logweight(decoded, rd)
+        sl_raw = _cx.surface_logweight_series(raw, rd)
+        sl_dec = _cx.surface_logweight_series(decoded, rd)
         err = max(err, abs(fac(sl_raw, slice(None)) - fac(sl_dec, slice(None))))
         floor = max(floor, abs(fac(sl_raw, A) - fac(sl_raw, B)))
     return dict(err=float(err), floor=float(floor))
@@ -482,20 +483,6 @@ def _pack_positions(pack):
     return _cx.decode(pack.arrays, meta, n_walkers=(pack.n_walkers if wp else None))
 
 
-def _se_gate(n_t, dt, refocus_time):
-    """Transverse-phase gate s(t): +1 before a 180 at ``refocus_time`` (s), -1 after; balanced so a
-    static field refocuses exactly (sum s = 0). ``None`` -> gradient echo (s == +1)."""
-    if refocus_time is None:
-        return np.ones(n_t)
-    t = np.arange(n_t) * dt
-    s = np.sign(refocus_time - t).astype(float)
-    d = int(round(s.sum()))
-    if d != 0:
-        side = np.where(s == np.sign(d))[0]
-        s[side[np.argsort(-np.abs(t[side] - refocus_time))[:abs(d)]]] = 0.0
-    return s
-
-
 def replay_susc(pack, waveform, *, b0_dir=(0.0, 0.0, 1.0), B0=0.0, chi_iso=0.0, chi_aniso=0.0,
                 refocus_time=None, relaxation=True, complex_signal=False, compartment=None):
     """Replay a gradient waveform on a static field-grid pack WITH susceptibility (the C3 consume
@@ -540,8 +527,8 @@ def replay_susc(pack, waveform, *, b0_dir=(0.0, 0.0, 1.0), B0=0.0, chi_iso=0.0, 
                  "shape": tuple(gm["shape"]), "voxel_size": np.asarray(gm["voxel_size"], float)}
         dB = sample_grid(assemble_field(basis, b0_dir, B0=B0, chi_iso=chi_iso, chi_aniso=chi_aniso),
                          pos, np.asarray(gm["origin"], float), gm["voxel_size"], periodic=False)
-    phi_x = GAMMA * dt * (dB * _se_gate(n_t, dt, refocus_time)[None, :]).sum(1)                # (n_w,)
-    phi_G = GAMMA * dt * np.einsum("mtj,wtj->mw", G, pos)                                       # (n_meas,n_w)
+    phi_x = GAMMA * dt * (dB * se_gate(n_t, dt, refocus_time)[None, :]).sum(1)                # (n_w,)
+    phi_G = gradient_phase(G, pos, dt)                                                          # (n_meas,n_w)
     logw = np.zeros(n_w)
     ch = (pack.meta.get("compression", {}).get("channels", {}) or {})
     if relaxation and "comp_rle_vals" in pack.arrays and pack.meta.get("per_comp", {}).get("T2"):
