@@ -113,7 +113,7 @@ def test_membrane_transmission_does_not_depend_on_the_sub_step():
     wf = d.set_b(d.pgse(delta=2e-3, DELTA=8e-3, G_magnitude=0.01, bvecs=[[1, 0, 0]], n_t=100,
                         slew_rate=np.inf), 1e6)
     N = 20_000
-    from dmipy_sim.physics import resolve_sub_steps
+    from dmipy_sim.engine.physics import resolve_sub_steps
     n_auto = resolve_sub_steps(pk, D, wf.dt)
     step_auto = np.sqrt(6 * D * wf.dt / n_auto)
     assert step_auto > 1.5 * gap, "the dispatched step must span the gap for this to be adversarial"

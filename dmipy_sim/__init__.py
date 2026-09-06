@@ -6,23 +6,23 @@ Shares one pulse-sequence and substrate interface with ``dmipy-fit``.
 """
 
 # Apply the GPU memory cap (DMIPY_GPU_MEM_GB) BEFORE any submodule imports JAX.
-from ._gpu_config import apply_gpu_mem_cap as _apply_gpu_mem_cap, configure  # noqa: E402
+from .engine._gpu_config import apply_gpu_mem_cap as _apply_gpu_mem_cap, configure  # noqa: E402
 _apply_gpu_mem_cap()
 
-from .core import simulate, simulate_mixture, simulate_cpmg, simulate_trajectories
+from .engine.core import simulate, simulate_mixture, simulate_cpmg, simulate_trajectories
 # NB: the scalar trajectory-replay entrypoint is `dmipy_sim.trajectories.replay`, NOT a bare
 # top-level `replay` — the name `dmipy_sim.replay` is the .rpk pack-forward module (see below).
 from .trajectories import (unwrap_periodic, replay_jax,
                            replay_bloch, replay_bloch_jax,
                            finite_180_longitudinal_dwell, pre_pulse_gradient_phase,
                            pathway_sign_se)
-from .mt_walk import simulate_mt_trajectories
+from .engine.mt_walk import simulate_mt_trajectories
 from .persistent_walk import PersistentWalk
 from .compartments import Compartments, Pool, pool_id
-from .bloch import simulate_bloch
-from .pulse_sequence import (BlochSequence, gradient_echo, spin_echo,
+from .engine.bloch import simulate_bloch
+from .engine.pulse_sequence import (BlochSequence, gradient_echo, spin_echo,
                              prepend_mt_prep, run_bloch_sequence, emergent_z_spectrum)
-from .gpu import (gpu_available, check_gpu, free_gpu_memory, gpu_session,
+from .engine.gpu import (gpu_available, check_gpu, free_gpu_memory, gpu_session,
                   list_gpu_processes)
 from .viz import (plot_waveform, plot_sequence_comparison,
                   plot_mesh_section, plot_walkers_3d, plot_cell_surface, plot_mesh_3d,
@@ -51,7 +51,7 @@ from .sh_convolution import (
     watson_odf_sh,
     isotropic_odf_sh,
 )
-from . import mt
+from .engine import mt
 from .rf import B1Pulse, bloch_simulate, slice_profile
 from .replay import (ReplayPack, read_rpk, write_rpk, compile_scheme, replay_signal,
                      replay_signal_jax, surface_logweight)

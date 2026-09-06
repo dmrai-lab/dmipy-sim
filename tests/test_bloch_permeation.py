@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 
 from dmipy_sim import Cylinder, FreeDiffusion
-from dmipy_sim.pulse_sequence import spin_echo, run_bloch_sequence
+from dmipy_sim.engine.pulse_sequence import spin_echo, run_bloch_sequence
 
 GAMMA = 2.675e8
 

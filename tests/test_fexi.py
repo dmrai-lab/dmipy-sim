@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 
 from dmipy_sim import FreeDiffusion
-from dmipy_sim.pulse_sequence import fexi, run_bloch_sequence
+from dmipy_sim.engine.pulse_sequence import fexi, run_bloch_sequence
 
 
 def _adc(seq, D=2e-9, n=6000):

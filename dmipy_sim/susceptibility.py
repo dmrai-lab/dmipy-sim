@@ -2,7 +2,7 @@
 
 A susceptibility source magnetises in the main field B0 and perturbs the local Larmor
 frequency by an off-resonance field ``ΔBz(r)``.  In the forward vector-Bloch walk
-(:mod:`dmipy_sim.bloch`) this enters as an extra z-precession ``γ·ΔBz(r(t))·dt`` at every
+(:mod:`dmipy_sim.engine.bloch`) this enters as an extra z-precession ``γ·ΔBz(r(t))·dt`` at every
 step, accrued on the same spin as the gradient phase; the sequence's own 180° pulse
 refocuses the static part of the field, exactly as in a real spin echo.
 

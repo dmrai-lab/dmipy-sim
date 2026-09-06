@@ -54,7 +54,7 @@ def mesh_axon_master(bundle, *, n_walkers=30_000, n_myelin=None, n_t=1600, T_max
 
     ``field_res`` is the susceptibility field-grid voxel size (m)."""
     from .geometry.mesh import Mesh
-    from .core import simulate_trajectories
+    from .engine.core import simulate_trajectories
 
     Vi, Fi = bundle.inner
     Vo, Fo = bundle.outer

@@ -14,7 +14,7 @@ import numpy as np
 import pytest
 
 from dmipy_sim import Sphere, simulate_bloch
-from dmipy_sim import mt
+from dmipy_sim.engine import mt
 
 pytestmark = pytest.mark.slow
 

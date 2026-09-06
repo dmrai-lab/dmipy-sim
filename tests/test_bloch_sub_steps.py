@@ -20,9 +20,9 @@ import pytest
 trimesh = pytest.importorskip("trimesh")
 
 from dmipy_sim import FreeDiffusion, Sphere, pgse, set_b, simulate
-from dmipy_sim.bloch import simulate_bloch
+from dmipy_sim.engine.bloch import simulate_bloch
 from dmipy_sim.geometry.mesh import Mesh
-from dmipy_sim.physics import walk_sub_steps
+from dmipy_sim.engine.physics import walk_sub_steps
 
 UM = 1e-6
 R = 2e-6

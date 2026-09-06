@@ -5,7 +5,7 @@ engine on an MT-binding substrate, saturates the broad (short-T2b) bound pool ov
 wide offset range while sparing the narrow free-water line; the saturation transfers
 to the free pool through the walk's emergent bind/release exchange -- the MT dip and
 its Z-spectrum EMERGE (no super-Lorentzian lineshape is imposed).  Validated against
-the analytic two-pool Z-spectrum oracle (dmipy_sim.mt.mt_z_spectrum).
+the analytic two-pool Z-spectrum oracle (dmipy_sim.engine.mt.mt_z_spectrum).
 
 Heavy Monte-Carlo -> GPU-recommended; marked slow.  Fine dt so the carrier
 2*pi*offset*dt does not alias.
@@ -16,7 +16,7 @@ import numpy as np
 import pytest
 
 from dmipy_sim import Sphere, simulate_bloch, gradient_echo, prepend_mt_prep, run_bloch_sequence
-from dmipy_sim import mt
+from dmipy_sim.engine import mt
 
 pytestmark = pytest.mark.slow
 

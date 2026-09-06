@@ -1,6 +1,6 @@
 """Forward vector-Bloch engine (Piece B of the MT staging ladder).
 
-Pins ``dmipy_sim.bloch.simulate_bloch`` -- the single-pass engine that carries
+Pins ``dmipy_sim.engine.bloch.simulate_bloch`` -- the single-pass engine that carries
 M=(Mx,My,Mz) through real RF pulses + gradient + relaxation (no replay, no
 susceptibility) -- against analytic Bloch results and against the scalar cos-phi
 engine (``core.simulate``), which it must reproduce on the identical walk.
@@ -14,7 +14,7 @@ import numpy as np
 import pytest
 
 from dmipy_sim import simulate, pgse, set_b, FreeDiffusion
-from dmipy_sim.bloch import simulate_bloch
+from dmipy_sim.engine.bloch import simulate_bloch
 
 D = 2e-9
 

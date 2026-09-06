@@ -784,7 +784,7 @@ def replay_bloch(trajectory, dt_traj, G, dt_wf, rf_events, *,
     sequence operators — RF rotations from ``rf_events``, the physical gradient
     precession ``dφ = γ·G(t)·r_w(t)·dt``, per-comp T2/T1, surface relaxivity, an
     optional susceptibility off-resonance field, and an optional MT bound-pool blend.
-    The forward-engine counterpart is :func:`dmipy_sim.bloch.simulate_bloch`.
+    The forward-engine counterpart is :func:`dmipy_sim.engine.bloch.simulate_bloch`.
 
     This is the numpy REFERENCE: a Python loop over measurements and steps written so each
     operator is one readable line. :func:`replay_bloch_jax` is the same operator as a jitted
@@ -811,7 +811,7 @@ def replay_bloch(trajectory, dt_traj, G, dt_wf, rf_events, *,
         per-step phase increment ``γ·ΔBz·dt`` if you already have it).
     bound_frac, T2_bound, T1_bound, off_resonance_bound : magnetization transfer.
         ``bound_frac`` (n_w, n_t) is the per-step bound-pool occupancy from
-        :func:`dmipy_sim.mt_walk.simulate_mt_trajectories`; when given, the per-step
+        :func:`dmipy_sim.engine.mt_walk.simulate_mt_trajectories`; when given, the per-step
         relaxation RATE is blended toward the bound-pool ``T2_bound``/``T1_bound`` (and
         ``off_resonance_bound``) by that occupancy.  RF rotates bound spins too, so MT
         saturation transfer is EMERGENT.  None → no MT.

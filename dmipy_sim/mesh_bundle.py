@@ -295,7 +295,7 @@ def bundle_mt_params(bundle, kappa_MT, dwell_time):
     voxel. Note the weighting counts only the free pools: a frozen myelin-water pool has D = 0, never strikes
     a wall and so never binds.
     """
-    from .mt import forward_rate, bound_fraction
+    from .engine.mt import forward_rate, bound_fraction
     pools = _free_pool_geometry(bundle)
     sv = {k: v[0] for k, v in pools.items()}
     vol = {k: v[1] for k, v in pools.items()}
@@ -314,7 +314,7 @@ def kappa_MT_for_voxel_f_bound(bundle, f_bound_voxel, dwell_time, *, tol=1e-10):
     One reactivity has to serve both pools, so a target can only be met on the voxel average; each pool then
     lands where its own S/V puts it. Monotone in kappa_MT, so bisected in log space.
     """
-    from .mt import bound_fraction
+    from .engine.mt import bound_fraction
     pools = _free_pool_geometry(bundle)
     tot = sum(v[1] for v in pools.values())
 
@@ -455,7 +455,7 @@ def mesh_bundle_master(bundle, *, n_walkers=30_000, params=None, T_max=0.04, dt_
         physical. ``nominal_T2`` lets ``build_replay_pack`` certify the C1 tier. Order (extra, intra, myelin).
     """
     from .geometry.mesh import Mesh
-    from .core import simulate_trajectories
+    from .engine.core import simulate_trajectories
     from .substrate.biophysical_constants import canonical_white_matter
 
     p = dict(canonical_white_matter())
@@ -516,7 +516,7 @@ def mesh_bundle_master(bundle, *, n_walkers=30_000, params=None, T_max=0.04, dt_
         inflates the master 4x for no information.
         """
         if mt_mode == "emergent":
-            from .mt_walk import simulate_mt_trajectories
+            from .engine.mt_walk import simulate_mt_trajectories
             o = simulate_mt_trajectories(n, D, geom, T_max, dt_save, kappa_MT, dwell_time, seed=sd,
                                          r0=r0, walker_batch_size=walker_batch_size,
                                          require_gpu=require_gpu)

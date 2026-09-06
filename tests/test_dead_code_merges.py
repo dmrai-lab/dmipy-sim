@@ -25,7 +25,7 @@ def test_one_axis_to_z_rotation():
 
 def test_one_ensemble_signal():
     import jax.numpy as jnp
-    from dmipy_sim.core import _ensemble_signal
+    from dmipy_sim.engine.core import _ensemble_signal
     rng = np.random.default_rng(1)
     w = jnp.asarray(rng.uniform(0.3, 1.0, 50), jnp.float32)
     phi = jnp.asarray(rng.normal(size=(50, 4)), jnp.float32)

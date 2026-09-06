@@ -22,7 +22,7 @@ def test_flags_are_kwargs_with_the_validated_defaults():
 def test_a_flag_is_part_of_the_compiled_program_key():
     """Two meshes that differ only in a flag must not share a batch program (core.cached_batch keys
     on the geometry's scalar state, which the flags are part of)."""
-    from dmipy_sim import core
+    from dmipy_sim.engine import core
     V, F = mesh_shapes.icosphere(2e-6, subdivisions=1)
     a = d.Mesh(V, F, feature_radius=1e-6)
     b = d.Mesh(V, F, feature_radius=1e-6, reject_escape=False)

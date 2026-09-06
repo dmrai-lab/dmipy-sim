@@ -24,8 +24,8 @@ import pytest
 trimesh = pytest.importorskip("trimesh")
 
 from dmipy_sim.geometry.mesh import Mesh
-from dmipy_sim.mt_walk import simulate_mt_trajectories
-from dmipy_sim.physics import collision_sub_steps
+from dmipy_sim.engine.mt_walk import simulate_mt_trajectories
+from dmipy_sim.engine.physics import collision_sub_steps
 
 UM = 1e-6
 R = 2e-6

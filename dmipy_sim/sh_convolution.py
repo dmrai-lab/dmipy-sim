@@ -114,7 +114,7 @@ def compute_fiber_response(geometry, acquisition_scheme, n_walkers,
     E_theta : np.ndarray, shape (n_angles, n_measurements)
         Raw simulated signals at each angle (for diagnostics / residuals).
     """
-    from .core import simulate
+    from .engine.core import simulate
 
     if lmax % 2 != 0:
         raise ValueError(f"lmax must be even, got {lmax}")
