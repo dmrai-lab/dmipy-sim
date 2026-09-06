@@ -333,7 +333,7 @@ class Mesh(Geometry):
     def __init__(self, vertices, faces, *, periodic=False, voxel_min=None,
                  voxel_max=None, feature_radius=None, surface_relaxivity_t2=None,
                  permeability=None, intra=None, extra=None, orientation=None, R=None,
-                 cell_size=None, cap=None, max_bounces=10):
+                 cell_size=None, cap=None, max_bounces=None):
         V = np.asarray(vertices, np.float64)
         F = np.asarray(faces, np.int64)
         self.vertices = V
@@ -637,6 +637,14 @@ class Mesh(Geometry):
         # it buys 7.7 +- 1.2 -> 3.0 +- 0.8 crossings (~3.9 sigma). At the old 1e-4 the lift produced rays
         # essentially parallel to the wall, which on concave geometry is how walkers ended up inside.
         self._GRAZE = jnp.float32(6e-2)
+        # Reflections one step can need. The grazing lift bounds the angle a reflected ray makes with
+        # the wall from below, so on a surface of curvature radius ~feature_radius the chord between
+        # bounces is at least 2 sin(asin(_GRAZE)) R, and the collision rule bounds the step at
+        # 0.9 cell. Ten is the floor (the measured worst case on the confinement tests); a larger
+        # cell or a smaller feature raises it.
+        if max_bounces is None:
+            chord_floor = 2.0 * float(self._GRAZE) * float(self.radius)
+            max_bounces = max(10, int(np.ceil(0.9 * float(self.cell_size) / chord_floor)) + 2)
         self._MAX_BOUNCES = int(max_bounces)
         self._OFF = jnp.asarray([[dx, dy, dz] for dx in (-1, 0, 1)
                                  for dy in (-1, 0, 1) for dz in (-1, 0, 1)], jnp.int32)

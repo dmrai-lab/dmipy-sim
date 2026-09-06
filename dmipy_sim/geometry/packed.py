@@ -9,22 +9,15 @@ import jax.numpy as jnp
 import numpy as np
 
 from ._boundary import (keep_side_radial, ray_sphere_t, specular, transmit_probability, off_wall,
-                        bounce_loop)
+                        bounce_loop, bounce_budget)
 from .base import Geometry, LengthScales, _rotation_to_z
 
 _TINY = 1e-30
 
 
 def packed_bounce_budget(R_min, nudge, min_gap, step_max):
-    """Reflections one step of length ``step_max`` can need in a pack: ``step / passage + 1``.
-
-    The passage is the narrowest thing the step can zig-zag across -- the smallest clear gap
-    between two walls, or the shortest chord a ray nudged ``nudge`` off the smallest object can
-    make when it grazes it (``2 sqrt(2 nudge R_min)``). Clipped to ``[2, 32]``.
-    """
-    chord_floor = 2.0 * np.sqrt(2.0 * float(nudge) * float(R_min))
-    passage = min(float(min_gap), chord_floor)
-    return int(np.clip(np.ceil(float(step_max) / passage) + 1, 2, 32))
+    """:func:`dmipy_sim.geometry._boundary.bounce_budget` for a pack."""
+    return bounce_budget(R_min, nudge, min_gap, step_max)
 
 
 def packed_candidate_count(N, R_min, step_max, dim):

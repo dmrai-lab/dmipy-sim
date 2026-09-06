@@ -7,7 +7,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from ._boundary import (bounce_loop, keep_side_radial, keep_side_planar, keep_side_quadric,
+from ._boundary import (bounce_budget, bounce_loop, keep_side_radial, keep_side_planar, keep_side_quadric,
                         ray_sphere_t, ray_quadric_t, specular,
                         transmit_probability, off_wall, step_off_wall)
 from .base import Geometry, LengthScales, _rotation_to_z
@@ -32,7 +32,11 @@ class Sphere(Geometry):
         reflecting wall).  Exchange time τ = R / (3κ).
     """
 
-    _MAX_BOUNCES = 8   #: a step spanning the object needs more than one reflection
+    @property
+    def _MAX_BOUNCES(self):
+        """Reflections a grazing walker can need in one R/6 step (:func:`bounce_budget`)."""
+        R = self.length_scales.min_feature
+        return bounce_budget(R, 1e-4 * R, float('inf'), R / 6.0)
 
     supports_permeability = True   #: has a membrane a walker can cross
 
@@ -170,7 +174,11 @@ class Cylinder(Geometry):
         the cylinder at any time.  Default None (fully reflecting wall).
     """
 
-    _MAX_BOUNCES = 8   #: a step spanning the object needs more than one reflection
+    @property
+    def _MAX_BOUNCES(self):
+        """Reflections a grazing walker can need in one R/6 step (:func:`bounce_budget`)."""
+        R = self.length_scales.min_feature
+        return bounce_budget(R, 1e-4 * R, float('inf'), R / 6.0)
 
     supports_permeability = True   #: has a membrane a walker can cross
 
@@ -345,7 +353,11 @@ class Ellipsoid(Geometry):
     When a = b = c = r the geometry is identical to Sphere(r).
     """
 
-    _MAX_BOUNCES = 8   #: a step spanning the object needs more than one reflection
+    @property
+    def _MAX_BOUNCES(self):
+        """Reflections a grazing walker can need in one R/6 step (:func:`bounce_budget`)."""
+        R = self.length_scales.min_feature
+        return bounce_budget(R, 1e-4 * R, float('inf'), R / 6.0)
 
     supports_permeability = True   #: has a membrane a walker can cross
 
