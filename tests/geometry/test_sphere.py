@@ -17,7 +17,7 @@ import jax.numpy as jnp
 
 from dmipy_sim import simulate, Sphere, set_b
 from dmipy_sim.waveforms import Waveform, calc_b
-from .conftest import D, N_WALKERS, SEED, load_fixture
+from tests.conftest import D, N_WALKERS, SEED, load_fixture
 
 
 def _build_disimpy_waveform(n_t_raw, pulse_slice_start, pulse_slice_end, n_t=1000):

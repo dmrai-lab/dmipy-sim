@@ -23,7 +23,7 @@ trimesh = pytest.importorskip("trimesh")
 
 from dmipy_sim.geometry.mesh import Mesh, _classify_arr, _gather_is_populated
 
-from ._containment import inside as contains
+from tests._containment import inside as contains
 
 
 def _thick_finely_meshed_tube(radius=3.0, height=20.0, sections=96, subdivisions=1):
