@@ -370,58 +370,14 @@ def simulate_bloch(n_walkers, diffusivity, waveform, geometry, rf_events, *,
 
 
 # ── magnetization transfer: fused forward walk + binding + Bloch ────────────────
-def _surface_to_volume(geometry):
-    """Surface-to-volume ratio (1/m) used only for the fast (mid-air) equilibrium init's
-    occupancy ``P_eq = k_f/(k_f+k_r)``, ``k_f = kappa_MT*(S/V)``.  Only closed analytic
-    shapes are handled exactly; None otherwise, so the fast path is refused and the caller
-    falls back to the geometry-agnostic burn-in (which needs no S/V)."""
-    from .physics import _geometry_radius
-    name = type(geometry).__name__
-    R = _geometry_radius(geometry)
-    if R is not None and R > 0.0:
-        if name == 'Sphere':
-            return 3.0 / R
-        if name == 'Cylinder':
-            return 2.0 / R                      # infinite cylinder, lateral wall
-    return None
-
-
-def _resolve_equilibrate_mode(equilibrate_binding, G, T2, T2_bound, geometry):
-    """Map the ``equilibrate_binding`` request to a concrete mode ('off'|'burnin'|'fast'),
-    demoting 'fast' to 'burnin' (with a warning) whenever the mid-air bound positions would
-    not be position-invariant.  Mid-air init is safe only when the bound spins never carry
-    position-dependent signal: either no gradient at all (G==0), or an MR-dark bound pool
-    (T2_bound << T2) so bound transverse dephases before any echo -- and S/V must be known
-    for the occupancy."""
-    eb = equilibrate_binding
-    if eb in (None, False, 'off'):
-        return 'off'
-    if eb in ('auto', True, 'burnin'):
-        return 'burnin'                         # safe, geometry-agnostic default when MT on
-    if eb == 'fast':
-        if _surface_to_volume(geometry) is None:
-            warnings.warn("equilibrate_binding='fast' needs a known surface-to-volume "
-                          "(analytic Sphere/Cylinder); falling back to 'burnin'.", stacklevel=3)
-            return 'burnin'
-        no_gradient = not bool(np.any(G))
-        dark = (T2 is None) or (float(T2_bound) <= 0.02 * float(T2))
-        if not (no_gradient or dark):
-            warnings.warn("equilibrate_binding='fast' is unsafe: a gradient is present and "
-                          "the bound pool is not MR-dark (T2_bound not << T2), so the mid-air "
-                          "bound positions would bias the signal; falling back to 'burnin'.",
-                          stacklevel=3)
-            return 'burnin'
-        return 'fast'
-    raise ValueError(f"equilibrate_binding must be 'auto'|'burnin'|'fast'|'off', got {eb!r}")
-
-
 def _equilibrate_burnin(step_fn, r0, walker_keys, uw, M_init, n_meas, dt, dwell_time,
                         tol=0.01, max_chunks=40):
-    """Adaptive RF-off / gradient-off burn-in: evolve the walk in chunks until the bound-pool
-    occupancy plateaus (relative change between chunks < ``tol``), so the binding reaches its
-    thermal equilibrium before the sequence.  Geometry-agnostic (needs no S/V) and self-adapts
-    to the slow long-dwell regime.  Returns equilibrated positions, per-walker residual bound
-    counter (sub-steps), advanced keys, the plateau occupancy, and a converged flag."""
+    """RF-off / gradient-off burn-in of the fused MT walk through
+    :func:`dmipy_sim.mt.equilibrate_burnin_plateau`: one chunk is ~one dwell of this engine's
+    step function with every sequence input zeroed. Returns equilibrated positions, per-walker
+    residual bound counter (sub-steps), advanced keys, the plateau occupancy, and a converged
+    flag."""
+    from .mt import equilibrate_burnin_plateau
     n_walkers = r0.shape[0]
     n_chunk = int(max(4, round(float(dwell_time) / dt)))       # ~one dwell (turnover unit)
     z1 = jnp.zeros((n_chunk,), jnp.float32)
@@ -433,16 +389,15 @@ def _equilibrate_burnin(step_fn, r0, walker_keys, uw, M_init, n_meas, dt, dwell_
         return r_f, key_f, brem_f, jnp.mean(bf_seq)
 
     chunk = jax.jit(jax.vmap(chunk_walker, in_axes=(0, 0, 0, 0)))
-    r, keys, brem = r0, walker_keys, jnp.zeros((n_walkers,), dtype=jnp.float32)
-    occ_prev, converged = -1.0, False
-    for _ in range(max_chunks):
+
+    def chunk_fn(r, keys, brem):
         r, keys, brem, bf = chunk(r, keys, uw, brem)
-        occ = float(jnp.mean(bf))
-        if occ_prev >= 0.0 and abs(occ - occ_prev) <= tol * max(occ, 1e-6):
-            occ_prev, converged = occ, True
-            break
-        occ_prev = occ
-    return r, brem, keys, occ_prev, converged
+        return r, keys, brem, jnp.mean(bf)
+
+    r, keys, brem, occ, converged = equilibrate_burnin_plateau(
+        chunk_fn, r0, walker_keys, jnp.zeros((n_walkers,), dtype=jnp.float32),
+        tol=tol, max_chunks=max_chunks)
+    return r, brem, keys, occ, converged
 
 
 def _make_bloch_mt_step_fn(geometry, D, dt, n_sub, T2, T1, M0, off_res_global,
@@ -644,8 +599,9 @@ def _simulate_bloch_mt(n_walkers, diffusivity, waveform, geometry, rf_events, *,
     dwell_steps_mean = float(dwell_time) / (dt / int(sub_steps))   # residual dwell in sub-steps
 
     # ── bound-pool initial condition (the thermal-equilibrium occupancy k_f/(k_f+k_r)) ──
-    mode = _resolve_equilibrate_mode(equilibrate_binding, G, T2, T2_bound, geometry)
-    S_V = _surface_to_volume(geometry)
+    from .mt import resolve_equilibrate_mode, surface_to_volume
+    mode = resolve_equilibrate_mode(equilibrate_binding, geometry, G=G, T2=T2, T2_bound=T2_bound)
+    S_V = surface_to_volume(geometry)
     P_eq = (kappa_MT * S_V) / (kappa_MT * S_V + 1.0 / dwell_time) if S_V is not None else None
     converged = True
     if mode == 'fast':

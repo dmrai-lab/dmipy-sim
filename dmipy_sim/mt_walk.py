@@ -56,8 +56,13 @@ def simulate_mt_trajectories(
     sub_steps: int = None,
     equilibrate_binding="auto",
     require_gpu=None,
+    storage_dtype=np.float32,
 ) -> tuple:
     """Random walk with MT surface binding.
+
+    At ``kappa_MT = 0`` this is the plain surface-relaxivity walk of
+    :func:`dmipy_sim.simulate_trajectories` -- same random stream, same positions to the bit --
+    so an MT pack and a plain pack of one substrate differ only by what binding did.
 
     Parameters
     ----------
@@ -93,15 +98,19 @@ def simulate_mt_trajectories(
     equilibrate_binding : {'auto', 'burnin', 'fast', 'off'}
         How the bound pool reaches its thermal-equilibrium occupancy BEFORE t=0;
         see :func:`dmipy_sim.mt.resolve_equilibrate_mode`.
+    storage_dtype : numpy dtype
+        Host dtype of the returned arrays; ``float32`` by default, as for
+        :func:`dmipy_sim.simulate_trajectories` (``float16`` positions in metres lose the
+        near-wall resolution the compartment channel depends on).
 
     Returns
     -------
-    trajectories : (n_walkers, n_t, 3) float16   positions at each saved step.
-    dt_actual : float                            saved time step.
-    sub_steps : int                              fine sub-steps per saved step.
-    dt_sim : float                               fine sub-step size.
-    bound_frac : (n_walkers, n_t) float16        fractional bound occupancy per save.
-    dlog_boundary_unit : (n_walkers, n_t) float16  free-pool boundary local time
+    trajectories : (n_walkers, n_t, 3)   positions at each saved step.
+    dt_actual : float                    saved time step.
+    sub_steps : int                      fine sub-steps per saved step.
+    dt_sim : float                       fine sub-step size.
+    bound_frac : (n_walkers, n_t)        fractional bound occupancy per save.
+    dlog_boundary_unit : (n_walkers, n_t)  free-pool boundary local time
         (rho/D=1), i.e. -2*Sum d_perp over the FREE sub-steps of each save.
     """
     from .gpu import check_gpu
@@ -152,9 +161,16 @@ def simulate_mt_trajectories(
             r_free, dlog_free = _reflect_lw(r, step, jnp.float32(1.0))
             return r_free, dlog_free, -dlog_free      # symmetric: binding LT = -dlog
 
+    mt_on = kappa_MT > 0.0
+
     def inner_step(carry, _):
         r, key, bound_rem, dlog_acc, bound_acc = carry
-        key, step_key, stick_key, dwell_key = jax.random.split(key, 4)
+        if mt_on:
+            key, step_key, stick_key, dwell_key = jax.random.split(key, 4)
+        else:
+            # the plain walk's stream: one draw per sub-step, so kappa_MT = 0 reproduces
+            # simulate_trajectories(save_relaxation_data=True) to the bit
+            key, step_key = jax.random.split(key)
         is_bound = bound_rem > jnp.float32(0.0)
 
         # free-move proposal + per-step boundary local time (surface + binding)
@@ -162,6 +178,8 @@ def simulate_mt_trajectories(
         unit = noise / jnp.linalg.norm(noise)
         step = unit * step_l
         r_free, dlog_free, local_time = _move(r, step)   # dlog_free <= 0, local_time >= 0
+        if not mt_on:
+            return (r_free, key, bound_rem, dlog_acc + dlog_free, bound_acc), None
 
         # stick decision (only if currently free); dwell drawn as exp residence
         p_stick = bind_probability(kappa_over_D, local_time)
@@ -247,9 +265,9 @@ def simulate_mt_trajectories(
         s = b * walker_batch_size
         e = min(s + walker_batch_size, n_walkers)
         p, d, bf = batch(r0_all[s:e], walker_keys[s:e], brem0[s:e])
-        pos_b.append(np.asarray(p).astype(np.float16))
-        dlog_b.append(np.asarray(d).astype(np.float16))
-        bfrac_b.append(np.asarray(bf).astype(np.float16))
+        pos_b.append(np.asarray(p).astype(storage_dtype))
+        dlog_b.append(np.asarray(d).astype(storage_dtype))
+        bfrac_b.append(np.asarray(bf).astype(storage_dtype))
 
     trajectories = np.concatenate(pos_b, axis=0)
     dlog_boundary_unit = np.concatenate(dlog_b, axis=0)

@@ -42,7 +42,7 @@ from __future__ import annotations
 import numpy as np
 
 try:
-    from scipy.fft import dct as _dct, idct as _idct, dst as _dst, idst as _idst
+    from scipy.fft import dst as _dst, idst as _idst
 except ImportError as _e:  # pragma: no cover
     raise ImportError("dmipy_sim.compression needs scipy (pip install scipy)") from _e
 
@@ -129,7 +129,7 @@ def encode_bridge_dst(X, K):
     C = np.concatenate([a[:, None, :], v[:, None, :], B], axis=1)   # (Nw, K+2, 3)
     arrays = pack_position_arrays(C, np.float32)
     meta = {"method": "bridge_dst", "K": K, "n_t": int(Nt)}
-    return arrays, meta, Nw * 3 * (K + 2) * _F16
+    return arrays, meta, Nw * 3 * (K + 2) * _F32
 
 
 def decode_bridge_dst(arrays, meta):
@@ -153,6 +153,21 @@ def bridge_moment_rows(G, n_t):
     G = np.asarray(G, np.float64)
     tau = np.arange(n_t) / (n_t - 1.0)
     return G.sum(1), (G * tau[None, :, None]).sum(1)
+
+
+def bridge_projection(G, n_t, K):
+    """The waveform's projection on the bridge basis, ``(n_meas, K+2, 3)``: the two gradient
+    moments (:func:`bridge_moment_rows`) then the ``K`` sine bands ``DST-I(G[1:-1])``. The
+    gradient phase of a walk stored as ``C`` (:func:`encode_bridge_dst`) is
+    ``gamma dt sum_{k,d} C[w,k,d] W[m,k,d]``; :func:`mode_space_phi` and
+    :func:`dmipy_sim.replay.compile_scheme` both read this one projection."""
+    G = np.asarray(G, np.float64)
+    n_t = int(n_t)
+    if G.shape[1] != n_t:
+        raise ValueError(f"waveform has {G.shape[1]} samples, pack walk has n_t={n_t}")
+    M0, M1 = bridge_moment_rows(G, n_t)
+    Ghat = _dst(G[:, 1:-1, :], axis=1, type=1, norm="ortho")[:, :int(K), :]
+    return np.concatenate([M0[:, None, :], M1[:, None, :], Ghat], axis=1)
 
 
 
@@ -483,14 +498,8 @@ def mode_space_phi(arrays, meta, G, dt, n_walkers=None, seed=0):
       c(G) = gamma*dt (V.vec(G)) a K-vector per measurement.
     """
     require_position_method(meta.get("method"))
-    G = np.asarray(G, np.float64)
     C = read_position_coeffs(arrays, dtype=np.float64)              # (N_w, K+2, n_axes)
-    n_t = int(meta["n_t"]); K = C.shape[1] - 2
-    if G.shape[1] != n_t:
-        raise ValueError(f"waveform has {G.shape[1]} samples, pack walk has n_t={n_t}")
-    M0, M1 = bridge_moment_rows(G, n_t)                             # (n_meas, 3) each
-    Ghat = _dst(G[:, 1:-1, :], axis=1, type=1, norm="ortho")[:, :K, :]
-    W = np.concatenate([M0[:, None, :], M1[:, None, :], Ghat], axis=1)
+    W = bridge_projection(G, int(meta["n_t"]), C.shape[1] - 2)      # (n_meas, K+2, 3)
     return (GAMMA * dt) * np.einsum("wkd,mkd->wm", C, W)
 
 
@@ -524,9 +533,11 @@ def relaxation_logweight(comp, T2_per_comp, T1_per_comp, dt, chi=None):
     return -dt * (chi * r2 + (1.0 - chi) * r1).sum(1)
 
 
-def surface_logweight(blt, rho_over_D, chi=None):
-    """Per-walker surface-relaxivity log-weight = (rho/D) sum_k chi_k ell_i(t_k) (ell stored
-    at rho/D=1, <=0). Additive over the boundary channel; no trajectory."""
+def surface_logweight_series(blt, rho_over_D, chi=None):
+    """Per-walker surface-relaxivity log-weight ``(rho/D) sum_k chi_k ell_i(t_k)`` from the
+    per-save boundary local-time SERIES ``blt`` (``(n_walkers, n_t)``, stored at ``rho/D = 1``,
+    ``<= 0``). The pack-level entry point, which reads the C2 channel and its exact endpoint, is
+    :func:`dmipy_sim.replay.surface_logweight`."""
     blt = np.asarray(blt, np.float64)
     s = blt.sum(1) if chi is None else (np.asarray(chi, float)[None, :] * blt).sum(1)
     return float(rho_over_D) * s
