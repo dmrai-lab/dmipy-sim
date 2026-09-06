@@ -131,9 +131,15 @@ class Geometry(ABC):
     _T1_comp = None
 
     # ---- compartment labelling ----
+    #
+    # One convention for every geometry, the one the .rpk format uses: id 0 is the
+    # extra-cellular / free pool; enclosed pools take positive ids (1 = intra / the lumen,
+    # 2 = myelin where there is a sheath). Packed geometries with `classify_returns_object_id`
+    # return 1..N for the object a walker is in and 0 outside all of them.
 
     def classify_position(self, r) -> jnp.ndarray:
-        """Compartment id (int32) of position ``r``. The default is a single pool, id 0."""
+        """Compartment id (int32) of position ``r``: 0 for the free pool, positive for an
+        enclosed pool. The default is a single free pool."""
         return jnp.int32(0)
 
     def classify_position_carry(self, r, comp_prev):
@@ -271,12 +277,9 @@ class Box1D(Geometry):
         return 2.0
 
     def classify_position(self, r: jnp.ndarray) -> jnp.ndarray:
-        """Compartment ID: 0=intra (0 <= x <= length), 1=extra (outside).
-
-        For the Box1D geometry walkers are always inside the slab (reflecting
-        walls), so this always returns 0.
-        """
-        return jnp.int32(0)
+        """Compartment id: 1 (the slab is one enclosed pool; its walls reflect, so every
+        walker is inside it)."""
+        return jnp.int32(1)
 
     def init_positions(self, n_walkers, key):
         x = jax.random.uniform(key, (n_walkers, 1), dtype=jnp.float32,

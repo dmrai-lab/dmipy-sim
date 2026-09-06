@@ -226,7 +226,7 @@ def _gather_is_populated(A, r):
 
 
 def _classify_arr(A, r):
-    """Interior (0) / exterior (1) from the array bundle.
+    """Interior (1) / exterior (0) from the array bundle.
 
     Single source of truth for both ``Mesh.classify_position`` and the ``init_positions`` seeding jit.
     Sidedness comes from the nearest surface triangle in the local 27-cell gather. A point with **no**
@@ -252,7 +252,7 @@ def _classify_arr(A, r):
     idx = jnp.argmin(dist)
     side = jnp.dot(r_w - cent[idx], nrm[idx])
     inside = (side < 0) & valid.any()          # no nearby wall => not enclosed => exterior
-    return jnp.where(inside, jnp.int32(0), jnp.int32(1))
+    return jnp.where(inside, jnp.int32(1), jnp.int32(0))
 
 
 # Hoisted to MODULE scope on purpose. jax.jit caches compiled programs on the identity of the
@@ -463,7 +463,7 @@ class Mesh(Geometry):
         self._kappa_mult_in = jnp.float32(k_in / k_nom if k_nom > 0 else 1.0)
 
         # ---- per-compartment BULK diffusivity / T2 / T1 (per-step effects) ----
-        # index convention: 0 = intra, 1 = extra (matches classify_position).
+        # index convention: 0 = extra, 1 = intra (the pool id classify_position returns).
         # T2 acts while transverse; T1 acts only during longitudinal storage — both
         # are gated by the waveform's coherence flag chi_t in make_step_fn.
         def _pair(key):
@@ -473,7 +473,7 @@ class Mesh(Geometry):
             if vi is None or ve is None:
                 raise ValueError(f"per-compartment '{key}' needs a value for BOTH intra and "
                                  f"extra (got intra={vi}, extra={ve}).")
-            return (float(vi), float(ve))
+            return (float(ve), float(vi))                    # indexed by pool id: 0 extra, 1 intra
         D_pair = _pair("D")
         T2_pair = _pair("T2")
         T1_pair = _pair("T1")
@@ -724,7 +724,7 @@ class Mesh(Geometry):
         return jnp.where(ok, t, jnp.inf), u, v
 
     def classify_position(self, r):
-        """Compartment tag: 0 = interior (inside a cell), 1 = exterior.
+        """Compartment id: 1 = interior (inside a cell), 0 = exterior.
 
         Delegates to :func:`_classify_arr` so the seeding jit and this method cannot diverge.
         """
@@ -1009,7 +1009,7 @@ class Mesh(Geometry):
             "the cell-gather classifier, which decides sidedness from the nearest triangle centroid and "
             "misplaces walkers near a wall (measured 6.3% on a coarse closed cylinder). Cap the surface "
             "to get exact seeding.", stacklevel=2)
-        want = 0 if intra else 1
+        want = 1 if intra else 0
         classify, populated = _classify_batch, _populated_batch
         n_resolved = 0
         while need > 0:
@@ -1022,7 +1022,7 @@ class Mesh(Geometry):
                 # as this path did before (#39); an open surface that reaches here kept working because
                 # it never produced an undecided point, and that is preserved rather than reasoned about
                 inside = mesh_contains(V, F, pts[undecided].astype(float))
-                lab[undecided] = np.where(inside, 0, 1)
+                lab[undecided] = np.where(inside, 1, 0)
                 n_resolved += int(undecided.sum())
             out.append(pts[lab == want])
             need = n_walkers - sum(len(a) for a in out)
@@ -1069,7 +1069,7 @@ class Mesh(Geometry):
             from ..susceptibility_field import mesh_contains
             inside = mesh_contains(np.asarray(self.vertices, float),
                                    np.asarray(self.faces, np.int64), pts[undecided])
-            lab[undecided] = np.where(inside, 0, 1)
+            lab[undecided] = np.where(inside, 1, 0)
         return jnp.asarray(lab, jnp.int32)
 
     def quality_report(self, verbose=True):

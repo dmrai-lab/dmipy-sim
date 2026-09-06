@@ -10,8 +10,8 @@ kept as the validation oracle + fallback.  This module asserts the selector:
       tolerance on a representative set — i.e. the default did not silently
       shift the shipped physics.
   (3) ``engine='replay'`` raises ``NotImplementedError`` (naming the gap) on the
-      unsupported paths (membrane permeability, PackedMyelinatedCylinders,
-      return_compartments), and ``engine='auto'`` falls those back to fused.
+      unsupported paths (PackedMyelinatedCylinders, return_compartments), and
+      ``engine='auto'`` falls those back to fused.
 
 SAME seed / N / waveform go through both engines.  The replay producer walks
 with a separate scan, so parity is at the MC-noise floor, not bit-identical.  The
@@ -182,26 +182,6 @@ def test_replay_serves_a_permeable_walk():
     S = np.asarray(simulate(2_000, D, _WF, geom, seed=SEED, engine="replay",
                             require_gpu=False)).ravel()
     assert np.all(np.isfinite(S)) and np.all(S <= 1.0 + 1e-6)
-
-
-def test_replay_raises_on_per_compartment_relaxation_under_exchange():
-    """(3) The gap that REPLACED the blanket permeability refusal -- and was untested until now.
-
-    Per-compartment T2/T1 are applied off the saved compartment channel, sampled at dt_save, while
-    crossings happen at sub-step resolution. Under exchange the compartment attribution of a crossing
-    walker is therefore quantised, so this combination is fused-only. Scalar relaxation is unaffected,
-    which the companion assertion below pins -- otherwise this test would still pass if the guard
-    over-refused and rejected every permeable run.
-    """
-    geom = d.Cylinder(radius=R, orientation=[0, 0, 1], permeability=2e-5)
-    with pytest.raises(NotImplementedError, match="per-compartment T2/T1"):
-        simulate(2_000, D, _WF, geom, seed=SEED, engine="replay",
-                 T2={"intra": 60e-3, "extra": 80e-3}, require_gpu=False)
-
-    # scalar T2 on the same permeable geometry must still be served by replay
-    S = np.asarray(simulate(2_000, D, _WF, geom, seed=SEED, engine="replay",
-                            T2=70e-3, require_gpu=False)).ravel()
-    assert np.all(np.isfinite(S))
 
 
 def test_replay_raises_on_return_compartments():

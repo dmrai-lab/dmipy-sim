@@ -59,10 +59,10 @@ class Sphere(Geometry):
         return 4.0 * np.pi * self.radius ** 2
 
     def classify_position(self, r: jnp.ndarray) -> jnp.ndarray:
-        """Compartment ID: 0=intra (|r| < R), 1=extra (|r| >= R)."""
+        """Compartment id: 1 intra (|r| < R), 0 extra (|r| >= R)."""
         R = jnp.float32(self.radius)
         inside = jnp.dot(r, r) < R * R
-        return jnp.where(inside, jnp.int32(0), jnp.int32(1))
+        return jnp.where(inside, jnp.int32(1), jnp.int32(0))
 
     def init_positions(self, n_walkers, key):
         """Uniform sampling inside sphere via rejection (CPU numpy)."""
@@ -300,16 +300,13 @@ class Cylinder(Geometry):
         return r_out, dlog_w
 
     def classify_position(self, r: jnp.ndarray) -> jnp.ndarray:
-        """Compartment ID: 0=intra (|r_xy| < R), 1=extra (|r_xy| >= R).
-
-        The check is performed in the cylinder frame (r_xy is the component
-        perpendicular to the cylinder axis).
-        """
+        """Compartment id: 1 intra (|r_xy| < R), 0 extra (|r_xy| >= R), with r_xy the component
+        perpendicular to the cylinder axis."""
         R = jnp.float32(self.radius)
         r_c = r if self._is_identity_rotation else self._R @ r
         r_xy_sq = jnp.dot(r_c[:2], r_c[:2])
         inside = r_xy_sq < R * R
-        return jnp.where(inside, jnp.int32(0), jnp.int32(1))
+        return jnp.where(inside, jnp.int32(1), jnp.int32(0))
 
     def volume(self, L: float = 1.0) -> float:
         """Volume of the cylinder: π·R²·L (m³).
@@ -622,13 +619,10 @@ class Ellipsoid(Geometry):
         return r_out, dlog_w
 
     def classify_position(self, r: jnp.ndarray) -> jnp.ndarray:
-        """Compartment ID: 0=intra (inside ellipsoid), 1=extra (outside).
-
-        Uses the ellipsoid equation: x²/a² + y²/b² + z²/c² < 1 → intra.
-        """
+        """Compartment id: 1 intra (x²/a² + y²/b² + z²/c² < 1), 0 extra."""
         inv_semi_sq = jnp.float32(1.0) / (self._semi_f32 * self._semi_f32)
         inside = jnp.dot(r * inv_semi_sq, r) < jnp.float32(1.0)
-        return jnp.where(inside, jnp.int32(0), jnp.int32(1))
+        return jnp.where(inside, jnp.int32(1), jnp.int32(0))
 
     def volume(self) -> float:
         """Volume of the ellipsoid: (4/3)·π·a·b·c (m³)."""
@@ -653,7 +647,7 @@ class PermeableSlab1D(Geometry):
     outer walls at x=0 and x=L (y, z free).  The cleanest first-principles benchmark for
     membrane permeability -- no curvature and no exterior re-entry (a closed reservoir):
 
-        compartment A = {x < L/2}, B = {x > L/2}; start all walkers in A ->
+        compartment A = {x < L/2} (id 1), B = {x > L/2} (id 0); start all walkers in A ->
         f_A(t) = 1/2 + 1/2 exp(-4 kappa t / L)   (closed two-compartment exchange).
 
     The membrane transmission is the SAME rule as the curved geometries
@@ -695,7 +689,8 @@ class PermeableSlab1D(Geometry):
         return jnp.stack([x, z, z], axis=1)
 
     def classify_position(self, r):
-        return jnp.int32(jnp.where(r[0] < jnp.float32(self.length / 2.0), 0, 1))
+        """Compartment id: 1 for A (x < L/2, the seeded pool), 0 for B."""
+        return jnp.int32(jnp.where(r[0] < jnp.float32(self.length / 2.0), 1, 0))
 
     def _fold(self, x):
         """Reflect x into [0, L] at the outer walls (modular mirror)."""
@@ -752,7 +747,7 @@ class PermeableShell(Geometry):
     2D/3D: a PERMEABLE membrane at r=R_in inside a REFLECTING outer wall at r=R_out.
 
     ``kind='sphere'`` -> r = |x| (3D);  ``kind='cylinder'`` -> r = |x_perp| to ``orientation``
-    (2D radial, free along the axis).  Compartment A = {r < R_in}, B = {R_in < r < R_out}.
+    (2D radial, free along the axis).  Compartment A = {r < R_in} (id 1), B = {R_in < r < R_out} (id 0).
     Closed (no exterior re-entry) and finite-diffusion-exact: the exchange time is the lowest
     (spherical-)Bessel eigenvalue, the clean analog of ``PermeableSlab1D`` for curved membranes.
     """
@@ -807,8 +802,9 @@ class PermeableShell(Geometry):
         return pos
 
     def classify_position(self, r):
+        """Compartment id: 1 for A (r < R_in), 0 for the shell B."""
         rad = jnp.linalg.norm(self._radial(r))
-        return jnp.int32(jnp.where(rad < jnp.float32(self.r_inner), 0, 1))
+        return jnp.int32(jnp.where(rad < jnp.float32(self.r_inner), 1, 0))
 
     def _permeate_impl(self, r, step, kappa_over_D, rho_over_D, perm_key):
         Rin = jnp.float32(self.r_inner); Rout = jnp.float32(self.r_outer)

@@ -132,7 +132,7 @@ def _run_f_inside_at_time(geometry, t_target, D, n_walkers, dt, seed):
     signals, comp_orig, comp_final = simulate(
         n_walkers, D, wf, geometry, seed=seed,
         return_compartments='final', walker_batch_size=batch)
-    f_inside = float((comp_final == 0).mean())
+    f_inside = float((comp_final == 1).mean())
     return f_inside, t_actual
 
 
@@ -342,7 +342,7 @@ class TestEscapeRateCylinder:
         _, _, comp_final = simulate(
             N_WALKERS_PERM, D, wf, geom_cyl, seed=SEED,
             return_compartments='final')
-        escape_rate_sim = float((comp_final != 0).mean())
+        escape_rate_sim = float((comp_final == 0).mean())
         theory_rate = DT_STD / tau_theory
 
         # Log the bias without asserting < 5% (known to be ~100% bias)

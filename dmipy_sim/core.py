@@ -55,11 +55,8 @@ from .geometry import initial_positions
 #                         the private repo unified these by REPLACING the fused
 #                         kernel; the public repo keeps both, so rerouting would
 #                         shift test_packed_myelinated_cylinders)
-#   permeability (any)   |  FUSED  (membrane crossing is single-pass walk
-#                         semantics; scalar replay has no Mz reservoir for
-#                         exchange across a longitudinal-storage mixing time)
-#   per-comp D/T2 Mesh   |  FUSED  (intra/extra dicts resolved per-step in
-#                         make_step_fn; not wired into the replay operator here)
+#   per-comp D Mesh      |  FUSED  (the step length depends on the compartment, so the
+#                         walk itself does; per-comp T2/T1 replay off the occupancy channel)
 #
 # Fused-only REQUESTS (any geometry) — replay raises NotImplementedError, auto
 # falls back to fused: return_positions, return_compartments,
@@ -76,7 +73,7 @@ _REPLAY_AUTO_GEOM_NAMES = frozenset({
 
 
 def _replay_gap(geometry, *, return_positions, return_compartments,
-                return_walker_signals, diffusivity, T2_probe=None, T1_probe=None):
+                return_walker_signals, diffusivity):
     """Return a string naming why the replay backend cannot serve this run
     exactly, or ``None`` when replay is a valid substitute for the fused engine.
 
@@ -93,18 +90,6 @@ def _replay_gap(geometry, *, return_positions, return_compartments,
     if geometry._is_packed_myelinated:
         return ("PackedMyelinatedCylinders fused single-reflection kernel is not "
                 "position-parity with the multi-bounce replay walk")
-    if geometry.permeability is not None:
-        # Permeability shapes the WALK, like geometry and diffusivity -- it is not a replay knob, and the
-        # recorded trajectory already contains every crossing that happened. Replay then applies the gradient
-        # off positions, scalar T2/T1 off elapsed time and rho off the unit boundary local time, none of which
-        # depend on kappa. So a permeable walk is as replayable as an impermeable one.
-        #
-        # The one genuine gap is PER-COMPARTMENT T2/T1 under exchange: those are applied off the saved
-        # compartment channel, which is sampled at dt_save while crossings happen at sub-step resolution, so
-        # the compartment attribution of a crossing walker is quantised. Scalar relaxation has no such issue.
-        if isinstance(T2_probe, dict) or isinstance(T1_probe, dict):
-            return ("per-compartment T2/T1 under membrane exchange needs sub-step compartment "
-                    "attribution, which the saved channel quantises to dt_save (fused-only)")
     if geometry._D_comp_jax is not None:
         # Per-compartment D changes the STEP LENGTH per compartment, so it alters the walk
         # itself — not a replay knob. (Per-compartment T2/T1 ARE replay knobs: they gate
@@ -159,9 +144,9 @@ def _simulate_via_replay(n_walkers, diffusivity, waveform, geometry, *, seed,
                 and hasattr(geometry, 'reflect_with_log_weight'))
 
     # Per-compartment T2/T1 (Mesh intra/extra dicts) are pure replay knobs: they gate only
-    # log_w and are applied off the saved compartment channel (comp_traj, index 0=intra /
-    # 1=extra, matching the geometry's _T2_comp/_T1_comp ordering). Requesting them forces
-    # save_relaxation_data so the compartment channel is recorded.
+    # log_w and are applied off the saved compartment channel (comp_traj, indexed by pool id:
+    # 0 extra, 1 intra, matching the geometry's _T2_comp/_T1_comp ordering). Requesting them
+    # forces save_relaxation_data so the compartment channel is recorded.
     T2_comp = geometry._T2_comp
     T1_comp = geometry._T1_comp
     has_per_comp = T2_comp is not None or T1_comp is not None
@@ -273,14 +258,15 @@ def simulate(
         required for Karger-model validation.  Default None (use geometry
         default positions).
 
-        Compartment integer IDs:
+        Compartment ids follow one convention: 0 is the extra-cellular / free pool and
+        enclosed pools are positive.
 
-        - ``Cylinder``, ``Sphere``, ``Ellipsoid``, ``Box1D``:
-          0 = intra, 1 = extra.
-        - ``MyelinatedCylinder``:
-          0 = intra-axonal, 1 = myelin, 2 = extra-axonal.
-        - ``PackedCylinders``:
-          0 = extra-axonal, 1..N = intra cylinder k (1-indexed).
+        - ``Cylinder``, ``Sphere``, ``Ellipsoid``, ``Mesh``: 1 = intra, 0 = extra.
+        - ``Box1D``: 1 (the slab).
+        - ``MyelinatedCylinder``, ``PackedMyelinatedCylinders``: 0 = extra-axonal,
+          1 = intra-axonal, 2 = myelin.
+        - ``PackedCylinders``, ``PackedSpheres``: 0 = extra, 1..N = the object the walker
+          is in.
 
     walker_batch_size : int, optional
         If set and smaller than ``n_walkers``, the run is split into walker
@@ -314,9 +300,9 @@ def simulate(
           (gradient phase + scalar/per-comp T2 + T1 + surface relaxivity).
           Raises :class:`NotImplementedError` (naming the gap) for a path the
           replay backend cannot serve exactly — MyelinatedCylinder /
-          PackedMyelinatedCylinders, membrane permeability, per-compartment
-          D/T2 meshes, or the ``return_positions``/``return_compartments``/
-          ``return_walker_signals`` single-pass internals.
+          PackedMyelinatedCylinders, per-compartment D meshes, or the
+          ``return_positions``/``return_compartments``/``return_walker_signals``
+          single-pass internals.
         - ``'auto'`` — route to replay where it is validated-equivalent AND
           keeps the test suite green, else fall back to fused (transparent).
 
@@ -358,7 +344,7 @@ def simulate(
             geometry, return_positions=return_positions,
             return_compartments=return_compartments,
             return_walker_signals=return_walker_signals,
-            diffusivity=diffusivity, T2_probe=T2, T1_probe=T1)
+            diffusivity=diffusivity)
         if engine == "replay":
             if _gap is not None:
                 raise NotImplementedError(
@@ -486,26 +472,15 @@ def simulate(
     # init_positions().  For standard geometries, classify_position() is used.
     # -----------------------------------------------------------------------
     track_comp = return_compartments is not False
-    if track_comp:
-        if is_myelin or is_packed_myelin:
-            # compartments0 is set during init_positions() call above.
-            # We read it after simulate to avoid forward-reference issues.
-            pass  # set later after the geometry-specific init
-        else:
-            # Standard geometry: vmap classify_position over initial positions
-            classify_fn = geometry.classify_position
-            # Initial labels are the one place an exact test is affordable and necessary: there is no
-            # previous label to carry, so an undecidable point must be resolved rather than defaulted.
-            comp_origin_jax = geometry.classify_positions_exact(r0)       # (n_walkers,) int32
 
     if is_myelin:
         # MyelinatedCylinder: extended carry state (r, phi, log_w, compartment_id, key)
         step_fn = make_myelin_step_fn(geometry, dt, T1=T1)
-        compartments0 = geometry._init_compartments  # (n_walkers,) int32
+        compartments0 = geometry._init_compartments  # (n_walkers,) int32, kernel code
         spin_w = jnp.asarray(geometry.water_fractions, jnp.float32)[compartments0]
 
         if track_comp:
-            comp_origin_jax = compartments0
+            comp_origin_jax = geometry.pool_of(compartments0)   # kernel code -> pool id
 
             if return_compartments == 'full':
                 def simulate_walker(r0_w, key_w, comp0):
@@ -514,12 +489,11 @@ def simulate(
                     # Emit compartment_id at every step
                     def step_with_comp(carry, inputs):
                         new_carry, _ = step_fn(carry, inputs)
-                        comp_out = new_carry[3]  # compartment_id at carry position 3
-                        return new_carry, comp_out
+                        return new_carry, geometry.pool_of(new_carry[3])
 
                     (r_final, phi_all, log_w, comp_final, _), comp_seq = jax.lax.scan(
                         step_with_comp, (r0_w, phi0, log_w0, comp0, key_w), scan_inputs)
-                    return r_final, phi_all, log_w, comp_final, comp_seq
+                    return r_final, phi_all, log_w, geometry.pool_of(comp_final), comp_seq
 
                 simulate_batch = jax.vmap(simulate_walker, in_axes=(0, 0, 0))
                 final_r, all_phi, all_log_w, comp_final, comp_seq = simulate_batch(
@@ -532,7 +506,7 @@ def simulate(
                     log_w0 = jnp.float32(0.0)
                     (r_final, phi_all, log_w, comp_final, _), _ = jax.lax.scan(
                         step_fn, (r0_w, phi0, log_w0, comp0, key_w), scan_inputs)
-                    return r_final, phi_all, log_w, comp_final
+                    return r_final, phi_all, log_w, geometry.pool_of(comp_final)
 
                 simulate_batch = jax.vmap(simulate_walker, in_axes=(0, 0, 0))
                 final_r, all_phi, all_log_w, comp_final = simulate_batch(
@@ -561,11 +535,8 @@ def simulate(
                 "initialises walkers (and their compartments) from `seed` via init_positions.")
         step_fn = make_packed_myelin_step_fn(geometry, dt, T1=T1)
         compartments0 = geometry._init_compartments        # encoded: 0=extra, 1..N=intra, >N=myelin
-
-        def _to3(cid):                                     # -> 0=intra, 1=myelin, 2=extra
-            return jnp.where(cid == jnp.int32(0), jnp.int32(2),
-                    jnp.where(cid > jnp.int32(geometry.N_max), jnp.int32(1), jnp.int32(0)))
-        spin_w = jnp.where(_to3(compartments0) == jnp.int32(1),
+        _to3 = geometry.pool_of                            # -> 0 extra, 1 intra, 2 myelin
+        spin_w = jnp.where(_to3(compartments0) == jnp.int32(2),
                            jnp.float32(geometry._myelin_proton_density), jnp.float32(1.0))
 
         def simulate_walker(r0_w, key_w, comp0):
@@ -586,159 +557,38 @@ def simulate(
             comp_final = _to3(_comp_final_enc)
             comp_seq = _comp_seq
     else:
-        # Standard geometry path
-        # Build scan body for this geometry and diffusivity
-        # T2/T1 are passed in so they are accumulated per-walker inside the scan
+        # Standard geometry path: one scan body whose carry is (r, phi, log_w, key, comp). The
+        # compartment id is advanced inside the step (per-compartment D/T2/T1 read it) and emitted
+        # per timestep only when the caller asked for it.
         step_fn, has_weight = make_step_fn(geometry, diffusivity, dt, T2=T2, T1=T1,
-                                       sub_steps=sub_steps)
+                                           sub_steps=sub_steps, track_compartment=track_comp)
         spin_w = jnp.ones((n_walkers,), dtype=jnp.float32)
-
-        if want_pos_full:
-            # Per-timestep position export (additive path; existing True/'final'
-            # scans are untouched).  Emits r at every step, plus the compartment
-            # id when tracking — e.g. to select walkers that permeated and plot
-            # only their trajectories.  pos_seq: (n_walkers, n_timesteps, 3).
-            classify_fn = geometry.classify_position
-            if has_weight:
-                def simulate_walker(r0_w, key_w):
-                    phi0 = jnp.zeros(n_measurements, dtype=jnp.float32)
-
-                    def body(carry, inp):
-                        (rn, pn, ln, kn), _ = step_fn(carry, inp)
-                        return (rn, pn, ln, kn), ((rn, classify_fn(rn)) if track_comp else rn)
-                    (r_final, phi_all, log_w, _), ys = jax.lax.scan(
-                        body, (r0_w, phi0, jnp.float32(0.0), key_w), scan_inputs)
-                    return r_final, phi_all, log_w, ys
-
-                final_r, all_phi, all_log_w, ys = jax.vmap(
-                    simulate_walker, in_axes=(0, 0))(r0, walker_keys)
-                signals = _ens(spin_w, all_log_w, all_phi)
-            else:
-                def simulate_walker(r0_w, key_w):
-                    phi0 = jnp.zeros(n_measurements, dtype=jnp.float32)
-
-                    def body(carry, inp):
-                        (rn, pn, kn), _ = step_fn(carry, inp)
-                        return (rn, pn, kn), ((rn, classify_fn(rn)) if track_comp else rn)
-                    (r_final, phi_all, _), ys = jax.lax.scan(
-                        body, (r0_w, phi0, key_w), scan_inputs)
-                    return r_final, phi_all, ys
-
-                final_r, all_phi, ys = jax.vmap(
-                    simulate_walker, in_axes=(0, 0))(r0, walker_keys)
-                signals = _ens_np(spin_w, all_phi)
-            if track_comp:
-                pos_seq, comp_seq = ys          # (n_w, n_t, 3), (n_w, n_t)
-                comp_final = comp_seq[:, -1]
-            else:
-                pos_seq = ys
-
-        elif track_comp:
-            # Need a classify_position closure for the scan body. Where the geometry can say that a
-            # position is undecidable (no wall within reach), prefer carrying the previous label: the
-            # walker cannot have crossed a boundary it was never near, and re-deriving would make its
-            # compartment depend on the local mesh resolution. See Mesh.classify_position_carry.
-            carry_fn = geometry.classify_position_carry
-
-            if has_weight:
-                # carry = (r, phi, log_weight, compartment_current, key)
-                def step_fn_comp(carry, inputs):
-                    r, phi, log_weight, comp_cur, key = carry
-                    # Run the original step_fn with its expected carry format
-                    orig_carry = (r, phi, log_weight, key)
-                    (r_new, phi_new, log_new, key_new), _ = step_fn(orig_carry, inputs)
-                    comp_new = carry_fn(r_new, comp_cur)
-                    return (r_new, phi_new, log_new, comp_new, key_new), comp_new
-
-                if return_compartments == 'full':
-                    def simulate_walker(r0_w, key_w, comp0):
-                        phi0   = jnp.zeros(n_measurements, dtype=jnp.float32)
-                        log_w0 = jnp.float32(0.0)
-                        (r_final, phi_all, log_w, comp_final, _), comp_seq = jax.lax.scan(
-                            step_fn_comp, (r0_w, phi0, log_w0, comp0, key_w), scan_inputs)
-                        return r_final, phi_all, log_w, comp_final, comp_seq
-
-                    simulate_batch = jax.vmap(simulate_walker, in_axes=(0, 0, 0))
-                    final_r, all_phi, all_log_w, comp_final, comp_seq = simulate_batch(
-                        r0, walker_keys, comp_origin_jax)
-                    signals = _ens(spin_w, all_log_w, all_phi)
-
-                else:  # 'final'
-                    def simulate_walker(r0_w, key_w, comp0):
-                        phi0   = jnp.zeros(n_measurements, dtype=jnp.float32)
-                        log_w0 = jnp.float32(0.0)
-                        (r_final, phi_all, log_w, comp_final, _), _ = jax.lax.scan(
-                            step_fn_comp, (r0_w, phi0, log_w0, comp0, key_w), scan_inputs)
-                        return r_final, phi_all, log_w, comp_final
-
-                    simulate_batch = jax.vmap(simulate_walker, in_axes=(0, 0, 0))
-                    final_r, all_phi, all_log_w, comp_final = simulate_batch(
-                        r0, walker_keys, comp_origin_jax)
-                    signals = _ens(spin_w, all_log_w, all_phi)
-
-            else:
-                # carry = (r, phi, compartment_current, key)
-                def step_fn_comp(carry, inputs):
-                    r, phi, comp_cur, key = carry
-                    orig_carry = (r, phi, key)
-                    (r_new, phi_new, key_new), _ = step_fn(orig_carry, inputs)
-                    comp_new = carry_fn(r_new, comp_cur)
-                    return (r_new, phi_new, comp_new, key_new), comp_new
-
-                if return_compartments == 'full':
-                    def simulate_walker(r0_w, key_w, comp0):
-                        phi0 = jnp.zeros(n_measurements, dtype=jnp.float32)
-                        (r_final, phi_all, comp_final, _), comp_seq = jax.lax.scan(
-                            step_fn_comp, (r0_w, phi0, comp0, key_w), scan_inputs)
-                        return r_final, phi_all, comp_final, comp_seq
-
-                    simulate_batch = jax.vmap(simulate_walker, in_axes=(0, 0, 0))
-                    final_r, all_phi, comp_final, comp_seq = simulate_batch(
-                        r0, walker_keys, comp_origin_jax)
-                    signals = _ens_np(spin_w, all_phi)
-
-                else:  # 'final'
-                    def simulate_walker(r0_w, key_w, comp0):
-                        phi0 = jnp.zeros(n_measurements, dtype=jnp.float32)
-                        (r_final, phi_all, comp_final, _), _ = jax.lax.scan(
-                            step_fn_comp, (r0_w, phi0, comp0, key_w), scan_inputs)
-                        return r_final, phi_all, comp_final
-
-                    simulate_batch = jax.vmap(simulate_walker, in_axes=(0, 0, 0))
-                    final_r, all_phi, comp_final = simulate_batch(
-                        r0, walker_keys, comp_origin_jax)
-                    signals = _ens_np(spin_w, all_phi)
-
+        per_comp = any(a is not None for a in (geometry._D_comp_jax, geometry._inv_T2_comp_jax,
+                                               geometry._inv_T1_comp_jax))
+        if track_comp or per_comp:
+            # Initial labels are the one place an exact test is affordable and necessary: there is
+            # no previous label to carry, so an undecidable point must be resolved, not defaulted.
+            comp_origin_jax = jnp.asarray(geometry.classify_positions_exact(r0), jnp.int32)
         else:
-            # Original code path (no compartment tracking)
-            if has_weight:
-                # Surface relaxation path: carry includes per-walker log-weight
-                def simulate_walker(r0_w, key_w):
-                    phi0   = jnp.zeros(n_measurements, dtype=jnp.float32)
-                    log_w0 = jnp.float32(0.0)
-                    (r_final, phi_all, log_w, _), _ = jax.lax.scan(
-                        step_fn, (r0_w, phi0, log_w0, key_w), scan_inputs)
-                    return r_final, phi_all, log_w
+            comp_origin_jax = jnp.zeros((n_walkers,), jnp.int32)   # carried untouched, never read
+        emit_pos  = want_pos_full
+        emit_comp = track_comp and return_compartments == 'full'
 
-                simulate_batch = jax.vmap(simulate_walker, in_axes=(0, 0))
-                final_r, all_phi, all_log_w = simulate_batch(r0, walker_keys)
-                # Signal: Re(<w · exp(i·phi)>) = <exp(log_w) · cos(phi)>
-                # all_log_w: (n_walkers,); all_phi: (n_walkers, n_measurements)
-                # [:, None] keeps broadcasting as (n_walkers, 1) × (n_walkers, n_meas)
-                signals = _ens(spin_w, all_log_w, all_phi)
+        def simulate_walker(r0_w, key_w, comp0_w):
+            phi0 = jnp.zeros(n_measurements, dtype=jnp.float32)
 
-            else:
-                # Standard path (no surface relaxation, no permeability)
-                def simulate_walker(r0_w, key_w):
-                    phi0 = jnp.zeros(n_measurements, dtype=jnp.float32)
-                    (r_final, phi_all, _), _ = jax.lax.scan(
-                        step_fn, (r0_w, phi0, key_w), scan_inputs)
-                    return r_final, phi_all
+            def body(carry, inp):
+                new_carry, _ = step_fn(carry, inp)
+                rn, _, _, _, cn = new_carry
+                return new_carry, (rn if emit_pos else None, cn if emit_comp else None)
 
-                simulate_batch = jax.vmap(simulate_walker, in_axes=(0, 0))
-                final_r, all_phi = simulate_batch(r0, walker_keys)
-                # Signal: Re(<exp(i*phi)>) = <cos(phi)>
-                signals = _ens_np(spin_w, all_phi)  # (n_measurements,)
+            (r_final, phi_all, log_w, _, comp_final), (pos_ys, comp_ys) = jax.lax.scan(
+                body, (r0_w, phi0, jnp.float32(0.0), key_w, comp0_w), scan_inputs)
+            return r_final, phi_all, log_w, comp_final, pos_ys, comp_ys
+
+        final_r, all_phi, all_log_w, comp_final, pos_seq, comp_seq = jax.vmap(
+            simulate_walker, in_axes=(0, 0, 0))(r0, walker_keys, comp_origin_jax)
+        signals = _ens(spin_w, all_log_w, all_phi) if has_weight else _ens_np(spin_w, all_phi)
 
     # T2/T1 are accumulated per-walker inside the scan body (make_step_fn /
     # make_myelin_step_fn); nothing further to apply here.
@@ -963,31 +813,24 @@ def simulate_cpmg(n_walkers, diffusivity, waveform, geometry, *,
     walker_keys = jax.random.split(walker_key, n_walkers)
     r0 = initial_positions(geometry, n_walkers, pos_key, r0)
 
-    step_fn, has_weight = make_step_fn(geometry, diffusivity, dt, T2=T2, sub_steps=sub_steps)
+    step_fn, _ = make_step_fn(geometry, diffusivity, dt, T2=T2, sub_steps=sub_steps)
+    per_comp = any(a is not None for a in (geometry._D_comp_jax, geometry._inv_T2_comp_jax,
+                                           geometry._inv_T1_comp_jax))
+    comp0 = (jnp.asarray(geometry.classify_positions_exact(r0), jnp.int32) if per_comp
+             else jnp.zeros((n_walkers,), jnp.int32))
 
-    if has_weight:
-        def step_emit(carry, inputs):
-            new_carry, _ = step_fn(carry, inputs)
-            _, phi, log_w, _ = new_carry
-            return new_carry, jnp.exp(log_w) * jnp.cos(phi)   # (n_measurements,)
+    def step_emit(carry, inputs):
+        new_carry, _ = step_fn(carry, inputs)
+        _, phi, log_w, _, _ = new_carry
+        return new_carry, jnp.exp(log_w) * jnp.cos(phi)       # (n_measurements,)
 
-        def walk(r0_w, key_w):
-            phi0 = jnp.zeros(n_measurements, dtype=jnp.float32)
-            _, s_trace = jax.lax.scan(
-                step_emit, (r0_w, phi0, jnp.float32(0.0), key_w), scan_inputs)
-            return s_trace                                    # (n_t, n_measurements)
-    else:
-        def step_emit(carry, inputs):
-            new_carry, _ = step_fn(carry, inputs)
-            _, phi, _ = new_carry
-            return new_carry, jnp.cos(phi)
+    def walk(r0_w, key_w, comp0_w):
+        phi0 = jnp.zeros(n_measurements, dtype=jnp.float32)
+        _, s_trace = jax.lax.scan(
+            step_emit, (r0_w, phi0, jnp.float32(0.0), key_w, comp0_w), scan_inputs)
+        return s_trace                                        # (n_t, n_measurements)
 
-        def walk(r0_w, key_w):
-            phi0 = jnp.zeros(n_measurements, dtype=jnp.float32)
-            _, s_trace = jax.lax.scan(step_emit, (r0_w, phi0, key_w), scan_inputs)
-            return s_trace
-
-    all_traces = jax.vmap(walk, in_axes=(0, 0))(r0, walker_keys)   # (n_walkers, n_t, n_meas)
+    all_traces = jax.vmap(walk, in_axes=(0, 0, 0))(r0, walker_keys, comp0)   # (n_w, n_t, n_meas)
     signal_trace = jnp.mean(all_traces, axis=0)                    # (n_t, n_meas)
     echo_signals = signal_trace[echo_indices]                     # (n_echoes, n_meas)
     return np.array(echo_signals)
@@ -1094,14 +937,12 @@ def simulate_trajectories(
         Replay surface relaxivity rho via
         ``log_w[m,w] += (rho/D) * sum_t(chi_perp[m,t] * dlog_boundary_unit[w,t])``.
     comp_traj : np.ndarray, shape (n_walkers, n_t)
-        Only when ``save_relaxation_data=True``.  For PERMEABLE 2-compartment
-        geometries (Sphere/Cylinder with permeability): float16 FRACTIONAL
-        OCCUPANCY of compartment 1 (outside) over each saved interval — the mean
-        of the sub-step compartment ids (resolves intra-save membrane crossings).
-        For all OTHER geometries (impermeable, surface relaxivity): int8 discrete
-        compartment ID (always 0 for single-compartment; 0/1/2 for packed
-        myelin).  Consumed by ``replay`` with
-        ``T2_per_comp``/``T1_per_comp``.
+        Only when ``save_relaxation_data=True``.  Pool id per saved step, 0 the
+        extra / free pool and 1 the enclosed pool (0/1/2 = extra/intra/myelin for packed
+        myelin), int8.  For a PERMEABLE geometry it is the FRACTIONAL OCCUPANCY of pool 1
+        over the saved interval (the mean of the sub-step ids, ``storage_dtype``), which
+        resolves intra-save membrane crossings.  Consumed by ``replay`` with
+        ``T2_per_comp``/``T1_per_comp`` indexed by pool id.
     bound_frac : np.ndarray, shape (n_walkers, n_t), ``storage_dtype``
         ONLY for the packed-myelin path with ``kappa_MT > 0`` — appended as a 7th
         return value.  Per-save MT bound-pool occupancy, consumed by
@@ -1263,44 +1104,15 @@ def simulate_trajectories(
     if _sdt not in (np.float16, np.float32, np.float64):
         raise ValueError(f"storage_dtype must be float16/32/64, got {storage_dtype!r}")
 
-    # ── Compartment ID detection (relaxation path only) ─────────────────────
-    # Permeable Cylinder (has _R and radius): 0=inside, 1=outside.  Permeable
-    # Sphere (radius, no _R): 0=inside, 1=outside.  Then any geometry exposing
-    # `classify_position`.  Only a geometry with none of these is a constant 0.
-    if save_relaxation_data:
-        if has_permeability and hasattr(geometry, '_R') and hasattr(geometry, 'radius'):
-            R_val = jnp.float32(float(geometry.radius))
-            _R_jax = jnp.array(geometry._R, dtype=jnp.float32)
-            _is_id_R = bool(np.allclose(np.array(geometry._R), np.eye(3)))
-
-            def _get_comp_id(r):
-                r_c = r if _is_id_R else _R_jax @ r
-                return jnp.int8(jnp.where(jnp.linalg.norm(r_c[:2]) < R_val, 0, 1))
-        elif has_permeability and hasattr(geometry, 'radius'):
-            R_val = jnp.float32(float(geometry.radius))
-
-            def _get_comp_id(r):
-                return jnp.int8(jnp.where(jnp.linalg.norm(r) < R_val, 0, 1))
-        elif geometry.classify_returns_object_id:
-            # PackedCylinders / PackedSpheres: 0=extra, 1..N = the object the walker is in.
-            # Collapse to two pools -- relaxation is per-pool, and an object id would
-            # overflow int8 above 127 objects.
-            #
-            # Before this branch they fell through to the constant below, so `comp_traj` was
-            # identically 0 and anyone wanting per-compartment occupancy had to re-derive it
-            # from the stored positions -- exactly the classification f16 positions get
-            # wrong (issue #78). Classifying at walk time in f32 is exact, and int8 costs
-            # 1 byte/save against 12 for f32 positions.
-            #
-            # NOTE the convention: this follows the geometry's own (and the .rpk spec's)
-            # `0 = extra-cellular / free`. The permeable Cylinder/Sphere branches above use
-            # the OPPOSITE convention (0 = intra) and are deliberately left alone here --
-            # flipping them would silently change existing relaxation replays. See #78.
-            def _get_comp_id(r):
-                return jnp.int8(jnp.minimum(geometry.classify_position(r), 1))
-        else:
-            def _get_comp_id(r):
-                return jnp.int8(0)
+    # ── Compartment channel (relaxation path only) ────────────────────────────
+    # The geometry's own pool id, collapsed to two pools (0 extra, 1 enclosed): relaxation is
+    # per pool, and an object id would overflow int8 above 127 objects. The label is CARRIED:
+    # seeded once from the exact classifier and updated per sub-step through
+    # `classify_position_carry`, so a geometry whose per-step classifier is undecidable away
+    # from its walls (a mesh) keeps the label it had. Recorded per sub-step at f32, so it is
+    # exact where re-classifying stored positions is not (issue #78).
+    def _pool2(comp):
+        return jnp.minimum(comp, 1).astype(jnp.float32)
 
     # ── Relaxation-data path (position + boundary log-weight with rho/D=1) ────
     is_packed_myelin_geom = geometry._is_packed_myelinated
@@ -1309,7 +1121,6 @@ def simulate_trajectories(
         # PackedMyelinatedCylinders: use the stripped trajectory step fn (geometry
         # + permeability only, rho/D=1 at all walls).  comp_id is the encoded id
         # (0=extra, 1..N_max=intra, >N_max=myelin); compress to 0/1/2 at save.
-        N_max_pm = geometry.N_max
         # Magnetization transfer (kappa_MT > 0): the step fn binds free water at the
         # myelin walls and records the per-save bound occupancy.  kappa_MT == 0 keeps
         # the pre-MT walk bit-for-bit (RNG stream + positions unchanged).
@@ -1318,9 +1129,7 @@ def simulate_trajectories(
             geometry, dt_sim, kappa_MT=kappa_MT, dwell_time=dwell_time)
 
         def _compress_comp_pm(comp_id):
-            return jnp.where(comp_id == jnp.int32(0), jnp.int8(0),
-                   jnp.where(comp_id <= jnp.int32(N_max_pm), jnp.int8(1),
-                             jnp.int8(2)))
+            return geometry.pool_of(comp_id).astype(jnp.int8)
 
         def _inner_pm(carry, _):
             return step_fn_traj_pm(carry, None)
@@ -1367,7 +1176,7 @@ def simulate_trajectories(
             permeate_relax = geometry.permeate
 
             def inner_step_relax(carry, _):
-                r, key, dlog_accum, comp_sum, side, bad = carry
+                r, key, dlog_accum, comp_sum, side, bad, comp = carry
                 key, step_key, perm_key = jax.random.split(key, 3)
                 noise = jax.random.normal(step_key, (3,), dtype=jnp.float32)
                 unit_noise = noise / jnp.linalg.norm(noise)
@@ -1380,65 +1189,67 @@ def simulate_trajectories(
                     # Label from the CARRIED side, not from the position. This is the
                     # channel `comp_traj` is built from, so re-deriving it here would put
                     # the relabelling straight back in even with the sentinel correcting
-                    # the coordinate. Convention matches `classify_returns_object_id`
-                    # (0 = extra, 1 = intra), which is what `_get_comp_id` collapses to.
+                    # the coordinate. 0 = extra, 1 = intra, as `_get_comp_id`.
                     comp_id = jnp.where(side < 0, jnp.float32(1.0), jnp.float32(0.0))
                 else:
                     r_new, dlog_w_unit = permeate_relax(
                         r, step, kappa_over_D_relax, jnp.float32(1.0), perm_key)
-                    comp_id = _get_comp_id(r_new).astype(jnp.float32)
+                    comp = geometry.classify_position_carry(r_new, comp)
+                    comp_id = _pool2(comp)
                 # Per-sub-step compartment id -> fractional occupancy (resolves
                 # intra-save crossings without a finer dt_save).
                 comp_sum = comp_sum + comp_id
-                return (r_new, key, dlog_accum + dlog_w_unit, comp_sum, side, bad), None
+                return (r_new, key, dlog_accum + dlog_w_unit, comp_sum, side, bad, comp), None
 
         elif has_reflect_with_log_weight:
             reflect_with_log_weight = geometry.reflect_with_log_weight
 
             def inner_step_relax(carry, _):
-                r, key, dlog_accum, comp_sum, side, bad = carry
+                r, key, dlog_accum, comp_sum, side, bad, comp = carry
                 key, subkey = jax.random.split(key)
                 noise = jax.random.normal(subkey, (3,), dtype=jnp.float32)
                 unit_noise = noise / jnp.linalg.norm(noise)
                 step = unit_noise * step_l_sim
                 r_new, dlog_w_unit = reflect_with_log_weight(r, step, jnp.float32(1.0))
-                comp_sum = comp_sum + _get_comp_id(r_new).astype(jnp.float32)
-                return (r_new, key, dlog_accum + dlog_w_unit, comp_sum, side, bad), None
+                comp = geometry.classify_position_carry(r_new, comp)
+                comp_sum = comp_sum + _pool2(comp)
+                return (r_new, key, dlog_accum + dlog_w_unit, comp_sum, side, bad, comp), None
 
         else:
             # FreeDiffusion: no boundaries → dlog_boundary_unit is always 0.
             reflect_free = geometry.reflect
 
             def inner_step_relax(carry, _):
-                r, key, dlog_accum, comp_sum, side, bad = carry
+                r, key, dlog_accum, comp_sum, side, bad, comp = carry
                 key, subkey = jax.random.split(key)
                 noise = jax.random.normal(subkey, (3,), dtype=jnp.float32)
                 unit_noise = noise / jnp.linalg.norm(noise)
                 step = unit_noise * step_l_sim
                 r_new = reflect_free(r, step)
-                comp_sum = comp_sum + _get_comp_id(r_new).astype(jnp.float32)
-                return (r_new, key, dlog_accum, comp_sum, side, bad), None
+                comp = geometry.classify_position_carry(r_new, comp)
+                comp_sum = comp_sum + _pool2(comp)
+                return (r_new, key, dlog_accum, comp_sum, side, bad, comp), None
 
         def outer_step_relax(carry, _):
-            r, key, side, bad = carry
-            inner_init = (r, key, jnp.float32(0.0), jnp.float32(0.0), side, bad)
-            (r_final, key_final, dlog_accum, comp_sum, side_f, bad_f), _ = jax.lax.scan(
+            r, key, side, bad, comp = carry
+            inner_init = (r, key, jnp.float32(0.0), jnp.float32(0.0), side, bad, comp)
+            (r_final, key_final, dlog_accum, comp_sum, side_f, bad_f, comp_f), _ = jax.lax.scan(
                 inner_step_relax, inner_init, None, length=sub_steps)
-            # Fractional occupancy of compartment 1 over the saved interval.  For
-            # single-compartment geometries this is identically 0.
+            # Fractional occupancy of pool 1 (the enclosed pool) over the saved interval.
             comp_occ = comp_sum / jnp.float32(sub_steps)
-            return (r_final, key_final, side_f, bad_f), (r_final, dlog_accum, comp_occ)
+            return (r_final, key_final, side_f, bad_f, comp_f), (r_final, dlog_accum, comp_occ)
 
-        def simulate_one_walker_relax(r0_w, key_w, side_w):
-            (_, _, _side_f, bad_f), (positions, dlog_boundary, comp_ids) = jax.lax.scan(
-                outer_step_relax, (r0_w, key_w, side_w, jnp.int32(0)), None, length=n_t)
+        def simulate_one_walker_relax(r0_w, key_w, side_w, comp0_w):
+            (_, _, _side_f, bad_f, _comp_f), (positions, dlog_boundary, comp_ids) = jax.lax.scan(
+                outer_step_relax, (r0_w, key_w, side_w, jnp.int32(0), comp0_w), None, length=n_t)
             return positions, dlog_boundary, comp_ids, bad_f
 
         _simulate_batch_relax_raw = jax.jit(
-            jax.vmap(simulate_one_walker_relax, in_axes=(0, 0, 0)))
+            jax.vmap(simulate_one_walker_relax, in_axes=(0, 0, 0, 0)))
 
         def simulate_batch_relax(r0_b, keys_b):
-            pos, dlog, comp, bad_f = _simulate_batch_relax_raw(r0_b, keys_b, _side0(r0_b))
+            comp0_b = jnp.asarray(geometry.classify_positions_exact(r0_b), jnp.int32)
+            pos, dlog, comp, bad_f = _simulate_batch_relax_raw(r0_b, keys_b, _side0(r0_b), comp0_b)
             _illegal_crossings[0] += int(jnp.sum(bad_f))
             return pos, dlog, comp
 
@@ -1449,11 +1260,7 @@ def simulate_trajectories(
     # the (r0, keys) -> positions signature every call site below already uses.
     _illegal_crossings = [0]
 
-    if _carries_side and geometry.classify_returns_object_id:
-        # `classify_returns_object_id` pins the convention this depends on: 0 = extra,
-        # 1..N = the object the walker is in. The permeable Cylinder/Sphere classifiers use
-        # the OPPOSITE convention (0 = intra), so gating on the flag rather than on the
-        # method's mere existence is what keeps the seed from being inverted.
+    if _carries_side:
         _cls = geometry.classify_position
 
         def _side0(r_b):

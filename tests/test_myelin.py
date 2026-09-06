@@ -267,7 +267,7 @@ class TestC_ExtraOnlyFreeDiffusion:
 class TestD_ExchangeRate:
     """Quantitative exchange validation.
 
-    Initialize all walkers in intra-axonal (compartment 0).
+    Initialize all walkers in intra-axonal (pool id 1).
     With known kappa_inner and zero kappa_outer, run with b=0 and
     measure what fraction of walkers ended up outside intra by comparing
     signal with and without exchange.

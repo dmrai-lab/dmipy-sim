@@ -71,7 +71,7 @@ def test_the_classifier_calls_those_points_exterior():
     interior = contains(tri, P.astype(float))
     lab = np.asarray(jax.jit(jax.vmap(_classify_arr, in_axes=(None, 0)))(mesh._A, P))
 
-    missed = interior & (lab == 1)
+    missed = interior & (lab == 0)
     frac = missed.sum() / max(interior.sum(), 1)
     assert frac > 0.30, (
         f"only {100*frac:.1f}% of the interior misreported; the geometry has stopped exercising the "
@@ -96,7 +96,7 @@ def test_refining_the_mesh_makes_the_classifier_worse():
         P = np.random.default_rng(2).uniform(lo, hi, (2000, 3)).astype(np.float32)
         interior = contains(tri, P.astype(float))
         lab = np.asarray(jax.jit(jax.vmap(_classify_arr, in_axes=(None, 0)))(mesh._A, P))
-        fracs.append((interior & (lab == 1)).sum() / max(interior.sum(), 1))
+        fracs.append((interior & (lab == 0)).sum() / max(interior.sum(), 1))
     assert fracs[1] > fracs[0], (
         f"refining should widen the blind interior, got {100*fracs[0]:.1f}% -> {100*fracs[1]:.1f}%")
 

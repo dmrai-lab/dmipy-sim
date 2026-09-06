@@ -58,8 +58,9 @@ class CurvedTube(Geometry):
         return Q[i], jnp.sqrt(d2[i])
 
     def classify_position(self, r):
+        """Compartment id: 1 inside the tube, 0 outside."""
         _, d = self._nearest(r)
-        return jnp.where(d < jnp.float32(self.radius), jnp.int32(0), jnp.int32(1))
+        return jnp.where(d < jnp.float32(self.radius), jnp.int32(1), jnp.int32(0))
 
     def volume(self) -> float:
         return float(self._seglen.sum() * np.pi * self.radius ** 2)
@@ -111,7 +112,7 @@ class CurvedTube(Geometry):
 class MultiShellCurvedTube(CurvedTube):
     """A myelinated curved axon: concentric intra / myelin / extra shells swept along a
     curved centerline. Compartment by distance-to-centerline d:
-      0 intra  (d < r_in),  1 myelin (r_in <= d < r_out),  2 extra (d >= r_out).
+      1 intra  (d < r_in),  2 myelin (r_in <= d < r_out),  0 extra (d >= r_out).
     Impermeable band-confined reflection keeps each walker in the shell it started in, so
     the three compartments are independent: seed a population with ``init_positions(...,
     shell=...)`` and walk it with that compartment's diffusivity (intra ~free, myelin
@@ -130,9 +131,10 @@ class MultiShellCurvedTube(CurvedTube):
         self.radius = float(r_in)                      # auto-tune to the finest wall
 
     def classify_position(self, r):
+        """Compartment id: 0 extra (d >= r_out), 1 intra (d < r_in), 2 myelin."""
         _, d = self._nearest(r)
-        return jnp.where(d < jnp.float32(self.r_in), jnp.int32(0),
-                         jnp.where(d < jnp.float32(self.r_out), jnp.int32(1), jnp.int32(2)))
+        return jnp.where(d < jnp.float32(self.r_in), jnp.int32(1),
+                         jnp.where(d < jnp.float32(self.r_out), jnp.int32(2), jnp.int32(0)))
 
     def reflect(self, r, step):
         r_in = jnp.float32(self.r_in); r_out = jnp.float32(self.r_out)
