@@ -101,11 +101,11 @@ def test_the_observables_are_converged_at_the_collision_criterion():
         mesh.cell_size = float(L / (0.9 * np.sqrt(target)))
         o = simulate_trajectories(n, D, mesh, T_max=T_max, dt_save=dt_save, seed=3,
                                   save_relaxation_data=True, require_gpu=False)
-        steps[mult] = int(o[2])
-        tr = np.asarray(o[0], np.float64)
+        steps[mult] = int(o.sub_steps)
+        tr = np.asarray(o.positions, np.float64)
         disp = tr[:, -1, :] - tr[:, 0, :]
         out[mult] = (float((disp ** 2).sum(axis=1).mean() / (6.0 * T_max)),
-                     float(-np.asarray(o[4], np.float64).sum(axis=1).mean()))
+                     float(-np.asarray(o.boundary_local_time, np.float64).sum(axis=1).mean()))
 
     # guard the lever itself: if the two runs used the same sub-step count this test proves nothing
     assert steps[4] >= 3 * steps[1], (

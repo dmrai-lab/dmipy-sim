@@ -102,7 +102,7 @@ def test_boundary_dct_replays_surface_signal_below_mc_floor():
     D, rho, N, R = 2e-9, 1e-6, 8000, 2e-6
     res = simulate_trajectories(N, D, Box1D(length=R), T_max=0.6, dt_save=3e-3,
                                 seed=7, save_relaxation_data=True, require_gpu=False)
-    dlog = np.asarray(res[4]).astype(np.float64)
+    dlog = np.asarray(res.boundary_local_time).astype(np.float64)
     n_t = dlog.shape[1]; ts = np.arange(n_t) * 0.6 / (n_t - 1)
 
     def survival(dl):                       # E(TE) for every truncation TE

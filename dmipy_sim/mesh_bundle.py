@@ -513,12 +513,12 @@ def mesh_bundle_master(bundle, *, n_walkers=30_000, params=None, T_max=0.04, dt_
             o = simulate_mt_trajectories(n, D, geom, T_max, dt_save, kappa_MT, dwell_time, seed=sd,
                                          r0=r0, walker_batch_size=walker_batch_size,
                                          require_gpu=require_gpu)
-            return (np.asarray(o[0], np.float32), np.asarray(o[5], np.float32),
-                    np.asarray(o[4], np.float32))
+            return (np.asarray(o.positions, np.float32), np.asarray(o.boundary_local_time, np.float32),
+                    np.asarray(o.bound_frac, np.float32))
         o = simulate_trajectories(n, D, geom, T_max=T_max, dt_save=dt_save, seed=sd, r0=r0,
                                   save_relaxation_data=True, require_gpu=require_gpu,
                                   walker_batch_size=walker_batch_size)
-        return np.asarray(o[0], np.float32), np.asarray(o[4], np.float32), None
+        return np.asarray(o.positions, np.float32), np.asarray(o.boundary_local_time, np.float32), None
 
     # ---- intra: restricted inside the inner wall. Seeds passed explicitly, never left to the cell-gather
     # classifier, which calls a deep-interior point exterior wherever its 27-cell gather is empty (49.3% of

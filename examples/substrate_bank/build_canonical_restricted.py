@@ -37,7 +37,8 @@ def walk_restricted_master(shape, diameter, D0, *, T_max=200e-3, n_t=2000, n_wal
                                 T_max=float(T_max), dt_save=float(dt_save), seed=int(seed),
                                 save_relaxation_data=True, require_gpu=require_gpu,
                                 walker_batch_size=int(walker_batch_size))
-    traj, dt, sub_steps, dt_sim, dlog_b, comp = out
+    traj, dt, sub_steps, dt_sim = out.positions, out.dt, out.sub_steps, out.dt_sim
+    dlog_b = out.boundary_local_time
     traj = np.asarray(traj, np.float64)
     nw, nt = traj.shape[0], traj.shape[1]
     if verbose:

@@ -182,11 +182,11 @@ def test_mt_walk_at_zero_binding_is_the_plain_walk_to_the_bit():
     plain = d.simulate_trajectories(200, 2e-9, g, 2e-3, 5e-4, save_relaxation_data=True, **kw)
     mt = d.simulate_mt_trajectories(200, 2e-9, g, 2e-3, 5e-4, kappa_MT=0.0, dwell_time=0.0,
                                     equilibrate_binding="off", **kw)
-    assert mt[0].dtype == np.float32 and mt[4].dtype == np.float32
-    assert mt[2] == plain[2], "the two producers must take the same sub-step count"
-    np.testing.assert_array_equal(mt[0], plain[0])                    # positions
-    np.testing.assert_array_equal(mt[5], plain[4])                    # boundary local time
-    assert (mt[4] == 0).all()
+    assert mt.positions.dtype == np.float32 and mt.bound_frac.dtype == np.float32
+    assert mt.sub_steps == plain.sub_steps, "the two producers must take the same sub-step count"
+    np.testing.assert_array_equal(mt.positions, plain.positions)
+    np.testing.assert_array_equal(mt.boundary_local_time, plain.boundary_local_time)
+    assert (mt.bound_frac == 0).all()
     mt16 = d.simulate_mt_trajectories(50, 2e-9, g, 1e-3, 5e-4, kappa_MT=0.0, dwell_time=0.0,
                                       equilibrate_binding="off", storage_dtype=np.float16, **kw)
-    assert mt16[0].dtype == np.float16
+    assert mt16.positions.dtype == np.float16

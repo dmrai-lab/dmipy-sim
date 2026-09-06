@@ -68,7 +68,7 @@ def test_mesh_mt_reaches_the_analytic_bound_fraction():
     out = simulate_mt_trajectories(N_WALKERS, D, mesh, T_MAX, DT_SAVE,
                                    kappa_MT=kappa_mt, dwell_time=1.0 / K_R,
                                    seed=5, sub_steps=n_sub, require_gpu=False)
-    bound = float(np.asarray(out[4], np.float64).mean())
+    bound = float(np.asarray(out.bound_frac, np.float64).mean())
 
     rel = abs(bound - f_b) / f_b
     # Measured -1.47% on this exact configuration, and -32.92% on it before the fix, so the 6% bound sits
@@ -116,7 +116,7 @@ def test_the_mt_driver_walks_the_pool_its_seeds_name():
                                        dwell_time=1.0 / K_R, seed=11, r0=r0,
                                        sub_steps=collision_sub_steps(mesh, D, dt_save),
                                        require_gpu=False)
-        return frac_inside(np.asarray(out[0])[:, 0, :])
+        return frac_inside(np.asarray(out.positions)[:, 0, :])
 
     # Self-guard: the default must still land inside, or an unrelated change could make this vacuous.
     default_in = first_step_pool(None)

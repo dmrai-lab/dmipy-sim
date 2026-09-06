@@ -40,8 +40,9 @@ def test_bloch_replay_matches_forward_spin_echo():
     geom, T2 = d.Sphere(radius=8e-6), 120e-3
 
     fwd = simulate_bloch(N, D, wf, geom, rf, T2=T2, seed=seed, require_gpu=False)
-    traj, dt_tr, subs, _ = simulate_trajectories(N, D, geom, TE, dt, seed=seed,
+    walk = simulate_trajectories(N, D, geom, TE, dt, seed=seed,
                                                  require_gpu=False)
+    traj, dt_tr, subs = walk.positions, walk.dt, walk.sub_steps
     assert subs == 1                                       # bit-identical walk to forward
     rep = replay_bloch(traj, dt_tr, G, dt, rf, T2=T2)
     assert abs(np.real(fwd[0]) - np.real(rep[0])) < 5e-3
@@ -55,8 +56,9 @@ def test_susceptibility_replay_gre_and_se():
     TE, dt = 15e-3, 0.15e-3
     n_t = int(round(TE / dt)) + 1
     geom, T2 = d.Sphere(radius=8e-6), 120e-3
-    traj, dt_tr, subs, _ = simulate_trajectories(N, D, geom, TE, dt, seed=seed,
+    walk = simulate_trajectories(N, D, geom, TE, dt, seed=seed,
                                                  require_gpu=False)
+    traj, dt_tr, subs = walk.positions, walk.dt, walk.sub_steps
     assert subs == 1
     prov = SusceptibilitySources(centers=[[0, 0, 0]], radii=[3e-6],
                                  delta_chi=8e-6, B0=3.0)
@@ -89,8 +91,9 @@ def test_scalar_susceptibility_replay_eps_p_refocus():
     TE, dt = 15e-3, 0.15e-3
     n_t = int(round(TE / dt)) + 1
     geom = d.Sphere(radius=8e-6)
-    traj, dt_tr, _, _ = simulate_trajectories(N, D, geom, TE, dt, seed=seed,
+    walk = simulate_trajectories(N, D, geom, TE, dt, seed=seed,
                                               require_gpu=False)
+    traj, dt_tr = walk.positions, walk.dt
     prov = SusceptibilitySources(centers=[[0, 0, 0]], radii=[3e-6],
                                  delta_chi=8e-6, B0=3.0)
     Z = np.zeros((1, n_t, 3)); chi = np.ones((1, n_t))
@@ -119,8 +122,9 @@ def test_mt_replay_zspectrum_matches_oracle():
 
     oracle = mt.mt_z_spectrum(offsets, w1_hz=w1_hz, t_sat=t_sat, T1a=T1, T2a=T2,
                               T1b=T1b, T2b=T2b, k_f=k_f, k_r=k_r)
-    traj, dt_tr, subs, _, bfrac, _ = simulate_mt_trajectories(
+    walk = simulate_mt_trajectories(
         N, D, geom, t_sat, dt, kappa_MT, dwell, seed=seed, require_gpu=False)
+    traj, dt_tr, subs, bfrac = walk.positions, walk.dt, walk.sub_steps, walk.bound_frac
     # the equilibrated occupancy should track f_b = k_f/(k_f+k_r)
     assert abs(float(np.asarray(bfrac, float).mean()) - k_f / (k_f + k_r)) < 0.03
 
@@ -155,16 +159,16 @@ def test_simulate_trajectories_packed_myelin_mt_channel():
     off = simulate_trajectories(N, D, d.PackedMyelinatedCylinders(**geom_kw), T, dt,
                                 seed=seed, save_relaxation_data=True, require_gpu=False,
                                 kappa_MT=0.0)
-    assert len(base) == 6 and len(off) == 6
-    assert np.array_equal(base[0], off[0])                      # positions bit-identical
-    assert np.array_equal(base[4], off[4])                      # dlog bit-identical
+    assert base.bound_frac is None and off.bound_frac is None
+    assert np.array_equal(base.positions, off.positions)                      # positions bit-identical
+    assert np.array_equal(base.boundary_local_time, off.boundary_local_time)                      # dlog bit-identical
 
     on = simulate_trajectories(N, D, d.PackedMyelinatedCylinders(**geom_kw), T, dt,
                                seed=seed, save_relaxation_data=True, require_gpu=False,
                                kappa_MT=5e-5, dwell_time=3e-3)
-    assert len(on) == 7
-    bf = np.asarray(on[6], dtype=float)
-    assert bf.shape == base[0].shape[:2]                        # (n_walkers, n_t)
+    assert on.has_binding
+    bf = np.asarray(on.bound_frac, dtype=float)
+    assert bf.shape == base.positions.shape[:2]                        # (n_walkers, n_t)
     assert bf.min() >= 0.0 and bf.max() <= 1.0 and bf.mean() > 0.0
 
 
@@ -176,8 +180,9 @@ def test_bloch_replay_jax_matches_numpy():
     n_t = int(round(TE / dt)) + 1
     G = np.zeros((1, n_t, 3)); G[0, :, 0] = 0.015
     geom, T2 = d.Sphere(radius=8e-6), 100e-3
-    traj, dt_tr, _, _ = simulate_trajectories(N, D, geom, TE, dt, seed=seed,
+    walk = simulate_trajectories(N, D, geom, TE, dt, seed=seed,
                                               require_gpu=False)
+    traj, dt_tr = walk.positions, walk.dt
     rf = [{'t_s': 0.0, 'flip_deg': 90.0, 'axis_deg': 90.0, 'duration_s': 0.0},
           {'t_s': TE / 2, 'flip_deg': 180.0, 'axis_deg': 0.0, 'duration_s': 0.0}]
     num = replay_bloch(traj, dt_tr, G, dt, rf, T2=T2)

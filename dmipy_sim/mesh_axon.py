@@ -97,13 +97,13 @@ def mesh_axon_master(bundle, *, n_walkers=30_000, n_myelin=None, n_t=1600, T_max
     oi = simulate_trajectories(n_walkers, D0, mesh_in, T_max=T_max, dt_save=T_max / n_t,
                                save_relaxation_data=True, seed=seed, r0=r0_i,
                                require_gpu=require_gpu, walker_batch_size=walker_batch_size)
-    tr_i = np.asarray(oi[0], np.float64); dt_traj = float(oi[1]); n_t_actual = tr_i.shape[1]
+    tr_i = np.asarray(oi.positions, np.float64); dt_traj = float(oi.dt); n_t_actual = tr_i.shape[1]
     # Boundary local time (C2). The membrane is impermeable, so there is no EXCHANGE tier -- but the
     # intra-axonal walkers still strike the myelin inner wall repeatedly, so the surface tier is real:
     # rho is a replay knob, not zero by construction. This channel is also what an analytic MT tier is
     # derived from (contact statistics / S:V at the myelin surface), so discarding it would silently
     # remove both capabilities from the pack.
-    dlog_i = np.asarray(oi[4], np.float64)
+    dlog_i = np.asarray(oi.boundary_local_time, np.float64)
 
     # ---- myelin pool: frozen shell water (D=0), seeded once in the sheath and held ----
     r0_m, f_shell = _rejection_seeds(lambda p: inside_out(p) & ~inside_in(p),

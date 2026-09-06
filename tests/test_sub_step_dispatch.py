@@ -93,17 +93,17 @@ def test_packed_myelin_kernel_takes_the_dispatched_count():
 def test_trajectory_producers_take_the_dispatched_count():
     g = _sphere_rho()
     T_max, dt_save = 5 * DT, DT
-    _, _, n_plain, _ = d.simulate_trajectories(64, D, g, T_max, dt_save, seed=0, require_gpu=False)
+    n_plain = d.simulate_trajectories(64, D, g, T_max, dt_save, seed=0, require_gpu=False).sub_steps
     assert n_plain == resolve_sub_steps(g, D, dt_save)
     out = d.simulate_trajectories(64, D, g, T_max, dt_save, seed=0, save_relaxation_data=True,
                                   require_gpu=False)
-    assert out[2] == resolve_sub_steps(g, D, dt_save, surface=True)
-    assert out[2] > n_plain, "recording the boundary local time resolves the surface criterion"
+    assert out.sub_steps == resolve_sub_steps(g, D, dt_save, surface=True)
+    assert out.sub_steps > n_plain, "recording the boundary local time resolves the surface criterion"
 
     mt = d.simulate_mt_trajectories(64, D, d.Sphere(2e-6), T_max, dt_save, kappa_MT=1e-5,
                                     dwell_time=1e-3, seed=0, require_gpu=False,
                                     equilibrate_binding="off")
-    assert mt[2] == resolve_sub_steps(d.Sphere(2e-6), D, dt_save, surface=True, mt_dwell_time=1e-3)
+    assert mt.sub_steps == resolve_sub_steps(d.Sphere(2e-6), D, dt_save, surface=True, mt_dwell_time=1e-3)
 
 
 # ── the consequence: fused == replay at the auto count ───────────────────────────────────

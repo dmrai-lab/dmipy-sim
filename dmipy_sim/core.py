@@ -17,6 +17,7 @@ import numpy as np
 from .physics import (make_step_fn, make_myelin_step_fn, make_packed_myelin_step_fn,
                       make_packed_myelin_traj_step_fn)
 from .geometry import initial_positions
+from .persistent_walk import PersistentWalk
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -219,13 +220,8 @@ def _simulate_via_replay(n_walkers, diffusivity, waveform, geometry, *, seed,
 
     if sub_steps:
         st_kwargs['sub_steps'] = sub_steps
-    out = simulate_trajectories(n_walkers, diffusivity, geometry, T_max, dt,
-                                **st_kwargs)
-    if save_relax:
-        traj, dt_traj, _sub, _dtsim, dlog, comp = out
-    else:
-        traj, dt_traj, _sub, _dtsim = out
-        dlog = comp = None
+    walk = simulate_trajectories(n_walkers, diffusivity, geometry, T_max, dt, **st_kwargs)
+    traj, dt_traj, dlog, comp = walk.positions, walk.dt, walk.boundary_local_time, walk.compartment
 
     relax_kw = dict(T2=T2, T1=T1)
     if has_per_comp:                                   # per-compartment overrides scalar
@@ -860,7 +856,6 @@ def simulate_cpmg(n_walkers, diffusivity, waveform, geometry, *,
     return np.array(echo_signals)
 
 
-LAST_ILLEGAL_CROSSINGS = 0   # illegal crossings rejected by the last simulate_trajectories
 
 
 def simulate_trajectories(
@@ -881,7 +876,7 @@ def simulate_trajectories(
     equilibrate_binding="auto",
     compress: int = None,
     enforce_compartment: bool = False,
-) -> tuple:
+) -> PersistentWalk:
     """Walk the spins ONCE and save positions at every saved time step — the
     producer for the replay path (:mod:`dmipy_sim.trajectories`).
 
@@ -945,32 +940,14 @@ def simulate_trajectories(
 
     Returns
     -------
-    trajectories : np.ndarray, shape (n_walkers, n_t, 3), ``storage_dtype``
-        Walker positions in metres at each saved time step.
-    dt_actual : float
-        Saved time step (= T_max / (n_t - 1)).
-    sub_steps : int
-        Number of physics sub-steps per saved point.
-    dt_sim : float
-        Actual simulation time step (= dt_actual / sub_steps).
-    dlog_boundary_unit : np.ndarray, shape (n_walkers, n_t), ``storage_dtype``
-        Only when ``save_relaxation_data=True``.  Per-step accumulated boundary
-        log-weight assuming rho/D = 1, i.e.
-        ``dlog_boundary_unit[w, t] = -2 * sum_k(d_perp_k)`` over the boundary
-        hits in the ``sub_steps`` inner steps of saved step t.  Non-positive.
-        Replay surface relaxivity rho via
-        ``log_w[m,w] += (rho/D) * sum_t(chi_perp[m,t] * dlog_boundary_unit[w,t])``.
-    comp_traj : np.ndarray, shape (n_walkers, n_t)
-        Only when ``save_relaxation_data=True``.  Pool id per saved step, 0 the
-        extra / free pool and 1 the enclosed pool (0/1/2 = extra/intra/myelin for packed
-        myelin), int8.  For a PERMEABLE geometry it is the FRACTIONAL OCCUPANCY of pool 1
-        over the saved interval (the mean of the sub-step ids, ``storage_dtype``), which
-        resolves intra-save membrane crossings.  Consumed by ``replay`` with
-        ``T2_per_comp``/``T1_per_comp`` indexed by pool id.
-    bound_frac : np.ndarray, shape (n_walkers, n_t), ``storage_dtype``
-        ONLY for the packed-myelin path with ``kappa_MT > 0`` — appended as a 7th
-        return value.  Per-save MT bound-pool occupancy, consumed by
-        ``replay_bloch(bound_frac=...)`` to blend the bound pool.
+    PersistentWalk
+        ``positions`` (n_walkers, n_t, 3) in ``storage_dtype``, ``dt`` (= T_max / (n_t - 1)),
+        ``sub_steps``, ``dt_sim``; with ``save_relaxation_data`` also ``boundary_local_time``
+        (n_walkers, n_t), the per-step boundary log-weight at rho/D = 1 (``-2 * sum d_perp`` over
+        the step's wall hits, non-positive), and ``compartment`` (n_walkers, n_t); with
+        ``kappa_MT > 0`` also ``bound_frac``. ``illegal_crossings`` counts the rejected wrong-side
+        steps. With ``compress=K`` a compressed master dict is returned instead (see
+        :func:`trajectories.replay`).
     """
     # GPU guard — never silently fall back to CPU for a heavy walk (CLAUDE rule).
     from .gpu import check_gpu
@@ -1521,17 +1498,14 @@ def simulate_trajectories(
     # is illegal by definition. The sentinel in `permeate` already ejected it back, so this is
     # a diagnostic rather than a loss -- but a nonzero count is the engine silently relabelling
     # walkers, and the number belongs in the open where it can be seen.
-    # Returned via a module global rather than the return tuple, whose shape is load-bearing
-    # for every existing caller.
-    global LAST_ILLEGAL_CROSSINGS
-    LAST_ILLEGAL_CROSSINGS = _illegal_crossings[0]
-    if LAST_ILLEGAL_CROSSINGS:
+    illegal = int(_illegal_crossings[0])
+    if illegal:
         import warnings
         warnings.warn(
-            f"{LAST_ILLEGAL_CROSSINGS} walker-steps ended on the wrong side of a membrane "
+            f"{illegal} walker-steps ended on the wrong side of a membrane "
             f"without a granted crossing (permeability={permeability!r}); each was rejected "
             f"and the walker returned to its own compartment. "
-            f"See dmipy_sim.core.LAST_ILLEGAL_CROSSINGS.", RuntimeWarning, stacklevel=2)
+            f"See PersistentWalk.illegal_crossings.", RuntimeWarning, stacklevel=2)
 
     if _compress:
         # Compressed master: IR modes instead of the raw trajectory. Decode with
@@ -1550,14 +1524,12 @@ def simulate_trajectories(
             master["comp_traj"] = np.concatenate(all_comp_batches, axis=0)      # (N, n_t)
         return master
 
-    trajectories = np.concatenate(all_batches, axis=0)  # (n_walkers, n_t, 3) float16
+    walk = PersistentWalk(np.concatenate(all_batches, axis=0), float(dt_actual), int(sub_steps),
+                      float(dt_sim), illegal_crossings=illegal, seed=int(seed))
     if save_relaxation_data:
-        dlog_boundary_unit = np.concatenate(all_dlog_batches, axis=0)  # (n_walkers, n_t) float16
-        comp_traj = np.concatenate(all_comp_batches, axis=0)           # (n_walkers, n_t)
-        if _mt_on:
-            # 7th channel: per-save MT bound-pool occupancy (packed myelin, kappa_MT>0).
-            bound_frac = np.concatenate(all_bound_batches, axis=0)     # (n_walkers, n_t) float16
-            return (trajectories, dt_actual, sub_steps, dt_sim,
-                    dlog_boundary_unit, comp_traj, bound_frac)
-        return trajectories, dt_actual, sub_steps, dt_sim, dlog_boundary_unit, comp_traj
-    return trajectories, dt_actual, sub_steps, dt_sim
+        walk = PersistentWalk(walk.positions, walk.dt, walk.sub_steps, walk.dt_sim,
+                          boundary_local_time=np.concatenate(all_dlog_batches, axis=0),
+                          compartment=np.concatenate(all_comp_batches, axis=0),
+                          bound_frac=(np.concatenate(all_bound_batches, axis=0) if _mt_on else None),
+                          illegal_crossings=illegal, seed=int(seed))
+    return walk
