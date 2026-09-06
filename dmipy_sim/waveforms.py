@@ -51,8 +51,13 @@ class Waveform:
         Index in [0, n_t) at which the signal is sampled (last time point for
         spin echo). Signal extraction uses phi at this time step.
     rf_events : list, optional
-        Ideal (instantaneous) RF markers for visualisation only, each
-        ``{'t_s', 'label', 'flip_deg'}``. Do not affect the simulation.
+        The ideal (instantaneous) RF schedule, each ``{'t_s', 'label', 'flip_deg'}``. It is the
+        source of the coherence attributes below: a 90 excites or, while transverse, stores the
+        magnetisation along z (the next 90 recalls it); a 180 refocuses, forming an echo at
+        ``2 t_180 - t_ref``. ``chi_perp``, ``TM``, ``stimulated_echo`` and ``echo_indices`` are
+        derived from it at construction (:func:`rf_schedule_coherence`); a value passed
+        explicitly must agree with the schedule or construction raises. The gradient ``G`` is
+        the effective (bipolar) waveform and already encodes the refocusing.
     G_display : np.ndarray, optional
         Physical scanner gradient for visualisation only (same-sign second lobe,
         as the 180° would deliver it). None → fall back to G for display. The
@@ -88,6 +93,97 @@ class Waveform:
     chi_perp: np.ndarray = None
     TM: float = None
     stimulated_echo: bool = False
+
+    def __post_init__(self):
+        if self.rf_events:
+            apply_rf_schedule(self)
+
+
+_ECHO_TOL = 2          # samples: the rounding freedom of placing a 180 at a lobe midpoint
+
+
+def rf_schedule_coherence(rf_events, n_t, dt):
+    """Coherence bookkeeping of an ideal instantaneous RF schedule on an ``n_t``-sample grid.
+
+    Returns ``(chi_perp, TM, stimulated_echo, echo_times)``: the transverse-coherence mask
+    (``True`` while the magnetisation is transverse), the total longitudinal-storage time (``None``
+    when there is none), whether the readout is a stimulated echo (a store / recall pair), and the
+    echo times of the refocusing pulses. Magnetisation starts along z; a 90 excites it, a 90 while
+    transverse stores it along z, the next 90 recalls it; a 180 while transverse refocuses, forming
+    an echo at ``2 t_180 - t_ref`` where ``t_ref`` is the previous echo or excitation. Other flips
+    are not tracked.
+    """
+    events = sorted(rf_events, key=lambda e: float(e['t_s']))
+    n_t = int(n_t)
+    chi = np.zeros(n_t, dtype=bool)
+    transverse = False
+    t_ref = None
+    stored_from = None
+    TM = 0.0
+    stores = 0
+    echoes = []
+    i_prev = 0
+    for e in events:
+        t = float(e['t_s'])
+        i = int(np.clip(int(round(t / dt)), 0, n_t))
+        chi[i_prev:i] = transverse
+        i_prev = i
+        flip = int(round(float(e.get('flip_deg', 0))))
+        if flip == 90:
+            if not transverse:
+                transverse = True
+                if stored_from is not None:                  # recall
+                    TM += t - stored_from
+                    stored_from = None
+                t_ref = t
+            else:                                           # store
+                transverse = False
+                stored_from = t
+                stores += 1
+        elif flip == 180 and transverse and t_ref is not None:
+            echoes.append(2.0 * t - t_ref)
+            t_ref = echoes[-1]
+    chi[i_prev:] = transverse
+    return chi, (TM if TM > 0.0 else None), stores > 0, echoes
+
+
+def apply_rf_schedule(wf):
+    """Set ``chi_perp``, ``TM``, ``stimulated_echo`` and ``echo_indices`` of ``wf`` from its
+    ``rf_events``, checking any value the constructor passed against the schedule.
+
+    ``chi_perp`` stays ``None`` for an all-transverse schedule (the spin-echo default);
+    ``echo_indices`` is set for a train of two or more echoes; a single echo must land on
+    ``echo_idx`` within the placement rounding.
+    """
+    n_t = int(wf.G.shape[1])
+    dt = float(wf.dt)
+    chi, TM, ste, echoes = rf_schedule_coherence(wf.rf_events, n_t, dt)
+    chi_out = None if chi.all() else chi
+    if wf.chi_perp is not None:
+        given = np.asarray(wf.chi_perp).reshape(-1).astype(bool)
+        if given.shape != chi.shape or not np.array_equal(given, chi):
+            raise ValueError("chi_perp disagrees with the RF schedule: the coherence mask is derived "
+                             "from rf_events, drop the explicit one or fix the schedule")
+    else:
+        wf.chi_perp = chi_out
+    if wf.TM is not None:
+        if TM is None or abs(float(wf.TM) - TM) > _ECHO_TOL * dt:
+            raise ValueError(f"TM={wf.TM} disagrees with the RF schedule's storage time {TM}")
+    else:
+        wf.TM = TM
+    if wf.stimulated_echo and not ste:
+        raise ValueError("stimulated_echo=True but the RF schedule has no store / recall pair")
+    wf.stimulated_echo = bool(ste)
+    idx = np.clip(np.rint(np.asarray(echoes) / dt).astype(int), 0, n_t - 1) if echoes else None
+    if wf.echo_indices is not None:
+        given = np.asarray(wf.echo_indices).astype(int).reshape(-1)
+        if idx is None or given.shape != idx.shape or np.abs(given - idx).max() > _ECHO_TOL:
+            raise ValueError(f"echo_indices {given.tolist()} disagree with the RF schedule's echoes "
+                             f"{None if idx is None else idx.tolist()}")
+    elif idx is not None and len(idx) >= 2:
+        wf.echo_indices = idx
+    if idx is not None and len(idx) == 1 and abs(int(idx[0]) - int(wf.echo_idx)) > _ECHO_TOL:
+        raise ValueError(f"echo_idx={wf.echo_idx} but the RF schedule forms its echo at sample {int(idx[0])}")
 
 
 def pgse(delta, DELTA, G_magnitude, bvecs, n_t,
@@ -148,9 +244,8 @@ def pgse(delta, DELTA, G_magnitude, bvecs, n_t,
         _fill_lobe(G_disp, m, 0, n_pulse, gpos, n_rise)
         _fill_lobe(G_disp, m, n_DELTA, n_pulse, gpos, n_rise)
 
-    # Ideal instantaneous 90°/180° markers (visualisation only): the 180° sits
-    # midway between the two gradient lobes.  The bipolar G already encodes the
-    # refocusing, so no χ_⊥ schedule or free-precession tail is needed.
+    # The RF schedule: the 180° sits midway between the two gradient lobes. The bipolar G
+    # already encodes the refocusing, so the mask is all-transverse.
     gap_mid = (n_pulse + n_DELTA) // 2
     rf_events = [
         {'t_s': 0.0,           'label': 'Mz→Mxy', 'flip_deg': 90},
@@ -239,14 +334,9 @@ def pgste(delta, TM, G_magnitude, bvecs, n_t, slew_rate=DEFAULT_SLEW_RATE):
         _fill_lobe(G_disp, m, 0, n_pulse, gpos, n_rise)
         _fill_lobe(G_disp, m, i_recall, min(n_pulse, n_t - i_recall), gpos, n_rise)
 
-    # Binary transverse-coherence mask: transverse during the two lobes,
-    # longitudinal (stored) during the mixing time.
-    chi_perp = np.ones(n_t, dtype=bool)
-    chi_perp[n_pulse:i_recall] = False
-
-    # Ideal instantaneous pulse markers (visualisation only): 90° excitation,
-    # 90° store (into z) at the end of the first lobe, 90° recall (back to
-    # transverse) at the start of the second lobe.
+    # The RF schedule: 90 excitation, 90 store (into z) at the end of the first lobe, 90 recall
+    # (back to transverse) at the start of the second lobe. chi_perp, TM and stimulated_echo
+    # follow from it (Waveform.__post_init__).
     rf_events = [
         {'t_s': 0.0,               'label': 'Mz→Mxy',  'flip_deg': 90},
         {'t_s': n_pulse * dt,      'label': 'store',    'flip_deg': 90},
@@ -256,10 +346,7 @@ def pgste(delta, TM, G_magnitude, bvecs, n_t, slew_rate=DEFAULT_SLEW_RATE):
     return Waveform(G=jnp.array(G_grad), dt=float(dt),
                     echo_idx=n_t - 1,
                     rf_events=rf_events,
-                    G_display=G_disp,
-                    chi_perp=chi_perp,
-                    TM=float(TM),
-                    stimulated_echo=True)
+                    G_display=G_disp)
 
 
 def ogse(frequency, T_total, G_magnitude, bvecs, n_t, kind='cosine'):
@@ -337,8 +424,7 @@ def ogse(frequency, T_total, G_magnitude, bvecs, n_t, kind='cosine'):
     for m in range(n_measurements):
         G_grad[m, :, :] = (G_mag[m] * envelope)[:, None] * bvecs[m]
 
-    # Ideal instantaneous 90°/180° markers (visualisation only); the bipolar
-    # (time-mirrored) G already refocuses at the echo.
+    # The RF schedule; the bipolar (time-mirrored) G already refocuses at the echo.
     gap_mid = (n_t - 1) // 2
     rf_events = [
         {'t_s': 0.0,          'label': 'Mz→Mxy', 'flip_deg': 90},
@@ -440,8 +526,7 @@ def trapezoidal_ogse(N, delta, DELTA, G_magnitude, bvecs, n_t,
         _fill_block(G_grad, m, 0, signs1)
         _fill_block(G_grad, m, n_DELTA, signs2)
 
-    # Ideal instantaneous 90°/180° markers (visualisation only); the sign-flipped
-    # second block already refocuses at the echo.
+    # The RF schedule; the sign-flipped second block already refocuses at the echo.
     gap_mid = (n_block + n_DELTA) // 2
     rf_events = [
         {'t_s': 0.0,          'label': 'Mz→Mxy', 'flip_deg': 90},
@@ -915,11 +1000,8 @@ def cpmg(n_echoes, TE, G_magnitude, bvecs, n_t_per_echo=100):
     rf_events += [{'t_s': (k + 0.5) * TE, 'label': 'refocus', 'flip_deg': 180}
                   for k in range(n_echoes)]
 
-    # Echoes form at k*TE, k=1..n_echoes → step indices k*n_t_per_echo.
-    echo_indices = np.arange(1, n_echoes + 1) * n_t_per_echo
-
+    # Echoes form at k*TE, k=1..n_echoes (step indices k*n_t_per_echo): derived from the schedule.
     return Waveform(G=jnp.array(G_eff), dt=float(dt),
                     echo_idx=n_t - 1,
                     rf_events=rf_events,
-                    G_display=G_phys,
-                    echo_indices=echo_indices)
+                    G_display=G_phys)
