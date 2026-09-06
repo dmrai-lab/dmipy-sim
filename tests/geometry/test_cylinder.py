@@ -12,7 +12,7 @@ import jax.numpy as jnp
 
 from dmipy_sim import simulate, Cylinder, FreeDiffusion, set_b
 from dmipy_sim.waveforms import Waveform
-from .conftest import D, N_WALKERS, SEED, load_fixture
+from tests.conftest import D, N_WALKERS, SEED, load_fixture
 
 
 def _build_disimpy_waveform(T, n_t_raw, pulse_start, pulse_end, n_t=1000):

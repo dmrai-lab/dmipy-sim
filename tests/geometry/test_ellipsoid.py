@@ -14,7 +14,7 @@ import jax.numpy as jnp
 
 from dmipy_sim import simulate, Ellipsoid, Sphere, set_b
 from dmipy_sim.waveforms import Waveform, pgse
-from .conftest import D, N_WALKERS, SEED
+from tests.conftest import D, N_WALKERS, SEED
 
 
 def _disimpy_example_waveform(n_t=1000):

@@ -33,7 +33,7 @@ from dmipy_sim import set_b, simulate
 from dmipy_sim.geometry.mesh import Mesh
 from dmipy_sim.waveforms import pgse
 
-from ._containment import inside as contains
+from tests._containment import inside as contains
 
 UM = 1e-6
 D = 1.0e-9

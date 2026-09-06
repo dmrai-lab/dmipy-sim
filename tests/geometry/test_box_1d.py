@@ -17,7 +17,7 @@ import numpy as np
 import numpy.testing as npt
 
 from dmipy_sim import simulate, pgse, Box1D, FreeDiffusion, set_b
-from .conftest import D, N_WALKERS, SEED
+from tests.conftest import D, N_WALKERS, SEED
 
 
 def test_box_1d_signal_at_b0_is_one():

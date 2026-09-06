@@ -45,6 +45,10 @@ JAX_PLATFORMS=cpu pytest tests/ -q -m "not slow and not gpu"   # fast: every PR
   `tests/conftest.py::_SLOW_MC_MODULES`) — runs weekly / `workflow_dispatch`.
   Add a new heavy MC module's name to that set. `--heavy` bumps `N_WALKERS` to 1e6.
 
+Tests mirror the package where a module has a home: `tests/geometry/` holds the substrate tests (walls, bounces,
+packings, meshes, myelin, compartments, the per-geometry MC validations) — the test for `dmipy_sim/geometry/X` is under
+`tests/geometry/`. `tests/physics/` and `tests/validation/` assert physics across modules and stay as they are.
+
 When adding physics, assert against an **analytical** result or a **MISST** fixture
 (`tests/fixtures/misst_*.npy`). Isolate faceting/discretisation bias by running a mesh
 and the analytic geometry of the same shape through the identical waveform/seed/N.
