@@ -510,7 +510,7 @@ def magnitude_movie(geometry, waveform, save, *, rho, T2_per_comp, n_walkers=400
     gives each its own wall-contact, fanning the spike into a distribution capped at the bulk-T2
     value. Intra and extra fan differently (different ``rho·a/D``). Packed-myelin substrate only.
 
-    ``T2_per_comp`` is ordered ``[T2_intra, T2_myelin, T2_extra]``; ``rho`` is the surface
+    ``T2_per_comp`` is indexed by pool id (0 extra, 1 intra, 2 myelin); ``rho`` is the surface
     relaxivity (m/s). ``save`` is a .gif/.mp4 path.
     """
     import jax
