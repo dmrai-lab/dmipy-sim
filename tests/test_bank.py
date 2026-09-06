@@ -47,7 +47,7 @@ def _lean_env():
 @pytest.fixture(scope="module")
 def pack():
     return build_replay_pack(_slab_master(), id="test/slab", method="bridge_dst",
-                             envelope=_lean_env(), K=64, surface_relaxivity=True,
+                             envelope=_lean_env(), K=64,
                              license="CC-BY-4.0", citation="test")
 
 
@@ -73,7 +73,7 @@ def test_pack_compresses_within_floor_and_declares_tiers(pack):
 def test_rpk_roundtrip_and_lean_consumption(pack, tmp_path):
     out = tmp_path / "slab.rpk"
     build_replay_pack(_slab_master(), id="test/slab", method="bridge_dst", envelope=_lean_env(),
-                      K=64, surface_relaxivity=True, license="CC-BY-4.0", citation="test",
+                      K=64, license="CC-BY-4.0", citation="test",
                       out_path=str(out))
     p2 = read_rpk(out)
     npt.assert_allclose(p2.position_coeffs, pack.position_coeffs, rtol=0, atol=0)
@@ -99,7 +99,7 @@ def test_susceptibility_master_is_rejected():
 def test_build_to_floor_converges_and_records_target():
     pk = build_to_floor(lambda n: _slab_master(n_w=n, seed=1), id="test/floor",
                         envelope=_lean_env(), method="bridge_dst", K=48, sigma_star=0.05,
-                        pilot_n=800, max_n=6000, surface_relaxivity=False,
+                        pilot_n=800, max_n=6000,
                         license="CC-BY-4.0", citation="test", verbose=False)
     assert pk.fidelity.get("target_floor") == 0.05
     assert "meets_target" in pk.fidelity
@@ -214,7 +214,7 @@ def test_c2_codec_is_chosen_by_cost_not_left_to_the_expensive_default():
     selector costs DCT candidates against the surface gate instead of falling back to sparse CSR,
     whose size grows with walk length."""
     pk = build_replay_pack(_slab_master(), id="test/slab-c2-auto", method="bridge_dst",
-                           envelope=_lean_env(), K=64, surface_relaxivity=True,
+                           envelope=_lean_env(), K=64,
                            license="CC-BY-4.0", citation="test")
     cm = pk.meta["compression"]["channels"]["boundary_local_time"]
     assert cm["mode"] == "bridge_dst" and cm["dtype"] == "float16"
@@ -227,7 +227,7 @@ def test_precision_tiers_declare_shuffle_and_account_for_non_sliceable_arrays():
     m = _slab_master()
     m["walkers_shuffled"] = True
     pk = build_replay_pack(m, id="test/slab-tiers", method="bridge_dst", envelope=_lean_env(),
-                           K=64, surface_relaxivity=True, license="CC-BY-4.0", citation="test")
+                           K=64, license="CC-BY-4.0", citation="test")
     pt = pk.meta["compression"]["precision_tiers"]
     assert pt["usable"] is True and pt["walkers_shuffled"] is True
     assert pt["bytes_per_walker"] > 0
@@ -352,12 +352,43 @@ def test_preflight_catches_what_otherwise_costs_a_full_walk():
     assert any("cannot be assembled" in p for p in probs)
     assert not preflight_master({"susc_field_basis": {"iso_local": 1}}, susc_path_K=64, K=48)
 
-    # requested tiers whose channels are absent
-    assert any("dlog_b" in p for p in preflight_master({}, surface_relaxivity=True))
-    assert any("bfrac" in p for p in preflight_master({}, mt=True))
-    assert any("T2_per_comp" in p for p in preflight_master({"comp": np.zeros(3)}))
+    # a channel whose metadata is missing: the tier would be silently skipped
+    assert any("compartments=" in p for p in preflight_master({"comp": np.zeros(3)}))
 
     # an auto-selected K is sized against THIS walk's floor; for a shard destined to be merged
     # the union's floor is lower and the codec error does not shrink, so K must be pinned
     assert any("Pin K" in p for p in preflight_master({}, sigma_star=5e-3))
     assert not any("Pin K" in p for p in preflight_master({}, sigma_star=5e-3, K=48))
+
+
+# ------------------------------------------------------------------ the builder takes a PersistentWalk
+def test_builder_takes_a_persistent_walk_and_assembles_the_tiers_it_carries():
+    import dmipy_sim as d
+    from dmipy_sim.compartments import Compartments, Pool
+    from dmipy_sim.fields.susceptibility_field import FieldGrid
+    walk = d.simulate_trajectories(300, D0, d.Cylinder(2e-6, (0, 0, 1)), 0.01, 5e-4, seed=0, require_gpu=False)
+    comps = Compartments(extra=Pool(T2=0.08, T1=1.0), intra=Pool(T2=0.05, T1=1.2))
+    pk = build_replay_pack(walk, id="test/walk", compartments=comps, K=8, envelope=_lean_env(),
+                           license="CC-BY-4.0", citation="test")
+    env = pk.meta["replay_envelope"]
+    assert env["gradient"] and env["bulk_relaxation"] and env["surface_relaxivity"] and not env["field"]
+    assert pk.meta["per_comp"]["T2"] == [0.08, 0.05] and pk.meta["per_comp"]["T1"] == [1.0, 1.2]
+    assert pk.meta["compression"]["precision_tiers"]["usable"]         # the producer's walkers are i.i.d.
+    assert pk.n_walkers == 300 and pk.n_t == walk.n_t
+    # positions only: gradient tier alone, nothing silently assembled
+    plain = d.simulate_trajectories(300, D0, d.Cylinder(2e-6, (0, 0, 1)), 0.01, 5e-4, seed=0, require_gpu=False, tiers=())
+    pk0 = build_replay_pack(plain, id="test/plain", K=8, envelope=_lean_env(), license="CC-BY-4.0", citation="test")
+    e0 = pk0.meta["replay_envelope"]
+    assert e0["gradient"] and not (e0["bulk_relaxation"] or e0["surface_relaxivity"] or e0["field"])
+    # the refusals
+    with pytest.raises(ValueError, match="ids 0..n-1"):
+        build_replay_pack(walk, id="x", compartments=Compartments(intra=Pool(T2=0.05)), K=8, envelope=_lean_env(),
+                          license="x", citation="x")
+    with pytest.raises(ValueError, match="weights has"):
+        build_replay_pack(walk, id="x", weights=np.ones(7), K=8, envelope=_lean_env(), license="x", citation="x")
+    with pytest.raises(TypeError, match="FieldGrid"):
+        build_replay_pack(walk, id="x", field={"iso_local": 1}, K=8, envelope=_lean_env(), license="x", citation="x")
+    with pytest.raises(TypeError, match="go with a PersistentWalk"):
+        build_replay_pack(_slab_master(), id="x", compartments=comps, K=8, envelope=_lean_env(), license="x", citation="x")
+    fb, origin = _field_basis_for_slab()
+    assert FieldGrid(fb, origin, 1.06e-6).delta_chi_a == 0.0

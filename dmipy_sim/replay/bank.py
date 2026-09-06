@@ -43,11 +43,11 @@ def _master_arrays(src) -> dict:
 
     ``src`` is a :class:`~dmipy_sim.persistent_walk.PersistentWalk` (what ``simulate_trajectories`` and
     ``simulate_mt_trajectories`` return), or a dict / ``.npz`` exposing at least ``traj``
-    (n_walkers, n_t, 3), ``dt_traj`` and ``T_max`` (``PersistentWalk.bank_dict(**metadata)`` writes one);
+    (n_walkers, n_t, 3), ``dt_traj`` and ``T_max`` (the builders' master dict);
     the tier channels (``comp``/``T2_per_comp``/``T1_per_comp`` for bulk relaxation, ``dlog_b`` for
     surface relaxivity, ``bfrac`` for MT) are optional."""
     if isinstance(src, PersistentWalk):
-        src = src.bank_dict()
+        src = src._bank_dict()
     if not (isinstance(src, dict) or hasattr(src, "files")):
         raise TypeError(
             "build_replay_pack expects a PersistentWalk (the output of simulate_trajectories(..., "
@@ -633,9 +633,8 @@ def _select_boundary_codec(m, dlog, env, tol, dtype, verbose=False):
     return a, mm
 
 
-def preflight_master(m, *, surface_relaxivity=False, mt=False, susc_path_K=None,
-                     sigma_star=None, K=None):
-    """Check a master walk against the tiers a build intends to assemble. Returns a list of
+def preflight_master(m, *, susc_path_K=None, sigma_star=None, K=None):
+    """Check a master walk against the tiers its content will assemble. Returns a list of
     problems, empty if it will work.
 
     Every one of these is knowable from metadata, yet each cost a full walk to discover:
@@ -661,12 +660,9 @@ def preflight_master(m, *, surface_relaxivity=False, mt=False, susc_path_K=None,
         bad.append("susc_path_K was requested but susc_field_basis is None, so the field tier (C3) "
                    "cannot be assembled and the pack would be silently missing it "
                    "(field_store='grid' is what produces it)")
-    if surface_relaxivity and m.get("dlog_b") is None:
-        bad.append("surface_relaxivity=True but the master has no dlog_b (C2 channel)")
-    if mt and m.get("bfrac") is None and m.get("mt_params") is None:
-        bad.append("mt=True but the master has neither bfrac nor mt_params")
     if m.get("comp") is not None and m.get("T2_per_comp") is None:
-        bad.append("master has a compartment map but no T2_per_comp, so C1 will not be assembled")
+        bad.append("the walk has a compartment channel but no per-pool T2 (compartments=), so the bulk "
+                   "relaxation tier (C1) will not be assembled")
     if sigma_star is not None and K is None:
         bad.append(f"sigma_star={sigma_star:g} with K unpinned: K is auto-selected against THIS "
                    f"walk's floor, which is the wrong reference for a pack that will be merged "
@@ -674,30 +670,85 @@ def preflight_master(m, *, surface_relaxivity=False, mt=False, susc_path_K=None,
     return bad
 
 
-def build_replay_pack(src, *, id, method=_cx.POSITION_METHOD, envelope=None, tol=2.0, K=None,
-                      err_target=None, sigma_star=None,
-                      license, citation, provenance=None, surface_relaxivity=False,
-                      blt_temporal_K=None, blt_dtype=np.float16, susc_path_K=None, susc_path_bits=8, mt=False,
-                      out_path=None, verbose=False):
-    """Compress a master walk and assemble a self-certifying replay pack.
 
-    ``src`` is a raw master dict / ``.npz`` (see :func:`_master_arrays`). The position ensemble is
-    compressed by ``method`` (default ``bridge_dst``: endpoints plus a Brownian bridge on the
-    sine basis, which holds both endpoints exactly and pairs its first two coefficients with the
-    gradient moments, at the same accuracy as ``temporal_dct`` -- see
-    :func:`compression.encode_bridge_dst`); ``K`` (mode count) is chosen automatically
-    to keep the *measured* replay error within ``tol``x the Monte-Carlo floor over ``envelope``
-    (default :func:`compression.default_envelope`) unless given. Walker-preserving methods
-    (``bridge_dst``) carry the full per-walker channel space; distributional methods
-    (``gaussian``/``marginal``) are gradient-only.
+def _walk_master(walk, *, compartments=None, weights=None, field=None, diffusivity=None,
+                 substrate_frame=None):
+    """The bank's master dict from a PersistentWalk plus the substrate metadata; a dict / .npz
+    passes through (the builders' path)."""
+    from ..persistent_walk import PersistentWalk
+    from ..compartments import Compartments
+    from ..fields.susceptibility_field import FieldGrid
+    if not isinstance(walk, PersistentWalk):
+        if any(v is not None for v in (compartments, weights, field, diffusivity, substrate_frame)):
+            raise TypeError("compartments=, weights=, field=, diffusivity= and substrate_frame= go with a "
+                            "PersistentWalk; a master dict carries them as its own keys")
+        return walk
+    extra = {}
+    if compartments is not None:
+        c = Compartments.coerce(compartments)
+        if c.ids != tuple(range(len(c))):
+            raise ValueError(f"compartments must be the pools the channel indexes, ids 0..n-1 without "
+                             f"gaps (extra, intra[, myelin]); got ids {c.ids}")
+        if walk.compartment is not None:
+            top = int(np.max(walk.compartment))
+            if top >= len(c):
+                raise ValueError(f"the walk's compartment channel uses id {top} but compartments has "
+                                 f"only {len(c)} pools")
+        T2 = c.by_id("T2")
+        if T2 is None:
+            raise ValueError("compartments must give T2 for every pool to assemble the relaxation tier")
+        extra["T2_per_comp"] = np.asarray(T2, float)
+        T1 = c.by_id("T1")
+        if T1 is not None:
+            extra["T1_per_comp"] = np.asarray(T1, float)
+        wf = c.by_id("water_fraction")
+        if wf is not None and weights is None and walk.compartment is not None:
+            weights = np.asarray(wf, float)[np.asarray(walk.compartment)[:, 0].astype(int)]
+    if weights is not None:
+        w = np.asarray(weights, float).reshape(-1)
+        if w.shape[0] != walk.n_walkers:
+            raise ValueError(f"weights has {w.shape[0]} entries for {walk.n_walkers} walkers")
+        extra["w"] = w
+    if field is not None:
+        if not isinstance(field, FieldGrid):
+            raise TypeError("field must be a fields.susceptibility_field.FieldGrid (basis, origin, chi_iso, "
+                            f"delta_chi_a), got {type(field).__name__}")
+        extra.update(susc_field_basis=field.basis, susc_grid_origin=np.asarray(field.origin, float),
+                     susc_chi_iso=float(field.chi_iso), delta_chi_a=float(field.delta_chi_a))
+    if diffusivity is not None:
+        extra["D_intra"] = float(diffusivity)
+    if substrate_frame is not None:
+        extra["substrate_frame"] = np.asarray(substrate_frame, float)
+    extra["walkers_shuffled"] = True        # the producer draws walkers i.i.d.: any prefix is a fair subsample
+    return walk._bank_dict(**extra)
 
-    Tiers assembled: **gradient** (always), **bulk relaxation** (from the compartment map +
-    per-compartment T1/T2, when ``comp``/``T2_per_comp`` are present), **surface relaxivity**
-    (``surface_relaxivity=True``, needs ``dlog_b``), **magnetization transfer** (``mt=True``, needs
-    ``bfrac``). The **susceptibility (field)** tier is not assembled here yet (needs the
-    susceptibility-basis channel + Q(H) contraction) — a master carrying ``susc_basis``/``PhiC`` is
-    rejected. Returns a :class:`dmipy_sim.replay.replay.ReplayPack`; writes it to ``out_path`` if given.
+def build_replay_pack(walk, *, id, license, citation, compartments=None, weights=None, field=None,
+                      method=_cx.POSITION_METHOD, envelope=None, tol=2.0, K=None,
+                      err_target=None, sigma_star=None, provenance=None,
+                      blt_temporal_K=None, blt_dtype=np.float16, susc_path_K=None, susc_path_bits=8,
+                      diffusivity=None, substrate_frame=None, out_path=None, verbose=False):
+    """Compress a persistent walk and assemble a self-certifying replay pack.
+
+    ``walk`` is the :class:`~dmipy_sim.persistent_walk.PersistentWalk` a producer returned (the
+    bundle builders' master dict / ``.npz`` is also accepted). The tiers assembled are the ones the
+    walk CARRIES: **gradient** (C0, always); **bulk relaxation** (C1) when the walk has a compartment
+    channel and ``compartments`` gives the pools' ``T2`` (and ``T1``) -- a
+    :class:`~dmipy_sim.compartments.Compartments` (e.g. ``Substrate().compartments``) whose pools
+    are the ids the channel uses, 0 extra, 1 intra, 2 myelin; **surface relaxivity** (C2) when the
+    walk has the boundary local time; **magnetization transfer** (C4) when it has the bound
+    fraction; **field** (C3) when ``field`` is a :class:`~dmipy_sim.fields.susceptibility_field.FieldGrid`
+    (the substrate's static field basis, sampled along the walk into the path channel when
+    ``susc_path_K`` is given). ``weights`` are per-walker proton-density weights (default uniform).
+
+    The position ensemble is compressed by ``method`` (default ``bridge_dst``: endpoints plus a
+    Brownian bridge on the sine basis, which holds both endpoints exactly and pairs its first two
+    coefficients with the gradient moments -- see :func:`compression.encode_bridge_dst`); ``K``
+    (mode count) is chosen automatically to keep the *measured* replay error within ``tol`` x the
+    Monte-Carlo floor over ``envelope`` (default :func:`compression.default_envelope`) unless given.
+    Returns a :class:`dmipy_sim.replay.replay.ReplayPack`; writes it to ``out_path`` if given.
     """
+    src = _walk_master(walk, compartments=compartments, weights=weights, field=field,
+                       diffusivity=diffusivity, substrate_frame=substrate_frame)
     _cx.require_position_method(method)
     m = _master_arrays(src)
     if m.get("PhiC") is not None or m.get("susc_basis") is not None:
@@ -772,20 +823,19 @@ def build_replay_pack(src, *, id, method=_cx.POSITION_METHOD, envelope=None, tol
         # side (vector-Bloch RF, bound-pool knobs, equilibrium start), not the storage.
         if m.get("comp") is not None and m.get("T2_per_comp") is not None:
             _cols = {"comp": np.asarray(m["comp"])}
-            if mt and m.get("bfrac") is not None:
+            if m.get("bfrac") is not None:
                 _cols["bound"] = np.asarray(m["bfrac"]); channels["mt"] = True
             _a, _cm = _cx.encode_occupancy(_cols)
             arrays.update(_a); chan_meta["compartment"] = _cm
             if m.get("w") is not None:
                 arrays["spin_weights"] = np.asarray(m["w"], np.float32)
             channels["T1T2"] = True
-        elif mt and m.get("bfrac") is not None:
+        elif m.get("bfrac") is not None:
             raise ValueError("an MT (C4) pack carries its bound pool as a C1 occupancy column, so "
-                             "it needs the compartment channel too: pass master['comp'] and "
-                             "['T2_per_comp'] alongside ['bfrac'].")
+                             "it needs the compartment channel and the pools' T2 (compartments=) too.")
         # dense per-walker physics channels get their own codecs (compression.py):
         # boundary local time -> sparse/dense or the cumulative bridge.
-        if surface_relaxivity and m.get("dlog_b") is not None:
+        if m.get("dlog_b") is not None:
             if blt_temporal_K:
                 _a, _mm = _cx.encode_boundary_bridge(np.asarray(m["dlog_b"]), K=int(blt_temporal_K),
                                                  dtype=blt_dtype)

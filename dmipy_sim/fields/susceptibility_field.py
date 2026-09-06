@@ -48,11 +48,28 @@ echo, so this choice is physically inert for SE/STE signals.
 from __future__ import annotations
 
 import warnings
+from typing import NamedTuple, Optional
+
 import numpy as np
 
 # Symmetric 3x3 tensor stored as 6 components in this fixed order.
 _SYM6 = ((0, 0), (1, 1), (2, 2), (0, 1), (0, 2), (1, 2))
 
+
+
+class FieldGrid(NamedTuple):
+    """A substrate's static susceptibility field on a voxel grid, ready for a replay pack's field tier.
+
+    ``basis`` is the geometry-only field basis (:func:`field_basis` / :func:`mesh_field_basis`:
+    ``iso_local``, ``iso_P``, optional ``aniso_G``, ``shape``, ``voxel_size``) from which
+    :func:`assemble_field` builds the field for any (B0 direction, B0, chi); ``origin`` is the
+    world position of voxel (0, 0, 0); ``chi_iso`` and ``delta_chi_a`` are the susceptibility the
+    substrate was built with, recorded as the pack's nominal values.
+    """
+    basis: dict
+    origin: np.ndarray
+    chi_iso: float
+    delta_chi_a: float = 0.0
 
 def _unit(v, axis=-1, eps=1e-30):
     v = np.asarray(v, float)

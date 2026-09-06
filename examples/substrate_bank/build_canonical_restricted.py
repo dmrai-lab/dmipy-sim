@@ -86,8 +86,7 @@ def build_pack(shape, diameter, D0, *, out_dir=None, sigma_star=5e-3, K=128,
         out_path = os.path.join(out_dir, pid + ".rpk")
         os.makedirs(os.path.dirname(out_path), exist_ok=True)
     pack = bank.build_replay_pack(
-        m, id=pid, method=method, envelope=envelope, K=int(K), sigma_star=sigma_star,
-        surface_relaxivity=True, license=license, citation=citation, out_path=out_path,
+        m, id=pid, method=method, envelope=envelope, K=int(K), sigma_star=sigma_star, license=license, citation=citation, out_path=out_path,
         provenance=dict(shape=shape, diameter_m=float(diameter), diffusivity=float(D0),
                         geometry="single impermeable restricted pore", real_or_synthetic="synthetic"),
         verbose=verbose)

@@ -5,7 +5,7 @@ engine walks once and keeps the walk -- positions and the boundary, compartment 
 channels -- so every acquisition, relaxation and exchange hypothesis is applied afterwards without
 walking again. `simulate_trajectories` and `simulate_mt_trajectories` return a `PersistentWalk`;
 its channels are attributes, present or ``None`` by what the walk recorded; the replay functions
-read the attributes they need and the bank builds a pack from `PersistentWalk.bank_dict`.
+read the attributes they need and `replay.bank.build_replay_pack` takes the walk directly.
 """
 from dataclasses import dataclass
 from typing import Optional
@@ -83,10 +83,10 @@ class PersistentWalk:
         """The MT bound-pool blend is replayable."""
         return self.bound_frac is not None
 
-    def bank_dict(self, **extra):
-        """The dict :func:`bank.build_replay_pack` reads: ``traj``, ``dt_traj``, ``T_max``,
-        ``comp``, ``dlog_b``, ``bfrac``, ``n_walkers``, ``seed``, plus any substrate metadata
-        passed as ``extra`` (``T2_per_comp``, ``w``, ``substrate_frame``, ...)."""
+    def _bank_dict(self, **extra):
+        """The bank's internal master dict (``traj``, ``dt_traj``, ``T_max``, ``comp``, ``dlog_b``,
+        ``bfrac``, ``n_walkers``, ``seed``) plus the substrate metadata in ``extra``. Callers use
+        :func:`replay.bank.build_replay_pack`, which builds this itself."""
         out = dict(traj=self.positions, dt_traj=float(self.dt), T_max=self.T_max,
                    comp=self.compartment, dlog_b=self.boundary_local_time, bfrac=self.bound_frac,
                    n_walkers=self.n_walkers, seed=0 if self.seed is None else int(self.seed))
