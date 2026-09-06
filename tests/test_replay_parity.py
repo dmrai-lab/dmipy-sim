@@ -205,7 +205,7 @@ def test_save_true_returns_6_tuple_shapes_dtypes():
     assert traj.shape == (2_000, n_t, 3) and traj.dtype == np.float32
     assert dlog.shape == (2_000, n_t) and dlog.dtype == np.float32
     assert comp.shape == (2_000, n_t)
-    # Impermeable Cylinder: comp is discrete int8, all zeros; dlog <= 0.
+    # Impermeable Cylinder: comp is discrete int8, every walker in the lumen (pool 1); dlog <= 0.
     assert comp.dtype == np.int8
-    assert np.all(np.asarray(comp) == 0)
+    assert np.all(np.asarray(comp) == 1)
     assert np.all(np.asarray(dlog, np.float64) <= 1e-6)

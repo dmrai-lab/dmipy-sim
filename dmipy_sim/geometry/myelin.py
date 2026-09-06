@@ -195,24 +195,26 @@ class MyelinatedCylinder(Geometry):
             "stepped by the fused kernel physics.make_myelin_step_fn, which carries the "
             "compartment id. Use simulate(...) (which dispatches to that kernel) rather "
             "than a generic reflect/trajectory walk.")
-    def classify_position(self, r: jnp.ndarray) -> jnp.ndarray:
-        """Compartment ID from position: 0=intra, 1=myelin, 2=extra.
+    #: The fused kernel (`physics.make_myelin_step_fn`) carries its own compartment code
+    #: (0 intra, 1 myelin, 2 extra -- the order of `water_fractions` and the per-compartment
+    #: D/T2 arrays); this maps that code to the pool id every geometry reports.
+    _KERNEL_TO_POOL = (1, 2, 0)
 
-        Classification is based on the radial distance in the cylinder
-        cross-section (r_xy):
-          - |r_xy| < R_inner  → 0 (intra-axonal)
-          - R_inner <= |r_xy| < R_outer → 1 (myelin)
-          - |r_xy| >= R_outer → 2 (extra-axonal)
-        """
+    def classify_position(self, r: jnp.ndarray) -> jnp.ndarray:
+        """Compartment id from the radial distance in the cross-section: 1 intra
+        (|r_xy| < R_inner), 2 myelin (R_inner <= |r_xy| < R_outer), 0 extra."""
         R_in  = jnp.float32(self.inner_radius)
         R_out = jnp.float32(self.outer_radius)
         r_c   = r if self._is_identity_rotation else self._R @ r
         r_xy_sq = jnp.dot(r_c[:2], r_c[:2])
         in_intra  = r_xy_sq < R_in  * R_in
         in_myelin = (r_xy_sq >= R_in * R_in) & (r_xy_sq < R_out * R_out)
-        comp = jnp.where(in_intra, jnp.int32(0),
-               jnp.where(in_myelin, jnp.int32(1), jnp.int32(2)))
-        return comp
+        return jnp.where(in_intra, jnp.int32(1),
+               jnp.where(in_myelin, jnp.int32(2), jnp.int32(0)))
+
+    def pool_of(self, kernel_code):
+        """Pool id (0 extra, 1 intra, 2 myelin) of a kernel compartment code."""
+        return jnp.asarray(self._KERNEL_TO_POOL, jnp.int32)[kernel_code]
 
     def volume(self, compartment: str, L: float = 1.0) -> float:
         """Volume of a compartment per unit length L (m³).
@@ -666,9 +668,17 @@ class PackedMyelinatedCylinders(Geometry):
         self._init_compartments = jnp.array(compartments, dtype=jnp.int32)
         return jnp.array(r_lab, dtype=jnp.float32)
 
+    def pool_of(self, encoded):
+        """Pool id (0 extra, 1 intra, 2 myelin) of an encoded compartment id
+        (0 extra, ``1..N_max`` lumen of axon k, ``N_max+1..2N_max`` its sheath)."""
+        enc = jnp.asarray(encoded)
+        return jnp.where(enc == 0, jnp.int32(0),
+                         jnp.where(enc <= jnp.int32(self.N_max), jnp.int32(1), jnp.int32(2)))
+
     def classify_position(self, r: jnp.ndarray) -> jnp.ndarray:
         """Encoded compartment id from position: 0 = extra, ``k+1`` = lumen of axon ``k``,
-        ``N_max+k+1`` = sheath of axon ``k`` (minimum image in the periodic cell)."""
+        ``N_max+k+1`` = sheath of axon ``k`` (minimum image in the periodic cell).
+        :meth:`pool_of` collapses it to the pool id."""
         L = self._L_jax
         r_c = r if self._is_identity_rotation else self._R @ r
         q = r_c[None, :2] - self._centers_jax                          # (N_max, 2)

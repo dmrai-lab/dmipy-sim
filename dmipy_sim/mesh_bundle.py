@@ -102,7 +102,7 @@ def _min_radius(V, F):
 
 
 def _exact_labels(mesh, pts):
-    """Interior(0)/exterior(1) for host-side points, decided EXACTLY.
+    """Interior(1)/exterior(0) for host-side points, decided EXACTLY.
 
     Uses :meth:`Mesh.classify_positions_exact`, which takes the cell-gather answer where the gather can
     decide and falls back to ray-parity where it cannot. The raw classifier alone is not usable for seeding
@@ -120,7 +120,7 @@ def _exterior_seeds(mesh_out, box_min, box_max, n, seed):
     keep, got = [], 0
     while got < n:
         p = rng.uniform(box_min, box_max, (max(2 * (n - got), 8192), 3))
-        ext = p[_exact_labels(mesh_out, p) == 1]
+        ext = p[_exact_labels(mesh_out, p) == 0]
         keep.append(ext); got += len(ext)
     return np.vstack(keep)[:n]
 
@@ -131,7 +131,7 @@ def _shell_seeds(mesh_out, mesh_in, box_min, box_max, n, seed):
     keep, got = [], 0
     while got < n:
         p = rng.uniform(box_min, box_max, (max(6 * (n - got), 8192), 3))
-        shell = p[(_exact_labels(mesh_out, p) == 0) & (_exact_labels(mesh_in, p) == 1)]
+        shell = p[(_exact_labels(mesh_out, p) == 1) & (_exact_labels(mesh_in, p) == 0)]
         keep.append(shell); got += len(shell)
     return np.vstack(keep)[:n]
 

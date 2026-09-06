@@ -17,7 +17,7 @@ dmipy-sim and dmipy-fit share.
     sequence_story(history, save=...)           -> a multi-panel figure (sequence + M(t))
     spin_movie(history, save=...)               -> an animation of the spin populations
 
-Colours: compartment 0 green, 1 blue, 2 orange (e.g. extra / intra / myelin).
+Colours by pool id: 0 extra-axonal green, 1 intra-axonal blue, 2 myelin orange.
 """
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ import numpy as np
 from .constants import GAMMA
 
 _COMP_COLOR = {0: '#2ca02c', 1: '#1f77b4', 2: '#ff7f0e'}
-_COMP_NAME = {0: 'intra-axonal', 1: 'myelin', 2: 'extra-axonal'}
+_COMP_NAME = {0: 'extra-axonal', 1: 'intra-axonal', 2: 'myelin'}
 
 
 # ── idealised RF rotation (Rodrigues about the in-plane B1 axis) ─────────────
@@ -73,8 +73,7 @@ def _walk_record(geometry, diffusivity, n_t, dt, n_walkers, seed):
         pos, cid = jax.vmap(one)(r0, jax.random.split(wk, n_walkers), comp0)
         traj = np.asarray(pos)                     # (n_w, n_t, 3)
         cid = np.asarray(cid)
-        # map the encoded id to the canonical 3-class label: 0=intra, 1=myelin, 2=extra
-        comp = np.where(cid == 0, 2, np.where(cid > N_max, 1, 0)).astype(int)
+        comp = np.asarray(geometry.pool_of(cid)).astype(int)     # 0 extra, 1 intra, 2 myelin
         return traj, comp
 
     step_l = jnp.float32(np.sqrt(6.0 * diffusivity * dt))
@@ -373,7 +372,7 @@ def spin_movie(history, save, stride=2, n_cloud=200, fps=20, dpi=110, title=None
 def _magnitude_walk(geometry, waveform, rho, T2_per_comp, n_walkers, seed, want_pos=False):
     """Shared walk for the magnitude renderers: walk the packed-myelin substrate and return
     each walker's transverse weight ``|M_i|(t) = exp(-∫dt/T2[comp] - (rho/D)·ℓ_i(t))``, its
-    origin compartment (0=intra, 1=myelin, 2=extra), and (optionally) its position track."""
+    origin pool (0 extra, 1 intra, 2 myelin), and (optionally) its position track."""
     import jax
     import jax.numpy as jnp
     from .physics import make_packed_myelin_traj_step_fn
@@ -400,11 +399,11 @@ def _magnitude_walk(geometry, waveform, rho, T2_per_comp, n_walkers, seed, want_
         pos, cid, dlog = (np.asarray(o) for o in out)
     else:
         cid, dlog = (np.asarray(o) for o in out); pos = None
-    lab = np.where(cid == 0, 2, np.where(cid > N_max, 1, 0))
+    lab = np.asarray(geometry.pool_of(cid)).astype(int)
     T2 = np.asarray(T2_per_comp, float)
     logw_t2 = -dt * np.cumsum((1.0 / T2)[lab], axis=1)
-    D_by_lab = np.array([float(np.max(geometry._D_intra_jax)), 1.0,
-                         float(np.max(geometry._D_extra_jax))])
+    D_by_lab = np.array([float(np.max(geometry._D_extra_jax)),          # by pool id
+                         float(np.max(geometry._D_intra_jax)), 1.0])
     D_w = D_by_lab[lab[:, 0]][:, None]
     weight = np.exp(logw_t2 + (rho / D_w) * dlog)
     return dict(weight=weight, origin=lab[:, 0], pos=pos, G=G, dt=dt, n_t=n_t,
@@ -431,12 +430,12 @@ def magnitude_zoom_movie(geometry, waveform, save, *, rho, T2_per_comp, n_walker
     w = _magnitude_walk(geometry, waveform, rho, T2_per_comp, n_walkers, seed)
     weight = w['weight']; origin = w['origin']; t_s = w['t_s']; t_ms = t_s * 1e3
     T2 = np.asarray(T2_per_comp, float)
-    i_idx = np.where(origin == 0)[0]; e_idx = np.where(origin == 2)[0]
+    i_idx = np.where(origin == 1)[0]; e_idx = np.where(origin == 0)[0]
     frames = range(0, w['n_t'], max(1, int(stride)))
 
     cbins = np.linspace(0, 1, n_coarse + 1); cc = 0.5 * (cbins[:-1] + cbins[1:]); cw = cbins[1] - cbins[0]
     fbins = np.linspace(0, 1, n_fine + 1); fc = 0.5 * (fbins[:-1] + fbins[1:]); fw = fbins[1] - fbins[0]
-    GREEN = _COMP_COLOR[0]; ORANGE = _COMP_COLOR[2]
+    GREEN = _COMP_COLOR[1]; ORANGE = _COMP_COLOR[0]
 
     fig = plt.figure(figsize=(11.5, 6.4))
     gs = GridSpec(2, 3, height_ratios=[2.4, 1.2], hspace=0.42, wspace=0.28,
@@ -556,18 +555,18 @@ def magnitude_movie(geometry, waveform, save, *, rho, T2_per_comp, n_walkers=400
 
     cid, dlog = jax.vmap(one)(r0, jax.random.split(wk, n_walkers), comp0)
     cid = np.asarray(cid); dlog = np.asarray(dlog)           # (n_w, n_t)
-    lab = np.where(cid == 0, 2, np.where(cid > N_max, 1, 0))  # 0=intra, 1=myelin, 2=extra
+    lab = np.asarray(geometry.pool_of(cid)).astype(int)
 
     # --- per-walker magnitude weight |M|(t) = exp(-T2 decay - (rho/D)·surface local time) ---
     T2 = np.asarray(T2_per_comp, float)
     logw_t2 = -dt * np.cumsum((1.0 / T2)[lab], axis=1)        # (n_w, n_t)
-    D_by_lab = np.array([float(np.max(geometry._D_intra_jax)), 1.0,
-                         float(np.max(geometry._D_extra_jax))])
+    D_by_lab = np.array([float(np.max(geometry._D_extra_jax)),          # by pool id
+                         float(np.max(geometry._D_intra_jax)), 1.0])
     origin = lab[:, 0]
     D_w = D_by_lab[origin][:, None]
     weight = np.exp(logw_t2 + (rho / D_w) * dlog)             # dlog <= 0 -> weight in (0, 1]
 
-    name2lab = {'intra': 0, 'myelin': 1, 'extra': 2}
+    name2lab = {'extra': 0, 'intra': 1, 'myelin': 2}         # pool ids
     panel_labs = [name2lab[p] for p in panels]
     idx_by_panel = [np.where(origin == pl)[0] for pl in panel_labs]
 
@@ -659,12 +658,12 @@ def magnitude_spatial_movie(geometry, waveform, save, *, rho, T2_per_comp, n_wal
 
     pos, cid, dlog = jax.vmap(one)(r0, jax.random.split(wk, n_walkers), comp0)
     pos = np.asarray(pos); cid = np.asarray(cid); dlog = np.asarray(dlog)
-    lab = np.where(cid == 0, 2, np.where(cid > N_max, 1, 0))
+    lab = np.asarray(geometry.pool_of(cid)).astype(int)
 
     T2 = np.asarray(T2_per_comp, float)
     logw_t2 = -dt * np.cumsum((1.0 / T2)[lab], axis=1)
-    D_by_lab = np.array([float(np.max(geometry._D_intra_jax)), 1.0,
-                         float(np.max(geometry._D_extra_jax))])
+    D_by_lab = np.array([float(np.max(geometry._D_extra_jax)),          # by pool id
+                         float(np.max(geometry._D_intra_jax)), 1.0])
     D_w = D_by_lab[lab[:, 0]][:, None]
     weight = np.exp(logw_t2 + (rho / D_w) * dlog)          # (n_w, n_t)
 

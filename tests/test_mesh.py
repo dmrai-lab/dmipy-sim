@@ -62,11 +62,11 @@ def test_construction_and_attributes():
 def test_classify_position_inside_outside():
     V, F = _icosphere(3)
     g = Mesh(V, F)
-    pts = jnp.array([[0., 0., 0.],               # centre -> inside (0)
+    pts = jnp.array([[0., 0., 0.],               # centre -> inside (1)
                      [0.9 * R, 0., 0.],           # inside
-                     [2 * R, 0., 0.]])            # outside (1)
+                     [2 * R, 0., 0.]])            # outside (0)
     lab = np.asarray(jax.vmap(g.classify_position)(pts))
-    assert lab[0] == 0 and lab[1] == 0 and lab[2] == 1
+    assert lab[0] == 1 and lab[1] == 1 and lab[2] == 0
 
 
 def test_seed_containment_closed():
@@ -130,8 +130,8 @@ def test_compartment_bulk_parsing():
     V, F = _icosphere(2)
     m = Mesh(V, F, intra={"D": 1e-9, "T2": 0.02}, extra={"D": 2e-9, "T2": 0.08})
     assert m._has_bulk_comp
-    npt.assert_allclose(np.asarray(m._D_comp_jax), [1e-9, 2e-9], rtol=1e-6)
-    npt.assert_allclose(np.asarray(m._inv_T2_comp_jax), [1 / 0.02, 1 / 0.08], rtol=1e-6)
+    npt.assert_allclose(np.asarray(m._D_comp_jax), [2e-9, 1e-9], rtol=1e-6)          # by pool id: extra, intra
+    npt.assert_allclose(np.asarray(m._inv_T2_comp_jax), [1 / 0.08, 1 / 0.02], rtol=1e-6)
     assert m._D_comp_max == 2e-9
     assert Mesh(V, F)._has_bulk_comp is False        # ordinary mesh: scalar path
     with pytest.raises(ValueError):                  # one-sided D not allowed

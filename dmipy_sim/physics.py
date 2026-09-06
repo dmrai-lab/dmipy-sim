@@ -332,63 +332,61 @@ def resolve_sub_steps(geometry, diffusivity: float, dt: float, *, surface: bool 
 
 
 def make_step_fn(geometry, diffusivity: float, dt: float, T2: float = None,
-                 T1: float = None, sub_steps: int = None):
-    """Return (step_fn, has_weight) for one simulation timestep.
+                 T1: float = None, sub_steps: int = None, track_compartment: bool = False):
+    """Return ``(step_fn, has_weight)``: the fused scan body for one waveform timestep.
 
-    Each step consumes ``(g_t, chi_t)``: the gradient sample and a binary
-    transverse-coherence flag.  When ``chi_t == 1`` the magnetisation is
-    transverse (T2 decay and surface relaxivity act); when ``chi_t == 0`` it is
-    stored longitudinally (only T1 acts — no T2 loss, no surface-relaxivity
-    loss).  A plain spin echo passes ``chi_t ≡ 1``.
+    Each step consumes ``(g_t, chi_t)``: the gradient sample and a binary transverse-coherence
+    flag. When ``chi_t == 1`` the magnetisation is transverse (T2 decay and surface relaxivity
+    act); when ``chi_t == 0`` it is stored longitudinally (only T1 acts). A plain spin echo
+    passes ``chi_t == 1`` throughout.
+
+    The carry is ``(r, phi, log_w, key, comp)`` for every geometry and effect::
+
+        step_fn(carry, (g_t, chi_t)) -> (carry, None)
+
+    ``comp`` is the walker's compartment id (see ``Geometry.classify_position``). It is advanced
+    with ``geometry.classify_position_carry`` when the geometry has per-compartment bulk
+    properties or when ``track_compartment`` is set, and passed through untouched otherwise, so a
+    walk that needs no label pays nothing for it. Per-compartment D is taken from the compartment
+    the walker is in when the sub-step starts; per-compartment 1/T2 and 1/T1 from the one it ends
+    in. Surface relaxivity, permeability and relaxation all accrue in ``log_w`` per fine sub-step.
 
     Parameters
     ----------
-    sub_steps : int, optional
-        Pin the sub-step count; otherwise :func:`resolve_sub_steps` chooses it from the geometry's
-        length scales and the effects in play. The returned ``step_fn`` carries the count as
-        ``step_fn.n_sub``.
-    geometry : Geometry instance
-        Provides reflect(r, step).  If geometry.surface_relaxivity_t2 is set,
-        also provides reflect_with_log_weight(r, step, rho_over_D).
-        If geometry.permeability is set, also provides
-        permeate(r, step, kappa_over_D, rho_over_D, perm_key).
+    geometry : Geometry
+        Provides ``reflect`` and, when it has a surface relaxivity, ``reflect_with_log_weight``;
+        when it has a permeability, ``permeate``.
     diffusivity : float
-        Diffusion coefficient in m²/s.
+        Diffusion coefficient in m²/s (``None`` for a geometry with per-compartment D).
     dt : float
-        Time step in seconds.
-    T2 : float, optional
-        Transverse relaxation time in seconds. When set, accumulates
-        ``-chi_t * dt / T2`` into log_weight each step.
-    T1 : float, optional
-        Longitudinal relaxation time in seconds. When set, accumulates
-        ``-(1 - chi_t) * dt / T1`` into log_weight each step (only the stored,
-        longitudinal intervals relax by T1).
+        Waveform time step in seconds.
+    T2, T1 : float, optional
+        Bulk relaxation times in seconds. ``-chi_t * dt / T2`` and ``-(1 - chi_t) * dt / T1``
+        accrue in ``log_w`` each step.
+    sub_steps : int, optional
+        Pin the sub-step count; otherwise :func:`resolve_sub_steps` chooses it. The count is
+        exposed as ``step_fn.n_sub``.
+    track_compartment : bool
+        Advance ``comp`` every sub-step even when no per-compartment property needs it.
 
     Returns
     -------
     step_fn : callable
-        Without weight (no surface relaxation, no permeability, no T2, no T1):
-            carry = (r, phi, key);  step_fn(carry, (g_t, chi_t)) -> (carry, None)
-        With weight (surface relaxation, permeability, T2, or T1 set):
-            carry = (r, phi, log_weight, key);
-            step_fn(carry, (g_t, chi_t)) -> (carry, None)
     has_weight : bool
-        True when geometry has surface_relaxivity_t2, permeability, T2, or T1 set.
+        True when something writes ``log_w`` (surface relaxivity, permeability, T2 or T1); a
+        caller may skip ``exp(log_w)`` otherwise.
     """
-    # Optional per-compartment bulk properties (a Mesh may carry per-compartment D,
-    # T2 and/or T1). None for ordinary geometries -> the resolvers collapse to the
-    # single-diffusivity / single-T2 / single-T1 scalars (identical path).
-    _D_arr     = geometry._D_comp_jax        # (2,) or None
-    _invT2_arr = geometry._inv_T2_comp_jax   # (2,) or None
-    _invT1_arr = geometry._inv_T1_comp_jax   # (2,) or None
-    _classify  = (geometry.classify_position
-                  if any(a is not None for a in (_D_arr, _invT2_arr, _invT1_arr)) else None)
+    _D_arr     = geometry._D_comp_jax        # per-compartment D, indexed by pool id, or None
+    _invT2_arr = geometry._inv_T2_comp_jax
+    _invT1_arr = geometry._inv_T1_comp_jax
+    per_comp   = any(a is not None for a in (_D_arr, _invT2_arr, _invT1_arr))
+    carry_comp = per_comp or track_compartment
     _D0 = diffusivity if diffusivity is not None else geometry._D_comp_max
 
     has_surf = geometry.surface_relaxivity_t2 is not None
     has_perm = geometry.permeability          is not None
-    has_t2   = (T2 is not None) or (_invT2_arr is not None)   # per-compartment T2 also needs log_w
-    has_t1   = (T1 is not None) or (_invT1_arr is not None)   # per-compartment T1 also needs log_w
+    has_t2   = (T2 is not None) or (_invT2_arr is not None)
+    has_t1   = (T1 is not None) or (_invT1_arr is not None)
     has_weight = has_surf or has_perm or has_t2 or has_t1
 
     _inv_T2 = jnp.float32(1.0 / T2) if T2 is not None else jnp.float32(0.0)
@@ -399,140 +397,72 @@ def make_step_fn(geometry, diffusivity: float, dt: float, T2: float = None,
     dt_sub       = dt / n_sub
     gamma_dt_sub = jnp.float32(GAMMA * dt_sub)
     dt_sub_f32   = jnp.float32(dt_sub)
+    one          = jnp.float32(1.0)
 
-    def _step_l(r, dt_local):
-        """Step length at r over dt_local — per-compartment D if present, else single."""
-        if _D_arr is not None:
-            return jnp.sqrt(6.0 * _D_arr[_classify(r)] * dt_local)
-        return jnp.sqrt(6.0 * _D0 * dt_local)
+    def _D_at(comp):
+        return _D_arr[comp] if _D_arr is not None else jnp.float32(_D0)
 
-    def _t2_decrement(r, dt_local):
-        """T2 log-weight decrement for a step ending at r (per-compartment if present).
-        The caller gates this by chi_t (only accrues while transverse)."""
-        if _invT2_arr is not None:
-            return dt_local * _invT2_arr[_classify(r)]
-        return dt_local * _inv_T2
+    def _t2_decrement(comp):
+        return dt_sub_f32 * (_invT2_arr[comp] if _invT2_arr is not None else _inv_T2)
 
-    def _t1_decrement(r, dt_local):
-        """T1 log-weight decrement for a step ending at r (per-compartment if present).
-        The caller gates this by (1 - chi_t) (only accrues during longitudinal storage)."""
-        if _invT1_arr is not None:
-            return dt_local * _invT1_arr[_classify(r)]
-        return dt_local * _inv_T1
+    def _t1_decrement(comp):
+        return dt_sub_f32 * (_invT1_arr[comp] if _invT1_arr is not None else _inv_T1)
 
     if has_perm:
-        # D is single when permeable (unequal-D across a permeable wall is rejected
-        # at Mesh construction), so κ/D uses the single diffusivity _D0.
+        # D is single across a permeable wall (unequal D is rejected at construction), so κ/D and
+        # ρ/D use the single diffusivity.
         kappa_over_D = jnp.float32(geometry.permeability / float(_D0))
         rho_over_D   = (jnp.float32(geometry.surface_relaxivity_t2 / float(_D0))
                         if has_surf else jnp.float32(0.0))
         permeate = geometry.permeate
 
-        # Phase + relaxation accumulate per fine sub-step; G is held fixed across the group.
-        def step_fn(carry, inputs):
-            g_t, chi_t = inputs
-
-            def _sub(c, _):
-                r, phi, log_weight, key = c
-                key, subkey_step, subkey_perm = jax.random.split(key, 3)
-                noise = jax.random.normal(subkey_step, (3,), dtype=jnp.float32)
-                unit_noise = noise / jnp.linalg.norm(noise)
-                step = unit_noise * _step_l(r, dt_sub_f32)
-
-                r_new, dlog_w = permeate(r, step, kappa_over_D,
-                                         rho_over_D, subkey_perm)
-
-                # Surface relaxivity accrues only while transverse (chi_t == 1).
-                dlog_w = dlog_w * chi_t
-                if has_t2:
-                    dlog_w = dlog_w - _t2_decrement(r_new, dt_sub_f32) * chi_t
-                if has_t1:
-                    dlog_w = dlog_w - _t1_decrement(r_new, dt_sub_f32) * (jnp.float32(1.0) - chi_t)
-
-                phi_new = phi + gamma_dt_sub * jnp.dot(g_t, r_new)
-                return (r_new, phi_new, log_weight + dlog_w, key), None
-
-            carry_out, _ = jax.lax.scan(_sub, carry, None, length=n_sub)
-            return carry_out, None
+        def _move(r, step, comp, key):
+            r_new, dlog_w = permeate(r, step, kappa_over_D, rho_over_D, key)
+            return r_new, dlog_w
 
     elif has_surf:
         rho_nom = jnp.float32(geometry.surface_relaxivity_t2)
         reflect_with_log_weight = geometry.reflect_with_log_weight
 
-        def _rho_over_D(r):
-            Dc = _D_arr[_classify(r)] if _D_arr is not None else _D0
-            return rho_nom / Dc
-
-        # Surface relaxivity accrues via the boundary local time (accumulated reflection
-        # overshoot); phase / T2 / local time accumulate per fine sub-step.
-        def step_fn(carry, inputs):
-            g_t, chi_t = inputs
-
-            def _sub(c, _):
-                r, phi, log_weight, key = c
-                key, subkey = jax.random.split(key)
-                noise = jax.random.normal(subkey, (3,), dtype=jnp.float32)
-                unit_noise = noise / jnp.linalg.norm(noise)
-                step = unit_noise * _step_l(r, dt_sub_f32)
-
-                r_new, dlog_w = reflect_with_log_weight(r, step, _rho_over_D(r))
-                # Surface relaxivity accrues only while transverse (chi_t == 1).
-                dlog_w = dlog_w * chi_t
-                if has_t2:
-                    dlog_w = dlog_w - _t2_decrement(r_new, dt_sub_f32) * chi_t
-                if has_t1:
-                    dlog_w = dlog_w - _t1_decrement(r_new, dt_sub_f32) * (jnp.float32(1.0) - chi_t)
-                phi_new = phi + gamma_dt_sub * jnp.dot(g_t, r_new)
-                return (r_new, phi_new, log_weight + dlog_w, key), None
-
-            carry_out, _ = jax.lax.scan(_sub, carry, None, length=n_sub)
-            return carry_out, None
-
-    elif has_t2 or has_t1:
-        # No surface relaxation, no permeability — but T2/T1 (incl. per-compartment)
-        # require the log_weight carry.
-        reflect = geometry.reflect
-
-        def step_fn(carry, inputs):
-            g_t, chi_t = inputs
-
-            def _sub(c, _):
-                r, phi, log_weight, key = c
-                key, subkey = jax.random.split(key)
-                noise = jax.random.normal(subkey, (3,), dtype=jnp.float32)
-                unit_noise = noise / jnp.linalg.norm(noise)
-                step = unit_noise * _step_l(r, dt_sub_f32)
-                r_new = reflect(r, step)
-                dlog = jnp.float32(0.0)
-                if has_t2:
-                    dlog = dlog - _t2_decrement(r_new, dt_sub_f32) * chi_t
-                if has_t1:
-                    dlog = dlog - _t1_decrement(r_new, dt_sub_f32) * (jnp.float32(1.0) - chi_t)
-                return (r_new, phi + gamma_dt_sub * jnp.dot(g_t, r_new),
-                        log_weight + dlog, key), None
-
-            carry_out, _ = jax.lax.scan(_sub, carry, None, length=n_sub)
-            return carry_out, None
+        def _move(r, step, comp, key):
+            return reflect_with_log_weight(r, step, rho_nom / _D_at(comp))
 
     else:
-        # No weight at all. (A Mesh with only per-compartment D lands here — the
-        # step length is still resolved per compartment via _step_l.)
         reflect = geometry.reflect
 
-        def step_fn(carry, inputs):
-            g_t, _chi_t = inputs
+        def _move(r, step, comp, key):
+            return reflect(r, step), jnp.float32(0.0)
 
-            def _sub(c, _):
-                r, phi, key = c
-                key, subkey = jax.random.split(key)
-                noise = jax.random.normal(subkey, (3,), dtype=jnp.float32)
-                unit_noise = noise / jnp.linalg.norm(noise)
-                step = unit_noise * _step_l(r, dt_sub_f32)
-                r_new = reflect(r, step)
-                return (r_new, phi + gamma_dt_sub * jnp.dot(g_t, r_new), key), None
+    carry_fn = geometry.classify_position_carry
 
-            carry_out, _ = jax.lax.scan(_sub, carry, None, length=n_sub)
-            return carry_out, None
+    def step_fn(carry, inputs):
+        g_t, chi_t = inputs
+
+        def _sub(c, _):
+            r, phi, log_w, key, comp = c
+            if has_perm:
+                key, k_step, k_wall = jax.random.split(key, 3)
+            else:
+                key, k_step = jax.random.split(key)
+                k_wall = None
+            noise = jax.random.normal(k_step, (3,), dtype=jnp.float32)
+            step = (noise / jnp.linalg.norm(noise)) * jnp.sqrt(6.0 * _D_at(comp) * dt_sub_f32)
+
+            r_new, dlog_w = _move(r, step, comp, k_wall)
+            comp_new = carry_fn(r_new, comp) if carry_comp else comp
+
+            # surface relaxivity accrues only while transverse
+            dlog_w = dlog_w * chi_t
+            if has_t2:
+                dlog_w = dlog_w - _t2_decrement(comp_new) * chi_t
+            if has_t1:
+                dlog_w = dlog_w - _t1_decrement(comp_new) * (one - chi_t)
+
+            phi_new = phi + gamma_dt_sub * jnp.dot(g_t, r_new)
+            return (r_new, phi_new, log_w + dlog_w, key, comp_new), None
+
+        carry_out, _ = jax.lax.scan(_sub, carry, None, length=n_sub)
+        return carry_out, None
 
     step_fn.n_sub = n_sub
     return step_fn, has_weight

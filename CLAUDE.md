@@ -116,6 +116,14 @@ and **one wall interaction**. Capability flags (`supports_permeability`, `carrie
 class with defaults, so the engine reads them directly; `tests/test_api_surface.py` fails on any
 new `getattr(geometry, …)` probe.
 
+**Compartment ids** follow one convention everywhere (the `.rpk` one): 0 is the extra-cellular /
+free pool, enclosed pools are positive — 1 intra (the lumen / inside a closed surface), 2 myelin.
+Packed geometries (`classify_returns_object_id`) return 1..N for the object a walker is in.
+`geometry.classify_position(r)` is the one source; `comp_traj`, `return_compartments`, per-compartment
+`T2_per_comp`/`intra=`/`extra=` arrays are all indexed by that id (a `Mesh(intra={"T2":…}, extra={"T2":…})`
+stores `(T2_extra, T2_intra)`). The myelin kernels carry their own code internally and map it with
+`geometry.pool_of(...)` at the API boundary.
+
 **Sub-steps** come from one dispatch, `physics.resolve_sub_steps(geometry, D, dt, surface=,
 mt_dwell_time=, override=)` — the maximum of the reflection (R/6, R/25 permeable), collision-lookup,
 surface-local-time (pore/8) and binding criteria that apply. Every driver (`make_step_fn`,
@@ -168,8 +176,9 @@ meshes:
   balance — it's a *pump* (net flux, non-equilibrium), not passive exchange.
 - **Per-compartment bulk D / T2** via the same `intra=`/`extra=` dicts
   (`{"D":…, "T2":…}`) — a per-*step* effect resolved in `make_step_fn`: the step
-  length uses the current compartment's D and the log-weight its 1/T2 (via the
-  geometry's `_D_comp_jax` / `_inv_T2_comp_jax` + `classify_position`; absent →
+  length uses the current compartment's D and the log-weight its 1/T2, indexed by
+  the compartment id the scan carries (`_D_comp_jax` / `_inv_T2_comp_jax`; seeded by
+  `classify_positions_exact`, advanced by `classify_position_carry`; absent →
   scalar path, unchanged). Both sides required if either is given. Unequal D across
   a **permeable** wall is rejected (diffusivity-discontinuity interface). T1 isn't
   applied in the forward walk, so per-compartment T1 is out of scope. There is ONE

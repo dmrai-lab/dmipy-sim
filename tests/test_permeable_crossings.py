@@ -162,9 +162,9 @@ def test_permeable_cylinder_labels_match_positions():
 
     labels = np.asarray(jax.jit(jax.vmap(geom.classify_position))(jnp.asarray(rf)))
     radial = np.linalg.norm(rf[:, :2], axis=1)
-    # convention: 0 = intra (|r_xy| < R), 1 = extra
-    assert ((labels == 0) == (radial < R)).all(), (
-        f"{int(((labels == 0) != (radial < R)).sum())} labels disagree with the positions")
+    # convention: 1 = intra (|r_xy| < R), 0 = extra
+    assert ((labels == 1) == (radial < R)).all(), (
+        f"{int(((labels == 1) != (radial < R)).sum())} labels disagree with the positions")
     # and the walk must genuinely have exchanged, or this proves nothing
-    frac_extra = float((labels == 1).mean())
+    frac_extra = float((labels == 0).mean())
     assert frac_extra > 0.002, f"only {frac_extra:.4f} exchanged; test is vacuous"

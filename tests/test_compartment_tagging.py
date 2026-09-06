@@ -75,19 +75,19 @@ class TestCompartmentOriginImmutability:
         geom = Cylinder(radius=5e-6, orientation=[0, 0, 1])
         comp_orig, comp_seq = _run_full(geom, n_walkers=500)
         # comp_origin is returned separately and is always the initial value.
-        # For impermeable walkers that start intra (comp_orig == 0), the first
+        # For impermeable walkers that start intra (comp_orig == 1), the first
         # step should almost always stay intra (barring boundary float32 effects).
-        intra_mask = comp_orig == 0
+        intra_mask = comp_orig == 1
         # The vast majority should stay intra (> 99%)
-        stay_intra = (comp_seq[intra_mask, 0] == 0).mean()
+        stay_intra = (comp_seq[intra_mask, 0] == 1).mean()
         assert stay_intra > 0.99, f"Expected >99% of intra walkers to stay intra at t=1, got {stay_intra:.3f}"
 
     def test_sphere_impermeable_origin_stable(self):
         """Impermeable sphere: compartment_origin is consistent with t=0."""
         geom = Sphere(radius=5e-6)
         comp_orig, comp_seq = _run_full(geom, n_walkers=500)
-        intra_mask = comp_orig == 0
-        stay_intra = (comp_seq[intra_mask, 0] == 0).mean()
+        intra_mask = comp_orig == 1
+        stay_intra = (comp_seq[intra_mask, 0] == 1).mean()
         assert stay_intra > 0.99
 
     def test_myelinated_cylinder_origin_stable(self):
@@ -160,7 +160,7 @@ class TestVolumefractionConsistency:
         """All walkers start intra for the single-cylinder geometry."""
         geom = Cylinder(radius=5e-6, orientation=[0, 0, 1])
         comp_orig, _ = _run_final(geom, n_walkers=100_000)
-        vf_intra = (comp_orig == 0).mean()
+        vf_intra = (comp_orig == 1).mean()
         # Nearly all walkers start inside (small float32 boundary effects allowed)
         npt.assert_allclose(vf_intra, 1.0, atol=0.002)
 
@@ -173,7 +173,7 @@ class TestVolumefractionConsistency:
             water_fractions=(1.0, 1.0, 1.0),
         )
         comp_orig, _ = _run_final(mc, n_walkers=100_000, diffusivity=None)
-        for comp_id, label in [(0, 'intra'), (1, 'myelin'), (2, 'extra')]:
+        for comp_id, label in [(1, 'intra'), (2, 'myelin'), (0, 'extra')]:   # pool ids
             vf_mc = (comp_orig == comp_id).mean()
             vf_analytical = mc.volume_fraction(label)
             npt.assert_allclose(vf_mc, vf_analytical, atol=0.01,
@@ -248,15 +248,15 @@ class TestImpermeableCylinderStable:
             f"crossings (tolerance 0.5%)")
 
     def test_impermeable_box1d_no_crossing(self):
-        """Box1D always assigns compartment 0; no changes expected."""
+        """Box1D is one enclosed pool (id 1); no changes expected."""
         geom = Box1D(length=10e-6)
         n_walkers = 500
         comp_orig, comp_seq = _run_full(geom, n_walkers=n_walkers)
-        npt.assert_array_equal(comp_orig, np.zeros(n_walkers, dtype=np.int32))
+        npt.assert_array_equal(comp_orig, np.ones(n_walkers, dtype=np.int32))
         npt.assert_array_equal(
             comp_seq,
-            np.zeros((n_walkers, N_T), dtype=np.int32),
-            err_msg="Box1D should always have compartment_id=0")
+            np.ones((n_walkers, N_T), dtype=np.int32),
+            err_msg="Box1D should always have compartment_id=1")
 
 
 # ---------------------------------------------------------------------------

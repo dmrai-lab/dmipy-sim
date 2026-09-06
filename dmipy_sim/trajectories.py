@@ -453,7 +453,7 @@ def replay(
         simulate_trajectories(save_relaxation_data=True).  Required when
         T2_per_comp or T1_per_comp is provided.  An integer array indexes the
         per-compartment arrays directly; a float array is the fractional
-        occupancy of compartment 1 in a 2-compartment permeable geometry.
+        occupancy of pool 1 (the enclosed pool) in a 2-compartment permeable geometry.
     T2_per_comp : array-like, shape (n_comp,), or None
         Per-compartment T2 in seconds.  If set, overrides scalar T2.
         Requires comp_traj.
@@ -561,7 +561,7 @@ def replay(
         """Per-(walker, step) inverse-relaxation rate from comp_traj.
 
         Discrete (integer) comp_traj indexes ``inv_arr`` directly.  Fractional
-        (float) comp_traj is the time-fraction in compartment 1 of a
+        (float) comp_traj is the time-fraction in pool 1 (the enclosed pool) of a
         2-compartment permeable geometry; the inverse rate is the
         occupancy-weighted average ``(1-f)·inv_arr[0] + f·inv_arr[1]`` (exact
         for compartment-weighted bulk relaxation, resolving intra-save crossings).

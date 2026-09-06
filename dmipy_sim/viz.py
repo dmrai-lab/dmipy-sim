@@ -393,7 +393,7 @@ def plot_mesh_section(mesh, axis='z', offset=0.0, walkers=None, compartments=Non
     walkers : (n, 3) array, optional
         Walker positions to overlay (those within ``slab`` of the plane).
     compartments : (n,) int array, optional
-        0 = intra, 1 = extra, colouring the overlaid walkers.  Computed from the
+        1 = intra, 0 = extra, colouring the overlaid walkers.  Computed from the
         mesh if omitted.
     slab : float, optional
         Half-thickness (metres) of the walker slab around the plane.  Defaults to
