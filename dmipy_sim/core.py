@@ -71,6 +71,54 @@ _REPLAY_AUTO_GEOM_NAMES = frozenset({
 })
 
 
+_BATCH_CACHE_ATTR = "_batch_cache"   # per-geometry {key: jitted batch function}, on the object
+
+
+def _geometry_state(geometry):
+    """The scalar state of a geometry that a step function bakes in at trace time.
+
+    Device arrays are fixed at construction; the knobs a caller may set afterwards
+    (``reflect_mode``, ``_GRAZE``, ``adaptive_nudge``, ...) are Python scalars, strings, bools
+    or 0-d arrays. Their values are part of the cache key, so changing one after a walk builds a
+    new program rather than replaying the old one.
+    """
+    items = []
+    for k, v in sorted(vars(geometry).items()):
+        if k == _BATCH_CACHE_ATTR:
+            continue
+        if isinstance(v, (bool, int, float, str, type(None))):
+            items.append((k, v))
+        elif isinstance(v, (np.ndarray, jnp.ndarray)) and v.ndim == 0:
+            items.append((k, float(v)))
+        elif isinstance(v, tuple) and all(isinstance(x, (bool, int, float, str)) for x in v):
+            items.append((k, v))
+    return tuple(items)
+
+
+def cached_batch(geometry, key, build):
+    """One compiled program per (geometry, configuration, shape), across calls.
+
+    ``simulate`` used to build its scan closure and dispatch it eagerly on every call, so a
+    second call on the same geometry paid a full compile again (measured 4.8-6.4 s against a
+    20 ms kernel run). The jitted batch function is kept ON the geometry object (the closure
+    references the geometry, so a side table keyed by it would pin it forever; on the object the
+    reference is a cycle the garbage collector frees with the geometry), keyed on its scalar
+    state and ``key`` -- everything the closure bakes in that is not a traced argument. Waveform
+    samples, walker positions, keys and labels are arguments, so a sweep over b, seed or direction
+    recompiles nothing; a new walker count retraces inside ``jax.jit`` by shape, once.
+    """
+    try:
+        per_geom = vars(geometry).setdefault(_BATCH_CACHE_ATTR, {})
+    except TypeError:                      # no instance dict: no caching, same result
+        return build()
+    full = (key, _geometry_state(geometry))
+    fn = per_geom.get(full)
+    if fn is None:
+        fn = build()
+        per_geom[full] = fn
+    return fn
+
+
 def _ensemble_signal(spin_w, phi, log_w=None):
     """Spin-density-weighted ensemble signal ``Re<w exp(log_w) e^{i phi}> / sum w``.
 
@@ -473,51 +521,27 @@ def simulate(
         compartments0 = geometry._init_compartments  # (n_walkers,) int32, pool id
         spin_w = jnp.asarray(geometry._water_fraction_by_pool, jnp.float32)[compartments0]
 
+        emit_comp = track_comp and return_compartments == 'full'
         if track_comp:
             comp_origin_jax = geometry.pool_of(compartments0)   # kernel code -> pool id
 
-            if return_compartments == 'full':
-                def simulate_walker(r0_w, key_w, comp0):
-                    phi0   = jnp.zeros(n_measurements, dtype=jnp.float32)
-                    log_w0 = jnp.float32(0.0)
-                    # Emit compartment_id at every step
-                    def step_with_comp(carry, inputs):
-                        new_carry, _ = step_fn(carry, inputs)
-                        return new_carry, geometry.pool_of(new_carry[3])
+        def _build_myelin():
+            def simulate_walker(r0_w, key_w, comp0, G_s, chi_s):
+                phi0 = jnp.zeros(n_measurements, dtype=jnp.float32)
 
-                    (r_final, phi_all, log_w, comp_final, _), comp_seq = jax.lax.scan(
-                        step_with_comp, (r0_w, phi0, log_w0, comp0, key_w), scan_inputs)
-                    return r_final, phi_all, log_w, geometry.pool_of(comp_final), comp_seq
+                def body(carry, inputs):
+                    new_carry, _ = step_fn(carry, inputs)
+                    return new_carry, (geometry.pool_of(new_carry[3]) if emit_comp else None)
+                (r_final, phi_all, log_w, comp_final, _), comp_seq = jax.lax.scan(
+                    body, (r0_w, phi0, jnp.float32(0.0), comp0, key_w), (G_s, chi_s))
+                return r_final, phi_all, log_w, geometry.pool_of(comp_final), comp_seq
+            return jax.jit(jax.vmap(simulate_walker, in_axes=(0, 0, 0, None, None)))
 
-                simulate_batch = jax.vmap(simulate_walker, in_axes=(0, 0, 0))
-                final_r, all_phi, all_log_w, comp_final, comp_seq = simulate_batch(
-                    r0, walker_keys, compartments0)
-                signals = _ensemble_signal(spin_w, all_phi, all_log_w)
-
-            else:  # 'final'
-                def simulate_walker(r0_w, key_w, comp0):
-                    phi0   = jnp.zeros(n_measurements, dtype=jnp.float32)
-                    log_w0 = jnp.float32(0.0)
-                    (r_final, phi_all, log_w, comp_final, _), _ = jax.lax.scan(
-                        step_fn, (r0_w, phi0, log_w0, comp0, key_w), scan_inputs)
-                    return r_final, phi_all, log_w, geometry.pool_of(comp_final)
-
-                simulate_batch = jax.vmap(simulate_walker, in_axes=(0, 0, 0))
-                final_r, all_phi, all_log_w, comp_final = simulate_batch(
-                    r0, walker_keys, compartments0)
-                signals = _ensemble_signal(spin_w, all_phi, all_log_w)
-
-        else:
-            def simulate_walker(r0_w, key_w, comp0):
-                phi0   = jnp.zeros(n_measurements, dtype=jnp.float32)
-                log_w0 = jnp.float32(0.0)
-                (r_final, phi_all, log_w, comp_final, _), _ = jax.lax.scan(
-                    step_fn, (r0_w, phi0, log_w0, comp0, key_w), scan_inputs)
-                return r_final, phi_all, log_w
-
-            simulate_batch = jax.vmap(simulate_walker, in_axes=(0, 0, 0))
-            final_r, all_phi, all_log_w = simulate_batch(r0, walker_keys, compartments0)
-            signals = _ensemble_signal(spin_w, all_phi, all_log_w)
+        simulate_batch = cached_batch(
+            geometry, ("myelin", n_measurements, n_t, float(dt), T1, sub_steps, emit_comp), _build_myelin)
+        final_r, all_phi, all_log_w, comp_final, comp_seq = simulate_batch(
+            r0, walker_keys, compartments0, *scan_inputs)
+        signals = _ensemble_signal(spin_w, all_phi, all_log_w)
 
     elif is_packed_myelin:
         # Fused forward: the SAME per-compartment walk as the trajectory step fn, with
@@ -533,18 +557,22 @@ def simulate(
         spin_w = jnp.where(_to3(compartments0) == jnp.int32(2),
                            jnp.float32(geometry._myelin_proton_density), jnp.float32(1.0))
 
-        def simulate_walker(r0_w, key_w, comp0):
-            phi0 = jnp.zeros(n_measurements, dtype=jnp.float32)
+        def _build_packed():
+            def simulate_walker(r0_w, key_w, comp0, G_s, chi_s):
+                phi0 = jnp.zeros(n_measurements, dtype=jnp.float32)
 
-            def emit(carry, inputs):
-                nc, _ = step_fn(carry, inputs)
-                return nc, _to3(nc[4])                     # nc[4] = compartment_id
-            (r_ic_f, _r_uw_f, phi_all, log_w, comp_f, _), comp_seq_w = jax.lax.scan(
-                emit, (r0_w, r0_w, phi0, jnp.float32(0.0), comp0, key_w), scan_inputs)
-            return r_ic_f, phi_all, log_w, comp_f, comp_seq_w
+                def emit(carry, inputs):
+                    nc, _ = step_fn(carry, inputs)
+                    return nc, _to3(nc[4])                 # nc[4] = compartment_id
+                (r_ic_f, _r_uw_f, phi_all, log_w, comp_f, _), comp_seq_w = jax.lax.scan(
+                    emit, (r0_w, r0_w, phi0, jnp.float32(0.0), comp0, key_w), (G_s, chi_s))
+                return r_ic_f, phi_all, log_w, comp_f, comp_seq_w
+            return jax.jit(jax.vmap(simulate_walker, in_axes=(0, 0, 0, None, None)))
 
-        final_r, all_phi, all_log_w, _comp_final_enc, _comp_seq = jax.vmap(
-            simulate_walker, in_axes=(0, 0, 0))(r0, walker_keys, compartments0)
+        simulate_batch = cached_batch(
+            geometry, ("packed_myelin", n_measurements, n_t, float(dt), T1), _build_packed)
+        final_r, all_phi, all_log_w, _comp_final_enc, _comp_seq = simulate_batch(
+            r0, walker_keys, compartments0, *scan_inputs)
         signals = _ensemble_signal(spin_w, all_phi, all_log_w)
         if track_comp:
             comp_origin_jax = _to3(compartments0)
@@ -568,20 +596,25 @@ def simulate(
         emit_pos  = want_pos_full
         emit_comp = track_comp and return_compartments == 'full'
 
-        def simulate_walker(r0_w, key_w, comp0_w):
-            phi0 = jnp.zeros(n_measurements, dtype=jnp.float32)
+        def _build_standard():
+            def simulate_walker(r0_w, key_w, comp0_w, G_s, chi_s):
+                phi0 = jnp.zeros(n_measurements, dtype=jnp.float32)
 
-            def body(carry, inp):
-                new_carry, _ = step_fn(carry, inp)
-                rn, _, _, _, cn = new_carry
-                return new_carry, (rn if emit_pos else None, cn if emit_comp else None)
+                def body(carry, inp):
+                    new_carry, _ = step_fn(carry, inp)
+                    rn, _, _, _, cn = new_carry
+                    return new_carry, (rn if emit_pos else None, cn if emit_comp else None)
 
-            (r_final, phi_all, log_w, _, comp_final), (pos_ys, comp_ys) = jax.lax.scan(
-                body, (r0_w, phi0, jnp.float32(0.0), key_w, comp0_w), scan_inputs)
-            return r_final, phi_all, log_w, comp_final, pos_ys, comp_ys
+                (r_final, phi_all, log_w, _, comp_final), (pos_ys, comp_ys) = jax.lax.scan(
+                    body, (r0_w, phi0, jnp.float32(0.0), key_w, comp0_w), (G_s, chi_s))
+                return r_final, phi_all, log_w, comp_final, pos_ys, comp_ys
+            return jax.jit(jax.vmap(simulate_walker, in_axes=(0, 0, 0, None, None)))
 
-        final_r, all_phi, all_log_w, comp_final, pos_seq, comp_seq = jax.vmap(
-            simulate_walker, in_axes=(0, 0, 0))(r0, walker_keys, comp_origin_jax)
+        simulate_batch = cached_batch(
+            geometry, ("standard", n_measurements, n_t, float(dt), diffusivity, T2, T1, sub_steps,
+                       track_comp, emit_pos, emit_comp), _build_standard)
+        final_r, all_phi, all_log_w, comp_final, pos_seq, comp_seq = simulate_batch(
+            r0, walker_keys, comp_origin_jax, *scan_inputs)
         signals = _ensemble_signal(spin_w, all_phi, all_log_w) if has_weight else _ensemble_signal(spin_w, all_phi)
 
     # T2/T1 are accumulated per-walker inside the scan body (make_step_fn /
@@ -806,18 +839,22 @@ def simulate_cpmg(n_walkers, diffusivity, waveform, geometry, *,
     comp0 = (jnp.asarray(geometry.classify_positions_exact(r0), jnp.int32) if per_comp
              else jnp.zeros((n_walkers,), jnp.int32))
 
-    def step_emit(carry, inputs):
-        new_carry, _ = step_fn(carry, inputs)
-        _, phi, log_w, _, _ = new_carry
-        return new_carry, jnp.exp(log_w) * jnp.cos(phi)       # (n_measurements,)
+    def _build_cpmg():
+        def step_emit(carry, inputs):
+            new_carry, _ = step_fn(carry, inputs)
+            _, phi, log_w, _, _ = new_carry
+            return new_carry, jnp.exp(log_w) * jnp.cos(phi)   # (n_measurements,)
 
-    def walk(r0_w, key_w, comp0_w):
-        phi0 = jnp.zeros(n_measurements, dtype=jnp.float32)
-        _, s_trace = jax.lax.scan(
-            step_emit, (r0_w, phi0, jnp.float32(0.0), key_w, comp0_w), scan_inputs)
-        return s_trace                                        # (n_t, n_measurements)
+        def walk(r0_w, key_w, comp0_w, G_s, chi_s):
+            phi0 = jnp.zeros(n_measurements, dtype=jnp.float32)
+            _, s_trace = jax.lax.scan(
+                step_emit, (r0_w, phi0, jnp.float32(0.0), key_w, comp0_w), (G_s, chi_s))
+            return s_trace                                    # (n_t, n_measurements)
+        return jax.jit(jax.vmap(walk, in_axes=(0, 0, 0, None, None)))
 
-    all_traces = jax.vmap(walk, in_axes=(0, 0, 0))(r0, walker_keys, comp0)   # (n_w, n_t, n_meas)
+    batch = cached_batch(geometry, ("cpmg", n_measurements, n_t, float(dt), diffusivity, T2, sub_steps),
+                         _build_cpmg)
+    all_traces = batch(r0, walker_keys, comp0, *scan_inputs)              # (n_w, n_t, n_meas)
     signal_trace = jnp.mean(all_traces, axis=0)                    # (n_t, n_meas)
     echo_signals = signal_trace[echo_indices]                     # (n_echoes, n_meas)
     return np.array(echo_signals)
@@ -1154,8 +1191,9 @@ def simulate_trajectories(
                                  None, length=n_t)
                 return positions, dlog_boundary, comp_types, bound_frac
 
-        simulate_batch_pm = jax.jit(
-            jax.vmap(simulate_one_walker_pm, in_axes=(0, 0, 0, 0)))
+        simulate_batch_pm = cached_batch(
+            geometry, ("traj_packed_myelin", n_t, sub_steps, float(dt_sim), kappa_MT, dwell_time),
+            lambda: jax.jit(jax.vmap(simulate_one_walker_pm, in_axes=(0, 0, 0, 0))))
 
     if save_relaxation_data and not is_packed_myelin_geom:
         if has_permeability:
@@ -1231,8 +1269,9 @@ def simulate_trajectories(
                 outer_step_relax, (r0_w, key_w, side_w, jnp.int32(0), comp0_w), None, length=n_t)
             return positions, dlog_boundary, comp_ids, bad_f
 
-        _simulate_batch_relax_raw = jax.jit(
-            jax.vmap(simulate_one_walker_relax, in_axes=(0, 0, 0, 0)))
+        _simulate_batch_relax_raw = cached_batch(
+            geometry, ("traj_relax", n_t, sub_steps, float(dt_sim), diffusivity),
+            lambda: jax.jit(jax.vmap(simulate_one_walker_relax, in_axes=(0, 0, 0, 0))))
 
         def simulate_batch_relax(r0_b, keys_b):
             comp0_b = jnp.asarray(geometry.classify_positions_exact(r0_b), jnp.int32)
@@ -1240,7 +1279,9 @@ def simulate_trajectories(
             _illegal_crossings[0] += int(jnp.sum(bad_f))
             return pos, dlog, comp
 
-    _simulate_batch_raw = jax.jit(jax.vmap(simulate_one_walker, in_axes=(0, 0, 0)))
+    _simulate_batch_raw = cached_batch(
+        geometry, ("traj", n_t, sub_steps, float(dt_sim), diffusivity),
+        lambda: jax.jit(jax.vmap(simulate_one_walker, in_axes=(0, 0, 0))))
 
     # Seed each walker's carried compartment ONCE, from its t=0 position, and let only a
     # granted crossing change it thereafter (MC/DC's `initial_location`). The wrapper keeps
