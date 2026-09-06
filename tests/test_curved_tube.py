@@ -116,7 +116,7 @@ def test_multishell_separates_lumen_from_sheath():
     """The myelinated form: an inner tube inside an outer one, seeded per shell."""
     g = MultiShellCurvedTube(_straight_centreline(20e-6), r_in=3e-6, r_out=5e-6)
 
-    intra = np.asarray(g.init_positions(2000, jax.random.PRNGKey(SEED), shell="intra"))
+    intra = np.asarray(g.init_positions(2000, jax.random.PRNGKey(SEED), pool="intra"))
     r_intra = np.linalg.norm(intra[:, :2], axis=1)
     assert r_intra.max() <= 3e-6, "an intra seed outside the inner wall"
 

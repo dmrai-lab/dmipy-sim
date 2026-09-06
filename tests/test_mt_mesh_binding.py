@@ -108,7 +108,7 @@ def test_the_mt_driver_walks_the_pool_its_seeds_name():
     def frac_inside(p):
         return float(np.asarray(mesh_contains(V64, F64, np.asarray(p, np.float64))).mean())
 
-    r0_out = np.asarray(mesh.init_positions(n, jax.random.PRNGKey(3), intra=False), np.float64)
+    r0_out = np.asarray(mesh.init_positions(n, jax.random.PRNGKey(3), pool="extra"), np.float64)
     assert frac_inside(r0_out) < 0.01, "the outside seeds are not outside; test cannot conclude anything"
 
     def first_step_pool(r0):

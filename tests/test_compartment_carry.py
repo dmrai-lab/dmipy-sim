@@ -50,7 +50,7 @@ def _thick_tube(radius=3.0, height=24.0, sections=96, subdivisions=1):
 def test_initial_labels_are_exact_not_defaulted():
     """Seeds inside the tube must be labelled interior, including the deep ones the gather cannot see."""
     mesh, tri = _thick_tube()
-    pts = np.asarray(mesh.init_positions(1200, jax.random.PRNGKey(0), intra=True), float)
+    pts = np.asarray(mesh.init_positions(1200, jax.random.PRNGKey(0), pool="intra"), float)
     lab = np.asarray(mesh.classify_positions_exact(pts))
 
     truth = contains(tri, pts / UM)      # tri is in unit coordinates

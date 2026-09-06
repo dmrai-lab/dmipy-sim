@@ -72,7 +72,7 @@ def test_classify_position_inside_outside():
 def test_seed_containment_closed():
     V, F = _icosphere(3)
     g = Mesh(V, F)
-    pts = np.asarray(g.init_positions(500, jax.random.PRNGKey(0), intra=True))
+    pts = np.asarray(g.init_positions(500, jax.random.PRNGKey(0), pool="intra"))
     assert (np.linalg.norm(pts, axis=1) < R).mean() > 0.99
 
 

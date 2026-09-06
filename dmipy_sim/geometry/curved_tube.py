@@ -121,12 +121,15 @@ class MultiShellCurvedTube(CurvedTube):
     optimisation; impermeable shells make the separate-walk form exact.)
     """
 
-    def __init__(self, centerline, r_in: float, r_out: float):
+    def __init__(self, centerline, r_in: float, r_out: float, pool="intra"):
         super().__init__(centerline, r_out)            # base extent = outer radius
         if not (r_out > r_in > 0):
             raise ValueError("need r_out > r_in > 0")
         self.r_in = float(r_in)
         self.r_out = float(r_out)
+        if pool not in ("intra", "myelin", "extra"):
+            raise ValueError(f"pool must be 'intra', 'myelin' or 'extra', got {pool!r}")
+        self.pool = pool                                   # the shell init_positions seeds
         self.radius = float(r_in)                      # auto-tune to the finest wall
 
     def classify_position(self, r):
@@ -155,7 +158,15 @@ class MultiShellCurvedTube(CurvedTube):
         dt = jnp.clip(dt, lo + NUDGE, jnp.where(jnp.isfinite(hi), hi - NUDGE, dt))
         return Q + dt * n
 
-    def init_positions(self, n_walkers, key, shell="intra"):
+    def init_positions(self, n_walkers, key, pool=None, shell=None):
+        if shell is not None:
+            import warnings
+            warnings.warn("init_positions(shell=...) is spelled pool=..., and the pool a driver seeds is the "
+                          "constructor argument MultiShellCurvedTube(pool=...)", DeprecationWarning, stacklevel=2)
+            if pool is not None:
+                raise ValueError("give pool= or shell=, not both")
+            pool = shell
+        shell = self.pool if pool is None else pool
         lo, hi = {"intra": (0.0, self.r_in),
                   "myelin": (self.r_in, self.r_out),
                   "extra": (self.r_out, 1.5 * self.r_out)}[shell]

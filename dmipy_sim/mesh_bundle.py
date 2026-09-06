@@ -202,8 +202,12 @@ class BoxedMesh(Geometry):
             return r_out
         return jnp.where(moved & crossed, r_out, mirrored)
 
-    def init_positions(self, n_walkers, key, intra=True):
-        return self.mesh.init_positions(n_walkers, key, intra=intra)
+    @property
+    def pool(self):
+        return self.mesh.pool
+
+    def init_positions(self, n_walkers, key, pool=None, intra=None):
+        return self.mesh.init_positions(n_walkers, key, pool=pool, intra=intra)
 
     def classify_position(self, r):
         return self.mesh.classify_position(r)

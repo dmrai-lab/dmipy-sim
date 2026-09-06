@@ -47,12 +47,11 @@ class LengthScales(NamedTuple):
 def initial_positions(geometry, n_walkers, key, r0=None):
     """Seed positions for a walk: ``r0`` when the caller supplied one, else the geometry's own.
 
-    Exists because the default is a trap on meshes. ``Mesh.init_positions`` takes an ``intra`` flag
-    that defaults to ``True`` -- INSIDE the surface -- so a driver that seeds itself silently picks a
-    compartment on the caller's behalf. For a sphere or cylinder that guess is right. For a fibre
-    bundle's extra-axonal pool, whose geometry is the OUTER surface and whose walkers belong outside
-    it, the guess re-simulates the intra pool and labels it "extra": measured at 0.54x the extra pool's
-    analytic ``(S/V)*D`` before the MT driver was given an ``r0``.
+    The pool a geometry seeds is its own declaration (``Mesh(pool="extra")``,
+    ``MultiShellCurvedTube(pool="myelin")``), so a driver that seeds itself walks the pool the
+    geometry was built for. A fibre bundle's extra-axonal water is the OUTER surface with
+    ``pool="extra"``; seeding it inside by default re-simulated the intra pool under the name
+    "extra", at 0.54x the extra pool's analytic ``(S/V)*D``.
 
     Every walk driver should route its seeding through here, so that "which pool did this run walk?"
     has one answer and one validation instead of one per driver. It replaced four inline copies, two of

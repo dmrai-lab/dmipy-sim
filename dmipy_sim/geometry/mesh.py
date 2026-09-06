@@ -267,6 +267,19 @@ _populated_batch = jax.jit(jax.vmap(_gather_is_populated, in_axes=(None, 0)))
 
 
 
+
+POOL_NAMES = ("extra", "intra")
+
+
+def _seed_pool(pool):
+    """Pool id of a seeding request: ``"intra"`` / 1 -> 1, ``"extra"`` / 0 -> 0."""
+    if pool in ("intra", 1, True):
+        return 1
+    if pool in ("extra", 0, False):
+        return 0
+    raise ValueError(f"pool must be 'intra' or 'extra', got {pool!r}")
+
+
 class Mesh(Geometry):
     """Reflecting/permeable triangular-mesh geometry (see module docstring).
 
@@ -309,6 +322,11 @@ class Mesh(Geometry):
         is required for BOTH sides. T1 only acts during longitudinal storage
         (χ=0, e.g. a PGSTE mixing time). Unequal ``D`` across a permeable wall is
         rejected (diffusivity-discontinuity interface).
+    pool : {"intra", "extra"}
+        The pool a driver seeds when it is given no ``r0``: inside the surface (``"intra"``, id 1)
+        or outside it (``"extra"``, id 0). Stated at construction so that "which pool did this run
+        walk?" is answered by the geometry, not by a default hidden in the seeding call. A fibre
+        bundle's extra-axonal water is ``Mesh(outer_surface, pool="extra")``.
     orientation : (3,) array-like, optional
         Direction, in the scanner frame (B0 = +z), along which the mesh's native
         +z axis (e.g. a periodic / fibre axis) is placed in the bore.  Applied as
@@ -340,10 +358,11 @@ class Mesh(Geometry):
     def __init__(self, vertices, faces, *, periodic=False, voxel_min=None,
                  voxel_max=None, feature_radius=None, surface_relaxivity_t2=None,
                  permeability=None, intra=None, extra=None, orientation=None, R=None,
-                 cell_size=None, cap=None, max_bounces=None):
+                 cell_size=None, cap=None, max_bounces=None, pool="intra"):
         V = np.asarray(vertices, np.float64)
         F = np.asarray(faces, np.int64)
         self.vertices = V
+        self.pool = POOL_NAMES[_seed_pool(pool)]           # the pool init_positions seeds
         self.faces = F
 
         if isinstance(periodic, bool):
@@ -948,8 +967,8 @@ class Mesh(Geometry):
         return t[ax], n, ax
 
     # ------------------------------------------------------------------
-    def init_positions(self, n_walkers, key, intra=True):
-        """Seed walkers inside (intra=True) or outside the surface, by exact rejection sampling.
+    def init_positions(self, n_walkers, key, pool=None, intra=None):
+        """Seed walkers in ``pool`` (default: the geometry's ``pool``) by exact rejection sampling.
 
         Every candidate is decided by :func:`mesh_contains` -- ray-crossing parity, a global test.
 
@@ -972,6 +991,14 @@ class Mesh(Geometry):
         treatment for an open surface is tracked with this issue.
         """
         from ..susceptibility_field import mesh_contains
+        if intra is not None:
+            warnings.warn("init_positions(intra=...) is spelled pool='intra' / pool='extra', and the pool a "
+                          "driver seeds is the geometry's constructor argument Mesh(pool=...)",
+                          DeprecationWarning, stacklevel=2)
+            if pool is not None:
+                raise ValueError("give pool= or intra=, not both")
+            pool = "intra" if intra else "extra"
+        intra = _seed_pool(self.pool if pool is None else pool) == 1
         rng = np.random.default_rng(int(jax.random.randint(key, (), 0, 2**30)))
         V = np.asarray(self.vertices, float)
         F = np.asarray(self.faces, np.int64)
