@@ -676,19 +676,9 @@ class PackedMyelinatedCylinders(Geometry):
 
     def _compute_min_gap(self):
         """Minimum clear gap between outer boundaries (actual cylinders only)."""
+        from .packing import periodic_min_gap
         N = self.N_actual
-        L = self._L_float
-        centers = self._centers_np[:N]
-        outer   = self._outer_radii_np[:N]
-        min_gap = float('inf')
-        for i in range(N):
-            for j in range(i + 1, N):
-                dq = centers[i] - centers[j]
-                dq -= L * np.round(dq / L)
-                gap = np.linalg.norm(dq) - outer[i] - outer[j]
-                min_gap = min(min_gap, gap)
-            min_gap = min(min_gap, L - 2.0 * outer[i])
-        return float(min_gap) if np.isfinite(min_gap) else float('inf')
+        return periodic_min_gap(self._centers_np[:N], self._outer_radii_np[:N], self._L_float)
 
     def volume_fraction(self, compartment: str) -> float:
         """Volume fraction of a named compartment within the periodic cell.

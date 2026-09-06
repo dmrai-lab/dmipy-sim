@@ -39,11 +39,11 @@ fine mesh (edge length ``<~ 0.04`` of the local feature radius).
 
 import itertools
 import warnings
-from collections import defaultdict
 from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
+from ._grid import bucket_by_bbox
 from ._boundary import specular, transmit_probability, off_wall
 import numpy as np
 
@@ -587,23 +587,8 @@ class Mesh(Geometry):
         cs = self.cell_size
         lo = np.clip(np.floor((tri_all.min(1) - self.grid_min) / cs).astype(int), 0, self.dims - 1)
         hi = np.clip(np.floor((tri_all.max(1) - self.grid_min) / cs).astype(int), 0, self.dims - 1)
-        buckets = defaultdict(list)
-        for t in range(len(tri_all)):
-            for ix in range(lo[t, 0], hi[t, 0] + 1):
-                for iy in range(lo[t, 1], hi[t, 1] + 1):
-                    for iz in range(lo[t, 2], hi[t, 2] + 1):
-                        buckets[(ix * self.dims[1] + iy) * self.dims[2] + iz].append(t)
-        occ = np.array([len(v) for v in buckets.values()]) if buckets else np.array([0])
-        C = int(occ.max()) if cap is None else int(cap)
+        cell_tri, C, self.max_occ, self.overflow = bucket_by_bbox(lo, hi, self.dims, cap)
         self.C = C
-        self.max_occ = int(occ.max())
-        cell_tri = np.full((int(np.prod(self.dims)), C), -1, np.int32)
-        self.overflow = 0
-        for cid, lst in buckets.items():
-            if len(lst) > C:
-                self.overflow += len(lst) - C
-                lst = lst[:C]
-            cell_tri[cid, :len(lst)] = lst
 
         self._TRIS = jnp.asarray(tri_all, jnp.float32)
         self._VN = jnp.asarray(vn_all, jnp.float32)

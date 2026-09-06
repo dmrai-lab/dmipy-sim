@@ -17,11 +17,10 @@ magnitude cheaper than walking the equivalent triangulated tube.
 """
 from __future__ import annotations
 
-from collections import defaultdict
-
 import jax
 import jax.numpy as jnp
 from ._boundary import keep_side_radial, ray_quadric_t, specular, off_wall
+from ._grid import bucket_by_bbox
 import numpy as np
 
 from .base import Geometry, LengthScales
@@ -212,16 +211,7 @@ class PackedCurvedTubes(Geometry):
         self.dims = np.maximum(1, np.ceil((hi.max(0) + cs - self.gmin) / cs).astype(int))
         loc = np.clip(np.floor((lo - self.gmin) / cs).astype(int), 0, self.dims - 1)
         hic = np.clip(np.floor((hi - self.gmin) / cs).astype(int), 0, self.dims - 1)
-        buckets = defaultdict(list)
-        for s in range(len(A)):
-            for ix in range(loc[s, 0], hic[s, 0] + 1):
-                for iy in range(loc[s, 1], hic[s, 1] + 1):
-                    for iz in range(loc[s, 2], hic[s, 2] + 1):
-                        buckets[(ix * self.dims[1] + iy) * self.dims[2] + iz].append(s)
-        self.C = max((len(v) for v in buckets.values()), default=1)
-        cell = np.full((int(np.prod(self.dims)), self.C), -1, np.int32)
-        for cid, lst in buckets.items():
-            cell[cid, :len(lst)] = lst
+        cell, self.C, _max_occ, _overflow = bucket_by_bbox(loc, hic, self.dims, None)
         self._CELL = jnp.asarray(cell, jnp.int32)
         self._DIMS = tuple(int(x) for x in self.dims)
         self._dims_arr = jnp.asarray(self._DIMS, jnp.int32)

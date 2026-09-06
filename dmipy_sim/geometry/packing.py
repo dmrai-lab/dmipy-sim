@@ -2,6 +2,54 @@
 import numpy as np
 
 
+def _rsa_place(radii_s, L, dim, rng, max_attempts, what):
+    """Random sequential addition of ``radii_s`` (largest first) in a periodic box of side ``L``.
+
+    One uniform candidate per trial, exactly as before, so a seed gives the same packing; the
+    overlap test against every placed object is one minimum-image distance array rather than a
+    Python loop, which is what made ``pack_cylinders(N=1000)`` take half a minute.
+    """
+    n = len(radii_s)
+    centers = np.zeros((n, dim))
+    for i in range(n):
+        r_new = radii_s[i]
+        placed = False
+        placed_c = centers[:i]
+        reach = r_new + radii_s[:i]
+        for _ in range(max_attempts):
+            c_new = rng.uniform(-L / 2.0, L / 2.0, dim)
+            if i:
+                dq = c_new - placed_c
+                dq -= L * np.round(dq / L)                     # minimum image
+                if np.any(np.einsum("ij,ij->i", dq, dq) < reach * reach):
+                    continue
+            centers[i] = c_new
+            placed = True
+            break
+        if not placed:
+            raise RuntimeError(
+                f"RSA failed after {max_attempts} attempts placing {what} {i} "
+                f"(r = {r_new * 1e6:.2f} µm). The target packing fraction may exceed what RSA can "
+                f"achieve; try reducing target_vf or increasing max_attempts.")
+    return centers
+
+
+def periodic_min_gap(centers, radii, L):
+    """Smallest clear gap between any two object surfaces, and between each object and its own
+    periodic image (at distance ``L``); ``inf`` for a single object in a box wider than itself."""
+    c = np.asarray(centers, np.float64)
+    r = np.asarray(radii, np.float64)
+    n = len(r)
+    gap = float(np.min(L - 2.0 * r)) if n else float("inf")
+    if n > 1:
+        dq = c[:, None, :] - c[None, :, :]
+        dq -= L * np.round(dq / L)
+        dist = np.sqrt(np.einsum("ijk,ijk->ij", dq, dq)) - r[:, None] - r[None, :]
+        iu = np.triu_indices(n, 1)
+        gap = min(gap, float(dist[iu].min()))
+    return gap
+
+
 def pack_cylinders(radii, target_vf=None, L=None, seed=0, max_attempts=100_000):
     """Pack N parallel cylinders in a periodic 2-D square domain using RSA.
 
@@ -72,30 +120,7 @@ def pack_cylinders(radii, target_vf=None, L=None, seed=0, max_attempts=100_000):
     rng = np.random.default_rng(int(seed))
     # Place largest cylinders first — improves RSA packing fraction.
     order = np.argsort(radii)[::-1]
-    radii_s   = radii[order]
-    centers_s = np.zeros((len(radii), 2))
-
-    for i, r_new in enumerate(radii_s):
-        placed = False
-        for _ in range(max_attempts):
-            c_new = rng.uniform(-L / 2.0, L / 2.0, 2)
-            ok = True
-            for j in range(i):
-                dq = c_new - centers_s[j]
-                dq -= L * np.round(dq / L)   # minimum-image distance
-                if np.linalg.norm(dq) < r_new + radii_s[j]:
-                    ok = False
-                    break
-            if ok:
-                centers_s[i] = c_new
-                placed = True
-                break
-        if not placed:
-            raise RuntimeError(
-                f"RSA failed after {max_attempts} attempts placing cylinder {i} "
-                f"(r = {r_new * 1e6:.2f} µm).  "
-                f"The target packing fraction may exceed what RSA can achieve; "
-                f"try reducing target_vf or increasing max_attempts.")
+    centers_s = _rsa_place(radii[order], L, 2, rng, max_attempts, "cylinder")
 
     # Restore original cylinder ordering
     centers_out = np.empty_like(centers_s)
@@ -166,31 +191,7 @@ def pack_spheres(radii, target_vf=None, L=None, seed=0, max_attempts=100_000):
 
     rng = np.random.default_rng(int(seed))
     order = np.argsort(radii)[::-1]   # largest first
-    radii_s   = radii[order]
-    centers_s = np.zeros((len(radii), 3))
-
-    for i, r_new in enumerate(radii_s):
-        placed = False
-        for _ in range(max_attempts):
-            c_new = rng.uniform(-L / 2.0, L / 2.0, 3)
-            ok = True
-            for j in range(i):
-                dq = c_new - centers_s[j]
-                dq -= L * np.round(dq / L)   # minimum-image
-                if np.linalg.norm(dq) < r_new + radii_s[j]:
-                    ok = False
-                    break
-            if ok:
-                centers_s[i] = c_new
-                placed = True
-                break
-        if not placed:
-            raise RuntimeError(
-                f"RSA failed after {max_attempts} attempts placing sphere {i} "
-                f"(r = {r_new * 1e6:.2f} µm).  "
-                f"The target packing fraction may exceed what RSA can achieve "
-                f"(monodisperse RSA limit ≈ 0.38); try reducing target_vf or "
-                f"increasing max_attempts.")
+    centers_s = _rsa_place(radii[order], L, 3, rng, max_attempts, "sphere")
 
     centers_out = np.empty_like(centers_s)
     centers_out[order] = centers_s
@@ -244,27 +245,7 @@ def pack_myelinated_cylinders(inner_radii, g_ratios, target_packing,
 
     rng = np.random.default_rng(int(seed))
     order = np.argsort(outer_radii)[::-1]   # place largest first
-    outer_s = outer_radii[order]
-    centers_s = np.zeros((N, 2))
-
-    for i, r_out in enumerate(outer_s):
-        placed = False
-        for _ in range(max_attempts):
-            c = rng.uniform(-L / 2.0, L / 2.0, 2)
-            ok = True
-            for j in range(i):
-                dq = c - centers_s[j]
-                dq -= L * np.round(dq / L)
-                if np.linalg.norm(dq) < r_out + outer_s[j]:
-                    ok = False
-                    break
-            if ok:
-                centers_s[i] = c
-                placed = True
-                break
-        if not placed:
-            raise RuntimeError(
-                f"RSA failed after {max_attempts} attempts placing cylinder {i}.")
+    centers_s = _rsa_place(outer_radii[order], L, 2, rng, max_attempts, "myelinated cylinder")
 
     centers_out = np.empty_like(centers_s)
     centers_out[order] = centers_s
