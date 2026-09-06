@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import numpy as np
 
+from ..waveforms import apply_rf_schedule
+
 from ..math.gradient_conversions import g_from_b, q_from_b
 from ..constants import GAMMA, DEFAULT_SLEW_RATE, resolve_slew as _resolve_slew
 from ._helpers import (
@@ -178,6 +180,7 @@ class Sequence:
         t_180 = float(np.mean(Delta_ + delta_ + eps_)) / 2.0
         seq.rf_events = [{'t_s': 0.0, 'label': 'Mz→Mxy', 'flip_deg': 90},
                          {'t_s': t_180, 'label': 'refocus', 'flip_deg': 180}]
+        apply_rf_schedule(seq)
         seq._carry(sequence_type='pgse', _minimum_te=T_total, _te_auto=te_auto,
                    _refocus_gap=float(np.min(Delta_ - delta_ - eps_)),
                    _effective_gradient=True)
@@ -224,10 +227,10 @@ class Sequence:
         seq = cls(G_arr, dt, bvalues, gradient_directions, qvals,
                   gstr, delta_lobe, Delta_lobe, TE_)
         # echo k forms at the end of its interval; the 180s sit at (k + 1/2) TE
-        seq.echo_indices = (np.arange(1, n_echoes + 1) * n_t_per_echo - 1).astype(int)
         seq.rf_events = ([{'t_s': 0.0, 'label': 'Mz→Mxy', 'flip_deg': 90}] +
                          [{'t_s': (k + 0.5) * TE_echo, 'label': 'refocus', 'flip_deg': 180}
                           for k in range(n_echoes)])
+        apply_rf_schedule(seq)
         seq._carry(sequence_type='cpmg', refocused=True, cpmg_n_echoes=n_echoes,
                    cpmg_TE=TE_echo, cpmg_beta_deg=float(beta_deg),
                    n_t_per_echo=int(n_t_per_echo))

@@ -70,7 +70,7 @@ def test_sequence_carries_the_waveform_readout_protocol():
     assert [e["flip_deg"] for e in seq.rf_events] == [90, 180]
     assert abs(seq.rf_events[1]["t_s"] - (DELTA + DELTA_BIG) / 2.0) < 1e-3     # midway, up to the ramp
     cp = S.cpmg(4, 20e-3, bvalues=1e9, n_t_per_echo=50)
-    assert list(cp.echo_indices) == [49, 99, 149, 199]
+    assert list(cp.echo_indices) == [50, 100, 150, 199]      # k*TE on the grid; the last clipped to n_t-1
     assert [e["flip_deg"] for e in cp.rf_events] == [90, 180, 180, 180, 180]
     G, dt = seq.to_gradient_array(n_t=N_T)
     sq = S.pgse(B, DIRS, DELTA, DELTA_BIG, n_t=N_T, slew_rate=np.inf)
