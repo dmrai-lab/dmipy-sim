@@ -109,7 +109,7 @@ acquisition; assert to `max(0.02, 1/√N)`.
 
 ## Geometry contract (duck-typed by `simulate`/`make_step_fn`)
 
-A geometry subclasses `geometry.base.Geometry` and provides `init_positions(n, key)`,
+A geometry subclasses `geometry.base.Geometry` and provides `init_positions(n, key)` (seeding the pool it declares: `Mesh(..., pool="intra"|"extra")`, `MultiShellCurvedTube(..., pool=)`; the old `intra=`/`shell=` seeding flags warn),
 `classify_position(r)` (compartment tag), `length_scales` (a `LengthScales` tuple:
 `min_feature`, `surface_pore`, `lookup_cell`, `is_mesh_feature`, `min_gap` — what the sub-step
 rules divide; read it via `physics.length_scales_of`, never by probing `radius`/`cell_size`),

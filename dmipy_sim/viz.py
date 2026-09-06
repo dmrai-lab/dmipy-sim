@@ -537,7 +537,7 @@ def seed_in_cell(cell, n_walkers, seed=0):
     return np.concatenate(out)[:n_walkers]
 
 
-def walk_paths(mesh, n_walkers, n_steps, diffusivity, dt, seed=0, intra=True, r0=None):
+def walk_paths(mesh, n_walkers, n_steps, diffusivity, dt, seed=0, pool=None, r0=None, intra=None):
     """Record plain reflecting random-walk paths for visualisation.
 
     A diffusion-only walk (no gradient, no phase) that just steps the geometry's
@@ -551,7 +551,7 @@ def walk_paths(mesh, n_walkers, n_steps, diffusivity, dt, seed=0, intra=True, r0
     key = jax.random.PRNGKey(seed)
     k0, kw = jax.random.split(key)
     if r0 is None:
-        r0 = mesh.init_positions(n_walkers, k0, intra=intra)
+        r0 = mesh.init_positions(n_walkers, k0, pool=pool, intra=intra)
     else:
         r0 = jnp.asarray(r0, jnp.float32)
     step_l = jnp.float32(np.sqrt(6.0 * diffusivity * dt))

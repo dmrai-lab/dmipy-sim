@@ -110,7 +110,7 @@ def test_seeding_fills_the_lumen_rather_than_hugging_the_wall():
     V, F, tri = _thick_finely_meshed_tube()
     mesh, _, _ = _mesh_for(V, F)
 
-    pts = np.asarray(mesh.init_positions(1500, jax.random.PRNGKey(3), intra=True), float)
+    pts = np.asarray(mesh.init_positions(1500, jax.random.PRNGKey(3), pool="intra"), float)
     # exact, not "mostly": seeding decides containment by ray parity, so a seed outside is a bug
     assert contains(tri, pts).all(), (
         f"{100*(~contains(tri, pts)).mean():.2f}% of the intra pool is outside the tube")
@@ -129,7 +129,7 @@ def test_exterior_seeding_does_not_swallow_the_interior():
     V, F, tri = _thick_finely_meshed_tube()
     mesh, _, _ = _mesh_for(V, F)
 
-    pts = np.asarray(mesh.init_positions(1500, jax.random.PRNGKey(4), intra=False), float)
+    pts = np.asarray(mesh.init_positions(1500, jax.random.PRNGKey(4), pool="extra"), float)
     assert not contains(tri, pts).any(), (
         f"{100*contains(tri, pts).mean():.1f}% of the exterior pool is actually inside the tube")
 
@@ -148,7 +148,7 @@ def test_seeding_is_exact_at_every_grid_resolution():
     for subdivisions in (0, 1, 2):
         V, F, tri = _thick_finely_meshed_tube(height=24.0, subdivisions=subdivisions)
         mesh, _, _ = _mesh_for(V, F)
-        pts = np.asarray(mesh.init_positions(600, jax.random.PRNGKey(5), intra=True), float)
+        pts = np.asarray(mesh.init_positions(600, jax.random.PRNGKey(5), pool="intra"), float)
         outside = ~contains(tri, pts)
         assert not outside.any(), (
             f"subdivision {subdivisions} ({len(F)} triangles): {100*outside.mean():.2f}% of the intra "
