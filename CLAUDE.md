@@ -17,6 +17,10 @@ signals. Any refactor/backend change is fine as long as the suite stays green.
 
 ## Environment & GPU
 
+Progress and diagnostics go to the `dmipy_sim.*` loggers (`logging.getLogger("dmipy_sim")`; silent unless you configure
+logging), never `print`. Warning categories: a physics-regime warning is a `UserWarning`, an environment / GPU / OOM warning a
+`RuntimeWarning`, a retired spelling a `DeprecationWarning`.
+
 Install: `pip install -e ".[dev]"` (add `[mesh]` for PLY loading, `[cuda12]` for GPU).
 Large Monte-Carlo runs belong on GPU; use `float32` on GPU. If a CUDA jaxlib is
 installed but `jax.devices()` shows only CPU, the loader path is usually missing —

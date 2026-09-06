@@ -13,6 +13,9 @@ Signal = mean(cos(phi) * exp(log_w)) over walkers.
 import jax
 import jax.numpy as jnp
 import numpy as np
+import logging
+
+log = logging.getLogger(__name__)
 
 from .physics import (make_step_fn, make_myelin_step_fn, make_packed_myelin_step_fn,
                       make_packed_myelin_traj_step_fn)
@@ -621,8 +624,8 @@ def _simulate_in_walker_batches(n_walkers, walker_batch_size, *, seed,
         start = b * walker_batch_size
         end = min(start + walker_batch_size, n_walkers)
         nb = end - start
-        print(f"  simulate: walkers {start}–{end - 1} "
-              f"({int(100 * end / n_walkers)}%)...", flush=True)
+        log.info(f"  simulate: walkers {start}–{end - 1} "
+              f"({int(100 * end / n_walkers)}%)...")
         out = simulate(
             n_walkers=nb, diffusivity=diffusivity, waveform=waveform,
             geometry=geometry, seed=seed + 1 + b, T2=T2, T1=T1,
@@ -756,8 +759,8 @@ def simulate_cpmg(n_walkers, diffusivity, waveform, geometry, *,
         for b in range(n_batches):
             start = b * walker_batch_size
             nb = min(walker_batch_size, n_walkers - start)
-            print(f"  simulate_cpmg: walkers {start}–{start + nb - 1} "
-                  f"({int(100 * (start + nb) / n_walkers)}%)...", flush=True)
+            log.info(f"  simulate_cpmg: walkers {start}–{start + nb - 1} "
+                  f"({int(100 * (start + nb) / n_walkers)}%)...")
             s = simulate_cpmg(nb, diffusivity, waveform, geometry, T2=T2,
                               seed=seed + 1 + b, walker_batch_size=None,
                               require_gpu=False)
@@ -925,10 +928,9 @@ def simulate_trajectories(
     from .physics import _warn_if_step_outruns_the_lookup as _warn_step
     _warn_step(geometry, diffusivity, dt_actual, sub_steps, "trajectory walk")
 
-    print(f"  sub_steps={sub_steps}, dt_sim={dt_sim*1e6:.3f} µs, "
+    log.info(f"  sub_steps={sub_steps}, dt_sim={dt_sim*1e6:.3f} µs, "
           f"step_l={float(step_l_sim)*1e6:.4f} µm"
-          + (f", step_l/R={float(step_l_sim)/float(R_geom):.4f}" if R_geom else ""),
-          flush=True)
+          + (f", step_l/R={float(step_l_sim)/float(R_geom):.4f}" if R_geom else ""))
 
     # ── Reject geometries whose boundaries this path cannot represent ────────
     # A multi-compartment geometry is stepped by a fused kernel that CARRIES the compartment
@@ -1276,7 +1278,7 @@ def simulate_trajectories(
                     break
                 _occ_prev = _occ
             r0_all, walker_keys_all, comp0_all, brem0_all = _r, _k, _c, _brem
-            print(f"  [mt] equilibrate 'burnin': <bound>={_occ_prev:.4f}", flush=True)
+            log.info(f"  [mt] equilibrate 'burnin': <bound>={_occ_prev:.4f}")
             if not _converged:
                 import warnings
                 warnings.warn("equilibrate_binding: bound occupancy did not plateau within "
@@ -1355,7 +1357,7 @@ def simulate_trajectories(
         end = min(start + walker_batch_size, n_walkers)
         batch_size = end - start
         pct = int(100 * end / n_walkers)
-        print(f"  Simulating walkers {start}–{end - 1} ({pct}% done)...", flush=True)
+        log.info(f"  Simulating walkers {start}–{end - 1} ({pct}% done)...")
 
         current_r0 = r0_all[start:end]
         current_keys = walker_keys_all[start:end]
@@ -1410,7 +1412,7 @@ def simulate_trajectories(
                     new_sub_batch = batch_size // 2
                     if new_sub_batch < 1000:
                         raise RuntimeError(f"Batch size too small after OOM: {e}") from e
-                    print(f"  OOM: halving sub-batch to {new_sub_batch}", flush=True)
+                    log.info(f"  OOM: halving sub-batch to {new_sub_batch}")
                     sub_pos_list = []
                     sub_dlog_list = [] if save_relaxation_data else None
                     sub_comp_list = [] if save_relaxation_data else None

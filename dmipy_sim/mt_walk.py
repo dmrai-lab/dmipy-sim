@@ -31,6 +31,9 @@ Targets closed analytic geometries with ``reflect_with_log_weight`` (Sphere,
 Cylinder, Box1D, Ellipsoid) and Mesh (via ``reflect_with_binding`` when present).
 """
 from __future__ import annotations
+import logging
+
+log = logging.getLogger(__name__)
 
 import numpy as np
 import jax
@@ -134,10 +137,9 @@ def simulate_mt_trajectories(
     dt_sim = dt_actual / sub_steps
     step_l = jnp.float32(jnp.sqrt(6.0 * diffusivity * dt_sim))
 
-    print(f"  [mt] sub_steps={sub_steps}, dt_sim={dt_sim*1e6:.3f} us, "
+    log.info(f"  [mt] sub_steps={sub_steps}, dt_sim={dt_sim*1e6:.3f} us, "
           f"step_l={float(step_l)*1e6:.4f} um"
-          + (f", step_l/R={float(step_l)/float(R_geom):.4f}" if R_geom else ""),
-          flush=True)
+          + (f", step_l/R={float(step_l)/float(R_geom):.4f}" if R_geom else ""))
 
     kappa_over_D = jnp.float32(float(kappa_MT) / float(diffusivity))
     dwell_steps_mean = (jnp.float32(float(dwell_time) / dt_sim) if dwell_time > 0
@@ -250,8 +252,8 @@ def simulate_mt_trajectories(
                 return r, keys, brem, jnp.mean(bf)
             r0_all, walker_keys, brem0, occ, converged = _mt.equilibrate_burnin_plateau(
                 _chunk_fn, r0_all, walker_keys, brem0)
-            print(f"  [mt] equilibrate '{mode}': <bound>={occ:.4f} "
-                  + (f"(f_b={P_eq:.4f})" if P_eq is not None else ""), flush=True)
+            log.info(f"  [mt] equilibrate '{mode}': <bound>={occ:.4f} "
+                  + (f"(f_b={P_eq:.4f})" if P_eq is not None else ""))
             if not converged:
                 import warnings
                 warnings.warn("equilibrate_binding: bound occupancy did not plateau within "

@@ -19,6 +19,9 @@ per-walker susceptibility-basis channel and its ``Q(H)`` contraction (a separate
 assembled here yet.
 """
 from __future__ import annotations
+import logging
+
+log = logging.getLogger(__name__)
 
 import numpy as np
 
@@ -617,16 +620,16 @@ def _select_boundary_codec(m, dlog, env, tol, dtype, verbose=False):
         cands.append((nb, K, a, mm, cf))
         if cf is not None and cf["err"] <= tol * cf["floor"]:
             if verbose:
-                print(f"[bank] C2 codec: boundary_dct K={K} {np.dtype(dtype).name} "
-                      f"({nb:.0f} B/walker, err={cf['err']:.2e} vs floor {cf['floor']:.2e})", flush=True)
+                log.info(f"[bank] C2 codec: boundary_dct K={K} {np.dtype(dtype).name} "
+                      f"({nb:.0f} B/walker, err={cf['err']:.2e} vs floor {cf['floor']:.2e})")
             return a, mm
     a, mm = _cx.encode_boundary_local_time(dlog)
     if verbose:
         nb = sum(int(np.asarray(v).nbytes) for v in a.values()) / max(len(dlog), 1)
         best = min(cands, key=lambda c: (c[4] or {}).get("err", np.inf))
-        print(f"[bank] C2 codec: no DCT K passed the surface gate (best K={best[1]} "
+        log.info(f"[bank] C2 codec: no DCT K passed the surface gate (best K={best[1]} "
               f"err={(best[4] or {}).get('err', float('nan')):.2e}); using exact sparse "
-              f"({nb:.0f} B/walker)", flush=True)
+              f"({nb:.0f} B/walker)")
     return a, mm
 
 
@@ -867,8 +870,8 @@ def build_replay_pack(src, *, id, method=_cx.POSITION_METHOD, envelope=None, tol
     if out_path is not None:
         write_rpk(out_path, {k: v for k, v in arrays.items() if v is not None}, meta)
     if verbose:
-        print(f"[pack] {id} method={method} K={K} err={fid['err_max']:.4f} "
-              f"floor={fid['floor_max']:.4f} within2x={fid['within_2x_floor']}", flush=True)
+        log.info(f"[pack] {id} method={method} K={K} err={fid['err_max']:.4f} "
+              f"floor={fid['floor_max']:.4f} within2x={fid['within_2x_floor']}")
     return pack
 
 
@@ -887,16 +890,16 @@ def build_to_floor(make_model, *, id, envelope=None, sigma_star=1e-3, pilot_n=80
     f0 = _measure_floor(_walk(make_model(pilot_n)), env)
     n_star = int(min(max_n, max(pilot_n, round(pilot_n * (f0 / sigma_star) ** 2 * safety))))
     if verbose:
-        print(f"[floor-target] pilot N={pilot_n}: floor={f0:.4g}; sigma*={sigma_star:.4g} -> N*~{n_star}", flush=True)
+        log.info(f"[floor-target] pilot N={pilot_n}: floor={f0:.4g}; sigma*={sigma_star:.4g} -> N*~{n_star}")
     model = make_model(n_star); f = _measure_floor(_walk(model), env)
     if f > sigma_star and n_star < max_n:            # undershoot -> one re-estimate/top-up
         n_star = int(min(max_n, round(n_star * (f / sigma_star) ** 2 * safety)))
         if verbose:
-            print(f"[floor-target] floor={f:.4g} > sigma*; topping up to N*={n_star}", flush=True)
+            log.info(f"[floor-target] floor={f:.4g} > sigma*; topping up to N*={n_star}")
         model = make_model(n_star); f = _measure_floor(_walk(model), env)
     if verbose:
-        print(f"[floor-target] N={n_star}: achieved floor={f:.4g} "
-              f"({'<=' if f <= sigma_star else '>'} sigma*)", flush=True)
+        log.info(f"[floor-target] N={n_star}: achieved floor={f:.4g} "
+              f"({'<=' if f <= sigma_star else '>'} sigma*)")
     # build_replay_pack normalises the raw model itself (idempotent if already a master dict)
     return build_replay_pack(model, id=id, envelope=env, method=method,
                              err_target=sigma_star, sigma_star=sigma_star, verbose=verbose, **bp)

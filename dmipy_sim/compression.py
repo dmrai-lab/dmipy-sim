@@ -38,6 +38,9 @@ Ported from the private replay-pack pipeline; the fidelity scorer here is self-c
 numpy (phase integral + separable log-weights) so this module depends only on numpy+scipy.
 """
 from __future__ import annotations
+import logging
+
+log = logging.getLogger(__name__)
 
 import numpy as np
 
@@ -643,8 +646,8 @@ def auto_select_modes(X, traj, dt_traj, method=POSITION_METHOD, env=None, tol=2.
         pos = decode(arrays, meta, n_walkers=(X.shape[0] if is_walker_preserving(method) else None))
         fid = measure_fidelity(traj, dt_traj, pos, env, w=w, logw=logw)
         if verbose:
-            print(f"  K={K}: err={fid['err_max']:.4f} floor={fid['floor_max']:.4f} "
-                  f"{'OK' if fid['within_2x_floor'] else '>'}", flush=True)
+            log.info(f"  K={K}: err={fid['err_max']:.4f} floor={fid['floor_max']:.4f} "
+                  f"{'OK' if fid['within_2x_floor'] else '>'}")
         best = (K, fid)
         thresh = err_target if err_target is not None else tol * fid["floor_max"]
         if fid["err_max"] <= thresh:
