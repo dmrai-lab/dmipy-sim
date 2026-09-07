@@ -323,6 +323,8 @@ def simulate(
         - shape (n_walkers, n_timesteps) when return_compartments='full'.
         Only returned when return_compartments is not False.
     """
+    from ..spec.build import as_geometry
+    geometry = as_geometry(geometry)               # a spec, a spec file or a dict is a substrate too
     if return_compartments not in (False, 'final', 'full'):
         raise ValueError(
             "return_compartments must be False, 'final', or 'full'; "
@@ -740,6 +742,8 @@ def simulate_cpmg(n_walkers, diffusivity, waveform, geometry, *,
     signals : np.ndarray, shape (n_echoes, n_measurements), float32
         Signal at each echo (echo k = k·TE), one column per gradient direction.
     """
+    from ..spec.build import as_geometry
+    geometry = as_geometry(geometry)               # a spec, a spec file or a dict is a substrate too
     from .gpu import check_gpu
     check_gpu(n_walkers, require_gpu, what="simulate_cpmg")
 
@@ -915,6 +919,8 @@ def simulate_trajectories(
         steps. With ``compress=K`` a compressed master dict is returned instead (see
         :func:`trajectories.replay`).
     """
+    from ..spec.build import as_geometry
+    geometry = as_geometry(geometry)               # a spec, a spec file or a dict is a substrate too
     # GPU guard — never silently fall back to CPU for a heavy walk (CLAUDE rule).
     from .gpu import check_gpu
     check_gpu(n_walkers, require_gpu, what="simulate_trajectories")

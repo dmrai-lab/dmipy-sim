@@ -297,6 +297,23 @@ def polyline_arrays(surface):
     return [np.asarray(s.centerline, float)], np.asarray([s.radius], float)
 
 
+def as_geometry(substrate):
+    """The geometry a driver walks, from any spelling of a substrate: a ``Geometry`` (returned as is), a
+    :class:`SubstrateSpec`, a spec dict, or the path of a ``.sub.json``. ``None`` and duck-typed objects pass
+    through untouched."""
+    import os
+    if substrate is None:
+        return None
+    if isinstance(substrate, SubstrateSpec):
+        return geometry_from_spec(substrate)
+    if isinstance(substrate, dict) and "walls" in substrate and "pools" in substrate:
+        return geometry_from_spec(substrate)
+    if isinstance(substrate, (str, os.PathLike)):
+        from .substrate import load_spec
+        return geometry_from_spec(load_spec(substrate))
+    return substrate
+
+
 def geometry_from_spec(spec):
     """The geometry a :class:`SubstrateSpec` describes (inverse of :func:`spec_of`); it keeps the spec it was built
     from as its ``.spec``, nominal values and provenance included."""

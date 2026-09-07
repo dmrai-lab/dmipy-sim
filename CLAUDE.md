@@ -62,6 +62,9 @@ wf   = set_b(pgse(delta=0.01, DELTA=0.04, G_magnitude=0.2, bvecs=[[1,0,0]], n_t=
 geom = Cylinder(radius=5e-6, orientation=(0,0,1))
 sig  = simulate(n_walkers=100_000, diffusivity=2e-9, waveform=wf, geometry=geom, seed=0)
 ```
+`geometry=` on every driver (`simulate`, `simulate_cpmg`, `simulate_trajectories`, `simulate_bloch`,
+`simulate_mt_trajectories`) also takes a `SubstrateSpec`, its dict or a `.sub.json` path (`spec.as_geometry`);
+`geom.spec` writes out what the constructor left implicit.
 
 **Surface relaxivity / permeability** — substrate properties baked into the walk (one walk
 per ρ/κ):

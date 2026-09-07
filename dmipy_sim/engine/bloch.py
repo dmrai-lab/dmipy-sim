@@ -289,6 +289,8 @@ def simulate_bloch(n_walkers, diffusivity, waveform, geometry, rf_events, *,
         (or ``(n_meas, n_echo)`` when ``echo_steps`` is given), optionally with
         ``Mz`` appended when ``return_mz``.
     """
+    from ..spec.build import as_geometry
+    geometry = as_geometry(geometry)               # a spec, a spec file or a dict is a substrate too
     if require_gpu and not gpu_available():
         raise RuntimeError("simulate_bloch(require_gpu=True) but no CUDA device is "
                            "visible to JAX.")

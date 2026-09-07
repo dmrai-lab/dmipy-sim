@@ -70,6 +70,14 @@ class PersistentWalk:
     weights: Optional[np.ndarray] = field(default=None, compare=False, repr=False)
     field_grid: object = field(default=None, compare=False, repr=False)
 
+    def __post_init__(self):
+        # a walk always knows the situation it was walked in: the spec it was driven by, else its geometry's
+        if self.spec is None and self.geometry is not None:
+            try:
+                object.__setattr__(self, "spec", self.geometry.spec)
+            except Exception:                       # a duck-typed geometry with no spec spelling
+                pass
+
     @property
     def n_walkers(self):
         return int(self.positions.shape[0])
