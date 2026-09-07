@@ -624,7 +624,7 @@ def _walk_master(walk, *, compartments=None, weights=None, field=None, diffusivi
     if field == "auto":
         field = None
         if geometry is not None and type(geometry).__name__ in ("MyelinatedCylinder", "PackedMyelinatedCylinders"):
-            field = field_grid_of(geometry, include_aniso=True)      # chi_aniso stays a replay knob
+            field = field_grid_of(geometry)                          # geometry only; chi is a replay knob
     elif field is False:
         field = None
     extra = {}
@@ -655,10 +655,9 @@ def _walk_master(walk, *, compartments=None, weights=None, field=None, diffusivi
         extra["w"] = w
     if field is not None:
         if not isinstance(field, FieldGrid):
-            raise TypeError("field must be a fields.susceptibility_field.FieldGrid (basis, origin, chi_iso, "
-                            f"delta_chi_a), got {type(field).__name__}")
-        extra.update(susc_field_basis=field.basis, susc_grid_origin=np.asarray(field.origin, float),
-                     susc_chi_iso=float(field.chi_iso), delta_chi_a=float(field.delta_chi_a))
+            raise TypeError("field must be a fields.susceptibility_field.FieldGrid (basis, origin), got "
+                            f"{type(field).__name__}")
+        extra.update(susc_field_basis=field.basis, susc_grid_origin=np.asarray(field.origin, float))
     if diffusivity is not None:
         extra["D_intra"] = float(diffusivity)
     if substrate_frame is not None:
@@ -749,7 +748,7 @@ def build_replay_pack(walk, *, id, license, citation, compartments=None, weights
             origin=np.asarray(m["susc_grid_origin"], float).tolist(),
             voxel_size=np.asarray(fb["voxel_size"], float).tolist(),
             shape=[int(s) for s in fb["shape"]], has_aniso=(fb.get("aniso_G") is not None),
-            chi_iso=(m.get("susc_chi_iso")), delta_chi_a=(m.get("delta_chi_a")),
+            reference_chi_iso=(m.get("susc_chi_iso")), reference_delta_chi_a=(m.get("delta_chi_a")),
             arrays_in_pack=bool(_grid_in_pack),
             replay_route=("grid+path" if (_grid_in_pack and susc_path_K)
                           else ("path" if susc_path_K else "grid")))

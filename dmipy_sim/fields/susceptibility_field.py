@@ -62,18 +62,16 @@ class FieldGrid(NamedTuple):
 
     ``basis`` is the geometry-only field basis (:func:`field_basis` / :func:`mesh_field_basis`:
     ``iso_local``, ``iso_P``, optional ``aniso_G``, ``shape``, ``voxel_size``) from which
-    :func:`assemble_field` builds the field for any (B0 direction, B0, chi); ``origin`` is the
-    world position of voxel (0, 0, 0); ``chi_iso`` and ``delta_chi_a`` are the susceptibility the
-    substrate was built with, recorded as the pack's nominal values.
+    :func:`assemble_field` builds the field for any (B0 direction, B0, chi_iso, chi_aniso) at
+    replay; ``origin`` is the world position of voxel (0, 0, 0). No susceptibility value lives here:
+    the grid is the substrate's shape, the field is a replay knob.
     """
     basis: dict
     origin: np.ndarray
-    chi_iso: float
-    delta_chi_a: float = 0.0
 
 
-def field_grid_of(geometry, *, res=0.1e-6, chi_iso=0.0, delta_chi_a=0.0, include_aniso=None,
-                  box=None, margin=None, n_z=4, mask_supersample=4, kspace_lowpass=0.5):
+def field_grid_of(geometry, *, res=0.1e-6, include_aniso=True, box=None, margin=None, n_z=4,
+                  mask_supersample=4, kspace_lowpass=0.5):
     """The :class:`FieldGrid` of an analytic myelinated substrate, for a pack's field tier.
 
     Rasterises the sheath of a :class:`~dmipy_sim.geometry.MyelinatedCylinder` or
@@ -87,7 +85,8 @@ def field_grid_of(geometry, *, res=0.1e-6, chi_iso=0.0, delta_chi_a=0.0, include
     the images are exact), or ``box = (lo, hi)`` (2-vectors, metres) for a single cylinder, default
     ``margin`` (default ``4 * outer_radius``) beyond the sheath; the field is invariant along the
     axis, so ``n_z`` voxels carry it (periodic in z). The basis is in the geometry frame (axis = z):
-    give ``b0_dir`` at replay in that frame.
+    give ``b0_dir`` at replay in that frame. ``include_aniso`` (default True) adds the six anisotropic
+    grids so ``chi_aniso`` can be applied at replay; False halves the work for an isotropic-only pack.
     """
     from ..geometry.myelin import MyelinatedCylinder, PackedMyelinatedCylinders
     if isinstance(geometry, MyelinatedCylinder):
@@ -110,8 +109,6 @@ def field_grid_of(geometry, *, res=0.1e-6, chi_iso=0.0, delta_chi_a=0.0, include
     else:
         raise TypeError(f"field_grid_of takes a MyelinatedCylinder or PackedMyelinatedCylinders, got "
                         f"{type(geometry).__name__}; a mesh substrate uses mesh_field_basis")
-    if include_aniso is None:
-        include_aniso = float(delta_chi_a) != 0.0
     side = hi - lo
     n_xy = np.maximum(2, np.round(side / res).astype(int))
     vs_xy = side / n_xy
@@ -141,7 +138,7 @@ def field_grid_of(geometry, *, res=0.1e-6, chi_iso=0.0, delta_chi_a=0.0, include
     basis = field_basis(mask, radial, vs, include_aniso=bool(include_aniso),
                         kspace_lowpass=(None if periodic else kspace_lowpass))
     origin = np.array([lo[0], lo[1], -0.5 * int(n_z) * vs[2]])
-    return FieldGrid(basis, origin, float(chi_iso), float(delta_chi_a))
+    return FieldGrid(basis, origin)
 
 def _unit(v, axis=-1, eps=1e-30):
     v = np.asarray(v, float)
