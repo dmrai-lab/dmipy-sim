@@ -626,14 +626,26 @@ def mesh_contains(V, F, pts, *, method="grid", prefilter=False, chunk=2_000_000)
 def mesh_field_basis(inner, outer, box_min, box_max, *, res=0.1e-6, include_aniso=True,
                      mask_supersample=2, kspace_lowpass=0.5, clip_axis=2):
     """Geometry-only myelin susceptibility field basis on a voxel grid, from inner (axonal) and
-    outer (myelin) surface meshes ``(V, F)`` (metres).
+    outer (myelin) surface meshes ``(V, F)`` (metres): :func:`predicate_field_basis` with
+    :func:`mesh_inside` as the two membership tests."""
+    return predicate_field_basis(lambda q: mesh_inside(inner[0], inner[1], q, clip_axis=clip_axis),
+                                 lambda q: mesh_inside(outer[0], outer[1], q, clip_axis=clip_axis),
+                                 box_min, box_max, res=res, include_aniso=include_aniso,
+                                 mask_supersample=mask_supersample, kspace_lowpass=kspace_lowpass)
 
-    Voxelises the myelin shell (inside outer, outside inner) via :meth:`Mesh.classify_position`
-    and derives the per-voxel radial director from the signed distance to the inner surface, then
-    calls :func:`field_basis`. ``mask_supersample`` (default 2) gives a partial-volume occupancy in
-    ``[0,1]`` at the sheath boundary — essential because the dipole kernel ``k̂ᵢk̂ⱼ`` does not decay
-    with ``|k|`` so a hard binary edge rings into the interior. Returns ``(basis, origin, voxel_size)``
-    with ``origin`` = box corner (the :func:`sample_grid` convention)."""
+
+def predicate_field_basis(inside_inner, inside_outer, box_min, box_max, *, res=0.1e-6, include_aniso=True,
+                          mask_supersample=2, kspace_lowpass=0.5):
+    """Geometry-only myelin susceptibility field basis on a voxel grid from two membership tests on
+    points (metres): ``inside_inner`` (the axon) and ``inside_outer`` (the sheath's outer surface); any
+    surface family that can answer "is this point inside" (a mesh, a sphere union, a strand pack).
+
+    Voxelises the shell (inside outer, outside inner) and derives the per-voxel radial director from the
+    signed distance to the inner surface (or to the shell itself when ``inside_inner`` is ``None``: a
+    solid source), then calls :func:`field_basis`. ``mask_supersample`` (default 2) gives a
+    partial-volume occupancy in ``[0,1]`` at the boundary — essential because the dipole kernel
+    ``k̂ᵢk̂ⱼ`` does not decay with ``|k|`` so a hard binary edge rings into the interior. Returns
+    ``(basis, origin, voxel_size)`` with ``origin`` = box corner (the :func:`sample_grid` convention)."""
     from scipy import ndimage
 
     box_min = np.asarray(box_min, float); box_max = np.asarray(box_max, float)
@@ -644,8 +656,8 @@ def mesh_field_basis(inner, outer, box_min, box_max, *, res=0.1e-6, include_anis
     XX, YY, ZZ = np.meshgrid(*axes, indexing="ij")
     pts = np.stack([XX.ravel(), YY.ravel(), ZZ.ravel()], axis=1)
 
-    in_in = mesh_inside(inner[0], inner[1], pts, clip_axis=clip_axis).reshape(N)   # for the SDF/director
-    in_out = mesh_inside(outer[0], outer[1], pts, clip_axis=clip_axis).reshape(N)
+    in_in = (inside_inner(pts) if inside_inner is not None else np.zeros(len(pts), bool)).reshape(N)   # SDF/director
+    in_out = np.asarray(inside_outer(pts), bool).reshape(N)
     binary = (in_out & ~in_in)
     SS = max(1, int(mask_supersample))
     if SS == 1:
@@ -666,11 +678,11 @@ def mesh_field_basis(inner, outer, box_min, box_max, *, res=0.1e-6, include_anis
             off = np.stack([ox.ravel(), oy.ravel(), oz.ravel()], axis=1)      # (SS^3, 3)
             base = pts[ei]                                                    # (n_edge, 3) voxel centres
             q = (base[:, None, :] + off[None, :, :]).reshape(-1, 3)
-            occ = (mesh_inside(outer[0], outer[1], q, clip_axis=clip_axis)
-                   & ~mesh_inside(inner[0], inner[1], q, clip_axis=clip_axis))
+            occ = np.asarray(inside_outer(q), bool) & ~(inside_inner(q) if inside_inner is not None else np.zeros(len(q), bool))
             myelin_mask.ravel()[ei] = occ.reshape(len(ei), -1).mean(axis=1)
-    sdf = (ndimage.distance_transform_edt(~in_in, sampling=tuple(vs))
-           - ndimage.distance_transform_edt(in_in, sampling=tuple(vs)))
+    ref = in_in if inside_inner is not None else in_out
+    sdf = (ndimage.distance_transform_edt(~ref, sampling=tuple(vs))
+           - ndimage.distance_transform_edt(ref, sampling=tuple(vs)))
     radial_dir = radial_from_sdf(sdf, vs)
     basis = field_basis(myelin_mask, radial_dir, vs, include_aniso=include_aniso,
                         kspace_lowpass=kspace_lowpass)

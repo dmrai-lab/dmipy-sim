@@ -81,6 +81,11 @@ everywhere: 0 extra-cellular, 1 intra (the lumen / inside a closed surface), 2 m
 | myelinated | `MyelinatedCylinder`, `PackedMyelinatedCylinders` — three pools, two walls |
 | curved fibres | `CurvedTube`, `MultiShellCurvedTube`, `PackedCurvedTubes` — sphere-swept polylines |
 | meshes | `Mesh` / `Mesh.from_ply` — any closed or 3-D-periodic triangle mesh, grid-accelerated |
+| sphere-grown cells | `SphereUnion` — the outer boundary of a union of overlapping spheres (CATERPillar), no meshing |
+
+Datasets enter as **specs**: `spec.cactus_spec(run_dir)`, `spec.winther_spec(inner, outer)`,
+`spec.caterpillar_spec(csv)`, `spec.strands_spec(txt)` / `spec.disco_spec(txt)` read the files and write down
+domain, pools, walls and seeding; `walk_spec(spec, ...)` walks them pool by pool and the pack embeds the spec.
 
 Wall and pool properties are set on the geometry and baked into the walk:
 

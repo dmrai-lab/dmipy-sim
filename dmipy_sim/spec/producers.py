@@ -1,4 +1,5 @@
-"""Spec producers for the mesh datasets: they emit a :class:`SubstrateSpec` and construct nothing.
+"""Spec producers for the datasets: they emit a :class:`SubstrateSpec` and construct nothing. Mesh runs (CACTUS,
+Winther), sphere-grown cells (CATERPillar) and strand lists (CACTUS / DiSCo).
 
 Every decision the loaders used to take in code is a field here, with its reason recorded in
 ``provenance.transformations``: which surface is which pool, the box and what its faces do, the
@@ -158,6 +159,118 @@ def winther_spec(inner_ply, outer_ply, *, scale=_UM, pad=1.0e-6, field_T=3.0, rh
                                         "nominal pool values from the catalogued white matter"],
                     "created": date.today().isoformat(), "software": {"name": "dmipy-sim", "version": _version()}})
     return spec.validate()
+
+
+def caterpillar_spec(path, *, scale=_UM, box=None, glia=True, field_T=3.0, rho2=None, id=None):
+    """The spec of a CATERPillar substrate table (``.csv`` / ``.swc``): every axon is two ``sphere_union`` walls
+    (its inner radii: intra | myelin; its outer radii: myelin | extra), the glial cells one wall around a
+    fourth pool (``glia``), all referencing the table by column and cell type; the voxel is the growth
+    info's, the config's or ``box=`` and its faces reflect (a CATERPillar voxel is finite, not periodic);
+    the pools are the catalogued white matter (glia: the intra values). An unmyelinated sphere has
+    ``outer == inner``, so its sheath wall coincides with its axolemma (a zero-thickness myelin there).
+    """
+    from ..io.caterpillar import read_caterpillar
+    from ..substrate.biophysical_constants import canonical_white_matter
+    t = read_caterpillar(path, scale=scale, cell_types=(("axon", "glial_cell") if glia else ("axon",)))
+    ct = t["cell_type"]
+    ax, gl = ct == "axon", ct == "glial_cell"
+    if not ax.any():
+        raise SpecError(f"{path}: no axon rows")
+    rho = float(rho2 if rho2 is not None else canonical_white_matter(field_T=field_T)["rho2"])
+    pools = wm_pools(field_T)
+    sha = _sha(path)
+
+    def surf(column, cell_type):
+        return Surface("sphere_union", file=str(path), format="caterpillar", scale=float(scale), sha256=sha,
+                       column=column, cell_type=cell_type)
+    walls = [Wall("axolemma", surf("inner_radius", "axon"), 1, 2, Directional(), Sided(rho, 0.0)),
+             Wall("sheath", surf("outer_radius", "axon"), 2, 0, Directional(), Sided(0.0, rho))]
+    transformations = [f"voxel: {t['box_source']}; faces reflect (a CATERPillar voxel is finite and not periodic)",
+                       "inside inner radii = intra (1), inner..outer = myelin (2), outside = extra (0)",
+                       f"{int((t['r_out'][ax] <= t['r_in'][ax] + 1e-15).sum())} unmyelinated axon sphere(s): sheath coincides with axolemma",
+                       "blood vessels dropped (no flow model)", "nominal pool values from the catalogued white matter"]
+    smallest = float(np.minimum(t["r_in"][ax], t["r_out"][ax]).min())
+    if gl.any():
+        pi = pools[1]
+        pools.append(Pool(3, "glia", pi.D, water_fraction=1.0, T2=pi.T2, T1=pi.T1))
+        walls.append(Wall("glia", surf("outer_radius", "glial_cell"), 3, 0, Directional(), Sided(rho, rho)))
+        transformations.append("glial cells: a fourth pool 'glia' (3) inside their spheres, with the intra pool's D / T2 / T1")
+        smallest = min(smallest, float(t["r_out"][gl].min()))
+    lo, hi = (np.asarray(box[0], float), np.asarray(box[1], float)) if box is not None else (t["box_min"], t["box_max"])
+    spec = SubstrateSpec(
+        id or f"caterpillar/{os.path.splitext(os.path.basename(path))[0]}",
+        Domain(lo.tolist(), hi.tolist(), ["reflect"] * 3), pools, walls,
+        Seeding([p.id for p in pools], "uniform_by_volume", "water_fraction"),
+        Validity(smallest, ["gradient", "relaxation", "surface", "field"]),
+        description=f"CATERPillar voxel: {len(np.unique(t['cell_id'][ax]))} axons as sphere chains"
+                    + (f", {len(np.unique(t['cell_id'][gl]))} glial cells" if gl.any() else ""),
+        realisation={"n_axons": int(len(np.unique(t["cell_id"][ax]))), "n_glia": int(len(np.unique(t["cell_id"][gl]))),
+                     "n_spheres": int(len(ct)), "reported": {k: v for k, v in t["params"].items() if "icvf" in k.lower()}},
+        provenance={"source": "CATERPillar", "scale": float(scale), "files": [{"path": str(path), "sha256": sha}],
+                    "transformations": transformations,
+                    "created": date.today().isoformat(), "software": {"name": "dmipy-sim", "version": _version()}})
+    return spec.validate()
+
+
+def strands_spec(path, *, scale=_UM, g_ratio=None, boundary="reflect", field_T=3.0, rho2=None, id=None,
+                 radius_tol=1e-3, source="EPFL strand list"):
+    """The spec of an EPFL strand list (CACTUS ``.init`` / ``optimized_final.txt``, the DiSCo phantom's strands):
+    every strand a sphere-swept polyline with its one radius, as per-instance arrays of one wall (or two with
+    ``g_ratio``: axolemma at ``g_ratio`` x the radius inside a sheath); the voxel ``[-side/2, side/2]^3`` with
+    ``boundary`` faces (``reflect`` or ``open``; strands are not periodic). A strand whose radius varies along
+    its length beyond ``radius_tol`` is refused: mesh it (``cactus_spec`` on the meshed run).
+    """
+    from ..io.strands import read_strands
+    from ..substrate.biophysical_constants import canonical_white_matter
+    if boundary not in ("reflect", "open"):
+        raise SpecError("boundary must be 'reflect' or 'open'; a strand list is not periodic")
+    t = read_strands(path, scale=scale)
+    R = []
+    for k, r in enumerate(t["radii"]):
+        if r.max() - r.min() > radius_tol * r.mean():
+            raise SpecError(f"strand {k} of {path}: radius varies along its length ({r.min():.3g}..{r.max():.3g} m); a "
+                            f"swept_polyline has one radius -- mesh the run (cactus_spec) or raise radius_tol")
+        R.append(float(r.mean()))
+    R = np.asarray(R)
+    rho = float(rho2 if rho2 is not None else canonical_white_matter(field_T=field_T)["rho2"])
+    cls_ = [c.tolist() for c in t["centerlines"]]
+    pools = wm_pools(field_T)
+    transformations = [f"voxel [-side/2, side/2]^3 from the file header, faces {boundary}",
+                       "nominal pool values from the catalogued white matter"]
+    if g_ratio is None:
+        pools = pools[:2]
+        walls = [Wall("tubes", Surface("swept_polyline", instances={"centerlines": cls_, "radii": R.tolist()}), 1, 0,
+                      Directional(), Sided(rho, rho))]
+        transformations.append("inside a strand = intra (1), outside all = extra (0); no myelin")
+        smallest = float(R.min())
+    else:
+        walls = [Wall("axolemma", Surface("swept_polyline", instances={"centerlines": cls_, "radii": (g_ratio * R).tolist()}),
+                      1, 2, Directional(), Sided(rho, 0.0)),
+                 Wall("sheath", Surface("swept_polyline", instances={"centerlines": cls_, "radii": R.tolist()}), 2, 0,
+                      Directional(), Sided(0.0, rho))]
+        transformations.append(f"the file's radius is the outer (sheath) radius; axolemma at g-ratio {g_ratio}")
+        smallest = float(g_ratio * R.min())
+    half = t["side"] / 2
+    spec = SubstrateSpec(
+        id or f"strands/{os.path.splitext(os.path.basename(path))[0]}",
+        Domain([-half] * 3, [half] * 3, [boundary] * 3), pools, walls,
+        Seeding([p.id for p in pools], "uniform_by_volume", "water_fraction"),
+        Validity(smallest, ["gradient", "relaxation", "surface"] + (["field"] if g_ratio is not None else [])),
+        description=f"{source}: {len(R)} strands as sphere-swept polylines" + ("" if g_ratio is None else " with a sheath"),
+        realisation={"n_objects": int(len(R)), "cell_side": float(t["side"]), "radius_min": float(R.min()),
+                     "radius_max": float(R.max())},
+        provenance={"source": source, "scale": float(scale), "files": [{"path": str(path), "sha256": _sha(path)}],
+                    "transformations": transformations,
+                    "created": date.today().isoformat(), "software": {"name": "dmipy-sim", "version": _version()}})
+    return spec.validate()
+
+
+def disco_spec(path, *, g_ratio=0.7, **kw):
+    """The spec of a DiSCo strand list (Rafael-Patino et al. 2021): :func:`strands_spec` with the phantom's
+    convention that the inner surface is 0.7 x the outer diameter."""
+    kw.setdefault("source", "DiSCo strand list")
+    kw.setdefault("id", f"disco/{os.path.splitext(os.path.basename(path))[0]}")
+    return strands_spec(path, g_ratio=g_ratio, **kw)
 
 
 def _version():

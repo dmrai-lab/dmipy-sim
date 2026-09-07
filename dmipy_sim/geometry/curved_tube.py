@@ -198,11 +198,17 @@ class PackedCurvedTubes(Geometry):
     counterpart of a triangle-mesh grid for the same geometry.
     """
 
-    def __init__(self, centerlines, radii, cell_size=None, interior=False):
+    def __init__(self, centerlines, radii, cell_size=None, interior=False, box=None, box_reflect=True):
         # interior=False: extra-axonal (bounce off tube exteriors, stay outside all tubes)
         # interior=True : intra-axonal, all tubes at once (each walker confined inside its
         #                 own -- i.e. its nearest -- tube), one grid/one JIT for all tubes.
+        # box=(lo, hi) : a finite, non-periodic voxel; with box_reflect its faces are mirrors that never
+        #                carry a walker across a tube wall (the fold is refused, like an escaping step).
         self.interior = bool(interior)
+        self.box = None if box is None else (np.asarray(box[0], float), np.asarray(box[1], float))
+        self.box_reflect = bool(box_reflect) and self.box is not None
+        if self.box_reflect:
+            self._lo, self._hi = jnp.asarray(self.box[0], jnp.float32), jnp.asarray(self.box[1], jnp.float32)
         self.centerlines = [np.asarray(cl, np.float64) for cl in centerlines]     # what the pack was built from
         self.radii = np.asarray(radii, np.float64).reshape(-1)
         A, AB, rr = [], [], []
@@ -289,7 +295,28 @@ class PackedCurvedTubes(Geometry):
             acc.append(P); got += len(P)
         return np.concatenate(acc)[:n_walkers].astype(np.float32)
 
+    def _inside_one(self, p):
+        """Pure-JAX membership of one point in any tube."""
+        cand, valid = self._gather(p)
+        A = self._A[cand]; AB = self._AB[cand]; AB2 = self._AB2[cand]; rr = self._rout[cand]
+        t = jnp.clip(((p[None, :] - A) * AB).sum(1) / AB2, 0.0, 1.0)
+        d = jnp.linalg.norm(p[None, :] - (A + t[:, None] * AB), axis=1)
+        return (valid & (d < rr)).any()
+
+    def _fold(self, r, r_new):
+        """Mirror into the voxel, never across a tube wall."""
+        if not self.box_reflect:
+            return r_new
+        span = self._hi - self._lo
+        x = (r_new - self._lo) % (2.0 * span)
+        folded = self._lo + jnp.where(x > span, 2.0 * span - x, x)
+        ok = self._inside_one(folded) == self.interior
+        return jnp.where(ok, folded, r)
+
     def reflect(self, r, step):
+        return self._fold(r, self._reflect(r, step))
+
+    def _reflect(self, r, step):
         NUDGE = jnp.float32(1e-4 * self._Rmin)
         r_new = r + step
         cand, valid = self._gather(r_new)
@@ -356,6 +383,13 @@ class PackedCurvedTubes(Geometry):
             rad = rout[idx] * np.sqrt(rng.uniform(0., 1., n_walkers))
             th = rng.uniform(0., 2 * np.pi, n_walkers)
             off = rad[:, None] * (np.cos(th)[:, None] * e1 + np.sin(th)[:, None] * e2)
-            return jnp.asarray(C + off, jnp.float32)
+            pts = C + off
+            if self.box is not None:                       # strands overrun the voxel: seed only inside it
+                keep = ((pts >= self.box[0]) & (pts <= self.box[1])).all(1)
+                pts = pts[keep]
+                while len(pts) < n_walkers:
+                    more = np.asarray(self.init_positions(n_walkers, jax.random.fold_in(key, len(pts))))
+                    pts = np.concatenate([pts, more])[:n_walkers]
+            return jnp.asarray(pts, jnp.float32)
         # extra: rejection outside all tubes, grid-accelerated (see sample_outside/inside_any)
-        return jnp.asarray(self.sample_outside(n_walkers, rng), jnp.float32)
+        return jnp.asarray(self.sample_outside(n_walkers, rng, bounds=self.box), jnp.float32)

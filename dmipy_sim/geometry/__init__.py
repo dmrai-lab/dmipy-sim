@@ -23,6 +23,7 @@ from .myelin import MyelinatedCylinder, PackedMyelinatedCylinders
 from .packing import pack_cylinders, pack_spheres, pack_myelinated_cylinders
 from .curved_tube import CurvedTube, MultiShellCurvedTube, PackedCurvedTubes
 from .mesh import Mesh
+from .sphere_union import SphereUnion
 
 __all__ = [
     "Geometry", "LengthScales", "FreeDiffusion", "Box1D", "initial_positions",
@@ -30,5 +31,5 @@ __all__ = [
     "PackedCylinders", "PackedSpheres",
     "MyelinatedCylinder", "PackedMyelinatedCylinders",
     "pack_cylinders", "pack_spheres", "pack_myelinated_cylinders",
-    "CurvedTube", "MultiShellCurvedTube", "PackedCurvedTubes", "Mesh",
+    "CurvedTube", "MultiShellCurvedTube", "PackedCurvedTubes", "SphereUnion", "Mesh",
 ]
