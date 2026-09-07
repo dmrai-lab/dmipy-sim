@@ -20,11 +20,11 @@ def hollow():
     """One hollow cylinder along z, alone in a wide periodic cell, with its field basis: the axially symmetric
     substrate the Gaunt route was derived for (the periodic images are 30 um away)."""
     g = d.PackedMyelinatedCylinders([1.0e-6], 0.7, [[0.0, 0.0]], 30e-6, N_max=2, D_intra=D0, D_extra=D0)
-    walk = d.simulate_trajectories(240, D0, g, 6e-3, 3e-4, seed=0, require_gpu=False)
+    walk = d.simulate_trajectories(3000, D0, g, 6e-3, 3e-4, seed=0, require_gpu=False)      # enough walkers for a smooth response over poses
     pk = build_replay_pack(walk, id="test/hollow", license="x", citation="x", K=8, envelope=ENV,
                            field=field_grid_of(g, res=0.2e-6), susc_path_K=16)
     assert pk.has_field and "susceptibility_path" in pk.meta["compression"]["channels"]
-    return pk, _pgse(pk, [[1, 0, 0], [1, 0, 0], [0, 0, 1]], [0.0, 1e9, 1e9])
+    return pk, _pgse(pk, [[1, 0, 0], [1, 0, 0], [0, 0, 1]], [0.0, 6e8, 6e8])
 
 
 class _Acq:
@@ -72,9 +72,12 @@ def test_orientation_is_the_counter_rotated_acquisition(hollow):
 def test_fod_composition_equals_brute_force_pose_averaging(hollow):
     """The Gaunt route against the definition: the FOD-weighted average of the pack replayed at every pose, on a
     quadrature the FOD is band-limited on, with a field ON and B0 skew to the gradient (the coupled case)."""
+    import warnings
     pk, seq = hollow
     fod = FOD.watson(3.0, mu=(0.3, 0.5, 0.81))
-    S = pk.replay(seq, fod=fod, **KW)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", UserWarning)                                  # the response IS band-limited here
+        S = pk.replay(seq, fod=fod, **KW)
     dirs, w = sphere_quadrature(20, 40)
     f = fod.evaluate(dirs)
     brute = np.zeros(len(seq.bvalues), np.complex128)
@@ -124,3 +127,16 @@ def test_fod_provenance_named_bases_convert_and_a_wrong_basis_would_be_wrong(hol
     assert FOD.native(2.0 * native.coeffs, normalize=True).integral == pytest.approx(1.0)
     with pytest.raises(ValueError, match="unknown basis"):
         FOD.from_sh(native.coeffs, basis="mrtrix")
+
+
+def test_a_response_the_two_axis_expansion_cannot_represent_is_flagged(hollow, monkeypatch):
+    """The two-axis expansion assumes the response depends on the pose only through n.g and n.B0. When the fit
+    misfits the response by more than the pack's own floor, the composition says so instead of returning a
+    plausible number (the guard is exercised by forcing the misfit; a two-cylinder cell trips it for real only
+    at a b and ensemble size too costly for this tier)."""
+    from dmipy_sim.replay import sh_convolution as sh
+    pk, seq = hollow
+    real = sh.coupled_spectrum_at
+    monkeypatch.setattr(sh, "coupled_spectrum_at", lambda *a, **k: (lambda out: (out[0], 1.0, out[2]))(real(*a, **k)))
+    with pytest.warns(UserWarning, match="not that of an axially symmetric substrate"):
+        pk.replay(seq, fod=FOD.watson(3.0), tissue=False)

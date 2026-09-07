@@ -18,7 +18,7 @@ from typing import NamedTuple
 import numpy as np
 
 from ..constants import GAMMA
-from ._replay_kernel import (resample_gradient, resample_gradient_jax, gradient_phase,
+from ._replay_kernel import (effective_gradient, effective_gradient_jax, gradient_phase,
                              gradient_phase_jax, phase_increment, phase_increments_jax)
 
 # JAX optional — dmipy-sim does not hard-require JAX for the NumPy replay path.
@@ -195,7 +195,7 @@ def replay_jax(
         )
 
     n_walkers, n_t_traj, _ = trajectory.shape
-    G_r = resample_gradient_jax(G, dt_wf, dt_traj, n_t_traj)
+    G_r = effective_gradient_jax(G, dt_wf, n_t_traj, dt_traj)
     phi = gradient_phase_jax(G_r, trajectory, dt_traj)                 # (n_meas, n_walkers)
 
     # --- Weighted average ---
@@ -234,10 +234,9 @@ def _replay_compressed(master, G, dt_wf, *, chi_perp, T2, T1, surface_relaxivity
     meta = {"method": master.get("method", "bridge_dst"), "K": K, "n_t": n_t}
 
     # ── Gradient phase in mode space (no trajectory reconstruction) ──────────────
-    G_traj = resample_gradient(G, dt_wf, dt_traj, n_t)                # (n_meas, n_t, 3)
-    n_meas = G_traj.shape[0]
+    n_meas = np.asarray(G).shape[0]
     phi = _cx.mode_space_phi(_cx.pack_position_arrays(pos_modes, np.float64),
-                             meta, G_traj, dt_traj).T                     # (n_meas, N)
+                             meta, G, dt_traj, dt_wf=dt_wf).T                # (n_meas, N), exact in time
 
     # ── chi_perp on the trajectory grid (nearest-neighbour, as in the raw path) ──
     ungated = chi_perp is None
@@ -459,7 +458,7 @@ def replay(
 
     per_meas_chi = chi_perp.ndim == 2  # (n_meas, n_t_wf) vs (n_t_wf,)
 
-    G_traj = resample_gradient(G, dt_wf, dt_traj, n_t_traj)          # (n_meas, n_t_traj, 3)
+    G_traj = effective_gradient(G, dt_wf, n_t_traj, dt_traj)         # exact per-save weights (n_meas, n_t_traj, 3)
 
     # ── Resample chi_perp to trajectory grid (nearest-neighbour) ─────────────
     t_wf   = np.arange(n_t_wf,   dtype=np.float64) * dt_wf
@@ -635,7 +634,7 @@ def pre_pulse_gradient_phase(trajectories, dt_traj, G, dt_wf, cutoff_wf_idx):
     n_walkers, n_t_traj, _ = trajectories.shape
     cutoff_traj = int(round(cutoff_wf_idx * dt_wf / dt_traj))
     cutoff_traj = max(0, min(cutoff_traj, n_t_traj))
-    G_pre = resample_gradient(G, dt_wf, dt_traj, n_t_traj).copy()
+    G_pre = effective_gradient(G, dt_wf, n_t_traj, dt_traj).copy()
     G_pre[:, cutoff_traj:, :] = 0.0
     return gradient_phase(G_pre, trajectories, dt_traj)               # (n_meas, n_walkers)
 
@@ -677,7 +676,7 @@ def _bloch_replay_terms(trajectory, dt_traj, G, dt_wf, rf_events, *, T2, T1, com
     G = np.asarray(G, np.float64)
     n_meas = G.shape[0]
     n_w, n_t, _ = trajectory.shape
-    G_tr = resample_gradient(G, dt_wf, dt_traj, n_t)                  # (n_meas, n_t, 3)
+    G_tr = effective_gradient(G, dt_wf, n_t, dt_traj)                 # exact per-save weights (n_meas, n_t, 3)
 
     def rate(per_comp, scalar):
         if per_comp is not None:

@@ -491,18 +491,20 @@ def is_walker_preserving(method):
 
 
 # ------------------------------------------------------------ mode-space replay
-def mode_space_phi(arrays, meta, G, dt, n_walkers=None, seed=0):
-    """Gradient phase phi_i (N_w, n_meas) in the compressed basis, WITHOUT reconstructing
-    the trajectory. Linear in position, so it commutes with every position codec:
-
-    The first two coefficients pair with the gradient moments,
-    phi = gamma*dt * [r(0).M0 + (r(T)-r(0)).M1 + sum_k beta_k Ghat_k] with Ghat the sine bands
-    of G, so a motion-compensated waveform zeroes the first two columns exactly.
-      c(G) = gamma*dt (V.vec(G)) a K-vector per measurement.
+def mode_space_phi(arrays, meta, G, dt, n_walkers=None, seed=0, *, dt_wf=None):
+    """Gradient phase phi_i (N_w, n_meas) in the compressed basis, WITHOUT reconstructing the trajectory:
+    the exact integral of the waveform ``G`` (on its own grid ``dt_wf``, default the pack's ``dt``) against
+    the piecewise-linear path through the saves, read through the per-save weights of
+    :func:`_replay_kernel.effective_gradient` and the bridge projection. Linear in position, so it commutes
+    with the codec: phi = gamma*dt * [r(0).M0 + (r(T)-r(0)).M1 + sum_k beta_k Ghat_k], and a
+    motion-compensated waveform zeroes the first two columns exactly.
     """
+    from ._replay_kernel import effective_gradient
     require_position_method(meta.get("method"))
     C = read_position_coeffs(arrays, dtype=np.float64)              # (N_w, K+2, n_axes)
-    W = bridge_projection(G, int(meta["n_t"]), C.shape[1] - 2)      # (n_meas, K+2, 3)
+    n_t = int(meta["n_t"])
+    Geff = effective_gradient(G, dt if dt_wf is None else dt_wf, n_t, dt)
+    W = bridge_projection(Geff, n_t, C.shape[1] - 2)                # (n_meas, K+2, 3)
     return (GAMMA * dt) * np.einsum("wkd,mkd->wm", C, W)
 
 
@@ -590,11 +592,13 @@ def acquisition_battery(n_t, dt, env):
 
 
 def _replay_complex_np(pos, dt, G, *, w=None, logw=None):
-    """Self-contained numpy replay <w exp(logw) exp(i phi)>, phi = gamma dt sum_t G.r.
-    Ground truth for the fidelity scorer (no engine dependency)."""
+    """Self-contained numpy replay <w exp(logw) exp(i phi)>, phi the exact integral of the on-grid waveform
+    against the piecewise-linear path through the saves (per-save weights of `effective_gradient`).
+    Ground truth for the fidelity scorer."""
+    from ._replay_kernel import effective_gradient
     pos = np.asarray(pos, np.float64); G = np.asarray(G, np.float64)
     nw = pos.shape[0]
-    phi = (GAMMA * dt) * np.einsum("mtd,ntd->nm", G, pos)     # (N_w, n_meas)
+    phi = (GAMMA * dt) * np.einsum("mtd,ntd->nm", effective_gradient(G, dt, pos.shape[1], dt), pos)   # (N_w, n_meas)
     ww = np.ones(nw) if w is None else np.asarray(w, float)
     lw = np.zeros(nw) if logw is None else np.asarray(logw, float)
     return (np.exp(lw[:, None] + 1j * phi) * (ww / ww.sum())[:, None]).sum(0)

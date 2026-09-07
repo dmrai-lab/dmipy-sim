@@ -6,7 +6,7 @@ import pytest
 import dmipy_sim as d
 from dmipy_sim.acquisition.scanners import SCANNERS, save_interval, scanner_limits, FIELD_DT_CAP
 from dmipy_sim.constants import GAMMA
-from dmipy_sim.replay._replay_kernel import resample_gradient, resample_gradient_jax
+from dmipy_sim.replay._replay_kernel import effective_gradient, effective_gradient_jax
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_sim.substrate import Substrate
 from dmipy_sim.spec import walk_spec
@@ -29,18 +29,18 @@ def _pgse(dt, n_t, delta, Delta, b, g=(0, 0, 1)):
     return _Acq(G, dt)
 
 
-def test_resampling_conserves_the_gradient_integral_on_every_walk_sample():
+def test_the_effective_gradient_conserves_the_integral_on_any_grid():
     rng = np.random.default_rng(0)
     G = rng.normal(size=(2, 37, 3)); dt_wf = 1e-5
-    for dt_tr, n_tr in ((3e-5, 20), (7e-6, 60), (1e-5 * 37 / 11, 11)):
-        R = resample_gradient(G, dt_wf, dt_tr, n_tr)
-        np.testing.assert_allclose(R.sum(1) * dt_tr, G.sum(1) * dt_wf, rtol=1e-12, atol=1e-12)     # total q exact
-        Rj = np.asarray(resample_gradient_jax(G.astype(np.float32), dt_wf, dt_tr, n_tr))
-        np.testing.assert_allclose(Rj, R, rtol=1e-4, atol=1e-5)
+    for dt_tr, n_tr in ((3e-5, 20), (7e-6, 60), (1e-5 * 37 / 11, 12)):
+        R = effective_gradient(G, dt_wf, n_tr, dt_tr)
+        np.testing.assert_allclose(R.sum(1) * dt_tr, G.sum(1) * dt_wf, rtol=1e-12, atol=1e-12)     # int G exact
+        Rj = np.asarray(effective_gradient_jax(G.astype(np.float32), dt_wf, n_tr, dt_tr))
+        np.testing.assert_allclose(Rj, R, rtol=1e-3, atol=5e-4)              # float32 cumulative sums
     # a finer walk grid keeps a lobe's value inside it and zero outside the waveform
     G = np.zeros((1, 10, 3)); G[0, 2:5, 0] = 0.05
-    F = resample_gradient(G, 1e-4, 2.5e-5, 60)
-    assert F[0, 8:20, 0] == pytest.approx(0.05) and np.all(F[0, 40:, 0] == 0) and F.sum() * 2.5e-5 == pytest.approx(G.sum() * 1e-4)
+    F = effective_gradient(G, 1e-4, 60, 2.5e-5)
+    assert F[0, 9:20, 0] == pytest.approx(0.05) and np.all(F[0, 41:, 0] == 0) and F.sum() * 2.5e-5 == pytest.approx(G.sum() * 1e-4)
 
 
 def test_an_off_grid_pgse_carries_its_b_to_the_replay():
@@ -50,7 +50,7 @@ def test_an_off_grid_pgse_carries_its_b_to_the_replay():
     pk = build_replay_pack(walk, id="t/grid", license="x", citation="x", K=32, envelope=ENV)
     on = pk.replay(_pgse(pk.dt, pk.n_t, 0.010, 0.030, 1e9), tissue=False)[0]
     off = pk.replay(_pgse(pk.dt / 4, 4 * pk.n_t, 0.010 + 0.6 * pk.dt, 0.030, 1e9), tissue=False)[0]
-    assert abs(off / on - 1) < 3e-3, f"off-grid bias {off / on - 1:+.3%}"
+    assert abs(off / on - 1) < 1e-3, f"off-grid bias {off / on - 1:+.3%}"
 
 
 def test_the_save_interval_rule_scales_as_derived():
@@ -80,3 +80,21 @@ def test_walk_spec_derives_the_save_grid():
     assert w2.dt > w.dt
     w3 = walk_spec(spec, 60, 2e-3, dt_save=2.5e-4, seed=0, require_gpu=False, field=False)     # an explicit grid still wins
     assert w3.dt == pytest.approx(2.5e-4)
+
+
+def test_mode_space_equals_position_space_for_an_off_grid_waveform():
+    """The same integral read two ways: the compiled scheme against the bands (what pack.replay does) and the
+    per-save weights against the decoded positions, for a waveform on its own grid with edges between saves.
+    At lossless K they agree to rounding; the effective weights are what make that true."""
+    from dmipy_sim.replay._replay_kernel import effective_gradient, gradient_phase
+    from dmipy_sim.replay.compression import decode_bridge_dst
+    walk = d.simulate_trajectories(300, D0, d.Cylinder(3e-6, (0, 0, 1)), 0.02, 2e-4, seed=0, require_gpu=False)
+    pk = build_replay_pack(walk, id="t/exact", license="x", citation="x", K=walk.n_t - 2, envelope=ENV)
+    acq = _pgse(pk.dt / 3, 3 * pk.n_t - 2, 0.004 + 0.4 * pk.dt, 0.012 + 0.7 * pk.dt, 1e9)          # edges between saves
+    S_mode = pk.replay(acq, tissue=False, complex_signal=True)
+    pos = decode_bridge_dst(pk.arrays, {"n_t": pk.n_t})
+    phi = gradient_phase(effective_gradient(acq.G, acq.dt, pk.n_t, pk.dt), pos, pk.dt)              # (n_meas, n_w)
+    S_pos = np.exp(1j * phi).mean(1)
+    np.testing.assert_allclose(S_mode, S_pos, rtol=1e-9, atol=1e-12)
+    with pytest.raises(ValueError, match="beyond the pack"):
+        pk.replay(_Acq(np.ones((1, 3 * pk.n_t + 30, 3)) * 1e-3, pk.dt / 3), tissue=False)

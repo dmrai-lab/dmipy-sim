@@ -5,9 +5,8 @@ compressed mode-space replay, the pre-pulse azimuth, the two vector-Bloch replay
 susceptibility replay and the SH responder -- integrates the same quantity,
 ``phi = gamma * dt * sum_t G(t) . r(t)``, on the same time grid. They read it from here.
 
-* :func:`resample_gradient` puts a waveform on the walk's save grid: linear interpolation of
-  each gradient component, zero outside the waveform's window, and plain length alignment when
-  the two grids share a step.
+* :func:`effective_gradient` gives a waveform's exact per-save weights against the piecewise-linear path
+  through the saves, from the waveform's own grid (:func:`waveform_moments`); no resampling of ``G``.
 * :func:`gradient_phase` is the total phase per (measurement, walker); :func:`phase_increments`
   the per-step increments one measurement contributes, for a propagator that applies them in
   order.
@@ -36,69 +35,85 @@ def _same_grid(dt_wf, dt_traj):
     return abs(float(dt_wf) - float(dt_traj)) / max(abs(float(dt_traj)), 1e-30) <= _SAME_GRID_RTOL
 
 
-def resample_gradient(G, dt_wf, dt_traj, n_t_traj):
-    """Waveform ``G`` (``(n_meas, n_t_wf, 3)``, step ``dt_wf``) on the walk grid (``n_t_traj``
-    samples of ``dt_traj``), **conserving the gradient integral over every walk sample**: a sample is
-    the mean of the sample-and-hold waveform over its interval, so the q-vector is exact at every walk
-    sample boundary whatever the grids. Zero outside the waveform.
+def waveform_moments(G, dt_wf, n_t, dt_pack):
+    """Zeroth and first moments of the sample-and-hold waveform ``G`` (``(n_meas, n_wf, 3)``, its own step
+    ``dt_wf``) over the walk's save intervals ``[t_k, t_{k+1}]``, ``t_k = k dt_pack``:
 
-    Interpolating the samples instead biased a PGSE whose edges fall between walk samples by
-    ``~dt_traj / delta`` in b (measured -1.0 % in signal at dt 50 us, delta 10 ms; -3.7 % at 200 us),
-    an error the fidelity certificate cannot see because its battery is built on the grid.
+        A0[k] = int G dt,    A1[k] = int G (t - t_k) dt,        k = 0 .. n_t - 2.
 
-    On the same grid the waveform is truncated or zero-padded to ``n_t_traj`` samples.
-    Returns float64 ``(n_meas, n_t_traj, 3)``.
+    Exact (closed form per constant piece), whatever the two grids and wherever the edges fall. A waveform
+    may end at ``T = (n_t - 1) dt_pack`` (its last sample sits there and integrates to nothing); one with a
+    non-zero sample starting beyond ``T`` is refused, because the stored path ends there.
     """
     G = np.asarray(G, np.float64)
-    n_meas, n_t_wf, _ = G.shape
-    n_t_traj = int(n_t_traj)
-    if _same_grid(dt_wf, dt_traj):
-        if n_t_wf == n_t_traj:
-            return G
-        if n_t_wf > n_t_traj:
-            return G[:, :n_t_traj, :]
-        out = np.zeros((n_meas, n_t_traj, 3))
-        out[:, :n_t_wf, :] = G
-        return out
-    e_wf = np.arange(n_t_wf + 1) * float(dt_wf)                     # sample-and-hold interval edges
-    e_tr = np.arange(n_t_traj + 1) * float(dt_traj)
-    Q = np.concatenate([np.zeros((n_meas, 1, 3)), np.cumsum(G, axis=1) * float(dt_wf)], axis=1)   # int_0^t G
-    out = np.zeros((n_meas, n_t_traj, 3))
-    for m in range(n_meas):
-        for ax in range(3):
-            q = np.interp(e_tr, e_wf, Q[m, :, ax], left=0.0, right=Q[m, -1, ax])
-            out[m, :, ax] = np.diff(q) / float(dt_traj)
-    return out
+    n_meas, n_wf, _ = G.shape
+    dt_wf, dt_pack = float(dt_wf), float(dt_pack)
+    T = (int(n_t) - 1) * dt_pack
+    e = np.arange(n_wf + 1) * dt_wf                                   # the waveform's interval edges
+    beyond = e[:-1] > T * (1.0 + 1e-9)
+    if beyond.any() and np.any(G[:, beyond, :] != 0.0):
+        raise ValueError(f"the waveform has a non-zero gradient beyond the pack's T_max = {T:.6g} s "
+                         f"(its own extent is {e[-1]:.6g} s); the stored path ends there")
+    Q0 = np.concatenate([np.zeros((n_meas, 1, 3)), np.cumsum(G, axis=1) * dt_wf], axis=1)          # int_0^t G
+    Q1 = np.concatenate([np.zeros((n_meas, 1, 3)),
+                         np.cumsum(G * ((e[1:] ** 2 - e[:-1] ** 2) / 2.0)[None, :, None], axis=1)], axis=1)   # int_0^t G t
+    tp = np.arange(int(n_t)) * dt_pack
+    tc = np.clip(tp, 0.0, e[-1])
+    j = np.clip(np.searchsorted(e, tc, side="right") - 1, 0, n_wf - 1)
+    Q0p = Q0[:, j, :] + G[:, j, :] * (tc - e[j])[None, :, None]
+    Q1p = Q1[:, j, :] + G[:, j, :] * ((tc ** 2 - e[j] ** 2) / 2.0)[None, :, None]
+    A0 = np.diff(Q0p, axis=1)
+    A1 = np.diff(Q1p, axis=1) - tp[:-1][None, :, None] * A0
+    return A0, A1
 
 
-def resample_gradient_jax(G, dt_wf, dt_traj, n_t_traj):
-    """:func:`resample_gradient` for a traced ``G`` (differentiable), float32 output."""
-    n_meas, n_t_wf, _ = G.shape
-    n_t_traj = int(n_t_traj)
+def effective_gradient(G, dt_wf, n_t, dt_pack):
+    """The per-save weights of a waveform against the path: ``(n_meas, n_t, 3)`` such that
+    ``gamma dt_pack sum_k Geff[k] . r[k]`` is **exactly** ``gamma int G(t) . r(t) dt`` for the piecewise-linear
+    path through the saves (the conditional mean of a Brownian path given its samples) and the
+    sample-and-hold waveform on its own grid:
+
+        Geff[k] dt_pack = (A0[k] - A1[k] / dt_pack) + A1[k-1] / dt_pack .
+
+    On the pack's own grid this is the trapezoid rule; off it there is no interpolation of ``G`` at all, so
+    an edge between two saves carries exactly its b. Every replay route reads this one function.
+    """
+    A0, A1 = waveform_moments(G, dt_wf, n_t, dt_pack)
+    n_meas = A0.shape[0]
+    W = np.zeros((n_meas, int(n_t), 3))
+    W[:, :-1, :] += A0 - A1 / float(dt_pack)
+    W[:, 1:, :] += A1 / float(dt_pack)
+    return W / float(dt_pack)
+
+
+def effective_gradient_jax(G, dt_wf, n_t, dt_pack):
+    """:func:`effective_gradient` for a traced ``G`` (differentiable in ``G``), float32 output."""
+    n_meas, n_wf, _ = G.shape
+    n_t = int(n_t)
+    dt_wf, dt_pack = float(dt_wf), float(dt_pack)
     G = G.astype(jnp.float32)
-    if dt_wf is None or _same_grid(dt_wf, dt_traj):
-        if n_t_wf == n_t_traj:
-            return G
-        if n_t_wf > n_t_traj:
-            return G[:, :n_t_traj, :]
-        return jnp.concatenate([G, jnp.zeros((n_meas, n_t_traj - n_t_wf, 3), jnp.float32)], axis=1)
-    e_wf = jnp.arange(n_t_wf + 1, dtype=jnp.float32) * float(dt_wf)
-    e_tr = jnp.arange(n_t_traj + 1, dtype=jnp.float32) * float(dt_traj)
-
-    def one(g_1d):                                                 # area-conserving, as the numpy twin
-        Q = jnp.concatenate([jnp.zeros((1,), jnp.float32), jnp.cumsum(g_1d) * jnp.float32(dt_wf)])
-        q = jnp.interp(e_tr, e_wf, Q, left=0.0, right=Q[-1])
-        return jnp.diff(q) / jnp.float32(dt_traj)
-    G_t = jax.vmap(jax.vmap(one))(G.transpose(0, 2, 1))          # (n_meas, 3, n_t_traj)
-    return G_t.transpose(0, 2, 1)
+    e = np.arange(n_wf + 1) * dt_wf
+    tp = np.arange(n_t) * dt_pack
+    tc = np.clip(tp, 0.0, e[-1])
+    j = np.clip(np.searchsorted(e, tc, side="right") - 1, 0, n_wf - 1)           # static: the grids are known
+    w1 = jnp.asarray((e[1:] ** 2 - e[:-1] ** 2) / 2.0, jnp.float32)
+    Q0 = jnp.concatenate([jnp.zeros((n_meas, 1, 3), jnp.float32), jnp.cumsum(G, axis=1) * jnp.float32(dt_wf)], axis=1)
+    Q1 = jnp.concatenate([jnp.zeros((n_meas, 1, 3), jnp.float32), jnp.cumsum(G * w1[None, :, None], axis=1)], axis=1)
+    Q0p = Q0[:, j, :] + G[:, j, :] * jnp.asarray(tc - e[j], jnp.float32)[None, :, None]
+    Q1p = Q1[:, j, :] + G[:, j, :] * jnp.asarray((tc ** 2 - e[j] ** 2) / 2.0, jnp.float32)[None, :, None]
+    A0 = jnp.diff(Q0p, axis=1)
+    A1 = jnp.diff(Q1p, axis=1) - jnp.asarray(tp[:-1], jnp.float32)[None, :, None] * A0
+    z = jnp.zeros((n_meas, 1, 3), jnp.float32)
+    W = jnp.concatenate([A0 - A1 / dt_pack, z], axis=1) + jnp.concatenate([z, A1 / dt_pack], axis=1)
+    return W / jnp.float32(dt_pack)
 
 
 _PHASE_CHUNK_BYTES = 256 * 2 ** 20     # float64 working copy of the trajectory per chunk
 
 
 def gradient_phase(G_traj, traj, dt, chunk_bytes=_PHASE_CHUNK_BYTES):
-    """``gamma * dt * sum_t G[m, t] . r[w, t]`` -> ``(n_meas, n_walkers)`` float64, with ``G_traj``
-    already on the walk grid (:func:`resample_gradient`).
+    """``gamma * dt * sum_t G[m, t] . r[w, t]`` -> ``(n_meas, n_walkers)`` float64, with ``G_traj`` the
+    waveform's per-save weights (:func:`effective_gradient`): the exact integral against the path.
 
     The contraction runs in float64 over walker chunks of at most ``chunk_bytes`` each, so a stored
     walk of 1e5 walkers by 1e3 steps (2.4 GB as float64) is never materialised whole. Each
@@ -149,15 +164,21 @@ def phase_increments_jax(G_m, traj, dt):
 
 
 def se_gate(n_t, dt, refocus_time):
-    """Transverse-phase gate ``s(t)`` of a spin echo: ``+1`` before the 180 at ``refocus_time``
-    (s), ``-1`` after, balanced so that ``sum s = 0`` and a static field refocuses exactly.
-    ``None`` is a gradient echo (``s == +1``)."""
+    """The transverse-phase gate of a spin echo as per-save weights: the sign function ``s(t) = +1`` before the
+    180 at ``refocus_time`` (s) and ``-1`` after, integrated exactly against the piecewise-linear path through
+    the saves (the same reading as :func:`effective_gradient`), so a 180 at ANY instant is exact and a 180 at
+    ``T/2`` refocuses a static field to the bit (``sum s = 0``). ``None`` is a gradient echo (``s == +1``).
+    Multiply per-save values by ``dt`` and these weights to integrate them over the echo."""
+    n_t = int(n_t); dt = float(dt)
+    T = (n_t - 1) * dt
     if refocus_time is None:
-        return np.ones(int(n_t))
-    t = np.arange(int(n_t)) * float(dt)
-    s = np.sign(float(refocus_time) - t).astype(float)
-    d = int(round(s.sum()))
-    if d != 0:
-        side = np.where(s == np.sign(d))[0]
-        s[side[np.argsort(-np.abs(t[side] - float(refocus_time)))[:abs(d)]]] = 0.0
-    return s
+        lp = np.full(n_t - 1, dt)                                   # +1 everywhere
+    else:
+        tr = float(np.clip(refocus_time, 0.0, T))
+        lp = np.clip(tr - np.arange(n_t - 1) * dt, 0.0, dt)         # the +1 part of each interval
+    A0 = lp - (dt - lp)
+    A1 = lp ** 2 / 2.0 - (dt ** 2 - lp ** 2) / 2.0
+    W = np.zeros(n_t)
+    W[:-1] += A0 - A1 / dt
+    W[1:] += A1 / dt
+    return W / dt

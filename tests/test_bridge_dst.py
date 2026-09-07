@@ -65,24 +65,29 @@ def test_endpoints_are_exact_at_every_truncation(walk):
 
 def test_mode_space_phase_equals_the_raw_sum(walk):
     G, dt = _deliverable(), 1e-4
-    raw = (GAMMA * dt) * np.einsum("mtd,ntd->nm", G, walk)
+    from dmipy_sim.replay._replay_kernel import effective_gradient
+    raw = (GAMMA * dt) * np.einsum("mtd,ntd->nm", effective_gradient(G, dt, N_T, dt), walk)     # exact in time
     a, m, _ = cx.encode_bridge_dst(walk, N_T - 2)
     # coefficients are stored float32, as they are for every position codec
     npt.assert_allclose(cx.mode_space_phi(a, m, G, dt), raw, rtol=1e-4, atol=1e-6)
 
 
 def test_moment_nulled_waveform_annihilates_the_first_two_columns(walk):
-    """Refocusing is M0 = 0 and velocity compensation M1 = 0, so both columns vanish."""
+    """Refocusing is M0 = int G dt = 0 and velocity compensation M1 = int G t dt = 0, so both columns vanish. The
+    moments are those of the sample-and-hold waveform (the last sample sits at T and integrates to nothing), and
+    the waveform is nulled inside the sine span so it still vanishes at both ends."""
+    from dmipy_sim.replay._replay_kernel import effective_gradient
     n_t = N_T
     t = np.arange(n_t) / (n_t - 1)
     rng = np.random.default_rng(3)
     S = np.stack([np.sin(np.pi * k * t) for k in range(1, 9)], axis=1)
-    A = np.stack([np.ones(n_t), t])                     # the two moment functionals
+    mid = t[:-1] + 0.5 / (n_t - 1)                                      # each sample's interval midpoint
+    F = np.stack([S[:-1].sum(0), (S[:-1] * mid[:, None]).sum(0)])       # int S dt, int S t dt  (up to dt)
     c = rng.standard_normal(S.shape[1])
+    c = c - F.T @ np.linalg.solve(F @ F.T, F @ c)                       # null both moments within the span
     p = S @ c
-    p = p - A.T @ np.linalg.solve(A @ A.T, A @ p)       # null M0 and M1 exactly
     G = 0.05 * p[:, None] * np.array([0.6, 0.5, 0.62])[None, :]
-    M0, M1 = cx.bridge_moment_rows(G[None], n_t)
+    M0, M1 = cx.bridge_moment_rows(effective_gradient(G[None], 1e-4, n_t, 1e-4), n_t)
     assert np.abs(M0).max() < 1e-10 and np.abs(M1).max() < 1e-10
 
     W = compile_scheme(G[None], 1e-4, 16, method="bridge_dst", n_t=n_t)
@@ -124,7 +129,9 @@ def test_sine_basis_is_the_bridge_karhunen_loeve_basis():
 def test_accuracy_matches_a_band_truncation_at_equal_budget(walk):
     """The duality says neither basis should win; this pins that it does not lose either."""
     G, dt = _deliverable(), 1e-4
-    phi = lambda r: (GAMMA * dt) * np.einsum("mtd,ntd->nm", G, r)
+    from dmipy_sim.replay._replay_kernel import effective_gradient
+    Geff = effective_gradient(G, dt, N_T, dt)
+    phi = lambda r: (GAMMA * dt) * np.einsum("mtd,ntd->nm", Geff, r)
     ref = np.exp(1j * phi(walk)).mean(0)
     for K in (8, 16, 32):
         ab, mb, _ = cx.encode_bridge_dst(walk, K - 2)          # same coefficient budget

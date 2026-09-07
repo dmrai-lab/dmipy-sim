@@ -174,14 +174,13 @@ class ReplayPack:
         """
         from .compression import (read_position_coeffs, require_position_method, decode_occupancy,
                                   relaxation_logweight)
-        from ._replay_kernel import resample_gradient, gradient_phase, se_gate
+        from ._replay_kernel import effective_gradient, gradient_phase, se_gate
         require_position_method(self.method)
         G = np.asarray(getattr(waveform, "G", waveform), np.float64)
         if G.ndim == 2:
             G = G[None]
         dt_wf = float(getattr(waveform, "dt", self.dt))
         n_t, dt = self.n_t, self.dt
-        G = resample_gradient(G, dt_wf, dt, n_t)                                  # (n_meas, n_t, 3)
         chi = getattr(waveform, "chi_perp", None)
         if chi is not None:
             chi = np.asarray(chi, np.float64).reshape(-1)
@@ -216,6 +215,7 @@ class ReplayPack:
             R = self._rotation_of(orientation)
             G = G @ R                                                     # R^T g per sample
             b0_dir = tuple(np.asarray(R, float).T @ np.asarray(b0_dir, float))
+        Geff = effective_gradient(G, dt_wf, n_t, dt)                     # exact per-save weights (n_meas, n_t, 3)
         logw = np.zeros(n_w)
         if T2 is not None or T1 is not None:
             if not self.has_relaxation:
@@ -243,11 +243,11 @@ class ReplayPack:
             ew = w * np.exp(logw)
             norm = w.sum()
             ew, norm = self._select(compartment, ew, norm, w, ch, n_w)
-            S = self._fod_signal(G, dt, n_t, fod, ew, norm, B0, b0_dir, chi_iso, chi_aniso, refocus_time, waveform)
+            S = self._fod_signal(Geff, dt, n_t, fod, ew, norm, B0, b0_dir, chi_iso, chi_aniso, refocus_time, waveform)
             return S if complex_signal else np.abs(S)
         if B0 is None:
             C = read_position_coeffs(self.arrays, dtype=np.float64)
-            W = compile_scheme(G, dt, self.K, n_t=n_t)
+            W = _compile_effective(Geff, dt, self.K, n_t)
             phi = C.reshape(n_w, self.n_coeffs * 3) @ W                              # (n_w, n_meas)
         else:
             if not self.has_field:
@@ -276,7 +276,7 @@ class ReplayPack:
             if refocus_time == "auto":
                 refocus_time = _refocus_time_of(waveform)
             phi_x = GAMMA * dt * (dB * se_gate(n_t, dt, refocus_time)[None, :]).sum(1)    # (n_w,)
-            phi = gradient_phase(G, pos, dt).T + phi_x[:, None]                                # (n_w, n_meas)
+            phi = gradient_phase(Geff, pos, dt).T + phi_x[:, None]                             # (n_w, n_meas)
 
         ew = w * np.exp(logw)
         norm = w.sum()
@@ -336,7 +336,7 @@ class ReplayPack:
             raise TypeError("fod must be a dmipy_sim.replay.fod.FOD -- a bare coefficient array has no basis, and the "
                             "Gaunt composition is silently wrong in a non-orthonormal one; use FOD.from_sh(coeffs, "
                             "basis=...) / FOD.native(coeffs) / FOD.watson(...)")
-        G = np.asarray(G, np.float64)
+        G = np.asarray(G, np.float64)                                                # the per-save weights
         n_meas = G.shape[0]
         n_w = ew.shape[0]
         gdir = np.zeros((n_meas, 3)); prof = np.zeros((n_meas, n_t))
@@ -354,7 +354,7 @@ class ReplayPack:
             gdir[i], prof[i] = g, p
         # per-walker gradient contraction q_{w,i} = gamma dt sum_k prof_ik r_wk: three axis waveforms per measurement
         C = read_position_coeffs(self.arrays, dtype=np.float64).reshape(n_w, -1)
-        q = np.stack([C @ compile_scheme(np.einsum("it,a->ita", prof, np.eye(3)[a]), dt, self.K, n_t=n_t)
+        q = np.stack([C @ _compile_effective(np.einsum("it,a->ita", prof, np.eye(3)[a]), dt, self.K, n_t)
                       for a in range(3)], axis=-1)                                   # (n_w, n_meas, 3)
         dirs, wq = sphere_quadrature(n_theta, n_phi)
         R = _rotations_from_axis(self.frame_axis, dirs)                               # (n_dirs, 3, 3)
@@ -385,12 +385,23 @@ class ReplayPack:
         else:
             Ew = np.broadcast_to(ew[None, :].astype(np.complex128), (dirs.shape[0], n_w))
         out = np.empty(n_meas, np.complex128)
+        worst = 0.0
         for i in range(n_meas):
             gp = np.einsum("nji,j->ni", R, gdir[i])                                   # R^T g
             E = (Ew * np.exp(1j * (gp @ q[:, i, :].T))).sum(1) / norm                  # response over poses
-            lam, _resid, _rank = coupled_spectrum_at(lambda d, E=E: E, gdir[i], b, l_g=l_g, l_b=l_b,
-                                                    chiral=(B0 is not None), _grid=(dirs, wq))
+            lam, resid, _rank = coupled_spectrum_at(lambda d, E=E: E, gdir[i], b, l_g=l_g, l_b=l_b,
+                                                   chiral=(B0 is not None), _grid=(dirs, wq))
+            # the fit's misfit in signal units; a finite ensemble leaves a roughness of order the pack's own
+            # floor (the same walkers seen from every pose), which is not a defect of the expansion
+            worst = max(worst, float(resid) * float(np.sqrt(np.mean(np.abs(E) ** 2))))
             out[i] = apply_odf_coupled(lam, fod.coeffs, gdir[i], b, l_fod=fod.lmax, l_g=l_g, l_b=l_b)
+        floor = 1.0 / np.sqrt(n_w)
+        if worst > 2.0 * floor:
+            import warnings
+            warnings.warn(f"the pack's response over poses is not that of an axially symmetric substrate within its own "
+                          f"Monte-Carlo floor (fit misfit {worst:.3f} in signal units vs floor {floor:.3f}): the two-axis "
+                          f"expansion (l_g={l_g}, l_b={l_b}) does not represent it and the FOD composition is unreliable. "
+                          f"Compose a non-axisymmetric substrate by averaging over poses instead.", UserWarning, stacklevel=3)
         return out
 
     @cached_property
@@ -498,22 +509,35 @@ def _refocus_time_of(waveform):
 
 
 # ------------------------------- compiled-scheme forward -------------------------------
-def compile_scheme(G, dt, K, gyromagnetic_ratio=GAMMA, *, n_t=None, method=None):
-    """Compile an acquisition into its temporal-basis projection ``W``.
+def compile_scheme(G, dt, K, gyromagnetic_ratio=GAMMA, *, n_t=None, method=None, dt_pack=None):
+    """Compile an acquisition into its temporal-basis projection ``W``: the exact integral of the waveform
+    against the stored path, in mode space.
 
-    ``G`` is the gradient waveform on the pack save grid, shape ``(n_meas, n_t, 3)`` [T/m]; ``dt`` the save
-    interval [s]; ``K`` the pack's retained-mode count; ``method`` the pack's position codec.
-    Shape is ``(3(K+2), n_meas)``: the first two rows per axis are the gradient moments
-    ``M0`` and ``M1``, which a motion-compensated waveform makes vanish, followed by the sine
-    bands.  ``method`` is accepted only to let a caller assert the pack's codec; a retired one
-    raises rather than selecting a different basis. Reusable across every pack on this grid (fitting) and
-    every fit iteration; in design it is recomputed per candidate waveform (cheap: an FFT + scale)."""
-    from .compression import require_position_method, bridge_projection
+    ``G`` is the gradient waveform ``(n_meas, n_wf, 3)`` [T/m] on ITS OWN grid ``dt`` [s]; ``dt_pack`` the pack's
+    save interval (default: the waveform is on the pack grid, ``dt_pack = dt``); ``n_t`` the pack's save count
+    (default ``G.shape[1]`` on the pack grid); ``K`` the pack's retained-mode count; ``method`` the pack's
+    position codec, accepted only to let a caller assert it. Shape is ``(3(K+2), n_meas)``: per axis the two
+    gradient moments ``M0`` and ``M1``, which a motion-compensated waveform makes vanish, then the sine bands.
+    Nothing is resampled: the waveform enters through its exact per-save weights
+    (:func:`_replay_kernel.effective_gradient`), so an edge between saves carries exactly its b. Reusable across
+    every pack on one grid (fitting) and every fit iteration; in design it is recomputed per candidate."""
+    from .compression import require_position_method
+    from ._replay_kernel import effective_gradient
     require_position_method(method or "bridge_dst")
     G = np.asarray(G, np.float64)
-    W = bridge_projection(G, int(n_t or G.shape[1]), K)              # (n_meas, K+2, 3)
-    n_meas = W.shape[0]
-    return (gyromagnetic_ratio * dt * W).reshape(n_meas, (K + 2) * 3).T
+    if dt_pack is None:
+        dt_pack = dt
+        n_t = int(n_t or G.shape[1])
+    elif n_t is None:
+        raise ValueError("a waveform on its own grid needs the pack's n_t")
+    return _compile_effective(effective_gradient(G, dt, int(n_t), dt_pack), dt_pack, K, int(n_t), gyromagnetic_ratio)
+
+
+def _compile_effective(Geff, dt_pack, K, n_t, gyromagnetic_ratio=GAMMA):
+    """``W`` from per-save weights already on the pack grid (:func:`_replay_kernel.effective_gradient`)."""
+    from .compression import bridge_projection
+    W = bridge_projection(np.asarray(Geff, np.float64), int(n_t), K)              # (n_meas, K+2, 3)
+    return (gyromagnetic_ratio * float(dt_pack) * W).reshape(W.shape[0], (K + 2) * 3).T
 
 
 def surface_logweight(arrays, rho_over_D, chan_meta=None, chi_hat=None):
