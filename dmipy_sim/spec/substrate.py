@@ -54,7 +54,7 @@ class Susceptibility:
 class Pool:
     id: int
     name: str
-    D: float
+    D: Optional[float]           # None: the free diffusivity the walk is driven with
     water_fraction: float = 1.0
     T2: Optional[float] = None
     T1: Optional[float] = None
@@ -270,7 +270,8 @@ def validate(d):
         raise SpecError(f"pools: names must be unique, got {names}")
     for p in pools:
         w = f"pool {p.get('name')!r}"
-        _nonneg(_req(p, "D", w), f"{w}.D")
+        if p.get("D") is not None:
+            _nonneg(p["D"], f"{w}.D")
         wf = _req(p, "water_fraction", w)
         if not (isinstance(wf, (int, float)) and 0.0 <= wf <= 1.0):
             raise SpecError(f"{w}.water_fraction must be in [0, 1], got {wf!r}")
@@ -339,9 +340,9 @@ def validate(d):
     tiers = _req(val, "tiers", "validity")
     if any(t not in TIERS for t in tiers) or len(set(tiers)) != len(tiers):
         raise SpecError(f"validity.tiers must be distinct entries of {TIERS}, got {tiers!r}")
-    has_wall = bool(walls)
+    has_wall = bool(walls) or (float(dom.get("surface_relaxivity", 0.0) or 0.0) > 0 and "reflect" in bc)
     if "surface" in tiers and not has_wall:
-        raise SpecError("validity.tiers lists 'surface' but the substrate has no wall")
+        raise SpecError("validity.tiers lists 'surface' but the substrate has no wall (and no relaxing reflect face)")
     if "field" in tiers and not any(p.get("susceptibility") for p in pools):
         raise SpecError("validity.tiers lists 'field' but no pool is a field source (susceptibility)")
     if "relaxation" in tiers and not (n_pools > 1 or any(p.get("T2") for p in pools)):

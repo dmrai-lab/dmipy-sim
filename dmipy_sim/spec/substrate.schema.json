@@ -31,7 +31,7 @@
         "properties": {
           "id": {"type": "integer", "minimum": 0},
           "name": {"type": "string", "minLength": 1},
-          "D": {"type": "number", "minimum": 0},
+          "D": {"type": ["number", "null"], "minimum": 0, "description": "free diffusivity in the pool (m^2/s); null: the diffusivity the walk is driven with"},
           "T2": {"type": ["number", "null"], "exclusiveMinimum": 0},
           "T1": {"type": ["number", "null"], "exclusiveMinimum": 0},
           "water_fraction": {"type": "number", "minimum": 0, "maximum": 1},
