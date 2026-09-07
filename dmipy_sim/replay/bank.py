@@ -490,7 +490,7 @@ def replay_susc(pack, waveform, *, b0_dir=(0.0, 0.0, 1.0), B0=0.0, chi_iso=0.0, 
                 refocus_time=None, T2=None, T1=None, complex_signal=False, compartment=None):
     """``pack.replay(waveform, B0=..., ...)``: the field-tier replay, kept under its old name; per-pool
     ``T2`` / ``T1`` are given here, the pack carries none."""
-    return pack.replay(waveform, T2=T2, T1=T1, B0=B0, b0_dir=b0_dir, chi_iso=chi_iso, chi_aniso=chi_aniso,
+    return pack.replay(waveform, tissue=False, T2=T2, T1=T1, B0=B0, b0_dir=b0_dir, chi_iso=chi_iso, chi_aniso=chi_aniso,
                        refocus_time=refocus_time, compartment=compartment, complex_signal=complex_signal)
 
 

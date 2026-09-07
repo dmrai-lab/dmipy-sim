@@ -42,16 +42,18 @@ def test_the_walk_keeps_its_geometry_and_the_builder_needs_nothing_else():
     G0 = np.zeros((1, pk.n_t, 3))
     e = pk.replay(G0, B0=3.0, b0_dir=(1, 0, 0), chi_iso=1.06e-6, chi_aniso=-0.1e-6, refocus_time=None)
     assert 0 < e[0] < 1
-    nominal = Tissue.from_spec(g.spec, B0=3.0, b0_dir=(1, 0, 0))                 # the spec's nominal values
+    nominal = Tissue.from_spec(g.spec)                                            # the spec's nominal values
     assert nominal.T2 == [sub.T2_extra, sub.T2_intra, sub.T2_myelin] and nominal.rho == pytest.approx(sub.rho2)
-    assert nominal.chi_iso is None, "a Substrate declares the sheath a field source and no chi: a replay knob"
-    with pytest.raises(ValueError, match="without chi_iso"):
-        pk.replay(G0, tissue=nominal, refocus_time=None)
-    tissue = Tissue.from_spec(g.spec, B0=3.0, b0_dir=(1, 0, 0), chi_iso=1.06e-6, chi_aniso=-0.1e-6)
-    e_t = pk.replay(G0, tissue=tissue, refocus_time=None)
-    np.testing.assert_allclose(e_t, pk.replay(G0, T2=tissue.T2, T1=tissue.T1, rho=tissue.rho, B0=3.0, b0_dir=(1, 0, 0),
-                                              chi_iso=1.06e-6, chi_aniso=-0.1e-6, refocus_time=None))
-    assert e_t[0] < e[0]                                                          # T2 and rho cost signal
+    assert nominal.B0 == sub.field_T == 3.0 and nominal.chi_iso == -0.1e-6 and nominal.chi_aniso == -0.1e-6
+    assert g.spec.nominal_field_T == 3.0
+    # the NOMINAL replay is the default: fire a pulse, get every tier at the spec's values
+    e_nom = pk.replay(G0, refocus_time=None)
+    np.testing.assert_allclose(e_nom, pk.replay(G0, T2=nominal.T2, T1=nominal.T1, rho=nominal.rho, B0=3.0,
+                                                chi_iso=-0.1e-6, chi_aniso=-0.1e-6, refocus_time=None))
+    np.testing.assert_allclose(e_nom, pk.replay(G0, tissue=nominal, refocus_time=None))
+    assert e_nom[0] < 1.0 and pk.replay(G0, tissue=False)[0] == pytest.approx(1.0)  # bare diffusion at b = 0
+    e_7T = pk.replay(G0, B0=7.0, b0_dir=(1, 0, 0), refocus_time=None)            # one knob overridden
+    assert e_7T[0] < e_nom[0]                                                      # a stronger field dephases more
     # field=False leaves the tier out
     pk2 = build_replay_pack(walk, id="t/own", license="x", citation="x", K=8, envelope=ENV, field=False)
     assert pk2.has_relaxation and not pk2.has_field

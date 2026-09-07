@@ -21,9 +21,12 @@ class Tissue:
 
     @classmethod
     def from_spec(cls, spec, *, B0=None, b0_dir=(0.0, 0.0, 1.0), **overrides):
-        """The spec's nominal pool T2 / T1, the walls' common relaxivity and the field-source pool's
-        susceptibility, with ``B0`` supplied here (a spec has no field strength). Any keyword overrides.
-        Walls with different relaxivities leave ``rho`` None: give it."""
+        """The spec's nominal values: pool T2 / T1, the walls' common relaxivity, the field-source pool's
+        susceptibility, and ``B0`` = the spec's ``nominal_field_T`` unless given here (``None`` when the spec
+        names no field: no field tier). Any keyword overrides. Walls with different relaxivities leave ``rho``
+        None: give it."""
+        if B0 is None:
+            B0 = spec.nominal_field_T
         pools = sorted(spec.pools, key=lambda p: p.id)
         T2 = [p.T2 for p in pools]; T1 = [p.T1 for p in pools]
         rhos = {r for w in spec.walls for r in (w.surface_relaxivity.inside, w.surface_relaxivity.outside) if r > 0}

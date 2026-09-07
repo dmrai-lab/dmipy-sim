@@ -28,10 +28,15 @@ def _sha(path):
     return h.hexdigest()
 
 
-def wm_pools(field_T=3.0, *, myelin_chi_iso=-1.06e-6, myelin_chi_aniso=0.0, D_myelin=0.0):
-    """The three white-matter pools with the catalogued nominal values; myelin is the field source."""
+def wm_pools(field_T=3.0, *, myelin_chi_iso=None, myelin_chi_aniso=None, D_myelin=0.0):
+    """The three white-matter pools with the catalogued nominal values; myelin is the field source, with the
+    catalogue's chi unless a dataset's own convention is given."""
     from ..substrate.biophysical_constants import canonical_white_matter, get_default_value
     p = canonical_white_matter(field_T=field_T)
+    if myelin_chi_iso is None:
+        myelin_chi_iso = p["chi_iso_myelin"]
+    if myelin_chi_aniso is None:
+        myelin_chi_aniso = p["delta_chi_a"]
     wf_m = float(get_default_value("myelin_water_proton_density"))
     return [Pool(0, "extra", float(p["D_extra"]), water_fraction=1.0, T2=float(p["T2_extra"]), T1=float(p.get("T1_extra", 1.0))),
             Pool(1, "intra", float(p["D_intra"]), water_fraction=1.0, T2=float(p["T2_intra"]), T1=float(p.get("T1_intra", 1.2))),
@@ -139,7 +144,7 @@ def cactus_spec(run_dir, *, scale=_UM, side_um=None, field_T=3.0, rho2=None, on_
         id or f"cactus/{os.path.basename(os.path.normpath(run_dir))}",
         Domain(lo, hi, ["periodic", "periodic", "periodic"]), pools, walls, Seeding([0, 1, 2], "uniform_by_volume", "thin"),
         Validity(smallest, ["gradient", "relaxation", "surface", "field"], mesh_edge_feature_ratio=edge_med / smallest),
-        frame=Frame([0.0, 0.0, 1.0]),
+        frame=Frame([0.0, 0.0, 1.0]), nominal_field_T=float(field_T),
         description=f"CACTUS bundle: {len(pairs)} strands, each an inner (axon) and outer (myelin) surface, in a periodic cell",
         realisation={"n_objects": len(pairs), "cell_side": L,
                      "g_ratio": {str(k): _g_ratio(by_path[v[0]], by_path[v[1]]) for k, v in pairs.items()}},   # JSON keys
@@ -161,18 +166,20 @@ def winther_spec(inner_ply, outer_ply, *, scale=_UM, pad=1.0e-6, field_T=3.0, rh
     Vo = meshes[1][0]
     lo = (Vo.min(0) - pad).tolist(); hi = (Vo.max(0) + pad).tolist()
     rho = float(rho2 if rho2 is not None else canonical_white_matter(field_T=field_T)["rho2"])
-    pools = wm_pools(field_T)
+    pools = wm_pools(field_T, myelin_chi_iso=1.06e-6, myelin_chi_aniso=0.0)       # the dataset's own convention
     pools[0] = Pool(0, "extra", pools[0].D, water_fraction=0.0, T2=pools[0].T2, T1=pools[0].T1)     # free water, not substrate
     walls = _walls({0: (inner_ply, outer_ply)}, scale, rho, rho)
     spec = SubstrateSpec(
         id or f"winther/{os.path.splitext(os.path.basename(inner_ply))[0]}",
         Domain(lo, hi, ["open", "open", "open"]), pools, walls, Seeding([1, 2], "uniform_by_volume", "thin"),
         Validity(smallest, ["gradient", "relaxation", "surface", "field"], mesh_edge_feature_ratio=edge_med / smallest),
+        nominal_field_T=float(field_T),
         description="one Winther axon: inner and outer surface, surroundings free water",
         realisation={"g_ratio": _g_ratio(meshes[0], meshes[1])},
         provenance={"source": "Winther", "scale": scale, "files": [{"path": p, "sha256": _sha(p)} for p in (inner_ply, outer_ply)],
                     "transformations": [f"box = outer surface padded by {pad} m", "extra pool declared free water (water_fraction 0, not seeded)",
-                                        "nominal pool values from the catalogued white matter"],
+                                        "nominal pool values from the catalogued white matter",
+                                        "myelin chi_iso = +1.06e-6, isotropic: the convention the Winther meshes were published with"],
                     "created": date.today().isoformat(), "software": {"name": "dmipy-sim", "version": _version()}})
     return spec.validate()
 
@@ -217,7 +224,7 @@ def caterpillar_spec(path, *, scale=_UM, box=None, glia=True, field_T=3.0, rho2=
         id or f"caterpillar/{os.path.splitext(os.path.basename(path))[0]}",
         Domain(lo.tolist(), hi.tolist(), ["reflect"] * 3), pools, walls,
         Seeding([p.id for p in pools], "uniform_by_volume", "water_fraction"),
-        Validity(smallest, ["gradient", "relaxation", "surface", "field"]),
+        Validity(smallest, ["gradient", "relaxation", "surface", "field"]), nominal_field_T=float(field_T),
         description=f"CATERPillar voxel: {len(np.unique(t['cell_id'][ax]))} axons as sphere chains"
                     + (f", {len(np.unique(t['cell_id'][gl]))} glial cells" if gl.any() else ""),
         realisation={"n_axons": int(len(np.unique(t["cell_id"][ax]))), "n_glia": int(len(np.unique(t["cell_id"][gl]))),
@@ -272,6 +279,7 @@ def strands_spec(path, *, scale=_UM, g_ratio=None, boundary="reflect", field_T=3
         Domain([-half] * 3, [half] * 3, [boundary] * 3), pools, walls,
         Seeding([p.id for p in pools], "uniform_by_volume", "water_fraction"),
         Validity(smallest, ["gradient", "relaxation", "surface"] + (["field"] if g_ratio is not None else [])),
+        nominal_field_T=float(field_T),
         description=f"{source}: {len(R)} strands as sphere-swept polylines" + ("" if g_ratio is None else " with a sheath"),
         realisation={"n_objects": int(len(R)), "cell_side": float(t["side"]), "radius_min": float(R.min()),
                      "radius_max": float(R.max())},

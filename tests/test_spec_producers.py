@@ -96,3 +96,12 @@ def test_the_g_ratio_is_measured_from_the_surfaces_not_assumed(tmp_path, g):
     run = _cactus_run_dir(tmp_path, g=g)
     gr = cactus_spec(run).realisation["g_ratio"]
     assert set(gr) == {"0", "1", "2"} and all(v == pytest.approx(g, abs=0.015) for v in gr.values())
+
+
+def test_producers_record_the_calibration_field_and_the_datasets_chi_convention(tmp_path):
+    from dmipy_sim.spec import winther_spec, cactus_spec
+    inner, outer = _tube_pair(tmp_path, g=0.7)
+    w = winther_spec(inner, outer, scale=1e-6, pad=1e-6, field_T=7.0)
+    assert w.nominal_field_T == 7.0 and w.pool("myelin").susceptibility.chi_iso == 1.06e-6      # Winther's own convention
+    c = cactus_spec(_cactus_run_dir(tmp_path))
+    assert c.nominal_field_T == 3.0 and c.pool("myelin").susceptibility.chi_iso == -0.1e-6     # the catalogue's

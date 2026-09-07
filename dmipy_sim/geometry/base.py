@@ -137,10 +137,17 @@ class Geometry(ABC):
     #: empty when the geometry was given none. The ONE spelling of per-compartment D/T2/T1/rho.
     compartments = Compartments()
 
+    #: The spec this geometry was built from by `spec.geometry_from_spec`, or None for a constructed one. A spec
+    #: can say more than a geometry knows (nominal chi, the calibration field, request / realisation /
+    #: provenance), so the geometry hands back the spec it came from rather than a regenerated one.
+    _spec_source = None
+
     @property
     def spec(self):
-        """The :class:`~dmipy_sim.spec.SubstrateSpec` of this geometry: the situation it puts a walker in,
-        written out (domain and faces, pools, walls and their physics, seeding)."""
+        """The :class:`~dmipy_sim.spec.SubstrateSpec` of this geometry: the one it was built from, else the
+        situation it puts a walker in written out (domain and faces, pools, walls and their physics, seeding)."""
+        if self._spec_source is not None:
+            return self._spec_source
         from ..spec.build import spec_of
         return spec_of(self)
 

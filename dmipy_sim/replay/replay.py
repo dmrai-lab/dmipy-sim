@@ -133,8 +133,9 @@ class ReplayPack:
             return out
         return [float(v) for v in np.asarray(values, float).reshape(-1)]
 
-    def replay(self, waveform, *, tissue=None, T2=None, T1=None, rho=None, D=None, B0=None, b0_dir=(0.0, 0.0, 1.0),
-               chi_iso=None, chi_aniso=0.0, refocus_time="auto", compartment=None, complex_signal=False):
+    def replay(self, waveform, *, tissue="nominal", T2=None, T1=None, rho=None, D=None, B0=None,
+               b0_dir=(0.0, 0.0, 1.0), chi_iso=None, chi_aniso=0.0, refocus_time="auto", compartment=None,
+               complex_signal=False):
         """The signal of ``waveform`` on this pack, with every tier the pack carries and the request asks for.
 
         ``waveform`` is a :class:`~dmipy_sim.acquisition.waveforms.Waveform` / :class:`~dmipy_sim.sequences.Sequence`
@@ -147,9 +148,12 @@ class ReplayPack:
         * **bulk relaxation** (C1): ``T2`` (and ``T1``, under the waveform's coherence gate) per pool
           id, or a ``{pool name: value}`` dict resolved through the embedded substrate spec; the pack
           carries the occupancy channel and no value, so nothing is applied unless given.
-        * ``tissue``: a :class:`~dmipy_sim.spec.Tissue` supplying T2, T1, rho, B0, its direction and the
-          susceptibilities at once (``Tissue.from_spec(spec, B0=...)`` reads the spec's nominal values);
-          an explicit keyword wins over it.
+        * ``tissue``: where the physical values come from. ``"nominal"`` (default) is the **nominal replay**:
+          the values the embedded substrate spec declares (pool T2 / T1, wall rho, the field source's chi,
+          the calibration field ``nominal_field_T`` as B0) -- what a paper's pack reproduces by firing a
+          pulse at it; a pack without a spec, or a spec that declares no values, replays the gradient alone.
+          ``False`` is the bare diffusion signal. A :class:`~dmipy_sim.spec.Tissue` supplies the values
+          yourself. In every case an explicit keyword wins.
         * **surface relaxivity** (C2): ``rho`` (m/s) with the walk's diffusivity ``D`` (the pack's
           recorded value unless given); requires the boundary local time.
         * **field** (C3): ``B0`` (T) with ``b0_dir`` and the susceptibility ``chi_iso`` (required) and
@@ -180,6 +184,17 @@ class ReplayPack:
         n_w = self.n_walkers
         w = np.asarray(self.spin_weights, np.float64)
 
+        if isinstance(tissue, str):
+            if tissue != "nominal":
+                raise ValueError("tissue must be 'nominal', False, or a Tissue")
+            spec = self.substrate
+            if spec is not None:
+                from ..spec.tissue import Tissue
+                tissue = Tissue.from_spec(spec)
+            else:
+                tissue = None
+        elif tissue is False:
+            tissue = None
         if tissue is not None:
             k = tissue.knobs()
             T2 = k["T2"] if T2 is None else T2; T1 = k["T1"] if T1 is None else T1
