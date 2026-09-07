@@ -66,8 +66,12 @@ E2   = pack.replay(seq, B0=7.0, b0_dir=(1, 0, 0))   # any value is a knob: same 
 The spec the pack embeds carries the substrate's nominal values, so a published pack reproduces its paper
 with no second file. `pack.replay(seq, tissue=False)` is the bare diffusion signal; `T2=` per pool id or
 `{"intra": 0.05, ...}` by pool name, `rho=`, `B0=`, `chi_iso=`, `chi_aniso=` override one value each;
-`tissue=Tissue(...)` supplies a whole set; `compartment=1` restricts the mean to one pool. A tier that is
-requested but not carried raises; nothing is silently skipped.
+`tissue=Tissue(...)` supplies a whole set; `compartment=1` restricts the mean to one pool. The pose is a knob
+too: `orientation=` (a rotation, or the lab direction the substrate axis points along) replays the same walk
+at another pose, and `fod=FOD.watson(kappa, mu)` / `FOD.from_sh(coeffs, basis="tournier07")` composes a
+distribution of poses through the two-axis Gaunt route, in which the gradient and the field move together (a
+bare coefficient array is refused: the basis must be named). A tier that is requested but not carried
+raises; nothing is silently skipped.
 
 ## Substrates
 

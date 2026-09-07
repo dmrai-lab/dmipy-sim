@@ -3,3 +3,4 @@ flat name keeps its public surface."""
 from .replay import *          # noqa: F401,F403
 from . import replay as _m     # noqa: E402
 globals().update({k: v for k, v in vars(_m).items() if k.startswith("_") and not k.startswith("__")})
+from .fod import FOD                    # noqa: E402,F401
