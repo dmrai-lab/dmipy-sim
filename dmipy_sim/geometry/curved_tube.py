@@ -203,6 +203,8 @@ class PackedCurvedTubes(Geometry):
         # interior=True : intra-axonal, all tubes at once (each walker confined inside its
         #                 own -- i.e. its nearest -- tube), one grid/one JIT for all tubes.
         self.interior = bool(interior)
+        self.centerlines = [np.asarray(cl, np.float64) for cl in centerlines]     # what the pack was built from
+        self.radii = np.asarray(radii, np.float64).reshape(-1)
         A, AB, rr = [], [], []
         for cl, R in zip(centerlines, radii):
             cl = np.asarray(cl, np.float64)

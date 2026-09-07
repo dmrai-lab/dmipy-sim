@@ -137,6 +137,13 @@ class Geometry(ABC):
     #: empty when the geometry was given none. The ONE spelling of per-compartment D/T2/T1/rho.
     compartments = Compartments()
 
+    @property
+    def spec(self):
+        """The :class:`~dmipy_sim.spec.SubstrateSpec` of this geometry: the situation it puts a walker in,
+        written out (domain and faces, pools, walls and their physics, seeding)."""
+        from ..spec.build import spec_of
+        return spec_of(self)
+
     # ---- compartment labelling ----
     #
     # One convention for every geometry, the one the .rpk format uses: id 0 is the
