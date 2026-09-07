@@ -8,7 +8,6 @@ import dmipy_sim as d
 from dmipy_sim.replay import ReplayPack, compile_scheme, replay_signal
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_sim.replay.compression import decode_occupancy, relaxation_logweight
-from dmipy_sim.replay._replay_kernel import resample_gradient
 from dmipy_sim.sequences import Sequence
 
 D0 = 2e-9
@@ -34,8 +33,7 @@ def _wf(n_t, dt):
 
 def _W(pack, wf):
     """The compiled scheme of ``wf`` on the pack grid, by hand: what pack.replay must reproduce."""
-    G = resample_gradient(np.asarray(wf.G), wf.dt, pack.dt, pack.n_t)
-    return compile_scheme(G, pack.dt, pack.K, n_t=pack.n_t)
+    return compile_scheme(np.asarray(wf.G), wf.dt, pack.K, n_t=pack.n_t, dt_pack=pack.dt)
 
 
 def test_gradient_replay_is_the_mode_space_contraction(packs):

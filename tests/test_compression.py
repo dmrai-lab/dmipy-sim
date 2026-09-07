@@ -28,7 +28,8 @@ def test_mode_space_phi_equals_raw_at_full_K():
     X = np.cumsum(rng.standard_normal((N, n_t, 3)) * 1e-7, axis=1)
     G = rng.standard_normal((M, n_t, 3)) * 0.1
     dt = 1e-4
-    phi_raw = (GAMMA * dt) * np.einsum("mtd,ntd->nm", G, X)
+    from dmipy_sim.replay._replay_kernel import effective_gradient
+    phi_raw = (GAMMA * dt) * np.einsum("mtd,ntd->nm", effective_gradient(G, dt, n_t, dt), X)
     arrays, meta, _ = cx.encode_bridge_dst(X, K=n_t - 2)
     phi_mode = cx.mode_space_phi(arrays, meta, G, dt)
     assert np.allclose(phi_mode, phi_raw, rtol=1e-6, atol=1e-6)

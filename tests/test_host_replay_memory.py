@@ -73,6 +73,7 @@ def test_replay_of_a_stored_walk_agrees_with_the_direct_sum():
     G[1, :20, 2] = 0.08
     G[1, 40:, 2] = -0.08
     phi, _, sig = replay(traj, dt, G, dt, return_walker_signals=True)
-    phi_ref = (GAMMA * dt) * np.einsum("mti,wti->mw", G, traj)
+    from dmipy_sim.replay._replay_kernel import effective_gradient
+    phi_ref = (GAMMA * dt) * np.einsum("mti,wti->mw", effective_gradient(G, dt, n_t, dt), traj)   # exact in time
     np.testing.assert_allclose(phi, phi_ref, rtol=1e-10, atol=1e-12)
     np.testing.assert_allclose(sig, np.cos(phi_ref).mean(1), rtol=1e-10, atol=1e-12)
