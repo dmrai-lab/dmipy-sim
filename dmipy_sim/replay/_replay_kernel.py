@@ -35,36 +35,91 @@ def _same_grid(dt_wf, dt_traj):
     return abs(float(dt_wf) - float(dt_traj)) / max(abs(float(dt_traj)), 1e-30) <= _SAME_GRID_RTOL
 
 
-def waveform_moments(G, dt_wf, n_t, dt_pack):
-    """Zeroth and first moments of the sample-and-hold waveform ``G`` (``(n_meas, n_wf, 3)``, its own step
-    ``dt_wf``) over the walk's save intervals ``[t_k, t_{k+1}]``, ``t_k = k dt_pack``:
-
-        A0[k] = int G dt,    A1[k] = int G (t - t_k) dt,        k = 0 .. n_t - 2.
-
-    Exact (closed form per constant piece), whatever the two grids and wherever the edges fall. A waveform
-    may end at ``T = (n_t - 1) dt_pack`` (its last sample sits there and integrates to nothing); one with a
-    non-zero sample starting beyond ``T`` is refused, because the stored path ends there.
-    """
-    G = np.asarray(G, np.float64)
+def _cumulative_at(G, dt_wf, times):
+    """``Q0(t) = int_0^t G`` and ``Q1(t) = int_0^t G t dt`` of the sample-and-hold waveform ``G``
+    (``(n_meas, n_wf, 3)``, step ``dt_wf``) at arbitrary ``times``, clipped to the waveform's extent
+    (zero gradient beyond it). Closed form per constant piece."""
     n_meas, n_wf, _ = G.shape
-    dt_wf, dt_pack = float(dt_wf), float(dt_pack)
-    T = (int(n_t) - 1) * dt_pack
-    e = np.arange(n_wf + 1) * dt_wf                                   # the waveform's interval edges
-    beyond = e[:-1] > T * (1.0 + 1e-9)
-    if beyond.any() and np.any(G[:, beyond, :] != 0.0):
-        raise ValueError(f"the waveform has a non-zero gradient beyond the pack's T_max = {T:.6g} s "
-                         f"(its own extent is {e[-1]:.6g} s); the stored path ends there")
-    Q0 = np.concatenate([np.zeros((n_meas, 1, 3)), np.cumsum(G, axis=1) * dt_wf], axis=1)          # int_0^t G
+    dt_wf = float(dt_wf)
+    e = np.arange(n_wf + 1) * dt_wf
+    Q0 = np.concatenate([np.zeros((n_meas, 1, 3)), np.cumsum(G, axis=1) * dt_wf], axis=1)
     Q1 = np.concatenate([np.zeros((n_meas, 1, 3)),
-                         np.cumsum(G * ((e[1:] ** 2 - e[:-1] ** 2) / 2.0)[None, :, None], axis=1)], axis=1)   # int_0^t G t
-    tp = np.arange(int(n_t)) * dt_pack
-    tc = np.clip(tp, 0.0, e[-1])
+                         np.cumsum(G * ((e[1:] ** 2 - e[:-1] ** 2) / 2.0)[None, :, None], axis=1)], axis=1)
+    tc = np.clip(np.asarray(times, np.float64), 0.0, e[-1])
     j = np.clip(np.searchsorted(e, tc, side="right") - 1, 0, n_wf - 1)
     Q0p = Q0[:, j, :] + G[:, j, :] * (tc - e[j])[None, :, None]
     Q1p = Q1[:, j, :] + G[:, j, :] * ((tc ** 2 - e[j] ** 2) / 2.0)[None, :, None]
-    A0 = np.diff(Q0p, axis=1)
-    A1 = np.diff(Q1p, axis=1) - tp[:-1][None, :, None] * A0
+    return Q0p, Q1p
+
+
+def piece_moments(G, dt_wf, edges, n_t, dt_pack):
+    """Moments of the sample-and-hold waveform ``G`` over the **pieces** ``[edges[p], edges[p+1]]`` of the
+    walk, a cut of the save grid at the saves and at any further instants (an RF pulse, an echo): returns
+    ``A0`` = int G dt, ``A1`` = int G (t - t_k) dt with ``t_k`` the start of the save interval the piece lies in,
+    both ``(n_meas, n_pieces, 3)``, and ``k`` ``(n_pieces,)`` that save interval's index. A piece must not
+    straddle a save (the saves are among the edges). Exact. A waveform with a non-zero sample starting beyond
+    ``T = (n_t - 1) dt_pack`` is refused: the stored path ends there.
+    """
+    G = np.asarray(G, np.float64)
+    dt_wf, dt_pack = float(dt_wf), float(dt_pack)
+    T = (int(n_t) - 1) * dt_pack
+    e_wf = np.arange(G.shape[1] + 1) * dt_wf
+    beyond = e_wf[:-1] > T * (1.0 + 1e-9)
+    if beyond.any() and np.any(G[:, beyond, :] != 0.0):
+        raise ValueError(f"the waveform has a non-zero gradient beyond the pack's T_max = {T:.6g} s "
+                         f"(its own extent is {e_wf[-1]:.6g} s); the stored path ends there")
+    edges = np.asarray(edges, np.float64)
+    if edges.ndim != 1 or edges.size < 2 or np.any(np.diff(edges) < -1e-12 * max(T, 1e-30)):
+        raise ValueError("edges must be a sorted 1-D array of at least two instants")
+    k = np.clip(np.floor(edges[:-1] / dt_pack + 1e-9).astype(int), 0, int(n_t) - 2)
+    Q0, Q1 = _cumulative_at(G, dt_wf, edges)
+    A0 = np.diff(Q0, axis=1)
+    A1 = np.diff(Q1, axis=1) - (k * dt_pack)[None, :, None] * A0
+    return A0, A1, k
+
+
+def waveform_moments(G, dt_wf, n_t, dt_pack):
+    """Zeroth and first moments of the sample-and-hold waveform over the walk's save intervals
+    ``[t_k, t_{k+1}]``, ``k = 0 .. n_t - 2``: :func:`piece_moments` with the saves as the edges."""
+    A0, A1, _ = piece_moments(G, dt_wf, np.arange(int(n_t)) * float(dt_pack), n_t, dt_pack)
     return A0, A1
+
+
+def piece_phase_weights(G, dt_wf, edges, n_t, dt_pack):
+    """The precession of each piece as weights on the two saves bounding its interval: the phase of piece
+    ``p`` is ``w_lo[p] . r[k_p] + w_hi[p] . r[k_p + 1]`` (radians, gamma included), exact for the
+    piecewise-linear path. Returns ``(w_lo, w_hi, k)`` with the weights ``(n_meas, n_pieces, 3)``."""
+    A0, A1, k = piece_moments(G, dt_wf, edges, n_t, dt_pack)
+    w_hi = GAMMA * A1 / float(dt_pack)
+    return GAMMA * A0 - w_hi, w_hi, k
+
+
+def bin_gate(chi, dt_wf, n_t, dt_pack):
+    """The fraction of each save's ACCUMULATION interval during which the gate ``chi`` is on. A save's boundary
+    local time, occupancy and bound fraction are accumulated over the step that ends at that save, so a gate on
+    them is the gate's average over ``[t_k - dt_pack, t_k]`` (the gate held at its first value before ``t = 0``),
+    not its value at a sample: ``bin_gate(ones) == 1`` everywhere. ``(n_meas|1, n_t)``. For SAMPLED quantities
+    (positions, a field at the saves) use :func:`gate_weights` instead."""
+    chi = np.asarray(chi, np.float64)
+    if chi.ndim == 1:
+        chi = chi[None, :]
+    Gc = np.zeros(chi.shape + (3,)); Gc[..., 0] = chi
+    t_hi = np.arange(int(n_t)) * float(dt_pack)
+    t_lo = t_hi - float(dt_pack)
+    Q_hi = _cumulative_at(Gc, dt_wf, t_hi)[0][..., 0]
+    Q_lo = _cumulative_at(Gc, dt_wf, np.clip(t_lo, 0.0, None))[0][..., 0] + chi[:, :1] * np.minimum(t_lo, 0.0)[None, :]
+    return (Q_hi - Q_lo) / float(dt_pack)
+
+
+def gate_weights(chi, dt_wf, n_t, dt_pack):
+    """Per-save weights of a scalar sample-and-hold gate (a coherence gate ``chi(t)``, ``(n_wf,)`` or
+    ``(n_meas, n_wf)`` on its own grid): :func:`effective_gradient` of one component, ``(n_meas|1, n_t)``.
+    ``gate_weights(ones) `` sums to ``T / dt_pack``: the exact duration in save units."""
+    chi = np.asarray(chi, np.float64)
+    if chi.ndim == 1:
+        chi = chi[None, :]
+    Gc = np.zeros(chi.shape + (3,)); Gc[..., 0] = chi
+    return effective_gradient(Gc, dt_wf, n_t, dt_pack)[..., 0]
 
 
 def effective_gradient(G, dt_wf, n_t, dt_pack):
