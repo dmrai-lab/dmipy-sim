@@ -62,7 +62,7 @@ def test_seed_in_cell_uses_the_exact_containment_test():
     assert mesh_contains(np.asarray(V, float), np.asarray(F, np.int64), pts).all()
 
 
-@pytest.mark.parametrize("flat", ["geometries", "mesh", "mesh_shapes", "curved_tube", "_boundary", "core", "physics",
+@pytest.mark.parametrize("flat", ["geometries", "mesh", "mesh_shapes", "curved_cylinder", "_boundary", "core", "physics",
                                   "bank", "trajectories", "waveforms", "pulse_sequence", "susceptibility", "pedagogy"])
 def test_no_flat_path_shims(flat):
     """The old flat module paths are gone, not deprecated: only the packaged paths exist."""

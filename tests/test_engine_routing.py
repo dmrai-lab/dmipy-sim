@@ -23,7 +23,7 @@ def _engines_used(geometry):
 
 def test_parity_is_declared_on_the_validated_families_only():
     yes = (d.FreeDiffusion, d.Box1D, d.Sphere, d.Cylinder, d.Ellipsoid, d.PackedCylinders, d.PackedSpheres, d.Mesh)
-    no = (d.MyelinatedCylinder, d.PackedMyelinatedCylinders, d.CurvedTube, d.PackedCurvedTubes,
+    no = (d.MyelinatedCylinder, d.PackedMyelinatedCylinders, d.CurvedCylinder, d.PackedCurvedCylinders,
           PermeableSlab1D, PermeableShell)
     assert all(g.replay_parity for g in yes) and not any(g.replay_parity for g in no)
     assert not hasattr(core, "_REPLAY_AUTO_GEOM_NAMES") and not hasattr(core, "_replay_auto_allowed")

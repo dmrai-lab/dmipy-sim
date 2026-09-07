@@ -49,7 +49,7 @@ def initial_positions(geometry, n_walkers, key, r0=None):
     """Seed positions for a walk: ``r0`` when the caller supplied one, else the geometry's own.
 
     The pool a geometry seeds is its own declaration (``Mesh(pool="extra")``,
-    ``MultiShellCurvedTube(pool="myelin")``), so a driver that seeds itself walks the pool the
+    ``CurvedMyelinatedCylinder(pool="myelin")``), so a driver that seeds itself walks the pool the
     geometry was built for. A fibre bundle's extra-axonal water is the OUTER surface with
     ``pool="extra"``; seeding it inside by default re-simulated the intra pool under the name
     "extra", at 0.54x the extra pool's analytic ``(S/V)*D``.

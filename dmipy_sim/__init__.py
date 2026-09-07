@@ -37,7 +37,7 @@ from .geometry import (FreeDiffusion, Box1D, Sphere, Cylinder, MyelinatedCylinde
                          PackedMyelinatedCylinders,
                          pack_myelinated_cylinders,
                          PermeableSlab1D)
-from .geometry.curved_tube import CurvedTube, MultiShellCurvedTube, PackedCurvedTubes
+from .geometry.curved_cylinder import CurvedCylinder, CurvedMyelinatedCylinder, PackedCurvedCylinders
 from .geometry.sphere_union import SphereUnion
 from .geometry.mesh import Mesh, load_ply
 from .fields.susceptibility import (SusceptibilitySources, MyelinSusceptibility,
@@ -82,7 +82,7 @@ __all__ = [
     "PackedSpheres", "pack_spheres",
     "PackedMyelinatedCylinders", "pack_myelinated_cylinders",
     "PermeableSlab1D",
-    "CurvedTube", "MultiShellCurvedTube", "PackedCurvedTubes", "SphereUnion",
+    "CurvedCylinder", "CurvedMyelinatedCylinder", "PackedCurvedCylinders", "SphereUnion",
     "Mesh", "load_ply",
     # susceptibility off-resonance fields (forward Bloch)
     "SusceptibilitySources", "MyelinSusceptibility", "GridSusceptibility",

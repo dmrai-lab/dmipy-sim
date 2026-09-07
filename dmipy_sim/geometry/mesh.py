@@ -383,7 +383,7 @@ class Mesh(Geometry):
     # `self.radius` is `feature_radius` -- a MESH-RESOLUTION parameter, not a physical
     # pore size. It therefore does NOT bound a step the way an analytic radius does, and
     # physics.walk_sub_steps must use the collision criterion INSTEAD of R/6 here (see #59).
-    # Analytic geometries that merely carry a spatial index (PackedCurvedTubes) leave this
+    # Analytic geometries that merely carry a spatial index (PackedCurvedCylinders) leave this
     # False, so both criteria apply to them.
     radius_is_mesh_feature = True
 

@@ -67,8 +67,8 @@ def spec_of(geometry, *, id=None, provenance=None, surface_dir=None):
     surface file into (a spec references surfaces as files); one loaded with ``Mesh.from_ply`` references
     the file it came from."""
     from ..geometry import (FreeDiffusion, Box1D, Sphere, Cylinder, Ellipsoid, PackedCylinders, PackedSpheres,
-                            MyelinatedCylinder, PackedMyelinatedCylinders, CurvedTube, MultiShellCurvedTube,
-                            PackedCurvedTubes, SphereUnion)
+                            MyelinatedCylinder, PackedMyelinatedCylinders, CurvedCylinder, CurvedMyelinatedCylinder,
+                            PackedCurvedCylinders, SphereUnion)
     from ..geometry.analytic import PermeableSlab1D, PermeableShell
     g = geometry
     name = type(g).__name__
@@ -180,7 +180,7 @@ def spec_of(geometry, *, id=None, provenance=None, surface_dir=None):
                              realisation={"n_objects": int(N), "packing_fraction": float(np.pi * np.sum(outer ** 2) / L ** 2),
                                           "cell_side": L, "g_ratio": float(np.mean(inner / outer))},
                              description=f"periodic cell of {N} myelinated cylinders", provenance=prov)
-    if isinstance(g, MultiShellCurvedTube):
+    if isinstance(g, CurvedMyelinatedCylinder):
         cl = np.asarray(g.centerline, float)
         pools = [Pool(0, "extra", None), Pool(1, "intra", None), Pool(2, "myelin", None, susceptibility=Susceptibility(None, None, "radial"))]
         inner = Wall("axolemma", Surface("swept_polyline", centerline=cl.tolist(), radius=g.r_in), 1, 2)
@@ -190,19 +190,19 @@ def spec_of(geometry, *, id=None, provenance=None, surface_dir=None):
         return SubstrateSpec(sid, Domain(lo, hi, ["open"] * 3), pools, [inner, outer], Seeding([seeded]),
                              Validity(min(g.r_in, g.r_out - g.r_in), _tiers([inner, outer], pools)),
                              description="myelinated curved axon: concentric shells swept along a polyline", provenance=prov)
-    if isinstance(g, CurvedTube):
+    if isinstance(g, CurvedCylinder):
         cl = np.asarray(g.centerline, float)
         pools = [extra0, Pool(1, "intra", None, water_fraction=1.0)]
-        wall = Wall("tube", Surface("swept_polyline", centerline=cl.tolist(), radius=g.radius), 1, None)
+        wall = Wall("cylinder", Surface("swept_polyline", centerline=cl.tolist(), radius=g.radius), 1, None)
         lo = (cl.min(0) - MARGIN * g.radius).tolist(); hi = (cl.max(0) + MARGIN * g.radius).tolist()
         return SubstrateSpec(sid, Domain(lo, hi, ["open"] * 3), pools, [wall], Seeding([1]),
-                             Validity(g.radius, _tiers([wall], pools)), description="curved tube; the lumen", provenance=prov)
-    if isinstance(g, PackedCurvedTubes):
+                             Validity(g.radius, _tiers([wall], pools)), description="curved cylinder; the lumen", provenance=prov)
+    if isinstance(g, PackedCurvedCylinders):
         cls_ = [np.asarray(c, float).tolist() for c in g.centerlines]
         radii = np.asarray(g.radii, float).tolist()
         pools = [Pool(0, "extra", None, water_fraction=(0.0 if g.interior else 1.0)),
                  Pool(1, "intra", None, water_fraction=(1.0 if g.interior else 0.0))]
-        wall = Wall("tubes", Surface("swept_polyline", instances={"centerlines": cls_, "radii": radii}), 1, 0)
+        wall = Wall("cylinders", Surface("swept_polyline", instances={"centerlines": cls_, "radii": radii}), 1, 0)
         if g.box is not None:
             lo, hi = g.box[0].tolist(), g.box[1].tolist(); bc = ["reflect" if g.box_reflect else "open"] * 3
         else:
@@ -325,8 +325,8 @@ def geometry_from_spec(spec):
 
 def _geometry_from_spec(spec):
     from ..geometry import (FreeDiffusion, Box1D, Sphere, Cylinder, Ellipsoid, PackedCylinders, PackedSpheres,
-                            MyelinatedCylinder, PackedMyelinatedCylinders, CurvedTube, MultiShellCurvedTube,
-                            PackedCurvedTubes, SphereUnion)
+                            MyelinatedCylinder, PackedMyelinatedCylinders, CurvedCylinder, CurvedMyelinatedCylinder,
+                            PackedCurvedCylinders, SphereUnion)
     from ..geometry.analytic import PermeableSlab1D, PermeableShell
     from ..compartments import Compartments, Pool as CPool
     spec = SubstrateSpec.from_dict(spec) if isinstance(spec, dict) else spec
@@ -394,7 +394,7 @@ def _geometry_from_spec(spec):
         if s.instances:
             if s.kind == "swept_polyline":
                 cls_, radii = polyline_arrays(s)
-                return PackedCurvedTubes(cls_, radii, interior=(spec.seeding.pools[0] == w.inside_pool),
+                return PackedCurvedCylinders(cls_, radii, interior=(spec.seeding.pools[0] == w.inside_pool),
                                          box=((dom.box_min, dom.box_max) if "reflect" in dom.boundary else None))
             centers = np.asarray(s.instances["centers"], float)
             L = float(dom.box_max[0] - dom.box_min[0])
@@ -410,7 +410,7 @@ def _geometry_from_spec(spec):
         if s.kind == "ellipsoid":
             return Ellipsoid(s.semiaxes, surface_relaxivity_t2=rho(w), permeability=kappa(w))
         if s.kind == "swept_polyline":
-            return CurvedTube(np.asarray(s.centerline), s.radius)
+            return CurvedCylinder(np.asarray(s.centerline), s.radius)
     if len(walls) == 2:
         a, b = walls
         if {a.name, b.name} == {"membrane", "outer"}:
@@ -426,7 +426,7 @@ def _geometry_from_spec(spec):
                                   if pools[n].T2 is not None or pools[n].T1 is not None})
             if inner.surface.kind == "swept_polyline":
                 seeded = {1: "intra", 2: "myelin", 0: "extra"}[spec.seeding.pools[0]]
-                return MultiShellCurvedTube(np.asarray(inner.surface.centerline), inner.surface.radius, outer.surface.radius, pool=seeded)
+                return CurvedMyelinatedCylinder(np.asarray(inner.surface.centerline), inner.surface.radius, outer.surface.radius, pool=seeded)
             D = {n: (pools[n].D if pools[n].D is not None else 0.0) for n in pools}
             if inner.surface.instances:
                 centers = np.asarray(inner.surface.instances["centers"], float)[:, :2]

@@ -262,7 +262,7 @@ def strands_spec(path, *, scale=_UM, g_ratio=None, boundary="reflect", field_T=3
                        "nominal pool values from the catalogued white matter"]
     if g_ratio is None:
         pools = pools[:2]
-        walls = [Wall("tubes", Surface("swept_polyline", instances={"centerlines": cls_, "radii": R.tolist()}), 1, 0,
+        walls = [Wall("cylinders", Surface("swept_polyline", instances={"centerlines": cls_, "radii": R.tolist()}), 1, 0,
                       Directional(), Sided(rho, rho))]
         transformations.append("inside a strand = intra (1), outside all = extra (0); no myelin")
         smallest = float(R.min())

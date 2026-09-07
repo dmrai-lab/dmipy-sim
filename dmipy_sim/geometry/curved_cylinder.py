@@ -1,4 +1,4 @@
-"""CurvedTube — a sphere-swept polyline geometry for curving fibres (e.g. DiSCo strands).
+"""CurvedCylinder — a sphere-swept polyline geometry for curving fibres (e.g. DiSCo strands).
 
 The intra-axonal space of a constant-radius fibre that follows an arbitrary curved
 centerline is exactly ``{ r : dist(r, centerline_polyline) < R }`` — the Minkowski
@@ -26,7 +26,7 @@ import numpy as np
 from .base import Geometry, LengthScales
 
 
-class CurvedTube(Geometry):
+class CurvedCylinder(Geometry):
     def __init__(self, centerline, radius: float):
         cl = np.asarray(centerline, np.float64)          # (P, 3) metres
         if cl.ndim != 2 or cl.shape[0] < 2:
@@ -108,7 +108,7 @@ class CurvedTube(Geometry):
         return r_out
 
 
-class MultiShellCurvedTube(CurvedTube):
+class CurvedMyelinatedCylinder(CurvedCylinder):
     """A myelinated curved axon: concentric intra / myelin / extra shells swept along a
     curved centerline. Compartment by distance-to-centerline d:
       1 intra  (d < r_in),  2 myelin (r_in <= d < r_out),  0 extra (d >= r_out).
@@ -162,7 +162,7 @@ class MultiShellCurvedTube(CurvedTube):
         if shell is not None:
             import warnings
             warnings.warn("init_positions(shell=...) is spelled pool=..., and the pool a driver seeds is the "
-                          "constructor argument MultiShellCurvedTube(pool=...)", DeprecationWarning, stacklevel=2)
+                          "constructor argument CurvedMyelinatedCylinder(pool=...)", DeprecationWarning, stacklevel=2)
             if pool is not None:
                 raise ValueError("give pool= or shell=, not both")
             pool = shell
@@ -189,7 +189,7 @@ class MultiShellCurvedTube(CurvedTube):
         return jnp.asarray(C + off, jnp.float32)
 
 
-class PackedCurvedTubes(Geometry):
+class PackedCurvedCylinders(Geometry):
     """Extra-axonal diffusion around a pack of curved tubes, accelerated by a sparse grid
     over the tube *segments* (~O(#segments), not #triangles). An extra walker must not
     enter any tube: each step gathers the tube segments in the walker's 27-cell

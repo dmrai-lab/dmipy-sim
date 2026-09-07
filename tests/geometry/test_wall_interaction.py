@@ -133,7 +133,7 @@ def test_reflect_equals_permeate_at_zero_permeability(name):
 _ALL_NAMES = [("Sphere", True), ("Cylinder", True), ("Ellipsoid", True),
               ("PackedCylinders", True), ("PackedSpheres", True),
               ("PermeableSlab1D", True), ("PermeableShell", True),
-              ("FreeDiffusion", False), ("Box1D", False), ("CurvedTube", False)]
+              ("FreeDiffusion", False), ("Box1D", False), ("CurvedCylinder", False)]
 
 
 def _build_any(name):
@@ -146,7 +146,7 @@ def _build_any(name):
 
 def _all_geometries():
     from dmipy_sim.geometry import (Sphere, Cylinder, Ellipsoid, FreeDiffusion, Box1D,
-                                    PermeableSlab1D, PermeableShell, CurvedTube)
+                                    PermeableSlab1D, PermeableShell, CurvedCylinder)
     c2 = _pack(12, R, 12e-6, 2); c3 = _pack(6, R, 12e-6, 3)
     t = np.linspace(0, 1, 32)
     cl = np.stack([20e-6 * t, 3e-6 * np.sin(2 * np.pi * t), np.zeros_like(t)], 1)
@@ -163,7 +163,7 @@ def _all_geometries():
         ("PermeableShell", PermeableShell(r_inner=3e-6, r_outer=5e-6, permeability=0.0), True),
         ("FreeDiffusion", FreeDiffusion(), False),
         ("Box1D", Box1D(length=1e-5), False),
-        ("CurvedTube", CurvedTube(centerline=cl, radius=2e-6), False),
+        ("CurvedCylinder", CurvedCylinder(centerline=cl, radius=2e-6), False),
     ]
 
 

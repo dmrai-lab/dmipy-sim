@@ -101,8 +101,8 @@ class _Boundary:
                 g = SphereUnion(self.centers, self.radii, pool=pool, feature_radius=feature,
                                 box=((lo, hi) if reflect else None))
             else:
-                from ..geometry.curved_tube import PackedCurvedTubes
-                g = PackedCurvedTubes(self.centerlines, self.radii, interior=(pool == "intra"),
+                from ..geometry.curved_cylinder import PackedCurvedCylinders
+                g = PackedCurvedCylinders(self.centerlines, self.radii, interior=(pool == "intra"),
                                       box=((lo, hi) if reflect else None))
             self._geom[key] = g
         return self._geom[key]
