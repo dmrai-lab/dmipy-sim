@@ -1,0 +1,23 @@
+{
+  "substrate_spec_version": "0.1",
+  "id": "examples/isolated-cylinder-5um",
+  "description": "One infinite impermeable cylinder of radius 5 um in an open domain; only the lumen is a pool, the outside is void. What dmipy_sim.Cylinder(5e-6, (0,0,1)) means.",
+  "domain": {"box_min": [-2e-5, -2e-5, -2e-5], "box_max": [2e-5, 2e-5, 2e-5], "boundary": ["open", "open", "open"]},
+  "frame": {"axis": [0.0, 0.0, 1.0], "in_plane": null},
+  "pools": [
+    {"id": 0, "name": "extra", "D": 0.0, "T2": null, "T1": null, "water_fraction": 0.0, "susceptibility": null},
+    {"id": 1, "name": "intra", "D": 2.0e-9, "T2": 0.05, "T1": 1.2, "water_fraction": 1.0, "susceptibility": null}
+  ],
+  "walls": [
+    {"name": "membrane", "surface": {"kind": "cylinder", "center": [0.0, 0.0, 0.0], "axis": [0.0, 0.0, 1.0], "radius": 5.0e-6},
+     "inside_pool": 1, "outside_pool": null,
+     "permeability": {"in_to_out": 0.0, "out_to_in": 0.0},
+     "surface_relaxivity": {"inside": 0.0, "outside": 0.0},
+     "mt_reactivity": {"inside": 0.0, "outside": 0.0}}
+  ],
+  "seeding": {"pools": [1], "rule": "uniform_by_volume", "weights": "water_fraction"},
+  "request": null,
+  "realisation": null,
+  "validity": {"smallest_feature": 5.0e-6, "min_gap": null, "mesh_edge_feature_ratio": null, "tiers": ["gradient", "relaxation", "surface"]},
+  "provenance": {"source": "analytic", "files": [], "scale": 1.0, "transformations": [], "created": "2026-09-07", "software": {"name": "dmipy-sim", "version": "2.2.0"}}
+}

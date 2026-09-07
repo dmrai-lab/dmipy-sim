@@ -1,0 +1,35 @@
+{
+  "substrate_spec_version": "0.1",
+  "id": "examples/packed-myelinated-3",
+  "description": "Three myelinated cylinders in a periodic square cell, open along the fibre axis: extra / intra / myelin pools, an axolemma with kappa, both sheath walls with rho2, myelin the field-source pool. What Substrate.canonical().pack(n_axons=3) means.",
+  "domain": {"box_min": [-2.0e-6, -2.0e-6, -1.0e-6], "box_max": [2.0e-6, 2.0e-6, 1.0e-6], "boundary": ["periodic", "periodic", "open"]},
+  "frame": {"axis": [0.0, 0.0, 1.0], "in_plane": [1.0, 0.0, 0.0]},
+  "pools": [
+    {"id": 0, "name": "extra",  "D": 1.7e-9, "T2": 0.055, "T1": 1.0,  "water_fraction": 1.0, "susceptibility": null},
+    {"id": 1, "name": "intra",  "D": 1.7e-9, "T2": 0.05,  "T1": 1.2,  "water_fraction": 1.0, "susceptibility": null},
+    {"id": 2, "name": "myelin", "D": 0.0,    "T2": 0.01,  "T1": 0.44, "water_fraction": 0.4,
+     "susceptibility": {"chi_iso": -1.06e-6, "chi_aniso": -0.1e-6, "director": "radial"}}
+  ],
+  "walls": [
+    {"name": "axolemma", "surface": {"kind": "cylinder", "axis": [0.0, 0.0, 1.0],
+       "instances": {"centers": [[-0.9e-6, -0.7e-6, 0.0], [0.8e-6, -0.6e-6, 0.0], [0.0, 0.9e-6, 0.0]], "radii": [0.35e-6, 0.42e-6, 0.28e-6]}},
+     "inside_pool": 1, "outside_pool": 2,
+     "permeability": {"in_to_out": 1.0e-5, "out_to_in": 1.0e-5},
+     "surface_relaxivity": {"inside": 1.16e-6, "outside": 1.16e-6},
+     "mt_reactivity": {"inside": 0.0, "outside": 0.0}},
+    {"name": "sheath", "surface": {"kind": "cylinder", "axis": [0.0, 0.0, 1.0],
+       "instances": {"centers": [[-0.9e-6, -0.7e-6, 0.0], [0.8e-6, -0.6e-6, 0.0], [0.0, 0.9e-6, 0.0]], "radii": [0.5e-6, 0.6e-6, 0.4e-6]}},
+     "inside_pool": 2, "outside_pool": 0,
+     "permeability": {"in_to_out": 0.0, "out_to_in": 0.0},
+     "surface_relaxivity": {"inside": 1.16e-6, "outside": 1.16e-6},
+     "mt_reactivity": {"inside": 0.0, "outside": 0.0}}
+  ],
+  "seeding": {"pools": [0, 1, 2], "rule": "uniform_by_volume", "weights": "water_fraction"},
+  "request": {"generator": {"name": "dmipy_sim.substrate.Substrate.pack", "version": "2.2.0"}, "seed": 0, "n_objects": 3,
+              "packing_fraction": 0.55, "diameter_law": {"family": "gamma", "shape": 2.0, "scale": 3.04e-7, "d_min": 4.0e-7}, "g_ratio": 0.7},
+  "realisation": {"n_objects": 3, "packing_fraction": 0.4967, "cell_side": 4.0e-6, "min_gap": 0.11e-6, "smallest_feature": 0.12e-6},
+  "validity": {"smallest_feature": 0.12e-6, "min_gap": 0.11e-6, "mesh_edge_feature_ratio": null,
+               "tiers": ["gradient", "relaxation", "surface", "field", "exchange"]},
+  "provenance": {"source": "generated", "files": [], "scale": 1.0, "transformations": ["outer diameters floored at d_min", "RSA placement of outer cylinders", "lumens = g_ratio * outer"],
+                 "created": "2026-09-07", "software": {"name": "dmipy-sim", "version": "2.2.0"}}
+}
