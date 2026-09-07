@@ -13,6 +13,45 @@ Everything is JAX (`vmap`/`scan`) and runs on CPU or a CUDA-12 GPU.
 > **[dmipy-fit](https://github.com/dmrai-lab/dmipy-fit)** · analytical inverse &nbsp;·&nbsp;
 > **[dmipy](https://github.com/dmrai-lab/dmipy)** · umbrella + docs at **[dmipy.org](https://dmipy.org)**.
 
+## What this is: a representation, not just a signal
+
+The proposal is a chain of declared, portable objects. A **substrate generator** (CACTUS, CATERPillar, a
+DiSCo strand list, the calibrated white matter of `Substrate`, or an analytic geometry) is written down as a
+**substrate spec**: where the walls are, which pool is on which side, what each wall does to a spin, where
+walkers are seeded. The **engine** walks that spec once and freezes the walk as a **replay pack**: the walk
+itself and nothing about how it will be read. Every physical value and every acquisition is then a **replay
+knob**: the same pack answers any gradient waveform, any RF schedule, any tissue value, any pose, without
+another simulation. Packs tile into a **replay phantom**, where the macroscopic layer lives: fibre
+distributions and fractions per voxel, and the maps a scanner adds on top of the microstructure.
+
+```mermaid
+flowchart LR
+    subgraph gen["substrate generators"]
+        direction TB
+        G1["CACTUS · CATERPillar · DiSCo strands"]
+        G2["Substrate.canonical(...).request(...)"]
+        G3["analytic geometries: Cylinder, Sphere, Mesh, ..."]
+    end
+    SPEC["SubstrateSpec (.sub.json)<br/>domain · pools · walls and their physics<br/>seeding · request vs realisation · nominal values"]
+    ENGINE["dmipy-sim engine<br/>walk_spec / simulate<br/>sub-steps from the spec's smallest feature<br/>save grid from the scanner class"]
+    RPK["Replay Pack (.rpk)<br/>positions as bridge + K sine bands<br/>occupancy · wall contact · field basis<br/>+ the spec, no tissue value"]
+    subgraph knobs["replay knobs"]
+        direction TB
+        K1["tissue: T2 / T1 per pool · rho · chi · B0 and its direction"]
+        K2["acquisition: any G(t) exactly · RF schedule (vector Bloch) · b-tensors · CPMG"]
+        K3["pose: orientation · FOD (Gaunt composition)"]
+    end
+    SIG["signal · any scanner, any sequence"]
+    RPH["Replay Phantom (.rph)<br/>packs over a voxel grid · FOD + fractions per voxel<br/>per-voxel maps (B1 transmit); macroscopic B0 /<br/>tissue-interface fields as the assembly layer"]
+    gen --> SPEC --> ENGINE --> RPK --> knobs --> SIG
+    RPK --> RPH --> knobs
+```
+
+The formats are open specifications, versioned together in
+[replay-pack-spec](https://github.com/dmrai-lab/replay-pack-spec): `SUBSTRATE.md` (the spec), `RPK.md`
+(the pack), `RPH.md` (the phantom). A pack from the substrate bank reproduces its paper by firing a pulse
+at it, and the same pack serves a fitting framework, an acquisition designer and a tractography phantom.
+
 ## Two ways to get a signal
 
 **Fused**: one call walks the spins under one acquisition and returns the signal.
@@ -44,7 +83,6 @@ from dmipy_sim.spec import walk_spec
 from dmipy_sim.replay import ReplayPack
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_sim.sequences import Sequence
-from dmipy_sim.spec import walk_spec
 
 # the substrate: histology-calibrated white matter, realised as a SPEC -- domain, pools, walls, seeding,
 # what was requested and what was achieved, all written out (replay-pack-spec/SUBSTRATE.md)

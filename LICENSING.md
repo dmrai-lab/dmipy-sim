@@ -20,7 +20,6 @@ commercial license is available under separately negotiated terms that lift thos
 
 ## Contributing
 
-Contributions are welcome under the AGPL. Because the project is dual-licensed, we ask outside
-contributors to agree that their contributions may also be offered under the commercial license
-(a lightweight contributor license agreement). For anything larger than a small fix, please get
-in touch before opening a pull request.
+The project does not take pull requests, so there is no contributor license agreement: open an
+issue with the physics, the substrate or the acquisition you need, and it is built into the
+framework from there (see `CONTRIBUTING.md`).
