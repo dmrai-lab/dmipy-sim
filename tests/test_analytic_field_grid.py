@@ -4,7 +4,6 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
-from dmipy_sim.compartments import Compartments, Pool
 from dmipy_sim.fields.susceptibility_field import FieldGrid, field_grid_of, assemble_field, sample_grid
 from dmipy_sim.replay.bank import build_replay_pack
 
@@ -48,15 +47,13 @@ def test_packed_grid_is_the_periodic_cell_and_a_pack_replays_with_the_field():
     with pytest.raises(TypeError, match="MyelinatedCylinder"):
         field_grid_of(d.Sphere(1e-6))
     walk = d.simulate_trajectories(200, D0, pm, 4e-3, 4e-4, seed=0, require_gpu=False)
-    comps = Compartments(extra=Pool(T2=0.08), intra=Pool(T2=0.05), myelin=Pool(T2=0.01))
-    pk = build_replay_pack(walk, id="test/pm-field", compartments=comps, field=fg, K=8, envelope=ENV,
-                           license="x", citation="x")
+    pk = build_replay_pack(walk, id="test/pm-field", field=fg, K=8, envelope=ENV, license="x", citation="x")
     assert pk.has_field and pk.has_relaxation and pk.has_surface
     G0 = np.zeros((1, pk.n_t, 3))                                           # b = 0, gradient echo
     with pytest.raises(ValueError, match="without chi_iso"):
-        pk.replay(G0, B0=3.0, b0_dir=(1, 0, 0), relaxation=False, refocus_time=None)
-    with_field = pk.replay(G0, B0=3.0, b0_dir=(1, 0, 0), chi_iso=1e-6, relaxation=False, refocus_time=None)
-    no_field = pk.replay(G0, relaxation=False)
+        pk.replay(G0, B0=3.0, b0_dir=(1, 0, 0), refocus_time=None)
+    with_field = pk.replay(G0, B0=3.0, b0_dir=(1, 0, 0), chi_iso=1e-6, refocus_time=None)
+    no_field = pk.replay(G0)
     assert no_field[0] == pytest.approx(1.0) and with_field[0] < no_field[0]      # the field dephases
-    lumen = pk.replay(G0, B0=3.0, b0_dir=(1, 0, 0), chi_iso=1e-6, relaxation=False, refocus_time=None, compartment=1)
+    lumen = pk.replay(G0, B0=3.0, b0_dir=(1, 0, 0), chi_iso=1e-6, refocus_time=None, compartment=1)
     assert lumen[0] > with_field[0]                                        # zero lumen field: the lumen keeps more

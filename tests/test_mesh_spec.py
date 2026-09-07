@@ -87,9 +87,10 @@ def test_a_multi_surface_bundle_is_walked_from_the_spec_alone(tmp_path):
     pk = build_replay_pack(walk, id="test/bundle", license="x", citation="x", K=8, envelope=ENV)
     assert pk.has_relaxation and pk.has_surface and pk.has_field
     assert pk.meta["substrate"]["id"] == "test/bundle-2" and SubstrateSpec.from_dict(pk.meta["substrate"]) == spec
-    assert pk.meta["per_comp"]["T2"] == [0.08, 0.05, 0.01]
+    assert "per_comp" not in pk.meta and pk.substrate == spec
     G0 = np.zeros((1, pk.n_t, 3))
-    e = pk.replay(G0, B0=3.0, b0_dir=(1, 0, 0), chi_iso=-1e-6, relaxation=False, refocus_time=None)
+    e = pk.replay(G0, B0=3.0, b0_dir=(1, 0, 0), chi_iso=-1e-6, refocus_time=None)
+    assert pk.replay(G0, T2={"intra": 0.05, "extra": 0.08, "myelin": 0.01})[0] < 1.0     # T2 by pool name
     assert 0 < e[0] <= 1.0
 
 

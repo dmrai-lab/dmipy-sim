@@ -194,7 +194,7 @@ def test_path_pack_with_lossy_positions_omits_the_grid_arrays_and_replays_via_pa
     # and it still replays: susceptibility off vs on must differ, and chi=0 must match the grid-free case
     class _W:
         G = np.zeros((1, N_T, 3)); dt = DT
-    kw = dict(b0_dir=[1, 0, 0], B0=7.0, relaxation=False)   # relaxation off: isolate the field
+    kw = dict(b0_dir=[1, 0, 0], B0=7.0)                     # no T2 given: isolate the field
     s0 = bank.replay_susc(pk, _W(), chi_iso=0.0, **kw)
     s1 = bank.replay_susc(pk, _W(), chi_iso=1.06e-6, **kw)
     npt.assert_allclose(s0, 1.0, atol=1e-12)          # no gradient, no field -> nothing to dephase
@@ -276,7 +276,7 @@ def test_replay_susc_can_restrict_to_one_compartment():
     W.dt = dt
 
     kw = dict(b0_dir=[0.0, 0.0, 1.0], B0=7.0, chi_iso=1.06e-6,
-              refocus_time=(nt - 1) * dt / 2, relaxation=False, complex_signal=True)
+              refocus_time=(nt - 1) * dt / 2, complex_signal=True)
     everything = bank.replay_susc(pk, W, **kw)
     pool0 = bank.replay_susc(pk, W, compartment=0, **kw)
     pool1 = bank.replay_susc(pk, W, compartment=1, **kw)
@@ -352,9 +352,6 @@ def test_preflight_catches_what_otherwise_costs_a_full_walk():
     assert any("cannot be assembled" in p for p in probs)
     assert not preflight_master({"susc_field_basis": {"iso_local": 1}}, susc_path_K=64, K=48)
 
-    # a channel whose metadata is missing: the tier would be silently skipped
-    assert any("compartments=" in p for p in preflight_master({"comp": np.zeros(3)}))
-
     # an auto-selected K is sized against THIS walk's floor; for a shard destined to be merged
     # the union's floor is lower and the codec error does not shrink, so K must be pinned
     assert any("Pin K" in p for p in preflight_master({}, sigma_star=5e-3))
@@ -364,15 +361,12 @@ def test_preflight_catches_what_otherwise_costs_a_full_walk():
 # ------------------------------------------------------------------ the builder takes a PersistentWalk
 def test_builder_takes_a_persistent_walk_and_assembles_the_tiers_it_carries():
     import dmipy_sim as d
-    from dmipy_sim.compartments import Compartments, Pool
     from dmipy_sim.fields.susceptibility_field import FieldGrid
     walk = d.simulate_trajectories(300, D0, d.Cylinder(2e-6, (0, 0, 1)), 0.01, 5e-4, seed=0, require_gpu=False)
-    comps = Compartments(extra=Pool(T2=0.08, T1=1.0), intra=Pool(T2=0.05, T1=1.2))
-    pk = build_replay_pack(walk, id="test/walk", compartments=comps, K=8, envelope=_lean_env(),
-                           license="CC-BY-4.0", citation="test")
+    pk = build_replay_pack(walk, id="test/walk", K=8, envelope=_lean_env(), license="CC-BY-4.0", citation="test")
     env = pk.meta["replay_envelope"]
     assert env["gradient"] and env["bulk_relaxation"] and env["surface_relaxivity"] and not env["field"]
-    assert pk.meta["per_comp"]["T2"] == [0.08, 0.05] and pk.meta["per_comp"]["T1"] == [1.0, 1.2]
+    assert "per_comp" not in pk.meta and pk.has_relaxation                   # the channel, never the values
     assert pk.meta["compression"]["precision_tiers"]["usable"]         # the producer's walkers are i.i.d.
     assert pk.n_walkers == 300 and pk.n_t == walk.n_t
     # positions only: gradient tier alone, nothing silently assembled
@@ -381,14 +375,11 @@ def test_builder_takes_a_persistent_walk_and_assembles_the_tiers_it_carries():
     e0 = pk0.meta["replay_envelope"]
     assert e0["gradient"] and not (e0["bulk_relaxation"] or e0["surface_relaxivity"] or e0["field"])
     # the refusals
-    with pytest.raises(ValueError, match="ids 0..n-1"):
-        build_replay_pack(walk, id="x", compartments=Compartments(intra=Pool(T2=0.05)), K=8, envelope=_lean_env(),
-                          license="x", citation="x")
     with pytest.raises(ValueError, match="weights has"):
         build_replay_pack(walk, id="x", weights=np.ones(7), K=8, envelope=_lean_env(), license="x", citation="x")
     with pytest.raises(TypeError, match="FieldGrid"):
         build_replay_pack(walk, id="x", field={"iso_local": 1}, K=8, envelope=_lean_env(), license="x", citation="x")
     with pytest.raises(TypeError, match="go with a PersistentWalk"):
-        build_replay_pack(_slab_master(), id="x", compartments=comps, K=8, envelope=_lean_env(), license="x", citation="x")
+        build_replay_pack(_slab_master(), id="x", weights=np.ones(3), K=8, envelope=_lean_env(), license="x", citation="x")
     fb, origin = _field_basis_for_slab()
     assert FieldGrid(fb, origin).origin is origin

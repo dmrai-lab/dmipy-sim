@@ -39,7 +39,7 @@
             "oneOf": [{"type": "null"}, {
               "type": "object", "required": ["chi_iso", "chi_aniso", "director"], "additionalProperties": false,
               "properties": {
-                "chi_iso": {"type": "number"}, "chi_aniso": {"type": "number"},
+                "chi_iso": {"type": ["number", "null"]}, "chi_aniso": {"type": ["number", "null"]},
                 "director": {"type": "string", "enum": ["none", "radial", "file"]},
                 "file": {"type": "string"}
               }

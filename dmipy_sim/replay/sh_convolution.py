@@ -493,9 +493,22 @@ def _rotations_from_axis(axis, dirs):
     return R
 
 
+def _pool_relaxation(pack, arrays, chans, T2, T1, dt):
+    """Per-walker bulk-relaxation log-weight for per-pool ``T2`` / ``T1`` given at replay (zero when none)."""
+    if T2 is None and T1 is None:
+        return 0.0
+    if "comp_rle_vals" not in arrays:
+        raise ValueError("T2 / T1 were given but the pack carries no compartment channel (C1)")
+    comp = decode_occupancy(arrays, chans["compartment"])["comp"]
+    n_ids = int(np.max(comp)) + 1
+    T2v = pack._by_pool(T2, "T2") or [0.0] * n_ids
+    T1v = pack._by_pool(T1, "T1") or [0.0] * n_ids
+    return relaxation_logweight(comp, T2v, T1v, dt)
+
+
 def pack_response(pack, profile, g_dir, b0_dir, *, amplitude=1.0, B0=3.0,
                   chi_iso=0.0, chi_aniso=0.0, refocus_time=None,
-                  fibre_axis=(0., 0., 1.), relaxation=True, chunk=256):
+                  fibre_axis=(0., 0., 1.), T2=None, T1=None, chunk=256):
     """Response callable for :func:`coupled_spectrum_at`, backed by a real replay pack.
 
     Returns ``response(dirs) -> (n_dirs,)`` complex signal: the pack replayed as though its
@@ -551,10 +564,7 @@ def pack_response(pack, profile, g_dir, b0_dir, *, amplitude=1.0, B0=3.0,
 
     w0 = np.asarray(arrays.get("spin_weights", np.ones(n_w)), np.float64)
     ew = w0.copy()
-    if relaxation and "comp_rle_vals" in arrays and meta.get("per_comp", {}).get("T2"):
-        comp = decode_occupancy(arrays, chans["compartment"])["comp"]
-        pc = meta["per_comp"]
-        ew = ew * np.exp(relaxation_logweight(comp, pc["T2"], pc.get("T1"), dt))
+    ew = ew * np.exp(_pool_relaxation(pack, arrays, chans, T2, T1, dt))
     norm = w0.sum()
 
     g = np.asarray(g_dir, np.float64); g /= np.linalg.norm(g)
@@ -597,7 +607,7 @@ class PackResponder:
 
     def __init__(self, pack, profile, b0_dir, *, amplitude=1.0, B0=3.0, chi_iso=0.0,
                  chi_aniso=0.0, refocus_time=None, fibre_axis=(0., 0., 1.),
-                 relaxation=True, n_theta=32, n_phi=64, backend="numpy", chunk=512):
+                 T2=None, T1=None, n_theta=32, n_phi=64, backend="numpy", chunk=512):
         from scipy.fft import dct
         from .gaunt import sphere_quadrature
         from .compression import read_position_coeffs, decode_occupancy, relaxation_logweight
@@ -644,10 +654,7 @@ class PackResponder:
 
         w0 = np.asarray(arrays.get("spin_weights", np.ones(n_w)), np.float64)
         ew = w0.copy()
-        if relaxation and "comp_rle_vals" in arrays and meta.get("per_comp", {}).get("T2"):
-            comp = decode_occupancy(arrays, chans["compartment"])["comp"]
-            pc = meta["per_comp"]
-            ew = ew * np.exp(relaxation_logweight(comp, pc["T2"], pc.get("T1"), dt))
+        ew = ew * np.exp(_pool_relaxation(pack, arrays, chans, T2, T1, dt))
         self.norm = float(w0.sum())
         self.backend, self.chunk = backend, int(chunk)
         if backend == "jax":

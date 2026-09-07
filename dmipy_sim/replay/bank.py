@@ -34,7 +34,7 @@ from .replay import ReplayPack, read_rpk, write_rpk
 __all__ = ["build_replay_pack", "build_to_floor", "replay_susc", "frame_from_axis", "frame_from_bundles",
            "read_rpk", "write_rpk", "RPK_SCHEMA_VERSION"]
 
-RPK_SCHEMA_VERSION = "0.3"
+RPK_SCHEMA_VERSION = "0.4"
 
 
 # --------------------------------------------------------------- master-walk normalisation
@@ -44,7 +44,7 @@ def _master_arrays(src) -> dict:
     ``src`` is a :class:`~dmipy_sim.persistent_walk.PersistentWalk` (what ``simulate_trajectories`` and
     ``simulate_mt_trajectories`` return), or a dict / ``.npz`` exposing at least ``traj``
     (n_walkers, n_t, 3), ``dt_traj`` and ``T_max`` (the builders' master dict);
-    the tier channels (``comp``/``T2_per_comp``/``T1_per_comp`` for bulk relaxation, ``dlog_b`` for
+    the tier channels (``comp`` for bulk relaxation, ``dlog_b`` for
     surface relaxivity, ``bfrac`` for MT) are optional."""
     if isinstance(src, PersistentWalk):
         src = src._bank_dict()
@@ -52,7 +52,7 @@ def _master_arrays(src) -> dict:
         raise TypeError(
             "build_replay_pack expects a PersistentWalk (the output of simulate_trajectories(..., "
             "tiers=\"all\")) or a master-walk dict / .npz with keys "
-            "traj/dt_traj/T_max[/comp/T2_per_comp/T1_per_comp/dlog_b/bfrac]; "
+            "traj/dt_traj/T_max[/comp/dlog_b/bfrac]; "
             f"got {type(src).__name__}.")
     keys = src.files if hasattr(src, "files") else src.keys()
     m = {k: src[k] for k in keys}
@@ -491,12 +491,11 @@ def _pack_positions(pack):
 
 
 def replay_susc(pack, waveform, *, b0_dir=(0.0, 0.0, 1.0), B0=0.0, chi_iso=0.0, chi_aniso=0.0,
-                refocus_time=None, relaxation=True, complex_signal=False, compartment=None):
-    """``pack.replay(waveform, B0=..., ...)``: the field-tier replay, kept under its old name.
-    ``relaxation=True`` here means "apply the pack's per-pool T2 when it carries them"."""
-    return pack.replay(waveform, relaxation=("auto" if relaxation else False), B0=B0, b0_dir=b0_dir,
-                       chi_iso=chi_iso, chi_aniso=chi_aniso, refocus_time=refocus_time,
-                       compartment=compartment, complex_signal=complex_signal)
+                refocus_time=None, T2=None, T1=None, complex_signal=False, compartment=None):
+    """``pack.replay(waveform, B0=..., ...)``: the field-tier replay, kept under its old name; per-pool
+    ``T2`` / ``T1`` are given here, the pack carries none."""
+    return pack.replay(waveform, T2=T2, T1=T1, B0=B0, b0_dir=b0_dir, chi_iso=chi_iso, chi_aniso=chi_aniso,
+                       refocus_time=refocus_time, compartment=compartment, complex_signal=complex_signal)
 
 
 # --------------------------------------------------------------- pack generation
@@ -593,9 +592,6 @@ def preflight_master(m, *, susc_path_K=None, sigma_star=None, K=None):
         bad.append("susc_path_K was requested but susc_field_basis is None, so the field tier (C3) "
                    "cannot be assembled and the pack would be silently missing it "
                    "(field_store='grid' is what produces it)")
-    if m.get("comp") is not None and m.get("T2_per_comp") is None:
-        bad.append("the walk has a compartment channel but no per-pool T2 (compartments=), so the bulk "
-                   "relaxation tier (C1) will not be assembled")
     if sigma_star is not None and K is None:
         bad.append(f"sigma_star={sigma_star:g} with K unpinned: K is auto-selected against THIS "
                    f"walk's floor, which is the wrong reference for a pack that will be merged "
@@ -604,29 +600,23 @@ def preflight_master(m, *, susc_path_K=None, sigma_star=None, K=None):
 
 
 
-def _walk_master(walk, *, compartments=None, weights=None, field=None, diffusivity=None,
-                 substrate_frame=None):
+def _walk_master(walk, *, weights=None, field=None, diffusivity=None, substrate_frame=None):
     """The bank's master dict from a PersistentWalk plus the substrate metadata; a dict / .npz
     passes through (the builders' path)."""
     from ..persistent_walk import PersistentWalk
     from ..compartments import Compartments
     from ..fields.susceptibility_field import FieldGrid, field_grid_of
     if not isinstance(walk, PersistentWalk):
-        if any(v is not None for v in (compartments, weights, diffusivity, substrate_frame)) \
-                or field not in ("auto", None, False):
-            raise TypeError("compartments=, weights=, field=, diffusivity= and substrate_frame= go with a "
-                            "PersistentWalk; a master dict carries them as its own keys")
+        if any(v is not None for v in (weights, diffusivity, substrate_frame)) or field not in ("auto", None, False):
+            raise TypeError("weights=, field=, diffusivity= and substrate_frame= go with a PersistentWalk; a master "
+                            "dict carries them as its own keys")
         return walk
     geometry = walk.geometry
     spec = walk.spec if walk.spec is not None else (getattr(geometry, "spec", None) if geometry is not None else None)
-    if compartments is None and geometry is not None and len(getattr(geometry, "compartments", ())):
-        c = geometry.compartments
-        if c.by_id("T2") is not None:
-            compartments = c
-    if compartments is None and spec is not None and all(p.T2 is not None for p in spec.pools):
-        from ..compartments import Pool as CPool
-        compartments = Compartments({p.name: CPool(T2=p.T2, T1=p.T1, water_fraction=p.water_fraction)
-                                     for p in spec.pools if p.name in ("extra", "intra", "myelin")})
+    if weights is None and walk.weights is None and spec is not None and walk.compartment is not None:
+        wf = [p.water_fraction for p in sorted(spec.pools, key=lambda p: p.id)]
+        if any(f != 1.0 for f in wf):                     # the seeding rule's weights, from the spec
+            weights = np.asarray(wf, float)[np.asarray(walk.compartment)[:, 0].astype(int)]
     if field == "auto":
         field = None
         if walk.field_grid is not None:
@@ -640,26 +630,6 @@ def _walk_master(walk, *, compartments=None, weights=None, field=None, diffusivi
     extra = {}
     if spec is not None:
         extra["substrate"] = spec.to_dict()
-    if compartments is not None:
-        c = Compartments.coerce(compartments)
-        if c.ids != tuple(range(len(c))):
-            raise ValueError(f"compartments must be the pools the channel indexes, ids 0..n-1 without "
-                             f"gaps (extra, intra[, myelin]); got ids {c.ids}")
-        if walk.compartment is not None:
-            top = int(np.max(walk.compartment))
-            if top >= len(c):
-                raise ValueError(f"the walk's compartment channel uses id {top} but compartments has "
-                                 f"only {len(c)} pools")
-        T2 = c.by_id("T2")
-        if T2 is None:
-            raise ValueError("compartments must give T2 for every pool to assemble the relaxation tier")
-        extra["T2_per_comp"] = np.asarray(T2, float)
-        T1 = c.by_id("T1")
-        if T1 is not None:
-            extra["T1_per_comp"] = np.asarray(T1, float)
-        wf = c.by_id("water_fraction")
-        if wf is not None and weights is None and walk.compartment is not None:
-            weights = np.asarray(wf, float)[np.asarray(walk.compartment)[:, 0].astype(int)]
     if weights is not None:
         w = np.asarray(weights, float).reshape(-1)
         if w.shape[0] != walk.n_walkers:
@@ -677,7 +647,7 @@ def _walk_master(walk, *, compartments=None, weights=None, field=None, diffusivi
     extra["walkers_shuffled"] = True        # the producer draws walkers i.i.d.: any prefix is a fair subsample
     return walk._bank_dict(**extra)
 
-def build_replay_pack(walk, *, id, license, citation, compartments=None, weights=None, field="auto",
+def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto",
                       method=_cx.POSITION_METHOD, envelope=None, tol=2.0, K=None,
                       err_target=None, sigma_star=None, provenance=None,
                       blt_temporal_K=None, blt_dtype=np.float16, susc_path_K=None, susc_path_bits=8,
@@ -706,8 +676,7 @@ def build_replay_pack(walk, *, id, license, citation, compartments=None, weights
     Monte-Carlo floor over ``envelope`` (default :func:`compression.default_envelope`) unless given.
     Returns a :class:`dmipy_sim.replay.replay.ReplayPack`; writes it to ``out_path`` if given.
     """
-    src = _walk_master(walk, compartments=compartments, weights=weights, field=field,
-                       diffusivity=diffusivity, substrate_frame=substrate_frame)
+    src = _walk_master(walk, weights=weights, field=field, diffusivity=diffusivity, substrate_frame=substrate_frame)
     _cx.require_position_method(method)
     m = _master_arrays(src)
     if m.get("PhiC") is not None or m.get("susc_basis") is not None:
@@ -734,7 +703,7 @@ def build_replay_pack(walk, *, id, license, citation, compartments=None, weights
     arrays = dict(pos_arrays)
     chan_meta = {}                                   # per-channel codec params
     channels = {"gradient": True, "susceptibility": False, "T1T2": False, "rho": False,
-                "mt": (m.get("bfrac") is not None) or (m.get("mt_params") is not None)}
+                "mt": (m.get("bfrac") is not None)}
     # STATIC field-grid susceptibility channel: store the geometry-only field-basis grids ONCE
     # (a substrate property); replay assembles the field for any (B0,dir,chi) and samples it along
     # the pos-codec-decoded trajectory (replay_susc). O(N_vox) not O(N_w*N_t) and SE-exact (a static
@@ -760,7 +729,6 @@ def build_replay_pack(walk, *, id, license, citation, compartments=None, weights
             origin=np.asarray(m["susc_grid_origin"], float).tolist(),
             voxel_size=np.asarray(fb["voxel_size"], float).tolist(),
             shape=[int(s) for s in fb["shape"]], has_aniso=(fb.get("aniso_G") is not None),
-            reference_chi_iso=(m.get("susc_chi_iso")), reference_delta_chi_a=(m.get("delta_chi_a")),
             arrays_in_pack=bool(_grid_in_pack),
             replay_route=("grid+path" if (_grid_in_pack and susc_path_K)
                           else ("path" if susc_path_K else "grid")))
@@ -780,7 +748,7 @@ def build_replay_pack(walk, *, id, license, citation, compartments=None, weights
         # pool as a SECOND COLUMN on an independent axis -- not a channel of its own. Replay weights
         # the per-pool rates by occupancy either way; what makes MT a distinct tier is the replay
         # side (vector-Bloch RF, bound-pool knobs, equilibrium start), not the storage.
-        if m.get("comp") is not None and m.get("T2_per_comp") is not None:
+        if m.get("comp") is not None:
             _cols = {"comp": np.asarray(m["comp"])}
             if m.get("bfrac") is not None:
                 _cols["bound"] = np.asarray(m["bfrac"]); channels["mt"] = True
@@ -791,7 +759,7 @@ def build_replay_pack(walk, *, id, license, citation, compartments=None, weights
             channels["T1T2"] = True
         elif m.get("bfrac") is not None:
             raise ValueError("an MT (C4) pack carries its bound pool as a C1 occupancy column, so "
-                             "it needs the compartment channel and the pools' T2 (compartments=) too.")
+                             "it needs the compartment channel too.")
         # dense per-walker physics channels get their own codecs (compression.py):
         # boundary local time -> sparse/dense or the cumulative bridge.
         if m.get("dlog_b") is not None:
@@ -847,7 +815,8 @@ def build_replay_pack(walk, *, id, license, citation, compartments=None, weights
                 fid["meets_target"] = bool(fid["err_max"] <= sigma_star and fid["floor_max"] <= sigma_star)
 
     n_t = X.shape[1]
-    comp_meta = dict(method=method, K=int(K), walker_preserving=bool(wp_method), n_t=int(n_t))
+    comp_meta = dict(method=method, K=int(pos_meta.get("K", K)),        # the K stored: the codec clamps a short walk
+                     walker_preserving=bool(wp_method), n_t=int(n_t))
     if wp_method:
         comp_meta["precision_tiers"] = _precision_tiers(arrays, int(m["n_walkers"]),
                                                         float(fid.get("floor_max") or 0.0),
@@ -862,9 +831,6 @@ def build_replay_pack(walk, *, id, license, citation, compartments=None, weights
                          cell_size=m.get("cell_size"),
                          substrate_frame=(None if m.get("substrate_frame") is None
                                           else np.asarray(m["substrate_frame"], float).tolist())),
-        per_comp=dict(T2=(None if m.get("T2_per_comp") is None else np.asarray(m["T2_per_comp"]).tolist()),
-                      T1=(None if m.get("T1_per_comp") is None else np.asarray(m["T1_per_comp"]).tolist()),
-                      R=(None if m.get("R") is None else np.asarray(m["R"]).tolist())),
         replay_envelope=dict(gradient=True,
                              bulk_relaxation=channels["T1T2"],
                              surface_relaxivity=channels["rho"],
@@ -874,9 +840,6 @@ def build_replay_pack(walk, *, id, license, citation, compartments=None, weights
         fidelity=fid, provenance=provenance or {}, license=license, citation=citation)
     if m.get("substrate") is not None:
         meta["substrate"] = m["substrate"]           # the spec the walk was driven by (#130)
-    if m.get("mt_params") is not None:              # parametric two-pool qMT (pool-level knob)
-        meta["mt"] = {k: (float(v) if isinstance(v, (int, float, np.floating)) else v)
-                      for k, v in m["mt_params"].items()}
     pack = ReplayPack(arrays, meta, source=out_path)
     if out_path is not None:
         write_rpk(out_path, {k: v for k, v in arrays.items() if v is not None}, meta)
