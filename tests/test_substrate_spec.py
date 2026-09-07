@@ -81,3 +81,13 @@ def test_programmatic_construction_validates_too():
         seeding={"pools": [1]}, validity={"smallest_feature": 3e-6, "tiers": ["gradient", "surface"]})
     spec = SubstrateSpec.from_dict(spec.to_dict()).validate()
     assert spec.wall("membrane").surface.radius == 3e-6 and spec.frame.axis == [0.0, 0.0, 1.0]
+
+
+def test_nominal_field_is_optional_and_positive():
+    import dataclasses
+    from dmipy_sim.spec import load_spec, SpecError
+    spec = load_spec(FIX / "isolated_cylinder.sub.json")
+    assert spec.nominal_field_T is None
+    assert dataclasses.replace(spec, nominal_field_T=3.0).validate().to_dict()["nominal_field_T"] == 3.0
+    with pytest.raises(SpecError, match="nominal_field_T"):
+        dataclasses.replace(spec, nominal_field_T=-1.0).validate()

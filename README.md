@@ -39,7 +39,7 @@ from dmipy_sim.spec import walk_spec
 from dmipy_sim.replay import ReplayPack
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_sim.sequences import Sequence
-from dmipy_sim.spec import Tissue, walk_spec
+from dmipy_sim.spec import walk_spec
 
 # the substrate: histology-calibrated white matter, realised as a SPEC -- domain, pools, walls, seeding,
 # what was requested and what was achieved, all written out (replay-pack-spec/SUBSTRATE.md)
@@ -55,19 +55,19 @@ walk = walk_spec(spec, 200_000, T_max=0.05, dt_save=5e-5, seed=0)
 pack = build_replay_pack(walk, id="wm/canonical", license="CC-BY-4.0", citation="...")
 pack.save("wm.rpk")
 
-# 3. anywhere, later: load and replay an acquisition with the tissue values you choose
-pack   = ReplayPack.load("wm.rpk")
-seq    = Sequence.from_pgse(bvalues=[1e9], gradient_directions=[[1, 0, 0]], delta=0.01, Delta=0.03)
-tissue = Tissue.from_spec(pack.substrate, B0=3.0, b0_dir=(1, 0, 0), chi_iso=1.06e-6, chi_aniso=-0.1e-6)
-E      = pack.replay(seq, tissue=tissue)            # = replay(seq, T2=[...], T1=[...], rho=..., B0=..., chi_iso=...)
-# gradient + T2 per pool + surface relaxivity + susceptibility, every value a replay knob
+# 3. anywhere, later: load it and fire a pulse at it
+pack = ReplayPack.load("wm.rpk")
+seq  = Sequence.from_pgse(bvalues=[1e9], gradient_directions=[[1, 0, 0]], delta=0.01, Delta=0.03)
+E    = pack.replay(seq)                             # the NOMINAL replay: the spec's T2 / T1 per pool, rho,
+                                                    # chi and calibration field (3 T here); all four tiers
+E2   = pack.replay(seq, B0=7.0, b0_dir=(1, 0, 0))   # any value is a knob: same walk, another scanner
 ```
 
-A tier that is requested but not carried raises; nothing is silently skipped. `pack.replay(seq)` alone
-is the diffusion signal; `T2=` per pool id or `{"intra": 0.05, ...}` by pool name adds bulk relaxation;
-`compartment=1` restricts the mean to one pool. `Tissue.from_spec` reads the spec's nominal T2, T1 and
-rho, and its chi when the producer knew them (a mesh dataset); an analytic sheath is a field source
-with no chi, so `chi_iso=` is yours to give.
+The spec the pack embeds carries the substrate's nominal values, so a published pack reproduces its paper
+with no second file. `pack.replay(seq, tissue=False)` is the bare diffusion signal; `T2=` per pool id or
+`{"intra": 0.05, ...}` by pool name, `rho=`, `B0=`, `chi_iso=`, `chi_aniso=` override one value each;
+`tissue=Tissue(...)` supplies a whole set; `compartment=1` restricts the mean to one pool. A tier that is
+requested but not carried raises; nothing is silently skipped.
 
 ## Substrates
 

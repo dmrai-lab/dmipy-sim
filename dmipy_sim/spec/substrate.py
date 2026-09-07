@@ -136,6 +136,7 @@ class SubstrateSpec:
     validity: Validity
     frame: Frame = field(default_factory=Frame)
     description: str = ""
+    nominal_field_T: Optional[float] = None    # the B0 the pools' nominal T2 / T1 were calibrated at
     request: Optional[dict] = None
     realisation: Optional[dict] = None
     provenance: Optional[dict] = None
@@ -253,6 +254,8 @@ def validate(d):
         raise SpecError(f"substrate_spec_version {d['substrate_spec_version']!r}: this validator reads 0.x")
     if not isinstance(d["id"], str) or not d["id"]:
         raise SpecError("id must be a non-empty string")
+    if d.get("nominal_field_T") is not None and not (isinstance(d["nominal_field_T"], (int, float)) and d["nominal_field_T"] > 0):
+        raise SpecError(f"nominal_field_T must be a positive field strength in tesla or null, got {d['nominal_field_T']!r}")
     dom = d["domain"]
     lo, hi = _req(dom, "box_min", "domain"), _req(dom, "box_max", "domain")
     _vec3(lo, "domain.box_min"); _vec3(hi, "domain.box_max")

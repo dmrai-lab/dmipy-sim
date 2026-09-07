@@ -339,6 +339,12 @@ class Substrate:
                                          kappa_inner=self.kappa, rho_inner=self.rho2, rho_outer=self.rho2,
                                          compartments=self.compartments)
         spec = spec_of(geom, id=id or f"substrate/canonical-{int(n_fibres)}-{seed}")
+        from ..spec.substrate import Susceptibility
+        from .biophysical_constants import canonical_white_matter
+        wm = canonical_white_matter(field_T=self.field_T)
+        chi = Susceptibility(float(wm["chi_iso_myelin"]), float(wm["delta_chi_a"]), "radial")     # the catalogue's nominal chi
+        pools = [replace(p, susceptibility=chi) if p.name == "myelin" else p for p in spec.pools]
+        spec = replace(spec, pools=pools, nominal_field_T=float(self.field_T))
         realised_gap = float(spec.validity.min_gap)
         if min_gap is not None and realised_gap < float(min_gap):
             raise ValueError(f"the packing's narrowest gap is {realised_gap:.3e} m, below the requested min_gap "
@@ -353,7 +359,8 @@ class Substrate:
                     transformations=["outer diameters drawn from the Gamma law and floored at d_min",
                                      "periodic cell sized for the requested packing fraction",
                                      "fibres packed by outer radius (random sequential addition)",
-                                     "lumens = g_ratio x outer", "pools, rho2 and kappa from the Substrate"])
+                                     "lumens = g_ratio x outer", "pools, rho2 and kappa from the Substrate",
+                                     "myelin chi_iso / chi_aniso and nominal_field_T from the catalogued white matter"])
         return replace(spec, request=request, realisation=realisation, provenance=prov).validate()
 
     def pack(self, n_axons: int = 300, seed: int = 0, N_max=None, orientation=(0.0, 0.0, 1.0),

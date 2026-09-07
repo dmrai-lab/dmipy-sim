@@ -298,7 +298,15 @@ def polyline_arrays(surface):
 
 
 def geometry_from_spec(spec):
-    """The analytic geometry a :class:`SubstrateSpec` describes (inverse of :func:`spec_of`)."""
+    """The geometry a :class:`SubstrateSpec` describes (inverse of :func:`spec_of`); it keeps the spec it was built
+    from as its ``.spec``, nominal values and provenance included."""
+    spec = SubstrateSpec.from_dict(spec) if isinstance(spec, dict) else spec
+    g = _geometry_from_spec(spec)
+    g._spec_source = spec
+    return g
+
+
+def _geometry_from_spec(spec):
     from ..geometry import (FreeDiffusion, Box1D, Sphere, Cylinder, Ellipsoid, PackedCylinders, PackedSpheres,
                             MyelinatedCylinder, PackedMyelinatedCylinders, CurvedTube, MultiShellCurvedTube,
                             PackedCurvedTubes, SphereUnion)

@@ -707,6 +707,30 @@ BIOPHYSICAL_CONSTANTS = {
         'note': 'Pairs with D_myelin_radial; the myelin sheath is an anisotropic '
                 'annular compartment.',
     },
+    'chi_iso_myelin': {
+        'default': {
+            'value': -0.1e-6,
+            'unit': 'SI (dimensionless)',
+            'field_T': None,   # susceptibility is field-independent
+            'species': 'human',
+            'method': 'GRE phase + hollow-cylinder model',
+            'source_key': 'wharton2012',
+            'location': 'isotropic myelin susceptibility chi_I relative to water, fitted alongside chi_A',
+            'citation': {
+                'key': 'wharton2012',
+                'authors': 'Wharton S, Bowtell R',
+                'title': 'Fiber orientation-dependent white matter contrast in gradient echo MRI',
+                'journal': 'Proceedings of the National Academy of Sciences',
+                'year': 2012,
+                'doi': '10.1073/pnas.1211075109',
+            },
+        },
+        'alternatives': [],
+        'description': 'Isotropic (orientation-independent) volume susceptibility of myelin relative to water: '
+                       'the chi_iso replay knob of the field tier. The Winther meshes were built and published '
+                       'with chi_myelin - chi_water = +1.06e-6 (their own convention), which winther_spec keeps.',
+        'note': 'Pairs with delta_chi_a_myelin (chi_A). TO VERIFY against Wharton & Bowtell 2012 Table 1.',
+    },
     'delta_chi_a_myelin': {
         'default': {
             'value': -0.1e-6,
@@ -1331,6 +1355,7 @@ def canonical_white_matter(field_T=3.0):
         'D_myelin_tangential': get_value('D_myelin_tangential'),
         # C3: myelin's susceptibility anisotropy -- the delta_chi_a knob of the field basis
         'delta_chi_a': get_value('delta_chi_a_myelin'),
+        'chi_iso_myelin': get_value('chi_iso_myelin'),
         'gamma_proton': get_value('gamma_proton'),
         'kappa': get_value('kappa_membrane', field_T, allow_nearest=True),
         # quantitative MT (two-pool). These are the MEASURED qMT observables, not the walk's

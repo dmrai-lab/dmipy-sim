@@ -66,6 +66,9 @@ def test_relaxation_applies_the_packs_per_pool_rates(packs):
                                full.replay(wf, T2=T2, T1=T1))                # names resolve through the spec
     for key in ("per_comp", "mt", "T2", "rho"):
         assert key not in full.meta, "a pack carries channels, never a physical value"
+    np.testing.assert_array_equal(full.replay(wf), full.replay(wf, tissue=False))   # a bare geometry declares no values
+    with pytest.raises(ValueError, match="nominal"):
+        full.replay(wf, tissue="all")
 
 
 def test_surface_relaxivity_uses_the_recorded_diffusivity(packs):
