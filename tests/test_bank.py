@@ -391,4 +391,4 @@ def test_builder_takes_a_persistent_walk_and_assembles_the_tiers_it_carries():
     with pytest.raises(TypeError, match="go with a PersistentWalk"):
         build_replay_pack(_slab_master(), id="x", compartments=comps, K=8, envelope=_lean_env(), license="x", citation="x")
     fb, origin = _field_basis_for_slab()
-    assert FieldGrid(fb, origin, 1.06e-6).delta_chi_a == 0.0
+    assert FieldGrid(fb, origin).origin is origin

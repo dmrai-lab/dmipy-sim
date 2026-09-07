@@ -17,8 +17,8 @@ def test_hollow_cylinder_grid_reproduces_the_analytic_field_structure():
     """An isotropic hollow cylinder has exactly zero field in the lumen and a dipolar field outside;
     the anisotropic one a uniform lumen field of half delta_chi_a B0 sin^2(theta) ln(1/g)."""
     g = d.MyelinatedCylinder(2e-6, 3e-6, (0, 0, 1), D0, D0)
-    fg = field_grid_of(g, res=0.1e-6, chi_iso=1e-6, delta_chi_a=-0.1e-6)
-    assert isinstance(fg, FieldGrid) and fg.chi_iso == 1e-6 and fg.basis["shape"][2] == 4
+    fg = field_grid_of(g, res=0.1e-6)
+    assert isinstance(fg, FieldGrid) and fg.basis["shape"][2] == 4 and fg.basis["aniso_G"] is not None
     B0 = 3.0
     iso = assemble_field(fg.basis, (1, 0, 0), B0=B0, chi_iso=1e-6, chi_aniso=0.0)      # B0 perpendicular
     aniso = assemble_field(fg.basis, (1, 0, 0), B0=B0, chi_iso=0.0, chi_aniso=-0.1e-6)
@@ -41,7 +41,7 @@ def test_packed_grid_is_the_periodic_cell_and_a_pack_replays_with_the_field():
     L = float(np.sqrt(np.pi * 3 * (1e-6 / 0.7) ** 2 / 0.5))
     _, _, c = d.pack_myelinated_cylinders([1e-6] * 3, 0.7, None, cell_size=L, seed=0)
     pm = d.PackedMyelinatedCylinders([1e-6] * 3, 0.7, c, L, N_max=4, D_intra=D0, D_extra=D0)
-    fg = field_grid_of(pm, res=0.1e-6, chi_iso=1e-6)
+    fg = field_grid_of(pm, res=0.1e-6, include_aniso=False)
     assert fg.basis["iso_local"].shape[:2] == tuple(np.round(np.array([L, L]) / 0.1e-6).astype(int))
     with pytest.raises(ValueError, match="periodic cell"):
         field_grid_of(pm, box=(np.zeros(2), np.ones(2)))
@@ -53,8 +53,10 @@ def test_packed_grid_is_the_periodic_cell_and_a_pack_replays_with_the_field():
                            license="x", citation="x")
     assert pk.has_field and pk.has_relaxation and pk.has_surface
     G0 = np.zeros((1, pk.n_t, 3))                                           # b = 0, gradient echo
-    with_field = pk.replay(G0, B0=3.0, b0_dir=(1, 0, 0), relaxation=False, refocus_time=None)
+    with pytest.raises(ValueError, match="without chi_iso"):
+        pk.replay(G0, B0=3.0, b0_dir=(1, 0, 0), relaxation=False, refocus_time=None)
+    with_field = pk.replay(G0, B0=3.0, b0_dir=(1, 0, 0), chi_iso=1e-6, relaxation=False, refocus_time=None)
     no_field = pk.replay(G0, relaxation=False)
     assert no_field[0] == pytest.approx(1.0) and with_field[0] < no_field[0]      # the field dephases
-    lumen = pk.replay(G0, B0=3.0, b0_dir=(1, 0, 0), relaxation=False, refocus_time=None, compartment=1)
+    lumen = pk.replay(G0, B0=3.0, b0_dir=(1, 0, 0), chi_iso=1e-6, relaxation=False, refocus_time=None, compartment=1)
     assert lumen[0] > with_field[0]                                        # zero lumen field: the lumen keeps more

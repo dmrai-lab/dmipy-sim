@@ -126,9 +126,10 @@ class ReplayPack:
           skips them.
         * **surface relaxivity** (C2): ``rho`` (m/s) with the walk's diffusivity ``D`` (the pack's
           recorded value unless given); requires the boundary local time.
-        * **field** (C3): ``B0`` (T) with ``b0_dir`` and the susceptibility ``chi_iso`` / ``chi_aniso``
-          (default: the pack's nominal values); ``refocus_time="auto"`` reads the 180 from the
-          waveform's RF schedule (``None`` = gradient echo); requires the field tier.
+        * **field** (C3): ``B0`` (T) with ``b0_dir`` and the susceptibility ``chi_iso`` (required) and
+          ``chi_aniso``; the pack stores the substrate's geometry-only basis and no susceptibility value,
+          so these are the replay's to give; ``refocus_time="auto"`` reads the 180 from the waveform's
+          RF schedule (``None`` = gradient echo); requires the field tier.
 
         ``compartment`` restricts the ensemble mean to one pool id (or a boolean walker mask).
         A tier that is requested but not carried raises rather than returning a plausible number.
@@ -181,7 +182,10 @@ class ReplayPack:
             from .bank import susc_path_decode, susc_path_field
             from ..fields.susceptibility_field import assemble_field, sample_grid
             gm = ch["susceptibility_grid"]
-            chi_i = float(gm.get("chi_iso") or 0.0) if chi_iso is None else float(chi_iso)
+            if chi_iso is None:
+                raise ValueError("B0 was given without chi_iso: the pack carries the substrate's field basis, "
+                                 "not a susceptibility; give chi_iso (and chi_aniso) at replay")
+            chi_i = float(chi_iso)
             pos = self.positions()
             pm = ch.get("susceptibility_path")
             if pm is not None:
