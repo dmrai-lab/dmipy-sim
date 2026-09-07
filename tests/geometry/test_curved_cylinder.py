@@ -17,7 +17,7 @@ import numpy as np
 import pytest
 
 from dmipy_sim import Cylinder, simulate, set_b
-from dmipy_sim.geometry.curved_tube import CurvedTube, MultiShellCurvedTube
+from dmipy_sim.geometry.curved_cylinder import CurvedCylinder, CurvedMyelinatedCylinder
 from dmipy_sim.acquisition.waveforms import pgse
 
 D = 2.0e-9
@@ -36,7 +36,7 @@ def _volume(g):
 
 def test_straight_sweep_is_a_cylinder_geometrically():
     """Volume and confinement in the straight limit, before any diffusion is involved."""
-    g = CurvedTube(_straight_centreline(20e-6), radius=R)
+    g = CurvedCylinder(_straight_centreline(20e-6), radius=R)
     assert _volume(g) == pytest.approx(np.pi * R ** 2 * 40e-6, rel=1e-6)
 
     r0 = np.asarray(g.init_positions(4000, jax.random.PRNGKey(SEED)))
@@ -57,7 +57,7 @@ def test_straight_sweep_matches_the_analytic_cylinder(b):
     n = 20_000
 
     s_cyl = float(np.atleast_1d(simulate(n, D, wf, Cylinder(radius=R, orientation=(0, 0, 1)), seed=SEED))[0])
-    s_swp = float(np.atleast_1d(simulate(n, D, wf, CurvedTube(_straight_centreline(), radius=R), seed=SEED))[0])
+    s_swp = float(np.atleast_1d(simulate(n, D, wf, CurvedCylinder(_straight_centreline(), radius=R), seed=SEED))[0])
 
     # The two geometries share a seed but diverge at the first reflection, so the difference carries the
     # full Monte-Carlo variance rather than being paired. Checked for a hidden systematic before settling on
@@ -82,8 +82,8 @@ def test_curvature_changes_the_perpendicular_signal():
     straight = np.stack([np.zeros_like(z), np.zeros_like(z), z], axis=1)
     bent = np.stack([15e-6 * (z / 30e-6) ** 2, np.zeros_like(z), z], axis=1)   # parabolic bend in x
 
-    s_straight = float(np.atleast_1d(simulate(n, D, wf, CurvedTube(straight, R), seed=SEED))[0])
-    s_bent = float(np.atleast_1d(simulate(n, D, wf, CurvedTube(bent, R), seed=SEED))[0])
+    s_straight = float(np.atleast_1d(simulate(n, D, wf, CurvedCylinder(straight, R), seed=SEED))[0])
+    s_bent = float(np.atleast_1d(simulate(n, D, wf, CurvedCylinder(bent, R), seed=SEED))[0])
 
     assert s_bent < s_straight, (
         f"bending the fibre into the gradient must add attenuation: bent {s_bent:.4f} "
@@ -96,7 +96,7 @@ def test_walkers_stay_inside_a_bent_tube():
     chain of finite cylinders would produce."""
     z = np.linspace(-30e-6, 30e-6, 15)
     bent = np.stack([12e-6 * np.sin(z / 30e-6 * np.pi), np.zeros_like(z), z], axis=1)
-    g = CurvedTube(bent, radius=R)
+    g = CurvedCylinder(bent, radius=R)
 
     wf = set_b(pgse(delta=10e-3, DELTA=30e-3, G_magnitude=0.1, bvecs=[[1, 0, 0]], n_t=400), 1e9)
     out = simulate(4000, D, wf, g, seed=SEED, return_positions=True)
@@ -114,7 +114,7 @@ def test_walkers_stay_inside_a_bent_tube():
 
 def test_multishell_separates_lumen_from_sheath():
     """The myelinated form: an inner tube inside an outer one, seeded per shell."""
-    g = MultiShellCurvedTube(_straight_centreline(20e-6), r_in=3e-6, r_out=5e-6)
+    g = CurvedMyelinatedCylinder(_straight_centreline(20e-6), r_in=3e-6, r_out=5e-6)
 
     intra = np.asarray(g.init_positions(2000, jax.random.PRNGKey(SEED), pool="intra"))
     r_intra = np.linalg.norm(intra[:, :2], axis=1)

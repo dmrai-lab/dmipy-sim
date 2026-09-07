@@ -131,5 +131,5 @@ def test_mesh_and_curved_pack_tables_are_unchanged():
     np.testing.assert_array_equal(np.asarray(m._CELL), ref_cell)
     assert (m.C, m.max_occ, m.overflow) == (ref_C, ref_occ, ref_over)
     cl = np.stack([np.zeros(6), np.linspace(0, 8e-6, 6) ** 2 / 8e-6, np.linspace(0, 8e-6, 6)], axis=1)
-    pk = d.PackedCurvedTubes([cl, cl + np.array([4e-6, 0, 0])], [1e-6, 1.5e-6])
+    pk = d.PackedCurvedCylinders([cl, cl + np.array([4e-6, 0, 0])], [1e-6, 1.5e-6])
     assert np.asarray(pk._CELL).shape[1] == pk.C and (np.asarray(pk._CELL) >= -1).all()

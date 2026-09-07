@@ -27,7 +27,7 @@ _DOWNSTREAM_MODULES = [
     "dmipy_sim.replay.gaunt", "dmipy_sim.replay.compression", "dmipy_sim.acquisition.rf",
     "dmipy_sim.replay.bank", "dmipy_sim.sequences", "dmipy_sim.sequences.pulseq",
     "dmipy_sim.substrate", "dmipy_sim.substrate.biophysical_constants", "dmipy_sim.substrate.substrate",
-    "dmipy_sim.geometry", "dmipy_sim.geometry.mesh", "dmipy_sim.geometry.curved_tube",
+    "dmipy_sim.geometry", "dmipy_sim.geometry.mesh", "dmipy_sim.geometry.curved_cylinder",
     "dmipy_sim.replay.phantom", "dmipy_sim.replay.trajectories",
     "dmipy_sim.fields.susceptibility", "dmipy_sim.fields.susceptibility_field",
     # the engine package
@@ -62,8 +62,8 @@ def _all_geometries():
     from dmipy_sim.geometry import mesh_shapes
     from dmipy_sim.geometry import (FreeDiffusion, Box1D, Sphere, Cylinder, Ellipsoid,
                                     PermeableSlab1D, PermeableShell, PackedCylinders, PackedSpheres,
-                                    MyelinatedCylinder, PackedMyelinatedCylinders, CurvedTube,
-                                    MultiShellCurvedTube, PackedCurvedTubes, Mesh,
+                                    MyelinatedCylinder, PackedMyelinatedCylinders, CurvedCylinder,
+                                    CurvedMyelinatedCylinder, PackedCurvedCylinders, Mesh,
                                     pack_cylinders, pack_spheres, pack_myelinated_cylinders)
     R = 1e-6
     c2, L2, _ = pack_cylinders([R] * 4, target_vf=0.3, seed=0)
@@ -84,16 +84,16 @@ def _all_geometries():
         "PackedSpheres": PackedSpheres([R] * 4, c3, L3),
         "MyelinatedCylinder": MyelinatedCylinder(3e-6, 5e-6, (0, 0, 1), 2e-9, 2e-9),
         "PackedMyelinatedCylinders": PackedMyelinatedCylinders([R] * 4, 0.7, c4, L4, N_max=8),
-        "CurvedTube": CurvedTube(cl, radius=2e-6),
-        "MultiShellCurvedTube": MultiShellCurvedTube(cl, r_in=2e-6, r_out=3e-6),
-        "PackedCurvedTubes": PackedCurvedTubes([cl], [2e-6]),
+        "CurvedCylinder": CurvedCylinder(cl, radius=2e-6),
+        "CurvedMyelinatedCylinder": CurvedMyelinatedCylinder(cl, r_in=2e-6, r_out=3e-6),
+        "PackedCurvedCylinders": PackedCurvedCylinders([cl], [2e-6]),
         "Mesh": Mesh(V, F, feature_radius=1e-6),
     }
 
 
 _NAMES = ["FreeDiffusion", "Box1D", "Sphere", "Cylinder", "Ellipsoid", "PermeableSlab1D",
           "PermeableShell", "PackedCylinders", "PackedSpheres", "MyelinatedCylinder",
-          "PackedMyelinatedCylinders", "CurvedTube", "MultiShellCurvedTube", "PackedCurvedTubes",
+          "PackedMyelinatedCylinders", "CurvedCylinder", "CurvedMyelinatedCylinder", "PackedCurvedCylinders",
           "Mesh"]
 # stepped by their own fused kernel; `reflect` raises by design
 _NO_REFLECT = {"MyelinatedCylinder", "PackedMyelinatedCylinders"}
@@ -116,7 +116,7 @@ def test_geometry_declares_the_protocol(name):
     if name != "FreeDiffusion":
         assert ls.min_feature is not None and ls.min_feature > 0, f"{name} has walls but no scale"
     assert ls.is_mesh_feature == (name == "Mesh")
-    assert (ls.lookup_cell is not None) == (name in ("Mesh", "PackedCurvedTubes"))
+    assert (ls.lookup_cell is not None) == (name in ("Mesh", "PackedCurvedCylinders"))
 
     for flag in ("supports_permeability", "carries_side", "_is_myelinated", "_is_packed_myelinated",
                  "classify_returns_object_id", "radius_is_mesh_feature"):
@@ -162,11 +162,11 @@ def test_length_scales_match_the_geometry_definition():
     outer = pm._outer_radii_np[:pm.N_actual]
     pore = (pm._L_float ** 2 - np.sum(np.pi * outer ** 2)) / np.sum(2 * np.pi * outer)
     assert ls("PackedMyelinatedCylinders").surface_pore == pytest.approx(pore)
-    assert ls("MultiShellCurvedTube").min_feature == 2e-6            # the inner wall
+    assert ls("CurvedMyelinatedCylinder").min_feature == 2e-6            # the inner wall
     m = G["Mesh"]
     assert ls("Mesh") == LengthScales(min_feature=1e-6, lookup_cell=m.cell_size, is_mesh_feature=True)
-    pk = G["PackedCurvedTubes"]
-    assert ls("PackedCurvedTubes") == LengthScales(min_feature=2e-6, lookup_cell=pk.cell_size)
+    pk = G["PackedCurvedCylinders"]
+    assert ls("PackedCurvedCylinders") == LengthScales(min_feature=2e-6, lookup_cell=pk.cell_size)
 
 
 def test_duck_typed_objects_still_read_through_the_legacy_attributes():

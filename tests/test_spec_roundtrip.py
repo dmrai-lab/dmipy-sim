@@ -41,9 +41,9 @@ GEOMETRIES = {
     "myelinated": lambda: d.MyelinatedCylinder(2e-6, 3e-6, (0, 0, 1), D, D, kappa_inner=1e-5,
                                                compartments=d.Compartments(intra=d.Pool(T2=0.05), myelin=d.Pool(T2=0.01), extra=d.Pool(T2=0.08))),
     "packed_myelin": _packed_myelin,
-    "curved": lambda: d.CurvedTube(CL, 1e-6),
-    "multishell": lambda: d.MultiShellCurvedTube(CL, 1e-6, 1.5e-6, pool="myelin"),
-    "packed_curved": lambda: d.PackedCurvedTubes([CL, CL + np.array([4e-6, 0, 0])], [1e-6, 1.5e-6]),
+    "curved": lambda: d.CurvedCylinder(CL, 1e-6),
+    "multishell": lambda: d.CurvedMyelinatedCylinder(CL, 1e-6, 1.5e-6, pool="myelin"),
+    "packed_curved": lambda: d.PackedCurvedCylinders([CL, CL + np.array([4e-6, 0, 0])], [1e-6, 1.5e-6]),
 }
 
 

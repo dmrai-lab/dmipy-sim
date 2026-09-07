@@ -97,7 +97,7 @@ def test_strand_list_round_trips_in_metres(strand_txt):
 
 def test_strands_spec_is_one_wall_of_swept_polylines_in_a_reflecting_voxel(strand_txt):
     spec = strands_spec(strand_txt, id="test/strands")
-    assert [w.name for w in spec.walls] == ["tubes"] and spec.walls[0].surface.kind == "swept_polyline"
+    assert [w.name for w in spec.walls] == ["cylinders"] and spec.walls[0].surface.kind == "swept_polyline"
     assert spec.walls[0].surface.instances["radii"] == pytest.approx([1.5e-6, 1.0e-6, 2.0e-6])
     assert spec.domain.box_min == pytest.approx([-10e-6] * 3) and spec.domain.boundary == ["reflect"] * 3
     assert spec.seeding.pools == [0, 1] and spec.validity.smallest_feature == pytest.approx(1.0e-6)
@@ -105,7 +105,7 @@ def test_strands_spec_is_one_wall_of_swept_polylines_in_a_reflecting_voxel(stran
     # one seeded pool is one geometry, each side of the wall
     g_e = geometry_from_spec(dataclasses.replace(spec, seeding=Seeding([0])))
     g_i = geometry_from_spec(dataclasses.replace(spec, seeding=Seeding([1])))
-    assert type(g_e) is d.PackedCurvedTubes and not g_e.interior and g_e.box is not None and g_i.interior
+    assert type(g_e) is d.PackedCurvedCylinders and not g_e.interior and g_e.box is not None and g_i.interior
     w = walk_spec(spec, 120, 1e-3, 2.5e-4, seed=0, n_probe=20_000, require_gpu=False)
     ids = np.asarray(w.compartment)[:, 0]; pos = np.asarray(w.positions)
     assert set(np.unique(ids)) == {0, 1} and (np.abs(pos) <= 10e-6 + 2e-9).all()

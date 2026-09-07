@@ -30,13 +30,13 @@ def _geometries():
         "PermeableShell": d.geometry.PermeableShell(3e-6, 5e-6, permeability=1e-5),
         "PackedCylinders": d.PackedCylinders([1e-6] * 4, c, L),
         "PackedSpheres": d.PackedSpheres([1e-6] * 4, cs, Ls),
-        "CurvedTube": d.CurvedTube(cl, radius=2e-6),
-        "MultiShellCurvedTube": d.MultiShellCurvedTube(cl, r_in=2e-6, r_out=3e-6),
+        "CurvedCylinder": d.CurvedCylinder(cl, radius=2e-6),
+        "CurvedMyelinatedCylinder": d.CurvedMyelinatedCylinder(cl, r_in=2e-6, r_out=3e-6),
         "Mesh": d.Mesh(V, F, feature_radius=1e-6),
     }
 
 
-@pytest.mark.parametrize("name", ["Sphere", "Cylinder", "Ellipsoid", "PermeableShell", "CurvedTube",
+@pytest.mark.parametrize("name", ["Sphere", "Cylinder", "Ellipsoid", "PermeableShell", "CurvedCylinder",
                                   "Mesh"])
 def test_inside_is_one_and_outside_is_zero(name):
     import jax
@@ -59,7 +59,7 @@ def test_the_remaining_geometries_follow_the_same_convention():
     assert int(G["Box1D"].classify_position(jnp.asarray([2e-6, 0, 0], jnp.float32))) == INTRA
     assert int(G["PermeableSlab1D"].classify_position(jnp.asarray([1e-6, 0, 0], jnp.float32))) == INTRA
     assert int(G["PermeableSlab1D"].classify_position(jnp.asarray([3e-6, 0, 0], jnp.float32))) == EXTRA
-    ms = G["MultiShellCurvedTube"]
+    ms = G["CurvedMyelinatedCylinder"]
     assert int(ms.classify_position(z)) == INTRA
     assert int(ms.classify_position(jnp.asarray([2.5e-6, 0, 0], jnp.float32))) == MYELIN
     assert int(ms.classify_position(jnp.asarray([5e-6, 0, 0], jnp.float32))) == EXTRA

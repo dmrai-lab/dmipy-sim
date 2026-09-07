@@ -194,23 +194,23 @@ def test_the_step_cell_assertion_actually_guards():
 
 
 def _disco_like_tubes(r_min_um=0.718, r_max_um=2.99, n_seg=40):
-    """A PackedCurvedTubes pack shaped like the DiSCo substrate: a RANGE of tube radii,
+    """A PackedCurvedCylinders pack shaped like the DiSCo substrate: a RANGE of tube radii,
     so the segment-bucket `cell_size` (4*Rmin/6 + 2*Rmax ~ 6.5um) is many times the
     finest tube radius (0.72um) that actually bounds the reflection."""
-    from dmipy_sim.geometry.curved_tube import PackedCurvedTubes
+    from dmipy_sim.geometry.curved_cylinder import PackedCurvedCylinders
     z = np.linspace(0.0, 200.0, n_seg) * UM
     zero = np.zeros_like(z)
     cls, radii = [], []
     for k, r_um in enumerate((r_min_um, r_max_um)):
         cls.append(np.stack([zero + k * 20.0 * UM, zero, z], axis=1))
         radii.append(r_um * UM)
-    return PackedCurvedTubes(cls, radii, interior=False)
+    return PackedCurvedCylinders(cls, radii, interior=False)
 
 
 def test_an_analytic_pack_with_a_spatial_index_keeps_the_R_over_6_rule():
-    """A cell grid is not a mesh. PackedCurvedTubes buckets tube SEGMENTS purely to cut
+    """A cell grid is not a mesh. PackedCurvedCylinders buckets tube SEGMENTS purely to cut
     the candidate set; its `radius` is a real tube radius, so R/6 still bounds the step
-    (single-reflection-per-step -- see CurvedTube's docstring). Keying the collision
+    (single-reflection-per-step -- see CurvedCylinder's docstring). Keying the collision
     substitution on `cell_size` alone dropped R/6 here and returned 1 sub-step at
     step/R ~ 1.7, i.e. walkers stepping through tube walls."""
     pk = _disco_like_tubes()

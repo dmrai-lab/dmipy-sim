@@ -37,7 +37,7 @@ import pytest
 
 from dmipy_sim.geometry import (Sphere, Cylinder, Ellipsoid, PackedCylinders,
                                   PackedSpheres, PermeableSlab1D, PermeableShell)
-from dmipy_sim.geometry.curved_tube import CurvedTube, MultiShellCurvedTube
+from dmipy_sim.geometry.curved_cylinder import CurvedCylinder, CurvedMyelinatedCylinder
 
 SUB_STEP = 2.0e-8          # a representative engine sub-step (20 nm)
 N_WALK   = 1500
@@ -151,8 +151,8 @@ def test_landing_on_a_wall_never_changes_compartment(name, geom):
 
 # ── reflect-only geometries ──────────────────────────────────────────────────
 # The curved tubes are impermeable (no `permeate`), so they are probed through `reflect`.
-# They were the last family with no shared boundary code at all: `CurvedTube`'s "safety
-# clamp" was an exact algebraic handroll of `keep_side_radial`, and `PackedCurvedTubes`
+# They were the last family with no shared boundary code at all: `CurvedCylinder`'s "safety
+# clamp" was an exact algebraic handroll of `keep_side_radial`, and `PackedCurvedCylinders`
 # carried its own quadratic and its own specular. Both now call the shared rules, so the
 # same invariant is asserted here as everywhere else.
 
@@ -160,10 +160,10 @@ def _reflect_geometries():
     t = np.linspace(0, 1, 64)
     cl = np.stack([20e-6 * t, 3e-6 * np.sin(2 * np.pi * t), np.zeros_like(t)], 1)
     return [
-        pytest.param("CurvedTube", CurvedTube(centerline=cl, radius=2e-6), id="CurvedTube"),
-        pytest.param("MultiShellCurvedTube",
-                     MultiShellCurvedTube(centerline=cl, r_in=1.5e-6, r_out=2e-6),
-                     id="MultiShellCurvedTube"),
+        pytest.param("CurvedCylinder", CurvedCylinder(centerline=cl, radius=2e-6), id="CurvedCylinder"),
+        pytest.param("CurvedMyelinatedCylinder",
+                     CurvedMyelinatedCylinder(centerline=cl, r_in=1.5e-6, r_out=2e-6),
+                     id="CurvedMyelinatedCylinder"),
     ]
 
 

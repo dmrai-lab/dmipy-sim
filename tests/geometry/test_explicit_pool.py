@@ -1,6 +1,6 @@
 """The pool a geometry seeds is declared on the geometry, not defaulted inside the seeding call.
 
-`Mesh(pool=)` and `MultiShellCurvedTube(pool=)` say which pool `init_positions` fills when a driver
+`Mesh(pool=)` and `CurvedMyelinatedCylinder(pool=)` say which pool `init_positions` fills when a driver
 is given no `r0`; the call can still name a pool explicitly; the old `intra=` / `shell=` flags warn.
 """
 import jax
@@ -47,10 +47,10 @@ def test_the_call_can_name_a_pool_and_the_old_flag_warns():
             m.init_positions(10, k, pool="extra", intra=True)
 
 
-def test_curved_tube_shells_are_pools_too():
+def test_curved_cylinder_shells_are_pools_too():
     z = np.linspace(-20e-6, 20e-6, 9)
     cl = np.stack([np.zeros_like(z), np.zeros_like(z), z], axis=1)
-    g = d.MultiShellCurvedTube(cl, 1e-6, 2e-6, pool="myelin")
+    g = d.CurvedMyelinatedCylinder(cl, 1e-6, 2e-6, pool="myelin")
     k = jax.random.PRNGKey(2)
     r = np.linalg.norm(np.asarray(g.init_positions(500, k))[:, :2], axis=1)
     assert (r >= 1e-6).all() and (r <= 2e-6).all()
@@ -58,4 +58,4 @@ def test_curved_tube_shells_are_pools_too():
         old = g.init_positions(500, k, shell="myelin")
     np.testing.assert_array_equal(np.asarray(old), np.asarray(g.init_positions(500, k)))
     with pytest.raises(ValueError, match="pool must be"):
-        d.MultiShellCurvedTube(cl, 1e-6, 2e-6, pool="csf")
+        d.CurvedMyelinatedCylinder(cl, 1e-6, 2e-6, pool="csf")

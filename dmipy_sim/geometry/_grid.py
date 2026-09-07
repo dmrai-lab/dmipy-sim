@@ -1,6 +1,6 @@
 """Setup-time bucketing of primitives into a uniform grid, vectorised.
 
-A `Mesh` buckets its triangles and `PackedCurvedTubes` its segments into the cells their
+A `Mesh` buckets its triangles and `PackedCurvedCylinders` its segments into the cells their
 bounding boxes overlap, so a walker's 27-cell gather tests only what lies near it. The
 per-primitive Python triple loop that did this cost seconds on a 20k-triangle mesh; here the
 (primitive, cell) pairs are generated with numpy and sorted once. The result is the same table:

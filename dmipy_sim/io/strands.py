@@ -4,7 +4,7 @@ phantom's strand format; ``read_strands_txt.cpp`` in CACTUS's fibre optimiser).
 Layout, whitespace-separated: the voxel side, the number of strands, then per strand its number of control
 points followed by one ``x y z r`` line per control point. Lengths are micrometres; the voxel is
 ``[-side/2, side/2]^3``. The geometry is a sphere-swept polyline per strand
-(:class:`~dmipy_sim.geometry.curved_tube.PackedCurvedTubes`); the spec producer is
+(:class:`~dmipy_sim.geometry.curved_cylinder.PackedCurvedCylinders`); the spec producer is
 :func:`dmipy_sim.spec.strands_spec`.
 """
 import numpy as np

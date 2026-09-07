@@ -87,7 +87,7 @@ everywhere: 0 extra-cellular, 1 intra (the lumen / inside a closed surface), 2 m
 | analytic | `FreeDiffusion`, `Box1D`, `Sphere`, `Cylinder`, `Ellipsoid`, `PermeableSlab1D`, `PermeableShell` |
 | packed, periodic | `PackedCylinders`, `PackedSpheres`, `PackedMyelinatedCylinders` (+ `pack_*` RSA packers) |
 | myelinated | `MyelinatedCylinder`, `PackedMyelinatedCylinders` — three pools, two walls |
-| curved fibres | `CurvedTube`, `MultiShellCurvedTube`, `PackedCurvedTubes` — sphere-swept polylines |
+| curved fibres | `CurvedCylinder`, `CurvedMyelinatedCylinder`, `PackedCurvedCylinders` — sphere-swept polylines |
 | meshes | `Mesh` / `Mesh.from_ply` — any closed or 3-D-periodic triangle mesh, grid-accelerated |
 | sphere-grown cells | `SphereUnion` — the outer boundary of a union of overlapping spheres (CATERPillar), no meshing |
 
@@ -144,7 +144,7 @@ meet in that substrate, not validated on an average case.
 
 ```
 dmipy_sim/
-  geometry/     substrates: base, analytic, packed, myelin, packing, curved_tube, mesh, mesh_shapes
+  geometry/     substrates: base, analytic, packed, myelin, packing, curved_cylinder, mesh, mesh_shapes
   engine/       core (simulate, simulate_trajectories), physics, bloch, pulse_sequence, mt, mt_walk, gpu
   replay/       trajectories, compression, replay (ReplayPack), bank (build_replay_pack)
   acquisition/  waveforms, rf, noise          sequences/   Sequence, pulseq import/export
