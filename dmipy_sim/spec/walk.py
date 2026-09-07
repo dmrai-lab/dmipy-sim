@@ -23,8 +23,7 @@ def walk_spec(spec, n_walkers, T_max, dt_save, *, diffusivity=None, seed=0, n_pr
     from ..persistent_walk import PersistentWalk
     spec = SubstrateSpec.from_dict(spec) if isinstance(spec, dict) else spec
     spec.validate()
-    mesh_walls = [w for w in spec.walls if w.surface.kind == "mesh"]
-    if len(mesh_walls) <= 1:
+    if not _needs_bundle_walk(spec):
         g = geometry_from_spec(spec)
         D = diffusivity
         if D is None:                                   # the walk's reference diffusivity: the intra pool's when
@@ -38,103 +37,160 @@ def walk_spec(spec, n_walkers, T_max, dt_save, *, diffusivity=None, seed=0, n_pr
                                   require_gpu=require_gpu, walker_batch_size=walker_batch_size, tiers=tiers)
         return PersistentWalk(w.positions, w.dt, w.sub_steps, w.dt_sim, w.boundary_local_time, w.compartment,
                               w.bound_frac, w.illegal_crossings, w.seed, w.diffusivity, geometry=g, spec=spec)
-    return _walk_mesh_bundle(spec, int(n_walkers), float(T_max), float(dt_save), seed, n_probe, field, field_res,
-                             require_gpu, walker_batch_size)
+    return _walk_bundle(spec, int(n_walkers), float(T_max), float(dt_save), seed, n_probe, field, field_res,
+                        require_gpu, walker_batch_size)
 
 
-def _walk_mesh_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field, field_res, require_gpu, batch):
+def _needs_bundle_walk(spec):
+    """A spec whose walls are closed surfaces (meshes, sphere unions, strand packs) with more than one wall or
+    more than one seeded pool has no single Geometry: it is walked pool by pool."""
+    def bundle_kind(w):
+        k = w.surface.kind
+        return k in ("mesh", "sphere_union") or (k == "swept_polyline" and bool(w.surface.instances))
+    return bool(spec.walls) and all(bundle_kind(w) for w in spec.walls) \
+        and (len(spec.walls) > 1 or len(spec.seeding.pools) > 1)
+
+
+class _Boundary:
+    """The closed surfaces of a set of walls as ONE boundary: membership on the host and the Geometry that walks
+    the pool inside (``"intra"``) or outside (``"extra"``) it. One surface family per boundary."""
+
+    def __init__(self, walls):
+        kinds = {w.surface.kind for w in walls}
+        if len(kinds) != 1:
+            raise SpecError(f"walls {[w.name for w in walls]} mix surface kinds {sorted(kinds)}; one pool's boundary "
+                            f"must be one kind")
+        self.kind = kinds.pop()
+        self.walls = walls
+        self._geom = {}
+        if self.kind == "mesh":
+            from ..geometry.mesh import load_ply
+            Vs, Fs, off = [], [], 0
+            for w in walls:
+                V, F = load_ply(w.surface.file, scale=(w.surface.scale or 1.0))
+                Vs.append(np.asarray(V, float)); Fs.append(np.asarray(F, np.int64) + off); off += len(V)
+            self.V, self.F = np.concatenate(Vs), np.concatenate(Fs)
+        elif self.kind == "sphere_union":
+            from .build import sphere_union_arrays
+            parts = [sphere_union_arrays(w.surface) for w in walls]
+            self.centers = np.concatenate([p[0] for p in parts]); self.radii = np.concatenate([p[1] for p in parts])
+        else:
+            from .build import polyline_arrays
+            parts = [polyline_arrays(w.surface) for w in walls]
+            self.centerlines = [c for p in parts for c in p[0]]; self.radii = np.concatenate([p[1] for p in parts])
+
+    def contains(self, pts):
+        pts = np.asarray(pts, float)
+        if self.kind == "mesh":
+            from ..fields.susceptibility_field import mesh_contains
+            return np.asarray(mesh_contains(self.V, self.F, pts), bool)
+        if self.kind == "sphere_union":
+            from ..io.caterpillar import points_inside_union
+            return points_inside_union(self.centers, self.radii, pts)
+        return np.asarray(self.geometry("extra", None, None, None, False, None).inside_any(pts), bool)
+
+    def geometry(self, pool, lo, hi, periodic, reflect, feature):
+        key = (pool, reflect)
+        if key not in self._geom:
+            if self.kind == "mesh":
+                from ..geometry.mesh import Mesh
+                g = Mesh(self.V, self.F, periodic=periodic, voxel_min=lo, voxel_max=hi, feature_radius=feature, pool=pool,
+                         box_reflect=reflect)
+            elif self.kind == "sphere_union":
+                from ..geometry.sphere_union import SphereUnion
+                g = SphereUnion(self.centers, self.radii, pool=pool, feature_radius=feature,
+                                box=((lo, hi) if reflect else None))
+            else:
+                from ..geometry.curved_tube import PackedCurvedTubes
+                g = PackedCurvedTubes(self.centerlines, self.radii, interior=(pool == "intra"),
+                                      box=((lo, hi) if reflect else None))
+            self._geom[key] = g
+        return self._geom[key]
+
+
+def _walk_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field, field_res, require_gpu, batch):
+    """Walk a multi-surface spec pool by pool: every seeded pool is defined by the walls it is inside and the walls it
+    is outside; a pool with D > 0 walks the interior of its inside-walls (intra, glia) or the exterior of its
+    outside-walls (extra); a shell pool at D = 0 (myelin) is frozen where it was seeded; the field basis is
+    rasterised from the same membership tests."""
     from ..engine.core import simulate_trajectories
-    from ..geometry.mesh import Mesh, load_ply
-    from ..fields.susceptibility_field import mesh_contains, FieldGrid, mesh_field_basis
+    from ..fields.susceptibility_field import FieldGrid, mesh_field_basis, predicate_field_basis
     from ..persistent_walk import PersistentWalk
-    pools = {p.name: p for p in spec.pools}
-    if set(pools) - {"extra", "intra", "myelin"}:
-        raise SpecError("walk_spec walks extra / intra / myelin mesh bundles; other pools are not implemented")
+    pools = {p.id: p for p in spec.pools}
     for w in spec.walls:
         if w.permeability.in_to_out > 0 or w.permeability.out_to_in > 0:
-            raise SpecError(f"wall {w.name!r} is permeable; a permeable multi-surface mesh walk is not implemented")
-    inner_w = [w for w in spec.walls if w.inside_pool == 1]
-    outer_w = [w for w in spec.walls if w.outside_pool == 0]
-    if not inner_w:
-        raise SpecError("a mesh bundle needs walls whose inside is the intra pool (id 1)")
+            raise SpecError(f"wall {w.name!r} is permeable; a permeable multi-surface walk is not implemented")
+    inside_w = {p: [w for w in spec.walls if w.inside_pool == p] for p in pools}
+    outside_w = {p: [w for w in spec.walls if w.outside_pool == p] for p in pools}
+    bounds = {}
 
-    def concat(walls):
-        Vs, Fs, off = [], [], 0
-        for w in walls:
-            V, F = load_ply(w.surface.file, scale=(w.surface.scale or 1.0))
-            Vs.append(np.asarray(V, float)); Fs.append(np.asarray(F, np.int64) + off); off += len(V)
-        return np.concatenate(Vs), np.concatenate(Fs)
-    Vi, Fi = concat(inner_w)
-    Vo, Fo = concat(outer_w)
+    def boundary(walls):
+        key = tuple(w.name for w in walls)
+        if key not in bounds:
+            bounds[key] = _Boundary(walls)
+        return bounds[key]
+
+    def member(pid):
+        def pred(pts):
+            m = np.ones(len(pts), bool)
+            if inside_w[pid]:
+                m &= boundary(inside_w[pid]).contains(pts)
+            if outside_w[pid]:
+                m &= ~boundary(outside_w[pid]).contains(pts)
+            return m
+        return pred
+
     lo, hi = np.asarray(spec.domain.box_min, float), np.asarray(spec.domain.box_max, float)
     periodic = [b == "periodic" for b in spec.domain.boundary]
     reflect = "reflect" in spec.domain.boundary
-    rng = np.random.default_rng(int(seed) + 99)
-    probe = rng.uniform(lo, hi, (int(n_probe), 3))
-    pin = mesh_contains(Vi, Fi, probe)
-    pout = mesh_contains(Vo, Fo, probe)
-    frac = {"intra": float(pin.mean()), "myelin": float((pout & ~pin).mean()), "extra": float((~pout).mean())}
-    seeded = [spec.pool(i).name for i in spec.seeding.pools]
-    wf = {n: pools[n].water_fraction for n in pools}
-    weight_mass = {n: frac[n] * wf[n] for n in seeded}
-    tot = sum(weight_mass.values())
-    counts = {n: max(1, int(round(n_walkers * weight_mass[n] / tot))) for n in seeded}
-    if spec.seeding.weights == "water_fraction":               # seed by volume, carry the water fraction
-        counts = {n: max(1, int(round(n_walkers * frac[n] / sum(frac[m] for m in seeded)))) for n in seeded}
+    probe = np.random.default_rng(int(seed) + 99).uniform(lo, hi, (int(n_probe), 3))
+    seeded = list(spec.seeding.pools)
+    frac = {pid: float(member(pid)(probe).mean()) for pid in seeded}
+    wf = {pid: pools[pid].water_fraction for pid in pools}
+    if spec.seeding.weights == "thin":                 # seed by volume x water fraction, every walker weight 1
+        mass = {pid: frac[pid] * wf[pid] for pid in seeded}
+    else:                                              # seed by volume, carry the water fraction as a weight
+        mass = {pid: frac[pid] for pid in seeded}
+    tot = sum(mass.values())
+    if tot <= 0:
+        raise SpecError("no probe point landed in any seeded pool; the domain box does not cover the substrate")
+    counts = {pid: max(1, int(round(n_walkers * mass[pid] / tot))) for pid in seeded}
 
     def seeds(pred, n, s):
-        out = []
-        need = n
+        out, need = [], n
         while need > 0:
             pts = np.random.default_rng(s).uniform(lo, hi, (max(4 * need, 1024), 3)); s += 1
             keep = pts[pred(pts)]
             out.append(keep[:need]); need -= len(keep[:need])
         return np.concatenate(out)
 
-    fr_i = float(spec.validity.smallest_feature)
-    mesh_in = Mesh(Vi, Fi, periodic=periodic, voxel_min=lo, voxel_max=hi, feature_radius=fr_i, pool="intra",
-                   box_reflect=reflect)
-    mesh_out = Mesh(Vo, Fo, periodic=periodic, voxel_min=lo, voxel_max=hi, feature_radius=fr_i, pool="extra",
-                    box_reflect=reflect)
-    parts = []                                                    # (positions, dlog, ids, weight)
-    n_t = None
-    for name in ("extra", "intra", "myelin"):
-        if name not in seeded:
+    feature = float(spec.validity.smallest_feature)
+    parts, n_t, walked = [], None, None                    # (pid, positions or seeds, local time or None)
+    for pid in seeded:
+        pool, n, pred = pools[pid], counts[pid], member(pid)
+        shell = bool(inside_w[pid]) and bool(outside_w[pid])
+        if pool.D in (None, 0.0):
+            if not shell:
+                raise SpecError(f"pool {pool.name!r} needs D to be walked")
+            parts.append((pid, seeds(pred, n, seed + 13 * pid).astype(np.float32), None))      # frozen shell
             continue
-        n = counts[name]
-        pool = pools[name]
-        if name == "myelin":
-            if pool.D not in (None, 0.0):
-                raise SpecError("a diffusing myelin pool (D > 0) in a mesh bundle is not implemented; set D = 0")
-            r0 = seeds(lambda q: mesh_contains(Vo, Fo, q) & ~mesh_contains(Vi, Fi, q), n, seed + 1)
-            pos = np.repeat(r0[:, None, :].astype(np.float32), n_t, axis=1) if n_t else None
-            parts.append(("myelin", r0.astype(np.float32), None, 2))
-            continue
-        pred = (lambda q: mesh_contains(Vi, Fi, q)) if name == "intra" else (lambda q: ~mesh_contains(Vo, Fo, q))
-        r0 = seeds(pred, n, seed + (0 if name == "intra" else 7))
-        D = pool.D
-        if D is None:
-            raise SpecError(f"pool {name!r} needs D to be walked")
-        w = simulate_trajectories(n, float(D), mesh_in if name == "intra" else mesh_out, T_max=T_max, dt_save=dt_save,
-                                  seed=seed + (0 if name == "intra" else 7), r0=r0, require_gpu=require_gpu,
-                                  walker_batch_size=batch)
-        n_t = w.n_t
-        parts.append((name, np.asarray(w.positions, np.float32), np.asarray(w.boundary_local_time, np.float32),
-                      1 if name == "intra" else 0))
-        dt_saved, sub_steps, dt_sim = w.dt, w.sub_steps, w.dt_sim
+        if shell:
+            raise SpecError(f"pool {pool.name!r} diffuses between two surfaces; a diffusing shell pool is not "
+                            f"implemented (set D = 0 for a stuck pool)")
+        g = (boundary(inside_w[pid]).geometry("intra", lo, hi, periodic, reflect, feature) if inside_w[pid]
+             else boundary(outside_w[pid]).geometry("extra", lo, hi, periodic, reflect, feature))
+        r0 = seeds(pred, n, seed + 13 * pid)
+        w = simulate_trajectories(n, float(pool.D), g, T_max=T_max, dt_save=dt_save, seed=seed + 13 * pid, r0=r0,
+                                  require_gpu=require_gpu, walker_batch_size=batch)
+        n_t, walked = w.n_t, w
+        parts.append((pid, np.asarray(w.positions, np.float32), np.asarray(w.boundary_local_time, np.float32)))
+    if walked is None:
+        raise SpecError("no seeded pool diffuses; nothing to walk")
     traj, dlog, ids, wts = [], [], [], []
-    for name, pos, dl, pid in parts:
-        if name == "myelin":
-            r0 = pos
-            if spec.seeding.weights == "thin":
-                keep = max(1, int(round(wf["myelin"] * len(r0))))
-                r0 = r0[np.sort(np.random.default_rng(seed + 7).permutation(len(r0))[:keep])]
-                wt = np.ones(len(r0))
-            else:
-                wt = np.full(len(r0), wf["myelin"])
-            pos = np.repeat(r0[:, None, :], n_t, axis=1); dl = np.zeros((len(r0), n_t), np.float32)
-        else:
-            wt = np.ones(len(pos)) if spec.seeding.weights == "thin" else np.full(len(pos), wf[name])
+    for pid, pos, dl in parts:
+        if dl is None:
+            pos = np.repeat(pos[:, None, :], n_t, axis=1); dl = np.zeros((len(pos), n_t), np.float32)
+        wt = np.ones(len(pos)) if spec.seeding.weights == "thin" else np.full(len(pos), wf[pid])
         traj.append(pos); dlog.append(dl); ids.append(np.full(len(pos), pid, np.int8)); wts.append(wt)
     traj = np.concatenate(traj); dlog = np.concatenate(dlog); ids = np.concatenate(ids); wts = np.concatenate(wts)
     order = np.random.default_rng(int(seed) + 991).permutation(len(ids))   # any prefix is a fair subsample
@@ -142,9 +198,20 @@ def _walk_mesh_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field, fie
     comp = np.repeat(ids[:, None], n_t, axis=1)
     fg = None
     if field and spec.field_source_pools:
-        basis, origin, vs = mesh_field_basis((Vi, Fi), (Vo, Fo), lo, hi, res=field_res, include_aniso=True)
+        src = spec.field_source_pools[0].id
+        outer_b = boundary(inside_w[src]) if inside_w[src] else None
+        inner_b = boundary(outside_w[src]) if outside_w[src] else None
+        if outer_b is None:
+            raise SpecError(f"field-source pool {pools[src].name!r} is bounded by no wall; its occupancy cannot be rasterised")
+        if inner_b is not None and inner_b.kind == "mesh" and outer_b.kind == "mesh":
+            basis, origin, _ = mesh_field_basis((inner_b.V, inner_b.F), (outer_b.V, outer_b.F), lo, hi, res=field_res,
+                                                include_aniso=True)
+        else:
+            basis, origin, _ = predicate_field_basis(inner_b.contains if inner_b is not None else None, outer_b.contains,
+                                                     lo, hi, res=field_res, include_aniso=True)
         fg = FieldGrid(basis, np.asarray(origin, float))
-    D_intra = pools["intra"].D
-    return PersistentWalk(traj, float(dt_saved), int(sub_steps), float(dt_sim), boundary_local_time=dlog,
-                          compartment=comp, seed=int(seed), diffusivity=D_intra, spec=spec,
+    by_name = {p.name: p for p in spec.pools}
+    D_ref = by_name["intra"].D if ("intra" in by_name and by_name["intra"].D) else float(walked.diffusivity)
+    return PersistentWalk(traj, float(walked.dt), int(walked.sub_steps), float(walked.dt_sim), boundary_local_time=dlog,
+                          compartment=comp, seed=int(seed), diffusivity=D_ref, spec=spec,
                           weights=(None if np.allclose(wts, 1.0) else wts), field_grid=fg)

@@ -68,12 +68,14 @@ def spec_of(geometry, *, id=None, provenance=None, surface_dir=None):
     the file it came from."""
     from ..geometry import (FreeDiffusion, Box1D, Sphere, Cylinder, Ellipsoid, PackedCylinders, PackedSpheres,
                             MyelinatedCylinder, PackedMyelinatedCylinders, CurvedTube, MultiShellCurvedTube,
-                            PackedCurvedTubes)
+                            PackedCurvedTubes, SphereUnion)
     from ..geometry.analytic import PermeableSlab1D, PermeableShell
     g = geometry
     name = type(g).__name__
     sid = id or f"analytic/{name.lower()}"
     prov = provenance or {"source": "analytic", "constructor": name}
+    if isinstance(g, SphereUnion):
+        return _spec_of_sphere_union(g, sid, prov)
     extra0 = Pool(0, "extra", None, water_fraction=0.0)
     if isinstance(g, FreeDiffusion):
         half = 1e-4
@@ -198,12 +200,16 @@ def spec_of(geometry, *, id=None, provenance=None, surface_dir=None):
     if isinstance(g, PackedCurvedTubes):
         cls_ = [np.asarray(c, float).tolist() for c in g.centerlines]
         radii = np.asarray(g.radii, float).tolist()
-        pools = [Pool(0, "extra", None, water_fraction=1.0), Pool(1, "intra", None, water_fraction=0.0)]
+        pools = [Pool(0, "extra", None, water_fraction=(0.0 if g.interior else 1.0)),
+                 Pool(1, "intra", None, water_fraction=(1.0 if g.interior else 0.0))]
         wall = Wall("tubes", Surface("swept_polyline", instances={"centerlines": cls_, "radii": radii}), 1, 0)
-        allp = np.concatenate([np.asarray(c, float) for c in g.centerlines])
-        rmax = max(radii)
-        lo = (allp.min(0) - MARGIN * rmax).tolist(); hi = (allp.max(0) + MARGIN * rmax).tolist()
-        return SubstrateSpec(sid, Domain(lo, hi, ["open"] * 3), pools, [wall], Seeding([0]),
+        if g.box is not None:
+            lo, hi = g.box[0].tolist(), g.box[1].tolist(); bc = ["reflect" if g.box_reflect else "open"] * 3
+        else:
+            allp = np.concatenate([np.asarray(c, float) for c in g.centerlines])
+            rmax = max(radii)
+            lo = (allp.min(0) - MARGIN * rmax).tolist(); hi = (allp.max(0) + MARGIN * rmax).tolist(); bc = ["open"] * 3
+        return SubstrateSpec(sid, Domain(lo, hi, bc), pools, [wall], Seeding([1 if g.interior else 0]),
                              Validity(min(radii), _tiers([wall], pools)),
                              description=f"extra-cellular walk around {len(radii)} curved tubes", provenance=prov)
     from ..geometry.mesh import Mesh
@@ -255,11 +261,47 @@ def _spec_of_mesh(g, sid, prov, surface_dir):
                          provenance=dict(prov, files=[{"path": src["file"], "sha256": surf.sha256}], scale=surf.scale))
 
 
+def _spec_of_sphere_union(g, sid, prov):
+    pools = [Pool(0, "extra", None, water_fraction=(1.0 if g.pool == "extra" else 0.0)),
+             Pool(1, "intra", None, water_fraction=(1.0 if g.pool == "intra" else 0.0))]
+    wall = Wall("union", Surface("sphere_union", instances={"centers": g.centers.tolist(), "radii": g.radii.tolist()}),
+                1, 0, Directional(), Sided(_rho(g) if g.pool == "intra" else 0.0, _rho(g) if g.pool == "extra" else 0.0))
+    if g.box is not None:
+        dom = Domain(g.box[0].tolist(), g.box[1].tolist(), ["reflect" if g.box_reflect else "open"] * 3)
+    else:
+        rmax = float(g.radii.max())
+        lo = (g.centers.min(0) - MARGIN * rmax).tolist(); hi = (g.centers.max(0) + MARGIN * rmax).tolist()
+        dom = Domain(lo, hi, ["open"] * 3)
+    return SubstrateSpec(sid, dom, pools, [wall], Seeding([1 if g.pool == "intra" else 0]),
+                         Validity(float(g.radius), _tiers([wall], pools)),
+                         description=f"union of {len(g.radii)} spheres; the {g.pool} pool", provenance=prov)
+
+
+def sphere_union_arrays(surface):
+    """``(centers, radii)`` in metres of a ``sphere_union`` surface: inline instances, or the rows of a
+    CATERPillar table selected by ``cell_type`` with the ``column`` radius."""
+    s = surface
+    if s.file:
+        from ..io.caterpillar import read_caterpillar
+        t = read_caterpillar(s.file, scale=(s.scale or 1.0), cell_types=(s.cell_type,) if s.cell_type else ("axon", "glial_cell"))
+        r = t["r_in"] if s.column == "inner_radius" else t["r_out"]
+        return t["centers"], r
+    return np.asarray(s.instances["centers"], float), np.asarray(s.instances["radii"], float)
+
+
+def polyline_arrays(surface):
+    """``(centerlines, radii)`` of a ``swept_polyline`` surface: per-instance arrays or the single polyline."""
+    s = surface
+    if s.instances:
+        return [np.asarray(c, float) for c in s.instances["centerlines"]], np.asarray(s.instances["radii"], float)
+    return [np.asarray(s.centerline, float)], np.asarray([s.radius], float)
+
+
 def geometry_from_spec(spec):
     """The analytic geometry a :class:`SubstrateSpec` describes (inverse of :func:`spec_of`)."""
     from ..geometry import (FreeDiffusion, Box1D, Sphere, Cylinder, Ellipsoid, PackedCylinders, PackedSpheres,
                             MyelinatedCylinder, PackedMyelinatedCylinders, CurvedTube, MultiShellCurvedTube,
-                            PackedCurvedTubes)
+                            PackedCurvedTubes, SphereUnion)
     from ..geometry.analytic import PermeableSlab1D, PermeableShell
     from ..compartments import Compartments, Pool as CPool
     spec = SubstrateSpec.from_dict(spec) if isinstance(spec, dict) else spec
@@ -283,6 +325,19 @@ def geometry_from_spec(spec):
             return Box1D(dom.box_max[0] - dom.box_min[0], surface_relaxivity_t2=rho_dom)
         raise SpecError("a wall-less spec is free diffusion (open) or a 1-D slab (reflect in x)")
     kinds = [w.surface.kind for w in walls]
+    if any(k == "sphere_union" for k in kinds) or (len(walls) > 1 and any(w.surface.instances for w in walls)
+                                                    and any(k == "swept_polyline" for k in kinds)):
+        if len(walls) != 1 or len(spec.seeding.pools) != 1:
+            raise SpecError("a multi-surface (or multi-pool) sphere-union / strand spec is walked pool by pool by "
+                            "spec.walk_spec; it has no single Geometry")
+        w = walls[0]; s = w.surface
+        seeded = spec.seeding.pools[0]
+        pool = "intra" if seeded == w.inside_pool else "extra"
+        box = (dom.box_min, dom.box_max) if "reflect" in dom.boundary else None
+        if s.kind == "sphere_union":
+            centers, radii = sphere_union_arrays(s)
+            return SphereUnion(centers, radii, pool=pool, feature_radius=spec.validity.smallest_feature,
+                               surface_relaxivity_t2=rho(w), box=box)
     if any(k == "mesh" for k in kinds):
         if len(walls) != 1:
             raise SpecError("a multi-surface mesh spec is walked pool by pool by spec.walk_spec; it has no "
@@ -313,7 +368,9 @@ def geometry_from_spec(spec):
             return PermeableSlab1D(dom.box_max[0] - dom.box_min[0], w.permeability.in_to_out, surface_relaxivity_t2=rho(w))
         if s.instances:
             if s.kind == "swept_polyline":
-                return PackedCurvedTubes([np.asarray(c) for c in s.instances["centerlines"]], s.instances["radii"])
+                cls_, radii = polyline_arrays(s)
+                return PackedCurvedTubes(cls_, radii, interior=(spec.seeding.pools[0] == w.inside_pool),
+                                         box=((dom.box_min, dom.box_max) if "reflect" in dom.boundary else None))
             centers = np.asarray(s.instances["centers"], float)
             L = float(dom.box_max[0] - dom.box_min[0])
             if s.kind == "cylinder":

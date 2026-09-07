@@ -16,7 +16,7 @@ from typing import Optional
 SPEC_VERSION = "0.1"
 SCHEMA_PATH = Path(__file__).with_name("substrate.schema.json")
 BOUNDARIES = ("periodic", "reflect", "open")
-SURFACE_KINDS = ("sphere", "cylinder", "ellipsoid", "plane", "swept_polyline", "mesh")
+SURFACE_KINDS = ("sphere", "cylinder", "ellipsoid", "plane", "swept_polyline", "sphere_union", "mesh")
 DIRECTORS = ("none", "radial", "file")
 SEEDING_RULES = ("uniform_by_volume", "explicit")
 WEIGHT_RULES = ("water_fraction", "thin")
@@ -64,7 +64,9 @@ class Pool:
 
 @dataclass(frozen=True)
 class Surface:
-    """An analytic surface or a mesh file; ``instances`` holds per-instance parameter arrays."""
+    """An analytic surface, a sphere union or a mesh file; ``instances`` holds per-instance parameter arrays.
+    A ``sphere_union`` is inline (``instances.centers`` / ``radii``) or a CATERPillar table (``file``,
+    ``format: caterpillar``, ``column`` = which radius, ``cell_type`` = which rows)."""
     kind: str
     center: Optional[list] = None
     radius: Optional[float] = None
@@ -73,6 +75,8 @@ class Surface:
     semiaxes: Optional[list] = None
     rotation: Optional[list] = None
     point: Optional[list] = None
+    column: Optional[str] = None        # sphere_union from a table: which radius column
+    cell_type: Optional[str] = None     # sphere_union from a table: which rows (axon | glial_cell | blood_vessel)
     normal: Optional[list] = None
     centerline: Optional[list] = None
     file: Optional[str] = None
@@ -302,6 +306,14 @@ def validate(d):
             raise SpecError(f"{where}.surface.kind must be one of {SURFACE_KINDS}, got {s.get('kind')!r}")
         if s["kind"] == "mesh" and not s.get("file"):
             raise SpecError(f"{where}.surface: a mesh surface needs 'file'")
+        if s["kind"] == "sphere_union":
+            inst = s.get("instances") or {}
+            if s.get("file"):
+                if s.get("format") != "caterpillar" or s.get("column") not in ("inner_radius", "outer_radius"):
+                    raise SpecError(f"{where}.surface: a sphere_union file needs format 'caterpillar' and column "
+                                    f"'inner_radius' or 'outer_radius'")
+            elif not (inst.get("centers") and inst.get("radii")):
+                raise SpecError(f"{where}.surface: a sphere_union needs 'file' or instances.centers and instances.radii")
         if s["kind"] in ("sphere", "cylinder") and s.get("radius") is None and not (s.get("instances") or {}).get("radii"):
             raise SpecError(f"{where}.surface: a {s['kind']} needs 'radius' or instances.radii")
         inst = s.get("instances")
