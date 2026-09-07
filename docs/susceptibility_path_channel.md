@@ -252,7 +252,7 @@ generation of packs:
    verified afterwards, a shuffled prefix is unbiased with error inside the `1/sqrt(N)` envelope
    (N=1 000 -> 1.2e-4, N=10 000 -> 5.4e-5 against the full-pack value).
 
-   Implemented as: `mesh_axon_master` applies one permutation to every walker-indexed array
+   Implemented as: a producer that shuffles applies one permutation to every walker-indexed array
    (`traj`, `dlog_b`, `comp`, `comp0`, `w`) and sets `walkers_shuffled=True` on the master;
    `build_replay_pack` copies that into `compression.precision_tiers`, which also carries
    `bytes_per_walker`, `floor_at_full_n` and the per-eps walker counts so a consumer computes the

@@ -36,13 +36,10 @@ def test_one_ensemble_signal():
     np.testing.assert_allclose(np.asarray(_ensemble_signal(w, phi)), ref_np, rtol=1e-5)
 
 
-def test_one_rf_increment_and_one_mesh_helper_set():
+def test_one_rf_increment():
     from dmipy_sim.viz import pedagogy
     from dmipy_sim.replay import trajectories
-    from dmipy_sim.replay.builders import mesh_axon, mesh_bundle
     assert pedagogy._rf_increment is trajectories._rf_increment
-    assert mesh_axon._min_radius is mesh_bundle._min_radius
-    assert mesh_axon._rejection_seeds is mesh_bundle._rejection_seeds
 
 
 def test_retired_knobs_are_gone():

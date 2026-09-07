@@ -166,8 +166,7 @@ def test_the_step_cell_assertion_actually_guards():
     90% walker loss (and a wrongly-filed permeability bug, dmrai-lab/dmipy-sim#65) must be rejected.
     """
     import trimesh as _tm
-    from dmipy_sim.geometry.mesh import Mesh
-    from dmipy_sim.replay.builders.mesh_bundle import _min_radius
+    from dmipy_sim.geometry.mesh import Mesh, mesh_feature_radius as _min_radius
     from dmipy_sim.engine.physics import permeable_sub_steps
     from tests.conftest import assert_step_resolves_the_collision_lookup
 

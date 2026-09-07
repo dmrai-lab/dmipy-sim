@@ -150,6 +150,14 @@ def write_ply(path, vertices, faces):
             fh.write(f"3 {int(f[0])} {int(f[1])} {int(f[2])}\n")
     return str(path)
 
+def mesh_feature_radius(V, F):
+    """A cheap feature radius for a mesh: half its median edge length (what a bundle's ``feature_radius`` is
+    sized from when no pore radius is known)."""
+    V = np.asarray(V, float); F = np.asarray(F)
+    e = np.linalg.norm(V[F[:, 0]] - V[F[:, 1]], axis=1)
+    return 0.5 * float(np.median(e))
+
+
 def load_ply(path, scale=1.0, recenter=False):
     """Load vertices and faces from a mesh file (PLY/STL/OBJ/...).
 
@@ -414,16 +422,12 @@ class Mesh(Geometry):
         # NB: `radius` here is a MESHING parameter, not a pore size -- see
         # `radius_is_mesh_feature` on the class and physics.walk_sub_steps.
         self.reject_escape = bool(reject_escape)         # impermeable-leak safety net
-        # Reflect at the voxel faces INSIDE the bounce loop (dmipy-sim#61). The alternative --
-        # `mesh_bundle.BoxedMesh`, which mirrors the position after the step -- applies a reflection of space
-        # with no collision test, so it can teleport a walker across a fibre wall. Measured on the 358-fibre
-        # CACTUS bundle over 20 ms: BoxedMesh leaks 19.17% of extra-axonal walkers into fibres (47.4% before
-        # its mirror veto). Treating the faces as ordinary specular walls in the same loop makes teleportation
-        # impossible by construction, which is what that class's own docstring asks for.
-        # DEFAULT ON. The alternative (mesh_bundle.BoxedMesh mirroring the position after the step) applies a
-        # reflection of space with no collision test, which places walkers inside bodies: measured 18.03% of
-        # extra-axonal walkers per 200 ms on a 358-fibre CACTUS bundle. Voxel faces belong in the same ordered
-        # bounce loop as the triangles. Applies only to NON-periodic axes; see `_box_face_hit`.
+        # Reflect at the voxel faces INSIDE the bounce loop (dmipy-sim#61), DEFAULT ON. A mirror applied to
+        # the position after the step is a reflection of space with no collision test, so it can teleport a
+        # walker across a fibre wall: measured on a 358-fibre CACTUS bundle, 18-19% of extra-axonal walkers
+        # per 20 ms ended inside fibres that way. Voxel faces belong in the same ordered bounce loop as the
+        # triangles, which makes teleportation impossible by construction. Applies only to NON-periodic axes;
+        # see `_box_face_hit`.
         self.box_reflect = bool(box_reflect)
         # Barycentric slack in the ray-triangle inside test. 0.0 reproduces the exact (non-watertight)
         # bounds; see `_mt` for the measurement that motivates a non-zero value.

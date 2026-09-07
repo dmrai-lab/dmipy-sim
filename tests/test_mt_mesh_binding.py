@@ -85,7 +85,7 @@ def test_the_mt_driver_walks_the_pool_its_seeds_name():
 
     Every MT test before this one used a sphere, where inside IS the pool of interest, so the omission was
     invisible. It is not invisible in a fibre bundle: the extra-axonal pool's geometry is the OUTER surface
-    and its walkers belong outside it, so `mesh_bundle_master`'s emergent branch (which passed `r0` on the
+    and its walkers belong outside it, so the retired bundle builder's emergent branch (which passed `r0` on the
     plain path and dropped it on the MT path) re-simulated the intra pool with `D_extra` and labelled the
     result "extra". Wall contact then measured 0.54x the extra pool's analytic `(S/V)*D` -- not because the
     walk was wrong (MT local time tracked a plain walk to 0.97x) but because the walkers were in the wrong

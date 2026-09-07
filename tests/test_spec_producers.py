@@ -1,11 +1,42 @@
 """The mesh datasets enter as specs: `cactus_spec` and `winther_spec` emit a validated SubstrateSpec that
 records every decision the loaders used to make, and `walk_spec` walks it into a pack."""
+import os
+
 import numpy as np
 import pytest
 
 from dmipy_sim.spec import cactus_spec, winther_spec, walk_spec, SpecError
 from dmipy_sim.replay.bank import build_replay_pack
-from tests.test_mesh_substrate_loader import _cactus_run_dir, _tube_pair
+
+trimesh = pytest.importorskip("trimesh")
+
+
+def _tube_pair(dir_path, g=0.62, r_out=2.0, height=20.0, prefix="tube"):
+    """Concentric closed tubes with a known g-ratio, written as PLY (units: whatever the caller says)."""
+    paths = []
+    for radius in (g * r_out, r_out):
+        m = trimesh.creation.cylinder(radius=radius, height=height, sections=64)
+        p = os.path.join(str(dir_path), f"{prefix}_r{radius:.3f}.ply")
+        m.export(p)
+        paths.append(p)
+    return paths[0], paths[1]
+
+
+def _cactus_run_dir(tmp_path, n_strands=3, side=30.0, g=0.7):
+    """A minimal CACTUS run directory: the strand-list header plus per-strand inner/outer PLYs."""
+    run = tmp_path / "cactus_run"
+    sim = run / "meshes" / "simulations"
+    sim.mkdir(parents=True)
+    for i in range(n_strands):
+        for tag, radius in (("inner", g * 1.5), ("outer", 1.5)):
+            m = trimesh.creation.cylinder(radius=radius, height=side, sections=48)
+            m.apply_translation([3.0 * i - 3.0, 0.0, 0.0])
+            m.export(sim / f"strand_{i:05d}_{tag}_erode_0.ply")
+    lines = [f"{side}", f"{n_strands}"]
+    for i in range(n_strands):
+        lines += ["2", f"{3.0*i-3.0} 0 {-side/2} 1.5", f"{3.0*i-3.0} 0 {side/2} 1.5"]
+    (run / "optimized_final.txt").write_text("\n".join(lines) + "\n")
+    return str(run)
 
 ENV = dict(bvals=[0.0, 1e9], dirs=[[0, 0, 1]], ogse_periods=[2], shortd_b=1e9, shortd_deltas_frac=[0.05],
            B0_list=[3.0], theta_deg=[90], delta_frac=0.2, Delta_frac=0.5, rho_list=[1e-5])
@@ -53,3 +84,15 @@ def test_winther_axon_is_an_open_box_with_free_water_outside(tmp_path):
     assert len(spec.walls) == 2 and spec.wall("fibre-0/inner").surface_relaxivity.inside > 0
     with pytest.raises(SpecError, match="no paired strand"):
         cactus_spec(str(tmp_path / "nothing_here"), side_um=10.0)
+
+
+@pytest.mark.parametrize("g", [0.45, 0.62, 0.80])
+def test_the_g_ratio_is_measured_from_the_surfaces_not_assumed(tmp_path, g):
+    """For a tube V ~ r^2 L, so g = sqrt(V_in / V_out); the spec records what the meshes realise (the Winther
+    axons realise 0.70, CACTUS strands 0.56-0.87), never a default."""
+    from dmipy_sim.spec import winther_spec, cactus_spec
+    inner, outer = _tube_pair(tmp_path, g=g)
+    assert winther_spec(inner, outer, scale=1e-6, pad=1e-6).realisation["g_ratio"] == pytest.approx(g, abs=0.015)
+    run = _cactus_run_dir(tmp_path, g=g)
+    gr = cactus_spec(run).realisation["g_ratio"]
+    assert set(gr) == {"0", "1", "2"} and all(v == pytest.approx(g, abs=0.015) for v in gr.values())

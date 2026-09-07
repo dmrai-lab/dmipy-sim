@@ -39,6 +39,19 @@ def wm_pools(field_T=3.0, *, myelin_chi_iso=-1.06e-6, myelin_chi_aniso=0.0, D_my
                  susceptibility=Susceptibility(float(myelin_chi_iso), float(myelin_chi_aniso), "radial"))]
 
 
+def _volume(V, F):
+    """Enclosed volume of a closed triangle surface (divergence theorem; orientation-independent)."""
+    V = np.asarray(V, float); F = np.asarray(F)
+    a, b, c = V[F[:, 0]], V[F[:, 1]], V[F[:, 2]]
+    return abs(float(np.einsum("ij,ij->i", a, np.cross(b, c)).sum()) / 6.0)
+
+
+def _g_ratio(inner, outer):
+    """The g-ratio a pair of tube surfaces realises: for a tube V ~ r^2 L, so g = sqrt(V_in / V_out). Measured,
+    never taken from an argument (the Winther axons realise 0.70; CACTUS strands 0.56-0.87)."""
+    return float(np.sqrt(_volume(*inner) / _volume(*outer)))
+
+
 def _surface_stats(paths, scale):
     """Per-file (V, F) in metres, the smallest edge-based feature, the median edge and watertightness."""
     from ..geometry.mesh import load_ply
@@ -102,6 +115,7 @@ def cactus_spec(run_dir, *, scale=_UM, side_um=None, field_T=3.0, rho2=None, on_
     L = float(side_um) * scale
     files = [p for pr in pairs.values() for p in pr]
     meshes, smallest, edge_med, open_files = _surface_stats(files, scale)
+    by_path = dict(zip(files, meshes))
     if open_files:
         if on_open_surface == "raise":
             raise SpecError(f"{len(open_files)} surface(s) are not watertight: {open_files[:4]}")
@@ -127,7 +141,8 @@ def cactus_spec(run_dir, *, scale=_UM, side_um=None, field_T=3.0, rho2=None, on_
         Validity(smallest, ["gradient", "relaxation", "surface", "field"], mesh_edge_feature_ratio=edge_med / smallest),
         frame=Frame([0.0, 0.0, 1.0]),
         description=f"CACTUS bundle: {len(pairs)} strands, each an inner (axon) and outer (myelin) surface, in a periodic cell",
-        realisation={"n_objects": len(pairs), "cell_side": L},
+        realisation={"n_objects": len(pairs), "cell_side": L,
+                     "g_ratio": {str(k): _g_ratio(by_path[v[0]], by_path[v[1]]) for k, v in pairs.items()}},   # JSON keys
         provenance={"source": "CACTUS", "run_dir": str(run_dir), "scale": scale,
                     "files": [{"path": p, "sha256": _sha(p)} for p in files],
                     "transformations": transformations + ["inside inner = intra (1), inner..outer = myelin (2), outside outer = extra (0)",
@@ -154,6 +169,7 @@ def winther_spec(inner_ply, outer_ply, *, scale=_UM, pad=1.0e-6, field_T=3.0, rh
         Domain(lo, hi, ["open", "open", "open"]), pools, walls, Seeding([1, 2], "uniform_by_volume", "thin"),
         Validity(smallest, ["gradient", "relaxation", "surface", "field"], mesh_edge_feature_ratio=edge_med / smallest),
         description="one Winther axon: inner and outer surface, surroundings free water",
+        realisation={"g_ratio": _g_ratio(meshes[0], meshes[1])},
         provenance={"source": "Winther", "scale": scale, "files": [{"path": p, "sha256": _sha(p)} for p in (inner_ply, outer_ply)],
                     "transformations": [f"box = outer surface padded by {pad} m", "extra pool declared free water (water_fraction 0, not seeded)",
                                         "nominal pool values from the catalogued white matter"],

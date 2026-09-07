@@ -17,7 +17,7 @@ jax = pytest.importorskip("jax")
 import jax.numpy as jnp
 
 from dmipy_sim.geometry.mesh import Mesh
-from dmipy_sim.replay.builders.mesh_bundle import BoxedMesh, _min_radius
+from dmipy_sim.geometry.mesh import mesh_feature_radius as _min_radius
 from dmipy_sim.fields.susceptibility_field import mesh_contains
 
 from tests.conftest import assert_step_resolves_the_collision_lookup
@@ -112,8 +112,23 @@ def _mesh(V, F, lo, hi, **kw):
     return m
 
 
+class _PostStepMirror:
+    """The retired alternative, kept here as the thing the test refutes: mirror the position into the box
+    AFTER the mesh step, with no collision test."""
+
+    def __init__(self, mesh, lo, hi):
+        self.mesh = mesh
+        self._lo, self._hi = jnp.asarray(lo, jnp.float32), jnp.asarray(hi, jnp.float32)
+
+    def reflect_with_log_weight(self, r, step, rho_over_D):
+        r_new, dlog = self.mesh.reflect_with_log_weight(r, step, rho_over_D)
+        span = self._hi - self._lo
+        x = (r_new - self._lo) % (2.0 * span)
+        return self._lo + jnp.where(x > span, 2.0 * span - x, x), dlog
+
+
 def test_box_faces_must_bounce_not_mirror(lattice):
-    """`BoxedMesh` mirrors the position with no collision test, so it can place a walker inside a body.
+    """A post-step mirror has no collision test, so it can place a walker inside a body.
 
     Mirroring is a reflection of space, not a displacement: it changes which cross-section a point falls in, so
     a walker crosses no wall yet ends up enclosed. Measured on a 358-fibre CACTUS bundle over 20 ms it leaked
@@ -122,8 +137,8 @@ def test_box_faces_must_bounce_not_mirror(lattice):
     """
     V, F, lo, hi, r0 = lattice
     # box_reflect is now the DEFAULT, so the mirror arm has to switch it off explicitly -- otherwise the
-    # inner mesh already confines the walker, BoxedMesh._box short-circuits, and this compares new with new.
-    mirrored = BoxedMesh(_mesh(V, F, lo, hi, box_reflect=False), lo, hi)
+    # inner mesh already confines the walker and this compares new with new.
+    mirrored = _PostStepMirror(_mesh(V, F, lo, hi, box_reflect=False), lo, hi)
     in_loop = _mesh(V, F, lo, hi, box_reflect=True)
 
     # 1000 sub-steps, not 3000. Measured leak counts against cost for both arms:
