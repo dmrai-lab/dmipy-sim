@@ -73,6 +73,7 @@ def _master_arrays(src) -> dict:
                 T2_per_comp=g("T2_per_comp"), T1_per_comp=g("T1_per_comp"),
                 substrate_frame=g("substrate_frame"),
                 walkers_shuffled=bool(m.get("walkers_shuffled", False)),
+                substrate=(m.get("substrate") if isinstance(m, dict) else None),
                 n_walkers=int(traj.shape[0]), seed=int(np.asarray(m.get("seed", 0))))
 
 
@@ -617,17 +618,28 @@ def _walk_master(walk, *, compartments=None, weights=None, field=None, diffusivi
                             "PersistentWalk; a master dict carries them as its own keys")
         return walk
     geometry = walk.geometry
+    spec = walk.spec if walk.spec is not None else (getattr(geometry, "spec", None) if geometry is not None else None)
     if compartments is None and geometry is not None and len(getattr(geometry, "compartments", ())):
         c = geometry.compartments
         if c.by_id("T2") is not None:
             compartments = c
+    if compartments is None and spec is not None and all(p.T2 is not None for p in spec.pools):
+        from ..compartments import Pool as CPool
+        compartments = Compartments({p.name: CPool(T2=p.T2, T1=p.T1, water_fraction=p.water_fraction)
+                                     for p in spec.pools if p.name in ("extra", "intra", "myelin")})
     if field == "auto":
         field = None
-        if geometry is not None and type(geometry).__name__ in ("MyelinatedCylinder", "PackedMyelinatedCylinders"):
+        if walk.field_grid is not None:
+            field = walk.field_grid
+        elif geometry is not None and type(geometry).__name__ in ("MyelinatedCylinder", "PackedMyelinatedCylinders"):
             field = field_grid_of(geometry)                          # geometry only; chi is a replay knob
     elif field is False:
         field = None
+    if weights is None and walk.weights is not None:
+        weights = walk.weights
     extra = {}
+    if spec is not None:
+        extra["substrate"] = spec.to_dict()
     if compartments is not None:
         c = Compartments.coerce(compartments)
         if c.ids != tuple(range(len(c))):
@@ -860,6 +872,8 @@ def build_replay_pack(walk, *, id, license, citation, compartments=None, weights
                              magnetization_transfer=channels["mt"],
                              diffusivity_fixed=True, acquisition=_envelope_summary(env)),
         fidelity=fid, provenance=provenance or {}, license=license, citation=citation)
+    if m.get("substrate") is not None:
+        meta["substrate"] = m["substrate"]           # the spec the walk was driven by (#130)
     if m.get("mt_params") is not None:              # parametric two-pool qMT (pool-level knob)
         meta["mt"] = {k: (float(v) if isinstance(v, (int, float, np.floating)) else v)
                       for k, v in m["mt_params"].items()}

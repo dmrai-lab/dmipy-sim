@@ -84,7 +84,7 @@ def test_the_published_examples_build_geometries(tmp_path):
     assert isinstance(cyl, d.Cylinder) and cyl.radius == 5e-6
     pm = geometry_from_spec(load_spec(fix / "packed_myelinated_cylinders.sub.json"))
     assert isinstance(pm, d.PackedMyelinatedCylinders) and pm.N_actual == 3
-    with pytest.raises(SpecError, match="mesh substrates follow"):
+    with pytest.raises(SpecError, match="pool by pool"):                 # a multi-surface bundle: walk_spec's job
         geometry_from_spec(load_spec(fix / "mesh_bundle.sub.json"))
 
 

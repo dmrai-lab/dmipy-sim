@@ -62,8 +62,10 @@ def _pools_from_compartments(g, names, D_by_name, wf_by_name=None):
     return out
 
 
-def spec_of(geometry, *, id=None, provenance=None):
-    """The :class:`SubstrateSpec` of an analytic geometry."""
+def spec_of(geometry, *, id=None, provenance=None, surface_dir=None):
+    """The :class:`SubstrateSpec` of a geometry. A mesh built in memory needs ``surface_dir`` to write its
+    surface file into (a spec references surfaces as files); one loaded with ``Mesh.from_ply`` references
+    the file it came from."""
     from ..geometry import (FreeDiffusion, Box1D, Sphere, Cylinder, Ellipsoid, PackedCylinders, PackedSpheres,
                             MyelinatedCylinder, PackedMyelinatedCylinders, CurvedTube, MultiShellCurvedTube,
                             PackedCurvedTubes)
@@ -204,7 +206,53 @@ def spec_of(geometry, *, id=None, provenance=None):
         return SubstrateSpec(sid, Domain(lo, hi, ["open"] * 3), pools, [wall], Seeding([0]),
                              Validity(min(radii), _tiers([wall], pools)),
                              description=f"extra-cellular walk around {len(radii)} curved tubes", provenance=prov)
-    raise SpecError(f"spec_of does not know {name}; mesh substrates follow in #130 PR 3")
+    from ..geometry.mesh import Mesh
+    if isinstance(g, Mesh):
+        return _spec_of_mesh(g, sid, prov, surface_dir)
+    raise SpecError(f"spec_of does not know {name}")
+
+
+def _sha256(path):
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _spec_of_mesh(g, sid, prov, surface_dir):
+    from ..geometry.mesh import write_ply
+    src = getattr(g, "source", None)
+    if src is None:
+        if surface_dir is None:
+            raise SpecError("a Mesh built from arrays has no surface file; pass surface_dir= to write one "
+                            "(a spec references surfaces as files)")
+        import os
+        os.makedirs(surface_dir, exist_ok=True)
+        path = os.path.join(surface_dir, f"{sid.replace('/', '_')}.ply")
+        write_ply(path, g.vertices, g.faces)
+        src = {"file": path, "scale": 1.0}
+    surf = Surface("mesh", file=src["file"], format=str(src["file"]).rsplit(".", 1)[-1].lower(), scale=float(src.get("scale", 1.0)),
+                   sha256=_sha256(src["file"]))
+    comps = g.compartments
+    def pool(i, n):
+        c = comps[n] if n in comps else None
+        return Pool(i, n, (c.D if c is not None else None), water_fraction=1.0,
+                    T2=(c.T2 if c is not None else None), T1=(c.T1 if c is not None else None))
+    pools = [pool(0, "extra"), pool(1, "intra")]
+    rho_nom = float(g.surface_relaxivity_t2 or 0.0)
+    rho_in = rho_nom * float(g._rho_mult_intra); rho_out = rho_nom * float(g._rho_mult_extra)
+    k_nom = float(g.permeability or 0.0)
+    k_out = k_nom * float(g._kappa_mult_out); k_in = k_nom * float(g._kappa_mult_in)
+    wall = Wall("surface", surf, 1, 0, Directional(k_out, k_in), Sided(rho_in, rho_out))
+    bc = ["periodic" if p else ("reflect" if g.box_reflect else "open") for p in g.periodic]
+    dom = Domain(np.asarray(g.vmin, float).tolist(), np.asarray(g.vmax, float).tolist(), bc)
+    seeded = 1 if g.pool == "intra" else 0
+    return SubstrateSpec(sid, dom, pools, [wall], Seeding([seeded]),
+                         Validity(float(g.radius), _tiers([wall], pools), mesh_edge_feature_ratio=float(g.edge_median / g.radius)),
+                         description="one closed (or periodic) triangle surface: inside is intra, outside extra",
+                         provenance=dict(prov, files=[{"path": src["file"], "sha256": surf.sha256}], scale=surf.scale))
 
 
 def geometry_from_spec(spec):
@@ -235,6 +283,30 @@ def geometry_from_spec(spec):
             return Box1D(dom.box_max[0] - dom.box_min[0], surface_relaxivity_t2=rho_dom)
         raise SpecError("a wall-less spec is free diffusion (open) or a 1-D slab (reflect in x)")
     kinds = [w.surface.kind for w in walls]
+    if any(k == "mesh" for k in kinds):
+        if len(walls) != 1:
+            raise SpecError("a multi-surface mesh spec is walked pool by pool by spec.walk_spec; it has no "
+                            "single Geometry")
+        from ..geometry.mesh import Mesh
+        from ..compartments import Compartments, Pool as CPool
+        w = walls[0]; s = w.surface
+        pools = {p.name: p for p in spec.pools}
+        comps = {}
+        for n in ("extra", "intra"):
+            kw = {k: getattr(pools[n], k) for k in ("D", "T2", "T1") if getattr(pools[n], k) is not None}
+            if w.surface_relaxivity.inside > 0 and n == "intra": kw["surface_relaxivity_t2"] = w.surface_relaxivity.inside
+            if w.surface_relaxivity.outside > 0 and n == "extra": kw["surface_relaxivity_t2"] = w.surface_relaxivity.outside
+            if kw: comps[n] = CPool(**kw)
+        perm = None
+        if w.permeability.in_to_out > 0 or w.permeability.out_to_in > 0:
+            perm = ({"intra_to_extra": w.permeability.in_to_out, "extra_to_intra": w.permeability.out_to_in}
+                    if w.permeability.in_to_out != w.permeability.out_to_in else w.permeability.in_to_out)
+        m = Mesh.from_ply(s.file, scale=(s.scale or 1.0), periodic=[b == "periodic" for b in dom.boundary],
+                          voxel_min=dom.box_min, voxel_max=dom.box_max, feature_radius=spec.validity.smallest_feature,
+                          permeability=perm, compartments=(Compartments(comps) if comps else None),
+                          pool={1: "intra", 0: "extra"}[spec.seeding.pools[0]],
+                          box_reflect=("reflect" in dom.boundary))
+        return m
     if len(walls) == 1:
         w = walls[0]; s = w.surface
         if s.kind == "plane":
@@ -288,4 +360,4 @@ def geometry_from_spec(spec):
                                       D["intra"], D["extra"], D_myelin=D["myelin"],
                                       kappa_inner=kappa(inner), kappa_outer=kappa(outer), water_fractions=wf,
                                       compartments=(comps if len(comps) else None))
-    raise SpecError(f"no analytic geometry matches walls {kinds}; mesh substrates follow in #130 PR 3")
+    raise SpecError(f"no geometry matches walls {kinds}")
