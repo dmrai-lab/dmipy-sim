@@ -115,6 +115,8 @@ def simulate_mt_trajectories(
         (n_walkers, n_t), the free-pool boundary local time (rho/D = 1, ``-2 * sum d_perp`` over the
         FREE sub-steps of each save).
     """
+    from ..spec.build import as_geometry
+    geometry = as_geometry(geometry)               # a spec, a spec file or a dict is a substrate too
     from .gpu import check_gpu
     check_gpu(n_walkers, require_gpu, what="simulate_mt_trajectories")
 

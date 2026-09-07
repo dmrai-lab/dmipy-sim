@@ -176,8 +176,10 @@ class Sequence:
 
         seq = cls(G_arr, dt, bvalues, gradient_directions, qvalues,
                   gradient_strengths, delta_, Delta_, TE_)
-        # ideal instantaneous 90/180 markers, as dmipy_sim.acquisition.waveforms.pgse places them
-        t_180 = float(np.mean(Delta_ + delta_ + eps_)) / 2.0
+        # ideal instantaneous 90/180 markers, as dmipy_sim.acquisition.waveforms.pgse places them: the echo forms at
+        # the END of the grid (T_total, the longest measurement), so the 180 sits at T_total / 2 -- a mean over
+        # measurements put it 10% early whenever a b = 0 row (no ramp) shared the scheme with slew-limited rows
+        t_180 = T_total / 2.0
         seq.rf_events = [{'t_s': 0.0, 'label': 'Mz→Mxy', 'flip_deg': 90},
                          {'t_s': t_180, 'label': 'refocus', 'flip_deg': 180}]
         apply_rf_schedule(seq)

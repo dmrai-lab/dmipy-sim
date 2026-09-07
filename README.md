@@ -23,9 +23,13 @@ from dmipy_sim.sequences import Sequence
 
 seq  = Sequence.from_pgse(bvalues=[0, 1e9, 2e9], gradient_directions=[[1, 0, 0]] * 3,
                           delta=0.01, Delta=0.04)                 # exact G for the requested b
-geom = Cylinder(radius=5e-6, orientation=(0, 0, 1))
-E    = simulate(n_walkers=100_000, diffusivity=2e-9, waveform=seq, geometry=geom, seed=0)
+spec = Cylinder(radius=5e-6, orientation=(0, 0, 1)).spec           # the situation, written out: an open box,
+spec.save("cylinder.sub.json")                                    #   one lumen pool seeded, a reflecting wall
+E    = simulate(n_walkers=100_000, diffusivity=2e-9, waveform=seq, geometry=spec, seed=0)
 ```
+
+Every driver takes the substrate as a **spec** (`SubstrateSpec`, its dict, or a `.sub.json` path) or as the
+geometry object that is one spelling of it; `geometry.spec` writes out what a constructor leaves implicit.
 
 **Persistent**: walk once, keep the walk, replay any acquisition on it. The walk records every replay
 tier the substrate supports — positions (C0), compartment occupancy for per-pool T2/T1 (C1), the

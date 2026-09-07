@@ -38,7 +38,7 @@ def test_a_mesh_writes_its_spec_and_is_rebuilt_from_it(tmp_path):
     w1 = d.simulate_trajectories(40, D, m, 4e-4, 2e-4, seed=2, require_gpu=False)
     w2 = d.simulate_trajectories(40, D, m2, 4e-4, 2e-4, seed=2, require_gpu=False)
     np.testing.assert_array_equal(w1.positions, w2.positions)
-    assert w2.spec is None and w2.geometry is m2
+    assert w2.spec == m2.spec and w2.geometry is m2               # a walk always carries its geometry's spec
 
 
 def _bundle_spec(tmp_path, n_fibres=2, L=8.0e-6):
