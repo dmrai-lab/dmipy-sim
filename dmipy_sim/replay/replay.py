@@ -135,7 +135,7 @@ class ReplayPack:
 
     def replay(self, waveform, *, tissue="nominal", T2=None, T1=None, rho=None, D=None, B0=None,
                b0_dir=(0.0, 0.0, 1.0), chi_iso=None, chi_aniso=0.0, refocus_time="auto", compartment=None,
-               complex_signal=False):
+               orientation=None, fod=None, complex_signal=False):
         """The signal of ``waveform`` on this pack, with every tier the pack carries and the request asks for.
 
         ``waveform`` is a :class:`~dmipy_sim.acquisition.waveforms.Waveform` / :class:`~dmipy_sim.sequences.Sequence`
@@ -154,6 +154,14 @@ class ReplayPack:
           pulse at it; a pack without a spec, or a spec that declares no values, replays the gradient alone.
           ``False`` is the bare diffusion signal. A :class:`~dmipy_sim.spec.Tissue` supplies the values
           yourself. In every case an explicit keyword wins.
+        * **orientation**: the substrate's pose in the scanner -- a 3x3 rotation (substrate frame -> lab) or the
+          lab direction its axis (``spec.frame.axis``, default z) points along. Exact by pose covariance: the
+          gradient and B0 are rotated into the substrate frame together.
+        * **fod**: a :class:`~dmipy_sim.replay.fod.FOD` -- the signal of a distribution of poses of this
+          substrate, composed through the two-axis Gaunt route (:mod:`sh_convolution`): the gradient and
+          field axes move together, so the composition is a spherical convolution only when there is no
+          field. Needs one gradient direction per measurement; with a field, the pack's path channel. A bare
+          coefficient array is refused: the basis must be declared (``FOD.from_sh``, ``FOD.native``).
         * **surface relaxivity** (C2): ``rho`` (m/s) with the walk's diffusivity ``D`` (the pack's
           recorded value unless given); requires the boundary local time.
         * **field** (C3): ``B0`` (T) with ``b0_dir`` and the susceptibility ``chi_iso`` (required) and
@@ -202,6 +210,12 @@ class ReplayPack:
             chi_iso = k["chi_iso"] if chi_iso is None else chi_iso
             if chi_aniso == 0.0: chi_aniso = k["chi_aniso"]
             if b0_dir == (0.0, 0.0, 1.0): b0_dir = k["b0_dir"]
+        if orientation is not None:
+            if fod is not None:
+                raise ValueError("orientation= and fod= exclude each other: one pose, or a distribution of poses")
+            R = self._rotation_of(orientation)
+            G = G @ R                                                     # R^T g per sample
+            b0_dir = tuple(np.asarray(R, float).T @ np.asarray(b0_dir, float))
         logw = np.zeros(n_w)
         if T2 is not None or T1 is not None:
             if not self.has_relaxation:
@@ -225,6 +239,12 @@ class ReplayPack:
             logw = logw + surface_logweight(self.arrays, float(rho) / float(D_walk),
                                             ch.get("boundary_local_time"), chi)      # raises without C2
 
+        if fod is not None:
+            ew = w * np.exp(logw)
+            norm = w.sum()
+            ew, norm = self._select(compartment, ew, norm, w, ch, n_w)
+            S = self._fod_signal(G, dt, n_t, fod, ew, norm, B0, b0_dir, chi_iso, chi_aniso, refocus_time, waveform)
+            return S if complex_signal else np.abs(S)
         if B0 is None:
             C = read_position_coeffs(self.arrays, dtype=np.float64)
             W = compile_scheme(G, dt, self.K, n_t=n_t)
@@ -260,22 +280,118 @@ class ReplayPack:
 
         ew = w * np.exp(logw)
         norm = w.sum()
-        if compartment is not None:
-            sel = np.asarray(compartment)
-            if sel.dtype != bool:
-                if "compartment" not in ch:
-                    raise ValueError("compartment= by id needs the pack's compartment channel")
-                ids = np.asarray(decode_occupancy(self.arrays, ch["compartment"])["comp"])
-                ids = ids[:, 0] if ids.ndim == 2 else ids
-                sel = ids.astype(int) == int(sel)
-            if sel.shape[0] != n_w:
-                raise ValueError(f"compartment mask has {sel.shape[0]} entries for {n_w} walkers")
-            if not sel.any():
-                raise ValueError("compartment selection matched no walkers")
-            ew = np.where(sel, ew, 0.0)
-            norm = w[sel].sum()
+        ew, norm = self._select(compartment, ew, norm, w, ch, n_w)
         S = (ew[:, None] * np.exp(1j * phi)).sum(0) / norm
         return S if complex_signal else np.abs(S)
+
+    def _select(self, compartment, ew, norm, w, ch, n_w):
+        """Restrict the ensemble mean to ``compartment`` (a pool id or a walker mask)."""
+        from .compression import decode_occupancy
+        if compartment is None:
+            return ew, norm
+        sel = np.asarray(compartment)
+        if sel.dtype != bool:
+            if "compartment" not in ch:
+                raise ValueError("compartment= by id needs the pack's compartment channel")
+            ids = np.asarray(decode_occupancy(self.arrays, ch["compartment"])["comp"])
+            ids = ids[:, 0] if ids.ndim == 2 else ids
+            sel = ids.astype(int) == int(sel)
+        if sel.shape[0] != n_w:
+            raise ValueError(f"compartment mask has {sel.shape[0]} entries for {n_w} walkers")
+        if not sel.any():
+            raise ValueError("compartment selection matched no walkers")
+        return np.where(sel, ew, 0.0), w[sel].sum()
+
+    @property
+    def frame_axis(self):
+        """The substrate's own axis (``spec.frame.axis``; z when the pack embeds no spec)."""
+        spec = self.substrate
+        a = np.asarray(spec.frame.axis if spec is not None else (0.0, 0.0, 1.0), float)
+        return a / np.linalg.norm(a)
+
+    def _rotation_of(self, orientation):
+        """A 3x3 rotation (substrate frame -> lab), or the lab direction the substrate axis points along."""
+        from .sh_convolution import _rotations_from_axis
+        o = np.asarray(orientation, float)
+        if o.shape == (3, 3):
+            if not np.allclose(o @ o.T, np.eye(3), atol=1e-6) or np.linalg.det(o) < 0:
+                raise ValueError("orientation must be a proper rotation matrix (R R^T = I, det +1)")
+            return o
+        if o.shape == (3,):
+            return _rotations_from_axis(self.frame_axis, o[None, :])[0]
+        raise ValueError("orientation is a (3, 3) rotation or a (3,) axis direction")
+
+    def _fod_signal(self, G, dt, n_t, fod, ew, norm, B0, b0_dir, chi_iso, chi_aniso, refocus_time, waveform,
+                    l_g=8, l_b=6, n_theta=32, n_phi=64):
+        """The signal of a distribution of poses: per measurement, the pack's response over a sphere of poses
+        (each pose = the gradient and B0 counter-rotated, from per-walker contractions hoisted once), its
+        two-axis spectrum ``Lambda`` and the Gaunt composition against the FOD."""
+        from scipy.fft import dct
+        from .fod import FOD
+        from .gaunt import sphere_quadrature
+        from .sh_convolution import coupled_spectrum_at, apply_odf_coupled, _rotations_from_axis
+        from .compression import read_position_coeffs
+        from ._replay_kernel import se_gate
+        if not isinstance(fod, FOD):
+            raise TypeError("fod must be a dmipy_sim.replay.fod.FOD -- a bare coefficient array has no basis, and the "
+                            "Gaunt composition is silently wrong in a non-orthonormal one; use FOD.from_sh(coeffs, "
+                            "basis=...) / FOD.native(coeffs) / FOD.watson(...)")
+        G = np.asarray(G, np.float64)
+        n_meas = G.shape[0]
+        n_w = ew.shape[0]
+        gdir = np.zeros((n_meas, 3)); prof = np.zeros((n_meas, n_t))
+        for i in range(n_meas):
+            A = G[i]
+            k = int(np.argmax(np.linalg.norm(A, axis=1)))
+            if np.linalg.norm(A[k]) == 0.0:
+                gdir[i] = self.frame_axis                                          # b = 0: any direction
+                continue
+            g = A[k] / np.linalg.norm(A[k])
+            p = A @ g
+            if np.linalg.norm(A - p[:, None] * g[None, :]) > 1e-9 * np.linalg.norm(A):
+                raise ValueError(f"measurement {i} has no single gradient direction (a multi-axis waveform); the FOD "
+                                 f"composition expands the response in the fibre-gradient angle and needs one")
+            gdir[i], prof[i] = g, p
+        # per-walker gradient contraction q_{w,i} = gamma dt sum_k prof_ik r_wk: three axis waveforms per measurement
+        C = read_position_coeffs(self.arrays, dtype=np.float64).reshape(n_w, -1)
+        q = np.stack([C @ compile_scheme(np.einsum("it,a->ita", prof, np.eye(3)[a]), dt, self.K, n_t=n_t)
+                      for a in range(3)], axis=-1)                                   # (n_w, n_meas, 3)
+        dirs, wq = sphere_quadrature(n_theta, n_phi)
+        R = _rotations_from_axis(self.frame_axis, dirs)                               # (n_dirs, 3, 3)
+        b = np.asarray(b0_dir, float); b = b / np.linalg.norm(b)
+        if B0 is not None:
+            if not self.has_field:
+                raise ValueError("B0 was given but the pack carries no field tier (C3)")
+            pm = self.meta.get("compression", {}).get("channels", {}).get("susceptibility_path")
+            if pm is None:
+                raise ValueError("the FOD composition with a field needs the pack's susc_path channel (C3 path route)")
+            if chi_iso is None:
+                raise ValueError("B0 was given without chi_iso; give chi_iso (and chi_aniso)")
+            from .bank import susc_path_coeffs
+            Cs, names = susc_path_coeffs(self.arrays, pm)
+            if refocus_time == "auto":
+                refocus_time = _refocus_time_of(waveform)
+            gate_hat = dct(se_gate(n_t, dt, refocus_time), type=2, norm="ortho")[:Cs.shape[2]]
+            Psi = (GAMMA * dt) * np.einsum("k,wck->wc", gate_hat, Cs)                # (n_w, n_ch)
+            bp = np.einsum("nji,j->ni", R, b)
+            Q = np.stack([bp[:, 0] ** 2, bp[:, 1] ** 2, bp[:, 2] ** 2, 2 * bp[:, 0] * bp[:, 1], 2 * bp[:, 0] * bp[:, 2],
+                          2 * bp[:, 1] * bp[:, 2]], axis=1)
+            i_p = names.index("iso_P_xx")
+            phi_chi = float(chi_iso) * float(B0) * (Psi[:, names.index("iso_local")][None, :] - Q @ Psi[:, i_p:i_p + 6].T)
+            if chi_aniso and "aniso_G_xx" in names:
+                ia = names.index("aniso_G_xx")
+                phi_chi = phi_chi + float(chi_aniso) * float(B0) * (Q @ Psi[:, ia:ia + 6].T)
+            Ew = np.exp(1j * phi_chi) * ew[None, :]                                    # (n_dirs, n_w)
+        else:
+            Ew = np.broadcast_to(ew[None, :].astype(np.complex128), (dirs.shape[0], n_w))
+        out = np.empty(n_meas, np.complex128)
+        for i in range(n_meas):
+            gp = np.einsum("nji,j->ni", R, gdir[i])                                   # R^T g
+            E = (Ew * np.exp(1j * (gp @ q[:, i, :].T))).sum(1) / norm                  # response over poses
+            lam, _resid, _rank = coupled_spectrum_at(lambda d, E=E: E, gdir[i], b, l_g=l_g, l_b=l_b,
+                                                    chiral=(B0 is not None), _grid=(dirs, wq))
+            out[i] = apply_odf_coupled(lam, fod.coeffs, gdir[i], b, l_fod=fod.lmax, l_g=l_g, l_b=l_b)
+        return out
 
     @cached_property
     def position_coeffs(self):
