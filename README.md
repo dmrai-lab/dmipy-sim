@@ -53,7 +53,7 @@ spec = sub.request(n_fibres=300, seed=0)         # refuses an infeasible packing
 spec.save("wm.sub.json")
 
 # 1. walk once, from the spec and nothing else -- positions, occupancy and boundary local time are recorded
-walk = walk_spec(spec, 200_000, T_max=0.05, dt_save=5e-5, seed=0)
+walk = walk_spec(spec, 200_000, T_max=0.05, seed=0)            # the save grid is derived (scanner="connectom" by default)
 
 # 2. compress into a pack: channels (positions, occupancy, local time, field basis) and the spec -- not one
 #    T2, rho or chi value lives in the pack; those are what a replay applies
@@ -95,6 +95,10 @@ everywhere: 0 extra-cellular, 1 intra (the lumen / inside a closed surface), 2 m
 Datasets enter as **specs**: `spec.cactus_spec(run_dir)`, `spec.winther_spec(inner, outer)`,
 `spec.caterpillar_spec(csv)`, `spec.strands_spec(txt)` / `spec.disco_spec(txt)` read the files and write down
 domain, pools, walls and seeding; `walk_spec(spec, ...)` walks them pool by pool and the pack embeds the spec.
+The save grid is not a knob: `walk_spec` derives `dt_save` from the strongest waveform a scanner class can
+deliver (`scanner="prisma" | "magnus" | "connectom" | ...`, or `(G_max, slew)`), the walker count and `T_max`,
+so the replay's in-step phase error stays below a tenth of the walk's own noise floor; pack size is set by K,
+not by the grid.
 
 Wall and pool properties are set on the geometry and baked into the walk:
 

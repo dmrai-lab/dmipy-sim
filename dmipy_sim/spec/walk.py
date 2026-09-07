@@ -16,13 +16,27 @@ from .substrate import SubstrateSpec, SpecError
 from .build import geometry_from_spec
 
 
-def walk_spec(spec, n_walkers, T_max, dt_save, *, diffusivity=None, seed=0, n_probe=200_000,
-              field=True, field_res=0.2e-6, require_gpu=None, walker_batch_size=50_000, tiers="all"):
-    """Walk ``spec`` and return a :class:`~dmipy_sim.persistent_walk.PersistentWalk` carrying the spec."""
+def walk_spec(spec, n_walkers, T_max, dt_save=None, *, scanner="connectom", floor_fraction=0.1, diffusivity=None,
+              seed=0, n_probe=200_000, field=True, field_res=0.2e-6, require_gpu=None, walker_batch_size=50_000,
+              tiers="all"):
+    """Walk ``spec`` and return a :class:`~dmipy_sim.persistent_walk.PersistentWalk` carrying the spec.
+
+    ``dt_save`` is derived unless given: :func:`~dmipy_sim.acquisition.scanners.save_interval` for the strongest
+    waveform ``scanner`` (a class name or ``(G_max, slew)``) can deliver over ``T_max``, held to ``floor_fraction``
+    of this walk's Monte-Carlo floor, from the spec's fastest pool, and capped when the spec has a field source.
+    """
+    import logging
     from ..engine.core import simulate_trajectories
     from ..persistent_walk import PersistentWalk
+    from ..acquisition.scanners import save_interval
     spec = SubstrateSpec.from_dict(spec) if isinstance(spec, dict) else spec
     spec.validate()
+    if dt_save is None:
+        Ds = [p.D for p in spec.pools if p.D] + ([float(diffusivity)] if diffusivity else [])
+        dt_save = save_interval(T_max, n_walkers, scanner, D=(max(Ds) if Ds else 2e-9), floor_fraction=floor_fraction,
+                                field=bool(field and spec.field_source_pools))
+        logging.getLogger("dmipy_sim").info("walk_spec: dt_save=%.3g s derived for %s over T_max=%.3g s with %d walkers "
+                                            "(n_t=%d)", dt_save, scanner, T_max, n_walkers, int(round(T_max / dt_save)) + 1)
     if not _needs_bundle_walk(spec):
         g = geometry_from_spec(spec)
         D = diffusivity
