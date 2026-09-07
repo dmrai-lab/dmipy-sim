@@ -8,7 +8,7 @@ pool (``D = 0``) frozen where it was seeded; seeding follows the spec's rule (un
 measured volume, weights by water fraction or thinning) and the pools are concatenated into one
 ``PersistentWalk`` whose compartment channel carries the spec's ids. The field basis of a
 field-source pool is computed on the domain grid and rides on the walk. This is what
-``replay.builders.mesh_bundle`` used to decide in code.
+the bespoke bundle builders used to decide in code.
 """
 import numpy as np
 

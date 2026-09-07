@@ -34,8 +34,7 @@ def _slab_master(n_w=N_W, seed=0):
     traj[:, :, 1:] = np.cumsum(rng.normal(0, step, (n_w, N_T, 2)), axis=1)
     return dict(traj=traj, dt_traj=DT, T_max=(N_T - 1) * DT,
                 comp=np.zeros((n_w, N_T), np.int8), comp0=np.zeros(n_w, np.int64),
-                w=np.ones(n_w), T2_per_comp=np.array([0.08]), T1_per_comp=np.array([1.0]),
-                dlog_b=dlog, D_intra=D0, n_walkers=n_w, seed=seed)
+                w=np.ones(n_w), dlog_b=dlog, D_intra=D0, n_walkers=n_w, seed=seed)
 
 
 def _lean_env():
@@ -88,12 +87,6 @@ def test_rpk_roundtrip_and_lean_consumption(pack, tmp_path):
     E = replay_signal(p2, compile_scheme(G, dt, p2.K))
     assert abs(E[0] - 1.0) < 1e-6                                # b=0 -> 1
     assert np.all(np.diff(E) <= 1e-6)                            # monotone non-increasing
-
-
-def test_susceptibility_master_is_rejected():
-    m = _slab_master(); m["PhiC"] = np.zeros((5, 4, 4))
-    with pytest.raises(NotImplementedError, match="susceptibility"):
-        build_replay_pack(m, id="x", method="bridge_dst", K=8, license="x", citation="x")
 
 
 def test_build_to_floor_converges_and_records_target():
@@ -263,8 +256,6 @@ def test_replay_susc_can_restrict_to_one_compartment():
     m["comp"] = m["comp"].copy()
     m["comp"][n_w // 2:, :] = 1                       # two pools: ids 0 and 1
     m["comp0"] = m["comp"][:, 0].astype(np.int64)
-    m["T2_per_comp"] = np.array([0.08, 0.02])
-    m["T1_per_comp"] = np.array([1.0, 0.5])
 
     env = dict(_lean_env(), B0_list=[7.0], theta_deg=[0, 90])
     pk = build_replay_pack(m, id="test/slab-susc-comp", method="bridge_dst", envelope=env,

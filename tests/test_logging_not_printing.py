@@ -16,7 +16,7 @@ import dmipy_sim as d
 PKG = pathlib.Path(d.__file__).parent
 ENGINE_MODULES = ["engine/core.py", "engine/mt_walk.py", "engine/physics.py", "engine/bloch.py", "engine/mt.py",
                   "engine/gpu.py", "engine/_gpu_config.py",
-                  "replay/bank.py", "replay/builders/mesh_bundle.py", "replay/builders/mesh_axon.py",
+                  "replay/bank.py", "spec/walk.py", "spec/producers.py",
                   "replay/compression.py", "replay/trajectories.py", "replay/replay.py"]
 GPU_MODULES = ["engine/gpu.py", "engine/_gpu_config.py"]
 

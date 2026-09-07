@@ -42,8 +42,8 @@ def _master_arrays(src) -> dict:
     """Normalise a master walk to the dict consumed by :func:`build_replay_pack`.
 
     ``src`` is a :class:`~dmipy_sim.persistent_walk.PersistentWalk` (what ``simulate_trajectories`` and
-    ``simulate_mt_trajectories`` return), or a dict / ``.npz`` exposing at least ``traj``
-    (n_walkers, n_t, 3), ``dt_traj`` and ``T_max`` (the builders' master dict);
+    ``simulate_mt_trajectories`` return), or its bank dict / ``.npz`` (``PersistentWalk._bank_dict``) exposing
+    at least ``traj`` (n_walkers, n_t, 3), ``dt_traj`` and ``T_max``;
     the tier channels (``comp`` for bulk relaxation, ``dlog_b`` for
     surface relaxivity, ``bfrac`` for MT) are optional."""
     if isinstance(src, PersistentWalk):
@@ -66,11 +66,7 @@ def _master_arrays(src) -> dict:
                 susc_field_basis=(m.get("susc_field_basis") if isinstance(m, dict) else None),
                 susc_grid_origin=(np.asarray(m["susc_grid_origin"]) if "susc_grid_origin" in m else None),
                 susc_chi_iso=scal("susc_chi_iso"), delta_chi_a=scal("delta_chi_a"),
-                # analytic phasor maps / per-walker basis are NOT assembled publicly (grid form only)
-                PhiC=g("PhiC"), PhiS=g("PhiS"), Phi0=g("Phi0"), susc_basis=g("susc_basis"),
-                mt_params=m.get("mt_params") if isinstance(m, dict) else None,
                 cell_size=scal("cell_size"), R=g("R"), D_intra=scal("D_intra"),
-                T2_per_comp=g("T2_per_comp"), T1_per_comp=g("T1_per_comp"),
                 substrate_frame=g("substrate_frame"),
                 walkers_shuffled=bool(m.get("walkers_shuffled", False)),
                 substrate=(m.get("substrate") if isinstance(m, dict) else None),
@@ -601,8 +597,8 @@ def preflight_master(m, *, susc_path_K=None, sigma_star=None, K=None):
 
 
 def _walk_master(walk, *, weights=None, field=None, diffusivity=None, substrate_frame=None):
-    """The bank's master dict from a PersistentWalk plus the substrate metadata; a dict / .npz
-    passes through (the builders' path)."""
+    """The bank's master dict from a PersistentWalk plus the substrate metadata; a bank dict / .npz passes
+    through."""
     from ..persistent_walk import PersistentWalk
     from ..compartments import Compartments
     from ..fields.susceptibility_field import FieldGrid, field_grid_of
@@ -655,12 +651,10 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto"
     """Compress a persistent walk and assemble a self-certifying replay pack.
 
     ``walk`` is the :class:`~dmipy_sim.persistent_walk.PersistentWalk` a producer returned (the
-    bundle builders' master dict / ``.npz`` is also accepted). The tiers assembled are the ones the
+    walk's bank dict / ``.npz`` is also accepted). The tiers assembled are the ones the
     walk CARRIES, with what they need read from the geometry the walk was run on
-    (``walk.geometry``): **gradient** (C0, always); **bulk relaxation** (C1) when the walk has a
-    compartment channel and the pools' ``T2`` (and ``T1``) are known -- from the geometry's
-    ``compartments`` or the ``compartments`` argument (a :class:`~dmipy_sim.compartments.Compartments`
-    whose pools are the ids the channel uses, 0 extra, 1 intra, 2 myelin); **surface relaxivity**
+    (``walk.geometry`` / ``walk.spec``): **gradient** (C0, always); **bulk relaxation** (C1) when the walk
+    has a compartment channel (the pools' T2 / T1 are replay knobs; the pack carries none); **surface relaxivity**
     (C2) when the walk has the boundary local time; **magnetization transfer** (C4) when it has the
     bound fraction; **field** (C3) when a static field basis exists for the substrate --
     ``field="auto"`` derives it from a myelinated geometry (:func:`fields.susceptibility_field.field_grid_of`),
@@ -679,11 +673,6 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto"
     src = _walk_master(walk, weights=weights, field=field, diffusivity=diffusivity, substrate_frame=substrate_frame)
     _cx.require_position_method(method)
     m = _master_arrays(src)
-    if m.get("PhiC") is not None or m.get("susc_basis") is not None:
-        raise NotImplementedError(
-            "the analytic phasor-map (PhiC) and per-walker (susc_basis) susceptibility forms are "
-            "not assembled publicly; use the STATIC FIELD-GRID form (master key 'susc_field_basis', "
-            "e.g. from dmipy_sim.replay.builders.mesh_axon.mesh_axon_master).")
     env = envelope or _cx.default_envelope()
     X = np.asarray(m["traj"], np.float64)
     dt = float(m["dt_traj"])

@@ -138,7 +138,7 @@ meet in that substrate, not validated on an average case.
 dmipy_sim/
   geometry/     substrates: base, analytic, packed, myelin, packing, curved_tube, mesh, mesh_shapes
   engine/       core (simulate, simulate_trajectories), physics, bloch, pulse_sequence, mt, mt_walk, gpu
-  replay/       trajectories, compression, replay (ReplayPack), bank (build_replay_pack), builders/
+  replay/       trajectories, compression, replay (ReplayPack), bank (build_replay_pack)
   acquisition/  waveforms, rf, noise          sequences/   Sequence, pulseq import/export
   fields/       susceptibility, susceptibility_field (FieldGrid, field_grid_of)
   substrate/    Substrate (calibrated white matter), biophysical constants

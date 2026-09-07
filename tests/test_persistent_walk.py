@@ -66,7 +66,7 @@ def test_the_bank_reads_a_persistent_walk_directly():
     assert m["traj"] is w.positions and m["dt_traj"] == w.dt and m["T_max"] == pytest.approx(w.T_max)
     assert m["dlog_b"] is w.boundary_local_time and m["comp"] is w.compartment and m["bfrac"] is None
     assert m["n_walkers"] == 40 and m["seed"] == 2
-    m2 = _master_arrays(w._bank_dict(T2_per_comp=[0.05, 0.08], w=np.ones(40)))
-    assert m2["T2_per_comp"].tolist() == [0.05, 0.08] and m2["w"].shape == (40,)
+    m2 = _master_arrays(w._bank_dict(w=np.ones(40)))
+    assert m2["w"].shape == (40,)
     with pytest.raises(TypeError, match="PersistentWalk"):
         _master_arrays((w.positions, w.dt))

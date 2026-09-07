@@ -35,7 +35,8 @@ _DOWNSTREAM_MODULES = [
     "dmipy_sim.engine.pulse_sequence", "dmipy_sim.engine.mt", "dmipy_sim.engine.mt_walk",
     "dmipy_sim.engine.gpu", "dmipy_sim.engine._gpu_config",
     # the replay package; dmipy_sim.replay is the package and keeps replay.py's surface
-    "dmipy_sim.replay._replay_kernel", "dmipy_sim.replay.builders.mesh_axon", "dmipy_sim.replay.builders.mesh_bundle",
+    "dmipy_sim.replay._replay_kernel", "dmipy_sim.spec", "dmipy_sim.spec.build", "dmipy_sim.spec.walk",
+    "dmipy_sim.spec.producers", "dmipy_sim.io.caterpillar", "dmipy_sim.io.strands", "dmipy_sim.geometry.sphere_union",
     # acquisition / fields / viz; dmipy_sim.viz is the package re-exporting viz.py
     "dmipy_sim.acquisition.noise",
     "dmipy_sim.viz", "dmipy_sim.viz.viz", "dmipy_sim.viz.pedagogy",
@@ -191,7 +192,7 @@ def test_duck_typed_objects_still_read_through_the_legacy_attributes():
 
 # ── the engine reads the protocol, not attribute probes ──────────────────────────────────
 _ENGINE_MODULES = ["engine/core.py", "engine/physics.py", "engine/bloch.py", "engine/mt_walk.py", "engine/mt.py", "viz/pedagogy.py",
-                   "replay/builders/mesh_bundle.py"]
+                   "spec/walk.py"]
 # Probes that remain, and why. Every other property is a declared attribute.
 _ALLOWED_PROBES = {
     # physics.length_scales_of: the ONE reader of legacy attributes for non-Geometry objects
@@ -233,3 +234,40 @@ def test_every_loaded_dmipy_sim_module_comes_from_this_package_tree():
               if n.startswith("dmipy_sim") and getattr(m, "__file__", None)
               and not Path(m.__file__).resolve().is_relative_to(root)}
     assert not strays, f"modules loaded from outside {root}: {strays}"
+
+
+# ── the door is locked: substrates enter as specs, nothing else constructs one (#130) ────────────
+def test_io_readers_construct_nothing_and_the_builders_are_gone():
+    """A file reader parses; the geometry a file describes is built from the SPEC the producer emits. So no
+    module under ``dmipy_sim.io`` may import the geometry or engine packages, and the bespoke walk builders
+    (``replay.builders``) no longer exist."""
+    import ast
+    pkg = Path(dmipy_sim.__file__).parent
+    for py in sorted((pkg / "io").glob("*.py")):
+        tree = ast.parse(py.read_text())
+        for node in ast.walk(tree):
+            names = []
+            if isinstance(node, ast.ImportFrom):
+                names = [(node.module or "") + ("." * node.level)]
+            elif isinstance(node, ast.Import):
+                names = [a.name for a in node.names]
+            for n in names:
+                assert not re.search(r"(^|\.)(geometry|engine|replay|spec)(\.|$)", n), \
+                    f"{py.name} imports {n!r}: a reader must not build or walk a geometry"
+    assert not (pkg / "replay" / "builders").exists()
+    assert not any((pkg / "io" / f).exists() for f in ("cactus.py", "winther.py", "mesh_substrate.py"))
+    with pytest.raises(ImportError):
+        importlib.import_module("dmipy_sim.replay.builders")
+
+
+def test_every_public_geometry_has_a_spec():
+    """Every geometry class the package exports is written by ``spec_of`` (and so read by
+    ``geometry_from_spec``): a substrate a walk can run on is a substrate a spec can describe."""
+    import inspect
+    import dmipy_sim.geometry as g
+    from dmipy_sim.spec import build
+    src = inspect.getsource(build)
+    for name in g.__all__:
+        obj = getattr(g, name)
+        if inspect.isclass(obj) and issubclass(obj, g.Geometry) and obj is not g.Geometry:
+            assert name in src, f"{name} is exported but spec_of / geometry_from_spec do not know it"
