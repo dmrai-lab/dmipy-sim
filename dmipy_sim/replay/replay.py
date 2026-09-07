@@ -82,8 +82,17 @@ class ReplayPack:
     # ---- tiers carried ----
     @property
     def has_relaxation(self):
-        """C1: a compartment channel plus per-pool T2 in the metadata."""
-        return "comp_rle_vals" in self.arrays and bool(self.meta.get("per_comp", {}).get("T2"))
+        """C1: a compartment channel, so per-pool T2 / T1 given at replay can be applied."""
+        return "comp_rle_vals" in self.arrays
+
+    @property
+    def substrate(self):
+        """The :class:`~dmipy_sim.spec.SubstrateSpec` the walk was driven by, when the pack embeds one."""
+        d = self.meta.get("substrate")
+        if d is None:
+            return None
+        from ..spec.substrate import SubstrateSpec
+        return SubstrateSpec.from_dict(d)
 
     @property
     def has_surface(self):
@@ -110,7 +119,21 @@ class ReplayPack:
         wp = is_walker_preserving(meta["method"])
         return np.asarray(decode(self.arrays, meta, n_walkers=(self.n_walkers if wp else None)), np.float64)
 
-    def replay(self, waveform, *, relaxation="auto", rho=None, D=None, B0=None, b0_dir=(0.0, 0.0, 1.0),
+    def _by_pool(self, values, what):
+        """Per-pool values as a list by id; a ``{name: value}`` dict resolves through the embedded spec."""
+        if values is None:
+            return None
+        if isinstance(values, dict):
+            spec = self.substrate
+            if spec is None:
+                raise ValueError(f"{what} given by pool name but the pack embeds no substrate spec; give a list by id")
+            out = [0.0] * len(spec.pools)
+            for name, v in values.items():
+                out[spec.pool(name).id] = float(v)
+            return out
+        return [float(v) for v in np.asarray(values, float).reshape(-1)]
+
+    def replay(self, waveform, *, tissue=None, T2=None, T1=None, rho=None, D=None, B0=None, b0_dir=(0.0, 0.0, 1.0),
                chi_iso=None, chi_aniso=0.0, refocus_time="auto", compartment=None, complex_signal=False):
         """The signal of ``waveform`` on this pack, with every tier the pack carries and the request asks for.
 
@@ -121,9 +144,12 @@ class ReplayPack:
         * **gradient** (C0): always, in mode space from the position coefficients -- unless a field is
           requested, when the trajectory is decoded and the two phases accrue in one complex mean so
           their cross-term is kept.
-        * **bulk relaxation** (C1): ``relaxation="auto"`` applies the pack's per-pool T2 (and T1 under
-          the waveform's coherence gate) when the pack carries them; ``True`` requires them; ``False``
-          skips them.
+        * **bulk relaxation** (C1): ``T2`` (and ``T1``, under the waveform's coherence gate) per pool
+          id, or a ``{pool name: value}`` dict resolved through the embedded substrate spec; the pack
+          carries the occupancy channel and no value, so nothing is applied unless given.
+        * ``tissue``: a :class:`~dmipy_sim.spec.Tissue` supplying T2, T1, rho, B0, its direction and the
+          susceptibilities at once (``Tissue.from_spec(spec, B0=...)`` reads the spec's nominal values);
+          an explicit keyword wins over it.
         * **surface relaxivity** (C2): ``rho`` (m/s) with the walk's diffusivity ``D`` (the pack's
           recorded value unless given); requires the boundary local time.
         * **field** (C3): ``B0`` (T) with ``b0_dir`` and the susceptibility ``chi_iso`` (required) and
@@ -154,17 +180,29 @@ class ReplayPack:
         n_w = self.n_walkers
         w = np.asarray(self.spin_weights, np.float64)
 
+        if tissue is not None:
+            k = tissue.knobs()
+            T2 = k["T2"] if T2 is None else T2; T1 = k["T1"] if T1 is None else T1
+            rho = k["rho"] if rho is None else rho; B0 = k["B0"] if B0 is None else B0
+            chi_iso = k["chi_iso"] if chi_iso is None else chi_iso
+            if chi_aniso == 0.0: chi_aniso = k["chi_aniso"]
+            if b0_dir == (0.0, 0.0, 1.0): b0_dir = k["b0_dir"]
         logw = np.zeros(n_w)
-        if relaxation not in ("auto", True, False):
-            raise ValueError("relaxation must be 'auto', True or False")
-        if relaxation is True and not self.has_relaxation:
-            raise ValueError("relaxation was requested but the pack carries no bulk-relaxation tier (C1: a "
-                             "compartment channel plus per-pool T2); build it from a walk with tiers='all' "
-                             "and compartments=")
-        if relaxation in ("auto", True) and self.has_relaxation:
+        if T2 is not None or T1 is not None:
+            if not self.has_relaxation:
+                raise ValueError("T2 / T1 were given but the pack carries no compartment channel (C1); build it "
+                                 "from a walk with tiers='all'")
             comp = decode_occupancy(self.arrays, ch["compartment"])["comp"]
-            pc = self.meta["per_comp"]
-            logw = logw + relaxation_logweight(comp, pc["T2"], pc.get("T1"), dt, chi)
+            T2v = self._by_pool(T2, "T2"); T1v = self._by_pool(T1, "T1")
+            n_ids = int(np.max(comp)) + 1
+            if T2v is None:
+                T2v = [0.0] * n_ids                                   # no T2 decay, T1 only
+            if T1v is None:
+                T1v = [0.0] * n_ids                                   # no T1 term
+            if len(T2v) < n_ids or (T1v is not None and len(T1v) < n_ids):
+                raise ValueError(f"the compartment channel uses pool ids up to {n_ids - 1}; T2 / T1 must be given "
+                                 f"for every id (got {len(T2v)}{'' if T1v is None else f' / {len(T1v)}'})")
+            logw = logw + relaxation_logweight(comp, T2v, T1v, dt, chi)
         if rho is not None and float(rho) != 0.0:
             D_walk = self.diffusivity if D is None else D
             if D_walk is None:

@@ -58,7 +58,7 @@ def _pools_from_compartments(g, names, D_by_name, wf_by_name=None):
             wf = c.water_fraction if (c is not None and c.water_fraction is not None) else 1.0
         out.append(Pool(i, n, D_by_name.get(n), water_fraction=wf,
                         T2=(c.T2 if c is not None else None), T1=(c.T1 if c is not None else None),
-                        susceptibility=(Susceptibility(0.0, 0.0, "radial") if n == "myelin" else None)))
+                        susceptibility=(Susceptibility(None, None, "radial") if n == "myelin" else None)))
     return out
 
 
@@ -180,7 +180,7 @@ def spec_of(geometry, *, id=None, provenance=None, surface_dir=None):
                              description=f"periodic cell of {N} myelinated cylinders", provenance=prov)
     if isinstance(g, MultiShellCurvedTube):
         cl = np.asarray(g.centerline, float)
-        pools = [Pool(0, "extra", None), Pool(1, "intra", None), Pool(2, "myelin", None, susceptibility=Susceptibility(0.0, 0.0, "radial"))]
+        pools = [Pool(0, "extra", None), Pool(1, "intra", None), Pool(2, "myelin", None, susceptibility=Susceptibility(None, None, "radial"))]
         inner = Wall("axolemma", Surface("swept_polyline", centerline=cl.tolist(), radius=g.r_in), 1, 2)
         outer = Wall("sheath", Surface("swept_polyline", centerline=cl.tolist(), radius=g.r_out), 2, 0)
         lo = (cl.min(0) - MARGIN * g.r_out).tolist(); hi = (cl.max(0) + MARGIN * g.r_out).tolist()

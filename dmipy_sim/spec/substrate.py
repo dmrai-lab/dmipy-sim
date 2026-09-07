@@ -43,9 +43,10 @@ class Sided:
 
 @dataclass(frozen=True)
 class Susceptibility:
-    """A pool's susceptibility: nominal values plus the director rule that shapes the field basis."""
-    chi_iso: float
-    chi_aniso: float = 0.0
+    """A pool's susceptibility: the director rule that shapes the field basis, plus nominal values -- ``None``
+    when the producer knows the pool is a field source but not its chi (a replay knob either way)."""
+    chi_iso: Optional[float] = None
+    chi_aniso: Optional[float] = None
     director: str = "none"
     file: Optional[str] = None
 
@@ -282,6 +283,9 @@ def validate(d):
         if su is not None:
             for k in ("chi_iso", "chi_aniso", "director"):
                 _req(su, k, f"{w}.susceptibility")
+            for k in ("chi_iso", "chi_aniso"):
+                if su[k] is not None and not isinstance(su[k], (int, float)):
+                    raise SpecError(f"{w}.susceptibility.{k} must be a number or null, got {su[k]!r}")
             if su["director"] not in DIRECTORS:
                 raise SpecError(f"{w}.susceptibility.director must be one of {DIRECTORS}, got {su['director']!r}")
             if su["director"] == "file" and not su.get("file"):

@@ -6,6 +6,7 @@ import pytest
 import dmipy_sim as d
 from dmipy_sim.compartments import Compartments, Pool
 from dmipy_sim.replay.bank import build_replay_pack
+from dmipy_sim.spec import Tissue
 from dmipy_sim.substrate import Substrate
 
 ENV = dict(bvals=[0.0, 1e9], dirs=[[1, 0, 0]], ogse_periods=[2], shortd_b=1e9, shortd_deltas_frac=[0.05],
@@ -35,17 +36,26 @@ def test_the_walk_keeps_its_geometry_and_the_builder_needs_nothing_else():
     assert walk.geometry is g and walk.diffusivity == sub.D_intra
     pk = build_replay_pack(walk, id="t/sub", license="x", citation="x", K=8, envelope=ENV)
     assert pk.has_relaxation and pk.has_surface and pk.has_field
-    assert pk.meta["per_comp"]["T2"] == [sub.T2_extra, sub.T2_intra, sub.T2_myelin]
+    assert "per_comp" not in pk.meta and pk.substrate.pools == g.spec.pools     # the spec, never the values
     gm = pk.meta["compression"]["channels"]["susceptibility_grid"]
     assert gm["has_aniso"], "the basis must carry the anisotropic part so chi_aniso is a replay knob"
     G0 = np.zeros((1, pk.n_t, 3))
-    e = pk.replay(G0, B0=3.0, b0_dir=(1, 0, 0), chi_iso=1.06e-6, chi_aniso=-0.1e-6, relaxation=False, refocus_time=None)
+    e = pk.replay(G0, B0=3.0, b0_dir=(1, 0, 0), chi_iso=1.06e-6, chi_aniso=-0.1e-6, refocus_time=None)
     assert 0 < e[0] < 1
-    # overrides: explicit pools win, field=False leaves the tier out
-    own = Compartments(extra=Pool(T2=0.2), intra=Pool(T2=0.1), myelin=Pool(T2=0.01))
-    pk2 = build_replay_pack(walk, id="t/own", license="x", citation="x", K=8, envelope=ENV, compartments=own, field=False)
-    assert pk2.meta["per_comp"]["T2"] == [0.2, 0.1, 0.01] and not pk2.has_field
-    # a geometry without pools or a field: the tiers are simply absent
+    nominal = Tissue.from_spec(g.spec, B0=3.0, b0_dir=(1, 0, 0))                 # the spec's nominal values
+    assert nominal.T2 == [sub.T2_extra, sub.T2_intra, sub.T2_myelin] and nominal.rho == pytest.approx(sub.rho2)
+    assert nominal.chi_iso is None, "a Substrate declares the sheath a field source and no chi: a replay knob"
+    with pytest.raises(ValueError, match="without chi_iso"):
+        pk.replay(G0, tissue=nominal, refocus_time=None)
+    tissue = Tissue.from_spec(g.spec, B0=3.0, b0_dir=(1, 0, 0), chi_iso=1.06e-6, chi_aniso=-0.1e-6)
+    e_t = pk.replay(G0, tissue=tissue, refocus_time=None)
+    np.testing.assert_allclose(e_t, pk.replay(G0, T2=tissue.T2, T1=tissue.T1, rho=tissue.rho, B0=3.0, b0_dir=(1, 0, 0),
+                                              chi_iso=1.06e-6, chi_aniso=-0.1e-6, refocus_time=None))
+    assert e_t[0] < e[0]                                                          # T2 and rho cost signal
+    # field=False leaves the tier out
+    pk2 = build_replay_pack(walk, id="t/own", license="x", citation="x", K=8, envelope=ENV, field=False)
+    assert pk2.has_relaxation and not pk2.has_field
+    # a bare cylinder: occupancy and local time are recorded (T2 / rho come at replay), no field source
     plain = d.simulate_trajectories(60, 2e-9, d.Cylinder(2e-6, (0, 0, 1)), 2e-3, 5e-4, seed=0, require_gpu=False)
     pk3 = build_replay_pack(plain, id="t/plain", license="x", citation="x", K=8, envelope=ENV)
-    assert pk3.has_surface and not pk3.has_relaxation and not pk3.has_field
+    assert pk3.has_surface and pk3.has_relaxation and not pk3.has_field
