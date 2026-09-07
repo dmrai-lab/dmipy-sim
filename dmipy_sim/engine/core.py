@@ -1495,11 +1495,12 @@ def simulate_trajectories(
 
     D_walk = None if diffusivity is None else float(diffusivity)
     walk = PersistentWalk(np.concatenate(all_batches, axis=0), float(dt_actual), int(sub_steps),
-                      float(dt_sim), illegal_crossings=illegal, seed=int(seed), diffusivity=D_walk)
+                      float(dt_sim), illegal_crossings=illegal, seed=int(seed), diffusivity=D_walk,
+                      geometry=geometry)
     if record:
         walk = PersistentWalk(walk.positions, walk.dt, walk.sub_steps, walk.dt_sim,
                           boundary_local_time=np.concatenate(all_dlog_batches, axis=0),
                           compartment=np.concatenate(all_comp_batches, axis=0),
                           bound_frac=(np.concatenate(all_bound_batches, axis=0) if _mt_on else None),
-                          illegal_crossings=illegal, seed=int(seed), diffusivity=D_walk)
+                          illegal_crossings=illegal, seed=int(seed), diffusivity=D_walk, geometry=geometry)
     return walk

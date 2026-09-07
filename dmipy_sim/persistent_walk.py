@@ -7,7 +7,7 @@ walking again. `simulate_trajectories` and `simulate_mt_trajectories` return a `
 its channels are attributes, present or ``None`` by what the walk recorded; the replay functions
 read the attributes they need and `replay.bank.build_replay_pack` takes the walk directly.
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 import numpy as np
@@ -44,6 +44,9 @@ class PersistentWalk:
     diffusivity : float or None
         The free diffusivity the walk was run with (m^2/s); what a surface-relaxivity replay divides
         rho by.
+    geometry : Geometry or None
+        The substrate the walk was run on; the pack builder reads its pools and its field basis from
+        it. Not part of equality and not stored in a pack.
     """
     positions: np.ndarray
     dt: float
@@ -55,6 +58,7 @@ class PersistentWalk:
     illegal_crossings: int = 0
     seed: Optional[int] = None
     diffusivity: Optional[float] = None
+    geometry: object = field(default=None, compare=False, repr=False)
 
     @property
     def n_walkers(self):

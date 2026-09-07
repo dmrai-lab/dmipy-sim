@@ -273,4 +273,4 @@ def simulate_mt_trajectories(
     return PersistentWalk(np.concatenate(pos_b, axis=0), float(dt_actual), int(sub_steps), float(dt_sim),
                       boundary_local_time=np.concatenate(dlog_b, axis=0),
                       bound_frac=np.concatenate(bfrac_b, axis=0), seed=int(seed),
-                      diffusivity=float(diffusivity))
+                      diffusivity=float(diffusivity), geometry=geometry)

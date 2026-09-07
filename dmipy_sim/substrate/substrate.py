@@ -58,6 +58,9 @@ class Substrate:
     # -- geometry (canonical CC Gamma diameter law; Aboitiz 1992) --
     gamma_shape_diameter: float = 2.0
     gamma_scale_diameter: float = 0.304e-6
+    #: Floor on the OUTER diameter (m) when realising the law: the Gamma tail reaches nanometre
+    #: axons that no histology reports and whose lumen would set a sub-step a hundred times finer.
+    d_min: float = 0.4e-6
     g_ratio: float = 0.70
 
     # -- diffusivity (m^2/s; D_extra is intrinsic, pre-tortuosity) --
@@ -284,6 +287,37 @@ class Substrate:
                                  self.g_ratio * self.gamma_scale_diameter,
                                  volume_weighted=True)
         return self.rho2 * sv
+
+    def sample_outer_diameters(self, n_axons: int, seed: int = 0):
+        """``n_axons`` outer (fibre) diameters from the Gamma law, floored at ``d_min`` (m)."""
+        import numpy as np
+        rng = np.random.default_rng(int(seed))
+        return np.maximum(rng.gamma(self.gamma_shape_diameter, self.gamma_scale_diameter, int(n_axons)), self.d_min)
+
+    def pack(self, n_axons: int = 300, seed: int = 0, N_max=None, orientation=(0.0, 0.0, 1.0),
+             max_attempts: int = 100_000):
+        """Realise the substrate as a :class:`~dmipy_sim.geometry.PackedMyelinatedCylinders`.
+
+        Draws ``n_axons`` outer diameters from the Gamma law (floored at ``d_min``), sizes the periodic
+        cell for ``f_axon``, packs the OUTER cylinders by random sequential addition, then applies the
+        g-ratio to get the lumens -- the way the substrate is defined (the diameter law is the fibre,
+        myelin included). The geometry carries the substrate's diffusivities, its pools as
+        ``compartments`` (T2, T1, water fraction), ``rho2`` on both myelin walls and ``kappa`` on the
+        axolemma.
+        """
+        import numpy as np
+        from ..geometry import PackedMyelinatedCylinders, pack_myelinated_cylinders
+        d_out = self.sample_outer_diameters(n_axons, seed)
+        outer = 0.5 * d_out
+        inner = self.g_ratio * outer
+        L = float(np.sqrt(np.sum(np.pi * outer ** 2) / self.f_axon))
+        _, _, centres = pack_myelinated_cylinders(inner, self.g_ratio, None, cell_size=L, seed=seed,
+                                                  max_attempts=max_attempts)
+        n_max = int(N_max) if N_max is not None else int(2 ** np.ceil(np.log2(max(n_axons, 2))))
+        return PackedMyelinatedCylinders(inner, self.g_ratio, centres, L, N_max=n_max, orientation=orientation,
+                                         D_intra=self.D_intra, D_myelin=self.D_myelin, D_extra=self.D_extra,
+                                         kappa_inner=self.kappa, rho_inner=self.rho2, rho_outer=self.rho2,
+                                         compartments=self.compartments)
 
     @property
     def compartments(self) -> Compartments:

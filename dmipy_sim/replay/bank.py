@@ -609,12 +609,24 @@ def _walk_master(walk, *, compartments=None, weights=None, field=None, diffusivi
     passes through (the builders' path)."""
     from ..persistent_walk import PersistentWalk
     from ..compartments import Compartments
-    from ..fields.susceptibility_field import FieldGrid
+    from ..fields.susceptibility_field import FieldGrid, field_grid_of
     if not isinstance(walk, PersistentWalk):
-        if any(v is not None for v in (compartments, weights, field, diffusivity, substrate_frame)):
+        if any(v is not None for v in (compartments, weights, diffusivity, substrate_frame)) \
+                or field not in ("auto", None, False):
             raise TypeError("compartments=, weights=, field=, diffusivity= and substrate_frame= go with a "
                             "PersistentWalk; a master dict carries them as its own keys")
         return walk
+    geometry = walk.geometry
+    if compartments is None and geometry is not None and len(getattr(geometry, "compartments", ())):
+        c = geometry.compartments
+        if c.by_id("T2") is not None:
+            compartments = c
+    if field == "auto":
+        field = None
+        if geometry is not None and type(geometry).__name__ in ("MyelinatedCylinder", "PackedMyelinatedCylinders"):
+            field = field_grid_of(geometry, include_aniso=True)      # chi_aniso stays a replay knob
+    elif field is False:
+        field = None
     extra = {}
     if compartments is not None:
         c = Compartments.coerce(compartments)
@@ -654,7 +666,7 @@ def _walk_master(walk, *, compartments=None, weights=None, field=None, diffusivi
     extra["walkers_shuffled"] = True        # the producer draws walkers i.i.d.: any prefix is a fair subsample
     return walk._bank_dict(**extra)
 
-def build_replay_pack(walk, *, id, license, citation, compartments=None, weights=None, field=None,
+def build_replay_pack(walk, *, id, license, citation, compartments=None, weights=None, field="auto",
                       method=_cx.POSITION_METHOD, envelope=None, tol=2.0, K=None,
                       err_target=None, sigma_star=None, provenance=None,
                       blt_temporal_K=None, blt_dtype=np.float16, susc_path_K=None, susc_path_bits=8,
@@ -663,14 +675,18 @@ def build_replay_pack(walk, *, id, license, citation, compartments=None, weights
 
     ``walk`` is the :class:`~dmipy_sim.persistent_walk.PersistentWalk` a producer returned (the
     bundle builders' master dict / ``.npz`` is also accepted). The tiers assembled are the ones the
-    walk CARRIES: **gradient** (C0, always); **bulk relaxation** (C1) when the walk has a compartment
-    channel and ``compartments`` gives the pools' ``T2`` (and ``T1``) -- a
-    :class:`~dmipy_sim.compartments.Compartments` (e.g. ``Substrate().compartments``) whose pools
-    are the ids the channel uses, 0 extra, 1 intra, 2 myelin; **surface relaxivity** (C2) when the
-    walk has the boundary local time; **magnetization transfer** (C4) when it has the bound
-    fraction; **field** (C3) when ``field`` is a :class:`~dmipy_sim.fields.susceptibility_field.FieldGrid`
-    (the substrate's static field basis, sampled along the walk into the path channel when
-    ``susc_path_K`` is given). ``weights`` are per-walker proton-density weights (default uniform).
+    walk CARRIES, with what they need read from the geometry the walk was run on
+    (``walk.geometry``): **gradient** (C0, always); **bulk relaxation** (C1) when the walk has a
+    compartment channel and the pools' ``T2`` (and ``T1``) are known -- from the geometry's
+    ``compartments`` or the ``compartments`` argument (a :class:`~dmipy_sim.compartments.Compartments`
+    whose pools are the ids the channel uses, 0 extra, 1 intra, 2 myelin); **surface relaxivity**
+    (C2) when the walk has the boundary local time; **magnetization transfer** (C4) when it has the
+    bound fraction; **field** (C3) when a static field basis exists for the substrate --
+    ``field="auto"`` derives it from a myelinated geometry (:func:`fields.susceptibility_field.field_grid_of`),
+    a :class:`~dmipy_sim.fields.susceptibility_field.FieldGrid` supplies one (a mesh substrate),
+    ``field=False`` leaves the tier out; the basis is geometry only, and B0, its direction and the
+    susceptibilities are replay knobs. ``weights`` are per-walker proton-density weights (default:
+    the pools' water fractions by compartment, else uniform).
 
     The position ensemble is compressed by ``method`` (default ``bridge_dst``: endpoints plus a
     Brownian bridge on the sine basis, which holds both endpoints exactly and pairs its first two

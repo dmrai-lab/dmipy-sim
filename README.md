@@ -34,37 +34,28 @@ boundary local time for surface relaxivity (C2), and, through a field grid, the 
 substrate bank distributes and what dmipy-fit fits against.
 
 ```python
-import numpy as np
-from dmipy_sim import PackedMyelinatedCylinders, pack_myelinated_cylinders, simulate_trajectories
+from dmipy_sim import simulate_trajectories
 from dmipy_sim.substrate import Substrate
-from dmipy_sim.fields.susceptibility_field import field_grid_of
 from dmipy_sim.replay import ReplayPack
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_sim.sequences import Sequence
 
-# the substrate: histology-calibrated white matter, packed myelinated cylinders
-sub   = Substrate.canonical(field_T=3.0)
-rng   = np.random.default_rng(0)
-d_out = np.maximum(rng.gamma(sub.gamma_shape_diameter, sub.gamma_scale_diameter, 300), 0.4e-6)  # outer diameters, floored
-inner = 0.5 * sub.g_ratio * d_out
-L     = np.sqrt(np.sum(np.pi * (d_out / 2) ** 2) / sub.f_axon)                    # periodic cell for f_axon
-_, _, centres = pack_myelinated_cylinders(inner, sub.g_ratio, None, cell_size=L, seed=0)
-geom  = PackedMyelinatedCylinders(inner, sub.g_ratio, centres, L, N_max=512,
-                                  D_intra=sub.D_intra, D_extra=sub.D_extra, D_myelin=sub.D_myelin)
+# the substrate: histology-calibrated white matter realised as packed myelinated cylinders
+sub  = Substrate.canonical(field_T=3.0)          # diameter law (floored at d_min), g-ratio, f_axon, D, T2, rho, kappa
+geom = sub.pack(n_axons=300, seed=0)             # pack the fibres by outer radius, lumens from the g-ratio
 
-# 1. walk once — C0, C1 and C2 are recorded by default
+# 1. walk once — positions, compartment occupancy and boundary local time are recorded by default
 walk = simulate_trajectories(200_000, sub.D_intra, geom, T_max=0.05, dt_save=5e-5, seed=0)
 
-# 2. compress into a pack; the tiers assembled are the ones the walk carries
-pack = build_replay_pack(walk, id="wm/canonical-3T", license="CC-BY-4.0", citation="...",
-                         compartments=sub.compartments,                     # per-pool T2/T1 -> C1
-                         field=field_grid_of(geom, chi_iso=1.06e-6, delta_chi_a=-0.1e-6))  # -> C3
+# 2. compress into a pack; pools and the susceptibility field basis come from the geometry the walk ran on
+pack = build_replay_pack(walk, id="wm/canonical-3T", license="CC-BY-4.0", citation="...")
 pack.save("wm.rpk")
 
 # 3. anywhere, later: load and replay an acquisition with the tiers you ask for
 pack = ReplayPack.load("wm.rpk")
 seq  = Sequence.from_pgse(bvalues=[1e9], gradient_directions=[[1, 0, 0]], delta=0.01, Delta=0.03)
-E    = pack.replay(seq, rho=sub.rho2, B0=3.0, b0_dir=(1, 0, 0))   # gradient + T2 per pool + surface + field
+E    = pack.replay(seq, rho=sub.rho2, B0=3.0, b0_dir=(1, 0, 0), chi_iso=1.06e-6, chi_aniso=-0.1e-6)
+# gradient + T2 per pool + surface relaxivity + susceptibility: B0, its direction and chi are replay knobs
 ```
 
 A tier that is requested but not carried raises; nothing is silently skipped. `pack.replay(seq)` alone
@@ -128,12 +119,6 @@ Correctness is defined by the test suite: analytical solutions, eigenfunction se
 relations, exchange laws and MISST reference signals. Every parameter the engine tunes for speed
 (bounce budgets, sub-steps, grid cells) is derived from the most adversarial situation a walker can
 meet in that substrate, not validated on an average case.
-
-> **Tracer self-diffusivity is not conductivity.** The Monte Carlo (and dMRI) measure
-> `D_self = MSD / 4t`. Maxwell–Garnett, Rayleigh and the Hashin–Shtrikman bounds are statements about
-> the effective conductivity `σ_eff = (1 − f) D_self / D0 · σ0`. For a square array of impermeable
-> cylinders the exact tracer value is `D_self / D0 = 1 / (1 + f)`, which the engine matches to ≤ 1.4%;
-> comparing it against a conductivity formula suggests a spurious 2× error.
 
 ## Layout
 
