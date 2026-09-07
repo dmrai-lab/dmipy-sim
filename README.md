@@ -29,7 +29,8 @@ E    = simulate(n_walkers=100_000, diffusivity=2e-9, waveform=seq, geometry=spec
 ```
 
 Every driver takes the substrate as a **spec** (`SubstrateSpec`, its dict, or a `.sub.json` path) or as the
-geometry object that is one spelling of it; `geometry.spec` writes out what a constructor leaves implicit.
+geometry object that is one spelling of it; `geometry.spec` writes out what a constructor leaves implicit, and a
+substrate with no spec spelling is refused.
 
 **Persistent**: walk once, keep the walk, replay any acquisition on it. The walk records every replay
 tier the substrate supports — positions (C0), compartment occupancy for per-pool T2/T1 (C1), the

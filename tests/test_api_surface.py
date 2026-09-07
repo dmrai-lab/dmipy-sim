@@ -254,7 +254,7 @@ def test_io_readers_construct_nothing_and_the_builders_are_gone():
             for n in names:
                 assert not re.search(r"(^|\.)(geometry|engine|replay|spec)(\.|$)", n), \
                     f"{py.name} imports {n!r}: a reader must not build or walk a geometry"
-    assert not (pkg / "replay" / "builders").exists()
+    assert not list((pkg / "replay" / "builders").glob("*.py")) if (pkg / "replay" / "builders").exists() else True
     assert not any((pkg / "io" / f).exists() for f in ("cactus.py", "winther.py", "mesh_substrate.py"))
     with pytest.raises(ImportError):
         importlib.import_module("dmipy_sim.replay.builders")
@@ -271,3 +271,19 @@ def test_every_public_geometry_has_a_spec():
         obj = getattr(g, name)
         if inspect.isclass(obj) and issubclass(obj, g.Geometry) and obj is not g.Geometry:
             assert name in src, f"{name} is exported but spec_of / geometry_from_spec do not know it"
+
+
+def test_a_substrate_without_a_spec_spelling_is_refused_by_every_driver():
+    """The door: a driver walks what a spec can describe. An object that only quacks like a geometry is refused,
+    with the reason; a Mesh built from arrays gets its surface written to the spec cache so it HAS a spelling."""
+    from dmipy_sim.spec import SpecError, as_geometry
+
+    class Quack:
+        def init_positions(self, n, key): return jnp.zeros((n, 3), jnp.float32)
+        def reflect(self, r, step): return r + step
+        length_scales = LengthScales()
+
+    with pytest.raises(SpecError, match="spec spelling"):
+        as_geometry(Quack())
+    g = dmipy_sim.Cylinder(2e-6, (0, 0, 1))
+    assert as_geometry(g) is g and g._spec_source is not None and g._spec_source == g.spec

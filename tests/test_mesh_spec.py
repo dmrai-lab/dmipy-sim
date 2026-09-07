@@ -16,14 +16,16 @@ ENV = dict(bvals=[0.0, 1e9], dirs=[[0, 0, 1]], ogse_periods=[2], shortd_b=1e9, s
            B0_list=[3.0], theta_deg=[90], delta_frac=0.2, Delta_frac=0.5, rho_list=[1e-5])
 
 
-def test_a_mesh_writes_its_spec_and_is_rebuilt_from_it(tmp_path):
+def test_a_mesh_writes_its_spec_and_is_rebuilt_from_it(tmp_path, monkeypatch):
     V, F = mesh_shapes.icosphere(2e-6, subdivisions=2)
     m = d.Mesh(V, F, feature_radius=1e-6, permeability={"intra_to_extra": 2e-5, "extra_to_intra": 1e-5},
                compartments=d.Compartments(intra=d.Pool(T2=0.05, surface_relaxivity_t2=1e-6), extra=d.Pool(T2=0.1)),
                voxel_min=[-4e-6] * 3, voxel_max=[4e-6] * 3)
-    with pytest.raises(SpecError, match="surface_dir"):
-        m.spec
-    spec = spec_of(m, surface_dir=tmp_path)
+    monkeypatch.setenv("DMIPY_SIM_SURFACE_DIR", str(tmp_path / "cache"))
+    cached = m.spec                                   # an in-memory mesh writes its surface to the cache, named by content
+    assert cached.wall("surface").surface.file.startswith(str(tmp_path / "cache")) and m.source["file"] == cached.wall("surface").surface.file
+    assert m.spec.wall("surface").surface.file == cached.wall("surface").surface.file      # written once
+    spec = spec_of(m, surface_dir=tmp_path)           # an explicit directory still wins
     spec.validate()
     w = spec.wall("surface")
     assert w.surface.kind == "mesh" and os.path.exists(w.surface.file) and len(w.surface.sha256) == 64

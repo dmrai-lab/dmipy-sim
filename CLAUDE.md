@@ -64,7 +64,10 @@ sig  = simulate(n_walkers=100_000, diffusivity=2e-9, waveform=wf, geometry=geom,
 ```
 `geometry=` on every driver (`simulate`, `simulate_cpmg`, `simulate_trajectories`, `simulate_bloch`,
 `simulate_mt_trajectories`) also takes a `SubstrateSpec`, its dict or a `.sub.json` path (`spec.as_geometry`);
-`geom.spec` writes out what the constructor left implicit.
+`geom.spec` writes out what the constructor left implicit. **The door is closed**: `as_geometry` computes and caches
+`geometry.spec` (validated) on first use and refuses an object with no spec spelling; a `Mesh` built from arrays writes
+its surface into `spec.build.surface_cache_dir()` (`$DMIPY_SIM_SURFACE_DIR`, else `~/.cache/dmipy-sim/surfaces`, named by
+content hash) so it has one.
 
 **Surface relaxivity / permeability** — substrate properties baked into the walk (one walk
 per ρ/κ):
