@@ -47,6 +47,13 @@ class PersistentWalk:
     geometry : Geometry or None
         The substrate the walk was run on; the pack builder reads its pools and its field basis from
         it. Not part of equality and not stored in a pack.
+    spec : SubstrateSpec or None
+        The substrate spec the walk was driven by (a spec-driven multi-pool walk has no single
+        geometry); the pack embeds it and reads the pools from it.
+    weights : (n_walkers,) or None
+        Per-walker spin weights when the seeding rule leaves them non-uniform.
+    field_grid : FieldGrid or None
+        The substrate's static field basis when the producer computed it (mesh substrates).
     """
     positions: np.ndarray
     dt: float
@@ -59,6 +66,9 @@ class PersistentWalk:
     seed: Optional[int] = None
     diffusivity: Optional[float] = None
     geometry: object = field(default=None, compare=False, repr=False)
+    spec: object = field(default=None, compare=False, repr=False)
+    weights: Optional[np.ndarray] = field(default=None, compare=False, repr=False)
+    field_grid: object = field(default=None, compare=False, repr=False)
 
     @property
     def n_walkers(self):

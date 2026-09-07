@@ -135,6 +135,21 @@ def _parse_ascii_ply(path):
         return None, None
 
 
+
+def write_ply(path, vertices, faces):
+    """Write an ASCII PLY (metres). The inverse of :func:`load_ply` at ``scale=1``, so a spec can
+    reference a surface that only existed in memory."""
+    V = np.asarray(vertices, np.float64); F = np.asarray(faces, np.int64)
+    with open(path, "w") as fh:
+        fh.write("ply\nformat ascii 1.0\n")
+        fh.write(f"element vertex {len(V)}\nproperty double x\nproperty double y\nproperty double z\n")
+        fh.write(f"element face {len(F)}\nproperty list uchar int vertex_indices\nend_header\n")
+        for v in V:
+            fh.write(f"{float(v[0]):.17g} {float(v[1]):.17g} {float(v[2]):.17g}\n")
+        for f in F:
+            fh.write(f"3 {int(f[0])} {int(f[1])} {int(f[2])}\n")
+    return str(path)
+
 def load_ply(path, scale=1.0, recenter=False):
     """Load vertices and faces from a mesh file (PLY/STL/OBJ/...).
 
@@ -1178,4 +1193,6 @@ class Mesh(Geometry):
     def from_ply(cls, path, scale=1.0, recenter=False, **kwargs):
         """Construct a Mesh directly from a mesh file (see :func:`load_ply`)."""
         V, F = load_ply(path, scale=scale, recenter=recenter)
-        return cls(V, F, **kwargs)
+        m = cls(V, F, **kwargs)
+        m.source = {"file": str(path), "scale": float(scale), "recenter": bool(recenter)}
+        return m
