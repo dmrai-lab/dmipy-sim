@@ -21,9 +21,11 @@ def test_as_geometry_accepts_every_spelling(tmp_path):
     assert type(as_geometry(spec)) is d.Cylinder and as_geometry(spec.to_dict()).spec == spec
     path = spec.save(tmp_path / "c.sub.json")
     assert as_geometry(str(path)).spec == spec
-    class Duck:                                   # duck-typed objects the engine's tests use pass through
+    from dmipy_sim.spec import SpecError
+    class Duck:                                   # an object with no spec spelling is not a substrate: refused
         pass
-    duck = Duck(); assert as_geometry(duck) is duck
+    with pytest.raises(SpecError, match="spec spelling"):
+        as_geometry(Duck())
 
 
 def test_fused_engine_and_producer_walk_a_spec_as_the_geometry():

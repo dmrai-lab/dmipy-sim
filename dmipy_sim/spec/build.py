@@ -47,6 +47,12 @@ def _tiers(walls, pools, kappa=0.0):
     return t
 
 
+def _seeded(pools):
+    """The pools a walk seeds: those that hold water."""
+    ids = [p.id for p in pools if p.water_fraction > 0]
+    return ids or [p.id for p in pools]
+
+
 def _pools_from_compartments(g, names, D_by_name, wf_by_name=None):
     """Pools 0..n for the named compartments, reading T2/T1/water fraction from ``g.compartments``."""
     comps = getattr(g, "compartments", None)
@@ -150,7 +156,7 @@ def spec_of(geometry, *, id=None, provenance=None, surface_dir=None):
         inner = Wall("axolemma", Surface("cylinder", center=[0.0] * 3, axis=ax, radius=g.inner_radius), 1, 2, Directional(ki, ki))
         outer = Wall("sheath", Surface("cylinder", center=[0.0] * 3, axis=ax, radius=g.outer_radius), 2, 0, Directional(ko, ko))
         return SubstrateSpec(sid, Domain(*_box(MARGIN * g.outer_radius), ["open"] * 3), pools, [inner, outer],
-                             Seeding([0, 1, 2]), Validity(min(g.inner_radius, g.outer_radius - g.inner_radius),
+                             Seeding(_seeded(pools)), Validity(min(g.inner_radius, g.outer_radius - g.inner_radius),
                                                           _tiers([inner, outer], pools)),
                              description="isolated myelinated cylinder: lumen, sheath, extra", provenance=prov)
     if isinstance(g, PackedMyelinatedCylinders):
@@ -174,7 +180,7 @@ def spec_of(geometry, *, id=None, provenance=None, surface_dir=None):
         w_out = Wall("sheath", Surface("cylinder", axis=ax, instances={"centers": centers.tolist(), "radii": outer.tolist()}),
                      2, 0, Directional(ko, ko), Sided(ro, ro))
         dom = Domain([-L / 2, -L / 2, -L / 2], [L / 2, L / 2, L / 2], ["periodic", "periodic", "open"])
-        return SubstrateSpec(sid, dom, pools, [w_in, w_out], Seeding([0, 1, 2]),
+        return SubstrateSpec(sid, dom, pools, [w_in, w_out], Seeding(_seeded(pools)),
                              Validity(float(min(inner.min(), (outer - inner).min())), _tiers([w_in, w_out], pools),
                                       min_gap=float(periodic_min_gap(centers[:, :2], outer, L))),
                              realisation={"n_objects": int(N), "packing_fraction": float(np.pi * np.sum(outer ** 2) / L ** 2),
@@ -227,18 +233,27 @@ def _sha256(path):
     return h.hexdigest()
 
 
+def surface_cache_dir():
+    """Where a Mesh built from arrays writes its surface so that it has a spec spelling: ``$DMIPY_SIM_SURFACE_DIR``,
+    else ``~/.cache/dmipy-sim/surfaces``. Files are named by the content hash, so the same mesh is written once."""
+    import os
+    return os.environ.get("DMIPY_SIM_SURFACE_DIR") or os.path.join(os.path.expanduser("~"), ".cache", "dmipy-sim", "surfaces")
+
+
 def _spec_of_mesh(g, sid, prov, surface_dir):
     from ..geometry.mesh import write_ply
+    import hashlib, os
     src = getattr(g, "source", None)
-    if src is None:
-        if surface_dir is None:
-            raise SpecError("a Mesh built from arrays has no surface file; pass surface_dir= to write one "
-                            "(a spec references surfaces as files)")
-        import os
-        os.makedirs(surface_dir, exist_ok=True)
-        path = os.path.join(surface_dir, f"{sid.replace('/', '_')}.ply")
-        write_ply(path, g.vertices, g.faces)
+    if src is None:                                   # built from arrays: a spec references surfaces as FILES
+        V = np.ascontiguousarray(np.asarray(g.vertices, np.float64)); F = np.ascontiguousarray(np.asarray(g.faces, np.int64))
+        digest = hashlib.sha256(V.tobytes() + F.tobytes()).hexdigest()[:24]
+        d = surface_dir if surface_dir is not None else surface_cache_dir()
+        os.makedirs(d, exist_ok=True)
+        path = os.path.join(d, f"mesh-{digest}.ply")
+        if not os.path.exists(path):
+            write_ply(path, V, F)
         src = {"file": path, "scale": 1.0}
+        g.source = dict(src, recenter=False)          # from now on the mesh knows its file
     surf = Surface("mesh", file=src["file"], format=str(src["file"]).rsplit(".", 1)[-1].lower(), scale=float(src.get("scale", 1.0)),
                    sha256=_sha256(src["file"]))
     comps = g.compartments
@@ -311,6 +326,18 @@ def as_geometry(substrate):
     if isinstance(substrate, (str, os.PathLike)):
         from .substrate import load_spec
         return geometry_from_spec(load_spec(substrate))
+    # the door: a driver walks what a spec can describe. The geometry's spec is computed once and kept on it.
+    if getattr(substrate, "_spec_source", None) is None:
+        try:
+            spec = substrate.spec
+            spec.validate()
+        except (AttributeError, SpecError, TypeError, ValueError) as e:
+            raise SpecError(f"{type(substrate).__name__} has no spec spelling ({e}); a driver walks only a substrate a "
+                            f"SubstrateSpec can describe -- give a spec, or a geometry spec_of knows") from e
+        try:
+            substrate._spec_source = spec
+        except Exception:                              # a slotted or frozen object: recomputed next time
+            pass
     return substrate
 
 
