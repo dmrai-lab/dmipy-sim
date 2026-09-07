@@ -1,197 +1,192 @@
 # dmipy-sim
 
-**Diffusion Microstructure Imaging in Python** — the Monte-Carlo **forward** engine: random-walk
-spins through explicit tissue geometry, accumulating phase under **arbitrary free gradient
-waveforms** `G(t)`, to generate the ground-truth signal. **Surface relaxivity** and **membrane
-permeability** are baked into the walk; everything is vmap/scan JAX and runs on CPU or any
-CUDA-12 GPU.
+**Diffusion Microstructure Imaging in Python** — the Monte-Carlo **forward** engine. Spins random-walk
+through an explicit tissue substrate and accumulate phase under an arbitrary gradient waveform `G(t)`;
+the signal is the ensemble mean of the phasors. Wall physics (surface relaxivity, membrane permeability,
+magnetization transfer), per-compartment relaxation and susceptibility fields are part of the walk.
+Everything is JAX (`vmap`/`scan`) and runs on CPU or a CUDA-12 GPU.
 
-> One shared `G(t)` + substrate across the whole loop — **design** the sequence, **simulate** the
+> One `G(t)` and one substrate across the whole loop — **design** the sequence, **simulate** the
 > signal, **fit** the tissue:
-> **[dmipy-design](https://github.com/dmrai-lab/dmipy-design)** · deliverable sequence **design**
-> &nbsp;·&nbsp; **dmipy-sim** · Monte-Carlo **forward** *(you are here)* &nbsp;·&nbsp;
-> **[dmipy-fit](https://github.com/dmrai-lab/dmipy-fit)** · analytical **inverse** &nbsp;·&nbsp;
-> **[dmipy](https://github.com/dmrai-lab/dmipy)** · umbrella + docs.
->
-> Docs: **[dmipy.org](https://dmipy.org)** &nbsp;·&nbsp; coming from the 2019 toolbox?
-> [What's changed in 2.x](https://dmipy.org/migrating/)
+> **[dmipy-design](https://github.com/dmrai-lab/dmipy-design)** · sequence design &nbsp;·&nbsp;
+> **dmipy-sim** · Monte-Carlo forward *(you are here)* &nbsp;·&nbsp;
+> **[dmipy-fit](https://github.com/dmrai-lab/dmipy-fit)** · analytical inverse &nbsp;·&nbsp;
+> **[dmipy](https://github.com/dmrai-lab/dmipy)** · umbrella + docs at **[dmipy.org](https://dmipy.org)**.
 
-The free waveform is the base representation: `G(t)` of shape `(n_measurements, n_t, 3)` is
-the ground truth, and PGSE/OGSE/CPMG/STE/PTE are factory constructors, not fundamental
-types. Magnetisation is treated as fully transverse throughout (ideal instantaneous pulses).
-dmipy-sim and dmipy-fit share **one** pulse-sequence and substrate interface — the
-simulator and the analytical models eat the same `Waveform` and the same substrate, with no
-conversion layer.
+## Two ways to get a signal
 
-## Quickstart — a diffusion signal in a few lines
+**Fused**: one call walks the spins under one acquisition and returns the signal.
 
-Free (Gaussian) diffusion under a PGSE waveform reproduces the textbook Stejskal–Tanner law
-`S/S0 = exp(-b·D)` — a one-line sanity check that the install works:
+```python
+from dmipy_sim import simulate, Cylinder
+from dmipy_sim.sequences import Sequence
+
+seq  = Sequence.from_pgse(bvalues=[0, 1e9, 2e9], gradient_directions=[[1, 0, 0]] * 3,
+                          delta=0.01, Delta=0.04)                 # exact G for the requested b
+geom = Cylinder(radius=5e-6, orientation=(0, 0, 1))
+E    = simulate(n_walkers=100_000, diffusivity=2e-9, waveform=seq, geometry=geom, seed=0)
+```
+
+**Persistent**: walk once, keep the walk, replay any acquisition on it. The walk records every replay
+tier the substrate supports — positions (C0), compartment occupancy for per-pool T2/T1 (C1), the
+boundary local time for surface relaxivity (C2), and, through a field grid, the susceptibility field
+(C3). A `.rpk` replay pack is the compressed, self-certifying form of that walk; it is what the
+substrate bank distributes and what dmipy-fit fits against.
 
 ```python
 import numpy as np
-from dmipy_sim import simulate, pgse, set_b, FreeDiffusion
+from dmipy_sim import PackedMyelinatedCylinders, pack_myelinated_cylinders, simulate_trajectories
+from dmipy_sim.substrate import Substrate
+from dmipy_sim.fields.susceptibility_field import field_grid_of
+from dmipy_sim.replay import ReplayPack
+from dmipy_sim.replay.bank import build_replay_pack
+from dmipy_sim.sequences import Sequence
 
-D = 2e-9   # m^2/s
-for b in [0, 1e9, 2e9]:                       # b in s/m^2  (1e9 s/m^2 = 1000 s/mm^2 = 1 ms/µm^2)
-    wf = set_b(pgse(delta=0.01, DELTA=0.04, G_magnitude=0.05, bvecs=[[1, 0, 0]], n_t=300), b)
-    S  = float(np.asarray(simulate(n_walkers=50_000, diffusivity=D, waveform=wf,
-                                    geometry=FreeDiffusion(), seed=0, require_gpu=False)).ravel()[0])
-    print(f"b={b/1e9:.0f} ms/µm²   S/S0={S:.3f}   (exp(-bD)={np.exp(-b*D):.3f})")
-# b=0 → 1.000   b=1 → 0.131 (exp -bD 0.135)   b=2 → 0.021 (0.018)
+# the substrate: histology-calibrated white matter, packed myelinated cylinders
+sub   = Substrate.canonical(field_T=3.0)
+rng   = np.random.default_rng(0)
+d_out = np.maximum(rng.gamma(sub.gamma_shape_diameter, sub.gamma_scale_diameter, 300), 0.4e-6)  # outer diameters, floored
+inner = 0.5 * sub.g_ratio * d_out
+L     = np.sqrt(np.sum(np.pi * (d_out / 2) ** 2) / sub.f_axon)                    # periodic cell for f_axon
+_, _, centres = pack_myelinated_cylinders(inner, sub.g_ratio, None, cell_size=L, seed=0)
+geom  = PackedMyelinatedCylinders(inner, sub.g_ratio, centres, L, N_max=512,
+                                  D_intra=sub.D_intra, D_extra=sub.D_extra, D_myelin=sub.D_myelin)
+
+# 1. walk once — C0, C1 and C2 are recorded by default
+walk = simulate_trajectories(200_000, sub.D_intra, geom, T_max=0.05, dt_save=5e-5, seed=0)
+
+# 2. compress into a pack; the tiers assembled are the ones the walk carries
+pack = build_replay_pack(walk, id="wm/canonical-3T", license="CC-BY-4.0", citation="...",
+                         compartments=sub.compartments,                     # per-pool T2/T1 -> C1
+                         field=field_grid_of(geom, chi_iso=1.06e-6, delta_chi_a=-0.1e-6))  # -> C3
+pack.save("wm.rpk")
+
+# 3. anywhere, later: load and replay an acquisition with the tiers you ask for
+pack = ReplayPack.load("wm.rpk")
+seq  = Sequence.from_pgse(bvalues=[1e9], gradient_directions=[[1, 0, 0]], delta=0.01, Delta=0.03)
+E    = pack.replay(seq, rho=sub.rho2, B0=3.0, b0_dir=(1, 0, 0))   # gradient + T2 per pool + surface + field
 ```
 
-Swap `FreeDiffusion()` for a `Cylinder`/`Sphere`/`PackedCylinders` to see restriction, or add
-`surface_relaxivity_t2=` / `permeability=` to the geometry — see below. (`require_gpu=False`
-just silences the CPU-fallback warning; drop it on a GPU.)
+A tier that is requested but not carried raises; nothing is silently skipped. `pack.replay(seq)` alone
+is the diffusion signal with the pack's per-pool T2; `relaxation=False` turns that off;
+`compartment=1` restricts the mean to one pool.
 
-## What's here
+## Substrates
 
-| | Entry point | Notes |
-|---|---|---|
-| **Forward MC** | `simulate(waveform, geometry, diffusivity, ...)` | walker ensemble signal `Re⟨exp(iφ)⟩`, with optional baked-in T2, surface relaxivity, permeability — one walk per call |
-| **Multi-echo** | `simulate_cpmg(n_walkers, D, cpmg_waveform, geometry, ...)` | full CPMG echo train from a **single** walk — signal sampled at each echo (ideal 180s); `(n_echoes, n_measurements)` |
-| **Encodings** | `pgse`, `ogse`, `cpmg`, `ste`, `pte`, `trapezoidal_ogse` | factory constructors over the free waveform; `calc_b`, `calc_btensor`, `btensor_invariants` |
-| **Noise** | `add_rician_noise`, `add_nc_chi_noise`, `estimate_sigma` | |
-| **Sequence I/O** | `dmipy_sim.sequences` (incl. Pulseq `.seq` interop), `scanner_constants` | per-vendor gradient/RF/SAR deliverability limits |
+All lengths in metres, diffusivities in m²/s, times in seconds. Compartment ids are the same
+everywhere: 0 extra-cellular, 1 intra (the lumen / inside a closed surface), 2 myelin.
 
-### Geometries
+| family | classes |
+|---|---|
+| analytic | `FreeDiffusion`, `Box1D`, `Sphere`, `Cylinder`, `Ellipsoid`, `PermeableSlab1D`, `PermeableShell` |
+| packed, periodic | `PackedCylinders`, `PackedSpheres`, `PackedMyelinatedCylinders` (+ `pack_*` RSA packers) |
+| myelinated | `MyelinatedCylinder`, `PackedMyelinatedCylinders` — three pools, two walls |
+| curved fibres | `CurvedTube`, `MultiShellCurvedTube`, `PackedCurvedTubes` — sphere-swept polylines |
+| meshes | `Mesh` / `Mesh.from_ply` — any closed or 3-D-periodic triangle mesh, grid-accelerated |
 
-| Geometry | Restriction | Surface relaxivity | Permeability |
-|---|---|---|---|
-| `FreeDiffusion` | none | — | — |
-| `Box1D` | 1-D slab | ✓ | — |
-| `Sphere`, `Cylinder`, `Ellipsoid` | closed wall | ✓ | ✓ |
-| `PackedCylinders`, `PackedSpheres` | periodic ensemble | ✓ | ✓ |
-| `MyelinatedCylinder`, `PackedMyelinatedCylinders` | multi-wall myelin geometry | ✓ | ✓ dual-wall |
-| `Mesh` (load a `.ply`) | arbitrary closed **or** 3-D-periodic triangular mesh | ✓ | ✓ |
-
-## Surface relaxivity & permeability
-
-`surface_relaxivity_t2=ρ` (m/s) — Brownstein–Tarr: each wall collision reduces the walker
-weight by `exp(−2ρ·d⊥/D)`, so the ensemble signal decays as `exp(−TE·ρ·S/V)` (cylinder
-`S/V=2/R`, sphere `3/R`). `permeability=κ` (m/s) — Powles (2004) bidirectional crossing with
-`p=min(1, 2κ·d⊥/D)`. Both are **baked into the walk**: build the geometry with the property
-and call `simulate()` (one walk per ρ/κ). The ρ weight applies on reflection only, never on
-transmission. Intra↔extra exchange is the Kärger/NEXI path; lipid bilayers are impermeable,
-so physiological exchange is at the nodes of Ranvier, not through the myelin sheath.
-
-## ⚠️ Tracer self-diffusivity vs conductivity (read before benchmarking tortuosity)
-
-The MC (and PGSE/dMRI) measure the **tracer self-diffusivity** `D_self = MSD/4t`. This is
-**not** the Fickian/effective conductivity `σ_eff` — they differ by the porosity:
-`σ_eff/σ0 = (1−f)·D_self/D0`. Maxwell–Garnett `(1−f)/(1+f)`, Rayleigh, and the
-Hashin–Shtrikman / Wiener bounds are statements about `σ_eff`, **not** `D_self`. For a
-square array of impermeable cylinders the exact *tracer* value is `D_self/D0 = 1/(1+f)`, and
-the MC matches it to ≤1.4%. Comparing the MC tracer diffusivity against the conductivity
-formula spuriously suggests a 2× error and an apparent bound violation — it is a
-units/quantity mismatch, not a bug.
-
-## One call, one walk
-
-Each `simulate(waveform, geometry, ...)` runs a fresh spin walk and returns the ensemble
-signal. Surface relaxivity and permeability are substrate properties baked into that walk —
-set them on the geometry and call `simulate()`:
+Wall and pool properties are set on the geometry and baked into the walk:
 
 ```python
-from dmipy_sim import simulate, pgse, set_b, Cylinder
-
-geom = Cylinder(radius=5e-6, orientation=(0, 0, 1), surface_relaxivity_t2=1e-6)
-wf   = set_b(pgse(delta=0.01, DELTA=0.04, G_magnitude=0.2, bvecs=[[1, 0, 0]], n_t=300), 1e9)
-sig  = simulate(n_walkers=100_000, diffusivity=2e-9, waveform=wf, geometry=geom, seed=0)
+Cylinder(5e-6, (0, 0, 1), surface_relaxivity_t2=1e-6)      # rho (m/s), Brownstein–Tarr at the wall
+Cylinder(5e-6, (0, 0, 1), permeability=2e-5)               # kappa (m/s), Powles crossing
+Mesh(V, F, pool="extra", compartments=Compartments(extra=Pool(T2=0.08, D=1.7e-9),
+                                                   intra=Pool(T2=0.05, D=1.7e-9)))
 ```
 
-## Meshes — load a `.ply` substrate
+`Compartments` is the one spelling of per-pool D / T2 / T1 / water fraction / side-dependent rho, for
+every geometry and for `Substrate`. A `Mesh` also declares which pool a driver seeds (`pool=`) and is
+placed in the bore by an acquisition rotation (`orientation=`), so the walk stays in the mesh frame.
 
-Run an arbitrary triangular surface mesh (e.g. a dense multi-cell microstructure
-exported as PLY by a substrate generator) with the same physics as the analytic
-geometries. The mesh is spatially accelerated (a uniform grid culls triangles per
-step, so ~10⁶-triangle meshes are tractable) and can be closed or 3-D periodic.
+### Meshes
 
 ```python
-from dmipy_sim import Mesh, simulate
-
-# load a mesh, scaling normalised coords -> metres, as a 3-D-periodic pack
-mesh = Mesh.from_ply("substrate.ply", scale=1e-5,
-                     periodic=True, voxel_min=[-10e-6]*3, voxel_max=[10e-6]*3,
-                     feature_radius=1.7e-6, permeability=2e-5)
-mesh.quality_report()                       # per-effect resolution verdict
-signal = simulate(n_walkers=50_000, diffusivity=2e-9, waveform=wf, geometry=mesh)
+from dmipy_sim import Mesh
+mesh = Mesh.from_ply("substrate.ply", scale=1e-5, periodic=True,
+                     voxel_min=[-10e-6] * 3, voxel_max=[10e-6] * 3, feature_radius=1.7e-6)
+mesh.quality_report()          # per-effect resolution verdict; permeability needs edge/feature <~ 0.04
 ```
 
-- **Placement in the bore:** pass `orientation=` (or a rotation `R=`) to align the
-  mesh's axis with B0 = +z — applied as an acquisition rotation, so the walk is
-  unchanged.
-- **Accuracy:** restricted diffusion and surface relaxivity reach the MC noise
-  floor; permeability needs a fine tessellation (its faceting bias falls `O(h²)`),
-  and `quality_report()` / a construction warning flag a mesh that's too coarse.
-- **Loading** needs the optional extra: `pip install "dmipy-sim[mesh]"` (trimesh).
-- **Visualise** the substrate and walkers with `dmipy_sim.viz`
-  (`plot_mesh_3d`, `plot_mesh_section`, `plot_cell_surface`, `walk_paths` +
-  `plot_trajectories`, `save_rotation`) — see the rendered gallery in
-  [`examples/mesh_viz/`](examples/mesh_viz/).
+Per step a walker tests only the triangles in its 27-cell neighbourhood, so a 10⁶-triangle mesh is
+tractable. Reflection uses smooth vertex normals; permeation is one Powles decision at the first hit
+and then a multi-bounce reflection; the voxel faces are periodic wrap planes or specular walls, never
+teleports. Loading needs `pip install "dmipy-sim[mesh]"`.
 
-<p align="center">
-  <img src="examples/mesh_viz/mesh_3d_spin.gif" width="360"
-       alt="walker paths confined inside a transparent mesh cell">
-</p>
+## Acquisitions
+
+`G(t)` of shape `(n_measurements, n_t, 3)` is the base representation. `Sequence.from_pgse` /
+`from_cpmg` / … compute the exact gradient for requested b-values and refuse infeasible requests; the
+lower-level `pgse`, `pgste`, `ogse`, `cpmg`, `ste`, `pte` constructors build the waveform from
+hardware amplitudes. The RF schedule (`rf_events`) is the source of a waveform's coherence attributes:
+`chi_perp`, `TM`, `stimulated_echo` and `echo_indices` are derived from it, never carried as flags.
+B-tensor encoding (LTE / PTE / STE) and multi-echo CPMG are included. The vector-Bloch engine
+(`simulate_bloch`) propagates M = (Mx, My, Mz) through the actual RF, gradient, relaxation, exchange
+and MT operators when the transverse-only picture is not enough.
+
+## Physics is the specification
+
+Correctness is defined by the test suite: analytical solutions, eigenfunction series, Brownstein–Tarr
+relations, exchange laws and MISST reference signals. Every parameter the engine tunes for speed
+(bounce budgets, sub-steps, grid cells) is derived from the most adversarial situation a walker can
+meet in that substrate, not validated on an average case.
+
+> **Tracer self-diffusivity is not conductivity.** The Monte Carlo (and dMRI) measure
+> `D_self = MSD / 4t`. Maxwell–Garnett, Rayleigh and the Hashin–Shtrikman bounds are statements about
+> the effective conductivity `σ_eff = (1 − f) D_self / D0 · σ0`. For a square array of impermeable
+> cylinders the exact tracer value is `D_self / D0 = 1 / (1 + f)`, which the engine matches to ≤ 1.4%;
+> comparing it against a conductivity formula suggests a spurious 2× error.
+
+## Layout
+
+```
+dmipy_sim/
+  geometry/     substrates: base, analytic, packed, myelin, packing, curved_tube, mesh, mesh_shapes
+  engine/       core (simulate, simulate_trajectories), physics, bloch, pulse_sequence, mt, mt_walk, gpu
+  replay/       trajectories, compression, replay (ReplayPack), bank (build_replay_pack), builders/
+  acquisition/  waveforms, rf, noise          sequences/   Sequence, pulseq import/export
+  fields/       susceptibility, susceptibility_field (FieldGrid, field_grid_of)
+  substrate/    Substrate (calibrated white matter), biophysical constants
+  compartments.py  persistent_walk.py  constants.py   viz/  io/  math/
+```
+
+`CLAUDE.md` is the operational guide for agents and contributors: the geometry contract, the step
+rules, the replay invariant, and how to add physics.
 
 ## Examples
 
-- **[Mesh loading + visualisation](examples/mesh_ply_and_viz.ipynb)**
-  ([Open in Colab](https://colab.research.google.com/github/dmrai-lab/dmipy-sim/blob/main/examples/mesh_ply_and_viz.ipynb))
-  — build/load a mesh substrate, run diffusion + surface relaxivity + permeability,
-  select walkers that permeated (`return_positions='full'`), and render the viewer.
-- **[Flagship — canonical white matter](examples/canonical_wm_flagship.ipynb)**
-  ([Open in Colab](https://colab.research.google.com/github/dmrai-lab/dmipy-sim/blob/main/examples/canonical_wm_flagship.ipynb))
-  — build a histology-calibrated packed-myelinated-cylinder substrate, run the Monte-Carlo
-  forward with surface relaxivity, and check it against the analytical model in dmipy-fit.
-- **[Validation ladders](examples/validation/)** — surface relaxivity and permeability from 1-D
-  to 3-D vs exact analytics, and the extra-axonal tortuosity scale sweep.
-
-## Lineage
-
-dmipy-sim shares the standard Brownian-walk Monte-Carlo lineage (disimpy / MISST / Camino) and
-extends well past it — membrane permeability, interior + exterior surface relaxivity,
-per-compartment properties, B-tensor encoding, arbitrary meshes, and the free-waveform interface
-shared with dmipy-fit, all on a JAX (vmap/scan) backend.
-
-## Physics as the specification
-
-dmipy-sim is written with the **physical test suite as the specification** — analytical
-solutions, eigenfunction series, Brownstein–Tarr relations, and MISST reference signals
-define correctness, and the code is written to pass them. Any refactor or backend change is
-safe as long as the suite passes.
+- **[Canonical white matter](examples/canonical_wm_flagship.ipynb)** — the calibrated packed-myelinated
+  substrate, forward signal with surface relaxivity, parity with dmipy-fit's analytical model.
+- **[Mesh loading and visualisation](examples/mesh_ply_and_viz.ipynb)** — build or load a mesh, run
+  diffusion, relaxivity and permeability, select permeated walkers, render the viewer.
+- **[Validation ladders](examples/validation/)** — surface relaxivity and permeability from 1-D to 3-D
+  against exact eigenvalues; extra-axonal tortuosity scale sweep.
+- **[Substrate bank](examples/substrate_bank/)** — building canonical-pore packs with a fidelity target.
 
 ## Install
 
 ```bash
-# CPU (any platform)
-pip install -e ".[dev]" && pip install "jax[cpu]>=0.6.2"
-# NVIDIA GPU (CUDA 12)
-pip install -e ".[cuda12,dev]"
+pip install -e ".[dev]" && pip install "jax[cpu]>=0.6.2"     # CPU, any platform
+pip install -e ".[cuda12,dev]"                                # NVIDIA GPU, CUDA 12
 ```
-GPU note: after install, point the linker at the bundled CUDA libs in your venv's `activate`:
+
+On a GPU box, point the loader at the bundled CUDA libraries once in your venv's `activate`:
+
 ```bash
 export LD_LIBRARY_PATH=$(find "$VIRTUAL_ENV/lib"/python*/site-packages/nvidia -name lib -type d | tr '\n' ':')$LD_LIBRARY_PATH
 ```
 
+Large runs belong on the GPU in float32; `simulate` warns on a large CPU run unless `require_gpu=False`.
+
 ## Tests
 
 ```bash
-pytest -q -m "not slow"   # fast suite
-pytest -q -m slow         # heavy GPU battery (first-principles validation ladders)
+JAX_PLATFORMS=cpu pytest tests/ -q -m "not slow and not gpu"   # fast tier: every PR (~7 min on a GPU)
+pytest -q -m slow                                              # heavy statistical MC validation
 ```
 
-The tests cover: free/box/sphere/cylinder/ellipsoid diffusion vs analytical + MISST;
-baked-in T2; surface relaxivity (interior + exterior); B-tensor (LTE/STE/PTE); packed
-cylinders/spheres; permeability (all closed surfaces); SH convolution; and periodic unwrap.
-The `slow`-marked `tests/validation/` battery asserts the first-principles 1D→2D→3D
-permeability and surface-relaxivity ladders against exact eigenvalues (see
-`examples/validation/`).
+`tests/geometry/` mirrors the geometry package; `tests/physics/` and `tests/validation/` assert
+physics across modules.
 
 ## License
 
-Dual-licensed: **GNU AGPL-3.0** for open-source use, or a **commercial license** for
-proprietary/closed use. See [LICENSE](LICENSE) and [LICENSING.md](LICENSING.md)
-(commercial: rutger.fick@dmrai-lab.org).
+Dual-licensed: **GNU AGPL-3.0** for open-source use, or a **commercial license** for proprietary use.
+See [LICENSE](LICENSE) and [LICENSING.md](LICENSING.md).
