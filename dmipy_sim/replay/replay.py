@@ -182,11 +182,10 @@ class ReplayPack:
         dt_wf = float(getattr(waveform, "dt", self.dt))
         n_t, dt = self.n_t, self.dt
         chi = getattr(waveform, "chi_perp", None)
-        if chi is not None:
+        if chi is not None:                              # the gate on the occupancy / contact channels: averaged over
+            from ._replay_kernel import bin_gate         # each save's accumulation interval, never resampled
             chi = np.asarray(chi, np.float64).reshape(-1)
-            if chi.shape[0] != n_t:                                               # nearest sample of the walk grid
-                idx = np.clip(np.rint(np.arange(n_t) * dt / dt_wf).astype(int), 0, chi.shape[0] - 1)
-                chi = chi[idx]
+            chi = bin_gate(chi, dt_wf if chi.shape[0] == G.shape[1] else dt, n_t, dt)[0]
         ch = (self.meta.get("compression", {}).get("channels", {}) or {})
         n_w = self.n_walkers
         w = np.asarray(self.spin_weights, np.float64)
