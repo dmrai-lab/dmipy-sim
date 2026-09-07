@@ -1,42 +1,38 @@
 # Contributing to dmipy-sim
 
-Thanks for your interest. dmipy-sim is the forward-truth engine: a GPU Monte-Carlo of spins
-under arbitrary `G(t)`. Physics is the specification — contributions are judged first on
-physical correctness (analytical limiting cases, conservation laws, known closed forms), not
-just on passing tests.
+dmipy-sim is maintained by one author with an AI pair, and features are cheap to add that way. So the
+project does not take pull requests: **open an issue instead**. Say what you want to simulate or what
+you found wrong, and we work out together how it fits the framework -- the substrate spec, the pack
+format, the replay knobs -- before anything is written. That keeps the physics, the specifications and
+the code in one hand, and it spares you a contributor license agreement.
 
-## Development setup
+## What makes a good issue
+
+- **A bug**: the spec (`.sub.json`) or the geometry, the acquisition, the call, what you expected and
+  why (an analytical limit, a reference simulator, a paper), and what came out. If a pack is involved,
+  its `id` and `fidelity` block.
+- **A feature**: the physics, with a reference, and the substrate or acquisition it needs. If it is a new
+  substrate family, where the geometry comes from (a generator, a dataset) -- it enters as a spec
+  producer, never as a loader that constructs geometry.
+- **A question about a result**: the smallest script that reproduces it.
+
+Physics is the specification. A change is right when it reproduces an analytical solution, an
+eigenfunction series, a Brownstein-Tarr relation or a MISST reference to the Monte-Carlo noise floor,
+not merely when the tests pass.
+
+## Running it yourself
 
 ```bash
 git clone https://github.com/dmrai-lab/dmipy-sim.git
 cd dmipy-sim
-pip install -e ".[examples]"   # JAX (CPU by default; see README for CUDA-12)
-pytest -q                      # CPU-safe suite (CI runs CPU-only)
+pip install -e ".[dev]"                                   # add [mesh] for PLY loading, [cuda12] for GPU
+JAX_PLATFORMS=cpu pytest tests/ -q -m "not slow and not gpu"   # the fast tier
 ```
 
-Test in **float64 first** (reference/correctness); float32 is production/GPU speed and is only
-acceptable when the difference from float64 is below the physical noise floor. Mind step
-resolution — the MC step must stay well below the smallest geometric feature (e.g. fibre
-radius) or walkers tunnel through walls.
+`CLAUDE.md` is the operational guide to the code (engine, layout, conventions, traps); the formats live
+in [replay-pack-spec](https://github.com/dmrai-lab/replay-pack-spec) (`SUBSTRATE.md`, `RPK.md`,
+`RPH.md`).
 
-## Guidelines
+## Licensing
 
-- Match the surrounding code — naming, comment density, and idiom.
-- One source of truth for every physical constant: tissue constants in the `Substrate` /
-  `biophysical_constants` catalogue, scanner hardware/safety limits in
-  `dmipy_sim.sequences.scanner_constants`. Read them via their accessors; do not hard-code.
-- The free waveform `G(t)` is the base representation; PGSE/OGSE/etc. are factory
-  constructors, not fundamental types.
-- Add a validation example against an exact analytical result for any new physical effect.
-
-## Contributor License Agreement
-
-dmipy is **dual-licensed** (AGPL-3.0 OR commercial), so we need an explicit relicensing grant
-from contributors — see the
-[CLA](https://github.com/dmrai-lab/dmipy/blob/main/licensing/CLA.md). For now, add this line
-to your first pull request:
-
-> I have read the CLA and I agree to it on behalf of myself (and my employer if applicable).
-> Signed, [your name] <[your email]>
-
-You keep the copyright to your work. Please open an issue before starting anything large.
+dmipy-sim is AGPL-3.0 with a commercial license available; see `LICENSING.md`.
