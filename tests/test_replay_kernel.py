@@ -116,7 +116,7 @@ def test_jax_routes_agree_with_numpy():
 
 
 def test_resampling_is_one_rule():
-    """Same grid: length alignment. Different grid: linear interpolation, zero outside."""
+    """Same grid: length alignment. Different grid: the integral over every walk sample conserved, zero outside."""
     G = _bipolar()
     np.testing.assert_array_equal(resample_gradient(G, DT, DT, N_T), G)
     assert resample_gradient(G, DT, DT, N_T // 2).shape == (1, N_T // 2, 3)

@@ -38,7 +38,13 @@ def _same_grid(dt_wf, dt_traj):
 
 def resample_gradient(G, dt_wf, dt_traj, n_t_traj):
     """Waveform ``G`` (``(n_meas, n_t_wf, 3)``, step ``dt_wf``) on the walk grid (``n_t_traj``
-    samples of ``dt_traj``): linear interpolation per component, zero outside the waveform.
+    samples of ``dt_traj``), **conserving the gradient integral over every walk sample**: a sample is
+    the mean of the sample-and-hold waveform over its interval, so the q-vector is exact at every walk
+    sample boundary whatever the grids. Zero outside the waveform.
+
+    Interpolating the samples instead biased a PGSE whose edges fall between walk samples by
+    ``~dt_traj / delta`` in b (measured -1.0 % in signal at dt 50 us, delta 10 ms; -3.7 % at 200 us),
+    an error the fidelity certificate cannot see because its battery is built on the grid.
 
     On the same grid the waveform is truncated or zero-padded to ``n_t_traj`` samples.
     Returns float64 ``(n_meas, n_t_traj, 3)``.
@@ -54,12 +60,14 @@ def resample_gradient(G, dt_wf, dt_traj, n_t_traj):
         out = np.zeros((n_meas, n_t_traj, 3))
         out[:, :n_t_wf, :] = G
         return out
-    t_wf = np.arange(n_t_wf) * float(dt_wf)
-    t_traj = np.arange(n_t_traj) * float(dt_traj)
+    e_wf = np.arange(n_t_wf + 1) * float(dt_wf)                     # sample-and-hold interval edges
+    e_tr = np.arange(n_t_traj + 1) * float(dt_traj)
+    Q = np.concatenate([np.zeros((n_meas, 1, 3)), np.cumsum(G, axis=1) * float(dt_wf)], axis=1)   # int_0^t G
     out = np.zeros((n_meas, n_t_traj, 3))
     for m in range(n_meas):
         for ax in range(3):
-            out[m, :, ax] = np.interp(t_traj, t_wf, G[m, :, ax], left=0.0, right=0.0)
+            q = np.interp(e_tr, e_wf, Q[m, :, ax], left=0.0, right=Q[m, -1, ax])
+            out[m, :, ax] = np.diff(q) / float(dt_traj)
     return out
 
 
@@ -74,11 +82,13 @@ def resample_gradient_jax(G, dt_wf, dt_traj, n_t_traj):
         if n_t_wf > n_t_traj:
             return G[:, :n_t_traj, :]
         return jnp.concatenate([G, jnp.zeros((n_meas, n_t_traj - n_t_wf, 3), jnp.float32)], axis=1)
-    t_wf = jnp.arange(n_t_wf, dtype=jnp.float32) * float(dt_wf)
-    t_traj = jnp.arange(n_t_traj, dtype=jnp.float32) * float(dt_traj)
+    e_wf = jnp.arange(n_t_wf + 1, dtype=jnp.float32) * float(dt_wf)
+    e_tr = jnp.arange(n_t_traj + 1, dtype=jnp.float32) * float(dt_traj)
 
-    def one(g_1d):
-        return jnp.interp(t_traj, t_wf, g_1d, left=0.0, right=0.0)
+    def one(g_1d):                                                 # area-conserving, as the numpy twin
+        Q = jnp.concatenate([jnp.zeros((1,), jnp.float32), jnp.cumsum(g_1d) * jnp.float32(dt_wf)])
+        q = jnp.interp(e_tr, e_wf, Q, left=0.0, right=Q[-1])
+        return jnp.diff(q) / jnp.float32(dt_traj)
     G_t = jax.vmap(jax.vmap(one))(G.transpose(0, 2, 1))          # (n_meas, 3, n_t_traj)
     return G_t.transpose(0, 2, 1)
 
