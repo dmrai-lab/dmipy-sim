@@ -300,6 +300,12 @@ def _warn_if_step_outruns_the_lookup(geometry, diffusivity, dt, n_sub, what):
             UserWarning, stacklevel=3)
 
 
+
+#: Sub-steps per save / waveform step above which the resolver refuses: a substrate whose smallest
+#: feature demands more than this is degenerate far more often than it is intended, and a walk at that
+#: cost blocks a user for hours before telling them. ``sub_steps=`` overrides deliberately.
+MAX_SUB_STEPS = 100_000
+
 def resolve_sub_steps(geometry, diffusivity: float, dt: float, *, surface: bool = False,
                       mt_dwell_time=None, override=None) -> int:
     """Fine sub-steps per waveform (or save) step for a walk on ``geometry``.
@@ -322,13 +328,28 @@ def resolve_sub_steps(geometry, diffusivity: float, dt: float, *, surface: bool 
     """
     if override:
         return int(override)
-    n = walk_sub_steps(geometry, diffusivity, dt)
-    n = max(n, collision_sub_steps(geometry, diffusivity, dt))
+    rules = {"reflection": walk_sub_steps(geometry, diffusivity, dt),
+             "collision lookup": collision_sub_steps(geometry, diffusivity, dt)}
     if surface:
-        n = max(n, surface_sub_steps(geometry, diffusivity, dt))
+        rules["surface local time"] = surface_sub_steps(geometry, diffusivity, dt)
     if mt_dwell_time is not None:
-        n = max(n, mt_sub_steps(geometry, diffusivity, dt, mt_dwell_time))
-    return max(1, int(n))
+        rules["binding"] = mt_sub_steps(geometry, diffusivity, dt, mt_dwell_time)
+    name, n = max(rules.items(), key=lambda kv: kv[1])
+    n = max(1, int(n))
+    if n > MAX_SUB_STEPS:
+        ls = length_scales_of(geometry)
+        feat = ls.min_feature
+        gap = ls.min_gap
+        step = float(np.sqrt(6.0 * float(diffusivity) * float(dt) / n))
+        raise ValueError(
+            f"{type(geometry).__name__} needs {n:,} sub-steps per {dt:.3g} s step (the {name} rule: a "
+            f"{step:.2g} m step for a smallest feature of {feat * 1e9:.1f} nm"
+            + (f", narrowest gap {gap * 1e9:.1f} nm" if gap is not None and np.isfinite(gap) else "") +
+            f"). That is {n / MAX_SUB_STEPS:.0f}x the cap of {MAX_SUB_STEPS:,} and almost always a degenerate "
+            f"substrate -- a radius drawn far below histology (floor the diameter law, e.g. outer diameter "
+            f">= 0.4 um) or a packing with a vanishing gap. Fix the substrate, or pass sub_steps= to walk it "
+            f"anyway at that cost.")
+    return n
 
 
 def make_step_fn(geometry, diffusivity: float, dt: float, T2: float = None,
