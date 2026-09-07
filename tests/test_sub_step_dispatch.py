@@ -119,3 +119,19 @@ def test_fused_and_replay_agree_at_the_auto_sub_step_count(make):
     s_replay = np.asarray(d.simulate(N, D, wf, g, seed=1, engine="replay", require_gpu=False)).ravel()
     tol = max(0.01, 3.0 / np.sqrt(N))
     assert abs(s_fused[0] - s_replay[0]) < tol, f"fused {s_fused[0]:.4f} vs replay {s_replay[0]:.4f}"
+
+
+def test_a_degenerate_feature_is_refused_with_the_reason_and_the_remedy():
+    """An 11 nm axon in a canonical packing asks for a million sub-steps per save. The resolver names
+    the feature and the rule and refuses, unless the caller pins sub_steps= deliberately."""
+    from dmipy_sim.engine.physics import MAX_SUB_STEPS
+    inner = np.array([0.011e-6, 0.3e-6, 0.3e-6])
+    L = float(np.sqrt(np.pi * np.sum((inner / 0.7) ** 2) / 0.55))
+    _, _, c = d.pack_myelinated_cylinders(inner, 0.7, None, cell_size=L, seed=0)
+    g = d.PackedMyelinatedCylinders(inner, 0.7, c, L, N_max=4)
+    with pytest.raises(ValueError, match="11.0 nm.*sub_steps="):
+        resolve_sub_steps(g, D, 4e-4, surface=True)
+    with pytest.raises(ValueError, match="sub-steps"):
+        d.simulate_trajectories(8, D, g, 8e-4, 4e-4, seed=0, require_gpu=False)
+    assert resolve_sub_steps(g, D, 4e-4, surface=True, override=50) == 50
+    assert resolve_sub_steps(d.Cylinder(3e-6, (0, 0, 1)), D, 4e-4, surface=True) < MAX_SUB_STEPS
