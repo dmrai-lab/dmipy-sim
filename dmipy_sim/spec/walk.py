@@ -27,9 +27,11 @@ def walk_spec(spec, n_walkers, T_max, dt_save, *, diffusivity=None, seed=0, n_pr
     if len(mesh_walls) <= 1:
         g = geometry_from_spec(spec)
         D = diffusivity
-        if D is None:
-            seeded = spec.pool(spec.seeding.pools[0])
-            D = seeded.D
+        if D is None:                                   # the walk's reference diffusivity: the intra pool's when
+            names = {p.name: p for p in spec.pools}     # there is one (multi-pool kernels carry per-pool D), else
+            pool = names.get("intra") if names.get("intra") is not None and names["intra"].D is not None \
+                else spec.pool(spec.seeding.pools[0])   # the seeded pool's
+            D = pool.D
         if D is None:
             raise SpecError("the spec's seeded pool has no D and no diffusivity= was given")
         w = simulate_trajectories(int(n_walkers), float(D), g, T_max=T_max, dt_save=dt_save, seed=seed,

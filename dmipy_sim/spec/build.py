@@ -339,7 +339,8 @@ def geometry_from_spec(spec):
         if {a.name, b.name} == {"axolemma", "sheath"}:
             inner = spec.wall("axolemma"); outer = spec.wall("sheath")
             pools = {p.name: p for p in spec.pools}
-            comps = Compartments({n: CPool(T2=pools[n].T2, T1=pools[n].T1) for n in ("extra", "intra", "myelin")
+            comps = Compartments({n: CPool(T2=pools[n].T2, T1=pools[n].T1, water_fraction=pools[n].water_fraction)
+                                  for n in ("extra", "intra", "myelin")
                                   if pools[n].T2 is not None or pools[n].T1 is not None})
             if inner.surface.kind == "swept_polyline":
                 seeded = {1: "intra", 2: "myelin", 0: "extra"}[spec.seeding.pools[0]]
@@ -358,6 +359,7 @@ def geometry_from_spec(spec):
             wf = (pools["intra"].water_fraction, pools["myelin"].water_fraction, pools["extra"].water_fraction)
             return MyelinatedCylinder(inner.surface.radius, outer.surface.radius, tuple(inner.surface.axis or (0, 0, 1)),
                                       D["intra"], D["extra"], D_myelin=D["myelin"],
-                                      kappa_inner=kappa(inner), kappa_outer=kappa(outer), water_fractions=wf,
+                                      kappa_inner=kappa(inner), kappa_outer=kappa(outer),
+                                      water_fractions=(None if len(comps) else wf),     # the pools carry them
                                       compartments=(comps if len(comps) else None))
     raise SpecError(f"no geometry matches walls {kinds}")
