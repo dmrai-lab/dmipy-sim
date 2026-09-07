@@ -1,0 +1,34 @@
+{
+  "substrate_spec_version": "0.1",
+  "id": "examples/cactus-bundle-2",
+  "description": "A meshed two-fibre bundle: each fibre an inner (axonal) and an outer (myelin) closed surface in a periodic box. Every decision the CACTUS loader used to make is a field here.",
+  "domain": {"box_min": [0.0, 0.0, 0.0], "box_max": [1.0e-5, 1.0e-5, 1.0e-5], "boundary": ["periodic", "periodic", "periodic"]},
+  "frame": {"axis": [0.0, 0.0, 1.0], "in_plane": null},
+  "pools": [
+    {"id": 0, "name": "extra",  "D": 1.7e-9, "T2": 0.055, "T1": 1.0,  "water_fraction": 1.0, "susceptibility": null},
+    {"id": 1, "name": "intra",  "D": 1.7e-9, "T2": 0.05,  "T1": 1.2,  "water_fraction": 1.0, "susceptibility": null},
+    {"id": 2, "name": "myelin", "D": 0.0,    "T2": 0.01,  "T1": 0.44, "water_fraction": 0.4,
+     "susceptibility": {"chi_iso": -1.06e-6, "chi_aniso": 0.0, "director": "radial"}}
+  ],
+  "walls": [
+    {"name": "fibre-0/inner", "surface": {"kind": "mesh", "file": "meshes/fibre_0_inner.ply", "format": "ply", "scale": 1.0e-6, "sha256": "…"},
+     "inside_pool": 1, "outside_pool": 2, "permeability": {"in_to_out": 0.0, "out_to_in": 0.0},
+     "surface_relaxivity": {"inside": 1.16e-6, "outside": 0.0}, "mt_reactivity": {"inside": 0.0, "outside": 0.0}},
+    {"name": "fibre-0/outer", "surface": {"kind": "mesh", "file": "meshes/fibre_0_outer.ply", "format": "ply", "scale": 1.0e-6, "sha256": "…"},
+     "inside_pool": 2, "outside_pool": 0, "permeability": {"in_to_out": 0.0, "out_to_in": 0.0},
+     "surface_relaxivity": {"inside": 0.0, "outside": 1.16e-6}, "mt_reactivity": {"inside": 0.0, "outside": 0.0}},
+    {"name": "fibre-1/inner", "surface": {"kind": "mesh", "file": "meshes/fibre_1_inner.ply", "format": "ply", "scale": 1.0e-6, "sha256": "…"},
+     "inside_pool": 1, "outside_pool": 2, "permeability": {"in_to_out": 0.0, "out_to_in": 0.0},
+     "surface_relaxivity": {"inside": 1.16e-6, "outside": 0.0}, "mt_reactivity": {"inside": 0.0, "outside": 0.0}},
+    {"name": "fibre-1/outer", "surface": {"kind": "mesh", "file": "meshes/fibre_1_outer.ply", "format": "ply", "scale": 1.0e-6, "sha256": "…"},
+     "inside_pool": 2, "outside_pool": 0, "permeability": {"in_to_out": 0.0, "out_to_in": 0.0},
+     "surface_relaxivity": {"inside": 0.0, "outside": 1.16e-6}, "mt_reactivity": {"inside": 0.0, "outside": 0.0}}
+  ],
+  "seeding": {"pools": [0, 1, 2], "rule": "uniform_by_volume", "weights": "thin"},
+  "request": null,
+  "realisation": {"n_objects": 2, "packing_fraction": 0.31, "g_ratio_measured": 0.68, "smallest_feature": 0.9e-6},
+  "validity": {"smallest_feature": 0.9e-6, "min_gap": 0.3e-6, "mesh_edge_feature_ratio": 0.12, "tiers": ["gradient", "relaxation", "surface", "field"]},
+  "provenance": {"source": "CACTUS run prod/rep_03", "files": [{"path": "meshes/fibre_0_inner.ply", "sha256": "…"}], "scale": 1.0e-6,
+                 "transformations": ["dropped 1 open surface (fibre 7 outer)", "box = periodic cell from optimized_final.txt", "g_ratio measured as sqrt(V_in/V_out)"],
+                 "created": "2026-09-07", "software": {"name": "dmipy-sim", "version": "2.2.0"}}
+}

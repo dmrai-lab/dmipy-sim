@@ -1,0 +1,109 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dmrai.org/schema/substrate.schema.json",
+  "title": "Substrate specification (substrate_spec_version 0.x)",
+  "description": "Normative schema for a substrate spec: the situation a random walker is in. See SUBSTRATE.md.",
+  "type": "object",
+  "required": ["substrate_spec_version", "id", "domain", "frame", "pools", "walls", "seeding", "validity"],
+  "additionalProperties": false,
+  "properties": {
+    "substrate_spec_version": {"type": "string", "pattern": "^0\\.[0-9]+$"},
+    "id": {"type": "string", "minLength": 1},
+    "description": {"type": "string"},
+    "domain": {
+      "type": "object", "required": ["box_min", "box_max", "boundary"], "additionalProperties": false,
+      "properties": {
+        "box_min": {"$ref": "#/$defs/vec3"},
+        "box_max": {"$ref": "#/$defs/vec3"},
+        "boundary": {"type": "array", "minItems": 3, "maxItems": 3,
+                     "items": {"type": "string", "enum": ["periodic", "reflect", "open"]}},
+        "surface_relaxivity": {"type": "number", "minimum": 0, "description": "rho2 (m/s) of reflect faces, default 0"}
+      }
+    },
+    "frame": {
+      "type": "object", "required": ["axis"], "additionalProperties": false,
+      "properties": {"axis": {"$ref": "#/$defs/vec3"}, "in_plane": {"oneOf": [{"$ref": "#/$defs/vec3"}, {"type": "null"}]}}
+    },
+    "pools": {
+      "type": "array", "minItems": 1,
+      "items": {
+        "type": "object", "required": ["id", "name", "D", "water_fraction"], "additionalProperties": false,
+        "properties": {
+          "id": {"type": "integer", "minimum": 0},
+          "name": {"type": "string", "minLength": 1},
+          "D": {"type": "number", "minimum": 0},
+          "T2": {"type": ["number", "null"], "exclusiveMinimum": 0},
+          "T1": {"type": ["number", "null"], "exclusiveMinimum": 0},
+          "water_fraction": {"type": "number", "minimum": 0, "maximum": 1},
+          "susceptibility": {
+            "oneOf": [{"type": "null"}, {
+              "type": "object", "required": ["chi_iso", "chi_aniso", "director"], "additionalProperties": false,
+              "properties": {
+                "chi_iso": {"type": "number"}, "chi_aniso": {"type": "number"},
+                "director": {"type": "string", "enum": ["none", "radial", "file"]},
+                "file": {"type": "string"}
+              }
+            }]
+          }
+        }
+      }
+    },
+    "walls": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "surface", "inside_pool", "outside_pool", "permeability", "surface_relaxivity", "mt_reactivity"],
+        "additionalProperties": false,
+        "properties": {
+          "name": {"type": "string", "minLength": 1},
+          "surface": {
+            "type": "object", "required": ["kind"],
+            "properties": {
+              "kind": {"type": "string", "enum": ["sphere", "cylinder", "ellipsoid", "plane", "swept_polyline", "mesh"]},
+              "center": {"$ref": "#/$defs/vec3"}, "radius": {"type": "number", "exclusiveMinimum": 0},
+              "axis": {"$ref": "#/$defs/vec3"}, "length": {"type": "number", "exclusiveMinimum": 0},
+              "semiaxes": {"$ref": "#/$defs/vec3"}, "rotation": {"type": "array"},
+              "point": {"$ref": "#/$defs/vec3"}, "normal": {"$ref": "#/$defs/vec3"},
+              "centerline": {"type": "array", "items": {"$ref": "#/$defs/vec3"}},
+              "file": {"type": "string"}, "format": {"type": "string", "enum": ["ply", "obj", "stl"]},
+              "scale": {"type": "number", "exclusiveMinimum": 0}, "sha256": {"type": "string"},
+              "instances": {"type": "object", "description": "per-instance parameter arrays (centers, radii, ...) of equal length"}
+            }
+          },
+          "inside_pool": {"type": "integer", "minimum": 0},
+          "outside_pool": {"type": ["integer", "null"], "minimum": 0},
+          "permeability": {"$ref": "#/$defs/directional"},
+          "surface_relaxivity": {"$ref": "#/$defs/sided"},
+          "mt_reactivity": {"$ref": "#/$defs/sided"}
+        }
+      }
+    },
+    "seeding": {
+      "type": "object", "required": ["pools", "rule", "weights"], "additionalProperties": false,
+      "properties": {
+        "pools": {"type": "array", "minItems": 1, "items": {"type": "integer", "minimum": 0}},
+        "rule": {"type": "string", "enum": ["uniform_by_volume", "explicit"]},
+        "weights": {"type": "string", "enum": ["water_fraction", "thin"]}
+      }
+    },
+    "request": {"type": ["object", "null"]},
+    "realisation": {"type": ["object", "null"]},
+    "validity": {
+      "type": "object", "required": ["smallest_feature", "tiers"], "additionalProperties": false,
+      "properties": {
+        "smallest_feature": {"type": "number", "exclusiveMinimum": 0},
+        "min_gap": {"type": ["number", "null"], "exclusiveMinimum": 0},
+        "mesh_edge_feature_ratio": {"type": ["number", "null"], "exclusiveMinimum": 0},
+        "tiers": {"type": "array", "items": {"type": "string", "enum": ["gradient", "relaxation", "surface", "field", "exchange"]}, "uniqueItems": true}
+      }
+    },
+    "provenance": {"type": ["object", "null"]}
+  },
+  "$defs": {
+    "vec3": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"type": "number"}},
+    "directional": {"type": "object", "required": ["in_to_out", "out_to_in"], "additionalProperties": false,
+                    "properties": {"in_to_out": {"type": "number", "minimum": 0}, "out_to_in": {"type": "number", "minimum": 0}}},
+    "sided": {"type": "object", "required": ["inside", "outside"], "additionalProperties": false,
+              "properties": {"inside": {"type": "number", "minimum": 0}, "outside": {"type": "number", "minimum": 0}}}
+  }
+}
