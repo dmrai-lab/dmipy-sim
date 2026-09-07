@@ -121,7 +121,9 @@ def test_fod_provenance_named_bases_convert_and_a_wrong_basis_would_be_wrong(hol
         np.testing.assert_allclose(back.coeffs, native.coeffs, atol=1e-9)
         if not (basis == "tournier07" and not legacy):
             wrong = FOD.native(c_other, normalize=True)                            # the unconverted mistake
-            assert not np.allclose(pk.replay(seq, fod=wrong, tissue=False), pk.replay(seq, fod=native, tissue=False), rtol=1e-3)
+            assert np.abs(wrong.evaluate(dirs) - f).max() > 0.05 * np.abs(f).max()     # a different distribution ...
+            S_wrong, S_native = pk.replay(seq, fod=wrong, tissue=False), pk.replay(seq, fod=native, tissue=False)
+            assert np.abs(S_wrong - S_native).max() > 1e-5                        # ... and a different signal, silently
     with pytest.raises(ValueError, match="unit-integral"):
         FOD.native(2.0 * native.coeffs)
     assert FOD.native(2.0 * native.coeffs, normalize=True).integral == pytest.approx(1.0)

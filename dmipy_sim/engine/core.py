@@ -911,7 +911,8 @@ def simulate_trajectories(
     Returns
     -------
     PersistentWalk
-        ``positions`` (n_walkers, n_t, 3) in ``storage_dtype``, ``dt`` (= T_max / (n_t - 1)),
+        ``positions`` (n_walkers, n_t, 3) in ``storage_dtype`` -- save ``k`` at ``t = k dt``, save 0 the start
+        (the initial position; its contact / occupancy entries are the initial state) -- ``dt`` (= T_max / (n_t - 1)),
         ``sub_steps``, ``dt_sim``; with the default ``tiers="all"`` also ``boundary_local_time``
         (n_walkers, n_t), the per-step boundary log-weight at rho/D = 1 (``-2 * sum d_perp`` over
         the step's wall hits, non-positive), and ``compartment`` (n_walkers, n_t); with
@@ -1058,8 +1059,10 @@ def simulate_trajectories(
         return carry_final, r_final
 
     def simulate_one_walker(r0_w, key_w, side_w):
+        # save 0 is the start (t = 0); saves 1..n_t-1 follow n_t-1 blocks of sub-steps
         (_, _, side_f, bad_f), positions = jax.lax.scan(
-            outer_step, (r0_w, key_w, side_w, jnp.int32(0)), None, length=n_t)
+            outer_step, (r0_w, key_w, side_w, jnp.int32(0)), None, length=n_t - 1)
+        positions = jnp.concatenate([r0_w[None, :], positions], axis=0)
         return positions, side_f, bad_f  # (n_t, 3), carried side, illegal-crossing count
 
     # ── Storage dtype for the returned channels ─────────────────────────────
@@ -1120,7 +1123,11 @@ def simulate_trajectories(
 
             def simulate_one_walker_pm(r0_w, key_w, comp0_w, brem0_w):  # brem0 unused
                 (_, _, _), (positions, dlog_boundary, comp_types) = jax.lax.scan(
-                    outer_step_pm, (r0_w, key_w, comp0_w), None, length=n_t)
+                    outer_step_pm, (r0_w, key_w, comp0_w), None, length=n_t - 1)
+                # save 0 is the start: the initial position, no contact yet, the initial pool
+                positions = jnp.concatenate([r0_w[None, :], positions], axis=0)
+                dlog_boundary = jnp.concatenate([jnp.zeros((1,), dlog_boundary.dtype), dlog_boundary])
+                comp_types = jnp.concatenate([_compress_comp_pm(comp0_w)[None], comp_types])
                 z = jnp.zeros_like(dlog_boundary)                       # placeholder bound_frac
                 return positions, dlog_boundary, comp_types, z
         else:
@@ -1137,7 +1144,12 @@ def simulate_trajectories(
             def simulate_one_walker_pm(r0_w, key_w, comp0_w, brem0_w):
                 (_, _, _, _), (positions, dlog_boundary, comp_types, bound_frac) = \
                     jax.lax.scan(outer_step_pm, (r0_w, key_w, comp0_w, brem0_w),
-                                 None, length=n_t)
+                                 None, length=n_t - 1)
+                # save 0 is the start: the initial position, no contact yet, the initial pool and bound state
+                positions = jnp.concatenate([r0_w[None, :], positions], axis=0)
+                dlog_boundary = jnp.concatenate([jnp.zeros((1,), dlog_boundary.dtype), dlog_boundary])
+                comp_types = jnp.concatenate([_compress_comp_pm(comp0_w)[None], comp_types])
+                bound_frac = jnp.concatenate([(brem0_w > 0).astype(bound_frac.dtype)[None], bound_frac])
                 return positions, dlog_boundary, comp_types, bound_frac
 
         simulate_batch_pm = cached_batch(
@@ -1215,7 +1227,11 @@ def simulate_trajectories(
 
         def simulate_one_walker_relax(r0_w, key_w, side_w, comp0_w):
             (_, _, _side_f, bad_f, _comp_f), (positions, dlog_boundary, comp_ids) = jax.lax.scan(
-                outer_step_relax, (r0_w, key_w, side_w, jnp.int32(0), comp0_w), None, length=n_t)
+                outer_step_relax, (r0_w, key_w, side_w, jnp.int32(0), comp0_w), None, length=n_t - 1)
+            # save 0 is the start: the initial position, no contact yet, the initial occupancy
+            positions = jnp.concatenate([r0_w[None, :], positions], axis=0)
+            dlog_boundary = jnp.concatenate([jnp.zeros((1,), dlog_boundary.dtype), dlog_boundary])
+            comp_ids = jnp.concatenate([jnp.asarray(_pool2(comp0_w), comp_ids.dtype)[None], comp_ids])   # the same collapse as the kernel's
             return positions, dlog_boundary, comp_ids, bad_f
 
         _simulate_batch_relax_raw = cached_batch(

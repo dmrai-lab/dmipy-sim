@@ -214,7 +214,11 @@ def simulate_mt_trajectories(
 
     def one_walker(r0_w, key_w, brem0_w):
         (_, _, _), (pos, dlog, bfrac) = jax.lax.scan(
-            outer_step, (r0_w, key_w, brem0_w), None, length=n_t)
+            outer_step, (r0_w, key_w, brem0_w), None, length=n_t - 1)
+        # save 0 is the start: the initial position, no contact yet, the initial bound state
+        pos = jnp.concatenate([r0_w[None, :], pos], axis=0)
+        dlog = jnp.concatenate([jnp.zeros((1,), dlog.dtype), dlog])
+        bfrac = jnp.concatenate([(brem0_w > 0).astype(bfrac.dtype)[None], bfrac])
         return pos, dlog, bfrac
 
     batch = jax.jit(jax.vmap(one_walker, in_axes=(0, 0, 0)))
