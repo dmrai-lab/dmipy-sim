@@ -34,20 +34,22 @@ boundary local time for surface relaxivity (C2), and, through a field grid, the 
 substrate bank distributes and what dmipy-fit fits against.
 
 ```python
-from dmipy_sim import simulate_trajectories
 from dmipy_sim.substrate import Substrate
+from dmipy_sim.spec import walk_spec
 from dmipy_sim.replay import ReplayPack
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_sim.sequences import Sequence
 
-# the substrate: histology-calibrated white matter realised as packed myelinated cylinders
+# the substrate: histology-calibrated white matter, realised as a SPEC -- domain, pools, walls, seeding,
+# what was requested and what was achieved, all written out (replay-pack-spec/SUBSTRATE.md)
 sub  = Substrate.canonical(field_T=3.0)          # diameter law (floored at d_min), g-ratio, f_axon, D, T2, rho, kappa
-geom = sub.pack(n_axons=300, seed=0)             # pack the fibres by outer radius, lumens from the g-ratio
+spec = sub.request(n_fibres=300, seed=0)         # refuses an infeasible packing; records the realised fraction and gaps
+spec.save("wm.sub.json")
 
-# 1. walk once — positions, compartment occupancy and boundary local time are recorded by default
-walk = simulate_trajectories(200_000, sub.D_intra, geom, T_max=0.05, dt_save=5e-5, seed=0)
+# 1. walk once, from the spec and nothing else -- positions, occupancy and boundary local time are recorded
+walk = walk_spec(spec, 200_000, T_max=0.05, dt_save=5e-5, seed=0)
 
-# 2. compress into a pack; pools and the susceptibility field basis come from the geometry the walk ran on
+# 2. compress into a pack; the pack embeds the spec and reads pools and the field basis from it
 pack = build_replay_pack(walk, id="wm/canonical-3T", license="CC-BY-4.0", citation="...")
 pack.save("wm.rpk")
 

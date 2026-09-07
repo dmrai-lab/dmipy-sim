@@ -294,30 +294,74 @@ class Substrate:
         rng = np.random.default_rng(int(seed))
         return np.maximum(rng.gamma(self.gamma_shape_diameter, self.gamma_scale_diameter, int(n_axons)), self.d_min)
 
-    def pack(self, n_axons: int = 300, seed: int = 0, N_max=None, orientation=(0.0, 0.0, 1.0),
-             max_attempts: int = 100_000):
-        """Realise the substrate as a :class:`~dmipy_sim.geometry.PackedMyelinatedCylinders`.
+    #: Packing fraction above which random sequential addition is refused before any placement is
+    #: tried. Monodisperse 2-D RSA jams near 0.547; the Gamma diameter law is polydisperse and the
+    #: canonical 0.55 packs routinely, so the cap is set where placement has been seen to fail
+    #: outright. Between the canonical fraction and this cap a request may still fail placement,
+    #: which is then refused with the attempt count.
+    RSA_LIMIT = 0.60
 
-        Draws ``n_axons`` outer diameters from the Gamma law (floored at ``d_min``), sizes the periodic
-        cell for ``f_axon``, packs the OUTER cylinders by random sequential addition, then applies the
-        g-ratio to get the lumens -- the way the substrate is defined (the diameter law is the fibre,
-        myelin included). The geometry carries the substrate's diffusivities, its pools as
-        ``compartments`` (T2, T1, water fraction), ``rho2`` on both myelin walls and ``kappa`` on the
-        axolemma.
+    def request(self, n_fibres: int = 300, packing_fraction=None, *, seed: int = 0, min_gap=None, d_min=None,
+                orientation=(0.0, 0.0, 1.0), max_attempts: int = 100_000, id=None):
+        """Realise the substrate and return its :class:`~dmipy_sim.spec.SubstrateSpec`.
+
+        What was asked -- ``n_fibres`` outer diameters from the Gamma law floored at ``d_min`` (default
+        ``self.d_min``), the periodic cell sized for ``packing_fraction`` (default ``f_axon``), fibres
+        packed by OUTER radius by random sequential addition, lumens from the g-ratio, an optional
+        ``min_gap`` between sheaths -- is recorded in ``spec.request``; what came out (fibres placed,
+        fraction, cell side, minimum gap, smallest feature) in ``spec.realisation``. A fraction above
+        ``RSA_LIMIT`` is refused before placing anything; a packing that fails or violates ``min_gap`` is
+        refused naming the value, never returned as a smaller substrate.
         """
         import numpy as np
         from ..geometry import PackedMyelinatedCylinders, pack_myelinated_cylinders
-        d_out = self.sample_outer_diameters(n_axons, seed)
+        from ..spec.build import spec_of
+        from dataclasses import replace
+        f = float(self.f_axon if packing_fraction is None else packing_fraction)
+        if not 0.0 < f <= self.RSA_LIMIT:
+            raise ValueError(f"packing_fraction {f:.3f} is above the random-sequential-addition saturation "
+                             f"(RSA_LIMIT = {self.RSA_LIMIT}); a denser packing needs a different placement method")
+        dmin = float(self.d_min if d_min is None else d_min)
+        rng = np.random.default_rng(int(seed))
+        d_out = np.maximum(rng.gamma(self.gamma_shape_diameter, self.gamma_scale_diameter, int(n_fibres)), dmin)
         outer = 0.5 * d_out
         inner = self.g_ratio * outer
-        L = float(np.sqrt(np.sum(np.pi * outer ** 2) / self.f_axon))
-        _, _, centres = pack_myelinated_cylinders(inner, self.g_ratio, None, cell_size=L, seed=seed,
-                                                  max_attempts=max_attempts)
-        n_max = int(N_max) if N_max is not None else int(2 ** np.ceil(np.log2(max(n_axons, 2))))
-        return PackedMyelinatedCylinders(inner, self.g_ratio, centres, L, N_max=n_max, orientation=orientation,
+        L = float(np.sqrt(np.sum(np.pi * outer ** 2) / f))
+        try:
+            _, _, centres = pack_myelinated_cylinders(inner, self.g_ratio, None, cell_size=L, seed=seed,
+                                                      max_attempts=max_attempts)
+        except RuntimeError as e:
+            raise ValueError(f"could not place {n_fibres} fibres at packing fraction {f:.3f} in {max_attempts} "
+                             f"attempts each ({e}); lower the fraction or the count") from e
+        n_max = int(2 ** np.ceil(np.log2(max(int(n_fibres), 2))))
+        geom = PackedMyelinatedCylinders(inner, self.g_ratio, centres, L, N_max=n_max, orientation=orientation,
                                          D_intra=self.D_intra, D_myelin=self.D_myelin, D_extra=self.D_extra,
                                          kappa_inner=self.kappa, rho_inner=self.rho2, rho_outer=self.rho2,
                                          compartments=self.compartments)
+        spec = spec_of(geom, id=id or f"substrate/canonical-{int(n_fibres)}-{seed}")
+        realised_gap = float(spec.validity.min_gap)
+        if min_gap is not None and realised_gap < float(min_gap):
+            raise ValueError(f"the packing's narrowest gap is {realised_gap:.3e} m, below the requested min_gap "
+                             f"{float(min_gap):.3e} m; lower the fraction or the count, or change the seed")
+        request = dict(generator={"name": "dmipy_sim.substrate.Substrate.request", "version": _version()}, seed=int(seed),
+                       n_objects=int(n_fibres), packing_fraction=f,
+                       diameter_law={"family": "gamma", "shape": self.gamma_shape_diameter, "scale": self.gamma_scale_diameter, "d_min": dmin},
+                       g_ratio=self.g_ratio, min_gap=(None if min_gap is None else float(min_gap)))
+        realisation = dict(spec.realisation or {}, min_gap=realised_gap, smallest_feature=float(spec.validity.smallest_feature),
+                           n_objects=int(len(centres)), packing_fraction=float(np.pi * np.sum(outer ** 2) / L ** 2), cell_side=L)
+        prov = dict(spec.provenance or {}, source="generated",
+                    transformations=["outer diameters drawn from the Gamma law and floored at d_min",
+                                     "periodic cell sized for the requested packing fraction",
+                                     "fibres packed by outer radius (random sequential addition)",
+                                     "lumens = g_ratio x outer", "pools, rho2 and kappa from the Substrate"])
+        return replace(spec, request=request, realisation=realisation, provenance=prov).validate()
+
+    def pack(self, n_axons: int = 300, seed: int = 0, N_max=None, orientation=(0.0, 0.0, 1.0),
+             max_attempts: int = 100_000):
+        """The :class:`~dmipy_sim.geometry.PackedMyelinatedCylinders` of :meth:`request` -- the realised
+        substrate as a walkable geometry; ``geometry.spec`` is the spec it was built from."""
+        from ..spec.build import geometry_from_spec
+        return geometry_from_spec(self.request(n_axons, seed=seed, orientation=orientation, max_attempts=max_attempts))
 
     @property
     def compartments(self) -> Compartments:
@@ -439,3 +483,11 @@ class Substrate:
 
     def as_dict(self) -> dict:
         return asdict(self)
+
+
+def _version():
+    try:
+        from importlib.metadata import version
+        return version("dmipy-sim")
+    except Exception:
+        return "dev"
