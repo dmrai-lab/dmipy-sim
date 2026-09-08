@@ -1,12 +1,17 @@
 """A circular white-matter phantom: one CACTUS replay pack, arranged in space (RPH.md).
 
 The phantom is an annulus of tangentially oriented fibres around a free-water core, with inert background
-outside. Every tissue voxel cites the *same* solved pack at its own orientation, so the expensive object -- the
-walk -- is paid for once and read from every pose and every acquisition.
+outside. Every tissue voxel cites the *same* solved pack at its own pose, so the expensive object -- the walk --
+is paid for once and read from every pose and every acquisition. Most of the ring is a tight cone of poses; one
+sector fans out anisotropically (a Bingham with two different concentrations), which is what the SO(3)
+composition is for and what an axially symmetric representation cannot hold.
 
-Run it to build the ``.rph``, replay two sweeps, and write the animation used in the README:
+Run it to build the ``.rph``, replay two sweeps and write the animation used in the README:
 
     python examples/rph/circular_wm_phantom.py <pack.rpk> [out_dir]
+
+The sweeps are cached next to the phantom, so a rerun redraws the picture without recomputing them; delete
+``circular_wm_sweeps.npz`` to force the replays.
 """
 import sys
 import numpy as np
@@ -300,8 +305,12 @@ if __name__ == "__main__":
     else:
         ang, dirs, S_g, S_b = sweeps(ph, pack_path)
         np.savez_compressed(cache, ang=ang, dirs=dirs, S_g=S_g, S_b=S_b)
-    print(f"  g sweep: |S| in [{np.abs(S_g).min():.3f}, {np.abs(S_g).max():.3f}]; "
-          f"B0 sweep modulation {100 * np.ptp(np.abs(S_b), axis=1).max():.2f}% peak-to-peak  "
-          f"[{time.time() - t0:.0f}s]", flush=True)
+    live = ph.fraction("cactus/bundle_00000_capped") > 0.5
+    def modulation(S):                                                  # peak-to-peak over the sweep, per voxel
+        a = np.abs(S)[live]
+        return 100.0 * np.ptp(a, axis=1) / a.mean(axis=1)
+    print(f"  g sweep: |S| in [{np.abs(S_g).min():.3f}, {np.abs(S_g).max():.3f}], modulation "
+          f"{np.median(modulation(S_g)):.0f}% median; B0 sweep modulation {np.median(modulation(S_b)):.1f}% "
+          f"median, {modulation(S_b).max():.1f}% max  [{time.time() - t0:.0f}s]", flush=True)
     gif = figure(ph, pack_path, ang, dirs, S_g, S_b, os.path.join(out_dir, "circular_wm.gif"))
     print(f"  wrote {gif} ({os.path.getsize(gif) / 1e6:.1f} MB)  [{time.time() - t0:.0f}s]", flush=True)
