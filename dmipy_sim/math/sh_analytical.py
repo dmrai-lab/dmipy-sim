@@ -1,9 +1,14 @@
 # -*- coding: utf-8 -*-
-"""Exact analytical Watson-ODF spherical harmonics.
+"""Exact spherical-harmonic coefficients of the orientation distributions.
 
-Vendored into dmipy-sim from dmipy_fit.utils.sh_analytical (the watson_* subset
-used by sh_convolution) so the sim package is self-contained.  The numerics are
-identical to the fit implementation.
+**This is the ecosystem's home for these forms.** The dependency runs one way -- fit and design
+import sim, and sim imports neither -- so the base mathematics of the Watson and Bingham
+distributions lives here and is written once, in the layer everything else can reach. A consumer's
+own parameterisation (fit's ODI and psi, for instance) is that consumer's business; only the
+mathematics is shared. Nothing here imports dipy: the normative basis is this package's
+:func:`dmipy_sim.replay.so3.real_sh`, pinned to dipy's non-legacy ``tournier`` by an oracle test
+(``test_required_basis_is_dipy_tournier_non_legacy``), so the claim is verified without a runtime
+dependency on it.
 
 For W(n; mu, kappa) ~ exp(kappa (n.mu)^2), the Tournier real SH coefficients are
 
@@ -12,15 +17,23 @@ For W(n; mu, kappa) ~ exp(kappa (n.mu)^2), the Tournier real SH coefficients are
 with the zonal ratios r_l = J_l(kappa)/J_0(kappa) computed by an exact
 erfi-based recurrence (no quadrature, no hyp1f1 overflow).
 
+The Bingham is the two-concentration generalisation: its azimuthal integral is analytic in
+modified Bessel functions and only the polar integral is quadrature, so its coefficients are exact
+to machine precision in the same sense.
+
 References
 ----------
 Kaden E, Knosche TR, Anwander A (2007). Parametric spherical deconvolution.
 NeuroImage 37(2):474-488.
 """
-import numpy as np
-from scipy.special import erfi
+import math
 
-__all__ = ['watson_zonal_ratios', 'watson_sh']
+import numpy as np
+from numpy.polynomial.legendre import leggauss
+from scipy.special import erfi, iv as bessel_iv, lpmv
+
+__all__ = ['watson_zonal_ratios', 'watson_sh', 'bingham_normalization', 'bingham_canonical_sh',
+           'bingham_sh']
 
 
 def cart2sphere(cartesian_coordinates):
@@ -110,3 +123,86 @@ def watson_sh(mu_cart, kappa, l_max=8):
         counter += n_in_order
 
     return (Y_mu * r_per_coef).astype(np.float64)
+
+
+# ------------------------------------------------------------------ Bingham
+# Parameterisation: a frame and one concentration about each of its first two axes, so the pose axis
+# is the frame's third column and larger concentrations are tighter. This matches
+# `so3.Distribution.bingham` and `phantom.BinghamField`, which is where it is consumed.
+# fit's `(mu, psi, kappa, beta)` maps in as kappa = k1, beta = k1 - k2, mu = the pose axis and
+# mu_beta = the frame's second column.
+def bingham_normalization(k1, k2):
+    r"""Partition function of ``exp(-k1 (n.e1)^2 - k2 (n.e2)^2)`` over the sphere.
+
+    Writing the exponent in the polar angle about the pose axis, the azimuthal integral is a
+    modified Bessel function and what is left is a smooth one-dimensional integral, taken here on
+    32 Gauss-Legendre nodes -- machine precision over any physical concentration.
+    """
+    k1, k2 = float(k1), float(k2)
+    nodes, weights = leggauss(32)
+    s2 = 1.0 - nodes ** 2                                   # sin^2 of the polar angle
+    A = -(k1 + k2) / 2.0 * s2
+    B = (k2 - k1) / 2.0 * s2
+    return 2.0 * np.pi * float(np.dot(weights, np.exp(A) * bessel_iv(0, B)))
+
+
+def bingham_canonical_sh(k1, k2, l_max=8):
+    r"""Coefficients of the Bingham whose pose axis is ``z`` and whose concentrations are about
+    ``x`` and ``y``: the canonical frame, before any rotation.
+
+    The exponent is ``A(t) + B(t) cos(2 phi)`` with ``t`` the cosine of the polar angle, so the
+    azimuthal integral closes analytically --- ``\int_0^{2\pi} e^{A + B\cos 2\phi}\cos(2q\phi)
+    d\phi = 2\pi e^{A} I_q(B)``, and the odd and sine terms vanish --- leaving one Gauss-Legendre
+    integral per coefficient. Only even ``l`` and even ``m >= 0`` survive, and ``c_0^0`` is exactly
+    ``1/(2\sqrt\pi)``.
+    """
+    k1, k2 = float(k1), float(k2)
+    nodes, weights = leggauss(32)
+    s2 = 1.0 - nodes ** 2
+    A = -(k1 + k2) / 2.0 * s2
+    B = (k2 - k1) / 2.0 * s2
+    exp_A = np.exp(A)
+    Z = 2.0 * np.pi * float(np.dot(weights, exp_A * bessel_iv(0, B)))
+
+    n_coef = (l_max + 1) * (l_max + 2) // 2
+    sh = np.zeros(n_coef)
+    counter = 0
+    for l in range(0, l_max + 1, 2):
+        n_in_order = 2 * l + 1
+        for m_block in range(n_in_order):
+            m = m_block - l
+            if m < 0 or m % 2 != 0:                         # sine terms and odd m are identically 0
+                continue
+            Iq = bessel_iv(m // 2, B)
+            if m == 0:
+                N_lm = math.sqrt((2 * l + 1) / (4.0 * math.pi))
+            else:
+                N_lm = math.sqrt(2.0 * (2 * l + 1) / (4.0 * math.pi)
+                                 * math.factorial(l - m) / float(math.factorial(l + m)))
+            sh[counter + m_block] = (N_lm * 2.0 * np.pi
+                                     * float(np.dot(weights, exp_A * Iq * lpmv(m, l, nodes))) / Z)
+        counter += n_in_order
+    return sh
+
+
+def bingham_sh(frame, kappa, l_max=8):
+    r"""Coefficients of a Bingham with a stated frame: the canonical form rotated.
+
+    ``frame`` is a rotation whose third column is the pose axis and whose first two columns carry
+    the two concentrations ``kappa = (k1, k2)``. Equal concentrations give the Watson of that
+    concentration, so this contains :func:`watson_sh` as a special case; the rotation uses the
+    harmonic rotation blocks of :func:`dmipy_sim.replay.so3.wigner_blocks`, which is the ecosystem's
+    one implementation of them.
+    """
+    from ..replay.so3 import wigner_blocks
+
+    R = np.asarray(frame, np.float64).reshape(3, 3)
+    k1, k2 = (float(kappa[0]), float(kappa[1])) if np.ndim(kappa) else (float(kappa), float(kappa))
+    c = bingham_canonical_sh(k1, k2, l_max)
+    blocks = wigner_blocks(l_max, R[None])
+    out, counter = np.zeros_like(c), 0
+    for l in range(0, l_max + 1, 2):
+        n_in_order = 2 * l + 1
+        out[counter:counter + n_in_order] = blocks[l][0] @ c[counter:counter + n_in_order]
+        counter += n_in_order
+    return out

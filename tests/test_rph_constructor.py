@@ -355,3 +355,62 @@ def test_a_bingham_slot_is_a_fan_and_contains_the_watson(tmp_path, pack_path):
     ref = np.abs(0.7 * pr.compose(so3.Distribution.watson(6.0, mu=(0, 0, 1), lmax=6, nmax=3)))
     np.testing.assert_allclose(S_cone[0], ref, rtol=1e-9)
     assert np.abs(S_fan - S_cone).max() > 3e-3                       # the fan is not that cone
+
+
+def test_peaks_agree_with_a_concentrated_odf(tmp_path, pack_path):
+    """RPH.md 4 states this as a MUST: a peak is the zero-dispersion limit of an axis density, so a
+    peaks-mode phantom must reproduce an ODF phantom concentrated on the same direction, to the
+    spherical-harmonic truncation that separates them."""
+    from dmipy_sim.replay import read_rpk
+    n = 2
+    d = np.zeros((n, n, 1, 3)); d[..., :] = (0.3, 0.5, 0.81)
+    d /= np.linalg.norm(d, axis=-1, keepdims=True)
+    kw = dict(grid=Grid((n, n, 1), (1e-3,) * 3), occupancy=np.zeros((n, n, 1), np.int32),
+              remainder=None, embed=True)
+    peaks, _ = _phantom(tmp_path / "pk", pack_path, orientation=PeakField(d), **kw)
+    sharp, _ = _phantom(tmp_path / "od", pack_path, orientation=WatsonField(400.0, d, lmax=12), **kw)
+    pk = read_rpk(pack_path)
+    seq = _acq(pk, [[1, 0, 0], [0, 0, 1]], [1e9, 1e9])
+    band = dict(lmax=6, nmax=3)
+    np.testing.assert_allclose(peaks.replay(seq, **band)[1], sharp.replay(seq, **band)[1], atol=5e-3)
+
+
+def test_the_same_substrate_cited_twice_is_a_crossing(tmp_path, pack_path):
+    """Two populations of one solved microstructure at two poses, with two fractions: the voxel is
+    their weighted sum, and its two slots cite the same substrate."""
+    from dmipy_sim.replay import read_rpk, so3
+    n = 2
+    dirs = np.zeros((n, n, 1, 2, 3))
+    dirs[..., 0, :] = (0.0, 0.0, 1.0)
+    dirs[..., 1, :] = (1.0, 0.0, 0.0)
+    w = np.zeros((n, n, 1, 2)); w[..., 0], w[..., 1] = 0.7, 0.3
+    ph, _ = _phantom(tmp_path / "x", pack_path, grid=Grid((n, n, 1), (1e-3,) * 3),
+                     occupancy=np.zeros((n, n, 1), np.int32), remainder=None, embed=True,
+                     orientation=PeakField(dirs, weights=w))
+    assert (ph.substrate_id[:, :2] == 0).all()                       # one substrate, two slots
+    pk = read_rpk(pack_path)
+    seq = _acq(pk, [[1, 0, 0], [0, 0, 1]], [1e9, 1e9])
+    band = dict(lmax=6, nmax=3)
+    _, S = ph.replay(seq, **band)
+    pr = pk.pose_response(seq, T2=[0.06] * 3, **band)
+    ref = np.abs(0.7 * pr.compose(so3.Distribution.axis((0, 0, 1), 6, 3))
+                 + 0.3 * pr.compose(so3.Distribution.axis((1, 0, 0), 6, 3))) * 0.7
+    np.testing.assert_allclose(S[0], ref, rtol=1e-6)                 # 0.7 is the substrate's m0
+
+
+def test_an_analytic_slot_ignores_the_orientation_it_is_given(tmp_path, pack_path):
+    """A closed form has no pose, so whatever a phantom writes in that slot's orientation entry must
+    make no difference to the signal."""
+    from dmipy_sim.replay import read_rpk
+    wm, csf = _annulus()
+    pk = read_rpk(pack_path)
+    seq = _acq(pk, [[1, 0, 0], [0, 0, 1]], [1e9, 1e9])
+    band = dict(lmax=6, nmax=3)
+    out = []
+    for axis in ((0.0, 0.0, 1.0), (0.3, 0.5, 0.81)):
+        mu = np.zeros((8, 8, 1, 3)); mu[..., :] = axis
+        ph, _ = _phantom(tmp_path / f"a{axis[0]}", pack_path, orientation=WatsonField(2.0, mu, lmax=8),
+                         embed=True)
+        f_csf = ph.fraction("csf/free-water")
+        out.append(ph.replay(seq, **band)[1][f_csf > 0.999])
+    assert out[0].size and np.abs(out[0] - out[1]).max() < 1e-12
