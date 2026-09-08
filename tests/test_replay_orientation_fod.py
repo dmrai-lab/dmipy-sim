@@ -142,3 +142,25 @@ def test_a_response_the_two_axis_expansion_cannot_represent_is_flagged(hollow, m
     monkeypatch.setattr(sh, "coupled_spectrum_at", lambda *a, **k: (lambda out: (out[0], 1.0, out[2]))(real(*a, **k)))
     with pytest.warns(UserWarning, match="not that of an axially symmetric substrate"):
         pk.replay(seq, fod=FOD.watson(3.0), tissue=False)
+
+
+def test_pose_spectra_are_the_factored_fod_route_and_carry_the_peak_limit(hollow):
+    """``pose_spectra`` is what a phantom composes against every voxel: ``compose(fod)`` is ``replay(fod=)``
+    exactly, and ``at(n)`` -- the peak, RPH 4 -- is the pack replayed at that one pose within the two-axis
+    truncation and the pack's own Monte-Carlo floor."""
+    from dmipy_sim.replay import PoseSpectra
+    pk, seq = hollow
+    ps = pk.pose_spectra(seq, **{k: v for k, v in KW.items() if k != "complex_signal"})
+    assert isinstance(ps, PoseSpectra) and ps.n_meas == len(seq.bvalues)
+    fod = FOD.watson(3.0, mu=(0.3, 0.5, 0.81))
+    np.testing.assert_allclose(ps.compose(fod), pk.replay(seq, fod=fod, **KW), rtol=1e-12)
+    # a single pose differs from the spectra by the pack's own roughness: 3000 walkers seen from one side are not
+    # axially symmetric at the 1/sqrt(N) level, and the expansion keeps the symmetric part (misfit ~ floor, checked)
+    floor = 1.0 / np.sqrt(pk.n_walkers)
+    assert ps.misfit < 2.0 * floor
+    for n in [(0, 0, 1), (1, 0, 0), (0.3, 0.5, 0.81)]:
+        n = np.asarray(n, float) / np.linalg.norm(n)
+        np.testing.assert_allclose(ps.at(n), pk.replay(seq, orientation=n, **KW), atol=3.0 * floor)
+    # the same spectra without a field: a spherical convolution kernel, same contract
+    ps0 = pk.pose_spectra(seq, tissue=False)
+    np.testing.assert_allclose(ps0.compose(fod), pk.replay(seq, fod=fod, tissue=False, complex_signal=True), rtol=1e-12)

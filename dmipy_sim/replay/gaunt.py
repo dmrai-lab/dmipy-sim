@@ -39,6 +39,8 @@ within each block.
 """
 from __future__ import annotations
 
+import functools
+
 import numpy as np
 from scipy.special import gammaln, lpmv
 from numpy.polynomial.legendre import leggauss
@@ -126,6 +128,7 @@ def assert_orthonormal(Y, w, atol=1e-10):
 _CACHE = {}
 
 
+@functools.lru_cache(maxsize=64)
 def gaunt_table(l_fod, l_g, l_b, n_theta=None, n_phi=None, atol=1e-10,
                 full_g=False, full_b=False, l_k=None):
     """``G[a, b, c] = \\int Y_a Y_b Y_c dn`` for the three truncation orders.
