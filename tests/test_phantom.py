@@ -62,7 +62,7 @@ def test_unknown_substrate_kind_is_refused(tmp_path):
                   geometric_fraction=np.ones((1, 1), np.float32),
                   odf_sh=np.zeros((1, 1, 15), np.float32),
                   substrates=[{"id": "?", "kind": "air", "m0": 1.0}],
-                  grid={"shape": [1, 1, 1]}, lmax=4, id="t", license="CC0-1.0", citation="t")
+                  grid={"shape": [1, 1, 1], "voxel_size_m": [1e-3] * 3}, lmax=4, id="t", license="CC0-1.0", citation="t")
 
 
 def test_tiers_are_the_intersection_over_packs(tmp_path):
