@@ -43,7 +43,8 @@ __all__ = ["real_sh", "sphere_quadrature", "n_sh_coeffs", "sh_block",
            "so3_quadrature",
            "density_coeffs", "delta_coeffs", "axis_density_coeffs", "axis_coeffs", "watson_coeffs",
            "bingham_coeffs",
-           "project", "quadrature_design", "energy", "evaluate", "rotation_of", "Distribution"]
+           "project", "quadrature_design", "energy", "evaluate", "rotation_of", "rotations_from_quaternions",
+           "Distribution"]
 
 
 # ------------------------------------------------------------------ real spherical harmonics
@@ -239,23 +240,15 @@ def rotation_of(axis, frame_axis=(0.0, 0.0, 1.0), roll=0.0):
 
 # ------------------------------------------------------------------ sampling
 def haar_rotations(n, seed=0):
-    """``(n, 3, 3)`` rotations drawn uniformly on SO(3) (Shoemake's quaternion sampling)."""
-    u = np.random.default_rng(seed).random((int(n), 3))
-    s1, s2 = np.sqrt(1.0 - u[:, 0]), np.sqrt(u[:, 0])
-    t1, t2 = 2.0 * np.pi * u[:, 1], 2.0 * np.pi * u[:, 2]
-    q = np.stack([s1 * np.sin(t1), s1 * np.cos(t1), s2 * np.sin(t2), s2 * np.cos(t2)], axis=1)
-    return _rotations_from_quaternions(q)
+    """``(n, 3, 3)`` rotations drawn uniformly on SO(3)."""
+    from scipy.spatial.transform import Rotation
+    return Rotation.random(int(n), random_state=int(seed)).as_matrix().reshape(int(n), 3, 3)
 
 
-def _rotations_from_quaternions(q):
-    """``(n, 3, 3)`` from ``(n, 4)`` quaternions ``(x, y, z, w)``; normalised on the way in."""
-    q = np.asarray(q, np.float64).reshape(-1, 4)
-    q = q / np.linalg.norm(q, axis=1, keepdims=True)
-    x, y, z, w = q.T
-    return np.stack([
-        np.stack([1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)], axis=1),
-        np.stack([2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)], axis=1),
-        np.stack([2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)], axis=1)], axis=1)
+def rotations_from_quaternions(q):
+    """``(n, 3, 3)`` from ``(n, 4)`` quaternions in the ``(x, y, z, w)`` convention RPH.md 4 states."""
+    from scipy.spatial.transform import Rotation
+    return Rotation.from_quat(np.asarray(q, np.float64).reshape(-1, 4)).as_matrix().reshape(-1, 3, 3)
 
 
 def so3_quadrature(lmax, nmax=None, frame_axis=(0.0, 0.0, 1.0)):

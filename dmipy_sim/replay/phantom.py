@@ -24,11 +24,12 @@ import numpy as np
 from .so3 import n_sh_coeffs
 
 __all__ = ["ReplayPhantom", "read_rph", "write_rph", "build_rph", "Grid", "ANALYTIC_MODELS", "pack_substrate",
-           "analytic_substrate", "inert_substrate", "ODFField", "PeakField", "WatsonField",
+           "analytic_substrate", "inert_substrate", "ODFField", "PeakField", "WatsonField", "FrameField",
+           "BinghamField",
            "SUBSTRATE_KINDS", "SCALAR_REGISTRY"]
 
 SUBSTRATE_KINDS = ("pack", "analytic", "inert")
-RPH_SCHEMA_VERSION = "0.3.0"
+RPH_SCHEMA_VERSION = "0.4.0"
 
 #: The closed forms an ``analytic`` substrate may name (RPH.md 3.1), each a callable ``(params, b_values) ->
 #: signal``. Orientation-independent by construction: a closed form has no pose.
@@ -203,6 +204,55 @@ class PeakField(_OrientationField):
         return out
 
 
+class FrameField(_OrientationField):
+    """A whole rotation per voxel (RPH.md 4, frames mode): ``rotations`` of shape grid + ``(3, 3)``, or
+    grid + ``(K, 3, 3)`` with ``weights`` for several populations.
+
+    What a substrate whose response is not axially symmetric needs in order to be placed unambiguously, and what
+    an operation on the magnetisation vector needs: a pulse is applied to a pose, not to an axis.
+    """
+
+    mode = "frames"
+
+    def __init__(self, rotations, *, weights=None):
+        self.rotations = self._volume(rotations, (3, 3), "frame rotations")
+        self.weights = None if weights is None else np.asarray(weights, np.float64)
+        self.lmax = 0
+
+    def at(self, ijk):
+        R = self.rotations[ijk]                                             # (K, 3, 3)
+        w = np.ones(R.shape[0]) / R.shape[0] if self.weights is None else self.weights[ijk]
+        out = []
+        for k in range(R.shape[0]):
+            if w[k] <= 0.0:
+                continue
+            if not np.allclose(R[k] @ R[k].T, np.eye(3), atol=1e-5) or np.linalg.det(R[k]) < 0:
+                raise ValueError(f"the frame at {ijk} population {k} is not a proper rotation")
+            out.append((float(w[k]), R[k]))
+        return out
+
+
+class BinghamField(FrameField):
+    """A fan per voxel (RPH.md 4, bingham mode): a frame, and a concentration about each of its first two axes.
+
+    ``kappa`` is a volume of ``(k1, k2)`` (or a pair, for a uniform field): larger is tighter, equal values are
+    the Watson cone of that width, and unequal ones are a population spread in one plane and narrow in the
+    other. ``roll_kappa`` ties the substrate's own azimuth to the frame; zero leaves it free.
+    """
+
+    mode = "bingham"
+
+    def __init__(self, rotations, kappa, *, roll_kappa=0.0, weights=None):
+        super().__init__(rotations, weights=weights)
+        shape = self.rotations.shape[:4]
+        self.kappa = np.broadcast_to(np.asarray(kappa, np.float64), shape + (2,))
+        self.roll_kappa = np.broadcast_to(np.asarray(roll_kappa, np.float64), shape)
+
+    def at(self, ijk):
+        return [(w, (R, tuple(self.kappa[ijk][k]), float(self.roll_kappa[ijk][k])))
+                for k, (w, R) in enumerate(super().at(ijk))]
+
+
 class WatsonField(ODFField):
     """A Watson distribution per voxel: ``kappa`` (a scalar or a volume) about ``mu``, a direction volume. The
     coefficients are generated in the required basis, so there is no convention to declare."""
@@ -304,15 +354,29 @@ def build_rph(path, *, grid, substrates, occupancy, orientation, remainder=None,
     voxel_index = np.zeros((N, 3), np.int32)
     substrate_id = np.full((N, P), -1, np.int16)
     frac = np.zeros((N, P), np.float32)
-    ori = np.zeros((N, P, n_c if mode == "odf_sh" else 3), np.float32)
+    # one array per mode, since each states a different amount of the pose (RPH.md 4)
+    width = {"odf_sh": n_c, "peaks": 3, "frames": 4, "bingham": 4}[mode]
+    ori = np.zeros((N, P, width), np.float32)
+    kap = np.zeros((N, P, 2), np.float32) if mode == "bingham" else None
+    rollk = np.zeros((N, P), np.float32) if mode == "bingham" else None
     for v, (ijk, slots) in enumerate(rows):
         voxel_index[v] = ijk
         for p, (i, f, payload) in enumerate(slots):
             substrate_id[v, p], frac[v, p] = i, f
-            if payload is not None:
+            if payload is None:
+                if mode == "peaks":
+                    ori[v, p] = (0.0, 0.0, 1.0)                # unoriented: an isotropic substrate has no axis
+                elif mode in ("frames", "bingham"):
+                    ori[v, p] = (0.0, 0.0, 0.0, 1.0)           # the identity rotation
+                continue
+            if mode == "bingham":
+                R, (k1, k2), rk = payload
+                ori[v, p] = _quat_of(R)
+                kap[v, p], rollk[v, p] = (k1, k2), rk
+            elif mode == "frames":
+                ori[v, p] = _quat_of(payload)
+            else:
                 ori[v, p, :len(payload)] = payload
-            elif mode == "peaks":
-                ori[v, p] = (0.0, 0.0, 1.0)                    # unoriented: an isotropic substrate has no axis
 
     sc, names = None, ()
     if scalars:
@@ -340,7 +404,24 @@ def build_rph(path, *, grid, substrates, occupancy, orientation, remainder=None,
     return write_rph(path, voxel_index=voxel_index, substrate_id=substrate_id, geometric_fraction=frac,
                      substrates=subs, grid=g, lmax=lmax, scalars=sc, scalar_names=names,
                      id=id, license=license, citation=citation, embed_packs=embed_packs,
-                     extra_meta=extra_meta, **{("odf_sh" if mode == "odf_sh" else "peak_dir"): ori})
+                     extra_meta=extra_meta, bingham_kappa=kap, roll_kappa=rollk,
+                     **{{"odf_sh": "odf_sh", "peaks": "peak_dir", "frames": "pose_quat",
+                         "bingham": "pose_quat"}[mode]: ori})
+
+
+def _slot_key(ph, v, p):
+    """What else, besides the orientation entry, distinguishes this slot's distribution."""
+    if ph.mode != "bingham":
+        return None
+    rk = ph.roll_kappa
+    return (tuple(ph.bingham_kappa[v, p]), None if rk is None else float(rk[v, p]))
+
+
+def _quat_of(R):
+    """``(x, y, z, w)`` of a proper rotation, sign fixed by ``w >= 0`` so a pose has one spelling."""
+    from scipy.spatial.transform import Rotation
+    q = Rotation.from_matrix(np.asarray(R, np.float64).reshape(3, 3)).as_quat()
+    return q if q[3] >= 0 else -q
 
 
 def _as_volume(a, g, name):
@@ -406,8 +487,8 @@ def _orientation_fields(orientation, subs, ids):
 
 # ------------------------------------------------------------------ writing
 def write_rph(path, *, voxel_index, substrate_id, geometric_fraction, substrates, grid, id, license, citation,
-              odf_sh=None, peak_dir=None, lmax=None, scalars=None, scalar_names=(), embed_packs=None,
-              extra_meta=None):
+              odf_sh=None, peak_dir=None, pose_quat=None, bingham_kappa=None, roll_kappa=None, lmax=None,
+              scalars=None, scalar_names=(), embed_packs=None, extra_meta=None):
     """Write a ``.rph``. Prefer :func:`build_rph`, which derives every array from volumes; this is the writer
     it calls and the level to reach for only when the sparse arrays already exist.
 
@@ -430,9 +511,11 @@ def write_rph(path, *, voxel_index, substrate_id, geometric_fraction, substrates
     for s in substrates:
         if s.get("kind") not in SUBSTRATE_KINDS:
             raise ValueError(f"substrate kind {s.get('kind')!r} not in {SUBSTRATE_KINDS}")
-    if (odf_sh is None) == (peak_dir is None):
-        raise ValueError("give exactly one of odf_sh= or peak_dir=: a phantom declares one orientation mode "
-                         "(RPH.md 4), and the two are the same physics read two ways")
+    given = [k for k, v in (("odf_sh", odf_sh), ("peak_dir", peak_dir), ("pose_quat", pose_quat)) if v is not None]
+    if len(given) != 1:
+        raise ValueError(f"give exactly one of odf_sh=, peak_dir= or pose_quat=: a phantom declares one "
+                         f"orientation mode (RPH.md 4), and they differ in how much of the pose they pin down "
+                         f"(got {given})")
 
     tensors = {"voxel_index": np.asarray(voxel_index, np.int32),
                "substrate_id": np.asarray(substrate_id, np.int16),
@@ -441,9 +524,17 @@ def write_rph(path, *, voxel_index, substrate_id, geometric_fraction, substrates
         tensors["odf_sh"] = np.asarray(odf_sh, np.float32)
         ori_meta = {"mode": "odf_sh", "lmax": int(lmax if lmax is not None else _lmax_of_n_coeffs(tensors["odf_sh"].shape[-1])),
                     "basis": "real", "convention": "orthonormal"}
-    else:
+    elif peak_dir is not None:
         tensors["peak_dir"] = np.asarray(peak_dir, np.float32)
         ori_meta = {"mode": "peaks", "max_peaks": int(tensors["peak_dir"].shape[1])}
+    else:
+        tensors["pose_quat"] = np.asarray(pose_quat, np.float32)
+        ori_meta = {"mode": "frames", "max_peaks": int(tensors["pose_quat"].shape[1])}
+        if bingham_kappa is not None:
+            tensors["bingham_kappa"] = np.asarray(bingham_kappa, np.float32)
+            ori_meta["mode"] = "bingham"
+            if roll_kappa is not None:
+                tensors["roll_kappa"] = np.asarray(roll_kappa, np.float32)
     if scalars is not None:
         names = list(scalar_names)
         sc = np.asarray(scalars, np.float32)
@@ -514,6 +605,18 @@ class ReplayPhantom:
     @property
     def peak_dir(self):
         return self.arrays["peak_dir"]
+
+    @property
+    def pose_quat(self):
+        return self.arrays["pose_quat"]
+
+    @property
+    def bingham_kappa(self):
+        return self.arrays["bingham_kappa"]
+
+    @property
+    def roll_kappa(self):
+        return self.arrays.get("roll_kappa")
 
     @property
     def m0(self):
@@ -657,10 +760,9 @@ class ReplayPhantom:
         sid, frac = self.substrate_id, self.geometric_fraction
         n_meas = next(iter(pose.values())).n_meas if pose else len(np.atleast_1d(next(iter(analytic.values()))))
         S = np.zeros((self.n_voxels, n_meas), np.complex128)
-        peaks = self.mode == "peaks"
-        ori = self.peak_dir if peaks else self.odf_sh
+        ori = self._orientation_entries()
         cache = {}
-        dist_of = self._distribution_of(lmax, nmax, peaks)
+        dist_of = self._distribution_of(lmax, nmax)
         for v in range(self.n_voxels):
             for p, i in enumerate(sid[v]):
                 i = int(i)
@@ -670,28 +772,42 @@ class ReplayPhantom:
                 if i in analytic:
                     resp = analytic[i]
                 elif i in pose:
-                    key = (i, ori[v, p].tobytes())
+                    key = (i, ori[v, p].tobytes(), _slot_key(self, v, p))
                     resp = cache.get(key)
                     if resp is None:
-                        resp = cache[key] = pose[i].compose(dist_of(ori[v, p]))
+                        resp = cache[key] = pose[i].compose(dist_of(v, p, ori[v, p]))
                 else:
                     continue                                        # inert: occupies the volume, emits nothing
                 S[v] += f * m0[v, i] * resp
         S = self._apply_layers(S, waveform, refocus_time, ref)
         return self.voxel_index, (S if complex_signal else np.abs(S))
 
-    def _distribution_of(self, lmax, nmax, peaks):
-        """What a slot's orientation entry means as a distribution of poses.
+    def _orientation_entries(self):
+        """The array a slot's orientation is read from, one row per slot."""
+        return {"peaks": lambda: self.peak_dir, "odf_sh": lambda: self.odf_sh,
+                "frames": lambda: self.pose_quat, "bingham": lambda: self.pose_quat}[self.mode]()
 
-        A **peak** is one direction with its azimuth unstated, which is the zero-dispersion limit of an axis
-        density and not a rotation -- naming a direction says nothing about the substrate's spin about it. An
-        **odf_sh** slot is an axis density in the required basis, checked as one on the way in.
+    def _distribution_of(self, lmax, nmax):
+        """What a slot's orientation entry means as a distribution of poses (RPH.md 4).
+
+        A **peak** is one direction with its azimuth unstated -- the zero-dispersion limit of an axis density,
+        not a rotation -- and an **odf_sh** slot is an axis density in the required basis, checked as one on the
+        way in. A **frames** slot is one rotation, azimuth and all. A **bingham** slot is a frame with a
+        concentration about each of two of its axes, which is where an anisotropically fanned population lives.
         """
         from .fod import FOD
-        from .so3 import Distribution
-        if peaks:
-            return lambda o: Distribution.axis(np.asarray(o, np.float64), lmax, nmax)
-        return lambda o: Distribution.axis_density(FOD.native(np.asarray(o, np.float64)), lmax, nmax)
+        from .so3 import Distribution, rotations_from_quaternions
+        mode = self.mode
+        if mode == "peaks":
+            return lambda v, p, o: Distribution.axis(np.asarray(o, np.float64), lmax, nmax)
+        if mode == "odf_sh":
+            return lambda v, p, o: Distribution.axis_density(FOD.native(np.asarray(o, np.float64)), lmax, nmax)
+        if mode == "frames":
+            return lambda v, p, o: Distribution.pose(rotations_from_quaternions(o)[0], lmax, nmax)
+        kap, rk = self.bingham_kappa, self.roll_kappa
+        return lambda v, p, o: Distribution.bingham(rotations_from_quaternions(o)[0], tuple(kap[v, p]),
+                                                    roll_kappa=(0.0 if rk is None else float(rk[v, p])),
+                                                    lmax=lmax, nmax=nmax)
 
     def _responses(self, waveform, B0, b0_dir, tissue, packs, lmax, nmax, n_check, knobs):
         """One response per substrate: a :class:`PoseResponse` for a pack, a closed form for an analytic
@@ -757,7 +873,7 @@ class ReplayPhantom:
 
     def replay_bloch(self, waveform, *, rf_events=None, B0=None, b0_dir=(0.0, 0.0, 1.0), tissue="nominal",
                      packs=None, complex_signal=False, T2=None, T1=None, rho=None, D=None, chi_iso=None,
-                     chi_aniso=0.0, roll=0.0, decimals=3):
+                     chi_aniso=0.0, decimals=3):
         """Replay the phantom through the RF-aware route: ``(voxel_index, S)``, one magnetisation propagation
         per distinct pose rather than one contraction per voxel.
 
@@ -768,19 +884,20 @@ class ReplayPhantom:
         (:meth:`ReplayPack.replay_bloch`), and analytic substrates take the same RF train on a static spin
         times their closed form.
 
-        **Peaks mode only, and one rotation per slot.** A propagation is at a pose, and a distribution of poses
-        under a scaled RF pulse is not the composition of one propagation, so an ODF phantom is refused rather
-        than approximated. A peaks-mode slot names a direction and leaves the substrate's azimuth about it
-        unstated, which a propagation cannot leave open, so ``roll`` states it here; a phantom that means to fix
-        it declares a rotation per slot instead (RPH.md frames mode). Distinct ``(substrate, rotation, scale)``
-        triples are propagated once each and reused, ``decimals`` setting how finely they are distinguished; the
-        cost is that count, not the voxel count.
+        **Frames mode only.** A propagation happens at a pose, so the phantom has to state one: a distribution
+        of poses under a scaled RF pulse is not the composition of one propagation, and a mode that leaves the
+        substrate's azimuth unstated leaves the propagation undefined rather than merely dispersed. Both are
+        refused instead of approximated. Distinct ``(substrate, rotation, scale)`` triples are propagated once
+        each and reused, ``decimals`` setting how finely they are distinguished; the cost is that count, not the
+        voxel count.
         """
         from .replay import ReplayPack, read_rpk
-        if self.mode != "peaks":
-            raise ValueError("replay_bloch composes one rotation per slot, so it needs a peaks-mode phantom "
-                             "(RPH.md 4). Under a scaled RF pulse a distribution of poses is not the average of "
-                             "one propagation, so an ODF phantom would be an approximation with no error bound.")
+        if self.mode != "frames":
+            raise ValueError(f"replay_bloch propagates the magnetisation at a pose, so it needs a frames-mode "
+                             f"phantom, which states one rotation per slot (RPH.md 4); this one is {self.mode!r}. "
+                             f"A mode that leaves the substrate's azimuth unstated leaves the propagation "
+                             f"undefined, and a distribution of poses under a scaled RF pulse is not the "
+                             f"composition of one propagation, so neither is approximated here.")
         rf = rf_events if rf_events is not None else (getattr(waveform, "rf_events", None) or [])
         if not rf:
             raise ValueError("the Bloch route replays an RF schedule: give rf_events= or a waveform carrying them")
@@ -799,7 +916,9 @@ class ReplayPhantom:
         m0 = np.broadcast_to(self.m0, (self.n_voxels, len(self.substrates))).astype(np.float64)
         if "m0_scale" in self.scalar_names:
             m0 = m0 * self.scalar("m0_scale")[:, None]
-        sid, frac, peak = self.substrate_id, self.geometric_fraction, self.peak_dir
+        from .so3 import rotations_from_quaternions
+        sid, frac = self.substrate_id, self.geometric_fraction
+        poses = rotations_from_quaternions(self.pose_quat.reshape(-1, 4)).reshape(self.pose_quat.shape[:2] + (3, 3))
         S, cache = None, {}
         for v in range(self.n_voxels):
             for p, i in enumerate(sid[v]):
@@ -807,7 +926,7 @@ class ReplayPhantom:
                 if i < 0 or f == 0.0 or self.substrates[i]["kind"] == "inert":
                     continue
                 kap = round(float(kappa[v]), int(decimals))
-                key = (i, kap, tuple(np.round(peak[v, p], int(decimals))))
+                key = (i, kap, tuple(np.round(poses[v, p].reshape(-1), int(decimals))))
                 resp = cache.get(key)
                 if resp is None:
                     sub = self.substrates[i]
@@ -820,10 +939,9 @@ class ReplayPhantom:
                     else:
                         kw = dict(knobs)
                         kw.update({k: val for k, val in (sub.get("tissue") or {}).items()})
-                        from .so3 import rotation_of
-                        R = rotation_of(np.asarray(peak[v, p], float), roll=float(roll))
                         resp = loaded[i].replay_bloch(waveform, rf_events=rf, b1_scale=kap, tissue=tissue, B0=B0,
-                                                      b0_dir=b0_dir, orientation=R, complex_signal=True, **kw)
+                                                      b0_dir=b0_dir, orientation=poses[v, p], complex_signal=True,
+                                                      **kw)
                     cache[key] = resp
                 resp = np.atleast_1d(resp)
                 if S is None:
