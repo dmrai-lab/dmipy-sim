@@ -626,7 +626,7 @@ class ReplayPhantom:
 
     # ---- replay
     def replay(self, waveform, *, B0=None, b0_dir=(0.0, 0.0, 1.0), tissue="nominal", packs=None,
-               l_g=8, l_b=6, complex_signal=False, T2=None, T1=None, rho=None, D=None,
+               l_g=8, l_b=6, n_theta=32, n_phi=64, complex_signal=False, T2=None, T1=None, rho=None, D=None,
                chi_iso=None, chi_aniso=0.0, refocus_time="auto"):
         """Replay the whole phantom: ``(voxel_index, S)`` with ``S`` of shape ``(n_voxels, n_measurements)``.
 
@@ -640,11 +640,14 @@ class ReplayPhantom:
         over them, and anything neither names takes the pack's nominal value. ``packs`` supplies the packs of
         substrates cited by ``uri`` as ``{id or index: path or ReplayPack}``.
 
+        ``n_theta`` / ``n_phi`` set the quadrature the pose response is expanded on: the default resolves the
+        ``l_g``, ``l_b`` truncation comfortably, and a coarser one is cheaper for a sweep of many frames.
+
         Declared macroscopic layers (RPH.md 5.1) are applied per voxel, and one that this acquisition cannot
         carry raises rather than being dropped.
         """
         from .fod import FOD
-        pose, analytic, m0, ref = self._responses(waveform, B0, b0_dir, tissue, packs, l_g, l_b,
+        pose, analytic, m0, ref = self._responses(waveform, B0, b0_dir, tissue, packs, l_g, l_b, n_theta, n_phi,
                                             dict(T2=T2, T1=T1, rho=rho, D=D, chi_iso=chi_iso, chi_aniso=chi_aniso,
                                                  refocus_time=refocus_time))
         sid, frac = self.substrate_id, self.geometric_fraction
@@ -673,7 +676,7 @@ class ReplayPhantom:
         S = self._apply_layers(S, waveform, refocus_time, ref)
         return self.voxel_index, (S if complex_signal else np.abs(S))
 
-    def _responses(self, waveform, B0, b0_dir, tissue, packs, l_g, l_b, knobs):
+    def _responses(self, waveform, B0, b0_dir, tissue, packs, l_g, l_b, n_theta, n_phi, knobs):
         """One response per substrate: a :class:`PoseSpectra` for a pack, a closed form for an analytic
         substrate, nothing for an inert one. Plus the per-voxel ``m0`` with the ``m0_scale`` layer applied."""
         from .replay import ReplayPack, read_rpk
@@ -699,7 +702,8 @@ class ReplayPhantom:
             kw = dict(knobs)
             kw.update({k: v for k, v in (sub.get("tissue") or {}).items()})
             ref = pk
-            pose[i] = pk.pose_spectra(waveform, tissue=tissue, B0=B0, b0_dir=b0_dir, l_g=l_g, l_b=l_b, **kw)
+            pose[i] = pk.pose_spectra(waveform, tissue=tissue, B0=B0, b0_dir=b0_dir, l_g=l_g, l_b=l_b,
+                                      n_theta=n_theta, n_phi=n_phi, **kw)
         if not pose and not analytic:
             raise ValueError("the phantom cites no signal-bearing substrate")
         m0 = np.broadcast_to(self.m0, (self.n_voxels, len(self.substrates))).astype(np.float64)

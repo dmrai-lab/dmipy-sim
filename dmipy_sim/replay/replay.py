@@ -64,9 +64,10 @@ class PoseSpectra:
     in the scanner frame. ``compose(fod)`` gives the signal of a distribution of poses; ``at(direction)`` the signal
     of one pose read from the same spectra (a peak, RPH.md 4)."""
 
-    def __init__(self, lams, gdir, b0_dir, l_g, l_b, misfit):
+    def __init__(self, lams, gdir, b0_dir, l_g, l_b, misfit, n_roll=1):
         self.lams, self.gdir, self.b0_dir, self.l_g, self.l_b, self.misfit = lams, np.asarray(gdir, float), \
             np.asarray(b0_dir, float), int(l_g), int(l_b), float(misfit)
+        self.n_roll = int(n_roll)                 # rolls about the substrate axis the response was averaged over
 
     @property
     def n_meas(self):
@@ -332,13 +333,14 @@ class ReplayPack:
 
     def pose_spectra(self, waveform, *, tissue="nominal", T2=None, T1=None, rho=None, D=None, B0=None,
                      b0_dir=(0.0, 0.0, 1.0), chi_iso=None, chi_aniso=0.0, refocus_time="auto", compartment=None,
-                     l_g=8, l_b=6, n_theta=32, n_phi=64):
+                     l_g=8, l_b=6, n_theta=32, n_phi=64, n_roll_max=8):
         """The pack's response over every pose of its substrate, one two-axis spectrum per measurement
         (:class:`PoseSpectra`): what a replay phantom composes against each voxel's orientation. Same knobs as
         :meth:`replay`; the acquisition is in the scanner frame, the substrate is rotated under it."""
         P = self._prepare(waveform, tissue=tissue, T2=T2, T1=T1, rho=rho, D=D, B0=B0, b0_dir=b0_dir, chi_iso=chi_iso,
                           chi_aniso=chi_aniso, orientation=None, compartment=compartment)
-        return self._pose_spectra(P, refocus_time, waveform, l_g=l_g, l_b=l_b, n_theta=n_theta, n_phi=n_phi)
+        return self._pose_spectra(P, refocus_time, waveform, l_g=l_g, l_b=l_b, n_theta=n_theta, n_phi=n_phi,
+                                  n_roll_max=n_roll_max)
 
     def _select(self, compartment, ew, norm, w, ch, n_w):
         """Restrict the ensemble mean to ``compartment`` (a pool id or a walker mask)."""
@@ -377,11 +379,22 @@ class ReplayPack:
             return _rotations_from_axis(self.frame_axis, o[None, :])[0]
         raise ValueError("orientation is a (3, 3) rotation or a (3,) axis direction")
 
-    def _pose_spectra(self, P, refocus_time, waveform, l_g=8, l_b=6, n_theta=32, n_phi=64, chunk=256):
-        """Per measurement: the pack's response over a sphere of poses (each pose = the gradient and B0
-        counter-rotated, from per-walker contractions hoisted once) and its two-axis spectrum ``Lambda``.
-        The sphere is walked in chunks of directions, since the response is an ``(n_dirs, n_walkers)`` array
-        and a large pack over a fine quadrature does not fit in memory whole."""
+    def _pose_spectra(self, P, refocus_time, waveform, l_g=8, l_b=6, n_theta=32, n_phi=64, chunk=256,
+                      n_roll_max=8):
+        """Per measurement: the pack's response over a sphere of poses and its two-axis spectrum ``Lambda``.
+
+        A pose is an **axis**, not a full rotation: a phantom slot gives the direction the substrate points
+        along and says nothing about the substrate's roll about it, so the response is averaged over that roll.
+        For an axially symmetric substrate one roll is the whole answer and the average is free. For one that is
+        not -- a finite bundle of tortuous strands is not, however parallel its axis -- the roll average is both
+        the physically defined quantity and the only response the two-axis expansion can represent, so the roll
+        count doubles until the expansion's misfit is inside the pack's own Monte-Carlo floor. The rolls are a
+        van der Corput sequence on the circle, so each doubling refines a uniform average rather than restarting
+        it, and the work already done is kept.
+
+        The sphere is walked in chunks of directions, since the response is an ``(n_dirs, n_walkers)`` array and
+        a large pack over a fine quadrature does not fit in memory whole.
+        """
         from scipy.fft import dct
         from .gaunt import sphere_quadrature
         from .sh_convolution import coupled_spectrum_at, _rotations_from_axis
@@ -424,41 +437,59 @@ class ReplayPack:
                 refocus_time = _refocus_time_of(waveform)
             gate_hat = dct(se_gate(n_t, dt, refocus_time), type=2, norm="ortho")[:Cs.shape[2]]
             Psi = (GAMMA * dt) * np.einsum("k,wck->wc", gate_hat, Cs)                # (n_w, n_ch)
-        E = np.empty((dirs.shape[0], n_meas), np.complex128)
-        for lo in range(0, dirs.shape[0], int(chunk)):
-            sl = slice(lo, min(lo + int(chunk), dirs.shape[0]))
-            R = _rotations_from_axis(self.frame_axis, dirs[sl])                      # (n_c, 3, 3)
-            if Psi is None:
-                Ew = np.broadcast_to(ew[None, :].astype(np.complex128), (R.shape[0], n_w))
-            else:
-                bp = np.einsum("nji,j->ni", R, b)
-                Q = np.stack([bp[:, 0] ** 2, bp[:, 1] ** 2, bp[:, 2] ** 2, 2 * bp[:, 0] * bp[:, 1],
-                              2 * bp[:, 0] * bp[:, 2], 2 * bp[:, 1] * bp[:, 2]], axis=1)
-                i_p = names.index("iso_P_xx")
-                phi_chi = float(chi_iso) * float(B0) * (Psi[:, names.index("iso_local")][None, :] - Q @ Psi[:, i_p:i_p + 6].T)
-                if chi_aniso and "aniso_G_xx" in names:
-                    ia = names.index("aniso_G_xx")
-                    phi_chi = phi_chi + float(chi_aniso) * float(B0) * (Q @ Psi[:, ia:ia + 6].T)
-                Ew = np.exp(1j * phi_chi) * ew[None, :]                              # (n_c, n_w)
+        i_p = names.index("iso_P_xx") if names is not None else None
+        i_a = names.index("aniso_G_xx") if names is not None and "aniso_G_xx" in names else None
+
+        def response(roll):
+            """The response over every direction for one roll of the substrate about its own axis."""
+            E = np.empty((dirs.shape[0], n_meas), np.complex128)
+            Rk = _rotation_about(self.frame_axis, roll)
+            for lo in range(0, dirs.shape[0], int(chunk)):
+                sl = slice(lo, min(lo + int(chunk), dirs.shape[0]))
+                R = _rotations_from_axis(self.frame_axis, dirs[sl])                  # (n_c, 3, 3)
+                if Psi is None:
+                    Ew = np.broadcast_to(ew[None, :].astype(np.complex128), (R.shape[0], n_w))
+                else:
+                    bp = np.einsum("nji,j->ni", R, b) @ Rk
+                    Q = np.stack([bp[:, 0] ** 2, bp[:, 1] ** 2, bp[:, 2] ** 2, 2 * bp[:, 0] * bp[:, 1],
+                                  2 * bp[:, 0] * bp[:, 2], 2 * bp[:, 1] * bp[:, 2]], axis=1)
+                    phi_chi = float(chi_iso) * float(B0) * (Psi[:, names.index("iso_local")][None, :]
+                                                            - Q @ Psi[:, i_p:i_p + 6].T)
+                    if chi_aniso and i_a is not None:
+                        phi_chi = phi_chi + float(chi_aniso) * float(B0) * (Q @ Psi[:, i_a:i_a + 6].T)
+                    Ew = np.exp(1j * phi_chi) * ew[None, :]                          # (n_c, n_w)
+                for i in range(n_meas):
+                    gp = np.einsum("nji,j->ni", R, gdir[i]) @ Rk                     # R^T g, rolled
+                    E[sl, i] = (Ew * np.exp(1j * (gp @ q[:, i, :].T))).sum(1) / norm
+            return E
+
+        def fit(E):
+            lams, worst = [], 0.0
             for i in range(n_meas):
-                gp = np.einsum("nji,j->ni", R, gdir[i])                              # R^T g
-                E[sl, i] = (Ew * np.exp(1j * (gp @ q[:, i, :].T))).sum(1) / norm
-        lams, worst = [], 0.0
-        for i in range(n_meas):
-            lam, resid, _rank = coupled_spectrum_at(lambda d, i=i: E[:, i], gdir[i], b, l_g=l_g, l_b=l_b,
-                                                    chiral=(B0 is not None), _grid=(dirs, wq))
-            # the fit's misfit in signal units; a finite ensemble leaves a roughness of order the pack's own
-            # floor (the same walkers seen from every pose), which is not a defect of the expansion
-            worst = max(worst, float(resid) * float(np.sqrt(np.mean(np.abs(E[:, i]) ** 2))))
-            lams.append(lam)
+                lam, resid, _rank = coupled_spectrum_at(lambda d, i=i: E[:, i], gdir[i], b, l_g=l_g, l_b=l_b,
+                                                        chiral=(B0 is not None), _grid=(dirs, wq))
+                # the misfit in signal units; a finite ensemble leaves a roughness of order the pack's own floor
+                # (the same walkers seen from every pose), which is not a defect of the expansion
+                worst = max(worst, float(resid) * float(np.sqrt(np.mean(np.abs(E[:, i]) ** 2))))
+                lams.append(lam)
+            return lams, worst
+
         floor = 1.0 / np.sqrt(n_w)
+        acc, n_roll = response(0.0), 1
+        lams, worst = fit(acc)
+        while worst > 2.0 * floor and 2 * n_roll <= int(n_roll_max):
+            for j in range(n_roll, 2 * n_roll):                                      # the next van der Corput block
+                acc = acc + response(2.0 * np.pi * _van_der_corput(j))
+            n_roll *= 2
+            lams, worst = fit(acc / n_roll)
         if worst > 2.0 * floor:
             import warnings
-            warnings.warn(f"the pack's response over poses is not that of an axially symmetric substrate within its own "
-                          f"Monte-Carlo floor (fit misfit {worst:.3f} in signal units vs floor {floor:.3f}): the two-axis "
-                          f"expansion (l_g={l_g}, l_b={l_b}) does not represent it and the pose composition is unreliable. "
-                          f"Compose a non-axisymmetric substrate by averaging over poses instead.", UserWarning, stacklevel=4)
-        return PoseSpectra(lams, gdir, b, int(l_g), int(l_b), worst)
+            warnings.warn(f"the pack's response over poses is not that of an axially symmetric substrate within its "
+                          f"own Monte-Carlo floor, even averaged over {n_roll} rolls (fit misfit {worst:.3f} in signal "
+                          f"units vs floor {floor:.3f}): the two-axis expansion (l_g={l_g}, l_b={l_b}) does not "
+                          f"represent it and the pose composition is unreliable. Raise n_roll_max, or compose this "
+                          f"substrate by averaging explicit poses instead.", UserWarning, stacklevel=4)
+        return PoseSpectra(lams, gdir, b, int(l_g), int(l_b), worst, n_roll)
 
     @cached_property
     def position_coeffs(self):
@@ -553,6 +584,25 @@ class ReplayPack:
     replay_envelope = property(lambda self: self.meta.get("replay_envelope"))
     provenance = property(lambda self: self.meta.get("provenance"))
 
+
+
+def _rotation_about(axis, angle):
+    """Rotation by ``angle`` about ``axis`` (Rodrigues)."""
+    k = np.asarray(axis, float); k = k / np.linalg.norm(k)
+    K = np.array([[0.0, -k[2], k[1]], [k[2], 0.0, -k[0]], [-k[1], k[0], 0.0]])
+    return np.eye(3) + np.sin(angle) * K + (1.0 - np.cos(angle)) * (K @ K)
+
+
+def _van_der_corput(n, base=2):
+    """The base-2 radical inverse: the sequence whose every power-of-two prefix is uniform on [0, 1), so
+    doubling a roll average refines it instead of restarting it."""
+    q, d = 0.0, 1.0
+    n = int(n)
+    while n:
+        n, r = divmod(n, base)
+        d *= base
+        q += r / d
+    return q
 
 
 def _refocus_time_of(waveform):
