@@ -62,21 +62,27 @@ class PoseResponse:
     """A pack's response over every pose of its substrate, for one acquisition, as SO(3) coefficients.
 
     The pose of a substrate is a rotation, so the response of one measurement is a function on SO(3), and this
-    holds its expansion in the real Wigner basis (:mod:`dmipy_sim.replay.so3`): ``coeffs`` is ``(n_meas,
-    n_features)``. Composing a voxel is then the Peter-Weyl inner product with that voxel's orientation
-    distribution -- ``compose(distribution)`` -- and reading one pose is ``at(R)``. Nothing here assumes the
-    substrate is axially symmetric; how far it is from symmetric is reported, as the coefficient energy at
-    ``|n| > 0`` relative to the whole.
+    holds its expansion in the real Wigner basis (:mod:`dmipy_sim.replay.so3`). Two bands are involved and they
+    are not the same:
 
-    ``misfit`` is what the truncation could not represent, per measurement, in signal units: the honest error
-    of the composition, to be read against the pack's own Monte-Carlo floor.
+    * the band this was **projected** at, ``(lmax, nmax)``, which follows the response's own sharpness -- the
+      accumulated phase amplitude :attr:`phase_amplitude`, in radians. It sets what had to be sampled, since a
+      rule that resolves only the retained band folds everything above it into the coefficients kept.
+    * the band a composition **retains**, which follows the orientation distribution: composing is an inner
+      product, so a distribution has no reach above its own order and none at all outside ``n = 0`` when it
+      leaves the substrate's azimuth unstated. :meth:`compose` restricts to that band, exactly.
+
+    ``misfit`` is the worst case, over rotations off the projection's own grid, of what the expansion could not
+    reproduce -- in signal units, to be read against the pack's Monte-Carlo floor. A worst case rather than a
+    spread, because a composition is exposed to individual poses and a spread bounds nothing.
     """
 
-    def __init__(self, coeffs, lmax, nmax, misfit, floor, n_samples):
+    def __init__(self, coeffs, lmax, nmax, misfit, floor, phase_amplitude, n_samples):
         self.coeffs = np.asarray(coeffs)
         self.lmax, self.nmax = int(lmax), int(nmax)
         self.misfit = np.asarray(misfit, float)
         self.floor, self.n_samples = float(floor), int(n_samples)
+        self.phase_amplitude = float(phase_amplitude)
 
     @property
     def n_meas(self):
@@ -87,31 +93,52 @@ class PoseResponse:
         """The share of the response's energy that depends on the substrate's own azimuth.
 
         Zero for an axially symmetric substrate, and the reason a pose has to be a rotation rather than an axis
-        when it is not: that share is exactly what an axis-only representation cannot carry.
+        when it is not: an axis-only representation cannot carry that share, and a rule that samples over
+        directions alone folds it into the ``n = 0`` coefficients a composition does use.
         """
         from . import so3
         num = den = 0.0
         for c in self.coeffs:
-            per_l, per_n = so3.energy(c, self.lmax, self.nmax)
+            _per_l, per_n = so3.energy(c, self.lmax, self.nmax)
             num += float(per_n[1:].sum())
             den += float(per_n.sum())
         return num / max(den, 1e-300)
+
+    def retained(self, lmax, nmax):
+        """The coefficients a distribution of this band reaches: ``(n_meas, n_features)``.
+
+        Dropping the rest is lossless, not an approximation -- the distribution has no coefficients there to
+        multiply. For an ODF of order 8 this is 45 numbers per measurement out of the 969 an unrestricted
+        expansion carries, which is what makes a per-voxel composition a short dot product.
+        """
+        from .so3 import truncate_coeffs
+        return truncate_coeffs(self.coeffs, self.lmax, self.nmax, lmax, nmax)
 
     def compose(self, distribution):
         """``(n_meas,)`` complex: the signal of a voxel holding this distribution of poses."""
         from .so3 import Distribution
         if not isinstance(distribution, Distribution):
-            raise TypeError("compose takes a dmipy_sim.replay.so3.Distribution (Distribution.pose / "
+            raise TypeError("compose takes a dmipy_sim.replay.so3.Distribution (Distribution.pose / axis / "
                             "axis_density / watson / bingham / uniform), so that what the coefficients mean is "
                             "carried with them")
-        if (distribution.lmax, distribution.nmax) != (self.lmax, self.nmax):
-            raise ValueError(f"the distribution is expanded at (lmax, nmax) = ({distribution.lmax}, "
-                             f"{distribution.nmax}) and the response at ({self.lmax}, {self.nmax}); they are "
-                             f"coefficients of one basis and have to be the same one")
-        return self.coeffs @ distribution.coeffs
+        from .so3 import truncate_coeffs
+        # both sides come down to the band they share. Dropping the distribution's higher terms is safe for the
+        # same reason dropping the response's is: the response was certified to reproduce itself at its own
+        # band, so it has nothing above it for those terms to multiply.
+        keep_l = min(distribution.lmax, self.lmax)
+        keep_n = min(distribution.nmax, self.nmax)
+        f = distribution.coeffs
+        if (distribution.lmax, distribution.nmax) != (keep_l, keep_n):
+            f = truncate_coeffs(f, distribution.lmax, distribution.nmax, keep_l, keep_n)
+        return self.retained(keep_l, keep_n) @ f
 
     def at(self, R):
-        """``(n_meas,)`` complex: the response at one pose, evaluated from the expansion."""
+        """``(n_meas,)`` complex: the response at one stated pose, evaluated from the expansion.
+
+        A single pose is a distribution of unbounded band, so this reads the whole expansion, and it is the one
+        case whose accuracy is the pointwise :attr:`misfit`. When one pose is all that is wanted,
+        :meth:`ReplayPack.replay` with ``orientation=R`` answers it exactly and costs nothing to certify.
+        """
         from .so3 import so3_design
         A = so3_design(self.lmax, np.asarray(R, np.float64).reshape(1, 3, 3), self.nmax)
         return self.coeffs @ A[0]
@@ -237,7 +264,7 @@ class ReplayPack:
         if dist is not None:
             S = self.pose_response(waveform, tissue=tissue, T2=T2, T1=T1, rho=rho, D=D, B0=B0, b0_dir=b0_dir,
                                     chi_iso=chi_iso, chi_aniso=chi_aniso, refocus_time=refocus_time,
-                                    compartment=compartment, lmax=dist.lmax, nmax=dist.nmax).compose(dist)
+                                    compartment=compartment).compose(dist)
             return S if complex_signal else np.abs(S)
         P = self._prepare(waveform, tissue=tissue, T2=T2, T1=T1, rho=rho, D=D, B0=B0, b0_dir=b0_dir, chi_iso=chi_iso,
                           chi_aniso=chi_aniso, orientation=orientation, compartment=compartment)
@@ -434,22 +461,35 @@ class ReplayPack:
 
     def pose_response(self, waveform, *, tissue="nominal", T2=None, T1=None, rho=None, D=None, B0=None,
                       b0_dir=(0.0, 0.0, 1.0), chi_iso=None, chi_aniso=0.0, refocus_time="auto", compartment=None,
-                      lmax=8, nmax=4, n_check=256, seed=0):
+                      band=None, keep=None, margin=2, n_check=256, seed=0, band_cap=12, strict=True):
         """The pack's response over every pose of its substrate, as SO(3) coefficients (:class:`PoseResponse`).
 
-        This is what a replay phantom composes against each voxel: one expansion per measurement, then an inner
+        This is what a replay phantom composes against each voxel: one expansion per measurement, then a dot
         product per voxel. The acquisition is in the scanner frame and the substrate rotates under it, so a
         voxel's orientation distribution is a distribution of those rotations.
 
-        The response is sampled once over the group and projected onto the basis truncated at ``lmax`` in the
-        pose and ``nmax`` in the substrate's own azimuth -- nothing is averaged away. ``nmax = 0`` is the axially
-        symmetric case and is a choice the caller makes knowingly; :attr:`PoseResponse.asymmetry` says how much
-        of the response it would discard. ``n_check`` rotations off the projection's grid measure the misfit,
-        and a band that cannot hold the response raises.
+        **There is no band to choose.** The band is derived from the response itself: the pose dependence is
+        ``exp(i <U, M_w>)``, whose harmonic content reaches the accumulated phase amplitude in radians, so the
+        projection is taken at ``ceil(phase amplitude) + margin`` and the quadrature is oversampled beyond that
+        because a rule exact only for the retained band folds higher content into the coefficients kept. What a
+        *composition* retains is a separate and smaller thing, and follows the distribution
+        (:meth:`PoseResponse.compose`). ``band`` forces the projection band, which is for measuring the
+        consequence of getting it wrong rather than for ordinary use.
+
+        ``strict=False`` warns instead of raising where the projection cannot hold the response, and hands
+        back the expansion with its misfit recorded -- for measuring the consequence of a band, not for use.
+
+        ``keep`` retains only part of the projection, which is what a composition needs: a distribution reaches
+        no further than its own band, so a phantom passes the band its orientations reach and pays a short dot
+        product per voxel instead of a long one. ``n_check`` rotations off the projection's grid measure the
+        worst case -- of the reconstruction where the whole response is retained, and of the retained
+        coefficients' stability under grid refinement where it is not -- and anything above the pack's own
+        Monte-Carlo floor raises rather than composing.
         """
         P = self._prepare(waveform, tissue=tissue, T2=T2, T1=T1, rho=rho, D=D, B0=B0, b0_dir=b0_dir, chi_iso=chi_iso,
                           chi_aniso=chi_aniso, orientation=None, compartment=compartment)
-        return self._pose_coeffs(P, refocus_time, waveform, lmax=lmax, nmax=nmax, n_check=n_check, seed=seed)
+        return self._pose_coeffs(P, refocus_time, waveform, band=band, keep=keep, margin=margin,
+                                 n_check=n_check, seed=seed, band_cap=band_cap, strict=strict)
 
     def _select(self, compartment, ew, norm, w, ch, n_w):
         """Restrict the ensemble mean to ``compartment`` (a pool id or a walker mask)."""
@@ -489,18 +529,22 @@ class ReplayPack:
         raise ValueError("orientation is a (3, 3) rotation, a (3,) axis direction, or a distribution of poses "
                          "(dmipy_sim.replay.so3.Distribution, or an FOD read as an axis density)")
 
-    def _pose_coeffs(self, P, refocus_time, waveform, lmax=8, nmax=4, n_check=256, seed=0, chunk=256):
-        """Sample the response over rotations, project it onto the SO(3) basis, and check it off the grid.
+    def _pose_coeffs(self, P, refocus_time, waveform, band=None, keep=None, margin=2, n_check=256, seed=0,
+                     chunk=256, over=2, band_cap=12, strict=True):
+        """Sample the response over rotations, project it, and check it off the grid.
 
         The gradient term is exact for any waveform, single- or multi-axis: the phase of walker ``w`` at pose
         ``R`` is ``<R, M_w>`` with ``M_w[a, b] = sum_t Geff[t, a] r_w[t, b]``, so the walk is contracted once
         per measurement and every pose is then a 3x3 inner product. The field term is the same second-rank form
-        in the field direction carried into the substrate frame.
+        in the field direction carried into the substrate frame, reached through the six quadratic products of
+        the rotated field direction.
 
-        The projection is on :func:`~dmipy_sim.replay.so3.so3_quadrature`, which is exact for the band, so
-        response content **beyond** the band aliases into the coefficients instead of showing up as a residual
-        there. That is what the ``n_check`` rotations off the grid are for: the misfit is measured where
-        aliasing cannot hide, and a band that cannot hold the response is refused rather than composed.
+        The band follows from those contractions rather than from a setting: ``||M_w||`` is the phase the pose
+        modulates, in radians, and the harmonic content of ``exp(i <U, M_w>)`` reaches about that order -- the
+        cutoff that makes ``j_l(x)`` negligible for ``l`` beyond ``x``. The quadrature is then oversampled past
+        the projection band, because a rule exact only for the band being kept folds everything above it into
+        those coefficients, and does so differently at different frames. The misfit is measured at rotations off
+        that grid, where such folding cannot hide, and as a worst case rather than a spread.
         """
         from scipy.fft import dct
         from . import so3
@@ -561,19 +605,62 @@ class ReplayPack:
                     E[sl, i] = (Ew * np.exp(1j * np.einsum("nab,wab->nw", Rc, Q[:, i]))).sum(1) / norm
             return E
 
-        Rq, wq, Aq = so3.quadrature_design(lmax, nmax)
-        coeffs = so3.project(Aq, wq, response(Rq))
-        Rc, Ac = so3.haar_design(lmax, nmax, int(n_check), int(seed))
-        misfit = np.abs(Ac @ coeffs - response(Rc)).std(axis=0)                     # off the grid, in signal units
-        floor = 1.0 / np.sqrt(n_w)
-        if misfit.max() > 2.0 * floor:
+        # the phase the pose modulates, per measurement: the sampling band follows this, not a setting
+        amp = np.linalg.norm(Q.reshape(n_w, n_meas, 9), axis=2)
+        phi_amp = float(np.percentile(amp, 95)) if amp.size else 0.0
+        if band is None:
+            S_L = int(max(int(np.ceil(phi_amp)) + int(margin), 2))
+        else:
+            S_L = int(band[0]) if np.ndim(band) else int(band)
+        if S_L > int(band_cap):
             raise ValueError(
-                f"this pack's pose response is not represented at (lmax, nmax) = ({lmax}, {nmax}): away from "
-                f"the projection's own grid the truncation misfits it by {misfit.max():.4f} in signal units, "
-                f"against the pack's Monte-Carlo floor of {floor:.4f}. Raise lmax (pose structure) or nmax "
-                f"(azimuthal structure); composing at this band would return a plausible wrong number rather "
-                f"than a wrong-looking one.")
-        return PoseResponse(coeffs.T, lmax, nmax, misfit, floor, Rq.shape[0] + Rc.shape[0])
+                f"this acquisition sweeps {phi_amp:.1f} radians of phase on this pack, so its pose response "
+                f"reaches order ~{S_L}, beyond the cap of {band_cap}. That is a real cost, not a setting: the "
+                f"expansion is worth building to share one walk over many poses, and at this sharpness a direct "
+                f"replay per pose (orientation=R) is the cheaper and exact route. Raise band_cap= to insist.")
+        S_N = S_L
+        # `keep` may leave either index open with None, meaning "whatever the response carries"
+        want_l, want_n = (None, None) if keep is None else (keep[0], keep[1])
+        keep_l = S_L if want_l is None else min(int(want_l), S_L)
+        keep_n = S_N if want_n is None else min(int(want_n), S_N)
+
+        # sample beyond the retained band and project onto it, in blocks: a rule exact only for what is kept
+        # folds everything above it into those coefficients (and differently at different frames)
+        Rq, wq, _dirs, _rolls = so3.so3_quadrature(S_L + int(over), S_N + int(over))
+        n_feat = so3.n_so3_coeffs(keep_l, keep_n)
+        coeffs = np.zeros((n_feat, n_meas), np.complex128)
+        for lo in range(0, Rq.shape[0], int(chunk)):
+            sl = slice(lo, min(lo + int(chunk), Rq.shape[0]))
+            A = so3.so3_design(keep_l, Rq[sl], keep_n)
+            coeffs += (A * wq[sl, None]).T @ response(Rq[sl])
+        floor = 1.0 / np.sqrt(n_w)
+
+        Rc, Ac = so3.haar_design(keep_l, keep_n, int(n_check), int(seed))
+        if (keep_l, keep_n) == (S_L, S_N):
+            # the retained band is the whole response: certify pointwise, worst case, off the grid
+            misfit = np.abs(Ac @ coeffs - response(Rc)).max(axis=0)
+        else:
+            # only part of the response is retained, so a pointwise comparison is not the question. What has to
+            # hold is that the retained coefficients are alias-free: refine the grid and require them to stand.
+            Rf, wf, _d, _r = so3.so3_quadrature(S_L + 2 * int(over) + 1, S_N + 2 * int(over) + 1)
+            fine = np.zeros_like(coeffs)
+            for lo in range(0, Rf.shape[0], int(chunk)):
+                sl = slice(lo, min(lo + int(chunk), Rf.shape[0]))
+                A = so3.so3_design(keep_l, Rf[sl], keep_n)
+                fine += (A * wf[sl, None]).T @ response(Rf[sl])
+            misfit = np.abs(Ac @ (coeffs - fine)).max(axis=0)
+        if misfit.max() > floor:
+            msg = (
+                f"this pack's pose response is not represented at (lmax, nmax) = ({keep_l}, {keep_n}): the worst "
+                f"case away from the projection's own grid is {misfit.max():.4f} in signal units, against the "
+                f"pack's Monte-Carlo floor of {floor:.4f}. The response's phase amplitude is {phi_amp:.1f} rad, "
+                f"so it reaches about that order; raise margin=, pass a larger band=, or retain more. Composing "
+                f"here would return a plausible wrong number rather than a wrong-looking one.")
+            if strict:
+                raise ValueError(msg)
+            import warnings
+            warnings.warn(msg, UserWarning, stacklevel=3)
+        return PoseResponse(coeffs.T, keep_l, keep_n, misfit, floor, phi_amp, Rq.shape[0] + Rc.shape[0])
 
 
     @cached_property

@@ -43,8 +43,8 @@ __all__ = ["real_sh", "sphere_quadrature", "n_sh_coeffs", "sh_block",
            "so3_quadrature",
            "density_coeffs", "delta_coeffs", "axis_density_coeffs", "axis_coeffs", "watson_coeffs",
            "bingham_coeffs",
-           "project", "quadrature_design", "energy", "evaluate", "rotation_of", "rotations_from_quaternions",
-           "rotate_coeffs",
+           "project", "quadrature_design", "oversampled_design", "truncate_coeffs", "energy", "evaluate",
+           "rotation_of", "rotations_from_quaternions", "rotate_coeffs",
            "Distribution"]
 
 
@@ -270,13 +270,14 @@ def so3_quadrature(lmax, nmax=None, frame_axis=(0.0, 0.0, 1.0)):
 
 # ------------------------------------------------------------------ distributions
 @functools.lru_cache(maxsize=16)
-def _fine_design(lmax, nmax, over, frame_axis=(0.0, 0.0, 1.0)):
-    """A quadrature well beyond the target band, with the **target** basis evaluated on it.
+def oversampled_design(lmax, nmax, over, frame_axis=(0.0, 0.0, 1.0)):
+    """A quadrature beyond the retained band, with the **retained** basis evaluated on it: ``(R, w, A)``.
 
-    A distribution is not band-limited -- a concentrated Watson or Bingham has content at every order -- and the
-    quadrature grid is not rotation invariant, so integrating it on its own band's grid makes the aliasing
-    depend on the frame: measured at 0.12 in coefficients of order 1, which would make the same fan give
-    different answers at different poses. Oversampling puts that below the noise of any pack.
+    Two bands, not one. The rule has to integrate the product of what is being projected with the basis
+    functions retained, so a grid sized to the retained band alone folds everything above it into the
+    coefficients that are kept -- and it does so differently at different frames, since the grid is not
+    rotation invariant. Measured on a Bingham: the same fan came out 0.12 apart (in coefficients of order 1)
+    at two poses when integrated on its own band's grid, and 7e-5 apart on an oversampled one.
     """
     nm = None if nmax is None else int(nmax) + int(over)
     R, w, _A = quadrature_design(int(lmax) + int(over), nm, frame_axis)
@@ -291,7 +292,7 @@ def density_coeffs(density, lmax, nmax=None, frame_axis=(0.0, 0.0, 1.0), over=8)
     which is why their structural properties -- a roll-uniform density having no ``n != 0`` coefficients, a
     Bingham with equal dispersions being a Watson -- are results to test rather than assumptions to trust.
     """
-    R, w, A = _fine_design(int(lmax), None if nmax is None else int(nmax), int(over), tuple(frame_axis))
+    R, w, A = oversampled_design(int(lmax), None if nmax is None else int(nmax), int(over), tuple(frame_axis))
     p = np.asarray(density(R), np.float64).reshape(-1)
     p = p / float(p @ w)                                              # a density integrates to one
     return project(A, p * w, np.ones(R.shape[0]))
@@ -358,7 +359,9 @@ def watson_coeffs(kappa, mu=(0.0, 0.0, 1.0), lmax=8, nmax=None, frame_axis=(0.0,
     """
     from ..math.sh_analytical import watson_sh
     mu = np.asarray(mu, np.float64); mu = mu / np.linalg.norm(mu)
-    return axis_density_coeffs(watson_sh(mu, float(kappa), l_max=int(lmax)), lmax, nmax, frame_axis)
+    # an axis density has only even orders, and the analytic forms are written in that layout, so the harmonic
+    # order rounds down to even while the SO(3) band it is embedded in stays as asked
+    return axis_density_coeffs(watson_sh(mu, float(kappa), l_max=2 * (int(lmax) // 2)), lmax, nmax, frame_axis)
 
 
 def bingham_coeffs(frame, kappa, lmax=8, nmax=None, roll_kappa=0.0, frame_axis=(0.0, 0.0, 1.0)):
@@ -380,7 +383,7 @@ def bingham_coeffs(frame, kappa, lmax=8, nmax=None, roll_kappa=0.0, frame_axis=(
     F = np.asarray(frame, np.float64).reshape(3, 3)
     k1, k2 = (float(kappa[0]), float(kappa[1])) if np.ndim(kappa) else (float(kappa), float(kappa))
     if not roll_kappa:
-        return axis_density_coeffs(bingham_sh(F, (k1, k2), l_max=int(lmax)), lmax, nmax, frame_axis)
+        return axis_density_coeffs(bingham_sh(F, (k1, k2), l_max=2 * (int(lmax) // 2)), lmax, nmax, frame_axis)
 
     f = np.asarray(frame_axis, np.float64); f = f / np.linalg.norm(f)
 
@@ -490,6 +493,28 @@ def rotate_coeffs(coeffs, R, lmax, nmax=None):
         out[:, i:i + width] = np.einsum("nmk,nkj->nmj", Ml, blk).reshape(n, width)
         i += width
     return out
+
+
+@functools.lru_cache(maxsize=64)
+def _truncation_index(lmax, nmax, keep_lmax, keep_nmax):
+    """Where each coefficient of the ``(keep_lmax, keep_nmax)`` layout sits in the ``(lmax, nmax)`` one."""
+    if keep_lmax > lmax or (nmax is not None and (keep_nmax is None or keep_nmax > nmax)):
+        raise ValueError(f"cannot keep ({keep_lmax}, {keep_nmax}) out of a ({lmax}, {nmax}) expansion: the "
+                         f"retained band has to be inside the one that was projected")
+    src = {k: i for i, k in enumerate(so3_index(lmax, nmax))}
+    return np.array([src[k] for k in so3_index(keep_lmax, keep_nmax)], np.int64)
+
+
+def truncate_coeffs(coeffs, lmax, nmax, keep_lmax, keep_nmax):
+    """Restrict coefficients from one band to a smaller one, exactly.
+
+    Dropping a coefficient is lossless for any distribution that has none there, which is what makes the
+    economy of the composition free rather than approximate: an orientation distribution over directions has
+    nothing at ``n != 0``, and one of order ``L`` has nothing above it.
+    """
+    c = np.asarray(coeffs)
+    idx = _truncation_index(int(lmax), nmax, int(keep_lmax), keep_nmax)
+    return c[..., idx]
 
 
 def _lmax_of(n_c):

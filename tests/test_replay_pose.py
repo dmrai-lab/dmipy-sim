@@ -9,8 +9,8 @@ from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_sim.replay.fod import FOD
 
 D0 = 2.0e-9
-ENV = dict(bvals=[0.0, 6e8], dirs=[[0, 0, 1], [1, 0, 0]], delta_frac=0.2, Delta_frac=0.5,
-           ogse_periods=[1], shortd_b=6e8, shortd_deltas_frac=[0.2])
+ENV = dict(bvals=[0.0, 1e8], dirs=[[0, 0, 1], [1, 0, 0]], delta_frac=0.2, Delta_frac=0.5,
+           ogse_periods=[1], shortd_b=1e8, shortd_deltas_frac=[0.2])
 
 
 @pytest.fixture(scope="module")
@@ -22,7 +22,7 @@ def hollow():
     pk = build_replay_pack(walk, id="test/hollow", license="x", citation="x", K=8, envelope=ENV,
                            field=field_grid_of(g, res=0.2e-6), susc_path_K=16)
     assert pk.has_field and "susceptibility_path" in pk.meta["compression"]["channels"]
-    return pk, _pgse(pk, [[1, 0, 0], [1, 0, 0], [0, 0, 1]], [0.0, 6e8, 6e8])
+    return pk, _pgse(pk, [[1, 0, 0], [1, 0, 0], [0, 0, 1]], [0.0, 1e8, 1e8])
 
 
 @pytest.fixture(scope="module")
@@ -31,7 +31,10 @@ def ellipsoid():
     substrate's own azimuth -- the case an axis-only representation cannot hold at all."""
     g = d.Ellipsoid(semiaxes=(1.0e-6, 3.5e-6, 8.0e-6))
     walk = d.simulate_trajectories(4000, D0, g, 6e-3, 3e-4, seed=0, require_gpu=False)
-    pk = build_replay_pack(walk, id="test/ellipsoid", license="x", citation="x", K=8, envelope=ENV, field=False)
+    pk = build_replay_pack(walk, id="test/ellipsoid", license="x", citation="x", K=8,
+                           envelope=dict(ENV, bvals=[0.0, 6e8], shortd_b=6e8), field=False)
+    # a closed pore bounds the displacement, so a high b here is a sharp *angular* response at a modest phase
+    # amplitude -- which is what makes this the substrate that shows azimuthal structure
     return pk, _pgse(pk, [[1, 0, 0], [0, 1, 0]], [6e8, 6e8])
 
 
@@ -56,7 +59,7 @@ def _pgse(pk, dirs, bvals, delta=1e-3, Delta=3e-3):
 
 
 KW = dict(B0=3.0, b0_dir=(0.6, 0.0, 0.8), chi_iso=-0.1e-6, chi_aniso=-0.1e-6, refocus_time=None)
-BAND = dict(lmax=6, nmax=3, n_check=200)
+BAND = dict(n_check=200)          # no band: it follows the response's phase amplitude
 
 
 def test_one_pose_is_the_counter_rotated_acquisition(hollow):
@@ -178,10 +181,12 @@ def test_an_orientation_distribution_must_say_what_basis_it_is_in(hollow):
     wrong = so3.Distribution.axis_density(FOD.from_sh(fod.coeffs, basis="tournier07", legacy=True))
     right = so3.Distribution.axis_density(fod)
     assert np.abs(wrong.coeffs - right.coeffs).max() > 1e-2
-    # a distribution and a response are coefficients of one basis, so a mismatched truncation is refused
+    # a distribution stated beyond the response's band meets it at the band they share, which is exact: the
+    # response was certified to reproduce itself at its own band, so it has nothing above it to multiply
     pr = pk.pose_response(seq, **BAND, **KW)
-    with pytest.raises(ValueError, match="the same one"):
-        pr.compose(so3.Distribution.watson(3.0, lmax=pr.lmax + 2, nmax=pr.nmax))
+    wide = pr.compose(so3.Distribution.watson(3.0, lmax=pr.lmax + 2, nmax=pr.nmax + 2))
+    same = pr.compose(so3.Distribution.watson(3.0, lmax=pr.lmax, nmax=pr.nmax))
+    np.testing.assert_allclose(wide, same, atol=pr.floor)
 
 
 def test_a_response_the_truncation_cannot_hold_is_refused(ellipsoid):
@@ -189,4 +194,4 @@ def test_a_response_the_truncation_cannot_hold_is_refused(ellipsoid):
     return a plausible wrong number, so the projection raises and names the knobs instead."""
     pk, seq = ellipsoid
     with pytest.raises(ValueError, match="not represented at"):
-        pk.pose_response(seq, lmax=0, nmax=0, n_check=200, tissue=False)          # a constant is not a response
+        pk.pose_response(seq, band=0, n_check=200, tissue=False)                  # a constant is not a response
