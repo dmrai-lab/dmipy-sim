@@ -39,10 +39,10 @@ flowchart LR
         direction TB
         K1["tissue: T2 / T1 per pool · rho · chi · B0 and its direction"]
         K2["acquisition: any G(t) exactly · RF schedule (vector Bloch) · b-tensors · CPMG"]
-        K3["pose: orientation · FOD (Gaunt composition)"]
+        K3["pose: one rotation · or a distribution of rotations (SO(3) composition)"]
     end
     SIG["signal · any scanner, any sequence"]
-    RPH["Replay Phantom (.rph)<br/>packs over a voxel grid · FOD + fractions per voxel<br/>per-voxel maps (B1 transmit); macroscopic B0 /<br/>tissue-interface fields as the assembly layer"]
+    RPH["Replay Phantom (.rph)<br/>packs over a voxel grid · poses + fractions per voxel<br/>peaks · ODF · frames · Bingham fans<br/>per-voxel layers (B1 transmit, field map)"]
     gen --> SPEC --> ENGINE --> RPK --> knobs --> SIG
     RPK --> RPH --> knobs
 ```
@@ -110,11 +110,72 @@ The spec the pack embeds carries the substrate's nominal values, so a published 
 with no second file. `pack.replay(seq, tissue=False)` is the bare diffusion signal; `T2=` per pool id or
 `{"intra": 0.05, ...}` by pool name, `rho=`, `B0=`, `chi_iso=`, `chi_aniso=` override one value each;
 `tissue=Tissue(...)` supplies a whole set; `compartment=1` restricts the mean to one pool. The pose is a knob
-too: `orientation=` (a rotation, or the lab direction the substrate axis points along) replays the same walk
-at another pose, and `fod=FOD.watson(kappa, mu)` / `FOD.from_sh(coeffs, basis="tournier07")` composes a
-distribution of poses through the two-axis Gaunt route, in which the gradient and the field move together (a
-bare coefficient array is refused: the basis must be named). A tier that is requested but not carried
+too: `orientation=` takes either **one pose** — a rotation, or the lab direction the substrate axis points
+along, exact by pose covariance since the gradient and the field rotate together — or **a distribution of
+poses**, composed on SO(3). A pose is a rotation and not an axis, so nothing assumes the substrate is axially
+symmetric: `pack.pose_response(seq)` expands the response in the real Wigner basis, and
+`Distribution.watson(...)` / `.bingham(frame, (k1, k2))` / `.axis(direction)` / an `FOD` in a **named** basis
+are its counterpart, so an anisotropically fanned population composes as easily as a cone. A distribution over
+directions alone says nothing about the substrate's own azimuth, and that azimuth is then integrated away
+exactly rather than sampled. A bare coefficient array is refused: the basis must be named, and the expansion
+refuses a truncation that cannot hold the response. A tier that is requested but not carried
 raises; nothing is silently skipped.
+
+## Replay phantoms: packs arranged in space
+
+A pack answers for one microstructure at any pose. A **replay phantom** (`.rph`, spec in
+[RPH.md](https://github.com/dmrai-lab/replay-pack-spec)) is a voxel grid that cites packs: per voxel, which
+substrates occupy it, in what volume fraction, and at what orientation. It owns no walkers of its own, so one
+solved pack serves every voxel and every pose that cites it, and the file is the arrangement rather than the
+physics — the phantom below is 77 kB citing an 11 MB pack.
+
+![circular white-matter phantom](examples/rph/circular_wm.gif)
+
+A CACTUS bundle of 366 tortuous strands, walked once, arranged as an annulus of tangentially oriented fibres
+around a free-water core with inert background outside. **Left**: the substrate the walk saw, and the poses the
+phantom replays — a tight cone around most of the ring, and one sector where the population fans out
+anisotropically, which is a Bingham with two different concentrations. **Middle and right**: a diffusion-weighted
+acquisition at 7 T. First the gradient turns through 360° with the field pointing north, giving the diffusion
+contrast everyone knows — dark where the gradient runs along the fibres, bright where it runs across them, a
+50% modulation per voxel. Then the gradient is held fixed through the plane, so the diffusion weighting is
+identical in every voxel and every frame, and **B0** turns instead: what still moves is the susceptibility, the
+myelin field each walker samples depending on the angle between the field and the fibre. That is a 2% effect
+here — integrating over the azimuth each slot leaves unstated averages away most of the frame-specific field,
+which is the honest answer for tissue with no preferred azimuth — so those frames are drawn as each voxel's
+departure from its own mean, and the free-water core, which has no field at all, sits flat.
+
+```python
+from dmipy_sim.replay.phantom import (BinghamField, Grid, build_rph, read_rph,
+                                      pack_substrate, analytic_substrate, inert_substrate)
+
+build_rph("wm.rph",
+          grid=Grid((40, 40, 1), (1.5e-3,) * 3),                  # placed in the scanner: origin, isocenter, frame
+          substrates=[pack_substrate("cactus/bundle", "cactus.rpk", m0=0.75),
+                      analytic_substrate("csf", "free_water", {"diffusivity": 3e-9}),
+                      inert_substrate()],
+          occupancy={"cactus/bundle": f_wm, "csf": f_csf},         # volume fractions, or a label volume
+          remainder="background/inert",                            # a voxel is always full: no unmodelled slack
+          orientation=BinghamField(frames, kappa),                 # a rotation and two concentrations per voxel
+          id="phantoms/circular-wm", license="CC-BY-4.0", citation="...")
+
+voxels, S = read_rph("wm.rph").replay(seq, B0=7.0, b0_dir=(0, 1, 0), chi_iso=-1e-7)
+```
+
+**A pose is a rotation, not an axis**, and the four orientation modes differ in how much of it they pin down:
+`peaks` a direction, `odf_sh` a distribution over directions (in a **named** spherical-harmonic basis — an
+MRtrix FOD taken as orthonormal is wrong by an amount that vanishes exactly when the gradient is parallel to
+B0, the one geometry a cursory check would test), `frames` a whole rotation, and `bingham` a frame with a
+concentration about each of two of its axes. The two that name only a direction leave the substrate's own
+azimuth unstated, and a replay integrates over it rather than picking a convention. Nothing assumes the
+substrate is axially symmetric: each cited pack is expanded once into its response over SO(3), and every voxel
+is then an inner product with its own distribution, with the projection **refusing** rather than composing when
+its truncation cannot hold the response. On this bundle the axially symmetric truncation is refused outright.
+
+Macroscopic effects that vary over centimetres rather than microns are per-voxel **layers** on top of the
+packs: `m0_scale` for proton density within a tissue, `delta_B0_T` for a field map, `kappa_B1` for a transmit
+field, which acts on the magnetisation and so goes through the RF-aware replay at each voxel's pose. A layer
+this replay cannot carry raises rather than being dropped, because a phantom that silently loses a layer
+replays wrong while looking right.
 
 ## Substrates
 
@@ -208,6 +269,8 @@ rules, the replay invariant, and how to add physics.
 - **[Validation ladders](examples/validation/)** — surface relaxivity and permeability from 1-D to 3-D
   against exact eigenvalues; extra-axonal tortuosity scale sweep.
 - **[Substrate bank](examples/substrate_bank/)** — building canonical-pore packs with a fidelity target.
+- **[Circular white-matter phantom](examples/rph/circular_wm_phantom.py)** — one CACTUS pack composed into a
+  replay phantom with a fanned sector, swept over gradient and field direction; writes the animation above.
 
 ## Install
 

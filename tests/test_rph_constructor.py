@@ -3,9 +3,9 @@ import numpy as np
 import pytest
 
 from dmipy_sim.replay.fod import FOD
-from dmipy_sim.replay.gaunt import n_sh_coeffs
-from dmipy_sim.replay.phantom import (Grid, ODFField, PeakField, WatsonField, analytic_substrate, build_rph,
-                                      inert_substrate, pack_substrate, read_rph)
+from dmipy_sim.replay.so3 import n_sh_coeffs
+from dmipy_sim.replay.phantom import (BinghamField, FrameField, Grid, ODFField, PeakField, WatsonField,
+                                      analytic_substrate, build_rph, inert_substrate, pack_substrate, read_rph)
 
 
 def _pack(tmp_path, n_walkers=400):
@@ -80,7 +80,7 @@ def test_the_grid_is_placed_in_the_scanner():
 
 def test_volumes_become_a_sparse_phantom_with_full_voxels(tmp_path, pack_path):
     ph, meta = _phantom(tmp_path, pack_path)
-    assert meta["rph_schema_version"] == "0.3.0" and ph.mode == "odf_sh" and ph.lmax == 8
+    assert meta["rph_schema_version"] == "0.4.0" and ph.mode == "odf_sh" and ph.lmax == 8
     assert ph.odf_sh.shape[-1] == n_sh_coeffs(8)
     wm, csf = _annulus()
     assert ph.n_voxels == int(((wm + csf) > 0).sum())                        # sparse: only occupied voxels
@@ -208,8 +208,9 @@ def test_the_phantom_replays_every_voxel_from_one_pack_replay(tmp_path, pack_pat
     # a pure tissue voxel is the pack composed against that voxel's ODF, nothing else
     wm = int(np.argmax(f_wm))
     from dmipy_sim.replay.fod import FOD
-    ps = pk.pose_spectra(seq, T2=[0.06] * 3)
-    ref = ps.compose(FOD.native(ph.odf_sh[wm, 0].astype(float)))
+    from dmipy_sim.replay.so3 import Distribution
+    pr = pk.pose_response(seq, T2=[0.06] * 3)
+    ref = pr.compose(Distribution.axis_density(FOD.native(ph.odf_sh[wm, 0].astype(float))))
     np.testing.assert_allclose(S[wm], np.abs(f_wm[wm] * 0.7 * ref + f_csf[wm] * np.exp(-seq.bvalues * 3e-9)), rtol=1e-6)
     vol = ph.to_volume(S[:, 1])
     assert vol.shape == (8, 8, 1) and np.isnan(vol).any() and np.nanmax(vol) > 0
@@ -275,7 +276,7 @@ def test_the_transmit_layer_goes_through_the_bloch_route(tmp_path, pack_path):
     kappa != 1 it follows the spin-echo law; and an ODF phantom is refused rather than approximated."""
     from dmipy_sim.replay import read_rpk
     n = 2
-    d = np.zeros((n, n, 1, 3)); d[..., :] = (0.0, 0.0, 1.0)
+    R = np.zeros((n, n, 1, 3, 3)); R[..., :, :] = np.eye(3)          # a stated pose: what a propagation needs
     kw = dict(grid=Grid((n, n, 1), (1e-3,) * 3), occupancy=np.zeros((n, n, 1), np.int32), remainder=None, embed=True)
     pk = read_rpk(pack_path)
     seq = _acq(pk, [[1, 0, 0], [0, 0, 1]], [1e9, 1e9])
@@ -283,7 +284,8 @@ def test_the_transmit_layer_goes_through_the_bloch_route(tmp_path, pack_path):
     phys.G, phys.dt, phys.bvalues = np.abs(np.asarray(seq.G)), seq.dt, seq.bvalues
     rf = [dict(t_s=0.0, flip_deg=90.0, axis_deg=0.0),
           dict(t_s=(pk.n_t - 1) * pk.dt / 2, flip_deg=180.0, axis_deg=90.0)]
-    ideal, _ = _phantom(tmp_path / "one", pack_path, orientation=PeakField(d), **kw)
+    ideal, _ = _phantom(tmp_path / "one", pack_path, orientation=FrameField(R), **kw)
+    assert ideal.mode == "frames"
     _, S_ideal = ideal.replay(seq)
     _, S_bloch = ideal.replay_bloch(phys, rf_events=rf)
     # the two routes differ by the pose expansion's truncation on a small pack, i.e. its Monte-Carlo floor
@@ -291,7 +293,7 @@ def test_the_transmit_layer_goes_through_the_bloch_route(tmp_path, pack_path):
     # a transmit map is applied voxel by voxel, and each voxel is the pack propagated at that scale: the
     # nominal case is untouched, and a scaled one is exactly what the pack alone returns at that scale
     kap = np.where(np.arange(n)[:, None, None] * np.ones((n, n, 1)) > 0, 0.6, 1.0)
-    ph, _ = _phantom(tmp_path / "b1", pack_path, orientation=PeakField(d), scalars={"kappa_B1": kap}, **kw)
+    ph, _ = _phantom(tmp_path / "b1", pack_path, orientation=FrameField(R), scalars={"kappa_B1": kap}, **kw)
     _, S_b1 = ph.replay_bloch(phys, rf_events=rf)
     i = ph.voxel_index[:, 0]
     np.testing.assert_allclose(S_b1[i == 0], S_bloch[i == 0], rtol=1e-9)          # kappa = 1: nothing changes
@@ -301,6 +303,55 @@ def test_the_transmit_layer_goes_through_the_bloch_route(tmp_path, pack_path):
     assert (S_b1[i == 1] < S_b1[i == 0] * 0.9).all()                              # a smaller flip, a smaller signal
     with pytest.raises(ValueError, match="vector-Bloch|ReplayPhantom.replay_bloch"):
         ph.replay(seq)                                      # the magnitude route refuses the layer
-    odf, _ = _phantom(tmp_path / "odf", pack_path, orientation=WatsonField(50.0, d, lmax=8), **kw)
-    with pytest.raises(ValueError, match="peaks-mode"):
+    mu = np.zeros((n, n, 1, 3)); mu[..., :] = (0.0, 0.0, 1.0)
+    odf, _ = _phantom(tmp_path / "odf", pack_path, orientation=WatsonField(50.0, mu, lmax=8), **kw)
+    with pytest.raises(ValueError, match="frames-mode"):
         odf.replay_bloch(phys, rf_events=rf)
+
+
+def test_a_frame_is_one_pose_and_a_peak_is_that_pose_with_its_azimuth_unstated(tmp_path, pack_path):
+    """RPH.md 4, the two modes side by side: a frames slot is a rotation, so its voxel is the pack replayed at
+    that rotation; a peaks slot is the same direction with the azimuth left open, so its voxel is the average
+    over that azimuth. They agree only where the substrate is axially symmetric, and the phantom says which it
+    is asking for rather than leaving it to a convention."""
+    from dmipy_sim.replay import read_rpk, so3
+    n = 2
+    R0 = so3.rotation_of((0.3, 0.5, 0.81))
+    R = np.zeros((n, n, 1, 3, 3)); R[..., :, :] = R0
+    dirs = np.zeros((n, n, 1, 3)); dirs[..., :] = R0[:, 2]
+    kw = dict(grid=Grid((n, n, 1), (1e-3,) * 3), occupancy=np.zeros((n, n, 1), np.int32), remainder=None, embed=True)
+    frames, _ = _phantom(tmp_path / "fr", pack_path, orientation=FrameField(R), **kw)
+    peaks, _ = _phantom(tmp_path / "pk", pack_path, orientation=PeakField(dirs), **kw)
+    pk = read_rpk(pack_path)
+    seq = _acq(pk, [[1, 0, 0], [0, 0, 1]], [1e9, 1e9])
+    _, S_fr = frames.replay(seq, lmax=6, nmax=3)
+    _, S_pk = peaks.replay(seq, lmax=6, nmax=3)
+    direct = np.abs(0.7 * pk.replay(seq, orientation=R0, T2=[0.06] * 3, complex_signal=True))
+    np.testing.assert_allclose(S_fr[0], direct, atol=3.0 / np.sqrt(pk.n_walkers))
+    # this substrate is a single cylinder, so the azimuth it leaves open changes nothing beyond its own noise
+    np.testing.assert_allclose(S_pk, S_fr, atol=3.0 / np.sqrt(pk.n_walkers))
+
+
+def test_a_bingham_slot_is_a_fan_and_contains_the_watson(tmp_path, pack_path):
+    """A frame plus two concentrations. Equal ones are the Watson cone of that width -- checked against the same
+    analytic distribution composed directly, so nothing but the phantom's own bookkeeping is in the way -- and
+    unequal ones are a fan the ODF mode cannot express."""
+    from dmipy_sim.replay import read_rpk, so3
+    n = 2
+    R0 = so3.rotation_of((0.0, 0.0, 1.0))
+    R = np.zeros((n, n, 1, 3, 3)); R[..., :, :] = R0
+    kw = dict(grid=Grid((n, n, 1), (1e-3,) * 3), occupancy=np.zeros((n, n, 1), np.int32), remainder=None, embed=True)
+    cone, meta = _phantom(tmp_path / "cone", pack_path, orientation=BinghamField(R, (6.0, 6.0)), **kw)
+    fan, _ = _phantom(tmp_path / "fan", pack_path, orientation=BinghamField(R, (0.2, 60.0)), **kw)
+    assert cone.mode == "bingham" and meta["orientation"]["mode"] == "bingham"
+    assert cone.bingham_kappa.shape == (cone.n_voxels, 1, 2)
+    pk = read_rpk(pack_path)
+    seq = _acq(pk, [[1, 0, 0], [0, 0, 1]], [1e9, 1e9])
+    band = dict(lmax=6, nmax=3)
+    _, S_cone = cone.replay(seq, **band)
+    _, S_fan = fan.replay(seq, **band)
+    # the same distribution composed outside the phantom: a Watson of that concentration
+    pr = pk.pose_response(seq, T2=[0.06] * 3, **band)
+    ref = np.abs(0.7 * pr.compose(so3.Distribution.watson(6.0, mu=(0, 0, 1), lmax=6, nmax=3)))
+    np.testing.assert_allclose(S_cone[0], ref, rtol=1e-9)
+    assert np.abs(S_fan - S_cone).max() > 3e-3                       # the fan is not that cone
