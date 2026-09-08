@@ -120,3 +120,59 @@ def test_the_azimuthal_band_is_measured_not_asserted():
     skew = np.array([1.0 if n == 1 else 0.0 for (_l, _m, n) in idx])
     _pl, pn = so3.energy(skew, lmax, nmax)
     assert pn[1] > 0 and pn[0] == 0.0
+
+
+def test_the_uniform_distribution_is_the_haar_mean():
+    """Every pose equally weighted is the powder average, and by orthonormality that is the zeroth coefficient
+    alone -- so the cheapest composition in the scheme must agree with the response's mean over the group."""
+    lmax, nmax = 4, 2
+    c = np.random.default_rng(2).normal(size=so3.n_so3_coeffs(lmax, nmax))
+    R, w, A = so3.quadrature_design(lmax, nmax)
+    mean = float(w @ (A @ c))
+    powder = so3.Distribution.uniform(lmax, nmax)
+    np.testing.assert_allclose(powder.coeffs @ c, mean, atol=1e-12)
+    np.testing.assert_allclose(powder.coeffs @ c, c[0], atol=1e-12)
+
+
+def test_a_rotated_distribution_is_the_distribution_of_rotated_poses():
+    """``rotate_coeffs`` is how a canonical fan reaches a voxel's frame, so it must be the group action and not
+    merely something of the right shape. Checked on the one distribution whose value is known everywhere: a
+    point mass at ``R0`` rotated by ``R1`` must compose to the response at ``R1 R0``."""
+    lmax, nmax = 6, 3
+    c = np.random.default_rng(3).normal(size=so3.n_so3_coeffs(lmax, nmax))
+    R0, R1 = so3.haar_rotations(2, seed=6)
+    moved = so3.Distribution.pose(R0, lmax, nmax).rotated(R1)
+    np.testing.assert_allclose(moved.coeffs, so3.delta_coeffs(R1 @ R0, lmax, nmax), atol=1e-9)
+    np.testing.assert_allclose(moved.coeffs @ c, float(so3.evaluate(c, lmax, (R1 @ R0)[None], nmax)[0]),
+                               rtol=1e-9)
+    np.testing.assert_allclose(so3.Distribution.pose(R0, lmax, nmax).rotated(np.eye(3)).coeffs,
+                               so3.delta_coeffs(R0, lmax, nmax), atol=1e-9)
+    # and batched over a grid of frames, which is the phantom's path: one canonical shape, many voxels
+    R = so3.haar_rotations(5, seed=7)
+    can = so3.watson_coeffs(6.0, mu=(0.0, 0.0, 1.0), lmax=lmax, nmax=nmax)
+    many = so3.rotate_coeffs(can, R, lmax, nmax)
+    assert many.shape == (5, can.size)
+    for k in range(5):
+        # a Watson carries no azimuth, so rotating it is the same distribution about the rotated mean
+        np.testing.assert_allclose(many[k], so3.watson_coeffs(6.0, mu=R[k][:, 2], lmax=lmax, nmax=nmax),
+                                   atol=1e-9)
+
+
+def test_the_bingham_concentrations_are_the_elementary_density():
+    """What ``(k1, k2)`` and the frame mean, pinned against the density itself rather than against the analytic
+    expansion that computes it: the third column is the mean direction, the concentrations belong to the first
+    two, larger is tighter, and the substrate's own azimuth is free unless tied."""
+    lmax, nmax = 6, 2
+    F = so3.rotation_of((0.3, 0.5, 0.81), roll=0.7)
+    k1, k2 = 1.0, 12.0
+
+    def rho(R):
+        u = np.einsum("nij,j->ni", R, np.array([0.0, 0.0, 1.0])) @ F   # the axis, in the frame's coordinates
+        return np.exp(-k1 * u[:, 0] ** 2 - k2 * u[:, 1] ** 2)
+
+    np.testing.assert_allclose(so3.bingham_coeffs(F, (k1, k2), lmax=lmax, nmax=nmax),
+                               so3.density_coeffs(rho, lmax, nmax), atol=1e-6)
+    # tying the azimuth is a density on the group, not on the sphere, and is the one kind with n != 0 terms
+    tied = so3.bingham_coeffs(F, (k1, k2), lmax=lmax, nmax=nmax, roll_kappa=4.0)
+    _pl, pn = so3.energy(tied, lmax, nmax)
+    assert pn[1:].sum() > 0.05 * pn.sum()

@@ -5,6 +5,11 @@ none at all outside ``n = 0`` when it leaves the substrate's azimuth unstated. T
 exact economy. What it does *not* make cheap is the sampling: a quadrature exact only for the band being kept
 folds everything above it into those coefficients.
 
+The second half is the composition itself, one test per kind of orientation statement -- a point mass, an
+axis with its azimuth unstated, a fan, a fan with that azimuth tied, the powder average -- each against the
+explicit average it is defined to be, plus the covariance that says a voxel's frame is a rotation of one
+canonical distribution (#163).
+
 Nothing here needs a statistical walk. Half the claims are algebra on synthetic coefficients, and the rest run
 on a pack of **static walkers at chosen positions** driven by a single unrefocused gradient lobe, whose response
 is the plane-wave sum ``mean_w exp(i q . R r_w)`` in closed form -- so the reference is analytic, the phase
@@ -194,3 +199,89 @@ def test_the_projection_is_deterministic(pack):
     seq = _Lobe(0.2)
     np.testing.assert_array_equal(pack.pose_response(seq, tissue=False).coeffs,
                                   pack.pose_response(seq, tissue=False).coeffs)
+
+
+# ------------------------------------------------------------------ each kind of orientation statement (#163.2)
+def test_a_point_mass_composes_to_the_response_at_that_pose(pack):
+    """The delta is the distribution that reaches the whole band, so it is where the composition and the
+    pointwise evaluation must agree, and both against the closed form."""
+    seq = _Lobe(0.2)
+    pr = pack.pose_response(seq, tissue=False)
+    for R in so3.haar_rotations(4, seed=7):
+        got = pr.compose(so3.Distribution.pose(R, pr.lmax, pr.nmax))[0]
+        np.testing.assert_allclose(got, pr.at(R)[0], rtol=1e-9)
+        assert abs(abs(got) - abs(analytic(seq.q, R))) < 2e-3
+
+
+def test_the_powder_average_is_the_isotropic_closed_form(pack):
+    """Every pose equally: the group mean of a plane wave is ``sin(x)/x`` per walker, so the cheapest
+    composition in the scheme -- the zeroth coefficient alone -- has an exact reference of its own."""
+    seq = _Lobe(0.2)
+    pr = pack.pose_response(seq, tissue=False)
+    x = np.linalg.norm(seq.q) * np.linalg.norm(POS, axis=1)
+    powder = pr.compose(so3.Distribution.uniform(pr.lmax, pr.nmax))[0]
+    np.testing.assert_allclose(powder.real, np.sinc(x / np.pi).mean(), atol=1e-6)
+
+
+def test_an_axis_composes_to_the_azimuth_averaged_response(pack):
+    """What a peak is: a direction with the substrate's own azimuth left unstated, so its signal is the
+    response averaged over that azimuth -- not the response at some arbitrary rotation carrying the direction."""
+    seq = _Lobe(0.2)
+    pr = pack.pose_response(seq, tissue=False)
+    for n in so3.haar_rotations(3, seed=8)[:, :, 2]:
+        got = pr.compose(so3.Distribution.axis(n, pr.lmax, pr.nmax))[0]
+        rolls = np.arange(24) * (2 * np.pi / 24)
+        brute = np.mean([analytic(seq.q, so3.rotation_of(n, roll=r)) for r in rolls])
+        assert abs(abs(got) - abs(brute)) < 2e-3
+
+
+def test_a_bingham_fan_composes_to_its_explicit_average(pack):
+    """A fan is two concentrations about a frame, and no single-parameter dispersion expresses it, so it is
+    checked against the explicit average under that density and against the cone it is not."""
+    seq = _Lobe(0.2)
+    pr = pack.pose_response(seq, tissue=False)
+    F, k = so3.rotation_of((0.3, 0.5, 0.81), roll=0.4), (0.5, 20.0)
+    got = pr.compose(so3.Distribution.bingham(F, k, lmax=pr.lmax, nmax=pr.nmax))[0]
+    brute = analytic_over(seq.q, lambda d: np.exp(-k[0] * (d @ F[:, 0]) ** 2 - k[1] * (d @ F[:, 1]) ** 2))
+    assert abs(abs(got) - abs(brute)) < 5e-3
+    cone = pr.compose(so3.Distribution.bingham(F, (10.0, 10.0), lmax=pr.lmax, nmax=pr.nmax))[0]
+    assert abs(got - cone) > 20 * pr.misfit.max()                    # measured 0.034, twenty times the misfit
+
+
+def test_a_tied_azimuth_composes_to_its_explicit_average(pack):
+    """The one distribution kind with azimuthal coefficients of its own: a substrate whose spin about its axis
+    is tied to the frame is a density on the group rather than on the sphere, and composing it uses the ``n``
+    columns an axis density annihilates. Averaged explicitly over rotations, since there is no sphere rule for
+    it."""
+    seq = _Lobe(0.2)
+    pr = pack.pose_response(seq, tissue=False)
+    F, k, rk = so3.rotation_of((0.3, 0.5, 0.81), roll=0.4), (0.5, 20.0), 6.0
+    got = pr.compose(so3.Distribution.bingham(F, k, roll_kappa=rk, lmax=pr.lmax, nmax=pr.nmax))[0]
+
+    R, w, _d, _r = so3.so3_quadrature(pr.lmax + 8, pr.nmax + 8)
+    d = np.einsum("nij,j->ni", R, np.array([0.0, 0.0, 1.0]))
+    p = np.exp(-k[0] * (d @ F[:, 0]) ** 2 - k[1] * (d @ F[:, 1]) ** 2)
+    ref = F[:, 0] - (d @ F[:, 0])[:, None] * d                       # the frame's first axis, made transverse
+    ref = ref / np.maximum(np.linalg.norm(ref, axis=1, keepdims=True), 1e-30)
+    u = np.einsum("nij,j->ni", R, np.array([1.0, 0.0, 0.0]))         # the substrate's own azimuth
+    p = p * np.exp(rk * np.einsum("ni,ni->n", u, ref) ** 2)
+    vals = np.array([analytic(seq.q, r) for r in R])
+    brute = complex((w * p * vals).sum() / (w * p).sum())
+    assert abs(abs(got) - abs(brute)) < 5e-3
+    # the tie is not cosmetic: it moves the signal into the imaginary part, where a fan free in that azimuth
+    # is real because the ensemble's phase averages over it. Measured 8.6e-3 against a misfit of 1.6e-3.
+    untied = pr.compose(so3.Distribution.bingham(F, k, lmax=pr.lmax, nmax=pr.nmax))[0]
+    assert abs(got - untied) > 3 * pr.misfit.max()
+
+
+def test_rotating_the_distribution_is_counter_rotating_the_acquisition(pack):
+    """Pose covariance, at the level a phantom uses it: a voxel's frame enters as a rotation of one canonical
+    distribution, and that must equal interrogating the canonical one with the acquisition turned the other
+    way. A convention error here is invisible at the identity and wrong everywhere else."""
+    seq = _Lobe(0.2)
+    pr = pack.pose_response(seq, tissue=False)
+    fod = FOD.watson(4.0, mu=(0.0, 0.0, 1.0), lmax=6)
+    canonical = so3.Distribution.axis_density(fod, pr.lmax, pr.nmax)
+    for R1 in so3.haar_rotations(3, seed=9):
+        got = pr.compose(canonical.rotated(R1))[0]
+        assert abs(abs(got) - abs(analytic_over(R1.T @ seq.q, fod.evaluate))) < 3e-3
