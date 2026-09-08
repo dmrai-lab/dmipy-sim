@@ -267,3 +267,40 @@ def test_a_referenced_pack_must_be_supplied(tmp_path, pack_path):
         ph.replay(seq)
     _, S = ph.replay(seq, packs={"wm/tiny": pack_path})
     assert S.shape == (ph.n_voxels, 1) and np.isfinite(S).all()
+
+
+def test_the_transmit_layer_goes_through_the_bloch_route(tmp_path, pack_path):
+    """kappa_B1 scales every flip angle, which the pose expansion cannot carry, so it goes through a
+    magnetisation propagation per pose. At kappa = 1 that route reproduces the ideal-pulse answer; at
+    kappa != 1 it follows the spin-echo law; and an ODF phantom is refused rather than approximated."""
+    from dmipy_sim.replay import read_rpk
+    n = 2
+    d = np.zeros((n, n, 1, 3)); d[..., :] = (0.0, 0.0, 1.0)
+    kw = dict(grid=Grid((n, n, 1), (1e-3,) * 3), occupancy=np.zeros((n, n, 1), np.int32), remainder=None, embed=True)
+    pk = read_rpk(pack_path)
+    seq = _acq(pk, [[1, 0, 0], [0, 0, 1]], [1e9, 1e9])
+    phys = type(seq)()                                      # the Bloch route takes the PHYSICAL waveform
+    phys.G, phys.dt, phys.bvalues = np.abs(np.asarray(seq.G)), seq.dt, seq.bvalues
+    rf = [dict(t_s=0.0, flip_deg=90.0, axis_deg=0.0),
+          dict(t_s=(pk.n_t - 1) * pk.dt / 2, flip_deg=180.0, axis_deg=90.0)]
+    ideal, _ = _phantom(tmp_path / "one", pack_path, orientation=PeakField(d), **kw)
+    _, S_ideal = ideal.replay(seq)
+    _, S_bloch = ideal.replay_bloch(phys, rf_events=rf)
+    # the two routes differ by the pose expansion's truncation on a small pack, i.e. its Monte-Carlo floor
+    np.testing.assert_allclose(S_bloch, S_ideal, atol=3.0 / np.sqrt(pk.n_walkers))
+    # a transmit map is applied voxel by voxel, and each voxel is the pack propagated at that scale: the
+    # nominal case is untouched, and a scaled one is exactly what the pack alone returns at that scale
+    kap = np.where(np.arange(n)[:, None, None] * np.ones((n, n, 1)) > 0, 0.6, 1.0)
+    ph, _ = _phantom(tmp_path / "b1", pack_path, orientation=PeakField(d), scalars={"kappa_B1": kap}, **kw)
+    _, S_b1 = ph.replay_bloch(phys, rf_events=rf)
+    i = ph.voxel_index[:, 0]
+    np.testing.assert_allclose(S_b1[i == 0], S_bloch[i == 0], rtol=1e-9)          # kappa = 1: nothing changes
+    alone = np.abs(pk.replay_bloch(phys, rf_events=rf, b1_scale=0.6, orientation=(0.0, 0.0, 1.0),
+                                   T2=[0.06] * 3))                                # the T2 the phantom declares
+    np.testing.assert_allclose(S_b1[i == 1], np.tile(0.7 * alone, (int((i == 1).sum()), 1)), rtol=1e-9)
+    assert (S_b1[i == 1] < S_b1[i == 0] * 0.9).all()                              # a smaller flip, a smaller signal
+    with pytest.raises(ValueError, match="vector-Bloch|ReplayPhantom.replay_bloch"):
+        ph.replay(seq)                                      # the magnitude route refuses the layer
+    odf, _ = _phantom(tmp_path / "odf", pack_path, orientation=WatsonField(50.0, d, lmax=8), **kw)
+    with pytest.raises(ValueError, match="peaks-mode"):
+        odf.replay_bloch(phys, rf_events=rf)

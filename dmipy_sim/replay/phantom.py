@@ -731,12 +731,87 @@ class ReplayPhantom:
                 raise ValueError(
                     "this phantom declares a kappa_B1 layer, which scales every RF flip angle and so needs the "
                     "RF-aware (vector-Bloch) replay of each pack at the voxel's pose. A magnitude gradient replay "
-                    "cannot carry it, and dropping it would return a signal that looks right and is not. Replay a "
-                    "phantom without the layer, or use the Bloch route.")
+                    "cannot carry it, and dropping it would return a signal that looks right and is not. Use "
+                    "ReplayPhantom.replay_bloch, which propagates the magnetisation per pose.")
             else:
                 raise ValueError(f"the phantom declares the layer {name!r}, which this replayer does not apply; "
                                  f"a layer silently dropped is a phantom that replays wrong (RPH.md 5.1)")
         return S
+
+    def replay_bloch(self, waveform, *, rf_events=None, B0=None, b0_dir=(0.0, 0.0, 1.0), tissue="nominal",
+                     packs=None, complex_signal=False, T2=None, T1=None, rho=None, D=None, chi_iso=None,
+                     chi_aniso=0.0, decimals=3):
+        """Replay the phantom through the RF-aware route: ``(voxel_index, S)``, one magnetisation propagation
+        per distinct pose rather than one contraction per voxel.
+
+        This is what a layer acting on the magnetisation vector needs. ``kappa_B1`` scales every flip angle of
+        the acquisition, and a flip angle is not something the pose expansion of :meth:`replay` carries: that
+        route reads the signal as a phase sum over an ideal-pulse echo, so an RF scale has nowhere to enter.
+        Here each pack is propagated at the voxel's own pose and transmit scale
+        (:meth:`ReplayPack.replay_bloch`), and analytic substrates take the same RF train on a static spin
+        times their closed form.
+
+        **Peaks mode only.** A pose here is one rotation of the substrate, and a distribution of poses under a
+        scaled RF pulse is not the pose-averaged response of one propagation, so an ODF phantom is refused
+        rather than approximated. Distinct ``(substrate, direction, scale)`` triples are propagated once each
+        and reused, ``decimals`` setting how finely they are distinguished; the cost is that count, not the
+        voxel count.
+        """
+        from .replay import ReplayPack, read_rpk
+        if self.mode != "peaks":
+            raise ValueError("replay_bloch composes one rotation per slot, so it needs a peaks-mode phantom "
+                             "(RPH.md 4). Under a scaled RF pulse a distribution of poses is not the average of "
+                             "one propagation, so an ODF phantom would be an approximation with no error bound.")
+        rf = rf_events if rf_events is not None else (getattr(waveform, "rf_events", None) or [])
+        if not rf:
+            raise ValueError("the Bloch route replays an RF schedule: give rf_events= or a waveform carrying them")
+        given = {}
+        for key, pk in (packs or {}).items():
+            given[key if isinstance(key, (int, np.integer)) else self.index_of(key)] = pk
+        loaded = {}
+        for i, sub in enumerate(self.substrates):
+            if sub["kind"] != "pack":
+                continue
+            pk = given.get(i)
+            loaded[i] = pk if isinstance(pk, ReplayPack) else (read_rpk(pk) if pk is not None else self.pack(i))
+        kappa = self.scalar("kappa_B1") if "kappa_B1" in self.scalar_names else np.ones(self.n_voxels)
+        knobs = dict(T2=T2, T1=T1, rho=rho, D=D, chi_iso=chi_iso, chi_aniso=chi_aniso)
+        b = _b_values(waveform)
+        m0 = np.broadcast_to(self.m0, (self.n_voxels, len(self.substrates))).astype(np.float64)
+        if "m0_scale" in self.scalar_names:
+            m0 = m0 * self.scalar("m0_scale")[:, None]
+        sid, frac, peak = self.substrate_id, self.geometric_fraction, self.peak_dir
+        S, cache = None, {}
+        for v in range(self.n_voxels):
+            for p, i in enumerate(sid[v]):
+                i, f = int(i), float(frac[v, p])
+                if i < 0 or f == 0.0 or self.substrates[i]["kind"] == "inert":
+                    continue
+                kap = round(float(kappa[v]), int(decimals))
+                key = (i, kap, tuple(np.round(peak[v, p], int(decimals))))
+                resp = cache.get(key)
+                if resp is None:
+                    sub = self.substrates[i]
+                    if sub["kind"] == "analytic":
+                        model = ANALYTIC_MODELS.get(sub.get("model"))
+                        if model is None:
+                            raise ValueError(f"substrate {sub['id']!r} names the closed form {sub.get('model')!r}, "
+                                             f"which this replayer does not implement")
+                        resp = model(sub.get("params", {}), b) * _static_spin_rf(waveform, rf, kap)
+                    else:
+                        kw = dict(knobs)
+                        kw.update({k: val for k, val in (sub.get("tissue") or {}).items()})
+                        resp = loaded[i].replay_bloch(waveform, rf_events=rf, b1_scale=kap, tissue=tissue, B0=B0,
+                                                      b0_dir=b0_dir, orientation=np.asarray(peak[v, p], float),
+                                                      complex_signal=True, **kw)
+                    cache[key] = resp
+                resp = np.atleast_1d(resp)
+                if S is None:
+                    S = np.zeros((self.n_voxels, resp.shape[0]), np.complex128)
+                S[v] += f * m0[v, i] * resp
+        if S is None:
+            raise ValueError("the phantom cites no signal-bearing substrate")
+        return self.voxel_index, (S if complex_signal else np.abs(S))
 
     def to_volume(self, values, fill=np.nan):
         """Scatter per-voxel values back onto the dense grid: ``(nx, ny, nz) + values.shape[1:]``, with ``fill``
@@ -760,3 +835,14 @@ def _b_values(waveform):
     dt = float(getattr(waveform, "dt"))
     q = GAMMA * np.cumsum(G, axis=1) * dt
     return (q * q).sum(axis=2).sum(axis=1) * dt
+
+
+def _static_spin_rf(waveform, rf_events, b1_scale):
+    """The transverse magnetisation a single static spin at the origin keeps through this RF schedule at this
+    transmit scale: what multiplies an analytic substrate's closed form, since a closed form has diffusion
+    attenuation but no magnetisation of its own. Zero gradient, so the schedule alone acts."""
+    from .trajectories import replay_bloch
+    n_t = int(np.asarray(getattr(waveform, "G", waveform)).shape[-2])
+    dt = float(getattr(waveform, "dt"))
+    out = replay_bloch(np.zeros((1, n_t, 3)), dt, np.zeros((1, n_t, 3)), dt, rf_events, b1_scale=float(b1_scale))
+    return complex(np.atleast_1d(np.asarray(out).ravel())[-1])

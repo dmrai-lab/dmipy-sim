@@ -261,7 +261,91 @@ class ReplayPack:
         S = (P["ew"][:, None] * np.exp(1j * phi)).sum(0) / P["norm"]
         return S if complex_signal else np.abs(S)
 
-    def _prepare(self, waveform, *, tissue, T2, T1, rho, D, B0, b0_dir, chi_iso, chi_aniso, orientation, compartment):
+    def replay_bloch(self, waveform, *, rf_events=None, b1_scale=None, tissue="nominal", T2=None, T1=None,
+                     rho=None, D=None, B0=None, b0_dir=(0.0, 0.0, 1.0), chi_iso=None, chi_aniso=0.0,
+                     orientation=None, compartment=None, echo_steps=None, jax=False, complex_signal=False):
+        """The RF-aware replay: each walker's magnetisation vector propagated through the actual sequence
+        operators on this pack's walk (:func:`~dmipy_sim.replay.trajectories.replay_bloch`).
+
+        The magnitude route of :meth:`replay` assumes ideal pulses and reads the signal as a phase sum, so it
+        cannot carry anything that acts on the magnetisation vector: a flip angle that is not nominal
+        (``b1_scale``), a finite pulse, a pulse train's coherence pathways. Those are what this route is for,
+        and it costs a propagation per piece instead of a projection.
+
+        Knobs are the same as :meth:`replay` and resolve the same way, nominal by default; the pose rotates the
+        acquisition and the field direction as it does there. ``b1_scale`` scales every flip angle, as a scalar
+        or per walker.
+        """
+        from .trajectories import replay_bloch as _rb, replay_bloch_jax as _rbj
+        from .compression import decode_occupancy, decode_boundary_bridge
+        P = self._prepare(waveform, tissue=tissue, T2=T2, T1=T1, rho=rho, D=D, B0=B0, b0_dir=b0_dir,
+                          chi_iso=chi_iso, chi_aniso=chi_aniso, orientation=orientation, compartment=compartment,
+                          relaxation=False, surface=False)
+        rf = rf_events if rf_events is not None else (getattr(waveform, "rf_events", None) or [])
+        if not rf:
+            raise ValueError("the Bloch route replays an RF schedule: give rf_events= (or a waveform carrying "
+                             "them). Without a pulse there is nothing this route adds over replay().")
+        ch, dt, n_t = P["ch"], P["dt"], P["n_t"]
+        pos = self.positions()
+        kw = dict(weights=P["ew"] / P["norm"], echo_steps=echo_steps)
+        if b1_scale is not None:
+            kw["b1_scale"] = b1_scale
+        T2v, T1v = P["T2"], P["T1"]
+        if T2v is not None or T1v is not None:
+            comp = decode_occupancy(self.arrays, ch["compartment"])["comp"]
+            n_ids = int(np.max(comp)) + 1
+            # the Bloch route reads a rate as 1/T, so "no decay in this pool" is an infinite time, not a zero
+            # one; a zero would make the rate infinite and return an identically dark signal
+            def per_pool(v, what):
+                out = self._by_pool(v, what)
+                if out is None:
+                    return [np.inf] * n_ids
+                return [np.inf if t is None or float(t) <= 0.0 else float(t) for t in out]
+            kw.update(comp_traj=comp, T2_per_comp=per_pool(T2v, "T2"), T1_per_comp=per_pool(T1v, "T1"))
+        if P["rho"] is not None and float(P["rho"]) != 0.0:
+            D_walk = self.diffusivity if P["D"] is None else P["D"]
+            if D_walk is None:
+                raise ValueError("rho needs the walk's diffusivity: the pack did not record it, pass D=")
+            if "blt_bridge_dst" not in self.arrays:
+                raise ValueError("surface relaxivity was requested but this pack carries no C2 channel")
+            meta = dict(ch.get("boundary_local_time") or {})
+            meta.setdefault("n_t", n_t)
+            meta.setdefault("K", int(np.asarray(self.arrays["blt_bridge_dst"]).shape[1]))
+            kw.update(dlog_boundary_unit=decode_boundary_bridge(self.arrays, meta),
+                      surface_relaxivity=float(P["rho"]), D=float(D_walk))
+        if P["B0"] is not None:
+            kw["extra_phase_per_step"] = GAMMA * dt * self._field_along_walk(P, pos)
+        out = (_rbj if jax else _rb)(pos, dt, P["G"], P["dt_wf"], rf, **kw)
+        S = np.asarray(out[0] if isinstance(out, tuple) else out)
+        return S if complex_signal else np.abs(S)
+
+    def _field_along_walk(self, P, pos):
+        """The susceptibility off-resonance each walker sees at each save, from whichever C3 route the pack
+        carries: the compressed path coefficients, or the stored field basis sampled along the walk."""
+        from .bank import susc_path_decode, susc_path_field
+        from ..fields.susceptibility_field import assemble_field, sample_grid
+        if not self.has_field:
+            raise ValueError("B0 was given but the pack carries no field tier (C3)")
+        if P["chi_iso"] is None:
+            raise ValueError("B0 was given without chi_iso: the pack carries the substrate's field basis, "
+                             "not a susceptibility; give chi_iso (and chi_aniso) at replay")
+        gm = P["ch"]["susceptibility_grid"]
+        pm = P["ch"].get("susceptibility_path")
+        if pm is not None:
+            b, _ = susc_path_decode(self.arrays, pm, n_w=P["n_w"])
+            return susc_path_field(b, P["b0_dir"], B0=float(P["B0"]), chi_iso=float(P["chi_iso"]),
+                                   chi_aniso=P["chi_aniso"], has_aniso=bool(gm.get("has_aniso")))
+        basis = {"iso_local": np.asarray(self.arrays["susc_grid_iso_local"], np.float64),
+                 "iso_P": np.asarray(self.arrays["susc_grid_iso_P"], np.float64),
+                 "aniso_G": (np.asarray(self.arrays["susc_grid_aniso_G"], np.float64)
+                             if "susc_grid_aniso_G" in self.arrays else None),
+                 "shape": tuple(gm["shape"]), "voxel_size": np.asarray(gm["voxel_size"], float)}
+        return sample_grid(assemble_field(basis, P["b0_dir"], B0=float(P["B0"]), chi_iso=float(P["chi_iso"]),
+                                          chi_aniso=P["chi_aniso"]),
+                           pos, np.asarray(gm["origin"], float), gm["voxel_size"], periodic=False)
+
+    def _prepare(self, waveform, *, tissue, T2, T1, rho, D, B0, b0_dir, chi_iso, chi_aniso, orientation, compartment,
+                 relaxation=True, surface=True):
         """Everything a replay resolves before it reads positions: the waveform's exact per-save weights (rotated
         into the substrate frame when a pose is given), the knobs (nominal, a Tissue, or explicit), the per-walker
         weights with the relaxation and surface terms applied, and the compartment selection."""
@@ -304,7 +388,7 @@ class ReplayPack:
             b0_dir = tuple(np.asarray(R, float).T @ np.asarray(b0_dir, float))
         Geff = effective_gradient(G, dt_wf, n_t, dt)                     # exact per-save weights (n_meas, n_t, 3)
         logw = np.zeros(n_w)
-        if T2 is not None or T1 is not None:
+        if (T2 is not None or T1 is not None) and relaxation:
             if not self.has_relaxation:
                 raise ValueError("T2 / T1 were given but the pack carries no compartment channel (C1); build it "
                                  "from a walk with tiers='all'")
@@ -319,7 +403,7 @@ class ReplayPack:
                 raise ValueError(f"the compartment channel uses pool ids up to {n_ids - 1}; T2 / T1 must be given "
                                  f"for every id (got {len(T2v)}{'' if T1v is None else f' / {len(T1v)}'})")
             logw = logw + relaxation_logweight(comp, T2v, T1v, dt, chi)
-        if rho is not None and float(rho) != 0.0:
+        if rho is not None and float(rho) != 0.0 and surface:
             D_walk = self.diffusivity if D is None else D
             if D_walk is None:
                 raise ValueError("rho needs the walk's diffusivity: the pack did not record it, pass D=")
@@ -329,7 +413,7 @@ class ReplayPack:
         norm = w.sum()
         ew, norm = self._select(compartment, ew, norm, w, ch, n_w)
         return dict(G=G, Geff=Geff, dt=dt, n_t=n_t, dt_wf=dt_wf, ch=ch, n_w=n_w, w=w, ew=ew, norm=norm, B0=B0,
-                    b0_dir=b0_dir, chi_iso=chi_iso, chi_aniso=chi_aniso)
+                    b0_dir=b0_dir, chi_iso=chi_iso, chi_aniso=chi_aniso, T2=T2, T1=T1, rho=rho, D=D)
 
     def pose_spectra(self, waveform, *, tissue="nominal", T2=None, T1=None, rho=None, D=None, B0=None,
                      b0_dir=(0.0, 0.0, 1.0), chi_iso=None, chi_aniso=0.0, refocus_time="auto", compartment=None,
