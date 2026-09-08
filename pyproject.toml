@@ -68,6 +68,11 @@ mesh = [
 # The cross-engine flagship example (examples/canonical_wm_parity_from_sim.py) additionally
 # needs the analytical engine dmipy-fit. It is an OPTIONAL example dependency only -- the
 # dmipy-sim package itself never imports dmipy-fit (the fit -> sim dependency is one-directional).
+# It is ALSO the oracle for the shared mathematics: the base forms of the orientation distributions
+# and of the harmonic rotation blocks live here (dmipy_sim.math.sh_analytical, replay.so3) because
+# everything else in the ecosystem can import sim, and while fit still carries its own copies,
+# tests/test_fit_oracle.py asserts the two agree to machine precision -- which is what makes
+# removing fit's copies a provable no-op. Those tests skip without it.
 examples = [
     "dmipy-fit>=2.0,<3",
 ]

@@ -351,43 +351,49 @@ def axis_coeffs(direction, lmax, nmax=None, frame_axis=(0.0, 0.0, 1.0)):
 
 
 def watson_coeffs(kappa, mu=(0.0, 0.0, 1.0), lmax=8, nmax=None, frame_axis=(0.0, 0.0, 1.0)):
-    """Watson dispersion about ``mu``: one concentration, axially symmetric, no preferred azimuth."""
-    m = np.asarray(mu, np.float64); m = m / np.linalg.norm(m)
-    f = np.asarray(frame_axis, np.float64); f = f / np.linalg.norm(f)
+    """Watson dispersion about ``mu``: one concentration, no preferred azimuth.
 
-    def rho(R):
-        d = np.einsum("nij,j->ni", R, f)
-        return np.exp(float(kappa) * (d @ m) ** 2)
-
-    return density_coeffs(rho, lmax, nmax, frame_axis)
+    The harmonic coefficients are exact (:func:`dmipy_sim.math.sh_analytical.watson_sh`), so this is
+    the analytic form mapped onto the group rather than a density sampled on a grid.
+    """
+    from ..math.sh_analytical import watson_sh
+    mu = np.asarray(mu, np.float64); mu = mu / np.linalg.norm(mu)
+    return axis_density_coeffs(watson_sh(mu, float(kappa), l_max=int(lmax)), lmax, nmax, frame_axis)
 
 
 def bingham_coeffs(frame, kappa, lmax=8, nmax=None, roll_kappa=0.0, frame_axis=(0.0, 0.0, 1.0)):
-    """Bingham dispersion: the axis fans **anisotropically**, with a concentration about each of two axes.
+    """Bingham dispersion: the axis fans **anisotropically**, with a concentration about each of two
+    axes of a declared frame.
 
-    ``frame`` is a rotation whose third column is the mean direction and whose first two columns are the axes
-    the two concentrations belong to. ``kappa = (k1, k2)`` are concentrations, larger being tighter, so a fan
-    spread in the first axis and narrow in the second is a small ``k1`` and a large ``k2``, and two equal values
-    are a Watson of that concentration. ``roll_kappa`` ties the substrate's own azimuth to the frame (a von
-    Mises about it); zero leaves the azimuth free, which is the right statement for a population whose members
-    are rolled arbitrarily.
+    ``frame`` is a rotation whose third column is the mean direction and whose first two columns are
+    the axes the two concentrations belong to. ``kappa = (k1, k2)`` are concentrations, larger being
+    tighter, so a fan spread in the first axis and narrow in the second is a small ``k1`` and a large
+    ``k2``, and two equal values are the Watson of that concentration.
+
+    With the azimuth free -- the usual case, and what an orientation distribution states -- this is
+    the analytic form of :func:`dmipy_sim.math.sh_analytical.bingham_sh`. ``roll_kappa`` ties the
+    substrate's own azimuth to the frame (a von Mises about it), which is a density on the group
+    rather than on the sphere and has no closed form here, so that case alone is projected by
+    quadrature.
     """
+    from ..math.sh_analytical import bingham_sh
     F = np.asarray(frame, np.float64).reshape(3, 3)
     k1, k2 = (float(kappa[0]), float(kappa[1])) if np.ndim(kappa) else (float(kappa), float(kappa))
+    if not roll_kappa:
+        return axis_density_coeffs(bingham_sh(F, (k1, k2), l_max=int(lmax)), lmax, nmax, frame_axis)
+
     f = np.asarray(frame_axis, np.float64); f = f / np.linalg.norm(f)
 
     def rho(R):
         d = np.einsum("nij,j->ni", R, f)                              # where the substrate axis points
         e = d @ F                                                     # in the frame's own coordinates
         p = np.exp(-k1 * e[:, 0] ** 2 - k2 * e[:, 1] ** 2)
-        if roll_kappa:
-            # the azimuth of the substrate about its own axis, measured against the frame's first axis
-            u = np.einsum("nij,j->ni", R, np.array([1.0, 0.0, 0.0]))
-            ref = F[:, 0] - np.outer(d @ F[:, 0], np.ones(3)) * d
-            nrm = np.linalg.norm(ref, axis=1, keepdims=True)
-            ref = np.where(nrm > 1e-9, ref / np.maximum(nrm, 1e-30), np.array([1.0, 0.0, 0.0]))
-            p = p * np.exp(float(roll_kappa) * (np.einsum("ni,ni->n", u, ref)) ** 2)
-        return p
+        # the azimuth of the substrate about its own axis, measured against the frame's first axis
+        u = np.einsum("nij,j->ni", R, np.array([1.0, 0.0, 0.0]))
+        ref = F[:, 0] - np.outer(d @ F[:, 0], np.ones(3)) * d
+        nrm = np.linalg.norm(ref, axis=1, keepdims=True)
+        ref = np.where(nrm > 1e-9, ref / np.maximum(nrm, 1e-30), np.array([1.0, 0.0, 0.0]))
+        return p * np.exp(float(roll_kappa) * (np.einsum("ni,ni->n", u, ref)) ** 2)
 
     return density_coeffs(rho, lmax, nmax, frame_axis)
 
