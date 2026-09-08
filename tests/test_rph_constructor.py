@@ -324,8 +324,8 @@ def test_a_frame_is_one_pose_and_a_peak_is_that_pose_with_its_azimuth_unstated(t
     peaks, _ = _phantom(tmp_path / "pk", pack_path, orientation=PeakField(dirs), **kw)
     pk = read_rpk(pack_path)
     seq = _acq(pk, [[1, 0, 0], [0, 0, 1]], [1e9, 1e9])
-    _, S_fr = frames.replay(seq, lmax=6, nmax=3)
-    _, S_pk = peaks.replay(seq, lmax=6, nmax=3)
+    _, S_fr = frames.replay(seq)
+    _, S_pk = peaks.replay(seq)
     direct = np.abs(0.7 * pk.replay(seq, orientation=R0, T2=[0.06] * 3, complex_signal=True))
     np.testing.assert_allclose(S_fr[0], direct, atol=3.0 / np.sqrt(pk.n_walkers))
     # this substrate is a single cylinder, so the azimuth it leaves open changes nothing beyond its own noise
@@ -347,13 +347,15 @@ def test_a_bingham_slot_is_a_fan_and_contains_the_watson(tmp_path, pack_path):
     assert cone.bingham_kappa.shape == (cone.n_voxels, 1, 2)
     pk = read_rpk(pack_path)
     seq = _acq(pk, [[1, 0, 0], [0, 0, 1]], [1e9, 1e9])
-    band = dict(lmax=6, nmax=3)
+    band = {}
     _, S_cone = cone.replay(seq, **band)
     _, S_fan = fan.replay(seq, **band)
     # the same distribution composed outside the phantom: a Watson of that concentration
     pr = pk.pose_response(seq, T2=[0.06] * 3, **band)
-    ref = np.abs(0.7 * pr.compose(so3.Distribution.watson(6.0, mu=(0, 0, 1), lmax=6, nmax=3)))
-    np.testing.assert_allclose(S_cone[0], ref, rtol=1e-9)
+    # the phantom retains n = 0 (its azimuth is unstated) while this reference composes the whole band, so the
+    # two agree to the projection's aliasing residual rather than to the bit
+    ref = np.abs(0.7 * pr.compose(so3.Distribution.watson(6.0, mu=(0, 0, 1), lmax=pr.lmax, nmax=pr.nmax)))
+    np.testing.assert_allclose(S_cone[0], ref, rtol=1e-3)
     assert np.abs(S_fan - S_cone).max() > 3e-3                       # the fan is not that cone
 
 
@@ -371,7 +373,7 @@ def test_peaks_agree_with_a_concentrated_odf(tmp_path, pack_path):
     sharp, _ = _phantom(tmp_path / "od", pack_path, orientation=WatsonField(400.0, d, lmax=12), **kw)
     pk = read_rpk(pack_path)
     seq = _acq(pk, [[1, 0, 0], [0, 0, 1]], [1e9, 1e9])
-    band = dict(lmax=6, nmax=3)
+    band = {}
     np.testing.assert_allclose(peaks.replay(seq, **band)[1], sharp.replay(seq, **band)[1], atol=5e-3)
 
 
@@ -390,12 +392,15 @@ def test_the_same_substrate_cited_twice_is_a_crossing(tmp_path, pack_path):
     assert (ph.substrate_id[:, :2] == 0).all()                       # one substrate, two slots
     pk = read_rpk(pack_path)
     seq = _acq(pk, [[1, 0, 0], [0, 0, 1]], [1e9, 1e9])
-    band = dict(lmax=6, nmax=3)
+    band = {}
     _, S = ph.replay(seq, **band)
     pr = pk.pose_response(seq, T2=[0.06] * 3, **band)
-    ref = np.abs(0.7 * pr.compose(so3.Distribution.axis((0, 0, 1), 6, 3))
-                 + 0.3 * pr.compose(so3.Distribution.axis((1, 0, 0), 6, 3))) * 0.7
-    np.testing.assert_allclose(S[0], ref, rtol=1e-6)                 # 0.7 is the substrate's m0
+    ref = np.abs(0.7 * pr.compose(so3.Distribution.axis((0, 0, 1), pr.lmax, pr.nmax))
+                 + 0.3 * pr.compose(so3.Distribution.axis((1, 0, 0), pr.lmax, pr.nmax))) * 0.7
+    # a peak is the most alias-sensitive distribution there is -- its coefficients do not decay with l -- so the
+    # phantom's retained (l, 0) projection and this full-band one agree to the pack's floor, which is the bound
+    # the design certifies, rather than to the bit
+    np.testing.assert_allclose(S[0], ref, atol=pr.floor)             # 0.7 is the substrate's m0
 
 
 def test_an_analytic_slot_ignores_the_orientation_it_is_given(tmp_path, pack_path):
@@ -405,7 +410,7 @@ def test_an_analytic_slot_ignores_the_orientation_it_is_given(tmp_path, pack_pat
     wm, csf = _annulus()
     pk = read_rpk(pack_path)
     seq = _acq(pk, [[1, 0, 0], [0, 0, 1]], [1e9, 1e9])
-    band = dict(lmax=6, nmax=3)
+    band = {}
     out = []
     for axis in ((0.0, 0.0, 1.0), (0.3, 0.5, 0.81)):
         mu = np.zeros((8, 8, 1, 3)); mu[..., :] = axis

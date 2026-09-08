@@ -739,7 +739,7 @@ class ReplayPhantom:
 
     # ---- replay
     def replay(self, waveform, *, B0=None, b0_dir=(0.0, 0.0, 1.0), tissue="nominal", packs=None,
-               lmax=8, nmax=4, n_check=256, complex_signal=False, T2=None, T1=None, rho=None, D=None,
+               n_check=256, complex_signal=False, T2=None, T1=None, rho=None, D=None,
                chi_iso=None, chi_aniso=0.0, refocus_time="auto"):
         """Replay the whole phantom: ``(voxel_index, S)`` with ``S`` of shape ``(n_voxels, n_measurements)``.
 
@@ -753,19 +753,23 @@ class ReplayPhantom:
         over them, and anything neither names takes the pack's nominal value. ``packs`` supplies the packs of
         substrates cited by ``uri`` as ``{id or index: path or ReplayPack}``.
 
-        ``lmax`` truncates the pose structure and ``nmax`` the substrate's own azimuthal structure; a pack whose
-        response the truncation cannot hold refuses rather than composing a plausible wrong number.
+        No band is passed. Each pack projects its response at the band that response needs (its phase
+        amplitude, :meth:`ReplayPack.pose_response`), and the composition retains only what this phantom's
+        orientations can reach: an ODF of order ``L`` reaches ``l <= L`` and, saying nothing about the
+        substrate's own azimuth, only ``n = 0``. At order 8 that is 45 coefficients per measurement rather than
+        the 969 an unrestricted expansion carries.
 
         Declared macroscopic layers (RPH.md 5.1) are applied per voxel, and one that this acquisition cannot
         carry raises rather than being dropped.
         """
-        pose, analytic, m0, ref = self._responses(waveform, B0, b0_dir, tissue, packs, lmax, nmax, n_check,
-                                            dict(T2=T2, T1=T1, rho=rho, D=D, chi_iso=chi_iso, chi_aniso=chi_aniso,
-                                                 refocus_time=refocus_time))
+        knobs = dict(T2=T2, T1=T1, rho=rho, D=D, chi_iso=chi_iso, chi_aniso=chi_aniso, refocus_time=refocus_time)
+        pose, analytic, m0, ref = self._responses(waveform, B0, b0_dir, tissue, packs, n_check, knobs,
+                                                  keep=self.retained_band())
         sid, frac = self.substrate_id, self.geometric_fraction
         n_meas = next(iter(pose.values())).n_meas if pose else len(np.atleast_1d(next(iter(analytic.values()))))
         S = np.zeros((self.n_voxels, n_meas), np.complex128)
-        vp, F = self.slot_coefficients(lmax, nmax)
+        keep_l, keep_n = self._resolve_band(pose)
+        vp, F = self.slot_coefficients(keep_l, keep_n)
         ids = sid[vp[:, 0], vp[:, 1]].astype(int)
         weight = frac[vp[:, 0], vp[:, 1]].astype(np.float64) * m0[vp[:, 0], ids]
         for i in set(ids.tolist()):
@@ -773,11 +777,11 @@ class ReplayPhantom:
             if i in analytic:                                          # a closed form has no pose
                 np.add.at(S, vp[m, 0], weight[m][:, None] * np.atleast_1d(analytic[i])[None, :])
             elif i in pose:                                            # one product for every slot citing it
-                np.add.at(S, vp[m, 0], weight[m][:, None] * (F[m] @ pose[i].coeffs.T))
+                np.add.at(S, vp[m, 0], weight[m][:, None] * (F[m] @ pose[i].retained(keep_l, keep_n).T))
         S = self._apply_layers(S, waveform, refocus_time, ref)
         return self.voxel_index, (S if complex_signal else np.abs(S))
 
-    def slot_coefficients(self, lmax=8, nmax=4):
+    def slot_coefficients(self, lmax, nmax):
         """Every slot's orientation distribution as SO(3) coefficients: ``(n_live, n_features)``, with the
         ``(voxel, slot)`` index of each row.
 
@@ -833,7 +837,40 @@ class ReplayPhantom:
             raise ValueError(f"unknown orientation mode {mode!r}")
         return vp, F
 
-    def _responses(self, waveform, B0, b0_dir, tissue, packs, lmax, nmax, n_check, knobs):
+    def _resolve_band(self, pose):
+        """The band to retain, once the packs have said what they projected at.
+
+        What this phantom's orientations can reach, capped by what its packs carry. The cap is safe rather than
+        lossy: a pack's projection band was chosen so that its response is reproduced to within the pack's own
+        Monte-Carlo floor, so the response has no content above it to multiply, and an orientation distribution
+        stated at a higher order contributes nothing there.
+        """
+        want_l, want_n = self.retained_band()
+        if not pose:
+            return 0, 0
+        have_l = min(p.lmax for p in pose.values())
+        have_n = min(p.nmax for p in pose.values())
+        return (have_l if want_l is None else min(want_l, have_l)), \
+               (have_n if want_n is None else min(want_n, have_n))
+
+    def retained_band(self):
+        """The band a composition of this phantom's orientations can reach: ``(lmax, nmax)``.
+
+        Everything above it is annihilated by the inner product, so retaining it would be arithmetic on numbers
+        that cannot matter (RPH.md 4). An ODF states an order and no azimuth; a peak states a direction and no
+        azimuth, so it is not band-limited in ``l`` and takes whatever the response was projected at; a frame
+        states a whole rotation and reaches everything; a Bingham with a free azimuth keeps ``n = 0``.
+        """
+        mode = self.mode
+        if mode == "odf_sh":
+            return int(self.lmax), 0
+        if mode == "peaks":
+            return None, 0                                  # l: whatever the response carries; n: only 0
+        if mode == "bingham":
+            return None, (None if self.roll_kappa is not None and np.any(self.roll_kappa) else 0)
+        return None, None                                   # frames: a point mass reaches every coefficient
+
+    def _responses(self, waveform, B0, b0_dir, tissue, packs, n_check, knobs, keep=None):
         """One response per substrate: a :class:`PoseResponse` for a pack, a closed form for an analytic
         substrate, nothing for an inert one. Plus the per-voxel ``m0`` with the ``m0_scale`` layer applied."""
         from .replay import ReplayPack, read_rpk
@@ -859,8 +896,8 @@ class ReplayPhantom:
             kw = dict(knobs)
             kw.update({k: v for k, v in (sub.get("tissue") or {}).items()})
             ref = pk
-            pose[i] = pk.pose_response(waveform, tissue=tissue, B0=B0, b0_dir=b0_dir, lmax=lmax, nmax=nmax,
-                                       n_check=n_check, **kw)
+            pose[i] = pk.pose_response(waveform, tissue=tissue, B0=B0, b0_dir=b0_dir, n_check=n_check,
+                                       keep=keep, **kw)
         if not pose and not analytic:
             raise ValueError("the phantom cites no signal-bearing substrate")
         m0 = np.broadcast_to(self.m0, (self.n_voxels, len(self.substrates))).astype(np.float64)
