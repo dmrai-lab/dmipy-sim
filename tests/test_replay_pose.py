@@ -134,6 +134,25 @@ def test_the_azimuthal_energy_measures_how_symmetric_a_substrate_is(hollow, elli
                                    atol=3.0 * asym.floor)
 
 
+def test_the_band_accounts_for_the_susceptibility_phase(hollow):
+    """The field is half the pose dependence, so it has to be half the band estimate. A walker's field phase at
+    pose ``R`` is ``chi B0 b_s^T P_w b_s`` with the field direction carried into the substrate frame, so over
+    poses it sweeps the spread of that tensor's eigenvalues -- linear in ``chi B0``, as the phase is. Measured
+    on this myelin field: 0.03 rad of swing at the catalogue's susceptibility and 2.3 rad at forty times it,
+    where the phase amplitude the band starts from moves 4.59 -> 5.10 rad and the band with it.
+    """
+    pk, seq = hollow
+    KW0 = dict(KW, B0=3.0)
+    weak = pk.pose_response(seq, **BAND, **KW0)
+    strong = pk.pose_response(seq, **BAND, **dict(KW0, chi_iso=-4e-6, chi_aniso=0.0))
+    stronger = pk.pose_response(seq, **BAND, **dict(KW0, chi_iso=-4e-6, chi_aniso=0.0, B0=7.0))
+    assert strong.phase_amplitude > weak.phase_amplitude + 0.15       # the field is counted at all
+    assert stronger.phase_amplitude > strong.phase_amplitude + 0.15   # and grows with B0, as the phase does
+    assert stronger.lmax > weak.lmax                                  # so the projection follows it
+    for pr in (weak, strong, stronger):
+        assert pr.misfit.max() <= pr.floor                            # each holds, which is the point of growing
+
+
 def test_an_axis_density_composes_like_averaging_explicit_poses(hollow):
     """The composition against the definition: an ODF states directions and says nothing about the substrate's
     azimuth, so its signal is the ODF-weighted, azimuth-averaged mean of the pack replayed at those poses."""
