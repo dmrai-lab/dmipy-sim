@@ -1,6 +1,6 @@
-"""`FOD`: an orientation distribution with its provenance, the object `ReplayPack.replay(fod=)` takes.
+"""`FOD`: a distribution over fibre directions with its provenance, read as an axis density on SO(3).
 
-The Gaunt composition (:mod:`dmipy_sim.replay.sh_convolution`) rests on the spherical-harmonic addition theorem,
+The composition of a response over an orientation distribution (:mod:`dmipy_sim.replay.so3`) rests on the
 which holds only for an **orthonormal** basis. Several conventions in circulation are not (DIPY's
 ``tournier07`` with ``legacy=True``, older MRtrix, whose ``m != 0`` functions have norm ``1/sqrt(2)``), one
 orders the coefficients differently (``descoteaux07``), and a CSD output is not a probability density (its
@@ -10,7 +10,7 @@ its basis named (:meth:`FOD.from_sh`, converted through DIPY as the oracle for t
 required basis (:meth:`FOD.native`, checked), or from a distribution this package knows (:meth:`FOD.watson`,
 :meth:`FOD.isotropic`), and is normalised to unit integral.
 
-The required basis is :func:`dmipy_sim.replay.gaunt.real_sh`: orthonormal real spherical harmonics, even
+The required basis is :func:`dmipy_sim.replay.so3.real_sh`: orthonormal real spherical harmonics, even
 orders, compact ``m = -l..l`` blocks -- DIPY's ``real_sh_tournier(..., legacy=False)`` (replay-pack-spec
 RPH.md section 4.1).
 """
@@ -101,7 +101,7 @@ class FOD:
     # ---- queries -----------------------------------------------------------------------------------------
     def evaluate(self, dirs):
         """The density at unit directions ``dirs`` (n, 3)."""
-        from .gaunt import real_sh
+        from .so3 import real_sh
         return real_sh(self.lmax, np.asarray(dirs, np.float64).reshape(-1, 3)) @ self.coeffs
 
     @property

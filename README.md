@@ -110,10 +110,15 @@ The spec the pack embeds carries the substrate's nominal values, so a published 
 with no second file. `pack.replay(seq, tissue=False)` is the bare diffusion signal; `T2=` per pool id or
 `{"intra": 0.05, ...}` by pool name, `rho=`, `B0=`, `chi_iso=`, `chi_aniso=` override one value each;
 `tissue=Tissue(...)` supplies a whole set; `compartment=1` restricts the mean to one pool. The pose is a knob
-too: `orientation=` (a rotation, or the lab direction the substrate axis points along) replays the same walk
-at another pose, and `fod=FOD.watson(kappa, mu)` / `FOD.from_sh(coeffs, basis="tournier07")` composes a
-distribution of poses through the two-axis Gaunt route, in which the gradient and the field move together (a
-bare coefficient array is refused: the basis must be named). A tier that is requested but not carried
+too: `orientation=` takes either **one pose** — a rotation, or the lab direction the substrate axis points
+along, exact by pose covariance since the gradient and the field rotate together — or **a distribution of
+poses**, which is composed on SO(3). A pose is a rotation and not an axis, so nothing assumes the substrate is
+axially symmetric: `pack.pose_response(seq)` expands the response in the real Wigner basis, and
+`Distribution.watson(...)` / `.bingham(frame, (k1, k2))` / `.axis(direction)` / `FOD.from_sh(coeffs,
+basis="tournier07")` are that expansion's counterpart, so anisotropic dispersion — a fan with two dispersion
+parameters — composes as easily as a cone. An orientation distribution over directions alone says nothing about
+the substrate's own azimuth, and that azimuth is then integrated away exactly rather than sampled. A bare
+coefficient array is refused: the basis must be named. A tier that is requested but not carried
 raises; nothing is silently skipped.
 
 ## Substrates

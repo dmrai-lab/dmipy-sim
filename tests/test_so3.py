@@ -41,18 +41,19 @@ def test_the_basis_is_orthonormal_under_the_quadrature():
 
 
 def test_a_band_limited_response_is_recovered_exactly():
-    """A function in the space is fitted with no residual, and evaluated back at rotations it was never
-    sampled at: the fit is a projection, not an interpolation."""
+    """A function in the space is recovered by the quadrature projection with no solve, and reproduced at
+    rotations off the grid: the projection is exact, not an interpolation."""
     lmax, nmax = 4, 2
     truth = np.random.default_rng(0).normal(size=so3.n_so3_coeffs(lmax, nmax))
-    R = so3.haar_rotations(4000, seed=3)
-    y = so3.so3_design(lmax, R, nmax) @ truth
-    c, resid = so3.fit(so3.so3_design(lmax, R, nmax), y)
-    assert resid < 1e-9
-    np.testing.assert_allclose(c, truth, atol=1e-8)
+    R, w, A = so3.quadrature_design(lmax, nmax)
+    c = so3.project(A, w, A @ truth)
+    np.testing.assert_allclose(c, truth, atol=1e-10)
     Q = so3.haar_rotations(20, seed=4)
     np.testing.assert_allclose(so3.evaluate(c, lmax, Q, nmax),
                                so3.so3_design(lmax, Q, nmax) @ truth, atol=1e-9)
+    # a whole acquisition projects in one product, real or complex
+    Y = A @ np.random.default_rng(1).normal(size=(truth.size, 3)) * (1 + 2j)
+    np.testing.assert_allclose(so3.project(A, w, Y).shape, (truth.size, 3))
 
 
 def test_one_pose_composes_to_the_response_at_that_pose():
@@ -82,7 +83,7 @@ def test_a_distribution_over_directions_has_no_azimuthal_coefficients():
     c = np.random.default_rng(2).normal(size=so3.n_so3_coeffs(lmax_r, nmax))
     fod = FOD.watson(2.0, mu=(0.3, 0.5, 0.81), lmax=6)               # broad enough to be positive in band
     f_r = so3.axis_density_coeffs(fod.coeffs, lmax_r, nmax)
-    from dmipy_sim.replay.gaunt import sphere_quadrature
+    from dmipy_sim.replay.so3 import sphere_quadrature
     dirs, w = sphere_quadrature(24, 48)
     rho = fod.evaluate(dirs)
     assert rho.min() > 0                                             # no clipping, so the two sides agree exactly

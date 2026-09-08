@@ -104,7 +104,7 @@ _SLOW_MC_MODULES = {
     "test_packed_cylinders", "test_packed_spheres",
     "test_packed_cylinders_permeability", "test_ellipsoid_permeability",
     "test_sphere_permeability", "test_permeability_crossing", "test_bloch_permeation",
-    "test_compartment_tagging", "test_t2", "test_sh_convolution",
+    "test_compartment_tagging", "test_t2",
     "test_karger_mc_parity", "test_t2_walker_parity",
     "test_mesh_mc",
     # Six mesh MC walks (three grid resolutions x two assertions). Collision sub-stepping makes each

@@ -3,7 +3,7 @@ import numpy as np
 import pytest
 
 from dmipy_sim.replay.fod import FOD
-from dmipy_sim.replay.gaunt import n_sh_coeffs
+from dmipy_sim.replay.so3 import n_sh_coeffs
 from dmipy_sim.replay.phantom import (Grid, ODFField, PeakField, WatsonField, analytic_substrate, build_rph,
                                       inert_substrate, pack_substrate, read_rph)
 
@@ -208,8 +208,9 @@ def test_the_phantom_replays_every_voxel_from_one_pack_replay(tmp_path, pack_pat
     # a pure tissue voxel is the pack composed against that voxel's ODF, nothing else
     wm = int(np.argmax(f_wm))
     from dmipy_sim.replay.fod import FOD
-    ps = pk.pose_spectra(seq, T2=[0.06] * 3)
-    ref = ps.compose(FOD.native(ph.odf_sh[wm, 0].astype(float)))
+    from dmipy_sim.replay.so3 import Distribution
+    pr = pk.pose_response(seq, T2=[0.06] * 3)
+    ref = pr.compose(Distribution.axis_density(FOD.native(ph.odf_sh[wm, 0].astype(float))))
     np.testing.assert_allclose(S[wm], np.abs(f_wm[wm] * 0.7 * ref + f_csf[wm] * np.exp(-seq.bvalues * 3e-9)), rtol=1e-6)
     vol = ph.to_volume(S[:, 1])
     assert vol.shape == (8, 8, 1) and np.isnan(vol).any() and np.nanmax(vol) > 0

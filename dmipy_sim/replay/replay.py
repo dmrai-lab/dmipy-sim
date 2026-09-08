@@ -32,7 +32,7 @@ import numpy as np
 
 from ..constants import GAMMA
 
-__all__ = ["ReplayPack", "PoseSpectra", "read_rpk", "write_rpk",
+__all__ = ["ReplayPack", "PoseResponse", "read_rpk", "write_rpk",
            "compile_scheme", "replay_signal", "replay_signal_jax", "surface_logweight"]
 
 
@@ -58,42 +58,63 @@ def read_rpk(path):
     return ReplayPack(arrays, meta, source=str(path))
 
 
-class PoseSpectra:
-    """A pack's response over every pose of its substrate for one acquisition: per measurement the two-axis spectrum
-    ``Lambda`` (:func:`sh_convolution.coupled_spectrum_at`), the gradient direction and the shared B0 direction, all
-    in the scanner frame. ``compose(fod)`` gives the signal of a distribution of poses; ``at(direction)`` the signal
-    of one pose read from the same spectra (a peak, RPH.md 4)."""
+class PoseResponse:
+    """A pack's response over every pose of its substrate, for one acquisition, as SO(3) coefficients.
 
-    def __init__(self, lams, gdir, b0_dir, l_g, l_b, misfit, n_roll=1):
-        self.lams, self.gdir, self.b0_dir, self.l_g, self.l_b, self.misfit = lams, np.asarray(gdir, float), \
-            np.asarray(b0_dir, float), int(l_g), int(l_b), float(misfit)
-        self.n_roll = int(n_roll)                 # rolls about the substrate axis the response was averaged over
+    The pose of a substrate is a rotation, so the response of one measurement is a function on SO(3), and this
+    holds its expansion in the real Wigner basis (:mod:`dmipy_sim.replay.so3`): ``coeffs`` is ``(n_meas,
+    n_features)``. Composing a voxel is then the Peter-Weyl inner product with that voxel's orientation
+    distribution -- ``compose(distribution)`` -- and reading one pose is ``at(R)``. Nothing here assumes the
+    substrate is axially symmetric; how far it is from symmetric is reported, as the coefficient energy at
+    ``|n| > 0`` relative to the whole.
+
+    ``misfit`` is what the truncation could not represent, per measurement, in signal units: the honest error
+    of the composition, to be read against the pack's own Monte-Carlo floor.
+    """
+
+    def __init__(self, coeffs, lmax, nmax, misfit, floor, n_samples):
+        self.coeffs = np.asarray(coeffs)
+        self.lmax, self.nmax = int(lmax), int(nmax)
+        self.misfit = np.asarray(misfit, float)
+        self.floor, self.n_samples = float(floor), int(n_samples)
 
     @property
     def n_meas(self):
-        return len(self.lams)
+        return self.coeffs.shape[0]
 
-    def compose(self, fod):
-        """``(n_meas,)`` complex: the pose-averaged signal for a :class:`~dmipy_sim.replay.fod.FOD`."""
-        from .sh_convolution import apply_odf_coupled
-        out = np.empty(self.n_meas, np.complex128)
-        for i, lam in enumerate(self.lams):
-            out[i] = apply_odf_coupled(lam, fod.coeffs, self.gdir[i], self.b0_dir, l_fod=fod.lmax, l_g=self.l_g, l_b=self.l_b)
-        return out
+    @property
+    def asymmetry(self):
+        """The share of the response's energy that depends on the substrate's own azimuth.
 
-    def at(self, direction):
-        """``(n_meas,)`` complex: the response at one pose (the substrate axis along ``direction``), evaluated from
-        the spectra -- the zero-dispersion limit a peak stands for."""
-        from scipy.special import eval_legendre
-        n = np.asarray(direction, float); n = n / np.linalg.norm(n)
-        out = np.empty(self.n_meas, np.complex128)
-        for i, lam in enumerate(self.lams):
-            u, v = float(n @ self.gdir[i]), float(n @ self.b0_dir)
-            kv = np.cross(self.gdir[i], self.b0_dir); s_k = np.linalg.norm(kv)
-            wt = float(n @ (kv / s_k)) if s_k > 1e-12 else 0.0
-            out[i] = sum(c * eval_legendre(l1, u) * eval_legendre(l2, v) * (wt ** p)
-                         for (l1, l2, p), c in zip(lam["terms"], lam["coeffs"]))
-        return out
+        Zero for an axially symmetric substrate, and the reason a pose has to be a rotation rather than an axis
+        when it is not: that share is exactly what an axis-only representation cannot carry.
+        """
+        from . import so3
+        num = den = 0.0
+        for c in self.coeffs:
+            per_l, per_n = so3.energy(c, self.lmax, self.nmax)
+            num += float(per_n[1:].sum())
+            den += float(per_n.sum())
+        return num / max(den, 1e-300)
+
+    def compose(self, distribution):
+        """``(n_meas,)`` complex: the signal of a voxel holding this distribution of poses."""
+        from .so3 import Distribution
+        if not isinstance(distribution, Distribution):
+            raise TypeError("compose takes a dmipy_sim.replay.so3.Distribution (Distribution.pose / "
+                            "axis_density / watson / bingham / uniform), so that what the coefficients mean is "
+                            "carried with them")
+        if (distribution.lmax, distribution.nmax) != (self.lmax, self.nmax):
+            raise ValueError(f"the distribution is expanded at (lmax, nmax) = ({distribution.lmax}, "
+                             f"{distribution.nmax}) and the response at ({self.lmax}, {self.nmax}); they are "
+                             f"coefficients of one basis and have to be the same one")
+        return self.coeffs @ distribution.coeffs
+
+    def at(self, R):
+        """``(n_meas,)`` complex: the response at one pose, evaluated from the expansion."""
+        from .so3 import so3_design
+        A = so3_design(self.lmax, np.asarray(R, np.float64).reshape(1, 3, 3), self.nmax)
+        return self.coeffs @ A[0]
 
 
 class ReplayPack:
@@ -173,7 +194,7 @@ class ReplayPack:
 
     def replay(self, waveform, *, tissue="nominal", T2=None, T1=None, rho=None, D=None, B0=None,
                b0_dir=(0.0, 0.0, 1.0), chi_iso=None, chi_aniso=0.0, refocus_time="auto", compartment=None,
-               orientation=None, fod=None, complex_signal=False):
+               orientation=None, complex_signal=False):
         """The signal of ``waveform`` on this pack, with every tier the pack carries and the request asks for.
 
         ``waveform`` is a :class:`~dmipy_sim.acquisition.waveforms.Waveform` / :class:`~dmipy_sim.sequences.Sequence`
@@ -192,14 +213,14 @@ class ReplayPack:
           pulse at it; a pack without a spec, or a spec that declares no values, replays the gradient alone.
           ``False`` is the bare diffusion signal. A :class:`~dmipy_sim.spec.Tissue` supplies the values
           yourself. In every case an explicit keyword wins.
-        * **orientation**: the substrate's pose in the scanner -- a 3x3 rotation (substrate frame -> lab) or the
-          lab direction its axis (``spec.frame.axis``, default z) points along. Exact by pose covariance: the
-          gradient and B0 are rotated into the substrate frame together.
-        * **fod**: a :class:`~dmipy_sim.replay.fod.FOD` -- the signal of a distribution of poses of this
-          substrate, composed through the two-axis Gaunt route (:mod:`sh_convolution`): the gradient and
-          field axes move together, so the composition is a spherical convolution only when there is no
-          field. Needs one gradient direction per measurement; with a field, the pack's path channel. A bare
-          coefficient array is refused: the basis must be declared (``FOD.from_sh``, ``FOD.native``).
+        * **orientation**: the substrate's pose. **One pose** -- a 3x3 rotation (substrate frame -> lab), or the
+          lab direction its axis (``spec.frame.axis``, default z) points along -- is exact by pose covariance:
+          the gradient and B0 are rotated into the substrate frame together, and no expansion is involved.
+          **A distribution of poses** -- a :class:`~dmipy_sim.replay.so3.Distribution` (one pose, an axis
+          density, a Watson cone, a Bingham fan) or an :class:`~dmipy_sim.replay.fod.FOD`, which is read as an
+          axis density with no statement about the substrate's own azimuth -- goes through
+          :meth:`pose_response` and is composed on SO(3). An FOD's basis must be declared (``FOD.from_sh``,
+          ``FOD.native``); a bare coefficient array is refused, since the convention cannot be inferred.
         * **surface relaxivity** (C2): ``rho`` (m/s) with the walk's diffusivity ``D`` (the pack's
           recorded value unless given); requires the boundary local time.
         * **field** (C3): ``B0`` (T) with ``b0_dir`` and the susceptibility ``chi_iso`` (required) and
@@ -212,18 +233,14 @@ class ReplayPack:
         """
         from .compression import read_position_coeffs
         from ._replay_kernel import gradient_phase, se_gate
-        if orientation is not None and fod is not None:
-            raise ValueError("orientation= and fod= exclude each other: one pose, or a distribution of poses")
+        dist = _as_distribution(orientation)
+        if dist is not None:
+            S = self.pose_response(waveform, tissue=tissue, T2=T2, T1=T1, rho=rho, D=D, B0=B0, b0_dir=b0_dir,
+                                    chi_iso=chi_iso, chi_aniso=chi_aniso, refocus_time=refocus_time,
+                                    compartment=compartment, lmax=dist.lmax, nmax=dist.nmax).compose(dist)
+            return S if complex_signal else np.abs(S)
         P = self._prepare(waveform, tissue=tissue, T2=T2, T1=T1, rho=rho, D=D, B0=B0, b0_dir=b0_dir, chi_iso=chi_iso,
                           chi_aniso=chi_aniso, orientation=orientation, compartment=compartment)
-        if fod is not None:
-            from .fod import FOD
-            if not isinstance(fod, FOD):
-                raise TypeError("fod must be a dmipy_sim.replay.fod.FOD -- a bare coefficient array has no basis, and the "
-                                "Gaunt composition is silently wrong in a non-orthonormal one; use FOD.from_sh(coeffs, "
-                                "basis=...) / FOD.native(coeffs) / FOD.watson(...)")
-            S = self._pose_spectra(P, refocus_time, waveform).compose(fod)
-            return S if complex_signal else np.abs(S)
         n_w, dt, n_t, Geff = P["n_w"], P["dt"], P["n_t"], P["Geff"]
         if P["B0"] is None:
             C = read_position_coeffs(self.arrays, dtype=np.float64)
@@ -415,16 +432,24 @@ class ReplayPack:
         return dict(G=G, Geff=Geff, dt=dt, n_t=n_t, dt_wf=dt_wf, ch=ch, n_w=n_w, w=w, ew=ew, norm=norm, B0=B0,
                     b0_dir=b0_dir, chi_iso=chi_iso, chi_aniso=chi_aniso, T2=T2, T1=T1, rho=rho, D=D)
 
-    def pose_spectra(self, waveform, *, tissue="nominal", T2=None, T1=None, rho=None, D=None, B0=None,
-                     b0_dir=(0.0, 0.0, 1.0), chi_iso=None, chi_aniso=0.0, refocus_time="auto", compartment=None,
-                     l_g=8, l_b=6, n_theta=32, n_phi=64, n_roll_max=8):
-        """The pack's response over every pose of its substrate, one two-axis spectrum per measurement
-        (:class:`PoseSpectra`): what a replay phantom composes against each voxel's orientation. Same knobs as
-        :meth:`replay`; the acquisition is in the scanner frame, the substrate is rotated under it."""
+    def pose_response(self, waveform, *, tissue="nominal", T2=None, T1=None, rho=None, D=None, B0=None,
+                      b0_dir=(0.0, 0.0, 1.0), chi_iso=None, chi_aniso=0.0, refocus_time="auto", compartment=None,
+                      lmax=8, nmax=4, n_check=256, seed=0):
+        """The pack's response over every pose of its substrate, as SO(3) coefficients (:class:`PoseResponse`).
+
+        This is what a replay phantom composes against each voxel: one expansion per measurement, then an inner
+        product per voxel. The acquisition is in the scanner frame and the substrate rotates under it, so a
+        voxel's orientation distribution is a distribution of those rotations.
+
+        The response is sampled once over the group and projected onto the basis truncated at ``lmax`` in the
+        pose and ``nmax`` in the substrate's own azimuth -- nothing is averaged away. ``nmax = 0`` is the axially
+        symmetric case and is a choice the caller makes knowingly; :attr:`PoseResponse.asymmetry` says how much
+        of the response it would discard. ``n_check`` rotations off the projection's grid measure the misfit,
+        and a band that cannot hold the response raises.
+        """
         P = self._prepare(waveform, tissue=tissue, T2=T2, T1=T1, rho=rho, D=D, B0=B0, b0_dir=b0_dir, chi_iso=chi_iso,
                           chi_aniso=chi_aniso, orientation=None, compartment=compartment)
-        return self._pose_spectra(P, refocus_time, waveform, l_g=l_g, l_b=l_b, n_theta=n_theta, n_phi=n_phi,
-                                  n_roll_max=n_roll_max)
+        return self._pose_coeffs(P, refocus_time, waveform, lmax=lmax, nmax=nmax, n_check=n_check, seed=seed)
 
     def _select(self, compartment, ew, norm, w, ch, n_w):
         """Restrict the ensemble mean to ``compartment`` (a pool id or a walker mask)."""
@@ -453,66 +478,56 @@ class ReplayPack:
 
     def _rotation_of(self, orientation):
         """A 3x3 rotation (substrate frame -> lab), or the lab direction the substrate axis points along."""
-        from .sh_convolution import _rotations_from_axis
+        from .so3 import rotation_of
         o = np.asarray(orientation, float)
         if o.shape == (3, 3):
             if not np.allclose(o @ o.T, np.eye(3), atol=1e-6) or np.linalg.det(o) < 0:
                 raise ValueError("orientation must be a proper rotation matrix (R R^T = I, det +1)")
             return o
         if o.shape == (3,):
-            return _rotations_from_axis(self.frame_axis, o[None, :])[0]
-        raise ValueError("orientation is a (3, 3) rotation or a (3,) axis direction")
+            return rotation_of(o, self.frame_axis)
+        raise ValueError("orientation is a (3, 3) rotation, a (3,) axis direction, or a distribution of poses "
+                         "(dmipy_sim.replay.so3.Distribution, or an FOD read as an axis density)")
 
-    def _pose_spectra(self, P, refocus_time, waveform, l_g=8, l_b=6, n_theta=32, n_phi=64, chunk=256,
-                      n_roll_max=8):
-        """Per measurement: the pack's response over a sphere of poses and its two-axis spectrum ``Lambda``.
+    def _pose_coeffs(self, P, refocus_time, waveform, lmax=8, nmax=4, n_check=256, seed=0, chunk=256):
+        """Sample the response over rotations, project it onto the SO(3) basis, and check it off the grid.
 
-        A pose is an **axis**, not a full rotation: a phantom slot gives the direction the substrate points
-        along and says nothing about the substrate's roll about it, so the response is averaged over that roll.
-        For an axially symmetric substrate one roll is the whole answer and the average is free. For one that is
-        not -- a finite bundle of tortuous strands is not, however parallel its axis -- the roll average is both
-        the physically defined quantity and the only response the two-axis expansion can represent, so the roll
-        count doubles until the expansion's misfit is inside the pack's own Monte-Carlo floor. The rolls are a
-        van der Corput sequence on the circle, so each doubling refines a uniform average rather than restarting
-        it, and the work already done is kept.
+        The gradient term is exact for any waveform, single- or multi-axis: the phase of walker ``w`` at pose
+        ``R`` is ``<R, M_w>`` with ``M_w[a, b] = sum_t Geff[t, a] r_w[t, b]``, so the walk is contracted once
+        per measurement and every pose is then a 3x3 inner product. The field term is the same second-rank form
+        in the field direction carried into the substrate frame.
 
-        The sphere is walked in chunks of directions, since the response is an ``(n_dirs, n_walkers)`` array and
-        a large pack over a fine quadrature does not fit in memory whole.
+        The projection is on :func:`~dmipy_sim.replay.so3.so3_quadrature`, which is exact for the band, so
+        response content **beyond** the band aliases into the coefficients instead of showing up as a residual
+        there. That is what the ``n_check`` rotations off the grid are for: the misfit is measured where
+        aliasing cannot hide, and a band that cannot hold the response is refused rather than composed.
         """
         from scipy.fft import dct
-        from .gaunt import sphere_quadrature
-        from .sh_convolution import coupled_spectrum_at, _rotations_from_axis
+        from . import so3
         from .compression import read_position_coeffs
         from ._replay_kernel import se_gate
-        G, dt, n_t, ew, norm, B0 = P["Geff"], P["dt"], P["n_t"], P["ew"], P["norm"], P["B0"]
+        Geff, dt, n_t, ew, norm, B0 = P["Geff"], P["dt"], P["n_t"], P["ew"], P["norm"], P["B0"]
         b0_dir, chi_iso, chi_aniso = P["b0_dir"], P["chi_iso"], P["chi_aniso"]
-        n_meas = G.shape[0]
-        n_w = ew.shape[0]
-        gdir = np.zeros((n_meas, 3)); prof = np.zeros((n_meas, n_t))
-        for i in range(n_meas):
-            A = G[i]
-            k = int(np.argmax(np.linalg.norm(A, axis=1)))
-            if np.linalg.norm(A[k]) == 0.0:
-                gdir[i] = self.frame_axis                                          # b = 0: any direction
-                continue
-            g = A[k] / np.linalg.norm(A[k])
-            p = A @ g
-            if np.linalg.norm(A - p[:, None] * g[None, :]) > 1e-9 * np.linalg.norm(A):
-                raise ValueError(f"measurement {i} has no single gradient direction (a multi-axis waveform); the pose "
-                                 f"composition expands the response in the fibre-gradient angle and needs one")
-            gdir[i], prof[i] = g, p
+        n_meas, n_w = Geff.shape[0], ew.shape[0]
+
         C = read_position_coeffs(self.arrays, dtype=np.float64).reshape(n_w, -1)
-        q = np.stack([C @ _compile_effective(np.einsum("it,a->ita", prof, np.eye(3)[a]), dt, self.K, n_t)
-                      for a in range(3)], axis=-1)                                   # (n_w, n_meas, 3)
-        dirs, wq = sphere_quadrature(n_theta, n_phi)
-        b = np.asarray(b0_dir, float); b = b / np.linalg.norm(b)
-        Psi = names = None
+        # The gradient term at pose R is <R, M_w> with M_w[a, b] = sum_t Geff[i, t, a] r_w[t, b]: the walk is
+        # contracted against the waveform once, and every pose after that is a 3x3 inner product. Exact for a
+        # multi-axis waveform too, which an expansion in one gradient direction could not take at all.
+        Q = np.empty((n_w, n_meas, 3, 3))
+        e = np.eye(3)
+        for a in range(3):
+            for b_ in range(3):
+                W = _compile_effective(Geff[:, :, a][:, :, None] * e[b_][None, None, :], dt, self.K, n_t)
+                Q[:, :, a, b_] = C @ W
+
+        Psi = names = i_p = i_a = None
         if B0 is not None:
             if not self.has_field:
                 raise ValueError("B0 was given but the pack carries no field tier (C3)")
             pm = self.meta.get("compression", {}).get("channels", {}).get("susceptibility_path")
             if pm is None:
-                raise ValueError("the pose composition with a field needs the pack's susc_path channel (C3 path route)")
+                raise ValueError("the pose expansion with a field needs the pack's susc_path channel (C3 path route)")
             if chi_iso is None:
                 raise ValueError("B0 was given without chi_iso; give chi_iso (and chi_aniso)")
             from .bank import susc_path_coeffs
@@ -520,60 +535,46 @@ class ReplayPack:
             if refocus_time == "auto":
                 refocus_time = _refocus_time_of(waveform)
             gate_hat = dct(se_gate(n_t, dt, refocus_time), type=2, norm="ortho")[:Cs.shape[2]]
-            Psi = (GAMMA * dt) * np.einsum("k,wck->wc", gate_hat, Cs)                # (n_w, n_ch)
-        i_p = names.index("iso_P_xx") if names is not None else None
-        i_a = names.index("aniso_G_xx") if names is not None and "aniso_G_xx" in names else None
+            Psi = (GAMMA * dt) * np.einsum("k,wck->wc", gate_hat, Cs)               # (n_w, n_ch)
+            i_p = names.index("iso_P_xx")
+            i_a = names.index("aniso_G_xx") if "aniso_G_xx" in names else None
+        b = np.asarray(b0_dir, float); b = b / np.linalg.norm(b)
 
-        def response(roll):
-            """The response over every direction for one roll of the substrate about its own axis."""
-            E = np.empty((dirs.shape[0], n_meas), np.complex128)
-            Rk = _rotation_about(self.frame_axis, roll)
-            for lo in range(0, dirs.shape[0], int(chunk)):
-                sl = slice(lo, min(lo + int(chunk), dirs.shape[0]))
-                R = _rotations_from_axis(self.frame_axis, dirs[sl])                  # (n_c, 3, 3)
+        def response(R):
+            """The ensemble signal of every measurement at every one of these poses."""
+            E = np.empty((R.shape[0], n_meas), np.complex128)
+            for lo in range(0, R.shape[0], int(chunk)):
+                sl = slice(lo, min(lo + int(chunk), R.shape[0]))
+                Rc = R[sl]
                 if Psi is None:
-                    Ew = np.broadcast_to(ew[None, :].astype(np.complex128), (R.shape[0], n_w))
+                    Ew = np.broadcast_to(ew[None, :].astype(np.complex128), (Rc.shape[0], n_w))
                 else:
-                    bp = np.einsum("nji,j->ni", R, b) @ Rk
-                    Q = np.stack([bp[:, 0] ** 2, bp[:, 1] ** 2, bp[:, 2] ** 2, 2 * bp[:, 0] * bp[:, 1],
-                                  2 * bp[:, 0] * bp[:, 2], 2 * bp[:, 1] * bp[:, 2]], axis=1)
+                    bs = np.einsum("nji,j->ni", Rc, b)                              # the field in the substrate frame
+                    Qf = np.stack([bs[:, 0] ** 2, bs[:, 1] ** 2, bs[:, 2] ** 2, 2 * bs[:, 0] * bs[:, 1],
+                                   2 * bs[:, 0] * bs[:, 2], 2 * bs[:, 1] * bs[:, 2]], axis=1)
                     phi_chi = float(chi_iso) * float(B0) * (Psi[:, names.index("iso_local")][None, :]
-                                                            - Q @ Psi[:, i_p:i_p + 6].T)
+                                                            - Qf @ Psi[:, i_p:i_p + 6].T)
                     if chi_aniso and i_a is not None:
-                        phi_chi = phi_chi + float(chi_aniso) * float(B0) * (Q @ Psi[:, i_a:i_a + 6].T)
-                    Ew = np.exp(1j * phi_chi) * ew[None, :]                          # (n_c, n_w)
+                        phi_chi = phi_chi + float(chi_aniso) * float(B0) * (Qf @ Psi[:, i_a:i_a + 6].T)
+                    Ew = np.exp(1j * phi_chi) * ew[None, :]
                 for i in range(n_meas):
-                    gp = np.einsum("nji,j->ni", R, gdir[i]) @ Rk                     # R^T g, rolled
-                    E[sl, i] = (Ew * np.exp(1j * (gp @ q[:, i, :].T))).sum(1) / norm
+                    E[sl, i] = (Ew * np.exp(1j * np.einsum("nab,wab->nw", Rc, Q[:, i]))).sum(1) / norm
             return E
 
-        def fit(E):
-            lams, worst = [], 0.0
-            for i in range(n_meas):
-                lam, resid, _rank = coupled_spectrum_at(lambda d, i=i: E[:, i], gdir[i], b, l_g=l_g, l_b=l_b,
-                                                        chiral=(B0 is not None), _grid=(dirs, wq))
-                # the misfit in signal units; a finite ensemble leaves a roughness of order the pack's own floor
-                # (the same walkers seen from every pose), which is not a defect of the expansion
-                worst = max(worst, float(resid) * float(np.sqrt(np.mean(np.abs(E[:, i]) ** 2))))
-                lams.append(lam)
-            return lams, worst
-
+        Rq, wq, Aq = so3.quadrature_design(lmax, nmax)
+        coeffs = so3.project(Aq, wq, response(Rq))
+        Rc, Ac = so3.haar_design(lmax, nmax, int(n_check), int(seed))
+        misfit = np.abs(Ac @ coeffs - response(Rc)).std(axis=0)                     # off the grid, in signal units
         floor = 1.0 / np.sqrt(n_w)
-        acc, n_roll = response(0.0), 1
-        lams, worst = fit(acc)
-        while worst > 2.0 * floor and 2 * n_roll <= int(n_roll_max):
-            for j in range(n_roll, 2 * n_roll):                                      # the next van der Corput block
-                acc = acc + response(2.0 * np.pi * _van_der_corput(j))
-            n_roll *= 2
-            lams, worst = fit(acc / n_roll)
-        if worst > 2.0 * floor:
-            import warnings
-            warnings.warn(f"the pack's response over poses is not that of an axially symmetric substrate within its "
-                          f"own Monte-Carlo floor, even averaged over {n_roll} rolls (fit misfit {worst:.3f} in signal "
-                          f"units vs floor {floor:.3f}): the two-axis expansion (l_g={l_g}, l_b={l_b}) does not "
-                          f"represent it and the pose composition is unreliable. Raise n_roll_max, or compose this "
-                          f"substrate by averaging explicit poses instead.", UserWarning, stacklevel=4)
-        return PoseSpectra(lams, gdir, b, int(l_g), int(l_b), worst, n_roll)
+        if misfit.max() > 2.0 * floor:
+            raise ValueError(
+                f"this pack's pose response is not represented at (lmax, nmax) = ({lmax}, {nmax}): away from "
+                f"the projection's own grid the truncation misfits it by {misfit.max():.4f} in signal units, "
+                f"against the pack's Monte-Carlo floor of {floor:.4f}. Raise lmax (pose structure) or nmax "
+                f"(azimuthal structure); composing at this band would return a plausible wrong number rather "
+                f"than a wrong-looking one.")
+        return PoseResponse(coeffs.T, lmax, nmax, misfit, floor, Rq.shape[0] + Rc.shape[0])
+
 
     @cached_property
     def position_coeffs(self):
@@ -670,23 +671,19 @@ class ReplayPack:
 
 
 
-def _rotation_about(axis, angle):
-    """Rotation by ``angle`` about ``axis`` (Rodrigues)."""
-    k = np.asarray(axis, float); k = k / np.linalg.norm(k)
-    K = np.array([[0.0, -k[2], k[1]], [k[2], 0.0, -k[0]], [-k[1], k[0], 0.0]])
-    return np.eye(3) + np.sin(angle) * K + (1.0 - np.cos(angle)) * (K @ K)
+def _as_distribution(orientation):
+    """``orientation=`` as a distribution of poses, or None when it names a single pose.
 
-
-def _van_der_corput(n, base=2):
-    """The base-2 radical inverse: the sequence whose every power-of-two prefix is uniform on [0, 1), so
-    doubling a roll average refines it instead of restarting it."""
-    q, d = 0.0, 1.0
-    n = int(n)
-    while n:
-        n, r = divmod(n, base)
-        d *= base
-        q += r / d
-    return q
+    An :class:`~dmipy_sim.replay.fod.FOD` is read as an axis density with no statement about the substrate's own
+    azimuth, which is what an ODF says.
+    """
+    from .fod import FOD
+    from .so3 import Distribution
+    if isinstance(orientation, Distribution):
+        return orientation
+    if isinstance(orientation, FOD):
+        return Distribution.axis_density(orientation)
+    return None
 
 
 def _refocus_time_of(waveform):

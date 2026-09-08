@@ -46,12 +46,8 @@ from .fields.susceptibility import (SusceptibilitySources, MyelinSusceptibility,
 from .geometry import mesh_shapes
 from .constants import GAMMA
 from .acquisition.noise import add_rician_noise, add_rician_noise_batch, add_nc_chi_noise, estimate_sigma
-from .replay.sh_convolution import (
-    compute_fiber_response,
-    apply_odf,
-    watson_odf_sh,
-    isotropic_odf_sh,
-)
+from .replay.fod import FOD
+from .replay.so3 import Distribution
 from .engine import mt
 from .acquisition.rf import B1Pulse, bloch_simulate, slice_profile
 from .replay.replay import (ReplayPack, read_rpk, write_rpk, compile_scheme, replay_signal,
@@ -91,10 +87,8 @@ __all__ = [
     "GAMMA",
     "add_rician_noise", "add_rician_noise_batch", "add_nc_chi_noise", "estimate_sigma",
     # SH convolution
-    "compute_fiber_response",
-    "apply_odf",
-    "watson_odf_sh",
-    "isotropic_odf_sh",
+    "FOD",
+    "Distribution",
     # magnetization transfer (physics + analytic oracle)
     "mt",
     # continuous RF pulses: complex B1(t) envelope + Bloch forward

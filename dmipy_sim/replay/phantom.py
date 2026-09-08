@@ -21,7 +21,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .gaunt import n_sh_coeffs
+from .so3 import n_sh_coeffs
 
 __all__ = ["ReplayPhantom", "read_rph", "write_rph", "build_rph", "Grid", "ANALYTIC_MODELS", "pack_substrate",
            "analytic_substrate", "inert_substrate", "ODFField", "PeakField", "WatsonField",
@@ -44,8 +44,13 @@ def analytic_model(name):
 
 @analytic_model("free_water")
 def _free_water(params, b_values):
-    from .sh_convolution import free_water_response
-    return np.array([free_water_response(b, params["diffusivity"]) for b in np.atleast_1d(b_values)])
+    """``exp(-b D)``: isotropic Gaussian diffusion, in closed form.
+
+    Free water is the case where storing walkers is not merely wasteful but unusable: its signal decays
+    exponentially in ``b`` while a Monte-Carlo floor decays only as ``1/sqrt(N)``, so at ``b = 3000 s/mm^2`` a
+    4000-walker pack carries ~113x more noise than signal. The closed form has no such error, and no pose.
+    """
+    return np.exp(-np.atleast_1d(np.asarray(b_values, np.float64)) * float(params["diffusivity"]))
 
 
 #: The macroscopic layers a phantom may declare per voxel (RPH.md 5.1). A name outside this registry is
@@ -626,28 +631,27 @@ class ReplayPhantom:
 
     # ---- replay
     def replay(self, waveform, *, B0=None, b0_dir=(0.0, 0.0, 1.0), tissue="nominal", packs=None,
-               l_g=8, l_b=6, n_theta=32, n_phi=64, complex_signal=False, T2=None, T1=None, rho=None, D=None,
+               lmax=8, nmax=4, n_check=256, complex_signal=False, T2=None, T1=None, rho=None, D=None,
                chi_iso=None, chi_aniso=0.0, refocus_time="auto"):
         """Replay the whole phantom: ``(voxel_index, S)`` with ``S`` of shape ``(n_voxels, n_measurements)``.
 
-        Each cited pack is replayed **once** into its response over poses (:meth:`ReplayPack.pose_spectra`), and
-        every voxel is then a contraction of those spectra against its own orientation -- an ODF through the
-        Gaunt route, a peak read at its direction. That is the whole economy of a replay phantom: the expensive
-        object is the walk, and it is shared by every voxel and every pose that cites it.
+        Each cited pack is replayed **once** into its response over poses (:meth:`ReplayPack.pose_response`),
+        and every voxel is then an inner product of those SO(3) coefficients with its own orientation
+        distribution. That is the whole economy of a replay phantom: the expensive object is the walk, and it is
+        shared by every voxel and every pose that cites it.
 
         The acquisition's gradient and B0 directions are in the scanner frame of ``grid.frame``; the substrates
         rotate under it. Knobs given here apply to every pack; a substrate's own ``tissue`` (RPH.md 3.2) wins
         over them, and anything neither names takes the pack's nominal value. ``packs`` supplies the packs of
         substrates cited by ``uri`` as ``{id or index: path or ReplayPack}``.
 
-        ``n_theta`` / ``n_phi`` set the quadrature the pose response is expanded on: the default resolves the
-        ``l_g``, ``l_b`` truncation comfortably, and a coarser one is cheaper for a sweep of many frames.
+        ``lmax`` truncates the pose structure and ``nmax`` the substrate's own azimuthal structure; a pack whose
+        response the truncation cannot hold refuses rather than composing a plausible wrong number.
 
         Declared macroscopic layers (RPH.md 5.1) are applied per voxel, and one that this acquisition cannot
         carry raises rather than being dropped.
         """
-        from .fod import FOD
-        pose, analytic, m0, ref = self._responses(waveform, B0, b0_dir, tissue, packs, l_g, l_b, n_theta, n_phi,
+        pose, analytic, m0, ref = self._responses(waveform, B0, b0_dir, tissue, packs, lmax, nmax, n_check,
                                             dict(T2=T2, T1=T1, rho=rho, D=D, chi_iso=chi_iso, chi_aniso=chi_aniso,
                                                  refocus_time=refocus_time))
         sid, frac = self.substrate_id, self.geometric_fraction
@@ -656,6 +660,7 @@ class ReplayPhantom:
         peaks = self.mode == "peaks"
         ori = self.peak_dir if peaks else self.odf_sh
         cache = {}
+        dist_of = self._distribution_of(lmax, nmax, peaks)
         for v in range(self.n_voxels):
             for p, i in enumerate(sid[v]):
                 i = int(i)
@@ -668,16 +673,28 @@ class ReplayPhantom:
                     key = (i, ori[v, p].tobytes())
                     resp = cache.get(key)
                     if resp is None:
-                        resp = cache[key] = (pose[i].at(ori[v, p]) if peaks
-                                             else pose[i].compose(FOD.native(ori[v, p].astype(np.float64))))
+                        resp = cache[key] = pose[i].compose(dist_of(ori[v, p]))
                 else:
                     continue                                        # inert: occupies the volume, emits nothing
                 S[v] += f * m0[v, i] * resp
         S = self._apply_layers(S, waveform, refocus_time, ref)
         return self.voxel_index, (S if complex_signal else np.abs(S))
 
-    def _responses(self, waveform, B0, b0_dir, tissue, packs, l_g, l_b, n_theta, n_phi, knobs):
-        """One response per substrate: a :class:`PoseSpectra` for a pack, a closed form for an analytic
+    def _distribution_of(self, lmax, nmax, peaks):
+        """What a slot's orientation entry means as a distribution of poses.
+
+        A **peak** is one direction with its azimuth unstated, which is the zero-dispersion limit of an axis
+        density and not a rotation -- naming a direction says nothing about the substrate's spin about it. An
+        **odf_sh** slot is an axis density in the required basis, checked as one on the way in.
+        """
+        from .fod import FOD
+        from .so3 import Distribution
+        if peaks:
+            return lambda o: Distribution.axis(np.asarray(o, np.float64), lmax, nmax)
+        return lambda o: Distribution.axis_density(FOD.native(np.asarray(o, np.float64)), lmax, nmax)
+
+    def _responses(self, waveform, B0, b0_dir, tissue, packs, lmax, nmax, n_check, knobs):
+        """One response per substrate: a :class:`PoseResponse` for a pack, a closed form for an analytic
         substrate, nothing for an inert one. Plus the per-voxel ``m0`` with the ``m0_scale`` layer applied."""
         from .replay import ReplayPack, read_rpk
         given = {}
@@ -702,8 +719,8 @@ class ReplayPhantom:
             kw = dict(knobs)
             kw.update({k: v for k, v in (sub.get("tissue") or {}).items()})
             ref = pk
-            pose[i] = pk.pose_spectra(waveform, tissue=tissue, B0=B0, b0_dir=b0_dir, l_g=l_g, l_b=l_b,
-                                      n_theta=n_theta, n_phi=n_phi, **kw)
+            pose[i] = pk.pose_response(waveform, tissue=tissue, B0=B0, b0_dir=b0_dir, lmax=lmax, nmax=nmax,
+                                       n_check=n_check, **kw)
         if not pose and not analytic:
             raise ValueError("the phantom cites no signal-bearing substrate")
         m0 = np.broadcast_to(self.m0, (self.n_voxels, len(self.substrates))).astype(np.float64)
@@ -740,7 +757,7 @@ class ReplayPhantom:
 
     def replay_bloch(self, waveform, *, rf_events=None, B0=None, b0_dir=(0.0, 0.0, 1.0), tissue="nominal",
                      packs=None, complex_signal=False, T2=None, T1=None, rho=None, D=None, chi_iso=None,
-                     chi_aniso=0.0, decimals=3):
+                     chi_aniso=0.0, roll=0.0, decimals=3):
         """Replay the phantom through the RF-aware route: ``(voxel_index, S)``, one magnetisation propagation
         per distinct pose rather than one contraction per voxel.
 
@@ -751,11 +768,13 @@ class ReplayPhantom:
         (:meth:`ReplayPack.replay_bloch`), and analytic substrates take the same RF train on a static spin
         times their closed form.
 
-        **Peaks mode only.** A pose here is one rotation of the substrate, and a distribution of poses under a
-        scaled RF pulse is not the pose-averaged response of one propagation, so an ODF phantom is refused
-        rather than approximated. Distinct ``(substrate, direction, scale)`` triples are propagated once each
-        and reused, ``decimals`` setting how finely they are distinguished; the cost is that count, not the
-        voxel count.
+        **Peaks mode only, and one rotation per slot.** A propagation is at a pose, and a distribution of poses
+        under a scaled RF pulse is not the composition of one propagation, so an ODF phantom is refused rather
+        than approximated. A peaks-mode slot names a direction and leaves the substrate's azimuth about it
+        unstated, which a propagation cannot leave open, so ``roll`` states it here; a phantom that means to fix
+        it declares a rotation per slot instead (RPH.md frames mode). Distinct ``(substrate, rotation, scale)``
+        triples are propagated once each and reused, ``decimals`` setting how finely they are distinguished; the
+        cost is that count, not the voxel count.
         """
         from .replay import ReplayPack, read_rpk
         if self.mode != "peaks":
@@ -801,9 +820,10 @@ class ReplayPhantom:
                     else:
                         kw = dict(knobs)
                         kw.update({k: val for k, val in (sub.get("tissue") or {}).items()})
+                        from .so3 import rotation_of
+                        R = rotation_of(np.asarray(peak[v, p], float), roll=float(roll))
                         resp = loaded[i].replay_bloch(waveform, rf_events=rf, b1_scale=kap, tissue=tissue, B0=B0,
-                                                      b0_dir=b0_dir, orientation=np.asarray(peak[v, p], float),
-                                                      complex_signal=True, **kw)
+                                                      b0_dir=b0_dir, orientation=R, complex_signal=True, **kw)
                     cache[key] = resp
                 resp = np.atleast_1d(resp)
                 if S is None:
