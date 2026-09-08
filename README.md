@@ -39,10 +39,10 @@ flowchart LR
         direction TB
         K1["tissue: T2 / T1 per pool · rho · chi · B0 and its direction"]
         K2["acquisition: any G(t) exactly · RF schedule (vector Bloch) · b-tensors · CPMG"]
-        K3["pose: orientation · FOD (Gaunt composition)"]
+        K3["pose: one rotation · or a distribution of rotations (SO(3) composition)"]
     end
     SIG["signal · any scanner, any sequence"]
-    RPH["Replay Phantom (.rph)<br/>packs over a voxel grid · FOD + fractions per voxel<br/>per-voxel maps (B1 transmit); macroscopic B0 /<br/>tissue-interface fields as the assembly layer"]
+    RPH["Replay Phantom (.rph)<br/>packs over a voxel grid · poses + fractions per voxel<br/>peaks · ODF · frames · Bingham fans<br/>per-voxel layers (B1 transmit, field map)"]
     gen --> SPEC --> ENGINE --> RPK --> knobs --> SIG
     RPK --> RPH --> knobs
 ```
@@ -110,10 +110,15 @@ The spec the pack embeds carries the substrate's nominal values, so a published 
 with no second file. `pack.replay(seq, tissue=False)` is the bare diffusion signal; `T2=` per pool id or
 `{"intra": 0.05, ...}` by pool name, `rho=`, `B0=`, `chi_iso=`, `chi_aniso=` override one value each;
 `tissue=Tissue(...)` supplies a whole set; `compartment=1` restricts the mean to one pool. The pose is a knob
-too: `orientation=` (a rotation, or the lab direction the substrate axis points along) replays the same walk
-at another pose, and `fod=FOD.watson(kappa, mu)` / `FOD.from_sh(coeffs, basis="tournier07")` composes a
-distribution of poses through the two-axis Gaunt route, in which the gradient and the field move together (a
-bare coefficient array is refused: the basis must be named). A tier that is requested but not carried
+too: `orientation=` takes either **one pose** — a rotation, or the lab direction the substrate axis points
+along, exact by pose covariance since the gradient and the field rotate together — or **a distribution of
+poses**, composed on SO(3). A pose is a rotation and not an axis, so nothing assumes the substrate is axially
+symmetric: `pack.pose_response(seq)` expands the response in the real Wigner basis, and
+`Distribution.watson(...)` / `.bingham(frame, (k1, k2))` / `.axis(direction)` / an `FOD` in a **named** basis
+are its counterpart, so an anisotropically fanned population composes as easily as a cone. A distribution over
+directions alone says nothing about the substrate's own azimuth, and that azimuth is then integrated away
+exactly rather than sampled. A bare coefficient array is refused: the basis must be named, and the expansion
+refuses a truncation that cannot hold the response. A tier that is requested but not carried
 raises; nothing is silently skipped.
 
 ## Replay phantoms: packs arranged in space
