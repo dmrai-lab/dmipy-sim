@@ -59,6 +59,7 @@ def _phantom(tmp_path, pack_path, **kw):
                 remainder="background/inert", orientation=WatsonField(12.0, _tangential(), lmax=8),
                 id="test/annulus", license="CC-BY-4.0", citation="x", embed=False)
     args.update(kw)
+    tmp_path.mkdir(parents=True, exist_ok=True)
     out = tmp_path / "p.rph"
     meta = build_rph(out, **args)
     return read_rph(out), meta
@@ -161,3 +162,108 @@ def test_the_pack_can_be_embedded_so_the_phantom_is_standalone(tmp_path, pack_pa
     with pytest.raises(ValueError, match="not a pack"):
         ph.pack(1)
     assert ph.tiers() >= {"gradient"}
+
+
+# ------------------------------------------------------------------ replay
+def _acq(pk, dirs, bvals, delta=6e-4, Delta=2e-3):
+    """A PGSE on the pack's save grid, one measurement per (direction, b)."""
+    from dmipy_sim.constants import GAMMA
+    n_t, dt = pk.n_t, pk.dt
+    nd, ng = int(round(delta / dt)), int(round(Delta / dt))
+    G = np.zeros((len(dirs), n_t, 3))
+    for i, (g, b) in enumerate(zip(dirs, bvals)):
+        g = np.asarray(g, float) / np.linalg.norm(g)
+        amp = np.sqrt(b / ((GAMMA * nd * dt) ** 2 * ((ng - nd / 3) * dt))) if b > 0 else 0.0
+        G[i, :nd] = amp * g
+        G[i, ng:ng + nd] = -amp * g
+
+    class A:
+        pass
+    a = A(); a.G, a.dt = G, dt
+    a.bvalues = np.asarray(bvals, float)
+    return a
+
+
+def test_the_phantom_replays_every_voxel_from_one_pack_replay(tmp_path, pack_path):
+    """Composition, substrate by substrate: the pack contributes its pose-composed response, free water its
+    closed form, inert nothing -- and each is the same number the pack or the closed form gives on its own."""
+    from dmipy_sim.replay import read_rpk
+    ph, _ = _phantom(tmp_path, pack_path, embed=True)
+    pk = read_rpk(pack_path)
+    seq = _acq(pk, [[1, 0, 0], [0, 0, 1], [1, 0, 0]], [0.0, 1e9, 1e9])
+    vi, S = ph.replay(seq)
+    assert vi.shape[0] == ph.n_voxels and S.shape == (ph.n_voxels, 3)
+    f_wm, f_csf = ph.fraction("wm/tiny"), ph.fraction("csf/free-water")
+    # b = 0: the m0-weighted volume of each substrate times its own b = 0 response -- the pack's nominal T2
+    # relaxation over the echo, free water's 1, and nothing at all from inert
+    # the pack replays at the T2 the phantom declares for that substrate (RPH.md 3.2), not at its nominal value
+    E0 = float(pk.replay(seq, T2=[0.06] * 3)[0])
+    assert E0 < float(pk.replay(seq)[0])
+    np.testing.assert_allclose(S[:, 0], f_wm * 0.7 * E0 + f_csf * 1.0, rtol=1e-6)
+    np.testing.assert_allclose(f_wm + f_csf + ph.fraction("background/inert"), 1.0, atol=1e-4)
+    # a pure free-water voxel is exp(-bD) times its m0
+    csf = int(np.argmax(f_csf))
+    if f_csf[csf] > 0.99:
+        np.testing.assert_allclose(S[csf, 1], np.exp(-1e9 * 3e-9), rtol=1e-6)
+    # a pure tissue voxel is the pack composed against that voxel's ODF, nothing else
+    wm = int(np.argmax(f_wm))
+    from dmipy_sim.replay.fod import FOD
+    ps = pk.pose_spectra(seq, T2=[0.06] * 3)
+    ref = ps.compose(FOD.native(ph.odf_sh[wm, 0].astype(float)))
+    np.testing.assert_allclose(S[wm], np.abs(f_wm[wm] * 0.7 * ref + f_csf[wm] * np.exp(-seq.bvalues * 3e-9)), rtol=1e-6)
+    vol = ph.to_volume(S[:, 1])
+    assert vol.shape == (8, 8, 1) and np.isnan(vol).any() and np.nanmax(vol) > 0
+
+
+def test_a_peak_and_a_concentrated_odf_give_the_same_signal(tmp_path, pack_path):
+    """RPH.md 4: peaks are the zero-dispersion limit, an acceptance test rather than a remark."""
+    from dmipy_sim.replay import read_rpk
+    from dmipy_sim.replay.fod import FOD
+    n = 2
+    d = np.zeros((n, n, 1, 3)); d[..., :] = (0.3, 0.0, 0.954)
+    d /= np.linalg.norm(d, axis=-1, keepdims=True)
+    kw = dict(grid=Grid((n, n, 1), (1e-3,) * 3), occupancy=np.zeros((n, n, 1), np.int32), remainder=None, embed=True)
+    peaks, _ = _phantom(tmp_path / "a", pack_path, orientation=PeakField(d), **kw)
+    sharp, _ = _phantom(tmp_path / "b", pack_path, orientation=WatsonField(400.0, d, lmax=12), **kw)
+    pk = read_rpk(pack_path)
+    seq = _acq(pk, [[1, 0, 0], [0, 0, 1]], [1e9, 1e9])
+    _, Sp = peaks.replay(seq)
+    _, So = sharp.replay(seq)
+    assert peaks.mode == "peaks" and sharp.mode == "odf_sh"
+    np.testing.assert_allclose(Sp, So, atol=2e-2)
+
+
+def test_a_layer_is_applied_or_refused_never_dropped(tmp_path, pack_path):
+    from dmipy_sim.replay import read_rpk
+    pk = read_rpk(pack_path)
+    seq = _acq(pk, [[1, 0, 0], [0, 0, 1]], [0.0, 1e9])
+    scale = np.full((8, 8, 1), 0.5)
+    ph, _ = _phantom(tmp_path, pack_path, embed=True, scalars={"m0_scale": scale})
+    base, _ = _phantom(tmp_path / "base", pack_path, embed=True)
+    np.testing.assert_allclose(ph.replay(seq)[1], 0.5 * base.replay(seq)[1], rtol=1e-9)
+    # kappa_B1 needs the RF-aware replay: refused here, not dropped
+    b1 = np.ones((8, 8, 1))
+    hard, _ = _phantom(tmp_path / "b1", pack_path, embed=True, scalars={"kappa_B1": b1})
+    with pytest.raises(ValueError, match="vector-Bloch|RF-aware"):
+        hard.replay(seq)
+    # delta_B0_T: a uniform precession over the voxel, which a spin echo at TE/2 refocuses exactly
+    dB = np.full((8, 8, 1), 1e-7)
+    off, _ = _phantom(tmp_path / "b0", pack_path, embed=True, scalars={"delta_B0_T": dB})
+    _, S = off.replay(seq, complex_signal=True)
+    _, S0 = base.replay(seq, complex_signal=True)
+    assert np.abs(np.angle(S / S0)).max() > 1e-3                     # a gradient echo carries the off-resonance
+    seq.rf_events = [{"t_s": (pk.n_t - 1) * pk.dt / 2, "flip_deg": 180}]
+    _, Se = off.replay(seq, complex_signal=True)
+    _, Se0 = base.replay(seq, complex_signal=True)
+    np.testing.assert_allclose(Se, Se0, rtol=1e-9)                   # refocused: the layer contributes nothing
+
+
+def test_a_referenced_pack_must_be_supplied(tmp_path, pack_path):
+    from dmipy_sim.replay import read_rpk
+    ph, _ = _phantom(tmp_path, pack_path, embed=False)
+    pk = read_rpk(pack_path)
+    seq = _acq(pk, [[1, 0, 0]], [1e9])
+    with pytest.raises(ValueError, match="uri|not embedded"):
+        ph.replay(seq)
+    _, S = ph.replay(seq, packs={"wm/tiny": pack_path})
+    assert S.shape == (ph.n_voxels, 1) and np.isfinite(S).all()

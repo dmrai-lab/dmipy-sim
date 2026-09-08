@@ -332,13 +332,13 @@ class ReplayPack:
 
     def pose_spectra(self, waveform, *, tissue="nominal", T2=None, T1=None, rho=None, D=None, B0=None,
                      b0_dir=(0.0, 0.0, 1.0), chi_iso=None, chi_aniso=0.0, refocus_time="auto", compartment=None,
-                     l_g=8, l_b=6):
+                     l_g=8, l_b=6, n_theta=32, n_phi=64):
         """The pack's response over every pose of its substrate, one two-axis spectrum per measurement
         (:class:`PoseSpectra`): what a replay phantom composes against each voxel's orientation. Same knobs as
         :meth:`replay`; the acquisition is in the scanner frame, the substrate is rotated under it."""
         P = self._prepare(waveform, tissue=tissue, T2=T2, T1=T1, rho=rho, D=D, B0=B0, b0_dir=b0_dir, chi_iso=chi_iso,
                           chi_aniso=chi_aniso, orientation=None, compartment=compartment)
-        return self._pose_spectra(P, refocus_time, waveform, l_g=l_g, l_b=l_b)
+        return self._pose_spectra(P, refocus_time, waveform, l_g=l_g, l_b=l_b, n_theta=n_theta, n_phi=n_phi)
 
     def _select(self, compartment, ew, norm, w, ch, n_w):
         """Restrict the ensemble mean to ``compartment`` (a pool id or a walker mask)."""
@@ -377,9 +377,11 @@ class ReplayPack:
             return _rotations_from_axis(self.frame_axis, o[None, :])[0]
         raise ValueError("orientation is a (3, 3) rotation or a (3,) axis direction")
 
-    def _pose_spectra(self, P, refocus_time, waveform, l_g=8, l_b=6, n_theta=32, n_phi=64):
+    def _pose_spectra(self, P, refocus_time, waveform, l_g=8, l_b=6, n_theta=32, n_phi=64, chunk=256):
         """Per measurement: the pack's response over a sphere of poses (each pose = the gradient and B0
-        counter-rotated, from per-walker contractions hoisted once) and its two-axis spectrum ``Lambda``."""
+        counter-rotated, from per-walker contractions hoisted once) and its two-axis spectrum ``Lambda``.
+        The sphere is walked in chunks of directions, since the response is an ``(n_dirs, n_walkers)`` array
+        and a large pack over a fine quadrature does not fit in memory whole."""
         from scipy.fft import dct
         from .gaunt import sphere_quadrature
         from .sh_convolution import coupled_spectrum_at, _rotations_from_axis
@@ -406,8 +408,8 @@ class ReplayPack:
         q = np.stack([C @ _compile_effective(np.einsum("it,a->ita", prof, np.eye(3)[a]), dt, self.K, n_t)
                       for a in range(3)], axis=-1)                                   # (n_w, n_meas, 3)
         dirs, wq = sphere_quadrature(n_theta, n_phi)
-        R = _rotations_from_axis(self.frame_axis, dirs)                               # (n_dirs, 3, 3)
         b = np.asarray(b0_dir, float); b = b / np.linalg.norm(b)
+        Psi = names = None
         if B0 is not None:
             if not self.has_field:
                 raise ValueError("B0 was given but the pack carries no field tier (C3)")
@@ -422,26 +424,32 @@ class ReplayPack:
                 refocus_time = _refocus_time_of(waveform)
             gate_hat = dct(se_gate(n_t, dt, refocus_time), type=2, norm="ortho")[:Cs.shape[2]]
             Psi = (GAMMA * dt) * np.einsum("k,wck->wc", gate_hat, Cs)                # (n_w, n_ch)
-            bp = np.einsum("nji,j->ni", R, b)
-            Q = np.stack([bp[:, 0] ** 2, bp[:, 1] ** 2, bp[:, 2] ** 2, 2 * bp[:, 0] * bp[:, 1], 2 * bp[:, 0] * bp[:, 2],
-                          2 * bp[:, 1] * bp[:, 2]], axis=1)
-            i_p = names.index("iso_P_xx")
-            phi_chi = float(chi_iso) * float(B0) * (Psi[:, names.index("iso_local")][None, :] - Q @ Psi[:, i_p:i_p + 6].T)
-            if chi_aniso and "aniso_G_xx" in names:
-                ia = names.index("aniso_G_xx")
-                phi_chi = phi_chi + float(chi_aniso) * float(B0) * (Q @ Psi[:, ia:ia + 6].T)
-            Ew = np.exp(1j * phi_chi) * ew[None, :]                                    # (n_dirs, n_w)
-        else:
-            Ew = np.broadcast_to(ew[None, :].astype(np.complex128), (dirs.shape[0], n_w))
+        E = np.empty((dirs.shape[0], n_meas), np.complex128)
+        for lo in range(0, dirs.shape[0], int(chunk)):
+            sl = slice(lo, min(lo + int(chunk), dirs.shape[0]))
+            R = _rotations_from_axis(self.frame_axis, dirs[sl])                      # (n_c, 3, 3)
+            if Psi is None:
+                Ew = np.broadcast_to(ew[None, :].astype(np.complex128), (R.shape[0], n_w))
+            else:
+                bp = np.einsum("nji,j->ni", R, b)
+                Q = np.stack([bp[:, 0] ** 2, bp[:, 1] ** 2, bp[:, 2] ** 2, 2 * bp[:, 0] * bp[:, 1],
+                              2 * bp[:, 0] * bp[:, 2], 2 * bp[:, 1] * bp[:, 2]], axis=1)
+                i_p = names.index("iso_P_xx")
+                phi_chi = float(chi_iso) * float(B0) * (Psi[:, names.index("iso_local")][None, :] - Q @ Psi[:, i_p:i_p + 6].T)
+                if chi_aniso and "aniso_G_xx" in names:
+                    ia = names.index("aniso_G_xx")
+                    phi_chi = phi_chi + float(chi_aniso) * float(B0) * (Q @ Psi[:, ia:ia + 6].T)
+                Ew = np.exp(1j * phi_chi) * ew[None, :]                              # (n_c, n_w)
+            for i in range(n_meas):
+                gp = np.einsum("nji,j->ni", R, gdir[i])                              # R^T g
+                E[sl, i] = (Ew * np.exp(1j * (gp @ q[:, i, :].T))).sum(1) / norm
         lams, worst = [], 0.0
         for i in range(n_meas):
-            gp = np.einsum("nji,j->ni", R, gdir[i])                                   # R^T g
-            E = (Ew * np.exp(1j * (gp @ q[:, i, :].T))).sum(1) / norm                  # response over poses
-            lam, resid, _rank = coupled_spectrum_at(lambda d, E=E: E, gdir[i], b, l_g=l_g, l_b=l_b,
-                                                   chiral=(B0 is not None), _grid=(dirs, wq))
+            lam, resid, _rank = coupled_spectrum_at(lambda d, i=i: E[:, i], gdir[i], b, l_g=l_g, l_b=l_b,
+                                                    chiral=(B0 is not None), _grid=(dirs, wq))
             # the fit's misfit in signal units; a finite ensemble leaves a roughness of order the pack's own
             # floor (the same walkers seen from every pose), which is not a defect of the expansion
-            worst = max(worst, float(resid) * float(np.sqrt(np.mean(np.abs(E) ** 2))))
+            worst = max(worst, float(resid) * float(np.sqrt(np.mean(np.abs(E[:, i]) ** 2))))
             lams.append(lam)
         floor = 1.0 / np.sqrt(n_w)
         if worst > 2.0 * floor:
