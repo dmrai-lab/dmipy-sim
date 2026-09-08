@@ -44,6 +44,7 @@ __all__ = ["real_sh", "sphere_quadrature", "n_sh_coeffs", "sh_block",
            "density_coeffs", "delta_coeffs", "axis_density_coeffs", "axis_coeffs", "watson_coeffs",
            "bingham_coeffs",
            "project", "quadrature_design", "energy", "evaluate", "rotation_of", "rotations_from_quaternions",
+           "rotate_coeffs",
            "Distribution"]
 
 
@@ -268,7 +269,21 @@ def so3_quadrature(lmax, nmax=None, frame_axis=(0.0, 0.0, 1.0)):
 
 
 # ------------------------------------------------------------------ distributions
-def density_coeffs(density, lmax, nmax=None, frame_axis=(0.0, 0.0, 1.0)):
+@functools.lru_cache(maxsize=16)
+def _fine_design(lmax, nmax, over, frame_axis=(0.0, 0.0, 1.0)):
+    """A quadrature well beyond the target band, with the **target** basis evaluated on it.
+
+    A distribution is not band-limited -- a concentrated Watson or Bingham has content at every order -- and the
+    quadrature grid is not rotation invariant, so integrating it on its own band's grid makes the aliasing
+    depend on the frame: measured at 0.12 in coefficients of order 1, which would make the same fan give
+    different answers at different poses. Oversampling puts that below the noise of any pack.
+    """
+    nm = None if nmax is None else int(nmax) + int(over)
+    R, w, _A = quadrature_design(int(lmax) + int(over), nm, frame_axis)
+    return R, w, so3_design(int(lmax), R, None if nmax is None else int(nmax))
+
+
+def density_coeffs(density, lmax, nmax=None, frame_axis=(0.0, 0.0, 1.0), over=8):
     """``f^l_{mn}`` of any orientation density, by the quadrature of :func:`so3_quadrature`.
 
     ``density`` is called with the ``(N, 3, 3)`` rotations and returns the density at each, in the normalised
@@ -276,7 +291,7 @@ def density_coeffs(density, lmax, nmax=None, frame_axis=(0.0, 0.0, 1.0)):
     which is why their structural properties -- a roll-uniform density having no ``n != 0`` coefficients, a
     Bingham with equal dispersions being a Watson -- are results to test rather than assumptions to trust.
     """
-    R, w, A = quadrature_design(lmax, nmax, frame_axis)
+    R, w, A = _fine_design(int(lmax), None if nmax is None else int(nmax), int(over), tuple(frame_axis))
     p = np.asarray(density(R), np.float64).reshape(-1)
     p = p / float(p @ w)                                              # a density integrates to one
     return project(A, p * w, np.ones(R.shape[0]))
@@ -439,15 +454,36 @@ class Distribution:
         return cls(c, int(lmax), int(nmax), "uniform (powder)")
 
     def rotated(self, R):
-        """The same distribution with every pose pre-rotated by ``R``: how a voxel's frame enters the scanner."""
-        M = wigner_blocks(self.lmax, np.asarray(R, np.float64).reshape(1, 3, 3))
-        out, i = np.empty_like(self.coeffs), 0
-        for l, Ml in enumerate(M):
-            k = _n_cols(l, self.nmax)
-            blk = self.coeffs[i:i + (2 * l + 1) * k].reshape(2 * l + 1, k)
-            out[i:i + blk.size] = (Ml[0].T @ blk).reshape(-1)
-            i += blk.size
-        return Distribution(out, self.lmax, self.nmax, f"{self.source}, rotated")
+        """The same distribution with every pose rotated by ``R``: how a voxel's own frame enters the scanner."""
+        return Distribution(rotate_coeffs(self.coeffs, R, self.lmax, self.nmax)[0], self.lmax, self.nmax,
+                            f"{self.source}, rotated")
+
+
+def rotate_coeffs(coeffs, R, lmax, nmax=None):
+    """Rotate coefficient vectors: ``(N, n_feat)`` for ``(N, 3, 3)`` rotations, batched, either side broadcast.
+
+    A density whose poses are all rotated by ``R`` has coefficients ``M^l(R) f^l``, block by block, because the
+    basis is a representation: ``phi(R S) = M^l(R) phi(S)``. So a distribution's frame is a rotation of a
+    canonical shape, and a whole grid of frames is one batched product rather than a quadrature per voxel.
+    """
+    c = np.atleast_2d(np.asarray(coeffs, np.float64))
+    M = wigner_blocks(int(lmax), np.asarray(R, np.float64).reshape(-1, 3, 3))
+    n_R = M[0].shape[0]
+    if c.shape[0] not in (1, n_R) and n_R != 1:
+        raise ValueError(f"{c.shape[0]} coefficient vectors and {n_R} rotations do not broadcast")
+    n = max(c.shape[0], n_R)
+    if c.shape[0] == 1:
+        c = np.broadcast_to(c, (n, c.shape[1]))
+    if n_R == 1:
+        M = [np.broadcast_to(Ml, (n,) + Ml.shape[1:]) for Ml in M]
+    out, i = np.empty((n, c.shape[1])), 0
+    for l, Ml in enumerate(M):
+        k = _n_cols(l, nmax)
+        width = (2 * l + 1) * k
+        blk = c[:, i:i + width].reshape(n, 2 * l + 1, k)
+        out[:, i:i + width] = np.einsum("nmk,nkj->nmj", Ml, blk).reshape(n, width)
+        i += width
+    return out
 
 
 def _lmax_of(n_c):

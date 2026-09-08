@@ -1,161 +1,295 @@
-"""Prototype .rph: a circular white-matter phantom composed from ONE solved pack.
+"""A circular white-matter phantom: one CACTUS replay pack, arranged in space (RPH.md).
 
-Mirrors the annulus of the dmipy Bloch studio -- a 30x30 grid, tissue between radii 8 and 13,
-fibres running tangentially -- so every voxel is the same solved microstructure at a different
-pose.  That is the whole point of a replay phantom: the expensive object is shared, and the
-phantom carries only where the packs are, how they are oriented, and in what proportion.
+The phantom is an annulus of tangentially oriented fibres around a free-water core, with inert background
+outside. Every tissue voxel cites the *same* solved pack at its own orientation, so the expensive object -- the
+walk -- is paid for once and read from every pose and every acquisition.
 
-Writes a `.rph` per RPH.md (replay-pack-spec), then replays it: one Lambda per measurement,
-then a contraction per voxel.
+Run it to build the ``.rph``, replay two sweeps, and write the animation used in the README:
+
+    python examples/rph/circular_wm_phantom.py <pack.rpk> [out_dir]
 """
-import json
+import sys
 import numpy as np
 
-from dmipy_sim.replay import read_rpk
-from dmipy_sim.replay.gaunt import n_sh_coeffs
-from dmipy_sim.replay.sh_convolution import (PackResponder, apply_odf_coupled,
-                                      compose_voxel, free_water_response,
-                                      watson_odf_sh)
+from dmipy_sim.constants import GAMMA
+from dmipy_sim.replay import read_rpk, so3
+from dmipy_sim.replay.phantom import (BinghamField, Grid, analytic_substrate, build_rph, inert_substrate,
+                                      pack_substrate, read_rph)
 
-PACK = "/home/rutger/dmrai-ws/winther-data/hf_release_winther_g6/packs/axon06.rpk"
-N, R_IN, R_OUT, LMAX, KAPPA = 30, 8.0, 13.0, 8, 12.0
+N, R_IN, R_OUT = 40, 11.0, 17.0
+KAPPA, KAPPA_FAN = (16.0, 16.0), (1.0, 40.0)     # a cone around the ring, and a fan in one sector
+FAN_SECTOR = (100.0, 170.0)                      # degrees of the ring that fan out in the plane
+LMAX, NMAX = 8, 4                                # the pose band, and how much azimuthal structure is kept
+B_VALUE, B0_T = 1.5e9, 7.0                       # 1500 s/mm^2 at 7 T
+CHI_ISO, CHI_ANISO = -1.0e-7, -1.0e-7            # myelin, Wharton & Bowtell 2012
 
 
-def circular_wm(n=N, r_in=R_IN, r_out=R_OUT, lmax=LMAX, kappa=KAPPA, sub=8):
-    """Annulus of tangentially-oriented fibres around a free-water core (RPH.md Sec. 3).
-
-    Three substrates: 0 white matter (a pack), 1 free water (analytic, ``exp(-bD)``), 2 inert.
-    The boundaries are supersampled, so voxels straddling the inner radius are a genuine
-    WM / CSF partial volume and those at the outer radius are WM / inert.  Rows sum to one.
-
-    Free water is analytic rather than a pack because its signal decays exponentially in b
-    while a Monte-Carlo floor does not: at b = 3000 s/mm^2 a 4000-walker free-water pack has
-    ~113x more noise than signal, and 1% relative accuracy would need of order 1e11 walkers.
-    Inert is not air -- an air interface would dominate the field of its neighbours, which a
-    voxel-by-voxel phantom has no mechanism for.
-    """
+# ------------------------------------------------------------------ the phantom
+def annulus(n=N, r_in=R_IN, r_out=R_OUT, sub=6):
+    """Volume fractions of tissue and core, supersampled so the two boundaries are genuine partial volume."""
     c = (n - 1) / 2.0
     off = (np.arange(sub) + 0.5) / sub - 0.5
     ox, oy = np.meshgrid(off, off, indexing="ij")
-    idx, sid, frac, sh = [], [], [], []
-    zero = np.zeros(n_sh_coeffs(lmax), np.float64)
-    for j in range(n):
-        for i in range(n):
+    wm, csf = np.zeros((n, n, 1)), np.zeros((n, n, 1))
+    for i in range(n):
+        for j in range(n):
             rr = np.hypot(i + ox - c, j + oy - c)
-            f_wm = float(np.mean((rr >= r_in) & (rr <= r_out)))
-            f_csf = float(np.mean(rr < r_in))               # ventricle-like core
-            f_inert = 1.0 - f_wm - f_csf
-            if f_wm == 0.0 and f_csf == 0.0:
-                continue                                    # sparse: unoccupied voxels absent
+            wm[i, j, 0] = np.mean((rr >= r_in) & (rr <= r_out))
+            csf[i, j, 0] = np.mean(rr < r_in)
+    return wm, csf
+
+
+def frames(n=N):
+    """A rotation per voxel, and a concentration pair per voxel (RPH.md 4, bingham mode).
+
+    The third column of each frame is the fibre direction -- tangent to the circle, so the phantom spans every
+    pose in the plane -- and the first is the direction the fan opens along, which is the tangent circle's own
+    plane. Most of the ring is a cone of one width; one sector fans out anisotropically, which is a distribution
+    no single dispersion parameter can express and no axially symmetric representation can compose.
+    """
+    c = (n - 1) / 2.0
+    R = np.zeros((n, n, 1, 3, 3))
+    kappa = np.zeros((n, n, 1, 2))
+    for i in range(n):
+        for j in range(n):
             dx, dy = i - c, j - c
             r = np.hypot(dx, dy)
-            mu = np.array([-dy / r, dx / r, 0.0]) if r > 1e-9 else np.array([1.0, 0.0, 0.0])
-            idx.append((i, j, 0))
-            sid.append((0, 1, 2))
-            frac.append((f_wm, f_csf, max(f_inert, 0.0)))
-            sh.append((watson_odf_sh(kappa, mu=mu, lmax=lmax), zero, zero))
-    return (np.asarray(idx, np.int32), np.asarray(sid, np.int16),
-            np.asarray(frac, np.float32), np.asarray(sh, np.float32))
+            t = np.array([-dy / r, dx / r, 0.0]) if r > 1e-9 else np.array([1.0, 0.0, 0.0])
+            e1 = np.array([dx / r, dy / r, 0.0]) if r > 1e-9 else np.array([0.0, 1.0, 0.0])  # radial: the fan plane
+            R[i, j, 0] = np.stack([e1, np.cross(t, e1), t], axis=1)
+            ang = np.degrees(np.arctan2(dy, dx)) % 360.0
+            kappa[i, j, 0] = KAPPA_FAN if FAN_SECTOR[0] <= ang <= FAN_SECTOR[1] else KAPPA
+    return R, kappa
 
 
-def write_rph(path, pack_path, pack_id, arrays, m0, *, embed=True, lmax=LMAX, n=N):
-    """Write a .rph. ``embed`` puts the pack's arrays under ``substrate0/`` so the phantom is a
-    standalone artifact -- nothing to resolve, nothing to go missing."""
-    from safetensors.numpy import save_file
-    import hashlib
-    h = hashlib.sha256(open(pack_path, "rb").read()).hexdigest()
-    vi, sid, gf, sh = arrays
-    tensors = {"voxel_index": vi, "substrate_id": sid,
-               "geometric_fraction": gf, "odf_sh": sh}
-    wm = {"id": pack_id, "kind": "pack", "m0": float(m0), "sha256": h,
-          "embedded": bool(embed)}
-    csf = {"id": "csf/free-water", "kind": "analytic", "m0": 1.0,
-           "model": "free_water", "params": {"diffusivity": 3.0e-9}}
-    inert = {"id": "background/inert", "kind": "inert", "m0": 0.0}
-    if embed:
-        pk = read_rpk(pack_path)
-        for k, v in pk.arrays.items():
-            tensors[f"substrate0/{k}"] = np.ascontiguousarray(v)
-        wm["pack_meta"] = pk.meta
-    else:
-        wm["uri"] = pack_path
-    meta = {
-        "rph_schema_version": "0.2.0",
-        "id": "phantoms/circular-wm/annulus-30",
-        "grid": {"shape": [n, n, 1], "voxel_size_m": [1e-3, 1e-3, 1e-3], "frame": "phantom"},
-        "orientation": {"mode": "odf_sh", "lmax": lmax, "basis": "real",
-                        "convention": "orthonormal"},
-        "substrates": [wm, csf, inert],
-        "license": "CC-BY-4.0",
-        "citation": "dmipy-sim replay phantom prototype",
-    }
-    save_file(tensors, str(path), metadata={"rph": json.dumps(meta)})
-    return meta
+def fan_density(kappa, dirs):
+    """The axis density a bingham slot declares, over in-plane directions: what the picture draws."""
+    k1, k2 = kappa
+    return np.exp(-k1 * dirs[:, 0] ** 2 - k2 * dirs[:, 1] ** 2)
 
 
-def replay_rph(path, responder, g_dir, b0_dir, b_value, l_g=8, l_b=6):
-    """One Lambda for the measurement, then a contraction per voxel (RPH.md Sec. 3)."""
-    from safetensors import safe_open
-    with safe_open(str(path), framework="numpy") as f:
-        meta = json.loads(f.metadata()["rph"])
-        vi, pid = f.get_tensor("voxel_index"), f.get_tensor("substrate_id")
-        pf, sh = f.get_tensor("geometric_fraction"), f.get_tensor("odf_sh")
-    lmax = int(meta["orientation"]["lmax"])
-    m0 = np.array([s["m0"] for s in meta["substrates"]], float)
-    bearing = np.array([s["kind"] != "inert" for s in meta["substrates"]])
-    lam, resid, _ = responder.spectrum_at(g_dir, l_g=l_g, l_b=l_b)
-    out = np.zeros(len(vi), np.complex128)
-    spectra = []
-    for sub in meta["substrates"]:
-        if sub["kind"] == "analytic":
-            spectra.append(free_water_response(b_value, sub["params"]["diffusivity"]))
+def build(pack_path, out, n=N):
+    """Three substrates and two volumes -- the constructor derives the sparse file (RPH.md 3)."""
+    wm, csf = annulus(n)
+    return build_rph(
+        out,
+        grid=Grid((n, n, 1), (1.5e-3, 1.5e-3, 1.5e-3)),
+        substrates=[pack_substrate("cactus/bundle_00000_capped", pack_path, m0=0.75),
+                    analytic_substrate("csf/free-water", "free_water", {"diffusivity": 3.0e-9}),
+                    inert_substrate()],
+        occupancy={"cactus/bundle_00000_capped": wm, "csf/free-water": csf},
+        remainder="background/inert",
+        orientation=BinghamField(*frames(n)),
+        id="phantoms/circular-wm/cactus-annulus", license="CC-BY-4.0",
+        citation="Villarreal-Haro et al. 2023 (CACTUS substrate); dmipy-sim replay phantom",
+        embed=False)
+
+
+# ------------------------------------------------------------------ the acquisition
+def pgse(pack, dirs, b=B_VALUE, delta=6.0e-3, Delta=1.5e-2, refocus=True):
+    """A PGSE on the pack's save grid, one measurement per direction, refocused at the middle of the echo --
+    or, with ``refocus=False``, the same diffusion weighting read as a gradient echo, which keeps the static
+    field dephasing a spin echo would have refocused."""
+    n_t, dt = pack.n_t, pack.dt
+    nd, ng = int(round(delta / dt)), int(round(Delta / dt))
+    G = np.zeros((len(dirs), n_t, 3))
+    amp = np.sqrt(b / ((GAMMA * nd * dt) ** 2 * ((ng - nd / 3) * dt)))
+    for i, g in enumerate(dirs):
+        g = np.asarray(g, float) / np.linalg.norm(g)
+        G[i, :nd] = amp * g
+        G[i, ng:ng + nd] = -amp * g
+
+    class Seq:
+        pass
+    s = Seq()
+    s.G, s.dt = G, dt
+    s.bvalues = np.full(len(dirs), float(b))
+    s.rf_events = [{"t_s": 0.0, "flip_deg": 90, "axis_deg": 0.0}]
+    if refocus:
+        s.rf_events.append({"t_s": (n_t - 1) * dt / 2.0, "flip_deg": 180, "axis_deg": 90.0})
+    return s, amp
+
+
+def sweeps(ph, pack_path, n_frames=36):
+    """The two sweeps of the animation.
+
+    * **g turns, B0 fixed north.** The classic diffusion weighting: a voxel is dark where the gradient runs
+      along its fibres and bright where it runs across them, so the contrast is a two-lobed pattern that
+      rotates with ``g``. One replay, ``n_frames`` measurements.
+    * **B0 turns, g fixed.** The same diffusion gradient, held **through the plane** so it is perpendicular to
+      every fibre in it: the diffusion weighting is then the same in every voxel and every frame, and the only
+      thing left moving is the susceptibility. The refocusing pulse is dropped for this sweep, which is what
+      makes the effect a large one -- a spin echo refocuses the static myelin field and leaves only the part a
+      walker diffuses through, worth a few tenths of a percent here, while a gradient echo keeps the static
+      dephasing, which at 7 T over this echo is tens of percent and depends strongly on the angle between the
+      field and the fibre. One replay per field direction, because ``B0`` is one direction per replay.
+
+      Through-plane also keeps ``g`` away from ``B0``: where the two are parallel the two-axis expansion's
+      chiral sector is degenerate (its ``g x B0`` axis is undefined) and a frame there is fit in a basis one
+      sector smaller than its neighbours, which is worth more than the effect being measured (issue #155).
+    """
+    ang = np.linspace(0.0, 2 * np.pi, n_frames, endpoint=False)
+    dirs = np.stack([np.cos(ang), np.sin(ang), np.zeros_like(ang)], axis=1)
+    pack = read_rpk(pack_path)
+    kw = dict(packs={"cactus/bundle_00000_capped": pack}, B0=B0_T, chi_iso=CHI_ISO, chi_aniso=CHI_ANISO,
+              lmax=LMAX, nmax=NMAX)
+    seq, _ = pgse(pack, dirs)
+    _, S_g = ph.replay(seq, b0_dir=(0.0, 1.0, 0.0), **kw)                   # B0 north, g turning
+    seq1, _ = pgse(pack, [[0.0, 0.0, 1.0]], refocus=False)                  # through the plane, across every fibre
+    S_b = np.stack([ph.replay(seq1, b0_dir=d, refocus_time=None, **kw)[1][:, 0] for d in dirs], axis=1)
+    return ang, dirs, S_g, S_b
+
+
+# ------------------------------------------------------------------ the picture
+def _pools(pack):
+    """The pool each walker started in: what colours the substrate picture."""
+    from dmipy_sim.replay.compression import decode_occupancy
+    ch = pack.meta["compression"]["channels"]
+    return np.asarray(decode_occupancy(pack.arrays, ch["compartment"])["comp"])[:, 0]
+
+
+def figure(ph, pack_path, ang, dirs, S_g, S_b, out_gif, fps=10, slab_um=1.2):
+    """Substrate, FODs, the signal map, and the signal of two voxels as each sweep advances.
+
+    Each sweep gets its own fixed colour scale, since the two sit at different signal levels: what the picture
+    is about is how the pattern moves within a sweep, not how the two sweeps compare.
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.animation import FuncAnimation, PillowWriter
+
+    pack = read_rpk(pack_path)
+    n = ph.grid.shape[0]
+    fig = plt.figure(figsize=(11.0, 4.4), facecolor="white")
+    gs = fig.add_gridspec(2, 3, width_ratios=[0.85, 1.25, 1.15], wspace=0.45, hspace=0.4,
+                          left=0.02, right=0.95, top=0.84, bottom=0.13)
+    ax_sub, ax_fod = fig.add_subplot(gs[0, 0]), fig.add_subplot(gs[1, 0])
+    ax_map, ax_cur = fig.add_subplot(gs[:, 1]), fig.add_subplot(gs[:, 2])
+
+    # the substrate: where the walkers start, in a thin slab so the strands read as cross-sections
+    p0 = pack.positions()[:, 0, :] * 1e6
+    pool = _pools(pack)
+    keep = np.abs(p0[:, 2] - np.median(p0[:, 2])) < slab_um
+    for pid in (2, 1, 0):                                                 # extra first, so the strands sit on top
+        col, lab = [("#2d6cdf", "intra"), ("#d9534f", "myelin"), ("#e8e8e8", "extra")][pid]
+        m = keep & (pool == pid)
+        if m.any():
+            ax_sub.scatter(p0[m, 0], p0[m, 1], s=2.2, c=col, lw=0, label=f"{lab} {(pool == pid).mean():.0%}")
+    ax_sub.set_aspect("equal"); ax_sub.set_xticks([]); ax_sub.set_yticks([])
+    ax_sub.set_title("CACTUS substrate, one walk", fontsize=8)
+    ax_sub.legend(fontsize=5.5, loc="upper right", framealpha=0.9, handletextpad=0.1, borderpad=0.2,
+                  labelspacing=0.2, markerscale=2.5)
+
+    # the orientation distributions the phantom replays, drawn where they sit
+    circ = np.linspace(0, 2 * np.pi, 73)
+    d_sh = np.stack([np.cos(circ), np.sin(circ), np.zeros_like(circ)], axis=1)
+    step = max(1, n // 13)
+    f_wm = ph.fraction("cactus/bundle_00000_capped")
+    for v in range(ph.n_voxels):
+        i, j = ph.voxel_index[v, :2]
+        if i % step or j % step or f_wm[v] < 0.5:
+            continue
+        R = so3.rotations_from_quaternions(ph.pose_quat[v, 0])[0]
+        r = fan_density(ph.bingham_kappa[v, 0], d_sh @ R)                 # the density, in the frame's own axes
+        r = 0.62 * step * r / max(r.max(), 1e-12)
+        fan = tuple(ph.bingham_kappa[v, 0]) != KAPPA
+        ax_fod.fill(i + r * d_sh[:, 0], j + r * d_sh[:, 1], color="#b3452c" if fan else "#3b3b6d", lw=0)
+    ax_fod.set_xlim(-1, n); ax_fod.set_ylim(-1, n); ax_fod.set_aspect("equal")
+    ax_fod.set_xticks([]); ax_fod.set_yticks([])
+    ax_fod.set_title(f"replayed poses: a $\\kappa$={KAPPA[0]:.0f} cone, and a "
+                     f"{KAPPA_FAN[0]:.0f}/{KAPPA_FAN[1]:.0f} fan", fontsize=8)
+
+    def vol(s):
+        return ph.to_volume(np.asarray(s))[:, :, 0].T                     # (j, i) for imshow
+
+    S_g, S_b = np.abs(S_g), np.abs(S_b)
+    im = ax_map.imshow(vol(S_g[:, 0]), origin="lower", cmap="magma", vmin=0.0, vmax=float(S_g.max()),
+                       interpolation="nearest")
+    ax_map.set_xticks([]); ax_map.set_yticks([])
+    cb = fig.colorbar(im, ax=ax_map, fraction=0.046, pad=0.03)
+    cb.ax.tick_params(labelsize=6)
+    cb.set_label("|S|", fontsize=7)
+    ax_cur.set_ylabel("|S|", fontsize=8)
+    c = (n - 1) / 2.0
+    import matplotlib.patheffects as pe
+    stroke = [pe.withStroke(linewidth=2.2, foreground="#222222")]
+    q_g = ax_map.annotate("", xy=(c, c), xytext=(c, c),
+                          arrowprops=dict(arrowstyle="-|>", color="white", lw=1.8, shrinkA=0, shrinkB=0))
+    q_b = ax_map.annotate("", xy=(c, c), xytext=(c, c),
+                          arrowprops=dict(arrowstyle="-|>", color="#33d17a", lw=1.8, shrinkA=0, shrinkB=0))
+    ax_map.text(0.03, 0.97, "g", color="white", fontsize=9, transform=ax_map.transAxes, va="top",
+                path_effects=stroke)
+    (g_dot,) = ax_map.plot([c], [c], marker="$\\odot$", ms=11, color="white", visible=False)
+    ax_map.text(0.10, 0.97, "B$_0$", color="#33d17a", fontsize=9, transform=ax_map.transAxes, va="top",
+                path_effects=stroke)
+
+    # two voxels on the ring, a quarter turn apart: their signal as the sweep advances
+    ring = np.flatnonzero(f_wm > 0.98)
+    xy = ph.voxel_index[ring, :2] - c
+    a_ring = np.arctan2(xy[:, 1], xy[:, 0])
+    v1 = int(ring[np.argmin(np.abs(a_ring))])                             # 3 o'clock: fibres run vertically
+    v2 = int(ring[np.argmin(np.abs(a_ring - np.pi / 2))])                 # 12 o'clock: fibres run horizontally
+    deg = np.degrees(ang)
+    lines = [ax_cur.plot([], [], lw=1.7, color=col, label=lab)[0]
+             for col, lab in [("#2d6cdf", "3 o'clock voxel"), ("#d9534f", "12 o'clock voxel")]]
+    ax_cur.set_xlim(0, 360); ax_cur.set_xlabel("sweep angle [deg]", fontsize=8)
+    ax_cur.tick_params(labelsize=7)
+    ax_cur.legend(fontsize=7, loc="lower right")
+    ttl = fig.suptitle("", fontsize=10)
+    nf = len(ang)
+
+    def draw(k):
+        phase, k = divmod(k, nf)
+        turning_g = phase == 0
+        S = S_g if turning_g else S_b
+        g = dirs[k] if turning_g else np.array([0.0, 0.0, 1.0])
+        b = np.array([0.0, 1.0, 0.0]) if turning_g else dirs[k]
+        im.set_data(vol(S[:, k])); im.set_clim(0.0, float(S.max()))
+        if turning_g:
+            ttl.set_text("g turns 360$^\\circ$, B$_0$ north: the diffusion contrast, dark along the fibres")
         else:
-            spectra.append(lam)
-    for v in range(len(vi)):
-        out[v] = compose_voxel(spectra, pid[v], pf[v], sh[v], m0, g_dir, b0_dir,
-                               l_fod=lmax, l_g=l_g, l_b=l_b, signal_bearing=bearing)
-    return vi, out, meta, resid
+            ttl.set_text("B$_0$ turns 360$^\\circ$, g fixed through the plane: the susceptibility contrast")
+        L_g, L_b = 0.31 * n, 0.22 * n
+        g_dot.set_visible(abs(g[2]) > 0.9)                                 # g through the plane: a dot, not an arrow
+        q_g.set_position((c - L_g * g[0], c - L_g * g[1])); q_g.xy = (c + L_g * g[0], c + L_g * g[1])
+        q_b.set_position((c - L_b * b[0], c - L_b * b[1])); q_b.xy = (c + L_b * b[0], c + L_b * b[1])
+        for line, v in zip(lines, (v1, v2)):
+            line.set_data(deg[:k + 1], S[v, :k + 1])
+        y = S[[v1, v2]]
+        pad = max(0.05 * (y.max() - y.min()), 1e-5)
+        ax_cur.set_ylim(y.min() - pad, y.max() + pad)
+        # what the two curves trace: the modulation each of those voxels goes through over the sweep
+        mod = 100.0 * np.ptp(y, axis=1) / y.mean(axis=1)
+        ax_cur.set_title(f"sweep modulation {mod.min():.0f}-{mod.max():.0f}%", fontsize=8)
+        return [im, q_g, q_b, g_dot, *lines, ttl]
 
-
-def amplitude_for_b(profile, dt, b_target):
-    """Gradient amplitude [T/m] giving ``b_target`` [s/m^2] for a unit-amplitude profile."""
-    from dmipy_sim.constants import GAMMA
-    q = GAMMA * np.cumsum(np.asarray(profile, np.float64)) * dt
-    return float(np.sqrt(b_target / (np.sum(q * q) * dt)))
+    anim = FuncAnimation(fig, draw, frames=2 * nf, blit=False)
+    anim.save(out_gif, writer=PillowWriter(fps=fps), dpi=92)
+    plt.close(fig)
+    return out_gif
 
 
 if __name__ == "__main__":
-    import time, os
-    pk = read_rpk(PACK)
-    pm = pk.meta["compression"]["channels"]["susceptibility_path"]
-    n_t, dt = int(pm["n_t"]), pk.dt
-    t = np.arange(n_t) * dt; T = n_t * dt
-    prof = ((t < 0.2 * T).astype(float) - ((t >= 0.5 * T) & (t < 0.7 * T)).astype(float))
-    b0 = np.array([0, 0, 1.0])
-
-    arrays = circular_wm()
-    here = os.path.dirname(os.path.abspath(__file__))
-    for embed in (False, True):
-        out = os.path.join(here, f"circular_wm{'_standalone' if embed else ''}.rph")
-        write_rph(out, PACK, "winther/g6/axon06", arrays, m0=0.70, embed=embed)
-        f = arrays[2]
-        edge = int(((f[:, 0] > 0) & (f[:, 0] < 0.999)).sum())
-        csfv = int((f[:, 1] > 0).sum())
-        print(f"  {'embedded ' if embed else 'referenced'}: {os.path.getsize(out)/1e6:8.2f} MB"
-              f"   ({len(arrays[0])} voxels, {edge} partial-volume WM, {csfv} with free "
-              f"water, pack is {os.path.getsize(PACK)/1e6:.0f} MB)")
-    out = os.path.join(here, "circular_wm_standalone.rph")
-
-    backend = os.environ.get("RPH_BACKEND", "numpy")
-    B_VALUE = 1e9                                     # s/m^2  == 1000 s/mm^2
-    amp = amplitude_for_b(prof, dt, B_VALUE)
-    print(f"  acquisition: b = {B_VALUE/1e6:.0f} s/mm^2 at TE = {T*1e3:.0f} ms "
-          f"(amplitude {amp:.3f} T/m)")
-    R = PackResponder(pk, prof, b0, amplitude=amp, B0=3.0, chi_iso=-9.4e-6,
-                      chi_aniso=-1.0e-7, refocus_time=0.5 * T, n_theta=32, n_phi=64,
-                      backend=backend)
-    for nm, g in (("g || x", [1, 0, 0.]), ("g || y", [0, 1, 0.]), ("g at 55deg", [np.sin(.96), 0, np.cos(.96)])):
-        t0 = time.time()
-        vi, S, _, resid = replay_rph(out, R, np.asarray(g, float), b0, B_VALUE)
-        print(f"  {nm:>11}: |S| {np.abs(S).min():.4f}..{np.abs(S).max():.4f}  "
-              f"resid {resid:.1e}  {time.time()-t0:.2f} s for {len(vi)} voxels")
+    import os, time
+    pack_path = sys.argv[1]
+    out_dir = sys.argv[2] if len(sys.argv) > 2 else os.path.dirname(os.path.abspath(__file__))
+    rph = os.path.join(out_dir, "circular_wm.rph")
+    t0 = time.time()
+    meta = build(pack_path, rph)
+    ph = read_rph(rph)
+    print(f"{ph!r}\n  {os.path.getsize(rph) / 1e3:.0f} kB citing a "
+          f"{os.path.getsize(pack_path) / 1e6:.0f} MB pack  [{time.time() - t0:.0f}s]", flush=True)
+    cache = os.path.join(out_dir, "circular_wm_sweeps.npz")
+    if os.path.exists(cache):
+        z = np.load(cache)
+        ang, dirs, S_g, S_b = z["ang"], z["dirs"], z["S_g"], z["S_b"]
+        print(f"  sweeps read from {os.path.basename(cache)}", flush=True)
+    else:
+        ang, dirs, S_g, S_b = sweeps(ph, pack_path)
+        np.savez_compressed(cache, ang=ang, dirs=dirs, S_g=S_g, S_b=S_b)
+    print(f"  g sweep: |S| in [{np.abs(S_g).min():.3f}, {np.abs(S_g).max():.3f}]; "
+          f"B0 sweep modulation {100 * np.ptp(np.abs(S_b), axis=1).max():.2f}% peak-to-peak  "
+          f"[{time.time() - t0:.0f}s]", flush=True)
+    gif = figure(ph, pack_path, ang, dirs, S_g, S_b, os.path.join(out_dir, "circular_wm.gif"))
+    print(f"  wrote {gif} ({os.path.getsize(gif) / 1e6:.1f} MB)  [{time.time() - t0:.0f}s]", flush=True)

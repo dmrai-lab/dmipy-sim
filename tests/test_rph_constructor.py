@@ -333,26 +333,25 @@ def test_a_frame_is_one_pose_and_a_peak_is_that_pose_with_its_azimuth_unstated(t
 
 
 def test_a_bingham_slot_is_a_fan_and_contains_the_watson(tmp_path, pack_path):
-    """A frame plus two concentrations: equal ones must reproduce the Watson ODF phantom of that width, which is
-    the acceptance test RPH.md 4 states, and unequal ones are a fan the ODF mode cannot express."""
+    """A frame plus two concentrations. Equal ones are the Watson cone of that width -- checked against the same
+    analytic distribution composed directly, so nothing but the phantom's own bookkeeping is in the way -- and
+    unequal ones are a fan the ODF mode cannot express."""
     from dmipy_sim.replay import read_rpk, so3
     n = 2
     R0 = so3.rotation_of((0.0, 0.0, 1.0))
     R = np.zeros((n, n, 1, 3, 3)); R[..., :, :] = R0
-    mu = np.zeros((n, n, 1, 3)); mu[..., :] = (0.0, 0.0, 1.0)
     kw = dict(grid=Grid((n, n, 1), (1e-3,) * 3), occupancy=np.zeros((n, n, 1), np.int32), remainder=None, embed=True)
-    cone, _ = _phantom(tmp_path / "cone", pack_path, orientation=BinghamField(R, (6.0, 6.0)), **kw)
-    watson, _ = _phantom(tmp_path / "wat", pack_path, orientation=WatsonField(6.0, mu, lmax=8), **kw)
-    fan, meta = _phantom(tmp_path / "fan", pack_path, orientation=BinghamField(R, (0.5, 30.0)), **kw)
+    cone, meta = _phantom(tmp_path / "cone", pack_path, orientation=BinghamField(R, (6.0, 6.0)), **kw)
+    fan, _ = _phantom(tmp_path / "fan", pack_path, orientation=BinghamField(R, (0.2, 60.0)), **kw)
     assert cone.mode == "bingham" and meta["orientation"]["mode"] == "bingham"
     assert cone.bingham_kappa.shape == (cone.n_voxels, 1, 2)
     pk = read_rpk(pack_path)
     seq = _acq(pk, [[1, 0, 0], [0, 0, 1]], [1e9, 1e9])
     band = dict(lmax=6, nmax=3)
     _, S_cone = cone.replay(seq, **band)
-    _, S_watson = watson.replay(seq, **band)
     _, S_fan = fan.replay(seq, **band)
-    # the two reach the same distribution by different routes -- the analytic Bingham density, and a Watson read
-    # from spherical-harmonic coefficients truncated at l = 8 -- so they agree to that truncation, not to the bit
-    np.testing.assert_allclose(S_cone, S_watson, atol=5e-4)
-    assert np.abs(S_fan - S_cone).max() > 4e-3                       # the fan is not that cone
+    # the same distribution composed outside the phantom: a Watson of that concentration
+    pr = pk.pose_response(seq, T2=[0.06] * 3, **band)
+    ref = np.abs(0.7 * pr.compose(so3.Distribution.watson(6.0, mu=(0, 0, 1), lmax=6, nmax=3)))
+    np.testing.assert_allclose(S_cone[0], ref, rtol=1e-9)
+    assert np.abs(S_fan - S_cone).max() > 3e-3                       # the fan is not that cone

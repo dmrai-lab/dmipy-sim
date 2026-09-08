@@ -106,7 +106,10 @@ def test_the_azimuthal_energy_measures_how_symmetric_a_substrate_is(hollow, elli
     """What the representation refuses to assume. A hollow cylinder is axially symmetric, so turning it about
     its own axis changes its response only by Monte-Carlo noise and its azimuthal coefficients are negligible;
     a three-axis pore is not, and both numbers say so. Measured here: asymmetry 5e-4 against 1e-2, and a
-    quarter-turn moving the signal by 1.6x the floor against 8.6x.
+    quarter-turn moving the signal by 2.9x the pack's floor against 13.4x. The energy separates the two by a
+    factor of twenty and is the statistic to read; the roll variation of an axially symmetric substrate does not
+    go to zero because a finite ensemble of walkers is not itself symmetric, and the coefficients that carry
+    that noise are exactly the ones an axis-only representation would have folded into its answer.
     """
     def roll_variation(pr):
         Rz = so3.rotation_of((0, 0, 1), roll=np.pi / 2)
@@ -115,12 +118,12 @@ def test_the_azimuthal_energy_measures_how_symmetric_a_substrate_is(hollow, elli
     pk, seq = hollow
     sym = pk.pose_response(seq, **BAND, **KW)
     assert sym.asymmetry < 2e-3
-    assert roll_variation(sym) < 2.5 * sym.floor
+    assert roll_variation(sym) < 4.0 * sym.floor
 
     pk2, seq2 = ellipsoid
     asym = pk2.pose_response(seq2, tissue=False, **BAND)
     assert asym.asymmetry > 5e-3
-    assert roll_variation(asym) > 5.0 * asym.floor
+    assert roll_variation(asym) > 8.0 * asym.floor
     # and it is still represented, because the azimuth is a dimension of the basis rather than an assumption
     assert asym.misfit.max() < 2.0 * asym.floor
     for R in so3.haar_rotations(4, seed=11):

@@ -244,9 +244,9 @@ class BinghamField(FrameField):
 
     def __init__(self, rotations, kappa, *, roll_kappa=0.0, weights=None):
         super().__init__(rotations, weights=weights)
-        shape = self.rotations.shape[:4]
-        self.kappa = np.broadcast_to(np.asarray(kappa, np.float64), shape + (2,))
-        self.roll_kappa = np.broadcast_to(np.asarray(roll_kappa, np.float64), shape)
+        shape = self.rotations.shape[:4]                                    # grid + (K,)
+        self.kappa = _with_population_axis(kappa, shape, (2,), "bingham kappa")
+        self.roll_kappa = _with_population_axis(roll_kappa, shape, (), "roll_kappa")
 
     def at(self, ijk):
         return [(w, (R, tuple(self.kappa[ijk][k]), float(self.roll_kappa[ijk][k])))
@@ -409,12 +409,17 @@ def build_rph(path, *, grid, substrates, occupancy, orientation, remainder=None,
                          "bingham": "pose_quat"}[mode]: ori})
 
 
-def _slot_key(ph, v, p):
-    """What else, besides the orientation entry, distinguishes this slot's distribution."""
-    if ph.mode != "bingham":
-        return None
-    rk = ph.roll_kappa
-    return (tuple(ph.bingham_kappa[v, p]), None if rk is None else float(rk[v, p]))
+def _with_population_axis(a, shape, trailing, name):
+    """A per-voxel value broadcast over the population axis, whether or not the caller wrote one."""
+    a = np.asarray(a, np.float64)
+    for cand in (shape + trailing, shape[:3] + trailing):
+        try:
+            out = np.broadcast_to(a, cand)
+        except ValueError:
+            continue
+        return out if cand == shape + trailing else np.broadcast_to(out[:, :, :, None, ...], shape + trailing)
+    raise ValueError(f"{name} has shape {a.shape}, which is neither grid + {trailing} nor grid + (K,) + "
+                     f"{trailing} for a {shape[3]}-population field")
 
 
 def _quat_of(R):
@@ -760,54 +765,73 @@ class ReplayPhantom:
         sid, frac = self.substrate_id, self.geometric_fraction
         n_meas = next(iter(pose.values())).n_meas if pose else len(np.atleast_1d(next(iter(analytic.values()))))
         S = np.zeros((self.n_voxels, n_meas), np.complex128)
-        ori = self._orientation_entries()
-        cache = {}
-        dist_of = self._distribution_of(lmax, nmax)
-        for v in range(self.n_voxels):
-            for p, i in enumerate(sid[v]):
-                i = int(i)
-                f = float(frac[v, p])
-                if i < 0 or f == 0.0:
-                    continue
-                if i in analytic:
-                    resp = analytic[i]
-                elif i in pose:
-                    key = (i, ori[v, p].tobytes(), _slot_key(self, v, p))
-                    resp = cache.get(key)
-                    if resp is None:
-                        resp = cache[key] = pose[i].compose(dist_of(v, p, ori[v, p]))
-                else:
-                    continue                                        # inert: occupies the volume, emits nothing
-                S[v] += f * m0[v, i] * resp
+        vp, F = self.slot_coefficients(lmax, nmax)
+        ids = sid[vp[:, 0], vp[:, 1]].astype(int)
+        weight = frac[vp[:, 0], vp[:, 1]].astype(np.float64) * m0[vp[:, 0], ids]
+        for i in set(ids.tolist()):
+            m = ids == i
+            if i in analytic:                                          # a closed form has no pose
+                np.add.at(S, vp[m, 0], weight[m][:, None] * np.atleast_1d(analytic[i])[None, :])
+            elif i in pose:                                            # one product for every slot citing it
+                np.add.at(S, vp[m, 0], weight[m][:, None] * (F[m] @ pose[i].coeffs.T))
         S = self._apply_layers(S, waveform, refocus_time, ref)
         return self.voxel_index, (S if complex_signal else np.abs(S))
 
-    def _orientation_entries(self):
-        """The array a slot's orientation is read from, one row per slot."""
-        return {"peaks": lambda: self.peak_dir, "odf_sh": lambda: self.odf_sh,
-                "frames": lambda: self.pose_quat, "bingham": lambda: self.pose_quat}[self.mode]()
+    def slot_coefficients(self, lmax=8, nmax=4):
+        """Every slot's orientation distribution as SO(3) coefficients: ``(n_live, n_features)``, with the
+        ``(voxel, slot)`` index of each row.
 
-    def _distribution_of(self, lmax, nmax):
-        """What a slot's orientation entry means as a distribution of poses (RPH.md 4).
+        One batched build per mode rather than a quadrature per voxel, which is what makes a phantom of many
+        voxels cost a matrix product (RPH.md 4):
 
-        A **peak** is one direction with its azimuth unstated -- the zero-dispersion limit of an axis density,
-        not a rotation -- and an **odf_sh** slot is an axis density in the required basis, checked as one on the
-        way in. A **frames** slot is one rotation, azimuth and all. A **bingham** slot is a frame with a
-        concentration about each of two of its axes, which is where an anisotropically fanned population lives.
+        * **peaks** -- a direction with its azimuth unstated, mapped through the cached axis map;
+        * **odf_sh** -- an axis density in the required basis, the same map applied to its coefficients;
+        * **frames** -- a rotation, so the coefficients are the basis evaluated there;
+        * **bingham** -- a canonical fan per distinct concentration pair, rotated into each slot's frame.
         """
         from .fod import FOD
-        from .so3 import Distribution, rotations_from_quaternions
+        from . import so3
+        sid, frac = self.substrate_id, self.geometric_fraction
+        rows = [(v, p) for v in range(self.n_voxels) for p in range(sid.shape[1])
+                if sid[v, p] >= 0 and frac[v, p] > 0.0]
+        vp = np.array(rows, np.int64).reshape(-1, 2)
+        n = vp.shape[0]
+        F = np.zeros((n, so3.n_so3_coeffs(lmax, nmax)))
+        # only a pack has a pose to compose: an analytic substrate is a closed form and an inert one emits
+        # nothing, so their slots keep the zero row rather than being read as an orientation
+        posed = np.array([self.substrates[int(sid[v, p])]["kind"] == "pack" for v, p in vp], bool)
+        if not posed.any():
+            return vp, F
+        idx = vp[posed]
         mode = self.mode
-        if mode == "peaks":
-            return lambda v, p, o: Distribution.axis(np.asarray(o, np.float64), lmax, nmax)
-        if mode == "odf_sh":
-            return lambda v, p, o: Distribution.axis_density(FOD.native(np.asarray(o, np.float64)), lmax, nmax)
-        if mode == "frames":
-            return lambda v, p, o: Distribution.pose(rotations_from_quaternions(o)[0], lmax, nmax)
-        kap, rk = self.bingham_kappa, self.roll_kappa
-        return lambda v, p, o: Distribution.bingham(rotations_from_quaternions(o)[0], tuple(kap[v, p]),
-                                                    roll_kappa=(0.0 if rk is None else float(rk[v, p])),
-                                                    lmax=lmax, nmax=nmax)
+        if mode in ("peaks", "odf_sh"):
+            T = so3._axis_map(int(lmax), int(nmax))
+            if mode == "peaks":
+                d = self.peak_dir[idx[:, 0], idx[:, 1]].astype(np.float64)
+                d = d / np.maximum(np.linalg.norm(d, axis=1, keepdims=True), 1e-30)
+                sh = so3.real_sh(lmax, d, full=True)
+            else:
+                sh = np.stack([so3._embed_sh(FOD.native(self.odf_sh[v, p].astype(np.float64)).coeffs, lmax)
+                               for v, p in idx])
+            F[posed] = sh @ T.T
+        elif mode in ("frames", "bingham"):
+            R = so3.rotations_from_quaternions(self.pose_quat[idx[:, 0], idx[:, 1]])
+            if mode == "frames":
+                F[posed] = so3.so3_design(lmax, R, nmax)
+            else:
+                kap = self.bingham_kappa[idx[:, 0], idx[:, 1]].astype(np.float64)
+                rk = self.roll_kappa
+                rk = np.zeros(idx.shape[0]) if rk is None else rk[idx[:, 0], idx[:, 1]].astype(np.float64)
+                key = np.stack([kap[:, 0], kap[:, 1], rk], axis=1)
+                out = np.zeros((idx.shape[0], F.shape[1]))
+                for u in np.unique(key, axis=0):                       # one canonical fan per distinct pair
+                    m = (key == u).all(axis=1)
+                    can = so3.bingham_coeffs(np.eye(3), (u[0], u[1]), lmax, nmax, roll_kappa=u[2])
+                    out[m] = so3.rotate_coeffs(can, R[m], lmax, nmax)
+                F[posed] = out
+        else:
+            raise ValueError(f"unknown orientation mode {mode!r}")
+        return vp, F
 
     def _responses(self, waveform, B0, b0_dir, tissue, packs, lmax, nmax, n_check, knobs):
         """One response per substrate: a :class:`PoseResponse` for a pack, a closed form for an analytic
