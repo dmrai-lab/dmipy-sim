@@ -120,26 +120,27 @@ raises; nothing is silently skipped.
 
 A pack answers for one microstructure at any pose. A **replay phantom** (`.rph`, spec in
 [RPH.md](https://github.com/dmrai-lab/replay-pack-spec)) is a voxel grid that cites packs: per voxel, which
-substrates occupy it, in what volume fraction, and along what orientation. It owns no walkers of its own, so
-one solved pack serves every voxel and every pose that cites it, and the file is the arrangement rather than
-the physics.
+substrates occupy it, in what volume fraction, and at what orientation. It owns no walkers of its own, so one
+solved pack serves every voxel and every pose that cites it, and the file is the arrangement rather than the
+physics — the phantom below is 77 kB citing an 11 MB pack.
 
 ![circular white-matter phantom](examples/rph/circular_wm.gif)
 
 A CACTUS bundle of 366 tortuous strands, walked once, arranged as an annulus of tangentially oriented fibres
-around a free-water core with inert background outside. **Left**: the substrate the walk saw, and the Watson
-FODs the phantom replays. **Middle and right**: a PGSE spin echo at 7 T. First the gradient turns through
-360° with the field pointing north, giving the diffusion contrast everyone knows -- dark where the gradient
-runs along the fibres, bright where it runs across them. Then the gradient is held fixed and **B0** turns
-instead. The diffusion weighting is identical in every frame, so what still moves is the susceptibility: the
-myelin field each walker samples depends on the angle between the field and the fibre, and a spin echo
-refocuses the static part of that field but not the part the walker diffuses through. That residue is a
-fraction of a percent, so those frames show each voxel's departure from its own mean over the sweep -- the
-pattern is the point, and the colour scale says how small it is. The free-water core has no field at all and
-sits at zero.
+around a free-water core with inert background outside. **Left**: the substrate the walk saw, and the poses the
+phantom replays — a tight cone around most of the ring, and one sector where the population fans out
+anisotropically, which is a Bingham with two different concentrations. **Middle and right**: a diffusion-weighted
+acquisition at 7 T. First the gradient turns through 360° with the field pointing north, giving the diffusion
+contrast everyone knows — dark where the gradient runs along the fibres, bright where it runs across them, a
+50% modulation per voxel. Then the gradient is held fixed through the plane, so the diffusion weighting is
+identical in every voxel and every frame, and **B0** turns instead: what still moves is the susceptibility, the
+myelin field each walker samples depending on the angle between the field and the fibre. That is a 2% effect
+here — integrating over the azimuth each slot leaves unstated averages away most of the frame-specific field,
+which is the honest answer for tissue with no preferred azimuth — so those frames are drawn as each voxel's
+departure from its own mean, and the free-water core, which has no field at all, sits flat.
 
 ```python
-from dmipy_sim.replay.phantom import (Grid, WatsonField, build_rph, read_rph,
+from dmipy_sim.replay.phantom import (BinghamField, Grid, build_rph, read_rph,
                                       pack_substrate, analytic_substrate, inert_substrate)
 
 build_rph("wm.rph",
@@ -147,25 +148,29 @@ build_rph("wm.rph",
           substrates=[pack_substrate("cactus/bundle", "cactus.rpk", m0=0.75),
                       analytic_substrate("csf", "free_water", {"diffusivity": 3e-9}),
                       inert_substrate()],
-          occupancy={"cactus/bundle": f_wm, "csf": f_csf},        # volume fractions, or a label volume
-          remainder="background/inert",                           # a voxel is always full: no unmodelled slack
-          orientation=WatsonField(kappa=16.0, mu=fibre_directions, lmax=8),
+          occupancy={"cactus/bundle": f_wm, "csf": f_csf},         # volume fractions, or a label volume
+          remainder="background/inert",                            # a voxel is always full: no unmodelled slack
+          orientation=BinghamField(frames, kappa),                 # a rotation and two concentrations per voxel
           id="phantoms/circular-wm", license="CC-BY-4.0", citation="...")
 
 voxels, S = read_rph("wm.rph").replay(seq, B0=7.0, b0_dir=(0, 1, 0), chi_iso=-1e-7)
 ```
 
-Orientation is either an ODF volume in a **named** basis (converted per RPH.md 4.1 -- an MRtrix FOD taken as
-orthonormal is wrong by an amount that vanishes exactly when the gradient is parallel to B0, the one geometry a
-cursory check would test), a Watson field, or discrete peaks with weights, where several populations of one
-substrate make a crossing. A pose is an axis and not a full rotation, so the response is averaged over the roll
-the phantom does not declare, with the roll count raised until the composition's misfit is inside the pack's own
-Monte-Carlo floor.
+**A pose is a rotation, not an axis**, and the four orientation modes differ in how much of it they pin down:
+`peaks` a direction, `odf_sh` a distribution over directions (in a **named** spherical-harmonic basis — an
+MRtrix FOD taken as orthonormal is wrong by an amount that vanishes exactly when the gradient is parallel to
+B0, the one geometry a cursory check would test), `frames` a whole rotation, and `bingham` a frame with a
+concentration about each of two of its axes. The two that name only a direction leave the substrate's own
+azimuth unstated, and a replay integrates over it rather than picking a convention. Nothing assumes the
+substrate is axially symmetric: each cited pack is expanded once into its response over SO(3), and every voxel
+is then an inner product with its own distribution, with the projection **refusing** rather than composing when
+its truncation cannot hold the response. On this bundle the axially symmetric truncation is refused outright.
 
 Macroscopic effects that vary over centimetres rather than microns are per-voxel **layers** on top of the
 packs: `m0_scale` for proton density within a tissue, `delta_B0_T` for a field map, `kappa_B1` for a transmit
-field. A layer this replay cannot carry raises rather than being dropped, because a phantom that silently loses
-a layer replays wrong while looking right.
+field, which acts on the magnetisation and so goes through the RF-aware replay at each voxel's pose. A layer
+this replay cannot carry raises rather than being dropped, because a phantom that silently loses a layer
+replays wrong while looking right.
 
 ## Substrates
 
@@ -260,7 +265,7 @@ rules, the replay invariant, and how to add physics.
   against exact eigenvalues; extra-axonal tortuosity scale sweep.
 - **[Substrate bank](examples/substrate_bank/)** — building canonical-pore packs with a fidelity target.
 - **[Circular white-matter phantom](examples/rph/circular_wm_phantom.py)** — one CACTUS pack composed into a
-  replay phantom, swept over gradient and field direction; writes the animation above.
+  replay phantom with a fanned sector, swept over gradient and field direction; writes the animation above.
 
 ## Install
 

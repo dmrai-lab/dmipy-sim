@@ -151,8 +151,11 @@ def _pools(pack):
 def figure(ph, pack_path, ang, dirs, S_g, S_b, out_gif, fps=10, slab_um=1.2):
     """Substrate, FODs, the signal map, and the signal of two voxels as each sweep advances.
 
-    Each sweep gets its own fixed colour scale, since the two sit at different signal levels: what the picture
-    is about is how the pattern moves within a sweep, not how the two sweeps compare.
+    The gradient sweep is a factor-of-twenty contrast and is drawn as ``|S|``. The field sweep is a two percent
+    one -- integrating over the azimuth each slot leaves unstated washes out most of the frame-specific field,
+    which is the honest answer for tissue with no preferred azimuth -- so those frames are drawn as each voxel's
+    departure from its own mean over the sweep: the pattern is the point, and the colour scale says how small it
+    is.
     """
     import matplotlib
     matplotlib.use("Agg")
@@ -162,8 +165,8 @@ def figure(ph, pack_path, ang, dirs, S_g, S_b, out_gif, fps=10, slab_um=1.2):
     pack = read_rpk(pack_path)
     n = ph.grid.shape[0]
     fig = plt.figure(figsize=(11.0, 4.4), facecolor="white")
-    gs = fig.add_gridspec(2, 3, width_ratios=[0.85, 1.25, 1.15], wspace=0.45, hspace=0.4,
-                          left=0.02, right=0.95, top=0.84, bottom=0.13)
+    gs = fig.add_gridspec(2, 3, width_ratios=[0.85, 1.25, 1.15], wspace=0.45, hspace=0.45,
+                          left=0.055, right=0.95, top=0.84, bottom=0.13)
     ax_sub, ax_fod = fig.add_subplot(gs[0, 0]), fig.add_subplot(gs[1, 0])
     ax_map, ax_cur = fig.add_subplot(gs[:, 1]), fig.add_subplot(gs[:, 2])
 
@@ -192,25 +195,28 @@ def figure(ph, pack_path, ang, dirs, S_g, S_b, out_gif, fps=10, slab_um=1.2):
             continue
         R = so3.rotations_from_quaternions(ph.pose_quat[v, 0])[0]
         r = fan_density(ph.bingham_kappa[v, 0], d_sh @ R)                 # the density, in the frame's own axes
-        r = 0.62 * step * r / max(r.max(), 1e-12)
+        r = r / max(r.max(), 1e-12)
+        r = 0.62 * step * (0.25 + 0.75 * r)                               # a floor, so a tight cone is visible
         fan = tuple(ph.bingham_kappa[v, 0]) != KAPPA
         ax_fod.fill(i + r * d_sh[:, 0], j + r * d_sh[:, 1], color="#b3452c" if fan else "#3b3b6d", lw=0)
     ax_fod.set_xlim(-1, n); ax_fod.set_ylim(-1, n); ax_fod.set_aspect("equal")
     ax_fod.set_xticks([]); ax_fod.set_yticks([])
-    ax_fod.set_title(f"replayed poses: a $\\kappa$={KAPPA[0]:.0f} cone, and a "
+    ax_fod.set_title(f"replayed poses: a {KAPPA[0]:.0f}/{KAPPA[1]:.0f} cone, and a "
                      f"{KAPPA_FAN[0]:.0f}/{KAPPA_FAN[1]:.0f} fan", fontsize=8)
 
     def vol(s):
         return ph.to_volume(np.asarray(s))[:, :, 0].T                     # (j, i) for imshow
 
     S_g, S_b = np.abs(S_g), np.abs(S_b)
+    mean_b = S_b.mean(axis=1, keepdims=True)
+    pct_b = 100.0 * (S_b - mean_b) / np.where(mean_b > 0, mean_b, 1.0)
+    lim_b = float(np.percentile(np.abs(pct_b[f_wm > 0.5]), 98))
     im = ax_map.imshow(vol(S_g[:, 0]), origin="lower", cmap="magma", vmin=0.0, vmax=float(S_g.max()),
                        interpolation="nearest")
     ax_map.set_xticks([]); ax_map.set_yticks([])
     cb = fig.colorbar(im, ax=ax_map, fraction=0.046, pad=0.03)
     cb.ax.tick_params(labelsize=6)
     cb.set_label("|S|", fontsize=7)
-    ax_cur.set_ylabel("|S|", fontsize=8)
     c = (n - 1) / 2.0
     import matplotlib.patheffects as pe
     stroke = [pe.withStroke(linewidth=2.2, foreground="#222222")]
@@ -242,26 +248,32 @@ def figure(ph, pack_path, ang, dirs, S_g, S_b, out_gif, fps=10, slab_um=1.2):
     def draw(k):
         phase, k = divmod(k, nf)
         turning_g = phase == 0
-        S = S_g if turning_g else S_b
         g = dirs[k] if turning_g else np.array([0.0, 0.0, 1.0])
         b = np.array([0.0, 1.0, 0.0]) if turning_g else dirs[k]
-        im.set_data(vol(S[:, k])); im.set_clim(0.0, float(S.max()))
         if turning_g:
+            im.set_data(vol(S_g[:, k])); im.set_cmap("magma"); im.set_clim(0.0, float(S_g.max()))
+            cb.set_label("|S|", fontsize=7)
             ttl.set_text("g turns 360$^\\circ$, B$_0$ north: the diffusion contrast, dark along the fibres")
+            curve, ylab = S_g, "|S|"
+            mod, unit = 100.0 * np.ptp(S_g[[v1, v2]], axis=1) / S_g[[v1, v2]].mean(axis=1), "%"
         else:
+            im.set_data(vol(pct_b[:, k])); im.set_cmap("coolwarm"); im.set_clim(-lim_b, lim_b)
+            cb.set_label("|S| departure from its sweep mean [%]", fontsize=7)
             ttl.set_text("B$_0$ turns 360$^\\circ$, g fixed through the plane: the susceptibility contrast")
+            curve, ylab = pct_b, "|S| departure [%]"
+            mod, unit = np.ptp(pct_b[[v1, v2]], axis=1), " points"
         L_g, L_b = 0.31 * n, 0.22 * n
         g_dot.set_visible(abs(g[2]) > 0.9)                                 # g through the plane: a dot, not an arrow
         q_g.set_position((c - L_g * g[0], c - L_g * g[1])); q_g.xy = (c + L_g * g[0], c + L_g * g[1])
         q_b.set_position((c - L_b * b[0], c - L_b * b[1])); q_b.xy = (c + L_b * b[0], c + L_b * b[1])
         for line, v in zip(lines, (v1, v2)):
-            line.set_data(deg[:k + 1], S[v, :k + 1])
-        y = S[[v1, v2]]
+            line.set_data(deg[:k + 1], curve[v, :k + 1])
+        y = curve[[v1, v2]]
         pad = max(0.05 * (y.max() - y.min()), 1e-5)
         ax_cur.set_ylim(y.min() - pad, y.max() + pad)
+        ax_cur.set_ylabel(ylab, fontsize=8)
         # what the two curves trace: the modulation each of those voxels goes through over the sweep
-        mod = 100.0 * np.ptp(y, axis=1) / y.mean(axis=1)
-        ax_cur.set_title(f"sweep modulation {mod.min():.0f}-{mod.max():.0f}%", fontsize=8)
+        ax_cur.set_title(f"sweep modulation {mod.min():.1f}-{mod.max():.1f}{unit}", fontsize=8)
         return [im, q_g, q_b, g_dot, *lines, ttl]
 
     anim = FuncAnimation(fig, draw, frames=2 * nf, blit=False)
