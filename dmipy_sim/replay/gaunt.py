@@ -146,10 +146,14 @@ def gaunt_table(l_fod, l_g, l_b, n_theta=None, n_phi=None, atol=1e-10,
     if key in _CACHE:
         return _CACHE[key]
     L = max(l_fod, l_g, l_b, l_k or 0)
-    # degree of the integrand; the rule must be exact for it
+    # the rule must be exact for the integrand -- a product of three or four harmonics, of degree `deg` -- AND
+    # for the orthonormality it is checked against, whose integrand is a product of two harmonics of the
+    # largest order L, reaching |m| = 2L in phi. The second is not implied by the first: at l_g = 16 the
+    # integrand rule gives 64 phi points where the Gram needs 65, and one missing point aliases a whole mode,
+    # which shows up as a Gram deviation of exactly 1 rather than as a small error.
     deg = l_fod + l_g + l_b + (l_k or 0)
-    nt = int(n_theta or (deg // 2 + 2))
-    npx = int(n_phi or (2 * deg + 4))
+    nt = int(n_theta or max(deg // 2 + 2, L + 2))
+    npx = int(n_phi or max(2 * deg + 4, 4 * L + 4))
     dirs, w = sphere_quadrature(nt, npx)
     Yfull = real_sh(L, dirs, full=True)
     assert_orthonormal(Yfull, w, atol=atol)

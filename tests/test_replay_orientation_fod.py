@@ -164,3 +164,27 @@ def test_pose_spectra_are_the_factored_fod_route_and_carry_the_peak_limit(hollow
     # the same spectra without a field: a spherical convolution kernel, same contract
     ps0 = pk.pose_spectra(seq, tissue=False)
     np.testing.assert_allclose(ps0.compose(fod), pk.replay(seq, fod=fod, tissue=False, complex_signal=True), rtol=1e-12)
+
+
+def test_the_roll_average_is_adaptive_and_free_on_an_axisymmetric_substrate(hollow, monkeypatch):
+    """A pose is an axis, not a full rotation, so the response is averaged over the roll a slot does not
+    declare. A hollow cylinder is axially symmetric, so one roll already fits inside its Monte-Carlo floor and
+    no extra work is done. When the misfit does not come down, the count doubles to the cap and then says so,
+    and each doubling refines a uniform average rather than restarting it."""
+    import warnings
+    from dmipy_sim.replay import sh_convolution as sh
+    from dmipy_sim.replay.replay import _van_der_corput
+    pk, seq = hollow
+    kw = {k: v for k, v in KW.items() if k != "complex_signal"}
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", UserWarning)
+        ps = pk.pose_spectra(seq, **kw)
+    assert ps.n_roll == 1 and ps.misfit < 2.0 / np.sqrt(pk.n_walkers)
+    real = sh.coupled_spectrum_at
+    monkeypatch.setattr(sh, "coupled_spectrum_at", lambda *a, **k: (lambda o: (o[0], 1.0, o[2]))(real(*a, **k)))
+    with pytest.warns(UserWarning, match="averaged over 4 rolls"):
+        pk.pose_spectra(seq, n_theta=12, n_phi=24, n_roll_max=4, **kw)
+    # every power-of-two prefix of the roll schedule is a uniform average over the circle
+    for m in (1, 2, 4, 8):
+        rolls = np.sort([_van_der_corput(j) for j in range(m)])
+        np.testing.assert_allclose(rolls, (np.arange(m) + 0.0) / m, atol=1e-12)
