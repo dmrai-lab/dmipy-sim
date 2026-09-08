@@ -101,7 +101,7 @@ acquisition; assert to `max(0.02, 1/√N)`.
 ## Module map (`dmipy_sim/`)
 
 Layered packages (#88): `geometry/` (substrates), `engine/` (`core`, `physics`, `bloch`, `pulse_sequence`, `mt`, `mt_walk`,
-`gpu`, `_gpu_config`), `replay/` (`trajectories`, `compression`, `replay`, `bank`, `phantom`, `sh_convolution`, `gaunt`,
+`gpu`, `_gpu_config`), `replay/` (`trajectories`, `compression`, `replay`, `bank`, `phantom`, `so3`, `sh_convolution`, `gaunt`,
 `_replay_kernel`), `acquisition/` (`waveforms`, `rf`, `noise`), `fields/`
 (`susceptibility`, `susceptibility_field`), `viz/` (`viz`, `pedagogy`), plus `sequences/`, `substrate/`, `io/`, `math/` and the
 level-0 modules `constants`, `compartments`, `persistent_walk`. `dmipy_sim.replay` and `dmipy_sim.viz` are packages that
