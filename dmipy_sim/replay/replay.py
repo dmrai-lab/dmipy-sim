@@ -683,15 +683,19 @@ class ReplayPack:
         start = (int(max(int(np.ceil(phi_amp)) + 2, 2)) if pointwise
                  else int(max(int(want_l), int(want_n)) + 2))
         S_L = start if band is None else (int(band[0]) if np.ndim(band) else int(band))
-        if S_L > int(band_cap):
+        # what the cap bounds is what was asked for: the projection band where the whole response must be
+        # reproduced, and the RETAINED band where a distribution states one -- the oversample the projection
+        # adds over that is arithmetic, not a request, and must not refuse a band the caller may keep
+        asked = S_L if pointwise or band is not None else int(max(int(want_l), int(want_n)))
+        if asked > int(band_cap):
             raise ValueError(
                 (f"this acquisition sweeps {phi_amp:.1f} radians of phase on this pack, so reproducing its "
                  f"response at every pose reaches order ~{S_L}, beyond the cap of {band_cap}. That is a real "
                  f"cost, not a setting: at this sharpness a direct replay per pose (orientation=R) is the "
                  f"cheaper and exact route, and composing a distribution of a stated band costs far less than "
                  f"this (pass keep=). Raise band_cap= to insist." if pointwise else
-                 f"the band kept here, {(want_l, want_n)}, needs a projection at order ~{S_L}, beyond the cap "
-                 f"of {band_cap}. Retain less, or raise band_cap= to insist."))
+                 f"the band kept here, {(want_l, want_n)}, is beyond the cap of {band_cap}: composing it "
+                 f"needs a projection at order ~{S_L}. Retain less, or raise band_cap= to insist."))
         floor = 1.0 / np.sqrt(n_w)
 
         def attempt(S):
