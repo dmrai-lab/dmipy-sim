@@ -680,8 +680,15 @@ class ReplayPack:
         # Where the whole response is retained -- at(R), frames mode, one pose -- the requirement really is
         # pointwise, and that is what the phase amplitude sets.
         pointwise = want_l is None or want_n is None
-        start = (int(max(int(np.ceil(phi_amp)) + 2, 2)) if pointwise
-                 else int(max(int(want_l), int(want_n)) + 2))
+        if pointwise:
+            start = int(max(int(np.ceil(phi_amp)) + 2, 2))
+        else:
+            # ...but never more than reproducing the whole response would need: if the band the phase
+            # amplitude implies already resolves everything, the kept coefficients are an exact truncation
+            # of that projection and no wider grid buys anything. And never less than the kept band itself,
+            # which cannot be retained from a projection that does not reach it.
+            kept = int(max(int(want_l), int(want_n)))
+            start = int(max(kept, min(int(np.ceil(phi_amp)) + 2, kept + 2), 2))
         S_L = start if band is None else (int(band[0]) if np.ndim(band) else int(band))
         # what the cap bounds is what was asked for: the projection band where the whole response must be
         # reproduced, and the RETAINED band where a distribution states one -- the oversample the projection

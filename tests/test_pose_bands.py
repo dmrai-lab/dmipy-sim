@@ -446,3 +446,21 @@ def test_a_stated_kept_band_sets_the_projection_and_not_the_phase_amplitude(pack
     got = kept.compose(so3.Distribution.axis_density(fod, 2, 0))[0]
     assert abs(abs(got) - abs(analytic_over(seq.q, fod.evaluate))) < 5e-3
     assert kept.misfit.max() <= kept.floor
+
+
+def test_a_kept_band_wider_than_the_response_does_not_widen_the_grid(pack):
+    """The other side of the same rule, and a factor of 1.5 in the wrong direction before it was fixed. Where
+    the phase amplitude already implies a band at or above what is kept, the kept coefficients are an exact
+    truncation of that projection, so the grid must not be widened past it -- while it can never be narrower
+    than the kept band either, which cannot be retained from a projection that does not reach it.
+    """
+    seq = _Lobe(0.2)                                                  # a phase amplitude of ~2 radians
+    kept = pack.pose_response(seq, keep=(8, 0), tissue=False)
+    wide = pack.pose_response(seq, band=10, keep=(8, 0), tissue=False)   # what the kept + 2 rule would cost
+    assert kept.lmax == wide.lmax == 8                                # the same coefficients either way
+    assert kept.n_samples < 0.75 * wide.n_samples                     # a third fewer poses: 7936 against 12000
+    np.testing.assert_allclose(kept.coeffs, wide.coeffs, atol=4.0 * kept.floor)
+    fod = FOD.watson(6.0, mu=(0.3, 0.5, 0.81), lmax=8)
+    got = kept.compose(so3.Distribution.axis_density(fod, 8, 0))[0]
+    assert abs(abs(got) - abs(analytic_over(seq.q, fod.evaluate))) < 5e-3
+    assert kept.misfit.max() <= kept.floor
