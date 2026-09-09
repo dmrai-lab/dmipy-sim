@@ -58,12 +58,32 @@ def read_rpk(path):
     return ReplayPack(arrays, meta, source=str(path))
 
 
-def _tensor_swing(voigt):
-    """``(n,)`` the spread ``lmax - lmin`` of each symmetric tensor's eigenvalues, from Voigt rows.
+def _encoding_phase_swing(M):
+    """``(n_w, n_meas)`` how many radians the **encoding-gradient** phase sweeps as the pose turns.
 
-    The susceptibility phase at pose ``R`` is ``chi B0 b_s^T P b_s`` for the field direction carried into the
-    substrate frame, so over all poses it sweeps exactly this -- the worst case over field directions, in
-    radians, and the field's contribution to how sharp the response is in the pose.
+    Walker ``w``'s phase from the encoding gradient is ``<R, M_w>``, whose extremes over rotations are
+    ``s1 + s2 +- s3`` for the singular values of ``M_w`` (orthogonal Procrustes), so the amplitude it
+    modulates -- half the peak-to-peak, and independent of both ``s3`` and the sign of ``det M`` -- is
+    ``s1 + s2``. That argument is linear in the pose, so its amplitude is also its bandwidth: the harmonic
+    content of ``exp(i <R, M_w>)`` reaches about that order.
+
+    Where the waveform holds one direction ``M_w`` is rank one and this is exactly ``||M_w||``, which is what
+    it replaces; where it does not -- a b-tensor or free waveform -- the norm runs up to 30% low, always low.
+    """
+    G = np.einsum("...ab,...ac->...bc", np.asarray(M, np.float64), np.asarray(M, np.float64))
+    lam = np.clip(np.linalg.eigvalsh(G), 0.0, None)         # singular values by the symmetric route: same
+    return np.sqrt(lam[..., 2]) + np.sqrt(lam[..., 1])      # cost as SVD, and this box has LAPACK history
+
+
+def _susceptibility_phase_swing(voigt):
+    """``(n,)`` the same quantity for the **susceptibility** phase, from Voigt rows of its tensor.
+
+    That phase is ``chi B0 b_s^T P_w b_s`` for the field direction carried into the substrate frame, so its
+    amplitude over poses is half the spread of ``P_w``'s eigenvalues. Its argument is *quadratic* in the pose
+    rather than linear, though, and a quadratic argument carries about a third more harmonic content than a
+    linear one of the same amplitude (measured: order 12 against 9 at an amplitude of 4 radians). Returning
+    the full spread -- twice the amplitude -- covers that with room to spare, which is the right side to be on
+    for an estimate the band then grows from.
     """
     v = np.asarray(voigt, np.float64)
     T = np.empty((v.shape[0], 3, 3))
@@ -488,8 +508,9 @@ class ReplayPack:
         voxel's orientation distribution is a distribution of those rotations.
 
         **There is no band to choose and no margin to tune.** The projection starts at the order the response's
-        own phase amplitude implies -- the pose dependence is ``exp(i phi)`` with ``phi`` the gradient
-        contraction plus, with a field, the swing of the susceptibility phase over field directions -- and then
+        own phase amplitude implies -- the pose dependence is ``exp(i phi)`` with ``phi`` the encoding-gradient
+        phase plus, with a field, the susceptibility phase, each contributing the radians it sweeps as the pose
+        turns (:func:`_encoding_phase_swing`, :func:`_susceptibility_phase_swing`) -- and then
         **grows until the worst case off the grid sits under the pack's Monte-Carlo floor**, or until a direct
         replay per pose would be cheaper (``band_cap``). It has to be grown rather than computed: the residual
         of a truncation is an ensemble average of the walkers' out-of-band content, so a pack whose walkers
@@ -557,16 +578,16 @@ class ReplayPack:
                      chunk=256, over=2, band_cap=12, strict=True):
         """Sample the response over rotations, project it, and grow the band until it holds.
 
-        The gradient term is exact for any waveform, single- or multi-axis: the phase of walker ``w`` at pose
-        ``R`` is ``<R, M_w>`` with ``M_w[a, b] = sum_t Geff[t, a] r_w[t, b]``, so the walk is contracted once
-        per measurement and every pose is then a 3x3 inner product. The field term is the same second-rank form
-        in the field direction carried into the substrate frame, reached through the six quadratic products of
-        the rotated field direction.
+        The encoding-gradient phase is exact for any waveform, single- or multi-axis: the phase of walker ``w``
+        at pose ``R`` is ``<R, M_w>`` with ``M_w[a, b] = sum_t Geff[t, a] r_w[t, b]``, so the walk is contracted
+        once per measurement and every pose is then a 3x3 inner product. The susceptibility phase is the same
+        second-rank form in the field direction carried into the substrate frame, reached through the six
+        quadratic products of the rotated field direction.
 
-        The band starts from those contractions rather than from a setting: the phase the pose modulates is
-        ``||M_w||`` plus, with a field, the swing of ``chi B0 (b^T P_w b)`` over field directions, which is the
-        spread of that tensor's eigenvalues -- and the harmonic content of ``exp(i phi)`` reaches about that
-        order, the cutoff that makes ``j_l(x)`` negligible for ``l`` beyond ``x``. It is a **starting** estimate
+        The band starts from those contractions rather than from a setting: what the pose modulates is
+        ``s1 + s2`` of ``M_w`` plus, with a field, the eigenvalue spread of ``chi B0 P_w``, both in radians --
+        and the harmonic content of ``exp(i phi)`` reaches about that order, the cutoff that makes ``j_l(x)``
+        negligible for ``l`` beyond ``x``. It is a **starting** estimate
         and not a guarantee, so the band then **grows** until the measured worst case sits under the pack's
         Monte-Carlo floor: how far above the estimate a given pack sits depends on how coherent its walkers'
         out-of-band content is, which no closed form knows. The quadrature is oversampled past the projection
@@ -583,7 +604,7 @@ class ReplayPack:
         n_meas, n_w = Geff.shape[0], ew.shape[0]
 
         C = read_position_coeffs(self.arrays, dtype=np.float64).reshape(n_w, -1)
-        # The gradient term at pose R is <R, M_w> with M_w[a, b] = sum_t Geff[i, t, a] r_w[t, b]: the walk is
+        # The encoding-gradient phase at pose R is <R, M_w>, M_w[a, b] = sum_t Geff[i, t, a] r_w[t, b]: the walk
         # contracted against the waveform once, and every pose after that is a 3x3 inner product. Exact for a
         # multi-axis waveform too, which an expansion in one gradient direction could not take at all.
         Q = np.empty((n_w, n_meas, 3, 3))
@@ -633,31 +654,44 @@ class ReplayPack:
                     E[sl, i] = (Ew * np.exp(1j * np.einsum("nab,wab->nw", Rc, Q[:, i]))).sum(1) / norm
             return E
 
-        # The phase the pose modulates, per walker: the gradient contraction, plus what the field contributes.
-        # A field's phase at pose R is chi B0 b_s^T P_w b_s with b_s the field direction in the substrate frame,
-        # so over poses it sweeps the spread of that tensor's eigenvalues -- and the two phases add in the
-        # exponent, so they are summed per walker before the percentile rather than compared.
-        amp = np.linalg.norm(Q.reshape(n_w, n_meas, 9), axis=2)
+        # How many radians the pose modulates, per walker: what the encoding gradient sweeps, plus what the
+        # susceptibility sweeps. Each is an amplitude weighted by the harmonic band of its own argument --
+        # linear in the pose for <R, M_w>, quadratic for the field -- and the two add in the exponent, so they
+        # are summed per walker rather than compared.
+        amp = _encoding_phase_swing(Q)
         if Psi is not None:
-            swing = np.abs(float(chi_iso) * float(B0)) * _tensor_swing(Psi[:, i_p:i_p + 6])
+            swing = np.abs(float(chi_iso) * float(B0)) * _susceptibility_phase_swing(Psi[:, i_p:i_p + 6])
             if chi_aniso and i_a is not None:
                 # two spreads added bound the combined tensor's own spread rather than computing it, which is
                 # the conservative direction for an estimate the growth then refines
-                swing = swing + np.abs(float(chi_aniso) * float(B0)) * _tensor_swing(Psi[:, i_a:i_a + 6])
+                swing = swing + np.abs(float(chi_aniso) * float(B0)) * _susceptibility_phase_swing(Psi[:, i_a:i_a + 6])
             amp = amp + swing[:, None]
         # per measurement, then the largest: one band serves the whole acquisition, so a b = 0 image in the
         # set must not dilute the percentile of the one that actually sweeps phase
         phi_amp = float(np.percentile(amp, 95, axis=0).max()) if amp.size else 0.0
-        start = int(max(int(np.ceil(phi_amp)) + 2, 2))                # an estimate, refined by measurement below
+
+        # `keep` may leave either index open with None, meaning "whatever the response carries"
+        want_l, want_n = (None, None) if keep is None else (keep[0], keep[1])
+        # Where the growth starts -- and it is not the same question in the two cases. With a kept band stated,
+        # what has to hold is that nothing folds into THOSE coefficients, an integral of the response against
+        # smooth basis functions, which needs a grid a little past them and nothing like the phase amplitude:
+        # on the adversarial ensemble of identical walkers an order-4 Watson composes to 6e-5 of the floor from
+        # a band-4 projection, where the phase amplitude would have asked for 8 and cost eight times as much.
+        # Where the whole response is retained -- at(R), frames mode, one pose -- the requirement really is
+        # pointwise, and that is what the phase amplitude sets.
+        pointwise = want_l is None or want_n is None
+        start = (int(max(int(np.ceil(phi_amp)) + 2, 2)) if pointwise
+                 else int(max(int(want_l), int(want_n)) + 2))
         S_L = start if band is None else (int(band[0]) if np.ndim(band) else int(band))
         if S_L > int(band_cap):
             raise ValueError(
-                f"this acquisition sweeps {phi_amp:.1f} radians of phase on this pack, so its pose response "
-                f"reaches order ~{S_L}, beyond the cap of {band_cap}. That is a real cost, not a setting: the "
-                f"expansion is worth building to share one walk over many poses, and at this sharpness a direct "
-                f"replay per pose (orientation=R) is the cheaper and exact route. Raise band_cap= to insist.")
-        # `keep` may leave either index open with None, meaning "whatever the response carries"
-        want_l, want_n = (None, None) if keep is None else (keep[0], keep[1])
+                (f"this acquisition sweeps {phi_amp:.1f} radians of phase on this pack, so reproducing its "
+                 f"response at every pose reaches order ~{S_L}, beyond the cap of {band_cap}. That is a real "
+                 f"cost, not a setting: at this sharpness a direct replay per pose (orientation=R) is the "
+                 f"cheaper and exact route, and composing a distribution of a stated band costs far less than "
+                 f"this (pass keep=). Raise band_cap= to insist." if pointwise else
+                 f"the band kept here, {(want_l, want_n)}, needs a projection at order ~{S_L}, beyond the cap "
+                 f"of {band_cap}. Retain less, or raise band_cap= to insist."))
         floor = 1.0 / np.sqrt(n_w)
 
         def attempt(S):

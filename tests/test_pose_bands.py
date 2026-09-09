@@ -363,3 +363,86 @@ def test_the_band_grows_until_the_worst_case_is_under_the_floor(pack):
     # and the estimate is not thrown away: the growth starts there, so an ordinary pack pays one pass
     incoherent = pack.pose_response(_Lobe(0.6), tissue=False)
     assert incoherent.lmax == int(np.ceil(incoherent.phase_amplitude)) + 2
+
+
+# ------------------------------------------------------------------ what the estimate is a swing of
+def test_the_swing_of_the_encoding_phase_is_its_two_largest_singular_values():
+    """The identity the estimate rests on. The encoding-gradient phase at pose ``R`` is ``<R, M_w>``, and its
+    extremes over rotations are ``s1 + s2 +- s3`` (orthogonal Procrustes), so the amplitude it modulates is
+    ``s1 + s2`` -- independent of ``s3`` and of the sign of ``det M``. Checked against turning the pose.
+
+    It coincides with ``||M||`` exactly at rank one, which is what a waveform holding one direction contracts
+    to, and runs up to 30% above it otherwise -- so the norm this replaced was right for PGSE and OGSE and low
+    for a b-tensor or free waveform, always low.
+    """
+    from dmipy_sim.replay.replay import _encoding_phase_swing
+    rng = np.random.default_rng(0)
+    R = so3.haar_rotations(200_000, seed=1)
+    g, v = rng.normal(size=3), rng.normal(size=3)
+    U, _s, Vt = np.linalg.svd(rng.normal(size=(3, 3)))
+    for tag, M in (("rank 1", np.outer(g, v)),
+                   ("rank 2", np.outer(g, v) + np.outer(*rng.normal(size=(2, 3)))),
+                   ("rank 3", rng.normal(size=(3, 3))),
+                   ("s = (1, 1, 0)", U @ np.diag([1.0, 1.0, 0.0]) @ Vt)):
+        phase = np.einsum("nab,ab->n", R, M)
+        swing = 0.5 * (phase.max() - phase.min())
+        got = float(_encoding_phase_swing(M[None, None])[0, 0])
+        np.testing.assert_allclose(got, swing, rtol=2e-3, err_msg=tag)
+        assert got >= np.linalg.norm(M) - 1e-9                        # never below the norm it replaced
+    assert _encoding_phase_swing((U @ np.diag([1.0, 1.0, 0.0]) @ Vt)[None, None])[0, 0] > 1.3 * np.sqrt(2)
+
+
+def test_the_phase_amplitude_is_the_swing_the_substrate_turns_through():
+    """And the estimate is that swing on a pack, for a waveform that turns while it plays -- the case whose
+    contraction is not rank one. One walker drifting in a straight line, so the phase is exactly ``<R, M_w>``
+    and reading the replayed signal's argument at many poses measures the swing directly.
+    """
+    t = np.arange(N_T) * DT
+    r0, v = np.array([2.0e-6, -1.0e-6, 0.5e-6]), np.array([-1.6e-4, 2.0e-4, 0.9e-4])
+    pos = (r0[None, :] + np.outer(t, v))[None, :, :]                  # (1 walker, n_t, 3)
+    walk = PersistentWalk(positions=pos, dt=DT, sub_steps=1, dt_sim=DT)
+    pk = build_replay_pack(walk, id="test/drift", license="x", citation="x", K=8, envelope=ENV, field=False)
+    assert pk.fidelity["err_max"] < 1e-8                              # a drift compresses exactly too
+
+    seq = _Lobe(0.05)
+    n = N_T // 3
+    seq.G[0, :, :] = 0.0
+    seq.G[0, :n, 0] = 0.05                                            # x while the first third plays,
+    seq.G[0, n:2 * n, 1] = 0.05                                       # then y: the contraction turns with it
+    pr = pk.pose_response(seq, tissue=False)
+    phase = np.array([np.angle(pk.replay(seq, orientation=R, tissue=False, complex_signal=True)[0])
+                      for R in so3.haar_rotations(1000, seed=4)])
+    assert np.abs(phase).max() < 3.0                                  # no wrapping, so the argument is the phase
+    swing = 0.5 * (phase.max() - phase.min())
+    assert swing <= pr.phase_amplitude < 1.06 * swing                 # sampled poses can only underestimate it
+
+    # and it is that swing because the contraction is rank two, where the norm it replaced is 21% low. The
+    # drift makes M_w analytic: q against the starting point, the first time moment against the velocity.
+    q = GAMMA * DT * seq.G[0].sum(0)
+    m = GAMMA * DT * (seq.G[0] * (t + 0.5 * DT)[:, None]).sum(0)      # the exact weights for a linear path
+    M = np.outer(q, r0) + np.outer(m, v)
+    sig = np.linalg.svd(M, compute_uv=False)
+    assert sig[1] > 0.2 * sig[0] and sig[2] < 1e-12 * sig[0]          # genuinely rank two
+    np.testing.assert_allclose(pr.phase_amplitude, sig[0] + sig[1], rtol=1e-3)
+    assert np.linalg.norm(M) < 0.85 * pr.phase_amplitude
+
+
+def test_a_stated_kept_band_sets_the_projection_and_not_the_phase_amplitude(pack):
+    """The two cases are different questions, and conflating them was expensive. Reproducing the response at
+    *every* pose is pointwise and really does need the phase amplitude. Composing a distribution of a stated
+    band only needs nothing to fold into those coefficients -- an integral against smooth basis functions --
+    so the projection starts just past what is kept.
+
+    Measured on a CACTUS-like bundle at a clinical b: the phase amplitude asked for order 15 where an order-4
+    ODF was satisfied at 4, eight times the work for no accuracy at all. And it is not a saving bought with
+    accuracy: the composition here still matches explicit averaging.
+    """
+    seq = _Lobe(0.6)                                                  # a phase amplitude of 6.2 radians
+    full = pack.pose_response(seq, tissue=False)
+    kept = pack.pose_response(seq, keep=(2, 0), tissue=False)
+    assert full.lmax == int(np.ceil(full.phase_amplitude)) + 2         # pointwise: the phase amplitude
+    assert kept.lmax == 2 and kept.n_samples < full.n_samples / 2.5    # kept: just past the distribution
+    fod = FOD.watson(4.0, mu=(0.3, 0.5, 0.81), lmax=2)
+    got = kept.compose(so3.Distribution.axis_density(fod, 2, 0))[0]
+    assert abs(abs(got) - abs(analytic_over(seq.q, fod.evaluate))) < 5e-3
+    assert kept.misfit.max() <= kept.floor
