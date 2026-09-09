@@ -106,3 +106,46 @@ def test_simulate_cpmg_accepts_a_cpmg_sequence():
     assert s.shape == (3, 3)
     te = (np.arange(1, 4) * 10e-3)
     np.testing.assert_allclose(s[:, 0], np.exp(-te / 0.05), rtol=0.02)
+
+
+# ── ... and on the PHYSICAL gradient, not just the effective one ────────────────────────────
+def test_both_pgse_families_agree_on_the_physical_gradient():
+    """``G_display`` is the gradient a scanner plays: same-sign lobes, the 180 doing the flip.
+    ``waveforms.pgse`` builds it explicitly, ``Sequence.from_pgse`` un-folds it from ``G`` --
+    the same waveform, so the same physical gradient."""
+    seq = S.pgse(B, DIRS, DELTA, DELTA_BIG, n_t=N_T, slew_rate=np.inf)
+    wf = d.set_b(W.pgse(DELTA, DELTA_BIG, 0.1, DIRS, N_T, slew_rate=np.inf), B)
+    assert seq.G_display is not None, "Sequence.from_pgse must carry a physical gradient"
+    np.testing.assert_allclose(np.asarray(seq.G_display), np.asarray(wf.G_display),
+                               rtol=2e-6, atol=0.0)
+
+
+def test_pgse_display_lobes_share_polarity_while_the_simulated_pair_is_bipolar():
+    seq = S.pgse(B, DIRS, DELTA, DELTA_BIG, n_t=N_T, slew_rate=200.0)
+    for m in range(len(B)):
+        ax = int(np.argmax(np.abs(DIRS[m])))
+        disp = np.asarray(seq.G_display)[m, :, ax]
+        sim = np.asarray(seq.G)[m, :, ax]
+        half = len(disp) // 2
+        assert np.sign(disp[:half].sum()) == np.sign(disp[half:].sum())
+        assert np.sign(sim[:half].sum()) == -np.sign(sim[half:].sum())
+
+
+def test_display_gradient_is_display_only_and_refolds_to_the_simulated_one():
+    """The un-fold changes no number the physics reads: b and the b-tensor come from ``G``,
+    and re-applying the sign returns ``G`` exactly (``s`` is its own inverse)."""
+    from dmipy_sim.acquisition.waveforms import effective_gradient_sign
+    seq = S.pgse(B, DIRS, DELTA, DELTA_BIG, n_t=N_T, slew_rate=200.0)
+    t_grid = np.arange(seq.G.shape[1]) * seq.dt
+    s = effective_gradient_sign(seq.rf_events, t_grid)
+    np.testing.assert_array_equal(np.asarray(seq.G_display) * s[None, :, None],
+                                  np.asarray(seq.G))
+    np.testing.assert_allclose(_num_b(seq), seq.bvalues, rtol=1e-6)
+
+
+def test_families_that_do_not_fold_the_pulses_leave_the_display_gradient_unset():
+    """``G_display`` is only set where ``G`` really is the 180-folded effective gradient; every
+    other family leaves it ``None`` so the viz layer honestly falls back to ``G``."""
+    assert S.cpmg(3, 20e-3, bvalues=[0.0, 5e8, 1e9], n_t_per_echo=100).G_display is None
+    assert S.ste(B, DELTA, DELTA_BIG, n_t=N_T).G_display is None
+    assert S.pte(B, [0.0, 0.0, 1.0], DELTA, DELTA_BIG, n_t=N_T).G_display is None

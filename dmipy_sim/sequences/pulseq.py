@@ -36,6 +36,7 @@ import warnings
 import numpy as np
 
 from ..constants import GAMMA
+from ..acquisition.waveforms import effective_gradient_sign
 
 GAMMA_HZ = GAMMA / (2.0 * np.pi)   # Hz/T (proton); pypulseq's gamma convention
 
@@ -177,7 +178,7 @@ def to_pulseq(waveform, m=0, *, system=None, filename=None,
         # un-folding the same sign schedule the importer will re-apply. s = +-1, so multiplying inverts.
         Geff = np.asarray(waveform.G)[m].astype(float)
         tg = np.arange(Geff.shape[0]) * dt
-        G = Geff * _effective_sign(waveform.rf_events, tg)[:, None]
+        G = Geff * effective_gradient_sign(waveform.rf_events, tg)[:, None]
     sys = system or _permissive_system(dt)
     gamma_hz = float(getattr(sys, 'gamma', GAMMA_HZ))
     seq = pp.Sequence(system=sys)
@@ -318,26 +319,6 @@ def _rf_from_pulseq(seq):
     return ev or None
 
 
-def _effective_sign(rf_events, t_grid):
-    """Sign of the EFFECTIVE gradient over time, from the pulses alone.
-
-    A refocusing pulse inverts the accumulated phase, so the effective gradient changes sign after it. A
-    stimulated echo does the same across its storage/recall pair: phase is parked along z at the storage
-    pulse and the recalled pathway rephases like a spin echo, so the sign flips at RECALL. Verified against
-    the constructors: pgse flips after its 180 (first non-zero sample 20.05 ms, pulse at 12.47 ms) and
-    pgste after its recall (25.04 ms, pulse at 24.96 ms).
-    """
-    s = np.ones_like(t_grid, dtype=np.float32)
-    if not rf_events:
-        return s
-    for e in rf_events:
-        lab = str(e.get('label', ''))
-        flips = abs(float(e.get('flip_deg', 0.0)) - 180.0) < 20.0 or lab == 'refocus' or lab == 'recall'
-        if flips:
-            s[t_grid >= float(e['t_s'])] *= -1.0
-    return s
-
-
 def _longitudinal_mask(rf_events, t_grid):
     """``chi_perp``: 0 where magnetisation is stored along z, 1 where it is transverse.
 
@@ -448,7 +429,7 @@ def from_pulseq(src, *, dt=None):
     # A .seq carries the PHYSICAL gradient; the simulator integrates the EFFECTIVE one. Fold the pulses in
     # rather than trusting a stored copy -- this is what makes the round trip physics rather than metadata.
     if native:
-        G = G * _effective_sign(rf_events, t_grid)[:, None]
+        G = G * effective_gradient_sign(rf_events, t_grid)[:, None]
     chi_perp = _longitudinal_mask(rf_events, t_grid)
 
     if 'dmipy_echo_idx' in defs:
