@@ -15,6 +15,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from dmipy_sim import pgse, pgste, set_b
+from dmipy_sim import sequences as S
 from dmipy_sim.viz import viz
 
 
@@ -80,3 +81,21 @@ def test_plot_helpers_run_on_pgse_and_pgste():
     fig = viz.plot_sequence_comparison([wf_se, wf_ste],
                                        titles=["PGSE", "PGSTE"])
     plt.close(fig)
+
+
+def test_a_sequence_is_drawn_with_the_physical_gradient_too():
+    """A ``Sequence`` carries the same RF panel as a ``Waveform``, so it must carry the same
+    physical gradient: drawing the bipolar simulation gradient NEXT TO a 180 asserts the flip
+    twice and shows a sequence that would not refocus."""
+    seq = S.pgse([1.0e9], [[1, 0, 0]], 4e-3, 20e-3, n_t=200)
+    assert any(e['flip_deg'] == 180 for e in seq.rf_events)      # the panel does draw a 180
+
+    disp = viz._display_G(seq)[0, :, 0]
+    sim = np.asarray(seq.G)[0, :, 0]
+    assert not np.allclose(disp, sim), "_display_G fell back to the bipolar simulation gradient"
+
+    half = len(disp) // 2
+    assert np.sign(disp[:half].sum()) == np.sign(disp[half:].sum())   # scanner: same polarity
+    assert np.sign(sim[:half].sum()) == -np.sign(sim[half:].sum())    # phase integral: bipolar
+    assert abs(disp.sum()) > 0.5 * np.abs(disp).sum()                 # net area, not refocused
+    plt.close(viz.plot_waveform(seq, title="PGSE Sequence")[0])

@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from ..acquisition.waveforms import apply_rf_schedule
+from ..acquisition.waveforms import apply_rf_schedule, effective_gradient_sign
 
 from ..math.gradient_conversions import g_from_b, q_from_b
 from ..constants import GAMMA, DEFAULT_SLEW_RATE, resolve_slew as _resolve_slew
@@ -130,6 +130,32 @@ class Sequence:
             setattr(self, k, v)
         return self
 
+    def _derive_display_gradient(self):
+        """Set ``G_display`` -- the PHYSICAL gradient a scanner plays -- by un-folding ``G``.
+
+        An ``_effective_gradient`` family stores ``G`` with the refocusing pulse's sign flip already
+        folded in, so a PGSE's second lobe is negative and the phase integral refocuses at the echo
+        without modelling the pulse.  The scanner plays the same-sign pair and lets the 180 do the
+        flip, which is ``G`` times
+        :func:`dmipy_sim.acquisition.waveforms.effective_gradient_sign` of the declared schedule --
+        the same un-fold ``to_pulseq`` exports, and equal to the hand-built ``G_display`` of
+        :func:`dmipy_sim.acquisition.waveforms.pgse` to the bit.
+
+        Derived from the already-``_scale_to_b``-scaled ``G``, so the physical and effective
+        waveforms carry the same b: a separately built same-sign pair would need that same factor
+        rather than one of its own.
+
+        Stays ``None`` -- and :func:`dmipy_sim.viz.viz._display_G` then honestly falls back to
+        ``G`` -- for a family that does not fold the pulses into its gradient (cpmg, ste, pte,
+        square ogse), or that folds them but declares no RF schedule to un-fold them from
+        (two-train ogse, which carries no ``rf_events`` yet).
+        """
+        if not getattr(self, '_effective_gradient', False) or not self.rf_events:
+            return
+        t_grid = np.arange(self.G.shape[1]) * self.dt
+        sign = effective_gradient_sign(self.rf_events, t_grid)
+        self.G_display = (np.asarray(self.G) * sign[None, :, None]).astype(self.G.dtype)
+
     # ── constructors (physical waveform generation) ───────────────────────────
     @classmethod
     def from_pgse(cls, bvalues, gradient_directions, delta, Delta, TE=None,
@@ -186,6 +212,7 @@ class Sequence:
         seq._carry(sequence_type='pgse', _minimum_te=T_total, _te_auto=te_auto,
                    _refocus_gap=float(np.min(Delta_ - delta_ - eps_)),
                    _effective_gradient=True)
+        seq._derive_display_gradient()
         seq._build_spec = ('from_pgse', dict(
             bvalues=bvalues, gradient_directions=gradient_directions,
             delta=delta, Delta=Delta, TE=TE, n_t=n_t, slew_rate=slew_rate))

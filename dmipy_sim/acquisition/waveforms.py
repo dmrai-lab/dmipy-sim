@@ -147,6 +147,33 @@ def rf_schedule_coherence(rf_events, n_t, dt):
     return chi, (TM if TM > 0.0 else None), stores > 0, echoes
 
 
+def effective_gradient_sign(rf_events, t_grid):
+    """Sign of the EFFECTIVE gradient over time, from the pulses alone -- ``(len(t_grid),)`` of +-1.
+
+    A refocusing pulse inverts the accumulated phase, so the effective gradient changes sign after it. A
+    stimulated echo does the same across its storage/recall pair: phase is parked along z at the storage
+    pulse and the recalled pathway rephases like a spin echo, so the sign flips at RECALL. Verified against
+    the constructors: pgse flips after its 180 (first non-zero sample 20.05 ms, pulse at 12.47 ms) and
+    pgste after its recall (25.04 ms, pulse at 24.96 ms).
+
+    This is the one un-fold between the two gradients a sequence has: the PHYSICAL one a scanner plays
+    (:func:`dmipy_sim.sequences.pulseq.to_pulseq`, the ``G_display`` the viz layer draws) and the EFFECTIVE
+    one the phase integral walks.  ``s`` is +-1 and so is its own inverse -- multiplying converts either
+    way.  It is a *sign*, not the quadrature weight
+    :func:`dmipy_sim.replay._replay_kernel.se_gate` builds for integrating against the path: that one
+    half-weights the grid endpoints, which is right under an integral and wrong for a waveform.
+    """
+    s = np.ones_like(t_grid, dtype=np.float32)
+    if not rf_events:
+        return s
+    for e in rf_events:
+        lab = str(e.get('label', ''))
+        flips = abs(float(e.get('flip_deg', 0.0)) - 180.0) < 20.0 or lab == 'refocus' or lab == 'recall'
+        if flips:
+            s[t_grid >= float(e['t_s'])] *= -1.0
+    return s
+
+
 def apply_rf_schedule(wf):
     """Set ``chi_perp``, ``TM``, ``stimulated_echo`` and ``echo_indices`` of ``wf`` from its
     ``rf_events``, checking any value the constructor passed against the schedule.
