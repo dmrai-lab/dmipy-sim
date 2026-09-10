@@ -45,6 +45,10 @@ class _Lobe:
         self.dt, self.bvalues, self.rf_events = dt, np.array([0.0]), []
         self.q = GAMMA * amp * dt * (n_t - 1) * np.asarray(axis, float)   # the exact integral of a constant
 
+    @property
+    def G_eff(self):
+        return self.G                                                       # no pulse: the effective gradient is the gradient
+
 
 def analytic(q, R):
     """The response of the static ensemble at pose ``R``, in closed form."""
