@@ -311,8 +311,8 @@ _RF_DICT_READ_BOUNDARY = {"dmipy_sim.acquisition.rf"}
 
 # §1.1 / #171 -- Sequence constructors that declare no RF schedule at all
 _SEQUENCE_CONSTRUCTORS_WITHOUT_RF = {
-    "Sequence.from_ogse", "Sequence.from_btensor_ste", "Sequence.from_btensor_pte",
-    "Sequence.from_waveform", "Sequence.from_btensor_waveform",
+    "Sequence.from_btensor_ste", "Sequence.from_btensor_pte",     # bipolar pairs, an excitation only (#171's twin)
+    "Sequence.from_waveform",                                      # arbitrary: cannot know its schedule
 }
 
 # §1.2 -- callables that take an acquisition AND its RF / echo / refocus time as separate arguments
@@ -464,6 +464,22 @@ def test_no_rf_event_is_spelled_as_a_dict_anywhere():
         if n:
             found[modname] = n
     assert not found, f"RF events spelled as dicts (build an RFEvent): {found}"
+
+
+def test_no_stored_effective_gradient_and_no_flag_standing_in_for_the_schedule():
+    """``G`` is the physical gradient and ``G_eff`` is derived from the schedule (#173 piece 3). The stored copy of
+    the physical one (``G_display``), the flag that said which convention ``G`` was in (``_effective_gradient``),
+    the index that stood in for a declared 180 (``_refocus_idx``) and the switch that allowed a misaligned one
+    (``allow_offcenter_180``) are gone, and stay gone."""
+    gone = ("G_display", "_effective_gradient", "_refocus_idx", "_display_G", "_derive_display_gradient",
+            "allow_offcenter_180")
+    found = {}
+    for py, modname in _package_modules():
+        text = py.read_text()
+        hits = [g for g in gone if g in text]
+        if hits:
+            found[modname] = hits
+    assert not found, f"retired names back in the package: {found}"
 
 
 def test_rf_is_taken_apart_from_the_gradient_only_where_declared():

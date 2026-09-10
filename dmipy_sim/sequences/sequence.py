@@ -32,31 +32,33 @@ from ._helpers import (
 # consuming analytical scheme).  Core fields are explicit __init__ args.
 _FLAG_ATTRS = (
     'sequence_type', '_minimum_te', '_te_auto', '_refocus_gap',
-    '_effective_gradient', '_ogse_two_train', '_refocus_duration',
+    '_ogse_two_train', '_refocus_duration',
     'TM', 'tau_perp_SE', 'ste_flip_angles', '_ramp_time',
     'oscillation_frequency', 'gradient_rise_time', 'n_oscillation_cycles',
     'gradient_duration', 'cpmg_n_echoes', 'cpmg_TE', 'cpmg_beta_deg',
-    'n_t_per_echo', 'refocused', '_refocus_idx',
+    'n_t_per_echo', 'refocused',
 )
 
 
 class Sequence:
-    """Physical acquisition: real ``G(t)`` + per-measurement encoding.
+    """Physical acquisition: the gradient the scanner plays, its RF schedule, and the per-measurement encoding.
 
     Build with the ``from_X`` classmethods (or the module-level
     ``dmipy_sim.sequences.pgse(...)`` etc.).  Carries:
-      * core encoding -- ``G, dt, bvalues, gradient_directions, qvalues,
-        gradient_strengths, delta, Delta, TE``
-      * family flags -- ``sequence_type`` and the physical markers each family
-        sets (``_effective_gradient``, ``TM``, ``ste_flip_angles``,
-        ``oscillation_frequency``, ``cpmg_*`` ...).
+      * ``G`` -- the PHYSICAL gradient ``(n_meas, n_t, 3)`` on ``dt``; :attr:`G_eff` is the effective
+        gradient the phase integral walks, ``G`` with the schedule's sign folded in, derived on read.
+      * core encoding -- ``bvalues, gradient_directions, qvalues, gradient_strengths, delta, Delta, TE``
+      * family flags -- ``sequence_type`` and the physical markers each family sets (``TM``,
+        ``ste_flip_angles``, ``oscillation_frequency``, ``cpmg_*`` ...).
       * the :class:`dmipy_sim.acquisition.waveforms.Waveform` readout attributes -- ``echo_idx``,
-        ``echo_indices``, ``rf_events``, ``G_display``, ``chi_perp``, ``TM``,
-        ``stimulated_echo`` -- so a ``Sequence`` is accepted wherever a ``Waveform`` is
-        (``simulate`` in either engine, ``simulate_cpmg``, ``to_pulseq``, ``viz``).
+        ``echo_indices``, ``rf_events``, ``chi_perp``, ``TM``, ``stimulated_echo`` -- so a ``Sequence``
+        is accepted wherever a ``Waveform`` is (``simulate`` in either engine, ``simulate_cpmg``,
+        ``to_pulseq``, ``viz``).
 
-    Every constructor finishes with a numeric scaling of ``G`` so that the declared
-    ``bvalues`` equal :func:`dmipy_sim.acquisition.waveforms.b_from_gradient` of the waveform it built.
+    Every constructor declares the pulses it plays, places each measurement's gradient relative to them
+    (lobes symmetric about a 180, whatever the row's own timing), finishes with a numeric scaling so the
+    declared ``bvalues`` equal :func:`dmipy_sim.acquisition.waveforms.b_from_gradient` of ``G_eff``, and
+    :meth:`validate`\ s: the gradient is off across every finite pulse and refocused at the echo.
     """
 
     def __init__(self, G, dt, bvalues, gradient_directions, qvalues,
@@ -67,7 +69,6 @@ class Sequence:
         self.echo_idx = int(self.G.shape[1] - 1)
         self.echo_indices = None
         self.rf_events = RFSchedule()
-        self.G_display = None
         self.chi_perp = None
         self.TM = None
         self.stimulated_echo = False
@@ -86,19 +87,46 @@ class Sequence:
     def number_of_measurements(self):
         return self.gradient_directions.shape[0]
 
+    @property
+    def G_eff(self):
+        """The EFFECTIVE gradient the phase integral walks: ``G * rf_events.sign(t)`` (RPK.md 6.6). Derived,
+        never stored. ``(n_meas, n_t, 3)`` float32."""
+        s = self.rf_events.sign(np.arange(self.G.shape[1]) * self.dt)
+        return self.G * s[None, :, None]
+
     def btensor(self):
-        """b-tensor B_ij = gamma^2 ∫ q_i q_j dt per measurement, (n_m, 3, 3)."""
-        return _btensor_from_waveform(self.G, self.dt)
+        """b-tensor B_ij = gamma^2 ∫ q_i q_j dt per measurement, (n_m, 3, 3), of the effective gradient."""
+        return _btensor_from_waveform(self.G_eff, self.dt)
 
     @property
     def refocusing_residual(self):
-        """max over measurements of the relative net gradient moment |q(TE)|/max|q|."""
-        return max(_refocusing_residual(self.G[m], self.dt)
+        """max over measurements of the relative net gradient moment |q(TE)|/max|q| of the effective gradient."""
+        G_eff = self.G_eff
+        return max(_refocusing_residual(G_eff[m], self.dt)
                    for m in range(self.number_of_measurements))
 
+    def validate(self):
+        """What every constructor guarantees: the gradient is OFF across every finite pulse (a hard pulse
+        occupies an instant and constrains nothing -- a constant gradient through an ideal 180 train is
+        Carr-Purcell), and the effective gradient refocuses at the echo. Raises naming the failure."""
+        t = np.arange(self.G.shape[1]) * self.dt
+        for e in self.rf_events:
+            if e.duration_s > 0.0:
+                t0, t1 = e.window
+                inside = (t >= t0 - 1e-9 * self.dt) & (t <= t1 + 1e-9 * self.dt)
+                if np.any(np.abs(self.G[:, inside, :]) > 0.0):
+                    raise ValueError(f"the gradient is on during the {e.flip_deg:g} pulse at {e.t_s*1e3:.3f} ms "
+                                     f"(window {t0*1e3:.3f}-{t1*1e3:.3f} ms): a finite pulse needs zero gradient")
+        res = self.refocusing_residual
+        if res > _REFOCUS_ATOL and float(np.abs(self.G).max()) > 0.0:
+            raise ValueError(f"the effective gradient is not refocused at the echo (|q(TE)|/max|q| = {res:.2e} > "
+                             f"{_REFOCUS_ATOL:.0e})")
+        return self
+
     def to_gradient_array(self, n_t=1000):
-        """Return ``(G, dt)`` of the square (instantaneous) PGSE with this scheme's b-values,
-        directions, delta and Delta on an ``n_t`` grid -- :meth:`from_pgse` at infinite slew."""
+        """Return ``(G_eff, dt)`` -- the EFFECTIVE gradient -- of the square (instantaneous) PGSE with
+        this scheme's b-values, directions, delta and Delta on an ``n_t`` grid: :meth:`from_pgse` at
+        infinite slew, as the analytical layer integrates it."""
         if self.delta is None or self.Delta is None or self.gradient_strengths is None:
             raise ValueError(
                 "to_gradient_array() requires delta, Delta, and gradient_strengths.")
@@ -109,7 +137,7 @@ class Sequence:
             raise ValueError("to_gradient_array() requires uniform Delta.")
         sq = Sequence.from_pgse(self.bvalues, self.gradient_directions, float(self.delta[0]),
                                 float(self.Delta[0]), n_t=n_t, slew_rate=np.inf)
-        return sq.G, sq.dt
+        return sq.G_eff, sq.dt
 
     def instantaneous(self):
         """Idealised instantaneous (infinite-slew / square) limit of this sequence.
@@ -131,39 +159,17 @@ class Sequence:
             setattr(self, k, v)
         return self
 
-    def _derive_display_gradient(self):
-        """Set ``G_display`` -- the PHYSICAL gradient a scanner plays -- by un-folding ``G``.
-
-        An ``_effective_gradient`` family stores ``G`` with the refocusing pulse's sign flip already
-        folded in, so a PGSE's second lobe is negative and the phase integral refocuses at the echo
-        without modelling the pulse.  The scanner plays the same-sign pair and lets the 180 do the
-        flip, which is ``G`` times the declared schedule's :meth:`~dmipy_sim.acquisition.rf.RFSchedule.sign` --
-        the same un-fold ``to_pulseq`` exports, and equal to the hand-built ``G_display`` of
-        :func:`dmipy_sim.acquisition.waveforms.pgse` to the bit.
-
-        Derived from the already-``_scale_to_b``-scaled ``G``, so the physical and effective
-        waveforms carry the same b: a separately built same-sign pair would need that same factor
-        rather than one of its own.
-
-        Stays ``None`` -- and :func:`dmipy_sim.viz.viz._display_G` then honestly falls back to
-        ``G`` -- for a family that does not fold the pulses into its gradient (cpmg, ste, pte,
-        square ogse), or that folds them but declares no RF schedule to un-fold them from
-        (two-train ogse, which carries no ``rf_events`` yet).
-        """
-        if not getattr(self, '_effective_gradient', False) or not self.rf_events:
-            return
-        t_grid = np.arange(self.G.shape[1]) * self.dt
-        sign = self.rf_events.sign(t_grid)
-        self.G_display = (np.asarray(self.G) * sign[None, :, None]).astype(self.G.dtype)
-
     # ── constructors (physical waveform generation) ───────────────────────────
     @classmethod
     def from_pgse(cls, bvalues, gradient_directions, delta, Delta, TE=None,
                   n_t=1000, slew_rate=DEFAULT_SLEW_RATE):
-        """PGSE: two same-direction lobes separated by Delta (180-folded effective G).
+        """PGSE: two same-sign lobes separated by Delta, the 180 midway between them.
 
-        Slew-limited (realizable) by default (``slew_rate`` in T/m/s); pass
-        ``slew_rate=np.inf`` for the idealized instantaneous (square) limit.
+        Every measurement's lobe pair is centred on the one 180 at ``T_total / 2`` (``T_total`` is the
+        longest row's ``Delta + delta + ramp``), so a row with a shorter ``Delta`` sits inside the same
+        echo with its 180 in its own gap rather than starting at t = 0 and having the pulse land inside
+        its second lobe. Slew-limited (realizable) by default (``slew_rate`` in T/m/s); pass
+        ``slew_rate=np.inf`` for the idealized instantaneous (square) limit -- vertical ramps, same structure.
         """
         bvalues = np.asarray(bvalues, dtype=np.float64)
         gradient_directions = np.asarray(gradient_directions, dtype=np.float64)
@@ -183,36 +189,39 @@ class Sequence:
         T_total = float(np.max(Delta_ + delta_ + eps_))
         dt = T_total / (n_t - 1)
         TE_, te_auto = _resolve_te(TE, T_total, n_m)
-        G_arr = np.zeros((n_m, n_t, 3), dtype=np.float64)
+        # ideal instantaneous 90/180: the echo forms at the END of the grid (T_total, the longest row), so the
+        # 180 sits at T_total / 2 and every row's lobe pair is centred on it -- a row with a shorter Delta is
+        # shifted right by half its slack instead of starting at t = 0 with the pulse inside its second lobe
+        t_180 = T_total / 2.0
+        schedule = RFSchedule([RFEvent(0.0, 90, 'Mz→Mxy'), RFEvent(t_180, 180, 'refocus')])
+        t_grid = np.arange(n_t) * dt
+        shift = (T_total - (Delta_ + delta_ + eps_)) / 2.0                 # per row; 0 for the longest
+        G_arr = np.zeros((n_m, n_t, 3), dtype=np.float64)                  # the PHYSICAL gradient
         if square:
             for m in range(n_m):
                 n_pulse = max(1, round(float(delta_[m]) / dt))
                 n_Delta = round(float(Delta_[m]) / dt)
+                n0 = round(float(shift[m]) / dt)
                 g_vec = gradient_strengths[m] * gradient_directions[m]
-                G_arr[m, :n_pulse, :] = g_vec
-                G_arr[m, n_Delta:n_Delta + n_pulse, :] = -g_vec
+                G_arr[m, n0:n0 + n_pulse, :] = g_vec
+                G_arr[m, n0 + n_Delta:n0 + n_Delta + n_pulse, :] = g_vec
         else:
-            t_grid = np.arange(n_t) * dt
             for m in range(n_m):
-                prof = (_trap_profile(t_grid, 0.0, delta_[m], eps_[m]) -
-                        _trap_profile(t_grid, Delta_[m], delta_[m], eps_[m]))
+                tm = t_grid - shift[m]
+                prof = (_trap_profile(tm, 0.0, delta_[m], eps_[m]) +
+                        _trap_profile(tm, Delta_[m], delta_[m], eps_[m]))
                 G_arr[m] = (gradient_strengths[m] * prof)[:, None] * gradient_directions[m]
-        # the declared b IS the numeric b of the waveform the walk integrates
-        G_arr = _scale_to_b(G_arr, dt, bvalues)
+        # the declared b IS the numeric b of the effective gradient the walk integrates
+        sign = schedule.sign(t_grid)[None, :, None]
+        G_arr = _scale_to_b(G_arr * sign, dt, bvalues) * sign
 
         seq = cls(G_arr, dt, bvalues, gradient_directions, qvalues,
                   gradient_strengths, delta_, Delta_, TE_)
-        # ideal instantaneous 90/180 markers, as dmipy_sim.acquisition.waveforms.pgse places them: the echo forms at
-        # the END of the grid (T_total, the longest measurement), so the 180 sits at T_total / 2 -- a mean over
-        # measurements put it 10% early whenever a b = 0 row (no ramp) shared the scheme with slew-limited rows
-        t_180 = T_total / 2.0
-        seq.rf_events = RFSchedule([RFEvent(0.0, 90, 'Mz→Mxy'),
-                                    RFEvent(t_180, 180, 'refocus')])
+        seq.rf_events = schedule
         apply_rf_schedule(seq)
         seq._carry(sequence_type='pgse', _minimum_te=T_total, _te_auto=te_auto,
-                   _refocus_gap=float(np.min(Delta_ - delta_ - eps_)),
-                   _effective_gradient=True)
-        seq._derive_display_gradient()
+                   _refocus_gap=float(np.min(Delta_ - delta_ - eps_)))
+        seq.validate()
         seq._build_spec = ('from_pgse', dict(
             bvalues=bvalues, gradient_directions=gradient_directions,
             delta=delta, Delta=Delta, TE=TE, n_t=n_t, slew_rate=slew_rate))
@@ -244,25 +253,29 @@ class Sequence:
                         g_from_b(np.maximum(bvalues, 1.0), delta_lobe, Delta_lobe), 0.0)
         qvals = np.where(bvalues > 0,
                          q_from_b(np.maximum(bvalues, 1.0), delta_lobe, Delta_lobe), 0.0)
-        G_arr = np.zeros((n_echoes, n_t_total, 3), dtype=np.float64)
+        # echo k forms at the end of its interval; the 180s sit at (k + 1/2) TE
+        schedule = RFSchedule([RFEvent(0.0, 90, 'Mz→Mxy')] +
+                              [RFEvent((k + 0.5) * TE_echo, 180, 'refocus') for k in range(n_echoes)])
+        # This family is defined by its EFFECTIVE gradient: a bipolar lobe pair per echo interval, so each
+        # echo self-refocuses. Its physical gradient is that un-folded through the declared 180 train.
+        G_eff = np.zeros((n_echoes, n_t_total, 3), dtype=np.float64)
         for m in range(n_echoes):
             lobe = gstr[m] * gradient_directions[m]
             for k in range(n_echoes):
                 base = k * n_t_per_echo
-                G_arr[m, base:base + n_half, :] = lobe
-                G_arr[m, base + n_half:base + n_t_per_echo, :] = -lobe
-        G_arr = _scale_to_b(G_arr, dt, bvalues)
+                G_eff[m, base:base + n_half, :] = lobe
+                G_eff[m, base + n_half:base + n_t_per_echo, :] = -lobe
+        sign = schedule.sign(np.arange(n_t_total) * dt)[None, :, None]
+        G_arr = _scale_to_b(G_eff, dt, bvalues) * sign
 
         seq = cls(G_arr, dt, bvalues, gradient_directions, qvals,
                   gstr, delta_lobe, Delta_lobe, TE_)
-        # echo k forms at the end of its interval; the 180s sit at (k + 1/2) TE
-        seq.rf_events = RFSchedule([RFEvent(0.0, 90, 'Mz→Mxy')] +
-                                   [RFEvent((k + 0.5) * TE_echo, 180, 'refocus')
-                                    for k in range(n_echoes)])
+        seq.rf_events = schedule
         apply_rf_schedule(seq)
         seq._carry(sequence_type='cpmg', refocused=True, cpmg_n_echoes=n_echoes,
                    cpmg_TE=TE_echo, cpmg_beta_deg=float(beta_deg),
                    n_t_per_echo=int(n_t_per_echo))
+        seq.validate()
         seq._build_spec = ('from_cpmg', dict(
             n_echoes=n_echoes, TE=TE, bvalues=bvalues,
             gradient_directions=gradient_directions, beta_deg=beta_deg,
@@ -286,24 +299,24 @@ class Sequence:
         seq = cls(G, dt, bvalues, gradient_directions, qvalues,
                   gradient_strengths, delta_, Delta_, TE_)
         seq._carry(sequence_type='waveform')
-        res = seq.refocusing_residual
-        if res > _REFOCUS_ATOL and float(np.abs(G).max()) > 0.0:
-            msg = ("from_waveform: gradient is not moment-nulled "
-                   "(|q(TE)|/max|q| = {:.2e} > {:.0e}); stationary spins will "
-                   "not rephase at TE. Ensure the waveform refocuses, or pass "
-                   "allow_unrefocused=True if intentional.".format(res, _REFOCUS_ATOL))
+        try:
+            seq.validate()
+        except ValueError as e:
+            msg = (f"from_waveform: {e}; stationary spins will not rephase at TE. Ensure the waveform "
+                   f"refocuses, or pass allow_unrefocused=True if intentional.")
             if allow_unrefocused:
                 warn(msg)
             else:
-                raise ValueError(msg)
+                raise ValueError(msg) from None
         return seq
 
     @classmethod
     def from_ogse(cls, bvalues, gradient_directions, oscillation_frequency,
                   gradient_duration, n_cycles=1, gradient_rise_time=0.,
                   TE=None, n_t=1000, slew_rate=DEFAULT_SLEW_RATE, refocus_duration=0.0):
-        """Cosine OGSE: two slew-limited trains by default; ``slew_rate=np.inf``
-        gives the idealized single continuous cosine (square/instantaneous)."""
+        """Cosine OGSE: two slew-limited trains straddling a declared 180 at ``T_total / 2`` by default;
+        ``slew_rate=np.inf`` gives the idealized single continuous cosine (no 180 modelled). Each
+        measurement's train pair is centred on the 180, whatever its own ``gradient_duration``."""
         bvalues = np.asarray(bvalues, dtype=np.float64)
         gradient_directions = np.asarray(gradient_directions, dtype=np.float64)
         n_m = len(bvalues)
@@ -327,8 +340,11 @@ class Sequence:
         else:
             T_total = float(np.max(2.0 * sigma + gap))
         dt = T_total / (n_t - 1)
-        G_arr = np.zeros((n_m, n_t, 3), dtype=np.float64)
         t_full = np.arange(n_t) * dt
+        schedule = (RFSchedule() if square else
+                    RFSchedule([RFEvent(0.0, 90, 'Mz→Mxy'), RFEvent(T_total / 2.0, 180, 'refocus')]))
+        sign = schedule.sign(t_full)[None, :, None]
+        G_arr = np.zeros((n_m, n_t, 3), dtype=np.float64)                  # the PHYSICAL gradient
         for m in range(n_m):
             if bvalues[m] <= 0 or G_mag[m] == 0:
                 continue
@@ -339,20 +355,22 @@ class Sequence:
                 G_arr[m, :n_sig, :] = g_t[:, None] * gradient_directions[m]
             else:
                 sg, fm, sr = float(sigma[m]), osc_freq[m], float(slew_rate)
+                shift = (T_total - (2.0 * sg + gap)) / 2.0                 # centre this row's pair on the 180
+                tm = t_full - shift
                 # the slew-limited trapezoidal ramps depend on the amplitude, so iterate the
                 # profile to the requested b before the exact scaling below
                 g_amp = G_mag[m]
                 for _ in range(6):
-                    pre = _trap_cosine_profile(t_full, sg, fm, sr, g_amp)
-                    post = _trap_cosine_profile(t_full - (sg + gap), sg, fm, sr, g_amp)
-                    Gm = (pre - post)[:, None] * gradient_directions[m]
-                    b_m = _calc_b_from_waveform(Gm[None], dt)[0]
+                    pre = _trap_cosine_profile(tm, sg, fm, sr, g_amp)
+                    post = _trap_cosine_profile(tm - (sg + gap), sg, fm, sr, g_amp)
+                    Gm = (pre + post)[:, None] * gradient_directions[m]
+                    b_m = _calc_b_from_waveform((Gm * sign[0])[None], dt)[0]
                     if b_m <= 0 or abs(b_m - bvalues[m]) <= 1e-6 * bvalues[m]:
                         break
                     g_amp *= np.sqrt(bvalues[m] / b_m)
                 G_arr[m] = Gm
-        # the declared b IS the numeric b of the waveform the walk integrates
-        G_arr = _scale_to_b(G_arr, dt, bvalues)
+        # the declared b IS the numeric b of the effective gradient the walk integrates
+        G_arr = _scale_to_b(G_arr * sign, dt, bvalues) * sign
 
         TE_, te_auto = _resolve_te(TE, T_total, n_m)
         qvalues = G_mag * gamma * sigma / (2.0 * np.pi)
@@ -360,14 +378,17 @@ class Sequence:
 
         seq = cls(G_arr, dt, bvalues, gradient_directions, qvalues,
                   gradient_strengths, None, None, TE_)
+        seq.rf_events = schedule
+        if schedule:
+            apply_rf_schedule(seq)
         seq._carry(oscillation_frequency=osc_freq, gradient_rise_time=t_r,
                    n_oscillation_cycles=n_cyc, gradient_duration=sigma,
                    _minimum_te=T_total, _te_auto=te_auto, sequence_type='ogse')
         if square:
             seq._carry(_refocus_gap=0.0)
         else:
-            seq._carry(_refocus_gap=float(gap), _effective_gradient=True,
-                       _ogse_two_train=True, _refocus_duration=float(gap))
+            seq._carry(_refocus_gap=float(gap), _ogse_two_train=True, _refocus_duration=float(gap))
+        seq.validate()
         seq._build_spec = ('from_ogse', dict(
             bvalues=bvalues, gradient_directions=gradient_directions,
             oscillation_frequency=oscillation_frequency,
@@ -383,7 +404,7 @@ class Sequence:
         n_m = len(bvalues)
         T_total = float(delta) + float(Delta)
         dt = T_total / (n_t - 1)
-        n_seg = max(1, round(n_t / 6))
+        n_seg = max(1, n_t // 6)                 # whole pairs on the grid: each refocuses exactly
         G_template = np.zeros((n_t, 3), dtype=np.float32)
         for i in range(3):
             enc_start = 2 * i * n_seg
@@ -402,6 +423,7 @@ class Sequence:
         seq = cls(G_arr, dt, bvalues_num, gradient_directions,
                   None, None, None, None, TE_)
         seq._carry(_minimum_te=T_total, _te_auto=te_auto, sequence_type='btensor_ste')
+        seq.validate()
         seq._build_spec = ('from_btensor_ste', dict(
             bvalues=bvalues, delta=delta, Delta=Delta, TE=TE, n_t=n_t))
         return seq
@@ -420,7 +442,7 @@ class Sequence:
         v /= np.linalg.norm(v)
         T_total = float(delta) + float(Delta)
         dt = T_total / (n_t - 1)
-        n_seg = max(1, round(n_t / 4))
+        n_seg = max(1, n_t // 4)                 # whole pairs on the grid: each refocuses exactly
         G_template = np.zeros((n_t, 3), dtype=np.float32)
         for i, axis in enumerate([u, v]):
             enc_start = 2 * i * n_seg
@@ -439,75 +461,58 @@ class Sequence:
         seq = cls(G_arr, dt, bvalues_num, gradient_directions,
                   None, None, None, None, TE_)
         seq._carry(_minimum_te=T_total, _te_auto=te_auto, sequence_type='btensor_pte')
+        seq.validate()
         seq._build_spec = ('from_btensor_pte', dict(
             bvalues=bvalues, plane_normal=plane_normal, delta=delta,
             Delta=Delta, TE=TE, n_t=n_t))
         return seq
 
     @classmethod
-    def from_btensor_waveform(cls, G, dt, *, echo_idx=None, TE=None,
-                              allow_offcenter_180=False):
-        """Wrap a precomputed b-tensor gradient waveform as a spin-echo Sequence.
+    def from_btensor_waveform(cls, G, dt, *, echo_idx=None, TE=None):
+        """Wrap a precomputed b-tensor gradient waveform -- the PHYSICAL gradient, as played -- as a spin echo.
 
-        For an externally designed b-tensor encoding (e.g. a dmipy-design
-        ``design_waveform`` output) rather than the canonical square bipolar
-        pairs of ``from_btensor_ste``/``from_btensor_pte``.  The b-tensor SHAPE
-        (spherical / planar / linear — i.e. b_delta) is whatever the gradient
-        numbers produce: it is computed from ``G``, not declared, so there is no
-        shape argument.  Use ``scheme.btensor()`` to read the realized shape.
+        For an externally designed b-tensor encoding (e.g. a dmipy-design ``design_waveform`` output)
+        rather than the canonical square bipolar pairs of ``from_btensor_ste`` / ``from_btensor_pte``. The
+        b-tensor SHAPE (spherical / planar / linear, i.e. b_delta) is whatever the numbers produce: it is
+        computed from ``G_eff``, not declared, so there is no shape argument; ``scheme.btensor()`` reads
+        the realised shape.
 
-        The 180 refocusing pulse is placed at ``echo_idx`` (default TE/2, the only
-        position at which static field refocuses at the echo).  An off-centre 180
-        is a *misaligned* spin echo — the static field then refocuses at
-        ``2·t_180 ≠ TE`` — so it is GUARDED: a non-TE/2
-        ``echo_idx`` raises unless ``allow_offcenter_180=True`` is passed
-        deliberately (and even then warns).
+        The 180 is declared at ``echo_idx`` (default TE/2 -- the only position at which the static field
+        refocuses at the echo, so a non-TE/2 ``echo_idx`` raises) and folds into ``G_eff`` through the
+        schedule's sign, as for every family.
 
         Parameters
         ----------
-        G : (n_t, 3) or (1, n_t, 3) array, T/m
-            The EFFECTIVE gradient (180 sign flip folded in, so q(TE)=0
-            self-refocuses).  This builder un-folds the post-180 part about
-            ``echo_idx`` to recover the physical gradient + the 180.
-        dt : float — time step (s).
-        echo_idx : int or None — sample index of the 180.  Default TE/2.  Pass the
-            design's own ``echo_idx`` so the un-fold is exact (for a TE/2 design it
-            simply equals TE/2).
-        TE : float or None — echo time; defaults to the waveform span.
-        allow_offcenter_180 : bool — opt in to a non-TE/2 180 (rarely correct).
+        G : (n_t, 3) or (1, n_t, 3) array, T/m -- the physical gradient the scanner plays.
+        dt : float -- time step (s).
+        echo_idx : int or None -- sample index of the 180. Default TE/2.
+        TE : float or None -- echo time; defaults to the waveform span.
         """
-        import warnings
         G = np.asarray(G, dtype=np.float32)
         if G.ndim == 2:
             G = G[None]
         n_m, n_t, _ = G.shape
         dt = float(dt)
         T_total = (n_t - 1) * dt
-        bvalues_num = _calc_b_from_waveform(G, dt)
         gradient_directions = np.tile([0., 0., 1.], (n_m, 1))
         TE_, te_auto = _resolve_te(TE, T_total, n_m)
         te2 = int(round((float(TE_[0]) / 2.0) / dt))      # the spin-echo 180 position
         if echo_idx is None:
             echo_idx = te2
-        else:
-            echo_idx = int(np.clip(echo_idx, 0, n_t - 1))
-            if abs(echo_idx - te2) > 1:                   # off-centre (beyond rounding)
-                msg = (
-                    "from_btensor_waveform: echo_idx={} places the 180 at {:.2f} ms, "
-                    "not TE/2={:.2f} ms. A spin echo refocuses static field at "
-                    "2·t_180={:.2f} ms, so an off-centre 180 does NOT refocus "
-                    "the static field at the echo TE={:.2f} ms — the 180 "
-                    "is misaligned with the readout."
-                ).format(echo_idx, echo_idx * dt * 1e3, te2 * dt * 1e3,
-                         2 * echo_idx * dt * 1e3, float(TE_[0]) * 1e3)
-                if not allow_offcenter_180:
-                    raise ValueError(
-                        msg + "  This is almost never intended; pass "
-                        "allow_offcenter_180=True to do it deliberately.")
-                warnings.warn(msg + "  (allow_offcenter_180=True)")
+        echo_idx = int(np.clip(echo_idx, 0, n_t - 1))
+        if abs(echo_idx - te2) > 1:                       # beyond rounding
+            raise ValueError(
+                f"from_btensor_waveform: echo_idx={echo_idx} places the 180 at {echo_idx * dt * 1e3:.2f} ms, not "
+                f"TE/2={te2 * dt * 1e3:.2f} ms. A spin echo refocuses the static field at 2*t_180="
+                f"{2 * echo_idx * dt * 1e3:.2f} ms, not at the echo TE={float(TE_[0]) * 1e3:.2f} ms.")
+        schedule = RFSchedule([RFEvent(0.0, 90, 'Mz→Mxy'), RFEvent(echo_idx * dt, 180, 'refocus')])
+        sign = schedule.sign(np.arange(n_t) * dt)[None, :, None]
+        bvalues_num = _calc_b_from_waveform(G * sign, dt)
         seq = cls(G, dt, bvalues_num, gradient_directions,
                   None, None, None, None, TE_)
-        seq._carry(_minimum_te=T_total, _te_auto=te_auto, sequence_type='btensor',
-                   _refocus_idx=echo_idx)
+        seq.rf_events = schedule
+        apply_rf_schedule(seq)
+        seq._carry(_minimum_te=T_total, _te_auto=te_auto, sequence_type='btensor')
+        seq.validate()
         seq._build_spec = ('from_btensor_waveform', dict(echo_idx=echo_idx))
         return seq

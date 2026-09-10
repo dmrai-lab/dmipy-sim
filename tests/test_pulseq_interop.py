@@ -235,7 +235,7 @@ def test_native_rf_export_is_scanner_shaped_and_costs_time_when_there_is_no_gap(
     assert np.asarray(back_t.G).shape[1] == 400 + n_pulses
 
     # the gradient is paused, not notched: every original sample survives, in order
-    g0 = np.asarray(tight.G_display if tight.G_display is not None else tight.G)[0, :, 0]
+    g0 = np.asarray(tight.G)[0, :, 0]
     g1 = np.asarray(back_t.G)[0, :, 0]
     assert np.count_nonzero(g1) >= np.count_nonzero(g0) - 2 * n_pulses, \
         "inserting a pulse must not delete gradient samples"

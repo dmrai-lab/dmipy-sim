@@ -1,11 +1,9 @@
 """Sequence-diagram visualisation: physical-gradient display + storage shading.
 
-The simulation gradient ``wf.G`` is bipolar (second lobe negated so the phase
-integral refocuses at the echo without explicitly modelling the 180°). For a
-*pulse-sequence diagram* we must instead show the physical scanner gradient
-``wf.G_display`` (same-sign lobes, since the 180° performs the flip). These tests
-lock in that the viz layer uses the physical gradient and shades the PGSTE
-longitudinal-storage (T_M) window.
+``wf.G`` is the physical scanner gradient (same-sign lobes, since the 180° performs the
+flip) and ``wf.G_eff`` the effective one the phase integral walks (bipolar). A *pulse-sequence
+diagram* shows ``G``; the q-trace integrates ``G_eff``. These tests lock in that the viz layer
+draws the physical gradient and shades the PGSTE longitudinal-storage (T_M) window.
 """
 import numpy as np
 import pytest
@@ -25,8 +23,8 @@ def test_display_gradient_is_same_sign_while_sim_gradient_is_bipolar():
     wf = set_b(pgse(delta=4e-3, DELTA=20e-3, G_magnitude=0.05,
                     bvecs=[[1, 0, 0]], n_t=200), 1.0e9)
 
-    disp = viz._display_G(wf)[0, :, 0]      # physical scanner gradient, x-axis
-    sim = np.array(wf.G)[0, :, 0]           # bipolar simulation gradient, x-axis
+    disp = np.array(wf.G)[0, :, 0]      # physical scanner gradient, x-axis
+    sim = np.array(wf.G_eff)[0, :, 0]       # bipolar effective gradient, x-axis
 
     disp_area = np.abs(disp).sum() * wf.dt
     assert disp_area > 0
@@ -41,8 +39,8 @@ def test_pgse_display_lobes_share_polarity():
     have opposite signs."""
     wf = pgse(delta=4e-3, DELTA=20e-3, G_magnitude=0.05,
               bvecs=[[1, 0, 0]], n_t=200)
-    disp = viz._display_G(wf)[0, :, 0]
-    sim = np.array(wf.G)[0, :, 0]
+    disp = np.array(wf.G)[0, :, 0]
+    sim = np.array(wf.G_eff)[0, :, 0]
     half = len(disp) // 2
     assert np.sign(disp[:half].sum()) == np.sign(disp[half:].sum())
     assert np.sign(sim[:half].sum()) == -np.sign(sim[half:].sum())
@@ -90,9 +88,9 @@ def test_a_sequence_is_drawn_with_the_physical_gradient_too():
     seq = S.pgse([1.0e9], [[1, 0, 0]], 4e-3, 20e-3, n_t=200)
     assert any(e.flip_deg == 180 for e in seq.rf_events)      # the panel does draw a 180
 
-    disp = viz._display_G(seq)[0, :, 0]
-    sim = np.asarray(seq.G)[0, :, 0]
-    assert not np.allclose(disp, sim), "_display_G fell back to the bipolar simulation gradient"
+    disp = np.array(seq.G)[0, :, 0]
+    sim = np.asarray(seq.G_eff)[0, :, 0]
+    assert not np.allclose(disp, sim), "the physical and effective gradients coincide: no 180 was folded"
 
     half = len(disp) // 2
     assert np.sign(disp[:half].sum()) == np.sign(disp[half:].sum())   # scanner: same polarity

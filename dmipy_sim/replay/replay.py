@@ -226,8 +226,9 @@ class ReplayPack:
         """The signal of ``waveform`` on this pack, with every tier the pack carries and the request asks for.
 
         ``waveform`` is a :class:`~dmipy_sim.acquisition.waveforms.Waveform` / :class:`~dmipy_sim.sequences.Sequence`
-        (``G`` (n_meas, n_t_wf, 3) in T/m, ``dt``), or a bare ``G`` already on the pack's save grid; it
-        is resampled onto the pack grid (``n_t`` samples of ``dt``, zero outside the waveform).
+        (its ``G_eff``, the effective gradient, is what this route integrates), or a bare EFFECTIVE ``G``
+        (n_meas, n_t_wf, 3) in T/m on ``dt`` already on the pack's save grid; it is read on the pack grid
+        (``n_t`` samples of ``dt``, zero outside the waveform).
 
         * **gradient** (C0): always, in mode space from the position coefficients -- unless a field is
           requested, when the trajectory is decoded and the two phases accrue in one complex mean so
@@ -312,8 +313,9 @@ class ReplayPack:
         """The RF-aware replay: each walker's magnetisation vector propagated through the actual sequence
         operators on this pack's walk (:func:`~dmipy_sim.replay.trajectories.replay_bloch`).
 
-        The magnitude route of :meth:`replay` assumes ideal pulses and reads the signal as a phase sum, so it
-        cannot carry anything that acts on the magnetisation vector: a flip angle that is not nominal
+        This route reads the waveform's PHYSICAL ``G`` and applies its pulses; :meth:`replay` reads ``G_eff``
+        with the pulses folded in. The magnitude route of :meth:`replay` assumes ideal pulses and reads the
+        signal as a phase sum, so it cannot carry anything that acts on the magnetisation vector: a flip angle that is not nominal
         (``b1_scale``), a finite pulse, a pulse train's coherence pathways. Those are what this route is for,
         and it costs a propagation per piece instead of a projection.
 
@@ -397,9 +399,13 @@ class ReplayPack:
         from .compression import require_position_method, decode_occupancy, relaxation_logweight
         from ._replay_kernel import effective_gradient, bin_gate
         require_position_method(self.method)
+        # two gradients: the PHYSICAL one (``G``, for the vector-Bloch route, which applies the pulses itself)
+        # and the EFFECTIVE one (``G_eff``, for the scalar routes, the pulses folded in); a bare array is
+        # effective by definition and stands for both
         G = np.asarray(getattr(waveform, "G", waveform), np.float64)
+        G_eff = np.asarray(getattr(waveform, "G_eff", waveform), np.float64)
         if G.ndim == 2:
-            G = G[None]
+            G, G_eff = G[None], G_eff[None]
         dt_wf = float(getattr(waveform, "dt", self.dt))
         n_t, dt = self.n_t, self.dt
         chi = getattr(waveform, "chi_perp", None)
@@ -429,9 +435,9 @@ class ReplayPack:
             if tuple(b0_dir) == (0.0, 0.0, 1.0): b0_dir = k["b0_dir"]
         if orientation is not None:
             R = self._rotation_of(orientation)
-            G = G @ R                                                     # R^T g per sample
+            G, G_eff = G @ R, G_eff @ R                                   # R^T g per sample
             b0_dir = tuple(np.asarray(R, float).T @ np.asarray(b0_dir, float))
-        Geff = effective_gradient(G, dt_wf, n_t, dt)                     # exact per-save weights (n_meas, n_t, 3)
+        Geff = effective_gradient(G_eff, dt_wf, n_t, dt)                 # exact per-save weights of the effective gradient
         logw = np.zeros(n_w)
         if (T2 is not None or T1 is not None) and relaxation:
             if not self.has_relaxation:

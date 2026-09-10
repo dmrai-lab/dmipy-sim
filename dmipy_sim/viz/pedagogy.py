@@ -161,15 +161,10 @@ def replay_with_history(geometry, waveform, diffusivity, *, T2=None, T1=None,
     history M(t) (gradient phase + hard-pulse rotations + T2/T1).  Returns a ``history`` dict
     for :func:`sequence_story` / :func:`spin_movie`.  ``waveform`` is any standard
     ``pgse``/``ogse`` Waveform."""
-    # Use the PHYSICAL same-sign gradient (G_display) if present: the idealised 180
-    # rotation does the refocusing, so the effective/bipolar convention must NOT be used
-    # (it would double-count the sign flip and cancel the echo).
-    _gd = getattr(waveform, 'G_display', None)
-    if _gd is not None:
-        G = np.asarray(_gd)
-        G = G[0] if G.ndim == 3 else G         # (n_t, 3)
-    else:
-        G = np.asarray(waveform.G)[0]          # (n_t, 3), first measurement
+    # Walk the PHYSICAL same-sign gradient: the idealised 180
+    # rotation does the refocusing, so the PHYSICAL gradient ``G`` is what it walks (the effective
+    # ``G_eff`` would double-count the sign flip and cancel the echo).
+    G = np.asarray(waveform.G)[0]              # (n_t, 3), first measurement
     dt = float(waveform.dt)
     n_t = G.shape[0]
     rf_events = _rf_events_for(waveform)
