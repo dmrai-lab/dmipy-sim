@@ -1,5 +1,6 @@
 """The .rph constructor: a phantom is built from volumes, not hand-rolled arrays (RPH.md, issue #151)."""
 import numpy as np
+from dmipy_sim import RFEvent
 import pytest
 
 from dmipy_sim.replay.fod import FOD
@@ -253,7 +254,7 @@ def test_a_layer_is_applied_or_refused_never_dropped(tmp_path, pack_path):
     _, S = off.replay(seq, complex_signal=True)
     _, S0 = base.replay(seq, complex_signal=True)
     assert np.abs(np.angle(S / S0)).max() > 1e-3                     # a gradient echo carries the off-resonance
-    seq.rf_events = [{"t_s": (pk.n_t - 1) * pk.dt / 2, "flip_deg": 180}]
+    seq.rf_events = [RFEvent((pk.n_t - 1) * pk.dt / 2, 180)]
     _, Se = off.replay(seq, complex_signal=True)
     _, Se0 = base.replay(seq, complex_signal=True)
     np.testing.assert_allclose(Se, Se0, rtol=1e-9)                   # refocused: the layer contributes nothing
@@ -282,8 +283,8 @@ def test_the_transmit_layer_goes_through_the_bloch_route(tmp_path, pack_path):
     seq = _acq(pk, [[1, 0, 0], [0, 0, 1]], [1e9, 1e9])
     phys = type(seq)()                                      # the Bloch route takes the PHYSICAL waveform
     phys.G, phys.dt, phys.bvalues = np.abs(np.asarray(seq.G)), seq.dt, seq.bvalues
-    rf = [dict(t_s=0.0, flip_deg=90.0, axis_deg=0.0),
-          dict(t_s=(pk.n_t - 1) * pk.dt / 2, flip_deg=180.0, axis_deg=90.0)]
+    rf = [RFEvent(0.0, 90.0, axis_deg=0.0),
+          RFEvent((pk.n_t - 1) * pk.dt / 2, 180.0, axis_deg=90.0)]
     ideal, _ = _phantom(tmp_path / "one", pack_path, orientation=FrameField(R), **kw)
     assert ideal.mode == "frames"
     _, S_ideal = ideal.replay(seq)

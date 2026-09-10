@@ -5,6 +5,7 @@ with no free parameters; the forward Bloch engine is checked for spin-echo refoc
 a static field and for diffusion-driven attenuation in a varying field.
 """
 import numpy as np
+from dmipy_sim import RFEvent
 import numpy.testing as npt
 import pytest
 import jax
@@ -176,8 +177,8 @@ def test_uniform_field_refocuses_under_spin_echo():
     dt, TE, dB0 = 1e-4, 4e-3, 2e-6            # gamma*dB0*TE ~ 2.1 rad (unrefocused phase)
     n_t = int(round(TE / dt)) + 1
     wf = _zero_waveform(n_t, dt)
-    exc = [{'t_s': 0.0, 'flip_deg': 90.0, 'axis_deg': 90.0}]
-    refocus = [{'t_s': TE / 2, 'flip_deg': 180.0, 'axis_deg': 0.0}]
+    exc = [RFEvent(0.0, 90.0, axis_deg=90.0)]
+    refocus = [RFEvent(TE / 2, 180.0, axis_deg=0.0)]
     uniform = lambda r: jnp.float32(dB0)      # position-independent field
     ec_ref = simulate_bloch(2000, D, wf, FreeDiffusion(), exc + refocus,
                             seed=0, susceptibility=uniform)[0]
@@ -194,8 +195,8 @@ def test_diffusion_in_varying_field_attenuates():
     dt, TE = 1e-4, 6e-3
     n_t = int(round(TE / dt)) + 1
     wf = _zero_waveform(n_t, dt)
-    exc = [{'t_s': 0.0, 'flip_deg': 90.0, 'axis_deg': 90.0}]
-    refocus = [{'t_s': TE / 2, 'flip_deg': 180.0, 'axis_deg': 0.0}]
+    exc = [RFEvent(0.0, 90.0, axis_deg=90.0)]
+    refocus = [RFEvent(TE / 2, 180.0, axis_deg=0.0)]
     # a strong local perturber the walkers diffuse around (impenetrable-source clamp)
     src = SusceptibilitySources(centers=[[0., 0., 0.]], radii=[2e-6],
                                 delta_chi=3e-6, B0=7.0)
@@ -217,8 +218,8 @@ def test_susceptibility_composes_with_mt():
     dt, TE, dB0 = 1e-4, 6e-3, 2e-6
     n_t = int(round(TE / dt)) + 1
     wf = _zero_waveform(n_t, dt)
-    se = [{'t_s': 0.0, 'flip_deg': 90.0, 'axis_deg': 90.0},
-          {'t_s': TE / 2, 'flip_deg': 180.0, 'axis_deg': 0.0}]
+    se = [RFEvent(0.0, 90.0, axis_deg=90.0),
+          RFEvent(TE / 2, 180.0, axis_deg=0.0)]
     geom = Sphere(radius=R)
     uniform = lambda r: jnp.float32(dB0)
     susc_only = simulate_bloch(3000, Dm, wf, geom, se, T2=0.06, seed=0, susceptibility=uniform)[0]
@@ -238,8 +239,8 @@ def test_grid_provider_runs_and_refocuses_frozen():
     dt, TE = 1e-4, 4e-3
     n_t = int(round(TE / dt)) + 1
     wf = _zero_waveform(n_t, dt)
-    exc = [{'t_s': 0.0, 'flip_deg': 90.0, 'axis_deg': 90.0}]
-    refocus = [{'t_s': TE / 2, 'flip_deg': 180.0, 'axis_deg': 0.0}]
+    exc = [RFEvent(0.0, 90.0, axis_deg=90.0)]
+    refocus = [RFEvent(TE / 2, 180.0, axis_deg=0.0)]
     ec = simulate_bloch(2000, 1e-13, wf, FreeDiffusion(), exc + refocus,
                         seed=0, susceptibility=prov)[0]
     assert abs(ec) == pytest.approx(1.0, abs=0.03)   # frozen -> static field refocuses
@@ -252,7 +253,7 @@ def test_forward_signal_parity_linear_field():
     gradient through the waveform (the already-validated gradient-phase path)."""
     g, dt, n_t, N = 0.05, 1e-4, 200, 20000        # g (T/m); ΔBz = g·x
     T = n_t * dt
-    exc = [{'t_s': 0.0, 'flip_deg': 90.0, 'axis_deg': 90.0}]   # gradient echo, no 180
+    exc = [RFEvent(0.0, 90.0, axis_deg=90.0)]   # gradient echo, no 180
     # (a) susceptibility as a linear field
     S_field = simulate_bloch(N, D, _zero_waveform(n_t, dt), FreeDiffusion(), exc,
                              seed=0, susceptibility=lambda r: g * r[0])[0]

@@ -23,6 +23,8 @@ from __future__ import annotations
 
 import numpy as np
 
+from ..acquisition.rf import RFEvent, RFSchedule
+
 from ..constants import GAMMA
 
 _COMP_COLOR = {0: '#2ca02c', 1: '#1f77b4', 2: '#ff7f0e'}
@@ -95,16 +97,12 @@ def _walk_record(geometry, diffusivity, n_t, dt, n_walkers, seed):
 
 
 def _rf_events_for(waveform):
-    """Return the ``[{t_s, flip_deg, axis_deg, duration_s}]`` RF list for a waveform.
+    """The RF schedule of a waveform (an excitation at t=0 when it carries none).
 
     Standard waveforms carry ideal (instantaneous) ``rf_events`` directly; a bare
     excitation at t=0 is the fallback."""
-    rf = getattr(waveform, 'rf_events', None)
-    if rf:
-        return [{'t_s': float(e['t_s']), 'flip_deg': float(e.get('flip_deg', 180.0)),
-                 'axis_deg': float(e.get('axis_deg') or 0.0),
-                 'duration_s': float(e.get('duration_s', 0.0) or 0.0)} for e in rf]
-    return [{'t_s': 0.0, 'flip_deg': 90.0, 'axis_deg': 0.0, 'duration_s': 0.0}]
+    rf = RFSchedule(getattr(waveform, 'rf_events', None))
+    return rf if rf else RFSchedule((RFEvent(0.0, 90.0, 'Mz→Mxy'),))
 
 
 def _idealised_history(traj, comp, dt, G, rf_events, T2=None, T1=None,
@@ -127,13 +125,12 @@ def _idealised_history(traj, comp, dt, G, rf_events, T2=None, T1=None,
     # map RF events onto trajectory steps (finite duration -> equal sub-rotations)
     rf_at = {}
     for e in rf_events:
-        i0 = int(round(e['t_s'] / dt))
-        nsub = max(1, int(round(e['duration_s'] / dt))) if e['duration_s'] > 0 else 1
+        i0 = int(round(e.t_s / dt))
+        nsub = max(1, int(round(e.duration_s / dt))) if e.duration_s > 0 else 1
         i_start = max(0, i0 - nsub // 2)
-        dflip = np.deg2rad(e['flip_deg']) / nsub
-        ax = np.deg2rad(e['axis_deg'])
+        dflips, axes = e.flip_split(nsub)
         for j in range(nsub):
-            rf_at.setdefault(min(i_start + j, n_t - 1), []).append((dflip, ax))
+            rf_at.setdefault(min(i_start + j, n_t - 1), []).append((dflips[j], axes[j]))
 
     comps = np.unique(comp[:, 0])
     sub = np.arange(min(300, n_w)) if sub_idx is None else np.asarray(sub_idx, int)
@@ -225,7 +222,7 @@ def sequence_story(history, title=None, save=None, figsize=(10, 7)):
         if np.any(G[:, a] != 0):
             ax[0].plot(tg, G[:, a] * 1e3, lw=1.1, label=lbl)
     for e in history['rf_events']:
-        _rf_glyph(ax[0], e['t_s'] * 1e3, e['flip_deg'], gmax * 1e3)
+        _rf_glyph(ax[0], e.t_s * 1e3, e.flip_deg, gmax * 1e3)
     ax[0].set_ylabel('G (mT/m) + RF'); ax[0].legend(loc='upper right', fontsize=8, ncol=3)
     ax[0].set_title(title or f"{history['family']}: spin-population dynamics (idealised pulses)")
 
@@ -272,8 +269,8 @@ def _draw_player(ax, history):
 
     # instantaneous RF flips: a stem line + a downward tick + the flip-angle label
     for e in history['rf_events']:
-        ts = float(e['t_s']) * 1e3
-        flip = float(e['flip_deg'])
+        ts = float(e.t_s) * 1e3
+        flip = float(e.flip_deg)
         h = 0.9 * H * min(flip / 180.0, 1.0)
         ax.plot([ts, ts], [Y_RF, Y_RF + h], color='crimson', lw=2.0, zorder=3)
         ax.plot([ts], [Y_RF + h], marker='v', color='crimson', ms=5, zorder=3)
@@ -394,7 +391,7 @@ def _magnitude_walk(geometry, waveform, rho, T2_per_comp, n_walkers, seed, want_
     D_w = D_by_lab[lab[:, 0]][:, None]
     weight = np.exp(logw_t2 + (rho / D_w) * dlog)
     return dict(weight=weight, origin=lab[:, 0], pos=pos, G=G, dt=dt, n_t=n_t,
-                rf_events=_rf_events_for(waveform), t_s=np.arange(n_t) * dt)
+                rf_events=_rf_events_for(waveform), t_axis=np.arange(n_t) * dt)
 
 
 def magnitude_zoom_movie(geometry, waveform, save, *, rho, T2_per_comp, n_walkers=8000,
@@ -415,7 +412,7 @@ def magnitude_zoom_movie(geometry, waveform, save, *, rho, T2_per_comp, n_walker
     from scipy.stats import gaussian_kde
 
     w = _magnitude_walk(geometry, waveform, rho, T2_per_comp, n_walkers, seed)
-    weight = w['weight']; origin = w['origin']; t_s = w['t_s']; t_ms = t_s * 1e3
+    weight = w['weight']; origin = w['origin']; t_s = w['t_axis']; t_ms = t_s * 1e3
     T2 = np.asarray(T2_per_comp, float)
     i_idx = np.where(origin == 1)[0]; e_idx = np.where(origin == 0)[0]
     frames = range(0, w['n_t'], max(1, int(stride)))

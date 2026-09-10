@@ -306,20 +306,8 @@ _ACQUISITION_CONTAINERS = {
     "dmipy_sim.acquisition.rf.B1Pulse",                  # the RF envelope itself
 }
 
-# §1.1 -- the two RF dialects builders emit
-_RF_IDEAL = frozenset({"t_s", "label", "flip_deg"})
-_RF_FINITE = frozenset({"t_s", "flip_deg", "axis_deg", "duration_s", "offset_hz"})
-_RF_DIALECT_OF_BUILDER = {
-    "waveforms.pgse": _RF_IDEAL, "waveforms.pgste": _RF_IDEAL, "waveforms.ogse": _RF_IDEAL,
-    "waveforms.trapezoidal_ogse": _RF_IDEAL, "waveforms.cpmg": _RF_IDEAL,
-    "waveforms.ste": _RF_IDEAL, "waveforms.pte": _RF_IDEAL,
-    "Sequence.from_pgse": _RF_IDEAL, "Sequence.from_cpmg": _RF_IDEAL,
-    "pulse_sequence.gradient_echo": _RF_FINITE, "pulse_sequence.spin_echo": _RF_FINITE,
-    "pulse_sequence.prepend_mt_prep": _RF_FINITE,
-}
-
-# every key any module reads off an RF event; ``b1_envelope`` is read (replay.trajectories) and emitted by no builder
-_RF_KEYS_READ = _RF_IDEAL | _RF_FINITE | {"b1_envelope"}
+# §1.1 -- the RF dialect: one. Every builder's events are RFEvent; a dict is read only by from_dict
+_RF_DICT_READ_BOUNDARY = {"dmipy_sim.acquisition.rf"}
 
 # §1.1 / #171 -- Sequence constructors that declare no RF schedule at all
 _SEQUENCE_CONSTRUCTORS_WITHOUT_RF = {
@@ -413,7 +401,7 @@ def _every_builder():
         "pulse_sequence.gradient_echo": P.gradient_echo(20e-3, 1e-4),
         "pulse_sequence.spin_echo": P.spin_echo(20e-3, 1e-4),
         "pulse_sequence.prepend_mt_prep": P.prepend_mt_prep(
-            P.spin_echo(20e-3, 1e-4), dict(offset_hz=2000.0, duration_s=2e-3, flip_deg=500.0)),
+            P.spin_echo(20e-3, 1e-4), P.saturation_pulse(2000.0, 2e-3, flip_deg=500.0)),
     }
     G = np.zeros((1, 200, 3), np.float32); G[0, :50, 0] = 0.05; G[0, 50:100, 0] = -0.05
     out["Sequence.from_waveform"] = Sequence.from_waveform(G, 1e-4, bv)
@@ -421,39 +409,61 @@ def _every_builder():
     return out
 
 
-def test_every_builder_speaks_a_declared_rf_dialect():
-    """Each builder's ``rf_events`` use exactly the key set of its declared dialect; the Sequence constructors
-    that declare no schedule at all are the declared ones (#171) and no others."""
-    dialects = {}
+def test_every_builder_emits_rf_events_of_the_one_dialect():
+    """Every builder's ``rf_events`` is a tuple of ``RFEvent`` -- one dialect, whatever the family; the
+    Sequence constructors that declare no schedule at all are the declared ones (#171) and no others."""
+    from dmipy_sim.acquisition.rf import RFEvent, RFSchedule
     without = set()
     for name, obj in _every_builder().items():
         rf = getattr(obj, "rf_events", None)
         if not rf:
             without.add(name)
             continue
-        keys = frozenset().union(*(frozenset(e) for e in rf))
-        dialects[name] = tuple(sorted(keys))
-    assert dialects == {k: tuple(sorted(v)) for k, v in _RF_DIALECT_OF_BUILDER.items()}, (
-        f"RF dialects changed: {dialects}")
+        assert isinstance(rf, RFSchedule) and all(isinstance(e, RFEvent) for e in rf), f"{name}: {rf!r}"
+        assert all(e.label for e in rf), f"{name}: an event without a coherence label: {rf!r}"
     assert without == _SEQUENCE_CONSTRUCTORS_WITHOUT_RF, (
         f"constructors without an RF schedule: {sorted(without)} (declared {sorted(_SEQUENCE_CONSTRUCTORS_WITHOUT_RF)}). "
         f"#173 piece 5 gives every builder a schedule; this set only shrinks.")
 
 
-def test_rf_event_keys_read_anywhere_are_declared():
-    """Every key any module reads off an RF event is one of the declared keys: a reader that invents a fourth
-    dialect fails here."""
-    pat = re.compile(r"""\be\s*(?:\.get\(|\[)\s*['"]([a-z_0-9]+)['"]""")
+def test_nothing_re_derives_from_a_list_of_events():
+    """The coherence mask, the spin-echo sign, the refocus and mixing times are RFSchedule's; the free
+    functions that each re-derived one of them from a bare list of events are gone, and so is the
+    normaliser every reader once called."""
+    import dmipy_sim.acquisition.waveforms as W
+    import dmipy_sim.sequences.pulseq as Q
+    import dmipy_sim.acquisition.rf as RF
+    for mod, name in ((W, "rf_schedule_coherence"), (W, "effective_gradient_sign"), (Q, "_ste_from_rf_schedule"),
+                      (Q, "_longitudinal_mask"), (RF, "as_rf_events")):
+        assert not hasattr(mod, name), f"{mod.__name__}.{name} is back; it is RFSchedule's"
+
+
+def test_rf_events_are_read_as_attributes_everywhere_but_the_boundary():
+    """An RF event is its attributes. ``['t_s']`` / ``.get('t_s')`` -- the key every event dialect had -- and
+    the retired ``b1_envelope`` are read off a dict in exactly one module: ``RFEvent.from_dict``, the inverse
+    of ``to_dict``; anywhere else is a reader that kept its own dialect."""
+    pat = re.compile(r"""(?:\.get\(|\[)\s*['"](t_s|b1_envelope)['"]""")
     found = {}
     for py, modname in _package_modules():
-        text = py.read_text()
-        if "rf_events" not in text and "rf" not in modname:
+        for m in pat.finditer(py.read_text()):
+            found.setdefault(modname, set()).add(m.group(1))
+    strays = {k: sorted(v) for k, v in found.items() if k not in _RF_DICT_READ_BOUNDARY}
+    assert not strays, f"RF events read as dicts outside the boundary {sorted(_RF_DICT_READ_BOUNDARY)}: {strays}"
+
+
+def test_no_rf_event_is_spelled_as_a_dict_anywhere():
+    """A pulse is an ``RFEvent`` and nothing else. Building one as ``{'t_s': ...}`` or ``dict(t_s=...)`` -- the
+    spellings the readers once accepted -- is the backdoor a tolerant boundary would let back in; it exists
+    only inside ``acquisition.rf`` (``to_dict`` / ``from_dict``, the object's own serialised record)."""
+    pat = re.compile(r"""['"]t_s['"]\s*:|\bdict\(\s*t_s\s*=""")
+    found = {}
+    for py, modname in _package_modules():
+        if modname in _RF_DICT_READ_BOUNDARY:
             continue
-        for m in pat.finditer(text):
-            found.setdefault(m.group(1), set()).add(modname)
-    assert set(found) == _RF_KEYS_READ, (
-        f"RF event keys read: {sorted(found)}; declared {sorted(_RF_KEYS_READ)}. "
-        f"new: { {k: sorted(v) for k, v in found.items() if k not in _RF_KEYS_READ} }")
+        n = len(pat.findall(py.read_text()))
+        if n:
+            found[modname] = n
+    assert not found, f"RF events spelled as dicts (build an RFEvent): {found}"
 
 
 def test_rf_is_taken_apart_from_the_gradient_only_where_declared():

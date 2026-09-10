@@ -17,6 +17,7 @@ except ImportError:
     _MPL_AVAILABLE = False
 
 from ..constants import GAMMA
+from ..acquisition.rf import RFSchedule
 
 # x / y / z colour palette
 _COLORS = ['#2196F3', '#4CAF50', '#F44336']   # blue, green, red
@@ -88,7 +89,7 @@ def _draw_rf_panel(ax, wf, t_plot):
     ax.set_ylim(0, 1)
     ax.axis('off')
 
-    rf_events = wf.rf_events or []
+    rf_events = RFSchedule(getattr(wf, 'rf_events', None))
     t_total_s = wf.dt * (len(t_plot) - 1)
     disp_per_s = (t_plot[-1] - t_plot[0]) / t_total_s if t_total_s > 0 else 1.0
 
@@ -101,7 +102,7 @@ def _draw_rf_panel(ax, wf, t_plot):
     ]
     LINE_YMIN = 0.05
 
-    t_evs = [ev['t_s'] * disp_per_s for ev in rf_events]
+    t_evs = [ev.t_s * disp_per_s for ev in rf_events]
     min_gap = (t_plot[-1] - t_plot[0]) * 0.18
 
     # Greedy tier assignment: events within min_gap of same tier get bumped to tier 1
@@ -113,8 +114,8 @@ def _draw_rf_panel(ax, wf, t_plot):
 
     for idx, ev in enumerate(rf_events):
         t_ev  = t_evs[idx]
-        flip  = ev['flip_deg']
-        label = ev['label']
+        flip  = ev.flip_deg
+        label = ev.label
         color = _RF_COLOR_90 if flip == 90 else _RF_COLOR_180
         lw    = 2.0 if flip == 90 else 3.0
         tier  = TIERS[min(tiers[idx], 1)]
@@ -124,7 +125,7 @@ def _draw_rf_panel(ax, wf, t_plot):
                    color=color, lw=lw, alpha=0.9, solid_capstyle='round')
 
         # Flip angle (bold, larger)
-        ax.text(t_ev, tier['flip_y'], f'{flip}°',
+        ax.text(t_ev, tier['flip_y'], f'{flip:g}°',
                 ha='center', va='bottom',
                 fontsize=10, color=color, fontweight='bold',
                 transform=ax.transData)

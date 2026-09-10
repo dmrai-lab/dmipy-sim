@@ -2,6 +2,7 @@
 a pulse is flipped by it exactly wherever the pulse falls and whatever gradient plays through it; and the coherence
 gates read accumulated channels by interval average, sampled ones through the path interpolant."""
 import numpy as np
+from dmipy_sim import RFEvent
 import pytest
 
 from dmipy_sim.constants import GAMMA
@@ -30,7 +31,7 @@ def test_a_gradient_through_a_180_on_a_save_is_refocused_exactly():
     traj = _walk()
     G = np.zeros((1, N_T, 3)); G[0, :, 0] = 0.02                                   # on through everything
     k180 = 40
-    rf = [{"t_s": 0.0, "flip_deg": 90.0, "axis_deg": 90.0}, {"t_s": k180 * DT, "flip_deg": 180.0, "axis_deg": 0.0}]
+    rf = [RFEvent(0.0, 90.0, axis_deg=90.0), RFEvent(k180 * DT, 180.0, axis_deg=0.0)]
     mxy = _bloch_phase(traj, G, rf)
     assert np.allclose(np.abs(mxy), 1.0, atol=1e-12)
     G_eff = G.copy(); G_eff[0, k180:, 0] *= -1                                     # the folded gradient
@@ -48,20 +49,20 @@ def test_a_180_between_saves_refocuses_a_static_gradient_to_the_analytic_phase()
     traj = np.repeat(r[:, None, :], N_T, axis=1)
     G = np.zeros((1, N_T, 3)); G[0, :, 0] = 0.03
     for t180 in (T / 2, 0.37 * T + 0.3 * DT):
-        rf = [{"t_s": 0.0, "flip_deg": 90.0, "axis_deg": 90.0}, {"t_s": t180, "flip_deg": 180.0, "axis_deg": 0.0}]
+        rf = [RFEvent(0.0, 90.0, axis_deg=90.0), RFEvent(t180, 180.0, axis_deg=0.0)]
         mxy = _bloch_phase(traj, G, rf)
         expect = GAMMA * 0.03 * r[:, 0] * (2 * t180 - T)
         err = min(np.abs(np.angle(mxy * np.exp(1j * expect))).max(), np.abs(np.angle(mxy * np.exp(-1j * expect))).max())
         assert err < 1e-9, f"t180={t180}: phase error {err:.2e}"
     # numpy and JAX agree with the pulse between saves too
-    rf = [{"t_s": 0.0, "flip_deg": 90.0, "axis_deg": 90.0}, {"t_s": 0.37 * T + 0.3 * DT, "flip_deg": 180.0, "axis_deg": 0.0}]
+    rf = [RFEvent(0.0, 90.0, axis_deg=90.0), RFEvent(0.37 * T + 0.3 * DT, 180.0, axis_deg=0.0)]
     np.testing.assert_allclose(replay_bloch_jax(traj, DT, G, DT, rf), replay_bloch(traj, DT, G, DT, rf), atol=2e-5)
 
 
 def test_pgse_with_the_pulses_clear_of_the_lobes_matches_the_scalar_replay():
     traj = _walk(2)
     G = np.zeros((2, N_T, 3)); G[0, 5:25, 0] = 0.04; G[0, 45:65, 0] = 0.04; G[1, 5:25, 2] = 0.06; G[1, 45:65, 2] = 0.06
-    rf = [{"t_s": 0.0, "flip_deg": 90.0, "axis_deg": 90.0}, {"t_s": 35 * DT, "flip_deg": 180.0, "axis_deg": 0.0}]
+    rf = [RFEvent(0.0, 90.0, axis_deg=90.0), RFEvent(35 * DT, 180.0, axis_deg=0.0)]
     S_bloch = np.abs(replay_bloch(traj, DT, G, DT, rf))
     G_eff = G.copy(); G_eff[:, 35:] *= -1
     phi, _, _ = replay(traj, DT, G_eff, DT, return_walker_signals=True)         # the scalar route's per-walker phase
@@ -88,4 +89,4 @@ def test_gates_read_accumulated_channels_by_interval_and_sampled_ones_by_interpo
         np.testing.assert_allclose(A0[:, k == kk].sum(1), A0s[:, kk], atol=1e-14)
         np.testing.assert_allclose(A1[:, k == kk].sum(1), A1s[:, kk], atol=1e-18)
     with pytest.raises(ValueError, match="outside the walk"):
-        replay_bloch(_walk(), DT, np.zeros((1, N_T, 3)), DT, [{"t_s": T + DT, "flip_deg": 90.0}])
+        replay_bloch(_walk(), DT, np.zeros((1, N_T, 3)), DT, [RFEvent(T + DT, 90.0)])

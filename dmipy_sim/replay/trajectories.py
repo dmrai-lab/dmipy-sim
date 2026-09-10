@@ -18,6 +18,7 @@ from typing import NamedTuple
 import numpy as np
 
 from ..constants import GAMMA
+from ..acquisition.rf import RFSchedule
 from ._replay_kernel import (effective_gradient, effective_gradient_jax, gradient_phase,
                              gradient_phase_jax, piece_phase_weights, gate_weights, bin_gate)
 
@@ -636,30 +637,18 @@ def _bloch_timeline(rf_events, n_t, dt_traj):
     tol = 1e-9 * float(dt_traj)
     saves = np.arange(int(n_t)) * float(dt_traj)
     rots, windows, instants = [], [], []
-    for e in rf_events:
-        t_s = float(e["t_s"])
+    for e in RFSchedule(rf_events):
+        t_s, dur = e.t_s, e.duration_s
         if t_s < -tol or t_s > T + tol:
             raise ValueError(f"RF event at t = {t_s:.6g} s lies outside the walk [0, {T:.6g}] s")
-        dur = float(e.get("duration_s", 0.0) or 0.0)
-        total = np.deg2rad(float(e.get("flip_deg", 180.0)))
-        ax = np.deg2rad(float(e.get("axis_deg", 0.0)))
         nsub = max(1, int(round(dur / float(dt_traj)))) if dur > 0.0 else 1
-        if dur > 0.0:
-            ts = np.clip(t_s - dur / 2.0 + (np.arange(nsub) + 0.5) * dur / nsub, 0.0, T)
-            env = e.get("b1_envelope", None)
-            if env is not None and nsub > 1:                                 # shaped pulse
-                env = np.asarray(env, np.float64)
-                env = np.interp(np.linspace(0.0, 1.0, nsub), np.linspace(0.0, 1.0, len(env)), env)
-                dflips = total * env / (env.sum() + 1e-30)                   # preserve the total flip
-            else:
-                dflips = np.full(nsub, total / nsub)
-        else:
-            ts, dflips = np.array([t_s]), np.array([total])
-        for t, f in zip(ts, dflips):
-            rots.append((float(t), float(f), ax))
+        ts = (np.clip(t_s - dur / 2.0 + (np.arange(nsub) + 0.5) * dur / nsub, 0.0, T) if dur > 0.0
+              else np.array([t_s]))
+        dflips, axes = e.flip_split(nsub)                                  # even, or by the pulse's envelope
+        for t, f, ax in zip(ts, dflips, axes):
+            rots.append((float(t), float(f), float(ax)))
             instants.append(float(t))
-        windows.append((max(0.0, t_s - dur / 2.0), min(T, t_s + dur / 2.0),
-                        2.0 * np.pi * float(e.get("offset_hz", 0.0) or 0.0)))
+        windows.append((max(0.0, t_s - dur / 2.0), min(T, t_s + dur / 2.0), 2.0 * np.pi * e.offset_hz))
     times = np.sort(np.concatenate([saves, np.asarray(instants, np.float64)]))
     edges = [times[0]]
     for t in times[1:]:
@@ -689,7 +678,7 @@ def _bloch_replay_terms(trajectory, dt_traj, G, dt_wf, rf_events, *, T2, T1, com
     precession is exact for the piecewise-linear path (:func:`_replay_kernel.piece_phase_weights`), relaxation
     runs for the piece's duration, and the per-save wall contact and off-resonance are shared by duration. A
     hard pulse is one rotation at its instant; a finite pulse of ``duration_s`` is ``round(duration/dt)``
-    sub-rotations spread over its window with the flip split evenly (or by ``b1_envelope``); its carrier
+    sub-rotations spread over its window with the flip split evenly (or by its envelope); its carrier
     ``offset_hz`` and, with ``slice_offsets``/``slice_gradient``, the slice-select off-resonance act over the
     window (a hard pulse has no window). An MT ``bound_frac`` blends the relaxation rates toward the bound
     pool's per save and adds the bound pool's off-resonance precession by occupancy.

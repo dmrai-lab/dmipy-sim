@@ -10,6 +10,7 @@ import jax.numpy as jnp
 from warnings import warn
 
 from ..constants import GAMMA, DEFAULT_SLEW_RATE, resolve_slew as _resolve_slew
+from .rf import RFEvent, RFSchedule
 
 
 def _fill_lobe(arr, m, i0, n_pulse, amp_vec, n_rise):
@@ -50,13 +51,11 @@ class Waveform:
     echo_idx : int
         Index in [0, n_t) at which the signal is sampled (last time point for
         spin echo). Signal extraction uses phi at this time step.
-    rf_events : list, optional
-        The ideal (instantaneous) RF schedule, each ``{'t_s', 'label', 'flip_deg'}``. It is the
-        source of the coherence attributes below: a 90 excites or, while transverse, stores the
-        magnetisation along z (the next 90 recalls it); a 180 refocuses, forming an echo at
-        ``2 t_180 - t_ref``. ``chi_perp``, ``TM``, ``stimulated_echo`` and ``echo_indices`` are
-        derived from it at construction (:func:`rf_schedule_coherence`); a value passed
-        explicitly must agree with the schedule or construction raises. The gradient ``G`` is
+    rf_events : RFSchedule, optional
+        The RF schedule (:class:`dmipy_sim.acquisition.rf.RFSchedule`, the pulses in time order;
+        any iterable of :class:`~dmipy_sim.acquisition.rf.RFEvent` builds one). It is the source of
+        the coherence attributes below, derived at construction by :meth:`RFSchedule.coherence`;
+        a value passed explicitly must agree with the schedule or construction raises. The gradient ``G`` is
         the effective (bipolar) waveform and already encodes the refocusing.
     G_display : np.ndarray, optional
         Physical scanner gradient for visualisation only (same-sign second lobe,
@@ -87,7 +86,7 @@ class Waveform:
     G: jnp.ndarray
     dt: float
     echo_idx: int
-    rf_events: list = None   # [{'t_s': float, 'label': str, 'flip_deg': int}, ...]
+    rf_events: RFSchedule = None
     G_display: np.ndarray = None
     echo_indices: np.ndarray = None
     chi_perp: np.ndarray = None
@@ -95,83 +94,12 @@ class Waveform:
     stimulated_echo: bool = False
 
     def __post_init__(self):
+        self.rf_events = RFSchedule(self.rf_events)
         if self.rf_events:
             apply_rf_schedule(self)
 
 
 _ECHO_TOL = 2          # samples: the rounding freedom of placing a 180 at a lobe midpoint
-
-
-def rf_schedule_coherence(rf_events, n_t, dt):
-    """Coherence bookkeeping of an ideal instantaneous RF schedule on an ``n_t``-sample grid.
-
-    Returns ``(chi_perp, TM, stimulated_echo, echo_times)``: the transverse-coherence mask
-    (``True`` while the magnetisation is transverse), the total longitudinal-storage time (``None``
-    when there is none), whether the readout is a stimulated echo (a store / recall pair), and the
-    echo times of the refocusing pulses. Magnetisation starts along z; a 90 excites it, a 90 while
-    transverse stores it along z, the next 90 recalls it; a 180 while transverse refocuses, forming
-    an echo at ``2 t_180 - t_ref`` where ``t_ref`` is the previous echo or excitation. Other flips
-    are not tracked.
-    """
-    events = sorted(rf_events, key=lambda e: float(e['t_s']))
-    n_t = int(n_t)
-    chi = np.zeros(n_t, dtype=bool)
-    transverse = False
-    t_ref = None
-    stored_from = None
-    TM = 0.0
-    stores = 0
-    echoes = []
-    i_prev = 0
-    for e in events:
-        t = float(e['t_s'])
-        i = int(np.clip(int(round(t / dt)), 0, n_t))
-        chi[i_prev:i] = transverse
-        i_prev = i
-        flip = int(round(float(e.get('flip_deg', 0))))
-        if flip == 90:
-            if not transverse:
-                transverse = True
-                if stored_from is not None:                  # recall
-                    TM += t - stored_from
-                    stored_from = None
-                t_ref = t
-            else:                                           # store
-                transverse = False
-                stored_from = t
-                stores += 1
-        elif flip == 180 and transverse and t_ref is not None:
-            echoes.append(2.0 * t - t_ref)
-            t_ref = echoes[-1]
-    chi[i_prev:] = transverse
-    return chi, (TM if TM > 0.0 else None), stores > 0, echoes
-
-
-def effective_gradient_sign(rf_events, t_grid):
-    """Sign of the EFFECTIVE gradient over time, from the pulses alone -- ``(len(t_grid),)`` of +-1.
-
-    A refocusing pulse inverts the accumulated phase, so the effective gradient changes sign after it. A
-    stimulated echo does the same across its storage/recall pair: phase is parked along z at the storage
-    pulse and the recalled pathway rephases like a spin echo, so the sign flips at RECALL. Verified against
-    the constructors: pgse flips after its 180 (first non-zero sample 20.05 ms, pulse at 12.47 ms) and
-    pgste after its recall (25.04 ms, pulse at 24.96 ms).
-
-    This is the one un-fold between the two gradients a sequence has: the PHYSICAL one a scanner plays
-    (:func:`dmipy_sim.sequences.pulseq.to_pulseq`, the ``G_display`` the viz layer draws) and the EFFECTIVE
-    one the phase integral walks.  ``s`` is +-1 and so is its own inverse -- multiplying converts either
-    way.  It is a *sign*, not the quadrature weight
-    :func:`dmipy_sim.replay._replay_kernel.se_gate` builds for integrating against the path: that one
-    half-weights the grid endpoints, which is right under an integral and wrong for a waveform.
-    """
-    s = np.ones_like(t_grid, dtype=np.float32)
-    if not rf_events:
-        return s
-    for e in rf_events:
-        lab = str(e.get('label', ''))
-        flips = abs(float(e.get('flip_deg', 0.0)) - 180.0) < 20.0 or lab == 'refocus' or lab == 'recall'
-        if flips:
-            s[t_grid >= float(e['t_s'])] *= -1.0
-    return s
 
 
 def apply_rf_schedule(wf):
@@ -182,9 +110,10 @@ def apply_rf_schedule(wf):
     ``echo_indices`` is set for a train of two or more echoes; a single echo must land on
     ``echo_idx`` within the placement rounding.
     """
+    wf.rf_events = RFSchedule(wf.rf_events)
     n_t = int(wf.G.shape[1])
     dt = float(wf.dt)
-    chi, TM, ste, echoes = rf_schedule_coherence(wf.rf_events, n_t, dt)
+    chi, TM, ste, echoes = wf.rf_events.coherence(n_t, dt)
     chi_out = None if chi.all() else chi
     if wf.chi_perp is not None:
         given = np.asarray(wf.chi_perp).reshape(-1).astype(bool)
@@ -275,8 +204,8 @@ def pgse(delta, DELTA, G_magnitude, bvecs, n_t,
     # already encodes the refocusing, so the mask is all-transverse.
     gap_mid = (n_pulse + n_DELTA) // 2
     rf_events = [
-        {'t_s': 0.0,           'label': 'Mz→Mxy', 'flip_deg': 90},
-        {'t_s': gap_mid * dt,  'label': 'refocus', 'flip_deg': 180},
+        RFEvent(0.0, 90, 'Mz→Mxy'),
+        RFEvent(gap_mid * dt, 180, 'refocus'),
     ]
 
     return Waveform(G=jnp.array(G_grad), dt=float(dt),
@@ -365,9 +294,9 @@ def pgste(delta, TM, G_magnitude, bvecs, n_t, slew_rate=DEFAULT_SLEW_RATE):
     # (back to transverse) at the start of the second lobe. chi_perp, TM and stimulated_echo
     # follow from it (Waveform.__post_init__).
     rf_events = [
-        {'t_s': 0.0,               'label': 'Mz→Mxy',  'flip_deg': 90},
-        {'t_s': n_pulse * dt,      'label': 'store',    'flip_deg': 90},
-        {'t_s': i_recall * dt,     'label': 'recall',   'flip_deg': 90},
+        RFEvent(0.0, 90, 'Mz→Mxy'),
+        RFEvent(n_pulse * dt, 90, 'store'),
+        RFEvent(i_recall * dt, 90, 'recall'),
     ]
 
     return Waveform(G=jnp.array(G_grad), dt=float(dt),
@@ -454,8 +383,8 @@ def ogse(frequency, T_total, G_magnitude, bvecs, n_t, kind='cosine'):
     # The RF schedule; the bipolar (time-mirrored) G already refocuses at the echo.
     gap_mid = (n_t - 1) // 2
     rf_events = [
-        {'t_s': 0.0,          'label': 'Mz→Mxy', 'flip_deg': 90},
-        {'t_s': gap_mid * dt, 'label': 'refocus', 'flip_deg': 180},
+        RFEvent(0.0, 90, 'Mz→Mxy'),
+        RFEvent(gap_mid * dt, 180, 'refocus'),
     ]
 
     return Waveform(G=jnp.array(G_grad), dt=float(dt),
@@ -556,8 +485,8 @@ def trapezoidal_ogse(N, delta, DELTA, G_magnitude, bvecs, n_t,
     # The RF schedule; the sign-flipped second block already refocuses at the echo.
     gap_mid = (n_block + n_DELTA) // 2
     rf_events = [
-        {'t_s': 0.0,          'label': 'Mz→Mxy', 'flip_deg': 90},
-        {'t_s': gap_mid * dt, 'label': 'refocus', 'flip_deg': 180},
+        RFEvent(0.0, 90, 'Mz→Mxy'),
+        RFEvent(gap_mid * dt, 180, 'refocus'),
     ]
 
     return Waveform(G=jnp.array(G_grad), dt=float(dt),
@@ -772,7 +701,7 @@ def ste(delta, DELTA, G_magnitude, n_t, slew_rate=DEFAULT_SLEW_RATE):
 
     return Waveform(G=jnp.array(G_grad), dt=float(dt),
                     echo_idx=n_t - 1,
-                    rf_events=[{'t_s': 0.0, 'label': 'Mz→Mxy', 'flip_deg': 90}])
+                    rf_events=[RFEvent(0.0, 90, 'Mz→Mxy')])
 
 
 def pte(delta, DELTA, G_magnitude, plane_normal, n_t, slew_rate=DEFAULT_SLEW_RATE):
@@ -837,7 +766,7 @@ def pte(delta, DELTA, G_magnitude, plane_normal, n_t, slew_rate=DEFAULT_SLEW_RAT
 
     return Waveform(G=jnp.array(G_grad), dt=float(dt),
                     echo_idx=n_t - 1,
-                    rf_events=[{'t_s': 0.0, 'label': 'Mz→Mxy', 'flip_deg': 90}])
+                    rf_events=[RFEvent(0.0, 90, 'Mz→Mxy')])
 
 
 def set_b(waveform, b_target):
@@ -1023,8 +952,8 @@ def cpmg(n_echoes, TE, G_magnitude, bvecs, n_t_per_echo=100):
         G_phys[m, :, :] = g
         G_eff[m, :, :]  = sign[:, None] * g
 
-    rf_events = [{'t_s': 0.0, 'label': 'Mz→Mxy', 'flip_deg': 90}]
-    rf_events += [{'t_s': (k + 0.5) * TE, 'label': 'refocus', 'flip_deg': 180}
+    rf_events = [RFEvent(0.0, 90, 'Mz→Mxy')]
+    rf_events += [RFEvent((k + 0.5) * TE, 180, 'refocus')
                   for k in range(n_echoes)]
 
     # Echoes form at k*TE, k=1..n_echoes (step indices k*n_t_per_echo): derived from the schedule.

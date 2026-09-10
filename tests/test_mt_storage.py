@@ -16,6 +16,7 @@ Heavy Monte-Carlo -> GPU-recommended; marked slow.
 from types import SimpleNamespace
 
 import numpy as np
+from dmipy_sim import RFEvent
 import pytest
 
 from dmipy_sim import Sphere, simulate_bloch
@@ -27,7 +28,7 @@ R, D = 5e-6, 1e-9
 k_f, k_r = 30.0, 100.0                       # -> f_b = k_f/(k_f+k_r) = 0.23
 KAPPA_MT, DWELL = k_f * R / 3.0, 1.0 / k_r   # sphere S/V = 3/R
 T1A, T1B = 1.0, 0.4
-INVERT = [{'t_s': 0.0, 'flip_deg': 180.0, 'axis_deg': 0.0, 'duration_s': 0.0, 'offset_hz': 0.0}]
+INVERT = [RFEvent(0.0, 180.0, axis_deg=0.0, duration_s=0.0, offset_hz=0.0)]
 
 
 def _stored_mz(TM, *, with_mt):

@@ -7,11 +7,12 @@ mainly demonstrates the plumbing + free-water specificity (the broad bound-pool 
 is added in Piece E).  Free diffusion, small walker counts, fast.
 """
 import numpy as np
+from dmipy_sim import RFEvent
 import pytest
 
 from dmipy_sim import FreeDiffusion
 from dmipy_sim.engine.pulse_sequence import (BlochSequence, gradient_echo, spin_echo,
-                                      prepend_mt_prep, run_bloch_sequence)
+                                      prepend_mt_prep, run_bloch_sequence, saturation_pulse)
 
 D = 2e-9
 
@@ -21,16 +22,16 @@ def test_mt_prep_structure():
     dt = 1e-4
     gre = gradient_echo(TE=2e-3, dt=dt)
     n0 = gre.n_t
-    prep = dict(offset_hz=800.0, duration_s=5e-3, b1_hz=100.0, spoiler_s=1e-3)
-    seq = prepend_mt_prep(gre, prep)
+    prep = saturation_pulse(800.0, 5e-3, b1_hz=100.0)
+    seq = prepend_mt_prep(gre, prep, spoiler_s=1e-3)
     n_sat, n_spoil = int(round(5e-3 / dt)), int(round(1e-3 / dt))
     assert seq.n_t == n0 + n_sat + n_spoil
     sat = seq.rf_events[0]
-    assert sat['offset_hz'] == 800.0
-    assert sat['flip_deg'] == pytest.approx(360.0 * 100.0 * 5e-3)   # 360*b1_hz*dur
+    assert sat.offset_hz == 800.0
+    assert sat.flip_deg == pytest.approx(360.0 * 100.0 * 5e-3)   # 360*b1_hz*dur
     assert seq.crusher is not None and len(seq.crusher['windows_s']) == 1
     # the original excitation is shifted by the whole prep block
-    assert seq.rf_events[1]['t_s'] == pytest.approx((n_sat + n_spoil) * dt)
+    assert seq.rf_events[1].t_s == pytest.approx((n_sat + n_spoil) * dt)
 
 
 # ── spin-echo readout: pure T2 (nothing to refocus) -> exp(-TE/T2) ──────────────
@@ -45,7 +46,7 @@ def test_spin_echo_readout_T2():
 def test_crusher_dephases_transverse():
     dt, n_t = 1e-4, 100
     G = np.zeros((1, n_t, 3))
-    exc = [{'t_s': 0.0, 'flip_deg': 90.0, 'axis_deg': 90.0, 'duration_s': 0.0, 'offset_hz': 0.0}]
+    exc = [RFEvent(0.0, 90.0, axis_deg=90.0, duration_s=0.0, offset_hz=0.0)]
     base = BlochSequence(G=G, dt=dt, rf_events=exc, complex_signal=True)
     crushed = BlochSequence(G=G, dt=dt, rf_events=exc, complex_signal=True,
                             crusher=dict(windows_s=[(dt, n_t * dt)], n_cycles=32.0))
@@ -61,9 +62,8 @@ def test_mt_prep_free_water_specificity():
     gre = gradient_echo(TE=2e-3, dt=dt)
 
     def mtr(offset_hz, flip_deg):
-        prep = dict(offset_hz=offset_hz, duration_s=5e-3, flip_deg=flip_deg,
-                    spoiler_s=1e-3, n_cycles=32.0)
-        s = run_bloch_sequence(prepend_mt_prep(gre, prep), 4000, D, FreeDiffusion(),
+        prep = saturation_pulse(offset_hz, 5e-3, flip_deg=flip_deg)
+        s = run_bloch_sequence(prepend_mt_prep(gre, prep, spoiler_s=1e-3, n_cycles=32.0), 4000, D, FreeDiffusion(),
                                T2=0.05, T1=1.0, seed=0)
         return abs(s[0])
 

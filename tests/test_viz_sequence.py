@@ -88,7 +88,7 @@ def test_a_sequence_is_drawn_with_the_physical_gradient_too():
     physical gradient: drawing the bipolar simulation gradient NEXT TO a 180 asserts the flip
     twice and shows a sequence that would not refocus."""
     seq = S.pgse([1.0e9], [[1, 0, 0]], 4e-3, 20e-3, n_t=200)
-    assert any(e['flip_deg'] == 180 for e in seq.rf_events)      # the panel does draw a 180
+    assert any(e.flip_deg == 180 for e in seq.rf_events)      # the panel does draw a 180
 
     disp = viz._display_G(seq)[0, :, 0]
     sim = np.asarray(seq.G)[0, :, 0]

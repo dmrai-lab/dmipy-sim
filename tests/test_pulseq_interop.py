@@ -10,6 +10,7 @@ import tempfile
 import warnings
 
 import numpy as np
+from dmipy_sim import RFEvent
 import pytest
 
 pytest.importorskip("pypulseq")
@@ -47,7 +48,7 @@ def test_roundtrip_slew_limited_preserves_bvalue():
     assert abs(_b(wf2) - _b(wf)) <= 1e-3 * _b(wf)
     assert int(wf2.echo_idx) == int(wf.echo_idx)
     # RF schedule preserved via definitions
-    flips = sorted(e['flip_deg'] for e in (wf2.rf_events or []))
+    flips = sorted(e.flip_deg for e in (wf2.rf_events or []))
     assert 90.0 in flips
 
 
@@ -92,9 +93,9 @@ def test_from_pulseq_native_file():
     G = np.asarray(wf.G)
     assert G.shape[0] == 1 and G.shape[2] == 3
     assert abs(float(np.abs(G).max()) - g_T) < 1e-3          # peak gradient recovered (T/m)
-    flips = sorted(e['flip_deg'] for e in wf.rf_events)
+    flips = sorted(e.flip_deg for e in wf.rf_events)
     assert flips == [90.0, 180.0]                            # clean schedule, no duplicates
-    t180 = [e['t_s'] for e in wf.rf_events if e['flip_deg'] == 180.0][0]
+    t180 = [e.t_s for e in wf.rf_events if e.flip_deg == 180.0][0]
     assert t180 > 0                                          # refocusing after excitation
     assert 0 <= int(wf.echo_idx) <= G.shape[1] - 1
 
@@ -174,23 +175,23 @@ def test_mixing_time_is_derived_from_the_pulses_not_from_a_stored_value():
     while the rule that produced it is wrong, so the rule is exercised on its own. Covers both the labelled
     form and the bare flip-angle pattern a foreign file would present.
     """
-    from dmipy_sim.sequences.pulseq import _ste_from_rf_schedule
+    from dmipy_sim.acquisition.rf import RFSchedule
 
-    labelled = [{'t_s': 0.0, 'flip_deg': 90, 'label': 'Mz→Mxy'},
-                {'t_s': 5e-3, 'flip_deg': 90, 'label': 'store'},
-                {'t_s': 25e-3, 'flip_deg': 90, 'label': 'recall'}]
-    tm, ste_ = _ste_from_rf_schedule(labelled)
+    labelled = [RFEvent(0.0, 90, 'Mz→Mxy'),
+                RFEvent(5e-3, 90, 'store'),
+                RFEvent(25e-3, 90, 'recall')]
+    tm, ste_ = RFSchedule(labelled).mixing_time
     assert ste_ and tm == pytest.approx(20e-3)
 
     # same pulses, no labels -- the flip-angle pattern alone must still give the mixing time
-    bare = [{'t_s': e['t_s'], 'flip_deg': e['flip_deg']} for e in labelled]
-    tm2, ste2 = _ste_from_rf_schedule(bare)
+    bare = [RFEvent(e.t_s, e.flip_deg) for e in labelled]
+    tm2, ste2 = RFSchedule(bare).mixing_time
     assert ste2 and tm2 == pytest.approx(20e-3)
 
     # a spin echo is not a stimulated echo
-    se = [{'t_s': 0.0, 'flip_deg': 90}, {'t_s': 12e-3, 'flip_deg': 180}]
-    assert _ste_from_rf_schedule(se) == (None, False)
-    assert _ste_from_rf_schedule([]) == (None, False)
+    se = [RFEvent(0.0, 90), RFEvent(12e-3, 180)]
+    assert RFSchedule(se).mixing_time == (None, False)
+    assert RFSchedule([]).mixing_time == (None, False)
 
 
 def test_native_rf_export_is_scanner_shaped_and_costs_time_when_there_is_no_gap():
@@ -214,7 +215,7 @@ def test_native_rf_export_is_scanner_shaped_and_costs_time_when_there_is_no_gap(
     assert abs(_b(back) - _b(free)) <= 2e-3 * _b(free)
 
     # real RF blocks, not one excitation plus metadata
-    flips = sorted({round(float(e["flip_deg"])) for e in (back.rf_events or [])})
+    flips = sorted({round(e.flip_deg) for e in (back.rf_events or [])})
     assert flips == [90, 180], f"expected a 90/180 schedule read from the blocks, got {flips}"
 
     # OGSE has no gradient-free sample at either pulse, so both must be inserted. Assert the CONSEQUENCE

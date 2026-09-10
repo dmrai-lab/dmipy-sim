@@ -13,6 +13,8 @@ Heavy Monte-Carlo -> GPU-recommended; marked slow.  Fine dt so the carrier
 from types import SimpleNamespace
 
 import numpy as np
+from dmipy_sim.engine.pulse_sequence import saturation_pulse
+from dmipy_sim import RFEvent
 import pytest
 
 from dmipy_sim import Sphere, simulate_bloch, gradient_echo, prepend_mt_prep, run_bloch_sequence
@@ -32,8 +34,7 @@ def _mz(offset_hz, *, with_mt, equilibrate='auto'):
     n_t = int(round(T_SAT / DT)) + 1
     wf = SimpleNamespace(G=np.zeros((1, n_t, 3)), dt=DT)
     flip = 360.0 * W1_HZ * T_SAT                            # CW over the window
-    rf = [{'t_s': T_SAT / 2, 'flip_deg': flip, 'axis_deg': 0.0,
-           'duration_s': T_SAT, 'offset_hz': offset_hz}]
+    rf = [RFEvent(T_SAT / 2, flip, axis_deg=0.0, duration_s=T_SAT, offset_hz=offset_hz)]
     kw = dict(T2=T2a, T1=T1a, return_mz=True, seed=3)
     if with_mt:
         kw.update(kappa_MT=KAPPA_MT, dwell_time=DWELL, T2_bound=T2b, T1_bound=T1b,
@@ -105,8 +106,8 @@ def test_mt_prep_gre_offresonance_mtr():
     # all-free reference is all-bright, while the prepped run loses signal to newly-stuck dark
     # spins -- that darkening used to masquerade as MT.)  A 20 ms prep gives a clear effect.
     gre = gradient_echo(TE=2e-3, dt=DT)
-    prep = dict(offset_hz=1500.0, duration_s=20e-3, b1_hz=W1_HZ, spoiler_s=1e-3, n_cycles=32.0)
-    seq = prepend_mt_prep(gre, prep)
+    prep = saturation_pulse(1500.0, 20e-3, b1_hz=W1_HZ)
+    seq = prepend_mt_prep(gre, prep, spoiler_s=1e-3, n_cycles=32.0)
     base = dict(T2=T2a, T1=T1a, seed=3)
     mt_kw = dict(kappa_MT=KAPPA_MT, dwell_time=DWELL, T2_bound=T2b, T1_bound=T1b)
     S_sat = abs(run_bloch_sequence(seq, 4000, D, Sphere(radius=R), **base, **mt_kw)[0])

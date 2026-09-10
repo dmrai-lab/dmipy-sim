@@ -13,6 +13,7 @@ Kept CPU-feasible (small N, coarse grids, short walks).  The whole module is aut
 ``slow`` in ``conftest.py`` (heavy MC); the pure-function unit checks at the end are cheap.
 """
 import numpy as np
+from dmipy_sim import RFEvent
 from types import SimpleNamespace
 
 import pytest
@@ -35,8 +36,8 @@ def test_bloch_replay_matches_forward_spin_echo():
     n_t = int(round(TE / dt)) + 1
     G = np.zeros((1, n_t, 3)); G[0, :, 0] = 0.02          # constant gradient (T/m)
     wf = SimpleNamespace(G=G, dt=dt)
-    rf = [{'t_s': 0.0, 'flip_deg': 90.0, 'axis_deg': 90.0, 'duration_s': 0.0},
-          {'t_s': TE / 2, 'flip_deg': 180.0, 'axis_deg': 0.0, 'duration_s': 0.0}]
+    rf = [RFEvent(0.0, 90.0, axis_deg=90.0, duration_s=0.0),
+          RFEvent(TE / 2, 180.0, axis_deg=0.0, duration_s=0.0)]
     geom, T2 = d.Sphere(radius=8e-6), 120e-3
 
     fwd = simulate_bloch(N, D, wf, geom, rf, T2=T2, seed=seed, require_gpu=False)
@@ -63,9 +64,8 @@ def test_susceptibility_replay_gre_and_se():
     prov = SusceptibilitySources(centers=[[0, 0, 0]], radii=[3e-6],
                                  delta_chi=8e-6, B0=3.0)
     Z = np.zeros((1, n_t, 3)); wf0 = SimpleNamespace(G=Z, dt=dt)
-    rf_gre = [{'t_s': 0.0, 'flip_deg': 90.0, 'axis_deg': 90.0, 'duration_s': 0.0}]
-    rf_se = rf_gre + [{'t_s': TE / 2, 'flip_deg': 180.0, 'axis_deg': 0.0,
-                       'duration_s': 0.0}]
+    rf_gre = [RFEvent(0.0, 90.0, axis_deg=90.0, duration_s=0.0)]
+    rf_se = rf_gre + [RFEvent(TE / 2, 180.0, axis_deg=0.0, duration_s=0.0)]
 
     f_gre = simulate_bloch(N, D, wf0, geom, rf_gre, T2=T2, seed=seed,
                            susceptibility=prov, require_gpu=False)
@@ -132,8 +132,7 @@ def test_mt_replay_zspectrum_matches_oracle():
     flip = 360.0 * w1_hz * t_sat
     rep = np.empty_like(offsets)
     for i, off in enumerate(offsets):
-        rf = [{'t_s': t_sat / 2, 'flip_deg': flip, 'axis_deg': 0.0,
-               'duration_s': t_sat, 'offset_hz': float(off)}]
+        rf = [RFEvent(t_sat / 2, flip, axis_deg=0.0, duration_s=t_sat, offset_hz=float(off))]
         Ml, _ = replay_bloch(traj, dt_tr, Z, dt, rf, T2=T2, T1=T1,
                                      bound_frac=bfrac, T2_bound=T2b, T1_bound=T1b,
                                      return_walker_signals=True)
@@ -183,8 +182,8 @@ def test_bloch_replay_jax_matches_numpy():
     walk = simulate_trajectories(N, D, geom, TE, dt, seed=seed,
                                               require_gpu=False, tiers=())
     traj, dt_tr = walk.positions, walk.dt
-    rf = [{'t_s': 0.0, 'flip_deg': 90.0, 'axis_deg': 90.0, 'duration_s': 0.0},
-          {'t_s': TE / 2, 'flip_deg': 180.0, 'axis_deg': 0.0, 'duration_s': 0.0}]
+    rf = [RFEvent(0.0, 90.0, axis_deg=90.0, duration_s=0.0),
+          RFEvent(TE / 2, 180.0, axis_deg=0.0, duration_s=0.0)]
     num = replay_bloch(traj, dt_tr, G, dt, rf, T2=T2)
     jx = replay_bloch_jax(traj, dt_tr, G, dt, rf, T2=T2)
     assert abs(np.real(num[0]) - np.real(jx[0])) < 2e-3

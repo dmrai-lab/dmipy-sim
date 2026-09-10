@@ -9,6 +9,7 @@ spin-echo gate has one implementation shared by the bank and the SH responder, a
 trajectory producer at zero binding is the plain producer to the bit.
 """
 import numpy as np
+from dmipy_sim import RFEvent
 import pytest
 
 import dmipy_sim as d
@@ -105,7 +106,7 @@ def test_jax_routes_agree_with_numpy():
     assert np.abs(inc - phi_exact).max() < tol
     # the vector-Bloch replays: a 90 at t = 0 and no relaxation leave Mxy = exp(+-i phi) (the sign
     # is the rotation convention; the magnitude of the phase is the physics)
-    rf = [{'t_s': 0.0, 'flip_deg': 90.0, 'axis_deg': 90.0, 'duration_s': 0.0}]
+    rf = [RFEvent(0.0, 90.0, axis_deg=90.0, duration_s=0.0)]
     M_final, s_mean = T.replay_bloch(traj, DT, G, DT, rf, return_walker_signals=True)   # (3, n_w)
     phi_bloch = np.angle(M_final[0] + 1j * M_final[1])
     assert np.abs(np.abs(phi_bloch) - np.abs(phi_exact)).max() < 1e-6

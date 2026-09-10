@@ -29,6 +29,7 @@ from ..persistent_walk import PersistentWalk
 
 from . import compression as _cx
 from ._replay_kernel import se_gate, gradient_phase
+from ..acquisition.rf import RFEvent
 from .replay import ReplayPack, read_rpk, write_rpk
 
 __all__ = ["build_replay_pack", "build_to_floor", "replay_susc", "frame_from_axis", "frame_from_bundles",
@@ -254,9 +255,9 @@ def _susc_path_bloch_fidelity(m, arrays, pm, gm, env, n_sub=8000):
     n_p = int(pm.get("max_refocus_pulses") or 1)
 
     def rf_train(npul):
-        ev = [dict(t_s=0.0, flip_deg=90.0, axis_deg=0.0)]
+        ev = [RFEvent(0.0, 90.0, 'Mz→Mxy')]
         for j in range(npul):
-            ev.append(dict(t_s=(j + 0.5) * TE / npul, flip_deg=180.0, axis_deg=90.0))
+            ev.append(RFEvent((j + 0.5) * TE / npul, 180.0, 'refocus', axis_deg=90.0))
         return ev
 
     G0 = np.zeros((1, n_t, 3))                       # b=0 isolates the susceptibility physics

@@ -1,7 +1,13 @@
-"""Continuous RF pulse representation: the complex B1(t) envelope.
+"""The RF side of an acquisition: the schedule of pulses (:class:`RFEvent`) and the played envelope
+(:class:`B1Pulse`).
 
-This is the RF analogue of the gradient ``Waveform`` (``waveforms.py``): the base
-representation is the *actual* transmit field
+:class:`RFEvent` is the one spelling of a pulse -- the instant, the flip, the coherence label, the B1
+axis, the duration, the carrier offset, and optionally the :class:`B1Pulse` that is its shape. Every
+builder emits it, every reader reads it. :class:`RFSchedule` is the schedule -- the events in time
+order, valid by construction, and the one place the coherence mask, the spin-echo sign, the refocus and
+mixing times are derived from them. The only dict an event is ever read from is its own
+:meth:`RFEvent.to_dict` record. :class:`B1Pulse` is the RF analogue of the gradient ``Waveform`` (``waveforms.py``):
+the base representation is the *actual* transmit field
 
     B1(t) = B1x(t) + i B1y(t)   in Tesla, on a uniform raster dt,
 
@@ -375,3 +381,264 @@ def slice_profile(pulse, slice_gradient, positions_m, df_hz=0.0, b1_scale=1.0,
     Mxy, Mz = bloch_simulate(pulse, df_hz=df_slice + np.asarray(df_hz, float),
                              b1_scale=b1_scale, **kw)
     return z, Mxy, Mz
+
+
+# ── the RF schedule: one event dialect ────────────────────────────────────────────────────────────
+@dataclass(frozen=True, eq=False)
+class RFEvent:
+    """One pulse of a sequence's RF schedule: the one dialect every builder emits and every reader reads.
+
+    ``t_s`` is the pulse's instant (the centre of a finite pulse), ``flip_deg`` its nominal flip, ``label``
+    the coherence role the schedule readers key on (``'Mz→Mxy'`` excitation, ``'store'`` / ``'recall'`` of
+    a stimulated echo, ``'refocus'``), ``axis_deg`` the B1 phase (0 = x, 90 = y), ``duration_s`` the pulse
+    length (0 is the instantaneous hard pulse), ``offset_hz`` the carrier offset. ``envelope`` is the played
+    ``B1(t)`` as a :class:`B1Pulse`; when given it IS the shape: ``duration_s`` is its length, ``flip_deg``
+    is ``gamma * int |B1| dt``, and a declared value that disagrees with either raises -- the rule
+    ``chi_perp`` follows in :func:`~dmipy_sim.acquisition.waveforms.apply_rf_schedule`.
+
+    :meth:`flip_split` is the one place a pulse becomes what a grid does with it; both rasterisers
+    (:func:`dmipy_sim.engine.bloch._build_rf_schedule`, :func:`dmipy_sim.replay.trajectories._bloch_timeline`)
+    read it, so a hard pulse, a finite hard pulse and a shaped pulse are the same object at three settings.
+    A sequence's pulses live in an :class:`RFSchedule`.
+    """
+    t_s: float
+    flip_deg: float = None
+    label: str = ""
+    axis_deg: float = 0.0
+    duration_s: float = 0.0
+    offset_hz: float = 0.0
+    envelope: B1Pulse = None
+
+    def __post_init__(self):
+        _set = lambda k, v: object.__setattr__(self, k, v)
+        _set("t_s", float(self.t_s)); _set("label", str(self.label or ""))
+        _set("axis_deg", float(self.axis_deg or 0.0)); _set("offset_hz", float(self.offset_hz or 0.0))
+        dur = float(self.duration_s or 0.0)
+        if dur < 0.0:
+            raise ValueError("duration_s must be >= 0")
+        if self.envelope is not None:
+            env = self.envelope
+            if not isinstance(env, B1Pulse):
+                raise TypeError(f"envelope must be a B1Pulse, got {type(env).__name__}")
+            if dur > 0.0 and abs(dur - env.duration) > 1e-9 * max(dur, env.duration):
+                raise ValueError(f"duration_s = {dur:.6g} s disagrees with the envelope's {env.duration:.6g} s")
+            dur = env.duration
+            nominal = env.nominal_flip_deg
+            if self.flip_deg is None:
+                _set("flip_deg", float(nominal))
+            elif abs(float(self.flip_deg) - nominal) > 1e-6 * max(abs(nominal), 1.0):
+                raise ValueError(f"flip_deg = {float(self.flip_deg):.6g} disagrees with the envelope's "
+                                 f"gamma * int |B1| dt = {nominal:.6g} deg")
+        if self.flip_deg is None:
+            raise ValueError("an RFEvent needs flip_deg, or an envelope to derive it from")
+        _set("flip_deg", float(self.flip_deg)); _set("duration_s", dur)
+
+    @property
+    def is_hard(self):
+        return self.duration_s == 0.0
+
+    @property
+    def window(self):
+        """``(t0, t1)`` the pulse occupies; a hard pulse occupies its instant."""
+        return self.t_s - self.duration_s / 2.0, self.t_s + self.duration_s / 2.0
+
+    def flip_split(self, nsub):
+        """``(dflips_rad, axes_rad)`` of the ``nsub`` sub-rotations that make up this pulse, in time order.
+
+        Without an envelope the flip splits evenly about the one axis. With one it splits as ``int |B1| dt``
+        over ``nsub`` equal sub-windows -- the total is exactly ``flip_deg`` at any ``nsub`` -- and each
+        sub-rotation's axis is ``axis_deg`` plus the phase of ``int B1 dt`` over its window (exact for a
+        constant-phase pulse, the mean phase otherwise).
+        """
+        nsub = max(1, int(nsub))
+        total, ax0 = np.deg2rad(self.flip_deg), np.deg2rad(self.axis_deg)
+        if self.envelope is None or nsub == 1:
+            return np.full(nsub, total / nsub), np.full(nsub, ax0)
+        b1 = self.envelope.b1
+        grid = np.arange(b1.shape[0] + 1, dtype=np.float64)
+        edges = np.linspace(0.0, b1.shape[0], nsub + 1)
+        cum = lambda x: np.diff(np.interp(edges, grid, np.concatenate([[0.0], np.cumsum(x)])))
+        mag = cum(np.abs(b1)); re_, im_ = cum(b1.real), cum(b1.imag)
+        dflips = total * mag / (mag.sum() + 1e-300)
+        axes = ax0 + np.where(mag > 0.0, np.angle(re_ + 1j * im_), 0.0)
+        return dflips, axes
+
+    def to_dict(self):
+        """The event as plain data (the envelope as its samples): what a ``.seq`` definition or a JSON holds."""
+        d = {"t_s": self.t_s, "flip_deg": self.flip_deg, "label": self.label}
+        for k in ("axis_deg", "duration_s", "offset_hz"):
+            if getattr(self, k):
+                d[k] = getattr(self, k)
+        if self.envelope is not None:
+            d["envelope"] = {"b1_re": self.envelope.b1.real.tolist(), "b1_im": self.envelope.b1.imag.tolist(),
+                             "dt": self.envelope.dt}
+        return d
+
+    @classmethod
+    def from_dict(cls, d):
+        """The inverse of :meth:`to_dict`: exactly its keys, an ``envelope`` as ``{b1_re, b1_im, dt}``. This is
+        deserialisation of what dmipy-sim wrote (a ``.seq`` definition, a JSON), not an alternative spelling:
+        an unknown key raises. :meth:`RFSchedule.from_dicts` reads a whole schedule."""
+        unknown = set(d) - {"t_s", "flip_deg", "label", "axis_deg", "duration_s", "offset_hz", "envelope"}
+        if unknown:
+            raise ValueError(f"not an RFEvent.to_dict record: unknown keys {sorted(unknown)}")
+        env = d.get("envelope")
+        if env is not None:
+            env = B1Pulse(np.asarray(env["b1_re"], float) + 1j * np.asarray(env["b1_im"], float), float(env["dt"]))
+        return cls(t_s=d["t_s"], flip_deg=d.get("flip_deg"), label=d.get("label", ""), axis_deg=d.get("axis_deg", 0.0),
+                   duration_s=d.get("duration_s", 0.0), offset_hz=d.get("offset_hz", 0.0), envelope=env)
+
+    def _key(self):
+        return (self.t_s, self.flip_deg, self.label, self.axis_deg, self.duration_s, self.offset_hz)
+
+    def __eq__(self, other):
+        if not isinstance(other, RFEvent) or self._key() != other._key():
+            return False
+        a, b = self.envelope, other.envelope
+        return (a is None and b is None) or (a is not None and b is not None and a.dt == b.dt
+                                              and np.array_equal(a.b1, b.b1))
+
+    def __hash__(self):
+        return hash(self._key())
+
+    def __repr__(self):
+        extra = "".join(f", {k}={getattr(self, k):g}" for k in ("axis_deg", "duration_s", "offset_hz") if getattr(self, k))
+        env = f", envelope=<B1Pulse {self.envelope.n}x{self.envelope.dt:g}s>" if self.envelope is not None else ""
+        return f"RFEvent({self.t_s:g}, {self.flip_deg:g}, {self.label!r}{extra}{env})"
+
+
+class RFSchedule(tuple):
+    """The RF schedule of an acquisition: its :class:`RFEvent`\ s in time order, valid by construction, and
+    the one place anything is derived from them. Empty is a gradient echo (no pulse).
+
+    Build it once and hold it -- ``Waveform.rf_events``, ``BlochSequence.rf_events`` are one -- and read
+    what it derives: :meth:`coherence` (the transverse mask, mixing time, stimulated-echo state and echo
+    times an ideal schedule implies), :meth:`sign` (the spin-echo gate ``s(t)`` of RPK.md 6.6, the un-fold
+    between the effective and the physical gradient), :attr:`refocus_time`, :attr:`mixing_time`,
+    :meth:`storage_mask`. Nothing else re-derives these from a list of events. Anything that is not an
+    ``RFEvent`` is refused; :meth:`to_dicts` / :meth:`from_dicts` are its serialised record.
+    """
+    __slots__ = ()
+
+    def __new__(cls, events=()):
+        if events is None:
+            events = ()
+        if isinstance(events, RFSchedule):
+            return events
+        evs = tuple(events)
+        for e in evs:
+            if not isinstance(e, RFEvent):
+                raise TypeError(f"an RF event is an RFEvent, got {type(e).__name__}: build it as "
+                                f"RFEvent(t_s, flip_deg, label, ...) -- or RFSchedule.from_dicts for serialised data")
+        return super().__new__(cls, sorted(evs, key=lambda e: e.t_s))
+
+    def __repr__(self):
+        return "RFSchedule(" + ", ".join(repr(e) for e in self) + ")"
+
+    def __getnewargs__(self):
+        return (tuple(self),)
+
+    @property
+    def refocus_time(self):
+        """The instant of the first 180 (the refocusing pulse a spin-echo gate flips at), or ``None``."""
+        for e in self:
+            if int(round(e.flip_deg)) == 180:
+                return e.t_s
+        return None
+
+    def sign(self, t_grid):
+        """The sign of the EFFECTIVE gradient over ``t_grid`` -- ``(len(t_grid),)`` of +-1: the spin-echo gate
+        ``s(t)`` (RPK.md 6.6), and the one un-fold between the two gradients a sequence has (the PHYSICAL one a
+        scanner plays, the EFFECTIVE one the phase integral walks). ``s`` is +-1 and its own inverse.
+
+        A refocusing pulse inverts the accumulated phase, so ``s`` flips after it; a stimulated echo does the same
+        across its storage/recall pair, so ``s`` flips at RECALL. It is a sign, not the quadrature weight
+        :func:`dmipy_sim.replay._replay_kernel.se_gate` builds for integrating against a path: that one half-weights
+        the grid endpoints, right under an integral and wrong for a waveform.
+        """
+        s = np.ones_like(np.asarray(t_grid, dtype=np.float64), dtype=np.float32)
+        for e in self:
+            if abs(e.flip_deg - 180.0) < 20.0 or e.label in ('refocus', 'recall'):
+                s[np.asarray(t_grid) >= e.t_s] *= -1.0
+        return s
+
+    def coherence(self, n_t, dt):
+        """Coherence bookkeeping of the ideal instantaneous schedule on an ``n_t``-sample grid of ``dt``.
+
+        Returns ``(chi_perp, TM, stimulated_echo, echo_times)``: the transverse-coherence mask (``True`` while
+        the magnetisation is transverse), the total longitudinal-storage time (``None`` when there is none),
+        whether the readout is a stimulated echo (a store / recall pair), and the echo times of the refocusing
+        pulses. Magnetisation starts along z; a 90 excites it, a 90 while transverse stores it along z, the next
+        90 recalls it; a 180 while transverse refocuses, forming an echo at ``2 t_180 - t_ref`` where ``t_ref``
+        is the previous echo or excitation. Other flips are not tracked.
+        """
+        n_t = int(n_t)
+        chi = np.zeros(n_t, dtype=bool)
+        transverse = False
+        t_ref = None
+        stored_from = None
+        TM = 0.0
+        stores = 0
+        echoes = []
+        i_prev = 0
+        for e in self:
+            t = e.t_s
+            i = int(np.clip(int(round(t / dt)), 0, n_t))
+            chi[i_prev:i] = transverse
+            i_prev = i
+            flip = int(round(e.flip_deg))
+            if flip == 90:
+                if not transverse:
+                    transverse = True
+                    if stored_from is not None:                  # recall
+                        TM += t - stored_from
+                        stored_from = None
+                    t_ref = t
+                else:                                           # store
+                    transverse = False
+                    stored_from = t
+                    stores += 1
+            elif flip == 180 and transverse and t_ref is not None:
+                echoes.append(2.0 * t - t_ref)
+                t_ref = echoes[-1]
+        chi[i_prev:] = transverse
+        return chi, (TM if TM > 0.0 else None), stores > 0, echoes
+
+    @property
+    def mixing_time(self):
+        """``(TM, stimulated_echo)`` from the pulses alone: a stimulated echo is defined by a store / recall pair,
+        so the mixing time is their gap -- by label where the schedule is labelled, else by the flip pattern
+        (three 90s: TM between the second and third). A 90/180 spin echo is ``(None, False)``."""
+        by_label = {e.label.lower(): e for e in self}
+        if 'store' in by_label and 'recall' in by_label:
+            return by_label['recall'].t_s - by_label['store'].t_s, True
+        nineties = [e for e in self if abs(e.flip_deg - 90.0) < 1e-3]
+        if len(nineties) >= 3:
+            return nineties[2].t_s - nineties[1].t_s, True
+        return None, False
+
+    def storage_mask(self, t_grid):
+        """``chi_perp`` over ``t_grid`` as a float mask -- 0 while stored along z between a labelled ``'store'``
+        and its ``'recall'``, 1 while transverse -- or ``None`` when there is no storage interval."""
+        st = next((e for e in self if e.label == 'store'), None)
+        rc = next((e for e in self if e.label == 'recall'), None)
+        if st is None or rc is None:
+            return None
+        t = np.asarray(t_grid, dtype=np.float64)
+        chi = np.ones_like(t, dtype=np.float32)
+        chi[(t >= st.t_s) & (t < rc.t_s)] = 0.0
+        return chi
+
+    def shifted(self, dt_s):
+        """The same pulses ``dt_s`` later."""
+        from dataclasses import replace
+        return RFSchedule(replace(e, t_s=e.t_s + float(dt_s)) for e in self)
+
+    def to_dicts(self):
+        """The schedule as plain records (:meth:`RFEvent.to_dict` each): a ``.seq`` definition, a JSON."""
+        return [e.to_dict() for e in self]
+
+    @classmethod
+    def from_dicts(cls, records):
+        """The inverse of :meth:`to_dicts`; each record through :meth:`RFEvent.from_dict`, strictly."""
+        return cls(RFEvent.from_dict(d) for d in (records or ()))

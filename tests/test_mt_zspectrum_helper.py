@@ -9,6 +9,7 @@ stays in the ~1-min fast tier.
 from types import SimpleNamespace
 
 import numpy as np
+from dmipy_sim import RFEvent
 
 from dmipy_sim import Sphere, simulate_bloch, emergent_z_spectrum
 
@@ -26,8 +27,7 @@ def _manual_sweep():
     flip = 360.0 * CFG["w1_hz"] * CFG["t_sat"]
     out = []
     for off in OFFSETS:
-        rf = [{"t_s": CFG["t_sat"] / 2, "flip_deg": flip, "axis_deg": 0.0,
-               "duration_s": CFG["t_sat"], "offset_hz": float(off)}]
+        rf = [RFEvent(CFG["t_sat"] / 2, flip, axis_deg=0.0, duration_s=CFG["t_sat"], offset_hz=float(off))]
         _, mz = simulate_bloch(CFG["n_walkers"], D, wf, Sphere(radius=R), rf,
                                T2=CFG["T2"], T1=CFG["T1"], kappa_MT=CFG["kappa_MT"],
                                dwell_time=CFG["dwell_time"], T2_bound=CFG["T2_bound"],
