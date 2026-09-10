@@ -147,3 +147,20 @@ def test_every_sequence_builder_is_validated_and_declares_its_family():
         assert seq.encoding is not None and seq.build_spec[0] == name, name
         assert seq.validate() is seq and seq.refocusing_residual < 1e-3, name
     assert built["cpmg"].readout == tuple(np.asarray(built["cpmg"].readout)) and len(built["cpmg"].readout) == 3
+
+
+def test_the_readers_of_a_played_gradient_take_a_budget():
+    """A designer's output built to a budget arrives with it: the 90 / 180 (or the three 90s) are finite, the
+    sequence carries the budget and validate() holds the gradient to its windows."""
+    tm = SequenceTiming(t_excite=2e-3, t_refocus=4e-3, t_readout_pre_echo=3e-3)
+    ref = S.pgse(D2[:1], 4e-3, 20e-3, bvalues=B[:1], n_t=400, timing=tm)
+    back = S.from_btensor_waveform(np.asarray(ref.G), ref.dt, timing=tm)
+    assert back.timing is tm and [e.duration_s for e in back.rf] == [2e-3, 4e-3]
+    np.testing.assert_allclose(back.b(), ref.b(), rtol=1e-6)
+    ste_ = S.pgste(D2[:1], 4e-3, 30e-3, bvalues=B[:1], n_t=400, timing=tm)
+    st, rc = (int(round(e.t_s / ste_.dt)) for e in ste_.rf[1:])
+    back = S.from_pgste_waveform(np.asarray(ste_.G), ste_.dt, store_idx=st, recall_idx=rc, timing=tm)
+    assert back.timing is tm and [e.duration_s for e in back.rf] == [2e-3] * 3 and back.stimulated_echo
+    G = np.asarray(ref.G).copy(); G[0, 16:19, 0] = 0.01                                    # into the lead-in
+    with pytest.raises(ValueError, match="lead-in window|during the 90 pulse"):
+        S.from_btensor_waveform(G, ref.dt, timing=tm)
