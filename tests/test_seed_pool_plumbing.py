@@ -68,8 +68,7 @@ def seeds(sphere):
 
 @pytest.fixture(scope="module")
 def waveform():
-    return set_b(pgse(delta=DELTA_PULSE, DELTA=DELTA_SEP, G_magnitude=0.05,
-                      bvecs=[[1.0, 0.0, 0.0]], n_t=300, slew_rate=np.inf), B)
+    return set_b(pgse([[1.0, 0.0, 0.0]], DELTA_PULSE, DELTA_SEP, gradient_strengths=0.05, n_t=300, slew_rate=np.inf), B)
 
 
 def _assert_r0_reaches_the_walk(run, seeds, label, min_sep=0.08):
@@ -125,7 +124,7 @@ def test_simulate_cpmg_starts_where_r0_says(sphere, seeds):
     DELTA ~ TE. At 19 T/m both arms decayed into the noise (0.024 and -0.004); TE=1 ms at 12 T/m keeps
     the signal near 0.5 where the start distribution is still visible.
     """
-    wf = cpmg(n_echoes=2, TE=1e-3, G_magnitude=12.0, bvecs=[[1.0, 0.0, 0.0]], n_t_per_echo=150)
+    wf = cpmg(2, 1e-3, gradient_strengths=12.0, gradient_directions=[[1.0, 0.0, 0.0]], n_t_per_echo=150)
 
     def run(r0):
         s = np.asarray(simulate_cpmg(N, D, wf, sphere, seed=3, r0=r0, require_gpu=False))

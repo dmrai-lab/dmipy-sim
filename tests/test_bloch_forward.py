@@ -62,8 +62,7 @@ def test_off_resonance_precession():
 # ── 4. PGSE parity vs the scalar engine (identical walk) + analytic exp(-bD) ─────
 def test_pgse_parity_with_scalar_engine():
     b = 1.0e9
-    wf = set_b(pgse(delta=0.01, DELTA=0.03, G_magnitude=0.05,
-                    bvecs=[[1., 0., 0.]], n_t=300), b)
+    wf = set_b(pgse([[1., 0., 0.]], 0.01, 0.03, gradient_strengths=0.05, n_t=300), b)
     geom, N, seed = FreeDiffusion(), 16000, 7
     scalar = simulate(N, D, wf, geom, seed=seed, require_gpu=False)  # <cos phi>
     # 90_y -> Mx = cos phi, then the waveform's own 180: G is the physical same-sign pair, the pulse refocuses

@@ -206,19 +206,22 @@ class ScannerSequence:
 
     @property
     def refocusing_residual(self):
-        """max over measurements of the relative net gradient moment |q(TE)| / max|q| of the effective gradient."""
+        """max over measurements of the relative net gradient moment |q(TE)| / max|q| of the effective gradient.
+        ``q`` at sample ``i`` is what the walk has accumulated by then: ``G[k]`` acts over ``[k dt, (k + 1) dt)``,
+        so the samples before ``i`` count and the one at the readout does not."""
         G_eff = np.asarray(self.G_eff, dtype=np.float64)
         q = np.cumsum(G_eff * self.dt, axis=1)
         qmax = np.max(np.abs(q), axis=(1, 2))
-        res = np.where(qmax > 0, np.max(np.abs(q[:, self.echo_idx, :]), axis=1) / np.where(qmax > 0, qmax, 1.0), 0.0)
+        q_echo = q[:, self.echo_idx - 1, :] if self.echo_idx > 0 else np.zeros_like(q[:, 0, :])
+        res = np.where(qmax > 0, np.max(np.abs(q_echo), axis=1) / np.where(qmax > 0, qmax, 1.0), 0.0)
         return float(np.max(res))
 
     # ── validity ───────────────────────────────────────────────────────────────────────────────────
     def validate(self):
         """What every builder guarantees: the gradient is OFF across every finite pulse (a hard pulse occupies an
-        instant and constrains nothing -- a constant gradient through an ideal 180 train is Carr-Purcell) and
-        inside every window of the timing budget it was built to, and the effective gradient refocuses at the
-        echo. Raises naming the failure; returns ``self``."""
+        instant and constrains nothing -- a constant gradient through an ideal 180 train is Carr-Purcell), off
+        in the lead-in and the readout tail before every readout sample of the budget it was built to, and the
+        effective gradient refocuses at the echo. Raises naming the failure; returns ``self``."""
         t = np.arange(self.n_t) * self.dt
         for e in self.rf:
             if e.duration_s > 0.0:
@@ -227,10 +230,14 @@ class ScannerSequence:
                 if np.any(np.abs(self.G[:, inside, :]) > 0.0):
                     raise ValueError(f"the gradient is on during the {e.flip_deg:g} pulse at {e.t_s*1e3:.3f} ms "
                                      f"(window {t0*1e3:.3f}-{t1*1e3:.3f} ms): a finite pulse needs zero gradient")
-        if self.timing is not None:
-            TE = self.T if self.timing.TE is None else self.timing.TE
-            for t0, t1, what in self.timing.windows(TE):
-                inside = (t >= t0 - 1e-9 * self.dt) & (t <= t1 + 1e-9 * self.dt)
+        if self.timing is not None:                    # the budget's dead times: the lead-in and the readout tails
+            if self.T < self.timing.min_TE() - 1e-9:
+                raise ValueError(f"TE = {self.T*1e3:.3f} ms is below min_TE = {self.timing.min_TE()*1e3:.3f} ms of the "
+                                 f"timing budget: an encoding window would vanish")
+            windows = [(0.0, self.timing.t_lead, "lead-in")]
+            windows += [(i * self.dt - self.timing.t_readout_pre_echo, i * self.dt, "readout") for i in self.readout]
+            for t0, t1, what in windows:                # a step wholly inside a dead time; a straddling step is rounding
+                inside = (t >= t0 - 1e-9 * self.dt) & (t + self.dt <= t1 + 1e-9 * self.dt)
                 if np.any(np.abs(self.G[:, inside, :]) > 0.0):
                     raise ValueError(f"the gradient is on in the {what} window {t0*1e3:.3f}-{t1*1e3:.3f} ms of the "
                                      f"timing budget")

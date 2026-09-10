@@ -155,7 +155,14 @@ def to_pulseq(waveform, m=0, *, system=None, filename=None,
     # constructor can add is never off, and then every pulse in the train needs room made for it.
     Ghz = G * gamma_hz                                # Hz/m
     ev = waveform.rf
-    ks = [int(np.clip(round(e.t_s / dt), 0, max(len(Ghz) - 1, 0))) for e in ev]
+    # a pulse takes the raster its instant falls in; an instant on the boundary between a free raster and a live
+    # one (a lobe starting at the recall, say) is played in the free raster just before it
+    ks = []
+    for e in ev:
+        k = int(np.clip(round(e.t_s / dt), 0, max(len(Ghz) - 1, 0)))
+        if k > 0 and np.any(np.abs(Ghz[k]) > 0) and not np.any(np.abs(Ghz[k - 1]) > 0) and (k - 0.5) * dt <= e.t_s + 1e-12:
+            k -= 1
+        ks.append(k)
     inserted = [k for k in ks if k < len(Ghz) and np.any(np.abs(Ghz[k]) > 0)]
     if inserted and native_rf:
         warnings.warn(
@@ -369,6 +376,8 @@ def from_pulseq(src, *, dt=None):
     # which it is; no flag is needed.
     native = bool(blk_events) and not (meta_events and len(meta_events) > len(blk_events))
     rf_events = blk_events if native else (meta_events or blk_events)
+    if native and meta_events and len(meta_events) == len(blk_events):
+        rf_events = meta_events                    # our own file: the blocks are its raster, the metadata its exact times
     if rf_events is None:
         rf_events = RFSchedule([RFEvent(float(t) - t0, 90.0, 'excitation') for t in t_exc] +
                                [RFEvent(float(t) - t0, 180.0, 'refocusing') for t in t_ref]) or None
@@ -395,10 +404,11 @@ def from_pulseq(src, *, dt=None):
     # pulseq_timing assumes exactly that -- else from what this version wrote, else none
     sched = RFSchedule(rf_events)
     timing = None
-    if native and len(sched) == 2 and sched.refocus_time is not None and sched.mixing_time == (None, False) and _has_adc(seq):
-        timing = SequenceTiming.from_pulseq(seq)
-    elif defs.get('dmipy_timing'):
+    if defs.get('dmipy_timing'):
         timing = SequenceTiming.from_dict(json.loads(defs['dmipy_timing']))
+    elif (native and not meta_events and len(sched) == 2 and sched.refocus_time is not None
+          and sched.mixing_time == (None, False) and _has_adc(seq)):
+        timing = SequenceTiming.from_pulseq(seq)   # a foreign spin echo: its budget is what its blocks say
 
     return ScannerSequence(G=G[None], dt=dt, rf=rf_events, readout=(echo_idx,), timing=timing, family="pulseq")
 

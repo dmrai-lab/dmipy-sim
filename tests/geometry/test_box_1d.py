@@ -23,8 +23,7 @@ from tests.conftest import D, N_WALKERS, SEED
 def test_box_1d_signal_at_b0_is_one():
     """Signal at very low b should be 1 regardless of geometry."""
     L = 10e-6
-    wf = set_b(pgse(delta=0.2e-3, DELTA=40e-3, G_magnitude=1.0,
-                    bvecs=np.array([[1., 0., 0.]]), n_t=1000),
+    wf = set_b(pgse(np.array([[1., 0., 0.]]), 0.2e-3, 40e-3, gradient_strengths=1.0, n_t=1000),
                np.array([1e3]))
     sig = simulate(10_000, D, wf, Box1D(L), seed=SEED)
     npt.assert_allclose(sig, 1.0, atol=0.02)
@@ -37,8 +36,7 @@ def test_box_1d_restricted_signal_above_free():
     b_values = np.linspace(1e8, 3e9, n_b)  # avoid b=0 edge
     bvecs = np.tile([1., 0., 0.], (n_b, 1))
 
-    wf = set_b(pgse(delta=delta, DELTA=DELTA, G_magnitude=1.0,
-                    bvecs=bvecs, n_t=n_t), b_values)
+    wf = set_b(pgse(bvecs, delta, DELTA, gradient_strengths=1.0, n_t=n_t), b_values)
 
     S_box  = simulate(N_WALKERS, D, wf, Box1D(L), seed=SEED)
     S_free = simulate(N_WALKERS, D, wf, FreeDiffusion(), seed=SEED + 1)
@@ -53,8 +51,7 @@ def test_box_1d_monotonically_decreasing():
     L = 10e-6
     b_values = np.linspace(1, 3e9, 30)
     bvecs = np.tile([1., 0., 0.], (30, 1))
-    wf = set_b(pgse(delta=0.2e-3, DELTA=40e-3, G_magnitude=1.0,
-                    bvecs=bvecs, n_t=1000), b_values)
+    wf = set_b(pgse(bvecs, 0.2e-3, 40e-3, gradient_strengths=1.0, n_t=1000), b_values)
     S = simulate(N_WALKERS, D, wf, Box1D(L), seed=SEED)
     assert np.all(np.diff(S) <= 0.005), (
         "Box1D signal should be monotonically non-increasing with b-value")
@@ -65,8 +62,7 @@ def test_box_1d_tighter_confinement_gives_higher_signal():
     delta = 0.2e-3; DELTA = 40e-3; n_t = 1000
     b_values = np.array([3e9])
     bvecs = np.array([[1., 0., 0.]])
-    wf = set_b(pgse(delta=delta, DELTA=DELTA, G_magnitude=1.0,
-                    bvecs=bvecs, n_t=n_t), b_values)
+    wf = set_b(pgse(bvecs, delta, DELTA, gradient_strengths=1.0, n_t=n_t), b_values)
 
     S_large = simulate(N_WALKERS, D, wf, Box1D(20e-6), seed=SEED)
     S_small = simulate(N_WALKERS, D, wf, Box1D(5e-6),  seed=SEED)
@@ -82,8 +78,7 @@ def test_box_1d_perpendicular_gradient_is_free():
     b_values = np.linspace(1, 2e9, 20)
     # Gradient along y — Box1D restricts x only
     bvecs = np.tile([0., 1., 0.], (20, 1))
-    wf = set_b(pgse(delta=0.2e-3, DELTA=40e-3, G_magnitude=1.0,
-                    bvecs=bvecs, n_t=1000), b_values)
+    wf = set_b(pgse(bvecs, 0.2e-3, 40e-3, gradient_strengths=1.0, n_t=1000), b_values)
 
     S_box  = simulate(N_WALKERS, D, wf, Box1D(L), seed=SEED)
     E_free = np.exp(-b_values * D)

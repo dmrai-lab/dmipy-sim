@@ -111,8 +111,7 @@ def test_trajectory_producers_take_the_dispatched_count():
 @pytest.mark.parametrize("make", [_sphere_rho, lambda: d.Box1D(4e-6, surface_relaxivity_t2=1e-6)])
 def test_fused_and_replay_agree_at_the_auto_sub_step_count(make):
     g = make()
-    wf = d.set_b(d.pgse(delta=4e-3, DELTA=12e-3, G_magnitude=0.1, bvecs=[[1, 0, 0]], n_t=160,
-                        slew_rate=np.inf), 1e9)
+    wf = d.set_b(d.pgse([[1, 0, 0]], 4e-3, 12e-3, gradient_strengths=0.1, n_t=160, slew_rate=np.inf), 1e9)
     assert resolve_sub_steps(g, D, wf.dt, surface=True) > 1, "the test must exercise sub-stepping"
     N = 40_000
     s_fused = np.asarray(d.simulate(N, D, wf, g, seed=1, engine="fused", require_gpu=False)).ravel()

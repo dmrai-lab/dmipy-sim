@@ -36,7 +36,7 @@ def run():
           f"b={B:.1e} s/m^2)\n")
     print(f"  {'TM [ms]':>8}  {'b_eff [s/m^2]':>14}  {'S_sim':>8}  {'S_model':>8}")
     for TM in TM_VALUES:
-        wf = set_b(pgste(delta=DELTA, TM=TM, G_magnitude=1.0, bvecs=bvecs, n_t=800),
+        wf = set_b(pgste(bvecs, DELTA, TM, gradient_strengths=1.0, n_t=800),
                    np.array([B]))
         b_eff = calc_b(wf)[0]
         S = float(simulate(N_WALKERS, D, wf, FreeDiffusion(), seed=SEED,

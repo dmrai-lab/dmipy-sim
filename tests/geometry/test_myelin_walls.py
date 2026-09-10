@@ -167,8 +167,7 @@ def test_membrane_exchange_matches_permeable_shell():
     two-compartment cylinder `PermeableShell(kind='cylinder')`: the lumen fraction after a
     diffusion time agrees to the MC floor."""
     R_in, R_out, kappa, N = 3e-6, 6e-6, 2e-5, 30_000
-    wf = d.set_b(d.pgse(delta=2e-3, DELTA=18e-3, G_magnitude=0.01, bvecs=[[0, 0, 1]], n_t=200,
-                        slew_rate=np.inf), 1e6)
+    wf = d.set_b(d.pgse([[0, 0, 1]], 2e-3, 18e-3, gradient_strengths=0.01, n_t=200, slew_rate=np.inf), 1e6)
     mc = d.MyelinatedCylinder(R_in, R_out, (0, 0, 1), D, D, D_myelin=D, kappa_inner=kappa,
                               kappa_outer=None, water_fractions=(1.0, 1.0, 0.0))
     _, o_m, f_m = d.simulate(N, None, wf, mc, seed=3, return_compartments="final", require_gpu=False)
@@ -200,8 +199,7 @@ def test_bare_pack_extra_axonal_signal_matches_packed_cylinders():
     c, L = _pack(radii, g, 0.35, seed=1)
     pm = d.PackedMyelinatedCylinders(radii, g, c, L, N_max=8, T2_intra=1e-6, T2_myelin=1e-6)
     pc = d.PackedCylinders(np.asarray(radii) / g, c, L)
-    wf = d.set_b(d.pgse(delta=5e-3, DELTA=15e-3, G_magnitude=0.1, bvecs=[[1, 0, 0]], n_t=200,
-                        slew_rate=np.inf), 1.5e9)
+    wf = d.set_b(d.pgse([[1, 0, 0]], 5e-3, 15e-3, gradient_strengths=0.1, n_t=200, slew_rate=np.inf), 1.5e9)
     N = 60_000
     s_pm, n_extra = _extra_only_signal(pm, wf, N, seed=4)
     s_pc, _, f_pc = d.simulate(N, D, wf, pc, seed=4, return_compartments="final", require_gpu=False)
@@ -243,8 +241,7 @@ def test_per_axon_properties_are_per_axon():
     axon's value; a relaxivity on the inner wall only leaves the extra-axonal signal untouched."""
     radii = [1e-6] * 6
     c, L = _pack(radii, 0.7, 0.5, seed=2)
-    wf = d.set_b(d.pgse(delta=2e-3, DELTA=28e-3, G_magnitude=0.01, bvecs=[[1, 0, 0]], n_t=300,
-                        slew_rate=np.inf), 1e6)
+    wf = d.set_b(d.pgse([[1, 0, 0]], 2e-3, 28e-3, gradient_strengths=0.01, n_t=300, slew_rate=np.inf), 1e6)
     N = 20_000
     mixed = d.PackedMyelinatedCylinders(radii, 0.7, c, L, N_max=8, T2_intra=[0.01] * 3 + [1.0] * 3,
                                         T2_extra=1e-6, T2_myelin=1e-6)

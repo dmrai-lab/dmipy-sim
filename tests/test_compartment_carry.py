@@ -19,7 +19,7 @@ trimesh = pytest.importorskip("trimesh")
 
 from dmipy_sim import simulate, set_b
 from dmipy_sim.geometry.mesh import Mesh
-from dmipy_sim.acquisition.waveforms import pgse
+from dmipy_sim.sequences import pgse
 
 from ._containment import inside as contains
 
@@ -67,7 +67,7 @@ def test_labels_agree_with_exact_containment_at_the_end_of_the_walk():
     the two would leave this test failing for a reason it does not test.
     """
     mesh, tri = _thick_tube()
-    wf = set_b(pgse(delta=5e-3, DELTA=15e-3, G_magnitude=0.05, bvecs=[[1, 0, 0]], n_t=200), 5e8)
+    wf = set_b(pgse([[1, 0, 0]], 5e-3, 15e-3, gradient_strengths=0.05, n_t=200), 5e8)
 
     out = simulate(1200, D, wf, mesh, seed=7, return_compartments='final',
                    return_positions=True, require_gpu=False)
@@ -96,7 +96,7 @@ def test_label_accuracy_does_not_depend_on_mesh_refinement():
     accs = []
     for subdiv in (0, 2):
         mesh, tri = _thick_tube(subdivisions=subdiv)
-        wf = set_b(pgse(delta=5e-3, DELTA=15e-3, G_magnitude=0.05, bvecs=[[1, 0, 0]], n_t=200), 5e8)
+        wf = set_b(pgse([[1, 0, 0]], 5e-3, 15e-3, gradient_strengths=0.05, n_t=200), 5e8)
         out = simulate(300, D, wf, mesh, seed=11, return_compartments='final',
                        return_positions=True, require_gpu=False)
         arrs = [np.asarray(a) for a in out]

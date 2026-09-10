@@ -5,6 +5,7 @@ stimulated echo, the gradient echo, a precomputed PGSTE, and Protocol for a mult
 from dataclasses import replace
 
 import numpy as np
+from dmipy_sim.acquisition.timing import SequenceTiming
 import pytest
 
 import dmipy_sim as d
@@ -18,7 +19,7 @@ D2 = np.array([[1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
 
 
 def test_stores_the_physical_gradient_and_derives_the_effective_one():
-    seq = S.pgse(B, D2, 4e-3, 20e-3, n_t=240)
+    seq = S.pgse(D2, 4e-3, 20e-3, bvalues=B, n_t=240)
     G, Ge = np.asarray(seq.G), np.asarray(seq.G_eff)
     k = int(round(seq.rf.refocus_time / seq.dt))
     assert G.dtype == np.float32 and G.shape == (2, 240, 3) and Ge.shape == G.shape
@@ -34,7 +35,7 @@ def test_stores_the_physical_gradient_and_derives_the_effective_one():
 
 
 def test_the_object_is_frozen_and_changed_through_replace():
-    seq = S.pgse(B, D2, 4e-3, 20e-3, n_t=240)
+    seq = S.pgse(D2, 4e-3, 20e-3, bvalues=B, n_t=240)
     with pytest.raises(AttributeError):
         seq.G = np.zeros_like(seq.G)
     half = seq.with_gradient(np.asarray(seq.G) / np.sqrt(2.0))
@@ -76,7 +77,7 @@ def test_validate_refuses_gradient_through_a_finite_pulse_but_not_through_a_hard
 
 
 def test_pgste_is_a_stimulated_echo_with_its_lobes_physical_and_same_sign():
-    seq = S.pgste(B, D2, delta=4e-3, TM=30e-3, n_t=400)
+    seq = S.pgste(D2, 4e-3, 30e-3, bvalues=B, n_t=400)
     assert seq.stimulated_echo and seq.TM == pytest.approx(30e-3, abs=2 * seq.dt)
     assert [e.label for e in seq.rf] == ["Mz→Mxy", "store", "recall"] and [e.flip_deg for e in seq.rf] == [90, 90, 90]
     chi = np.asarray(seq.chi_perp)
@@ -88,15 +89,15 @@ def test_pgste_is_a_stimulated_echo_with_its_lobes_physical_and_same_sign():
     np.testing.assert_allclose(seq.b(), B, rtol=1e-6)
     assert seq.readout == (399,) and seq.refocusing_residual < 1e-3        # off-grid recall: rasterised to the validate tolerance
     assert seq.encoding.ste_flip_angles == (90.0, 90.0, 90.0) and np.allclose(seq.encoding.delta, 4e-3)
-    tipped = S.pgste(B, D2, delta=4e-3, TM=30e-3, n_t=400, ste_flip_angles=(90.0, 60.0, 60.0))
+    tipped = S.pgste(D2, 4e-3, 30e-3, bvalues=B, n_t=400, ste_flip_angles=(90.0, 60.0, 60.0))
     assert [e.flip_deg for e in tipped.rf] == [90, 60, 60] and tipped.stimulated_echo   # the label says the role
     # the same physics from the amplitude-first builder
-    w = d.pgste(delta=4e-3, TM=30e-3, G_magnitude=0.05, bvecs=D2, n_t=400)
+    w = d.pgste(D2, 4e-3, 30e-3, gradient_strengths=0.05, n_t=400)
     assert w.stimulated_echo and w.TM == pytest.approx(30e-3, abs=2 * w.dt) and w.family == "pgste"
 
 
 def test_from_pgste_waveform_reads_a_played_stimulated_echo_and_refuses_an_unmatched_one():
-    ref = S.pgste(B[:1], D2[:1], delta=4e-3, TM=30e-3, n_t=400)
+    ref = S.pgste(D2[:1], 4e-3, 30e-3, bvalues=B[:1], n_t=400)
     st, rc = (int(round(e.t_s / ref.dt)) for e in ref.rf[1:])
     back = S.from_pgste_waveform(np.asarray(ref.G), ref.dt, store_idx=st, recall_idx=rc, gradient_directions=D2[:1])
     assert back.stimulated_echo and back.TM == pytest.approx(ref.TM, abs=ref.dt) and back.readout == ref.readout
@@ -108,20 +109,20 @@ def test_from_pgste_waveform_reads_a_played_stimulated_echo_and_refuses_an_unmat
 
 
 def test_gre_is_a_bipolar_pair_with_no_180_or_a_pure_fid():
-    seq = S.gre([20e-3], D2[:1], [1e9], delta=4e-3, Delta=10e-3, n_t=200)
+    seq = S.gre(20e-3, bvalues=[1e9], gradient_directions=D2[:1], delta=4e-3, Delta=10e-3, n_t=200)
     assert len(seq.rf) == 1 and seq.rf[0].flip_deg == 90 and seq.rf.refocus_time is None
     G = np.asarray(seq.G)[0, :, 0]
     assert np.sign(G[G != 0][0]) == -np.sign(G[G != 0][-1])                              # self-refocusing: bipolar
     np.testing.assert_array_equal(np.asarray(seq.G_eff), np.asarray(seq.G))                # nothing to un-fold
     np.testing.assert_allclose(seq.b(), [1e9], rtol=1e-6)
     assert seq.T == pytest.approx(20e-3, abs=seq.dt) and seq.encoding.TE[0] == pytest.approx(20e-3)
-    fid = S.gre([20e-3], n_t=200)
+    fid = S.gre(20e-3, n_t=200)
     assert fid.n_meas == 1 and float(np.abs(fid.G).max()) == 0.0 and fid.b()[0] == 0.0 and fid.family == "gre"
 
 
 def test_a_protocol_is_a_tuple_of_sequences_one_te_each():
-    a = S.pgse(B, D2, 4e-3, 20e-3, n_t=240)
-    b = S.pgse(B, D2, 4e-3, 40e-3, n_t=360)
+    a = S.pgse(D2, 4e-3, 20e-3, bvalues=B, n_t=240)
+    b = S.pgse(D2, 4e-3, 40e-3, bvalues=B, n_t=360)
     p = Protocol([a, b])
     assert isinstance(p, tuple) and len(p) == 2 and p.n_meas == 4
     assert p.echo_times == pytest.approx((a.T, b.T)) and a.T < b.T
@@ -133,13 +134,13 @@ def test_a_protocol_is_a_tuple_of_sequences_one_te_each():
 def test_every_sequence_builder_is_validated_and_declares_its_family():
     bv = D2[:1]
     built = {
-        "pgse": S.pgse([1e9], bv, 4e-3, 20e-3, n_t=240),
-        "pgste": S.pgste([1e9], bv, 4e-3, 20e-3, n_t=240),
-        "gre": S.gre([20e-3], bv, [1e9], delta=4e-3, Delta=10e-3, n_t=200),
+        "pgse": S.pgse(bv, 4e-3, 20e-3, bvalues=[1e9], n_t=240),
+        "pgste": S.pgste(bv, 4e-3, 20e-3, bvalues=[1e9], n_t=240),
+        "gre": S.gre(20e-3, bvalues=[1e9], gradient_directions=bv, delta=4e-3, Delta=10e-3, n_t=200),
         "cpmg": S.cpmg(3, 20e-3, bvalues=[1e9] * 3, n_t_per_echo=50),
-        "ogse": S.ogse([1e9], bv, 100.0, 20e-3, n_t=400, refocus_duration=4e-3),
-        "ste": S.ste([1e9], 4e-3, 20e-3, n_t=240),
-        "pte": S.pte([1e9], [0.0, 0.0, 1.0], 4e-3, 20e-3, n_t=240),
+        "ogse": S.ogse(bv, 100.0, 20e-3, bvalues=[1e8], timing=SequenceTiming(t_excite=0.0, t_refocus=4e-3, t_readout_pre_echo=0.0), n_t=400),
+        "ste": S.ste(4e-3 + 20e-3, bvalues=[1e8], n_t=240),
+        "pte": S.pte([0.0, 0.0, 1.0], 4e-3 + 20e-3, bvalues=[1e8], n_t=240),
     }
     for name, seq in built.items():
         assert isinstance(seq, ScannerSequence) and seq.family == name, name

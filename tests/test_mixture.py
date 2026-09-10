@@ -8,15 +8,14 @@ import numpy as np
 import numpy.testing as npt
 
 from dmipy_sim import simulate, simulate_mixture, FreeDiffusion, Sphere, set_b
-from dmipy_sim.acquisition.waveforms import pgse
+from dmipy_sim.sequences import pgse
 from .conftest import D, N_WALKERS, SEED
 
 
 def _waveform(n_b=20):
     b_values = np.linspace(1e8, 2e9, n_b)
     bvecs = np.tile([1., 0., 0.], (n_b, 1))
-    return set_b(pgse(delta=0.2e-3, DELTA=40e-3, G_magnitude=1.0,
-                      bvecs=bvecs, n_t=1000), b_values), b_values
+    return set_b(pgse(bvecs, 0.2e-3, 40e-3, gradient_strengths=1.0, n_t=1000), b_values), b_values
 
 
 def test_mixture_is_weighted_sum():

@@ -46,8 +46,7 @@ def d_perp(scale, Delta, delta=3e-3, b=0.15e9, n_walk=30000, seed=0):
     geom = PackedCylinders(radii, centers, L)
     step_target = float(radii.min()) / 3.0               # resolve the smallest cylinder
     n_t = int(np.ceil((delta + Delta) / (step_target ** 2 / (6.0 * D))))
-    wf = set_b(pgse(delta=delta, DELTA=Delta, G_magnitude=0.05,
-                    bvecs=np.array([[1., 0, 0]], np.float32), n_t=n_t),
+    wf = set_b(pgse(np.array([[1., 0, 0]], np.float32), delta, Delta, gradient_strengths=0.05, n_t=n_t),
                np.array([b], np.float32))
     S = float(np.asarray(simulate(n_walk, diffusivity=D, waveform=wf, geometry=geom,
                                   seed=seed + 1, require_gpu=False)).ravel()[0])

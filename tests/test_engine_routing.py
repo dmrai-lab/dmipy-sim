@@ -12,7 +12,7 @@ from dmipy_sim.engine import core
 from dmipy_sim.geometry.analytic import PermeableShell, PermeableSlab1D
 
 D = 2e-9
-WF = d.set_b(d.pgse(delta=3e-3, DELTA=8e-3, G_magnitude=0.1, bvecs=[[1, 0, 0]], n_t=40, slew_rate=np.inf), 5e8)
+WF = d.set_b(d.pgse([[1, 0, 0]], 3e-3, 8e-3, gradient_strengths=0.1, n_t=40, slew_rate=np.inf), 5e8)
 
 
 def _engines_used(geometry):

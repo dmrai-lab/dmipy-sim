@@ -1,84 +1,14 @@
-"""Pure waveform / timing helpers for the physical sequence constructors.
-
-Vendored from dmipy_fit.core.acquisition_scheme so the constructors live in
-dmipy-sim (the forward truth).  All gyromagnetic references use dmipy-sim's own
-GAMMA (= 267.513e6 rad/s/T, identical to the fit value), so b-values match the
-fit implementation bit-for-bit.
-"""
+"""The few helpers the builders and the assembler share: the b integral of a gradient array, the echo-time
+floor, the per-row broadcast of delta / Delta / TE."""
 import numpy as np
-from warnings import warn
 
 _TE_FLOOR_ATOL = 1e-9
-_REFOCUS_ATOL = 1e-3
-
-
-def _trap_profile(t, start, delta, eps):
-    """Unit trapezoid amplitude (0..1) sampled at times ``t`` (s).
-
-    Ramps 0->1 over ``eps``, holds, ramps 1->0 over ``eps``, ramp MIDPOINTS at
-    ``start`` and ``start + delta`` (the half-amplitude width is ``delta``; the
-    lobe physically spans ``delta + eps``).  ``eps <= 0`` gives a rectangle.
-    """
-    if eps <= 0:
-        return ((t >= start) & (t < start + delta)).astype(np.float64)
-    a = np.zeros_like(t, dtype=np.float64)
-    up = (t >= start) & (t < start + eps)
-    a[up] = (t[up] - start) / eps
-    flat = (t >= start + eps) & (t < start + delta)
-    a[flat] = 1.0
-    dn = (t >= start + delta) & (t < start + delta + eps)
-    a[dn] = 1.0 - (t[dn] - (start + delta)) / eps
-    return a
-
-
-def _trap_cosine_profile(t, sigma, f, slew, g_mag):
-    """Trapezoidal (flat-top, slew-limited) cosine-OGSE amplitude, T/m.
-
-    Triangle carrier aligned with the cosine, scaled so its slope equals the slew
-    rate, clipped at +/- g_mag; leading/trailing ramps taper to zero (Drobnjak
-    2016; for N=1 this is one +/- pair, i.e. PGSE).
-    """
-    P = 1.0 / f
-    phi = (f * t) % 1.0
-    tri = 1.0 - 4.0 * np.minimum(phi, 1.0 - phi)        # +1 at peak, -1 at trough
-    trap = np.clip((slew * P / 4.0) * tri, -g_mag, g_mag)
-    ramp = g_mag / slew
-    env = np.clip(t / ramp, 0.0, 1.0) * np.clip((sigma - t) / ramp, 0.0, 1.0)
-    env = np.where((t >= 0) & (t < sigma), env, 0.0)
-    return trap * env
-
-
-def _refocusing_residual(G, dt):
-    """Relative net gradient moment ``max|q(TE)| / max|q|`` for one measurement."""
-    G = np.asarray(G, dtype=np.float64)
-    q = np.cumsum(G * dt, axis=0)
-    qmax = float(np.max(np.abs(q)))
-    if qmax <= 0.0:
-        return 0.0
-    return float(np.max(np.abs(q[-1]))) / qmax
 
 
 def _calc_b_from_waveform(G, dt):
     """b per measurement, ``(n_m, n_t, 3) -> (n_m,)``: :func:`dmipy_sim.acquisition.waveforms.b_from_gradient`."""
     from ..acquisition.waveforms import b_from_gradient
     return b_from_gradient(G, dt)
-
-
-def _btensor_from_waveform(G, dt):
-    """B-tensor per measurement, ``(n_m, n_t, 3) -> (n_m, 3, 3)``:
-    :func:`dmipy_sim.acquisition.waveforms.btensor_from_gradient`."""
-    from ..acquisition.waveforms import btensor_from_gradient
-    return btensor_from_gradient(G, dt)
-
-
-def _scale_to_b(G, dt, bvalues):
-    """Scale each measurement of ``G`` so its numeric b equals ``bvalues`` exactly (b ∝ G²).
-    Measurements with b = 0 or an all-zero gradient are left as they are."""
-    G = np.asarray(G, dtype=np.float64)
-    b_num = _calc_b_from_waveform(G, dt)
-    b_t = np.broadcast_to(np.asarray(bvalues, dtype=np.float64), b_num.shape)
-    scale = np.where((b_num > 0) & (b_t > 0), np.sqrt(np.where(b_num > 0, b_t / np.where(b_num > 0, b_num, 1.0), 1.0)), 1.0)
-    return (G * scale[:, None, None]).astype(np.float32)
 
 
 def _resolve_te(TE, t_total_min, n_m):
@@ -118,65 +48,3 @@ def unify_length_reference_delta_Delta(reference_array, delta, Delta, TE):
     return delta_, Delta_, TE_
 
 
-def check_acquisition_scheme(bqg_values, gradient_directions, delta, Delta, TE):
-    "Check the validity of the input parameters."
-    if bqg_values.ndim > 1:
-        raise ValueError(
-            "b/q/G input must be a one-dimensional array. Currently its "
-            "dimensions is {}.".format(bqg_values.ndim))
-    if len(bqg_values) != len(gradient_directions):
-        raise ValueError(
-            "b/q/G input and gradient_directions must have the same length. "
-            "Currently their lengths are {} and {}.".format(
-                len(bqg_values), len(gradient_directions)))
-    if delta is not None:
-        if len(bqg_values) != len(delta):
-            raise ValueError(
-                "b/q/G input and delta must have the same length. Currently "
-                "their lengths are {} and {}.".format(len(bqg_values), len(delta)))
-        if delta.ndim > 1:
-            raise ValueError(
-                "delta must be one-dimensional array. Currently its dimension "
-                "is {}".format(delta.ndim))
-        if np.min(delta) < 0:
-            raise ValueError(
-                "delta must be zero or positive. Currently its minimum value "
-                "is {}.".format(np.min(delta)))
-    if Delta is not None:
-        if len(bqg_values) != len(Delta):
-            raise ValueError(
-                "b/q/G input and Delta must have the same length. Currently "
-                "their lengths are {} and {}.".format(len(bqg_values), len(Delta)))
-        if Delta.ndim > 1:
-            raise ValueError(
-                "Delta must be one-dimensional array. Currently its dimension "
-                "is {}.".format(Delta.ndim))
-        if np.min(Delta) < 0:
-            raise ValueError(
-                "Delta must be zero or positive. Currently its minimum value "
-                "is {}.".format(np.min(Delta)))
-    if gradient_directions.ndim != 2 or gradient_directions.shape[1] != 3:
-        raise ValueError(
-            "gradient_directions n must be two dimensional array of shape "
-            "[N, 3]. Currently its shape is {}.".format(gradient_directions.shape))
-    if np.min(bqg_values) < 0.:
-        raise ValueError(
-            "b/q/G input must be zero or positive. Minimum value found is "
-            "{}.".format(bqg_values.min()))
-    gradient_norms = np.linalg.norm(gradient_directions, axis=1)
-    zero_norms = gradient_norms == 0.
-    if not np.all(abs(gradient_norms[~zero_norms] - 1.) < 0.001):
-        raise ValueError("gradient orientations n are not unit vectors. ")
-    if TE is not None and len(TE) != len(bqg_values):
-        pass  # (matches the fit reference: message built but not raised)
-    if TE is not None:
-        te_min = np.min(TE)
-        te_max = np.max(TE)
-        if te_min < 0.005:
-            warn("TE minimum value {:.4f} s is below 5 ms. TE must be given in "
-                 "seconds. Did you accidentally provide TE in milliseconds?"
-                 .format(te_min), UserWarning)
-        if te_max > 0.500:
-            warn("TE maximum value {:.4f} s exceeds 500 ms. TE must be given in "
-                 "seconds. Did you accidentally provide TE in milliseconds?"
-                 .format(te_max), UserWarning)

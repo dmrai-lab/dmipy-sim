@@ -34,7 +34,7 @@ import numpy as np
 import numpy.testing as npt
 
 from dmipy_sim import simulate, Ellipsoid, set_b
-from dmipy_sim.acquisition.waveforms import pgse
+from dmipy_sim.sequences import pgse
 
 from tests.conftest import D, N_WALKERS, N_EXACT, SEED
 
@@ -52,7 +52,7 @@ def _pgse_wf(TE_s, n_t=500):
     b_values = np.array([0.0, 500e6, 1000e6, 2000e6])  # s/m²
     bvecs    = np.tile([1., 0., 0.], (4, 1))
     return set_b(
-        pgse(delta=delta, DELTA=DELTA, G_magnitude=1.0, bvecs=bvecs, n_t=n_t),
+        pgse(bvecs, delta, DELTA, gradient_strengths=1.0, n_t=n_t),
         b_values)
 
 

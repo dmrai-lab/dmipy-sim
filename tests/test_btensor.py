@@ -9,7 +9,7 @@ import pytest
 
 import dmipy_sim as ds
 from dmipy_sim import (
-    pgse, ogse, trapezoidal_ogse,
+    pgse, ogse,
     ste, pte,
     calc_b, calc_btensor, btensor_invariants,
     set_b, simulate, FreeDiffusion,
@@ -34,7 +34,7 @@ N_T     = 1000
 
 @pytest.mark.parametrize("waveform_fn, kwargs", [
     ("pgse",  {}),
-    ("ogse",  {"frequency": 50.0, "T_total": DELTA + BIGDEL}),
+    ("ogse",  {"frequency": 2.0 / (DELTA + BIGDEL), "T_total": DELTA + BIGDEL}),     # one period per block
     ("trap",  {"N": 2}),
 ])
 def test_trace_equals_calc_b(waveform_fn, kwargs):
@@ -42,11 +42,11 @@ def test_trace_equals_calc_b(waveform_fn, kwargs):
     bvecs = np.array([[1., 0., 0.]])
 
     if waveform_fn == "pgse":
-        wf = pgse(DELTA, BIGDEL, G, bvecs, N_T)
+        wf = pgse(bvecs, DELTA, BIGDEL, gradient_strengths=G, n_t=N_T)
     elif waveform_fn == "ogse":
-        wf = ogse(kwargs["frequency"], kwargs["T_total"], G, bvecs, N_T)
+        wf = ogse(bvecs, kwargs["frequency"], (kwargs["T_total"]) / 2, gradient_strengths=G, shape="cosine", slew_rate=np.inf, n_t=N_T)
     elif waveform_fn == "trap":
-        wf = trapezoidal_ogse(kwargs["N"], DELTA, BIGDEL, G, bvecs, N_T)
+        wf = ogse(bvecs, kwargs["N"] / (2 * DELTA), DELTA, gradient_strengths=G, shape="trapezoid", Delta=BIGDEL, slew_rate=200e3, n_t=N_T)
 
     B    = calc_btensor(wf)       # (1, 3, 3)
     b_tr = np.trace(B[0])
@@ -70,7 +70,7 @@ def test_lte_b_delta(bvec):
     """PGSE (LTE) must give b_delta=1.0 regardless of gradient direction."""
     bv = np.array([bvec], dtype=np.float32)
     bv /= np.linalg.norm(bv)
-    wf = pgse(DELTA, BIGDEL, G, bv, N_T)
+    wf = pgse(bv, DELTA, BIGDEL, gradient_strengths=G, n_t=N_T)
     B  = calc_btensor(wf)
     b, b_delta, b_eta = btensor_invariants(B)
     assert abs(b_delta[0] - 1.0) < 1e-3, f"LTE b_delta={b_delta[0]:.6f}, expected 1.0"
@@ -81,7 +81,7 @@ def test_lte_b_delta(bvec):
 
 def test_ste_b_delta():
     """STE waveform must have b_delta=0 (isotropic B-tensor)."""
-    wf = ste(DELTA, BIGDEL, G, N_T)
+    wf = ste(DELTA + BIGDEL, gradient_strengths=G, n_t=N_T)
     B  = calc_btensor(wf)
     b, b_delta, b_eta = btensor_invariants(B)
     assert abs(b_delta[0]) < 1e-3, f"STE b_delta={b_delta[0]:.6f}, expected 0.0"
@@ -90,7 +90,7 @@ def test_ste_b_delta():
 
 def test_ste_btensor_diagonal():
     """B-tensor for STE must have equal diagonal and near-zero off-diagonal."""
-    wf = ste(DELTA, BIGDEL, G, N_T)
+    wf = ste(DELTA + BIGDEL, gradient_strengths=G, n_t=N_T)
     B  = calc_btensor(wf)[0]          # (3, 3)
     b  = np.trace(B)
     # Each diagonal element should be b/3 (float32 G: ~1e-5 relative error)
@@ -104,7 +104,7 @@ def test_ste_btensor_diagonal():
 
 def test_ste_total_b():
     """STE total b-value must equal 3 × b per axis (by symmetry)."""
-    wf_ste = ste(DELTA, BIGDEL, G, N_T)
+    wf_ste = ste(DELTA + BIGDEL, gradient_strengths=G, n_t=N_T)
     B      = calc_btensor(wf_ste)[0]
     b_total = np.trace(B)
     # Each diagonal entry should be b_total/3 (float32: ~1e-5 relative)
@@ -122,7 +122,7 @@ def test_pte_b_delta(normal):
     """PTE waveform must have b_delta=-0.5 for any plane normal."""
     n = np.array(normal, dtype=np.float64)
     n /= np.linalg.norm(n)
-    wf = pte(DELTA, BIGDEL, G, n, N_T)
+    wf = pte(n, DELTA + BIGDEL, gradient_strengths=G, n_t=N_T)
     B  = calc_btensor(wf)
     b, b_delta, b_eta = btensor_invariants(B)
     assert abs(b_delta[0] - (-0.5)) < 1e-3, \
@@ -132,7 +132,7 @@ def test_pte_b_delta(normal):
 def test_pte_zero_eigenvalue():
     """PTE B-tensor must have one zero eigenvalue along the normal axis."""
     n = np.array([0., 0., 1.])
-    wf = pte(DELTA, BIGDEL, G, n, N_T)
+    wf = pte(n, DELTA + BIGDEL, gradient_strengths=G, n_t=N_T)
     B  = calc_btensor(wf)[0]
     eigvals = np.sort(np.linalg.eigvalsh(B))[::-1]  # descending
     # λ_1 ≈ λ_2 ≈ b/2 (float32: ~1e-5 relative off-diagonal residuals)
@@ -145,7 +145,7 @@ def test_pte_zero_eigenvalue():
 
 def test_pte_total_b():
     """PTE total b-value must equal 2 × b per in-plane axis (by symmetry)."""
-    wf_pte = pte(DELTA, BIGDEL, G, np.array([0., 0., 1.]), N_T)
+    wf_pte = pte(np.array([0., 0., 1.]), DELTA + BIGDEL, gradient_strengths=G, n_t=N_T)
     B      = calc_btensor(wf_pte)[0]
     eigs   = np.sort(np.linalg.eigvalsh(B))[::-1]  # descending
     # Two equal non-zero eigenvalues (float32: ~1e-5 relative)
@@ -158,7 +158,7 @@ def test_pte_total_b():
 
 def test_set_b_ste():
     """set_b should scale STE to the requested b while preserving b_delta=0."""
-    wf   = ste(DELTA, BIGDEL, G, N_T)
+    wf   = ste(DELTA + BIGDEL, gradient_strengths=G, n_t=N_T)
     b_target = 1e9
     wf2  = set_b(wf, b_target)
     b_out, b_delta, _ = btensor_invariants(calc_btensor(wf2))
@@ -168,7 +168,7 @@ def test_set_b_ste():
 
 def test_set_b_pte():
     """set_b should scale PTE to the requested b while preserving b_delta=-0.5."""
-    wf   = pte(DELTA, BIGDEL, G, np.array([0., 0., 1.]), N_T)
+    wf   = pte(np.array([0., 0., 1.]), DELTA + BIGDEL, gradient_strengths=G, n_t=N_T)
     b_target = 1e9
     wf2  = set_b(wf, b_target)
     b_out, b_delta, _ = btensor_invariants(calc_btensor(wf2))
@@ -188,8 +188,8 @@ def test_ste_free_diffusion_isotropic():
     D = 2e-9   # m²/s
     b_val = 1e9  # s/m²
 
-    wf_lte = set_b(pgse(DELTA, BIGDEL, G, np.array([[1., 0., 0.]]), N_T), b_val)
-    wf_ste = set_b(ste(DELTA, BIGDEL, G, N_T), b_val)
+    wf_lte = set_b(pgse(np.array([[1., 0., 0.]]), DELTA, BIGDEL, gradient_strengths=G, n_t=N_T), b_val)
+    wf_ste = set_b(ste(DELTA + BIGDEL, gradient_strengths=G, n_t=N_T), b_val)
 
     geom  = FreeDiffusion()
     E_lte = simulate(100_000, D, wf_lte, geom, seed=1)

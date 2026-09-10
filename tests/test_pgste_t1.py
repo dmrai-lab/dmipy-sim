@@ -15,7 +15,7 @@ import numpy as np
 import numpy.testing as npt
 
 from dmipy_sim import simulate, FreeDiffusion, set_b, calc_b
-from dmipy_sim.acquisition.waveforms import pgse, pgste
+from dmipy_sim.sequences import pgse, pgste
 from .conftest import D, SEED
 
 # Local walker count: FreeDiffusion is cheap per walker, so this test stays fast
@@ -26,7 +26,7 @@ N = 40_000
 def _pgste_at_b(delta, TM, b, n_t=600):
     """Single-direction PGSTE scaled to a target b-value (s/m²)."""
     bvecs = np.array([[1.0, 0.0, 0.0]])
-    return set_b(pgste(delta=delta, TM=TM, G_magnitude=1.0, bvecs=bvecs, n_t=n_t),
+    return set_b(pgste(bvecs, delta, TM, gradient_strengths=1.0, n_t=n_t),
                  np.array([b]))
 
 
@@ -89,7 +89,7 @@ def test_pgse_unaffected_by_t1():
     step, so T1 never acts and the signal is identical to the no-T1 run.
     """
     bvecs = np.array([[1.0, 0.0, 0.0]])
-    wf = set_b(pgse(delta=5e-3, DELTA=45e-3, G_magnitude=1.0, bvecs=bvecs, n_t=600),
+    wf = set_b(pgse(bvecs, 5e-3, 45e-3, gradient_strengths=1.0, n_t=600),
                np.array([1.0e9]))
 
     S_no_t1 = simulate(N, D, wf, FreeDiffusion(), seed=SEED, require_gpu=False)

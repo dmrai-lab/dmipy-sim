@@ -95,7 +95,7 @@ def test_the_scalar_engine_gates_relaxation_by_the_fractional_mask():
 def test_from_pgse_builds_to_a_budget():
     st = SequenceTiming(t_excite=3e-3, t_refocus=6e-3, t_readout_pre_echo=14e-3)
     B = np.array([1e9, 2e9]); D2 = np.array([[1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
-    seq = S.pgse(B, D2, 8e-3, 24e-3, n_t=1200, slew_rate=200.0, timing=st)
+    seq = S.pgse(D2, 8e-3, 24e-3, bvalues=B, n_t=1200, slew_rate=200.0, timing=st)
     assert seq.timing is st and [e.duration_s for e in seq.rf] == [3e-3, 6e-3]
     TE = float(seq.encoding.TE[0])
     assert TE == pytest.approx(seq.rf.refocus_time * 2) and TE >= st.min_TE()
@@ -107,25 +107,25 @@ def test_from_pgse_builds_to_a_budget():
     assert seq.refocus_gap >= st.t_refocus
     seq.validate()
     # the pair without a budget is the idealised one; a gap too narrow for the 180 is refused, so is a short TE
-    assert S.pgse(B, D2, 8e-3, 24e-3, n_t=600).timing is None
+    assert S.pgse(D2, 8e-3, 24e-3, bvalues=B, n_t=600).timing is None
     with pytest.raises(ValueError, match="narrower than the refocusing window"):
-        S.pgse(B, D2, 8e-3, 12e-3, n_t=600, slew_rate=np.inf, timing=SequenceTiming(1e-3, 5e-3, 1e-3))
+        S.pgse(D2, 8e-3, 12e-3, bvalues=B, n_t=600, slew_rate=np.inf, timing=SequenceTiming(1e-3, 5e-3, 1e-3))
     with pytest.raises(ValueError, match="below the"):
-        S.pgse(B, D2, 8e-3, 24e-3, TE=40e-3, n_t=600, slew_rate=np.inf, timing=st)
+        S.pgse(D2, 8e-3, 24e-3, bvalues=B, TE=40e-3, n_t=600, slew_rate=np.inf, timing=st)
 
 
 def test_refocus_gap_is_derived_from_the_gradient_and_the_schedule():
-    seq = S.pgse([1e9], [[1.0, 0.0, 0.0]], 8e-3, 24e-3, n_t=640, slew_rate=np.inf)
-    assert seq.refocus_gap == pytest.approx(16e-3, abs=seq.dt)             # Delta - delta
-    assert S.ogse([1e9], [[1.0, 0.0, 0.0]], 100.0, 20e-3, n_t=400, slew_rate=np.inf).refocus_gap is None   # no 180
+    seq = S.pgse([[1.0, 0.0, 0.0]], 8e-3, 24e-3, bvalues=[1e9], n_t=640, slew_rate=np.inf)
+    assert seq.refocus_gap == pytest.approx(16e-3, abs=2 * seq.dt)         # Delta - delta, to the raster
+    assert S.ogse([[1.0, 0.0, 0.0]], 100.0, 20e-3, bvalues=[1e9], n_t=400, slew_rate=np.inf).refocus_gap == 0.0    # the blocks meet at the 180
     assert S.cpmg(2, 20e-3, bvalues=[1e9, 1e9], n_t_per_echo=100).refocus_gap == 0.0                       # on the gradient
 
 
 def test_validate_refuses_gradient_inside_a_budget_window():
     st = SequenceTiming(t_excite=3e-3, t_refocus=2e-3, t_readout_pre_echo=2e-3)      # fits a 32 ms echo
-    seq = S.pgse([1e9], [[1.0, 0.0, 0.0]], 8e-3, 24e-3, n_t=600, slew_rate=np.inf)   # idealised: lobe 1 at t = 0
+    seq = S.pgse([[1.0, 0.0, 0.0]], 8e-3, 24e-3, bvalues=[1e9], n_t=600, slew_rate=np.inf)   # idealised: lobe 1 at t = 0
     seq = replace(seq, timing=st)
-    with pytest.raises(ValueError, match="excitation window"):
+    with pytest.raises(ValueError, match="lead-in window"):
         seq.validate()
     seq = replace(seq, timing=SequenceTiming(t_excite=3e-3, t_refocus=6e-3, t_readout_pre_echo=14e-3))   # min_TE 34 ms > its 32 ms
     with pytest.raises(ValueError, match="below min_TE"):
@@ -138,7 +138,7 @@ pypulseq = pytest.importorskip("pypulseq")
 def test_a_seq_file_carries_the_budget_both_ways(tmp_path):
     from dmipy_sim.sequences.pulseq import to_pulseq, from_pulseq
     st = SequenceTiming(t_excite=3e-3, t_refocus=6e-3, t_readout_pre_echo=14e-3)
-    seq = S.pgse([1e9], [[1.0, 0.0, 0.0]], 8e-3, 24e-3, n_t=1200, slew_rate=200.0, timing=st)
+    seq = S.pgse([[1.0, 0.0, 0.0]], 8e-3, 24e-3, bvalues=[1e9], n_t=1200, slew_rate=200.0, timing=st)
     p = tmp_path / "budget.seq"
     to_pulseq(seq, filename=str(p), native_rf=False)
     back = from_pulseq(str(p))

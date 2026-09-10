@@ -21,7 +21,8 @@ import jax
 import jax.numpy as jnp
 
 from dmipy_sim import simulate, Cylinder, FreeDiffusion, MyelinatedCylinder, set_b
-from dmipy_sim.acquisition.waveforms import pgse, tile_waveform
+from dmipy_sim.acquisition.waveforms import tile_waveform
+from dmipy_sim.sequences import pgse
 from dmipy_sim.acquisition.scanner_sequence import ScannerSequence
 
 
@@ -37,7 +38,7 @@ def _make_pgse_waveform(delta, Delta, n_t=2000, grad_dir=None):
     grad_dir = np.asarray(grad_dir, dtype=np.float32)
     grad_dir = grad_dir / np.linalg.norm(grad_dir)
     bvecs = grad_dir.reshape(1, 3)
-    wf = pgse(delta=delta, DELTA=Delta, G_magnitude=1.0, bvecs=bvecs, n_t=n_t)
+    wf = pgse(bvecs, delta, Delta, gradient_strengths=1.0, n_t=n_t)
     return wf
 
 
@@ -54,7 +55,7 @@ def _make_multi_direction_waveform(delta, Delta, n_t, bvecs):
     # Normalise each row
     norms = np.linalg.norm(bvecs, axis=1, keepdims=True)
     bvecs = bvecs / np.maximum(norms, 1e-20)
-    wf = pgse(delta=delta, DELTA=Delta, G_magnitude=1.0, bvecs=bvecs, n_t=n_t)
+    wf = pgse(bvecs, delta, Delta, gradient_strengths=1.0, n_t=n_t)
     return wf
 
 

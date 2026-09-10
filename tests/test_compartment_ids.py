@@ -93,8 +93,7 @@ def test_simulate_and_simulate_trajectories_report_the_same_ids():
     L = float(np.sqrt(np.pi * 3 * (1e-6 / 0.7) ** 2 / 0.5))
     _, _, c = d.pack_myelinated_cylinders([1e-6] * 3, 0.7, None, cell_size=L, seed=0)
     pm = d.PackedMyelinatedCylinders([1e-6] * 3, 0.7, c, L, N_max=4)
-    wf = d.set_b(d.pgse(delta=2e-3, DELTA=4e-3, G_magnitude=0.05, bvecs=[[1, 0, 0]], n_t=30,
-                        slew_rate=np.inf), 5e8)
+    wf = d.set_b(d.pgse([[1, 0, 0]], 2e-3, 4e-3, gradient_strengths=0.05, n_t=30, slew_rate=np.inf), 5e8)
     _, origin, final = d.simulate(300, None, wf, pm, seed=0, return_compartments="final",
                                   require_gpu=False)
     out = d.simulate_trajectories(300, 2e-9, pm, T_max=6e-3, dt_save=2e-3, seed=0, require_gpu=False)
@@ -131,8 +130,7 @@ def test_permeable_mesh_with_per_compartment_T2_replays_the_fused_engine():
     from dmipy_sim.geometry import mesh_shapes
     V, F = mesh_shapes.icosphere(3e-6, subdivisions=3)
     m = d.Mesh(V, F, feature_radius=0.5e-6, permeability=2e-5, intra={"T2": 0.03}, extra={"T2": 0.3})
-    wf = d.set_b(d.pgse(delta=3e-3, DELTA=9e-3, G_magnitude=0.1, bvecs=[[1, 0, 0]], n_t=120,
-                        slew_rate=np.inf), 5e8)
+    wf = d.set_b(d.pgse([[1, 0, 0]], 3e-3, 9e-3, gradient_strengths=0.1, n_t=120, slew_rate=np.inf), 5e8)
     N = 6_000
     s_f = np.asarray(d.simulate(N, D, wf, m, seed=2, engine="fused", require_gpu=False)).ravel()
     s_r = np.asarray(d.simulate(N, D, wf, m, seed=2, engine="replay", require_gpu=False)).ravel()

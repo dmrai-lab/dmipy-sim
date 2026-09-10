@@ -59,8 +59,7 @@ at it, and the same pack serves a fitting framework, an acquisition designer and
 ```python
 from dmipy_sim import simulate, Cylinder, sequences
 
-seq  = sequences.pgse(bvalues=[0, 1e9, 2e9], gradient_directions=[[1, 0, 0]] * 3,
-                      delta=0.01, Delta=0.04)                     # exact G for the requested b
+seq  = sequences.pgse([[1, 0, 0]] * 3, 0.01, 0.04, bvalues=[0, 1e9, 2e9])                     # exact G for the requested b
 spec = Cylinder(radius=5e-6, orientation=(0, 0, 1)).spec           # the situation, written out: an open box,
 spec.save("cylinder.sub.json")                                    #   one lumen pool seeded, a reflecting wall
 E    = simulate(n_walkers=100_000, diffusivity=2e-9, waveform=seq, geometry=spec, seed=0)
@@ -99,7 +98,7 @@ pack.save("wm.rpk")
 
 # 3. anywhere, later: load it and fire a pulse at it
 pack = ReplayPack.load("wm.rpk")
-seq  = sequences.pgse(bvalues=[1e9], gradient_directions=[[1, 0, 0]], delta=0.01, Delta=0.03)
+seq  = sequences.pgse([[1, 0, 0]], 0.01, 0.03, bvalues=[1e9])
 E    = pack.replay(seq)                             # the NOMINAL replay: the spec's T2 / T1 per pool, rho,
                                                     # chi and calibration field (3 T here); all four tiers
 E2   = pack.replay(seq, B0=7.0, b0_dir=(1, 0, 0))   # any value is a knob: same walk, another scanner
@@ -229,11 +228,12 @@ teleports. Loading needs `pip install "dmipy-sim[mesh]"`.
 
 A `ScannerSequence` is the one acquisition object: what the scanner does from t = 0 to the readout --
 the physical gradient `G(t)` of shape `(n_measurements, n_t, 3)` on a `dt` grid, the RF schedule `rf`,
-the `readout`, a timing budget and the per-measurement `Encoding`. `sequences.pgse` / `pgste` / `cpmg` /
-`ogse` / `ste` / `pte` compute the exact gradient for requested b-values and refuse infeasible requests;
-the amplitude-first `pgse`, `pgste`, `ogse`, `cpmg`, `ste`, `pte` build it from hardware amplitudes.
-Everything else is derived from `G` and `rf`, never carried as a flag: the effective gradient `G_eff`,
-`chi_perp`, `TM`, `stimulated_echo`, the `echoes`, `b()`.
+the `readout`, a timing budget and the per-measurement `Encoding`. One builder per family -- `pgse`,
+`pgste` (the stimulated echo), `ogse` (trapezoid or cosine trains), `cpmg`, `gre`, `ste`, `pte` -- takes the
+directions and either `bvalues=` (the exact b to realise) or `gradient_strengths=` (the amplitude to play),
+the family's parameters, an optional `TE=`, `slew_rate=` and a `timing=` budget, and refuses what cannot be
+played. Everything else is derived from `G` and `rf`, never carried as a flag: the effective gradient
+`G_eff`, `chi_perp`, `TM`, `stimulated_echo`, the `echoes`, `b()`.
 B-tensor encoding (LTE / PTE / STE) and multi-echo CPMG are included. The vector-Bloch engine
 (`simulate_bloch`) propagates M = (Mx, My, Mz) through the actual RF, gradient, relaxation, exchange
 and MT operators when the transverse-only picture is not enough.

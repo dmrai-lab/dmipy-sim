@@ -11,7 +11,7 @@ import numpy as np
 import numpy.testing as npt
 
 from dmipy_sim import simulate, FreeDiffusion, set_b
-from dmipy_sim.acquisition.waveforms import pgse
+from dmipy_sim.sequences import pgse
 
 
 # ── Simulation constants ────────────────────────────────────────────────────
@@ -26,7 +26,7 @@ _ATOL = 1.0 / np.sqrt(N_WALKERS)  # MC noise floor, ~0.003 for N=100 000
 
 def _make_waveform(b_values):
     bvecs = np.tile([1., 0., 0.], (len(b_values), 1))
-    return set_b(pgse(delta=1e-3, DELTA=40e-3, G_magnitude=1.0, bvecs=bvecs, n_t=500),
+    return set_b(pgse(bvecs, 1e-3, 40e-3, gradient_strengths=1.0, n_t=500),
                  b_values)
 
 

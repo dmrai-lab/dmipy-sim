@@ -58,7 +58,7 @@ def test_internal_seam_is_not_a_wall():
 def test_single_sphere_matches_the_analytic_sphere():
     R = 5e-6
     u = SphereUnion(np.zeros((1, 3)), np.array([R]), pool="intra")
-    wf = set_b(pgse(delta=0.01, DELTA=0.03, G_magnitude=0.2, bvecs=[[1, 0, 0]], n_t=150), 2e9)
+    wf = set_b(pgse([[1, 0, 0]], 0.01, 0.03, gradient_strengths=0.2, n_t=150), 2e9)
     kw = dict(n_walkers=3000, diffusivity=D0, waveform=wf, seed=0, require_gpu=False)
     s_u = float(np.asarray(simulate(geometry=u, **kw)).ravel()[0])
     s_a = float(np.asarray(simulate(geometry=d.Sphere(radius=R), **kw)).ravel()[0])

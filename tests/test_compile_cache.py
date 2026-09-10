@@ -16,8 +16,7 @@ D = 2e-9
 
 
 def _wf(b, n_t=100, direction=(1, 0, 0)):
-    return d.set_b(d.pgse(delta=3e-3, DELTA=8e-3, G_magnitude=0.1, bvecs=[list(direction)], n_t=n_t,
-                          slew_rate=np.inf), b)
+    return d.set_b(d.pgse([list(direction)], 3e-3, 8e-3, gradient_strengths=0.1, n_t=n_t, slew_rate=np.inf), b)
 
 
 def _entries(geometry):
@@ -76,7 +75,7 @@ def test_every_engine_path_caches():
         d.simulate(500, diff, _wf(1e9), g, seed=3, require_gpu=False, engine="fused")
         entries = _entries(g)
         assert len(entries) == 1 and next(iter(entries.values()))._cache_size() == 1, type(g).__name__
-    cp = d.cpmg(3, 10e-3, 0.0, [[0, 0, 1]], n_t_per_echo=20)
+    cp = d.cpmg(3, 10e-3, gradient_strengths=0.0, gradient_directions=[[0, 0, 1]], n_t_per_echo=20)
     sp = d.Sphere(4e-6)
     d.simulate_cpmg(300, D, cp, sp, T2=0.05, seed=0, require_gpu=False)
     d.simulate_cpmg(300, D, cp, sp, T2=0.05, seed=1, require_gpu=False)

@@ -34,7 +34,7 @@ import jax.numpy as jnp
 import pytest
 
 from dmipy_sim import simulate, PackedSpheres, Sphere, pack_spheres, set_b
-from dmipy_sim.acquisition.waveforms import pgse
+from dmipy_sim.sequences import pgse
 
 from tests.conftest import D, N_WALKERS, N_EXACT, SEED
 
@@ -68,8 +68,7 @@ def _pgse_wf(TE_s, n_t=500):
     # square (instantaneous) lobes: these restricted-diffusion checks were
     # validated against the idealized waveform (sim now defaults to slew-limited)
     return set_b(
-        pgse(delta=delta, DELTA=DELTA, G_magnitude=1.0, bvecs=bvecs, n_t=n_t,
-             slew_rate=np.inf),
+        pgse(bvecs, delta, DELTA, gradient_strengths=1.0, n_t=n_t, slew_rate=np.inf),
         b_values)
 
 

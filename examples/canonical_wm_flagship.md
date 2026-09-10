@@ -80,8 +80,7 @@ A gradient-free `pgse` (b=0) isolates the pure T2 / surface-relaxivity attenuati
 weighting — so the effect of the myelin wall as a relaxation sink is visible directly.
 
 ```{code-cell} ipython3
-wf0 = pgse(delta=TE / 2 - 1e-4, DELTA=TE / 2, G_magnitude=0.0,
-           bvecs=np.array([[0, 0, 1.]], np.float32), n_t=3000)
+wf0 = pgse(np.array([[0, 0, 1.]]), TE / 2 - 1e-4, TE / 2, gradient_strengths=0.0, n_t=3000)
 S_off = float(np.asarray(simulate(5000, waveform=wf0, geometry=build_substrate(False),
                                    seed=1, require_gpu=False)).ravel()[0])
 S_on  = float(np.asarray(simulate(5000, waveform=wf0, geometry=build_substrate(True),

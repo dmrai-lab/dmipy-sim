@@ -79,11 +79,10 @@ def test_cylinder_misst_config2():
 
 def test_cylinder_parallel_gradient_is_free():
     """Gradient along cylinder axis → walkers diffuse freely → exp(-bD)."""
-    from dmipy_sim.acquisition.waveforms import pgse
+    from dmipy_sim.sequences import pgse
     b_values = np.linspace(1e8, 3e9, 20)
     bvecs = np.tile([0., 0., 1.], (20, 1))  # gradient along z = cylinder axis
-    wf = set_b(pgse(delta=0.2e-3, DELTA=40e-3, G_magnitude=1.0,
-                    bvecs=bvecs, n_t=1000), b_values)
+    wf = set_b(pgse(bvecs, 0.2e-3, 40e-3, gradient_strengths=1.0, n_t=1000), b_values)
 
     signals = simulate(N_WALKERS, D, wf,
                        Cylinder(radius=5e-6, orientation=[0, 0, 1.0]),
@@ -96,11 +95,10 @@ def test_cylinder_parallel_gradient_is_free():
 
 def test_cylinder_signal_above_free_perp():
     """Perpendicular gradient → restricted; signal must exceed free diffusion."""
-    from dmipy_sim.acquisition.waveforms import pgse
+    from dmipy_sim.sequences import pgse
     b_values = np.linspace(1e8, 3e9, 20)
     bvecs = np.tile([1., 0., 0.], (20, 1))  # gradient ⊥ cylinder axis
-    wf = set_b(pgse(delta=0.2e-3, DELTA=40e-3, G_magnitude=1.0,
-                    bvecs=bvecs, n_t=1000), b_values)
+    wf = set_b(pgse(bvecs, 0.2e-3, 40e-3, gradient_strengths=1.0, n_t=1000), b_values)
 
     S_cyl  = simulate(N_WALKERS, D, wf,
                       Cylinder(radius=5e-6, orientation=[0, 0, 1.0]), seed=SEED)

@@ -17,8 +17,7 @@ D = 2e-9
 
 
 def _wf(n_t=120):
-    return d.set_b(d.pgse(delta=4e-3, DELTA=10e-3, G_magnitude=0.1, bvecs=[[1, 0, 0], [0, 0, 1]],
-                          n_t=n_t, slew_rate=np.inf), 1e9)
+    return d.set_b(d.pgse([[1, 0, 0], [0, 0, 1]], 4e-3, 10e-3, gradient_strengths=0.1, n_t=n_t, slew_rate=np.inf), 1e9)
 
 
 def test_analytic_caps_are_the_grazing_worst_case():

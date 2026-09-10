@@ -21,7 +21,7 @@ from dmipy_sim import (
     simulate, PackedMyelinatedCylinders, pack_myelinated_cylinders,
     set_b,
 )
-from dmipy_sim.acquisition.waveforms import pgse
+from dmipy_sim.sequences import pgse
 
 
 SEED = 42
@@ -31,7 +31,7 @@ def _make_waveform(b_values=None):
     if b_values is None:
         b_values = np.array([0.0, 1e9])
     bvecs = np.tile([1., 0., 0.], (len(b_values), 1))
-    wf = pgse(delta=5e-3, DELTA=15e-3, G_magnitude=1.0, bvecs=bvecs, n_t=500)
+    wf = pgse(bvecs, 5e-3, 15e-3, gradient_strengths=1.0, n_t=500)
     return set_b(wf, b_values)
 
 
@@ -113,8 +113,7 @@ def test_periodic_boundary_wrap():
     )
 
     # Single gradient measurement along x
-    wf = set_b(pgse(delta=2e-3, DELTA=6e-3, G_magnitude=1.0,
-                    bvecs=np.array([[1., 0., 0.]]), n_t=200),
+    wf = set_b(pgse(np.array([[1., 0., 0.]]), 2e-3, 6e-3, gradient_strengths=1.0, n_t=200),
                np.array([1e9]))
 
     _, final_pos = simulate(500, waveform=wf, geometry=geom, seed=SEED,
