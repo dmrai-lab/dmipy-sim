@@ -32,7 +32,7 @@ import numpy as np
 
 from ..constants import GAMMA
 from ..acquisition.rf import RFSchedule
-from ..acquisition.scanner_sequence import ScannerSequence
+from ..acquisition.scanner_sequence import Protocol, ScannerSequence
 
 __all__ = ["ReplayPack", "PoseResponse", "read_rpk", "write_rpk",
            "compile_scheme", "replay_signal", "replay_signal_jax", "surface_logweight"]
@@ -263,6 +263,11 @@ class ReplayPack:
         """
         from .compression import read_position_coeffs
         from ._replay_kernel import gradient_phase, se_gate
+        waveform = waveform.waveform if hasattr(waveform, "waveform") else waveform
+        if isinstance(waveform, Protocol):                # a multi-TE scheme: each sequence replayed, placed at its rows
+            kw = dict(tissue=tissue, T2=T2, T1=T1, rho=rho, D=D, B0=B0, b0_dir=b0_dir, chi_iso=chi_iso,
+                      chi_aniso=chi_aniso, compartment=compartment, orientation=orientation, complex_signal=complex_signal)
+            return waveform.scatter([self.replay(seq, **kw) for seq in waveform])
         dist = _as_distribution(orientation)
         if dist is not None:
             S = self.pose_response(waveform, tissue=tissue, T2=T2, T1=T1, rho=rho, D=D, B0=B0, b0_dir=b0_dir,

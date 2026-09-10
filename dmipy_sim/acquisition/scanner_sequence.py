@@ -262,17 +262,39 @@ class ScannerSequence:
 
 
 class Protocol(tuple):
-    """A multi-TE scheme: a tuple of :class:`ScannerSequence`\\ s, one echo time each. It is the shell list an
-    analytical layer groups measurements into; a single ``ScannerSequence`` has one schedule and one TE, so a
-    scheme with several TEs is several of them."""
-    __slots__ = ()
+    """A multi-TE scheme: a tuple of :class:`ScannerSequence`\\ s, one echo time each, and how their measurements
+    interleave in the acquisition. A single ``ScannerSequence`` has one schedule and one TE, so a scheme with
+    several TEs is several of them; an analytical layer groups its measurements into these.
 
-    def __new__(cls, sequences):
+    ``rows`` says which measurement of the whole acquisition each sequence's rows are (``rows[i]`` the indices
+    of sequence ``i``'s rows in acquisition order); by default the sequences follow one another. A consumer that
+    returns one value per measurement (``simulate``, a pack's ``replay``) places each sequence's results at its
+    rows, so the output is in acquisition order whatever the grouping.
+    """
+
+    def __new__(cls, sequences, rows=None):
         seqs = tuple(sequences)
         for s in seqs:
             if not isinstance(s, ScannerSequence):
                 raise TypeError(f"a Protocol holds ScannerSequences, got {type(s).__name__}")
-        return super().__new__(cls, seqs)
+        self = super().__new__(cls, seqs)
+        n = sum(s.n_meas for s in seqs)
+        if rows is None:
+            offs = np.cumsum([0] + [s.n_meas for s in seqs])
+            rows = tuple(np.arange(offs[i], offs[i + 1]) for i in range(len(seqs)))
+        else:
+            rows = tuple(np.asarray(r, dtype=int).reshape(-1) for r in rows)
+            if len(rows) != len(seqs) or any(len(r) != s.n_meas for r, s in zip(rows, seqs)):
+                raise ValueError("rows must give one index array per sequence, of that sequence's n_meas")
+            if sorted(np.concatenate(rows).tolist()) != list(range(n)):
+                raise ValueError(f"rows must be a partition of range({n})")
+        self._rows = rows
+        return self
+
+    @property
+    def rows(self):
+        """One index array per sequence: its rows' positions in the acquisition."""
+        return self._rows
 
     @property
     def echo_times(self):
@@ -281,3 +303,15 @@ class Protocol(tuple):
     @property
     def n_meas(self):
         return sum(s.n_meas for s in self)
+
+    def scatter(self, parts, axis=-1):
+        """Place per-sequence results (each with its sequence's ``n_meas`` along ``axis``) at their rows: the
+        acquisition-ordered result."""
+        parts = [np.asarray(p) for p in parts]
+        out = np.empty(parts[0].shape[:axis % parts[0].ndim] + (self.n_meas,) + parts[0].shape[axis % parts[0].ndim + 1:],
+                       dtype=np.result_type(*parts))
+        for p, r in zip(parts, self.rows):
+            idx = [slice(None)] * out.ndim
+            idx[axis % out.ndim] = r
+            out[tuple(idx)] = p
+        return out

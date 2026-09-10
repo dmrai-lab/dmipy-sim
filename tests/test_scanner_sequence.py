@@ -120,15 +120,27 @@ def test_gre_is_a_bipolar_pair_with_no_180_or_a_pure_fid():
     assert fid.n_meas == 1 and float(np.abs(fid.G).max()) == 0.0 and fid.b()[0] == 0.0 and fid.family == "gre"
 
 
-def test_a_protocol_is_a_tuple_of_sequences_one_te_each():
+def test_a_protocol_is_a_tuple_of_sequences_one_te_each_in_acquisition_order():
     a = S.pgse(D2, 4e-3, 20e-3, bvalues=B, n_t=240)
     b = S.pgse(D2, 4e-3, 40e-3, bvalues=B, n_t=360)
     p = Protocol([a, b])
     assert isinstance(p, tuple) and len(p) == 2 and p.n_meas == 4
     assert p.echo_times == pytest.approx((a.T, b.T)) and a.T < b.T
+    assert [r.tolist() for r in p.rows] == [[0, 1], [2, 3]]                       # one after the other by default
+    q = Protocol([a, b], rows=[[0, 2], [1, 3]])                                   # interleaved in the acquisition
+    np.testing.assert_array_equal(q.scatter([np.array([10, 30]), np.array([20, 40])]), [10, 20, 30, 40])
+    with pytest.raises(ValueError, match="partition"):
+        Protocol([a, b], rows=[[0, 1], [1, 3]])
     with pytest.raises(TypeError, match="holds ScannerSequences"):
         Protocol([a, np.asarray(b.G)])
     assert d.Protocol is Protocol and d.ScannerSequence is ScannerSequence and d.Encoding is Encoding
+    # simulate takes it: one walk per sequence, the signal in acquisition order
+    E = d.simulate(1500, 2e-9, q, d.FreeDiffusion(), seed=0, require_gpu=False)
+    Ea = d.simulate(1500, 2e-9, a, d.FreeDiffusion(), seed=0, require_gpu=False)
+    Eb = d.simulate(1500, 2e-9, b, d.FreeDiffusion(), seed=0, require_gpu=False)
+    np.testing.assert_allclose(E, [Ea[0], Eb[0], Ea[1], Eb[1]], atol=1e-6)
+    with pytest.raises(ValueError, match="one sequence"):
+        d.simulate(100, 2e-9, q, d.FreeDiffusion(), seed=0, require_gpu=False, return_positions=True)
 
 
 def test_every_sequence_builder_is_validated_and_declares_its_family():
