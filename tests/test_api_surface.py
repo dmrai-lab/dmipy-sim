@@ -1,10 +1,13 @@
 """The public surface, and the geometry protocol every exported geometry satisfies.
 
-Two things are pinned here. Every name the package exports resolves, and the submodules
-downstream packages import exist. And every geometry declares the protocol the engine reads --
+Three things are pinned here. Every name the package exports resolves, and the submodules
+downstream packages import exist. Every geometry declares the protocol the engine reads --
 ``length_scales``, the capability flags, the wall/bulk attributes, ``classify_position`` and its
 two helpers, ``interact`` -- so a geometry the engine cannot size or label fails here, by name,
-rather than inside a walk.
+rather than inside a walk. And the acquisition surface is an inventory (#173): the containers that
+carry what the scanner does, the RF dialects they speak, the consumers that take the RF apart from
+the gradient, the scanner catalogues -- each a declared set, so the spread that #173 collapses into
+one ``ScannerSequence`` can only shrink.
 """
 import importlib
 import re
@@ -287,3 +290,210 @@ def test_a_substrate_without_a_spec_spelling_is_refused_by_every_driver():
         as_geometry(Quack())
     g = dmipy_sim.Cylinder(2e-6, (0, 0, 1))
     assert as_geometry(g) is g and g._spec_source is not None and g._spec_source == g.spec
+
+
+# ── the acquisition surface is an inventory that can only shrink (#173) ─────────────────────────
+# What the scanner does from t=0 to TE is carried by these containers, in these RF dialects, read by
+# these consumers, against these scanner catalogues. Each set is declared; a NEW member fails here
+# by name. #173 collapses them into one ScannerSequence piece by piece, and each piece deletes from
+# these sets -- never adds.
+
+# §1.1 -- a class whose instances carry G on a dt grid, or a B1 envelope on one
+_ACQUISITION_CONTAINERS = {
+    "dmipy_sim.acquisition.waveforms.Waveform",          # effective G, ideal RF
+    "dmipy_sim.sequences.sequence.Sequence",             # a Waveform + per-measurement encoding
+    "dmipy_sim.engine.pulse_sequence.BlochSequence",     # PHYSICAL G, finite RF, crusher
+    "dmipy_sim.acquisition.rf.B1Pulse",                  # the RF envelope itself
+}
+
+# §1.1 -- the two RF dialects builders emit
+_RF_IDEAL = frozenset({"t_s", "label", "flip_deg"})
+_RF_FINITE = frozenset({"t_s", "flip_deg", "axis_deg", "duration_s", "offset_hz"})
+_RF_DIALECT_OF_BUILDER = {
+    "waveforms.pgse": _RF_IDEAL, "waveforms.pgste": _RF_IDEAL, "waveforms.ogse": _RF_IDEAL,
+    "waveforms.trapezoidal_ogse": _RF_IDEAL, "waveforms.cpmg": _RF_IDEAL,
+    "waveforms.ste": _RF_IDEAL, "waveforms.pte": _RF_IDEAL,
+    "Sequence.from_pgse": _RF_IDEAL, "Sequence.from_cpmg": _RF_IDEAL,
+    "pulse_sequence.gradient_echo": _RF_FINITE, "pulse_sequence.spin_echo": _RF_FINITE,
+    "pulse_sequence.prepend_mt_prep": _RF_FINITE,
+}
+
+# every key any module reads off an RF event; ``b1_envelope`` is read (replay.trajectories) and emitted by no builder
+_RF_KEYS_READ = _RF_IDEAL | _RF_FINITE | {"b1_envelope"}
+
+# §1.1 / #171 -- Sequence constructors that declare no RF schedule at all
+_SEQUENCE_CONSTRUCTORS_WITHOUT_RF = {
+    "Sequence.from_ogse", "Sequence.from_btensor_ste", "Sequence.from_btensor_pte",
+    "Sequence.from_waveform", "Sequence.from_btensor_waveform",
+}
+
+# §1.2 -- callables that take an acquisition AND its RF / echo / refocus time as separate arguments
+_RF_SIDE_CHANNELS = {
+    ("dmipy_sim.engine.bloch.simulate_bloch", ("echo_steps", "rf_events")),
+    ("dmipy_sim.engine.bloch._simulate_bloch_mt", ("echo_steps", "rf_events")),
+    ("dmipy_sim.replay.replay.replay", ("refocus_time",)),
+    ("dmipy_sim.replay.replay.replay_bloch", ("echo_steps", "rf_events")),
+    ("dmipy_sim.replay.replay.pose_response", ("refocus_time",)),
+    ("dmipy_sim.replay.replay._pose_coeffs", ("refocus_time",)),
+    ("dmipy_sim.replay.bank.replay_susc", ("refocus_time",)),
+    ("dmipy_sim.replay.phantom.replay", ("refocus_time",)),
+    ("dmipy_sim.replay.phantom.replay_bloch", ("rf_events",)),
+    ("dmipy_sim.replay.phantom._apply_layers", ("refocus_time",)),
+    ("dmipy_sim.replay.phantom._static_spin_rf", ("rf_events",)),
+}
+
+# §1.3 -- the scanner catalogues; piece 1 makes scanner_constants the source and the other two views of it
+_SCANNER_CATALOGUES = {
+    "dmipy_sim.acquisition.scanners.SCANNERS",
+    "dmipy_sim.sequences.pulseq.PULSEQ_SYSTEMS",
+    "dmipy_sim.sequences.scanner_constants.SCANNER_CONSTANTS",
+}
+
+
+def _class_attribute_names(cls_node):
+    """Names a class gives its instances: dataclass fields and every ``self.<name> =`` in its methods."""
+    import ast
+    names = set()
+    for node in cls_node.body:
+        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            names.add(node.target.id)
+    for fn in ast.walk(cls_node):
+        if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            for node in ast.walk(fn):
+                targets = []
+                if isinstance(node, ast.Assign):
+                    targets = node.targets
+                elif isinstance(node, ast.AnnAssign):
+                    targets = [node.target]
+                for t in targets:
+                    if isinstance(t, ast.Attribute) and isinstance(t.value, ast.Name) and t.value.id == "self":
+                        names.add(t.attr)
+    return names
+
+
+def _package_modules():
+    for py in sorted(_SRC.rglob("*.py")):
+        rel = py.relative_to(_SRC.parent).with_suffix("")
+        yield py, ".".join(rel.parts)
+
+
+def test_no_new_acquisition_container():
+    """A class whose instances carry a gradient ``G`` on a ``dt`` grid, or an RF envelope ``b1`` on one, is an
+    acquisition container. There are exactly the declared ones."""
+    import ast
+    found = set()
+    for py, modname in _package_modules():
+        for node in ast.walk(ast.parse(py.read_text())):
+            if isinstance(node, ast.ClassDef):
+                names = _class_attribute_names(node)
+                if {"G", "dt"} <= names or {"b1", "dt"} <= names:
+                    found.add(f"{modname}.{node.name}")
+    assert found == _ACQUISITION_CONTAINERS, (
+        f"acquisition containers changed. new: {sorted(found - _ACQUISITION_CONTAINERS)}, "
+        f"gone: {sorted(_ACQUISITION_CONTAINERS - found)}. #173 collapses these into ScannerSequence; "
+        f"a new one is a step the other way.")
+
+
+def _every_builder():
+    """One instance of every constructor that declares an RF schedule (or is documented not to), built small."""
+    import dmipy_sim.acquisition.waveforms as W
+    from dmipy_sim.sequences import Sequence
+    import dmipy_sim.engine.pulse_sequence as P
+    bv = np.array([[1.0, 0.0, 0.0]])
+    out = {
+        "waveforms.pgse": W.pgse(4e-3, 20e-3, 0.05, bv, 200),
+        "waveforms.pgste": W.pgste(4e-3, 20e-3, 0.05, bv, 200),
+        "waveforms.ogse": W.ogse(100.0, 40e-3, 0.05, bv, 400),
+        "waveforms.trapezoidal_ogse": W.trapezoidal_ogse(2, 20e-3, 24e-3, 0.05, bv, 400),
+        "waveforms.cpmg": W.cpmg(3, 20e-3, 0.05, bv, n_t_per_echo=50),
+        "waveforms.ste": W.ste(4e-3, 20e-3, 0.05, 240),
+        "waveforms.pte": W.pte(4e-3, 20e-3, 0.05, [0.0, 0.0, 1.0], 240),
+        "Sequence.from_pgse": Sequence.from_pgse([1e9], bv, 4e-3, 20e-3, n_t=200),
+        "Sequence.from_cpmg": Sequence.from_cpmg(3, 20e-3, bvalues=[1e9] * 3, n_t_per_echo=50),
+        "Sequence.from_ogse": Sequence.from_ogse([1e9], bv, 100.0, 20e-3, n_t=400, refocus_duration=4e-3),
+        "Sequence.from_btensor_ste": Sequence.from_btensor_ste([1e9], 4e-3, 20e-3, n_t=240),
+        "Sequence.from_btensor_pte": Sequence.from_btensor_pte([1e9], [0.0, 0.0, 1.0], 4e-3, 20e-3, n_t=240),
+        "pulse_sequence.gradient_echo": P.gradient_echo(20e-3, 1e-4),
+        "pulse_sequence.spin_echo": P.spin_echo(20e-3, 1e-4),
+        "pulse_sequence.prepend_mt_prep": P.prepend_mt_prep(
+            P.spin_echo(20e-3, 1e-4), dict(offset_hz=2000.0, duration_s=2e-3, flip_deg=500.0)),
+    }
+    G = np.zeros((1, 200, 3), np.float32); G[0, :50, 0] = 0.05; G[0, 50:100, 0] = -0.05
+    out["Sequence.from_waveform"] = Sequence.from_waveform(G, 1e-4, bv)
+    out["Sequence.from_btensor_waveform"] = Sequence.from_btensor_waveform(G, 1e-4)
+    return out
+
+
+def test_every_builder_speaks_a_declared_rf_dialect():
+    """Each builder's ``rf_events`` use exactly the key set of its declared dialect; the Sequence constructors
+    that declare no schedule at all are the declared ones (#171) and no others."""
+    dialects = {}
+    without = set()
+    for name, obj in _every_builder().items():
+        rf = getattr(obj, "rf_events", None)
+        if not rf:
+            without.add(name)
+            continue
+        keys = frozenset().union(*(frozenset(e) for e in rf))
+        dialects[name] = tuple(sorted(keys))
+    assert dialects == {k: tuple(sorted(v)) for k, v in _RF_DIALECT_OF_BUILDER.items()}, (
+        f"RF dialects changed: {dialects}")
+    assert without == _SEQUENCE_CONSTRUCTORS_WITHOUT_RF, (
+        f"constructors without an RF schedule: {sorted(without)} (declared {sorted(_SEQUENCE_CONSTRUCTORS_WITHOUT_RF)}). "
+        f"#173 piece 5 gives every builder a schedule; this set only shrinks.")
+
+
+def test_rf_event_keys_read_anywhere_are_declared():
+    """Every key any module reads off an RF event is one of the declared keys: a reader that invents a fourth
+    dialect fails here."""
+    pat = re.compile(r"""\be\s*(?:\.get\(|\[)\s*['"]([a-z_0-9]+)['"]""")
+    found = {}
+    for py, modname in _package_modules():
+        text = py.read_text()
+        if "rf_events" not in text and "rf" not in modname:
+            continue
+        for m in pat.finditer(text):
+            found.setdefault(m.group(1), set()).add(modname)
+    assert set(found) == _RF_KEYS_READ, (
+        f"RF event keys read: {sorted(found)}; declared {sorted(_RF_KEYS_READ)}. "
+        f"new: { {k: sorted(v) for k, v in found.items() if k not in _RF_KEYS_READ} }")
+
+
+def test_rf_is_taken_apart_from_the_gradient_only_where_declared():
+    """A callable that takes an acquisition AND separately its RF schedule / echo / refocus time is a side
+    channel: the two can then disagree by signature (#172 is one such bug). The declared set is where that
+    still happens; #173 piece 6 empties it."""
+    import ast
+    acq = {"waveform", "wf", "seq", "sequence", "acq"}
+    side = {"rf_events", "refocus_time", "echo_steps"}
+    found = set()
+    for py, modname in _package_modules():
+        tree = ast.parse(py.read_text())
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                params = {a.arg for a in node.args.args + node.args.kwonlyargs}
+                if params & acq and params & side:
+                    found.add((f"{modname}.{node.name}", tuple(sorted(params & side))))
+    assert found == _RF_SIDE_CHANNELS, (
+        f"side channels changed. new: {sorted(found - _RF_SIDE_CHANNELS)}, gone: {sorted(_RF_SIDE_CHANNELS - found)}")
+
+
+def test_scanner_catalogues_are_the_declared_ones():
+    """A module-level name spelled like a scanner catalogue (``...SCANNER...`` / ``...SYSTEMS``) is one. #173
+    piece 1 makes one of them the source and the rest views of it; a new catalogue fails here."""
+    import ast
+    pat = re.compile(r"^[A-Z_]*(SCANNER|SYSTEMS)[A-Z_]*$")
+    found = set()
+    for py, modname in _package_modules():
+        tree = ast.parse(py.read_text())
+        nested = {id(n) for scope in ast.walk(tree) if isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+                  for n in ast.walk(scope) if n is not scope}
+        for node in ast.walk(tree):
+            if id(node) in nested or not isinstance(node, (ast.Assign, ast.AnnAssign)):
+                continue
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for t in targets:
+                if isinstance(t, ast.Name) and pat.match(t.id):
+                    found.add(f"{modname}.{t.id}")
+    assert found == _SCANNER_CATALOGUES, (
+        f"scanner catalogues changed. new: {sorted(found - _SCANNER_CATALOGUES)}, gone: {sorted(_SCANNER_CATALOGUES - found)}")
