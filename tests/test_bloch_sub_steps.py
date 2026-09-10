@@ -15,6 +15,7 @@ on a substrate rather than only on a pore.
 from __future__ import annotations
 
 import numpy as np
+from dmipy_sim import RFEvent
 import pytest
 
 trimesh = pytest.importorskip("trimesh")
@@ -30,7 +31,7 @@ D = 2e-9
 B = 2.0e9
 N = 2000
 FREE = float(np.exp(-B * D))
-EXC = [{"t_s": 0.0, "flip_deg": 90.0, "axis_deg": 90.0}]     # 90_y -> Mx = cos(phi)
+EXC = [RFEvent(0.0, 90.0, axis_deg=90.0)]     # 90_y -> Mx = cos(phi)
 TOL = max(0.02, 1.0 / np.sqrt(N))
 
 

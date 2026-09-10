@@ -35,6 +35,7 @@ import jax.numpy as jnp
 from ..geometry._boundary import bind_probability
 
 from ..constants import GAMMA
+from ..acquisition.rf import RFSchedule
 from .gpu import gpu_available
 from ..geometry import initial_positions
 from .physics import resolve_sub_steps, _warn_if_step_outruns_the_lookup
@@ -66,26 +67,23 @@ def _build_rf_schedule(rf_events, dt, n_t):
     (rad) applied at that step, its B1 axis (rad), and the off-resonance carrier
     phase (rad) accrued over that step.  A finite pulse (``duration_s`` > 0) is
     centred on its nominal time ``t_s`` and spread over ``round(duration_s/dt)``
-    steps of equal flip (the excitation at ``t_s = 0`` runs forward from step 0);
-    ``duration_s = 0`` is the instantaneous hard-pulse limit (one step).  Distinct
+    steps with the flip split evenly, or by its envelope (the excitation at ``t_s = 0`` runs
+    forward from step 0); ``duration_s = 0`` is the instantaneous hard-pulse limit (one step).  Distinct
     pulses are not expected to overlap a step.
     """
     dflip = np.zeros(n_t, dtype=np.float64)
     axis = np.zeros(n_t, dtype=np.float64)
     carrier = np.zeros(n_t, dtype=np.float64)
-    for e in rf_events:
-        i0 = int(round(float(e['t_s']) / dt))
-        dur = float(e.get('duration_s', 0.0) or 0.0)
-        nsub = max(1, int(round(dur / dt))) if dur > 0.0 else 1
+    for e in RFSchedule(rf_events):
+        i0 = int(round(e.t_s / dt))
+        nsub = max(1, int(round(e.duration_s / dt))) if e.duration_s > 0.0 else 1
         i_start = max(0, i0 - nsub // 2)
-        total = np.deg2rad(float(e.get('flip_deg', 180.0)))
-        ax = np.deg2rad(float(e.get('axis_deg', 0.0)))
-        off_dphi = 2.0 * np.pi * float(e.get('offset_hz', 0.0) or 0.0) * dt
-        per = total / nsub
+        off_dphi = 2.0 * np.pi * e.offset_hz * dt
+        dflips, axes = e.flip_split(nsub)                      # even, or by the pulse's envelope
         for j in range(nsub):
             i = min(i_start + j, n_t - 1)
-            dflip[i] += per
-            axis[i] = ax
+            dflip[i] += dflips[j]
+            axis[i] = axes[j]
             carrier[i] += off_dphi
     return dflip, axis, carrier
 
@@ -243,8 +241,8 @@ def simulate_bloch(n_walkers, diffusivity, waveform, geometry, rf_events, *,
     n_walkers, diffusivity, waveform, geometry : as ``core.simulate`` (``waveform``
         may be a ``Waveform`` or any object with a ``.waveform``; the PHYSICAL
         same-sign gradient is expected).
-    rf_events : list of dict
-        ``{'t_s', 'flip_deg', 'axis_deg', 'duration_s', 'offset_hz'}`` per pulse;
+    rf_events : RFSchedule
+        :class:`dmipy_sim.acquisition.rf.RFSchedule` (or the events that build one);
         the first is usually the excitation.  ``axis_deg`` is the B1 phase (0 = x,
         90 = y); ``duration_s = 0`` is an instantaneous hard pulse; ``offset_hz``
         gives an off-resonance carrier over the pulse (0 = on-resonance).

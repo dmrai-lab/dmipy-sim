@@ -1,6 +1,7 @@
 """Every walk driver takes the substrate as a spec: the walk from a spec is the walk from the geometry it describes,
 to the bit, on the fused engine, the trajectory producer, the Bloch engine and the MT walk."""
 import numpy as np
+from dmipy_sim import RFEvent
 import pytest
 
 import dmipy_sim as d
@@ -43,7 +44,7 @@ def test_bloch_and_mt_drivers_take_a_spec():
     from dmipy_sim.engine.mt_walk import simulate_mt_trajectories
     g = d.Cylinder(3e-6, (0, 0, 1)); spec = g.spec
     seq = _seq()
-    rf = [{"t_s": 0.0, "flip_deg": 90.0, "axis_deg": 90.0}, {"t_s": seq.dt * (seq.G.shape[1] // 2), "flip_deg": 180.0, "axis_deg": 0.0}]
+    rf = [RFEvent(0.0, 90.0, axis_deg=90.0), RFEvent(seq.dt * (seq.G.shape[1] // 2), 180.0, axis_deg=0.0)]
     kw = dict(T2=0.05, seed=0, require_gpu=False)
     np.testing.assert_array_equal(np.asarray(simulate_bloch(60, D0, seq, spec, rf, **kw)),
                                   np.asarray(simulate_bloch(60, D0, seq, g, rf, **kw)))

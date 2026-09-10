@@ -67,11 +67,11 @@ def test_one_b_integral_and_one_btensor():
 def test_sequence_carries_the_waveform_readout_protocol():
     seq = S.pgse(B, DIRS, DELTA, DELTA_BIG, n_t=N_T)
     assert seq.echo_idx == N_T - 1 and seq.echo_indices is None and seq.chi_perp is None
-    assert [e["flip_deg"] for e in seq.rf_events] == [90, 180]
-    assert abs(seq.rf_events[1]["t_s"] - (DELTA + DELTA_BIG) / 2.0) < 1e-3     # midway, up to the ramp
+    assert [e.flip_deg for e in seq.rf_events] == [90, 180]
+    assert abs(seq.rf_events[1].t_s - (DELTA + DELTA_BIG) / 2.0) < 1e-3     # midway, up to the ramp
     cp = S.cpmg(4, 20e-3, bvalues=1e9, n_t_per_echo=50)
     assert list(cp.echo_indices) == [50, 100, 150, 199]      # k*TE on the grid; the last clipped to n_t-1
-    assert [e["flip_deg"] for e in cp.rf_events] == [90, 180, 180, 180, 180]
+    assert [e.flip_deg for e in cp.rf_events] == [90, 180, 180, 180, 180]
     G, dt = seq.to_gradient_array(n_t=N_T)
     sq = S.pgse(B, DIRS, DELTA, DELTA_BIG, n_t=N_T, slew_rate=np.inf)
     np.testing.assert_array_equal(G, sq.G)
@@ -134,10 +134,9 @@ def test_pgse_display_lobes_share_polarity_while_the_simulated_pair_is_bipolar()
 def test_display_gradient_is_display_only_and_refolds_to_the_simulated_one():
     """The un-fold changes no number the physics reads: b and the b-tensor come from ``G``,
     and re-applying the sign returns ``G`` exactly (``s`` is its own inverse)."""
-    from dmipy_sim.acquisition.waveforms import effective_gradient_sign
     seq = S.pgse(B, DIRS, DELTA, DELTA_BIG, n_t=N_T, slew_rate=200.0)
     t_grid = np.arange(seq.G.shape[1]) * seq.dt
-    s = effective_gradient_sign(seq.rf_events, t_grid)
+    s = seq.rf_events.sign(t_grid)
     np.testing.assert_array_equal(np.asarray(seq.G_display) * s[None, :, None],
                                   np.asarray(seq.G))
     np.testing.assert_allclose(_num_b(seq), seq.bvalues, rtol=1e-6)

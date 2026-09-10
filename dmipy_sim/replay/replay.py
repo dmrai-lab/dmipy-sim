@@ -31,6 +31,7 @@ from functools import cached_property
 import numpy as np
 
 from ..constants import GAMMA
+from ..acquisition.rf import RFSchedule
 
 __all__ = ["ReplayPack", "PoseResponse", "read_rpk", "write_rpk",
            "compile_scheme", "replay_signal", "replay_signal_jax", "surface_logweight"]
@@ -776,10 +777,7 @@ def _as_distribution(orientation):
 def _refocus_time_of(waveform):
     """The time of the waveform's 180 (the first refocusing pulse of its RF schedule), or ``None``
     for a schedule without one (a gradient echo)."""
-    for e in (getattr(waveform, "rf_events", None) or []):
-        if int(round(float(e.get("flip_deg", 0)))) == 180:
-            return float(e["t_s"])
-    return None
+    return RFSchedule(getattr(waveform, "rf_events", None)).refocus_time
 
 
 # ------------------------------- compiled-scheme forward -------------------------------

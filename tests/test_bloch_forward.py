@@ -11,6 +11,7 @@ walker counts suffice because with G=0 every walker is coherent.
 from types import SimpleNamespace
 
 import numpy as np
+from dmipy_sim import RFEvent
 import pytest
 
 from dmipy_sim import simulate, pgse, set_b, FreeDiffusion
@@ -28,7 +29,7 @@ def _zero_waveform(n_t, dt):
 def test_transverse_decays_at_T2():
     n_t, dt, T2 = 200, 2e-4, 0.05
     wf = _zero_waveform(n_t, dt)                       # no gradient
-    exc = [{'t_s': 0.0, 'flip_deg': 90.0, 'axis_deg': 90.0}]   # 90_y -> Mx
+    exc = [RFEvent(0.0, 90.0, axis_deg=90.0)]   # 90_y -> Mx
     s = simulate_bloch(2000, D, wf, FreeDiffusion(), exc, T2=T2, seed=0)
     T = n_t * dt
     assert abs(s[0]) == pytest.approx(np.exp(-T / T2), rel=0.02)
@@ -39,7 +40,7 @@ def test_transverse_decays_at_T2():
 def test_inversion_recovery_T1():
     n_t, dt, T1 = 300, 5e-4, 0.8
     wf = _zero_waveform(n_t, dt)
-    inv = [{'t_s': 0.0, 'flip_deg': 180.0, 'axis_deg': 0.0}]    # 180_x inverts Mz
+    inv = [RFEvent(0.0, 180.0, axis_deg=0.0)]    # 180_x inverts Mz
     _, mz = simulate_bloch(2000, D, wf, FreeDiffusion(), inv,
                            T1=T1, M0=1.0, seed=0, return_mz=True)
     T = n_t * dt
@@ -50,7 +51,7 @@ def test_inversion_recovery_T1():
 def test_off_resonance_precession():
     n_t, dt, f = 200, 1e-5, 200.0                     # fine dt; f*T=0.4 turn (no wrap)
     wf = _zero_waveform(n_t, dt)
-    exc = [{'t_s': 0.0, 'flip_deg': 90.0, 'axis_deg': 90.0}]
+    exc = [RFEvent(0.0, 90.0, axis_deg=90.0)]
     s = simulate_bloch(2000, D, wf, FreeDiffusion(), exc,
                        off_resonance_hz=f, seed=0)     # no relaxation
     T = n_t * dt
@@ -65,7 +66,7 @@ def test_pgse_parity_with_scalar_engine():
                     bvecs=[[1., 0., 0.]], n_t=300), b)
     geom, N, seed = FreeDiffusion(), 16000, 7
     scalar = simulate(N, D, wf, geom, seed=seed, require_gpu=False)  # <cos phi>
-    exc = [{'t_s': 0.0, 'flip_deg': 90.0, 'axis_deg': 90.0}]         # 90_y -> Mx=cos phi
+    exc = [RFEvent(0.0, 90.0, axis_deg=90.0)]         # 90_y -> Mx=cos phi
     vec = simulate_bloch(N, D, wf, geom, exc, seed=seed)             # no relaxation
     tol = max(0.02, 1.0 / np.sqrt(N))
     # same seed + FreeDiffusion (identity reflect) => bit-identical walk
@@ -81,8 +82,8 @@ def test_cpmg_refocuses_static_offset():
     wf = _zero_waveform(n_t, dt)
     echo_steps = [int(round((k + 1) * TE / dt)) for k in range(n_echo)]
 
-    exc = [{'t_s': 0.0, 'flip_deg': 90.0, 'axis_deg': 90.0}]         # 90_y
-    refocus = [{'t_s': (2 * k + 1) * (TE / 2), 'flip_deg': 180.0, 'axis_deg': 0.0}
+    exc = [RFEvent(0.0, 90.0, axis_deg=90.0)]         # 90_y
+    refocus = [RFEvent((2 * k + 1) * (TE / 2), 180.0, axis_deg=0.0)
                for k in range(n_echo)]                               # 180_x train
 
     ec = simulate_bloch(4000, D, wf, FreeDiffusion(), exc + refocus,

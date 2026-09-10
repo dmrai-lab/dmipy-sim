@@ -37,8 +37,8 @@ import warnings
 import numpy as np
 
 from ..constants import GAMMA
-from ..acquisition.waveforms import effective_gradient_sign
 from ..acquisition.scanners import ScannerLimits
+from ..acquisition.rf import RFEvent, RFSchedule
 
 GAMMA_HZ = GAMMA / (2.0 * np.pi)   # Hz/T (proton); pypulseq's gamma convention
 
@@ -94,16 +94,14 @@ def _permissive_system(dt):
 def _encode_rf_events(rf_events):
     if not rf_events:
         return ''
-    slim = [{'t_s': float(e['t_s']), 'flip_deg': float(e.get('flip_deg', 0.0)),
-             'label': str(e.get('label', ''))} for e in rf_events]
-    return json.dumps(slim, separators=(',', ':'))
+    return json.dumps(RFSchedule(rf_events).to_dicts(), separators=(',', ':'))
 
 
 def _decode_rf_events(s):
     if not s:
         return None
     try:
-        return json.loads(s)
+        return RFSchedule.from_dicts(json.loads(s)) or None
     except (ValueError, TypeError):
         return None
 
@@ -125,30 +123,6 @@ def _event_times(arr):
 
 
 # -- export: Waveform -> .seq -------------------------------------------------
-
-def _ste_from_rf_schedule(rf_events):
-    """``(TM, stimulated_echo)`` derived from the RF schedule itself.
-
-    A stimulated echo is defined by its pulses, not by a label: magnetisation is tipped down, STORED along
-    z by a second 90 degrees, and RECALLED by a third, so the mixing time is the gap between the storage and
-    recall pulses. That is already in the schedule the bridge carries, so deriving it beats writing the
-    value into a private definition -- one less thing that can disagree with the waveform it describes, and
-    it works for any sequence whose RF is described, not only for files we wrote.
-
-    Falls back to the flip-angle pattern when the pulses are unlabelled: three 90-degree pulses, TM between
-    the second and third. A 90/180 spin echo yields ``(None, False)``.
-    """
-    if not rf_events:
-        return None, False
-    ev = sorted(rf_events, key=lambda e: float(e.get('t_s', 0.0)))
-    by_label = {str(e.get('label', '')).lower(): e for e in ev}
-    if 'store' in by_label and 'recall' in by_label:
-        return float(by_label['recall']['t_s']) - float(by_label['store']['t_s']), True
-    nineties = [e for e in ev if abs(float(e.get('flip_deg', 0.0)) - 90.0) < 1e-3]
-    if len(nineties) >= 3:
-        return float(nineties[2]['t_s']) - float(nineties[1]['t_s']), True
-    return None, False
-
 
 def to_pulseq(waveform, m=0, *, system=None, filename=None,
               excitation_flip_deg=90.0, native_rf=True):
@@ -175,7 +149,7 @@ def to_pulseq(waveform, m=0, *, system=None, filename=None,
         # un-folding the same sign schedule the importer will re-apply. s = +-1, so multiplying inverts.
         Geff = np.asarray(waveform.G)[m].astype(float)
         tg = np.arange(Geff.shape[0]) * dt
-        G = Geff * effective_gradient_sign(waveform.rf_events, tg)[:, None]
+        G = Geff * RFSchedule(getattr(waveform, 'rf_events', None)).sign(tg)[:, None]
     sys = system or _permissive_system(dt)
     gamma_hz = float(getattr(sys, 'gamma', GAMMA_HZ))
     seq = pp.Sequence(system=sys)
@@ -187,8 +161,8 @@ def to_pulseq(waveform, m=0, *, system=None, filename=None,
     # gradient of its own -- G=0 inserts freely -- but the constant diffusion-weighting gradient the
     # constructor can add is never off, and then every pulse in the train needs room made for it.
     Ghz = G * gamma_hz                                # Hz/m
-    ev = sorted(waveform.rf_events or [], key=lambda e: float(e['t_s']))
-    ks = [int(np.clip(round(float(e['t_s']) / dt), 0, max(len(Ghz) - 1, 0))) for e in ev]
+    ev = RFSchedule(getattr(waveform, 'rf_events', None))
+    ks = [int(np.clip(round(e.t_s / dt), 0, max(len(Ghz) - 1, 0))) for e in ev]
     inserted = [k for k in ks if k < len(Ghz) and np.any(np.abs(Ghz[k]) > 0)]
     if inserted and native_rf:
         warnings.warn(
@@ -251,7 +225,7 @@ def to_pulseq(waveform, m=0, *, system=None, filename=None,
         # encoding area per cut (measured: ogse 2 cuts -> 1.2%, cpmg 5 cuts -> 3.5%). A scanner pays that
         # too, and more, since its ramps are slew-limited rather than one sample wide.
         free_slot = not np.any(np.abs(Ghz[k]) > 0)
-        flip = float(e.get('flip_deg', 90.0))
+        flip = e.flip_deg
         # 'use' is what lets a reader classify the pulse without our labels: pypulseq reports excitation
         # and refocusing events separately, which is exactly the distinction the effective gradient needs.
         use = 'refocusing' if abs(flip - 180.0) < 1.0 else 'excitation'
@@ -305,33 +279,16 @@ def _rf_from_pulseq(seq):
     wav = seq.waveforms_and_times()
     t_exc = _event_times(wav[1]) if len(wav) > 1 else np.array([])
     t_ref = _event_times(wav[2]) if len(wav) > 2 else np.array([])
-    ev = ([{'t_s': float(t), 'flip_deg': 90.0, 'label': ''} for t in np.atleast_1d(t_exc)] +
-          [{'t_s': float(t), 'flip_deg': 180.0, 'label': 'refocus'} for t in np.atleast_1d(t_ref)])
-    ev.sort(key=lambda e: e['t_s'])
-    n90 = 0
-    for e in ev:
-        if e['label'] != 'refocus':
-            e['label'] = ('Mz\u2192Mxy', 'store', 'recall')[min(n90, 2)]
+    times = sorted([(float(t), 90.0) for t in np.atleast_1d(t_exc)] +
+                   [(float(t), 180.0) for t in np.atleast_1d(t_ref)])
+    ev, n90 = [], 0
+    for t, flip in times:
+        if flip == 180.0:
+            ev.append(RFEvent(t, 180.0, 'refocus'))
+        else:
+            ev.append(RFEvent(t, 90.0, ('Mz\u2192Mxy', 'store', 'recall')[min(n90, 2)]))
             n90 += 1
-    return ev or None
-
-
-def _longitudinal_mask(rf_events, t_grid):
-    """``chi_perp``: 0 where magnetisation is stored along z, 1 where it is transverse.
-
-    Between a storage pulse and its recall the spins carry no phase, which is precisely the T1-weighted
-    period a stimulated echo exists to create. Returns ``None`` when there is no storage interval, so a
-    spin echo keeps the default.
-    """
-    if not rf_events:
-        return None
-    st = next((e for e in rf_events if e.get('label') == 'store'), None)
-    rc = next((e for e in rf_events if e.get('label') == 'recall'), None)
-    if st is None or rc is None:
-        return None
-    chi = np.ones_like(t_grid, dtype=np.float32)
-    chi[(t_grid >= float(st['t_s'])) & (t_grid < float(rc['t_s']))] = 0.0
-    return chi
+    return RFSchedule(ev) or None
 
 
 # -- import: .seq -> Waveform -------------------------------------------------
@@ -409,8 +366,7 @@ def from_pulseq(src, *, dt=None):
     blk_events = _rf_from_pulseq(seq)
     meta_events = _decode_rf_events(defs.get('dmipy_rf_events'))
     if blk_events:
-        for e in blk_events:
-            e['t_s'] = float(e['t_s']) - t0
+        blk_events = blk_events.shifted(-t0)
     # Which convention is this file written in? A sequence whose blocks carry the WHOLE schedule states its
     # RF natively, so its gradient is physical and the pulses must be folded in. One that describes more
     # pulses in metadata than it plays as blocks is the older form, whose gradient is already effective --
@@ -418,16 +374,14 @@ def from_pulseq(src, *, dt=None):
     native = bool(blk_events) and not (meta_events and len(meta_events) > len(blk_events))
     rf_events = blk_events if native else (meta_events or blk_events)
     if rf_events is None:
-        rf_events = ([{'t_s': float(t) - t0, 'flip_deg': 90.0, 'label': 'excitation'}
-                      for t in t_exc] +
-                     [{'t_s': float(t) - t0, 'flip_deg': 180.0, 'label': 'refocusing'}
-                      for t in t_ref]) or None
+        rf_events = RFSchedule([RFEvent(float(t) - t0, 90.0, 'excitation') for t in t_exc] +
+                               [RFEvent(float(t) - t0, 180.0, 'refocusing') for t in t_ref]) or None
 
     # A .seq carries the PHYSICAL gradient; the simulator integrates the EFFECTIVE one. Fold the pulses in
     # rather than trusting a stored copy -- this is what makes the round trip physics rather than metadata.
     if native:
-        G = G * effective_gradient_sign(rf_events, t_grid)[:, None]
-    chi_perp = _longitudinal_mask(rf_events, t_grid)
+        G = G * RFSchedule(rf_events).sign(t_grid)[:, None]
+    chi_perp = RFSchedule(rf_events).storage_mask(t_grid)
 
     if 'dmipy_echo_idx' in defs:
         echo_idx = int(defs['dmipy_echo_idx'])
@@ -439,7 +393,7 @@ def from_pulseq(src, *, dt=None):
     # TM / stimulated-echo state come from the RF schedule rather than a stored value: the pulses ARE the
     # definition, so a file that describes its RF describes its mixing time, and there is no second copy to
     # fall out of sync with the first.
-    TM, stimulated_echo = _ste_from_rf_schedule(rf_events)
+    TM, stimulated_echo = RFSchedule(rf_events).mixing_time
 
     return Waveform(G=jnp.asarray(G[None]), dt=dt, echo_idx=echo_idx,
                     rf_events=rf_events, TM=TM, stimulated_echo=stimulated_echo,

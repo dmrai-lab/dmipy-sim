@@ -11,6 +11,7 @@ Heavy Monte-Carlo (fine binding sub-steps) -> GPU-recommended; marked slow.
 from types import SimpleNamespace
 
 import numpy as np
+from dmipy_sim import RFEvent
 import pytest
 
 from dmipy_sim import Sphere, simulate_bloch
@@ -18,7 +19,7 @@ from dmipy_sim.engine import mt
 
 pytestmark = pytest.mark.slow
 
-EXC = [{'t_s': 0.0, 'flip_deg': 90.0, 'axis_deg': 90.0, 'duration_s': 0.0, 'offset_hz': 0.0}]
+EXC = [RFEvent(0.0, 90.0, axis_deg=90.0, duration_s=0.0, offset_hz=0.0)]
 
 
 def _zero_wf(n_t, dt):

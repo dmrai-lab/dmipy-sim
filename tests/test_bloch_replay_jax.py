@@ -7,6 +7,8 @@ off-resonance carrier, slice-select, per-walker B1+, the MT bound-pool blend, su
 phase, surface relaxivity, per-compartment relaxation, weights and per-walker echo readout.
 """
 import numpy as np
+from dmipy_sim.acquisition.rf import B1Pulse, RFEvent
+from dmipy_sim.constants import GAMMA
 import pytest
 
 from dmipy_sim.replay.trajectories import replay_bloch, replay_bloch_jax
@@ -32,11 +34,16 @@ def _gradient(n_meas=2):
 
 
 def _rf(finite=False):
+    """A 90_y then a 180_x; when finite, 8-step pulses, the 90 shaped (a 0.2 / 1.0 / 0.2 envelope) and carried
+    at 40 Hz off resonance."""
     dur = 8 * DT if finite else 0.0
-    return [{'t_s': 5 * DT, 'flip_deg': 90.0, 'axis_deg': 90.0, 'duration_s': dur,
-             'offset_hz': 40.0 if finite else 0.0,
-             'b1_envelope': [0.2, 1.0, 0.2] if finite else None},
-            {'t_s': 55 * DT, 'flip_deg': 180.0, 'axis_deg': 0.0, 'duration_s': dur}]
+    if finite:
+        w = np.array([0.2, 1.0, 0.2])
+        env = B1Pulse.from_samples(w * (np.pi / 2) / (GAMMA * w.sum() * (dur / 3)), dur / 3)   # a 90 by area
+        exc = RFEvent(5 * DT, None, 'Mz→Mxy', axis_deg=90.0, offset_hz=40.0, envelope=env)
+    else:
+        exc = RFEvent(5 * DT, 90.0, 'Mz→Mxy', axis_deg=90.0)
+    return [exc, RFEvent(55 * DT, 180.0, 'refocus', duration_s=dur)]
 
 
 def _close(a, b, tol=2e-5):

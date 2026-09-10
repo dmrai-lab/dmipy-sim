@@ -21,7 +21,7 @@ from .persistent_walk import PersistentWalk
 from .compartments import Compartments, Pool, pool_id
 from .engine.bloch import simulate_bloch
 from .engine.pulse_sequence import (BlochSequence, gradient_echo, spin_echo,
-                             prepend_mt_prep, run_bloch_sequence, emergent_z_spectrum)
+                             saturation_pulse, prepend_mt_prep, run_bloch_sequence, emergent_z_spectrum)
 from .engine.gpu import (gpu_available, check_gpu, free_gpu_memory, gpu_session,
                   list_gpu_processes)
 from .viz.viz import (plot_waveform, plot_sequence_comparison,
@@ -49,7 +49,7 @@ from .acquisition.noise import add_rician_noise, add_rician_noise_batch, add_nc_
 from .replay.fod import FOD
 from .replay.so3 import Distribution
 from .engine import mt
-from .acquisition.rf import B1Pulse, bloch_simulate, slice_profile
+from .acquisition.rf import B1Pulse, RFEvent, RFSchedule, bloch_simulate, slice_profile
 from .acquisition.scanners import ScannerLimits, SCANNERS
 from .replay.replay import (ReplayPack, read_rpk, write_rpk, compile_scheme, replay_signal,
                      replay_signal_jax, surface_logweight)
@@ -67,7 +67,7 @@ __all__ = [
     "finite_180_longitudinal_dwell", "pre_pulse_gradient_phase", "pathway_sign_se",
     "simulate_mt_trajectories", "PersistentWalk", "Compartments", "Pool", "pool_id",
     "simulate_bloch",
-    "BlochSequence", "gradient_echo", "spin_echo", "prepend_mt_prep",
+    "BlochSequence", "gradient_echo", "spin_echo", "saturation_pulse", "prepend_mt_prep",
     "run_bloch_sequence", "emergent_z_spectrum",
     "gpu_available", "check_gpu", "free_gpu_memory", "gpu_session", "list_gpu_processes",
     "ScannerLimits", "SCANNERS",
@@ -94,5 +94,5 @@ __all__ = [
     # magnetization transfer (physics + analytic oracle)
     "mt",
     # continuous RF pulses: complex B1(t) envelope + Bloch forward
-    "B1Pulse", "ReplayPack", "read_rpk", "write_rpk", "compile_scheme", "replay_signal", "replay_signal_jax", "bloch_simulate", "slice_profile",
+    "B1Pulse", "RFEvent", "RFSchedule", "ReplayPack", "read_rpk", "write_rpk", "compile_scheme", "replay_signal", "replay_signal_jax", "bloch_simulate", "slice_profile",
 ]
