@@ -9,8 +9,9 @@ GAMMA = 267.513e6
 # dmipy-sim is the forward truth -- a real scanner -- so its sequences are
 # slew-limited (realizable) BY DEFAULT; ``slew_rate=np.inf`` requests the
 # idealized instantaneous (square) limit used for A/B against dmipy-fit's
-# analytic solutions.  200 T/m/s (= 200 mT/m/ms) is a typical clinical maximum
-# (e.g. Siemens Prisma); see dmipy_sim.sequences.pulseq.PULSEQ_SYSTEMS.
+# analytic solutions.  200 T/m/s (= 200 mT/m/ms) is the ``prisma`` class of the
+# scanner catalogue (dmipy_sim.acquisition.scanners.SCANNERS); a test pins the two
+# together, since this level-0 module cannot read the catalogue itself.
 DEFAULT_SLEW_RATE = 200.0
 
 

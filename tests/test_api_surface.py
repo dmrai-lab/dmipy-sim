@@ -41,7 +41,7 @@ _DOWNSTREAM_MODULES = [
     "dmipy_sim.replay._replay_kernel", "dmipy_sim.spec", "dmipy_sim.spec.build", "dmipy_sim.spec.walk",
     "dmipy_sim.spec.producers", "dmipy_sim.io.caterpillar", "dmipy_sim.io.strands", "dmipy_sim.geometry.sphere_union",
     # acquisition / fields / viz; dmipy_sim.viz is the package re-exporting viz.py
-    "dmipy_sim.acquisition.noise",
+    "dmipy_sim.acquisition.noise", "dmipy_sim.acquisition.scanners", "dmipy_sim.acquisition.scanner_constants",
     "dmipy_sim.viz", "dmipy_sim.viz.viz", "dmipy_sim.viz.pedagogy",
 ]
 
@@ -342,12 +342,9 @@ _RF_SIDE_CHANNELS = {
     ("dmipy_sim.replay.phantom._static_spin_rf", ("rf_events",)),
 }
 
-# §1.3 -- the scanner catalogues; piece 1 makes scanner_constants the source and the other two views of it
-_SCANNER_CATALOGUES = {
-    "dmipy_sim.acquisition.scanners.SCANNERS",
-    "dmipy_sim.sequences.pulseq.PULSEQ_SYSTEMS",
-    "dmipy_sim.sequences.scanner_constants.SCANNER_CONSTANTS",
-}
+# §1.3 -- the scanner catalogues: ONE source (the cited JSON) and the views derived from it at import
+_SCANNER_SOURCE = {"dmipy_sim.acquisition.scanner_constants.SCANNER_CONSTANTS"}
+_SCANNER_VIEWS = {"dmipy_sim.acquisition.scanners.SCANNERS", "dmipy_sim.sequences.pulseq.PULSEQ_SYSTEMS"}
 
 
 def _class_attribute_names(cls_node):
@@ -478,12 +475,13 @@ def test_rf_is_taken_apart_from_the_gradient_only_where_declared():
         f"side channels changed. new: {sorted(found - _RF_SIDE_CHANNELS)}, gone: {sorted(_RF_SIDE_CHANNELS - found)}")
 
 
-def test_scanner_catalogues_are_the_declared_ones():
-    """A module-level name spelled like a scanner catalogue (``...SCANNER...`` / ``...SYSTEMS``) is one. #173
-    piece 1 makes one of them the source and the rest views of it; a new catalogue fails here."""
+def test_scanner_numbers_live_in_one_place():
+    """A module-scope name spelled like a scanner catalogue (``...SCANNER...`` / ``...SYSTEMS``) is either THE
+    source -- the cited JSON, loaded -- or a view derived from it. A view's expression carries no numeric
+    literal: every scanner number in Python is read, never written (#173 piece 1)."""
     import ast
     pat = re.compile(r"^[A-Z_]*(SCANNER|SYSTEMS)[A-Z_]*$")
-    found = set()
+    found, literal = set(), set()
     for py, modname in _package_modules():
         tree = ast.parse(py.read_text())
         nested = {id(n) for scope in ast.walk(tree) if isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
@@ -494,6 +492,12 @@ def test_scanner_catalogues_are_the_declared_ones():
             targets = node.targets if isinstance(node, ast.Assign) else [node.target]
             for t in targets:
                 if isinstance(t, ast.Name) and pat.match(t.id):
-                    found.add(f"{modname}.{t.id}")
-    assert found == _SCANNER_CATALOGUES, (
-        f"scanner catalogues changed. new: {sorted(found - _SCANNER_CATALOGUES)}, gone: {sorted(_SCANNER_CATALOGUES - found)}")
+                    q = f"{modname}.{t.id}"
+                    found.add(q)
+                    if node.value is not None and any(isinstance(n, ast.Constant) and isinstance(n.value, (int, float))
+                                                      and not isinstance(n.value, bool) for n in ast.walk(node.value)):
+                        literal.add(q)
+    assert found == _SCANNER_SOURCE | _SCANNER_VIEWS, (
+        f"scanner catalogues changed. new: {sorted(found - _SCANNER_SOURCE - _SCANNER_VIEWS)}, "
+        f"gone: {sorted((_SCANNER_SOURCE | _SCANNER_VIEWS) - found)}")
+    assert not literal, f"a scanner catalogue carries numbers in Python instead of reading the JSON: {sorted(literal)}"

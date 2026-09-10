@@ -4,7 +4,7 @@ import pytest
 
 from dmipy_sim.acquisition.rf import B1Pulse, bloch_simulate, slice_profile
 from dmipy_sim.constants import GAMMA
-from dmipy_sim.sequences import scanner_constants as scc
+from dmipy_sim.acquisition import scanner_constants as scc
 
 
 # ── basic quantities ──────────────────────────────────────────────────────────

@@ -9,9 +9,10 @@ sequence format.  This module bridges it to dmipy-sim's base representation
     sequences directly, no manual parameter transfer;
   * ``to_pulseq`` exports a ``Waveform`` back to a ``.seq`` (the round-trip is the
     consistency/safety check on the bridge);
-  * ``PULSEQ_SYSTEMS`` is a small curated catalogue of scanner hardware limits in
-    Pulseq's own ``Opts`` schema (max_grad/max_slew/raster/dead-times), so our
-    slew-limited constructors and the exported files speak the same language.
+  * ``PULSEQ_SYSTEMS`` is the scanner catalogue (:mod:`dmipy_sim.acquisition.scanner_constants`)
+    in Pulseq's own ``Opts`` schema (max_grad/max_slew/raster/dead-times), one preset per
+    legacy name, derived at import -- so our slew-limited constructors, the exported files
+    and every other reader of the catalogue speak the same numbers.
 
 Units: pypulseq works in Hz/m with gamma in Hz/T; we work in T/m with
 ``dmipy_sim.constants.GAMMA`` in rad/s/T.  The boundary conversion uses
@@ -37,6 +38,7 @@ import numpy as np
 
 from ..constants import GAMMA
 from ..acquisition.waveforms import effective_gradient_sign
+from ..acquisition.scanners import ScannerLimits
 
 GAMMA_HZ = GAMMA / (2.0 * np.pi)   # Hz/T (proton); pypulseq's gamma convention
 
@@ -52,30 +54,25 @@ def _require_pypulseq():
     return pp
 
 
-# -- scanner catalogue (Pulseq Opts schema) ----------------------------------
-# Representative hardware limits.  Gmax in mT/m, slew in T/m/s (= mT/m/ms).
-# These are first-order {Gmax, slew} models -- the binding in-vivo limit is often
-# peripheral-nerve-stimulation (IEC 60601-2-33), which is vendor-specific (SAFE
-# model) and NOT captured here.  Values are widely-published nominal maxima.
-PULSEQ_SYSTEMS = {
-    'siemens_prisma':     dict(max_grad=80.,   max_slew=200.,   grad_unit='mT/m', slew_unit='T/m/s'),
-    'siemens_connectom':  dict(max_grad=300.,  max_slew=200.,   grad_unit='mT/m', slew_unit='T/m/s'),
-    'ge_premier':         dict(max_grad=70.,   max_slew=200.,   grad_unit='mT/m', slew_unit='T/m/s'),
-    'philips_ingenia':    dict(max_grad=80.,   max_slew=200.,   grad_unit='mT/m', slew_unit='T/m/s'),
-    'clinical_typical':   dict(max_grad=45.,   max_slew=150.,   grad_unit='mT/m', slew_unit='T/m/s'),
-    'preclinical_bruker': dict(max_grad=1000., max_slew=10000., grad_unit='mT/m', slew_unit='T/m/s'),
-}
+# -- scanner catalogue in the Pulseq Opts schema: a VIEW of acquisition.scanner_constants -----------
+# The binding in-vivo limit is often peripheral-nerve stimulation (IEC 60601-2-33), which the SAFE
+# model captures; its representative coefficients are ``ScannerLimits.safe_model`` and the solver is
+# dmipy-design's.
+_PULSEQ_PRESETS = ('siemens_prisma', 'siemens_connectom', 'ge_premier', 'philips_ingenia',
+                   'clinical_typical', 'preclinical_bruker')
+PULSEQ_SYSTEMS = {name: ScannerLimits.of(name).pulseq_dict() for name in _PULSEQ_PRESETS}
 
 
 def make_system(scanner=None, *, grad_raster_time=None, **overrides):
-    """Build a pypulseq ``Opts`` from a named scanner (or overrides).
+    """Build a pypulseq ``Opts`` from a scanner (or overrides alone).
 
-    ``scanner`` keys :data:`PULSEQ_SYSTEMS`; ``overrides`` set/replace any Opts
-    field (e.g. ``max_slew=300``).  ``gamma`` defaults to dmipy-sim's value so
-    Hz/m <-> T/m conversions are self-consistent.
+    ``scanner`` is anything :meth:`ScannerLimits.of` resolves -- a preset name, a certificate
+    class, a model key -- or a ``ScannerLimits``; an unknown name raises rather than yielding a
+    limit-free system. ``overrides`` set/replace any Opts field (e.g. ``max_slew=300``). ``gamma``
+    defaults to dmipy-sim's value so Hz/m <-> T/m conversions are self-consistent.
     """
     pp = _require_pypulseq()
-    kw = dict(PULSEQ_SYSTEMS.get(scanner, {})) if scanner else {}
+    kw = dict(ScannerLimits.of(scanner).pulseq_dict()) if scanner is not None else {}
     kw.setdefault('gamma', GAMMA_HZ)
     if grad_raster_time is not None:
         kw['grad_raster_time'] = float(grad_raster_time)
