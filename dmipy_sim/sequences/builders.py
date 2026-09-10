@@ -144,7 +144,7 @@ def ogse(gradient_directions, oscillation_frequency, gradient_duration, *, shape
         timing=timing, family='ogse', q_width=sigma_,
         span=lambda m, g: sigma_[m] if live[m] else 0.0, sample=sample,
         encoding=lambda g, te, te_min: dict(oscillation_frequency=f_, gradient_duration=sigma_,
-                                            n_oscillation_cycles=np.where(live, f_ * sigma_, 0.0),
+                                            n_oscillation_cycles=f_ * sigma_,
                                             Delta=None if Delta is None else sigma_ + gap_,
                                             gradient_rise_time=np.array([eps(m, g[m]) for m in range(n_m)])),
         build_spec=('ogse', dict(gradient_directions=gradient_directions, oscillation_frequency=oscillation_frequency,
