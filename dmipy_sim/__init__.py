@@ -50,6 +50,7 @@ from .replay.fod import FOD
 from .replay.so3 import Distribution
 from .engine import mt
 from .acquisition.rf import B1Pulse, RFEvent, RFSchedule, bloch_simulate, slice_profile
+from .acquisition.timing import SequenceTiming
 from .acquisition.scanners import ScannerLimits, SCANNERS
 from .replay.replay import (ReplayPack, read_rpk, write_rpk, compile_scheme, replay_signal,
                      replay_signal_jax, surface_logweight)
@@ -94,5 +95,5 @@ __all__ = [
     # magnetization transfer (physics + analytic oracle)
     "mt",
     # continuous RF pulses: complex B1(t) envelope + Bloch forward
-    "B1Pulse", "RFEvent", "RFSchedule", "ReplayPack", "read_rpk", "write_rpk", "compile_scheme", "replay_signal", "replay_signal_jax", "bloch_simulate", "slice_profile",
+    "B1Pulse", "RFEvent", "RFSchedule", "SequenceTiming", "ReplayPack", "read_rpk", "write_rpk", "compile_scheme", "replay_signal", "replay_signal_jax", "bloch_simulate", "slice_profile",
 ]

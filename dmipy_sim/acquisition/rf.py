@@ -563,16 +563,24 @@ class RFSchedule(tuple):
         return s
 
     def coherence(self, n_t, dt):
-        """Coherence bookkeeping of the ideal instantaneous schedule on an ``n_t``-sample grid of ``dt``.
+        """Coherence bookkeeping of the schedule on an ``n_t``-sample grid of ``dt``.
 
-        Returns ``(chi_perp, TM, stimulated_echo, echo_times)``: the transverse-coherence mask (``True`` while
-        the magnetisation is transverse), the total longitudinal-storage time (``None`` when there is none),
-        whether the readout is a stimulated echo (a store / recall pair), and the echo times of the refocusing
-        pulses. Magnetisation starts along z; a 90 excites it, a 90 while transverse stores it along z, the next
-        90 recalls it; a 180 while transverse refocuses, forming an echo at ``2 t_180 - t_ref`` where ``t_ref``
-        is the previous echo or excitation. Other flips are not tracked.
+        Returns ``(chi_perp, TM, stimulated_echo, echo_times)``: the transverse-coherence mask, the total
+        longitudinal-storage time (``None`` when there is none), whether the readout is a stimulated echo (a
+        store / recall pair), and the echo times of the refocusing pulses. Magnetisation starts along z; a 90
+        excites it, a 90 while transverse stores it along z, the next 90 recalls it; a 180 while transverse
+        refocuses, forming an echo at ``2 t_180 - t_ref`` where ``t_ref`` is the previous echo or excitation.
+        Other flips are not tracked. Each transition happens at the pulse's instant ``t_s``.
+
+        For a hard pulse the mask is binary. Over a FINITE pulse's window it is the transverse fraction of the
+        pathway, averaged over the ensemble's azimuth: an excitation or a recall tips z into the plane as
+        ``sin^2(theta)``, a store tips the plane onto z as ``cos^2(theta)``, with ``theta`` running 0 to pi/2
+        across the pulse; a 180 keeps the component along B1 transverse and swings the perpendicular one through
+        z, ``1/2 + cos^2(theta)/2`` with ``theta`` 0 to pi -- a quarter of the pulse spent longitudinal in all,
+        the ensemble mean of :func:`dmipy_sim.replay.trajectories.finite_180_longitudinal_dwell`. The mask is
+        then float; a schedule of hard pulses keeps the binary one.
         """
-        n_t = int(n_t)
+        n_t = int(n_t); dt = float(dt)
         chi = np.zeros(n_t, dtype=bool)
         transverse = False
         t_ref = None
@@ -581,6 +589,7 @@ class RFSchedule(tuple):
         stores = 0
         echoes = []
         i_prev = 0
+        roles = []                                          # (event, role) for the finite-pulse profiles
         for e in self:
             t = e.t_s
             i = int(np.clip(int(round(t / dt)), 0, n_t))
@@ -593,15 +602,34 @@ class RFSchedule(tuple):
                     if stored_from is not None:                  # recall
                         TM += t - stored_from
                         stored_from = None
+                        roles.append((e, "recall"))
+                    else:
+                        roles.append((e, "excite"))
                     t_ref = t
                 else:                                           # store
                     transverse = False
                     stored_from = t
                     stores += 1
+                    roles.append((e, "store"))
             elif flip == 180 and transverse and t_ref is not None:
                 echoes.append(2.0 * t - t_ref)
                 t_ref = echoes[-1]
+                roles.append((e, "refocus"))
         chi[i_prev:] = transverse
+        finite = [(e, role) for e, role in roles if e.duration_s > 0.0]
+        if finite:
+            chi = chi.astype(np.float64)
+            tg = np.arange(n_t) * dt
+            for e, role in finite:
+                t0, t1 = e.window
+                inside = (tg >= t0 - 1e-12) & (tg <= t1 + 1e-12)
+                frac = np.clip((tg[inside] - t0) / e.duration_s, 0.0, 1.0)
+                if role in ("excite", "recall"):
+                    chi[inside] = np.sin(0.5 * np.pi * frac) ** 2
+                elif role == "store":
+                    chi[inside] = np.cos(0.5 * np.pi * frac) ** 2
+                else:                                           # refocus
+                    chi[inside] = 0.5 + 0.5 * np.cos(np.pi * frac) ** 2
         return chi, (TM if TM > 0.0 else None), stores > 0, echoes
 
     @property
