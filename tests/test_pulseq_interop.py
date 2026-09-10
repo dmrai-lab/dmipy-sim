@@ -273,3 +273,20 @@ def test_a_gradient_free_train_inserts_nothing():
         seq_w = to_pulseq(weighted, 0)
         assert [x for x in w if issubclass(x.category, RuntimeWarning)]
     assert int(seq_w.definitions["dmipy_n_t"]) == n0 + 5
+
+
+def test_a_coarse_grid_plays_as_ramps_on_a_real_scanner_or_is_refused():
+    """On a real system the grid must sit on the scanner's raster; each step is then a linear ramp between the
+    samples (the b the scanner encodes differs from the step function the walk integrates by O(dt / lobe)),
+    and a grid off the raster is refused naming the ones that fit."""
+    from dmipy_sim.acquisition.timing import SequenceTiming
+    tm = SequenceTiming(t_excite=2e-3, t_refocus=4e-3, t_readout_pre_echo=2e-3)
+    on = pgse(BVEC, 8e-3, 30e-3, gradient_strengths=0.04, TE=0.08, n_t=81, timing=tm)         # dt = 1 ms = 100 rasters
+    seq = to_pulseq(on, system=make_system("siemens_prisma"))
+    ok, err = seq.check_timing()
+    assert ok, err
+    back = from_pulseq(seq)
+    assert abs(_b(back) - _b(on)) <= 0.05 * _b(on)                 # ramps, not steps: a few percent
+    off = pgse(BVEC, 8e-3, 30e-3, gradient_strengths=0.04, TE=0.08, n_t=100, timing=tm)        # dt = 808 us
+    with pytest.raises(ValueError, match=r"not a whole number of the 10 us gradient raster.*n_t = \[81, 101\]"):
+        to_pulseq(off, system=make_system("siemens_prisma"))

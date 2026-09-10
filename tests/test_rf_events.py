@@ -129,3 +129,15 @@ def test_a_bloch_sequence_now_carries_coherence_labels_so_it_un_folds():
 
 def test_public_names():
     assert dmipy_sim.RFEvent is RFEvent and dmipy_sim.RFSchedule is RFSchedule
+
+
+def test_the_refocus_time_follows_the_label_not_the_flip():
+    """An adiabatic refocusing pulse's integrated nutation is far from 180 degrees; its LABEL says it refocuses,
+    and the gate, the coherence and the refocus time all read the label."""
+    sched = RFSchedule((RFEvent(0.0, 90, 'Mz→Mxy'), RFEvent(0.02, 506.3, 'refocus', duration_s=6e-3)))
+    assert sched.refocus_time == pytest.approx(0.02)
+    t = np.linspace(0.0, 0.04, 9)
+    np.testing.assert_array_equal(sched.sign(t), np.where(t >= 0.02, -1.0, 1.0))
+    _, TM, ste, echoes = sched.coherence(41, 1e-3)
+    assert TM is None and not ste and echoes == pytest.approx([0.04])
+    assert RFSchedule((RFEvent(0.0, 90), RFEvent(0.02, 506.3))).refocus_time is None       # unlabelled: not a 180
