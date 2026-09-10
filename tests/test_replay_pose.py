@@ -60,7 +60,7 @@ def _pgse(pk, dirs, bvals, delta=1e-3, Delta=3e-3):
     return _Acq(G, dt, bvals)
 
 
-KW = dict(B0=3.0, b0_dir=(0.6, 0.0, 0.8), chi_iso=-0.1e-6, chi_aniso=-0.1e-6, refocus_time=None)
+KW = dict(B0=3.0, b0_dir=(0.6, 0.0, 0.8), chi_iso=-0.1e-6, chi_aniso=-0.1e-6)
 BAND = dict(n_check=200)          # no band: it follows the response's phase amplitude
 
 

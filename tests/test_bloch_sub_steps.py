@@ -14,6 +14,7 @@ on a substrate rather than only on a pore.
 """
 from __future__ import annotations
 
+from dataclasses import replace
 import numpy as np
 from dmipy_sim import RFEvent
 import pytest
@@ -62,7 +63,7 @@ def mesh_sphere():
 
 def _bloch(geom, wf, **kw):
     rf = EXC + [e for e in wf.rf if e.flip_deg == 180]        # the physical pair needs its 180
-    return float(np.real(simulate_bloch(N, D, wf, geom, rf, seed=3, require_gpu=False, **kw)[0]))
+    return float(np.real(simulate_bloch(N, D, replace(wf, rf=rf), geom, **kw, seed=3, require_gpu=False)[0]))
 
 
 def _scalar(geom, wf, **kw):

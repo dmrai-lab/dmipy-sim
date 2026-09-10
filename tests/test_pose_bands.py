@@ -12,6 +12,7 @@ amplitude is exactly ``|q| max|r|`` and can be dialled to whatever sharpness a t
 Monte-Carlo floor in the way. The statistical coverage lives in ``test_replay_pose.py``.
 """
 import numpy as np
+from dmipy_sim import Encoding, ScannerSequence
 import pytest
 
 from dmipy_sim.constants import GAMMA
@@ -36,18 +37,17 @@ def pack():
     return pk
 
 
-class _Lobe:
-    """One unrefocused gradient lobe: its zeroth moment survives, so a static walker accrues ``q . r``."""
+def _Lobe(amp, axis=(1.0, 0.0, 0.0), dt=DT, n_t=N_T):
+    """One unrefocused constant gradient lobe, no pulse: its zeroth moment survives, so a static walker accrues
+    ``q . r``. Built deliberately unrefocused, so not through a builder (which would refuse it)."""
+    G = np.zeros((1, n_t, 3))
+    G[0, :, :] = amp * np.asarray(axis, float)
+    return ScannerSequence(G=G, dt=dt, family="lobe", encoding=Encoding(bvalues=np.array([0.0]), gradient_directions=np.asarray([axis], float)))
 
-    def __init__(self, amp, axis=(1.0, 0.0, 0.0), dt=DT, n_t=N_T):
-        self.G = np.zeros((1, n_t, 3))
-        self.G[0, :, :] = amp * np.asarray(axis, float)
-        self.dt, self.bvalues, self.rf = dt, np.array([0.0]), []
-        self.q = GAMMA * amp * dt * (n_t - 1) * np.asarray(axis, float)   # the exact integral of a constant
 
-    @property
-    def G_eff(self):
-        return self.G                                                       # no pulse: the effective gradient is the gradient
+def _q_of(seq):
+    """The exact zeroth moment of a constant lobe over the walk's steps (the readout sample acts over nothing)."""
+    return GAMMA * float(seq.dt) * (seq.n_t - 1) * np.asarray(seq.G[0, 0], float)
 
 
 def analytic(q, R):
@@ -109,7 +109,7 @@ def test_the_phase_amplitude_is_the_accumulated_phase(pack):
     for amp in (0.02, 0.2, 0.6):
         seq = _Lobe(amp)
         pr = pack.pose_response(seq, tissue=False)
-        expected = float(np.linalg.norm(seq.q) * np.linalg.norm(POS, axis=1).max())
+        expected = float(np.linalg.norm(_q_of(seq)) * np.linalg.norm(POS, axis=1).max())
         np.testing.assert_allclose(pr.phase_amplitude, expected, rtol=0.02)
 
 
@@ -121,7 +121,7 @@ def test_the_expansion_reproduces_the_analytic_response(pack):
         seq = _Lobe(amp)
         pr = pack.pose_response(seq, tissue=False)
         for R in so3.haar_rotations(8, seed=2):
-            assert abs(float(np.abs(pr.at(R))[0]) - abs(analytic(seq.q, R))) < tol
+            assert abs(float(np.abs(pr.at(R))[0]) - abs(analytic(_q_of(seq), R))) < tol
 
 
 def test_the_band_follows_the_phase_amplitude_and_a_smaller_one_is_worse(pack):
@@ -131,7 +131,7 @@ def test_the_band_follows_the_phase_amplitude_and_a_smaller_one_is_worse(pack):
     pr = pack.pose_response(seq, tissue=False)
     assert pr.lmax == int(np.ceil(pr.phase_amplitude)) + 2
     R = so3.haar_rotations(8, seed=3)
-    truth = np.abs([analytic(seq.q, r) for r in R])
+    truth = np.abs([analytic(_q_of(seq), r) for r in R])
     good = np.abs([pr.at(r)[0] for r in R])
     with pytest.warns(UserWarning, match="not represented"):
         coarse = pack.pose_response(seq, band=3, tissue=False, strict=False)   # deliberately below Phi
@@ -146,7 +146,7 @@ def test_the_reported_misfit_is_the_worst_case_not_a_spread(pack):
     with pytest.warns(UserWarning, match="not represented"):
         pr = pack.pose_response(seq, band=3, tissue=False, strict=False)
     R = so3.haar_rotations(120, seed=4)
-    err = np.abs(np.array([pr.at(r)[0] for r in R]) - np.array([analytic(seq.q, r) for r in R]))
+    err = np.abs(np.array([pr.at(r)[0] for r in R]) - np.array([analytic(_q_of(seq), r) for r in R]))
     assert err.max() > 3 * err.std()                                      # the error really is uneven
     assert pr.misfit.max() > 2 * err.std()                                # so a spread would have hidden it
     np.testing.assert_allclose(pr.misfit.max(), err.max(), rtol=0.4)      # what is reported is the max
@@ -159,7 +159,7 @@ def test_composition_equals_the_analytic_pose_average(pack):
     for kappa in (1.0, 4.0):
         fod = FOD.watson(kappa, mu=(0.3, 0.5, 0.81), lmax=6)
         got = pr.compose(so3.Distribution.axis_density(fod, pr.lmax, pr.nmax))[0]
-        assert abs(abs(got) - abs(analytic_over(seq.q, fod.evaluate))) < 5e-3
+        assert abs(abs(got) - abs(analytic_over(_q_of(seq), fod.evaluate))) < 5e-3
 
 
 def test_one_stated_pose_needs_no_expansion(pack):
@@ -168,7 +168,7 @@ def test_one_stated_pose_needs_no_expansion(pack):
     seq = _Lobe(0.6)
     for R in so3.haar_rotations(4, seed=5):
         got = pack.replay(seq, orientation=R, tissue=False, complex_signal=True)[0]
-        assert abs(abs(got) - abs(analytic(seq.q, R))) < 1e-6
+        assert abs(abs(got) - abs(analytic(_q_of(seq), R))) < 1e-6
 
 
 # ------------------------------------------------------------------ guards
@@ -190,7 +190,7 @@ def test_a_waveform_on_its_own_grid_composes_correctly(pack):
     assert abs(seq.dt - pack.dt) > 1e-9
     pr = pack.pose_response(seq, tissue=False)
     for R in so3.haar_rotations(4, seed=6):
-        assert abs(float(np.abs(pr.at(R))[0]) - abs(analytic(seq.q, R))) < 2e-3
+        assert abs(float(np.abs(pr.at(R))[0]) - abs(analytic(_q_of(seq), R))) < 2e-3
 
 
 def test_the_projection_is_deterministic(pack):

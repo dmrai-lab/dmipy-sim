@@ -13,9 +13,10 @@ surface relaxivity are transverse-gated (off during storage), MT is not.
 
 Heavy Monte-Carlo -> GPU-recommended; marked slow.
 """
-from types import SimpleNamespace
 
+from dataclasses import replace
 import numpy as np
+from dmipy_sim import ScannerSequence
 from dmipy_sim import RFEvent
 import pytest
 
@@ -34,7 +35,7 @@ INVERT = [RFEvent(0.0, 180.0, axis_deg=0.0, duration_s=0.0, offset_hz=0.0)]
 def _stored_mz(TM, *, with_mt):
     dt = 1e-3
     n_t = int(round(TM / dt)) + 1
-    wf = SimpleNamespace(G=np.zeros((1, n_t, 3)), dt=dt)
+    wf = ScannerSequence(G=np.zeros((1, n_t, 3)), dt=dt)
     kw = dict(T2=80e-3, T1=T1A, M0=1.0, return_mz=True, seed=4)
     if with_mt:
         # equilibrate_binding='off': this coverage test's oracle idealises a CLEAN 180
@@ -46,7 +47,7 @@ def _stored_mz(TM, *, with_mt):
         # the idealisation breaks; that regime needs a finite-pulse oracle (future work).
         kw.update(kappa_MT=KAPPA_MT, dwell_time=DWELL, T2_bound=1e-5, T1_bound=T1B,
                   equilibrate_binding='off')
-    _, mz = simulate_bloch(4000, D, wf, Sphere(radius=R), INVERT, **kw)
+    _, mz = simulate_bloch(4000, D, replace(wf, rf=INVERT), Sphere(radius=R), **kw)
     return float(mz[0])
 
 

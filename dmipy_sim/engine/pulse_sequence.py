@@ -3,7 +3,7 @@
 Everything here is a :class:`~dmipy_sim.acquisition.scanner_sequence.ScannerSequence` -- the physical gradient,
 the schedule, the readout, and where the engine models one, the emergent voxel-scale ``crusher`` (windings over
 windows; a um cell-scale gradient cannot wind >> 2 pi across a cell, so the crusher acts at the mm scale it
-physically has). :func:`run_bloch_sequence` drives one through ``simulate_bloch``, which applies the pulses
+physically has). ``simulate_bloch`` runs one, applying its pulses
 itself and so reads ``G``; a spin echo refocuses EMERGENTLY there, with no sign folding.
 """
 from __future__ import annotations
@@ -18,7 +18,7 @@ from .bloch import simulate_bloch
 from ..constants import GAMMA
 
 __all__ = ["bare_gradient_echo", "bare_spin_echo", "fexi", "saturation_pulse", "prepend_mt_prep",
-           "run_bloch_sequence", "emergent_z_spectrum"]
+           "emergent_z_spectrum"]
 
 
 # ── bare readouts (no gradient) ─────────────────────────────────────────────────
@@ -180,18 +180,6 @@ def prepend_mt_prep(seq, sat, *, spoiler_s=0.5e-3, n_cycles=32.0):
 
 
 # ── run through the forward engine ──────────────────────────────────────────────
-def run_bloch_sequence(seq, n_walkers, diffusivity, geometry, *, seed=0, **kw):
-    """Run a :class:`ScannerSequence` through ``simulate_bloch`` and return the signal.
-
-    Extra keywords (``T2``, ``T1``, ``M0``, ``off_resonance_hz``, ``kappa_MT``, ``dwell_time``, ``T2_bound``,
-    ``T1_bound``, ``off_resonance_bound``, ``return_mz``, ``require_gpu``) pass straight to ``simulate_bloch``.
-    A readout at the last sample returns that echo; a multi-echo readout returns every echo.
-    """
-    echo_steps = None if seq.readout == (seq.n_t - 1,) else list(seq.readout)
-    return simulate_bloch(n_walkers, diffusivity, seq, geometry, seq.rf,
-                          seed=seed, echo_steps=echo_steps, crusher=seq.crusher, **kw)
-
-
 # ── turnkey emergent Z-spectrum sweep ─────────────────────────────────────────────
 def emergent_z_spectrum(offsets_hz, geometry, *, n_walkers, diffusivity, w1_hz, t_sat, dt,
                         T2, kappa_MT, dwell_time, T1=1.0, T2_bound=1e-5, T1_bound=1.0,
@@ -221,7 +209,7 @@ def emergent_z_spectrum(offsets_hz, geometry, *, n_walkers, diffusivity, w1_hz, 
     for i, off in enumerate(offsets):
         sat = saturation_pulse(float(off), float(t_sat), b1_hz=float(w1_hz))          # the CW flip over the window
         seq = ScannerSequence(G=np.zeros((1, n_t, 3)), dt=float(dt), rf=(sat,), family="mt-sat")
-        _, m = simulate_bloch(n_walkers, diffusivity, seq, geometry, seq.rf,
+        _, m = simulate_bloch(n_walkers, diffusivity, seq, geometry,
                               T2=T2, T1=T1, kappa_MT=kappa_MT, dwell_time=dwell_time,
                               T2_bound=T2_bound, T1_bound=T1_bound, return_mz=True,
                               equilibrate_binding=equilibrate_binding, seed=seed)

@@ -21,7 +21,7 @@ from .persistent_walk import PersistentWalk
 from .compartments import Compartments, Pool, pool_id
 from .engine.bloch import simulate_bloch
 from .engine.pulse_sequence import (bare_gradient_echo, bare_spin_echo, fexi, fexi_b_detect,
-                             saturation_pulse, prepend_mt_prep, run_bloch_sequence, emergent_z_spectrum)
+                             saturation_pulse, prepend_mt_prep, emergent_z_spectrum)
 from .engine.gpu import (gpu_available, check_gpu, free_gpu_memory, gpu_session,
                   list_gpu_processes)
 from .viz.viz import (plot_waveform, plot_sequence_comparison,
@@ -70,7 +70,7 @@ __all__ = [
     "simulate_bloch",
     "ScannerSequence", "Encoding", "Protocol",
     "bare_gradient_echo", "bare_spin_echo", "fexi", "fexi_b_detect", "saturation_pulse", "prepend_mt_prep",
-    "run_bloch_sequence", "emergent_z_spectrum",
+    "emergent_z_spectrum",
     "gpu_available", "check_gpu", "free_gpu_memory", "gpu_session", "list_gpu_processes",
     "ScannerLimits", "SCANNERS",
     "pgse", "pgste", "ogse", "cpmg", "gre", "ste", "pte",

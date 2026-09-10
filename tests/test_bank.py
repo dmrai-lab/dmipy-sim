@@ -185,12 +185,11 @@ def test_path_pack_with_lossy_positions_omits_the_grid_arrays_and_replays_via_pa
     assert gm["arrays_in_pack"] is False and gm["replay_route"] == "path"
     assert "susc_grid_iso_local" not in pk.arrays and "susc_grid_iso_P" not in pk.arrays
     # and it still replays: susceptibility off vs on must differ, and chi=0 must match the grid-free case
-    class _W:
-        G = np.zeros((1, N_T, 3)); dt = DT
-        G_eff = G                                   # a bare gradient echo: no pulse folded
+    from dmipy_sim import ScannerSequence
+    W = ScannerSequence(G=np.zeros((1, N_T, 3)), dt=DT)     # a bare gradient echo: no pulse folded
     kw = dict(b0_dir=[1, 0, 0], B0=7.0)                     # no T2 given: isolate the field
-    s0 = bank.replay_susc(pk, _W(), chi_iso=0.0, **kw)
-    s1 = bank.replay_susc(pk, _W(), chi_iso=1.06e-6, **kw)
+    s0 = bank.replay_susc(pk, W, chi_iso=0.0, **kw)
+    s1 = bank.replay_susc(pk, W, chi_iso=1.06e-6, **kw)
     npt.assert_allclose(s0, 1.0, atol=1e-12)          # no gradient, no field -> nothing to dephase
     assert s1 < s0                                     # field present -> dephasing
 
@@ -263,13 +262,11 @@ def test_replay_susc_can_restrict_to_one_compartment():
                            K=64, susc_path_K=32, license="CC-BY-4.0", citation="test")
     nt, dt = pk.n_t, pk.dt
 
-    class W:
-        G = np.zeros((1, nt, 3))
-        G_eff = G                                   # a bare gradient echo: no pulse folded
-    W.dt = dt
+    from dmipy_sim import RFEvent, ScannerSequence
+    W = ScannerSequence(G=np.zeros((1, nt, 3)), dt=dt,                   # no gradient; a spin echo's 180 at TE/2
+                        rf=[RFEvent(0.0, 90), RFEvent((nt - 1) * dt / 2, 180)])
 
-    kw = dict(b0_dir=[0.0, 0.0, 1.0], B0=7.0, chi_iso=1.06e-6,
-              refocus_time=(nt - 1) * dt / 2, complex_signal=True)
+    kw = dict(b0_dir=[0.0, 0.0, 1.0], B0=7.0, chi_iso=1.06e-6, complex_signal=True)
     everything = bank.replay_susc(pk, W, **kw)
     pool0 = bank.replay_susc(pk, W, compartment=0, **kw)
     pool1 = bank.replay_susc(pk, W, compartment=1, **kw)

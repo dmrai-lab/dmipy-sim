@@ -7,10 +7,11 @@ diffusion signal in the high-κ limit. This is what lets the Bloch engine model 
 longitudinal-storage mixing time (FEXI).
 """
 import numpy as np
+from dmipy_sim import simulate_bloch
 import pytest
 
 from dmipy_sim import Cylinder, FreeDiffusion
-from dmipy_sim.engine.pulse_sequence import bare_spin_echo, run_bloch_sequence
+from dmipy_sim.engine.pulse_sequence import bare_spin_echo
 
 GAMMA = 2.675e8
 
@@ -34,7 +35,7 @@ def _dw_spin_echo(g=0.20, TE=30e-3, dt=1e-4, delta=5e-3):
 def _S(kappa, seq, D=2e-9, n=4000, seed=0):
     geom = Cylinder(radius=3e-6, orientation=(0, 0, 1),
                     permeability=(None if kappa == 0 else kappa))
-    return abs(complex(run_bloch_sequence(seq, n, D, geom, seed=seed, require_gpu=False)[0]))
+    return abs(complex(simulate_bloch(n, D, seq, geom, seed=seed, require_gpu=False)[0]))
 
 
 def test_permeability_increases_attenuation_monotonically():
@@ -48,8 +49,7 @@ def test_permeability_increases_attenuation_monotonically():
 
 def test_high_permeability_approaches_free_diffusion():
     seq, b = _dw_spin_echo()
-    S_free = abs(complex(run_bloch_sequence(seq, 4000, 2e-9, FreeDiffusion(), seed=0,
-                                            require_gpu=False)[0]))
+    S_free = abs(complex(simulate_bloch(4000, 2e-9, seq, FreeDiffusion(), seed=0, require_gpu=False)[0]))
     S_perm = _S(1e-2, seq)                            # nearly transparent wall
     assert abs(S_perm - S_free) < 0.12               # high-κ limit ≈ free diffusion
 

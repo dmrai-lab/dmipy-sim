@@ -9,6 +9,7 @@ Three ways to define a susceptibility source, each yielding an off-resonance fie
 
 Run:  python examples/susceptibility_field.py
 """
+from dataclasses import replace
 import numpy as np
 import jax, jax.numpy as jnp
 
@@ -42,7 +43,7 @@ wf = SimpleNamespace(G=np.zeros((1, n_t, 3)), dt=dt)
 exc = [{'t_s': 0.0, 'flip_deg': 90.0, 'axis_deg': 90.0}]
 se = exc + [{'t_s': TE / 2, 'flip_deg': 180.0, 'axis_deg': 0.0}]
 src = SusceptibilitySources(centers=[[0., 0., 0.]], radii=[2e-6], delta_chi=3e-6, B0=7.0)
-frozen = abs(simulate_bloch(4000, 1e-13, wf, FreeDiffusion(), se, seed=0, susceptibility=src)[0])
-moving = abs(simulate_bloch(4000, 2e-9, wf, FreeDiffusion(), se, seed=0, susceptibility=src)[0])
+frozen = abs(simulate_bloch(4000, 1e-13, replace(wf, rf=se), FreeDiffusion(), seed=0, susceptibility=src)[0])
+moving = abs(simulate_bloch(4000, 2e-9, replace(wf, rf=se), FreeDiffusion(), seed=0, susceptibility=src)[0])
 print(f"spin-echo |S| frozen spins    = {frozen:.3f}  (static field refocused)")
 print(f"spin-echo |S| diffusing spins = {moving:.3f}  (susceptibility x diffusion)")

@@ -60,6 +60,19 @@ def _rf_increment_jax(M, flip, ax):
     return jnp.stack([Mx2, My2, Mz2], axis=1)
 
 
+def _sequence_inputs(waveform, geometry):
+    """The sequence behind ``waveform`` (a scheme wraps one as ``.waveform``), its PHYSICAL gradient in the
+    substrate frame, its step, and the echo samples to read (``None`` when the readout is the last sample)."""
+    seq = waveform.waveform if hasattr(waveform, 'waveform') else waveform
+    G = np.asarray(seq.G, dtype=np.float64)                 # (n_meas, n_t, 3)
+    _orient_R = geometry._orient_R
+    if _orient_R is not None:
+        G = G @ np.asarray(_orient_R, dtype=np.float64)
+    readout = tuple(int(i) for i in seq.readout)
+    echo_steps = None if readout == (G.shape[1] - 1,) else list(readout)
+    return seq, G, float(seq.dt), echo_steps
+
+
 def _build_rf_schedule(rf_events, dt, n_t):
     """Rasterise ``rf_events`` onto the ``n_t``-step grid.
 
@@ -227,34 +240,27 @@ def _build_crusher(crusher, dt, n_t):
     return rate, True
 
 
-def simulate_bloch(n_walkers, diffusivity, waveform, geometry, rf_events, *,
+def simulate_bloch(n_walkers, diffusivity, waveform, geometry, *,
                    T2=None, T1=None, M0=1.0, off_resonance_hz=0.0, seed=0, r0=None,
-                   echo_steps=None, return_mz=False, crusher=None,
-                   surface_relaxivity=0.0,
+                   return_mz=False, surface_relaxivity=0.0,
                    kappa_MT=0.0, dwell_time=0.0, T2_bound=1e-5, T1_bound=1.0,
                    off_resonance_bound=0.0, sub_steps=None, return_bound_frac=False,
                    equilibrate_binding="auto", susceptibility=None, require_gpu=None):
-    """Forward vector-Bloch signal for a sequence of RF pulses on ``waveform.G``.
+    """Forward vector-Bloch signal of a :class:`~dmipy_sim.acquisition.scanner_sequence.ScannerSequence`:
+    its PHYSICAL gradient ``G``, its RF schedule ``rf`` (each pulse a Rodrigues rotation about its B1 axis;
+    ``duration_s = 0`` an instantaneous hard pulse, ``offset_hz`` an off-resonance carrier), its emergent
+    voxel-scale ``crusher``, and its ``readout``: the signal at the last sample, or at every echo of a train.
 
     Parameters
     ----------
-    n_walkers, diffusivity, waveform, geometry : as ``core.simulate`` (``waveform``
-        may be a ``ScannerSequence`` or any object with a ``.waveform``; the PHYSICAL
-        same-sign gradient is expected).
-    rf_events : RFSchedule
-        :class:`dmipy_sim.acquisition.rf.RFSchedule` (or the events that build one);
-        the first is usually the excitation.  ``axis_deg`` is the B1 phase (0 = x,
-        90 = y); ``duration_s = 0`` is an instantaneous hard pulse; ``offset_hz``
-        gives an off-resonance carrier over the pulse (0 = on-resonance).
+    n_walkers, diffusivity, waveform, geometry : as ``core.simulate`` (``waveform`` is the
+        ``ScannerSequence`` or any object with a ``.waveform``).
     T2, T1 : float or None
         Relaxation times (s).  None disables that channel (factor 1).
     M0 : float
         Equilibrium longitudinal magnetization (per walker; uniform here).
     off_resonance_hz : float
         Global spin off-resonance (Hz) applied every step (a voxel B0 offset).
-    echo_steps : sequence of int, optional
-        Step indices at which to record the (walker-mean) transverse signal, e.g.
-        a CPMG echo train.  Returns ``(n_meas, n_echo)`` complex when given.
     return_mz : bool
         Also return the final walker-mean ``Mz`` (n_meas,).
     equilibrate_binding : {'auto', 'burnin', 'fast', 'off'}
@@ -284,7 +290,7 @@ def simulate_bloch(n_walkers, diffusivity, waveform, geometry, rf_events, *,
     Returns
     -------
     signals : (n_meas,) complex        walker-mean ``Mx + i My`` at the last step
-        (or ``(n_meas, n_echo)`` when ``echo_steps`` is given), optionally with
+        (or ``(n_meas, n_echo)`` when the readout is a multi-echo train), optionally with
         ``Mz`` appended when ``return_mz``.
     """
     from ..spec.build import as_geometry
@@ -298,26 +304,19 @@ def simulate_bloch(n_walkers, diffusivity, waveform, geometry, rf_events, *,
     # the plain forward path below byte-identical.
     if kappa_MT > 0.0:
         return _simulate_bloch_mt(
-            n_walkers, diffusivity, waveform, geometry, rf_events,
+            n_walkers, diffusivity, waveform, geometry,
             T2=T2, T1=T1, M0=M0, off_resonance_hz=off_resonance_hz, seed=seed, r0=r0,
-            echo_steps=echo_steps, return_mz=return_mz, crusher=crusher,
-            surface_relaxivity=surface_relaxivity,
+            return_mz=return_mz, surface_relaxivity=surface_relaxivity,
             kappa_MT=kappa_MT, dwell_time=dwell_time, T2_bound=T2_bound,
             T1_bound=T1_bound, off_resonance_bound=off_resonance_bound,
             sub_steps=sub_steps, return_bound_frac=return_bound_frac,
             equilibrate_binding=equilibrate_binding, susceptibility=susceptibility)
 
-    if hasattr(waveform, 'waveform'):
-        waveform = waveform.waveform
-    G = np.asarray(waveform.G, dtype=np.float64)            # (n_meas, n_t, 3)
-    dt = float(waveform.dt)
-    _orient_R = geometry._orient_R
-    if _orient_R is not None:
-        G = G @ np.asarray(_orient_R, dtype=np.float64)
+    seq, G, dt, echo_steps = _sequence_inputs(waveform, geometry)
     n_meas, n_t, _ = G.shape
 
-    dflip, axis, carrier = _build_rf_schedule(rf_events, dt, n_t)
-    crush_rate, has_crush = _build_crusher(crusher, dt, n_t)
+    dflip, axis, carrier = _build_rf_schedule(seq.rf, dt, n_t)
+    crush_rate, has_crush = _build_crusher(seq.crusher, dt, n_t)
     G_scan = jnp.asarray(np.transpose(G, (1, 0, 2)), dtype=jnp.float32)   # (n_t,n_meas,3)
     scan_inputs = (G_scan,
                    jnp.asarray(dflip, dtype=jnp.float32),
@@ -542,9 +541,9 @@ def _make_bloch_mt_step_fn(geometry, D, dt, n_sub, T2, T1, M0, off_res_global,
     return step_fn
 
 
-def _simulate_bloch_mt(n_walkers, diffusivity, waveform, geometry, rf_events, *,
-                       T2, T1, M0, off_resonance_hz, seed, r0, echo_steps, return_mz,
-                       crusher, surface_relaxivity, kappa_MT, dwell_time, T2_bound,
+def _simulate_bloch_mt(n_walkers, diffusivity, waveform, geometry, *,
+                       T2, T1, M0, off_resonance_hz, seed, r0, return_mz,
+                       surface_relaxivity, kappa_MT, dwell_time, T2_bound,
                        T1_bound, off_resonance_bound, sub_steps, return_bound_frac,
                        equilibrate_binding="auto", susceptibility=None):
     """MT forward path (see ``simulate_bloch``).  Returns ``signals`` then, in order,
@@ -557,20 +556,14 @@ def _simulate_bloch_mt(n_walkers, diffusivity, waveform, geometry, rf_events, *,
                         "binding needs the boundary-local-time channel "
                         "(Sphere / Cylinder / Box1D / Ellipsoid / Mesh).")
     D = float(diffusivity)
-    if hasattr(waveform, 'waveform'):
-        waveform = waveform.waveform
-    G = np.asarray(waveform.G, dtype=np.float64)
-    dt = float(waveform.dt)
-    _orient_R = geometry._orient_R
-    if _orient_R is not None:
-        G = G @ np.asarray(_orient_R, dtype=np.float64)
+    seq, G, dt, echo_steps = _sequence_inputs(waveform, geometry)
     n_meas, n_t, _ = G.shape
 
     sub_steps = resolve_sub_steps(geometry, D, dt, surface=float(surface_relaxivity) > 0.0,
                                   mt_dwell_time=dwell_time, override=sub_steps)
 
-    dflip, axis, carrier = _build_rf_schedule(rf_events, dt, n_t)
-    crush_rate, has_crush = _build_crusher(crusher, dt, n_t)
+    dflip, axis, carrier = _build_rf_schedule(seq.rf, dt, n_t)
+    crush_rate, has_crush = _build_crusher(seq.crusher, dt, n_t)
     G_scan = jnp.asarray(np.transpose(G, (1, 0, 2)), dtype=jnp.float32)
     scan_inputs = (G_scan,
                    jnp.asarray(dflip, dtype=jnp.float32),
