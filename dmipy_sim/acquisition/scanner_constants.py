@@ -3,9 +3,11 @@
 The hardware + safety limits that bound a *deliverable* acquisition — gradient
 (max amplitude, slew, raster), RF (peak B1, raster), and safety (IEC SAR / B1+rms /
 PNS) — per vendor and model.  This is the acquisition-side analogue of
-:mod:`dmipy_sim.substrate.biophysical_constants`: one cited source for every
-hardware number, so the NOW gradient designer and the RF co-optimizer pull their
-limits from here rather than hard-coding them.
+:mod:`dmipy_sim.substrate.biophysical_constants`: **the one home of every scanner
+number in the ecosystem**. :class:`dmipy_sim.acquisition.scanners.ScannerLimits` is the
+typed view a consumer takes; the certificate's class table ``SCANNERS`` and the Pulseq
+``PULSEQ_SYSTEMS`` presets are derived from here at import, never written by hand; the
+NOW gradient designer and the RF co-optimizer read their limits through them.
 
 The data lives in ``scanner_constants.json`` beside this module (human-readable,
 diffable); this module loads it and adds typed accessors.
@@ -14,7 +16,13 @@ Schema
 ------
 ``SCANNER_CONSTANTS`` has these sections:
   * ``citations``  — shared citation dicts (key, authors, title, publisher, year, doi_or_url).
-  * ``scanners``   — keyed by model; each has ``gradient`` / ``rf`` sub-dicts of entries.
+  * ``scanners``   — real machines, keyed by model; each has ``gradient`` / ``rf`` sub-dicts of entries.
+  * ``envelopes``  — declared limit points that are not a machine: the replay band-limit
+    certificate's classes (#143), the Pulseq presets, the Pulseq example system's dead times.
+    Same leaf schema; ``NEEDS VERIFICATION`` where nothing cites them, which is the honest state.
+  * ``classes``    — the certificate's short names (``prisma``, ``connectom``, ``connectome_2``,
+    ``magnus`` ...) -> a ``scanners`` / ``envelopes`` key.
+  * ``aliases``    — every other short name (the Pulseq preset names, ``signa_magnus`` ...) -> a key.
   * ``safety``     — IEC 60601-2-33 SAR / B1+rms / dB-dt-PNS / SAFE-model (field-independent).
 Each leaf entry carries ``value``, ``unit``, ``field_T`` (or null), ``context``,
 ``source_key``, ``location`` (the specific clause/table/figure), and ``confidence``
@@ -43,6 +51,33 @@ with open(Path(__file__).with_name("scanner_constants.json")) as _f:
 # catalogue stores convenient units; convert to SI for the solvers.
 _TO_SI = {"mT/m": 1e-3, "T/m": 1.0, "T/m/s": 1.0, "us": 1e-6, "ms": 1e-3,
           "s": 1.0, "uT": 1e-6, "T": 1.0, "W/kg": 1.0}
+
+
+def resolve(name):
+    """``(key, entry, kind)`` of a scanner given ANY of its names: a certificate class, an alias, a
+    ``scanners`` model key or an ``envelopes`` key, case-insensitively. ``kind`` is ``"scanner"`` or
+    ``"envelope"``. Unknown names raise ``ValueError`` listing every accepted name."""
+    n = str(name).lower()
+    short = {k.lower(): v for k, v in {**SCANNER_CONSTANTS["classes"], **SCANNER_CONSTANTS["aliases"]}.items()}
+    key = short.get(n, n).lower()
+    for kind in ("scanner", "envelope"):
+        table = SCANNER_CONSTANTS[kind + "s"]
+        by_lower = {k.lower(): k for k in table}
+        if key in by_lower:
+            return by_lower[key], table[by_lower[key]], kind
+    raise ValueError(f"unknown scanner {name!r}; known: classes {sorted(SCANNER_CONSTANTS['classes'])}, "
+                     f"aliases {sorted(SCANNER_CONSTANTS['aliases'])}, models {sorted(SCANNER_CONSTANTS['scanners'])}, "
+                     f"envelopes {sorted(SCANNER_CONSTANTS['envelopes'])}")
+
+
+def leaf_si(entry, group, name):
+    """The SI value of ``entry[group][name]``, or ``None`` when the leaf is absent or unverified (its
+    ``value`` is null). The typed :class:`~dmipy_sim.acquisition.scanners.ScannerLimits` carries ``None``
+    for what is not known rather than a number for it."""
+    lf = entry.get(group, {}).get(name)
+    if not isinstance(lf, dict) or lf.get("value") is None:
+        return None
+    return float(lf["value"]) * _TO_SI.get(lf.get("unit"), 1.0)
 
 
 def list_scanners():
@@ -115,7 +150,7 @@ def get_citation(source_key):
 def needs_verification():
     """List ``(model, group, name)`` of every entry whose value is unverified/None."""
     out = []
-    for m, sc in SCANNER_CONSTANTS["scanners"].items():
+    for m, sc in {**SCANNER_CONSTANTS["scanners"], **SCANNER_CONSTANTS["envelopes"]}.items():
         for grp in ("gradient", "rf"):
             for n, leaf in sc.get(grp, {}).items():
                 if isinstance(leaf, dict) and (leaf.get("confidence") == "NEEDS VERIFICATION"

@@ -15,7 +15,7 @@ also serve as warm starts for dmipy-design's RF optimiser.
 
 Deliverability is the RF mirror of the gradient slew/amplitude limits: the peak |B1|,
 the B1+rms / SAR proxy, and the transmit raster are read from
-``sequences.scanner_constants`` (per-vendor ``rf`` + ``safety`` catalogue), never
+``acquisition.scanner_constants`` (per-vendor ``rf`` + ``safety`` catalogue), never
 hard-coded.
 
 The forward is a single-spin Bloch integrator (``bloch_simulate`` / ``slice_profile``)
@@ -31,7 +31,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from ..constants import GAMMA                       # rad / (s * T)
-from ..sequences import scanner_constants as scc
+from . import scanner_constants as scc
 
 
 @dataclass
