@@ -42,6 +42,7 @@ _DOWNSTREAM_MODULES = [
     "dmipy_sim.spec.producers", "dmipy_sim.io.caterpillar", "dmipy_sim.io.strands", "dmipy_sim.geometry.sphere_union",
     # acquisition / fields / viz; dmipy_sim.viz is the package re-exporting viz.py
     "dmipy_sim.acquisition.noise", "dmipy_sim.acquisition.scanners", "dmipy_sim.acquisition.scanner_constants",
+    "dmipy_sim.acquisition.timing",
     "dmipy_sim.viz", "dmipy_sim.viz.viz", "dmipy_sim.viz.pedagogy",
 ]
 
@@ -469,10 +470,13 @@ def test_no_rf_event_is_spelled_as_a_dict_anywhere():
 def test_no_stored_effective_gradient_and_no_flag_standing_in_for_the_schedule():
     """``G`` is the physical gradient and ``G_eff`` is derived from the schedule (#173 piece 3). The stored copy of
     the physical one (``G_display``), the flag that said which convention ``G`` was in (``_effective_gradient``),
-    the index that stood in for a declared 180 (``_refocus_idx``) and the switch that allowed a misaligned one
-    (``allow_offcenter_180``) are gone, and stay gone."""
+    the index that stood in for a declared 180 (``_refocus_idx``), the switch that allowed a misaligned one
+    (``allow_offcenter_180``) and the write-only timing flags that restated the gradient-free span around the
+    180 (``_refocus_gap``, ``_ogse_two_train``, ``_refocus_duration``; it is ``refocus_gap`` now, derived) are
+    gone, and stay gone."""
     gone = ("G_display", "_effective_gradient", "_refocus_idx", "_display_G", "_derive_display_gradient",
-            "allow_offcenter_180")
+            "allow_offcenter_180",
+            "_refocus_gap", "_ogse_two_train", "_refocus_duration")   # piece 4: questions asked of G and the schedule
     found = {}
     for py, modname in _package_modules():
         text = py.read_text()

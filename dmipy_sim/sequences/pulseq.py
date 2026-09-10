@@ -39,6 +39,7 @@ import numpy as np
 from ..constants import GAMMA
 from ..acquisition.scanners import ScannerLimits
 from ..acquisition.rf import RFEvent, RFSchedule
+from ..acquisition.timing import SequenceTiming
 
 GAMMA_HZ = GAMMA / (2.0 * np.pi)   # Hz/T (proton); pypulseq's gamma convention
 
@@ -256,6 +257,8 @@ def _write_defs(seq, waveform, dt, n_t, echo_idx=None):
     seq.set_definition('dmipy_n_t', int(n_t))
     seq.set_definition('dmipy_rf_events', _encode_rf_events(waveform.rf_events))
     seq.set_definition('dmipy_gradient', 'physical')     # what G is: the scanner's, pulses as blocks or metadata
+    if getattr(waveform, 'timing', None) is not None:
+        seq.set_definition('dmipy_timing', json.dumps(waveform.timing.to_dict(), separators=(',', ':')))
 
 
 
@@ -389,9 +392,22 @@ def from_pulseq(src, *, dt=None):
     # fall out of sync with the first.
     TM, stimulated_echo = RFSchedule(rf_events).mixing_time
 
+    # the budget: read from the blocks where the file plays a plain spin echo (a 90, one 180, a readout) --
+    # pulseq_timing assumes exactly that -- else from what this version wrote, else none
+    sched = RFSchedule(rf_events)
+    timing = None
+    if native and len(sched) == 2 and sched.refocus_time is not None and sched.mixing_time == (None, False) and _has_adc(seq):
+        timing = SequenceTiming.from_pulseq(seq)
+    elif defs.get('dmipy_timing'):
+        timing = SequenceTiming.from_dict(json.loads(defs['dmipy_timing']))
+
     return Waveform(G=jnp.asarray(G[None]), dt=dt, echo_idx=echo_idx,
                     rf_events=rf_events, TM=TM, stimulated_echo=stimulated_echo,
-                    chi_perp=None if chi_perp is None else jnp.asarray(chi_perp))
+                    chi_perp=None if chi_perp is None else jnp.asarray(chi_perp), timing=timing)
+
+
+def _has_adc(seq):
+    return any(getattr(seq.get_block(i), 'adc', None) is not None for i in range(1, len(seq.block_events) + 1))
 
 
 def pulseq_timing(src):
@@ -416,9 +432,8 @@ def pulseq_timing(src):
                                by ``TE − t_readout_pre_echo``),
         ``readout_duration``   ADC window length.
 
-    These feed ``dmipy_design.optimizers.SequenceTiming`` (via
-    ``SequenceTiming.from_pulseq``), which turns them into the encoding-window
-    masks for the waveform optimizer.
+    :meth:`dmipy_sim.acquisition.timing.SequenceTiming.from_pulseq` wraps them as the budget a
+    :class:`~dmipy_sim.acquisition.waveforms.Waveform` carries and a designer reads.
     """
     pp = _require_pypulseq()
     if isinstance(src, pp.Sequence):

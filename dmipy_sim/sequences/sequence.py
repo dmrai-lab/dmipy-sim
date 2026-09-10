@@ -18,6 +18,7 @@ import numpy as np
 
 from ..acquisition.waveforms import apply_rf_schedule
 from ..acquisition.rf import RFEvent, RFSchedule
+from ..acquisition.timing import SequenceTiming
 
 from ..math.gradient_conversions import g_from_b, q_from_b
 from ..constants import GAMMA, DEFAULT_SLEW_RATE, resolve_slew as _resolve_slew
@@ -31,8 +32,7 @@ from ._helpers import (
 # Physical flag attributes a Sequence may carry (copied verbatim onto a
 # consuming analytical scheme).  Core fields are explicit __init__ args.
 _FLAG_ATTRS = (
-    'sequence_type', '_minimum_te', '_te_auto', '_refocus_gap',
-    '_ogse_two_train', '_refocus_duration',
+    'sequence_type', '_minimum_te', '_te_auto',
     'TM', 'tau_perp_SE', 'ste_flip_angles', '_ramp_time',
     'oscillation_frequency', 'gradient_rise_time', 'n_oscillation_cycles',
     'gradient_duration', 'cpmg_n_echoes', 'cpmg_TE', 'cpmg_beta_deg',
@@ -69,6 +69,7 @@ class Sequence:
         self.echo_idx = int(self.G.shape[1] - 1)
         self.echo_indices = None
         self.rf_events = RFSchedule()
+        self.timing = None
         self.chi_perp = None
         self.TM = None
         self.stimulated_echo = False
@@ -105,10 +106,35 @@ class Sequence:
         return max(_refocusing_residual(G_eff[m], self.dt)
                    for m in range(self.number_of_measurements))
 
+    @property
+    def refocus_gap(self):
+        """The gradient-free span around the first 180, the shortest over measurements (s): what a finite
+        refocusing pulse (and its crushers) can occupy without lengthening the echo. ``None`` without a 180;
+        0 when the gradient is on at the pulse (Carr-Purcell)."""
+        t180 = self.rf_events.refocus_time
+        if t180 is None:
+            return None
+        t = np.arange(self.G.shape[1]) * self.dt
+        k = int(np.clip(round(t180 / self.dt), 0, self.G.shape[1] - 1))
+        gaps = []
+        for m in range(self.G.shape[0]):
+            on = np.abs(self.G[m]).sum(1) > 0.0
+            if on[k]:
+                return 0.0
+            lo = k
+            while lo > 0 and not on[lo - 1]:
+                lo -= 1
+            hi = k
+            while hi < on.shape[0] - 1 and not on[hi + 1]:
+                hi += 1
+            gaps.append((hi - lo + 1) * self.dt)                        # the gradient-free span, edge to edge
+        return float(min(gaps))
+
     def validate(self):
         """What every constructor guarantees: the gradient is OFF across every finite pulse (a hard pulse
         occupies an instant and constrains nothing -- a constant gradient through an ideal 180 train is
-        Carr-Purcell), and the effective gradient refocuses at the echo. Raises naming the failure."""
+        Carr-Purcell) and inside every window of the timing budget it was built to, and the effective
+        gradient refocuses at the echo. Raises naming the failure."""
         t = np.arange(self.G.shape[1]) * self.dt
         for e in self.rf_events:
             if e.duration_s > 0.0:
@@ -117,6 +143,13 @@ class Sequence:
                 if np.any(np.abs(self.G[:, inside, :]) > 0.0):
                     raise ValueError(f"the gradient is on during the {e.flip_deg:g} pulse at {e.t_s*1e3:.3f} ms "
                                      f"(window {t0*1e3:.3f}-{t1*1e3:.3f} ms): a finite pulse needs zero gradient")
+        if self.timing is not None:
+            TE = t[-1] if self.timing.TE is None else self.timing.TE
+            for t0, t1, what in self.timing.windows(TE):
+                inside = (t >= t0 - 1e-9 * self.dt) & (t <= t1 + 1e-9 * self.dt)
+                if np.any(np.abs(self.G[:, inside, :]) > 0.0):
+                    raise ValueError(f"the gradient is on in the {what} window {t0*1e3:.3f}-{t1*1e3:.3f} ms of the "
+                                     f"timing budget")
         res = self.refocusing_residual
         if res > _REFOCUS_ATOL and float(np.abs(self.G).max()) > 0.0:
             raise ValueError(f"the effective gradient is not refocused at the echo (|q(TE)|/max|q| = {res:.2e} > "
@@ -162,7 +195,7 @@ class Sequence:
     # ── constructors (physical waveform generation) ───────────────────────────
     @classmethod
     def from_pgse(cls, bvalues, gradient_directions, delta, Delta, TE=None,
-                  n_t=1000, slew_rate=DEFAULT_SLEW_RATE):
+                  n_t=1000, slew_rate=DEFAULT_SLEW_RATE, timing=None):
         """PGSE: two same-sign lobes separated by Delta, the 180 midway between them.
 
         Every measurement's lobe pair is centred on the one 180 at ``T_total / 2`` (``T_total`` is the
@@ -170,6 +203,12 @@ class Sequence:
         echo with its 180 in its own gap rather than starting at t = 0 and having the pulse land inside
         its second lobe. Slew-limited (realizable) by default (``slew_rate`` in T/m/s); pass
         ``slew_rate=np.inf`` for the idealized instantaneous (square) limit -- vertical ramps, same structure.
+
+        ``timing`` (a :class:`~dmipy_sim.acquisition.timing.SequenceTiming`) builds to a budget: the pulses take
+        their durations, the pair sits inside the two encoding windows, ``TE`` is the budget's (or the smallest
+        that fits, ``Delta + delta + ramp + 2 max(lead-in, readout tail)``), the coherence mask is fractional
+        across the pulses, and a gap ``Delta - delta - ramp`` narrower than the refocusing window is refused.
+        Without it the pulses are instantaneous and the echo forms at ``Delta + delta + ramp``.
         """
         bvalues = np.asarray(bvalues, dtype=np.float64)
         gradient_directions = np.asarray(gradient_directions, dtype=np.float64)
@@ -186,16 +225,31 @@ class Sequence:
             eps_ = np.zeros(n_m)
         else:
             eps_ = np.minimum(gradient_strengths / float(slew_rate), delta_)
-        T_total = float(np.max(Delta_ + delta_ + eps_))
+        span = Delta_ + delta_ + eps_                                     # each row's lobe pair, end to end
+        if timing is None:
+            # ideal instantaneous 90/180: the echo forms at the END of the grid (the longest row's span), so the
+            # 180 sits at T_total / 2 and every row's pair is centred on it -- a shorter row is shifted right by
+            # half its slack instead of starting at t = 0 with the pulse inside its second lobe
+            T_total = float(np.max(span))
+            TE_, te_auto = _resolve_te(TE, T_total, n_m)
+            schedule = RFSchedule([RFEvent(0.0, 90, 'Mz→Mxy'), RFEvent(T_total / 2.0, 180, 'refocus')])
+        else:
+            # to a budget: the pulses take their durations, the pair sits inside the two encoding windows
+            gap = Delta_ - delta_ - eps_
+            if np.any(gap < timing.t_refocus - 1e-12):
+                raise ValueError(f"the gap between the lobes, Delta - delta - ramp = {float(np.min(gap))*1e3:.3f} ms, is "
+                                 f"narrower than the refocusing window {timing.t_refocus*1e3:.3f} ms: the 180 does "
+                                 f"not fit")
+            te_min = float(np.max(span)) + 2.0 * max(timing.t_lead, timing.t_readout_pre_echo)
+            T_total = timing.resolve_TE(TE if TE is not None else (timing.TE if timing.TE is not None else te_min))
+            if T_total < te_min - 1e-12:
+                raise ValueError(f"TE = {T_total*1e3:.3f} ms is below the {te_min*1e3:.3f} ms this encoding needs "
+                                 f"inside the budget's windows")
+            TE_, te_auto = np.full(n_m, T_total), TE is None and timing.TE is None
+            schedule = timing.rf_events(T_total)
         dt = T_total / (n_t - 1)
-        TE_, te_auto = _resolve_te(TE, T_total, n_m)
-        # ideal instantaneous 90/180: the echo forms at the END of the grid (T_total, the longest row), so the
-        # 180 sits at T_total / 2 and every row's lobe pair is centred on it -- a row with a shorter Delta is
-        # shifted right by half its slack instead of starting at t = 0 with the pulse inside its second lobe
-        t_180 = T_total / 2.0
-        schedule = RFSchedule([RFEvent(0.0, 90, 'Mz→Mxy'), RFEvent(t_180, 180, 'refocus')])
         t_grid = np.arange(n_t) * dt
-        shift = (T_total - (Delta_ + delta_ + eps_)) / 2.0                 # per row; 0 for the longest
+        shift = (T_total - span) / 2.0                                    # per row; 0 for the longest
         G_arr = np.zeros((n_m, n_t, 3), dtype=np.float64)                  # the PHYSICAL gradient
         if square:
             for m in range(n_m):
@@ -218,13 +272,13 @@ class Sequence:
         seq = cls(G_arr, dt, bvalues, gradient_directions, qvalues,
                   gradient_strengths, delta_, Delta_, TE_)
         seq.rf_events = schedule
+        seq.timing = timing
         apply_rf_schedule(seq)
-        seq._carry(sequence_type='pgse', _minimum_te=T_total, _te_auto=te_auto,
-                   _refocus_gap=float(np.min(Delta_ - delta_ - eps_)))
+        seq._carry(sequence_type='pgse', _minimum_te=T_total, _te_auto=te_auto)
         seq.validate()
         seq._build_spec = ('from_pgse', dict(
             bvalues=bvalues, gradient_directions=gradient_directions,
-            delta=delta, Delta=Delta, TE=TE, n_t=n_t, slew_rate=slew_rate))
+            delta=delta, Delta=Delta, TE=TE, n_t=n_t, slew_rate=slew_rate, timing=timing))
         return seq
 
 
@@ -384,10 +438,6 @@ class Sequence:
         seq._carry(oscillation_frequency=osc_freq, gradient_rise_time=t_r,
                    n_oscillation_cycles=n_cyc, gradient_duration=sigma,
                    _minimum_te=T_total, _te_auto=te_auto, sequence_type='ogse')
-        if square:
-            seq._carry(_refocus_gap=0.0)
-        else:
-            seq._carry(_refocus_gap=float(gap), _ogse_two_train=True, _refocus_duration=float(gap))
         seq.validate()
         seq._build_spec = ('from_ogse', dict(
             bvalues=bvalues, gradient_directions=gradient_directions,

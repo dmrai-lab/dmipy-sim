@@ -11,6 +11,7 @@ from warnings import warn
 
 from ..constants import GAMMA, DEFAULT_SLEW_RATE, resolve_slew as _resolve_slew
 from .rf import RFEvent, RFSchedule
+from .timing import SequenceTiming
 
 
 def _fill_lobe(arr, m, i0, n_pulse, amp_vec, n_rise):
@@ -79,6 +80,9 @@ class Waveform:
         True for a stimulated-echo readout: the stimulated echo stores half the
         magnetisation, an idealized 0.5 amplitude factor applied to the signal.
         Default False (spin echo, full amplitude).
+    timing : SequenceTiming, optional
+        The budget this waveform was built to (:class:`dmipy_sim.acquisition.timing.SequenceTiming`):
+        the windows the gradient stays out of. ``None`` for an idealised instant-pulse waveform.
     """
     G: jnp.ndarray
     dt: float
@@ -88,6 +92,7 @@ class Waveform:
     chi_perp: np.ndarray = None
     TM: float = None
     stimulated_echo: bool = False
+    timing: SequenceTiming = None
 
     def __post_init__(self):
         self.rf_events = RFSchedule(self.rf_events)
@@ -112,7 +117,8 @@ def apply_rf_schedule(wf):
     """Set ``chi_perp``, ``TM``, ``stimulated_echo`` and ``echo_indices`` of ``wf`` from its
     ``rf_events``, checking any value the constructor passed against the schedule.
 
-    ``chi_perp`` stays ``None`` for an all-transverse schedule (the spin-echo default);
+    ``chi_perp`` stays ``None`` for an all-transverse schedule (the spin-echo default) and is a float
+    profile over any finite pulse (:meth:`RFSchedule.coherence`);
     ``echo_indices`` is set for a train of two or more echoes; a single echo must land on
     ``echo_idx`` within the placement rounding.
     """
@@ -120,10 +126,10 @@ def apply_rf_schedule(wf):
     n_t = int(wf.G.shape[1])
     dt = float(wf.dt)
     chi, TM, ste, echoes = wf.rf_events.coherence(n_t, dt)
-    chi_out = None if chi.all() else chi
+    chi_out = None if np.all(chi == 1) else chi
     if wf.chi_perp is not None:
-        given = np.asarray(wf.chi_perp).reshape(-1).astype(bool)
-        if given.shape != chi.shape or not np.array_equal(given, chi):
+        given = np.asarray(wf.chi_perp, dtype=np.float64).reshape(-1)
+        if given.shape != chi.shape or not np.allclose(given, chi.astype(np.float64), atol=1e-9):
             raise ValueError("chi_perp disagrees with the RF schedule: the coherence mask is derived "
                              "from rf_events, drop the explicit one or fix the schedule")
     else:
