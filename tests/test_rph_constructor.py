@@ -179,7 +179,8 @@ def _acq(pk, dirs, bvals, delta=6e-4, Delta=2e-3):
         G[i, ng:ng + nd] = -amp * g
 
     class A:
-        pass
+        """A bare gradient echo on the pack grid: no pulses, so the effective gradient is the gradient itself."""
+        G_eff = property(lambda self: self.G)
     a = A(); a.G, a.dt = G, dt
     a.bvalues = np.asarray(bvals, float)
     return a

@@ -33,7 +33,7 @@ def _wf(n_t, dt):
 
 def _W(pack, wf):
     """The compiled scheme of ``wf`` on the pack grid, by hand: what pack.replay must reproduce."""
-    return compile_scheme(np.asarray(wf.G), wf.dt, pack.K, n_t=pack.n_t, dt_pack=pack.dt)
+    return compile_scheme(np.asarray(wf.G_eff), wf.dt, pack.K, n_t=pack.n_t, dt_pack=pack.dt)
 
 
 def test_gradient_replay_is_the_mode_space_contraction(packs):

@@ -136,7 +136,7 @@ def _simulate_via_replay(n_walkers, diffusivity, waveform, geometry, *, seed,
     cleared the run (no permeability / myelin / per-comp / extra-output)."""
     from ..replay.trajectories import replay
 
-    G = np.asarray(waveform.G, dtype=np.float32)          # (n_meas, n_t, 3)
+    G = np.asarray(waveform.G_eff, dtype=np.float32)      # (n_meas, n_t, 3), the effective gradient
     dt = float(waveform.dt)
     n_t = G.shape[1]
     T_max = dt * (n_t - 1)
@@ -418,7 +418,7 @@ def simulate(
     # Accept AcquisitionScheme (any object with .waveform) or raw Waveform
     if hasattr(waveform, 'waveform'):
         waveform = waveform.waveform
-    G = waveform.G          # (n_measurements, n_t, 3)
+    G = waveform.G_eff      # (n_measurements, n_t, 3), the effective gradient
     dt = waveform.dt
 
     # Substrate placement in the bore (e.g. Mesh with orientation/R): the walk runs
@@ -711,7 +711,7 @@ def simulate_cpmg(n_walkers, diffusivity, waveform, geometry, *,
     """Multi-echo CPMG signal from a SINGLE diffusion walk.
 
     Walks the spin ensemble once through the full CPMG train (ideal instantaneous
-    180° refocusing is encoded as the sign flips of ``waveform.G``) and samples the
+    180° refocusing is the sign flips of ``waveform.G_eff``) and samples the
     ensemble signal ``Re<exp(iφ)·exp(log_w)>`` at each echo time.  This is the
     ordinary forward model: one pass through the train, nothing cached or reused.
     Build ``waveform`` with :func:`dmipy_sim.cpmg`
@@ -771,7 +771,7 @@ def simulate_cpmg(n_walkers, diffusivity, waveform, geometry, *,
             acc = s * nb if acc is None else acc + s * nb
         return acc / n_walkers
 
-    G = waveform.G                     # (n_measurements, n_t, 3)
+    G = waveform.G_eff                 # (n_measurements, n_t, 3), the effective gradient
     dt = waveform.dt
     n_measurements, n_t, _ = G.shape
 

@@ -17,8 +17,13 @@ ENV = dict(bvals=[0.0, 1e9], dirs=[[0, 0, 1]], ogse_periods=[2], shortd_b=1e9, s
 
 
 class _Acq:
+    """A bare gradient echo on the pack grid: no pulses, so the effective gradient is the gradient itself."""
     def __init__(self, G, dt):
         self.G, self.dt = G, dt
+
+    @property
+    def G_eff(self):
+        return self.G
 
 
 def _pgse(dt, n_t, delta, Delta, b, g=(0, 0, 1)):

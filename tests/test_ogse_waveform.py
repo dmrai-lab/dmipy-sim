@@ -16,7 +16,7 @@ BVECS = np.array([[1.0, 0.0, 0.0]])
 
 
 def _q_and_dt(wf):
-    G = np.asarray(wf.G)[0, :, 0]
+    G = np.asarray(wf.G_eff)[0, :, 0]          # the effective gradient: what q integrates
     dt = float(wf.dt)
     # trapezoidal zeroth moment (left-Riemann leaves an O(dt) residual that is a
     # sampling artifact, not a waveform property)

@@ -36,24 +36,11 @@ def _require_mpl():
 def _q_from_waveform(wf):
     """Return q(t) array of shape (n_meas, n_t, 3) in m⁻¹.
 
-    Uses the simulation (bipolar) gradient ``wf.G`` so that q is the *effective*
-    dephasing wavevector: with a 180° refocus baked into the sign convention, |q|
-    ramps up over the first lobe and back to ~0 at the echo, as it physically
-    should for a (stationary-spin-refocusing) spin/stimulated echo."""
-    G = np.array(wf.G)                              # (n_meas, n_t, 3)
+    Uses the effective gradient ``wf.G_eff`` (the pulses folded in) so that q is the *effective*
+    dephasing wavevector: |q| ramps up over the first lobe and back to ~0 at the echo, as it
+    physically should for a (stationary-spin-refocusing) spin/stimulated echo."""
+    G = np.array(wf.G_eff)                          # (n_meas, n_t, 3)
     return np.cumsum(G * wf.dt, axis=1) * GAMMA     # (n_meas, n_t, 3)
-
-
-def _display_G(wf):
-    """Physical scanner gradient for display, shape (n_meas, n_t, 3).
-
-    Returns ``wf.G_display`` (the same-sign second lobe a real scanner delivers,
-    since the 180° performs the phase flip) when present, else falls back to the
-    simulation gradient ``wf.G``. Plotting the physical gradient is why a PGSE
-    shows two lobes of the *same* polarity rather than the bipolar pair used
-    internally by the phase integral."""
-    G = wf.G_display if getattr(wf, 'G_display', None) is not None else wf.G
-    return np.array(G)
 
 
 def _shade_storage(ax, wf, t_plot):
@@ -148,10 +135,10 @@ def _draw_rf_panel(ax, wf, t_plot):
 def _draw_G_panel(ax, wf, t_plot, meas_idx, show_ylabel=True):
     """Populate the physical-gradient G(t) axis.
 
-    Draws the physical scanner gradient (:func:`_display_G`): a spin echo shows two
-    lobes of the *same* polarity, because the 180° refocus does the sign flip. The
+    Draws the physical scanner gradient ``wf.G``: a spin echo shows two lobes of the
+    *same* polarity, because the 180° refocus does the sign flip. The
     longitudinal-storage (T_M) window, if any, is shaded."""
-    G_all = _display_G(wf)          # (n_meas, n_t, 3), physical scanner gradient
+    G_all = np.array(wf.G)          # (n_meas, n_t, 3), physical scanner gradient
     n_meas = G_all.shape[0]
     G_hi = G_all[meas_idx]          # (n_t, 3)
 
@@ -191,7 +178,7 @@ def _draw_q_panel(ax, wf, t_plot, meas_idx, show_ylabel=True, t_unit='ms'):
     q_all = _q_from_waveform(wf)    # (n_meas, n_t, 3)
     n_meas = q_all.shape[0]
     q_hi = q_all[meas_idx]          # (n_t, 3)
-    G_hi = np.array(wf.G)[meas_idx]
+    G_hi = np.array(wf.G_eff)[meas_idx]
 
     _shade_storage(ax, wf, t_plot)
 

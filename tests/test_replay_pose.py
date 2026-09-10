@@ -39,10 +39,15 @@ def ellipsoid():
 
 
 class _Acq:
-    """A bare gradient waveform on the pack grid (a gradient echo): ``G`` (n_meas, n_t, 3), ``dt``."""
+    """A bare gradient waveform on the pack grid (a gradient echo): ``G`` (n_meas, n_t, 3), ``dt``. No pulses,
+    so the effective gradient is the gradient itself."""
     def __init__(self, G, dt):
         self.G, self.dt = G, dt
         self.bvalues = np.zeros(G.shape[0])
+
+    @property
+    def G_eff(self):
+        return self.G
 
 
 def _pgse(pk, dirs, bvals, delta=1e-3, Delta=3e-3):
@@ -72,7 +77,7 @@ def test_one_pose_is_the_counter_rotated_acquisition(hollow):
     R = np.array([[np.cos(th), 0, np.sin(th)], [0, 1, 0], [-np.sin(th), 0, np.cos(th)]])
     kw = dict(KW, b0_dir=tuple(R.T @ np.asarray(KW["b0_dir"])))
     np.testing.assert_allclose(pk.replay(seq, orientation=R, complex_signal=True, **KW),
-                               pk.replay(_Acq(np.asarray(seq.G) @ R, seq.dt), complex_signal=True, **kw), rtol=1e-10)
+                               pk.replay(_Acq(np.asarray(seq.G_eff) @ R, seq.dt), complex_signal=True, **kw), rtol=1e-10)
     with pytest.raises(ValueError, match="proper rotation"):
         pk.replay(seq, orientation=np.diag([1, 1, -1]))
 
@@ -95,7 +100,7 @@ def test_a_multi_axis_waveform_is_expanded_too(hollow):
     """The contraction is over the waveform's own components, so a gradient that turns during the measurement
     is no different -- the axis-only expansion had to refuse those."""
     pk, seq = hollow
-    G = np.asarray(seq.G).copy()
+    G = np.asarray(seq.G_eff).copy()
     n_t = G.shape[1]
     G[1, : n_t // 4, 1] = G[1, : n_t // 4, 0] * 0.7                  # a second axis during the first lobe
     twisted = _Acq(G, seq.dt)

@@ -100,7 +100,7 @@ def _replay_case(request):
     dt = float(wf.dt)
     n_t = wf.G.shape[1]
     T_max = dt * (n_t - 1)
-    G = np.asarray(wf.G, np.float32)
+    G = np.asarray(wf.G_eff, np.float32)       # the effective gradient the kernel integrates
     chi = np.ones(n_t)
 
     out = simulate_trajectories(n, D, geom, T_max, dt, seed=SEED, require_gpu=False)

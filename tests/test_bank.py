@@ -187,6 +187,7 @@ def test_path_pack_with_lossy_positions_omits_the_grid_arrays_and_replays_via_pa
     # and it still replays: susceptibility off vs on must differ, and chi=0 must match the grid-free case
     class _W:
         G = np.zeros((1, N_T, 3)); dt = DT
+        G_eff = G                                   # a bare gradient echo: no pulse folded
     kw = dict(b0_dir=[1, 0, 0], B0=7.0)                     # no T2 given: isolate the field
     s0 = bank.replay_susc(pk, _W(), chi_iso=0.0, **kw)
     s1 = bank.replay_susc(pk, _W(), chi_iso=1.06e-6, **kw)
@@ -264,6 +265,7 @@ def test_replay_susc_can_restrict_to_one_compartment():
 
     class W:
         G = np.zeros((1, nt, 3))
+        G_eff = G                                   # a bare gradient echo: no pulse folded
     W.dt = dt
 
     kw = dict(b0_dir=[0.0, 0.0, 1.0], B0=7.0, chi_iso=1.06e-6,

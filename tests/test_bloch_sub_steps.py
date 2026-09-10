@@ -62,7 +62,8 @@ def mesh_sphere():
 
 
 def _bloch(geom, wf, **kw):
-    return float(np.real(simulate_bloch(N, D, wf, geom, EXC, seed=3, require_gpu=False, **kw)[0]))
+    rf = EXC + [e for e in wf.rf_events if e.flip_deg == 180]        # the physical pair needs its 180
+    return float(np.real(simulate_bloch(N, D, wf, geom, rf, seed=3, require_gpu=False, **kw)[0]))
 
 
 def _scalar(geom, wf, **kw):

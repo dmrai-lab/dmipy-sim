@@ -39,13 +39,15 @@ def _lobe_n_rise(square, G_peak, slew_rate, dt, n_pulse):
 
 @dataclass
 class Waveform:
-    """Gradient waveform for Monte Carlo simulation.
+    """One acquisition's gradient and RF schedule: what the scanner plays, on a ``dt`` grid.
 
     Attributes
     ----------
     G : jnp.ndarray
-        Shape (n_measurements, n_t, 3), float32. Gradient vectors in T/m at
-        each time point for each measurement.
+        Shape (n_measurements, n_t, 3), float32. The PHYSICAL gradient in T/m at each time
+        point for each measurement -- what the scanner plays: a spin echo's two lobes have
+        the same sign, the 180 does the flip. :attr:`G_eff` is the effective gradient the
+        phase integral walks, derived from ``G`` and the schedule; it is never stored.
     dt : float
         Uniform time step in seconds.
     echo_idx : int
@@ -55,13 +57,8 @@ class Waveform:
         The RF schedule (:class:`dmipy_sim.acquisition.rf.RFSchedule`, the pulses in time order;
         any iterable of :class:`~dmipy_sim.acquisition.rf.RFEvent` builds one). It is the source of
         the coherence attributes below, derived at construction by :meth:`RFSchedule.coherence`;
-        a value passed explicitly must agree with the schedule or construction raises. The gradient ``G`` is
-        the effective (bipolar) waveform and already encodes the refocusing.
-    G_display : np.ndarray, optional
-        Physical scanner gradient for visualisation only (same-sign second lobe,
-        as the 180° would deliver it). None → fall back to G for display. The
-        simulation always uses G (bipolar convention; calc_b / physics depend
-        on it).
+        a value passed explicitly must agree with the schedule or construction raises. Its
+        :meth:`RFSchedule.sign` folds the pulses into :attr:`G_eff`.
     echo_indices : np.ndarray, optional
         Time-step indices of the successive echoes for a multi-echo train (e.g.
         CPMG). None → single echo at ``echo_idx``. :func:`dmipy_sim.simulate_cpmg`
@@ -87,7 +84,6 @@ class Waveform:
     dt: float
     echo_idx: int
     rf_events: RFSchedule = None
-    G_display: np.ndarray = None
     echo_indices: np.ndarray = None
     chi_perp: np.ndarray = None
     TM: float = None
@@ -97,6 +93,16 @@ class Waveform:
         self.rf_events = RFSchedule(self.rf_events)
         if self.rf_events:
             apply_rf_schedule(self)
+
+    @property
+    def G_eff(self):
+        """The EFFECTIVE gradient the phase integral walks: ``G`` with the schedule's sign folded in
+        (``G * rf_events.sign(t)``, the gate of RPK.md 6.6), so a spin echo's second lobe reads negative
+        and ``q(TE) = 0`` without modelling the pulse. Derived, never stored; ``G`` is what the scanner
+        plays. ``(n_measurements, n_t, 3)`` float32."""
+        G = np.asarray(self.G, dtype=np.float32)
+        s = self.rf_events.sign(np.arange(G.shape[1]) * float(self.dt))
+        return G * s[None, :, None]
 
 
 _ECHO_TOL = 2          # samples: the rounding freedom of placing a 180 at a lobe midpoint
@@ -183,35 +189,28 @@ def pgse(delta, DELTA, G_magnitude, bvecs, n_t,
     n_pulse = max(1, round(delta / dt))
     n_DELTA = round(DELTA / dt)
 
-    # Gradient-only waveform (n_t steps, fully transverse throughout for PGSE).
-    # Simulation uses bipolar convention: second lobe is -G so that the phase
-    # integral refocuses at TE without explicitly modeling the 180° spin flip.
-    # G_display uses same-sign second lobe (physical scanner convention).
+    # The PHYSICAL gradient: two same-sign lobes. The 180 declared below does the flip -- G_eff
+    # reads the second lobe negative, so the phase integral refocuses at TE.
     _, square = _resolve_slew(slew_rate)
     G_peak = float(np.max(np.abs(G_mag)))
     n_rise = _lobe_n_rise(square, G_peak, slew_rate, dt, n_pulse)
 
-    G_grad = np.zeros((n_measurements, n_t, 3), dtype=np.float32)
-    G_disp = np.zeros((n_measurements, n_t, 3), dtype=np.float32)
+    G_phys = np.zeros((n_measurements, n_t, 3), dtype=np.float32)
     for m in range(n_measurements):
         gpos = G_mag[m] * bvecs[m]
-        _fill_lobe(G_grad, m, 0, n_pulse, gpos, n_rise)
-        _fill_lobe(G_grad, m, n_DELTA, n_pulse, -gpos, n_rise)
-        _fill_lobe(G_disp, m, 0, n_pulse, gpos, n_rise)
-        _fill_lobe(G_disp, m, n_DELTA, n_pulse, gpos, n_rise)
+        _fill_lobe(G_phys, m, 0, n_pulse, gpos, n_rise)
+        _fill_lobe(G_phys, m, n_DELTA, n_pulse, gpos, n_rise)
 
-    # The RF schedule: the 180° sits midway between the two gradient lobes. The bipolar G
-    # already encodes the refocusing, so the mask is all-transverse.
+    # The RF schedule: the 180° sits midway between the two gradient lobes, on zero gradient.
     gap_mid = (n_pulse + n_DELTA) // 2
     rf_events = [
         RFEvent(0.0, 90, 'Mz→Mxy'),
         RFEvent(gap_mid * dt, 180, 'refocus'),
     ]
 
-    return Waveform(G=jnp.array(G_grad), dt=float(dt),
+    return Waveform(G=jnp.array(G_phys), dt=float(dt),
                     echo_idx=n_t - 1,
-                    rf_events=rf_events,
-                    G_display=G_disp)
+                    rf_events=rf_events)
 
 
 def pgste(delta, TM, G_magnitude, bvecs, n_t, slew_rate=DEFAULT_SLEW_RATE):
@@ -278,17 +277,13 @@ def pgste(delta, TM, G_magnitude, bvecs, n_t, slew_rate=DEFAULT_SLEW_RATE):
     G_peak = float(np.max(np.abs(G_mag)))
     n_rise = _lobe_n_rise(square, G_peak, slew_rate, dt, n_pulse)
 
-    # Bipolar convention: the second lobe is -G so the phase integral refocuses
-    # at the echo without explicitly modelling the pulses.  G_display uses the
-    # same-sign second lobe (physical scanner convention).
-    G_grad = np.zeros((n_measurements, n_t, 3), dtype=np.float32)
-    G_disp = np.zeros((n_measurements, n_t, 3), dtype=np.float32)
+    # The PHYSICAL gradient: two same-sign lobes; the store / recall pair declared below does the
+    # flip, so G_eff reads the second lobe negative and the phase integral refocuses at the echo.
+    G_phys = np.zeros((n_measurements, n_t, 3), dtype=np.float32)
     for m in range(n_measurements):
         gpos = G_mag[m] * bvecs[m]
-        _fill_lobe(G_grad, m, 0, n_pulse, gpos, n_rise)
-        _fill_lobe(G_grad, m, i_recall, min(n_pulse, n_t - i_recall), -gpos, n_rise)
-        _fill_lobe(G_disp, m, 0, n_pulse, gpos, n_rise)
-        _fill_lobe(G_disp, m, i_recall, min(n_pulse, n_t - i_recall), gpos, n_rise)
+        _fill_lobe(G_phys, m, 0, n_pulse, gpos, n_rise)
+        _fill_lobe(G_phys, m, i_recall, min(n_pulse, n_t - i_recall), gpos, n_rise)
 
     # The RF schedule: 90 excitation, 90 store (into z) at the end of the first lobe, 90 recall
     # (back to transverse) at the start of the second lobe. chi_perp, TM and stimulated_echo
@@ -299,10 +294,9 @@ def pgste(delta, TM, G_magnitude, bvecs, n_t, slew_rate=DEFAULT_SLEW_RATE):
         RFEvent(i_recall * dt, 90, 'recall'),
     ]
 
-    return Waveform(G=jnp.array(G_grad), dt=float(dt),
+    return Waveform(G=jnp.array(G_phys), dt=float(dt),
                     echo_idx=n_t - 1,
-                    rf_events=rf_events,
-                    G_display=G_disp)
+                    rf_events=rf_events)
 
 
 def ogse(frequency, T_total, G_magnitude, bvecs, n_t, kind='cosine'):
@@ -366,28 +360,28 @@ def ogse(frequency, T_total, G_magnitude, bvecs, n_t, kind='cosine'):
         envelope = np.sin(2 * np.pi * f_eff * t)
     else:
         raise ValueError(f"ogse kind must be 'cosine' or 'sine', got {kind!r}")
-    # Spin-echo refocusing: the post-180 lobe is the negated time-mirror of the
-    # pre-180 lobe. This makes the gradient moment null EXACTLY at the echo
-    # (q(TE)=0 to one sample), independent of frequency -- a discrete sign-flip at
-    # t>=T/2 instead leaves an O(f*dt) residual because the first block falls one
-    # sample short of an integer number of periods.
+    # The PHYSICAL gradient: the post-180 block is the time-mirror of the pre-180 block, so with
+    # the 180 declared at T/2 the effective gradient (G_eff) is the negated mirror and the gradient
+    # moment nulls EXACTLY at the echo (q(TE)=0 to one sample), independent of frequency -- a
+    # cosine simply continued through T/2 would leave an O(f*dt) residual because the first block
+    # falls one sample short of an integer number of periods. The 180 sits at T/2 itself, which is
+    # the sample ``mid`` (zeroed: gradient off at the pulse) for odd n_t and falls between two
+    # samples for even n_t, so the sign flips exactly where the mirror starts in both cases.
     mid = n_t // 2
-    envelope[n_t - mid:] = -envelope[:mid][::-1]
+    envelope[n_t - mid:] = envelope[:mid][::-1]
     if n_t % 2 == 1:
-        envelope[mid] = 0.0          # gradient off at the 180 instant -> exact null
+        envelope[mid] = 0.0
 
-    G_grad = np.zeros((n_measurements, n_t, 3), dtype=np.float32)
+    G_phys = np.zeros((n_measurements, n_t, 3), dtype=np.float32)
     for m in range(n_measurements):
-        G_grad[m, :, :] = (G_mag[m] * envelope)[:, None] * bvecs[m]
+        G_phys[m, :, :] = (G_mag[m] * envelope)[:, None] * bvecs[m]
 
-    # The RF schedule; the bipolar (time-mirrored) G already refocuses at the echo.
-    gap_mid = (n_t - 1) // 2
     rf_events = [
         RFEvent(0.0, 90, 'Mz→Mxy'),
-        RFEvent(gap_mid * dt, 180, 'refocus'),
+        RFEvent(T_total / 2.0, 180, 'refocus'),
     ]
 
-    return Waveform(G=jnp.array(G_grad), dt=float(dt),
+    return Waveform(G=jnp.array(G_phys), dt=float(dt),
                     echo_idx=n_t - 1,
                     rf_events=rf_events)
 
@@ -474,22 +468,21 @@ def trapezoidal_ogse(N, delta, DELTA, G_magnitude, bvecs, n_t,
             else:
                 G[m, i0:i1, :] = (s * G_mag[m]) * bvecs[m]
 
-    signs1 = [(-1) ** k for k in range(N)]          # block 1: +, -, +, ...
-    signs2 = [-((-1) ** k) for k in range(N)]        # block 2: -, +, -, ...
+    signs = [(-1) ** k for k in range(N)]           # both blocks: +, -, +, ... (the PHYSICAL gradient)
 
-    G_grad = np.zeros((n_measurements, n_t, 3), dtype=np.float32)
+    G_phys = np.zeros((n_measurements, n_t, 3), dtype=np.float32)
     for m in range(n_measurements):
-        _fill_block(G_grad, m, 0, signs1)
-        _fill_block(G_grad, m, n_DELTA, signs2)
+        _fill_block(G_phys, m, 0, signs)
+        _fill_block(G_phys, m, n_DELTA, signs)
 
-    # The RF schedule; the sign-flipped second block already refocuses at the echo.
+    # The RF schedule: the 180 in the gap flips the second block in G_eff, which refocuses at the echo.
     gap_mid = (n_block + n_DELTA) // 2
     rf_events = [
         RFEvent(0.0, 90, 'Mz→Mxy'),
         RFEvent(gap_mid * dt, 180, 'refocus'),
     ]
 
-    return Waveform(G=jnp.array(G_grad), dt=float(dt),
+    return Waveform(G=jnp.array(G_phys), dt=float(dt),
                     echo_idx=n_t - 1,
                     rf_events=rf_events)
 
@@ -569,7 +562,7 @@ def calc_b(waveform):
     -------
     b_values : np.ndarray of shape (n_measurements,)
     """
-    return b_from_gradient(waveform.G, waveform.dt)
+    return b_from_gradient(waveform.G_eff, waveform.dt)
 
 
 def calc_btensor(waveform):
@@ -589,7 +582,7 @@ def calc_btensor(waveform):
     B : np.ndarray, shape (n_measurements, 3, 3), float64
         B-tensor in s/m².
     """
-    return btensor_from_gradient(waveform.G, waveform.dt)
+    return btensor_from_gradient(waveform.G_eff, waveform.dt)
 
 
 def btensor_invariants(B):
@@ -691,15 +684,15 @@ def ste(delta, DELTA, G_magnitude, n_t, slew_rate=DEFAULT_SLEW_RATE):
     _, square = _resolve_slew(slew_rate)
     n_rise = _lobe_n_rise(square, abs(float(G_magnitude)), slew_rate, dt, n_seg)
     eye = np.eye(3, dtype=np.float32)
-    G_grad = np.zeros((1, n_t, 3), dtype=np.float32)
+    G_phys = np.zeros((1, n_t, 3), dtype=np.float32)
     for i in range(3):
         enc_start = 2 * i * n_seg
         enc_end   = min((2 * i + 1) * n_seg, n_t)
         dec_end   = min((2 * i + 2) * n_seg, n_t)
-        _fill_lobe(G_grad, 0, enc_start, enc_end - enc_start,  G_magnitude * eye[i], n_rise)
-        _fill_lobe(G_grad, 0, enc_end,   dec_end - enc_end,   -G_magnitude * eye[i], n_rise)
+        _fill_lobe(G_phys, 0, enc_start, enc_end - enc_start,  G_magnitude * eye[i], n_rise)
+        _fill_lobe(G_phys, 0, enc_end,   dec_end - enc_end,   -G_magnitude * eye[i], n_rise)
 
-    return Waveform(G=jnp.array(G_grad), dt=float(dt),
+    return Waveform(G=jnp.array(G_phys), dt=float(dt),
                     echo_idx=n_t - 1,
                     rf_events=[RFEvent(0.0, 90, 'Mz→Mxy')])
 
@@ -755,16 +748,16 @@ def pte(delta, DELTA, G_magnitude, plane_normal, n_t, slew_rate=DEFAULT_SLEW_RAT
 
     _, square = _resolve_slew(slew_rate)
     n_rise = _lobe_n_rise(square, abs(float(G_magnitude)), slew_rate, dt, n_seg)
-    G_grad = np.zeros((1, n_t, 3), dtype=np.float32)
+    G_phys = np.zeros((1, n_t, 3), dtype=np.float32)
     for i, axis in enumerate([u, v]):
         enc_start = 2 * i * n_seg
         enc_end   = min((2 * i + 1) * n_seg, n_t)
         dec_end   = min((2 * i + 2) * n_seg, n_t)
         avec = (G_magnitude * axis).astype(np.float32)
-        _fill_lobe(G_grad, 0, enc_start, enc_end - enc_start,  avec, n_rise)
-        _fill_lobe(G_grad, 0, enc_end,   dec_end - enc_end,   -avec, n_rise)
+        _fill_lobe(G_phys, 0, enc_start, enc_end - enc_start,  avec, n_rise)
+        _fill_lobe(G_phys, 0, enc_end,   dec_end - enc_end,   -avec, n_rise)
 
-    return Waveform(G=jnp.array(G_grad), dt=float(dt),
+    return Waveform(G=jnp.array(G_phys), dt=float(dt),
                     echo_idx=n_t - 1,
                     rf_events=[RFEvent(0.0, 90, 'Mz→Mxy')])
 
@@ -808,14 +801,10 @@ def set_b(waveform, b_target):
     # b scales as G², so G scales as sqrt(b_target / b_current)
     scale = np.sqrt(b_target / b_current).astype(np.float32)  # (n_measurements,)
     G_new = np.array(waveform.G) * scale[:, None, None]
-    G_disp = waveform.G_display
-    if G_disp is not None:
-        G_disp = (np.array(G_disp) * scale[:, None, None]).astype(np.float32)
     return Waveform(G=jnp.array(G_new.astype(np.float32)),
                     dt=waveform.dt,
                     echo_idx=waveform.echo_idx,
                     rf_events=waveform.rf_events,
-                    G_display=G_disp,
                     chi_perp=waveform.chi_perp,
                     TM=waveform.TM,
                     stimulated_echo=waveform.stimulated_echo)
@@ -908,8 +897,8 @@ def cpmg(n_echoes, TE, G_magnitude, bvecs, n_t_per_echo=100):
     (:mod:`dmipy_sim.viz.pedagogy`) and for the final-echo :func:`simulate` sample.
 
     The (constant) diffusion-weighting gradient is stored physically in
-    ``G_display``; the ``G`` used by the walk carries the effective sign flip
-    imposed by each 180° (so static-spin phase refocuses at every echo).  Use
+    ``G``; ``G_eff`` carries the sign flip each 180° imposes (so static-spin phase
+    refocuses at every echo).  Use
     ``G_magnitude=0`` for a pure-T2 demonstration.
 
     Parameters
@@ -937,27 +926,17 @@ def cpmg(n_echoes, TE, G_magnitude, bvecs, n_t_per_echo=100):
     n_t = n_echoes * n_t_per_echo + 1
     T_total = n_echoes * TE
     dt = T_total / (n_t - 1)
-    t = np.arange(n_t) * dt
 
-    # Effective sign: +1, flipped by each 180° at (k+1/2)*TE (spin-echo conjugation).
-    ref_times = [(k + 0.5) * TE for k in range(n_echoes)]
-    sign = np.ones(n_t, dtype=np.float32)
-    for rt in ref_times:
-        sign[t >= rt] *= -1.0
-
+    # The PHYSICAL gradient is constant (Carr-Purcell); each declared 180 at (k+1/2)*TE flips it in G_eff.
     G_phys = np.zeros((n_measurements, n_t, 3), dtype=np.float32)
-    G_eff  = np.zeros((n_measurements, n_t, 3), dtype=np.float32)
     for m in range(n_measurements):
-        g = G_mag[m] * bvecs[m]
-        G_phys[m, :, :] = g
-        G_eff[m, :, :]  = sign[:, None] * g
+        G_phys[m, :, :] = G_mag[m] * bvecs[m]
 
     rf_events = [RFEvent(0.0, 90, 'Mz→Mxy')]
     rf_events += [RFEvent((k + 0.5) * TE, 180, 'refocus')
                   for k in range(n_echoes)]
 
     # Echoes form at k*TE, k=1..n_echoes (step indices k*n_t_per_echo): derived from the schedule.
-    return Waveform(G=jnp.array(G_eff), dt=float(dt),
+    return Waveform(G=jnp.array(G_phys), dt=float(dt),
                     echo_idx=n_t - 1,
-                    rf_events=rf_events,
-                    G_display=G_phys)
+                    rf_events=rf_events)

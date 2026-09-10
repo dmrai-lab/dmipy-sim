@@ -139,17 +139,8 @@ def to_pulseq(waveform, m=0, *, system=None, filename=None,
     """
     pp = _require_pypulseq()
     dt = float(waveform.dt)
-    # The PHYSICAL gradient is what a scanner plays. waveform.G is the EFFECTIVE gradient, whose sign is
-    # already folded through the refocusing pulses -- exporting that would describe a sequence no scanner
-    # can run, and would double-count the inversion for any reader that applies the RF itself.
-    if getattr(waveform, 'G_display', None) is not None:
-        G = np.asarray(waveform.G_display)[m].astype(float)
-    else:
-        # No physical copy stored: waveform.G is the effective gradient, so recover the physical one by
-        # un-folding the same sign schedule the importer will re-apply. s = +-1, so multiplying inverts.
-        Geff = np.asarray(waveform.G)[m].astype(float)
-        tg = np.arange(Geff.shape[0]) * dt
-        G = Geff * RFSchedule(getattr(waveform, 'rf_events', None)).sign(tg)[:, None]
+    # waveform.G is the PHYSICAL gradient, what a scanner plays; the pulses are their own blocks.
+    G = np.asarray(waveform.G)[m].astype(float)
     sys = system or _permissive_system(dt)
     gamma_hz = float(getattr(sys, 'gamma', GAMMA_HZ))
     seq = pp.Sequence(system=sys)
@@ -264,6 +255,7 @@ def _write_defs(seq, waveform, dt, n_t, echo_idx=None):
                        int(waveform.echo_idx if echo_idx is None else echo_idx))
     seq.set_definition('dmipy_n_t', int(n_t))
     seq.set_definition('dmipy_rf_events', _encode_rf_events(waveform.rf_events))
+    seq.set_definition('dmipy_gradient', 'physical')     # what G is: the scanner's, pulses as blocks or metadata
 
 
 
@@ -368,18 +360,20 @@ def from_pulseq(src, *, dt=None):
     if blk_events:
         blk_events = blk_events.shifted(-t0)
     # Which convention is this file written in? A sequence whose blocks carry the WHOLE schedule states its
-    # RF natively, so its gradient is physical and the pulses must be folded in. One that describes more
-    # pulses in metadata than it plays as blocks is the older form, whose gradient is already effective --
-    # folding again would invert it twice. The file says which it is; no flag is needed.
+    # RF natively, so its gradient is physical, as stored. One that describes more pulses in metadata than it
+    # plays as blocks is the older form, whose gradient is effective and is un-folded below. The file says
+    # which it is; no flag is needed.
     native = bool(blk_events) and not (meta_events and len(meta_events) > len(blk_events))
     rf_events = blk_events if native else (meta_events or blk_events)
     if rf_events is None:
         rf_events = RFSchedule([RFEvent(float(t) - t0, 90.0, 'excitation') for t in t_exc] +
                                [RFEvent(float(t) - t0, 180.0, 'refocusing') for t in t_ref]) or None
 
-    # A .seq carries the PHYSICAL gradient; the simulator integrates the EFFECTIVE one. Fold the pulses in
-    # rather than trusting a stored copy -- this is what makes the round trip physics rather than metadata.
-    if native:
+    # A Waveform stores the PHYSICAL gradient. A .seq written natively carries it (the pulses are blocks), and
+    # so does one this version writes with the pulses as metadata (it says so: dmipy_gradient = 'physical').
+    # The older metadata form wrote the EFFECTIVE gradient; un-fold it through the same schedule so the object
+    # holds what the scanner plays and G_eff derives the rest.
+    if not native and defs.get('dmipy_gradient') != 'physical':
         G = G * RFSchedule(rf_events).sign(t_grid)[:, None]
     chi_perp = RFSchedule(rf_events).storage_mask(t_grid)
 

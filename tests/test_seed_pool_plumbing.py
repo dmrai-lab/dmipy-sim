@@ -40,6 +40,11 @@ B = 2.0e9
 N = 2000
 EXC = [RFEvent(0.0, 90.0, axis_deg=90.0)]      # 90_y -> Mx = cos(phi)
 
+
+def _rf(waveform):
+    """The 90_y excitation plus the waveform's own 180: G is the physical same-sign pair, the pulse refocuses."""
+    return EXC + [e for e in waveform.rf_events if e.flip_deg == 180]
+
 # tau_D = R^2/D = 2.0 ms, so DELTA = 2 ms leaves the ensemble short of full exploration and the start
 # distribution still visible. slew_rate=inf: reaching b=2e9 in a 0.2 ms pulse needs ~19 T/m, which no
 # real gradient slews to, and the square limit is what keeps the comparison clean.
@@ -94,7 +99,7 @@ def _assert_r0_reaches_the_walk(run, seeds, label, min_sep=0.08):
 @pytest.mark.slow
 def test_simulate_bloch_starts_where_r0_says(sphere, seeds, waveform):
     def run(r0):
-        return float(np.real(simulate_bloch(N, D, waveform, sphere, EXC, seed=3, r0=r0,
+        return float(np.real(simulate_bloch(N, D, waveform, sphere, _rf(waveform), seed=3, r0=r0,
                                             require_gpu=False)[0]))
 
     _assert_r0_reaches_the_walk(run, seeds, "simulate_bloch")
@@ -104,7 +109,7 @@ def test_simulate_bloch_starts_where_r0_says(sphere, seeds, waveform):
 def test_the_bloch_mt_path_starts_where_r0_says(sphere, seeds, waveform):
     """`kappa_MT > 0` dispatches to `_simulate_bloch_mt`, which seeds at its own separate site."""
     def run(r0):
-        return float(np.real(simulate_bloch(N, D, waveform, sphere, EXC, seed=3, r0=r0,
+        return float(np.real(simulate_bloch(N, D, waveform, sphere, _rf(waveform), seed=3, r0=r0,
                                             kappa_MT=1e-6, dwell_time=2e-3,
                                             equilibrate_binding="off", require_gpu=False)[0]))
 
