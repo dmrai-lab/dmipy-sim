@@ -109,25 +109,27 @@ def ogse(gradient_directions, oscillation_frequency, gradient_duration, *, shape
     if shape not in ("trapezoid", "cosine"):
         raise ValueError(f"ogse shape must be 'trapezoid' or 'cosine', got {shape!r}")
     dirs, n_m, (f_, sigma_) = _rows(gradient_directions, oscillation_frequency, gradient_duration)
-    # a row with no gradient (a b = 0 measurement) has no oscillation to define: it plays nothing
+    # a row's block is shaped by its frequency and duration; a row without one (a b = 0 measurement given no
+    # frequency) plays nothing, a b = 0 row WITH one plays its block at zero amplitude (it is that shell's b = 0)
     amp = np.broadcast_to(np.asarray(bvalues if bvalues is not None else gradient_strengths, np.float64), (n_m,))
-    live = amp > 0
-    if np.any((f_[live] <= 0) | (sigma_[live] <= 0)):
+    shaped = (f_ > 0) & (sigma_ > 0)
+    if np.any((amp > 0) & ~shaped):
         raise ValueError("ogse needs a positive oscillation_frequency and gradient_duration on every weighted row")
     eps = lambda m, g: ramp_of(g, slew_rate)
     if shape == "trapezoid":
         n_lobes = np.ones(n_m, dtype=int)
-        n_lobes[live] = _whole(2.0 * f_[live] * sigma_[live], "the number of lobes 2 f sigma of a trapezoidal OGSE block")
-        lobe = np.where(live, sigma_ / n_lobes, 0.0)
+        n_lobes[shaped] = _whole(2.0 * f_[shaped] * sigma_[shaped],
+                                 "the number of lobes 2 f sigma of a trapezoidal OGSE block")
+        lobe = np.where(shaped, sigma_ / np.maximum(n_lobes, 1), 0.0)
 
         def sample(m, g, dt):
-            return trapezoid_train(n_lobes[m], lobe[m], eps(m, g), dt) if live[m] else np.zeros(1)
+            return trapezoid_train(n_lobes[m], lobe[m], eps(m, g), dt) if shaped[m] else np.zeros(1)
     else:
         n_cyc = np.ones(n_m, dtype=int)
-        n_cyc[live] = _whole(f_[live] * sigma_[live], "the number of periods f sigma of a cosine OGSE block")
+        n_cyc[shaped] = _whole(f_[shaped] * sigma_[shaped], "the number of periods f sigma of a cosine OGSE block")
 
         def sample(m, g, dt):
-            if not live[m]:
+            if not shaped[m]:
                 return np.zeros(1)
             slew = float(slew_rate)
             if np.isfinite(slew) and 2.0 * np.pi * f_[m] * g > slew * (1.0 + 1e-9):
@@ -142,9 +144,9 @@ def ogse(gradient_directions, oscillation_frequency, gradient_duration, *, shape
         SpinEcho(gap=lambda m, g: gap_[m], timing=timing),
         gradient_directions=dirs, bvalues=bvalues, gradient_strengths=gradient_strengths, TE=TE, n_t=n_t,
         timing=timing, family='ogse', q_width=sigma_,
-        span=lambda m, g: sigma_[m] if live[m] else 0.0, sample=sample,
+        span=lambda m, g: sigma_[m] if shaped[m] else 0.0, sample=sample,
         encoding=lambda g, te, te_min: dict(oscillation_frequency=f_, gradient_duration=sigma_,
-                                            n_oscillation_cycles=f_ * sigma_,
+                                            n_oscillation_cycles=np.where(shaped, f_ * sigma_, 0.0),
                                             Delta=None if Delta is None else sigma_ + gap_,
                                             gradient_rise_time=np.array([eps(m, g[m]) for m in range(n_m)])),
         build_spec=('ogse', dict(gradient_directions=gradient_directions, oscillation_frequency=oscillation_frequency,
