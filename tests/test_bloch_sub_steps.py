@@ -44,8 +44,7 @@ def waveform():
     0.95. Reaching b = 2e9 that fast needs ~1.9 T/m, which no real gradient slews to -- irrelevant here,
     and `slew_rate=inf` is what makes the free limit exactly exp(-b*D).
     """
-    return set_b(pgse(delta=0.5e-3, DELTA=30e-3, G_magnitude=0.05,
-                      bvecs=[[1.0, 0.0, 0.0]], n_t=600, slew_rate=np.inf), B)
+    return set_b(pgse([[1.0, 0.0, 0.0]], 0.5e-3, 30e-3, gradient_strengths=0.05, n_t=600, slew_rate=np.inf), B)
 
 
 @pytest.fixture(scope="module")

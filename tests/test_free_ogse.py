@@ -20,8 +20,7 @@ def test_free_diffusion_ogse():
     b_values = np.linspace(1, 2e9, n_b)
     bvecs = np.tile([1.0, 0.0, 0.0], (n_b, 1))
 
-    wf = set_b(ogse(frequency=frequency, T_total=T_total, G_magnitude=1.0,
-                    bvecs=bvecs, n_t=n_t), b_values)
+    wf = set_b(ogse(bvecs, frequency, T_total / 2, gradient_strengths=1.0, shape="cosine", slew_rate=np.inf, n_t=n_t), b_values)
 
     signals = simulate(N_WALKERS, D, wf, FreeDiffusion(), seed=SEED)
 

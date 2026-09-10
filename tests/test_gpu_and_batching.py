@@ -56,7 +56,7 @@ def test_walker_batching_matches_single_shot_and_analytic():
 
     D = 2.0e-9
     bvecs = np.array([[1.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
-    wf = set_b(pgse(delta=0.01, DELTA=0.03, G_magnitude=1.0, bvecs=bvecs, n_t=200),
+    wf = set_b(pgse(bvecs, 0.01, 0.03, gradient_strengths=1.0, n_t=200),
                np.array([1.0, 1.0e9]))
     geom = FreeDiffusion()
     NW = 60_000

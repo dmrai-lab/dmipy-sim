@@ -21,7 +21,7 @@ def test_free_diffusion_pgse_1d():
 
     # Build PGSE waveform along x with unit amplitude, then scale to b-values
     bvecs = np.tile([1.0, 0.0, 0.0], (n_b, 1))
-    wf_unit = pgse(delta=delta, DELTA=DELTA, G_magnitude=1.0, bvecs=bvecs, n_t=n_t)
+    wf_unit = pgse(bvecs, delta, DELTA, gradient_strengths=1.0, n_t=n_t)
     wf = set_b(wf_unit, b_values)
 
     # Verify b-values were set correctly

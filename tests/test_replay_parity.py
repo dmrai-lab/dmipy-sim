@@ -42,8 +42,7 @@ def _tol(n):
 
 def _pgse(delta, DELTA, n_t, b, G_magnitude=0.2):
     return d.set_b(
-        d.pgse(delta=delta, DELTA=DELTA, G_magnitude=G_magnitude,
-               bvecs=[[1.0, 0.0, 0.0]], n_t=n_t, slew_rate=np.inf), b)
+        d.pgse([[1.0, 0.0, 0.0]], delta, DELTA, gradient_strengths=G_magnitude, n_t=n_t, slew_rate=np.inf), b)
 
 
 # ── Geometry specs ──────────────────────────────────────────────────────────

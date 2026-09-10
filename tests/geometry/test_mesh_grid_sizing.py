@@ -43,7 +43,6 @@ def test_a_twenty_thousand_triangle_sphere_walks_at_default_arguments():
     assert F.shape[0] == 20480
     m = d.Mesh(V, F)
     assert m.C < 200 and m.memory_estimate(4000) < 4e9, (m.C, m.memory_estimate(4000))
-    wf = d.set_b(d.pgse(delta=3e-3, DELTA=6e-3, G_magnitude=0.1, bvecs=[[1, 0, 0]], n_t=60,
-                        slew_rate=np.inf), 5e8)
+    wf = d.set_b(d.pgse([[1, 0, 0]], 3e-3, 6e-3, gradient_strengths=0.1, n_t=60, slew_rate=np.inf), 5e8)
     s = np.asarray(d.simulate(4000, D, wf, m, seed=0, require_gpu=False)).ravel()
     assert 0.0 < s[0] < 1.0 and np.isfinite(s[0])

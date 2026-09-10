@@ -3,7 +3,7 @@
 Every builder returns a :class:`~dmipy_sim.acquisition.scanner_sequence.ScannerSequence` -- the physical
 gradient, the RF schedule, the readout, the per-measurement encoding an analytical layer reads::
 
-    seq = dmipy_sim.sequences.pgse(bvalues, gdirs, delta, Delta, slew_rate=200.)
+    seq = dmipy_sim.sequences.pgse(gdirs, delta, Delta, bvalues=bvalues, slew_rate=200.)
     seq.G, seq.G_eff, seq.dt, seq.encoding.bvalues, seq.btensor()
     dmipy_sim.sequences.instantaneous(seq)          # the square / infinite-slew limit
 

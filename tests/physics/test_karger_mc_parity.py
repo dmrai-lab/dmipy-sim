@@ -21,7 +21,7 @@ import numpy.testing as npt
 
 from dmipy_sim import simulate, PackedSpheres, set_b
 from dmipy_sim.geometry import Sphere
-from dmipy_sim.acquisition.waveforms import pgse, pgste
+from dmipy_sim.sequences import pgse, pgste
 
 import importlib.util
 
@@ -134,8 +134,7 @@ def _geom_packed(kappa_surf=None):
 def _pgse_waveform(b_values):
     """PGSE waveform at given b-values (s/m²), all along x-axis."""
     bvecs = np.tile([1., 0., 0.], (len(b_values), 1))
-    wf = pgse(delta=DELTA_SHORT, DELTA=DELTA_PGSE, G_magnitude=1.0,
-              bvecs=bvecs, n_t=500)
+    wf = pgse(bvecs, DELTA_SHORT, DELTA_PGSE, gradient_strengths=1.0, n_t=500)
     return set_b(wf, b_values)
 
 
@@ -146,8 +145,7 @@ def _pgste_waveform(b_values):
     so :func:`dmipy_sim.simulate` applies the idealized 0.5 stimulated-echo factor.
     """
     bvecs = np.tile([1., 0., 0.], (len(b_values), 1))
-    wf = pgste(delta=DELTA_SHORT, TM=TM_STE, G_magnitude=1.0,
-               bvecs=bvecs, n_t=500)
+    wf = pgste(bvecs, DELTA_SHORT, TM_STE, gradient_strengths=1.0, n_t=500)
     return set_b(wf, b_values)
 
 

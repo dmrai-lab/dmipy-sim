@@ -561,10 +561,11 @@ class RFSchedule(tuple):
         :func:`dmipy_sim.replay._replay_kernel.se_gate` builds for integrating against a path: that one half-weights
         the grid endpoints, right under an integral and wrong for a waveform.
         """
-        s = np.ones_like(np.asarray(t_grid, dtype=np.float64), dtype=np.float32)
+        t = np.asarray(t_grid, dtype=np.float64)
+        s = np.ones_like(t, dtype=np.float32)
         for e in self:
             if abs(e.flip_deg - 180.0) < 20.0 or e.label in ('refocus', 'recall'):
-                s[np.asarray(t_grid) >= e.t_s] *= -1.0
+                s[t >= e.t_s - 1e-12] *= -1.0                    # a sample AT the pulse (to rounding) is after it
         return s
 
     def coherence(self, n_t, dt):

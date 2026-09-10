@@ -13,7 +13,7 @@ import numpy.testing as npt
 import jax.numpy as jnp
 
 from dmipy_sim import simulate, Ellipsoid, Sphere, set_b
-from dmipy_sim.acquisition.waveforms import pgse
+from dmipy_sim.sequences import pgse
 from dmipy_sim.acquisition.scanner_sequence import ScannerSequence
 from tests.conftest import D, N_WALKERS, SEED
 
@@ -87,8 +87,7 @@ def test_ellipsoid_signal_above_free():
     bvecs = np.tile([1., 0., 0.], (20, 1))   # gradient along x (short semi-axis)
     # Prolate ellipsoid: short axes a=b=2µm, long axis c=10µm
     semiaxes = np.array([2e-6, 2e-6, 10e-6])
-    wf = set_b(pgse(delta=0.2e-3, DELTA=40e-3, G_magnitude=1.0,
-                    bvecs=bvecs, n_t=1000), b_values)
+    wf = set_b(pgse(bvecs, 0.2e-3, 40e-3, gradient_strengths=1.0, n_t=1000), b_values)
 
     S_ellipsoid = simulate(N_WALKERS, D, wf, Ellipsoid(semiaxes), seed=SEED)
     S_free      = simulate(N_WALKERS, D, wf, FreeDiffusion(),     seed=SEED + 1)
@@ -108,11 +107,9 @@ def test_ellipsoid_anisotropic_axis_dependence():
     semiaxes = np.array([2e-6, 2e-6, 10e-6])   # short x,y; long z
     b = 2e9  # single high b-value to maximise contrast
 
-    wf_x = set_b(pgse(delta=0.2e-3, DELTA=40e-3, G_magnitude=1.0,
-                      bvecs=np.array([[1., 0., 0.]]), n_t=1000),
+    wf_x = set_b(pgse(np.array([[1., 0., 0.]]), 0.2e-3, 40e-3, gradient_strengths=1.0, n_t=1000),
                  np.array([b]))
-    wf_z = set_b(pgse(delta=0.2e-3, DELTA=40e-3, G_magnitude=1.0,
-                      bvecs=np.array([[0., 0., 1.]]), n_t=1000),
+    wf_z = set_b(pgse(np.array([[0., 0., 1.]]), 0.2e-3, 40e-3, gradient_strengths=1.0, n_t=1000),
                  np.array([b]))
 
     S_x = simulate(N_WALKERS, D, wf_x, Ellipsoid(semiaxes), seed=SEED)

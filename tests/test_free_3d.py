@@ -29,8 +29,7 @@ def test_free_diffusion_pgse_3d():
 
     for bvec in directions:
         bvecs = np.tile(bvec, (len(b_values_1d), 1))
-        wf = set_b(pgse(delta=delta, DELTA=DELTA, G_magnitude=1.0,
-                        bvecs=bvecs, n_t=n_t), b_values_1d)
+        wf = set_b(pgse(bvecs, delta, DELTA, gradient_strengths=1.0, n_t=n_t), b_values_1d)
         signals = simulate(N_WALKERS, D, wf, FreeDiffusion(), seed=SEED)
         E_ref = np.exp(-b_values_1d * D)
         npt.assert_allclose(

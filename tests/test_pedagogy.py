@@ -18,7 +18,7 @@ NW = 5000
 def test_free_diffusion_echo_matches_analytic():
     """PGSE spin echo on free diffusion: net(echo) ~ exp(-b D - TE/T2)."""
     D, T2 = 1e-9, 80e-3
-    wf = set_b(pgse(delta=4e-3, DELTA=20e-3, G_magnitude=0.05, bvecs=[[1, 0, 0]], n_t=160), 1.0e9)
+    wf = set_b(pgse([[1, 0, 0]], 4e-3, 20e-3, gradient_strengths=0.05, n_t=160), 1.0e9)
     b = float(np.asarray(calc_b(wf)).ravel()[0])
     h = ped.replay_with_history(FreeDiffusion(), wf, diffusivity=D, T2=T2, n_walkers=NW, seed=0)
     Mc = h["M_comp"]
@@ -33,7 +33,7 @@ def test_free_diffusion_echo_matches_analytic():
 def test_restricted_echo_above_free():
     """A restricted cylinder attenuates less than free diffusion at the same b."""
     D = 1e-9
-    wf = set_b(pgse(delta=4e-3, DELTA=20e-3, G_magnitude=0.05, bvecs=[[1, 0, 0]], n_t=160), 1.0e9)
+    wf = set_b(pgse([[1, 0, 0]], 4e-3, 20e-3, gradient_strengths=0.05, n_t=160), 1.0e9)
     ei = wf.echo_idx
     def echo(geom):
         Mc = ped.replay_with_history(geom, wf, diffusivity=D, T2=80e-3, n_walkers=NW, seed=0)["M_comp"]
@@ -44,7 +44,7 @@ def test_restricted_echo_above_free():
 def test_cpmg_echoes_decay_exponentially():
     """Instant-pulse CPMG (180 train): echo peaks decay by ~exp(-TE/T2) per echo."""
     TE, T2, n_echoes = 12e-3, 60e-3, 4
-    wf = cpmg(n_echoes=n_echoes, TE=TE, G_magnitude=0.0, bvecs=[[1, 0, 0]], n_t_per_echo=50)
+    wf = cpmg(n_echoes, TE, gradient_strengths=0.0, gradient_directions=[[1, 0, 0]], n_t_per_echo=50)
     h = ped.replay_with_history(Cylinder(radius=5e-6, orientation=(0, 0, 1)), wf,
                                 diffusivity=1e-9, T2=T2, n_walkers=NW, seed=0)
     Mc = h["M_comp"]; dt = float(wf.dt)
@@ -54,7 +54,7 @@ def test_cpmg_echoes_decay_exponentially():
 
 
 def test_sequence_story_renders(tmp_path):
-    wf = set_b(pgse(delta=4e-3, DELTA=20e-3, G_magnitude=0.05, bvecs=[[1, 0, 0]], n_t=120), 1.0e9)
+    wf = set_b(pgse([[1, 0, 0]], 4e-3, 20e-3, gradient_strengths=0.05, n_t=120), 1.0e9)
     h = ped.replay_with_history(FreeDiffusion(), wf, diffusivity=1e-9, T2=80e-3, n_walkers=NW, seed=0)
     fig = ped.sequence_story(h, save=str(tmp_path / "story.png"))
     assert len(fig.axes) == 3

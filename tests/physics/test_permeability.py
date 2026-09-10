@@ -72,7 +72,7 @@ import matplotlib.pyplot as plt
 import jax.numpy as jnp
 
 from dmipy_sim import simulate, Box1D, Cylinder, Sphere, set_b
-from dmipy_sim.acquisition.waveforms import pgse
+from dmipy_sim.sequences import pgse
 from dmipy_sim.acquisition.scanner_sequence import ScannerSequence
 
 
@@ -377,8 +377,7 @@ def test_permeability_high_kappa_free_diffusion_cylinder():
     b_values = np.array([500e6, 1000e6])   # s/m²
     bvecs = np.tile([1., 0., 0.], (2, 1))
     wf = set_b(
-        pgse(delta=delta, DELTA=DELTA, G_magnitude=1.0,
-             bvecs=bvecs, n_t=n_t),
+        pgse(bvecs, delta, DELTA, gradient_strengths=1.0, n_t=n_t),
         b_values)
 
     geom = Cylinder(radius=R, orientation=[0, 0, 1.], permeability=kappa_high)
@@ -404,8 +403,7 @@ def test_permeability_high_kappa_free_diffusion_sphere():
     b_values = np.array([500e6, 1000e6])
     bvecs = np.tile([1., 0., 0.], (2, 1))
     wf = set_b(
-        pgse(delta=delta, DELTA=DELTA, G_magnitude=1.0,
-             bvecs=bvecs, n_t=n_t),
+        pgse(bvecs, delta, DELTA, gradient_strengths=1.0, n_t=n_t),
         b_values)
 
     geom = Sphere(radius=R, permeability=kappa_high)

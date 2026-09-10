@@ -18,7 +18,7 @@ import numpy.testing as npt
 import pytest
 
 from dmipy_sim import simulate, simulate_mixture, FreeDiffusion, pack_cylinders, PackedCylinders, set_b, Cylinder
-from dmipy_sim.acquisition.waveforms import pgse
+from dmipy_sim.sequences import pgse
 from tests.conftest import D, N_WALKERS, SEED
 
 
@@ -151,8 +151,7 @@ def test_packed_cylinders_parallel_gradient_free():
 
     b_values = np.linspace(1e8, 3e9, 20)
     bvecs    = np.tile([0., 0., 1.], (20, 1))   # gradient ∥ cylinder axis
-    wf       = set_b(pgse(delta=10e-3, DELTA=40e-3, G_magnitude=1.0,
-                          bvecs=bvecs, n_t=1000), b_values)
+    wf       = set_b(pgse(bvecs, 10e-3, 40e-3, gradient_strengths=1.0, n_t=1000), b_values)
 
     S_packed = simulate(N_WALKERS, D, wf, geom, seed=SEED)
     expected  = np.exp(-b_values * D)
@@ -171,8 +170,7 @@ def test_packed_cylinders_walkers_stay_outside():
     geom = _simple_geometry()
 
     bvec = np.array([[1., 0., 0.]])
-    wf   = set_b(pgse(delta=10e-3, DELTA=40e-3, G_magnitude=1.0,
-                      bvecs=bvec, n_t=1000), np.array([1e9]))
+    wf   = set_b(pgse(bvec, 10e-3, 40e-3, gradient_strengths=1.0, n_t=1000), np.array([1e9]))
     _, final_pos = simulate(5_000, D, wf, geom, seed=SEED, return_positions=True)
 
     centers = np.array(geom._centers_jax)
@@ -208,8 +206,7 @@ def test_packed_cylinders_hindered_above_free():
 
     b_values = np.array([3e9])
     bvecs    = np.array([[1., 0., 0.]])
-    wf       = set_b(pgse(delta=10e-3, DELTA=40e-3, G_magnitude=1.0,
-                          bvecs=bvecs, n_t=1000), b_values)
+    wf       = set_b(pgse(bvecs, 10e-3, 40e-3, gradient_strengths=1.0, n_t=1000), b_values)
 
     S_extra = simulate(N_WALKERS, D, wf, geom_packed, seed=SEED)
     S_free  = simulate(N_WALKERS, D, wf, FreeDiffusion(),  seed=SEED + 1)
@@ -259,8 +256,7 @@ def test_packed_cylinders_mc_mixture_vs_callaghan():
     B_VALUES = np.array([0., 5e8, 1e9, 2e9])
     BVECS    = np.tile([[1., 0., 0.]], (len(B_VALUES), 1))
     scheme   = acquisition_scheme_from_bvalues(B_VALUES, BVECS, DELTA_S, DELTA_L)
-    wf       = set_b(pgse(delta=DELTA_S, DELTA=DELTA_L, G_magnitude=1.0,
-                          bvecs=BVECS, n_t=1000), B_VALUES)
+    wf       = set_b(pgse(BVECS, DELTA_S, DELTA_L, gradient_strengths=1.0, n_t=1000), B_VALUES)
 
     # --- Empirical analytical: area-weighted Callaghan sum ---
     area    = radii ** 2

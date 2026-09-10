@@ -16,6 +16,7 @@ from pathlib import Path
 import jax
 import jax.numpy as jnp
 import numpy as np
+from dmipy_sim.acquisition.timing import SequenceTiming
 import pytest
 
 import dmipy_sim
@@ -378,27 +379,26 @@ def test_no_new_acquisition_container():
 
 def _every_builder():
     """One instance of every constructor that declares an RF schedule (or is documented not to), built small."""
-    import dmipy_sim.acquisition.waveforms as W
     from dmipy_sim import sequences as _seqmod
     import dmipy_sim.engine.pulse_sequence as P
     bv = np.array([[1.0, 0.0, 0.0]])
     out = {
-        "waveforms.pgse": W.pgse(4e-3, 20e-3, 0.05, bv, 200),
-        "waveforms.pgste": W.pgste(4e-3, 20e-3, 0.05, bv, 200),
-        "waveforms.ogse": W.ogse(100.0, 40e-3, 0.05, bv, 400),
-        "waveforms.trapezoidal_ogse": W.trapezoidal_ogse(2, 20e-3, 24e-3, 0.05, bv, 400),
-        "waveforms.cpmg": W.cpmg(3, 20e-3, 0.05, bv, n_t_per_echo=50),
-        "waveforms.ste": W.ste(4e-3, 20e-3, 0.05, 240),
-        "waveforms.pte": W.pte(4e-3, 20e-3, 0.05, [0.0, 0.0, 1.0], 240),
-        "sequences.pgse": _seqmod.pgse([1e9], bv, 4e-3, 20e-3, n_t=200),
+        "amplitude.pgse": _seqmod.pgse(bv, 4e-3, 20e-3, gradient_strengths=0.05, n_t=200),
+        "amplitude.pgste": _seqmod.pgste(bv, 4e-3, 20e-3, gradient_strengths=0.05, n_t=200),
+        "amplitude.ogse.cosine": _seqmod.ogse(bv, 100.0, 20e-3, gradient_strengths=0.05, shape="cosine", slew_rate=np.inf, n_t=400),
+        "amplitude.ogse.trapezoid": _seqmod.ogse(bv, 50.0, 20e-3, gradient_strengths=0.05, shape="trapezoid", TE=44e-3, n_t=400),
+        "amplitude.cpmg": _seqmod.cpmg(3, 20e-3, gradient_strengths=0.05, gradient_directions=bv, n_t_per_echo=50),
+        "amplitude.ste": _seqmod.ste(24e-3, gradient_strengths=0.05, n_t=240),
+        "amplitude.pte": _seqmod.pte([0.0, 0.0, 1.0], 24e-3, gradient_strengths=0.05, n_t=240),
+        "sequences.pgse": _seqmod.pgse(bv, 4e-3, 20e-3, bvalues=[1e9], n_t=200),
         "sequences.cpmg": _seqmod.cpmg(3, 20e-3, bvalues=[1e9] * 3, n_t_per_echo=50),
-        "sequences.ogse": _seqmod.ogse([1e9], bv, 100.0, 20e-3, n_t=400, refocus_duration=4e-3),
-        "sequences.ste": _seqmod.ste([1e9], 4e-3, 20e-3, n_t=240),
-        "sequences.pte": _seqmod.pte([1e9], [0.0, 0.0, 1.0], 4e-3, 20e-3, n_t=240),
+        "sequences.ogse": _seqmod.ogse(bv, 100.0, 20e-3, bvalues=[1e8], timing=SequenceTiming(t_excite=0.0, t_refocus=4e-3, t_readout_pre_echo=0.0), n_t=400),
+        "sequences.ste": _seqmod.ste(24e-3, bvalues=[1e8], n_t=240),
+        "sequences.pte": _seqmod.pte([0.0, 0.0, 1.0], 24e-3, bvalues=[1e8], n_t=240),
         "pulse_sequence.bare_gradient_echo": P.bare_gradient_echo(20e-3, 1e-4),
         "pulse_sequence.bare_spin_echo": P.bare_spin_echo(20e-3, 1e-4),
-        "sequences.pgste": _seqmod.pgste([1e9], bv, 4e-3, 20e-3, n_t=240),
-        "sequences.gre": _seqmod.gre([20e-3], bv, [1e9], delta=4e-3, Delta=10e-3, n_t=200),
+        "sequences.pgste": _seqmod.pgste(bv, 4e-3, 20e-3, bvalues=[1e9], n_t=240),
+        "sequences.gre": _seqmod.gre(20e-3, bvalues=[1e9], gradient_directions=bv, delta=4e-3, Delta=10e-3, n_t=200),
         "pulse_sequence.prepend_mt_prep": P.prepend_mt_prep(
             P.bare_spin_echo(20e-3, 1e-4), P.saturation_pulse(2000.0, 2e-3, flip_deg=500.0)),
     }
@@ -476,7 +476,9 @@ def test_no_stored_effective_gradient_and_no_flag_standing_in_for_the_schedule()
             "allow_offcenter_180",
             "_refocus_gap", "_ogse_two_train", "_refocus_duration",   # piece 4: questions asked of G and the schedule
             "class Waveform", "class Sequence:", "class BlochSequence", "def apply_rf_schedule",   # piece 5a: one container
-            "allow_unmatched_periods")
+            "allow_unmatched_periods",
+            "def trapezoidal_ogse", "def b_trapezoidal_ogse", "_fill_lobe", "_lobe_n_rise", "_trap_cosine_profile",
+            "G_magnitude", "refocus_duration", "kind='sine'")                        # piece 5b: one set of builders
     found = {}
     for py, modname in _package_modules():
         text = py.read_text()

@@ -91,8 +91,7 @@ def _build_sgp_waveform(q_values, bvec, delta, DELTA, n_t):
     bvecs = np.tile(bvec, (n_q, 1)).astype(np.float32)
 
     # Template with G_magnitude=1 T/m; actual magnitude set by scaling below.
-    wf_template = pgse(delta=delta, DELTA=DELTA, G_magnitude=1.0,
-                       bvecs=bvecs, n_t=n_t)
+    wf_template = pgse(bvecs, delta, DELTA, gradient_strengths=1.0, n_t=n_t)
     b_template = calc_b(wf_template)  # (n_q,) — same for all measurements
 
     # b = q² · (Δ - δ/3) — exact for PGSE in the SGP limit

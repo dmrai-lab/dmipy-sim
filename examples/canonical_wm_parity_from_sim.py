@@ -49,8 +49,7 @@ def geom(surf, seed=0):
     g.surface_substep_frac = (2.0 if surf else 0.0)
     return g
 
-wf0 = pgse(delta=TE / 2 - 1e-4, DELTA=TE / 2, G_magnitude=0.0,
-           bvecs=np.array([[0, 0, 1.]], np.float32), n_t=3000)   # b=0, gradient-free
+wf0 = pgse(np.array([[0, 0, 1.]], np.float32), TE / 2 - 1e-4, TE / 2, gradient_strengths=0.0, n_t=3000)   # b=0, gradient-free
 
 # --- fit side: analytical forward from the factory (same substrate) ---
 scheme = acquisition_scheme_from_bvalues(np.array([0.]), np.array([[0, 0, 1.]]),

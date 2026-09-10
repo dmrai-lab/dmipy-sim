@@ -14,7 +14,8 @@ import numpy.testing as npt
 import jax.numpy as jnp
 
 from dmipy_sim import simulate, FreeDiffusion, Sphere, set_b
-from dmipy_sim.acquisition.waveforms import pgse, ogse, calc_b
+from dmipy_sim.acquisition.waveforms import calc_b
+from dmipy_sim.sequences import pgse, ogse
 from dmipy_sim.acquisition.scanner_sequence import ScannerSequence
 from .conftest import D, N_WALKERS, SEED
 
@@ -23,8 +24,7 @@ def test_ogse_free_diffusion_matches_exp_bD():
     """OGSE on FreeDiffusion must give exp(-b*D) to within MC noise."""
     b_values = np.linspace(1e8, 2e9, 20)
     bvecs = np.tile([1., 0., 0.], (20, 1))
-    wf = set_b(ogse(frequency=50.0, T_total=80e-3, G_magnitude=1.0,
-                    bvecs=bvecs, n_t=1000), b_values)
+    wf = set_b(ogse(bvecs, 50.0, (80e-3) / 2, gradient_strengths=1.0, shape="cosine", slew_rate=np.inf, n_t=1000), b_values)
 
     signals = simulate(N_WALKERS, D, wf, FreeDiffusion(), seed=SEED)
     expected = np.exp(-b_values * D)
@@ -44,10 +44,8 @@ def test_pgse_long_delta_more_restricted_than_ogse():
     b_target = 1e9  # s/m²
     bvecs = np.array([[1., 0., 0.]])
 
-    wf_pgse = set_b(pgse(delta=5e-3, DELTA=40e-3, G_magnitude=1.0,
-                          bvecs=bvecs, n_t=1000), np.array([b_target]))
-    wf_ogse = set_b(ogse(frequency=100.0, T_total=80e-3, G_magnitude=1.0,
-                          bvecs=bvecs, n_t=1000), np.array([b_target]))
+    wf_pgse = set_b(pgse(bvecs, 5e-3, 40e-3, gradient_strengths=1.0, n_t=1000), np.array([b_target]))
+    wf_ogse = set_b(ogse(bvecs, 100.0, (80e-3) / 2, gradient_strengths=1.0, shape="cosine", slew_rate=np.inf, n_t=1000), np.array([b_target]))
 
     geom = Sphere(radius=5e-6)
     S_pgse = simulate(N_WALKERS, D, wf_pgse, geom, seed=SEED)
@@ -98,8 +96,7 @@ def test_calc_b_pgse_analytical():
 
     # the analytic formula is for SQUARE lobes -> build the instantaneous waveform
     # (sim now defaults to slew-limited, whose ramps give a slightly smaller b)
-    wf = pgse(delta=delta, DELTA=DELTA, G_magnitude=G_mag, bvecs=bvecs, n_t=2000,
-              slew_rate=np.inf)
+    wf = pgse(bvecs, delta, DELTA, gradient_strengths=G_mag, n_t=2000, slew_rate=np.inf)
     b_sim = calc_b(wf)[0]
     b_analytic = (GAMMA * G_mag * delta) ** 2 * (DELTA - delta / 3)
 

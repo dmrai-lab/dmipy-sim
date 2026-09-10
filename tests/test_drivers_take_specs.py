@@ -12,7 +12,7 @@ D0 = 2e-9
 
 def _seq():
     from dmipy_sim import sequences as _seqmod
-    return _seqmod.pgse(bvalues=[0, 1e9], gradient_directions=[[1, 0, 0]] * 2, delta=2e-3, Delta=6e-3)
+    return _seqmod.pgse([[1, 0, 0]] * 2, 2e-3, 6e-3, bvalues=[0, 1e9], slew_rate=np.inf)
 
 
 def test_as_geometry_accepts_every_spelling(tmp_path):

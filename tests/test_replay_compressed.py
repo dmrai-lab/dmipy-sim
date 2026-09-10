@@ -10,15 +10,15 @@ import pytest
 
 from dmipy_sim import simulate_trajectories, Cylinder, Box1D
 from dmipy_sim.replay.trajectories import replay
-from dmipy_sim.acquisition.waveforms import pgse, set_b
+from dmipy_sim.acquisition.waveforms import set_b
+from dmipy_sim.sequences import pgse
 
 N = 4000
 MC = 1.0 / np.sqrt(N)          # Monte-Carlo floor
 
 
 def _grad_battery(n_t):
-    G = [np.asarray(set_b(pgse(delta=0.02, DELTA=0.038, G_magnitude=0.2,
-                               bvecs=[bv], n_t=n_t), b).G[0])
+    G = [np.asarray(set_b(pgse([bv], 0.02, 0.038, gradient_strengths=0.2, n_t=n_t), b).G[0])
          for b in (1e9, 2e9) for bv in ([1, 0, 0], [0, 0, 1])]
     return np.stack(G, 0)
 

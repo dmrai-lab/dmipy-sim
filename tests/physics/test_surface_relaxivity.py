@@ -43,7 +43,7 @@ import matplotlib.pyplot as plt
 import jax.numpy as jnp
 
 from dmipy_sim import simulate, Box1D, Cylinder, Sphere, set_b
-from dmipy_sim.acquisition.waveforms import pgse
+from dmipy_sim.sequences import pgse
 
 
 # ---------------------------------------------------------------------------
@@ -74,8 +74,7 @@ def _b0_waveform(TE_s, n_t=500):
     DELTA = TE_s - delta
     bvecs = np.array([[1.0, 0.0, 0.0]])
     wf = set_b(
-        pgse(delta=delta, DELTA=DELTA, G_magnitude=1.0,
-             bvecs=bvecs, n_t=n_t),
+        pgse(bvecs, delta, DELTA, gradient_strengths=1.0, n_t=n_t),
         np.array([1.0]))   # b=1 s/m² → attenuation = exp(-2e-9) ≈ 1
     actual_TE = wf.echo_idx * wf.dt
     return wf, actual_TE

@@ -18,7 +18,7 @@ import pytest
 
 from dmipy_sim import Cylinder, simulate, set_b
 from dmipy_sim.geometry.curved_cylinder import CurvedCylinder, CurvedMyelinatedCylinder
-from dmipy_sim.acquisition.waveforms import pgse
+from dmipy_sim.sequences import pgse
 
 D = 2.0e-9
 R = 5.0e-6
@@ -53,7 +53,7 @@ def test_straight_sweep_matches_the_analytic_cylinder(b):
     Same walkers, same waveform, same seed -- the only difference is which geometry object reflects them,
     so any disagreement beyond Monte-Carlo noise is the sweep's own.
     """
-    wf = set_b(pgse(delta=10e-3, DELTA=30e-3, G_magnitude=0.1, bvecs=[[1, 0, 0]], n_t=600), b)
+    wf = set_b(pgse([[1, 0, 0]], 10e-3, 30e-3, gradient_strengths=0.1, n_t=600), b)
     n = 20_000
 
     s_cyl = float(np.atleast_1d(simulate(n, D, wf, Cylinder(radius=R, orientation=(0, 0, 1)), seed=SEED))[0])
@@ -75,7 +75,7 @@ def test_curvature_changes_the_perpendicular_signal():
     """A bent fibre is not a straight one: curvature tilts the local axis into the gradient direction, so
     some of the restricted direction becomes free. Guards against a 'curved' tube that quietly ignores its
     centreline -- which would pass the straight-limit test above perfectly."""
-    wf = set_b(pgse(delta=10e-3, DELTA=30e-3, G_magnitude=0.1, bvecs=[[1, 0, 0]], n_t=600), 2.5e9)
+    wf = set_b(pgse([[1, 0, 0]], 10e-3, 30e-3, gradient_strengths=0.1, n_t=600), 2.5e9)
     n = 20_000
 
     z = np.linspace(-30e-6, 30e-6, 21)
@@ -98,7 +98,7 @@ def test_walkers_stay_inside_a_bent_tube():
     bent = np.stack([12e-6 * np.sin(z / 30e-6 * np.pi), np.zeros_like(z), z], axis=1)
     g = CurvedCylinder(bent, radius=R)
 
-    wf = set_b(pgse(delta=10e-3, DELTA=30e-3, G_magnitude=0.1, bvecs=[[1, 0, 0]], n_t=400), 1e9)
+    wf = set_b(pgse([[1, 0, 0]], 10e-3, 30e-3, gradient_strengths=0.1, n_t=400), 1e9)
     out = simulate(4000, D, wf, g, seed=SEED, return_positions=True)
     pos = np.asarray(out[1] if isinstance(out, tuple) else out)
 

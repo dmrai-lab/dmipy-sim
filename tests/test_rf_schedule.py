@@ -15,7 +15,7 @@ from dmipy_sim import sequences as _seqmod
 
 
 def test_pgste_mask_storage_time_and_stimulated_echo_come_from_the_schedule():
-    wf = d.pgste(delta=5e-3, TM=20e-3, G_magnitude=0.1, bvecs=[[1, 0, 0]], n_t=300, slew_rate=np.inf)
+    wf = d.pgste([[1, 0, 0]], 5e-3, 20e-3, gradient_strengths=0.1, n_t=300, slew_rate=np.inf)
     n_pulse = int(round(5e-3 / wf.dt))
     i_recall = int(round(wf.rf[2].t_s / wf.dt))
     expect = np.ones(300, bool)
@@ -26,16 +26,16 @@ def test_pgste_mask_storage_time_and_stimulated_echo_come_from_the_schedule():
 
 
 def test_spin_echo_constructors_are_all_transverse_with_the_echo_at_the_end():
-    for wf in (d.pgse(delta=5e-3, DELTA=20e-3, G_magnitude=0.1, bvecs=[[1, 0, 0]], n_t=200),
-               d.ogse(frequency=100.0, T_total=40e-3, G_magnitude=0.1, bvecs=[[1, 0, 0]], n_t=400),
-               d.trapezoidal_ogse(N=3, delta=10e-3, DELTA=15e-3, G_magnitude=0.1, bvecs=[[1, 0, 0]], n_t=300)):
+    for wf in (d.pgse([[1, 0, 0]], 5e-3, 20e-3, gradient_strengths=0.1, n_t=200),
+               d.ogse([[1, 0, 0]], 100.0, (40e-3) / 2, gradient_strengths=0.1, shape="cosine", slew_rate=np.inf, n_t=400),
+               d.ogse([[1, 0, 0]], 3 / (2 * (10e-3)), 10e-3, gradient_strengths=0.1, shape="trapezoid", Delta=15e-3, slew_rate=200e3, n_t=300)):
         assert wf.chi_perp is None and wf.TM is None and not wf.stimulated_echo and wf.readout == (wf.n_t - 1,)
         chi, TM, ste, echoes = wf.rf.coherence(wf.G.shape[1], wf.dt)
         assert chi.all() and len(echoes) == 1 and abs(round(echoes[0] / wf.dt) - wf.echo_idx) <= 2
 
 
 def test_cpmg_echo_indices_are_the_echo_times():
-    wf = d.cpmg(4, 10e-3, 0.02, [[0, 0, 1]], n_t_per_echo=50)
+    wf = d.cpmg(4, 10e-3, gradient_strengths=0.02, gradient_directions=[[0, 0, 1]], n_t_per_echo=50)
     np.testing.assert_array_equal(wf.readout, np.arange(1, 5) * 50)     # k*TE on the grid
     seq = _seqmod.cpmg(4, 10e-3, bvalues=1e9, n_t_per_echo=50)
     n_t = seq.G.shape[1]

@@ -27,8 +27,7 @@ def packs():
 
 
 def _wf(n_t, dt):
-    return d.set_b(d.pgse(delta=2e-3, DELTA=6e-3, G_magnitude=0.1, bvecs=[[1, 0, 0], [0, 0, 1]], n_t=n_t,
-                          slew_rate=np.inf), [1e9, 1e9])
+    return d.set_b(d.pgse([[1, 0, 0], [0, 0, 1]], 2e-3, 6e-3, gradient_strengths=0.1, n_t=n_t, slew_rate=np.inf), [1e9, 1e9])
 
 
 def _W(pack, wf):
@@ -90,7 +89,7 @@ def test_any_waveform_grid_and_a_sequence_are_accepted(packs):
     np.testing.assert_allclose(fine, replay_signal(full, _W(full, wf_fine)), rtol=1e-12)   # resampled onto the pack grid
     same = full.replay(_wf(full.n_t, full.dt))
     np.testing.assert_allclose(fine, same, rtol=0.1)                    # two discretisations of one waveform
-    seq = _seqmod.pgse(bvalues=[1e9], gradient_directions=[[1, 0, 0]], delta=2e-3, Delta=6e-3, n_t=200)
+    seq = _seqmod.pgse([[1, 0, 0]], 2e-3, 6e-3, bvalues=[1e9], n_t=200, slew_rate=np.inf)
     s = full.replay(seq)
     assert s.shape == (1,) and 0 < s[0] < 1
     per_pool = full.replay(_wf(full.n_t, full.dt), compartment=1)
