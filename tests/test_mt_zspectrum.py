@@ -17,7 +17,7 @@ from dmipy_sim.engine.pulse_sequence import saturation_pulse
 from dmipy_sim import RFEvent
 import pytest
 
-from dmipy_sim import Sphere, simulate_bloch, gradient_echo, prepend_mt_prep, run_bloch_sequence
+from dmipy_sim import Sphere, simulate_bloch, bare_gradient_echo, prepend_mt_prep, run_bloch_sequence
 from dmipy_sim.engine import mt
 
 pytestmark = pytest.mark.slow
@@ -105,13 +105,13 @@ def test_mt_prep_gre_offresonance_mtr():
     # off-resonance saturation.  (The pre-equilibration fix removed a spurious inflation: an
     # all-free reference is all-bright, while the prepped run loses signal to newly-stuck dark
     # spins -- that darkening used to masquerade as MT.)  A 20 ms prep gives a clear effect.
-    gre = gradient_echo(TE=2e-3, dt=DT)
+    gre = bare_gradient_echo(TE=2e-3, dt=DT)
     prep = saturation_pulse(1500.0, 20e-3, b1_hz=W1_HZ)
     seq = prepend_mt_prep(gre, prep, spoiler_s=1e-3, n_cycles=32.0)
     base = dict(T2=T2a, T1=T1a, seed=3)
     mt_kw = dict(kappa_MT=KAPPA_MT, dwell_time=DWELL, T2_bound=T2b, T1_bound=T1b)
     S_sat = abs(run_bloch_sequence(seq, 4000, D, Sphere(radius=R), **base, **mt_kw)[0])
-    S_ref = abs(run_bloch_sequence(gradient_echo(TE=2e-3, dt=DT), 4000, D,
+    S_ref = abs(run_bloch_sequence(bare_gradient_echo(TE=2e-3, dt=DT), 4000, D,
                                    Sphere(radius=R), **base, **mt_kw)[0])
     mtr = 1.0 - S_sat / S_ref
     assert mtr > 0.03                                      # emergent off-resonance MTR (bound pool)

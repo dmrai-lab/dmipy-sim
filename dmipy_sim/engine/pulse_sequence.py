@@ -1,80 +1,43 @@
-"""Lean forward-native pulse-sequence construction for the vector-Bloch engine.
+"""Bloch-side sequence builders: bare readouts for the vector-Bloch engine, FEXI, and the MT preparation block.
 
-Builds the engine-ready representation ``dmipy_sim.engine.bloch.simulate_bloch`` consumes:
-a PHYSICAL gradient ``G(t)`` on a ``dt`` grid, a finite-pulse RF event list, and an
-optional emergent voxel-scale crusher.  Scoped to what the magnetization-transfer /
-three-observables work needs -- a spin-echo or gradient-echo readout, optionally
-preceded by an off-resonance MT-prep saturation block.  (No replay, no
-susceptibility; the private repo's pgste / b-tensor / ogse families are out of scope
-here -- the readout does the refocusing emergently via its 180, no sign folding.)
+Everything here is a :class:`~dmipy_sim.acquisition.scanner_sequence.ScannerSequence` -- the physical gradient,
+the schedule, the readout, and where the engine models one, the emergent voxel-scale ``crusher`` (windings over
+windows; a um cell-scale gradient cannot wind >> 2 pi across a cell, so the crusher acts at the mm scale it
+physically has). :func:`run_bloch_sequence` drives one through ``simulate_bloch``, which applies the pulses
+itself and so reads ``G``; a spin echo refocuses EMERGENTLY there, with no sign folding.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
-
-from ..acquisition.rf import RFEvent, RFSchedule
-from types import SimpleNamespace
+from dataclasses import replace
 
 import numpy as np
 
+from ..acquisition.rf import RFEvent, RFSchedule
+from ..acquisition.scanner_sequence import ScannerSequence
 from .bloch import simulate_bloch
 from ..constants import GAMMA
 
-__all__ = ["BlochSequence", "gradient_echo", "spin_echo", "fexi", "saturation_pulse", "prepend_mt_prep",
+__all__ = ["bare_gradient_echo", "bare_spin_echo", "fexi", "saturation_pulse", "prepend_mt_prep",
            "run_bloch_sequence", "emergent_z_spectrum"]
 
 
-@dataclass
-class BlochSequence:
-    """Engine-ready emergent representation of one acquisition (forward, no replay)."""
-    G: np.ndarray                       # (n_meas, n_t, 3) PHYSICAL gradient, dt grid
-    dt: float                           # time step (s)
-    rf_events: RFSchedule
-    complex_signal: bool = True         # True -> read (Mx+iMy); False -> Re only
-    echo_steps: list = None             # multi-echo sample steps; None -> read the last step
-    crusher: dict = None                # {'windows_s':[(t0,t1)], 'n_cycles':...}
-    family: str = "gre"
-    notes: str = ""
-
-    def __post_init__(self):
-        self.rf_events = RFSchedule(self.rf_events)
-
-    @property
-    def n_t(self) -> int:
-        return self.G.shape[1]
-
-    @property
-    def n_meas(self) -> int:
-        return self.G.shape[0]
-
-
-# ── readout builders ────────────────────────────────────────────────────────────
-def gradient_echo(TE, dt, *, n_meas=1, exc_axis_deg=90.0):
-    """90 excitation then free evolution to ``TE``; read the transverse (complex).
-
-    No 180, so a static off-resonance is NOT refocused -- the readout reports the
-    (relaxed) transverse of whatever longitudinal magnetisation the excitation tips,
-    which is exactly the MT-reduced ``Mz`` after an MT-prep block.
-    """
+# ── bare readouts (no gradient) ─────────────────────────────────────────────────
+def bare_gradient_echo(TE, dt, *, n_meas=1, exc_axis_deg=90.0):
+    """A 90 then free evolution to ``TE``, no gradient: read the transverse. No 180, so a static off-resonance is
+    NOT refocused -- the readout reports the (relaxed) transverse of whatever longitudinal magnetisation the
+    excitation tips, which is exactly the MT-reduced ``Mz`` after an MT-prep block."""
     n_t = int(round(TE / dt)) + 1
-    G = np.zeros((n_meas, n_t, 3), dtype=np.float64)
-    rf = (RFEvent(0.0, 90.0, 'Mz→Mxy', axis_deg=exc_axis_deg),)
-    return BlochSequence(G=G, dt=dt, rf_events=rf, complex_signal=True,
-                         family="gre", notes="90 + free evolution to TE (complex)")
+    return ScannerSequence(G=np.zeros((n_meas, n_t, 3)), dt=dt, rf=(RFEvent(0.0, 90.0, 'Mz→Mxy', axis_deg=exc_axis_deg),),
+                           family="gre", notes="90 + free evolution to TE")
 
 
-def spin_echo(TE, dt, *, n_meas=1, exc_axis_deg=90.0):
-    """90 at 0, 180 at TE/2, echo at TE (real).  Gradient is zero unless set on ``G``.
-
-    The 180 refocuses static dephasing EMERGENTLY (it conjugates the accumulated
-    phase) -- no ``eps_P`` sign, no folded/effective gradient convention.
-    """
+def bare_spin_echo(TE, dt, *, n_meas=1, exc_axis_deg=90.0):
+    """A 90 at 0, a 180 at TE/2, the echo at TE, no gradient. The 180 refocuses static dephasing EMERGENTLY in the
+    vector-Bloch engine (it conjugates the accumulated phase)."""
     n_t = int(round(TE / dt)) + 1
-    G = np.zeros((n_meas, n_t, 3), dtype=np.float64)
-    rf = (RFEvent(0.0, 90.0, 'Mz→Mxy', axis_deg=exc_axis_deg),
-          RFEvent(TE / 2.0, 180.0, 'refocus'))
-    return BlochSequence(G=G, dt=dt, rf_events=rf, complex_signal=False,
-                         family="se", notes="90 - 180@TE/2 - echo (emergent refocusing)")
+    return ScannerSequence(G=np.zeros((n_meas, n_t, 3)), dt=dt,
+                           rf=(RFEvent(0.0, 90.0, 'Mz→Mxy', axis_deg=exc_axis_deg), RFEvent(TE / 2.0, 180.0, 'refocus')),
+                           family="se", notes="90 - 180@TE/2 - echo")
 
 
 def fexi(delta, t_mix, dt, *, g_filter, g_detect, Delta=None, delta_detect=None,
@@ -99,8 +62,8 @@ def fexi(delta, t_mix, dt, *, g_filter, g_detect, Delta=None, delta_detect=None,
     diffusion time; a contiguous pair (``Delta=delta``) has too short a time to separate a
     restricted pool (raise ``Delta`` / the gradient). Runs through :func:`simulate_bloch` (the
     crusher + stimulated-echo storage select the filtered pathway — a scalar ``chi_perp`` walk
-    cannot); exchange needs a **permeable** substrate. Returns a :class:`BlochSequence` with the
-    per-measurement detection b-value on ``.b_detect`` (s/m²).
+    cannot); exchange needs a **permeable** substrate. Returns a ``ScannerSequence`` whose
+    ``notes`` name it; the per-measurement detection b-value is :func:`fexi_b_detect`.
 
     Parameters
     ----------
@@ -158,17 +121,19 @@ def fexi(delta, t_mix, dt, *, g_filter, g_detect, Delta=None, delta_detect=None,
                for i, lab in zip((0, i_store, i_recall), ('Mz→Mxy', 'store', 'recall')))
     crusher = {'windows_s': [((i_store + 1) * dt, (i_recall - 1) * dt)],
                'n_cycles': float(crush_cycles)}
+    return ScannerSequence(G=G, dt=dt, rf=rf, crusher=crusher, family="fexi",
+                           notes="PGSE filter - store - t_mix (exchange) - recall - PGSE detect")
 
-    # detection b per measurement: q = γ·∫G dt over the (self-refocused bipolar) detection block
-    b_detect = np.empty(n_meas)
-    for m in range(n_meas):
-        qd = GAMMA * np.cumsum(G[m, i_recall:, :], axis=0) * dt
-        b_detect[m] = float(np.sum(qd ** 2) * dt)
 
-    seq = BlochSequence(G=G, dt=dt, rf_events=rf, complex_signal=True, crusher=crusher,
-                        family="fexi", notes="PGSE filter - store - t_mix (exchange) - recall - PGSE detect")
-    seq.b_detect = b_detect
-    return seq
+def fexi_b_detect(seq):
+    """The detection b-value per measurement (s/m^2) of a :func:`fexi` sequence: ``q = gamma int G dt`` over the
+    self-refocused detection block after the recall."""
+    i_recall = int(round(seq.rf[2].t_s / seq.dt))
+    b = np.empty(seq.n_meas)
+    for m in range(seq.n_meas):
+        qd = GAMMA * np.cumsum(np.asarray(seq.G[m, i_recall:, :], np.float64), axis=0) * seq.dt
+        b[m] = float(np.sum(qd ** 2) * seq.dt)
+    return b
 
 
 # ── MT-prep saturation block ────────────────────────────────────────────────────
@@ -190,9 +155,7 @@ def prepend_mt_prep(seq, sat, *, spoiler_s=0.5e-3, n_cycles=32.0):
     off-resonance (``offset_hz``), *just another RF event*, placed over ``[0, sat.duration_s)`` and FOLLOWED
     BY a SEPARATE voxel-scale crusher window of ``spoiler_s`` (RF off) that dephases the residual transverse
     so only the (MT-reduced) longitudinal magnetisation is excited by the readout. A crusher concurrent with
-    the pulse would be continuously refilled by the RF, so it must be its own window afterwards. The crusher
-    is modelled at the mm voxel scale it physically acts on (``n_cycles`` windings across the voxel; a um
-    cell-scale gradient cannot wind >> 2 pi across the cell).
+    the pulse would be continuously refilled by the RF, so it must be its own window afterwards.
     """
     if not isinstance(sat, RFEvent):
         raise TypeError(f"sat is the saturation pulse as an RFEvent (saturation_pulse(...) builds it), got {type(sat).__name__}")
@@ -208,27 +171,25 @@ def prepend_mt_prep(seq, sat, *, spoiler_s=0.5e-3, n_cycles=32.0):
     G_new = np.concatenate([Gpre, seq.G], axis=1)
     t_shift = shift * dt
     sat = replace(sat, t_s=dur / 2.0)                    # RF only over [0, dur]
-    rf_new = RFSchedule((sat,) + seq.rf_events.shifted(t_shift))
-    echo_new = (None if seq.echo_steps is None
-                else [int(s) + shift for s in seq.echo_steps])
+    rf_new = RFSchedule((sat,) + seq.rf.shifted(t_shift))
+    readout_new = tuple(int(s) + shift for s in seq.readout)
     spoil_win = (n_sat * dt, (n_sat + n_spoil) * dt)
     crush = (dict(windows_s=[spoil_win], n_cycles=float(n_cycles)) if n_spoil > 0 else seq.crusher)
-    return replace(seq, G=G_new, rf_events=rf_new, echo_steps=echo_new, crusher=crush,
+    return replace(seq, G=G_new, rf=rf_new, readout=readout_new, crusher=crush,
                    notes=seq.notes + f"; MT-prep {sat.offset_hz:.0f} Hz / {dur*1e3:.0f} ms")
 
 
-# ── run a BlochSequence through the forward engine ──────────────────────────────
+# ── run through the forward engine ──────────────────────────────────────────────
 def run_bloch_sequence(seq, n_walkers, diffusivity, geometry, *, seed=0, **kw):
-    """Run a :class:`BlochSequence` through ``simulate_bloch`` and return the signal.
+    """Run a :class:`ScannerSequence` through ``simulate_bloch`` and return the signal.
 
-    Extra keywords (``T2``, ``T1``, ``M0``, ``off_resonance_hz``, ``kappa_MT``,
-    ``dwell_time``, ``T2_bound``, ``T1_bound``, ``off_resonance_bound``,
-    ``return_mz``, ``require_gpu``) pass straight to ``simulate_bloch``.  With
-    ``seq.echo_steps`` None the last step (the readout echo) is returned.
+    Extra keywords (``T2``, ``T1``, ``M0``, ``off_resonance_hz``, ``kappa_MT``, ``dwell_time``, ``T2_bound``,
+    ``T1_bound``, ``off_resonance_bound``, ``return_mz``, ``require_gpu``) pass straight to ``simulate_bloch``.
+    A readout at the last sample returns that echo; a multi-echo readout returns every echo.
     """
-    wf = SimpleNamespace(G=np.asarray(seq.G), dt=float(seq.dt))
-    return simulate_bloch(n_walkers, diffusivity, wf, geometry, seq.rf_events,
-                          seed=seed, echo_steps=seq.echo_steps, crusher=seq.crusher, **kw)
+    echo_steps = None if seq.readout == (seq.n_t - 1,) else list(seq.readout)
+    return simulate_bloch(n_walkers, diffusivity, seq, geometry, seq.rf,
+                          seed=seed, echo_steps=echo_steps, crusher=seq.crusher, **kw)
 
 
 # ── turnkey emergent Z-spectrum sweep ─────────────────────────────────────────────
@@ -249,23 +210,6 @@ def emergent_z_spectrum(offsets_hz, geometry, *, n_walkers, diffusivity, w1_hz, 
     pool is burned in (``equilibrate_binding`` other than ``'off'``).  Fine ``dt`` is
     required so the carrier ``2*pi*offset*dt`` does not alias.
 
-    Parameters
-    ----------
-    offsets_hz : array-like
-        Saturation offsets from the free-water resonance (Hz).
-    geometry : Sphere | Cylinder | ...
-        Any MT-capable geometry (the wall the spins bind to).
-    n_walkers, diffusivity : int, float
-        Walker count and free-water diffusivity (m^2/s).
-    w1_hz, t_sat, dt : float
-        CW saturation nutation rate (Hz), duration (s), and timestep (s).
-    T2, T1 : float
-        Free-pool relaxation times (s).
-    kappa_MT, dwell_time, T2_bound, T1_bound : float
-        MT wall reactivity (m/s), bound dwell time (s, = 1/k_r), and bound-pool T2/T1 (s).
-    equilibrate_binding : {'auto', 'burnin', 'fast', 'off'}
-        Bound-pool initialisation; see :func:`dmipy_sim.simulate_bloch`.
-
     Returns
     -------
     numpy.ndarray
@@ -273,11 +217,11 @@ def emergent_z_spectrum(offsets_hz, geometry, *, n_walkers, diffusivity, w1_hz, 
     """
     offsets = np.atleast_1d(np.asarray(offsets_hz, dtype=float))
     n_t = int(round(float(t_sat) / float(dt))) + 1
-    wf = SimpleNamespace(G=np.zeros((1, n_t, 3)), dt=float(dt))
     mz = np.empty(offsets.shape, dtype=float)
     for i, off in enumerate(offsets):
-        rf = (saturation_pulse(float(off), float(t_sat), b1_hz=float(w1_hz)),)   # the CW flip over the window
-        _, m = simulate_bloch(n_walkers, diffusivity, wf, geometry, rf,
+        sat = saturation_pulse(float(off), float(t_sat), b1_hz=float(w1_hz))          # the CW flip over the window
+        seq = ScannerSequence(G=np.zeros((1, n_t, 3)), dt=float(dt), rf=(sat,), family="mt-sat")
+        _, m = simulate_bloch(n_walkers, diffusivity, seq, geometry, seq.rf,
                               T2=T2, T1=T1, kappa_MT=kappa_MT, dwell_time=dwell_time,
                               T2_bound=T2_bound, T1_bound=T1_bound, return_mz=True,
                               equilibrate_binding=equilibrate_binding, seed=seed)

@@ -43,7 +43,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from dmipy_sim import simulate, pgse, Box1D, Cylinder, Sphere
-from dmipy_sim.acquisition.waveforms import Waveform, calc_b
+from dmipy_sim.acquisition.waveforms import calc_b
+from dmipy_sim.acquisition.scanner_sequence import ScannerSequence
 import jax.numpy as jnp
 
 # ── Constants ────────────────────────────────────────────────────────────────
@@ -84,7 +85,7 @@ def _build_sgp_waveform(q_values, bvec, delta, DELTA, n_t):
 
     Returns
     -------
-    Waveform with G scaled so each measurement corresponds to q_values[i].
+    ScannerSequence with G scaled so each measurement corresponds to q_values[i].
     """
     n_q = len(q_values)
     bvecs = np.tile(bvec, (n_q, 1)).astype(np.float32)
@@ -105,9 +106,9 @@ def _build_sgp_waveform(q_values, bvec, delta, DELTA, n_t):
 
     G = np.array(wf_template.G)  # (n_q, n_t, 3)
     G_scaled = G * scale[:, None, None]
-    return Waveform(G=jnp.array(G_scaled.astype(np.float32)),
+    return ScannerSequence(G=jnp.array(G_scaled.astype(np.float32)),
                     dt=wf_template.dt,
-                    echo_idx=wf_template.echo_idx)
+                    readout=wf_template.readout)
 
 
 # ── Theoretical form factors ──────────────────────────────────────────────────

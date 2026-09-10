@@ -2,12 +2,12 @@
 
 Pulseq (Layton et al., MRM 2017) is the de-facto open, vendor-neutral pulse-
 sequence format.  This module bridges it to dmipy-sim's base representation
-(``Waveform``: G(t) in T/m + dt + RF event schedule), so that:
+(``ScannerSequence``: G(t) in T/m + dt + RF event schedule), so that:
 
   * ``from_pulseq`` rasterises ANY ``.seq`` onto our uniform grid and returns a
-    Monte-Carlo-simulable ``Waveform`` -- i.e. dmipy-sim can simulate the field's
+    Monte-Carlo-simulable ``ScannerSequence`` -- i.e. dmipy-sim can simulate the field's
     sequences directly, no manual parameter transfer;
-  * ``to_pulseq`` exports a ``Waveform`` back to a ``.seq`` (the round-trip is the
+  * ``to_pulseq`` exports a ``ScannerSequence`` back to a ``.seq`` (the round-trip is the
     consistency/safety check on the bridge);
   * ``PULSEQ_SYSTEMS`` is the scanner catalogue (:mod:`dmipy_sim.acquisition.scanner_constants`)
     in Pulseq's own ``Opts`` schema (max_grad/max_slew/raster/dead-times), one preset per
@@ -40,6 +40,7 @@ from ..constants import GAMMA
 from ..acquisition.scanners import ScannerLimits
 from ..acquisition.rf import RFEvent, RFSchedule
 from ..acquisition.timing import SequenceTiming
+from ..acquisition.scanner_sequence import ScannerSequence
 
 GAMMA_HZ = GAMMA / (2.0 * np.pi)   # Hz/T (proton); pypulseq's gamma convention
 
@@ -123,17 +124,17 @@ def _event_times(arr):
     return a.ravel()
 
 
-# -- export: Waveform -> .seq -------------------------------------------------
+# -- export: ScannerSequence -> .seq -------------------------------------------------
 
 def to_pulseq(waveform, m=0, *, system=None, filename=None,
               excitation_flip_deg=90.0, native_rf=True):
-    """Export measurement ``m`` of a :class:`dmipy_sim.acquisition.waveforms.Waveform` to a
+    """Export measurement ``m`` of a :class:`dmipy_sim.acquisition.scanner_sequence.ScannerSequence` to a
     pypulseq ``Sequence`` (written to ``filename`` if given).
 
     The full gradient G(t) is emitted as one arbitrary-gradient block (exact, on
     the waveform's own raster), bracketed by an excitation RF and an ADC; the RF
     schedule, dt and echo index travel in the ``[DEFINITIONS]`` so ``from_pulseq``
-    reconstructs the Waveform faithfully (the round-trip safety net).  v1 carries
+    reconstructs the ScannerSequence faithfully (the round-trip safety net).  v1 carries
     the refocusing RF as metadata rather than splitting the gradient into native
     180-blocks -- enough for round-trip + simulation, not yet a scanner-runnable
     spin echo (that is the v2 native-RF-splitting follow-up).
@@ -153,7 +154,7 @@ def to_pulseq(waveform, m=0, *, system=None, filename=None,
     # gradient of its own -- G=0 inserts freely -- but the constant diffusion-weighting gradient the
     # constructor can add is never off, and then every pulse in the train needs room made for it.
     Ghz = G * gamma_hz                                # Hz/m
-    ev = RFSchedule(getattr(waveform, 'rf_events', None))
+    ev = waveform.rf
     ks = [int(np.clip(round(e.t_s / dt), 0, max(len(Ghz) - 1, 0))) for e in ev]
     inserted = [k for k in ks if k < len(Ghz) and np.any(np.abs(Ghz[k]) > 0)]
     if inserted and native_rf:
@@ -255,7 +256,7 @@ def _write_defs(seq, waveform, dt, n_t, echo_idx=None):
     seq.set_definition('dmipy_echo_idx',
                        int(waveform.echo_idx if echo_idx is None else echo_idx))
     seq.set_definition('dmipy_n_t', int(n_t))
-    seq.set_definition('dmipy_rf_events', _encode_rf_events(waveform.rf_events))
+    seq.set_definition('dmipy_rf_events', _encode_rf_events(waveform.rf))
     seq.set_definition('dmipy_gradient', 'physical')     # what G is: the scanner's, pulses as blocks or metadata
     if getattr(waveform, 'timing', None) is not None:
         seq.set_definition('dmipy_timing', json.dumps(waveform.timing.to_dict(), separators=(',', ':')))
@@ -286,10 +287,10 @@ def _rf_from_pulseq(seq):
     return RFSchedule(ev) or None
 
 
-# -- import: .seq -> Waveform -------------------------------------------------
+# -- import: .seq -> ScannerSequence -------------------------------------------------
 def from_pulseq(src, *, dt=None):
     """Read a Pulseq ``.seq`` (path or ``pypulseq.Sequence``) and rasterise it to
-    a Monte-Carlo-simulable :class:`dmipy_sim.acquisition.waveforms.Waveform` (single
+    a Monte-Carlo-simulable :class:`dmipy_sim.acquisition.scanner_sequence.ScannerSequence` (single
     measurement, shape (1, n_t, 3) in T/m).
 
     Gradients are rasterised exactly (piecewise-linear interpolation onto the
@@ -299,7 +300,7 @@ def from_pulseq(src, *, dt=None):
     excitation/refocusing when only times are available.
     """
     pp = _require_pypulseq()
-    from ..acquisition.waveforms import Waveform
+    
     import jax.numpy as jnp
 
     if isinstance(src, pp.Sequence):
@@ -316,11 +317,11 @@ def from_pulseq(src, *, dt=None):
     # out[1]/out[2] are (3, n_event): row 0 = times, rows 1-2 = freq/phase offsets.
     t_exc = _event_times(wav[1]) if len(wav) > 1 else np.array([])
     t_ref = _event_times(wav[2]) if len(wav) > 2 else np.array([])
-    t_adc = wav[-1] if len(wav) >= 4 else None
+    t_adc = wav[3] if len(wav) >= 4 else None            # out[3] = ADC sample times; out[4] their freq/phase
 
     dt = float(dt if dt is not None else defs.get('dmipy_dt', seq.grad_raster_time))
 
-    # Anchor t=0 of the Waveform at the excitation (our convention: rf/echo times
+    # Anchor t=0 of the ScannerSequence at the excitation (our convention: rf/echo times
     # are relative to excitation).  Fall back to the first gradient sample, else 0.
     t0 = float(t_exc[0]) if t_exc.size else np.inf
     if not np.isfinite(t0):
@@ -372,13 +373,12 @@ def from_pulseq(src, *, dt=None):
         rf_events = RFSchedule([RFEvent(float(t) - t0, 90.0, 'excitation') for t in t_exc] +
                                [RFEvent(float(t) - t0, 180.0, 'refocusing') for t in t_ref]) or None
 
-    # A Waveform stores the PHYSICAL gradient. A .seq written natively carries it (the pulses are blocks), and
+    # A ScannerSequence stores the PHYSICAL gradient. A .seq written natively carries it (the pulses are blocks), and
     # so does one this version writes with the pulses as metadata (it says so: dmipy_gradient = 'physical').
     # The older metadata form wrote the EFFECTIVE gradient; un-fold it through the same schedule so the object
     # holds what the scanner plays and G_eff derives the rest.
     if not native and defs.get('dmipy_gradient') != 'physical':
         G = G * RFSchedule(rf_events).sign(t_grid)[:, None]
-    chi_perp = RFSchedule(rf_events).storage_mask(t_grid)
 
     if 'dmipy_echo_idx' in defs:
         echo_idx = int(defs['dmipy_echo_idx'])
@@ -387,10 +387,9 @@ def from_pulseq(src, *, dt=None):
         echo_idx = (int(round((float(ta[-1]) - t0) / dt)) if ta.size else n_t - 1)
     echo_idx = int(np.clip(echo_idx, 0, n_t - 1))
 
-    # TM / stimulated-echo state come from the RF schedule rather than a stored value: the pulses ARE the
-    # definition, so a file that describes its RF describes its mixing time, and there is no second copy to
-    # fall out of sync with the first.
-    TM, stimulated_echo = RFSchedule(rf_events).mixing_time
+    # TM / stimulated-echo state / chi_perp are the ScannerSequence's own derivations from the schedule: the
+    # pulses ARE the definition, so a file that describes its RF describes its mixing time, and there is no
+    # second copy to fall out of sync with the first.
 
     # the budget: read from the blocks where the file plays a plain spin echo (a 90, one 180, a readout) --
     # pulseq_timing assumes exactly that -- else from what this version wrote, else none
@@ -401,9 +400,7 @@ def from_pulseq(src, *, dt=None):
     elif defs.get('dmipy_timing'):
         timing = SequenceTiming.from_dict(json.loads(defs['dmipy_timing']))
 
-    return Waveform(G=jnp.asarray(G[None]), dt=dt, echo_idx=echo_idx,
-                    rf_events=rf_events, TM=TM, stimulated_echo=stimulated_echo,
-                    chi_perp=None if chi_perp is None else jnp.asarray(chi_perp), timing=timing)
+    return ScannerSequence(G=G[None], dt=dt, rf=rf_events, readout=(echo_idx,), timing=timing, family="pulseq")
 
 
 def _has_adc(seq):
@@ -433,7 +430,7 @@ def pulseq_timing(src):
         ``readout_duration``   ADC window length.
 
     :meth:`dmipy_sim.acquisition.timing.SequenceTiming.from_pulseq` wraps them as the budget a
-    :class:`~dmipy_sim.acquisition.waveforms.Waveform` carries and a designer reads.
+    :class:`~dmipy_sim.acquisition.scanner_sequence.ScannerSequence` carries and a designer reads.
     """
     pp = _require_pypulseq()
     if isinstance(src, pp.Sequence):

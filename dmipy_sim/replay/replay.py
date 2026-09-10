@@ -225,7 +225,7 @@ class ReplayPack:
                orientation=None, complex_signal=False):
         """The signal of ``waveform`` on this pack, with every tier the pack carries and the request asks for.
 
-        ``waveform`` is a :class:`~dmipy_sim.acquisition.waveforms.Waveform` / :class:`~dmipy_sim.sequences.Sequence`
+        ``waveform`` is a :class:`~dmipy_sim.acquisition.scanner_sequence.ScannerSequence` / :class:`~dmipy_sim.acquisition.scanner_sequence.ScannerSequence`
         (its ``G_eff``, the effective gradient, is what this route integrates), or a bare EFFECTIVE ``G``
         (n_meas, n_t_wf, 3) in T/m on ``dt`` already on the pack's save grid; it is read on the pack grid
         (``n_t`` samples of ``dt``, zero outside the waveform).
@@ -328,7 +328,7 @@ class ReplayPack:
         P = self._prepare(waveform, tissue=tissue, T2=T2, T1=T1, rho=rho, D=D, B0=B0, b0_dir=b0_dir,
                           chi_iso=chi_iso, chi_aniso=chi_aniso, orientation=orientation, compartment=compartment,
                           relaxation=False, surface=False)
-        rf = rf_events if rf_events is not None else (getattr(waveform, "rf_events", None) or [])
+        rf = rf_events if rf_events is not None else (getattr(waveform, "rf", None) or [])
         if not rf:
             raise ValueError("the Bloch route replays an RF schedule: give rf_events= (or a waveform carrying "
                              "them). Without a pulse there is nothing this route adds over replay().")
@@ -783,7 +783,7 @@ def _as_distribution(orientation):
 def _refocus_time_of(waveform):
     """The time of the waveform's 180 (the first refocusing pulse of its RF schedule), or ``None``
     for a schedule without one (a gradient echo)."""
-    return RFSchedule(getattr(waveform, "rf_events", None)).refocus_time
+    return RFSchedule(getattr(waveform, "rf", None)).refocus_time
 
 
 # ------------------------------- compiled-scheme forward -------------------------------

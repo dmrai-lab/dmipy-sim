@@ -959,7 +959,7 @@ class ReplayPhantom:
                              f"A mode that leaves the substrate's azimuth unstated leaves the propagation "
                              f"undefined, and a distribution of poses under a scaled RF pulse is not the "
                              f"composition of one propagation, so neither is approximated here.")
-        rf = rf_events if rf_events is not None else (getattr(waveform, "rf_events", None) or [])
+        rf = rf_events if rf_events is not None else (getattr(waveform, "rf", None) or [])
         if not rf:
             raise ValueError("the Bloch route replays an RF schedule: give rf_events= or a waveform carrying them")
         given = {}
@@ -1022,18 +1022,10 @@ class ReplayPhantom:
 
 
 def _b_values(waveform):
-    """The b-values of the waveform, from its own declaration or from the gradient itself: ``b = int |q|^2 dt``
-    with ``q = gamma int G``, which is what an analytic closed form is evaluated at."""
-    from ..constants import GAMMA
-    b = getattr(waveform, "bvalues", None)
-    if b is not None:
-        return np.asarray(b, np.float64)
-    G = np.asarray(getattr(waveform, "G", waveform), np.float64)
-    if G.ndim == 2:
-        G = G[None]
-    dt = float(getattr(waveform, "dt"))
-    q = GAMMA * np.cumsum(G, axis=1) * dt
-    return (q * q).sum(axis=2).sum(axis=1) * dt
+    """The b-values an analytic closed form is evaluated at: the sequence's declared encoding, else the integral
+    of its effective gradient (``b = int |q|^2 dt``, ``q = gamma int G_eff``)."""
+    enc = waveform.encoding
+    return np.asarray(enc.bvalues if enc is not None else waveform.b(), np.float64)
 
 
 def _static_spin_rf(waveform, rf_events, b1_scale):

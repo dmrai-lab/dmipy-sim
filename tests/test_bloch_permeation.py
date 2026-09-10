@@ -10,14 +10,14 @@ import numpy as np
 import pytest
 
 from dmipy_sim import Cylinder, FreeDiffusion
-from dmipy_sim.engine.pulse_sequence import spin_echo, run_bloch_sequence
+from dmipy_sim.engine.pulse_sequence import bare_spin_echo, run_bloch_sequence
 
 GAMMA = 2.675e8
 
 
 def _dw_spin_echo(g=0.20, TE=30e-3, dt=1e-4, delta=5e-3):
     """PGSE (physical same-sign lobes; the 180 folds the sign) perpendicular to the cylinder."""
-    seq = spin_echo(TE, dt)
+    seq = bare_spin_echo(TE, dt)
     n_t = seq.n_t
     nd = int(round(delta / dt))
     i1 = int(round(4e-3 / dt))

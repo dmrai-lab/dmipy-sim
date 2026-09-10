@@ -1,4 +1,4 @@
-"""Waveform visualization utilities.
+"""ScannerSequence visualization utilities.
 
 Main entry points
 -----------------
@@ -76,7 +76,7 @@ def _draw_rf_panel(ax, wf, t_plot):
     ax.set_ylim(0, 1)
     ax.axis('off')
 
-    rf_events = RFSchedule(getattr(wf, 'rf_events', None))
+    rf_events = RFSchedule(getattr(wf, 'rf', None))
     t_total_s = wf.dt * (len(t_plot) - 1)
     disp_per_s = (t_plot[-1] - t_plot[0]) / t_total_s if t_total_s > 0 else 1.0
 
@@ -223,7 +223,7 @@ def plot_waveform(wf, meas_idx=0, title=None, t_unit='ms', figsize=(9, 5)):
 
     Parameters
     ----------
-    wf : Waveform
+    wf : ScannerSequence
     meas_idx : int
         Measurement index to highlight (default 0).
     title : str or None
@@ -274,7 +274,7 @@ def plot_sequence_comparison(waveforms, titles=None, meas_idx=0,
 
     Parameters
     ----------
-    waveforms : list of Waveform
+    waveforms : list of ScannerSequence
     titles : list of str or None
     meas_idx : int
         Measurement index to highlight in each waveform.

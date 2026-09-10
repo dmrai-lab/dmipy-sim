@@ -3,6 +3,7 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+from dmipy_sim import Encoding, ScannerSequence
 from dmipy_sim.fields.susceptibility_field import field_grid_of
 from dmipy_sim.replay import so3
 from dmipy_sim.replay.bank import build_replay_pack
@@ -38,16 +39,13 @@ def ellipsoid():
     return pk, _pgse(pk, [[1, 0, 0], [0, 1, 0]], [6e8, 6e8])
 
 
-class _Acq:
-    """A bare gradient waveform on the pack grid (a gradient echo): ``G`` (n_meas, n_t, 3), ``dt``. No pulses,
-    so the effective gradient is the gradient itself."""
-    def __init__(self, G, dt):
-        self.G, self.dt = G, dt
-        self.bvalues = np.zeros(G.shape[0])
-
-    @property
-    def G_eff(self):
-        return self.G
+def _Acq(G, dt, bvalues=None):
+    """A bare gradient waveform on the pack grid (a gradient echo): no pulses, so the effective gradient is the
+    gradient itself; the declared b defaults to zero."""
+    G = np.asarray(G)
+    return ScannerSequence(G=G, dt=dt, family="gre",
+                           encoding=Encoding(bvalues=np.zeros(G.shape[0]) if bvalues is None else np.asarray(bvalues, float),
+                                             gradient_directions=np.zeros((G.shape[0], 3))))
 
 
 def _pgse(pk, dirs, bvals, delta=1e-3, Delta=3e-3):
@@ -59,8 +57,7 @@ def _pgse(pk, dirs, bvals, delta=1e-3, Delta=3e-3):
         g = np.asarray(g, float) / np.linalg.norm(g)
         amp = np.sqrt(b / ((GAMMA * nd * dt) ** 2 * ((ng - nd / 3) * dt))) if b > 0 else 0.0
         G[i, :nd] = amp * g; G[i, ng:ng + nd] = -amp * g
-    acq = _Acq(G, dt); acq.bvalues = np.asarray(bvals, float)
-    return acq
+    return _Acq(G, dt, bvals)
 
 
 KW = dict(B0=3.0, b0_dir=(0.6, 0.0, 0.8), chi_iso=-0.1e-6, chi_aniso=-0.1e-6, refocus_time=None)
@@ -77,7 +74,8 @@ def test_one_pose_is_the_counter_rotated_acquisition(hollow):
     R = np.array([[np.cos(th), 0, np.sin(th)], [0, 1, 0], [-np.sin(th), 0, np.cos(th)]])
     kw = dict(KW, b0_dir=tuple(R.T @ np.asarray(KW["b0_dir"])))
     np.testing.assert_allclose(pk.replay(seq, orientation=R, complex_signal=True, **KW),
-                               pk.replay(_Acq(np.asarray(seq.G_eff) @ R, seq.dt), complex_signal=True, **kw), rtol=1e-10)
+                               pk.replay(_Acq(np.asarray(seq.G_eff) @ R, seq.dt), complex_signal=True, **kw),
+                               rtol=1e-6)                     # the object stores G in float32: agreement to its rounding
     with pytest.raises(ValueError, match="proper rotation"):
         pk.replay(seq, orientation=np.diag([1, 1, -1]))
 
@@ -148,7 +146,7 @@ def test_an_axis_density_composes_like_averaging_explicit_poses(hollow):
     dirs, w = so3.sphere_quadrature(10, 20)
     rolls = np.arange(6) * (2 * np.pi / 6)
     rho = fod.evaluate(dirs)
-    brute = np.zeros(len(seq.bvalues), np.complex128)
+    brute = np.zeros(len(seq.encoding.bvalues), np.complex128)
     for n, wn, fn in zip(dirs, w, rho):
         for r in rolls:
             brute += (wn * fn / len(rolls)) * pk.replay(seq, orientation=so3.rotation_of(n, roll=r),

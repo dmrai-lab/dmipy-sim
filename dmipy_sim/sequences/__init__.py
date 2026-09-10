@@ -1,29 +1,21 @@
-"""Physical acquisition sequences (sim-owned forward-signal definition).
+"""The sequence builders and the Pulseq bridge.
 
-``Sequence`` carries the real ``G(t)`` + per-measurement encoding (gradient
-directions, b-values, q-values, gradient strengths, timing) and the directly
-derived ``btensor`` / ``instantaneous`` view.  The module-level constructors are
-the canonical API::
+Every builder returns a :class:`~dmipy_sim.acquisition.scanner_sequence.ScannerSequence` -- the physical
+gradient, the RF schedule, the readout, the per-measurement encoding an analytical layer reads::
 
     seq = dmipy_sim.sequences.pgse(bvalues, gdirs, delta, Delta, slew_rate=200.)
-    seq.G, seq.dt, seq.bvalues, seq.btensor()      # physical / forward
-    seq.instantaneous()                            # square / infinite-slew limit
+    seq.G, seq.G_eff, seq.dt, seq.encoding.bvalues, seq.btensor()
+    dmipy_sim.sequences.instantaneous(seq)          # the square / infinite-slew limit
 
-dmipy-fit's AcquisitionScheme consumes a Sequence (fit eats sim's real
-constructors) and adds the analytical shell / SH / rotational-harmonics layer.
+dmipy-fit's AcquisitionScheme consumes one (fit eats sim's real builders) and adds the analytical shell / SH /
+rotational-harmonics layer.
 """
-from .sequence import Sequence
+from .builders import (pgse, pgste, gre, cpmg, ogse, ste, pte, from_waveform, from_btensor_waveform,
+                       from_pgste_waveform, instantaneous, to_gradient_array)
 from .pulseq import from_pulseq, to_pulseq, make_system, PULSEQ_SYSTEMS
 
-pgse = Sequence.from_pgse
-cpmg = Sequence.from_cpmg
-ogse = Sequence.from_ogse
-ste = Sequence.from_btensor_ste
-pte = Sequence.from_btensor_pte
-from_waveform = Sequence.from_waveform
-
 __all__ = [
-    'Sequence', 'pgse', 'cpmg', 'ogse', 'ste', 'pte',
-    'from_waveform',
+    'pgse', 'pgste', 'gre', 'cpmg', 'ogse', 'ste', 'pte',
+    'from_waveform', 'from_btensor_waveform', 'from_pgste_waveform', 'instantaneous', 'to_gradient_array',
     'from_pulseq', 'to_pulseq', 'make_system', 'PULSEQ_SYSTEMS',
 ]

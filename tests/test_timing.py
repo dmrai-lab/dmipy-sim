@@ -6,6 +6,8 @@ encoding windows exist for. A finite pulse makes the coherence mask a fractional
 pulse keeps the binary one -- and the scalar engine gates T2 / T1 by it. ``from_pgse(timing=)`` builds to a
 budget; ``validate()`` refuses gradient inside its windows; a ``.seq`` carries it both ways.
 """
+from dataclasses import replace
+
 import numpy as np
 import pytest
 
@@ -78,14 +80,14 @@ def test_the_scalar_engine_gates_relaxation_by_the_fractional_mask():
     longitudinal times read off the profile -- the check #25 could not write while nothing produced one."""
     n_t, dt, T2, T1 = 401, 1e-4, 30e-3, 300e-3
     rf = RFSchedule((RFEvent(0.0, 90, 'Mz→Mxy'), RFEvent(20e-3, 180, 'refocus', duration_s=8e-3)))
-    wf = d.Waveform(G=np.zeros((1, n_t, 3), np.float32), dt=dt, echo_idx=n_t - 1, rf_events=rf)
+    wf = d.ScannerSequence(G=np.zeros((1, n_t, 3), np.float32), dt=dt, readout=(n_t - 1,), rf=rf)
     chi = np.asarray(wf.chi_perp, float)
     assert 0.0 < chi.min() < 1.0                                            # fractional, and reachable
     S_ = d.simulate(500, 2e-9, wf, d.FreeDiffusion(), T2=T2, T1=T1, seed=0, require_gpu=False)
     expected = np.exp(-(chi.sum() * dt) / T2 - ((1.0 - chi).sum() * dt) / T1)
     assert float(S_[0]) == pytest.approx(expected, rel=2e-3)
-    hard = d.Waveform(G=np.zeros((1, n_t, 3), np.float32), dt=dt, echo_idx=n_t - 1,
-                      rf_events=RFSchedule((RFEvent(0.0, 90, 'Mz→Mxy'), RFEvent(20e-3, 180, 'refocus'))))
+    hard = d.ScannerSequence(G=np.zeros((1, n_t, 3), np.float32), dt=dt, readout=(n_t - 1,),
+                      rf=RFSchedule((RFEvent(0.0, 90, 'Mz→Mxy'), RFEvent(20e-3, 180, 'refocus'))))
     S_hard = d.simulate(500, 2e-9, hard, d.FreeDiffusion(), T2=T2, T1=T1, seed=0, require_gpu=False)
     assert float(S_hard[0]) == pytest.approx(np.exp(-n_t * dt / T2), rel=2e-3) and S_[0] > S_hard[0]
 
@@ -94,9 +96,9 @@ def test_from_pgse_builds_to_a_budget():
     st = SequenceTiming(t_excite=3e-3, t_refocus=6e-3, t_readout_pre_echo=14e-3)
     B = np.array([1e9, 2e9]); D2 = np.array([[1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
     seq = S.pgse(B, D2, 8e-3, 24e-3, n_t=1200, slew_rate=200.0, timing=st)
-    assert seq.timing is st and [e.duration_s for e in seq.rf_events] == [3e-3, 6e-3]
-    TE = float(seq.TE[0])
-    assert TE == pytest.approx(seq.rf_events.refocus_time * 2) and TE >= st.min_TE()
+    assert seq.timing is st and [e.duration_s for e in seq.rf] == [3e-3, 6e-3]
+    TE = float(seq.encoding.TE[0])
+    assert TE == pytest.approx(seq.rf.refocus_time * 2) and TE >= st.min_TE()
     t = np.arange(seq.G.shape[1]) * seq.dt
     assert np.all(np.abs(np.asarray(seq.G))[:, st.on_mask(t, TE) == 0.0, :] == 0.0)   # nothing in an off window
     np.testing.assert_allclose(d.calc_b(seq), B, rtol=1e-6)
@@ -122,10 +124,10 @@ def test_refocus_gap_is_derived_from_the_gradient_and_the_schedule():
 def test_validate_refuses_gradient_inside_a_budget_window():
     st = SequenceTiming(t_excite=3e-3, t_refocus=2e-3, t_readout_pre_echo=2e-3)      # fits a 32 ms echo
     seq = S.pgse([1e9], [[1.0, 0.0, 0.0]], 8e-3, 24e-3, n_t=600, slew_rate=np.inf)   # idealised: lobe 1 at t = 0
-    seq.timing = st
+    seq = replace(seq, timing=st)
     with pytest.raises(ValueError, match="excitation window"):
         seq.validate()
-    seq.timing = SequenceTiming(t_excite=3e-3, t_refocus=6e-3, t_readout_pre_echo=14e-3)   # min_TE 34 ms > its 32 ms
+    seq = replace(seq, timing=SequenceTiming(t_excite=3e-3, t_refocus=6e-3, t_readout_pre_echo=14e-3))   # min_TE 34 ms > its 32 ms
     with pytest.raises(ValueError, match="below min_TE"):
         seq.validate()
 

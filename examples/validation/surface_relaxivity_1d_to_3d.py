@@ -23,7 +23,7 @@ import jax.numpy as jnp
 from scipy.special import jv
 from scipy.optimize import brentq
 
-from dmipy_sim import simulate, Waveform, Box1D, Sphere, Cylinder
+from dmipy_sim import simulate, ScannerSequence, Box1D, Sphere, Cylinder
 
 D = 2e-9            # m^2/s
 NW = 500_000        # walkers (raise for tighter statistics)
@@ -67,7 +67,7 @@ def tau_fast(rho, S_over_V):
 # ── Monte-Carlo relaxation time in a closed cell ─────────────────────────────
 def _zero_waveform(n_t, dt):
     """b=0, G=0 walk of duration n_t*dt: signal == surviving magnetisation S(t)."""
-    return Waveform(G=jnp.zeros((1, n_t, 3), dtype=jnp.float32), dt=float(dt), echo_idx=n_t - 1)
+    return ScannerSequence(G=jnp.zeros((1, n_t, 3), dtype=jnp.float32), dt=float(dt))
 
 
 def _survival(geom, t, dt):

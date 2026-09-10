@@ -10,9 +10,9 @@ real pool contrast (below). Parked here so we can pick it up later.
   `permeable_sub_steps`. Reflecting path unchanged when `permeability is None`. Tests:
   `tests/test_bloch_permeation.py` (slow tier) — κ-monotone + high-κ→free. **This is the reusable
   win** (any Bloch exchange work needs it), independent of FEXI.
-- **`dmipy_sim.pulse_sequence.fexi(...)` — the FEXI sequence.** Bipolar filter + 90 store +
-  crusher/mixing + 90 recall + bipolar detection → a `BlochSequence` (+ per-measurement
-  `.b_detect`). **Bipolar blocks, no 180** — matches Kiselev & Li (below). `Delta` sets the
+- **`dmipy_sim.engine.pulse_sequence.fexi(...)` — the FEXI sequence.** Bipolar filter + 90 store +
+  crusher/mixing + 90 recall + bipolar detection → a `ScannerSequence` (+ per-measurement
+  `fexi_b_detect(seq)`). **Bipolar blocks, no 180** — matches Kiselev & Li (below). `Delta` sets the
   diffusion time. Tests: `tests/test_fexi.py` — free-diffusion mechanics (reads true D, ADC flat
   vs t_mix, filter attenuates).
 

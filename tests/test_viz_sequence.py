@@ -82,11 +82,11 @@ def test_plot_helpers_run_on_pgse_and_pgste():
 
 
 def test_a_sequence_is_drawn_with_the_physical_gradient_too():
-    """A ``Sequence`` carries the same RF panel as a ``Waveform``, so it must carry the same
+    """An encoding-first sequence carries the same RF panel as an amplitude-first one, so it must carry the same
     physical gradient: drawing the bipolar simulation gradient NEXT TO a 180 asserts the flip
     twice and shows a sequence that would not refocus."""
     seq = S.pgse([1.0e9], [[1, 0, 0]], 4e-3, 20e-3, n_t=200)
-    assert any(e.flip_deg == 180 for e in seq.rf_events)      # the panel does draw a 180
+    assert any(e.flip_deg == 180 for e in seq.rf)      # the panel does draw a 180
 
     disp = np.array(seq.G)[0, :, 0]
     sim = np.asarray(seq.G_eff)[0, :, 0]

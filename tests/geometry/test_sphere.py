@@ -16,7 +16,8 @@ import numpy.testing as npt
 import jax.numpy as jnp
 
 from dmipy_sim import simulate, Sphere, set_b
-from dmipy_sim.acquisition.waveforms import Waveform, calc_b
+from dmipy_sim.acquisition.waveforms import calc_b
+from dmipy_sim.acquisition.scanner_sequence import ScannerSequence
 from tests.conftest import D, N_WALKERS, SEED, load_fixture
 
 
@@ -36,7 +37,7 @@ def _build_disimpy_waveform(n_t_raw, pulse_slice_start, pulse_slice_end, n_t=100
 
     Returns
     -------
-    Waveform with G-amplitude 1.0 along x, shape (1, n_t, 3).
+    ScannerSequence with G-amplitude 1.0 along x, shape (1, n_t, 3).
     """
     T = 70e-3  # same for both configs
     dt_raw = T / (n_t_raw - 1)
@@ -58,14 +59,14 @@ def _build_disimpy_waveform(n_t_raw, pulse_slice_start, pulse_slice_end, n_t=100
     for j in range(3):
         G_interp[0, :, j] = np.interp(t_new, t_old, grad_raw[0, :, j])
 
-    return Waveform(G=jnp.array(G_interp), dt=float(dt), echo_idx=n_t - 1)
+    return ScannerSequence(G=jnp.array(G_interp), dt=float(dt))
 
 
 def _tile_and_set_b(wf_single, b_values):
     """Tile a single-measurement waveform to n_b measurements and set b-values."""
     n_b = len(b_values)
     G_tiled = jnp.tile(wf_single.G, (n_b, 1, 1))  # (n_b, n_t, 3)
-    wf = Waveform(G=G_tiled, dt=wf_single.dt, echo_idx=wf_single.echo_idx)
+    wf = ScannerSequence(G=G_tiled, dt=wf_single.dt, readout=wf_single.readout)
     return set_b(wf, b_values)
 
 
@@ -113,7 +114,7 @@ def test_sphere_misst_config2():
     for j in range(3):
         G_interp[0, :, j] = np.interp(t_new, t_old, grad_raw[0, :, j])
 
-    wf_single = Waveform(G=jnp.array(G_interp), dt=float(dt), echo_idx=n_t - 1)
+    wf_single = ScannerSequence(G=jnp.array(G_interp), dt=float(dt))
     wf = _tile_and_set_b(wf_single, b_values)
 
     signals = simulate(N_WALKERS, D, wf, Sphere(5e-6), seed=SEED)

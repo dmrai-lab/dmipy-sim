@@ -11,8 +11,8 @@ D0 = 2e-9
 
 
 def _seq():
-    from dmipy_sim.sequences import Sequence
-    return Sequence.from_pgse(bvalues=[0, 1e9], gradient_directions=[[1, 0, 0]] * 2, delta=2e-3, Delta=6e-3)
+    from dmipy_sim import sequences as _seqmod
+    return _seqmod.pgse(bvalues=[0, 1e9], gradient_directions=[[1, 0, 0]] * 2, delta=2e-3, Delta=6e-3)
 
 
 def test_as_geometry_accepts_every_spelling(tmp_path):

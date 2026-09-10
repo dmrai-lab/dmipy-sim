@@ -5,7 +5,7 @@ Verifies that:
      at the same b-value because OGSE probes shorter length scales).
   2. An asymmetric waveform (non-zero net gradient) gives lower signal than a
      fully refocused waveform at the same b-value.
-  3. The Waveform dataclass can be constructed directly with arbitrary G arrays
+  3. A ScannerSequence can be constructed directly with arbitrary G arrays
      and still produce physically sensible results.
 """
 
@@ -14,7 +14,8 @@ import numpy.testing as npt
 import jax.numpy as jnp
 
 from dmipy_sim import simulate, FreeDiffusion, Sphere, set_b
-from dmipy_sim.acquisition.waveforms import pgse, ogse, Waveform, calc_b
+from dmipy_sim.acquisition.waveforms import pgse, ogse, calc_b
+from dmipy_sim.acquisition.scanner_sequence import ScannerSequence
 from .conftest import D, N_WALKERS, SEED
 
 
@@ -75,7 +76,7 @@ def test_arbitrary_waveform_zero_net_gradient_gives_free():
     # Second lobe: -G along x for second quarter (same duration → refocused)
     G_arr[0, q1:2*q1, 0] = -1.0
 
-    wf_raw = Waveform(G=jnp.array(G_arr), dt=float(dt), echo_idx=n_t - 1)
+    wf_raw = ScannerSequence(G=jnp.array(G_arr), dt=float(dt), readout=(n_t - 1,))
     b_raw = calc_b(wf_raw)
     assert b_raw[0] > 0, "b-value should be positive"
 

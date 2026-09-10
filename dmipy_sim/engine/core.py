@@ -67,7 +67,7 @@ def cached_batch(geometry, key, build):
     20 ms kernel run). The jitted batch function is kept ON the geometry object (the closure
     references the geometry, so a side table keyed by it would pin it forever; on the object the
     reference is a cycle the garbage collector frees with the geometry), keyed on its scalar
-    state and ``key`` -- everything the closure bakes in that is not a traced argument. Waveform
+    state and ``key`` -- everything the closure bakes in that is not a traced argument. ScannerSequence
     samples, walker positions, keys and labels are arguments, so a sweep over b, seed or direction
     recompiles nothing; a new walker count retraces inside ``jax.jit`` by shape, once.
     """
@@ -225,7 +225,7 @@ def simulate(
     diffusivity : float, optional
         Diffusion coefficient in m²/s. Required for standard geometries.
         Omit for MyelinatedCylinder (D values are in the geometry).
-    waveform : Waveform
+    waveform : ScannerSequence
         Gradient waveform. G has shape (n_measurements, n_t, 3).
     geometry : Geometry
         Boundary geometry. Provides init_positions() and reflect().
@@ -415,7 +415,7 @@ def simulate(
             return_compartments=return_compartments,
             return_walker_signals=return_walker_signals, sub_steps=sub_steps)
 
-    # Accept AcquisitionScheme (any object with .waveform) or raw Waveform
+    # Accept AcquisitionScheme (any object with .waveform) or raw ScannerSequence
     if hasattr(waveform, 'waveform'):
         waveform = waveform.waveform
     G = waveform.G_eff      # (n_measurements, n_t, 3), the effective gradient
@@ -677,7 +677,7 @@ def simulate_mixture(compartments, waveform, seed=123, sub_steps=None):
         - 'n_walkers'    : int, walkers for this compartment.
         - 'diffusivity'  : float, D in m²/s.
         - 'geometry'     : Geometry instance.
-    waveform : Waveform
+    waveform : ScannerSequence
     seed : int
         Base seed; each compartment gets seed + compartment_index.
 
@@ -715,15 +715,15 @@ def simulate_cpmg(n_walkers, diffusivity, waveform, geometry, *,
     ensemble signal ``Re<exp(iφ)·exp(log_w)>`` at each echo time.  This is the
     ordinary forward model: one pass through the train, nothing cached or reused.
     Build ``waveform`` with :func:`dmipy_sim.cpmg`
-    (which sets ``echo_indices``).
+    (whose ``readout`` is every echo).
 
     Parameters
     ----------
     n_walkers : int
     diffusivity : float or None
         Bulk diffusivity (m²/s); omit for MyelinatedCylinder (D in the geometry).
-    waveform : Waveform
-        A multi-echo waveform carrying ``echo_indices`` (e.g. from ``cpmg``).
+    waveform : ScannerSequence
+        A multi-echo sequence, its ``readout`` every echo (e.g. from ``cpmg``).
     geometry : Geometry
     T2 : float, optional
         Transverse relaxation time (s), accumulated per-walker in the walk.
@@ -749,12 +749,9 @@ def simulate_cpmg(n_walkers, diffusivity, waveform, geometry, *,
 
     if hasattr(waveform, 'waveform'):
         waveform = waveform.waveform
-    echo_indices = getattr(waveform, 'echo_indices', None)
-    if echo_indices is None:
-        raise ValueError(
-            "simulate_cpmg needs a multi-echo waveform with echo_indices set; "
-            "build it with dmipy_sim.cpmg(...).")
-    echo_indices = np.asarray(echo_indices, dtype=int)
+    echo_indices = np.asarray(waveform.readout, dtype=int)
+    if echo_indices.shape[0] < 2:
+        raise ValueError("simulate_cpmg needs a multi-echo readout: build the train with cpmg(...)")
 
     # Walker batching: one echo-signal accumulator, size-weighted mean over chunks.
     if walker_batch_size is not None and walker_batch_size < n_walkers:

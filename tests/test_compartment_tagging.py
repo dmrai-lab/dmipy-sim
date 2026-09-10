@@ -21,7 +21,7 @@ from dmipy_sim.geometry import (
     Box1D,
     Ellipsoid,
 )
-from dmipy_sim.acquisition.waveforms import Waveform
+from dmipy_sim.acquisition.scanner_sequence import ScannerSequence
 
 
 # ---------------------------------------------------------------------------
@@ -36,7 +36,7 @@ D = 2e-9   # 2 µm²/ms
 
 def _make_waveform():
     G = np.zeros((N_MEAS, N_T, 3), dtype=np.float32)
-    return Waveform(G=jnp.array(G), dt=DT, echo_idx=N_T - 1)
+    return ScannerSequence(G=jnp.array(G), dt=DT, readout=(N_T - 1,))
 
 
 # ---------------------------------------------------------------------------

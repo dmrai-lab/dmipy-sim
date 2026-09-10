@@ -1,6 +1,6 @@
 """One acquisition: the `waveforms` builders and the `sequences` constructors describe the same
 PGSE, every constructor's declared b is the numeric b of the waveform it built, there is one b
-and one B-tensor integral, and `simulate` takes a `Waveform`, a `Sequence` or a scheme wrapping
+and one B-tensor integral, and `simulate` takes a `ScannerSequence` or a scheme wrapping
 either, in both engines.
 """
 import numpy as np
@@ -44,16 +44,16 @@ def test_declared_b_is_the_numeric_b_for_every_constructor():
     cases["from_waveform"] = S.from_waveform(np.asarray(wf.G_eff), wf.dt, DIRS, delta=DELTA, Delta=DELTA_BIG)   # a refocused waveform
     for name, seq in cases.items():
         b_num = _num_b(seq)
-        nz = seq.bvalues > 0
+        nz = seq.encoding.bvalues > 0
         assert nz.any(), name
-        rel = np.abs(b_num[nz] - seq.bvalues[nz]) / seq.bvalues[nz]
+        rel = np.abs(b_num[nz] - seq.encoding.bvalues[nz]) / seq.encoding.bvalues[nz]
         assert rel.max() < 1e-6, f"{name}: declared b differs from the waveform's b by {rel.max():.2e}"
         assert np.all(b_num[~nz] == 0.0), name
 
 
 def test_one_b_integral_and_one_btensor():
     seq = S.pgse(B, DIRS, DELTA, DELTA_BIG, n_t=N_T, slew_rate=200.0)
-    wf = d.Waveform(G=seq.G, dt=seq.dt, echo_idx=seq.echo_idx, rf_events=seq.rf_events)
+    wf = d.ScannerSequence(G=seq.G, dt=seq.dt, readout=(seq.echo_idx,), rf=seq.rf)
     np.testing.assert_array_equal(d.calc_b(wf), _num_b(seq))
     np.testing.assert_array_equal(d.calc_btensor(wf), seq.btensor())
     np.testing.assert_array_equal(seq.btensor(), btensor_from_gradient(seq.G_eff, seq.dt))
@@ -66,13 +66,13 @@ def test_one_b_integral_and_one_btensor():
 
 def test_sequence_carries_the_waveform_readout_protocol():
     seq = S.pgse(B, DIRS, DELTA, DELTA_BIG, n_t=N_T)
-    assert seq.echo_idx == N_T - 1 and seq.echo_indices is None and seq.chi_perp is None
-    assert [e.flip_deg for e in seq.rf_events] == [90, 180]
-    assert abs(seq.rf_events[1].t_s - (DELTA + DELTA_BIG) / 2.0) < 1e-3     # midway, up to the ramp
+    assert seq.echo_idx == N_T - 1 and seq.readout == (N_T - 1,) and seq.chi_perp is None
+    assert [e.flip_deg for e in seq.rf] == [90, 180]
+    assert abs(seq.rf[1].t_s - (DELTA + DELTA_BIG) / 2.0) < 1e-3     # midway, up to the ramp
     cp = S.cpmg(4, 20e-3, bvalues=1e9, n_t_per_echo=50)
-    assert list(cp.echo_indices) == [50, 100, 150, 199]      # k*TE on the grid; the last clipped to n_t-1
-    assert [e.flip_deg for e in cp.rf_events] == [90, 180, 180, 180, 180]
-    G, dt = seq.to_gradient_array(n_t=N_T)
+    assert list(cp.readout) == [50, 100, 150, 199]      # k*TE on the grid; the last clipped to n_t-1
+    assert [e.flip_deg for e in cp.rf] == [90, 180, 180, 180, 180]
+    G, dt = S.to_gradient_array(seq, n_t=N_T)
     sq = S.pgse(B, DIRS, DELTA, DELTA_BIG, n_t=N_T, slew_rate=np.inf)
     np.testing.assert_array_equal(G, sq.G_eff)          # to_gradient_array is the effective gradient
     assert dt == sq.dt
@@ -133,11 +133,11 @@ def test_the_effective_gradient_is_the_physical_one_through_the_schedule_and_car
     """``G_eff == G * rf_events.sign(t)`` exactly (the sign is +-1 and its own inverse), and the declared b is
     the numeric b of ``G_eff`` -- never of ``G``."""
     seq = S.pgse(B, DIRS, DELTA, DELTA_BIG, n_t=N_T, slew_rate=200.0)
-    s = seq.rf_events.sign(np.arange(seq.G.shape[1]) * seq.dt)
+    s = seq.rf.sign(np.arange(seq.G.shape[1]) * seq.dt)
     np.testing.assert_array_equal(np.asarray(seq.G_eff), np.asarray(seq.G) * s[None, :, None])
     np.testing.assert_array_equal(np.asarray(seq.G_eff) * s[None, :, None], np.asarray(seq.G))
-    np.testing.assert_allclose(_num_b(seq), seq.bvalues, rtol=1e-6)
-    assert np.all(b_from_gradient(seq.G, seq.dt) > 1.5 * seq.bvalues)      # the physical pair does not refocus
+    np.testing.assert_allclose(_num_b(seq), seq.encoding.bvalues, rtol=1e-6)
+    assert np.all(b_from_gradient(seq.G, seq.dt) > 1.5 * seq.encoding.bvalues)      # the physical pair does not refocus
 
 
 def test_a_family_that_declares_no_180_has_one_gradient():

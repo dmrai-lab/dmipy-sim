@@ -13,7 +13,8 @@ import numpy.testing as npt
 import jax.numpy as jnp
 
 from dmipy_sim import simulate, Ellipsoid, Sphere, set_b
-from dmipy_sim.acquisition.waveforms import Waveform, pgse
+from dmipy_sim.acquisition.waveforms import pgse
+from dmipy_sim.acquisition.scanner_sequence import ScannerSequence
 from tests.conftest import D, N_WALKERS, SEED
 
 
@@ -45,7 +46,7 @@ def _disimpy_example_waveform(n_t=1000):
     for j in range(3):
         G_interp[0, :, j] = np.interp(t_new, t_old, grad_raw[0, :, j])
 
-    return Waveform(G=jnp.array(G_interp), dt=float(dt_new), echo_idx=n_t - 1)
+    return ScannerSequence(G=jnp.array(G_interp), dt=float(dt_new))
 
 
 # NOTE: `test_ellipsoid_walkers_contained*` was removed (#88). It asserted two things:
