@@ -50,6 +50,7 @@ from .replay.fod import FOD
 from .replay.so3 import Distribution
 from .engine import mt
 from .acquisition.rf import B1Pulse, bloch_simulate, slice_profile
+from .acquisition.scanners import ScannerLimits, SCANNERS
 from .replay.replay import (ReplayPack, read_rpk, write_rpk, compile_scheme, replay_signal,
                      replay_signal_jax, surface_logweight)
 from .replay import bank
@@ -69,6 +70,7 @@ __all__ = [
     "BlochSequence", "gradient_echo", "spin_echo", "prepend_mt_prep",
     "run_bloch_sequence", "emergent_z_spectrum",
     "gpu_available", "check_gpu", "free_gpu_memory", "gpu_session", "list_gpu_processes",
+    "ScannerLimits", "SCANNERS",
     "Waveform", "pgse", "pgste", "ogse", "cpmg", "trapezoidal_ogse", "b_trapezoidal_ogse",
     "set_b", "calc_b", "calc_btensor", "btensor_invariants", "ste", "pte",
     "rotate_waveform", "tile_waveform",

@@ -1,6 +1,6 @@
 {
   "_schema": {
-    "description": "Per-vendor/per-model MR scanner deliverability constants (gradient, RF, safety) with full citation provenance. Mirrors dmipy_sim biophysical_constants schema.",
+    "description": "Per-vendor/per-model MR scanner deliverability constants (gradient, RF, safety) with full citation provenance. Mirrors dmipy_sim biophysical_constants schema. Sections: 'scanners' (real machines, per model), 'envelopes' (declared limit points that are not a specific machine: the replay band-limit certificate's classes, Pulseq presets, the Pulseq example system), 'classes' (the certificate's short names -> a scanners/envelopes key), 'aliases' (every other short name -> a key), 'safety'. Every scanner number in dmipy-sim is read from here; nothing in Python carries one.",
     "entry_fields": [
       "value",
       "unit",
@@ -121,6 +121,30 @@
       "journal_or_publisher": "GE HealthCare (press release, FDA 510(k) clearance)",
       "year": 2024,
       "doi_or_url": "https://investor.gehealthcare.com/news-releases/news-release-details/ge-healthcare-receives-fda-clearance-head-only-signa-magnus-30t"
+    },
+    "foo2020_magnus": {
+      "key": "foo2020_magnus",
+      "authors": "Foo TKF, Tan ET, Vermilyea ME, et al.",
+      "title": "Highly efficient head-only magnetic field insert gradient coil for achieving simultaneous high gradient amplitude and slew rate at 3.0T (MAGNUS) for brain microstructure imaging",
+      "publisher": "Magnetic Resonance in Medicine 83(6):2356-2369",
+      "year": 2020,
+      "doi_or_url": "10.1002/mrm.28087"
+    },
+    "szczepankiewicz_safe_pns": {
+      "key": "szczepankiewicz_safe_pns",
+      "authors": "Szczepankiewicz F, Witzel T",
+      "title": "safe_pns_prediction: SAFE model PNS prediction for arbitrary gradient waveforms (the representative example gradient system shipped with it and with pypulseq)",
+      "publisher": "GitHub",
+      "year": 2020,
+      "doi_or_url": "https://github.com/filip-szczepankiewicz/safe_pns_prediction"
+    },
+    "dmipy_sim_143": {
+      "key": "dmipy_sim_143",
+      "authors": "dmrai-lab",
+      "title": "dmipy-sim #143: the replay band-limit certificate and the save-grid rule -- the six scanner classes it is sized over",
+      "publisher": "GitHub issue",
+      "year": 2026,
+      "doi_or_url": "https://github.com/dmrai-lab/dmipy-sim/issues/143"
     }
   },
   "scanners": {
@@ -539,6 +563,28 @@
           "confidence": "NEEDS VERIFICATION"
         }
       }
+    },
+    "ge_magnus_prototype_3T": {
+      "gradient": {
+        "max_amplitude": {
+          "value": 200,
+          "unit": "mT/m",
+          "field_T": null,
+          "context": "MAGNUS head-only gradient insert PROTOTYPE (GE / NIH). The FDA-cleared product, ge_signa_magnus_3T, is 300 mT/m / 750 T/m/s; the two are different machines.",
+          "source_key": "foo2020_magnus",
+          "location": "Foo et al. 2020, abstract",
+          "confidence": "widely-quoted"
+        },
+        "max_slew_rate": {
+          "value": 500,
+          "unit": "T/m/s",
+          "field_T": null,
+          "context": "MAGNUS prototype; head-only asymmetric coil, PNS-limited well above whole-body coils",
+          "source_key": "foo2020_magnus",
+          "location": "Foo et al. 2020, abstract",
+          "confidence": "widely-quoted"
+        }
+      }
     }
   },
   "safety": {
@@ -734,7 +780,215 @@
         "source_key": "hebrank2000_safe",
         "location": "n/a",
         "confidence": "NEEDS VERIFICATION"
+      },
+      "example_coefficients": {
+        "value": [
+          {
+            "axis": "x",
+            "tau1_ms": 0.2,
+            "tau2_ms": 0.03,
+            "tau3_ms": 3.0,
+            "a1": 0.4,
+            "a2": 0.1,
+            "a3": 0.5,
+            "stim_limit": 30.0,
+            "g_scale": 0.35
+          },
+          {
+            "axis": "y",
+            "tau1_ms": 1.5,
+            "tau2_ms": 2.5,
+            "tau3_ms": 0.15,
+            "a1": 0.55,
+            "a2": 0.15,
+            "a3": 0.3,
+            "stim_limit": 15.0,
+            "g_scale": 0.31
+          },
+          {
+            "axis": "z",
+            "tau1_ms": 2.0,
+            "tau2_ms": 0.12,
+            "tau3_ms": 1.0,
+            "a1": 0.42,
+            "a2": 0.4,
+            "a3": 0.18,
+            "stim_limit": 25.0,
+            "g_scale": 0.25
+          }
+        ],
+        "unit": "n/a",
+        "field_T": null,
+        "context": "The REPRESENTATIVE example gradient system's SAFE coefficients (per axis: three RC time constants, their normalised weights a1+a2+a3 = 1, the stimulation limit and the gradient scale), as shipped with safe_pns_prediction and pypulseq. NOT any specific scanner's calibration -- those are vendor-confidential (see 'coefficients'). The SAFE solver lives in dmipy-design; this is the data it reads.",
+        "source_key": "szczepankiewicz_safe_pns",
+        "location": "example hardware file in the repository",
+        "confidence": "widely-quoted"
       }
     }
+  },
+  "envelopes": {
+    "certificate_bruker_bga_s": {
+      "gradient": {
+        "max_amplitude": {
+          "value": 750,
+          "unit": "mT/m",
+          "field_T": null,
+          "context": "declared envelope point of the replay band-limit certificate (dmipy-sim #143): a limit the certificate is sized over, NOT a specific machine's spec sheet",
+          "source_key": "dmipy_sim_143",
+          "location": null,
+          "confidence": "NEEDS VERIFICATION"
+        },
+        "max_slew_rate": {
+          "value": 6000,
+          "unit": "T/m/s",
+          "field_T": null,
+          "context": "declared envelope point of the replay band-limit certificate (dmipy-sim #143): a limit the certificate is sized over, NOT a specific machine's spec sheet",
+          "source_key": "dmipy_sim_143",
+          "location": null,
+          "confidence": "NEEDS VERIFICATION"
+        }
+      }
+    },
+    "certificate_micro_insert": {
+      "gradient": {
+        "max_amplitude": {
+          "value": 1500,
+          "unit": "mT/m",
+          "field_T": null,
+          "context": "declared envelope point of the replay band-limit certificate (dmipy-sim #143): a limit the certificate is sized over, NOT a specific machine's spec sheet",
+          "source_key": "dmipy_sim_143",
+          "location": null,
+          "confidence": "NEEDS VERIFICATION"
+        },
+        "max_slew_rate": {
+          "value": 10000,
+          "unit": "T/m/s",
+          "field_T": null,
+          "context": "declared envelope point of the replay band-limit certificate (dmipy-sim #143): a limit the certificate is sized over, NOT a specific machine's spec sheet",
+          "source_key": "dmipy_sim_143",
+          "location": null,
+          "confidence": "NEEDS VERIFICATION"
+        }
+      }
+    },
+    "certificate_extreme_insert": {
+      "gradient": {
+        "max_amplitude": {
+          "value": 3000,
+          "unit": "mT/m",
+          "field_T": null,
+          "context": "declared envelope point of the replay band-limit certificate (dmipy-sim #143): a limit the certificate is sized over, NOT a specific machine's spec sheet",
+          "source_key": "dmipy_sim_143",
+          "location": null,
+          "confidence": "NEEDS VERIFICATION"
+        },
+        "max_slew_rate": {
+          "value": 20000,
+          "unit": "T/m/s",
+          "field_T": null,
+          "context": "declared envelope point of the replay band-limit certificate (dmipy-sim #143): a limit the certificate is sized over, NOT a specific machine's spec sheet",
+          "source_key": "dmipy_sim_143",
+          "location": null,
+          "confidence": "NEEDS VERIFICATION"
+        }
+      }
+    },
+    "pulseq_clinical_typical": {
+      "gradient": {
+        "max_amplitude": {
+          "value": 45,
+          "unit": "mT/m",
+          "field_T": null,
+          "context": "the PULSEQ_SYSTEMS 'clinical_typical' preset: a nominal clinical system, not a machine",
+          "source_key": "pulseq_spec",
+          "location": null,
+          "confidence": "NEEDS VERIFICATION"
+        },
+        "max_slew_rate": {
+          "value": 150,
+          "unit": "T/m/s",
+          "field_T": null,
+          "context": "the PULSEQ_SYSTEMS 'clinical_typical' preset",
+          "source_key": "pulseq_spec",
+          "location": null,
+          "confidence": "NEEDS VERIFICATION"
+        }
+      }
+    },
+    "pulseq_preclinical_bruker": {
+      "gradient": {
+        "max_amplitude": {
+          "value": 1000,
+          "unit": "mT/m",
+          "field_T": null,
+          "context": "the PULSEQ_SYSTEMS 'preclinical_bruker' preset: a nominal preclinical system, not a machine (distinct from certificate_bruker_bga_s)",
+          "source_key": "pulseq_spec",
+          "location": null,
+          "confidence": "NEEDS VERIFICATION"
+        },
+        "max_slew_rate": {
+          "value": 10000,
+          "unit": "T/m/s",
+          "field_T": null,
+          "context": "the PULSEQ_SYSTEMS 'preclinical_bruker' preset",
+          "source_key": "pulseq_spec",
+          "location": null,
+          "confidence": "NEEDS VERIFICATION"
+        }
+      }
+    },
+    "pulseq_example_system": {
+      "rf": {
+        "rf_dead_time": {
+          "value": 100,
+          "unit": "us",
+          "field_T": null,
+          "context": "RF dead time of the example system used by Pulseq exporters so check_timing is meaningful; no vendor spec sheet publishes one (the Prisma leaf is NEEDS VERIFICATION for that reason). Was hard-coded in dmipy-design pulseq_export._DEAD.",
+          "source_key": "pulseq_spec",
+          "location": null,
+          "confidence": "NEEDS VERIFICATION"
+        },
+        "rf_ringdown_time": {
+          "value": 60,
+          "unit": "us",
+          "field_T": null,
+          "context": "example-system RF ringdown, as rf_dead_time",
+          "source_key": "pulseq_spec",
+          "location": null,
+          "confidence": "NEEDS VERIFICATION"
+        },
+        "adc_dead_time": {
+          "value": 10,
+          "unit": "us",
+          "field_T": null,
+          "context": "example-system ADC dead time, as rf_dead_time",
+          "source_key": "pulseq_spec",
+          "location": null,
+          "confidence": "NEEDS VERIFICATION"
+        }
+      }
+    }
+  },
+  "classes": {
+    "prisma": "siemens_magnetom_prisma_3T",
+    "magnus": "ge_magnus_prototype_3T",
+    "connectom": "siemens_magnetom_connectom_3T",
+    "connectome_2": "siemens_magnetom_connectom_2_0_3T",
+    "bruker_bga_s": "certificate_bruker_bga_s",
+    "micro_insert": "certificate_micro_insert",
+    "extreme_insert": "certificate_extreme_insert"
+  },
+  "aliases": {
+    "siemens_prisma": "siemens_magnetom_prisma_3T",
+    "siemens_connectom": "siemens_magnetom_connectom_3T",
+    "ge_premier": "ge_signa_premier_3T",
+    "philips_ingenia": "philips_ingenia_3T",
+    "clinical_typical": "pulseq_clinical_typical",
+    "preclinical_bruker": "pulseq_preclinical_bruker",
+    "signa_magnus": "ge_signa_magnus_3T",
+    "terra": "siemens_magnetom_terra_7T",
+    "terra_x": "siemens_magnetom_terra_x_7T",
+    "premier": "ge_signa_premier_3T",
+    "ingenia": "philips_ingenia_3T"
   }
 }
