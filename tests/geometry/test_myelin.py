@@ -21,7 +21,8 @@ import jax
 import jax.numpy as jnp
 
 from dmipy_sim import simulate, Cylinder, FreeDiffusion, MyelinatedCylinder, set_b
-from dmipy_sim.acquisition.waveforms import pgse, Waveform, tile_waveform
+from dmipy_sim.acquisition.waveforms import pgse, tile_waveform
+from dmipy_sim.acquisition.scanner_sequence import ScannerSequence
 
 
 # ─── Helpers ────────────────────────────────────────────────────────────────
@@ -44,7 +45,7 @@ def _make_b0_waveform(n_t=2000, TE=60e-3):
     """Build a zero-gradient waveform for b=0 signal measurement."""
     dt = TE / (n_t - 1)
     G = jnp.zeros((1, n_t, 3), dtype=jnp.float32)
-    return Waveform(G=G, dt=dt, echo_idx=n_t - 1)
+    return ScannerSequence(G=G, dt=dt)
 
 
 def _make_multi_direction_waveform(delta, Delta, n_t, bvecs):

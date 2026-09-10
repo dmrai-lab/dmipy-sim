@@ -14,8 +14,7 @@ pre/post-180 asymmetry of a designed waveform is a consequence of the budget, ne
 
 Times in seconds; ``t = 0`` is the excitation centre (echo time is centre-to-centre, as a scanner counts
 it), so the excitation pulse straddles t = 0. Build it from a readout description (:meth:`from_readout`)
-or from a real ``.seq`` (:meth:`from_pulseq`). A :class:`~dmipy_sim.acquisition.waveforms.Waveform` or
-:class:`~dmipy_sim.sequences.Sequence` carries one as ``timing`` when it was built to a budget, and
+or from a real ``.seq`` (:meth:`from_pulseq`). A :class:`~dmipy_sim.acquisition.scanner_sequence.ScannerSequence` carries one as ``timing`` when it was built to a budget, and
 ``validate()`` then refuses gradient inside its windows.
 """
 from dataclasses import dataclass, asdict

@@ -43,7 +43,7 @@ EXC = [RFEvent(0.0, 90.0, axis_deg=90.0)]      # 90_y -> Mx = cos(phi)
 
 def _rf(waveform):
     """The 90_y excitation plus the waveform's own 180: G is the physical same-sign pair, the pulse refocuses."""
-    return EXC + [e for e in waveform.rf_events if e.flip_deg == 180]
+    return EXC + [e for e in waveform.rf if e.flip_deg == 180]
 
 # tau_D = R^2/D = 2.0 ms, so DELTA = 2 ms leaves the ensemble short of full exploration and the start
 # distribution still visible. slew_rate=inf: reaching b=2e9 in a 0.2 ms pulse needs ~19 T/m, which no

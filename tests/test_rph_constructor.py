@@ -1,6 +1,8 @@
 """The .rph constructor: a phantom is built from volumes, not hand-rolled arrays (RPH.md, issue #151)."""
 import numpy as np
-from dmipy_sim import RFEvent
+from dataclasses import replace
+
+from dmipy_sim import Encoding, RFEvent, ScannerSequence
 import pytest
 
 from dmipy_sim.replay.fod import FOD
@@ -178,12 +180,9 @@ def _acq(pk, dirs, bvals, delta=6e-4, Delta=2e-3):
         G[i, :nd] = amp * g
         G[i, ng:ng + nd] = -amp * g
 
-    class A:
-        """A bare gradient echo on the pack grid: no pulses, so the effective gradient is the gradient itself."""
-        G_eff = property(lambda self: self.G)
-    a = A(); a.G, a.dt = G, dt
-    a.bvalues = np.asarray(bvals, float)
-    return a
+    # a bare gradient echo on the pack grid: no pulses, so the effective gradient is the gradient itself
+    return ScannerSequence(G=G, dt=dt, family="gre",
+                           encoding=Encoding(bvalues=np.asarray(bvals, float), gradient_directions=np.asarray(dirs, float)))
 
 
 def test_the_phantom_replays_every_voxel_from_one_pack_replay(tmp_path, pack_path):
@@ -213,7 +212,7 @@ def test_the_phantom_replays_every_voxel_from_one_pack_replay(tmp_path, pack_pat
     from dmipy_sim.replay.so3 import Distribution
     pr = pk.pose_response(seq, T2=[0.06] * 3)
     ref = pr.compose(Distribution.axis_density(FOD.native(ph.odf_sh[wm, 0].astype(float))))
-    np.testing.assert_allclose(S[wm], np.abs(f_wm[wm] * 0.7 * ref + f_csf[wm] * np.exp(-seq.bvalues * 3e-9)), rtol=1e-6)
+    np.testing.assert_allclose(S[wm], np.abs(f_wm[wm] * 0.7 * ref + f_csf[wm] * np.exp(-seq.encoding.bvalues * 3e-9)), rtol=1e-6)
     vol = ph.to_volume(S[:, 1])
     assert vol.shape == (8, 8, 1) and np.isnan(vol).any() and np.nanmax(vol) > 0
 
@@ -255,7 +254,8 @@ def test_a_layer_is_applied_or_refused_never_dropped(tmp_path, pack_path):
     _, S = off.replay(seq, complex_signal=True)
     _, S0 = base.replay(seq, complex_signal=True)
     assert np.abs(np.angle(S / S0)).max() > 1e-3                     # a gradient echo carries the off-resonance
-    seq.rf_events = [RFEvent((pk.n_t - 1) * pk.dt / 2, 180)]
+    seq = replace(seq, G=np.abs(np.asarray(seq.G)), family="pgse",             # the same encoding as a spin echo
+                  rf=[RFEvent(0.0, 90), RFEvent((pk.n_t - 1) * pk.dt / 2, 180)])
     _, Se = off.replay(seq, complex_signal=True)
     _, Se0 = base.replay(seq, complex_signal=True)
     np.testing.assert_allclose(Se, Se0, rtol=1e-9)                   # refocused: the layer contributes nothing
@@ -282,10 +282,9 @@ def test_the_transmit_layer_goes_through_the_bloch_route(tmp_path, pack_path):
     kw = dict(grid=Grid((n, n, 1), (1e-3,) * 3), occupancy=np.zeros((n, n, 1), np.int32), remainder=None, embed=True)
     pk = read_rpk(pack_path)
     seq = _acq(pk, [[1, 0, 0], [0, 0, 1]], [1e9, 1e9])
-    phys = type(seq)()                                      # the Bloch route takes the PHYSICAL waveform
-    phys.G, phys.dt, phys.bvalues = np.abs(np.asarray(seq.G)), seq.dt, seq.bvalues
     rf = [RFEvent(0.0, 90.0, axis_deg=0.0),
           RFEvent((pk.n_t - 1) * pk.dt / 2, 180.0, axis_deg=90.0)]
+    phys = replace(seq, G=np.abs(np.asarray(seq.G)), rf=rf, family="pgse")   # the Bloch route takes the PHYSICAL waveform
     ideal, _ = _phantom(tmp_path / "one", pack_path, orientation=FrameField(R), **kw)
     assert ideal.mode == "frames"
     _, S_ideal = ideal.replay(seq)

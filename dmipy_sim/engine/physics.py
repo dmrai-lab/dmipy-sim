@@ -380,7 +380,7 @@ def make_step_fn(geometry, diffusivity: float, dt: float, T2: float = None,
     diffusivity : float
         Diffusion coefficient in m²/s (``None`` for a geometry with per-compartment D).
     dt : float
-        Waveform time step in seconds.
+        ScannerSequence time step in seconds.
     T2, T1 : float, optional
         Bulk relaxation times in seconds. ``-chi_t * dt / T2`` and ``-(1 - chi_t) * dt / T1``
         accrue in ``log_w`` each step.

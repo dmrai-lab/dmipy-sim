@@ -1,17 +1,17 @@
 """Gradient waveform representation and constructors.
 
 Primary representation: G array of shape (n_measurements, n_t, 3), float32, in T/m.
-All constructors return a Waveform dataclass.
+Every builder returns a :class:`~dmipy_sim.acquisition.scanner_sequence.ScannerSequence`.
 """
 
-from dataclasses import dataclass
+from dataclasses import replace
 import numpy as np
 import jax.numpy as jnp
 from warnings import warn
 
 from ..constants import GAMMA, DEFAULT_SLEW_RATE, resolve_slew as _resolve_slew
-from .rf import RFEvent, RFSchedule
-from .timing import SequenceTiming
+from .rf import RFEvent
+from .scanner_sequence import ScannerSequence
 
 
 def _fill_lobe(arr, m, i0, n_pulse, amp_vec, n_rise):
@@ -36,122 +36,6 @@ def _lobe_n_rise(square, G_peak, slew_rate, dt, n_pulse):
     if square or G_peak <= 0:
         return 0
     return min(max(0, round((G_peak / float(slew_rate)) / dt)), n_pulse // 2)
-
-
-@dataclass
-class Waveform:
-    """One acquisition's gradient and RF schedule: what the scanner plays, on a ``dt`` grid.
-
-    Attributes
-    ----------
-    G : jnp.ndarray
-        Shape (n_measurements, n_t, 3), float32. The PHYSICAL gradient in T/m at each time
-        point for each measurement -- what the scanner plays: a spin echo's two lobes have
-        the same sign, the 180 does the flip. :attr:`G_eff` is the effective gradient the
-        phase integral walks, derived from ``G`` and the schedule; it is never stored.
-    dt : float
-        Uniform time step in seconds.
-    echo_idx : int
-        Index in [0, n_t) at which the signal is sampled (last time point for
-        spin echo). Signal extraction uses phi at this time step.
-    rf_events : RFSchedule, optional
-        The RF schedule (:class:`dmipy_sim.acquisition.rf.RFSchedule`, the pulses in time order;
-        any iterable of :class:`~dmipy_sim.acquisition.rf.RFEvent` builds one). It is the source of
-        the coherence attributes below, derived at construction by :meth:`RFSchedule.coherence`;
-        a value passed explicitly must agree with the schedule or construction raises. Its
-        :meth:`RFSchedule.sign` folds the pulses into :attr:`G_eff`.
-    echo_indices : np.ndarray, optional
-        Time-step indices of the successive echoes for a multi-echo train (e.g.
-        CPMG). None → single echo at ``echo_idx``. :func:`dmipy_sim.simulate_cpmg`
-        samples the signal at each of these indices from a single walk.
-    chi_perp : np.ndarray, optional
-        Per-time-point transverse-coherence mask of shape ``(n_t,)`` (bool or
-        float in {0, 1}).  ``1`` marks intervals where the magnetisation is
-        transverse (T2 decay and surface relaxivity act); ``0`` marks intervals
-        where it is stored longitudinally (only T1 acts, no T2 loss, no surface-
-        relaxivity loss).  Under the scoped constraints (ideal, instantaneous,
-        perfect 90°/180° pulses) this is a simple binary schedule.
-        None → all-transverse (a spin echo, χ_⊥ ≡ 1 for the whole waveform).
-    TM : float, optional
-        Mixing time in seconds — the duration of the longitudinal-storage
-        interval (the ``chi_perp == 0`` block of a stimulated echo).  None for
-        sequences with no storage interval.
-    stimulated_echo : bool
-        True for a stimulated-echo readout: the stimulated echo stores half the
-        magnetisation, an idealized 0.5 amplitude factor applied to the signal.
-        Default False (spin echo, full amplitude).
-    timing : SequenceTiming, optional
-        The budget this waveform was built to (:class:`dmipy_sim.acquisition.timing.SequenceTiming`):
-        the windows the gradient stays out of. ``None`` for an idealised instant-pulse waveform.
-    """
-    G: jnp.ndarray
-    dt: float
-    echo_idx: int
-    rf_events: RFSchedule = None
-    echo_indices: np.ndarray = None
-    chi_perp: np.ndarray = None
-    TM: float = None
-    stimulated_echo: bool = False
-    timing: SequenceTiming = None
-
-    def __post_init__(self):
-        self.rf_events = RFSchedule(self.rf_events)
-        if self.rf_events:
-            apply_rf_schedule(self)
-
-    @property
-    def G_eff(self):
-        """The EFFECTIVE gradient the phase integral walks: ``G`` with the schedule's sign folded in
-        (``G * rf_events.sign(t)``, the gate of RPK.md 6.6), so a spin echo's second lobe reads negative
-        and ``q(TE) = 0`` without modelling the pulse. Derived, never stored; ``G`` is what the scanner
-        plays. ``(n_measurements, n_t, 3)`` float32."""
-        G = np.asarray(self.G, dtype=np.float32)
-        s = self.rf_events.sign(np.arange(G.shape[1]) * float(self.dt))
-        return G * s[None, :, None]
-
-
-_ECHO_TOL = 2          # samples: the rounding freedom of placing a 180 at a lobe midpoint
-
-
-def apply_rf_schedule(wf):
-    """Set ``chi_perp``, ``TM``, ``stimulated_echo`` and ``echo_indices`` of ``wf`` from its
-    ``rf_events``, checking any value the constructor passed against the schedule.
-
-    ``chi_perp`` stays ``None`` for an all-transverse schedule (the spin-echo default) and is a float
-    profile over any finite pulse (:meth:`RFSchedule.coherence`);
-    ``echo_indices`` is set for a train of two or more echoes; a single echo must land on
-    ``echo_idx`` within the placement rounding.
-    """
-    wf.rf_events = RFSchedule(wf.rf_events)
-    n_t = int(wf.G.shape[1])
-    dt = float(wf.dt)
-    chi, TM, ste, echoes = wf.rf_events.coherence(n_t, dt)
-    chi_out = None if np.all(chi == 1) else chi
-    if wf.chi_perp is not None:
-        given = np.asarray(wf.chi_perp, dtype=np.float64).reshape(-1)
-        if given.shape != chi.shape or not np.allclose(given, chi.astype(np.float64), atol=1e-9):
-            raise ValueError("chi_perp disagrees with the RF schedule: the coherence mask is derived "
-                             "from rf_events, drop the explicit one or fix the schedule")
-    else:
-        wf.chi_perp = chi_out
-    if wf.TM is not None:
-        if TM is None or abs(float(wf.TM) - TM) > _ECHO_TOL * dt:
-            raise ValueError(f"TM={wf.TM} disagrees with the RF schedule's storage time {TM}")
-    else:
-        wf.TM = TM
-    if wf.stimulated_echo and not ste:
-        raise ValueError("stimulated_echo=True but the RF schedule has no store / recall pair")
-    wf.stimulated_echo = bool(ste)
-    idx = np.clip(np.rint(np.asarray(echoes) / dt).astype(int), 0, n_t - 1) if echoes else None
-    if wf.echo_indices is not None:
-        given = np.asarray(wf.echo_indices).astype(int).reshape(-1)
-        if idx is None or given.shape != idx.shape or np.abs(given - idx).max() > _ECHO_TOL:
-            raise ValueError(f"echo_indices {given.tolist()} disagree with the RF schedule's echoes "
-                             f"{None if idx is None else idx.tolist()}")
-    elif idx is not None and len(idx) >= 2:
-        wf.echo_indices = idx
-    if idx is not None and len(idx) == 1 and abs(int(idx[0]) - int(wf.echo_idx)) > _ECHO_TOL:
-        raise ValueError(f"echo_idx={wf.echo_idx} but the RF schedule forms its echo at sample {int(idx[0])}")
 
 
 def pgse(delta, DELTA, G_magnitude, bvecs, n_t,
@@ -180,7 +64,7 @@ def pgse(delta, DELTA, G_magnitude, bvecs, n_t,
 
     Returns
     -------
-    Waveform
+    ScannerSequence
     """
     bvecs = np.asarray(bvecs, dtype=np.float32)
     n_measurements = bvecs.shape[0]
@@ -214,9 +98,7 @@ def pgse(delta, DELTA, G_magnitude, bvecs, n_t,
         RFEvent(gap_mid * dt, 180, 'refocus'),
     ]
 
-    return Waveform(G=jnp.array(G_phys), dt=float(dt),
-                    echo_idx=n_t - 1,
-                    rf_events=rf_events)
+    return ScannerSequence(G=G_phys, dt=float(dt), rf=rf_events, family='pgse')
 
 
 def pgste(delta, TM, G_magnitude, bvecs, n_t, slew_rate=DEFAULT_SLEW_RATE):
@@ -232,7 +114,7 @@ def pgste(delta, TM, G_magnitude, bvecs, n_t, slew_rate=DEFAULT_SLEW_RATE):
     axis: the gradient is off, no transverse (T2) or surface-relaxivity loss
     accrues, and only T1 acts.  This is encoded by the binary transverse-
     coherence mask ``chi_perp = [ones | zeros(TM) | ones]`` carried on the
-    returned :class:`Waveform` (see its ``chi_perp`` attribute) and consumed by
+    returned ``ScannerSequence`` (its derived ``chi_perp``) and consumed by
     :func:`dmipy_sim.simulate`.  The walkers keep diffusing throughout, so the
     effective diffusion time spans the two lobes and the mixing time.
 
@@ -262,7 +144,7 @@ def pgste(delta, TM, G_magnitude, bvecs, n_t, slew_rate=DEFAULT_SLEW_RATE):
 
     Returns
     -------
-    Waveform
+    ScannerSequence
         With ``chi_perp`` set (binary transverse/longitudinal mask), ``TM=TM``
         and ``stimulated_echo=True``.
     """
@@ -293,16 +175,14 @@ def pgste(delta, TM, G_magnitude, bvecs, n_t, slew_rate=DEFAULT_SLEW_RATE):
 
     # The RF schedule: 90 excitation, 90 store (into z) at the end of the first lobe, 90 recall
     # (back to transverse) at the start of the second lobe. chi_perp, TM and stimulated_echo
-    # follow from it (Waveform.__post_init__).
+    # follow from it (ScannerSequence derives them).
     rf_events = [
         RFEvent(0.0, 90, 'Mz→Mxy'),
         RFEvent(n_pulse * dt, 90, 'store'),
         RFEvent(i_recall * dt, 90, 'recall'),
     ]
 
-    return Waveform(G=jnp.array(G_phys), dt=float(dt),
-                    echo_idx=n_t - 1,
-                    rf_events=rf_events)
+    return ScannerSequence(G=G_phys, dt=float(dt), rf=rf_events, family='pgste')
 
 
 def ogse(frequency, T_total, G_magnitude, bvecs, n_t, kind='cosine'):
@@ -342,7 +222,7 @@ def ogse(frequency, T_total, G_magnitude, bvecs, n_t, kind='cosine'):
 
     Returns
     -------
-    Waveform
+    ScannerSequence
     """
     bvecs = np.asarray(bvecs, dtype=np.float32)
     n_measurements = bvecs.shape[0]
@@ -387,9 +267,7 @@ def ogse(frequency, T_total, G_magnitude, bvecs, n_t, kind='cosine'):
         RFEvent(T_total / 2.0, 180, 'refocus'),
     ]
 
-    return Waveform(G=jnp.array(G_phys), dt=float(dt),
-                    echo_idx=n_t - 1,
-                    rf_events=rf_events)
+    return ScannerSequence(G=G_phys, dt=float(dt), rf=rf_events, family='ogse')
 
 
 def trapezoidal_ogse(N, delta, DELTA, G_magnitude, bvecs, n_t,
@@ -436,7 +314,7 @@ def trapezoidal_ogse(N, delta, DELTA, G_magnitude, bvecs, n_t,
 
     Returns
     -------
-    Waveform
+    ScannerSequence
     """
     bvecs = np.asarray(bvecs, dtype=np.float32)
     n_measurements = bvecs.shape[0]
@@ -488,9 +366,7 @@ def trapezoidal_ogse(N, delta, DELTA, G_magnitude, bvecs, n_t,
         RFEvent(gap_mid * dt, 180, 'refocus'),
     ]
 
-    return Waveform(G=jnp.array(G_phys), dt=float(dt),
-                    echo_idx=n_t - 1,
-                    rf_events=rf_events)
+    return ScannerSequence(G=G_phys, dt=float(dt), rf=rf_events, family='trapezoidal_ogse')
 
 
 def b_trapezoidal_ogse(N, delta, DELTA, G, rise_time):
@@ -548,7 +424,7 @@ def btensor_from_gradient(G, dt):
 
 
 def calc_b(waveform):
-    """Compute b-values for each measurement in a Waveform (s/m²).
+    """Compute b-values for each measurement of a ScannerSequence (s/m²).
 
     Uses the rectangular (left-point) rule to accumulate q(t), then
     integrates |q(t)|² with the trapezoidal rule.  This is internally
@@ -581,7 +457,7 @@ def calc_btensor(waveform):
 
     Parameters
     ----------
-    waveform : Waveform
+    waveform : ScannerSequence
 
     Returns
     -------
@@ -680,7 +556,7 @@ def ste(delta, DELTA, G_magnitude, n_t, slew_rate=DEFAULT_SLEW_RATE):
 
     Returns
     -------
-    Waveform
+    ScannerSequence
         Single measurement.  G shape = (1, n_t, 3).
     """
     T_total = DELTA + delta
@@ -698,9 +574,7 @@ def ste(delta, DELTA, G_magnitude, n_t, slew_rate=DEFAULT_SLEW_RATE):
         _fill_lobe(G_phys, 0, enc_start, enc_end - enc_start,  G_magnitude * eye[i], n_rise)
         _fill_lobe(G_phys, 0, enc_end,   dec_end - enc_end,   -G_magnitude * eye[i], n_rise)
 
-    return Waveform(G=jnp.array(G_phys), dt=float(dt),
-                    echo_idx=n_t - 1,
-                    rf_events=[RFEvent(0.0, 90, 'Mz→Mxy')])
+    return ScannerSequence(G=G_phys, dt=float(dt), rf=[RFEvent(0.0, 90, 'Mz→Mxy')], family='ste')
 
 
 def pte(delta, DELTA, G_magnitude, plane_normal, n_t, slew_rate=DEFAULT_SLEW_RATE):
@@ -735,7 +609,7 @@ def pte(delta, DELTA, G_magnitude, plane_normal, n_t, slew_rate=DEFAULT_SLEW_RAT
 
     Returns
     -------
-    Waveform
+    ScannerSequence
         Single measurement.  G shape = (1, n_t, 3).
     """
     n = np.asarray(plane_normal, dtype=np.float64)
@@ -763,17 +637,15 @@ def pte(delta, DELTA, G_magnitude, plane_normal, n_t, slew_rate=DEFAULT_SLEW_RAT
         _fill_lobe(G_phys, 0, enc_start, enc_end - enc_start,  avec, n_rise)
         _fill_lobe(G_phys, 0, enc_end,   dec_end - enc_end,   -avec, n_rise)
 
-    return Waveform(G=jnp.array(G_phys), dt=float(dt),
-                    echo_idx=n_t - 1,
-                    rf_events=[RFEvent(0.0, 90, 'Mz→Mxy')])
+    return ScannerSequence(G=G_phys, dt=float(dt), rf=[RFEvent(0.0, 90, 'Mz→Mxy')], family='pte')
 
 
 def set_b(waveform, b_target):
-    """Return a new Waveform scaled so each measurement has the given b-value.
+    """Return a new ScannerSequence scaled so each measurement has the given b-value.
 
     Parameters
     ----------
-    waveform : Waveform
+    waveform : ScannerSequence
     b_target : float or array of shape (n_measurements,)
         Target b-values in **s/m²** (SI units), consistent with ``calc_b``.
         Typical clinical values: 1e8–3e9 s/m² (= 100–3000 s/mm²).
@@ -787,7 +659,7 @@ def set_b(waveform, b_target):
 
     Returns
     -------
-    Waveform with scaled G.
+    ScannerSequence with scaled G.
     """
     import warnings
     b_current = calc_b(waveform)
@@ -807,13 +679,7 @@ def set_b(waveform, b_target):
     # b scales as G², so G scales as sqrt(b_target / b_current)
     scale = np.sqrt(b_target / b_current).astype(np.float32)  # (n_measurements,)
     G_new = np.array(waveform.G) * scale[:, None, None]
-    return Waveform(G=jnp.array(G_new.astype(np.float32)),
-                    dt=waveform.dt,
-                    echo_idx=waveform.echo_idx,
-                    rf_events=waveform.rf_events,
-                    chi_perp=waveform.chi_perp,
-                    TM=waveform.TM,
-                    stimulated_echo=waveform.stimulated_echo)
+    return replace(waveform, G=G_new.astype(np.float32))
 
 
 def rotate_waveform(waveform, R=None, *, theta=None):
@@ -832,7 +698,7 @@ def rotate_waveform(waveform, R=None, *, theta=None):
 
     Parameters
     ----------
-    waveform : Waveform
+    waveform : ScannerSequence
         Input waveform with G of shape (n_measurements, n_t, 3).
     R : np.ndarray, shape (3, 3), optional
         Rotation matrix (mutually exclusive with ``theta``).
@@ -841,8 +707,8 @@ def rotate_waveform(waveform, R=None, *, theta=None):
 
     Returns
     -------
-    Waveform
-        New Waveform with rotated G, same dt and echo_idx.
+    ScannerSequence
+        New ScannerSequence with rotated G, same dt and readout.
     """
     if (R is None) == (theta is None):
         raise ValueError("rotate_waveform: pass exactly one of R or theta.")
@@ -853,13 +719,7 @@ def rotate_waveform(waveform, R=None, *, theta=None):
     G = np.array(waveform.G)  # (n_meas, n_t, 3)
     # G_rotated[m, t, :] = G[m, t, :] @ R.T = R.T @ G[m, t, :]^T
     G_rot = np.einsum('mtj,ij->mti', G, R)  # G @ R.T via einsum
-    return Waveform(G=jnp.array(G_rot, dtype=jnp.float32),
-                    dt=waveform.dt,
-                    echo_idx=waveform.echo_idx,
-                    rf_events=waveform.rf_events,
-                    chi_perp=waveform.chi_perp,
-                    TM=waveform.TM,
-                    stimulated_echo=waveform.stimulated_echo)
+    return replace(waveform, G=G_rot.astype(np.float32))
 
 
 def tile_waveform(waveform, n_copies):
@@ -871,31 +731,25 @@ def tile_waveform(waveform, n_copies):
 
     Parameters
     ----------
-    waveform : Waveform
+    waveform : ScannerSequence
         Input waveform with G of shape (n_measurements, n_t, 3).
     n_copies : int
         Number of copies.
 
     Returns
     -------
-    Waveform
-        New Waveform with G of shape (n_copies * n_measurements, n_t, 3).
+    ScannerSequence
+        New ScannerSequence with G of shape (n_copies * n_measurements, n_t, 3).
     """
     G = np.array(waveform.G)  # (n_meas, n_t, 3)
     G_tiled = np.tile(G, (n_copies, 1, 1))
-    return Waveform(G=jnp.array(G_tiled, dtype=jnp.float32),
-                    dt=waveform.dt,
-                    echo_idx=waveform.echo_idx,
-                    rf_events=waveform.rf_events,
-                    chi_perp=waveform.chi_perp,
-                    TM=waveform.TM,
-                    stimulated_echo=waveform.stimulated_echo)
+    return replace(waveform, G=G_tiled.astype(np.float32), encoding=None)      # n_meas changes: the encoding does not carry over
 
 
 def cpmg(n_echoes, TE, G_magnitude, bvecs, n_t_per_echo=100):
     """Instantaneous-pulse CPMG (Carr–Purcell–Meiboom–Gill) echo train.
 
-    A plain :class:`Waveform` for the multi-echo spin-echo: a 90° excitation at
+    A ScannerSequence for the multi-echo spin-echo: a 90° excitation at
     ``t=0`` and ``n_echoes`` ideal 180° refocusing pulses at ``(k+½)·TE``, with
     echoes forming at ``k·TE``.  Magnetisation is fully transverse throughout
     (ideal instantaneous pulses) — there is no coherence-pathway machinery
@@ -922,7 +776,7 @@ def cpmg(n_echoes, TE, G_magnitude, bvecs, n_t_per_echo=100):
 
     Returns
     -------
-    Waveform
+    ScannerSequence
     """
     bvecs = np.asarray(bvecs, dtype=np.float32)
     n_measurements = bvecs.shape[0]
@@ -943,6 +797,4 @@ def cpmg(n_echoes, TE, G_magnitude, bvecs, n_t_per_echo=100):
                   for k in range(n_echoes)]
 
     # Echoes form at k*TE, k=1..n_echoes (step indices k*n_t_per_echo): derived from the schedule.
-    return Waveform(G=jnp.array(G_phys), dt=float(dt),
-                    echo_idx=n_t - 1,
-                    rf_events=rf_events)
+    return ScannerSequence(G=G_phys, dt=float(dt), rf=rf_events, family='cpmg')

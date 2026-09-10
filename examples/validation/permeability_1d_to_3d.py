@@ -22,7 +22,7 @@ import jax.numpy as jnp
 from scipy.special import jv, yv, spherical_jn, spherical_yn
 from scipy.optimize import brentq
 
-from dmipy_sim import simulate, Waveform, PermeableSlab1D
+from dmipy_sim import simulate, ScannerSequence, PermeableSlab1D
 from dmipy_sim.geometry import PermeableShell
 
 D = 2e-9            # m^2/s
@@ -66,7 +66,7 @@ def _tau_shell(Rin, Rout, kappa, kind):
 
 # ── Monte-Carlo exchange time in a closed cell ───────────────────────────────
 def _zero_waveform(n_t, dt):
-    return Waveform(G=jnp.zeros((1, n_t, 3), dtype=jnp.float32), dt=float(dt), echo_idx=n_t - 1)
+    return ScannerSequence(G=jnp.zeros((1, n_t, 3), dtype=jnp.float32), dt=float(dt))
 
 
 def _f_inside(geom, t, dt):

@@ -18,7 +18,7 @@ no replay.  Each step applies, in order:
 Spin echoes and CPMG refocusing are EMERGENT: the 180 rotation conjugates the
 accumulated phase, so the echo forms by itself -- there is no ``eps_P`` sign, no
 coherence gate, no pathway enumeration.  **Pass the PHYSICAL (same-sign-lobe)
-gradient** (``Waveform.G``); the RF rotations do the refocusing, so the
+gradient** (``ScannerSequence.G``); the RF rotations do the refocusing, so the
 bipolar/effective convention must NOT be used here.
 
 Scope: B1 + relaxation + gradient, single forward pass.  No susceptibility and no
@@ -239,7 +239,7 @@ def simulate_bloch(n_walkers, diffusivity, waveform, geometry, rf_events, *,
     Parameters
     ----------
     n_walkers, diffusivity, waveform, geometry : as ``core.simulate`` (``waveform``
-        may be a ``Waveform`` or any object with a ``.waveform``; the PHYSICAL
+        may be a ``ScannerSequence`` or any object with a ``.waveform``; the PHYSICAL
         same-sign gradient is expected).
     rf_events : RFSchedule
         :class:`dmipy_sim.acquisition.rf.RFSchedule` (or the events that build one);

@@ -18,7 +18,7 @@ import jax.numpy as jnp
 import pytest
 
 from dmipy_sim import simulate, Sphere, Cylinder, Mesh, set_b, pgse, pgste
-from dmipy_sim.acquisition.waveforms import Waveform
+from dmipy_sim.acquisition.scanner_sequence import ScannerSequence
 
 trimesh = pytest.importorskip("trimesh")
 
@@ -33,7 +33,7 @@ def _pgse(nb, n_t, TE=40e-3, axis=0):
     G[0, 1:int(0.4 * n_t), axis] = 1.0
     G[0, -int(0.4 * n_t):-1, axis] = -1.0
     Gt = jnp.tile(jnp.array(G), (nb, 1, 1))
-    return set_b(Waveform(G=Gt, dt=dt, echo_idx=n_t - 1), np.linspace(1, 2e9, nb))
+    return set_b(ScannerSequence(G=Gt, dt=dt), np.linspace(1, 2e9, nb))
 
 
 def _ico(sub, r=R):

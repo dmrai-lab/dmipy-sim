@@ -1,4 +1,4 @@
-"""Waveform application to pre-computed walker trajectories (the replay path).
+"""ScannerSequence application to pre-computed walker trajectories (the replay path).
 
 Decouples MC geometry simulation from gradient encoding + relaxation, enabling
 fast re-use of a single walker library for arbitrary waveforms, T2/T1 schedules
@@ -166,7 +166,7 @@ def replay_jax(
     dt_traj : float
         Trajectory time step in seconds.
     dt_wf : float or None
-        Waveform time step in seconds.  If None, assumed equal to ``dt_traj``
+        ScannerSequence time step in seconds.  If None, assumed equal to ``dt_traj``
         (no resampling).
     weights : jnp.ndarray, shape (n_walkers,) or None
         Optional per-walker importance weights.  If None, uniform mean is used.
@@ -174,7 +174,7 @@ def replay_jax(
     stimulated_echo : bool
         If True, multiply the returned signal by 0.5 to account for the
         cos(phi1) storage step in PGSTE sequences.  Pass
-        ``stimulated_echo=wf.stimulated_echo`` when replaying a Waveform
+        ``stimulated_echo=wf.stimulated_echo`` when replaying a ScannerSequence
         built by :func:`pgste`.
 
     Returns
@@ -369,7 +369,7 @@ def replay(
     G : np.ndarray, shape (n_meas, n_t_wf, 3)
         Gradient waveform in T/m.
     dt_wf : float
-        Waveform time step in seconds.
+        ScannerSequence time step in seconds.
     chi_perp : np.ndarray, shape (n_t_wf,) or (n_meas, n_t_wf), or None
         Transverse gating schedule: 1 during encoding/decoding (T2 active),
         0 during mixing time (T1 active, T2 suspended).  Resampled to the
@@ -800,7 +800,7 @@ def replay_bloch(trajectory, dt_traj, G, dt_wf, rf_events, *,
     readable line. :func:`replay_bloch_jax` is the same operator as a jitted scan and takes the same arguments.
 
     Coherence pathways / refocusing are EMERGENT: the 180 conjugates the accumulated phase, so the spin echo
-    forms by itself. **Pass the PHYSICAL (same-sign-lobe) gradient** (``Waveform.G``, on its own grid).
+    forms by itself. **Pass the PHYSICAL (same-sign-lobe) gradient** (``ScannerSequence.G``, on its own grid).
 
     Parameters
     ----------

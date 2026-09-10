@@ -42,8 +42,7 @@ def test_a_schedule_is_events_in_time_order_and_nothing_else_is_accepted():
 
 
 def test_the_schedule_is_the_one_place_things_are_derived_from_the_pulses():
-    """Refocus time, the spin-echo sign, the coherence mask, the mixing time and the storage mask come from the
-    schedule; a gradient echo (no pulse) has none of them."""
+    """Refocus time, the spin-echo sign, the coherence mask and the mixing time come from the schedule; a gradient echo (no pulse) has none of them."""
     se = IDEAL
     assert se.refocus_time == 0.02 and RFSchedule().refocus_time is None
     t = np.linspace(0.0, 0.04, 9)
@@ -51,15 +50,14 @@ def test_the_schedule_is_the_one_place_things_are_derived_from_the_pulses():
     np.testing.assert_array_equal(RFSchedule().sign(t), np.ones_like(t))
     chi, TM, ste, echoes = se.coherence(41, 1e-3)
     assert chi.all() and TM is None and not ste and echoes == pytest.approx([0.04])
-    assert se.mixing_time == (None, False) and se.storage_mask(t) is None
+    assert se.mixing_time == (None, False)
     pgste = RFSchedule((RFEvent(0.0, 90, 'Mz→Mxy'), RFEvent(0.01, 90, 'store'), RFEvent(0.03, 90, 'recall')))
     assert pgste.mixing_time == (pytest.approx(0.02), True)
     chi, TM, ste, _ = pgste.coherence(41, 1e-3)
     assert TM == pytest.approx(0.02) and ste and not chi[15] and chi[5] and chi[35]
-    np.testing.assert_array_equal(pgste.storage_mask(t), np.where((t >= 0.01) & (t < 0.03), 0.0, 1.0))
     np.testing.assert_array_equal(pgste.sign(t), np.where(t >= 0.03, -1.0, 1.0))         # flips at RECALL
     unlabelled = RFSchedule((RFEvent(0.0, 90), RFEvent(0.01, 90), RFEvent(0.03, 90)))
-    assert unlabelled.mixing_time == (pytest.approx(0.02), True) and unlabelled.storage_mask(t) is None
+    assert unlabelled.mixing_time == (pytest.approx(0.02), True)
     assert [e.t_s for e in se.shifted(0.005)] == pytest.approx([0.005, 0.025]) and isinstance(se.shifted(1.0), RFSchedule)
 
 
@@ -119,14 +117,14 @@ def test_events_round_trip_through_plain_data():
 
 def test_a_bloch_sequence_now_carries_coherence_labels_so_it_un_folds():
     """The finite-pulse builders emitted flips without labels; now their 180 says 'refocus', so the same
-    RFSchedule.sign that un-folds a Waveform un-folds a BlochSequence."""
-    from dmipy_sim.engine.pulse_sequence import spin_echo, fexi
-    se = spin_echo(20e-3, 1e-4)
-    assert [e.label for e in se.rf_events] == ['Mz→Mxy', 'refocus']
-    s = se.rf_events.sign(np.arange(se.n_t) * se.dt)
+    RFSchedule.sign un-folds a ScannerSequence."""
+    from dmipy_sim.engine.pulse_sequence import bare_spin_echo, fexi
+    se = bare_spin_echo(20e-3, 1e-4)
+    assert [e.label for e in se.rf] == ['Mz→Mxy', 'refocus']
+    s = se.rf.sign(np.arange(se.n_t) * se.dt)
     assert s[:se.n_t // 2].min() == 1.0 and s[se.n_t // 2 + 1:].max() == -1.0
     fx = fexi(4e-3, 20e-3, 1e-4, g_filter=0.05, g_detect=0.05)
-    assert [e.label for e in fx.rf_events] == ['Mz→Mxy', 'store', 'recall']
+    assert [e.label for e in fx.rf] == ['Mz→Mxy', 'store', 'recall']
 
 
 def test_public_names():

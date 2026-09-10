@@ -67,7 +67,7 @@ def test_pgse_parity_with_scalar_engine():
     geom, N, seed = FreeDiffusion(), 16000, 7
     scalar = simulate(N, D, wf, geom, seed=seed, require_gpu=False)  # <cos phi>
     # 90_y -> Mx = cos phi, then the waveform's own 180: G is the physical same-sign pair, the pulse refocuses
-    rf = [RFEvent(0.0, 90.0, axis_deg=90.0)] + [e for e in wf.rf_events if e.flip_deg == 180]
+    rf = [RFEvent(0.0, 90.0, axis_deg=90.0)] + [e for e in wf.rf if e.flip_deg == 180]
     vec = simulate_bloch(N, D, wf, geom, rf, seed=seed)              # no relaxation
     tol = max(0.02, 1.0 / np.sqrt(N))
     # same seed + FreeDiffusion (identity reflect) => bit-identical walk

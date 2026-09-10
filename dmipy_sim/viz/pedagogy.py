@@ -99,9 +99,9 @@ def _walk_record(geometry, diffusivity, n_t, dt, n_walkers, seed):
 def _rf_events_for(waveform):
     """The RF schedule of a waveform (an excitation at t=0 when it carries none).
 
-    Standard waveforms carry ideal (instantaneous) ``rf_events`` directly; a bare
+    A sequence carries its schedule as ``rf``; a bare
     excitation at t=0 is the fallback."""
-    rf = RFSchedule(getattr(waveform, 'rf_events', None))
+    rf = RFSchedule(getattr(waveform, 'rf', None))
     return rf if rf else RFSchedule((RFEvent(0.0, 90.0, 'Mz→Mxy'),))
 
 
@@ -160,7 +160,7 @@ def replay_with_history(geometry, waveform, diffusivity, *, T2=None, T1=None,
     """Walk once on ``geometry`` under ``waveform`` and record the idealised magnetisation
     history M(t) (gradient phase + hard-pulse rotations + T2/T1).  Returns a ``history`` dict
     for :func:`sequence_story` / :func:`spin_movie`.  ``waveform`` is any standard
-    ``pgse``/``ogse`` Waveform."""
+    ``pgse``/``ogse`` ScannerSequence."""
     # Walk the PHYSICAL same-sign gradient: the idealised 180
     # rotation does the refocusing, so the PHYSICAL gradient ``G`` is what it walks (the effective
     # ``G_eff`` would double-count the sign flip and cancel the echo).

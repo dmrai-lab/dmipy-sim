@@ -8,7 +8,7 @@ import dmipy_sim as d
 from dmipy_sim.replay import ReplayPack, compile_scheme, replay_signal
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_sim.replay.compression import decode_occupancy, relaxation_logweight
-from dmipy_sim.sequences import Sequence
+from dmipy_sim import sequences as _seqmod
 
 D0 = 2e-9
 ENV = dict(bvals=[0.0, 1e9, 3e9], dirs=[[1, 0, 0], [0, 0, 1]], ogse_periods=[2], shortd_b=1e9,
@@ -90,7 +90,7 @@ def test_any_waveform_grid_and_a_sequence_are_accepted(packs):
     np.testing.assert_allclose(fine, replay_signal(full, _W(full, wf_fine)), rtol=1e-12)   # resampled onto the pack grid
     same = full.replay(_wf(full.n_t, full.dt))
     np.testing.assert_allclose(fine, same, rtol=0.1)                    # two discretisations of one waveform
-    seq = Sequence.from_pgse(bvalues=[1e9], gradient_directions=[[1, 0, 0]], delta=2e-3, Delta=6e-3, n_t=200)
+    seq = _seqmod.pgse(bvalues=[1e9], gradient_directions=[[1, 0, 0]], delta=2e-3, Delta=6e-3, n_t=200)
     s = full.replay(seq)
     assert s.shape == (1,) and 0 < s[0] < 1
     per_pool = full.replay(_wf(full.n_t, full.dt), compartment=1)

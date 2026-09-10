@@ -72,7 +72,8 @@ import matplotlib.pyplot as plt
 import jax.numpy as jnp
 
 from dmipy_sim import simulate, Box1D, Cylinder, Sphere, set_b
-from dmipy_sim.acquisition.waveforms import Waveform, pgse
+from dmipy_sim.acquisition.waveforms import pgse
+from dmipy_sim.acquisition.scanner_sequence import ScannerSequence
 
 
 # ---------------------------------------------------------------------------
@@ -105,7 +106,7 @@ os.makedirs(FIG_DIR, exist_ok=True)
 def _zero_waveform(n_t: int, dt: float):
     """Return a zero-gradient waveform of shape (1, n_t, 3) with echo at end."""
     G = np.zeros((1, n_t, 3), dtype=np.float32)
-    return Waveform(G=jnp.array(G), dt=float(dt), echo_idx=n_t - 1)
+    return ScannerSequence(G=jnp.array(G), dt=float(dt))
 
 
 def _run_f_inside_at_time(geometry, t_target, D, n_walkers, dt, seed):

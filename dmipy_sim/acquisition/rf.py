@@ -6,13 +6,13 @@ axis, the duration, the carrier offset, and optionally the :class:`B1Pulse` that
 builder emits it, every reader reads it. :class:`RFSchedule` is the schedule -- the events in time
 order, valid by construction, and the one place the coherence mask, the spin-echo sign, the refocus and
 mixing times are derived from them. The only dict an event is ever read from is its own
-:meth:`RFEvent.to_dict` record. :class:`B1Pulse` is the RF analogue of the gradient ``Waveform`` (``waveforms.py``):
+:meth:`RFEvent.to_dict` record. :class:`B1Pulse` is the RF analogue of the gradient array ``G``:
 the base representation is the *actual* transmit field
 
     B1(t) = B1x(t) + i B1y(t)   in Tesla, on a uniform raster dt,
 
-NOT an idealised flip angle, and NOT the transverse-coherence mask a ``Waveform``
-carries (``Waveform.chi_perp``, which describes a pulse's *effect* — which intervals are
+NOT an idealised flip angle, and NOT the transverse-coherence mask a ``ScannerSequence``
+derives (``chi_perp``, which describes a pulse's *effect* — which intervals are
 transverse vs longitudinal). ``B1Pulse`` describes the pulse you actually play on the
 coil, with the same status the ``G(t)`` array has for gradients: it is the ground truth,
 and the constructors are conveniences on top of it — simple shapes (hard / windowed_sinc /
@@ -394,7 +394,7 @@ class RFEvent:
     length (0 is the instantaneous hard pulse), ``offset_hz`` the carrier offset. ``envelope`` is the played
     ``B1(t)`` as a :class:`B1Pulse`; when given it IS the shape: ``duration_s`` is its length, ``flip_deg``
     is ``gamma * int |B1| dt``, and a declared value that disagrees with either raises -- the rule
-    ``chi_perp`` follows in :func:`~dmipy_sim.acquisition.waveforms.apply_rf_schedule`.
+    ``chi_perp`` follows on the ``ScannerSequence`` that carries the schedule.
 
     :meth:`flip_split` is the one place a pulse becomes what a grid does with it; both rasterisers
     (:func:`dmipy_sim.engine.bloch._build_rf_schedule`, :func:`dmipy_sim.replay.trajectories._bloch_timeline`)
@@ -507,15 +507,20 @@ class RFEvent:
         return f"RFEvent({self.t_s:g}, {self.flip_deg:g}, {self.label!r}{extra}{env})"
 
 
+#: a labelled pulse is what its label says, whatever its flip -- a stimulated echo's store may be 60 degrees
+_ROLE_OF_LABEL = {"Mz→Mxy": "excite", "excitation": "excite", "store": "store", "recall": "recall",
+                  "refocus": "refocus", "refocusing": "refocus"}
+
+
 class RFSchedule(tuple):
     """The RF schedule of an acquisition: its :class:`RFEvent`\ s in time order, valid by construction, and
     the one place anything is derived from them. Empty is a gradient echo (no pulse).
 
-    Build it once and hold it -- ``Waveform.rf_events``, ``BlochSequence.rf_events`` are one -- and read
+    Build it once and hold it -- ``ScannerSequence.rf`` is one -- and read
     what it derives: :meth:`coherence` (the transverse mask, mixing time, stimulated-echo state and echo
     times an ideal schedule implies), :meth:`sign` (the spin-echo gate ``s(t)`` of RPK.md 6.6, the un-fold
     between the effective and the physical gradient), :attr:`refocus_time`, :attr:`mixing_time`,
-    :meth:`storage_mask`. Nothing else re-derives these from a list of events. Anything that is not an
+    Nothing else re-derives these from a list of events. Anything that is not an
     ``RFEvent`` is refused; :meth:`to_dicts` / :meth:`from_dicts` are its serialised record.
     """
     __slots__ = ()
@@ -570,7 +575,9 @@ class RFSchedule(tuple):
         store / recall pair), and the echo times of the refocusing pulses. Magnetisation starts along z; a 90
         excites it, a 90 while transverse stores it along z, the next 90 recalls it; a 180 while transverse
         refocuses, forming an echo at ``2 t_180 - t_ref`` where ``t_ref`` is the previous echo or excitation.
-        Other flips are not tracked. Each transition happens at the pulse's instant ``t_s``.
+        A labelled pulse plays the role its label says whatever its flip (a stimulated echo's store may be 60
+        degrees); an unlabelled one is inferred from its flip, and other flips are not tracked. Each transition
+        happens at the pulse's instant ``t_s``.
 
         For a hard pulse the mask is binary. Over a FINITE pulse's window it is the transverse fraction of the
         pathway, averaged over the ensemble's azimuth: an excitation or a recall tips z into the plane as
@@ -581,6 +588,8 @@ class RFSchedule(tuple):
         then float; a schedule of hard pulses keeps the binary one.
         """
         n_t = int(n_t); dt = float(dt)
+        if len(self) == 0:                                  # no pulses declared: the gradient is read as it stands
+            return np.ones(n_t, dtype=bool), None, False, []
         chi = np.zeros(n_t, dtype=bool)
         transverse = False
         t_ref = None
@@ -595,23 +604,26 @@ class RFSchedule(tuple):
             i = int(np.clip(int(round(t / dt)), 0, n_t))
             chi[i_prev:i] = transverse
             i_prev = i
-            flip = int(round(e.flip_deg))
-            if flip == 90:
-                if not transverse:
-                    transverse = True
-                    if stored_from is not None:                  # recall
-                        TM += t - stored_from
-                        stored_from = None
-                        roles.append((e, "recall"))
-                    else:
-                        roles.append((e, "excite"))
-                    t_ref = t
-                else:                                           # store
-                    transverse = False
-                    stored_from = t
-                    stores += 1
-                    roles.append((e, "store"))
-            elif flip == 180 and transverse and t_ref is not None:
+            role = _ROLE_OF_LABEL.get(e.label)
+            if role is None:                                    # unlabelled: infer from the flip and the state
+                flip = int(round(e.flip_deg))
+                if flip == 90:
+                    role = "store" if transverse else ("recall" if stored_from is not None else "excite")
+                elif flip == 180 and transverse and t_ref is not None:
+                    role = "refocus"
+            if role in ("excite", "recall") and not transverse:
+                transverse = True
+                if role == "recall" and stored_from is not None:
+                    TM += t - stored_from
+                    stored_from = None
+                t_ref = t
+                roles.append((e, role))
+            elif role == "store" and transverse:
+                transverse = False
+                stored_from = t
+                stores += 1
+                roles.append((e, "store"))
+            elif role == "refocus" and transverse and t_ref is not None:
                 echoes.append(2.0 * t - t_ref)
                 t_ref = echoes[-1]
                 roles.append((e, "refocus"))
@@ -644,18 +656,6 @@ class RFSchedule(tuple):
         if len(nineties) >= 3:
             return nineties[2].t_s - nineties[1].t_s, True
         return None, False
-
-    def storage_mask(self, t_grid):
-        """``chi_perp`` over ``t_grid`` as a float mask -- 0 while stored along z between a labelled ``'store'``
-        and its ``'recall'``, 1 while transverse -- or ``None`` when there is no storage interval."""
-        st = next((e for e in self if e.label == 'store'), None)
-        rc = next((e for e in self if e.label == 'recall'), None)
-        if st is None or rc is None:
-            return None
-        t = np.asarray(t_grid, dtype=np.float64)
-        chi = np.ones_like(t, dtype=np.float32)
-        chi[(t >= st.t_s) & (t < rc.t_s)] = 0.0
-        return chi
 
     def shifted(self, dt_s):
         """The same pulses ``dt_s`` later."""

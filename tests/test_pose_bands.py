@@ -42,7 +42,7 @@ class _Lobe:
     def __init__(self, amp, axis=(1.0, 0.0, 0.0), dt=DT, n_t=N_T):
         self.G = np.zeros((1, n_t, 3))
         self.G[0, :, :] = amp * np.asarray(axis, float)
-        self.dt, self.bvalues, self.rf_events = dt, np.array([0.0]), []
+        self.dt, self.bvalues, self.rf = dt, np.array([0.0]), []
         self.q = GAMMA * amp * dt * (n_t - 1) * np.asarray(axis, float)   # the exact integral of a constant
 
     @property

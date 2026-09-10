@@ -1,12 +1,14 @@
 """The stored gradient is the PHYSICAL one; the effective one is derived (#173 piece 3).
 
-``G`` is what the scanner plays; ``G_eff = G * rf_events.sign(t)`` is what the phase integral walks. Every
+``G`` is what the scanner plays; ``G_eff = G * rf.sign(t)`` is what the phase integral walks. Every
 builder's ``G_eff`` is, bit for bit, the gradient it stored before the flip (the fixture was generated from the
 pre-piece-3 tree); a shorter-timing row is placed symmetric about the one 180 instead of starting at t = 0
 with the pulse inside its lobe; the two constructors that folded a 180 without declaring it now declare it;
 and ``validate()`` refuses a finite pulse over a live gradient and an unrefocused echo.
 """
 from pathlib import Path
+
+from dataclasses import replace
 
 import numpy as np
 import pytest
@@ -15,7 +17,7 @@ import dmipy_sim as d
 from dmipy_sim import sequences as S
 from dmipy_sim.acquisition.rf import RFEvent, RFSchedule
 from dmipy_sim.acquisition.waveforms import b_from_gradient
-from dmipy_sim.sequences import Sequence
+from dmipy_sim import sequences as _seqmod
 
 FIX = np.load(Path(__file__).parent / "fixtures" / "effective_gradient_pre_piece3.npz")
 bv = np.array([[1.0, 0.0, 0.0], [0.0, 0.6, 0.8]]); B = np.array([1e9, 2e9]); D2 = bv
@@ -52,7 +54,7 @@ def _unshifted_rows(key, obj):
     n = np.asarray(obj.G).shape[0]
     if key != "Sequence.pgse.slew":
         return list(range(n))
-    eps = np.minimum(np.asarray(obj.gradient_strengths) / 200.0, np.asarray(obj.delta))
+    eps = np.minimum(np.asarray(obj.encoding.gradient_strengths) / 200.0, np.asarray(obj.encoding.delta))
     return [m for m in range(n) if eps[m] == eps.max()]
 
 
@@ -72,7 +74,7 @@ def test_the_effective_gradient_is_bit_for_bit_what_was_stored_before(key):
 def test_the_effective_gradient_is_the_physical_one_through_the_schedule():
     for key, obj in _builders().items():
         G, G_eff = np.asarray(obj.G, np.float32), np.asarray(obj.G_eff, np.float32)
-        s = RFSchedule(obj.rf_events).sign(np.arange(G.shape[1]) * float(obj.dt))
+        s = RFSchedule(obj.rf).sign(np.arange(G.shape[1]) * float(obj.dt))
         np.testing.assert_array_equal(G_eff, G * s[None, :, None], err_msg=key)
         np.testing.assert_array_equal(G_eff * s[None, :, None], G, err_msg=key)     # s is its own inverse
         if np.any(s < 0):                                                 # a 180, or a stimulated echo's recall
@@ -104,7 +106,7 @@ def test_a_shorter_row_is_placed_symmetric_about_the_one_180():
     np.testing.assert_array_equal(G_eff[0], old[0])                       # the longest row: bit for bit
     assert not np.array_equal(G_eff[1], old[1])                           # the shorter row moved
     np.testing.assert_allclose(b_from_gradient(G_eff, seq.dt), B, rtol=1e-6)
-    t180 = seq.rf_events.refocus_time
+    t180 = seq.rf.refocus_time
     k = int(round(t180 / seq.dt))
     assert np.all(G[:, k - 1:k + 2, :] == 0.0), "the 180 sits on zero gradient for every row"
     assert seq.refocusing_residual < 1e-6
@@ -116,24 +118,24 @@ def test_a_shorter_row_is_placed_symmetric_about_the_one_180():
 
 def test_the_two_train_ogse_and_the_btensor_waveform_declare_their_180():
     og = S.ogse(B, D2, 100.0, 20e-3, n_t=400, slew_rate=200.0, refocus_duration=4e-3)
-    assert og.rf_events.refocus_time == pytest.approx(22e-3) and og.refocusing_residual < 1e-6
-    k = int(round(og.rf_events.refocus_time / og.dt))
+    assert og.rf.refocus_time == pytest.approx(22e-3) and og.refocusing_residual < 1e-6
+    k = int(round(og.rf.refocus_time / og.dt))
     assert np.all(np.asarray(og.G)[:, k, :] == 0.0)                     # in the gap
-    assert not S.ogse(B, D2, 100.0, 20e-3, n_t=400, slew_rate=np.inf).rf_events   # the single-cosine limit: no pulse
+    assert not S.ogse(B, D2, 100.0, 20e-3, n_t=400, slew_rate=np.inf).rf   # the single-cosine limit: no pulse
     # a physical same-sign pair with its 180 at TE/2 is a spin echo; an off-centre 180 is refused, not allowed
     G = np.zeros((1, 200, 3), np.float32); G[0, 20:60, 2] = 0.05; G[0, 140:180, 2] = 0.05
-    seq = Sequence.from_btensor_waveform(G, 1e-4)
-    assert seq.rf_events.refocus_time == pytest.approx(100 * 1e-4) and seq.refocusing_residual < 1e-6
-    assert seq.bvalues[0] > 0 and np.sign(np.asarray(seq.G_eff)[0, 30, 2]) == -np.sign(np.asarray(seq.G_eff)[0, 150, 2])
-    with pytest.raises(ValueError, match="not TE/2"):
-        Sequence.from_btensor_waveform(G, 1e-4, echo_idx=60)
+    seq = _seqmod.from_btensor_waveform(G, 1e-4)
+    assert seq.rf.refocus_time == pytest.approx(100 * 1e-4) and seq.refocusing_residual < 1e-6
+    assert seq.encoding.bvalues[0] > 0 and np.sign(np.asarray(seq.G_eff)[0, 30, 2]) == -np.sign(np.asarray(seq.G_eff)[0, 150, 2])
+    with pytest.raises(ValueError, match="forms its echo at sample"):
+        replace(seq, readout=(60,))
 
 
 def test_validate_refuses_a_finite_pulse_over_a_live_gradient_and_an_unrefocused_echo():
     seq = S.pgse(B, D2, 4e-3, 20e-3, n_t=240, slew_rate=np.inf)
     seq.validate()
-    t180 = seq.rf_events.refocus_time
-    seq.rf_events = RFSchedule([RFEvent(0.0, 90, 'Mz→Mxy'), RFEvent(t180, 180, 'refocus', duration_s=30e-3)])
+    t180 = seq.rf.refocus_time
+    seq = replace(seq, rf=RFSchedule([RFEvent(0.0, 90, 'Mz→Mxy'), RFEvent(t180, 180, 'refocus', duration_s=30e-3)]))
     with pytest.raises(ValueError, match="gradient is on during the 180"):
         seq.validate()
     G = np.zeros((1, 200, 3), np.float32); G[0, :50, 0] = 0.05                     # one lobe: never refocuses
@@ -144,7 +146,7 @@ def test_validate_refuses_a_finite_pulse_over_a_live_gradient_and_an_unrefocused
 def test_the_ogse_waveform_declares_its_180_at_exactly_half_the_span():
     for n_t in (400, 401):
         wf = d.ogse(100.0, 40e-3, 0.05, bv, n_t)
-        assert wf.rf_events.refocus_time == pytest.approx(20e-3, abs=1e-15)
+        assert wf.rf.refocus_time == pytest.approx(20e-3, abs=1e-15)
 
 
 def test_the_scalar_engine_and_b_read_the_effective_gradient():

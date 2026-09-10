@@ -11,7 +11,7 @@ import numpy.testing as npt
 import jax.numpy as jnp
 
 from dmipy_sim import simulate, Cylinder, FreeDiffusion, set_b
-from dmipy_sim.acquisition.waveforms import Waveform
+from dmipy_sim.acquisition.scanner_sequence import ScannerSequence
 from tests.conftest import D, N_WALKERS, SEED, load_fixture
 
 
@@ -33,13 +33,13 @@ def _build_disimpy_waveform(T, n_t_raw, pulse_start, pulse_end, n_t=1000):
     for j in range(3):
         G_interp[0, :, j] = np.interp(t_new, t_old, grad_raw[0, :, j])
 
-    return Waveform(G=jnp.array(G_interp), dt=float(dt), echo_idx=n_t - 1)
+    return ScannerSequence(G=jnp.array(G_interp), dt=float(dt))
 
 
 def _tile_and_set_b(wf_single, b_values):
     n_b = len(b_values)
     G_tiled = jnp.tile(wf_single.G, (n_b, 1, 1))
-    wf = Waveform(G=G_tiled, dt=wf_single.dt, echo_idx=wf_single.echo_idx)
+    wf = ScannerSequence(G=G_tiled, dt=wf_single.dt, readout=wf_single.readout)
     return set_b(wf, b_values)
 
 

@@ -16,7 +16,8 @@ import pytest
 pytest.importorskip("pypulseq")
 import pypulseq as pp
 
-from dmipy_sim.acquisition.waveforms import trapezoidal_ogse, pgse, calc_b, Waveform
+from dmipy_sim.acquisition.waveforms import trapezoidal_ogse, pgse, calc_b
+from dmipy_sim.acquisition.scanner_sequence import ScannerSequence
 from dmipy_sim.sequences import (
     from_pulseq, to_pulseq, make_system, PULSEQ_SYSTEMS)
 from dmipy_sim.constants import GAMMA
@@ -38,7 +39,7 @@ def test_scanner_catalogue_opts():
 
 
 def test_roundtrip_slew_limited_preserves_bvalue():
-    """A realizable (slew-limited) gradient survives Waveform -> .seq -> Waveform
+    """A realizable (slew-limited) gradient survives ScannerSequence -> .seq -> ScannerSequence
     with the diffusion b-value preserved to <0.1%."""
     wf = trapezoidal_ogse(1, 0.01, 0.04, 0.05, BVEC, n_t=400, slew_rate=200.0)
     with tempfile.TemporaryDirectory() as d:
@@ -48,7 +49,7 @@ def test_roundtrip_slew_limited_preserves_bvalue():
     assert abs(_b(wf2) - _b(wf)) <= 1e-3 * _b(wf)
     assert int(wf2.echo_idx) == int(wf.echo_idx)
     # RF schedule preserved via definitions
-    flips = sorted(e.flip_deg for e in (wf2.rf_events or []))
+    flips = sorted(e.flip_deg for e in (wf2.rf or []))
     assert 90.0 in flips
 
 
@@ -93,16 +94,16 @@ def test_from_pulseq_native_file():
     G = np.asarray(wf.G)
     assert G.shape[0] == 1 and G.shape[2] == 3
     assert abs(float(np.abs(G).max()) - g_T) < 1e-3          # peak gradient recovered (T/m)
-    flips = sorted(e.flip_deg for e in wf.rf_events)
+    flips = sorted(e.flip_deg for e in wf.rf)
     assert flips == [90.0, 180.0]                            # clean schedule, no duplicates
-    t180 = [e.t_s for e in wf.rf_events if e.flip_deg == 180.0][0]
+    t180 = [e.t_s for e in wf.rf if e.flip_deg == 180.0][0]
     assert t180 > 0                                          # refocusing after excitation
     assert 0 <= int(wf.echo_idx) <= G.shape[1] - 1
 
     # folding the physical gradient at the 180 yields a positive, finite diffusion b
     i180 = int(round(t180 / wf.dt))
     Gf = G.copy(); Gf[:, i180:, :] *= -1.0
-    b_eff = _b(Waveform(G=jnp.asarray(Gf), dt=wf.dt, echo_idx=wf.echo_idx))
+    b_eff = _b(ScannerSequence(G=jnp.asarray(Gf), dt=wf.dt, readout=(wf.echo_idx,)))
     assert b_eff > 0 and np.isfinite(b_eff)
 
 
@@ -215,14 +216,14 @@ def test_native_rf_export_is_scanner_shaped_and_costs_time_when_there_is_no_gap(
     assert abs(_b(back) - _b(free)) <= 2e-3 * _b(free)
 
     # real RF blocks, not one excitation plus metadata
-    flips = sorted({round(e.flip_deg) for e in (back.rf_events or [])})
+    flips = sorted({round(e.flip_deg) for e in (back.rf or [])})
     assert flips == [90, 180], f"expected a 90/180 schedule read from the blocks, got {flips}"
 
     # OGSE has no gradient-free sample at either pulse, so both must be inserted. Assert the CONSEQUENCE
     # -- the exported sequence is longer by one sample per inserted pulse -- rather than the wording of the
     # warning, so the test survives rephrasing but not a silent change of behaviour.
     tight = ogse(frequency=100.0, T_total=40e-3, G_magnitude=0.04, bvecs=[[1, 0, 0]], n_t=400)
-    n_pulses = len(tight.rf_events or [])
+    n_pulses = len(tight.rf or [])
     with warnings.catch_warnings(record=True) as w:
         warnings.simplefilter("always")
         seq_t = to_pulseq(tight, 0)
@@ -258,7 +259,7 @@ def test_a_gradient_free_train_inserts_nothing():
             "a gradient-free echo train costs nothing to export natively"
     n0 = np.asarray(plain.G).shape[1]
     assert int(seq.definitions["dmipy_n_t"]) == n0
-    assert len(plain.rf_events) == 5                      # the pulses are there; they simply fit
+    assert len(plain.rf) == 5                      # the pulses are there; they simply fit
 
     weighted = cpmg(n_echoes=4, TE=10e-3, G_magnitude=0.04, bvecs=[[1, 0, 0]], n_t_per_echo=50)
     with warnings.catch_warnings(record=True) as w:

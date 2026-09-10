@@ -301,10 +301,7 @@ def test_a_substrate_without_a_spec_spelling_is_refused_by_every_driver():
 
 # §1.1 -- a class whose instances carry G on a dt grid, or a B1 envelope on one
 _ACQUISITION_CONTAINERS = {
-    "dmipy_sim.acquisition.waveforms.Waveform",          # effective G, ideal RF
-    "dmipy_sim.sequences.sequence.Sequence",             # a Waveform + per-measurement encoding
-    "dmipy_sim.engine.pulse_sequence.BlochSequence",     # PHYSICAL G, finite RF, crusher
-    "dmipy_sim.acquisition.rf.B1Pulse",                  # the RF envelope itself
+    "dmipy_sim.acquisition.scanner_sequence.ScannerSequence",     # the one: physical G, the schedule, readout, timing, encoding
 }
 
 # §1.1 -- the RF dialect: one. Every builder's events are RFEvent; a dict is read only by from_dict
@@ -312,8 +309,7 @@ _RF_DICT_READ_BOUNDARY = {"dmipy_sim.acquisition.rf"}
 
 # §1.1 / #171 -- Sequence constructors that declare no RF schedule at all
 _SEQUENCE_CONSTRUCTORS_WITHOUT_RF = {
-    "Sequence.from_btensor_ste", "Sequence.from_btensor_pte",     # bipolar pairs, an excitation only (#171's twin)
-    "Sequence.from_waveform",                                      # arbitrary: cannot know its schedule
+    "sequences.from_waveform",                                     # arbitrary: cannot know its schedule
 }
 
 # §1.2 -- callables that take an acquisition AND its RF / echo / refocus time as separate arguments
@@ -364,15 +360,15 @@ def _package_modules():
 
 
 def test_no_new_acquisition_container():
-    """A class whose instances carry a gradient ``G`` on a ``dt`` grid, or an RF envelope ``b1`` on one, is an
-    acquisition container. There are exactly the declared ones."""
+    """A class whose instances carry a gradient ``G`` on a ``dt`` grid is an acquisition container. There is
+    exactly one (a ``B1Pulse`` is a pulse's envelope, held by an ``RFEvent``, not a container)."""
     import ast
     found = set()
     for py, modname in _package_modules():
         for node in ast.walk(ast.parse(py.read_text())):
             if isinstance(node, ast.ClassDef):
                 names = _class_attribute_names(node)
-                if {"G", "dt"} <= names or {"b1", "dt"} <= names:
+                if {"G", "dt"} <= names:
                     found.add(f"{modname}.{node.name}")
     assert found == _ACQUISITION_CONTAINERS, (
         f"acquisition containers changed. new: {sorted(found - _ACQUISITION_CONTAINERS)}, "
@@ -383,7 +379,7 @@ def test_no_new_acquisition_container():
 def _every_builder():
     """One instance of every constructor that declares an RF schedule (or is documented not to), built small."""
     import dmipy_sim.acquisition.waveforms as W
-    from dmipy_sim.sequences import Sequence
+    from dmipy_sim import sequences as _seqmod
     import dmipy_sim.engine.pulse_sequence as P
     bv = np.array([[1.0, 0.0, 0.0]])
     out = {
@@ -394,29 +390,31 @@ def _every_builder():
         "waveforms.cpmg": W.cpmg(3, 20e-3, 0.05, bv, n_t_per_echo=50),
         "waveforms.ste": W.ste(4e-3, 20e-3, 0.05, 240),
         "waveforms.pte": W.pte(4e-3, 20e-3, 0.05, [0.0, 0.0, 1.0], 240),
-        "Sequence.from_pgse": Sequence.from_pgse([1e9], bv, 4e-3, 20e-3, n_t=200),
-        "Sequence.from_cpmg": Sequence.from_cpmg(3, 20e-3, bvalues=[1e9] * 3, n_t_per_echo=50),
-        "Sequence.from_ogse": Sequence.from_ogse([1e9], bv, 100.0, 20e-3, n_t=400, refocus_duration=4e-3),
-        "Sequence.from_btensor_ste": Sequence.from_btensor_ste([1e9], 4e-3, 20e-3, n_t=240),
-        "Sequence.from_btensor_pte": Sequence.from_btensor_pte([1e9], [0.0, 0.0, 1.0], 4e-3, 20e-3, n_t=240),
-        "pulse_sequence.gradient_echo": P.gradient_echo(20e-3, 1e-4),
-        "pulse_sequence.spin_echo": P.spin_echo(20e-3, 1e-4),
+        "sequences.pgse": _seqmod.pgse([1e9], bv, 4e-3, 20e-3, n_t=200),
+        "sequences.cpmg": _seqmod.cpmg(3, 20e-3, bvalues=[1e9] * 3, n_t_per_echo=50),
+        "sequences.ogse": _seqmod.ogse([1e9], bv, 100.0, 20e-3, n_t=400, refocus_duration=4e-3),
+        "sequences.ste": _seqmod.ste([1e9], 4e-3, 20e-3, n_t=240),
+        "sequences.pte": _seqmod.pte([1e9], [0.0, 0.0, 1.0], 4e-3, 20e-3, n_t=240),
+        "pulse_sequence.bare_gradient_echo": P.bare_gradient_echo(20e-3, 1e-4),
+        "pulse_sequence.bare_spin_echo": P.bare_spin_echo(20e-3, 1e-4),
+        "sequences.pgste": _seqmod.pgste([1e9], bv, 4e-3, 20e-3, n_t=240),
+        "sequences.gre": _seqmod.gre([20e-3], bv, [1e9], delta=4e-3, Delta=10e-3, n_t=200),
         "pulse_sequence.prepend_mt_prep": P.prepend_mt_prep(
-            P.spin_echo(20e-3, 1e-4), P.saturation_pulse(2000.0, 2e-3, flip_deg=500.0)),
+            P.bare_spin_echo(20e-3, 1e-4), P.saturation_pulse(2000.0, 2e-3, flip_deg=500.0)),
     }
     G = np.zeros((1, 200, 3), np.float32); G[0, :50, 0] = 0.05; G[0, 50:100, 0] = -0.05
-    out["Sequence.from_waveform"] = Sequence.from_waveform(G, 1e-4, bv)
-    out["Sequence.from_btensor_waveform"] = Sequence.from_btensor_waveform(G, 1e-4)
+    out["sequences.from_waveform"] = _seqmod.from_waveform(G, 1e-4, bv)
+    out["sequences.from_btensor_waveform"] = _seqmod.from_btensor_waveform(G, 1e-4)
     return out
 
 
 def test_every_builder_emits_rf_events_of_the_one_dialect():
-    """Every builder's ``rf_events`` is a tuple of ``RFEvent`` -- one dialect, whatever the family; the
+    """Every builder's ``rf`` is an ``RFSchedule`` of ``RFEvent`` -- one dialect, whatever the family; the
     Sequence constructors that declare no schedule at all are the declared ones (#171) and no others."""
     from dmipy_sim.acquisition.rf import RFEvent, RFSchedule
     without = set()
     for name, obj in _every_builder().items():
-        rf = getattr(obj, "rf_events", None)
+        rf = getattr(obj, "rf", None)
         if not rf:
             without.add(name)
             continue
@@ -476,7 +474,9 @@ def test_no_stored_effective_gradient_and_no_flag_standing_in_for_the_schedule()
     gone, and stay gone."""
     gone = ("G_display", "_effective_gradient", "_refocus_idx", "_display_G", "_derive_display_gradient",
             "allow_offcenter_180",
-            "_refocus_gap", "_ogse_two_train", "_refocus_duration")   # piece 4: questions asked of G and the schedule
+            "_refocus_gap", "_ogse_two_train", "_refocus_duration",   # piece 4: questions asked of G and the schedule
+            "class Waveform", "class Sequence:", "class BlochSequence", "def apply_rf_schedule",   # piece 5a: one container
+            "allow_unmatched_periods")
     found = {}
     for py, modname in _package_modules():
         text = py.read_text()

@@ -16,6 +16,7 @@ The sweeps are cached next to the phantom, so a rerun redraws the picture withou
 import sys
 import numpy as np
 
+from dmipy_sim import Encoding, RFEvent, ScannerSequence
 from dmipy_sim.constants import GAMMA
 from dmipy_sim.replay import read_rpk, so3
 from dmipy_sim.replay.phantom import (BinghamField, Grid, analytic_substrate, build_rph, inert_substrate,
@@ -99,20 +100,19 @@ def pgse(pack, dirs, b=B_VALUE, delta=6.0e-3, Delta=1.5e-2, refocus=True):
     nd, ng = int(round(delta / dt)), int(round(Delta / dt))
     G = np.zeros((len(dirs), n_t, 3))
     amp = np.sqrt(b / ((GAMMA * nd * dt) ** 2 * ((ng - nd / 3) * dt)))
+    # the PHYSICAL gradient: a spin echo plays two same-sign lobes and the 180 flips the second one; a gradient
+    # echo has no 180 and plays the bipolar pair itself
     for i, g in enumerate(dirs):
         g = np.asarray(g, float) / np.linalg.norm(g)
         G[i, :nd] = amp * g
-        G[i, ng:ng + nd] = -amp * g
-
-    class Seq:
-        pass
-    s = Seq()
-    s.G, s.dt = G, dt
-    s.bvalues = np.full(len(dirs), float(b))
-    s.rf_events = [{"t_s": 0.0, "flip_deg": 90, "axis_deg": 0.0}]
+        G[i, ng:ng + nd] = (amp if refocus else -amp) * g
+    rf = [RFEvent(0.0, 90, "Mz→Mxy", axis_deg=0.0)]
     if refocus:
-        s.rf_events.append({"t_s": (n_t - 1) * dt / 2.0, "flip_deg": 180, "axis_deg": 90.0})
-    return s, amp
+        rf.append(RFEvent((n_t - 1) * dt / 2.0, 180, "refocus", axis_deg=90.0))
+    seq = ScannerSequence(G=G, dt=dt, rf=rf, family="pgse" if refocus else "gre",
+                          encoding=Encoding(bvalues=np.full(len(dirs), float(b)),
+                                            gradient_directions=np.asarray(dirs, float)))
+    return seq, amp
 
 
 def sweeps(ph, pack_path, n_frames=36):

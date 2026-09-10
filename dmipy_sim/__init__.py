@@ -20,14 +20,15 @@ from .engine.mt_walk import simulate_mt_trajectories
 from .persistent_walk import PersistentWalk
 from .compartments import Compartments, Pool, pool_id
 from .engine.bloch import simulate_bloch
-from .engine.pulse_sequence import (BlochSequence, gradient_echo, spin_echo,
+from .engine.pulse_sequence import (bare_gradient_echo, bare_spin_echo, fexi, fexi_b_detect,
                              saturation_pulse, prepend_mt_prep, run_bloch_sequence, emergent_z_spectrum)
 from .engine.gpu import (gpu_available, check_gpu, free_gpu_memory, gpu_session,
                   list_gpu_processes)
 from .viz.viz import (plot_waveform, plot_sequence_comparison,
                   plot_mesh_section, plot_walkers_3d, plot_cell_surface, plot_mesh_3d,
                   seed_in_cell, walk_paths, plot_trajectories, save_rotation)
-from .acquisition.waveforms import (Waveform, pgse, pgste, ogse, cpmg, trapezoidal_ogse, b_trapezoidal_ogse,
+from .acquisition.scanner_sequence import ScannerSequence, Encoding, Protocol
+from .acquisition.waveforms import (pgse, pgste, ogse, cpmg, trapezoidal_ogse, b_trapezoidal_ogse,
                         set_b, calc_b, calc_btensor, btensor_invariants, ste, pte,
                         rotate_waveform, tile_waveform)
 from .geometry import (FreeDiffusion, Box1D, Sphere, Cylinder, MyelinatedCylinder,
@@ -68,11 +69,12 @@ __all__ = [
     "finite_180_longitudinal_dwell", "pre_pulse_gradient_phase", "pathway_sign_se",
     "simulate_mt_trajectories", "PersistentWalk", "Compartments", "Pool", "pool_id",
     "simulate_bloch",
-    "BlochSequence", "gradient_echo", "spin_echo", "saturation_pulse", "prepend_mt_prep",
+    "ScannerSequence", "Encoding", "Protocol",
+    "bare_gradient_echo", "bare_spin_echo", "fexi", "fexi_b_detect", "saturation_pulse", "prepend_mt_prep",
     "run_bloch_sequence", "emergent_z_spectrum",
     "gpu_available", "check_gpu", "free_gpu_memory", "gpu_session", "list_gpu_processes",
     "ScannerLimits", "SCANNERS",
-    "Waveform", "pgse", "pgste", "ogse", "cpmg", "trapezoidal_ogse", "b_trapezoidal_ogse",
+    "pgse", "pgste", "ogse", "cpmg", "trapezoidal_ogse", "b_trapezoidal_ogse",
     "set_b", "calc_b", "calc_btensor", "btensor_invariants", "ste", "pte",
     "rotate_waveform", "tile_waveform",
     "FreeDiffusion", "Box1D", "Sphere", "Cylinder", "MyelinatedCylinder",
