@@ -124,32 +124,26 @@ def test_the_expansion_reproduces_the_analytic_response(pack):
             assert abs(float(np.abs(pr.at(R))[0]) - abs(analytic(_q_of(seq), R))) < tol
 
 
-def test_the_band_follows_the_phase_amplitude_and_a_smaller_one_is_worse(pack):
-    """The band is ``ceil(Phi) + margin``, and forcing it below the phase amplitude costs accuracy against the
-    closed form -- which is what makes this a rule rather than a default."""
+def test_the_band_follows_the_phase_amplitude_and_truncating_below_it_is_worse(pack):
+    """The band is set by the Bessel tail of the phase amplitude, so it is never below ``Phi``; truncating the
+    expansion below ``Phi`` costs accuracy against the closed form, by no more than the tail of the orders
+    dropped -- a bound, not a spread (#197)."""
+    from scipy.special import spherical_jn
     seq = _Lobe(0.6)
     pr = pack.pose_response(seq, tissue=False)
-    assert pr.lmax == int(np.ceil(pr.phase_amplitude)) + 2
-    R = so3.haar_rotations(8, seed=3)
-    truth = np.abs([analytic(_q_of(seq), r) for r in R])
-    good = np.abs([pr.at(r)[0] for r in R])
-    with pytest.warns(UserWarning, match="not represented"):
-        coarse = pack.pose_response(seq, band=3, tissue=False, strict=False)   # deliberately below Phi
-    poor = np.abs([coarse.at(r)[0] for r in R])
-    assert np.abs(poor - truth).max() > 10 * np.abs(good - truth).max()
-
-
-def test_the_reported_misfit_is_the_worst_case_not_a_spread(pack):
-    """A spread bounds nothing. With the band forced below the phase amplitude the error is uneven across
-    poses, and the number reported must be the largest of them rather than their scatter."""
-    seq = _Lobe(0.6)
-    with pytest.warns(UserWarning, match="not represented"):
-        pr = pack.pose_response(seq, band=3, tissue=False, strict=False)
-    R = so3.haar_rotations(120, seed=4)
-    err = np.abs(np.array([pr.at(r)[0] for r in R]) - np.array([analytic(_q_of(seq), r) for r in R]))
-    assert err.max() > 3 * err.std()                                      # the error really is uneven
-    assert pr.misfit.max() > 2 * err.std()                                # so a spread would have hidden it
-    np.testing.assert_allclose(pr.misfit.max(), err.max(), rtol=0.4)      # what is reported is the max
+    assert pr.n_samples == 0 and pr.lmax >= int(np.ceil(pr.phase_amplitude))
+    R = so3.haar_rotations(120, seed=3)
+    truth = np.array([analytic(_q_of(seq), r) for r in R])
+    good = np.array([pr.at(r)[0] for r in R])
+    assert np.abs(good - truth).max() < 1e-6
+    coarse = pr.retained(3, 3)                                                # deliberately below Phi
+    A = so3.so3_design(3, R, 3)
+    poor = A @ coarse[0]
+    err = np.abs(poor - truth)
+    assert err.max() > 10 * np.abs(good - truth).max()                       # worse
+    assert err.max() > 3 * err.std()                                         # and uneven across poses
+    bound = sum((2 * l + 1) * abs(spherical_jn(l, pr.phase_amplitude)) for l in range(4, pr.lmax + 1))
+    assert err.max() <= bound + 1e-9                                          # by no more than the dropped tail
 
 
 def test_composition_equals_the_analytic_pose_average(pack):
@@ -172,10 +166,14 @@ def test_one_stated_pose_needs_no_expansion(pack):
 
 
 # ------------------------------------------------------------------ guards
-def test_an_acquisition_too_sharp_to_expand_is_refused_with_the_reason(pack):
-    """Past a point a direct replay per pose is the cheaper and exact route, so the cost is stated."""
-    with pytest.raises(ValueError, match="cheaper and exact route|band_cap"):
-        pack.pose_response(_Lobe(1.5), band_cap=6, tissue=False)
+def test_a_sharp_acquisition_expands_in_closed_form(pack):
+    """The quadrature route refused an acquisition past a band cap, because sampling it was dearer than a direct
+    replay per pose; the closed form has no such cost, so a sharp response is simply a higher band, still exact."""
+    seq = _Lobe(1.5)
+    pr = pack.pose_response(seq, tissue=False)
+    assert pr.n_samples == 0 and pr.lmax > 12
+    for R in so3.haar_rotations(6, seed=8):
+        assert abs(pr.at(R)[0] - analytic(_q_of(seq), R)) < 1e-6
 
 
 def test_no_azimuthal_truncation_is_a_valid_request(pack):
