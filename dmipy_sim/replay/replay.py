@@ -640,12 +640,16 @@ class ReplayPack:
         """This walk re-encoded to the shorter echo time ``TE`` (s), at the same bands per second (#199).
 
         The TE-prefix property (RPK.md 3) makes the first ``ceil(TE / dt)`` saves a valid walk to ``TE``. Every
-        channel is decoded, cut there and re-encoded with its own codec at ``K' = K TE / T`` (``K`` overrides),
-        through :func:`~dmipy_sim.replay.bank.build_replay_pack`, so the result is a pack like any other with its
-        own fidelity certificate -- and that certificate is what licenses the prefix: re-pinning the bridge at
-        ``TE`` is a new truncation, measured against the parent's decoded prefix on the fidelity battery, and a
-        prefix whose replay error exceeds ``tol`` times its Monte-Carlo floor is refused rather than written.
-        ``provenance.prefix`` records the parent (digest, id, T, K) and the cut.
+        channel is decoded, cut there and re-encoded with its own codec through
+        :func:`~dmipy_sim.replay.bank.build_replay_pack`, so the result is a pack like any other with its own
+        fidelity certificate -- and that certificate is what licenses the prefix: re-pinning the bridge at ``TE``
+        is a new truncation, measured against the parent's decoded prefix on the fidelity battery, and a prefix
+        whose replay error exceeds ``tol`` times its Monte-Carlo floor is refused rather than written. The band
+        starts at the same bands per second, ``K' = ceil(K TE / T)``, and is doubled (up to the parent's ``K``)
+        until the certificate passes: a short prefix needs more than its share, since the pinned residual's
+        truncation error does not scale with the duration (#199: 100 ms at K = 48 prefixes to 25 ms at 12 but
+        needs 12, not 6, at 12.5 ms). ``K=`` fixes the band instead and is refused as it stands.
+        ``provenance.prefix`` records the parent (digest, id, T, K), the cut and every band tried.
         """
         from .bank import build_replay_pack, susc_path_decode, susc_path_encode_series, susc_path_series_fidelity
         from .compression import decode_occupancy, decode_boundary_bridge, decode_boundary_local_time
@@ -691,11 +695,20 @@ class ReplayPack:
             path_series = (series[:, :, :n_cut], names,
                            max(2, int(np.ceil(int(ch["susceptibility_path"]["K"]) * T_cut / T))),
                            ch["susceptibility_path"].get("bits", 8))
-        prov = dict(provenance or {})
-        prov["prefix"] = dict(parent_digest=self.digest, parent_id=self.meta.get("id"), parent_T_s=T, parent_K=int(self.K),
-                              TE_s=T_cut, K=K_new, note="re-encoded from the parent's decoded prefix at the same bands per second")
-        pk = build_replay_pack(m, id=id or f"{self.meta.get('id')}/prefix-{T_cut * 1e3:.0f}ms", license=self.license,
-                               citation=self.citation, K=K_new, tol=tol, field=False, blt_temporal_K=blt_K, provenance=prov)
+        tried = []
+        while True:
+            prov = dict(provenance or {})
+            prov["prefix"] = dict(parent_digest=self.digest, parent_id=self.meta.get("id"), parent_T_s=T, parent_K=int(self.K),
+                                  TE_s=T_cut, K=K_new, K_tried=tried + [K_new],
+                                  note="re-encoded from the parent's decoded prefix; the band starts at the parent's bands "
+                                       "per second and doubles until the certificate passes")
+            pk = build_replay_pack(m, id=id or f"{self.meta.get('id')}/prefix-{T_cut * 1e3:.0f}ms", license=self.license,
+                                   citation=self.citation, K=K_new, tol=tol, field=False, blt_temporal_K=blt_K, provenance=prov)
+            fid = pk.meta.get("fidelity", {})
+            if K is not None or fid.get("within_2x_floor", True) or K_new >= int(self.K):
+                break
+            tried.append(K_new)
+            K_new = min(2 * K_new, int(self.K))
         if path_series is not None:
             series, names, Kp, bits = path_series
             a, pm = susc_path_encode_series(series, names, K=Kp, bits=bits)

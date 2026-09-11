@@ -56,6 +56,10 @@ def test_a_prefix_outside_the_walk_or_below_the_floor_is_refused(parent):
     # forcing far too few bands fails the certificate rather than writing a pack
     with pytest.raises(ValueError, match="Monte-Carlo floor"):
         parent.prefix(10e-3, K=2, tol=0.01)
+    # left to itself the band starts at the parent's bands per second and doubles until the certificate passes
+    tight = parent.prefix(5e-3, tol=0.5)
+    tried = tight.meta["provenance"]["prefix"]["K_tried"]
+    assert tried[0] == 4 and tight.K == tried[-1] and tight.meta["fidelity"]["err_max"] <= 0.5 * tight.meta["fidelity"]["floor_max"]
 
 
 def test_a_short_acquisition_relaxes_to_its_own_echo_on_a_longer_walk(parent):
