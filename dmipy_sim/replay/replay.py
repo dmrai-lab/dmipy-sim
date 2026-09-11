@@ -311,7 +311,7 @@ class ReplayPack:
         S = (P["ew"][:, None] * np.exp(1j * phi)).sum(0) / P["norm"]
         return S if complex_signal else np.abs(S)
 
-    def replay_bloch(self, waveform, *, b1_scale=None, tissue="nominal", T2=None, T1=None,
+    def replay_bloch(self, waveform, *, b1_scale=None, off_resonance_T=None, tissue="nominal", T2=None, T1=None,
                      rho=None, D=None, B0=None, b0_dir=(0.0, 0.0, 1.0), chi_iso=None, chi_aniso=0.0,
                      orientation=None, compartment=None, jax=False, complex_signal=False):
         """The RF-aware replay: each walker's magnetisation vector propagated through the actual sequence
@@ -325,7 +325,8 @@ class ReplayPack:
 
         Knobs are the same as :meth:`replay` and resolve the same way, nominal by default; the pose rotates the
         acquisition and the field direction as it does there. ``b1_scale`` scales every flip angle, as a scalar
-        or per walker.
+        or per walker. ``off_resonance_T`` is a **uniform** static field offset (a field-map value, in T) every
+        walker precesses in through the actual pulses -- what a macroscopic layer of a phantom is (RPH.md 5.1).
         """
         from .trajectories import replay_bloch as _rb, replay_bloch_jax as _rbj
         from .compression import decode_occupancy, decode_boundary_bridge
@@ -364,8 +365,14 @@ class ReplayPack:
             meta.setdefault("K", int(np.asarray(self.arrays["blt_bridge_dst"]).shape[1]))
             kw.update(dlog_boundary_unit=decode_boundary_bridge(self.arrays, meta),
                       surface_relaxivity=float(P["rho"]), D=float(D_walk))
+        extra = None
         if P["B0"] is not None:
-            kw["extra_phase_per_step"] = GAMMA * dt * self._field_along_walk(P, pos)
+            extra = GAMMA * dt * self._field_along_walk(P, pos)
+        if off_resonance_T is not None and float(off_resonance_T) != 0.0:
+            uniform = np.full((pos.shape[0], n_t), GAMMA * dt * float(off_resonance_T))
+            extra = uniform if extra is None else extra + uniform
+        if extra is not None:
+            kw["extra_phase_per_step"] = extra
         out = (_rbj if jax else _rb)(pos, dt, P["G"], P["dt_wf"], rf, **kw)
         S = np.asarray(out[0] if isinstance(out, tuple) else out)
         return S if complex_signal else np.abs(S)

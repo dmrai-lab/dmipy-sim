@@ -265,31 +265,56 @@ class Phantom:
         return out
 
     def replay(self, seq, *, B0_T=None, b0_dir=(0.0, 0.0, 1.0), tissue="nominal", packs=None, complex_signal=False,
-               T2_s=None, T1_s=None, rho_m_s=None, D_m2_s=None, chi_iso=None, chi_aniso=0.0):
+               T2_s=None, T1_s=None, rho_m_s=None, D_m2_s=None, chi_iso=None, chi_aniso=0.0,
+               transmit=None, off_resonance=None, proton_density=None):
         """The signal of every voxel under ``seq``: a dense volume ``grid.shape + (n_measurements,)``, NaN where
         the phantom has no voxel (:meth:`sparse` gives the rows).
 
         Each cited pack is replayed once into its response over poses and every voxel is an inner product of
         that with its own orientation distribution (RPH.md 6). Knobs apply to every pack; a substrate's own
-        declared tissue values win over them, and anything neither names is the pack's nominal value. A declared
-        layer this acquisition cannot carry raises rather than being dropped; a ``kappa_B1`` layer needs the
-        RF-aware route (:meth:`replay_bloch`).
+        declared tissue values win over them, and anything neither names is the pack's nominal value.
+
+        **Maps at replay time**, each a scalar, a volume of the grid's shape, or a callable of scanner
+        coordinates ``f(xyz_m (N, 3)) -> (N,)`` evaluated at the voxel centres:
+
+        * ``transmit`` -- the B1+ scale, 1 nominal; multiplies a ``kappa_B1`` layer in the file. A transmit scale
+          acts on the magnetisation, so giving one (or carrying the layer) sends the replay through the RF-aware
+          route -- one propagation per distinct pose -- which needs a frames-mode phantom and refuses the others
+          rather than approximating them.
+        * ``off_resonance`` -- a field-map value in T, added to a ``delta_B0_T`` layer: a uniform precession over
+          the voxel through the acquisition's own coherence gate (zero for a 180 at TE/2).
+        * ``proton_density`` -- multiplies every slot's ``m0`` in the voxel (and an ``m0_scale`` layer).
+
+        A declared layer this route cannot carry raises rather than being dropped.
         """
-        vi, S = self.file.replay(seq, B0=B0_T, b0_dir=b0_dir, tissue=tissue, packs=self._packs(packs),
-                                 complex_signal=complex_signal, T2=T2_s, T1=T1_s, rho=rho_m_s, D=D_m2_s,
-                                 chi_iso=chi_iso, chi_aniso=chi_aniso)
+        f = self.file
+        maps = dict(transmit=self._map(transmit, "transmit"), off_resonance=self._map(off_resonance, "off_resonance"),
+                    proton_density=self._map(proton_density, "proton_density"))
+        common = dict(B0=B0_T, b0_dir=b0_dir, tissue=tissue, packs=self._packs(packs), complex_signal=complex_signal,
+                      T2=T2_s, T1=T1_s, rho=rho_m_s, D=D_m2_s, chi_iso=chi_iso, chi_aniso=chi_aniso,
+                      off_resonance=maps["off_resonance"], proton_density=maps["proton_density"])
+        if maps["transmit"] is not None or "kappa_B1" in f.scalar_names:
+            _, S = f.replay_bloch(seq, transmit=maps["transmit"], **common)
+        else:
+            _, S = f.replay(seq, **common)
         return self.to_volume(S)
 
-    def replay_bloch(self, seq, *, B0_T=None, b0_dir=(0.0, 0.0, 1.0), tissue="nominal", packs=None,
-                     complex_signal=False, T2_s=None, T1_s=None, rho_m_s=None, D_m2_s=None, chi_iso=None,
-                     chi_aniso=0.0):
-        """The RF-aware replay (frames mode only): each pack's magnetisation propagated through the sequence's
-        pulses at the voxel's pose and transmit scale, which is what a ``kappa_B1`` layer needs. Same return as
-        :meth:`replay`."""
-        vi, S = self.file.replay_bloch(seq, B0=B0_T, b0_dir=b0_dir, tissue=tissue, packs=self._packs(packs),
-                                       complex_signal=complex_signal, T2=T2_s, T1=T1_s, rho=rho_m_s, D=D_m2_s,
-                                       chi_iso=chi_iso, chi_aniso=chi_aniso)
-        return self.to_volume(S)
+    def _map(self, value, name):
+        """A replay-time map as one value per occupied voxel, or None."""
+        if value is None:
+            return None
+        if callable(value):
+            out = np.asarray(value(self.grid.positions_m(self.voxel_index)), np.float64).reshape(-1)
+            if out.shape != (self.n_voxels,):
+                raise ValueError(f"{name}(xyz) must return one value per voxel ({self.n_voxels}); got {out.shape}")
+            return out
+        v = np.asarray(value, np.float64)
+        if v.ndim == 0:
+            return v
+        if v.shape == tuple(self.grid.shape):
+            return v[tuple(self.voxel_index.T)]
+        raise ValueError(f"{name} is a scalar, a volume of the grid's shape {tuple(self.grid.shape)}, or a callable of "
+                         f"scanner coordinates; got an array of shape {v.shape}")
 
 
 # ------------------------------------------------------------------ helpers
