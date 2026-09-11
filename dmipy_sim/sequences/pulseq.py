@@ -131,13 +131,13 @@ def to_pulseq(waveform, m=0, *, system=None, filename=None,
     """Export measurement ``m`` of a :class:`dmipy_sim.acquisition.scanner_sequence.ScannerSequence` to a
     pypulseq ``Sequence`` (written to ``filename`` if given).
 
-    The full gradient G(t) is emitted as one arbitrary-gradient block (exact, on
-    the waveform's own raster), bracketed by an excitation RF and an ADC; the RF
-    schedule, dt and echo index travel in the ``[DEFINITIONS]`` so ``from_pulseq``
-    reconstructs the ScannerSequence faithfully (the round-trip safety net).  v1 carries
-    the refocusing RF as metadata rather than splitting the gradient into native
-    180-blocks -- enough for round-trip + simulation, not yet a scanner-runnable
-    spin echo (that is the v2 native-RF-splitting follow-up).
+    The gradient is emitted as arbitrary-gradient blocks split at the pulses, the pulses as blocks, an ADC at
+    the readout; the RF schedule, dt, echo index and budget travel in the ``[DEFINITIONS]`` so ``from_pulseq``
+    reconstructs the ScannerSequence faithfully (the round-trip safety net). With no ``system`` the file's
+    raster IS the sequence grid (one sample per raster, exact). On a real ``system`` (``make_system(scanner)``)
+    the grid must be a whole number of the scanner's gradient rasters -- refused otherwise, naming the grids
+    that would fit -- and each step is played as a linear ramp between its samples on that raster: what a
+    scanner does with a coarser grid, and what ``from_pulseq`` reads back exactly at the grid's own nodes.
     """
     pp = _require_pypulseq()
     dt = float(waveform.dt)
@@ -145,6 +145,17 @@ def to_pulseq(waveform, m=0, *, system=None, filename=None,
     G = np.asarray(waveform.G)[m].astype(float)
     sys = system or _permissive_system(dt)
     gamma_hz = float(getattr(sys, 'gamma', GAMMA_HZ))
+    raster = float(getattr(sys, 'grad_raster_time', dt) or dt)
+    up = dt / raster                                  # rasters per grid step
+    if abs(up - round(up)) > 1e-6:
+        TE, q = waveform.T, int(round(waveform.T / raster))
+        below = next((m_ for m_ in range(int(up), 0, -1) if q % m_ == 0), None)
+        above = next((m_ for m_ in range(int(up) + 1, q + 1) if q % m_ == 0), None)
+        near = sorted(q // m_ + 1 for m_ in (below, above) if m_ is not None)
+        raise ValueError(f"the grid dt = {dt*1e6:.2f} us is not a whole number of the {raster*1e6:.0f} us gradient "
+                         f"raster of this system; at TE = {TE*1e3:.2f} ms the grids n_t = {near} are. Build on the "
+                         f"raster rather than resample the sequence.")
+    up = int(round(up))
     seq = pp.Sequence(system=sys)
 
     # A finite pulse needs a slot with no gradient on it. Whether one exists is a property of the
@@ -190,6 +201,9 @@ def to_pulseq(waveform, m=0, *, system=None, filename=None,
                 pre = [] if col[0] == 0.0 else [0.0]
                 post = [] if col[-1] == 0.0 else [0.0]
                 wf = np.concatenate([pre, col, post]) if (pre or post) else col
+                if up > 1:                                # a coarser grid: linear ramps between its samples
+                    k = np.arange(len(wf)) * up
+                    wf = np.interp(np.arange(k[-1] + 1), k, wf)
                 blocks.append(pp.make_arbitrary_grad(channel=ch, waveform=wf, system=sys))
         if blocks:
             seq.add_block(*blocks)

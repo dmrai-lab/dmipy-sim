@@ -26,6 +26,7 @@ the walk). Measured separation is 0.130 against a 0.011 spread between two indep
 """
 from __future__ import annotations
 
+from dataclasses import replace
 import numpy as np
 from dmipy_sim import RFEvent
 import pytest
@@ -98,8 +99,7 @@ def _assert_r0_reaches_the_walk(run, seeds, label, min_sep=0.08):
 @pytest.mark.slow
 def test_simulate_bloch_starts_where_r0_says(sphere, seeds, waveform):
     def run(r0):
-        return float(np.real(simulate_bloch(N, D, waveform, sphere, _rf(waveform), seed=3, r0=r0,
-                                            require_gpu=False)[0]))
+        return float(np.real(simulate_bloch(N, D, replace(waveform, rf=_rf(waveform)), sphere, seed=3, r0=r0, require_gpu=False)[0]))
 
     _assert_r0_reaches_the_walk(run, seeds, "simulate_bloch")
 
@@ -108,9 +108,7 @@ def test_simulate_bloch_starts_where_r0_says(sphere, seeds, waveform):
 def test_the_bloch_mt_path_starts_where_r0_says(sphere, seeds, waveform):
     """`kappa_MT > 0` dispatches to `_simulate_bloch_mt`, which seeds at its own separate site."""
     def run(r0):
-        return float(np.real(simulate_bloch(N, D, waveform, sphere, _rf(waveform), seed=3, r0=r0,
-                                            kappa_MT=1e-6, dwell_time=2e-3,
-                                            equilibrate_binding="off", require_gpu=False)[0]))
+        return float(np.real(simulate_bloch(N, D, replace(waveform, rf=_rf(waveform)), sphere, seed=3, r0=r0, kappa_MT=1e-6, dwell_time=2e-3, equilibrate_binding="off", require_gpu=False)[0]))
 
     _assert_r0_reaches_the_walk(run, seeds, "_simulate_bloch_mt")
 

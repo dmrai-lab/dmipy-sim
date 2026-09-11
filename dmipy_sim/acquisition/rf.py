@@ -545,9 +545,11 @@ class RFSchedule(tuple):
 
     @property
     def refocus_time(self):
-        """The instant of the first 180 (the refocusing pulse a spin-echo gate flips at), or ``None``."""
+        """The instant of the first refocusing pulse (the one a spin-echo gate flips at), or ``None``: a pulse
+        labelled ``refocus`` whatever its flip (an adiabatic passage's integrated nutation is far from 180), or
+        an unlabelled 180."""
         for e in self:
-            if int(round(e.flip_deg)) == 180:
+            if _ROLE_OF_LABEL.get(e.label) == "refocus" or (not e.label and int(round(e.flip_deg)) == 180):
                 return e.t_s
         return None
 

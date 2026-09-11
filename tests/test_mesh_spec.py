@@ -4,6 +4,7 @@ import json
 import os
 
 import numpy as np
+from dmipy_sim import ScannerSequence
 import pytest
 
 import dmipy_sim as d
@@ -90,8 +91,8 @@ def test_a_multi_surface_bundle_is_walked_from_the_spec_alone(tmp_path):
     assert pk.has_relaxation and pk.has_surface and pk.has_field
     assert pk.meta["substrate"]["id"] == "test/bundle-2" and SubstrateSpec.from_dict(pk.meta["substrate"]) == spec
     assert "per_comp" not in pk.meta and pk.substrate == spec
-    G0 = np.zeros((1, pk.n_t, 3))
-    e = pk.replay(G0, B0=3.0, b0_dir=(1, 0, 0), chi_iso=-1e-6, refocus_time=None)
+    G0 = ScannerSequence(G=np.zeros((1, pk.n_t, 3)), dt=pk.dt)      # b = 0, no pulse: a gradient echo
+    e = pk.replay(G0, B0=3.0, b0_dir=(1, 0, 0), chi_iso=-1e-6)
     assert pk.replay(G0, T2={"intra": 0.05, "extra": 0.08, "myelin": 0.01})[0] < 1.0     # T2 by pool name
     assert 0 < e[0] <= 1.0
 

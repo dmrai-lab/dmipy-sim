@@ -141,7 +141,7 @@ def sweeps(ph, pack_path, n_frames=36):
     seq, _ = pgse(pack, dirs)
     _, S_g = ph.replay(seq, b0_dir=(0.0, 1.0, 0.0), **kw)                   # B0 north, g turning
     seq1, _ = pgse(pack, [[0.0, 0.0, 1.0]], refocus=False)                  # through the plane, across every fibre
-    S_b = np.stack([ph.replay(seq1, b0_dir=d, refocus_time=None, **kw)[1][:, 0] for d in dirs], axis=1)
+    S_b = np.stack([ph.replay(seq1, **kw, b0_dir=d)[1][:, 0] for d in dirs], axis=1)
     return ang, dirs, S_g, S_b
 
 

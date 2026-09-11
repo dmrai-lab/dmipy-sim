@@ -32,6 +32,7 @@ import numpy as np
 
 from ..constants import GAMMA
 from ..acquisition.rf import RFSchedule
+from ..acquisition.scanner_sequence import Protocol, ScannerSequence
 
 __all__ = ["ReplayPack", "PoseResponse", "read_rpk", "write_rpk",
            "compile_scheme", "replay_signal", "replay_signal_jax", "surface_logweight"]
@@ -221,14 +222,14 @@ class ReplayPack:
         return [float(v) for v in np.asarray(values, float).reshape(-1)]
 
     def replay(self, waveform, *, tissue="nominal", T2=None, T1=None, rho=None, D=None, B0=None,
-               b0_dir=(0.0, 0.0, 1.0), chi_iso=None, chi_aniso=0.0, refocus_time="auto", compartment=None,
+               b0_dir=(0.0, 0.0, 1.0), chi_iso=None, chi_aniso=0.0, compartment=None,
                orientation=None, complex_signal=False):
         """The signal of ``waveform`` on this pack, with every tier the pack carries and the request asks for.
 
-        ``waveform`` is a :class:`~dmipy_sim.acquisition.scanner_sequence.ScannerSequence` / :class:`~dmipy_sim.acquisition.scanner_sequence.ScannerSequence`
-        (its ``G_eff``, the effective gradient, is what this route integrates), or a bare EFFECTIVE ``G``
-        (n_meas, n_t_wf, 3) in T/m on ``dt`` already on the pack's save grid; it is read on the pack grid
-        (``n_t`` samples of ``dt``, zero outside the waveform).
+        ``waveform`` is a :class:`~dmipy_sim.acquisition.scanner_sequence.ScannerSequence`: its ``G_eff``, the
+        effective gradient, is what this route integrates, and its RF schedule says where the 180 is (a schedule
+        without one is a gradient echo). It is read on the pack grid (``n_t`` samples of ``dt``, zero outside
+        the waveform).
 
         * **gradient** (C0): always, in mode space from the position coefficients -- unless a field is
           requested, when the trajectory is decoded and the two phases accrue in one complex mean so
@@ -254,18 +255,23 @@ class ReplayPack:
           recorded value unless given); requires the boundary local time.
         * **field** (C3): ``B0`` (T) with ``b0_dir`` and the susceptibility ``chi_iso`` (required) and
           ``chi_aniso``; the pack stores the substrate's geometry-only basis and no susceptibility value,
-          so these are the replay's to give; ``refocus_time="auto"`` reads the 180 from the waveform's
-          RF schedule (``None`` = gradient echo); requires the field tier.
+          so these are the replay's to give; the 180 the static field refocuses at is the waveform's own
+          (``waveform.rf.refocus_time``); requires the field tier.
 
         ``compartment`` restricts the ensemble mean to one pool id (or a boolean walker mask).
         A tier that is requested but not carried raises rather than returning a plausible number.
         """
         from .compression import read_position_coeffs
         from ._replay_kernel import gradient_phase, se_gate
+        waveform = waveform.waveform if hasattr(waveform, "waveform") else waveform
+        if isinstance(waveform, Protocol):                # a multi-TE scheme: each sequence replayed, placed at its rows
+            kw = dict(tissue=tissue, T2=T2, T1=T1, rho=rho, D=D, B0=B0, b0_dir=b0_dir, chi_iso=chi_iso,
+                      chi_aniso=chi_aniso, compartment=compartment, orientation=orientation, complex_signal=complex_signal)
+            return waveform.scatter([self.replay(seq, **kw) for seq in waveform])
         dist = _as_distribution(orientation)
         if dist is not None:
             S = self.pose_response(waveform, tissue=tissue, T2=T2, T1=T1, rho=rho, D=D, B0=B0, b0_dir=b0_dir,
-                                    chi_iso=chi_iso, chi_aniso=chi_aniso, refocus_time=refocus_time,
+                                    chi_iso=chi_iso, chi_aniso=chi_aniso,
                                     compartment=compartment).compose(dist)
             return S if complex_signal else np.abs(S)
         P = self._prepare(waveform, tissue=tissue, T2=T2, T1=T1, rho=rho, D=D, B0=B0, b0_dir=b0_dir, chi_iso=chi_iso,
@@ -300,16 +306,14 @@ class ReplayPack:
                          "shape": tuple(gm["shape"]), "voxel_size": np.asarray(gm["voxel_size"], float)}
                 dB = sample_grid(assemble_field(basis, b0_dir, B0=float(B0), chi_iso=chi_i, chi_aniso=chi_aniso),
                                  pos, np.asarray(gm["origin"], float), gm["voxel_size"], periodic=False)
-            if refocus_time == "auto":
-                refocus_time = _refocus_time_of(waveform)
-            phi_x = GAMMA * dt * (dB * se_gate(n_t, dt, refocus_time)[None, :]).sum(1)    # (n_w,)
+            phi_x = GAMMA * dt * (dB * se_gate(n_t, dt, waveform.rf.refocus_time)[None, :]).sum(1)    # (n_w,)
             phi = gradient_phase(Geff, pos, dt).T + phi_x[:, None]                             # (n_w, n_meas)
         S = (P["ew"][:, None] * np.exp(1j * phi)).sum(0) / P["norm"]
         return S if complex_signal else np.abs(S)
 
-    def replay_bloch(self, waveform, *, rf_events=None, b1_scale=None, tissue="nominal", T2=None, T1=None,
+    def replay_bloch(self, waveform, *, b1_scale=None, tissue="nominal", T2=None, T1=None,
                      rho=None, D=None, B0=None, b0_dir=(0.0, 0.0, 1.0), chi_iso=None, chi_aniso=0.0,
-                     orientation=None, compartment=None, echo_steps=None, jax=False, complex_signal=False):
+                     orientation=None, compartment=None, jax=False, complex_signal=False):
         """The RF-aware replay: each walker's magnetisation vector propagated through the actual sequence
         operators on this pack's walk (:func:`~dmipy_sim.replay.trajectories.replay_bloch`).
 
@@ -328,13 +332,13 @@ class ReplayPack:
         P = self._prepare(waveform, tissue=tissue, T2=T2, T1=T1, rho=rho, D=D, B0=B0, b0_dir=b0_dir,
                           chi_iso=chi_iso, chi_aniso=chi_aniso, orientation=orientation, compartment=compartment,
                           relaxation=False, surface=False)
-        rf = rf_events if rf_events is not None else (getattr(waveform, "rf", None) or [])
+        rf = waveform.rf
         if not rf:
-            raise ValueError("the Bloch route replays an RF schedule: give rf_events= (or a waveform carrying "
-                             "them). Without a pulse there is nothing this route adds over replay().")
+            raise ValueError("the Bloch route replays an RF schedule and this sequence carries none. Without a "
+                             "pulse there is nothing this route adds over replay().")
         ch, dt, n_t = P["ch"], P["dt"], P["n_t"]
         pos = self.positions()
-        kw = dict(weights=P["ew"] / P["norm"], echo_steps=echo_steps)
+        kw = dict(weights=P["ew"] / P["norm"], echo_steps=_echo_saves(waveform, dt))
         if b1_scale is not None:
             kw["b1_scale"] = b1_scale
         T2v, T1v = P["T2"], P["T1"]
@@ -400,15 +404,16 @@ class ReplayPack:
         from ._replay_kernel import effective_gradient, bin_gate
         require_position_method(self.method)
         # two gradients: the PHYSICAL one (``G``, for the vector-Bloch route, which applies the pulses itself)
-        # and the EFFECTIVE one (``G_eff``, for the scalar routes, the pulses folded in); a bare array is
-        # effective by definition and stands for both
-        G = np.asarray(getattr(waveform, "G", waveform), np.float64)
-        G_eff = np.asarray(getattr(waveform, "G_eff", waveform), np.float64)
-        if G.ndim == 2:
-            G, G_eff = G[None], G_eff[None]
-        dt_wf = float(getattr(waveform, "dt", self.dt))
+        # and the EFFECTIVE one (``G_eff``, for the scalar routes, the pulses folded in)
+        waveform = waveform.waveform if hasattr(waveform, "waveform") else waveform
+        if not isinstance(waveform, ScannerSequence):
+            raise TypeError(f"a replay takes a ScannerSequence (a bare gradient array says nothing about its pulses); "
+                            f"got {type(waveform).__name__}")
+        G = np.asarray(waveform.G, np.float64)
+        G_eff = np.asarray(waveform.G_eff, np.float64)
+        dt_wf = float(waveform.dt)
         n_t, dt = self.n_t, self.dt
-        chi = getattr(waveform, "chi_perp", None)
+        chi = waveform.chi_perp
         if chi is not None:                              # the gate on the occupancy / contact channels: averaged over
             chi = np.asarray(chi, np.float64).reshape(-1)  # each save's accumulation interval, never resampled
             chi = bin_gate(chi, dt_wf if chi.shape[0] == G.shape[1] else dt, n_t, dt)[0]
@@ -467,7 +472,7 @@ class ReplayPack:
                     b0_dir=b0_dir, chi_iso=chi_iso, chi_aniso=chi_aniso, T2=T2, T1=T1, rho=rho, D=D)
 
     def pose_response(self, waveform, *, tissue="nominal", T2=None, T1=None, rho=None, D=None, B0=None,
-                      b0_dir=(0.0, 0.0, 1.0), chi_iso=None, chi_aniso=0.0, refocus_time="auto", compartment=None,
+                      b0_dir=(0.0, 0.0, 1.0), chi_iso=None, chi_aniso=0.0, compartment=None,
                       band=None, keep=None, margin=2, n_check=256, seed=0, band_cap=12, strict=True):
         """The pack's response over every pose of its substrate, as SO(3) coefficients (:class:`PoseResponse`).
 
@@ -495,7 +500,7 @@ class ReplayPack:
         """
         P = self._prepare(waveform, tissue=tissue, T2=T2, T1=T1, rho=rho, D=D, B0=B0, b0_dir=b0_dir, chi_iso=chi_iso,
                           chi_aniso=chi_aniso, orientation=None, compartment=compartment)
-        return self._pose_coeffs(P, refocus_time, waveform, band=band, keep=keep, margin=margin,
+        return self._pose_coeffs(P, waveform, band=band, keep=keep, margin=margin,
                                  n_check=n_check, seed=seed, band_cap=band_cap, strict=strict)
 
     def _select(self, compartment, ew, norm, w, ch, n_w):
@@ -536,7 +541,7 @@ class ReplayPack:
         raise ValueError("orientation is a (3, 3) rotation, a (3,) axis direction, or a distribution of poses "
                          "(dmipy_sim.replay.so3.Distribution, or an FOD read as an axis density)")
 
-    def _pose_coeffs(self, P, refocus_time, waveform, band=None, keep=None, margin=2, n_check=256, seed=0,
+    def _pose_coeffs(self, P, waveform, band=None, keep=None, margin=2, n_check=256, seed=0,
                      chunk=256, over=2, band_cap=12, strict=True):
         """Sample the response over rotations, project it, and check it off the grid.
 
@@ -583,9 +588,7 @@ class ReplayPack:
                 raise ValueError("B0 was given without chi_iso; give chi_iso (and chi_aniso)")
             from .bank import susc_path_coeffs
             Cs, names = susc_path_coeffs(self.arrays, pm)
-            if refocus_time == "auto":
-                refocus_time = _refocus_time_of(waveform)
-            gate_hat = dct(se_gate(n_t, dt, refocus_time), type=2, norm="ortho")[:Cs.shape[2]]
+            gate_hat = dct(se_gate(n_t, dt, waveform.rf.refocus_time), type=2, norm="ortho")[:Cs.shape[2]]
             Psi = (GAMMA * dt) * np.einsum("k,wck->wc", gate_hat, Cs)               # (n_w, n_ch)
             i_p = names.index("iso_P_xx")
             i_a = names.index("aniso_G_xx") if "aniso_G_xx" in names else None
@@ -780,10 +783,13 @@ def _as_distribution(orientation):
     return None
 
 
-def _refocus_time_of(waveform):
-    """The time of the waveform's 180 (the first refocusing pulse of its RF schedule), or ``None``
-    for a schedule without one (a gradient echo)."""
-    return RFSchedule(getattr(waveform, "rf", None)).refocus_time
+def _echo_saves(waveform, dt_pack):
+    """The pack-grid save indices of a multi-echo readout, or ``None`` when the sequence is read at its last
+    sample (the Bloch replay then returns the final magnetisation)."""
+    readout = tuple(int(i) for i in waveform.readout)
+    if readout == (waveform.n_t - 1,):
+        return None
+    return [int(round(i * float(waveform.dt) / float(dt_pack))) for i in readout]
 
 
 # ------------------------------- compiled-scheme forward -------------------------------

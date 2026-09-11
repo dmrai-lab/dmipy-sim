@@ -740,7 +740,7 @@ class ReplayPhantom:
     # ---- replay
     def replay(self, waveform, *, B0=None, b0_dir=(0.0, 0.0, 1.0), tissue="nominal", packs=None,
                n_check=256, complex_signal=False, T2=None, T1=None, rho=None, D=None,
-               chi_iso=None, chi_aniso=0.0, refocus_time="auto"):
+               chi_iso=None, chi_aniso=0.0):
         """Replay the whole phantom: ``(voxel_index, S)`` with ``S`` of shape ``(n_voxels, n_measurements)``.
 
         Each cited pack is replayed **once** into its response over poses (:meth:`ReplayPack.pose_response`),
@@ -762,7 +762,7 @@ class ReplayPhantom:
         Declared macroscopic layers (RPH.md 5.1) are applied per voxel, and one that this acquisition cannot
         carry raises rather than being dropped.
         """
-        knobs = dict(T2=T2, T1=T1, rho=rho, D=D, chi_iso=chi_iso, chi_aniso=chi_aniso, refocus_time=refocus_time)
+        knobs = dict(T2=T2, T1=T1, rho=rho, D=D, chi_iso=chi_iso, chi_aniso=chi_aniso)
         pose, analytic, m0, ref = self._responses(waveform, B0, b0_dir, tissue, packs, n_check, knobs,
                                                   keep=self.retained_band())
         sid, frac = self.substrate_id, self.geometric_fraction
@@ -778,7 +778,7 @@ class ReplayPhantom:
                 np.add.at(S, vp[m, 0], weight[m][:, None] * np.atleast_1d(analytic[i])[None, :])
             elif i in pose:                                            # one product for every slot citing it
                 np.add.at(S, vp[m, 0], weight[m][:, None] * (F[m] @ pose[i].retained(keep_l, keep_n).T))
-        S = self._apply_layers(S, waveform, refocus_time, ref)
+        S = self._apply_layers(S, waveform, ref)
         return self.voxel_index, (S if complex_signal else np.abs(S))
 
     def slot_coefficients(self, lmax, nmax):
@@ -905,10 +905,9 @@ class ReplayPhantom:
             m0 = m0 * self.scalar("m0_scale")[:, None]
         return pose, analytic, m0, ref
 
-    def _apply_layers(self, S, waveform, refocus_time, ref):
+    def _apply_layers(self, S, waveform, ref):
         """The macroscopic layers of RPH.md 5.1, each on the voxel's whole signal."""
         from ._replay_kernel import se_gate
-        from .replay import _refocus_time_of
         from ..constants import GAMMA
         for name in self.scalar_names:
             if name == "m0_scale":
@@ -918,7 +917,7 @@ class ReplayPhantom:
                     raise ValueError("the delta_B0_T layer needs a pack's save grid to integrate the coherence gate "
                                      "over; the phantom cites no pack")
                 n_t, dt = ref.n_t, ref.dt
-                t_ref = _refocus_time_of(waveform) if refocus_time == "auto" else refocus_time
+                t_ref = waveform.rf.refocus_time                     # the sequence's own 180, or none
                 gate = float(dt * se_gate(n_t, dt, t_ref).sum())     # zero for a 180 at TE/2: the layer refocuses
                 S = S * np.exp(1j * GAMMA * self.scalar("delta_B0_T")[:, None] * gate)
             elif name == "kappa_B1":
@@ -932,7 +931,7 @@ class ReplayPhantom:
                                  f"a layer silently dropped is a phantom that replays wrong (RPH.md 5.1)")
         return S
 
-    def replay_bloch(self, waveform, *, rf_events=None, B0=None, b0_dir=(0.0, 0.0, 1.0), tissue="nominal",
+    def replay_bloch(self, waveform, *, B0=None, b0_dir=(0.0, 0.0, 1.0), tissue="nominal",
                      packs=None, complex_signal=False, T2=None, T1=None, rho=None, D=None, chi_iso=None,
                      chi_aniso=0.0, decimals=3):
         """Replay the phantom through the RF-aware route: ``(voxel_index, S)``, one magnetisation propagation
@@ -959,9 +958,9 @@ class ReplayPhantom:
                              f"A mode that leaves the substrate's azimuth unstated leaves the propagation "
                              f"undefined, and a distribution of poses under a scaled RF pulse is not the "
                              f"composition of one propagation, so neither is approximated here.")
-        rf = rf_events if rf_events is not None else (getattr(waveform, "rf", None) or [])
+        rf = waveform.rf
         if not rf:
-            raise ValueError("the Bloch route replays an RF schedule: give rf_events= or a waveform carrying them")
+            raise ValueError("the Bloch route replays an RF schedule and this sequence carries none")
         given = {}
         for key, pk in (packs or {}).items():
             given[key if isinstance(key, (int, np.integer)) else self.index_of(key)] = pk
@@ -996,11 +995,11 @@ class ReplayPhantom:
                         if model is None:
                             raise ValueError(f"substrate {sub['id']!r} names the closed form {sub.get('model')!r}, "
                                              f"which this replayer does not implement")
-                        resp = model(sub.get("params", {}), b) * _static_spin_rf(waveform, rf, kap)
+                        resp = model(sub.get("params", {}), b) * _static_spin_rf(waveform, kap)
                     else:
                         kw = dict(knobs)
                         kw.update({k: val for k, val in (sub.get("tissue") or {}).items()})
-                        resp = loaded[i].replay_bloch(waveform, rf_events=rf, b1_scale=kap, tissue=tissue, B0=B0,
+                        resp = loaded[i].replay_bloch(waveform, b1_scale=kap, tissue=tissue, B0=B0,
                                                       b0_dir=b0_dir, orientation=poses[v, p], complex_signal=True,
                                                       **kw)
                     cache[key] = resp
@@ -1028,12 +1027,11 @@ def _b_values(waveform):
     return np.asarray(enc.bvalues if enc is not None else waveform.b(), np.float64)
 
 
-def _static_spin_rf(waveform, rf_events, b1_scale):
-    """The transverse magnetisation a single static spin at the origin keeps through this RF schedule at this
-    transmit scale: what multiplies an analytic substrate's closed form, since a closed form has diffusion
+def _static_spin_rf(waveform, b1_scale):
+    """The transverse magnetisation a single static spin at the origin keeps through this sequence's RF schedule
+    at this transmit scale: what multiplies an analytic substrate's closed form, since a closed form has diffusion
     attenuation but no magnetisation of its own. Zero gradient, so the schedule alone acts."""
     from .trajectories import replay_bloch
-    n_t = int(np.asarray(getattr(waveform, "G", waveform)).shape[-2])
-    dt = float(getattr(waveform, "dt"))
-    out = replay_bloch(np.zeros((1, n_t, 3)), dt, np.zeros((1, n_t, 3)), dt, rf_events, b1_scale=float(b1_scale))
+    n_t, dt = waveform.n_t, float(waveform.dt)
+    out = replay_bloch(np.zeros((1, n_t, 3)), dt, np.zeros((1, n_t, 3)), dt, waveform.rf, b1_scale=float(b1_scale))
     return complex(np.atleast_1d(np.asarray(out).ravel())[-1])

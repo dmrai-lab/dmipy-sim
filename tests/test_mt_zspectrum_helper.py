@@ -6,9 +6,10 @@ over a tiny MC run it must reproduce a hand-written ``simulate_bloch`` offset sw
 identical parameters and seed, and return the right shape.  Small/`off`-equilibrated so it
 stays in the ~1-min fast tier.
 """
-from types import SimpleNamespace
 
+from dataclasses import replace
 import numpy as np
+from dmipy_sim import ScannerSequence
 from dmipy_sim import RFEvent
 
 from dmipy_sim import Sphere, simulate_bloch, emergent_z_spectrum
@@ -23,15 +24,12 @@ OFFSETS = np.array([0.0, 4000.0])
 
 def _manual_sweep():
     n_t = int(round(CFG["t_sat"] / CFG["dt"])) + 1
-    wf = SimpleNamespace(G=np.zeros((1, n_t, 3)), dt=CFG["dt"])
+    wf = ScannerSequence(G=np.zeros((1, n_t, 3)), dt=CFG["dt"])
     flip = 360.0 * CFG["w1_hz"] * CFG["t_sat"]
     out = []
     for off in OFFSETS:
         rf = [RFEvent(CFG["t_sat"] / 2, flip, axis_deg=0.0, duration_s=CFG["t_sat"], offset_hz=float(off))]
-        _, mz = simulate_bloch(CFG["n_walkers"], D, wf, Sphere(radius=R), rf,
-                               T2=CFG["T2"], T1=CFG["T1"], kappa_MT=CFG["kappa_MT"],
-                               dwell_time=CFG["dwell_time"], T2_bound=CFG["T2_bound"],
-                               return_mz=True, equilibrate_binding="off", seed=CFG["seed"])
+        _, mz = simulate_bloch(CFG["n_walkers"], D, replace(wf, rf=rf), Sphere(radius=R), T2=CFG["T2"], T1=CFG["T1"], kappa_MT=CFG["kappa_MT"], dwell_time=CFG["dwell_time"], T2_bound=CFG["T2_bound"], return_mz=True, equilibrate_binding="off", seed=CFG["seed"])
         out.append(float(mz[0]))
     return np.array(out)
 

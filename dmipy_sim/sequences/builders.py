@@ -109,19 +109,28 @@ def ogse(gradient_directions, oscillation_frequency, gradient_duration, *, shape
     if shape not in ("trapezoid", "cosine"):
         raise ValueError(f"ogse shape must be 'trapezoid' or 'cosine', got {shape!r}")
     dirs, n_m, (f_, sigma_) = _rows(gradient_directions, oscillation_frequency, gradient_duration)
-    if np.any(f_ <= 0) or np.any(sigma_ <= 0):
-        raise ValueError("ogse needs a positive oscillation_frequency and gradient_duration")
+    # a row's block is shaped by its frequency and duration; a row without one (a b = 0 measurement given no
+    # frequency) plays nothing, a b = 0 row WITH one plays its block at zero amplitude (it is that shell's b = 0)
+    amp = np.broadcast_to(np.asarray(bvalues if bvalues is not None else gradient_strengths, np.float64), (n_m,))
+    shaped = (f_ > 0) & (sigma_ > 0)
+    if np.any((amp > 0) & ~shaped):
+        raise ValueError("ogse needs a positive oscillation_frequency and gradient_duration on every weighted row")
     eps = lambda m, g: ramp_of(g, slew_rate)
     if shape == "trapezoid":
-        n_lobes = _whole(2.0 * f_ * sigma_, "the number of lobes 2 f sigma of a trapezoidal OGSE block")
-        lobe = sigma_ / n_lobes
+        n_lobes = np.ones(n_m, dtype=int)
+        n_lobes[shaped] = _whole(2.0 * f_[shaped] * sigma_[shaped],
+                                 "the number of lobes 2 f sigma of a trapezoidal OGSE block")
+        lobe = np.where(shaped, sigma_ / np.maximum(n_lobes, 1), 0.0)
 
         def sample(m, g, dt):
-            return trapezoid_train(n_lobes[m], lobe[m], eps(m, g), dt)
+            return trapezoid_train(n_lobes[m], lobe[m], eps(m, g), dt) if shaped[m] else np.zeros(1)
     else:
-        n_cyc = _whole(f_ * sigma_, "the number of periods f sigma of a cosine OGSE block")
+        n_cyc = np.ones(n_m, dtype=int)
+        n_cyc[shaped] = _whole(f_[shaped] * sigma_[shaped], "the number of periods f sigma of a cosine OGSE block")
 
         def sample(m, g, dt):
+            if not shaped[m]:
+                return np.zeros(1)
             slew = float(slew_rate)
             if np.isfinite(slew) and 2.0 * np.pi * f_[m] * g > slew * (1.0 + 1e-9):
                 raise ValueError(f"a cosine at {f_[m]:.1f} Hz and {g:.4f} T/m slews at {2*np.pi*f_[m]*g:.1f} T/m/s, "
@@ -135,9 +144,10 @@ def ogse(gradient_directions, oscillation_frequency, gradient_duration, *, shape
         SpinEcho(gap=lambda m, g: gap_[m], timing=timing),
         gradient_directions=dirs, bvalues=bvalues, gradient_strengths=gradient_strengths, TE=TE, n_t=n_t,
         timing=timing, family='ogse', q_width=sigma_,
-        span=lambda m, g: sigma_[m], sample=sample,
+        span=lambda m, g: sigma_[m] if shaped[m] else 0.0, sample=sample,
         encoding=lambda g, te, te_min: dict(oscillation_frequency=f_, gradient_duration=sigma_,
-                                            n_oscillation_cycles=f_ * sigma_, Delta=None if Delta is None else sigma_ + gap_,
+                                            n_oscillation_cycles=np.where(shaped, f_ * sigma_, 0.0),
+                                            Delta=None if Delta is None else sigma_ + gap_,
                                             gradient_rise_time=np.array([eps(m, g[m]) for m in range(n_m)])),
         build_spec=('ogse', dict(gradient_directions=gradient_directions, oscillation_frequency=oscillation_frequency,
                                  gradient_duration=gradient_duration, shape=shape, Delta=Delta, bvalues=bvalues,
@@ -327,7 +337,7 @@ def from_waveform(G, dt, gradient_directions, delta=None, Delta=None, TE=None, a
     return seq
 
 
-def from_btensor_waveform(G, dt, *, echo_idx=None, TE=None):
+def from_btensor_waveform(G, dt, *, echo_idx=None, TE=None, timing=None):
     """A precomputed b-tensor gradient waveform -- the PHYSICAL gradient, as played -- as a spin echo.
 
     For an externally designed b-tensor encoding (e.g. a dmipy-design ``design_waveform`` output) rather than
@@ -335,7 +345,9 @@ def from_btensor_waveform(G, dt, *, echo_idx=None, TE=None):
     b_delta) is whatever the numbers produce: it is computed from ``G_eff``, not declared, so there is no shape
     argument; ``seq.btensor()`` reads the realised shape. The 180 is declared at ``echo_idx`` (default TE/2 --
     the only position at which the static field refocuses at the echo, so a non-TE/2 ``echo_idx`` raises) and
-    folds into ``G_eff`` through the schedule's sign, as for every family.
+    folds into ``G_eff`` through the schedule's sign, as for every family. With a ``timing`` budget the pulses
+    are the finite 90 / 180 it implies and the sequence carries it (a designer's output built to a budget
+    arrives with the budget, and ``validate()`` holds the gradient to its windows).
     """
     G = np.asarray(G, dtype=np.float32)
     if G.ndim == 2:
@@ -354,18 +366,22 @@ def from_btensor_waveform(G, dt, *, echo_idx=None, TE=None):
             f"from_btensor_waveform: echo_idx={echo_idx} places the 180 at {echo_idx * dt * 1e3:.2f} ms, not "
             f"TE/2={te2 * dt * 1e3:.2f} ms. A spin echo refocuses the static field at 2*t_180="
             f"{2 * echo_idx * dt * 1e3:.2f} ms, not at the echo TE={float(TE_[0]) * 1e3:.2f} ms.")
-    schedule = RFSchedule([RFEvent(0.0, 90, 'Mz→Mxy'), RFEvent(echo_idx * dt, 180, 'refocus')])
+    if timing is None:
+        schedule = RFSchedule([RFEvent(0.0, 90, 'Mz→Mxy'), RFEvent(echo_idx * dt, 180, 'refocus')])
+    else:
+        schedule = RFSchedule([RFEvent(timing.t_prep, 90, 'Mz→Mxy', duration_s=timing.t_excite),
+                               RFEvent(echo_idx * dt, 180, 'refocus', duration_s=timing.t_refocus)])
     sign = schedule.sign(np.arange(n_t) * dt)[None, :, None]
     bvalues_num = _calc_b_from_waveform(G * sign, dt)
     return ScannerSequence(
-        G=G, dt=dt, rf=schedule, family='btensor',
+        G=G, dt=dt, rf=schedule, timing=timing, family='btensor',
         encoding=Encoding(bvalues=bvalues_num, gradient_directions=gradient_directions, TE=TE_, minimum_te=T_total,
                           te_auto=te_auto),
-        build_spec=('from_btensor_waveform', dict(G=G, dt=dt, echo_idx=echo_idx, TE=TE))).validate()
+        build_spec=('from_btensor_waveform', dict(G=G, dt=dt, echo_idx=echo_idx, TE=TE, timing=timing))).validate()
 
 
 def from_pgste_waveform(G, dt, *, store_idx, recall_idx, gradient_directions=None, ste_flip_angles=(90., 90., 90.),
-                        TE=None):
+                        TE=None, timing=None):
     """A precomputed PGSTE (stimulated-echo) gradient waveform -- the PHYSICAL gradient, as played -- as a
     stimulated echo.
 
@@ -377,7 +393,8 @@ def from_pgste_waveform(G, dt, *, store_idx, recall_idx, gradient_directions=Non
     gradient-off mixing time ``TM`` on z.
 
     ``store_idx`` / ``recall_idx`` are the samples of the store and recall pulses; ``delta = store_idx * dt`` and
-    ``TM = (recall_idx - store_idx) * dt`` follow.
+    ``TM = (recall_idx - store_idx) * dt`` follow. With a ``timing`` budget the three pulses are finite
+    (``t_excite`` each) and the sequence carries the budget.
     """
     G = np.asarray(G, dtype=np.float32)
     if G.ndim == 2:
@@ -397,8 +414,10 @@ def from_pgste_waveform(G, dt, *, store_idx, recall_idx, gradient_directions=Non
             f"static field only when the two transverse encoding periods match; unequal periods leave a residual "
             f"static dephasing at the echo.")
     a1, a2, a3 = (float(a) for a in ste_flip_angles)
-    schedule = RFSchedule([RFEvent(0.0, a1, 'Mz→Mxy'), RFEvent(store_idx * dt, a2, 'store'),
-                           RFEvent(recall_idx * dt, a3, 'recall')])
+    w = 0.0 if timing is None else float(timing.t_excite)
+    schedule = RFSchedule([RFEvent(0.0 if timing is None else timing.t_prep, a1, 'Mz→Mxy', duration_s=w),
+                           RFEvent(store_idx * dt, a2, 'store', duration_s=w),
+                           RFEvent(recall_idx * dt, a3, 'recall', duration_s=w)])
     sign = schedule.sign(np.arange(n_t) * dt)[None, :, None]
     delta = float(store_idx * dt)
     TM = float((recall_idx - store_idx) * dt)
@@ -408,12 +427,12 @@ def from_pgste_waveform(G, dt, *, store_idx, recall_idx, gradient_directions=Non
     TE_, te_auto = _resolve_te(TE, T_total, n_m)
     delta_ = np.full(n_m, delta)
     return ScannerSequence(
-        G=G, dt=dt, rf=schedule, family='pgste',
+        G=G, dt=dt, rf=schedule, timing=timing, family='pgste',
         encoding=Encoding(bvalues=bvalues_num, gradient_directions=gradient_directions, TE=TE_, delta=delta_,
                           Delta=delta_ + TM, minimum_te=T_total, te_auto=te_auto, ste_flip_angles=(a1, a2, a3)),
         build_spec=('from_pgste_waveform', dict(G=G, dt=dt, store_idx=store_idx, recall_idx=recall_idx,
                                                 gradient_directions=gradient_directions,
-                                                ste_flip_angles=ste_flip_angles, TE=TE))).validate()
+                                                ste_flip_angles=ste_flip_angles, TE=TE, timing=timing))).validate()
 
 
 # ── views of a built sequence ────────────────────────────────────────────────────────────────────────────────────

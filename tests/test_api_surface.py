@@ -314,19 +314,7 @@ _SEQUENCE_CONSTRUCTORS_WITHOUT_RF = {
 }
 
 # §1.2 -- callables that take an acquisition AND its RF / echo / refocus time as separate arguments
-_RF_SIDE_CHANNELS = {
-    ("dmipy_sim.engine.bloch.simulate_bloch", ("echo_steps", "rf_events")),
-    ("dmipy_sim.engine.bloch._simulate_bloch_mt", ("echo_steps", "rf_events")),
-    ("dmipy_sim.replay.replay.replay", ("refocus_time",)),
-    ("dmipy_sim.replay.replay.replay_bloch", ("echo_steps", "rf_events")),
-    ("dmipy_sim.replay.replay.pose_response", ("refocus_time",)),
-    ("dmipy_sim.replay.replay._pose_coeffs", ("refocus_time",)),
-    ("dmipy_sim.replay.bank.replay_susc", ("refocus_time",)),
-    ("dmipy_sim.replay.phantom.replay", ("refocus_time",)),
-    ("dmipy_sim.replay.phantom.replay_bloch", ("rf_events",)),
-    ("dmipy_sim.replay.phantom._apply_layers", ("refocus_time",)),
-    ("dmipy_sim.replay.phantom._static_spin_rf", ("rf_events",)),
-}
+_RF_SIDE_CHANNELS = set()      # #173 piece 6: every consumer reads the object's rf / readout / refocus time
 
 # §1.3 -- the scanner catalogues: ONE source (the cited JSON) and the views derived from it at import
 _SCANNER_SOURCE = {"dmipy_sim.acquisition.scanner_constants.SCANNER_CONSTANTS"}
@@ -478,7 +466,8 @@ def test_no_stored_effective_gradient_and_no_flag_standing_in_for_the_schedule()
             "class Waveform", "class Sequence:", "class BlochSequence", "def apply_rf_schedule",   # piece 5a: one container
             "allow_unmatched_periods",
             "def trapezoidal_ogse", "def b_trapezoidal_ogse", "_fill_lobe", "_lobe_n_rise", "_trap_cosine_profile",
-            "G_magnitude", "refocus_duration", "kind='sine'")                        # piece 5b: one set of builders
+            "G_magnitude", "refocus_duration", "kind='sine'",                        # piece 5b: one set of builders
+            "def run_bloch_sequence", "def _refocus_time_of", 'refocus_time="auto"', "rf_events=None")   # piece 6
     found = {}
     for py, modname in _package_modules():
         text = py.read_text()
@@ -490,8 +479,8 @@ def test_no_stored_effective_gradient_and_no_flag_standing_in_for_the_schedule()
 
 def test_rf_is_taken_apart_from_the_gradient_only_where_declared():
     """A callable that takes an acquisition AND separately its RF schedule / echo / refocus time is a side
-    channel: the two can then disagree by signature (#172 is one such bug). The declared set is where that
-    still happens; #173 piece 6 empties it."""
+    channel: the two can then disagree by signature (#172 is one such bug). #173 piece 6 emptied the set: every
+    consumer reads ``seq.rf``, ``seq.readout`` and ``seq.rf.refocus_time`` from the object."""
     import ast
     acq = {"waveform", "wf", "seq", "sequence", "acq"}
     side = {"rf_events", "refocus_time", "echo_steps"}

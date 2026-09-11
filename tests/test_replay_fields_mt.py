@@ -12,9 +12,10 @@ Validates the replay operators AGAINST the public forward engine
 Kept CPU-feasible (small N, coarse grids, short walks).  The whole module is auto-marked
 ``slow`` in ``conftest.py`` (heavy MC); the pure-function unit checks at the end are cheap.
 """
+from dataclasses import replace
 import numpy as np
+from dmipy_sim import ScannerSequence
 from dmipy_sim import RFEvent
-from types import SimpleNamespace
 
 import pytest
 
@@ -35,12 +36,12 @@ def test_bloch_replay_matches_forward_spin_echo():
     TE, dt = 15e-3, 0.15e-3                     # dt chosen so the walk has sub_steps=1
     n_t = int(round(TE / dt)) + 1
     G = np.zeros((1, n_t, 3)); G[0, :, 0] = 0.02          # constant gradient (T/m)
-    wf = SimpleNamespace(G=G, dt=dt)
+    wf = ScannerSequence(G=G, dt=dt)
     rf = [RFEvent(0.0, 90.0, axis_deg=90.0, duration_s=0.0),
           RFEvent(TE / 2, 180.0, axis_deg=0.0, duration_s=0.0)]
     geom, T2 = d.Sphere(radius=8e-6), 120e-3
 
-    fwd = simulate_bloch(N, D, wf, geom, rf, T2=T2, seed=seed, require_gpu=False)
+    fwd = simulate_bloch(N, D, replace(wf, rf=rf), geom, T2=T2, seed=seed, require_gpu=False)
     walk = simulate_trajectories(N, D, geom, TE, dt, seed=seed,
                                                  require_gpu=False, tiers=())
     traj, dt_tr, subs = walk.positions, walk.dt, walk.sub_steps
@@ -63,15 +64,13 @@ def test_susceptibility_replay_gre_and_se():
     assert subs == 1
     prov = SusceptibilitySources(centers=[[0, 0, 0]], radii=[3e-6],
                                  delta_chi=8e-6, B0=3.0)
-    Z = np.zeros((1, n_t, 3)); wf0 = SimpleNamespace(G=Z, dt=dt)
+    Z = np.zeros((1, n_t, 3)); wf0 = ScannerSequence(G=Z, dt=dt)
     rf_gre = [RFEvent(0.0, 90.0, axis_deg=90.0, duration_s=0.0)]
     rf_se = rf_gre + [RFEvent(TE / 2, 180.0, axis_deg=0.0, duration_s=0.0)]
 
-    f_gre = simulate_bloch(N, D, wf0, geom, rf_gre, T2=T2, seed=seed,
-                           susceptibility=prov, require_gpu=False)
+    f_gre = simulate_bloch(N, D, replace(wf0, rf=rf_gre), geom, T2=T2, seed=seed, susceptibility=prov, require_gpu=False)
     r_gre = replay_bloch(traj, dt_tr, Z, dt, rf_gre, T2=T2, susceptibility=prov)
-    f_se = simulate_bloch(N, D, wf0, geom, rf_se, T2=T2, seed=seed,
-                          susceptibility=prov, require_gpu=False)
+    f_se = simulate_bloch(N, D, replace(wf0, rf=rf_se), geom, T2=T2, seed=seed, susceptibility=prov, require_gpu=False)
     r_se = replay_bloch(traj, dt_tr, Z, dt, rf_se, T2=T2, susceptibility=prov)
 
     # forward vs replay parity (same provider, bit-identical walk)

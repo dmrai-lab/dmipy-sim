@@ -288,18 +288,17 @@ def test_the_transmit_layer_goes_through_the_bloch_route(tmp_path, pack_path):
     ideal, _ = _phantom(tmp_path / "one", pack_path, orientation=FrameField(R), **kw)
     assert ideal.mode == "frames"
     _, S_ideal = ideal.replay(seq)
-    _, S_bloch = ideal.replay_bloch(phys, rf_events=rf)
+    _, S_bloch = ideal.replay_bloch(phys)
     # the two routes differ by the pose expansion's truncation on a small pack, i.e. its Monte-Carlo floor
     np.testing.assert_allclose(S_bloch, S_ideal, atol=3.0 / np.sqrt(pk.n_walkers))
     # a transmit map is applied voxel by voxel, and each voxel is the pack propagated at that scale: the
     # nominal case is untouched, and a scaled one is exactly what the pack alone returns at that scale
     kap = np.where(np.arange(n)[:, None, None] * np.ones((n, n, 1)) > 0, 0.6, 1.0)
     ph, _ = _phantom(tmp_path / "b1", pack_path, orientation=FrameField(R), scalars={"kappa_B1": kap}, **kw)
-    _, S_b1 = ph.replay_bloch(phys, rf_events=rf)
+    _, S_b1 = ph.replay_bloch(phys)
     i = ph.voxel_index[:, 0]
     np.testing.assert_allclose(S_b1[i == 0], S_bloch[i == 0], rtol=1e-9)          # kappa = 1: nothing changes
-    alone = np.abs(pk.replay_bloch(phys, rf_events=rf, b1_scale=0.6, orientation=(0.0, 0.0, 1.0),
-                                   T2=[0.06] * 3))                                # the T2 the phantom declares
+    alone = np.abs(pk.replay_bloch(phys, b1_scale=0.6, orientation=(0.0, 0.0, 1.0), T2=[0.06] * 3))                                # the T2 the phantom declares
     np.testing.assert_allclose(S_b1[i == 1], np.tile(0.7 * alone, (int((i == 1).sum()), 1)), rtol=1e-9)
     assert (S_b1[i == 1] < S_b1[i == 0] * 0.9).all()                              # a smaller flip, a smaller signal
     with pytest.raises(ValueError, match="vector-Bloch|ReplayPhantom.replay_bloch"):
@@ -307,7 +306,7 @@ def test_the_transmit_layer_goes_through_the_bloch_route(tmp_path, pack_path):
     mu = np.zeros((n, n, 1, 3)); mu[..., :] = (0.0, 0.0, 1.0)
     odf, _ = _phantom(tmp_path / "odf", pack_path, orientation=WatsonField(50.0, mu, lmax=8), **kw)
     with pytest.raises(ValueError, match="frames-mode"):
-        odf.replay_bloch(phys, rf_events=rf)
+        odf.replay_bloch(phys)
 
 
 def test_a_frame_is_one_pose_and_a_peak_is_that_pose_with_its_azimuth_unstated(tmp_path, pack_path):

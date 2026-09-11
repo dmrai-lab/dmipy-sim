@@ -29,10 +29,11 @@ for _v in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
     os.environ.setdefault(_v, "1")
 
 import numpy as np
+from dmipy_sim import simulate_bloch
 from scipy.optimize import curve_fit
 
 from dmipy_sim.geometry import pack_spheres, PackedSpheres
-from dmipy_sim.engine.pulse_sequence import fexi, run_bloch_sequence   # <- library constructor (no handroll)
+from dmipy_sim.engine.pulse_sequence import fexi   # <- library constructor (no handroll)
 
 # ---- substrate: uniform-D packed spheres (3D restriction gives the intra/extra ADC contrast) ----
 D = 2e-9                                        # bulk diffusivity (m^2/s)
@@ -49,8 +50,7 @@ N_WALKERS, SEEDS, DT = 40_000, (1, 2, 3), 1e-4
 
 
 def _S(seq, geom):
-    return np.mean([abs(complex(run_bloch_sequence(seq, N_WALKERS, D, geom, seed=s,
-                                                    require_gpu=True)[0])) for s in SEEDS])
+    return np.mean([abs(complex(simulate_bloch(N_WALKERS, D, seq, geom, seed=s, require_gpu=True)[0])) for s in SEEDS])
 
 
 def adc_prime(geom, g_filter, t_mix):

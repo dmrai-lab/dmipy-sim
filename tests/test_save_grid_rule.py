@@ -16,14 +16,9 @@ ENV = dict(bvals=[0.0, 1e9], dirs=[[0, 0, 1]], ogse_periods=[2], shortd_b=1e9, s
            theta_deg=[0], delta_frac=0.2, Delta_frac=0.5, rho_list=[1e-5])
 
 
-class _Acq:
-    """A bare gradient echo on the pack grid: no pulses, so the effective gradient is the gradient itself."""
-    def __init__(self, G, dt):
-        self.G, self.dt = G, dt
-
-    @property
-    def G_eff(self):
-        return self.G
+def _acq(G, dt):
+    """A bare gradient echo on its own grid: no pulses, so the effective gradient is the gradient itself."""
+    return d.ScannerSequence(G=np.asarray(G, np.float32), dt=float(dt))
 
 
 def _pgse(dt, n_t, delta, Delta, b, g=(0, 0, 1)):
@@ -31,7 +26,7 @@ def _pgse(dt, n_t, delta, Delta, b, g=(0, 0, 1)):
     amp = np.sqrt(b / ((GAMMA * nd * dt) ** 2 * ((ng - nd / 3) * dt)))
     G = np.zeros((1, n_t, 3)); g = np.asarray(g, float)
     G[0, :nd] = amp * g; G[0, ng:ng + nd] = -amp * g
-    return _Acq(G, dt)
+    return _acq(G, dt)
 
 
 def test_the_effective_gradient_conserves_the_integral_on_any_grid():
@@ -102,4 +97,4 @@ def test_mode_space_equals_position_space_for_an_off_grid_waveform():
     S_pos = np.exp(1j * phi).mean(1)
     np.testing.assert_allclose(S_mode, S_pos, rtol=1e-9, atol=1e-12)
     with pytest.raises(ValueError, match="beyond the pack"):
-        pk.replay(_Acq(np.ones((1, 3 * pk.n_t + 30, 3)) * 1e-3, pk.dt / 3), tissue=False)
+        pk.replay(_acq(np.ones((1, 3 * pk.n_t + 30, 3)) * 1e-3, pk.dt / 3), tissue=False)

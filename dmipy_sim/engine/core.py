@@ -21,6 +21,7 @@ from .physics import (make_step_fn, make_myelin_step_fn, make_packed_myelin_step
                       make_packed_myelin_traj_step_fn)
 from ..geometry import initial_positions
 from ..persistent_walk import PersistentWalk
+from ..acquisition.scanner_sequence import Protocol
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -337,6 +338,19 @@ def simulate(
         raise ValueError(
             f"engine must be 'auto', 'replay', or 'fused'; got {engine!r}")
     want_pos_full = return_positions == 'full'
+
+    _acq = waveform.waveform if hasattr(waveform, 'waveform') else waveform
+    if isinstance(_acq, Protocol):
+        # a multi-TE scheme: one sequence per echo time, one walk each, the signals placed at their rows
+        if return_positions or return_compartments:
+            raise ValueError("positions and compartments are one sequence's: simulate each sequence of the "
+                             "Protocol on its own to get them")
+        kw = dict(seed=seed, T2=T2, T1=T1, return_walker_signals=return_walker_signals, r0=r0,
+                  walker_batch_size=walker_batch_size, require_gpu=require_gpu, engine=engine, sub_steps=sub_steps)
+        parts = [simulate(n_walkers, diffusivity, seq, geometry, **kw) for seq in _acq]
+        if return_walker_signals:                                   # (signal, walker_signals) per sequence
+            return _acq.scatter([p[0] for p in parts]), _acq.scatter([p[1] for p in parts], axis=-1)
+        return _acq.scatter(parts)
 
     # ── Engine routing (Phase 5) ────────────────────────────────────────────
     # Decide replay vs fused BEFORE the fused-only OOM/batch machinery so the
