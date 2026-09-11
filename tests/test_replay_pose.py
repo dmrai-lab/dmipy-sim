@@ -197,4 +197,4 @@ def test_a_response_the_truncation_cannot_hold_is_refused(ellipsoid):
     return a plausible wrong number, so the projection raises and names the knobs instead."""
     pk, seq = ellipsoid
     with pytest.raises(ValueError, match="not represented at"):
-        pk.pose_response(seq, band=0, n_check=200, tissue=False)                  # a constant is not a response
+        pk.pose_response(seq, method="quadrature", band=0, n_check=200, tissue=False)   # the sampled route: a constant is not a response
