@@ -647,7 +647,7 @@ class ReplayPack:
         prefix whose replay error exceeds ``tol`` times its Monte-Carlo floor is refused rather than written.
         ``provenance.prefix`` records the parent (digest, id, T, K) and the cut.
         """
-        from .bank import build_replay_pack, susc_path_decode, susc_path_encode_series
+        from .bank import build_replay_pack, susc_path_decode, susc_path_encode_series, susc_path_series_fidelity
         from .compression import decode_occupancy, decode_boundary_bridge, decode_boundary_local_time
         dt, n_t = float(self.dt), int(self.n_t)
         T = (n_t - 1) * dt
@@ -704,9 +704,22 @@ class ReplayPack:
             g = dict(ch.get("susceptibility_grid", {})); g.update(arrays_in_pack=False, replay_route="path")
             pk.meta["compression"]["channels"]["susceptibility_grid"] = g
             pk.meta["replay_envelope"]["field"] = True
-            back, _ = susc_path_decode(pk.arrays, pm, n_w=self.n_walkers)
-            scale = float(np.abs(series).max()) or 1.0
-            pk.meta["fidelity"]["err_susc_path_reencode"] = float(np.abs(back - series).max() / scale)
+            pk.meta["replay_envelope"].setdefault("acquisition", {})["max_refocusing_pulses"] = int(pm["max_refocus_pulses"])
+            # the field tier is certified as the producer certifies it (GRE, SE, the CPMG train it advertises),
+            # against the parent's decoded prefix, which is the reference this child has
+            spec = self.substrate
+            chi_i = None
+            if spec is not None:
+                from ..spec.tissue import Tissue
+                chi_i = Tissue.from_spec(spec).knobs().get("chi_iso")
+            cf = susc_path_series_fidelity(series, pk.arrays, pm, g, w=self.spin_weights, dt=dt,
+                                           env=self.meta.get("replay_envelope", {}).get("acquisition"),
+                                           chi_iso=float(chi_i or 1.06e-6))
+            fid = pk.meta.setdefault("fidelity", {})
+            fid.update(err_susc_path=cf["err"], floor_susc_path=cf["floor"], susc_path_pulses_certified=cf["n_pulses_certified"],
+                       err_max=max(float(fid.get("err_max", 0.0)), cf["err"]),
+                       floor_max=max(float(fid.get("floor_max", 0.0)), cf["floor"]))
+            fid["within_2x_floor"] = bool(fid["err_max"] <= tol * fid["floor_max"])
         fid = pk.meta.get("fidelity", {})
         if not fid.get("within_2x_floor", True):
             raise ValueError(f"the prefix at TE = {T_cut * 1e3:.1f} ms with K' = {K_new} does not reproduce the parent's decoded "

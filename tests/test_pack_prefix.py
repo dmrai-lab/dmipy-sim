@@ -65,3 +65,26 @@ def test_a_short_acquisition_relaxes_to_its_own_echo_on_a_longer_walk(parent):
     S0 = parent.replay(seq, tissue=False)
     S = parent.replay(seq, T2=[0.02, 0.02, 0.02])
     assert S[0] / S0[0] == pytest.approx(np.exp(-10e-3 / 0.02), rel=2e-2)          # exp(-TE/T2), not exp(-T/T2)
+
+
+def test_a_prefix_of_a_field_pack_re_encodes_the_path_channel_and_certifies_it(tmp_path):
+    """The path-field channel has no grid in the pack to re-sample from: the prefix re-encodes the parent's decoded
+    series and certifies the result on the producer's battery (GRE, SE, the CPMG train it advertises)."""
+    from tests.test_bank import _susc_master, _lean_env
+    from dmipy_sim.replay.bank import susc_path_decode
+    env = dict(_lean_env(), B0_list=[7.0], theta_deg=[0, 90])
+    parent = build_replay_pack(_susc_master(), id="test/slab-susc", method="bridge_dst", envelope=env, K=64,
+                               susc_path_K=32, license="CC-BY-4.0", citation="test")
+    T = (parent.n_t - 1) * parent.dt
+    half = parent.prefix(T / 2)
+    pm = half.meta["compression"]["channels"]["susceptibility_path"]
+    K_half = int(np.ceil(32 * (half.n_t - 1) / (parent.n_t - 1)))                # the same bands per second
+    assert pm["K"] == K_half and pm["max_refocus_pulses"] == K_half // 2 and half.meta["replay_envelope"]["field"]
+    assert half.meta["replay_envelope"]["acquisition"]["max_refocusing_pulses"] == K_half // 2
+    f = half.meta["fidelity"]
+    assert f["susc_path_pulses_certified"] == K_half // 2 and f["err_susc_path"] <= 2.0 * f["floor_susc_path"] + 1e-9
+    assert f["err_max"] >= f["err_susc_path"] and f["within_2x_floor"]
+    # the child's decoded series is the parent's decoded prefix, channel for channel, to the certified error
+    b_parent, names = susc_path_decode(parent.arrays, parent.meta["compression"]["channels"]["susceptibility_path"])
+    b_half, names_half = susc_path_decode(half.arrays, pm, n_w=half.n_walkers)
+    assert names_half == names and b_half.shape == b_parent[:, :, :half.n_t].shape

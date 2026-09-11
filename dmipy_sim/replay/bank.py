@@ -332,11 +332,47 @@ def _susc_path_fidelity(m, arrays, pm, gm, env):
                                 traj, origin, vs, periodic=False)
             f_dec = susc_path_field(b_dec, d, B0=B0, chi_iso=chi_i, chi_aniso=ca,
                                     has_aniso=bool(gm.get("has_aniso")))
-            for g in gates:
-                cr = np.cos(GAMMA * dt * (f_raw * g[None, :]).sum(1))
-                cd = np.cos(GAMMA * dt * (f_dec * g[None, :]).sum(1))
-                err = max(err, abs(wmean(cr, slice(None)) - wmean(cd, slice(None))))
-                floor = max(floor, abs(wmean(cr, A) - wmean(cr, B)))
+            e, f = _gate_battery(f_raw, f_dec, gates, w, A, B, dt)
+            err, floor = max(err, e), max(floor, f)
+    return dict(err=float(err), floor=float(floor), n_pulses_certified=n_p)
+
+
+def _gate_battery(f_raw, f_dec, gates, w, A, B, dt):
+    """The worst gated-phase replay error between two per-walker field series over ``gates``, and the split-half
+    floor of the reference: ``(err, floor)``."""
+    from ..constants import GAMMA
+    wmean = lambda c, idx: float(np.sum(w[idx] * c[idx]) / np.sum(w[idx]))
+    err = floor = 0.0
+    for g in gates:
+        cr = np.cos(GAMMA * dt * (f_raw * g[None, :]).sum(1))
+        cd = np.cos(GAMMA * dt * (f_dec * g[None, :]).sum(1))
+        err = max(err, abs(wmean(cr, slice(None)) - wmean(cd, slice(None))))
+        floor = max(floor, abs(wmean(cr, A) - wmean(cr, B)))
+    return err, floor
+
+
+def susc_path_series_fidelity(series_raw, arrays, pm, gm, *, w, dt, env=None, chi_iso=1.06e-6, chi_aniso=None):
+    """Certify a path channel against a REFERENCE SERIES ``(n_w, n_ch, n_t)`` in the canonical channel order (what a
+    re-encoding of a decoded channel is measured against, since the grid is not in the pack): the same battery
+    as the producer's -- GRE, spin echo and the CPMG train at the channel's ``max_refocus_pulses``, over the
+    envelope's ``B0_list`` and ``theta_deg`` -- against the split-half floor of the reference."""
+    env = env or {}
+    series_raw = np.asarray(series_raw, np.float64); n_w, n_t = series_raw.shape[0], series_raw.shape[2]
+    b_dec, _ = susc_path_decode(arrays, pm, n_w=n_w)
+    has_aniso = bool(gm.get("has_aniso")) and series_raw.shape[1] >= 13
+    ca = (0.1 * chi_iso if has_aniso else 0.0) if chi_aniso is None else float(chi_aniso)
+    n_p = int(pm.get("max_refocus_pulses") or 1)
+    gates = [np.ones(n_t), _cpmg_gate(n_t, 1), _cpmg_gate(n_t, n_p)]
+    perm = np.random.RandomState(0).permutation(n_w); A, B = perm[:n_w // 2], perm[n_w // 2:]
+    w = np.ones(n_w) if w is None else np.asarray(w, np.float64)
+    err = floor = 0.0
+    for B0 in (env.get("B0_list") or [3.0, 7.0]):
+        for th in (env.get("theta_deg") or [0, 90]):
+            t = np.deg2rad(float(th)); d = [np.sin(t), 0.0, np.cos(t)]
+            f_raw = susc_path_field(series_raw, d, B0=B0, chi_iso=chi_iso, chi_aniso=ca, has_aniso=has_aniso)
+            f_dec = susc_path_field(b_dec, d, B0=B0, chi_iso=chi_iso, chi_aniso=ca, has_aniso=has_aniso)
+            e, f = _gate_battery(f_raw, f_dec, gates, w, A, B, float(dt))
+            err, floor = max(err, e), max(floor, f)
     return dict(err=float(err), floor=float(floor), n_pulses_certified=n_p)
 
 
