@@ -95,6 +95,37 @@ def _susceptibility_phase_swing(voigt):
     return lam[:, -1] - lam[:, 0]
 
 
+class PoseCoordinates:
+    """What a pose reads of a walk: the per-walker coordinates one acquisition leaves on one pack.
+
+    The whole pose dependence of the signal passes through these and nothing else, which is what makes a
+    pose an inner product rather than a re-simulation:
+
+    * ``M`` ``(n_w, n_meas, 3, 3)`` -- the walk contracted against the effective gradient, so walker
+      ``w``'s encoding-gradient phase at pose ``R`` is ``<R, M_w>``. Nine numbers per measurement.
+    * ``Psi`` ``(n_w, n_ch)`` -- its field history contracted against the gate, so its susceptibility
+      phase at pose ``R`` and field direction ``b`` is ``chi B0 b^T (R^T P_w R) b``. Six of the thirteen
+      channels are that tensor. ``None`` without a field.
+    * ``swing`` ``(n_w, n_meas)`` -- how many radians each walker's phase sweeps as the pose turns, exactly
+      (:func:`_encoding_phase_swing`, :func:`_susceptibility_phase_swing`), and ``phase_amplitude`` its
+      95th centile per measurement, then the largest. That is where a projection band starts.
+    * ``gate`` / ``gate_coeffs`` -- the spin-echo gate this acquisition applies to the field channel, and
+      its coefficients in the channel's own basis. ``None`` without a field.
+    * ``bridge`` ``(n_coeffs, n_meas, 3)`` -- the acquisition on the walk's own basis, per axis: the
+      acquisition-side half of the contraction that produced ``M``.
+    """
+
+    def __init__(self, M, Psi, channels, swing, phase_amplitude, gate, gate_coeffs, bridge):
+        self.M, self.Psi, self.channels = np.asarray(M), Psi, channels
+        self.swing = np.asarray(swing, float)
+        self.phase_amplitude = float(phase_amplitude)
+        self.gate, self.gate_coeffs, self.bridge = gate, gate_coeffs, bridge
+
+    @property
+    def n_walkers(self):
+        return self.M.shape[0]
+
+
 class PoseResponse:
     """A pack's response over every pose of its substrate, for one acquisition, as SO(3) coefficients.
 
@@ -116,12 +147,15 @@ class PoseResponse:
     spread, because a composition is exposed to individual poses and a spread bounds nothing.
     """
 
-    def __init__(self, coeffs, lmax, nmax, misfit, floor, phase_amplitude, n_samples):
+    def __init__(self, coeffs, lmax, nmax, misfit, floor, phase_amplitude, n_samples, sampled_band=None):
         self.coeffs = np.asarray(coeffs)
         self.lmax, self.nmax = int(lmax), int(nmax)
         self.misfit = np.asarray(misfit, float)
         self.floor, self.n_samples = float(floor), int(n_samples)
         self.phase_amplitude = float(phase_amplitude)
+        # the order the projection was taken at, which is >= the band retained: what had to be RESOLVED so
+        # that nothing folded into the coefficients kept. Equal to lmax when the whole response is retained.
+        self.sampled_band = int(lmax if sampled_band is None else sampled_band)
 
     @property
     def n_meas(self):
@@ -574,6 +608,80 @@ class ReplayPack:
         raise ValueError("orientation is a (3, 3) rotation, a (3,) axis direction, or a distribution of poses "
                          "(dmipy_sim.replay.so3.Distribution, or an FOD read as an axis density)")
 
+    def pose_coordinates(self, waveform, *, tissue="nominal", T2=None, T1=None, rho=None, D=None, B0=None,
+                         b0_dir=(0.0, 0.0, 1.0), chi_iso=None, chi_aniso=0.0, refocus_time="auto",
+                         compartment=None):
+        """The per-walker coordinates this acquisition leaves on this pack (:class:`PoseCoordinates`).
+
+        The whole pose dependence passes through these fifteen numbers per walker, so this is what an
+        expansion over poses is built from and the only place the walk is read. Exposed because it is the
+        object the representation is *about*: nine numbers contracting the walk against the effective
+        gradient, six contracting its field history against this acquisition's gate, and the radians each
+        walker's phase therefore sweeps as the pose turns.
+        """
+        P = self._prepare(waveform, tissue=tissue, T2=T2, T1=T1, rho=rho, D=D, B0=B0, b0_dir=b0_dir,
+                          chi_iso=chi_iso, chi_aniso=chi_aniso, orientation=None, compartment=compartment)
+        return self._pose_coordinates(P, refocus_time, waveform)
+
+    def _pose_coordinates(self, P, refocus_time, waveform):
+        """The contraction itself, on a prepared replay."""
+        from scipy.fft import dct
+        from .compression import read_position_coeffs
+        from ._replay_kernel import se_gate
+        Geff, dt, n_t, B0 = P["Geff"], P["dt"], P["n_t"], P["B0"]
+        chi_iso, chi_aniso = P["chi_iso"], P["chi_aniso"]
+        n_meas, n_w = Geff.shape[0], P["ew"].shape[0]
+
+        C = read_position_coeffs(self.arrays, dtype=np.float64).reshape(n_w, -1)
+        # The encoding-gradient phase at pose R is <R, M_w>, M_w[a, b] = sum_t Geff[i, t, a] r_w[t, b]: the
+        # walk contracted against the waveform once, and every pose after that is a 3x3 inner product. Exact
+        # for a multi-axis waveform too, which an expansion in one gradient direction could not take at all.
+        Q = np.empty((n_w, n_meas, 3, 3))
+        bridge = np.empty((C.shape[1], n_meas, 3))
+        e = np.eye(3)
+        for a in range(3):
+            for b_ in range(3):
+                W = _compile_effective(Geff[:, :, a][:, :, None] * e[b_][None, None, :], dt, self.K, n_t)
+                Q[:, :, a, b_] = C @ W
+                if a == b_:
+                    bridge[:, :, a] = W
+
+        Psi = names = gate = gate_hat = None
+        if B0 is not None:
+            if not self.has_field:
+                raise ValueError("B0 was given but the pack carries no field tier (C3)")
+            pm = self.meta.get("compression", {}).get("channels", {}).get("susceptibility_path")
+            if pm is None:
+                raise ValueError("the pose expansion with a field needs the pack's susc_path channel (C3 path route)")
+            if chi_iso is None:
+                raise ValueError("B0 was given without chi_iso; give chi_iso (and chi_aniso)")
+            from .bank import susc_path_coeffs
+            Cs, names = susc_path_coeffs(self.arrays, pm)
+            if refocus_time == "auto":
+                refocus_time = _refocus_time_of(waveform)
+            gate = se_gate(n_t, dt, refocus_time)
+            gate_hat = dct(gate, type=2, norm="ortho")[:Cs.shape[2]]
+            Psi = (GAMMA * dt) * np.einsum("k,wck->wc", gate_hat, Cs)               # (n_w, n_ch)
+
+        # How many radians the pose modulates, per walker: what the encoding gradient sweeps, plus what the
+        # susceptibility sweeps. Each is an amplitude weighted by the harmonic band of its own argument --
+        # linear in the pose for <R, M_w>, quadratic for the field -- and the two add in the exponent, so
+        # they are summed per walker rather than compared.
+        amp = _encoding_phase_swing(Q)
+        if Psi is not None:
+            i_p = names.index("iso_P_xx")
+            i_a = names.index("aniso_G_xx") if "aniso_G_xx" in names else None
+            swing = np.abs(float(chi_iso) * float(B0)) * _susceptibility_phase_swing(Psi[:, i_p:i_p + 6])
+            if chi_aniso and i_a is not None:
+                # two spreads added bound the combined tensor's own spread rather than computing it, which
+                # is the conservative direction for an estimate the growth then refines
+                swing = swing + np.abs(float(chi_aniso) * float(B0)) * _susceptibility_phase_swing(Psi[:, i_a:i_a + 6])
+            amp = amp + swing[:, None]
+        # per measurement, then the largest: one band serves the whole acquisition, so a b = 0 image in the
+        # set must not dilute the percentile of the one that actually sweeps phase
+        phi_amp = float(np.percentile(amp, 95, axis=0).max()) if amp.size else 0.0
+        return PoseCoordinates(Q, Psi, names, amp, phi_amp, gate, gate_hat, bridge)
+
     def _pose_coeffs(self, P, refocus_time, waveform, band=None, keep=None, n_check=1024, seed=0,
                      chunk=256, over=2, band_cap=12, strict=True):
         """Sample the response over rotations, project it, and grow the band until it holds.
@@ -595,42 +703,15 @@ class ReplayPack:
         coefficients, and does so differently at different frames. The misfit is measured at rotations off that
         grid, where such folding cannot hide, and as a worst case rather than a spread.
         """
-        from scipy.fft import dct
         from . import so3
-        from .compression import read_position_coeffs
-        from ._replay_kernel import se_gate
         Geff, dt, n_t, ew, norm, B0 = P["Geff"], P["dt"], P["n_t"], P["ew"], P["norm"], P["B0"]
         b0_dir, chi_iso, chi_aniso = P["b0_dir"], P["chi_iso"], P["chi_aniso"]
         n_meas, n_w = Geff.shape[0], ew.shape[0]
 
-        C = read_position_coeffs(self.arrays, dtype=np.float64).reshape(n_w, -1)
-        # The encoding-gradient phase at pose R is <R, M_w>, M_w[a, b] = sum_t Geff[i, t, a] r_w[t, b]: the walk
-        # contracted against the waveform once, and every pose after that is a 3x3 inner product. Exact for a
-        # multi-axis waveform too, which an expansion in one gradient direction could not take at all.
-        Q = np.empty((n_w, n_meas, 3, 3))
-        e = np.eye(3)
-        for a in range(3):
-            for b_ in range(3):
-                W = _compile_effective(Geff[:, :, a][:, :, None] * e[b_][None, None, :], dt, self.K, n_t)
-                Q[:, :, a, b_] = C @ W
-
-        Psi = names = i_p = i_a = None
-        if B0 is not None:
-            if not self.has_field:
-                raise ValueError("B0 was given but the pack carries no field tier (C3)")
-            pm = self.meta.get("compression", {}).get("channels", {}).get("susceptibility_path")
-            if pm is None:
-                raise ValueError("the pose expansion with a field needs the pack's susc_path channel (C3 path route)")
-            if chi_iso is None:
-                raise ValueError("B0 was given without chi_iso; give chi_iso (and chi_aniso)")
-            from .bank import susc_path_coeffs
-            Cs, names = susc_path_coeffs(self.arrays, pm)
-            if refocus_time == "auto":
-                refocus_time = _refocus_time_of(waveform)
-            gate_hat = dct(se_gate(n_t, dt, refocus_time), type=2, norm="ortho")[:Cs.shape[2]]
-            Psi = (GAMMA * dt) * np.einsum("k,wck->wc", gate_hat, Cs)               # (n_w, n_ch)
-            i_p = names.index("iso_P_xx")
-            i_a = names.index("aniso_G_xx") if "aniso_G_xx" in names else None
+        pc = self._pose_coordinates(P, refocus_time, waveform)
+        Q, Psi, names = pc.M, pc.Psi, pc.channels
+        i_p = None if names is None else names.index("iso_P_xx")
+        i_a = None if names is None else (names.index("aniso_G_xx") if "aniso_G_xx" in names else None)
         b = np.asarray(b0_dir, float); b = b / np.linalg.norm(b)
 
         def response(R):
@@ -654,21 +735,7 @@ class ReplayPack:
                     E[sl, i] = (Ew * np.exp(1j * np.einsum("nab,wab->nw", Rc, Q[:, i]))).sum(1) / norm
             return E
 
-        # How many radians the pose modulates, per walker: what the encoding gradient sweeps, plus what the
-        # susceptibility sweeps. Each is an amplitude weighted by the harmonic band of its own argument --
-        # linear in the pose for <R, M_w>, quadratic for the field -- and the two add in the exponent, so they
-        # are summed per walker rather than compared.
-        amp = _encoding_phase_swing(Q)
-        if Psi is not None:
-            swing = np.abs(float(chi_iso) * float(B0)) * _susceptibility_phase_swing(Psi[:, i_p:i_p + 6])
-            if chi_aniso and i_a is not None:
-                # two spreads added bound the combined tensor's own spread rather than computing it, which is
-                # the conservative direction for an estimate the growth then refines
-                swing = swing + np.abs(float(chi_aniso) * float(B0)) * _susceptibility_phase_swing(Psi[:, i_a:i_a + 6])
-            amp = amp + swing[:, None]
-        # per measurement, then the largest: one band serves the whole acquisition, so a b = 0 image in the
-        # set must not dilute the percentile of the one that actually sweeps phase
-        phi_amp = float(np.percentile(amp, 95, axis=0).max()) if amp.size else 0.0
+        phi_amp = pc.phase_amplitude
 
         # `keep` may leave either index open with None, meaning "whatever the response carries"
         want_l, want_n = (None, None) if keep is None else (keep[0], keep[1])
@@ -759,7 +826,7 @@ class ReplayPack:
                 raise ValueError(msg)
             import warnings
             warnings.warn(msg, UserWarning, stacklevel=3)
-        return PoseResponse(coeffs.T, keep_l, keep_n, misfit, floor, phi_amp, sampled)
+        return PoseResponse(coeffs.T, keep_l, keep_n, misfit, floor, phi_amp, sampled, S_L)
 
 
     @cached_property
