@@ -281,7 +281,7 @@ class ReplayPack:
         A tier that is requested but not carried raises rather than returning a plausible number.
         """
         from .compression import read_position_coeffs
-        from ._replay_kernel import gradient_phase, se_gate
+        from ._replay_kernel import gradient_phase, field_gate
         waveform = waveform.waveform if hasattr(waveform, "waveform") else waveform
         if isinstance(waveform, Protocol):                # a multi-TE scheme: each sequence replayed, placed at its rows
             kw = dict(tissue=tissue, T2=T2, T1=T1, rho=rho, D=D, B0=B0, b0_dir=b0_dir, chi_iso=chi_iso,
@@ -328,7 +328,7 @@ class ReplayPack:
     def _walker_phases(self, P, waveform):
         """``(n_w, n_meas)`` accumulated phase of every walker under the prepared acquisition ``P``."""
         from .compression import read_position_coeffs
-        from ._replay_kernel import gradient_phase, se_gate
+        from ._replay_kernel import gradient_phase, field_gate
         n_w, dt, n_t, Geff = P["n_w"], P["dt"], P["n_t"], P["Geff"]
         if P["B0"] is None:
             C = read_position_coeffs(self.arrays, dtype=np.float64)
@@ -359,7 +359,7 @@ class ReplayPack:
                          "shape": tuple(gm["shape"]), "voxel_size": np.asarray(gm["voxel_size"], float)}
                 dB = sample_grid(assemble_field(basis, b0_dir, B0=float(B0), chi_iso=chi_i, chi_aniso=chi_aniso),
                                  pos, np.asarray(gm["origin"], float), gm["voxel_size"], periodic=False)
-            phi_x = GAMMA * dt * (dB * se_gate(n_t, dt, waveform.rf.refocus_time)[None, :]).sum(1)    # (n_w,)
+            phi_x = GAMMA * dt * (dB * field_gate(waveform, n_t, dt)[None, :]).sum(1)    # (n_w,)
             phi = gradient_phase(Geff, pos, dt).T + phi_x[:, None]                             # (n_w, n_meas)
         return phi
 
@@ -965,7 +965,7 @@ class ReplayPack:
         route) scaled by ``B0``, ``chi_iso``, ``chi_aniso``. Raises, as the quadrature route does, when the pack
         cannot supply it."""
         from scipy.fft import dct
-        from ._replay_kernel import se_gate
+        from ._replay_kernel import field_gate
         from .bank import susc_path_coeffs
         B0, chi_iso, chi_aniso = P["B0"], P["chi_iso"], P["chi_aniso"]
         if not self.has_field:
@@ -977,7 +977,7 @@ class ReplayPack:
             raise ValueError("B0 was given without chi_iso; give chi_iso (and chi_aniso)")
         dt, n_t = P["dt"], P["n_t"]
         Cs, names = susc_path_coeffs(self.arrays, pm)
-        gate_hat = dct(se_gate(n_t, dt, waveform.rf.refocus_time), type=2, norm="ortho")[:Cs.shape[2]]
+        gate_hat = dct(field_gate(waveform, n_t, dt), type=2, norm="ortho")[:Cs.shape[2]]
         Psi = (GAMMA * dt) * np.einsum("k,wck->wc", gate_hat, Cs)               # (n_w, n_ch)
         i_p = names.index("iso_P_xx")
         i_a = names.index("aniso_G_xx") if "aniso_G_xx" in names else None
@@ -1032,7 +1032,7 @@ class ReplayPack:
         from scipy.fft import dct
         from . import so3
         from .compression import read_position_coeffs
-        from ._replay_kernel import se_gate
+        from ._replay_kernel import field_gate
         Geff, dt, n_t, ew, norm, B0 = P["Geff"], P["dt"], P["n_t"], P["ew"], P["norm"], P["B0"]
         b0_dir, chi_iso, chi_aniso = P["b0_dir"], P["chi_iso"], P["chi_aniso"]
         n_meas, n_w = Geff.shape[0], ew.shape[0]
@@ -1059,7 +1059,7 @@ class ReplayPack:
                 raise ValueError("B0 was given without chi_iso; give chi_iso (and chi_aniso)")
             from .bank import susc_path_coeffs
             Cs, names = susc_path_coeffs(self.arrays, pm)
-            gate_hat = dct(se_gate(n_t, dt, waveform.rf.refocus_time), type=2, norm="ortho")[:Cs.shape[2]]
+            gate_hat = dct(field_gate(waveform, n_t, dt), type=2, norm="ortho")[:Cs.shape[2]]
             Psi = (GAMMA * dt) * np.einsum("k,wck->wc", gate_hat, Cs)               # (n_w, n_ch)
             i_p = names.index("iso_P_xx")
             i_a = names.index("aniso_G_xx") if "aniso_G_xx" in names else None

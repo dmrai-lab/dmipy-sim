@@ -88,3 +88,36 @@ def test_a_prefix_of_a_field_pack_re_encodes_the_path_channel_and_certifies_it(t
     b_parent, names = susc_path_decode(parent.arrays, parent.meta["compression"]["channels"]["susceptibility_path"])
     b_half, names_half = susc_path_decode(half.arrays, pm, n_w=half.n_walkers)
     assert names_half == names and b_half.shape == b_parent[:, :, :half.n_t].shape
+
+
+def test_a_short_acquisition_dephases_in_the_field_to_its_own_echo(tmp_path):
+    """The field route ends at the echo too: a spin echo or gradient echo shorter than the walk integrates the
+    off-resonance under ITS gate, zero beyond its echo, so the parent and its prefix agree to the certificate."""
+    from tests.test_bank import _susc_master, _lean_env
+    from dmipy_sim.replay.bank import susc_path_decode, susc_path_field
+    from dmipy_sim.constants import GAMMA
+    env = dict(_lean_env(), B0_list=[7.0], theta_deg=[0, 90])
+    parent = build_replay_pack(_susc_master(), id="test/slab-susc", method="bridge_dst", envelope=env, K=64,
+                               susc_path_K=32, license="CC-BY-4.0", citation="test")
+    T = (parent.n_t - 1) * parent.dt
+    half = parent.prefix(T / 2)
+    TE = (half.n_t - 1) * half.dt
+    # a fine sequence grid: a sample is a block, so a sequence's last block spills half a sample past its echo,
+    # which the longer parent integrates and the prefix cannot -- an O(dt_wf / TE) convention, not a gate
+    se = sequences.pgse([[0, 0, 1]], 0.15 * TE, 0.5 * TE, gradient_strengths=[0.01], TE=TE, n_t=4000)
+    gre = sequences.gre(TE, n_t=4000)
+    for seq in (se, gre):
+        S_p = parent.replay(seq, tissue=False, B0=7.0, chi_iso=1.06e-6, complex_signal=True)
+        S_h = half.replay(seq, tissue=False, B0=7.0, chi_iso=1.06e-6, complex_signal=True)
+        np.testing.assert_allclose(S_h, S_p, atol=3 * half.meta["fidelity"]["err_max"] + 5e-4)
+    # the gradient echo by hand on the parent: the field over the first n_t' saves only, +1 throughout
+    b, _ = susc_path_decode(parent.arrays, parent.meta["compression"]["channels"]["susceptibility_path"])
+    dB = susc_path_field(b, (0.0, 0.0, 1.0), B0=7.0, chi_iso=1.06e-6)
+    n_cut = half.n_t
+    w = np.ones(n_cut); w[0] = w[-1] = 0.5                                        # the trapezoid over the prefix
+    phi = GAMMA * parent.dt * (dB[:, :n_cut] * w[None, :]).sum(1)
+    S_hand = np.exp(1j * phi).mean()
+    S_p = parent.replay(gre, tissue=False, B0=7.0, chi_iso=1.06e-6, complex_signal=True)[0]
+    assert abs(S_p - S_hand) < 5e-3
+    phi_full = GAMMA * parent.dt * dB.sum(1)                                       # what the old gate integrated
+    assert abs(S_p - np.exp(1j * phi_full).mean()) > 5e-2 or abs(S_hand - np.exp(1j * phi_full).mean()) < 5e-3
