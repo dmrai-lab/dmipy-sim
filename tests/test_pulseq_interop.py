@@ -290,3 +290,21 @@ def test_a_coarse_grid_plays_as_ramps_on_a_real_scanner_or_is_refused():
     off = pgse(BVEC, 8e-3, 30e-3, gradient_strengths=0.04, TE=0.08, n_t=100, timing=tm)        # dt = 808 us
     with pytest.raises(ValueError, match=r"not a whole number of the 10 us gradient raster.*n_t = \[81, 101\]"):
         to_pulseq(off, system=make_system("siemens_prisma"))
+
+
+def test_the_prescription_travels_through_pulseq(tmp_path):
+    """A prescribed acquisition writes Pulseq's own FOV definition plus the full object, and reads back equal;
+    an unprescribed one writes neither and reads back with none."""
+    from dmipy_sim import Prescription, sequences
+    from dmipy_sim.sequences import from_pulseq, to_pulseq
+    p = Prescription(isocenter_m=(0.0, 0.01, 0.0), voxel_size_m=(2e-3, 2e-3, 3e-3), matrix=(64, 64, 20), axes="LPS")
+    seq = sequences.pgse([[0, 0, 1]], 0.010, 0.030, bvalues=[1e9], TE=0.060).with_prescription(p)
+    f = tmp_path / "p.seq"
+    pseq = to_pulseq(seq, filename=str(f))
+    assert list(pseq.definitions["FOV"]) == pytest.approx([0.128, 0.128, 0.06])
+    back = from_pulseq(str(f))
+    assert back.prescription == p
+    plain = sequences.pgse([[0, 0, 1]], 0.010, 0.030, bvalues=[1e9], TE=0.060)
+    pseq0 = to_pulseq(plain, filename=str(tmp_path / "q.seq"))
+    assert "FOV" not in pseq0.definitions and "dmipy_prescription" not in pseq0.definitions
+    assert from_pulseq(str(tmp_path / "q.seq")).prescription is None

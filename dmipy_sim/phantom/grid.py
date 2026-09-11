@@ -66,6 +66,14 @@ class Grid:
                    origin_m=tuple(float(v) * 1e-3 for v in A[:3, 3]), isocenter_m=isocenter_m, axes=axes)
 
     @classmethod
+    def from_prescription(cls, prescription):
+        """The voxels a prescribed acquisition images (:class:`~dmipy_sim.acquisition.prescription.Prescription`):
+        its matrix, voxel size, origin, isocenter and axes, as a grid."""
+        p = prescription
+        return cls(shape=p.matrix, voxel_size_m=p.voxel_size_m, origin_m=p.origin_m, isocenter_m=p.isocenter_m,
+                   axes=p.axes)
+
+    @classmethod
     def from_meta(cls, meta):
         g = meta["grid"] if "grid" in meta else meta
         return cls(shape=g["shape"], voxel_size_m=g["voxel_size_m"], origin_m=g.get("origin_m"),

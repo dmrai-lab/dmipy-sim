@@ -27,7 +27,7 @@ from .engine.gpu import (gpu_available, check_gpu, free_gpu_memory, gpu_session,
 from .viz.viz import (plot_waveform, plot_sequence_comparison,
                   plot_mesh_section, plot_walkers_3d, plot_cell_surface, plot_mesh_3d,
                   seed_in_cell, walk_paths, plot_trajectories, save_rotation)
-from .acquisition.scanner_sequence import ScannerSequence, Encoding, Protocol
+from .acquisition.scanner_sequence import ScannerSequence, Encoding, Protocol, Prescription
 from .sequences.builders import pgse, pgste, ogse, cpmg, gre, ste, pte
 from .acquisition.waveforms import (set_b, calc_b, calc_btensor, btensor_invariants, rotate_waveform, tile_waveform)
 from .geometry import (FreeDiffusion, Box1D, Sphere, Cylinder, MyelinatedCylinder,
@@ -97,6 +97,6 @@ __all__ = [
     # magnetization transfer (physics + analytic oracle)
     "mt",
     # continuous RF pulses: complex B1(t) envelope + Bloch forward
-    "Phantom", "Grid", "PackSubstrate", "FreeWater", "Inert", "Peaks", "ODF", "Watson", "Frames", "Fan",
+    "Prescription", "Phantom", "Grid", "PackSubstrate", "FreeWater", "Inert", "Peaks", "ODF", "Watson", "Frames", "Fan",
     "B1Pulse", "RFEvent", "RFSchedule", "SequenceTiming", "ReplayPack", "read_rpk", "write_rpk", "compile_scheme", "replay_signal", "replay_signal_jax", "bloch_simulate", "slice_profile",
 ]
