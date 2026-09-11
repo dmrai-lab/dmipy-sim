@@ -105,3 +105,22 @@ def test_the_closed_form_is_fast_on_a_real_pack(seq):
     direct = np.mean([pk.replay(seq30, orientation=so3.rotation_of(axis, roll=r), complex_signal=True, tissue=False) for r in rolls], axis=0)
     composed = pr.compose(Distribution.axis(axis, 8, 0))
     np.testing.assert_allclose(composed, direct, atol=3e-3)                  # order 8 of a kappa ~ 20 response: the ODF band
+
+
+def test_a_shell_is_one_body_and_its_directions_are_free(pack):
+    """Every measurement on a shell plays the same waveform, so the closed form contracts the walkers once per
+    shell and applies each direction as harmonics: a 64-direction shell equals 64 single-measurement calls, with
+    one body per shell."""
+    rng = np.random.default_rng(4)
+    dirs = rng.normal(size=(64, 3)); dirs /= np.linalg.norm(dirs, axis=1, keepdims=True)
+    shell = sequences.pgse(dirs, 2e-3, 5e-3, gradient_strengths=[0.3] * 64, TE=10e-3)
+    pr = pack.pose_response(shell, method="closed", keep=(8, 0))
+    assert pr.n_bodies == 1
+    for i in (0, 17, 63):
+        one = sequences.pgse(dirs[i:i + 1], 2e-3, 5e-3, gradient_strengths=[0.3], TE=10e-3)
+        np.testing.assert_allclose(pack.pose_response(one, method="closed", keep=(8, 0)).coeffs[0], pr.coeffs[i], atol=1e-12)
+    two = sequences.pgse(np.concatenate([dirs, dirs]), 2e-3, 5e-3, gradient_strengths=[0.3] * 64 + [0.15] * 64, TE=10e-3)
+    assert pack.pose_response(two, method="closed", keep=(8, 0)).n_bodies == 2
+    b0 = sequences.pgse(dirs[:3], 2e-3, 5e-3, bvalues=[0.0, 0.0, 0.0], TE=10e-3)       # b = 0 rows: one body, all ones at l = 0
+    p0 = pack.pose_response(b0, method="closed", keep=(4, 0))
+    assert p0.n_bodies == 1 and np.allclose(np.abs(p0.compose(Distribution.axis((0, 0, 1), 4, 0))), 1.0)

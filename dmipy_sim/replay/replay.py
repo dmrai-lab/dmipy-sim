@@ -664,20 +664,30 @@ class ReplayPack:
             _u, sv, vt = np.linalg.svd(Gi, full_matrices=False)
             if sv[1] > 1e-6 * sv[0]:                                    # G is stored float32; a direction is one to that
                 return None                                                    # rank > 1: not a single direction
-            g_hat[i] = vt[0]; s_wave[i] = Gi @ vt[0]
+            g, sw = vt[0], Gi @ vt[0]
+            lead = int(np.flatnonzero(np.abs(sw) > 1e-6 * np.abs(sw).max())[0])
+            if sw[lead] < 0:                       # one spelling of (direction, waveform): the first lobe positive
+                g, sw = -g, -sw
+            g_hat[i] = g; s_wave[i] = sw
+        # the body of a coefficient depends on the waveform's shape and amplitude only, never on its direction:
+        # measurements that play the same s_i(t) -- a shell -- share one body, and their directions enter as
+        # harmonics afterwards. Group by the played waveform, exactly, and contract once per group.
+        group, first = _group_waveforms(s_wave, rtol=1e-5)                   # float32 G: 1e-5 is the same waveform
+        n_grp = len(first)
+        s_grp = s_wave[first]                                                  # (n_grp, n_t)
         C = read_position_coeffs(self.arrays, dtype=np.float64).reshape(n_w, -1)
         e = np.eye(3)
-        m = np.empty((n_w, n_meas, 3))
-        for b_ in range(3):                                                    # m_w[b] = gamma sum_t s_i(t) r_w(t)_b dt
-            W = _compile_effective(s_wave[:, :, None] * e[b_][None, None, :], dt, self.K, n_t)
+        m = np.empty((n_w, n_grp, 3))
+        for b_ in range(3):                                                    # m_w[b] = gamma sum_t s(t) r_w(t)_b dt
+            W = _compile_effective(s_grp[:, :, None] * e[b_][None, None, :], dt, self.K, n_t)
             m[:, :, b_] = C @ W
         m = m @ self.substrate_frame                                           # stored -> canonical: F^T m, per walker
-        kappa = np.linalg.norm(m, axis=2)                                      # (n_w, n_meas), radians
+        kappa = np.linalg.norm(m, axis=2)                                      # (n_w, n_grp), radians
         safe = np.where(kappa > 0, kappa, 1.0)
         m_hat = m / safe[:, :, None]
         m_hat[kappa == 0] = (0.0, 0.0, 1.0)
         w = np.asarray(ew, np.float64) / float(norm)
-        # the band: orders until the weighted Bessel tail is below tol for the worst measurement
+        # the band: orders until the weighted Bessel tail is below tol for the worst group
         k_max = float(kappa.max()) if kappa.size else 0.0
         L = int(np.ceil(k_max)) + 2
         while L < l_cap:
@@ -691,21 +701,21 @@ class ReplayPack:
         n_feat = so3.n_so3_coeffs(keep_l, keep_n)
         coeffs = np.zeros((n_meas, n_feat), np.complex128)
         cos_z = m_hat[:, :, 2]
-        J = [spherical_jn(l, kappa) for l in range(keep_l + 1)]                 # (n_w, n_meas) per order
+        J = [spherical_jn(l, kappa) for l in range(keep_l + 1)]                 # (n_w, n_grp) per order
         Yg = so3.real_sh(keep_l, g_hat, full=True)                              # (n_meas, (L+1)^2): the lab side
-        bodies = [None] * (keep_l + 1)
+        bodies = [None] * (keep_l + 1)                                          # per order: (n_grp, 2k+1)
         if keep_n == 0:                                                         # n = 0 only: the Legendre of the angle to the axis
             for l in range(keep_l + 1):
                 bodies[l] = np.sqrt((2 * l + 1) / (4 * np.pi)) * ((w[:, None] * J[l]) * _legendre(l, cos_z)).sum(0)[:, None]
         else:
             # the body side: every walker's moment direction's harmonics, all orders in one recurrence pass,
-            # in chunks of measurements sized to ~256 MB
+            # in chunks of groups sized to ~256 MB
             for l in range(keep_l + 1):
-                bodies[l] = np.empty((n_meas, 2 * (so3._n_cols(l, keep_n) // 2) + 1))
+                bodies[l] = np.empty((n_grp, 2 * (so3._n_cols(l, keep_n) // 2) + 1))
             n_cols = (keep_l + 1) ** 2
             step = max(1, int(2.5e8 / (8 * n_w * n_cols)))
-            for lo in range(0, n_meas, step):
-                sl = slice(lo, min(lo + step, n_meas))
+            for lo in range(0, n_grp, step):
+                sl = slice(lo, min(lo + step, n_grp))
                 nc = sl.stop - sl.start
                 Y = so3.real_sh(keep_l, m_hat[:, sl, :].reshape(-1, 3), full=True).reshape(n_w, nc, n_cols)
                 for l in range(keep_l + 1):
@@ -717,16 +727,19 @@ class ReplayPack:
         for l in range(keep_l + 1):
             k = so3._n_cols(l, keep_n) // 2
             blk = so3.sh_block(l, True)
-            block = (4 * np.pi * (1j ** l) / np.sqrt(2 * l + 1)) * Yg[:, blk][:, :, None] * bodies[l][:, None, :]   # (n_meas, 2l+1, 2k+1)
+            body_i = bodies[l][group]                                                          # (n_meas, 2k+1)
+            block = (4 * np.pi * (1j ** l) / np.sqrt(2 * l + 1)) * Yg[:, blk][:, :, None] * body_i[:, None, :]   # (n_meas, 2l+1, 2k+1)
             coeffs[:, off:off + (2 * l + 1) * (2 * k + 1)] = block.reshape(n_meas, -1)
             off += (2 * l + 1) * (2 * k + 1)
         # what the expansion cannot hold pointwise: the orders above the band it was built to, as a bound from
         # |P_l| <= 1 -- below tol by construction
-        tail = np.zeros(n_meas)
+        tail = np.zeros(n_grp)
         for l in range(L + 1, L + 4):
             tail += (2 * l + 1) * (np.abs(w)[:, None] * np.abs(spherical_jn(l, kappa))).sum(0)
-        return PoseResponse(coeffs, keep_l, keep_n, misfit=tail, floor=1.0 / np.sqrt(n_w), phase_amplitude=k_max,
-                            n_samples=0)
+        out = PoseResponse(coeffs, keep_l, keep_n, misfit=tail[group], floor=1.0 / np.sqrt(n_w), phase_amplitude=k_max,
+                           n_samples=0)
+        out.n_bodies = n_grp                                                   # the distinct waveforms contracted
+        return out
 
     def _pose_coeffs(self, P, waveform, band=None, keep=None, margin=2, n_check=256, seed=0,
                      chunk=256, over=2, band_cap=12, strict=True):
@@ -1019,6 +1032,23 @@ def compile_scheme(G, dt, K, gyromagnetic_ratio=GAMMA, *, n_t=None, method=None,
     elif n_t is None:
         raise ValueError("a waveform on its own grid needs the pack's n_t")
     return _compile_effective(effective_gradient(G, dt, int(n_t), dt_pack), dt_pack, K, int(n_t), gyromagnetic_ratio)
+
+
+def _group_waveforms(s, rtol=1e-5):
+    """Group rows of ``s (n, n_t)`` that are the same waveform to ``rtol`` of the largest amplitude: ``(group (n,),
+    first (n_grp,))``. A tolerance, not a rounding, so two rows a rounding boundary apart stay together."""
+    s = np.asarray(s, np.float64)
+    scale = float(np.abs(s).max()) or 1.0
+    tol = rtol * scale
+    group = np.full(s.shape[0], -1, np.int64)
+    first = []
+    for i in range(s.shape[0]):
+        if group[i] >= 0:
+            continue
+        same = np.flatnonzero((group < 0) & (np.abs(s - s[i]).max(axis=1) <= tol))
+        group[same] = len(first)
+        first.append(i)
+    return group, np.asarray(first, np.int64)
 
 
 def _legendre(l, x):
