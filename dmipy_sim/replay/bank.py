@@ -426,6 +426,11 @@ def susc_path_encode(fb, traj, origin, *, K=32, bits=8, dtype=np.float16, atol_t
     if bits not in (8, 16):
         raise ValueError("susc_path bits must be 8, 16, or None (got %r); sub-byte depths need "
                          "bit-packing to save bytes and 6-bit measured above the MC floor" % (bits,))
+    return _quantise_susc_path(coeffs, meta, bits)
+
+
+def _quantise_susc_path(coeffs, meta, bits):
+    """The integer container of the path-field coefficients: a per-(channel, band) scale, ``bits`` wide."""
     itype = np.int8 if bits == 8 else np.int16
     lim = 2 ** (bits - 1) - 1
     scale = np.abs(coeffs).max(axis=0) / lim                     # (n_ch, K), per channel AND band
@@ -433,6 +438,25 @@ def susc_path_encode(fb, traj, origin, *, K=32, bits=8, dtype=np.float16, atol_t
     q = np.clip(np.rint(coeffs / scale), -lim, lim).astype(itype)
     meta["bits"] = int(bits); meta["dtype"] = np.dtype(itype).name
     return {"susc_path_dct": q, "susc_path_scale": np.asarray(scale, np.float32)}, meta
+
+
+def susc_path_encode_series(series, names, *, K=32, bits=8, dtype=np.float16):
+    """:func:`susc_path_encode` from the per-save field series itself, ``(n_w, n_ch, n_t)`` in the canonical
+    channel order with ``names``: what re-encoding a pack's path route to another duration needs, since the
+    grid the path was sampled from need not be in the pack."""
+    from scipy.fft import dct
+    series = np.asarray(series, np.float64)
+    n_w, n_ch, n_t = series.shape
+    K = int(min(K, n_t))
+    coeffs = dct(series, type=2, norm="ortho", axis=2)[:, :, :K]
+    meta = dict(channel="susc_path_dct", K=K, n_t=int(n_t), n_ch=int(n_ch), channels=list(names),
+                iso_P_zz="stored", trace_residual=None, max_refocus_pulses=K // 2)
+    if bits is None:
+        meta["bits"] = None; meta["dtype"] = np.dtype(dtype).name
+        return {"susc_path_dct": np.asarray(coeffs, dtype)}, meta
+    if bits not in (8, 16):
+        raise ValueError("susc_path bits must be 8, 16, or None")
+    return _quantise_susc_path(coeffs, meta, bits)
 
 
 def susc_path_coeffs(arrays, meta):
@@ -645,7 +669,7 @@ def _walk_master(walk, *, weights=None, field=None, diffusivity=None, substrate_
     return walk._bank_dict(**extra)
 
 def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto",
-                      method=_cx.POSITION_METHOD, envelope=None, tol=2.0, K=None,
+                      method=_cx.POSITION_METHOD, envelope=None, tol=2.0, K=None, temporal_bandwidth_hz=None,
                       err_target=None, sigma_star=None, provenance=None,
                       blt_temporal_K=None, blt_dtype=np.float16, susc_path_K=None, susc_path_bits=8,
                       diffusivity=None, substrate_frame=None, out_path=None, verbose=False):
@@ -678,6 +702,9 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto"
     X = np.asarray(m["traj"], np.float64)
     dt = float(m["dt_traj"])
     wp_method = _cx.is_walker_preserving(method)
+    if K is None and temporal_bandwidth_hz is not None:
+        # the band as a frequency (#199): K bands over T resolve up to K / (2T)
+        K = max(2, int(np.ceil(2.0 * float(temporal_bandwidth_hz) * (X.shape[1] - 1) * dt)))
     if K is None:
         K, fid = _cx.auto_select_modes(X, X, dt, method=method, env=env, tol=tol,
                                        err_target=err_target, verbose=verbose)
@@ -806,7 +833,8 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto"
 
     n_t = X.shape[1]
     comp_meta = dict(method=method, K=int(pos_meta.get("K", K)),        # the K stored: the codec clamps a short walk
-                     walker_preserving=bool(wp_method), n_t=int(n_t))
+                     walker_preserving=bool(wp_method), n_t=int(n_t),
+                     temporal_bandwidth_hz=float(int(pos_meta.get("K", K)) / (2.0 * (int(n_t) - 1) * dt)))   # K bands over T (#199)
     if wp_method:
         comp_meta["precision_tiers"] = _precision_tiers(arrays, int(m["n_walkers"]),
                                                         float(fid.get("floor_max") or 0.0),
