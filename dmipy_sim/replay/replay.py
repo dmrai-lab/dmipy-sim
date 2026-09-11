@@ -276,6 +276,40 @@ class ReplayPack:
             return S if complex_signal else np.abs(S)
         P = self._prepare(waveform, tissue=tissue, T2=T2, T1=T1, rho=rho, D=D, B0=B0, b0_dir=b0_dir, chi_iso=chi_iso,
                           chi_aniso=chi_aniso, orientation=orientation, compartment=compartment)
+        phi = self._walker_phases(P, waveform)
+        S = (P["ew"][:, None] * np.exp(1j * phi)).sum(0) / P["norm"]
+        return S if complex_signal else np.abs(S)
+
+    def walker_signals(self, waveform, *, tissue="nominal", T2=None, T1=None, rho=None, D=None, B0=None,
+                       b0_dir=(0.0, 0.0, 1.0), chi_iso=None, chi_aniso=0.0, orientation=None, compartment=None,
+                       b1_scale=None, off_resonance_T=None):
+        """The replay **before the ensemble mean**: ``(w, ew, E)`` with ``w`` the walkers' statistical weights
+        ``(n_w,)``, ``ew`` those weights with the relaxation and surface terms applied, and ``E`` the complex
+        signal factor of every walker at every measurement, ``(n_w, n_meas)``.
+
+        :meth:`replay` is ``(ew[:, None] * E).sum(0) / w.sum()``; any other grouping of the walkers -- by the
+        voxel they started in, which is what partitions one walk into a phantom (RPH.md) -- is the same sum
+        over its members with its own normaliser. Knobs resolve as in :meth:`replay`. With ``b1_scale`` (a
+        scalar or per walker) or ``off_resonance_T`` (a scalar or per walker) given, ``E`` comes from the
+        RF-aware route (:meth:`replay_bloch`): the transverse magnetisation of each walker at the readout,
+        with the relaxation the route applied itself, so ``ew`` is then ``w``.
+        """
+        waveform = waveform.waveform if hasattr(waveform, "waveform") else waveform
+        if b1_scale is None and off_resonance_T is None:
+            P = self._prepare(waveform, tissue=tissue, T2=T2, T1=T1, rho=rho, D=D, B0=B0, b0_dir=b0_dir, chi_iso=chi_iso,
+                              chi_aniso=chi_aniso, orientation=orientation, compartment=compartment)
+            w = np.asarray(self.spin_weights, np.float64)
+            return w, P["ew"], np.exp(1j * self._walker_phases(P, waveform))
+        E = self.replay_bloch(waveform, b1_scale=b1_scale, off_resonance_T=off_resonance_T, tissue=tissue, T2=T2, T1=T1,
+                              rho=rho, D=D, B0=B0, b0_dir=b0_dir, chi_iso=chi_iso, chi_aniso=chi_aniso,
+                              orientation=orientation, compartment=compartment, complex_signal=True, per_walker=True)
+        w = np.asarray(self.spin_weights, np.float64)
+        return w, w, E
+
+    def _walker_phases(self, P, waveform):
+        """``(n_w, n_meas)`` accumulated phase of every walker under the prepared acquisition ``P``."""
+        from .compression import read_position_coeffs
+        from ._replay_kernel import gradient_phase, se_gate
         n_w, dt, n_t, Geff = P["n_w"], P["dt"], P["n_t"], P["Geff"]
         if P["B0"] is None:
             C = read_position_coeffs(self.arrays, dtype=np.float64)
@@ -308,12 +342,11 @@ class ReplayPack:
                                  pos, np.asarray(gm["origin"], float), gm["voxel_size"], periodic=False)
             phi_x = GAMMA * dt * (dB * se_gate(n_t, dt, waveform.rf.refocus_time)[None, :]).sum(1)    # (n_w,)
             phi = gradient_phase(Geff, pos, dt).T + phi_x[:, None]                             # (n_w, n_meas)
-        S = (P["ew"][:, None] * np.exp(1j * phi)).sum(0) / P["norm"]
-        return S if complex_signal else np.abs(S)
+        return phi
 
     def replay_bloch(self, waveform, *, b1_scale=None, off_resonance_T=None, tissue="nominal", T2=None, T1=None,
                      rho=None, D=None, B0=None, b0_dir=(0.0, 0.0, 1.0), chi_iso=None, chi_aniso=0.0,
-                     orientation=None, compartment=None, jax=False, complex_signal=False):
+                     orientation=None, compartment=None, jax=False, complex_signal=False, per_walker=False):
         """The RF-aware replay: each walker's magnetisation vector propagated through the actual sequence
         operators on this pack's walk (:func:`~dmipy_sim.replay.trajectories.replay_bloch`).
 
@@ -327,6 +360,8 @@ class ReplayPack:
         acquisition and the field direction as it does there. ``b1_scale`` scales every flip angle, as a scalar
         or per walker. ``off_resonance_T`` is a **uniform** static field offset (a field-map value, in T) every
         walker precesses in through the actual pulses -- what a macroscopic layer of a phantom is (RPH.md 5.1).
+        ``per_walker`` returns every walker's transverse magnetisation at the readout, ``(n_w, n_meas)`` complex,
+        unweighted, instead of the ensemble mean (single-readout sequences).
         """
         from .trajectories import replay_bloch as _rb, replay_bloch_jax as _rbj
         from .compression import decode_occupancy, decode_boundary_bridge
@@ -368,11 +403,22 @@ class ReplayPack:
         extra = None
         if P["B0"] is not None:
             extra = GAMMA * dt * self._field_along_walk(P, pos)
-        if off_resonance_T is not None and float(off_resonance_T) != 0.0:
-            uniform = np.full((pos.shape[0], n_t), GAMMA * dt * float(off_resonance_T))
+        if off_resonance_T is not None and np.any(np.asarray(off_resonance_T, np.float64) != 0.0):
+            off = np.asarray(off_resonance_T, np.float64).reshape(-1)
+            if off.size not in (1, pos.shape[0]):
+                raise ValueError(f"off_resonance_T is a scalar or one value per walker ({pos.shape[0]}); got {off.shape}")
+            uniform = GAMMA * dt * np.broadcast_to(off[:, None], (pos.shape[0], n_t))
             extra = uniform if extra is None else extra + uniform
         if extra is not None:
             kw["extra_phase_per_step"] = extra
+        if per_walker:
+            if kw.get("echo_steps") is not None:
+                raise ValueError("per_walker reads each walker at the readout of a single-echo sequence")
+            kw.update(echo_steps=[n_t - 1], echo_per_walker=True)
+            out = (_rbj if jax else _rb)(pos, dt, P["G"], P["dt_wf"], rf, **kw)
+            E = np.asarray(out[0] if isinstance(out, tuple) else out)                # (n_meas, 1, n_w)
+            E = np.asarray(E).reshape(E.shape[0], -1, pos.shape[0])[:, -1, :].T     # (n_w, n_meas)
+            return E if complex_signal else np.abs(E)
         out = (_rbj if jax else _rb)(pos, dt, P["G"], P["dt_wf"], rf, **kw)
         S = np.asarray(out[0] if isinstance(out, tuple) else out)
         return S if complex_signal else np.abs(S)

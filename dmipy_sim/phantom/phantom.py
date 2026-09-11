@@ -26,7 +26,7 @@ class Phantom:
     """
 
     def __init__(self, file, substrates):
-        self.file = file
+        self.file = file                                    # the .rph object of a composed phantom; None for a partition
         self.substrates = list(substrates)
         ids = [s.name for s in self.substrates]
         if len(set(ids)) != len(ids):
@@ -142,12 +142,37 @@ class Phantom:
         return cls(ReplayPhantom(arrays, meta), subs)
 
     @classmethod
+    def partition(cls, pack, grid=None, *, declared=None, outside=None, pose=None):
+        """Cut **one walk** into voxels by where each walker started (RPH.md partition addressing; #76).
+
+        * ``pack`` -- a :class:`~dmipy_sim.phantom.substrates.PackSubstrate`, or a list of them when the walk
+          was packed per compartment (each cites the same walk; their weighted counts share every voxel).
+        * ``grid`` -- the voxels, with ``attach="substrate"`` (the grid follows the tissue) or ``"lab"`` (the
+          bore's); ``None`` leaves the voxels to the acquisition's ``Prescription`` at replay time.
+        * ``declared`` -- ``{Inert or FreeWater: volume}``: fractions of walker-less slots (the myelin the walk
+          excluded), declared because nothing weighs them.
+        * ``outside`` -- what a voxel with no walkers is made of (``FreeWater(...)`` beyond the strands, or
+          ``Inert()``); required when the grid reaches beyond the walk.
+        * ``pose`` -- a :class:`~dmipy_sim.phantom.partition.Pose`, the specimen's rotation in the bore.
+
+        Membership is derived from :attr:`ReplayPack.r0`, never stored; fractions of pack slots are emergent from
+        ``spin_weights``; the grid is free (:meth:`~dmipy_sim.phantom.partition.PartitionPhantom.regrid`).
+        """
+        from .partition import PartitionPhantom
+        packs = list(pack) if isinstance(pack, (list, tuple)) else [pack]
+        return PartitionPhantom(packs, grid, declared=declared, outside=outside, pose=pose)
+
+    @classmethod
     def read(cls, path, *, packs=None):
         """A phantom from a ``.rph``. ``packs`` -- ``{substrate name: pack or path}`` -- supplies packs for
         substrates the file cites by ``uri``; otherwise the recorded path is read on first use, and a missing file
-        is reported by name."""
+        is reported by name. A partition file (``addressing: "partition"``) comes back as a
+        :class:`~dmipy_sim.phantom.partition.PartitionPhantom`."""
         from ..replay.phantom import read_rph
         f = read_rph(path)
+        if f.meta.get("addressing") == "partition":
+            from .partition import PartitionPhantom
+            return PartitionPhantom._read(path, f.meta, f.arrays, packs=packs)
         given = dict(packs or {})
         subs = []
         for i, m in enumerate(f.substrates):
