@@ -16,6 +16,8 @@ is the plane-wave sum ``mean_w exp(i q . R r_w)`` in closed form -- so the refer
 amplitude is exactly ``|q| max|r|`` and can be dialled to whatever sharpness a test needs, and there is no
 Monte-Carlo floor in the way. The statistical coverage lives in ``test_replay_pose.py``.
 """
+import warnings
+
 import numpy as np
 import pytest
 
@@ -245,7 +247,7 @@ def test_a_bingham_fan_composes_to_its_explicit_average(pack):
     brute = analytic_over(seq.q, lambda d: np.exp(-k[0] * (d @ F[:, 0]) ** 2 - k[1] * (d @ F[:, 1]) ** 2))
     assert abs(abs(got) - abs(brute)) < 5e-3
     cone = pr.compose(so3.Distribution.bingham(F, (10.0, 10.0), lmax=pr.lmax, nmax=pr.nmax))[0]
-    assert abs(got - cone) > 20 * pr.misfit.max()                    # measured 0.034, twenty times the misfit
+    assert abs(got - cone) > 10 * pr.misfit.max()                    # measured 0.034 against a misfit of 1.7e-3
 
 
 def test_a_tied_azimuth_composes_to_its_explicit_average(pack):
@@ -285,3 +287,180 @@ def test_rotating_the_distribution_is_counter_rotating_the_acquisition(pack):
     for R1 in so3.haar_rotations(3, seed=9):
         got = pr.compose(canonical.rotated(R1))[0]
         assert abs(abs(got) - abs(analytic_over(R1.T @ seq.q, fod.evaluate))) < 3e-3
+
+
+# ------------------------------------------------------------------ how far above the estimate a pack sits (#163.3)
+def _static_pack(pos):
+    """A pack of walkers standing still at ``pos``: the response is the plane-wave sum over those points."""
+    walk = PersistentWalk(positions=np.repeat(np.asarray(pos, float)[:, None, :], N_T, axis=1),
+                          dt=DT, sub_steps=1, dt_sim=DT)
+    return build_replay_pack(walk, id="test/plane-wave", license="x", citation="x", K=8, envelope=ENV,
+                             field=False)
+
+
+def _shell(n, seed=0, r=3.0e-6):
+    """``n`` walkers on a shell of one radius: the same phase amplitude at every walker count, and out-of-band
+    content whose sign differs from walker to walker."""
+    u = np.random.default_rng(seed).normal(size=(n, 3))
+    return r * u / np.linalg.norm(u, axis=1, keepdims=True)
+
+
+def test_the_truncation_residual_is_an_ensemble_average_not_a_fixed_error():
+    """Whether a band that holds on a small pack still holds on a large one, which decides whether a band can
+    be certified once. It cannot, and the reason is the interesting part: the residual of a truncation is the
+    ensemble mean of the walkers' out-of-band content, so it *falls* like the Monte-Carlo floor when the
+    walkers dephase incoherently and stays put when they do not.
+
+    Measured at the same phase amplitude: 4.5e-4, 2.2e-4, 7.7e-5 on a shell of random directions at 64, 512
+    and 4096 walkers -- the floor's own 1/sqrt(N) -- against 6.3e-2 at every walker count for an ensemble of
+    identical walkers. So no rule in N or in the phase amplitude alone can set the band.
+    """
+    ratio = []
+    for n in (64, 512, 4096):
+        pr = _static_pack(_shell(n)).pose_response(_Lobe(0.2), tissue=False)
+        ratio.append((pr.misfit.max(), pr.floor))
+    assert ratio[0][0] > 3.0 * ratio[2][0]                           # incoherent: the residual falls with N
+    r = [m / f for m, f in ratio]
+    assert max(r) < 2.0 * min(r)                                     # and tracks the floor, so the test is scale-free
+
+    one = np.array([[0.6, 0.48, 0.64]]) * 3.0e-6 / np.linalg.norm([0.6, 0.48, 0.64])
+    seq = _Lobe(0.6)
+    fixed = []
+    for n in (64, 1024):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)             # a forced band may not hold; that is the point
+            pr = _static_pack(np.repeat(one, n, axis=0)).pose_response(seq, band=8, tissue=False, strict=False)
+        fixed.append(pr.misfit.max())
+    np.testing.assert_allclose(fixed[0], fixed[1], rtol=1e-6)        # coherent: N buys nothing
+
+
+def test_the_band_grows_until_the_worst_case_is_under_the_floor(pack):
+    """The consequence: the band is grown by measurement rather than set by the estimate. On the adversarial
+    ensemble -- every walker identical, so nothing averages away -- the estimate of ``ceil(Phi) + 2`` is one
+    order short, and forcing it there leaves a worst case of 6.1e-2 against a floor of 3.1e-2.
+    """
+    one = np.array([[0.6, 0.48, 0.64]]) * 3.0e-6 / np.linalg.norm([0.6, 0.48, 0.64])
+    pos = np.repeat(one, 1024, axis=0)
+    pk = _static_pack(pos)
+    seq = _Lobe(5.5 / (GAMMA * DT * (N_T - 1) * 3.0e-6))             # a phase amplitude of 5.5 radians
+    pr = pk.pose_response(seq, tissue=False)
+    start = int(np.ceil(pr.phase_amplitude)) + 2
+    assert pr.lmax > start and pr.misfit.max() <= pr.floor
+    R = so3.haar_rotations(24, seed=12)
+    grown = np.abs([pr.at(r)[0] - np.mean(np.exp(1j * (pos @ r.T @ seq.q))) for r in R]).max()
+    assert grown < pr.floor
+    with pytest.warns(UserWarning, match="not represented"):
+        held = pk.pose_response(seq, band=start, tissue=False, strict=False)
+    poor = np.abs([held.at(r)[0] - np.mean(np.exp(1j * (pos @ r.T @ seq.q))) for r in R]).max()
+    assert poor > 1.5 * pr.floor > grown                              # 6.1e-2 forced, 3.1e-2 floor
+    # the number the growth is judged by is itself a maximum over a three-dimensional group, so it has to be
+    # stable: an independent, larger sample of rotations must not find materially more. At 256 rotations it
+    # ranged over 3.4e-2 to 5.9e-2 between seeds against a true maximum of 6.1e-2, which is why 1024 is the
+    # default -- an underestimate here stops the growth an order early.
+    indep = np.abs([held.at(r)[0] - np.mean(np.exp(1j * (pos @ r.T @ seq.q)))
+                    for r in so3.haar_rotations(512, seed=77)]).max()
+    assert held.misfit.max() > 0.7 * indep
+    # and the estimate is not thrown away: the growth starts there, so an ordinary pack pays one pass
+    incoherent = pack.pose_response(_Lobe(0.6), tissue=False)
+    assert incoherent.lmax == int(np.ceil(incoherent.phase_amplitude)) + 2
+
+
+# ------------------------------------------------------------------ what the estimate is a swing of
+def test_the_swing_of_the_encoding_phase_is_its_two_largest_singular_values():
+    """The identity the estimate rests on. The encoding-gradient phase at pose ``R`` is ``<R, M_w>``, and its
+    extremes over rotations are ``s1 + s2 +- s3`` (orthogonal Procrustes), so the amplitude it modulates is
+    ``s1 + s2`` -- independent of ``s3`` and of the sign of ``det M``. Checked against turning the pose.
+
+    It coincides with ``||M||`` exactly at rank one, which is what a waveform holding one direction contracts
+    to, and runs up to 30% above it otherwise -- so the norm this replaced was right for PGSE and OGSE and low
+    for a b-tensor or free waveform, always low.
+    """
+    from dmipy_sim.replay.replay import _encoding_phase_swing
+    rng = np.random.default_rng(0)
+    R = so3.haar_rotations(200_000, seed=1)
+    g, v = rng.normal(size=3), rng.normal(size=3)
+    U, _s, Vt = np.linalg.svd(rng.normal(size=(3, 3)))
+    for tag, M in (("rank 1", np.outer(g, v)),
+                   ("rank 2", np.outer(g, v) + np.outer(*rng.normal(size=(2, 3)))),
+                   ("rank 3", rng.normal(size=(3, 3))),
+                   ("s = (1, 1, 0)", U @ np.diag([1.0, 1.0, 0.0]) @ Vt)):
+        phase = np.einsum("nab,ab->n", R, M)
+        swing = 0.5 * (phase.max() - phase.min())
+        got = float(_encoding_phase_swing(M[None, None])[0, 0])
+        np.testing.assert_allclose(got, swing, rtol=2e-3, err_msg=tag)
+        assert got >= np.linalg.norm(M) - 1e-9                        # never below the norm it replaced
+    assert _encoding_phase_swing((U @ np.diag([1.0, 1.0, 0.0]) @ Vt)[None, None])[0, 0] > 1.3 * np.sqrt(2)
+
+
+def test_the_phase_amplitude_is_the_swing_the_substrate_turns_through():
+    """And the estimate is that swing on a pack, for a waveform that turns while it plays -- the case whose
+    contraction is not rank one. One walker drifting in a straight line, so the phase is exactly ``<R, M_w>``
+    and reading the replayed signal's argument at many poses measures the swing directly.
+    """
+    t = np.arange(N_T) * DT
+    r0, v = np.array([2.0e-6, -1.0e-6, 0.5e-6]), np.array([-1.6e-4, 2.0e-4, 0.9e-4])
+    pos = (r0[None, :] + np.outer(t, v))[None, :, :]                  # (1 walker, n_t, 3)
+    walk = PersistentWalk(positions=pos, dt=DT, sub_steps=1, dt_sim=DT)
+    pk = build_replay_pack(walk, id="test/drift", license="x", citation="x", K=8, envelope=ENV, field=False)
+    assert pk.fidelity["err_max"] < 1e-8                              # a drift compresses exactly too
+
+    seq = _Lobe(0.05)
+    n = N_T // 3
+    seq.G[0, :, :] = 0.0
+    seq.G[0, :n, 0] = 0.05                                            # x while the first third plays,
+    seq.G[0, n:2 * n, 1] = 0.05                                       # then y: the contraction turns with it
+    pr = pk.pose_response(seq, tissue=False)
+    phase = np.array([np.angle(pk.replay(seq, orientation=R, tissue=False, complex_signal=True)[0])
+                      for R in so3.haar_rotations(1000, seed=4)])
+    assert np.abs(phase).max() < 3.0                                  # no wrapping, so the argument is the phase
+    swing = 0.5 * (phase.max() - phase.min())
+    assert swing <= pr.phase_amplitude < 1.06 * swing                 # sampled poses can only underestimate it
+
+    # and it is that swing because the contraction is rank two, where the norm it replaced is 21% low. The
+    # drift makes M_w analytic: q against the starting point, the first time moment against the velocity.
+    q = GAMMA * DT * seq.G[0].sum(0)
+    m = GAMMA * DT * (seq.G[0] * (t + 0.5 * DT)[:, None]).sum(0)      # the exact weights for a linear path
+    M = np.outer(q, r0) + np.outer(m, v)
+    sig = np.linalg.svd(M, compute_uv=False)
+    assert sig[1] > 0.2 * sig[0] and sig[2] < 1e-12 * sig[0]          # genuinely rank two
+    np.testing.assert_allclose(pr.phase_amplitude, sig[0] + sig[1], rtol=1e-3)
+    assert np.linalg.norm(M) < 0.85 * pr.phase_amplitude
+
+
+def test_a_stated_kept_band_sets_the_projection_and_not_the_phase_amplitude(pack):
+    """The two cases are different questions, and conflating them was expensive. Reproducing the response at
+    *every* pose is pointwise and really does need the phase amplitude. Composing a distribution of a stated
+    band only needs nothing to fold into those coefficients -- an integral against smooth basis functions --
+    so the projection starts just past what is kept.
+
+    Measured on a CACTUS-like bundle at a clinical b: the phase amplitude asked for order 15 where an order-4
+    ODF was satisfied at 4, eight times the work for no accuracy at all. And it is not a saving bought with
+    accuracy: the composition here still matches explicit averaging.
+    """
+    seq = _Lobe(0.6)                                                  # a phase amplitude of 6.2 radians
+    full = pack.pose_response(seq, tissue=False)
+    kept = pack.pose_response(seq, keep=(2, 0), tissue=False)
+    assert full.lmax == int(np.ceil(full.phase_amplitude)) + 2         # pointwise: the phase amplitude
+    assert kept.lmax == 2 and kept.n_samples < full.n_samples / 2.5    # kept: just past the distribution
+    fod = FOD.watson(4.0, mu=(0.3, 0.5, 0.81), lmax=2)
+    got = kept.compose(so3.Distribution.axis_density(fod, 2, 0))[0]
+    assert abs(abs(got) - abs(analytic_over(seq.q, fod.evaluate))) < 5e-3
+    assert kept.misfit.max() <= kept.floor
+
+
+def test_a_kept_band_wider_than_the_response_does_not_widen_the_grid(pack):
+    """The other side of the same rule, and a factor of 1.5 in the wrong direction before it was fixed. Where
+    the phase amplitude already implies a band at or above what is kept, the kept coefficients are an exact
+    truncation of that projection, so the grid must not be widened past it -- while it can never be narrower
+    than the kept band either, which cannot be retained from a projection that does not reach it.
+    """
+    seq = _Lobe(0.2)                                                  # a phase amplitude of ~2 radians
+    kept = pack.pose_response(seq, keep=(8, 0), tissue=False)
+    wide = pack.pose_response(seq, band=10, keep=(8, 0), tissue=False)   # what the kept + 2 rule would cost
+    assert kept.lmax == wide.lmax == 8                                # the same coefficients either way
+    assert kept.n_samples < 0.75 * wide.n_samples                     # a third fewer poses: 7936 against 12000
+    np.testing.assert_allclose(kept.coeffs, wide.coeffs, atol=4.0 * kept.floor)
+    fod = FOD.watson(6.0, mu=(0.3, 0.5, 0.81), lmax=8)
+    got = kept.compose(so3.Distribution.axis_density(fod, 8, 0))[0]
+    assert abs(abs(got) - abs(analytic_over(seq.q, fod.evaluate))) < 5e-3
+    assert kept.misfit.max() <= kept.floor
