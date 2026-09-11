@@ -119,28 +119,32 @@ exactly rather than sampled. A bare coefficient array is refused: the basis must
 refuses a truncation that cannot hold the response. A tier that is requested but not carried
 raises; nothing is silently skipped.
 
-## Replay phantoms: packs arranged in space
+## Replay phantoms: voxels from packs
 
 A pack answers for one microstructure at any pose. A **replay phantom** (`.rph`, spec in
-[RPH.md](https://github.com/dmrai-lab/replay-pack-spec)) is a voxel grid that cites packs: per voxel, which
-substrates occupy it, in what volume fraction, and at what orientation. It owns no walkers of its own, so one
-solved pack serves every voxel and every pose that cites it, and the file is the arrangement rather than the
-physics — the phantom below is 77 kB citing an 11 MB pack.
+[RPH.md](https://github.com/dmrai-lab/replay-pack-spec)) is a voxel grid that cites packs, and there are two ways to
+arrive at one:
+
+* **Composition** places solved packs into voxels you declare: which substrate is where, in what volume fraction,
+  at what pose, with what proton density. One pack serves every voxel and every pose that cites it, so the file is
+  the arrangement rather than the physics — the ring below is 77 kB citing an 11 MB pack.
+* **Partition** cuts **one walk** of a substrate larger than a voxel (a DiSCo strand phantom, a whole mesh) into the
+  voxels each walker started in. The grid is free — coarsen, refine, shift, no re-walk — and the fractions are
+  measured, not declared.
+
+Both are a `Phantom`, replayed the same way, and composition is the voxel-averaged projection of a partition.
 
 ![circular white-matter phantom](examples/rph/circular_wm.gif)
 
 A CACTUS bundle of 366 tortuous strands, walked once, arranged as an annulus of tangentially oriented fibres
 around a free-water core with inert background outside. **Left**: the substrate the walk saw, and the poses the
 phantom replays — a tight cone around most of the ring, and one sector where the population fans out
-anisotropically, which is a Bingham with two different concentrations. **Middle and right**: a diffusion-weighted
-acquisition at 7 T. First the gradient turns through 360° with the field pointing north, giving the diffusion
-contrast everyone knows — dark where the gradient runs along the fibres, bright where it runs across them, a
-50% modulation per voxel. Then the gradient is held fixed through the plane, so the diffusion weighting is
-identical in every voxel and every frame, and **B0** turns instead: what still moves is the susceptibility, the
-myelin field each walker samples depending on the angle between the field and the fibre. That is a 2% effect
-here — integrating over the azimuth each slot leaves unstated averages away most of the frame-specific field,
-which is the honest answer for tissue with no preferred azimuth — so those frames are drawn as each voxel's
-departure from its own mean, and the free-water core, which has no field at all, sits flat.
+anisotropically. **Middle and right**: a diffusion-weighted acquisition at 7 T. First the gradient turns through
+360° with the field pointing north, giving the diffusion contrast everyone knows. Then the gradient is held fixed
+through the plane and **B0** turns instead: what still moves is the susceptibility, the myelin field each walker
+samples depending on the angle between the field and the fibre.
+
+### Composition
 
 ```python
 import numpy as np
@@ -156,28 +160,64 @@ wm = PackSubstrate("cactus.rpk", m0=0.75)                           # m0 is requ
 ph = Phantom.compose(grid,
                      fractions={wm: f_wm, FreeWater(D_m2_s=3e-9, m0=1.0): f_csf},
                      remainder=Inert(),                             # a voxel is always full: no unmodelled slack
-                     orientation={wm: Fan(R, kappa=kappa)})         # or Peaks(...), ODF(..., basis=...), Watson(mu=, kappa=), Frames(...)
+                     orientation={wm: Fan(R, kappa=kappa)})
 ph.write("wm.rph", id="phantoms/circular-wm", license="CC-BY-4.0", citation="...")   # provenance only when publishing
 
 seq = sequences.pgse(dirs, 0.006, 0.015, bvalues=[1.5e9] * len(dirs), TE=0.030)
 S = ph.replay(seq, B0_T=7.0, b0_dir=(0, 1, 0), chi_iso=-1e-7)     # (n, n, 1, n_dirs), NaN where the phantom has no voxel
 ```
 
-**A pose is a rotation, not an axis**, and the four orientation modes differ in how much of it they pin down:
-`peaks` a direction, `odf_sh` a distribution over directions (in a **named** spherical-harmonic basis — an
-MRtrix FOD taken as orthonormal is wrong by an amount that vanishes exactly when the gradient is parallel to
-B0, the one geometry a cursory check would test), `frames` a whole rotation, and `bingham` a frame with a
-concentration about each of two of its axes. The two that name only a direction leave the substrate's own
-azimuth unstated, and a replay integrates over it rather than picking a convention. Nothing assumes the
-substrate is axially symmetric: each cited pack is expanded once into its response over SO(3), and every voxel
-is then an inner product with its own distribution, with the projection **refusing** rather than composing when
-its truncation cannot hold the response. On this bundle the axially symmetric truncation is refused outright.
+Every piece is an object with named, unit-bearing arguments, and the phantom is keyed by those objects:
 
-Macroscopic effects that vary over centimetres rather than microns are per-voxel **layers** on top of the
-packs: `m0_scale` for proton density within a tissue, `delta_B0_T` for a field map, `kappa_B1` for a transmit
-field, which acts on the magnetisation and so goes through the RF-aware replay at each voxel's pose. A layer
-this replay cannot carry raises rather than being dropped, because a phantom that silently loses a layer
-replays wrong while looking right.
+| piece | what it is |
+|---|---|
+| `PackSubstrate(pack_or_path, *, m0, T2_s=, T1_s=, rho_m_s=, chi_iso=, chi_aniso=)` | a solved pack; the tissue knobs (by the pack's pool names) are what it replays at, anything not given is the pack's nominal value |
+| `FreeWater(*, D_m2_s, m0)` | the one closed form: a pack cannot stand in for free water (its Monte-Carlo floor does not decay with b) |
+| `Inert()` | fills a voxel and emits nothing, so it has no `m0`; not air |
+| `Peaks(directions, weights=)`, `ODF(coeffs, *, basis)`, `Watson(*, mu, kappa)`, `Frames(rotations)`, `Fan(rotations, *, kappa)` / `Fan.from_axis(*, axis, fan_towards, kappa_fan, kappa_perp)` | a pose per voxel, from a direction to a whole rotation; `ODF` names its **source** basis (`"mrtrix3"`, `"mrtrix-legacy"`, `"dmipy-fit"`, ...), keeps a CSD's integral on `.integral` |
+| `Grid(*, shape, voxel_size_m, origin_m=, isocenter_m=, axes=)`, `Grid.from_affine(nifti_affine, shape)` | the voxels in the scanner |
+
+`fractions=` also takes an integer label volume with `labels={value: substrate}`; `remainder=` takes `1 - sum`
+where the fractions leave a gap. `m0` is required on every signal-bearing substrate, because a proton density
+of 1 only means "the reference the others are stated against". The replayed signal is `sum_p f_p m0_p E_p`.
+
+**A pose is a rotation, not an axis.** `Peaks` and `ODF` state a direction and leave the substrate's own azimuth
+unstated, which the replay integrates away; `Frames` states the whole rotation; `Fan` a frame with a
+concentration about each of its first two axes, a population dispersed anisotropically. Each cited pack is
+expanded once into its response over SO(3), and every voxel is an inner product with its own distribution.
+
+**Maps at replay time.** `ph.replay(seq, transmit=kappa_map)` scales every flip angle per voxel and goes through
+the RF-aware route (one propagation per distinct pose; frames mode); `off_resonance=dB0_map` (T) is a uniform
+precession through the acquisition's own coherence gate; `proton_density=pd_map` scales every slot's `m0`. Each
+is a scalar, a volume of the grid, or a callable of scanner coordinates, and composes with the same layer baked
+into the file. A layer the replay cannot carry raises rather than being dropped.
+
+### Partition
+
+```python
+from dmipy_sim import Prescription
+from dmipy_sim.phantom import Grid, Inert, FreeWater, PackSubstrate, Phantom, Pose
+
+pack = PackSubstrate("disco.rpk", m0=1.0)                           # ONE walk of a 1 mm^3 anatomy, spin_weights carried
+ph = Phantom.partition(pack, Grid(shape=(40, 40, 40), voxel_size_m=(25e-6,) * 3, attach="substrate"),
+                       declared={Inert(name="myelin"): f_myelin},   # the walker-less slot declares its fraction
+                       outside=FreeWater(D_m2_s=0.6e-9, m0=1.0))    # voxels the walk did not seed
+
+ph50 = ph.regrid(voxel_size_m=(50e-6,) * 3)                         # exact rebin of r(0): no re-walk, no re-encode
+ph_r = ph.with_pose(Pose(rotation))                                 # attach="substrate": physics only; "lab": walkers rebinned
+S = ph.replay(seq, transmit=kappa_map)                              # per-walker B1 through one propagation of the walk
+
+scanner = Phantom.partition(pack, outside=Inert())                  # no grid: the scanner decides the voxels
+S = scanner.replay(seq.with_prescription(Prescription(voxel_size_m=(50e-6,) * 3, matrix=(20, 20, 20))))
+```
+
+Membership is derived from the pack's stored start positions (`ReplayPack.r0`, exact at any `K`), never stored;
+a pack slot's fraction is emergent from the walkers' weights, `(1 - declared) · W_p / ΣW`, so weighted counts
+*are* the fractions at any grid and any pose. The anatomy rotates as a block: `Grid.attach` says whether the grid
+follows the tissue (a pose changes the physics only, membership is invariant) or is the bore's (the posed starts
+are rebinned). A `ScannerSequence` can carry a `Prescription` — isocenter, axes, voxel size, matrix — and a
+partition with no grid of its own bins on it. Every pack is replayed once per acquisition whatever the voxel
+count; a walker's signal belongs to the voxel it **started** in.
 
 ## Substrates
 
