@@ -56,7 +56,7 @@ from .replay.replay import (ReplayPack, read_rpk, write_rpk, compile_scheme, rep
                      replay_signal_jax, surface_logweight)
 from .replay import bank
 from .replay.bank import build_replay_pack, build_to_floor, frame_from_axis, frame_from_bundles
-from .phantom import Phantom, Grid, PackSubstrate, FreeWater, Inert, Peaks, ODF, Watson, Frames, Fan
+from .phantom import Phantom, PartitionPhantom, Pose, Grid, PackSubstrate, FreeWater, Inert, Peaks, ODF, Watson, Frames, Fan
 
 __all__ = [
     "simulate", "simulate_mixture", "simulate_cpmg", "simulate_trajectories",
@@ -97,6 +97,6 @@ __all__ = [
     # magnetization transfer (physics + analytic oracle)
     "mt",
     # continuous RF pulses: complex B1(t) envelope + Bloch forward
-    "Prescription", "Phantom", "Grid", "PackSubstrate", "FreeWater", "Inert", "Peaks", "ODF", "Watson", "Frames", "Fan",
+    "Prescription", "Phantom", "PartitionPhantom", "Pose", "Grid", "PackSubstrate", "FreeWater", "Inert", "Peaks", "ODF", "Watson", "Frames", "Fan",
     "B1Pulse", "RFEvent", "RFSchedule", "SequenceTiming", "ReplayPack", "read_rpk", "write_rpk", "compile_scheme", "replay_signal", "replay_signal_jax", "bloch_simulate", "slice_profile",
 ]
