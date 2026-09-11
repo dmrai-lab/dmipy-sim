@@ -556,7 +556,7 @@ class ReplayPack:
         if method not in ("auto", "closed", "quadrature"):
             raise ValueError("method is 'auto', 'closed' (the per-walker Rayleigh expansion) or 'quadrature'")
         if method != "quadrature":
-            closed = self._pose_coeffs_closed(P, keep=keep)
+            closed = self._pose_coeffs_closed(P, waveform, keep=keep)
             if closed is not None:
                 return closed
             if method == "closed":
@@ -627,7 +627,7 @@ class ReplayPack:
         raise ValueError("orientation is a (3, 3) rotation, a (3,) axis direction, or a distribution of poses "
                          "(dmipy_sim.replay.so3.Distribution, or an FOD read as an axis density)")
 
-    def _pose_coeffs_closed(self, P, keep=None, tol=1e-8, l_cap=64):
+    def _pose_coeffs_closed(self, P, waveform, keep=None, tol=1e-8, l_cap=64):
         """The pose expansion in closed form (#197): the response of a single-direction encoding is a sum of plane
         waves in the rotated moment of each walker, and a plane wave's harmonics are the Rayleigh expansion.
 
@@ -644,16 +644,22 @@ class ReplayPack:
         ``l ~ kappa``, so the band is the largest phase amplitude and nothing is chosen: orders are added until
         their weighted Bessel tail is below ``tol``. ``keep`` restrains the band as before: an ODF or peaks
         composition keeps ``n = 0`` only, which here is the Legendre polynomial of the moment's angle to the
-        substrate axis and never a roll quadrature. Returns None when a measurement is not single-direction
-        (a b-tensor encoding) or a field is replayed: those take the quadrature route.
+        substrate axis and never a roll quadrature.
+
+        **The field.** The susceptibility phase of a walker is ``a_w + u^T A_w u`` in the field direction
+        ``u = R^T b`` (:meth:`_field_quadratic`), a function on the sphere whose harmonics ``a_l'm'`` are read
+        off a product quadrature exact to its own band (the band follows the phase amplitude ``|A_w|``, orders
+        added until the energy above them is below ``tol``). The response is then the product of two expansions,
+        contracted with the real coupling tables (:func:`so3.coupling`) on the lab index (``Y_lm(g^)`` with
+        ``Y_l'n'(b^)``) and on the body index (``j_l Y_ln(m^)`` with ``a_l'm'``); no ``g x B0`` frame exists.
+        Returns None when a measurement is not single-direction (a b-tensor encoding): that takes the quadrature.
         """
         from scipy.special import spherical_jn
         from . import so3
         from .compression import read_position_coeffs
         Geff, dt, n_t, ew, norm = P["Geff"], P["dt"], P["n_t"], P["ew"], P["norm"]
-        if P["B0"] is not None:
-            return None
         n_meas, n_w = Geff.shape[0], ew.shape[0]
+        field = self._field_quadratic(P, waveform) if P["B0"] is not None else None   # (a_w, A_w) or None
         G = np.asarray(Geff, np.float64)
         g_hat = np.zeros((n_meas, 3)); s_wave = np.zeros((n_meas, n_t))
         for i in range(n_meas):
@@ -695,42 +701,90 @@ class ReplayPack:
             if tail < tol:
                 break
             L += 1
+        # the field factor's harmonics per walker, and the band the product reaches
+        if field is None:
+            L_f, F_sh = 0, None
+        else:
+            F_sh, L_f = self._field_harmonics(field, tol=tol, l_cap=l_cap)      # (n_w, (L_f+1)^2) complex
+        L_tot = L + L_f
         want_l, want_n = (None, None) if keep is None else (keep[0], keep[1])
-        keep_l = L if want_l is None else min(int(want_l), L)
-        keep_n = L if want_n is None else min(int(want_n), L)
+        keep_l = L_tot if want_l is None else min(int(want_l), L_tot)
+        keep_n = L_tot if want_n is None else min(int(want_n), L_tot)
         n_feat = so3.n_so3_coeffs(keep_l, keep_n)
         coeffs = np.zeros((n_meas, n_feat), np.complex128)
         cos_z = m_hat[:, :, 2]
-        J = [spherical_jn(l, kappa) for l in range(keep_l + 1)]                 # (n_w, n_grp) per order
-        Yg = so3.real_sh(keep_l, g_hat, full=True)                              # (n_meas, (L+1)^2): the lab side
-        bodies = [None] * (keep_l + 1)                                          # per order: (n_grp, 2k+1)
-        if keep_n == 0:                                                         # n = 0 only: the Legendre of the angle to the axis
+        J = [spherical_jn(l, kappa) for l in range(L + 1)]                      # (n_w, n_grp) per order
+        Yg = so3.real_sh(L, g_hat, full=True)                                   # (n_meas, (L+1)^2): the lab side
+        if field is None:
+            # ---- gradient only: one body per order and group, outer product with the direction harmonics
+            bodies = [None] * (keep_l + 1)                                      # per order: (n_grp, 2k+1)
+            if keep_n == 0:                                                     # n = 0 only: the Legendre of the angle to the axis
+                for l in range(keep_l + 1):
+                    bodies[l] = np.sqrt((2 * l + 1) / (4 * np.pi)) * ((w[:, None] * J[l]) * _legendre(l, cos_z)).sum(0)[:, None]
+            else:
+                # the body side: every walker's moment direction's harmonics, all orders in one recurrence pass,
+                # in chunks of groups sized to ~256 MB
+                for l in range(keep_l + 1):
+                    bodies[l] = np.empty((n_grp, 2 * (so3._n_cols(l, keep_n) // 2) + 1))
+                n_cols = (keep_l + 1) ** 2
+                step = max(1, int(2.5e8 / (8 * n_w * n_cols)))
+                for lo in range(0, n_grp, step):
+                    sl = slice(lo, min(lo + step, n_grp))
+                    nc = sl.stop - sl.start
+                    Y = so3.real_sh(keep_l, m_hat[:, sl, :].reshape(-1, 3), full=True).reshape(n_w, nc, n_cols)
+                    for l in range(keep_l + 1):
+                        k = so3._n_cols(l, keep_n) // 2
+                        blk = so3.sh_block(l, True)
+                        Yl = Y[:, :, blk.start + l - k:blk.start + l + k + 1]                 # (n_w, nc, 2k+1)
+                        bodies[l][sl] = np.einsum("wi,wim->im", w[:, None] * J[l][:, sl], Yl)
+            off = 0
             for l in range(keep_l + 1):
-                bodies[l] = np.sqrt((2 * l + 1) / (4 * np.pi)) * ((w[:, None] * J[l]) * _legendre(l, cos_z)).sum(0)[:, None]
+                k = so3._n_cols(l, keep_n) // 2
+                blk = so3.sh_block(l, True)
+                body_i = bodies[l][group]                                                      # (n_meas, 2k+1)
+                block = (4 * np.pi * (1j ** l) / np.sqrt(2 * l + 1)) * Yg[:, blk][:, :, None] * body_i[:, None, :]
+                coeffs[:, off:off + (2 * l + 1) * (2 * k + 1)] = block.reshape(n_meas, -1)
+                off += (2 * l + 1) * (2 * k + 1)
         else:
-            # the body side: every walker's moment direction's harmonics, all orders in one recurrence pass,
-            # in chunks of groups sized to ~256 MB
-            for l in range(keep_l + 1):
-                bodies[l] = np.empty((n_grp, 2 * (so3._n_cols(l, keep_n) // 2) + 1))
-            n_cols = (keep_l + 1) ** 2
+            # ---- gradient x field: the outer product of the two body expansions per walker, summed over the
+            # walkers per group, then coupled on both indices into the total order L_tot
+            b_lab = np.asarray(P["b0_dir"], np.float64); b_lab = b_lab / np.linalg.norm(b_lab)
+            Yb = so3.real_sh(L_f, b_lab[None, :], full=True)[0]                 # ((L_f+1)^2,): the field direction, lab side
+            n_cols = (L + 1) ** 2
+            Ym = np.empty((n_w, n_grp, n_cols))                                # the moment harmonics, all groups
             step = max(1, int(2.5e8 / (8 * n_w * n_cols)))
             for lo in range(0, n_grp, step):
-                sl = slice(lo, min(lo + step, n_grp))
-                nc = sl.stop - sl.start
-                Y = so3.real_sh(keep_l, m_hat[:, sl, :].reshape(-1, 3), full=True).reshape(n_w, nc, n_cols)
-                for l in range(keep_l + 1):
-                    k = so3._n_cols(l, keep_n) // 2
-                    blk = so3.sh_block(l, True)
-                    Yl = Y[:, :, blk.start + l - k:blk.start + l + k + 1]                     # (n_w, nc, 2k+1)
-                    bodies[l][sl] = np.einsum("wi,wim->im", w[:, None] * J[l][:, sl], Yl)
-        off = 0
-        for l in range(keep_l + 1):
-            k = so3._n_cols(l, keep_n) // 2
-            blk = so3.sh_block(l, True)
-            body_i = bodies[l][group]                                                          # (n_meas, 2k+1)
-            block = (4 * np.pi * (1j ** l) / np.sqrt(2 * l + 1)) * Yg[:, blk][:, :, None] * body_i[:, None, :]   # (n_meas, 2l+1, 2k+1)
-            coeffs[:, off:off + (2 * l + 1) * (2 * k + 1)] = block.reshape(n_meas, -1)
-            off += (2 * l + 1) * (2 * k + 1)
+                sl = slice(lo, min(lo + step, n_grp)); nc = sl.stop - sl.start
+                Ym[:, sl, :] = so3.real_sh(L, m_hat[:, sl, :].reshape(-1, 3), full=True).reshape(n_w, nc, n_cols)
+            offs = {}
+            off = 0
+            for Lc in range(keep_l + 1):
+                offs[Lc] = off; off += (2 * Lc + 1) * (2 * (so3._n_cols(Lc, keep_n) // 2) + 1)
+            for l in range(L + 1):
+                bl = so3.sh_block(l, True)
+                if l > keep_l + L_f:
+                    break
+                # body for every field order at once: B_all[(g, n), (l', m')] = sum_w w j_l(kappa) Y_ln(m^) a_l'm'(w),
+                # one matrix product over the walkers per gradient order
+                X = ((w[:, None] * J[l])[:, :, None] * Ym[:, :, bl]).reshape(n_w, -1)       # (n_w, n_grp (2l+1))
+                B_all = (X.T @ F_sh.real + 1j * (X.T @ F_sh.imag)).reshape(n_grp, 2 * l + 1, -1)   # (n_grp, 2l+1, (L_f+1)^2); real products
+                for lp in range(L_f + 1):
+                    blp = so3.sh_block(lp, True)
+                    Ls = [Lc for Lc in range(abs(l - lp), min(l + lp, keep_l) + 1)]
+                    if not Ls:
+                        continue
+                    B = B_all[:, :, blp].reshape(n_grp, -1)                                 # (n_grp, (2l+1)(2l'+1))
+                    # lab: Lam[i, (m, n')] = Y_lm(g^_i) Y_l'n'(b^)
+                    Lam = (Yg[:, bl][:, :, None] * Yb[blp][None, None, :]).reshape(n_meas, -1)
+                    K = so3.coupling(l, lp)
+                    for Lc in Ls:
+                        KL = K[Lc]                                              # ((2l+1)(2l'+1), 2Lc+1)
+                        kk = so3._n_cols(Lc, keep_n) // 2
+                        lab = Lam @ KL                                          # (n_meas, 2Lc+1)
+                        body = B @ KL.conj()[:, Lc - kk:Lc + kk + 1]            # (n_grp, 2kk+1)
+                        block = (4 * np.pi * (1j ** l) / np.sqrt(2 * Lc + 1)) * lab[:, :, None] * body[group][:, None, :]
+                        o = offs[Lc]
+                        coeffs[:, o:o + (2 * Lc + 1) * (2 * kk + 1)] += block.reshape(n_meas, -1)
         # what the expansion cannot hold pointwise: the orders above the band it was built to, as a bound from
         # |P_l| <= 1 -- below tol by construction
         tail = np.zeros(n_grp)
@@ -739,7 +793,61 @@ class ReplayPack:
         out = PoseResponse(coeffs, keep_l, keep_n, misfit=tail[group], floor=1.0 / np.sqrt(n_w), phase_amplitude=k_max,
                            n_samples=0)
         out.n_bodies = n_grp                                                   # the distinct waveforms contracted
+        out.field_lmax = L_f
         return out
+
+    def _field_quadratic(self, P, waveform):
+        """The susceptibility phase of every walker as ``a_w + u^T A_w u`` in the field direction ``u`` expressed in
+        the CANONICAL frame: ``(a (n_w,), A (n_w, 3, 3))``, the gate-integrated path field basis of the pack (C3 path
+        route) scaled by ``B0``, ``chi_iso``, ``chi_aniso``. Raises, as the quadrature route does, when the pack
+        cannot supply it."""
+        from scipy.fft import dct
+        from ._replay_kernel import se_gate
+        from .bank import susc_path_coeffs
+        B0, chi_iso, chi_aniso = P["B0"], P["chi_iso"], P["chi_aniso"]
+        if not self.has_field:
+            raise ValueError("B0 was given but the pack carries no field tier (C3)")
+        pm = self.meta.get("compression", {}).get("channels", {}).get("susceptibility_path")
+        if pm is None:
+            raise ValueError("the pose expansion with a field needs the pack's susc_path channel (C3 path route)")
+        if chi_iso is None:
+            raise ValueError("B0 was given without chi_iso; give chi_iso (and chi_aniso)")
+        dt, n_t = P["dt"], P["n_t"]
+        Cs, names = susc_path_coeffs(self.arrays, pm)
+        gate_hat = dct(se_gate(n_t, dt, waveform.rf.refocus_time), type=2, norm="ortho")[:Cs.shape[2]]
+        Psi = (GAMMA * dt) * np.einsum("k,wck->wc", gate_hat, Cs)               # (n_w, n_ch)
+        i_p = names.index("iso_P_xx")
+        i_a = names.index("aniso_G_xx") if "aniso_G_xx" in names else None
+        a = float(chi_iso) * float(B0) * Psi[:, names.index("iso_local")]
+        six = -float(chi_iso) * float(B0) * Psi[:, i_p:i_p + 6]
+        if chi_aniso and i_a is not None:
+            six = six + float(chi_aniso) * float(B0) * Psi[:, i_a:i_a + 6]
+        xx, yy, zz, xy, xz, yz = six.T                                         # u^T A u = xx x^2 + ... + 2 xy x y + ...
+        A = np.empty((six.shape[0], 3, 3))
+        A[:, 0, 0], A[:, 1, 1], A[:, 2, 2] = xx, yy, zz
+        A[:, 0, 1] = A[:, 1, 0] = xy; A[:, 0, 2] = A[:, 2, 0] = xz; A[:, 1, 2] = A[:, 2, 1] = yz
+        F = self.substrate_frame                                               # stored -> canonical: A_c = F^T A F
+        A = np.einsum("ab,wbc,cd->wad", F.T, A, F)
+        return a, A
+
+    def _field_harmonics(self, field, tol=1e-8, l_cap=48):
+        """The harmonics of ``exp(i (a_w + u^T A_w u))`` over the sphere per walker, ``(n_w, (L'+1)^2)``, by a product
+        quadrature exact to the band ``L'`` chosen from the phase amplitude: orders are added until the energy in
+        the last one is below ``tol`` of the total."""
+        from . import so3
+        a, A = field
+        amp = float(np.abs(np.linalg.eigvalsh(A)).max()) if A.size else 0.0
+        Lp = int(np.ceil(2.0 * amp)) + 4
+        while True:
+            dirs, wq = so3.sphere_quadrature(Lp + 2, 2 * Lp + 2)
+            q = np.einsum("qa,wab,qb->wq", dirs, A, dirs)                     # (n_w, n_q)
+            f = np.exp(1j * (a[:, None] + q))
+            Y = so3.real_sh(Lp, dirs, full=True)                               # (n_q, (Lp+1)^2)
+            F = (f * wq[None, :]) @ Y                                           # (n_w, (Lp+1)^2)
+            top = so3.sh_block(Lp, True)
+            if (np.abs(F[:, top]) ** 2).sum(1).max() <= tol * (np.abs(F) ** 2).sum(1).max() or Lp >= l_cap:
+                return F, Lp
+            Lp += 4
 
     def _pose_coeffs(self, P, waveform, band=None, keep=None, margin=2, n_check=256, seed=0,
                      chunk=256, over=2, band_cap=12, strict=True):

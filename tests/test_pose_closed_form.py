@@ -124,3 +124,35 @@ def test_a_shell_is_one_body_and_its_directions_are_free(pack):
     b0 = sequences.pgse(dirs[:3], 2e-3, 5e-3, bvalues=[0.0, 0.0, 0.0], TE=10e-3)       # b = 0 rows: one body, all ones at l = 0
     p0 = pack.pose_response(b0, method="closed", keep=(4, 0))
     assert p0.n_bodies == 1 and np.allclose(np.abs(p0.compose(Distribution.axis((0, 0, 1), 4, 0))), 1.0)
+
+
+@pytest.fixture(scope="module")
+def field_pack():
+    import os
+    path = "/home/rutger/dmrai-ws/packs/cactus_demo_xframe.rpk"
+    if not os.path.exists(path):
+        pytest.skip("the CACTUS demo pack (field tier, path route) is not on this machine")
+    return read_rpk(path)
+
+
+def test_the_field_is_composed_in_closed_form_and_agrees_with_every_other_route(field_pack):
+    """With a field the response is the product of the gradient's plane-wave expansion and the field factor's
+    harmonics, coupled on both indices: exact against the direct posed replay with the field, equal to the
+    quadrature route to that route's misfit, and no g x B0 frame anywhere (#197 step 3, #155)."""
+    pk = field_pack
+    seq = sequences.pgse([[1, 0, 0], [0, 0, 1], [0.6, 0.8, 0.0]], 6e-3, 15e-3, bvalues=[1.5e9] * 3, TE=30e-3)
+    kw = dict(B0=7.0, b0_dir=(0.0, 1.0, 0.0), chi_iso=-1e-7, chi_aniso=-1e-7, tissue=False)
+    pc = pk.pose_response(seq, method="closed", **kw)
+    assert pc.n_samples == 0 and pc.field_lmax >= 2
+    for R in so3.haar_rotations(6, 2):
+        np.testing.assert_allclose(pc.at(R), pk.replay(seq, orientation=R, complex_signal=True, **kw), atol=2e-6)
+    pq = pk.pose_response(seq, method="quadrature", **kw)
+    for d in (Distribution.axis((0.3, 0.5, 0.81), pq.lmax, 0), Distribution.watson(6.0, mu=(0, 0, 1), lmax=pq.lmax, nmax=0)):
+        np.testing.assert_allclose(pc.compose(d), pq.compose(d), atol=3 * pq.misfit.max())
+    # the parallel geometry the quadrature route had to handle specially (#155) is nothing special here
+    par = dict(kw, b0_dir=(1.0, 0.0, 0.0))
+    pp = pk.pose_response(seq, method="closed", keep=(8, 0), **par)
+    for R in so3.haar_rotations(2, 9):
+        full = pk.pose_response(seq, method="closed", **par)
+        np.testing.assert_allclose(full.at(R), pk.replay(seq, orientation=R, complex_signal=True, **par), atol=2e-6)
+    assert np.isfinite(pp.coeffs).all()
