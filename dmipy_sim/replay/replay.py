@@ -493,7 +493,7 @@ class ReplayPack:
             if tuple(b0_dir) == (0.0, 0.0, 1.0): b0_dir = k["b0_dir"]
         if orientation is not None:
             R = self._rotation_of(orientation)
-            G, G_eff = G @ R, G_eff @ R                                   # R^T g per sample
+            G, G_eff = G @ R, G_eff @ R                                   # R^T g per sample: stored coordinates
             b0_dir = tuple(np.asarray(R, float).T @ np.asarray(b0_dir, float))
         Geff = effective_gradient(G_eff, dt_wf, n_t, dt)                 # exact per-save weights of the effective gradient
         logw = np.zeros(n_w)
@@ -575,20 +575,44 @@ class ReplayPack:
         return np.where(sel, ew, 0.0), w[sel].sum()
 
     @property
+    def substrate_frame(self):
+        """The substrate's intrinsic frame (RPK.md 4.2): a ``(3, 3)`` right-handed basis in stored coordinates, column
+        3 the primary structural axis, ``d_stored = F d_canonical``. From ``walk_params.substrate_frame`` when the
+        producer declared it, else from the embedded spec's ``frame`` (axis, optional in-plane), else the identity --
+        the pack's positions are then taken to be in the canonical frame already."""
+        from .bank import frame_from_axis
+        wp = self.meta.get("walk_params", {}) or {}
+        F = wp.get("substrate_frame")
+        if F is None:
+            F = self.meta.get("substrate_frame")
+        if F is not None:
+            F = np.asarray(F, np.float64).reshape(3, 3)
+        else:
+            spec = self.substrate
+            fr = getattr(spec, "frame", None) if spec is not None else None
+            if fr is None:
+                return np.eye(3)
+            a = np.asarray(fr.axis, np.float64); a = a / np.linalg.norm(a)
+            F = np.asarray(frame_from_axis(a), np.float64).reshape(3, 3)
+        if not np.allclose(F @ F.T, np.eye(3), atol=1e-6) or np.linalg.det(F) < 0:
+            raise ValueError("the pack's substrate_frame is not a proper rotation")
+        return F
+
+    @property
     def frame_axis(self):
-        """The substrate's own axis (``spec.frame.axis``; z when the pack embeds no spec)."""
-        spec = self.substrate
-        a = np.asarray(spec.frame.axis if spec is not None else (0.0, 0.0, 1.0), float)
-        return a / np.linalg.norm(a)
+        """The substrate's own axis in stored coordinates: column 3 of :attr:`substrate_frame`."""
+        return self.substrate_frame[:, 2].copy()
 
     def _rotation_of(self, orientation):
-        """A 3x3 rotation (substrate frame -> lab), or the lab direction the substrate axis points along."""
+        """The rotation taking STORED coordinates to the lab: from a 3x3 pose of the canonical substrate frame
+        (``R``, so stored -> lab is ``R F^T`` with ``F`` the pack's :attr:`substrate_frame`), or from the lab
+        direction the substrate's axis points along (the azimuth left as the frame's)."""
         from .so3 import rotation_of
         o = np.asarray(orientation, float)
         if o.shape == (3, 3):
             if not np.allclose(o @ o.T, np.eye(3), atol=1e-6) or np.linalg.det(o) < 0:
                 raise ValueError("orientation must be a proper rotation matrix (R R^T = I, det +1)")
-            return o
+            return o @ self.substrate_frame.T
         if o.shape == (3,):
             return rotation_of(o, self.frame_axis)
         raise ValueError("orientation is a (3, 3) rotation, a (3,) axis direction, or a distribution of poses "
@@ -647,12 +671,16 @@ class ReplayPack:
             i_a = names.index("aniso_G_xx") if "aniso_G_xx" in names else None
         b = np.asarray(b0_dir, float); b = b / np.linalg.norm(b)
 
+        # a pose R is a rotation of the CANONICAL substrate frame: the stored walk is first turned into it
+        # (F^T, RPK.md 4.2) and then by R -- the identity for a pack whose frame is the identity
+        Qf_axis = self.substrate_frame.T
+
         def response(R):
             """The ensemble signal of every measurement at every one of these poses."""
             E = np.empty((R.shape[0], n_meas), np.complex128)
             for lo in range(0, R.shape[0], int(chunk)):
                 sl = slice(lo, min(lo + int(chunk), R.shape[0]))
-                Rc = R[sl]
+                Rc = R[sl] @ Qf_axis
                 if Psi is None:
                     Ew = np.broadcast_to(ew[None, :].astype(np.complex128), (Rc.shape[0], n_w))
                 else:

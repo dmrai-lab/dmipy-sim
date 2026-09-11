@@ -246,6 +246,24 @@ def haar_rotations(n, seed=0):
     return Rotation.random(int(n), random_state=int(seed)).as_matrix().reshape(int(n), 3, 3)
 
 
+def rotate_sh(coeffs, R, lmax=None):
+    """Rotate a function on the sphere given by its even-order harmonics in the required basis: the coefficients
+    of ``f'(d) = f(R^T d)``, the function whose features sit at ``R`` times where they were. ``coeffs`` is
+    ``(..., n_c)`` compact even-order (``n_c = (lmax + 1)(lmax + 2) / 2``); one rotation for all of them."""
+    c = np.asarray(coeffs, np.float64)
+    n_c = c.shape[-1]
+    if lmax is None:
+        lmax = int(round((-3 + np.sqrt(1 + 8 * n_c)) / 2))
+    if n_sh_coeffs(lmax) != n_c:
+        raise ValueError(f"{n_c} coefficients is not an even-order compact block")
+    blocks = wigner_blocks(lmax, np.asarray(R, np.float64).reshape(1, 3, 3))
+    out = np.zeros_like(c)
+    for l in range(0, lmax + 1, 2):
+        blk = sh_block(l)
+        out[..., blk] = c[..., blk] @ blocks[l][0].T
+    return out
+
+
 def rotations_from_quaternions(q):
     """``(n, 3, 3)`` from ``(n, 4)`` quaternions in the ``(x, y, z, w)`` convention RPH.md 4 states."""
     from scipy.spatial.transform import Rotation
