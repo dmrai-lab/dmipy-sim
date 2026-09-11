@@ -278,15 +278,31 @@ def test_a_layer_is_applied_or_refused_never_dropped(pack_path):
     ph, *_ = _phantom(pack_path, layers={"m0_scale": np.full((8, 8, 1), 0.5)})
     np.testing.assert_allclose(_rows(ph, ph.replay(seq)), 0.5 * _rows(base, base.replay(seq)), rtol=1e-9)
     hard, *_ = _phantom(pack_path, layers={"kappa_B1": np.ones((8, 8, 1))})
-    with pytest.raises(ValueError, match="vector-Bloch|RF-aware"):
-        hard.replay(seq)                                        # kappa_B1 needs the RF-aware replay: refused, not dropped
+    with pytest.raises(ValueError, match="frames-mode"):
+        hard.replay(seq)                  # kappa_B1 routes to the RF-aware replay, which this ODF phantom cannot take: refused
     off, *_ = _phantom(pack_path, layers={"delta_B0_T": np.full((8, 8, 1), 1e-7)})
     S, S0 = _rows(off, off.replay(seq, complex_signal=True)), _rows(base, base.replay(seq, complex_signal=True))
     assert np.abs(np.angle(S / S0)).max() > 1e-3                # a gradient echo carries the off-resonance
+    from dmipy_sim.constants import GAMMA
+    TE = (pk.n_t - 1) * pk.dt
+    np.testing.assert_allclose(np.angle(S / S0), GAMMA * 1e-7 * TE, rtol=1e-6)   # gamma dB0 TE, over the acquisition
+    # the same offset given at replay time, and the two adding
+    np.testing.assert_allclose(_rows(base, base.replay(seq, off_resonance=1e-7, complex_signal=True)), S, rtol=1e-6)  # the file holds float32
+    S2 = _rows(off, off.replay(seq, off_resonance=1e-7, complex_signal=True))
+    np.testing.assert_allclose(np.angle(S2 / S0), GAMMA * 2e-7 * TE, rtol=1e-6)
+    # the gate is the ACQUISITION's: a shorter gradient echo on its own raster dephases over its own TE
+    short = _acq(pk, [[1, 0, 0]], [1e9], delta=4e-4, Delta=1.2e-3)
+    short = ScannerSequence(G=np.asarray(short.G)[:, : pk.n_t - 2], dt=short.dt, family="gre",
+                            encoding=short.encoding)                                    # two saves shorter than the pack
+    Ss, Ss0 = _rows(base, base.replay(short, off_resonance=1e-7, complex_signal=True)), _rows(base, base.replay(short, complex_signal=True))
+    np.testing.assert_allclose(np.angle(Ss / Ss0), GAMMA * 1e-7 * (short.n_t - 1) * short.dt, rtol=1e-6)
     se = replace(seq, G=np.abs(np.asarray(seq.G)), family="pgse",
                  rf=[RFEvent(0.0, 90), RFEvent((pk.n_t - 1) * pk.dt / 2, 180)])
     np.testing.assert_allclose(_rows(off, off.replay(se, complex_signal=True)),
                                _rows(base, base.replay(se, complex_signal=True)), rtol=1e-9)   # refocused: nothing
+    # proton density at replay time is the m0_scale layer at call time, and they multiply
+    np.testing.assert_allclose(_rows(base, base.replay(seq, proton_density=0.5)), _rows(ph, ph.replay(seq)), rtol=1e-9)
+    np.testing.assert_allclose(_rows(ph, ph.replay(seq, proton_density=2.0)), _rows(base, base.replay(seq)), rtol=1e-9)
 
 
 def test_a_referenced_pack_is_resolved_or_overridden(tmp_path, pack_path):
@@ -320,22 +336,32 @@ def test_the_transmit_layer_goes_through_the_bloch_route(pack_path):
     phys = replace(seq, G=np.abs(np.asarray(seq.G)), rf=rf, family="pgse")   # the Bloch route takes the PHYSICAL waveform
     ideal = Phantom.compose(grid, fractions=full, orientation=Frames(R))
     assert ideal.mode == "frames"
-    S_ideal, S_bloch = _rows(ideal, ideal.replay(seq)), _rows(ideal, ideal.replay_bloch(phys))
+    S_ideal = _rows(ideal, ideal.replay(seq))
+    S_bloch = _rows(ideal, ideal.replay(phys, transmit=1.0))                      # transmit= selects the Bloch route
     np.testing.assert_allclose(S_bloch, S_ideal, atol=3.0 / np.sqrt(pk.n_walkers))
     kap = np.where(np.arange(n)[:, None, None] * np.ones((n, n, 1)) > 0, 0.6, 1.0)
     ph = Phantom.compose(grid, fractions=full, orientation=Frames(R), layers={"kappa_B1": kap})
-    S_b1 = _rows(ph, ph.replay_bloch(phys))
+    S_b1 = _rows(ph, ph.replay(phys))                                            # the layer alone routes it too
     i = ph.voxel_index[:, 0]
     np.testing.assert_allclose(S_b1[i == 0], S_bloch[i == 0], rtol=1e-9)          # kappa = 1: nothing changes
     alone = np.abs(pk.replay_bloch(phys, b1_scale=0.6, orientation=(0.0, 0.0, 1.0), T2=[0.06] * 3))
-    np.testing.assert_allclose(S_b1[i == 1], np.tile(0.7 * alone, (int((i == 1).sum()), 1)), rtol=1e-9)
+    np.testing.assert_allclose(S_b1[i == 1], np.tile(0.7 * alone, (int((i == 1).sum()), 1)), rtol=1e-6)   # the file holds float32
     assert (S_b1[i == 1] < S_b1[i == 0] * 0.9).all()                              # a smaller flip, a smaller signal
+    # the same map given at replay time, as a volume and as a function of position, is the same phantom
+    np.testing.assert_allclose(_rows(ideal, ideal.replay(phys, transmit=kap)), S_b1, rtol=1e-6)
+    x_split = ideal.grid.positions_m([[0, 0, 0], [1, 0, 0]])[:, 0].mean()
+    np.testing.assert_allclose(_rows(ideal, ideal.replay(phys, transmit=lambda xyz: np.where(xyz[:, 0] > x_split, 0.6, 1.0))),
+                               S_b1, rtol=1e-6)
+    # file layer and replay-time map compose by multiplication
+    np.testing.assert_allclose(_rows(ph, ph.replay(phys, transmit=1.0 / kap)), S_bloch, rtol=1e-6)
     with pytest.raises(ValueError, match="vector-Bloch|replay_bloch"):
-        ph.replay(seq)                                          # the magnitude route refuses the layer
+        ph.file.replay(seq)                                     # the phase route itself refuses the layer
     mu = np.zeros((n, n, 1, 3)); mu[..., :] = (0.0, 0.0, 1.0)
     odf = Phantom.compose(grid, fractions=full, orientation=Watson(mu=mu, kappa=50.0))
     with pytest.raises(ValueError, match="frames-mode"):
-        odf.replay_bloch(phys)
+        odf.replay(phys, transmit=0.8)
+    with pytest.raises(ValueError, match="scalar, a volume"):
+        ideal.replay(phys, transmit=np.ones(7))
 
 
 def test_a_frame_is_one_pose_and_a_peak_is_that_pose_with_its_azimuth_unstated(pack_path):
