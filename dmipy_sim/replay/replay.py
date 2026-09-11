@@ -689,6 +689,19 @@ class ReplayPack:
         return read_position_coeffs(self.arrays, dtype=np.float32)
 
     @property
+    def r0(self):
+        """``(n_walkers, 3)``: where every walker **started**, in metres, read from the stored coefficients.
+
+        The position codec keeps ``r(0)`` as an exact entry rather than a reconstructed band, so this is the
+        stored value to float32 (of order 0.1 nm on a millimetre coordinate), identical at every ``K``, and it
+        costs one slice of the coefficient block -- no path is decoded. It is what partitions a walk into voxels
+        (RPH.md: ``voxel = floor((r0 - origin) / voxel_size)``), which is why it must not depend on the band.
+        """
+        from .compression import read_position_coeffs, require_position_method
+        require_position_method(self.method)
+        return np.ascontiguousarray(read_position_coeffs(self.arrays, dtype=np.float64)[:, 0, :])
+
+    @property
     def dct_coeffs(self):
         raise AttributeError(
             "ReplayPack.dct_coeffs is gone. Positions are stored as bridge_dst -- two exact "

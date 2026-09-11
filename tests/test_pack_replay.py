@@ -106,3 +106,25 @@ def test_save_and_load_round_trip(packs, tmp_path):
     wf = _wf(full.n_t, full.dt)
     np.testing.assert_array_equal(back.replay(wf, rho=1e-5, T2=T2), full.replay(wf, rho=1e-5, T2=T2))
     assert back.diffusivity == pytest.approx(D0)
+
+
+def test_r0_is_the_stored_start_read_without_decoding(tmp_path):
+    """The start of every walk is an exact entry of the position codec, so it is the same number at any K, is
+    read from one slice of the coefficient block, and matches the first sample of the decoded path to float32
+    rounding -- the property a voxel partition of a walk rests on (dmipy-sim#76, #186)."""
+    import dmipy_sim as d
+    from dmipy_sim.replay import read_rpk
+    from dmipy_sim.replay.bank import build_replay_pack
+    g = d.PackedCylinders([1e-6], [[0.0, 0.0]], 10e-6)
+    walk = d.simulate_trajectories(200, 2e-9, g, 2e-3, 5e-4, seed=3, require_gpu=False)
+    r0 = {}
+    for K in (2, 4):
+        out = tmp_path / f"k{K}.rpk"
+        build_replay_pack(walk, id="t", license="x", citation="x", K=K, out_path=str(out))
+        pk = read_rpk(str(out))
+        r0[K] = pk.r0
+        assert r0[K].shape == (200, 3) and r0[K].dtype == np.float64
+        np.testing.assert_allclose(r0[K], pk.positions()[:, 0, :], atol=1e-12)     # the path starts where r0 says
+    np.testing.assert_array_equal(r0[2], r0[4])                                       # K-independent, to the bit
+    x0 = np.asarray(walk._bank_dict()["traj"])[:, 0, :]                              # the walk's own first sample
+    np.testing.assert_allclose(r0[4], x0, atol=2e-10)                                # float32 of a 10 um coordinate
