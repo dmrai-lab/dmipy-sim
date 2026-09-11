@@ -293,7 +293,7 @@ class ReplayPhantom:
 
     # ---- replay
     def replay(self, waveform, *, B0=None, b0_dir=(0.0, 0.0, 1.0), tissue="nominal", packs=None,
-               n_check=256, complex_signal=False, T2=None, T1=None, rho=None, D=None,
+               complex_signal=False, T2=None, T1=None, rho=None, D=None,
                chi_iso=None, chi_aniso=0.0, off_resonance=None, proton_density=None):
         """Replay the whole phantom through the pose expansion: ``(voxel_index, S)`` with ``S`` of shape
         ``(n_voxels, n_measurements)``.
@@ -323,7 +323,7 @@ class ReplayPhantom:
                 "cannot carry it, and dropping it would return a signal that looks right and is not. Use "
                 "ReplayPhantom.replay_bloch, which propagates the magnetisation per pose.")
         knobs = dict(T2=T2, T1=T1, rho=rho, D=D, chi_iso=chi_iso, chi_aniso=chi_aniso)
-        pose, analytic, m0 = self._responses(waveform, B0, b0_dir, tissue, packs, n_check, knobs,
+        pose, analytic, m0 = self._responses(waveform, B0, b0_dir, tissue, packs, knobs,
                                              keep=self.retained_band(), proton_density=proton_density)
         sid, frac = self.substrate_id, self.geometric_fraction
         n_meas = next(iter(pose.values())).n_meas if pose else len(np.atleast_1d(next(iter(analytic.values()))))
@@ -479,7 +479,7 @@ class ReplayPhantom:
         pd = self.layer_values("m0_scale", proton_density, combine="mul")
         return m0 if pd is None else m0 * pd[:, None]
 
-    def _responses(self, waveform, B0, b0_dir, tissue, packs, n_check, knobs, keep=None, proton_density=None):
+    def _responses(self, waveform, B0, b0_dir, tissue, packs, knobs, keep=None, proton_density=None):
         """One response per substrate: a :class:`PoseResponse` for a pack, a closed form for an analytic
         substrate, nothing for an inert one. Plus the per-voxel ``m0``."""
         pose, analytic = {}, {}
@@ -492,8 +492,7 @@ class ReplayPhantom:
                 continue
             kw = dict(knobs)
             kw.update({k: v for k, v in (sub.get("tissue") or {}).items()})
-            pose[i] = loaded[i].pose_response(waveform, tissue=tissue, B0=B0, b0_dir=b0_dir, n_check=n_check,
-                                              keep=keep, **kw)
+            pose[i] = loaded[i].pose_response(waveform, tissue=tissue, B0=B0, b0_dir=b0_dir, keep=keep, **kw)
         if not pose and not analytic:
             raise ValueError("the phantom cites no signal-bearing substrate")
         return pose, analytic, self._m0(proton_density)
