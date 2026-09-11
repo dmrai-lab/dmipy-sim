@@ -13,7 +13,7 @@ from pathlib import Path
 
 import numpy as np
 
-__all__ = ["MifImage", "read_mif"]
+__all__ = ["MifImage", "read_mif", "write_mif"]
 
 _DTYPES = {"Float32LE": "<f4", "Float32BE": ">f4", "Float64LE": "<f8", "Float64BE": ">f8",
            "Int8": "i1", "UInt8": "u1", "Int16LE": "<i2", "UInt16LE": "<u2", "Int16BE": ">i2", "UInt16BE": ">u2",
@@ -103,3 +103,30 @@ def read_mif(path):
     affine[:3, :3] = T[:3, :3] @ np.diag(vox[:3])
     affine[:3, 3] = T[:3, 3]
     return MifImage(data, affine, vox, header)
+
+
+def write_mif(path, data, affine, *, vox=None, extra=None):
+    """Write a ``.mif`` in C order (layout ``+n-1,...,+1,+0``: the last axis fastest), float32 (or uint8 for a boolean mask), from data
+    in canonical axis order and a NIfTI-style affine in millimetres. What a cropped test fixture or a synthetic
+    image needs; MRtrix reads the result as any other image."""
+    data = np.asarray(data)
+    A = np.asarray(affine, np.float64)
+    n = data.ndim
+    if vox is None:
+        vs = np.linalg.norm(A[:3, :3], axis=0)
+        vox = list(vs) + [1.0] * (n - 3)
+    T = np.column_stack([A[:3, :3] / np.asarray(vox[:3], np.float64), A[:3, 3]])
+    if data.dtype == bool:
+        payload, dtype = data.astype(np.uint8).tobytes(), "UInt8"
+    else:
+        payload, dtype = np.ascontiguousarray(data, dtype="<f4").tobytes(), "Float32LE"
+    head = ["mrtrix image", "dim: " + ",".join(str(int(v)) for v in data.shape),
+            "vox: " + ",".join(f"{float(v):g}" for v in vox), "layout: " + ",".join(f"+{n - 1 - i}" for i in range(n)),
+            f"datatype: {dtype}"] + ["transform: " + ",".join(f"{v:.15g}" for v in row) for row in T]
+    for k, v in (extra or {}).items():
+        head.append(f"{k}: {v}")
+    body = "\n".join(head) + "\nfile: . "
+    off = len(body.encode()) + 12
+    body += f"{off:>6}\nEND\n"
+    b = body.encode()
+    Path(path).write_bytes(b + b" " * (off - len(b)) + payload)
