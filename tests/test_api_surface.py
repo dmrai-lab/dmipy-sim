@@ -32,7 +32,7 @@ _DOWNSTREAM_MODULES = [
     "dmipy_sim.replay.bank", "dmipy_sim.sequences", "dmipy_sim.sequences.pulseq",
     "dmipy_sim.substrate", "dmipy_sim.substrate.biophysical_constants", "dmipy_sim.substrate.substrate",
     "dmipy_sim.geometry", "dmipy_sim.geometry.mesh", "dmipy_sim.geometry.curved_cylinder",
-    "dmipy_sim.replay.phantom", "dmipy_sim.replay.trajectories",
+    "dmipy_sim.replay.phantom", "dmipy_sim.replay.trajectories", "dmipy_sim.phantom",
     "dmipy_sim.fields.susceptibility", "dmipy_sim.fields.susceptibility_field",
     # the engine package
     "dmipy_sim.engine", "dmipy_sim.engine.core", "dmipy_sim.engine.physics", "dmipy_sim.engine.bloch",

@@ -16,16 +16,13 @@ The sweeps are cached next to the phantom, so a rerun redraws the picture withou
 import sys
 import numpy as np
 
-from dmipy_sim import Encoding, RFEvent, ScannerSequence
-from dmipy_sim.constants import GAMMA
+from dmipy_sim import sequences
+from dmipy_sim.phantom import Fan, FreeWater, Grid, Inert, PackSubstrate, Phantom
 from dmipy_sim.replay import read_rpk, so3
-from dmipy_sim.replay.phantom import (BinghamField, Grid, analytic_substrate, build_rph, inert_substrate,
-                                      pack_substrate, read_rph)
 
 N, R_IN, R_OUT = 40, 11.0, 17.0
 KAPPA, KAPPA_FAN = (16.0, 16.0), (1.0, 40.0)     # a cone around the ring, and a fan in one sector
 FAN_SECTOR = (100.0, 170.0)                      # degrees of the ring that fan out in the plane
-LMAX, NMAX = 8, 4                                # the pose band, and how much azimuthal structure is kept
 B_VALUE, B0_T = 1.5e9, 7.0                       # 1500 s/mm^2 at 7 T
 CHI_ISO, CHI_ANISO = -1.0e-7, -1.0e-7            # myelin, Wharton & Bowtell 2012
 
@@ -75,44 +72,30 @@ def fan_density(kappa, dirs):
 
 
 def build(pack_path, out, n=N):
-    """Three substrates and two volumes -- the constructor derives the sparse file (RPH.md 3)."""
-    wm, csf = annulus(n)
-    return build_rph(
-        out,
-        grid=Grid((n, n, 1), (1.5e-3, 1.5e-3, 1.5e-3)),
-        substrates=[pack_substrate("cactus/bundle_00000_capped", pack_path, m0=0.75),
-                    analytic_substrate("csf/free-water", "free_water", {"diffusivity": 3.0e-9}),
-                    inert_substrate()],
-        occupancy={"cactus/bundle_00000_capped": wm, "csf/free-water": csf},
-        remainder="background/inert",
-        orientation=BinghamField(*frames(n)),
-        id="phantoms/circular-wm/cactus-annulus", license="CC-BY-4.0",
-        citation="Villarreal-Haro et al. 2023 (CACTUS substrate); dmipy-sim replay phantom",
-        embed=False)
+    """Three substrates and two volumes -- the phantom derives the sparse file (RPH.md 3)."""
+    f_wm, f_csf = annulus(n)
+    R, kappa = frames(n)
+    wm = PackSubstrate(pack_path, m0=0.75, name="cactus/bundle")
+    ph = Phantom.compose(Grid(shape=(n, n, 1), voxel_size_m=(1.5e-3, 1.5e-3, 1.5e-3)),
+                         fractions={wm: f_wm, FreeWater(D_m2_s=3.0e-9, m0=1.0): f_csf},
+                         remainder=Inert(),
+                         orientation={wm: Fan(R, kappa=kappa)})
+    ph.write(out, id="phantoms/circular-wm/cactus-annulus", license="CC-BY-4.0",
+             citation="Villarreal-Haro et al. 2023 (CACTUS substrate); dmipy-sim replay phantom", embed=False)
+    return ph
 
 
 # ------------------------------------------------------------------ the acquisition
 def pgse(pack, dirs, b=B_VALUE, delta=6.0e-3, Delta=1.5e-2, refocus=True):
-    """A PGSE on the pack's save grid, one measurement per direction, refocused at the middle of the echo --
-    or, with ``refocus=False``, the same diffusion weighting read as a gradient echo, which keeps the static
-    field dephasing a spin echo would have refocused."""
-    n_t, dt = pack.n_t, pack.dt
-    nd, ng = int(round(delta / dt)), int(round(Delta / dt))
-    G = np.zeros((len(dirs), n_t, 3))
-    amp = np.sqrt(b / ((GAMMA * nd * dt) ** 2 * ((ng - nd / 3) * dt)))
-    # the PHYSICAL gradient: a spin echo plays two same-sign lobes and the 180 flips the second one; a gradient
-    # echo has no 180 and plays the bipolar pair itself
-    for i, g in enumerate(dirs):
-        g = np.asarray(g, float) / np.linalg.norm(g)
-        G[i, :nd] = amp * g
-        G[i, ng:ng + nd] = (amp if refocus else -amp) * g
-    rf = [RFEvent(0.0, 90, "Mz→Mxy", axis_deg=0.0)]
+    """A PGSE over the pack's duration, one measurement per direction, its 180 midway between the lobes -- or,
+    with ``refocus=False``, the same diffusion weighting read as a gradient echo (a bipolar pair, no 180), which
+    keeps the static field dephasing a spin echo would have refocused. The replay is exact in time, so the
+    sequence lives on its own raster, not the pack's save grid."""
+    TE = (pack.n_t - 1) * pack.dt
+    bvals = [float(b)] * len(dirs)
     if refocus:
-        rf.append(RFEvent((n_t - 1) * dt / 2.0, 180, "refocus", axis_deg=90.0))
-    seq = ScannerSequence(G=G, dt=dt, rf=rf, family="pgse" if refocus else "gre",
-                          encoding=Encoding(bvalues=np.full(len(dirs), float(b)),
-                                            gradient_directions=np.asarray(dirs, float)))
-    return seq, amp
+        return sequences.pgse(dirs, delta, Delta, bvalues=bvals, TE=TE)
+    return sequences.gre(TE, gradient_directions=dirs, bvalues=bvals, delta=delta, Delta=Delta)
 
 
 def sweeps(ph, pack_path, n_frames=36):
@@ -136,12 +119,11 @@ def sweeps(ph, pack_path, n_frames=36):
     ang = np.linspace(0.0, 2 * np.pi, n_frames, endpoint=False)
     dirs = np.stack([np.cos(ang), np.sin(ang), np.zeros_like(ang)], axis=1)
     pack = read_rpk(pack_path)
-    kw = dict(packs={"cactus/bundle_00000_capped": pack}, B0=B0_T, chi_iso=CHI_ISO, chi_aniso=CHI_ANISO,
-              lmax=LMAX, nmax=NMAX)
-    seq, _ = pgse(pack, dirs)
-    _, S_g = ph.replay(seq, b0_dir=(0.0, 1.0, 0.0), **kw)                   # B0 north, g turning
-    seq1, _ = pgse(pack, [[0.0, 0.0, 1.0]], refocus=False)                  # through the plane, across every fibre
-    S_b = np.stack([ph.replay(seq1, **kw, b0_dir=d)[1][:, 0] for d in dirs], axis=1)
+    kw = dict(B0_T=B0_T, chi_iso=CHI_ISO, chi_aniso=CHI_ANISO)
+    seq = pgse(pack, dirs)
+    S_g = ph.sparse(ph.replay(seq, b0_dir=(0.0, 1.0, 0.0), **kw))[1]           # B0 north, g turning
+    seq1 = pgse(pack, [[0.0, 0.0, 1.0]], refocus=False)                       # through the plane, across every fibre
+    S_b = np.stack([ph.sparse(ph.replay(seq1, **kw, b0_dir=d))[1][:, 0] for d in dirs], axis=1)
     return ang, dirs, S_g, S_b
 
 
@@ -193,16 +175,16 @@ def figure(ph, pack_path, ang, dirs, S_g, S_b, out_gif, fps=10, slab_um=1.2):
     circ = np.linspace(0, 2 * np.pi, 73)
     d_sh = np.stack([np.cos(circ), np.sin(circ), np.zeros_like(circ)], axis=1)
     step = max(1, n // 13)
-    f_wm = ph.fraction("cactus/bundle_00000_capped")
+    f_wm = ph.sparse(ph.fraction("cactus/bundle"))[1]
     for v in range(ph.n_voxels):
         i, j = ph.voxel_index[v, :2]
         if i % step or j % step or f_wm[v] < 0.5:
             continue
-        R = so3.rotations_from_quaternions(ph.pose_quat[v, 0])[0]
-        r = fan_density(ph.bingham_kappa[v, 0], d_sh @ R)                 # the density, in the frame's own axes
+        R = so3.rotations_from_quaternions(ph.file.pose_quat[v, 0])[0]
+        r = fan_density(ph.file.bingham_kappa[v, 0], d_sh @ R)            # the density, in the frame's own axes
         r = r / max(r.max(), 1e-12)
         r = 0.62 * step * (0.25 + 0.75 * r)                               # a floor, so a tight cone is visible
-        fan = tuple(ph.bingham_kappa[v, 0]) != KAPPA
+        fan = tuple(ph.file.bingham_kappa[v, 0]) != KAPPA
         ax_fod.fill(i + r * d_sh[:, 0], j + r * d_sh[:, 1], color="#b3452c" if fan else "#3b3b6d", lw=0)
     ax_fod.set_xlim(-1, n); ax_fod.set_ylim(-1, n); ax_fod.set_aspect("equal")
     ax_fod.set_xticks([]); ax_fod.set_yticks([])
@@ -293,8 +275,8 @@ if __name__ == "__main__":
     out_dir = sys.argv[2] if len(sys.argv) > 2 else os.path.dirname(os.path.abspath(__file__))
     rph = os.path.join(out_dir, "circular_wm.rph")
     t0 = time.time()
-    meta = build(pack_path, rph)
-    ph = read_rph(rph)
+    build(pack_path, rph)
+    ph = Phantom.read(rph)
     print(f"{ph!r}\n  {os.path.getsize(rph) / 1e3:.0f} kB citing a "
           f"{os.path.getsize(pack_path) / 1e6:.0f} MB pack  [{time.time() - t0:.0f}s]", flush=True)
     cache = os.path.join(out_dir, "circular_wm_sweeps.npz")
@@ -305,7 +287,7 @@ if __name__ == "__main__":
     else:
         ang, dirs, S_g, S_b = sweeps(ph, pack_path)
         np.savez_compressed(cache, ang=ang, dirs=dirs, S_g=S_g, S_b=S_b)
-    live = ph.fraction("cactus/bundle_00000_capped") > 0.5
+    live = ph.sparse(ph.fraction("cactus/bundle"))[1] > 0.5
     def modulation(S):                                                  # peak-to-peak over the sweep, per voxel
         a = np.abs(S)[live]
         return 100.0 * np.ptp(a, axis=1) / a.mean(axis=1)

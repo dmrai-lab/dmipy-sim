@@ -143,20 +143,24 @@ which is the honest answer for tissue with no preferred azimuth — so those fra
 departure from its own mean, and the free-water core, which has no field at all, sits flat.
 
 ```python
-from dmipy_sim.replay.phantom import (BinghamField, Grid, build_rph, read_rph,
-                                      pack_substrate, analytic_substrate, inert_substrate)
+import numpy as np
+from dmipy_sim import sequences
+from dmipy_sim.phantom import Fan, FreeWater, Grid, Inert, PackSubstrate, Phantom
 
-build_rph("wm.rph",
-          grid=Grid((40, 40, 1), (1.5e-3,) * 3),                  # placed in the scanner: origin, isocenter, frame
-          substrates=[pack_substrate("cactus/bundle", "cactus.rpk", m0=0.75),
-                      analytic_substrate("csf", "free_water", {"diffusivity": 3e-9}),
-                      inert_substrate()],
-          occupancy={"cactus/bundle": f_wm, "csf": f_csf},         # volume fractions, or a label volume
-          remainder="background/inert",                            # a voxel is always full: no unmodelled slack
-          orientation=BinghamField(frames, kappa),                 # a rotation and two concentrations per voxel
-          id="phantoms/circular-wm", license="CC-BY-4.0", citation="...")
+n = 40
+grid = Grid(shape=(n, n, 1), voxel_size_m=(1.5e-3,) * 3)          # centred on the isocenter unless origin_m= says otherwise
+f_wm, f_csf = annulus(n)                                            # volume fractions on the grid (examples/rph/circular_wm_phantom.py)
+R, kappa = frames(n)                                                # a rotation per voxel: the fibre axis and the fan plane
 
-voxels, S = read_rph("wm.rph").replay(seq, B0=7.0, b0_dir=(0, 1, 0), chi_iso=-1e-7)
+wm = PackSubstrate("cactus.rpk", m0=0.75)                           # m0 is required: proton density is relative
+ph = Phantom.compose(grid,
+                     fractions={wm: f_wm, FreeWater(D_m2_s=3e-9, m0=1.0): f_csf},
+                     remainder=Inert(),                             # a voxel is always full: no unmodelled slack
+                     orientation={wm: Fan(R, kappa=kappa)})         # or Peaks(...), ODF(..., basis=...), Watson(mu=, kappa=), Frames(...)
+ph.write("wm.rph", id="phantoms/circular-wm", license="CC-BY-4.0", citation="...")   # provenance only when publishing
+
+seq = sequences.pgse(dirs, 0.006, 0.015, bvalues=[1.5e9] * len(dirs), TE=0.030)
+S = ph.replay(seq, B0_T=7.0, b0_dir=(0, 1, 0), chi_iso=-1e-7)     # (n, n, 1, n_dirs), NaN where the phantom has no voxel
 ```
 
 **A pose is a rotation, not an axis**, and the four orientation modes differ in how much of it they pin down:
