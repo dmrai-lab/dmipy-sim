@@ -110,6 +110,16 @@ _CITATION_SPIJKERMAN2017 = {
 }
 
 
+_CITATION_WHARTON2012 = {
+    'key': 'wharton2012',
+    'authors': 'Wharton S, Bowtell R',
+    'title': 'Fiber orientation-dependent white matter contrast in gradient echo MRI',
+    'journal': 'Proceedings of the National Academy of Sciences',
+    'year': 2012,
+    'doi': '10.1073/pnas.1211075109',
+}
+
+
 _CITATION_STANISZ2005 = {
     'key': 'stanisz2005',
     'authors': 'Stanisz GJ, Odrobina EE, Pun J, Escaravage M, Graham SJ, Bronskill MJ, Henkelman RM',
@@ -323,6 +333,7 @@ BIOPHYSICAL_CONSTANTS = {
                 'location': 'Table 2, gray matter row: M0B = 5.0 +/- 0.5 %',
             },
         ],
+        'citation': _CITATION_STANISZ2005,
     },
 
     'mt_exchange_rate': {
@@ -347,6 +358,7 @@ BIOPHYSICAL_CONSTANTS = {
                 'location': 'Table 2, gray matter row: R = 40 +/- 1 s^-1',
             },
         ],
+        'citation': _CITATION_STANISZ2005,
     },
 
     'T2_bound_pool': {
@@ -370,6 +382,7 @@ BIOPHYSICAL_CONSTANTS = {
                 'location': 'Table 2, gray matter row: T2B = 9.1 +/- 0.2 us',
             },
         ],
+        'citation': _CITATION_STANISZ2005,
     },
 
     'T2_myelin': {
@@ -716,16 +729,9 @@ BIOPHYSICAL_CONSTANTS = {
             'method': 'GRE phase + hollow-cylinder model',
             'source_key': 'wharton2012',
             'location': 'isotropic myelin susceptibility chi_I relative to water, fitted alongside chi_A',
-            'citation': {
-                'key': 'wharton2012',
-                'authors': 'Wharton S, Bowtell R',
-                'title': 'Fiber orientation-dependent white matter contrast in gradient echo MRI',
-                'journal': 'Proceedings of the National Academy of Sciences',
-                'year': 2012,
-                'doi': '10.1073/pnas.1211075109',
-            },
         },
         'alternatives': [],
+        'citation': _CITATION_WHARTON2012,
         'description': 'Isotropic (orientation-independent) volume susceptibility of myelin relative to water: '
                        'the chi_iso replay knob of the field tier. The Winther meshes were built and published '
                        'with chi_myelin - chi_water = +1.06e-6 (their own convention), which winther_spec keeps.',
@@ -750,15 +756,7 @@ BIOPHYSICAL_CONSTANTS = {
                 'method': 'GRE phase + hollow-cylinder model',
                 'source_key': 'wharton2012',
                 'location': 'Table 1: Δχ_a = −0.1 ppm used in model fits',
-                'citation': {
-                    'key': 'wharton2012',
-                    'authors': 'Wharton S, Bowtell R',
-                    'title': 'Fiber orientation-dependent white matter contrast in gradient '
-                             'echo MRI',
-                    'journal': 'Proceedings of the National Academy of Sciences',
-                    'year': 2012,
-                    'doi': '10.1073/pnas.1211075109',
-                },
+                'citation': _CITATION_WHARTON2012,
             },
             {
                 'value': -0.08e-6,
