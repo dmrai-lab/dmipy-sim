@@ -61,6 +61,7 @@ class Encoding:
     cpmg_n_echoes: int = None
     cpmg_TE: float = None
     cpmg_beta_deg: float = None
+    cpmg_refocus_axis_deg: float = None
     n_t_per_echo: int = None
     refocused: bool = None
 
