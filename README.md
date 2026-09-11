@@ -318,6 +318,9 @@ rules, the replay invariant, and how to add physics.
 - **[Substrate bank](examples/substrate_bank/)** — building canonical-pore packs with a fidelity target.
 - **[Circular white-matter phantom](examples/rph/circular_wm_phantom.py)** — one CACTUS pack composed into a
   replay phantom with a fanned sector, swept over gradient and field direction; writes the animation above.
+- **[A brain from an MRtrix CSD result](examples/rph/brain_from_csd.py)** — the B.A.T.M.A.N. tutorial subject's own
+  CSD FOD and five-tissue segmentation composed into a whole-brain phantom on the image's grid, replayed on the
+  tutorial's multi-shell table, written back as a DWI; `brain_from_csd_check.py` deconvolves it and recovers the FOD.
 
 ## Install
 
