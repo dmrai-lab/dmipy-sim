@@ -176,3 +176,27 @@ def test_the_readers_of_a_played_gradient_take_a_budget():
     G = np.asarray(ref.G).copy(); G[0, 16:19, 0] = 0.01                                    # into the lead-in
     with pytest.raises(ValueError, match="lead-in window|during the 90 pulse"):
         S.from_btensor_waveform(G, ref.dt, timing=tm)
+
+
+def test_a_prescription_places_the_acquisition_in_the_bore_and_derives_nothing():
+    """The acquisition in space: isocenter, axes, voxel size, matrix. Optional, keyword-only, and the waveform,
+    the schedule and b are the same with or without it (ACQUISITION.md 3.6, 5.7)."""
+    from dmipy_sim import Prescription, sequences
+    from dmipy_sim.phantom import Grid
+    p = Prescription(voxel_size_m=(1.5e-3,) * 3, matrix=(40, 40, 1))
+    assert p.isocenter_m == (0.0, 0.0, 0.0) and p.axes == "RAS" and p.fov_m == (0.06, 0.06, 1.5e-3)
+    np.testing.assert_allclose(p.origin_m, (-0.02925, -0.02925, 0.0))            # the FOV centred on the isocenter
+    assert Prescription.from_dict(p.to_dict()) == p
+    with pytest.raises(ValueError, match="axes"):
+        Prescription(voxel_size_m=(1e-3,) * 3, matrix=(2, 2, 2), axes="RRS")
+    with pytest.raises(TypeError):
+        Prescription((0, 0, 0), (1e-3,) * 3, (2, 2, 2))
+    seq = sequences.pgse([[1, 0, 0]], 0.010, 0.030, bvalues=[1e9], TE=0.060)
+    assert seq.prescription is None
+    seq_p = seq.with_prescription(p)
+    assert seq_p.prescription == p and seq_p.G is seq.G and seq_p.rf == seq.rf and seq_p.b()[0] == seq.b()[0]
+    with pytest.raises(TypeError):
+        seq.with_prescription({"matrix": (1, 1, 1)})
+    g = Grid.from_prescription(p)
+    assert g.shape == (40, 40, 1) and g.axes == "RAS"
+    np.testing.assert_allclose(g.origin_m, p.origin_m); np.testing.assert_allclose(g.isocenter_m, p.isocenter_m)

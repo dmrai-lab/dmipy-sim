@@ -281,6 +281,10 @@ def _write_defs(seq, waveform, dt, n_t, echo_idx=None):
     seq.set_definition('dmipy_gradient', 'physical')     # what G is: the scanner's, pulses as blocks or metadata
     if getattr(waveform, 'timing', None) is not None:
         seq.set_definition('dmipy_timing', json.dumps(waveform.timing.to_dict(), separators=(',', ':')))
+    if getattr(waveform, 'prescription', None) is not None:
+        p = waveform.prescription
+        seq.set_definition('FOV', list(p.fov_m))                                    # Pulseq's own field-of-view key
+        seq.set_definition('dmipy_prescription', json.dumps(p.to_dict(), separators=(',', ':')))
 
 
 
@@ -420,11 +424,16 @@ def from_pulseq(src, *, dt=None):
     timing = None
     if defs.get('dmipy_timing'):
         timing = SequenceTiming.from_dict(json.loads(defs['dmipy_timing']))
+    prescription = None
+    if defs.get('dmipy_prescription'):
+        from ..acquisition.prescription import Prescription
+        prescription = Prescription.from_dict(json.loads(defs['dmipy_prescription']))
     elif (native and not meta_events and len(sched) == 2 and sched.refocus_time is not None
           and sched.mixing_time == (None, False) and _has_adc(seq)):
         timing = SequenceTiming.from_pulseq(seq)   # a foreign spin echo: its budget is what its blocks say
 
-    return ScannerSequence(G=G[None], dt=dt, rf=rf_events, readout=(echo_idx,), timing=timing, family="pulseq")
+    return ScannerSequence(G=G[None], dt=dt, rf=rf_events, readout=(echo_idx,), timing=timing, family="pulseq",
+                           prescription=prescription)
 
 
 def _has_adc(seq):

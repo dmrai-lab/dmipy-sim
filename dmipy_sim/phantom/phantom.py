@@ -288,6 +288,7 @@ class Phantom:
         A declared layer this route cannot carry raises rather than being dropped.
         """
         f = self.file
+        self._check_prescription(seq)
         maps = dict(transmit=self._map(transmit, "transmit"), off_resonance=self._map(off_resonance, "off_resonance"),
                     proton_density=self._map(proton_density, "proton_density"))
         common = dict(B0=B0_T, b0_dir=b0_dir, tissue=tissue, packs=self._packs(packs), complex_signal=complex_signal,
@@ -298,6 +299,15 @@ class Phantom:
         else:
             _, S = f.replay(seq, **common)
         return self.to_volume(S)
+
+    def _check_prescription(self, seq):
+        """A prescribed acquisition and this grid must agree on the scanner axes: the gradient and B0
+        directions are given in them (ACQUISITION.md 4.1), so a mismatch is refused rather than rotated."""
+        p = getattr(seq, "prescription", None)
+        if p is not None and p.axes != self.grid.axes:
+            raise ValueError(f"the acquisition is prescribed on axes {p.axes!r} and the phantom's grid on {self.grid.axes!r}: "
+                             f"the gradient and B0 directions are given in the scanner frame, so the two must agree; "
+                             f"build the grid with Grid.from_prescription(seq.prescription) or re-prescribe the sequence")
 
     def _map(self, value, name):
         """A replay-time map as one value per occupied voxel, or None."""

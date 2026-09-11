@@ -466,3 +466,23 @@ def test_an_analytic_slot_ignores_the_orientation_it_is_given(pack_path):
     with pytest.raises(ValueError, match="orientation-independent"):
         Phantom.compose(GRID8, fractions={wm: np.full((8, 8, 1), 0.5), csf: np.full((8, 8, 1), 0.5)},
                         orientation={wm: Peaks(np.zeros((8, 8, 1, 3)) + (0, 0, 1)), csf: Peaks(np.zeros((8, 8, 1, 3)) + (0, 0, 1))})
+
+
+def test_a_prescribed_acquisition_must_share_the_grid_axes(pack_path):
+    """The gradient and B0 directions are given in the scanner frame, so a sequence prescribed on other axes than
+    the grid's is refused rather than rotated; a grid built from the prescription agrees by construction."""
+    from dmipy_sim import Prescription
+    from dmipy_sim.replay import read_rpk
+    ph, *_ = _phantom(pack_path)
+    pk = read_rpk(pack_path)
+    seq = _acq(pk, [[1, 0, 0]], [1e9])
+    p_bad = Prescription(voxel_size_m=(1e-3,) * 3, matrix=(8, 8, 1), axes="LPS")
+    with pytest.raises(ValueError, match="axes 'LPS'"):
+        ph.replay(seq.with_prescription(p_bad))
+    p_ok = Prescription(voxel_size_m=(1e-3,) * 3, matrix=(8, 8, 1))
+    S = ph.replay(seq.with_prescription(p_ok))
+    np.testing.assert_allclose(np.nan_to_num(S), np.nan_to_num(ph.replay(seq)))
+    wm, csf, bg = _subs(pack_path)
+    g = Grid.from_prescription(Prescription(voxel_size_m=(1e-3,) * 3, matrix=(8, 8, 1), axes="LPS"))
+    ph2 = Phantom.compose(g, fractions={wm: np.ones((8, 8, 1))}, orientation=Watson(mu=_tangential(), kappa=12.0))
+    assert np.isfinite(ph2.replay(seq.with_prescription(p_bad))).all()          # same axes: fine

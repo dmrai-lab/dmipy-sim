@@ -13,6 +13,8 @@ three containers is one field or one derivation here:
 * ``timing`` -- the :class:`~dmipy_sim.acquisition.timing.SequenceTiming` budget, when built to one.
 * ``encoding`` -- the per-measurement :class:`Encoding` an analytical layer reads (b, directions, delta, ...).
 * ``crusher`` -- the emergent voxel-scale crusher the vector-Bloch engine models as windings over windows.
+* ``prescription`` -- optionally, where in the bore and on what voxels (:class:`~dmipy_sim.acquisition.prescription.Prescription`):
+  the acquisition in space, as the rest of the object is the acquisition in time. Nothing is derived from it.
 
 The scalar engine, the b integrals and the pack's replay read ``G_eff``; the vector-Bloch routes read ``G`` and
 apply ``rf`` themselves. A :class:`Protocol` is a tuple of these -- one echo time each -- for a multi-TE scheme.
@@ -21,10 +23,11 @@ from dataclasses import dataclass, field, replace
 
 import numpy as np
 
+from .prescription import Prescription
 from .rf import RFSchedule
 from .timing import SequenceTiming
 
-__all__ = ["Encoding", "ScannerSequence", "Protocol", "ECHO_TOL"]
+__all__ = ["Encoding", "ScannerSequence", "Protocol", "Prescription", "ECHO_TOL"]
 
 #: samples: the rounding freedom of placing a pulse at a lobe midpoint
 ECHO_TOL = 2
@@ -92,9 +95,12 @@ class ScannerSequence:
     family: str = "waveform"
     notes: str = ""
     build_spec: tuple = None
+    prescription: Prescription = None
 
     def __post_init__(self):
         _set = lambda k, v: object.__setattr__(self, k, v)
+        if self.prescription is not None and not isinstance(self.prescription, Prescription):
+            raise TypeError(f"prescription is a Prescription; got {type(self.prescription).__name__}")
         G = np.asarray(self.G, dtype=np.float32)
         if G.ndim == 2:
             G = G[None]
@@ -249,6 +255,13 @@ class ScannerSequence:
         return self
 
     # ── the measurement axis ───────────────────────────────────────────────────────────────────────
+    def with_prescription(self, prescription):
+        """The same acquisition, prescribed in the bore: isocenter, axes, voxel size and matrix
+        (:class:`~dmipy_sim.acquisition.prescription.Prescription`). Nothing about the waveform changes."""
+        if not isinstance(prescription, Prescription):
+            raise TypeError(f"prescription is a Prescription; got {type(prescription).__name__}")
+        return replace(self, prescription=prescription)
+
     def with_gradient(self, G):
         """The same acquisition with another physical gradient of the same shape (a rescale, a rotation)."""
         G = np.asarray(G, dtype=np.float32)
