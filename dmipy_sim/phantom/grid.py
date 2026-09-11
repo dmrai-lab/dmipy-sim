@@ -95,6 +95,32 @@ class Grid:
         origin = centre - 0.5 * (n - 1) * vs
         return cls(shape=tuple(int(v) for v in n), voxel_size_m=tuple(vs), origin_m=tuple(origin), isocenter_m=isocenter_m,
                    axes=axes, attach=attach)
+    @classmethod
+    def from_oblique_affine(cls, affine, shape, *, isocenter_m=None):
+        """The grid of an image whose voxel axes are **rotated** in the scanner (an oblique prescription), and
+        the rotation that says so: ``(grid, R)`` with ``R`` the proper rotation taking image axes to scanner axes,
+        ``affine[:3, :3] = R @ diag(voxel_size)``. Nothing is resampled and nothing is straightened: the grid's
+        axes are the image's, the origin is the image's, and it is the **caller's** job to rotate everything given
+        in scanner coordinates -- an FOD's harmonics, the gradient directions, the field direction -- by ``R.T``
+        into the grid frame before composing. A shear or a non-orthogonal block is refused."""
+        A = np.asarray(affine, np.float64)
+        if A.shape != (4, 4):
+            raise ValueError(f"an affine is 4 x 4; got {A.shape}")
+        M = A[:3, :3]
+        vs = np.linalg.norm(M, axis=0)
+        if np.any(vs == 0):
+            raise ValueError("the affine has a zero voxel size")
+        R = M / vs
+        if not np.allclose(R.T @ R, np.eye(3), atol=1e-6):
+            raise ValueError("the affine's rotation block is not orthogonal (a shear): a voxel grid cannot represent it")
+        if np.linalg.det(R) < 0:
+            R = R @ np.diag([1.0, 1.0, -1.0])                       # a left-handed image: flip the last axis' label
+            axes = "RAS"[:2] + "I"
+        else:
+            axes = "RAS"
+        grid = cls(shape=tuple(int(v) for v in shape)[:3], voxel_size_m=tuple(float(v) * 1e-3 for v in vs),
+                   origin_m=tuple(float(v) * 1e-3 for v in A[:3, 3]), isocenter_m=isocenter_m, axes=axes)
+        return grid, R
 
     @classmethod
     def from_meta(cls, meta):
