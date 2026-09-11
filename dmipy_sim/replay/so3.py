@@ -77,23 +77,39 @@ def sh_block(l, full=False):
 def real_sh(lmax, dirs, full=False):
     """Orthonormal real spherical harmonics in the compact layout.
 
-    ``dirs`` is ``(n, 3)`` unit Cartesian; returns ``(n, n_sh_coeffs(lmax, full))``.
+    ``dirs`` is ``(n, 3)`` unit Cartesian; returns ``(n, n_sh_coeffs(lmax, full))``. Every order comes from one
+    pass of the standard three-term recurrences on the fully normalised associated Legendre functions
+    (Condon-Shortley phase included, as ``scipy.special.lpmv`` has it), vectorised over the directions: the
+    same numbers as evaluating ``lpmv`` per ``(l, m)`` to 1e-12, at a small fraction of its cost, which is what
+    the closed-form pose expansion needs when it evaluates the harmonics of every walker's moment.
     """
     d = np.asarray(dirs, np.float64).reshape(-1, 3)
     x = np.clip(d[:, 2], -1.0, 1.0)
     phi = np.arctan2(d[:, 1], d[:, 0])
-    out = np.empty((d.shape[0], n_sh_coeffs(lmax, full)), np.float64)
-    for l in range(0, lmax + 1, 1 if full else 2):
-        blk = sh_block(l, full)
-        col = out[:, blk]
-        col[:, l] = np.sqrt((2 * l + 1) / (4 * np.pi)) * lpmv(0, l, x)
+    s = np.sqrt(np.clip(1.0 - x * x, 0.0, 1.0))
+    L = int(lmax)
+    # P[l][m] = K_lm P_l^m(x), K_lm = sqrt((2l+1)/4pi (l-m)!/(l+m)!): the diagonal by the sectoral recurrence, the
+    # first off-diagonal by one step, the rest by the standard recurrence in l at fixed m
+    P = [[None] * (l + 1) for l in range(L + 1)]
+    P[0][0] = np.full(d.shape[0], 1.0 / np.sqrt(4.0 * np.pi))
+    for m in range(1, L + 1):
+        P[m][m] = -np.sqrt((2.0 * m + 1.0) / (2.0 * m)) * s * P[m - 1][m - 1]
+    for m in range(0, L):
+        P[m + 1][m] = np.sqrt(2.0 * m + 3.0) * x * P[m][m]
+    for m in range(0, L + 1):
+        for l in range(m + 2, L + 1):
+            a = np.sqrt((4.0 * l * l - 1.0) / (l * l - m * m))
+            b = np.sqrt(((l - 1.0) ** 2 - m * m) / (4.0 * (l - 1.0) ** 2 - 1.0))
+            P[l][m] = a * x * P[l - 1][m] - a * b * P[l - 2][m]
+    cos_m = [np.cos(m * phi) for m in range(L + 1)]
+    sin_m = [np.sin(m * phi) for m in range(L + 1)]
+    out = np.empty((d.shape[0], n_sh_coeffs(L, full)), np.float64)
+    for l in range(0, L + 1, 1 if full else 2):
+        col = out[:, sh_block(l, full)]
+        col[:, l] = P[l][0]
         for m in range(1, l + 1):
-            # K_lm = sqrt((2l+1)/4pi * (l-m)!/(l+m)!), via gammaln for large l
-            K = np.sqrt((2 * l + 1) / (4 * np.pi)
-                        * np.exp(gammaln(l - m + 1) - gammaln(l + m + 1)))
-            P = lpmv(m, l, x)
-            col[:, l + m] = np.sqrt(2.0) * K * P * np.cos(m * phi)
-            col[:, l - m] = np.sqrt(2.0) * K * P * np.sin(m * phi)
+            col[:, l + m] = np.sqrt(2.0) * P[l][m] * cos_m[m]
+            col[:, l - m] = np.sqrt(2.0) * P[l][m] * sin_m[m]
     return out
 
 
