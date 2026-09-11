@@ -80,7 +80,7 @@ from dmipy_sim.substrate import Substrate
 from dmipy_sim.spec import walk_spec
 from dmipy_sim.replay import ReplayPack
 from dmipy_sim.replay.bank import build_replay_pack
-from dmipy_sim.sequences import Sequence
+from dmipy_sim import sequences
 
 # the substrate: histology-calibrated white matter, realised as a SPEC -- domain, pools, walls, seeding,
 # what was requested and what was achieved, all written out (replay-pack-spec/SUBSTRATE.md)
@@ -250,9 +250,11 @@ meet in that substrate, not validated on an average case.
 ```
 dmipy_sim/
   geometry/     substrates: base, analytic, packed, myelin, packing, curved_cylinder, mesh, mesh_shapes
-  engine/       core (simulate, simulate_trajectories), physics, bloch, pulse_sequence, mt, mt_walk, gpu
-  replay/       trajectories, compression, replay (ReplayPack), bank (build_replay_pack)
-  acquisition/  waveforms, rf, noise          sequences/   Sequence, pulseq import/export
+  engine/       core (simulate, simulate_trajectories), physics, bloch (simulate_bloch), pulse_sequence, mt, mt_walk, gpu
+  replay/       trajectories, compression, replay (ReplayPack), phantom, bank (build_replay_pack), fod, so3
+  acquisition/  scanner_sequence (ScannerSequence, Protocol, Encoding), rf (RFEvent, RFSchedule), timing (SequenceTiming),
+                scanners (ScannerLimits), waveforms (the integrals), noise
+  sequences/    builders (pgse, pgste, ogse, cpmg, gre, ste, pte, from_waveform, ...), assemble (the mechanics), pulseq
   fields/       susceptibility, susceptibility_field (FieldGrid, field_grid_of)
   substrate/    Substrate (calibrated white matter), biophysical constants
   compartments.py  persistent_walk.py  constants.py   viz/  io/  math/
