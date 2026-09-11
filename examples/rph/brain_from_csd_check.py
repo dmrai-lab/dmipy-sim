@@ -1,10 +1,11 @@
-"""The round trip of brain_from_csd.py: deconvolve the synthetic DWI with the phantom's own white-matter response
-and compare the recovered FOD with the one that built it, voxel by voxel.
+"""The round trip of brain_from_csd.py: deconvolve the synthetic DWI with dmipy-fit and compare the recovered FOD
+with the one that built the phantom, voxel by voxel.
 
-A Tournier-style constrained spherical deconvolution (positivity on a sphere, Laplace-Beltrami smoothing), with the
-kernel taken from the replay pack itself -- the pack replayed at the identity pose on the acquisition's directions
--- so nothing outside this package is needed. It is single-tissue: the GM and CSF terms of a voxel are the isotropic
-contamination a single-fibre CSD always sees, which is why the comparison is made on white-matter-dominated voxels.
+Needs ``dmipy-fit`` (``pip install dmipy-fit``): the estimator is fit's business. The white-matter kernel is the
+pack's own single-fibre signal -- the pack replayed at the identity pose on the acquisition's directions -- handed to
+fit's anisotropic tissue-response estimator exactly as a single-fibre voxel of real data would be; the FOD is then
+fit's spherical-harmonics model with the CSD solver. Single tissue: the GM and CSF terms of a voxel are the isotropic
+contamination a single-fibre CSD always sees, so the comparison is made on white-matter-dominated voxels.
 
     python examples/rph/brain_from_csd_check.py <batman_dir> <out_dir> <wm_pack.rpk> [--TE 0.100 --delta 0.025 --Delta 0.055]
 """
@@ -19,7 +20,7 @@ from brain_from_csd import acquisition  # noqa: E402
 
 from dmipy_sim.io.mrtrix import read_mif
 from dmipy_sim.phantom import Grid, PackSubstrate
-from dmipy_sim.replay.so3 import n_sh_coeffs, real_sh, rotate_sh, sh_block
+from dmipy_sim.replay.so3 import real_sh, rotate_sh
 
 
 def fibonacci_sphere(n=724):
@@ -28,48 +29,27 @@ def fibonacci_sphere(n=724):
     return np.stack([np.cos(theta) * np.sin(phi), np.sin(theta) * np.sin(phi), np.cos(phi)], 1)
 
 
-def kernel(pack, seq, g, lmax=8):
-    """``A (n_meas, n_c)``: FOD harmonics -> signal, from the pack's response about its own axis on each shell."""
-    E = np.real(pack.replay(seq, orientation=np.eye(3), complex_signal=True))
-    dirs = np.asarray(seq.encoding.gradient_directions, np.float64)
-    shells = np.round(g[:, 3] / 100.0) * 100.0
-    ls = list(range(0, lmax + 1, 2))
-    cosz = np.abs(dirs[:, 2])                                             # the angle to the axis (z at the identity pose)
-    polar = np.stack([np.sqrt(np.clip(1 - cosz ** 2, 0, 1)), np.zeros_like(cosz), cosz], 1)
-    Yz = np.stack([real_sh(lmax, polar)[:, sh_block(l).start + l] for l in ls], 1)   # Y_l0 per measurement, (n_meas, n_l)
-    r = {}
-    for sh in np.unique(shells):
-        m = shells == sh
-        if sh == 0:
-            r[sh] = np.array([E[m].mean() / Yz[m, 0].mean()] + [0.0] * (len(ls) - 1))
-        else:
-            r[sh] = np.linalg.lstsq(Yz[m], E[m], rcond=None)[0]
-    Y = real_sh(lmax, dirs)                                               # (n_meas, n_c)
-    A = np.zeros_like(Y)
-    for i in range(len(shells)):
-        for li, l in enumerate(ls):
-            A[i, sh_block(l)] = np.sqrt(4 * np.pi / (2 * l + 1)) * r[shells[i]][li] * Y[i, sh_block(l)]
-    return A
+def fit_fods(pack, seq, S, voxels):
+    """FOD harmonics (fit's CSD, MRtrix3 basis) of the given voxels of a synthetic DWI, with the pack as kernel."""
+    from dmipy_fit.core.acquisition_scheme import AcquisitionScheme
+    from dmipy_fit.core.spherical_harmonics_framework import MultiCompartmentSphericalHarmonicsModel
+    from dmipy_fit.signal_models.tissue_response_models import estimate_TR2_anisotropic_tissue_response_model
+    scheme = AcquisitionScheme(seq)
+    single_fibre = np.real(pack.replay(seq, orientation=np.eye(3), complex_signal=True))[None, :]
+    _S0, tr2 = estimate_TR2_anisotropic_tissue_response_model(scheme, single_fibre)     # (S0, model)
+    model = MultiCompartmentSphericalHarmonicsModel(models=[tr2], sh_order=8)
+    data = np.stack([S[tuple(v)] for v in voxels])
+    fitted = model.fit(scheme, data, solver="csd", verbose=False)
+    return np.asarray(fitted.fod_sh())                                    # (n_voxels, 45), dipy tournier non-legacy = MRtrix3
 
 
-def csd(A, S, sphere_Y, lmax=8, lambda_pos=1.0, lambda_lb=5e-4, tau=0.1, max_iter=50):
-    """Tournier 2007 CSD for one voxel: positivity on the sphere, iteratively reweighted."""
-    n4 = n_sh_coeffs(4)
-    ls = np.concatenate([[l] * (2 * l + 1) for l in range(0, lmax + 1, 2)])
-    Rlb = np.diag((ls * (ls + 1.0)) ** 2)
-    AT_A = A.T @ A + lambda_lb * Rlb
-    f = np.zeros(A.shape[1]); f[:n4] = np.linalg.pinv(A[:, :n4]) @ S
-    thr = tau * sphere_Y[0, 0] * f[0]
-    neg = sphere_Y @ f < thr
-    for _ in range(max_iter):
-        L = sphere_Y[neg]
-        Q = AT_A + lambda_pos * (L.T @ L)
-        f = np.linalg.solve(Q + 1e-8 * np.eye(Q.shape[0]), A.T @ S)
-        new = sphere_Y @ f < thr
-        if np.array_equal(new, neg):
-            break
-        neg = new
-    return f
+def compare(c_in, c_out, sphere):
+    Ys = real_sh(8, sphere)
+    pin = sphere[np.argmax(Ys @ c_in.T, axis=0)]; pout = sphere[np.argmax(Ys @ c_out.T, axis=0)]
+    angle = np.degrees(np.arccos(np.clip(np.abs(np.sum(pin * pout, 1)), 0, 1)))
+    u, v = c_in[:, 1:], c_out[:, 1:]                                      # angular correlation of the anisotropic part
+    acc = np.sum(u * v, 1) / np.maximum(np.linalg.norm(u, axis=1) * np.linalg.norm(v, axis=1), 1e-30)
+    return angle, acc
 
 
 def main(argv=None):
@@ -79,32 +59,22 @@ def main(argv=None):
     ap.add_argument("--Delta", type=float, default=0.055); ap.add_argument("--afd", type=float, default=0.15)
     a = ap.parse_args(argv)
     import nibabel as nib
+    from dmipy_sim.replay.phantom import read_rph
     fod = read_mif(os.path.join(a.batman, "wmfod_norm.mif"))
     grid, R = Grid.from_oblique_affine(fod.affine, fod.shape[:3])
     seq, g = acquisition(a.batman, R, grid, TE=a.TE, delta=a.delta, Delta=a.Delta)
     S = nib.load(os.path.join(a.out, "synthetic_dwi.nii.gz")).get_fdata()
-    from dmipy_sim.replay.phantom import read_rph
     ph = read_rph(os.path.join(a.out, "batman_brain.rph"))
     f_wm = ph.to_volume(ph.fraction(0), fill=0.0)
-    pack = PackSubstrate(a.wm_pack, m0=1.0).pack
-    A = kernel(pack, seq, g)
-    sphere = fibonacci_sphere(); Ys = real_sh(8, sphere)
-    c_in = rotate_sh(fod.data, R.T)
-    live = np.argwhere((fod.data[..., 0] > a.afd) & (f_wm > 0.5) & (S[..., 0] > 0))
-    angles, accs = [], []
-    for i, j, k in live:
-        s = S[i, j, k]
-        f = csd(A, s / s[g[:, 3] == 0].mean(), Ys)
-        pin, pout = sphere[np.argmax(Ys @ c_in[i, j, k])], sphere[np.argmax(Ys @ f)]
-        angles.append(np.degrees(np.arccos(min(1.0, abs(pin @ pout)))))
-        u, v = c_in[i, j, k][1:], f[1:]                                   # angular correlation: the anisotropic part
-        accs.append(float(u @ v / max(np.linalg.norm(u) * np.linalg.norm(v), 1e-30)))
-    angles, accs = np.array(angles), np.array(accs)
-    print(f"CSD round trip on {len(angles)} WM voxels (AFD > {a.afd}, f_wm > 0.5): peak angle median {np.median(angles):.1f} deg, "
-          f"< 10 deg {np.mean(angles < 10) * 100:.0f} %, < 20 deg {np.mean(angles < 20) * 100:.0f} %; "
-          f"angular correlation median {np.median(accs):.3f}", flush=True)
-    np.savez(os.path.join(a.out, "csd_roundtrip.npz"), voxels=live, angle_deg=angles, acc=accs)
-    return angles, accs
+    voxels = np.argwhere((fod.data[..., 0] > a.afd) & (f_wm > 0.5) & (S[..., 0] > 0))
+    c_out = fit_fods(PackSubstrate(a.wm_pack, m0=1.0).pack, seq, S, voxels)
+    c_in = rotate_sh(fod.data, R.T)[tuple(voxels.T)]
+    angle, acc = compare(c_in, c_out, fibonacci_sphere())
+    print(f"CSD round trip (dmipy-fit) on {len(voxels)} WM voxels (AFD > {a.afd}, f_wm > 0.5): peak angle median "
+          f"{np.median(angle):.1f} deg, < 10 deg {np.mean(angle < 10) * 100:.0f} %, < 20 deg {np.mean(angle < 20) * 100:.0f} %; "
+          f"angular correlation median {np.median(acc):.3f}", flush=True)
+    np.savez(os.path.join(a.out, "csd_roundtrip.npz"), voxels=voxels, angle_deg=angle, acc=acc, fod_sh=c_out)
+    return angle, acc
 
 
 if __name__ == "__main__":

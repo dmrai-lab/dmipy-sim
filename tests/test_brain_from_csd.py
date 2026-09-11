@@ -70,23 +70,23 @@ def test_the_signal_minimum_lies_along_the_fod_peak(example, wm_pack):
 
 
 def test_csd_on_the_synthetic_dwi_recovers_the_fod_that_built_it(example, wm_pack):
-    """The load-bearing check of #193: deconvolve the synthetic DWI with the phantom's own white-matter response and
-    the recovered FOD peaks where the input one did (single-tissue CSD, on WM-dominated voxels)."""
+    """The load-bearing check of #193, with dmipy-fit as the estimator (skipped when fit is not installed: sim ships
+    no estimator): deconvolve the synthetic DWI with fit's CSD, the pack's own single-fibre signal as the kernel, and
+    the recovered FOD peaks where the input one did (single tissue, on WM-dominated voxels)."""
+    fit = pytest.importorskip("dmipy_fit")
+    import inspect
+    from dmipy_fit.core.acquisition_scheme import AcquisitionScheme
+    if "sequence" not in inspect.signature(AcquisitionScheme.__init__).parameters:
+        pytest.skip("needs a dmipy-fit whose AcquisitionScheme takes a ScannerSequence (fit >= #27)")
     spec = importlib.util.spec_from_file_location("check", ROOT / "examples" / "rph" / "brain_from_csd_check.py")
     check = importlib.util.module_from_spec(spec); spec.loader.exec_module(check)
     from dmipy_sim.replay import read_rpk
     ph, fod, R = example.build(str(CROP), wm_pack)
     seq, g = example.acquisition(str(CROP), R, ph.grid, TE=0.030, delta=0.006, Delta=0.015)
     S = ph.replay(seq)
-    A = check.kernel(read_rpk(wm_pack), seq, g)
-    sphere = check.fibonacci_sphere(); Ys = real_sh(8, sphere)
-    c_in = rotate_sh(fod.data, R.T)
     f_wm = ph.fraction(ph.substrates[0])
-    angles = []
-    for i, j, k in np.argwhere((fod.data[..., 0] > 0.15) & (f_wm > 0.5)):
-        s = S[i, j, k]
-        f = check.csd(A, s / s[g[:, 3] == 0].mean(), Ys)
-        pin, pout = sphere[np.argmax(Ys @ c_in[i, j, k])], sphere[np.argmax(Ys @ f)]
-        angles.append(np.degrees(np.arccos(min(1.0, abs(pin @ pout)))))
-    angles = np.array(angles)
-    assert angles.size >= 20 and np.median(angles) < 8.0 and np.mean(angles < 15.0) > 0.75
+    voxels = np.argwhere((fod.data[..., 0] > 0.15) & (f_wm > 0.5))
+    c_out = check.fit_fods(read_rpk(wm_pack), seq, S, voxels)
+    c_in = rotate_sh(fod.data, R.T)[tuple(voxels.T)]
+    angle, acc = check.compare(c_in, c_out, check.fibonacci_sphere())
+    assert angle.size >= 20 and np.median(angle) < 8.0 and np.mean(angle < 15.0) > 0.75 and np.median(acc) > 0.9
