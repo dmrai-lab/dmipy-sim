@@ -237,14 +237,16 @@ class GradientEcho:
 
 
 class EchoTrain:
-    """90 at 0 and ``n_echoes`` refocusing pulses of ``beta_deg`` at ``(k + 1/2) TE``; the gradient fills every
-    stretch the pulses and readouts leave, at one polarity or alternating per echo interval."""
+    """90 about x at 0 and ``n_echoes`` refocusing pulses of ``beta_deg`` at ``(k + 1/2) TE`` about the axis
+    ``refocus_axis_deg`` -- 90 (y) is Meiboom-Gill, where a flip-angle error self-corrects every second echo;
+    0 (x) is Carr-Purcell, where it accumulates. A gradient, if any, fills every stretch the pulses and readouts
+    leave, at one polarity or alternating per echo interval."""
 
-    def __init__(self, n_echoes, TE, polarity="constant", beta_deg=180.0, timing=None):
+    def __init__(self, n_echoes, TE, polarity="constant", beta_deg=180.0, refocus_axis_deg=90.0, timing=None):
         if polarity not in ("constant", "alternate"):
             raise ValueError(f"polarity must be 'constant' or 'alternate', got {polarity!r}")
         self.n_echoes, self.TE_echo = int(n_echoes), float(TE)
-        self.polarity, self.beta = polarity, float(beta_deg)
+        self.polarity, self.beta, self.refocus_axis = polarity, float(beta_deg), float(refocus_axis_deg)
         self.timing = timing
 
     def te_min(self, spans, g):
@@ -272,7 +274,8 @@ class EchoTrain:
     def layout(self, spans, g, TE, dt, n_t):
         tm = self.timing
         schedule = RFSchedule([RFEvent(_dur(tm, "t_prep"), 90, 'Mz→Mxy', duration_s=_dur(tm, "t_excite"))] +
-                              [RFEvent((k + 0.5) * self.TE_echo, self.beta, 'refocus', duration_s=_dur(tm, "t_refocus"))
+                              [RFEvent((k + 0.5) * self.TE_echo, self.beta, 'refocus', axis_deg=self.refocus_axis,
+                                       duration_s=_dur(tm, "t_refocus"))
                                for k in range(self.n_echoes)])
         t = np.arange(n_t) * dt
         on = np.ones(n_t, bool)

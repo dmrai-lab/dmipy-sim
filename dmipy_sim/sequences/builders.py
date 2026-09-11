@@ -271,17 +271,21 @@ def pte(plane_normal, gradient_duration, *, bvalues=None, gradient_strengths=Non
 
 # ── the echo train ───────────────────────────────────────────────────────────────────────────────────────────────
 
-def cpmg(n_echoes, TE, *, gradient_directions=None, bvalues=None, gradient_strengths=None, polarity="constant",
-         beta_deg=180.0, n_t_per_echo=100, slew_rate=DEFAULT_SLEW_RATE, timing=None):
-    """CPMG: a 90 and ``n_echoes`` refocusing pulses of ``beta_deg`` at ``(k + 1/2) TE``, an echo read at every
-    ``k TE``; the grid runs to the last echo.
+def cpmg(n_echoes, TE, *, beta_deg=180.0, refocus_axis_deg=90.0, gradient_directions=None, bvalues=None,
+         gradient_strengths=None, polarity="constant", n_t_per_echo=100, slew_rate=DEFAULT_SLEW_RATE, timing=None):
+    """CPMG: a 90 about x and ``n_echoes`` refocusing pulses of ``beta_deg`` at ``(k + 1/2) TE``, an echo read
+    at every ``k TE``; the grid runs to the last echo.
 
-    The diffusion gradient is on wherever the pulses and readouts leave room. ``polarity='constant'`` plays it
-    at one sign through the train (Carr-Purcell: with instantaneous pulses and no budget, one constant lobe);
-    ``polarity='alternate'`` flips its sign every echo interval. Either way each interval's ``G_eff`` is a
-    bipolar pair and every echo refocuses; they differ in what the scanner plays, which the vector-Bloch route
-    sees. ``bvalues`` is the b of the whole train (the last echo's); with neither ``bvalues`` nor
-    ``gradient_strengths`` the train carries no gradient (a pure-T2 train).
+    ``refocus_axis_deg`` is what makes it Meiboom-Gill: the refocusing pulses turn about y (90, the default),
+    a quarter turn from the excitation, so a flip-angle error ``beta_deg != 180`` cancels every second echo
+    instead of accumulating; ``refocus_axis_deg=0`` is the Carr-Purcell train, which decays with the error. The
+    transverse-only engine sees only the sign the pulses impose; ``simulate_bloch`` plays the axes.
+
+    With neither ``bvalues`` nor ``gradient_strengths`` the train carries no gradient: a relaxation (T2)
+    train, the usual CPMG. A diffusion-weighted train is opt-in: the gradient is then on wherever the pulses
+    and readouts leave room, ``polarity='constant'`` at one sign throughout, ``'alternate'`` flipping every
+    echo interval; either way each interval's ``G_eff`` is a bipolar pair and every echo refocuses.
+    ``bvalues`` is the b of the whole train (the last echo's).
     """
     n_echoes, TE_echo = int(n_echoes), float(TE)
     if n_echoes < 1:
@@ -291,7 +295,8 @@ def cpmg(n_echoes, TE, *, gradient_directions=None, bvalues=None, gradient_stren
     if bvalues is None and gradient_strengths is None:
         gradient_strengths = np.zeros(n_m)
     eps = lambda m, g: ramp_of(g, slew_rate)
-    train = EchoTrain(n_echoes, TE_echo, polarity=polarity, beta_deg=beta_deg, timing=timing)
+    train = EchoTrain(n_echoes, TE_echo, polarity=polarity, beta_deg=beta_deg, refocus_axis_deg=refocus_axis_deg,
+                      timing=timing)
     half = np.full(n_m, TE_echo / 2.0)
     return assemble(
         train, gradient_directions=dirs, bvalues=bvalues, gradient_strengths=gradient_strengths, TE=None,
@@ -300,6 +305,7 @@ def cpmg(n_echoes, TE, *, gradient_directions=None, bvalues=None, gradient_stren
         fill=lambda m, g, dt, n: trapezoid(n * dt - eps(m, g), eps(m, g), dt)[:n],
         encoding=lambda g, te, te_min: dict(delta=half, Delta=half, refocused=True, cpmg_n_echoes=n_echoes,
                                             cpmg_TE=TE_echo, cpmg_beta_deg=float(beta_deg),
+                                            cpmg_refocus_axis_deg=float(refocus_axis_deg),
                                             n_t_per_echo=int(n_t_per_echo),
                                             ramp_time=np.array([eps(m, g[m]) for m in range(n_m)])),
         build_spec=('cpmg', dict(n_echoes=n_echoes, TE=TE, gradient_directions=gradient_directions, bvalues=bvalues,
