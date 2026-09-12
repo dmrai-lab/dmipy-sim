@@ -111,8 +111,11 @@ def check_frame_against_walk(traj, F, *, w=None, bundle_axes=None, tol_deg=5.0, 
     of the walkers' end-to-end displacements must lie within ``tol_deg`` of the span of the declared bundle
     axes (``bundle_axes``, default the frame's ``z``). A walk whose displacement covariance has no dominant
     axis declares nothing and passes: dominant means an eigenvalue ratio above ``anisotropy`` AND above the
-    spread finite sampling gives an isotropic walk (``1 + 6 / sqrt(n_eff)``), so a small walk of free water is
-    not read as oriented by its noise. A walk with two comparable axes is checked against the plane only when
+    spread finite sampling gives an isotropic walk -- each eigenvalue of an isotropic sample covariance
+    fluctuates by ``sqrt(2 / n_eff)``, the ratio of the largest to the next by about ``2.4 / sqrt(n_eff)`` at
+    one sigma, so ``1 + 10 / sqrt(n_eff)`` is the four-sigma allowance the angle tolerance also uses -- so a
+    small walk of free water is not read as oriented by its noise (113 free walkers gave a ratio of 1.56 on
+    one platform's realisation and passed on another's). A walk with two comparable axes is checked against the plane only when
     two or more bundles are declared. Returns the angle (degrees)."""
     X = np.asarray(traj, np.float64)
     d = X[:, -1, :] - X[:, 0, :]
@@ -129,7 +132,7 @@ def check_frame_against_walk(traj, F, *, w=None, bundle_axes=None, tol_deg=5.0, 
     lam, V = np.linalg.eigh(C / tr)                               # ascending; unit trace keeps LAPACK away from
     lam, V = lam[::-1], V[:, ::-1]                                # its tolerance floor at 1e-12 m^2
     n_eff = float(w.sum() ** 2 / (w ** 2).sum())
-    dominant = max(float(anisotropy), 1.0 + 6.0 / np.sqrt(max(n_eff, 1.0)))
+    dominant = max(float(anisotropy), 1.0 + 10.0 / np.sqrt(max(n_eff, 1.0)))
     if lam[1] <= 0 or lam[0] / lam[1] < dominant:
         if lam[2] <= 0 or lam[1] / lam[2] < dominant or bundle_axes is None or len(bundle_axes) < 2:
             return 0.0                                            # no dominant axis: nothing to contradict
