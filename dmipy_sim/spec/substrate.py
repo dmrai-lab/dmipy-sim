@@ -265,6 +265,12 @@ def validate(d):
     if not (isinstance(bc, list) and len(bc) == 3 and all(b in BOUNDARIES for b in bc)):
         raise SpecError(f"domain.boundary must be three of {BOUNDARIES}, got {bc!r}")
     _vec3(_req(d["frame"], "axis", "frame"), "frame.axis")
+    if d["frame"].get("in_plane") is not None:
+        _vec3(d["frame"]["in_plane"], "frame.in_plane")
+        a = [float(v) for v in d["frame"]["axis"]]; b = [float(v) for v in d["frame"]["in_plane"]]
+        cross = [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
+        if sum(c * c for c in cross) ** 0.5 < 1e-6 * sum(v * v for v in a) ** 0.5 * sum(v * v for v in b) ** 0.5:
+            raise SpecError("frame.in_plane is parallel to frame.axis: it must span the plane with it")
     pools = d["pools"]
     if not pools:
         raise SpecError("pools: at least the free pool (id 0) is required")

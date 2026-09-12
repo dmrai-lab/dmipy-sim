@@ -32,7 +32,7 @@ from ._replay_kernel import se_gate, gradient_phase
 from ..acquisition.rf import RFEvent
 from .replay import ReplayPack, read_rpk, write_rpk
 
-__all__ = ["build_replay_pack", "build_to_floor", "replay_susc", "frame_from_axis", "frame_from_bundles",
+__all__ = ["build_replay_pack", "build_to_floor", "replay_susc", "frame_from_axis", "frame_from_bundles", "frame_of_spec", "check_frame_against_walk",
            "read_rpk", "write_rpk", "RPK_SCHEMA_VERSION"]
 
 RPK_SCHEMA_VERSION = "0.4"
@@ -75,18 +75,88 @@ def _master_arrays(src) -> dict:
 
 
 # --------------------------------------------------------------- substrate frames
-def frame_from_axis(axis):
+def frame_from_axis(axis, *, in_plane=None):
     """Deterministic orthonormal substrate frame R (3x3, columns [x, y, z]) with z = `axis`
     (the primary fibre direction) and a FIXED perpendicular x/y basis (Gram-Schmidt seeded
     from the global axis least aligned with z). A single fibre vector leaves a free rotation
     about itself; this pins x/y so directions are reproducible run-to-run and gradient schemes
     are oriented unambiguously. For an isotropic substrate any axis works — the frame is still
-    fixed, giving uniform behaviour across packs."""
+    fixed, giving uniform behaviour across packs. ``in_plane`` (a spec's ``frame.in_plane``) pins
+    ``y`` instead: its component perpendicular to ``z``, the direction a secondary bundle opens
+    into (RPK.md 4.2), and ``x = y × z``."""
     z = np.asarray(axis, float); z = z / np.linalg.norm(z)
+    if in_plane is not None:
+        y = np.asarray(in_plane, float); y = y - z * float(y @ z)
+        if np.linalg.norm(y) < 1e-9:
+            raise ValueError("in_plane is parallel to the axis")
+        y /= np.linalg.norm(y)
+        return np.column_stack([np.cross(y, z), y, z])
     seed = np.eye(3)[int(np.argmin(np.abs(z)))]        # global axis least aligned with z
     x = seed - z * float(seed @ z); x /= np.linalg.norm(x)
     y = np.cross(z, x)
     return np.column_stack([x, y, z])
+
+
+def frame_of_spec(spec):
+    """The substrate frame a spec declares, as the 3x3 basis: ``frame.axis`` (and ``frame.in_plane`` when
+    given) through :func:`frame_from_axis`."""
+    fr = getattr(spec, "frame", None)
+    if fr is None:
+        return None
+    return frame_from_axis(fr.axis, in_plane=getattr(fr, "in_plane", None))
+
+
+def check_frame_against_walk(traj, F, *, w=None, bundle_axes=None, tol_deg=5.0, anisotropy=1.1):
+    """Refuse a declared substrate frame the walk contradicts (RPK.md 4.2, dmipy-sim#194): the principal axis
+    of the walkers' end-to-end displacements must lie within ``tol_deg`` of the span of the declared bundle
+    axes (``bundle_axes``, default the frame's ``z``). A walk whose displacement covariance has no dominant
+    axis declares nothing and passes: dominant means an eigenvalue ratio above ``anisotropy`` AND above the
+    spread finite sampling gives an isotropic walk (``1 + 6 / sqrt(n_eff)``), so a small walk of free water is
+    not read as oriented by its noise. A walk with two comparable axes is checked against the plane only when
+    two or more bundles are declared. Returns the angle (degrees)."""
+    X = np.asarray(traj, np.float64)
+    d = X[:, -1, :] - X[:, 0, :]
+    w = np.ones(d.shape[0]) if w is None else np.asarray(w, np.float64)
+    ok = np.isfinite(d).all(1) & np.isfinite(w) & (w > 0)        # a walker with no position at the end says nothing
+    d, w = d[ok], w[ok]
+    if d.shape[0] < 4:
+        return 0.0
+    d = d - (w[:, None] * d).sum(0) / w.sum()
+    C = (d * w[:, None]).T @ d / w.sum()
+    tr = float(np.trace(C))
+    if tr <= 0:
+        return 0.0                                                # nobody moved
+    lam, V = np.linalg.eigh(C / tr)                               # ascending; unit trace keeps LAPACK away from
+    lam, V = lam[::-1], V[:, ::-1]                                # its tolerance floor at 1e-12 m^2
+    n_eff = float(w.sum() ** 2 / (w ** 2).sum())
+    dominant = max(float(anisotropy), 1.0 + 6.0 / np.sqrt(max(n_eff, 1.0)))
+    if lam[1] <= 0 or lam[0] / lam[1] < dominant:
+        if lam[2] <= 0 or lam[1] / lam[2] < dominant or bundle_axes is None or len(bundle_axes) < 2:
+            return 0.0                                            # no dominant axis: nothing to contradict
+        probe = V[:, :2]                                          # a plane of two comparable axes
+    else:
+        probe = V[:, :1]
+    F = np.asarray(F, np.float64).reshape(3, 3)
+    B = np.asarray(bundle_axes if bundle_axes is not None else [F[:, 2]], np.float64)
+    B = B / np.linalg.norm(B, axis=1, keepdims=True)
+    Q, _ = np.linalg.qr(B.T)                                      # an orthonormal basis of the declared span
+    Q = Q[:, :np.linalg.matrix_rank(B)]
+    worst = 0.0
+    for k in range(probe.shape[1]):
+        v = probe[:, k]
+        r = v - Q @ (Q.T @ v)
+        worst = max(worst, float(np.degrees(np.arcsin(min(1.0, np.linalg.norm(r))))))
+    # the principal axis of n_eff samples is itself uncertain by ~ sqrt(l1 l2) / (l1 - l2) / sqrt(n_eff) radians
+    # (Anderson): a small walk is refused only beyond four of those, never for its own sampling noise
+    k = probe.shape[1]
+    sigma = np.degrees(np.sqrt(lam[k - 1] * lam[k]) / max(lam[k - 1] - lam[k], 1e-300) / np.sqrt(n_eff))
+    if worst > max(float(tol_deg), 4.0 * float(sigma)):
+        raise ValueError(f"the walk's principal displacement axis {np.round(V[:, 0], 3).tolist()} is {worst:.1f} deg from "
+                         f"the declared substrate frame (axis {np.round(F[:, 2], 3).tolist()}"
+                         f"{'' if bundle_axes is None else f', bundles {np.round(B, 3).tolist()}'}): the frame does not "
+                         f"describe this substrate (RPK.md 4.2). Declare it from the substrate's own structure -- "
+                         f"substrate_frame=frame_from_axis(axis) or the spec's frame -- not from a guess")
+    return worst
 
 
 def frame_from_bundles(axes, *, primary=0, weights=None, tol=1e-3):
@@ -332,11 +402,47 @@ def _susc_path_fidelity(m, arrays, pm, gm, env):
                                 traj, origin, vs, periodic=False)
             f_dec = susc_path_field(b_dec, d, B0=B0, chi_iso=chi_i, chi_aniso=ca,
                                     has_aniso=bool(gm.get("has_aniso")))
-            for g in gates:
-                cr = np.cos(GAMMA * dt * (f_raw * g[None, :]).sum(1))
-                cd = np.cos(GAMMA * dt * (f_dec * g[None, :]).sum(1))
-                err = max(err, abs(wmean(cr, slice(None)) - wmean(cd, slice(None))))
-                floor = max(floor, abs(wmean(cr, A) - wmean(cr, B)))
+            e, f = _gate_battery(f_raw, f_dec, gates, w, A, B, dt)
+            err, floor = max(err, e), max(floor, f)
+    return dict(err=float(err), floor=float(floor), n_pulses_certified=n_p)
+
+
+def _gate_battery(f_raw, f_dec, gates, w, A, B, dt):
+    """The worst gated-phase replay error between two per-walker field series over ``gates``, and the split-half
+    floor of the reference: ``(err, floor)``."""
+    from ..constants import GAMMA
+    wmean = lambda c, idx: float(np.sum(w[idx] * c[idx]) / np.sum(w[idx]))
+    err = floor = 0.0
+    for g in gates:
+        cr = np.cos(GAMMA * dt * (f_raw * g[None, :]).sum(1))
+        cd = np.cos(GAMMA * dt * (f_dec * g[None, :]).sum(1))
+        err = max(err, abs(wmean(cr, slice(None)) - wmean(cd, slice(None))))
+        floor = max(floor, abs(wmean(cr, A) - wmean(cr, B)))
+    return err, floor
+
+
+def susc_path_series_fidelity(series_raw, arrays, pm, gm, *, w, dt, env=None, chi_iso=1.06e-6, chi_aniso=None):
+    """Certify a path channel against a REFERENCE SERIES ``(n_w, n_ch, n_t)`` in the canonical channel order (what a
+    re-encoding of a decoded channel is measured against, since the grid is not in the pack): the same battery
+    as the producer's -- GRE, spin echo and the CPMG train at the channel's ``max_refocus_pulses``, over the
+    envelope's ``B0_list`` and ``theta_deg`` -- against the split-half floor of the reference."""
+    env = env or {}
+    series_raw = np.asarray(series_raw, np.float64); n_w, n_t = series_raw.shape[0], series_raw.shape[2]
+    b_dec, _ = susc_path_decode(arrays, pm, n_w=n_w)
+    has_aniso = bool(gm.get("has_aniso")) and series_raw.shape[1] >= 13
+    ca = (0.1 * chi_iso if has_aniso else 0.0) if chi_aniso is None else float(chi_aniso)
+    n_p = int(pm.get("max_refocus_pulses") or 1)
+    gates = [np.ones(n_t), _cpmg_gate(n_t, 1), _cpmg_gate(n_t, n_p)]
+    perm = np.random.RandomState(0).permutation(n_w); A, B = perm[:n_w // 2], perm[n_w // 2:]
+    w = np.ones(n_w) if w is None else np.asarray(w, np.float64)
+    err = floor = 0.0
+    for B0 in (env.get("B0_list") or [3.0, 7.0]):
+        for th in (env.get("theta_deg") or [0, 90]):
+            t = np.deg2rad(float(th)); d = [np.sin(t), 0.0, np.cos(t)]
+            f_raw = susc_path_field(series_raw, d, B0=B0, chi_iso=chi_iso, chi_aniso=ca, has_aniso=has_aniso)
+            f_dec = susc_path_field(b_dec, d, B0=B0, chi_iso=chi_iso, chi_aniso=ca, has_aniso=has_aniso)
+            e, f = _gate_battery(f_raw, f_dec, gates, w, A, B, float(dt))
+            err, floor = max(err, e), max(floor, f)
     return dict(err=float(err), floor=float(floor), n_pulses_certified=n_p)
 
 
@@ -426,6 +532,11 @@ def susc_path_encode(fb, traj, origin, *, K=32, bits=8, dtype=np.float16, atol_t
     if bits not in (8, 16):
         raise ValueError("susc_path bits must be 8, 16, or None (got %r); sub-byte depths need "
                          "bit-packing to save bytes and 6-bit measured above the MC floor" % (bits,))
+    return _quantise_susc_path(coeffs, meta, bits)
+
+
+def _quantise_susc_path(coeffs, meta, bits):
+    """The integer container of the path-field coefficients: a per-(channel, band) scale, ``bits`` wide."""
     itype = np.int8 if bits == 8 else np.int16
     lim = 2 ** (bits - 1) - 1
     scale = np.abs(coeffs).max(axis=0) / lim                     # (n_ch, K), per channel AND band
@@ -433,6 +544,25 @@ def susc_path_encode(fb, traj, origin, *, K=32, bits=8, dtype=np.float16, atol_t
     q = np.clip(np.rint(coeffs / scale), -lim, lim).astype(itype)
     meta["bits"] = int(bits); meta["dtype"] = np.dtype(itype).name
     return {"susc_path_dct": q, "susc_path_scale": np.asarray(scale, np.float32)}, meta
+
+
+def susc_path_encode_series(series, names, *, K=32, bits=8, dtype=np.float16):
+    """:func:`susc_path_encode` from the per-save field series itself, ``(n_w, n_ch, n_t)`` in the canonical
+    channel order with ``names``: what re-encoding a pack's path route to another duration needs, since the
+    grid the path was sampled from need not be in the pack."""
+    from scipy.fft import dct
+    series = np.asarray(series, np.float64)
+    n_w, n_ch, n_t = series.shape
+    K = int(min(K, n_t))
+    coeffs = dct(series, type=2, norm="ortho", axis=2)[:, :, :K]
+    meta = dict(channel="susc_path_dct", K=K, n_t=int(n_t), n_ch=int(n_ch), channels=list(names),
+                iso_P_zz="stored", trace_residual=None, max_refocus_pulses=K // 2)
+    if bits is None:
+        meta["bits"] = None; meta["dtype"] = np.dtype(dtype).name
+        return {"susc_path_dct": np.asarray(coeffs, dtype)}, meta
+    if bits not in (8, 16):
+        raise ValueError("susc_path bits must be 8, 16, or None")
+    return _quantise_susc_path(coeffs, meta, bits)
 
 
 def susc_path_coeffs(arrays, meta):
@@ -627,6 +757,8 @@ def _walk_master(walk, *, weights=None, field=None, diffusivity=None, substrate_
     extra = {}
     if spec is not None:
         extra["substrate"] = spec.to_dict()
+        if substrate_frame is None:                       # the pack declares what its spec declares (RPK.md 4.2)
+            substrate_frame = frame_of_spec(spec)
     if weights is not None:
         w = np.asarray(weights, float).reshape(-1)
         if w.shape[0] != walk.n_walkers:
@@ -645,7 +777,7 @@ def _walk_master(walk, *, weights=None, field=None, diffusivity=None, substrate_
     return walk._bank_dict(**extra)
 
 def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto",
-                      method=_cx.POSITION_METHOD, envelope=None, tol=2.0, K=None,
+                      method=_cx.POSITION_METHOD, envelope=None, tol=2.0, K=None, temporal_bandwidth_hz=None,
                       err_target=None, sigma_star=None, provenance=None,
                       blt_temporal_K=None, blt_dtype=np.float16, susc_path_K=None, susc_path_bits=8,
                       diffusivity=None, substrate_frame=None, out_path=None, verbose=False):
@@ -674,10 +806,18 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto"
     src = _walk_master(walk, weights=weights, field=field, diffusivity=diffusivity, substrate_frame=substrate_frame)
     _cx.require_position_method(method)
     m = _master_arrays(src)
+    if m.get("substrate_frame") is not None:              # a declared frame the walk contradicts is refused (#194)
+        sub = m.get("substrate") or {}
+        bundles = (sub.get("realisation") or {}).get("bundles") if isinstance(sub, dict) else None
+        check_frame_against_walk(m["traj"], m["substrate_frame"], w=m.get("w"),
+                                 bundle_axes=(None if not bundles else [b["axis"] for b in bundles]))
     env = envelope or _cx.default_envelope()
     X = np.asarray(m["traj"], np.float64)
     dt = float(m["dt_traj"])
     wp_method = _cx.is_walker_preserving(method)
+    if K is None and temporal_bandwidth_hz is not None:
+        # the band as a frequency (#199): K bands over T resolve up to K / (2T)
+        K = max(2, int(np.ceil(2.0 * float(temporal_bandwidth_hz) * (X.shape[1] - 1) * dt)))
     if K is None:
         K, fid = _cx.auto_select_modes(X, X, dt, method=method, env=env, tol=tol,
                                        err_target=err_target, verbose=verbose)
@@ -806,7 +946,8 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto"
 
     n_t = X.shape[1]
     comp_meta = dict(method=method, K=int(pos_meta.get("K", K)),        # the K stored: the codec clamps a short walk
-                     walker_preserving=bool(wp_method), n_t=int(n_t))
+                     walker_preserving=bool(wp_method), n_t=int(n_t),
+                     temporal_bandwidth_hz=float(int(pos_meta.get("K", K)) / (2.0 * (int(n_t) - 1) * dt)))   # K bands over T (#199)
     if wp_method:
         comp_meta["precision_tiers"] = _precision_tiers(arrays, int(m["n_walkers"]),
                                                         float(fid.get("floor_max") or 0.0),
