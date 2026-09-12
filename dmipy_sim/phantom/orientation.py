@@ -90,6 +90,15 @@ class Peaks(_Field):
             out.append((float(w[k]), d[k] / n))
         return out
 
+    def at_many(self, idx):
+        """Every population of the voxels ``idx (N, 3)`` at once: ``(weights (N, K), payload (N, K, 3))``, a zero
+        weight where a population is absent."""
+        d = self.directions[tuple(idx.T)]                                       # (N, K, 3)
+        n = np.linalg.norm(d, axis=-1)
+        w = np.broadcast_to(np.ones(d.shape[1]) / d.shape[1], d.shape[:2]) if self.weights is None else self.weights[tuple(idx.T)]
+        w = np.where((w > 0) & (n > 0), w, 0.0)
+        return w, d / np.where(n > 0, n, 1.0)[..., None]
+
 
 class ODF(_Field):
     """Orientation distributions over the grid, ``coeffs`` of shape grid + ``(n_c,)`` (or grid + ``(K, n_c)`` with
@@ -129,6 +138,21 @@ class ODF(_Field):
             f = self._FOD.from_sh(c[k], basis=self._fod_basis, legacy=self._legacy, normalize=True)
             out.append((float(w[k]), f.coeffs))
         return out
+
+    def at_many(self, idx):
+        """Every population of the voxels ``idx (N, 3)``: ``(weights (N, K), coefficients (N, K, n_c))`` in the required
+        basis and normalised, the conversion applied once to the whole block (RPH.md 4.1); an all-zero block
+        has weight zero."""
+        from ..replay.fod import _C00
+        c = self.coeffs[tuple(idx.T)]                                            # (N, K, n_c)
+        live = np.any(c != 0, axis=-1)
+        w = np.broadcast_to(np.ones(c.shape[1]) / c.shape[1], c.shape[:2]) if self.weights is None else self.weights[tuple(idx.T)]
+        w = np.where((w > 0) & live, w, 0.0)
+        c = _convert_block(c, self._fod_basis, self._legacy, self.lmax)
+        c0 = c[..., 0]
+        if np.any((c0 <= 0) & live):
+            raise ValueError("an ODF block has a non-positive l = 0 coefficient: not a density")
+        return w, c * np.where(live, _C00 / np.where(c0 == 0, 1.0, c0), 0.0)[..., None]
 
 
 class Watson(ODF):
@@ -173,6 +197,20 @@ class Frames(_Field):
                 raise ValueError(f"the frame at {ijk} population {k} is not a proper rotation")
             out.append((float(w[k]), R[k]))
         return out
+
+    def at_many(self, idx):
+        """Every population of the voxels ``idx (N, 3)``: ``(weights (N, K), rotations (N, K, 3, 3))``, checked to be
+        proper rotations wherever the weight is positive."""
+        R = self.rotations[tuple(idx.T)]                                         # (N, K, 3, 3)
+        w = np.broadcast_to(np.ones(R.shape[1]) / R.shape[1], R.shape[:2]) if self.weights is None else self.weights[tuple(idx.T)]
+        w = np.where(w > 0, w, 0.0)
+        live = w > 0
+        RRt = np.einsum("...ij,...kj->...ik", R, R)
+        bad = live & (~np.all(np.abs(RRt - np.eye(3)) < 1e-5, axis=(-2, -1)) | (np.linalg.det(R) < 0))
+        if bad.any():
+            v, k = np.argwhere(bad)[0]
+            raise ValueError(f"the frame at voxel {tuple(idx[v])} population {k} is not a proper rotation")
+        return w, R
 
 
 class Fan(Frames):
@@ -229,6 +267,32 @@ class Fan(Frames):
     def at(self, ijk):
         return [(w, (R, tuple(self.kappa[ijk][k]), float(self.roll_kappa[ijk][k])))
                 for k, (w, R) in enumerate(super().at(ijk))]
+
+    def at_many(self, idx):
+        """``(weights (N, K), (rotations (N, K, 3, 3), kappa (N, K, 2), roll_kappa (N, K)))``."""
+        w, R = super().at_many(idx)
+        return w, (R, self.kappa[tuple(idx.T)], self.roll_kappa[tuple(idx.T)])
+
+
+def _convert_block(c, basis, legacy, lmax):
+    """:meth:`FOD.from_sh`'s exact per-coefficient conversion, applied to a whole ``(..., n_c)`` block."""
+    from ..replay.fod import _block
+    out = np.array(c, np.float64, copy=True)
+    if basis == "tournier07":
+        if legacy:
+            for l in range(0, lmax + 1, 2):
+                blk = _block(l)
+                for m in range(-l, l + 1):
+                    if m != 0:
+                        out[..., blk + l + m] /= np.sqrt(2.0)
+    elif basis == "descoteaux07":
+        for l in range(0, lmax + 1, 2):
+            blk = _block(l)
+            for m in range(-l, l + 1):
+                out[..., blk + l + m] = ((-1) ** m if m > 0 else 1.0) * c[..., blk + l - m]
+    else:
+        raise ValueError(f"unknown basis {basis!r}")
+    return out
 
 
 def _with_population_axis(a, shape, trailing, name):

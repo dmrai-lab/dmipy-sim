@@ -125,6 +125,7 @@ def write_rph(path, *, voxel_index, substrate_id, geometric_fraction, substrates
     if scalars is not None:
         meta["scalars"] = list(scalar_names)
     meta.update(extra_meta or {})
+    tensors = {k: np.ascontiguousarray(v) for k, v in tensors.items()}      # safetensors writes a buffer as it lies
     save_file(tensors, str(path), metadata={"rph": json.dumps(meta)})
     return meta
 
@@ -380,15 +381,14 @@ class ReplayPhantom:
         """
         from .fod import FOD
         from . import so3
-        sid, frac = self.substrate_id, self.geometric_fraction
-        rows = [(v, p) for v in range(self.n_voxels) for p in range(sid.shape[1])
-                if sid[v, p] >= 0 and frac[v, p] > 0.0]
-        vp = np.array(rows, np.int64).reshape(-1, 2)
+        sid, frac = np.asarray(self.substrate_id), np.asarray(self.geometric_fraction)
+        vp = np.argwhere((sid >= 0) & (frac > 0.0)).astype(np.int64)           # (n_live, 2): every live slot
         n = vp.shape[0]
         F = np.zeros((n, so3.n_so3_coeffs(lmax, nmax)))
         # only a pack has a pose to compose: an analytic substrate is a closed form and an inert one emits
         # nothing, so their slots keep the zero row rather than being read as an orientation
-        posed = np.array([self.substrates[int(sid[v, p])]["kind"] == "pack" for v, p in vp], bool)
+        is_pack = np.array([s_["kind"] == "pack" for s_ in self.substrates], bool)
+        posed = is_pack[sid[vp[:, 0], vp[:, 1]]]
         if not posed.any():
             return vp, F
         idx = vp[posed]
@@ -400,8 +400,14 @@ class ReplayPhantom:
                 d = d / np.maximum(np.linalg.norm(d, axis=1, keepdims=True), 1e-30)
                 sh = so3.real_sh(lmax, d, full=True)
             else:
-                sh = np.stack([so3._embed_sh(FOD.native(self.odf_sh[v, p].astype(np.float64)).coeffs, lmax)
-                               for v, p in idx])
+                from .fod import _C00, _lmax_of
+                c = self.odf_sh[idx[:, 0], idx[:, 1]].astype(np.float64)            # (n_posed, n_c), compact even
+                if np.any(np.abs(c[:, 0] - _C00) > 1e-6 * _C00):
+                    raise ValueError("an ODF slot is not a unit-integral density in the required basis")
+                l_odf = _lmax_of(c.shape[1])
+                sh = np.zeros((c.shape[0], so3.n_sh_coeffs(int(lmax), full=True)))
+                for l in range(0, min(l_odf, int(lmax)) + 1, 2):                    # compact even -> full layout
+                    sh[:, so3.sh_block(l, True)] = c[:, so3.sh_block(l, False)]
             F[posed] = sh @ T.T
         elif mode in ("frames", "bingham"):
             R = so3.rotations_from_quaternions(self.pose_quat[idx[:, 0], idx[:, 1]])

@@ -67,54 +67,60 @@ class Phantom:
         idx = np.argwhere(live)
         if idx.size == 0:
             raise ValueError("no voxel carries a signal-bearing substrate: the fraction volumes are empty")
-
-        rows = []
-        for ijk in map(tuple, idx):
-            slots = []
-            for i, s in enumerate(subs):
-                f = float(F[(i,) + ijk])
-                if f <= 0.0:
-                    continue
-                fld = fields.get(i)
-                if fld is None:
-                    slots.append((i, f, None))
-                    continue
-                pops = fld.at(ijk)
-                if not pops:
-                    raise ValueError(f"voxel {ijk} holds {f:.3g} of {s!r} but its orientation field has no pose there; "
-                                     f"an oriented substrate needs a pose in every voxel it occupies")
-                wsum = sum(w for w, _ in pops)
-                for w, payload in pops:
-                    slots.append((i, f * w / wsum, payload))
-            rows.append((ijk, slots))
-        P = max(len(sl) for _, sl in rows)
-        N = len(rows)
-        voxel_index = np.zeros((N, 3), np.int32)
-        substrate_id = np.full((N, P), -1, np.int16)
-        frac = np.zeros((N, P), np.float32)
+        N = idx.shape[0]
         width = {"odf_sh": n_c, "peaks": 3, "frames": 4, "bingham": 4}[mode]
-        ori = np.zeros((N, P, width), np.float32)
-        kap = np.zeros((N, P, 2), np.float32) if mode == "bingham" else None
-        rollk = np.zeros((N, P), np.float32) if mode == "bingham" else None
-        for v, (ijk, slots) in enumerate(rows):
-            voxel_index[v] = ijk
-            for p, (i, f, payload) in enumerate(slots):
-                substrate_id[v, p], frac[v, p] = i, f
-                if payload is None:
-                    if mode == "peaks":
-                        ori[v, p] = (0.0, 0.0, 1.0)                # unoriented: an isotropic substrate has no axis
-                    elif mode in ("frames", "bingham"):
-                        ori[v, p] = (0.0, 0.0, 0.0, 1.0)           # the identity rotation
-                    continue
-                if mode == "bingham":
-                    R, (k1, k2), rk = payload
-                    ori[v, p] = _quat_of(R)
-                    kap[v, p], rollk[v, p] = (k1, k2), rk
-                elif mode == "frames":
-                    ori[v, p] = _quat_of(payload)
-                else:
-                    ori[v, p, :len(payload)] = payload
-
+        # every substrate contributes a block of slots to every voxel: its fraction split over its populations;
+        # built as arrays per substrate and packed so that live slots come first in every row
+        blocks = []                                                   # (sid (N, K), frac (N, K), ori (N, K, width), kap, roll)
+        for i, sub in enumerate(subs):
+            f = F[(i,) + tuple(idx.T)]                                                     # (N,)
+            fld = fields.get(i)
+            if fld is None:
+                ori = np.zeros((N, 1, width), np.float32)
+                if mode == "peaks":
+                    ori[..., :] = (0.0, 0.0, 1.0)                        # unoriented: an isotropic substrate has no axis
+                elif mode in ("frames", "bingham"):
+                    ori[..., :] = (0.0, 0.0, 0.0, 1.0)                   # the identity rotation
+                blocks.append((np.full((N, 1), i, np.int16), f[:, None].astype(np.float32), ori, None, None))
+                continue
+            w, payload = fld.at_many(idx)                                                  # (N, K), (N, K, ...)
+            wsum = w.sum(axis=1)
+            missing = (f > 0) & (wsum <= 0)
+            if missing.any():
+                v = idx[np.argmax(missing)]
+                raise ValueError(f"voxel {tuple(v)} holds {f[np.argmax(missing)]:.3g} of {sub!r} but its orientation field "
+                                 f"has no pose there; an oriented substrate needs a pose in every voxel it occupies")
+            fr = (f[:, None] * w / np.where(wsum > 0, wsum, 1.0)[:, None]).astype(np.float32)
+            K = w.shape[1]
+            kap = roll = None
+            if mode == "bingham":
+                R, kappa_v, roll_v = payload
+                ori = _quats_of(R.reshape(-1, 3, 3)).reshape(N, K, 4).astype(np.float32)
+                kap, roll = kappa_v.astype(np.float32), roll_v.astype(np.float32)
+            elif mode == "frames":
+                ori = _quats_of(payload.reshape(-1, 3, 3)).reshape(N, K, 4).astype(np.float32)
+            else:
+                ori = np.zeros((N, K, width), np.float32); ori[..., :payload.shape[-1]] = payload
+            blocks.append((np.full((N, K), i, np.int16), fr, ori, kap, roll))
+        substrate_id = np.concatenate([b[0] for b in blocks], axis=1)
+        frac = np.concatenate([b[1] for b in blocks], axis=1)
+        ori = np.concatenate([b[2] for b in blocks], axis=1)
+        kap = np.concatenate([b[3] if b[3] is not None else np.zeros((N, b[0].shape[1], 2), np.float32) for b in blocks], axis=1) \
+            if mode == "bingham" else None
+        rollk = np.concatenate([b[4] if b[4] is not None else np.zeros((N, b[0].shape[1]), np.float32) for b in blocks], axis=1) \
+            if mode == "bingham" else None
+        # pack: live slots first, then cut the row length to the largest live count
+        alive = frac > 0
+        order = np.argsort(~alive, axis=1, kind="stable")
+        take = lambda a: np.take_along_axis(a, order.reshape(order.shape + (1,) * (a.ndim - 2)), axis=1) if a is not None else None
+        substrate_id, frac, ori, kap, rollk = take(substrate_id), take(frac), take(ori), take(kap), take(rollk)
+        P = int(alive.sum(axis=1).max())
+        C = np.ascontiguousarray                                     # slices are written to a file as they lie: never a view
+        substrate_id, frac, ori = C(substrate_id[:, :P]), C(frac[:, :P]), C(ori[:, :P])
+        substrate_id = np.where(frac > 0, substrate_id, -1).astype(np.int16)
+        if mode == "bingham":
+            kap, rollk = C(kap[:, :P]), C(rollk[:, :P])
+        voxel_index = idx.astype(np.int32)
         arrays = {"voxel_index": voxel_index, "substrate_id": substrate_id, "geometric_fraction": frac}
         key = {"odf_sh": "odf_sh", "peaks": "peak_dir", "frames": "pose_quat", "bingham": "pose_quat"}[mode]
         arrays[key] = ori
@@ -442,9 +448,17 @@ def _orientation_fields(orientation, subs):
 
 def _quat_of(R):
     """``(x, y, z, w)`` of a proper rotation, sign fixed by ``w >= 0`` so a pose has one spelling."""
+    return _quats_of(np.asarray(R, np.float64).reshape(1, 3, 3))[0]
+
+
+def _quats_of(R):
+    """``(N, 4)`` quaternions ``(x, y, z, w)`` of ``(N, 3, 3)`` rotations, ``w >= 0``."""
     from scipy.spatial.transform import Rotation
-    q = Rotation.from_matrix(np.asarray(R, np.float64).reshape(3, 3)).as_quat()
-    return q if q[3] >= 0 else -q
+    R = np.asarray(R, np.float64).reshape(-1, 3, 3)
+    if R.shape[0] == 0:
+        return np.zeros((0, 4))
+    q = Rotation.from_matrix(R).as_quat().reshape(-1, 4)
+    return np.where(q[:, 3:4] < 0, -q, q)
 
 
 def _n_sh(lmax):
