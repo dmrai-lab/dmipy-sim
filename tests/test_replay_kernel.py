@@ -207,3 +207,39 @@ def test_mt_walk_at_zero_binding_is_the_plain_walk_to_the_bit():
     mt16 = d.simulate_mt_trajectories(50, 2e-9, g, 1e-3, 5e-4, kappa_MT=0.0, dwell_time=0.0,
                                       equilibrate_binding="off", storage_dtype=np.float16, **kw)
     assert mt16.positions.dtype == np.float16
+
+
+# ------------------------------------------------------------ one host kernel, any component subset (#200 item 9)
+def test_the_compiled_scheme_is_generic_in_its_components_and_the_host_kernel_is_one_function():
+    """A consumer that reads two of the three stored axes compiles the waveform's matching components and gets
+    exactly the rows of the full compile; ``replay_coefficients`` is what ``replay_signal`` evaluates; the
+    traced batch twin equals the looped twin."""
+    import dmipy_sim as d
+    from dmipy_sim.replay import (compile_scheme, replay_signal, replay_coefficients, replay_signal_jax,
+                                  replay_batch_jax, surface_logweight)
+    from dmipy_sim.replay.bank import build_replay_pack
+    from dmipy_sim.replay.compression import read_position_coeffs
+    g = d.Cylinder(radius=2e-6, orientation=(0, 0, 1), surface_relaxivity_t2=0.0)
+    walk = d.simulate_trajectories(300, 2e-9, g, 8e-3, 4e-4, seed=3, require_gpu=False)
+    pk = build_replay_pack(walk, id="t/k", license="x", citation="x", K=6, blt_temporal_K=4)
+    seq = d.set_b(d.pgse([[1, 0, 0], [0, 1, 1], [1, 1, 1]], 2e-3, 5e-3, gradient_strengths=0.1, n_t=pk.n_t, slew_rate=np.inf), [1e9] * 3)
+    G = np.asarray(seq.G_eff)
+    W3 = compile_scheme(G, pk.dt, pk.K, n_t=pk.n_t)
+    W2 = compile_scheme(G[..., [0, 2]], pk.dt, pk.K, n_t=pk.n_t)
+    Kw = pk.K + 2
+    np.testing.assert_allclose(W2, W3.reshape(Kw, 3, -1)[:, [0, 2], :].reshape(2 * Kw, -1), atol=1e-12 * np.abs(W3).max())
+    C = read_position_coeffs(pk.arrays, dtype=np.float64); w = np.asarray(pk.spin_weights, float)
+    np.testing.assert_allclose(replay_coefficients(C, w, W3, complex_signal=True), replay_signal(pk, W3, complex_signal=True), rtol=1e-13)
+    C2 = read_position_coeffs(pk.arrays, axes=[0, 2], dtype=np.float64)
+    assert np.isfinite(replay_coefficients(C2, w, W2)).all() and C2.shape[2] == 2
+    with pytest.raises(ValueError, match="rows"):
+        replay_coefficients(C2, w, W3)
+    cm = pk.meta["compression"]["channels"]["boundary_local_time"]
+    slw = surface_logweight(pk.arrays, 5e3, cm)
+    np.testing.assert_allclose(replay_coefficients(C, w, W3, surface_logw=slw), replay_signal(pk, W3, rho_over_D=5e3), rtol=1e-13)
+    jax = pytest.importorskip("jax")
+    jax.config.update("jax_enable_x64", True)
+    np.testing.assert_allclose(np.asarray(replay_signal_jax(C, w, W3, surface_logw=slw)),
+                               replay_coefficients(C, w, W3, surface_logw=slw, complex_signal=True), atol=1e-10)
+    Wb = np.stack([W3, 0.5 * W3, W2.repeat(1, axis=0)[:0] if False else W3 * 0.1])
+    np.testing.assert_allclose(np.asarray(replay_batch_jax(C, w, Wb)), np.stack([replay_coefficients(C, w, Wk) for Wk in Wb]), atol=1e-10)

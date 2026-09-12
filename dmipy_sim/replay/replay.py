@@ -35,7 +35,8 @@ from ..acquisition.rf import RFSchedule
 from ..acquisition.scanner_sequence import Protocol, ScannerSequence
 
 __all__ = ["ReplayPack", "PoseResponse", "read_rpk", "write_rpk",
-           "compile_scheme", "replay_signal", "replay_signal_jax", "surface_logweight"]
+           "compile_scheme", "replay_signal", "replay_coefficients", "replay_signal_jax", "replay_batch_jax",
+           "surface_logweight"]
 
 
 # ------------------------------- .rpk container I/O -------------------------------
@@ -512,7 +513,7 @@ class ReplayPack:
             if chi_aniso == 0.0: chi_aniso = k["chi_aniso"]
             if tuple(b0_dir) == (0.0, 0.0, 1.0): b0_dir = k["b0_dir"]
         if orientation is not None:
-            R = self._rotation_of(orientation)
+            R = self.pose_rotation(orientation)
             G, G_eff = G @ R, G_eff @ R                                   # R^T g per sample: stored coordinates
             b0_dir = tuple(np.asarray(R, float).T @ np.asarray(b0_dir, float))
         Geff = effective_gradient(G_eff, dt_wf, n_t, dt)                 # exact per-save weights of the effective gradient
@@ -783,10 +784,12 @@ class ReplayPack:
         """The substrate's own axis in stored coordinates: column 3 of :attr:`substrate_frame`."""
         return self.substrate_frame[:, 2].copy()
 
-    def _rotation_of(self, orientation):
-        """The rotation taking STORED coordinates to the lab: from a 3x3 pose of the canonical substrate frame
-        (``R``, so stored -> lab is ``R F^T`` with ``F`` the pack's :attr:`substrate_frame`), or from the lab
-        direction the substrate's axis points along (the azimuth left as the frame's)."""
+    def pose_rotation(self, orientation):
+        """The rotation taking STORED coordinates to the lab for one pose: from a 3x3 pose of the canonical
+        substrate frame (``R``, so stored -> lab is ``R F^T`` with ``F`` the pack's :attr:`substrate_frame`), or
+        from the lab direction the substrate's axis points along (the azimuth left as the frame's). A lab
+        waveform reads in stored coordinates as ``G @ pose_rotation(orientation)``: what a consumer compiling
+        its own scheme (a fit's compartment model) rotates by."""
         from .so3 import rotation_of
         o = np.asarray(orientation, float)
         if o.shape == (3, 3):
@@ -1300,8 +1303,10 @@ def compile_scheme(G, dt, K, gyromagnetic_ratio=GAMMA, *, n_t=None, method=None,
     ``G`` is the gradient waveform ``(n_meas, n_wf, 3)`` [T/m] on ITS OWN grid ``dt`` [s]; ``dt_pack`` the pack's
     save interval (default: the waveform is on the pack grid, ``dt_pack = dt``); ``n_t`` the pack's save count
     (default ``G.shape[1]`` on the pack grid); ``K`` the pack's retained-mode count; ``method`` the pack's
-    position codec, accepted only to let a caller assert it. Shape is ``(3(K+2), n_meas)``: per axis the two
-    gradient moments ``M0`` and ``M1``, which a motion-compensated waveform makes vanish, then the sine bands.
+    position codec, accepted only to let a caller assert it. Shape is ``(n_c (K+2), n_meas)`` for a waveform of
+    ``n_c`` components (three for a pack's positions; fewer when a consumer reads only some stored axes and
+    supplies the waveform's matching components, in the same order): per component the two gradient moments
+    ``M0`` and ``M1``, which a motion-compensated waveform makes vanish, then the sine bands.
     Nothing is resampled: the waveform enters through its exact per-save weights
     (:func:`_replay_kernel.effective_gradient`), so an edge between saves carries exactly its b. Reusable across
     every pack on one grid (fitting) and every fit iteration; in design it is recomputed per candidate."""
@@ -1377,8 +1382,8 @@ def _legendre(l, x):
 def _compile_effective(Geff, dt_pack, K, n_t, gyromagnetic_ratio=GAMMA):
     """``W`` from per-save weights already on the pack grid (:func:`_replay_kernel.effective_gradient`)."""
     from .compression import bridge_projection
-    W = bridge_projection(np.asarray(Geff, np.float64), int(n_t), K)              # (n_meas, K+2, 3)
-    return (gyromagnetic_ratio * float(dt_pack) * W).reshape(W.shape[0], (K + 2) * 3).T
+    W = bridge_projection(np.asarray(Geff, np.float64), int(n_t), K)              # (n_meas, K+2, n_c)
+    return (gyromagnetic_ratio * float(dt_pack) * W).reshape(W.shape[0], (K + 2) * W.shape[2]).T
 
 
 def surface_logweight(arrays, rho_over_D, chan_meta=None, chi_hat=None):
@@ -1422,23 +1427,40 @@ def replay_signal(pack, W, *, rho_over_D=0.0, chi_hat=None, complex_signal=False
     if isinstance(pack, ReplayPack):
         require_position_method(pack.method)
     C = read_position_coeffs(a, dtype=np.float64)
-    N_w, K, _ = C.shape
-    if W.shape[0] != K * 3:
-        raise ValueError(
-            f"compiled scheme has {W.shape[0]} rows for {K * 3} stored coefficients "
-            f"({K} per axis = 2 endpoints + {K - 2} bands). Compile with "
-            f"compile_scheme(G, dt, pack.K, n_t=pack.n_t) -- passing the stored width instead "
-            f"of pack.K produces a scheme that multiplies cleanly and means nothing.")
+    N_w = C.shape[0]
     w0 = np.asarray(a.get("spin_weights", np.ones(N_w)), np.float64)
-    phi = C.reshape(N_w, K * 3) @ W                            # (N_w, n_meas)
-    w_eff = w0
+    surface_logw = None
     if rho_over_D:
         # asked for, so it must happen: a missing C2 channel raises inside surface_logweight
         # rather than being skipped. The previous form looked up a key the bridge rename
         # retired, so `rho_over_D` was silently ignored and callers got an unattenuated signal.
         cm = ((pack.meta.get("compression", {}).get("channels", {}) or {}).get("boundary_local_time")
               if isinstance(pack, ReplayPack) else None)
-        w_eff = w0 * np.exp(surface_logweight(a, rho_over_D, cm, chi_hat))
+        surface_logw = surface_logweight(a, rho_over_D, cm, chi_hat)
+    return replay_coefficients(C, w0, W, surface_logw=surface_logw, complex_signal=complex_signal)
+
+
+def replay_coefficients(position_coeffs, spin_weights, W, *, surface_logw=None, complex_signal=False):
+    """The compiled replay on host arrays: ``E = <w_eff exp(i C W)> / <w>`` for the position coefficients
+    ``C`` ``(n_w, K+2, n_c)`` (:func:`compression.read_position_coeffs`, any subset of the stored axes so long
+    as ``W`` was compiled from the matching waveform components), the walkers' weights ``w`` and the compiled
+    scheme ``W`` ``(n_c (K+2), n_meas)`` from :func:`compile_scheme`. ``surface_logw`` is the per-walker
+    surface-relaxivity log-weight from :func:`surface_logweight`: a signal LOSS, so it weights the numerator
+    while the denominator stays ``<w>`` (``E(b=0) < 1``). The one host kernel every consumer -- the pack's
+    ``replay``, a fit's per-voxel forward, a lookup-table build -- evaluates; :func:`replay_signal_jax` is its
+    traced twin."""
+    C = np.asarray(position_coeffs, np.float64)
+    N_w, K, n_c = C.shape
+    W = np.asarray(W)
+    if W.shape[0] != K * n_c:
+        raise ValueError(
+            f"compiled scheme has {W.shape[0]} rows for {K * n_c} stored coefficients "
+            f"({K} per axis = 2 endpoints + {K - 2} bands, {n_c} axes). Compile with "
+            f"compile_scheme(G, dt, pack.K, n_t=pack.n_t) from the same components -- passing the stored "
+            f"width instead of pack.K produces a scheme that multiplies cleanly and means nothing.")
+    w0 = np.asarray(spin_weights, np.float64)
+    phi = C.reshape(N_w, K * n_c) @ W                          # (N_w, n_meas)
+    w_eff = w0 if surface_logw is None else w0 * np.exp(np.asarray(surface_logw, np.float64))
     S = (w_eff[:, None] * np.exp(1j * phi)).sum(0) / w0.sum()
     return S if complex_signal else np.abs(S)
 
@@ -1456,7 +1478,17 @@ def replay_signal_jax(position_coeffs, spin_weights, W, *, surface_logw=None):
     import jax.numpy as jnp
     C = jnp.asarray(position_coeffs)
     N_w, K, _ = C.shape
-    phi = C.reshape(N_w, K * 3) @ jnp.asarray(W)
+    phi = C.reshape(N_w, K * C.shape[2]) @ jnp.asarray(W)
     w0 = jnp.asarray(spin_weights)
     w_eff = w0 if surface_logw is None else w0 * jnp.exp(jnp.asarray(surface_logw))
     return (w_eff[:, None] * jnp.exp(1j * phi)).sum(0) / w0.sum()
+
+
+def replay_batch_jax(position_coeffs, spin_weights, W_batch, *, surface_logw=None):
+    """:func:`replay_signal_jax` over a batch of compiled schemes ``W_batch`` ``(n_batch, n_c (K+2), n_meas)``
+    -- one candidate orientation or knob setting per entry -- as one traced call: ``(n_batch, n_meas)``
+    magnitudes. What a fit evaluates over a grid of poses in one device call."""
+    import jax
+    import jax.numpy as jnp
+    fn = lambda W: jnp.abs(replay_signal_jax(position_coeffs, spin_weights, W, surface_logw=surface_logw))
+    return jax.vmap(fn)(jnp.asarray(W_batch))

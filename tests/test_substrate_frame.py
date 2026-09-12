@@ -65,7 +65,9 @@ def test_a_declared_frame_makes_the_rotated_walk_replay_like_the_original(packs)
         declared = np.abs(out["x"][k] - out["z"][k]).max()
         silent = np.abs(out["silent"][k] - out["z"][k]).max()
         np.testing.assert_allclose(out["x"][k], out["z"][k], rtol=5e-3)         # the declared frame: the same physics
-        assert silent > 10 * declared and silent > 1e-2                         # undeclared: a different (wrong) tissue
+        assert silent > 1e6 * declared and silent > 3e-3                        # undeclared: a different (wrong) tissue
+        # (the contrast of one 2000-walker cylinder pack posed wrongly is realisation-dependent: 1.4 % on aarch64,
+        # 0.8 % on x86 for the same fixture; the declared frame is exact to rounding on both)
 
 
 # ---------------------------------------------------------------------------- the frame declared by the substrate (#194)
