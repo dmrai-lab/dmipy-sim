@@ -42,8 +42,8 @@ def _cumulative_at(G, dt_wf, times):
     n_meas, n_wf, _ = G.shape
     dt_wf = float(dt_wf)
     e = np.arange(n_wf + 1) * dt_wf
-    Q0 = np.concatenate([np.zeros((n_meas, 1, 3)), np.cumsum(G, axis=1) * dt_wf], axis=1)
-    Q1 = np.concatenate([np.zeros((n_meas, 1, 3)),
+    Q0 = np.concatenate([np.zeros((n_meas, 1, G.shape[2])), np.cumsum(G, axis=1) * dt_wf], axis=1)
+    Q1 = np.concatenate([np.zeros((n_meas, 1, G.shape[2])),
                          np.cumsum(G * ((e[1:] ** 2 - e[:-1] ** 2) / 2.0)[None, :, None], axis=1)], axis=1)
     tc = np.clip(np.asarray(times, np.float64), 0.0, e[-1])
     j = np.clip(np.searchsorted(e, tc, side="right") - 1, 0, n_wf - 1)
@@ -132,7 +132,8 @@ def field_gate(waveform, n_t, dt_pack):
 
 
 def effective_gradient(G, dt_wf, n_t, dt_pack):
-    """The per-save weights of a waveform against the path: ``(n_meas, n_t, 3)`` such that
+    """The per-save weights of a waveform against the path: ``(n_meas, n_t, n_c)`` for a waveform of ``n_c``
+    components (three, or the subset a consumer reads), such that
     ``gamma dt_pack sum_k Geff[k] . r[k]`` is **exactly** ``gamma int G(t) . r(t) dt`` for the piecewise-linear
     path through the saves (the conditional mean of a Brownian path given its samples) and the
     sample-and-hold waveform on its own grid:
@@ -144,7 +145,7 @@ def effective_gradient(G, dt_wf, n_t, dt_pack):
     """
     A0, A1 = waveform_moments(G, dt_wf, n_t, dt_pack)
     n_meas = A0.shape[0]
-    W = np.zeros((n_meas, int(n_t), 3))
+    W = np.zeros((n_meas, int(n_t), A0.shape[2]))              # as many components as the waveform carries
     W[:, :-1, :] += A0 - A1 / float(dt_pack)
     W[:, 1:, :] += A1 / float(dt_pack)
     return W / float(dt_pack)
@@ -152,7 +153,7 @@ def effective_gradient(G, dt_wf, n_t, dt_pack):
 
 def effective_gradient_jax(G, dt_wf, n_t, dt_pack):
     """:func:`effective_gradient` for a traced ``G`` (differentiable in ``G``), float32 output."""
-    n_meas, n_wf, _ = G.shape
+    n_meas, n_wf, n_c = G.shape
     n_t = int(n_t)
     dt_wf, dt_pack = float(dt_wf), float(dt_pack)
     G = G.astype(jnp.float32)
@@ -161,13 +162,13 @@ def effective_gradient_jax(G, dt_wf, n_t, dt_pack):
     tc = np.clip(tp, 0.0, e[-1])
     j = np.clip(np.searchsorted(e, tc, side="right") - 1, 0, n_wf - 1)           # static: the grids are known
     w1 = jnp.asarray((e[1:] ** 2 - e[:-1] ** 2) / 2.0, jnp.float32)
-    Q0 = jnp.concatenate([jnp.zeros((n_meas, 1, 3), jnp.float32), jnp.cumsum(G, axis=1) * jnp.float32(dt_wf)], axis=1)
-    Q1 = jnp.concatenate([jnp.zeros((n_meas, 1, 3), jnp.float32), jnp.cumsum(G * w1[None, :, None], axis=1)], axis=1)
+    Q0 = jnp.concatenate([jnp.zeros((n_meas, 1, n_c), jnp.float32), jnp.cumsum(G, axis=1) * jnp.float32(dt_wf)], axis=1)
+    Q1 = jnp.concatenate([jnp.zeros((n_meas, 1, n_c), jnp.float32), jnp.cumsum(G * w1[None, :, None], axis=1)], axis=1)
     Q0p = Q0[:, j, :] + G[:, j, :] * jnp.asarray(tc - e[j], jnp.float32)[None, :, None]
     Q1p = Q1[:, j, :] + G[:, j, :] * jnp.asarray((tc ** 2 - e[j] ** 2) / 2.0, jnp.float32)[None, :, None]
     A0 = jnp.diff(Q0p, axis=1)
     A1 = jnp.diff(Q1p, axis=1) - jnp.asarray(tp[:-1], jnp.float32)[None, :, None] * A0
-    z = jnp.zeros((n_meas, 1, 3), jnp.float32)
+    z = jnp.zeros((n_meas, 1, n_c), jnp.float32)
     W = jnp.concatenate([A0 - A1 / dt_pack, z], axis=1) + jnp.concatenate([z, A1 / dt_pack], axis=1)
     return W / jnp.float32(dt_pack)
 
