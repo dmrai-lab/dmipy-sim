@@ -154,6 +154,74 @@ def _surface_fidelity(m, arrays, chan_meta, env):
     return dict(err=float(err), floor=float(floor))
 
 
+def voxel_fidelity(traj, dt, decoded_pos, grid, comp, env, *, w=None, logw=None, chunk=20_000):
+    """The pack's fidelity PER VOXEL AND POOL, for a walk meant to be partitioned: every walker is binned by where
+    it started (``grid.bin``, the partition's own rule) and by its pool; per (voxel, pool) the ensemble signal
+    over the envelope's acquisition battery is formed from the raw and the decoded paths, and a split-half
+    Monte-Carlo floor from the voxel's own walkers. Returns ``(ijk, pools, n, floor, err)``: the occupied voxels
+    ``(n_v, 3)``, the pool ids, and ``(n_v, n_pools)`` arrays of the walker count, the floor (max over the
+    battery of ``|S_a - S_b| / 2``) and the codec error (max over the battery of ``|S_dec - S_raw|``); a voxel
+    with fewer than two walkers of a pool has ``nan`` for its floor. Walker chunks keep the memory at
+    ``chunk x n_meas`` complex."""
+    traj = np.asarray(traj, np.float64); dec = np.asarray(decoded_pos, np.float64)
+    n_w, n_t = traj.shape[0], traj.shape[1]
+    G, _ = _cx.acquisition_battery(n_t, dt, env); n_m = G.shape[0]
+    ijk_all, inside = grid.bin(traj[:, 0])
+    pools = sorted(set(np.unique(np.asarray(comp)[:, 0]).tolist())) if comp is not None else [0]
+    pid = np.asarray(comp)[:, 0].astype(np.int64) if comp is not None else np.zeros(n_w, np.int64)
+    ijk = np.unique(ijk_all[inside], axis=0)
+    key = {tuple(v): i for i, v in enumerate(map(tuple, ijk))}
+    row = np.full(n_w, -1, np.int64)
+    for i in np.flatnonzero(inside):
+        row[i] = key[tuple(ijk_all[i])]
+    col = np.searchsorted(pools, pid)
+    ww = np.ones(n_w) if w is None else np.asarray(w, np.float64)
+    lw = np.zeros(n_w) if logw is None else np.asarray(logw, np.float64)
+    half = (np.random.default_rng(0).permutation(n_w) % 2).astype(bool)      # a fixed split of every voxel's walkers
+    n_v, n_p = ijk.shape[0], len(pools)
+    S_raw = np.zeros((n_v, n_p, n_m), complex); S_dec = np.zeros_like(S_raw)
+    S_a = np.zeros_like(S_raw); S_b = np.zeros_like(S_raw)
+    W = np.zeros((n_v, n_p)); W_a = np.zeros((n_v, n_p)); W_b = np.zeros((n_v, n_p)); N = np.zeros((n_v, n_p), np.int64)
+    for i in range(0, n_w, chunk):
+        sl = slice(i, i + chunk); m = row[sl] >= 0
+        if not m.any():
+            continue
+        idx = np.arange(i, min(i + chunk, n_w))[m]
+        e_raw = np.exp(lw[idx, None] + 1j * _cx._walker_phases(traj[idx], dt, G)) * ww[idx, None]
+        e_dec = np.exp(lw[idx, None] + 1j * _cx._walker_phases(dec[idx], dt, G)) * ww[idx, None]
+        r, c, h = row[idx], col[idx], half[idx]
+        np.add.at(S_raw, (r, c), e_raw); np.add.at(S_dec, (r, c), e_dec)
+        np.add.at(S_a, (r[h], c[h]), e_raw[h]); np.add.at(S_b, (r[~h], c[~h]), e_raw[~h])
+        np.add.at(W, (r, c), ww[idx]); np.add.at(W_a, (r[h], c[h]), ww[idx][h]); np.add.at(W_b, (r[~h], c[~h]), ww[idx][~h])
+        np.add.at(N, (r, c), 1)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        err = np.abs(S_dec / W[..., None] - S_raw / W[..., None]).max(-1)
+        floor = 0.5 * np.abs(S_a / W_a[..., None] - S_b / W_b[..., None]).max(-1)
+    err[W == 0] = np.nan; floor[(W_a == 0) | (W_b == 0)] = np.nan
+    return ijk, pools, N, floor, err
+
+
+def voxel_fidelity_volumes(pack):
+    """The per-voxel certificate of a pack built with ``voxel_grid=`` as dense volumes on that grid:
+    ``(grid, {pool name: floor volume}, {pool name: walker-count volume})``, the pools named by the pack's
+    embedded spec -- the input of :func:`dmipy_sim.spec.seeding.plan_seeding`."""
+    from ..phantom.grid import Grid
+    pv = (pack.meta.get("fidelity") or {}).get("per_voxel")
+    if pv is None or "voxel_certificate" not in pack.arrays:
+        raise ValueError("this pack carries no per-voxel certificate; build it with voxel_grid=")
+    if pack.substrate is None:
+        raise ValueError("this pack embeds no spec, so its pools have no names")
+    names = {p.id: p.name for p in pack.substrate.pools}
+    grid = Grid.from_meta(pv["grid"]); ijk = np.asarray(pack.arrays["voxel_ijk"], np.int64)
+    cert = np.asarray(pack.arrays["voxel_certificate"], np.float64)              # (n_v, n_pools, 3): n, floor, err
+    floors, counts = {}, {}
+    for j, pid in enumerate(pv["pools"]):
+        fl = np.zeros(grid.shape); n = np.zeros(grid.shape)
+        fl[tuple(ijk.T)] = np.nan_to_num(cert[:, j, 1], nan=0.0); n[tuple(ijk.T)] = cert[:, j, 0]
+        floors[names[int(pid)]] = fl; counts[names[int(pid)]] = n
+    return grid, floors, counts
+
+
 def _field_of(m):
     """The master's field source as a sampler (``channels(points)`` / ``field(points, ...)``): the grid as a
     :class:`FieldGrid`, or the strand substrate's :class:`StrandFieldBasis`; None without a field tier."""
@@ -610,7 +678,7 @@ def _walk_master(walk, *, weights=None, field=None, diffusivity=None, substrate_
 def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto",
                       method=_cx.POSITION_METHOD, envelope=None, tol=2.0, K=None,
                       err_target=None, sigma_star=None, provenance=None,
-                      blt_temporal_K=None, blt_dtype=np.float16, susc_path_K=None, susc_path_bits=8,
+                      blt_temporal_K=None, blt_dtype=np.float16, susc_path_K=None, susc_path_bits=8, voxel_grid=None,
                       diffusivity=None, substrate_frame=None, out_path=None, verbose=False):
     """Compress a persistent walk and assemble a self-certifying replay pack.
 
@@ -634,6 +702,12 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto"
     coefficients with the gradient moments -- see :func:`compression.encode_bridge_dst`); ``K``
     (mode count) is chosen automatically to keep the *measured* replay error within ``tol`` x the
     Monte-Carlo floor over ``envelope`` (default :func:`compression.default_envelope`) unless given.
+    ``voxel_grid`` (a :class:`~dmipy_sim.phantom.Grid`, substrate-attached) adds the PER-VOXEL certificate a
+    partition needs: walkers binned by where they started and by pool, and per (voxel, pool) the split-half
+    floor and the codec error over the acquisition battery, stored as ``voxel_ijk`` / ``voxel_certificate``
+    with a summary in ``fidelity["per_voxel"]`` (:func:`voxel_fidelity`; :func:`voxel_fidelity_volumes` reads
+    it back, :func:`dmipy_sim.spec.seeding.plan_seeding` turns a pilot's into the next walk's counts).
+
     Returns a :class:`dmipy_sim.replay.replay.ReplayPack`; writes it to ``out_path`` if given.
     """
     src = _walk_master(walk, weights=weights, field=field, diffusivity=diffusivity, substrate_frame=substrate_frame)
@@ -778,6 +852,25 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto"
                 fid["meets_target"] = bool(fid["err_max"] <= sigma_star and fid["floor_max"] <= sigma_star)
 
     n_t = X.shape[1]
+    if voxel_grid is not None:
+        from ..phantom.grid import Grid
+        if not isinstance(voxel_grid, Grid) or voxel_grid.attach != "substrate":
+            raise TypeError("voxel_grid must be a dmipy_sim.phantom.Grid attached to the substrate")
+        _dpos = _cx.decode(pos_arrays, pos_meta, n_walkers=(X.shape[0] if wp_method else None))
+        _w = np.asarray(m["w"], np.float64) if m.get("w") is not None else None
+        _ijk, _pools, _n, _floor, _err = voxel_fidelity(X, dt, _dpos, voxel_grid, m.get("comp"), env, w=_w)
+        arrays["voxel_ijk"] = _ijk.astype(np.int32)
+        arrays["voxel_certificate"] = np.stack([_n.astype(np.float32), _floor.astype(np.float32), _err.astype(np.float32)], axis=-1)
+        _ok = np.isfinite(_floor)
+        fid = dict(fid, per_voxel=dict(grid=voxel_grid.to_meta(), pools=[int(p) for p in _pools], n_voxels=int(_ijk.shape[0]),
+                                       walkers_min=int(_n[_n > 0].min()) if (_n > 0).any() else 0,
+                                       floor_max=float(np.nanmax(_floor)) if _ok.any() else None,
+                                       floor_median=float(np.nanmedian(_floor)) if _ok.any() else None,
+                                       err_max=float(np.nanmax(_err)) if np.isfinite(_err).any() else None,
+                                       within_2x_floor_fraction=(float(np.mean(_err[_ok] <= 2.0 * _floor[_ok])) if _ok.any() else None),
+                                       thin_voxels=int(((_n > 0) & (_n < 2)).sum())))
+        if sigma_star is not None and _ok.any():
+            fid["per_voxel"]["meets_target"] = bool(np.nanmax(_floor) <= sigma_star and np.nanmax(_err) <= sigma_star)
     comp_meta = dict(method=method, K=int(pos_meta.get("K", K)),        # the K stored: the codec clamps a short walk
                      walker_preserving=bool(wp_method), n_t=int(n_t))
     if wp_method:
