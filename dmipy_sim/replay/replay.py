@@ -93,6 +93,22 @@ class PoseResponse:
     def n_meas(self):
         return self.coeffs.shape[0]
 
+    def save(self, path):
+        """Write the expansion as one ``.npz``: what a cache keeps between two replays of the same pack under the
+        same acquisition and knobs."""
+        np.savez(str(path), coeffs=self.coeffs, lmax=self.lmax, nmax=self.nmax, misfit=self.misfit, floor=self.floor,
+                 phase_amplitude=self.phase_amplitude, n_samples=self.n_samples, route=self.route,
+                 n_bodies=-1 if self.n_bodies is None else int(self.n_bodies), field_lmax=int(self.field_lmax))
+
+    @classmethod
+    def load(cls, path):
+        z = np.load(str(path), allow_pickle=False)
+        out = cls(z["coeffs"], int(z["lmax"]), int(z["nmax"]), z["misfit"], float(z["floor"]), float(z["phase_amplitude"]),
+                  int(z["n_samples"]))
+        out.route = str(z["route"]); nb = int(z["n_bodies"]); out.n_bodies = None if nb < 0 else nb
+        out.field_lmax = int(z["field_lmax"])
+        return out
+
     @property
     def asymmetry(self):
         """The share of the response's energy that depends on the substrate's own azimuth.
@@ -529,7 +545,7 @@ class ReplayPack:
 
     def pose_response(self, waveform, *, tissue="nominal", T2=None, T1=None, rho=None, D=None, B0=None,
                       b0_dir=(0.0, 0.0, 1.0), chi_iso=None, chi_aniso=0.0, compartment=None,
-                      method="auto", keep=None):
+                      method="auto", keep=None, cache=None):
         """The pack's response over every pose of its substrate, for one acquisition: a :class:`PoseResponse` whose
         coefficients a voxel's orientation distribution contracts against (RPH.md 6).
 
@@ -549,19 +565,51 @@ class ReplayPack:
 
         Knobs are the same as :meth:`replay` and resolve the same way; the pose is not one of them, since every
         pose is what is being expanded.
+
+        ``cache`` -- a directory (or ``True`` for ``$DMIPY_SIM_CACHE``, else ``~/.cache/dmipy_sim/pose``): the
+        expansion is written there under a key of the pack's digest, the acquisition on the pack's grid, the
+        resolved knobs, the frame, the method and the band, and read back instead of recomputed the next time
+        the same pack meets the same acquisition. Off unless asked for.
         """
         P = self._prepare(waveform, tissue=tissue, T2=T2, T1=T1, rho=rho, D=D, B0=B0, b0_dir=b0_dir, chi_iso=chi_iso,
                           chi_aniso=chi_aniso, orientation=None, compartment=compartment)
         if method not in ("auto", "closed", "quadrature"):
             raise ValueError("method is 'auto', 'closed' (the per-walker Rayleigh expansion) or 'quadrature'")
+        path = None
+        if cache is not None and cache is not False:
+            path = self._pose_cache_path(cache, P, waveform, method, keep)
+            if path.exists():
+                return PoseResponse.load(path)
+        out = None
         if method != "quadrature":
-            closed = self._pose_coeffs_closed(P, waveform, keep=keep)
-            if closed is not None:
-                return closed
-            if method == "closed":
-                raise ValueError("the closed-form pose expansion needs a single-direction encoding on every measurement "
-                                 "and no field: this acquisition or replay has neither, so use method='quadrature'")
-        return self._pose_coeffs(P, waveform, keep=keep)
+            out = self._pose_coeffs_closed(P, waveform, keep=keep)
+            if out is None and method == "closed":
+                raise ValueError("the closed-form pose expansion needs a single-direction encoding on every measurement: "
+                                 "this acquisition has a b-tensor or multi-axis waveform, so use method='quadrature'")
+        if out is None:
+            out = self._pose_coeffs(P, waveform, keep=keep)
+        if path is not None:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            out.save(path)
+        return out
+
+    def _pose_cache_path(self, cache, P, waveform, method, keep):
+        """``<dir>/<key>.npz`` with the key over everything the expansion depends on."""
+        import hashlib, os
+        from pathlib import Path
+        if cache is True:
+            root = Path(os.environ.get("DMIPY_SIM_CACHE") or (Path.home() / ".cache" / "dmipy_sim")) / "pose"
+        else:
+            root = Path(cache)
+        h = hashlib.sha256()
+        h.update(self.digest.encode())
+        h.update(np.ascontiguousarray(P["Geff"], np.float64).tobytes())      # the acquisition on the pack's grid
+        h.update(np.ascontiguousarray(P["ew"], np.float64).tobytes())        # the weights with every tissue knob applied
+        h.update(np.ascontiguousarray(self.substrate_frame).tobytes())
+        rf = waveform.rf.refocus_time if waveform.rf else None
+        h.update(repr((float(P["norm"]), P["B0"], tuple(np.round(np.asarray(P["b0_dir"], float), 12)), P["chi_iso"],
+                       P["chi_aniso"], rf, method, None if keep is None else tuple(keep))).encode())
+        return root / (h.hexdigest() + ".npz")
 
     def _select(self, compartment, ew, norm, w, ch, n_w):
         """Restrict the ensemble mean to ``compartment`` (a pool id or a walker mask)."""
@@ -580,6 +628,19 @@ class ReplayPack:
         if not sel.any():
             raise ValueError("compartment selection matched no walkers")
         return np.where(sel, ew, 0.0), w[sel].sum()
+
+    @property
+    def digest(self):
+        """A sha256 of the pack's arrays and metadata: its identity for a cache. Computed once per instance."""
+        d = getattr(self, "_digest", None)
+        if d is None:
+            import hashlib, json
+            h = hashlib.sha256()
+            for k in sorted(self.arrays):
+                h.update(k.encode()); h.update(np.ascontiguousarray(self.arrays[k]).tobytes())
+            h.update(json.dumps(self.meta, sort_keys=True, default=str).encode())
+            d = self._digest = h.hexdigest()
+        return d
 
     @property
     def substrate_frame(self):
@@ -652,7 +713,6 @@ class ReplayPack:
         ``Y_l'n'(b^)``) and on the body index (``j_l Y_ln(m^)`` with ``a_l'm'``); no ``g x B0`` frame exists.
         Returns None when a measurement is not single-direction (a b-tensor encoding): that takes the quadrature.
         """
-        from scipy.special import spherical_jn
         from . import so3
         from .compression import read_position_coeffs
         Geff, dt, n_t, ew, norm = P["Geff"], P["dt"], P["n_t"], P["ew"], P["norm"]
@@ -691,11 +751,15 @@ class ReplayPack:
         m_hat = m / safe[:, :, None]
         m_hat[kappa == 0] = (0.0, 0.0, 1.0)
         w = np.asarray(ew, np.float64) / float(norm)
-        # the band: orders until the weighted Bessel tail is below tol for the worst group
+        # the band: orders until the weighted Bessel tail is below tol for the worst group, every order from one
+        # downward recurrence
         k_max = float(kappa.max()) if kappa.size else 0.0
         L = int(np.ceil(k_max)) + 2
+        J_all = _spherical_jn_all(min(l_cap, L + 12), kappa)                  # (L_hi+1, n_w, n_grp)
         while L < l_cap:
-            tail = (2 * (L + 1) + 1) * (np.abs(w)[:, None] * np.abs(spherical_jn(L + 1, kappa))).sum(0).max()
+            if L + 1 >= J_all.shape[0]:
+                J_all = _spherical_jn_all(min(l_cap, J_all.shape[0] + 12), kappa)
+            tail = (2 * (L + 1) + 1) * (np.abs(w)[:, None] * np.abs(J_all[L + 1])).sum(0).max()
             if tail < tol:
                 break
             L += 1
@@ -711,7 +775,7 @@ class ReplayPack:
         n_feat = so3.n_so3_coeffs(keep_l, keep_n)
         coeffs = np.zeros((n_meas, n_feat), np.complex128)
         cos_z = m_hat[:, :, 2]
-        J = [spherical_jn(l, kappa) for l in range(L + 1)]                      # (n_w, n_grp) per order
+        J = [J_all[l] for l in range(L + 1)]                                    # (n_w, n_grp) per order
         Yg = so3.real_sh(L, g_hat, full=True)                                   # (n_meas, (L+1)^2): the lab side
         if field is None:
             # ---- gradient only: one body per order and group, outer product with the direction harmonics
@@ -786,8 +850,8 @@ class ReplayPack:
         # what the expansion cannot hold pointwise: the orders above the band it was built to, as a bound from
         # |P_l| <= 1 -- below tol by construction
         tail = np.zeros(n_grp)
-        for l in range(L + 1, L + 4):
-            tail += (2 * l + 1) * (np.abs(w)[:, None] * np.abs(spherical_jn(l, kappa))).sum(0)
+        for l in range(L + 1, min(L + 4, J_all.shape[0])):
+            tail += (2 * l + 1) * (np.abs(w)[:, None] * np.abs(J_all[l])).sum(0)
         out = PoseResponse(coeffs, keep_l, keep_n, misfit=tail[group], floor=1.0 / np.sqrt(n_w), phase_amplitude=k_max,
                            n_samples=0)
         out.n_bodies = n_grp                                                   # the distinct waveforms contracted
@@ -1156,6 +1220,35 @@ def _group_waveforms(s, rtol=1e-5):
         group[same] = len(first)
         first.append(i)
     return group, np.asarray(first, np.int64)
+
+
+def _spherical_jn_all(L, x, extra=24):
+    """``j_0(x) .. j_L(x)`` for every entry of ``x``, ``(L+1,) + x.shape``, by the downward (Miller) recurrence
+    started ``extra`` orders above ``L`` and normalised to ``j_0 = sin x / x``: stable for every order and
+    argument, exact to 1e-12 against scipy, and one pass instead of one call per order."""
+    x = np.asarray(x, np.float64)
+    L = int(L)
+    N = L + int(extra) + int(np.ceil(np.abs(x).max())) if x.size else L + int(extra)
+    small = np.abs(x) < 1e-12
+    xs = np.where(small, 1.0, x)
+    hi, lo = np.zeros_like(xs), np.full_like(xs, 1e-30)           # j_{N+1} := 0, j_N := tiny, then downward
+    out = np.empty((L + 1,) + x.shape, np.float64)
+    for l in range(N, -1, -1):
+        cur = (2 * l + 3) / xs * lo - hi                            # j_l = (2l+3)/x j_{l+1} - j_{l+2}
+        hi, lo = lo, cur
+        if l <= L:
+            out[l] = cur
+        m = np.abs(cur) > 1e200                                     # rescale before it overflows; the ratio is what matters
+        if m.any():
+            hi = np.where(m, hi * 1e-200, hi); lo = np.where(m, lo * 1e-200, lo)
+            if l <= L:
+                out[l:] = np.where(m[None, ...], out[l:] * 1e-200, out[l:])
+    j0 = np.where(small, 1.0, np.sin(xs) / xs)
+    scale = j0 / np.where(out[0] == 0, 1.0, out[0])
+    out = out * scale[None, ...]
+    if small.any():
+        out[1:, small] = 0.0; out[0, small] = 1.0
+    return out
 
 
 def _legendre(l, x):

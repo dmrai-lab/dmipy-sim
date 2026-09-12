@@ -291,7 +291,7 @@ class Phantom:
 
     def replay(self, seq, *, B0_T=None, b0_dir=(0.0, 0.0, 1.0), tissue="nominal", packs=None, complex_signal=False,
                T2_s=None, T1_s=None, rho_m_s=None, D_m2_s=None, chi_iso=None, chi_aniso=0.0,
-               transmit=None, off_resonance=None, proton_density=None):
+               transmit=None, off_resonance=None, proton_density=None, cache=None):
         """The signal of every voxel under ``seq``: a dense volume ``grid.shape + (n_measurements,)``, NaN where
         the phantom has no voxel (:meth:`sparse` gives the rows).
 
@@ -310,7 +310,9 @@ class Phantom:
           the voxel through the acquisition's own coherence gate (zero for a 180 at TE/2).
         * ``proton_density`` -- multiplies every slot's ``m0`` in the voxel (and an ``m0_scale`` layer).
 
-        A declared layer this route cannot carry raises rather than being dropped.
+        ``cache`` (a directory, or ``True``) keeps each pack's expansion on disk under the acquisition and the knobs,
+        so a phantom replayed twice under the same acquisition pays the expansion once
+        (:meth:`ReplayPack.pose_response`). A declared layer this route cannot carry raises rather than being dropped.
         """
         f = self.file
         self._check_prescription(seq)
@@ -322,7 +324,7 @@ class Phantom:
         if maps["transmit"] is not None or "kappa_B1" in f.scalar_names:
             _, S = f.replay_bloch(seq, transmit=maps["transmit"], **common)
         else:
-            _, S = f.replay(seq, **common)
+            _, S = f.replay(seq, cache=cache, **common)
         return self.to_volume(S)
 
     def _check_prescription(self, seq):
