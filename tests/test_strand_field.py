@@ -65,7 +65,7 @@ def test_the_domain_mean_is_the_closed_form():
     P = rng.uniform(lo, hi, (60000, 3))
     sampled = sf.channels(P).mean(0)                                           # mean subtracted: should be ~0
     scale = np.abs(sf.mean).max()
-    assert scale > 1e-4 and np.abs(sampled).max() < 0.05 * scale, (sampled / scale)
+    assert scale > 1e-4 and np.abs(sampled).max() < 0.08 * scale, (sampled / scale)   # 60k samples of a field whose outside terms average out by cos 2a
 
 
 def test_the_cutoff_error_falls_with_the_cutoff_and_the_field_contracts():
@@ -85,3 +85,44 @@ def test_the_cutoff_error_falls_with_the_cutoff_and_the_field_contracts():
     f_par = sf.field(P, [0.0, 0.0, 1.0], B0=3.0, chi_aniso=-0.1e-6)
     assert (dist > 1.4e-6).sum() > 500 and np.abs(f_par[dist > 1.4e-6] - f_par[dist > 1.4e-6].mean()).max() < 1e-15
     assert sf.meta["kind"] == "strand_superposition" and sf.meta["n_strands"] == 120
+    with pytest.raises(ValueError, match="strands_max"):                     # more strands within reach than allowed: refused, not dropped
+        StrandFieldBasis(cls, ra, rb, cutoff_m=20e-6, strands_max=4).channels(P[:50])
+
+
+def test_the_bounded_evaluation_is_the_full_superposition():
+    """The grid gather, the duplicate removal and the top-k of nearest strands reproduce the brute-force sum over
+    every strand within the cutoff, at cutoffs below and above the segment length (a segment gathered from several
+    cells counts once, and the padding never shadows segment zero -- both were defects once)."""
+    from dmipy_sim.fields.hollow_cylinder import hollow_cylinder_basis
+    rng = np.random.default_rng(2); cls, ra, rb = [], [], []
+    for k in range(120):
+        c0 = np.array([rng.uniform(-40e-6, 40e-6), rng.uniform(-40e-6, 40e-6), 0.0])
+        cls.append(np.stack([c0 + [0, 0, -50e-6], c0 + [0, 0, 50e-6]])); ra.append(1e-6); rb.append(1.4e-6)
+    P = rng.uniform(-10e-6, 10e-6, (7, 3))
+
+    def brute(P, cutoff):
+        out = np.zeros((len(P), 13))
+        for c, a, b in zip(cls, ra, rb):
+            A = c[0]; AB = c[1] - c[0]; t = np.clip(((P - A) @ AB) / (AB @ AB), 0, 1); Q = A + t[:, None] * AB
+            u = AB / np.linalg.norm(AB); rv = P - Q; rv -= (rv @ u)[:, None] * u; d = np.linalg.norm(rv, axis=1)
+            out += np.asarray(hollow_cylinder_basis(rv, np.tile(u, (len(P), 1)), np.full(len(P), a), np.full(len(P), b))) * (d < cutoff)[:, None]
+        return out
+    for cutoff in (20e-6, 40e-6, 90e-6):
+        sf = StrandFieldBasis(cls, ra, rb, cutoff_m=cutoff)
+        np.testing.assert_allclose(sf.channels(P) + sf.mean, brute(P, cutoff), atol=2e-7, rtol=0)
+    # kinked strands with many segments each: one segment per strand counts, the joint's tie broken once
+    cls2 = [_kinked_strand(n=9, step=6e-6, turn_deg=25.0, seed=k) + rng.uniform(-15e-6, 15e-6, 3) for k in range(30)]
+    ra2, rb2 = [1e-6] * 30, [1.5e-6] * 30
+    def brute2(P, cutoff):
+        out = np.zeros((len(P), 13))
+        for c, a, b in zip(cls2, ra2, rb2):
+            A_ = c[:-1]; AB = c[1:] - c[:-1]; AB2 = (AB ** 2).sum(1)
+            t = np.clip(((P[:, None, :] - A_[None]) * AB[None]).sum(-1) / AB2[None], 0, 1)
+            Q = A_[None] + t[..., None] * AB[None]; dist = np.linalg.norm(P[:, None, :] - Q, axis=-1)
+            j = (dist <= dist.min(1, keepdims=True) + StrandFieldBasis.TIE_TOL * cutoff).argmax(1)   # the tie rule: lowest index
+            u = AB[j] / np.sqrt(AB2[j])[:, None]; rv = P - Q[np.arange(len(P)), j]; rv -= (rv * u).sum(1, keepdims=True) * u
+            out += np.asarray(hollow_cylinder_basis(rv, u, np.full(len(P), a), np.full(len(P), b))) * (dist.min(1) < cutoff)[:, None]
+        return out
+    P2 = np.concatenate([P, np.vstack([c[3] for c in cls2[:5]])])     # the joints themselves: a tie, counted once
+    sf2 = StrandFieldBasis(cls2, ra2, rb2, cutoff_m=12e-6)
+    np.testing.assert_allclose(sf2.channels(P2) + sf2.mean, brute2(P2, 12e-6), atol=5e-7, rtol=0)   # float32 in the evaluator

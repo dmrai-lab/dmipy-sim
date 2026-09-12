@@ -10,6 +10,8 @@ measured volume, weights by water fraction or thinning) and the pools are concat
 field-source pool is computed on the domain grid and rides on the walk. This is what
 the bespoke bundle builders used to decide in code.
 """
+import logging
+
 import numpy as np
 
 from .substrate import SubstrateSpec, SpecError
@@ -18,7 +20,8 @@ from .build import geometry_from_spec
 
 def walk_spec(spec, n_walkers=None, T_max=None, dt_save=None, *, scanner="connectom", floor_fraction=0.1, diffusivity=None,
               seed=0, n_probe=200_000, field=True, field_res=0.2e-6, field_budget=5e7, field_cutoff_m=25e-6,
-              field_cutoff_tol=0.02, require_gpu=None, walker_batch_size=50_000, tiers="all", seeding=None):
+              field_cutoff_tol=0.02, field_cutoff_max_m=50e-6, require_gpu=None, walker_batch_size=50_000, tiers="all",
+              seeding=None):
     """Walk ``spec`` and return a :class:`~dmipy_sim.persistent_walk.PersistentWalk` carrying the spec.
 
     ``seeding`` replaces the spec's uniform rule with :class:`~dmipy_sim.spec.seeding.StratifiedByVoxel`: the
@@ -33,7 +36,10 @@ def walk_spec(spec, n_walkers=None, T_max=None, dt_save=None, *, scanner="connec
     (:class:`~dmipy_sim.fields.strand_field.StrandFieldBasis`): every strand within ``field_cutoff_m`` of a
     point contributes its nearest segment's hollow-cylinder field, and the cutoff doubles until the channels
     at a sample of the walk's start positions change by less than ``field_cutoff_tol`` (relative rms) when
-    it doubles again -- the certificate the basis records. Every other substrate, and a strand substrate
+    it doubles again, up to ``field_cutoff_max_m`` -- the certificate the basis records, with the change the
+    last doubling still made when the bound stopped it (``converged: False``): over a domain that is mostly
+    sparse (DiSCo) the 1/r^2 fields of distant bundles are a share of the field's variance that a cutoff sum
+    reaches only as 1/cutoff, which a far-field grid, not a larger cutoff, will settle. Every other substrate, and a strand substrate
     with ``field="grid"``, rasterises within ``field_budget`` voxels (13 float32 channels each) at
     ``field_res``, the cross-check of the closed form on a small strand voxel.
     """
@@ -77,7 +83,8 @@ def walk_spec(spec, n_walkers=None, T_max=None, dt_save=None, *, scanner="connec
         return PersistentWalk(w.positions, w.dt, w.sub_steps, w.dt_sim, w.boundary_local_time, w.compartment,
                               w.bound_frac, w.illegal_crossings, w.seed, w.diffusivity, geometry=g, spec=spec)
     return _walk_bundle(spec, int(n_walkers), float(T_max), float(dt_save), seed, n_probe, field, field_res,
-                        require_gpu, walker_batch_size, field_budget=float(field_budget), field_cutoff_m=field_cutoff_m, field_cutoff_tol=field_cutoff_tol, seeding=seeding)
+                        require_gpu, walker_batch_size, field_budget=float(field_budget), field_cutoff_m=field_cutoff_m, field_cutoff_tol=field_cutoff_tol, seeding=seeding,
+                        field_cutoff_max_m=field_cutoff_max_m)
 
 
 def _needs_bundle_walk(spec):
@@ -178,27 +185,36 @@ class _Boundary:
         return self._geom[key]
 
 
-def _strand_field(outer_b, inner_b, lo, hi, traj, cutoff_m, tol, seed):
+def _strand_field(outer_b, inner_b, lo, hi, traj, cutoff_m, tol, seed, strands_max=1024, cutoff_max=50e-6):
     """The per-segment field basis of a strand substrate (its sheath between ``inner_b`` and ``outer_b``), the
     cutoff doubled until the channels at a sample of the walk's start positions move by less than ``tol``."""
     from ..fields.strand_field import StrandFieldBasis
     if len(outer_b.centerlines) != len(inner_b.centerlines):
         raise SpecError("the sheath's inner and outer walls list different numbers of strands")
-    sf = StrandFieldBasis(outer_b.centerlines, inner_b.radii, outer_b.radii, cutoff_m=cutoff_m, domain=(lo, hi))
+    sf = StrandFieldBasis(outer_b.centerlines, inner_b.radii, outer_b.radii, cutoff_m=cutoff_m, domain=(lo, hi),
+                          strands_max=strands_max)
     rng = np.random.default_rng(int(seed) + 7)
     sample = traj[rng.choice(traj.shape[0], size=min(traj.shape[0], 2000), replace=False), 0]
     extent = float(np.max(np.asarray(hi) - np.asarray(lo)))
+    log = logging.getLogger("dmipy_sim")
     while True:
         err = sf.cutoff_error(sample)
-        if max(err.values()) <= tol or sf.cutoff_m >= extent:
+        log.info("walk_spec: strand field cutoff %.0f um -> %.0f um changes the channels by iso %.4f, aniso %.4f (tol %.3f)",
+                 sf.cutoff_m * 1e6, 2 * sf.cutoff_m * 1e6, err["iso"], err["aniso"], tol)
+        converged = max(err.values()) <= tol
+        if converged or 2.0 * sf.cutoff_m > cutoff_max or 2.0 * sf.cutoff_m >= extent:   # the bound, or the whole domain
             break
         sf = sf.with_cutoff(2.0 * sf.cutoff_m)
+    if not converged:
+        log.warning("walk_spec: the strand field's cutoff stopped at %.0f um (bound %.0f um) with the next doubling still "
+                    "changing the channels by iso %.3f, aniso %.3f: the pack records it (converged: False)",
+                    sf.cutoff_m * 1e6, cutoff_max * 1e6, err["iso"], err["aniso"])
     return sf.with_cutoff(sf.cutoff_m, certificate=dict(cutoff_error=err, tol=float(tol), n_sample=int(len(sample)),
-                                                       converged=bool(max(err.values()) <= tol)))
+                                                       cutoff_max_m=float(cutoff_max), converged=bool(converged)))
 
 
 def _walk_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field, field_res, require_gpu, batch, field_budget=5e7,
-                 field_cutoff_m=25e-6, field_cutoff_tol=0.02, seeding=None):
+                 field_cutoff_m=25e-6, field_cutoff_tol=0.02, seeding=None, field_cutoff_max_m=50e-6):
     """Walk a multi-surface spec pool by pool: every seeded pool is defined by the walls it is inside and the walls it
     is outside; a pool with D > 0 walks the interior of its inside-walls (intra, glia) or the exterior of its
     outside-walls (extra); a shell pool at D = 0 (myelin) is frozen where it was seeded; the field basis is
@@ -206,6 +222,7 @@ def _walk_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field, field_re
     from ..engine.core import simulate_trajectories
     from ..fields.susceptibility_field import FieldGrid, mesh_field_basis, predicate_field_basis
     from ..persistent_walk import PersistentWalk
+    log = logging.getLogger("dmipy_sim")
     pools = {p.id: p for p in spec.pools}
     for w in spec.walls:
         if w.permeability.in_to_out > 0 or w.permeability.out_to_in > 0:
@@ -278,6 +295,7 @@ def _walk_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field, field_re
         def seeds(pid, s):
             want = seeding.count_for(pools[pid].name)
             by_volume = inside_w[pid] and not outside_w[pid] and all(w.surface.kind == "swept_polyline" for w in inside_w[pid])
+            log.info("walk_spec: seeding pool %s per voxel (%d wanted)", pools[pid].name, int(want.sum()))
             P, v, f, trials, n_drawn = fill_per_voxel(sampler(pid), bin_index, grid.n_voxels, want,
                                                       trials_max=int(seeding.trials_per_voxel_max), seed=s)
             if by_volume:                                  # the census of a volume-uniform draw over the WHOLE pool:
@@ -306,6 +324,7 @@ def _walk_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field, field_re
                             f"implemented (set D = 0 for a stuck pool)")
         g = (boundary(inside_w[pid]).geometry("intra", lo, hi, periodic, reflect, feature) if inside_w[pid]
              else boundary(outside_w[pid]).geometry("extra", lo, hi, periodic, reflect, feature))
+        log.info("walk_spec: walking pool %s, %d walkers", pool.name, n)
         w = simulate_trajectories(n, float(pool.D), g, T_max=T_max, dt_save=dt_save, seed=seed + 13 * pid, r0=r0,
                                   require_gpu=require_gpu, walker_batch_size=batch)
         n_t, walked = w.n_t, w
@@ -337,7 +356,7 @@ def _walk_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field, field_re
             raise SpecError(f"field-source pool {pools[src].name!r} is bounded by no wall; its occupancy cannot be rasterised")
         strands = outer_b.kind == "swept_polyline" and inner_b is not None and inner_b.kind == "swept_polyline"
         if strands and field != "grid":
-            fg = _strand_field(outer_b, inner_b, lo, hi, traj, field_cutoff_m, field_cutoff_tol, seed)
+            fg = _strand_field(outer_b, inner_b, lo, hi, traj, field_cutoff_m, field_cutoff_tol, seed, cutoff_max=field_cutoff_max_m)
         else:
             n_vox = int(np.prod(np.ceil((hi - lo) / float(field_res))))
             if n_vox > field_budget:

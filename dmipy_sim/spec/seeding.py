@@ -6,6 +6,7 @@ is set by the emptiest voxel; stratification puts the walkers where the certific
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -64,15 +65,18 @@ class StratifiedByVoxel:
                     trials_per_voxel_max=int(self.trials_per_voxel_max))
 
 
-def fill_per_voxel(draw, bin_index, n_voxels, want, *, trials_max, batch=1_000_000, seed=0):
+def fill_per_voxel(draw, bin_index, n_voxels, want, *, trials_max, draws_max=None, batch=1_000_000, seed=0):
     """Draw points with ``draw(n, rng) -> (points (n, 3), accepted (n,) bool)`` -- the pool's own sampler, which
     may reject -- until every voxel with any accepted draw holds ``want[v]`` points or has spent ``trials_max``
-    draws. Returns ``(points, voxel, f, trials)``: the kept points and their voxels, the pool's volume fraction
+    draws, or ``draws_max`` points have been drawn in all (default 200 x the points wanted: a sliver of a pool
+    that a volume-uniform draw reaches once in a million is left with what it got). Returns ``(points, voxel, f, trials)``: the kept points and their voxels, the pool's volume fraction
     per voxel measured from the draws (accepted / drawn, the census), and the draws per voxel."""
     rng = np.random.default_rng(seed)
     want = np.asarray(want, np.int64)
     have = np.zeros(n_voxels, np.int64); trials = np.zeros(n_voxels, np.int64); acc = np.zeros(n_voxels, np.int64)
     kept_p, kept_v = [], []; n_drawn = 0
+    draws_max = int(draws_max) if draws_max is not None else 200 * int(want.sum())
+    log = logging.getLogger("dmipy_sim")
     while True:
         P, ok = draw(int(batch), rng); n_drawn += len(P)
         v = bin_index(P)
@@ -88,7 +92,9 @@ def fill_per_voxel(draw, bin_index, n_voxels, want, *, trials_max, batch=1_000_0
         kept_p.append(P[take]); kept_v.append(v[take])
         have += np.bincount(v[take], minlength=n_voxels)
         short = (acc > 0) & (have < want) & (trials < trials_max)
-        if not short.any():
+        log.info("fill_per_voxel: %d drawn, %d voxels occupied, %d short, %d kept", n_drawn, int((acc > 0).sum()),
+                 int(short.sum()), int(have.sum()))
+        if not short.any() or n_drawn >= draws_max:
             break
     P = np.concatenate(kept_p) if kept_p else np.zeros((0, 3)); v = np.concatenate(kept_v) if kept_v else np.zeros(0, np.int64)
     f = np.where(trials > 0, acc / np.maximum(trials, 1), 0.0)
