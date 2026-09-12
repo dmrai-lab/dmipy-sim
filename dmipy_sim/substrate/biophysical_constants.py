@@ -129,6 +129,15 @@ _CITATION_STANISZ2005 = {
     'doi': '10.1002/mrm.20605',
 }
 
+_CITATION_TOFTS2003 = {
+    'key': 'tofts2003',
+    'authors': 'Tofts PS (ed.)',
+    'title': 'Quantitative MRI of the Brain: Measuring Changes Caused by Disease',
+    'journal': 'John Wiley & Sons (book)',
+    'year': 2003,
+    'doi': '10.1002/0470869526',
+}
+
 BIOPHYSICAL_CONSTANTS = {
     'D_water_37C': {
         'default': {
@@ -461,6 +470,101 @@ BIOPHYSICAL_CONSTANTS = {
                 'intra/extra split -- the apparent T2 baseline shortens with B0 mostly '
                 'from microscopic relaxation, NOT the mesoscopic susceptibility the model '
                 'adds separately; that mesoscopic term is < 10 percent of the 3->7T shift).',
+    },
+    'T2_grey_matter': {
+        'default': {
+            'value': 0.099,
+            'unit': 's',
+            'field_T': 3.0,
+            'species': 'human',
+            'method': 'in vitro relaxometry of fresh bovine/human tissue at 37 C (grey matter, single pool)',
+            'source_key': 'stanisz2005',
+            'location': 'Table 1, grey matter row: T2 = 99 +/- 7 ms at 3 T',
+        },
+        'alternatives': [
+            {
+                'value': 0.095,
+                'unit': 's',
+                'field_T': 1.5,
+                'species': 'human',
+                'method': 'in vitro relaxometry at 37 C (grey matter, single pool)',
+                'source_key': 'stanisz2005',
+                'location': 'Table 1, grey matter row: T2 = 95 +/- 8 ms at 1.5 T',
+            },
+        ],
+        'citation': _CITATION_STANISZ2005,
+        'description': 'T2 relaxation time of grey matter as one pool (a sphere-packed cortex substrate '
+                       'replays both of its pools at it)',
+    },
+    'T1_grey_matter': {
+        'default': {
+            'value': 1.820,
+            'unit': 's',
+            'field_T': 3.0,
+            'species': 'human',
+            'method': 'in vitro relaxometry at 37 C (grey matter, single pool)',
+            'source_key': 'stanisz2005',
+            'location': 'Table 1, grey matter row: T1 = 1820 +/- 114 ms at 3 T',
+        },
+        'alternatives': [
+            {
+                'value': 1.124,
+                'unit': 's',
+                'field_T': 1.5,
+                'species': 'human',
+                'method': 'in vitro relaxometry at 37 C (grey matter, single pool)',
+                'source_key': 'stanisz2005',
+                'location': 'Table 1, grey matter row: T1 = 1124 +/- 50 ms at 1.5 T',
+            },
+        ],
+        'citation': _CITATION_STANISZ2005,
+        'description': 'T1 relaxation time of grey matter as one pool',
+    },
+    'proton_density_white_matter': {
+        'default': {
+            'value': 0.70,
+            'unit': '(water content relative to CSF = 1)',
+            'field_T': None,
+            'species': 'human',
+            'method': 'quantitative proton-density / water-content imaging',
+            'source_key': 'tofts2003',
+            'location': 'Chapter 4 (proton density and water content), tissue water content: white matter '
+                        '~0.70 of CSF -- NEEDS VERIFICATION of the table number',
+        },
+        'alternatives': [],
+        'citation': _CITATION_TOFTS2003,
+        'description': 'Proton density (water content) of white matter relative to CSF: the m0 a white-matter '
+                       'substrate declares in a replay phantom',
+    },
+    'proton_density_grey_matter': {
+        'default': {
+            'value': 0.85,
+            'unit': '(water content relative to CSF = 1)',
+            'field_T': None,
+            'species': 'human',
+            'method': 'quantitative proton-density / water-content imaging',
+            'source_key': 'tofts2003',
+            'location': 'Chapter 4 (proton density and water content), tissue water content: grey matter '
+                        '~0.85 of CSF -- NEEDS VERIFICATION of the table number',
+        },
+        'alternatives': [],
+        'citation': _CITATION_TOFTS2003,
+        'description': 'Proton density (water content) of grey matter relative to CSF: the m0 a grey-matter '
+                       'substrate declares in a replay phantom',
+    },
+    'proton_density_csf': {
+        'default': {
+            'value': 1.0,
+            'unit': '(water content relative to CSF = 1)',
+            'field_T': None,
+            'species': 'human',
+            'method': 'definition: CSF is the reference water content',
+            'source_key': 'tofts2003',
+            'location': 'Chapter 4: CSF is the 100 % water reference the tissue values are given against',
+        },
+        'alternatives': [],
+        'citation': _CITATION_TOFTS2003,
+        'description': 'Proton density of CSF, the reference (1.0): the m0 free water declares in a replay phantom',
     },
     'T2_csf': {
         'default': {
