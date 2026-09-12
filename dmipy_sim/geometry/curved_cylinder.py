@@ -283,6 +283,33 @@ class PackedCurvedCylinders(Geometry):
             out[i:i + chunk] = np.asarray(_batch(jnp.asarray(P[i:i + chunk])))
         return out
 
+    def radial_directors(self, P, chunk=50000):
+        """``(n, 3)`` -> ``(n, 3)`` unit vectors from the nearest centerline point to each point: the sheath's
+        radial (lipid) director at that point, exact from the geometry rather than from the gradient of a
+        voxelised mask (dmipy-sim#213). Grid-accelerated like :meth:`inside_any`; a point with no segment in its
+        neighbourhood gets the zero vector."""
+        P = np.asarray(P, np.float32)
+        out = np.zeros((P.shape[0], 3), np.float32)
+        _batch = getattr(self, "_radial_batch", None)
+        if _batch is None:
+            @jax.jit
+            def _batch(Pb):
+                def one(p):
+                    cand, valid = self._gather(p)
+                    A = self._A[cand]; AB = self._AB[cand]; AB2 = self._AB2[cand]
+                    t = jnp.clip(((p[None, :] - A) * AB).sum(1) / AB2, 0.0, 1.0)
+                    Q = A + t[:, None] * AB
+                    d2 = jnp.where(valid, ((p[None, :] - Q) ** 2).sum(1), jnp.inf)
+                    i = jnp.argmin(d2)
+                    v = p - Q[i]
+                    n = jnp.sqrt((v * v).sum())
+                    return jnp.where(valid.any() & (n > 0), v / jnp.maximum(n, 1e-30), jnp.zeros(3, v.dtype))
+                return jax.vmap(one)(Pb)
+            self._radial_batch = _batch
+        for i in range(0, P.shape[0], chunk):
+            out[i:i + chunk] = np.asarray(_batch(jnp.asarray(P[i:i + chunk])))
+        return out
+
     def sample_outside(self, n_walkers, rng, bounds=None):
         """Uniformly sample `n_walkers` points in the extra-axonal space (outside all
         tubes). `bounds=(lo,hi)` overrides the tube bounding box (e.g. the voxel domain)."""

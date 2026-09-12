@@ -152,27 +152,30 @@ def test_a_strand_pack_claims_no_tier_the_walk_did_not_record(strand_txt):
 def test_a_straight_myelinated_curved_tube_is_the_myelinated_cylinder():
     """The straight limit of the curved myelinated tube is the myelinated cylinder: the same pools, the same walls,
     and the same rasterised field basis -- the cross-check a per-segment field along a path is measured against.
-    Measured: the isotropic term and the anisotropic term with B0 along the axis agree to the bit; the
-    anisotropic term with B0 ACROSS the axis differs by 28 % RMS, because predicate_field_basis takes its radial
-    director from the voxelised mask's gradient while the cylinder's basis uses the exact one (dmipy-sim#213).
-    The discrepancy is pinned at its measured size so that fixing the director flips this test."""
+    With the strand pack's own radial director the two bases agree to 1e-6 in every term at every B0; with the
+    mask-gradient director the general route falls back on (meshes, sphere unions) the anisotropic term with B0
+    across the axis is 28 % off (dmipy-sim#213), pinned at its measured size so a better director flips it."""
     from dmipy_sim.fields.susceptibility_field import field_grid_of, predicate_field_basis, assemble_field
     r_in, r_out = 1.0e-6, 1.4e-6
-    straight = d.CurvedMyelinatedCylinder(np.array([[0.0, 0.0, -6e-6], [0.0, 0.0, 6e-6]]), r_in, r_out, pool="intra")
+    cl = np.array([[0.0, 0.0, -6e-6], [0.0, 0.0, 6e-6]])
+    straight = d.CurvedMyelinatedCylinder(cl, r_in, r_out, pool="intra")
+    pack = d.PackedCurvedCylinders([cl], [r_in], interior=True)                 # the strand pack: its radial director
     cyl = d.MyelinatedCylinder(r_in, r_out, (0, 0, 1), 1.7e-9, 1.7e-9)
     lo, hi = np.array([-3e-6, -3e-6, -2e-6]), np.array([3e-6, 3e-6, 2e-6])
     res = 0.2e-6
-    b_curved, o_curved, _ = predicate_field_basis(lambda p: np.asarray(straight.classify_positions_exact(p)) == 1,
-                                                  lambda p: np.asarray(straight.classify_positions_exact(p)) != 0, lo, hi, res=res,
-                                                  mask_supersample=4)                   # the same partial volume at the walls
+    inner = lambda p: np.asarray(straight.classify_positions_exact(p)) == 1
+    outer = lambda p: np.asarray(straight.classify_positions_exact(p)) != 0
+    exact, _, _ = predicate_field_basis(inner, outer, lo, hi, res=res, mask_supersample=4, director=pack.radial_directors)
+    grad, o_curved, _ = predicate_field_basis(inner, outer, lo, hi, res=res, mask_supersample=4)
     fg = field_grid_of(cyl, res=res, box=(lo, hi), mask_supersample=4)              # stored translation-invariant: a few slabs
-    assert tuple(b_curved["shape"][:2]) == tuple(fg.basis["shape"][:2]) and np.allclose(o_curved[:2], np.asarray(fg.origin)[:2])
+    assert tuple(exact["shape"][:2]) == tuple(fg.basis["shape"][:2]) and np.allclose(o_curved[:2], np.asarray(fg.origin)[:2])
 
-    def rms(direction, chi_iso, chi_aniso):
-        f1 = np.asarray(assemble_field(b_curved, direction, B0=3.0, chi_iso=chi_iso, chi_aniso=chi_aniso))[:, :, b_curved["shape"][2] // 2]
+    def rms(basis, direction, chi_iso, chi_aniso):
+        f1 = np.asarray(assemble_field(basis, direction, B0=3.0, chi_iso=chi_iso, chi_aniso=chi_aniso))[:, :, basis["shape"][2] // 2]
         f2 = np.asarray(assemble_field(fg.basis, direction, B0=3.0, chi_iso=chi_iso, chi_aniso=chi_aniso))[:, :, fg.basis["shape"][2] // 2]
         return np.sqrt(np.mean((f1 - f2) ** 2)) / np.sqrt(np.mean(f2 ** 2))
-    assert rms((0, 0, 1.0), -1e-7, 0.0) < 1e-6 and rms((1.0, 0, 0), -1e-7, 0.0) < 1e-6      # isotropic: the same occupancy
-    assert rms((0, 0, 1.0), 0.0, -1e-7) < 1e-6                                              # anisotropic, B0 along the axis
-    across = rms((1.0, 0, 0), 0.0, -1e-7)
-    assert 0.2 < across < 0.35, across                                                     # the director discrepancy (#213)
+    for direction in ((0, 0, 1.0), (1.0, 0, 0)):
+        assert rms(exact, direction, -1e-7, 0.0) < 1e-6 and rms(exact, direction, 0.0, -1e-7) < 1e-6 and rms(exact, direction, -1e-7, -1e-7) < 1e-6
+    assert rms(grad, (0, 0, 1.0), 0.0, -1e-7) < 1e-6                                 # the gradient director along the axis
+    across = rms(grad, (1.0, 0, 0), 0.0, -1e-7)
+    assert 0.2 < across < 0.35, across                                             # and across it (#213)

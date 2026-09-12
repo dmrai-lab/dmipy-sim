@@ -97,6 +97,13 @@ class _Boundary:
             parts = [polyline_arrays(w.surface) for w in walls]
             self.centerlines = [c for p in parts for c in p[0]]; self.radii = np.concatenate([p[1] for p in parts])
 
+    def director(self, pts):
+        """The radial director at ``pts`` from the geometry itself, or ``None`` when this surface family has none
+        to give (a mesh, a sphere union: the field basis then takes the mask gradient, dmipy-sim#213)."""
+        if self.kind != "swept_polyline":
+            return None
+        return self.geometry("extra", None, None, None, False, None).radial_directors(pts)
+
     def contains(self, pts):
         pts = np.asarray(pts, float)
         if self.kind == "mesh":
@@ -238,8 +245,10 @@ def _walk_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field, field_re
             basis, origin, _ = mesh_field_basis((inner_b.V, inner_b.F), (outer_b.V, outer_b.F), lo, hi, res=field_res,
                                                 include_aniso=True)
         else:
+            ref_b = inner_b if inner_b is not None else outer_b
+            director = ref_b.director if ref_b.kind == "swept_polyline" else None
             basis, origin, _ = predicate_field_basis(inner_b.contains if inner_b is not None else None, outer_b.contains,
-                                                     lo, hi, res=field_res, include_aniso=True)
+                                                     lo, hi, res=field_res, include_aniso=True, director=director)
         fg = FieldGrid(basis, np.asarray(origin, float))
     by_name = {p.name: p for p in spec.pools}
     D_ref = by_name["intra"].D if ("intra" in by_name and by_name["intra"].D) else float(walked.diffusivity)
