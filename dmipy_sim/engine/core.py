@@ -1531,8 +1531,13 @@ def simulate_trajectories(
                       float(dt_sim), illegal_crossings=illegal, seed=int(seed), diffusivity=D_walk,
                       geometry=geometry)
     if record:
+        # a geometry without a log-weight reflection accumulates no boundary local time: the channel is then
+        # NOT a record of zero contact but the absence of a record, and a pack built from it must not claim the
+        # surface tier (a replay at rho would return an unattenuated signal without a word)
+        records_surface = has_reflect_with_log_weight or geometry._is_myelinated or geometry._is_packed_myelinated
+        blt = np.concatenate(all_dlog_batches, axis=0) if records_surface else None   # the myelin kernels accumulate it too
         walk = PersistentWalk(walk.positions, walk.dt, walk.sub_steps, walk.dt_sim,
-                          boundary_local_time=np.concatenate(all_dlog_batches, axis=0),
+                          boundary_local_time=blt,
                           compartment=np.concatenate(all_comp_batches, axis=0),
                           bound_frac=(np.concatenate(all_bound_batches, axis=0) if _mt_on else None),
                           illegal_crossings=illegal, seed=int(seed), diffusivity=D_walk, geometry=geometry)

@@ -624,23 +624,58 @@ def mesh_contains(V, F, pts, *, method="grid", prefilter=False, chunk=2_000_000)
 
 
 def mesh_field_basis(inner, outer, box_min, box_max, *, res=0.1e-6, include_aniso=True,
-                     mask_supersample=2, kspace_lowpass=0.5, clip_axis=2):
+                     mask_supersample=2, kspace_lowpass=0.5, clip_axis=2, director=None):
     """Geometry-only myelin susceptibility field basis on a voxel grid, from inner (axonal) and
     outer (myelin) surface meshes ``(V, F)`` (metres): :func:`predicate_field_basis` with
-    :func:`mesh_inside` as the two membership tests."""
+    :func:`mesh_inside` as the two membership tests and, by default, the closest point on the axon surface as
+    the radial director (:func:`mesh_directors`). ``director=`` overrides it; ``director=False`` falls back to
+    the gradient of the voxelised mask (dmipy-sim#213: ~28 % off on the anisotropic term across the axis)."""
+    if director is False:
+        director = None
+    elif director is None:
+        ref = inner if inner is not None else outer
+        director = lambda q: mesh_directors(ref[0], ref[1], q)
     return predicate_field_basis(lambda q: mesh_inside(inner[0], inner[1], q, clip_axis=clip_axis),
                                  lambda q: mesh_inside(outer[0], outer[1], q, clip_axis=clip_axis),
                                  box_min, box_max, res=res, include_aniso=include_aniso,
-                                 mask_supersample=mask_supersample, kspace_lowpass=kspace_lowpass)
+                                 mask_supersample=mask_supersample, kspace_lowpass=kspace_lowpass, director=director)
+
+
+def mesh_directors(V, F, pts, *, chunk=2_000_000):
+    """``(n, 3)`` unit vectors: the radial (lipid) director of a sheath at each point, from the surface ``(V, F)``
+    -- the normal of the nearest face (by centroid, a k-d tree). The director is a line field (the tensor is
+    ``n n^T``), so its sign is immaterial and none is imposed. On a sheath mesh the nearest face's normal is the
+    local surface normal to the faceting angle, which is the radial direction; the gradient of a voxelised mask was
+    ~28 % off on the anisotropic term (dmipy-sim#213), and trimesh's closest-point query, exact, costs ~360 us and
+    up to 280 kB per point (36 s and 28 GB per 100k points), which no field grid can afford. Degenerate faces are
+    dropped."""
+    from scipy.spatial import cKDTree
+    V = np.asarray(V, float); F = np.asarray(F, np.int64)
+    tri = V[F]
+    n = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
+    ln = np.linalg.norm(n, axis=1)
+    good = ln > 0
+    tri = tri[good]; n = n[good] / ln[good][:, None]
+    cent = tri.mean(1)
+    tree = cKDTree(cent)
+    P = np.asarray(pts, float).reshape(-1, 3)
+    out = np.zeros_like(P)
+    for i in range(0, P.shape[0], chunk):
+        q = P[i:i + chunk]
+        _, idx = tree.query(q, workers=-1)
+        out[i:i + chunk] = n[idx]
+    return out
 
 
 def predicate_field_basis(inside_inner, inside_outer, box_min, box_max, *, res=0.1e-6, include_aniso=True,
-                          mask_supersample=2, kspace_lowpass=0.5):
+                          mask_supersample=2, kspace_lowpass=0.5, director=None):
     """Geometry-only myelin susceptibility field basis on a voxel grid from two membership tests on
     points (metres): ``inside_inner`` (the axon) and ``inside_outer`` (the sheath's outer surface); any
     surface family that can answer "is this point inside" (a mesh, a sphere union, a strand pack).
 
-    Voxelises the shell (inside outer, outside inner) and derives the per-voxel radial director from the
+    Voxelises the shell (inside outer, outside inner). The per-voxel radial director comes from ``director``
+    -- a callable ``(n, 3) points -> (n, 3)`` unit vectors, the geometry's own radial vector (a strand pack's
+    nearest-segment normal, :meth:`PackedCurvedCylinders.radial_directors`) -- when given, else from the
     signed distance to the inner surface (or to the shell itself when ``inside_inner`` is ``None``: a
     solid source), then calls :func:`field_basis`. ``mask_supersample`` (default 2) gives a
     partial-volume occupancy in ``[0,1]`` at the boundary — essential because the dipole kernel
@@ -680,10 +715,13 @@ def predicate_field_basis(inside_inner, inside_outer, box_min, box_max, *, res=0
             q = (base[:, None, :] + off[None, :, :]).reshape(-1, 3)
             occ = np.asarray(inside_outer(q), bool) & ~(inside_inner(q) if inside_inner is not None else np.zeros(len(q), bool))
             myelin_mask.ravel()[ei] = occ.reshape(len(ei), -1).mean(axis=1)
-    ref = in_in if inside_inner is not None else in_out
-    sdf = (ndimage.distance_transform_edt(~ref, sampling=tuple(vs))
-           - ndimage.distance_transform_edt(ref, sampling=tuple(vs)))
-    radial_dir = radial_from_sdf(sdf, vs)
+    if director is not None:                                       # the geometry's own radial vector at every voxel
+        radial_dir = _unit(np.asarray(director(pts), float), axis=-1).reshape(tuple(N) + (3,))
+    else:                                                          # the gradient of the voxelised mask's signed distance
+        ref = in_in if inside_inner is not None else in_out        # (dmipy-sim#213: ~28 % off on the anisotropic term)
+        sdf = (ndimage.distance_transform_edt(~ref, sampling=tuple(vs))
+               - ndimage.distance_transform_edt(ref, sampling=tuple(vs)))
+        radial_dir = radial_from_sdf(sdf, vs)
     basis = field_basis(myelin_mask, radial_dir, vs, include_aniso=include_aniso,
                         kspace_lowpass=kspace_lowpass)
     return basis, box_min, vs

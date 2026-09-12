@@ -101,7 +101,7 @@ def test_strands_spec_is_one_wall_of_swept_polylines_in_a_reflecting_voxel(stran
     assert spec.walls[0].surface.instances["radii"] == pytest.approx([1.5e-6, 1.0e-6, 2.0e-6])
     assert spec.domain.box_min == pytest.approx([-10e-6] * 3) and spec.domain.boundary == ["reflect"] * 3
     assert spec.seeding.pools == [0, 1] and spec.validity.smallest_feature == pytest.approx(1.0e-6)
-    assert "field" not in spec.validity.tiers
+    assert spec.validity.tiers == ["gradient", "relaxation", "surface"]
     # one seeded pool is one geometry, each side of the wall
     g_e = geometry_from_spec(dataclasses.replace(spec, seeding=Seeding([0])))
     g_i = geometry_from_spec(dataclasses.replace(spec, seeding=Seeding([1])))
@@ -118,10 +118,10 @@ def test_disco_spec_adds_the_sheath_at_the_phantoms_g_ratio(strand_txt):
     spec = disco_spec(strand_txt)
     assert spec.id == "disco/optimized_final" and [w.name for w in spec.walls] == ["axolemma", "sheath"]
     assert spec.walls[0].surface.instances["radii"] == pytest.approx([0.7 * r for r in (1.5e-6, 1.0e-6, 2.0e-6)])
-    assert [p.name for p in spec.pools] == ["extra", "intra", "myelin"] and "field" in spec.validity.tiers
+    assert [p.name for p in spec.pools] == ["extra", "intra", "myelin"] and spec.validity.tiers == ["gradient", "relaxation", "surface", "field"]
     w = walk_spec(spec, 90, 8e-4, 2e-4, seed=0, n_probe=20_000, field_res=0.5e-6, require_gpu=False)
     ids = np.asarray(w.compartment)[:, 0]
-    assert set(np.unique(ids)) == {0, 1, 2} and w.field_grid is not None
+    assert set(np.unique(ids)) == {0, 1, 2} and w.field_grid is not None       # a small voxel rasterises its sheath
 
 
 def test_a_strand_whose_radius_varies_is_refused(tmp_path):
@@ -130,3 +130,78 @@ def test_a_strand_whose_radius_varies_is_refused(tmp_path):
     with pytest.raises(SpecError, match="varies along its length"):
         strands_spec(path)
     assert strands_spec(path, radius_tol=1.0).validity.smallest_feature > 0
+
+
+def test_a_strand_pack_claims_what_its_walk_recorded(strand_txt):
+    """A strand spec declares the tiers the engine walks it for; the walk records contact (the curved tubes
+    accumulate it), the pack claims C2 and replays rho; a domain too large to rasterise refuses the field."""
+    from dmipy_sim.replay.bank import build_replay_pack
+    spec = disco_spec(strand_txt)
+    assert spec.validity.tiers == ["gradient", "relaxation", "surface", "field"]
+    w = walk_spec(spec, 120, 1e-3, 2.5e-4, seed=0, n_probe=20_000, require_gpu=False, field=False)
+    assert w.has_surface and w.has_compartments
+    pk = build_replay_pack(w, id="t/strands", license="x", citation="x", K=4, field=False)
+    assert pk.has_relaxation and pk.has_surface and pk.meta["replay_envelope"]["surface_relaxivity"]
+    seq = d.set_b(d.pgse([[1, 0, 0]], 0.2e-3, 0.5e-3, gradient_strengths=0.1, n_t=pk.n_t, slew_rate=np.inf), [1e9])
+    assert pk.replay(seq, tissue=False, rho=1e-5, D=1.7e-9)[0] < pk.replay(seq, tissue=False)[0]   # contact attenuates
+    with pytest.raises(SpecError, match="voxel budget"):                       # a domain too large to rasterise is refused
+        walk_spec(spec, 60, 1e-3, 2.5e-4, seed=0, n_probe=20_000, require_gpu=False, field=True, field_budget=1e3)
+
+def test_a_straight_myelinated_curved_tube_is_the_myelinated_cylinder():
+    """The straight limit of the curved myelinated tube is the myelinated cylinder: the same pools, the same walls,
+    and the same rasterised field basis -- the cross-check a per-segment field along a path is measured against.
+    With the strand pack's own radial director the two bases agree to 1e-6 in every term at every B0; with the
+    mask-gradient director the general route falls back on (meshes, sphere unions) the anisotropic term with B0
+    across the axis is 28 % off (dmipy-sim#213), pinned at its measured size so a better director flips it."""
+    from dmipy_sim.fields.susceptibility_field import field_grid_of, predicate_field_basis, assemble_field
+    r_in, r_out = 1.0e-6, 1.4e-6
+    cl = np.array([[0.0, 0.0, -6e-6], [0.0, 0.0, 6e-6]])
+    straight = d.CurvedMyelinatedCylinder(cl, r_in, r_out, pool="intra")
+    pack = d.PackedCurvedCylinders([cl], [r_in], interior=True)                 # the strand pack: its radial director
+    cyl = d.MyelinatedCylinder(r_in, r_out, (0, 0, 1), 1.7e-9, 1.7e-9)
+    lo, hi = np.array([-3e-6, -3e-6, -2e-6]), np.array([3e-6, 3e-6, 2e-6])
+    res = 0.2e-6
+    inner = pack.inside_any; outer = d.PackedCurvedCylinders([cl], [r_out], interior=True).inside_any      # chunked membership
+    exact, _, _ = predicate_field_basis(inner, outer, lo, hi, res=res, mask_supersample=4, director=pack.radial_directors)
+    grad, o_curved, _ = predicate_field_basis(inner, outer, lo, hi, res=res, mask_supersample=4)
+    fg = field_grid_of(cyl, res=res, box=(lo, hi), mask_supersample=4)              # stored translation-invariant: a few slabs
+    assert tuple(exact["shape"][:2]) == tuple(fg.basis["shape"][:2]) and np.allclose(o_curved[:2], np.asarray(fg.origin)[:2])
+
+    def rms(basis, direction, chi_iso, chi_aniso):
+        f1 = np.asarray(assemble_field(basis, direction, B0=3.0, chi_iso=chi_iso, chi_aniso=chi_aniso))[:, :, basis["shape"][2] // 2]
+        f2 = np.asarray(assemble_field(fg.basis, direction, B0=3.0, chi_iso=chi_iso, chi_aniso=chi_aniso))[:, :, fg.basis["shape"][2] // 2]
+        return np.sqrt(np.mean((f1 - f2) ** 2)) / np.sqrt(np.mean(f2 ** 2))
+    for direction in ((0, 0, 1.0), (1.0, 0, 0)):
+        assert rms(exact, direction, -1e-7, 0.0) < 1e-6 and rms(exact, direction, 0.0, -1e-7) < 1e-6 and rms(exact, direction, -1e-7, -1e-7) < 1e-6
+    assert rms(grad, (0, 0, 1.0), 0.0, -1e-7) < 1e-6                                 # the gradient director along the axis
+    across = rms(grad, (1.0, 0, 0), 0.0, -1e-7)
+    assert 0.2 < across < 0.35, across                                             # and across it (#213)
+
+
+def test_the_curved_tubes_record_surface_time_and_the_straight_limit_is_the_cylinder():
+    """The curved tubes accumulate the wall contact (#76 item 2): a straight curved tube with a surface relaxivity
+    attenuates like the analytic cylinder with the same rho, walked from the same seed; a strand walk carries the
+    boundary channel, its pack claims C2, and a replay at rho attenuates."""
+    from dmipy_sim.replay.bank import build_replay_pack
+    R, rho, D = 2e-6, 20e-6, 2e-9
+    cl = np.array([[0.0, 0.0, -30e-6], [0.0, 0.0, 30e-6]])
+    # a PGSE at 0.1 mT/m: b ~ 0.1 s/m^2, exp(-bD) = 1 - 2e-10, so the signal is the wall relaxation alone (a zero-G
+    # sequence has no echo to read)
+    seq = d.pgse([[1.0, 0.0, 0.0]], 0.2e-3, 3.8e-3, gradient_strengths=1e-4, n_t=200, slew_rate=np.inf)
+    T = seq.echo_idx * seq.dt
+    s_cyl = float(np.asarray(d.simulate(20_000, D, seq, d.Cylinder(radius=R, orientation=(0, 0, 1), surface_relaxivity_t2=rho),
+                                        seed=3, require_gpu=False))[0])
+    s_cur = float(np.asarray(d.simulate(20_000, D, seq, d.CurvedCylinder(cl, R, surface_relaxivity_t2=rho),
+                                        seed=3, require_gpu=False))[0])
+    T2 = R / (2 * rho)                                                                  # Brownstein-Tarr, fast regime
+    assert abs(s_cyl - np.exp(-T / T2)) < 0.01 and abs(s_cur - s_cyl) < 0.01, (s_cur, s_cyl, np.exp(-T / T2))
+    s_pack = float(np.asarray(d.simulate(20_000, D, seq, d.PackedCurvedCylinders([cl], [R], interior=True, surface_relaxivity_t2=rho),
+                                         seed=3, require_gpu=False))[0])
+    assert abs(s_pack - s_cyl) < 0.01, (s_pack, s_cyl)
+    # the strand walk records it and the pack replays it
+    w = d.simulate_trajectories(300, D, d.PackedCurvedCylinders([cl], [R], interior=True), 2e-3, 2.5e-4, seed=0, require_gpu=False)
+    assert w.has_surface and float(np.abs(np.asarray(w.boundary_local_time)).sum()) > 0
+    pk = build_replay_pack(w, id="t/curved", license="x", citation="x", K=4, blt_temporal_K=4)
+    assert pk.has_surface
+    wf = d.pgse([[1.0, 0.0, 0.0]], 0.1e-3, 1.9e-3, gradient_strengths=1e-4, n_t=100, slew_rate=np.inf)
+    assert pk.replay(wf, tissue=False, rho=rho, D=D)[0] < 0.99 * pk.replay(wf, tissue=False)[0]

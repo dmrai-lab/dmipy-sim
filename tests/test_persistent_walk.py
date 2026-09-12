@@ -21,7 +21,7 @@ def test_the_default_walk_records_every_tier_the_geometry_supports():
     w = d.simulate_trajectories(64, D, d.Sphere(3e-6), 2e-3, 5e-4, seed=1, require_gpu=False)
     assert w.has_surface and w.has_compartments and not w.has_binding
     free = d.simulate_trajectories(64, D, d.FreeDiffusion(), 2e-3, 5e-4, seed=1, require_gpu=False)
-    assert free.has_surface and (free.boundary_local_time == 0).all()      # no walls: an all-zero channel
+    assert not free.has_surface and free.boundary_local_time is None      # no walls: nothing to record, no channel
     with pytest.raises(ValueError, match="tiers must be"):
         d.simulate_trajectories(64, D, d.Sphere(3e-6), 2e-3, 5e-4, seed=1, require_gpu=False, tiers="surface")
 
