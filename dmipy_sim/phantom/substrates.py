@@ -20,7 +20,16 @@ _KNOBS = {"T2_s": "T2", "T1_s": "T1", "rho_m_s": "rho", "chi_iso": "chi_iso", "c
 @runtime_checkable
 class AnalyticSubstrate(Protocol):
     """A closed form standing in for walkers. ``response`` is the complex signal of the form **at one pose**,
-    one value per measurement of ``seq``; the phantom composes poses, the form never disperses itself."""
+    one value per measurement of ``seq``; the phantom composes poses, the form never disperses itself.
+
+    ``oriented`` says whether the form has a pose at all: ``False`` for an isotropic form (free water), whose
+    ``response`` ignores ``pose``; ``True`` for a form with an axis (a stick, a cylinder), whose ``response`` at
+    ``pose`` -- a 3x3 rotation of the canonical frame, the axis along its third column -- is what the phantom
+    expands over SO(3) and contracts with a voxel's orientation distribution, exactly as a pack's (RPH.md 6).
+    An oriented form takes an orientation field in :meth:`Phantom.compose` like a pack and is refused without
+    one. ``model`` names the form for the file: sim's own (``free_water``) or a namespaced one,
+    ``"<package>:<Name>"``, read back by ``<package>.phantom.analytic_substrate(meta)`` (RPH.md 3.1)."""
+    oriented: bool
 
     def response(self, seq, pose=None) -> np.ndarray: ...
 
@@ -108,6 +117,7 @@ class FreeWater(_Declared):
 
     kind = "analytic"
     model = "free_water"
+    oriented = False
 
     def __init__(self, *, D_m2_s, m0, name="csf/free-water"):
         super().__init__(name, m0)
@@ -162,11 +172,26 @@ def substrate_from_meta(meta, *, pack=None):
     if kind == "pack":
         return PackSubstrate.from_meta(meta, pack=pack if pack is not None else meta.get("uri"))
     if kind == "analytic":
-        cls = _ANALYTIC.get(meta.get("model"))
-        if cls is None:
-            raise ValueError(f"substrate {meta.get('id')!r} names the closed form {meta.get('model')!r}, which this "
-                             f"replayer does not implement; it knows {sorted(_ANALYTIC)} (RPH.md 3.1: refuse, never guess)")
-        return cls.from_meta(meta)
+        model = meta.get("model")
+        cls = _ANALYTIC.get(model)
+        if cls is not None:
+            return cls.from_meta(meta)
+        if isinstance(model, str) and ":" in model:                 # "<package>:<Name>": that package reads it
+            pkg = model.split(":", 1)[0]
+            import importlib
+            try:
+                mod = importlib.import_module(f"{pkg}.phantom")
+            except ImportError as e:
+                raise ValueError(f"substrate {meta.get('id')!r} names the closed form {model!r}, which the package "
+                                 f"{pkg!r} defines; it is not installed here ({e}). Install it or replace the "
+                                 f"substrate (RPH.md 3.1: refuse, never guess)") from e
+            reader = getattr(mod, "analytic_substrate", None)
+            if reader is None:
+                raise ValueError(f"{pkg}.phantom defines no analytic_substrate(meta): it cannot read {model!r}")
+            return reader(meta)
+        raise ValueError(f"substrate {meta.get('id')!r} names the closed form {model!r}, which this "
+                         f"replayer does not implement; it knows {sorted(_ANALYTIC)} and namespaced models "
+                         f"'<package>:<Name>' (RPH.md 3.1: refuse, never guess)")
     if kind == "inert":
         return Inert.from_meta(meta)
     raise ValueError(f"substrate kind {kind!r} is not one of ('pack', 'analytic', 'inert')")

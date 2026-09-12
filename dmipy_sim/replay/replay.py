@@ -34,7 +34,7 @@ from ..constants import GAMMA
 from ..acquisition.rf import RFSchedule
 from ..acquisition.scanner_sequence import Protocol, ScannerSequence
 
-__all__ = ["ReplayPack", "PoseResponse", "read_rpk", "write_rpk",
+__all__ = ["ReplayPack", "PoseResponse", "read_rpk", "write_rpk", "analytic_pose_response",
            "compile_scheme", "replay_signal", "replay_coefficients", "replay_signal_jax", "replay_batch_jax",
            "surface_logweight"]
 
@@ -1296,6 +1296,76 @@ def _echo_saves(waveform, dt_pack):
 
 
 # ------------------------------- compiled-scheme forward -------------------------------
+def analytic_pose_response(form, waveform, keep=None, *, over=8, tol=1e-8, l_cap=48):
+    """The :class:`PoseResponse` of a closed form with an axis: ``form.response(waveform, pose=R)`` expanded in the
+    SO(3) basis (RPH.md 6), so a voxel's orientation distribution contracts it exactly as it does a pack's.
+
+    A form with an axis and no azimuth of its own is a function of where its axis points, ``g(R z)``, so its
+    expansion lives in the ``n = 0`` coefficients and is the harmonic expansion of ``g`` over the sphere carried
+    through the same map an axis density is (:func:`so3.axis_density_coeffs`): one sphere quadrature of the
+    form, never a quadrature over rotations. ``keep = (lmax, nmax)`` is what the composition retains; ``None``
+    in the first slot means the form's own band, found by raising ``lmax`` (4, 8, 12, 16, 24, 32, 48) until the
+    top two orders carry less than ``tol`` of the energy. The sphere rule is exact ``over`` orders past the
+    band because the form is not band-limited; ``misfit`` is the largest difference, per measurement, between
+    that expansion and one exact eight orders further, relative to the largest response, and the route is
+    refused when it exceeds ten times ``tol``. A closed form has no Monte-Carlo floor: ``floor = 0``."""
+    from . import so3
+    keep_l, keep_n = (None, None) if keep is None else keep
+    nmax = 0 if keep_n is None else int(keep_n)
+    evaluated = {}
+
+    def sh(lmax, ov):
+        """The form's harmonic coefficients over the sphere, ``(n_sh, n_meas)``, by a rule exact to ``lmax + ov``."""
+        L = int(lmax) + int(ov)
+        dirs, w = so3.sphere_quadrature(L + 1, 2 * L + 2)
+        E = np.stack([_evaluate(form, waveform, so3.rotation_of(u), evaluated) for u in dirs])   # (n_q, n_meas)
+        Y = so3.real_sh(int(lmax), dirs, full=True)
+        return (Y * w[:, None]).T @ E
+
+    if keep_l is None:
+        ladder = [l for l in (4, 8, 12, 16, 24, 32, 48) if l <= l_cap] or [int(l_cap)]
+        for lmax in ladder:
+            g = sh(lmax, over)
+            per_l = np.array([float((np.abs(g[so3.sh_block(l, True)]) ** 2).sum()) for l in range(lmax + 1)])
+            tot = float(per_l.sum())
+            if tot > 0 and per_l[-2:].sum() <= tol * tot:
+                break
+    else:
+        lmax = int(keep_l)
+    M = _axis_map_cached(lmax, nmax)                                 # (n_feat, n_sh): a scaled isometry per order
+    scale = np.einsum("ij,ij->j", M, M)                              # so the response's coefficients are M g / |M_l|^2
+    scale = np.where(scale > 0, scale, 1.0)
+    f1 = M @ (sh(lmax, over) / scale[:, None])
+    f2 = M @ (sh(lmax, over + 8) / scale[:, None])
+    ref = float(np.abs(_evaluate(form, waveform, np.eye(3), evaluated)).max()) or 1.0
+    misfit = np.abs(f1 - f2).max(axis=0) / ref
+    if misfit.max() > 10 * tol:
+        raise ValueError(f"the closed form {form!r} expands to lmax = {lmax} with a sphere rule that has not converged "
+                         f"(misfit {misfit.max():.3g} of the largest response between over = {over} and {over + 8}): "
+                         f"raise the orientation field's order or pass over=")
+    out = PoseResponse(f2.T, lmax, nmax, misfit, 0.0, 0.0, 0)
+    out.route = "analytic"
+    return out
+
+
+_AXIS_MAPS = {}
+
+
+def _axis_map_cached(lmax, nmax):
+    from . import so3
+    key = (int(lmax), int(nmax))
+    if key not in _AXIS_MAPS:
+        _AXIS_MAPS[key] = np.asarray(so3._axis_map(int(lmax), int(nmax)), np.float64)
+    return _AXIS_MAPS[key]
+
+
+def _evaluate(form, waveform, R, cache):
+    key = tuple(np.round(np.asarray(R, np.float64).reshape(-1), 12))
+    if key not in cache:
+        cache[key] = np.asarray(form.response(waveform, pose=np.asarray(R, np.float64).reshape(3, 3)), np.complex128).reshape(-1)
+    return cache[key]
+
+
 def compile_scheme(G, dt, K, gyromagnetic_ratio=GAMMA, *, n_t=None, method=None, dt_pack=None):
     """Compile an acquisition into its temporal-basis projection ``W``: the exact integral of the waveform
     against the stored path, in mode space.
