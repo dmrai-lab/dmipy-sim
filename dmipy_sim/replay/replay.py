@@ -691,19 +691,33 @@ class ReplayPack:
         n_feat = so3.n_so3_coeffs(keep_l, keep_n)
         coeffs = np.zeros((n_meas, n_feat), np.complex128)
         cos_z = m_hat[:, :, 2]
+        J = [spherical_jn(l, kappa) for l in range(keep_l + 1)]                 # (n_w, n_meas) per order
+        Yg = so3.real_sh(keep_l, g_hat, full=True)                              # (n_meas, (L+1)^2): the lab side
+        bodies = [None] * (keep_l + 1)
+        if keep_n == 0:                                                         # n = 0 only: the Legendre of the angle to the axis
+            for l in range(keep_l + 1):
+                bodies[l] = np.sqrt((2 * l + 1) / (4 * np.pi)) * ((w[:, None] * J[l]) * _legendre(l, cos_z)).sum(0)[:, None]
+        else:
+            # the body side: every walker's moment direction's harmonics, all orders in one recurrence pass,
+            # in chunks of measurements sized to ~256 MB
+            for l in range(keep_l + 1):
+                bodies[l] = np.empty((n_meas, 2 * (so3._n_cols(l, keep_n) // 2) + 1))
+            n_cols = (keep_l + 1) ** 2
+            step = max(1, int(2.5e8 / (8 * n_w * n_cols)))
+            for lo in range(0, n_meas, step):
+                sl = slice(lo, min(lo + step, n_meas))
+                nc = sl.stop - sl.start
+                Y = so3.real_sh(keep_l, m_hat[:, sl, :].reshape(-1, 3), full=True).reshape(n_w, nc, n_cols)
+                for l in range(keep_l + 1):
+                    k = so3._n_cols(l, keep_n) // 2
+                    blk = so3.sh_block(l, True)
+                    Yl = Y[:, :, blk.start + l - k:blk.start + l + k + 1]                     # (n_w, nc, 2k+1)
+                    bodies[l][sl] = np.einsum("wi,wim->im", w[:, None] * J[l][:, sl], Yl)
         off = 0
         for l in range(keep_l + 1):
             k = so3._n_cols(l, keep_n) // 2
-            Yg = so3._sh_l(l, g_hat)                                            # (n_meas, 2l+1): the lab side
-            J = spherical_jn(l, kappa)                                          # (n_w, n_meas)
-            if k == 0:                                                          # n = 0: the Legendre of the angle to the axis
-                body = np.sqrt((2 * l + 1) / (4 * np.pi)) * ((w[:, None] * J) * _legendre(l, cos_z)).sum(0)[:, None]
-            else:
-                body = np.empty((n_meas, 2 * k + 1))
-                for i in range(n_meas):
-                    Y = so3._sh_l(l, m_hat[:, i, :])[:, l - k:l + k + 1]            # (n_w, 2k+1): the body side
-                    body[i] = (w * J[:, i]) @ Y
-            block = (4 * np.pi * (1j ** l) / np.sqrt(2 * l + 1)) * Yg[:, :, None] * body[:, None, :]   # (n_meas, 2l+1, 2k+1)
+            blk = so3.sh_block(l, True)
+            block = (4 * np.pi * (1j ** l) / np.sqrt(2 * l + 1)) * Yg[:, blk][:, :, None] * bodies[l][:, None, :]   # (n_meas, 2l+1, 2k+1)
             coeffs[:, off:off + (2 * l + 1) * (2 * k + 1)] = block.reshape(n_meas, -1)
             off += (2 * l + 1) * (2 * k + 1)
         # what the expansion cannot hold pointwise: the orders above the band it was built to, as a bound from
