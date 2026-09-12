@@ -35,3 +35,22 @@ def test_the_basis_is_orthonormal_by_quadrature():
     dirs, w = sphere_quadrature(24, 48)
     Y = real_sh(12, dirs, full=True)
     np.testing.assert_allclose((Y * w[:, None]).T @ Y, np.eye(Y.shape[1]), atol=1e-10)
+
+
+def test_two_real_wigner_blocks_multiply_through_the_coupling_tables():
+    """``M^l1[m,n] M^l2[m',n'] = sum_L K_L[(m,m'),M] M^L[M,N] conj(K_L[(n,n'),N])`` with ``K_L`` from the complex
+    Clebsch-Gordan coefficients and the real-from-complex unitaries: the product of two expansions on SO(3) is a
+    contraction with these tables, the whole basis of composing a field with a gradient (#197 step 3)."""
+    from dmipy_sim.replay import so3
+    for (l1, l2) in [(1, 1), (2, 3), (4, 2), (6, 5), (9, 5)]:
+        C = np.concatenate([so3.clebsch_gordan(l1, l2, L) for L in range(abs(l1 - l2), l1 + l2 + 1)], axis=1)
+        np.testing.assert_allclose(C.T @ C, np.eye(C.shape[1]), atol=1e-10)          # CG: orthogonal
+        np.testing.assert_allclose(C @ C.T, np.eye(C.shape[0]), atol=1e-10)
+    Rs = so3.haar_rotations(3, 11)
+    for (l1, l2) in [(3, 1), (4, 6), (9, 5)]:
+        B1, B2 = so3.wigner_blocks(l1, Rs)[l1], so3.wigner_blocks(l2, Rs)[l2]
+        BL = so3.wigner_blocks(l1 + l2, Rs)
+        K = so3.coupling(l1, l2)
+        for r in range(Rs.shape[0]):
+            prod = sum(K[L] @ BL[L][r] @ K[L].conj().T for L in K)
+            np.testing.assert_allclose(prod, np.kron(B1[r], B2[r]), atol=1e-12)

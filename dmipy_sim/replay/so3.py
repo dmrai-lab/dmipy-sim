@@ -44,6 +44,7 @@ __all__ = ["real_sh", "sphere_quadrature", "n_sh_coeffs", "sh_block",
            "density_coeffs", "delta_coeffs", "axis_density_coeffs", "axis_coeffs", "watson_coeffs",
            "bingham_coeffs",
            "project", "quadrature_design", "oversampled_design", "truncate_coeffs", "energy", "evaluate",
+           "clebsch_gordan", "coupling",
            "rotation_of", "rotations_from_quaternions", "rotate_coeffs",
            "Distribution"]
 
@@ -153,22 +154,9 @@ def so3_index(lmax, nmax=None):
 
 # ------------------------------------------------------------------ the basis
 def _sh_l(l, dirs):
-    """Order-``l`` block of the orthonormal real spherical harmonics, ``(n, 2l+1)``.
-
-    Only that order: going through :func:`real_sh` would recompute every lower order on every call, which the
-    rotation matrices do once per order and would pay ``lmax`` times over.
-    """
-    d = np.asarray(dirs, np.float64).reshape(-1, 3)
-    x = np.clip(d[:, 2], -1.0, 1.0)
-    phi = np.arctan2(d[:, 1], d[:, 0])
-    out = np.empty((d.shape[0], 2 * l + 1), np.float64)
-    out[:, l] = np.sqrt((2 * l + 1) / (4 * np.pi)) * lpmv(0, l, x)
-    for m in range(1, l + 1):
-        K = np.sqrt((2 * l + 1) / (4 * np.pi) * np.exp(gammaln(l - m + 1) - gammaln(l + m + 1)))
-        P = np.sqrt(2.0) * K * lpmv(m, l, x)
-        out[:, l + m] = P * np.cos(m * phi)
-        out[:, l - m] = P * np.sin(m * phi)
-    return out
+    """Order-``l`` block of the orthonormal real spherical harmonics, ``(n, 2l+1)``: the recurrence of
+    :func:`real_sh` (``lpmv`` is not used anywhere: at high orders it has crashed the process)."""
+    return np.ascontiguousarray(real_sh(int(l), dirs, full=True)[:, sh_block(int(l), True)])
 
 
 @functools.lru_cache(maxsize=64)
@@ -253,6 +241,65 @@ def rotation_of(axis, frame_axis=(0.0, 0.0, 1.0), roll=0.0):
         K = np.array([[0.0, -f[2], f[1]], [f[2], 0.0, -f[0]], [-f[1], f[0], 0.0]])
         R = R @ (np.eye(3) + np.sin(roll) * K + (1.0 - np.cos(roll)) * (K @ K))
     return R
+
+
+# ------------------------------------------------------------------ products of two expansions
+@functools.lru_cache(maxsize=4096)
+def clebsch_gordan(l1, l2, L):
+    """The complex Clebsch-Gordan matrix ``C[(m1, m2), M] = <l1 m1 l2 m2 | L M>``, by Racah's formula in log
+    factorials, vectorised over ``(m1, m2)``: ``((2l1+1)(2l2+1), 2L+1)``, rows ``m1`` outer, ``m2`` inner, all
+    indices from ``-l``."""
+    l1, l2, L = int(l1), int(l2), int(L)
+    C = np.zeros(((2 * l1 + 1) * (2 * l2 + 1), 2 * L + 1))
+    if L < abs(l1 - l2) or L > l1 + l2:
+        return C
+    lf = lambda n: gammaln(np.asarray(n, np.float64) + 1.0)
+    pref = 0.5 * (np.log(2 * L + 1.0) + lf(L + l1 - l2) + lf(L - l1 + l2) + lf(l1 + l2 - L) - lf(l1 + l2 + L + 1))
+    m1, m2 = np.meshgrid(np.arange(-l1, l1 + 1), np.arange(-l2, l2 + 1), indexing="ij")
+    M = m1 + m2
+    ok = np.abs(M) <= L
+    a = 0.5 * (lf(np.abs(L + M)) + lf(np.abs(L - M)) + lf(l1 - m1) + lf(l1 + m1) + lf(l2 - m2) + lf(l2 + m2))
+    tot = np.zeros(m1.shape)
+    for k in range(0, l1 + l2 - L + 1):
+        args = [np.broadcast_to(np.asarray(x), m1.shape) for x in
+                (k, l1 + l2 - L - k, l1 - m1 - k, l2 + m2 - k, L - l2 + m1 + k, L - l1 - m2 + k)]
+        valid = ok & np.all([x >= 0 for x in args], axis=0)
+        if not valid.any():
+            continue
+        d = sum(lf(np.where(valid, x, 0)) for x in args)
+        tot = tot + np.where(valid, (-1.0) ** k * np.exp(pref + a - d), 0.0)
+    rows = (m1 + l1) * (2 * l2 + 1) + (m2 + l2)
+    C[rows[ok], (M + L)[ok]] = tot[ok]
+    return C
+
+
+@functools.lru_cache(maxsize=64)
+def _real_from_complex(l):
+    """``U`` with ``Y_real = U Y_complex`` for this package's real basis (rows ``m = -l..l``: sine terms below zero,
+    cosine terms above, Condon-Shortley phase inside the associated Legendre functions as ``lpmv`` has it)."""
+    l = int(l)
+    U = np.zeros((2 * l + 1, 2 * l + 1), np.complex128)
+    U[l, l] = 1.0
+    for m in range(1, l + 1):
+        s = (-1.0) ** m
+        U[l + m, l + m] = 1 / np.sqrt(2);  U[l + m, l - m] = s / np.sqrt(2)          # cos: (Y_m + (-1)^m Y_-m) / sqrt2
+        U[l - m, l + m] = -1j / np.sqrt(2); U[l - m, l - m] = 1j * s / np.sqrt(2)     # sin: (Y_m - (-1)^m Y_-m) / (i sqrt2)
+    return U
+
+
+@functools.lru_cache(maxsize=256)
+def coupling(l1, l2):
+    """How two real Wigner blocks multiply: ``{L: K_L}`` with
+
+        M^l1(R)[m, n] M^l2(R)[m', n'] = sum_L sum_{M, N} K_L[(m, m'), M] M^L(R)[M, N] conj(K_L[(n, n'), N])
+
+    for ``L = |l1 - l2| .. l1 + l2``, ``K_L = (U_l1 (x) U_l2) C_L U_L^H`` (``((2l1+1)(2l2+1), 2L+1)`` complex). The
+    product of two expansions on SO(3) -- a plane wave in the rotated gradient and a field factor in the rotated
+    field direction -- is then a contraction with these tables on the lab index and on the body index.
+    """
+    l1, l2 = int(l1), int(l2)
+    U12 = np.kron(_real_from_complex(l1), _real_from_complex(l2))
+    return {L: U12 @ clebsch_gordan(l1, l2, L) @ _real_from_complex(L).conj().T for L in range(abs(l1 - l2), l1 + l2 + 1)}
 
 
 # ------------------------------------------------------------------ sampling
