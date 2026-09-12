@@ -118,12 +118,11 @@ def test_anisotropic_lumen_field_matches_wharton_bowtell_on_every_route(theta_de
     routes = {}
     fg = field_grid_of(d.MyelinatedCylinder(a, b, (0, 0, 1), 1.7e-9, 1.7e-9), res=res, box=(lo, hi), mask_supersample=4)
     routes["cylinder"] = (fg.basis, fg.origin)
-    m = myelinated_cylinder(a, b, 12e-6, n_ang=128, n_ax=48)
-    basis, origin, _ = mesh_field_basis(m["inner"], m["outer"], lo, hi, res=res, mask_supersample=4)
+    m = myelinated_cylinder(a, b, 12e-6, n_ang=64, n_ax=24)          # the mesh route's containment is the costly
+    basis, origin, _ = mesh_field_basis(m["inner"], m["outer"], lo, hi, res=res, mask_supersample=2)   # one: 8 points per voxel
     routes["mesh"] = (basis, origin)
-    tube = d.CurvedMyelinatedCylinder(cl, a, b, pool="intra"); pack = d.PackedCurvedCylinders([cl], [a], interior=True)
-    basis, origin, _ = predicate_field_basis(lambda p: np.asarray(tube.classify_positions_exact(p)) == 1,
-                                             lambda p: np.asarray(tube.classify_positions_exact(p)) != 0, lo, hi, res=res,
+    pack = d.PackedCurvedCylinders([cl], [a], interior=True); sheath = d.PackedCurvedCylinders([cl], [b], interior=True)
+    basis, origin, _ = predicate_field_basis(pack.inside_any, sheath.inside_any, lo, hi, res=res,        # chunked membership
                                              mask_supersample=4, director=pack.radial_directors)
     routes["strand"] = (basis, origin)
     for name, (basis, origin) in routes.items():
@@ -134,3 +133,21 @@ def test_anisotropic_lumen_field_matches_wharton_bowtell_on_every_route(theta_de
         lumen = (X ** 2 + Y ** 2) < (0.6 * a) ** 2                                         # well inside the lumen
         got = np.array([f[:, :, k][lumen].mean() for k in range(shape[2])]).mean()
         assert abs(got - expect) < 0.02 * abs(expect), (name, got, expect)
+
+
+def test_the_mesh_director_is_the_radial_direction_of_a_tube():
+    """`mesh_directors` (the nearest face's normal, a line field) on a meshed tube is the radial direction to the
+    faceting angle, inside and outside the surface, at SI scale (dmipy-sim#213: the gradient director was 28 % off,
+    and a closest point at SI scale carried a 0.33 axial component)."""
+    from dmipy_sim.fields.susceptibility_field import mesh_directors
+    from dmipy_sim.geometry.mesh_shapes import myelinated_cylinder
+    a, b = 1.0e-6, 1.4e-6
+    m = myelinated_cylinder(a, b, 12e-6, n_ang=128, n_ax=48)
+    rng = np.random.default_rng(0); n = 4000
+    r = rng.uniform(0.5 * a, 2.0 * b, n); ph = rng.uniform(0, 2 * np.pi, n); z = rng.uniform(-3e-6, 3e-6, n)
+    pts = np.stack([r * np.cos(ph), r * np.sin(ph), z], 1)
+    exact = pts.copy(); exact[:, 2] = 0; exact /= np.linalg.norm(exact, axis=1, keepdims=True)
+    for key in ("inner", "outer"):
+        d = mesh_directors(m[key][0], m[key][1], pts)
+        dot = np.abs((d * exact).sum(1))                         # a line field: the sign is immaterial
+        assert dot.min() > np.cos(2 * np.pi / 128) - 1e-6 and np.abs(d[:, 2]).max() < 1e-6, (key, dot.min(), np.abs(d[:, 2]).max())

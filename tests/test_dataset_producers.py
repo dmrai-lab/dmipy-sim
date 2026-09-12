@@ -161,8 +161,7 @@ def test_a_straight_myelinated_curved_tube_is_the_myelinated_cylinder():
     cyl = d.MyelinatedCylinder(r_in, r_out, (0, 0, 1), 1.7e-9, 1.7e-9)
     lo, hi = np.array([-3e-6, -3e-6, -2e-6]), np.array([3e-6, 3e-6, 2e-6])
     res = 0.2e-6
-    inner = lambda p: np.asarray(straight.classify_positions_exact(p)) == 1
-    outer = lambda p: np.asarray(straight.classify_positions_exact(p)) != 0
+    inner = pack.inside_any; outer = d.PackedCurvedCylinders([cl], [r_out], interior=True).inside_any      # chunked membership
     exact, _, _ = predicate_field_basis(inner, outer, lo, hi, res=res, mask_supersample=4, director=pack.radial_directors)
     grad, o_curved, _ = predicate_field_basis(inner, outer, lo, hi, res=res, mask_supersample=4)
     fg = field_grid_of(cyl, res=res, box=(lo, hi), mask_supersample=4)              # stored translation-invariant: a few slabs

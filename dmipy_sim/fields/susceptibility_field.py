@@ -641,28 +641,29 @@ def mesh_field_basis(inner, outer, box_min, box_max, *, res=0.1e-6, include_anis
                                  mask_supersample=mask_supersample, kspace_lowpass=kspace_lowpass, director=director)
 
 
-def mesh_directors(V, F, pts, *, chunk=500_000):
-    """``(n, 3)`` unit vectors from the closest point on the surface ``(V, F)`` to each point: the radial (lipid)
-    director of a sheath, exact from the geometry (trimesh's closest-point query, an r-tree over the faces),
-    where the gradient of a voxelised mask was ~28 % off on the anisotropic term (dmipy-sim#213). A point ON
-    the surface gets the zero vector.
-
-    The query runs on the mesh rescaled to edges of O(1), as :func:`mesh_contains` does: trimesh's proximity
-    predicates use an absolute tolerance, and at SI scale (edges ~1e-7 m) the closest point lands up to a
-    ring spacing away along the tube, which put a 0.33 axial component on every director (the mesh route
-    read 20 % low against the Wharton-Bowtell lumen field). The factor cancels in the direction."""
-    import trimesh
+def mesh_directors(V, F, pts, *, chunk=2_000_000):
+    """``(n, 3)`` unit vectors: the radial (lipid) director of a sheath at each point, from the surface ``(V, F)``
+    -- the normal of the nearest face (by centroid, a k-d tree). The director is a line field (the tensor is
+    ``n n^T``), so its sign is immaterial and none is imposed. On a sheath mesh the nearest face's normal is the
+    local surface normal to the faceting angle, which is the radial direction; the gradient of a voxelised mask was
+    ~28 % off on the anisotropic term (dmipy-sim#213), and trimesh's closest-point query, exact, costs ~360 us and
+    up to 280 kB per point (36 s and 28 GB per 100k points), which no field grid can afford. Degenerate faces are
+    dropped."""
+    from scipy.spatial import cKDTree
     V = np.asarray(V, float); F = np.asarray(F, np.int64)
-    s = 1.0 / max(float(np.median(np.linalg.norm(V[F[:, 0]] - V[F[:, 1]], axis=1))), 1e-300)
-    mesh = trimesh.Trimesh(V * s, F, process=False)
+    tri = V[F]
+    n = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
+    ln = np.linalg.norm(n, axis=1)
+    good = ln > 0
+    tri = tri[good]; n = n[good] / ln[good][:, None]
+    cent = tri.mean(1)
+    tree = cKDTree(cent)
     P = np.asarray(pts, float).reshape(-1, 3)
     out = np.zeros_like(P)
     for i in range(0, P.shape[0], chunk):
-        q = P[i:i + chunk] * s
-        c, _, _ = trimesh.proximity.closest_point(mesh, q)
-        v = q - c
-        n = np.linalg.norm(v, axis=1, keepdims=True)
-        out[i:i + chunk] = np.where(n > 0, v / np.maximum(n, 1e-30), 0.0)
+        q = P[i:i + chunk]
+        _, idx = tree.query(q, workers=-1)
+        out[i:i + chunk] = n[idx]
     return out
 
 
