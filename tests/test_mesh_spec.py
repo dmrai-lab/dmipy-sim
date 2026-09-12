@@ -82,7 +82,7 @@ def test_a_multi_surface_bundle_is_walked_from_the_spec_alone(tmp_path):
     assert walk.spec is spec and walk.geometry is None and walk.weights is None      # thinned: unweighted
     ids = np.asarray(walk.compartment)[:, 0]
     assert set(np.unique(ids)) == {0, 1, 2} and (np.asarray(walk.compartment) == ids[:, None]).all()
-    assert walk.has_surface and walk.diffusivity == D and walk.field_grid is not None
+    assert walk.has_surface and walk.diffusivity == D and walk.field_basis is not None
     pos = np.asarray(walk.positions)
     r0 = np.hypot(pos[:, 0, 0] - np.where(pos[:, 0, 0] < 0, -2e-6, 2e-6), pos[:, 0, 1])
     assert (r0[ids == 1] < 0.8e-6 + 1e-9).all() and (r0[ids == 2] > 0.8e-6 - 1e-9).all()      # pools where the walls say

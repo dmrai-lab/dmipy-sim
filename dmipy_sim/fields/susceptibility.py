@@ -96,20 +96,16 @@ class SusceptibilitySources:
 # =============================================================================== #
 @dataclass
 class MyelinSusceptibility:
-    """Anisotropic hollow-cylinder (myelin) off-resonance field (Wharton & Bowtell 2012).
+    """Anisotropic hollow-cylinder (myelin) off-resonance field: the closed form of
+    :mod:`dmipy_sim.fields.hollow_cylinder` summed over axons ``k`` (inner ``a_k``, outer ``b_k``, axis along
+    z after ``R``) and their periodic images,
 
-    ``ΔBz(r) = Δχ_a·B0·[ (sin²θ/2 − 1/3)·Φ₀(r) + (sin²θ/2)·(cos2α·Φ_C + sin2α·Φ_S) ]``,
-    summed over axons k (inner a, outer b, g=a/b) and periodic images, with, per axon,
-    ``(dx,dy) = r⊥ − c_k``, ``r² = dx²+dy²``:
+    ``dBz(r) = delta_chi_a * B0 * sum_k  H . M_A(r - c_k) . H``,
 
-        extra  (r>b):   Φ_C += (b²−a²)(dx²−dy²)/r⁴ ,          Φ_S += (b²−a²)·2dxdy/r⁴
-        sheath (a<r<b): Φ_C += (r⁴−a⁴)(dx²−dy²)/[r⁴(b²+a²)] , Φ_S += (r⁴−a⁴)·2dxdy/[…]
-        Φ₀ = ln(b/r) in the sheath, ln(b/a)=ln(1/g) in the lumen, 0 outside.
-
-    with the m=0 term carried at angular factor ``sin²θ/2``, so the intra field is
-    ``½·Δχ_a·B0·sin²θ·ln(1/g)`` — uniform inside the lumen and zero when B0 ∥ fibre,
-    matching the k-space dipole solver (:func:`dipole_field`).  θ is the fibre-to-B0
-    angle, α the B0 azimuth in the cross-section.  Closed-form (no grid).
+    with ``H`` the B0 direction given by ``theta`` (fibre-to-B0 angle) and ``alpha`` (its azimuth in the
+    cross-section): the lumen field ``(1/2) delta_chi_a B0 sin^2 theta ln(1/g)``, uniform and zero with B0 along
+    the fibre, the sheath's and the outside's per the module docstring. Closed form (no grid); one value
+    ``delta_chi_a`` (the anisotropic susceptibility, the isotropic one being a replay knob on a pack).
     """
     centers: np.ndarray
     inner_radii: np.ndarray
@@ -156,19 +152,18 @@ class MyelinSusceptibility:
                    n_images=n_images)
 
     def delta_bz_fn(self):
-        """JAX callable ``delta_bz(r) -> ΔBz`` (T) for a position r (3,)."""
+        """JAX callable ``delta_bz(r) -> dBz`` (T) for a position r (3,)."""
+        from .hollow_cylinder import hollow_cylinder_basis, q_of_H
         c = jnp.asarray(self.centers, jnp.float32)                   # (N, 2)
-        a2 = jnp.asarray(self.inner_radii ** 2, jnp.float32)
-        b2 = jnp.asarray(self.outer_radii ** 2, jnp.float32)
-        a4 = jnp.asarray(self.inner_radii ** 4, jnp.float32)
-        ln_ba = jnp.asarray(np.log(self.outer_radii / self.inner_radii), jnp.float32)  # ln(1/g)
+        a = jnp.asarray(self.inner_radii, jnp.float32)
+        b = jnp.asarray(self.outer_radii, jnp.float32)
         ims = jnp.arange(-self.n_images, self.n_images + 1) * jnp.float32(self.L)
         ox, oy = jnp.meshgrid(ims, ims)
         ox = ox.ravel(); oy = oy.ravel()                             # (M,)
-        sin2 = jnp.float32(np.sin(self.theta) ** 2)
-        s_l2 = jnp.float32(self.delta_chi_a * self.B0) * sin2 * 0.5
-        s_m0 = jnp.float32(self.delta_chi_a * self.B0) * (sin2 * 0.5)
-        c2a = jnp.float32(np.cos(2 * self.alpha)); s2a = jnp.float32(np.sin(2 * self.alpha))
+        H = np.array([np.sin(self.theta) * np.cos(self.alpha), np.sin(self.theta) * np.sin(self.alpha), np.cos(self.theta)])
+        q = jnp.asarray(q_of_H(H), jnp.float32)                      # (6,)
+        scale = jnp.float32(self.delta_chi_a * self.B0)
+        u = jnp.asarray([0.0, 0.0, 1.0], jnp.float32)
         R = None if self.R is None else jnp.asarray(self.R, jnp.float32)
         Lf = jnp.float32(self.L)
         wrap = bool(self.periodic)
@@ -181,23 +176,10 @@ class MyelinSusceptibility:
                 y = ((y + 0.5 * Lf) % Lf) - 0.5 * Lf
             dx = x - (c[:, 0:1] + ox[None, :])                       # (N, M)
             dy = y - (c[:, 1:2] + oy[None, :])
-            r2 = dx * dx + dy * dy
-            r4 = r2 * r2
-            extra = r2 > b2[:, None]
-            myelin = (r2 > a2[:, None]) & (~extra)
-            intra = r2 < a2[:, None]
-            r4e = jnp.where(extra, r4, jnp.inf)
-            PhiC = jnp.sum(jnp.where(extra, (b2 - a2)[:, None] * (dx * dx - dy * dy) / r4e, 0.0))
-            PhiS = jnp.sum(jnp.where(extra, (b2 - a2)[:, None] * 2.0 * dx * dy / r4e, 0.0))
-            r4m = jnp.where(myelin, r4, jnp.inf)
-            sf = jnp.where(myelin, (r4 - a4[:, None]) / (r4m * (b2 + a2)[:, None]), 0.0)
-            PhiC += jnp.sum(sf * (dx * dx - dy * dy))
-            PhiS += jnp.sum(sf * 2.0 * dx * dy)
-            r2s = jnp.where(myelin, r2, b2[:, None])
-            # Phi0 = ln(b/r) in the sheath, ln(b/a)=ln(1/g) in the lumen, 0 outside.
-            Phi0 = (jnp.sum(jnp.where(myelin, -0.5 * jnp.log(r2s / b2[:, None]), 0.0))
-                    + jnp.sum(jnp.where(intra, ln_ba[:, None], 0.0)))
-            return s_m0 * Phi0 + s_l2 * (c2a * PhiC + s2a * PhiS)
+            rho_vec = jnp.stack([dx, dy, jnp.zeros_like(dx)], axis=-1)            # (N, M, 3)
+            C = hollow_cylinder_basis(rho_vec, jnp.broadcast_to(u, rho_vec.shape),
+                                      jnp.broadcast_to(a[:, None], dx.shape), jnp.broadcast_to(b[:, None], dx.shape))
+            return scale * jnp.sum(C[..., 7:13] @ q)
 
         return delta_bz
 

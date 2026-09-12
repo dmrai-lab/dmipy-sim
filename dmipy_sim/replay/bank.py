@@ -65,6 +65,7 @@ def _master_arrays(src) -> dict:
                 w=g("w"), dlog_b=g("dlog_b"), bfrac=g("bfrac"),
                 # static field-grid susceptibility channel (dict of grids + world origin + chi)
                 susc_field_basis=(m.get("susc_field_basis") if isinstance(m, dict) else None),
+                susc_field_sampler=(m.get("susc_field_sampler") if isinstance(m, dict) else None),
                 susc_grid_origin=(np.asarray(m["susc_grid_origin"]) if "susc_grid_origin" in m else None),
                 susc_chi_iso=scal("susc_chi_iso"), delta_chi_a=scal("delta_chi_a"),
                 cell_size=scal("cell_size"), R=g("R"), D_intra=scal("D_intra"),
@@ -226,6 +227,27 @@ def _surface_fidelity(m, arrays, chan_meta, env):
     return dict(err=float(err), floor=float(floor))
 
 
+def _field_of(m):
+    """The master's field source as a sampler (``channels(points)`` / ``field(points, ...)``): the grid as a
+    :class:`FieldGrid`, or the strand substrate's :class:`StrandFieldBasis`; None without a field tier."""
+    fb = m.get("susc_field_basis")
+    if fb is not None:
+        from ..fields.susceptibility_field import FieldGrid
+        return FieldGrid(fb, np.asarray(m["susc_grid_origin"], float))
+    return m.get("susc_field_sampler")
+
+
+def _field_along(field, traj, b0_dir, *, B0, chi_iso, chi_aniso, walkers_per_chunk=None):
+    """``(n_w, n_t)`` field (Tesla) along every walker's path, in walker chunks."""
+    traj = np.asarray(traj, np.float64); n_w, n_t = traj.shape[0], traj.shape[1]
+    step = walkers_per_chunk or max(1, int(2e8 // max(n_t * 13, 1)))
+    out = np.empty((n_w, n_t), np.float64)
+    for i in range(0, n_w, step):
+        out[i:i + step] = field.field(traj[i:i + step].reshape(-1, 3), b0_dir, B0=B0, chi_iso=chi_iso,
+                                      chi_aniso=chi_aniso).reshape(-1, n_t)
+    return out
+
+
 def _susc_grid_fidelity(m, arrays, gm, decoded_pos, dt, env):
     """Certify the static field-grid tier (SE + GRE): the STORED f16 grid sampled at the DECODED
     trajectory vs the RAW f64 grid at the FULL-resolution trajectory (folds in f16 quantisation AND
@@ -298,10 +320,9 @@ def _susc_path_bloch_fidelity(m, arrays, pm, gm, env, n_sub=8000):
     the comparison floor is the split-half floor OF THAT SUBSAMPLE, so the verdict stays self-consistent.
     """
     from ..constants import GAMMA
-    from ..fields.susceptibility_field import assemble_field, sample_grid
     from .trajectories import replay_bloch
-    fb = m.get("susc_field_basis")
-    if fb is None or "susc_path_dct" not in arrays:
+    field = _field_of(m)
+    if field is None or "susc_path_dct" not in arrays:
         return None
     traj = np.asarray(m["traj"], np.float64)
     n_w, n_t = traj.shape[0], traj.shape[1]
@@ -309,11 +330,6 @@ def _susc_path_bloch_fidelity(m, arrays, pm, gm, env, n_sub=8000):
     k = int(min(n_sub, n_w))
     pos = traj[:k]
     w = (np.asarray(m["w"], np.float64)[:k] if m.get("w") is not None else np.ones(k))
-    origin = np.asarray(gm["origin"], float); vs = np.asarray(fb["voxel_size"], float)
-    braw = {"iso_local": np.asarray(fb["iso_local"], np.float64),
-            "iso_P": np.asarray(fb["iso_P"], np.float64),
-            "aniso_G": (np.asarray(fb["aniso_G"], np.float64) if fb.get("aniso_G") is not None else None),
-            "shape": tuple(fb["shape"]), "voxel_size": vs}
     b_dec, _ = susc_path_decode(arrays, pm, n_w=k)
     chi_i = float(m.get("susc_chi_iso") or 1.06e-6)
     # Certify the ANISOTROPIC channels even when the substrate's reference delta_chi_a is 0 (Winther
@@ -349,8 +365,7 @@ def _susc_path_bloch_fidelity(m, arrays, pm, gm, env, n_sub=8000):
     for B0 in B0s:
         for th in (env.get("theta_deg") or [90]):
             t = np.deg2rad(float(th)); d = [np.sin(t), 0.0, np.cos(t)]
-            f_raw = sample_grid(assemble_field(braw, d, B0=B0, chi_iso=chi_i, chi_aniso=ca),
-                                pos, origin, vs, periodic=False)
+            f_raw = _field_along(field, pos, d, B0=B0, chi_iso=chi_i, chi_aniso=ca)
             f_dec = susc_path_field(b_dec, d, B0=B0, chi_iso=chi_i, chi_aniso=ca,
                                     has_aniso=bool(gm.get("has_aniso")))
             for npul in (1, n_p):
@@ -370,18 +385,12 @@ def _susc_path_fidelity(m, arrays, pm, gm, env):
     gate bandwidth, so certifying on SE alone would pass a pack that fails the trains it advertises.
     """
     from ..constants import GAMMA
-    from ..fields.susceptibility_field import assemble_field, sample_grid
-    fb = m.get("susc_field_basis")
-    if fb is None or "susc_path_dct" not in arrays:
+    field = _field_of(m)
+    if field is None or "susc_path_dct" not in arrays:
         return None
     traj = np.asarray(m["traj"], np.float64); n_w, n_t = traj.shape[0], traj.shape[1]
     dt = float(m["dt_traj"])
     w = np.asarray(m["w"], np.float64) if m.get("w") is not None else np.ones(n_w)
-    origin = np.asarray(gm["origin"], float); vs = np.asarray(fb["voxel_size"], float)
-    braw = {"iso_local": np.asarray(fb["iso_local"], np.float64),
-            "iso_P": np.asarray(fb["iso_P"], np.float64),
-            "aniso_G": (np.asarray(fb["aniso_G"], np.float64) if fb.get("aniso_G") is not None else None),
-            "shape": tuple(fb["shape"]), "voxel_size": vs}
     b_dec, _ = susc_path_decode(arrays, pm)
     chi_i = float(m.get("susc_chi_iso") or 1.06e-6)
     # Certify the ANISOTROPIC channels even when the substrate's reference delta_chi_a is 0 (Winther
@@ -401,8 +410,7 @@ def _susc_path_fidelity(m, arrays, pm, gm, env):
     for B0 in (env.get("B0_list") or [3.0, 7.0]):
         for th in (env.get("theta_deg") or [0, 90]):
             t = np.deg2rad(float(th)); d = [np.sin(t), 0.0, np.cos(t)]
-            f_raw = sample_grid(assemble_field(braw, d, B0=B0, chi_iso=chi_i, chi_aniso=ca),
-                                traj, origin, vs, periodic=False)
+            f_raw = _field_along(field, traj, d, B0=B0, chi_iso=chi_i, chi_aniso=ca)
             f_dec = susc_path_field(b_dec, d, B0=B0, chi_iso=chi_i, chi_aniso=ca,
                                     has_aniso=bool(gm.get("has_aniso")))
             e, f = _gate_battery(f_raw, f_dec, gates, w, A, B, dt)
@@ -449,83 +457,34 @@ def susc_path_series_fidelity(series_raw, arrays, pm, gm, *, w, dt, env=None, ch
     return dict(err=float(err), floor=float(floor), n_pulses_certified=n_p)
 
 
-def susc_path_encode(fb, traj, origin, *, K=32, bits=8, dtype=np.float16, atol_trace=1e-6):
+def susc_path_encode(field, traj, *, K=32, bits=8, dtype=np.float16, atol_trace=1e-6):
     """Encode the off-resonance field ALONG each walker's path as K temporal DCT-II coefficients.
 
-    The obstacle to compressing susceptibility is that phi_chi = gamma*int s(t)*dB(r(t)) dt is
-    NONLINEAR in r, so a low-rank/DCT model of r(t) has no Parseval shortcut the way the gradient
-    phase does. The fix is to move the compression to the other side of the nonlinearity: evaluate
-    the field basis along the FULL-resolution path first, then compress the resulting scalars
-    b_c(t). Those are very red (the field varies on ~1um scales while r(t) is broadband), so K<<n_t.
-
-    Stored per walker: n_ch channels x K coefficients, where the channels are geometry only -- B0
-    direction/magnitude and chi stay replay knobs via the same Q(H) contraction the grid form uses.
-
-    ``iso_P_zz`` is dropped when the exact identity ``P_xx + P_yy + P_zz == 3*iso_local`` holds
-    (it does to machine precision for an un-apodised source grid), and reconstructed on read. If a
-    k-space window was applied to iso_P but not iso_local the identity is broken, so it is CHECKED
-    rather than assumed and all six components are kept when it fails.
-
-    **K is a gate-bandwidth capability, not a field-fidelity knob.** b_c(t) is broadband -- the walker
-    crosses ~1um field structure every save step -- so truncation does NOT reproduce the field (K=512
-    still misses ~60% of its peak). What it reproduces is the *phase*, because phi only sees b(t)
-    integrated against the sequence gate s(t), and s(t) is narrowband. Measured requirement on the
-    vector-Bloch path (n_t=1601, TE=36ms, MC floor 9.4e-3, tolerance floor/3):
-
-        CPMG pulses  1   2   4   8   16  32  64
-        min K        8   8   16  16  32  64  128        =>  K >= 2 * n_refocus
-
-    So ``max_refocus_pulses = K//2`` is recorded in the metadata; a consumer replaying a denser train
-    than that is outside the pack's certified range. Do not read K as "the field is accurate to X".
-
-    **Bit depth, not K, is the cheap axis.** Above the DC term b_c(t) is nearly white (band variance
-    falls only ~1 decade over 63 bands, slope ~-0.6, against -2 for a trajectory), so the DCT here is
-    NOT doing energy compaction -- it earns its place because it is the basis in which the *gate* is
-    sparse, and truncation is therefore a brick-wall approximation to the gate-weighted allocation.
-    The graded version is to keep every band and spend fewer bits on each. Measured on three Winther
-    axons, 48 knob settings x CPMG{1,4,16,32}, worst-case signal error against the f16 pack:
-
-        12ch x K=32 f16    27.6 MB   1.4e-04 (CPMG1)  1.2e-03 (CPMG16)  1.5e-02 (CPMG32) <- capability lost
-        12ch x K=64 int8   27.6 MB   1.2e-03           1.4e-05           1.7e-05
-        12ch x K=64 6-bit  20.7 MB   1.9e-02  <- exceeds the MC floor on axon08; not safe
-
-    So ``bits=8`` is the default: half the size of f16 with the declared refocusing capability intact.
-    Cross-channel decorrelation was also tested and REJECTED -- the 12 channels are correlated (rank 4
-    holds 97% of the energy) but a rank-6 KLT at matched bytes is 4.9e-02, two orders worse than band
-    truncation, because the gate weights frequencies and is blind to channel identity. Bits belong in
-    frequency, never across channels.
-
-    ``bits`` selects the integer container: 8 -> int8, 16 -> int16, each with a per-(channel, band)
-    scale in ``susc_path_scale``. ``bits=None`` stores raw floats at ``dtype`` (the only mode that can
-    satisfy the lossless-at-K=n_t contract). Sub-byte depths are not offered: they would need explicit
-    bit-packing to actually save bytes, and 6-bit measured unsafe anyway.
+    ``field`` is the substrate's field source -- a :class:`~dmipy_sim.fields.susceptibility_field.FieldGrid` or a
+    :class:`~dmipy_sim.fields.strand_field.StrandFieldBasis` -- read through ``channels(points)``; ``traj`` the
+    full-resolution walk ``(n_w, n_t, 3)``. The ``iso_P_zz`` channel is implied by the trace identity
+    ``iso_P_xx + iso_P_yy + iso_P_zz = 3 iso_local`` and left out when the source satisfies it to ``atol_trace``.
     """
     from scipy.fft import dct
-    from ..fields.susceptibility_field import sample_grid
     traj = np.asarray(traj, np.float64)
     n_w, n_t = traj.shape[0], traj.shape[1]
-    vs = np.asarray(fb["voxel_size"], float)
-    il = np.asarray(fb["iso_local"], np.float64)
-    iP = np.asarray(fb["iso_P"], np.float64)
-    aG = np.asarray(fb["aniso_G"], np.float64) if fb.get("aniso_G") is not None else None
-
-    # the identity is a property of the GRIDS, so test it there (cheap) rather than along paths
-    tr = iP[0] + iP[1] + iP[2]
-    scale = float(np.max(np.abs(il))) or 1.0
-    trace_res = float(np.max(np.abs(tr - 3.0 * il))) / (3.0 * scale)
+    names_all = list(field.channel_names)
+    step = max(1, int(2e8 // max(n_t * 13, 1)))                 # walkers per chunk: ~1.6 GB of channels
+    first = field.channels(traj[:min(step, n_w)].reshape(-1, 3))
+    tr = first[:, 1] + first[:, 2] + first[:, 3]
+    scale = float(np.max(np.abs(first[:, 0]))) or 1.0
+    trace_res = float(np.max(np.abs(tr - 3.0 * first[:, 0]))) / (3.0 * scale)
     drop_zz = bool(trace_res <= atol_trace)
-
-    names = ["iso_local"] + [f"iso_P_{n}" for n in _ISO_P_NAMES if not (drop_zz and n == "zz")]
-    grids = [il] + [iP[i] for i, n in enumerate(_ISO_P_NAMES) if not (drop_zz and n == "zz")]
-    if aG is not None:
-        names += [f"aniso_G_{n}" for n in _ISO_P_NAMES]
-        grids += [aG[i] for i in range(6)]
-
+    keep = [i for i, n in enumerate(names_all) if not (drop_zz and n == "iso_P_zz")]
+    names = [names_all[i] for i in keep]
+    grids = keep                                                  # the channel columns stored
     K = int(min(K, n_t))
     coeffs = np.empty((n_w, len(grids), K), np.float64)
-    for c, g in enumerate(grids):                      # one channel at a time: n_w*n_t floats, not n_ch*
-        coeffs[:, c, :] = dct(sample_grid(g, traj, origin, vs, periodic=False),
-                              type=2, norm="ortho", axis=1)[:, :K]
+    for i in range(0, n_w, step):                      # walker chunks: the channels of a chunk, then their DCT
+        ch = first if i == 0 else field.channels(traj[i:i + step].reshape(-1, 3))
+        ch = ch.reshape(-1, n_t, ch.shape[-1])
+        for c, col in enumerate(grids):
+            coeffs[i:i + step, c, :] = dct(ch[:, :, col], type=2, norm="ortho", axis=1)[:, :K]
     meta = dict(channel="susc_path_dct", K=K, n_t=int(n_t), n_ch=len(grids), channels=names,
                 iso_P_zz=("implied" if drop_zz else "stored"), trace_residual=trace_res,
                 max_refocus_pulses=K // 2)
@@ -718,8 +677,8 @@ def preflight_master(m, *, susc_path_K=None, sigma_star=None, K=None):
         bad.append("master carries the private susceptibility forms (susc_basis/PhiC), which are "
                    "refused here; rebuild the master with field_store='grid', or drop them and "
                    "rely on susc_field_basis")
-    if susc_path_K and m.get("susc_field_basis") is None:
-        bad.append("susc_path_K was requested but susc_field_basis is None, so the field tier (C3) "
+    if susc_path_K and m.get("susc_field_basis") is None and m.get("susc_field_sampler") is None:
+        bad.append("susc_path_K was requested but the master carries no field basis (grid or sampler), so the field tier (C3) "
                    "cannot be assembled and the pack would be silently missing it "
                    "(field_store='grid' is what produces it)")
     if sigma_star is not None and K is None:
@@ -749,8 +708,8 @@ def _walk_master(walk, *, weights=None, field=None, diffusivity=None, substrate_
             weights = np.asarray(wf, float)[np.asarray(walk.compartment)[:, 0].astype(int)]
     if field == "auto":
         field = None
-        if walk.field_grid is not None:
-            field = walk.field_grid
+        if walk.field_basis is not None:
+            field = walk.field_basis
         elif geometry is not None and type(geometry).__name__ in ("MyelinatedCylinder", "PackedMyelinatedCylinders"):
             field = field_grid_of(geometry)                          # geometry only; chi is a replay knob
     elif field is False:
@@ -768,10 +727,14 @@ def _walk_master(walk, *, weights=None, field=None, diffusivity=None, substrate_
             raise ValueError(f"weights has {w.shape[0]} entries for {walk.n_walkers} walkers")
         extra["w"] = w
     if field is not None:
-        if not isinstance(field, FieldGrid):
-            raise TypeError("field must be a fields.susceptibility_field.FieldGrid (basis, origin), got "
-                            f"{type(field).__name__}")
-        extra.update(susc_field_basis=field.basis, susc_grid_origin=np.asarray(field.origin, float))
+        from ..fields.strand_field import StrandFieldBasis
+        if isinstance(field, FieldGrid):
+            extra.update(susc_field_basis=field.basis, susc_grid_origin=np.asarray(field.origin, float))
+        elif isinstance(field, StrandFieldBasis):
+            extra["susc_field_sampler"] = field
+        else:
+            raise TypeError("field must be a fields.susceptibility_field.FieldGrid (basis, origin) or a "
+                            f"fields.strand_field.StrandFieldBasis, got {type(field).__name__}")
     if diffusivity is not None:
         extra["D_intra"] = float(diffusivity)
     if substrate_frame is not None:
@@ -794,7 +757,9 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto"
     (C2) when the walk has the boundary local time; **magnetization transfer** (C4) when it has the
     bound fraction; **field** (C3) when a static field basis exists for the substrate --
     ``field="auto"`` derives it from a myelinated geometry (:func:`fields.susceptibility_field.field_grid_of`),
-    a :class:`~dmipy_sim.fields.susceptibility_field.FieldGrid` supplies one (a mesh substrate),
+    a :class:`~dmipy_sim.fields.susceptibility_field.FieldGrid` supplies one (a mesh substrate), a
+    :class:`~dmipy_sim.fields.strand_field.StrandFieldBasis` the per-segment closed form of a strand substrate
+    (path channel only: it has no grid),
     ``field=False`` leaves the tier out; the basis is geometry only, and B0, its direction and the
     susceptibilities are replay knobs. ``weights`` are per-walker proton-density weights (default:
     the pools' water fractions by compartment, else uniform).
@@ -841,6 +806,15 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto"
     # (a substrate property); replay assembles the field for any (B0,dir,chi) and samples it along
     # the pos-codec-decoded trajectory (replay_susc). O(N_vox) not O(N_w*N_t) and SE-exact (a static
     # field at a frozen point cancels under the SE gate to machine precision). f16 grids: O(1) geometry.
+    _field = _field_of(m)
+    if _field is not None and m.get("susc_field_basis") is None:
+        # a strand substrate's per-segment field: no grid to store, the path channel is the tier
+        if not susc_path_K:
+            raise ValueError("a StrandFieldBasis has no grid to store: the field tier (C3) needs susc_path_K")
+        chan_meta["susceptibility_grid"] = dict(has_aniso=True, arrays_in_pack=False, replay_route="path", source=_field.meta)
+        channels["susceptibility"] = True
+        _a, _pm = susc_path_encode(_field, np.asarray(m["traj"], np.float64), K=int(susc_path_K), bits=susc_path_bits)
+        arrays.update(_a); chan_meta["susceptibility_path"] = _pm
     if m.get("susc_field_basis") is not None:
         fb = m["susc_field_basis"]
         # The GRID route samples the field at codec-DECODED positions, so it is only sound when the
@@ -872,8 +846,7 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto"
         # losslessly was that grid-sampling needed exact r(t). See susc_path_encode for why K is a
         # gate-bandwidth capability rather than a fidelity knob.
         if susc_path_K:
-            _a, _pm = susc_path_encode(fb, np.asarray(m["traj"], np.float64),
-                                       np.asarray(m["susc_grid_origin"], float),
+            _a, _pm = susc_path_encode(_field, np.asarray(m["traj"], np.float64),
                                        K=int(susc_path_K), bits=susc_path_bits)
             arrays.update(_a); chan_meta["susceptibility_path"] = _pm
     if wp_method:
