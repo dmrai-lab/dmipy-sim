@@ -121,7 +121,7 @@ def test_disco_spec_adds_the_sheath_at_the_phantoms_g_ratio(strand_txt):
     assert [p.name for p in spec.pools] == ["extra", "intra", "myelin"] and spec.validity.tiers == ["gradient", "relaxation"]
     w = walk_spec(spec, 90, 8e-4, 2e-4, seed=0, n_probe=20_000, field_res=0.5e-6, require_gpu=False, field=False)
     ids = np.asarray(w.compartment)[:, 0]
-    assert set(np.unique(ids)) == {0, 1, 2} and w.field_grid is not None
+    assert set(np.unique(ids)) == {0, 1, 2} and w.field_grid is None            # no field route for strands yet (#76 item 3)
 
 
 def test_a_strand_whose_radius_varies_is_refused(tmp_path):
