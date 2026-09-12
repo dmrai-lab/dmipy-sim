@@ -17,9 +17,13 @@ from .build import geometry_from_spec
 
 
 def walk_spec(spec, n_walkers, T_max, dt_save=None, *, scanner="connectom", floor_fraction=0.1, diffusivity=None,
-              seed=0, n_probe=200_000, field=True, field_res=0.2e-6, require_gpu=None, walker_batch_size=50_000,
-              tiers="all"):
+              seed=0, n_probe=200_000, field=True, field_res=0.2e-6, field_budget=5e7, require_gpu=None,
+              walker_batch_size=50_000, tiers="all"):
     """Walk ``spec`` and return a :class:`~dmipy_sim.persistent_walk.PersistentWalk` carrying the spec.
+
+    ``field_budget`` caps the rasterised field basis at that many voxels (13 float32 channels each): a small
+    strand voxel rasterises like any other substrate, which is the cross-check a future per-segment field is
+    measured against; a cubic millimetre does not, and is refused with the count rather than attempted.
 
     ``dt_save`` is derived unless given: :func:`~dmipy_sim.acquisition.scanners.save_interval` for the strongest
     waveform ``scanner`` (a class name or ``(G_max, slew)``) can deliver over ``T_max``, held to ``floor_fraction``
@@ -52,7 +56,7 @@ def walk_spec(spec, n_walkers, T_max, dt_save=None, *, scanner="connectom", floo
         return PersistentWalk(w.positions, w.dt, w.sub_steps, w.dt_sim, w.boundary_local_time, w.compartment,
                               w.bound_frac, w.illegal_crossings, w.seed, w.diffusivity, geometry=g, spec=spec)
     return _walk_bundle(spec, int(n_walkers), float(T_max), float(dt_save), seed, n_probe, field, field_res,
-                        require_gpu, walker_batch_size)
+                        require_gpu, walker_batch_size, field_budget=float(field_budget))
 
 
 def _needs_bundle_walk(spec):
@@ -122,7 +126,7 @@ class _Boundary:
         return self._geom[key]
 
 
-def _walk_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field, field_res, require_gpu, batch):
+def _walk_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field, field_res, require_gpu, batch, field_budget=5e7):
     """Walk a multi-surface spec pool by pool: every seeded pool is defined by the walls it is inside and the walls it
     is outside; a pool with D > 0 walks the interior of its inside-walls (intra, glia) or the exterior of its
     outside-walls (extra); a shell pool at D = 0 (myelin) is frozen where it was seeded; the field basis is
@@ -219,10 +223,13 @@ def _walk_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field, field_re
     fg = None
     if field and spec.field_source_pools:
         src = spec.field_source_pools[0].id
-        if any(w.surface.kind == "swept_polyline" for w in spec.walls):
-            raise SpecError("the field of a strand substrate is not implemented: a rasterised basis over its domain is "
-                            "out of reach (a cubic millimetre at 0.2 um is 1e11 voxels) and the per-segment analytic "
-                            "field along each path (dmipy-sim#76, item 3) is not built yet; walk it with field=False")
+        n_vox = int(np.prod(np.ceil((hi - lo) / float(field_res))))
+        if n_vox > field_budget:
+            raise SpecError(f"the field basis of this substrate would be {n_vox:.2e} voxels at {field_res * 1e6:.2f} um over its "
+                            f"{np.round((hi - lo) * 1e6, 1).tolist()} um domain, beyond the {field_budget:.0e}-voxel budget "
+                            f"(13 float32 channels per voxel). Coarsen field_res=, raise field_budget=, or walk it with "
+                            f"field=False; a domain this size (DiSCo) needs the per-segment analytic field along each "
+                            f"path, dmipy-sim#76 item 3")
         outer_b = boundary(inside_w[src]) if inside_w[src] else None
         inner_b = boundary(outside_w[src]) if outside_w[src] else None
         if outer_b is None:

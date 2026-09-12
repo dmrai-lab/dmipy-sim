@@ -118,10 +118,10 @@ def test_disco_spec_adds_the_sheath_at_the_phantoms_g_ratio(strand_txt):
     spec = disco_spec(strand_txt)
     assert spec.id == "disco/optimized_final" and [w.name for w in spec.walls] == ["axolemma", "sheath"]
     assert spec.walls[0].surface.instances["radii"] == pytest.approx([0.7 * r for r in (1.5e-6, 1.0e-6, 2.0e-6)])
-    assert [p.name for p in spec.pools] == ["extra", "intra", "myelin"] and spec.validity.tiers == ["gradient", "relaxation"]
-    w = walk_spec(spec, 90, 8e-4, 2e-4, seed=0, n_probe=20_000, field_res=0.5e-6, require_gpu=False, field=False)
+    assert [p.name for p in spec.pools] == ["extra", "intra", "myelin"] and spec.validity.tiers == ["gradient", "relaxation", "field"]
+    w = walk_spec(spec, 90, 8e-4, 2e-4, seed=0, n_probe=20_000, field_res=0.5e-6, require_gpu=False)
     ids = np.asarray(w.compartment)[:, 0]
-    assert set(np.unique(ids)) == {0, 1, 2} and w.field_grid is None            # no field route for strands yet (#76 item 3)
+    assert set(np.unique(ids)) == {0, 1, 2} and w.field_grid is not None       # a small voxel rasterises its sheath
 
 
 def test_a_strand_whose_radius_varies_is_refused(tmp_path):
@@ -137,7 +137,7 @@ def test_a_strand_pack_claims_no_tier_the_walk_did_not_record(strand_txt):
     C2, a replay at rho is refused rather than returned unattenuated; and the field is refused at the walk."""
     from dmipy_sim.replay.bank import build_replay_pack
     spec = disco_spec(strand_txt)
-    assert spec.validity.tiers == ["gradient", "relaxation"]
+    assert spec.validity.tiers == ["gradient", "relaxation", "field"]
     w = walk_spec(spec, 120, 1e-3, 2.5e-4, seed=0, n_probe=20_000, require_gpu=False, field=False)
     assert w.boundary_local_time is None and not w.has_surface and w.has_compartments
     pk = build_replay_pack(w, id="t/strands", license="x", citation="x", K=4, field=False)
@@ -145,5 +145,34 @@ def test_a_strand_pack_claims_no_tier_the_walk_did_not_record(strand_txt):
     seq = d.set_b(d.pgse([[1, 0, 0]], 0.2e-3, 0.5e-3, gradient_strengths=0.1, n_t=pk.n_t, slew_rate=np.inf), [1e9])
     with pytest.raises(ValueError, match="no C2"):
         pk.replay(seq, rho=1e-5)
-    with pytest.raises(SpecError, match="not implemented"):
-        walk_spec(spec, 60, 1e-3, 2.5e-4, seed=0, n_probe=20_000, require_gpu=False, field=True)
+    with pytest.raises(SpecError, match="voxel budget"):                       # a domain too large to rasterise is refused
+        walk_spec(spec, 60, 1e-3, 2.5e-4, seed=0, n_probe=20_000, require_gpu=False, field=True, field_budget=1e3)
+
+
+def test_a_straight_myelinated_curved_tube_is_the_myelinated_cylinder():
+    """The straight limit of the curved myelinated tube is the myelinated cylinder: the same pools, the same walls,
+    and the same rasterised field basis -- the cross-check a per-segment field along a path is measured against.
+    Measured: the isotropic term and the anisotropic term with B0 along the axis agree to the bit; the
+    anisotropic term with B0 ACROSS the axis differs by 28 % RMS, because predicate_field_basis takes its radial
+    director from the voxelised mask's gradient while the cylinder's basis uses the exact one (dmipy-sim#213).
+    The discrepancy is pinned at its measured size so that fixing the director flips this test."""
+    from dmipy_sim.fields.susceptibility_field import field_grid_of, predicate_field_basis, assemble_field
+    r_in, r_out = 1.0e-6, 1.4e-6
+    straight = d.CurvedMyelinatedCylinder(np.array([[0.0, 0.0, -6e-6], [0.0, 0.0, 6e-6]]), r_in, r_out, pool="intra")
+    cyl = d.MyelinatedCylinder(r_in, r_out, (0, 0, 1), 1.7e-9, 1.7e-9)
+    lo, hi = np.array([-3e-6, -3e-6, -2e-6]), np.array([3e-6, 3e-6, 2e-6])
+    res = 0.2e-6
+    b_curved, o_curved, _ = predicate_field_basis(lambda p: np.asarray(straight.classify_positions_exact(p)) == 1,
+                                                  lambda p: np.asarray(straight.classify_positions_exact(p)) != 0, lo, hi, res=res,
+                                                  mask_supersample=4)                   # the same partial volume at the walls
+    fg = field_grid_of(cyl, res=res, box=(lo, hi), mask_supersample=4)              # stored translation-invariant: a few slabs
+    assert tuple(b_curved["shape"][:2]) == tuple(fg.basis["shape"][:2]) and np.allclose(o_curved[:2], np.asarray(fg.origin)[:2])
+
+    def rms(direction, chi_iso, chi_aniso):
+        f1 = np.asarray(assemble_field(b_curved, direction, B0=3.0, chi_iso=chi_iso, chi_aniso=chi_aniso))[:, :, b_curved["shape"][2] // 2]
+        f2 = np.asarray(assemble_field(fg.basis, direction, B0=3.0, chi_iso=chi_iso, chi_aniso=chi_aniso))[:, :, fg.basis["shape"][2] // 2]
+        return np.sqrt(np.mean((f1 - f2) ** 2)) / np.sqrt(np.mean(f2 ** 2))
+    assert rms((0, 0, 1.0), -1e-7, 0.0) < 1e-6 and rms((1.0, 0, 0), -1e-7, 0.0) < 1e-6      # isotropic: the same occupancy
+    assert rms((0, 0, 1.0), 0.0, -1e-7) < 1e-6                                              # anisotropic, B0 along the axis
+    across = rms((1.0, 0, 0), 0.0, -1e-7)
+    assert 0.2 < across < 0.35, across                                                     # the director discrepancy (#213)
