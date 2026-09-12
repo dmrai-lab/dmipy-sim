@@ -526,7 +526,7 @@ class ReplayPack:
 
     def pose_response(self, waveform, *, tissue="nominal", T2=None, T1=None, rho=None, D=None, B0=None,
                       b0_dir=(0.0, 0.0, 1.0), chi_iso=None, chi_aniso=0.0, compartment=None,
-                      band=None, keep=None, margin=2, n_check=256, seed=0, band_cap=12, strict=True):
+                      method="auto", band=None, keep=None, margin=2, n_check=256, seed=0, band_cap=12, strict=True):
         """The pack's response over every pose of its substrate, as SO(3) coefficients (:class:`PoseResponse`).
 
         This is what a replay phantom composes against each voxel: one expansion per measurement, then a dot
@@ -553,6 +553,15 @@ class ReplayPack:
         """
         P = self._prepare(waveform, tissue=tissue, T2=T2, T1=T1, rho=rho, D=D, B0=B0, b0_dir=b0_dir, chi_iso=chi_iso,
                           chi_aniso=chi_aniso, orientation=None, compartment=compartment)
+        if method not in ("auto", "closed", "quadrature"):
+            raise ValueError("method is 'auto', 'closed' (the per-walker Rayleigh expansion) or 'quadrature'")
+        if method != "quadrature":
+            closed = self._pose_coeffs_closed(P, keep=keep)
+            if closed is not None:
+                return closed
+            if method == "closed":
+                raise ValueError("the closed-form pose expansion needs a single-direction encoding on every measurement "
+                                 "and no field: this acquisition or replay has neither, so use method='quadrature'")
         return self._pose_coeffs(P, waveform, band=band, keep=keep, margin=margin,
                                  n_check=n_check, seed=seed, band_cap=band_cap, strict=strict)
 
@@ -617,6 +626,93 @@ class ReplayPack:
             return rotation_of(o, self.frame_axis)
         raise ValueError("orientation is a (3, 3) rotation, a (3,) axis direction, or a distribution of poses "
                          "(dmipy_sim.replay.so3.Distribution, or an FOD read as an axis density)")
+
+    def _pose_coeffs_closed(self, P, keep=None, tol=1e-8, l_cap=64):
+        """The pose expansion in closed form (#197): the response of a single-direction encoding is a sum of plane
+        waves in the rotated moment of each walker, and a plane wave's harmonics are the Rayleigh expansion.
+
+        Measurement ``i`` plays ``G_i(t) = g_i s_i(t)``; walker ``w``'s phase at pose ``R`` is ``kappa g^ . R m^``
+        with ``m_w = gamma sum_t s_i(t) r_w(t) dt`` (the moment, in the canonical frame) and ``kappa = |g||m|``. Then
+
+            exp(i kappa g^.R m^) = 4 pi sum_l i^l j_l(kappa) sum_m Y_lm(g^) sum_n M^l(R)[m, n] Y_ln(m^)
+
+        so in the basis ``sqrt(2l+1) M^l(R)[m, n]`` the ``(l, m, n)`` coefficient of the ensemble is
+
+            c^l_mn = 4 pi i^l / sqrt(2l+1) * Y_lm(g^_i) * sum_w ew_w j_l(kappa_w) Y_ln(m^_w) / norm
+
+        -- one contraction over walkers per order, no rotation ever evaluated. ``j_l(kappa)`` dies above
+        ``l ~ kappa``, so the band is the largest phase amplitude and nothing is chosen: orders are added until
+        their weighted Bessel tail is below ``tol``. ``keep`` restrains the band as before: an ODF or peaks
+        composition keeps ``n = 0`` only, which here is the Legendre polynomial of the moment's angle to the
+        substrate axis and never a roll quadrature. Returns None when a measurement is not single-direction
+        (a b-tensor encoding) or a field is replayed: those take the quadrature route.
+        """
+        from scipy.special import spherical_jn
+        from . import so3
+        from .compression import read_position_coeffs
+        Geff, dt, n_t, ew, norm = P["Geff"], P["dt"], P["n_t"], P["ew"], P["norm"]
+        if P["B0"] is not None:
+            return None
+        n_meas, n_w = Geff.shape[0], ew.shape[0]
+        G = np.asarray(Geff, np.float64)
+        g_hat = np.zeros((n_meas, 3)); s_wave = np.zeros((n_meas, n_t))
+        for i in range(n_meas):
+            Gi = G[i]
+            if not np.any(Gi):
+                g_hat[i] = (0.0, 0.0, 1.0)                                     # a b = 0 row: no phase at any pose
+                continue
+            _u, sv, vt = np.linalg.svd(Gi, full_matrices=False)
+            if sv[1] > 1e-6 * sv[0]:                                    # G is stored float32; a direction is one to that
+                return None                                                    # rank > 1: not a single direction
+            g_hat[i] = vt[0]; s_wave[i] = Gi @ vt[0]
+        C = read_position_coeffs(self.arrays, dtype=np.float64).reshape(n_w, -1)
+        e = np.eye(3)
+        m = np.empty((n_w, n_meas, 3))
+        for b_ in range(3):                                                    # m_w[b] = gamma sum_t s_i(t) r_w(t)_b dt
+            W = _compile_effective(s_wave[:, :, None] * e[b_][None, None, :], dt, self.K, n_t)
+            m[:, :, b_] = C @ W
+        m = m @ self.substrate_frame                                           # stored -> canonical: F^T m, per walker
+        kappa = np.linalg.norm(m, axis=2)                                      # (n_w, n_meas), radians
+        safe = np.where(kappa > 0, kappa, 1.0)
+        m_hat = m / safe[:, :, None]
+        m_hat[kappa == 0] = (0.0, 0.0, 1.0)
+        w = np.asarray(ew, np.float64) / float(norm)
+        # the band: orders until the weighted Bessel tail is below tol for the worst measurement
+        k_max = float(kappa.max()) if kappa.size else 0.0
+        L = int(np.ceil(k_max)) + 2
+        while L < l_cap:
+            tail = (2 * (L + 1) + 1) * (np.abs(w)[:, None] * np.abs(spherical_jn(L + 1, kappa))).sum(0).max()
+            if tail < tol:
+                break
+            L += 1
+        want_l, want_n = (None, None) if keep is None else (keep[0], keep[1])
+        keep_l = L if want_l is None else min(int(want_l), L)
+        keep_n = L if want_n is None else min(int(want_n), L)
+        n_feat = so3.n_so3_coeffs(keep_l, keep_n)
+        coeffs = np.zeros((n_meas, n_feat), np.complex128)
+        cos_z = m_hat[:, :, 2]
+        off = 0
+        for l in range(keep_l + 1):
+            k = so3._n_cols(l, keep_n) // 2
+            Yg = so3._sh_l(l, g_hat)                                            # (n_meas, 2l+1): the lab side
+            J = spherical_jn(l, kappa)                                          # (n_w, n_meas)
+            if k == 0:                                                          # n = 0: the Legendre of the angle to the axis
+                body = np.sqrt((2 * l + 1) / (4 * np.pi)) * ((w[:, None] * J) * _legendre(l, cos_z)).sum(0)[:, None]
+            else:
+                body = np.empty((n_meas, 2 * k + 1))
+                for i in range(n_meas):
+                    Y = so3._sh_l(l, m_hat[:, i, :])[:, l - k:l + k + 1]            # (n_w, 2k+1): the body side
+                    body[i] = (w * J[:, i]) @ Y
+            block = (4 * np.pi * (1j ** l) / np.sqrt(2 * l + 1)) * Yg[:, :, None] * body[:, None, :]   # (n_meas, 2l+1, 2k+1)
+            coeffs[:, off:off + (2 * l + 1) * (2 * k + 1)] = block.reshape(n_meas, -1)
+            off += (2 * l + 1) * (2 * k + 1)
+        # what the expansion cannot hold pointwise: the orders above the band it was built to, as a bound from
+        # |P_l| <= 1 -- below tol by construction
+        tail = np.zeros(n_meas)
+        for l in range(L + 1, L + 4):
+            tail += (2 * l + 1) * (np.abs(w)[:, None] * np.abs(spherical_jn(l, kappa))).sum(0)
+        return PoseResponse(coeffs, keep_l, keep_n, misfit=tail, floor=1.0 / np.sqrt(n_w), phase_amplitude=k_max,
+                            n_samples=0)
 
     def _pose_coeffs(self, P, waveform, band=None, keep=None, margin=2, n_check=256, seed=0,
                      chunk=256, over=2, band_cap=12, strict=True):
@@ -909,6 +1005,17 @@ def compile_scheme(G, dt, K, gyromagnetic_ratio=GAMMA, *, n_t=None, method=None,
     elif n_t is None:
         raise ValueError("a waveform on its own grid needs the pack's n_t")
     return _compile_effective(effective_gradient(G, dt, int(n_t), dt_pack), dt_pack, K, int(n_t), gyromagnetic_ratio)
+
+
+def _legendre(l, x):
+    """``P_l(x)`` by the three-term recurrence, vectorised over ``x``."""
+    x = np.asarray(x, np.float64)
+    if l == 0:
+        return np.ones_like(x)
+    p0, p1 = np.ones_like(x), x.copy()
+    for k in range(1, l):
+        p0, p1 = p1, ((2 * k + 1) * x * p1 - k * p0) / (k + 1)
+    return p1
 
 
 def _compile_effective(Geff, dt_pack, K, n_t, gyromagnetic_ratio=GAMMA):

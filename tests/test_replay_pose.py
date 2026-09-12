@@ -185,11 +185,15 @@ def test_an_orientation_distribution_must_say_what_basis_it_is_in(hollow):
     right = so3.Distribution.axis_density(fod)
     assert np.abs(wrong.coeffs - right.coeffs).max() > 1e-2
     # a distribution stated beyond the response's band meets it at the band they share, which is exact: the
-    # response was certified to reproduce itself at its own band, so it has nothing above it to multiply
+    # response has nothing above its band for those terms to multiply. (The closed form's full band is large,
+    # so the response is truncated to (6, 6) here rather than the distribution raised above it.)
     pr = pk.pose_response(seq, **BAND, **KW)
-    wide = pr.compose(so3.Distribution.watson(3.0, lmax=pr.lmax + 2, nmax=pr.nmax + 2))
-    same = pr.compose(so3.Distribution.watson(3.0, lmax=pr.lmax, nmax=pr.nmax))
-    np.testing.assert_allclose(wide, same, atol=pr.floor)
+    from dmipy_sim.replay.replay import PoseResponse
+    low = PoseResponse(so3.truncate_coeffs(pr.coeffs, pr.lmax, pr.nmax, 6, 6), 6, 6, pr.misfit, pr.floor,
+                       pr.phase_amplitude, pr.n_samples)
+    wide = low.compose(so3.Distribution.watson(3.0, lmax=8, nmax=8))
+    same = low.compose(so3.Distribution.watson(3.0, lmax=6, nmax=6))
+    np.testing.assert_allclose(wide, same, atol=1e-12)
 
 
 def test_a_response_the_truncation_cannot_hold_is_refused(ellipsoid):
@@ -197,4 +201,4 @@ def test_a_response_the_truncation_cannot_hold_is_refused(ellipsoid):
     return a plausible wrong number, so the projection raises and names the knobs instead."""
     pk, seq = ellipsoid
     with pytest.raises(ValueError, match="not represented at"):
-        pk.pose_response(seq, band=0, n_check=200, tissue=False)                  # a constant is not a response
+        pk.pose_response(seq, method="quadrature", band=0, n_check=200, tissue=False)   # the sampled route: a constant is not a response
