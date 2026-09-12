@@ -513,7 +513,7 @@ class ReplayPack:
             if chi_aniso == 0.0: chi_aniso = k["chi_aniso"]
             if tuple(b0_dir) == (0.0, 0.0, 1.0): b0_dir = k["b0_dir"]
         if orientation is not None:
-            R = self._rotation_of(orientation)
+            R = self.pose_rotation(orientation)
             G, G_eff = G @ R, G_eff @ R                                   # R^T g per sample: stored coordinates
             b0_dir = tuple(np.asarray(R, float).T @ np.asarray(b0_dir, float))
         Geff = effective_gradient(G_eff, dt_wf, n_t, dt)                 # exact per-save weights of the effective gradient
@@ -784,10 +784,12 @@ class ReplayPack:
         """The substrate's own axis in stored coordinates: column 3 of :attr:`substrate_frame`."""
         return self.substrate_frame[:, 2].copy()
 
-    def _rotation_of(self, orientation):
-        """The rotation taking STORED coordinates to the lab: from a 3x3 pose of the canonical substrate frame
-        (``R``, so stored -> lab is ``R F^T`` with ``F`` the pack's :attr:`substrate_frame`), or from the lab
-        direction the substrate's axis points along (the azimuth left as the frame's)."""
+    def pose_rotation(self, orientation):
+        """The rotation taking STORED coordinates to the lab for one pose: from a 3x3 pose of the canonical
+        substrate frame (``R``, so stored -> lab is ``R F^T`` with ``F`` the pack's :attr:`substrate_frame`), or
+        from the lab direction the substrate's axis points along (the azimuth left as the frame's). A lab
+        waveform reads in stored coordinates as ``G @ pose_rotation(orientation)``: what a consumer compiling
+        its own scheme (a fit's compartment model) rotates by."""
         from .so3 import rotation_of
         o = np.asarray(orientation, float)
         if o.shape == (3, 3):
