@@ -201,6 +201,50 @@ def voxel_fidelity(traj, dt, decoded_pos, grid, comp, env, *, w=None, logw=None,
     return ijk, pools, N, floor, err
 
 
+def voxel_floor(pack, grid, waveform, *, shells=None, **replay_knobs):
+    """The per-voxel, per-pool split-half Monte-Carlo floor of a pack's replay of ``waveform`` -- the acquisition
+    the pack is meant for, rather than the envelope battery the build certifies against -- as dense volumes on
+    ``grid`` (substrate-attached): ``(floors, counts)`` with ``floors[pool name][shell]`` the rms over the shell's
+    measurements of ``|S_a - S_b| / 2`` from a fixed split of each voxel's walkers of that pool (the rms, not the
+    max: a max over 90 directions of a few-walker difference sits ~2 sigma above the error of any one
+    measurement, and the plan would over-count by 5x), and
+    ``counts[pool name]`` the walkers per voxel. ``shells`` groups the measurements (``{name: index array}``;
+    default one group, ``"all"``). Walkers are binned by where they started (``pack.r0``, the partition's rule).
+    The input of :func:`dmipy_sim.spec.seeding.plan_seeding` for a target acquisition."""
+    from ..replay.compression import decode_occupancy
+    if pack.substrate is None:
+        raise ValueError("this pack embeds no spec, so its pools have no names")
+    names = {p.id: p.name for p in pack.substrate.pools}
+    ch = pack.meta.get("compression", {}).get("channels", {}) or {}
+    if "compartment" not in ch:
+        raise ValueError("the per-pool floor needs the pack's compartment channel")
+    ids = np.asarray(decode_occupancy(pack.arrays, ch["compartment"])["comp"]); ids = ids[:, 0] if ids.ndim == 2 else ids
+    w, ew, E = pack.walker_signals(waveform, **replay_knobs)
+    n_w, n_m = E.shape
+    ijk, inside = grid.bin(pack.r0)
+    flat = np.where(inside, np.ravel_multi_index(tuple(np.clip(ijk, 0, np.asarray(grid.shape) - 1).T), grid.shape), -1)
+    half = (np.random.default_rng(0).permutation(n_w) % 2).astype(bool)
+    shells = shells or {"all": np.arange(n_m)}
+    floors, counts = {}, {}
+    n_v = grid.n_voxels
+    for pid, name in names.items():
+        m = (ids.astype(int) == int(pid)) & (flat >= 0)
+        cnt = np.bincount(flat[m], minlength=n_v)
+        counts[name] = cnt.reshape(grid.shape).astype(float)
+        floors[name] = {}
+        S_a = np.zeros((n_v, n_m), complex); S_b = np.zeros_like(S_a); W_a = np.zeros(n_v); W_b = np.zeros(n_v)
+        ma, mb = m & half, m & ~half
+        np.add.at(S_a, flat[ma], ew[ma, None] * E[ma]); np.add.at(W_a, flat[ma], w[ma])
+        np.add.at(S_b, flat[mb], ew[mb, None] * E[mb]); np.add.at(W_b, flat[mb], w[mb])
+        with np.errstate(invalid="ignore", divide="ignore"):
+            diff = 0.5 * np.abs(S_a / W_a[:, None] - S_b / W_b[:, None])
+        diff[(W_a == 0) | (W_b == 0)] = np.nan
+        for sh, idx in shells.items():
+            floors[name][sh] = (np.nan_to_num(np.sqrt(np.nanmean(diff[:, np.asarray(idx)] ** 2, axis=1)), nan=0.0).reshape(grid.shape)
+                                if len(idx) else np.zeros(grid.shape))
+    return floors, counts
+
+
 def voxel_fidelity_volumes(pack):
     """The per-voxel certificate of a pack built with ``voxel_grid=`` as dense volumes on that grid:
     ``(grid, {pool name: floor volume}, {pool name: walker-count volume})``, the pools named by the pack's

@@ -279,3 +279,9 @@ def test_stratified_seeding_fills_every_occupied_voxel_and_keeps_the_volumes(dis
     assert want.max() == 4 * 12 and want.min() >= 2                     # halving the floor quadruples the count
     with pytest.raises(ValueError, match="no per-voxel certificate"):
         voxel_fidelity_volumes(build_replay_pack(w, id="t/plain", license="x", citation="x", K=4))
+    # the floor on the acquisition the pack is meant for (per shell), from the pack alone
+    from dmipy_sim.replay.bank import voxel_floor
+    seq = d.set_b(d.pgse(np.eye(3), 0.1e-3, 0.4e-3, gradient_strengths=[0.1] * 3, n_t=100, slew_rate=np.inf), [1e9, 1e9, 2e9])
+    fl, cnt = voxel_floor(pk, grid, seq, shells={"b1": [0, 1], "b2": [2]}, tissue=False)
+    assert set(fl) == {"extra", "intra", "myelin"} and cnt["extra"].sum() == (ids == 0).sum()
+    assert fl["extra"]["b1"].shape == grid.shape and (fl["extra"]["b1"][cnt["extra"] > 1] > 0).all() and (fl["myelin"]["b2"] < 1e-6).all()
