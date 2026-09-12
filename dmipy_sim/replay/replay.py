@@ -85,6 +85,9 @@ class PoseResponse:
         self.misfit = np.asarray(misfit, float)
         self.floor, self.n_samples = float(floor), int(n_samples)
         self.phase_amplitude = float(phase_amplitude)
+        self.route = "quadrature" if n_samples > 0 else "closed"      # which route built it (#197)
+        self.n_bodies = None                                          # distinct waveforms contracted (closed form)
+        self.field_lmax = 0
 
     @property
     def n_meas(self):
@@ -526,30 +529,26 @@ class ReplayPack:
 
     def pose_response(self, waveform, *, tissue="nominal", T2=None, T1=None, rho=None, D=None, B0=None,
                       b0_dir=(0.0, 0.0, 1.0), chi_iso=None, chi_aniso=0.0, compartment=None,
-                      method="auto", band=None, keep=None, margin=2, n_check=256, seed=0, band_cap=12, strict=True):
-        """The pack's response over every pose of its substrate, as SO(3) coefficients (:class:`PoseResponse`).
+                      method="auto", keep=None):
+        """The pack's response over every pose of its substrate, for one acquisition: a :class:`PoseResponse` whose
+        coefficients a voxel's orientation distribution contracts against (RPH.md 6).
 
-        This is what a replay phantom composes against each voxel: one expansion per measurement, then a dot
-        product per voxel. The acquisition is in the scanner frame and the substrate rotates under it, so a
-        voxel's orientation distribution is a distribution of those rotations.
+        **Closed form, by default (#197).** For a single-direction encoding the response is a sum of plane waves in
+        each walker's rotated moment, and its harmonics are the Rayleigh expansion, computed per walker with no
+        rotation ever evaluated; with a field the response is that expansion times the field factor's, coupled
+        with the real Clebsch-Gordan tables. The band follows the walkers' phase amplitudes by construction and
+        nothing is chosen. ``keep = (lmax, nmax)`` restricts what is computed to what the composition retains: an
+        ODF or peaks composition keeps ``n = 0``, a frame keeps everything; ``None`` in either slot means the
+        response's own band.
 
-        **There is no band to choose.** The band is derived from the response itself: the pose dependence is
-        ``exp(i <U, M_w>)``, whose harmonic content reaches the accumulated phase amplitude in radians, so the
-        projection is taken at ``ceil(phase amplitude) + margin`` and the quadrature is oversampled beyond that
-        because a rule exact only for the retained band folds higher content into the coefficients kept. What a
-        *composition* retains is a separate and smaller thing, and follows the distribution
-        (:meth:`PoseResponse.compose`). ``band`` forces the projection band, which is for measuring the
-        consequence of getting it wrong rather than for ordinary use.
+        **The quadrature, by name.** An encoding whose moment matrix is not rank one -- a b-tensor or multi-axis
+        waveform -- has no plane-wave expansion, and takes the sampled route: the response evaluated on an SO(3)
+        quadrature sized to its phase amplitude, projected, and certified off the grid (``misfit``, a worst case).
+        ``method="quadrature"`` asks for it explicitly; ``method="closed"`` refuses what the closed form cannot
+        take rather than falling back. :attr:`PoseResponse.route` says which was used.
 
-        ``strict=False`` warns instead of raising where the projection cannot hold the response, and hands
-        back the expansion with its misfit recorded -- for measuring the consequence of a band, not for use.
-
-        ``keep`` retains only part of the projection, which is what a composition needs: a distribution reaches
-        no further than its own band, so a phantom passes the band its orientations reach and pays a short dot
-        product per voxel instead of a long one. ``n_check`` rotations off the projection's grid measure the
-        worst case -- of the reconstruction where the whole response is retained, and of the retained
-        coefficients' stability under grid refinement where it is not -- and anything above the pack's own
-        Monte-Carlo floor raises rather than composing.
+        Knobs are the same as :meth:`replay` and resolve the same way; the pose is not one of them, since every
+        pose is what is being expanded.
         """
         P = self._prepare(waveform, tissue=tissue, T2=T2, T1=T1, rho=rho, D=D, B0=B0, b0_dir=b0_dir, chi_iso=chi_iso,
                           chi_aniso=chi_aniso, orientation=None, compartment=compartment)
@@ -562,8 +561,7 @@ class ReplayPack:
             if method == "closed":
                 raise ValueError("the closed-form pose expansion needs a single-direction encoding on every measurement "
                                  "and no field: this acquisition or replay has neither, so use method='quadrature'")
-        return self._pose_coeffs(P, waveform, band=band, keep=keep, margin=margin,
-                                 n_check=n_check, seed=seed, band_cap=band_cap, strict=strict)
+        return self._pose_coeffs(P, waveform, keep=keep)
 
     def _select(self, compartment, ew, norm, w, ch, n_w):
         """Restrict the ensemble mean to ``compartment`` (a pool id or a walker mask)."""
@@ -794,6 +792,7 @@ class ReplayPack:
                            n_samples=0)
         out.n_bodies = n_grp                                                   # the distinct waveforms contracted
         out.field_lmax = L_f
+        out.route = "closed"
         return out
 
     def _field_quadratic(self, P, waveform):
@@ -939,7 +938,7 @@ class ReplayPack:
                 f"this acquisition sweeps {phi_amp:.1f} radians of phase on this pack, so its pose response "
                 f"reaches order ~{S_L}, beyond the cap of {band_cap}. That is a real cost, not a setting: the "
                 f"expansion is worth building to share one walk over many poses, and at this sharpness a direct "
-                f"replay per pose (orientation=R) is the cheaper and exact route. Raise band_cap= to insist.")
+                f"replay per pose (orientation=R) is the exact route for it.")
         S_N = S_L
         # `keep` may leave either index open with None, meaning "whatever the response carries"
         want_l, want_n = (None, None) if keep is None else (keep[0], keep[1])
@@ -976,7 +975,7 @@ class ReplayPack:
                 f"this pack's pose response is not represented at (lmax, nmax) = ({keep_l}, {keep_n}): the worst "
                 f"case away from the projection's own grid is {misfit.max():.4f} in signal units, against the "
                 f"pack's Monte-Carlo floor of {floor:.4f}. The response's phase amplitude is {phi_amp:.1f} rad, "
-                f"so it reaches about that order; raise margin=, pass a larger band=, or retain more. Composing "
+                f"so it reaches about that order; retain more of it. Composing "
                 f"here would return a plausible wrong number rather than a wrong-looking one.")
             if strict:
                 raise ValueError(msg)

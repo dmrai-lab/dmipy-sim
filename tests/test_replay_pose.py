@@ -61,7 +61,7 @@ def _pgse(pk, dirs, bvals, delta=1e-3, Delta=3e-3):
 
 
 KW = dict(B0=3.0, b0_dir=(0.6, 0.0, 0.8), chi_iso=-0.1e-6, chi_aniso=-0.1e-6)
-BAND = dict(n_check=200)          # no band: it follows the response's phase amplitude
+BAND = {}                         # no band: it follows the response's phase amplitude
 
 
 def test_one_pose_is_the_counter_rotated_acquisition(hollow):
@@ -200,5 +200,7 @@ def test_a_response_the_truncation_cannot_hold_is_refused(ellipsoid):
     """The band is measured, not asserted: at a truncation the response does not fit into, composing would
     return a plausible wrong number, so the projection raises and names the knobs instead."""
     pk, seq = ellipsoid
+    P = pk._prepare(seq, tissue=False, T2=None, T1=None, rho=None, D=None, B0=None, b0_dir=(0, 0, 1), chi_iso=None,
+                    chi_aniso=0.0, orientation=None, compartment=None)
     with pytest.raises(ValueError, match="not represented at"):
-        pk.pose_response(seq, method="quadrature", band=0, n_check=200, tissue=False)   # the sampled route: a constant is not a response
+        pk._pose_coeffs(P, seq, band=0, n_check=200)                  # the sampled route, forced below its band
