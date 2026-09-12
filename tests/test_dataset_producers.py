@@ -73,7 +73,7 @@ def test_caterpillar_spec_is_walked_pool_by_pool_and_packed(caterpillar_csv):
     assert (np.abs(pos) <= 6e-6 + 2e-9).all()                                      # nobody left the voxel
     assert (pos[ids == 2] == pos[ids == 2][:, :1]).all()                           # myelin frozen
     assert (np.linalg.norm(pos[ids == 3] - np.array([0, 3.5e-6, 0]), axis=-1) < 1.5e-6 + 2e-9).all()   # glia in its soma
-    assert w.field_grid is not None and w.diffusivity == spec.pool("intra").D
+    assert w.field_basis is not None and w.diffusivity == spec.pool("intra").D
     pk = build_replay_pack(w, id="t/cat", license="x", citation="x", K=3, envelope=ENV)
     assert pk.has_relaxation and pk.has_surface and pk.has_field and pk.substrate == spec
 
@@ -121,7 +121,7 @@ def test_disco_spec_adds_the_sheath_at_the_phantoms_g_ratio(strand_txt):
     assert [p.name for p in spec.pools] == ["extra", "intra", "myelin"] and spec.validity.tiers == ["gradient", "relaxation", "surface", "field"]
     w = walk_spec(spec, 90, 8e-4, 2e-4, seed=0, n_probe=20_000, field_res=0.5e-6, require_gpu=False)
     ids = np.asarray(w.compartment)[:, 0]
-    assert set(np.unique(ids)) == {0, 1, 2} and w.field_grid is not None       # a small voxel rasterises its sheath
+    assert set(np.unique(ids)) == {0, 1, 2} and w.field_basis is not None       # a small voxel rasterises its sheath
 
 
 def test_a_strand_whose_radius_varies_is_refused(tmp_path):
@@ -144,8 +144,18 @@ def test_a_strand_pack_claims_what_its_walk_recorded(strand_txt):
     assert pk.has_relaxation and pk.has_surface and pk.meta["replay_envelope"]["surface_relaxivity"]
     seq = d.set_b(d.pgse([[1, 0, 0]], 0.2e-3, 0.5e-3, gradient_strengths=0.1, n_t=pk.n_t, slew_rate=np.inf), [1e9])
     assert pk.replay(seq, tissue=False, rho=1e-5, D=1.7e-9)[0] < pk.replay(seq, tissue=False)[0]   # contact attenuates
-    with pytest.raises(SpecError, match="voxel budget"):                       # a domain too large to rasterise is refused
-        walk_spec(spec, 60, 1e-3, 2.5e-4, seed=0, n_probe=20_000, require_gpu=False, field=True, field_budget=1e3)
+    with pytest.raises(SpecError, match="voxel budget"):                       # the raster of a domain too large is refused
+        walk_spec(spec, 60, 1e-3, 2.5e-4, seed=0, n_probe=20_000, require_gpu=False, field="grid", field_budget=1e3)
+    # the default field of a strand substrate is the per-segment closed form: no grid, a certified cutoff, a C3 pack
+    from dmipy_sim.fields.strand_field import StrandFieldBasis
+    wf = walk_spec(spec, 60, 1e-3, 2.5e-4, seed=0, n_probe=20_000, require_gpu=False, field=True, field_budget=1e3)
+    assert isinstance(wf.field_basis, StrandFieldBasis) and wf.field_basis.certificate["converged"]
+    pkf = build_replay_pack(wf, id="t/strands-field", license="x", citation="x", K=4, susc_path_K=4)
+    assert pkf.has_field and pkf.meta["compression"]["channels"]["susceptibility_grid"]["source"]["kind"] == "strand_superposition"
+    s_off = pkf.replay(seq, tissue=False)[0]
+    s_gre = pkf.replay(d.gre(0.5e-3, gradient_directions=[[1, 0, 0]], bvalues=[1e9], delta=0.2e-3, Delta=0.3e-3, n_t=pk.n_t, slew_rate=np.inf),
+                       tissue=False, B0=7.0, b0_dir=(1, 0, 0), chi_iso=-0.1e-6, chi_aniso=-0.1e-6)[0]
+    assert np.isfinite(s_gre) and s_gre != s_off
 
 def test_a_straight_myelinated_curved_tube_is_the_myelinated_cylinder():
     """The straight limit of the curved myelinated tube is the myelinated cylinder: the same pools, the same walls,

@@ -69,6 +69,28 @@ class FieldGrid(NamedTuple):
     basis: dict
     origin: np.ndarray
 
+    @property
+    def channel_names(self):
+        """The channels :meth:`channels` returns, in order: ``iso_local``, the six ``iso_P``, and the six
+        ``aniso_G`` when the basis carries them."""
+        from .hollow_cylinder import CHANNEL_NAMES
+        return CHANNEL_NAMES if self.basis.get("aniso_G") is not None else CHANNEL_NAMES[:7]
+
+    def channels(self, points):
+        """``(n, 7 | 13)`` basis channels at ``points`` ``(n, 3)`` (metres), trilinear on the grid: the same
+        protocol as :meth:`dmipy_sim.fields.strand_field.StrandFieldBasis.channels`."""
+        P = np.asarray(points, float).reshape(-1, 3)
+        vs = np.asarray(self.basis["voxel_size"], float); org = np.asarray(self.origin, float)
+        grids = [np.asarray(self.basis["iso_local"], np.float64)] + [np.asarray(self.basis["iso_P"][c], np.float64) for c in range(6)]
+        if self.basis.get("aniso_G") is not None:
+            grids += [np.asarray(self.basis["aniso_G"][c], np.float64) for c in range(6)]
+        return np.stack([sample_grid(g, P, org, vs, periodic=False) for g in grids], axis=1)
+
+    def field(self, points, b0_dir, *, B0, chi_iso=0.0, chi_aniso=0.0):
+        """``dB`` (Tesla) at ``points`` for one configuration."""
+        from .hollow_cylinder import contract
+        return contract(self.channels(points), b0_dir, B0=B0, chi_iso=chi_iso, chi_aniso=chi_aniso)
+
 
 def field_grid_of(geometry, *, res=0.1e-6, include_aniso=True, box=None, margin=None, n_z=4,
                   mask_supersample=4, kspace_lowpass=0.5):

@@ -7,6 +7,7 @@ replay-signal forward (the fit/design path), and the floor-target policy converg
 end-to-end walk->pack->replay validation in test_replay_parity for the physics parity.
 """
 import numpy as np
+from dmipy_sim.fields.susceptibility_field import FieldGrid
 import numpy.testing as npt
 import pytest
 
@@ -166,7 +167,7 @@ def test_susc_path_lossless_at_K_equals_nt():
     m = _susc_master()
     fb, origin = m["susc_field_basis"], m["susc_grid_origin"]
     traj = m["traj"][:200]
-    a, pm = bank.susc_path_encode(fb, traj, origin, K=N_T, bits=None, dtype=np.float64)
+    a, pm = bank.susc_path_encode(FieldGrid(fb, origin), traj, K=N_T, bits=None, dtype=np.float64)
     b, _ = bank.susc_path_decode(a, pm)
     d = [1.0, 0.0, 0.0]
     ref = sample_grid(assemble_field(fb, d, B0=7.0, chi_iso=1.06e-6), traj, origin,
@@ -297,9 +298,9 @@ def test_susc_path_bit_depth_is_the_cheap_axis_not_K():
     fb, origin, traj = m["susc_field_basis"], m["susc_grid_origin"], m["traj"][:400]
     n_t, dt, K = traj.shape[1], m["dt_traj"], 64
 
-    a8, pm8 = bank.susc_path_encode(fb, traj, origin, K=K, bits=8)
-    aR, pmR = bank.susc_path_encode(fb, traj, origin, K=K, bits=None, dtype=np.float64)
-    a16, pm16 = bank.susc_path_encode(fb, traj, origin, K=K // 2, bits=None, dtype=np.float16)
+    a8, pm8 = bank.susc_path_encode(FieldGrid(fb, origin), traj, K=K, bits=8)
+    aR, pmR = bank.susc_path_encode(FieldGrid(fb, origin), traj, K=K, bits=None, dtype=np.float64)
+    a16, pm16 = bank.susc_path_encode(FieldGrid(fb, origin), traj, K=K // 2, bits=None, dtype=np.float16)
     assert a8["susc_path_dct"].nbytes + a8["susc_path_scale"].nbytes < aR["susc_path_dct"].nbytes
     assert a8["susc_path_dct"].nbytes <= a16["susc_path_dct"].nbytes    # same or less space
 
@@ -322,7 +323,7 @@ def test_susc_path_bit_depth_is_the_cheap_axis_not_K():
     assert err(a8, pm8, 1) < 1e-2
 
     with pytest.raises(ValueError, match="bits must be"):
-        bank.susc_path_encode(fb, traj, origin, K=K, bits=6)
+        bank.susc_path_encode(FieldGrid(fb, origin), traj, K=K, bits=6)
 
 
 def test_preflight_catches_what_otherwise_costs_a_full_walk():

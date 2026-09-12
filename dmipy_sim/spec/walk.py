@@ -17,17 +17,19 @@ from .build import geometry_from_spec
 
 
 def walk_spec(spec, n_walkers, T_max, dt_save=None, *, scanner="connectom", floor_fraction=0.1, diffusivity=None,
-              seed=0, n_probe=200_000, field=True, field_res=0.2e-6, field_budget=5e7, require_gpu=None,
-              walker_batch_size=50_000, tiers="all"):
+              seed=0, n_probe=200_000, field=True, field_res=0.2e-6, field_budget=5e7, field_cutoff_m=25e-6,
+              field_cutoff_tol=0.02, require_gpu=None, walker_batch_size=50_000, tiers="all"):
     """Walk ``spec`` and return a :class:`~dmipy_sim.persistent_walk.PersistentWalk` carrying the spec.
 
-    ``field_budget`` caps the rasterised field basis at that many voxels (13 float32 channels each): a small
-    strand voxel rasterises like any other substrate, which is the cross-check a future per-segment field is
-    measured against; a cubic millimetre does not, and is refused with the count rather than attempted.
-
-    ``dt_save`` is derived unless given: :func:`~dmipy_sim.acquisition.scanners.save_interval` for the strongest
-    waveform ``scanner`` (a class name or ``(G_max, slew)``) can deliver over ``T_max``, held to ``floor_fraction``
-    of this walk's Monte-Carlo floor, from the spec's fastest pool, and capped when the spec has a field source.
+    ``field`` is the susceptibility field basis the walk carries for the pack's C3 tier: ``True`` builds it,
+    ``False`` leaves it out, ``"grid"`` forces the rasterised k-space route. A strand substrate (sheathed swept
+    polylines) takes the per-segment closed form by default
+    (:class:`~dmipy_sim.fields.strand_field.StrandFieldBasis`): every strand within ``field_cutoff_m`` of a
+    point contributes its nearest segment's hollow-cylinder field, and the cutoff doubles until the channels
+    at a sample of the walk's start positions change by less than ``field_cutoff_tol`` (relative rms) when
+    it doubles again -- the certificate the basis records. Every other substrate, and a strand substrate
+    with ``field="grid"``, rasterises within ``field_budget`` voxels (13 float32 channels each) at
+    ``field_res``, the cross-check of the closed form on a small strand voxel.
     """
     import logging
     from ..engine.core import simulate_trajectories
@@ -56,7 +58,7 @@ def walk_spec(spec, n_walkers, T_max, dt_save=None, *, scanner="connectom", floo
         return PersistentWalk(w.positions, w.dt, w.sub_steps, w.dt_sim, w.boundary_local_time, w.compartment,
                               w.bound_frac, w.illegal_crossings, w.seed, w.diffusivity, geometry=g, spec=spec)
     return _walk_bundle(spec, int(n_walkers), float(T_max), float(dt_save), seed, n_probe, field, field_res,
-                        require_gpu, walker_batch_size, field_budget=float(field_budget))
+                        require_gpu, walker_batch_size, field_budget=float(field_budget), field_cutoff_m=field_cutoff_m, field_cutoff_tol=field_cutoff_tol)
 
 
 def _needs_bundle_walk(spec):
@@ -133,7 +135,27 @@ class _Boundary:
         return self._geom[key]
 
 
-def _walk_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field, field_res, require_gpu, batch, field_budget=5e7):
+def _strand_field(outer_b, inner_b, lo, hi, traj, cutoff_m, tol, seed):
+    """The per-segment field basis of a strand substrate (its sheath between ``inner_b`` and ``outer_b``), the
+    cutoff doubled until the channels at a sample of the walk's start positions move by less than ``tol``."""
+    from ..fields.strand_field import StrandFieldBasis
+    if len(outer_b.centerlines) != len(inner_b.centerlines):
+        raise SpecError("the sheath's inner and outer walls list different numbers of strands")
+    sf = StrandFieldBasis(outer_b.centerlines, inner_b.radii, outer_b.radii, cutoff_m=cutoff_m, domain=(lo, hi))
+    rng = np.random.default_rng(int(seed) + 7)
+    sample = traj[rng.choice(traj.shape[0], size=min(traj.shape[0], 2000), replace=False), 0]
+    extent = float(np.max(np.asarray(hi) - np.asarray(lo)))
+    while True:
+        err = sf.cutoff_error(sample)
+        if max(err.values()) <= tol or sf.cutoff_m >= extent:
+            break
+        sf = sf.with_cutoff(2.0 * sf.cutoff_m)
+    return sf.with_cutoff(sf.cutoff_m, certificate=dict(cutoff_error=err, tol=float(tol), n_sample=int(len(sample)),
+                                                       converged=bool(max(err.values()) <= tol)))
+
+
+def _walk_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field, field_res, require_gpu, batch, field_budget=5e7,
+                 field_cutoff_m=25e-6, field_cutoff_tol=0.02):
     """Walk a multi-surface spec pool by pool: every seeded pool is defined by the walls it is inside and the walls it
     is outside; a pool with D > 0 walks the interior of its inside-walls (intra, glia) or the exterior of its
     outside-walls (extra); a shell pool at D = 0 (myelin) is frozen where it was seeded; the field basis is
@@ -230,28 +252,32 @@ def _walk_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field, field_re
     fg = None
     if field and spec.field_source_pools:
         src = spec.field_source_pools[0].id
-        n_vox = int(np.prod(np.ceil((hi - lo) / float(field_res))))
-        if n_vox > field_budget:
-            raise SpecError(f"the field basis of this substrate would be {n_vox:.2e} voxels at {field_res * 1e6:.2f} um over its "
-                            f"{np.round((hi - lo) * 1e6, 1).tolist()} um domain, beyond the {field_budget:.0e}-voxel budget "
-                            f"(13 float32 channels per voxel). Coarsen field_res=, raise field_budget=, or walk it with "
-                            f"field=False; a domain this size (DiSCo) needs the per-segment analytic field along each "
-                            f"path, dmipy-sim#76 item 3")
         outer_b = boundary(inside_w[src]) if inside_w[src] else None
         inner_b = boundary(outside_w[src]) if outside_w[src] else None
         if outer_b is None:
             raise SpecError(f"field-source pool {pools[src].name!r} is bounded by no wall; its occupancy cannot be rasterised")
-        if inner_b is not None and inner_b.kind == "mesh" and outer_b.kind == "mesh":
-            basis, origin, _ = mesh_field_basis((inner_b.V, inner_b.F), (outer_b.V, outer_b.F), lo, hi, res=field_res,
-                                                include_aniso=True)
+        strands = outer_b.kind == "swept_polyline" and inner_b is not None and inner_b.kind == "swept_polyline"
+        if strands and field != "grid":
+            fg = _strand_field(outer_b, inner_b, lo, hi, traj, field_cutoff_m, field_cutoff_tol, seed)
         else:
-            ref_b = inner_b if inner_b is not None else outer_b
-            director = ref_b.director if ref_b.kind == "swept_polyline" else None
-            basis, origin, _ = predicate_field_basis(inner_b.contains if inner_b is not None else None, outer_b.contains,
-                                                     lo, hi, res=field_res, include_aniso=True, director=director)
-        fg = FieldGrid(basis, np.asarray(origin, float))
+            n_vox = int(np.prod(np.ceil((hi - lo) / float(field_res))))
+            if n_vox > field_budget:
+                raise SpecError(f"the field basis of this substrate would be {n_vox:.2e} voxels at {field_res * 1e6:.2f} um over its "
+                                f"{np.round((hi - lo) * 1e6, 1).tolist()} um domain, beyond the {field_budget:.0e}-voxel budget "
+                                f"(13 float32 channels per voxel). Coarsen field_res=, raise field_budget=, or walk it with "
+                                f"field=False" + ("; field=True evaluates a strand substrate's per-segment closed form instead"
+                                                  if strands else ""))
+            if inner_b is not None and inner_b.kind == "mesh" and outer_b.kind == "mesh":
+                basis, origin, _ = mesh_field_basis((inner_b.V, inner_b.F), (outer_b.V, outer_b.F), lo, hi, res=field_res,
+                                                    include_aniso=True)
+            else:
+                ref_b = inner_b if inner_b is not None else outer_b
+                director = ref_b.director if ref_b.kind == "swept_polyline" else None
+                basis, origin, _ = predicate_field_basis(inner_b.contains if inner_b is not None else None, outer_b.contains,
+                                                         lo, hi, res=field_res, include_aniso=True, director=director)
+            fg = FieldGrid(basis, np.asarray(origin, float))
     by_name = {p.name: p for p in spec.pools}
     D_ref = by_name["intra"].D if ("intra" in by_name and by_name["intra"].D) else float(walked.diffusivity)
     return PersistentWalk(traj, float(walked.dt), int(walked.sub_steps), float(walked.dt_sim), boundary_local_time=dlog,
                           compartment=comp, seed=int(seed), diffusivity=D_ref, spec=spec,
-                          weights=(None if np.allclose(wts, 1.0) else wts), field_grid=fg)
+                          weights=(None if np.allclose(wts, 1.0) else wts), field_basis=fg)
