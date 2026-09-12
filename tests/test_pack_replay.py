@@ -47,7 +47,9 @@ def test_relaxation_applies_the_packs_per_pool_rates(packs):
     wf = _wf(full.n_t, full.dt)
     ch = full.meta["compression"]["channels"]["compartment"]
     comp = decode_occupancy(full.arrays, ch)["comp"]
-    logw = relaxation_logweight(comp, [0.08, 0.03], [1.0, 1.2], full.dt)
+    from dmipy_sim.replay._replay_kernel import bin_gate
+    chi = bin_gate(np.ones(wf.n_t), wf.dt, full.n_t, full.dt)[0]     # the acquisition ends at its echo: no relaxation
+    logw = relaxation_logweight(comp, [0.08, 0.03], [1.0, 1.2], full.dt, chi)   # counted over the walk beyond it
     W = _W(full, wf)
     from dmipy_sim.replay.compression import read_position_coeffs
     C = read_position_coeffs(full.arrays, dtype=np.float64)
@@ -73,7 +75,9 @@ def test_surface_relaxivity_uses_the_recorded_diffusivity(packs):
     wf = _wf(full.n_t, full.dt)
     W = _W(full, wf)
     rho = 1e-5
-    ref = replay_signal(full, W, rho_over_D=rho / D0)
+    from dmipy_sim.replay._replay_kernel import bin_gate
+    chi = bin_gate(np.ones(wf.n_t), wf.dt, full.n_t, full.dt)[0]     # contact after the echo is not in the acquisition
+    ref = replay_signal(full, W, rho_over_D=rho / D0, chi_hat=chi)
     np.testing.assert_allclose(full.replay(wf, rho=rho), ref, rtol=1e-12)
     np.testing.assert_allclose(full.replay(wf, rho=rho, D=D0), ref, rtol=1e-12)
     with pytest.raises(ValueError, match="no C2"):

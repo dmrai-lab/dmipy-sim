@@ -87,6 +87,43 @@ def _walls(pairs, scale, rho_inner, rho_outer):
     return walls
 
 
+def strand_frame(centerlines, *, cluster_deg=30.0):
+    """The substrate frame of a strand substrate from the strands themselves (RPK.md 4.2, dmipy-sim#194): every
+    strand's axis is its end-to-end chord, the chords are clustered into bundles (greedy, within ``cluster_deg``
+    of a bundle's running mean, sign-free), and the frame is :func:`~dmipy_sim.replay.bank.frame_from_bundles`
+    anchored to the largest bundle. Returns ``(F, bundles)`` with ``bundles`` a list of ``{"axis", "n_strands"}``
+    in stored coordinates, largest first -- never a PCA over positions, which for a crossing is the bisector."""
+    from ..replay.bank import frame_from_bundles
+    ch = []
+    for c in centerlines:
+        c = np.asarray(c, float)
+        if c.shape[0] < 2:
+            continue
+        v = c[-1] - c[0]
+        n = np.linalg.norm(v)
+        if n > 0:
+            ch.append(v / n)
+    if not ch:
+        raise SpecError("no strand has two control points: no axis to declare")
+    ch = np.asarray(ch)
+    cos_tol = np.cos(np.radians(cluster_deg))
+    means, members = [], []
+    for v in ch:
+        for k, mu in enumerate(means):
+            if abs(float(v @ mu)) >= cos_tol:
+                v = v if float(v @ mu) >= 0 else -v
+                members[k].append(v)
+                mu = np.mean(members[k], axis=0); means[k] = mu / np.linalg.norm(mu)
+                break
+        else:
+            means.append(v.copy()); members.append([v])
+    order = np.argsort([-len(mm) for mm in members], kind="stable")
+    axes = np.asarray([means[k] for k in order]); counts = [len(members[k]) for k in order]
+    F = frame_from_bundles(axes, primary=0, weights=counts)
+    bundles = [{"axis": axes[k].tolist(), "n_strands": int(counts[k])} for k in range(len(axes))]
+    return F, bundles
+
+
 def cactus_spec(run_dir, *, scale=_UM, side_um=None, field_T=3.0, rho2=None, on_open_surface="drop", id=None):
     """The spec of a CACTUS run directory (``optimized_final.txt`` + ``meshes/simulations/strand_*_erode_*.ply``).
 
@@ -110,13 +147,22 @@ def cactus_spec(run_dir, *, scale=_UM, side_um=None, field_T=3.0, rho2=None, on_
         transformations.append(f"dropped {len(dropped_unpaired)} strand(s) lacking an inner or outer surface: {dropped_unpaired[:8]}")
     if not pairs:
         raise SpecError(f"no paired strand surfaces under {sim}")
+    hdr = os.path.join(run_dir, "optimized_final.txt")
     if side_um is None:
-        hdr = os.path.join(run_dir, "optimized_final.txt")
         if not os.path.isfile(hdr):
             raise SpecError("no optimized_final.txt header and no side_um: the periodic cell is unknown")
         with open(hdr) as fh:
             side_um = float(fh.readline().strip())
         transformations.append("periodic cell side read from optimized_final.txt")
+    frame, bundles = Frame([0.0, 0.0, 1.0]), None
+    if os.path.isfile(hdr):                                         # the strands themselves declare the frame
+        from ..io.strands import read_strands
+        F, bundles = strand_frame(read_strands(hdr, scale=scale)["centerlines"])
+        frame = Frame(F[:, 2].tolist(), F[:, 1].tolist())
+        transformations.append(f"substrate frame from the {sum(b['n_strands'] for b in bundles)} strand chords of "
+                               f"optimized_final.txt in {len(bundles)} bundle(s), z the largest bundle's mean axis")
+    else:
+        transformations.append("no strand list: the frame is undeclared (z), which a walk along another axis refuses at build")
     L = float(side_um) * scale
     files = [p for pr in pairs.values() for p in pr]
     meshes, smallest, edge_med, open_files = _surface_stats(files, scale)
@@ -144,9 +190,9 @@ def cactus_spec(run_dir, *, scale=_UM, side_um=None, field_T=3.0, rho2=None, on_
         id or f"cactus/{os.path.basename(os.path.normpath(run_dir))}",
         Domain(lo, hi, ["periodic", "periodic", "periodic"]), pools, walls, Seeding([0, 1, 2], "uniform_by_volume", "thin"),
         Validity(smallest, ["gradient", "relaxation", "surface", "field"], mesh_edge_feature_ratio=edge_med / smallest),
-        frame=Frame([0.0, 0.0, 1.0]), nominal_field_T=float(field_T),
+        frame=frame, nominal_field_T=float(field_T),
         description=f"CACTUS bundle: {len(pairs)} strands, each an inner (axon) and outer (myelin) surface, in a periodic cell",
-        realisation={"n_objects": len(pairs), "cell_side": L,
+        realisation={"n_objects": len(pairs), "cell_side": L, **({} if bundles is None else {"bundles": bundles}),
                      "g_ratio": {str(k): _g_ratio(by_path[v[0]], by_path[v[1]]) for k, v in pairs.items()}},   # JSON keys
         provenance={"source": "CACTUS", "run_dir": str(run_dir), "scale": scale,
                     "files": [{"path": p, "sha256": _sha(p)} for p in files],
@@ -310,16 +356,18 @@ def _strands_spec(centerlines, R, lo, hi, *, boundary, g_ratio, field_T, rho2, i
                       Directional(), Sided(0.0, rho))]
         transformations.append(f"the outer (sheath) radius listed; axolemma at g-ratio {g_ratio}")
         smallest = float(g_ratio * R.min())
+    F, bundles = strand_frame([np.asarray(c, float) for c in centerlines])
+    transformations.append(f"substrate frame from the strand chords in {len(bundles)} bundle(s), z the largest bundle's mean axis")
     spec = SubstrateSpec(
         id, Domain(list(lo), list(hi), [boundary] * 3), pools, walls,
         Seeding([p.id for p in pools], "uniform_by_volume", "water_fraction"),
         # the curved tubes record their wall contact (surface); a sheath is a field source (the per-segment closed
         # form along each path, or the raster within walk_spec's field_budget)
         Validity(smallest, ["gradient", "relaxation", "surface"] + (["field"] if g_ratio is not None else [])),
-        nominal_field_T=float(field_T),
+        frame=Frame(F[:, 2].tolist(), F[:, 1].tolist()), nominal_field_T=float(field_T),
         description=f"{source}: {len(R)} strands as sphere-swept polylines" + ("" if g_ratio is None else " with a sheath"),
         realisation={"n_objects": int(len(R)), "cell_side": cell_side, "radius_min": float(R.min()),
-                     "radius_max": float(R.max())},
+                     "radius_max": float(R.max()), "bundles": bundles},
         provenance={"source": source, "scale": scale, "files": [{"path": str(f), "sha256": _sha(f)} for f in files],
                     "transformations": transformations,
                     "created": date.today().isoformat(), "software": {"name": "dmipy-sim", "version": _version()}})

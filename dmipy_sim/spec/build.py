@@ -69,6 +69,42 @@ def _pools_from_compartments(g, names, D_by_name, wf_by_name=None):
 
 
 def spec_of(geometry, *, id=None, provenance=None, surface_dir=None):
+    """The spec of an analytic geometry, its ``frame`` the geometry's own axis (RPK.md 4.2): the orientation of a
+    cylinder-like object, the chord of a curved one; an object with no axis keeps the default ``z``."""
+    spec = _spec_without_frame(geometry, id=id, provenance=provenance, surface_dir=surface_dir)
+    axis = _axis_of(geometry)
+    if axis is None:
+        return spec
+    import dataclasses
+    return dataclasses.replace(spec, frame=Frame(np.asarray(axis, float).tolist()))
+
+
+def _axis_of(g):
+    """The structural axis an analytic geometry declares, or ``None``: ``orientation`` on the cylinder kinds, the
+    end-to-end chord of a curved cylinder's centerline (the mean chord over a packed set)."""
+    o = getattr(g, "orientation", None)
+    if o is not None and np.ndim(o) == 1 and len(o) == 3:
+        a = np.asarray(o, float)
+        if np.linalg.norm(a) > 0:
+            return a / np.linalg.norm(a)
+    cl = getattr(g, "centerline", None)
+    if cl is not None:
+        c = np.asarray(cl, float)
+        if c.ndim == 2 and c.shape[0] >= 2 and np.linalg.norm(c[-1] - c[0]) > 0:
+            a = c[-1] - c[0]; return a / np.linalg.norm(a)
+    cls = getattr(g, "centerlines", None)
+    if cls is not None:
+        ch = [np.asarray(c, float)[-1] - np.asarray(c, float)[0] for c in cls if len(c) >= 2]
+        if ch:
+            ch = np.asarray(ch); ch = ch / np.linalg.norm(ch, axis=1, keepdims=True)
+            ch = ch * np.sign(ch @ ch[0])[:, None]
+            a = ch.mean(0)
+            if np.linalg.norm(a) > 0.5:                     # one bundle; a crossing declares no single axis
+                return a / np.linalg.norm(a)
+    return None
+
+
+def _spec_without_frame(geometry, *, id=None, provenance=None, surface_dir=None):
     """The :class:`SubstrateSpec` of a geometry. A mesh built in memory needs ``surface_dir`` to write its
     surface file into (a spec references surfaces as files); one loaded with ``Mesh.from_ply`` references
     the file it came from."""
