@@ -27,7 +27,8 @@ from .base import Geometry, LengthScales
 
 
 class CurvedCylinder(Geometry):
-    def __init__(self, centerline, radius: float):
+    def __init__(self, centerline, radius: float, surface_relaxivity_t2=None):
+        self.surface_relaxivity_t2 = None if surface_relaxivity_t2 is None else float(surface_relaxivity_t2)
         cl = np.asarray(centerline, np.float64)          # (P, 3) metres
         if cl.ndim != 2 or cl.shape[0] < 2:
             raise ValueError("centerline must be (P>=2, 3)")
@@ -92,6 +93,16 @@ class CurvedCylinder(Geometry):
 
     # ---- specular reflection off the swept-tube wall ----
     def reflect(self, r, step):
+        return self._reflect_contact(r, step)[0]
+
+    def reflect_with_log_weight(self, r, step, rho_over_D):
+        """The reflection with the surface-relaxation log-weight ``-2 (rho / D) d_perp`` of the wall contact:
+        ``d_perp`` is the radial overshoot of the raw step past the wall, the perpendicular distance the base
+        slab rule uses, read on the tube's own normal (single crossing per step, as there)."""
+        r_out, d_perp = self._reflect_contact(r, step)
+        return r_out, -2.0 * rho_over_D * d_perp
+
+    def _reflect_contact(self, r, step):
         R = jnp.float32(self.radius)
         NUDGE = jnp.float32(1e-4 * self.radius)
         r_new = r + step
@@ -100,12 +111,13 @@ class CurvedCylinder(Geometry):
         # mirror the radial overshoot back inside, then nudge just inside the wall
         r_ref = r_new - (2.0 * (d - R) + NUDGE) * n
         r_out = jnp.where(d > R, r_ref, r_new)
+        d_perp = jnp.maximum(d - R, jnp.float32(0.0))           # the overshoot past the wall: the contact
         # safety clamp: if a sharp joint left it outside, put it back inside the wall.
         # `Q2 + (R - NUDGE) * n2` is exactly keep_side_radial's correction written out --
         # same rule, so it uses the same implementation and the same tie handling.
         Q2, _ = self._nearest(r_out)
         r_out, _ = keep_side_radial(r_out, r_out - Q2, R, True, NUDGE)
-        return r_out
+        return r_out, d_perp
 
 
 class CurvedMyelinatedCylinder(CurvedCylinder):
@@ -121,8 +133,8 @@ class CurvedMyelinatedCylinder(CurvedCylinder):
     optimisation; impermeable shells make the separate-walk form exact.)
     """
 
-    def __init__(self, centerline, r_in: float, r_out: float, pool="intra"):
-        super().__init__(centerline, r_out)            # base extent = outer radius
+    def __init__(self, centerline, r_in: float, r_out: float, pool="intra", surface_relaxivity_t2=None):
+        super().__init__(centerline, r_out, surface_relaxivity_t2)   # base extent = outer radius
         if not (r_out > r_in > 0):
             raise ValueError("need r_out > r_in > 0")
         self.r_in = float(r_in)
@@ -139,6 +151,14 @@ class CurvedMyelinatedCylinder(CurvedCylinder):
                          jnp.where(d < jnp.float32(self.r_out), jnp.int32(2), jnp.int32(0)))
 
     def reflect(self, r, step):
+        return self._reflect_contact(r, step)[0]
+
+    def reflect_with_log_weight(self, r, step, rho_over_D):
+        """The band-confined reflection with the contact log-weight of the wall hit (either edge of the band)."""
+        r_out, d_perp = self._reflect_contact(r, step)
+        return r_out, -2.0 * rho_over_D * d_perp
+
+    def _reflect_contact(self, r, step):
         r_in = jnp.float32(self.r_in); r_out = jnp.float32(self.r_out)
         NUDGE = jnp.float32(1e-4 * self.r_in)
         _, do = self._nearest(r)                       # band of the OLD position
@@ -150,13 +170,15 @@ class CurvedMyelinatedCylinder(CurvedCylinder):
         dt = d
         dt = jnp.where(d >= hi, 2.0 * hi - d - NUDGE, dt)  # mirror at the band's outer wall
         dt = jnp.where(d <= lo, 2.0 * lo - d + NUDGE, dt)  # mirror at the band's inner wall
+        d_perp = jnp.maximum(jnp.where(jnp.isfinite(hi), d - hi, jnp.float32(-1.0)), jnp.float32(0.0)) \
+            + jnp.where(lo > 0, jnp.maximum(lo - d, jnp.float32(0.0)), jnp.float32(0.0))       # the overshoot past either edge
         # Equality counts as the wrong side for BOTH neighbours (see _boundary): a walker
         # landing exactly on r_in or r_out belongs to neither band, and the strict `>` / `<`
         # used here previously left that tie unresolved -- the same defect that let walkers
         # change compartment without moving in the analytic geometries (#86). A mirror alone
         # also has no guarantee, so clamp the result into [lo, hi] explicitly.
         dt = jnp.clip(dt, lo + NUDGE, jnp.where(jnp.isfinite(hi), hi - NUDGE, dt))
-        return Q + dt * n
+        return Q + dt * n, d_perp
 
     def init_positions(self, n_walkers, key, pool=None, shell=None):
         if shell is not None:
@@ -198,7 +220,9 @@ class PackedCurvedCylinders(Geometry):
     counterpart of a triangle-mesh grid for the same geometry.
     """
 
-    def __init__(self, centerlines, radii, cell_size=None, interior=False, box=None, box_reflect=True):
+    def __init__(self, centerlines, radii, cell_size=None, interior=False, box=None, box_reflect=True,
+                 surface_relaxivity_t2=None):
+        self.surface_relaxivity_t2 = None if surface_relaxivity_t2 is None else float(surface_relaxivity_t2)
         # interior=False: extra-axonal (bounce off tube exteriors, stay outside all tubes)
         # interior=True : intra-axonal, all tubes at once (each walker confined inside its
         #                 own -- i.e. its nearest -- tube), one grid/one JIT for all tubes.
@@ -216,6 +240,7 @@ class PackedCurvedCylinders(Geometry):
             cl = np.asarray(cl, np.float64)
             A.append(cl[:-1]); AB.append(cl[1:] - cl[:-1]); rr.append(np.full(len(cl) - 1, float(R)))
         A = np.vstack(A); AB = np.vstack(AB); rout = np.concatenate(rr)
+        self._seg_tube = jnp.asarray(np.concatenate([np.full(len(cl) - 1, k) for k, cl in enumerate(centerlines)]), jnp.int32)
         self._A = jnp.asarray(A, jnp.float32)
         self._AB = jnp.asarray(AB, jnp.float32)
         self._AB2 = jnp.asarray(np.maximum((AB ** 2).sum(1), 1e-30), jnp.float32)
@@ -251,6 +276,20 @@ class PackedCurvedCylinders(Geometry):
     def length_scales(self):
         # a real tube radius (the R/6 rule applies) and a segment grid (the lookup rule applies)
         return LengthScales(min_feature=self._Rmin, lookup_cell=self.cell_size)
+
+    classify_returns_object_id = True
+
+    def classify_position(self, r):
+        """Compartment id: ``k + 1`` inside tube ``k`` (the nearest segment's tube, 1-indexed as every packed
+        geometry), 0 outside every tube. The record of an interior walk carried pool 0 without this, and the pack
+        then weighted every walker with the extra-cellular water fraction."""
+        cand, valid = self._gather(r)
+        A = self._A[cand]; AB = self._AB[cand]; AB2 = self._AB2[cand]
+        t = jnp.clip(((r[None, :] - A) * AB).sum(1) / AB2, 0.0, 1.0)
+        d2 = jnp.where(valid, ((r[None, :] - (A + t[:, None] * AB)) ** 2).sum(1), jnp.inf)
+        i = jnp.argmin(d2)
+        inside = valid.any() & (d2[i] < self._rout[cand[i]] ** 2)
+        return jnp.where(inside, self._seg_tube[cand[i]] + 1, 0).astype(jnp.int32)
 
     def inside_any(self, P, chunk=50000):
         """(n,3) → (n,) bool: is each point inside ANY tube (dist-to-segment < r_out)?
@@ -341,7 +380,14 @@ class PackedCurvedCylinders(Geometry):
         return jnp.where(ok, folded, r)
 
     def reflect(self, r, step):
-        return self._fold(r, self._reflect(r, step))
+        return self._fold(r, self._reflect(r, step)[0])
+
+    def reflect_with_log_weight(self, r, step, rho_over_D):
+        """The reflection with the contact log-weight ``-2 (rho / D) d_perp``: inside, the overshoot past the
+        tube's wall; outside, the radial part of the displacement left after the entry, on the entered tube's
+        normal, as the exact packed cylinders read it."""
+        r_new, d_perp = self._reflect(r, step)
+        return self._fold(r, r_new), -2.0 * rho_over_D * d_perp
 
     def _reflect(self, r, step):
         NUDGE = jnp.float32(1e-4 * self._Rmin)
@@ -362,7 +408,7 @@ class PackedCurvedCylinders(Geometry):
             # the mirror can still land outside off a sharp joint; the shared rule is the
             # guarantee, and it resolves the on-surface tie the same way everywhere
             r_int, _ = keep_side_radial(r_int, r_int - Qh, rh, True, NUDGE)
-            return r_int
+            return r_int, jnp.maximum(dh - rh, jnp.float32(0.0))
         # Proper specular reflection off the FIRST tube the step-ray enters: find the
         # entry point along the step, reflect the RADIAL component of the remaining
         # displacement (keeping the axial component), like the exact PackedCylinders.
@@ -390,7 +436,9 @@ class PackedCurvedCylinders(Geometry):
         # just bounced off. The mirror alone has no such guarantee near a joint.
         Qe = Ai + jnp.clip(((r_ref - Ai) @ u), 0.0, jnp.sqrt(AB2[i])) * u
         r_ref, _ = keep_side_radial(r_ref, r_ref - Qe, rh, False, NUDGE)
-        return jnp.where(inside.any(), r_ref, r_new)
+        hit = inside.any()
+        d_perp = jnp.where(hit, jnp.abs(rem_p @ nhat), jnp.float32(0.0))       # the contact: the radial remainder on the normal
+        return jnp.where(hit, r_ref, r_new), d_perp
 
     def init_positions(self, n_walkers, key):
         rng = np.random.default_rng(int(jax.random.randint(key, (), 0, 2 ** 30)))

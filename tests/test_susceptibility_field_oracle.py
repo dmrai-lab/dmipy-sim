@@ -95,3 +95,42 @@ def test_coaxial_annulus_matches_analytic_amplitude_and_structure():
     # SIGNED: an inverted field must fail, so no abs() here and the slope must be +1
     assert np.corrcoef(a, g)[0, 1] > 0.99, np.corrcoef(a, g)[0, 1]
     assert abs(np.polyfit(a, g, 1)[0] - 1.0) < 0.05, np.polyfit(a, g, 1)[0]
+
+
+@pytest.mark.parametrize("theta_deg", [45.0, 90.0])
+def test_anisotropic_lumen_field_matches_wharton_bowtell_on_every_route(theta_deg):
+    """The ANISOTROPIC term has a closed form in the lumen of a hollow cylinder (Wharton & Bowtell 2012):
+    dB/B0 = (1/2) dchi_a sin^2(theta) ln(1/g), uniform, zero with B0 along the fibre. Every route that builds a
+    field basis must reproduce it: the analytic cylinder (field_grid_of), the meshed cylinder (mesh_field_basis,
+    closest-point director) and the straight strand (predicate_field_basis with the pack's radial director).
+    The mask-gradient director (dmipy-sim#213) is what this oracle catches, and the tolerance is what the k-space
+    solver's periodic images leave at this box (12 um in-plane: 1.4 % at 45 deg, 0.01 % at 90; a 6 um box gave
+    6.5 % at 45, identically on all three routes -- the routes agree with each other to 0.01 %)."""
+    import dmipy_sim as d
+    from dmipy_sim.fields.susceptibility_field import (field_grid_of, mesh_field_basis, predicate_field_basis,
+                                                       assemble_field)
+    from dmipy_sim.geometry.mesh_shapes import myelinated_cylinder
+    a, b, dchi, B0 = 1.0e-6, 1.4e-6, -1e-7, 3.0
+    t = np.deg2rad(theta_deg); direction = (np.sin(t), 0.0, np.cos(t))
+    expect = 0.5 * dchi * np.sin(t) ** 2 * np.log(b / a)                                # dB / B0 in the lumen
+    lo, hi = np.array([-6e-6, -6e-6, -2e-6]), np.array([6e-6, 6e-6, 2e-6]); res = 0.2e-6
+    cl = np.array([[0.0, 0.0, -6e-6], [0.0, 0.0, 6e-6]])
+    routes = {}
+    fg = field_grid_of(d.MyelinatedCylinder(a, b, (0, 0, 1), 1.7e-9, 1.7e-9), res=res, box=(lo, hi), mask_supersample=4)
+    routes["cylinder"] = (fg.basis, fg.origin)
+    m = myelinated_cylinder(a, b, 12e-6, n_ang=128, n_ax=48)
+    basis, origin, _ = mesh_field_basis(m["inner"], m["outer"], lo, hi, res=res, mask_supersample=4)
+    routes["mesh"] = (basis, origin)
+    tube = d.CurvedMyelinatedCylinder(cl, a, b, pool="intra"); pack = d.PackedCurvedCylinders([cl], [a], interior=True)
+    basis, origin, _ = predicate_field_basis(lambda p: np.asarray(tube.classify_positions_exact(p)) == 1,
+                                             lambda p: np.asarray(tube.classify_positions_exact(p)) != 0, lo, hi, res=res,
+                                             mask_supersample=4, director=pack.radial_directors)
+    routes["strand"] = (basis, origin)
+    for name, (basis, origin) in routes.items():
+        f = np.asarray(assemble_field(basis, direction, B0=B0, chi_iso=0.0, chi_aniso=dchi)) / B0
+        shape = tuple(basis["shape"]); vs = np.asarray(basis["voxel_size"], float)
+        ax = [np.asarray(origin)[k] + (np.arange(shape[k]) + 0.5) * vs[k] for k in range(3)]
+        X, Y = np.meshgrid(ax[0], ax[1], indexing="ij")
+        lumen = (X ** 2 + Y ** 2) < (0.6 * a) ** 2                                         # well inside the lumen
+        got = np.array([f[:, :, k][lumen].mean() for k in range(shape[2])]).mean()
+        assert abs(got - expect) < 0.02 * abs(expect), (name, got, expect)

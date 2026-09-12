@@ -278,10 +278,10 @@ def strands_spec(path, *, scale=_UM, g_ratio=None, boundary="reflect", field_T=3
         id or f"strands/{os.path.splitext(os.path.basename(path))[0]}",
         Domain([-half] * 3, [half] * 3, [boundary] * 3), pools, walls,
         Seeding([p.id for p in pools], "uniform_by_volume", "water_fraction"),
-        # the curved tubes accumulate no boundary local time yet (no surface tier: dmipy-sim#76 item 2); a sheath
-        # is a field source, rasterised where the domain allows it (walk_spec's field_budget) and, at DiSCo's
-        # size, awaiting the per-segment field along each path (item 3)
-        Validity(smallest, ["gradient", "relaxation"] + (["field"] if g_ratio is not None else [])),
+        # the curved tubes record their wall contact (surface); a sheath is a field source, rasterised where the
+        # domain allows it (walk_spec's field_budget) and, at DiSCo's size, awaiting the per-segment field along
+        # each path (dmipy-sim#76 item 3)
+        Validity(smallest, ["gradient", "relaxation", "surface"] + (["field"] if g_ratio is not None else [])),
         nominal_field_T=float(field_T),
         description=f"{source}: {len(R)} strands as sphere-swept polylines" + ("" if g_ratio is None else " with a sheath"),
         realisation={"n_objects": int(len(R)), "cell_side": float(t["side"]), "radius_min": float(R.min()),

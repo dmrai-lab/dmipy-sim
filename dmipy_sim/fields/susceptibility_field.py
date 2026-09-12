@@ -624,14 +624,46 @@ def mesh_contains(V, F, pts, *, method="grid", prefilter=False, chunk=2_000_000)
 
 
 def mesh_field_basis(inner, outer, box_min, box_max, *, res=0.1e-6, include_aniso=True,
-                     mask_supersample=2, kspace_lowpass=0.5, clip_axis=2):
+                     mask_supersample=2, kspace_lowpass=0.5, clip_axis=2, director=None):
     """Geometry-only myelin susceptibility field basis on a voxel grid, from inner (axonal) and
     outer (myelin) surface meshes ``(V, F)`` (metres): :func:`predicate_field_basis` with
-    :func:`mesh_inside` as the two membership tests."""
+    :func:`mesh_inside` as the two membership tests and, by default, the closest point on the axon surface as
+    the radial director (:func:`mesh_directors`). ``director=`` overrides it; ``director=False`` falls back to
+    the gradient of the voxelised mask (dmipy-sim#213: ~28 % off on the anisotropic term across the axis)."""
+    if director is False:
+        director = None
+    elif director is None:
+        ref = inner if inner is not None else outer
+        director = lambda q: mesh_directors(ref[0], ref[1], q)
     return predicate_field_basis(lambda q: mesh_inside(inner[0], inner[1], q, clip_axis=clip_axis),
                                  lambda q: mesh_inside(outer[0], outer[1], q, clip_axis=clip_axis),
                                  box_min, box_max, res=res, include_aniso=include_aniso,
-                                 mask_supersample=mask_supersample, kspace_lowpass=kspace_lowpass)
+                                 mask_supersample=mask_supersample, kspace_lowpass=kspace_lowpass, director=director)
+
+
+def mesh_directors(V, F, pts, *, chunk=500_000):
+    """``(n, 3)`` unit vectors from the closest point on the surface ``(V, F)`` to each point: the radial (lipid)
+    director of a sheath, exact from the geometry (trimesh's closest-point query, an r-tree over the faces),
+    where the gradient of a voxelised mask was ~28 % off on the anisotropic term (dmipy-sim#213). A point ON
+    the surface gets the zero vector.
+
+    The query runs on the mesh rescaled to edges of O(1), as :func:`mesh_contains` does: trimesh's proximity
+    predicates use an absolute tolerance, and at SI scale (edges ~1e-7 m) the closest point lands up to a
+    ring spacing away along the tube, which put a 0.33 axial component on every director (the mesh route
+    read 20 % low against the Wharton-Bowtell lumen field). The factor cancels in the direction."""
+    import trimesh
+    V = np.asarray(V, float); F = np.asarray(F, np.int64)
+    s = 1.0 / max(float(np.median(np.linalg.norm(V[F[:, 0]] - V[F[:, 1]], axis=1))), 1e-300)
+    mesh = trimesh.Trimesh(V * s, F, process=False)
+    P = np.asarray(pts, float).reshape(-1, 3)
+    out = np.zeros_like(P)
+    for i in range(0, P.shape[0], chunk):
+        q = P[i:i + chunk] * s
+        c, _, _ = trimesh.proximity.closest_point(mesh, q)
+        v = q - c
+        n = np.linalg.norm(v, axis=1, keepdims=True)
+        out[i:i + chunk] = np.where(n > 0, v / np.maximum(n, 1e-30), 0.0)
+    return out
 
 
 def predicate_field_basis(inside_inner, inside_outer, box_min, box_max, *, res=0.1e-6, include_aniso=True,
