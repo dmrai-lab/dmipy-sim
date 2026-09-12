@@ -122,6 +122,15 @@ def gate_weights(chi, dt_wf, n_t, dt_pack):
     return effective_gradient(Gc, dt_wf, n_t, dt_pack)[..., 0]
 
 
+def field_gate(waveform, n_t, dt_pack):
+    """The per-save weights that integrate a field SAMPLED at the saves over an acquisition: the sequence's own
+    sign ``s(t)`` (its refocusing pulses, RPK.md 6.6) read on its grid onto the pack grid by :func:`gate_weights`,
+    and zero beyond its echo -- so an acquisition shorter than the walk ends at its echo, and the gate is the one
+    ``G_eff`` was folded with. ``(n_t,)``; multiply per-save values by ``dt_pack`` and these weights."""
+    t = np.arange(int(waveform.n_t)) * float(waveform.dt)
+    return gate_weights(waveform.rf.sign(t), float(waveform.dt), n_t, dt_pack)[0]
+
+
 def effective_gradient(G, dt_wf, n_t, dt_pack):
     """The per-save weights of a waveform against the path: ``(n_meas, n_t, 3)`` such that
     ``gamma dt_pack sum_k Geff[k] . r[k]`` is **exactly** ``gamma int G(t) . r(t) dt`` for the piecewise-linear
