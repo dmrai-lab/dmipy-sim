@@ -29,7 +29,9 @@ from dmipy_sim.replay.so3 import rotate_sh
 
 # 5TT columns (MRtrix): cortical GM, sub-cortical GM, WM, CSF, pathological tissue
 GM_COLS, WM_COL, CSF_COL, PATH_COL = (0, 1), 2, 3, 4
-M0 = {"wm": 0.70, "gm": 0.85, "csf": 1.00}          # proton densities relative to CSF
+from dmipy_sim.substrate.biophysical_constants import get_value
+M0 = {"wm": get_value("proton_density_white_matter"), "gm": get_value("proton_density_grey_matter"),
+      "csf": get_value("proton_density_csf")}                       # water content relative to CSF, cited in the table
 
 
 def fractions_on(grid_img, target_affine, tt_img, sub=3):

@@ -131,7 +131,7 @@ class Phantom:
             if np.any(rollk):
                 arrays["roll_kappa"] = rollk
         meta = {"rph_schema_version": RPH_SCHEMA_VERSION, "id": None, "grid": grid.to_meta(), "orientation": ori_meta,
-                "substrates": [s.to_meta() for s in subs], "license": None, "citation": None}
+                "substrates": [_substrate_meta(s) for s in subs], "license": None, "citation": None}
         for i, s in enumerate(subs):
             if s.kind == "pack" and s.uri is not None:
                 meta["substrates"][i]["uri"] = s.uri
@@ -200,7 +200,7 @@ class Phantom:
         a = f.arrays
         embed_packs, subs = {}, []
         for i, s in enumerate(self.substrates):
-            m = s.to_meta()
+            m = _substrate_meta(s)
             if s.kind == "pack":
                 if embed:
                     embed_packs[i] = s.pack
@@ -326,7 +326,8 @@ class Phantom:
                     proton_density=self._map(proton_density, "proton_density"))
         common = dict(B0=B0_T, b0_dir=b0_dir, tissue=tissue, packs=self._packs(packs), complex_signal=complex_signal,
                       T2=T2_s, T1=T1_s, rho=rho_m_s, D=D_m2_s, chi_iso=chi_iso, chi_aniso=chi_aniso,
-                      off_resonance=maps["off_resonance"], proton_density=maps["proton_density"])
+                      off_resonance=maps["off_resonance"], proton_density=maps["proton_density"],
+                      forms={i: s for i, s in enumerate(self.substrates) if getattr(s, "kind", None) == "analytic"})
         if maps["transmit"] is not None or "kappa_B1" in f.scalar_names:
             _, S = f.replay_bloch(seq, transmit=maps["transmit"], **common)
         else:
@@ -417,22 +418,32 @@ def _fraction_volumes(grid, fractions, remainder, labels):
     return subs, F
 
 
+def _substrate_meta(s):
+    """A substrate's file record; a closed form with an axis says so (``oriented``), which is what tells a reader
+    that its slots carry a pose to compose (RPH.md 3.1)."""
+    m = dict(s.to_meta())
+    if getattr(s, "kind", None) == "analytic" and getattr(s, "oriented", False):
+        m["oriented"] = True
+    return m
+
+
 def _orientation_fields(orientation, subs):
     """Which substrate each orientation field applies to: every pack substrate by default, or per object."""
-    oriented = [i for i, s in enumerate(subs) if s.kind == "pack"]
+    oriented = [i for i, s in enumerate(subs) if s.kind == "pack" or (s.kind == "analytic" and getattr(s, "oriented", False))]
     if isinstance(orientation, dict):
         out = {}
         for s, f in orientation.items():
             i = next((j for j, t in enumerate(subs) if t is s), None)
             if i is None:
                 raise ValueError(f"orientation names {s!r}, which is not among the substrates {subs}")
-            if subs[i].kind != "pack":
-                raise ValueError(f"{s!r} is {subs[i].kind!r} and has no orientation: an analytic or inert substrate "
-                                 f"is orientation-independent")
+            if i not in oriented:
+                raise ValueError(f"{s!r} is {subs[i].kind!r} and has no orientation: an inert substrate, or a closed "
+                                 f"form that declares no axis (oriented = False), is orientation-independent")
             out[i] = f
         missing = [subs[i] for i in oriented if i not in out]
         if missing:
-            raise ValueError(f"no orientation given for pack substrate(s) {missing}")
+            raise ValueError(f"no orientation given for the posed substrate(s) {missing} (a pack, or a closed form "
+                             f"with an axis)")
         return out
     if orientation is None:
         if oriented:

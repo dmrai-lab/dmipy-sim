@@ -101,3 +101,15 @@ def test_canonical_substrate_carries_a_physiological_fibre_size():
     d_outer_um = 2e6 * s.mean_outer_radius
     assert 0.5 < d_outer_um < 0.75, f"mean fibre diameter {d_outer_um:.3f} um is not the Aboitiz value"
     assert s.mean_inner_radius < s.mean_outer_radius
+
+
+def test_the_tissue_values_a_phantom_declares_are_catalogued_with_a_citation():
+    """No magic numbers: a brain phantom's grey-matter T2, and every tissue's proton density, come from the
+    table with a source key, a location and a citation; the field-dependent ones are field-matched."""
+    for name in ("T2_grey_matter", "T1_grey_matter", "proton_density_white_matter", "proton_density_grey_matter",
+                 "proton_density_csf"):
+        e = bc.get_constant(name)
+        assert e["citation"]["key"] == e["default"]["source_key"] and e["default"]["location"]
+        assert e["citation"]["doi"]
+    assert bc.get_value("T2_grey_matter", field_T=3.0) == 0.099 and bc.get_value("T2_grey_matter", field_T=1.5) == 0.095
+    assert bc.get_value("proton_density_csf") == 1.0 > bc.get_value("proton_density_grey_matter") > bc.get_value("proton_density_white_matter")

@@ -295,7 +295,7 @@ class ReplayPhantom:
     # ---- replay
     def replay(self, waveform, *, B0=None, b0_dir=(0.0, 0.0, 1.0), tissue="nominal", packs=None,
                complex_signal=False, T2=None, T1=None, rho=None, D=None,
-               chi_iso=None, chi_aniso=0.0, off_resonance=None, proton_density=None, cache=None):
+               chi_iso=None, chi_aniso=0.0, off_resonance=None, proton_density=None, cache=None, forms=None):
         """Replay the whole phantom through the pose expansion: ``(voxel_index, S)`` with ``S`` of shape
         ``(n_voxels, n_measurements)``.
 
@@ -325,7 +325,8 @@ class ReplayPhantom:
                 "ReplayPhantom.replay_bloch, which propagates the magnetisation per pose.")
         knobs = dict(T2=T2, T1=T1, rho=rho, D=D, chi_iso=chi_iso, chi_aniso=chi_aniso)
         pose, analytic, m0 = self._responses(waveform, B0, b0_dir, tissue, packs, knobs,
-                                             keep=self.retained_band(), proton_density=proton_density, cache=cache)
+                                             keep=self.retained_band(), proton_density=proton_density, cache=cache,
+                                             forms=forms)
         sid, frac = self.substrate_id, self.geometric_fraction
         n_meas = next(iter(pose.values())).n_meas if pose else len(np.atleast_1d(next(iter(analytic.values()))))
         S = np.zeros((self.n_voxels, n_meas), np.complex128)
@@ -387,8 +388,9 @@ class ReplayPhantom:
         F = np.zeros((n, so3.n_so3_coeffs(lmax, nmax)))
         # only a pack has a pose to compose: an analytic substrate is a closed form and an inert one emits
         # nothing, so their slots keep the zero row rather than being read as an orientation
-        is_pack = np.array([s_["kind"] == "pack" for s_ in self.substrates], bool)
-        posed = is_pack[sid[vp[:, 0], vp[:, 1]]]
+        has_pose = np.array([s_["kind"] == "pack" or (s_["kind"] == "analytic" and bool(s_.get("oriented", False)))
+                             for s_ in self.substrates], bool)                # a pack, or a closed form with an axis
+        posed = has_pose[sid[vp[:, 0], vp[:, 1]]]
         if not posed.any():
             return vp, F
         idx = vp[posed]
@@ -485,7 +487,16 @@ class ReplayPhantom:
         pd = self.layer_values("m0_scale", proton_density, combine="mul")
         return m0 if pd is None else m0 * pd[:, None]
 
-    def _responses(self, waveform, B0, b0_dir, tissue, packs, knobs, keep=None, proton_density=None, cache=None):
+    @staticmethod
+    def _form(i, sub, forms):
+        """The closed form of substrate ``i``: the live object when the caller holds one (``forms``, an in-memory
+        phantom's own declarations), else the one its ``model`` names, read back from the file's record."""
+        if forms and i in forms:
+            return forms[i]
+        return substrate_from_meta(sub)
+
+    def _responses(self, waveform, B0, b0_dir, tissue, packs, knobs, keep=None, proton_density=None, cache=None,
+                   forms=None):
         """One response per substrate: a :class:`PoseResponse` for a pack, a closed form for an analytic
         substrate, nothing for an inert one. Plus the per-voxel ``m0``."""
         pose, analytic = {}, {}
@@ -494,7 +505,12 @@ class ReplayPhantom:
             if sub["kind"] == "inert":
                 continue
             if sub["kind"] == "analytic":
-                analytic[i] = substrate_from_meta(sub).response(waveform)      # refuses an unknown closed form
+                form = self._form(i, sub, forms)                               # refuses an unknown closed form
+                if sub.get("oriented", False) or getattr(form, "oriented", False):   # a form with an axis: expanded over
+                    from .replay import analytic_pose_response               # SO(3) like a pack, then contracted
+                    pose[i] = analytic_pose_response(form, waveform, keep)
+                else:
+                    analytic[i] = form.response(waveform)
                 continue
             kw = dict(knobs)
             kw.update({k: v for k, v in (sub.get("tissue") or {}).items()})
@@ -505,7 +521,7 @@ class ReplayPhantom:
 
     def replay_bloch(self, waveform, *, B0=None, b0_dir=(0.0, 0.0, 1.0), tissue="nominal",
                      packs=None, complex_signal=False, T2=None, T1=None, rho=None, D=None, chi_iso=None,
-                     chi_aniso=0.0, transmit=None, off_resonance=None, proton_density=None, decimals=3):
+                     chi_aniso=0.0, transmit=None, off_resonance=None, proton_density=None, decimals=3, forms=None):
         """Replay the phantom through the RF-aware route: ``(voxel_index, S)``, one magnetisation propagation
         per distinct pose rather than one contraction per voxel.
 
@@ -566,7 +582,9 @@ class ReplayPhantom:
             i, kap, off = int(ids[first]), float(kappa[v_idx[first]]), float(dB0[v_idx[first]])
             sub = self.substrates[i]
             if sub["kind"] == "analytic":
-                resp = substrate_from_meta(sub).response(waveform) * _static_spin_rf(waveform, kap)
+                form = self._form(i, sub, forms)
+                pose_R = R[first].reshape(3, 3) if (sub.get("oriented", False) or getattr(form, "oriented", False)) else None
+                resp = form.response(waveform, pose=pose_R) * _static_spin_rf(waveform, kap)
                 if off != 0.0:
                     resp = resp * np.exp(1j * GAMMA * off * gate)
             else:
