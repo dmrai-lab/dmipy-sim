@@ -204,7 +204,10 @@ def test_transmit_on_a_partition_is_the_per_walker_scale(pack_paths):
     S1 = ph.replay(seq, transmit=1.0)
     S0 = ph.replay(seq)
     np.testing.assert_allclose(np.nan_to_num(S1), np.nan_to_num(S0), atol=3.0 / np.sqrt(60))   # ideal pulses vs propagated
-    assert (np.nan_to_num(np.abs(S))[kap < 1] < np.nan_to_num(S1)[kap < 1] * 0.95).all()
+    # a 0.6 transmit scale plays 54 / 108 degree pulses: the region's signal drops well below the ideal one. Summed
+    # over the scaled voxels (a voxel holds ~60 walkers, so a per-voxel ratio is realisation-dependent: it sat at
+    # 0.89 on aarch64 and crossed 0.95 on x86 for the same fixture)
+    assert np.nansum(np.abs(S)[kap < 1]) < 0.8 * np.nansum(S1[kap < 1])
 
 
 def test_off_resonance_and_proton_density_on_a_partition(pack_paths):
