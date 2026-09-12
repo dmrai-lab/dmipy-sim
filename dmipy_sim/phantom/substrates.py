@@ -28,7 +28,13 @@ class AnalyticSubstrate(Protocol):
     expands over SO(3) and contracts with a voxel's orientation distribution, exactly as a pack's (RPH.md 6).
     An oriented form takes an orientation field in :meth:`Phantom.compose` like a pack and is refused without
     one. ``model`` names the form for the file: sim's own (``free_water``) or a namespaced one,
-    ``"<package>:<Name>"``, read back by ``<package>.phantom.analytic_substrate(meta)`` (RPH.md 3.1)."""
+    ``"<package>:<Name>"``, read back by ``<package>.phantom.analytic_substrate(meta)`` (RPH.md 3.1).
+
+    A closed form is **full-tier**: every knob a pack takes has an exact value for it. A form with no
+    susceptibility source has a field of zero at any ``B0``; with no wall it has no surface relaxivity; with no
+    bound pool no magnetisation transfer; under an RF train it is a static spin's response. What it does carry it
+    evaluates exactly -- free water's bulk relaxation, ``exp(-TE / T2)``, when its ``T2_s`` is declared. Nothing
+    is stated as missing and nothing composes silently: the zeros are the physics."""
     oriented: bool
 
     def response(self, seq, pose=None) -> np.ndarray: ...
@@ -113,32 +119,53 @@ class FreeWater(_Declared):
     A pack cannot stand in for it: the signal decays exponentially in b while a Monte-Carlo floor decays only as
     ``1 / sqrt(N)``, so at b = 3000 s/mm² a few-thousand-walker free-water pack carries orders of magnitude more
     noise than signal. The closed form is exact, has no walkers and no pose. ``m0`` is required, as on a pack.
+    It is full-tier with zeros: no susceptibility source (a field of zero at any ``B0``), no wall (no surface
+    relaxivity), no bound pool; its bulk relaxation is ``exp(-TE / T2_s) exp(-TM / T1_s)`` of the sequence's echo
+    and mixing times when ``T2_s`` / ``T1_s`` are declared, and none when they are not.
     """
 
     kind = "analytic"
     model = "free_water"
     oriented = False
 
-    def __init__(self, *, D_m2_s, m0, name="csf/free-water"):
+    def __init__(self, *, D_m2_s, m0, name="csf/free-water", T2_s=None, T1_s=None):
         super().__init__(name, m0)
         self.D_m2_s = float(D_m2_s)
         if self.D_m2_s <= 0:
             raise ValueError(f"D_m2_s is a diffusivity in m^2/s and must be positive: {D_m2_s}")
+        self.T2_s = None if T2_s is None else float(T2_s)
+        self.T1_s = None if T1_s is None else float(T1_s)
+        for k, v in (("T2_s", self.T2_s), ("T1_s", self.T1_s)):
+            if v is not None and v <= 0:
+                raise ValueError(f"{k} is a relaxation time in seconds and must be positive: {v}")
 
     def response(self, seq, pose=None):
-        """``exp(-b D)`` per measurement: the sequence's declared b, else the integral of its effective gradient.
+        """``exp(-b D)`` per measurement (the sequence's declared b, else the integral of its effective gradient),
+        times the bulk relaxation of the declared ``T2_s`` over the echo time and ``T1_s`` over the mixing time.
         The pose is ignored: an isotropic form has none (RPH.md 6)."""
-        return np.exp(-_b_values(seq) * self.D_m2_s).astype(np.complex128)
+        E = np.exp(-_b_values(seq) * self.D_m2_s).astype(np.complex128)
+        if self.T2_s is not None:
+            E = E * np.exp(-_echo_time(seq) / self.T2_s)
+        if self.T1_s is not None:
+            E = E * np.exp(-float(getattr(seq, "TM", 0.0) or 0.0) / self.T1_s)
+        return E
 
     def to_meta(self):
-        return {**self._base_meta(), "model": self.model, "params": {"diffusivity": self.D_m2_s}}
+        m = {**self._base_meta(), "model": self.model, "params": {"diffusivity": self.D_m2_s}}
+        if self.T2_s is not None:
+            m["T2_s"] = self.T2_s
+        if self.T1_s is not None:
+            m["T1_s"] = self.T1_s
+        return m
 
     @classmethod
     def from_meta(cls, meta):
-        return cls(D_m2_s=meta["params"]["diffusivity"], m0=meta["m0"], name=meta["id"])
+        return cls(D_m2_s=meta["params"]["diffusivity"], m0=meta["m0"], name=meta["id"],
+                   T2_s=meta.get("T2_s"), T1_s=meta.get("T1_s"))
 
     def __repr__(self):
-        return f"FreeWater(D_m2_s={self.D_m2_s:g}, m0={self.m0:g}, name={self.name!r})"
+        t = "".join(f", {k}={v:g}" for k, v in (("T2_s", self.T2_s), ("T1_s", self.T1_s)) if v is not None)
+        return f"FreeWater(D_m2_s={self.D_m2_s:g}, m0={self.m0:g}{t}, name={self.name!r})"
 
 
 class Inert(_Declared):
@@ -195,6 +222,15 @@ def substrate_from_meta(meta, *, pack=None):
     if kind == "inert":
         return Inert.from_meta(meta)
     raise ValueError(f"substrate kind {kind!r} is not one of ('pack', 'analytic', 'inert')")
+
+
+def _echo_time(seq):
+    """The sequence's echo time (s): its encoding's, else its duration."""
+    enc = getattr(seq, "encoding", None)
+    TE = getattr(enc, "TE", None) if enc is not None else None
+    if TE is None:
+        TE = getattr(seq, "T", None)
+    return float(np.max(np.atleast_1d(TE)))
 
 
 def _b_values(seq):

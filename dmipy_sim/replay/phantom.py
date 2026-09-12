@@ -495,23 +495,6 @@ class ReplayPhantom:
             return forms[i]
         return substrate_from_meta(sub)
 
-    def _physics_stated(self, form, sub, *, B0=None, chi_iso=None, transmit=False):
-        """A closed form has no field term and no magnetisation of its own: with a field or a transmit scale
-        given, say once per substrate that it contributes at its closed form rather than composing silently."""
-        import warnings
-        asked = [k for k, v in (("B0", B0), ("chi_iso", chi_iso)) if v is not None] + (["transmit"] if transmit else [])
-        if not asked:
-            return
-        seen = self.__dict__.setdefault("_physics_stated_for", set())
-        key = (sub.get("id"), tuple(asked))
-        if key in seen:
-            return
-        seen.add(key)
-        warnings.warn(f"substrate {sub.get('id')!r} is the closed form {sub.get('model')!r}: it has no field term and no "
-                      f"magnetisation of its own, so with {', '.join(asked)} given it contributes at its closed form "
-                      f"(diffusion attenuation, a static spin's RF response) while the packs compose the physics asked",
-                      UserWarning, stacklevel=3)
-
     def _responses(self, waveform, B0, b0_dir, tissue, packs, knobs, keep=None, proton_density=None, cache=None,
                    forms=None):
         """One response per substrate: a :class:`PoseResponse` for a pack, a closed form for an analytic
@@ -523,7 +506,6 @@ class ReplayPhantom:
                 continue
             if sub["kind"] == "analytic":
                 form = self._form(i, sub, forms)                               # refuses an unknown closed form
-                self._physics_stated(form, sub, B0=B0, chi_iso=knobs.get("chi_iso"))
                 if sub.get("oriented", False) or getattr(form, "oriented", False):   # a form with an axis: expanded over
                     from .replay import analytic_pose_response               # SO(3) like a pack, then contracted
                     pose[i] = analytic_pose_response(form, waveform, keep)
@@ -601,7 +583,6 @@ class ReplayPhantom:
             sub = self.substrates[i]
             if sub["kind"] == "analytic":
                 form = self._form(i, sub, forms)
-                self._physics_stated(form, sub, B0=B0, chi_iso=knobs.get("chi_iso"), transmit=(kap != 1.0))
                 pose_R = R[first].reshape(3, 3) if (sub.get("oriented", False) or getattr(form, "oriented", False)) else None
                 resp = form.response(waveform, pose=pose_R) * _static_spin_rf(waveform, kap)
                 if off != 0.0:

@@ -117,14 +117,19 @@ def test_a_namespaced_model_is_read_by_its_package_or_refused_naming_it(tmp_path
     np.testing.assert_allclose(back.replay(seq), ph.replay(seq), rtol=1e-6)
 
 
-def test_physics_the_form_lacks_is_stated_once():
+def test_a_closed_form_is_full_tier_with_zeros():
+    """A form with no susceptibility source has a field of zero at any B0: the signal is unchanged and nothing is
+    said; free water carries its bulk relaxation when declared, and none when not."""
+    from dmipy_sim.phantom import FreeWater
     seq = _seq(); stick = Stick(D_m2_s=1.7e-9, m0=1.0)
     ph = Phantom.compose(Grid(shape=(1, 1, 1), voxel_size_m=(2e-3, 2e-3, 2e-3)), fractions={stick: np.ones((1, 1, 1))},
                          orientation=Peaks(np.zeros((1, 1, 1, 1, 3)) + [0, 0, 1.0]))
-    with warnings.catch_warnings(record=True) as rec:
-        warnings.simplefilter("always")
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
         S1 = ph.replay(seq, B0_T=3.0, chi_iso=1e-7)
-        S2 = ph.replay(seq, B0_T=3.0, chi_iso=1e-7)
-    said = [w for w in rec if "closed form" in str(w.message)]
-    assert len(said) == 1 and "B0, chi_iso" in str(said[0].message)
-    np.testing.assert_allclose(S1, ph.replay(seq))            # the form's signal is unchanged
+    np.testing.assert_allclose(S1, ph.replay(seq))
+    water = FreeWater(D_m2_s=3e-9, m0=1.0, T2_s=2.0)
+    b = np.asarray(seq.encoding.bvalues); TE = float(np.max(seq.encoding.TE))
+    np.testing.assert_allclose(water.response(seq), np.exp(-b * 3e-9) * np.exp(-TE / 2.0))
+    np.testing.assert_allclose(FreeWater(D_m2_s=3e-9, m0=1.0).response(seq), np.exp(-b * 3e-9))
+    assert FreeWater.from_meta(water.to_meta()).T2_s == 2.0 and "T2_s" not in FreeWater(D_m2_s=3e-9, m0=1.0).to_meta()
