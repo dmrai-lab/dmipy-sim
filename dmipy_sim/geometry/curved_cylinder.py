@@ -369,6 +369,51 @@ class PackedCurvedCylinders(Geometry):
         d = jnp.linalg.norm(p[None, :] - (A + t[:, None] * AB), axis=1)
         return (valid & (d < rr)).any()
 
+    def wall_scales(self, P, chunk=100_000):
+        """``(n, 3) -> (d_wall (n,), R_near (n,))``: each point's distance to the nearest wall it can hit -- the
+        nearest tube's surface (outside all tubes for the exterior pool, the confining tube's wall for the interior
+        one) and, when the pack mirrors at a box, the nearest face -- and the radius of that nearest tube, the
+        curvature scale of the wall. What an adaptive walk steps by (:mod:`dmipy_sim.engine.adaptive`): a walker
+        farther from every wall than its round's excursion takes one free step, the rest step at the R/6 rule
+        of THEIR tube rather than the pack's smallest. A point with no tube in reach gets ``inf`` and the
+        pack's largest radius."""
+        P = np.asarray(P, np.float32)
+        out_d = np.empty(P.shape[0], np.float32); out_r = np.empty(P.shape[0], np.float32)
+        _batch = self._wall_scales_device()
+        for i in range(0, P.shape[0], chunk):
+            d, r = _batch(jnp.asarray(P[i:i + chunk]))
+            out_d[i:i + chunk] = np.asarray(d); out_r[i:i + chunk] = np.asarray(r)
+        return out_d, out_r
+
+    def _wall_scales_device(self):
+        """The jitted ``(n, 3) -> (d_wall, R_near)`` of :meth:`wall_scales` on device arrays, built once."""
+        _batch = getattr(self, "_wall_scales_batch", None)
+        if _batch is None:
+            interior = self.interior; box = self.box_reflect
+            lo = self._lo if box else None; hi = self._hi if box else None
+            R_max = jnp.float32(self._Rmax)
+
+            @jax.jit
+            def _batch(Pb):
+                def one(p):
+                    cand, valid = self._gather(p)
+                    A = self._A[cand]; AB = self._AB[cand]; AB2 = self._AB2[cand]; rr = self._rout[cand]
+                    t = jnp.clip(((p[None, :] - A) * AB).sum(1) / AB2, 0.0, 1.0)
+                    d = jnp.linalg.norm(p[None, :] - (A + t[:, None] * AB), axis=1)
+                    dd = jnp.where(valid, d, jnp.inf)
+                    i = jnp.argmin(dd)
+                    if interior:
+                        d_wall = jnp.where(valid.any(), rr[i] - dd[i], jnp.inf)
+                    else:
+                        d_wall = jnp.where(valid, d - rr, jnp.inf).min()
+                    R_near = jnp.where(valid.any(), rr[i], R_max)
+                    if box:
+                        d_wall = jnp.minimum(d_wall, jnp.minimum((p - lo).min(), (hi - p).min()))
+                    return jnp.maximum(d_wall, 0.0), R_near
+                return jax.vmap(one)(Pb)
+            self._wall_scales_batch = _batch
+        return _batch
+
     def _fold(self, r, r_new):
         """Mirror into the voxel, never across a tube wall."""
         if not self.box_reflect:
@@ -440,30 +485,33 @@ class PackedCurvedCylinders(Geometry):
         d_perp = jnp.where(hit, jnp.abs(rem_p @ nhat), jnp.float32(0.0))       # the contact: the radial remainder on the normal
         return jnp.where(hit, r_ref, r_new), d_perp
 
+    def sample_inside(self, n, rng):
+        """``n`` points uniform by volume inside the tubes (segment volume, then the disc, then the length), the
+        whole strand set: no box."""
+        A = np.asarray(self._A); AB = np.asarray(self._AB); AB2 = np.asarray(self._AB2); rout = np.asarray(self._rout)
+        L = np.sqrt(AB2)
+        w = (rout ** 2) * L; w = w / w.sum()
+        idx = rng.choice(len(A), size=int(n), p=w)
+        C = A[idx] + rng.uniform(0.0, 1.0, int(n))[:, None] * AB[idx]
+        T = AB[idx] / L[idx][:, None]
+        ref = np.tile(np.array([0., 0., 1.]), (int(n), 1))
+        ref[np.abs((T * ref).sum(1)) > 0.9] = np.array([1., 0., 0.])
+        e1 = np.cross(T, ref); e1 /= np.linalg.norm(e1, axis=1, keepdims=True)
+        e2 = np.cross(T, e1)
+        rad = rout[idx] * np.sqrt(rng.uniform(0., 1., int(n)))
+        th = rng.uniform(0., 2 * np.pi, int(n))
+        return C + rad[:, None] * (np.cos(th)[:, None] * e1 + np.sin(th)[:, None] * e2)
+
     def init_positions(self, n_walkers, key):
         rng = np.random.default_rng(int(jax.random.randint(key, (), 0, 2 ** 30)))
-        A = np.asarray(self._A); AB = np.asarray(self._AB)
-        AB2 = np.asarray(self._AB2); rout = np.asarray(self._rout)
         if self.interior:
-            # seed inside the tubes, volume-weighted over segments (pi R^2 * length)
-            L = np.sqrt(AB2)
-            w = (rout ** 2) * L; w = w / w.sum()
-            idx = rng.choice(len(A), size=n_walkers, p=w)
-            C = A[idx] + rng.uniform(0.0, 1.0, n_walkers)[:, None] * AB[idx]
-            T = AB[idx] / L[idx][:, None]
-            ref = np.tile(np.array([0., 0., 1.]), (n_walkers, 1))
-            ref[np.abs((T * ref).sum(1)) > 0.9] = np.array([1., 0., 0.])
-            e1 = np.cross(T, ref); e1 /= np.linalg.norm(e1, axis=1, keepdims=True)
-            e2 = np.cross(T, e1)
-            rad = rout[idx] * np.sqrt(rng.uniform(0., 1., n_walkers))
-            th = rng.uniform(0., 2 * np.pi, n_walkers)
-            off = rad[:, None] * (np.cos(th)[:, None] * e1 + np.sin(th)[:, None] * e2)
-            pts = C + off
+            pts = self.sample_inside(n_walkers, rng)
             if self.box is not None:                       # strands overrun the voxel: seed only inside it
                 keep = ((pts >= self.box[0]) & (pts <= self.box[1])).all(1)
                 pts = pts[keep]
                 while len(pts) < n_walkers:
-                    more = np.asarray(self.init_positions(n_walkers, jax.random.fold_in(key, len(pts))))
+                    more = self.sample_inside(n_walkers, rng)
+                    more = more[((more >= self.box[0]) & (more <= self.box[1])).all(1)]
                     pts = np.concatenate([pts, more])[:n_walkers]
             return jnp.asarray(pts, jnp.float32)
         # extra: rejection outside all tubes, grid-accelerated (see sample_outside/inside_any)
