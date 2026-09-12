@@ -82,8 +82,7 @@ def test_surface_relaxivity_uses_the_recorded_diffusivity(packs):
     np.testing.assert_allclose(full.replay(wf, rho=rho, D=D0), ref, rtol=1e-12)
     with pytest.raises(ValueError, match="no C2"):
         plain.replay(wf, rho=rho)
-    with pytest.raises(ValueError, match="no field tier"):
-        full.replay(wf, B0=3.0)
+    np.testing.assert_array_equal(full.replay(wf, B0=3.0), full.replay(wf))      # its spec declares no field source
 
 
 def test_any_waveform_grid_and_a_sequence_are_accepted(packs):
@@ -132,3 +131,20 @@ def test_r0_is_the_stored_start_read_without_decoding(tmp_path):
     np.testing.assert_array_equal(r0[2], r0[4])                                       # K-independent, to the bit
     x0 = np.asarray(walk._bank_dict()["traj"])[:, 0, :]                              # the walk's own first sample
     np.testing.assert_allclose(r0[4], x0, atol=2e-10)                                # float32 of a 10 um coordinate
+
+
+def test_a_substrate_with_no_field_source_replays_at_any_B0_as_a_zero_field(packs):
+    """A spec whose pools declare no susceptibility has a field of zero everywhere: the pack is C3-capable with a
+    zero field, so B0 = 3 T is its gradient-only replay, through the direct and the pose routes; a pack without a
+    spec (nothing declares the field zero) still refuses."""
+    full, plain = packs
+    assert full.field_is_zero and not full.has_field
+    wf = _wf(full.n_t, full.dt)
+    np.testing.assert_array_equal(full.replay(wf, B0=3.0, chi_iso=1e-7), full.replay(wf))
+    np.testing.assert_allclose(full.pose_response(wf, B0=3.0, chi_iso=1e-7, keep=(4, 0)).coeffs,
+                               full.pose_response(wf, keep=(4, 0)).coeffs)
+    import copy
+    bare = ReplayPack(dict(full.arrays), {k: v for k, v in copy.deepcopy(full.meta).items() if k != "substrate"})
+    assert not bare.field_is_zero
+    with pytest.raises(ValueError, match="no field tier"):
+        bare.replay(wf, B0=3.0, chi_iso=1e-7)

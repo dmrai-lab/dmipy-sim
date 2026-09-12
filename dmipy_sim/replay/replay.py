@@ -214,6 +214,29 @@ class ReplayPack:
         return ch.get("susceptibility_path") is not None or "susc_grid_iso_local" in self.arrays
 
     @property
+    def field_is_zero(self):
+        """The substrate declares no field source: its embedded spec names no pool susceptibility, so its
+        off-resonance field is zero everywhere and a replay at any ``B0`` is its gradient-only replay. Such a
+        pack is C3-capable with a field of zero (a grey-matter sphere packing, a free walk); a pack without a
+        spec, or with a susceptible pool and no field channel, still refuses ``B0``."""
+        spec = self.substrate
+        if spec is None or not getattr(spec, "pools", None):
+            return False
+        return all(getattr(p, "susceptibility", None) is None for p in spec.pools)
+
+    def _field_active(self, B0):
+        """Whether a replay at ``B0`` has a field term to evaluate: a field was asked and the substrate has one.
+        Refuses a field asked of a substrate that has one but carries no channel for it."""
+        if B0 is None:
+            return False
+        if self.has_field:
+            return True
+        if self.field_is_zero:
+            return False
+        raise ValueError("B0 was given but the pack carries no field tier (C3) and its substrate declares a "
+                         "susceptibility, or no spec at all; build it with field=FieldGrid(...)")
+
+    @property
     def diffusivity(self):
         """The walk's diffusivity (m^2/s) when the producer recorded it."""
         return self.meta.get("walk_params", {}).get("diffusivity")
@@ -331,13 +354,11 @@ class ReplayPack:
         from .compression import read_position_coeffs
         from ._replay_kernel import gradient_phase, field_gate
         n_w, dt, n_t, Geff = P["n_w"], P["dt"], P["n_t"], P["Geff"]
-        if P["B0"] is None:
+        if not self._field_active(P["B0"]):                                          # no field, or a field of zero
             C = read_position_coeffs(self.arrays, dtype=np.float64)
             W = _compile_effective(Geff, dt, self.K, n_t)
             phi = C.reshape(n_w, self.n_coeffs * 3) @ W                              # (n_w, n_meas)
         else:
-            if not self.has_field:
-                raise ValueError("B0 was given but the pack carries no field tier (C3); build it with field=FieldGrid(...)")
             from .bank import susc_path_decode, susc_path_field
             from ..fields.susceptibility_field import assemble_field, sample_grid
             ch, b0_dir, B0, chi_aniso = P["ch"], P["b0_dir"], P["B0"], P["chi_aniso"]
@@ -400,7 +421,8 @@ class ReplayPack:
         T2v, T1v = P["T2"], P["T1"]
         if T2v is not None or T1v is not None:
             comp = decode_occupancy(self.arrays, ch["compartment"])["comp"]
-            n_ids = int(np.max(comp)) + 1
+            n_ids = 2 if (np.issubdtype(np.asarray(comp).dtype, np.floating) and not np.array_equal(comp, np.round(comp))) \
+                else int(np.max(comp)) + 1                            # a fractional occupancy is two pools, whatever its maximum
             # the Bloch route reads a rate as 1/T, so "no decay in this pool" is an infinite time, not a zero
             # one; a zero would make the rate infinite and return an identically dark signal
             def per_pool(v, what):
@@ -448,8 +470,8 @@ class ReplayPack:
         carries: the compressed path coefficients, or the stored field basis sampled along the walk."""
         from .bank import susc_path_decode, susc_path_field
         from ..fields.susceptibility_field import assemble_field, sample_grid
-        if not self.has_field:
-            raise ValueError("B0 was given but the pack carries no field tier (C3)")
+        if not self._field_active(P["B0"]):
+            return np.zeros((P["n_w"], self.n_t))                                     # a declared zero field
         if P["chi_iso"] is None:
             raise ValueError("B0 was given without chi_iso: the pack carries the substrate's field basis, "
                              "not a susceptibility; give chi_iso (and chi_aniso) at replay")
@@ -524,7 +546,8 @@ class ReplayPack:
                                  "from a walk with tiers='all'")
             comp = decode_occupancy(self.arrays, ch["compartment"])["comp"]
             T2v = self._by_pool(T2, "T2"); T1v = self._by_pool(T1, "T1")
-            n_ids = int(np.max(comp)) + 1
+            n_ids = 2 if (np.issubdtype(np.asarray(comp).dtype, np.floating) and not np.array_equal(comp, np.round(comp))) \
+                else int(np.max(comp)) + 1                            # a fractional occupancy is two pools, whatever its maximum
             if T2v is None:
                 T2v = [0.0] * n_ids                                   # no T2 decay, T1 only
             if T1v is None:
@@ -832,7 +855,7 @@ class ReplayPack:
         from .compression import read_position_coeffs
         Geff, dt, n_t, ew, norm = P["Geff"], P["dt"], P["n_t"], P["ew"], P["norm"]
         n_meas, n_w = Geff.shape[0], ew.shape[0]
-        field = self._field_quadratic(P, waveform) if P["B0"] is not None else None   # (a_w, A_w) or None
+        field = self._field_quadratic(P, waveform) if self._field_active(P["B0"]) else None   # (a_w, A_w) or None
         G = np.asarray(Geff, np.float64)
         g_hat = np.zeros((n_meas, 3)); s_wave = np.zeros((n_meas, n_t))
         for i in range(n_meas):
@@ -983,8 +1006,7 @@ class ReplayPack:
         from ._replay_kernel import field_gate
         from .bank import susc_path_coeffs
         B0, chi_iso, chi_aniso = P["B0"], P["chi_iso"], P["chi_aniso"]
-        if not self.has_field:
-            raise ValueError("B0 was given but the pack carries no field tier (C3)")
+        self._field_active(B0)
         pm = self.meta.get("compression", {}).get("channels", {}).get("susceptibility_path")
         if pm is None:
             raise ValueError("the pose expansion with a field needs the pack's susc_path channel (C3 path route)")
@@ -1064,9 +1086,7 @@ class ReplayPack:
                 Q[:, :, a, b_] = C @ W
 
         Psi = names = i_p = i_a = None
-        if B0 is not None:
-            if not self.has_field:
-                raise ValueError("B0 was given but the pack carries no field tier (C3)")
+        if self._field_active(B0):
             pm = self.meta.get("compression", {}).get("channels", {}).get("susceptibility_path")
             if pm is None:
                 raise ValueError("the pose expansion with a field needs the pack's susc_path channel (C3 path route)")
