@@ -280,16 +280,18 @@ class PackedCurvedCylinders(Geometry):
     classify_returns_object_id = True
 
     def classify_position(self, r):
-        """Compartment id: ``k + 1`` inside tube ``k`` (the nearest segment's tube, 1-indexed as every packed
-        geometry), 0 outside every tube. The record of an interior walk carried pool 0 without this, and the pack
-        then weighted every walker with the extra-cellular water fraction."""
+        """Compartment id: ``k + 1`` inside tube ``k`` (1-indexed as every packed geometry; where tubes overlap or
+        a thin tube runs close to a fat one, the tube the point is DEEPEST inside -- inside ANY tube, not only the
+        nearest axis, which misread a walker in a fat tube close to a thin one's axis as outside), 0 outside every
+        tube. The record of an interior walk carried pool 0 without this, and the pack then weighted every walker
+        with the extra-cellular water fraction."""
         cand, valid = self._gather(r)
-        A = self._A[cand]; AB = self._AB[cand]; AB2 = self._AB2[cand]
+        A = self._A[cand]; AB = self._AB[cand]; AB2 = self._AB2[cand]; rr = self._rout[cand]
         t = jnp.clip(((r[None, :] - A) * AB).sum(1) / AB2, 0.0, 1.0)
-        d2 = jnp.where(valid, ((r[None, :] - (A + t[:, None] * AB)) ** 2).sum(1), jnp.inf)
-        i = jnp.argmin(d2)
-        inside = valid.any() & (d2[i] < self._rout[cand[i]] ** 2)
-        return jnp.where(inside, self._seg_tube[cand[i]] + 1, 0).astype(jnp.int32)
+        d = jnp.sqrt(((r[None, :] - (A + t[:, None] * AB)) ** 2).sum(1))
+        depth = jnp.where(valid, rr - d, -jnp.inf)                   # positive inside a tube
+        i = jnp.argmax(depth)
+        return jnp.where(depth[i] > 0, self._seg_tube[cand[i]] + 1, 0).astype(jnp.int32)
 
     def inside_any(self, P, chunk=50000):
         """(n,3) → (n,) bool: is each point inside ANY tube (dist-to-segment < r_out)?

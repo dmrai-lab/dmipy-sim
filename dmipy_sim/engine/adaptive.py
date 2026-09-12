@@ -131,7 +131,9 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, dt_s
     pos_key, walker_key = jax.random.split(key)
     r0_all = np.asarray(initial_positions(geometry, n_walkers, pos_key, r0), np.float32)
     keys_all = jax.random.split(walker_key, n_walkers)
-    comp_all = np.asarray(geometry.classify_positions_exact(jnp.asarray(r0_all)), np.int32)
+    # the pool (0 free, 1 enclosed), not the object: a packed classify returns the tube's id, and a walker inside two
+    # overlapping tubes is labelled by either
+    comp_all = np.minimum(np.asarray(geometry.classify_positions_exact(jnp.asarray(r0_all)), np.int32), 1)
 
     sdt = np.dtype(storage_dtype).type
     positions = np.empty((n_walkers, n_t, 3), sdt); dlog_all = np.zeros((n_walkers, n_t), sdt)
@@ -161,7 +163,7 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, dt_s
                     n_kernel_steps += idx.size * steps_c[c]
             positions[s:e, t] = np.asarray(r, sdt); dlog_all[s:e, t] = np.asarray(dlog_int, sdt)
         # the guarantee: nobody changed pool
-        comp_end = np.asarray(geometry.classify_positions_exact(r), np.int32)
+        comp_end = np.minimum(np.asarray(geometry.classify_positions_exact(r), np.int32), 1)
         n_illegal += int((comp_end != comp_all[s:e]).sum())
     if n_illegal:
         raise RuntimeError(f"adaptive walk: {n_illegal} walker(s) changed pool -- an illegal crossing; the walk is refused")
