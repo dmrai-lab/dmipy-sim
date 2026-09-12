@@ -332,11 +332,47 @@ def _susc_path_fidelity(m, arrays, pm, gm, env):
                                 traj, origin, vs, periodic=False)
             f_dec = susc_path_field(b_dec, d, B0=B0, chi_iso=chi_i, chi_aniso=ca,
                                     has_aniso=bool(gm.get("has_aniso")))
-            for g in gates:
-                cr = np.cos(GAMMA * dt * (f_raw * g[None, :]).sum(1))
-                cd = np.cos(GAMMA * dt * (f_dec * g[None, :]).sum(1))
-                err = max(err, abs(wmean(cr, slice(None)) - wmean(cd, slice(None))))
-                floor = max(floor, abs(wmean(cr, A) - wmean(cr, B)))
+            e, f = _gate_battery(f_raw, f_dec, gates, w, A, B, dt)
+            err, floor = max(err, e), max(floor, f)
+    return dict(err=float(err), floor=float(floor), n_pulses_certified=n_p)
+
+
+def _gate_battery(f_raw, f_dec, gates, w, A, B, dt):
+    """The worst gated-phase replay error between two per-walker field series over ``gates``, and the split-half
+    floor of the reference: ``(err, floor)``."""
+    from ..constants import GAMMA
+    wmean = lambda c, idx: float(np.sum(w[idx] * c[idx]) / np.sum(w[idx]))
+    err = floor = 0.0
+    for g in gates:
+        cr = np.cos(GAMMA * dt * (f_raw * g[None, :]).sum(1))
+        cd = np.cos(GAMMA * dt * (f_dec * g[None, :]).sum(1))
+        err = max(err, abs(wmean(cr, slice(None)) - wmean(cd, slice(None))))
+        floor = max(floor, abs(wmean(cr, A) - wmean(cr, B)))
+    return err, floor
+
+
+def susc_path_series_fidelity(series_raw, arrays, pm, gm, *, w, dt, env=None, chi_iso=1.06e-6, chi_aniso=None):
+    """Certify a path channel against a REFERENCE SERIES ``(n_w, n_ch, n_t)`` in the canonical channel order (what a
+    re-encoding of a decoded channel is measured against, since the grid is not in the pack): the same battery
+    as the producer's -- GRE, spin echo and the CPMG train at the channel's ``max_refocus_pulses``, over the
+    envelope's ``B0_list`` and ``theta_deg`` -- against the split-half floor of the reference."""
+    env = env or {}
+    series_raw = np.asarray(series_raw, np.float64); n_w, n_t = series_raw.shape[0], series_raw.shape[2]
+    b_dec, _ = susc_path_decode(arrays, pm, n_w=n_w)
+    has_aniso = bool(gm.get("has_aniso")) and series_raw.shape[1] >= 13
+    ca = (0.1 * chi_iso if has_aniso else 0.0) if chi_aniso is None else float(chi_aniso)
+    n_p = int(pm.get("max_refocus_pulses") or 1)
+    gates = [np.ones(n_t), _cpmg_gate(n_t, 1), _cpmg_gate(n_t, n_p)]
+    perm = np.random.RandomState(0).permutation(n_w); A, B = perm[:n_w // 2], perm[n_w // 2:]
+    w = np.ones(n_w) if w is None else np.asarray(w, np.float64)
+    err = floor = 0.0
+    for B0 in (env.get("B0_list") or [3.0, 7.0]):
+        for th in (env.get("theta_deg") or [0, 90]):
+            t = np.deg2rad(float(th)); d = [np.sin(t), 0.0, np.cos(t)]
+            f_raw = susc_path_field(series_raw, d, B0=B0, chi_iso=chi_iso, chi_aniso=ca, has_aniso=has_aniso)
+            f_dec = susc_path_field(b_dec, d, B0=B0, chi_iso=chi_iso, chi_aniso=ca, has_aniso=has_aniso)
+            e, f = _gate_battery(f_raw, f_dec, gates, w, A, B, float(dt))
+            err, floor = max(err, e), max(floor, f)
     return dict(err=float(err), floor=float(floor), n_pulses_certified=n_p)
 
 
@@ -426,6 +462,11 @@ def susc_path_encode(fb, traj, origin, *, K=32, bits=8, dtype=np.float16, atol_t
     if bits not in (8, 16):
         raise ValueError("susc_path bits must be 8, 16, or None (got %r); sub-byte depths need "
                          "bit-packing to save bytes and 6-bit measured above the MC floor" % (bits,))
+    return _quantise_susc_path(coeffs, meta, bits)
+
+
+def _quantise_susc_path(coeffs, meta, bits):
+    """The integer container of the path-field coefficients: a per-(channel, band) scale, ``bits`` wide."""
     itype = np.int8 if bits == 8 else np.int16
     lim = 2 ** (bits - 1) - 1
     scale = np.abs(coeffs).max(axis=0) / lim                     # (n_ch, K), per channel AND band
@@ -433,6 +474,25 @@ def susc_path_encode(fb, traj, origin, *, K=32, bits=8, dtype=np.float16, atol_t
     q = np.clip(np.rint(coeffs / scale), -lim, lim).astype(itype)
     meta["bits"] = int(bits); meta["dtype"] = np.dtype(itype).name
     return {"susc_path_dct": q, "susc_path_scale": np.asarray(scale, np.float32)}, meta
+
+
+def susc_path_encode_series(series, names, *, K=32, bits=8, dtype=np.float16):
+    """:func:`susc_path_encode` from the per-save field series itself, ``(n_w, n_ch, n_t)`` in the canonical
+    channel order with ``names``: what re-encoding a pack's path route to another duration needs, since the
+    grid the path was sampled from need not be in the pack."""
+    from scipy.fft import dct
+    series = np.asarray(series, np.float64)
+    n_w, n_ch, n_t = series.shape
+    K = int(min(K, n_t))
+    coeffs = dct(series, type=2, norm="ortho", axis=2)[:, :, :K]
+    meta = dict(channel="susc_path_dct", K=K, n_t=int(n_t), n_ch=int(n_ch), channels=list(names),
+                iso_P_zz="stored", trace_residual=None, max_refocus_pulses=K // 2)
+    if bits is None:
+        meta["bits"] = None; meta["dtype"] = np.dtype(dtype).name
+        return {"susc_path_dct": np.asarray(coeffs, dtype)}, meta
+    if bits not in (8, 16):
+        raise ValueError("susc_path bits must be 8, 16, or None")
+    return _quantise_susc_path(coeffs, meta, bits)
 
 
 def susc_path_coeffs(arrays, meta):
@@ -645,7 +705,7 @@ def _walk_master(walk, *, weights=None, field=None, diffusivity=None, substrate_
     return walk._bank_dict(**extra)
 
 def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto",
-                      method=_cx.POSITION_METHOD, envelope=None, tol=2.0, K=None,
+                      method=_cx.POSITION_METHOD, envelope=None, tol=2.0, K=None, temporal_bandwidth_hz=None,
                       err_target=None, sigma_star=None, provenance=None,
                       blt_temporal_K=None, blt_dtype=np.float16, susc_path_K=None, susc_path_bits=8,
                       diffusivity=None, substrate_frame=None, out_path=None, verbose=False):
@@ -678,6 +738,9 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto"
     X = np.asarray(m["traj"], np.float64)
     dt = float(m["dt_traj"])
     wp_method = _cx.is_walker_preserving(method)
+    if K is None and temporal_bandwidth_hz is not None:
+        # the band as a frequency (#199): K bands over T resolve up to K / (2T)
+        K = max(2, int(np.ceil(2.0 * float(temporal_bandwidth_hz) * (X.shape[1] - 1) * dt)))
     if K is None:
         K, fid = _cx.auto_select_modes(X, X, dt, method=method, env=env, tol=tol,
                                        err_target=err_target, verbose=verbose)
@@ -806,7 +869,8 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto"
 
     n_t = X.shape[1]
     comp_meta = dict(method=method, K=int(pos_meta.get("K", K)),        # the K stored: the codec clamps a short walk
-                     walker_preserving=bool(wp_method), n_t=int(n_t))
+                     walker_preserving=bool(wp_method), n_t=int(n_t),
+                     temporal_bandwidth_hz=float(int(pos_meta.get("K", K)) / (2.0 * (int(n_t) - 1) * dt)))   # K bands over T (#199)
     if wp_method:
         comp_meta["precision_tiers"] = _precision_tiers(arrays, int(m["n_walkers"]),
                                                         float(fid.get("floor_max") or 0.0),

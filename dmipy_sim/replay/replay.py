@@ -281,7 +281,7 @@ class ReplayPack:
         A tier that is requested but not carried raises rather than returning a plausible number.
         """
         from .compression import read_position_coeffs
-        from ._replay_kernel import gradient_phase, se_gate
+        from ._replay_kernel import gradient_phase, field_gate
         waveform = waveform.waveform if hasattr(waveform, "waveform") else waveform
         if isinstance(waveform, Protocol):                # a multi-TE scheme: each sequence replayed, placed at its rows
             kw = dict(tissue=tissue, T2=T2, T1=T1, rho=rho, D=D, B0=B0, b0_dir=b0_dir, chi_iso=chi_iso,
@@ -328,7 +328,7 @@ class ReplayPack:
     def _walker_phases(self, P, waveform):
         """``(n_w, n_meas)`` accumulated phase of every walker under the prepared acquisition ``P``."""
         from .compression import read_position_coeffs
-        from ._replay_kernel import gradient_phase, se_gate
+        from ._replay_kernel import gradient_phase, field_gate
         n_w, dt, n_t, Geff = P["n_w"], P["dt"], P["n_t"], P["Geff"]
         if P["B0"] is None:
             C = read_position_coeffs(self.arrays, dtype=np.float64)
@@ -359,7 +359,7 @@ class ReplayPack:
                          "shape": tuple(gm["shape"]), "voxel_size": np.asarray(gm["voxel_size"], float)}
                 dB = sample_grid(assemble_field(basis, b0_dir, B0=float(B0), chi_iso=chi_i, chi_aniso=chi_aniso),
                                  pos, np.asarray(gm["origin"], float), gm["voxel_size"], periodic=False)
-            phi_x = GAMMA * dt * (dB * se_gate(n_t, dt, waveform.rf.refocus_time)[None, :]).sum(1)    # (n_w,)
+            phi_x = GAMMA * dt * (dB * field_gate(waveform, n_t, dt)[None, :]).sum(1)    # (n_w,)
             phi = gradient_phase(Geff, pos, dt).T + phi_x[:, None]                             # (n_w, n_meas)
         return phi
 
@@ -485,10 +485,11 @@ class ReplayPack:
         G_eff = np.asarray(waveform.G_eff, np.float64)
         dt_wf = float(waveform.dt)
         n_t, dt = self.n_t, self.dt
-        chi = waveform.chi_perp
-        if chi is not None:                              # the gate on the occupancy / contact channels: averaged over
-            chi = np.asarray(chi, np.float64).reshape(-1)  # each save's accumulation interval, never resampled
-            chi = bin_gate(chi, dt_wf if chi.shape[0] == G.shape[1] else dt, n_t, dt)[0]
+        chi = waveform.chi_perp                          # the gate on the occupancy / contact channels: the sequence's
+        if chi is None:                                  # coherence gate, or 1 over the sequence -- and 0 after its
+            chi = np.ones(G.shape[1])                    # echo, so a short acquisition relaxes to ITS echo, never to
+        chi = np.asarray(chi, np.float64).reshape(-1)    # the end of a longer walk (the TE-prefix property, #199)
+        chi = bin_gate(chi, dt_wf if chi.shape[0] == G.shape[1] else dt, n_t, dt)[0]   # averaged over each save's
         ch = (self.meta.get("compression", {}).get("channels", {}) or {})
         n_w = self.n_walkers
         w = np.asarray(self.spin_weights, np.float64)
@@ -628,6 +629,118 @@ class ReplayPack:
         if not sel.any():
             raise ValueError("compartment selection matched no walkers")
         return np.where(sel, ew, 0.0), w[sel].sum()
+
+    @property
+    def temporal_bandwidth_hz(self):
+        """The highest frequency the position bands resolve, ``K / (2 T)`` (#199): the pack's temporal band stated
+        as a frequency, which is what a scanner envelope is checked against and what a prefix keeps."""
+        return float(self.K) / (2.0 * (self.n_t - 1) * self.dt)
+
+    def prefix(self, TE, *, K=None, out_path=None, tol=2.0, id=None, provenance=None):
+        """This walk re-encoded to the shorter echo time ``TE`` (s), at the same bands per second (#199).
+
+        The TE-prefix property (RPK.md 3) makes the first ``ceil(TE / dt)`` saves a valid walk to ``TE``. Every
+        channel is decoded, cut there and re-encoded with its own codec through
+        :func:`~dmipy_sim.replay.bank.build_replay_pack`, so the result is a pack like any other with its own
+        fidelity certificate -- and that certificate is what licenses the prefix: re-pinning the bridge at ``TE``
+        is a new truncation, measured against the parent's decoded prefix on the fidelity battery, and a prefix
+        whose replay error exceeds ``tol`` times its Monte-Carlo floor is refused rather than written. The band
+        starts at the same bands per second, ``K' = ceil(K TE / T)``, and is doubled (up to the parent's ``K``)
+        until the certificate passes: a short prefix needs more than its share, since the pinned residual's
+        truncation error does not scale with the duration (#199: 100 ms at K = 48 prefixes to 25 ms at 12 but
+        needs 12, not 6, at 12.5 ms). ``K=`` fixes the band instead and is refused as it stands.
+        ``provenance.prefix`` records the parent (digest, id, T, K), the cut and every band tried.
+        """
+        from .bank import build_replay_pack, susc_path_decode, susc_path_encode_series, susc_path_series_fidelity
+        from .compression import decode_occupancy, decode_boundary_bridge, decode_boundary_local_time
+        dt, n_t = float(self.dt), int(self.n_t)
+        T = (n_t - 1) * dt
+        n_cut = int(round(float(TE) / dt)) + 1
+        if n_cut < 3 or n_cut > n_t:
+            raise ValueError(f"TE = {TE * 1e3:.3f} ms is not a prefix of this {T * 1e3:.3f} ms walk (dt {dt * 1e6:.1f} us): "
+                             f"it needs at least three saves and at most the walk's {n_t}")
+        T_cut = (n_cut - 1) * dt
+        K_new = int(K) if K is not None else max(2, int(np.ceil(self.K * T_cut / T)))
+        ch = dict(self.meta.get("compression", {}).get("channels", {}) or {})
+        wp = dict(self.meta.get("walk_params", {}) or {})
+        m = dict(traj=self.positions()[:, :n_cut, :], dt_traj=dt, T_max=T_cut,
+                 walkers_shuffled=bool(self.meta.get("compression", {}).get("precision_tiers", {}).get("walkers_shuffled", False)),
+                 seed=int(wp.get("seed", 0)))
+        if "spin_weights" in self.arrays:
+            m["w"] = np.asarray(self.arrays["spin_weights"], np.float64)
+        if self.meta.get("substrate") is not None:
+            m["substrate"] = self.meta["substrate"]
+        if wp.get("diffusivity") is not None:
+            m["D_intra"] = float(wp["diffusivity"])
+        m["substrate_frame"] = self.substrate_frame
+        if "compartment" in ch:
+            occ = decode_occupancy(self.arrays, ch["compartment"])
+            comp = np.asarray(occ["comp"])
+            m["comp"] = comp[:, :n_cut] if comp.ndim == 2 else comp
+            if "bound" in occ:
+                b = np.asarray(occ["bound"]); m["bfrac"] = b[:, :n_cut] if b.ndim == 2 else b
+        blt_K = None
+        if "boundary_local_time" in ch:
+            bm = dict(ch["boundary_local_time"]); bm.setdefault("n_t", n_t)
+            if "blt_bridge_dst" in self.arrays:
+                bm.setdefault("K", int(np.asarray(self.arrays["blt_bridge_dst"]).shape[1]))
+                ell = decode_boundary_bridge(self.arrays, bm)
+                blt_K = max(2, int(np.ceil(bm["K"] * T_cut / T)))
+            else:
+                ell = decode_boundary_local_time(self.arrays, bm)
+            m["dlog_b"] = np.asarray(ell)[:, :n_cut]
+        path_series = None
+        if "susceptibility_path" in ch:
+            series, names = susc_path_decode(self.arrays, ch["susceptibility_path"], n_w=self.n_walkers)
+            path_series = (series[:, :, :n_cut], names,
+                           max(2, int(np.ceil(int(ch["susceptibility_path"]["K"]) * T_cut / T))),
+                           ch["susceptibility_path"].get("bits", 8))
+        tried = []
+        while True:
+            prov = dict(provenance or {})
+            prov["prefix"] = dict(parent_digest=self.digest, parent_id=self.meta.get("id"), parent_T_s=T, parent_K=int(self.K),
+                                  TE_s=T_cut, K=K_new, K_tried=tried + [K_new],
+                                  note="re-encoded from the parent's decoded prefix; the band starts at the parent's bands "
+                                       "per second and doubles until the certificate passes")
+            pk = build_replay_pack(m, id=id or f"{self.meta.get('id')}/prefix-{T_cut * 1e3:.0f}ms", license=self.license,
+                                   citation=self.citation, K=K_new, tol=tol, field=False, blt_temporal_K=blt_K, provenance=prov)
+            fid = pk.meta.get("fidelity", {})
+            if K is not None or fid.get("within_2x_floor", True) or K_new >= int(self.K):
+                break
+            tried.append(K_new)
+            K_new = min(2 * K_new, int(self.K))
+        if path_series is not None:
+            series, names, Kp, bits = path_series
+            a, pm = susc_path_encode_series(series, names, K=Kp, bits=bits)
+            pk.arrays.update(a)
+            pk.meta["compression"]["channels"]["susceptibility_path"] = pm
+            g = dict(ch.get("susceptibility_grid", {})); g.update(arrays_in_pack=False, replay_route="path")
+            pk.meta["compression"]["channels"]["susceptibility_grid"] = g
+            pk.meta["replay_envelope"]["field"] = True
+            pk.meta["replay_envelope"].setdefault("acquisition", {})["max_refocusing_pulses"] = int(pm["max_refocus_pulses"])
+            # the field tier is certified as the producer certifies it (GRE, SE, the CPMG train it advertises),
+            # against the parent's decoded prefix, which is the reference this child has
+            spec = self.substrate
+            chi_i = None
+            if spec is not None:
+                from ..spec.tissue import Tissue
+                chi_i = Tissue.from_spec(spec).knobs().get("chi_iso")
+            cf = susc_path_series_fidelity(series, pk.arrays, pm, g, w=self.spin_weights, dt=dt,
+                                           env=self.meta.get("replay_envelope", {}).get("acquisition"),
+                                           chi_iso=float(chi_i or 1.06e-6))
+            fid = pk.meta.setdefault("fidelity", {})
+            fid.update(err_susc_path=cf["err"], floor_susc_path=cf["floor"], susc_path_pulses_certified=cf["n_pulses_certified"],
+                       err_max=max(float(fid.get("err_max", 0.0)), cf["err"]),
+                       floor_max=max(float(fid.get("floor_max", 0.0)), cf["floor"]))
+            fid["within_2x_floor"] = bool(fid["err_max"] <= tol * fid["floor_max"])
+        fid = pk.meta.get("fidelity", {})
+        if not fid.get("within_2x_floor", True):
+            raise ValueError(f"the prefix at TE = {T_cut * 1e3:.1f} ms with K' = {K_new} does not reproduce the parent's decoded "
+                             f"prefix within {tol:g} x its Monte-Carlo floor (error {fid.get('err_max'):.3g}, floor "
+                             f"{fid.get('floor_max'):.3g}); give a larger K= or keep the parent")
+        if out_path is not None:
+            write_rpk(out_path, pk.arrays, pk.meta)
+        return pk
 
     @property
     def digest(self):
@@ -865,7 +978,7 @@ class ReplayPack:
         route) scaled by ``B0``, ``chi_iso``, ``chi_aniso``. Raises, as the quadrature route does, when the pack
         cannot supply it."""
         from scipy.fft import dct
-        from ._replay_kernel import se_gate
+        from ._replay_kernel import field_gate
         from .bank import susc_path_coeffs
         B0, chi_iso, chi_aniso = P["B0"], P["chi_iso"], P["chi_aniso"]
         if not self.has_field:
@@ -877,7 +990,7 @@ class ReplayPack:
             raise ValueError("B0 was given without chi_iso; give chi_iso (and chi_aniso)")
         dt, n_t = P["dt"], P["n_t"]
         Cs, names = susc_path_coeffs(self.arrays, pm)
-        gate_hat = dct(se_gate(n_t, dt, waveform.rf.refocus_time), type=2, norm="ortho")[:Cs.shape[2]]
+        gate_hat = dct(field_gate(waveform, n_t, dt), type=2, norm="ortho")[:Cs.shape[2]]
         Psi = (GAMMA * dt) * np.einsum("k,wck->wc", gate_hat, Cs)               # (n_w, n_ch)
         i_p = names.index("iso_P_xx")
         i_a = names.index("aniso_G_xx") if "aniso_G_xx" in names else None
@@ -932,7 +1045,7 @@ class ReplayPack:
         from scipy.fft import dct
         from . import so3
         from .compression import read_position_coeffs
-        from ._replay_kernel import se_gate
+        from ._replay_kernel import field_gate
         Geff, dt, n_t, ew, norm, B0 = P["Geff"], P["dt"], P["n_t"], P["ew"], P["norm"], P["B0"]
         b0_dir, chi_iso, chi_aniso = P["b0_dir"], P["chi_iso"], P["chi_aniso"]
         n_meas, n_w = Geff.shape[0], ew.shape[0]
@@ -959,7 +1072,7 @@ class ReplayPack:
                 raise ValueError("B0 was given without chi_iso; give chi_iso (and chi_aniso)")
             from .bank import susc_path_coeffs
             Cs, names = susc_path_coeffs(self.arrays, pm)
-            gate_hat = dct(se_gate(n_t, dt, waveform.rf.refocus_time), type=2, norm="ortho")[:Cs.shape[2]]
+            gate_hat = dct(field_gate(waveform, n_t, dt), type=2, norm="ortho")[:Cs.shape[2]]
             Psi = (GAMMA * dt) * np.einsum("k,wck->wc", gate_hat, Cs)               # (n_w, n_ch)
             i_p = names.index("iso_P_xx")
             i_a = names.index("aniso_G_xx") if "aniso_G_xx" in names else None
