@@ -101,7 +101,7 @@ def test_strands_spec_is_one_wall_of_swept_polylines_in_a_reflecting_voxel(stran
     assert spec.walls[0].surface.instances["radii"] == pytest.approx([1.5e-6, 1.0e-6, 2.0e-6])
     assert spec.domain.box_min == pytest.approx([-10e-6] * 3) and spec.domain.boundary == ["reflect"] * 3
     assert spec.seeding.pools == [0, 1] and spec.validity.smallest_feature == pytest.approx(1.0e-6)
-    assert "field" not in spec.validity.tiers
+    assert spec.validity.tiers == ["gradient", "relaxation"]           # no surface, no field: the engine walks neither yet
     # one seeded pool is one geometry, each side of the wall
     g_e = geometry_from_spec(dataclasses.replace(spec, seeding=Seeding([0])))
     g_i = geometry_from_spec(dataclasses.replace(spec, seeding=Seeding([1])))
@@ -118,8 +118,8 @@ def test_disco_spec_adds_the_sheath_at_the_phantoms_g_ratio(strand_txt):
     spec = disco_spec(strand_txt)
     assert spec.id == "disco/optimized_final" and [w.name for w in spec.walls] == ["axolemma", "sheath"]
     assert spec.walls[0].surface.instances["radii"] == pytest.approx([0.7 * r for r in (1.5e-6, 1.0e-6, 2.0e-6)])
-    assert [p.name for p in spec.pools] == ["extra", "intra", "myelin"] and "field" in spec.validity.tiers
-    w = walk_spec(spec, 90, 8e-4, 2e-4, seed=0, n_probe=20_000, field_res=0.5e-6, require_gpu=False)
+    assert [p.name for p in spec.pools] == ["extra", "intra", "myelin"] and spec.validity.tiers == ["gradient", "relaxation"]
+    w = walk_spec(spec, 90, 8e-4, 2e-4, seed=0, n_probe=20_000, field_res=0.5e-6, require_gpu=False, field=False)
     ids = np.asarray(w.compartment)[:, 0]
     assert set(np.unique(ids)) == {0, 1, 2} and w.field_grid is not None
 
@@ -130,3 +130,20 @@ def test_a_strand_whose_radius_varies_is_refused(tmp_path):
     with pytest.raises(SpecError, match="varies along its length"):
         strands_spec(path)
     assert strands_spec(path, radius_tol=1.0).validity.smallest_feature > 0
+
+
+def test_a_strand_pack_claims_no_tier_the_walk_did_not_record(strand_txt):
+    """The curved tubes accumulate no boundary local time: the walk carries no surface channel, the pack claims no
+    C2, a replay at rho is refused rather than returned unattenuated; and the field is refused at the walk."""
+    from dmipy_sim.replay.bank import build_replay_pack
+    spec = disco_spec(strand_txt)
+    assert spec.validity.tiers == ["gradient", "relaxation"]
+    w = walk_spec(spec, 120, 1e-3, 2.5e-4, seed=0, n_probe=20_000, require_gpu=False, field=False)
+    assert w.boundary_local_time is None and not w.has_surface and w.has_compartments
+    pk = build_replay_pack(w, id="t/strands", license="x", citation="x", K=4, field=False)
+    assert pk.has_relaxation and not pk.has_surface and not pk.meta["replay_envelope"]["surface_relaxivity"]
+    seq = d.set_b(d.pgse([[1, 0, 0]], 0.2e-3, 0.5e-3, gradient_strengths=0.1, n_t=pk.n_t, slew_rate=np.inf), [1e9])
+    with pytest.raises(ValueError, match="no C2"):
+        pk.replay(seq, rho=1e-5)
+    with pytest.raises(SpecError, match="not implemented"):
+        walk_spec(spec, 60, 1e-3, 2.5e-4, seed=0, n_probe=20_000, require_gpu=False, field=True)

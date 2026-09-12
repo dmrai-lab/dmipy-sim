@@ -197,22 +197,32 @@ def _walk_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field, field_re
         w = simulate_trajectories(n, float(pool.D), g, T_max=T_max, dt_save=dt_save, seed=seed + 13 * pid, r0=r0,
                                   require_gpu=require_gpu, walker_batch_size=batch)
         n_t, walked = w.n_t, w
-        parts.append((pid, np.asarray(w.positions, np.float32), np.asarray(w.boundary_local_time, np.float32)))
+        parts.append((pid, np.asarray(w.positions, np.float32),
+                      None if w.boundary_local_time is None else np.asarray(w.boundary_local_time, np.float32)))
     if walked is None:
         raise SpecError("no seeded pool diffuses; nothing to walk")
     traj, dlog, ids, wts = [], [], [], []
+    surface = all(dl is not None for pid, pos, dl in parts if pos.ndim == 3)      # every walked pool records contact
     for pid, pos, dl in parts:
-        if dl is None:
+        if pos.ndim == 2:                                                        # a frozen shell: no path, no contact
             pos = np.repeat(pos[:, None, :], n_t, axis=1); dl = np.zeros((len(pos), n_t), np.float32)
+        elif dl is None:
+            dl = np.zeros((len(pos), n_t), np.float32)                           # a placeholder: dropped below
         wt = np.ones(len(pos)) if spec.seeding.weights == "thin" else np.full(len(pos), wf[pid])
         traj.append(pos); dlog.append(dl); ids.append(np.full(len(pos), pid, np.int8)); wts.append(wt)
     traj = np.concatenate(traj); dlog = np.concatenate(dlog); ids = np.concatenate(ids); wts = np.concatenate(wts)
     order = np.random.default_rng(int(seed) + 991).permutation(len(ids))   # any prefix is a fair subsample
     traj, dlog, ids, wts = traj[order], dlog[order], ids[order], wts[order]
+    if not surface:
+        dlog = None                                                              # the geometry records no surface time
     comp = np.repeat(ids[:, None], n_t, axis=1)
     fg = None
     if field and spec.field_source_pools:
         src = spec.field_source_pools[0].id
+        if any(w.surface.kind == "swept_polyline" for w in spec.walls):
+            raise SpecError("the field of a strand substrate is not implemented: a rasterised basis over its domain is "
+                            "out of reach (a cubic millimetre at 0.2 um is 1e11 voxels) and the per-segment analytic "
+                            "field along each path (dmipy-sim#76, item 3) is not built yet; walk it with field=False")
         outer_b = boundary(inside_w[src]) if inside_w[src] else None
         inner_b = boundary(outside_w[src]) if outside_w[src] else None
         if outer_b is None:
