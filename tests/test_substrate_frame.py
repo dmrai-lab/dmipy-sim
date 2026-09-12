@@ -66,3 +66,60 @@ def test_a_declared_frame_makes_the_rotated_walk_replay_like_the_original(packs)
         silent = np.abs(out["silent"][k] - out["z"][k]).max()
         np.testing.assert_allclose(out["x"][k], out["z"][k], rtol=5e-3)         # the declared frame: the same physics
         assert silent > 10 * declared and silent > 1e-2                         # undeclared: a different (wrong) tissue
+
+
+# ---------------------------------------------------------------------------- the frame declared by the substrate (#194)
+def test_a_strand_list_declares_its_frame_from_its_own_strands(tmp_path):
+    """Three strands along x and two along y: z of the frame is the larger bundle's axis, y the other's, and the
+    realisation records both bundles -- never a PCA over positions (the bisector of a crossing)."""
+    from dmipy_sim.io.strands import write_strands
+    from dmipy_sim.spec import strands_spec
+    from dmipy_sim.replay.bank import frame_of_spec
+    r = 1e-6
+    along_x = [np.array([[-5e-6, y, 0.0], [5e-6, y, 0.0]]) for y in (-3e-6, 0.0, 3e-6)]
+    along_y = [np.array([[x, -5e-6, 0.0], [x, 5e-6, 0.0]]) for x in (-2e-6, 2e-6)]
+    p = tmp_path / "cross.txt"
+    write_strands(str(p), along_x + along_y, [r] * 5, 20e-6)
+    spec = strands_spec(str(p), g_ratio=None)
+    F = frame_of_spec(spec)
+    assert abs(abs(F[:, 2] @ [1, 0, 0]) - 1) < 1e-9 and abs(abs(F[:, 1] @ [0, 1, 0]) - 1) < 1e-9
+    assert np.linalg.det(F) > 0 and np.allclose(F @ F.T, np.eye(3))
+    b = spec.realisation["bundles"]
+    assert [x["n_strands"] for x in b] == [3, 2] and abs(abs(np.dot(b[1]["axis"], [0, 1, 0])) - 1) < 1e-9
+
+
+def test_an_analytic_geometry_declares_its_axis_and_the_pack_carries_it():
+    """A cylinder oriented along x: its spec's frame axis is x (not the default z), and a pack built from its walk
+    declares ``walk_params.substrate_frame`` with that axis as column 3."""
+    g = d.Cylinder(radius=2e-6, orientation=(1, 0, 0))
+    assert np.allclose(g.spec.frame.axis, [1, 0, 0])
+    walk = d.simulate_trajectories(200, 2e-9, g, 4e-3, 5e-4, seed=1, require_gpu=False)
+    pk = build_replay_pack(walk, id="t/x", license="x", citation="x", K=4)
+    F = np.asarray(pk.meta["walk_params"]["substrate_frame"])
+    assert np.allclose(F[:, 2], [1, 0, 0]) and np.allclose(pk.frame_axis, [1, 0, 0])
+
+
+def test_a_declared_frame_the_walk_contradicts_is_refused_at_build():
+    """The bundle runs along x; a frame that says z is refused with the angle, a frame that says x is written,
+    and a sphere walk (no dominant axis) declares nothing to contradict."""
+    from dmipy_sim.replay.bank import frame_from_axis, check_frame_against_walk
+    g = d.Cylinder(radius=1e-6, orientation=(1, 0, 0))                    # intra-axonal: free along x, restricted across
+    walk = d.simulate_trajectories(400, 2e-9, g, 6e-3, 5e-4, seed=2, require_gpu=False)
+    with pytest.raises(ValueError, match="principal displacement axis"):
+        build_replay_pack(walk, id="t/wrong", license="x", citation="x", K=4, substrate_frame=np.eye(3))
+    pk = build_replay_pack(walk, id="t/right", license="x", citation="x", K=4, substrate_frame=frame_from_axis((1, 0, 0)))
+    assert np.allclose(pk.frame_axis, [1, 0, 0])
+    rng = np.random.default_rng(0)
+    iso = np.cumsum(rng.normal(size=(300, 20, 3)), axis=1) * 1e-7
+    assert check_frame_against_walk(iso, np.eye(3)) == 0.0
+
+
+@pytest.mark.skipif(not __import__("os").path.isdir("/home/rutger/dmrai-ws/CACTUS/prod/cactus_bundle_00000"),
+                    reason="the CACTUS production run is not on this machine")
+def test_the_cactus_run_declares_its_bundle_along_x():
+    from dmipy_sim.spec import cactus_spec
+    from dmipy_sim.replay.bank import frame_of_spec
+    spec = cactus_spec("/home/rutger/dmrai-ws/CACTUS/prod/cactus_bundle_00000")
+    F = frame_of_spec(spec)
+    assert np.degrees(np.arccos(abs(F[:, 2] @ [1, 0, 0]))) < 2.0
+    assert len(spec.realisation["bundles"]) == 1

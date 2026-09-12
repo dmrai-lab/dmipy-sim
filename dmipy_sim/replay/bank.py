@@ -32,7 +32,7 @@ from ._replay_kernel import se_gate, gradient_phase
 from ..acquisition.rf import RFEvent
 from .replay import ReplayPack, read_rpk, write_rpk
 
-__all__ = ["build_replay_pack", "build_to_floor", "replay_susc", "frame_from_axis", "frame_from_bundles",
+__all__ = ["build_replay_pack", "build_to_floor", "replay_susc", "frame_from_axis", "frame_from_bundles", "frame_of_spec", "check_frame_against_walk",
            "read_rpk", "write_rpk", "RPK_SCHEMA_VERSION"]
 
 RPK_SCHEMA_VERSION = "0.4"
@@ -75,18 +75,88 @@ def _master_arrays(src) -> dict:
 
 
 # --------------------------------------------------------------- substrate frames
-def frame_from_axis(axis):
+def frame_from_axis(axis, *, in_plane=None):
     """Deterministic orthonormal substrate frame R (3x3, columns [x, y, z]) with z = `axis`
     (the primary fibre direction) and a FIXED perpendicular x/y basis (Gram-Schmidt seeded
     from the global axis least aligned with z). A single fibre vector leaves a free rotation
     about itself; this pins x/y so directions are reproducible run-to-run and gradient schemes
     are oriented unambiguously. For an isotropic substrate any axis works — the frame is still
-    fixed, giving uniform behaviour across packs."""
+    fixed, giving uniform behaviour across packs. ``in_plane`` (a spec's ``frame.in_plane``) pins
+    ``y`` instead: its component perpendicular to ``z``, the direction a secondary bundle opens
+    into (RPK.md 4.2), and ``x = y × z``."""
     z = np.asarray(axis, float); z = z / np.linalg.norm(z)
+    if in_plane is not None:
+        y = np.asarray(in_plane, float); y = y - z * float(y @ z)
+        if np.linalg.norm(y) < 1e-9:
+            raise ValueError("in_plane is parallel to the axis")
+        y /= np.linalg.norm(y)
+        return np.column_stack([np.cross(y, z), y, z])
     seed = np.eye(3)[int(np.argmin(np.abs(z)))]        # global axis least aligned with z
     x = seed - z * float(seed @ z); x /= np.linalg.norm(x)
     y = np.cross(z, x)
     return np.column_stack([x, y, z])
+
+
+def frame_of_spec(spec):
+    """The substrate frame a spec declares, as the 3x3 basis: ``frame.axis`` (and ``frame.in_plane`` when
+    given) through :func:`frame_from_axis`."""
+    fr = getattr(spec, "frame", None)
+    if fr is None:
+        return None
+    return frame_from_axis(fr.axis, in_plane=getattr(fr, "in_plane", None))
+
+
+def check_frame_against_walk(traj, F, *, w=None, bundle_axes=None, tol_deg=5.0, anisotropy=1.1):
+    """Refuse a declared substrate frame the walk contradicts (RPK.md 4.2, dmipy-sim#194): the principal axis
+    of the walkers' end-to-end displacements must lie within ``tol_deg`` of the span of the declared bundle
+    axes (``bundle_axes``, default the frame's ``z``). A walk whose displacement covariance has no dominant
+    axis declares nothing and passes: dominant means an eigenvalue ratio above ``anisotropy`` AND above the
+    spread finite sampling gives an isotropic walk (``1 + 6 / sqrt(n_eff)``), so a small walk of free water is
+    not read as oriented by its noise. A walk with two comparable axes is checked against the plane only when
+    two or more bundles are declared. Returns the angle (degrees)."""
+    X = np.asarray(traj, np.float64)
+    d = X[:, -1, :] - X[:, 0, :]
+    w = np.ones(d.shape[0]) if w is None else np.asarray(w, np.float64)
+    ok = np.isfinite(d).all(1) & np.isfinite(w) & (w > 0)        # a walker with no position at the end says nothing
+    d, w = d[ok], w[ok]
+    if d.shape[0] < 4:
+        return 0.0
+    d = d - (w[:, None] * d).sum(0) / w.sum()
+    C = (d * w[:, None]).T @ d / w.sum()
+    tr = float(np.trace(C))
+    if tr <= 0:
+        return 0.0                                                # nobody moved
+    lam, V = np.linalg.eigh(C / tr)                               # ascending; unit trace keeps LAPACK away from
+    lam, V = lam[::-1], V[:, ::-1]                                # its tolerance floor at 1e-12 m^2
+    n_eff = float(w.sum() ** 2 / (w ** 2).sum())
+    dominant = max(float(anisotropy), 1.0 + 6.0 / np.sqrt(max(n_eff, 1.0)))
+    if lam[1] <= 0 or lam[0] / lam[1] < dominant:
+        if lam[2] <= 0 or lam[1] / lam[2] < dominant or bundle_axes is None or len(bundle_axes) < 2:
+            return 0.0                                            # no dominant axis: nothing to contradict
+        probe = V[:, :2]                                          # a plane of two comparable axes
+    else:
+        probe = V[:, :1]
+    F = np.asarray(F, np.float64).reshape(3, 3)
+    B = np.asarray(bundle_axes if bundle_axes is not None else [F[:, 2]], np.float64)
+    B = B / np.linalg.norm(B, axis=1, keepdims=True)
+    Q, _ = np.linalg.qr(B.T)                                      # an orthonormal basis of the declared span
+    Q = Q[:, :np.linalg.matrix_rank(B)]
+    worst = 0.0
+    for k in range(probe.shape[1]):
+        v = probe[:, k]
+        r = v - Q @ (Q.T @ v)
+        worst = max(worst, float(np.degrees(np.arcsin(min(1.0, np.linalg.norm(r))))))
+    # the principal axis of n_eff samples is itself uncertain by ~ sqrt(l1 l2) / (l1 - l2) / sqrt(n_eff) radians
+    # (Anderson): a small walk is refused only beyond four of those, never for its own sampling noise
+    k = probe.shape[1]
+    sigma = np.degrees(np.sqrt(lam[k - 1] * lam[k]) / max(lam[k - 1] - lam[k], 1e-300) / np.sqrt(n_eff))
+    if worst > max(float(tol_deg), 4.0 * float(sigma)):
+        raise ValueError(f"the walk's principal displacement axis {np.round(V[:, 0], 3).tolist()} is {worst:.1f} deg from "
+                         f"the declared substrate frame (axis {np.round(F[:, 2], 3).tolist()}"
+                         f"{'' if bundle_axes is None else f', bundles {np.round(B, 3).tolist()}'}): the frame does not "
+                         f"describe this substrate (RPK.md 4.2). Declare it from the substrate's own structure -- "
+                         f"substrate_frame=frame_from_axis(axis) or the spec's frame -- not from a guess")
+    return worst
 
 
 def frame_from_bundles(axes, *, primary=0, weights=None, tol=1e-3):
@@ -687,6 +757,8 @@ def _walk_master(walk, *, weights=None, field=None, diffusivity=None, substrate_
     extra = {}
     if spec is not None:
         extra["substrate"] = spec.to_dict()
+        if substrate_frame is None:                       # the pack declares what its spec declares (RPK.md 4.2)
+            substrate_frame = frame_of_spec(spec)
     if weights is not None:
         w = np.asarray(weights, float).reshape(-1)
         if w.shape[0] != walk.n_walkers:
@@ -734,6 +806,11 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto"
     src = _walk_master(walk, weights=weights, field=field, diffusivity=diffusivity, substrate_frame=substrate_frame)
     _cx.require_position_method(method)
     m = _master_arrays(src)
+    if m.get("substrate_frame") is not None:              # a declared frame the walk contradicts is refused (#194)
+        sub = m.get("substrate") or {}
+        bundles = (sub.get("realisation") or {}).get("bundles") if isinstance(sub, dict) else None
+        check_frame_against_walk(m["traj"], m["substrate_frame"], w=m.get("w"),
+                                 bundle_axes=(None if not bundles else [b["axis"] for b in bundles]))
     env = envelope or _cx.default_envelope()
     X = np.asarray(m["traj"], np.float64)
     dt = float(m["dt_traj"])

@@ -773,8 +773,7 @@ class ReplayPack:
             fr = getattr(spec, "frame", None) if spec is not None else None
             if fr is None:
                 return np.eye(3)
-            a = np.asarray(fr.axis, np.float64); a = a / np.linalg.norm(a)
-            F = np.asarray(frame_from_axis(a), np.float64).reshape(3, 3)
+            F = np.asarray(frame_from_axis(fr.axis, in_plane=getattr(fr, "in_plane", None)), np.float64).reshape(3, 3)
         if not np.allclose(F @ F.T, np.eye(3), atol=1e-6) or np.linalg.det(F) < 0:
             raise ValueError("the pack's substrate_frame is not a proper rotation")
         return F
