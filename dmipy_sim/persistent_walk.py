@@ -52,6 +52,9 @@ class PersistentWalk:
         geometry); the pack embeds it and reads the pools from it.
     weights : (n_walkers,) or None
         Per-walker spin weights when the seeding rule leaves them non-uniform.
+    stepping : dict or None
+        How the producer stepped when it was not one fixed step for every walker (the adaptive producer's
+        free-step fraction, kernel steps against the fused count, its classes); None for the fused walk.
     field_basis : FieldGrid, StrandFieldBasis or None
         The substrate's susceptibility field basis when the producer computed it: a grid (a mesh, a
         rasterised substrate) or the per-segment closed form of a strand substrate; both answer
@@ -71,6 +74,7 @@ class PersistentWalk:
     spec: object = field(default=None, compare=False, repr=False)
     weights: Optional[np.ndarray] = field(default=None, compare=False, repr=False)
     field_basis: object = field(default=None, compare=False, repr=False)
+    stepping: Optional[dict] = field(default=None, compare=False, repr=False)
 
     def __post_init__(self):
         # a walk always knows the situation it was walked in: the spec it was driven by, else its geometry's
