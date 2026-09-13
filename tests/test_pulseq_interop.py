@@ -308,3 +308,34 @@ def test_the_prescription_travels_through_pulseq(tmp_path):
     pseq0 = to_pulseq(plain, filename=str(tmp_path / "q.seq"))
     assert "FOV" not in pseq0.definitions and "dmipy_prescription" not in pseq0.definitions
     assert from_pulseq(str(tmp_path / "q.seq")).prescription is None
+
+
+def test_from_pulseq_keeps_trapezoid_flat_tops():
+    """dmipy-sim#230: pypulseq exports a trapezoid as its four corners, so its flat top is two samples far apart;
+    the reader must take the event's extent from the block, not from the sample spacing, or the lobe is deleted
+    and only the ramps survive. Checked against the closed-form b of a trapezoid pair with ramps."""
+    sysd = make_system('siemens_prisma', grad_raster_time=1e-5)
+    seq = pp.Sequence(system=sysd)
+    delta, Delta, g_T, eps = 10e-3, 40e-3, 0.06, 0.3e-3
+    lobe = pp.make_trapezoid('y', amplitude=g_T * sysd.gamma, flat_time=delta, rise_time=eps, system=sysd)
+    anti = pp.make_trapezoid('y', amplitude=-g_T * sysd.gamma, flat_time=delta, rise_time=eps, system=sysd)
+    seq.add_block(pp.make_delay(1e-3))
+    seq.add_block(lobe)
+    seq.add_block(pp.make_delay(Delta - pp.calc_duration(lobe)))
+    seq.add_block(anti)                                       # effective form: no RF, a bipolar pair
+    seq.add_block(pp.make_delay(5e-3))
+    seq.add_block(pp.make_adc(num_samples=1, duration=1e-5, system=sysd))
+    with tempfile.TemporaryDirectory() as d:
+        p = os.path.join(d, "trap.seq")
+        seq.write(p)
+        wf = from_pulseq(p, dt=1e-5)
+    G = np.asarray(wf.G)[0, :, 1]
+    n_flat = int(np.sum(np.abs(np.abs(G) - g_T) < 1e-6 * g_T))
+    assert abs(n_flat - 2 * delta / 1e-5) <= 4               # both flat tops present, sample for sample
+    # b of a trapezoid pair with ramps eps, delta counted from the start of the ramp up to the start of the ramp
+    # down (Price 1997): gamma^2 G^2 [delta^2 (Delta - delta/3) + eps^3/30 - delta eps^2/6]
+    gam = 2 * np.pi * sysd.gamma
+    d_eff = delta + eps
+    b_ref = gam ** 2 * g_T ** 2 * (d_eff ** 2 * (Delta - d_eff / 3) + eps ** 3 / 30 - d_eff * eps ** 2 / 6)
+    b_read = _b(ScannerSequence(G=jnp.asarray(np.asarray(wf.G)), dt=wf.dt, readout=(wf.echo_idx,)))
+    assert abs(b_read / b_ref - 1.0) < 2e-3

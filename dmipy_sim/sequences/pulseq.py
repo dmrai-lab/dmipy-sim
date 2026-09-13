@@ -124,6 +124,33 @@ def _event_times(arr):
     return a.ravel()
 
 
+def _gradient_live_spans(seq, raster):
+    """Per channel, the [start, end] spans (s, from the file's t = 0) where a block plays a gradient event: a
+    trapezoid's exact extent, an arbitrary gradient's extent widened by half a raster on each side (its samples
+    sit at raster centres). Anything outside is zero by Pulseq's definition."""
+    spans = ([], [], [])
+    t = 0.0
+    for i in range(1, len(seq.block_events) + 1):
+        blk = seq.get_block(i)
+        dur = float(seq.block_durations[i])
+        for ci, ch in enumerate(('gx', 'gy', 'gz')):
+            g = getattr(blk, ch, None)
+            if g is None:
+                continue
+            start = t + float(getattr(g, 'delay', 0.0) or 0.0)
+            if getattr(g, 'type', '') == 'trap':
+                length = float(g.rise_time) + float(g.flat_time) + float(g.fall_time)
+                spans[ci].append((start, start + length))
+            else:
+                length = float(getattr(g, 'shape_dur', 0.0) or 0.0)
+                if not length:
+                    tt_g = getattr(g, 'tt', None)
+                    length = float(np.asarray(tt_g)[-1] + 0.5 * raster) if tt_g is not None else len(np.asarray(g.waveform)) * raster
+                spans[ci].append((start - 0.5 * raster, start + length + 0.5 * raster))
+        t += dur
+    return spans
+
+
 # -- export: ScannerSequence -> .seq -------------------------------------------------
 
 def to_pulseq(waveform, m=0, *, system=None, filename=None,
@@ -363,24 +390,25 @@ def from_pulseq(src, *, dt=None):
 
     G = np.zeros((n_t, 3), dtype=np.float32)
     raster = float(getattr(seq, 'grad_raster_time', dt) or dt)
+    live = _gradient_live_spans(seq, raster)
     for ci in range(min(3, len(gw))):
         arr = np.asarray(gw[ci], dtype=float)
         if arr.ndim == 2 and arr.shape[1] >= 2:
             tt, aa = arr[0], arr[1]
-            # waveforms_and_times() lists samples only WITHIN gradient events; between events the gradient
-            # is zero by definition. Interpolating the bare list draws a straight line across every gap --
-            # filling a diffusion gap, or a stimulated echo's whole storage period, with gradient that is
-            # not there. Mask the gaps instead of inserting zeros near their edges: an inserted zero makes
-            # the interpolator ramp down to it, shaving area off the end of every segment.
+            # waveforms_and_times() lists samples only WITHIN gradient events: a trapezoid as its four corners, an
+            # arbitrary gradient as its raster samples. Between events the gradient is zero by definition, but
+            # interpolating the bare list draws a straight line across every gap -- filling a diffusion gap, or a
+            # stimulated echo's whole storage period, with gradient that is not there. The gaps are known from the
+            # blocks (an event's span is live, the rest is not), never from the sample spacing: a trapezoid's flat
+            # top is two corners 10 ms apart, and reading that spacing as a gap deletes the lobe (dmipy-sim#230).
+            # An arbitrary event's span is widened by half a raster on each side so its first and last samples,
+            # which sit at raster centres, are not cut off, which would shave area off the end of every segment.
             tq = t_grid + t0
             vals = np.interp(tq, tt, aa, left=0.0, right=0.0)
-            live = np.zeros(tq.shape, bool)
-            edges = np.where(np.diff(tt) > 1.5 * raster)[0]
-            starts = np.concatenate([[tt[0]], tt[edges + 1]]) if tt.size else np.zeros(0)
-            ends = np.concatenate([tt[edges], [tt[-1]]]) if tt.size else np.zeros(0)
-            for a0, b0 in zip(starts, ends):
-                live |= (tq >= a0 - 0.5 * raster) & (tq <= b0 + 0.5 * raster)
-            G[:, ci] = np.where(live, vals, 0.0) / gamma_hz
+            mask = np.zeros(tq.shape, bool)
+            for a0, b0 in live[ci]:
+                mask |= (tq >= a0) & (tq <= b0)
+            G[:, ci] = np.where(mask, vals, 0.0) / gamma_hz
 
     # RF schedule, read from the blocks themselves so a file that describes its RF is understood whoever
     # wrote it. The stored dmipy_rf_events is a fallback for older files that carry only the excitation.
