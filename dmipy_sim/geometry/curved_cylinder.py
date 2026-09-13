@@ -363,9 +363,11 @@ class PackedCurvedCylinders(Geometry):
             acc.append(P); got += len(P)
         return np.concatenate(acc)[:n_walkers].astype(np.float32)
 
-    def _inside_one(self, p):
-        """Pure-JAX membership of one point in any tube."""
-        cand, valid = self._gather(p)
+    def _inside_one(self, p, cand=None, valid=None):
+        """Pure-JAX membership of one point in any tube, against the given candidate segments or, without them,
+        the 27-cell gather at ``p``."""
+        if cand is None:
+            cand, valid = self._gather(p)
         A = self._A[cand]; AB = self._AB[cand]; AB2 = self._AB2[cand]; rr = self._rout[cand]
         t = jnp.clip(((p[None, :] - A) * AB).sum(1) / AB2, 0.0, 1.0)
         d = jnp.linalg.norm(p[None, :] - (A + t[:, None] * AB), axis=1)
@@ -416,30 +418,65 @@ class PackedCurvedCylinders(Geometry):
             self._wall_scales_batch = _batch
         return _batch
 
-    def _fold(self, r, r_new):
-        """Mirror into the voxel, never across a tube wall."""
+    def _fold(self, r, r_new, cand=None, valid=None):
+        """Mirror into the voxel, never across a tube wall. The membership of the mirrored point is tested against
+        ``cand`` / ``valid`` when given -- the segments the step was reflected against, which cover the mirror
+        image (it lies within two steps of ``r_new``) -- else against a gather of its own; that second gather per
+        step was 20x the cost of the reflection itself."""
         if not self.box_reflect:
             return r_new
         span = self._hi - self._lo
         x = (r_new - self._lo) % (2.0 * span)
         folded = self._lo + jnp.where(x > span, 2.0 * span - x, x)
-        ok = self._inside_one(folded) == self.interior
+        ok = self._inside_one(folded, cand, valid) == self.interior
         return jnp.where(ok, folded, r)
 
+    def _step_with(self, r, step, cand, valid):
+        """One wall interaction and the box fold against one candidate list: ``(r_out, d_perp)``."""
+        r_ref, d_perp = self._reflect_with(r, step, cand, valid)
+        return self._fold(r, r_ref, cand, valid), d_perp
+
     def reflect(self, r, step):
-        return self._fold(r, self._reflect(r, step)[0])
+        cand, valid = self._gather(r + step)
+        return self._step_with(r, step, cand, valid)[0]
 
     def reflect_with_log_weight(self, r, step, rho_over_D):
         """The reflection with the contact log-weight ``-2 (rho / D) d_perp``: inside, the overshoot past the
         tube's wall; outside, the radial part of the displacement left after the entry, on the entered tube's
         normal, as the exact packed cylinders read it."""
-        r_new, d_perp = self._reflect(r, step)
-        return self._fold(r, r_new), -2.0 * rho_over_D * d_perp
+        cand, valid = self._gather(r + step)
+        r_out, d_perp = self._step_with(r, step, cand, valid)
+        return r_out, -2.0 * rho_over_D * d_perp
 
     def _reflect(self, r, step):
+        """The wall interaction against every segment near the step's end (the 27-cell gather)."""
+        cand, valid = self._gather(r + step)
+        return self._reflect_with(r, step, cand, valid)
+
+    def reach_candidates(self, r, reach, k):
+        """``(cand (k,), valid (k,), n_within)``: the segments whose SURFACE lies within ``reach`` of ``r`` -- every
+        segment a walker can meet while it stays within ``reach`` of ``r`` -- the nearest ``k`` of them padded
+        with invalid entries, and how many there were (more than ``k``: the list is short, and the caller must
+        widen it). What a round of an adaptive walk gathers once and steps against (:mod:`engine.adaptive`)."""
+        cand, valid = self._gather(r)
+        A = self._A[cand]; AB = self._AB[cand]; AB2 = self._AB2[cand]; rr = self._rout[cand]
+        t = jnp.clip(((r[None, :] - A) * AB).sum(1) / AB2, 0.0, 1.0)
+        d = jnp.linalg.norm(r[None, :] - (A + t[:, None] * AB), axis=1)
+        s = jnp.where(valid, d - rr, jnp.inf)                         # signed distance to the tube surface
+        within = s < reach
+        k_eff = int(min(k, cand.shape[0]))                            # a sparse pack gathers fewer than k
+        neg, pick = jax.lax.top_k(jnp.where(within, -s, -jnp.inf), k_eff)
+        out_c, out_v = cand[pick], jnp.isfinite(neg)
+        if k_eff < k:
+            out_c = jnp.concatenate([out_c, jnp.zeros(k - k_eff, out_c.dtype)])
+            out_v = jnp.concatenate([out_v, jnp.zeros(k - k_eff, bool)])
+        return out_c, out_v, within.sum()
+
+    def _reflect_with(self, r, step, cand, valid):
+        """The wall interaction against the given candidate segments (``cand`` indices, ``valid`` mask): the one
+        implementation behind :meth:`_reflect` and the cached-candidate round of an adaptive walk."""
         NUDGE = jnp.float32(1e-4 * self._Rmin)
         r_new = r + step
-        cand, valid = self._gather(r_new)
         A = self._A[cand]; AB = self._AB[cand]; AB2 = self._AB2[cand]; rr = self._rout[cand]
         t = jnp.clip(((r_new[None, :] - A) * AB).sum(1) / AB2, 0.0, 1.0)
         Q = A + t[:, None] * AB

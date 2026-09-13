@@ -53,3 +53,20 @@ def test_the_guarantees_and_the_statistics(interior):
 def test_a_geometry_without_wall_scales_is_refused():
     with pytest.raises(TypeError, match="wall_scales"):
         simulate_trajectories_adaptive(10, D, d.Sphere(3e-6), 1e-3, 5e-4, require_gpu=False)
+
+
+def test_the_candidate_cache_is_the_full_gather():
+    """A round stepped against the segments within its reach is the round stepped against the 27-cell gather:
+    the same walls are met, so the same positions and contact (to rounding), from the same noise."""
+    g = _pack(False)
+    kw = dict(seed=5, require_gpu=False, walker_batch_size=2000)
+    full = simulate_trajectories_adaptive(2000, D, g, 2e-3, 2.5e-4, candidate_cache=False, **kw)
+    cache = simulate_trajectories_adaptive(2000, D, g, 2e-3, 2.5e-4, candidate_cache=True, candidate_k_start=4, **kw)
+    assert cache.stepping["candidate_cache"] and max(cache.stepping["candidate_k"]) >= 4
+    # the same segments decide every reflection; the two programs round differently at float32, and a grazing
+    # step within an ulp of a wall may flip between hit and miss -- a handful of (walker, save) pairs, by less
+    # than one step (0.13 um), never a wall crossed
+    diff = np.abs(cache.positions - full.positions).max(-1)
+    assert (diff > 1e-10).mean() < 2e-3 and diff.max() < 0.13e-6, ((diff > 1e-10).mean(), diff.max())
+    dl = np.abs(cache.boundary_local_time - full.boundary_local_time)
+    assert (dl > 1e-10).mean() < 2e-3 and not g.inside_any(cache.positions.reshape(-1, 3)).any()

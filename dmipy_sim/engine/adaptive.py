@@ -40,12 +40,16 @@ def _pad_to(n, unit=4096):
 
 def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, dt_save, *, seed=0, r0=None,
                                    steps_per_round=16, safety_sigma=6.0, n_classes=4, sub_steps=None,
-                                   walker_batch_size=100_000, require_gpu=None, storage_dtype=np.float32):
+                                   walker_batch_size=100_000, require_gpu=None, storage_dtype=np.float32,
+                                   candidate_cache=True, candidate_k_start=64):
     """A :class:`~dmipy_sim.persistent_walk.PersistentWalk` of ``geometry`` with adaptive stepping (module
     docstring). ``geometry`` must offer ``wall_scales``, ``reflect_with_log_weight`` and ``classify_positions_exact``
     and be impermeable. ``steps_per_round`` is the finest class's steps per round (the round is
     ``steps_per_round`` finest steps long); ``n_classes`` the radius classes; ``sub_steps`` overrides the finest
-    sub-step count per save (rounded up to a multiple of ``steps_per_round``)."""
+    sub-step count per save (rounded up to a multiple of ``steps_per_round``). With ``candidate_cache`` (the
+    default) each round gathers, per walker, the segments whose surface lies within the round's deterministic
+    excursion once (``candidate_k_start`` entries, widened when a walker has more in reach) and steps against
+    those instead of the 27-cell gather at every step."""
     from .gpu import check_gpu
     from .physics import resolve_sub_steps, length_scales_of
     if not hasattr(geometry, "wall_scales"):
@@ -76,32 +80,54 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, dt_s
 
     reflect_lw = geometry.reflect_with_log_weight
 
-    def _kernel(m, step_l):
+    cached = bool(candidate_cache) and hasattr(geometry, "reach_candidates") and hasattr(geometry, "_reflect_with")
+    NUDGE = 1e-4 * R_min
+
+    def _kernel(m, step_l, k_cand=None):
         """One jitted dispatch per class and round: gather the class's walkers by index, step them ``m`` times,
-        scatter them back; the padded tail of ``sel`` repeats a walker whose result is discarded."""
+        scatter them back; the padded tail of ``sel`` repeats a walker whose result is discarded. With a candidate
+        cache the segments a walker can meet in the round -- those whose surface lies within its deterministic
+        excursion ``m step_l`` of its start -- are gathered once and the ``m`` steps test only them."""
+        reach = jnp.float32(float(m) * float(step_l) + NUDGE)
+
         def one(r, key):
+            if cached:
+                cand, valid, n_within = geometry.reach_candidates(r, reach, k_cand)
+
             def body(carry, _):
                 r, key, dlog = carry
                 key, sub = jax.random.split(key)
                 noise = jax.random.normal(sub, (3,), dtype=jnp.float32)
                 step = noise / jnp.linalg.norm(noise) * step_l
-                r_new, dlw = reflect_lw(r, step, jnp.float32(1.0))
+                if cached:
+                    r_new, d_perp = geometry._step_with(r, step, cand, valid)
+                    dlw = -2.0 * d_perp
+                else:
+                    r_new, dlw = reflect_lw(r, step, jnp.float32(1.0))
                 return (r_new, key, dlog + dlw), None
             (r_f, key_f, dlog_f), _ = jax.lax.scan(body, (r, key, jnp.float32(0.0)), None, length=m)
-            return r_f, key_f, dlog_f
+            return r_f, key_f, dlog_f, (n_within if cached else jnp.int32(0))
         stepped = jax.vmap(one)
 
         @jax.jit
         def run(r, keys, dlog, sel, n_real):
-            r_c, key_c, dl_c = stepped(r[sel], keys[sel])
+            r_c, key_c, dl_c, n_w = stepped(r[sel], keys[sel])
             real = jnp.arange(sel.shape[0]) < n_real
             sel_r = jnp.where(real, sel, r.shape[0])                      # out of bounds: dropped (-1 would wrap)
             r = r.at[sel_r].set(r_c, mode="drop"); keys = keys.at[sel_r].set(key_c, mode="drop")
             dlog = dlog.at[sel_r].add(dl_c, mode="drop")
-            return r, keys, dlog
+            return r, keys, dlog, jnp.where(real, n_w, 0).max()
         return run
 
-    kernels = [_kernel(m, l) for m, l in zip(steps_c, step_l_c)]
+    kernels = {}
+
+    def kernel_for(c, k_cand):
+        key_ = (c, k_cand)
+        if key_ not in kernels:
+            kernels[key_] = _kernel(steps_c[c], step_l_c[c], k_cand)
+        return kernels[key_]
+
+    k_cand_by_class = [int(candidate_k_start)] * n_classes
 
     scales_dev = geometry._wall_scales_device()
 
@@ -159,7 +185,15 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, dt_s
                         continue
                     n_pad = _pad_to(idx.size)
                     sel = np.concatenate([idx, np.full(n_pad - idx.size, idx[0])]) if n_pad > idx.size else idx
-                    r, keys, dlog_int = kernels[c](r, keys, dlog_int, jnp.asarray(sel), idx.size)
+                    sel_j = jnp.asarray(sel)
+                    while True:                                          # the candidate list widens until it holds every segment in reach
+                        r_try, keys_try, dlog_try, n_max = kernel_for(c, k_cand_by_class[c])(r, keys, dlog_int, sel_j, idx.size)
+                        if not cached or int(n_max) <= k_cand_by_class[c]:
+                            r, keys, dlog_int = r_try, keys_try, dlog_try
+                            break
+                        k_cand_by_class[c] = 1 << int(math.ceil(math.log2(int(n_max))))
+                        log.info("adaptive: class %d candidate list widened to %d (a walker had %d segments in reach)", c,
+                                 k_cand_by_class[c], int(n_max))
                     n_kernel_steps += idx.size * steps_c[c]
             positions[s:e, t] = np.asarray(r, sdt); dlog_all[s:e, t] = np.asarray(dlog_int, sdt)
         # the guarantee: nobody changed pool
@@ -172,7 +206,8 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, dt_s
              "(%.1fx fewer)", 100.0 * n_free / max(n_walkers * (n_t - 1) * n_rounds, 1), n_kernel_steps, total_steps,
              total_steps / max(n_kernel_steps, 1))
     comp = np.repeat(comp_all[:, None], n_t, axis=1).astype(np.int8)
-    stepping = dict(rule="adaptive", free_fraction=n_free / max(n_walkers * (n_t - 1) * n_rounds, 1),
+    stepping = dict(rule="adaptive", candidate_cache=cached, candidate_k=list(k_cand_by_class),
+                    free_fraction=n_free / max(n_walkers * (n_t - 1) * n_rounds, 1),
                     kernel_steps=int(n_kernel_steps), fused_steps=int(total_steps),
                     kernel_steps_ratio=total_steps / max(n_kernel_steps, 1), steps_per_round_by_class=steps_c,
                     radius_class_bounds_m=R_bounds.tolist(), far_at_m=far_at, safety_sigma=float(safety_sigma))
