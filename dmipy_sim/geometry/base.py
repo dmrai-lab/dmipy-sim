@@ -174,9 +174,15 @@ class Geometry(ABC):
         """
         return self.classify_position(r)
 
-    def classify_positions_exact(self, pts):
-        """Exact labels for a batch of host-side points; the default vmaps `classify_position`."""
-        return jax.vmap(self.classify_position)(jnp.asarray(pts, jnp.float32))
+    def classify_positions_exact(self, pts, chunk=100_000):
+        """Exact labels for a batch of host-side points; the default vmaps `classify_position` in chunks of
+        ``chunk`` points (a classifier gathers per point, and a 512k-walker start classified at once was 2.8 GB
+        of intermediates on a shared device)."""
+        pts = np.asarray(pts, np.float32)
+        f = jax.jit(jax.vmap(self.classify_position))
+        if pts.shape[0] <= chunk:
+            return f(jnp.asarray(pts))
+        return jnp.concatenate([f(jnp.asarray(pts[i:i + chunk])) for i in range(0, pts.shape[0], chunk)])
 
     def interact(self, r, step, *, kappa_over_D=0.0, rho_over_D=0.0,
                  key=None, side=None):

@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import jax
 import jax.numpy as jnp
-from ._boundary import keep_side_radial, ray_quadric_t, specular, off_wall
+from ._boundary import keep_side_radial, ray_quadric_t, specular, off_wall, representable_nudge
 from ._grid import bucket_by_bbox
 import numpy as np
 
@@ -192,6 +192,8 @@ class CurvedCylinder(Geometry):
         cl = np.asarray(centerline, np.float64)          # (P, 3) metres
         if cl.ndim != 2 or cl.shape[0] < 2:
             raise ValueError("centerline must be (P>=2, 3)")
+        #: the wall nudge: a fraction of the radius, and never below what a float32 coordinate of this strand can carry
+        self.nudge_m = representable_nudge(1e-4 * float(radius), np.abs(cl).max() + float(radius))
         self.centerline = cl
         self.radius = float(radius)
         A = cl[:-1]
@@ -264,7 +266,7 @@ class CurvedCylinder(Geometry):
 
     def _reflect_contact(self, r, step):
         R = jnp.float32(self.radius)
-        NUDGE = jnp.float32(1e-4 * self.radius)
+        NUDGE = jnp.float32(self.nudge_m)
         M = self._A.shape[0]
         return _reflect_interior(r, step, self._A, self._AB, self._AB2, jnp.full((M,), R, jnp.float32),
                                  jnp.ones((M,), bool), jnp.zeros((M,), jnp.int32), NUDGE)
@@ -289,6 +291,7 @@ class CurvedMyelinatedCylinder(CurvedCylinder):
             raise ValueError("need r_out > r_in > 0")
         self.r_in = float(r_in)
         self.r_out = float(r_out)
+        self.nudge_m = representable_nudge(1e-4 * self.r_in, np.abs(self.centerline).max() + self.r_out)
         if pool not in ("intra", "myelin", "extra"):
             raise ValueError(f"pool must be 'intra', 'myelin' or 'extra', got {pool!r}")
         self.pool = pool                                   # the shell init_positions seeds
@@ -310,7 +313,7 @@ class CurvedMyelinatedCylinder(CurvedCylinder):
 
     def _reflect_contact(self, r, step):
         r_in = jnp.float32(self.r_in); r_out = jnp.float32(self.r_out)
-        NUDGE = jnp.float32(1e-4 * self.r_in)
+        NUDGE = jnp.float32(self.nudge_m)
         _, do = self._nearest(r)                       # band of the OLD position
         lo = jnp.where(do < r_in, jnp.float32(0.0), jnp.where(do < r_out, r_in, r_out))
         hi = jnp.where(do < r_in, r_in, jnp.where(do < r_out, r_out, jnp.float32(np.inf)))
@@ -409,6 +412,9 @@ class PackedCurvedCylinders(Geometry):
         hi = np.maximum(A, A + AB) + self._Rmax
         self.gmin = lo.min(0) - cs
         self.dims = np.maximum(1, np.ceil((hi.max(0) + cs - self.gmin) / cs).astype(int))
+        corners = [self.gmin, self.gmin + self.dims * cs] + ([self.box[0], self.box[1]] if self.box is not None else [])
+        #: the wall nudge: a fraction of the smallest radius, and never below what a float32 coordinate of this pack can carry
+        self.nudge_m = representable_nudge(1e-4 * self._Rmin, np.abs(np.concatenate(corners)).max())
         loc = np.clip(np.floor((lo - self.gmin) / cs).astype(int), 0, self.dims - 1)
         hic = np.clip(np.floor((hi - self.gmin) / cs).astype(int), 0, self.dims - 1)
         cell, self.C, _max_occ, _overflow = bucket_by_bbox(loc, hic, self.dims, None)
@@ -630,7 +636,7 @@ class PackedCurvedCylinders(Geometry):
     def _reflect_with(self, r, step, cand, valid):
         """The wall interaction against the given candidate segments (``cand`` indices, ``valid`` mask): the one
         implementation behind :meth:`_reflect` and the cached-candidate round of an adaptive walk."""
-        NUDGE = jnp.float32(1e-4 * self._Rmin)
+        NUDGE = jnp.float32(self.nudge_m)
         A = self._A[cand]; AB = self._AB[cand]; AB2 = self._AB2[cand]; rr = self._rout[cand]
         if self.interior:
             # each walker keeps to its own tube; the strands are separate axons even where the data lets them touch
