@@ -283,16 +283,13 @@ def caterpillar_spec(path, *, scale=_UM, box=None, glia=True, field_T=3.0, rho2=
 
 def strands_spec(path, *, scale=_UM, g_ratio=None, boundary="reflect", field_T=3.0, rho2=None, id=None,
                  radius_tol=1e-3, source="EPFL strand list"):
-    """The spec of an EPFL strand list (CACTUS ``.init`` / ``optimized_final.txt``, the DiSCo phantom's strands):
-    every strand a sphere-swept polyline with its one radius, as per-instance arrays of one wall (or two with
-    ``g_ratio``: axolemma at ``g_ratio`` x the radius inside a sheath); the voxel ``[-side/2, side/2]^3`` with
-    ``boundary`` faces (``reflect`` or ``open``; strands are not periodic). A strand whose radius varies along
-    its length beyond ``radius_tol`` is refused: mesh it (``cactus_spec`` on the meshed run).
+    """The spec of an EPFL strand list (CACTUS ``.init`` / ``optimized_final.txt``): every strand a sphere-swept
+    polyline with its one radius, as per-instance arrays of one wall (or two with ``g_ratio``: axolemma at
+    ``g_ratio`` x the radius inside a sheath); the voxel ``[-side/2, side/2]^3`` with ``boundary`` faces
+    (``reflect`` or ``open``; strands are not periodic). A strand whose radius varies along its length beyond
+    ``radius_tol`` is refused: mesh it (``cactus_spec`` on the meshed run).
     """
     from ..io.strands import read_strands
-    from ..substrate.biophysical_constants import canonical_white_matter
-    if boundary not in ("reflect", "open"):
-        raise SpecError("boundary must be 'reflect' or 'open'; a strand list is not periodic")
     t = read_strands(path, scale=scale)
     R = []
     for k, r in enumerate(t["radii"]):
@@ -300,12 +297,52 @@ def strands_spec(path, *, scale=_UM, g_ratio=None, boundary="reflect", field_T=3
             raise SpecError(f"strand {k} of {path}: radius varies along its length ({r.min():.3g}..{r.max():.3g} m); a "
                             f"swept_polyline has one radius -- mesh the run (cactus_spec) or raise radius_tol")
         R.append(float(r.mean()))
-    R = np.asarray(R)
+    half = t["side"] / 2
+    return _strands_spec(t["centerlines"], np.asarray(R), [-half] * 3, [half] * 3, boundary=boundary, g_ratio=g_ratio,
+                         field_T=field_T, rho2=rho2, id=id or f"strands/{os.path.splitext(os.path.basename(path))[0]}",
+                         source=source, files=[path], scale=float(scale),
+                         transformations=[f"voxel [-side/2, side/2]^3 from the file header, faces {boundary}"],
+                         cell_side=float(t["side"]))
+
+
+def disco_spec(tracks, diameters, *, coordinate_unit_m=25e-6, diameter_unit_m=1e-3, side_m=1e-3, g_ratio=0.7,
+               field_T=3.0, rho2=None, id=None):
+    """The spec of the DiSCo phantom (Rafael-Patino, Girard et al., Data in Brief 38 (2021) 107429,
+    doi:10.1016/j.dib.2021.107429; dataset doi:10.17632/fgf86jdfg6): its strands from the released MRtrix track
+    file, in units of the ground-truth voxel (``coordinate_unit_m``, 25 um for the 40^3 grid over 1 mm^3), and
+    ``DiSCo_Strands_Diameters.txt``, the INNER (axonal) diameters in millimetres (``diameter_unit_m``); the
+    sheath's outer radius is the inner one over ``g_ratio`` (the phantom's uniform 0.7). The domain is
+    ``[0, side_m]^3`` with reflecting faces. Every conversion is recorded in the provenance.
+    """
+    from ..io.strands import read_tck, read_diameters
+    cls_ = read_tck(tracks, coordinate_unit_m=coordinate_unit_m)
+    d_in = read_diameters(diameters, diameter_unit_m=diameter_unit_m)
+    if len(cls_) != len(d_in):
+        raise SpecError(f"{len(cls_)} tracks in {tracks} but {len(d_in)} diameters in {diameters}")
+    keep = [k for k, c in enumerate(cls_) if len(c) >= 2]
+    R_outer = np.asarray([d_in[k] / 2.0 / g_ratio for k in keep])
+    transformations = [f"track coordinates x {coordinate_unit_m} m (the ground-truth voxel)",
+                       f"inner diameters x {diameter_unit_m} m, halved; the sheath's outer radius is the inner over g = {g_ratio}",
+                       f"domain [0, {side_m}]^3, faces reflect"]
+    if len(keep) != len(cls_):
+        transformations.append(f"dropped {len(cls_) - len(keep)} track(s) with fewer than two points")
+    return _strands_spec([cls_[k] for k in keep], R_outer, [0.0] * 3, [float(side_m)] * 3, boundary="reflect", g_ratio=g_ratio,
+                         field_T=field_T, rho2=rho2, id=id or "disco/rafael-patino-2021", source="DiSCo (Rafael-Patino et al. 2021)",
+                         files=[tracks, diameters], scale=float(coordinate_unit_m), transformations=transformations,
+                         cell_side=float(side_m))
+
+
+def _strands_spec(centerlines, R, lo, hi, *, boundary, g_ratio, field_T, rho2, id, source, files, scale, transformations,
+                  cell_side):
+    """The strand spec proper: sphere-swept polylines (metres) with one OUTER radius each, in a box."""
+    from ..substrate.biophysical_constants import canonical_white_matter
+    if boundary not in ("reflect", "open"):
+        raise SpecError("boundary must be 'reflect' or 'open'; a strand list is not periodic")
+    R = np.asarray(R, float)
     rho = float(rho2 if rho2 is not None else canonical_white_matter(field_T=field_T)["rho2"])
-    cls_ = [c.tolist() for c in t["centerlines"]]
+    cls_ = [np.asarray(c, float).tolist() for c in centerlines]
     pools = wm_pools(field_T)
-    transformations = [f"voxel [-side/2, side/2]^3 from the file header, faces {boundary}",
-                       "nominal pool values from the catalogued white matter"]
+    transformations = list(transformations) + ["nominal pool values from the catalogued white matter"]
     if g_ratio is None:
         pools = pools[:2]
         walls = [Wall("cylinders", Surface("swept_polyline", instances={"centerlines": cls_, "radii": R.tolist()}), 1, 0,
@@ -317,35 +354,24 @@ def strands_spec(path, *, scale=_UM, g_ratio=None, boundary="reflect", field_T=3
                       1, 2, Directional(), Sided(rho, 0.0)),
                  Wall("sheath", Surface("swept_polyline", instances={"centerlines": cls_, "radii": R.tolist()}), 2, 0,
                       Directional(), Sided(0.0, rho))]
-        transformations.append(f"the file's radius is the outer (sheath) radius; axolemma at g-ratio {g_ratio}")
+        transformations.append(f"the outer (sheath) radius listed; axolemma at g-ratio {g_ratio}")
         smallest = float(g_ratio * R.min())
-    half = t["side"] / 2
-    F, bundles = strand_frame(t["centerlines"])
+    F, bundles = strand_frame([np.asarray(c, float) for c in centerlines])
     transformations.append(f"substrate frame from the strand chords in {len(bundles)} bundle(s), z the largest bundle's mean axis")
     spec = SubstrateSpec(
-        id or f"strands/{os.path.splitext(os.path.basename(path))[0]}",
-        Domain([-half] * 3, [half] * 3, [boundary] * 3), pools, walls,
+        id, Domain(list(lo), list(hi), [boundary] * 3), pools, walls,
         Seeding([p.id for p in pools], "uniform_by_volume", "water_fraction"),
-        # the curved tubes record their wall contact (surface); a sheath is a field source, rasterised where the
-        # domain allows it (walk_spec's field_budget) and, at DiSCo's size, awaiting the per-segment field along
-        # each path (dmipy-sim#76 item 3)
+        # the curved tubes record their wall contact (surface); a sheath is a field source (the per-segment closed
+        # form along each path, or the raster within walk_spec's field_budget)
         Validity(smallest, ["gradient", "relaxation", "surface"] + (["field"] if g_ratio is not None else [])),
         frame=Frame(F[:, 2].tolist(), F[:, 1].tolist()), nominal_field_T=float(field_T),
         description=f"{source}: {len(R)} strands as sphere-swept polylines" + ("" if g_ratio is None else " with a sheath"),
-        realisation={"n_objects": int(len(R)), "cell_side": float(t["side"]), "radius_min": float(R.min()),
+        realisation={"n_objects": int(len(R)), "cell_side": cell_side, "radius_min": float(R.min()),
                      "radius_max": float(R.max()), "bundles": bundles},
-        provenance={"source": source, "scale": float(scale), "files": [{"path": str(path), "sha256": _sha(path)}],
+        provenance={"source": source, "scale": scale, "files": [{"path": str(f), "sha256": _sha(f)} for f in files],
                     "transformations": transformations,
                     "created": date.today().isoformat(), "software": {"name": "dmipy-sim", "version": _version()}})
     return spec.validate()
-
-
-def disco_spec(path, *, g_ratio=0.7, **kw):
-    """The spec of a DiSCo strand list (Rafael-Patino et al. 2021): :func:`strands_spec` with the phantom's
-    convention that the inner surface is 0.7 x the outer diameter."""
-    kw.setdefault("source", "DiSCo strand list")
-    kw.setdefault("id", f"disco/{os.path.splitext(os.path.basename(path))[0]}")
-    return strands_spec(path, g_ratio=g_ratio, **kw)
 
 
 def _version():

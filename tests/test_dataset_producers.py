@@ -9,7 +9,7 @@ import pytest
 
 import dmipy_sim as d
 from dmipy_sim.io.caterpillar import read_caterpillar, write_caterpillar, points_inside_union
-from dmipy_sim.io.strands import read_strands, write_strands
+from dmipy_sim.io.strands import read_strands, write_strands, read_tck, write_tck, read_diameters
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_sim.spec import (caterpillar_spec, strands_spec, disco_spec, walk_spec, geometry_from_spec, load_spec,
                             SpecError, Seeding)
@@ -87,6 +87,28 @@ def strand_txt(tmp_path_factory):
     return path
 
 
+@pytest.fixture(scope="module")
+def disco_files(tmp_path_factory):
+    """The three strands of `strand_txt` in DiSCo's release form: a .tck in 25 um voxel units over [0, 20 um]^3 and
+    the INNER diameters in mm (the outer radius is inner / 0.7)."""
+    tmp = tmp_path_factory.mktemp("disco")
+    cls_ = [np.array([[x, 0, -12e-6], [x, 0.5e-6, 0], [x, 0, 12e-6]]) + 10e-6 for x in (-5e-6, 0, 5e-6)]
+    tck, dia = str(tmp / "DiSCo_Strands_Trajectories.tck"), str(tmp / "DiSCo_Strands_Diameters.txt")
+    write_tck(tck, cls_, coordinate_unit_m=25e-6)
+    np.savetxt(dia, np.array([2 * 0.7 * r for r in (1.5e-6, 1.0e-6, 2.0e-6)]) / 1e-3)
+    return tck, dia
+
+
+def test_the_track_file_round_trips_in_metres(disco_files):
+    tck, dia = disco_files
+    cls_ = read_tck(tck, coordinate_unit_m=25e-6)
+    assert len(cls_) == 3 and np.allclose(cls_[1], np.array([[0, 0, -12e-6], [0, 0.5e-6, 0], [0, 0, 12e-6]]) + 10e-6, atol=1e-11)
+    np.testing.assert_allclose(read_diameters(dia, diameter_unit_m=1e-3), [2 * 0.7 * r for r in (1.5e-6, 1.0e-6, 2.0e-6)], rtol=1e-12)
+    nib = pytest.importorskip("nibabel")
+    ref = nib.streamlines.load(tck).streamlines                                   # the reference reader agrees
+    assert len(ref) == 3 and np.allclose(np.asarray(ref[2]) * 25e-6, cls_[2], atol=1e-11)
+
+
 def test_strand_list_round_trips_in_metres(strand_txt):
     t = read_strands(strand_txt)
     assert t["side"] == pytest.approx(20e-6) and t["n_strands"] == 3 and len(t["centerlines"][0]) == 3
@@ -114,10 +136,13 @@ def test_strands_spec_is_one_wall_of_swept_polylines_in_a_reflecting_voxel(stran
         strands_spec(strand_txt, boundary="periodic")
 
 
-def test_disco_spec_adds_the_sheath_at_the_phantoms_g_ratio(strand_txt):
-    spec = disco_spec(strand_txt)
-    assert spec.id == "disco/optimized_final" and [w.name for w in spec.walls] == ["axolemma", "sheath"]
+def test_disco_spec_adds_the_sheath_at_the_phantoms_g_ratio(disco_files):
+    spec = disco_spec(*disco_files, side_m=20e-6)
+    assert spec.id == "disco/rafael-patino-2021" and [w.name for w in spec.walls] == ["axolemma", "sheath"]
     assert spec.walls[0].surface.instances["radii"] == pytest.approx([0.7 * r for r in (1.5e-6, 1.0e-6, 2.0e-6)])
+    assert spec.walls[1].surface.instances["radii"] == pytest.approx([1.5e-6, 1.0e-6, 2.0e-6])        # inner / g
+    assert spec.domain.box_min == [0.0] * 3 and spec.domain.box_max == [20e-6] * 3 and spec.domain.boundary == ["reflect"] * 3
+    assert any("25e-06" in t or "2.5e-05" in t for t in spec.provenance["transformations"])
     assert [p.name for p in spec.pools] == ["extra", "intra", "myelin"] and spec.validity.tiers == ["gradient", "relaxation", "surface", "field"]
     w = walk_spec(spec, 90, 8e-4, 2e-4, seed=0, n_probe=20_000, field_res=0.5e-6, require_gpu=False)
     ids = np.asarray(w.compartment)[:, 0]
@@ -132,11 +157,11 @@ def test_a_strand_whose_radius_varies_is_refused(tmp_path):
     assert strands_spec(path, radius_tol=1.0).validity.smallest_feature > 0
 
 
-def test_a_strand_pack_claims_what_its_walk_recorded(strand_txt):
+def test_a_strand_pack_claims_what_its_walk_recorded(disco_files):
     """A strand spec declares the tiers the engine walks it for; the walk records contact (the curved tubes
     accumulate it), the pack claims C2 and replays rho; a domain too large to rasterise refuses the field."""
     from dmipy_sim.replay.bank import build_replay_pack
-    spec = disco_spec(strand_txt)
+    spec = disco_spec(*disco_files, side_m=20e-6)
     assert spec.validity.tiers == ["gradient", "relaxation", "surface", "field"]
     w = walk_spec(spec, 120, 1e-3, 2.5e-4, seed=0, n_probe=20_000, require_gpu=False, field=False)
     assert w.has_surface and w.has_compartments
@@ -215,3 +240,47 @@ def test_the_curved_tubes_record_surface_time_and_the_straight_limit_is_the_cyli
     assert pk.has_surface
     wf = d.pgse([[1.0, 0.0, 0.0]], 0.1e-3, 1.9e-3, gradient_strengths=1e-4, n_t=100, slew_rate=np.inf)
     assert pk.replay(wf, tissue=False, rho=rho, D=D)[0] < 0.99 * pk.replay(wf, tissue=False)[0]
+
+
+def test_stratified_seeding_fills_every_occupied_voxel_and_keeps_the_volumes(disco_files):
+    """Seeded per voxel: every voxel a pool occupies holds the asked count (or all a sliver allows), the weights
+    make the per-voxel pool volumes right (against a rejection census), and the pack's per-voxel certificate
+    reads back on the grid."""
+    from dmipy_sim.spec import StratifiedByVoxel, plan_seeding
+    from dmipy_sim.phantom import Grid
+    from dmipy_sim.replay.bank import build_replay_pack, voxel_fidelity_volumes
+    spec = disco_spec(*disco_files, side_m=20e-6)
+    grid = Grid(shape=(4, 4, 4), voxel_size_m=(5e-6,) * 3, origin_m=(2.5e-6,) * 3)
+    w = walk_spec(spec, T_max=8e-4, dt_save=2e-4, seed=0, require_gpu=False, field=False,
+                  seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": 12, "intra": 8, "myelin": 3}))
+    with pytest.raises(TypeError, match="not both"):
+        walk_spec(spec, 50, 8e-4, 2e-4, seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel=4))
+    ids = np.asarray(w.compartment)[:, 0]; r0 = np.asarray(w.positions)[:, 0]; wt = np.asarray(w.weights)
+    ijk, inside = grid.bin(r0); assert inside.all()
+    flat = np.ravel_multi_index(tuple(ijk.T), grid.shape)
+    n_extra = np.bincount(flat[ids == 0], minlength=64); n_intra = np.bincount(flat[ids == 1], minlength=64)
+    assert (n_extra[n_extra > 0] == 12).all() and n_intra.max() == 8 and (n_intra > 0).sum() >= 6
+    # a rejection census of each pool's volume per voxel, against the sum of the weights (f x water fraction)
+    rng = np.random.default_rng(3); P = rng.uniform(0, 20e-6, (400_000, 3)); v = np.ravel_multi_index(tuple(grid.bin(P)[0].T), grid.shape)
+    inner = d.PackedCurvedCylinders([np.asarray(c) for c in spec.walls[0].surface.instances["centerlines"]],
+                                    spec.walls[0].surface.instances["radii"], interior=True)
+    f_in = np.bincount(v, weights=inner.inside_any(P), minlength=64) / np.bincount(v, minlength=64)
+    wsum_in = np.bincount(flat[ids == 1], weights=wt[ids == 1], minlength=64)
+    wf_in = spec.pool("intra").water_fraction
+    assert np.abs(wsum_in - f_in * wf_in).max() < 0.03 * wf_in, (wsum_in, f_in * wf_in)
+    pk = build_replay_pack(w, id="t/strat", license="x", citation="x", K=4, voxel_grid=grid)
+    pv = pk.meta["fidelity"]["per_voxel"]
+    assert pv["n_voxels"] == 64 and pv["pools"] == [0, 1, 2] and pv["floor_max"] > 0 and pk.arrays["voxel_certificate"].shape == (64, 3, 3)
+    g2, floors, counts = voxel_fidelity_volumes(pk)
+    assert g2.shape == grid.shape and counts["extra"].sum() == (ids == 0).sum() and (floors["extra"][counts["extra"] > 1] > 0).all()
+    plan = plan_seeding({"extra": floors["extra"]}, {"extra": counts["extra"]}, target_floor=floors["extra"].max() / 2, grid=grid)
+    want = plan.count_for("extra")
+    assert want.max() == 4 * 12 and want.min() >= 2                     # halving the floor quadruples the count
+    with pytest.raises(ValueError, match="no per-voxel certificate"):
+        voxel_fidelity_volumes(build_replay_pack(w, id="t/plain", license="x", citation="x", K=4))
+    # the floor on the acquisition the pack is meant for (per shell), from the pack alone
+    from dmipy_sim.replay.bank import voxel_floor
+    seq = d.set_b(d.pgse(np.eye(3), 0.1e-3, 0.4e-3, gradient_strengths=[0.1] * 3, n_t=100, slew_rate=np.inf), [1e9, 1e9, 2e9])
+    fl, cnt = voxel_floor(pk, grid, seq, shells={"b1": [0, 1], "b2": [2]}, tissue=False)
+    assert set(fl) == {"extra", "intra", "myelin"} and cnt["extra"].sum() == (ids == 0).sum()
+    assert fl["extra"]["b1"].shape == grid.shape and (fl["extra"]["b1"][cnt["extra"] > 1] > 0).all() and (fl["myelin"]["b2"] < 1e-6).all()

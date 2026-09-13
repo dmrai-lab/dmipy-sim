@@ -4,10 +4,11 @@
 """
 from .build import spec_of, geometry_from_spec, as_geometry
 from .walk import walk_spec
+from .seeding import StratifiedByVoxel, plan_seeding
 from .producers import cactus_spec, winther_spec, caterpillar_spec, strands_spec, disco_spec, wm_pools
 from .tissue import Tissue
 from .substrate import (SubstrateSpec, Domain, Frame, Pool, Susceptibility, Surface, Wall, Directional, Sided,
                         Seeding, Validity, SpecError, validate, load_spec, SCHEMA_PATH, SPEC_VERSION)
 
-__all__ = ["Tissue", "spec_of", "geometry_from_spec", "as_geometry", "walk_spec", "cactus_spec", "winther_spec", "caterpillar_spec", "strands_spec", "disco_spec", "wm_pools", "SubstrateSpec", "Domain", "Frame", "Pool", "Susceptibility", "Surface", "Wall", "Directional", "Sided",
+__all__ = ["StratifiedByVoxel", "plan_seeding", "Tissue", "spec_of", "geometry_from_spec", "as_geometry", "walk_spec", "cactus_spec", "winther_spec", "caterpillar_spec", "strands_spec", "disco_spec", "wm_pools", "SubstrateSpec", "Domain", "Frame", "Pool", "Susceptibility", "Surface", "Wall", "Directional", "Sided",
            "Seeding", "Validity", "SpecError", "validate", "load_spec", "SCHEMA_PATH", "SPEC_VERSION"]

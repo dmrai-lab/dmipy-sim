@@ -591,14 +591,21 @@ def acquisition_battery(n_t, dt, env):
     return np.asarray(G, np.float32), meta
 
 
-def _replay_complex_np(pos, dt, G, *, w=None, logw=None):
-    """Self-contained numpy replay <w exp(logw) exp(i phi)>, phi the exact integral of the on-grid waveform
-    against the piecewise-linear path through the saves (per-save weights of `effective_gradient`).
-    Ground truth for the fidelity scorer."""
+def _walker_phases(pos, dt, G):
+    """``(N_w, n_meas)`` phase of every walker under every waveform of ``G`` ``(n_meas, n_t, 3)``: the exact
+    integral of the on-grid waveform against the piecewise-linear path through the saves (per-save weights of
+    `effective_gradient`)."""
     from ._replay_kernel import effective_gradient
     pos = np.asarray(pos, np.float64); G = np.asarray(G, np.float64)
+    return (GAMMA * dt) * np.einsum("mtd,ntd->nm", effective_gradient(G, dt, pos.shape[1], dt), pos)
+
+
+def _replay_complex_np(pos, dt, G, *, w=None, logw=None):
+    """Self-contained numpy replay <w exp(logw) exp(i phi)> over :func:`_walker_phases`. Ground truth for the
+    fidelity scorer."""
+    pos = np.asarray(pos, np.float64)
     nw = pos.shape[0]
-    phi = (GAMMA * dt) * np.einsum("mtd,ntd->nm", effective_gradient(G, dt, pos.shape[1], dt), pos)   # (N_w, n_meas)
+    phi = _walker_phases(pos, dt, G)                                          # (N_w, n_meas)
     ww = np.ones(nw) if w is None else np.asarray(w, float)
     lw = np.zeros(nw) if logw is None else np.asarray(logw, float)
     return (np.exp(lw[:, None] + 1j * phi) * (ww / ww.sum())[:, None]).sum(0)
