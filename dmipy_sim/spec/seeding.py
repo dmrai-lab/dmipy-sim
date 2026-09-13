@@ -132,7 +132,7 @@ def _clip_segments_to_voxels(A, B, r, grid):
     return seg[ok], vox, t0[ok], t1[ok]
 
 
-def fill_swept_by_voxel(A, B, r, grid, want, *, seed=0, census_draws=200, rounds_max=20):
+def fill_swept_by_voxel(A, B, r, grid, want, *, seed=0, census_draws=200, rounds_max=20, margin=None):
     """``want[v]`` points uniform inside the swept polylines (segments ``A -> B`` of radius ``r``) AND inside voxel
     ``v``, for every voxel of ``grid``, drawn per voxel: a segment whose tube meets the voxel, by its clipped
     volume, a point uniform in that clipped piece, kept when it lies in the voxel (the disc pokes out of it near
@@ -141,10 +141,18 @@ def fill_swept_by_voxel(A, B, r, grid, want, *, seed=0, census_draws=200, rounds
     ``census_draws`` draws per voxel (2 % at 200). Returns ``(points, voxel, f, n_drawn)``; a voxel no tube meets
     gets nothing, and ``f = 0`` there; a sliver a tube barely touches (a few draws in a thousand land in the
     voxel) may be left short after ``rounds_max`` rounds. Overlapping tubes count twice, as everywhere in the
-    strand family."""
+    strand family. A seed sits at least ``margin`` inside its wall (default: the family's representable nudge
+    at the grid's coordinates, :func:`~dmipy_sim.geometry._boundary.representable_nudge`): a point drawn up to
+    the wall itself reads as outside to a float32 classification at millimetre coordinates -- one seed in 40k
+    on the 1 mm DiSCo strands -- and a walk that then keeps it inside its tube is refused as a pool change."""
+    from ..geometry._boundary import representable_nudge
     rng = np.random.default_rng(seed)
     A = np.asarray(A, float); B = np.asarray(B, float); r = np.asarray(r, float)
     want = np.asarray(want, np.int64).reshape(-1)
+    if margin is None:
+        extent = float(np.abs(np.asarray(grid.corner_m)).max() + np.max(np.asarray(grid.shape) * np.asarray(grid.voxel_size_m)))
+        margin = representable_nudge(1e-4 * float(r.min()), extent)
+    margin = float(margin)
     seg, vox, t0, t1 = _clip_segments_to_voxels(A, B, r, grid)
     L = np.linalg.norm(B - A, axis=1)
     w_pair = np.pi * r[seg] ** 2 * L[seg] * (t1 - t0)                 # the clipped piece's volume
@@ -175,7 +183,7 @@ def fill_swept_by_voxel(A, B, r, grid, want, *, seed=0, census_draws=200, rounds
         T = (B[k] - A[k]) / np.maximum(L[k], 1e-30)[:, None]
         ref = np.tile([0.0, 0.0, 1.0], (len(k), 1)); ref[np.abs((T * ref).sum(1)) > 0.9] = [1.0, 0.0, 0.0]
         e1 = np.cross(T, ref); e1 /= np.linalg.norm(e1, axis=1, keepdims=True); e2 = np.cross(T, e1)
-        rad = r[k] * np.sqrt(rng.uniform(0.0, 1.0, len(k))); th = rng.uniform(0.0, 2 * np.pi, len(k))
+        rad = np.maximum(r[k] - margin, 0.0) * np.sqrt(rng.uniform(0.0, 1.0, len(k))); th = rng.uniform(0.0, 2 * np.pi, len(k))
         P = C + rad[:, None] * (np.cos(th)[:, None] * e1 + np.sin(th)[:, None] * e2)
         ijk = np.floor((P - corner) / vs).astype(np.int64)
         inside = np.all((ijk >= 0) & (ijk < np.asarray(grid.shape)), axis=1)

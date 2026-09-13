@@ -66,3 +66,20 @@ def test_the_per_voxel_census_is_the_box_wide_one():
     np.testing.assert_allclose(f_new.sum(), f_old.sum(), rtol=0.02)
     # both count segment volumes (overlaps twice, no joint spheres), the strand family's convention; a membership
     # count of uniform points differs by up to 25 % in a voxel a joint or an overlap sits in
+
+
+def test_every_seed_reads_as_inside_at_millimetre_coordinates():
+    """Seeds at 1 mm: the disc is drawn to the wall less the representable nudge, so the geometry's own float32
+    classification reads every seed as inside. Drawn to the wall itself, one seed in 40k on the DiSCo strands sat
+    within rounding of it, read as outside, and was refused by the adaptive walk as a pool change."""
+    import jax
+    R = 0.7182e-6; off = 1e-3
+    cl = [np.array([[-30e-6, 0, 0], [30e-6, 0, 0]]) + off, np.array([[-30e-6, 3 * R, 0], [30e-6, 3 * R, 0]]) + off]
+    A = np.vstack([c[:-1] for c in cl]); B = np.vstack([c[1:] for c in cl]); r = np.array([R, R])
+    grid = Grid(shape=(4, 1, 1), voxel_size_m=(15e-6, 10e-6, 10e-6), origin_m=(off - 22.5e-6, off + 1.5 * R, off))
+    P, v, f, n = fill_swept_by_voxel(A, B, r, grid, np.full(grid.n_voxels, 50_000), seed=0)
+    g = d.PackedCurvedCylinders(cl, r, interior=True)
+    lab = np.asarray(g.classify_positions_exact(P.astype(np.float32)))
+    assert len(P) == 200_000 and (lab > 0).all(), f"{(lab == 0).sum()} of {len(P)} seeds read as outside"
+    d_wall, _ = g.wall_scales(P.astype(np.float32))
+    assert d_wall.min() > 0.0                                                    # strictly inside, to float32
