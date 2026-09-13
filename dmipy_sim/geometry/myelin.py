@@ -7,7 +7,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from ._boundary import (keep_side_radial, specular, off_wall, ray_sphere_t, transmit_probability,
+from ._boundary import (keep_side_radial, specular, off_wall, ray_sphere_t, transmit_probability, rotate,
                         bounce_loop)
 import warnings
 
@@ -404,7 +404,7 @@ class MyelinatedCylinder(Geometry):
         (|r_xy| < R_inner), 2 myelin (R_inner <= |r_xy| < R_outer), 0 extra."""
         R_in  = jnp.float32(self.inner_radius)
         R_out = jnp.float32(self.outer_radius)
-        r_c   = r if self._is_identity_rotation else self._R @ r
+        r_c   = r if self._is_identity_rotation else rotate(self._R, r)
         r_xy_sq = jnp.dot(r_c[:2], r_c[:2])
         in_intra  = r_xy_sq < R_in  * R_in
         in_myelin = (r_xy_sq >= R_in * R_in) & (r_xy_sq < R_out * R_out)
@@ -887,7 +887,7 @@ class PackedMyelinatedCylinders(Geometry):
         ``N_max+k+1`` = sheath of axon ``k`` (minimum image in the periodic cell).
         :meth:`pool_of` collapses it to the pool id."""
         L = self._L_jax
-        r_c = r if self._is_identity_rotation else self._R @ r
+        r_c = r if self._is_identity_rotation else rotate(self._R, r)
         q = r_c[None, :2] - self._centers_jax                          # (N_max, 2)
         q = q - L * jnp.floor(q / L + jnp.float32(0.5))
         d2 = jnp.sum(q * q, axis=1)

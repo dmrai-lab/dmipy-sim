@@ -8,7 +8,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from ._boundary import (keep_side_radial, ray_sphere_t, specular, transmit_probability, off_wall,
+from ._boundary import (keep_side_radial, ray_sphere_t, specular, transmit_probability, off_wall, rotate,
                         bounce_loop, bounce_budget)
 from .base import Geometry, LengthScales, _rotation_to_z
 from .packing import periodic_min_gap
@@ -305,7 +305,7 @@ class PackedCylinders(Geometry):
         if self._is_identity_rotation:
             r_c, step_c = r, step
         else:
-            r_c, step_c = self._R @ r, self._R @ step
+            r_c, step_c = rotate(self._R, r), rotate(self._R, step)
         r2, step_xy, step_z = r_c[:2], step_c[:2], step_c[2]
         step_l_xy = jnp.linalg.norm(step_xy)
         d_hat_xy = jnp.where(step_l_xy > 0, step_xy / jnp.maximum(step_l_xy, self._eps_detect),
@@ -320,7 +320,7 @@ class PackedCylinders(Geometry):
             r2, d_hat_xy, step_l_xy, inside0, jnp.float32(kappa_over_D), jnp.float32(rho_over_D),
             perm_key)
         r_c_new = jnp.stack([xy_final[0], xy_final[1], r_c[2] + step_z])
-        r_out = r_c_new if self._is_identity_rotation else self._R_inv @ r_c_new
+        r_out = r_c_new if self._is_identity_rotation else rotate(self._R_inv, r_c_new)
         if side is None:
             return r_out, dlog_w
         return r_out, dlog_w, crossed, illegal
@@ -339,7 +339,7 @@ class PackedCylinders(Geometry):
         centers_2d = self._centers_jax    # (N, 2)
         radii_arr  = self._radii_jax      # (N,)
 
-        r_c = r if self._is_identity_rotation else self._R @ r
+        r_c = r if self._is_identity_rotation else rotate(self._R, r)
         r2  = r_c[:2]
 
         # Minimum-image distances to each cylinder centre

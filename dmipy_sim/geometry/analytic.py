@@ -7,7 +7,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from ._boundary import (bounce_budget, bounce_loop, keep_side_radial, keep_side_planar, keep_side_quadric,
+from ._boundary import (bounce_budget, bounce_loop, keep_side_radial, keep_side_planar, keep_side_quadric, rotate,
                         ray_sphere_t, ray_quadric_t, specular,
                         transmit_probability, off_wall, step_off_wall)
 from .base import Geometry, LengthScales, _rotation_to_z
@@ -195,11 +195,8 @@ class Cylinder(Geometry):
         _R_np = _rotation_to_z(self.orientation)
         self._R = jnp.array(_R_np, dtype=jnp.float32)
         self._R_inv = jnp.array(_R_np.T, dtype=jnp.float32)
-        # GPU batch-matmul bug: when _R == I, XLA's dot_general lowering for
-        # vmap(lambda r: _R @ r) produces wrong results on GPU.  Detect the
-        # identity case at construction time so permeate/reflect can skip the
-        # matmul and use direct indexing instead (pure Python branch, resolved
-        # at trace time, so no runtime overhead).
+        # The frame change is applied with `rotate` (exact float32 products; a device matmul runs at TF32
+        # and leaks a rotated cylinder's walkers); the identity case skips it altogether, a trace-time branch.
         self._is_identity_rotation = bool(np.allclose(_R_np, np.eye(3)))
         self.surface_relaxivity_t2 = (
             float(surface_relaxivity_t2) if surface_relaxivity_t2 is not None else None
@@ -258,8 +255,8 @@ class Cylinder(Geometry):
         R     = jnp.float32(self.radius)
         EPS   = jnp.float32(1e-7 * self.radius)
         NUDGE = jnp.float32(1e-4 * self.radius)
-        r_c    = r    if self._is_identity_rotation else self._R @ r
-        step_c = step if self._is_identity_rotation else self._R @ step
+        r_c    = r    if self._is_identity_rotation else rotate(self._R, r)
+        step_c = step if self._is_identity_rotation else rotate(self._R, step)
         step_xy, step_z = step_c[:2], step_c[2]
         step_l_xy = jnp.linalg.norm(step_xy)
         d_hat_xy = jnp.where(step_l_xy > 0, step_xy / jnp.maximum(step_l_xy, EPS),
@@ -304,14 +301,14 @@ class Cylinder(Geometry):
         xy_final, _ = keep_side_radial(xy_final, xy_final, R, inside0, NUDGE,
                                        active=~crossed)
         r_c_new = jnp.stack([xy_final[0], xy_final[1], r_c[2] + step_z])
-        r_out = r_c_new if self._is_identity_rotation else self._R_inv @ r_c_new
+        r_out = r_c_new if self._is_identity_rotation else rotate(self._R_inv, r_c_new)
         return r_out, dlog_w
 
     def classify_position(self, r: jnp.ndarray) -> jnp.ndarray:
         """Compartment id: 1 intra (|r_xy| < R), 0 extra (|r_xy| >= R), with r_xy the component
         perpendicular to the cylinder axis."""
         R = jnp.float32(self.radius)
-        r_c = r if self._is_identity_rotation else self._R @ r
+        r_c = r if self._is_identity_rotation else rotate(self._R, r)
         r_xy_sq = jnp.dot(r_c[:2], r_c[:2])
         inside = r_xy_sq < R * R
         return jnp.where(inside, jnp.int32(1), jnp.int32(0))
