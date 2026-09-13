@@ -16,6 +16,11 @@ jobs:
       fail-fast: false
       matrix:
         python-version: ["3.11", "3.12"]
+        # Three processes, not one: the suite's memory only grows across a session (every jit is built over a
+        # fresh closure, so the compile caches never hit and never shrink; 3.0 GB after the first file, 6.2 GB
+        # by the p-files), and the 7 GB hosted runner shut the single 3.11 job down at that point six times in
+        # one day. Each group starts at a fresh process; they also run in parallel.
+        group: ["dirs", "a-l", "m-z"]
 
     steps:
       - uses: actions/checkout@v4
@@ -59,13 +64,18 @@ jobs:
           # GitHub runners have no GPU, so pin JAX to CPU and deselect the
           # slow / GPU-only Monte Carlo tests (mark heavy tests with @pytest.mark.gpu
           # or @pytest.mark.slow as they are identified).
-          JAX_PLATFORMS=cpu pytest tests/ -q --tb=short -m "not slow and not gpu"
+          case "${{ matrix.group }}" in
+            dirs) PATHS="tests/geometry tests/physics tests/validation" ;;
+            a-l)  PATHS=$(ls tests/test_[a-l]*.py) ;;
+            m-z)  PATHS=$(ls tests/test_[m-z]*.py) ;;
+          esac
+          JAX_PLATFORMS=cpu pytest $PATHS -q --tb=short -m "not slow and not gpu"
 
       - name: Upload coverage
         if: matrix.python-version == '3.12'
         uses: actions/upload-artifact@v4
         with:
-          name: coverage-report
+          name: coverage-report-${{ matrix.group }}
           path: .coverage
           if-no-files-found: ignore
 
