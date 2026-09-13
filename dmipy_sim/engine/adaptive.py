@@ -1,7 +1,7 @@
 """The trajectory producer with adaptive stepping: every walker steps at the rate its own situation needs.
 
 The fused producer (:func:`dmipy_sim.engine.core.simulate_trajectories`) steps every walker at one ``dt_sim``,
-resolved from the substrate's smallest feature (the R/6 rule of its smallest tube), so a walker in the extra-
+resolved from the substrate's smallest feature (the step rule of its smallest tube), so a walker in the extra-
 axonal space of a strand substrate pays for the thinnest strand it will never touch. Here a save interval is
 walked in ROUNDS, and at each round every walker is placed by the geometry's ``wall_scales``: its distance to
 the nearest wall it can hit and the radius (curvature scale) of that wall.
@@ -9,7 +9,7 @@ the nearest wall it can hit and the radius (curvature scale) of that wall.
 - A walker farther from every wall than ``safety_sigma`` times the round's rms excursion takes ONE free
   Gaussian step for the round (truncated at its wall distance, so it cannot cross: the truncation removes a
   ``safety_sigma`` tail, 6e-8 of the mass at six sigma), accrues no contact and keeps its label.
-- Every other walker runs the geometry's wall-aware kernel for the round at the step the R/6 rule gives for
+- Every other walker runs the geometry's wall-aware kernel for the round at the step the family's rule gives for
   ITS nearest wall's radius, in radius classes doubling in step time (``dt_c = dt_min 2^c``, i.e. radius
   bounds ``R_min 2^(c/2)``): the finest class is the fused producer's own step and noise sequence.
 

@@ -40,7 +40,9 @@ def test_the_guarantees_and_the_statistics(interior):
     else:
         assert not g.inside_any(P).any()                               # never entered one
     assert (np.abs(a.positions) <= 10e-6 + 1e-9).all() and (a.boundary_local_time <= 0).all() and a.illegal_crossings == 0
-    assert a.stepping["kernel_steps_ratio"] > 1.2 and (interior or a.stepping["free_fraction"] > 0.05)   # intra gains by class, not by distance
+    # intra gains by class, not by distance; the free step needs a walker beyond 6 sigma of a round (16 finest steps at
+    # the family's R/3 rule: 3.4 um on this pack), which a few percent of the exterior walkers of this box are
+    assert a.stepping["kernel_steps_ratio"] > 1.2 and (interior or a.stepping["free_fraction"] > 0.01)
     # end-to-end displacement variance per axis and the accumulated contact, within the floor of n walkers
     da = a.positions[:, -1] - a.positions[:, 0]; df = f.positions[:, -1] - f.positions[:, 0]
     va, vf = (da ** 2).mean(0), (df ** 2).mean(0)
