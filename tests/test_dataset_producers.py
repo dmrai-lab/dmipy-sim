@@ -261,6 +261,16 @@ def test_stratified_seeding_fills_every_occupied_voxel_and_keeps_the_volumes(dis
     assert wa.positions.shape == w.positions.shape and wa.has_surface and wa.stepping["rule"] == "adaptive"
     assert set(wa.stepping["pools"]) == {"extra", "intra"} and wa.stepping["pools"]["extra"]["kernel_steps_ratio"] >= 1.0
     np.testing.assert_array_equal(wa.positions[:, 0], w.positions[:, 0])            # the same seeds
+    # the field sampled by the walk: every walker has a series, the pack encodes it and replays the field
+    wf = walk_spec(spec, T_max=8e-4, dt_save=2e-4, seed=0, require_gpu=False, field=True, adaptive_steps=True,
+                   field_cutoff_max_m=25e-6, seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": 6, "intra": 4, "myelin": 2}))
+    assert wf.field_samples is not None and wf.field_samples.shape == (wf.positions.shape[0], wf.positions.shape[1], 13)
+    frozen = np.asarray(wf.compartment)[:, 0] == 2
+    assert (wf.field_samples[frozen] == wf.field_samples[frozen][:, :1]).all()      # a frozen shell: constant
+    pkf2 = build_replay_pack(wf, id="t/strands-sampled", license="x", citation="x", K=4, susc_path_K=4)
+    assert pkf2.has_field and pkf2.meta["compression"]["channels"]["susceptibility_path"]["sampling"] == "interval_mean_in_walk"
+    seq_g = d.gre(0.5e-3, gradient_directions=[[1, 0, 0]], bvalues=[1e9], delta=0.2e-3, Delta=0.3e-3, n_t=pkf2.n_t, slew_rate=np.inf)
+    assert pkf2.replay(seq_g, tissue=False, B0=7.0, b0_dir=(1, 0, 0), chi_iso=-0.1e-6, chi_aniso=-0.1e-6)[0] != pkf2.replay(seq_g, tissue=False)[0]
     ids = np.asarray(w.compartment)[:, 0]; r0 = np.asarray(w.positions)[:, 0]; wt = np.asarray(w.weights)
     ijk, inside = grid.bin(r0); assert inside.all()
     flat = np.ravel_multi_index(tuple(ijk.T), grid.shape)

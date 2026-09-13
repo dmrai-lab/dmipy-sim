@@ -41,7 +41,7 @@ def _pad_to(n, unit=4096):
 def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, dt_save, *, seed=0, r0=None,
                                    steps_per_round=16, safety_sigma=6.0, n_classes=4, sub_steps=None,
                                    walker_batch_size=100_000, require_gpu=None, storage_dtype=np.float32,
-                                   candidate_cache=True, candidate_k_start=64):
+                                   candidate_cache=True, candidate_k_start=64, field_basis=None, field_reuse_intervals=4):
     """A :class:`~dmipy_sim.persistent_walk.PersistentWalk` of ``geometry`` with adaptive stepping (module
     docstring). ``geometry`` must offer ``wall_scales``, ``reflect_with_log_weight`` and ``classify_positions_exact``
     and be impermeable. ``steps_per_round`` is the finest class's steps per round (the round is
@@ -49,7 +49,15 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, dt_s
     sub-step count per save (rounded up to a multiple of ``steps_per_round``). With ``candidate_cache`` (the
     default) each round gathers, per walker, the segments whose surface lies within the round's deterministic
     excursion once (``candidate_k_start`` entries, widened when a walker has more in reach) and steps against
-    those instead of the 27-cell gather at every step."""
+    those instead of the 27-cell gather at every step. With ``field_basis`` (a
+    :class:`~dmipy_sim.fields.strand_field.StrandFieldBasis`) the walk samples the field's channels itself: once per
+    save interval every walker gathers the nearest segment of each strand within the basis' cutoff, and at the end
+    of every round the channels are evaluated against that list at the walker's position and accumulated; the
+    interval's mean, the domain mean subtracted, is the sample the pack's path channel stores for that save
+    (``PersistentWalk.field_samples``), so the tier costs one gather and a few fixed-list evaluations per
+    walker-save rather than a field evaluation per stored point. The list is gathered every ``field_reuse_intervals``
+    save intervals with the margin the walkers can travel in between (six sigma of that excursion) and masked by
+    the true distance when evaluated, so reuse costs no strand within the cutoff."""
     from .gpu import check_gpu
     from .physics import resolve_sub_steps, length_scales_of
     if not hasattr(geometry, "wall_scales"):
@@ -183,6 +191,35 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, dt_s
         k_cand = max(int(candidate_k_start), 1 << int(math.ceil(math.log2(1.5 * max(int(np.asarray(counts).max()), 1)))))
         log.info("adaptive: candidate list of %d (up to %d segments within %.2f um of a start position)", k_cand,
                  int(np.asarray(counts).max()), max(reach_c) * 1e6)
+    sampling = field_basis is not None
+    if sampling:
+        from ..fields.strand_field import StrandFieldBasis
+        if not isinstance(field_basis, StrandFieldBasis):
+            raise TypeError("field_basis must be a StrandFieldBasis: the walk samples the strand field along the path")
+        f_reuse = max(1, int(field_reuse_intervals))
+        f_margin = 6.0 * math.sqrt(2.0 * D * dt_actual * f_reuse)     # six sigma of the excursion over the reused intervals
+        f_radius = min(field_basis.cutoff_m + f_margin, 2.0 * field_basis.cutoff_m)
+        _at = field_basis.channels_at_device()
+        f_mean = jnp.asarray(field_basis.mean, jnp.float32)
+        field_all = np.empty((n_walkers, n_t, 13), np.float32)
+        f_chunk = 8192                                                # the gather's per-strand minima are n_strands per walker
+        # size the list from the start positions at the gather radius
+        sample = r0_all[np.random.default_rng(int(seed) + 5).choice(n_walkers, size=min(n_walkers, 20_000), replace=False)]
+        n_probe = np.concatenate([np.asarray(field_basis.nearest_device(radius_m=f_radius, k=1)(jnp.asarray(sample[i:i + f_chunk]))[2])
+                                  for i in range(0, sample.shape[0], f_chunk)])
+        f_k = min(field_basis.strands_max + 1, 1 << int(math.ceil(math.log2(1.5 * max(int(n_probe.max()), 1)))))
+        _nearest = field_basis.nearest_device(radius_m=f_radius, k=f_k)
+        log.info("adaptive: field sampled in the walk: list of %d strands gathered every %d saves at %.1f um (cutoff %.0f um + "
+                 "margin), up to %d in reach at the start", f_k, f_reuse, f_radius * 1e6, field_basis.cutoff_m * 1e6, int(n_probe.max()))
+
+        def nearest_dev(r):
+            parts = [_nearest(r[i:i + f_chunk]) for i in range(0, r.shape[0], f_chunk)]
+            return (jnp.concatenate([q[0] for q in parts]), jnp.concatenate([q[1] for q in parts]),
+                    jnp.concatenate([q[2] for q in parts]))
+
+        def at_dev(r, seg, keep):
+            return jnp.concatenate([_at(r[i:i + f_chunk], seg[i:i + f_chunk], keep[i:i + f_chunk])
+                                    for i in range(0, r.shape[0], f_chunk)])
     sdt = np.dtype(storage_dtype).type
     positions = np.empty((n_walkers, n_t, 3), sdt); dlog_all = np.zeros((n_walkers, n_t), sdt)
     positions[:, 0] = r0_all
@@ -193,8 +230,19 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, dt_s
         nb = e - s
         r = jnp.asarray(r0_all[s:e]); keys = keys_all[s:e]
         log.info("  adaptive: walkers %d-%d (%d%% done)...", s, e - 1, int(100 * e / n_walkers))
+        if sampling:
+            seg, keep, n_str = nearest_dev(r)
+            if int(n_str.max()) > f_k:
+                raise ValueError(f"a walker has {int(n_str.max())} strands within {f_radius * 1e6:.0f} um, more than the list's {f_k}")
+            field_all[s:e, 0] = np.asarray(at_dev(r, seg, keep) - f_mean)
         for t in range(1, n_t):
             dlog_int = jnp.zeros(nb, jnp.float32)
+            if sampling:
+                if (t - 1) % f_reuse == 0:                           # the list, reused over f_reuse intervals with its margin
+                    seg, keep, n_str = nearest_dev(r)
+                    if int(n_str.max()) > f_k:
+                        raise ValueError(f"a walker has {int(n_str.max())} strands within {f_radius * 1e6:.0f} um, more than the list's {f_k}")
+                f_acc = jnp.zeros((nb, 13), jnp.float32)
             for _ in range(n_rounds):
                 d_wall, R_near = scales_dev(r)
                 bucket, far_j = _bucket(d_wall, R_near)
@@ -215,7 +263,11 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, dt_s
                         k_cand = 1 << int(math.ceil(math.log2(int(n_max))))
                         log.info("adaptive: candidate list widened to %d (a walker had %d segments in reach)", k_cand, int(n_max))
                     n_kernel_steps += n_c * steps_c[c]; start += n_c
+                if sampling:
+                    f_acc = f_acc + at_dev(r, seg, keep)
             positions[s:e, t] = np.asarray(r, sdt); dlog_all[s:e, t] = np.asarray(dlog_int, sdt)
+            if sampling:
+                field_all[s:e, t] = np.asarray(f_acc / jnp.float32(n_rounds) - f_mean)
         # the guarantee: nobody changed pool
         comp_end = np.minimum(np.asarray(geometry.classify_positions_exact(r), np.int32), 1)
         n_illegal += int((comp_end != comp_all[s:e]).sum())
@@ -233,4 +285,4 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, dt_s
                     radius_class_bounds_m=R_bounds.tolist(), far_at_m=far_at, safety_sigma=float(safety_sigma))
     return PersistentWalk(positions, float(dt_actual), int(n_min), float(dt_min), boundary_local_time=dlog_all,
                           compartment=comp, illegal_crossings=0, seed=int(seed), diffusivity=D, geometry=geometry,
-                          stepping=stepping)
+                          stepping=stepping, field_basis=field_basis, field_samples=(field_all if sampling else None))

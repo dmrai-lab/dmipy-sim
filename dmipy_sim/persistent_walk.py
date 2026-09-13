@@ -52,6 +52,10 @@ class PersistentWalk:
         geometry); the pack embeds it and reads the pools from it.
     weights : (n_walkers,) or None
         Per-walker spin weights when the seeding rule leaves them non-uniform.
+    field_samples : (n_walkers, n_t, 13) or None
+        The field basis channels along every walker's path, sampled BY THE WALK: the mean over each save interval
+        of the channels of ``field_basis`` at the walker's positions through the interval (sample 0 the start
+        position's), the domain mean subtracted -- the pack's path channel encodes these directly.
     stepping : dict or None
         How the producer stepped when it was not one fixed step for every walker (the adaptive producer's
         free-step fraction, kernel steps against the fused count, its classes); None for the fused walk.
@@ -75,6 +79,7 @@ class PersistentWalk:
     weights: Optional[np.ndarray] = field(default=None, compare=False, repr=False)
     field_basis: object = field(default=None, compare=False, repr=False)
     stepping: Optional[dict] = field(default=None, compare=False, repr=False)
+    field_samples: Optional[np.ndarray] = field(default=None, compare=False, repr=False)
 
     def __post_init__(self):
         # a walk always knows the situation it was walked in: the spec it was driven by, else its geometry's

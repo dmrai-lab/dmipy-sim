@@ -13,6 +13,7 @@ the bespoke bundle builders used to decide in code.
 import logging
 
 import numpy as np
+import jax.numpy as jnp
 
 from .substrate import SubstrateSpec, SpecError
 from .build import geometry_from_spec
@@ -311,14 +312,25 @@ def _walk_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field, field_re
             return P, w
     feature = float(spec.validity.smallest_feature)
     parts, n_t, walked = [], None, None                    # (pid, positions or seeds, local time or None)
-    weights_of = {}; stepping = []
+    weights_of = {}; stepping = []; seeds_of = {}
+    for pid in seeded:
+        seeds_of[pid], weights_of[pid] = seeds(pid, seed + 13 * pid)
+        if len(seeds_of[pid]) == 0:
+            raise SpecError(f"pool {pools[pid].name!r}: no seed landed in it")
+    # a strand field is certified on the start positions and, with adaptive steps, sampled by the walk itself
+    sf = None
+    if field and field != "grid" and spec.field_source_pools:
+        src0 = spec.field_source_pools[0].id
+        ob = boundary(inside_w[src0]) if inside_w[src0] else None; ib = boundary(outside_w[src0]) if outside_w[src0] else None
+        if ob is not None and ib is not None and ob.kind == "swept_polyline" and ib.kind == "swept_polyline":
+            starts = np.concatenate([np.asarray(seeds_of[pid], np.float32) for pid in seeded])
+            sf = _strand_field(ob, ib, lo, hi, starts[:, None, :], field_cutoff_m, field_cutoff_tol, seed, cutoff_max=field_cutoff_max_m)
+    field_samples = []
     for pid in seeded:
         pool = pools[pid]
         shell = bool(inside_w[pid]) and bool(outside_w[pid])
-        r0, weights_of[pid] = seeds(pid, seed + 13 * pid)
+        r0 = seeds_of[pid]
         n = len(r0)
-        if n == 0:
-            raise SpecError(f"pool {pool.name!r}: no seed landed in it")
         if pool.D in (None, 0.0):
             if not shell:
                 raise SpecError(f"pool {pool.name!r} needs D to be walked")
@@ -336,8 +348,10 @@ def _walk_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field, field_re
                                 f"is for the curved tubes")
             from ..engine.adaptive import simulate_trajectories_adaptive
             w = simulate_trajectories_adaptive(n, float(pool.D), g, T_max, dt_save, seed=seed + 13 * pid, r0=r0,
-                                               require_gpu=require_gpu, walker_batch_size=batch)
+                                               require_gpu=require_gpu, walker_batch_size=batch, field_basis=sf)
             stepping.append((pool.name, w.stepping))
+            if w.field_samples is not None:
+                field_samples.append((pid, w.field_samples))
         else:
             w = simulate_trajectories(n, float(pool.D), g, T_max=T_max, dt_save=dt_save, seed=seed + 13 * pid, r0=r0,
                                       require_gpu=require_gpu, walker_batch_size=batch)
@@ -346,9 +360,17 @@ def _walk_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field, field_re
                       None if w.boundary_local_time is None else np.asarray(w.boundary_local_time, np.float32)))
     if walked is None:
         raise SpecError("no seeded pool diffuses; nothing to walk")
-    traj, dlog, ids, wts = [], [], [], []
+    traj, dlog, ids, wts, fs = [], [], [], [], []
     surface = all(dl is not None for pid, pos, dl in parts if pos.ndim == 3)      # every walked pool records contact
+    sampled = {pid: arr for pid, arr in field_samples}
     for pid, pos, dl in parts:
+        if sampled:
+            if pid in sampled:
+                fs.append(sampled[pid])
+            else:                                                            # a frozen shell: its start's channels, constant
+                seg, keep, _ = sf.nearest_device()(jnp.asarray(np.asarray(pos if pos.ndim == 2 else pos[:, 0], np.float32)))
+                c0 = np.asarray(sf.channels_at_device()(jnp.asarray(np.asarray(pos if pos.ndim == 2 else pos[:, 0], np.float32)), seg, keep)) - sf.mean[None, :]
+                fs.append(np.repeat(c0[:, None, :].astype(np.float32), n_t, axis=1))
         if pos.ndim == 2:                                                        # a frozen shell: no path, no contact
             pos = np.repeat(pos[:, None, :], n_t, axis=1); dl = np.zeros((len(pos), n_t), np.float32)
         elif dl is None:
@@ -358,6 +380,7 @@ def _walk_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field, field_re
     traj = np.concatenate(traj); dlog = np.concatenate(dlog); ids = np.concatenate(ids); wts = np.concatenate(wts)
     order = np.random.default_rng(int(seed) + 991).permutation(len(ids))   # any prefix is a fair subsample
     traj, dlog, ids, wts = traj[order], dlog[order], ids[order], wts[order]
+    samples = np.concatenate(fs)[order] if fs else None
     if not surface:
         dlog = None                                                              # the geometry records no surface time
     comp = np.repeat(ids[:, None], n_t, axis=1)
@@ -370,7 +393,7 @@ def _walk_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field, field_re
             raise SpecError(f"field-source pool {pools[src].name!r} is bounded by no wall; its occupancy cannot be rasterised")
         strands = outer_b.kind == "swept_polyline" and inner_b is not None and inner_b.kind == "swept_polyline"
         if strands and field != "grid":
-            fg = _strand_field(outer_b, inner_b, lo, hi, traj, field_cutoff_m, field_cutoff_tol, seed, cutoff_max=field_cutoff_max_m)
+            fg = sf                                                          # built and certified on the start positions
         else:
             n_vox = int(np.prod(np.ceil((hi - lo) / float(field_res))))
             if n_vox > field_budget:
@@ -393,4 +416,5 @@ def _walk_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field, field_re
     return PersistentWalk(traj, float(walked.dt), int(walked.sub_steps), float(walked.dt_sim), boundary_local_time=dlog,
                           compartment=comp, seed=int(seed), diffusivity=D_ref, spec=spec,
                           weights=(None if np.allclose(wts, 1.0) else wts), field_basis=fg,
-                          stepping=(dict(rule="adaptive", pools=dict(stepping)) if stepping else None))
+                          stepping=(dict(rule="adaptive", pools=dict(stepping)) if stepping else None),
+                          field_samples=samples)
