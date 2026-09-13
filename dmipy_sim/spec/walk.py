@@ -131,13 +131,18 @@ class _Boundary:
             parts = [polyline_arrays(w.surface) for w in walls]
             self.centerlines = [c for p in parts for c in p[0]]; self.radii = np.concatenate([p[1] for p in parts])
 
+    def segments(self):
+        """The swept polylines as segments ``(A, B, r)``."""
+        if self.kind != "swept_polyline":
+            raise SpecError("segments is the swept-polyline decomposition")
+        A = np.vstack([c[:-1] for c in self.centerlines]); B = np.vstack([c[1:] for c in self.centerlines])
+        r = np.concatenate([np.full(len(c) - 1, rr) for c, rr in zip(self.centerlines, self.radii)])
+        return A, B, r
+
     def sample_inside(self, n, rng):
         """``n`` points uniform by volume inside the swept polylines (by segment volume, then a disc, then the
         segment's length): the exact intra draw, no rejection."""
-        if self.kind != "swept_polyline":
-            raise SpecError("sample_inside is the swept-polyline draw; other surfaces are seeded by rejection")
-        A = np.vstack([c[:-1] for c in self.centerlines]); B = np.vstack([c[1:] for c in self.centerlines])
-        r = np.concatenate([np.full(len(c) - 1, rr) for c, rr in zip(self.centerlines, self.radii)])
+        A, B, r = self.segments()
         L = np.linalg.norm(B - A, axis=1); w = np.pi * r ** 2 * L
         k = rng.choice(len(w), size=int(n), p=w / w.sum())
         t = rng.uniform(0.0, 1.0, int(n))[:, None]
@@ -289,7 +294,7 @@ def _walk_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field, field_re
                 out.append(keep); need -= len(keep)
             return np.concatenate(out), np.full(len(np.concatenate(out)), 1.0 if spec.seeding.weights == "thin" else wf[pid])
     else:
-        from .seeding import fill_per_voxel
+        from .seeding import fill_per_voxel, fill_swept_by_voxel
         grid = seeding.grid
         V_box = float(np.prod(hi - lo)); V_vox = float(np.prod(grid.voxel_size_m))
 
@@ -302,11 +307,15 @@ def _walk_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field, field_re
             want = seeding.count_for(pools[pid].name)
             by_volume = inside_w[pid] and not outside_w[pid] and all(w.surface.kind == "swept_polyline" for w in inside_w[pid])
             log.info("walk_spec: seeding pool %s per voxel (%d wanted)", pools[pid].name, int(want.sum()))
-            P, v, f, trials, n_drawn = fill_per_voxel(sampler(pid), bin_index, grid.n_voxels, want,
-                                                      trials_max=int(seeding.trials_per_voxel_max), seed=s)
-            if by_volume:                                  # the census of a volume-uniform draw over the WHOLE pool:
-                V_pool = boundary(inside_w[pid]).volume()  # the pool's volume in a voxel over the voxel's volume
-                f = trials / max(n_drawn, 1) * V_pool / V_vox
+            if by_volume:                                  # inside swept polylines: drawn per voxel from the segments
+                A_, B_, r_ = boundary(inside_w[pid]).segments()   # that meet it, the census their clipped volume
+                P, v, f, n_drawn = fill_swept_by_voxel(A_, B_, r_, grid, want, seed=s)
+                inb = np.all((P >= lo) & (P <= hi), axis=1)     # strands may leave the box
+                P, v = P[inb], v[inb]
+                log.info("walk_spec: %d seeds in %d voxels from %d draws", len(P), int(np.bincount(v, minlength=grid.n_voxels).astype(bool).sum()), n_drawn)
+            else:
+                P, v, f, trials, n_drawn = fill_per_voxel(sampler(pid), bin_index, grid.n_voxels, want,
+                                                          trials_max=int(seeding.trials_per_voxel_max), seed=s)
             n_have = np.bincount(v, minlength=grid.n_voxels)
             w = f[v] * wf[pid] / np.maximum(n_have[v], 1)  # f_pool,v x water fraction / n_pool,v: volume-correct per voxel
             return P, w
