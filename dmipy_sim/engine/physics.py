@@ -237,7 +237,7 @@ def walk_sub_steps(geometry, diffusivity: float, dt: float) -> int:
                 f"wrong if that step is comparable to the pore. Expose `radius` (or `length`) on the "
                 f"geometry, or pass sub_steps explicitly.", UserWarning, stacklevel=3)
         return 1
-    frac = 25.0 if has_perm else float(getattr(geometry, 'reflection_step_fraction', 6.0))
+    frac = 25.0 if has_perm else float(getattr(geometry, 'reflection_step_fraction', None) or 6.0)
     dt_phys_max = (float(R) / frac) ** 2 / (6.0 * diffusivity)
     return max(n_coll, max(1, int(np.ceil(dt / dt_phys_max))))
 
