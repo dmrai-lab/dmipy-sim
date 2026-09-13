@@ -49,19 +49,6 @@ _TINY = 1e-30
 _SURF_EPS = 1e-6
 
 
-def rotate(M, v):
-    """``M @ v`` for a 3x3 frame rotation and one position, as exact float32 products and sums.
-
-    A ``@`` on the accelerator is a matmul, and a float32 matmul on a CUDA device runs at TF32 precision by
-    default: 10 mantissa bits, a relative error of 1e-3 on every rotated coordinate. A walker a micron along the
-    axis then lands nanometres off in the radial coordinate on every step, far past the ``nudge`` that keeps it
-    on its side of the wall, and a rotated cylinder leaks its interior walkers (48 % in 5000 steps of 35 nm at
-    R = 0.72 um, measured; none on the CPU, none with the matmul at full precision). Elementwise products are
-    full float32 wherever they run.
-    """
-    return (M * v[None, :]).sum(1)
-
-
 def keep_side_radial(pos, q, R, want_inside, nudge, active=True):
     """Force ``pos`` strictly onto ``want_inside``'s side of the surface |q| = R.
 

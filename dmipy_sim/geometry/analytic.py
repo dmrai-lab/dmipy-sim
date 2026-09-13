@@ -7,10 +7,10 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from ._boundary import (bounce_budget, bounce_loop, keep_side_radial, keep_side_planar, keep_side_quadric, rotate,
+from ._boundary import (bounce_budget, bounce_loop, keep_side_radial, keep_side_planar, keep_side_quadric,
                         ray_sphere_t, ray_quadric_t, specular,
                         transmit_probability, off_wall, step_off_wall)
-from .base import Geometry, LengthScales, _rotation_to_z
+from .base import Geometry, LengthScales, acquisition_rotation
 
 
 class Sphere(Geometry):
@@ -150,17 +150,20 @@ class Sphere(Geometry):
 
 
 class Cylinder(Geometry):
-    """Reflecting infinite cylinder of given radius and orientation.
+    """Reflecting infinite cylinder along +z of its own frame.
 
-    Restriction acts in the plane perpendicular to `orientation`.
-    Walkers move freely along the cylinder axis.
+    Restriction acts in the x-y plane; walkers move freely along z.
 
     Parameters
     ----------
     radius : float
         Cylinder inner radius in metres.
     orientation : array-like of shape (3,)
-        Cylinder axis direction (normalised internally).
+        The axis's direction in the lab: the POSE of the substrate for :func:`~dmipy_sim.simulate`. The walk runs
+        in the substrate's own frame (the axis along +z) and the engine rotates the acquisition into it
+        (``_orient_R``, as for a Mesh), so the walkers and the wall rules never see the pose and a tilted
+        substrate costs what an upright one does. A pack built from a walk of this geometry is in the substrate
+        frame; a pose is given at replay.
     surface_relaxivity_t2 : float, optional
         Surface relaxivity ρ₂ in m/s.  When set, each boundary collision
         reduces the walker magnetisation weight by exp(-2·ρ₂·d_out/D),
@@ -188,16 +191,8 @@ class Cylinder(Geometry):
                  permeability=None):
         self.radius = float(radius)
         orientation = np.asarray(orientation, dtype=np.float64)
-        self.orientation = (orientation / np.linalg.norm(orientation)).astype(
-            np.float32)
-        # Rotation matrix: aligns orientation with z-axis
-        # R @ orientation = [0, 0, 1]
-        _R_np = _rotation_to_z(self.orientation)
-        self._R = jnp.array(_R_np, dtype=jnp.float32)
-        self._R_inv = jnp.array(_R_np.T, dtype=jnp.float32)
-        # The frame change is applied with `rotate` (exact float32 products; a device matmul runs at TF32
-        # and leaks a rotated cylinder's walkers); the identity case skips it altogether, a trace-time branch.
-        self._is_identity_rotation = bool(np.allclose(_R_np, np.eye(3)))
+        self.orientation = (orientation / np.linalg.norm(orientation)).astype(np.float32)
+        self._orient_R = acquisition_rotation(self.orientation)
         self.surface_relaxivity_t2 = (
             float(surface_relaxivity_t2) if surface_relaxivity_t2 is not None else None
         )
@@ -218,12 +213,8 @@ class Cylinder(Geometry):
             xy = rng.uniform(-self.radius, self.radius, (n_walkers * 2, 2))
             accepted.append(xy[np.linalg.norm(xy, axis=1) < self.radius])
         xy = np.concatenate(accepted, axis=0)[:n_walkers].astype(np.float32)
-        # In cylinder frame: R maps orientation → z (free axis).
-        # Restricted cross-section is the x-y plane (indices 0,1); z is free.
-        r_cyl = np.stack([xy[:, 0], xy[:, 1], np.zeros(n_walkers)], axis=1)
-        R_inv = np.array(self._R_inv)
-        r_lab = (R_inv @ r_cyl.T).T
-        return jnp.array(r_lab, dtype=jnp.float32)
+        # the substrate frame: the cross-section is the x-y plane, z is free
+        return jnp.array(np.stack([xy[:, 0], xy[:, 1], np.zeros(n_walkers)], axis=1), dtype=jnp.float32)
 
     def reflect(self, r, step):
         """Impermeable wall interaction -- the kappa = 0 case of :meth:`permeate`.
@@ -255,8 +246,7 @@ class Cylinder(Geometry):
         R     = jnp.float32(self.radius)
         EPS   = jnp.float32(1e-7 * self.radius)
         NUDGE = jnp.float32(1e-4 * self.radius)
-        r_c    = r    if self._is_identity_rotation else rotate(self._R, r)
-        step_c = step if self._is_identity_rotation else rotate(self._R, step)
+        r_c, step_c = r, step
         step_xy, step_z = step_c[:2], step_c[2]
         step_l_xy = jnp.linalg.norm(step_xy)
         d_hat_xy = jnp.where(step_l_xy > 0, step_xy / jnp.maximum(step_l_xy, EPS),
@@ -301,15 +291,13 @@ class Cylinder(Geometry):
         xy_final, _ = keep_side_radial(xy_final, xy_final, R, inside0, NUDGE,
                                        active=~crossed)
         r_c_new = jnp.stack([xy_final[0], xy_final[1], r_c[2] + step_z])
-        r_out = r_c_new if self._is_identity_rotation else rotate(self._R_inv, r_c_new)
-        return r_out, dlog_w
+        return r_c_new, dlog_w
 
     def classify_position(self, r: jnp.ndarray) -> jnp.ndarray:
         """Compartment id: 1 intra (|r_xy| < R), 0 extra (|r_xy| >= R), with r_xy the component
         perpendicular to the cylinder axis."""
         R = jnp.float32(self.radius)
-        r_c = r if self._is_identity_rotation else rotate(self._R, r)
-        r_xy_sq = jnp.dot(r_c[:2], r_c[:2])
+        r_xy_sq = jnp.dot(r[:2], r[:2])
         inside = r_xy_sq < R * R
         return jnp.where(inside, jnp.int32(1), jnp.int32(0))
 

@@ -357,6 +357,16 @@ class Box1D(Geometry):
         return r_out, dlog_w
 
 
+def acquisition_rotation(orientation):
+    """The ``_orient_R`` (substrate frame -> lab, 3x3 float32) of a substrate whose axis lies along the lab
+    direction ``orientation``: ``R @ [0, 0, 1] = orientation``. ``None`` when that is +z already, so the engine
+    skips the rotation. The walk runs in the substrate frame; this is applied to the ACQUISITION."""
+    a = np.asarray(orientation, np.float64).reshape(3)
+    a = a / np.linalg.norm(a)
+    R = _rotation_to_z(a).T
+    return None if np.allclose(R, np.eye(3)) else np.ascontiguousarray(R, np.float32)
+
+
 def _rotation_to_z(v):
     """Compute 3x3 rotation matrix R such that R @ v = [0, 0, 1].
 

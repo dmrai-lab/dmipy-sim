@@ -7,7 +7,7 @@ on first call via jax.jit applied in core.py.
 
 import jax
 import jax.numpy as jnp
-from ..geometry._boundary import bind_probability, rotate
+from ..geometry._boundary import bind_probability
 import warnings
 
 import numpy as np
@@ -534,15 +534,12 @@ def make_myelin_substep(geometry, dt: float, rho_weights=None):
         geometry._centers_jax, geometry._inner_radii_jax, geometry._outer_radii_jax, L,
         D_i, D_m, D_e, geometry._kappa_inner_jax, geometry._kappa_outer_jax, rho_weights,
         geometry._eps, geometry._nudge, step_max, geometry.min_gap)
-    R_mat, R_inv = geometry._R, geometry._R_inv
-    ident = bool(np.allclose(np.array(R_mat), np.eye(3)))
-
     def sub(r, step_key, u, comp_id):
         pool, k = _pool_and_axon(geometry, comp_id)
         noise = jax.random.normal(step_key, (3,), dtype=jnp.float32)
         unit = noise / jnp.linalg.norm(noise)
         step_l = jnp.where(pool == 1, step_i[k], jnp.where(pool == 2, step_m[k], step_e[k]))
-        r_c = r if ident else rotate(R_mat, r)
+        r_c = r
         s_c = unit * step_l
         l_xy = jnp.linalg.norm(s_c[:2])
         d_hat = jnp.where(l_xy > 0, s_c[:2] / jnp.maximum(l_xy, jnp.float32(1e-30)),
@@ -551,7 +548,7 @@ def make_myelin_substep(geometry, dt: float, rho_weights=None):
         if L is not None:
             xy_new = xy_new - L * jnp.floor(xy_new / L + jnp.float32(0.5))      # stay in the cell
         r_c_new = jnp.stack([xy_new[0], xy_new[1], r_c[2] + s_c[2]])
-        r_new = r_c_new if ident else rotate(R_inv, r_c_new)
+        r_new = r_c_new
         return r_new, _encode_compartment(geometry, pool_new, k_new), chan, dlog_rho
 
     sub.max_bounces = wall.max_bounces

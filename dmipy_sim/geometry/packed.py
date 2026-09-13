@@ -8,9 +8,9 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from ._boundary import (keep_side_radial, ray_sphere_t, specular, transmit_probability, off_wall, rotate,
+from ._boundary import (keep_side_radial, ray_sphere_t, specular, transmit_probability, off_wall,
                         bounce_loop, bounce_budget)
-from .base import Geometry, LengthScales, _rotation_to_z
+from .base import Geometry, LengthScales, acquisition_rotation
 from .packing import periodic_min_gap
 
 _TINY = 1e-30
@@ -138,7 +138,7 @@ class PackedCylinders(Geometry):
     cross-section boundary is periodic (walkers wrap around the square box);
     diffusion along the shared cylinder axis is unrestricted.
 
-    All N cylinders are parallel and share the same ``orientation`` axis.
+    All N cylinders are parallel along +z of the substrate frame.
     Use ``pack_cylinders()`` to generate collision-free centre positions.
 
     Parameters
@@ -151,7 +151,12 @@ class PackedCylinders(Geometry):
     L : float
         Side-length of the periodic square domain in metres.
     orientation : array-like, shape (3,), optional
-        Shared cylinder axis direction (normalised internally).  Default [0,0,1].
+        The axis's direction in the lab: the POSE of the substrate for :func:`~dmipy_sim.simulate`. The walk runs
+        in the substrate's own frame (the axis along +z) and the engine rotates the acquisition into it
+        (``_orient_R``, as for a Mesh), so the walkers and the wall rules never see the pose and a tilted
+        substrate costs what an upright one does. A pack built from a walk of this geometry is in the substrate
+        frame; a pose is given at replay.
+        Default [0, 0, 1].
 
     Attributes
     ----------
@@ -208,12 +213,8 @@ class PackedCylinders(Geometry):
         self._radii_np = radii.copy()
 
         orientation = np.asarray(orientation, dtype=np.float64)
-        self.orientation = (orientation / np.linalg.norm(orientation)).astype(
-            np.float32)
-        _R_np = _rotation_to_z(self.orientation)
-        self._R     = jnp.array(_R_np, dtype=jnp.float32)
-        self._R_inv = jnp.array(_R_np.T, dtype=jnp.float32)
-        self._is_identity_rotation = bool(np.allclose(_R_np, np.eye(3)))
+        self.orientation = (orientation / np.linalg.norm(orientation)).astype(np.float32)
+        self._orient_R = acquisition_rotation(self.orientation)
 
         # JAX-side constants baked in at construction time
         self._L_jax       = jnp.float32(L)
@@ -263,11 +264,7 @@ class PackedCylinders(Geometry):
 
         xy_out = np.concatenate(accepted, axis=0)[:n_walkers].astype(np.float32)
         # z = 0; walkers are free along the cylinder axis
-        r_cyl = np.concatenate(
-            [xy_out, np.zeros((n_walkers, 1), dtype=np.float32)], axis=1)
-        R_inv = np.array(self._R_inv)
-        r_lab = (R_inv @ r_cyl.T).T
-        return jnp.array(r_lab, dtype=jnp.float32)
+        return jnp.array(np.concatenate([xy_out, np.zeros((n_walkers, 1), dtype=np.float32)], axis=1), dtype=jnp.float32)
 
     def reflect(self, r, step):
         """Impermeable wall interaction -- the kappa = 0 case of :meth:`permeate`.
@@ -302,10 +299,7 @@ class PackedCylinders(Geometry):
         the sentinel and the call returns ``(r_new, dlog_w, crossed, illegal)``; without it the
         side is read at the start of the step and the call returns ``(r_new, dlog_w)``.
         """
-        if self._is_identity_rotation:
-            r_c, step_c = r, step
-        else:
-            r_c, step_c = rotate(self._R, r), rotate(self._R, step)
+        r_c, step_c = r, step
         r2, step_xy, step_z = r_c[:2], step_c[:2], step_c[2]
         step_l_xy = jnp.linalg.norm(step_xy)
         d_hat_xy = jnp.where(step_l_xy > 0, step_xy / jnp.maximum(step_l_xy, self._eps_detect),
@@ -320,7 +314,7 @@ class PackedCylinders(Geometry):
             r2, d_hat_xy, step_l_xy, inside0, jnp.float32(kappa_over_D), jnp.float32(rho_over_D),
             perm_key)
         r_c_new = jnp.stack([xy_final[0], xy_final[1], r_c[2] + step_z])
-        r_out = r_c_new if self._is_identity_rotation else rotate(self._R_inv, r_c_new)
+        r_out = r_c_new
         if side is None:
             return r_out, dlog_w
         return r_out, dlog_w, crossed, illegal
@@ -339,8 +333,7 @@ class PackedCylinders(Geometry):
         centers_2d = self._centers_jax    # (N, 2)
         radii_arr  = self._radii_jax      # (N,)
 
-        r_c = r if self._is_identity_rotation else rotate(self._R, r)
-        r2  = r_c[:2]
+        r2  = r[:2]
 
         # Minimum-image distances to each cylinder centre
         q_all = r2[None, :] - centers_2d                              # (N, 2)

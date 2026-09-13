@@ -7,11 +7,11 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from ._boundary import (keep_side_radial, specular, off_wall, ray_sphere_t, transmit_probability, rotate,
+from ._boundary import (keep_side_radial, specular, off_wall, ray_sphere_t, transmit_probability,
                         bounce_loop)
 import warnings
 
-from .base import Geometry, LengthScales, _rotation_to_z
+from .base import Geometry, LengthScales, acquisition_rotation
 from ..compartments import Compartments, Pool
 
 _TINY = 1e-30
@@ -203,7 +203,11 @@ class MyelinatedCylinder(Geometry):
     outer_radius : float
         Outer cylinder radius in metres (outer myelin boundary).
     orientation : array-like of shape (3,)
-        Cylinder axis direction (normalised internally).
+        The axis's direction in the lab: the POSE of the substrate for :func:`~dmipy_sim.simulate`. The walk runs
+        in the substrate's own frame (the axis along +z) and the engine rotates the acquisition into it
+        (``_orient_R``, as for a Mesh), so the walkers and the wall rules never see the pose and a tilted
+        substrate costs what an upright one does. A pack built from a walk of this geometry is in the substrate
+        frame; a pose is given at replay.
     D_intra : float
         Intra-axonal diffusivity in m^2/s (isotropic).
     D_extra : float
@@ -279,12 +283,8 @@ class MyelinatedCylinder(Geometry):
                                         self.water_fractions[1])
 
         orientation = np.asarray(orientation, dtype=np.float64)
-        self.orientation = (orientation / np.linalg.norm(orientation)).astype(
-            np.float32)
-        _R_np = _rotation_to_z(self.orientation)
-        self._R = jnp.array(_R_np, dtype=jnp.float32)
-        self._R_inv = jnp.array(_R_np.T, dtype=jnp.float32)
-        self._is_identity_rotation = bool(np.allclose(_R_np, np.eye(3)))
+        self.orientation = (orientation / np.linalg.norm(orientation)).astype(np.float32)
+        self._orient_R = acquisition_rotation(self.orientation)
 
         # The same per-axon array layout as PackedMyelinatedCylinders, with one axon at the
         # origin and no periodic cell, so both are stepped by the one kernel in `physics`.
@@ -374,10 +374,7 @@ class MyelinatedCylinder(Geometry):
             compartments[idx:idx + n_extra] = 0
             idx += n_extra
 
-        # Positions are in cylinder frame (xy = cross-section, z = axis).
-        # Rotate to lab frame.
-        R_inv = np.array(self._R_inv)
-        r_lab = (R_inv @ positions.T).T
+        r_lab = positions                                   # the substrate frame: xy the cross-section, z the axis
 
         self._init_compartments = jnp.array(compartments, dtype=jnp.int32)
         return jnp.array(r_lab, dtype=jnp.float32)
@@ -404,8 +401,7 @@ class MyelinatedCylinder(Geometry):
         (|r_xy| < R_inner), 2 myelin (R_inner <= |r_xy| < R_outer), 0 extra."""
         R_in  = jnp.float32(self.inner_radius)
         R_out = jnp.float32(self.outer_radius)
-        r_c   = r if self._is_identity_rotation else rotate(self._R, r)
-        r_xy_sq = jnp.dot(r_c[:2], r_c[:2])
+        r_xy_sq = jnp.dot(r[:2], r[:2])
         in_intra  = r_xy_sq < R_in  * R_in
         in_myelin = (r_xy_sq >= R_in * R_in) & (r_xy_sq < R_out * R_out)
         return jnp.where(in_intra, jnp.int32(1),
@@ -535,7 +531,12 @@ class PackedMyelinatedCylinders(Geometry):
     N_max : int, optional
         Fixed JIT padding length (>= N_actual).  Default 128.
     orientation : array-like, shape (3,), optional
-        Shared cylinder axis direction. Default [0, 0, 1].
+        The axis's direction in the lab: the POSE of the substrate for :func:`~dmipy_sim.simulate`. The walk runs
+        in the substrate's own frame (the axis along +z) and the engine rotates the acquisition into it
+        (``_orient_R``, as for a Mesh), so the walkers and the wall rules never see the pose and a tilted
+        substrate costs what an upright one does. A pack built from a walk of this geometry is in the substrate
+        frame; a pose is given at replay.
+        Default [0, 0, 1].
     D_intra, D_myelin, D_extra : float or array-like (N_actual,)
         Diffusivities in m^2/s.  Scalar is broadcast to all cylinders.  ``D_myelin``
         defaults to 0 (stuck myelin water; set > 0 to let it diffuse).
@@ -710,12 +711,8 @@ class PackedMyelinatedCylinders(Geometry):
 
         # Rotation matrix (shared cylinder axis)
         orientation = np.asarray(orientation, dtype=np.float64)
-        self.orientation = (orientation / np.linalg.norm(orientation)).astype(
-            np.float32)
-        _R_np = _rotation_to_z(self.orientation)
-        self._R     = jnp.array(_R_np, dtype=jnp.float32)
-        self._R_inv = jnp.array(_R_np.T, dtype=jnp.float32)
-        self._is_identity_rotation = bool(np.allclose(_R_np, np.eye(3)))
+        self.orientation = (orientation / np.linalg.norm(orientation)).astype(np.float32)
+        self._orient_R = acquisition_rotation(self.orientation)
 
         # EPS/NUDGE — scale by smallest non-zero inner radius
         nonzero = inner_p[inner_p > 0]
@@ -868,9 +865,7 @@ class PackedMyelinatedCylinders(Geometry):
             positions[idx:idx + n_extra_actual, 1] = xy_ex[:, 1]
             compartments[idx:idx + n_extra_actual] = 0
 
-        # Rotate to lab frame (positions in cylinder-frame xy-plane, z=0)
-        R_inv = np.array(self._R_inv)
-        r_lab = (R_inv @ positions.T).T
+        r_lab = positions                                   # the substrate frame: xy the cross-section, z = 0
 
         self._init_compartments = jnp.array(compartments, dtype=jnp.int32)
         return jnp.array(r_lab, dtype=jnp.float32)
@@ -887,8 +882,7 @@ class PackedMyelinatedCylinders(Geometry):
         ``N_max+k+1`` = sheath of axon ``k`` (minimum image in the periodic cell).
         :meth:`pool_of` collapses it to the pool id."""
         L = self._L_jax
-        r_c = r if self._is_identity_rotation else rotate(self._R, r)
-        q = r_c[None, :2] - self._centers_jax                          # (N_max, 2)
+        q = r[None, :2] - self._centers_jax                          # (N_max, 2)
         q = q - L * jnp.floor(q / L + jnp.float32(0.5))
         d2 = jnp.sum(q * q, axis=1)
         k = jnp.argmin(jnp.where(self._outer_radii_jax > 0, d2, jnp.inf)).astype(jnp.int32)
