@@ -121,6 +121,27 @@ _SLOW_MC_MODULES = {
 }
 
 
+def pytest_runtest_logreport(report):
+    """Drop JAX's in-memory compile caches at every module boundary. Every jit in the package is built inside a
+    function body over a fresh closure, so the caches only grow: measured over the fast tier on the CPU, the
+    process went 3.0 GB after the first file to 6.2 GB by the p-files and the 7 GB hosted runner shut the
+    3.11 job down around the r-files six times in a day; with the caches cleared per module the same files
+    grew by a third of that."""
+    if report.when != "teardown":
+        return
+    mod = report.nodeid.split("::")[0]
+    if mod != _last_module[0]:
+        if _last_module[0] is not None:
+            import gc
+            import jax
+            jax.clear_caches()
+            gc.collect()
+        _last_module[0] = mod
+
+
+_last_module = [None]
+
+
 def pytest_collection_modifyitems(config, items):
     slow = pytest.mark.slow
     for item in items:
