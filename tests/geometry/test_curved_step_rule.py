@@ -48,6 +48,7 @@ def test_an_interior_walker_never_changes_tube():
         assert np.array_equal(tube, tube0), (k, (tube != tube0).sum(), (tube == 0).sum())
 
 
+@pytest.mark.slow
 def test_the_hairpin_keeps_its_walkers_at_the_rule():
     """The thinnest strand at DiSCo's sharpest joint (173 deg, a hairpin): at the rule's step no walker leaves it and the
     displacement variance matches a walk at R/12 to the Monte Carlo floor."""
