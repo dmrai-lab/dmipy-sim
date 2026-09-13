@@ -305,28 +305,33 @@ def strands_spec(path, *, scale=_UM, g_ratio=None, boundary="reflect", field_T=3
                          cell_side=float(t["side"]))
 
 
-def disco_spec(tracks, diameters, *, coordinate_unit_m=25e-6, diameter_unit_m=1e-3, side_m=1e-3, g_ratio=0.7,
+def disco_spec(tracks, diameters, *, coordinate_unit_m=25e-6, diameter_unit_m=1e-3, side_m=1e-3, g_ratio=None,
                field_T=3.0, rho2=None, id=None):
     """The spec of the DiSCo phantom (Rafael-Patino, Girard et al., Data in Brief 38 (2021) 107429,
     doi:10.1016/j.dib.2021.107429; dataset doi:10.17632/fgf86jdfg6): its strands from the released MRtrix track
     file, in units of the ground-truth voxel (``coordinate_unit_m``, 25 um for the 40^3 grid over 1 mm^3), and
-    ``DiSCo_Strands_Diameters.txt``, the INNER (axonal) diameters in millimetres (``diameter_unit_m``); the
-    sheath's outer radius is the inner one over ``g_ratio`` (the phantom's uniform 0.7). The domain is
-    ``[0, side_m]^3`` with reflecting faces. Every conversion is recorded in the provenance.
+    ``DiSCo_Strands_Diameters.txt``, the strand diameters in millimetres (``diameter_unit_m``). A strand is the
+    phantom's one wall: inside it is intra, outside every strand is extra, and the released intra-strand volume
+    fraction map is that tube volume (3.4 % of the box, 26 % at its centre). With ``g_ratio`` a sheath is declared
+    INSIDE the strand -- the reported radius is the sheath's outer radius and the axolemma sits at ``g_ratio`` times
+    it, so the intra pool holds ``g_ratio**2`` of the phantom's intra water: the multiphysics variant, not the
+    ground truth. The domain is ``[0, side_m]^3`` with reflecting faces. Every conversion is recorded in the
+    provenance.
     """
     from ..io.strands import read_tck, read_diameters
     cls_ = read_tck(tracks, coordinate_unit_m=coordinate_unit_m)
-    d_in = read_diameters(diameters, diameter_unit_m=diameter_unit_m)
-    if len(cls_) != len(d_in):
-        raise SpecError(f"{len(cls_)} tracks in {tracks} but {len(d_in)} diameters in {diameters}")
+    d = read_diameters(diameters, diameter_unit_m=diameter_unit_m)
+    if len(cls_) != len(d):
+        raise SpecError(f"{len(cls_)} tracks in {tracks} but {len(d)} diameters in {diameters}")
     keep = [k for k, c in enumerate(cls_) if len(c) >= 2]
-    R_outer = np.asarray([d_in[k] / 2.0 / g_ratio for k in keep])
+    R = np.asarray([d[k] / 2.0 for k in keep])
     transformations = [f"track coordinates x {coordinate_unit_m} m (the ground-truth voxel)",
-                       f"inner diameters x {diameter_unit_m} m, halved; the sheath's outer radius is the inner over g = {g_ratio}",
+                       f"strand diameters x {diameter_unit_m} m, halved: the strand's radius"
+                       + ("" if g_ratio is None else f", the sheath's outer radius; the axolemma at g = {g_ratio} times it"),
                        f"domain [0, {side_m}]^3, faces reflect"]
     if len(keep) != len(cls_):
         transformations.append(f"dropped {len(cls_) - len(keep)} track(s) with fewer than two points")
-    return _strands_spec([cls_[k] for k in keep], R_outer, [0.0] * 3, [float(side_m)] * 3, boundary="reflect", g_ratio=g_ratio,
+    return _strands_spec([cls_[k] for k in keep], R, [0.0] * 3, [float(side_m)] * 3, boundary="reflect", g_ratio=g_ratio,
                          field_T=field_T, rho2=rho2, id=id or "disco/rafael-patino-2021", source="DiSCo (Rafael-Patino et al. 2021)",
                          files=[tracks, diameters], scale=float(coordinate_unit_m), transformations=transformations,
                          cell_side=float(side_m))
