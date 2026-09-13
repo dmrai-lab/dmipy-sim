@@ -49,6 +49,16 @@ _TINY = 1e-30
 _SURF_EPS = 1e-6
 
 
+def representable_nudge(nudge, extent):
+    """The larger of ``nudge`` and eight float32 ulps at ``extent`` (the largest coordinate magnitude a walker
+    can have): a nudge a float32 coordinate can carry. A geometry's nudge is a fraction of its smallest feature
+    (``1e-4 R``), and in a domain much larger than the feature that is below the coordinate's own resolution --
+    on the 1 mm DiSCo strands ``1e-4 R_min`` is 72 pm against a 116 pm ulp -- so a walker set "just inside" its
+    wall rounds onto it and reads as outside at the next classification."""
+    import numpy as _np
+    return max(float(nudge), 8.0 * float(_np.spacing(_np.float32(abs(float(extent))))))
+
+
 def keep_side_radial(pos, q, R, want_inside, nudge, active=True):
     """Force ``pos`` strictly onto ``want_inside``'s side of the surface |q| = R.
 
