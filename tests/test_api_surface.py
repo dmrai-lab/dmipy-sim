@@ -126,7 +126,7 @@ def test_geometry_declares_the_protocol(name):
     for flag in ("supports_permeability", "carries_side", "_is_myelinated", "_is_packed_myelinated",
                  "classify_returns_object_id", "radius_is_mesh_feature"):
         assert isinstance(getattr(g, flag), bool), f"{name}.{flag}"
-    for attr in ("permeability", "surface_relaxivity_t2", "surface_substep_frac", "_orient_R",
+    for attr in ("permeability", "surface_relaxivity_t2", "surface_substep_frac", "reflection_step_fraction", "_orient_R",
                  "_D_comp_jax", "_inv_T2_comp_jax", "_inv_T1_comp_jax", "_D_comp_max",
                  "_T2_comp", "_T1_comp"):
         getattr(g, attr)                      # declared on every geometry, None when unset
@@ -204,7 +204,7 @@ _ALLOWED_PROBES = {
     "length_scales", "radius", "sphere_radius", "length", "_radii_np", "_inner_radii_np",
     "cell_size", "radius_is_mesh_feature",
     # sub-step helpers accept duck-typed objects (tests pass bare classes)
-    "permeability", "surface_substep_frac",
+    "permeability", "surface_substep_frac", "reflection_step_fraction",
     # optional methods: not every geometry records a boundary local time / binding / membrane
     "reflect_with_log_weight", "reflect_with_binding", "permeate",
     # core.simulate_trajectories compartment-id derivation (issue #94, A7)
