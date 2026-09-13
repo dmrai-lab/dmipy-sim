@@ -66,6 +66,7 @@ def _master_arrays(src) -> dict:
                 # static field-grid susceptibility channel (dict of grids + world origin + chi)
                 susc_field_basis=(m.get("susc_field_basis") if isinstance(m, dict) else None),
                 susc_field_sampler=(m.get("susc_field_sampler") if isinstance(m, dict) else None),
+                susc_field_samples=(m.get("susc_field_samples") if isinstance(m, dict) else None),
                 susc_grid_origin=(np.asarray(m["susc_grid_origin"]) if "susc_grid_origin" in m else None),
                 susc_chi_iso=scal("susc_chi_iso"), delta_chi_a=scal("delta_chi_a"),
                 cell_size=scal("cell_size"), R=g("R"), D_intra=scal("D_intra"),
@@ -360,6 +361,17 @@ def _field_along(field, traj, b0_dir, *, B0, chi_iso, chi_aniso, walkers_per_chu
     return out
 
 
+def _raw_field(m, field, traj, b0_dir, *, B0, chi_iso, chi_aniso, idx=None):
+    """The reference field along the walk for the path certificates: the walk's own samples (the interval means
+    it stored) when it took them, else the field evaluated at the stored points."""
+    from ..fields.hollow_cylinder import contract
+    samples = m.get("susc_field_samples")
+    if samples is not None:
+        sm = np.asarray(samples, np.float64) if idx is None else np.asarray(samples, np.float64)[idx]
+        return contract(sm, b0_dir, B0=B0, chi_iso=chi_iso, chi_aniso=chi_aniso)
+    return _field_along(field, traj, b0_dir, B0=B0, chi_iso=chi_iso, chi_aniso=chi_aniso)
+
+
 def _susc_grid_fidelity(m, arrays, gm, decoded_pos, dt, env):
     """Certify the static field-grid tier (SE + GRE): the STORED f16 grid sampled at the DECODED
     trajectory vs the RAW f64 grid at the FULL-resolution trajectory (folds in f16 quantisation AND
@@ -477,7 +489,7 @@ def _susc_path_bloch_fidelity(m, arrays, pm, gm, env, n_sub=8000):
     for B0 in B0s:
         for th in (env.get("theta_deg") or [90]):
             t = np.deg2rad(float(th)); d = [np.sin(t), 0.0, np.cos(t)]
-            f_raw = _field_along(field, pos, d, B0=B0, chi_iso=chi_i, chi_aniso=ca)
+            f_raw = _raw_field(m, field, pos, d, B0=B0, chi_iso=chi_i, chi_aniso=ca, idx=slice(0, k))
             f_dec = susc_path_field(b_dec, d, B0=B0, chi_iso=chi_i, chi_aniso=ca,
                                     has_aniso=bool(gm.get("has_aniso")))
             for npul in (1, n_p):
@@ -522,7 +534,7 @@ def _susc_path_fidelity(m, arrays, pm, gm, env):
     for B0 in (env.get("B0_list") or [3.0, 7.0]):
         for th in (env.get("theta_deg") or [0, 90]):
             t = np.deg2rad(float(th)); d = [np.sin(t), 0.0, np.cos(t)]
-            f_raw = _field_along(field, traj, d, B0=B0, chi_iso=chi_i, chi_aniso=ca)
+            f_raw = _raw_field(m, field, traj, d, B0=B0, chi_iso=chi_i, chi_aniso=ca)
             f_dec = susc_path_field(b_dec, d, B0=B0, chi_iso=chi_i, chi_aniso=ca,
                                     has_aniso=bool(gm.get("has_aniso")))
             e, f = _gate_battery(f_raw, f_dec, gates, w, A, B, dt)
@@ -844,6 +856,8 @@ def _walk_master(walk, *, weights=None, field=None, diffusivity=None, substrate_
             extra.update(susc_field_basis=field.basis, susc_grid_origin=np.asarray(field.origin, float))
         elif isinstance(field, StrandFieldBasis):
             extra["susc_field_sampler"] = field
+            if walk.field_samples is not None:                       # the walk sampled the field along its own path
+                extra["susc_field_samples"] = np.asarray(walk.field_samples, np.float32)
         else:
             raise TypeError("field must be a fields.susceptibility_field.FieldGrid (basis, origin) or a "
                             f"fields.strand_field.StrandFieldBasis, got {type(field).__name__}")
@@ -931,7 +945,13 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto"
             raise ValueError("a StrandFieldBasis has no grid to store: the field tier (C3) needs susc_path_K")
         chan_meta["susceptibility_grid"] = dict(has_aniso=True, arrays_in_pack=False, replay_route="path", source=_field.meta)
         channels["susceptibility"] = True
-        _a, _pm = susc_path_encode(_field, np.asarray(m["traj"], np.float64), K=int(susc_path_K), bits=susc_path_bits)
+        if m.get("susc_field_samples") is not None:                  # sampled by the walk: the interval means
+            from ..fields.hollow_cylinder import CHANNEL_NAMES
+            _a, _pm = susc_path_encode_series(np.transpose(np.asarray(m["susc_field_samples"], np.float64), (0, 2, 1)),
+                                              CHANNEL_NAMES, K=int(susc_path_K), bits=susc_path_bits)
+            _pm["sampling"] = "interval_mean_in_walk"
+        else:
+            _a, _pm = susc_path_encode(_field, np.asarray(m["traj"], np.float64), K=int(susc_path_K), bits=susc_path_bits)
         arrays.update(_a); chan_meta["susceptibility_path"] = _pm
     if m.get("susc_field_basis") is not None:
         fb = m["susc_field_basis"]

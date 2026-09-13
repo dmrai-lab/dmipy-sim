@@ -143,45 +143,73 @@ class StrandFieldBasis:
                     channels=list(CHANNEL_NAMES), mean_subtracted=True, certificate=self.certificate)
 
     # ------------------------------------------------------------------ evaluation
+    def nearest_device(self):
+        """The jitted, vmapped ``p -> (segments (k,), keep (k,), n_within)``: for a point, the nearest segment of
+        every strand within the cutoff -- global segment indices, the nearest ``k = strands_max + 1`` of them by
+        distance with ``keep`` marking the real entries, and how many strands were within reach (more than
+        ``strands_max``: the list is short). What a walk gathers once per save interval and evaluates the field
+        against at every round (:mod:`dmipy_sim.engine.adaptive`)."""
+        f = getattr(self, "_nearest_batch", None)
+        if f is None:
+            A, AB, AB2, sid = self._A, self._AB, self._AB2, self._sid
+            CELL, OFF, GMIN, CS, dims_arr, DIMS = self._CELL, self._OFF, self._GMIN, self._CS, self._dims_arr, self._dims
+            cutoff = jnp.float32(self.cutoff_m); n_strands = self.n_strands; n_seg = self.n_segments
+            tie_tol = jnp.float32(self.TIE_TOL * self.cutoff_m)
+            k_max = int(min(self.strands_max + 1, 27 * self._cap))       # one more than allowed: the overflow shows
+
+            def one(p):
+                c = jnp.clip(jnp.floor((p - GMIN) / CS).astype(jnp.int32), 0, dims_arr - 1)
+                nb = jnp.clip(c[None, :] + OFF, 0, dims_arr - 1)
+                cids = (nb[:, 0] * DIMS[1] + nb[:, 1]) * DIMS[2] + nb[:, 2]
+                raw = CELL[cids].reshape(-1); valid = raw >= 0; cand = jnp.where(valid, raw, 0)
+                # a segment crossing several of the 27 cells is gathered once per cell: keep one copy (the padding,
+                # -1, sorts first and is never valid, so a real segment is never taken for its duplicate)
+                order = jnp.argsort(raw); rs = raw[order]
+                dup = jnp.zeros_like(valid).at[order[1:]].set(rs[1:] == rs[:-1])
+                As = A[cand]; ABs = AB[cand]
+                t = jnp.clip(((p[None, :] - As) * ABs).sum(1) / AB2[cand], 0.0, 1.0)
+                Q = As + t[:, None] * ABs
+                d = jnp.linalg.norm(p[None, :] - Q, axis=1)
+                near = valid & ~dup & (d < cutoff)
+                # the nearest segment of EVERY strand among the candidates (a per-strand minimum over all of them,
+                # not over a bounded prefix); at a joint two segments tie -- to a tolerance, so that float32 rounding
+                # does not pick either -- and the lower segment index is the one
+                s_c = sid[cand]
+                dmin = jax.ops.segment_min(jnp.where(near, d, jnp.inf), s_c, num_segments=n_strands)
+                tie = near & (d <= dmin[s_c] + tie_tol)
+                imin = jax.ops.segment_min(jnp.where(tie, cand, n_seg), s_c, num_segments=n_strands)
+                first = tie & (cand == imin[s_c])
+                _, pick = jax.lax.top_k(jnp.where(first, -d, -jnp.inf), k_max)
+                return cand[pick], first[pick], first.sum()
+            f = self._nearest_batch = jax.jit(jax.vmap(one))
+        return f
+
+    def channels_at_device(self):
+        """The jitted, vmapped ``(p, segments, keep) -> (13,)``: the bare channels at ``p`` from the given segments
+        (their infinite hollow cylinders, the radial vector taken at ``p``), summed over the kept ones. No mean is
+        subtracted here."""
+        f = getattr(self, "_channels_at_batch", None)
+        if f is None:
+            A, AB, AB2, ra, rb = self._A, self._AB, self._AB2, self._a, self._b
+
+            def one(p, seg, keep):
+                As = A[seg]; ABs = AB[seg]
+                u = ABs / jnp.sqrt(AB2[seg])[:, None]
+                t = jnp.clip(((p[None, :] - As) * ABs).sum(1) / AB2[seg], 0.0, 1.0)
+                rv = p[None, :] - (As + t[:, None] * ABs); rv = rv - (rv * u).sum(1, keepdims=True) * u
+                C = hollow_cylinder_basis(rv, u, ra[seg], rb[seg])
+                return (C * keep[:, None]).sum(0)
+            f = self._channels_at_batch = jax.jit(jax.vmap(one))
+        return f
+
     def _build(self):
-        A, AB, AB2, sid, ra, rb = self._A, self._AB, self._AB2, self._sid, self._a, self._b
-        CELL, OFF, GMIN, CS, dims_arr, DIMS = self._CELL, self._OFF, self._GMIN, self._CS, self._dims_arr, self._dims
-        cutoff = jnp.float32(self.cutoff_m); n_strands = self.n_strands; n_seg = self.n_segments
-        tie_tol = jnp.float32(self.TIE_TOL * self.cutoff_m)
-        k_max = int(min(self.strands_max + 1, 27 * self._cap))       # one more than allowed: the overflow shows
+        nearest = self.nearest_device(); at = self.channels_at_device()
 
-        def one(p):
-            c = jnp.clip(jnp.floor((p - GMIN) / CS).astype(jnp.int32), 0, dims_arr - 1)
-            nb = jnp.clip(c[None, :] + OFF, 0, dims_arr - 1)
-            cids = (nb[:, 0] * DIMS[1] + nb[:, 1]) * DIMS[2] + nb[:, 2]
-            raw = CELL[cids].reshape(-1); valid = raw >= 0; cand = jnp.where(valid, raw, 0)
-            # a segment crossing several of the 27 cells is gathered once per cell: keep one copy (the padding,
-            # -1, sorts first and is never valid, so a real segment is never taken for its duplicate)
-            order = jnp.argsort(raw); rs = raw[order]
-            dup = jnp.zeros_like(valid).at[order[1:]].set(rs[1:] == rs[:-1])
-            As = A[cand]; ABs = AB[cand]
-            t = jnp.clip(((p[None, :] - As) * ABs).sum(1) / AB2[cand], 0.0, 1.0)
-            Q = As + t[:, None] * ABs
-            d = jnp.linalg.norm(p[None, :] - Q, axis=1)
-            near = valid & ~dup & (d < cutoff)
-            # the nearest segment of EVERY strand among the candidates (a per-strand minimum over all of them,
-            # not over a bounded prefix); at a joint two segments tie -- to a tolerance, so that float32 rounding
-            # does not pick either -- and the lower segment index is the one
-            s_c = sid[cand]
-            dmin = jax.ops.segment_min(jnp.where(near, d, jnp.inf), s_c, num_segments=n_strands)
-            tie = near & (d <= dmin[s_c] + tie_tol)
-            imin = jax.ops.segment_min(jnp.where(tie, cand, n_seg), s_c, num_segments=n_strands)
-            first = tie & (cand == imin[s_c])
-            n_first = first.sum()
-            # the closed form on the nearest strands_max of them (all of them when the count is within bound)
-            _, pick = jax.lax.top_k(jnp.where(first, -d, -jnp.inf), k_max)
-            keep = first[pick]
-            u = ABs[pick] / jnp.sqrt(AB2[cand][pick])[:, None]
-            rv = p[None, :] - Q[pick]; rv = rv - (rv * u).sum(1, keepdims=True) * u
-            C = hollow_cylinder_basis(rv, u, ra[cand][pick], rb[cand][pick])
-            return (C * keep[:, None]).sum(0), n_first
-
-        return jax.jit(jax.vmap(one))
+        @jax.jit
+        def batch(P):
+            seg, keep, n = nearest(P)
+            return at(P, seg, keep), n
+        return batch
 
     def channels(self, points, *, chunk=None):
         """``(n, 13)`` channels at ``points`` ``(n, 3)`` (metres), domain mean subtracted."""

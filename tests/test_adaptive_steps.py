@@ -70,3 +70,26 @@ def test_the_candidate_cache_is_the_full_gather():
     assert (diff > 1e-10).mean() < 2e-3 and diff.max() < 0.13e-6, ((diff > 1e-10).mean(), diff.max())
     dl = np.abs(cache.boundary_local_time - full.boundary_local_time)
     assert (dl > 1e-10).mean() < 2e-3 and not g.inside_any(cache.positions.reshape(-1, 3)).any()
+
+
+def test_the_walk_samples_the_field_it_carries():
+    """With one round per save the interval mean is the channels at the save position: the walk's own samples
+    equal the standalone basis evaluated at the stored positions, the domain mean subtracted -- exactly so when
+    the interval's segment list cannot change (straight strands, every strand within the cutoff throughout); a
+    strand crossing the cutoff or a joint between the interval's gather and its end is the difference otherwise,
+    at the size of that strand's field at the cutoff."""
+    from dmipy_sim.fields.strand_field import StrandFieldBasis
+    cls = [np.array([[x, 0, -30e-6], [x, 0, 30e-6]]) for x in (-6e-6, 0, 6e-6)]
+    g = d.PackedCurvedCylinders(cls, [1.0e-6, 1.5e-6, 2.0e-6], interior=False, box=(np.full(3, -10e-6), np.full(3, 10e-6)))
+    sf = StrandFieldBasis(cls, [0.7e-6, 1.05e-6, 1.4e-6], [1.0e-6, 1.5e-6, 2.0e-6], cutoff_m=60e-6,
+                          domain=(np.full(3, -10e-6), np.full(3, 10e-6)))
+    w = simulate_trajectories_adaptive(400, D, g, 1e-3, 2.5e-4, seed=4, require_gpu=False, walker_batch_size=400,
+                                       sub_steps=64, steps_per_round=64, field_basis=sf)
+    assert w.field_samples.shape == (400, 5, 13) and w.field_basis is sf
+    for k in range(5):
+        np.testing.assert_allclose(w.field_samples[:, k], sf.channels(w.positions[:, k]), rtol=0, atol=2e-6)
+    # several rounds per save: the mean over the interval, not the endpoint
+    w2 = simulate_trajectories_adaptive(400, D, g, 1e-3, 2.5e-4, seed=4, require_gpu=False, walker_batch_size=400,
+                                        sub_steps=64, steps_per_round=16, field_basis=sf)
+    end = sf.channels(w2.positions[:, 2]); assert np.abs(w2.field_samples[:, 2] - end).max() > 1e-4
+    assert np.abs(w2.field_samples[:, 2] - end).mean() < np.abs(w2.field_samples[:, 2]).mean()
