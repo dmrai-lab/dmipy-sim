@@ -373,15 +373,11 @@ def from_pulseq(src, *, dt=None):
 
     dt = float(dt if dt is not None else defs.get('dmipy_dt', seq.grad_raster_time))
 
-    # Anchor t=0 of the ScannerSequence at the excitation (our convention: rf/echo times
-    # are relative to excitation).  Fall back to the first gradient sample, else 0.
-    t0 = float(t_exc[0]) if t_exc.size else np.inf
-    if not np.isfinite(t0):
-        for ci in range(min(3, len(gw))):
-            arr = np.asarray(gw[ci], dtype=float)
-            if arr.ndim == 2 and arr.shape[1] >= 1:
-                t0 = min(t0, float(arr[0, 0]))
-        t0 = t0 if np.isfinite(t0) else 0.0
+    # Anchor t=0 of the ScannerSequence at the excitation (our convention: rf/echo times are relative to
+    # excitation). A file without one (an effective-form gradient train, spins taken as transverse from its
+    # start) is anchored at its own t=0: a delay before the first gradient is time in which relaxation, exchange
+    # and the field act, so it is kept, not cut.
+    t0 = float(t_exc[0]) if t_exc.size else 0.0
 
     T = float(seq.duration()[0])
     n_t = (int(defs['dmipy_n_t']) if 'dmipy_n_t' in defs
