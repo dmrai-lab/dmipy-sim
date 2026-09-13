@@ -512,7 +512,9 @@ class ReplayPack:
         if chi is None:                                  # coherence gate, or 1 over the sequence -- and 0 after its
             chi = np.ones(G.shape[1])                    # echo, so a short acquisition relaxes to ITS echo, never to
         chi = np.asarray(chi, np.float64).reshape(-1)    # the end of a longer walk (the TE-prefix property, #199)
-        chi = bin_gate(chi, dt_wf if chi.shape[0] == G.shape[1] else dt, n_t, dt)[0]   # averaged over each save's
+        on_wf = chi.shape[0] == G.shape[1]
+        active = bin_gate(np.ones(chi.shape[0]), dt_wf if on_wf else dt, n_t, dt)[0]  # the acquisition's own extent
+        chi = bin_gate(chi, dt_wf if on_wf else dt, n_t, dt)[0]                       # averaged over each save's
         ch = (self.meta.get("compression", {}).get("channels", {}) or {})
         n_w = self.n_walkers
         w = np.asarray(self.spin_weights, np.float64)
@@ -555,7 +557,7 @@ class ReplayPack:
             if len(T2v) < n_ids or (T1v is not None and len(T1v) < n_ids):
                 raise ValueError(f"the compartment channel uses pool ids up to {n_ids - 1}; T2 / T1 must be given "
                                  f"for every id (got {len(T2v)}{'' if T1v is None else f' / {len(T1v)}'})")
-            logw = logw + relaxation_logweight(comp, T2v, T1v, dt, chi)
+            logw = logw + relaxation_logweight(comp, T2v, T1v, dt, chi, active)
         if rho is not None and float(rho) != 0.0 and surface:
             D_walk = self.diffusivity if D is None else D
             if D_walk is None:
