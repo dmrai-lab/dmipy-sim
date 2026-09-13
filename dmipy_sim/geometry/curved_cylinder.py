@@ -280,16 +280,18 @@ class PackedCurvedCylinders(Geometry):
     classify_returns_object_id = True
 
     def classify_position(self, r):
-        """Compartment id: ``k + 1`` inside tube ``k`` (the nearest segment's tube, 1-indexed as every packed
-        geometry), 0 outside every tube. The record of an interior walk carried pool 0 without this, and the pack
-        then weighted every walker with the extra-cellular water fraction."""
+        """Compartment id: ``k + 1`` inside tube ``k`` (1-indexed as every packed geometry; where tubes overlap or
+        a thin tube runs close to a fat one, the tube the point is DEEPEST inside -- inside ANY tube, not only the
+        nearest axis, which misread a walker in a fat tube close to a thin one's axis as outside), 0 outside every
+        tube. The record of an interior walk carried pool 0 without this, and the pack then weighted every walker
+        with the extra-cellular water fraction."""
         cand, valid = self._gather(r)
-        A = self._A[cand]; AB = self._AB[cand]; AB2 = self._AB2[cand]
+        A = self._A[cand]; AB = self._AB[cand]; AB2 = self._AB2[cand]; rr = self._rout[cand]
         t = jnp.clip(((r[None, :] - A) * AB).sum(1) / AB2, 0.0, 1.0)
-        d2 = jnp.where(valid, ((r[None, :] - (A + t[:, None] * AB)) ** 2).sum(1), jnp.inf)
-        i = jnp.argmin(d2)
-        inside = valid.any() & (d2[i] < self._rout[cand[i]] ** 2)
-        return jnp.where(inside, self._seg_tube[cand[i]] + 1, 0).astype(jnp.int32)
+        d = jnp.sqrt(((r[None, :] - (A + t[:, None] * AB)) ** 2).sum(1))
+        depth = jnp.where(valid, rr - d, -jnp.inf)                   # positive inside a tube
+        i = jnp.argmax(depth)
+        return jnp.where(depth[i] > 0, self._seg_tube[cand[i]] + 1, 0).astype(jnp.int32)
 
     def inside_any(self, P, chunk=50000):
         """(n,3) → (n,) bool: is each point inside ANY tube (dist-to-segment < r_out)?
@@ -361,38 +363,119 @@ class PackedCurvedCylinders(Geometry):
             acc.append(P); got += len(P)
         return np.concatenate(acc)[:n_walkers].astype(np.float32)
 
-    def _inside_one(self, p):
-        """Pure-JAX membership of one point in any tube."""
-        cand, valid = self._gather(p)
+    def _inside_one(self, p, cand=None, valid=None):
+        """Pure-JAX membership of one point in any tube, against the given candidate segments or, without them,
+        the 27-cell gather at ``p``."""
+        if cand is None:
+            cand, valid = self._gather(p)
         A = self._A[cand]; AB = self._AB[cand]; AB2 = self._AB2[cand]; rr = self._rout[cand]
         t = jnp.clip(((p[None, :] - A) * AB).sum(1) / AB2, 0.0, 1.0)
         d = jnp.linalg.norm(p[None, :] - (A + t[:, None] * AB), axis=1)
         return (valid & (d < rr)).any()
 
-    def _fold(self, r, r_new):
-        """Mirror into the voxel, never across a tube wall."""
+    def wall_scales(self, P, chunk=100_000):
+        """``(n, 3) -> (d_wall (n,), R_near (n,))``: each point's distance to the nearest wall it can hit -- the
+        nearest tube's surface (outside all tubes for the exterior pool, the confining tube's wall for the interior
+        one) and, when the pack mirrors at a box, the nearest face -- and the radius of that nearest tube, the
+        curvature scale of the wall. What an adaptive walk steps by (:mod:`dmipy_sim.engine.adaptive`): a walker
+        farther from every wall than its round's excursion takes one free step, the rest step at the R/6 rule
+        of THEIR tube rather than the pack's smallest. A point with no tube in reach gets ``inf`` and the
+        pack's largest radius."""
+        P = np.asarray(P, np.float32)
+        out_d = np.empty(P.shape[0], np.float32); out_r = np.empty(P.shape[0], np.float32)
+        _batch = self._wall_scales_device()
+        for i in range(0, P.shape[0], chunk):
+            d, r = _batch(jnp.asarray(P[i:i + chunk]))
+            out_d[i:i + chunk] = np.asarray(d); out_r[i:i + chunk] = np.asarray(r)
+        return out_d, out_r
+
+    def _wall_scales_device(self):
+        """The jitted ``(n, 3) -> (d_wall, R_near)`` of :meth:`wall_scales` on device arrays, built once."""
+        _batch = getattr(self, "_wall_scales_batch", None)
+        if _batch is None:
+            interior = self.interior; box = self.box_reflect
+            lo = self._lo if box else None; hi = self._hi if box else None
+            R_max = jnp.float32(self._Rmax)
+
+            @jax.jit
+            def _batch(Pb):
+                def one(p):
+                    cand, valid = self._gather(p)
+                    A = self._A[cand]; AB = self._AB[cand]; AB2 = self._AB2[cand]; rr = self._rout[cand]
+                    t = jnp.clip(((p[None, :] - A) * AB).sum(1) / AB2, 0.0, 1.0)
+                    d = jnp.linalg.norm(p[None, :] - (A + t[:, None] * AB), axis=1)
+                    dd = jnp.where(valid, d, jnp.inf)
+                    i = jnp.argmin(dd)
+                    if interior:
+                        d_wall = jnp.where(valid.any(), rr[i] - dd[i], jnp.inf)
+                    else:
+                        d_wall = jnp.where(valid, d - rr, jnp.inf).min()
+                    R_near = jnp.where(valid.any(), rr[i], R_max)
+                    if box:
+                        d_wall = jnp.minimum(d_wall, jnp.minimum((p - lo).min(), (hi - p).min()))
+                    return jnp.maximum(d_wall, 0.0), R_near
+                return jax.vmap(one)(Pb)
+            self._wall_scales_batch = _batch
+        return _batch
+
+    def _fold(self, r, r_new, cand=None, valid=None):
+        """Mirror into the voxel, never across a tube wall. The membership of the mirrored point is tested against
+        ``cand`` / ``valid`` when given -- the segments the step was reflected against, which cover the mirror
+        image (it lies within two steps of ``r_new``) -- else against a gather of its own; that second gather per
+        step was 20x the cost of the reflection itself."""
         if not self.box_reflect:
             return r_new
         span = self._hi - self._lo
         x = (r_new - self._lo) % (2.0 * span)
         folded = self._lo + jnp.where(x > span, 2.0 * span - x, x)
-        ok = self._inside_one(folded) == self.interior
+        ok = self._inside_one(folded, cand, valid) == self.interior
         return jnp.where(ok, folded, r)
 
+    def _step_with(self, r, step, cand, valid):
+        """One wall interaction and the box fold against one candidate list: ``(r_out, d_perp)``."""
+        r_ref, d_perp = self._reflect_with(r, step, cand, valid)
+        return self._fold(r, r_ref, cand, valid), d_perp
+
     def reflect(self, r, step):
-        return self._fold(r, self._reflect(r, step)[0])
+        cand, valid = self._gather(r + step)
+        return self._step_with(r, step, cand, valid)[0]
 
     def reflect_with_log_weight(self, r, step, rho_over_D):
         """The reflection with the contact log-weight ``-2 (rho / D) d_perp``: inside, the overshoot past the
         tube's wall; outside, the radial part of the displacement left after the entry, on the entered tube's
         normal, as the exact packed cylinders read it."""
-        r_new, d_perp = self._reflect(r, step)
-        return self._fold(r, r_new), -2.0 * rho_over_D * d_perp
+        cand, valid = self._gather(r + step)
+        r_out, d_perp = self._step_with(r, step, cand, valid)
+        return r_out, -2.0 * rho_over_D * d_perp
 
     def _reflect(self, r, step):
+        """The wall interaction against every segment near the step's end (the 27-cell gather)."""
+        cand, valid = self._gather(r + step)
+        return self._reflect_with(r, step, cand, valid)
+
+    def reach_candidates(self, r, reach, k):
+        """``(cand (k,), valid (k,), n_within)``: the segments whose SURFACE lies within ``reach`` of ``r`` -- every
+        segment a walker can meet while it stays within ``reach`` of ``r`` -- the nearest ``k`` of them padded
+        with invalid entries, and how many there were (more than ``k``: the list is short, and the caller must
+        widen it). What a round of an adaptive walk gathers once and steps against (:mod:`engine.adaptive`)."""
+        cand, valid = self._gather(r)
+        A = self._A[cand]; AB = self._AB[cand]; AB2 = self._AB2[cand]; rr = self._rout[cand]
+        t = jnp.clip(((r[None, :] - A) * AB).sum(1) / AB2, 0.0, 1.0)
+        d = jnp.linalg.norm(r[None, :] - (A + t[:, None] * AB), axis=1)
+        within = valid & (d - rr < reach)                             # the surface within reach
+        # compact the hits into the first k slots by a prefix sum (order is immaterial to the interaction; a
+        # top-k sort of thousands of candidates per walker per round was the round's cost)
+        slot = jnp.cumsum(within) - 1
+        put = within & (slot < k)
+        out_c = jnp.zeros(k, cand.dtype).at[jnp.where(put, slot, k)].set(cand, mode="drop")
+        out_v = jnp.zeros(k, bool).at[jnp.where(put, slot, k)].set(True, mode="drop")
+        return out_c, out_v, within.sum()
+
+    def _reflect_with(self, r, step, cand, valid):
+        """The wall interaction against the given candidate segments (``cand`` indices, ``valid`` mask): the one
+        implementation behind :meth:`_reflect` and the cached-candidate round of an adaptive walk."""
         NUDGE = jnp.float32(1e-4 * self._Rmin)
         r_new = r + step
-        cand, valid = self._gather(r_new)
         A = self._A[cand]; AB = self._AB[cand]; AB2 = self._AB2[cand]; rr = self._rout[cand]
         t = jnp.clip(((r_new[None, :] - A) * AB).sum(1) / AB2, 0.0, 1.0)
         Q = A + t[:, None] * AB
@@ -440,30 +523,33 @@ class PackedCurvedCylinders(Geometry):
         d_perp = jnp.where(hit, jnp.abs(rem_p @ nhat), jnp.float32(0.0))       # the contact: the radial remainder on the normal
         return jnp.where(hit, r_ref, r_new), d_perp
 
+    def sample_inside(self, n, rng):
+        """``n`` points uniform by volume inside the tubes (segment volume, then the disc, then the length), the
+        whole strand set: no box."""
+        A = np.asarray(self._A); AB = np.asarray(self._AB); AB2 = np.asarray(self._AB2); rout = np.asarray(self._rout)
+        L = np.sqrt(AB2)
+        w = (rout ** 2) * L; w = w / w.sum()
+        idx = rng.choice(len(A), size=int(n), p=w)
+        C = A[idx] + rng.uniform(0.0, 1.0, int(n))[:, None] * AB[idx]
+        T = AB[idx] / L[idx][:, None]
+        ref = np.tile(np.array([0., 0., 1.]), (int(n), 1))
+        ref[np.abs((T * ref).sum(1)) > 0.9] = np.array([1., 0., 0.])
+        e1 = np.cross(T, ref); e1 /= np.linalg.norm(e1, axis=1, keepdims=True)
+        e2 = np.cross(T, e1)
+        rad = rout[idx] * np.sqrt(rng.uniform(0., 1., int(n)))
+        th = rng.uniform(0., 2 * np.pi, int(n))
+        return C + rad[:, None] * (np.cos(th)[:, None] * e1 + np.sin(th)[:, None] * e2)
+
     def init_positions(self, n_walkers, key):
         rng = np.random.default_rng(int(jax.random.randint(key, (), 0, 2 ** 30)))
-        A = np.asarray(self._A); AB = np.asarray(self._AB)
-        AB2 = np.asarray(self._AB2); rout = np.asarray(self._rout)
         if self.interior:
-            # seed inside the tubes, volume-weighted over segments (pi R^2 * length)
-            L = np.sqrt(AB2)
-            w = (rout ** 2) * L; w = w / w.sum()
-            idx = rng.choice(len(A), size=n_walkers, p=w)
-            C = A[idx] + rng.uniform(0.0, 1.0, n_walkers)[:, None] * AB[idx]
-            T = AB[idx] / L[idx][:, None]
-            ref = np.tile(np.array([0., 0., 1.]), (n_walkers, 1))
-            ref[np.abs((T * ref).sum(1)) > 0.9] = np.array([1., 0., 0.])
-            e1 = np.cross(T, ref); e1 /= np.linalg.norm(e1, axis=1, keepdims=True)
-            e2 = np.cross(T, e1)
-            rad = rout[idx] * np.sqrt(rng.uniform(0., 1., n_walkers))
-            th = rng.uniform(0., 2 * np.pi, n_walkers)
-            off = rad[:, None] * (np.cos(th)[:, None] * e1 + np.sin(th)[:, None] * e2)
-            pts = C + off
+            pts = self.sample_inside(n_walkers, rng)
             if self.box is not None:                       # strands overrun the voxel: seed only inside it
                 keep = ((pts >= self.box[0]) & (pts <= self.box[1])).all(1)
                 pts = pts[keep]
                 while len(pts) < n_walkers:
-                    more = np.asarray(self.init_positions(n_walkers, jax.random.fold_in(key, len(pts))))
+                    more = self.sample_inside(n_walkers, rng)
+                    more = more[((more >= self.box[0]) & (more <= self.box[1])).all(1)]
                     pts = np.concatenate([pts, more])[:n_walkers]
             return jnp.asarray(pts, jnp.float32)
         # extra: rejection outside all tubes, grid-accelerated (see sample_outside/inside_any)

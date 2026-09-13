@@ -124,3 +124,14 @@ def test_multishell_separates_lumen_from_sheath():
     r_sheath = np.linalg.norm(sheath[:, :2], axis=1)
     assert r_sheath.min() >= 3e-6 * 0.98, "a sheath seed inside the lumen"
     assert r_sheath.max() <= 5e-6, "a sheath seed outside the outer wall"
+
+
+def test_a_walker_in_a_fat_tube_near_a_thin_one_is_classified_inside():
+    """`classify_position` reads inside ANY tube (the deepest), not only the nearest axis: a point inside a
+    2 um tube, 0.8 um from a 0.5 um tube's axis, is in the fat tube, not outside."""
+    import numpy as np
+    from dmipy_sim.geometry.curved_cylinder import PackedCurvedCylinders
+    fat = np.array([[0.0, 0.0, -20e-6], [0.0, 0.0, 20e-6]]); thin = np.array([[1.8e-6, 0.0, -20e-6], [1.8e-6, 0.0, 20e-6]])
+    g = PackedCurvedCylinders([fat, thin], [2.0e-6, 0.5e-6], interior=True)
+    ids = np.asarray(g.classify_positions_exact(np.array([[1.2e-6, 0.0, 0.0], [1.8e-6, 0.0, 0.0], [2.5e-6, 0.0, 0.0], [0.0, 0.0, 0.0]])))
+    assert ids.tolist() == [1, 2, 0, 1]                             # fat (the thin axis is nearer, but it is outside the thin tube), thin (deepest), out, fat

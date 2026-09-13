@@ -255,6 +255,12 @@ def test_stratified_seeding_fills_every_occupied_voxel_and_keeps_the_volumes(dis
                   seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": 12, "intra": 8, "myelin": 3}))
     with pytest.raises(TypeError, match="not both"):
         walk_spec(spec, 50, 8e-4, 2e-4, seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel=4))
+    # the same walk with adaptive steps: the same channels, the stepping recorded per pool
+    wa = walk_spec(spec, T_max=8e-4, dt_save=2e-4, seed=0, require_gpu=False, field=False, adaptive_steps=True,
+                   seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": 12, "intra": 8, "myelin": 3}))
+    assert wa.positions.shape == w.positions.shape and wa.has_surface and wa.stepping["rule"] == "adaptive"
+    assert set(wa.stepping["pools"]) == {"extra", "intra"} and wa.stepping["pools"]["extra"]["kernel_steps_ratio"] >= 1.0
+    np.testing.assert_array_equal(wa.positions[:, 0], w.positions[:, 0])            # the same seeds
     ids = np.asarray(w.compartment)[:, 0]; r0 = np.asarray(w.positions)[:, 0]; wt = np.asarray(w.weights)
     ijk, inside = grid.bin(r0); assert inside.all()
     flat = np.ravel_multi_index(tuple(ijk.T), grid.shape)

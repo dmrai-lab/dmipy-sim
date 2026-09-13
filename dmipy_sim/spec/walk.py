@@ -21,8 +21,13 @@ from .build import geometry_from_spec
 def walk_spec(spec, n_walkers=None, T_max=None, dt_save=None, *, scanner="connectom", floor_fraction=0.1, diffusivity=None,
               seed=0, n_probe=200_000, field=True, field_res=0.2e-6, field_budget=5e7, field_cutoff_m=25e-6,
               field_cutoff_tol=0.02, field_cutoff_max_m=50e-6, require_gpu=None, walker_batch_size=50_000, tiers="all",
-              seeding=None):
+              seeding=None, adaptive_steps=False):
     """Walk ``spec`` and return a :class:`~dmipy_sim.persistent_walk.PersistentWalk` carrying the spec.
+
+    ``adaptive_steps`` walks every pool whose geometry offers ``wall_scales`` (the curved tubes) with the adaptive
+    producer (:func:`dmipy_sim.engine.adaptive.simulate_trajectories_adaptive`): free steps away from every
+    wall, the R/6 step of the walker's own nearest tube near one, the same channels; the walk records how it
+    stepped (``PersistentWalk.stepping``).
 
     ``seeding`` replaces the spec's uniform rule with :class:`~dmipy_sim.spec.seeding.StratifiedByVoxel`: the
     same number of walkers of every seeded pool in each voxel of a grid the pool occupies, weighted by the
@@ -84,7 +89,7 @@ def walk_spec(spec, n_walkers=None, T_max=None, dt_save=None, *, scanner="connec
                               w.bound_frac, w.illegal_crossings, w.seed, w.diffusivity, geometry=g, spec=spec)
     return _walk_bundle(spec, int(n_walkers), float(T_max), float(dt_save), seed, n_probe, field, field_res,
                         require_gpu, walker_batch_size, field_budget=float(field_budget), field_cutoff_m=field_cutoff_m, field_cutoff_tol=field_cutoff_tol, seeding=seeding,
-                        field_cutoff_max_m=field_cutoff_max_m)
+                        field_cutoff_max_m=field_cutoff_max_m, adaptive_steps=adaptive_steps)
 
 
 def _needs_bundle_walk(spec):
@@ -214,7 +219,7 @@ def _strand_field(outer_b, inner_b, lo, hi, traj, cutoff_m, tol, seed, strands_m
 
 
 def _walk_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field, field_res, require_gpu, batch, field_budget=5e7,
-                 field_cutoff_m=25e-6, field_cutoff_tol=0.02, seeding=None, field_cutoff_max_m=50e-6):
+                 field_cutoff_m=25e-6, field_cutoff_tol=0.02, seeding=None, field_cutoff_max_m=50e-6, adaptive_steps=False):
     """Walk a multi-surface spec pool by pool: every seeded pool is defined by the walls it is inside and the walls it
     is outside; a pool with D > 0 walks the interior of its inside-walls (intra, glia) or the exterior of its
     outside-walls (extra); a shell pool at D = 0 (myelin) is frozen where it was seeded; the field basis is
@@ -306,7 +311,7 @@ def _walk_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field, field_re
             return P, w
     feature = float(spec.validity.smallest_feature)
     parts, n_t, walked = [], None, None                    # (pid, positions or seeds, local time or None)
-    weights_of = {}
+    weights_of = {}; stepping = []
     for pid in seeded:
         pool = pools[pid]
         shell = bool(inside_w[pid]) and bool(outside_w[pid])
@@ -324,9 +329,18 @@ def _walk_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field, field_re
                             f"implemented (set D = 0 for a stuck pool)")
         g = (boundary(inside_w[pid]).geometry("intra", lo, hi, periodic, reflect, feature) if inside_w[pid]
              else boundary(outside_w[pid]).geometry("extra", lo, hi, periodic, reflect, feature))
-        log.info("walk_spec: walking pool %s, %d walkers", pool.name, n)
-        w = simulate_trajectories(n, float(pool.D), g, T_max=T_max, dt_save=dt_save, seed=seed + 13 * pid, r0=r0,
-                                  require_gpu=require_gpu, walker_batch_size=batch)
+        log.info("walk_spec: walking pool %s, %d walkers%s", pool.name, n, " (adaptive steps)" if adaptive_steps else "")
+        if adaptive_steps:
+            if not hasattr(g, "wall_scales"):
+                raise SpecError(f"pool {pool.name!r}: its {type(g).__name__} offers no wall_scales; adaptive stepping "
+                                f"is for the curved tubes")
+            from ..engine.adaptive import simulate_trajectories_adaptive
+            w = simulate_trajectories_adaptive(n, float(pool.D), g, T_max, dt_save, seed=seed + 13 * pid, r0=r0,
+                                               require_gpu=require_gpu, walker_batch_size=batch)
+            stepping.append((pool.name, w.stepping))
+        else:
+            w = simulate_trajectories(n, float(pool.D), g, T_max=T_max, dt_save=dt_save, seed=seed + 13 * pid, r0=r0,
+                                      require_gpu=require_gpu, walker_batch_size=batch)
         n_t, walked = w.n_t, w
         parts.append((pid, np.asarray(w.positions, np.float32),
                       None if w.boundary_local_time is None else np.asarray(w.boundary_local_time, np.float32)))
@@ -378,4 +392,5 @@ def _walk_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field, field_re
     D_ref = by_name["intra"].D if ("intra" in by_name and by_name["intra"].D) else float(walked.diffusivity)
     return PersistentWalk(traj, float(walked.dt), int(walked.sub_steps), float(walked.dt_sim), boundary_local_time=dlog,
                           compartment=comp, seed=int(seed), diffusivity=D_ref, spec=spec,
-                          weights=(None if np.allclose(wts, 1.0) else wts), field_basis=fg)
+                          weights=(None if np.allclose(wts, 1.0) else wts), field_basis=fg,
+                          stepping=(dict(rule="adaptive", pools=dict(stepping)) if stepping else None))
