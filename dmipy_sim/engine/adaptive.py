@@ -41,7 +41,7 @@ def _pad_to(n, unit=4096):
 def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, dt_save, *, seed=0, r0=None,
                                    steps_per_round=16, safety_sigma=6.0, n_classes=4, sub_steps=None,
                                    walker_batch_size=100_000, require_gpu=None, storage_dtype=np.float32,
-                                   candidate_cache=True, candidate_k_start=64, field_basis=None):
+                                   candidate_cache=True, candidate_k_start=64, field_basis=None, field_reuse_intervals=4):
     """A :class:`~dmipy_sim.persistent_walk.PersistentWalk` of ``geometry`` with adaptive stepping (module
     docstring). ``geometry`` must offer ``wall_scales``, ``reflect_with_log_weight`` and ``classify_positions_exact``
     and be impermeable. ``steps_per_round`` is the finest class's steps per round (the round is
@@ -55,7 +55,9 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, dt_s
     of every round the channels are evaluated against that list at the walker's position and accumulated; the
     interval's mean, the domain mean subtracted, is the sample the pack's path channel stores for that save
     (``PersistentWalk.field_samples``), so the tier costs one gather and a few fixed-list evaluations per
-    walker-save rather than a field evaluation per stored point."""
+    walker-save rather than a field evaluation per stored point. The list is gathered every ``field_reuse_intervals``
+    save intervals with the margin the walkers can travel in between (six sigma of that excursion) and masked by
+    the true distance when evaluated, so reuse costs no strand within the cutoff."""
     from .gpu import check_gpu
     from .physics import resolve_sub_steps, length_scales_of
     if not hasattr(geometry, "wall_scales"):
@@ -194,10 +196,21 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, dt_s
         from ..fields.strand_field import StrandFieldBasis
         if not isinstance(field_basis, StrandFieldBasis):
             raise TypeError("field_basis must be a StrandFieldBasis: the walk samples the strand field along the path")
-        _nearest = field_basis.nearest_device(); _at = field_basis.channels_at_device()
+        f_reuse = max(1, int(field_reuse_intervals))
+        f_margin = 6.0 * math.sqrt(2.0 * D * dt_actual * f_reuse)     # six sigma of the excursion over the reused intervals
+        f_radius = min(field_basis.cutoff_m + f_margin, 2.0 * field_basis.cutoff_m)
+        _at = field_basis.channels_at_device()
         f_mean = jnp.asarray(field_basis.mean, jnp.float32)
         field_all = np.empty((n_walkers, n_t, 13), np.float32)
         f_chunk = 8192                                                # the gather's per-strand minima are n_strands per walker
+        # size the list from the start positions at the gather radius
+        sample = r0_all[np.random.default_rng(int(seed) + 5).choice(n_walkers, size=min(n_walkers, 20_000), replace=False)]
+        n_probe = np.concatenate([np.asarray(field_basis.nearest_device(radius_m=f_radius, k=1)(jnp.asarray(sample[i:i + f_chunk]))[2])
+                                  for i in range(0, sample.shape[0], f_chunk)])
+        f_k = min(field_basis.strands_max + 1, 1 << int(math.ceil(math.log2(1.5 * max(int(n_probe.max()), 1)))))
+        _nearest = field_basis.nearest_device(radius_m=f_radius, k=f_k)
+        log.info("adaptive: field sampled in the walk: list of %d strands gathered every %d saves at %.1f um (cutoff %.0f um + "
+                 "margin), up to %d in reach at the start", f_k, f_reuse, f_radius * 1e6, field_basis.cutoff_m * 1e6, int(n_probe.max()))
 
         def nearest_dev(r):
             parts = [_nearest(r[i:i + f_chunk]) for i in range(0, r.shape[0], f_chunk)]
@@ -219,17 +232,16 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, dt_s
         log.info("  adaptive: walkers %d-%d (%d%% done)...", s, e - 1, int(100 * e / n_walkers))
         if sampling:
             seg, keep, n_str = nearest_dev(r)
-            if int(n_str.max()) > field_basis.strands_max:
-                raise ValueError(f"a walker has {int(n_str.max())} strands within the field's {field_basis.cutoff_m * 1e6:.0f} um "
-                                 f"cutoff, more than strands_max={field_basis.strands_max}")
+            if int(n_str.max()) > f_k:
+                raise ValueError(f"a walker has {int(n_str.max())} strands within {f_radius * 1e6:.0f} um, more than the list's {f_k}")
             field_all[s:e, 0] = np.asarray(at_dev(r, seg, keep) - f_mean)
         for t in range(1, n_t):
             dlog_int = jnp.zeros(nb, jnp.float32)
-            if sampling:                                             # the interval's list: the nearest segments now
-                seg, keep, n_str = nearest_dev(r)
-                if int(n_str.max()) > field_basis.strands_max:
-                    raise ValueError(f"a walker has {int(n_str.max())} strands within the field's cutoff, more than "
-                                     f"strands_max={field_basis.strands_max}")
+            if sampling:
+                if (t - 1) % f_reuse == 0:                           # the list, reused over f_reuse intervals with its margin
+                    seg, keep, n_str = nearest_dev(r)
+                    if int(n_str.max()) > f_k:
+                        raise ValueError(f"a walker has {int(n_str.max())} strands within {f_radius * 1e6:.0f} um, more than the list's {f_k}")
                 f_acc = jnp.zeros((nb, 13), jnp.float32)
             for _ in range(n_rounds):
                 d_wall, R_near = scales_dev(r)

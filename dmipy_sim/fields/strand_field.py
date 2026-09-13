@@ -143,19 +143,27 @@ class StrandFieldBasis:
                     channels=list(CHANNEL_NAMES), mean_subtracted=True, certificate=self.certificate)
 
     # ------------------------------------------------------------------ evaluation
-    def nearest_device(self):
+    def nearest_device(self, *, radius_m=None, k=None):
         """The jitted, vmapped ``p -> (segments (k,), keep (k,), n_within)``: for a point, the nearest segment of
-        every strand within the cutoff -- global segment indices, the nearest ``k = strands_max + 1`` of them by
-        distance with ``keep`` marking the real entries, and how many strands were within reach (more than
-        ``strands_max``: the list is short). What a walk gathers once per save interval and evaluates the field
-        against at every round (:mod:`dmipy_sim.engine.adaptive`)."""
-        f = getattr(self, "_nearest_batch", None)
+        every strand within ``radius_m`` (the cutoff by default; a walk gathers with a margin and reuses the list
+        over several save intervals, masking by the true distance when it evaluates) -- global segment indices,
+        the nearest ``k`` of them by distance (``strands_max + 1`` by default) with ``keep`` marking the real
+        entries, and how many strands were within the radius (more than ``k``: the list is short). The radius must
+        not exceed the grid's reach (the cutoff the grid was built for, plus a cell). What a walk gathers and
+        evaluates the field against at every round (:mod:`dmipy_sim.engine.adaptive`)."""
+        radius = float(self.cutoff_m if radius_m is None else radius_m)
+        if radius > 2.0 * self.cutoff_m:
+            raise ValueError(f"radius_m={radius * 1e6:.0f} um is beyond what the {self.cutoff_m * 1e6:.0f} um grid gathers (a cell)")
+        k_max = int(min(self.strands_max + 1 if k is None else int(k), 27 * self._cap))
+        cache = getattr(self, "_nearest_batches", None)
+        if cache is None:
+            cache = self._nearest_batches = {}
+        f = cache.get((radius, k_max))
         if f is None:
             A, AB, AB2, sid = self._A, self._AB, self._AB2, self._sid
             CELL, OFF, GMIN, CS, dims_arr, DIMS = self._CELL, self._OFF, self._GMIN, self._CS, self._dims_arr, self._dims
-            cutoff = jnp.float32(self.cutoff_m); n_strands = self.n_strands; n_seg = self.n_segments
+            cutoff = jnp.float32(radius); n_strands = self.n_strands; n_seg = self.n_segments
             tie_tol = jnp.float32(self.TIE_TOL * self.cutoff_m)
-            k_max = int(min(self.strands_max + 1, 27 * self._cap))       # one more than allowed: the overflow shows
 
             def one(p):
                 c = jnp.clip(jnp.floor((p - GMIN) / CS).astype(jnp.int32), 0, dims_arr - 1)
@@ -181,24 +189,28 @@ class StrandFieldBasis:
                 first = tie & (cand == imin[s_c])
                 _, pick = jax.lax.top_k(jnp.where(first, -d, -jnp.inf), k_max)
                 return cand[pick], first[pick], first.sum()
-            f = self._nearest_batch = jax.jit(jax.vmap(one))
+            f = cache[(radius, k_max)] = jax.jit(jax.vmap(one))
         return f
 
     def channels_at_device(self):
         """The jitted, vmapped ``(p, segments, keep) -> (13,)``: the bare channels at ``p`` from the given segments
-        (their infinite hollow cylinders, the radial vector taken at ``p``), summed over the kept ones. No mean is
+        (their infinite hollow cylinders, the radial vector taken at ``p``), summed over the kept ones whose
+        segment lies within the cutoff of ``p`` (a list gathered with a margin is masked here). No mean is
         subtracted here."""
         f = getattr(self, "_channels_at_batch", None)
         if f is None:
             A, AB, AB2, ra, rb = self._A, self._AB, self._AB2, self._a, self._b
+            cutoff = jnp.float32(self.cutoff_m)
 
             def one(p, seg, keep):
                 As = A[seg]; ABs = AB[seg]
                 u = ABs / jnp.sqrt(AB2[seg])[:, None]
                 t = jnp.clip(((p[None, :] - As) * ABs).sum(1) / AB2[seg], 0.0, 1.0)
-                rv = p[None, :] - (As + t[:, None] * ABs); rv = rv - (rv * u).sum(1, keepdims=True) * u
+                q = p[None, :] - (As + t[:, None] * ABs)
+                within = keep & (jnp.linalg.norm(q, axis=1) < cutoff)
+                rv = q - (q * u).sum(1, keepdims=True) * u
                 C = hollow_cylinder_basis(rv, u, ra[seg], rb[seg])
-                return (C * keep[:, None]).sum(0)
+                return (C * within[:, None]).sum(0)
             f = self._channels_at_batch = jax.jit(jax.vmap(one))
         return f
 
