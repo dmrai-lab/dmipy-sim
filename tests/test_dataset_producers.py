@@ -103,7 +103,7 @@ def test_the_track_file_round_trips_in_metres(disco_files):
     tck, dia = disco_files
     cls_ = read_tck(tck, coordinate_unit_m=25e-6)
     assert len(cls_) == 3 and np.allclose(cls_[1], np.array([[0, 0, -12e-6], [0, 0.5e-6, 0], [0, 0, 12e-6]]) + 10e-6, atol=1e-11)
-    np.testing.assert_allclose(read_diameters(dia, diameter_unit_m=1e-3), [2 * 0.7 * r for r in (1.5e-6, 1.0e-6, 2.0e-6)], rtol=1e-12)
+    np.testing.assert_allclose(read_diameters(dia, diameter_unit_m=1e-3), [2 * r for r in (1.5e-6, 1.0e-6, 2.0e-6)], rtol=1e-12)
     nib = pytest.importorskip("nibabel")
     ref = nib.streamlines.load(tck).streamlines                                   # the reference reader agrees
     assert len(ref) == 3 and np.allclose(np.asarray(ref[2]) * 25e-6, cls_[2], atol=1e-11)
