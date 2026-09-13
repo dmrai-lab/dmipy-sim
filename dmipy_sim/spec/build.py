@@ -69,8 +69,10 @@ def _pools_from_compartments(g, names, D_by_name, wf_by_name=None):
 
 
 def spec_of(geometry, *, id=None, provenance=None, surface_dir=None):
-    """The spec of an analytic geometry, its ``frame`` the geometry's own axis (RPK.md 4.2): the orientation of a
-    cylinder-like object, the chord of a curved one; an object with no axis keeps the default ``z``."""
+    """The spec of an analytic geometry, its ``frame`` the geometry's own axis in the frame it is walked in
+    (RPK.md 4.2): ``z`` for the cylinder kinds, which are walked in their own frame (their ``orientation`` is the
+    pose :func:`~dmipy_sim.simulate` applies to the acquisition, not a property of the substrate, and is recorded
+    in the provenance), the chord of a curved one; an object with no axis keeps the default ``z``."""
     spec = _spec_without_frame(geometry, id=id, provenance=provenance, surface_dir=surface_dir)
     axis = _axis_of(geometry)
     if axis is None:
@@ -80,13 +82,9 @@ def spec_of(geometry, *, id=None, provenance=None, surface_dir=None):
 
 
 def _axis_of(g):
-    """The structural axis an analytic geometry declares, or ``None``: ``orientation`` on the cylinder kinds, the
-    end-to-end chord of a curved cylinder's centerline (the mean chord over a packed set)."""
-    o = getattr(g, "orientation", None)
-    if o is not None and np.ndim(o) == 1 and len(o) == 3:
-        a = np.asarray(o, float)
-        if np.linalg.norm(a) > 0:
-            return a / np.linalg.norm(a)
+    """The structural axis an analytic geometry declares in the frame it is walked in, or ``None``: the end-to-end
+    chord of a curved cylinder's centerline (the mean chord over a packed set). The cylinder kinds are walked along
+    ``z`` of their own frame, the default."""
     cl = getattr(g, "centerline", None)
     if cl is not None:
         c = np.asarray(cl, float)
@@ -115,7 +113,13 @@ def _spec_without_frame(geometry, *, id=None, provenance=None, surface_dir=None)
     g = geometry
     name = type(g).__name__
     sid = id or f"analytic/{name.lower()}"
-    prov = provenance or {"source": "analytic", "constructor": name}
+    prov = dict(provenance or {"source": "analytic", "constructor": name})
+    if getattr(g, "_orient_R", None) is not None and hasattr(g, "orientation"):
+        # the substrate is described in its own frame; the constructor's pose is simulate's, not the spec's
+        prov.setdefault("transformations", []).append(
+            f"walked in the substrate frame (axis +z); the constructor's orientation "
+            f"{np.asarray(g.orientation, float).round(6).tolist()} is the pose simulate applies to the acquisition, "
+            f"a replay knob for a pack")
     if isinstance(g, SphereUnion):
         return _spec_of_sphere_union(g, sid, prov)
     extra0 = Pool(0, "extra", None, water_fraction=0.0)
@@ -157,7 +161,7 @@ def _spec_without_frame(geometry, *, id=None, provenance=None, surface_dir=None)
         if isinstance(g, Sphere):
             surf, R = Surface("sphere", center=[0.0] * 3, radius=g.radius), g.radius
         elif isinstance(g, Cylinder):
-            surf, R = Surface("cylinder", center=[0.0] * 3, axis=np.asarray(g.orientation, float).tolist(), radius=g.radius), g.radius
+            surf, R = Surface("cylinder", center=[0.0] * 3, axis=[0.0, 0.0, 1.0], radius=g.radius), g.radius
         else:
             surf, R = Surface("ellipsoid", center=[0.0] * 3, semiaxes=np.asarray(g.semiaxes, float).tolist()), float(np.min(g.semiaxes))
         wall = Wall("membrane", surf, 1, (0 if kappa > 0 else None), Directional(kappa, kappa), Sided(_rho(g), _rho(g)))
@@ -173,7 +177,7 @@ def _spec_without_frame(geometry, *, id=None, provenance=None, surface_dir=None)
         if centers.shape[1] == 2:
             centers = np.column_stack([centers, np.zeros(len(centers))])
         kind = "cylinder" if isinstance(g, PackedCylinders) else "sphere"
-        surf = Surface(kind, **({"axis": np.asarray(g.orientation, float).tolist()} if kind == "cylinder" else {}),
+        surf = Surface(kind, **({"axis": [0.0, 0.0, 1.0]} if kind == "cylinder" else {}),
                        instances={"centers": centers.tolist(), "radii": np.asarray(g._radii_np, float).tolist()})
         wall = Wall("objects", surf, 1, 0, Directional(kappa, kappa), Sided(_rho(g), _rho(g)))
         bc = ["periodic", "periodic", "open"] if kind == "cylinder" else ["periodic"] * 3
@@ -184,7 +188,7 @@ def _spec_without_frame(geometry, *, id=None, provenance=None, surface_dir=None)
                                                                      np.asarray(g._radii_np, float), L))),
                              description=f"periodic cell of {len(centers)} {kind}s; extra-cellular walk", provenance=prov)
     if isinstance(g, MyelinatedCylinder):
-        ax = np.asarray(g.orientation, float).tolist()
+        ax = [0.0, 0.0, 1.0]
         pools = _pools_from_compartments(g, ["extra", "intra", "myelin"],
                                          {"extra": g.D_extra, "intra": g.D_intra, "myelin": g.D_myelin},
                                          {"extra": g.water_fractions[2], "intra": g.water_fractions[0], "myelin": g.water_fractions[1]})
@@ -197,7 +201,7 @@ def _spec_without_frame(geometry, *, id=None, provenance=None, surface_dir=None)
                              description="isolated myelinated cylinder: lumen, sheath, extra", provenance=prov)
     if isinstance(g, PackedMyelinatedCylinders):
         N = g.N_actual
-        ax = np.asarray(g.orientation, float).tolist()
+        ax = [0.0, 0.0, 1.0]
         inner = np.asarray(g._inner_radii_np[:N], float); outer = np.asarray(g._outer_radii_np[:N], float)
         centers = np.column_stack([np.asarray(g._centers_np[:N], float), np.zeros(N)])
         def scalar(arr, what):

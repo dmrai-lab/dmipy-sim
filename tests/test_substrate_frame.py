@@ -90,27 +90,29 @@ def test_a_strand_list_declares_its_frame_from_its_own_strands(tmp_path):
     assert [x["n_strands"] for x in b] == [3, 2] and abs(abs(np.dot(b[1]["axis"], [0, 1, 0])) - 1) < 1e-9
 
 
-def test_an_analytic_geometry_declares_its_axis_and_the_pack_carries_it():
-    """A cylinder oriented along x: its spec's frame axis is x (not the default z), and a pack built from its walk
-    declares ``walk_params.substrate_frame`` with that axis as column 3."""
+def test_an_analytic_geometry_is_walked_in_its_own_frame_and_the_pack_says_so():
+    """A cylinder posed along x is walked along z of its own frame: its spec's frame axis is z, the pose is in the
+    provenance, and a pack built from its walk declares the identity frame -- the pose is a replay knob."""
     g = d.Cylinder(radius=2e-6, orientation=(1, 0, 0))
-    assert np.allclose(g.spec.frame.axis, [1, 0, 0])
+    assert np.allclose(g.spec.frame.axis, [0, 0, 1]) and any("pose" in t for t in g.spec.provenance["transformations"])
     walk = d.simulate_trajectories(200, 2e-9, g, 4e-3, 5e-4, seed=1, require_gpu=False)
+    P = np.asarray(walk.positions)
+    assert (np.hypot(P[..., 0], P[..., 1]) < 2e-6).all()                               # confined in x-y, free along z
     pk = build_replay_pack(walk, id="t/x", license="x", citation="x", K=4)
     F = np.asarray(pk.meta["walk_params"]["substrate_frame"])
-    assert np.allclose(F[:, 2], [1, 0, 0]) and np.allclose(pk.frame_axis, [1, 0, 0])
+    assert np.allclose(F, np.eye(3)) and np.allclose(pk.frame_axis, [0, 0, 1])
 
 
 def test_a_declared_frame_the_walk_contradicts_is_refused_at_build():
-    """The bundle runs along x; a frame that says z is refused with the angle, a frame that says x is written,
+    """The bundle runs along z; a frame that says x is refused with the angle, a frame that says z is written,
     and a sphere walk (no dominant axis) declares nothing to contradict."""
     from dmipy_sim.replay.bank import frame_from_axis, check_frame_against_walk
-    g = d.Cylinder(radius=1e-6, orientation=(1, 0, 0))                    # intra-axonal: free along x, restricted across
+    g = d.Cylinder(radius=1e-6, orientation=(0, 0, 1))                    # intra-axonal: free along z, restricted across
     walk = d.simulate_trajectories(400, 2e-9, g, 6e-3, 5e-4, seed=2, require_gpu=False)
     with pytest.raises(ValueError, match="principal displacement axis"):
-        build_replay_pack(walk, id="t/wrong", license="x", citation="x", K=4, substrate_frame=np.eye(3))
-    pk = build_replay_pack(walk, id="t/right", license="x", citation="x", K=4, substrate_frame=frame_from_axis((1, 0, 0)))
-    assert np.allclose(pk.frame_axis, [1, 0, 0])
+        build_replay_pack(walk, id="t/wrong", license="x", citation="x", K=4, substrate_frame=frame_from_axis((1, 0, 0)))
+    pk = build_replay_pack(walk, id="t/right", license="x", citation="x", K=4, substrate_frame=np.eye(3))
+    assert np.allclose(pk.frame_axis, [0, 0, 1])
     rng = np.random.default_rng(0)
     iso = np.cumsum(rng.normal(size=(300, 20, 3)), axis=1) * 1e-7
     assert check_frame_against_walk(iso, np.eye(3)) == 0.0
