@@ -141,8 +141,12 @@ class _Boundary:
 
     def sample_inside(self, n, rng):
         """``n`` points uniform by volume inside the swept polylines (by segment volume, then a disc, then the
-        segment's length): the exact intra draw, no rejection."""
+        segment's length): the exact intra draw, no rejection. A point sits at least the family's representable
+        nudge inside its wall (:func:`~dmipy_sim.geometry._boundary.representable_nudge`), so a float32
+        classification at the strands' coordinates reads it as inside."""
+        from ..geometry._boundary import representable_nudge
         A, B, r = self.segments()
+        margin = representable_nudge(1e-4 * float(r.min()), float(np.abs(np.concatenate([A, B])).max() + r.max()))
         L = np.linalg.norm(B - A, axis=1); w = np.pi * r ** 2 * L
         k = rng.choice(len(w), size=int(n), p=w / w.sum())
         t = rng.uniform(0.0, 1.0, int(n))[:, None]
@@ -150,7 +154,7 @@ class _Boundary:
         T = (B[k] - A[k]) / np.maximum(L[k], 1e-30)[:, None]
         ref = np.tile([0.0, 0.0, 1.0], (int(n), 1)); ref[np.abs((T * ref).sum(1)) > 0.9] = [1.0, 0.0, 0.0]
         e1 = np.cross(T, ref); e1 /= np.linalg.norm(e1, axis=1, keepdims=True); e2 = np.cross(T, e1)
-        rr = r[k] * np.sqrt(rng.uniform(0.0, 1.0, int(n))); th = rng.uniform(0.0, 2 * np.pi, int(n))
+        rr = np.maximum(r[k] - margin, 0.0) * np.sqrt(rng.uniform(0.0, 1.0, int(n))); th = rng.uniform(0.0, 2 * np.pi, int(n))
         return C + rr[:, None] * (np.cos(th)[:, None] * e1 + np.sin(th)[:, None] * e2)
 
     def volume(self):
