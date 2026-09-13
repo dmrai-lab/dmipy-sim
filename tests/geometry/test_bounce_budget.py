@@ -38,32 +38,69 @@ def test_mesh_cap_has_a_floor_and_grows_with_the_cell():
     assert wide._MAX_BOUNCES == max(10, int(np.ceil(0.9 * wide.cell_size / (2 * 0.06 * 0.5e-6))) + 2) > 10
 
 
+def _dispatched_steps(g, n, rng, key):
+    """``n`` wall interactions' worth of starts and steps at the step the dispatcher chooses for ``g``: Gaussian
+    steps at the resolved sub-step (their tails included), and a grazing set -- a start ``2 nudge`` inside the
+    smallest object's wall with a tangential step of the rule's length ``R / 6``, the lane the cap is derived
+    from (a sphere or a cylinder; an ellipsoid has no one radius and gets random starts)."""
+    from dmipy_sim.engine.physics import resolve_sub_steps
+    import jax
+    dt = 1e-4; n_sub = resolve_sub_steps(g, D, dt)
+    sigma = float(np.sqrt(2.0 * D * dt / n_sub))
+    r0 = np.asarray(g.init_positions(n, key), np.float64)
+    step = rng.normal(0.0, sigma, (n, 3))
+    R = float(g.length_scales.min_feature)
+    m = n // 5
+    u = rng.normal(size=(m, 3)); u /= np.linalg.norm(u, axis=1, keepdims=True)
+    graze = (R - 2e-4 * R) * u                                          # just inside the smallest sphere / cylinder radius
+    if isinstance(g, d.Cylinder):
+        graze[:, 2] = 0.0; graze[:, :2] *= (R - 2e-4 * R) / np.linalg.norm(graze[:, :2], axis=1, keepdims=True)
+    t = rng.normal(size=(m, 3)); t -= (t * u).sum(1, keepdims=True) * u; t /= np.linalg.norm(t, axis=1, keepdims=True)
+    if isinstance(g, d.Ellipsoid):
+        graze = graze * 0.0 + r0[:m]                                  # an ellipsoid has no one radius: random starts
+    return np.concatenate([r0, graze]).astype(np.float32), np.concatenate([step, (R / 6.0) * t]).astype(np.float32)
+
+
 @pytest.mark.parametrize("make", [
     lambda: d.Sphere(1e-6), lambda: d.Cylinder(1e-6, (0, 0, 1)),
     lambda: d.Ellipsoid((1e-6, 1.5e-6, 0.8e-6)), lambda: d.Sphere(1e-6, permeability=2e-5),
 ], ids=["Sphere", "Cylinder", "Ellipsoid", "permeable Sphere"])
 def test_no_lane_reaches_the_cap_at_the_dispatched_step(make):
-    """Doubling the cap changes nothing: the budget covers every lane at the sub-step the
-    dispatcher chooses."""
+    """Doubling the cap changes nothing: the budget covers every lane at the sub-step the dispatcher chooses.
+    One wall interaction per lane -- the cap is a per-step property -- over 20k Gaussian steps and 4k grazing
+    ones, under the cap and under twice the cap, to the bit."""
+    import jax, jax.numpy as jnp
     g = make()
     cap = g._MAX_BOUNCES
     cls = type(g)
     original = cls.__dict__["_MAX_BOUNCES"]          # the class property; restore it afterwards
-    sig = []
-    for c in (cap, 2 * cap):
+    r0, step = _dispatched_steps(g, 20_000, np.random.default_rng(0), jax.random.PRNGKey(0))
+    keys = jax.random.split(jax.random.PRNGKey(1), r0.shape[0])
+    out = []
+    for c in (cap, 2 * cap, 1):
         cls._MAX_BOUNCES = property(lambda self, c=c: c)
         try:
-            sig.append(np.asarray(d.simulate(3000, D, _wf(), make(), seed=0, require_gpu=False)))
+            gg = make()
+            if gg.permeability is not None:
+                f = jax.jit(jax.vmap(lambda r, s, k: gg.permeate(r, s, jnp.float32(gg.permeability / D), jnp.float32(0.0), k)[0]))
+                out.append(np.asarray(f(jnp.asarray(r0), jnp.asarray(step), keys)))
+            else:
+                out.append(np.asarray(jax.jit(jax.vmap(gg.reflect))(jnp.asarray(r0), jnp.asarray(step))))
         finally:
             cls._MAX_BOUNCES = original
-    np.testing.assert_array_equal(sig[0], sig[1])
+    np.testing.assert_array_equal(out[0], out[1])
+    if not isinstance(g, d.Ellipsoid):
+        assert (out[2][20_000:] != out[1][20_000:]).any()               # a cap of 1 does cut the grazing lanes: the test has teeth
 
 
 def test_no_mesh_lane_reaches_the_cap_at_the_dispatched_step():
+    import jax, jax.numpy as jnp
     V, F = mesh_shapes.icosphere(1e-6, subdivisions=2)
     m = d.Mesh(V, F, feature_radius=0.5e-6)
-    out = [np.asarray(d.simulate(2000, D, _wf(), d.Mesh(V, F, feature_radius=0.5e-6, max_bounces=c),
-                                 seed=1, require_gpu=False)) for c in (m._MAX_BOUNCES, 2 * m._MAX_BOUNCES)]
+    r0, step = _dispatched_steps(m, 5_000, np.random.default_rng(2), jax.random.PRNGKey(2))
+    r0, step = r0[:5_000], step[:5_000]                                  # the Gaussian set: a mesh has no one radius
+    out = [np.asarray(jax.jit(jax.vmap(d.Mesh(V, F, feature_radius=0.5e-6, max_bounces=c).reflect))(jnp.asarray(r0), jnp.asarray(step)))
+           for c in (m._MAX_BOUNCES, 2 * m._MAX_BOUNCES)]
     np.testing.assert_array_equal(out[0], out[1])
 
 
