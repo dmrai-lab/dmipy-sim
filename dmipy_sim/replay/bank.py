@@ -712,6 +712,86 @@ def replay_susc(pack, waveform, *, b0_dir=(0.0, 0.0, 1.0), B0=0.0, chi_iso=0.0, 
 
 
 # --------------------------------------------------------------- pack generation
+def merge_packs(packs, *, id, out_path=None):
+    """One pack from the shards of one walk: the packs of disjoint voxel blocks of the same substrate, walked
+    with the same parameters and codec (a distributed fill: each device seeds and walks its block and packs it
+    with ``voxel_grid=``). Every walker-indexed array is concatenated shard after shard; the per-voxel
+    certificate is the union of the shards' rows, and two shards holding the same voxel are refused (a voxel
+    belongs to one shard, so its floor is one shard's). The fidelity summary is the conservative one over the
+    shards (the largest error and floor, every family within its floor only when every shard was); the
+    precision tiers are recomputed and declared unshuffled (the walkers are ordered by shard). Provenance
+    lists the shards. ``packs`` are :class:`ReplayPack` objects or paths."""
+    from ..phantom.grid import Grid
+    pks = [pk if isinstance(pk, ReplayPack) else read_rpk(pk) for pk in packs]
+    if len(pks) < 2:
+        raise ValueError("merge_packs takes at least two shards")
+    def same(key, get):
+        vals = [get(pk) for pk in pks]
+        if any(v != vals[0] for v in vals[1:]):
+            raise ValueError(f"the shards differ in {key}: {vals[0]!r} vs {[v for v in vals[1:] if v != vals[0]][0]!r}")
+        return vals[0]
+    comp = same("compression", lambda pk: {k: v for k, v in pk.meta["compression"].items() if k != "precision_tiers"})
+    wp = same("walk_params", lambda pk: {k: v for k, v in pk.meta["walk_params"].items() if k not in ("n_walkers", "seed")})
+    same("substrate", lambda pk: pk.meta.get("substrate"))
+    same("replay_envelope", lambda pk: pk.meta.get("replay_envelope"))
+    pv0 = same("per-voxel grid", lambda pk: ((pk.meta.get("fidelity") or {}).get("per_voxel") or {}).get("grid"))
+    same("array names", lambda pk: sorted(pk.arrays))
+    n = [int(pk.meta["walk_params"]["n_walkers"]) for pk in pks]
+    arrays = {}
+    for k in pks[0].arrays:
+        if k in ("voxel_ijk", "voxel_certificate"):
+            continue
+        parts = [np.asarray(pk.arrays[k]) for pk in pks]
+        if not all(a.shape[0] == m and a.shape[1:] == parts[0].shape[1:] for a, m in zip(parts, n)):
+            raise ValueError(f"array {k!r} is not walker-leading in every shard; it cannot be concatenated")
+        arrays[k] = np.concatenate(parts)
+    fid = dict(pks[0].meta.get("fidelity") or {})
+    for key, agg in (("err_max", max), ("floor_max", max), ("noise_floor", max), ("err_surface", max), ("floor_surface", max)):
+        vals = [(pk.meta.get("fidelity") or {}).get(key) for pk in pks]
+        if all(v is not None for v in vals):
+            fid[key] = float(agg(vals))
+    if all("within_2x_floor" in (pk.meta.get("fidelity") or {}) for pk in pks):
+        fid["within_2x_floor"] = bool(all((pk.meta["fidelity"]["within_2x_floor"]) for pk in pks))
+    fid.pop("per_family", None)
+    if pv0 is not None:
+        ijk = np.concatenate([np.asarray(pk.arrays["voxel_ijk"], np.int64) for pk in pks])
+        cert = np.concatenate([np.asarray(pk.arrays["voxel_certificate"], np.float64) for pk in pks])
+        pools = same("per-voxel pools", lambda pk: pk.meta["fidelity"]["per_voxel"]["pools"])
+        held = cert[:, :, 0].sum(1) > 0                                   # a voxel a shard put walkers in
+        key = np.ravel_multi_index(tuple(ijk[held].T), tuple(Grid.from_meta(pv0).shape))
+        uk, cnt = np.unique(key, return_counts=True)
+        if (cnt > 1).any():
+            dup = np.unravel_index(uk[cnt > 1][0], tuple(Grid.from_meta(pv0).shape))
+            raise ValueError(f"two shards hold walkers in the same voxel (e.g. {tuple(int(x) for x in dup)}); a voxel belongs to one shard")
+        # one row per voxel: the shard that holds it, else the first shard's empty row
+        order = {}
+        for r_, (i_, c_) in enumerate(zip(map(tuple, ijk), cert)):
+            if i_ not in order or c_[:, 0].sum() > 0:
+                order[i_] = r_
+        rows = np.array(sorted(order.values()))
+        arrays["voxel_ijk"] = ijk[rows].astype(np.int32); c = cert[rows]
+        arrays["voxel_certificate"] = c.astype(np.float32)
+        _n, _floor, _err = c[:, :, 0], c[:, :, 1], c[:, :, 2]; _ok = np.isfinite(_floor)
+        fid["per_voxel"] = dict(grid=pv0, pools=pools, n_voxels=int(len(rows)),
+                                walkers_min=int(_n[_n > 0].min()) if (_n > 0).any() else 0,
+                                floor_max=float(np.nanmax(_floor)) if _ok.any() else None,
+                                floor_median=float(np.nanmedian(_floor)) if _ok.any() else None,
+                                err_max=float(np.nanmax(_err)) if np.isfinite(_err).any() else None,
+                                within_2x_floor_fraction=(float(np.mean(_err[_ok] <= 2.0 * _floor[_ok])) if _ok.any() else None),
+                                thin_voxels=int(((_n > 0) & (_n < 2)).sum()), shards=len(pks))
+    n_all = int(sum(n))
+    comp_meta = dict(pks[0].meta["compression"])
+    if comp_meta.get("walker_preserving"):
+        comp_meta["precision_tiers"] = _precision_tiers(arrays, n_all, float(fid.get("floor_max") or 0.0), False)
+    meta = dict(pks[0].meta)
+    meta.update(id=id, compression=comp_meta, fidelity=fid,
+                walk_params=dict(pks[0].meta["walk_params"], n_walkers=n_all, seed=[int(pk.meta["walk_params"]["seed"]) for pk in pks]),
+                provenance=dict(pks[0].meta.get("provenance") or {}, shards=[dict(id=pk.meta.get("id"), n_walkers=int(m)) for pk, m in zip(pks, n)]))
+    if out_path is not None:
+        write_rpk(out_path, arrays, meta)
+    return ReplayPack(arrays, meta)
+
+
 def _precision_tiers(arrays, n_walkers, floor_max, walkers_shuffled):
     """How many leading walkers a consumer must read to reach a given statistical floor.
 
