@@ -241,7 +241,7 @@ def _replay_compressed(master, G, dt_wf, *, chi_perp, T2, T1, surface_relaxivity
 
     # ── the coherence gate on the save grid, without resampling: averaged over each save's accumulation interval
     ungated = chi_perp is None
-    ones_r = np.ones((1, n_t))
+    ones_r = bin_gate(np.ones(np.asarray(G).shape[1]), dt_wf, n_t, dt_traj)   # the acquisition's own extent on the saves
     chi_r = ones_r if ungated else bin_gate(chi_perp, dt_wf, n_t, dt_traj)
 
     # ── Relaxation / surface log-weights ─────────────────────────────────────────
@@ -270,7 +270,7 @@ def _replay_compressed(master, G, dt_wf, *, chi_perp, T2, T1, surface_relaxivity
         inv = _inv_rate_at_step(1.0 / np.asarray(T1_per_comp, np.float64), comp)
         log_w_pw = log_w_pw - dt_traj * ((ones_r - chi_r) @ inv.T)
     elif T1 is not None:
-        log_w_scalar -= (dt_traj / T1) * (ones_r.sum() - chi_r.sum(1))
+        log_w_scalar -= (dt_traj / T1) * (ones_r.sum(1) - chi_r.sum(1))
 
     if surface_relaxivity is not None:
         if D is None:
@@ -454,7 +454,7 @@ def replay(
     # over the step ending at it, so the gate is averaged over that interval (bin_gate); the sampled field below
     # reads the gate through the path interpolant (gate_weights)
     chi_r = bin_gate(chi_perp, dt_wf, n_t_traj, dt_traj)              # (n_meas | 1, n_t_traj)
-    ones_r = np.ones((1, n_t_traj))
+    ones_r = bin_gate(np.ones(np.asarray(G).shape[1]), dt_wf, n_t_traj, dt_traj)   # the acquisition's own extent
 
     phi = gradient_phase(G_traj, trajectory, dt_traj)                 # (n_meas, n_walkers)
 
@@ -501,7 +501,7 @@ def replay(
         log_w_t1 = -dt_traj * (chi_inv_r @ inv_T1_at_step.T)   # (n_meas, n_walkers)
         log_w_per_walker = log_w_per_walker + log_w_t1
     elif T1 is not None:
-        log_w_scalar -= (dt_traj / T1) * (ones_r.sum() - chi_r.sum(axis=1))  # (n_meas,)
+        log_w_scalar -= (dt_traj / T1) * (ones_r.sum(1) - chi_r.sum(axis=1))  # (n_meas,)
 
     # ── Surface relaxivity walker-dependent log-weight ────────────────────────
     # log_w_surf[m,w] = (surface_relaxivity/D) * chi_r[m,:] @ dlog_bnd_unit[w,:].T

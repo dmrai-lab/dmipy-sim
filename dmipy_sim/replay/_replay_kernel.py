@@ -94,30 +94,44 @@ def piece_phase_weights(G, dt_wf, edges, n_t, dt_pack):
     return GAMMA * A0 - w_hi, w_hi, k
 
 
-def bin_gate(chi, dt_wf, n_t, dt_pack):
-    """The fraction of each save's ACCUMULATION interval during which the gate ``chi`` is on. A save's boundary
-    local time, occupancy and bound fraction are accumulated over the step that ends at that save, so a gate on
-    them is the gate's average over ``[t_k - dt_pack, t_k]`` (the gate held at its first value before ``t = 0``),
-    not its value at a sample: ``bin_gate(ones) == 1`` everywhere. ``(n_meas|1, n_t)``. For SAMPLED quantities
-    (positions, a field at the saves) use :func:`gate_weights` instead."""
+def _held_samples(chi):
+    """A gate as ``(n_meas|1, n - 1)`` float64: the samples held over a step, the readout sample dropped."""
     chi = np.asarray(chi, np.float64)
     if chi.ndim == 1:
         chi = chi[None, :]
+    if chi.shape[1] < 2:
+        raise ValueError(f"a gate needs at least two samples (the last is the readout, held over nothing); got {chi.shape[1]}")
+    return chi[:, :-1]
+
+
+def bin_gate(chi, dt_wf, n_t, dt_pack):
+    """The fraction of each save's ACCUMULATION interval during which the gate ``chi`` is on. A save's boundary
+    local time, occupancy and bound fraction are accumulated over the step that ends at that save, so a gate on
+    them is the gate's average over ``[t_k - dt_pack, t_k]``, not its value at a sample: ``bin_gate(ones) == 1``
+    at every save but the first, which ends no step and weighs 0. ``(n_meas|1, n_t)``. For SAMPLED quantities
+    (positions, a field at the saves) use :func:`gate_weights` instead.
+
+    A gate of ``n`` samples on a grid of ``dt_wf`` spans ``(n - 1) dt_wf``: its last sample sits at the readout
+    (the sequence convention -- ``n_t`` samples at ``dt = TE / (n_t - 1)``, the readout at ``n_t - 1`` acting over
+    nothing) and is held over nothing, so an acquisition of ``TE`` relaxes and accrues contact over ``TE``, not
+    over ``TE + dt_wf`` (dmipy-sim#225: one save interval of contact too many, 1 % at 0.2 um)."""
+    chi = _held_samples(chi)
     Gc = np.zeros(chi.shape + (3,)); Gc[..., 0] = chi
     t_hi = np.arange(int(n_t)) * float(dt_pack)
     t_lo = t_hi - float(dt_pack)
     Q_hi = _cumulative_at(Gc, dt_wf, t_hi)[0][..., 0]
-    Q_lo = _cumulative_at(Gc, dt_wf, np.clip(t_lo, 0.0, None))[0][..., 0] + chi[:, :1] * np.minimum(t_lo, 0.0)[None, :]
-    return (Q_hi - Q_lo) / float(dt_pack)
+    Q_lo = _cumulative_at(Gc, dt_wf, np.clip(t_lo, 0.0, None))[0][..., 0]
+    out = (Q_hi - Q_lo) / float(dt_pack)
+    out[:, 0] = 0.0                                                   # nothing accumulates before t = 0
+    return out
 
 
 def gate_weights(chi, dt_wf, n_t, dt_pack):
     """Per-save weights of a scalar sample-and-hold gate (a coherence gate ``chi(t)``, ``(n_wf,)`` or
     ``(n_meas, n_wf)`` on its own grid): :func:`effective_gradient` of one component, ``(n_meas|1, n_t)``.
-    ``gate_weights(ones) `` sums to ``T / dt_pack``: the exact duration in save units."""
-    chi = np.asarray(chi, np.float64)
-    if chi.ndim == 1:
-        chi = chi[None, :]
+    ``gate_weights(ones) `` sums to ``TE / dt_pack``: the exact duration in save units, the last sample being the
+    readout and held over nothing (as in :func:`bin_gate`)."""
+    chi = _held_samples(chi)
     Gc = np.zeros(chi.shape + (3,)); Gc[..., 0] = chi
     return effective_gradient(Gc, dt_wf, n_t, dt_pack)[..., 0]
 

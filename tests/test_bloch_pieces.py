@@ -73,10 +73,11 @@ def test_gates_read_accumulated_channels_by_interval_and_sampled_ones_by_interpo
     n_wf, dt_wf = 200, 4e-5                                                       # a gate on its own grid
     chi = np.ones(n_wf); chi[int(0.5 * T / dt_wf):] = 0.0                          # transverse until T/2
     b = bin_gate(chi, dt_wf, N_T, DT)[0]
-    assert np.allclose(bin_gate(np.ones(n_wf), dt_wf, N_T, DT), 1.0, atol=1e-12)  # the whole step, every save
+    ones = bin_gate(np.ones(n_wf), dt_wf, N_T, DT)[0]                              # the whole step at every save that
+    assert ones[0] == 0.0 and np.allclose(ones[1:], 1.0, atol=1e-12)               # ends one; the first ends none
     k_half = int(round(0.5 * T / DT))
-    assert np.allclose(b[:k_half], 1.0, atol=1e-12) and np.allclose(b[k_half + 1:], 0.0, atol=1e-12) and -1e-12 <= b[k_half] <= 1 + 1e-12
-    assert b.sum() * DT == pytest.approx(0.5 * T + DT, abs=dt_wf)                  # the gate's on-time, plus the step before t = 0
+    assert b[0] == 0.0 and np.allclose(b[1:k_half], 1.0, atol=1e-12) and np.allclose(b[k_half + 1:], 0.0, atol=1e-12) and -1e-12 <= b[k_half] <= 1 + 1e-12
+    assert b.sum() * DT == pytest.approx(0.5 * T, abs=dt_wf)                       # the gate's on-time
     w = gate_weights(chi, dt_wf, N_T, DT)[0]
     assert w.sum() * DT == pytest.approx(int(0.5 * T / dt_wf) * dt_wf, rel=1e-12)  # the interpolant integral: exact on-time
     # the pieces of a cut: the moments add up to the save-interval moments whatever the cut

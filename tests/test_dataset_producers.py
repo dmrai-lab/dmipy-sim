@@ -168,7 +168,8 @@ def test_a_strand_pack_claims_what_its_walk_recorded(disco_files):
     pk = build_replay_pack(w, id="t/strands", license="x", citation="x", K=4, field=False)
     assert pk.has_relaxation and pk.has_surface and pk.meta["replay_envelope"]["surface_relaxivity"]
     seq = d.set_b(d.pgse([[1, 0, 0]], 0.2e-3, 0.5e-3, gradient_strengths=0.1, n_t=pk.n_t, slew_rate=np.inf), [1e9])
-    assert pk.replay(seq, tissue=False, rho=1e-5, D=1.7e-9)[0] < pk.replay(seq, tissue=False)[0]   # contact attenuates
+    w_, ew, _ = pk.walker_signals(seq, tissue=False, rho=1e-5, D=1.7e-9)
+    assert (ew <= w_ * (1 + 1e-3)).all() and ew.sum() < w_.sum()      # contact attenuates (the K = 4 bridge series overshoots by 1e-4)
     with pytest.raises(SpecError, match="voxel budget"):                       # the raster of a domain too large is refused
         walk_spec(spec, 60, 1e-3, 2.5e-4, seed=0, n_probe=20_000, require_gpu=False, field="grid", field_budget=1e3)
     # the default field of a strand substrate is the per-segment closed form: no grid, a certified cutoff, a C3 pack

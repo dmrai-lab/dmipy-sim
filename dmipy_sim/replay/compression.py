@@ -520,9 +520,15 @@ def mode_space_signal(arrays, meta, G, dt, logw=None, weights=None,
     return (np.exp(lw[:, None] + 1j * phi) * (w / w.sum())[:, None]).sum(0)
 
 
-def relaxation_logweight(comp, T2_per_comp, T1_per_comp, dt, chi=None):
-    """Per-walker relaxation log-weight from the compartment channel — O(N_w N_t), no
-    trajectory. `comp` is integer labels OR fractional 2-compartment occupancy."""
+def relaxation_logweight(comp, T2_per_comp, T1_per_comp, dt, chi=None, active=None):
+    """Per-walker relaxation log-weight from the compartment channel -- O(N_w N_t), no trajectory. ``comp`` is
+    integer labels OR fractional 2-compartment occupancy, one per save; a save's occupancy is accumulated over the
+    step that ends at it, so the first save (which ends no step) relaxes nothing and the whole walk relaxes over
+    ``(n_t - 1) dt``. With ``chi`` (:func:`~dmipy_sim.replay._replay_kernel.bin_gate`, 0 at the first save) the
+    transverse periods relax at T2 and the longitudinal ones at T1, the longitudinal periods being ``active - chi``
+    with ``active`` the acquisition's own accumulation gate (its ones through ``bin_gate``): a stored period of a
+    stimulated echo relaxes at T1, the walk beyond the echo relaxes at nothing; a gate without its extent is
+    refused, since nothing in ``chi`` says where the acquisition ends."""
     comp = np.asarray(comp)
     invT2 = np.where(np.asarray(T2_per_comp) > 0, 1.0 / np.maximum(np.asarray(T2_per_comp, float), 1e-30), 0.0)
     invT1 = np.where(np.asarray(T1_per_comp) > 0, 1.0 / np.maximum(np.asarray(T1_per_comp, float), 1e-30), 0.0)
@@ -533,9 +539,14 @@ def relaxation_logweight(comp, T2_per_comp, T1_per_comp, dt, chi=None):
     else:
         ci = comp.astype(np.int64); r2 = invT2[ci]; r1 = invT1[ci]
     if chi is None:
-        return -dt * r2.sum(1)
+        return -dt * r2[:, 1:].sum(1)
+    if active is None:
+        raise ValueError("relaxation_logweight: a gate `chi` needs the acquisition's own extent `active` (bin_gate of its "
+                         "ones) -- the longitudinal periods are `active - chi`; without it T1 would act over the walk "
+                         "beyond the echo")
     chi = np.asarray(chi, float)[None, :]
-    return -dt * (chi * r2 + (1.0 - chi) * r1).sum(1)
+    lon = np.asarray(active, float).reshape(1, -1) - chi
+    return -dt * (chi * r2 + np.clip(lon, 0.0, None) * r1).sum(1)
 
 
 def surface_logweight_series(blt, rho_over_D, chi=None):

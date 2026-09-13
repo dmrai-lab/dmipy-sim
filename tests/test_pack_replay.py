@@ -49,7 +49,7 @@ def test_relaxation_applies_the_packs_per_pool_rates(packs):
     comp = decode_occupancy(full.arrays, ch)["comp"]
     from dmipy_sim.replay._replay_kernel import bin_gate
     chi = bin_gate(np.ones(wf.n_t), wf.dt, full.n_t, full.dt)[0]     # the acquisition ends at its echo: no relaxation
-    logw = relaxation_logweight(comp, [0.08, 0.03], [1.0, 1.2], full.dt, chi)   # counted over the walk beyond it
+    logw = relaxation_logweight(comp, [0.08, 0.03], [1.0, 1.2], full.dt, chi, chi)   # counted over the walk beyond it
     W = _W(full, wf)
     from dmipy_sim.replay.compression import read_position_coeffs
     C = read_position_coeffs(full.arrays, dtype=np.float64)
@@ -148,3 +148,25 @@ def test_a_substrate_with_no_field_source_replays_at_any_B0_as_a_zero_field(pack
     assert not bare.field_is_zero
     with pytest.raises(ValueError, match="no field tier"):
         bare.replay(wf, B0=3.0, chi_iso=1e-7)
+
+
+def test_relaxation_and_contact_end_at_the_readout(packs):
+    """An acquisition of ``TE = n dt`` relaxes and accrues contact over exactly ``n`` save intervals: its readout
+    sample is held over nothing (dmipy-sim#225: the gate counted one interval more, so an FID at ``T2 = TE``
+    replayed ``exp(-(n + 1) / n)`` and the surface term was the walk's one save later, 1 % at 0.2 um)."""
+    full, _ = packs
+    n = 8; TE = n * full.dt
+    fid = _seqmod.gre(TE, n_t=n * 4 + 1)                                        # a pure FID on a finer grid
+    s = full.replay(fid, tissue=False, T2=[TE, TE], T1=[1e9, 1e9])
+    np.testing.assert_allclose(np.abs(s), np.exp(-1.0), rtol=1e-9)
+    # an FID has no longitudinal period: T1 acts over none of it, and none of the walk beyond its echo
+    np.testing.assert_allclose(np.abs(full.replay(fid, tissue=False, T2=[1e9, 1e9], T1=[TE, TE])), 1.0, rtol=1e-9)
+    # the contact term against the walk's own cumulative local time at save n (not n + 1)
+    walk = d.simulate_trajectories(300, D0, d.Cylinder(2e-6, (0, 0, 1)), 0.01, 5e-4, seed=0, require_gpu=False)
+    pk = build_replay_pack(walk, id="test/blt", K=8, blt_temporal_K=full.n_t, envelope=ENV, license="x", citation="x")
+    rho = 1e-5
+    cum = np.cumsum(np.asarray(walk.boundary_local_time, np.float64), axis=1)   # per-step log-weight at rho / D = 1
+    ref = np.exp(rho / D0 * cum[:, n]).mean()
+    off = np.exp(rho / D0 * cum[:, n + 1]).mean()
+    got = float(np.abs(pk.replay(fid, tissue=False, rho=rho)[0]))
+    assert abs(got - ref) < 0.1 * abs(off - ref), (got, ref, off)
