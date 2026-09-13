@@ -207,21 +207,22 @@ def _disco_like_tubes(r_min_um=0.718, r_max_um=2.99, n_seg=40):
     return PackedCurvedCylinders(cls, radii, interior=False)
 
 
-def test_an_analytic_pack_with_a_spatial_index_keeps_the_R_over_6_rule():
+def test_an_analytic_pack_with_a_spatial_index_keeps_the_reflection_rule():
     """A cell grid is not a mesh. PackedCurvedCylinders buckets tube SEGMENTS purely to cut
-    the candidate set; its `radius` is a real tube radius, so R/6 still bounds the step
-    (single-reflection-per-step -- see CurvedCylinder's docstring). Keying the collision
-    substitution on `cell_size` alone dropped R/6 here and returned 1 sub-step at
-    step/R ~ 1.7, i.e. walkers stepping through tube walls."""
+    the candidate set; its `radius` is a real tube radius, so the family's step rule
+    (``R / STEP_FRACTION``, measured -- see curved_cylinder's module docstring) bounds the
+    step. Keying the collision substitution on `cell_size` alone dropped the radius rule
+    here and returned 1 sub-step at step/R ~ 1.7, i.e. walkers stepping through tube walls."""
+    from dmipy_sim.geometry.curved_cylinder import STEP_FRACTION
     pk = _disco_like_tubes()
     dt = 53.5e-3 / 128                      # the DiSCo dt_save
     D0 = 0.6e-9                             # the DiSCo diffusivity
     assert not getattr(pk, "radius_is_mesh_feature", False)
     assert pk.cell_size > 4 * pk.radius, "test pack no longer has the coarse-cell/fine-tube shape"
     n = walk_sub_steps(pk, D0, dt)
-    assert n == _old_rule_at(pk, dt, D0), f"analytic R/6 rule not applied (got {n})"
+    assert n == _old_rule_at(pk, dt, D0, divisor=6.0 * STEP_FRACTION ** 2), f"the family's reflection rule not applied (got {n})"
     step_l = float(np.sqrt(6.0 * D0 * dt / n))
-    assert step_l / pk.radius < 1.0 / 6.0 + 1e-6, f"step/R = {step_l/pk.radius:.4f}, must be <= 1/6"
+    assert step_l / pk.radius < 1.0 / STEP_FRACTION + 1e-6, f"step/R = {step_l/pk.radius:.4f}, must be <= 1/{STEP_FRACTION:g}"
 
 
 def test_the_collision_criterion_still_applies_to_an_analytic_pack():
