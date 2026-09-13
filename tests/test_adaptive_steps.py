@@ -62,7 +62,7 @@ def test_the_candidate_cache_is_the_full_gather():
     kw = dict(seed=5, require_gpu=False, walker_batch_size=2000)
     full = simulate_trajectories_adaptive(2000, D, g, 2e-3, 2.5e-4, candidate_cache=False, **kw)
     cache = simulate_trajectories_adaptive(2000, D, g, 2e-3, 2.5e-4, candidate_cache=True, candidate_k_start=4, **kw)
-    assert cache.stepping["candidate_cache"] and max(cache.stepping["candidate_k"]) >= 4
+    assert cache.stepping["candidate_cache"] and cache.stepping["candidate_k"] >= 4
     # the same segments decide every reflection; the two programs round differently at float32, and a grazing
     # step within an ulp of a wall may flip between hit and miss -- a handful of (walker, save) pairs, by less
     # than one step (0.13 um), never a wall crossed

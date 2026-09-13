@@ -462,14 +462,13 @@ class PackedCurvedCylinders(Geometry):
         A = self._A[cand]; AB = self._AB[cand]; AB2 = self._AB2[cand]; rr = self._rout[cand]
         t = jnp.clip(((r[None, :] - A) * AB).sum(1) / AB2, 0.0, 1.0)
         d = jnp.linalg.norm(r[None, :] - (A + t[:, None] * AB), axis=1)
-        s = jnp.where(valid, d - rr, jnp.inf)                         # signed distance to the tube surface
-        within = s < reach
-        k_eff = int(min(k, cand.shape[0]))                            # a sparse pack gathers fewer than k
-        neg, pick = jax.lax.top_k(jnp.where(within, -s, -jnp.inf), k_eff)
-        out_c, out_v = cand[pick], jnp.isfinite(neg)
-        if k_eff < k:
-            out_c = jnp.concatenate([out_c, jnp.zeros(k - k_eff, out_c.dtype)])
-            out_v = jnp.concatenate([out_v, jnp.zeros(k - k_eff, bool)])
+        within = valid & (d - rr < reach)                             # the surface within reach
+        # compact the hits into the first k slots by a prefix sum (order is immaterial to the interaction; a
+        # top-k sort of thousands of candidates per walker per round was the round's cost)
+        slot = jnp.cumsum(within) - 1
+        put = within & (slot < k)
+        out_c = jnp.zeros(k, cand.dtype).at[jnp.where(put, slot, k)].set(cand, mode="drop")
+        out_v = jnp.zeros(k, bool).at[jnp.where(put, slot, k)].set(True, mode="drop")
         return out_c, out_v, within.sum()
 
     def _reflect_with(self, r, step, cand, valid):
