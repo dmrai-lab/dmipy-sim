@@ -90,12 +90,12 @@ def strand_txt(tmp_path_factory):
 @pytest.fixture(scope="module")
 def disco_files(tmp_path_factory):
     """The three strands of `strand_txt` in DiSCo's release form: a .tck in 25 um voxel units over [0, 20 um]^3 and
-    the INNER diameters in mm (the outer radius is inner / 0.7)."""
+    the strand diameters in mm."""
     tmp = tmp_path_factory.mktemp("disco")
     cls_ = [np.array([[x, 0, -12e-6], [x, 0.5e-6, 0], [x, 0, 12e-6]]) + 10e-6 for x in (-5e-6, 0, 5e-6)]
     tck, dia = str(tmp / "DiSCo_Strands_Trajectories.tck"), str(tmp / "DiSCo_Strands_Diameters.txt")
     write_tck(tck, cls_, coordinate_unit_m=25e-6)
-    np.savetxt(dia, np.array([2 * 0.7 * r for r in (1.5e-6, 1.0e-6, 2.0e-6)]) / 1e-3)
+    np.savetxt(dia, np.array([2 * r for r in (1.5e-6, 1.0e-6, 2.0e-6)]) / 1e-3)
     return tck, dia
 
 
@@ -103,7 +103,7 @@ def test_the_track_file_round_trips_in_metres(disco_files):
     tck, dia = disco_files
     cls_ = read_tck(tck, coordinate_unit_m=25e-6)
     assert len(cls_) == 3 and np.allclose(cls_[1], np.array([[0, 0, -12e-6], [0, 0.5e-6, 0], [0, 0, 12e-6]]) + 10e-6, atol=1e-11)
-    np.testing.assert_allclose(read_diameters(dia, diameter_unit_m=1e-3), [2 * 0.7 * r for r in (1.5e-6, 1.0e-6, 2.0e-6)], rtol=1e-12)
+    np.testing.assert_allclose(read_diameters(dia, diameter_unit_m=1e-3), [2 * r for r in (1.5e-6, 1.0e-6, 2.0e-6)], rtol=1e-12)
     nib = pytest.importorskip("nibabel")
     ref = nib.streamlines.load(tck).streamlines                                   # the reference reader agrees
     assert len(ref) == 3 and np.allclose(np.asarray(ref[2]) * 25e-6, cls_[2], atol=1e-11)
@@ -136,11 +136,17 @@ def test_strands_spec_is_one_wall_of_swept_polylines_in_a_reflecting_voxel(stran
         strands_spec(strand_txt, boundary="periodic")
 
 
-def test_disco_spec_adds_the_sheath_at_the_phantoms_g_ratio(disco_files):
-    spec = disco_spec(*disco_files, side_m=20e-6)
-    assert spec.id == "disco/rafael-patino-2021" and [w.name for w in spec.walls] == ["axolemma", "sheath"]
+def test_disco_spec_is_the_strand_wall_and_puts_a_sheath_inside_it(disco_files):
+    """The reported diameter is the strand: the phantom's one wall, intra inside, extra outside (its intra-strand
+    volume fraction map is that tube volume). A sheath, when asked for, sits INSIDE it at the g-ratio."""
+    gt = disco_spec(*disco_files, side_m=20e-6)
+    assert gt.id == "disco/rafael-patino-2021" and [w.name for w in gt.walls] == ["cylinders"]
+    assert gt.walls[0].surface.instances["radii"] == pytest.approx([1.5e-6, 1.0e-6, 2.0e-6])
+    assert [p.name for p in gt.pools] == ["extra", "intra"]
+    spec = disco_spec(*disco_files, side_m=20e-6, g_ratio=0.7)
+    assert [w.name for w in spec.walls] == ["axolemma", "sheath"]
     assert spec.walls[0].surface.instances["radii"] == pytest.approx([0.7 * r for r in (1.5e-6, 1.0e-6, 2.0e-6)])
-    assert spec.walls[1].surface.instances["radii"] == pytest.approx([1.5e-6, 1.0e-6, 2.0e-6])        # inner / g
+    assert spec.walls[1].surface.instances["radii"] == pytest.approx([1.5e-6, 1.0e-6, 2.0e-6])        # the strand itself
     assert spec.domain.box_min == [0.0] * 3 and spec.domain.box_max == [20e-6] * 3 and spec.domain.boundary == ["reflect"] * 3
     assert any("25e-06" in t or "2.5e-05" in t for t in spec.provenance["transformations"])
     assert [p.name for p in spec.pools] == ["extra", "intra", "myelin"] and spec.validity.tiers == ["gradient", "relaxation", "surface", "field"]
@@ -161,7 +167,7 @@ def test_a_strand_pack_claims_what_its_walk_recorded(disco_files):
     """A strand spec declares the tiers the engine walks it for; the walk records contact (the curved tubes
     accumulate it), the pack claims C2 and replays rho; a domain too large to rasterise refuses the field."""
     from dmipy_sim.replay.bank import build_replay_pack
-    spec = disco_spec(*disco_files, side_m=20e-6)
+    spec = disco_spec(*disco_files, side_m=20e-6, g_ratio=0.7)
     assert spec.validity.tiers == ["gradient", "relaxation", "surface", "field"]
     w = walk_spec(spec, 120, 1e-3, 2.5e-4, seed=0, n_probe=20_000, require_gpu=False, field=False)
     assert w.has_surface and w.has_compartments
@@ -249,7 +255,7 @@ def test_stratified_seeding_fills_every_occupied_voxel_and_keeps_the_volumes(dis
     from dmipy_sim.spec import StratifiedByVoxel, plan_seeding
     from dmipy_sim.phantom import Grid
     from dmipy_sim.replay.bank import build_replay_pack, voxel_fidelity_volumes
-    spec = disco_spec(*disco_files, side_m=20e-6)
+    spec = disco_spec(*disco_files, side_m=20e-6, g_ratio=0.7)
     grid = Grid(shape=(4, 4, 4), voxel_size_m=(5e-6,) * 3, origin_m=(2.5e-6,) * 3)
     w = walk_spec(spec, T_max=8e-4, dt_save=2e-4, seed=0, require_gpu=False, field=False,
                   seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": 12, "intra": 8, "myelin": 3}))
