@@ -151,7 +151,7 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, dt_s
         return jnp.concatenate([order, pad]), jnp.bincount(bucket.astype(jnp.int32) + 1, length=n_classes + 1)
 
     reach_c = [float(m) * float(l) + NUDGE for m, l in zip(steps_c, step_l_c)]
-    k_cand = int(candidate_k_start)
+    k_cand_c = [int(candidate_k_start)] * n_classes                 # one width per radius class
 
     scales_dev = geometry._wall_scales_device()
 
@@ -185,12 +185,14 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, dt_s
     # overlapping tubes is labelled by either
     comp_all = np.minimum(np.asarray(geometry.classify_positions_exact(jnp.asarray(r0_all)), np.int32), 1)
 
-    if cached:                                                       # size the list from the start positions (the widest reach)
-        sample = r0_all[np.random.default_rng(int(seed) + 3).choice(n_walkers, size=min(n_walkers, 20_000), replace=False)]
-        counts = jax.jit(jax.vmap(lambda p: geometry.reach_candidates(p, jnp.float32(max(reach_c)), 1)[2]))(jnp.asarray(sample))
-        k_cand = max(int(candidate_k_start), 1 << int(math.ceil(math.log2(1.5 * max(int(np.asarray(counts).max()), 1)))))
-        log.info("adaptive: candidate list of %d (up to %d segments within %.2f um of a start position)", k_cand,
-                 int(np.asarray(counts).max()), max(reach_c) * 1e6)
+    if cached:                                                       # size each class's list from the start positions at
+        sample = jnp.asarray(r0_all[np.random.default_rng(int(seed) + 3).choice(n_walkers, size=min(n_walkers, 20_000), replace=False)])
+        count_at = jax.jit(jax.vmap(lambda p, reach: geometry.reach_candidates(p, reach, 1)[2], in_axes=(0, None)))
+        for c in range(n_classes):                                   # ITS reach: the coarser classes reach less per round
+            n_max0 = max(int(np.asarray(count_at(sample, jnp.float32(reach_c[c]))).max()), 1)
+            k_cand_c[c] = max(int(candidate_k_start), 1 << int(math.ceil(math.log2(1.5 * n_max0))))
+            log.info("adaptive: class %d candidate list of %d (up to %d segments within %.2f um of a start position)", c,
+                     k_cand_c[c], n_max0, reach_c[c] * 1e6)
     sampling = field_basis is not None
     if sampling:
         from ..fields.strand_field import StrandFieldBasis
@@ -255,13 +257,13 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, dt_s
                     if n_c == 0:
                         continue
                     while True:                                          # the candidate list widens until it holds every segment in reach
-                        r_try, keys_try, dlog_try, n_max = kernel_for(k_cand, _pad_to(n_c))(
+                        r_try, keys_try, dlog_try, n_max = kernel_for(k_cand_c[c], _pad_to(n_c))(
                             r, keys, dlog_int, order, start, n_c, steps_c[c], step_l_c[c], jnp.float32(reach_c[c]))
-                        if not cached or int(n_max) <= k_cand:
+                        if not cached or int(n_max) <= k_cand_c[c]:
                             r, keys, dlog_int = r_try, keys_try, dlog_try
                             break
-                        k_cand = 1 << int(math.ceil(math.log2(int(n_max))))
-                        log.info("adaptive: candidate list widened to %d (a walker had %d segments in reach)", k_cand, int(n_max))
+                        k_cand_c[c] = 1 << int(math.ceil(math.log2(int(n_max))))
+                        log.info("adaptive: class %d candidate list widened to %d (a walker had %d segments in reach)", c, k_cand_c[c], int(n_max))
                     n_kernel_steps += n_c * steps_c[c]; start += n_c
                 if sampling:
                     f_acc = f_acc + at_dev(r, seg, keep)
@@ -278,7 +280,7 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, dt_s
              "(%.1fx fewer)", 100.0 * n_free / max(n_walkers * (n_t - 1) * n_rounds, 1), n_kernel_steps, total_steps,
              total_steps / max(n_kernel_steps, 1))
     comp = np.repeat(comp_all[:, None], n_t, axis=1).astype(np.int8)
-    stepping = dict(rule="adaptive", candidate_cache=cached, candidate_k=int(k_cand),
+    stepping = dict(rule="adaptive", candidate_cache=cached, candidate_k=[int(k) for k in k_cand_c],
                     free_fraction=n_free / max(n_walkers * (n_t - 1) * n_rounds, 1),
                     kernel_steps=int(n_kernel_steps), fused_steps=int(total_steps),
                     kernel_steps_ratio=total_steps / max(n_kernel_steps, 1), steps_per_round_by_class=steps_c,
