@@ -177,6 +177,8 @@ def walk_sub_steps(geometry, diffusivity: float, dt: float) -> int:
     For an ANALYTIC pore this is the historical ``step_l = R/6`` (``R/25`` when the wall is permeable, since
     the crossing probability is step-size sensitive and over-permeates at coarse steps). Reflection off an
     analytic surface is exact at any step, so the criterion only has to keep a step from skipping the pore.
+    A geometry that has measured its own step declares it as ``reflection_step_fraction`` (the curved tubes:
+    see :class:`~dmipy_sim.geometry.curved_cylinder.PackedCurvedCylinders`).
 
     For a MESH it is :func:`collision_sub_steps` instead, because ``R/6`` is not a physical criterion there:
     ``_geometry_radius`` returns ``feature_radius``, a MESH-RESOLUTION parameter, so the rule tightened as a
@@ -235,8 +237,8 @@ def walk_sub_steps(geometry, diffusivity: float, dt: float) -> int:
                 f"wrong if that step is comparable to the pore. Expose `radius` (or `length`) on the "
                 f"geometry, or pass sub_steps explicitly.", UserWarning, stacklevel=3)
         return 1
-    divisor = 3750.0 if has_perm else 216.0
-    dt_phys_max = float(R) ** 2 / (divisor * diffusivity)
+    frac = 25.0 if has_perm else float(getattr(geometry, 'reflection_step_fraction', None) or 6.0)
+    dt_phys_max = (float(R) / frac) ** 2 / (6.0 * diffusivity)
     return max(n_coll, max(1, int(np.ceil(dt / dt_phys_max))))
 
 
@@ -315,9 +317,10 @@ def resolve_sub_steps(geometry, diffusivity: float, dt: float, *, surface: bool 
     engine and the MT walker -- takes its count from here, so one substrate is walked at one
     resolution whichever way it is driven. The count is the maximum over the criteria that apply:
 
-    * reflection, ``step_l <= min_feature / 6`` (:func:`walk_sub_steps`), or ``min_feature / 25``
-      when the wall is permeable, since the crossing probability is step-size sensitive; not applied
-      when ``min_feature`` is a meshing parameter;
+    * reflection, ``step_l <= min_feature / 6`` (:func:`walk_sub_steps`; a geometry's own measured
+      ``reflection_step_fraction`` in place of the 6), or ``min_feature / 25`` when the wall is
+      permeable, since the crossing probability is step-size sensitive; not applied when
+      ``min_feature`` is a meshing parameter;
     * collision lookup, ``step_l <= 0.9 * lookup_cell`` (:func:`collision_sub_steps`), for a
       spatially indexed geometry;
     * surface local time, ``step_l <= surface_pore / 8`` (:func:`surface_sub_steps`), when

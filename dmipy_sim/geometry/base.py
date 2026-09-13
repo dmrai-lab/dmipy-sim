@@ -123,6 +123,9 @@ class Geometry(ABC):
     #: Per-geometry override of the surface-relaxivity sub-step target `pore / frac`;
     #: 0 or a negative value disables surface sub-stepping (see `physics.surface_sub_steps`).
     surface_substep_frac = None
+    #: A family's measured reflection step, `step_l <= min_feature / frac`, in place of the historical 6
+    #: (see `physics.walk_sub_steps`); None takes the 6.
+    reflection_step_fraction = None
     #: Acquisition rotation (geometry frame -> lab, 3x3) applied to G by the engine, or None.
     _orient_R = None
     #: Per-compartment bulk properties resolved per step by `physics.make_step_fn`
