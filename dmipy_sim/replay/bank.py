@@ -668,14 +668,15 @@ def _quantise_susc_path(coeffs, meta, bits):
     return {"susc_path_dct": q, "susc_path_scale": np.asarray(scale, np.float32)}, meta
 
 
-def susc_path_encode_series(series, names, *, K=32, bits=8, dtype=np.float16, layout="wct", atol_trace=1e-6, device="auto",
+def susc_path_encode_series(series, names, *, K=32, bits=8, dtype=np.float16, layout="wct", atol_trace=1e-4, device="auto",
                             chunk=20_000):
     """:func:`susc_path_encode` from the per-save field series itself, in the canonical channel order with
     ``names``: ``(n_w, n_ch, n_t)`` (``layout="wct"``, what a decoded path channel gives) or ``(n_w, n_t, n_ch)``
     (``layout="wtc"``, the interval means a walk sampled), encoded in walker chunks of ``chunk`` on ``device``
     without a copy of the whole series. The ``iso_P_zz`` channel is implied by the trace identity
     ``iso_P_xx + iso_P_yy + iso_P_zz = 3 iso_local`` and left out when the series satisfies it to ``atol_trace``
-    (the closed-form strand field does exactly; a windowed k-space grid does not); the decoder re-inserts it."""
+    (the closed-form strand field does exactly, and a series sampled in float32 over a few hundred strands keeps it
+    to ~1e-5; a windowed k-space grid breaks it at the percent level); the decoder re-inserts it."""
     if layout not in ("wct", "wtc"):
         raise ValueError("layout is 'wct' (n_w, n_ch, n_t) or 'wtc' (n_w, n_t, n_ch)")
     series = np.asarray(series)

@@ -307,7 +307,7 @@ def test_stratified_seeding_fills_every_occupied_voxel_and_keeps_the_volumes(dis
     pkf2 = build_replay_pack(wf, id="t/strands-sampled", license="x", citation="x", K=4, susc_path_K=4)
     pm2 = pkf2.meta["compression"]["channels"]["susceptibility_path"]
     assert pkf2.has_field and pm2["sampling"] == "interval_mean_in_walk"
-    assert pm2["iso_P_zz"] == "implied" and pm2["n_ch"] == 12 and pm2["trace_residual"] < 1e-6   # the closed form's trace identity
+    assert pm2["iso_P_zz"] == "implied" and pm2["n_ch"] == 12 and pm2["trace_residual"] < 1e-4   # the closed form's trace identity, float32 samples
     from dmipy_sim.replay.bank import susc_path_decode
     b_, names_ = susc_path_decode(pkf2.arrays, pm2); assert b_.shape[1] == 13 and names_[3] == "iso_P_zz"
     seq_g = d.gre(0.5e-3, gradient_directions=[[1, 0, 0]], bvalues=[1e9], delta=0.2e-3, Delta=0.3e-3, n_t=pkf2.n_t, slew_rate=np.inf)
