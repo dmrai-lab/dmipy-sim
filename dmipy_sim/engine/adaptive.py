@@ -203,7 +203,8 @@ interval mean as before).
         f_reuse = max(1, int(field_reuse_intervals))
         f_every = max(1, int(field_sample_every))                    # the field's own save grid: every f_every saves
         f_margin = 6.0 * math.sqrt(2.0 * D * dt_actual * f_reuse)     # six sigma of the excursion over the reused intervals
-        f_radius = min(field_basis.cutoff_m + f_margin, 2.0 * field_basis.cutoff_m)
+        f_reach = float(field_basis.gather_radius_m)                 # the closed form's reach: the far switch with a far grid
+        f_radius = min(f_reach + f_margin, 2.0 * f_reach)
         _at = field_basis.channels_at_device()
         f_mean = jnp.asarray(field_basis.mean, jnp.float32)
         n_tf = len(range(0, n_t, f_every))                          # the saves the field is read at
@@ -216,7 +217,7 @@ interval mean as before).
         f_k = min(field_basis.strands_max + 1, 1 << int(math.ceil(math.log2(1.5 * max(int(n_probe.max()), 1)))))
         _nearest = field_basis.nearest_device(radius_m=f_radius, k=f_k)
         log.info("adaptive: field sampled in the walk: list of %d strands gathered every %d saves at %.1f um (cutoff %.0f um + "
-                 "margin), up to %d in reach at the start", f_k, f_reuse, f_radius * 1e6, field_basis.cutoff_m * 1e6, int(n_probe.max()))
+                 "margin), up to %d in reach at the start", f_k, f_reuse, f_radius * 1e6, f_reach * 1e6, int(n_probe.max()))
 
         def nearest_dev(r):
             parts = [_nearest(r[i:i + f_chunk]) for i in range(0, r.shape[0], f_chunk)]
