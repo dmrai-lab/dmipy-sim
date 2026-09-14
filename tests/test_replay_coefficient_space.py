@@ -36,7 +36,7 @@ def field_pack(tmp_path_factory):
     cls_ = [np.array([[x, 0, -12e-6], [x, 0.5e-6, 0], [x, 0, 12e-6]]) + 10e-6 for x in (-5e-6, 0, 5e-6)]
     tck, dia = str(tmp / "t.tck"), str(tmp / "d.txt")
     write_tck(tck, cls_, coordinate_unit_m=25e-6); np.savetxt(dia, np.array([2 * r for r in (1.5e-6, 1.0e-6, 2.0e-6)]) / 1e-3)
-    spec = disco_spec(tck, dia, side_m=20e-6, g_ratio=0.7)
+    spec = disco_spec(tck, dia, side_m=20e-6, myelin=True)
     w = walk_spec(spec, 90, 8e-4, 2e-4, seed=0, n_probe=20_000, field_res=0.5e-6, require_gpu=False)
     return build_replay_pack(w, id="test/field", license="x", citation="x", K=4, susc_path_K=4)
 

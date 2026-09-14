@@ -313,7 +313,7 @@ def _walk_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field, field_re
             log.info("walk_spec: seeding pool %s per voxel (%d wanted)", pools[pid].name, int(want.sum()))
             if by_volume:                                  # inside swept polylines: drawn per voxel from the segments
                 A_, B_, r_ = boundary(inside_w[pid]).segments()   # that meet it, the census their clipped volume
-                P, v, f, n_drawn = fill_swept_by_voxel(A_, B_, r_, grid, want, seed=s)
+                P, v, f, n_drawn = fill_swept_by_voxel(A_, B_, r_, grid, want, seed=s, census_draws=int(seeding.census_draws))
                 inb = np.all((P >= lo) & (P <= hi), axis=1)     # strands may leave the box
                 P, v = P[inb], v[inb]
                 log.info("walk_spec: %d seeds in %d voxels from %d draws", len(P), int(np.bincount(v, minlength=grid.n_voxels).astype(bool).sum()), n_drawn)

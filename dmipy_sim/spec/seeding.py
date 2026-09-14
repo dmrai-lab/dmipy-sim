@@ -23,11 +23,17 @@ class StratifiedByVoxel:
     the grid's shape (a per-voxel budget, what :func:`plan_seeding` returns from a pilot's per-voxel floor).
     ``trials_per_voxel_max`` bounds the rejection sampling per voxel: a voxel holding a sliver of a pool is
     left with what it got, its walkers weighted by the sliver's measured volume fraction, rather than drawn
-    for ever. The grid is in substrate coordinates (``attach="substrate"``).
+    for ever. ``census_draws`` is the least number of draws the per-voxel volume fraction of a swept-polyline
+    pool is read on (:func:`fill_swept_by_voxel`): its relative spread is ``sqrt((1 - p) / (N p))`` with ``p``
+    the share of a tube's clipped piece that lands in the voxel (near 1 for a tube well inside a voxel, a
+    quarter for one centred on a voxel edge), and every seed drawn counts, so a voxel seeded with many
+    walkers reads its volume at the precision those draws give. The grid is in substrate coordinates
+    (``attach="substrate"``).
     """
     grid: Grid
     walkers_per_voxel: object
     trials_per_voxel_max: int = 200_000
+    census_draws: int = 200
 
     def __post_init__(self):
         if not isinstance(self.grid, Grid):
@@ -36,6 +42,8 @@ class StratifiedByVoxel:
             raise ValueError("a seeding grid is welded to the substrate: Grid(..., attach='substrate')")
         if int(self.trials_per_voxel_max) < 1:
             raise ValueError("trials_per_voxel_max must be at least 1")
+        if int(self.census_draws) < 1:
+            raise ValueError("census_draws must be at least 1")
 
     def count_for(self, pool_name):
         """``(n_voxels,)`` int: the walkers wanted per voxel of the grid for this pool (flattened C order)."""
@@ -62,7 +70,7 @@ class StratifiedByVoxel:
         else:
             w = int(w) if np.ndim(w) == 0 else np.asarray(w).tolist()
         return dict(rule="stratified_by_voxel", grid=self.grid.to_meta(), walkers_per_voxel=w,
-                    trials_per_voxel_max=int(self.trials_per_voxel_max))
+                    trials_per_voxel_max=int(self.trials_per_voxel_max), census_draws=int(self.census_draws))
 
 
 def fill_per_voxel(draw, bin_index, n_voxels, want, *, trials_max, draws_max=None, batch=1_000_000, seed=0):
@@ -138,7 +146,8 @@ def fill_swept_by_voxel(A, B, r, grid, want, *, seed=0, census_draws=200, rounds
     volume, a point uniform in that clipped piece, kept when it lies in the voxel (the disc pokes out of it near
     a face; nine in ten are kept). The pool's per-voxel volume fraction ``f`` is the clipped volume times the
     acceptance over the voxel's volume, the unbiased estimate of ``tube AND voxel``, read on at least
-    ``census_draws`` draws per voxel (2 % at 200). Returns ``(points, voxel, f, n_drawn)``; a voxel no tube meets
+    ``census_draws`` draws per voxel (a relative spread of ``sqrt((1 - p) / (N p))`` at acceptance ``p``: 2 % at
+    200 draws for a tube well inside the voxel, 12 % for one centred on a voxel edge). Returns ``(points, voxel, f, n_drawn)``; a voxel no tube meets
     gets nothing, and ``f = 0`` there; a sliver a tube barely touches (a few draws in a thousand land in the
     voxel) may be left short after ``rounds_max`` rounds. Overlapping tubes count twice, as everywhere in the
     strand family. A seed sits at least ``margin`` inside its wall (default: the family's representable nudge
