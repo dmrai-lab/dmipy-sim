@@ -275,6 +275,42 @@ def voxel_fidelity(traj, dt, decoded_pos, grid, comp, env, *, w=None, logw=None,
     return ijk, pools, N, floor, err
 
 
+def voxel_floor_coded(C, dt, n_t, grid, comp, env, *, w=None, device="auto", chunk=200_000):
+    """The per-(voxel, pool) split-half floor of a walk meant to be partitioned, from its bridge coefficients
+    (:func:`voxel_fidelity` without the dense oracle: the same binning by start position -- the exact first
+    endpoint -- and pool, the same fixed split, the phases by :func:`compression.coded_phases`). Returns
+    ``(ijk, pools, n, floor, err)`` with ``err`` all ``nan``: the codec error is the certifying pack's."""
+    C = np.asarray(C); n_w = C.shape[0]
+    G, _ = _cx.acquisition_battery(int(n_t), float(dt), env); n_m = G.shape[0]
+    ijk_all, inside = grid.bin(np.asarray(C[:, 0, :], np.float64))
+    pools = sorted(set(np.unique(np.asarray(comp)[:, 0]).tolist())) if comp is not None else [0]
+    pid = np.asarray(comp)[:, 0].astype(np.int64) if comp is not None else np.zeros(n_w, np.int64)
+    ijk = np.unique(ijk_all[inside], axis=0)
+    key = {tuple(v): i for i, v in enumerate(map(tuple, ijk))}
+    row = np.full(n_w, -1, np.int64)
+    for i in np.flatnonzero(inside):
+        row[i] = key[tuple(ijk_all[i])]
+    col = np.searchsorted(pools, pid)
+    ww = np.ones(n_w) if w is None else np.asarray(w, np.float64)
+    half = (np.random.default_rng(0).permutation(n_w) % 2).astype(bool)
+    n_v, n_p = ijk.shape[0], len(pools)
+    S_a = np.zeros((n_v, n_p, n_m), complex); S_b = np.zeros_like(S_a)
+    W_a = np.zeros((n_v, n_p)); W_b = np.zeros((n_v, n_p)); N = np.zeros((n_v, n_p), np.int64)
+    for i in range(0, n_w, chunk):
+        idx = np.arange(i, min(i + chunk, n_w)); idx = idx[row[idx] >= 0]
+        if not len(idx):
+            continue
+        e = np.exp(1j * _cx.coded_phases(C[idx], dt, G, n_t, device=device)) * ww[idx, None]
+        r, c, h = row[idx], col[idx], half[idx]
+        np.add.at(S_a, (r[h], c[h]), e[h]); np.add.at(S_b, (r[~h], c[~h]), e[~h])
+        np.add.at(W_a, (r[h], c[h]), ww[idx][h]); np.add.at(W_b, (r[~h], c[~h]), ww[idx][~h])
+        np.add.at(N, (r, c), 1)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        floor = 0.5 * np.abs(S_a / W_a[..., None] - S_b / W_b[..., None]).max(-1)
+    floor[(W_a == 0) | (W_b == 0)] = np.nan
+    return ijk, pools, N, floor, np.full_like(floor, np.nan)
+
+
 def voxel_floor(pack, grid, waveform, *, shells=None, **replay_knobs):
     """The per-voxel, per-pool split-half Monte-Carlo floor of a pack's replay of ``waveform`` -- the acquisition
     the pack is meant for, rather than the envelope battery the build certifies against -- as dense volumes on
@@ -975,8 +1011,18 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto"
                       err_target=None, sigma_star=None, provenance=None,
                       blt_temporal_K=None, blt_dtype=np.float16, susc_path_K=None, susc_path_bits=8, voxel_grid=None,
                       position_container=None, blt_container=None,
-                      diffusivity=None, substrate_frame=None, out_path=None, verbose=False):
+                      diffusivity=None, substrate_frame=None, out_path=None, verbose=False,
+                      fidelity="measured", fidelity_from=None, device="auto"):
     """Compress a persistent walk and assemble a self-certifying replay pack.
+
+    ``fidelity`` is what this pack certifies (RPK.md 9.4 rule 4): ``"measured"`` replays the envelope's battery
+    on the raw and the decoded walk and reports the codec error against the split-half floor, per tier; a pack
+    that is one block of a fill -- the same substrate, walk parameters, save grid, codec and containers as a
+    pack already measured, other walkers -- passes ``fidelity="inherited"`` with ``fidelity_from=`` that
+    certifying pack (or its meta): the codec error and the per-tier terms are the certifying pack's, this pack
+    reads its OWN split-half floor (whole and per voxel) from its stored coefficients over the same battery,
+    no path is decoded, and a codec parameter that differs from the cited pack is refused. ``device`` runs the
+    band transforms and the coded floors on the JAX device (``"auto"``: when it is a GPU).
 
     ``walk`` is the :class:`~dmipy_sim.persistent_walk.PersistentWalk` a producer returned (the
     walk's bank dict / ``.npz`` is also accepted). The tiers assembled are the ones the
@@ -1015,24 +1061,60 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto"
         check_frame_against_walk(m["traj"], m["substrate_frame"], w=m.get("w"),
                                  bundle_axes=(None if not bundles else [b["axis"] for b in bundles]))
     env = envelope or _cx.default_envelope()
-    X = np.asarray(m["traj"], np.float64)
+    if fidelity not in ("measured", "inherited"):
+        raise ValueError("fidelity is 'measured' (the battery on this walk) or 'inherited' (a block of a fill citing its certifying pack)")
+    cert = None
+    if fidelity == "inherited":
+        if fidelity_from is None:
+            raise ValueError("fidelity='inherited' needs fidelity_from=: the certifying pack of the fill, or its meta")
+        cert = fidelity_from.meta if hasattr(fidelity_from, "meta") else dict(fidelity_from)
+        cc, cf = cert["compression"], cert["fidelity"]
+        if cc.get("method") != method:
+            raise ValueError(f"the certifying pack stores positions by {cc.get('method')!r}, this build by {method!r}")
+        if K is None and temporal_bandwidth_hz is None:
+            K = int(cc["K"])
+        if cf.get("certified", "measured") != "measured":
+            raise ValueError("a certifying pack carries a measured fidelity; a pack that inherited one cannot certify another")
+    elif fidelity_from is not None:
+        raise ValueError("fidelity_from= goes with fidelity='inherited'")
+    X = np.asarray(m["traj"], np.float64) if fidelity == "measured" else np.asarray(m["traj"])
     dt = float(m["dt_traj"])
     wp_method = _cx.is_walker_preserving(method)
     if K is None and temporal_bandwidth_hz is not None:
         # the band as a frequency (#199): K bands over T resolve up to K / (2T)
         K = max(2, int(np.ceil(2.0 * float(temporal_bandwidth_hz) * (X.shape[1] - 1) * dt)))
-    if K is None:
+    if cert is not None:                              # the codec error is the certifying pack's; the floor is this walk's
+        pos_arrays, pos_meta, _ = _cx.encode(X, method, K, container=_container(position_container), device=device)
+        cc, cf = cert["compression"], cert["fidelity"]
+        same = dict(K=(int(pos_meta.get("K", K)), int(cc["K"])), n_t=(int(X.shape[1]), int(cc["n_t"])),
+                    container=(pos_meta.get("container"), cc.get("container")),
+                    dt_traj=(dt, float(cert["walk_params"]["dt_traj"])))
+        for name, (mine, theirs) in same.items():
+            if (abs(mine - theirs) > 1e-12 * abs(theirs) if name == "dt_traj" else mine != theirs):
+                raise ValueError(f"this build's {name} is {mine!r}, the certifying pack's {theirs!r}: a block inherits a "
+                                 "certificate only with the codec it was measured for")
+        _Cc = _cx.read_position_coeffs(pos_arrays, dtype=np.float64)
+        fl = _cx.measure_floor_coded(_Cc, dt, X.shape[1], env, device=device)     # unweighted, as measure_fidelity reads it
+        fid = dict(metric=cf["metric"], err_max=float(cf["err_max"]), floor_max=fl["floor_max"], noise_floor=fl["noise_floor"],
+                   within_2x_floor=bool(float(cf["err_max"]) <= 2.0 * fl["floor_max"]),
+                   per_family={f: dict(err_max=float(cf["per_family"][f]["err_max"]), floor_max=fl["per_family"][f])
+                               for f in fl["per_family"] if f in cf.get("per_family", {})},
+                   certified="inherited",
+                   inherited_from=dict(id=cert["id"], err_max=float(cf["err_max"]), floor_max=float(cf["floor_max"])))
+    elif K is None:
         K, fid = _cx.auto_select_modes(X, X, dt, method=method, env=env, tol=tol,
                                        err_target=err_target, verbose=verbose)
+        pos_arrays, pos_meta, _ = _cx.encode(X, method, K, container=_container(position_container), device=device)
     else:
-        arrays0, meta0, _ = _cx.encode(X, method, K, container=_container(position_container))
-        pos = _cx.decode(arrays0, meta0, n_walkers=(X.shape[0] if wp_method else None))
+        pos_arrays, pos_meta, _ = _cx.encode(X, method, K, container=_container(position_container), device=device)
+        pos = _cx.decode(pos_arrays, pos_meta, n_walkers=(X.shape[0] if wp_method else None))
         fid = _cx.measure_fidelity(X, dt, pos, env)
+    if cert is None:
+        fid["certified"] = "measured"
     if sigma_star is not None:                       # adaptive floor-target policy (build_to_floor)
         fid = dict(fid, target_floor=float(sigma_star),
                    meets_target=bool(fid["err_max"] <= sigma_star and fid["floor_max"] <= sigma_star))
 
-    pos_arrays, pos_meta, _ = _cx.encode(X, method, K, container=_container(position_container))
     arrays = dict(pos_arrays)
     chan_meta = {}                                   # per-channel codec params
     channels = {"gradient": True, "susceptibility": False, "T1T2": False, "rho": False,
@@ -1110,9 +1192,19 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto"
         # dense per-walker physics channels get their own codecs (compression.py):
         # boundary local time -> sparse/dense or the cumulative bridge.
         if m.get("dlog_b") is not None:
-            if blt_temporal_K:
+            if cert is not None:                                   # the cited pack's channel, parameter for parameter
+                _cb = (cert["compression"].get("channels") or {}).get("boundary_local_time")
+                if _cb is None:
+                    raise ValueError("this walk records wall contact but the certifying pack carries no C2 channel")
+                if blt_temporal_K is not None and int(blt_temporal_K) != int(_cb["K"]):
+                    raise ValueError(f"blt_temporal_K={blt_temporal_K} but the certifying pack's C2 has K={_cb['K']}")
+                _a, _mm = _cx.encode_boundary_bridge(np.asarray(m["dlog_b"]), K=int(_cb["K"]), dtype=blt_dtype,
+                                                     container=_container(blt_container), device=device)
+                if _mm.get("container") != _cb.get("container") or _mm.get("dtype") != _cb.get("dtype"):
+                    raise ValueError("the C2 container or dtype differs from the certifying pack's")
+            elif blt_temporal_K:
                 _a, _mm = _cx.encode_boundary_bridge(np.asarray(m["dlog_b"]), K=int(blt_temporal_K),
-                                                 dtype=blt_dtype, container=_container(blt_container))
+                                                 dtype=blt_dtype, container=_container(blt_container), device=device)
             else:
                 _a, _mm = _select_boundary_codec(m, np.asarray(m["dlog_b"]), env, tol,
                                                  blt_dtype, verbose, container=_container(blt_container))
@@ -1120,7 +1212,7 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto"
 
     # Surface tier (C2) fidelity: certify the boundary channel reproduces the surface-relaxivity
     # signal from its stored coeffs, vs the raw boundary local time.
-    if channels["rho"] and chan_meta.get("boundary_local_time") is not None:
+    if channels["rho"] and chan_meta.get("boundary_local_time") is not None and cert is None:
         _cf = _surface_fidelity(m, arrays, chan_meta["boundary_local_time"], env)
         if _cf is not None:
             fid = dict(fid, err_surface=_cf["err"], floor_surface=_cf["floor"],
@@ -1132,7 +1224,11 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto"
 
     # Field tier (C3) fidelity: certify the stored f16 grid sampled at the decoded trajectory
     # reproduces the raw-grid/true-trajectory susceptibility signal (SE + GRE, split-half floor).
-    if channels["susceptibility"] and chan_meta.get("susceptibility_path") is not None:
+    if channels["susceptibility"] and chan_meta.get("susceptibility_path") is not None and cert is not None:
+        _cp = (cert["compression"].get("channels") or {}).get("susceptibility_path") or {}
+        if int(_cp.get("K", -1)) != int(susc_path_K) or int(_cp.get("bits", -1)) != int(susc_path_bits):
+            raise ValueError("the path channel's K or bits differ from the certifying pack's")
+    if channels["susceptibility"] and chan_meta.get("susceptibility_path") is not None and cert is None:
         _pf = _susc_path_fidelity(m, arrays, chan_meta["susceptibility_path"],
                                   chan_meta["susceptibility_grid"], env)
         if _pf is not None:
@@ -1150,7 +1246,10 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto"
             fid["within_2x_floor"] = bool(fid["err_max"] <= 2.0 * fid["floor_max"])
             if sigma_star is not None:
                 fid["meets_target"] = bool(fid["err_max"] <= sigma_star and fid["floor_max"] <= sigma_star)
-    if channels["susceptibility"] and m.get("susc_field_basis") is not None:
+    if cert is not None:                                   # the certifying pack's per-tier terms, its codec on this walk
+        fid.update({k: v for k, v in cert["fidelity"].items()
+                    if k.startswith(("err_", "floor_", "susc_")) and k not in ("err_max", "floor_max")})
+    if channels["susceptibility"] and m.get("susc_field_basis") is not None and cert is None:
         _dpos = _cx.decode(pos_arrays, pos_meta, n_walkers=(X.shape[0] if wp_method else None))
         _gf = _susc_grid_fidelity(m, arrays, chan_meta["susceptibility_grid"], _dpos, dt, env)
         if _gf is not None:
@@ -1166,9 +1265,12 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto"
         from ..phantom.grid import Grid
         if not isinstance(voxel_grid, Grid) or voxel_grid.attach != "substrate":
             raise TypeError("voxel_grid must be a dmipy_sim.phantom.Grid attached to the substrate")
-        _dpos = _cx.decode(pos_arrays, pos_meta, n_walkers=(X.shape[0] if wp_method else None))
         _w = np.asarray(m["w"], np.float64) if m.get("w") is not None else None
-        _ijk, _pools, _n, _floor, _err = voxel_fidelity(X, dt, _dpos, voxel_grid, m.get("comp"), env, w=_w)
+        if cert is not None:
+            _ijk, _pools, _n, _floor, _err = voxel_floor_coded(_Cc, dt, X.shape[1], voxel_grid, m.get("comp"), env, w=_w, device=device)
+        else:
+            _dpos = _cx.decode(pos_arrays, pos_meta, n_walkers=(X.shape[0] if wp_method else None))
+            _ijk, _pools, _n, _floor, _err = voxel_fidelity(X, dt, _dpos, voxel_grid, m.get("comp"), env, w=_w)
         arrays["voxel_ijk"] = _ijk.astype(np.int32)
         arrays["voxel_certificate"] = np.stack([_n.astype(np.float32), _floor.astype(np.float32), _err.astype(np.float32)], axis=-1)
         _ok = np.isfinite(_floor)

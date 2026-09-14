@@ -164,7 +164,92 @@ def dequantise_bands(arrays, container, key, scale_key, dtype=np.float64):
     return np.concatenate(parts, axis=1).astype(dtype)
 
 
-def encode_bridge_dst(X, K, container=None):
+DEVICES = ("auto", "numpy", "jax")
+
+
+def _jax_has_gpu():
+    try:
+        import jax
+        return any(d.platform == "gpu" for d in jax.devices())
+    except Exception:                                                # no jax, or no backend
+        return False
+
+
+def resolve_device(device):
+    """``"numpy"`` or ``"jax"`` from a device word: ``"auto"`` is the JAX device when one is a GPU, else numpy
+    (a CPU JAX transform is no faster than scipy's)."""
+    if device not in DEVICES:
+        raise ValueError(f"device must be one of {DEVICES}, not {device!r}")
+    if device == "auto":
+        return "jax" if _jax_has_gpu() else "numpy"
+    return device
+
+
+def dst_bands(u, K, *, device="auto", chunk_bytes=1 << 30):
+    """The lowest ``K`` orthonormal DST-I bands along axis 1 of ``u`` ``(N_w, N, ...)``, as float64: scipy on the
+    host, or on the JAX device as one matmul against the sine matrix at full precision (``Precision.HIGHEST``:
+    a float32 ``@`` on a CUDA device is TF32 otherwise), in walker chunks of ``chunk_bytes``."""
+    K = int(K)
+    if resolve_device(device) == "numpy":
+        return np.asarray(_dst(np.asarray(u, np.float64), axis=1, type=1, norm="ortho")[:, :K], np.float64)
+    import jax
+    import jax.numpy as jnp
+    N = int(u.shape[1])
+    n = np.arange(1, N + 1)[:, None]; k = np.arange(1, K + 1)[None, :]
+    S = jnp.asarray(np.sqrt(2.0 / (N + 1)) * np.sin(np.pi * n * k / (N + 1)), jnp.float32)          # (N, K)
+    f = jax.jit(lambda x: jnp.einsum("wn...,nk->wk...", x, S, precision=jax.lax.Precision.HIGHEST))
+    rows = max(1, int(chunk_bytes // max(int(np.prod(u.shape[1:])) * 4, 1)))
+    out = np.empty((u.shape[0], K) + tuple(u.shape[2:]), np.float64)
+    for i in range(0, u.shape[0], rows):
+        out[i:i + rows] = np.asarray(f(jnp.asarray(np.asarray(u[i:i + rows], np.float32))), np.float64)
+    return out
+
+
+def coded_phases(C, dt, G, n_t, *, device="auto", chunk_bytes=1 << 30):
+    """``(N_w, n_meas)`` gradient phase of every walker under the waveforms ``G`` ``(n_meas, n_t, 3)`` from the
+    bridge coefficients ``C`` ``(N_w, K+2, 3)`` alone: ``gamma dt sum C W`` with ``W`` the bridge projection of the
+    waveforms' exact per-save weights (:func:`_replay_kernel.effective_gradient`) -- the replay's own reading of a
+    pack, no path decoded (host float64, or the device in float32 at full precision)."""
+    from ._replay_kernel import effective_gradient
+    C = np.asarray(C); K = int(C.shape[1]) - 2
+    Geff = effective_gradient(np.asarray(G, np.float64), float(dt), int(n_t), float(dt))              # per-save weights
+    W = bridge_projection(Geff, int(n_t), K)                                                         # (n_meas, K+2, 3)
+    W2 = (GAMMA * float(dt)) * W.reshape(W.shape[0], -1).T                                           # ((K+2)*3, n_meas)
+    Cf = C.reshape(C.shape[0], -1)
+    if resolve_device(device) == "numpy":
+        return np.asarray(Cf, np.float64) @ W2
+    import jax
+    import jax.numpy as jnp
+    Wd = jnp.asarray(W2, jnp.float32)
+    f = jax.jit(lambda x: jnp.matmul(x, Wd, precision=jax.lax.Precision.HIGHEST))
+    rows = max(1, int(chunk_bytes // max(Cf.shape[1] * 4, 1)))
+    out = np.empty((Cf.shape[0], W2.shape[1]), np.float64)
+    for i in range(0, Cf.shape[0], rows):
+        out[i:i + rows] = np.asarray(f(jnp.asarray(np.asarray(Cf[i:i + rows], np.float32))), np.float64)
+    return out
+
+
+def measure_floor_coded(C, dt, n_t, env=None, *, w=None, logw=None, device="auto"):
+    """The split-half Monte-Carlo floor of a walk over the envelope's battery, read from its bridge coefficients
+    (:func:`coded_phases`): the same ensemble split :func:`measure_fidelity` uses, no path decoded. Returns
+    ``floor_max``, ``noise_floor`` and the floor per family."""
+    env = env or default_envelope()
+    G, meta = acquisition_battery(int(n_t), float(dt), env)
+    phi = coded_phases(C, dt, G, n_t, device=device)
+    nw = phi.shape[0]
+    ww = np.ones(nw) if w is None else np.asarray(w, float)
+    lw = np.zeros(nw) if logw is None else np.asarray(logw, float)
+    e = np.exp(lw[:, None] + 1j * phi) * ww[:, None]
+    idx = np.random.default_rng(0).permutation(nw); h = nw // 2
+    ia, ib = idx[:h], idx[h:]
+    Sa = e[ia].sum(0) / ww[ia].sum(); Sb = e[ib].sum(0) / ww[ib].sum()
+    floor = np.abs(Sa - Sb) / 2.0
+    fams = sorted({m["fam"] for m in meta})
+    per_fam = {f: float(floor[[i for i, m in enumerate(meta) if m["fam"] == f]].max()) for f in fams}
+    return dict(floor_max=float(floor.max()), noise_floor=float(1 / np.sqrt(nw)), per_family=per_fam)
+
+
+def encode_bridge_dst(X, K, container=None, *, device="auto"):
     """Endpoints plus a Brownian bridge, expanded on the sine basis (per axis).
 
     Splits each path the way the gradient phase reads it -- into the two endpoints and a
@@ -188,14 +273,21 @@ def encode_bridge_dst(X, K, container=None):
     ``c_k(n) - c_k(n-1) = -2 sin(pi k / 2N) s_{k-1}(n)``, so a cosine expansion of the path is a
     sine expansion of its increments and the two truncate to the same subspaces.
     """
-    X = np.asarray(X, np.float64)
+    X = np.asarray(X)
     Nw, Nt, _ = X.shape
-    a = X[:, 0, :]
-    v = X[:, -1, :] - X[:, 0, :]
+    a = np.asarray(X[:, 0, :], np.float64)
+    v = np.asarray(X[:, -1, :], np.float64) - a
     tau = np.arange(Nt) / (Nt - 1.0)
-    u = X - (a[:, None, :] + v[:, None, :] * tau[None, :, None])
     K = int(min(K, Nt - 2))
-    B = _dst(u[:, 1:-1, :], axis=1, type=1, norm="ortho")[:, :K, :]
+    if resolve_device(device) == "numpy":
+        u = np.asarray(X, np.float64) - (a[:, None, :] + v[:, None, :] * tau[None, :, None])
+        B = dst_bands(u[:, 1:-1, :], K, device="numpy")
+    else:                                                            # the residual per chunk, the bands on the device
+        B = np.empty((Nw, K, 3), np.float64); rows = max(1, int((1 << 30) // max(Nt * 3 * 4, 1)))
+        for i in range(0, Nw, rows):
+            sl = slice(i, i + rows)
+            u = np.asarray(X[sl], np.float32) - np.asarray(a[sl, None, :] + v[sl, None, :] * tau[None, :, None], np.float32)
+            B[sl] = dst_bands(u[:, 1:-1, :], K, device="jax")
     C = np.concatenate([a[:, None, :], v[:, None, :], B], axis=1)   # (Nw, K+2, 3)
     meta = {"method": "bridge_dst", "K": K, "n_t": int(Nt)}
     if container is None:                                            # the float32 container, one tensor per axis
@@ -319,7 +411,7 @@ def decode_boundary_local_time(arrays, meta):
     return out
 
 
-def encode_boundary_bridge(dlog, K=16, dtype=np.float32, container=None):
+def encode_boundary_bridge(dlog, K=16, dtype=np.float32, container=None, *, device="auto"):
     """Bridge codec for the boundary-local-time channel: the CUMULATIVE local time B(t)=cumsum(ell)
     stored as its two exact endpoints plus SINE bands of the pinned residual -- the same form C0
     uses for positions, on the same segment grid.
@@ -348,15 +440,19 @@ def encode_boundary_bridge(dlog, K=16, dtype=np.float32, container=None):
     Stores (N_w, K) sine bands + two floats per walker; ratio ~ n_t/K, which GROWS with walk length.
     Lossless at K = n_t - 2 (the interior dimension), NOT at K = n_t.
     """
-    A = np.asarray(dlog, np.float64)
+    A = np.asarray(dlog)
     nw, nt = A.shape
-    B = np.cumsum(A, axis=1)                                   # (N_w, n_t) smooth
-    a = B[:, 0].copy()                                         # exact B(0)
-    endpoint = B[:, -1].copy()                                 # exact total local time B(T)
-    tau = np.linspace(0.0, 1.0, nt)[None, :]
-    resid = B - (a[:, None] + (endpoint - a)[:, None] * tau)   # exactly 0 at BOTH ends
     K = int(min(K, nt - 2))
-    C = _dst(resid[:, 1:-1], axis=1, type=1, norm="ortho")[:, :K]
+    tau = np.linspace(0.0, 1.0, nt)[None, :]
+    a = np.empty(nw); endpoint = np.empty(nw); C = np.empty((nw, K), np.float64)
+    rows = nw if resolve_device(device) == "numpy" else max(1, int((1 << 30) // max(nt * 8, 1)))
+    for i in range(0, nw, rows):                               # the cumulative time per chunk (float64), its bands
+        sl = slice(i, i + rows)
+        B = np.cumsum(np.asarray(A[sl], np.float64), axis=1)   # (rows, n_t) smooth
+        a[sl] = B[:, 0]                                        # exact B(0)
+        endpoint[sl] = B[:, -1]                                # exact total local time B(T)
+        resid = B - (a[sl, None] + (endpoint[sl] - a[sl])[:, None] * tau)   # exactly 0 at BOTH ends
+        C[sl] = dst_bands(resid[:, 1:-1], K, device=device)
     # ``dtype`` sets the band precision; packs pass f16 via build_replay_pack's ``blt_dtype``. The
     # two ENDPOINTS are always f32 -- they are the exact quantities the rho attenuation and the
     # segment chaining read, where f16's ~3 significant digits would be a real error, not a rounding.
