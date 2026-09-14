@@ -206,13 +206,13 @@ def _surface_fidelity(m, arrays, chan_meta, env):
     STORED boundary channel vs the RAW per-step boundary local time, over a rho battery, against
     the split-half MC floor of the raw surface signal. Returns ``dict(err, floor)`` or None."""
     raw = m.get("dlog_b")
-    has_stored = any(k in arrays for k in ("blt_bridge_dst", "blt_dense_q", "blt_counts"))
+    has_stored = _cx.has_c2(arrays) or any(k in arrays for k in ("blt_dense_q", "blt_counts"))
     if raw is None or not has_stored:
         return None
     raw = np.asarray(raw, np.float64); n_w = raw.shape[0]
     w = np.asarray(m["w"], np.float64) if m.get("w") is not None else np.ones(n_w)
     D = float(m.get("D_intra") or 0.0) or 1.0
-    if "blt_bridge_dst" in arrays:
+    if _cx.has_c2(arrays):
         decoded = _cx.decode_boundary_bridge(arrays, chan_meta)
     else:
         decoded = _cx.decode_boundary_local_time(arrays, chan_meta)
@@ -738,8 +738,18 @@ def merge_packs(packs, *, id, out_path=None):
     same("array names", lambda pk: sorted(pk.arrays))
     n = [int(pk.meta["walk_params"]["n_walkers"]) for pk in pks]
     arrays = {}
+    scale_keys = [k for k in pks[0].arrays if k.endswith("_band_scale")]
+    if scale_keys:                                                   # band containers: stack the shards' scale tables and
+        blocks, off = [], 0                                          # give every walker its block
+        for pk, m in zip(pks, n):
+            nb = int(np.asarray(pk.arrays[scale_keys[0]]).shape[0])
+            blk = np.asarray(pk.arrays["band_block"], np.int64) if "band_block" in pk.arrays else np.zeros(m, np.int64)
+            blocks.append(blk + off); off += nb
+        arrays["band_block"] = np.concatenate(blocks).astype(np.uint16 if off < 65536 else np.int32)
+        for k in scale_keys:
+            arrays[k] = np.concatenate([np.asarray(pk.arrays[k]) for pk in pks])
     for k in pks[0].arrays:
-        if k in ("voxel_ijk", "voxel_certificate"):
+        if k in ("voxel_ijk", "voxel_certificate", "band_block") or k in scale_keys:
             continue
         parts = [np.asarray(pk.arrays[k]) for pk in pks]
         if not all(a.shape[0] == m and a.shape[1:] == parts[0].shape[1:] for a, m in zip(parts, n)):
@@ -828,7 +838,7 @@ def _precision_tiers(arrays, n_walkers, floor_max, walkers_shuffled):
                       "WALKER ORDER NOT DECLARED SHUFFLED -- a prefix may be a biased sub-ensemble"))
 
 
-def _select_boundary_codec(m, dlog, env, tol, dtype, verbose=False):
+def _select_boundary_codec(m, dlog, env, tol, dtype, verbose=False, container=None):
     """Choose the C2 (boundary-local-time) codec by COST subject to the surface-fidelity gate.
 
     The historical default was sparse CSR, which is exact but costs ~one entry per wall contact, so it
@@ -839,7 +849,7 @@ def _select_boundary_codec(m, dlog, env, tol, dtype, verbose=False):
     """
     cands = []
     for K in (8, 16, 32, 64):
-        a, mm = _cx.encode_boundary_bridge(dlog, K=int(K), dtype=dtype)
+        a, mm = _cx.encode_boundary_bridge(dlog, K=int(K), dtype=dtype, container=container)
         cf = _surface_fidelity(m, a, mm, env)
         nb = sum(int(np.asarray(v).nbytes) for v in a.values()) / max(len(dlog), 1)
         cands.append((nb, K, a, mm, cf))
@@ -948,10 +958,23 @@ def _walk_master(walk, *, weights=None, field=None, diffusivity=None, substrate_
     extra["walkers_shuffled"] = True        # the producer draws walkers i.i.d.: any prefix is a fair subsample
     return walk._bank_dict(**extra)
 
+def _container(spec):
+    """A band container from the builder's knob: ``None`` (the float container), ``"bands"`` (the registry's
+    default, :data:`compression.BAND_CONTAINER`) or an explicit ``((upto, bits), ...)``."""
+    if spec is None:
+        return None
+    if isinstance(spec, str):
+        if spec != "bands":
+            raise ValueError(f"container must be None, 'bands' or ((upto, bits), ...); got {spec!r}")
+        return _cx.BAND_CONTAINER
+    return tuple((None if u is None else int(u), int(b)) for u, b in spec)
+
+
 def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto",
                       method=_cx.POSITION_METHOD, envelope=None, tol=2.0, K=None, temporal_bandwidth_hz=None,
                       err_target=None, sigma_star=None, provenance=None,
                       blt_temporal_K=None, blt_dtype=np.float16, susc_path_K=None, susc_path_bits=8, voxel_grid=None,
+                      position_container=None, blt_container=None,
                       diffusivity=None, substrate_frame=None, out_path=None, verbose=False):
     """Compress a persistent walk and assemble a self-certifying replay pack.
 
@@ -1002,14 +1025,14 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto"
         K, fid = _cx.auto_select_modes(X, X, dt, method=method, env=env, tol=tol,
                                        err_target=err_target, verbose=verbose)
     else:
-        arrays0, meta0, _ = _cx.encode(X, method, K)
+        arrays0, meta0, _ = _cx.encode(X, method, K, container=_container(position_container))
         pos = _cx.decode(arrays0, meta0, n_walkers=(X.shape[0] if wp_method else None))
         fid = _cx.measure_fidelity(X, dt, pos, env)
     if sigma_star is not None:                       # adaptive floor-target policy (build_to_floor)
         fid = dict(fid, target_floor=float(sigma_star),
                    meets_target=bool(fid["err_max"] <= sigma_star and fid["floor_max"] <= sigma_star))
 
-    pos_arrays, pos_meta, _ = _cx.encode(X, method, K)
+    pos_arrays, pos_meta, _ = _cx.encode(X, method, K, container=_container(position_container))
     arrays = dict(pos_arrays)
     chan_meta = {}                                   # per-channel codec params
     channels = {"gradient": True, "susceptibility": False, "T1T2": False, "rho": False,
@@ -1089,10 +1112,10 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto"
         if m.get("dlog_b") is not None:
             if blt_temporal_K:
                 _a, _mm = _cx.encode_boundary_bridge(np.asarray(m["dlog_b"]), K=int(blt_temporal_K),
-                                                 dtype=blt_dtype)
+                                                 dtype=blt_dtype, container=_container(blt_container))
             else:
                 _a, _mm = _select_boundary_codec(m, np.asarray(m["dlog_b"]), env, tol,
-                                                 blt_dtype, verbose)
+                                                 blt_dtype, verbose, container=_container(blt_container))
             arrays.update(_a); chan_meta["boundary_local_time"] = _mm; channels["rho"] = True
 
     # Surface tier (C2) fidelity: certify the boundary channel reproduces the surface-relaxivity
@@ -1160,6 +1183,7 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto"
             fid["per_voxel"]["meets_target"] = bool(np.nanmax(_floor) <= sigma_star and np.nanmax(_err) <= sigma_star)
     comp_meta = dict(method=method, K=int(pos_meta.get("K", K)),        # the K stored: the codec clamps a short walk
                      walker_preserving=bool(wp_method), n_t=int(n_t),
+                     container=pos_meta.get("container"),               # None: the float container; else the band ranges
                      temporal_bandwidth_hz=float(int(pos_meta.get("K", K)) / (2.0 * (int(n_t) - 1) * dt)))   # K bands over T (#199)
     if wp_method:
         comp_meta["precision_tiers"] = _precision_tiers(arrays, int(m["n_walkers"]),

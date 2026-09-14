@@ -29,6 +29,7 @@ import json
 from functools import cached_property
 
 import numpy as np
+from .compression import c2_bands_K as _cx_bands_K
 
 from ..constants import GAMMA
 from ..acquisition.rf import RFSchedule
@@ -191,7 +192,8 @@ class ReplayPack:
     @property
     def has_relaxation(self):
         """C1: a compartment channel, so per-pool T2 / T1 given at replay can be applied."""
-        return "comp_rle_vals" in self.arrays
+        from .compression import has_c1
+        return has_c1(self.arrays)
 
     @property
     def substrate(self):
@@ -205,7 +207,8 @@ class ReplayPack:
     @property
     def has_surface(self):
         """C2: the boundary local time in the bridge form."""
-        return "blt_bridge_dst" in self.arrays
+        from .compression import has_c2
+        return has_c2(self.arrays)
 
     @property
     def has_field(self):
@@ -451,11 +454,11 @@ class ReplayPack:
             D_walk = self.diffusivity if P["D"] is None else P["D"]
             if D_walk is None:
                 raise ValueError("rho needs the walk's diffusivity: the pack did not record it, pass D=")
-            if "blt_bridge_dst" not in self.arrays:
+            if not self.has_surface:
                 raise ValueError("surface relaxivity was requested but this pack carries no C2 channel")
             meta = dict(ch.get("boundary_local_time") or {})
             meta.setdefault("n_t", n_t)
-            meta.setdefault("K", int(np.asarray(self.arrays["blt_bridge_dst"]).shape[1]))
+            meta.setdefault("K", _cx_bands_K(self.arrays, meta))
             kw.update(dlog_boundary_unit=decode_boundary_bridge(self.arrays, meta),
                       surface_relaxivity=float(P["rho"]), D=float(D_walk))
         extra = None
@@ -567,7 +570,7 @@ class ReplayPack:
                 decode_occupancy(self.arrays, ch["compartment"])              # raises with the re-encode message
             col = next(d for d in ch["compartment"]["columns"] if d["name"] == "comp")
             T2v = self._by_pool(T2, "T2"); T1v = self._by_pool(T1, "T1")
-            n_ids = 2 if col["kind"] != "label" else int(np.max(self.arrays["comp_rle_vals"])) + 1   # a fraction is two pools
+            n_ids = 2 if col["kind"] == "fraction" else int(np.max(self.arrays["comp_static" if col["kind"] == "static" else "comp_rle_vals"])) + 1
             if T2v is None:
                 T2v = [0.0] * n_ids                                   # no T2 decay, T1 only
             if T1v is None:
@@ -726,8 +729,8 @@ class ReplayPack:
         blt_K = None
         if "boundary_local_time" in ch:
             bm = dict(ch["boundary_local_time"]); bm.setdefault("n_t", n_t)
-            if "blt_bridge_dst" in self.arrays:
-                bm.setdefault("K", int(np.asarray(self.arrays["blt_bridge_dst"]).shape[1]))
+            if self.has_surface:
+                bm.setdefault("K", _cx_bands_K(self.arrays, bm))
                 ell = decode_boundary_bridge(self.arrays, bm)
                 blt_K = max(2, int(np.ceil(bm["K"] * T_cut / T)))
             else:
@@ -1508,8 +1511,8 @@ def surface_logweight(arrays, rho_over_D, chan_meta=None, chi_hat=None):
     Takes the pack's ``arrays`` rather than one tensor: the channel is three tensors now, and a
     signature that accepted just the coefficient block invited passing the wrong one.
     """
-    from .compression import surface_logweight_bridge
-    if "blt_bridge_dst" not in arrays:
+    from .compression import surface_logweight_bridge, has_c2
+    if not has_c2(arrays):
         raise ValueError(
             "surface relaxivity was requested but this pack carries no C2 channel "
             "(no 'blt_bridge_dst'). A pack written before the C2 bridge form stored "
@@ -1519,7 +1522,7 @@ def surface_logweight(arrays, rho_over_D, chan_meta=None, chi_hat=None):
         return float(rho_over_D) * np.asarray(arrays["blt_endpoint"], np.float64)
     meta = dict(chan_meta or {})
     meta.setdefault("n_t", int(np.asarray(chi_hat).shape[0]))
-    meta.setdefault("K", int(np.asarray(arrays["blt_bridge_dst"]).shape[1]))
+    meta.setdefault("K", _cx_bands_K(arrays, meta))
     return surface_logweight_bridge(arrays, meta, rho_over_D, chi_hat)          # the bridge contracted, never decoded
 
 

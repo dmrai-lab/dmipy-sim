@@ -66,8 +66,10 @@ def test_pack_compresses_within_floor_and_declares_tiers(pack):
     from dmipy_sim.replay.compression import POSITION_AXES, has_axis_layout
     assert has_axis_layout(pack.arrays) and all(k in pack.arrays for k in POSITION_AXES)
     assert np.asarray(pack.position_coeffs).shape[2] == 3
-    assert any(k.startswith("comp_rle") for k in pack.arrays)   # compartment tier
-    assert any(k.startswith("blt_") for k in pack.arrays)       # surface tier
+    from dmipy_sim.replay.compression import has_c1, has_c2
+    assert has_c1(pack.arrays)                                  # compartment tier
+    assert "comp_static" in pack.arrays                         # impermeable: one label per walker
+    assert has_c2(pack.arrays)                                  # surface tier
 
 
 def test_rpk_roundtrip_and_lean_consumption(pack, tmp_path):

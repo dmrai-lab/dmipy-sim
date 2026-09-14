@@ -42,6 +42,7 @@ import logging
 
 log = logging.getLogger(__name__)
 
+import re
 import numpy as np
 
 try:
@@ -97,7 +98,73 @@ _F16, _F32 = 2, 4
 
 # --------------------------------------------------------------------- encoders
 
-def encode_bridge_dst(X, K):
+#: The default band container of the bridge channels: the first 16 bands at 16 bits, the rest at 8. A bridge's sine
+#: coefficients fall as 1/k, so a per-band scale keeps the quantisation step proportional to the band's own range:
+#: at 8 bits a band contributes a step of ~1/127 of its range, which for band 17 and beyond of a 100 ms walk is
+#: nanometres; the first bands carry the walker's excursion and keep 16 bits.
+BAND_CONTAINER = ((16, 16), (None, 8))
+
+
+def _band_ranges(container, K):
+    """``[(k0, k1, bits), ...]`` covering bands ``0 .. K-1`` from a container ``((upto, bits), ...)``; ``upto`` None
+    is the end. Refuses a gap, an overlap, or a width other than 8 or 16."""
+    out, k0 = [], 0
+    for upto, bits in container:
+        k1 = int(K) if upto is None else min(int(upto), int(K))
+        if int(bits) not in (8, 16):
+            raise ValueError(f"band container bits must be 8 or 16 (got {bits})")
+        if k1 > k0:
+            out.append((k0, k1, int(bits)))
+        k0 = max(k0, k1)
+    if k0 < int(K):
+        raise ValueError(f"band container covers bands up to {k0} of {K}; end it with (None, bits)")
+    return out
+
+
+def quantise_bands(B, container, key, scale_key):
+    """The integer container of sine bands ``B`` (``(N_w, K)`` or ``(N_w, K, n_axes)``): per band (and axis) a
+    scale ``max |B| / (2^(bits-1) - 1)`` and the rounded integers, one tensor per band range at its width, under
+    ``{key}_b{i}``; the scales under ``scale_key`` as ``(1, K)`` or ``(1, n_axes, K)`` float32 -- the leading axis is
+    the walker BLOCK: a merged pack stacks its shards' scales there and carries ``band_block`` ``(N_w,)``, the
+    block of each walker (absent: block 0). Returns ``(arrays, meta)`` with ``meta["container"]`` the ranges."""
+    B = np.asarray(B, np.float64)
+    K = B.shape[1]
+    ranges = _band_ranges(container, K)
+    amax = np.abs(B).max(axis=0)                                      # (K,) or (K, n_axes)
+    arrays, cont = {}, []
+    scale = np.zeros(amax.shape, np.float64)
+    for i, (k0, k1, bits) in enumerate(ranges):
+        lim = 2 ** (bits - 1) - 1
+        scale[k0:k1] = np.maximum(amax[k0:k1], 1e-300) / lim
+        q = np.rint(B[:, k0:k1] / scale[None, k0:k1]).astype(np.int16 if bits == 16 else np.int8)
+        arrays[f"{key}_b{i}"] = np.ascontiguousarray(q)
+        cont.append({"bands": [int(k0), int(k1)], "bits": int(bits)})
+    arrays[scale_key] = np.ascontiguousarray((scale.T if scale.ndim == 2 else scale)[None]).astype(np.float32)
+    return arrays, {"container": cont}
+
+
+def band_scales(arrays, scale_key, n_w):
+    """The per-walker scale of every band, ``(N_w, K)`` or ``(N_w, n_axes, K)``: the block table indexed by each
+    walker's block (``band_block``, absent: one block)."""
+    table = np.asarray(arrays[scale_key], np.float64)
+    if "band_block" in arrays:
+        return table[np.asarray(arrays["band_block"], np.int64)]
+    if table.shape[0] != 1:
+        raise KeyError(f"{scale_key} holds {table.shape[0]} blocks but the pack carries no band_block")
+    return np.broadcast_to(table[0], (int(n_w),) + table.shape[1:])
+
+
+def dequantise_bands(arrays, container, key, scale_key, dtype=np.float64):
+    """The bands back as ``(N_w, K)`` or ``(N_w, K, n_axes)`` from :func:`quantise_bands`' tensors."""
+    q0 = np.asarray(arrays[f"{key}_b0"])
+    scale = band_scales(arrays, scale_key, q0.shape[0])               # (N_w, K) or (N_w, n_axes, K)
+    scale = np.swapaxes(scale, 1, 2) if scale.ndim == 3 else scale    # -> (N_w, K[, n_axes])
+    parts = [np.asarray(arrays[f"{key}_b{i}"], np.float64) * scale[:, r["bands"][0]:r["bands"][1]]
+             for i, r in enumerate(container)]
+    return np.concatenate(parts, axis=1).astype(dtype)
+
+
+def encode_bridge_dst(X, K, container=None):
     """Endpoints plus a Brownian bridge, expanded on the sine basis (per axis).
 
     Splits each path the way the gradient phase reads it -- into the two endpoints and a
@@ -130,9 +197,13 @@ def encode_bridge_dst(X, K):
     K = int(min(K, Nt - 2))
     B = _dst(u[:, 1:-1, :], axis=1, type=1, norm="ortho")[:, :K, :]
     C = np.concatenate([a[:, None, :], v[:, None, :], B], axis=1)   # (Nw, K+2, 3)
-    arrays = pack_position_arrays(C, np.float32)
     meta = {"method": "bridge_dst", "K": K, "n_t": int(Nt)}
-    return arrays, meta, Nw * 3 * (K + 2) * _F32
+    if container is None:                                            # the float32 container, one tensor per axis
+        arrays = pack_position_arrays(C, np.float32)
+        return arrays, meta, Nw * 3 * (K + 2) * _F32
+    arrays = pack_position_arrays(C, np.float32, container=container)
+    meta["container"] = [{"bands": [k0, k1], "bits": b} for k0, k1, b in _band_ranges(container, K)]
+    return arrays, meta, int(sum(int(np.asarray(v).nbytes) for v in arrays.values()))
 
 
 def decode_bridge_dst(arrays, meta):
@@ -248,7 +319,7 @@ def decode_boundary_local_time(arrays, meta):
     return out
 
 
-def encode_boundary_bridge(dlog, K=16, dtype=np.float32):
+def encode_boundary_bridge(dlog, K=16, dtype=np.float32, container=None):
     """Bridge codec for the boundary-local-time channel: the CUMULATIVE local time B(t)=cumsum(ell)
     stored as its two exact endpoints plus SINE bands of the pinned residual -- the same form C0
     uses for positions, on the same segment grid.
@@ -289,18 +360,50 @@ def encode_boundary_bridge(dlog, K=16, dtype=np.float32):
     # ``dtype`` sets the band precision; packs pass f16 via build_replay_pack's ``blt_dtype``. The
     # two ENDPOINTS are always f32 -- they are the exact quantities the rho attenuation and the
     # segment chaining read, where f16's ~3 significant digits would be a real error, not a rounding.
-    arrays = {"blt_bridge_dst": C.astype(dtype),
-              "blt_start": a.astype(np.float32),
-              "blt_endpoint": endpoint.astype(np.float32)}
     meta = {"channel": "boundary_local_time", "mode": "bridge_dst", "n_t": int(nt), "K": int(K),
             "dtype": np.dtype(dtype).name}
+    arrays = {"blt_start": a.astype(np.float32), "blt_endpoint": endpoint.astype(np.float32)}
+    if container is None:
+        arrays["blt_bridge_dst"] = C.astype(dtype)
+    else:                                                          # the integer container: bands per range, a scale per band
+        q, qm = quantise_bands(C, container, "blt", "blt_band_scale")
+        arrays.update(q); meta["container"] = qm["container"]; meta["dtype"] = "bands"
     return arrays, meta
+
+
+def has_c2(arrays):
+    """Whether the arrays carry the C2 bridge in either container."""
+    return "blt_bridge_dst" in arrays or "blt_b0" in arrays
+
+
+def has_c1(arrays):
+    """Whether the arrays carry the C1 ``comp`` column in either form (runs or the static label)."""
+    return "comp_rle_vals" in arrays or "comp_static" in arrays
+
+
+def c2_bands_K(arrays, meta):
+    """The number of C2 bands stored, from the metadata or the tensors."""
+    if meta and meta.get("K") is not None:
+        return int(meta["K"])
+    if "blt_bridge_dst" in arrays:
+        return int(np.asarray(arrays["blt_bridge_dst"]).shape[1])
+    return int(sum(np.asarray(arrays[k]).shape[1] for k in arrays if re.fullmatch(r"blt_b\d+", k)))
+
+
+def bridge_bands(arrays, meta, key="blt", scale_key="blt_band_scale", dtype=np.float64):
+    """The C2 bands ``(N_w, K)`` from either container: the float tensor ``blt_bridge_dst`` or the integer ranges
+    ``blt_b<i>`` with ``blt_band_scale`` (``meta["container"]``)."""
+    if "blt_bridge_dst" in arrays:
+        return np.asarray(arrays["blt_bridge_dst"], dtype)
+    if meta.get("container") is None:
+        raise KeyError("this pack's C2 channel is in the integer container but its metadata carries no 'container'")
+    return dequantise_bands(arrays, meta["container"], key, scale_key, dtype)
 
 
 def decode_boundary_bridge(arrays, meta):
     """Reconstruct per-save ell(t) = diff(B) from the two endpoints + the pinned sine bands."""
     nt = int(meta["n_t"])
-    C = np.asarray(arrays["blt_bridge_dst"], np.float64)
+    C = bridge_bands(arrays, meta)
     a = np.asarray(arrays["blt_start"], np.float64)
     endpoint = np.asarray(arrays["blt_endpoint"], np.float64)
     tau = np.linspace(0.0, 1.0, nt)[None, :]
@@ -335,6 +438,9 @@ def _encode_occupancy_column(x, name, Q):
     C1 carries the realised exchange statistics rather than a summarising mean rate.
     """
     A = np.asarray(x)
+    if name == _EXCLUSIVE_COLUMN and np.array_equal(A, np.round(A)) and A.ndim == 2 and (A == A[:, :1]).all():
+        # nothing crosses: one label per walker, the static column (an impermeable substrate)
+        return ({f"{name}_static": A[:, 0].astype(np.int8)}, {"name": name, "kind": "static", "n_t": int(A.shape[1])})
     if name == _EXCLUSIVE_COLUMN and np.array_equal(A, np.round(A)):
         vals, lens, counts, n_t = rle_encode_rows(A.astype(np.int32))
         return ({f"{name}_rle_vals": vals.astype(np.int16),
@@ -352,6 +458,8 @@ def _encode_occupancy_column(x, name, Q):
 
 def _decode_occupancy_column(arrays, d):
     name = d["name"]
+    if d["kind"] == "static":
+        return np.repeat(np.asarray(arrays[f"{name}_static"], np.int16)[:, None], int(d["n_t"]), axis=1)
     q = rle_decode_rows(np.asarray(arrays[f"{name}_rle_vals"]),
                         np.asarray(arrays[f"{name}_rle_lens"]),
                         np.asarray(arrays[f"{name}_rle_counts"]), int(d["n_t"]))
@@ -427,15 +535,34 @@ def encode(X, method=POSITION_METHOD, K=32, **kw):
 POSITION_AXES = ("pos_x", "pos_y", "pos_z")
 
 
-def pack_position_arrays(C, dtype=np.float32):
-    """(n_w, K, 3) coefficients -> {'pos_x','pos_y','pos_z'}, each (n_w, K)."""
+def pack_position_arrays(C, dtype=np.float32, container=None):
+    """(n_w, K+2, 3) coefficients -> the position tensors: the float container ``pos_x``, ``pos_y``, ``pos_z`` (each
+    ``(n_w, K+2)``), or with ``container`` the integer one -- the two exact endpoints per axis under ``pos_x_ends``
+    etc. (float32) and the bands quantised per band under ``pos_x_b<i>`` with the scales in ``pos_band_scale``
+    (:func:`quantise_bands`)."""
     C = np.asarray(C)
-    return {POSITION_AXES[i]: np.ascontiguousarray(C[:, :, i]).astype(dtype)
-            for i in range(C.shape[2])}
+    if container is None:
+        return {POSITION_AXES[i]: np.ascontiguousarray(C[:, :, i]).astype(dtype) for i in range(C.shape[2])}
+    out = {f"{POSITION_AXES[i]}_ends": np.ascontiguousarray(C[:, :2, i]).astype(np.float32) for i in range(C.shape[2])}
+    q, _ = quantise_bands(C[:, 2:, :], container, "pos", "pos_band_scale")
+    for i in range(C.shape[2]):
+        for k in [k for k in q if re.fullmatch(r"pos_b\d+", k)]:
+            out[f"{POSITION_AXES[i]}{k[3:]}"] = np.ascontiguousarray(q[k][:, :, i])
+    out["pos_band_scale"] = q["pos_band_scale"]
+    return out
+
+
+def position_container(arrays):
+    """The container the position tensors are in: ``"float"`` (``pos_x`` ...) or ``"bands"`` (``pos_x_ends`` ...)."""
+    if POSITION_AXES[0] in arrays:
+        return "float"
+    if f"{POSITION_AXES[0]}_ends" in arrays:
+        return "bands"
+    return None
 
 
 def has_axis_layout(arrays):
-    return POSITION_AXES[0] in arrays
+    return position_container(arrays) is not None
 
 
 def read_position_coeffs(arrays, axes=None, dtype=np.float64):
@@ -444,15 +571,30 @@ def read_position_coeffs(arrays, axes=None, dtype=np.float64):
     ``axes`` selects spatial components by index (default all present). Reading a subset is the point of
     the layout: pass e.g. ``axes=(0,)`` for a slab or ``(0, 1)`` for a cylinder's transverse plane.
     """
-    if has_axis_layout(arrays):
-        present = [i for i, k in enumerate(POSITION_AXES) if k in arrays]
+    kind = position_container(arrays)
+    if kind is not None:
+        suffix = "" if kind == "float" else "_ends"
+        present = [i for i, k in enumerate(POSITION_AXES) if f"{k}{suffix}" in arrays]
         want = list(present if axes is None else axes)
         missing = [i for i in want if i not in present]
         if missing:
             raise KeyError(f"pack does not carry position axes {missing} "
                            f"(has {[POSITION_AXES[i] for i in present]}); it was written with a reduced "
                            f"axis set and cannot serve this encoding")
-        return np.stack([np.asarray(arrays[POSITION_AXES[i]], dtype) for i in want], axis=2)
+        if kind == "float":
+            return np.stack([np.asarray(arrays[POSITION_AXES[i]], dtype) for i in want], axis=2)
+        n_w = int(np.asarray(arrays[f"{POSITION_AXES[present[0]]}_ends"]).shape[0])
+        scale = band_scales(arrays, "pos_band_scale", n_w)                          # (N_w, n_axes, K)
+        ranges = sorted({int(k.split("_b")[1]) for k in arrays if re.fullmatch(f"{POSITION_AXES[present[0]]}_b\\d+", k)})
+        cols = []
+        for i in want:
+            ends = np.asarray(arrays[f"{POSITION_AXES[i]}_ends"], np.float64)
+            bands, k0 = [], 0
+            for r in ranges:
+                q = np.asarray(arrays[f"{POSITION_AXES[i]}_b{r}"], np.float64)
+                bands.append(q * scale[:, i, k0:k0 + q.shape[1]]); k0 += q.shape[1]
+            cols.append(np.concatenate([ends] + bands, axis=1))
+        return np.stack(cols, axis=2).astype(dtype)
     # No legacy (n_w, K, 3) fallback by design. A dataset with two position layouts forces every
     # consumer to carry a compatibility branch, and that branch is where silent errors live -- a reader
     # that guesses the wrong convention returns plausible numbers. Fail loudly instead; convert the pack.
@@ -566,10 +708,14 @@ def relaxation_logweight_runs(arrays, column, T2_per_comp, T1_per_comp, dt, chi=
     :func:`relaxation_logweight`: without ``chi`` the walk relaxes over its ``(n_t - 1) dt`` at T2, and with it the
     longitudinal periods are ``active - chi``."""
     name = column["name"]; n_t = int(column["n_t"])
-    vals = np.asarray(arrays[f"{name}_rle_vals"]); lens = np.asarray(arrays[f"{name}_rle_lens"]); counts = np.asarray(arrays[f"{name}_rle_counts"])
+    if column["kind"] == "static":                                                 # one run per walker
+        lab = np.asarray(arrays[f"{name}_static"])
+        vals, lens, counts = lab, np.full(lab.shape[0], n_t, np.int64), np.ones(lab.shape[0], np.int64)
+    else:
+        vals = np.asarray(arrays[f"{name}_rle_vals"]); lens = np.asarray(arrays[f"{name}_rle_lens"]); counts = np.asarray(arrays[f"{name}_rle_counts"])
     invT2 = np.where(np.asarray(T2_per_comp) > 0, 1.0 / np.maximum(np.asarray(T2_per_comp, float), 1e-30), 0.0)
     invT1 = np.where(np.asarray(T1_per_comp) > 0, 1.0 / np.maximum(np.asarray(T1_per_comp, float), 1e-30), 0.0)
-    if column["kind"] == "label":
+    if column["kind"] in ("label", "static"):
         v = vals.astype(np.int64); r2 = invT2[v]; r1 = invT1[v]
     else:
         f = np.clip(vals.astype(np.float64) / float(column["Q"] - 1) * float(column.get("scale", 1.0)), 0.0, 1.0)
@@ -596,7 +742,7 @@ def surface_logweight_bridge(arrays, meta, rho_over_D, chi):
     and one ``(n_w, K)`` product, equal to the decoded sum to rounding."""
     from scipy.fft import dst
     nt = int(meta["n_t"])
-    C = np.asarray(arrays["blt_bridge_dst"], np.float64); K = C.shape[1]
+    C = bridge_bands(arrays, meta); K = C.shape[1]
     a = np.asarray(arrays["blt_start"], np.float64); e = np.asarray(arrays["blt_endpoint"], np.float64)
     chi = np.asarray(chi, np.float64).reshape(-1)[:nt]
     if chi.shape[0] < nt:
