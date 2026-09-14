@@ -121,7 +121,11 @@ def test_the_bounded_evaluation_is_the_full_superposition():
             Q = A_[None] + t[..., None] * AB[None]; dist = np.linalg.norm(P[:, None, :] - Q, axis=-1)
             j = (dist <= dist.min(1, keepdims=True) + StrandFieldBasis.TIE_TOL * cutoff).argmax(1)   # the tie rule: lowest index
             u = AB[j] / np.sqrt(AB2[j])[:, None]; rv = P - Q[np.arange(len(P)), j]; rv -= (rv * u).sum(1, keepdims=True) * u
-            out += np.asarray(hollow_cylinder_basis(rv, u, np.full(len(P), a), np.full(len(P), b))) * (dist.min(1) < cutoff)[:, None]
+            # beyond a free end the local cylinder tapers out over END_TAPER_RADII outer radii of axial overshoot
+            tr = ((P - A_[j]) * AB[j]).sum(1) / AB2[j]; L = np.sqrt(AB2[j])
+            over = np.where((j == len(AB) - 1) & (tr > 1), (tr - 1) * L, 0.0) + np.where((j == 0) & (tr < 0), -tr * L, 0.0)
+            x = np.clip(over / (StrandFieldBasis.END_TAPER_RADII * b), 0, 1); w_end = 1 - x * x * (3 - 2 * x)
+            out += np.asarray(hollow_cylinder_basis(rv, u, np.full(len(P), a), np.full(len(P), b))) * ((dist.min(1) < cutoff) * w_end)[:, None]
         return out
     P2 = np.concatenate([P, np.vstack([c[3] for c in cls2[:5]])])     # the joints themselves: a tie, counted once
     sf2 = StrandFieldBasis(cls2, ra2, rb2, cutoff_m=12e-6)

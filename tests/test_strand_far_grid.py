@@ -68,3 +68,27 @@ def test_the_far_grid_round_trips_and_the_walk_reads_it(tmp_path):
     from dmipy_sim.replay.bank import build_replay_pack
     pk = build_replay_pack(w1, id="t/far", license="x", citation="x", K=6, susc_path_K=4, device="numpy")
     assert pk.meta["compression"]["channels"]["susceptibility_grid"]["source"]["far_grid"]["near_m"] == 7e-6
+
+
+def test_free_ends_taper_and_the_exact_grid_equals_the_cutoff_grid():
+    """Beyond a strand's free end the local cylinder tapers out (END_TAPER_RADII outer radii), so strands ending
+    inside the domain -- DiSCo's 24,392 ends do -- leave the far part smooth: a fixture with free ends reads to a
+    percent. The all-strands far grid equals the cutoff grid when the cutoff spans the box."""
+    rng = np.random.default_rng(3)
+    cls, ri, ro = [], [], []
+    side = 40e-6
+    for _ in range(40):                                              # strands ending INSIDE the box
+        p0 = rng.uniform(0, side, 3); d = rng.normal(size=3); d /= np.linalg.norm(d)
+        pts = np.stack([p0 - 0.35 * side * d, p0 + rng.normal(0, 0.3e-6, 3), p0 + 0.35 * side * d])
+        cls.append(pts); r = rng.uniform(0.7e-6, 2.1e-6); ri.append(r); ro.append(r / 0.7)
+    ri, ro = np.array(ri), np.array(ro)
+    lo, hi = np.zeros(3), np.full(3, side)
+    plain = StrandFieldBasis(cls, ri, ro, cutoff_m=80e-6, domain=(lo, hi))
+    far = plain.build_far_grid(1.0e-6, 9e-6, blend_m=4e-6, dtype=np.float32)
+    P = rng.uniform(2e-6, 38e-6, (1500, 3))
+    c0 = plain.channels(P); c1 = plain.with_far(far).channels(P)
+    rel = np.sqrt(((c1 - c0) ** 2).sum()) / np.sqrt((c0 ** 2).sum())
+    assert rel < 1.5e-2, rel
+    exact = plain.build_far_grid(1.0e-6, 9e-6, blend_m=4e-6, dtype=np.float32, all_strands=True, chunk=512)
+    assert exact.cutoff_m == pytest.approx(float(np.linalg.norm(hi - lo)))
+    np.testing.assert_allclose(exact.values, far.values, atol=1e-5, rtol=0)     # 80 um spans the box: the same sum
