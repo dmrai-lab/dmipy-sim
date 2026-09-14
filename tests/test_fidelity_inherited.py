@@ -145,3 +145,26 @@ def test_rounds_of_one_block_merge_and_recertify(walks, tmp_path):
     W = [float(np.asarray(pk.arrays["spin_weights"]).sum()) for pk in rounds]
     S = [pk.replay(seq, tissue=False)[0] for pk in rounds]
     np.testing.assert_allclose(merged.replay(seq, tissue=False)[0], (W[0] * S[0] + W[1] * S[1]) / (W[0] + W[1]), rtol=1e-6)   # float32 weights
+
+
+def test_path_channel_series_encoder_is_chunked_device_capable_and_drops_zz():
+    """The sampled path-channel encoder takes the walk's own layout without a copy, encodes in chunks on either
+    device to the same coefficients, and drops iso_P_zz when the trace identity holds."""
+    from dmipy_sim.replay.bank import susc_path_encode_series, susc_path_decode
+    from dmipy_sim.fields.hollow_cylinder import CHANNEL_NAMES
+    rng = np.random.default_rng(2)
+    n_w, n_t = 70, 65
+    S = rng.normal(0, 1e-7, (n_w, n_t, 13)); S[:, :, 3] = 3 * S[:, :, 0] - S[:, :, 1] - S[:, :, 2]      # the identity
+    u = rng.normal(0, 1, (30, 33, 2))
+    assert np.abs(cx.dct_bands(u, 9, device="jax") - cx.dct_bands(u, 9, device="numpy")).max() < 1e-6
+    a1, m1 = susc_path_encode_series(S, CHANNEL_NAMES, K=8, bits=None, layout="wtc", device="numpy", chunk=16)
+    a2, m2 = susc_path_encode_series(np.transpose(S, (0, 2, 1)), CHANNEL_NAMES, K=8, bits=None, layout="wct", device="jax", chunk=64)
+    assert m1["iso_P_zz"] == "implied" and m1["n_ch"] == 12 and m2["n_ch"] == 12
+    np.testing.assert_allclose(a1["susc_path_dct"], a2["susc_path_dct"], rtol=1e-3, atol=1e-10)      # f16 store, f32 device
+    b, names = susc_path_decode(a1, m1)
+    assert b.shape == (n_w, 13, n_t) and names.index("iso_P_zz") == 3            # the decoder gives the series back
+    S[:, :, 3] *= 1.05
+    _, m3 = susc_path_encode_series(S, CHANNEL_NAMES, K=8, bits=8, layout="wtc", device="numpy")
+    assert m3["iso_P_zz"] == "stored" and m3["n_ch"] == 13
+    with pytest.raises(ValueError, match="layout"):
+        susc_path_encode_series(S, CHANNEL_NAMES, K=8, layout="cwt")

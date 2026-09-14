@@ -305,7 +305,11 @@ def test_stratified_seeding_fills_every_occupied_voxel_and_keeps_the_volumes(dis
     assert wf.field_samples is not None and wf.field_samples.shape == (wf.positions.shape[0], wf.positions.shape[1], 13)
     assert not (np.asarray(wf.compartment)[:, 0] == 2).any()                     # nothing walks the dry sheath
     pkf2 = build_replay_pack(wf, id="t/strands-sampled", license="x", citation="x", K=4, susc_path_K=4)
-    assert pkf2.has_field and pkf2.meta["compression"]["channels"]["susceptibility_path"]["sampling"] == "interval_mean_in_walk"
+    pm2 = pkf2.meta["compression"]["channels"]["susceptibility_path"]
+    assert pkf2.has_field and pm2["sampling"] == "interval_mean_in_walk"
+    assert pm2["iso_P_zz"] == "implied" and pm2["n_ch"] == 12 and pm2["trace_residual"] < 1e-4   # the closed form's trace identity, float32 samples
+    from dmipy_sim.replay.bank import susc_path_decode
+    b_, names_ = susc_path_decode(pkf2.arrays, pm2); assert b_.shape[1] == 13 and names_[3] == "iso_P_zz"
     seq_g = d.gre(0.5e-3, gradient_directions=[[1, 0, 0]], bvalues=[1e9], delta=0.2e-3, Delta=0.3e-3, n_t=pkf2.n_t, slew_rate=np.inf)
     assert pkf2.replay(seq_g, tissue=False, B0=7.0, b0_dir=(1, 0, 0), chi_iso=-0.1e-6, chi_aniso=-0.1e-6)[0] != pkf2.replay(seq_g, tissue=False)[0]
     ids = np.asarray(w.compartment)[:, 0]; r0 = np.asarray(w.positions)[:, 0]; wt = np.asarray(w.weights)

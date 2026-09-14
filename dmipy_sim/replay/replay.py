@@ -382,8 +382,9 @@ class ReplayPack:
                 phi = C.reshape(n_w, self.n_coeffs * 3) @ _compile_effective(Geff, dt, self.K, n_t)     # the gradient, as without a field
                 Cs, names = susc_path_coeffs(self.arrays, pm)
                 Cs = Cs[:n_w]
-                gate_hat = dct(field_gate(waveform, n_t, dt), type=2, norm="ortho")[:Cs.shape[2]]
-                Psi = (GAMMA * dt) * np.einsum("k,wck->wc", gate_hat, Cs)             # (n_w, n_ch): the gated path integral per channel
+                n_tf, dt_f = _path_grid(pm, n_t, dt)                                  # the channel's own grid
+                gate_hat = dct(field_gate(waveform, n_tf, dt_f), type=2, norm="ortho")[:Cs.shape[2]]
+                Psi = (GAMMA * dt_f) * np.einsum("k,wck->wc", gate_hat, Cs)           # (n_w, n_ch): the gated path integral per channel
                 q = _q_of_H(b0_dir)
                 i_p = names.index("iso_P_xx")
                 phi_x = chi_i * float(B0) * (Psi[:, names.index("iso_local")] - Psi[:, i_p:i_p + 6] @ q)
@@ -739,7 +740,10 @@ class ReplayPack:
         path_series = None
         if "susceptibility_path" in ch:
             series, names = susc_path_decode(self.arrays, ch["susceptibility_path"], n_w=self.n_walkers)
-            path_series = (series[:, :, :n_cut], names,
+            _n_tf, _dt_f = _path_grid(ch["susceptibility_path"], n_t, dt)
+            _every = max(1, int(round(_dt_f / dt)))
+            n_cut_f = len(range(0, n_cut, _every))                                    # the channel's own prefix
+            path_series = (series[:, :, :n_cut_f], names,
                            max(2, int(np.ceil(int(ch["susceptibility_path"]["K"]) * T_cut / T))),
                            ch["susceptibility_path"].get("bits", 8))
         tried = []
@@ -758,7 +762,7 @@ class ReplayPack:
             K_new = min(2 * K_new, int(self.K))
         if path_series is not None:
             series, names, Kp, bits = path_series
-            a, pm = susc_path_encode_series(series, names, K=Kp, bits=bits)
+            a, pm = susc_path_encode_series(series, names, K=Kp, bits=bits, dt=_dt_f)
             pk.arrays.update(a)
             pk.meta["compression"]["channels"]["susceptibility_path"] = pm
             g = dict(ch.get("susceptibility_grid", {})); g.update(arrays_in_pack=False, replay_route="path")
@@ -772,7 +776,7 @@ class ReplayPack:
             if spec is not None:
                 from ..spec.tissue import Tissue
                 chi_i = Tissue.from_spec(spec).knobs().get("chi_iso")
-            cf = susc_path_series_fidelity(series, pk.arrays, pm, g, w=self.spin_weights, dt=dt,
+            cf = susc_path_series_fidelity(series, pk.arrays, pm, g, w=self.spin_weights, dt=_dt_f,
                                            env=self.meta.get("replay_envelope", {}).get("acquisition"),
                                            chi_iso=float(chi_i or 1.06e-6))
             fid = pk.meta.setdefault("fidelity", {})
@@ -1037,8 +1041,9 @@ class ReplayPack:
             raise ValueError("B0 was given without chi_iso; give chi_iso (and chi_aniso)")
         dt, n_t = P["dt"], P["n_t"]
         Cs, names = susc_path_coeffs(self.arrays, pm)
-        gate_hat = dct(field_gate(waveform, n_t, dt), type=2, norm="ortho")[:Cs.shape[2]]
-        Psi = (GAMMA * dt) * np.einsum("k,wck->wc", gate_hat, Cs)               # (n_w, n_ch)
+        n_tf, dt_f = _path_grid(pm, n_t, dt)
+        gate_hat = dct(field_gate(waveform, n_tf, dt_f), type=2, norm="ortho")[:Cs.shape[2]]
+        Psi = (GAMMA * dt_f) * np.einsum("k,wck->wc", gate_hat, Cs)             # (n_w, n_ch)
         i_p = names.index("iso_P_xx")
         i_a = names.index("aniso_G_xx") if "aniso_G_xx" in names else None
         a = float(chi_iso) * float(B0) * Psi[:, names.index("iso_local")]
@@ -1117,8 +1122,9 @@ class ReplayPack:
                 raise ValueError("B0 was given without chi_iso; give chi_iso (and chi_aniso)")
             from .bank import susc_path_coeffs
             Cs, names = susc_path_coeffs(self.arrays, pm)
-            gate_hat = dct(field_gate(waveform, n_t, dt), type=2, norm="ortho")[:Cs.shape[2]]
-            Psi = (GAMMA * dt) * np.einsum("k,wck->wc", gate_hat, Cs)               # (n_w, n_ch)
+            n_tf, dt_f = _path_grid(pm, n_t, dt)
+            gate_hat = dct(field_gate(waveform, n_tf, dt_f), type=2, norm="ortho")[:Cs.shape[2]]
+            Psi = (GAMMA * dt_f) * np.einsum("k,wck->wc", gate_hat, Cs)             # (n_w, n_ch)
             i_p = names.index("iso_P_xx")
             i_a = names.index("aniso_G_xx") if "aniso_G_xx" in names else None
         b = np.asarray(b0_dir, float); b = b / np.linalg.norm(b)
@@ -1490,6 +1496,12 @@ def _legendre(l, x):
     for k in range(1, l):
         p0, p1 = p1, ((2 * k + 1) * x * p1 - k * p0) / (k + 1)
     return p1
+
+
+def _path_grid(pm, n_t, dt):
+    """The path channel's own save grid ``(n_t, dt)``: the walk's when the field was read at every save, else the
+    coarser grid the producer recorded (``field_sample_every`` saves per field sample)."""
+    return int(pm.get("n_t", n_t)), float(pm.get("dt", dt))
 
 
 def _compile_effective(Geff, dt_pack, K, n_t, gyromagnetic_ratio=GAMMA):
