@@ -22,8 +22,13 @@ from .build import geometry_from_spec
 def walk_spec(spec, n_walkers=None, T_max=None, dt_save=None, *, scanner="connectom", floor_fraction=0.1, diffusivity=None,
               seed=0, n_probe=200_000, field=True, field_res=0.2e-6, field_budget=5e7, field_cutoff_m=25e-6,
               field_cutoff_tol=0.02, field_cutoff_max_m=50e-6, require_gpu=None, walker_batch_size=50_000, tiers="all",
-              seeding=None, adaptive_steps=False, field_sample_every=1):
+              seeding=None, adaptive_steps=False, field_sample_every=1, field_far=None):
     """Walk ``spec`` and return a :class:`~dmipy_sim.persistent_walk.PersistentWalk` carrying the spec.
+
+    ``field_far`` is a :class:`~dmipy_sim.fields.strand_field.FarGrid` (or its ``.npz`` path) built for the strand
+    substrate: the closed form is then summed over the few strands within its ``near_m`` of a point and the grid read
+    beyond, the cutoff being the grid's (no doubling; the grid records what it summed to). A one-off per substrate
+    (``StrandFieldBasis.build_far_grid``), the lever that makes a dense substrate's field affordable in the walk.
 
     ``field_sample_every`` reads the strand field along the walk at every that-many-th save only (the adaptive
     producer samples it in the walk): the path channel keeps a few modes over the walk and lives on its own grid,
@@ -96,7 +101,7 @@ def walk_spec(spec, n_walkers=None, T_max=None, dt_save=None, *, scanner="connec
                               w.bound_frac, w.illegal_crossings, w.seed, w.diffusivity, geometry=g, spec=spec)
     return _walk_bundle(spec, int(n_walkers), float(T_max), float(dt_save), seed, n_probe, field, field_res,
                         require_gpu, walker_batch_size, field_budget=float(field_budget), field_cutoff_m=field_cutoff_m, field_cutoff_tol=field_cutoff_tol, seeding=seeding,
-                        field_cutoff_max_m=field_cutoff_max_m, adaptive_steps=adaptive_steps, field_sample_every=int(field_sample_every))
+                        field_cutoff_max_m=field_cutoff_max_m, adaptive_steps=adaptive_steps, field_sample_every=int(field_sample_every), field_far=field_far)
 
 
 def _needs_bundle_walk(spec):
@@ -235,7 +240,7 @@ def _strand_field(outer_b, inner_b, lo, hi, traj, cutoff_m, tol, seed, strands_m
 
 
 def _walk_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field, field_res, require_gpu, batch, field_budget=5e7,
-                 field_cutoff_m=25e-6, field_cutoff_tol=0.02, seeding=None, field_cutoff_max_m=50e-6, adaptive_steps=False, field_sample_every=1):
+                 field_cutoff_m=25e-6, field_cutoff_tol=0.02, seeding=None, field_cutoff_max_m=50e-6, adaptive_steps=False, field_sample_every=1, field_far=None):
     """Walk a multi-surface spec pool by pool: every seeded pool is defined by the walls it is inside and the walls it
     is outside; a pool with D > 0 walks the interior of its inside-walls (intra, glia) or the exterior of its
     outside-walls (extra); a shell pool at D = 0 (myelin) is frozen where it was seeded; the field basis is
@@ -341,7 +346,16 @@ def _walk_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field, field_re
         ob = boundary(inside_w[src0]) if inside_w[src0] else None; ib = boundary(outside_w[src0]) if outside_w[src0] else None
         if ob is not None and ib is not None and ob.kind == "swept_polyline" and ib.kind == "swept_polyline":
             starts = np.concatenate([np.asarray(seeds_of[pid], np.float32) for pid in seeded])
-            sf = _strand_field(ob, ib, lo, hi, starts[:, None, :], field_cutoff_m, field_cutoff_tol, seed, cutoff_max=field_cutoff_max_m)
+            if field_far is not None:                                    # the split: the grid's cutoff, no doubling
+                from ..fields.strand_field import FarGrid, StrandFieldBasis
+                fg_ = field_far if isinstance(field_far, FarGrid) else FarGrid.load(field_far)
+                if len(ob.centerlines) != len(ib.centerlines):
+                    raise SpecError("the sheath's inner and outer walls list different numbers of strands")
+                sf = StrandFieldBasis(ob.centerlines, ib.radii, ob.radii, cutoff_m=fg_.cutoff_m, domain=(lo, hi),
+                                      certificate=dict(cutoff_m=float(fg_.cutoff_m), far_grid=fg_.meta,
+                                                       note="the cutoff the far grid summed to; not doubled here")).with_far(fg_)
+            else:
+                sf = _strand_field(ob, ib, lo, hi, starts[:, None, :], field_cutoff_m, field_cutoff_tol, seed, cutoff_max=field_cutoff_max_m)
     field_samples = []
     for pid in seeded:
         pool = pools[pid]
