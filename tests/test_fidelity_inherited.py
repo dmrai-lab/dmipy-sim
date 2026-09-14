@@ -110,3 +110,38 @@ def test_a_block_inherits_the_certificate_and_measures_its_own_floor(walks, tmp_
     again = build_replay_pack(w1, id="fill/block-1b", license="x", citation="x", fidelity="inherited", device="numpy",
                               fidelity_from=json.loads(json.dumps(cert.meta, default=float)))
     assert again.meta["fidelity"]["inherited_from"]["id"] == "fill/block-0"
+
+
+def test_rounds_of_one_block_merge_and_recertify(walks, tmp_path):
+    """A small host walks one block in rounds that share its voxels; `merge_packs(overlap="recertify")` joins them
+    and re-reads the union's per-voxel floors from the coefficients: counts add, the replay of the union is the
+    weight-averaged replay of the rounds, and the plain merge refuses shared voxels."""
+    from dmipy_sim.replay.bank import merge_packs
+    import dmipy_sim as d
+    grid, (w0, w1) = walks
+    K = w0.positions.shape[1] - 2
+    cert = build_replay_pack(w0, id="fill/cert", license="x", citation="x", K=K, voxel_grid=grid, blt_temporal_K=3, device="numpy")
+    spec = w1.spec
+    want = np.zeros(grid.shape, np.int64); want[1] = 12
+    rounds = []
+    for r in (0, 1):
+        w = walk_spec(spec, T_max=8e-4, dt_save=2e-4, seed=100 + r, require_gpu=False, field=False,
+                      seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want}))
+        rounds.append(build_replay_pack(w, id=f"fill/block-1/round-{r}", license="x", citation="x", voxel_grid=grid, device="numpy",
+                                        fidelity="inherited", fidelity_from=cert, out_path=str(tmp_path / f"r{r}.rpk")))
+    with pytest.raises(ValueError, match="unless the merge recertifies"):
+        merge_packs(rounds, id="fill/block-1")
+    merged = merge_packs([str(tmp_path / "r0.rpk"), str(tmp_path / "r1.rpk")], id="fill/block-1", overlap="recertify", device="numpy",
+                         out_path=str(tmp_path / "b1.rpk"))
+    pv = merged.meta["fidelity"]["per_voxel"]
+    assert pv["recertified"] and pv["shards"] == 2 and merged.n_walkers == rounds[0].n_walkers + rounds[1].n_walkers
+    _, fl, n = voxel_fidelity_volumes(merged)
+    _, fl0, n0 = voxel_fidelity_volumes(rounds[0]); _, fl1, n1 = voxel_fidelity_volumes(rounds[1])
+    for name in n:
+        np.testing.assert_array_equal(n[name], n0[name] + n1[name])
+        assert np.isfinite(fl[name][n[name] > 1]).all() and (fl[name][n[name] == 0] == 0).all()
+    assert np.isnan(merged.arrays["voxel_certificate"][..., 2]).all()
+    seq = d.pgse([[1, 0, 0]], 2e-4, 4e-4, gradient_strengths=0.1, n_t=merged.n_t, slew_rate=np.inf)
+    W = [float(np.asarray(pk.arrays["spin_weights"]).sum()) for pk in rounds]
+    S = [pk.replay(seq, tissue=False)[0] for pk in rounds]
+    np.testing.assert_allclose(merged.replay(seq, tissue=False)[0], (W[0] * S[0] + W[1] * S[1]) / (W[0] + W[1]), rtol=1e-6)   # float32 weights

@@ -748,16 +748,22 @@ def replay_susc(pack, waveform, *, b0_dir=(0.0, 0.0, 1.0), B0=0.0, chi_iso=0.0, 
 
 
 # --------------------------------------------------------------- pack generation
-def merge_packs(packs, *, id, out_path=None):
-    """One pack from the shards of one walk: the packs of disjoint voxel blocks of the same substrate, walked
-    with the same parameters and codec (a distributed fill: each device seeds and walks its block and packs it
-    with ``voxel_grid=``). Every walker-indexed array is concatenated shard after shard; the per-voxel
-    certificate is the union of the shards' rows, and two shards holding the same voxel are refused (a voxel
-    belongs to one shard, so its floor is one shard's). The fidelity summary is the conservative one over the
-    shards (the largest error and floor, every family within its floor only when every shard was); the
-    precision tiers are recomputed and declared unshuffled (the walkers are ordered by shard). Provenance
-    lists the shards. ``packs`` are :class:`ReplayPack` objects or paths."""
+def merge_packs(packs, *, id, out_path=None, overlap="refuse", envelope=None, device="auto"):
+    """One pack from the shards of one walk: the packs of voxel blocks of the same substrate, walked with the
+    same parameters and codec (a distributed fill: each device seeds and walks its block and packs it with
+    ``voxel_grid=``). Every walker-indexed array is concatenated shard after shard. The per-voxel certificate:
+    with ``overlap="refuse"`` the shards hold disjoint voxels and the certificate is the union of their rows
+    (two shards holding the same voxel are refused); with ``overlap="recertify"`` shards may share voxels -- the
+    rounds a small machine walks one block in, or a top-up of voxels that fell short -- and the per-voxel floor
+    of the union is read afresh from the merged coefficients (:func:`voxel_floor_coded`, over ``envelope``'s
+    battery, default the envelope every pack is built against), the codec-error column ``nan`` as in an
+    inherited certificate. The fidelity summary is the conservative one over the shards (the largest error and
+    floor, every family within its floor only when every shard was); the precision tiers are recomputed and
+    declared unshuffled (the walkers are ordered by shard). Provenance lists the shards. ``packs`` are
+    :class:`ReplayPack` objects or paths."""
     from ..phantom.grid import Grid
+    if overlap not in ("refuse", "recertify"):
+        raise ValueError("overlap is 'refuse' (disjoint voxel blocks) or 'recertify' (shards may share voxels; the floors are re-read)")
     pks = [pk if isinstance(pk, ReplayPack) else read_rpk(pk) for pk in packs]
     if len(pks) < 2:
         raise ValueError("merge_packs takes at least two shards")
@@ -806,15 +812,34 @@ def merge_packs(packs, *, id, out_path=None):
         held = cert[:, :, 0].sum(1) > 0                                   # a voxel a shard put walkers in
         key = np.ravel_multi_index(tuple(ijk[held].T), tuple(Grid.from_meta(pv0).shape))
         uk, cnt = np.unique(key, return_counts=True)
-        if (cnt > 1).any():
+        if (cnt > 1).any() and overlap == "refuse":
             dup = np.unravel_index(uk[cnt > 1][0], tuple(Grid.from_meta(pv0).shape))
-            raise ValueError(f"two shards hold walkers in the same voxel (e.g. {tuple(int(x) for x in dup)}); a voxel belongs to one shard")
-        # one row per voxel: the shard that holds it, else the first shard's empty row
-        order = {}
-        for r_, (i_, c_) in enumerate(zip(map(tuple, ijk), cert)):
-            if i_ not in order or c_[:, 0].sum() > 0:
-                order[i_] = r_
-        rows = np.array(sorted(order.values()))
+            raise ValueError(f"two shards hold walkers in the same voxel (e.g. {tuple(int(x) for x in dup)}); a voxel belongs to one "
+                             "shard, unless the merge recertifies (overlap='recertify')")
+        if overlap == "recertify":                                        # the union's floors from the merged coefficients
+            grid = Grid.from_meta(pv0)
+            ch = (comp_meta_ch := (pks[0].meta["compression"].get("channels") or {})).get("compartment")
+            comp = None
+            if ch is not None:
+                if ch.get("columns") and all(c.get("kind") == "static" for c in ch["columns"]) and "comp_static" in arrays:
+                    comp = np.asarray(arrays["comp_static"])[:, None]
+                else:
+                    comp = np.asarray(_cx.decode_occupancy(arrays, ch)["comp"])
+            C = _cx.read_position_coeffs(arrays, dtype=np.float64)
+            _w = np.asarray(arrays["spin_weights"], np.float64) if "spin_weights" in arrays else None
+            _ijk, _pools_r, _n, _floor, _err = voxel_floor_coded(C, float(wp["dt_traj"]), int(comp_meta_ch and pks[0].meta["walk_params"]["n_t"]),
+                                                                 grid, comp, envelope or _cx.default_envelope(), w=_w, device=device)
+            if [int(p_) for p_ in _pools_r] != [int(p_) for p_ in pools]:
+                raise ValueError(f"the merged walkers' pools {list(_pools_r)} differ from the shards' certificate pools {pools}")
+            ijk, cert = _ijk, np.stack([_n.astype(np.float64), _floor, _err], axis=-1)
+            rows = np.arange(len(_ijk))
+        else:
+            # one row per voxel: the shard that holds it, else the first shard's empty row
+            order = {}
+            for r_, (i_, c_) in enumerate(zip(map(tuple, ijk), cert)):
+                if i_ not in order or c_[:, 0].sum() > 0:
+                    order[i_] = r_
+            rows = np.array(sorted(order.values()))
         arrays["voxel_ijk"] = ijk[rows].astype(np.int32); c = cert[rows]
         arrays["voxel_certificate"] = c.astype(np.float32)
         _n, _floor, _err = c[:, :, 0], c[:, :, 1], c[:, :, 2]; _ok = np.isfinite(_floor)
@@ -824,7 +849,8 @@ def merge_packs(packs, *, id, out_path=None):
                                 floor_median=float(np.nanmedian(_floor)) if _ok.any() else None,
                                 err_max=float(np.nanmax(_err)) if np.isfinite(_err).any() else None,
                                 within_2x_floor_fraction=(float(np.mean(_err[_ok] <= 2.0 * _floor[_ok])) if _ok.any() else None),
-                                thin_voxels=int(((_n > 0) & (_n < 2)).sum()), shards=len(pks))
+                                thin_voxels=int(((_n > 0) & (_n < 2)).sum()), shards=len(pks),
+                                recertified=bool(overlap == "recertify"))
     n_all = int(sum(n))
     comp_meta = dict(pks[0].meta["compression"])
     if comp_meta.get("walker_preserving"):
