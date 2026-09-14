@@ -205,6 +205,28 @@ def dst_bands(u, K, *, device="auto", chunk_bytes=1 << 30):
     return out
 
 
+def dct_bands(u, K, *, device="auto", chunk_bytes=1 << 30):
+    """The lowest ``K`` orthonormal DCT-II bands along axis 1 of ``u`` ``(N_w, N, ...)``, as float64 -- the cosine
+    twin of :func:`dst_bands` for the path field channel: scipy on the host, or one full-precision matmul against
+    the cosine matrix on the JAX device, in walker chunks."""
+    K = int(K)
+    if resolve_device(device) == "numpy":
+        from scipy.fft import dct
+        return np.asarray(dct(np.asarray(u, np.float64), type=2, norm="ortho", axis=1)[:, :K], np.float64)
+    import jax
+    import jax.numpy as jnp
+    N = int(u.shape[1])
+    n = np.arange(N)[:, None]; k = np.arange(K)[None, :]
+    Cm = np.sqrt(2.0 / N) * np.cos(np.pi * (2 * n + 1) * k / (2 * N)); Cm[:, 0] /= np.sqrt(2.0)
+    Cd = jnp.asarray(Cm, jnp.float32)                                                                 # (N, K)
+    f = jax.jit(lambda x: jnp.einsum("wn...,nk->wk...", x, Cd, precision=jax.lax.Precision.HIGHEST))
+    rows = max(1, int(chunk_bytes // max(int(np.prod(u.shape[1:])) * 4, 1)))
+    out = np.empty((u.shape[0], K) + tuple(u.shape[2:]), np.float64)
+    for i in range(0, u.shape[0], rows):
+        out[i:i + rows] = np.asarray(f(jnp.asarray(np.asarray(u[i:i + rows], np.float32))), np.float64)
+    return out
+
+
 def coded_phases(C, dt, G, n_t, *, device="auto", chunk_bytes=1 << 30):
     """``(N_w, n_meas)`` gradient phase of every walker under the waveforms ``G`` ``(n_meas, n_t, 3)`` from the
     bridge coefficients ``C`` ``(N_w, K+2, 3)`` alone: ``gamma dt sum C W`` with ``W`` the bridge projection of the

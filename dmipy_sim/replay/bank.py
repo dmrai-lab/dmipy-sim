@@ -668,17 +668,40 @@ def _quantise_susc_path(coeffs, meta, bits):
     return {"susc_path_dct": q, "susc_path_scale": np.asarray(scale, np.float32)}, meta
 
 
-def susc_path_encode_series(series, names, *, K=32, bits=8, dtype=np.float16):
-    """:func:`susc_path_encode` from the per-save field series itself, ``(n_w, n_ch, n_t)`` in the canonical
-    channel order with ``names``: what re-encoding a pack's path route to another duration needs, since the
-    grid the path was sampled from need not be in the pack."""
-    from scipy.fft import dct
-    series = np.asarray(series, np.float64)
-    n_w, n_ch, n_t = series.shape
+def susc_path_encode_series(series, names, *, K=32, bits=8, dtype=np.float16, layout="wct", atol_trace=1e-6, device="auto",
+                            chunk=20_000):
+    """:func:`susc_path_encode` from the per-save field series itself, in the canonical channel order with
+    ``names``: ``(n_w, n_ch, n_t)`` (``layout="wct"``, what a decoded path channel gives) or ``(n_w, n_t, n_ch)``
+    (``layout="wtc"``, the interval means a walk sampled), encoded in walker chunks of ``chunk`` on ``device``
+    without a copy of the whole series. The ``iso_P_zz`` channel is implied by the trace identity
+    ``iso_P_xx + iso_P_yy + iso_P_zz = 3 iso_local`` and left out when the series satisfies it to ``atol_trace``
+    (the closed-form strand field does exactly; a windowed k-space grid does not); the decoder re-inserts it."""
+    if layout not in ("wct", "wtc"):
+        raise ValueError("layout is 'wct' (n_w, n_ch, n_t) or 'wtc' (n_w, n_t, n_ch)")
+    series = np.asarray(series)
+    n_w = series.shape[0]; n_ch = series.shape[1] if layout == "wct" else series.shape[2]
+    n_t = series.shape[2] if layout == "wct" else series.shape[1]
+    names = list(names)
+    if len(names) != n_ch:
+        raise ValueError(f"{len(names)} channel names for {n_ch} channels")
     K = int(min(K, n_t))
-    coeffs = dct(series, type=2, norm="ortho", axis=2)[:, :, :K]
-    meta = dict(channel="susc_path_dct", K=K, n_t=int(n_t), n_ch=int(n_ch), channels=list(names),
-                iso_P_zz="stored", trace_residual=None, max_refocus_pulses=K // 2)
+    take = lambda sl: (np.transpose(series[sl], (0, 2, 1)) if layout == "wct" else series[sl])   # (rows, n_t, n_ch)
+    first = np.asarray(take(slice(0, min(chunk, n_w))), np.float64)
+    drop_zz = False; trace_res = None
+    if {"iso_local", "iso_P_xx", "iso_P_yy", "iso_P_zz"} <= set(names):
+        i0, ix, iy, iz = (names.index(n) for n in ("iso_local", "iso_P_xx", "iso_P_yy", "iso_P_zz"))
+        tr = first[..., ix] + first[..., iy] + first[..., iz]
+        scale = float(np.max(np.abs(first[..., i0]))) or 1.0
+        trace_res = float(np.max(np.abs(tr - 3.0 * first[..., i0]))) / (3.0 * scale)
+        drop_zz = bool(trace_res <= atol_trace)
+    keep = [i for i, n in enumerate(names) if not (drop_zz and n == "iso_P_zz")]
+    coeffs = np.empty((n_w, len(keep), K), np.float64)
+    for i in range(0, n_w, chunk):
+        ch = first if i == 0 else take(slice(i, i + chunk))
+        b = _cx.dct_bands(np.asarray(ch)[:, :, keep], K, device=device)             # (rows, K, n_keep)
+        coeffs[i:i + chunk] = np.transpose(b, (0, 2, 1))
+    meta = dict(channel="susc_path_dct", K=K, n_t=int(n_t), n_ch=len(keep), channels=[names[i] for i in keep],
+                iso_P_zz=("implied" if drop_zz else "stored"), trace_residual=trace_res, max_refocus_pulses=K // 2)
     if bits is None:
         meta["bits"] = None; meta["dtype"] = np.dtype(dtype).name
         return {"susc_path_dct": np.asarray(coeffs, dtype)}, meta
@@ -1158,8 +1181,8 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto"
         channels["susceptibility"] = True
         if m.get("susc_field_samples") is not None:                  # sampled by the walk: the interval means
             from ..fields.hollow_cylinder import CHANNEL_NAMES
-            _a, _pm = susc_path_encode_series(np.transpose(np.asarray(m["susc_field_samples"], np.float64), (0, 2, 1)),
-                                              CHANNEL_NAMES, K=int(susc_path_K), bits=susc_path_bits)
+            _a, _pm = susc_path_encode_series(np.asarray(m["susc_field_samples"]), CHANNEL_NAMES, K=int(susc_path_K),
+                                              bits=susc_path_bits, layout="wtc", device=device)   # no copy of the samples
             _pm["sampling"] = "interval_mean_in_walk"
         else:
             _a, _pm = susc_path_encode(_field, np.asarray(m["traj"], np.float64), K=int(susc_path_K), bits=susc_path_bits)
