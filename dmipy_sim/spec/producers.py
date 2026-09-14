@@ -316,7 +316,7 @@ axon-like structure was generated following the same trajectory, but with a diam
 diameter" (section 2.1); the released diameters are the inner ones (section 1)."""
 
 
-def disco_spec(tracks, diameters, *, coordinate_unit_m=25e-6, diameter_unit_m=1e-3, side_m=1e-3, myelin=False,
+def disco_spec(tracks, diameters, *, coordinate_unit_m=25e-6, diameter_unit_m=1e-3, side_m=1e-3, field=True,
                field_T=3.0, rho2=None, id=None, cite_tracks_as=None):
     """The spec of the DiSCo phantom (Rafael-Patino, Girard et al., Data in Brief 38 (2021) 107429,
     doi:10.1016/j.dib.2021.107429; dataset doi:10.17632/fgf86jdfg6.3, CC BY 4.0): its strands from the released MRtrix
@@ -327,9 +327,13 @@ def disco_spec(tracks, diameters, *, coordinate_unit_m=25e-6, diameter_unit_m=1e
     outside the outer tube extra-axonal and those between the two myelin, and generated the signal from the first
     two. So the spec has two walls, the axolemma at the listed radius and the sheath at the listed radius over the
     g-ratio, with the intra pool inside the first, the extra pool outside the second, and a third pool between them
-    that is DRY by default (``myelin=False``: the ground truth, no water and no field, the intra-strand volume
-    fraction map being the inner tube's volume). ``myelin=True`` gives that pool the catalogue's myelin water and
-    susceptibility: the multiphysics variant. Both pools diffuse at :data:`DISCO_D`, as the dataset's own walk did.
+    that holds no water and is not seeded (the intra-strand volume fraction map being the inner tube's volume, and
+    DiSCo's signal having no myelin water). With ``field`` (the default) that sheath is a susceptibility source with
+    the catalogue's myelin chi, so a walk carries the field tier (C3) for the two diffusing pools; the myelin's
+    susceptibility is a property of the sheath, not of its water. DiSCo's own simulation is the replay of such a
+    pack with the field off. ``field=False`` leaves the sheath inert: the two walls alone. Both pools diffuse at
+    :data:`DISCO_D`, as the dataset's own walk did. A pack of this spec has no myelin water: a short-echo or
+    multi-echo replay sees two pools where white matter has three.
     The domain is ``[0, side_m]^3`` with reflecting faces. The walls cite the track file (``format: tck``, its
     coordinate unit and sha256) rather than carrying 12,196 centerlines inline, at the path given or at
     ``cite_tracks_as`` (the path a dataset distributes it at; a consumer resolves it from the working directory or
@@ -347,27 +351,28 @@ def disco_spec(tracks, diameters, *, coordinate_unit_m=25e-6, diameter_unit_m=1e
     transformations = [f"track coordinates x {coordinate_unit_m} m (the ground-truth voxel)",
                        f"strand diameters x {diameter_unit_m} m, halved: the inner tube's radius (the axolemma)",
                        f"the outer tube (the sheath) at the inner radius / {DISCO_G_RATIO}: DiSCo's outer mesh",
-                       "intra inside the inner tube, extra outside the outer tube"
-                       + (", the catalogue's myelin water and susceptibility between them" if myelin
-                          else ", nothing between them: DiSCo's signal came from the intra and extra particles only"),
+                       "intra inside the inner tube, extra outside the outer tube, no water between them (DiSCo's signal came from "
+                       "the intra and extra particles only)" + (", the sheath a susceptibility source with the catalogue's myelin chi"
+                                                                if field else ", the sheath inert"),
                        f"both pools at DiSCo's own diffusivity {DISCO_D} m^2/s",
                        f"domain [0, {side_m}]^3, faces reflect"]
     if len(keep) != len(cls_):
         raise SpecError(f"{tracks} holds {len(cls_) - len(keep)} track(s) with fewer than two points; a cited file lists every strand")
     cite = dict(file=str(cite_tracks_as or tracks), format="tck", scale=float(coordinate_unit_m), sha256=_sha(tracks))
     return _strands_spec([cls_[k] for k in keep], R_out, [0.0] * 3, [float(side_m)] * 3, boundary="reflect", g_ratio=DISCO_G_RATIO,
-                         R_inner=R_in, D=DISCO_D, myelin_water=bool(myelin), centerline_file=cite,
+                         R_inner=R_in, D=DISCO_D, sheath_water=False, sheath_field=bool(field), centerline_file=cite,
                          field_T=field_T, rho2=rho2, id=id or "disco/rafael-patino-2021", source="DiSCo (Rafael-Patino et al. 2021)",
                          files=[tracks, diameters], scale=float(coordinate_unit_m), transformations=transformations,
                          cell_side=float(side_m))
 
 
 def _strands_spec(centerlines, R, lo, hi, *, boundary, g_ratio, field_T, rho2, id, source, files, scale, transformations,
-                  cell_side, R_inner=None, D=None, myelin_water=True, centerline_file=None):
+                  cell_side, R_inner=None, D=None, sheath_water=True, sheath_field=True, centerline_file=None):
     """The strand spec proper: sphere-swept polylines (metres) with one OUTER radius each, in a box. With ``g_ratio``
-    a sheath: the axolemma at ``R_inner`` (given) or ``g_ratio`` x the outer radius, the pool between the two walls
-    holding the catalogue's myelin water and susceptibility, or dry (``myelin_water=False``: a wall pair with no
-    water and no field between). ``D`` sets both diffusing pools' diffusivity (a dataset's own value). With
+    a sheath: the axolemma at ``R_inner`` (given) or ``g_ratio`` x the outer radius, and the pool between the two
+    walls holding the catalogue's myelin water (``sheath_water``, else no water and not seeded) and the catalogue's
+    myelin susceptibility (``sheath_field``, else no field source). ``D`` sets both diffusing pools' diffusivity (a
+    dataset's own value). With
     ``centerline_file`` (``file``, ``format``, ``scale``, ``sha256``) the walls cite the file instead of carrying the
     centerlines inline."""
     from ..substrate.biophysical_constants import canonical_white_matter
@@ -395,8 +400,9 @@ def _strands_spec(centerlines, R, lo, hi, *, boundary, g_ratio, field_T, rho2, i
                  Wall("sheath", surf(R), 2, 0, Directional(), Sided(0.0, rho))]
         if R_inner is None:
             transformations.append(f"the outer (sheath) radius listed; axolemma at g-ratio {g_ratio}")
-        if not myelin_water:
-            pools = pools[:2] + [dataclasses.replace(pools[2], water_fraction=0.0, susceptibility=None)]
+        if not sheath_water or not sheath_field:
+            pools = pools[:2] + [dataclasses.replace(pools[2], water_fraction=(pools[2].water_fraction if sheath_water else 0.0),
+                                                     susceptibility=(pools[2].susceptibility if sheath_field else None))]
         smallest = float(R_in.min())
     F, bundles = strand_frame([np.asarray(c, float) for c in centerlines])
     transformations.append(f"substrate frame from the strand chords in {len(bundles)} bundle(s), z the largest bundle's mean axis")
@@ -408,7 +414,8 @@ def _strands_spec(centerlines, R, lo, hi, *, boundary, g_ratio, field_T, rho2, i
         Validity(smallest, ["gradient", "relaxation", "surface"] + (["field"] if any(p.susceptibility is not None for p in pools) else [])),
         frame=Frame(F[:, 2].tolist(), F[:, 1].tolist()), nominal_field_T=float(field_T),
         description=f"{source}: {len(R)} strands as sphere-swept polylines"
-                    + ("" if g_ratio is None else (" with a sheath" if myelin_water else " with a dry sheath")),
+                    + ("" if g_ratio is None else (" with a sheath" if sheath_water else
+                                                   (" with a dry sheath as a field source" if sheath_field else " with a dry sheath"))),
         realisation={"n_objects": int(len(R)), "cell_side": cell_side, "radius_min": float(R.min()),
                      "radius_max": float(R.max()), "bundles": bundles},
         provenance={"source": source, "scale": scale, "files": [{"path": str(f), "sha256": _sha(f)} for f in files],
