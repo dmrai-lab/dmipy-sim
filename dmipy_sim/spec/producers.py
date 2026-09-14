@@ -6,6 +6,7 @@ Every decision the loaders used to take in code is a field here, with its reason
 measured g-ratio, dropped open surfaces, the nominal pool values (from the catalogued white matter,
 ``substrate.biophysical_constants.canonical_white_matter``), and the unit scale.
 """
+import dataclasses
 import glob
 import hashlib
 import os
@@ -269,7 +270,7 @@ def caterpillar_spec(path, *, scale=_UM, box=None, glia=True, field_T=3.0, rho2=
     spec = SubstrateSpec(
         id or f"caterpillar/{os.path.splitext(os.path.basename(path))[0]}",
         Domain(lo.tolist(), hi.tolist(), ["reflect"] * 3), pools, walls,
-        Seeding([p.id for p in pools], "uniform_by_volume", "water_fraction"),
+        Seeding([p.id for p in pools if p.water_fraction > 0], "uniform_by_volume", "water_fraction"),
         Validity(smallest, ["gradient", "relaxation", "surface", "field"]), nominal_field_T=float(field_T),
         description=f"CATERPillar voxel: {len(np.unique(t['cell_id'][ax]))} axons as sphere chains"
                     + (f", {len(np.unique(t['cell_id'][gl]))} glial cells" if gl.any() else ""),
@@ -305,18 +306,31 @@ def strands_spec(path, *, scale=_UM, g_ratio=None, boundary="reflect", field_T=3
                          cell_side=float(t["side"]))
 
 
-def disco_spec(tracks, diameters, *, coordinate_unit_m=25e-6, diameter_unit_m=1e-3, side_m=1e-3, g_ratio=None,
+DISCO_D = 0.6e-9
+"""m^2/s: DiSCo's unrestricted diffusion coefficient, the same in both compartments -- "The unrestricted diffusion
+coefficient of the Monte Carlo particles was set to 0.6e-3 mm^2/s ... The simulation parameters for both
+compartments were the same" (Rafael-Patino et al., Data in Brief 38 (2021) 107429, section 2.2)."""
+DISCO_G_RATIO = 0.7
+"""DiSCo's inner over outer tube diameter -- "an additional inner tubular mesh representing the inner surface of the
+axon-like structure was generated following the same trajectory, but with a diameter of 0.7 times the outer
+diameter" (section 2.1); the released diameters are the inner ones (section 1)."""
+
+
+def disco_spec(tracks, diameters, *, coordinate_unit_m=25e-6, diameter_unit_m=1e-3, side_m=1e-3, myelin=False,
                field_T=3.0, rho2=None, id=None):
     """The spec of the DiSCo phantom (Rafael-Patino, Girard et al., Data in Brief 38 (2021) 107429,
-    doi:10.1016/j.dib.2021.107429; dataset doi:10.17632/fgf86jdfg6): its strands from the released MRtrix track
-    file, in units of the ground-truth voxel (``coordinate_unit_m``, 25 um for the 40^3 grid over 1 mm^3), and
-    ``DiSCo_Strands_Diameters.txt``, the strand diameters in millimetres (``diameter_unit_m``). A strand is the
-    phantom's one wall: inside it is intra, outside every strand is extra, and the released intra-strand volume
-    fraction map is that tube volume (3.4 % of the box, 26 % at its centre). With ``g_ratio`` a sheath is declared
-    INSIDE the strand -- the reported radius is the sheath's outer radius and the axolemma sits at ``g_ratio`` times
-    it, so the intra pool holds ``g_ratio**2`` of the phantom's intra water: the multiphysics variant, not the
-    ground truth. The domain is ``[0, side_m]^3`` with reflecting faces. Every conversion is recorded in the
-    provenance.
+    doi:10.1016/j.dib.2021.107429; dataset doi:10.17632/fgf86jdfg6.3, CC BY 4.0): its strands from the released MRtrix
+    track file, in units of the ground-truth voxel (``coordinate_unit_m``, 25 um for the 40^3 grid over 1 mm^3), and
+    ``DiSCo_Strands_Diameters.txt``, the strands' INNER diameters in millimetres (``diameter_unit_m``). DiSCo's
+    substrate is two tubes per strand: the inner one at the listed diameter and the outer one at the listed diameter
+    over :data:`DISCO_G_RATIO`; its Monte Carlo labelled the particles inside the inner tube intra-axonal, those
+    outside the outer tube extra-axonal and those between the two myelin, and generated the signal from the first
+    two. So the spec has two walls, the axolemma at the listed radius and the sheath at the listed radius over the
+    g-ratio, with the intra pool inside the first, the extra pool outside the second, and a third pool between them
+    that is DRY by default (``myelin=False``: the ground truth, no water and no field, the intra-strand volume
+    fraction map being the inner tube's volume). ``myelin=True`` gives that pool the catalogue's myelin water and
+    susceptibility: the multiphysics variant. Both pools diffuse at :data:`DISCO_D`, as the dataset's own walk did.
+    The domain is ``[0, side_m]^3`` with reflecting faces. Every conversion is recorded in the provenance.
     """
     from ..io.strands import read_tck, read_diameters
     cls_ = read_tck(tracks, coordinate_unit_m=coordinate_unit_m)
@@ -324,22 +338,31 @@ def disco_spec(tracks, diameters, *, coordinate_unit_m=25e-6, diameter_unit_m=1e
     if len(cls_) != len(d):
         raise SpecError(f"{len(cls_)} tracks in {tracks} but {len(d)} diameters in {diameters}")
     keep = [k for k, c in enumerate(cls_) if len(c) >= 2]
-    R = np.asarray([d[k] / 2.0 for k in keep])
+    R_in = np.asarray([d[k] / 2.0 for k in keep])
+    R_out = R_in / DISCO_G_RATIO
     transformations = [f"track coordinates x {coordinate_unit_m} m (the ground-truth voxel)",
-                       f"strand diameters x {diameter_unit_m} m, halved: the strand's radius"
-                       + ("" if g_ratio is None else f", the sheath's outer radius; the axolemma at g = {g_ratio} times it"),
+                       f"strand diameters x {diameter_unit_m} m, halved: the inner tube's radius (the axolemma)",
+                       f"the outer tube (the sheath) at the inner radius / {DISCO_G_RATIO}: DiSCo's outer mesh",
+                       "intra inside the inner tube, extra outside the outer tube"
+                       + (", the catalogue's myelin water and susceptibility between them" if myelin
+                          else ", nothing between them: DiSCo's signal came from the intra and extra particles only"),
+                       f"both pools at DiSCo's own diffusivity {DISCO_D} m^2/s",
                        f"domain [0, {side_m}]^3, faces reflect"]
     if len(keep) != len(cls_):
         transformations.append(f"dropped {len(cls_) - len(keep)} track(s) with fewer than two points")
-    return _strands_spec([cls_[k] for k in keep], R, [0.0] * 3, [float(side_m)] * 3, boundary="reflect", g_ratio=g_ratio,
+    return _strands_spec([cls_[k] for k in keep], R_out, [0.0] * 3, [float(side_m)] * 3, boundary="reflect", g_ratio=DISCO_G_RATIO,
+                         R_inner=R_in, D=DISCO_D, myelin_water=bool(myelin),
                          field_T=field_T, rho2=rho2, id=id or "disco/rafael-patino-2021", source="DiSCo (Rafael-Patino et al. 2021)",
                          files=[tracks, diameters], scale=float(coordinate_unit_m), transformations=transformations,
                          cell_side=float(side_m))
 
 
 def _strands_spec(centerlines, R, lo, hi, *, boundary, g_ratio, field_T, rho2, id, source, files, scale, transformations,
-                  cell_side):
-    """The strand spec proper: sphere-swept polylines (metres) with one OUTER radius each, in a box."""
+                  cell_side, R_inner=None, D=None, myelin_water=True):
+    """The strand spec proper: sphere-swept polylines (metres) with one OUTER radius each, in a box. With ``g_ratio``
+    a sheath: the axolemma at ``R_inner`` (given) or ``g_ratio`` x the outer radius, the pool between the two walls
+    holding the catalogue's myelin water and susceptibility, or dry (``myelin_water=False``: a wall pair with no
+    water and no field between). ``D`` sets both diffusing pools' diffusivity (a dataset's own value)."""
     from ..substrate.biophysical_constants import canonical_white_matter
     if boundary not in ("reflect", "open"):
         raise SpecError("boundary must be 'reflect' or 'open'; a strand list is not periodic")
@@ -348,6 +371,8 @@ def _strands_spec(centerlines, R, lo, hi, *, boundary, g_ratio, field_T, rho2, i
     cls_ = [np.asarray(c, float).tolist() for c in centerlines]
     pools = wm_pools(field_T)
     transformations = list(transformations) + ["nominal pool values from the catalogued white matter"]
+    if D is not None:
+        pools = [dataclasses.replace(p, D=float(D)) if p.id in (0, 1) else p for p in pools]
     if g_ratio is None:
         pools = pools[:2]
         walls = [Wall("cylinders", Surface("swept_polyline", instances={"centerlines": cls_, "radii": R.tolist()}), 1, 0,
@@ -355,22 +380,29 @@ def _strands_spec(centerlines, R, lo, hi, *, boundary, g_ratio, field_T, rho2, i
         transformations.append("inside a strand = intra (1), outside all = extra (0); no myelin")
         smallest = float(R.min())
     else:
-        walls = [Wall("axolemma", Surface("swept_polyline", instances={"centerlines": cls_, "radii": (g_ratio * R).tolist()}),
+        R_in = np.asarray(R_inner, float) if R_inner is not None else g_ratio * R
+        if R_in.shape != R.shape or (R_in >= R).any():
+            raise SpecError("every inner radius must be smaller than its outer radius")
+        walls = [Wall("axolemma", Surface("swept_polyline", instances={"centerlines": cls_, "radii": R_in.tolist()}),
                       1, 2, Directional(), Sided(rho, 0.0)),
                  Wall("sheath", Surface("swept_polyline", instances={"centerlines": cls_, "radii": R.tolist()}), 2, 0,
                       Directional(), Sided(0.0, rho))]
-        transformations.append(f"the outer (sheath) radius listed; axolemma at g-ratio {g_ratio}")
-        smallest = float(g_ratio * R.min())
+        if R_inner is None:
+            transformations.append(f"the outer (sheath) radius listed; axolemma at g-ratio {g_ratio}")
+        if not myelin_water:
+            pools = pools[:2] + [dataclasses.replace(pools[2], water_fraction=0.0, susceptibility=None)]
+        smallest = float(R_in.min())
     F, bundles = strand_frame([np.asarray(c, float) for c in centerlines])
     transformations.append(f"substrate frame from the strand chords in {len(bundles)} bundle(s), z the largest bundle's mean axis")
     spec = SubstrateSpec(
         id, Domain(list(lo), list(hi), [boundary] * 3), pools, walls,
-        Seeding([p.id for p in pools], "uniform_by_volume", "water_fraction"),
+        Seeding([p.id for p in pools if p.water_fraction > 0], "uniform_by_volume", "water_fraction"),
         # the curved tubes record their wall contact (surface); a sheath is a field source (the per-segment closed
         # form along each path, or the raster within walk_spec's field_budget)
-        Validity(smallest, ["gradient", "relaxation", "surface"] + (["field"] if g_ratio is not None else [])),
+        Validity(smallest, ["gradient", "relaxation", "surface"] + (["field"] if any(p.susceptibility is not None for p in pools) else [])),
         frame=Frame(F[:, 2].tolist(), F[:, 1].tolist()), nominal_field_T=float(field_T),
-        description=f"{source}: {len(R)} strands as sphere-swept polylines" + ("" if g_ratio is None else " with a sheath"),
+        description=f"{source}: {len(R)} strands as sphere-swept polylines"
+                    + ("" if g_ratio is None else (" with a sheath" if myelin_water else " with a dry sheath")),
         realisation={"n_objects": int(len(R)), "cell_side": cell_side, "radius_min": float(R.min()),
                      "radius_max": float(R.max()), "bundles": bundles},
         provenance={"source": source, "scale": scale, "files": [{"path": str(f), "sha256": _sha(f)} for f in files],

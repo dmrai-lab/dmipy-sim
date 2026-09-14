@@ -136,20 +136,28 @@ def test_strands_spec_is_one_wall_of_swept_polylines_in_a_reflecting_voxel(stran
         strands_spec(strand_txt, boundary="periodic")
 
 
-def test_disco_spec_is_the_strand_wall_and_puts_a_sheath_inside_it(disco_files):
-    """The reported diameter is the strand: the phantom's one wall, intra inside, extra outside (its intra-strand
-    volume fraction map is that tube volume). A sheath, when asked for, sits INSIDE it at the g-ratio."""
+def test_disco_spec_is_two_tubes_per_strand_at_the_papers_diameters(disco_files):
+    """DiSCo lists its strands' INNER diameters and meshed an outer tube at 1/0.7 of them; its Monte Carlo took the
+    signal from the particles inside the inner tube and outside the outer one, at 0.6e-9 m^2/s in both (Data in
+    Brief 38 (2021) 107429, sections 1, 2.1, 2.2). The spec is that: the axolemma at the listed radius, the sheath at
+    the listed radius over 0.7, a dry pool between them and no field by default; ``myelin=True`` waters the sheath."""
+    from dmipy_sim.spec.producers import DISCO_D, DISCO_G_RATIO
     gt = disco_spec(*disco_files, side_m=20e-6)
-    assert gt.id == "disco/rafael-patino-2021" and [w.name for w in gt.walls] == ["cylinders"]
-    assert gt.walls[0].surface.instances["radii"] == pytest.approx([1.5e-6, 1.0e-6, 2.0e-6])
-    assert [p.name for p in gt.pools] == ["extra", "intra"]
-    spec = disco_spec(*disco_files, side_m=20e-6, g_ratio=0.7)
-    assert [w.name for w in spec.walls] == ["axolemma", "sheath"]
-    assert spec.walls[0].surface.instances["radii"] == pytest.approx([0.7 * r for r in (1.5e-6, 1.0e-6, 2.0e-6)])
-    assert spec.walls[1].surface.instances["radii"] == pytest.approx([1.5e-6, 1.0e-6, 2.0e-6])        # the strand itself
-    assert spec.domain.box_min == [0.0] * 3 and spec.domain.box_max == [20e-6] * 3 and spec.domain.boundary == ["reflect"] * 3
-    assert any("25e-06" in t or "2.5e-05" in t for t in spec.provenance["transformations"])
-    assert [p.name for p in spec.pools] == ["extra", "intra", "myelin"] and spec.validity.tiers == ["gradient", "relaxation", "surface", "field"]
+    assert gt.id == "disco/rafael-patino-2021" and [w.name for w in gt.walls] == ["axolemma", "sheath"]
+    assert gt.walls[0].surface.instances["radii"] == pytest.approx([1.5e-6, 1.0e-6, 2.0e-6])                      # listed
+    assert gt.walls[1].surface.instances["radii"] == pytest.approx([r / DISCO_G_RATIO for r in (1.5e-6, 1.0e-6, 2.0e-6)])
+    assert [p.name for p in gt.pools] == ["extra", "intra", "myelin"] and [p.D for p in gt.pools[:2]] == [DISCO_D] * 2
+    assert gt.pools[2].water_fraction == 0.0 and gt.pools[2].susceptibility is None and gt.seeding.pools == [0, 1]
+    assert gt.validity.tiers == ["gradient", "relaxation", "surface"] and gt.field_source_pools == []
+    assert gt.domain.box_min == [0.0] * 3 and gt.domain.box_max == [20e-6] * 3 and gt.domain.boundary == ["reflect"] * 3
+    assert any("25e-06" in t or "2.5e-05" in t for t in gt.provenance["transformations"])
+    w = walk_spec(gt, 90, 8e-4, 2e-4, seed=0, n_probe=20_000, require_gpu=False)
+    ids = np.asarray(w.compartment)[:, 0]
+    assert set(np.unique(ids)) == {0, 1} and w.field_basis is None                # nothing walks the dry sheath, no field
+    spec = disco_spec(*disco_files, side_m=20e-6, myelin=True)
+    assert spec.pools[2].water_fraction > 0 and spec.pools[2].susceptibility is not None and spec.seeding.pools == [0, 1, 2]
+    assert spec.validity.tiers == ["gradient", "relaxation", "surface", "field"]
+    assert spec.walls[0].surface.instances["radii"] == gt.walls[0].surface.instances["radii"]
     w = walk_spec(spec, 90, 8e-4, 2e-4, seed=0, n_probe=20_000, field_res=0.5e-6, require_gpu=False)
     ids = np.asarray(w.compartment)[:, 0]
     assert set(np.unique(ids)) == {0, 1, 2} and w.field_basis is not None       # a small voxel rasterises its sheath
@@ -167,7 +175,7 @@ def test_a_strand_pack_claims_what_its_walk_recorded(disco_files):
     """A strand spec declares the tiers the engine walks it for; the walk records contact (the curved tubes
     accumulate it), the pack claims C2 and replays rho; a domain too large to rasterise refuses the field."""
     from dmipy_sim.replay.bank import build_replay_pack
-    spec = disco_spec(*disco_files, side_m=20e-6, g_ratio=0.7)
+    spec = disco_spec(*disco_files, side_m=20e-6, myelin=True)
     assert spec.validity.tiers == ["gradient", "relaxation", "surface", "field"]
     w = walk_spec(spec, 120, 1e-3, 2.5e-4, seed=0, n_probe=20_000, require_gpu=False, field=False)
     assert w.has_surface and w.has_compartments
@@ -256,15 +264,15 @@ def test_stratified_seeding_fills_every_occupied_voxel_and_keeps_the_volumes(dis
     from dmipy_sim.spec import StratifiedByVoxel, plan_seeding
     from dmipy_sim.phantom import Grid
     from dmipy_sim.replay.bank import build_replay_pack, voxel_fidelity_volumes
-    spec = disco_spec(*disco_files, side_m=20e-6, g_ratio=0.7)
+    spec = disco_spec(*disco_files, side_m=20e-6, myelin=True)
     grid = Grid(shape=(4, 4, 4), voxel_size_m=(5e-6,) * 3, origin_m=(2.5e-6,) * 3)
     w = walk_spec(spec, T_max=8e-4, dt_save=2e-4, seed=0, require_gpu=False, field=False,
-                  seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": 12, "intra": 8, "myelin": 3}))
+                  seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": 12, "intra": 8, "myelin": 3}, census_draws=5000))
     with pytest.raises(TypeError, match="not both"):
         walk_spec(spec, 50, 8e-4, 2e-4, seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel=4))
     # the same walk with adaptive steps: the same channels, the stepping recorded per pool
     wa = walk_spec(spec, T_max=8e-4, dt_save=2e-4, seed=0, require_gpu=False, field=False, adaptive_steps=True,
-                   seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": 12, "intra": 8, "myelin": 3}))
+                   seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": 12, "intra": 8, "myelin": 3}, census_draws=5000))
     assert wa.positions.shape == w.positions.shape and wa.has_surface and wa.stepping["rule"] == "adaptive"
     assert set(wa.stepping["pools"]) == {"extra", "intra"} and wa.stepping["pools"]["extra"]["kernel_steps_ratio"] >= 1.0
     np.testing.assert_array_equal(wa.positions[:, 0], w.positions[:, 0])            # the same seeds
@@ -283,7 +291,8 @@ def test_stratified_seeding_fills_every_occupied_voxel_and_keeps_the_volumes(dis
     flat = np.ravel_multi_index(tuple(ijk.T), grid.shape)
     n_extra = np.bincount(flat[ids == 0], minlength=64); n_intra = np.bincount(flat[ids == 1], minlength=64)
     assert (n_extra[n_extra > 0] == 12).all() and n_intra.max() == 8 and (n_intra > 0).sum() >= 6
-    # a rejection census of each pool's volume per voxel, against the sum of the weights (f x water fraction)
+    # a rejection census of each pool's volume per voxel, against the sum of the weights (f x water fraction): the
+    # tubes here straddle voxel faces (acceptance ~ 1/4), so the census is read on 5000 draws (2 % spread)
     rng = np.random.default_rng(3); P = rng.uniform(0, 20e-6, (400_000, 3)); v = np.ravel_multi_index(tuple(grid.bin(P)[0].T), grid.shape)
     inner = d.PackedCurvedCylinders([np.asarray(c) for c in spec.walls[0].surface.instances["centerlines"]],
                                     spec.walls[0].surface.instances["radii"], interior=True)
