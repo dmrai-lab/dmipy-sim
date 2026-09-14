@@ -350,7 +350,10 @@ class ReplayPack:
         return w, w, E
 
     def _walker_phases(self, P, waveform):
-        """``(n_w, n_meas)`` accumulated phase of every walker under the prepared acquisition ``P``."""
+        """``(n_w, n_meas)`` accumulated phase of every walker under the prepared acquisition ``P``: the gradient
+        as the bridge coefficients against the effective gradient's projection, and with a field the path channel's
+        cosine modes against the gate's DCT (the grid route, a pack without the path channel, samples the field
+        along the decoded path)."""
         from .compression import read_position_coeffs
         from ._replay_kernel import gradient_phase, field_gate
         n_w, dt, n_t, Geff = P["n_w"], P["dt"], P["n_t"], P["Geff"]
@@ -367,13 +370,26 @@ class ReplayPack:
                 raise ValueError("B0 was given without chi_iso: the pack carries the substrate's field basis, "
                                  "not a susceptibility; give chi_iso (and chi_aniso) at replay")
             chi_i = float(P["chi_iso"])
-            pos = self.positions()
             pm = ch.get("susceptibility_path")
-            if pm is not None:
-                b, _ = susc_path_decode(self.arrays, pm, n_w=n_w)
-                dB = susc_path_field(b, b0_dir, B0=float(B0), chi_iso=chi_i, chi_aniso=chi_aniso,
-                                     has_aniso=bool(gm.get("has_aniso")))
-            else:
+            if pm is not None:                                                        # the path route: every term a contraction
+                from scipy.fft import dct
+                from .bank import susc_path_coeffs
+                from ..fields.susceptibility_field import _q_of_H
+                C = read_position_coeffs(self.arrays, dtype=np.float64)
+                phi = C.reshape(n_w, self.n_coeffs * 3) @ _compile_effective(Geff, dt, self.K, n_t)     # the gradient, as without a field
+                Cs, names = susc_path_coeffs(self.arrays, pm)
+                Cs = Cs[:n_w]
+                gate_hat = dct(field_gate(waveform, n_t, dt), type=2, norm="ortho")[:Cs.shape[2]]
+                Psi = (GAMMA * dt) * np.einsum("k,wck->wc", gate_hat, Cs)             # (n_w, n_ch): the gated path integral per channel
+                q = _q_of_H(b0_dir)
+                i_p = names.index("iso_P_xx")
+                phi_x = chi_i * float(B0) * (Psi[:, names.index("iso_local")] - Psi[:, i_p:i_p + 6] @ q)
+                if bool(gm.get("has_aniso")) and chi_aniso and "aniso_G_xx" in names:
+                    i_a = names.index("aniso_G_xx")
+                    phi_x = phi_x + float(chi_aniso) * float(B0) * (Psi[:, i_a:i_a + 6] @ q)
+                return phi + phi_x[:, None]
+            pos = self.positions()                                                    # the grid route samples the field along the path
+            if True:
                 basis = {"iso_local": np.asarray(self.arrays["susc_grid_iso_local"], np.float64),
                          "iso_P": np.asarray(self.arrays["susc_grid_iso_P"], np.float64),
                          "aniso_G": (np.asarray(self.arrays["susc_grid_aniso_G"], np.float64)
@@ -546,10 +562,12 @@ class ReplayPack:
             if not self.has_relaxation:
                 raise ValueError("T2 / T1 were given but the pack carries no compartment channel (C1); build it "
                                  "from a walk with tiers='all'")
-            comp = decode_occupancy(self.arrays, ch["compartment"])["comp"]
+            from .compression import relaxation_logweight_runs, is_current_c1
+            if not is_current_c1(ch["compartment"]):
+                decode_occupancy(self.arrays, ch["compartment"])              # raises with the re-encode message
+            col = next(d for d in ch["compartment"]["columns"] if d["name"] == "comp")
             T2v = self._by_pool(T2, "T2"); T1v = self._by_pool(T1, "T1")
-            n_ids = 2 if (np.issubdtype(np.asarray(comp).dtype, np.floating) and not np.array_equal(comp, np.round(comp))) \
-                else int(np.max(comp)) + 1                            # a fractional occupancy is two pools, whatever its maximum
+            n_ids = 2 if col["kind"] != "label" else int(np.max(self.arrays["comp_rle_vals"])) + 1   # a fraction is two pools
             if T2v is None:
                 T2v = [0.0] * n_ids                                   # no T2 decay, T1 only
             if T1v is None:
@@ -557,7 +575,7 @@ class ReplayPack:
             if len(T2v) < n_ids or (T1v is not None and len(T1v) < n_ids):
                 raise ValueError(f"the compartment channel uses pool ids up to {n_ids - 1}; T2 / T1 must be given "
                                  f"for every id (got {len(T2v)}{'' if T1v is None else f' / {len(T1v)}'})")
-            logw = logw + relaxation_logweight(comp, T2v, T1v, dt, chi, active)
+            logw = logw + relaxation_logweight_runs(self.arrays, col, T2v, T1v, dt, chi, active)   # on the runs, never a track
         if rho is not None and float(rho) != 0.0 and surface:
             D_walk = self.diffusivity if D is None else D
             if D_walk is None:
@@ -1484,12 +1502,13 @@ def surface_logweight(arrays, rho_over_D, chan_meta=None, chi_hat=None):
     C2 is stored in the bridge form (``blt_bridge_dst`` + the two exact endpoints), so the
     UNGATED total contact is ``blt_endpoint`` read directly -- it is the exact cumulative
     ``L(T)``, not something reconstructed from bands, which is the whole reason the endpoint is
-    held exactly. A coherence gate needs the per-save series, so that branch decodes.
+    held exactly. A coherence gate contracts the bridge with the gate's sine transform
+    (:func:`~dmipy_sim.replay.compression.surface_logweight_bridge`): no per-save series is built.
 
     Takes the pack's ``arrays`` rather than one tensor: the channel is three tensors now, and a
     signature that accepted just the coefficient block invited passing the wrong one.
     """
-    from .compression import decode_boundary_bridge, surface_logweight_series
+    from .compression import surface_logweight_bridge
     if "blt_bridge_dst" not in arrays:
         raise ValueError(
             "surface relaxivity was requested but this pack carries no C2 channel "
@@ -1501,9 +1520,7 @@ def surface_logweight(arrays, rho_over_D, chan_meta=None, chi_hat=None):
     meta = dict(chan_meta or {})
     meta.setdefault("n_t", int(np.asarray(chi_hat).shape[0]))
     meta.setdefault("K", int(np.asarray(arrays["blt_bridge_dst"]).shape[1]))
-    ell = np.asarray(decode_boundary_bridge(arrays, meta), np.float64)
-    chi = np.asarray(chi_hat, np.float64)[: ell.shape[1]]
-    return surface_logweight_series(ell[:, : chi.shape[0]], rho_over_D, chi)
+    return surface_logweight_bridge(arrays, meta, rho_over_D, chi_hat)          # the bridge contracted, never decoded
 
 
 def replay_signal(pack, W, *, rho_over_D=0.0, chi_hat=None, complex_signal=False):
