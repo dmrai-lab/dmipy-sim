@@ -2,6 +2,7 @@
 strand lists (CACTUS / DiSCo, sphere-swept polylines). The specs validate, round-trip through JSON, walk pool by
 pool through `walk_spec` and are embedded in the pack."""
 import dataclasses
+import json
 import os
 
 import numpy as np
@@ -136,7 +137,7 @@ def test_strands_spec_is_one_wall_of_swept_polylines_in_a_reflecting_voxel(stran
         strands_spec(strand_txt, boundary="periodic")
 
 
-def test_disco_spec_is_two_tubes_per_strand_at_the_papers_diameters(disco_files):
+def test_disco_spec_is_two_tubes_per_strand_at_the_papers_diameters(disco_files, tmp_path, monkeypatch):
     """DiSCo lists its strands' INNER diameters and meshed an outer tube at 1/0.7 of them; its Monte Carlo took the
     signal from the particles inside the inner tube and outside the outer one, at 0.6e-9 m^2/s in both (Data in
     Brief 38 (2021) 107429, sections 1, 2.1, 2.2). The spec is that: the axolemma at the listed radius, the sheath at
@@ -151,6 +152,27 @@ def test_disco_spec_is_two_tubes_per_strand_at_the_papers_diameters(disco_files)
     assert gt.validity.tiers == ["gradient", "relaxation", "surface"] and gt.field_source_pools == []
     assert gt.domain.box_min == [0.0] * 3 and gt.domain.box_max == [20e-6] * 3 and gt.domain.boundary == ["reflect"] * 3
     assert any("25e-06" in t or "2.5e-05" in t for t in gt.provenance["transformations"])
+    # the walls cite the track file rather than carrying the centerlines: format, coordinate unit, sha256, radii inline
+    from dmipy_sim.spec.build import polyline_arrays, resolve_surface_file
+    from dmipy_sim.io.strands import read_tck
+    import hashlib, os
+    sf = gt.walls[0].surface
+    assert sf.file == disco_files[0] and sf.format == "tck" and sf.scale == 25e-6 and "centerlines" not in sf.instances
+    assert sf.sha256 == hashlib.sha256(open(disco_files[0], "rb").read()).hexdigest()
+    cls_, radii = polyline_arrays(sf)
+    np.testing.assert_allclose(np.vstack(cls_), np.vstack(read_tck(disco_files[0], coordinate_unit_m=25e-6)))
+    assert len(json.dumps(gt.to_dict())) < 20_000
+    cited = disco_spec(*disco_files, side_m=20e-6, cite_tracks_as="substrate/strands.tck")
+    assert cited.walls[1].surface.file == "substrate/strands.tck" and cited.walls[1].surface.sha256 == sf.sha256
+    with pytest.raises(SpecError, match="neither at that path"):
+        polyline_arrays(cited.walls[1].surface)
+    monkeypatch.setenv("DMIPY_SIM_SURFACE_DIR", str(tmp_path))
+    os.makedirs(tmp_path / "substrate", exist_ok=True)
+    import shutil; shutil.copy(disco_files[0], tmp_path / "substrate" / "strands.tck")
+    assert len(polyline_arrays(cited.walls[1].surface)[0]) == 3                 # found under the surface cache
+    bad = dataclasses.replace(sf, sha256="0" * 64)
+    with pytest.raises(SpecError, match="sha256"):
+        polyline_arrays(bad)
     w = walk_spec(gt, 90, 8e-4, 2e-4, seed=0, n_probe=20_000, require_gpu=False)
     ids = np.asarray(w.compartment)[:, 0]
     assert set(np.unique(ids)) == {0, 1} and w.field_basis is None                # nothing walks the dry sheath, no field
@@ -294,7 +316,8 @@ def test_stratified_seeding_fills_every_occupied_voxel_and_keeps_the_volumes(dis
     # a rejection census of each pool's volume per voxel, against the sum of the weights (f x water fraction): the
     # tubes here straddle voxel faces (acceptance ~ 1/4), so the census is read on 5000 draws (2 % spread)
     rng = np.random.default_rng(3); P = rng.uniform(0, 20e-6, (400_000, 3)); v = np.ravel_multi_index(tuple(grid.bin(P)[0].T), grid.shape)
-    inner = d.PackedCurvedCylinders([np.asarray(c) for c in spec.walls[0].surface.instances["centerlines"]],
+    from dmipy_sim.spec.build import polyline_arrays
+    inner = d.PackedCurvedCylinders(polyline_arrays(spec.walls[0].surface)[0],
                                     spec.walls[0].surface.instances["radii"], interior=True)
     f_in = np.bincount(v, weights=inner.inside_any(P), minlength=64) / np.bincount(v, minlength=64)
     wsum_in = np.bincount(flat[ids == 1], weights=wt[ids == 1], minlength=64)

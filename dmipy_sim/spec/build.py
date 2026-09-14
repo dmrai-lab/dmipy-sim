@@ -344,9 +344,43 @@ def sphere_union_arrays(surface):
     return np.asarray(s.instances["centers"], float), np.asarray(s.instances["radii"], float)
 
 
+def resolve_surface_file(path):
+    """The file a surface cites, found: as given (absolute, or relative to the working directory), else under
+    :func:`surface_cache_dir`; a dataset's strand or mesh files are cited by the relative path they are
+    distributed at, and a consumer works from the dataset's directory or copies them into the cache."""
+    import os
+    if os.path.exists(path):
+        return path
+    alt = os.path.join(surface_cache_dir(), path)
+    if os.path.exists(alt):
+        return alt
+    raise SpecError(f"the surface file {path!r} is neither at that path nor under {surface_cache_dir()}")
+
+
 def polyline_arrays(surface):
-    """``(centerlines, radii)`` of a ``swept_polyline`` surface: per-instance arrays or the single polyline."""
+    """``(centerlines, radii)`` in metres of a ``swept_polyline`` surface: per-instance arrays, the single polyline,
+    or a track ``file`` (``format: tck``, ``scale`` its coordinate unit, the radii inline as ``instances.radii``;
+    ``format: strands``, an EPFL strand list with its own radii) whose ``sha256`` must match when given."""
     s = surface
+    if s.file:
+        path = resolve_surface_file(s.file)
+        if s.sha256 and _sha256(path) != s.sha256:
+            raise SpecError(f"{path} does not match the sha256 the spec cites")
+        fmt = (s.format or "").lower()
+        if fmt == "tck":
+            from ..io.strands import read_tck
+            if not s.instances or "radii" not in s.instances:
+                raise SpecError("a swept_polyline from a track file carries its radii as instances.radii")
+            cls_ = read_tck(path, coordinate_unit_m=float(s.scale or 1.0))
+            radii = np.asarray(s.instances["radii"], float)
+            if len(cls_) != len(radii):
+                raise SpecError(f"{path} holds {len(cls_)} tracks but the spec lists {len(radii)} radii")
+            return cls_, radii
+        if fmt == "strands":
+            from ..io.strands import read_strands
+            t = read_strands(path, scale=float(s.scale or 1.0))
+            return [np.asarray(c, float) for c in t["centerlines"]], np.asarray(t["radii"], float)
+        raise SpecError(f"a swept_polyline file is a 'tck' track file or a 'strands' list, not {s.format!r}")
     if s.instances:
         return [np.asarray(c, float) for c in s.instances["centerlines"]], np.asarray(s.instances["radii"], float)
     return [np.asarray(s.centerline, float)], np.asarray([s.radius], float)

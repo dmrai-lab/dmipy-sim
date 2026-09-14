@@ -302,11 +302,6 @@ def _walk_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field, field_re
         grid = seeding.grid
         V_box = float(np.prod(hi - lo)); V_vox = float(np.prod(grid.voxel_size_m))
 
-        def bin_index(P):
-            ijk, inside = grid.bin(P)
-            flat = np.ravel_multi_index(tuple(np.clip(ijk, 0, np.asarray(grid.shape) - 1).T), grid.shape)
-            return np.where(inside, flat, -1)
-
         def seeds(pid, s):
             want = seeding.count_for(pools[pid].name)
             by_volume = inside_w[pid] and not outside_w[pid] and all(w.surface.kind == "swept_polyline" for w in inside_w[pid])
@@ -317,9 +312,12 @@ def _walk_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field, field_re
                 inb = np.all((P >= lo) & (P <= hi), axis=1)     # strands may leave the box
                 P, v = P[inb], v[inb]
                 log.info("walk_spec: %d seeds in %d voxels from %d draws", len(P), int(np.bincount(v, minlength=grid.n_voxels).astype(bool).sum()), n_drawn)
-            else:
-                P, v, f, trials, n_drawn = fill_per_voxel(sampler(pid), bin_index, grid.n_voxels, want,
-                                                          trials_max=int(seeding.trials_per_voxel_max), seed=s)
+            else:                                          # drawn in each wanted voxel, kept by membership
+                P, v, f, trials, n_drawn = fill_per_voxel(member(pid), grid, want, trials_max=int(seeding.trials_per_voxel_max),
+                                                          census_draws=int(seeding.census_draws), seed=s)
+                inb = np.all((P >= lo) & (P <= hi), axis=1)     # the grid may reach beyond the domain
+                P, v = P[inb], v[inb]
+                log.info("walk_spec: %d seeds in %d voxels from %d draws", len(P), int(np.bincount(v, minlength=grid.n_voxels).astype(bool).sum()), n_drawn)
             n_have = np.bincount(v, minlength=grid.n_voxels)
             w = f[v] * wf[pid] / np.maximum(n_have[v], 1)  # f_pool,v x water fraction / n_pool,v: volume-correct per voxel
             return P, w
