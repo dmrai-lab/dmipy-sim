@@ -73,37 +73,46 @@ class StratifiedByVoxel:
                     trials_per_voxel_max=int(self.trials_per_voxel_max), census_draws=int(self.census_draws))
 
 
-def fill_per_voxel(draw, bin_index, n_voxels, want, *, trials_max, draws_max=None, batch=1_000_000, seed=0):
-    """Draw points with ``draw(n, rng) -> (points (n, 3), accepted (n,) bool)`` -- the pool's own sampler, which
-    may reject -- until every voxel with any accepted draw holds ``want[v]`` points or has spent ``trials_max``
-    draws, or ``draws_max`` points have been drawn in all (default 200 x the points wanted: a sliver of a pool
-    that a volume-uniform draw reaches once in a million is left with what it got). Returns ``(points, voxel, f, trials)``: the kept points and their voxels, the pool's volume fraction
-    per voxel measured from the draws (accepted / drawn, the census), and the draws per voxel."""
+def fill_per_voxel(pred, grid, want, *, trials_max, census_draws=200, rounds_max=50, batch=2_000_000, seed=0):
+    """``want[v]`` points of a pool in voxel ``v`` of ``grid``, for every voxel, drawn IN the voxel: points uniform
+    in the voxel, kept where ``pred(points) -> bool`` says the pool is (the pool's membership: inside its inside
+    walls, outside its outside walls). The pool's volume fraction per voxel is the acceptance, read on at least
+    ``census_draws`` draws (its relative spread ``sqrt((1 - f) / (N f))``), and every seed drawn counts. A voxel
+    that wants nothing costs nothing, so a block of a grid is seeded at the cost of its own voxels; a voxel
+    holding a sliver of the pool (no hit after ``trials_max`` draws, or short of ``want`` after them) is left
+    with what it got. Returns ``(points, voxel, f, trials, n_drawn)``."""
     rng = np.random.default_rng(seed)
-    want = np.asarray(want, np.int64)
-    have = np.zeros(n_voxels, np.int64); trials = np.zeros(n_voxels, np.int64); acc = np.zeros(n_voxels, np.int64)
+    want = np.asarray(want, np.int64).reshape(-1)
+    n_vox = grid.n_voxels; shape = np.asarray(grid.shape)
+    corner = np.asarray(grid.corner_m, float); vs = np.asarray(grid.voxel_size_m, float)
+    have = np.zeros(n_vox, np.int64); trials = np.zeros(n_vox, np.int64); acc = np.zeros(n_vox, np.int64)
     kept_p, kept_v = [], []; n_drawn = 0
-    draws_max = int(draws_max) if draws_max is not None else 200 * int(want.sum())
     log = logging.getLogger("dmipy_sim")
-    while True:
-        P, ok = draw(int(batch), rng); n_drawn += len(P)
-        v = bin_index(P)
-        inside = v >= 0
-        trials += np.bincount(v[inside], minlength=n_voxels)
-        ok = ok & inside
-        P, v = P[ok], v[ok]
-        acc += np.bincount(v, minlength=n_voxels)
-        order = np.argsort(v, kind="stable"); v = v[order]; P = P[order]
-        starts = np.searchsorted(v, np.arange(n_voxels))
-        rank = np.arange(len(v)) - starts[v] + have[v]
-        take = rank < want[v]
-        kept_p.append(P[take]); kept_v.append(v[take])
-        have += np.bincount(v[take], minlength=n_voxels)
-        short = (acc > 0) & (have < want) & (trials < trials_max)
-        log.info("fill_per_voxel: %d drawn, %d voxels occupied, %d short, %d kept", n_drawn, int((acc > 0).sum()),
-                 int(short.sum()), int(have.sum()))
-        if not short.any() or n_drawn >= draws_max:
+    active = want > 0
+    for _ in range(int(rounds_max)):
+        short = active & ((have < want) | (trials < int(census_draws))) & (trials < int(trials_max))
+        if not short.any():
             break
+        vids = np.flatnonzero(short)
+        rate = np.where(trials[vids] > 0, acc[vids] / np.maximum(trials[vids], 1), 0.5)
+        n_try = np.ceil(1.3 * (want[vids] - have[vids]) / np.maximum(rate, 0.02)).astype(np.int64) + 4
+        n_try = np.maximum(n_try, int(census_draws) - trials[vids])
+        n_try = np.minimum(n_try, int(trials_max) - trials[vids])
+        if n_try.sum() > int(batch):                                    # a round is bounded; the loop continues
+            n_try = np.maximum((n_try * (int(batch) / n_try.sum())).astype(np.int64), 1)
+        v_all = np.repeat(vids, n_try); n_drawn += len(v_all)
+        ijk = np.stack(np.unravel_index(v_all, tuple(shape)), axis=1)
+        P = corner + (ijk + rng.uniform(0.0, 1.0, (len(v_all), 3))) * vs
+        ok = np.asarray(pred(P), bool)
+        trials += np.bincount(v_all, minlength=n_vox); acc += np.bincount(v_all[ok], minlength=n_vox)
+        Pk, vk = P[ok], v_all[ok]
+        o = np.argsort(vk, kind="stable"); vk, Pk = vk[o], Pk[o]
+        st = np.searchsorted(vk, np.arange(n_vox))
+        rank = np.arange(len(vk)) - st[vk] + have[vk]
+        take = rank < want[vk]
+        kept_p.append(Pk[take]); kept_v.append(vk[take]); have += np.bincount(vk[take], minlength=n_vox)
+        log.info("fill_per_voxel: %d drawn, %d voxels occupied, %d short, %d kept", n_drawn, int((acc > 0).sum()),
+                 int((active & (have < want) & (trials < int(trials_max))).sum()), int(have.sum()))
     P = np.concatenate(kept_p) if kept_p else np.zeros((0, 3)); v = np.concatenate(kept_v) if kept_v else np.zeros(0, np.int64)
     f = np.where(trials > 0, acc / np.maximum(trials, 1), 0.0)
     return P, v, f, trials, n_drawn

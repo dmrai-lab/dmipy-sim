@@ -317,7 +317,7 @@ diameter" (section 2.1); the released diameters are the inner ones (section 1)."
 
 
 def disco_spec(tracks, diameters, *, coordinate_unit_m=25e-6, diameter_unit_m=1e-3, side_m=1e-3, myelin=False,
-               field_T=3.0, rho2=None, id=None):
+               field_T=3.0, rho2=None, id=None, cite_tracks_as=None):
     """The spec of the DiSCo phantom (Rafael-Patino, Girard et al., Data in Brief 38 (2021) 107429,
     doi:10.1016/j.dib.2021.107429; dataset doi:10.17632/fgf86jdfg6.3, CC BY 4.0): its strands from the released MRtrix
     track file, in units of the ground-truth voxel (``coordinate_unit_m``, 25 um for the 40^3 grid over 1 mm^3), and
@@ -330,7 +330,11 @@ def disco_spec(tracks, diameters, *, coordinate_unit_m=25e-6, diameter_unit_m=1e
     that is DRY by default (``myelin=False``: the ground truth, no water and no field, the intra-strand volume
     fraction map being the inner tube's volume). ``myelin=True`` gives that pool the catalogue's myelin water and
     susceptibility: the multiphysics variant. Both pools diffuse at :data:`DISCO_D`, as the dataset's own walk did.
-    The domain is ``[0, side_m]^3`` with reflecting faces. Every conversion is recorded in the provenance.
+    The domain is ``[0, side_m]^3`` with reflecting faces. The walls cite the track file (``format: tck``, its
+    coordinate unit and sha256) rather than carrying 12,196 centerlines inline, at the path given or at
+    ``cite_tracks_as`` (the path a dataset distributes it at; a consumer resolves it from the working directory or
+    the surface cache, :func:`~dmipy_sim.spec.build.resolve_surface_file`). Every conversion is recorded in the
+    provenance.
     """
     from ..io.strands import read_tck, read_diameters
     cls_ = read_tck(tracks, coordinate_unit_m=coordinate_unit_m)
@@ -349,44 +353,46 @@ def disco_spec(tracks, diameters, *, coordinate_unit_m=25e-6, diameter_unit_m=1e
                        f"both pools at DiSCo's own diffusivity {DISCO_D} m^2/s",
                        f"domain [0, {side_m}]^3, faces reflect"]
     if len(keep) != len(cls_):
-        transformations.append(f"dropped {len(cls_) - len(keep)} track(s) with fewer than two points")
+        raise SpecError(f"{tracks} holds {len(cls_) - len(keep)} track(s) with fewer than two points; a cited file lists every strand")
+    cite = dict(file=str(cite_tracks_as or tracks), format="tck", scale=float(coordinate_unit_m), sha256=_sha(tracks))
     return _strands_spec([cls_[k] for k in keep], R_out, [0.0] * 3, [float(side_m)] * 3, boundary="reflect", g_ratio=DISCO_G_RATIO,
-                         R_inner=R_in, D=DISCO_D, myelin_water=bool(myelin),
+                         R_inner=R_in, D=DISCO_D, myelin_water=bool(myelin), centerline_file=cite,
                          field_T=field_T, rho2=rho2, id=id or "disco/rafael-patino-2021", source="DiSCo (Rafael-Patino et al. 2021)",
                          files=[tracks, diameters], scale=float(coordinate_unit_m), transformations=transformations,
                          cell_side=float(side_m))
 
 
 def _strands_spec(centerlines, R, lo, hi, *, boundary, g_ratio, field_T, rho2, id, source, files, scale, transformations,
-                  cell_side, R_inner=None, D=None, myelin_water=True):
+                  cell_side, R_inner=None, D=None, myelin_water=True, centerline_file=None):
     """The strand spec proper: sphere-swept polylines (metres) with one OUTER radius each, in a box. With ``g_ratio``
     a sheath: the axolemma at ``R_inner`` (given) or ``g_ratio`` x the outer radius, the pool between the two walls
     holding the catalogue's myelin water and susceptibility, or dry (``myelin_water=False``: a wall pair with no
-    water and no field between). ``D`` sets both diffusing pools' diffusivity (a dataset's own value)."""
+    water and no field between). ``D`` sets both diffusing pools' diffusivity (a dataset's own value). With
+    ``centerline_file`` (``file``, ``format``, ``scale``, ``sha256``) the walls cite the file instead of carrying the
+    centerlines inline."""
     from ..substrate.biophysical_constants import canonical_white_matter
     if boundary not in ("reflect", "open"):
         raise SpecError("boundary must be 'reflect' or 'open'; a strand list is not periodic")
     R = np.asarray(R, float)
     rho = float(rho2 if rho2 is not None else canonical_white_matter(field_T=field_T)["rho2"])
     cls_ = [np.asarray(c, float).tolist() for c in centerlines]
+    surf = ((lambda R_: Surface("swept_polyline", instances={"radii": R_.tolist()}, **centerline_file)) if centerline_file
+            else (lambda R_: Surface("swept_polyline", instances={"centerlines": cls_, "radii": R_.tolist()})))
     pools = wm_pools(field_T)
     transformations = list(transformations) + ["nominal pool values from the catalogued white matter"]
     if D is not None:
         pools = [dataclasses.replace(p, D=float(D)) if p.id in (0, 1) else p for p in pools]
     if g_ratio is None:
         pools = pools[:2]
-        walls = [Wall("cylinders", Surface("swept_polyline", instances={"centerlines": cls_, "radii": R.tolist()}), 1, 0,
-                      Directional(), Sided(rho, rho))]
+        walls = [Wall("cylinders", surf(R), 1, 0, Directional(), Sided(rho, rho))]
         transformations.append("inside a strand = intra (1), outside all = extra (0); no myelin")
         smallest = float(R.min())
     else:
         R_in = np.asarray(R_inner, float) if R_inner is not None else g_ratio * R
         if R_in.shape != R.shape or (R_in >= R).any():
             raise SpecError("every inner radius must be smaller than its outer radius")
-        walls = [Wall("axolemma", Surface("swept_polyline", instances={"centerlines": cls_, "radii": R_in.tolist()}),
-                      1, 2, Directional(), Sided(rho, 0.0)),
-                 Wall("sheath", Surface("swept_polyline", instances={"centerlines": cls_, "radii": R.tolist()}), 2, 0,
-                      Directional(), Sided(0.0, rho))]
+        walls = [Wall("axolemma", surf(R_in), 1, 2, Directional(), Sided(rho, 0.0)),
+                 Wall("sheath", surf(R), 2, 0, Directional(), Sided(0.0, rho))]
         if R_inner is None:
             transformations.append(f"the outer (sheath) radius listed; axolemma at g-ratio {g_ratio}")
         if not myelin_water:
