@@ -41,3 +41,16 @@ def test_every_walker_bounced_off_a_wall_a_millimetre_away_is_still_inside_its_t
     r = jax.jit(jax.vmap(g.reflect))(jnp.asarray(start, jnp.float32), jnp.asarray(step, jnp.float32))
     tube = np.asarray(jax.vmap(g.classify_position)(r))
     assert (tube == 1).all(), f"{(tube != 1).sum()} of {n} walkers read as outside their tube after the bounce"
+
+
+def test_the_geometry_seeds_inside_by_its_nudge_at_a_millimetre():
+    """The packed and the single-strand seeders draw the disc to the wall less the nudge: at 1 mm every seed reads
+    as inside to the geometry's own float32 classification (drawn to the wall, 11 of a million seeds on DiSCo sat
+    within rounding of it, read as outside, and the adaptive walk refused the pool)."""
+    off = np.array([1e-3, 1e-3, 1e-3])
+    g = _pack(off)
+    P = np.asarray(g.init_positions(400_000, jax.random.PRNGKey(5)))
+    assert (np.asarray(g.classify_positions_exact(P)) > 0).all()
+    one = d.CurvedCylinder(np.array([[-30e-6, 0, 0], [30e-6, 0, 0]]) + off, R)
+    Q = np.asarray(one.init_positions(200_000, jax.random.PRNGKey(6)))
+    assert (np.asarray(one.classify_positions_exact(Q)) == 1).all()

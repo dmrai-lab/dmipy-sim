@@ -248,8 +248,8 @@ class CurvedCylinder(Geometry):
         ref[par] = np.array([1.0, 0.0, 0.0])
         e1 = np.cross(T, ref); e1 /= np.linalg.norm(e1, axis=1, keepdims=True)
         e2 = np.cross(T, e1)
-        rr = self.radius * np.sqrt(rng.uniform(0.0, 1.0, n_walkers))
-        th = rng.uniform(0.0, 2 * np.pi, n_walkers)
+        rr = (self.radius - self.nudge_m) * np.sqrt(rng.uniform(0.0, 1.0, n_walkers))   # inside by the nudge: a seed
+        th = rng.uniform(0.0, 2 * np.pi, n_walkers)                                       # on the wall reads as outside
         off = rr[:, None] * (np.cos(th)[:, None] * e1 + np.sin(th)[:, None] * e2)
         return jnp.asarray(C + off, jnp.float32)
 
@@ -358,6 +358,7 @@ class CurvedMyelinatedCylinder(CurvedCylinder):
         ref[np.abs((T * ref).sum(1)) > 0.9] = np.array([1.0, 0.0, 0.0])
         e1 = np.cross(T, ref); e1 /= np.linalg.norm(e1, axis=1, keepdims=True)
         e2 = np.cross(T, e1)
+        lo, hi = (lo + self.nudge_m if lo > 0 else 0.0), hi - self.nudge_m           # inside the band by the nudge
         rr = np.sqrt(rng.uniform(lo ** 2, hi ** 2, n_walkers))   # uniform-in-area radius
         th = rng.uniform(0.0, 2 * np.pi, n_walkers)
         off = rr[:, None] * (np.cos(th)[:, None] * e1 + np.sin(th)[:, None] * e2)
@@ -657,7 +658,7 @@ class PackedCurvedCylinders(Geometry):
         ref[np.abs((T * ref).sum(1)) > 0.9] = np.array([1., 0., 0.])
         e1 = np.cross(T, ref); e1 /= np.linalg.norm(e1, axis=1, keepdims=True)
         e2 = np.cross(T, e1)
-        rad = rout[idx] * np.sqrt(rng.uniform(0., 1., int(n)))
+        rad = (rout[idx] - self.nudge_m) * np.sqrt(rng.uniform(0., 1., int(n)))     # inside by the nudge: a seed on the wall reads as outside
         th = rng.uniform(0., 2 * np.pi, int(n))
         return C + rad[:, None] * (np.cos(th)[:, None] * e1 + np.sin(th)[:, None] * e2)
 
