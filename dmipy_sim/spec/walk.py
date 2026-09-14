@@ -22,8 +22,12 @@ from .build import geometry_from_spec
 def walk_spec(spec, n_walkers=None, T_max=None, dt_save=None, *, scanner="connectom", floor_fraction=0.1, diffusivity=None,
               seed=0, n_probe=200_000, field=True, field_res=0.2e-6, field_budget=5e7, field_cutoff_m=25e-6,
               field_cutoff_tol=0.02, field_cutoff_max_m=50e-6, require_gpu=None, walker_batch_size=50_000, tiers="all",
-              seeding=None, adaptive_steps=False):
+              seeding=None, adaptive_steps=False, field_sample_every=1):
     """Walk ``spec`` and return a :class:`~dmipy_sim.persistent_walk.PersistentWalk` carrying the spec.
+
+    ``field_sample_every`` reads the strand field along the walk at every that-many-th save only (the adaptive
+    producer samples it in the walk): the path channel keeps a few modes over the walk and lives on its own grid,
+    recorded on the walk and in the pack; the positions keep the save grid the envelope asks for.
 
     ``adaptive_steps`` walks every pool whose geometry offers ``wall_scales`` (the curved tubes) with the adaptive
     producer (:func:`dmipy_sim.engine.adaptive.simulate_trajectories_adaptive`): free steps away from every
@@ -57,6 +61,8 @@ def walk_spec(spec, n_walkers=None, T_max=None, dt_save=None, *, scanner="connec
     spec.validate()
     if T_max is None:
         raise TypeError("walk_spec needs T_max (seconds)")
+    if int(field_sample_every) != 1 and not adaptive_steps:
+        raise ValueError("field_sample_every reads the field in the walk, which the adaptive producer does: pass adaptive_steps=True")
     if seeding is not None:
         from .seeding import StratifiedByVoxel
         if not isinstance(seeding, StratifiedByVoxel):
@@ -90,7 +96,7 @@ def walk_spec(spec, n_walkers=None, T_max=None, dt_save=None, *, scanner="connec
                               w.bound_frac, w.illegal_crossings, w.seed, w.diffusivity, geometry=g, spec=spec)
     return _walk_bundle(spec, int(n_walkers), float(T_max), float(dt_save), seed, n_probe, field, field_res,
                         require_gpu, walker_batch_size, field_budget=float(field_budget), field_cutoff_m=field_cutoff_m, field_cutoff_tol=field_cutoff_tol, seeding=seeding,
-                        field_cutoff_max_m=field_cutoff_max_m, adaptive_steps=adaptive_steps)
+                        field_cutoff_max_m=field_cutoff_max_m, adaptive_steps=adaptive_steps, field_sample_every=int(field_sample_every))
 
 
 def _needs_bundle_walk(spec):
@@ -229,7 +235,7 @@ def _strand_field(outer_b, inner_b, lo, hi, traj, cutoff_m, tol, seed, strands_m
 
 
 def _walk_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field, field_res, require_gpu, batch, field_budget=5e7,
-                 field_cutoff_m=25e-6, field_cutoff_tol=0.02, seeding=None, field_cutoff_max_m=50e-6, adaptive_steps=False):
+                 field_cutoff_m=25e-6, field_cutoff_tol=0.02, seeding=None, field_cutoff_max_m=50e-6, adaptive_steps=False, field_sample_every=1):
     """Walk a multi-surface spec pool by pool: every seeded pool is defined by the walls it is inside and the walls it
     is outside; a pool with D > 0 walks the interior of its inside-walls (intra, glia) or the exterior of its
     outside-walls (extra); a shell pool at D = 0 (myelin) is frozen where it was seeded; the field basis is
@@ -359,7 +365,7 @@ def _walk_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field, field_re
                                 f"is for the curved tubes")
             from ..engine.adaptive import simulate_trajectories_adaptive
             w = simulate_trajectories_adaptive(n, float(pool.D), g, T_max, dt_save, seed=seed + 13 * pid, r0=r0,
-                                               require_gpu=require_gpu, walker_batch_size=batch, field_basis=sf)
+                                               require_gpu=require_gpu, walker_batch_size=batch, field_basis=sf, field_sample_every=int(field_sample_every))
             stepping.append((pool.name, w.stepping))
             if w.field_samples is not None:
                 field_samples.append((pid, w.field_samples))
@@ -428,4 +434,4 @@ def _walk_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field, field_re
                           compartment=comp, seed=int(seed), diffusivity=D_ref, spec=spec,
                           weights=(None if np.allclose(wts, 1.0) else wts), field_basis=fg,
                           stepping=(dict(rule="adaptive", pools=dict(stepping)) if stepping else None),
-                          field_samples=samples)
+                          field_samples=samples, field_sample_every=(int(field_sample_every) if samples is not None else 1))

@@ -67,6 +67,7 @@ def _master_arrays(src) -> dict:
                 susc_field_basis=(m.get("susc_field_basis") if isinstance(m, dict) else None),
                 susc_field_sampler=(m.get("susc_field_sampler") if isinstance(m, dict) else None),
                 susc_field_samples=(m.get("susc_field_samples") if isinstance(m, dict) else None),
+                susc_field_every=int(m.get("susc_field_every", 1) or 1) if isinstance(m, dict) else 1,
                 susc_grid_origin=(np.asarray(m["susc_grid_origin"]) if "susc_grid_origin" in m else None),
                 susc_chi_iso=scal("susc_chi_iso"), delta_chi_a=scal("delta_chi_a"),
                 cell_size=scal("cell_size"), R=g("R"), D_intra=scal("D_intra"),
@@ -510,8 +511,12 @@ def _susc_path_bloch_fidelity(m, arrays, pm, gm, env, n_sub=8000):
         return ev
 
     G0 = np.zeros((1, n_t, 3))                       # b=0 isolates the susceptibility physics
+    every = int(m.get("susc_field_every", 1) or 1)
+
     def sig(field, rf, idx=None):
         f = field if idx is None else field[idx]
+        if every > 1:                                                     # a field on its own grid, held over its saves
+            f = np.repeat(f, every, axis=1)[:, :n_t]
         p = pos if idx is None else pos[idx]
         ww = w if idx is None else w[idx]
         out = replay_bloch(p, dt, G0, dt, rf, T2=None, T1=None,
@@ -548,8 +553,10 @@ def _susc_path_fidelity(m, arrays, pm, gm, env):
     field = _field_of(m)
     if field is None or "susc_path_dct" not in arrays:
         return None
-    traj = np.asarray(m["traj"], np.float64); n_w, n_t = traj.shape[0], traj.shape[1]
-    dt = float(m["dt_traj"])
+    traj = np.asarray(m["traj"], np.float64); n_w = traj.shape[0]
+    every = int(m.get("susc_field_every", 1) or 1)
+    n_t = len(range(0, traj.shape[1], every))                    # the channel's own grid
+    dt = float(m["dt_traj"]) * every
     w = np.asarray(m["w"], np.float64) if m.get("w") is not None else np.ones(n_w)
     b_dec, _ = susc_path_decode(arrays, pm)
     chi_i = float(m.get("susc_chi_iso") or 1.06e-6)
@@ -669,14 +676,16 @@ def _quantise_susc_path(coeffs, meta, bits):
 
 
 def susc_path_encode_series(series, names, *, K=32, bits=8, dtype=np.float16, layout="wct", atol_trace=1e-4, device="auto",
-                            chunk=20_000):
+                            chunk=20_000, dt=None):
     """:func:`susc_path_encode` from the per-save field series itself, in the canonical channel order with
     ``names``: ``(n_w, n_ch, n_t)`` (``layout="wct"``, what a decoded path channel gives) or ``(n_w, n_t, n_ch)``
     (``layout="wtc"``, the interval means a walk sampled), encoded in walker chunks of ``chunk`` on ``device``
     without a copy of the whole series. The ``iso_P_zz`` channel is implied by the trace identity
     ``iso_P_xx + iso_P_yy + iso_P_zz = 3 iso_local`` and left out when the series satisfies it to ``atol_trace``
     (the closed-form strand field does exactly, and a series sampled in float32 over a few hundred strands keeps it
-    to ~1e-5; a windowed k-space grid breaks it at the percent level); the decoder re-inserts it."""
+    to ~1e-5; a windowed k-space grid breaks it at the percent level); the decoder re-inserts it. ``dt``
+    is the series' own step (the walk's save step times ``field_sample_every``), recorded so the replay gates the
+    channel on its grid; absent, the channel is on the pack's save grid."""
     if layout not in ("wct", "wtc"):
         raise ValueError("layout is 'wct' (n_w, n_ch, n_t) or 'wtc' (n_w, n_t, n_ch)")
     series = np.asarray(series)
@@ -703,6 +712,8 @@ def susc_path_encode_series(series, names, *, K=32, bits=8, dtype=np.float16, la
         coeffs[i:i + chunk] = np.transpose(b, (0, 2, 1))
     meta = dict(channel="susc_path_dct", K=K, n_t=int(n_t), n_ch=len(keep), channels=[names[i] for i in keep],
                 iso_P_zz=("implied" if drop_zz else "stored"), trace_residual=trace_res, max_refocus_pulses=K // 2)
+    if dt is not None:
+        meta["dt"] = float(dt)
     if bits is None:
         meta["bits"] = None; meta["dtype"] = np.dtype(dtype).name
         return {"susc_path_dct": np.asarray(coeffs, dtype)}, meta
@@ -1034,6 +1045,7 @@ def _walk_master(walk, *, weights=None, field=None, diffusivity=None, substrate_
             extra["susc_field_sampler"] = field
             if walk.field_samples is not None:                       # the walk sampled the field along its own path
                 extra["susc_field_samples"] = np.asarray(walk.field_samples, np.float32)
+                extra["susc_field_every"] = int(getattr(walk, "field_sample_every", 1) or 1)
         else:
             raise TypeError("field must be a fields.susceptibility_field.FieldGrid (basis, origin) or a "
                             f"fields.strand_field.StrandFieldBasis, got {type(field).__name__}")
@@ -1183,7 +1195,8 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto"
         if m.get("susc_field_samples") is not None:                  # sampled by the walk: the interval means
             from ..fields.hollow_cylinder import CHANNEL_NAMES
             _a, _pm = susc_path_encode_series(np.asarray(m["susc_field_samples"]), CHANNEL_NAMES, K=int(susc_path_K),
-                                              bits=susc_path_bits, layout="wtc", device=device)   # no copy of the samples
+                                              bits=susc_path_bits, layout="wtc", device=device,    # no copy of the samples
+                                              dt=float(m["dt_traj"]) * int(m.get("susc_field_every", 1)))
             _pm["sampling"] = "interval_mean_in_walk"
         else:
             _a, _pm = susc_path_encode(_field, np.asarray(m["traj"], np.float64), K=int(susc_path_K), bits=susc_path_bits)
