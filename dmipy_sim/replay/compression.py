@@ -549,6 +549,64 @@ def relaxation_logweight(comp, T2_per_comp, T1_per_comp, dt, chi=None, active=No
     return -dt * (chi * r2 + np.clip(lon, 0.0, None) * r1).sum(1)
 
 
+def _run_bounds(lens, counts, n_t):
+    """The walker and the save interval ``[k0, k1)`` of every run of a walker-major RLE, from the run lengths and
+    the runs per walker (every walker's runs cover its ``n_t`` saves)."""
+    lens = np.asarray(lens, np.int64); counts = np.asarray(counts, np.int64)
+    run_w = np.repeat(np.arange(counts.size), counts)
+    k1 = np.cumsum(lens) - run_w * int(n_t)
+    return run_w, k1 - lens, k1
+
+
+def relaxation_logweight_runs(arrays, column, T2_per_comp, T1_per_comp, dt, chi=None, active=None):
+    """:func:`relaxation_logweight` on the stored runs, never on a decoded track: the per-walker log-weight is a
+    sum over the walker's runs of the run's rate times the gate's on-time within it, ``dt * r * (Cg[k1] - Cg[k0])``
+    with ``Cg`` the gate's prefix sum over the saves. O(runs) -- one run per walker on an impermeable substrate.
+    ``column`` is the ``comp`` column's descriptor (``kind`` label or fraction); the gates as in
+    :func:`relaxation_logweight`: without ``chi`` the walk relaxes over its ``(n_t - 1) dt`` at T2, and with it the
+    longitudinal periods are ``active - chi``."""
+    name = column["name"]; n_t = int(column["n_t"])
+    vals = np.asarray(arrays[f"{name}_rle_vals"]); lens = np.asarray(arrays[f"{name}_rle_lens"]); counts = np.asarray(arrays[f"{name}_rle_counts"])
+    invT2 = np.where(np.asarray(T2_per_comp) > 0, 1.0 / np.maximum(np.asarray(T2_per_comp, float), 1e-30), 0.0)
+    invT1 = np.where(np.asarray(T1_per_comp) > 0, 1.0 / np.maximum(np.asarray(T1_per_comp, float), 1e-30), 0.0)
+    if column["kind"] == "label":
+        v = vals.astype(np.int64); r2 = invT2[v]; r1 = invT1[v]
+    else:
+        f = np.clip(vals.astype(np.float64) / float(column["Q"] - 1) * float(column.get("scale", 1.0)), 0.0, 1.0)
+        r2 = (1.0 - f) * invT2[0] + f * invT2[1]; r1 = (1.0 - f) * invT1[0] + f * invT1[1]
+    if chi is None:
+        chi = np.ones(n_t); chi[0] = 0.0                                          # the first save ends no step
+        lon = np.zeros(n_t)
+    else:
+        if active is None:
+            raise ValueError("relaxation_logweight_runs: a gate `chi` needs the acquisition's own extent `active`")
+        chi = np.asarray(chi, np.float64).reshape(-1)[:n_t]
+        lon = np.clip(np.asarray(active, np.float64).reshape(-1)[:n_t] - chi, 0.0, None)
+    Cchi = np.concatenate([[0.0], np.cumsum(chi)]); Clon = np.concatenate([[0.0], np.cumsum(lon)])
+    run_w, k0, k1 = _run_bounds(lens, counts, n_t)
+    per_run = r2 * (Cchi[k1] - Cchi[k0]) + r1 * (Clon[k1] - Clon[k0])
+    return -float(dt) * np.bincount(run_w, weights=per_run, minlength=counts.size)
+
+
+def surface_logweight_bridge(arrays, meta, rho_over_D, chi):
+    """The gated surface log-weight ``(rho/D) sum_t chi_t ell_t`` from the bridge form itself, without the per-save
+    series: with ``ell = diff(B)`` (``ell_0 = B_0``, the start), summation by parts gives ``sum_t d_t B_t`` with
+    ``d_t = chi_t - chi_{t+1}`` (``chi_{n_t} = 0``), and on the bridge ``B = a + (e - a) tau + u``, ``u = idst(C)``
+    (DST-I, orthonormal, its own inverse), that is ``a sum d + (e - a) sum d tau + C . dst(d[1:-1])``: two scalars
+    and one ``(n_w, K)`` product, equal to the decoded sum to rounding."""
+    from scipy.fft import dst
+    nt = int(meta["n_t"])
+    C = np.asarray(arrays["blt_bridge_dst"], np.float64); K = C.shape[1]
+    a = np.asarray(arrays["blt_start"], np.float64); e = np.asarray(arrays["blt_endpoint"], np.float64)
+    chi = np.asarray(chi, np.float64).reshape(-1)[:nt]
+    if chi.shape[0] < nt:
+        chi = np.concatenate([chi, np.zeros(nt - chi.shape[0])])
+    d = chi - np.concatenate([chi[1:], [0.0]])
+    tau = np.linspace(0.0, 1.0, nt)
+    dhat = dst(d[1:-1], type=1, norm="ortho")[:K]
+    return float(rho_over_D) * (a * d.sum() + (e - a) * (d * tau).sum() + C @ dhat)
+
+
 def surface_logweight_series(blt, rho_over_D, chi=None):
     """Per-walker surface-relaxivity log-weight ``(rho/D) sum_k chi_k ell_i(t_k)`` from the
     per-save boundary local-time SERIES ``blt`` (``(n_walkers, n_t)``, stored at ``rho/D = 1``,
