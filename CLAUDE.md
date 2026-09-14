@@ -57,8 +57,8 @@ and the analytic geometry of the same shape through the identical waveform/seed/
 
 **Forward signal** (b-values SI, s/m²; diffusivity m²/s; lengths m):
 ```python
-from dmipy_sim import simulate, pgse, set_b, Cylinder
-wf   = set_b(pgse([[1,0,0]], 0.01, 0.04, gradient_strengths=0.2, n_t=300), 1e9)
+from dmipy_sim import simulate, pgse, Cylinder
+wf   = pgse([[1,0,0]], 0.01, 0.04, bvalues=[1e9], n_t=300)
 geom = Cylinder(radius=5e-6, orientation=(0,0,1))
 sig  = simulate(n_walkers=100_000, diffusivity=2e-9, waveform=wf, geometry=geom, seed=0)
 ```
