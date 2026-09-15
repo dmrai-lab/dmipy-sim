@@ -29,6 +29,7 @@ import jax
 import jax.numpy as jnp
 
 from ..persistent_walk import PersistentWalk
+from .tables import jit_with_tables
 
 log = logging.getLogger("dmipy_sim")
 
@@ -42,7 +43,7 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, dt_s
                                    steps_per_round=16, safety_sigma=6.0, n_classes=4, sub_steps=None,
                                    walker_batch_size=100_000, require_gpu=None, storage_dtype=np.float32,
                                    candidate_cache=True, candidate_k_start=64, field_basis=None, field_reuse_intervals=4,
-                                   field_sample_every=1):
+                                   field_sample_every=1, spec=None):
     """A :class:`~dmipy_sim.persistent_walk.PersistentWalk` of ``geometry`` with adaptive stepping (module
     docstring). ``geometry`` must offer ``wall_scales``, ``reflect_with_log_weight`` and ``classify_positions_exact``
     and be impermeable. ``steps_per_round`` is the finest class's steps per round (the round is
@@ -61,7 +62,10 @@ interval mean as before).
     (``PersistentWalk.field_samples``), so the tier costs one gather and a few fixed-list evaluations per
     walker-save rather than a field evaluation per stored point. The list is gathered every ``field_reuse_intervals``
     save intervals with the margin the walkers can travel in between (six sigma of that excursion) and masked by
-    the true distance when evaluated, so reuse costs no strand within the cutoff."""
+    the true distance when evaluated, so reuse costs no strand within the cutoff.
+    ``spec`` is the situation the walk records (the bundle spec ``walk_spec`` drives it by); without one the
+    geometry writes its own, which for 12,196 cited centerlines is 100 MB of Python lists.
+    """
     from .gpu import check_gpu
     from .physics import resolve_sub_steps, length_scales_of
     if not hasattr(geometry, "wall_scales"):
@@ -120,7 +124,6 @@ interval mean as before).
             return r_f, key_f, dlog_f, (n_within if cached else jnp.int32(0))
         stepped = jax.vmap(one, in_axes=(0, 0, None, None, None))
 
-        @jax.jit
         def run(r, keys, dlog, order, start, n_real, m, step_l, reach):
             """The class's walkers are ``order[start:start + n_real]`` (the walkers sorted by class, on the device);
             the window is ``n_pad`` wide, static, and its tail beyond ``n_real`` is stepped and dropped."""
@@ -132,7 +135,7 @@ interval mean as before).
             r = r.at[sel_r].set(r_c, mode="drop"); keys = keys.at[sel_r].set(key_c, mode="drop")
             dlog = dlog.at[sel_r].add(dl_c, mode="drop")
             return r, keys, dlog, jnp.where(real, n_w, 0).max()
-        return run
+        return jit_with_tables(geometry, geometry.TABLES, run)
 
     kernels = {}
 
@@ -191,7 +194,7 @@ interval mean as before).
 
     if cached:                                                       # size the list from the start positions (the widest reach)
         sample = r0_all[np.random.default_rng(int(seed) + 3).choice(n_walkers, size=min(n_walkers, 20_000), replace=False)]
-        counts = jax.jit(jax.vmap(lambda p: geometry.reach_candidates(p, jnp.float32(max(reach_c)), 1)[2]))(jnp.asarray(sample))
+        counts = jit_with_tables(geometry, geometry.TABLES, jax.vmap(lambda p: geometry.reach_candidates(p, jnp.float32(max(reach_c)), 1)[2]))(jnp.asarray(sample))
         k_cand = max(int(candidate_k_start), 1 << int(math.ceil(math.log2(1.5 * max(int(np.asarray(counts).max()), 1)))))
         log.info("adaptive: candidate list of %d (up to %d segments within %.2f um of a start position)", k_cand,
                  int(np.asarray(counts).max()), max(reach_c) * 1e6)
@@ -299,6 +302,6 @@ interval mean as before).
                     kernel_steps_ratio=total_steps / max(n_kernel_steps, 1), steps_per_round_by_class=steps_c,
                     radius_class_bounds_m=R_bounds.tolist(), far_at_m=far_at, safety_sigma=float(safety_sigma))
     return PersistentWalk(positions, float(dt_actual), int(n_min), float(dt_min), boundary_local_time=dlog_all,
-                          compartment=comp, illegal_crossings=0, seed=int(seed), diffusivity=D, geometry=geometry,
+                          compartment=comp, illegal_crossings=0, seed=int(seed), diffusivity=D, geometry=geometry, spec=spec,
                           stepping=stepping, field_basis=field_basis, field_samples=(field_all if sampling else None),
                           field_sample_every=(f_every if sampling else 1))

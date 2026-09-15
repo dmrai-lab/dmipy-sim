@@ -25,7 +25,7 @@ def walk_spec(spec, n_walkers=None, T_max=None, dt_save=None, *, scanner="connec
               seeding=None, adaptive_steps=False, field_sample_every=1, field_far=None, field_gather_every=4):
     """Walk ``spec`` and return a :class:`~dmipy_sim.persistent_walk.PersistentWalk` carrying the spec.
 
-    ``field_far`` is a :class:`~dmipy_sim.fields.strand_field.FarGrid` (or its ``.npz`` path) built for the strand
+    ``field_far`` is a :class:`~dmipy_sim.fields.strand_field.FarGrid` (or its ``.npy`` path) built for the strand
     substrate: the closed form is then summed over the few strands within its ``near_m`` of a point and the grid read
     beyond, the cutoff being the grid's (no doubling; the grid records what it summed to). A one-off per substrate
     (``StrandFieldBasis.build_far_grid``), the lever that makes a dense substrate's field affordable in the walk.
@@ -382,7 +382,7 @@ def _walk_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field, field_re
                 raise SpecError(f"pool {pool.name!r}: its {type(g).__name__} offers no wall_scales; adaptive stepping "
                                 f"is for the curved tubes")
             from ..engine.adaptive import simulate_trajectories_adaptive
-            w = simulate_trajectories_adaptive(n, float(pool.D), g, T_max, dt_save, seed=seed + 13 * pid, r0=r0,
+            w = simulate_trajectories_adaptive(n, float(pool.D), g, T_max, dt_save, seed=seed + 13 * pid, r0=r0, spec=spec,
                                                require_gpu=require_gpu, walker_batch_size=batch, field_basis=sf, field_sample_every=int(field_sample_every), field_reuse_intervals=int(field_gather_every))
             stepping.append((pool.name, w.stepping))
             if w.field_samples is not None:

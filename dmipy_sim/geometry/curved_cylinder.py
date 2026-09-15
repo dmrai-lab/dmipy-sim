@@ -32,6 +32,8 @@ from __future__ import annotations
 
 import jax
 import jax.numpy as jnp
+
+from ..engine.tables import jit_with_tables
 from ._boundary import keep_side_radial, ray_quadric_t, specular, off_wall, representable_nudge
 from ._grid import bucket_by_bbox
 import numpy as np
@@ -427,6 +429,20 @@ class PackedCurvedCylinders(Geometry):
         self._OFF = jnp.asarray([[dx, dy, dz] for dx in (-1, 0, 1)
                                  for dy in (-1, 0, 1) for dz in (-1, 0, 1)], jnp.int32)
 
+    #: the device tables every jitted program of this geometry reads -- passed as arguments at every call
+    #: (:func:`~dmipy_sim.engine.tables.jit_with_tables`), never captured: a program per batch shape and candidate
+    #: width that embedded them held hundreds of copies of the segment tables on the host
+    TABLES = ("_A", "_AB", "_AB2", "_rout", "_seg_tube", "_CELL")
+
+    def classify_positions_exact(self, pts, chunk=100_000):
+        """The exact labels of a batch of host-side points, in chunks; the program is built once per instance
+        and reads the tables as arguments."""
+        f = getattr(self, "_classify_batch", None)
+        if f is None:
+            f = self._classify_batch = jit_with_tables(self, self.TABLES, jax.vmap(self.classify_position))
+        pts = np.asarray(pts, np.float32)
+        return jnp.concatenate([f(jnp.asarray(pts[i:i + chunk])) for i in range(0, pts.shape[0], chunk)])
+
     def _gather(self, r):
         c = jnp.clip(jnp.floor((r - self._GMIN) / self._CS).astype(jnp.int32), 0, self._dims_arr - 1)
         nb = jnp.clip(c[None, :] + self._OFF, 0, self._dims_arr - 1)
@@ -472,8 +488,7 @@ class PackedCurvedCylinders(Geometry):
         # scope. Measured on the same pattern in mesh.py: ~1.4 s per call -> 0.0002 s once hoisted.
         _batch = getattr(self, "_inside_any_batch", None)
         if _batch is None:
-            @jax.jit
-            def _batch(Pb):
+            def _batch_body(Pb):
                 def one(p):
                     cand, valid = self._gather(p)
                     A = self._A[cand]; AB = self._AB[cand]; AB2 = self._AB2[cand]; rr = self._rout[cand]
@@ -481,7 +496,7 @@ class PackedCurvedCylinders(Geometry):
                     d = jnp.linalg.norm(p[None, :] - (A + t[:, None] * AB), axis=1)
                     return (valid & (d < rr)).any()
                 return jax.vmap(one)(Pb)
-            self._inside_any_batch = _batch
+            _batch = self._inside_any_batch = jit_with_tables(self, self.TABLES, _batch_body)
 
         for i in range(0, P.shape[0], chunk):
             out[i:i + chunk] = np.asarray(_batch(jnp.asarray(P[i:i + chunk])))
@@ -496,8 +511,7 @@ class PackedCurvedCylinders(Geometry):
         out = np.zeros((P.shape[0], 3), np.float32)
         _batch = getattr(self, "_radial_batch", None)
         if _batch is None:
-            @jax.jit
-            def _batch(Pb):
+            def _batch_body(Pb):
                 def one(p):
                     cand, valid = self._gather(p)
                     A = self._A[cand]; AB = self._AB[cand]; AB2 = self._AB2[cand]
@@ -509,7 +523,7 @@ class PackedCurvedCylinders(Geometry):
                     n = jnp.sqrt((v * v).sum())
                     return jnp.where(valid.any() & (n > 0), v / jnp.maximum(n, 1e-30), jnp.zeros(3, v.dtype))
                 return jax.vmap(one)(Pb)
-            self._radial_batch = _batch
+            _batch = self._radial_batch = jit_with_tables(self, self.TABLES, _batch_body)
         for i in range(0, P.shape[0], chunk):
             out[i:i + chunk] = np.asarray(_batch(jnp.asarray(P[i:i + chunk])))
         return out
@@ -560,8 +574,7 @@ class PackedCurvedCylinders(Geometry):
             lo = self._lo if box else None; hi = self._hi if box else None
             R_max = jnp.float32(self._Rmax)
 
-            @jax.jit
-            def _batch(Pb):
+            def _batch_body(Pb):
                 def one(p):
                     cand, valid = self._gather(p)
                     A = self._A[cand]; AB = self._AB[cand]; AB2 = self._AB2[cand]; rr = self._rout[cand]
@@ -578,7 +591,7 @@ class PackedCurvedCylinders(Geometry):
                         d_wall = jnp.minimum(d_wall, jnp.minimum((p - lo).min(), (hi - p).min()))
                     return jnp.maximum(d_wall, 0.0), R_near
                 return jax.vmap(one)(Pb)
-            self._wall_scales_batch = _batch
+            _batch = self._wall_scales_batch = jit_with_tables(self, self.TABLES, _batch_body)
         return _batch
 
     def _fold(self, r, r_new, cand=None, valid=None):
