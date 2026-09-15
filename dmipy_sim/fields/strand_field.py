@@ -125,6 +125,21 @@ class FarGrid:
                    float(m["blend_m"]), float(m["cutoff_m"]))
 
 
+class StrandFieldRecord:
+    """The record of a :class:`StrandFieldBasis` a walk sampled along its path: its ``meta`` (the cutoff, the
+    certificate, the far grid's meta, the channel names), no evaluation. What a walk file carries and what a pack
+    of a walk that has its field samples needs; a walk without samples needs the basis itself, rebuilt from the
+    spec."""
+
+    def __init__(self, meta):
+        self.meta = dict(meta)
+        self.channel_names = tuple(self.meta.get("channels") or CHANNEL_NAMES)
+
+    def channels(self, points, *, chunk=None):
+        raise ValueError("a StrandFieldRecord is the record of a basis a walk sampled: it evaluates nothing; rebuild the "
+                         "basis from the spec (walk_spec builds it) to sample the field at new points")
+
+
 class StrandFieldBasis:
     """The field basis of sheathed strands, evaluated at points.
 

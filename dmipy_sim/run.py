@@ -16,9 +16,22 @@ exception's traceback when there was one) and ``summary.json`` (the wall time pe
 The last resource row's age is the run's heartbeat: :func:`list_runs` reports a run whose heartbeat is older
 than twice the interval as ``stale``. ``python -m dmipy_sim.run`` lists the runs on this machine or reports one.
 
+A ``run_dir`` that already holds a record of the same producer with the same parameters is RESUMED: the events
+are appended to, and what the earlier run spooled (:meth:`Run.spool`: a walk's finished batches, one safetensors
+file each under ``spool/``) is there for the producer to read back (:meth:`Run.spooled`) instead of redoing; a
+record of a different run in that directory is refused.
+
 Progress is throttled here, not by the caller: a producer reports every batch or save it finishes, and a row
 is written when ``DMIPY_SIM_PROGRESS_S`` has passed since the last (or the phase completes). The sampler reads
 ``/proc`` (microseconds) and ``device.memory_stats()``; nothing touches the device's compute.
+
+The budget guard: the host kills a process that reaches its ceiling with ``SIGKILL`` and no last word, so the run
+raises first. At every sample the RSS is held against ``DMIPY_SIM_BUDGET_FRACTION`` (0.9) of the ceiling
+(:func:`memory_ceiling`: the cgroup's, else ``MemTotal``, or ``DMIPY_SIM_MEMORY_CEILING_BYTES`` when set), and at
+every batch boundary the RSS the run will reach at its pace -- the growth over the last batch times the batches
+left -- is held against it too; past either, :class:`ResourceBudgetError` is raised from the producer at the next
+batch boundary (the spool intact, the record ended with the projection), and at the next progress report when the
+margin itself is crossed. ``DMIPY_SIM_BUDGET_FRACTION=0`` disables the guard.
 """
 from __future__ import annotations
 
@@ -33,6 +46,8 @@ import sys
 import threading
 import time
 import traceback
+
+import numpy as np
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -44,6 +59,12 @@ SAMPLE_S = float(os.environ.get("DMIPY_SIM_SAMPLE_S", "10"))
 PROGRESS_S = float(os.environ.get("DMIPY_SIM_PROGRESS_S", "10"))
 #: a heartbeat older than this many intervals is stale
 STALE_INTERVALS = 2.0
+#: the share of the memory ceiling a run may reach before it stops itself; 0 disables the guard
+BUDGET_FRACTION = float(os.environ.get("DMIPY_SIM_BUDGET_FRACTION", "0.9"))
+
+
+class ResourceBudgetError(RuntimeError):
+    """The run would exceed the host's memory ceiling: stopped before the kernel does it, its record complete."""
 
 _local = threading.local()
 
@@ -141,8 +162,12 @@ def _devices():
 
 
 def memory_ceiling():
-    """The bytes this process may use before the host kills it: the cgroup's ceiling when there is one, else
-    ``MemTotal``; ``None`` when neither is readable."""
+    """The bytes this process may use before the host kills it: ``DMIPY_SIM_MEMORY_CEILING_BYTES`` when set (a
+    shared machine's share, a test), else the cgroup's ceiling when there is one, else ``MemTotal``; ``None`` when
+    none is readable."""
+    env = os.environ.get("DMIPY_SIM_MEMORY_CEILING_BYTES")
+    if env:
+        return int(float(env))
     _, mx = _cgroup()
     if mx is not None:
         return mx
@@ -173,6 +198,13 @@ class Run:
         self.producer = str(producer)
         self.params = {k: _jsonable(v) for k, v in (params or {}).items()}
         self.run_dir = run_dir
+        self.resumed = False
+        if run_dir is not None and os.path.isfile(os.path.join(run_dir, "manifest.json")):
+            man = json.load(open(os.path.join(run_dir, "manifest.json")))
+            if man.get("producer") != self.producer or man.get("params") != self.params:
+                raise ValueError(f"{run_dir} holds the record of another run ({man.get('producer')} {man.get('params')}); "
+                                 f"this is {self.producer} {self.params}")
+            self.resumed = True
         self.started = time.time()
         self.id = f"{_dt.datetime.utcfromtimestamp(self.started).strftime('%Y%m%dT%H%M%S')}-{self.producer}-{os.getpid()}"
         self._events = []                            # buffered until persisted
@@ -186,6 +218,9 @@ class Run:
         self._outer = None
         self.status = None
         self._joined = False
+        self._ceiling = memory_ceiling()
+        self._budget = None                          # the ResourceBudgetError to raise at the next boundary
+        self._rss_batch = []                         # RSS at the start of every batch of the current batches()
 
     # ------------------------------------------------------------------ the context
     def __enter__(self):
@@ -198,7 +233,7 @@ class Run:
         if stack is None:
             stack = _local.stack = []
         stack.append(self)
-        self._event("start", producer=self.producer)
+        self._event("start", producer=self.producer, resumed=self.resumed)
         if self.run_dir is not None:
             self._persist()
         self._sampler = threading.Thread(target=self._sample_loop, name=f"dmipy-sim run {self.id}", daemon=True)
@@ -268,6 +303,8 @@ class Run:
             ph.last_written = now
         self._event("progress", phase=ph.name, done=float(done), total=float(total), unit=unit,
                     rate_per_s=rate, eta_s=eta, elapsed_s=now - self.started)
+        if self._budget is not None:                 # the margin was crossed since: stop at this report
+            raise self._budget
 
     def batches(self, n, size, *, unit="walkers", what=None):
         """The walker batches of a producer: yields ``(start, end)`` over ``n`` in batches of ``size`` (one batch
@@ -275,12 +312,68 @@ class Run:
         every producer (``what`` names it in the log: the producer by default)."""
         n = int(n); size = n if (size is None or int(size) >= n) else int(size)
         what = what or self.producer
-        for start in range(0, n, size):
+        n_batches = -(-n // size); self._rss_batch = []
+        for b, start in enumerate(range(0, n, size)):
             end = min(start + size, n)
+            self._check_budget(batches_left=n_batches - b)
             log.info("  %s: %s %d-%d (%d%%)...", what, unit, start, end - 1, int(100 * end / n))
             self.progress(start, n, unit=unit)
             yield start, end
         self.progress(n, n, unit=unit)
+
+    def _check_budget(self, *, batches_left=None):
+        """Raise the pending budget error, and at a batch boundary project the run's RSS to its end."""
+        if self._budget is not None:
+            raise self._budget
+        if batches_left is None or not self._ceiling or BUDGET_FRACTION <= 0:
+            return
+        rss = _rss() or 0; self._rss_batch.append(rss)
+        if len(self._rss_batch) >= 2:
+            growth = self._rss_batch[-1] - self._rss_batch[-2]
+            projected = rss + max(growth, 0) * (batches_left - 1)
+            if projected > BUDGET_FRACTION * self._ceiling:
+                self._fail_budget(rss, projected=projected, batches_left=batches_left)
+
+    def _fail_budget(self, rss, **fields):
+        limit = BUDGET_FRACTION * self._ceiling
+        msg = (f"the run would exceed its memory budget: host RSS {rss / 2 ** 30:.1f} GB"
+               + (f", projected {fields['projected'] / 2 ** 30:.1f} GB over the {fields['batches_left']} batches left" if "projected" in fields else "")
+               + f", against {limit / 2 ** 30:.1f} GB ({BUDGET_FRACTION:.0%} of the {self._ceiling / 2 ** 30:.1f} GB ceiling); stopped before the host "
+               f"does it, the record and the spool intact")
+        self._event("warning", message=msg, rss_bytes=rss, ceiling_bytes=self._ceiling, **fields)
+        self._budget = ResourceBudgetError(msg)
+        raise self._budget
+
+    def spool(self, name, arrays, header=None):
+        """A finished piece of the run's result -- a walk's batch -- written now, so a kill loses at most the piece
+        in progress and a resumed run reads it back: ``spool/<name>.safetensors`` under the record (persisting the
+        record at once), the arrays as tensors, ``header`` (JSON-able) in the metadata. Returns the path."""
+        from safetensors.numpy import save_file
+        self._persist()
+        if self._dir is None:
+            raise ValueError("the run is not persisted (DMIPY_SIM_RUN_DIR is empty): nothing to spool to")
+        d = os.path.join(self._dir, "spool"); os.makedirs(d, exist_ok=True)
+        path = os.path.join(d, f"{name}.safetensors"); tmp = path + ".part"
+        save_file({k: np.ascontiguousarray(v) for k, v in arrays.items()}, tmp, metadata={"spool": json.dumps(header or {})})
+        os.replace(tmp, path)                                            # whole or absent, never half
+        self._event("spool", name=str(name), path=path, bytes=os.path.getsize(path))
+        return path
+
+    def spooled(self, name):
+        """The arrays and header spooled under ``name`` by this run or the one it resumes, or ``None``."""
+        root = self._dir if self._dir is not None else (self.run_dir if self.run_dir is not None else None)
+        if root is None:
+            return None
+        path = os.path.join(root, "spool", f"{name}.safetensors")
+        if not os.path.isfile(path):
+            return None
+        from safetensors import safe_open
+        arrays = {}
+        with safe_open(path, framework="numpy") as f:
+            header = json.loads((f.metadata() or {}).get("spool") or "{}")
+            for k in f.keys():
+                arrays[k] = f.get_tensor(k)
+        return arrays, header
 
     def artifact(self, path, **fields):
         """Something written to disk, as it is written."""
@@ -320,7 +413,8 @@ class Run:
             return
         d = root if self.run_dir is not None else os.path.join(root, self.id)
         os.makedirs(d, exist_ok=True)
-        json.dump(self._manifest(), open(os.path.join(d, "manifest.json"), "w"), indent=1)
+        if not self.resumed:
+            json.dump(self._manifest(), open(os.path.join(d, "manifest.json"), "w"), indent=1)
         fh = open(os.path.join(d, "events.jsonl"), "a")
         with self._lock:
             for row in self._events:
@@ -342,6 +436,11 @@ class Run:
         rss = _rss(); total, avail = _meminfo(); cg_cur, cg_max = _cgroup(); dev = _devices()
         if rss:
             self._peak_rss = max(self._peak_rss, rss)
+            if self._ceiling and BUDGET_FRACTION > 0 and self._budget is None and rss > BUDGET_FRACTION * self._ceiling:
+                try:
+                    self._fail_budget(rss)           # from the sampler: recorded now, raised at the next report
+                except ResourceBudgetError:
+                    pass
         for d in dev:
             if d.get("peak_bytes_in_use"):
                 self._peak_dev = max(self._peak_dev, int(d["peak_bytes_in_use"]))
