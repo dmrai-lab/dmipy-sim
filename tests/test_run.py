@@ -121,3 +121,24 @@ def test_every_long_producer_opens_a_run():
     # and ONE batch loop: no producer counts its own batches
     for mod in (core, adaptive, bloch, mt_walk):
         assert "n_batches" not in inspect.getsource(mod), mod.__name__
+
+
+def test_the_budget_guard_stops_a_run_before_the_host_does(tmp_path, monkeypatch):
+    """A ceiling just above the current footprint: a walk-like loop that grows by a batch's worth per batch is
+    stopped at a batch boundary with the projection in its record, and the pieces it spooled are intact."""
+    import gc
+    monkeypatch.setenv("DMIPY_SIM_MEMORY_CEILING_BYTES", str(R._rss() + 400 * 2 ** 20))
+    monkeypatch.setattr(R, "BUDGET_FRACTION", 0.9)
+    keep = []
+    with pytest.raises(R.ResourceBudgetError, match="memory budget"):
+        with R.Run("hog", run_dir=str(tmp_path / "h")) as r:
+            for b, (s, e) in enumerate(r.batches(10, 1)):
+                keep.append(np.ones(150 * 2 ** 20 // 8)); keep[-1][:] = b     # 150 MB per batch, touched
+                r.spool(f"batch-{b:04d}", dict(x=np.arange(3)), dict(batch=b))
+    rows = R.read_events(str(tmp_path / "h"))
+    assert rows[-1]["kind"] == "end" and rows[-1]["status"] == "error" and "ResourceBudgetError" in rows[-1]["error"]
+    warn = [x for x in rows if x["kind"] == "warning"]
+    assert warn and warn[-1]["projected"] > warn[-1]["ceiling_bytes"] * 0.9
+    spooled = [x for x in rows if x["kind"] == "spool"]
+    assert 1 <= len(spooled) < 10 and all(os.path.isfile(x["path"]) for x in spooled)
+    del keep; gc.collect()

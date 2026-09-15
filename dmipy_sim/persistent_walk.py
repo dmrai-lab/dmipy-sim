@@ -128,6 +128,53 @@ class PersistentWalk:
         """The MT bound-pool blend is replayable."""
         return self.bound_frac is not None
 
+    #: the arrays a walk file holds (those present), and the header's scalars
+    _FILE_ARRAYS = ("positions", "boundary_local_time", "compartment", "bound_frac", "weights", "field_samples")
+
+    def save(self, path):
+        """The walk as one safetensors file: its arrays as tensors, the rest (``dt``, ``sub_steps``, ``dt_sim``,
+        ``illegal_crossings``, ``seed``, ``diffusivity``, ``field_sample_every``, ``stepping``, the spec, the field
+        basis's record, the run's summary) as JSON under the ``"walk"`` header key. The geometry is not stored: the
+        spec is the situation, and :meth:`load` gives the walk that; the field basis comes back as its record
+        (:class:`~dmipy_sim.fields.strand_field.StrandFieldRecord`), enough for a pack of a walk that carries its
+        samples. What a spool holds per batch and what a pack is built from later or elsewhere."""
+        import json
+        from safetensors.numpy import save_file
+        arrays = {k: np.ascontiguousarray(getattr(self, k)) for k in self._FILE_ARRAYS if getattr(self, k) is not None}
+        run = self.run
+        header = dict(dt=float(self.dt), sub_steps=int(self.sub_steps), dt_sim=float(self.dt_sim), illegal_crossings=int(self.illegal_crossings),
+                      seed=self.seed, diffusivity=self.diffusivity, field_sample_every=int(self.field_sample_every), stepping=self.stepping,
+                      spec=(None if self.spec is None else self.spec.to_dict()),
+                      field=(None if self.field_basis is None else getattr(self.field_basis, "meta", None)),
+                      run=(None if run is None else (run.summary if hasattr(run, "summary") else run)),
+                      geometry=(None if self.geometry is None else type(self.geometry).__name__))
+        save_file(arrays, str(path), metadata={"walk": json.dumps(header, default=float)})
+
+    @classmethod
+    def load(cls, path):
+        """The walk from :meth:`save`."""
+        import json
+        from safetensors import safe_open
+        arrays = {}
+        with safe_open(str(path), framework="numpy") as f:
+            h = json.loads((f.metadata() or {}).get("walk") or "{}")
+            for k in f.keys():
+                arrays[k] = f.get_tensor(k)
+        spec = None
+        if h.get("spec") is not None:
+            from .spec.substrate import SubstrateSpec
+            spec = SubstrateSpec.from_dict(h["spec"])
+        basis = None
+        if h.get("field") is not None:
+            from .fields.strand_field import StrandFieldRecord
+            basis = StrandFieldRecord(h["field"])
+        return cls(arrays["positions"], float(h["dt"]), int(h["sub_steps"]), float(h["dt_sim"]),
+                   boundary_local_time=arrays.get("boundary_local_time"), compartment=arrays.get("compartment"),
+                   bound_frac=arrays.get("bound_frac"), illegal_crossings=int(h.get("illegal_crossings", 0)), seed=h.get("seed"),
+                   diffusivity=h.get("diffusivity"), spec=spec, weights=arrays.get("weights"), field_basis=basis,
+                   stepping=h.get("stepping"), field_samples=arrays.get("field_samples"),
+                   field_sample_every=int(h.get("field_sample_every", 1)), run=h.get("run"))
+
     def _bank_dict(self, **extra):
         """The bank's internal master dict (``traj``, ``dt_traj``, ``T_max``, ``comp``, ``dlog_b``,
         ``bfrac``, ``n_walkers``, ``seed``) plus the substrate metadata in ``extra``. Callers use

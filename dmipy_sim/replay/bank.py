@@ -939,7 +939,7 @@ def _run_provenance(run, walk):
     record, so its cost is findable) and the summary of the walk's, when the walk carries one."""
     w = getattr(walk, "run", None)
     return dict(pack=dict(id=run.id, host=run.summary["host"], code=run.summary["code"], record=run.dir),
-                walk=(w.summary if w is not None else None))
+                walk=(None if w is None else (w.summary if hasattr(w, "summary") else w)))   # a loaded walk carries the summary
 
 
 def _precision_tiers(arrays, n_walkers, floor_max, walkers_shuffled):
@@ -1081,10 +1081,13 @@ def _walk_master(walk, *, weights=None, field=None, diffusivity=None, substrate_
             raise ValueError(f"weights has {w.shape[0]} entries for {walk.n_walkers} walkers")
         extra["w"] = w
     if field is not None:
-        from ..fields.strand_field import StrandFieldBasis
+        from ..fields.strand_field import StrandFieldBasis, StrandFieldRecord
         if isinstance(field, FieldGrid):
             extra.update(susc_field_basis=field.basis, susc_grid_origin=np.asarray(field.origin, float))
-        elif isinstance(field, StrandFieldBasis):
+        elif isinstance(field, (StrandFieldBasis, StrandFieldRecord)):
+            if isinstance(field, StrandFieldRecord) and walk.field_samples is None:
+                raise ValueError("the walk carries the record of its field basis but no field samples: rebuild the basis from "
+                                 "the spec (walk_spec) to sample the field, or pass field=")
             extra["susc_field_sampler"] = field
             if walk.field_samples is not None:                       # the walk sampled the field along its own path
                 extra["susc_field_samples"] = np.asarray(walk.field_samples, np.float32)

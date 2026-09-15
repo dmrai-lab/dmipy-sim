@@ -44,7 +44,7 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, dt_s
                                    steps_per_round=16, safety_sigma=6.0, n_classes=4, sub_steps=None,
                                    walker_batch_size=100_000, require_gpu=None, storage_dtype=np.float32,
                                    candidate_cache=True, candidate_k_start=64, field_basis=None, field_reuse_intervals=4,
-                                   field_sample_every=1, spec=None):
+                                   field_sample_every=1, spec=None, spool=None):
     """A :class:`~dmipy_sim.persistent_walk.PersistentWalk` of ``geometry`` with adaptive stepping (module
     docstring). ``geometry`` must offer ``wall_scales``, ``reflect_with_log_weight`` and ``classify_positions_exact``
     and be impermeable. ``steps_per_round`` is the finest class's steps per round (the round is
@@ -65,7 +65,10 @@ interval mean as before).
     save intervals with the margin the walkers can travel in between (six sigma of that excursion) and masked by
     the true distance when evaluated, so reuse costs no strand within the cutoff.
     ``spec`` is the situation the walk records (the bundle spec ``walk_spec`` drives it by); without one the
-    geometry writes its own, which for 12,196 cited centerlines is 100 MB of Python lists.
+    geometry writes its own, which for 12,196 cited centerlines is 100 MB of Python lists. ``spool`` names the
+    walk's batches in the run's record (``"<spool>-batch-NNNN"``): every finished batch is written there at once
+    (:meth:`dmipy_sim.run.Run.spool`), and a run resumed in that record reads the batches it finds instead of
+    walking them again -- a killed walk costs the batch in progress; ``None`` spools nothing.
     """
     with Run("simulate_trajectories_adaptive", params=dict(n_walkers=n_walkers, diffusivity=diffusivity, geometry=type(geometry).__name__, T_max=T_max, dt_save=dt_save, walker_batch_size=walker_batch_size)) as run:
         from .gpu import check_gpu
@@ -247,9 +250,20 @@ interval mean as before).
         positions = np.empty((n_walkers, n_t, 3), sdt); dlog_all = np.zeros((n_walkers, n_t), sdt)
         positions[:, 0] = r0_all
         n_free = 0; n_kernel_steps = 0; n_illegal = 0
-        for s, e in run.batches(n_walkers, walker_batch_size, what="adaptive"):
+        for b, (s, e) in enumerate(run.batches(n_walkers, walker_batch_size, what="adaptive")):
             nb = e - s
+            if spool is not None:
+                got = run.spooled(f"{spool}-batch-{b:04d}")
+                if got is not None:                                   # walked before the kill: read back, not redone
+                    arr, hdr = got
+                    positions[s:e] = arr["positions"]; dlog_all[s:e] = arr["boundary_local_time"]
+                    if sampling:
+                        field_all[s:e] = arr["field_samples"]
+                    n_free += int(hdr["n_free"]); n_kernel_steps += int(hdr["n_kernel_steps"])
+                    log.info("  adaptive: batch %d read from the spool (%d walkers)", b, nb)
+                    continue
             r = jnp.asarray(r0_all[s:e]); keys = keys_all[s:e]
+            n_free_0, n_kernel_0 = n_free, n_kernel_steps
             if sampling:
                 seg, keep, n_str = within_dev(r)
                 field_all[s:e, 0] = np.asarray(at_dev(r, seg, keep) - f_mean)
@@ -289,6 +303,12 @@ interval mean as before).
             # the guarantee: nobody changed pool
             comp_end = np.minimum(np.asarray(geometry.classify_positions_exact(r), np.int32), 1)
             n_illegal += int((comp_end != comp_all[s:e]).sum())
+            if spool is not None and not n_illegal:
+                arrays = dict(positions=positions[s:e], boundary_local_time=dlog_all[s:e])
+                if sampling:
+                    arrays["field_samples"] = field_all[s:e]
+                run.spool(f"{spool}-batch-{b:04d}", arrays, dict(batch=b, start=s, end=e, n_free=n_free - n_free_0,
+                                                                  n_kernel_steps=n_kernel_steps - n_kernel_0))
         if n_illegal:
             raise RuntimeError(f"adaptive walk: {n_illegal} walker(s) changed pool -- an illegal crossing; the walk is refused")
         total_steps = n_walkers * (n_t - 1) * n_min
