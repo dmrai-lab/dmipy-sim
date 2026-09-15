@@ -115,8 +115,10 @@ def test_every_long_producer_opens_a_run():
     from dmipy_sim.engine import core, adaptive, bloch, mt_walk
     from dmipy_sim.spec import walk
     from dmipy_sim.replay import bank
+    from dmipy_sim.fields.strand_field import StrandFieldBasis
     for f in (core.simulate, core.simulate_cpmg, core.simulate_trajectories, adaptive.simulate_trajectories_adaptive,
-              bloch.simulate_bloch, mt_walk.simulate_mt_trajectories, walk.walk_spec, bank.build_replay_pack, bank.merge_packs):
+              bloch.simulate_bloch, mt_walk.simulate_mt_trajectories, walk.walk_spec, bank.build_replay_pack, bank.merge_packs,
+              StrandFieldBasis.build_far_grid):
         assert "with Run(" in inspect.getsource(f), f.__name__
     # and ONE batch loop: no producer counts its own batches
     for mod in (core, adaptive, bloch, mt_walk):
@@ -125,14 +127,15 @@ def test_every_long_producer_opens_a_run():
 
 def test_the_budget_guard_stops_a_run_before_the_host_does(tmp_path, monkeypatch):
     """A ceiling just above the current footprint: a walk-like loop that grows by a batch's worth per batch is
-    stopped at a batch boundary with the projection in its record, and the pieces it spooled are intact."""
+    stopped at a batch boundary -- after the warm-up batches, from the median pace -- with the projection in its
+    record, and the pieces it spooled are intact."""
     import gc
-    monkeypatch.setenv("DMIPY_SIM_MEMORY_CEILING_BYTES", str(R._rss() + 400 * 2 ** 20))
+    monkeypatch.setenv("DMIPY_SIM_MEMORY_CEILING_BYTES", str(R._rss() + 2500 * 2 ** 20))
     monkeypatch.setattr(R, "BUDGET_FRACTION", 0.9)
     keep = []
     with pytest.raises(R.ResourceBudgetError, match="memory budget"):
         with R.Run("hog", run_dir=str(tmp_path / "h")) as r:
-            for b, (s, e) in enumerate(r.batches(10, 1)):
+            for b, (s, e) in enumerate(r.batches(20, 1)):
                 keep.append(np.ones(150 * 2 ** 20 // 8)); keep[-1][:] = b     # 150 MB per batch, touched
                 r.spool(f"batch-{b:04d}", dict(x=np.arange(3)), dict(batch=b))
     rows = R.read_events(str(tmp_path / "h"))
@@ -140,5 +143,5 @@ def test_the_budget_guard_stops_a_run_before_the_host_does(tmp_path, monkeypatch
     warn = [x for x in rows if x["kind"] == "warning"]
     assert warn and warn[-1]["projected"] > warn[-1]["ceiling_bytes"] * 0.9
     spooled = [x for x in rows if x["kind"] == "spool"]
-    assert 1 <= len(spooled) < 10 and all(os.path.isfile(x["path"]) for x in spooled)
+    assert R.BUDGET_WARMUP + R.BUDGET_STRIKES - 1 <= len(spooled) < 20 and all(os.path.isfile(x["path"]) for x in spooled)
     del keep; gc.collect()

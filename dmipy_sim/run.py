@@ -11,8 +11,8 @@ The directory holds ``manifest.json`` (written first: producer, parameters, code
 ceiling, the command line -- a dead run is identifiable from it alone), ``events.jsonl`` (append-only, one JSON
 row per line, flushed per row, so a kill loses at most the row being written: ``phase``, ``progress`` with rate
 and ETA, ``resource`` from the sampler thread -- host RSS from ``/proc/self/statm``, host available, the cgroup's
-current and ceiling, every JAX device's bytes in use and peak -- ``artifact``, ``warning``, ``end`` with the
-exception's traceback when there was one) and ``summary.json`` (the wall time per phase, the peaks, the status).
+current and ceiling, every JAX device's bytes in use and peak, and ``where``, the main thread's stack at that moment -- ``artifact``,
+``warning``, ``end`` with the exception's traceback when there was one) and ``summary.json`` (the wall time per phase, the peaks, the status).
 The last resource row's age is the run's heartbeat: :func:`list_runs` reports a run whose heartbeat is older
 than twice the interval as ``stale``. ``python -m dmipy_sim.run`` lists the runs on this machine or reports one.
 
@@ -28,8 +28,9 @@ is written when ``DMIPY_SIM_PROGRESS_S`` has passed since the last (or the phase
 The budget guard: the host kills a process that reaches its ceiling with ``SIGKILL`` and no last word, so the run
 raises first. At every sample the RSS is held against ``DMIPY_SIM_BUDGET_FRACTION`` (0.9) of the ceiling
 (:func:`memory_ceiling`: the cgroup's, else ``MemTotal``, or ``DMIPY_SIM_MEMORY_CEILING_BYTES`` when set), and at
-every batch boundary the RSS the run will reach at its pace -- the growth over the last batch times the batches
-left -- is held against it too; past either, :class:`ResourceBudgetError` is raised from the producer at the next
+every batch boundary the RSS the run will reach at its pace -- the median growth over the last ``BUDGET_WINDOW``
+batches times the batches left, after ``BUDGET_WARMUP`` batches (both at least ``BUDGET_WARMUP_SHARE`` of the run),
+at ``BUDGET_STRIKES`` consecutive boundaries -- is held against it too; past either, :class:`ResourceBudgetError` is raised from the producer at the next
 batch boundary (the spool intact, the record ended with the projection), and at the next progress report when the
 margin itself is crossed. ``DMIPY_SIM_BUDGET_FRACTION=0`` disables the guard.
 """
@@ -61,6 +62,21 @@ PROGRESS_S = float(os.environ.get("DMIPY_SIM_PROGRESS_S", "10"))
 STALE_INTERVALS = 2.0
 #: the share of the memory ceiling a run may reach before it stops itself; 0 disables the guard
 BUDGET_FRACTION = float(os.environ.get("DMIPY_SIM_BUDGET_FRACTION", "0.9"))
+
+
+#: batches before the guard projects a run's pace from its RSS growth, and the window of batches the pace is the
+#: median growth over: the first batches carry the compile, the runtime's buffers and the first pages of the output
+#: arrays, which a projection over ten thousand batches multiplies into nonsense (the DiSCo far-grid build's first
+#: batches grew 44 MB, then 250 MB, and were projected to 1.8 TB and 10 TB against a 3 GB run); a median over a
+#: window ignores a one-off jump and keeps a sustained leak; and the projection must exceed the budget at
+#: BUDGET_STRIKES consecutive boundaries before the run stops
+BUDGET_WARMUP = 8
+BUDGET_WINDOW = 32
+BUDGET_STRIKES = 2
+#: and for a long run both scale with it: the guard judges a pace after this share of the batches (a 42,000-batch
+#: build's first 420: what its warm-up amounts to; on a 42,000-batch run any growth above 12 MB per batch projects
+#: past a 500 GB ceiling, so the pace must be the run's own, not its start's)
+BUDGET_WARMUP_SHARE = 0.01
 
 
 class ResourceBudgetError(RuntimeError):
@@ -174,6 +190,21 @@ def memory_ceiling():
     return _meminfo()[0]
 
 
+def _main_thread_frames(depth=6):
+    """Where the main thread is, as ``file:line function`` from the innermost frame out: the run's own stack trace
+    in every resource row, so a stalled run says what it was doing (a sampler that cannot run at all -- the main
+    thread inside a C call holding the GIL -- leaves the last row's ``where`` as the answer)."""
+    try:
+        frame = sys._current_frames().get(threading.main_thread().ident)
+        out = []
+        while frame is not None and len(out) < depth:
+            out.append(f"{os.path.basename(frame.f_code.co_filename)}:{frame.f_lineno} {frame.f_code.co_name}")
+            frame = frame.f_back
+        return out
+    except Exception:
+        return None
+
+
 def _jsonable(x):
     try:
         json.dumps(x); return x
@@ -221,6 +252,7 @@ class Run:
         self._ceiling = memory_ceiling()
         self._budget = None                          # the ResourceBudgetError to raise at the next boundary
         self._rss_batch = []                         # RSS at the start of every batch of the current batches()
+        self._strikes = 0
 
     # ------------------------------------------------------------------ the context
     def __enter__(self):
@@ -312,7 +344,7 @@ class Run:
         every producer (``what`` names it in the log: the producer by default)."""
         n = int(n); size = n if (size is None or int(size) >= n) else int(size)
         what = what or self.producer
-        n_batches = -(-n // size); self._rss_batch = []
+        n_batches = -(-n // size); self._rss_batch = []; self._strikes = 0
         for b, start in enumerate(range(0, n, size)):
             end = min(start + size, n)
             self._check_budget(batches_left=n_batches - b)
@@ -328,11 +360,19 @@ class Run:
         if batches_left is None or not self._ceiling or BUDGET_FRACTION <= 0:
             return
         rss = _rss() or 0; self._rss_batch.append(rss)
-        if len(self._rss_batch) >= 2:
-            growth = self._rss_batch[-1] - self._rss_batch[-2]
-            projected = rss + max(growth, 0) * (batches_left - 1)
+        n_batches = len(self._rss_batch) + batches_left - 1
+        warmup = max(BUDGET_WARMUP, int(np.ceil(BUDGET_WARMUP_SHARE * n_batches)))
+        window = max(BUDGET_WINDOW, warmup)
+        if len(self._rss_batch) > warmup:
+            inc = np.diff(np.asarray(self._rss_batch[-(window + 1):], np.float64))
+            growth = float(np.median(inc))                                  # the pace: a median, not the last jump
+            projected = rss + max(growth, 0.0) * (batches_left - 1)
             if projected > BUDGET_FRACTION * self._ceiling:
-                self._fail_budget(rss, projected=projected, batches_left=batches_left)
+                self._strikes += 1
+                if self._strikes >= BUDGET_STRIKES:
+                    self._fail_budget(rss, projected=projected, batches_left=batches_left, growth_per_batch=growth)
+            else:
+                self._strikes = 0
 
     def _fail_budget(self, rss, **fields):
         limit = BUDGET_FRACTION * self._ceiling
@@ -433,7 +473,7 @@ class Run:
             log.info("run %s: %s %s", self.producer, kind, {k: v for k, v in fields.items() if k != "traceback"})
 
     def _sample(self):
-        rss = _rss(); total, avail = _meminfo(); cg_cur, cg_max = _cgroup(); dev = _devices()
+        rss = _rss(); total, avail = _meminfo(); cg_cur, cg_max = _cgroup(); dev = _devices(); where = _main_thread_frames()
         if rss:
             self._peak_rss = max(self._peak_rss, rss)
             if self._ceiling and BUDGET_FRACTION > 0 and self._budget is None and rss > BUDGET_FRACTION * self._ceiling:
@@ -445,7 +485,7 @@ class Run:
             if d.get("peak_bytes_in_use"):
                 self._peak_dev = max(self._peak_dev, int(d["peak_bytes_in_use"]))
         self._event("resource", elapsed_s=time.time() - self.started, rss_bytes=rss, host_available_bytes=avail,
-                    cgroup_bytes=cg_cur, cgroup_max_bytes=cg_max, devices=dev)
+                    cgroup_bytes=cg_cur, cgroup_max_bytes=cg_max, devices=dev, where=where)
 
     def _sample_loop(self):
         while not self._stop.wait(SAMPLE_S):

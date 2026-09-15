@@ -49,9 +49,10 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 
-from .hollow_cylinder import hollow_cylinder_basis, contract, annulus_mean_log, CHANNEL_NAMES
+from .hollow_cylinder import hollow_cylinder_basis, outside_basis, contract, annulus_mean_log, CHANNEL_NAMES
 from ..geometry._grid import bucket_by_bbox
 from ..engine.tables import jit_with_tables
+from ..run import Run
 
 
 def _length_inside(A, AB, lo, hi):
@@ -338,6 +339,22 @@ class StrandFieldBasis:
         C_out = hollow_cylinder_basis(rv * (jnp.maximum(rho, b_out) / rho)[:, None], u, ra[seg], rb[seg])
         return C_out, C - C_out, F, d
 
+    def _segment_far(self, p, seg):
+        """The segments ``seg`` at ``p`` for the far part: the outside formula alone (:func:`outside_basis`, what
+        :meth:`_segment` returns as the non-local part, at a fifteenth of the cost), the finite-line factor, the
+        distance: ``(C_out (k, 13), F (k,), d (k,))``."""
+        A, AB, AB2, ra, rb = self._A, self._AB, self._AB2, self._a, self._b
+        As = A[seg]; ABs = AB[seg]
+        L = jnp.sqrt(AB2[seg]); u = ABs / L[:, None]
+        q = p[None, :] - As
+        zA = (q * u).sum(1); zB = zA - L
+        rv = q - zA[:, None] * u
+        rho = jnp.maximum(jnp.linalg.norm(rv, axis=1), jnp.float32(1e-12))
+        F = 0.5 * (zA / jnp.sqrt(zA * zA + rho * rho) - zB / jnp.sqrt(zB * zB + rho * rho))
+        t = jnp.clip(zA / L, 0.0, 1.0)
+        d = jnp.linalg.norm(q - t[:, None] * ABs, axis=1)
+        return outside_basis(rv, u, ra[seg], rb[seg]), F, d
+
     def _channels_kernel(self, weight, *, gate=True):
         """``(p, segments, keep) -> (13,)`` summing the kept segments within the gather radius with ``weight(d)``
         (``d`` the distance to the segment): the whole field, the near part ``1 - S``, or the far part ``S``. The
@@ -349,12 +366,13 @@ class StrandFieldBasis:
         g_w = jnp.float32(self.NEAREST_GATE_RADII); tie = jnp.float32(1e-6 * self.gather_radius_m)   # float32 rounding
 
         def one(p, seg, keep):
+            if not gate:                                                            # the far part: the outside formula alone
+                C, F, d = self._segment_far(p, seg)
+                return (C * ((keep & (d < reach)) * F * weight(d))[:, None]).sum(0)
             sid = self._sid; rb = self._b                                           # read at the trace: arguments
             C, local, F, d = self._segment(p, seg)
             within = keep & (d < reach)
             out = (C * (within * F * weight(d))[:, None]).sum(0)
-            if not gate:
-                return out
             dm = jnp.where(within, d, jnp.inf); d1 = dm.min()
             s1 = jnp.where(within & (d <= d1 + tie), seg, n_seg).min(); i1 = jnp.argmax(seg == s1)
             own = within & (sid[seg] == sid[s1])
@@ -389,62 +407,6 @@ class StrandFieldBasis:
             return x * x * (3.0 - 2.0 * x)
         return jit_with_tables(self, self.TABLES, jax.vmap(self._channels_kernel(S, gate=False)))
 
-    def build_far_grid(self, spacing_m, near_m, *, blend_m=None, dtype=np.float16, chunk=None, all_strands=False):
-        """The :class:`FarGrid` of this substrate at ``spacing_m`` over the domain: the ``S``-weighted superposition
-        (``near_m``, ``blend_m`` default ``2 spacing_m``) at every node, summed to this basis's cutoff. The switch
-        must start beyond the nearest-segment gate of the largest sheath plus two cells (refused otherwise: the
-        sheath surface and the nearest segment's jump at a joint are discontinuities no grid reads); beyond it the
-        far part is the finite-line sum's 1/r^2 tails, continuous, and the tricubic read is good to a percent at a
-        spacing of a third of the switch's start. ``all_strands`` sums every strand at every node (no
-        cutoff: the exact far part, so the truncation certificate is moot; ``chunk x FAR_BLOCK`` terms of device
-        memory at a time). A one-off per substrate (DiSCo at 2.5 um: 64M nodes; hours on a GH200)."""
-        if self.far is not None:
-            raise ValueError("build the far grid from the plain superposition (a basis without a far grid)")
-        h = float(spacing_m); near = float(near_m); blend = float(2.0 * h if blend_m is None else blend_m)
-        if not (0 < blend < near <= self.cutoff_m):
-            raise ValueError("need 0 < blend_m < near_m <= cutoff_m")
-        r_min = (1.0 + self.NEAREST_GATE_RADII) * float(self.outer_radii.max()) + 2.0 * h
-        if near - blend < r_min:
-            raise ValueError(f"the switch starts at {(near - blend) * 1e6:.1f} um; it must start beyond the largest sheath's nearest-segment "
-                             f"gate plus two cells ({r_min * 1e6:.1f} um), or the far part carries discontinuities no grid reads")
-        lo, hi = np.asarray(self.domain[0], float), np.asarray(self.domain[1], float)
-        n = np.maximum(2, np.ceil((hi - lo) / h - 1e-6).astype(int) + 1)      # the nodes cover the domain (a divisible extent exactly)
-        origin = lo
-        ijk = np.stack(np.meshgrid(*[np.arange(k) for k in n], indexing="ij"), -1).reshape(-1, 3)
-        P = (origin[None, :] + ijk * h).astype(np.float32)
-        out = np.empty((P.shape[0], 13), np.float32)
-        log = logging.getLogger("dmipy_sim")
-        if all_strands:                                          # every strand, no cutoff: the exact far part
-            at_all = self.far_channels_all_device(near, blend)
-            chunk = int(chunk or 1024)
-            log.info("StrandFieldBasis.build_far_grid: %d nodes at %.2f um (near %.1f um, blend %.1f um), every strand, chunks of %d",
-                     P.shape[0], h * 1e6, near * 1e6, blend * 1e6, chunk)
-            for i in range(0, P.shape[0], chunk):
-                Pc = P[i:i + chunk]; m = Pc.shape[0]
-                if m < chunk:
-                    Pc = np.concatenate([Pc, np.repeat(Pc[-1:], chunk - m, axis=0)])
-                out[i:i + m] = np.asarray(at_all(jnp.asarray(Pc)))[:m]
-            cutoff = float(np.linalg.norm(hi - lo))                 # what it summed to: the whole domain
-        else:
-            within = self.within_device(); at = self.far_channels_at_device(near, blend)
-            if chunk is None:
-                k_max = min(self.segments_max + 1, 27 * self._cap)
-                chunk = max(64, int(2e9 // max(27 * self._cap * 48 + k_max * 9 * 4 * 24, 1)))
-            log.info("StrandFieldBasis.build_far_grid: %d nodes at %.2f um (near %.1f um, blend %.1f um) in chunks of %d",
-                     P.shape[0], h * 1e6, near * 1e6, blend * 1e6, chunk)
-            for i in range(0, P.shape[0], chunk):
-                Pc = P[i:i + chunk]; m = Pc.shape[0]
-                if m < chunk:
-                    Pc = np.concatenate([Pc, np.repeat(Pc[-1:], chunk - m, axis=0)])
-                Pd = jnp.asarray(Pc)
-                seg, keep, cnt = within(Pd)
-                if int(np.asarray(cnt)[:m].max()) > self.segments_max:
-                    raise ValueError(f"a node has more than segments_max={self.segments_max} segments within the cutoff")
-                out[i:i + m] = np.asarray(at(Pd, seg, keep))[:m]
-            cutoff = self.cutoff_m
-        values = out.reshape(tuple(n) + (13,)).astype(dtype)
-        return FarGrid(tuple(float(x) for x in origin), h, values, near, blend, cutoff)
-
     #: within a strand's outer tube and this many outer radii beyond it, the strand's field is its nearest segment's
     #: infinite cylinder alone (the swept tube's own lumen and sheath: the finite-line blend of two segments at a joint
     #: classifies a sheath point by the other segment's cylinder too, and smeared the sheath's own term by 13 % of
@@ -456,6 +418,64 @@ class StrandFieldBasis:
     NEAREST_GATE_RADII = 1.0
     #: segments per block of the all-segments far kernel: the block's terms are what a chunk of points holds at once
     FAR_BLOCK = 4096
+
+    def build_far_grid(self, spacing_m, near_m, *, blend_m=None, dtype=np.float16, chunk=None, all_strands=False):
+        """The :class:`FarGrid` of this substrate at ``spacing_m`` over the domain: the ``S``-weighted superposition
+        (``near_m``, ``blend_m`` default ``2 spacing_m``) at every node, summed to this basis's cutoff. The switch
+        must start beyond the nearest-segment gate of the largest sheath plus two cells (refused otherwise: the
+        sheath surface and the nearest segment's jump at a joint are discontinuities no grid reads); beyond it the
+        far part is the finite-line sum's 1/r^2 tails, continuous, and the tricubic read is good to a percent at a
+        spacing of a third of the switch's start. ``all_strands`` sums every strand at every node (no
+        cutoff: the exact far part, so the truncation certificate is moot; ``chunk x FAR_BLOCK`` terms of device
+        memory at a time). A one-off per substrate (DiSCo at 2.5 um: 64M nodes; hours on a GH200)."""
+        with Run("build_far_grid", params=dict(spacing_m=float(spacing_m), near_m=float(near_m), blend_m=blend_m, all_strands=bool(all_strands),
+                                            n_strands=self.n_strands, n_segments=self.n_segments)) as run:
+            if self.far is not None:
+                raise ValueError("build the far grid from the plain superposition (a basis without a far grid)")
+            h = float(spacing_m); near = float(near_m); blend = float(2.0 * h if blend_m is None else blend_m)
+            if not (0 < blend < near <= self.cutoff_m):
+                raise ValueError("need 0 < blend_m < near_m <= cutoff_m")
+            r_min = (1.0 + self.NEAREST_GATE_RADII) * float(self.outer_radii.max()) + 2.0 * h
+            if near - blend < r_min:
+                raise ValueError(f"the switch starts at {(near - blend) * 1e6:.1f} um; it must start beyond the largest sheath's nearest-segment "
+                                 f"gate plus two cells ({r_min * 1e6:.1f} um), or the far part carries discontinuities no grid reads")
+            lo, hi = np.asarray(self.domain[0], float), np.asarray(self.domain[1], float)
+            n = np.maximum(2, np.ceil((hi - lo) / h - 1e-6).astype(int) + 1)      # the nodes cover the domain (a divisible extent exactly)
+            origin = lo
+            ijk = np.stack(np.meshgrid(*[np.arange(k) for k in n], indexing="ij"), -1).reshape(-1, 3)
+            P = (origin[None, :] + ijk * h).astype(np.float32)
+            out = np.empty((P.shape[0], 13), np.float32)
+            log = logging.getLogger("dmipy_sim")
+            if all_strands:                                          # every strand, no cutoff: the exact far part
+                at_all = self.far_channels_all_device(near, blend)
+                chunk = int(chunk or 1024)
+                log.info("StrandFieldBasis.build_far_grid: %d nodes at %.2f um (near %.1f um, blend %.1f um), every strand, chunks of %d",
+                         P.shape[0], h * 1e6, near * 1e6, blend * 1e6, chunk)
+                for i, _e in run.batches(P.shape[0], chunk, unit="nodes"):
+                    Pc = P[i:i + chunk]; m = Pc.shape[0]
+                    if m < chunk:
+                        Pc = np.concatenate([Pc, np.repeat(Pc[-1:], chunk - m, axis=0)])
+                    out[i:i + m] = np.asarray(at_all(jnp.asarray(Pc)))[:m]
+                cutoff = float(np.linalg.norm(hi - lo))                 # what it summed to: the whole domain
+            else:
+                within = self.within_device(); at = self.far_channels_at_device(near, blend)
+                if chunk is None:
+                    k_max = min(self.segments_max + 1, 27 * self._cap)
+                    chunk = max(64, int(2e9 // max(27 * self._cap * 48 + k_max * 9 * 4 * 24, 1)))
+                log.info("StrandFieldBasis.build_far_grid: %d nodes at %.2f um (near %.1f um, blend %.1f um) in chunks of %d",
+                         P.shape[0], h * 1e6, near * 1e6, blend * 1e6, chunk)
+                for i, _e in run.batches(P.shape[0], chunk, unit="nodes"):
+                    Pc = P[i:i + chunk]; m = Pc.shape[0]
+                    if m < chunk:
+                        Pc = np.concatenate([Pc, np.repeat(Pc[-1:], chunk - m, axis=0)])
+                    Pd = jnp.asarray(Pc)
+                    seg, keep, cnt = within(Pd)
+                    if int(np.asarray(cnt)[:m].max()) > self.segments_max:
+                        raise ValueError(f"a node has more than segments_max={self.segments_max} segments within the cutoff")
+                    out[i:i + m] = np.asarray(at(Pd, seg, keep))[:m]
+                cutoff = self.cutoff_m
+            values = out.reshape(tuple(n) + (13,)).astype(dtype)
+            return FarGrid(tuple(float(x) for x in origin), h, values, near, blend, cutoff)
 
     def far_channels_all_device(self, near_m, blend_m):
         """The jitted far part at a chunk of points summed over EVERY segment (no cutoff, no gather): ``(chunk, 3)
@@ -469,7 +489,7 @@ class StrandFieldBasis:
         def one(p):
             def block(args):
                 seg, m = args
-                C, _, F, d = self._segment(p, seg)                                    # no local term in the far part
+                C, F, d = self._segment_far(p, seg)                                   # the outside formula: no local term
                 x = jnp.clip((d - n0) / b0, 0.0, 1.0); S = x * x * (3.0 - 2.0 * x)
                 return (C * (S * F * m)[:, None]).sum(0)
             return jax.lax.map(block, (IDX, MSK)).sum(0)
