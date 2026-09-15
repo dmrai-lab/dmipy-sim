@@ -40,8 +40,10 @@ magnitude signal cannot see).
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 from dataclasses import dataclass
+from functools import cached_property
 
 import numpy as np
 import jax
@@ -49,6 +51,7 @@ import jax.numpy as jnp
 
 from .hollow_cylinder import hollow_cylinder_basis, contract, annulus_mean_log, CHANNEL_NAMES
 from ..geometry._grid import bucket_by_bbox
+from ..engine.tables import jit_with_tables
 
 
 def _length_inside(A, AB, lo, hi):
@@ -72,7 +75,9 @@ class FarGrid:
     to 1 at ``near_m`` with the distance ``d`` to its nearest segment -- smooth on the grid's scale by construction,
     so trilinear interpolation reads it -- and the complement ``1 - S`` is what the closed form sums over the few
     strands within ``near_m`` of a point (the particle-mesh split; issue #217). ``values`` ``(nx, ny, nz, 13)`` on the
-    nodes ``origin + (i, j, k) * spacing_m``; ``cutoff_m`` the superposition cutoff the grid summed to."""
+    nodes ``origin + (i, j, k) * spacing_m``; ``cutoff_m`` the superposition cutoff the grid summed to. On disk a
+    ``.npy`` of the values with a ``.json`` of the rest beside it; :meth:`load` maps the values from the file, so
+    the host holds no copy of a grid that lives on the device (DiSCo's is 1.7 GB)."""
     origin_m: tuple
     spacing_m: float
     values: np.ndarray
@@ -84,9 +89,12 @@ class FarGrid:
     def shape(self):
         return tuple(int(n) for n in self.values.shape[:3])
 
-    @property
+    @cached_property
     def sha256(self):
-        return hashlib.sha256(np.ascontiguousarray(self.values).tobytes()).hexdigest()
+        h = hashlib.sha256()
+        for i in range(self.values.shape[0]):                       # a memory-mapped grid is read once, slab by slab
+            h.update(np.ascontiguousarray(self.values[i]).tobytes())
+        return h.hexdigest()
 
     @property
     def meta(self):
@@ -94,16 +102,27 @@ class FarGrid:
                     cutoff_m=float(self.cutoff_m), origin_m=[float(x) for x in self.origin_m], shape=list(self.shape),
                     dtype=str(np.dtype(self.values.dtype)), sha256=self.sha256)
 
+    @staticmethod
+    def _paths(path):
+        path = str(path)
+        if not path.endswith(".npy"):
+            raise ValueError("a far grid is a .npy of its values with a .json beside it")
+        return path, path[:-4] + ".json"
+
     def save(self, path):
-        """The grid as one ``.npz``."""
-        np.savez(path, values=self.values, origin_m=np.asarray(self.origin_m, np.float64), spacing_m=self.spacing_m,
-                 near_m=self.near_m, blend_m=self.blend_m, cutoff_m=self.cutoff_m)
+        """The grid: ``path`` (``.npy``, the values) and its ``.json`` beside it (origin, spacing, switch, cutoff)."""
+        npy, meta = self._paths(path)
+        np.save(npy, np.ascontiguousarray(self.values))
+        json.dump(dict(origin_m=[float(x) for x in self.origin_m], spacing_m=float(self.spacing_m), near_m=float(self.near_m),
+                       blend_m=float(self.blend_m), cutoff_m=float(self.cutoff_m)), open(meta, "w"), indent=1)
 
     @classmethod
     def load(cls, path):
-        z = np.load(path)
-        return cls(tuple(float(x) for x in z["origin_m"]), float(z["spacing_m"]), np.asarray(z["values"]), float(z["near_m"]),
-                   float(z["blend_m"]), float(z["cutoff_m"]))
+        """The grid from ``path`` (``.npy``), its values memory-mapped: the file backs them, the host keeps no copy."""
+        npy, meta = cls._paths(path)
+        m = json.load(open(meta))
+        return cls(tuple(float(x) for x in m["origin_m"]), float(m["spacing_m"]), np.load(npy, mmap_mode="r"), float(m["near_m"]),
+                   float(m["blend_m"]), float(m["cutoff_m"]))
 
 
 class StrandFieldBasis:
@@ -167,12 +186,14 @@ class StrandFieldBasis:
         self._OFF = jnp.asarray([[dx, dy, dz] for dx in (-1, 0, 1) for dy in (-1, 0, 1) for dz in (-1, 0, 1)], jnp.int32)
         self._mean = self._domain_mean()
         self._batch = None
+        #: the device tables every jitted program reads, passed as arguments at every call (never captured: a
+        #: program per shape that embedded them held a copy each on the host and in the runtime; the 1.7 GB far
+        #: grid as a captured constant made a walk with the grid slower than one without)
+        self.TABLES = ("_A", "_AB", "_AB2", "_a", "_b", "_sid", "_CELL") + (("_FAR",) if far is not None else ())
         if far is not None:                                      # the far grid on the device as STORED (float16 halves the
-            self._FAR = jnp.asarray(np.asarray(far.values))      # traffic of the 64-tap read); passed to every jitted kernel
+            self._FAR = jnp.asarray(np.asarray(far.values))      # traffic of the 64-tap read)
             self._FAR_O = jnp.asarray(np.asarray(far.origin_m, np.float32)); self._FAR_H = jnp.float32(far.spacing_m)
-            self._FAR_N = jnp.asarray(np.asarray(far.shape, np.int32))     # as an ARGUMENT, never a captured constant:
-            # a 1.7 GB constant closed over by a jit is embedded in every executable it lowers (minutes per compile,
-            # a copy per shape), which made a walk with the grid slower than one without
+            self._FAR_N = jnp.asarray(np.asarray(far.shape, np.int32))
         logging.getLogger("dmipy_sim").info("StrandFieldBasis: %d strands, %d segments, cutoff %.1f um, grid %s, up to %d segments per cell "
                                             "(%d candidates per point), closed form on the nearest %d",
                                             self.n_strands, self.n_segments, self.cutoff_m * 1e6, self._dims, self._cap,
@@ -233,11 +254,11 @@ class StrandFieldBasis:
             cache = self._within_batches = {}
         f = cache.get((radius, k_max))
         if f is None:
-            A, AB, AB2 = self._A, self._AB, self._AB2
-            CELL, OFF, GMIN, CS, dims_arr, DIMS = self._CELL, self._OFF, self._GMIN, self._CS, self._dims_arr, self._dims
+            OFF, GMIN, CS, dims_arr, DIMS = self._OFF, self._GMIN, self._CS, self._dims_arr, self._dims
             cutoff = jnp.float32(radius)
 
             def one(p):
+                A, AB, AB2, CELL = self._A, self._AB, self._AB2, self._CELL       # read at the trace: arguments
                 c = jnp.clip(jnp.floor((p - GMIN) / CS).astype(jnp.int32), 0, dims_arr - 1)
                 nb = jnp.clip(c[None, :] + OFF, 0, dims_arr - 1)
                 cids = (nb[:, 0] * DIMS[1] + nb[:, 1]) * DIMS[2] + nb[:, 2]
@@ -252,7 +273,7 @@ class StrandFieldBasis:
                 near = valid & ~dup & (d < cutoff)
                 _, pick = jax.lax.top_k(jnp.where(near, -d, -jnp.inf), k_max)
                 return cand[pick], near[pick], near.sum()
-            f = cache[(radius, k_max)] = jax.jit(jax.vmap(one))
+            f = cache[(radius, k_max)] = jit_with_tables(self, self.TABLES, jax.vmap(one))
         return f
 
     def _switch(self, d):
@@ -261,8 +282,8 @@ class StrandFieldBasis:
         x = jnp.clip((d - jnp.float32(self.far.near_m - self.far.blend_m)) / jnp.float32(self.far.blend_m), 0.0, 1.0)
         return x * x * (3.0 - 2.0 * x)
 
-    def _far_at(self, p, FAR):
-        """Tricubic (Catmull-Rom) read of the far grid ``FAR`` at ``p`` (jnp, one point): the far part carries the 1/r^2
+    def _far_at(self, p):
+        """Tricubic (Catmull-Rom) read of the far grid at ``p`` (jnp, one point): the far part carries the 1/r^2
         tails of the strands beyond the switch, whose curvature a trilinear read resolves only at a spacing far below
         the switch radius; the cubic's error falls as the fourth power of spacing over radius. Border nodes repeat."""
         g = (p - self._FAR_O) / self._FAR_H
@@ -276,7 +297,7 @@ class StrandFieldBasis:
         ix = jnp.clip(i0[0] + jnp.arange(-1, 3), 0, self._FAR_N[0] - 1)
         iy = jnp.clip(i0[1] + jnp.arange(-1, 3), 0, self._FAR_N[1] - 1)
         iz = jnp.clip(i0[2] + jnp.arange(-1, 3), 0, self._FAR_N[2] - 1)
-        cube = FAR[ix[:, None, None], iy[None, :, None], iz[None, None, :]].astype(jnp.float32)   # (4, 4, 4, 13)
+        cube = self._FAR[ix[:, None, None], iy[None, :, None], iz[None, None, :]].astype(jnp.float32)   # (4, 4, 4, 13)
         return jnp.einsum("a,b,c,abcd->d", wx, wy, wz, cube)
 
     def _segment(self, p, seg):
@@ -309,10 +330,11 @@ class StrandFieldBasis:
         by its nearest segment's whole cylinder within the gate (``NEAREST_GATE_RADII``; at a tie, the lower segment
         index), the only local terms there are (membership, not a field: ``tr M_P = 3 iso_local`` holds); the far
         part carries no local term (the gate ends before the switch starts)."""
-        reach = jnp.float32(self.gather_radius_m); sid = self._sid; rb = self._b; n_seg = self.n_segments
+        reach = jnp.float32(self.gather_radius_m); n_seg = self.n_segments
         g_w = jnp.float32(self.NEAREST_GATE_RADII); tie = jnp.float32(1e-6 * self.gather_radius_m)   # float32 rounding
 
         def one(p, seg, keep):
+            sid = self._sid; rb = self._b                                           # read at the trace: arguments
             C, local, F, d = self._segment(p, seg)
             within = keep & (d < reach)
             out = (C * (within * F * weight(d))[:, None]).sum(0)
@@ -334,12 +356,10 @@ class StrandFieldBasis:
         f = getattr(self, "_channels_at_batch", None)
         if f is None:
             if self.far is None:
-                f = self._channels_at_batch = jax.jit(jax.vmap(self._channels_kernel(lambda d: 1.0)))
+                f = self._channels_at_batch = jit_with_tables(self, self.TABLES, jax.vmap(self._channels_kernel(lambda d: 1.0)))
             else:
                 near = self._channels_kernel(lambda d: 1.0 - self._switch(d)); far_at = self._far_at
-                g = jax.jit(jax.vmap(lambda p, seg, keep, FAR: near(p, seg, keep) + far_at(p, FAR), in_axes=(0, 0, 0, None)))
-                FAR = self._FAR
-                f = self._channels_at_batch = lambda p, seg, keep: g(p, seg, keep, FAR)     # the grid as an argument
+                f = self._channels_at_batch = jit_with_tables(self, self.TABLES, jax.vmap(lambda p, seg, keep: near(p, seg, keep) + far_at(p)))
         return f
 
     def far_channels_at_device(self, near_m, blend_m):
@@ -352,7 +372,7 @@ class StrandFieldBasis:
         def S(d):
             x = jnp.clip((d - n0) / b0, 0.0, 1.0)
             return x * x * (3.0 - 2.0 * x)
-        return jax.jit(jax.vmap(self._channels_kernel(S, gate=False)))
+        return jit_with_tables(self, self.TABLES, jax.vmap(self._channels_kernel(S, gate=False)))
 
     def build_far_grid(self, spacing_m, near_m, *, blend_m=None, dtype=np.float16, chunk=None, all_strands=False):
         """The :class:`FarGrid` of this substrate at ``spacing_m`` over the domain: the ``S``-weighted superposition
@@ -438,7 +458,7 @@ class StrandFieldBasis:
                 x = jnp.clip((d - n0) / b0, 0.0, 1.0); S = x * x * (3.0 - 2.0 * x)
                 return (C * (S * F * m)[:, None]).sum(0)
             return jax.lax.map(block, (IDX, MSK)).sum(0)
-        return jax.jit(jax.vmap(one))
+        return jit_with_tables(self, self.TABLES, jax.vmap(one))
 
     def with_far(self, far):
         """The same strands read through ``far`` (a :class:`FarGrid` built for this substrate at this cutoff): the
