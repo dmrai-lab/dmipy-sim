@@ -215,14 +215,14 @@ class _Boundary:
         return self._geom[key]
 
 
-def _strand_field(outer_b, inner_b, lo, hi, traj, cutoff_m, tol, seed, strands_max=1024, cutoff_max=50e-6):
+def _strand_field(outer_b, inner_b, lo, hi, traj, cutoff_m, tol, seed, segments_max=4096, cutoff_max=50e-6):
     """The per-segment field basis of a strand substrate (its sheath between ``inner_b`` and ``outer_b``), the
     cutoff doubled until the channels at a sample of the walk's start positions move by less than ``tol``."""
     from ..fields.strand_field import StrandFieldBasis
     if len(outer_b.centerlines) != len(inner_b.centerlines):
         raise SpecError("the sheath's inner and outer walls list different numbers of strands")
     sf = StrandFieldBasis(outer_b.centerlines, inner_b.radii, outer_b.radii, cutoff_m=cutoff_m, domain=(lo, hi),
-                          strands_max=strands_max)
+                          segments_max=segments_max)
     rng = np.random.default_rng(int(seed) + 7)
     sample = traj[rng.choice(traj.shape[0], size=min(traj.shape[0], 2000), replace=False), 0]
     extent = float(np.max(np.asarray(hi) - np.asarray(lo)))
@@ -403,8 +403,9 @@ def _walk_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field, field_re
             if pid in sampled:
                 fs.append(sampled[pid])
             else:                                                            # a frozen shell: its start's channels, constant
-                seg, keep, _ = sf.nearest_device()(jnp.asarray(np.asarray(pos if pos.ndim == 2 else pos[:, 0], np.float32)))
-                c0 = np.asarray(sf.channels_at_device()(jnp.asarray(np.asarray(pos if pos.ndim == 2 else pos[:, 0], np.float32)), seg, keep)) - sf.mean[None, :]
+                p0 = jnp.asarray(np.asarray(pos if pos.ndim == 2 else pos[:, 0], np.float32))
+                seg, keep, _ = sf.within_device()(p0)
+                c0 = np.asarray(sf.channels_at_device()(p0, seg, keep)) - sf.mean[None, :]
                 fs.append(np.repeat(c0[:, None, :].astype(np.float32), n_t, axis=1))
         if pos.ndim == 2:                                                        # a frozen shell: no path, no contact
             pos = np.repeat(pos[:, None, :], n_t, axis=1); dl = np.zeros((len(pos), n_t), np.float32)
