@@ -28,8 +28,9 @@ is written when ``DMIPY_SIM_PROGRESS_S`` has passed since the last (or the phase
 The budget guard: the host kills a process that reaches its ceiling with ``SIGKILL`` and no last word, so the run
 raises first. At every sample the RSS is held against ``DMIPY_SIM_BUDGET_FRACTION`` (0.9) of the ceiling
 (:func:`memory_ceiling`: the cgroup's, else ``MemTotal``, or ``DMIPY_SIM_MEMORY_CEILING_BYTES`` when set), and at
-every batch boundary the RSS the run will reach at its pace -- the median growth over the last ``BUDGET_WARMUP``
-batches times the batches left, after that many batches -- is held against it too; past either, :class:`ResourceBudgetError` is raised from the producer at the next
+every batch boundary the RSS the run will reach at its pace -- the median growth over the last ``BUDGET_WINDOW``
+batches times the batches left, after ``BUDGET_WARMUP`` batches, at ``BUDGET_STRIKES`` consecutive boundaries -- is
+held against it too; past either, :class:`ResourceBudgetError` is raised from the producer at the next
 batch boundary (the spool intact, the record ended with the projection), and at the next progress report when the
 margin itself is crossed. ``DMIPY_SIM_BUDGET_FRACTION=0`` disables the guard.
 """
@@ -63,10 +64,15 @@ STALE_INTERVALS = 2.0
 BUDGET_FRACTION = float(os.environ.get("DMIPY_SIM_BUDGET_FRACTION", "0.9"))
 
 
-#: batches before the guard projects a run's pace from its RSS growth (the first ones carry the compile and the
-#: first pages of the output arrays, which a projection over ten thousand batches would multiply into nonsense:
-#: the DiSCo far-grid build's first batch grew 44 MB and was projected to 1.8 TB)
-BUDGET_WARMUP = 3
+#: batches before the guard projects a run's pace from its RSS growth, and the window of batches the pace is the
+#: median growth over: the first batches carry the compile, the runtime's buffers and the first pages of the output
+#: arrays, which a projection over ten thousand batches multiplies into nonsense (the DiSCo far-grid build's first
+#: batches grew 44 MB, then 250 MB, and were projected to 1.8 TB and 10 TB against a 3 GB run); a median over a
+#: window ignores a one-off jump and keeps a sustained leak; and the projection must exceed the budget at
+#: BUDGET_STRIKES consecutive boundaries before the run stops
+BUDGET_WARMUP = 8
+BUDGET_WINDOW = 32
+BUDGET_STRIKES = 2
 
 
 class ResourceBudgetError(RuntimeError):
@@ -242,6 +248,7 @@ class Run:
         self._ceiling = memory_ceiling()
         self._budget = None                          # the ResourceBudgetError to raise at the next boundary
         self._rss_batch = []                         # RSS at the start of every batch of the current batches()
+        self._strikes = 0
 
     # ------------------------------------------------------------------ the context
     def __enter__(self):
@@ -333,7 +340,7 @@ class Run:
         every producer (``what`` names it in the log: the producer by default)."""
         n = int(n); size = n if (size is None or int(size) >= n) else int(size)
         what = what or self.producer
-        n_batches = -(-n // size); self._rss_batch = []
+        n_batches = -(-n // size); self._rss_batch = []; self._strikes = 0
         for b, start in enumerate(range(0, n, size)):
             end = min(start + size, n)
             self._check_budget(batches_left=n_batches - b)
@@ -349,14 +356,16 @@ class Run:
         if batches_left is None or not self._ceiling or BUDGET_FRACTION <= 0:
             return
         rss = _rss() or 0; self._rss_batch.append(rss)
-        if len(self._rss_batch) >= 1 + BUDGET_WARMUP:
-            # the pace: the median growth over the last batches (a one-off -- the compile, an output array's first
-            # pages -- is not a pace; the first BUDGET_WARMUP batches are not counted at all)
-            inc = np.diff(np.asarray(self._rss_batch[-(BUDGET_WARMUP + 1):], np.float64))
-            growth = float(np.median(inc))
+        if len(self._rss_batch) > BUDGET_WARMUP:
+            inc = np.diff(np.asarray(self._rss_batch[-(BUDGET_WINDOW + 1):], np.float64))
+            growth = float(np.median(inc))                                  # the pace: a median, not the last jump
             projected = rss + max(growth, 0.0) * (batches_left - 1)
             if projected > BUDGET_FRACTION * self._ceiling:
-                self._fail_budget(rss, projected=projected, batches_left=batches_left, growth_per_batch=growth)
+                self._strikes += 1
+                if self._strikes >= BUDGET_STRIKES:
+                    self._fail_budget(rss, projected=projected, batches_left=batches_left, growth_per_batch=growth)
+            else:
+                self._strikes = 0
 
     def _fail_budget(self, rss, **fields):
         limit = BUDGET_FRACTION * self._ceiling
