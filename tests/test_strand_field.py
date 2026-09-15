@@ -23,7 +23,7 @@ def _kinked_strand(n=7, step=3e-6, turn_deg=20.0, seed=0):
 def test_a_curved_strand_matches_the_rasterised_route():
     """One sheathed strand with 20-degree joints (DiSCo's median): the superposition's 13 channels against the
     k-space route on a box, inside the lumen, the sheath and outside (measured 4.8 / 3.5 / 1.6 / 0.9 % of the
-    component's maximum; a 54-degree joint, DiSCo's sharpest, measures 8.9 / 8.4 / 2.8 / 1.0 %)."""
+    component's maximum; a 54-degree joint, DiSCo's sharpest, measures 8.9 / 8.4 / 3.6 / 1.0 %)."""
     cl = _kinked_strand(); a, b = 0.8e-6, 1.4e-6
     lo, hi = np.full(3, -7e-6), np.full(3, 7e-6); res = 0.15e-6
     inner = d.PackedCurvedCylinders([cl], [a], interior=True); outer = d.PackedCurvedCylinders([cl], [b], interior=True)

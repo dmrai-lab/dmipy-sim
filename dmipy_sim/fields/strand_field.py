@@ -29,8 +29,8 @@ the largest the far field's whole rms), which no far grid can read and which the
 segment's term is continuous in the point). What the sum costs at a joint, against the rasterised k-space field
 (the two arms' half-cylinders overlap inside the bend and leave a wedge outside it, where the swept tube is
 round): a 54-degree joint, the sharpest on DiSCo, reproduces the field to 9 % of the component's maximum in the
-lumen and the sheath at the joint, 2.8 % outside within three radii, 1.0 % beyond; a 20-degree joint (DiSCo's
-median) to 4.8 / 3.5 / 1.6 / 0.9 %. Overlapping strands (DiSCo admits residual overlap) are summed where the
+lumen and the sheath at the joint, 3.6 % outside within three radii, 1.0 % beyond; a 20-degree joint (DiSCo's
+median) to 4.8 / 3.5 / 1.3 / 0.9 %. Overlapping strands (DiSCo admits residual overlap) are summed where the
 rasterised mask takes their union: a second-order difference confined to the overlap volume.
 
 Every channel is relative to the domain mean of the bare superposition, computed in closed form from the strands'
@@ -417,7 +417,7 @@ class StrandFieldBasis:
     #: beyond it -- where the far grid reads -- the field is continuous. Measured against the k-space route on a
     #: 20-degree joint: 4.8 % of the component's maximum in the lumen, 3.5 % in the sheath, 1.3 % within three radii
     #: outside, 0.9 % beyond (the nearest segment alone everywhere: 4.8 / 3.5 / 1.4 / 0.9; a 54-degree joint: 8.9 /
-    #: 8.4 / 4.5 / 1.1 against 9.0 / 9.3 / 4.6 / 1.4)
+    #: 8.4 / 3.6 / 1.0 against 9.0 / 9.3 / 4.6 / 1.4)
     NEAREST_GATE_RADII = 1.0
     #: segments per block of the all-segments far kernel: the block's terms are what a chunk of points holds at once
     FAR_BLOCK = 4096
