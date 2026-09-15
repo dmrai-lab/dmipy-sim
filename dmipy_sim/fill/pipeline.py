@@ -209,9 +209,9 @@ class Fill:
         self.hub, self.rc, self.o = hub, rc, o
         os.makedirs(o.workdir, exist_ok=True)
         self.packing = {"proc": None, "job": None}; self.uploading = {"thread": None, "error": None}
-        self.post = {"threads": [], "error": None}; self.post_lock = threading.Lock()
+        self.post = {"threads": [], "error": None}; self.post_lock = threading.RLock()   # the pack/upload handoff: one thread at a time
         self.prefetch = {"thread": None, "key": None, "seeds": None, "error": None}
-        self.state = {"walking": None}; self.stop = threading.Event()
+        self.state = {"walking": None, "held": {}}; self.stop = threading.Event()   # held: every claim in the pipeline, by name
         self.cert = None
         if not o.certify:                                  # the fill's certificate: measured once, inherited by every block
             try:
@@ -223,34 +223,63 @@ class Fill:
 
     # ---- pack + upload, depth one each
     def start_pack(self, job):
+        """The pack subprocess for a block whose rounds are all saved; a waiter thread hands its shard to the upload
+        the moment it ends (on a slow device a block's walk is an hour, and its shard must not wait for the next)."""
         jf = job["file"]; json.dump(job, open(jf, "w"), indent=1, default=float)
         env = dict(os.environ, JAX_PLATFORMS="cpu") if self.o.pack_device == "numpy" else dict(os.environ)
         pkg = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))   # the same dmipy_sim as this process
         env["PYTHONPATH"] = pkg + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
-        self.packing["proc"] = subprocess.Popen([sys.executable, "-m", "dmipy_sim.fill", "--pack", jf], env=env); self.packing["job"] = job
-        log.info("%s: pack started (pid %d, device %s)", job["name"], self.packing["proc"].pid, self.o.pack_device)
+        proc = subprocess.Popen([sys.executable, "-m", "dmipy_sim.fill", "--pack", jf], env=env)
+        cs = job.get("claim_state") or dict(block=job["block"], variant=job["variant"], host=job["host"], name=job["name"], claim=job.get("claim"),
+                                            round=None, **{"pass": job.get("pass")}, run_dir=None, commit=job["manifest"]["code"]["commit"], started=C.stamp())
+        self.packing["proc"] = proc; self.packing["job"] = job; self.state["held"][job["name"]] = dict(cs, stage="packing")
+        log.info("%s: pack started (pid %d, device %s)", job["name"], proc.pid, self.o.pack_device)
+
+        def waiter():
+            proc.wait()
+            try:
+                with self.post_lock:
+                    self.finish_pack()
+            except BaseException as e:
+                self.post["error"] = e
+        threading.Thread(target=waiter, daemon=True).start()
 
     def finish_pack(self):
-        """Wait for the pack in flight; hand its shard to the upload thread (waiting for the one before)."""
+        """The pack in flight, waited for; its shard handed to the upload thread (after the one before). Called by
+        the waiter thread, by the post thread that starts the next pack, and by the loop's end: the lock keeps
+        one handoff at a time."""
+        with self.post_lock:
+            self._finish_pack()
+
+    def _finish_pack(self):
         if self.packing["proc"] is None:
             return
         rc_ = self.packing["proc"].wait(); job = self.packing["job"]; self.packing["proc"] = None; self.packing["job"] = None
         if rc_ != 0:
             raise RuntimeError(f"{job['name']}: the pack subprocess failed (exit {rc_}); its walk files are kept in {self.o.workdir}")
         if self.o.no_upload:
-            log.info("%s: packed, not uploaded", job["name"]); os.remove(job["file"]); return
+            log.info("%s: packed, not uploaded", job["name"]); os.remove(job["file"]); self.state["held"].pop(job["name"], None); return
         self.join_upload()
+        if job["name"] in self.state["held"]:
+            self.state["held"][job["name"]]["stage"] = "uploading"
 
         def go():
             try:
                 upload_block(self.hub, self.o, job)
             except BaseException as e:
                 self.uploading["error"] = e
+            finally:
+                self.state["held"].pop(job["name"], None)
         self.uploading["thread"] = threading.Thread(target=go, daemon=False); self.uploading["thread"].start()
 
     def join_upload(self):
-        if self.uploading["thread"] is not None:
-            self.uploading["thread"].join(); self.uploading["thread"] = None
+        with self.post_lock:
+            t = self.uploading["thread"]
+        if t is not None:
+            t.join()
+            with self.post_lock:
+                if self.uploading["thread"] is t:
+                    self.uploading["thread"] = None
             if self.uploading["error"] is not None:
                 raise self.uploading["error"]
 
@@ -313,7 +342,9 @@ class Fill:
                     seed=row["seed"], box=dict(i=row["i"], j=row["j"], k=row["k"]), n_walkers=sum(rd["n_walkers"] for rd in rounds),
                     **{"pass": P.get("pass"), "pass_scale": P["scale"]},
                     provenance=dict(fill=dict(dataset=o.repo, variant=rc.variant, block=claimed["block"], host=o.host, budget=o.budget, code=rc.man["code"],
-                                              **{"pass": P.get("pass"), "pass_scale": P["scale"]}, plan=rc.man["plan"]["file"], blocks=rc.man["plan"]["blocks"])))
+                                              **{"pass": P.get("pass"), "pass_scale": P["scale"]}, plan=rc.man["plan"]["file"], blocks=rc.man["plan"]["blocks"])),
+                    claim_state=dict(block=claimed["block"], variant=rc.variant, host=o.host, name=claimed["name"], claim=claimed["claim"], round=None,
+                                     **{"pass": P.get("pass")}, run_dir=None, commit=rc.commit, started=C.stamp()))
 
     # ---- the loop
     def run(self, *, heartbeat_every=None):
@@ -344,10 +375,13 @@ class Fill:
                         nxt = pending = C.claim_next(hub, rc, o.host, only_pass=o.only_pass, claim_batch=o.claim_batch, write=o.claims)
                         if nxt is not None:                # the next block's first round, likewise
                             self.prefetch_start(nxt["row"], 0, rc.rounds(nxt["row"], o.budget, nxt["P"], o.max_walkers), nxt["P"], (nxt["name"], 0))
-                    self.state["walking"] = dict(block=block, variant=rc.variant, host=o.host, name=name, claim=claimed["claim"], round=(r if k > 1 else None),
-                                                 **{"pass": P.get("pass")}, run_dir=round_paths(o.workdir, name, r, k)[0], commit=rc.commit, started=C.stamp())
+                    cur = dict(block=block, variant=rc.variant, host=o.host, name=name, claim=claimed["claim"], round=(r if k > 1 else None), stage="walking",
+                               **{"pass": P.get("pass")}, run_dir=round_paths(o.workdir, name, r, k)[0], commit=rc.commit, started=C.stamp())
+                    self.state["walking"] = cur; self.state["held"][name] = cur
                     w, rd = walk_round(o, rc, row, name, r, k, P, seeds); rounds.append(rd)
                     self.state["walking"] = None
+                    if r + 1 < k:
+                        self.state["held"].pop(name, None)  # between rounds: covered again by the next round's walk
                     self.post_round(w, rd, self.job_of(claimed, rounds, out) if r + 1 == k else None)
                     del w
                 claimed = nxt; pending = None

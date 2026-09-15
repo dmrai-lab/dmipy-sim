@@ -147,22 +147,30 @@ def release_stale(hub, variant, *, stale_s=None):
 
 
 def heartbeat_payload(cur, rep):
-    """The claim's refreshed content: what the worker is walking and the run record's last progress row."""
+    """A claim's refreshed content: the block's stage in the pipeline (``walking``, ``packing``, ``uploading``)
+    and, while it walks, the run record's last progress row."""
     lp = rep.get("last_progress") or {}
-    return dict(block=cur["block"], variant=cur["variant"], host=cur["host"], started=cur["started"], commit=cur["commit"], stage="walking",
-                round=cur.get("round"), **{"pass": cur.get("pass")}, heartbeat=stamp(),
+    return dict(block=cur["block"], variant=cur["variant"], host=cur["host"], started=cur["started"], commit=cur["commit"],
+                stage=cur.get("stage", "walking"), round=cur.get("round"), **{"pass": cur.get("pass")}, heartbeat=stamp(),
                 progress=dict(done=lp.get("done"), total=lp.get("total"), unit=lp.get("unit"), rate_per_s=lp.get("rate_per_s"), eta_s=lp.get("eta_s")),
                 peaks=rep.get("peaks"), status=rep.get("status"))
 
 
-def heartbeat_once(hub, cur, report):
-    """One heartbeat: the claim rewritten with :func:`heartbeat_payload` in a commit that is not retried (a 429 is
-    logged and the next beat tries again). ``report`` is :func:`dmipy_sim.run.report`."""
-    if cur is None or cur.get("claim") is None:
+def heartbeat_once(hub, held, report):
+    """One heartbeat: every claim the worker holds (``held``: ``{name: cur}`` -- the block walking, the ones
+    packing and uploading) rewritten with :func:`heartbeat_payload` in ONE commit that is not retried (a 429 is
+    logged and the next beat tries again). A block's claim stays fresh from its first round to its upload, so a
+    slow device's shard is never taken for a dead worker's. ``report`` is :func:`dmipy_sim.run.report`."""
+    curs = [c for c in list(held.values()) if c and c.get("claim")]
+    if not curs:
         return False
     try:
-        rep = report(cur["run_dir"]) if os.path.isfile(os.path.join(cur["run_dir"], "manifest.json")) else {}
-        hub.put_json(heartbeat_payload(cur, rep), cur["claim"], f"heartbeat {cur['name']} on {cur['host']}", tries=1)
+        adds = {}
+        for cur in curs:
+            rd = cur.get("run_dir")
+            rep = report(rd) if rd and os.path.isfile(os.path.join(rd, "manifest.json")) else {}
+            adds[cur["claim"]] = json.dumps(heartbeat_payload(cur, rep), indent=1).encode()
+        hub.commit(adds, [], f"heartbeat {', '.join(c['name'] for c in curs)} on {curs[0]['host']}", tries=1)
         return True
     except Exception as e:
         log.warning("heartbeat failed: %s", e)
@@ -170,11 +178,11 @@ def heartbeat_once(hub, cur, report):
 
 
 def heartbeat(hub, state, stop, report, *, every=None):
-    """The worker's heartbeat thread: :func:`heartbeat_once` on ``state["walking"]`` every ``every`` seconds until
+    """The worker's heartbeat thread: :func:`heartbeat_once` on ``state["held"]`` every ``every`` seconds until
     ``stop`` is set. ``report`` is imported by the main thread before this one starts: a thread that imports
     while the main thread imports deadlocks on Python's import lock (measured)."""
     while not stop.wait(HEARTBEAT_S if every is None else every):
-        heartbeat_once(hub, state.get("walking"), report)
+        heartbeat_once(hub, state.get("held") or {}, report)
 
 
 def mine(hub, variant, host):
