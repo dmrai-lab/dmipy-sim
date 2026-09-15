@@ -72,3 +72,25 @@ def test_the_pack_records_the_grid_and_the_replay_gates_on_it(spec, tmp_path):
 def test_the_grid_knob_needs_the_adaptive_producer(spec):
     with pytest.raises(ValueError, match="adaptive"):
         walk_spec(spec, 30, 8e-4, 5e-5, seed=3, n_probe=20_000, require_gpu=False, field=True, field_sample_every=4)
+
+
+def test_shards_with_the_path_channel_merge(spec, tmp_path):
+    """Each pack quantises its path channel with its own scale table; a merge stacks the tables with a block axis
+    and the decoder applies each walker's own, so the merged coefficients are the shards' and the field replay is
+    the weight-averaged replay of the shards."""
+    from dmipy_sim.replay.bank import merge_packs, susc_path_coeffs
+    pks = [build_replay_pack(_walk(spec, 4) if s_ == 3 else walk_spec(spec, 60, 8e-4, 5e-5, seed=s_, n_probe=20_000, require_gpu=False, field=True,
+                                                                     adaptive_steps=True, field_cutoff_max_m=25e-6, field_sample_every=4),
+                             id=f"t/shard-{s_}", license="x", citation="x", K=8, susc_path_K=4, device="numpy", out_path=str(tmp_path / f"s{s_}.rpk"))
+           for s_ in (3, 4)]
+    m = merge_packs([str(tmp_path / "s3.rpk"), str(tmp_path / "s4.rpk")], id="t/merged")
+    pm = m.meta["compression"]["channels"]["susceptibility_path"]
+    assert m.arrays["susc_path_scale"].shape[0] == 2 and "band_block" in m.arrays
+    C_m, names = susc_path_coeffs(m.arrays, pm)
+    C_s = np.concatenate([susc_path_coeffs(pk.arrays, pk.meta["compression"]["channels"]["susceptibility_path"])[0] for pk in pks])
+    np.testing.assert_allclose(C_m, C_s, rtol=1e-12, atol=0)
+    seq = d.gre(4e-4, gradient_directions=[[1, 0, 0]], bvalues=[0.0], delta=1e-4, Delta=2e-4, n_t=m.n_t, slew_rate=np.inf)
+    kw = dict(tissue=False, B0=7.0, b0_dir=(1, 0, 0), chi_iso=-0.1e-6, chi_aniso=-0.1e-6)
+    W = [float(np.asarray(pk.arrays["spin_weights"]).sum()) if "spin_weights" in pk.arrays else pk.n_walkers for pk in pks]
+    S = [pk.replay(seq, **kw)[0] for pk in pks]
+    np.testing.assert_allclose(m.replay(seq, **kw)[0], (W[0] * S[0] + W[1] * S[1]) / (W[0] + W[1]), rtol=1e-6)

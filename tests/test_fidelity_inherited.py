@@ -131,6 +131,12 @@ def test_rounds_of_one_block_merge_and_recertify(walks, tmp_path):
                                         fidelity="inherited", fidelity_from=cert, out_path=str(tmp_path / f"r{r}.rpk")))
     with pytest.raises(ValueError, match="unless the merge recertifies"):
         merge_packs(rounds, id="fill/block-1")
+    # a codec's MEASURED numbers differ between rounds and are not a codec difference (the L40S's two rounds of
+    # block 1 differed in the path channel's trace residual by 4e-5 and were refused)
+    from dmipy_sim.replay.bank import _codec_signature
+    m0 = dict(rounds[0].meta["compression"]); m0["channels"] = dict(m0["channels"], boundary_local_time=dict(m0["channels"]["boundary_local_time"], trace_residual=1.0))
+    m1 = dict(rounds[1].meta["compression"]); m1["channels"] = dict(m1["channels"], boundary_local_time=dict(m1["channels"]["boundary_local_time"], trace_residual=2.0))
+    assert _codec_signature(m0) == _codec_signature(m1) and _codec_signature(dict(m0, K=99)) != _codec_signature(m1)
     merged = merge_packs([str(tmp_path / "r0.rpk"), str(tmp_path / "r1.rpk")], id="fill/block-1", overlap="recertify", device="numpy",
                          out_path=str(tmp_path / "b1.rpk"))
     pv = merged.meta["fidelity"]["per_voxel"]

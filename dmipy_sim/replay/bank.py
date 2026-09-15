@@ -732,7 +732,13 @@ def susc_path_coeffs(arrays, meta):
     """
     C = np.asarray(arrays["susc_path_dct"], np.float64)
     if "susc_path_scale" in arrays:
-        C = C * np.asarray(arrays["susc_path_scale"], np.float64)[None]
+        S = np.asarray(arrays["susc_path_scale"], np.float64)
+        if S.ndim == 3:                                            # a merged pack: one scale table per shard, walkers by block
+            blk = np.asarray(arrays["band_block"], np.int64)
+            for b in np.unique(blk):
+                C[blk == b] *= S[b][None]
+        else:
+            C = C * S[None]
     names = list(meta["channels"])
     if meta.get("iso_P_zz") == "implied":
         i_loc, i_xx, i_yy = (names.index(n) for n in ("iso_local", "iso_P_xx", "iso_P_yy"))
@@ -783,6 +789,20 @@ def replay_susc(pack, waveform, *, b0_dir=(0.0, 0.0, 1.0), B0=0.0, chi_iso=0.0, 
 
 
 # --------------------------------------------------------------- pack generation
+#: per-channel numbers a codec MEASURES on the walk it encoded (not parameters): two shards of one fill differ in them
+_MEASURED_CHANNEL_KEYS = ("trace_residual",)
+
+
+def _codec_signature(comp):
+    """The codec parameters of a pack's ``compression`` meta, without what is measured per pack (the precision tiers,
+    a channel's trace residual): what two shards of one fill must agree on."""
+    sig = {k: v for k, v in comp.items() if k != "precision_tiers"}
+    if "channels" in sig:
+        sig["channels"] = {c: ({k: v for k, v in m.items() if k not in _MEASURED_CHANNEL_KEYS} if isinstance(m, dict) else m)
+                           for c, m in sig["channels"].items()}
+    return sig
+
+
 def merge_packs(packs, *, id, out_path=None, overlap="refuse", envelope=None, device="auto"):
     """One pack from the shards of one walk: the packs of voxel blocks of the same substrate, walked with the
     same parameters and codec (a distributed fill: each device seeds and walks its block and packs it with
@@ -807,7 +827,7 @@ def merge_packs(packs, *, id, out_path=None, overlap="refuse", envelope=None, de
         if any(v != vals[0] for v in vals[1:]):
             raise ValueError(f"the shards differ in {key}: {vals[0]!r} vs {[v for v in vals[1:] if v != vals[0]][0]!r}")
         return vals[0]
-    comp = same("compression", lambda pk: {k: v for k, v in pk.meta["compression"].items() if k != "precision_tiers"})
+    comp = same("compression", lambda pk: _codec_signature(pk.meta["compression"]))
     wp = same("walk_params", lambda pk: {k: v for k, v in pk.meta["walk_params"].items() if k not in ("n_walkers", "seed")})
     same("substrate", lambda pk: pk.meta.get("substrate"))
     same("replay_envelope", lambda pk: pk.meta.get("replay_envelope"))
@@ -815,16 +835,19 @@ def merge_packs(packs, *, id, out_path=None, overlap="refuse", envelope=None, de
     same("array names", lambda pk: sorted(pk.arrays))
     n = [int(pk.meta["walk_params"]["n_walkers"]) for pk in pks]
     arrays = {}
-    scale_keys = [k for k in pks[0].arrays if k.endswith("_band_scale")]
-    if scale_keys:                                                   # band containers: stack the shards' scale tables and
-        blocks, off = [], 0                                          # give every walker its block
+    scale_keys = [k for k in pks[0].arrays if k.endswith("_band_scale") or k == "susc_path_scale"]
+    # a scale table with a block axis: the band scales carry one from the start ((n_blocks, ...)); the path channel's
+    # (n_ch, K) gains one here
+    table = lambda pk, k: (np.asarray(pk.arrays[k])[None] if (k == "susc_path_scale" and np.asarray(pk.arrays[k]).ndim == 2) else np.asarray(pk.arrays[k]))
+    if scale_keys:                                                   # per-pack scale tables: stack the shards' and give
+        blocks, off = [], 0                                          # every walker its block
         for pk, m in zip(pks, n):
-            nb = int(np.asarray(pk.arrays[scale_keys[0]]).shape[0])
+            nb = int(table(pk, scale_keys[0]).shape[0])
             blk = np.asarray(pk.arrays["band_block"], np.int64) if "band_block" in pk.arrays else np.zeros(m, np.int64)
             blocks.append(blk + off); off += nb
         arrays["band_block"] = np.concatenate(blocks).astype(np.uint16 if off < 65536 else np.int32)
         for k in scale_keys:
-            arrays[k] = np.concatenate([np.asarray(pk.arrays[k]) for pk in pks])
+            arrays[k] = np.concatenate([table(pk, k) for pk in pks])
     for k in pks[0].arrays:
         if k in ("voxel_ijk", "voxel_certificate", "band_block") or k in scale_keys:
             continue
@@ -888,6 +911,15 @@ def merge_packs(packs, *, id, out_path=None, overlap="refuse", envelope=None, de
                                 recertified=bool(overlap == "recertify"))
     n_all = int(sum(n))
     comp_meta = dict(pks[0].meta["compression"])
+    if "channels" in comp_meta:                                      # the measured numbers: the worst over the shards
+        chans = {c: (dict(m) if isinstance(m, dict) else m) for c, m in comp_meta["channels"].items()}
+        for c, m in chans.items():
+            if isinstance(m, dict):
+                for k in _MEASURED_CHANNEL_KEYS:
+                    vals = [((pk.meta["compression"].get("channels") or {}).get(c) or {}).get(k) for pk in pks]
+                    if all(v is not None for v in vals):
+                        m[k] = float(max(vals))
+        comp_meta["channels"] = chans
     if comp_meta.get("walker_preserving"):
         comp_meta["precision_tiers"] = _precision_tiers(arrays, n_all, float(fid.get("floor_max") or 0.0), False)
     meta = dict(pks[0].meta)
