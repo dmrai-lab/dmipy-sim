@@ -732,7 +732,13 @@ def susc_path_coeffs(arrays, meta):
     """
     C = np.asarray(arrays["susc_path_dct"], np.float64)
     if "susc_path_scale" in arrays:
-        C = C * np.asarray(arrays["susc_path_scale"], np.float64)[None]
+        S = np.asarray(arrays["susc_path_scale"], np.float64)
+        if S.ndim == 3:                                            # a merged pack: one scale table per shard, walkers by block
+            blk = np.asarray(arrays["band_block"], np.int64)
+            for b in np.unique(blk):
+                C[blk == b] *= S[b][None]
+        else:
+            C = C * S[None]
     names = list(meta["channels"])
     if meta.get("iso_P_zz") == "implied":
         i_loc, i_xx, i_yy = (names.index(n) for n in ("iso_local", "iso_P_xx", "iso_P_yy"))
@@ -829,16 +835,19 @@ def merge_packs(packs, *, id, out_path=None, overlap="refuse", envelope=None, de
     same("array names", lambda pk: sorted(pk.arrays))
     n = [int(pk.meta["walk_params"]["n_walkers"]) for pk in pks]
     arrays = {}
-    scale_keys = [k for k in pks[0].arrays if k.endswith("_band_scale")]
-    if scale_keys:                                                   # band containers: stack the shards' scale tables and
-        blocks, off = [], 0                                          # give every walker its block
+    scale_keys = [k for k in pks[0].arrays if k.endswith("_band_scale") or k == "susc_path_scale"]
+    # a scale table with a block axis: the band scales carry one from the start ((n_blocks, ...)); the path channel's
+    # (n_ch, K) gains one here
+    table = lambda pk, k: (np.asarray(pk.arrays[k])[None] if (k == "susc_path_scale" and np.asarray(pk.arrays[k]).ndim == 2) else np.asarray(pk.arrays[k]))
+    if scale_keys:                                                   # per-pack scale tables: stack the shards' and give
+        blocks, off = [], 0                                          # every walker its block
         for pk, m in zip(pks, n):
-            nb = int(np.asarray(pk.arrays[scale_keys[0]]).shape[0])
+            nb = int(table(pk, scale_keys[0]).shape[0])
             blk = np.asarray(pk.arrays["band_block"], np.int64) if "band_block" in pk.arrays else np.zeros(m, np.int64)
             blocks.append(blk + off); off += nb
         arrays["band_block"] = np.concatenate(blocks).astype(np.uint16 if off < 65536 else np.int32)
         for k in scale_keys:
-            arrays[k] = np.concatenate([np.asarray(pk.arrays[k]) for pk in pks])
+            arrays[k] = np.concatenate([table(pk, k) for pk in pks])
     for k in pks[0].arrays:
         if k in ("voxel_ijk", "voxel_certificate", "band_block") or k in scale_keys:
             continue
