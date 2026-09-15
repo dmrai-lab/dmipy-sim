@@ -21,6 +21,7 @@ from .physics import (make_step_fn, make_myelin_step_fn, make_packed_myelin_step
                       make_packed_myelin_traj_step_fn)
 from ..geometry import initial_positions
 from ..persistent_walk import PersistentWalk
+from ..run import Run, current
 from ..acquisition.scanner_sequence import Protocol
 
 
@@ -324,302 +325,303 @@ def simulate(
         - shape (n_walkers, n_timesteps) when return_compartments='full'.
         Only returned when return_compartments is not False.
     """
-    from ..spec.build import as_geometry
-    geometry = as_geometry(geometry)               # a spec, a spec file or a dict is a substrate too
-    if return_compartments not in (False, 'final', 'full'):
-        raise ValueError(
-            "return_compartments must be False, 'final', or 'full'; "
-            f"got {return_compartments!r}")
-    if return_positions not in (False, True, 'full'):
-        raise ValueError(
-            "return_positions must be False, True, or 'full'; "
-            f"got {return_positions!r}")
-    if engine not in ("auto", "replay", "fused"):
-        raise ValueError(
-            f"engine must be 'auto', 'replay', or 'fused'; got {engine!r}")
-    want_pos_full = return_positions == 'full'
+    with Run("simulate", params=dict(n_walkers=n_walkers, diffusivity=diffusivity, geometry=type(geometry).__name__)) as run:
+        from ..spec.build import as_geometry
+        geometry = as_geometry(geometry)               # a spec, a spec file or a dict is a substrate too
+        if return_compartments not in (False, 'final', 'full'):
+            raise ValueError(
+                "return_compartments must be False, 'final', or 'full'; "
+                f"got {return_compartments!r}")
+        if return_positions not in (False, True, 'full'):
+            raise ValueError(
+                "return_positions must be False, True, or 'full'; "
+                f"got {return_positions!r}")
+        if engine not in ("auto", "replay", "fused"):
+            raise ValueError(
+                f"engine must be 'auto', 'replay', or 'fused'; got {engine!r}")
+        want_pos_full = return_positions == 'full'
 
-    _acq = waveform.waveform if hasattr(waveform, 'waveform') else waveform
-    if isinstance(_acq, Protocol):
-        # a multi-TE scheme: one sequence per echo time, one walk each, the signals placed at their rows
-        if return_positions or return_compartments:
-            raise ValueError("positions and compartments are one sequence's: simulate each sequence of the "
-                             "Protocol on its own to get them")
-        kw = dict(seed=seed, T2=T2, T1=T1, return_walker_signals=return_walker_signals, r0=r0,
-                  walker_batch_size=walker_batch_size, require_gpu=require_gpu, engine=engine, sub_steps=sub_steps)
-        parts = [simulate(n_walkers, diffusivity, seq, geometry, **kw) for seq in _acq]
-        if return_walker_signals:                                   # (signal, walker_signals) per sequence
-            return _acq.scatter([p[0] for p in parts]), _acq.scatter([p[1] for p in parts], axis=-1)
-        return _acq.scatter(parts)
+        _acq = waveform.waveform if hasattr(waveform, 'waveform') else waveform
+        if isinstance(_acq, Protocol):
+            # a multi-TE scheme: one sequence per echo time, one walk each, the signals placed at their rows
+            if return_positions or return_compartments:
+                raise ValueError("positions and compartments are one sequence's: simulate each sequence of the "
+                                 "Protocol on its own to get them")
+            kw = dict(seed=seed, T2=T2, T1=T1, return_walker_signals=return_walker_signals, r0=r0,
+                      walker_batch_size=walker_batch_size, require_gpu=require_gpu, engine=engine, sub_steps=sub_steps)
+            parts = [simulate(n_walkers, diffusivity, seq, geometry, **kw) for seq in _acq]
+            if return_walker_signals:                                   # (signal, walker_signals) per sequence
+                return _acq.scatter([p[0] for p in parts]), _acq.scatter([p[1] for p in parts], axis=-1)
+            return _acq.scatter(parts)
 
-    # ── Engine routing (Phase 5) ────────────────────────────────────────────
-    # Decide replay vs fused BEFORE the fused-only OOM/batch machinery so the
-    # fused code path below stays byte-for-byte the pre-replay engine.  The
-    # replay backend produces a bare signal array only; every extra-output /
-    # single-pass-internal request is a fused-only gap.
-    if engine != "fused":
-        _wf_r = waveform.waveform if hasattr(waveform, 'waveform') else waveform
-        _gap = _replay_gap(
-            geometry, return_positions=return_positions,
-            return_compartments=return_compartments,
-            return_walker_signals=return_walker_signals,
-            diffusivity=diffusivity)
-        if engine == "replay":
-            if _gap is not None:
-                raise NotImplementedError(
-                    f"engine='replay' cannot serve this run: {_gap}. "
-                    "Use engine='fused' (or 'auto').")
-            return _simulate_via_replay(
-                n_walkers, diffusivity, _wf_r, geometry, seed=seed,
-                T2=T2, T1=T1, r0=r0, require_gpu=require_gpu,
-                walker_batch_size=walker_batch_size, sub_steps=sub_steps)
-        # engine == "auto": replay only where the walk is the fused walk and nothing is missing.
-        if _gap is None and geometry.replay_parity:
-            return _simulate_via_replay(
-                n_walkers, diffusivity, _wf_r, geometry, seed=seed,
-                T2=T2, T1=T1, r0=r0, require_gpu=require_gpu,
-                walker_batch_size=walker_batch_size, sub_steps=sub_steps)
-        # else: fall through to the fused engine (pin so recursion stays fused).
-        engine = "fused"
+        # ── Engine routing (Phase 5) ────────────────────────────────────────────
+        # Decide replay vs fused BEFORE the fused-only OOM/batch machinery so the
+        # fused code path below stays byte-for-byte the pre-replay engine.  The
+        # replay backend produces a bare signal array only; every extra-output /
+        # single-pass-internal request is a fused-only gap.
+        if engine != "fused":
+            _wf_r = waveform.waveform if hasattr(waveform, 'waveform') else waveform
+            _gap = _replay_gap(
+                geometry, return_positions=return_positions,
+                return_compartments=return_compartments,
+                return_walker_signals=return_walker_signals,
+                diffusivity=diffusivity)
+            if engine == "replay":
+                if _gap is not None:
+                    raise NotImplementedError(
+                        f"engine='replay' cannot serve this run: {_gap}. "
+                        "Use engine='fused' (or 'auto').")
+                return _simulate_via_replay(
+                    n_walkers, diffusivity, _wf_r, geometry, seed=seed,
+                    T2=T2, T1=T1, r0=r0, require_gpu=require_gpu,
+                    walker_batch_size=walker_batch_size, sub_steps=sub_steps)
+            # engine == "auto": replay only where the walk is the fused walk and nothing is missing.
+            if _gap is None and geometry.replay_parity:
+                return _simulate_via_replay(
+                    n_walkers, diffusivity, _wf_r, geometry, seed=seed,
+                    T2=T2, T1=T1, r0=r0, require_gpu=require_gpu,
+                    walker_batch_size=walker_batch_size, sub_steps=sub_steps)
+            # else: fall through to the fused engine (pin so recursion stays fused).
+            engine = "fused"
 
-    # GPU guard — never silently fall back to CPU for a heavy run (CLAUDE rule).
-    from .gpu import check_gpu
-    check_gpu(n_walkers, require_gpu, what="simulate")
+        # GPU guard — never silently fall back to CPU for a heavy run (CLAUDE rule).
+        from .gpu import check_gpu
+        check_gpu(n_walkers, require_gpu, what="simulate")
 
-    # Automatic GPU-OOM backoff: try the requested plan; if device memory is
-    # exhausted, split walkers into progressively smaller batches (down to 1)
-    # rather than dying with a raw XLA traceback. Pin walker_batch_size to skip.
-    if _allow_oom_backoff:
-        try:
-            from jaxlib.xla_extension import XlaRuntimeError
-        except Exception:
-            XlaRuntimeError = RuntimeError
-        bs = walker_batch_size
-        while True:
+        # Automatic GPU-OOM backoff: try the requested plan; if device memory is
+        # exhausted, split walkers into progressively smaller batches (down to 1)
+        # rather than dying with a raw XLA traceback. Pin walker_batch_size to skip.
+        if _allow_oom_backoff:
             try:
-                return simulate(
-                    n_walkers, diffusivity=diffusivity, waveform=waveform,
-                    geometry=geometry, seed=seed, T2=T2, T1=T1,
-                    return_positions=return_positions,
-                    return_compartments=return_compartments,
-                    return_walker_signals=return_walker_signals, r0=r0,
-                    walker_batch_size=bs, require_gpu=require_gpu,
-                    engine="fused", sub_steps=sub_steps, _allow_oom_backoff=False)
-            except (XlaRuntimeError, RuntimeError) as exc:
-                m = str(exc)
-                if not ('RESOURCE_EXHAUSTED' in m or 'out of memory' in m.lower()):
-                    raise
-                cur = bs if bs is not None else n_walkers
-                nxt = cur // 2
-                if nxt < 1:
-                    raise
-                import warnings
-                warnings.warn(
-                    "simulate() hit GPU OOM at walker_batch_size={}; retrying at "
-                    "{}.".format(cur, nxt), RuntimeWarning, stacklevel=2)
-                bs = nxt
+                from jaxlib.xla_extension import XlaRuntimeError
+            except Exception:
+                XlaRuntimeError = RuntimeError
+            bs = walker_batch_size
+            while True:
+                try:
+                    return simulate(
+                        n_walkers, diffusivity=diffusivity, waveform=waveform,
+                        geometry=geometry, seed=seed, T2=T2, T1=T1,
+                        return_positions=return_positions,
+                        return_compartments=return_compartments,
+                        return_walker_signals=return_walker_signals, r0=r0,
+                        walker_batch_size=bs, require_gpu=require_gpu,
+                        engine="fused", sub_steps=sub_steps, _allow_oom_backoff=False)
+                except (XlaRuntimeError, RuntimeError) as exc:
+                    m = str(exc)
+                    if not ('RESOURCE_EXHAUSTED' in m or 'out of memory' in m.lower()):
+                        raise
+                    cur = bs if bs is not None else n_walkers
+                    nxt = cur // 2
+                    if nxt < 1:
+                        raise
+                    import warnings
+                    warnings.warn(
+                        "simulate() hit GPU OOM at walker_batch_size={}; retrying at "
+                        "{}.".format(cur, nxt), RuntimeWarning, stacklevel=2)
+                    bs = nxt
 
-    # Walker batching: split into chunks so peak device memory is one chunk.
-    if walker_batch_size is not None and walker_batch_size < n_walkers:
-        return _simulate_in_walker_batches(
-            n_walkers, walker_batch_size, seed=seed,
-            diffusivity=diffusivity, waveform=waveform, geometry=geometry,
-            T2=T2, T1=T1, r0=r0,
-            return_positions=return_positions,
-            return_compartments=return_compartments,
-            return_walker_signals=return_walker_signals, sub_steps=sub_steps)
+        # Walker batching: split into chunks so peak device memory is one chunk.
+        if walker_batch_size is not None and walker_batch_size < n_walkers:
+            return _simulate_in_walker_batches(
+                n_walkers, walker_batch_size, seed=seed,
+                diffusivity=diffusivity, waveform=waveform, geometry=geometry,
+                T2=T2, T1=T1, r0=r0,
+                return_positions=return_positions,
+                return_compartments=return_compartments,
+                return_walker_signals=return_walker_signals, sub_steps=sub_steps)
 
-    # Accept AcquisitionScheme (any object with .waveform) or raw ScannerSequence
-    if hasattr(waveform, 'waveform'):
-        waveform = waveform.waveform
-    G = waveform.G_eff      # (n_measurements, n_t, 3), the effective gradient
-    dt = waveform.dt
+        # Accept AcquisitionScheme (any object with .waveform) or raw ScannerSequence
+        if hasattr(waveform, 'waveform'):
+            waveform = waveform.waveform
+        G = waveform.G_eff      # (n_measurements, n_t, 3), the effective gradient
+        dt = waveform.dt
 
-    # Substrate placement in the bore (e.g. Mesh with orientation/R): the walk runs
-    # in the geometry's native frame, so rotate the ACQUISITION into that frame
-    # instead of rotating the geometry.  A gradient g in the lab (B0=+z) frame is
-    # g_mesh = R^T g for a mesh->lab rotation R, i.e. G_mesh = G @ R.
-    _orient_R = geometry._orient_R
-    if _orient_R is not None:
-        G = G @ jnp.asarray(_orient_R, G.dtype)
+        # Substrate placement in the bore (e.g. Mesh with orientation/R): the walk runs
+        # in the geometry's native frame, so rotate the ACQUISITION into that frame
+        # instead of rotating the geometry.  A gradient g in the lab (B0=+z) frame is
+        # g_mesh = R^T g for a mesh->lab rotation R, i.e. G_mesh = G @ R.
+        _orient_R = geometry._orient_R
+        if _orient_R is not None:
+            G = G @ jnp.asarray(_orient_R, G.dtype)
 
-    n_measurements, n_t, _ = G.shape
+        n_measurements, n_t, _ = G.shape
 
 
-    # Transpose G for scan: (n_t, n_measurements, 3).  Each step also receives a
-    # scalar transverse-coherence flag chi_t: 1 where the magnetisation is
-    # transverse (T2 + surface relaxivity act), 0 where it is stored
-    # longitudinally (only T1 acts).  A waveform with no chi_perp schedule is a
-    # spin echo (chi_t == 1 throughout).  step_fn receives inputs = (g_t, chi_t).
-    G_scan = jnp.transpose(G, (1, 0, 2))
-    chi_perp = getattr(waveform, 'chi_perp', None)
-    if chi_perp is not None:
-        chi_perp_scan = jnp.asarray(chi_perp, dtype=jnp.float32).reshape(n_t)
-    else:
-        chi_perp_scan = jnp.ones((n_t,), dtype=jnp.float32)
-    scan_inputs = (G_scan, chi_perp_scan)
-
-    # Build per-walker PRNG keys
-    master_key = jax.random.PRNGKey(seed)
-    pos_key, walker_key = jax.random.split(master_key)
-    walker_keys = jax.random.split(walker_key, n_walkers)
-
-    # Initial positions — use caller-supplied r0 or let geometry place walkers
-    _r0_user_supplied = r0 is not None
-    r0 = initial_positions(geometry, n_walkers, pos_key, r0)   # (n_walkers, 3)
-
-    # Check if this is a MyelinatedCylinder or LabelMap2D (custom step function path)
-    is_myelin = geometry._is_myelinated
-    is_packed_myelin = geometry._is_packed_myelinated
-
-    if want_pos_full and (is_myelin or is_packed_myelin):
-        raise NotImplementedError(
-            "return_positions='full' is supported for standard geometries "
-            "(including Mesh), not MyelinatedCylinder / PackedMyelinatedCylinders.")
-
-    # -----------------------------------------------------------------------
-    # Compartment origin: determined from initial positions.
-    # For MyelinatedCylinder and LabelMap2D, _init_compartments is set by
-    # init_positions().  For standard geometries, classify_position() is used.
-    # -----------------------------------------------------------------------
-    track_comp = return_compartments is not False
-
-    if is_myelin:
-        # MyelinatedCylinder: extended carry state (r, phi, log_w, compartment_id, key)
-        step_fn = make_myelin_step_fn(geometry, dt, T1=T1, sub_steps=sub_steps)
-        compartments0 = geometry._init_compartments  # (n_walkers,) int32, pool id
-        spin_w = jnp.asarray(geometry._water_fraction_by_pool, jnp.float32)[compartments0]
-
-        emit_comp = track_comp and return_compartments == 'full'
-        if track_comp:
-            comp_origin_jax = geometry.pool_of(compartments0)   # kernel code -> pool id
-
-        def _build_myelin():
-            def simulate_walker(r0_w, key_w, comp0, G_s, chi_s):
-                phi0 = jnp.zeros(n_measurements, dtype=jnp.float32)
-
-                def body(carry, inputs):
-                    new_carry, _ = step_fn(carry, inputs)
-                    return new_carry, (geometry.pool_of(new_carry[3]) if emit_comp else None)
-                (r_final, phi_all, log_w, comp_final, _), comp_seq = jax.lax.scan(
-                    body, (r0_w, phi0, jnp.float32(0.0), comp0, key_w), (G_s, chi_s))
-                return r_final, phi_all, log_w, geometry.pool_of(comp_final), comp_seq
-            return jax.jit(jax.vmap(simulate_walker, in_axes=(0, 0, 0, None, None)))
-
-        simulate_batch = cached_batch(
-            geometry, ("myelin", n_measurements, n_t, float(dt), T1, sub_steps, emit_comp), _build_myelin)
-        final_r, all_phi, all_log_w, comp_final, comp_seq = simulate_batch(
-            r0, walker_keys, compartments0, *scan_inputs)
-        signals = _ensemble_signal(spin_w, all_phi, all_log_w)
-
-    elif is_packed_myelin:
-        # Fused forward: the SAME per-compartment walk as the trajectory step fn, with
-        # gradient phase (on the periodic-unwrapped position) + per-compartment T2 + surface
-        # relaxivity accumulated in-scan. No trajectory storage / replay.
-        if _r0_user_supplied:
-            raise NotImplementedError(
-                "simulate(r0=...) is unsupported for PackedMyelinatedCylinders; it "
-                "initialises walkers (and their compartments) from `seed` via init_positions.")
-        step_fn = make_packed_myelin_step_fn(geometry, dt, T1=T1)
-        compartments0 = geometry._init_compartments        # encoded: 0=extra, 1..N=intra, >N=myelin
-        _to3 = geometry.pool_of                            # -> 0 extra, 1 intra, 2 myelin
-        spin_w = jnp.where(_to3(compartments0) == jnp.int32(2),
-                           jnp.float32(geometry._myelin_proton_density), jnp.float32(1.0))
-
-        def _build_packed():
-            def simulate_walker(r0_w, key_w, comp0, G_s, chi_s):
-                phi0 = jnp.zeros(n_measurements, dtype=jnp.float32)
-
-                def emit(carry, inputs):
-                    nc, _ = step_fn(carry, inputs)
-                    return nc, _to3(nc[4])                 # nc[4] = compartment_id
-                (r_ic_f, _r_uw_f, phi_all, log_w, comp_f, _), comp_seq_w = jax.lax.scan(
-                    emit, (r0_w, r0_w, phi0, jnp.float32(0.0), comp0, key_w), (G_s, chi_s))
-                return r_ic_f, phi_all, log_w, comp_f, comp_seq_w
-            return jax.jit(jax.vmap(simulate_walker, in_axes=(0, 0, 0, None, None)))
-
-        simulate_batch = cached_batch(
-            geometry, ("packed_myelin", n_measurements, n_t, float(dt), T1), _build_packed)
-        final_r, all_phi, all_log_w, _comp_final_enc, _comp_seq = simulate_batch(
-            r0, walker_keys, compartments0, *scan_inputs)
-        signals = _ensemble_signal(spin_w, all_phi, all_log_w)
-        if track_comp:
-            comp_origin_jax = _to3(compartments0)
-            comp_final = _to3(_comp_final_enc)
-            comp_seq = _comp_seq
-    else:
-        # Standard geometry path: one scan body whose carry is (r, phi, log_w, key, comp). The
-        # compartment id is advanced inside the step (per-compartment D/T2/T1 read it) and emitted
-        # per timestep only when the caller asked for it.
-        step_fn, has_weight = make_step_fn(geometry, diffusivity, dt, T2=T2, T1=T1,
-                                           sub_steps=sub_steps, track_compartment=track_comp)
-        spin_w = jnp.ones((n_walkers,), dtype=jnp.float32)
-        per_comp = any(a is not None for a in (geometry._D_comp_jax, geometry._inv_T2_comp_jax,
-                                               geometry._inv_T1_comp_jax))
-        if track_comp or per_comp:
-            # Initial labels are the one place an exact test is affordable and necessary: there is
-            # no previous label to carry, so an undecidable point must be resolved, not defaulted.
-            comp_origin_jax = jnp.asarray(geometry.classify_positions_exact(r0), jnp.int32)
+        # Transpose G for scan: (n_t, n_measurements, 3).  Each step also receives a
+        # scalar transverse-coherence flag chi_t: 1 where the magnetisation is
+        # transverse (T2 + surface relaxivity act), 0 where it is stored
+        # longitudinally (only T1 acts).  A waveform with no chi_perp schedule is a
+        # spin echo (chi_t == 1 throughout).  step_fn receives inputs = (g_t, chi_t).
+        G_scan = jnp.transpose(G, (1, 0, 2))
+        chi_perp = getattr(waveform, 'chi_perp', None)
+        if chi_perp is not None:
+            chi_perp_scan = jnp.asarray(chi_perp, dtype=jnp.float32).reshape(n_t)
         else:
-            comp_origin_jax = jnp.zeros((n_walkers,), jnp.int32)   # carried untouched, never read
-        emit_pos  = want_pos_full
-        emit_comp = track_comp and return_compartments == 'full'
+            chi_perp_scan = jnp.ones((n_t,), dtype=jnp.float32)
+        scan_inputs = (G_scan, chi_perp_scan)
 
-        def _build_standard():
-            def simulate_walker(r0_w, key_w, comp0_w, G_s, chi_s):
-                phi0 = jnp.zeros(n_measurements, dtype=jnp.float32)
+        # Build per-walker PRNG keys
+        master_key = jax.random.PRNGKey(seed)
+        pos_key, walker_key = jax.random.split(master_key)
+        walker_keys = jax.random.split(walker_key, n_walkers)
 
-                def body(carry, inp):
-                    new_carry, _ = step_fn(carry, inp)
-                    rn, _, _, _, cn = new_carry
-                    return new_carry, (rn if emit_pos else None, cn if emit_comp else None)
+        # Initial positions — use caller-supplied r0 or let geometry place walkers
+        _r0_user_supplied = r0 is not None
+        r0 = initial_positions(geometry, n_walkers, pos_key, r0)   # (n_walkers, 3)
 
-                (r_final, phi_all, log_w, _, comp_final), (pos_ys, comp_ys) = jax.lax.scan(
-                    body, (r0_w, phi0, jnp.float32(0.0), key_w, comp0_w), (G_s, chi_s))
-                return r_final, phi_all, log_w, comp_final, pos_ys, comp_ys
-            return jax.jit(jax.vmap(simulate_walker, in_axes=(0, 0, 0, None, None)))
+        # Check if this is a MyelinatedCylinder or LabelMap2D (custom step function path)
+        is_myelin = geometry._is_myelinated
+        is_packed_myelin = geometry._is_packed_myelinated
 
-        simulate_batch = cached_batch(
-            geometry, ("standard", n_measurements, n_t, float(dt), diffusivity, T2, T1, sub_steps,
-                       track_comp, emit_pos, emit_comp), _build_standard)
-        final_r, all_phi, all_log_w, comp_final, pos_seq, comp_seq = simulate_batch(
-            r0, walker_keys, comp_origin_jax, *scan_inputs)
-        signals = _ensemble_signal(spin_w, all_phi, all_log_w) if has_weight else _ensemble_signal(spin_w, all_phi)
+        if want_pos_full and (is_myelin or is_packed_myelin):
+            raise NotImplementedError(
+                "return_positions='full' is supported for standard geometries "
+                "(including Mesh), not MyelinatedCylinder / PackedMyelinatedCylinders.")
 
-    # T2/T1 are accumulated per-walker inside the scan body (make_step_fn /
-    # make_myelin_step_fn); nothing further to apply here.
+        # -----------------------------------------------------------------------
+        # Compartment origin: determined from initial positions.
+        # For MyelinatedCylinder and LabelMap2D, _init_compartments is set by
+        # init_positions().  For standard geometries, classify_position() is used.
+        # -----------------------------------------------------------------------
+        track_comp = return_compartments is not False
 
-    # Stimulated-echo readout: the stimulated echo stores half the
-    # magnetisation, an idealized 0.5 amplitude factor.
-    if getattr(waveform, 'stimulated_echo', False):
-        signals = signals * jnp.float32(0.5)
+        if is_myelin:
+            # MyelinatedCylinder: extended carry state (r, phi, log_w, compartment_id, key)
+            step_fn = make_myelin_step_fn(geometry, dt, T1=T1, sub_steps=sub_steps)
+            compartments0 = geometry._init_compartments  # (n_walkers,) int32, pool id
+            spin_w = jnp.asarray(geometry._water_fraction_by_pool, jnp.float32)[compartments0]
 
-    # Build return tuple
-    result = [np.array(signals)]
+            emit_comp = track_comp and return_compartments == 'full'
+            if track_comp:
+                comp_origin_jax = geometry.pool_of(compartments0)   # kernel code -> pool id
 
-    if return_positions == 'full':
-        result.append(np.array(pos_seq))        # (n_walkers, n_timesteps, 3)
-    elif return_positions:
-        result.append(np.array(final_r))
+            def _build_myelin():
+                def simulate_walker(r0_w, key_w, comp0, G_s, chi_s):
+                    phi0 = jnp.zeros(n_measurements, dtype=jnp.float32)
 
-    if track_comp:
-        result.append(np.array(comp_origin_jax))
-        if return_compartments == 'full':
-            # comp_seq: (n_walkers, n_t) — transpose from scan output
-            result.append(np.array(comp_seq))
-        else:  # 'final'
-            result.append(np.array(comp_final))
+                    def body(carry, inputs):
+                        new_carry, _ = step_fn(carry, inputs)
+                        return new_carry, (geometry.pool_of(new_carry[3]) if emit_comp else None)
+                    (r_final, phi_all, log_w, comp_final, _), comp_seq = jax.lax.scan(
+                        body, (r0_w, phi0, jnp.float32(0.0), comp0, key_w), (G_s, chi_s))
+                    return r_final, phi_all, log_w, geometry.pool_of(comp_final), comp_seq
+                return jax.jit(jax.vmap(simulate_walker, in_axes=(0, 0, 0, None, None)))
 
-    if return_walker_signals:
-        # Per-walker (log_weight, phi) arrays for population-level signal decomposition.
-        # log_w: (n_walkers,), phi: (n_walkers, n_measurements).
-        # Walker signal contribution: exp(log_w[i]) * cos(phi[i]).
-        result.append(np.array(all_log_w))   # (n_walkers,)
-        result.append(np.array(all_phi))     # (n_walkers, n_measurements)
+            simulate_batch = cached_batch(
+                geometry, ("myelin", n_measurements, n_t, float(dt), T1, sub_steps, emit_comp), _build_myelin)
+            final_r, all_phi, all_log_w, comp_final, comp_seq = simulate_batch(
+                r0, walker_keys, compartments0, *scan_inputs)
+            signals = _ensemble_signal(spin_w, all_phi, all_log_w)
 
-    if len(result) == 1:
-        return result[0]
-    return tuple(result)
+        elif is_packed_myelin:
+            # Fused forward: the SAME per-compartment walk as the trajectory step fn, with
+            # gradient phase (on the periodic-unwrapped position) + per-compartment T2 + surface
+            # relaxivity accumulated in-scan. No trajectory storage / replay.
+            if _r0_user_supplied:
+                raise NotImplementedError(
+                    "simulate(r0=...) is unsupported for PackedMyelinatedCylinders; it "
+                    "initialises walkers (and their compartments) from `seed` via init_positions.")
+            step_fn = make_packed_myelin_step_fn(geometry, dt, T1=T1)
+            compartments0 = geometry._init_compartments        # encoded: 0=extra, 1..N=intra, >N=myelin
+            _to3 = geometry.pool_of                            # -> 0 extra, 1 intra, 2 myelin
+            spin_w = jnp.where(_to3(compartments0) == jnp.int32(2),
+                               jnp.float32(geometry._myelin_proton_density), jnp.float32(1.0))
+
+            def _build_packed():
+                def simulate_walker(r0_w, key_w, comp0, G_s, chi_s):
+                    phi0 = jnp.zeros(n_measurements, dtype=jnp.float32)
+
+                    def emit(carry, inputs):
+                        nc, _ = step_fn(carry, inputs)
+                        return nc, _to3(nc[4])                 # nc[4] = compartment_id
+                    (r_ic_f, _r_uw_f, phi_all, log_w, comp_f, _), comp_seq_w = jax.lax.scan(
+                        emit, (r0_w, r0_w, phi0, jnp.float32(0.0), comp0, key_w), (G_s, chi_s))
+                    return r_ic_f, phi_all, log_w, comp_f, comp_seq_w
+                return jax.jit(jax.vmap(simulate_walker, in_axes=(0, 0, 0, None, None)))
+
+            simulate_batch = cached_batch(
+                geometry, ("packed_myelin", n_measurements, n_t, float(dt), T1), _build_packed)
+            final_r, all_phi, all_log_w, _comp_final_enc, _comp_seq = simulate_batch(
+                r0, walker_keys, compartments0, *scan_inputs)
+            signals = _ensemble_signal(spin_w, all_phi, all_log_w)
+            if track_comp:
+                comp_origin_jax = _to3(compartments0)
+                comp_final = _to3(_comp_final_enc)
+                comp_seq = _comp_seq
+        else:
+            # Standard geometry path: one scan body whose carry is (r, phi, log_w, key, comp). The
+            # compartment id is advanced inside the step (per-compartment D/T2/T1 read it) and emitted
+            # per timestep only when the caller asked for it.
+            step_fn, has_weight = make_step_fn(geometry, diffusivity, dt, T2=T2, T1=T1,
+                                               sub_steps=sub_steps, track_compartment=track_comp)
+            spin_w = jnp.ones((n_walkers,), dtype=jnp.float32)
+            per_comp = any(a is not None for a in (geometry._D_comp_jax, geometry._inv_T2_comp_jax,
+                                                   geometry._inv_T1_comp_jax))
+            if track_comp or per_comp:
+                # Initial labels are the one place an exact test is affordable and necessary: there is
+                # no previous label to carry, so an undecidable point must be resolved, not defaulted.
+                comp_origin_jax = jnp.asarray(geometry.classify_positions_exact(r0), jnp.int32)
+            else:
+                comp_origin_jax = jnp.zeros((n_walkers,), jnp.int32)   # carried untouched, never read
+            emit_pos  = want_pos_full
+            emit_comp = track_comp and return_compartments == 'full'
+
+            def _build_standard():
+                def simulate_walker(r0_w, key_w, comp0_w, G_s, chi_s):
+                    phi0 = jnp.zeros(n_measurements, dtype=jnp.float32)
+
+                    def body(carry, inp):
+                        new_carry, _ = step_fn(carry, inp)
+                        rn, _, _, _, cn = new_carry
+                        return new_carry, (rn if emit_pos else None, cn if emit_comp else None)
+
+                    (r_final, phi_all, log_w, _, comp_final), (pos_ys, comp_ys) = jax.lax.scan(
+                        body, (r0_w, phi0, jnp.float32(0.0), key_w, comp0_w), (G_s, chi_s))
+                    return r_final, phi_all, log_w, comp_final, pos_ys, comp_ys
+                return jax.jit(jax.vmap(simulate_walker, in_axes=(0, 0, 0, None, None)))
+
+            simulate_batch = cached_batch(
+                geometry, ("standard", n_measurements, n_t, float(dt), diffusivity, T2, T1, sub_steps,
+                           track_comp, emit_pos, emit_comp), _build_standard)
+            final_r, all_phi, all_log_w, comp_final, pos_seq, comp_seq = simulate_batch(
+                r0, walker_keys, comp_origin_jax, *scan_inputs)
+            signals = _ensemble_signal(spin_w, all_phi, all_log_w) if has_weight else _ensemble_signal(spin_w, all_phi)
+
+        # T2/T1 are accumulated per-walker inside the scan body (make_step_fn /
+        # make_myelin_step_fn); nothing further to apply here.
+
+        # Stimulated-echo readout: the stimulated echo stores half the
+        # magnetisation, an idealized 0.5 amplitude factor.
+        if getattr(waveform, 'stimulated_echo', False):
+            signals = signals * jnp.float32(0.5)
+
+        # Build return tuple
+        result = [np.array(signals)]
+
+        if return_positions == 'full':
+            result.append(np.array(pos_seq))        # (n_walkers, n_timesteps, 3)
+        elif return_positions:
+            result.append(np.array(final_r))
+
+        if track_comp:
+            result.append(np.array(comp_origin_jax))
+            if return_compartments == 'full':
+                # comp_seq: (n_walkers, n_t) — transpose from scan output
+                result.append(np.array(comp_seq))
+            else:  # 'final'
+                result.append(np.array(comp_final))
+
+        if return_walker_signals:
+            # Per-walker (log_weight, phi) arrays for population-level signal decomposition.
+            # log_w: (n_walkers,), phi: (n_walkers, n_measurements).
+            # Walker signal contribution: exp(log_w[i]) * cos(phi[i]).
+            result.append(np.array(all_log_w))   # (n_walkers,)
+            result.append(np.array(all_phi))     # (n_walkers, n_measurements)
+
+        if len(result) == 1:
+            return result[0]
+        return tuple(result)
 
 
 def _simulate_in_walker_batches(n_walkers, walker_batch_size, *, seed,
@@ -631,17 +633,12 @@ def _simulate_in_walker_batches(n_walkers, walker_batch_size, *, seed,
     as a size-weighted mean; per-walker outputs (positions, compartments, walker
     signals) are concatenated.  Each chunk's device buffers are released when its
     (host) results are returned, so peak device memory is one chunk."""
-    n_batches = (n_walkers + walker_batch_size - 1) // walker_batch_size
     track_comp = return_compartments is not False
     sig_acc = None
     pos_l, origin_l, comp_l, lw_l, phi_l = [], [], [], [], []
 
-    for b in range(n_batches):
-        start = b * walker_batch_size
-        end = min(start + walker_batch_size, n_walkers)
+    for start, end in current().batches(n_walkers, walker_batch_size, what="simulate"):
         nb = end - start
-        log.info(f"  simulate: walkers {start}–{end - 1} "
-              f"({int(100 * end / n_walkers)}%)...")
         out = simulate(
             n_walkers=nb, diffusivity=diffusivity, waveform=waveform,
             geometry=geometry, seed=seed + 1 + b, T2=T2, T1=T1,
@@ -756,76 +753,73 @@ def simulate_cpmg(n_walkers, diffusivity, waveform, geometry, *,
     signals : np.ndarray, shape (n_echoes, n_measurements), float32
         Signal at each echo (echo k = k·TE), one column per gradient direction.
     """
-    from ..spec.build import as_geometry
-    geometry = as_geometry(geometry)               # a spec, a spec file or a dict is a substrate too
-    from .gpu import check_gpu
-    check_gpu(n_walkers, require_gpu, what="simulate_cpmg")
+    with Run("simulate_cpmg", params=dict(n_walkers=n_walkers, diffusivity=diffusivity, geometry=type(geometry).__name__)) as run:
+        from ..spec.build import as_geometry
+        geometry = as_geometry(geometry)               # a spec, a spec file or a dict is a substrate too
+        from .gpu import check_gpu
+        check_gpu(n_walkers, require_gpu, what="simulate_cpmg")
 
-    if hasattr(waveform, 'waveform'):
-        waveform = waveform.waveform
-    echo_indices = np.asarray(waveform.readout, dtype=int)
-    if echo_indices.shape[0] < 2:
-        raise ValueError("simulate_cpmg needs a multi-echo readout: build the train with cpmg(...)")
+        if hasattr(waveform, 'waveform'):
+            waveform = waveform.waveform
+        echo_indices = np.asarray(waveform.readout, dtype=int)
+        if echo_indices.shape[0] < 2:
+            raise ValueError("simulate_cpmg needs a multi-echo readout: build the train with cpmg(...)")
 
-    # Walker batching: one echo-signal accumulator, size-weighted mean over chunks.
-    if walker_batch_size is not None and walker_batch_size < n_walkers:
-        n_batches = (n_walkers + walker_batch_size - 1) // walker_batch_size
-        acc = None
-        for b in range(n_batches):
-            start = b * walker_batch_size
-            nb = min(walker_batch_size, n_walkers - start)
-            log.info(f"  simulate_cpmg: walkers {start}–{start + nb - 1} "
-                  f"({int(100 * (start + nb) / n_walkers)}%)...")
-            s = simulate_cpmg(nb, diffusivity, waveform, geometry, T2=T2,
-                              seed=seed + 1 + b, walker_batch_size=None,
-                              require_gpu=False)
-            acc = s * nb if acc is None else acc + s * nb
-        return acc / n_walkers
+        # Walker batching: one echo-signal accumulator, size-weighted mean over chunks.
+        if walker_batch_size is not None and walker_batch_size < n_walkers:
+            acc = None
+            for start, end in run.batches(n_walkers, walker_batch_size):
+                nb = end - start
+                s = simulate_cpmg(nb, diffusivity, waveform, geometry, T2=T2,
+                                  seed=seed + 1 + b, walker_batch_size=None,
+                                  require_gpu=False)
+                acc = s * nb if acc is None else acc + s * nb
+            return acc / n_walkers
 
-    G = waveform.G_eff                 # (n_measurements, n_t, 3), the effective gradient
-    dt = waveform.dt
-    n_measurements, n_t, _ = G.shape
+        G = waveform.G_eff                 # (n_measurements, n_t, 3), the effective gradient
+        dt = waveform.dt
+        n_measurements, n_t, _ = G.shape
 
-    G_scan = jnp.transpose(G, (1, 0, 2))   # (n_t, n_measurements, 3)
-    # CPMG is a spin-echo train: magnetisation is transverse throughout, so the
-    # coherence flag is 1 at every step (step_fn receives inputs = (g_t, chi_t)).
-    chi_perp = getattr(waveform, 'chi_perp', None)
-    if chi_perp is not None:
-        chi_perp_scan = jnp.asarray(chi_perp, dtype=jnp.float32).reshape(n_t)
-    else:
-        chi_perp_scan = jnp.ones((n_t,), dtype=jnp.float32)
-    scan_inputs = (G_scan, chi_perp_scan)
+        G_scan = jnp.transpose(G, (1, 0, 2))   # (n_t, n_measurements, 3)
+        # CPMG is a spin-echo train: magnetisation is transverse throughout, so the
+        # coherence flag is 1 at every step (step_fn receives inputs = (g_t, chi_t)).
+        chi_perp = getattr(waveform, 'chi_perp', None)
+        if chi_perp is not None:
+            chi_perp_scan = jnp.asarray(chi_perp, dtype=jnp.float32).reshape(n_t)
+        else:
+            chi_perp_scan = jnp.ones((n_t,), dtype=jnp.float32)
+        scan_inputs = (G_scan, chi_perp_scan)
 
-    master_key = jax.random.PRNGKey(seed)
-    pos_key, walker_key = jax.random.split(master_key)
-    walker_keys = jax.random.split(walker_key, n_walkers)
-    r0 = initial_positions(geometry, n_walkers, pos_key, r0)
+        master_key = jax.random.PRNGKey(seed)
+        pos_key, walker_key = jax.random.split(master_key)
+        walker_keys = jax.random.split(walker_key, n_walkers)
+        r0 = initial_positions(geometry, n_walkers, pos_key, r0)
 
-    step_fn, _ = make_step_fn(geometry, diffusivity, dt, T2=T2, sub_steps=sub_steps)
-    per_comp = any(a is not None for a in (geometry._D_comp_jax, geometry._inv_T2_comp_jax,
-                                           geometry._inv_T1_comp_jax))
-    comp0 = (jnp.asarray(geometry.classify_positions_exact(r0), jnp.int32) if per_comp
-             else jnp.zeros((n_walkers,), jnp.int32))
+        step_fn, _ = make_step_fn(geometry, diffusivity, dt, T2=T2, sub_steps=sub_steps)
+        per_comp = any(a is not None for a in (geometry._D_comp_jax, geometry._inv_T2_comp_jax,
+                                               geometry._inv_T1_comp_jax))
+        comp0 = (jnp.asarray(geometry.classify_positions_exact(r0), jnp.int32) if per_comp
+                 else jnp.zeros((n_walkers,), jnp.int32))
 
-    def _build_cpmg():
-        def step_emit(carry, inputs):
-            new_carry, _ = step_fn(carry, inputs)
-            _, phi, log_w, _, _ = new_carry
-            return new_carry, jnp.exp(log_w) * jnp.cos(phi)   # (n_measurements,)
+        def _build_cpmg():
+            def step_emit(carry, inputs):
+                new_carry, _ = step_fn(carry, inputs)
+                _, phi, log_w, _, _ = new_carry
+                return new_carry, jnp.exp(log_w) * jnp.cos(phi)   # (n_measurements,)
 
-        def walk(r0_w, key_w, comp0_w, G_s, chi_s):
-            phi0 = jnp.zeros(n_measurements, dtype=jnp.float32)
-            _, s_trace = jax.lax.scan(
-                step_emit, (r0_w, phi0, jnp.float32(0.0), key_w, comp0_w), (G_s, chi_s))
-            return s_trace                                    # (n_t, n_measurements)
-        return jax.jit(jax.vmap(walk, in_axes=(0, 0, 0, None, None)))
+            def walk(r0_w, key_w, comp0_w, G_s, chi_s):
+                phi0 = jnp.zeros(n_measurements, dtype=jnp.float32)
+                _, s_trace = jax.lax.scan(
+                    step_emit, (r0_w, phi0, jnp.float32(0.0), key_w, comp0_w), (G_s, chi_s))
+                return s_trace                                    # (n_t, n_measurements)
+            return jax.jit(jax.vmap(walk, in_axes=(0, 0, 0, None, None)))
 
-    batch = cached_batch(geometry, ("cpmg", n_measurements, n_t, float(dt), diffusivity, T2, sub_steps),
-                         _build_cpmg)
-    all_traces = batch(r0, walker_keys, comp0, *scan_inputs)              # (n_w, n_t, n_meas)
-    signal_trace = jnp.mean(all_traces, axis=0)                    # (n_t, n_meas)
-    echo_signals = signal_trace[echo_indices]                     # (n_echoes, n_meas)
-    return np.array(echo_signals)
+        batch = cached_batch(geometry, ("cpmg", n_measurements, n_t, float(dt), diffusivity, T2, sub_steps),
+                             _build_cpmg)
+        all_traces = batch(r0, walker_keys, comp0, *scan_inputs)              # (n_w, n_t, n_meas)
+        signal_trace = jnp.mean(all_traces, axis=0)                    # (n_t, n_meas)
+        echo_signals = signal_trace[echo_indices]                     # (n_echoes, n_meas)
+        return np.array(echo_signals)
 
 
 
@@ -931,614 +925,611 @@ def simulate_trajectories(
         steps. With ``compress=K`` a compressed master dict is returned instead (see
         :func:`trajectories.replay`).
     """
-    from ..spec.build import as_geometry
-    geometry = as_geometry(geometry)               # a spec, a spec file or a dict is a substrate too
-    # GPU guard — never silently fall back to CPU for a heavy walk (CLAUDE rule).
-    from .gpu import check_gpu
-    check_gpu(n_walkers, require_gpu, what="simulate_trajectories")
-    record = _record_channels(tiers)
+    with Run("simulate_trajectories", params=dict(n_walkers=n_walkers, diffusivity=diffusivity, geometry=type(geometry).__name__, T_max=T_max, dt_save=dt_save)) as run:
+        from ..spec.build import as_geometry
+        geometry = as_geometry(geometry)               # a spec, a spec file or a dict is a substrate too
+        # GPU guard — never silently fall back to CPU for a heavy walk (CLAUDE rule).
+        from .gpu import check_gpu
+        check_gpu(n_walkers, require_gpu, what="simulate_trajectories")
+        record = _record_channels(tiers)
 
-    n_t = int(round(T_max / dt_save)) + 1
-    dt_actual = T_max / (n_t - 1)
+        n_t = int(round(T_max / dt_save)) + 1
+        dt_actual = T_max / (n_t - 1)
 
-    # --- Sub-stepping: one dispatch for every driver (physics.resolve_sub_steps) ---
-    # A walk that records the boundary local time is resolved at the surface criterion too, so a
-    # replayed rho reproduces the fused engine's; MT binding adds its own.
-    from .physics import resolve_sub_steps as _resolve_sub_steps, length_scales_of as _length_scales_of
-    R_geom = _length_scales_of(geometry).min_feature
-    sub_steps = _resolve_sub_steps(
-        geometry, diffusivity, dt_actual, surface=bool(record),
-        mt_dwell_time=(dwell_time if kappa_MT > 0.0 else None), override=sub_steps)
-    dt_sim = dt_actual / sub_steps
-    step_l_sim = jnp.float32(jnp.sqrt(6.0 * diffusivity * dt_sim))
-    # Same soundness bound as in physics.make_step_fn -- the guard has to live here too, because a permeable
-    # mesh now routes through the REPLAY backend (see _replay_gap) and so never reaches make_step_fn.
-    from .physics import _warn_if_step_outruns_the_lookup as _warn_step
-    _warn_step(geometry, diffusivity, dt_actual, sub_steps, "trajectory walk")
+        # --- Sub-stepping: one dispatch for every driver (physics.resolve_sub_steps) ---
+        # A walk that records the boundary local time is resolved at the surface criterion too, so a
+        # replayed rho reproduces the fused engine's; MT binding adds its own.
+        from .physics import resolve_sub_steps as _resolve_sub_steps, length_scales_of as _length_scales_of
+        R_geom = _length_scales_of(geometry).min_feature
+        sub_steps = _resolve_sub_steps(
+            geometry, diffusivity, dt_actual, surface=bool(record),
+            mt_dwell_time=(dwell_time if kappa_MT > 0.0 else None), override=sub_steps)
+        dt_sim = dt_actual / sub_steps
+        step_l_sim = jnp.float32(jnp.sqrt(6.0 * diffusivity * dt_sim))
+        # Same soundness bound as in physics.make_step_fn -- the guard has to live here too, because a permeable
+        # mesh now routes through the REPLAY backend (see _replay_gap) and so never reaches make_step_fn.
+        from .physics import _warn_if_step_outruns_the_lookup as _warn_step
+        _warn_step(geometry, diffusivity, dt_actual, sub_steps, "trajectory walk")
 
-    log.info(f"  sub_steps={sub_steps}, dt_sim={dt_sim*1e6:.3f} µs, "
-          f"step_l={float(step_l_sim)*1e6:.4f} µm"
-          + (f", step_l/R={float(step_l_sim)/float(R_geom):.4f}" if R_geom else ""))
+        log.info(f"  sub_steps={sub_steps}, dt_sim={dt_sim*1e6:.3f} µs, "
+              f"step_l={float(step_l_sim)*1e6:.4f} µm"
+              + (f", step_l/R={float(step_l_sim)/float(R_geom):.4f}" if R_geom else ""))
 
-    # ── Reject geometries whose boundaries this path cannot represent ────────
-    # A multi-compartment geometry is stepped by a fused kernel that CARRIES the compartment
-    # id; the generic position-only walk below has no such state and would fall through to a
-    # `reflect` that cannot express the boundaries. Both used to do so silently -- a
-    # MyelinatedCylinder came back confined to R_inner (myelin and extra water absent) and a
-    # PackedMyelinatedCylinders came back at 1.02x free diffusion through 1 um axons. The
-    # replay-support check already knew this (see _replay_unsupported_reason); it just was
-    # not enforced on the entry point the pack builders actually call.
-    if geometry._is_myelinated:
-        raise NotImplementedError(
-            "simulate_trajectories cannot walk a MyelinatedCylinder: its three compartments "
-            "need the fused kernel physics.make_myelin_step_fn, which carries the "
-            "compartment id. Use simulate(...) instead.")
-    if geometry._is_packed_myelinated and not record:
-        raise NotImplementedError(
-            "simulate_trajectories on PackedMyelinatedCylinders requires the recorded channels "
-            "(tiers='all'), which route to the fused kernel "
-            "physics.make_packed_myelin_traj_step_fn. The position-only path has no "
-            "compartment state and would return an unrestricted walk.")
+        # ── Reject geometries whose boundaries this path cannot represent ────────
+        # A multi-compartment geometry is stepped by a fused kernel that CARRIES the compartment
+        # id; the generic position-only walk below has no such state and would fall through to a
+        # `reflect` that cannot express the boundaries. Both used to do so silently -- a
+        # MyelinatedCylinder came back confined to R_inner (myelin and extra water absent) and a
+        # PackedMyelinatedCylinders came back at 1.02x free diffusion through 1 um axons. The
+        # replay-support check already knew this (see _replay_unsupported_reason); it just was
+        # not enforced on the entry point the pack builders actually call.
+        if geometry._is_myelinated:
+            raise NotImplementedError(
+                "simulate_trajectories cannot walk a MyelinatedCylinder: its three compartments "
+                "need the fused kernel physics.make_myelin_step_fn, which carries the "
+                "compartment id. Use simulate(...) instead.")
+        if geometry._is_packed_myelinated and not record:
+            raise NotImplementedError(
+                "simulate_trajectories on PackedMyelinatedCylinders requires the recorded channels "
+                "(tiers='all'), which route to the fused kernel "
+                "physics.make_packed_myelin_traj_step_fn. The position-only path has no "
+                "compartment state and would return an unrestricted walk.")
 
-    permeability = geometry.permeability
-    has_permeability = permeability is not None
-    has_reflect_with_log_weight = hasattr(geometry, 'reflect_with_log_weight')
+        permeability = geometry.permeability
+        has_permeability = permeability is not None
+        has_reflect_with_log_weight = hasattr(geometry, 'reflect_with_log_weight')
 
-    # ── Standard path (position-only) ─────────────────────────────────────────
-    _carries_side = False   # set below only where the geometry accepts a carried side
-    if has_permeability:
-        kappa_over_D = jnp.float32(float(permeability) / diffusivity)
-        permeate = geometry.permeate
-
-        # Does this geometry support carried-compartment bookkeeping? If so the walker OWNS its
-        # side and only a granted crossing changes it. Deriving the compartment from the position
-        # each step is what allows a walker whose step merely ROUNDS onto the surface to change
-        # compartment without moving -- measured at 0.675% of intra walkers per 30k steps on a
-        # dense packing at kappa = 0, and ~10% over a production walk. The sentinel inside
-        # `permeate` ejects such a walker back to its own side; this carries the label.
-        # Modelled on MC/DC's deportation check, which compares the final position against the
-        # walker's `initial_location` and re-runs it (dynamicsSimulation.finalPositionCheck).
-        import inspect as _inspect
-        _carries_side = "side" in _inspect.signature(permeate).parameters
-
-        def inner_step(carry, _):
-            r, key, side, bad = carry
-            key, step_key, perm_key = jax.random.split(key, 3)
-            noise = jax.random.normal(step_key, (3,), dtype=jnp.float32)
-            unit_noise = noise / jnp.linalg.norm(noise)
-            step = unit_noise * step_l_sim
-            if _carries_side:
-                r_new, _dlog_w, crossed, illegal = permeate(
-                    r, step, kappa_over_D, jnp.float32(0.0), perm_key, side)
-                # a granted crossing is the ONLY thing that flips the carried side
-                side = jnp.where(crossed, -side, side)
-                bad = bad + illegal.astype(jnp.int32)
-            else:
-                r_new, _dlog_w = permeate(r, step, kappa_over_D, jnp.float32(0.0), perm_key)
-            return (r_new, key, side, bad), None
-    else:
-        reflect = geometry.reflect
-
-        def inner_step(carry, _):
-            r, key, side, bad = carry
-            key, subkey = jax.random.split(key)
-            noise = jax.random.normal(subkey, (3,), dtype=jnp.float32)
-            unit_noise = noise / jnp.linalg.norm(noise)
-            step = unit_noise * step_l_sim
-            r_new = reflect(r, step)
-            return (r_new, key, side, bad), None
-
-    # ── Universal compartment sentinel ───────────────────────────────────────
-    # `permeate(..., side=)` gives PackedCylinders an exact ejection, but every other
-    # geometry re-derives the compartment from the position and shares the same defect: an
-    # adversarial probe that steps walkers EXACTLY onto a wall (bisecting to the boundary
-    # with the geometry's own classifier) flips 23-81% of them on every analytic geometry,
-    # against 0% once a side is carried.
-    #
-    # At kappa <= 0 the rule needs no geometry knowledge: an impermeable wall grants no
-    # crossings, so ANY change of compartment label is illegal and the move that caused it
-    # can be rejected outright. One check therefore covers spheres, cylinders, ellipsoids,
-    # packed spheres, slabs, shells and meshes alike. At kappa > 0 a label change may be a
-    # genuine crossing, so there a geometry must opt in through the `side` API instead.
-    #
-    # Rejecting rather than ejecting costs a walker one step of displacement, at a measured
-    # rate of ~1e-7 per walker-step -- unmeasurable against the walk, and strictly better
-    # than silently relabelling the walker.
-    # Cost is why this is opt-in rather than the default: a classify_position per sub-step
-    # roughly DOUBLES the walk (+88% measured on Sphere, +69% on PackedCylinders), and walk
-    # time is the entire cost of the engine. The geometries that carry the largest risk --
-    # dense packings, where the rate scales with surface-to-volume -- instead get an exact
-    # O(1) sentinel inside their own step for +0.8%, so they are protected by default and
-    # do not need this. Use it to validate a geometry that has no in-step sentinel yet.
-    _cls_fn = geometry.classify_position
-    _use_guard = (bool(enforce_compartment) and not _carries_side
-                  and (not has_permeability or float(permeability) <= 0.0))
-    if _use_guard:
-        _inner_raw = inner_step
-
-        def inner_step(carry, _):
-            r_old = carry[0]
-            carry, out = _inner_raw(carry, _)
-            r_new = carry[0]
-            keep = _cls_fn(r_new) == _cls_fn(r_old)
-            bad = carry[3] + jnp.where(keep, 0, 1)
-            return (jnp.where(keep, r_new, r_old),) + carry[1:3] + (bad,), out
-
-    def outer_step(carry, _):
-        carry_final, _ = jax.lax.scan(inner_step, carry, None, length=sub_steps)
-        r_final = carry_final[0]
-        return carry_final, r_final
-
-    def simulate_one_walker(r0_w, key_w, side_w):
-        # save 0 is the start (t = 0); saves 1..n_t-1 follow n_t-1 blocks of sub-steps
-        (_, _, side_f, bad_f), positions = jax.lax.scan(
-            outer_step, (r0_w, key_w, side_w, jnp.int32(0)), None, length=n_t - 1)
-        positions = jnp.concatenate([r0_w[None, :], positions], axis=0)
-        return positions, side_f, bad_f  # (n_t, 3), carried side, illegal-crossing count
-
-    # ── Storage dtype for the returned channels ─────────────────────────────
-    # f32 by DEFAULT. The walk is f32, the pack is f32 (compression.pack_position_arrays)
-    # and SPEC 5.1 requires float32/float64 for `positions`, so f16 used to be the only
-    # non-f32 link in the chain -- and a biased one: f16's smallest normal is 6.1e-5, so a
-    # micron-scale coordinate in METRES is subnormal, with a flat ~6e-8 m quantum (12.5% of
-    # a 0.5 um coordinate). A compartment is populated up to its wall and empty beyond, so
-    # that quantum can only EJECT walkers, never recruit them: 3.1% of a confined population
-    # at R=0.5um, scaling as ~1/R. The signal never noticed (|dS| <= 1.3e-5) but compartment
-    # counting did. Pass storage_dtype=np.float16 to halve peak RAM on large walks, knowing
-    # positions are then unfit for inside/outside classification -- use `comp_traj` instead,
-    # which is computed here at f32 and stored as int8.
-    _sdt = np.dtype(storage_dtype).type
-    if _sdt not in (np.float16, np.float32, np.float64):
-        raise ValueError(f"storage_dtype must be float16/32/64, got {storage_dtype!r}")
-
-    # ── Compartment channel (relaxation path only) ────────────────────────────
-    # The geometry's own pool id, collapsed to two pools (0 extra, 1 enclosed): relaxation is
-    # per pool, and an object id would overflow int8 above 127 objects. The label is CARRIED:
-    # seeded once from the exact classifier and updated per sub-step through
-    # `classify_position_carry`, so a geometry whose per-step classifier is undecidable away
-    # from its walls (a mesh) keeps the label it had. Recorded per sub-step at f32, so it is
-    # exact where re-classifying stored positions is not (issue #78).
-    def _pool2(comp):
-        return jnp.minimum(comp, 1).astype(jnp.float32)
-
-    # ── Relaxation-data path (position + boundary log-weight with rho/D=1) ────
-    is_packed_myelin_geom = geometry._is_packed_myelinated
-
-    if record and is_packed_myelin_geom:
-        # PackedMyelinatedCylinders: use the stripped trajectory step fn (geometry
-        # + permeability only, rho/D=1 at all walls).  comp_id is the encoded id
-        # (0=extra, 1..N_max=intra, >N_max=myelin); compress to 0/1/2 at save.
-        # Magnetization transfer (kappa_MT > 0): the step fn binds free water at the
-        # myelin walls and records the per-save bound occupancy.  kappa_MT == 0 keeps
-        # the pre-MT walk bit-for-bit (RNG stream + positions unchanged).
-        _mt_on_pm = kappa_MT > 0.0
-        step_fn_traj_pm = make_packed_myelin_traj_step_fn(
-            geometry, dt_sim, kappa_MT=kappa_MT, dwell_time=dwell_time)
-
-        def _compress_comp_pm(comp_id):
-            return geometry.pool_of(comp_id).astype(jnp.int8)
-
-        def _inner_pm(carry, _):
-            return step_fn_traj_pm(carry, None)
-
-        if not _mt_on_pm:
-            # ── pre-MT path (4-element carry) — UNCHANGED, kept bit-for-bit ──
-            def outer_step_pm(carry, _):
-                r, key, comp_id = carry
-                # dlog_accum resets each save so the emitted value is the per-save delta.
-                inner_init = (r, key, jnp.float32(0.0), comp_id)
-                (r_final, key_final, dlog_accum, comp_final), _ = jax.lax.scan(
-                    _inner_pm, inner_init, None, length=sub_steps)
-                return (r_final, key_final, comp_final), \
-                       (r_final, dlog_accum, _compress_comp_pm(comp_final))
-
-            def simulate_one_walker_pm(r0_w, key_w, comp0_w, brem0_w):  # brem0 unused
-                (_, _, _), (positions, dlog_boundary, comp_types) = jax.lax.scan(
-                    outer_step_pm, (r0_w, key_w, comp0_w), None, length=n_t - 1)
-                # save 0 is the start: the initial position, no contact yet, the initial pool
-                positions = jnp.concatenate([r0_w[None, :], positions], axis=0)
-                dlog_boundary = jnp.concatenate([jnp.zeros((1,), dlog_boundary.dtype), dlog_boundary])
-                comp_types = jnp.concatenate([_compress_comp_pm(comp0_w)[None], comp_types])
-                z = jnp.zeros_like(dlog_boundary)                       # placeholder bound_frac
-                return positions, dlog_boundary, comp_types, z
-        else:
-            # ── MT path (6-element carry): bound_rem persists across saves ──
-            def outer_step_pm(carry, _):
-                r, key, comp_id, bound_rem = carry
-                inner_init = (r, key, jnp.float32(0.0), comp_id, bound_rem, jnp.float32(0.0))
-                (r_final, key_final, dlog_accum, comp_final, bound_rem_f, bound_acc), _ = \
-                    jax.lax.scan(_inner_pm, inner_init, None, length=sub_steps)
-                bound_frac = bound_acc / jnp.float32(sub_steps)
-                return (r_final, key_final, comp_final, bound_rem_f), \
-                       (r_final, dlog_accum, _compress_comp_pm(comp_final), bound_frac)
-
-            def simulate_one_walker_pm(r0_w, key_w, comp0_w, brem0_w):
-                (_, _, _, _), (positions, dlog_boundary, comp_types, bound_frac) = \
-                    jax.lax.scan(outer_step_pm, (r0_w, key_w, comp0_w, brem0_w),
-                                 None, length=n_t - 1)
-                # save 0 is the start: the initial position, no contact yet, the initial pool and bound state
-                positions = jnp.concatenate([r0_w[None, :], positions], axis=0)
-                dlog_boundary = jnp.concatenate([jnp.zeros((1,), dlog_boundary.dtype), dlog_boundary])
-                comp_types = jnp.concatenate([_compress_comp_pm(comp0_w)[None], comp_types])
-                bound_frac = jnp.concatenate([(brem0_w > 0).astype(bound_frac.dtype)[None], bound_frac])
-                return positions, dlog_boundary, comp_types, bound_frac
-
-        simulate_batch_pm = cached_batch(
-            geometry, ("traj_packed_myelin", n_t, sub_steps, float(dt_sim), kappa_MT, dwell_time),
-            lambda: jax.jit(jax.vmap(simulate_one_walker_pm, in_axes=(0, 0, 0, 0))))
-
-    if record and not is_packed_myelin_geom:
+        # ── Standard path (position-only) ─────────────────────────────────────────
+        _carries_side = False   # set below only where the geometry accepts a carried side
         if has_permeability:
-            kappa_over_D_relax = jnp.float32(float(permeability) / diffusivity)
-            permeate_relax = geometry.permeate
+            kappa_over_D = jnp.float32(float(permeability) / diffusivity)
+            permeate = geometry.permeate
 
-            def inner_step_relax(carry, _):
-                r, key, dlog_accum, comp_sum, side, bad, comp = carry
+            # Does this geometry support carried-compartment bookkeeping? If so the walker OWNS its
+            # side and only a granted crossing changes it. Deriving the compartment from the position
+            # each step is what allows a walker whose step merely ROUNDS onto the surface to change
+            # compartment without moving -- measured at 0.675% of intra walkers per 30k steps on a
+            # dense packing at kappa = 0, and ~10% over a production walk. The sentinel inside
+            # `permeate` ejects such a walker back to its own side; this carries the label.
+            # Modelled on MC/DC's deportation check, which compares the final position against the
+            # walker's `initial_location` and re-runs it (dynamicsSimulation.finalPositionCheck).
+            import inspect as _inspect
+            _carries_side = "side" in _inspect.signature(permeate).parameters
+
+            def inner_step(carry, _):
+                r, key, side, bad = carry
                 key, step_key, perm_key = jax.random.split(key, 3)
                 noise = jax.random.normal(step_key, (3,), dtype=jnp.float32)
                 unit_noise = noise / jnp.linalg.norm(noise)
                 step = unit_noise * step_l_sim
                 if _carries_side:
-                    r_new, dlog_w_unit, crossed, illegal = permeate_relax(
-                        r, step, kappa_over_D_relax, jnp.float32(1.0), perm_key, side)
+                    r_new, _dlog_w, crossed, illegal = permeate(
+                        r, step, kappa_over_D, jnp.float32(0.0), perm_key, side)
+                    # a granted crossing is the ONLY thing that flips the carried side
                     side = jnp.where(crossed, -side, side)
                     bad = bad + illegal.astype(jnp.int32)
-                    # Label from the CARRIED side, not from the position. This is the
-                    # channel `comp_traj` is built from, so re-deriving it here would put
-                    # the relabelling straight back in even with the sentinel correcting
-                    # the coordinate. 0 = extra, 1 = intra, as `_get_comp_id`.
-                    comp_id = jnp.where(side < 0, jnp.float32(1.0), jnp.float32(0.0))
                 else:
-                    r_new, dlog_w_unit = permeate_relax(
-                        r, step, kappa_over_D_relax, jnp.float32(1.0), perm_key)
-                    comp = geometry.classify_position_carry(r_new, comp)
-                    comp_id = _pool2(comp)
-                # Per-sub-step compartment id -> fractional occupancy (resolves
-                # intra-save crossings without a finer dt_save).
-                comp_sum = comp_sum + comp_id
-                return (r_new, key, dlog_accum + dlog_w_unit, comp_sum, side, bad, comp), None
-
-        elif has_reflect_with_log_weight:
-            reflect_with_log_weight = geometry.reflect_with_log_weight
-
-            def inner_step_relax(carry, _):
-                r, key, dlog_accum, comp_sum, side, bad, comp = carry
-                key, subkey = jax.random.split(key)
-                noise = jax.random.normal(subkey, (3,), dtype=jnp.float32)
-                unit_noise = noise / jnp.linalg.norm(noise)
-                step = unit_noise * step_l_sim
-                r_new, dlog_w_unit = reflect_with_log_weight(r, step, jnp.float32(1.0))
-                comp = geometry.classify_position_carry(r_new, comp)
-                comp_sum = comp_sum + _pool2(comp)
-                return (r_new, key, dlog_accum + dlog_w_unit, comp_sum, side, bad, comp), None
-
+                    r_new, _dlog_w = permeate(r, step, kappa_over_D, jnp.float32(0.0), perm_key)
+                return (r_new, key, side, bad), None
         else:
-            # FreeDiffusion: no boundaries → dlog_boundary_unit is always 0.
-            reflect_free = geometry.reflect
+            reflect = geometry.reflect
 
-            def inner_step_relax(carry, _):
-                r, key, dlog_accum, comp_sum, side, bad, comp = carry
+            def inner_step(carry, _):
+                r, key, side, bad = carry
                 key, subkey = jax.random.split(key)
                 noise = jax.random.normal(subkey, (3,), dtype=jnp.float32)
                 unit_noise = noise / jnp.linalg.norm(noise)
                 step = unit_noise * step_l_sim
-                r_new = reflect_free(r, step)
-                comp = geometry.classify_position_carry(r_new, comp)
-                comp_sum = comp_sum + _pool2(comp)
-                return (r_new, key, dlog_accum, comp_sum, side, bad, comp), None
+                r_new = reflect(r, step)
+                return (r_new, key, side, bad), None
 
-        def outer_step_relax(carry, _):
-            r, key, side, bad, comp = carry
-            inner_init = (r, key, jnp.float32(0.0), jnp.float32(0.0), side, bad, comp)
-            (r_final, key_final, dlog_accum, comp_sum, side_f, bad_f, comp_f), _ = jax.lax.scan(
-                inner_step_relax, inner_init, None, length=sub_steps)
-            # Fractional occupancy of pool 1 (the enclosed pool) over the saved interval.
-            comp_occ = comp_sum / jnp.float32(sub_steps)
-            return (r_final, key_final, side_f, bad_f, comp_f), (r_final, dlog_accum, comp_occ)
+        # ── Universal compartment sentinel ───────────────────────────────────────
+        # `permeate(..., side=)` gives PackedCylinders an exact ejection, but every other
+        # geometry re-derives the compartment from the position and shares the same defect: an
+        # adversarial probe that steps walkers EXACTLY onto a wall (bisecting to the boundary
+        # with the geometry's own classifier) flips 23-81% of them on every analytic geometry,
+        # against 0% once a side is carried.
+        #
+        # At kappa <= 0 the rule needs no geometry knowledge: an impermeable wall grants no
+        # crossings, so ANY change of compartment label is illegal and the move that caused it
+        # can be rejected outright. One check therefore covers spheres, cylinders, ellipsoids,
+        # packed spheres, slabs, shells and meshes alike. At kappa > 0 a label change may be a
+        # genuine crossing, so there a geometry must opt in through the `side` API instead.
+        #
+        # Rejecting rather than ejecting costs a walker one step of displacement, at a measured
+        # rate of ~1e-7 per walker-step -- unmeasurable against the walk, and strictly better
+        # than silently relabelling the walker.
+        # Cost is why this is opt-in rather than the default: a classify_position per sub-step
+        # roughly DOUBLES the walk (+88% measured on Sphere, +69% on PackedCylinders), and walk
+        # time is the entire cost of the engine. The geometries that carry the largest risk --
+        # dense packings, where the rate scales with surface-to-volume -- instead get an exact
+        # O(1) sentinel inside their own step for +0.8%, so they are protected by default and
+        # do not need this. Use it to validate a geometry that has no in-step sentinel yet.
+        _cls_fn = geometry.classify_position
+        _use_guard = (bool(enforce_compartment) and not _carries_side
+                      and (not has_permeability or float(permeability) <= 0.0))
+        if _use_guard:
+            _inner_raw = inner_step
 
-        def simulate_one_walker_relax(r0_w, key_w, side_w, comp0_w):
-            (_, _, _side_f, bad_f, _comp_f), (positions, dlog_boundary, comp_ids) = jax.lax.scan(
-                outer_step_relax, (r0_w, key_w, side_w, jnp.int32(0), comp0_w), None, length=n_t - 1)
-            # save 0 is the start: the initial position, no contact yet, the initial occupancy
+            def inner_step(carry, _):
+                r_old = carry[0]
+                carry, out = _inner_raw(carry, _)
+                r_new = carry[0]
+                keep = _cls_fn(r_new) == _cls_fn(r_old)
+                bad = carry[3] + jnp.where(keep, 0, 1)
+                return (jnp.where(keep, r_new, r_old),) + carry[1:3] + (bad,), out
+
+        def outer_step(carry, _):
+            carry_final, _ = jax.lax.scan(inner_step, carry, None, length=sub_steps)
+            r_final = carry_final[0]
+            return carry_final, r_final
+
+        def simulate_one_walker(r0_w, key_w, side_w):
+            # save 0 is the start (t = 0); saves 1..n_t-1 follow n_t-1 blocks of sub-steps
+            (_, _, side_f, bad_f), positions = jax.lax.scan(
+                outer_step, (r0_w, key_w, side_w, jnp.int32(0)), None, length=n_t - 1)
             positions = jnp.concatenate([r0_w[None, :], positions], axis=0)
-            dlog_boundary = jnp.concatenate([jnp.zeros((1,), dlog_boundary.dtype), dlog_boundary])
-            comp_ids = jnp.concatenate([jnp.asarray(_pool2(comp0_w), comp_ids.dtype)[None], comp_ids])   # the same collapse as the kernel's
-            return positions, dlog_boundary, comp_ids, bad_f
+            return positions, side_f, bad_f  # (n_t, 3), carried side, illegal-crossing count
 
-        _simulate_batch_relax_raw = cached_batch(
-            geometry, ("traj_relax", n_t, sub_steps, float(dt_sim), diffusivity),
-            lambda: jax.jit(jax.vmap(simulate_one_walker_relax, in_axes=(0, 0, 0, 0))))
+        # ── Storage dtype for the returned channels ─────────────────────────────
+        # f32 by DEFAULT. The walk is f32, the pack is f32 (compression.pack_position_arrays)
+        # and SPEC 5.1 requires float32/float64 for `positions`, so f16 used to be the only
+        # non-f32 link in the chain -- and a biased one: f16's smallest normal is 6.1e-5, so a
+        # micron-scale coordinate in METRES is subnormal, with a flat ~6e-8 m quantum (12.5% of
+        # a 0.5 um coordinate). A compartment is populated up to its wall and empty beyond, so
+        # that quantum can only EJECT walkers, never recruit them: 3.1% of a confined population
+        # at R=0.5um, scaling as ~1/R. The signal never noticed (|dS| <= 1.3e-5) but compartment
+        # counting did. Pass storage_dtype=np.float16 to halve peak RAM on large walks, knowing
+        # positions are then unfit for inside/outside classification -- use `comp_traj` instead,
+        # which is computed here at f32 and stored as int8.
+        _sdt = np.dtype(storage_dtype).type
+        if _sdt not in (np.float16, np.float32, np.float64):
+            raise ValueError(f"storage_dtype must be float16/32/64, got {storage_dtype!r}")
 
-        def simulate_batch_relax(r0_b, keys_b):
-            comp0_b = jnp.asarray(geometry.classify_positions_exact(r0_b), jnp.int32)
-            pos, dlog, comp, bad_f = _simulate_batch_relax_raw(r0_b, keys_b, _side0(r0_b), comp0_b)
-            _illegal_crossings[0] += int(jnp.sum(bad_f))
-            return pos, dlog, comp
+        # ── Compartment channel (relaxation path only) ────────────────────────────
+        # The geometry's own pool id, collapsed to two pools (0 extra, 1 enclosed): relaxation is
+        # per pool, and an object id would overflow int8 above 127 objects. The label is CARRIED:
+        # seeded once from the exact classifier and updated per sub-step through
+        # `classify_position_carry`, so a geometry whose per-step classifier is undecidable away
+        # from its walls (a mesh) keeps the label it had. Recorded per sub-step at f32, so it is
+        # exact where re-classifying stored positions is not (issue #78).
+        def _pool2(comp):
+            return jnp.minimum(comp, 1).astype(jnp.float32)
 
-    _simulate_batch_raw = cached_batch(
-        geometry, ("traj", n_t, sub_steps, float(dt_sim), diffusivity),
-        lambda: jax.jit(jax.vmap(simulate_one_walker, in_axes=(0, 0, 0))))
+        # ── Relaxation-data path (position + boundary log-weight with rho/D=1) ────
+        is_packed_myelin_geom = geometry._is_packed_myelinated
 
-    # Seed each walker's carried compartment ONCE, from its t=0 position, and let only a
-    # granted crossing change it thereafter (MC/DC's `initial_location`). The wrapper keeps
-    # the (r0, keys) -> positions signature every call site below already uses.
-    _illegal_crossings = [0]
-
-    if _carries_side:
-        _cls = geometry.classify_position
-
-        def _side0(r_b):
-            # -1 = intra (inside some object), +1 = extra. Matches `side < 0 == intra`.
-            ids = jax.vmap(_cls)(r_b)
-            return jnp.where(ids > 0, jnp.int8(-1), jnp.int8(1))
-    else:
-        def _side0(r_b):
-            return jnp.zeros((r_b.shape[0],), dtype=jnp.int8)
-
-    def simulate_batch(r0_b, keys_b):
-        positions, _side_f, bad_f = _simulate_batch_raw(r0_b, keys_b, _side0(r0_b))
-        _illegal_crossings[0] += int(jnp.sum(bad_f))
-        return positions
-
-    master_key = jax.random.PRNGKey(seed)
-    pos_key, walker_key = jax.random.split(master_key)
-
-    r0_all = initial_positions(geometry, n_walkers, pos_key, r0)   # (n_walkers, 3)
-    walker_keys_all = jax.random.split(walker_key, n_walkers)
-
-    comp0_all = (jnp.asarray(geometry._init_compartments)
-                 if (record and is_packed_myelin_geom) else None)
-
-    # ── MT bound-pool equilibration (packed myelin, kappa_MT > 0) ──
-    # An all-free start under-fills the macromolecular pool and biases the transfer;
-    # equilibrate the bound occupancy (and spatial state) to f_b BEFORE t=0 and discard
-    # the preamble.  kappa_MT == 0 leaves brem0_all at zero and skips this entirely.
-    _mt_on = kappa_MT > 0.0 and record and is_packed_myelin_geom
-    brem0_all = jnp.zeros((n_walkers,), dtype=jnp.float32)
-    if _mt_on:
-        from . import mt as _mt
-        if dwell_time <= 0.0:
-            raise ValueError("dwell_time must be > 0 when kappa_MT > 0.")
-        _mode = _mt.resolve_equilibrate_mode(equilibrate_binding, geometry)
-        if _mode == 'burnin':
-            _n_chunk = max(4, int(round(float(dwell_time) / float(dt_sim))))
-
-            def _burn_walker(r_w, key_w, comp_w, brem_w):
-                (r_f, key_f, _da, comp_f, brem_f, bacc), _ = jax.lax.scan(
-                    _inner_pm, (r_w, key_w, jnp.float32(0.0), comp_w, brem_w,
-                                jnp.float32(0.0)), None, length=_n_chunk)
-                return r_f, key_f, comp_f, brem_f, bacc / jnp.float32(_n_chunk)
-            _burn = jax.jit(jax.vmap(_burn_walker, in_axes=(0, 0, 0, 0)))
-
-            _r, _k, _c = r0_all, walker_keys_all, comp0_all
-            _brem = brem0_all
-            _occ_prev, _converged = -1.0, False
-            for _ in range(40):
-                _r, _k, _c, _brem, _bf = _burn(_r, _k, _c, _brem)
-                _occ = float(jnp.mean(_bf))
-                if _occ_prev >= 0.0 and abs(_occ - _occ_prev) <= 0.01 * max(_occ, 1e-6):
-                    _occ_prev, _converged = _occ, True
-                    break
-                _occ_prev = _occ
-            r0_all, walker_keys_all, comp0_all, brem0_all = _r, _k, _c, _brem
-            log.info(f"  [mt] equilibrate 'burnin': <bound>={_occ_prev:.4f}")
-            if not _converged:
-                import warnings
-                warnings.warn("equilibrate_binding: bound occupancy did not plateau within "
-                              "the burn-in cap; the saved walk may be under-equilibrated.",
-                              stacklevel=2)
-
-    all_batches = []
-    all_dlog_batches = [] if record else None
-    all_comp_batches = [] if record else None
-    all_bound_batches = [] if _mt_on else None
-    n_batches = (n_walkers + walker_batch_size - 1) // walker_batch_size
-
-    # ── IR-basis streaming compression (piece 1) ────────────────────────────────
-    # When compress=K, DCT each batch's positions/boundary channel ON DEVICE and pull
-    # only (batch, K, 3) / (batch, K+1) to the host — the raw (batch, n_t, 3) trajectory
-    # never leaves the GPU, so the producer's host-RAM footprint drops ~n_t/K. The DCT is
-    # a matmul against the SAME orthonormal DCT-II basis compression.py uses (built from
-    # scipy so the stored modes decode/mode-space-replay bit-consistently).
-    _compress = compress is not None
-    _cx = {"K": int(compress) if _compress else 0, "Phi": None, "Psi": None, "ramp": None, "n_t": None}
-    all_blt_endpoints = [] if (_compress and record) else None
-    all_blt_starts = [] if (_compress and record) else None
-    if _compress and is_packed_myelin_geom:
-        raise NotImplementedError(
-            "compress= is not yet wired for packed-myelin walks (extra MT bound channel); "
-            "piece 1 covers the generic reflect/surface-relaxivity producer.")
-
-    def _dct_basis(n_t):
-        from scipy.fft import dct as _sdct
-        # dct(I, axis=0)[k, n] = DCT-II coeff k of basis vector e_n  ->  Phi @ x == dct(x)
-        Phi = _sdct(np.eye(n_t, dtype=np.float64), type=2, norm="ortho", axis=0)[:_cx["K"]]
-        return jnp.asarray(Phi, jnp.float32)
-
-    def _sine_basis(n_t):
-        from scipy.fft import dst as _sdst
-        # dst(I, axis=0)[k, n] over the INTERIOR: Psi @ u_int == dst-I(u_int)
-        Psi = _sdst(np.eye(n_t - 2, dtype=np.float64), type=1, norm="ortho",
-                    axis=0)[:_cx["K"]]
-        return jnp.asarray(Psi, jnp.float32)
-
-    def _compress_pos(pos_dev):                  # (b, n_t, 3) device -> (b, K+2, 3) host
-        """Positions in the same representation build_replay_pack writes: two exact endpoints
-        then sine bands of the pinned residual.  Producing DCT bands here instead would put a
-        second, differently-meaning C0 layout into masters that the reader cannot distinguish
-        by shape."""
-        n_t = int(pos_dev.shape[1])
-        if _cx["Psi"] is None:
-            _cx["n_t"] = n_t; _cx["Psi"] = _sine_basis(n_t)
-        a = pos_dev[:, 0, :]
-        v = pos_dev[:, -1, :] - a
-        tau = jnp.linspace(jnp.float32(0.0), jnp.float32(1.0), n_t)
-        u = pos_dev - (a[:, None, :] + v[:, None, :] * tau[None, :, None])
-        B = jnp.einsum("kt,btd->bkd", _cx["Psi"], u[:, 1:-1, :])
-        return np.asarray(jnp.concatenate([a[:, None, :], v[:, None, :], B],
-                                          axis=1)).astype(np.float32)
-
-    def _compress_blt(dlog_dev):          # (b, n_t) -> start (b,), endpoint (b,), modes (b, K)
-        """The cumulative local time in the SAME bridge form as positions: both endpoints exact,
-        then sine bands of the pinned residual. Emitting detrended cosine bands here instead would
-        put a second, differently-meaning C2 layout into masters that the reader cannot tell apart
-        from this one -- and a truncated cosine residual misses the stored endpoint by percent."""
-        n_t = int(dlog_dev.shape[1])
-        if _cx["Psi"] is None:
-            _cx["n_t"] = n_t; _cx["Psi"] = _sine_basis(n_t)
-        if _cx["ramp"] is None:
-            _cx["ramp"] = jnp.linspace(jnp.float32(0.0), jnp.float32(1.0), n_t)
-        B = jnp.cumsum(dlog_dev, axis=1)
-        a, endpoint = B[:, 0], B[:, -1]
-        resid = B - (a[:, None] + (endpoint - a)[:, None] * _cx["ramp"][None, :])   # 0 at BOTH ends
-        modes = jnp.einsum("kt,bt->bk", _cx["Psi"], resid[:, 1:-1])
-        return (np.asarray(a).astype(np.float32), np.asarray(endpoint).astype(np.float32),
-                np.asarray(modes).astype(np.float32))
-
-    for batch_idx in range(n_batches):
-        start = batch_idx * walker_batch_size
-        end = min(start + walker_batch_size, n_walkers)
-        batch_size = end - start
-        pct = int(100 * end / n_walkers)
-        log.info(f"  Simulating walkers {start}–{end - 1} ({pct}% done)...")
-
-        current_r0 = r0_all[start:end]
-        current_keys = walker_keys_all[start:end]
         if record and is_packed_myelin_geom:
-            current_comp0 = comp0_all[start:end]
-            current_brem0 = brem0_all[start:end]
+            # PackedMyelinatedCylinders: use the stripped trajectory step fn (geometry
+            # + permeability only, rho/D=1 at all walls).  comp_id is the encoded id
+            # (0=extra, 1..N_max=intra, >N_max=myelin); compress to 0/1/2 at save.
+            # Magnetization transfer (kappa_MT > 0): the step fn binds free water at the
+            # myelin walls and records the per-save bound occupancy.  kappa_MT == 0 keeps
+            # the pre-MT walk bit-for-bit (RNG stream + positions unchanged).
+            _mt_on_pm = kappa_MT > 0.0
+            step_fn_traj_pm = make_packed_myelin_traj_step_fn(
+                geometry, dt_sim, kappa_MT=kappa_MT, dwell_time=dwell_time)
 
-        success = False
-        while not success:
-            try:
-                if record and is_packed_myelin_geom:
-                    pos_f32, dlog_f32, comp_f32, bfrac_f32 = simulate_batch_pm(
-                        current_r0, current_keys, current_comp0, current_brem0)
-                    all_batches.append(np.array(pos_f32).astype(_sdt))
-                    all_dlog_batches.append(np.array(dlog_f32).astype(_sdt))
-                    all_comp_batches.append(np.array(comp_f32).astype(np.int8))
-                    if _mt_on:
-                        all_bound_batches.append(np.array(bfrac_f32).astype(_sdt))
-                elif record:
-                    pos_f32, dlog_f32, comp_f32 = simulate_batch_relax(current_r0, current_keys)
-                    if _compress:
-                        all_batches.append(_compress_pos(pos_f32))
-                        _start, _end, _bmodes = _compress_blt(dlog_f32)
-                        all_blt_starts.append(_start)
-                        all_blt_endpoints.append(_end)
-                        all_dlog_batches.append(_bmodes)
+            def _compress_comp_pm(comp_id):
+                return geometry.pool_of(comp_id).astype(jnp.int8)
+
+            def _inner_pm(carry, _):
+                return step_fn_traj_pm(carry, None)
+
+            if not _mt_on_pm:
+                # ── pre-MT path (4-element carry) — UNCHANGED, kept bit-for-bit ──
+                def outer_step_pm(carry, _):
+                    r, key, comp_id = carry
+                    # dlog_accum resets each save so the emitted value is the per-save delta.
+                    inner_init = (r, key, jnp.float32(0.0), comp_id)
+                    (r_final, key_final, dlog_accum, comp_final), _ = jax.lax.scan(
+                        _inner_pm, inner_init, None, length=sub_steps)
+                    return (r_final, key_final, comp_final), \
+                           (r_final, dlog_accum, _compress_comp_pm(comp_final))
+
+                def simulate_one_walker_pm(r0_w, key_w, comp0_w, brem0_w):  # brem0 unused
+                    (_, _, _), (positions, dlog_boundary, comp_types) = jax.lax.scan(
+                        outer_step_pm, (r0_w, key_w, comp0_w), None, length=n_t - 1)
+                    # save 0 is the start: the initial position, no contact yet, the initial pool
+                    positions = jnp.concatenate([r0_w[None, :], positions], axis=0)
+                    dlog_boundary = jnp.concatenate([jnp.zeros((1,), dlog_boundary.dtype), dlog_boundary])
+                    comp_types = jnp.concatenate([_compress_comp_pm(comp0_w)[None], comp_types])
+                    z = jnp.zeros_like(dlog_boundary)                       # placeholder bound_frac
+                    return positions, dlog_boundary, comp_types, z
+            else:
+                # ── MT path (6-element carry): bound_rem persists across saves ──
+                def outer_step_pm(carry, _):
+                    r, key, comp_id, bound_rem = carry
+                    inner_init = (r, key, jnp.float32(0.0), comp_id, bound_rem, jnp.float32(0.0))
+                    (r_final, key_final, dlog_accum, comp_final, bound_rem_f, bound_acc), _ = \
+                        jax.lax.scan(_inner_pm, inner_init, None, length=sub_steps)
+                    bound_frac = bound_acc / jnp.float32(sub_steps)
+                    return (r_final, key_final, comp_final, bound_rem_f), \
+                           (r_final, dlog_accum, _compress_comp_pm(comp_final), bound_frac)
+
+                def simulate_one_walker_pm(r0_w, key_w, comp0_w, brem0_w):
+                    (_, _, _, _), (positions, dlog_boundary, comp_types, bound_frac) = \
+                        jax.lax.scan(outer_step_pm, (r0_w, key_w, comp0_w, brem0_w),
+                                     None, length=n_t - 1)
+                    # save 0 is the start: the initial position, no contact yet, the initial pool and bound state
+                    positions = jnp.concatenate([r0_w[None, :], positions], axis=0)
+                    dlog_boundary = jnp.concatenate([jnp.zeros((1,), dlog_boundary.dtype), dlog_boundary])
+                    comp_types = jnp.concatenate([_compress_comp_pm(comp0_w)[None], comp_types])
+                    bound_frac = jnp.concatenate([(brem0_w > 0).astype(bound_frac.dtype)[None], bound_frac])
+                    return positions, dlog_boundary, comp_types, bound_frac
+
+            simulate_batch_pm = cached_batch(
+                geometry, ("traj_packed_myelin", n_t, sub_steps, float(dt_sim), kappa_MT, dwell_time),
+                lambda: jax.jit(jax.vmap(simulate_one_walker_pm, in_axes=(0, 0, 0, 0))))
+
+        if record and not is_packed_myelin_geom:
+            if has_permeability:
+                kappa_over_D_relax = jnp.float32(float(permeability) / diffusivity)
+                permeate_relax = geometry.permeate
+
+                def inner_step_relax(carry, _):
+                    r, key, dlog_accum, comp_sum, side, bad, comp = carry
+                    key, step_key, perm_key = jax.random.split(key, 3)
+                    noise = jax.random.normal(step_key, (3,), dtype=jnp.float32)
+                    unit_noise = noise / jnp.linalg.norm(noise)
+                    step = unit_noise * step_l_sim
+                    if _carries_side:
+                        r_new, dlog_w_unit, crossed, illegal = permeate_relax(
+                            r, step, kappa_over_D_relax, jnp.float32(1.0), perm_key, side)
+                        side = jnp.where(crossed, -side, side)
+                        bad = bad + illegal.astype(jnp.int32)
+                        # Label from the CARRIED side, not from the position. This is the
+                        # channel `comp_traj` is built from, so re-deriving it here would put
+                        # the relabelling straight back in even with the sentinel correcting
+                        # the coordinate. 0 = extra, 1 = intra, as `_get_comp_id`.
+                        comp_id = jnp.where(side < 0, jnp.float32(1.0), jnp.float32(0.0))
                     else:
+                        r_new, dlog_w_unit = permeate_relax(
+                            r, step, kappa_over_D_relax, jnp.float32(1.0), perm_key)
+                        comp = geometry.classify_position_carry(r_new, comp)
+                        comp_id = _pool2(comp)
+                    # Per-sub-step compartment id -> fractional occupancy (resolves
+                    # intra-save crossings without a finer dt_save).
+                    comp_sum = comp_sum + comp_id
+                    return (r_new, key, dlog_accum + dlog_w_unit, comp_sum, side, bad, comp), None
+
+            elif has_reflect_with_log_weight:
+                reflect_with_log_weight = geometry.reflect_with_log_weight
+
+                def inner_step_relax(carry, _):
+                    r, key, dlog_accum, comp_sum, side, bad, comp = carry
+                    key, subkey = jax.random.split(key)
+                    noise = jax.random.normal(subkey, (3,), dtype=jnp.float32)
+                    unit_noise = noise / jnp.linalg.norm(noise)
+                    step = unit_noise * step_l_sim
+                    r_new, dlog_w_unit = reflect_with_log_weight(r, step, jnp.float32(1.0))
+                    comp = geometry.classify_position_carry(r_new, comp)
+                    comp_sum = comp_sum + _pool2(comp)
+                    return (r_new, key, dlog_accum + dlog_w_unit, comp_sum, side, bad, comp), None
+
+            else:
+                # FreeDiffusion: no boundaries → dlog_boundary_unit is always 0.
+                reflect_free = geometry.reflect
+
+                def inner_step_relax(carry, _):
+                    r, key, dlog_accum, comp_sum, side, bad, comp = carry
+                    key, subkey = jax.random.split(key)
+                    noise = jax.random.normal(subkey, (3,), dtype=jnp.float32)
+                    unit_noise = noise / jnp.linalg.norm(noise)
+                    step = unit_noise * step_l_sim
+                    r_new = reflect_free(r, step)
+                    comp = geometry.classify_position_carry(r_new, comp)
+                    comp_sum = comp_sum + _pool2(comp)
+                    return (r_new, key, dlog_accum, comp_sum, side, bad, comp), None
+
+            def outer_step_relax(carry, _):
+                r, key, side, bad, comp = carry
+                inner_init = (r, key, jnp.float32(0.0), jnp.float32(0.0), side, bad, comp)
+                (r_final, key_final, dlog_accum, comp_sum, side_f, bad_f, comp_f), _ = jax.lax.scan(
+                    inner_step_relax, inner_init, None, length=sub_steps)
+                # Fractional occupancy of pool 1 (the enclosed pool) over the saved interval.
+                comp_occ = comp_sum / jnp.float32(sub_steps)
+                return (r_final, key_final, side_f, bad_f, comp_f), (r_final, dlog_accum, comp_occ)
+
+            def simulate_one_walker_relax(r0_w, key_w, side_w, comp0_w):
+                (_, _, _side_f, bad_f, _comp_f), (positions, dlog_boundary, comp_ids) = jax.lax.scan(
+                    outer_step_relax, (r0_w, key_w, side_w, jnp.int32(0), comp0_w), None, length=n_t - 1)
+                # save 0 is the start: the initial position, no contact yet, the initial occupancy
+                positions = jnp.concatenate([r0_w[None, :], positions], axis=0)
+                dlog_boundary = jnp.concatenate([jnp.zeros((1,), dlog_boundary.dtype), dlog_boundary])
+                comp_ids = jnp.concatenate([jnp.asarray(_pool2(comp0_w), comp_ids.dtype)[None], comp_ids])   # the same collapse as the kernel's
+                return positions, dlog_boundary, comp_ids, bad_f
+
+            _simulate_batch_relax_raw = cached_batch(
+                geometry, ("traj_relax", n_t, sub_steps, float(dt_sim), diffusivity),
+                lambda: jax.jit(jax.vmap(simulate_one_walker_relax, in_axes=(0, 0, 0, 0))))
+
+            def simulate_batch_relax(r0_b, keys_b):
+                comp0_b = jnp.asarray(geometry.classify_positions_exact(r0_b), jnp.int32)
+                pos, dlog, comp, bad_f = _simulate_batch_relax_raw(r0_b, keys_b, _side0(r0_b), comp0_b)
+                _illegal_crossings[0] += int(jnp.sum(bad_f))
+                return pos, dlog, comp
+
+        _simulate_batch_raw = cached_batch(
+            geometry, ("traj", n_t, sub_steps, float(dt_sim), diffusivity),
+            lambda: jax.jit(jax.vmap(simulate_one_walker, in_axes=(0, 0, 0))))
+
+        # Seed each walker's carried compartment ONCE, from its t=0 position, and let only a
+        # granted crossing change it thereafter (MC/DC's `initial_location`). The wrapper keeps
+        # the (r0, keys) -> positions signature every call site below already uses.
+        _illegal_crossings = [0]
+
+        if _carries_side:
+            _cls = geometry.classify_position
+
+            def _side0(r_b):
+                # -1 = intra (inside some object), +1 = extra. Matches `side < 0 == intra`.
+                ids = jax.vmap(_cls)(r_b)
+                return jnp.where(ids > 0, jnp.int8(-1), jnp.int8(1))
+        else:
+            def _side0(r_b):
+                return jnp.zeros((r_b.shape[0],), dtype=jnp.int8)
+
+        def simulate_batch(r0_b, keys_b):
+            positions, _side_f, bad_f = _simulate_batch_raw(r0_b, keys_b, _side0(r0_b))
+            _illegal_crossings[0] += int(jnp.sum(bad_f))
+            return positions
+
+        master_key = jax.random.PRNGKey(seed)
+        pos_key, walker_key = jax.random.split(master_key)
+
+        r0_all = initial_positions(geometry, n_walkers, pos_key, r0)   # (n_walkers, 3)
+        walker_keys_all = jax.random.split(walker_key, n_walkers)
+
+        comp0_all = (jnp.asarray(geometry._init_compartments)
+                     if (record and is_packed_myelin_geom) else None)
+
+        # ── MT bound-pool equilibration (packed myelin, kappa_MT > 0) ──
+        # An all-free start under-fills the macromolecular pool and biases the transfer;
+        # equilibrate the bound occupancy (and spatial state) to f_b BEFORE t=0 and discard
+        # the preamble.  kappa_MT == 0 leaves brem0_all at zero and skips this entirely.
+        _mt_on = kappa_MT > 0.0 and record and is_packed_myelin_geom
+        brem0_all = jnp.zeros((n_walkers,), dtype=jnp.float32)
+        if _mt_on:
+            from . import mt as _mt
+            if dwell_time <= 0.0:
+                raise ValueError("dwell_time must be > 0 when kappa_MT > 0.")
+            _mode = _mt.resolve_equilibrate_mode(equilibrate_binding, geometry)
+            if _mode == 'burnin':
+                _n_chunk = max(4, int(round(float(dwell_time) / float(dt_sim))))
+
+                def _burn_walker(r_w, key_w, comp_w, brem_w):
+                    (r_f, key_f, _da, comp_f, brem_f, bacc), _ = jax.lax.scan(
+                        _inner_pm, (r_w, key_w, jnp.float32(0.0), comp_w, brem_w,
+                                    jnp.float32(0.0)), None, length=_n_chunk)
+                    return r_f, key_f, comp_f, brem_f, bacc / jnp.float32(_n_chunk)
+                _burn = jax.jit(jax.vmap(_burn_walker, in_axes=(0, 0, 0, 0)))
+
+                _r, _k, _c = r0_all, walker_keys_all, comp0_all
+                _brem = brem0_all
+                _occ_prev, _converged = -1.0, False
+                for _ in range(40):
+                    _r, _k, _c, _brem, _bf = _burn(_r, _k, _c, _brem)
+                    _occ = float(jnp.mean(_bf))
+                    if _occ_prev >= 0.0 and abs(_occ - _occ_prev) <= 0.01 * max(_occ, 1e-6):
+                        _occ_prev, _converged = _occ, True
+                        break
+                    _occ_prev = _occ
+                r0_all, walker_keys_all, comp0_all, brem0_all = _r, _k, _c, _brem
+                log.info(f"  [mt] equilibrate 'burnin': <bound>={_occ_prev:.4f}")
+                if not _converged:
+                    import warnings
+                    warnings.warn("equilibrate_binding: bound occupancy did not plateau within "
+                                  "the burn-in cap; the saved walk may be under-equilibrated.",
+                                  stacklevel=2)
+
+        all_batches = []
+        all_dlog_batches = [] if record else None
+        all_comp_batches = [] if record else None
+        all_bound_batches = [] if _mt_on else None
+
+        # ── IR-basis streaming compression (piece 1) ────────────────────────────────
+        # When compress=K, DCT each batch's positions/boundary channel ON DEVICE and pull
+        # only (batch, K, 3) / (batch, K+1) to the host — the raw (batch, n_t, 3) trajectory
+        # never leaves the GPU, so the producer's host-RAM footprint drops ~n_t/K. The DCT is
+        # a matmul against the SAME orthonormal DCT-II basis compression.py uses (built from
+        # scipy so the stored modes decode/mode-space-replay bit-consistently).
+        _compress = compress is not None
+        _cx = {"K": int(compress) if _compress else 0, "Phi": None, "Psi": None, "ramp": None, "n_t": None}
+        all_blt_endpoints = [] if (_compress and record) else None
+        all_blt_starts = [] if (_compress and record) else None
+        if _compress and is_packed_myelin_geom:
+            raise NotImplementedError(
+                "compress= is not yet wired for packed-myelin walks (extra MT bound channel); "
+                "piece 1 covers the generic reflect/surface-relaxivity producer.")
+
+        def _dct_basis(n_t):
+            from scipy.fft import dct as _sdct
+            # dct(I, axis=0)[k, n] = DCT-II coeff k of basis vector e_n  ->  Phi @ x == dct(x)
+            Phi = _sdct(np.eye(n_t, dtype=np.float64), type=2, norm="ortho", axis=0)[:_cx["K"]]
+            return jnp.asarray(Phi, jnp.float32)
+
+        def _sine_basis(n_t):
+            from scipy.fft import dst as _sdst
+            # dst(I, axis=0)[k, n] over the INTERIOR: Psi @ u_int == dst-I(u_int)
+            Psi = _sdst(np.eye(n_t - 2, dtype=np.float64), type=1, norm="ortho",
+                        axis=0)[:_cx["K"]]
+            return jnp.asarray(Psi, jnp.float32)
+
+        def _compress_pos(pos_dev):                  # (b, n_t, 3) device -> (b, K+2, 3) host
+            """Positions in the same representation build_replay_pack writes: two exact endpoints
+            then sine bands of the pinned residual.  Producing DCT bands here instead would put a
+            second, differently-meaning C0 layout into masters that the reader cannot distinguish
+            by shape."""
+            n_t = int(pos_dev.shape[1])
+            if _cx["Psi"] is None:
+                _cx["n_t"] = n_t; _cx["Psi"] = _sine_basis(n_t)
+            a = pos_dev[:, 0, :]
+            v = pos_dev[:, -1, :] - a
+            tau = jnp.linspace(jnp.float32(0.0), jnp.float32(1.0), n_t)
+            u = pos_dev - (a[:, None, :] + v[:, None, :] * tau[None, :, None])
+            B = jnp.einsum("kt,btd->bkd", _cx["Psi"], u[:, 1:-1, :])
+            return np.asarray(jnp.concatenate([a[:, None, :], v[:, None, :], B],
+                                              axis=1)).astype(np.float32)
+
+        def _compress_blt(dlog_dev):          # (b, n_t) -> start (b,), endpoint (b,), modes (b, K)
+            """The cumulative local time in the SAME bridge form as positions: both endpoints exact,
+            then sine bands of the pinned residual. Emitting detrended cosine bands here instead would
+            put a second, differently-meaning C2 layout into masters that the reader cannot tell apart
+            from this one -- and a truncated cosine residual misses the stored endpoint by percent."""
+            n_t = int(dlog_dev.shape[1])
+            if _cx["Psi"] is None:
+                _cx["n_t"] = n_t; _cx["Psi"] = _sine_basis(n_t)
+            if _cx["ramp"] is None:
+                _cx["ramp"] = jnp.linspace(jnp.float32(0.0), jnp.float32(1.0), n_t)
+            B = jnp.cumsum(dlog_dev, axis=1)
+            a, endpoint = B[:, 0], B[:, -1]
+            resid = B - (a[:, None] + (endpoint - a)[:, None] * _cx["ramp"][None, :])   # 0 at BOTH ends
+            modes = jnp.einsum("kt,bt->bk", _cx["Psi"], resid[:, 1:-1])
+            return (np.asarray(a).astype(np.float32), np.asarray(endpoint).astype(np.float32),
+                    np.asarray(modes).astype(np.float32))
+
+        for batch_idx, (start, end) in enumerate(run.batches(n_walkers, walker_batch_size)):
+            batch_size = end - start
+
+            current_r0 = r0_all[start:end]
+            current_keys = walker_keys_all[start:end]
+            if record and is_packed_myelin_geom:
+                current_comp0 = comp0_all[start:end]
+                current_brem0 = brem0_all[start:end]
+
+            success = False
+            while not success:
+                try:
+                    if record and is_packed_myelin_geom:
+                        pos_f32, dlog_f32, comp_f32, bfrac_f32 = simulate_batch_pm(
+                            current_r0, current_keys, current_comp0, current_brem0)
                         all_batches.append(np.array(pos_f32).astype(_sdt))
                         all_dlog_batches.append(np.array(dlog_f32).astype(_sdt))
-                    # Permeable: fractional occupancy; else a discrete label, ROUNDED: the occupancy
-                    # is comp_sum / sub_steps and XLA may form it as comp_sum * (1/sub_steps), which
-                    # for some sub-step counts is 0.99999994 -- truncating that to int8 labelled every
-                    # intra walker "extra" (measured at sub_steps = 97).
-                    all_comp_batches.append(np.array(comp_f32).astype(_sdt) if has_permeability
-                                            else np.rint(np.array(comp_f32)).astype(np.int8))
-                else:
-                    if _compress:
-                        all_batches.append(_compress_pos(simulate_batch(current_r0, current_keys)))
-                    else:
-                        positions_f32 = np.array(simulate_batch(current_r0, current_keys))
-                        all_batches.append(positions_f32.astype(_sdt))
-                success = True
-            except Exception as e:
-                err_str = str(e)
-                if ("OOM" in err_str or "out of memory" in err_str.lower()
-                        or "RESOURCE_EXHAUSTED" in err_str):
-                    if _compress:
-                        # The compressed path already keeps peak device memory low; a
-                        # further sub-batch split here would need to compress each sub-slice
-                        # too. Not wired yet — surface a clear message instead of raw OOM.
-                        raise RuntimeError(
-                            "compress= hit GPU OOM within a walker batch; lower "
-                            "walker_batch_size (the compressed sub-batch fallback is not "
-                            "yet implemented).") from e
-                    new_sub_batch = batch_size // 2
-                    if new_sub_batch < 1000:
-                        raise RuntimeError(f"Batch size too small after OOM: {e}") from e
-                    log.info(f"  OOM: halving sub-batch to {new_sub_batch}")
-                    sub_pos_list = []
-                    sub_dlog_list = [] if record else None
-                    sub_comp_list = [] if record else None
-                    sub_bound_list = [] if _mt_on else None
-                    for ss in range(0, batch_size, new_sub_batch):
-                        se = min(ss + new_sub_batch, batch_size)
-                        if record and is_packed_myelin_geom:
-                            sp, sd, sc, sbf = simulate_batch_pm(
-                                current_r0[ss:se], current_keys[ss:se],
-                                current_comp0[ss:se], current_brem0[ss:se])
-                            sub_pos_list.append(np.array(sp).astype(_sdt))
-                            sub_dlog_list.append(np.array(sd).astype(_sdt))
-                            sub_comp_list.append(np.array(sc).astype(np.int8))
-                            if _mt_on:
-                                sub_bound_list.append(np.array(sbf).astype(_sdt))
-                        elif record:
-                            sp, sd, sc = simulate_batch_relax(
-                                current_r0[ss:se], current_keys[ss:se])
-                            sub_pos_list.append(np.array(sp).astype(_sdt))
-                            sub_dlog_list.append(np.array(sd).astype(_sdt))
-                            sub_comp_list.append(np.array(sc).astype(_sdt) if has_permeability
-                                                 else np.rint(np.array(sc)).astype(np.int8))
-                        else:
-                            sp = np.array(simulate_batch(
-                                current_r0[ss:se], current_keys[ss:se]))
-                            sub_pos_list.append(sp.astype(_sdt))
-                    all_batches.append(np.concatenate(sub_pos_list, axis=0))
-                    if record:
-                        all_dlog_batches.append(np.concatenate(sub_dlog_list, axis=0))
-                        all_comp_batches.append(np.concatenate(sub_comp_list, axis=0))
+                        all_comp_batches.append(np.array(comp_f32).astype(np.int8))
                         if _mt_on:
-                            all_bound_batches.append(np.concatenate(sub_bound_list, axis=0))
+                            all_bound_batches.append(np.array(bfrac_f32).astype(_sdt))
+                    elif record:
+                        pos_f32, dlog_f32, comp_f32 = simulate_batch_relax(current_r0, current_keys)
+                        if _compress:
+                            all_batches.append(_compress_pos(pos_f32))
+                            _start, _end, _bmodes = _compress_blt(dlog_f32)
+                            all_blt_starts.append(_start)
+                            all_blt_endpoints.append(_end)
+                            all_dlog_batches.append(_bmodes)
+                        else:
+                            all_batches.append(np.array(pos_f32).astype(_sdt))
+                            all_dlog_batches.append(np.array(dlog_f32).astype(_sdt))
+                        # Permeable: fractional occupancy; else a discrete label, ROUNDED: the occupancy
+                        # is comp_sum / sub_steps and XLA may form it as comp_sum * (1/sub_steps), which
+                        # for some sub-step counts is 0.99999994 -- truncating that to int8 labelled every
+                        # intra walker "extra" (measured at sub_steps = 97).
+                        all_comp_batches.append(np.array(comp_f32).astype(_sdt) if has_permeability
+                                                else np.rint(np.array(comp_f32)).astype(np.int8))
+                    else:
+                        if _compress:
+                            all_batches.append(_compress_pos(simulate_batch(current_r0, current_keys)))
+                        else:
+                            positions_f32 = np.array(simulate_batch(current_r0, current_keys))
+                            all_batches.append(positions_f32.astype(_sdt))
                     success = True
-                else:
-                    raise
+                except Exception as e:
+                    err_str = str(e)
+                    if ("OOM" in err_str or "out of memory" in err_str.lower()
+                            or "RESOURCE_EXHAUSTED" in err_str):
+                        if _compress:
+                            # The compressed path already keeps peak device memory low; a
+                            # further sub-batch split here would need to compress each sub-slice
+                            # too. Not wired yet — surface a clear message instead of raw OOM.
+                            raise RuntimeError(
+                                "compress= hit GPU OOM within a walker batch; lower "
+                                "walker_batch_size (the compressed sub-batch fallback is not "
+                                "yet implemented).") from e
+                        new_sub_batch = batch_size // 2
+                        if new_sub_batch < 1000:
+                            raise RuntimeError(f"Batch size too small after OOM: {e}") from e
+                        log.info(f"  OOM: halving sub-batch to {new_sub_batch}")
+                        sub_pos_list = []
+                        sub_dlog_list = [] if record else None
+                        sub_comp_list = [] if record else None
+                        sub_bound_list = [] if _mt_on else None
+                        for ss in range(0, batch_size, new_sub_batch):
+                            se = min(ss + new_sub_batch, batch_size)
+                            if record and is_packed_myelin_geom:
+                                sp, sd, sc, sbf = simulate_batch_pm(
+                                    current_r0[ss:se], current_keys[ss:se],
+                                    current_comp0[ss:se], current_brem0[ss:se])
+                                sub_pos_list.append(np.array(sp).astype(_sdt))
+                                sub_dlog_list.append(np.array(sd).astype(_sdt))
+                                sub_comp_list.append(np.array(sc).astype(np.int8))
+                                if _mt_on:
+                                    sub_bound_list.append(np.array(sbf).astype(_sdt))
+                            elif record:
+                                sp, sd, sc = simulate_batch_relax(
+                                    current_r0[ss:se], current_keys[ss:se])
+                                sub_pos_list.append(np.array(sp).astype(_sdt))
+                                sub_dlog_list.append(np.array(sd).astype(_sdt))
+                                sub_comp_list.append(np.array(sc).astype(_sdt) if has_permeability
+                                                     else np.rint(np.array(sc)).astype(np.int8))
+                            else:
+                                sp = np.array(simulate_batch(
+                                    current_r0[ss:se], current_keys[ss:se]))
+                                sub_pos_list.append(sp.astype(_sdt))
+                        all_batches.append(np.concatenate(sub_pos_list, axis=0))
+                        if record:
+                            all_dlog_batches.append(np.concatenate(sub_dlog_list, axis=0))
+                            all_comp_batches.append(np.concatenate(sub_comp_list, axis=0))
+                            if _mt_on:
+                                all_bound_batches.append(np.concatenate(sub_bound_list, axis=0))
+                        success = True
+                    else:
+                        raise
 
-    # ── Illegal-crossing report ─────────────────────────────────────────────
-    # A step that leaves the walker on the far side of a membrane WITHOUT a granted crossing
-    # is illegal by definition. The sentinel in `permeate` already ejected it back, so this is
-    # a diagnostic rather than a loss -- but a nonzero count is the engine silently relabelling
-    # walkers, and the number belongs in the open where it can be seen.
-    illegal = int(_illegal_crossings[0])
-    if illegal:
-        import warnings
-        warnings.warn(
-            f"{illegal} walker-steps ended on the wrong side of a membrane "
-            f"without a granted crossing (permeability={permeability!r}); each was rejected "
-            f"and the walker returned to its own compartment. "
-            f"See PersistentWalk.illegal_crossings.", RuntimeWarning, stacklevel=2)
+        # ── Illegal-crossing report ─────────────────────────────────────────────
+        # A step that leaves the walker on the far side of a membrane WITHOUT a granted crossing
+        # is illegal by definition. The sentinel in `permeate` already ejected it back, so this is
+        # a diagnostic rather than a loss -- but a nonzero count is the engine silently relabelling
+        # walkers, and the number belongs in the open where it can be seen.
+        illegal = int(_illegal_crossings[0])
+        if illegal:
+            import warnings
+            warnings.warn(
+                f"{illegal} walker-steps ended on the wrong side of a membrane "
+                f"without a granted crossing (permeability={permeability!r}); each was rejected "
+                f"and the walker returned to its own compartment. "
+                f"See PersistentWalk.illegal_crossings.", RuntimeWarning, stacklevel=2)
 
-    if _compress:
-        # Compressed master: IR modes instead of the raw trajectory. Decode with
-        # compression.decode / replay via compression.mode_space_signal (piece 2 wires
-        # this into replay() directly). `pos_modes` are [r(0), r(T)-r(0), sine bands].
-        master = {
-            "compressed": True, "method": "bridge_dst", "K": _cx["K"],
-            "n_t": int(_cx["n_t"]), "dt_traj": dt_actual,
-            "sub_steps": sub_steps, "dt_sim": dt_sim,
-            "pos_modes": np.concatenate(all_batches, axis=0),        # (N, K, 3) f32
-        }
+        if _compress:
+            # Compressed master: IR modes instead of the raw trajectory. Decode with
+            # compression.decode / replay via compression.mode_space_signal (piece 2 wires
+            # this into replay() directly). `pos_modes` are [r(0), r(T)-r(0), sine bands].
+            master = {
+                "compressed": True, "method": "bridge_dst", "K": _cx["K"],
+                "n_t": int(_cx["n_t"]), "dt_traj": dt_actual,
+                "sub_steps": sub_steps, "dt_sim": dt_sim,
+                "pos_modes": np.concatenate(all_batches, axis=0),        # (N, K, 3) f32
+            }
+            if record:
+                master["blt_endpoint"] = np.concatenate(all_blt_endpoints, axis=0)  # (N,)
+                master["blt_start"] = np.concatenate(all_blt_starts, axis=0)        # (N,)
+                master["blt_modes"] = np.concatenate(all_dlog_batches, axis=0)      # (N, K)
+                master["comp_traj"] = np.concatenate(all_comp_batches, axis=0)      # (N, n_t)
+            return master
+
+        D_walk = None if diffusivity is None else float(diffusivity)
+        walk = PersistentWalk(np.concatenate(all_batches, axis=0), float(dt_actual), int(sub_steps),
+                          float(dt_sim), illegal_crossings=illegal, seed=int(seed), diffusivity=D_walk,
+                          geometry=geometry)
         if record:
-            master["blt_endpoint"] = np.concatenate(all_blt_endpoints, axis=0)  # (N,)
-            master["blt_start"] = np.concatenate(all_blt_starts, axis=0)        # (N,)
-            master["blt_modes"] = np.concatenate(all_dlog_batches, axis=0)      # (N, K)
-            master["comp_traj"] = np.concatenate(all_comp_batches, axis=0)      # (N, n_t)
-        return master
-
-    D_walk = None if diffusivity is None else float(diffusivity)
-    walk = PersistentWalk(np.concatenate(all_batches, axis=0), float(dt_actual), int(sub_steps),
-                      float(dt_sim), illegal_crossings=illegal, seed=int(seed), diffusivity=D_walk,
-                      geometry=geometry)
-    if record:
-        # a geometry without a log-weight reflection accumulates no boundary local time: the channel is then
-        # NOT a record of zero contact but the absence of a record, and a pack built from it must not claim the
-        # surface tier (a replay at rho would return an unattenuated signal without a word)
-        records_surface = has_reflect_with_log_weight or geometry._is_myelinated or geometry._is_packed_myelinated
-        blt = np.concatenate(all_dlog_batches, axis=0) if records_surface else None   # the myelin kernels accumulate it too
-        walk = PersistentWalk(walk.positions, walk.dt, walk.sub_steps, walk.dt_sim,
-                          boundary_local_time=blt,
-                          compartment=np.concatenate(all_comp_batches, axis=0),
-                          bound_frac=(np.concatenate(all_bound_batches, axis=0) if _mt_on else None),
-                          illegal_crossings=illegal, seed=int(seed), diffusivity=D_walk, geometry=geometry)
-    return walk
+            # a geometry without a log-weight reflection accumulates no boundary local time: the channel is then
+            # NOT a record of zero contact but the absence of a record, and a pack built from it must not claim the
+            # surface tier (a replay at rho would return an unattenuated signal without a word)
+            records_surface = has_reflect_with_log_weight or geometry._is_myelinated or geometry._is_packed_myelinated
+            blt = np.concatenate(all_dlog_batches, axis=0) if records_surface else None   # the myelin kernels accumulate it too
+            walk = PersistentWalk(walk.positions, walk.dt, walk.sub_steps, walk.dt_sim,
+                              boundary_local_time=blt,
+                              compartment=np.concatenate(all_comp_batches, axis=0),
+                              bound_frac=(np.concatenate(all_bound_batches, axis=0) if _mt_on else None),
+                              illegal_crossings=illegal, seed=int(seed), diffusivity=D_walk, geometry=geometry)
+        object.__setattr__(walk, "run", run)
+        return walk

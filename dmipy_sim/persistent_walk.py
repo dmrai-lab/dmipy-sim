@@ -66,6 +66,9 @@ class PersistentWalk:
         The substrate's susceptibility field basis when the producer computed it: a grid (a mesh, a
         rasterised substrate) or the per-segment closed form of a strand substrate; both answer
         ``channels(points)``.
+    run : dmipy_sim.run.Run or None
+        The record of the run that produced the walk (``run.summary`` once it has ended; a pack records it in
+        its provenance).
     """
     positions: np.ndarray
     dt: float
@@ -84,6 +87,7 @@ class PersistentWalk:
     stepping: Optional[dict] = field(default=None, compare=False, repr=False)
     field_samples: Optional[np.ndarray] = field(default=None, compare=False, repr=False)
     field_sample_every: int = 1
+    run: object = field(default=None, compare=False, repr=False)
 
     def __post_init__(self):
         # a walk always knows the situation it was walked in: the spec it was driven by, else its geometry's
