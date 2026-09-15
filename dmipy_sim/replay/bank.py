@@ -783,6 +783,20 @@ def replay_susc(pack, waveform, *, b0_dir=(0.0, 0.0, 1.0), B0=0.0, chi_iso=0.0, 
 
 
 # --------------------------------------------------------------- pack generation
+#: per-channel numbers a codec MEASURES on the walk it encoded (not parameters): two shards of one fill differ in them
+_MEASURED_CHANNEL_KEYS = ("trace_residual",)
+
+
+def _codec_signature(comp):
+    """The codec parameters of a pack's ``compression`` meta, without what is measured per pack (the precision tiers,
+    a channel's trace residual): what two shards of one fill must agree on."""
+    sig = {k: v for k, v in comp.items() if k != "precision_tiers"}
+    if "channels" in sig:
+        sig["channels"] = {c: ({k: v for k, v in m.items() if k not in _MEASURED_CHANNEL_KEYS} if isinstance(m, dict) else m)
+                           for c, m in sig["channels"].items()}
+    return sig
+
+
 def merge_packs(packs, *, id, out_path=None, overlap="refuse", envelope=None, device="auto"):
     """One pack from the shards of one walk: the packs of voxel blocks of the same substrate, walked with the
     same parameters and codec (a distributed fill: each device seeds and walks its block and packs it with
@@ -807,7 +821,7 @@ def merge_packs(packs, *, id, out_path=None, overlap="refuse", envelope=None, de
         if any(v != vals[0] for v in vals[1:]):
             raise ValueError(f"the shards differ in {key}: {vals[0]!r} vs {[v for v in vals[1:] if v != vals[0]][0]!r}")
         return vals[0]
-    comp = same("compression", lambda pk: {k: v for k, v in pk.meta["compression"].items() if k != "precision_tiers"})
+    comp = same("compression", lambda pk: _codec_signature(pk.meta["compression"]))
     wp = same("walk_params", lambda pk: {k: v for k, v in pk.meta["walk_params"].items() if k not in ("n_walkers", "seed")})
     same("substrate", lambda pk: pk.meta.get("substrate"))
     same("replay_envelope", lambda pk: pk.meta.get("replay_envelope"))
@@ -888,6 +902,15 @@ def merge_packs(packs, *, id, out_path=None, overlap="refuse", envelope=None, de
                                 recertified=bool(overlap == "recertify"))
     n_all = int(sum(n))
     comp_meta = dict(pks[0].meta["compression"])
+    if "channels" in comp_meta:                                      # the measured numbers: the worst over the shards
+        chans = {c: (dict(m) if isinstance(m, dict) else m) for c, m in comp_meta["channels"].items()}
+        for c, m in chans.items():
+            if isinstance(m, dict):
+                for k in _MEASURED_CHANNEL_KEYS:
+                    vals = [((pk.meta["compression"].get("channels") or {}).get(c) or {}).get(k) for pk in pks]
+                    if all(v is not None for v in vals):
+                        m[k] = float(max(vals))
+        comp_meta["channels"] = chans
     if comp_meta.get("walker_preserving"):
         comp_meta["precision_tiers"] = _precision_tiers(arrays, n_all, float(fid.get("floor_max") or 0.0), False)
     meta = dict(pks[0].meta)
