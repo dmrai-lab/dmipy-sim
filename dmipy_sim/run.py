@@ -11,8 +11,8 @@ The directory holds ``manifest.json`` (written first: producer, parameters, code
 ceiling, the command line -- a dead run is identifiable from it alone), ``events.jsonl`` (append-only, one JSON
 row per line, flushed per row, so a kill loses at most the row being written: ``phase``, ``progress`` with rate
 and ETA, ``resource`` from the sampler thread -- host RSS from ``/proc/self/statm``, host available, the cgroup's
-current and ceiling, every JAX device's bytes in use and peak -- ``artifact``, ``warning``, ``end`` with the
-exception's traceback when there was one) and ``summary.json`` (the wall time per phase, the peaks, the status).
+current and ceiling, every JAX device's bytes in use and peak, and ``where``, the main thread's stack at that moment -- ``artifact``,
+``warning``, ``end`` with the exception's traceback when there was one) and ``summary.json`` (the wall time per phase, the peaks, the status).
 The last resource row's age is the run's heartbeat: :func:`list_runs` reports a run whose heartbeat is older
 than twice the interval as ``stale``. ``python -m dmipy_sim.run`` lists the runs on this machine or reports one.
 
@@ -172,6 +172,21 @@ def memory_ceiling():
     if mx is not None:
         return mx
     return _meminfo()[0]
+
+
+def _main_thread_frames(depth=6):
+    """Where the main thread is, as ``file:line function`` from the innermost frame out: the run's own stack trace
+    in every resource row, so a stalled run says what it was doing (a sampler that cannot run at all -- the main
+    thread inside a C call holding the GIL -- leaves the last row's ``where`` as the answer)."""
+    try:
+        frame = sys._current_frames().get(threading.main_thread().ident)
+        out = []
+        while frame is not None and len(out) < depth:
+            out.append(f"{os.path.basename(frame.f_code.co_filename)}:{frame.f_lineno} {frame.f_code.co_name}")
+            frame = frame.f_back
+        return out
+    except Exception:
+        return None
 
 
 def _jsonable(x):
@@ -433,7 +448,7 @@ class Run:
             log.info("run %s: %s %s", self.producer, kind, {k: v for k, v in fields.items() if k != "traceback"})
 
     def _sample(self):
-        rss = _rss(); total, avail = _meminfo(); cg_cur, cg_max = _cgroup(); dev = _devices()
+        rss = _rss(); total, avail = _meminfo(); cg_cur, cg_max = _cgroup(); dev = _devices(); where = _main_thread_frames()
         if rss:
             self._peak_rss = max(self._peak_rss, rss)
             if self._ceiling and BUDGET_FRACTION > 0 and self._budget is None and rss > BUDGET_FRACTION * self._ceiling:
@@ -445,7 +460,7 @@ class Run:
             if d.get("peak_bytes_in_use"):
                 self._peak_dev = max(self._peak_dev, int(d["peak_bytes_in_use"]))
         self._event("resource", elapsed_s=time.time() - self.started, rss_bytes=rss, host_available_bytes=avail,
-                    cgroup_bytes=cg_cur, cgroup_max_bytes=cg_max, devices=dev)
+                    cgroup_bytes=cg_cur, cgroup_max_bytes=cg_max, devices=dev, where=where)
 
     def _sample_loop(self):
         while not self._stop.wait(SAMPLE_S):

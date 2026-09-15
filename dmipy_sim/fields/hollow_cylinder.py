@@ -73,6 +73,25 @@ def hollow_cylinder_basis(rho_vec, u, a, b):
     return jnp.concatenate([(m / 3.0)[..., None], _sym6(MP), _sym6(MA)], axis=-1)
 
 
+def outside_basis(rho_vec, u, a, b):
+    """The 13 channels of the cylinder's OUTSIDE formula alone, ``M_P = -((b^2 - a^2) / 2 r^2) S`` and ``M_A = ((b^2 -
+    a^2) / 12 r^2) S`` with ``S = e1 e1^T - e2 e2^T``, evaluated at ``rho`` or, within the sheath's radius, on its
+    surface (``r = b``, the value continued inward): the non-local part of a segment's field, what the far part of a
+    strand substrate sums over every segment (:mod:`dmipy_sim.fields.strand_field`). Two coefficients times six
+    components, a fifteenth of :func:`hollow_cylinder_basis`, which branches over the three regions."""
+    rho_vec = jnp.asarray(rho_vec); u = jnp.asarray(u)
+    a = jnp.asarray(a, rho_vec.dtype); b = jnp.asarray(b, rho_vec.dtype)
+    rho = jnp.linalg.norm(rho_vec, axis=-1)
+    e1 = rho_vec / jnp.maximum(rho, jnp.asarray(1e-30, rho_vec.dtype))[..., None]
+    e2 = jnp.cross(u, e1)
+    S6 = jnp.stack([e1[..., 0] ** 2 - e2[..., 0] ** 2, e1[..., 1] ** 2 - e2[..., 1] ** 2, e1[..., 2] ** 2 - e2[..., 2] ** 2,
+                    e1[..., 0] * e1[..., 1] - e2[..., 0] * e2[..., 1], e1[..., 0] * e1[..., 2] - e2[..., 0] * e2[..., 2],
+                    e1[..., 1] * e1[..., 2] - e2[..., 1] * e2[..., 2]], axis=-1)
+    r2 = jnp.maximum(rho, b * (1.0 + 1e-6)) ** 2
+    d2 = (b ** 2 - a ** 2) / r2
+    return jnp.concatenate([jnp.zeros(rho.shape + (1,), rho_vec.dtype), (-0.5 * d2)[..., None] * S6, (d2 / 12.0)[..., None] * S6], axis=-1)
+
+
 def q_of_H(b0_dir):
     """``Q(H) = (Hx^2, Hy^2, Hz^2, 2 Hx Hy, 2 Hx Hz, 2 Hy Hz)``: the contraction weights of the six symmetric
     components, so that ``Q . sym6(M) = H . M . H``."""
