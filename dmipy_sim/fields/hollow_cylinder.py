@@ -98,15 +98,21 @@ def segment_basis(rho_vec, u, z1, z2, a, b):
         return (z / (r2 * rr), z * (2.0 * z * z + 3.0 * r2) / (3.0 * r2 * r2 * r3), -1.0 / (3.0 * r3), z * z * z / (3.0 * r2 * r3))
     p1, p2 = prim(z1), prim(z2)
     i0, j0, j1, j2 = (q2 - q1 for q1, q2 in zip(p1, p2))
-    eye = jnp.eye(3, dtype=dt)
-    rr_ = rv[..., :, None] * rv[..., None, :]; ru = rv[..., :, None] * u[..., None, :] + u[..., :, None] * rv[..., None, :]
-    UU = u[..., :, None] * u[..., None, :]
-    L = (eye * i0[..., None, None] - 3.0 * (rr_ * j0[..., None, None] - ru * j1[..., None, None] + UU * j2[..., None, None])) / (4.0 * jnp.pi)
+    # the six components of L = (I i0 - 3 (rv rv^T j0 - (rv u^T + u rv^T) j1 + u u^T j2)) / 4 pi, no 3x3 intermediates
+    # (a 1536 x 4096 block of 3x3 tensors is 226 MB per intermediate; this form moves a third of that)
     A = jnp.pi * (b * b - a * a)
-    T = 0.5 * (eye - UU) - eye / 3.0
-    LT = L @ T
-    MA = -0.5 * A[..., None, None] * (LT + jnp.swapaxes(LT, -1, -2))
-    return jnp.concatenate([jnp.zeros(rho.shape + (1,), dt), _sym6(A[..., None, None] * L), _sym6(MA)], axis=-1)
+    c = A / (4.0 * jnp.pi)
+    rx, ry, rz = rv[..., 0], rv[..., 1], rv[..., 2]; ux, uy, uz = u[..., 0], u[..., 1], u[..., 2]
+    def L6(ri, rj, ui, uj, diag):
+        return c * ((i0 if diag else 0.0) - 3.0 * (ri * rj * j0 - (ri * uj + ui * rj) * j1 + ui * uj * j2))
+    Lxx = L6(rx, rx, ux, ux, True); Lyy = L6(ry, ry, uy, uy, True); Lzz = L6(rz, rz, uz, uz, True)
+    Lxy = L6(rx, ry, ux, uy, False); Lxz = L6(rx, rz, ux, uz, False); Lyz = L6(ry, rz, uy, uz, False)
+    MP = jnp.stack([Lxx, Lyy, Lzz, Lxy, Lxz, Lyz], axis=-1)                   # A L
+    # M_A = -A sym(L T) with T = P/2 - I/3 = I/6 - u u^T/2:  -[A L / 6 - sym((A L u) u^T) / 2]
+    wx = Lxx * ux + Lxy * uy + Lxz * uz; wy = Lxy * ux + Lyy * uy + Lyz * uz; wz = Lxz * ux + Lyz * uy + Lzz * uz   # (A L) u
+    MA = jnp.stack([-(Lxx / 6.0 - wx * ux / 2.0), -(Lyy / 6.0 - wy * uy / 2.0), -(Lzz / 6.0 - wz * uz / 2.0),
+                    -(Lxy / 6.0 - (wx * uy + wy * ux) / 4.0), -(Lxz / 6.0 - (wx * uz + wz * ux) / 4.0), -(Lyz / 6.0 - (wy * uz + wz * uy) / 4.0)], axis=-1)
+    return jnp.concatenate([jnp.zeros(rho.shape + (1,), dt), MP, MA], axis=-1)
 def q_of_H(b0_dir):
     """``Q(H) = (Hx^2, Hy^2, Hz^2, 2 Hx Hy, 2 Hx Hz, 2 Hy Hz)``: the contraction weights of the six symmetric
     components, so that ``Q . sym6(M) = H . M . H``."""
