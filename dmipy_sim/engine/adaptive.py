@@ -215,14 +215,25 @@ interval mean as before).
         n_probe = np.concatenate([np.asarray(field_basis.nearest_device(radius_m=f_radius, k=1)(jnp.asarray(sample[i:i + f_chunk]))[2])
                                   for i in range(0, sample.shape[0], f_chunk)])
         f_k = min(field_basis.strands_max + 1, 1 << int(math.ceil(math.log2(1.5 * max(int(n_probe.max()), 1)))))
-        _nearest = field_basis.nearest_device(radius_m=f_radius, k=f_k)
+        _list = dict(k=f_k, f=field_basis.nearest_device(radius_m=f_radius, k=f_k))   # widened when a walker outgrows it
         log.info("adaptive: field sampled in the walk: list of %d strands gathered every %d saves at %.1f um (cutoff %.0f um + "
                  "margin), up to %d in reach at the start", f_k, f_reuse, f_radius * 1e6, f_reach * 1e6, int(n_probe.max()))
 
         def nearest_dev(r):
-            parts = [_nearest(r[i:i + f_chunk]) for i in range(0, r.shape[0], f_chunk)]
-            return (jnp.concatenate([q[0] for q in parts]), jnp.concatenate([q[1] for q in parts]),
-                    jnp.concatenate([q[2] for q in parts]))
+            """The strands within reach of every walker of ``r``; the list widens (doubling, up to ``strands_max + 1``)
+            when a walker has more strands in reach than it holds -- the start positions sized it, and a walker can
+            drift into a denser neighbourhood."""
+            while True:
+                parts = [_list["f"](r[i:i + f_chunk]) for i in range(0, r.shape[0], f_chunk)]
+                seg = jnp.concatenate([q[0] for q in parts]); keep = jnp.concatenate([q[1] for q in parts]); n_str = jnp.concatenate([q[2] for q in parts])
+                n_max = int(n_str.max())
+                if n_max <= _list["k"]:
+                    return seg, keep, n_str
+                k_new = min(field_basis.strands_max + 1, 1 << int(math.ceil(math.log2(n_max + 1))))
+                if k_new <= _list["k"]:
+                    raise ValueError(f"a walker has {n_max} strands within {f_radius * 1e6:.0f} um, more than strands_max={field_basis.strands_max}")
+                log.info("adaptive: field strand list widened to %d (a walker had %d strands within %.0f um)", k_new, n_max, f_radius * 1e6)
+                _list["k"] = k_new; _list["f"] = field_basis.nearest_device(radius_m=f_radius, k=k_new)
 
         def at_dev(r, seg, keep):
             return jnp.concatenate([_at(r[i:i + f_chunk], seg[i:i + f_chunk], keep[i:i + f_chunk])
@@ -239,8 +250,6 @@ interval mean as before).
         log.info("  adaptive: walkers %d-%d (%d%% done)...", s, e - 1, int(100 * e / n_walkers))
         if sampling:
             seg, keep, n_str = nearest_dev(r)
-            if int(n_str.max()) > f_k:
-                raise ValueError(f"a walker has {int(n_str.max())} strands within {f_radius * 1e6:.0f} um, more than the list's {f_k}")
             field_all[s:e, 0] = np.asarray(at_dev(r, seg, keep) - f_mean)
         for t in range(1, n_t):
             dlog_int = jnp.zeros(nb, jnp.float32)
@@ -248,8 +257,6 @@ interval mean as before).
             if sampling:
                 if (t - 1) % f_reuse == 0:                           # the list, reused over f_reuse intervals with its margin
                     seg, keep, n_str = nearest_dev(r)
-                    if int(n_str.max()) > f_k:
-                        raise ValueError(f"a walker has {int(n_str.max())} strands within {f_radius * 1e6:.0f} um, more than the list's {f_k}")
                 f_acc = jnp.zeros((nb, 13), jnp.float32)
             for _ in range(n_rounds):
                 d_wall, R_near = scales_dev(r)
