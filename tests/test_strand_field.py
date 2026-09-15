@@ -102,17 +102,17 @@ def test_the_cutoff_error_falls_with_the_cutoff_and_the_field_contracts():
 
 
 def _finite_line_sum(cls, ra, rb, P, cutoff):
-    """The reference: every segment within ``cutoff`` (capsule distance) of a point, the non-local part of its
-    infinite hollow cylinder times the finite-line factor F, summed (float64); within the nearest strand's gate,
-    that strand's terms are its nearest segment's cylinder (the lowest index at a tie), whose local terms
-    (iso_local and P / 2 of M_P in the sheath) are the only local terms."""
+    """The reference: every segment within ``cutoff`` (capsule distance) of a point, its infinite hollow cylinder's
+    outside formula (continued inward at the surface value) times the finite-line factor F, summed (float64);
+    within the nearest strand's gate, that strand's terms are its nearest segment's whole cylinder (the lowest
+    index at a tie)."""
     from dmipy_sim.fields.hollow_cylinder import hollow_cylinder_basis
 
-    def split(C, U):
-        m3 = C[..., 0]; P2 = 0.5 * np.stack([1 - U[..., 0] ** 2, 1 - U[..., 1] ** 2, 1 - U[..., 2] ** 2, -U[..., 0] * U[..., 1], -U[..., 0] * U[..., 2], -U[..., 1] * U[..., 2]], -1)
-        local = np.concatenate([m3[..., None], 3 * m3[..., None] * P2], -1)
-        nl = C.copy(); nl[..., 0] = 0; nl[..., 1:7] -= local[..., 1:]
-        return nl, local
+    def split(rv, U, a, b):
+        C = np.asarray(hollow_cylinder_basis(rv, U, a, b), np.float64)
+        rho = np.maximum(np.linalg.norm(rv, axis=-1), 1e-12); scale = np.maximum(rho, b * (1 + 1e-6)) / rho
+        C_out = np.asarray(hollow_cylinder_basis(rv * scale[..., None], U, a, b), np.float64)
+        return C_out, C - C_out
     out = np.zeros((len(P), 13)); d_best = np.full(len(P), np.inf); corr = np.zeros((len(P), 13))
     for c, a, b in zip(cls, ra, rb):
         A_ = c[:-1]; AB = c[1:] - c[:-1]; L = np.linalg.norm(AB, axis=1); U = AB / L[:, None]
@@ -121,12 +121,12 @@ def _finite_line_sum(cls, ra, rb, P, cutoff):
         F = 0.5 * (zA / np.sqrt(zA ** 2 + rho ** 2) - zB / np.sqrt(zB ** 2 + rho ** 2))
         t = np.clip(zA / L[None], 0, 1); d = np.linalg.norm(P[:, None, :] - (A_[None] + t[..., None] * AB[None]), axis=-1)
         Ub = np.broadcast_to(U[None], rv.shape)
-        C, _ = split(np.asarray(hollow_cylinder_basis(rv, Ub, np.full(rv.shape[:2], a), np.full(rv.shape[:2], b)), np.float64), Ub)
+        C, _ = split(rv, Ub, np.full(rv.shape[:2], a), np.full(rv.shape[:2], b))
         own = (C * (F * (d < cutoff))[..., None]).sum(1); out += own
         d1 = d.min(1); j = (d <= d1[:, None] + 1e-6 * cutoff).argmax(1); new = d1 < d_best - 1e-6 * cutoff
         x = np.clip((d1 - b) / (StrandFieldBasis.NEAREST_GATE_RADII * b), 0, 1); g = x * x * (3 - 2 * x)
-        Cj, loc = split(np.asarray(hollow_cylinder_basis(rv[np.arange(len(P)), j], U[j], np.full(len(P), a), np.full(len(P), b)), np.float64), U[j])
-        this = (1 - g)[:, None] * (Cj - own) * (d1 < cutoff)[:, None]; this[:, :7] += (1 - g)[:, None] * loc
+        Cj, loc = split(rv[np.arange(len(P)), j], U[j], np.full(len(P), a), np.full(len(P), b))
+        this = (1 - g)[:, None] * (Cj + loc - own) * (d1 < cutoff)[:, None]
         corr = np.where(new[:, None], this, corr); d_best = np.where(new, d1, d_best)
     return out + corr
 

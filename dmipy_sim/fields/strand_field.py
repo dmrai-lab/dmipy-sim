@@ -8,10 +8,12 @@ of its infinite hollow cylinder (:mod:`dmipy_sim.fields.hollow_cylinder`) times 
 line): the line-dipole integral over the segment alone, 1 beside an infinite line, 1/2 on an end plane, the dipole
 tail ``L rho^2 / 2 r^3`` far away, telescoping to 1 along a straight strand, and the contributions are summed;
 within a strand's outer tube and one outer radius beyond it, that strand's own term is its nearest segment's
-infinite cylinder instead (``NEAREST_GATE_RADII``: the swept tube's own lumen and sheath), and the local terms --
-the sheath indicator ``iso_local`` and the material term ``P / 2`` of ``M_P``, a membership and not a field --
-are that nearest segment's alone (the finite-line factor would carry a segment's sheath beyond its end, where
-there is no material), so the trace identity ``tr M_P = 3 iso_local`` holds everywhere and a pack stores 12 channels. A
+infinite cylinder instead (``NEAREST_GATE_RADII``: the swept tube's own lumen and sheath). Every other segment
+contributes its OUTSIDE formula, continued inward at its surface value where a point lies within its radius (beyond
+an end, or across a joint): the interior formulas are what a point has by being inside the tube -- the sheath
+indicator ``iso_local``, the material terms, the lumen's uniform field -- a membership, which the finite-line factor
+must not carry beyond the end, where there is no material; so the field is continuous everywhere beyond the gate
+and the trace identity ``tr M_P = 3 iso_local`` holds everywhere (a pack stores 12 channels). A
 pack's path channel samples this along each walker's path exactly as it samples a
 :class:`~dmipy_sim.fields.susceptibility_field.FieldGrid`; the two are one protocol (``channels(points)``).
 
@@ -278,12 +280,13 @@ class StrandFieldBasis:
         return jnp.einsum("a,b,c,abcd->d", wx, wy, wz, cube)
 
     def _segment(self, p, seg):
-        """The segments ``seg`` ``(k,)`` at ``p``: each its infinite hollow cylinder's 13 channels ``C`` split into
-        the non-local part (the dipolar terms, traceless in ``M_P``; the lumen and the ``M_A`` sheath terms) and the
-        local part ``m [1 / 3, P / 2]`` (the sheath indicator channel and the material term of ``M_P``, ``(k, 7)``:
-        what the trace identity ``tr M_P = 3 iso_local`` ties together), its finite-line factor ``F`` (the module docstring), and the
-        distance from ``p`` to it (to the capsule, what the cutoff and the switch measure):
-        ``(C_nonlocal (k, 13), local (k, 7), F (k,), d (k,))``."""
+        """The segments ``seg`` ``(k,)`` at ``p``: each its infinite hollow cylinder's 13 channels split into the
+        non-local part -- the outside formula, its value on the sheath's surface continued inward, continuous
+        everywhere and traceless in ``M_P`` -- and the local part, the interior formulas' excess over it (zero
+        outside the sheath; the sheath indicator, the material terms, the lumen's uniform field: what a point has
+        by being inside the tube, so ``tr M_P = 3 iso_local`` lives here), its finite-line factor ``F`` (the module
+        docstring), and the distance from ``p`` to it (to the capsule, what the cutoff and the switch measure):
+        ``(C_nonlocal (k, 13), C_local (k, 13), F (k,), d (k,))``."""
         A, AB, AB2, ra, rb = self._A, self._AB, self._AB2, self._a, self._b
         As = A[seg]; ABs = AB[seg]
         L = jnp.sqrt(AB2[seg]); u = ABs / L[:, None]
@@ -295,19 +298,17 @@ class StrandFieldBasis:
         t = jnp.clip(zA / L, 0.0, 1.0)
         d = jnp.linalg.norm(q - t[:, None] * ABs, axis=1)
         C = hollow_cylinder_basis(rv, u, ra[seg], rb[seg])
-        m3 = C[:, 0]                                                # the channel stores m / 3
-        P2 = 0.5 * jnp.stack([1.0 - u[:, 0] ** 2, 1.0 - u[:, 1] ** 2, 1.0 - u[:, 2] ** 2, -u[:, 0] * u[:, 1], -u[:, 0] * u[:, 2], -u[:, 1] * u[:, 2]], 1)
-        local = jnp.concatenate([m3[:, None], 3.0 * m3[:, None] * P2], 1)
-        C = jnp.concatenate([jnp.zeros_like(m3)[:, None], C[:, 1:7] - local[:, 1:], C[:, 7:]], 1)
-        return C, local, F, d
+        b_out = rb[seg] * (1.0 + 1e-6)                             # the outside branch, at rho or on the surface
+        C_out = hollow_cylinder_basis(rv * (jnp.maximum(rho, b_out) / rho)[:, None], u, ra[seg], rb[seg])
+        return C_out, C - C_out, F, d
 
     def _channels_kernel(self, weight, *, gate=True):
         """``(p, segments, keep) -> (13,)`` summing the kept segments within the gather radius with ``weight(d)``
         (``d`` the distance to the segment): the whole field, the near part ``1 - S``, or the far part ``S``. The
-        finite-line factors weight the non-local terms; with ``gate``, the nearest strand's own non-local terms are
-        replaced by its nearest segment's cylinder within the gate (``NEAREST_GATE_RADII``; at a tie, the lower
-        segment index) and the local terms are that segment's (membership, not a field: ``tr M_P = 3 iso_local`` holds); the
-        far part carries no local term (the gate ends before the switch starts)."""
+        finite-line factors weight the non-local terms; with ``gate``, the nearest strand's own terms are replaced
+        by its nearest segment's whole cylinder within the gate (``NEAREST_GATE_RADII``; at a tie, the lower segment
+        index), the only local terms there are (membership, not a field: ``tr M_P = 3 iso_local`` holds); the far
+        part carries no local term (the gate ends before the switch starts)."""
         reach = jnp.float32(self.gather_radius_m); sid = self._sid; rb = self._b; n_seg = self.n_segments
         g_w = jnp.float32(self.NEAREST_GATE_RADII); tie = jnp.float32(1e-6 * self.gather_radius_m)   # float32 rounding
 
@@ -322,8 +323,7 @@ class StrandFieldBasis:
             own = within & (sid[seg] == sid[s1])
             x = jnp.clip((d1 - rb[s1]) / (g_w * rb[s1]), 0.0, 1.0); g = x * x * (3.0 - 2.0 * x)
             g = jnp.where(jnp.isfinite(d1), g, 1.0)                                 # nothing within reach: no gate
-            out = out + (1.0 - g) * (C[i1] - (C * (own * F)[:, None]).sum(0))
-            return out.at[:7].add((1.0 - g) * local[i1])
+            return out + (1.0 - g) * (C[i1] + local[i1] - (C * (own * F)[:, None]).sum(0))
         return one
 
     def channels_at_device(self):
