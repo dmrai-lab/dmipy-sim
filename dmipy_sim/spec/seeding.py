@@ -45,7 +45,9 @@ class StratifiedByVoxel:
     """Seed ``walkers_per_voxel`` walkers of each seeded pool in every voxel of ``grid`` the pool occupies.
 
     ``walkers_per_voxel``: one count for every pool, or ``{pool name: count}``; a count is an int or an array of
-    the grid's shape (a per-voxel budget, what :func:`plan_seeding` returns from a pilot's per-voxel floor).
+    the grid's shape (a per-voxel budget, what :func:`plan_seeding` returns from a pilot's per-voxel floor); a
+    pool whose array is zero in every voxel is not walked by that call (a round of a pass may hold none of a
+    sparse pool), and the walk records only the pools it walked.
     ``trials_per_voxel_max`` bounds the rejection sampling per voxel: a voxel holding a sliver of a pool is
     left with what it got, its walkers weighted by the sliver's measured volume fraction, rather than drawn
     for ever. ``census_draws`` is the least number of draws the per-voxel volume fraction of a swept-polyline

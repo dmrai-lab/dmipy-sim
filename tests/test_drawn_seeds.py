@@ -63,3 +63,35 @@ def test_a_walk_context_is_kept_across_walks(spec_grid):
         walk_spec(spec, seeding=seeding, seed=3, context=ctx, field_far="x.npy", **kw)
     with pytest.raises(TypeError, match="WalkContext"):
         walk_spec(spec, seeding=seeding, seed=3, context="ctx", **kw)
+
+
+def test_a_pool_the_seeding_wants_nowhere_is_not_walked(spec_grid, tmp_path):
+    """A round of a pass may hold none of a sparse pool: the seeding's zero map draws that pool empty, the walk
+    carries the other pools only, its pack certifies them, and a merge with a shard that holds the pool counts
+    the union; a pool wanted somewhere that no draw lands in, or a seeding with nothing in it, is refused."""
+    from dmipy_sim.replay.bank import build_replay_pack, merge_packs, voxel_fidelity_volumes
+    from dmipy_sim.spec import SpecError
+    spec, grid = spec_grid
+    want = np.zeros(grid.shape, np.int64); want[0] = 6
+    none = np.zeros(grid.shape, np.int64)
+    kw = dict(T_max=8e-4, dt_save=2e-4, require_gpu=False, field=False)
+    drawn = draw_seeds(spec, StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": none}), 5)
+    assert len(drawn.positions["intra"]) == 0 and drawn.n_walkers == len(drawn.positions["extra"]) > 0
+    w = walk_spec(spec, seeding=drawn, seed=5, **kw)
+    intra = next(p.id for p in spec.pools if p.name == "intra")
+    assert w.positions.shape[0] == drawn.n_walkers and intra not in set(np.unique(w.compartment).tolist())
+    both = walk_spec(spec, seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want}), seed=6, **kw)
+    a = build_replay_pack(w, id="t/none", license="x", citation="x", K=3, voxel_grid=grid, out_path=str(tmp_path / "none.rpk"))
+    b = build_replay_pack(both, id="t/both", license="x", citation="x", K=3, voxel_grid=grid, out_path=str(tmp_path / "both.rpk"))
+    _, _, ca = voxel_fidelity_volumes(a); _, _, cb = voxel_fidelity_volumes(b)
+    assert ca["extra"].sum() == drawn.n_walkers and ca.get("intra", np.zeros(1)).sum() == 0 and cb["intra"].sum() > 0
+    m = merge_packs([a, b], id="t/union", overlap="recertify", out_path=str(tmp_path / "union.rpk"))
+    _, _, cm = voxel_fidelity_volumes(m)
+    assert m.n_walkers == a.n_walkers + b.n_walkers and cm["intra"].sum() == cb["intra"].sum()
+    assert cm["extra"].sum() == ca["extra"].sum() + cb["extra"].sum()
+    with pytest.raises(SpecError, match="nothing to walk"):
+        walk_spec(spec, seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": none, "intra": none}), seed=5, **kw)
+    wide = Grid(shape=(3, 2, 2), voxel_size_m=(10e-6,) * 3, origin_m=(5e-6,) * 3)   # its third column is past the box
+    far = np.zeros(wide.shape, np.int64); far[2, 0, 0] = 4
+    with pytest.raises(SpecError, match="no seed landed"):
+        draw_seeds(spec, StratifiedByVoxel(grid=wide, walkers_per_voxel={"extra": np.zeros(wide.shape, np.int64), "intra": far}), 5)

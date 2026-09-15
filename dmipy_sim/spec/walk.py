@@ -361,7 +361,9 @@ def draw_seeds(spec, seeding, seed, *, context=None):
     """The stratified seeds of ``spec`` drawn on the CPU: every seeded pool's start positions and weights on
     ``seeding``'s grid, as a :class:`~dmipy_sim.spec.seeding.DrawnSeeds` that :func:`walk_spec` takes in place
     of the :class:`~dmipy_sim.spec.seeding.StratifiedByVoxel` they were drawn from, with the same result to the
-    bit; ``context`` is a :class:`WalkContext` of the spec whose pool tests the draw uses. What a producer draws for its next block while the device walks this one (dmipy-sim#258): the draw of
+    bit; ``context`` is a :class:`WalkContext` of the spec whose pool tests the draw uses. A pool the seeding
+    wants nowhere is drawn empty, and the walk leaves it out (a round of a pass may hold none of a sparse pool);
+    a pool wanted somewhere that no draw lands in is refused. What a producer draws for its next block while the device walks this one (dmipy-sim#258): the draw of
     a DiSCo block is 20 s of CPU the walk otherwise waits for. Pool ``pid`` is drawn from ``seed + 13 pid``."""
     from .seeding import DrawnSeeds, StratifiedByVoxel, fill_per_voxel, fill_swept_by_voxel
     from ..run import Run
@@ -385,6 +387,8 @@ def draw_seeds(spec, seeding, seed, *, context=None):
                                                           census_draws=int(seeding.census_draws), seed=s)
             inb = np.all((P >= g.lo) & (P <= g.hi), axis=1)  # strands may leave the box; the grid may reach beyond it
             P, v = P[inb], v[inb]
+            if len(P) == 0 and int(want.sum()) > 0:
+                raise SpecError(f"pool {name!r}: no seed landed in it")
             log.info("walk_spec: %d seeds in %d voxels from %d draws", len(P), int(np.bincount(v, minlength=grid.n_voxels).astype(bool).sum()), n_drawn)
             n_have = np.bincount(v, minlength=grid.n_voxels)
             positions[name] = P
@@ -438,7 +442,12 @@ def _walk_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field, field_re
     for pid in seeded:
         seeds_of[pid], weights_of[pid] = seeds(pid, seed + 13 * pid)
         if len(seeds_of[pid]) == 0:
-            raise SpecError(f"pool {pools[pid].name!r}: no seed landed in it")
+            if seeding is None:
+                raise SpecError(f"pool {pools[pid].name!r}: no seed landed in it")
+            log.info("walk_spec: pool %s has no seed in this walk; not walked", pools[pid].name)
+    seeded = tuple(pid for pid in seeded if len(seeds_of[pid]))  # a seeding may hold none of a pool: a round of a pass
+    if not seeded:
+        raise SpecError("the seeding holds no seed of any pool; nothing to walk")
     # a strand field is certified on the start positions and, with adaptive steps, sampled by the walk itself
     sf = None
     if field and field != "grid" and spec.field_source_pools:

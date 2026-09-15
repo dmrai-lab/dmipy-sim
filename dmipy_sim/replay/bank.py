@@ -889,8 +889,18 @@ def merge_packs(packs, *, id, out_path=None, overlap="refuse", envelope=None, de
         fid.pop("per_family", None)
         if pv0 is not None:
             ijk = np.concatenate([np.asarray(pk.arrays["voxel_ijk"], np.int64) for pk in pks])
-            cert = np.concatenate([np.asarray(pk.arrays["voxel_certificate"], np.float64) for pk in pks])
-            pools = same("per-voxel pools", lambda pk: pk.meta["fidelity"]["per_voxel"]["pools"])
+            # the certificate's pool axis is the union of the shards' pools (a round of a pass may hold none of a
+            # sparse pool): a pool a shard lacks has no walkers there, its floor and error unread
+            pools_of = [[int(p_) for p_ in pk.meta["fidelity"]["per_voxel"]["pools"]] for pk in pks]
+            pools = sorted(set().union(*pools_of))
+
+            def aligned(pk, own):
+                c_ = np.asarray(pk.arrays["voxel_certificate"], np.float64)
+                out = np.full((c_.shape[0], len(pools), 3), np.nan); out[:, :, 0] = 0.0
+                for j_, p_ in enumerate(own):
+                    out[:, pools.index(p_)] = c_[:, j_]
+                return out
+            cert = np.concatenate([aligned(pk, own) for pk, own in zip(pks, pools_of)])
             held = cert[:, :, 0].sum(1) > 0                                   # a voxel a shard put walkers in
             key = np.ravel_multi_index(tuple(ijk[held].T), tuple(Grid.from_meta(pv0).shape))
             uk, cnt = np.unique(key, return_counts=True)
