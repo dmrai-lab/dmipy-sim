@@ -16,6 +16,31 @@ from ..phantom.grid import Grid
 
 
 @dataclass(frozen=True)
+class DrawnSeeds:
+    """The seeds of a :class:`StratifiedByVoxel` already drawn (:func:`~dmipy_sim.spec.walk.draw_seeds`): per seeded
+    pool name its start positions ``(n, 3)`` in substrate coordinates and its walker weights ``(n,)``, the grid
+    they were stratified on, the seed they were drawn from and the seeding they realise. :func:`walk_spec` takes
+    one in place of the ``StratifiedByVoxel`` with the same result to the bit."""
+    positions: dict
+    weights: dict
+    grid: Grid
+    seed: int
+    drawn_from: object = None
+
+    def __post_init__(self):
+        if set(self.positions) != set(self.weights):
+            raise ValueError("positions and weights name different pools")
+        for name in self.positions:
+            P, w = np.asarray(self.positions[name]), np.asarray(self.weights[name])
+            if P.ndim != 2 or P.shape[1] != 3 or w.shape != (P.shape[0],):
+                raise ValueError(f"pool {name!r}: positions must be (n, 3) and weights (n,)")
+
+    @property
+    def n_walkers(self):
+        return int(sum(len(P) for P in self.positions.values()))
+
+
+@dataclass(frozen=True)
 class StratifiedByVoxel:
     """Seed ``walkers_per_voxel`` walkers of each seeded pool in every voxel of ``grid`` the pool occupies.
 
