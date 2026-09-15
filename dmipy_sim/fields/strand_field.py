@@ -71,11 +71,16 @@ def _length_inside(A, AB, lo, hi):
 
 @dataclass(frozen=True)
 class FarGrid:
-    """The far part of a strand substrate's field on a coarse grid: the superposition over every strand within the
-    build cutoff, each strand's contribution weighted by the switch ``S(d)`` that rises from 0 at ``near_m - blend_m``
-    to 1 at ``near_m`` with the distance ``d`` to its nearest segment -- smooth on the grid's scale by construction,
-    so trilinear interpolation reads it -- and the complement ``1 - S`` is what the closed form sums over the few
-    strands within ``near_m`` of a point (the particle-mesh split; issue #217). ``values`` ``(nx, ny, nz, 13)`` on the
+    """The far part of a strand substrate's field on a coarse grid: the superposition over every segment within the
+    build cutoff, each segment's contribution weighted by the switch ``S(d)`` that rises from 0 at ``near_m - blend_m``
+    to 1 at ``near_m`` with the distance ``d`` to it -- smooth on the grid's scale by construction, so an
+    interpolation reads it -- and the complement ``1 - S`` is what the closed form sums over the few segments within
+    ``near_m`` of a point. This is the particle-particle particle-mesh split (P3M: Hockney & Eastwood, Computer
+    Simulation Using Particles, 1988, ch. 8; the smooth switch is Ewald's 1921 splitting of a long-range sum into a
+    short-range direct part and a smooth mesh part, with a smoothstep in place of the Gaussian): a dipole line's
+    1/r^2 tail cannot be cut, and summing every segment at every walker sample cannot be paid, so the near part is
+    summed exactly and the far part, which the switch has made smooth, is tabulated once -- once per substrate,
+    since the strands never move, unlike an N-body code's mesh (issue #217). ``values`` ``(nx, ny, nz, 13)`` on the
     nodes ``origin + (i, j, k) * spacing_m``; ``cutoff_m`` the superposition cutoff the grid summed to. On disk a
     ``.npy`` of the values with a ``.json`` of the rest beside it; :meth:`load` maps the values from the file, so
     the host holds no copy of a grid that lives on the device (DiSCo's is 1.7 GB)."""
