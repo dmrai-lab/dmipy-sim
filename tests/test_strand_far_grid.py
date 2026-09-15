@@ -28,12 +28,12 @@ def test_the_split_equals_the_superposition():
     cls, ri, ro = _strands(rng)
     lo, hi = np.zeros(3), np.full(3, 40e-6)
     plain = StrandFieldBasis(cls, ri, ro, cutoff_m=30e-6, domain=(lo, hi))
-    with pytest.raises(ValueError, match="largest sheath radius"):
-        plain.build_far_grid(1.0e-6, 4e-6)                        # a switch starting inside the largest sheath
-    far = plain.build_far_grid(1.0e-6, 9e-6, blend_m=4e-6)
+    with pytest.raises(ValueError, match="nearest-segment gate"):
+        plain.build_far_grid(1.0e-6, 4e-6)                        # a switch starting inside the largest sheath's gate
+    far = plain.build_far_grid(1.0e-6, 12e-6, blend_m=4e-6)
     assert far.shape == (41, 41, 41) and far.values.dtype == np.float16 and far.blend_m == 4e-6
     split = plain.with_far(far)
-    assert split.gather_radius_m == 9e-6 and split.meta["far_grid"]["sha256"] == far.sha256
+    assert split.gather_radius_m == 12e-6 and split.meta["far_grid"]["sha256"] == far.sha256
     P = rng.uniform(2e-6, 38e-6, (2000, 3))
     c_plain = plain.channels(P); c_split = split.channels(P)
     rel = np.sqrt(((c_split - c_plain) ** 2).sum()) / np.sqrt((c_plain ** 2).sum())
@@ -42,7 +42,7 @@ def test_the_split_equals_the_superposition():
     with pytest.raises(ValueError, match="cutoff"):
         plain.with_cutoff(60e-6).with_far(far)
     with pytest.raises(ValueError, match="without a far grid"):
-        split.build_far_grid(1e-6, 9e-6)
+        split.build_far_grid(1e-6, 12e-6)
 
 
 def test_the_far_grid_round_trips_and_the_walk_reads_it(tmp_path):
@@ -54,7 +54,7 @@ def test_the_far_grid_round_trips_and_the_walk_reads_it(tmp_path):
     write_tck(tck, [c + 0.0 for c in cls], coordinate_unit_m=25e-6); np.savetxt(dia, 2 * ri / 1e-3)
     spec = disco_spec(tck, dia, side_m=20e-6)
     plain = StrandFieldBasis(cls, ri, ro, cutoff_m=25e-6, domain=(np.zeros(3), np.full(3, 20e-6)))
-    far = plain.build_far_grid(0.5e-6, 7e-6, blend_m=2.5e-6)
+    far = plain.build_far_grid(0.5e-6, 10e-6, blend_m=3e-6)
     far.save(str(tmp_path / "far.npz")); back = FarGrid.load(str(tmp_path / "far.npz"))
     np.testing.assert_array_equal(back.values, far.values); assert back.meta == far.meta
     kw = dict(T_max=6e-4, dt_save=5e-5, seed=5, n_probe=20_000, require_gpu=False, field=True, adaptive_steps=True,
@@ -67,13 +67,14 @@ def test_the_far_grid_round_trips_and_the_walk_reads_it(tmp_path):
     assert w1.field_basis.far is not None and w1.field_basis.certificate["far_grid"]["sha256"] == far.sha256
     from dmipy_sim.replay.bank import build_replay_pack
     pk = build_replay_pack(w1, id="t/far", license="x", citation="x", K=6, susc_path_K=4, device="numpy")
-    assert pk.meta["compression"]["channels"]["susceptibility_grid"]["source"]["far_grid"]["near_m"] == 7e-6
+    assert pk.meta["compression"]["channels"]["susceptibility_grid"]["source"]["far_grid"]["near_m"] == 10e-6
 
 
-def test_free_ends_taper_and_the_exact_grid_equals_the_cutoff_grid():
-    """Beyond a strand's free end the local cylinder tapers out (END_TAPER_RADII outer radii), so strands ending
-    inside the domain -- DiSCo's 24,392 ends do -- leave the far part smooth: a fixture with free ends reads to a
-    percent. The all-strands far grid equals the cutoff grid when the cutoff spans the box."""
+def test_free_ends_and_the_exact_grid_equals_the_cutoff_grid():
+    """A strand's field ends at its free end with its finite-line factor (1/2 on the end plane, the dipole tail
+    beyond), so strands ending inside the domain -- DiSCo's 24,392 ends do -- leave the far part smooth: a fixture
+    with free ends reads to a tenth of a percent, and the read error falls with the spacing. The all-strands far
+    grid equals the cutoff grid when the cutoff spans the box."""
     rng = np.random.default_rng(3)
     cls, ri, ro = [], [], []
     side = 40e-6
@@ -84,11 +85,14 @@ def test_free_ends_taper_and_the_exact_grid_equals_the_cutoff_grid():
     ri, ro = np.array(ri), np.array(ro)
     lo, hi = np.zeros(3), np.full(3, side)
     plain = StrandFieldBasis(cls, ri, ro, cutoff_m=80e-6, domain=(lo, hi))
-    far = plain.build_far_grid(1.0e-6, 9e-6, blend_m=4e-6, dtype=np.float32)
-    P = rng.uniform(2e-6, 38e-6, (1500, 3))
-    c0 = plain.channels(P); c1 = plain.with_far(far).channels(P)
-    rel = np.sqrt(((c1 - c0) ** 2).sum()) / np.sqrt((c0 ** 2).sum())
-    assert rel < 1.5e-2, rel
-    exact = plain.build_far_grid(1.0e-6, 9e-6, blend_m=4e-6, dtype=np.float32, all_strands=True, chunk=512)
+    P = rng.uniform(2e-6, 38e-6, (1500, 3)); c0 = plain.channels(P)
+    rel = {}
+    for h in (2.0e-6, 1.0e-6):
+        far = plain.build_far_grid(h, 14e-6, blend_m=4e-6, dtype=np.float32)
+        c1 = plain.with_far(far).channels(P)
+        rel[h] = np.sqrt(((c1 - c0) ** 2).sum()) / np.sqrt((c0 ** 2).sum())
+    assert rel[1.0e-6] < 5e-3 and rel[1.0e-6] < rel[2.0e-6], rel              # measured 0.19 % -> 0.11 % (the taper read 1 %)
+    far = plain.build_far_grid(1.0e-6, 14e-6, blend_m=4e-6, dtype=np.float32)
+    exact = plain.build_far_grid(1.0e-6, 14e-6, blend_m=4e-6, dtype=np.float32, all_strands=True, chunk=512)
     assert exact.cutoff_m == pytest.approx(float(np.linalg.norm(hi - lo)))
     np.testing.assert_allclose(exact.values, far.values, atol=1e-5, rtol=0)     # 80 um spans the box: the same sum
