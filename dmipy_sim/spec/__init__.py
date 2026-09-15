@@ -3,12 +3,12 @@
 `SubstrateSpec` is the only input the engine will accept for a walk (issue #130); a pack embeds it.
 """
 from .build import spec_of, geometry_from_spec, as_geometry
-from .walk import walk_spec, draw_seeds
+from .walk import walk_spec, draw_seeds, WalkContext
 from .seeding import StratifiedByVoxel, DrawnSeeds, plan_seeding
 from .producers import cactus_spec, winther_spec, caterpillar_spec, strands_spec, disco_spec, wm_pools
 from .tissue import Tissue
 from .substrate import (SubstrateSpec, Domain, Frame, Pool, Susceptibility, Surface, Wall, Directional, Sided,
                         Seeding, Validity, SpecError, validate, load_spec, SCHEMA_PATH, SPEC_VERSION)
 
-__all__ = ["StratifiedByVoxel", "DrawnSeeds", "draw_seeds", "plan_seeding", "Tissue", "spec_of", "geometry_from_spec", "as_geometry", "walk_spec", "cactus_spec", "winther_spec", "caterpillar_spec", "strands_spec", "disco_spec", "wm_pools", "SubstrateSpec", "Domain", "Frame", "Pool", "Susceptibility", "Surface", "Wall", "Directional", "Sided",
+__all__ = ["StratifiedByVoxel", "DrawnSeeds", "draw_seeds", "WalkContext", "plan_seeding", "Tissue", "spec_of", "geometry_from_spec", "as_geometry", "walk_spec", "cactus_spec", "winther_spec", "caterpillar_spec", "strands_spec", "disco_spec", "wm_pools", "SubstrateSpec", "Domain", "Frame", "Pool", "Susceptibility", "Surface", "Wall", "Directional", "Sided",
            "Seeding", "Validity", "SpecError", "validate", "load_spec", "SCHEMA_PATH", "SPEC_VERSION"]
