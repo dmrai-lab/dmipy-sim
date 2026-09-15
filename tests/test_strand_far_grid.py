@@ -65,6 +65,14 @@ def test_the_far_grid_round_trips_and_the_walk_reads_it(tmp_path):
     d = w1.field_samples - w0.field_samples
     assert np.sqrt((d ** 2).sum()) / np.sqrt((w0.field_samples ** 2).sum()) < 5e-2      # measured 3.1 % on this 0.5 um grid: the segments' end fields are sharper than a line's
     assert w1.field_basis.far is not None and w1.field_basis.certificate["far_grid"]["sha256"] == far.sha256
+    from dmipy_sim.spec import WalkContext                                        # the context: the basis and grid kept across walks
+    ctx = WalkContext(spec, field_far=str(tmp_path / "far.npy"))
+    w2 = walk_spec(spec, 40, context=ctx, **kw); w3 = walk_spec(spec, 40, context=ctx, **kw)
+    np.testing.assert_array_equal(w2.positions, w1.positions); np.testing.assert_array_equal(w2.field_samples, w1.field_samples)
+    np.testing.assert_array_equal(w3.field_samples, w2.field_samples)
+    assert w2.field_basis is ctx.field_basis() and w3.field_basis is w2.field_basis and ctx.key[1] == far.sha256
+    with pytest.raises(ValueError, match="another far grid"):
+        ctx.check(spec, plain.build_far_grid(0.5e-6, 10e-6, blend_m=2e-6))
     from dmipy_sim.replay.bank import build_replay_pack
     pk = build_replay_pack(w1, id="t/far", license="x", citation="x", K=6, susc_path_K=4, device="numpy")
     assert pk.meta["compression"]["channels"]["susceptibility_grid"]["source"]["far_grid"]["near_m"] == 10e-6

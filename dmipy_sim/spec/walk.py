@@ -25,8 +25,12 @@ def walk_spec(spec, n_walkers=None, T_max=None, dt_save=None, *, scanner="connec
               seed=0, n_probe=200_000, field=True, field_res=0.2e-6, field_budget=5e7, field_cutoff_m=25e-6,
               field_cutoff_tol=0.02, field_cutoff_max_m=50e-6, require_gpu=None, walker_batch_size=50_000, tiers="all",
               seeding=None, adaptive_steps=False, field_sample_every=1, field_far=None, field_gather_every=4, run_dir=None,
-              spool=False):
+              spool=False, context=None):
     """Walk ``spec`` and return a :class:`~dmipy_sim.persistent_walk.PersistentWalk` carrying the spec.
+
+    ``context`` is a :class:`WalkContext` of the spec (its pool tests, boundaries, walking geometries and the
+    strand-field basis with its far grid), kept by a producer across the walks of one spec so that none of it is
+    built or compiled again; it carries the far grid, so ``field_far`` is not passed with it.
 
     ``field_far`` is a :class:`~dmipy_sim.fields.strand_field.FarGrid` (or its ``.npy`` path) built for the strand
     substrate: the closed form is then summed over the few strands within its ``near_m`` of a point and the grid read
@@ -82,6 +86,12 @@ def walk_spec(spec, n_walkers=None, T_max=None, dt_save=None, *, scanner="connec
             raise TypeError("walk_spec needs T_max (seconds)")
         if int(field_sample_every) != 1 and not adaptive_steps:
             raise ValueError("field_sample_every reads the field in the walk, which the adaptive producer does: pass adaptive_steps=True")
+        if context is not None:
+            if not isinstance(context, WalkContext):
+                raise TypeError(f"context must be a WalkContext, got {type(context).__name__}")
+            if field_far is not None:
+                raise TypeError("the context carries the far grid: give context= or field_far=, not both")
+            context.check(spec)
         if seeding is not None:
             from .seeding import DrawnSeeds, StratifiedByVoxel
             if not isinstance(seeding, (StratifiedByVoxel, DrawnSeeds)):
@@ -116,7 +126,7 @@ def walk_spec(spec, n_walkers=None, T_max=None, dt_save=None, *, scanner="connec
                                   w.bound_frac, w.illegal_crossings, w.seed, w.diffusivity, geometry=g, spec=spec, run=w.run)
         return _walk_bundle(spec, int(n_walkers), float(T_max), float(dt_save), seed, n_probe, field, field_res,
                             require_gpu, walker_batch_size, field_budget=float(field_budget), field_cutoff_m=field_cutoff_m, field_cutoff_tol=field_cutoff_tol, seeding=seeding,
-                            field_cutoff_max_m=field_cutoff_max_m, adaptive_steps=adaptive_steps, field_sample_every=int(field_sample_every), field_far=field_far, field_gather_every=int(field_gather_every), spool=bool(spool))
+                            field_cutoff_max_m=field_cutoff_max_m, adaptive_steps=adaptive_steps, field_sample_every=int(field_sample_every), field_far=field_far, field_gather_every=int(field_gather_every), context=context, spool=bool(spool))
 
 
 def _needs_bundle_walk(spec):
@@ -302,18 +312,65 @@ class _PoolTests:
         return lambda n, rng: (lambda P: (P, pred(P)))(rng.uniform(lo, hi, (n, 3)))
 
 
-def draw_seeds(spec, seeding, seed):
+class WalkContext:
+    """What a walk of ``spec`` builds before its first step, kept by a producer that walks block after block of one
+    spec (the DiSCo fill: 1399 blocks, nothing but the seeds changing): the pool membership tests and boundaries,
+    each pool's walking geometry once it is built (its segment tables on the device, its kernels compiled), and
+    the strand-field basis with its far grid (the grid on the device once). Keyed by what determines it -- the
+    spec's dict and the far grid's sha256 -- so a producer keeps one across blocks and builds another only when
+    the key changes; :func:`walk_spec` and :func:`draw_seeds` refuse a context of another key."""
+
+    def __init__(self, spec, *, field_far=None):
+        from ..fields.strand_field import FarGrid
+        self.spec = spec
+        self.far = None if field_far is None else (field_far if isinstance(field_far, FarGrid) else FarGrid.load(field_far))
+        self.key = self.key_of(spec, self.far)
+        self.tests = _PoolTests(spec)
+        self._basis = None
+
+    @staticmethod
+    def key_of(spec, far):
+        import hashlib, json
+        h = hashlib.sha256(json.dumps(spec.to_dict(), sort_keys=True, default=str).encode()).hexdigest()
+        return (h, None if far is None else far.meta.get("sha256"))
+
+    def check(self, spec, far=None):
+        """Raise unless this context was built for ``spec`` (and for ``far`` when one is named)."""
+        if self.key[0] != self.key_of(spec, None)[0]:
+            raise ValueError("the walk context was built for another spec")
+        if far is not None and self.key[1] != self.key_of(spec, far)[1]:
+            raise ValueError("the walk context carries another far grid")
+
+    def field_basis(self):
+        """The strand-field basis of the spec's field source with the far grid (the particle-mesh split), built once;
+        ``None`` when the context has no far grid or the source is not a pair of swept-polyline walls."""
+        if self._basis is None and self.far is not None and self.spec.field_source_pools:
+            from ..fields.strand_field import StrandFieldBasis
+            g = self.tests; src0 = self.spec.field_source_pools[0].id
+            ob = g.boundary(g.inside_w[src0]) if g.inside_w[src0] else None; ib = g.boundary(g.outside_w[src0]) if g.outside_w[src0] else None
+            if ob is not None and ib is not None and ob.kind == "swept_polyline" and ib.kind == "swept_polyline":
+                if len(ob.centerlines) != len(ib.centerlines):
+                    raise SpecError("the sheath's inner and outer walls list different numbers of strands")
+                self._basis = StrandFieldBasis(ob.centerlines, ib.radii, ob.radii, cutoff_m=self.far.cutoff_m, domain=(g.lo, g.hi),
+                                               certificate=dict(cutoff_m=float(self.far.cutoff_m), far_grid=self.far.meta,
+                                                                note="the cutoff the far grid summed to; not doubled here")).with_far(self.far)
+        return self._basis
+
+
+def draw_seeds(spec, seeding, seed, *, context=None):
     """The stratified seeds of ``spec`` drawn on the CPU: every seeded pool's start positions and weights on
     ``seeding``'s grid, as a :class:`~dmipy_sim.spec.seeding.DrawnSeeds` that :func:`walk_spec` takes in place
     of the :class:`~dmipy_sim.spec.seeding.StratifiedByVoxel` they were drawn from, with the same result to the
-    bit. What a producer draws for its next block while the device walks this one (dmipy-sim#258): the draw of
+    bit; ``context`` is a :class:`WalkContext` of the spec whose pool tests the draw uses. What a producer draws for its next block while the device walks this one (dmipy-sim#258): the draw of
     a DiSCo block is 20 s of CPU the walk otherwise waits for. Pool ``pid`` is drawn from ``seed + 13 pid``."""
     from .seeding import DrawnSeeds, StratifiedByVoxel, fill_per_voxel, fill_swept_by_voxel
     from ..run import Run
     if not isinstance(seeding, StratifiedByVoxel):
         raise TypeError(f"draw_seeds draws a StratifiedByVoxel, got {type(seeding).__name__}")
     log = logging.getLogger("dmipy_sim")
-    g = _PoolTests(spec); grid = seeding.grid; positions, weights = {}, {}
+    if context is not None:
+        context.check(spec)
+    g = context.tests if context is not None else _PoolTests(spec); grid = seeding.grid; positions, weights = {}, {}
     with Run("draw_seeds", params=dict(seed=int(seed), n_voxels=int(grid.n_voxels))) as run:
         for pid in g.seeded:
             name = g.pools[pid].name; s = int(seed) + 13 * pid
@@ -336,7 +393,7 @@ def draw_seeds(spec, seeding, seed):
 
 
 def _walk_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field, field_res, require_gpu, batch, field_budget=5e7,
-                 field_cutoff_m=25e-6, field_cutoff_tol=0.02, seeding=None, field_cutoff_max_m=50e-6, adaptive_steps=False, field_sample_every=1, field_far=None, field_gather_every=4, spool=False):
+                 field_cutoff_m=25e-6, field_cutoff_tol=0.02, seeding=None, field_cutoff_max_m=50e-6, adaptive_steps=False, field_sample_every=1, field_far=None, field_gather_every=4, context=None, spool=False):
     """Walk a multi-surface spec pool by pool: every seeded pool is defined by the walls it is inside and the walls it
     is outside; a pool with D > 0 walks the interior of its inside-walls (intra, glia) or the exterior of its
     outside-walls (extra); a shell pool at D = 0 (myelin) is frozen where it was seeded; the field basis is
@@ -345,7 +402,8 @@ def _walk_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field, field_re
     from ..fields.susceptibility_field import FieldGrid, mesh_field_basis, predicate_field_basis
     from ..persistent_walk import PersistentWalk
     log = logging.getLogger("dmipy_sim")
-    g = _PoolTests(spec)
+    ctx = context if context is not None else WalkContext(spec, field_far=field_far)
+    g = ctx.tests
     pools, inside_w, outside_w, boundary, member, sampler = g.pools, g.inside_w, g.outside_w, g.boundary, g.member, g.sampler
     lo, hi, periodic, reflect, seeded, wf = g.lo, g.hi, g.periodic, g.reflect, g.seeded, g.wf
     if seeding is None:
@@ -370,7 +428,7 @@ def _walk_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field, field_re
             return np.concatenate(out), np.full(len(np.concatenate(out)), 1.0 if spec.seeding.weights == "thin" else wf[pid])
     else:
         from .seeding import DrawnSeeds
-        drawn = seeding if isinstance(seeding, DrawnSeeds) else draw_seeds(spec, seeding, seed)
+        drawn = seeding if isinstance(seeding, DrawnSeeds) else draw_seeds(spec, seeding, seed, context=ctx)
 
         def seeds(pid, s):
             return drawn.positions[pools[pid].name], drawn.weights[pools[pid].name]
@@ -388,14 +446,8 @@ def _walk_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field, field_re
         ob = boundary(inside_w[src0]) if inside_w[src0] else None; ib = boundary(outside_w[src0]) if outside_w[src0] else None
         if ob is not None and ib is not None and ob.kind == "swept_polyline" and ib.kind == "swept_polyline":
             starts = np.concatenate([np.asarray(seeds_of[pid], np.float32) for pid in seeded])
-            if field_far is not None:                                    # the split: the grid's cutoff, no doubling
-                from ..fields.strand_field import FarGrid, StrandFieldBasis
-                fg_ = field_far if isinstance(field_far, FarGrid) else FarGrid.load(field_far)
-                if len(ob.centerlines) != len(ib.centerlines):
-                    raise SpecError("the sheath's inner and outer walls list different numbers of strands")
-                sf = StrandFieldBasis(ob.centerlines, ib.radii, ob.radii, cutoff_m=fg_.cutoff_m, domain=(lo, hi),
-                                      certificate=dict(cutoff_m=float(fg_.cutoff_m), far_grid=fg_.meta,
-                                                       note="the cutoff the far grid summed to; not doubled here")).with_far(fg_)
+            if ctx.far is not None:                                      # the split: the grid's cutoff, no doubling
+                sf = ctx.field_basis()
             else:
                 sf = _strand_field(ob, ib, lo, hi, starts[:, None, :], field_cutoff_m, field_cutoff_tol, seed, cutoff_max=field_cutoff_max_m)
     field_samples = []

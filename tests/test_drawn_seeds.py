@@ -41,3 +41,25 @@ def test_drawn_seeds_are_checked(spec_grid):
         DrawnSeeds(positions={"extra": np.zeros((2, 2))}, weights={"extra": np.ones(2)}, grid=grid, seed=0)
     with pytest.raises(TypeError, match="StratifiedByVoxel"):
         draw_seeds(spec, "extra", 0)
+
+
+def test_a_walk_context_is_kept_across_walks(spec_grid):
+    """A walk with a `WalkContext` equals the walk without one; the same context serves a second walk with another
+    seeding; a context of another spec, or one given beside `field_far`, is refused."""
+    from dmipy_sim.spec import WalkContext
+    spec, grid = spec_grid
+    want = np.zeros(grid.shape, np.int64); want[0] = 5
+    seeding = StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want})
+    kw = dict(T_max=8e-4, dt_save=2e-4, require_gpu=False, field=False)
+    ctx = WalkContext(spec)
+    assert ctx.key == WalkContext.key_of(spec, None) and ctx.field_basis() is None
+    a = walk_spec(spec, seeding=seeding, seed=3, **kw); b = walk_spec(spec, seeding=seeding, seed=3, context=ctx, **kw)
+    np.testing.assert_array_equal(a.positions, b.positions); np.testing.assert_array_equal(np.asarray(a.weights), np.asarray(b.weights))
+    drawn = draw_seeds(spec, seeding, 4, context=ctx)
+    c = walk_spec(spec, seeding=drawn, seed=4, context=ctx, **kw); d = walk_spec(spec, seeding=seeding, seed=4, **kw)
+    np.testing.assert_array_equal(c.positions, d.positions)
+    assert len(ctx.tests._bounds) > 0 and all(len(b_._geom) > 0 for b_ in ctx.tests._bounds.values())   # the geometries, kept
+    with pytest.raises(TypeError, match="not both"):
+        walk_spec(spec, seeding=seeding, seed=3, context=ctx, field_far="x.npy", **kw)
+    with pytest.raises(TypeError, match="WalkContext"):
+        walk_spec(spec, seeding=seeding, seed=3, context="ctx", **kw)
