@@ -63,11 +63,14 @@ def test_a_429_is_retried_and_a_heartbeat_is_not(certified, monkeypatch):
     before = open(hub.get(claimed["claim"])).read()
     hub.fail_429.append("heartbeat")
     cur = dict(block=claimed["block"], variant="t", host="h2", name=claimed["name"], claim=claimed["claim"], started="2026-01-01T00:00:00Z", commit="test",
-               run_dir=os.path.join(work, "none"), **{"pass": 1})
+               run_dir=os.path.join(work, "none"), stage="walking", **{"pass": 1})
     from dmipy_sim.run import report
-    assert heartbeat_once(hub, cur, report) is False and open(hub.get(claimed["claim"])).read() == before and not hub.fail_429
-    hub.queue = []
-    assert heartbeat_once(hub, cur, report) is True and json.load(open(hub.get(claimed["claim"])))["stage"] == "walking"
+    assert heartbeat_once(hub, {cur["name"]: cur}, report) is False and open(hub.get(claimed["claim"])).read() == before and not hub.fail_429
+    other = claim_next(hub, rc, "h2", claim_batch=1); hub.queue = []
+    held = {cur["name"]: cur, other["name"]: dict(cur, name=other["name"], claim=other["claim"], block=other["block"], stage="uploading", run_dir=None)}
+    n = len(hub.log)
+    assert heartbeat_once(hub, held, report) is True and len(hub.log) == n + 1        # every held claim in ONE commit
+    assert json.load(open(hub.get(claimed["claim"])))["stage"] == "walking" and json.load(open(hub.get(other["claim"])))["stage"] == "uploading"
 
 
 def test_the_claim_protocol(fake):
@@ -137,7 +140,8 @@ def test_drain_finishes_what_a_dead_worker_left(certified):
     b = hub.queue[0]; hub.queue = []
     w, rd = walk_round(o, rc, a["row"], a["name"], 0, 1, a["P"], draw_round(rc, a["row"], 0, 1, a["P"], None))
     save_walk(w, rd)
-    job = f.job_of(a, [rd], os.path.join(work, f"t-{a['name']}.rpk")); json.dump(job, open(job["file"], "w"), default=float)
+    job = f.job_of(a, [rd], os.path.join(work, f"t-{a['name']}.rpk")); job.pop("claim_state")   # a job file of an earlier worker version
+    json.dump(job, open(job["file"], "w"), default=float)
     n = len(hub.log)
     Fill(hub, rc, opts(work, host="dead")).drain()
     assert hub.exists(f"blocks/t/{a['name']}.rpk") and not hub.exists(a["claim"]) and not hub.exists(b["claim"])
