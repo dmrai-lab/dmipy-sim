@@ -161,10 +161,12 @@ class StrandFieldBasis:
         self._OFF = jnp.asarray([[dx, dy, dz] for dx in (-1, 0, 1) for dy in (-1, 0, 1) for dz in (-1, 0, 1)], jnp.int32)
         self._mean = self._domain_mean()
         self._batch = None
-        if far is not None:                                      # the far grid on the device, trilinear at a point
-            self._FAR = jnp.asarray(np.asarray(far.values, np.float32))
+        if far is not None:                                      # the far grid on the device as STORED (float16 halves the
+            self._FAR = jnp.asarray(np.asarray(far.values))      # traffic of the 64-tap read); passed to every jitted kernel
             self._FAR_O = jnp.asarray(np.asarray(far.origin_m, np.float32)); self._FAR_H = jnp.float32(far.spacing_m)
-            self._FAR_N = jnp.asarray(np.asarray(far.shape, np.int32))
+            self._FAR_N = jnp.asarray(np.asarray(far.shape, np.int32))     # as an ARGUMENT, never a captured constant:
+            # a 1.7 GB constant closed over by a jit is embedded in every executable it lowers (minutes per compile,
+            # a copy per shape), which made a walk with the grid slower than one without
         logging.getLogger("dmipy_sim").info("StrandFieldBasis: %d strands, %d segments, cutoff %.1f um, grid %s, up to %d segments per cell "
                                             "(%d candidates per point), closed form on the nearest %d",
                                             self.n_strands, self.n_segments, self.cutoff_m * 1e6, self._dims, self._cap,
@@ -263,10 +265,10 @@ class StrandFieldBasis:
         x = jnp.clip((d - jnp.float32(self.far.near_m - self.far.blend_m)) / jnp.float32(self.far.blend_m), 0.0, 1.0)
         return x * x * (3.0 - 2.0 * x)
 
-    def _far_at(self, p):
-        """Tricubic (Catmull-Rom) read of the far grid at ``p`` (jnp, one point): the far part carries the 1/r^2 tails
-        of the strands beyond the switch, whose curvature a trilinear read resolves only at a spacing far below the
-        switch radius; the cubic's error falls as the fourth power of spacing over radius. Border nodes repeat."""
+    def _far_at(self, p, FAR):
+        """Tricubic (Catmull-Rom) read of the far grid ``FAR`` at ``p`` (jnp, one point): the far part carries the 1/r^2
+        tails of the strands beyond the switch, whose curvature a trilinear read resolves only at a spacing far below
+        the switch radius; the cubic's error falls as the fourth power of spacing over radius. Border nodes repeat."""
         g = (p - self._FAR_O) / self._FAR_H
         i0 = jnp.floor(g).astype(jnp.int32)
         f = g - i0.astype(jnp.float32)
@@ -278,7 +280,7 @@ class StrandFieldBasis:
         ix = jnp.clip(i0[0] + jnp.arange(-1, 3), 0, self._FAR_N[0] - 1)
         iy = jnp.clip(i0[1] + jnp.arange(-1, 3), 0, self._FAR_N[1] - 1)
         iz = jnp.clip(i0[2] + jnp.arange(-1, 3), 0, self._FAR_N[2] - 1)
-        cube = self._FAR[ix[:, None, None], iy[None, :, None], iz[None, None, :]]        # (4, 4, 4, 13)
+        cube = FAR[ix[:, None, None], iy[None, :, None], iz[None, None, :]].astype(jnp.float32)   # (4, 4, 4, 13)
         return jnp.einsum("a,b,c,abcd->d", wx, wy, wz, cube)
 
     def _channels_kernel(self, weight):
@@ -313,11 +315,12 @@ class StrandFieldBasis:
         f = getattr(self, "_channels_at_batch", None)
         if f is None:
             if self.far is None:
-                one = self._channels_kernel(lambda d: 1.0)
+                f = self._channels_at_batch = jax.jit(jax.vmap(self._channels_kernel(lambda d: 1.0)))
             else:
                 near = self._channels_kernel(lambda d: 1.0 - self._switch(d)); far_at = self._far_at
-                one = lambda p, seg, keep: near(p, seg, keep) + far_at(p)
-            f = self._channels_at_batch = jax.jit(jax.vmap(one))
+                g = jax.jit(jax.vmap(lambda p, seg, keep, FAR: near(p, seg, keep) + far_at(p, FAR), in_axes=(0, 0, 0, None)))
+                FAR = self._FAR
+                f = self._channels_at_batch = lambda p, seg, keep: g(p, seg, keep, FAR)     # the grid as an argument
         return f
 
     def far_channels_at_device(self, near_m, blend_m):
@@ -426,8 +429,7 @@ class StrandFieldBasis:
     def _build(self):
         nearest = self.nearest_device(); at = self.channels_at_device()
 
-        @jax.jit
-        def batch(P):
+        def batch(P):                                            # not jitted as a whole: the far grid stays an argument
             seg, keep, n = nearest(P)
             return at(P, seg, keep), n
         return batch
