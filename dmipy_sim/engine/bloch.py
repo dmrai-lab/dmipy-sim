@@ -37,6 +37,7 @@ from ..geometry._boundary import bind_probability
 from ..constants import GAMMA
 from ..acquisition.rf import RFSchedule
 from .gpu import gpu_available
+from ..run import Run
 from ..geometry import initial_positions
 from .physics import resolve_sub_steps, _warn_if_step_outruns_the_lookup
 
@@ -293,79 +294,80 @@ def simulate_bloch(n_walkers, diffusivity, waveform, geometry, *,
         (or ``(n_meas, n_echo)`` when the readout is a multi-echo train), optionally with
         ``Mz`` appended when ``return_mz``.
     """
-    from ..spec.build import as_geometry
-    geometry = as_geometry(geometry)               # a spec, a spec file or a dict is a substrate too
-    if require_gpu and not gpu_available():
-        raise RuntimeError("simulate_bloch(require_gpu=True) but no CUDA device is "
-                           "visible to JAX.")
+    with Run("simulate_bloch", params=dict(n_walkers=n_walkers, diffusivity=diffusivity, geometry=type(geometry).__name__)) as run:
+        from ..spec.build import as_geometry
+        geometry = as_geometry(geometry)               # a spec, a spec file or a dict is a substrate too
+        if require_gpu and not gpu_available():
+            raise RuntimeError("simulate_bloch(require_gpu=True) but no CUDA device is "
+                               "visible to JAX.")
 
-    # Magnetization transfer: dispatch to the fused walk+Bloch path (binding at the
-    # walls during the walk, bound-pool relaxation blended in).  kappa_MT == 0 keeps
-    # the plain forward path below byte-identical.
-    if kappa_MT > 0.0:
-        return _simulate_bloch_mt(
-            n_walkers, diffusivity, waveform, geometry,
-            T2=T2, T1=T1, M0=M0, off_resonance_hz=off_resonance_hz, seed=seed, r0=r0,
-            return_mz=return_mz, surface_relaxivity=surface_relaxivity,
-            kappa_MT=kappa_MT, dwell_time=dwell_time, T2_bound=T2_bound,
-            T1_bound=T1_bound, off_resonance_bound=off_resonance_bound,
-            sub_steps=sub_steps, return_bound_frac=return_bound_frac,
-            equilibrate_binding=equilibrate_binding, susceptibility=susceptibility)
+        # Magnetization transfer: dispatch to the fused walk+Bloch path (binding at the
+        # walls during the walk, bound-pool relaxation blended in).  kappa_MT == 0 keeps
+        # the plain forward path below byte-identical.
+        if kappa_MT > 0.0:
+            return _simulate_bloch_mt(
+                n_walkers, diffusivity, waveform, geometry,
+                T2=T2, T1=T1, M0=M0, off_resonance_hz=off_resonance_hz, seed=seed, r0=r0,
+                return_mz=return_mz, surface_relaxivity=surface_relaxivity,
+                kappa_MT=kappa_MT, dwell_time=dwell_time, T2_bound=T2_bound,
+                T1_bound=T1_bound, off_resonance_bound=off_resonance_bound,
+                sub_steps=sub_steps, return_bound_frac=return_bound_frac,
+                equilibrate_binding=equilibrate_binding, susceptibility=susceptibility)
 
-    seq, G, dt, echo_steps = _sequence_inputs(waveform, geometry)
-    n_meas, n_t, _ = G.shape
+        seq, G, dt, echo_steps = _sequence_inputs(waveform, geometry)
+        n_meas, n_t, _ = G.shape
 
-    dflip, axis, carrier = _build_rf_schedule(seq.rf, dt, n_t)
-    crush_rate, has_crush = _build_crusher(seq.crusher, dt, n_t)
-    G_scan = jnp.asarray(np.transpose(G, (1, 0, 2)), dtype=jnp.float32)   # (n_t,n_meas,3)
-    scan_inputs = (G_scan,
-                   jnp.asarray(dflip, dtype=jnp.float32),
-                   jnp.asarray(axis, dtype=jnp.float32),
-                   jnp.asarray(carrier, dtype=jnp.float32),
-                   jnp.asarray(crush_rate, dtype=jnp.float32))
+        dflip, axis, carrier = _build_rf_schedule(seq.rf, dt, n_t)
+        crush_rate, has_crush = _build_crusher(seq.crusher, dt, n_t)
+        G_scan = jnp.asarray(np.transpose(G, (1, 0, 2)), dtype=jnp.float32)   # (n_t,n_meas,3)
+        scan_inputs = (G_scan,
+                       jnp.asarray(dflip, dtype=jnp.float32),
+                       jnp.asarray(axis, dtype=jnp.float32),
+                       jnp.asarray(carrier, dtype=jnp.float32),
+                       jnp.asarray(crush_rate, dtype=jnp.float32))
 
-    # pos_key / walker_key keep the SAME 2-way split as core.simulate (identical walk
-    # for parity); the crusher's per-walker macro coordinate is an independent stream.
-    master_key = jax.random.PRNGKey(seed)
-    pos_key, walker_key = jax.random.split(master_key)
-    walker_keys = jax.random.split(walker_key, n_walkers)
-    r0 = initial_positions(geometry, n_walkers, pos_key, r0)   # (n_walkers, 3)
-    if has_crush:
-        uw = jax.random.uniform(jax.random.fold_in(master_key, 0xC0FFEE), (n_walkers,),
-                                dtype=jnp.float32)
-    else:
-        uw = jnp.zeros((n_walkers,), dtype=jnp.float32)
+        # pos_key / walker_key keep the SAME 2-way split as core.simulate (identical walk
+        # for parity); the crusher's per-walker macro coordinate is an independent stream.
+        master_key = jax.random.PRNGKey(seed)
+        pos_key, walker_key = jax.random.split(master_key)
+        walker_keys = jax.random.split(walker_key, n_walkers)
+        r0 = initial_positions(geometry, n_walkers, pos_key, r0)   # (n_walkers, 3)
+        if has_crush:
+            uw = jax.random.uniform(jax.random.fold_in(master_key, 0xC0FFEE), (n_walkers,),
+                                    dtype=jnp.float32)
+        else:
+            uw = jnp.zeros((n_walkers,), dtype=jnp.float32)
 
-    field_fn = None
-    if susceptibility is not None:
-        field_fn = (susceptibility.delta_bz_fn()
-                    if hasattr(susceptibility, "delta_bz_fn") else susceptibility)
-    step_fn = _make_bloch_step_fn(geometry, float(diffusivity), dt,
-                                  T2, T1, float(M0), float(off_resonance_hz),
-                                  rho=float(surface_relaxivity), field_fn=field_fn,
-                                  sub_steps=sub_steps)
-    M_init = jnp.zeros((n_meas, 3), dtype=jnp.float32).at[:, 2].set(jnp.float32(M0))
+        field_fn = None
+        if susceptibility is not None:
+            field_fn = (susceptibility.delta_bz_fn()
+                        if hasattr(susceptibility, "delta_bz_fn") else susceptibility)
+        step_fn = _make_bloch_step_fn(geometry, float(diffusivity), dt,
+                                      T2, T1, float(M0), float(off_resonance_hz),
+                                      rho=float(surface_relaxivity), field_fn=field_fn,
+                                      sub_steps=sub_steps)
+        M_init = jnp.zeros((n_meas, 3), dtype=jnp.float32).at[:, 2].set(jnp.float32(M0))
 
-    want_echo = echo_steps is not None
+        want_echo = echo_steps is not None
 
-    def simulate_walker(r0_w, key_w, uw_w):
-        (r_f, M_f, _, _), xy_seq = jax.lax.scan(
-            step_fn, (r0_w, M_init, key_w, uw_w), scan_inputs)
-        return (M_f, xy_seq) if want_echo else M_f
+        def simulate_walker(r0_w, key_w, uw_w):
+            (r_f, M_f, _, _), xy_seq = jax.lax.scan(
+                step_fn, (r0_w, M_init, key_w, uw_w), scan_inputs)
+            return (M_f, xy_seq) if want_echo else M_f
 
-    if want_echo:
-        M_final, xy_seq = jax.vmap(simulate_walker, in_axes=(0, 0, 0))(r0, walker_keys, uw)
-        # xy_seq: (n_walkers, n_t, n_meas) complex -> walker-mean at the echo steps
-        echoes = jnp.mean(xy_seq, axis=0)[jnp.asarray(echo_steps, dtype=int)]   # (n_echo,n_meas)
-        signals = np.asarray(echoes.T)                     # (n_meas, n_echo)
-    else:
-        M_final = jax.vmap(simulate_walker, in_axes=(0, 0, 0))(r0, walker_keys, uw)  # (n_w,n_meas,3)
-        signals = np.asarray(jnp.mean(M_final[:, :, 0] + 1j * M_final[:, :, 1], axis=0))
+        if want_echo:
+            M_final, xy_seq = jax.vmap(simulate_walker, in_axes=(0, 0, 0))(r0, walker_keys, uw)
+            # xy_seq: (n_walkers, n_t, n_meas) complex -> walker-mean at the echo steps
+            echoes = jnp.mean(xy_seq, axis=0)[jnp.asarray(echo_steps, dtype=int)]   # (n_echo,n_meas)
+            signals = np.asarray(echoes.T)                     # (n_meas, n_echo)
+        else:
+            M_final = jax.vmap(simulate_walker, in_axes=(0, 0, 0))(r0, walker_keys, uw)  # (n_w,n_meas,3)
+            signals = np.asarray(jnp.mean(M_final[:, :, 0] + 1j * M_final[:, :, 1], axis=0))
 
-    if return_mz:
-        mz = np.asarray(jnp.mean(M_final[:, :, 2], axis=0))
-        return signals, mz
-    return signals
+        if return_mz:
+            mz = np.asarray(jnp.mean(M_final[:, :, 2], axis=0))
+            return signals, mz
+        return signals
 
 
 # ── magnetization transfer: fused forward walk + binding + Bloch ────────────────

@@ -13,6 +13,8 @@ the bespoke bundle builders used to decide in code.
 import logging
 
 import numpy as np
+
+from ..run import Run, current
 import jax.numpy as jnp
 
 from .substrate import SubstrateSpec, SpecError
@@ -62,50 +64,51 @@ def walk_spec(spec, n_walkers=None, T_max=None, dt_save=None, *, scanner="connec
     with ``field="grid"``, rasterises within ``field_budget`` voxels (13 float32 channels each) at
     ``field_res``, the cross-check of the closed form on a small strand voxel.
     """
-    import logging
-    from ..engine.core import simulate_trajectories
-    from ..persistent_walk import PersistentWalk
-    from ..acquisition.scanners import save_interval
-    spec = SubstrateSpec.from_dict(spec) if isinstance(spec, dict) else spec
-    spec.validate()
-    if T_max is None:
-        raise TypeError("walk_spec needs T_max (seconds)")
-    if int(field_sample_every) != 1 and not adaptive_steps:
-        raise ValueError("field_sample_every reads the field in the walk, which the adaptive producer does: pass adaptive_steps=True")
-    if seeding is not None:
-        from .seeding import StratifiedByVoxel
-        if not isinstance(seeding, StratifiedByVoxel):
-            raise TypeError(f"seeding must be a StratifiedByVoxel, got {type(seeding).__name__}")
-        if n_walkers is not None:
-            raise TypeError("n_walkers is what a stratified seeding produces: give seeding= or n_walkers=, not both")
+    with Run("walk_spec", params=dict(spec=getattr(spec, "id", None), n_walkers=n_walkers, T_max=T_max, dt_save=dt_save, field=field, adaptive_steps=adaptive_steps)) as run:
+        import logging
+        from ..engine.core import simulate_trajectories
+        from ..persistent_walk import PersistentWalk
+        from ..acquisition.scanners import save_interval
+        spec = SubstrateSpec.from_dict(spec) if isinstance(spec, dict) else spec
+        spec.validate()
+        if T_max is None:
+            raise TypeError("walk_spec needs T_max (seconds)")
+        if int(field_sample_every) != 1 and not adaptive_steps:
+            raise ValueError("field_sample_every reads the field in the walk, which the adaptive producer does: pass adaptive_steps=True")
+        if seeding is not None:
+            from .seeding import StratifiedByVoxel
+            if not isinstance(seeding, StratifiedByVoxel):
+                raise TypeError(f"seeding must be a StratifiedByVoxel, got {type(seeding).__name__}")
+            if n_walkers is not None:
+                raise TypeError("n_walkers is what a stratified seeding produces: give seeding= or n_walkers=, not both")
+            if not _needs_bundle_walk(spec):
+                raise SpecError("stratified seeding is for the pool-by-pool walk of a multi-surface spec")
+            n_walkers = int(sum(seeding.count_for(p.name).sum() for p in spec.pools if p.id in spec.seeding.pools))
+        elif n_walkers is None:
+            raise TypeError("walk_spec needs n_walkers, or a seeding= that sets the count per voxel")
+        if dt_save is None:
+            Ds = [p.D for p in spec.pools if p.D] + ([float(diffusivity)] if diffusivity else [])
+            dt_save = save_interval(T_max, n_walkers, scanner, D=(max(Ds) if Ds else 2e-9), floor_fraction=floor_fraction,
+                                    field=bool(field and spec.field_source_pools))
+            logging.getLogger("dmipy_sim").info("walk_spec: dt_save=%.3g s derived for %s over T_max=%.3g s with %d walkers "
+                                                "(n_t=%d)", dt_save, scanner, T_max, n_walkers, int(round(T_max / dt_save)) + 1)
         if not _needs_bundle_walk(spec):
-            raise SpecError("stratified seeding is for the pool-by-pool walk of a multi-surface spec")
-        n_walkers = int(sum(seeding.count_for(p.name).sum() for p in spec.pools if p.id in spec.seeding.pools))
-    elif n_walkers is None:
-        raise TypeError("walk_spec needs n_walkers, or a seeding= that sets the count per voxel")
-    if dt_save is None:
-        Ds = [p.D for p in spec.pools if p.D] + ([float(diffusivity)] if diffusivity else [])
-        dt_save = save_interval(T_max, n_walkers, scanner, D=(max(Ds) if Ds else 2e-9), floor_fraction=floor_fraction,
-                                field=bool(field and spec.field_source_pools))
-        logging.getLogger("dmipy_sim").info("walk_spec: dt_save=%.3g s derived for %s over T_max=%.3g s with %d walkers "
-                                            "(n_t=%d)", dt_save, scanner, T_max, n_walkers, int(round(T_max / dt_save)) + 1)
-    if not _needs_bundle_walk(spec):
-        g = geometry_from_spec(spec)
-        D = diffusivity
-        if D is None:                                   # the walk's reference diffusivity: the intra pool's when
-            names = {p.name: p for p in spec.pools}     # there is one (multi-pool kernels carry per-pool D), else
-            pool = names.get("intra") if names.get("intra") is not None and names["intra"].D is not None \
-                else spec.pool(spec.seeding.pools[0])   # the seeded pool's
-            D = pool.D
-        if D is None:
-            raise SpecError("the spec's seeded pool has no D and no diffusivity= was given")
-        w = simulate_trajectories(int(n_walkers), float(D), g, T_max=T_max, dt_save=dt_save, seed=seed,
-                                  require_gpu=require_gpu, walker_batch_size=walker_batch_size, tiers=tiers)
-        return PersistentWalk(w.positions, w.dt, w.sub_steps, w.dt_sim, w.boundary_local_time, w.compartment,
-                              w.bound_frac, w.illegal_crossings, w.seed, w.diffusivity, geometry=g, spec=spec)
-    return _walk_bundle(spec, int(n_walkers), float(T_max), float(dt_save), seed, n_probe, field, field_res,
-                        require_gpu, walker_batch_size, field_budget=float(field_budget), field_cutoff_m=field_cutoff_m, field_cutoff_tol=field_cutoff_tol, seeding=seeding,
-                        field_cutoff_max_m=field_cutoff_max_m, adaptive_steps=adaptive_steps, field_sample_every=int(field_sample_every), field_far=field_far, field_gather_every=int(field_gather_every))
+            g = geometry_from_spec(spec)
+            D = diffusivity
+            if D is None:                                   # the walk's reference diffusivity: the intra pool's when
+                names = {p.name: p for p in spec.pools}     # there is one (multi-pool kernels carry per-pool D), else
+                pool = names.get("intra") if names.get("intra") is not None and names["intra"].D is not None \
+                    else spec.pool(spec.seeding.pools[0])   # the seeded pool's
+                D = pool.D
+            if D is None:
+                raise SpecError("the spec's seeded pool has no D and no diffusivity= was given")
+            w = simulate_trajectories(int(n_walkers), float(D), g, T_max=T_max, dt_save=dt_save, seed=seed,
+                                      require_gpu=require_gpu, walker_batch_size=walker_batch_size, tiers=tiers)
+            return PersistentWalk(w.positions, w.dt, w.sub_steps, w.dt_sim, w.boundary_local_time, w.compartment,
+                                  w.bound_frac, w.illegal_crossings, w.seed, w.diffusivity, geometry=g, spec=spec, run=w.run)
+        return _walk_bundle(spec, int(n_walkers), float(T_max), float(dt_save), seed, n_probe, field, field_res,
+                            require_gpu, walker_batch_size, field_budget=float(field_budget), field_cutoff_m=field_cutoff_m, field_cutoff_tol=field_cutoff_tol, seeding=seeding,
+                            field_cutoff_max_m=field_cutoff_max_m, adaptive_steps=adaptive_steps, field_sample_every=int(field_sample_every), field_far=field_far, field_gather_every=int(field_gather_every))
 
 
 def _needs_bundle_walk(spec):
@@ -321,6 +324,7 @@ def _walk_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field, field_re
             want = seeding.count_for(pools[pid].name)
             by_volume = inside_w[pid] and not outside_w[pid] and all(w.surface.kind == "swept_polyline" for w in inside_w[pid])
             log.info("walk_spec: seeding pool %s per voxel (%d wanted)", pools[pid].name, int(want.sum()))
+            current().phase(f"seeding {pools[pid].name}", wanted=int(want.sum()))
             if by_volume:                                  # inside swept polylines: drawn per voxel from the segments
                 A_, B_, r_ = boundary(inside_w[pid]).segments()   # that meet it, the census their clipped volume
                 P, v, f, n_drawn = fill_swept_by_voxel(A_, B_, r_, grid, want, seed=s, census_draws=int(seeding.census_draws))
@@ -377,6 +381,7 @@ def _walk_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field, field_re
         g = (boundary(inside_w[pid]).geometry("intra", lo, hi, periodic, reflect, feature) if inside_w[pid]
              else boundary(outside_w[pid]).geometry("extra", lo, hi, periodic, reflect, feature))
         log.info("walk_spec: walking pool %s, %d walkers%s", pool.name, n, " (adaptive steps)" if adaptive_steps else "")
+        current().phase(f"walk {pool.name}", n_walkers=int(n), adaptive_steps=bool(adaptive_steps))
         if adaptive_steps:
             if not hasattr(g, "wall_scales"):
                 raise SpecError(f"pool {pool.name!r}: its {type(g).__name__} offers no wall_scales; adaptive stepping "
@@ -449,8 +454,10 @@ def _walk_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field, field_re
             fg = FieldGrid(basis, np.asarray(origin, float))
     by_name = {p.name: p for p in spec.pools}
     D_ref = by_name["intra"].D if ("intra" in by_name and by_name["intra"].D) else float(walked.diffusivity)
-    return PersistentWalk(traj, float(walked.dt), int(walked.sub_steps), float(walked.dt_sim), boundary_local_time=dlog,
+    walk = PersistentWalk(traj, float(walked.dt), int(walked.sub_steps), float(walked.dt_sim), boundary_local_time=dlog,
                           compartment=comp, seed=int(seed), diffusivity=D_ref, spec=spec,
                           weights=(None if np.allclose(wts, 1.0) else wts), field_basis=fg,
                           stepping=(dict(rule="adaptive", pools=dict(stepping)) if stepping else None),
                           field_samples=samples, field_sample_every=(int(field_sample_every) if samples is not None else 1))
+    object.__setattr__(walk, "run", current())
+    return walk
