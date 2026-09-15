@@ -83,14 +83,15 @@ def walk_spec(spec, n_walkers=None, T_max=None, dt_save=None, *, scanner="connec
         if int(field_sample_every) != 1 and not adaptive_steps:
             raise ValueError("field_sample_every reads the field in the walk, which the adaptive producer does: pass adaptive_steps=True")
         if seeding is not None:
-            from .seeding import StratifiedByVoxel
-            if not isinstance(seeding, StratifiedByVoxel):
-                raise TypeError(f"seeding must be a StratifiedByVoxel, got {type(seeding).__name__}")
+            from .seeding import DrawnSeeds, StratifiedByVoxel
+            if not isinstance(seeding, (StratifiedByVoxel, DrawnSeeds)):
+                raise TypeError(f"seeding must be a StratifiedByVoxel or the DrawnSeeds of one, got {type(seeding).__name__}")
             if n_walkers is not None:
                 raise TypeError("n_walkers is what a stratified seeding produces: give seeding= or n_walkers=, not both")
             if not _needs_bundle_walk(spec):
                 raise SpecError("stratified seeding is for the pool-by-pool walk of a multi-surface spec")
-            n_walkers = int(sum(seeding.count_for(p.name).sum() for p in spec.pools if p.id in spec.seeding.pools))
+            n_walkers = (int(seeding.n_walkers) if isinstance(seeding, DrawnSeeds)
+                         else int(sum(seeding.count_for(p.name).sum() for p in spec.pools if p.id in spec.seeding.pools)))
         elif n_walkers is None:
             raise TypeError("walk_spec needs n_walkers, or a seeding= that sets the count per voxel")
         if dt_save is None:
@@ -253,6 +254,87 @@ def _strand_field(outer_b, inner_b, lo, hi, traj, cutoff_m, tol, seed, segments_
                                                        cutoff_max_m=float(cutoff_max), converged=bool(converged)))
 
 
+class _PoolTests:
+    """A spec's pools as membership tests: the walls each pool is inside and outside, their boundaries built once,
+    the domain box, the water fractions -- what seeding and walking share."""
+
+    def __init__(self, spec):
+        self.pools = {p.id: p for p in spec.pools}
+        for w in spec.walls:
+            if w.permeability.in_to_out > 0 or w.permeability.out_to_in > 0:
+                raise SpecError(f"wall {w.name!r} is permeable; a permeable multi-surface walk is not implemented")
+        self.inside_w = {p: [w for w in spec.walls if w.inside_pool == p] for p in self.pools}
+        self.outside_w = {p: [w for w in spec.walls if w.outside_pool == p] for p in self.pools}
+        self._bounds = {}
+        self.lo, self.hi = np.asarray(spec.domain.box_min, float), np.asarray(spec.domain.box_max, float)
+        self.periodic = [b == "periodic" for b in spec.domain.boundary]
+        self.reflect = "reflect" in spec.domain.boundary
+        self.seeded = list(spec.seeding.pools)
+        self.wf = {pid: self.pools[pid].water_fraction for pid in self.pools}
+
+    def boundary(self, walls):
+        key = tuple(w.name for w in walls)
+        if key not in self._bounds:
+            self._bounds[key] = _Boundary(walls)
+        return self._bounds[key]
+
+    def member(self, pid):
+        def pred(pts):
+            m = np.ones(len(pts), bool)
+            if self.inside_w[pid]:
+                m &= self.boundary(self.inside_w[pid]).contains(pts)
+            if self.outside_w[pid]:
+                m &= ~self.boundary(self.outside_w[pid]).contains(pts)
+            return m
+        return pred
+
+    def by_volume(self, pid):
+        """Whether the pool is the inside of swept polylines only: seeds are then drawn by segment volume, exactly."""
+        return bool(self.inside_w[pid]) and not self.outside_w[pid] and all(w.surface.kind == "swept_polyline" for w in self.inside_w[pid])
+
+    def sampler(self, pid):
+        """``(n, rng) -> (points, accepted)``: the pool's own draw -- inside its swept polylines by segment volume
+        (exact, no rejection), else uniform in the box and rejected by membership."""
+        pred = self.member(pid); lo, hi = self.lo, self.hi
+        if self.by_volume(pid):
+            b = self.boundary(self.inside_w[pid])          # strands may leave the box: a draw outside it is rejected
+            return lambda n, rng: (lambda P: (P, np.all((P >= lo) & (P <= hi), axis=1)))(b.sample_inside(n, rng))
+        return lambda n, rng: (lambda P: (P, pred(P)))(rng.uniform(lo, hi, (n, 3)))
+
+
+def draw_seeds(spec, seeding, seed):
+    """The stratified seeds of ``spec`` drawn on the CPU: every seeded pool's start positions and weights on
+    ``seeding``'s grid, as a :class:`~dmipy_sim.spec.seeding.DrawnSeeds` that :func:`walk_spec` takes in place
+    of the :class:`~dmipy_sim.spec.seeding.StratifiedByVoxel` they were drawn from, with the same result to the
+    bit. What a producer draws for its next block while the device walks this one (dmipy-sim#258): the draw of
+    a DiSCo block is 20 s of CPU the walk otherwise waits for. Pool ``pid`` is drawn from ``seed + 13 pid``."""
+    from .seeding import DrawnSeeds, StratifiedByVoxel, fill_per_voxel, fill_swept_by_voxel
+    from ..run import Run
+    if not isinstance(seeding, StratifiedByVoxel):
+        raise TypeError(f"draw_seeds draws a StratifiedByVoxel, got {type(seeding).__name__}")
+    log = logging.getLogger("dmipy_sim")
+    g = _PoolTests(spec); grid = seeding.grid; positions, weights = {}, {}
+    with Run("draw_seeds", params=dict(seed=int(seed), n_voxels=int(grid.n_voxels))) as run:
+        for pid in g.seeded:
+            name = g.pools[pid].name; s = int(seed) + 13 * pid
+            want = seeding.count_for(name)
+            log.info("walk_spec: seeding pool %s per voxel (%d wanted)", name, int(want.sum()))
+            run.phase(f"seeding {name}", wanted=int(want.sum()))
+            if g.by_volume(pid):                           # inside swept polylines: drawn per voxel from the segments
+                A_, B_, r_ = g.boundary(g.inside_w[pid]).segments()   # that meet it, the census their clipped volume
+                P, v, f, n_drawn = fill_swept_by_voxel(A_, B_, r_, grid, want, seed=s, census_draws=int(seeding.census_draws))
+            else:                                          # drawn in each wanted voxel, kept by membership
+                P, v, f, trials, n_drawn = fill_per_voxel(g.member(pid), grid, want, trials_max=int(seeding.trials_per_voxel_max),
+                                                          census_draws=int(seeding.census_draws), seed=s)
+            inb = np.all((P >= g.lo) & (P <= g.hi), axis=1)  # strands may leave the box; the grid may reach beyond it
+            P, v = P[inb], v[inb]
+            log.info("walk_spec: %d seeds in %d voxels from %d draws", len(P), int(np.bincount(v, minlength=grid.n_voxels).astype(bool).sum()), n_drawn)
+            n_have = np.bincount(v, minlength=grid.n_voxels)
+            positions[name] = P
+            weights[name] = f[v] * g.wf[pid] / np.maximum(n_have[v], 1)  # f_pool,v x water fraction / n_pool,v: volume-correct per voxel
+    return DrawnSeeds(positions=positions, weights=weights, grid=grid, seed=int(seed), drawn_from=seeding)
+
+
 def _walk_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field, field_res, require_gpu, batch, field_budget=5e7,
                  field_cutoff_m=25e-6, field_cutoff_tol=0.02, seeding=None, field_cutoff_max_m=50e-6, adaptive_steps=False, field_sample_every=1, field_far=None, field_gather_every=4, spool=False):
     """Walk a multi-surface spec pool by pool: every seeded pool is defined by the walls it is inside and the walls it
@@ -263,45 +345,9 @@ def _walk_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field, field_re
     from ..fields.susceptibility_field import FieldGrid, mesh_field_basis, predicate_field_basis
     from ..persistent_walk import PersistentWalk
     log = logging.getLogger("dmipy_sim")
-    pools = {p.id: p for p in spec.pools}
-    for w in spec.walls:
-        if w.permeability.in_to_out > 0 or w.permeability.out_to_in > 0:
-            raise SpecError(f"wall {w.name!r} is permeable; a permeable multi-surface walk is not implemented")
-    inside_w = {p: [w for w in spec.walls if w.inside_pool == p] for p in pools}
-    outside_w = {p: [w for w in spec.walls if w.outside_pool == p] for p in pools}
-    bounds = {}
-
-    def boundary(walls):
-        key = tuple(w.name for w in walls)
-        if key not in bounds:
-            bounds[key] = _Boundary(walls)
-        return bounds[key]
-
-    def member(pid):
-        def pred(pts):
-            m = np.ones(len(pts), bool)
-            if inside_w[pid]:
-                m &= boundary(inside_w[pid]).contains(pts)
-            if outside_w[pid]:
-                m &= ~boundary(outside_w[pid]).contains(pts)
-            return m
-        return pred
-
-    lo, hi = np.asarray(spec.domain.box_min, float), np.asarray(spec.domain.box_max, float)
-    periodic = [b == "periodic" for b in spec.domain.boundary]
-    reflect = "reflect" in spec.domain.boundary
-    seeded = list(spec.seeding.pools)
-    wf = {pid: pools[pid].water_fraction for pid in pools}
-
-    def sampler(pid):
-        """``(n, rng) -> (points, accepted)``: the pool's own draw -- inside its swept polylines by segment volume
-        (exact, no rejection), else uniform in the box and rejected by membership."""
-        pred = member(pid)
-        if inside_w[pid] and not outside_w[pid] and all(w.surface.kind == "swept_polyline" for w in inside_w[pid]):
-            b = boundary(inside_w[pid])                    # strands may leave the box: a draw outside it is rejected
-            return lambda n, rng: (lambda P: (P, np.all((P >= lo) & (P <= hi), axis=1)))(b.sample_inside(n, rng))
-        return lambda n, rng: (lambda P: (P, pred(P)))(rng.uniform(lo, hi, (n, 3)))
-
+    g = _PoolTests(spec)
+    pools, inside_w, outside_w, boundary, member, sampler = g.pools, g.inside_w, g.outside_w, g.boundary, g.member, g.sampler
+    lo, hi, periodic, reflect, seeded, wf = g.lo, g.hi, g.periodic, g.reflect, g.seeded, g.wf
     if seeding is None:
         probe = np.random.default_rng(int(seed) + 99).uniform(lo, hi, (int(n_probe), 3))
         frac = {pid: float(member(pid)(probe).mean()) for pid in seeded}
@@ -323,30 +369,11 @@ def _walk_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field, field_re
                 out.append(keep); need -= len(keep)
             return np.concatenate(out), np.full(len(np.concatenate(out)), 1.0 if spec.seeding.weights == "thin" else wf[pid])
     else:
-        from .seeding import fill_per_voxel, fill_swept_by_voxel
-        grid = seeding.grid
-        V_box = float(np.prod(hi - lo)); V_vox = float(np.prod(grid.voxel_size_m))
+        from .seeding import DrawnSeeds
+        drawn = seeding if isinstance(seeding, DrawnSeeds) else draw_seeds(spec, seeding, seed)
 
         def seeds(pid, s):
-            want = seeding.count_for(pools[pid].name)
-            by_volume = inside_w[pid] and not outside_w[pid] and all(w.surface.kind == "swept_polyline" for w in inside_w[pid])
-            log.info("walk_spec: seeding pool %s per voxel (%d wanted)", pools[pid].name, int(want.sum()))
-            current().phase(f"seeding {pools[pid].name}", wanted=int(want.sum()))
-            if by_volume:                                  # inside swept polylines: drawn per voxel from the segments
-                A_, B_, r_ = boundary(inside_w[pid]).segments()   # that meet it, the census their clipped volume
-                P, v, f, n_drawn = fill_swept_by_voxel(A_, B_, r_, grid, want, seed=s, census_draws=int(seeding.census_draws))
-                inb = np.all((P >= lo) & (P <= hi), axis=1)     # strands may leave the box
-                P, v = P[inb], v[inb]
-                log.info("walk_spec: %d seeds in %d voxels from %d draws", len(P), int(np.bincount(v, minlength=grid.n_voxels).astype(bool).sum()), n_drawn)
-            else:                                          # drawn in each wanted voxel, kept by membership
-                P, v, f, trials, n_drawn = fill_per_voxel(member(pid), grid, want, trials_max=int(seeding.trials_per_voxel_max),
-                                                          census_draws=int(seeding.census_draws), seed=s)
-                inb = np.all((P >= lo) & (P <= hi), axis=1)     # the grid may reach beyond the domain
-                P, v = P[inb], v[inb]
-                log.info("walk_spec: %d seeds in %d voxels from %d draws", len(P), int(np.bincount(v, minlength=grid.n_voxels).astype(bool).sum()), n_drawn)
-            n_have = np.bincount(v, minlength=grid.n_voxels)
-            w = f[v] * wf[pid] / np.maximum(n_have[v], 1)  # f_pool,v x water fraction / n_pool,v: volume-correct per voxel
-            return P, w
+            return drawn.positions[pools[pid].name], drawn.weights[pools[pid].name]
     feature = float(spec.validity.smallest_feature)
     parts, n_t, walked = [], None, None                    # (pid, positions or seeds, local time or None)
     weights_of = {}; stepping = []; seeds_of = {}
