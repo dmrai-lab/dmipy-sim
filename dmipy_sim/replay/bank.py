@@ -804,13 +804,35 @@ def _codec_signature(comp):
     return sig
 
 
+def union_weights(w, shard, voxel, pool):
+    """The walker weights of merged shards, renormalised to the union. A walk weights every walker of a (voxel,
+    pool) alike, by its census of the voxel's fraction of that pool over its own count there, so one shard's
+    walkers of a (voxel, pool) sum to its fraction. The union's walkers of that (voxel, pool) are weighted alike
+    too, whichever shard they came from, by the mean of the shards' fractions (each census an independent
+    estimate) over the union's count -- a 16 % first pass merged with its 84 % top-up as-is would weigh both
+    passes equally, and the union's floor would be 36 % worse than its count deserves. ``shard``, ``voxel`` and
+    ``pool`` are per walker; a walker outside the grid (``voxel`` -1) keeps its weight."""
+    w = np.asarray(w, np.float64).copy(); shard = np.asarray(shard); voxel = np.asarray(voxel); pool = np.asarray(pool)
+    held = voxel >= 0
+    _, cell = np.unique(np.stack([voxel[held], pool[held]], 1), axis=0, return_inverse=True); cell = cell.reshape(-1)
+    n_union = np.bincount(cell).astype(np.float64)
+    _, own, n_own = np.unique(np.stack([shard[held], cell], 1), axis=0, return_inverse=True, return_counts=True); own = own.reshape(-1)
+    fraction_own = np.bincount(own, weights=w[held])                        # each shard's fraction of its (voxel, pool)
+    cell_of_own = np.zeros(len(n_own), np.int64); cell_of_own[own] = cell
+    shards_in_cell = np.bincount(cell_of_own, minlength=len(n_union)).astype(np.float64)
+    fraction = np.bincount(cell_of_own, weights=fraction_own, minlength=len(n_union)) / shards_in_cell
+    w[held] = fraction[cell] / n_union[cell]
+    return w
+
+
 def merge_packs(packs, *, id, out_path=None, overlap="refuse", envelope=None, device="auto"):
     """One pack from the shards of one walk: the packs of voxel blocks of the same substrate, walked with the
     same parameters and codec (a distributed fill: each device seeds and walks its block and packs it with
     ``voxel_grid=``). Every walker-indexed array is concatenated shard after shard. The per-voxel certificate:
     with ``overlap="refuse"`` the shards hold disjoint voxels and the certificate is the union of their rows
     (two shards holding the same voxel are refused); with ``overlap="recertify"`` shards may share voxels -- the
-    rounds a small machine walks one block in, or a top-up of voxels that fell short -- and the per-voxel floor
+    rounds a small machine walks one block in, or a top-up pass of the same block -- the walker weights are
+    renormalised to the union (:func:`union_weights`) and the per-voxel floor
     of the union is read afresh from the merged coefficients (:func:`voxel_floor_coded`, over ``envelope``'s
     battery, default the envelope every pack is built against), the codec-error column ``nan`` as in an
     inherited certificate. The fidelity summary is the conservative one over the shards (the largest error and
@@ -886,7 +908,13 @@ def merge_packs(packs, *, id, out_path=None, overlap="refuse", envelope=None, de
                     else:
                         comp = np.asarray(_cx.decode_occupancy(arrays, ch)["comp"])
                 C = _cx.read_position_coeffs(arrays, dtype=np.float64)
-                _w = np.asarray(arrays["spin_weights"], np.float64) if "spin_weights" in arrays else None
+                _w = None
+                if "spin_weights" in arrays:                                  # the union's weights, not the shards'
+                    _vox, _in = grid.bin(C[:, 0, :])
+                    _key = np.where(_in, np.ravel_multi_index(tuple(np.clip(_vox, 0, np.asarray(grid.shape) - 1).T), tuple(grid.shape)), -1)
+                    _pid = np.asarray(comp)[:, 0].astype(np.int64) if comp is not None else np.zeros(len(_key), np.int64)
+                    _w = union_weights(np.asarray(arrays["spin_weights"], np.float64), np.repeat(np.arange(len(pks)), n), _key, _pid)
+                    arrays["spin_weights"] = _w.astype(np.float32)
                 _ijk, _pools_r, _n, _floor, _err = voxel_floor_coded(C, float(wp["dt_traj"]), int(comp_meta_ch and pks[0].meta["walk_params"]["n_t"]),
                                                                      grid, comp, envelope or _cx.default_envelope(), w=_w, device=device)
                 if [int(p_) for p_ in _pools_r] != [int(p_) for p_ in pools]:
