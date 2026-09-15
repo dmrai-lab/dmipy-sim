@@ -73,25 +73,46 @@ def hollow_cylinder_basis(rho_vec, u, a, b):
     return jnp.concatenate([(m / 3.0)[..., None], _sym6(MP), _sym6(MA)], axis=-1)
 
 
-def outside_basis(rho_vec, u, a, b):
-    """The 13 channels of the cylinder's OUTSIDE formula alone, ``M_P = -((b^2 - a^2) / 2 r^2) S`` and ``M_A = ((b^2 -
-    a^2) / 12 r^2) S`` with ``S = e1 e1^T - e2 e2^T``, evaluated at ``rho`` or, within the sheath's radius, on its
-    surface (``r = b``, the value continued inward): the non-local part of a segment's field, what the far part of a
-    strand substrate sums over every segment (:mod:`dmipy_sim.fields.strand_field`). Two coefficients times six
-    components, a fifteenth of :func:`hollow_cylinder_basis`, which branches over the three regions."""
-    rho_vec = jnp.asarray(rho_vec); u = jnp.asarray(u)
-    a = jnp.asarray(a, rho_vec.dtype); b = jnp.asarray(b, rho_vec.dtype)
+def segment_basis(rho_vec, u, z1, z2, a, b):
+    """The 13 channels of one FINITE segment of the hollow cylinder, seen from outside the sheath: the dipole kernel
+    ``D = (I - 3 n n^T) / (4 pi r^3)`` integrated in closed form along the segment, whose ends are at axial
+    coordinates ``z1 < z2`` from the point's foot on the axis (``c(z') = foot + z' u``, ``p - c = rho_vec - z' u``),
+    times the sheath's cross-section ``pi (b^2 - a^2)``: ``M_P = A L``, ``M_A = -A sym(L T)`` with ``L`` the
+    integrated tensor and ``T = P / 2 - I / 3`` the annulus-averaged director tensor. For an infinite line it is
+    the outside formula of :func:`hollow_cylinder_basis` (``M_P = -A S / 2 pi rho^2``, ``M_A = A S / 12 pi rho^2``),
+    far away the point dipole of the segment's moment, ``A L (I - 3 r r^T) / 4 pi r^3``; a line cut into segments
+    sums to the line exactly. Within the sheath's radius ``rho`` is continued at the surface (``rho >= b``): the
+    value a point inside another segment's extension sees. Traceless in ``M_P``, no local term."""
+    rho_vec = jnp.asarray(rho_vec); u = jnp.asarray(u); dt = rho_vec.dtype
+    a = jnp.asarray(a, dt); b = jnp.asarray(b, dt); z1 = jnp.asarray(z1, dt); z2 = jnp.asarray(z2, dt)
+    # in units of the outer radius: the primitives are then of order one (in metres they reach 1e24 and a
+    # float32 difference of two of them is noise)
+    rho_vec = rho_vec / b[..., None]; z1 = z1 / b; z2 = z2 / b; a = a / b; b = jnp.ones_like(b)
     rho = jnp.linalg.norm(rho_vec, axis=-1)
-    e1 = rho_vec / jnp.maximum(rho, jnp.asarray(1e-30, rho_vec.dtype))[..., None]
-    e2 = jnp.cross(u, e1)
-    S6 = jnp.stack([e1[..., 0] ** 2 - e2[..., 0] ** 2, e1[..., 1] ** 2 - e2[..., 1] ** 2, e1[..., 2] ** 2 - e2[..., 2] ** 2,
-                    e1[..., 0] * e1[..., 1] - e2[..., 0] * e2[..., 1], e1[..., 0] * e1[..., 2] - e2[..., 0] * e2[..., 2],
-                    e1[..., 1] * e1[..., 2] - e2[..., 1] * e2[..., 2]], axis=-1)
-    r2 = jnp.maximum(rho, b * (1.0 + 1e-6)) ** 2
-    d2 = (b ** 2 - a ** 2) / r2
-    return jnp.concatenate([jnp.zeros(rho.shape + (1,), rho_vec.dtype), (-0.5 * d2)[..., None] * S6, (d2 / 12.0)[..., None] * S6], axis=-1)
+    rho_c = jnp.maximum(rho, 1.0 + 1e-6)
+    rv = rho_vec * (rho_c / jnp.maximum(rho, jnp.asarray(1e-30, dt)))[..., None]
+    r2 = rho_c * rho_c
 
-
+    def prim(z):                                       # the four primitives at z (r^2 = rho^2 + z^2)
+        rr = jnp.sqrt(r2 + z * z); r3 = rr * rr * rr
+        return (z / (r2 * rr), z * (2.0 * z * z + 3.0 * r2) / (3.0 * r2 * r2 * r3), -1.0 / (3.0 * r3), z * z * z / (3.0 * r2 * r3))
+    p1, p2 = prim(z1), prim(z2)
+    i0, j0, j1, j2 = (q2 - q1 for q1, q2 in zip(p1, p2))
+    # the six components of L = (I i0 - 3 (rv rv^T j0 - (rv u^T + u rv^T) j1 + u u^T j2)) / 4 pi, no 3x3 intermediates
+    # (a 1536 x 4096 block of 3x3 tensors is 226 MB per intermediate; this form moves a third of that)
+    A = jnp.pi * (b * b - a * a)
+    c = A / (4.0 * jnp.pi)
+    rx, ry, rz = rv[..., 0], rv[..., 1], rv[..., 2]; ux, uy, uz = u[..., 0], u[..., 1], u[..., 2]
+    def L6(ri, rj, ui, uj, diag):
+        return c * ((i0 if diag else 0.0) - 3.0 * (ri * rj * j0 - (ri * uj + ui * rj) * j1 + ui * uj * j2))
+    Lxx = L6(rx, rx, ux, ux, True); Lyy = L6(ry, ry, uy, uy, True); Lzz = L6(rz, rz, uz, uz, True)
+    Lxy = L6(rx, ry, ux, uy, False); Lxz = L6(rx, rz, ux, uz, False); Lyz = L6(ry, rz, uy, uz, False)
+    MP = jnp.stack([Lxx, Lyy, Lzz, Lxy, Lxz, Lyz], axis=-1)                   # A L
+    # M_A = -A sym(L T) with T = P/2 - I/3 = I/6 - u u^T/2:  -[A L / 6 - sym((A L u) u^T) / 2]
+    wx = Lxx * ux + Lxy * uy + Lxz * uz; wy = Lxy * ux + Lyy * uy + Lyz * uz; wz = Lxz * ux + Lyz * uy + Lzz * uz   # (A L) u
+    MA = jnp.stack([-(Lxx / 6.0 - wx * ux / 2.0), -(Lyy / 6.0 - wy * uy / 2.0), -(Lzz / 6.0 - wz * uz / 2.0),
+                    -(Lxy / 6.0 - (wx * uy + wy * ux) / 4.0), -(Lxz / 6.0 - (wx * uz + wz * ux) / 4.0), -(Lyz / 6.0 - (wy * uz + wz * uy) / 4.0)], axis=-1)
+    return jnp.concatenate([jnp.zeros(rho.shape + (1,), dt), MP, MA], axis=-1)
 def q_of_H(b0_dir):
     """``Q(H) = (Hx^2, Hy^2, Hz^2, 2 Hx Hy, 2 Hx Hz, 2 Hy Hz)``: the contraction weights of the six symmetric
     components, so that ``Q . sym6(M) = H . M . H``."""
