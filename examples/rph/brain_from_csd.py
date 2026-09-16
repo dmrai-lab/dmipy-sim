@@ -32,8 +32,20 @@ GM_COLS, WM_COL, CSF_COL, PATH_COL = (0, 1), 2, 3, 4
 from dmipy_sim.substrate.biophysical_constants import get_value
 M0 = {"wm": get_value("proton_density_white_matter"), "gm": get_value("proton_density_grey_matter"),
       "csf": get_value("proton_density_csf")}                       # water content relative to CSF, cited in the table
-T2 = {"gm": get_value("T2_grey_matter", 3.0), "csf": get_value("T2_csf", 3.0)}   # the white-matter pack's pools carry
-                                                                    # their own nominal T2; a spheres pack does not
+T2 = {"gm": get_value("T2_grey_matter", 3.0), "csf": get_value("T2_csf", 3.0)}   # a spheres pack carries no T2
+WM_T2 = {"extra": "T2_extra_axonal", "intra": "T2_intra_axonal", "myelin": "T2_myelin"}   # by the pack's pool names
+
+
+def wm_T2(pack_path):
+    """None when the pack's pools carry their nominal T2 (the CACTUS pack does), else the table's compartment
+    values by the pack's pool names: a phantom is refused when one tissue relaxes and another would not."""
+    from dmipy_sim.replay import read_rpk
+    spec = read_rpk(pack_path).substrate
+    if spec is not None and all(p.T2 is not None for p in spec.pools):
+        return None
+    if spec is None:
+        return get_value(WM_T2["extra"], 3.0, allow_nearest=True)            # one value for every pool
+    return {p.name: get_value(WM_T2[p.name], 3.0, allow_nearest=True) for p in spec.pools}
 
 
 def fractions_on(grid_img, target_affine, tt_img, sub=3):
@@ -71,7 +83,7 @@ def build(batman, wm_pack, gm_pack=None, slab=None):
     if slab is not None:                                                                   # a few slices, for speed
         keep = np.zeros(grid.shape, bool); keep[:, :, slab[0]:slab[1]] = True
         f_wm, f_gm, f_csf = f_wm * keep, f_gm * keep, f_csf * keep
-    wm = PackSubstrate(wm_pack, m0=M0["wm"], name="wm")
+    wm = PackSubstrate(wm_pack, m0=M0["wm"], name="wm", T2_s=wm_T2(wm_pack))
     gm = (PackSubstrate(gm_pack, m0=M0["gm"], name="gm", T2_s=T2["gm"]) if gm_pack
           else FreeWater(D_m2_s=0.8e-9, m0=M0["gm"], name="gm/stand-in", T2_s=T2["gm"]))
     csf = FreeWater(D_m2_s=3.0e-9, m0=M0["csf"], T2_s=T2["csf"])
