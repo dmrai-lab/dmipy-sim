@@ -125,6 +125,37 @@ def strand_frame(centerlines, *, cluster_deg=30.0):
     return F, bundles
 
 
+def chain_frame(centers, r_in, cell_id):
+    """The substrate frame of a sphere-chain substrate from the chains themselves (RPK.md 4.2, dmipy-sim#233): the
+    principal axis of the chain segments' direction dyadic, each segment weighted by the intra-axonal volume it
+    carries (the frustum of its two inner radii), which is what the walkers sample. A cell's rows are its chain in
+    file order, as CATERPillar writes them. Returns ``(F, axis)`` with ``F`` :func:`~dmipy_sim.replay.bank.frame_from_axis`
+    of the axis, signed towards ``+z``. On ``myelin15`` the tapering large axons put this axis 5.7 deg from ``z``,
+    where the walk's principal displacement axis lands too; a bare ``z`` is refused at build."""
+    from ..replay.bank import frame_from_axis
+    centers = np.asarray(centers, float); r_in = np.asarray(r_in, float); cell_id = np.asarray(cell_id)
+    Q = np.zeros((3, 3))
+    for cid in np.unique(cell_id):
+        sel = np.flatnonzero(cell_id == cid)
+        if len(sel) < 2:
+            continue
+        seg = np.diff(centers[sel], axis=0)
+        L = np.linalg.norm(seg, axis=1)
+        ok = L > 0
+        if not ok.any():
+            continue
+        d = seg[ok] / L[ok, None]
+        a, b = r_in[sel][:-1][ok], r_in[sel][1:][ok]
+        vol = np.pi * L[ok] * (a * a + a * b + b * b) / 3.0
+        Q += (d.T * vol) @ d
+    if not Q.any():
+        raise SpecError("no sphere chain has two distinct centres: no axis to declare")
+    w, v = np.linalg.eigh(Q)
+    axis = v[:, -1]
+    axis = axis * (np.sign(axis[2]) or 1.0)
+    return frame_from_axis(axis), axis
+
+
 def cactus_spec(run_dir, *, scale=_UM, side_um=None, field_T=3.0, rho2=None, on_open_surface="drop", id=None):
     """The spec of a CACTUS run directory (``optimized_final.txt`` + ``meshes/simulations/strand_*_erode_*.ply``).
 
@@ -260,6 +291,9 @@ def caterpillar_spec(path, *, scale=_UM, box=None, glia=True, field_T=3.0, rho2=
                        f"{int((t['r_out'][ax] <= t['r_in'][ax] + 1e-15).sum())} unmyelinated axon sphere(s): sheath coincides with axolemma",
                        "blood vessels dropped (no flow model)", "nominal pool values from the catalogued white matter"]
     smallest = float(np.minimum(t["r_in"][ax], t["r_out"][ax]).min())
+    F, axis = chain_frame(t["centers"][ax], t["r_in"][ax], t["cell_id"][ax])      # the axons declare the frame
+    transformations.append(f"substrate frame from the axon sphere chains: the principal axis of their intra-volume-weighted "
+                           f"direction dyadic, {np.degrees(np.arccos(min(1.0, abs(float(axis[2]))))):.1f} deg from stored z")
     if gl.any():
         pi = pools[1]
         pools.append(Pool(3, "glia", pi.D, water_fraction=1.0, T2=pi.T2, T1=pi.T1))
@@ -271,7 +305,8 @@ def caterpillar_spec(path, *, scale=_UM, box=None, glia=True, field_T=3.0, rho2=
         id or f"caterpillar/{os.path.splitext(os.path.basename(path))[0]}",
         Domain(lo.tolist(), hi.tolist(), ["reflect"] * 3), pools, walls,
         Seeding([p.id for p in pools if p.water_fraction > 0], "uniform_by_volume", "water_fraction"),
-        Validity(smallest, ["gradient", "relaxation", "surface", "field"]), nominal_field_T=float(field_T),
+        Validity(smallest, ["gradient", "relaxation", "surface", "field"]),
+        frame=Frame(F[:, 2].tolist(), F[:, 1].tolist()), nominal_field_T=float(field_T),
         description=f"CATERPillar voxel: {len(np.unique(t['cell_id'][ax]))} axons as sphere chains"
                     + (f", {len(np.unique(t['cell_id'][gl]))} glial cells" if gl.any() else ""),
         realisation={"n_axons": int(len(np.unique(t["cell_id"][ax]))), "n_glia": int(len(np.unique(t["cell_id"][gl]))),

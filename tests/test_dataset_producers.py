@@ -64,6 +64,35 @@ def test_caterpillar_spec_declares_four_pools_three_walls_and_a_reflecting_voxel
     assert [p.name for p in caterpillar_spec(caterpillar_csv, glia=False).pools] == ["extra", "intra", "myelin"]
 
 
+def test_caterpillar_spec_declares_the_frame_the_axons_run_along(caterpillar_csv, tmp_path):
+    """The frame comes from the sphere chains (dmipy-sim#233), volume-weighted: a bare z was 5.7 deg off on
+    myelin15 and refused at build. Straight chains along z declare z; the same chains tilted declare the tilt; and
+    a thick tilted axon outweighs a thin straight one by its volume, not by its sphere count."""
+    from dmipy_sim.spec.producers import chain_frame
+    assert np.allclose(caterpillar_spec(caterpillar_csv).frame.axis, [0.0, 0.0, 1.0])
+    t = read_caterpillar(caterpillar_csv)
+    ax = t["cell_type"] == "axon"
+    tilt = np.array([np.sin(np.radians(12.0)), 0.0, np.cos(np.radians(12.0))])
+    z = np.array([0.0, 0.0, 1.0]); v = np.cross(z, tilt); c = float(z @ tilt)
+    vx = np.array([[0, -v[2], v[1]], [v[2], 0, -v[0]], [-v[1], v[0], 0]])
+    R = np.eye(3) + vx + vx @ vx / (1.0 + c)                              # Rodrigues: R z = tilt
+    csv = str(tmp_path / "tilted.csv")
+    write_caterpillar(csv, t["centers"] @ R.T, t["r_in"], t["r_out"], t["cell_type"], t["cell_id"], t["comp_id"])
+    spec = caterpillar_spec(csv, glia=False)
+    assert np.allclose(spec.frame.axis, tilt, atol=1e-6) and "frame from the axon sphere chains" in " ".join(spec.provenance["transformations"])
+    # a thin straight chain and a thick tilted chain: the axis follows the volume
+    thin = np.array([[0.0, 0.0, zz] for zz in np.linspace(-8e-6, 8e-6, 33)])
+    thick = (np.array([[0.0, 0.0, zz] for zz in np.linspace(-8e-6, 8e-6, 33)]) @ R.T) + [4e-6, 0, 0]
+    cen = np.vstack([thin, thick]); rin = np.r_[np.full(33, 0.3e-6), np.full(33, 2.0e-6)]
+    cid = np.r_[np.zeros(33, int), np.ones(33, int)]
+    F, axis = chain_frame(cen, rin, cid)
+    assert float(axis @ tilt) > float(axis @ z) and np.allclose(F[:, 2], axis)
+    F2, axis2 = chain_frame(cen, np.r_[np.full(33, 2.0e-6), np.full(33, 0.3e-6)], cid)
+    assert float(axis2 @ z) > float(axis2 @ tilt)
+    with pytest.raises(SpecError, match="no axis"):
+        chain_frame(cen[:1], rin[:1], cid[:1])
+
+
 def test_caterpillar_spec_is_walked_pool_by_pool_and_packed(caterpillar_csv):
     spec = caterpillar_spec(caterpillar_csv, id="test/cat")
     w = walk_spec(spec, 160, 1e-3, 2.5e-4, seed=0, n_probe=20_000, field_res=0.5e-6, require_gpu=False)
