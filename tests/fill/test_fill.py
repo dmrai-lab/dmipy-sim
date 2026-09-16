@@ -9,6 +9,7 @@ import pytest
 
 from dmipy_sim.fill import (Fill, Options, Recipe, claim_next, claim_blocks, collect, draw_round, heartbeat_once, parse_shard, release_queue,
                             release_stale, render, round_seeding, shard_name, summarise)
+from dmipy_sim.fill.claims import settle_collisions
 from dmipy_sim.fill import hub as hubmod
 
 
@@ -146,3 +147,27 @@ def test_drain_finishes_what_a_dead_worker_left(certified):
     Fill(hub, rc, opts(work, host="dead")).drain()
     assert hub.exists(f"blocks/t/{a['name']}.rpk") and not hub.exists(a["claim"]) and not hub.exists(b["claim"])
     assert [c["message"][:12] for c in hub.log[n:]] == [f"t {a['name']}"[:12], "release clai"] and not os.listdir(work)
+
+
+def test_two_claims_of_one_block_settle_to_the_first(fake):
+    """Two workers that read the same open list and both claim block 0 (a released block is the lowest open one
+    for everybody): the claim that started first stays, the other is released in one commit and the loser gets
+    nothing; a worker whose claimed block gained a shard meanwhile skips it."""
+    hub, work = fake
+    rc = Recipe(hub); P = rc.passes[0]
+    a = claim_blocks(hub, rc, [0], "first", P)                       # 'first' claims at t0
+    time.sleep(1.1)                                                  # 'second' read the same open list and claims too (the race)
+    hub.put_json({"block": 0, "pass": 1, "variant": "t", "host": "second", "started": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                  "commit": "test", "stage": "claimed"}, "claims/t/block-0000.p1.second.json", "claim block-0000.p1 (t) on second")
+    got = settle_collisions(hub, "t", [dict(block=0, row=rc.table[0], name="block-0000.p1", claim="claims/t/block-0000.p1.second.json", P=P)], "second")
+    assert got == [] and hub.exists(a[0]["claim"]) and not hub.exists("claims/t/block-0000.p1.second.json")
+    assert hub.log[-1]["message"].startswith("release block-0000.p1: claimed first")
+    # the mirror: 'first' settling against 'second' keeps its claim
+    assert settle_collisions(hub, "t", a, "first") == a
+    # a claimed block that gained a shard meanwhile is skipped by the loop, its claim released
+    os.makedirs(os.path.join(hub.root, "blocks/t"), exist_ok=True); open(os.path.join(hub.root, "blocks/t/block-0000.p1.rpk"), "wb").write(b"x")
+    os.makedirs(os.path.join(hub.root, "certificate"), exist_ok=True); open(os.path.join(hub.root, "certificate/t.json"), "w").write("{}")
+    f = Fill(hub, rc, opts(work, host="first", loop=False))
+    f.claim_first = lambda: a[0]
+    f.run(heartbeat_every=3600)
+    assert not hub.exists(a[0]["claim"]) and not os.listdir(work)

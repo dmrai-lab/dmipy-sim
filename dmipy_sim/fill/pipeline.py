@@ -361,6 +361,10 @@ class Fill:
         try:
             while claimed is not None:
                 row, name, block, P = claimed["row"], claimed["name"], claimed["block"], claimed["P"]
+                if o.claims and o.block is None and C.has_shard(hub, rc.variant, block, P):   # done by another worker meanwhile
+                    log.info("%s has a shard already; skipped", name); C.release(hub, claimed, "a shard exists")
+                    claimed = C.claim_next(hub, rc, o.host, only_pass=o.only_pass, claim_batch=o.claim_batch, write=o.claims) if o.loop else None
+                    continue
                 k = rc.rounds(row, o.budget, P, o.max_walkers)
                 if k > 1 and o.certify:
                     raise SystemExit("a certifying walk is one round: lower the budget instead of max_walkers")
