@@ -143,14 +143,24 @@ interval mean as before).
                 the largest candidate count met and whether the class outgrew the window (its walkers beyond it were
                 not stepped: the chunk is redone with a wider one)."""
                 cum = jnp.cumsum(counts); start = cum[c]; n_real = counts[c + 1]
-                sel = jax.lax.dynamic_slice(order, (start,), (n_pad,))
-                sel_g = jnp.minimum(sel, r.shape[0] - 1)
-                r_c, key_c, dl_c, n_w = stepped(r[sel_g], keys[sel_g], m, step_l, reach)
-                real = jnp.arange(n_pad) < n_real
-                sel_r = jnp.where(real, sel, r.shape[0])                      # out of bounds: dropped (-1 would wrap)
-                r = r.at[sel_r].set(r_c, mode="drop"); keys = keys.at[sel_r].set(key_c, mode="drop")
-                dlog = dlog.at[sel_r].add(dl_c, mode="drop")
-                return r, keys, dlog, jnp.where(real, n_w, 0).max(), n_real > n_pad
+
+                def step_window(op):
+                    r, keys, dlog = op
+                    sel = jax.lax.dynamic_slice(order, (start,), (n_pad,))
+                    sel_g = jnp.minimum(sel, r.shape[0] - 1)
+                    r_c, key_c, dl_c, n_w = stepped(r[sel_g], keys[sel_g], m, step_l, reach)
+                    real = jnp.arange(n_pad) < n_real
+                    sel_r = jnp.where(real, sel, r.shape[0])                  # out of bounds: dropped (-1 would wrap)
+                    r = r.at[sel_r].set(r_c, mode="drop"); keys = keys.at[sel_r].set(key_c, mode="drop")
+                    dlog = dlog.at[sel_r].add(dl_c, mode="drop")
+                    return r, keys, dlog, jnp.where(real, n_w, 0).max()
+
+                def skip_window(op):
+                    r, keys, dlog = op
+                    return r, keys, dlog, jnp.int32(0)
+                # a class with no walker this round steps nothing: the launch is the host's, the skip the device's
+                r, keys, dlog, n_w_max = jax.lax.cond(n_real > 0, step_window, skip_window, (r, keys, dlog))
+                return r, keys, dlog, n_w_max, n_real > n_pad
             return jit_with_tables(geometry, geometry.TABLES, run)
 
         kernels = {}
