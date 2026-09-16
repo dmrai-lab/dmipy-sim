@@ -298,7 +298,7 @@ interval mean as before).
             if sampling:
                 seg, keep, n_str = within_dev(r)
                 field_all[s:e, 0] = np.asarray(at_dev(r, seg, keep) - f_mean)
-            pads = pads_from(np.asarray(_counts(r)))                     # the first chunk's windows: one sync per batch
+            pads = pads_from(np.asarray(_counts(r))[1:])                 # the first chunk's windows (the classes, not the free count): one sync per batch
             t = 1
             while t < n_t:
                 # a chunk of saves, one dispatch each, launched without waiting on the device; the programs' overflow

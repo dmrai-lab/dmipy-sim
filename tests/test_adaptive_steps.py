@@ -57,6 +57,26 @@ def test_a_geometry_without_wall_scales_is_refused():
         simulate_trajectories_adaptive(10, D, d.Sphere(3e-6), 1e-3, 5e-4, require_gpu=False)
 
 
+def test_a_chunk_whose_class_outgrows_its_window_is_redone_to_the_same_walk(monkeypatch):
+    """The per-save program's class windows are sized from the previous chunk's counts; a chunk in which a class
+    outgrows its window raises the program's overflow flag and is redone from its start with wider windows.
+    Windows padded to eight instead of 4096 overflow on nearly every chunk; the walk is the wide-window walk to
+    rounding: the same walls from the same noise, but a program over a different window width rounds by an ulp
+    (as a different candidate-list width does), and a grazing step within an ulp of a wall may flip -- a handful
+    of (walker, save) pairs by less than one step, never a wall crossed. At equal widths the walk is bit-identical
+    (the per-class dispatch this program replaced is that case: tests/../eq_check in dmipy-sim#281)."""
+    import dmipy_sim.engine.adaptive as A
+    g = _pack(False)
+    kw = dict(seed=5, require_gpu=False, walker_batch_size=2000, candidate_cache=True, candidate_k_start=64)
+    ref = simulate_trajectories_adaptive(2000, D, g, 2e-3, 2.5e-4, **kw)
+    monkeypatch.setattr(A, "_pad_to", lambda n, unit=8: max(unit, 1 << int(np.ceil(np.log2(max(n, 1))))))
+    narrow = simulate_trajectories_adaptive(2000, D, g, 2e-3, 2.5e-4, **kw)
+    diff = np.abs(narrow.positions - ref.positions).max(-1)
+    assert (diff > 1e-10).mean() < 2e-3 and diff.max() < 0.13e-6, ((diff > 1e-10).mean(), diff.max())
+    dl = np.abs(narrow.boundary_local_time - ref.boundary_local_time)
+    assert (dl > 1e-10).mean() < 2e-3 and not g.inside_any(narrow.positions.reshape(-1, 3)).any()
+
+
 def test_the_candidate_cache_is_the_full_gather():
     """A round stepped against the segments within its reach is the round stepped against the 27-cell gather:
     the same walls are met, so the same positions and contact (to rounding), from the same noise."""
