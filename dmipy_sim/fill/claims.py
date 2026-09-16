@@ -96,7 +96,37 @@ def claim_blocks(hub, rc, blocks, host, P, *, write=True):
     if adds:
         hub.commit(adds, [], f"claim {', '.join(g['name'] for g in got)} ({rc.variant}) on {host}")
         log.info("claimed %s in one commit", ", ".join(adds))
+        got = settle_collisions(hub, rc.variant, got, host)
     return got
+
+
+def settle_collisions(hub, variant, got, host):
+    """Two workers that claimed the same block within seconds of each other (a released block is the lowest open
+    one for every worker at once): the claim that started first keeps the block, the other is released in one
+    commit and dropped from ``got``. Reads the claims after our commit, so both see the same pair."""
+    names = {g["name"]: g for g in got if g.get("claim")}
+    if not names:
+        return got
+    lost, files = {}, hub.files()
+    for f in files:
+        if not f.startswith(f"claims/{variant}/") or f.endswith(f".{host}.json"):
+            continue
+        base = os.path.basename(f)[:-5]                    # block-NNNN[.pK].<other host>
+        name = next((n for n in names if base.startswith(n + ".")), None)
+        if name is None or name in lost:
+            continue
+        try:
+            other = json.load(open(hub.get_live(f)))
+            ours = json.loads(open(hub.get_live(names[name]["claim"])).read())
+        except Exception as e:
+            log.warning("could not compare claims of %s: %s", name, e); continue
+        if (other.get("started") or "", other.get("host") or "") < (ours.get("started") or "", host):
+            lost[name] = f
+    if lost:
+        hub.commit({}, [names[n]["claim"] for n in lost], f"release {', '.join(lost)}: claimed first by another worker")
+        for n, f in lost.items():
+            log.info("%s: %s claimed it first (%s); ours released", n, os.path.basename(f).split(".")[-2], f)
+    return [g for g in got if g["name"] not in lost]
 
 
 def release(hub, claimed, why):
