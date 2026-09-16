@@ -66,9 +66,10 @@ class PackSubstrate(_Declared):
     ``pack`` is a ``.rpk`` path or an in-memory :class:`~dmipy_sim.replay.replay.ReplayPack`. ``m0`` is required:
     proton density only means anything relative to the other substrates of the same phantom, so there is no
     default, the same way there is no default pack. The tissue knobs (``T2_s``, ``T1_s`` by the pack's own pool
-    names or by pool id, the wall relaxivity ``rho_m_s``, the field source's ``chi_iso`` / ``chi_aniso``) are the
-    values this substrate replays at (RPH.md 3.2); anything not given takes the pack's nominal value from its
-    embedded specification.
+    names, by pool id, or one value for every pool; the wall relaxivity ``rho_m_s``; the field source's
+    ``chi_iso`` / ``chi_aniso``) are the values this substrate replays at (RPH.md 3.2); anything not given takes
+    the pack's nominal value from its embedded specification. A pool with no T2 in either place replays with none,
+    which a phantom refuses beside a substrate that does relax (:meth:`Phantom.replay`, dmipy-sim#238).
     """
 
     kind = "pack"

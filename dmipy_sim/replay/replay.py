@@ -254,7 +254,8 @@ class ReplayPack:
         return np.asarray(decode(self.arrays, meta, n_walkers=(self.n_walkers if wp else None)), np.float64)
 
     def _by_pool(self, values, what):
-        """Per-pool values as a list by id; a ``{name: value}`` dict resolves through the embedded spec."""
+        """Per-pool values as a list by id; a ``{name: value}`` dict resolves through the embedded spec, and a
+        scalar is every pool's value."""
         if values is None:
             return None
         if isinstance(values, dict):
@@ -265,6 +266,9 @@ class ReplayPack:
             for name, v in values.items():
                 out[spec.pool(name).id] = float(v)
             return out
+        if np.ndim(values) == 0:                                   # one value is every pool's
+            spec = self.substrate
+            return [float(values)] * (len(spec.pools) if spec is not None else 1)
         return [float(v) for v in np.asarray(values, float).reshape(-1)]
 
     def replay(self, waveform, *, tissue="nominal", T2=None, T1=None, rho=None, D=None, B0=None,
@@ -449,6 +453,7 @@ class ReplayPack:
                 out = self._by_pool(v, what)
                 if out is None:
                     return [np.inf] * n_ids
+                out = out * n_ids if len(out) == 1 else out
                 return [np.inf if t is None or float(t) <= 0.0 else float(t) for t in out]
             kw.update(comp_traj=comp, T2_per_comp=per_pool(T2v, "T2"), T1_per_comp=per_pool(T1v, "T1"))
         if P["rho"] is not None and float(P["rho"]) != 0.0:
@@ -576,6 +581,7 @@ class ReplayPack:
                 T2v = [0.0] * n_ids                                   # no T2 decay, T1 only
             if T1v is None:
                 T1v = [0.0] * n_ids                                   # no T1 term
+            T2v = T2v * n_ids if len(T2v) == 1 else T2v; T1v = T1v * n_ids if len(T1v) == 1 else T1v
             if len(T2v) < n_ids or (T1v is not None and len(T1v) < n_ids):
                 raise ValueError(f"the compartment channel uses pool ids up to {n_ids - 1}; T2 / T1 must be given "
                                  f"for every id (got {len(T2v)}{'' if T1v is None else f' / {len(T1v)}'})")

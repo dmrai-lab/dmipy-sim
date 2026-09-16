@@ -32,6 +32,8 @@ GM_COLS, WM_COL, CSF_COL, PATH_COL = (0, 1), 2, 3, 4
 from dmipy_sim.substrate.biophysical_constants import get_value
 M0 = {"wm": get_value("proton_density_white_matter"), "gm": get_value("proton_density_grey_matter"),
       "csf": get_value("proton_density_csf")}                       # water content relative to CSF, cited in the table
+T2 = {"gm": get_value("T2_grey_matter", 3.0), "csf": get_value("T2_csf", 3.0)}   # the white-matter pack's pools carry
+                                                                    # their own nominal T2; a spheres pack does not
 
 
 def fractions_on(grid_img, target_affine, tt_img, sub=3):
@@ -70,8 +72,9 @@ def build(batman, wm_pack, gm_pack=None, slab=None):
         keep = np.zeros(grid.shape, bool); keep[:, :, slab[0]:slab[1]] = True
         f_wm, f_gm, f_csf = f_wm * keep, f_gm * keep, f_csf * keep
     wm = PackSubstrate(wm_pack, m0=M0["wm"], name="wm")
-    gm = PackSubstrate(gm_pack, m0=M0["gm"], name="gm") if gm_pack else FreeWater(D_m2_s=0.8e-9, m0=M0["gm"], name="gm/stand-in")
-    csf = FreeWater(D_m2_s=3.0e-9, m0=M0["csf"])
+    gm = (PackSubstrate(gm_pack, m0=M0["gm"], name="gm", T2_s=T2["gm"]) if gm_pack
+          else FreeWater(D_m2_s=0.8e-9, m0=M0["gm"], name="gm/stand-in", T2_s=T2["gm"]))
+    csf = FreeWater(D_m2_s=3.0e-9, m0=M0["csf"], T2_s=T2["csf"])
     orientation = {wm: ODF(c, basis="mrtrix3")}
     if gm_pack:
         from dmipy_sim.replay.fod import FOD
