@@ -293,9 +293,8 @@ class ReplayPhantom:
                 f"without it.")
 
     # ---- replay
-    def replay(self, waveform, *, B0=None, b0_dir=(0.0, 0.0, 1.0), tissue="nominal", packs=None,
-               complex_signal=False, T2=None, T1=None, rho=None, D=None,
-               chi_iso=None, chi_aniso=0.0, off_resonance=None, proton_density=None, cache=None, forms=None):
+    def replay(self, waveform, *, scanner=None, pose=None, packs=None, complex_signal=False,
+               off_resonance=None, proton_density=None, cache=None, forms=None):
         """Replay the whole phantom through the pose expansion: ``(voxel_index, S)`` with ``S`` of shape
         ``(n_voxels, n_measurements)``.
 
@@ -304,10 +303,12 @@ class ReplayPhantom:
         distribution. That is the whole economy of a replay phantom: the expensive object is the walk, and it is
         shared by every voxel and every pose that cites it.
 
-        The acquisition's gradient and B0 directions are in the scanner frame of the grid; the substrates rotate
-        under it. Knobs given here apply to every pack; a substrate's own ``tissue`` (RPH.md 3.2) wins over them,
-        and anything neither names takes the pack's nominal value. ``packs`` supplies the packs of substrates
-        cited by ``uri`` as ``{id or index: path or ReplayPack}``.
+        The acquisition's gradient and the field are in the scanner frame of the grid; the substrates rotate
+        under it, and ``pose`` (a 3x3 rotation or a :class:`~dmipy_sim.phantom.partition.Pose`) is the specimen's
+        rigid rotation in the bore. Each substrate replays at its own declared ``tissue`` (RPH.md 3.2; a pack
+        substrate with none is the bare diffusion signal) and at the one ``scanner`` field (a
+        :class:`~dmipy_sim.acquisition.scanners.ScannerLimits` or tesla, ``None`` for no field). ``packs``
+        supplies the packs of substrates cited by ``uri`` as ``{id or index: path or ReplayPack}``.
 
         No band is passed: each pack projects its response at the band that response needs, and the composition
         retains only what this phantom's orientations can reach.
@@ -323,10 +324,8 @@ class ReplayPhantom:
                 "RF-aware (vector-Bloch) replay of each pack at the voxel's pose. A magnitude gradient replay "
                 "cannot carry it, and dropping it would return a signal that looks right and is not. Use "
                 "ReplayPhantom.replay_bloch, which propagates the magnetisation per pose.")
-        knobs = dict(T2=T2, T1=T1, rho=rho, D=D, chi_iso=chi_iso, chi_aniso=chi_aniso)
-        pose, analytic, m0 = self._responses(waveform, B0, b0_dir, tissue, packs, knobs,
-                                             keep=self.retained_band(), proton_density=proton_density, cache=cache,
-                                             forms=forms)
+        pose, analytic, m0 = self._responses(waveform, scanner, pose, packs, keep=self.retained_band(),
+                                             proton_density=proton_density, cache=cache, forms=forms)
         sid, frac = self.substrate_id, self.geometric_fraction
         n_meas = next(iter(pose.values())).n_meas if pose else len(np.atleast_1d(next(iter(analytic.values()))))
         S = np.zeros((self.n_voxels, n_meas), np.complex128)
@@ -495,52 +494,43 @@ class ReplayPhantom:
             return forms[i]
         return substrate_from_meta(sub)
 
-    def _check_relaxation(self, waveform, tissue, knobs, loaded, forms):
+    def _check_relaxation(self, waveform, loaded, forms):
         """Refuse a phantom whose substrates would relax inconsistently under a readout (dmipy-sim#238).
 
-        Every acquisition reads out at an echo time, so a pack pool whose T2 resolves to nothing (neither given on
-        the substrate or on this call, nor nominal in the pack's specification) replays as if T2 were infinite;
-        composed beside a substrate that does relax, it returns a tissue contrast that looks right and is not (the
-        brain example's grey matter at its proton density against a white matter at 0.06). A phantom in which no
-        substrate relaxes is a consistent diffusion phantom and is not refused; ``tissue=False`` resolves no nominal
-        value, so with no T2 given anywhere it is that phantom. A closed form relaxes when it declares ``T2_s``."""
+        Every acquisition reads out at an echo time, so a substrate whose tissue declares no T2 / T1 replays as if
+        T2 were infinite; composed beside a substrate that does relax, it returns a tissue contrast that looks
+        right and is not (the brain example's grey matter at its proton density against a white matter at 0.06).
+        A phantom in which no substrate relaxes is a consistent diffusion phantom and is not refused."""
+        from ..spec.tissue import Tissue
         relaxes, missing = [], []
         for i, sub in enumerate(self.substrates):
             if sub["kind"] == "inert":
                 continue
-            if sub["kind"] == "analytic":
-                form = self._form(i, sub, forms)
-                (relaxes if getattr(form, "T2_s", None) is not None else missing).append((sub["id"], ""))
-                continue
-            T2 = (sub.get("tissue") or {}).get("T2", knobs.get("T2"))
-            if T2 is not None or (getattr(tissue, "T2", None) is not None):
-                relaxes.append((sub["id"], ""))
-                continue
-            spec = loaded[i].substrate if tissue == "nominal" else None
-            pools = ([p.name for p in spec.pools if p.T2 is None] if spec is not None else None)
-            if spec is not None and not pools:
-                relaxes.append((sub["id"], ""))
-            else:
-                missing.append((sub["id"], (f" (pool{'s' if len(pools) > 1 else ''} {', '.join(pools)} declare no T2 in "
-                                            f"the pack's specification)" if pools else " (the pack embeds no specification)")))
+            t = self._form(i, sub, forms).tissue if sub["kind"] == "analytic" else Tissue.from_meta(sub.get("tissue"))
+            (relaxes if (t is not None and t.relaxes) else missing).append(sub["id"])
         if relaxes and missing:
             TE = _echo_time(waveform)
             raise ValueError(
                 f"under a readout at TE = {TE * 1e3:.3g} ms, "
-                + ", ".join(f"substrate {n!r} relaxes" for n, _ in relaxes) + " while "
-                + ", ".join(f"{n!r} would not{why}" for n, why in missing)
-                + ": no T2 was given for it and none is nominal, so it would replay as if T2 were infinite and the "
-                  "composed contrast would look right and be wrong. Declare its T2 on the substrate (PackSubstrate(..., "
-                  "T2_s=...) by pool, FreeWater(..., T2_s=...)), give T2= on this call for every pack, or give none "
-                  "anywhere (tissue=False resolves no nominal value) for a phantom with no relaxation (RPH.md 3.2).")
+                + ", ".join(f"substrate {n!r} relaxes" for n in relaxes) + " while "
+                + ", ".join(f"{n!r} would not" for n in missing)
+                + ": its tissue declares no T2, so it would replay as if T2 were infinite and the composed contrast "
+                  "would look right and be wrong. Declare it on the substrate (PackSubstrate(..., tissue=Tissue(T2=...)) "
+                  "by pool, or pack.nominal; FreeWater(tissue=Tissue(D=..., T2=...))), or declare none anywhere for "
+                  "a phantom with no relaxation (RPH.md 3.2).")
 
-    def _responses(self, waveform, B0, b0_dir, tissue, packs, knobs, keep=None, proton_density=None, cache=None,
-                   forms=None):
+    def _responses(self, waveform, scanner, specimen, packs, keep=None, proton_density=None, cache=None, forms=None):
         """One response per substrate: a :class:`PoseResponse` for a pack, a closed form for an analytic
-        substrate, nothing for an inert one. Plus the per-voxel ``m0``."""
+        substrate, nothing for an inert one. Plus the per-voxel ``m0``. ``specimen`` is the specimen's rotation in
+        the bore: a pack's expansion runs in that frame, and an analytic form sees the acquisition turned into it."""
+        from ..spec.tissue import Tissue
+        from ..acquisition.waveforms import rotate_waveform
+        from .replay import _pose_matrix
         pose, analytic = {}, {}
         loaded = self._loaded_packs(packs)
-        self._check_relaxation(waveform, tissue, knobs, loaded, forms)
+        self._check_relaxation(waveform, loaded, forms)
+        R_s = _pose_matrix(specimen)
+        turned = waveform if R_s is None else rotate_waveform(waveform, R_s.T)        # G @ R_s: the acquisition in the specimen frame
         for i, sub in enumerate(self.substrates):
             if sub["kind"] == "inert":
                 continue
@@ -548,20 +538,18 @@ class ReplayPhantom:
                 form = self._form(i, sub, forms)                               # refuses an unknown closed form
                 if sub.get("oriented", False) or getattr(form, "oriented", False):   # a form with an axis: expanded over
                     from .replay import analytic_pose_response               # SO(3) like a pack, then contracted
-                    pose[i] = analytic_pose_response(form, waveform, keep)
+                    pose[i] = analytic_pose_response(form, turned, keep)
                 else:
-                    analytic[i] = form.response(waveform)
+                    analytic[i] = form.response(turned)
                 continue
-            kw = dict(knobs)
-            kw.update({k: v for k, v in (sub.get("tissue") or {}).items()})
-            pose[i] = loaded[i].pose_response(waveform, tissue=tissue, B0=B0, b0_dir=b0_dir, keep=keep, cache=cache, **kw)
+            pose[i] = loaded[i].pose_response(waveform, tissue=Tissue.from_meta(sub.get("tissue")), scanner=scanner,
+                                              pose=R_s, keep=keep, cache=cache)
         if not pose and not analytic:
             raise ValueError("the phantom cites no signal-bearing substrate")
         return pose, analytic, self._m0(proton_density)
 
-    def replay_bloch(self, waveform, *, B0=None, b0_dir=(0.0, 0.0, 1.0), tissue="nominal",
-                     packs=None, complex_signal=False, T2=None, T1=None, rho=None, D=None, chi_iso=None,
-                     chi_aniso=0.0, transmit=None, off_resonance=None, proton_density=None, decimals=3, forms=None):
+    def replay_bloch(self, waveform, *, scanner=None, pose=None, packs=None, complex_signal=False,
+                     transmit=None, off_resonance=None, proton_density=None, decimals=3, forms=None):
         """Replay the phantom through the RF-aware route: ``(voxel_index, S)``, one magnetisation propagation
         per distinct pose rather than one contraction per voxel.
 
@@ -597,10 +585,12 @@ class ReplayPhantom:
         kappa = np.ones(self.n_voxels) if kappa is None else kappa
         dB0 = self.layer_values("delta_B0_T", off_resonance)
         dB0 = np.zeros(self.n_voxels) if dB0 is None else dB0
-        knobs = dict(T2=T2, T1=T1, rho=rho, D=D, chi_iso=chi_iso, chi_aniso=chi_aniso)
-        self._check_relaxation(waveform, tissue, knobs, loaded, forms)
+        self._check_relaxation(waveform, loaded, forms)
         m0 = self._m0(proton_density)
         from .so3 import rotations_from_quaternions
+        from .replay import _pose_matrix
+        from ..spec.tissue import Tissue
+        R_s = _pose_matrix(pose)
         sid, frac = self.substrate_id, self.geometric_fraction
         live = [(v, p) for v in range(self.n_voxels) for p in range(sid.shape[1])
                 if sid[v, p] >= 0 and frac[v, p] > 0.0 and self.substrates[int(sid[v, p])]["kind"] != "inert"]
@@ -609,7 +599,10 @@ class ReplayPhantom:
         vp = np.array(live, np.int64)
         v_idx, p_idx = vp[:, 0], vp[:, 1]
         ids = sid[v_idx, p_idx].astype(int)
-        R = rotations_from_quaternions(self.pose_quat[v_idx, p_idx]).reshape(-1, 9)
+        R = rotations_from_quaternions(self.pose_quat[v_idx, p_idx])
+        if R_s is not None:
+            R = np.einsum("ij,njk->nik", R_s, R)                       # substrate -> specimen -> lab
+        R = R.reshape(-1, 9)
         # every slot's propagation key: substrate, rounded pose, rounded transmit scale, rounded field offset
         keys = np.concatenate([ids[:, None].astype(np.float64), np.round(R, int(decimals)),
                                np.round(kappa[v_idx], int(decimals))[:, None],
@@ -629,11 +622,9 @@ class ReplayPhantom:
                 if off != 0.0:
                     resp = resp * np.exp(1j * GAMMA * off * gate)
             else:
-                kw = dict(knobs)
-                kw.update({k: val for k, val in (sub.get("tissue") or {}).items()})
-                resp = loaded[i].replay_bloch(waveform, b1_scale=kap, off_resonance_T=(off or None), tissue=tissue,
-                                              B0=B0, b0_dir=b0_dir, orientation=R[first].reshape(3, 3),
-                                              complex_signal=True, **kw)
+                resp = loaded[i].replay_bloch(waveform, b1_scale=kap, off_resonance_T=(off or None),
+                                              tissue=Tissue.from_meta(sub.get("tissue")), scanner=scanner,
+                                              orientation=R[first].reshape(3, 3), complex_signal=True)
             resp = np.atleast_1d(np.asarray(resp, np.complex128))
             if S is None:
                 S = np.zeros((self.n_voxels, resp.shape[0]), np.complex128)

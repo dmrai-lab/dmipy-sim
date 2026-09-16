@@ -17,6 +17,8 @@ from dmipy_sim.replay import ReplayPack
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_sim.replay import compression as _cx
 from dmipy_sim.replay._replay_kernel import bin_gate
+from dmipy_sim.spec.tissue import Tissue
+from tests.replay_frames import field_along
 
 D0 = 2e-9
 
@@ -63,7 +65,7 @@ def _dense_logweights(pk, seq, T2, T1, rho):
 def test_relaxation_and_surface_weights_equal_the_decoded_ones(pack, make_seq):
     seq = make_seq(4 * pack.n_t + 1)
     T2, T1, rho = [0.08, 0.03], [1.0, 1.2], 1e-5
-    w, ew, _ = pack.walker_signals(seq, tissue=False, T2=T2, T1=T1, rho=rho, D=D0)
+    w, ew, _ = pack.walker_signals(seq, tissue=Tissue(T2=T2, T1=T1, rho=rho, D=D0))
     expect = w * np.exp(_dense_logweights(pack, seq, T2, T1, rho))
     np.testing.assert_allclose(ew, expect, rtol=1e-6, atol=1e-14)          # the oracle decodes the bridge in float32
 
@@ -76,13 +78,14 @@ def test_the_field_phase_equals_the_decoded_path_integral(field_pack):
     from dmipy_sim.replay.replay import GAMMA
     pk = field_pack
     seq = _seqmod.gre(6e-4, gradient_directions=[[1, 0, 0]], bvalues=[5e8], delta=1e-4, Delta=3e-4, n_t=4 * pk.n_t + 1, slew_rate=np.inf)
-    kw = dict(tissue=False, B0=3.0, chi_iso=-1e-7, chi_aniso=-5e-8, b0_dir=(0.6, 0.0, 0.8))
-    w, ew, E = pk.walker_signals(seq, **kw)
+    b0_dir = (0.6, 0.0, 0.8)
+    seq_lab, R = field_along(seq, b0_dir)
+    w, ew, E = pk.walker_signals(seq_lab, orientation=R, scanner=3.0, tissue=Tissue(chi_iso=-1e-7, chi_aniso=-5e-8))
     # the oracle
     ch = pk.meta["compression"]["channels"]; gm = ch["susceptibility_grid"]
     b, _ = susc_path_decode(pk.arrays, ch["susceptibility_path"], n_w=pk.n_walkers)
     R = np.asarray(pk.pose_rotation(None), float) if False else np.eye(3)
-    dB = susc_path_field(b, np.asarray(kw["b0_dir"]) / np.linalg.norm(kw["b0_dir"]), B0=3.0, chi_iso=-1e-7, chi_aniso=-5e-8, has_aniso=bool(gm.get("has_aniso")))
+    dB = susc_path_field(b, np.asarray(b0_dir) / np.linalg.norm(b0_dir), B0=3.0, chi_iso=-1e-7, chi_aniso=-5e-8, has_aniso=bool(gm.get("has_aniso")))
     phi_x = GAMMA * pk.dt * (dB * field_gate(seq, pk.n_t, pk.dt)[None, :]).sum(1)
     Geff = effective_gradient(np.asarray(seq.G_eff, np.float64), float(seq.dt), pk.n_t, pk.dt)
     phi_g = gradient_phase(Geff, pk.positions(), pk.dt).T
@@ -97,7 +100,7 @@ def test_no_route_decodes_a_track_or_a_trajectory(field_pack, monkeypatch):
         monkeypatch.setattr(_cx, name, lambda *a, **k: (_ for _ in ()).throw(AssertionError(f"{name} was called")))
     monkeypatch.setattr(ReplayPack, "positions", lambda self: (_ for _ in ()).throw(AssertionError("positions() was decoded")))
     seq = _seqmod.pgse([[1, 0, 0]], 1e-4, 3e-4, bvalues=[5e8], TE=6e-4, n_t=4 * pk.n_t + 1, slew_rate=np.inf)
-    pk.walker_signals(seq, tissue=False, T2={"extra": 0.08, "intra": 0.03, "myelin": 0.01}, T1={"extra": 1.0, "intra": 1.2, "myelin": 0.3})
-    pk.walker_signals(seq, tissue=False, rho=1e-5, D=D0)
-    pk.walker_signals(seq, tissue=False, B0=3.0, chi_iso=-1e-7, chi_aniso=-5e-8)
-    pk.walker_signals(seq, tissue="nominal", B0=3.0)
+    pk.walker_signals(seq, tissue=Tissue(T2={"extra": 0.08, "intra": 0.03, "myelin": 0.01}, T1={"extra": 1.0, "intra": 1.2, "myelin": 0.3}))
+    pk.walker_signals(seq, tissue=Tissue(rho=1e-5, D=D0))
+    pk.walker_signals(seq, scanner=3.0, tissue=Tissue(chi_iso=-1e-7, chi_aniso=-5e-8))
+    pk.walker_signals(seq, tissue=pk.nominal, scanner=3.0)

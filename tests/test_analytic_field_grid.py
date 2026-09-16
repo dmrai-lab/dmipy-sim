@@ -7,6 +7,8 @@ import pytest
 import dmipy_sim as d
 from dmipy_sim.fields.susceptibility_field import FieldGrid, field_grid_of, assemble_field, sample_grid
 from dmipy_sim.replay.bank import build_replay_pack
+from dmipy_sim.spec.tissue import Tissue
+from tests.replay_frames import field_along
 
 D0 = 2e-9
 ENV = dict(bvals=[0.0, 1e9], dirs=[[1, 0, 0]], ogse_periods=[2], shortd_b=1e9, shortd_deltas_frac=[0.05],
@@ -50,11 +52,12 @@ def test_packed_grid_is_the_periodic_cell_and_a_pack_replays_with_the_field():
     walk = d.simulate_trajectories(200, D0, pm, 4e-3, 4e-4, seed=0, require_gpu=False)
     pk = build_replay_pack(walk, id="test/pm-field", field=fg, K=8, envelope=ENV, license="x", citation="x")
     assert pk.has_field and pk.has_relaxation and pk.has_surface
-    G0 = ScannerSequence(G=np.zeros((1, pk.n_t, 3)), dt=pk.dt)      # b = 0, no pulse: a gradient echo                                           # b = 0, gradient echo
-    with pytest.raises(ValueError, match="without chi_iso"):
-        pk.replay(G0, B0=3.0, b0_dir=(1, 0, 0))
-    with_field = pk.replay(G0, B0=3.0, b0_dir=(1, 0, 0), chi_iso=1e-6)
+    G0 = ScannerSequence(G=np.zeros((1, pk.n_t, 3)), dt=pk.dt)      # b = 0, no pulse: a gradient echo
+    G_lab, R = field_along(G0, (1, 0, 0))                           # the field along x of the substrate: a posent echo
+    with pytest.raises(ValueError, match="without a chi_iso"):
+        pk.replay(G_lab, orientation=R, scanner=3.0)
+    with_field = pk.replay(G_lab, orientation=R, scanner=3.0, tissue=Tissue(chi_iso=1e-6))
     no_field = pk.replay(G0)
     assert no_field[0] == pytest.approx(1.0) and with_field[0] < no_field[0]      # the field dephases
-    lumen = pk.replay(G0, B0=3.0, b0_dir=(1, 0, 0), chi_iso=1e-6, compartment=1)
+    lumen = pk.replay(G_lab, orientation=R, scanner=3.0, tissue=Tissue(chi_iso=1e-6), compartment=1)
     assert lumen[0] > with_field[0]                                        # zero lumen field: the lumen keeps more

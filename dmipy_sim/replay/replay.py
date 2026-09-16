@@ -167,6 +167,29 @@ class PoseResponse:
         return self.coeffs @ A[0]
 
 
+def _field_strength(scanner):
+    """The static field (T) of ``scanner``: a :class:`~dmipy_sim.acquisition.scanners.ScannerLimits` (its catalogue
+    ``field_T``), a number in tesla, or ``None`` for no field."""
+    if scanner is None:
+        return None
+    from ..acquisition.scanners import ScannerLimits
+    if isinstance(scanner, ScannerLimits):
+        if scanner.field_T is None:
+            raise ValueError(f"the catalogue knows no field strength for {scanner.name!r}; give the field in tesla")
+        return float(scanner.field_T)
+    if isinstance(scanner, str):
+        raise TypeError("scanner is a ScannerLimits (ScannerLimits.of('connectom')) or a field strength in tesla, not a name")
+    return float(scanner)
+
+
+def _pose_matrix(pose):
+    """A specimen pose as a 3x3 rotation, from a matrix or an object with ``.rotation``; ``None`` stays ``None``."""
+    if pose is None:
+        return None
+    R = getattr(pose, "rotation", pose)
+    return np.asarray(R, np.float64).reshape(3, 3)
+
+
 class ReplayPack:
     """A replay pack: the channel ``arrays`` plus ``meta``, with ``load`` / ``save`` and the one
     consume path, :meth:`replay`. Accessors mirror the walk parameters (``n_t``, ``dt``, ``K``,
@@ -236,13 +259,29 @@ class ReplayPack:
             return True
         if self.field_is_zero:
             return False
-        raise ValueError("B0 was given but the pack carries no field tier (C3) and its substrate declares a "
+        raise ValueError("a scanner field was given but the pack carries no field tier (C3) and its substrate declares a "
                          "susceptibility, or no spec at all; build it with field=FieldGrid(...)")
 
     @property
     def diffusivity(self):
         """The walk's diffusivity (m^2/s) when the producer recorded it."""
         return self.meta.get("walk_params", {}).get("diffusivity")
+
+    @property
+    def nominal(self):
+        """The embedded spec's values as a :class:`~dmipy_sim.spec.Tissue`: what a paper's replay applies,
+        ``replay(seq, tissue=pack.nominal, scanner=pack.nominal_field_T)``; ``None`` for a pack without a spec."""
+        spec = self.substrate
+        if spec is None:
+            return None
+        from ..spec.tissue import Tissue
+        return Tissue.from_spec(spec)
+
+    @property
+    def nominal_field_T(self):
+        """The spec's calibration field (T), the ``scanner`` of the nominal replay; ``None`` when it names none."""
+        spec = self.substrate
+        return None if spec is None else spec.nominal_field_T
 
     def positions(self):
         """The ``(n_walkers, n_t, 3)`` trajectory decoded from the position codec (float64)."""
@@ -271,67 +310,59 @@ class ReplayPack:
             return [float(values)] * (int(n) if n is not None else (len(spec.pools) if spec is not None else 1))
         return [float(v) for v in np.asarray(values, float).reshape(-1)]
 
-    def replay(self, waveform, *, tissue="nominal", T2=None, T1=None, rho=None, D=None, B0=None,
-               b0_dir=(0.0, 0.0, 1.0), chi_iso=None, chi_aniso=0.0, compartment=None,
-               orientation=None, complex_signal=False):
-        """The signal of ``waveform`` on this pack, with every tier the pack carries and the request asks for.
+    def replay(self, waveform, *, tissue=None, scanner=None, orientation=None, compartment=None, complex_signal=False):
+        """The signal of ``waveform`` on this pack: the gradient always, and every other tier whose inputs are given
+        and which the pack carries.
 
         ``waveform`` is a :class:`~dmipy_sim.acquisition.scanner_sequence.ScannerSequence`: its ``G_eff``, the
         effective gradient, is what this route integrates, and its RF schedule says where the 180 is (a schedule
         without one is a gradient echo). It is read on the pack grid (``n_t`` samples of ``dt``, zero outside
         the waveform).
 
-        * **gradient** (C0): always, in mode space from the position coefficients -- unless a field is
-          requested, when the trajectory is decoded and the two phases accrue in one complex mean so
-          their cross-term is kept.
-        * **bulk relaxation** (C1): ``T2`` (and ``T1``, under the waveform's coherence gate) per pool
-          id, or a ``{pool name: value}`` dict resolved through the embedded substrate spec; the pack
-          carries the occupancy channel and no value, so nothing is applied unless given.
-        * ``tissue``: where the physical values come from. ``"nominal"`` (default) is the **nominal replay**:
-          the values the embedded substrate spec declares (pool T2 / T1, wall rho, the field source's chi,
-          the calibration field ``nominal_field_T`` as B0) -- what a paper's pack reproduces by firing a
-          pulse at it; a pack without a spec, or a spec that declares no values, replays the gradient alone.
-          ``False`` is the bare diffusion signal. A :class:`~dmipy_sim.spec.Tissue` supplies the values
-          yourself. In every case an explicit keyword wins.
-        * **orientation**: the substrate's pose. **One pose** -- a 3x3 rotation (substrate frame -> lab), or the
-          lab direction its axis (``spec.frame.axis``, default z) points along -- is exact by pose covariance:
-          the gradient and B0 are rotated into the substrate frame together, and no expansion is involved.
-          **A distribution of poses** -- a :class:`~dmipy_sim.replay.so3.Distribution` (one pose, an axis
-          density, a Watson cone, a Bingham fan) or an :class:`~dmipy_sim.replay.fod.FOD`, which is read as an
-          axis density with no statement about the substrate's own azimuth -- goes through
+        Three things describe a replay setting, each stated once:
+
+        * ``tissue`` -- **what the material is**: a :class:`~dmipy_sim.spec.Tissue` (pool T2 / T1, the walls'
+          rho, the bulk D, the field source's chi) or ``None``, the bare diffusion signal. ``pack.nominal`` is
+          the embedded spec's values, so a paper's replay is ``replay(seq, tissue=pack.nominal,
+          scanner=pack.nominal_field_T)``; ``pack.nominal.replace(T2={"intra": 0.08})`` changes one.
+        * ``orientation`` -- **where the substrate sits**: its pose. **One pose** -- a 3x3 rotation (substrate
+          frame -> lab), or the lab direction its axis (``spec.frame.axis``, default z) points along -- is exact by
+          pose covariance: the gradient and the field are rotated into the substrate frame together, and no
+          expansion is involved. **A distribution of poses** -- a :class:`~dmipy_sim.replay.so3.Distribution`
+          (one pose, an axis density, a Watson cone, a Bingham fan) or an :class:`~dmipy_sim.replay.fod.FOD`,
+          which is read as an axis density with no statement about the substrate's own azimuth -- goes through
           :meth:`pose_response` and is composed on SO(3). An FOD's basis must be declared (``FOD.from_sh``,
           ``FOD.native``); a bare coefficient array is refused, since the convention cannot be inferred.
-        * **surface relaxivity** (C2): ``rho`` (m/s) with the walk's diffusivity ``D`` (the pack's
-          recorded value unless given); requires the boundary local time.
-        * **field** (C3): ``B0`` (T) with ``b0_dir`` and the susceptibility ``chi_iso`` (required) and
-          ``chi_aniso``; the pack stores the substrate's geometry-only basis and no susceptibility value,
-          so these are the replay's to give; the 180 the static field refocuses at is the waveform's own
-          (``waveform.rf.refocus_time``); requires the field tier.
+        * ``scanner`` -- **what the scanner is**: its static field, as a
+          :class:`~dmipy_sim.acquisition.scanners.ScannerLimits` (the catalogue's ``field_T``) or a number in
+          tesla, or ``None`` for no field. The field points along the bore's z; the pose turns it.
+
+        The tiers follow from those: **gradient** (C0) always, in mode space from the position coefficients;
+        **bulk relaxation** (C1) with a T2 / T1 in the tissue, under the waveform's coherence gate, on the
+        occupancy channel; **surface relaxivity** (C2) with a rho, scaled by the walk's D (the tissue's, else the
+        pack's recorded one), on the boundary local time; **field** (C3) with a chi in the tissue and a field on
+        the scanner, on the path channel (or the stored basis sampled along the decoded path), the 180 the
+        waveform's own. A tier whose inputs are given but which the pack does not carry raises rather than
+        returning a plausible number.
 
         ``compartment`` restricts the ensemble mean to one pool id (or a boolean walker mask).
-        A tier that is requested but not carried raises rather than returning a plausible number.
         """
         from .compression import read_position_coeffs
         from ._replay_kernel import gradient_phase, field_gate
         waveform = waveform.waveform if hasattr(waveform, "waveform") else waveform
         if isinstance(waveform, Protocol):                # a multi-TE scheme: each sequence replayed, placed at its rows
-            kw = dict(tissue=tissue, T2=T2, T1=T1, rho=rho, D=D, B0=B0, b0_dir=b0_dir, chi_iso=chi_iso,
-                      chi_aniso=chi_aniso, compartment=compartment, orientation=orientation, complex_signal=complex_signal)
+            kw = dict(tissue=tissue, scanner=scanner, orientation=orientation, compartment=compartment, complex_signal=complex_signal)
             return waveform.scatter([self.replay(seq, **kw) for seq in waveform])
         dist = _as_distribution(orientation)
         if dist is not None:
-            S = self.pose_response(waveform, tissue=tissue, T2=T2, T1=T1, rho=rho, D=D, B0=B0, b0_dir=b0_dir,
-                                    chi_iso=chi_iso, chi_aniso=chi_aniso,
-                                    compartment=compartment).compose(dist)
+            S = self.pose_response(waveform, tissue=tissue, scanner=scanner, compartment=compartment).compose(dist)
             return S if complex_signal else np.abs(S)
-        P = self._prepare(waveform, tissue=tissue, T2=T2, T1=T1, rho=rho, D=D, B0=B0, b0_dir=b0_dir, chi_iso=chi_iso,
-                          chi_aniso=chi_aniso, orientation=orientation, compartment=compartment)
+        P = self._prepare(waveform, tissue=tissue, scanner=scanner, orientation=orientation, compartment=compartment)
         phi = self._walker_phases(P, waveform)
         S = (P["ew"][:, None] * np.exp(1j * phi)).sum(0) / P["norm"]
         return S if complex_signal else np.abs(S)
 
-    def walker_signals(self, waveform, *, tissue="nominal", T2=None, T1=None, rho=None, D=None, B0=None,
-                       b0_dir=(0.0, 0.0, 1.0), chi_iso=None, chi_aniso=0.0, orientation=None, compartment=None,
+    def walker_signals(self, waveform, *, tissue=None, scanner=None, orientation=None, compartment=None,
                        b1_scale=None, off_resonance_T=None):
         """The replay **before the ensemble mean**: ``(w, ew, E)`` with ``w`` the walkers' statistical weights
         ``(n_w,)``, ``ew`` those weights with the relaxation and surface terms applied, and ``E`` the complex
@@ -346,12 +377,10 @@ class ReplayPack:
         """
         waveform = waveform.waveform if hasattr(waveform, "waveform") else waveform
         if b1_scale is None and off_resonance_T is None:
-            P = self._prepare(waveform, tissue=tissue, T2=T2, T1=T1, rho=rho, D=D, B0=B0, b0_dir=b0_dir, chi_iso=chi_iso,
-                              chi_aniso=chi_aniso, orientation=orientation, compartment=compartment)
+            P = self._prepare(waveform, tissue=tissue, scanner=scanner, orientation=orientation, compartment=compartment)
             w = np.asarray(self.spin_weights, np.float64)
             return w, P["ew"], np.exp(1j * self._walker_phases(P, waveform))
-        E = self.replay_bloch(waveform, b1_scale=b1_scale, off_resonance_T=off_resonance_T, tissue=tissue, T2=T2, T1=T1,
-                              rho=rho, D=D, B0=B0, b0_dir=b0_dir, chi_iso=chi_iso, chi_aniso=chi_aniso,
+        E = self.replay_bloch(waveform, b1_scale=b1_scale, off_resonance_T=off_resonance_T, tissue=tissue, scanner=scanner,
                               orientation=orientation, compartment=compartment, complex_signal=True, per_walker=True)
         w = np.asarray(self.spin_weights, np.float64)
         return w, w, E
@@ -374,8 +403,8 @@ class ReplayPack:
             ch, b0_dir, B0, chi_aniso = P["ch"], P["b0_dir"], P["B0"], P["chi_aniso"]
             gm = ch["susceptibility_grid"]
             if P["chi_iso"] is None:
-                raise ValueError("B0 was given without chi_iso: the pack carries the substrate's field basis, "
-                                 "not a susceptibility; give chi_iso (and chi_aniso) at replay")
+                raise ValueError("a scanner field was given without a chi_iso in the tissue: the pack carries the substrate's field basis, "
+                                 "not a susceptibility; give a tissue with chi_iso (and chi_aniso)")
             chi_i = float(P["chi_iso"])
             pm = ch.get("susceptibility_path")
             if pm is not None:                                                        # the path route: every term a contraction
@@ -409,8 +438,7 @@ class ReplayPack:
             phi = gradient_phase(Geff, pos, dt).T + phi_x[:, None]                             # (n_w, n_meas)
         return phi
 
-    def replay_bloch(self, waveform, *, b1_scale=None, off_resonance_T=None, tissue="nominal", T2=None, T1=None,
-                     rho=None, D=None, B0=None, b0_dir=(0.0, 0.0, 1.0), chi_iso=None, chi_aniso=0.0,
+    def replay_bloch(self, waveform, *, b1_scale=None, off_resonance_T=None, tissue=None, scanner=None,
                      orientation=None, compartment=None, jax=False, complex_signal=False, per_walker=False):
         """The RF-aware replay: each walker's magnetisation vector propagated through the actual sequence
         operators on this pack's walk (:func:`~dmipy_sim.replay.trajectories.replay_bloch`).
@@ -421,7 +449,7 @@ class ReplayPack:
         (``b1_scale``), a finite pulse, a pulse train's coherence pathways. Those are what this route is for,
         and it costs a propagation per piece instead of a projection.
 
-        Knobs are the same as :meth:`replay` and resolve the same way, nominal by default; the pose rotates the
+        Knobs are the same as :meth:`replay` and resolve the same way; the pose rotates the
         acquisition and the field direction as it does there. ``b1_scale`` scales every flip angle, as a scalar
         or per walker. ``off_resonance_T`` is a **uniform** static field offset (a field-map value, in T) every
         walker precesses in through the actual pulses -- what a macroscopic layer of a phantom is (RPH.md 5.1).
@@ -430,8 +458,7 @@ class ReplayPack:
         """
         from .trajectories import replay_bloch as _rb, replay_bloch_jax as _rbj
         from .compression import decode_occupancy, decode_boundary_bridge
-        P = self._prepare(waveform, tissue=tissue, T2=T2, T1=T1, rho=rho, D=D, B0=B0, b0_dir=b0_dir,
-                          chi_iso=chi_iso, chi_aniso=chi_aniso, orientation=orientation, compartment=compartment,
+        P = self._prepare(waveform, tissue=tissue, scanner=scanner, orientation=orientation, compartment=compartment,
                           relaxation=False, surface=False)
         rf = waveform.rf
         if not rf:
@@ -497,8 +524,8 @@ class ReplayPack:
         if not self._field_active(P["B0"]):
             return np.zeros((P["n_w"], self.n_t))                                     # a declared zero field
         if P["chi_iso"] is None:
-            raise ValueError("B0 was given without chi_iso: the pack carries the substrate's field basis, "
-                             "not a susceptibility; give chi_iso (and chi_aniso) at replay")
+            raise ValueError("a scanner field was given without a chi_iso in the tissue: the pack carries the substrate's field basis, "
+                             "not a susceptibility; give a tissue with chi_iso (and chi_aniso)")
         gm = P["ch"]["susceptibility_grid"]
         pm = P["ch"].get("susceptibility_path")
         if pm is not None:
@@ -514,11 +541,11 @@ class ReplayPack:
                                           chi_aniso=P["chi_aniso"]),
                            pos, np.asarray(gm["origin"], float), gm["voxel_size"], periodic=False)
 
-    def _prepare(self, waveform, *, tissue, T2, T1, rho, D, B0, b0_dir, chi_iso, chi_aniso, orientation, compartment,
-                 relaxation=True, surface=True):
+    def _prepare(self, waveform, *, tissue, scanner, orientation, compartment, relaxation=True, surface=True):
         """Everything a replay resolves before it reads positions: the waveform's exact per-save weights (rotated
-        into the substrate frame when a pose is given), the knobs (nominal, a Tissue, or explicit), the per-walker
-        weights with the relaxation and surface terms applied, and the compartment selection."""
+        into the substrate frame when a pose is given), the tissue's values (none for ``None``), the scanner's
+        field along the bore's z turned by the pose, the per-walker weights with the relaxation and surface terms
+        applied, and the compartment selection."""
         from .compression import require_position_method, decode_occupancy, relaxation_logweight
         from ._replay_kernel import effective_gradient, bin_gate
         require_position_method(self.method)
@@ -542,24 +569,14 @@ class ReplayPack:
         ch = (self.meta.get("compression", {}).get("channels", {}) or {})
         n_w = self.n_walkers
         w = np.asarray(self.spin_weights, np.float64)
-        if isinstance(tissue, str):
-            if tissue != "nominal":
-                raise ValueError("tissue must be 'nominal', False, or a Tissue")
-            spec = self.substrate
-            if spec is not None:
-                from ..spec.tissue import Tissue
-                tissue = Tissue.from_spec(spec)
-            else:
-                tissue = None
-        elif tissue is False:
-            tissue = None
-        if tissue is not None:
-            k = tissue.knobs()
-            T2 = k["T2"] if T2 is None else T2; T1 = k["T1"] if T1 is None else T1
-            rho = k["rho"] if rho is None else rho; B0 = k["B0"] if B0 is None else B0
-            chi_iso = k["chi_iso"] if chi_iso is None else chi_iso
-            if chi_aniso == 0.0: chi_aniso = k["chi_aniso"]
-            if tuple(b0_dir) == (0.0, 0.0, 1.0): b0_dir = k["b0_dir"]
+        from ..spec.tissue import Tissue
+        if tissue is not None and not isinstance(tissue, Tissue):
+            raise TypeError(f"tissue is a Tissue (pack.nominal, Tissue(...)) or None for the bare diffusion signal; "
+                            f"got {type(tissue).__name__}")
+        t = tissue if tissue is not None else Tissue()
+        T2, T1, rho, D, chi_iso, chi_aniso = t.T2, t.T1, t.rho, t.D, t.chi_iso, t.chi_aniso
+        B0 = _field_strength(scanner)
+        b0_dir = (0.0, 0.0, 1.0)                                          # the bore's field; the pose turns it
         if orientation is not None:
             R = self.pose_rotation(orientation)
             G, G_eff = G @ R, G_eff @ R                                   # R^T g per sample: stored coordinates
@@ -596,8 +613,7 @@ class ReplayPack:
         return dict(G=G, Geff=Geff, dt=dt, n_t=n_t, dt_wf=dt_wf, ch=ch, n_w=n_w, w=w, ew=ew, norm=norm, B0=B0,
                     b0_dir=b0_dir, chi_iso=chi_iso, chi_aniso=chi_aniso, T2=T2, T1=T1, rho=rho, D=D)
 
-    def pose_response(self, waveform, *, tissue="nominal", T2=None, T1=None, rho=None, D=None, B0=None,
-                      b0_dir=(0.0, 0.0, 1.0), chi_iso=None, chi_aniso=0.0, compartment=None,
+    def pose_response(self, waveform, *, tissue=None, scanner=None, pose=None, compartment=None,
                       method="auto", keep=None, cache=None):
         """The pack's response over every pose of its substrate, for one acquisition: a :class:`PoseResponse` whose
         coefficients a voxel's orientation distribution contracts against (RPH.md 6).
@@ -616,16 +632,23 @@ class ReplayPack:
         ``method="quadrature"`` asks for it explicitly; ``method="closed"`` refuses what the closed form cannot
         take rather than falling back. :attr:`PoseResponse.route` says which was used.
 
-        Knobs are the same as :meth:`replay` and resolve the same way; the pose is not one of them, since every
-        pose is what is being expanded.
+        ``tissue`` and ``scanner`` are :meth:`replay`'s. The substrate's pose is not a knob here, since every pose
+        of it is what is being expanded; ``pose`` is the SPECIMEN's rigid rotation in the bore (a 3x3 rotation, or
+        a phantom's :class:`~dmipy_sim.phantom.partition.Pose`): the acquisition and the field turn into that
+        frame and the expansion runs there.
 
         ``cache`` -- a directory (or ``True`` for ``$DMIPY_SIM_CACHE``, else ``~/.cache/dmipy_sim/pose``): the
         expansion is written there under a key of the pack's digest, the acquisition on the pack's grid, the
         resolved knobs, the frame, the method and the band, and read back instead of recomputed the next time
         the same pack meets the same acquisition. Off unless asked for.
         """
-        P = self._prepare(waveform, tissue=tissue, T2=T2, T1=T1, rho=rho, D=D, B0=B0, b0_dir=b0_dir, chi_iso=chi_iso,
-                          chi_aniso=chi_aniso, orientation=None, compartment=compartment)
+        R_s = _pose_matrix(pose)
+        if R_s is not None:                                       # the acquisition in the specimen frame: what the
+            from ..acquisition.waveforms import rotate_waveform   # expansion reads, in P and from the waveform itself
+            waveform = rotate_waveform(waveform, R_s.T)
+        P = self._prepare(waveform, tissue=tissue, scanner=scanner, orientation=None, compartment=compartment)
+        if R_s is not None:
+            P["b0_dir"] = tuple(R_s.T @ np.array([0.0, 0.0, 1.0]))   # the bore's field, seen from the specimen
         if method not in ("auto", "closed", "quadrature"):
             raise ValueError("method is 'auto', 'closed' (the per-walker Rayleigh expansion) or 'quadrature'")
         path = None
@@ -779,7 +802,7 @@ class ReplayPack:
             chi_i = None
             if spec is not None:
                 from ..spec.tissue import Tissue
-                chi_i = Tissue.from_spec(spec).knobs().get("chi_iso")
+                chi_i = Tissue.from_spec(spec).chi_iso
             cf = susc_path_series_fidelity(series, pk.arrays, pm, g, w=self.spin_weights, dt=_dt_f,
                                            env=self.meta.get("replay_envelope", {}).get("acquisition"),
                                            chi_iso=float(chi_i or 1.06e-6))
@@ -1042,7 +1065,7 @@ class ReplayPack:
         if pm is None:
             raise ValueError("the pose expansion with a field needs the pack's susc_path channel (C3 path route)")
         if chi_iso is None:
-            raise ValueError("B0 was given without chi_iso; give chi_iso (and chi_aniso)")
+            raise ValueError("a scanner field was given without a chi_iso in the tissue; give chi_iso (and chi_aniso)")
         dt, n_t = P["dt"], P["n_t"]
         Cs, names = susc_path_coeffs(self.arrays, pm)
         n_tf, dt_f = _path_grid(pm, n_t, dt)
@@ -1123,7 +1146,7 @@ class ReplayPack:
             if pm is None:
                 raise ValueError("the pose expansion with a field needs the pack's susc_path channel (C3 path route)")
             if chi_iso is None:
-                raise ValueError("B0 was given without chi_iso; give chi_iso (and chi_aniso)")
+                raise ValueError("a scanner field was given without a chi_iso in the tissue; give chi_iso (and chi_aniso)")
             from .bank import susc_path_coeffs
             Cs, names = susc_path_coeffs(self.arrays, pm)
             n_tf, dt_f = _path_grid(pm, n_t, dt)

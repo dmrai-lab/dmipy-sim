@@ -1,5 +1,8 @@
 """A pack's pose: one rotation exactly, or a distribution of rotations through the SO(3) response (#157)."""
 import numpy as np
+
+from dmipy_sim.spec.tissue import Tissue
+from tests.replay_frames import pose_with_field_along
 import pytest
 
 import dmipy_sim as d
@@ -60,7 +63,8 @@ def _pgse(pk, dirs, bvals, delta=1e-3, Delta=3e-3):
     return _Acq(G, dt, bvals)
 
 
-KW = dict(B0=3.0, b0_dir=(0.6, 0.0, 0.8), chi_iso=-0.1e-6, chi_aniso=-0.1e-6)
+KW = dict(scanner=3.0, tissue=Tissue(chi_iso=-0.1e-6, chi_aniso=-0.1e-6))
+B0_DIR = (0.6, 0.0, 0.8)                                       # the field in the substrate frame: a pose
 BAND = {}                         # no band: it follows the response's phase amplitude
 
 
@@ -72,10 +76,14 @@ def test_one_pose_is_the_counter_rotated_acquisition(hollow):
     np.testing.assert_allclose(pk.replay(seq, orientation=(0, 0, 1), complex_signal=True, **KW), ref, rtol=1e-12)
     th = 0.7
     R = np.array([[np.cos(th), 0, np.sin(th)], [0, 1, 0], [-np.sin(th), 0, np.cos(th)]])
-    kw = dict(KW, b0_dir=tuple(R.T @ np.asarray(KW["b0_dir"])))
-    np.testing.assert_allclose(pk.replay(seq, orientation=R, complex_signal=True, **KW),
-                               pk.replay(_Acq(np.asarray(seq.G_eff) @ R, seq.dt), complex_signal=True, **kw),
+    turned = _Acq(np.asarray(seq.G_eff) @ R, seq.dt)          # the acquisition in the substrate frame
+    np.testing.assert_allclose(pk.replay(seq, orientation=R, complex_signal=True), pk.replay(turned, complex_signal=True),
                                rtol=1e-6)                     # the object stores G in float32: agreement to its rounding
+    # with a field the pose turns it too: the counter-rotated acquisition under the bore's field is another setting
+    assert not np.allclose(pk.replay(seq, orientation=R, complex_signal=True, **KW), pk.replay(turned, complex_signal=True, **KW), rtol=1e-6)
+    R_f = pose_with_field_along(R.T @ np.array([0.0, 0.0, 1.0]))   # a pose putting the field where R put it, the gradient turned back
+    np.testing.assert_allclose(pk.replay(seq, orientation=R, complex_signal=True, **KW),
+                               pk.replay(_Acq(np.asarray(seq.G_eff) @ R @ R_f.T, seq.dt), orientation=R_f, complex_signal=True, **KW), rtol=1e-6)
     with pytest.raises(ValueError, match="proper rotation"):
         pk.replay(seq, orientation=np.diag([1, 1, -1]))
 
@@ -127,13 +135,13 @@ def test_the_azimuthal_energy_measures_how_symmetric_a_substrate_is(hollow, elli
     assert roll_variation(sym) < 4.0 * sym.floor
 
     pk2, seq2 = ellipsoid
-    asym = pk2.pose_response(seq2, tissue=False, **BAND)
+    asym = pk2.pose_response(seq2, **BAND)
     assert asym.asymmetry > 5e-3
     assert roll_variation(asym) > 8.0 * asym.floor
     # and it is still represented, because the azimuth is a dimension of the basis rather than an assumption
     assert asym.misfit.max() < 2.0 * asym.floor
     for R in so3.haar_rotations(4, seed=11):
-        np.testing.assert_allclose(asym.at(R), pk2.replay(seq2, orientation=R, tissue=False, complex_signal=True),
+        np.testing.assert_allclose(asym.at(R), pk2.replay(seq2, orientation=R, complex_signal=True),
                                    atol=3.0 * asym.floor)
 
 
@@ -160,7 +168,7 @@ def test_a_bingham_fan_reduces_to_the_watson_it_contains(ellipsoid):
     single-parameter dispersion can express -- checked on the substrate whose response varies enough with pose
     for the difference to be visible above its own noise."""
     pk, seq = ellipsoid
-    pr = pk.pose_response(seq, tissue=False, **BAND)
+    pr = pk.pose_response(seq, **BAND)
     frame = so3.rotation_of((0.3, 0.5, 0.81))
     cone = pr.compose(so3.Distribution.bingham(frame, (6.0, 6.0), lmax=pr.lmax, nmax=pr.nmax))
     watson = pr.compose(so3.Distribution.watson(6.0, mu=(0.3, 0.5, 0.81), lmax=pr.lmax, nmax=pr.nmax))
@@ -200,7 +208,6 @@ def test_a_response_the_truncation_cannot_hold_is_refused(ellipsoid):
     """The band is measured, not asserted: at a truncation the response does not fit into, composing would
     return a plausible wrong number, so the projection raises and names the knobs instead."""
     pk, seq = ellipsoid
-    P = pk._prepare(seq, tissue=False, T2=None, T1=None, rho=None, D=None, B0=None, b0_dir=(0, 0, 1), chi_iso=None,
-                    chi_aniso=0.0, orientation=None, compartment=None)
+    P = pk._prepare(seq, tissue=None, scanner=None, orientation=None, compartment=None)
     with pytest.raises(ValueError, match="not represented at"):
         pk._pose_coeffs(P, seq, band=0, n_check=200)                  # the sampled route, forced below its band

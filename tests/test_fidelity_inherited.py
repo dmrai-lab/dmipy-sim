@@ -95,7 +95,7 @@ def test_a_block_inherits_the_certificate_and_measures_its_own_floor(walks, tmp_
             np.testing.assert_array_equal(shard.arrays[name], measured.arrays[name])
     import dmipy_sim as d
     seq = d.pgse([[1, 0, 0]], 2e-4, 4e-4, gradient_strengths=0.1, n_t=shard.n_t, slew_rate=np.inf)
-    np.testing.assert_allclose(shard.replay(seq, tissue=False), measured.replay(seq, tissue=False), rtol=1e-12)
+    np.testing.assert_allclose(shard.replay(seq), measured.replay(seq), rtol=1e-12)
     from dmipy_sim.replay import read_rpk
     assert read_rpk(str(tmp_path / "b1.rpk")).meta["fidelity"]["certified"] == "inherited"
     with pytest.raises(ValueError, match="inherits a certificate only"):
@@ -149,8 +149,8 @@ def test_rounds_of_one_block_merge_and_recertify(walks, tmp_path):
     assert np.isnan(merged.arrays["voxel_certificate"][..., 2]).all()
     seq = d.pgse([[1, 0, 0]], 2e-4, 4e-4, gradient_strengths=0.1, n_t=merged.n_t, slew_rate=np.inf)
     W = [float(np.asarray(pk.arrays["spin_weights"]).sum()) for pk in rounds]
-    S = [pk.replay(seq, tissue=False)[0] for pk in rounds]
-    np.testing.assert_allclose(merged.replay(seq, tissue=False)[0], (W[0] * S[0] + W[1] * S[1]) / (W[0] + W[1]), rtol=1e-6)   # float32 weights
+    S = [pk.replay(seq)[0] for pk in rounds]
+    np.testing.assert_allclose(merged.replay(seq)[0], (W[0] * S[0] + W[1] * S[1]) / (W[0] + W[1]), rtol=1e-6)   # float32 weights
 
 
 def test_path_channel_series_encoder_is_chunked_device_capable_and_drops_zz():

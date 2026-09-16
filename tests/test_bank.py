@@ -15,6 +15,8 @@ from dmipy_sim import (build_replay_pack, build_to_floor, read_rpk,
                        compile_scheme, replay_signal)
 from dmipy_sim.replay import bank
 from dmipy_sim.constants import GAMMA
+from dmipy_sim.spec.tissue import Tissue
+from tests.replay_frames import field_along
 
 N_W, N_T, DT, D0, L = 3000, 200, 5e-4, 2e-9, 6e-6
 
@@ -190,9 +192,9 @@ def test_path_pack_with_lossy_positions_omits_the_grid_arrays_and_replays_via_pa
     # and it still replays: susceptibility off vs on must differ, and chi=0 must match the grid-free case
     from dmipy_sim import ScannerSequence
     W = ScannerSequence(G=np.zeros((1, N_T, 3)), dt=DT)     # a bare gradient echo: no pulse folded
-    kw = dict(b0_dir=[1, 0, 0], B0=7.0)                     # no T2 given: isolate the field
-    s0 = bank.replay_susc(pk, W, chi_iso=0.0, **kw)
-    s1 = bank.replay_susc(pk, W, chi_iso=1.06e-6, **kw)
+    W_lab, R = field_along(W, (1, 0, 0))                    # no T2 given: isolate the field
+    s0 = pk.replay(W_lab, orientation=R, scanner=7.0, tissue=Tissue(chi_iso=0.0))
+    s1 = pk.replay(W_lab, orientation=R, scanner=7.0, tissue=Tissue(chi_iso=1.06e-6))
     npt.assert_allclose(s0, 1.0, atol=1e-12)          # no gradient, no field -> nothing to dephase
     assert s1 < s0                                     # field present -> dephasing
 
@@ -243,7 +245,7 @@ def test_precision_tiers_flag_unshuffled_packs_as_unusable():
     assert pt["usable"] is False and "NOT DECLARED SHUFFLED" in pt["note"]
 
 
-def test_replay_susc_can_restrict_to_one_compartment():
+def test_a_field_replay_can_restrict_to_one_compartment():
     """A per-pool observable must be reachable from the public API.
 
     The packs carry a compartment channel so intra-axonal signal can be asked for separately -- that is
@@ -269,10 +271,10 @@ def test_replay_susc_can_restrict_to_one_compartment():
     W = ScannerSequence(G=np.zeros((1, nt, 3)), dt=dt,                   # no gradient; a spin echo's 180 at TE/2
                         rf=[RFEvent(0.0, 90), RFEvent((nt - 1) * dt / 2, 180)])
 
-    kw = dict(b0_dir=[0.0, 0.0, 1.0], B0=7.0, chi_iso=1.06e-6, complex_signal=True)
-    everything = bank.replay_susc(pk, W, **kw)
-    pool0 = bank.replay_susc(pk, W, compartment=0, **kw)
-    pool1 = bank.replay_susc(pk, W, compartment=1, **kw)
+    kw = dict(scanner=7.0, tissue=Tissue(chi_iso=1.06e-6), complex_signal=True)
+    everything = pk.replay(W, **kw)
+    pool0 = pk.replay(W, compartment=0, **kw)
+    pool1 = pk.replay(W, compartment=1, **kw)
 
     assert np.isfinite(complex(pool0[0])) and np.isfinite(complex(pool1[0]))
     assert complex(pool0[0]) != complex(pool1[0]), "the two pools must not give the same answer"
@@ -280,11 +282,11 @@ def test_replay_susc_can_restrict_to_one_compartment():
 
     # a boolean mask must select the same walkers as the id does
     mask = np.zeros(n_w, bool); mask[:n_w // 2] = True
-    assert complex(bank.replay_susc(pk, W, compartment=mask, **kw)[0]) == pytest.approx(
+    assert complex(pk.replay(W, compartment=mask, **kw)[0]) == pytest.approx(
         complex(pool0[0]), rel=1e-9)
 
     with pytest.raises(ValueError, match="matched no walkers"):
-        bank.replay_susc(pk, W, compartment=99, **kw)
+        pk.replay(W, compartment=99, **kw)
 
 
 def test_susc_path_bit_depth_is_the_cheap_axis_not_K():

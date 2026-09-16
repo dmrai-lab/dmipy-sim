@@ -46,9 +46,9 @@ def test_the_crop_becomes_a_phantom_on_the_image_grid(example, wm_pack):
 
 def test_the_signal_minimum_lies_along_the_fod_peak(example, wm_pack):
     ph, fod, R = example.build(str(CROP), wm_pack)
-    seq, g = example.acquisition(str(CROP), R, ph.grid, TE=0.030, delta=0.006, Delta=0.015)
+    seq, g = example.acquisition(str(CROP), ph.grid, TE=0.030, delta=0.006, Delta=0.015)
     assert seq.prescription is not None and seq.prescription.axes == ph.grid.axes
-    S = ph.replay(seq)
+    S = ph.replay(seq, pose=R)
     assert S.shape == (10, 10, 3, 113) and np.isfinite(S).all()
     b = g[:, 3]; ok = np.isclose(b, 3000)
     dirs = g[ok, :3] / np.linalg.norm(g[ok, :3], axis=1, keepdims=True) @ R     # into the image frame
@@ -82,8 +82,8 @@ def test_csd_on_the_synthetic_dwi_recovers_the_fod_that_built_it(example, wm_pac
     check = importlib.util.module_from_spec(spec); spec.loader.exec_module(check)
     from dmipy_sim.replay import read_rpk
     ph, fod, R = example.build(str(CROP), wm_pack)
-    seq, g = example.acquisition(str(CROP), R, ph.grid, TE=0.030, delta=0.006, Delta=0.015)
-    S = ph.replay(seq)
+    seq, g = example.acquisition(str(CROP), ph.grid, TE=0.030, delta=0.006, Delta=0.015)
+    S = ph.replay(seq, pose=R)
     f_wm = ph.fraction(ph.substrates[0])
     voxels = np.argwhere((fod.data[..., 0] > 0.15) & (f_wm > 0.5))
     c_out = check.fit_fods(read_rpk(wm_pack), seq, S, voxels)

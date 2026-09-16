@@ -15,6 +15,8 @@ import sys
 
 import numpy as np
 
+from dmipy_sim.acquisition.waveforms import rotate_waveform
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from brain_from_csd import acquisition  # noqa: E402
 
@@ -35,7 +37,8 @@ def fit_fods(pack, seq, S, voxels):
     from dmipy_fit.core.spherical_harmonics_framework import MultiCompartmentSphericalHarmonicsModel
     from dmipy_fit.signal_models.tissue_response_models import estimate_TR2_anisotropic_tissue_response_model
     scheme = AcquisitionScheme(seq)
-    single_fibre = np.real(pack.replay(seq, orientation=np.eye(3), complex_signal=True))[None, :]
+    single_fibre = np.real(pack.replay(seq, orientation=np.eye(3), tissue=pack.nominal, scanner=pack.nominal_field_T,
+                                       complex_signal=True))[None, :]
     _S0, tr2 = estimate_TR2_anisotropic_tissue_response_model(scheme, single_fibre)     # (S0, model)
     model = MultiCompartmentSphericalHarmonicsModel(models=[tr2], sh_order=8)
     data = np.stack([S[tuple(v)] for v in voxels])
@@ -62,7 +65,8 @@ def main(argv=None):
     from dmipy_sim.replay.phantom import read_rph
     fod = read_mif(os.path.join(a.batman, "wmfod_norm.mif"))
     grid, R = Grid.from_oblique_affine(fod.affine, fod.shape[:3])
-    seq, g = acquisition(a.batman, R, grid, TE=a.TE, delta=a.delta, Delta=a.Delta)
+    seq, g = acquisition(a.batman, grid, TE=a.TE, delta=a.delta, Delta=a.Delta)
+    seq = rotate_waveform(seq, R.T)                                   # the acquisition in the image frame, as the phantom replayed it (pose=R)
     S = nib.load(os.path.join(a.out, "synthetic_dwi.nii.gz")).get_fdata()
     ph = read_rph(os.path.join(a.out, "batman_brain.rph"))
     f_wm = ph.to_volume(ph.fraction(0), fill=0.0)

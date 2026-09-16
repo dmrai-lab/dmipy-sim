@@ -1,6 +1,6 @@
 """What a voxel may hold: a solved pack, a closed form, or nothing (RPH.md 3.1).
 
-Each declaration is an object that carries its own id, its proton density and, for a pack, the tissue knobs
+Each declaration is an object that carries its own id, its proton density and the :class:`~dmipy_sim.spec.Tissue`
 it replays at. A phantom is keyed by these objects, so an id is typed once. The closed forms implement
 :class:`AnalyticSubstrate`; :class:`FreeWater` is the one this package ships, and the file names a closed
 form by ``model`` so a reader that does not know one refuses it rather than guessing.
@@ -14,7 +14,6 @@ import numpy as np
 
 __all__ = ["AnalyticSubstrate", "PackSubstrate", "FreeWater", "Inert", "substrate_from_meta"]
 
-_KNOBS = {"T2_s": "T2", "T1_s": "T1", "rho_m_s": "rho", "chi_iso": "chi_iso", "chi_aniso": "chi_aniso"}
 
 
 @runtime_checkable
@@ -33,7 +32,7 @@ class AnalyticSubstrate(Protocol):
     A closed form is **full-tier**: every knob a pack takes has an exact value for it. A form with no
     susceptibility source has a field of zero at any ``B0``; with no wall it has no surface relaxivity; with no
     bound pool no magnetisation transfer; under an RF train it is a static spin's response. What it does carry it
-    evaluates exactly -- free water's bulk relaxation, ``exp(-TE / T2)``, when its ``T2_s`` is declared. Nothing
+    evaluates exactly -- free water's bulk relaxation, ``exp(-TE / T2)``, when its tissue declares ``T2``. Nothing
     is stated as missing and nothing composes silently: the zeros are the physics."""
     oriented: bool
 
@@ -65,17 +64,18 @@ class PackSubstrate(_Declared):
 
     ``pack`` is a ``.rpk`` path or an in-memory :class:`~dmipy_sim.replay.replay.ReplayPack`. ``m0`` is required:
     proton density only means anything relative to the other substrates of the same phantom, so there is no
-    default, the same way there is no default pack. The tissue knobs (``T2_s``, ``T1_s`` by the pack's own pool
-    names, by pool id, or one value for every pool; the wall relaxivity ``rho_m_s``; the field source's
-    ``chi_iso`` / ``chi_aniso``) are the values this substrate replays at (RPH.md 3.2); anything not given takes
-    the pack's nominal value from its embedded specification. A pool with no T2 in either place replays with none,
-    which a phantom refuses beside a substrate that does relax (:meth:`Phantom.replay`, dmipy-sim#238).
+    default, the same way there is no default pack. ``tissue`` is the :class:`~dmipy_sim.spec.Tissue` this
+    substrate replays at (RPH.md 3.2: pool T2 / T1 by the pack's pool names or ids, the walls' rho, the bulk D,
+    the field source's chi) -- ``pack.nominal`` for the pack's own specification's values -- or ``None``, the bare
+    diffusion signal, which a phantom refuses beside a substrate that does relax (:meth:`Phantom.replay`,
+    dmipy-sim#238). The scanner's field is the replay's, not the substrate's.
     """
 
     kind = "pack"
 
-    def __init__(self, pack, *, m0, name=None, T2_s=None, T1_s=None, rho_m_s=None, chi_iso=None, chi_aniso=None):
+    def __init__(self, pack, *, m0, name=None, tissue=None):
         from ..replay.replay import ReplayPack
+        from ..spec.tissue import Tissue
         if isinstance(pack, (str, Path)):
             self.uri, self._pack = str(pack), None
         elif isinstance(pack, ReplayPack):
@@ -85,8 +85,9 @@ class PackSubstrate(_Declared):
         if name is None:
             name = self._pack.meta.get("id") if self._pack is not None else Path(self.uri).stem
         super().__init__(name, m0)
-        given = dict(T2_s=T2_s, T1_s=T1_s, rho_m_s=rho_m_s, chi_iso=chi_iso, chi_aniso=chi_aniso)
-        self.tissue = {_KNOBS[k]: (dict(v) if isinstance(v, dict) else v) for k, v in given.items() if v is not None}
+        if tissue is not None and not isinstance(tissue, Tissue):
+            raise TypeError(f"tissue is a Tissue (pack.nominal, Tissue(...)) or None; got {type(tissue).__name__}")
+        self.tissue = tissue
 
     @property
     def pack(self):
@@ -101,16 +102,15 @@ class PackSubstrate(_Declared):
 
     def to_meta(self):
         m = self._base_meta()
-        if self.tissue:
-            m["tissue"] = {k: (list(np.asarray(v, float).reshape(-1)) if not isinstance(v, dict) and np.ndim(v) else v)
-                          for k, v in self.tissue.items()}
+        t = self.tissue.to_meta() if self.tissue is not None else {}
+        if t:
+            m["tissue"] = t
         return m
 
     @classmethod
     def from_meta(cls, meta, *, pack):
-        t = dict(meta.get("tissue") or {})
-        inv = {v: k for k, v in _KNOBS.items()}
-        return cls(pack, m0=meta["m0"], name=meta["id"], **{inv[k]: v for k, v in t.items() if k in inv})
+        from ..spec.tissue import Tissue
+        return cls(pack, m0=meta["m0"], name=meta["id"], tissue=Tissue.from_meta(meta.get("tissue")))
 
 
 class FreeWater(_Declared):
@@ -121,52 +121,60 @@ class FreeWater(_Declared):
     ``1 / sqrt(N)``, so at b = 3000 s/mm² a few-thousand-walker free-water pack carries orders of magnitude more
     noise than signal. The closed form is exact, has no walkers and no pose. ``m0`` is required, as on a pack.
     It is full-tier with zeros: no susceptibility source (a field of zero at any ``B0``), no wall (no surface
-    relaxivity), no bound pool; its bulk relaxation is ``exp(-TE / T2_s) exp(-TM / T1_s)`` of the sequence's echo
-    and mixing times when ``T2_s`` / ``T1_s`` are declared, and none when they are not.
+    relaxivity), no bound pool; its bulk relaxation is ``exp(-TE / T2) exp(-TM / T1)`` of the sequence's echo
+    and mixing times when its ``tissue`` declares them, and none when it does not. ``tissue`` is a
+    :class:`~dmipy_sim.spec.Tissue` whose ``D`` is the diffusion coefficient (required) and whose ``T2`` / ``T1``
+    are one value each (a closed form has one pool).
     """
 
     kind = "analytic"
     model = "free_water"
     oriented = False
 
-    def __init__(self, *, D_m2_s, m0, name="csf/free-water", T2_s=None, T1_s=None):
+    def __init__(self, *, m0, tissue, name="csf/free-water"):
+        from ..spec.tissue import Tissue
         super().__init__(name, m0)
-        self.D_m2_s = float(D_m2_s)
-        if self.D_m2_s <= 0:
-            raise ValueError(f"D_m2_s is a diffusivity in m^2/s and must be positive: {D_m2_s}")
-        self.T2_s = None if T2_s is None else float(T2_s)
-        self.T1_s = None if T1_s is None else float(T1_s)
-        for k, v in (("T2_s", self.T2_s), ("T1_s", self.T1_s)):
-            if v is not None and v <= 0:
+        if not isinstance(tissue, Tissue):
+            raise TypeError(f"tissue is a Tissue with D, the diffusion coefficient; got {type(tissue).__name__}")
+        if tissue.D is None or float(tissue.D) <= 0:
+            raise ValueError(f"free water needs a positive diffusion coefficient: Tissue(D=...) in m^2/s, got {tissue.D!r}")
+        for k in ("T2", "T1"):
+            v = getattr(tissue, k)
+            if v is not None and (np.ndim(v) or isinstance(v, dict)):
+                raise ValueError(f"a closed form has one pool: {k} is one value, not {v!r}")
+            if v is not None and float(v) <= 0:
                 raise ValueError(f"{k} is a relaxation time in seconds and must be positive: {v}")
+        self.tissue = tissue
 
     def response(self, seq, pose=None):
         """``exp(-b D)`` per measurement (the sequence's declared b, else the integral of its effective gradient),
-        times the bulk relaxation of the declared ``T2_s`` over the echo time and ``T1_s`` over the mixing time.
+        times the bulk relaxation of the tissue's ``T2`` over the echo time and ``T1`` over the mixing time.
         The pose is ignored: an isotropic form has none (RPH.md 6)."""
-        E = np.exp(-_b_values(seq) * self.D_m2_s).astype(np.complex128)
-        if self.T2_s is not None:
-            E = E * np.exp(-_echo_time(seq) / self.T2_s)
-        if self.T1_s is not None:
-            E = E * np.exp(-float(getattr(seq, "TM", 0.0) or 0.0) / self.T1_s)
+        t = self.tissue
+        E = np.exp(-_b_values(seq) * float(t.D)).astype(np.complex128)
+        if t.T2 is not None:
+            E = E * np.exp(-_echo_time(seq) / float(t.T2))
+        if t.T1 is not None:
+            E = E * np.exp(-float(getattr(seq, "TM", 0.0) or 0.0) / float(t.T1))
         return E
 
     def to_meta(self):
-        m = {**self._base_meta(), "model": self.model, "params": {"diffusivity": self.D_m2_s}}
-        if self.T2_s is not None:
-            m["T2_s"] = self.T2_s
-        if self.T1_s is not None:
-            m["T1_s"] = self.T1_s
+        t = self.tissue
+        m = {**self._base_meta(), "model": self.model, "params": {"diffusivity": float(t.D)}}
+        if t.T2 is not None:
+            m["T2_s"] = float(t.T2)
+        if t.T1 is not None:
+            m["T1_s"] = float(t.T1)
         return m
 
     @classmethod
     def from_meta(cls, meta):
-        return cls(D_m2_s=meta["params"]["diffusivity"], m0=meta["m0"], name=meta["id"],
-                   T2_s=meta.get("T2_s"), T1_s=meta.get("T1_s"))
+        from ..spec.tissue import Tissue
+        return cls(m0=meta["m0"], name=meta["id"],
+                   tissue=Tissue(D=meta["params"]["diffusivity"], T2=meta.get("T2_s"), T1=meta.get("T1_s")))
 
     def __repr__(self):
-        t = "".join(f", {k}={v:g}" for k, v in (("T2_s", self.T2_s), ("T1_s", self.T1_s)) if v is not None)
-        return f"FreeWater(D_m2_s={self.D_m2_s:g}, m0={self.m0:g}{t}, name={self.name!r})"
+        return f"FreeWater(m0={self.m0:g}, tissue={self.tissue!r}, name={self.name!r})"
 
 
 class Inert(_Declared):

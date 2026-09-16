@@ -9,6 +9,7 @@ from dmipy_sim.replay import ReplayPack, compile_scheme, replay_signal
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_sim.replay.compression import decode_occupancy, relaxation_logweight
 from dmipy_sim import sequences as _seqmod
+from dmipy_sim.spec.tissue import Tissue
 
 D0 = 2e-9
 ENV = dict(bvals=[0.0, 1e9, 3e9], dirs=[[1, 0, 0], [0, 0, 1]], ogse_periods=[2], shortd_b=1e9,
@@ -55,19 +56,19 @@ def test_relaxation_applies_the_packs_per_pool_rates(packs):
     C = read_position_coeffs(full.arrays, dtype=np.float64)
     phi = C.reshape(C.shape[0], -1) @ W
     ref = np.abs((np.exp(logw)[:, None] * np.exp(1j * phi)).sum(0) / C.shape[0])
-    np.testing.assert_allclose(full.replay(wf, T2=T2, T1=T1), ref, rtol=1e-12)
-    assert full.replay(wf, T2=T2, T1=T1)[0] < full.replay(wf)[0]         # T2 costs signal, also at b = 0
+    np.testing.assert_allclose(full.replay(wf, tissue=Tissue(T2=T2, T1=T1)), ref, rtol=1e-12)
+    assert full.replay(wf, tissue=Tissue(T2=T2, T1=T1))[0] < full.replay(wf)[0]         # T2 costs signal, also at b = 0
     with pytest.raises(ValueError, match="no compartment channel"):
-        plain.replay(wf, T2=T2)
+        plain.replay(wf, tissue=Tissue(T2=T2))
     with pytest.raises(ValueError, match="every id"):
-        full.replay(wf, T2=[0.08])
-    np.testing.assert_allclose(full.replay(wf, T2={"extra": 0.08, "intra": 0.03}, T1=T1),
-                               full.replay(wf, T2=T2, T1=T1))                # names resolve through the spec
+        full.replay(wf, tissue=Tissue(T2=[0.08]))
+    np.testing.assert_allclose(full.replay(wf, tissue=Tissue(T2={"extra": 0.08, "intra": 0.03}, T1=T1)),
+                               full.replay(wf, tissue=Tissue(T2=T2, T1=T1)))                # names resolve through the spec
     for key in ("per_comp", "mt", "T2", "rho"):
         assert key not in full.meta, "a pack carries channels, never a physical value"
-    np.testing.assert_array_equal(full.replay(wf), full.replay(wf, tissue=False))   # a bare geometry declares no values
-    with pytest.raises(ValueError, match="nominal"):
-        full.replay(wf, tissue="all")
+    np.testing.assert_array_equal(full.replay(wf), full.replay(wf, tissue=full.nominal))   # a bare geometry declares no values
+    with pytest.raises(TypeError, match="a Tissue .* or None"):
+        full.replay(wf, tissue="nominal")                                     # no strings: the nominal values are pack.nominal
 
 
 def test_surface_relaxivity_uses_the_recorded_diffusivity(packs):
@@ -78,11 +79,11 @@ def test_surface_relaxivity_uses_the_recorded_diffusivity(packs):
     from dmipy_sim.replay._replay_kernel import bin_gate
     chi = bin_gate(np.ones(wf.n_t), wf.dt, full.n_t, full.dt)[0]     # contact after the echo is not in the acquisition
     ref = replay_signal(full, W, rho_over_D=rho / D0, chi_hat=chi)
-    np.testing.assert_allclose(full.replay(wf, rho=rho), ref, rtol=1e-12)
-    np.testing.assert_allclose(full.replay(wf, rho=rho, D=D0), ref, rtol=1e-12)
+    np.testing.assert_allclose(full.replay(wf, tissue=Tissue(rho=rho)), ref, rtol=1e-12)
+    np.testing.assert_allclose(full.replay(wf, tissue=Tissue(rho=rho, D=D0)), ref, rtol=1e-12)
     with pytest.raises(ValueError, match="no C2"):
-        plain.replay(wf, rho=rho)
-    np.testing.assert_array_equal(full.replay(wf, B0=3.0), full.replay(wf))      # its spec declares no field source
+        plain.replay(wf, tissue=Tissue(rho=rho))
+    np.testing.assert_array_equal(full.replay(wf, scanner=3.0), full.replay(wf))      # its spec declares no field source
 
 
 def test_any_waveform_grid_and_a_sequence_are_accepted(packs):
@@ -107,7 +108,7 @@ def test_save_and_load_round_trip(packs, tmp_path):
     back = ReplayPack.load(path)
     assert back.has_relaxation and back.has_surface and not back.has_field
     wf = _wf(full.n_t, full.dt)
-    np.testing.assert_array_equal(back.replay(wf, rho=1e-5, T2=T2), full.replay(wf, rho=1e-5, T2=T2))
+    np.testing.assert_array_equal(back.replay(wf, tissue=Tissue(rho=1e-5, T2=T2)), full.replay(wf, tissue=Tissue(rho=1e-5, T2=T2)))
     assert back.diffusivity == pytest.approx(D0)
 
 
@@ -140,14 +141,14 @@ def test_a_substrate_with_no_field_source_replays_at_any_B0_as_a_zero_field(pack
     full, plain = packs
     assert full.field_is_zero and not full.has_field
     wf = _wf(full.n_t, full.dt)
-    np.testing.assert_array_equal(full.replay(wf, B0=3.0, chi_iso=1e-7), full.replay(wf))
-    np.testing.assert_allclose(full.pose_response(wf, B0=3.0, chi_iso=1e-7, keep=(4, 0)).coeffs,
+    np.testing.assert_array_equal(full.replay(wf, scanner=3.0, tissue=Tissue(chi_iso=1e-7)), full.replay(wf))
+    np.testing.assert_allclose(full.pose_response(wf, scanner=3.0, tissue=Tissue(chi_iso=1e-7), keep=(4, 0)).coeffs,
                                full.pose_response(wf, keep=(4, 0)).coeffs)
     import copy
     bare = ReplayPack(dict(full.arrays), {k: v for k, v in copy.deepcopy(full.meta).items() if k != "substrate"})
     assert not bare.field_is_zero
     with pytest.raises(ValueError, match="no field tier"):
-        bare.replay(wf, B0=3.0, chi_iso=1e-7)
+        bare.replay(wf, scanner=3.0, tissue=Tissue(chi_iso=1e-7))
 
 
 def test_relaxation_and_contact_end_at_the_readout(packs):
@@ -157,10 +158,10 @@ def test_relaxation_and_contact_end_at_the_readout(packs):
     full, _ = packs
     n = 8; TE = n * full.dt
     fid = _seqmod.gre(TE, n_t=n * 4 + 1)                                        # a pure FID on a finer grid
-    s = full.replay(fid, tissue=False, T2=[TE, TE], T1=[1e9, 1e9])
+    s = full.replay(fid, tissue=Tissue(T2=[TE, TE], T1=[1e9, 1e9]))
     np.testing.assert_allclose(np.abs(s), np.exp(-1.0), rtol=1e-9)
     # an FID has no longitudinal period: T1 acts over none of it, and none of the walk beyond its echo
-    np.testing.assert_allclose(np.abs(full.replay(fid, tissue=False, T2=[1e9, 1e9], T1=[TE, TE])), 1.0, rtol=1e-9)
+    np.testing.assert_allclose(np.abs(full.replay(fid, tissue=Tissue(T2=[1e9, 1e9], T1=[TE, TE]))), 1.0, rtol=1e-9)
     # the contact term against the walk's own cumulative local time at save n (not n + 1)
     walk = d.simulate_trajectories(300, D0, d.Cylinder(2e-6, (0, 0, 1)), 0.01, 5e-4, seed=0, require_gpu=False)
     pk = build_replay_pack(walk, id="test/blt", K=8, blt_temporal_K=full.n_t, envelope=ENV, license="x", citation="x")
@@ -168,5 +169,5 @@ def test_relaxation_and_contact_end_at_the_readout(packs):
     cum = np.cumsum(np.asarray(walk.boundary_local_time, np.float64), axis=1)   # per-step log-weight at rho / D = 1
     ref = np.exp(rho / D0 * cum[:, n]).mean()
     off = np.exp(rho / D0 * cum[:, n + 1]).mean()
-    got = float(np.abs(pk.replay(fid, tissue=False, rho=rho)[0]))
+    got = float(np.abs(pk.replay(fid, tissue=Tissue(rho=rho))[0]))
     assert abs(got - ref) < 0.1 * abs(off - ref), (got, ref, off)

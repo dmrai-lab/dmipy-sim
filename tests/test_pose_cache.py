@@ -11,6 +11,7 @@ from dmipy_sim.phantom import Grid, PackSubstrate, Phantom, Watson
 from dmipy_sim.replay import read_rpk
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_sim.replay.replay import PoseResponse, _spherical_jn_all
+from dmipy_sim.spec.tissue import Tissue
 
 
 @pytest.fixture(scope="module")
@@ -44,7 +45,7 @@ def test_the_cache_is_hit_only_by_the_same_expansion(pack, tmp_path, monkeypatch
     monkeypatch.undo()
     # every dependency changes the key: the band, a knob, a direction, the method
     pack.pose_response(seq, keep=(6, 0), cache=cache)
-    pack.pose_response(seq, keep=(8, 0), T2=[0.05, 0.05, 0.05], cache=cache)
+    pack.pose_response(seq, keep=(8, 0), tissue=Tissue(T2=[0.05, 0.05, 0.05]), cache=cache)
     pack.pose_response(seq.with_gradient(np.asarray(seq.G)[:, :, [1, 0, 2]]), keep=(8, 0), cache=cache)
     assert len(sorted(cache.glob("*.npz"))) == 4
     # cache=True goes to the environment's directory
