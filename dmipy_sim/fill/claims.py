@@ -186,21 +186,33 @@ def heartbeat_payload(cur, rep):
                 peaks=rep.get("peaks"), status=rep.get("status"))
 
 
-def heartbeat_once(hub, held, report):
+def heartbeat_once(hub, held, report, *, queue=()):
     """One heartbeat: every claim the worker holds (``held``: ``{name: cur}`` -- the block walking, the ones
-    packing and uploading) rewritten with :func:`heartbeat_payload` in ONE commit that is not retried (a 429 is
-    logged and the next beat tries again). A block's claim stays fresh from its first round to its upload, so a
-    slow device's shard is never taken for a dead worker's. ``report`` is :func:`dmipy_sim.run.report`."""
+    packing and uploading) and every claim queued from its batch (``queue``: the claim dicts of
+    :func:`claim_next`, stage ``queued``) rewritten with :func:`heartbeat_payload` in ONE commit that is not
+    retried (a 429 is logged and the next beat tries again). A claim stays fresh from the batch's commit to the
+    shard's upload, so a slow device's blocks are never taken for a dead worker's (a T4 walks a block in over an
+    hour: its batch's second and third claims went stale before they were started). ``report`` is
+    :func:`dmipy_sim.run.report`."""
     curs = [c for c in list(held.values()) if c and c.get("claim")]
-    if not curs:
+    queued = [q for q in list(queue) if q.get("claim") and q["name"] not in {c["name"] for c in curs}]
+    if not curs and not queued:
         return False
+    host = (curs or [None])[0]["host"] if curs else None
     try:
         adds = {}
         for cur in curs:
             rd = cur.get("run_dir")
             rep = report(rd) if rd and os.path.isfile(os.path.join(rd, "manifest.json")) else {}
             adds[cur["claim"]] = json.dumps(heartbeat_payload(cur, rep), indent=1).encode()
-        hub.commit(adds, [], f"heartbeat {', '.join(c['name'] for c in curs)} on {curs[0]['host']}", tries=1)
+        for q in queued:
+            try:
+                d = json.load(open(hub.get_live(q["claim"])))
+            except Exception:
+                d = {"block": q["block"], "pass": q["P"].get("pass"), "variant": None, "host": host, "started": stamp(), "commit": None}
+            host = host or d.get("host")
+            adds[q["claim"]] = json.dumps(dict(d, stage="queued", heartbeat=stamp()), indent=1).encode()
+        hub.commit(adds, [], f"heartbeat {', '.join([c['name'] for c in curs] + [q['name'] for q in queued])} on {host}", tries=1)
         return True
     except Exception as e:
         log.warning("heartbeat failed: %s", e)
@@ -208,11 +220,11 @@ def heartbeat_once(hub, held, report):
 
 
 def heartbeat(hub, state, stop, report, *, every=None):
-    """The worker's heartbeat thread: :func:`heartbeat_once` on ``state["held"]`` every ``every`` seconds until
-    ``stop`` is set. ``report`` is imported by the main thread before this one starts: a thread that imports
-    while the main thread imports deadlocks on Python's import lock (measured)."""
+    """The worker's heartbeat thread: :func:`heartbeat_once` on ``state["held"]`` and ``hub.queue`` every
+    ``every`` seconds until ``stop`` is set. ``report`` is imported by the main thread before this one starts: a
+    thread that imports while the main thread imports deadlocks on Python's import lock (measured)."""
     while not stop.wait(HEARTBEAT_S if every is None else every):
-        heartbeat_once(hub, state.get("held") or {}, report)
+        heartbeat_once(hub, state.get("held") or {}, report, queue=list(hub.queue))
 
 
 def mine(hub, variant, host):
