@@ -13,8 +13,11 @@ the nearest wall it can hit and the radius (curvature scale) of that wall.
   ITS nearest wall's radius, in radius classes doubling in step time (``dt_c = dt_min 2^c``, i.e. radius
   bounds ``R_min 2^(c/2)``): the finest class is the fused producer's own step and noise sequence.
 
-Walkers are re-bucketed every round on the host (index arrays), the kernels are jitted per class and padded
-walker count, and the positions stay on the device. The recorded channels are the fused producer's: positions
+Walkers are re-bucketed every round on the device (an argsort by class); the host reads the class counts once per round
+(the padded class windows are static shapes) and nothing else until a chunk of CHUNK_SAVES saves is launched: the kernels'
+overflow (a walker with more segments in reach than its candidate list) is a device-side maximum read once per chunk,
+and the chunk is redone from its start with a wider list when it happened; the saves' positions and contact are stacked
+on the device and copied to the host once per chunk. The kernels are jitted per class and padded
 at every save, the boundary local time accumulated over each interval (the kernel's, at unit rho / D), the
 compartment label (the geometries this serves are impermeable, so a label is constant). Illegal crossings are
 counted the same way and the walk is refused if any occurred.
@@ -33,6 +36,9 @@ from .tables import jit_with_tables
 from ..run import Run
 
 log = logging.getLogger("dmipy_sim")
+
+
+CHUNK_SAVES = 32   # saves launched per host sync and copied to the host together (32 x 100k walkers x 3 x 4 B = 38 MB)
 
 
 def _pad_to(n, unit=4096):
@@ -267,39 +273,59 @@ interval mean as before).
             if sampling:
                 seg, keep, n_str = within_dev(r)
                 field_all[s:e, 0] = np.asarray(at_dev(r, seg, keep) - f_mean)
-            for t in range(1, n_t):
-                dlog_int = jnp.zeros(nb, jnp.float32)
-                read_field = sampling and (t % f_every == 0)
-                if sampling:
-                    if (t - 1) % f_reuse == 0:                           # the list, reused over f_reuse intervals with its margin
-                        seg, keep, n_str = within_dev(r)
-                    f_acc = jnp.zeros((nb, 13), jnp.float32)
-                for _ in range(n_rounds):
-                    d_wall, R_near = scales_dev(r)
-                    bucket, far_j = _bucket(d_wall, R_near)
-                    r, keys = _free_step(r, keys, d_wall, far_j)
-                    order, counts = _order(bucket)
-                    counts = np.asarray(counts)                          # the one small host transfer per round
-                    n_free += int(counts[0]); start = int(counts[0])
-                    for c in range(n_classes):
-                        n_c = int(counts[c + 1])
-                        if n_c == 0:
-                            continue
-                        while True:                                          # the candidate list widens until it holds every segment in reach
-                            r_try, keys_try, dlog_try, n_max = kernel_for(k_cand, _pad_to(n_c))(
-                                r, keys, dlog_int, order, start, n_c, steps_c[c], step_l_c[c], jnp.float32(reach_c[c]))
-                            if not cached or int(n_max) <= k_cand:
-                                r, keys, dlog_int = r_try, keys_try, dlog_try
-                                break
-                            k_cand = 1 << int(math.ceil(math.log2(int(n_max))))
-                            log.info("adaptive: candidate list widened to %d (a walker had %d segments in reach)", k_cand, int(n_max))
-                        n_kernel_steps += n_c * steps_c[c]; start += n_c
-                    if read_field:
-                        f_acc = f_acc + at_dev(r, seg, keep)
-                positions[s:e, t] = np.asarray(r, sdt); dlog_all[s:e, t] = np.asarray(dlog_int, sdt)
-                run.progress(s + nb * t / n_t, n_walkers)                      # the batch's fraction of its saves
-                if read_field:
-                    field_all[s:e, t // f_every] = np.asarray(f_acc / jnp.float32(n_rounds) - f_mean)
+            t = 1
+            while t < n_t:
+                # a chunk of saves launched without waiting on the device: the class kernels' overflow (a walker with
+                # more segments in reach than its candidate list) is read once per chunk, and the chunk is redone from
+                # its start with a wider list when it happened (rare: once per walk, if at all); the saves' positions
+                # and contact are stacked on the device and copied to the host once per chunk
+                t_end = min(t + CHUNK_SAVES, n_t)
+                r_c0, keys_c0 = r, keys; n_free_c0, n_kernel_c0 = n_free, n_kernel_steps
+                seg_c0 = (seg, keep, n_str) if sampling else None
+                while True:
+                    r, keys = r_c0, keys_c0; n_free, n_kernel_steps = n_free_c0, n_kernel_c0
+                    if sampling:
+                        seg, keep, n_str = seg_c0
+                    rs, dls, fs = [], [], []
+                    n_max_acc = jnp.int32(0)
+                    for tt in range(t, t_end):
+                        dlog_int = jnp.zeros(nb, jnp.float32)
+                        read_field = sampling and (tt % f_every == 0)
+                        if sampling:
+                            if (tt - 1) % f_reuse == 0:                  # the list, reused over f_reuse intervals with its margin
+                                seg, keep, n_str = within_dev(r)
+                            f_acc = jnp.zeros((nb, 13), jnp.float32)
+                        for _ in range(n_rounds):
+                            d_wall, R_near = scales_dev(r)
+                            bucket, far_j = _bucket(d_wall, R_near)
+                            r, keys = _free_step(r, keys, d_wall, far_j)
+                            order, counts = _order(bucket)
+                            counts = np.asarray(counts)                  # the one small host transfer per round
+                            n_free += int(counts[0]); start = int(counts[0])
+                            for c in range(n_classes):
+                                n_c = int(counts[c + 1])
+                                if n_c == 0:
+                                    continue
+                                r, keys, dlog_int, n_w = kernel_for(k_cand, _pad_to(n_c))(
+                                    r, keys, dlog_int, order, start, n_c, steps_c[c], step_l_c[c], jnp.float32(reach_c[c]))
+                                n_max_acc = jnp.maximum(n_max_acc, n_w)
+                                n_kernel_steps += n_c * steps_c[c]; start += n_c
+                            if read_field:
+                                f_acc = f_acc + at_dev(r, seg, keep)
+                        rs.append(r); dls.append(dlog_int)
+                        if read_field:
+                            fs.append(f_acc / jnp.float32(n_rounds) - f_mean)
+                    n_max = int(n_max_acc) if cached else 0                  # the chunk's one sync
+                    if n_max <= k_cand:
+                        break
+                    k_cand = 1 << int(math.ceil(math.log2(n_max)))
+                    log.info("adaptive: candidate list widened to %d (a walker had %d segments in reach); saves %d-%d redone", k_cand, n_max, t, t_end - 1)
+                positions[s:e, t:t_end] = np.asarray(jnp.stack(rs, axis=1), sdt)
+                dlog_all[s:e, t:t_end] = np.asarray(jnp.stack(dls, axis=1), sdt)
+                if fs:
+                    field_all[s:e, [tt // f_every for tt in range(t, t_end) if tt % f_every == 0]] = np.asarray(jnp.stack(fs, axis=1))
+                run.progress(s + nb * (t_end - 1) / n_t, n_walkers)              # the batch's fraction of its saves
+                t = t_end
             # the guarantee: nobody changed pool
             comp_end = np.minimum(np.asarray(geometry.classify_positions_exact(r), np.int32), 1)
             n_illegal += int((comp_end != comp_all[s:e]).sum())
