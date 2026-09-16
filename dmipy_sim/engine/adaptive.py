@@ -13,8 +13,12 @@ the nearest wall it can hit and the radius (curvature scale) of that wall.
   ITS nearest wall's radius, in radius classes doubling in step time (``dt_c = dt_min 2^c``, i.e. radius
   bounds ``R_min 2^(c/2)``): the finest class is the fused producer's own step and noise sequence.
 
-Walkers are re-bucketed every round on the host (index arrays), the kernels are jitted per class and padded
-walker count, and the positions stay on the device. The recorded channels are the fused producer's: positions
+Walkers are re-bucketed every round on the device (an argsort by class), and the class kernels read their window's
+start and size from the device's counts, so the host launches a whole chunk of CHUNK_SAVES saves without waiting:
+the windows' static widths come from the previous chunk's counts, the kernels' overflow (a class wider than its
+window, a walker with more segments in reach than its candidate list) is a device-side flag read once per chunk,
+and the chunk is redone from its start with wider ones when it happened; the saves' positions and contact are
+stacked on the device and copied to the host once per chunk. The kernels are jitted per class width and padded
 at every save, the boundary local time accumulated over each interval (the kernel's, at unit rho / D), the
 compartment label (the geometries this serves are impermeable, so a label is constant). Illegal crossings are
 counted the same way and the walk is refused if any occurred.
@@ -33,6 +37,9 @@ from .tables import jit_with_tables
 from ..run import Run
 
 log = logging.getLogger("dmipy_sim")
+
+
+CHUNK_SAVES = 32   # saves launched per host sync and copied to the host together (32 x 100k walkers x 3 x 4 B = 38 MB)
 
 
 def _pad_to(n, unit=4096):
@@ -129,9 +136,13 @@ interval mean as before).
                 return r_f, key_f, dlog_f, (n_within if cached else jnp.int32(0))
             stepped = jax.vmap(one, in_axes=(0, 0, None, None, None))
 
-            def run(r, keys, dlog, order, start, n_real, m, step_l, reach):
-                """The class's walkers are ``order[start:start + n_real]`` (the walkers sorted by class, on the device);
-                the window is ``n_pad`` wide, static, and its tail beyond ``n_real`` is stepped and dropped."""
+            def run(r, keys, dlog, order, counts, c, m, step_l, reach):
+                """The class's walkers are ``order[start:start + n_real]`` (the walkers sorted by class, on the device;
+                ``start`` and ``n_real`` read from the device's ``counts`` of the round, so the host waits on nothing);
+                the window is ``n_pad`` wide, static, and its tail beyond ``n_real`` is stepped and dropped. Returns
+                the largest candidate count met and whether the class outgrew the window (its walkers beyond it were
+                not stepped: the chunk is redone with a wider one)."""
+                cum = jnp.cumsum(counts); start = cum[c]; n_real = counts[c + 1]
                 sel = jax.lax.dynamic_slice(order, (start,), (n_pad,))
                 sel_g = jnp.minimum(sel, r.shape[0] - 1)
                 r_c, key_c, dl_c, n_w = stepped(r[sel_g], keys[sel_g], m, step_l, reach)
@@ -139,7 +150,7 @@ interval mean as before).
                 sel_r = jnp.where(real, sel, r.shape[0])                      # out of bounds: dropped (-1 would wrap)
                 r = r.at[sel_r].set(r_c, mode="drop"); keys = keys.at[sel_r].set(key_c, mode="drop")
                 dlog = dlog.at[sel_r].add(dl_c, mode="drop")
-                return r, keys, dlog, jnp.where(real, n_w, 0).max()
+                return r, keys, dlog, jnp.where(real, n_w, 0).max(), n_real > n_pad
             return jit_with_tables(geometry, geometry.TABLES, run)
 
         kernels = {}
@@ -152,6 +163,19 @@ interval mean as before).
             return kernels[(k_cand, n_pad_)]
 
         n_pad = 0
+
+        def pads_from(cmax, n):
+            """The class windows of the next chunk from each class's largest count seen: the count's own padding (a
+            class within a tenth of its window's top takes the next width, so a little growth redoes no chunk), never
+            wider than the padded batch (the sorted order is padded by that much: a wider slice would shift)."""
+            out = []
+            for c_ in cmax:
+                k = int(c_)
+                if k == 0:
+                    out.append(0); continue
+                pad = _pad_to(k)
+                out.append(min(_pad_to(pad + 1) if k > 0.9 * pad else pad, _pad_to(n)))
+            return tuple(out)
 
         @jax.jit
         def _order(bucket):
@@ -267,39 +291,69 @@ interval mean as before).
             if sampling:
                 seg, keep, n_str = within_dev(r)
                 field_all[s:e, 0] = np.asarray(at_dev(r, seg, keep) - f_mean)
-            for t in range(1, n_t):
-                dlog_int = jnp.zeros(nb, jnp.float32)
-                read_field = sampling and (t % f_every == 0)
-                if sampling:
-                    if (t - 1) % f_reuse == 0:                           # the list, reused over f_reuse intervals with its margin
-                        seg, keep, n_str = within_dev(r)
-                    f_acc = jnp.zeros((nb, 13), jnp.float32)
-                for _ in range(n_rounds):
-                    d_wall, R_near = scales_dev(r)
-                    bucket, far_j = _bucket(d_wall, R_near)
-                    r, keys = _free_step(r, keys, d_wall, far_j)
-                    order, counts = _order(bucket)
-                    counts = np.asarray(counts)                          # the one small host transfer per round
-                    n_free += int(counts[0]); start = int(counts[0])
-                    for c in range(n_classes):
-                        n_c = int(counts[c + 1])
-                        if n_c == 0:
-                            continue
-                        while True:                                          # the candidate list widens until it holds every segment in reach
-                            r_try, keys_try, dlog_try, n_max = kernel_for(k_cand, _pad_to(n_c))(
-                                r, keys, dlog_int, order, start, n_c, steps_c[c], step_l_c[c], jnp.float32(reach_c[c]))
-                            if not cached or int(n_max) <= k_cand:
-                                r, keys, dlog_int = r_try, keys_try, dlog_try
-                                break
-                            k_cand = 1 << int(math.ceil(math.log2(int(n_max))))
-                            log.info("adaptive: candidate list widened to %d (a walker had %d segments in reach)", k_cand, int(n_max))
-                        n_kernel_steps += n_c * steps_c[c]; start += n_c
-                    if read_field:
-                        f_acc = f_acc + at_dev(r, seg, keep)
-                positions[s:e, t] = np.asarray(r, sdt); dlog_all[s:e, t] = np.asarray(dlog_int, sdt)
-                run.progress(s + nb * t / n_t, n_walkers)                      # the batch's fraction of its saves
-                if read_field:
-                    field_all[s:e, t // f_every] = np.asarray(f_acc / jnp.float32(n_rounds) - f_mean)
+            d0, R0 = scales_dev(r); b0, _ = _bucket(d0, R0)
+            pads = pads_from(np.asarray(_order(b0)[1])[1:], nb)              # the first chunk's windows: the batch's one sync
+            t = 1
+            while t < n_t:
+                # a chunk of saves launched without waiting on the device: every round's class kernels read their
+                # window from the device's counts (the windows' widths are static, sized from the previous chunk), and
+                # the kernels' overflow -- a class wider than its window, a walker with more segments in reach than
+                # the candidate list -- is read once per chunk, the chunk redone from its start with wider ones when
+                # it happened (rare: a class grows past a power of two, a walker drifts into a denser neighbourhood);
+                # the saves' positions and contact are stacked on the device and copied to the host once per chunk
+                t_end = min(t + CHUNK_SAVES, n_t)
+                r_c0, keys_c0 = r, keys
+                seg_c0 = (seg, keep, n_str) if sampling else None
+                while True:
+                    r, keys = r_c0, keys_c0
+                    if sampling:
+                        seg, keep, n_str = seg_c0
+                    rs, dls, fs = [], [], []
+                    cmax = jnp.zeros(n_classes, jnp.int32); free_acc = jnp.int32(0); kern_acc = jnp.int32(0)
+                    n_w_max = jnp.int32(0); over = jnp.bool_(False)
+                    for tt in range(t, t_end):
+                        dlog_int = jnp.zeros(nb, jnp.float32)
+                        read_field = sampling and (tt % f_every == 0)
+                        if sampling:
+                            if (tt - 1) % f_reuse == 0:                  # the list, reused over f_reuse intervals with its margin
+                                seg, keep, n_str = within_dev(r)
+                            f_acc = jnp.zeros((nb, 13), jnp.float32)
+                        for _ in range(n_rounds):
+                            d_wall, R_near = scales_dev(r)
+                            bucket, far_j = _bucket(d_wall, R_near)
+                            r, keys = _free_step(r, keys, d_wall, far_j)
+                            order, counts = _order(bucket)
+                            free_acc = free_acc + counts[0]; cmax = jnp.maximum(cmax, counts[1:])
+                            for c in range(n_classes):
+                                if pads[c] == 0:                             # a class the chunk had no walker in
+                                    over = over | (counts[c + 1] > 0)
+                                    continue
+                                r, keys, dlog_int, n_w, over_c = kernel_for(k_cand, pads[c])(
+                                    r, keys, dlog_int, order, counts, c, steps_c[c], step_l_c[c], jnp.float32(reach_c[c]))
+                                n_w_max = jnp.maximum(n_w_max, n_w); over = over | over_c
+                                kern_acc = kern_acc + counts[c + 1] * steps_c[c]
+                            if read_field:
+                                f_acc = f_acc + at_dev(r, seg, keep)
+                        rs.append(r); dls.append(dlog_int)
+                        if read_field:
+                            fs.append(f_acc / jnp.float32(n_rounds) - f_mean)
+                    cmax_h = np.asarray(cmax); n_w = int(n_w_max) if cached else 0; overflow = bool(over)   # the chunk's one sync
+                    if not overflow and n_w <= k_cand:
+                        break
+                    if n_w > k_cand:
+                        k_cand = 1 << int(math.ceil(math.log2(n_w)))
+                        log.info("adaptive: candidate list widened to %d (a walker had %d segments in reach); saves %d-%d redone", k_cand, n_w, t, t_end - 1)
+                    if overflow:
+                        log.info("adaptive: class windows %s too narrow for counts %s; saves %d-%d redone", pads, cmax_h.tolist(), t, t_end - 1)
+                    pads = tuple(max(p_, q_) for p_, q_ in zip(pads, pads_from(cmax_h, nb)))
+                n_free += int(free_acc); n_kernel_steps += int(kern_acc)
+                pads = tuple(max(p_, q_) for p_, q_ in zip(pads, pads_from(cmax_h, nb)))   # windows grow with the classes, never shrink
+                positions[s:e, t:t_end] = np.asarray(jnp.stack(rs, axis=1), sdt)
+                dlog_all[s:e, t:t_end] = np.asarray(jnp.stack(dls, axis=1), sdt)
+                if fs:
+                    field_all[s:e, [tt // f_every for tt in range(t, t_end) if tt % f_every == 0]] = np.asarray(jnp.stack(fs, axis=1))
+                run.progress(s + nb * (t_end - 1) / n_t, n_walkers)              # the batch's fraction of its saves
+                t = t_end
             # the guarantee: nobody changed pool
             comp_end = np.minimum(np.asarray(geometry.classify_positions_exact(r), np.int32), 1)
             n_illegal += int((comp_end != comp_all[s:e]).sum())
