@@ -212,8 +212,18 @@ interval mean as before).
             return programs[(k_cand, pads)]
 
         def pads_from(cmax):
-            """The windows of the next chunk: each class's largest count seen, a quarter of headroom, padded."""
-            return tuple(_pad_to(int(math.ceil(1.25 * int(c_)))) if int(c_) > 0 else 0 for c_ in cmax)
+            """The windows of the next chunk: each class's largest count seen, padded (a class within a tenth of its
+            window's top takes the next width, so a class that grows a little does not redo a chunk); a window
+            wider than the class steps its tail for nothing, so the width is the count's own padding wherever
+            the headroom allows."""
+            out = []
+            for c_ in cmax:
+                n = int(c_)
+                if n == 0:
+                    out.append(0); continue
+                pad = _pad_to(n)
+                out.append(_pad_to(pad + 1) if n > 0.9 * pad else pad)
+            return tuple(out)
 
         reach_c = [float(m) * float(l) + NUDGE for m, l in zip(steps_c, step_l_c)]
         k_cand = int(candidate_k_start)
