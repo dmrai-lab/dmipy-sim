@@ -316,6 +316,7 @@ interval mean as before).
                         if read_field:
                             fs.append(f_acc / jnp.float32(n_rounds) - f_mean)
                     n_max = int(n_max_acc) if cached else 0                  # the chunk's one sync
+                    log.debug("adaptive: saves %d-%d: at most %d segments in reach (list %d)", t, t_end - 1, n_max, k_cand)
                     if n_max <= k_cand:
                         break
                     k_cand = 1 << int(math.ceil(math.log2(n_max)))
