@@ -235,7 +235,7 @@ def test_a_partition_writes_and_reads_back(pack_paths, tmp_path):
     grid = _grid(pk, attach="lab")
     myelin = Inert(name="myelin")
     ph = Phantom.partition(PackSubstrate(pk, m0=0.7, name="wm", T2_s=[0.06, 0.06, 0.06]), grid,
-                           declared={myelin: np.full(grid.shape, 0.2)}, outside=FreeWater(D_m2_s=3e-9, m0=1.0),
+                           declared={myelin: np.full(grid.shape, 0.2)}, outside=FreeWater(D_m2_s=3e-9, m0=1.0, T2_s=2.0),   # both relax (#238)
                            pose=Pose(np.eye(3)))
     meta = ph.write(tmp_path / "part.rph", id="t/part", license="x", citation="x", embed=True)
     assert meta["addressing"] == "partition" and meta["substrates"][0]["addressing"] == "partition"

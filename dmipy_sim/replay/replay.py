@@ -253,8 +253,9 @@ class ReplayPack:
         wp = is_walker_preserving(meta["method"])
         return np.asarray(decode(self.arrays, meta, n_walkers=(self.n_walkers if wp else None)), np.float64)
 
-    def _by_pool(self, values, what):
-        """Per-pool values as a list by id; a ``{name: value}`` dict resolves through the embedded spec."""
+    def _by_pool(self, values, what, n=None):
+        """Per-pool values as a list by id; a ``{name: value}`` dict resolves through the embedded spec, and a
+        scalar is every pool's value (``n`` pools, else the spec's). A list is by id and must cover every id."""
         if values is None:
             return None
         if isinstance(values, dict):
@@ -265,6 +266,9 @@ class ReplayPack:
             for name, v in values.items():
                 out[spec.pool(name).id] = float(v)
             return out
+        if np.ndim(values) == 0:                                   # one value is every pool's
+            spec = self.substrate
+            return [float(values)] * (int(n) if n is not None else (len(spec.pools) if spec is not None else 1))
         return [float(v) for v in np.asarray(values, float).reshape(-1)]
 
     def replay(self, waveform, *, tissue="nominal", T2=None, T1=None, rho=None, D=None, B0=None,
@@ -446,7 +450,7 @@ class ReplayPack:
             # the Bloch route reads a rate as 1/T, so "no decay in this pool" is an infinite time, not a zero
             # one; a zero would make the rate infinite and return an identically dark signal
             def per_pool(v, what):
-                out = self._by_pool(v, what)
+                out = self._by_pool(v, what, n=n_ids)
                 if out is None:
                     return [np.inf] * n_ids
                 return [np.inf if t is None or float(t) <= 0.0 else float(t) for t in out]
@@ -570,8 +574,8 @@ class ReplayPack:
             if not is_current_c1(ch["compartment"]):
                 decode_occupancy(self.arrays, ch["compartment"])              # raises with the re-encode message
             col = next(d for d in ch["compartment"]["columns"] if d["name"] == "comp")
-            T2v = self._by_pool(T2, "T2"); T1v = self._by_pool(T1, "T1")
             n_ids = 2 if col["kind"] == "fraction" else int(np.max(self.arrays["comp_static" if col["kind"] == "static" else "comp_rle_vals"])) + 1
+            T2v = self._by_pool(T2, "T2", n=n_ids); T1v = self._by_pool(T1, "T1", n=n_ids)
             if T2v is None:
                 T2v = [0.0] * n_ids                                   # no T2 decay, T1 only
             if T1v is None:

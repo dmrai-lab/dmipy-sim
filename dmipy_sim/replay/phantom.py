@@ -21,7 +21,7 @@ import numpy as np
 
 from ..phantom.grid import Grid
 from ..constants import GAMMA
-from ..phantom.substrates import substrate_from_meta
+from ..phantom.substrates import substrate_from_meta, _echo_time
 from .so3 import n_sh_coeffs
 
 __all__ = ["ReplayPhantom", "read_rph", "write_rph", "Grid", "SUBSTRATE_KINDS", "SCALAR_REGISTRY", "RPH_SCHEMA_VERSION"]
@@ -495,12 +495,52 @@ class ReplayPhantom:
             return forms[i]
         return substrate_from_meta(sub)
 
+    def _check_relaxation(self, waveform, tissue, knobs, loaded, forms):
+        """Refuse a phantom whose substrates would relax inconsistently under a readout (dmipy-sim#238).
+
+        Every acquisition reads out at an echo time, so a pack pool whose T2 resolves to nothing (neither given on
+        the substrate or on this call, nor nominal in the pack's specification) replays as if T2 were infinite;
+        composed beside a substrate that does relax, it returns a tissue contrast that looks right and is not (the
+        brain example's grey matter at its proton density against a white matter at 0.06). A phantom in which no
+        substrate relaxes is a consistent diffusion phantom and is not refused; ``tissue=False`` resolves no nominal
+        value, so with no T2 given anywhere it is that phantom. A closed form relaxes when it declares ``T2_s``."""
+        relaxes, missing = [], []
+        for i, sub in enumerate(self.substrates):
+            if sub["kind"] == "inert":
+                continue
+            if sub["kind"] == "analytic":
+                form = self._form(i, sub, forms)
+                (relaxes if getattr(form, "T2_s", None) is not None else missing).append((sub["id"], ""))
+                continue
+            T2 = (sub.get("tissue") or {}).get("T2", knobs.get("T2"))
+            if T2 is not None or (getattr(tissue, "T2", None) is not None):
+                relaxes.append((sub["id"], ""))
+                continue
+            spec = loaded[i].substrate if tissue == "nominal" else None
+            pools = ([p.name for p in spec.pools if p.T2 is None] if spec is not None else None)
+            if spec is not None and not pools:
+                relaxes.append((sub["id"], ""))
+            else:
+                missing.append((sub["id"], (f" (pool{'s' if len(pools) > 1 else ''} {', '.join(pools)} declare no T2 in "
+                                            f"the pack's specification)" if pools else " (the pack embeds no specification)")))
+        if relaxes and missing:
+            TE = _echo_time(waveform)
+            raise ValueError(
+                f"under a readout at TE = {TE * 1e3:.3g} ms, "
+                + ", ".join(f"substrate {n!r} relaxes" for n, _ in relaxes) + " while "
+                + ", ".join(f"{n!r} would not{why}" for n, why in missing)
+                + ": no T2 was given for it and none is nominal, so it would replay as if T2 were infinite and the "
+                  "composed contrast would look right and be wrong. Declare its T2 on the substrate (PackSubstrate(..., "
+                  "T2_s=...) by pool, FreeWater(..., T2_s=...)), give T2= on this call for every pack, or give none "
+                  "anywhere (tissue=False resolves no nominal value) for a phantom with no relaxation (RPH.md 3.2).")
+
     def _responses(self, waveform, B0, b0_dir, tissue, packs, knobs, keep=None, proton_density=None, cache=None,
                    forms=None):
         """One response per substrate: a :class:`PoseResponse` for a pack, a closed form for an analytic
         substrate, nothing for an inert one. Plus the per-voxel ``m0``."""
         pose, analytic = {}, {}
         loaded = self._loaded_packs(packs)
+        self._check_relaxation(waveform, tissue, knobs, loaded, forms)
         for i, sub in enumerate(self.substrates):
             if sub["kind"] == "inert":
                 continue
@@ -558,6 +598,7 @@ class ReplayPhantom:
         dB0 = self.layer_values("delta_B0_T", off_resonance)
         dB0 = np.zeros(self.n_voxels) if dB0 is None else dB0
         knobs = dict(T2=T2, T1=T1, rho=rho, D=D, chi_iso=chi_iso, chi_aniso=chi_aniso)
+        self._check_relaxation(waveform, tissue, knobs, loaded, forms)
         m0 = self._m0(proton_density)
         from .so3 import rotations_from_quaternions
         sid, frac = self.substrate_id, self.geometric_fraction

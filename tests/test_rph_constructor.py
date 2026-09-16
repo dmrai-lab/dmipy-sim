@@ -53,11 +53,12 @@ def _tangential(n=8):
 
 
 GRID8 = Grid(shape=(8, 8, 1), voxel_size_m=(1e-3, 1e-3, 1e-3))
+T2_CSF = 2.0
 
 
 def _subs(pack_path):
     wm = PackSubstrate(pack_path, m0=0.7, name="wm/tiny", T2_s=[0.06, 0.06, 0.06])
-    return wm, FreeWater(D_m2_s=3e-9, m0=1.0), Inert()
+    return wm, FreeWater(D_m2_s=3e-9, m0=1.0, T2_s=T2_CSF), Inert()     # both relax: a phantom is refused otherwise (#238)
 
 
 def _phantom(pack_path, *, grid=GRID8, fractions=None, orientation=None, remainder="default", **kw):
@@ -255,13 +256,15 @@ def test_the_phantom_replays_every_voxel_from_one_pack_replay(pack_path):
     assert vi.shape[0] == ph.n_voxels and S.shape == (ph.n_voxels, 3)
     f_wm, f_csf = ph.sparse(ph.fraction(wm))[1], ph.sparse(ph.fraction(csf))[1]
     # b = 0: the m0-weighted volume of each substrate times its own b = 0 response -- at the T2 the phantom
-    # declares for that substrate (RPH.md 3.2), not its nominal value; free water's 1; nothing from inert
+    # declares for that substrate (RPH.md 3.2), not its nominal value; free water's own decay; nothing from inert
+    from dmipy_sim.phantom.substrates import _echo_time
     E0 = float(pk.replay(seq, T2=[0.06] * 3)[0])
     assert E0 < float(pk.replay(seq)[0])
-    np.testing.assert_allclose(S[:, 0], f_wm * 0.7 * E0 + f_csf * 1.0, rtol=1e-6)
+    E_csf = np.exp(-_echo_time(seq) / T2_CSF)
+    np.testing.assert_allclose(S[:, 0], f_wm * 0.7 * E0 + f_csf * E_csf, rtol=1e-6)
     csf_v = int(np.argmax(f_csf))
     if f_csf[csf_v] > 0.99:
-        np.testing.assert_allclose(S[csf_v, 1], np.exp(-1e9 * 3e-9), rtol=1e-6)
+        np.testing.assert_allclose(S[csf_v, 1], np.exp(-1e9 * 3e-9) * E_csf, rtol=1e-6)
     wm_v = int(np.argmax(f_wm))
     from dmipy_sim.replay.so3 import Distribution
     pr = pk.pose_response(seq, T2=[0.06] * 3)
