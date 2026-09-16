@@ -55,10 +55,14 @@ def test_a_429_is_retried_and_a_heartbeat_is_not(certified, monkeypatch):
     """The shard commit hit by a 429 lands after the wait; a heartbeat hit by one is skipped (its commit is not
     retried) and the claim keeps its previous content."""
     hub, work = certified
-    monkeypatch.setattr(hubmod, "RATE_LIMIT_WAIT_S", 0.01)
-    hub.fail_429.append("t block-0000.p1")
+    monkeypatch.setattr(hubmod, "RATE_LIMIT_WAIT_S", 0.01); monkeypatch.setattr(hubmod, "OUTAGE_WAIT_S", 0.01)
+    hub.fail_429.append("t block-0000.p1"); hub.fail_500 += ["t block-0000.p1"] * 8      # eight 5xx in a row: an outage, beyond `tries`
     Fill(hub, Recipe(hub), opts(work, block=0, only_pass=1)).run(heartbeat_every=3600)
-    assert hub.exists("blocks/t/block-0000.p1.rpk") and not hub.fail_429
+    assert hub.exists("blocks/t/block-0000.p1.rpk") and not hub.fail_429 and not hub.fail_500
+    hub.fail_500.append("claim"); n = len(hub.log)
+    with pytest.raises(Exception, match="500"):
+        hub.commit({"claims/t/x.json": b"{}"}, [], "claim x", tries=1)                    # a heartbeat-style commit never retries
+    assert len(hub.log) == n and not hub.fail_500
     rc = Recipe(hub)
     claimed = claim_next(hub, rc, "h2", claim_batch=1)
     before = open(hub.get(claimed["claim"])).read()

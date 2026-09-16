@@ -24,6 +24,8 @@ import time
 
 RATE_LIMIT_WAIT_S = 600      # a 429 (128 commits an hour per repository) waits this long before the retry
 UPLOAD_TRIES = 6             # a commit retried with backoff: a transient hub error must not lose a shard
+OUTAGE_WAIT_S = 60           # a 5xx (the hub refusing commits) waits this long before the retry ...
+OUTAGE_TRIES = 60            # ... up to this many times (an hour): a hub outage must not crash every worker
 log = logging.getLogger("dmipy_sim.fill")
 
 
@@ -40,13 +42,23 @@ def _expected(adds):
             for r, l in adds.items()}
 
 
-def is_rate_limited(e):
-    """Whether an exception is the hub's 429."""
+def _status(e):
     try:
         from huggingface_hub.errors import HfHubHTTPError
     except ImportError:                                    # pragma: no cover
-        return False
-    return isinstance(e, HfHubHTTPError) and getattr(getattr(e, "response", None), "status_code", None) == 429
+        return None
+    return getattr(getattr(e, "response", None), "status_code", None) if isinstance(e, HfHubHTTPError) else None
+
+
+def is_rate_limited(e):
+    """Whether an exception is the hub's 429."""
+    return _status(e) == 429
+
+
+def is_outage(e):
+    """Whether an exception is the hub failing on its side (a 5xx)."""
+    st = _status(e)
+    return st is not None and 500 <= st < 600
 
 
 class HubBase:
@@ -55,17 +67,30 @@ class HubBase:
 
     def commit(self, adds, deletes, message, *, tries=UPLOAD_TRIES):
         """ONE commit: ``adds`` is ``{remote path: local path or bytes}``, ``deletes`` a list of remote paths (a
-        path that is not there -- a claim released before -- is skipped). Returns ``{remote path: sha256}``."""
+        path that is not there -- a claim released before -- is skipped). Returns ``{remote path: sha256}``.
+        ``tries`` bounds the retries of an error of ours (backoff 30, 60, 120... s) and of a 429 (a wait of
+        :data:`RATE_LIMIT_WAIT_S`); a 5xx is the hub's outage and is retried every :data:`OUTAGE_WAIT_S` up to
+        :data:`OUTAGE_TRIES` times on its own count (``tries=1`` skips every retry: a heartbeat)."""
         expect = _expected(adds)
-        for k in range(tries):
+        k = outages = 0
+        while True:
             try:
                 self._commit(dict(adds), list(deletes), message, expect)
                 return {r: expect[r][0] for r in adds}
             except Exception as e:
-                if k == tries - 1:
+                if tries <= 1:
                     raise
-                wait = RATE_LIMIT_WAIT_S if is_rate_limited(e) else 30 * 2 ** k
-                log.warning("commit %r failed (%s); retry %d/%d in %d s", message, str(e).splitlines()[0][:160], k + 2, tries, wait)
+                if is_outage(e):
+                    outages += 1
+                    if outages >= OUTAGE_TRIES:
+                        raise
+                    wait = OUTAGE_WAIT_S; n, of = outages + 1, OUTAGE_TRIES
+                else:
+                    k += 1
+                    if k >= tries:
+                        raise
+                    wait = RATE_LIMIT_WAIT_S if is_rate_limited(e) else 30 * 2 ** (k - 1); n, of = k + 1, tries
+                log.warning("commit %r failed (%s); retry %d/%d in %d s", message, str(e).splitlines()[0][:160], n, of, wait)
                 time.sleep(wait)
 
     def put_json(self, obj, path, message, *, tries=UPLOAD_TRIES):
@@ -126,10 +151,10 @@ class FakeHub(HubBase):
     commit as ``dict(time, message, adds, deletes)``; ``fail_429`` is a list of message prefixes whose first
     commit raises the hub's 429 (a retry then succeeds)."""
 
-    def __init__(self, root, *, fail_429=()):
+    def __init__(self, root, *, fail_429=(), fail_500=()):
         self.root = os.path.abspath(root); self.repo = f"fake:{self.root}"
         os.makedirs(self.root, exist_ok=True)
-        self.revision = "fake"; self.queue = []; self.log = []; self.fail_429 = list(fail_429)
+        self.revision = "fake"; self.queue = []; self.log = []; self.fail_429 = list(fail_429); self.fail_500 = list(fail_500)
 
     def _p(self, f):
         return os.path.join(self.root, f)
@@ -156,7 +181,11 @@ class FakeHub(HubBase):
         for i, prefix in enumerate(self.fail_429):
             if message.startswith(prefix):
                 del self.fail_429[i]
-                raise _fake_429(message)
+                raise _fake_http(message, 429, "Too Many Requests")
+        for i, prefix in enumerate(self.fail_500):
+            if message.startswith(prefix):
+                del self.fail_500[i]
+                raise _fake_http(message, 500, "Internal Server Error")
         for r, l in adds.items():
             p = self._p(r); os.makedirs(os.path.dirname(p), exist_ok=True)
             if isinstance(l, str):
@@ -173,9 +202,9 @@ class FakeHub(HubBase):
         return [(c["time"], c["message"]) for c in reversed(self.log)]
 
 
-def _fake_429(message):
+def _fake_http(message, code, reason):
     import requests
     from huggingface_hub.errors import HfHubHTTPError
-    r = requests.Response(); r.status_code = 429; r.reason = "Too Many Requests"; r._content = b"rate limited"
+    r = requests.Response(); r.status_code = code; r.reason = reason; r._content = reason.encode()
     r.request = requests.Request("POST", "https://fake/api/commit").prepare()
-    return HfHubHTTPError(f"429 Client Error: Too Many Requests ({message})", response=r)
+    return HfHubHTTPError(f"{code} Error: {reason} ({message})", response=r)
