@@ -181,3 +181,26 @@ def test_two_claims_of_one_block_settle_to_the_first(fake):
     f.claim_first = lambda: a[0]
     f.run(heartbeat_every=3600)
     assert not hub.exists(a[0]["claim"]) and not os.listdir(work)
+
+
+def test_a_batch_lost_entirely_is_not_the_end_of_the_loop(fake, monkeypatch):
+    """A worker whose whole batch was claimed first by another (every worker takes the lowest open blocks) reads the
+    listing again and claims the next open (pass, block) instead of returning None, which ended a loop with
+    hundreds of blocks open."""
+    hub, work = fake
+    rc = Recipe(hub)
+    earlier = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 5))
+    first = [f"claims/t/block-000{b}.p1.first.json" for b in (0, 1)]
+    for b, f in zip((0, 1), first):                                  # 'first' holds pass 1 of both blocks, claimed 5 s ago
+        hub.put_json({"block": b, "pass": 1, "variant": "t", "host": "first", "started": earlier, "commit": "test", "stage": "claimed"}, f, "claim")
+    real, calls = hub.files, []
+    def stale_once():                                                # 'second' read the listing before those claims landed
+        calls.append(1); fs = real()
+        return fs - set(first) if len(calls) == 1 else fs
+    monkeypatch.setattr(hub, "files", stale_once)
+    got = claim_next(hub, rc, "second", claim_batch=2)
+    assert (got["block"], got["P"]["pass"]) == (0, 2)                # pass 1 is 'first's: pass 2 of block 0 is the next open one
+    assert [(q["block"], q["P"]["pass"]) for q in hub.queue] == [(1, 2)]  # and pass 2 of block 1 came in the same batch
+    assert all(hub.exists(f) for f in first) and not any("second" in f and ".p1." in f for f in hub.files())
+    hub.queue = []
+    assert claim_next(hub, rc, "third", claim_batch=2) is None       # every (pass, block) is claimed: nothing open is None, still

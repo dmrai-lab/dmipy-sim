@@ -47,28 +47,38 @@ def has_shard(hub, variant, block, P):
         P.get("pass") is not None and hub.exists(f"blocks/{variant}/{shard_name(block, FULL)}.rpk"))
 
 
-def claim_next(hub, rc, host, *, only_pass=None, claim_batch=3, write=True):
+def claim_next(hub, rc, host, *, only_pass=None, claim_batch=3, write=True, tries=6):
     """The lowest open (pass, block), passes in the plan's order (``only_pass`` restricts to one), claimed; ``None``
-    when none is open. ``claim_batch`` blocks are claimed in ONE commit and the rest queued on ``hub.queue``, served
-    first by the next call; :func:`release_queue` gives them back when the worker stops. ``write=False`` claims
-    nothing (a rehearsal) and returns the first open block."""
+    when nothing is open. ``claim_batch`` blocks are claimed in one commit and the rest served from ``hub.queue``
+    on the next calls. A batch can come back empty while blocks are open: every block in it was claimed first by
+    another worker (:func:`settle_collisions`) or gained a shard between the listing and the commit -- five workers
+    all take the lowest open blocks -- so the listing is read afresh and the next open blocks claimed, up to
+    ``tries`` batches, and only a plan with nothing open returns ``None``. ``write=False`` claims nothing (a
+    rehearsal) and returns the first open block."""
     if hub.queue:
         return hub.queue.pop(0)
-    files = hub.files() - (release_stale(hub, rc.variant) if write else set()); variant = rc.variant
-    held = [parse_shard(f) for f in files if f.startswith((f"blocks/{variant}/block-", f"claims/{variant}/block-"))]
-    whole = {b for b, p in held if p is None}
-    for P in rc.passes:
-        if only_pass is not None and P.get("pass") != only_pass:
-            continue
-        taken = whole | {b for b, p in held if p == P.get("pass")}
-        open_blocks = [r["block"] for r in rc.table if r["block"] not in taken]
-        if open_blocks:
-            if not write:
-                return claim_block(hub, rc, open_blocks[0], host, P, write=False)
-            got = claim_blocks(hub, rc, open_blocks[:max(1, int(claim_batch))], host, P)
-            if got:
-                hub.queue = got[1:]
-                return got[0]
+    variant = rc.variant
+    for attempt in range(max(1, int(tries))):
+        files = hub.files() - (release_stale(hub, variant) if write else set())
+        held = [parse_shard(f) for f in files if f.startswith((f"blocks/{variant}/block-", f"claims/{variant}/block-"))]
+        whole = {b for b, p in held if p is None}
+        for P in rc.passes:
+            if only_pass is not None and P.get("pass") != only_pass:
+                continue
+            taken = whole | {b for b, p in held if p == P.get("pass")}
+            open_blocks = [r["block"] for r in rc.table if r["block"] not in taken]
+            if open_blocks:
+                if not write:
+                    return claim_block(hub, rc, open_blocks[0], host, P, write=False)
+                got = claim_blocks(hub, rc, open_blocks[:max(1, int(claim_batch))], host, P)
+                if got:
+                    hub.queue = got[1:]
+                    return got[0]
+                log.info("the batch of %d was taken by others; the listing read again (%d of %d)", len(open_blocks[:max(1, int(claim_batch))]), attempt + 1, tries)
+                break                                      # this pass again, from a fresh listing
+        else:
+            return None                                    # no pass has an open block
+    log.warning("no claim in %d batches; giving up this call", tries)
     return None
 
 
