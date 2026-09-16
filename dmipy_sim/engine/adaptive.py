@@ -192,14 +192,24 @@ interval mean as before).
                             over = over | (n_c > 0)
                             continue
                         over = over | (n_c > pads[c])
-                        sel = jax.lax.dynamic_slice(order_p, (start,), (pads[c],))
-                        sel_g = jnp.minimum(sel, n - 1)
-                        r_c, key_c, dl_c, n_w = stepped(r[sel_g], keys[sel_g], m_c[c], step_l_arr[c], reach_arr[c])
-                        real = jnp.arange(pads[c]) < n_c
-                        sel_r = jnp.where(real, sel, n)                              # out of bounds: dropped (-1 would wrap)
-                        r = r.at[sel_r].set(r_c, mode="drop"); keys = keys.at[sel_r].set(key_c, mode="drop")
-                        dlog = dlog.at[sel_r].add(dl_c, mode="drop")
-                        n_w_max = jnp.maximum(n_w_max, jnp.where(real, n_w, 0).max())
+
+                        def run_class(op, c=c):
+                            r, keys, dlog, start, n_c = op
+                            sel = jax.lax.dynamic_slice(order_p, (start,), (pads[c],))
+                            sel_g = jnp.minimum(sel, n - 1)
+                            r_c, key_c, dl_c, n_w = stepped(r[sel_g], keys[sel_g], m_c[c], step_l_arr[c], reach_arr[c])
+                            real = jnp.arange(pads[c]) < n_c
+                            sel_r = jnp.where(real, sel, n)                          # out of bounds: dropped (-1 would wrap)
+                            r = r.at[sel_r].set(r_c, mode="drop"); keys = keys.at[sel_r].set(key_c, mode="drop")
+                            dlog = dlog.at[sel_r].add(dl_c, mode="drop")
+                            return r, keys, dlog, jnp.where(real, n_w, 0).max()
+
+                        def skip_class(op):
+                            r, keys, dlog, start, n_c = op
+                            return r, keys, dlog, jnp.int32(0)
+                        # a class with no walker this round runs nothing (the host skipped its launch before)
+                        r, keys, dlog, n_w_c = jax.lax.cond(n_c > 0, run_class, skip_class, (r, keys, dlog, start, n_c))
+                        n_w_max = jnp.maximum(n_w_max, n_w_c)
                         n_kern = n_kern + n_c * m_c[c]
                         start = start + n_c
                     r_rounds.append(r)
