@@ -17,17 +17,21 @@ Schema
 ``SCANNER_CONSTANTS`` has these sections:
   * ``citations``  — shared citation dicts (key, authors, title, publisher, year, doi_or_url).
   * ``scanners``   — real machines, keyed by model; each has ``gradient`` / ``rf`` sub-dicts of entries.
-  * ``envelopes``  — declared limit points that are not a machine: the replay band-limit
-    certificate's classes (#143), the Pulseq presets, the Pulseq example system's dead times.
-    Same leaf schema; ``NEEDS VERIFICATION`` where nothing cites them, which is the honest state.
-  * ``classes``    — the certificate's short names (``prisma``, ``connectom``, ``connectome_2``,
-    ``magnus`` ...) -> a ``scanners`` / ``envelopes`` key.
+  * ``envelopes``  — declared limit points that are not a machine: the Pulseq presets and the
+    Pulseq example system's dead times. Same leaf schema; ``NEEDS VERIFICATION`` where nothing
+    cites them, which is the honest state.
+  * ``classes``    — the replay band-limit certificate's short names (``prisma``, ``connectom``,
+    ``connectome_2``, ``magnus``, ``bruker_bga_s``, ``micro_insert``, ``extreme_insert``) -> a
+    ``scanners`` key: every class is a cited machine (#220), the three preclinical ones Bruker's
+    BGA-9S, Micro2.5 and Micro5.
   * ``aliases``    — every other short name (the Pulseq preset names, ``signa_magnus`` ...) -> a key.
   * ``safety``     — IEC 60601-2-33 SAR / B1+rms / dB-dt-PNS / SAFE-model (field-independent).
 Each leaf entry carries ``value``, ``unit``, ``field_T`` (or null), ``context``,
 ``source_key``, ``location`` (the specific clause/table/figure), and ``confidence``
-(``cited`` / ``widely-quoted`` / ``NEEDS VERIFICATION``).  ``value`` may be ``null``
-for a NEEDS-VERIFICATION entry (vendor-confidential / coil-dependent).
+(``cited`` / ``derived`` / ``widely-quoted`` / ``NEEDS VERIFICATION``).  ``derived`` is a
+number computed from a cited one (a microscopy probe's slew rate from its stated rise time
+and amplitude: a lower bound, said so in ``context``).  ``value`` may be ``null`` for a
+NEEDS-VERIFICATION entry (vendor-confidential / coil-dependent).
 
 Caveats that travel with these numbers
 ---------------------------------------
@@ -36,7 +40,9 @@ Caveats that travel with these numbers
   ceiling (it comes from the implant's MR-Conditional label);
 * slew is usually PNS-limited well below the hardware max — Connectom is 200 T/m/s
   hardware but **62.5 T/m/s during diffusion encoding** (use ``regime='diffusion'``);
-* Connectome-2.0 figures are published *design targets*, not production specs.
+* Connectome-2.0 figures were published as design targets and are reached per axis on the
+  built scanner (Ramos-Llorden 2026); the Bruker microscopy probes' slew rates are derived
+  from rise times, not published.
 
 Provenance compiled 2026-06-26 by an automated literature/standards sweep; every
 ``source_key`` resolves in ``citations`` to a DOI / IEC clause / vendor document.

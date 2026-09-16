@@ -72,10 +72,31 @@ def test_what_the_catalogue_does_not_know_is_none_and_listed():
     with pytest.raises(ValueError, match="no verified gradient"):
         ScannerLimits.of("pulseq_example_system")
     unverified = {m for m, _, _ in scc.needs_verification()}
-    assert {"certificate_bruker_bga_s", "certificate_micro_insert", "certificate_extreme_insert",
-            "pulseq_clinical_typical", "pulseq_preclinical_bruker", "pulseq_example_system"} <= unverified
-    for k in ("bruker_bga_s", "micro_insert", "extreme_insert", "clinical_typical", "preclinical_bruker"):
+    assert {"pulseq_clinical_typical", "pulseq_preclinical_bruker", "pulseq_example_system"} <= unverified
+    for k in ("clinical_typical", "preclinical_bruker"):
         assert ScannerLimits.of(k).kind == "envelope", k
+
+
+def test_the_preclinical_classes_are_cited_bruker_hardware():
+    """The three preclinical certificate classes were unsourced envelope points (750 / 6000, 1500 / 10000,
+    3000 / 20000, 'NEEDS VERIFICATION'); they are Bruker's BGA-9S, Micro2.5 and Micro5 (#220), and no
+    certificate can be published against a number no hardware has."""
+    for cls, key, lim in (("bruker_bga_s", "bruker_bga_9s", (0.760, 6840.0)),
+                          ("micro_insert", "bruker_micro2_5", (1.500, 15000.0)),
+                          ("extreme_insert", "bruker_micro5", (3.000, 37500.0))):
+        lm = ScannerLimits.of(cls)
+        assert lm.kind == "scanner" and lm.name == key and lm.gradient_limits == pytest.approx(lim), cls
+    assert ScannerLimits.of("bga_12s_hp").gradient_limits == pytest.approx((0.660, 4570.0))
+    assert ScannerLimits.of("bga_6s").gradient_limits == pytest.approx((1.000, 11250.0))
+    assert not [k for k in scc.SCANNER_CONSTANTS["envelopes"] if k.startswith("certificate_")]
+    # the microscopy probes' slew rates are derived from a stated rise time, and say so
+    for key in ("bruker_micro2_5", "bruker_micro5"):
+        leaf = scc.get_limit(key, "gradient", "max_slew_rate")
+        assert leaf["confidence"] == "derived" and "rise time" in leaf["context"] and "lower bound" in leaf["context"]
+        assert scc.get_limit(key, "gradient", "max_amplitude")["confidence"] == "cited"
+    assert not [m for m, _, _ in scc.needs_verification() if m.startswith("bruker_")]
+    for key in ("bruker_almanac_2011", "bruker_micro2_5_web", "bruker_micro5_web", "ramos_llorden2026_connectome2"):
+        assert scc.get_citation(key)["doi_or_url"]
 
 
 def test_safe_model_is_the_representative_example_with_normalised_weights():
