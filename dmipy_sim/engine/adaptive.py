@@ -187,6 +187,17 @@ interval mean as before).
             return jnp.concatenate([order, pad]), jnp.bincount(bucket.astype(jnp.int32) + 1, length=n_classes + 1)
 
         reach_c = [float(m) * float(l) + NUDGE for m, l in zip(steps_c, step_l_c)]
+
+        def _place_body(r, keys):
+            """A round's placement, bucketing, free steps and ordering as ONE program (no loop in it, so XLA keeps it
+            a handful of kernels): four launches of the host become one. Traced under the geometry's tables as
+            arguments (:func:`jit_with_tables`), so the nested wall-scales program reads tracers, never a copy."""
+            d_wall, R_near = scales_dev(r)
+            bucket, far_j = _bucket(d_wall, R_near)
+            r, keys = _free_step(r, keys, d_wall, far_j)
+            order, counts = _order(bucket)
+            return r, keys, order, counts
+        _place = jit_with_tables(geometry, geometry.TABLES, _place_body)
         k_cand = int(candidate_k_start)
 
         scales_dev = geometry._wall_scales_device()
@@ -319,10 +330,7 @@ interval mean as before).
                                 seg, keep, n_str = within_dev(r)
                             f_acc = jnp.zeros((nb, 13), jnp.float32)
                         for _ in range(n_rounds):
-                            d_wall, R_near = scales_dev(r)
-                            bucket, far_j = _bucket(d_wall, R_near)
-                            r, keys = _free_step(r, keys, d_wall, far_j)
-                            order, counts = _order(bucket)
+                            r, keys, order, counts = _place(r, keys)         # one launch: placement, bucketing, free steps, order
                             free_acc = free_acc + counts[0]; cmax = jnp.maximum(cmax, counts[1:])
                             for c in range(n_classes):
                                 if pads[c] == 0:                             # a class the chunk had no walker in
