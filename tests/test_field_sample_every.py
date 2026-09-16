@@ -12,6 +12,8 @@ import dmipy_sim as d
 from dmipy_sim.io.strands import write_tck
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_sim.spec import disco_spec, walk_spec
+from dmipy_sim.spec.tissue import Tissue
+from tests.replay_frames import field_along
 
 
 @pytest.fixture(scope="module")
@@ -51,8 +53,9 @@ def test_the_pack_records_the_grid_and_the_replay_gates_on_it(spec, tmp_path):
     assert pm["n_t"] == n_tf and abs(pm["dt"] - 4 * pk.dt) < 1e-15 and pm["n_ch"] == 12
     assert pk.meta["fidelity"]["susc_path_pulses_certified"] == 2 and np.isfinite(pk.meta["fidelity"]["err_susc_path"])
     seq = d.gre(4e-4, gradient_directions=[[1, 0, 0]], bvalues=[0.0], delta=1e-4, Delta=2e-4, n_t=pk.n_t, slew_rate=np.inf)
-    w_, ew, E = pk.walker_signals(seq, tissue=False, B0=7.0, b0_dir=(1, 0, 0), chi_iso=-0.1e-6, chi_aniso=-0.1e-6)
-    w0, ew0, E0 = pk.walker_signals(seq, tissue=False)
+    seq_x, R = field_along(seq, (1, 0, 0))
+    w_, ew, E = pk.walker_signals(seq_x, orientation=R, scanner=7.0, tissue=Tissue(chi_iso=-0.1e-6, chi_aniso=-0.1e-6))
+    w0, ew0, E0 = pk.walker_signals(seq)
     phase = np.angle(E[:, 0] / E0[:, 0])                             # the field's phase per walker
     from scipy.fft import dct
     from dmipy_sim.replay._replay_kernel import field_gate
@@ -90,7 +93,7 @@ def test_shards_with_the_path_channel_merge(spec, tmp_path):
     C_s = np.concatenate([susc_path_coeffs(pk.arrays, pk.meta["compression"]["channels"]["susceptibility_path"])[0] for pk in pks])
     np.testing.assert_allclose(C_m, C_s, rtol=1e-12, atol=0)
     seq = d.gre(4e-4, gradient_directions=[[1, 0, 0]], bvalues=[0.0], delta=1e-4, Delta=2e-4, n_t=m.n_t, slew_rate=np.inf)
-    kw = dict(tissue=False, B0=7.0, b0_dir=(1, 0, 0), chi_iso=-0.1e-6, chi_aniso=-0.1e-6)
+    kw = dict(scanner=7.0, tissue=Tissue(chi_iso=-0.1e-6, chi_aniso=-0.1e-6))
     W = [float(np.asarray(pk.arrays["spin_weights"]).sum()) if "spin_weights" in pk.arrays else pk.n_walkers for pk in pks]
     S = [pk.replay(seq, **kw)[0] for pk in pks]
     np.testing.assert_allclose(m.replay(seq, **kw)[0], (W[0] * S[0] + W[1] * S[1]) / (W[0] + W[1]), rtol=1e-6)

@@ -14,6 +14,7 @@ from dmipy_sim.io.strands import write_tck
 from dmipy_sim.phantom import Grid
 from dmipy_sim.replay.bank import build_replay_pack, merge_packs, voxel_fidelity_volumes
 from dmipy_sim.spec import disco_spec, walk_spec, StratifiedByVoxel
+from dmipy_sim.spec.tissue import Tissue
 
 
 @pytest.fixture(scope="module")
@@ -48,12 +49,12 @@ def test_the_merged_pack_replays_as_the_weight_combined_shards(shards):
     wa, wb = np.asarray(a.spin_weights).sum(), np.asarray(b.spin_weights).sum()
     def combined(**kw):                                                        # the shards' complex signals, by weight
         return np.abs((wa * a.replay(seq, complex_signal=True, **kw) + wb * b.replay(seq, complex_signal=True, **kw)) / (wa + wb))
-    expect = combined(tissue=False)
-    np.testing.assert_allclose(m.replay(seq, tissue=False), expect, rtol=1e-6)
-    np.testing.assert_allclose(m.replay(seq, tissue=False, rho=1e-5, D=1.7e-9), combined(tissue=False, rho=1e-5, D=1.7e-9), rtol=1e-6)
+    expect = combined()
+    np.testing.assert_allclose(m.replay(seq), expect, rtol=1e-6)
+    np.testing.assert_allclose(m.replay(seq, tissue=Tissue(rho=1e-5, D=1.7e-9)), combined(tissue=Tissue(rho=1e-5, D=1.7e-9)), rtol=1e-6)
     from dmipy_sim.replay import read_rpk
     back = read_rpk(str(tmp / "merged.rpk"))
-    np.testing.assert_allclose(back.replay(seq, tissue=False), expect, rtol=1e-6)
+    np.testing.assert_allclose(back.replay(seq), expect, rtol=1e-6)
     # the certificate: the union of the two blocks, each voxel from its shard
     g, floors, counts = voxel_fidelity_volumes(m)
     _, fa, ca = voxel_fidelity_volumes(a); _, fb, cb = voxel_fidelity_volumes(b)
@@ -101,7 +102,7 @@ def test_passes_of_one_block_merge_with_the_union_weights(spec_grid):
     for name in counts:
         assert counts[name][0].sum() == 16 * 4 and counts[name][1].sum() == 0
     seq = d.set_b(d.pgse([[1, 0, 0]], 0.2e-3, 0.5e-3, gradient_strengths=0.1, n_t=m.n_t, slew_rate=np.inf), [1e9])
-    E = np.concatenate([pk.walker_signals(seq, tissue=False)[2] for pk in packs])                     # per-walker complex signals
-    np.testing.assert_allclose(m.replay(seq, tissue=False), np.abs((wm[:, None] * E).sum(0) / wm.sum()), rtol=1e-6)
+    E = np.concatenate([pk.walker_signals(seq)[2] for pk in packs])                     # per-walker complex signals
+    np.testing.assert_allclose(m.replay(seq), np.abs((wm[:, None] * E).sum(0) / wm.sum()), rtol=1e-6)
     alike = np.abs((ws[:, None] * E).sum(0) / ws.sum())
-    assert not np.allclose(m.replay(seq, tissue=False), alike, rtol=1e-6)
+    assert not np.allclose(m.replay(seq), alike, rtol=1e-6)

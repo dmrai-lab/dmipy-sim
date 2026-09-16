@@ -33,7 +33,7 @@ from ._replay_kernel import se_gate, gradient_phase
 from ..acquisition.rf import RFEvent
 from .replay import ReplayPack, read_rpk, write_rpk
 
-__all__ = ["build_replay_pack", "build_to_floor", "replay_susc", "frame_from_axis", "frame_from_bundles", "frame_of_spec", "check_frame_against_walk",
+__all__ = ["build_replay_pack", "build_to_floor", "frame_from_axis", "frame_from_bundles", "frame_of_spec", "check_frame_against_walk",
            "read_rpk", "write_rpk", "RPK_SCHEMA_VERSION"]
 
 RPK_SCHEMA_VERSION = "0.4"
@@ -781,14 +781,6 @@ def _pack_positions(pack):
     return pack.positions()
 
 
-def replay_susc(pack, waveform, *, b0_dir=(0.0, 0.0, 1.0), B0=0.0, chi_iso=0.0, chi_aniso=0.0,
-                T2=None, T1=None, complex_signal=False, compartment=None):
-    """``pack.replay(waveform, B0=..., ...)``: the field-tier replay, kept under its old name; per-pool
-    ``T2`` / ``T1`` are given here, the pack carries none; the 180 is the waveform's own."""
-    return pack.replay(waveform, tissue=False, T2=T2, T1=T1, B0=B0, b0_dir=b0_dir, chi_iso=chi_iso, chi_aniso=chi_aniso,
-                       compartment=compartment, complex_signal=complex_signal)
-
-
 # --------------------------------------------------------------- pack generation
 #: per-channel numbers a codec MEASURES on the walk it encoded (not parameters): two shards of one fill differ in them
 _MEASURED_CHANNEL_KEYS = ("trace_residual",)
@@ -1269,7 +1261,7 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto"
                     "mt": (m.get("bfrac") is not None)}
         # STATIC field-grid susceptibility channel: store the geometry-only field-basis grids ONCE
         # (a substrate property); replay assembles the field for any (B0,dir,chi) and samples it along
-        # the pos-codec-decoded trajectory (replay_susc). O(N_vox) not O(N_w*N_t) and SE-exact (a static
+        # the pos-codec-decoded trajectory (ReplayPack.replay with a field). O(N_vox) not O(N_w*N_t) and SE-exact (a static
         # field at a frozen point cancels under the SE gate to machine precision). f16 grids: O(1) geometry.
         _field = _field_of(m)
         if _field is not None and m.get("susc_field_basis") is None:

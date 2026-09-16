@@ -42,7 +42,7 @@ def test_the_readme_phantom_snippets_run(stand_in_pack, tmp_path, monkeypatch):
     assert len(blocks) == 2, "the section has a composition block and a partition block"
     for src in blocks:
         src = src.replace('"cactus.rpk"', repr(stand_in_pack)).replace('"disco.rpk"', repr(stand_in_pack))
-        src = src.replace(", B0_T=7.0, b0_dir=(0, 1, 0), chi_iso=-1e-7", "")   # the stand-in carries no field tier
+        src = src.replace(", tissue=Tissue(chi_iso=-1e-7)", "").replace(", scanner=7.0", "")   # the stand-in carries no field tier
         exec(compile(src, "README.md", "exec"), ns)
     S, S_part = ns["S"], ns["S"]
     ph, scanner = ns["ph"], ns["scanner"]

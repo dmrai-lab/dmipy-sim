@@ -14,6 +14,8 @@ from dmipy_sim.io.strands import read_strands, write_strands, read_tck, write_tc
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_sim.spec import (caterpillar_spec, strands_spec, disco_spec, walk_spec, geometry_from_spec, load_spec,
                             SpecError, Seeding)
+from dmipy_sim.spec.tissue import Tissue
+from tests.replay_frames import field_along
 
 ENV = dict(bvals=[0.0, 1e9], dirs=[[1, 0, 0]], ogse_periods=[2], shortd_b=1e9, shortd_deltas_frac=[0.05], B0_list=[],
            theta_deg=[0], delta_frac=0.2, Delta_frac=0.5, rho_list=[1e-5])
@@ -234,7 +236,7 @@ def test_a_strand_pack_claims_what_its_walk_recorded(disco_files):
     pk = build_replay_pack(w, id="t/strands", license="x", citation="x", K=4, field=False)
     assert pk.has_relaxation and pk.has_surface and pk.meta["replay_envelope"]["surface_relaxivity"]
     seq = d.set_b(d.pgse([[1, 0, 0]], 0.2e-3, 0.5e-3, gradient_strengths=0.1, n_t=pk.n_t, slew_rate=np.inf), [1e9])
-    w_, ew, _ = pk.walker_signals(seq, tissue=False, rho=1e-5, D=1.7e-9)
+    w_, ew, _ = pk.walker_signals(seq, tissue=Tissue(rho=1e-5, D=1.7e-9))
     assert (ew <= w_ * (1 + 1e-3)).all() and ew.sum() < w_.sum()      # contact attenuates (the K = 4 bridge series overshoots by 1e-4)
     with pytest.raises(SpecError, match="voxel budget"):                       # the raster of a domain too large is refused
         walk_spec(spec, 60, 1e-3, 2.5e-4, seed=0, n_probe=20_000, require_gpu=False, field="grid", field_budget=1e3)
@@ -244,9 +246,9 @@ def test_a_strand_pack_claims_what_its_walk_recorded(disco_files):
     assert isinstance(wf.field_basis, StrandFieldBasis) and wf.field_basis.certificate["converged"]
     pkf = build_replay_pack(wf, id="t/strands-field", license="x", citation="x", K=4, susc_path_K=4)
     assert pkf.has_field and pkf.meta["compression"]["channels"]["susceptibility_grid"]["source"]["kind"] == "strand_superposition"
-    s_off = pkf.replay(seq, tissue=False)[0]
-    s_gre = pkf.replay(d.gre(0.5e-3, gradient_directions=[[1, 0, 0]], bvalues=[1e9], delta=0.2e-3, Delta=0.3e-3, n_t=pk.n_t, slew_rate=np.inf),
-                       tissue=False, B0=7.0, b0_dir=(1, 0, 0), chi_iso=-0.1e-6, chi_aniso=-0.1e-6)[0]
+    s_off = pkf.replay(seq)[0]
+    gre_x, R = field_along(d.gre(0.5e-3, gradient_directions=[[1, 0, 0]], bvalues=[1e9], delta=0.2e-3, Delta=0.3e-3, n_t=pk.n_t, slew_rate=np.inf), (1, 0, 0))
+    s_gre = pkf.replay(gre_x, orientation=R, scanner=7.0, tissue=Tissue(chi_iso=-0.1e-6, chi_aniso=-0.1e-6))[0]
     assert np.isfinite(s_gre) and s_gre != s_off
 
 def test_a_straight_myelinated_curved_tube_is_the_myelinated_cylinder():
@@ -306,7 +308,7 @@ def test_the_curved_tubes_record_surface_time_and_the_straight_limit_is_the_cyli
     pk = build_replay_pack(w, id="t/curved", license="x", citation="x", K=4, blt_temporal_K=4)
     assert pk.has_surface
     wf = d.pgse([[1.0, 0.0, 0.0]], 0.1e-3, 1.9e-3, gradient_strengths=1e-4, n_t=100, slew_rate=np.inf)
-    assert pk.replay(wf, tissue=False, rho=rho, D=D)[0] < 0.99 * pk.replay(wf, tissue=False)[0]
+    assert pk.replay(wf, tissue=Tissue(rho=rho, D=D))[0] < 0.99 * pk.replay(wf)[0]
 
 
 def test_stratified_seeding_fills_every_occupied_voxel_and_keeps_the_volumes(disco_files):
@@ -340,7 +342,8 @@ def test_stratified_seeding_fills_every_occupied_voxel_and_keeps_the_volumes(dis
     from dmipy_sim.replay.bank import susc_path_decode
     b_, names_ = susc_path_decode(pkf2.arrays, pm2); assert b_.shape[1] == 13 and names_[3] == "iso_P_zz"
     seq_g = d.gre(0.5e-3, gradient_directions=[[1, 0, 0]], bvalues=[1e9], delta=0.2e-3, Delta=0.3e-3, n_t=pkf2.n_t, slew_rate=np.inf)
-    assert pkf2.replay(seq_g, tissue=False, B0=7.0, b0_dir=(1, 0, 0), chi_iso=-0.1e-6, chi_aniso=-0.1e-6)[0] != pkf2.replay(seq_g, tissue=False)[0]
+    seq_gx, R = field_along(seq_g, (1, 0, 0))
+    assert pkf2.replay(seq_gx, orientation=R, scanner=7.0, tissue=Tissue(chi_iso=-0.1e-6, chi_aniso=-0.1e-6))[0] != pkf2.replay(seq_g)[0]
     ids = np.asarray(w.compartment)[:, 0]; r0 = np.asarray(w.positions)[:, 0]; wt = np.asarray(w.weights)
     ijk, inside = grid.bin(r0); assert inside.all()
     flat = np.ravel_multi_index(tuple(ijk.T), grid.shape)
@@ -369,6 +372,6 @@ def test_stratified_seeding_fills_every_occupied_voxel_and_keeps_the_volumes(dis
     # the floor on the acquisition the pack is meant for (per shell), from the pack alone
     from dmipy_sim.replay.bank import voxel_floor
     seq = d.set_b(d.pgse(np.eye(3), 0.1e-3, 0.4e-3, gradient_strengths=[0.1] * 3, n_t=100, slew_rate=np.inf), [1e9, 1e9, 2e9])
-    fl, cnt = voxel_floor(pk, grid, seq, shells={"b1": [0, 1], "b2": [2]}, tissue=False)
+    fl, cnt = voxel_floor(pk, grid, seq, shells={"b1": [0, 1], "b2": [2]})
     assert set(fl) == {"extra", "intra", "myelin"} and cnt["extra"].sum() == (ids == 0).sum()
     assert fl["extra"]["b1"].shape == grid.shape and (fl["extra"]["b1"][cnt["extra"] > 1] > 0).all() and (fl["myelin"]["b2"] < 1e-6).all()

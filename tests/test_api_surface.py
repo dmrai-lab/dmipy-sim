@@ -522,3 +522,27 @@ def test_scanner_numbers_live_in_one_place():
         f"scanner catalogues changed. new: {sorted(found - _SCANNER_SOURCE - _SCANNER_VIEWS)}, "
         f"gone: {sorted((_SCANNER_SOURCE | _SCANNER_VIEWS) - found)}")
     assert not literal, f"a scanner catalogue carries numbers in Python instead of reading the JSON: {sorted(literal)}"
+
+
+def test_replay_knobs_are_tissue_orientation_and_scanner():
+    """A replay setting is three things, each stated once (dmipy-sim#283): ``tissue`` (a ``spec.Tissue`` or None),
+    ``orientation`` / the phantom's pose, ``scanner``. No replay entry point takes a flat physical value -- a T2, a
+    B0, a chi, a field direction -- and none takes a string or a boolean for the tissue."""
+    import inspect
+    from dmipy_sim.replay.replay import ReplayPack
+    from dmipy_sim.replay.phantom import ReplayPhantom
+    from dmipy_sim.phantom.phantom import Phantom
+    from dmipy_sim.phantom.partition import PartitionPhantom
+    from dmipy_sim.phantom.substrates import PackSubstrate, FreeWater
+    flat = {"T2", "T1", "rho", "D", "B0", "b0_dir", "chi_iso", "chi_aniso", "T2_s", "T1_s", "rho_m_s", "D_m2_s", "B0_T"}
+    entry_points = [ReplayPack.replay, ReplayPack.walker_signals, ReplayPack.replay_bloch, ReplayPack.pose_response,
+                    ReplayPhantom.replay, ReplayPhantom.replay_bloch, Phantom.replay, PartitionPhantom.replay,
+                    PackSubstrate.__init__, FreeWater.__init__]
+    for fn in entry_points:
+        params = inspect.signature(fn).parameters
+        assert not (flat & set(params)), f"{fn.__qualname__} takes a flat physical value: {sorted(flat & set(params))}"
+        if "tissue" in params:
+            assert params["tissue"].default in (None, inspect.Parameter.empty), fn.__qualname__
+    for fn in (ReplayPack.replay, ReplayPack.walker_signals, ReplayPack.replay_bloch, ReplayPack.pose_response,
+               ReplayPhantom.replay, ReplayPhantom.replay_bloch, Phantom.replay, PartitionPhantom.replay):
+        assert "scanner" in inspect.signature(fn).parameters, fn.__qualname__

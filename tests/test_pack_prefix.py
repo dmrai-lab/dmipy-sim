@@ -7,6 +7,7 @@ import dmipy_sim as d
 from dmipy_sim import sequences
 from dmipy_sim.replay import read_rpk
 from dmipy_sim.replay.bank import build_replay_pack
+from dmipy_sim.spec.tissue import Tissue
 
 
 @pytest.fixture(scope="module")
@@ -40,7 +41,7 @@ def test_a_prefix_keeps_the_bands_per_second_and_replays_like_the_parent(parent,
     S_half = half.replay(seq, complex_signal=True)
     np.testing.assert_allclose(S_half, S_parent, atol=3 * half.meta["fidelity"]["err_max"] + 1e-6)
     # with the compartment channel: relaxation replays on both
-    np.testing.assert_allclose(half.replay(seq, T2=[0.02, 0.02, 0.02]), parent.replay(seq, T2=[0.02, 0.02, 0.02]),
+    np.testing.assert_allclose(half.replay(seq, tissue=Tissue(T2=[0.02, 0.02, 0.02])), parent.replay(seq, tissue=Tissue(T2=[0.02, 0.02, 0.02])),
                                atol=3 * half.meta["fidelity"]["err_max"] + 1e-6)
     # the start positions are the parent's, exactly
     np.testing.assert_allclose(half.r0, parent.r0, atol=1e-12)
@@ -66,8 +67,8 @@ def test_a_short_acquisition_relaxes_to_its_own_echo_on_a_longer_walk(parent):
     """The TE-prefix property on the replay side: the walk beyond the echo is not part of the acquisition, so
     relaxation and surface terms stop there, whatever the pack's length."""
     seq = sequences.pgse([[1, 0, 0]], 2e-3, 5e-3, gradient_strengths=[0.3], TE=10e-3)
-    S0 = parent.replay(seq, tissue=False)
-    S = parent.replay(seq, T2=[0.02, 0.02, 0.02])
+    S0 = parent.replay(seq)
+    S = parent.replay(seq, tissue=Tissue(T2=[0.02, 0.02, 0.02]))
     assert S[0] / S0[0] == pytest.approx(np.exp(-10e-3 / 0.02), rel=2e-2)          # exp(-TE/T2), not exp(-T/T2)
 
 
@@ -111,8 +112,8 @@ def test_a_short_acquisition_dephases_in_the_field_to_its_own_echo(tmp_path):
     se = sequences.pgse([[0, 0, 1]], 0.15 * TE, 0.5 * TE, gradient_strengths=[0.01], TE=TE, n_t=4000)
     gre = sequences.gre(TE, n_t=4000)
     for seq in (se, gre):
-        S_p = parent.replay(seq, tissue=False, B0=7.0, chi_iso=1.06e-6, complex_signal=True)
-        S_h = half.replay(seq, tissue=False, B0=7.0, chi_iso=1.06e-6, complex_signal=True)
+        S_p = parent.replay(seq, scanner=7.0, tissue=Tissue(chi_iso=1.06e-6), complex_signal=True)
+        S_h = half.replay(seq, scanner=7.0, tissue=Tissue(chi_iso=1.06e-6), complex_signal=True)
         np.testing.assert_allclose(S_h, S_p, atol=3 * half.meta["fidelity"]["err_max"] + 5e-4)
     # the gradient echo by hand on the parent: the field over the first n_t' saves only, +1 throughout
     b, _ = susc_path_decode(parent.arrays, parent.meta["compression"]["channels"]["susceptibility_path"])
@@ -121,7 +122,7 @@ def test_a_short_acquisition_dephases_in_the_field_to_its_own_echo(tmp_path):
     w = np.ones(n_cut); w[0] = w[-1] = 0.5                                        # the trapezoid over the prefix
     phi = GAMMA * parent.dt * (dB[:, :n_cut] * w[None, :]).sum(1)
     S_hand = np.exp(1j * phi).mean()
-    S_p = parent.replay(gre, tissue=False, B0=7.0, chi_iso=1.06e-6, complex_signal=True)[0]
+    S_p = parent.replay(gre, scanner=7.0, tissue=Tissue(chi_iso=1.06e-6), complex_signal=True)[0]
     assert abs(S_p - S_hand) < 5e-3
     phi_full = GAMMA * parent.dt * dB.sum(1)                                       # what the old gate integrated
     assert abs(S_p - np.exp(1j * phi_full).mean()) > 5e-2 or abs(S_hand - np.exp(1j * phi_full).mean()) < 5e-3

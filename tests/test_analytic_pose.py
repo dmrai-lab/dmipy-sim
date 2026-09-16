@@ -6,6 +6,8 @@ import textwrap
 import warnings
 
 import numpy as np
+
+from dmipy_sim.spec.tissue import Tissue
 import pytest
 
 from dmipy_sim import sequences
@@ -20,8 +22,9 @@ class Stick:
     model = "stickpkg:Stick"
     oriented = True
 
-    def __init__(self, *, D_m2_s, m0, name="wm/stick"):
-        self.D_m2_s, self.m0, self.name = float(D_m2_s), float(m0), name
+    def __init__(self, *, m0, tissue, name="wm/stick"):
+        self.tissue, self.m0, self.name = tissue, float(m0), name
+        self.D_m2_s = float(tissue.D)
 
     def response(self, seq, pose=None):
         axis = (np.eye(3) if pose is None else np.asarray(pose, float))[:, 2]
@@ -33,10 +36,10 @@ class Stick:
 
     @classmethod
     def from_meta(cls, meta):
-        return cls(D_m2_s=meta["params"]["D"], m0=meta["m0"], name=meta["id"])
+        return cls(m0=meta["m0"], name=meta["id"], tissue=Tissue(D=meta["params"]["D"]))
 
     def __repr__(self):
-        return f"Stick(D_m2_s={self.D_m2_s:g}, m0={self.m0:g})"
+        return f"Stick(m0={self.m0:g}, tissue={self.tissue!r})"
 
 
 def _seq():
@@ -46,7 +49,7 @@ def _seq():
 
 
 def test_a_peak_evaluates_the_form_at_that_pose_exactly():
-    seq = _seq(); stick = Stick(D_m2_s=1.7e-9, m0=1.0)
+    seq = _seq(); stick = Stick(m0=1.0, tissue=Tissue(D=1.7e-9))
     axis = np.array([1.0, 2.0, 0.5]); axis /= np.linalg.norm(axis)
     ph = Phantom.compose(Grid(shape=(1, 1, 1), voxel_size_m=(2e-3, 2e-3, 2e-3)), fractions={stick: np.ones((1, 1, 1))},
                          orientation=Peaks(np.broadcast_to(axis, (1, 1, 1, 1, 3)).copy()))
@@ -58,7 +61,7 @@ def test_a_peak_evaluates_the_form_at_that_pose_exactly():
 
 def test_a_watson_field_on_the_form_is_the_dispersed_integral():
     """The composition equals the Watson-weighted average of the form over the sphere, computed by brute force."""
-    seq = _seq(); stick = Stick(D_m2_s=1.7e-9, m0=1.0)
+    seq = _seq(); stick = Stick(m0=1.0, tissue=Tissue(D=1.7e-9))
     mu = np.array([0.3, 0.2, 1.0]); mu /= np.linalg.norm(mu); kappa = 6.0
     ph = Phantom.compose(Grid(shape=(1, 1, 1), voxel_size_m=(2e-3, 2e-3, 2e-3)), fractions={stick: np.ones((1, 1, 1))},
                          orientation=Watson(mu=np.broadcast_to(mu, (1, 1, 1, 3)).copy(), kappa=np.full((1, 1, 1), kappa)))
@@ -74,27 +77,29 @@ def test_a_watson_field_on_the_form_is_the_dispersed_integral():
 
 def test_a_form_with_an_axis_needs_an_orientation_and_free_water_refuses_one():
     from dmipy_sim.phantom import FreeWater
-    stick = Stick(D_m2_s=1.7e-9, m0=1.0)
+    stick = Stick(m0=1.0, tissue=Tissue(D=1.7e-9))
     with pytest.raises(ValueError, match="no orientation given"):
         Phantom.compose(Grid(shape=(1, 1, 1), voxel_size_m=(2e-3, 2e-3, 2e-3)), fractions={stick: np.ones((1, 1, 1))}, orientation={})
-    water = FreeWater(D_m2_s=3e-9, m0=1.0)
+    water = FreeWater(m0=1.0, tissue=Tissue(D=3e-9))
     with pytest.raises(ValueError, match="orientation-independent"):
         Phantom.compose(Grid(shape=(1, 1, 1), voxel_size_m=(2e-3, 2e-3, 2e-3)), fractions={water: np.ones((1, 1, 1))},
                         orientation={water: Peaks(np.zeros((1, 1, 1, 1, 3)) + [0, 0, 1.0])})
 
 
 def test_a_namespaced_model_is_read_by_its_package_or_refused_naming_it(tmp_path, monkeypatch):
-    meta = Stick(D_m2_s=1.7e-9, m0=0.7).to_meta()
+    meta = Stick(m0=0.7, tissue=Tissue(D=1.7e-9)).to_meta()
     with pytest.raises(ValueError, match="'stickpkg'"):
         substrate_from_meta(meta)                              # the package is not installed: refused, named
     pkg = tmp_path / "stickpkg"; pkg.mkdir()
     (pkg / "__init__.py").write_text("")
     (pkg / "phantom.py").write_text(textwrap.dedent('''
         import numpy as np
+        from dmipy_sim.spec.tissue import Tissue
         class Stick:
             kind = "analytic"; model = "stickpkg:Stick"; oriented = True
-            def __init__(self, *, D_m2_s, m0, name):
-                self.D_m2_s, self.m0, self.name = float(D_m2_s), float(m0), name
+            def __init__(self, *, m0, tissue, name):
+                self.tissue, self.m0, self.name = tissue, float(m0), name
+                self.D_m2_s = float(tissue.D)
             def response(self, seq, pose=None):
                 axis = (np.eye(3) if pose is None else np.asarray(pose, float))[:, 2]
                 b = np.asarray(seq.encoding.bvalues, float); g = np.asarray(seq.encoding.gradient_directions, float)
@@ -102,13 +107,13 @@ def test_a_namespaced_model_is_read_by_its_package_or_refused_naming_it(tmp_path
             def to_meta(self):
                 return {"id": self.name, "kind": "analytic", "m0": self.m0, "model": self.model, "params": {"D": self.D_m2_s}}
         def analytic_substrate(meta):
-            return Stick(D_m2_s=meta["params"]["D"], m0=meta["m0"], name=meta["id"])
+            return Stick(m0=meta["m0"], name=meta["id"], tissue=Tissue(D=meta["params"]["D"]))
     '''))
     monkeypatch.syspath_prepend(str(tmp_path))
     form = substrate_from_meta(meta)
     assert form.oriented and form.m0 == 0.7 and form.D_m2_s == 1.7e-9
     # a phantom written with it reads back and replays through the package's reader
-    seq = _seq(); stick = Stick(D_m2_s=1.7e-9, m0=1.0)
+    seq = _seq(); stick = Stick(m0=1.0, tissue=Tissue(D=1.7e-9))
     axis = np.array([0.0, 1.0, 1.0]) / np.sqrt(2)
     ph = Phantom.compose(Grid(shape=(1, 1, 1), voxel_size_m=(2e-3, 2e-3, 2e-3)), fractions={stick: np.ones((1, 1, 1))},
                          orientation=Peaks(np.broadcast_to(axis, (1, 1, 1, 1, 3)).copy()))
@@ -121,15 +126,15 @@ def test_a_closed_form_is_full_tier_with_zeros():
     """A form with no susceptibility source has a field of zero at any B0: the signal is unchanged and nothing is
     said; free water carries its bulk relaxation when declared, and none when not."""
     from dmipy_sim.phantom import FreeWater
-    seq = _seq(); stick = Stick(D_m2_s=1.7e-9, m0=1.0)
+    seq = _seq(); stick = Stick(m0=1.0, tissue=Tissue(D=1.7e-9))
     ph = Phantom.compose(Grid(shape=(1, 1, 1), voxel_size_m=(2e-3, 2e-3, 2e-3)), fractions={stick: np.ones((1, 1, 1))},
                          orientation=Peaks(np.zeros((1, 1, 1, 1, 3)) + [0, 0, 1.0]))
     with warnings.catch_warnings():
         warnings.simplefilter("error")
-        S1 = ph.replay(seq, B0_T=3.0, chi_iso=1e-7)
+        S1 = ph.replay(seq, scanner=3.0)
     np.testing.assert_allclose(S1, ph.replay(seq))
-    water = FreeWater(D_m2_s=3e-9, m0=1.0, T2_s=2.0)
+    water = FreeWater(m0=1.0, tissue=Tissue(D=3e-9, T2=2.0))
     b = np.asarray(seq.encoding.bvalues); TE = float(np.max(seq.encoding.TE))
     np.testing.assert_allclose(water.response(seq), np.exp(-b * 3e-9) * np.exp(-TE / 2.0))
-    np.testing.assert_allclose(FreeWater(D_m2_s=3e-9, m0=1.0).response(seq), np.exp(-b * 3e-9))
-    assert FreeWater.from_meta(water.to_meta()).T2_s == 2.0 and "T2_s" not in FreeWater(D_m2_s=3e-9, m0=1.0).to_meta()
+    np.testing.assert_allclose(FreeWater(m0=1.0, tissue=Tissue(D=3e-9)).response(seq), np.exp(-b * 3e-9))
+    assert FreeWater.from_meta(water.to_meta()).tissue.T2 == 2.0 and "T2_s" not in FreeWater(m0=1.0, tissue=Tissue(D=3e-9)).to_meta()

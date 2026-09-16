@@ -295,15 +295,17 @@ class Phantom:
             out[self.index_of(key)] = pk
         return out
 
-    def replay(self, seq, *, B0_T=None, b0_dir=(0.0, 0.0, 1.0), tissue="nominal", packs=None, complex_signal=False,
-               T2_s=None, T1_s=None, rho_m_s=None, D_m2_s=None, chi_iso=None, chi_aniso=0.0,
+    def replay(self, seq, *, scanner=None, pose=None, packs=None, complex_signal=False,
                transmit=None, off_resonance=None, proton_density=None, cache=None):
         """The signal of every voxel under ``seq``: a dense volume ``grid.shape + (n_measurements,)``, NaN where
         the phantom has no voxel (:meth:`sparse` gives the rows).
 
         Each cited pack is replayed once into its response over poses and every voxel is an inner product of
-        that with its own orientation distribution (RPH.md 6). Knobs apply to every pack; a substrate's own
-        declared tissue values win over them, and anything neither names is the pack's nominal value.
+        that with its own orientation distribution (RPH.md 6). Each substrate replays at its own declared
+        :class:`~dmipy_sim.spec.Tissue` (``PackSubstrate(..., tissue=)``, ``FreeWater(tissue=)``; a pack substrate
+        with none is the bare diffusion signal). Two things are image-wide: ``scanner``, the static field (a
+        :class:`~dmipy_sim.acquisition.scanners.ScannerLimits` or tesla, ``None`` for no field), and ``pose``, the
+        specimen's rigid rotation in the bore (a 3x3 rotation or a :class:`~dmipy_sim.phantom.partition.Pose`).
 
         **Maps at replay time**, each a scalar, a volume of the grid's shape, or a callable of scanner
         coordinates ``f(xyz_m (N, 3)) -> (N,)`` evaluated at the voxel centres:
@@ -324,8 +326,7 @@ class Phantom:
         self._check_prescription(seq)
         maps = dict(transmit=self._map(transmit, "transmit"), off_resonance=self._map(off_resonance, "off_resonance"),
                     proton_density=self._map(proton_density, "proton_density"))
-        common = dict(B0=B0_T, b0_dir=b0_dir, tissue=tissue, packs=self._packs(packs), complex_signal=complex_signal,
-                      T2=T2_s, T1=T1_s, rho=rho_m_s, D=D_m2_s, chi_iso=chi_iso, chi_aniso=chi_aniso,
+        common = dict(scanner=scanner, pose=pose, packs=self._packs(packs), complex_signal=complex_signal,
                       off_resonance=maps["off_resonance"], proton_density=maps["proton_density"],
                       forms={i: s for i, s in enumerate(self.substrates) if getattr(s, "kind", None) == "analytic"})
         if maps["transmit"] is not None or "kappa_B1" in f.scalar_names:

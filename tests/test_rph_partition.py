@@ -2,6 +2,8 @@
 dmipy-sim#76, #186). Membership is derived from the stored ``r0``, fractions are emergent from the weights, the
 grid is free, and the anatomy rotates as a block."""
 import numpy as np
+
+from dmipy_sim.spec.tissue import Tissue
 import pytest
 
 import dmipy_sim as d
@@ -85,7 +87,7 @@ def test_a_voxel_without_walkers_is_absent_or_is_the_outside_substrate(pack_path
     assert np.isnan(bare.replay(_acq(pk, [[1, 0, 0]], [1e9]))[0, 0, 0, 0])
     with pytest.raises(ValueError, match="outside="):                                # a declared slot alone cannot fill a voxel
         Phantom.partition(PackSubstrate(pk, m0=0.7), big, declared={Inert(name="myelin"): np.full(big.shape, 0.3)}).fraction(0)
-    csf = FreeWater(D_m2_s=3e-9, m0=1.0)
+    csf = FreeWater(m0=1.0, tissue=Tissue(D=3e-9))
     ph = Phantom.partition(PackSubstrate(pk, m0=0.7), big, outside=csf)
     f_csf, f_pk = ph.fraction(csf), ph.fraction(ph.packs[0])
     assert ph.n_voxels == big.n_voxels and f_csf[0, 0, 0] == 1.0 and f_pk[0, 0, 0] == 0.0
@@ -234,8 +236,8 @@ def test_a_partition_writes_and_reads_back(pack_paths, tmp_path):
     pk = read_rpk(pack_paths[6])
     grid = _grid(pk, attach="lab")
     myelin = Inert(name="myelin")
-    ph = Phantom.partition(PackSubstrate(pk, m0=0.7, name="wm", T2_s=[0.06, 0.06, 0.06]), grid,
-                           declared={myelin: np.full(grid.shape, 0.2)}, outside=FreeWater(D_m2_s=3e-9, m0=1.0, T2_s=2.0),   # both relax (#238)
+    ph = Phantom.partition(PackSubstrate(pk, m0=0.7, name="wm", tissue=Tissue(T2=[0.06, 0.06, 0.06])), grid,
+                           declared={myelin: np.full(grid.shape, 0.2)}, outside=FreeWater(m0=1.0, tissue=Tissue(D=3e-9, T2=2.0)),   # both relax (#238)
                            pose=Pose(np.eye(3)))
     meta = ph.write(tmp_path / "part.rph", id="t/part", license="x", citation="x", embed=True)
     assert meta["addressing"] == "partition" and meta["substrates"][0]["addressing"] == "partition"
@@ -244,4 +246,4 @@ def test_a_partition_writes_and_reads_back(pack_paths, tmp_path):
     seq = _acq(pk, [[1, 0, 0], [0, 0, 1]], [1e9, 1e9])
     np.testing.assert_allclose(np.nan_to_num(back.replay(seq)), np.nan_to_num(ph.replay(seq)), rtol=1e-6)
     np.testing.assert_allclose(back.fraction("myelin"), ph.fraction(myelin))
-    assert back.substrates[0].tissue == {"T2": [0.06, 0.06, 0.06]}
+    assert back.substrates[0].tissue.to_meta() == {"T2": [0.06, 0.06, 0.06]}

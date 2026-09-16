@@ -48,8 +48,8 @@ def test_an_off_grid_pgse_carries_its_b_to_the_replay():
     grid with shifted edges replays within the codec's own precision of the on-grid one."""
     walk = d.simulate_trajectories(3000, D0, d.FreeDiffusion(), 0.05, 2e-4, seed=0, require_gpu=False)
     pk = build_replay_pack(walk, id="t/grid", license="x", citation="x", K=32, envelope=ENV)
-    on = pk.replay(_pgse(pk.dt, pk.n_t, 0.010, 0.030, 1e9), tissue=False)[0]
-    off = pk.replay(_pgse(pk.dt / 4, 4 * pk.n_t, 0.010 + 0.6 * pk.dt, 0.030, 1e9), tissue=False)[0]
+    on = pk.replay(_pgse(pk.dt, pk.n_t, 0.010, 0.030, 1e9))[0]
+    off = pk.replay(_pgse(pk.dt / 4, 4 * pk.n_t, 0.010 + 0.6 * pk.dt, 0.030, 1e9))[0]
     assert abs(off / on - 1) < 1e-3, f"off-grid bias {off / on - 1:+.3%}"
 
 
@@ -91,10 +91,10 @@ def test_mode_space_equals_position_space_for_an_off_grid_waveform():
     walk = d.simulate_trajectories(300, D0, d.Cylinder(3e-6, (0, 0, 1)), 0.02, 2e-4, seed=0, require_gpu=False)
     pk = build_replay_pack(walk, id="t/exact", license="x", citation="x", K=walk.n_t - 2, envelope=ENV)
     acq = _pgse(pk.dt / 3, 3 * pk.n_t - 2, 0.004 + 0.4 * pk.dt, 0.012 + 0.7 * pk.dt, 1e9)          # edges between saves
-    S_mode = pk.replay(acq, tissue=False, complex_signal=True)
+    S_mode = pk.replay(acq, complex_signal=True)
     pos = decode_bridge_dst(pk.arrays, {"n_t": pk.n_t})
     phi = gradient_phase(effective_gradient(acq.G, acq.dt, pk.n_t, pk.dt), pos, pk.dt)              # (n_meas, n_w)
     S_pos = np.exp(1j * phi).mean(1)
     np.testing.assert_allclose(S_mode, S_pos, rtol=1e-9, atol=1e-12)
     with pytest.raises(ValueError, match="beyond the pack"):
-        pk.replay(_acq(np.ones((1, 3 * pk.n_t + 30, 3)) * 1e-3, pk.dt / 3), tissue=False)
+        pk.replay(_acq(np.ones((1, 3 * pk.n_t + 30, 3)) * 1e-3, pk.dt / 3))

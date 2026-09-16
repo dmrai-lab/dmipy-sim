@@ -9,6 +9,7 @@ from dmipy_sim.compartments import Compartments, Pool
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_sim.spec import Tissue
 from dmipy_sim.substrate import Substrate
+from tests.replay_frames import field_along
 
 ENV = dict(bvals=[0.0, 1e9], dirs=[[1, 0, 0]], ogse_periods=[2], shortd_b=1e9, shortd_deltas_frac=[0.05],
            B0_list=[3.0], theta_deg=[90], delta_frac=0.2, Delta_frac=0.5, rho_list=[1e-5])
@@ -41,18 +42,19 @@ def test_the_walk_keeps_its_geometry_and_the_builder_needs_nothing_else():
     gm = pk.meta["compression"]["channels"]["susceptibility_grid"]
     assert gm["has_aniso"], "the basis must carry the anisotropic part so chi_aniso is a replay knob"
     G0 = ScannerSequence(G=np.zeros((1, pk.n_t, 3)), dt=pk.dt)      # b = 0, no pulse: a gradient echo
-    e = pk.replay(G0, B0=3.0, b0_dir=(1, 0, 0), chi_iso=1.06e-6, chi_aniso=-0.1e-6)
+    G_lab, R = field_along(G0, (1, 0, 0))
+    e = pk.replay(G_lab, orientation=R, scanner=3.0, tissue=Tissue(chi_iso=1.06e-6, chi_aniso=-0.1e-6))
     assert 0 < e[0] < 1
     nominal = Tissue.from_spec(g.spec)                                            # the spec's nominal values
     assert nominal.T2 == [sub.T2_extra, sub.T2_intra, sub.T2_myelin] and nominal.rho == pytest.approx(sub.rho2)
-    assert nominal.B0 == sub.field_T == 3.0 and nominal.chi_iso == -0.1e-6 and nominal.chi_aniso == -0.1e-6
-    assert g.spec.nominal_field_T == 3.0
-    # the NOMINAL replay is the default: fire a pulse, get every tier at the spec's values
-    e_nom = pk.replay(G0)
-    np.testing.assert_allclose(e_nom, pk.replay(G0, T2=nominal.T2, T1=nominal.T1, rho=nominal.rho, B0=3.0, chi_iso=-0.1e-6, chi_aniso=-0.1e-6))
-    np.testing.assert_allclose(e_nom, pk.replay(G0, tissue=nominal))
-    assert e_nom[0] < 1.0 and pk.replay(G0, tissue=False)[0] == pytest.approx(1.0)  # bare diffusion at b = 0
-    e_7T = pk.replay(G0, B0=7.0, b0_dir=(1, 0, 0))            # one knob overridden
+    assert nominal.chi_iso == -0.1e-6 and nominal.chi_aniso == -0.1e-6           # the field is the scanner's, not tissue
+    assert g.spec.nominal_field_T == sub.field_T == 3.0 == pk.nominal_field_T
+    # the NOMINAL replay is the explicit one: the spec's values and its calibration field, every tier
+    e_nom = pk.replay(G0, tissue=pk.nominal, scanner=pk.nominal_field_T)
+    np.testing.assert_allclose(e_nom, pk.replay(G0, tissue=Tissue(T2=nominal.T2, T1=nominal.T1, rho=nominal.rho, chi_iso=-0.1e-6, chi_aniso=-0.1e-6), scanner=3.0))
+    np.testing.assert_allclose(e_nom, pk.replay(G0, tissue=pk.nominal, scanner=pk.nominal_field_T))
+    assert e_nom[0] < 1.0 and pk.replay(G0)[0] == pytest.approx(1.0)  # bare diffusion at b = 0
+    e_7T = pk.replay(G_lab, orientation=R, tissue=pk.nominal, scanner=7.0)            # the scanner changed, the field turned
     assert e_7T[0] < e_nom[0]                                                      # a stronger field dephases more
     # field=False leaves the tier out
     pk2 = build_replay_pack(walk, id="t/own", license="x", citation="x", K=8, envelope=ENV, field=False)

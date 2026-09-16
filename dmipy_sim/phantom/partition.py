@@ -249,8 +249,7 @@ class PartitionPhantom(Phantom):
         return PartitionPhantom(self.packs, self._grid, declared=self.declared, outside=self.outside, pose=pose)
 
     # ---- replay ---------------------------------------------------------------------------------------------
-    def replay(self, seq, *, B0_T=None, b0_dir=(0.0, 0.0, 1.0), tissue="nominal", packs=None, complex_signal=False,
-               T2_s=None, T1_s=None, rho_m_s=None, D_m2_s=None, chi_iso=None, chi_aniso=0.0,
+    def replay(self, seq, *, scanner=None, packs=None, complex_signal=False,
                transmit=None, off_resonance=None, proton_density=None):
         """The signal of every voxel: each pack's walkers replayed **once** (:meth:`ReplayPack.walker_signals`),
         summed by the voxel they started in, normalised by the weights in that voxel, and weighted by the
@@ -258,7 +257,9 @@ class PartitionPhantom(Phantom):
         nothing). ``transmit`` is looked up per voxel and applied **per walker**, so the RF-aware route runs once for
         the whole walk rather than once per voxel; ``off_resonance`` goes the same way when a transmit scale is
         given, and otherwise is the uniform precession through the acquisition's gate, as for a composed
-        phantom. A dense volume, as :meth:`Phantom.replay`.
+        phantom. A dense volume, as :meth:`Phantom.replay`. Each substrate replays at its own declared
+        :class:`~dmipy_sim.spec.Tissue`; ``scanner`` is the static field (a ScannerLimits or tesla); the pose is
+        this phantom's own (:meth:`with_pose`).
         """
         g = self._need_grid(seq)
         if getattr(seq, "prescription", None) is not None and seq.prescription.axes != g.axes:
@@ -269,8 +270,6 @@ class PartitionPhantom(Phantom):
                                                           ("proton_density", proton_density))}
         R = self.pose.rotation
         orientation = None if self.pose.is_identity else R
-        knobs = dict(tissue=tissue, T2=T2_s, T1=T1_s, rho=rho_m_s, D=D_m2_s, B0=B0_T, b0_dir=b0_dir,
-                     chi_iso=chi_iso, chi_aniso=chi_aniso)
         S = None
         given = {self.index_of(k): v for k, v in (packs or {}).items()}
         bloch = maps["transmit"] is not None
@@ -280,8 +279,7 @@ class PartitionPhantom(Phantom):
             pk = given.get(i, s.pack)
             row = walker_row[s.name]
             m = row >= 0
-            kw = dict(knobs)
-            kw.update(s.tissue)
+            kw = dict(tissue=s.tissue, scanner=scanner)
             per = {}
             if bloch:
                 # the RF-aware route, once for the whole walk: every walker at its own voxel's scale and offset

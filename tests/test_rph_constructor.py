@@ -1,6 +1,8 @@
 """``Phantom.compose``: a phantom is built from volumes keyed by substrate objects, not hand-rolled arrays (RPH.md,
 issues #151, #162, #186)."""
 import numpy as np
+
+from dmipy_sim.spec.tissue import Tissue
 from dataclasses import replace
 
 import pytest
@@ -57,8 +59,8 @@ T2_CSF = 2.0
 
 
 def _subs(pack_path):
-    wm = PackSubstrate(pack_path, m0=0.7, name="wm/tiny", T2_s=[0.06, 0.06, 0.06])
-    return wm, FreeWater(D_m2_s=3e-9, m0=1.0, T2_s=T2_CSF), Inert()     # both relax: a phantom is refused otherwise (#238)
+    wm = PackSubstrate(pack_path, m0=0.7, name="wm/tiny", tissue=Tissue(T2=[0.06, 0.06, 0.06]))
+    return wm, FreeWater(m0=1.0, tissue=Tissue(D=3e-9, T2=T2_CSF)), Inert()     # both relax: a phantom is refused otherwise (#238)
 
 
 def _phantom(pack_path, *, grid=GRID8, fractions=None, orientation=None, remainder="default", **kw):
@@ -123,14 +125,14 @@ def test_a_grid_comes_from_a_nifti_affine_when_it_is_axis_aligned():
 
 
 def test_substrates_are_objects_with_a_required_proton_density(pack_path):
-    wm = PackSubstrate(pack_path, m0=0.7, T2_s={"intra": 0.06})
-    assert wm.name == "tiny" and wm.uri == pack_path and wm.tissue == {"T2": {"intra": 0.06}}
+    wm = PackSubstrate(pack_path, m0=0.7, tissue=Tissue(T2={"intra": 0.06}))
+    assert wm.name == "tiny" and wm.uri == pack_path and wm.tissue.to_meta() == {"T2": {"intra": 0.06}}
     assert wm.pack.n_walkers == 400                                          # resolved from the path on first use
     with pytest.raises(TypeError):
         PackSubstrate(pack_path)                                              # m0 has no default
     with pytest.raises(TypeError):
-        FreeWater(D_m2_s=3e-9)                                                # nor here: 1 is only a reference
-    assert Inert().m0 == 0.0 and FreeWater(D_m2_s=3e-9, m0=1.0).to_meta()["params"] == {"diffusivity": 3e-9}
+        FreeWater(tissue=Tissue(D=3e-9))                                      # nor here: 1 is only a reference
+    assert Inert().m0 == 0.0 and FreeWater(m0=1.0, tissue=Tissue(D=3e-9)).to_meta()["params"] == {"diffusivity": 3e-9}
     with pytest.raises(FileNotFoundError, match="does not exist"):
         PackSubstrate("/nowhere/none.rpk", m0=1.0).pack
 
@@ -258,7 +260,7 @@ def test_the_phantom_replays_every_voxel_from_one_pack_replay(pack_path):
     # b = 0: the m0-weighted volume of each substrate times its own b = 0 response -- at the T2 the phantom
     # declares for that substrate (RPH.md 3.2), not its nominal value; free water's own decay; nothing from inert
     from dmipy_sim.phantom.substrates import _echo_time
-    E0 = float(pk.replay(seq, T2=[0.06] * 3)[0])
+    E0 = float(pk.replay(seq, tissue=Tissue(T2=[0.06] * 3))[0])
     assert E0 < float(pk.replay(seq)[0])
     E_csf = np.exp(-_echo_time(seq) / T2_CSF)
     np.testing.assert_allclose(S[:, 0], f_wm * 0.7 * E0 + f_csf * E_csf, rtol=1e-6)
@@ -267,7 +269,7 @@ def test_the_phantom_replays_every_voxel_from_one_pack_replay(pack_path):
         np.testing.assert_allclose(S[csf_v, 1], np.exp(-1e9 * 3e-9) * E_csf, rtol=1e-6)
     wm_v = int(np.argmax(f_wm))
     from dmipy_sim.replay.so3 import Distribution
-    pr = pk.pose_response(seq, T2=[0.06] * 3)
+    pr = pk.pose_response(seq, tissue=Tissue(T2=[0.06] * 3))
     ref = pr.compose(Distribution.axis_density(FOD.native(ph.file.odf_sh[wm_v, 0].astype(float))))
     np.testing.assert_allclose(S[wm_v], np.abs(f_wm[wm_v] * 0.7 * ref + f_csf[wm_v] * np.exp(-seq.encoding.bvalues * 3e-9)),
                                rtol=1e-6)
@@ -347,7 +349,7 @@ def test_the_transmit_layer_goes_through_the_bloch_route(pack_path):
     S_b1 = _rows(ph, ph.replay(phys))                                            # the layer alone routes it too
     i = ph.voxel_index[:, 0]
     np.testing.assert_allclose(S_b1[i == 0], S_bloch[i == 0], rtol=1e-9)          # kappa = 1: nothing changes
-    alone = np.abs(pk.replay_bloch(phys, b1_scale=0.6, orientation=(0.0, 0.0, 1.0), T2=[0.06] * 3))
+    alone = np.abs(pk.replay_bloch(phys, b1_scale=0.6, orientation=(0.0, 0.0, 1.0), tissue=Tissue(T2=[0.06] * 3)))
     np.testing.assert_allclose(S_b1[i == 1], np.tile(0.7 * alone, (int((i == 1).sum()), 1)), rtol=1e-6)   # the file holds float32
     assert (S_b1[i == 1] < S_b1[i == 0] * 0.9).all()                              # a smaller flip, a smaller signal
     # the same map given at replay time, as a volume and as a function of position, is the same phantom
@@ -384,7 +386,7 @@ def test_a_frame_is_one_pose_and_a_peak_is_that_pose_with_its_azimuth_unstated(p
     pk = read_rpk(pack_path)
     seq = _acq(pk, [[1, 0, 0], [0, 0, 1]], [1e9, 1e9])
     S_fr, S_pk = _rows(frames, frames.replay(seq)), _rows(peaks, peaks.replay(seq))
-    direct = np.abs(0.7 * pk.replay(seq, orientation=R0, T2=[0.06] * 3, complex_signal=True))
+    direct = np.abs(0.7 * pk.replay(seq, orientation=R0, tissue=Tissue(T2=[0.06] * 3), complex_signal=True))
     np.testing.assert_allclose(S_fr[0], direct, atol=3.0 / np.sqrt(pk.n_walkers))
     np.testing.assert_allclose(S_pk, S_fr, atol=3.0 / np.sqrt(pk.n_walkers))     # a single cylinder: axially symmetric
 
@@ -409,7 +411,7 @@ def test_a_fan_is_a_frame_with_two_concentrations_and_contains_the_watson(pack_p
     pk = read_rpk(pack_path)
     seq = _acq(pk, [[1, 0, 0], [0, 0, 1]], [1e9, 1e9])
     S_cone, S_fan = _rows(cone, cone.replay(seq)), _rows(fan, fan.replay(seq))
-    pr = pk.pose_response(seq, T2=[0.06] * 3)
+    pr = pk.pose_response(seq, tissue=Tissue(T2=[0.06] * 3))
     ref = np.abs(0.7 * pr.compose(so3.Distribution.watson(6.0, mu=(0, 0, 1), lmax=pr.lmax, nmax=pr.nmax)))
     np.testing.assert_allclose(S_cone[0], ref, rtol=1e-3)
     assert np.abs(S_fan - S_cone).max() > 3e-3                       # the fan is not that cone
@@ -447,7 +449,7 @@ def test_the_same_substrate_cited_twice_is_a_crossing(pack_path):
     pk = read_rpk(pack_path)
     seq = _acq(pk, [[1, 0, 0], [0, 0, 1]], [1e9, 1e9])
     S = _rows(ph, ph.replay(seq))
-    pr = pk.pose_response(seq, T2=[0.06] * 3)
+    pr = pk.pose_response(seq, tissue=Tissue(T2=[0.06] * 3))
     ref = np.abs(0.7 * pr.compose(so3.Distribution.axis((0, 0, 1), pr.lmax, pr.nmax))
                  + 0.3 * pr.compose(so3.Distribution.axis((1, 0, 0), pr.lmax, pr.nmax))) * 0.7
     np.testing.assert_allclose(S[0], ref, atol=pr.floor)             # 0.7 is the substrate's m0

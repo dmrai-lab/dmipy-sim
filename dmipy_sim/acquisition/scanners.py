@@ -51,6 +51,7 @@ class ScannerLimits:
     rf_ringdown_time: float = None
     adc_dead_time: float = None
     peak_B1: float = None      # T, body coil where the catalogue has it, else head coil
+    field_T: float = None      # T, the static field; None for an envelope or an uncatalogued field
 
     @classmethod
     def of(cls, scanner, *, regime="default"):
@@ -77,7 +78,8 @@ class ScannerLimits:
                    adc_dead_time=scc.leaf_si(entry, "rf", "adc_dead_time"),
                    peak_B1=(scc.leaf_si(entry, "rf", "peak_B1_body_coil")
                             if scc.leaf_si(entry, "rf", "peak_B1_body_coil") is not None
-                            else scc.leaf_si(entry, "rf", "peak_B1_head_coil")))
+                            else scc.leaf_si(entry, "rf", "peak_B1_head_coil")),
+                   field_T=(float(entry["field_T"]) if entry.get("field_T") is not None else None))
 
     @property
     def gradient_limits(self):

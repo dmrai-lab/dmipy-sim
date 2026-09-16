@@ -12,6 +12,8 @@ from dmipy_sim import sequences
 from dmipy_sim.replay import read_rpk, so3
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_sim.replay.so3 import Distribution
+from dmipy_sim.spec.tissue import Tissue
+from tests.replay_frames import field_along
 
 
 @pytest.fixture(scope="module")
@@ -64,8 +66,7 @@ def test_the_band_follows_the_bessel_tail(pack, seq):
     dist = Distribution.axis((0.3, 0.5, 0.81), pr.lmax, 0)
     S = pr.compose(dist)
     # the walkers' phase amplitudes, recomputed the way the expansion does
-    P = pack._prepare(seq, tissue="nominal", T2=None, T1=None, rho=None, D=None, B0=None, b0_dir=(0, 0, 1),
-                      chi_iso=None, chi_aniso=0.0, orientation=None, compartment=None)
+    P = pack._prepare(seq, tissue=pack.nominal, scanner=pack.nominal_field_T, orientation=None, compartment=None)
     w = P["ew"] / P["norm"]
     for L in (2, 4, 6):
         low = so3.truncate_coeffs(pr.coeffs, pr.lmax, pr.nmax, L, 0)
@@ -96,13 +97,13 @@ def test_the_closed_form_is_fast_on_a_real_pack(seq):
         pytest.skip("the CACTUS demo pack is not on this machine")
     pk = read_rpk(path)
     seq30 = sequences.pgse([[1, 0, 0], [0, 0, 1], [0.6, 0.8, 0.0], [0.0, 0.6, 0.8]], 8e-3, 16e-3, bvalues=[3e9] * 4, TE=30e-3)
-    # tissue=False: this pack's spec declares a nominal field, and a field response still takes the quadrature
-    t0 = time.time(); pr = pk.pose_response(seq30, keep=(8, 0), tissue=False); dt = time.time() - t0
+    # no tissue, no scanner: this pack's spec declares a nominal field, and a field response still takes the quadrature
+    t0 = time.time(); pr = pk.pose_response(seq30, keep=(8, 0)); dt = time.time() - t0
     assert dt < 5.0 and pr.n_samples == 0 and pr.phase_amplitude > 5.0     # a sharp response, still cheap at n = 0
     # and the n = 0 column composes the same signal as the direct replay averaged over the roll about an axis
     axis = np.array([0.3, 0.5, 0.81]); axis /= np.linalg.norm(axis)
     rolls = np.linspace(0, 2 * np.pi, 24, endpoint=False)
-    direct = np.mean([pk.replay(seq30, orientation=so3.rotation_of(axis, roll=r), complex_signal=True, tissue=False) for r in rolls], axis=0)
+    direct = np.mean([pk.replay(seq30, orientation=so3.rotation_of(axis, roll=r), complex_signal=True) for r in rolls], axis=0)
     composed = pr.compose(Distribution.axis(axis, 8, 0))
     np.testing.assert_allclose(composed, direct, atol=3e-3)                  # order 8 of a kappa ~ 20 response: the ODF band
 
@@ -141,18 +142,19 @@ def test_the_field_is_composed_in_closed_form_and_agrees_with_every_other_route(
     quadrature route to that route's misfit, and no g x B0 frame anywhere (#197 step 3, #155)."""
     pk = field_pack
     seq = sequences.pgse([[1, 0, 0], [0, 0, 1], [0.6, 0.8, 0.0]], 6e-3, 15e-3, bvalues=[1.5e9] * 3, TE=30e-3)
-    kw = dict(B0=7.0, b0_dir=(0.0, 1.0, 0.0), chi_iso=-1e-7, chi_aniso=-1e-7, tissue=False)
-    pc = pk.pose_response(seq, method="closed", **kw)
+    kw = dict(scanner=7.0, tissue=Tissue(chi_iso=-1e-7, chi_aniso=-1e-7))
+    seq_y, R_y = field_along(seq, (0.0, 1.0, 0.0))                   # the field along y of the specimen: a pose
+    pc = pk.pose_response(seq_y, method="closed", pose=R_y, **kw)
     assert pc.n_samples == 0 and pc.field_lmax >= 2
     for R in so3.haar_rotations(6, 2):
-        np.testing.assert_allclose(pc.at(R), pk.replay(seq, orientation=R, complex_signal=True, **kw), atol=2e-6)
-    pq = pk.pose_response(seq, method="quadrature", **kw)
+        np.testing.assert_allclose(pc.at(R), pk.replay(seq_y, orientation=R_y @ R, complex_signal=True, **kw), atol=2e-6)
+    pq = pk.pose_response(seq_y, method="quadrature", pose=R_y, **kw)
     for d in (Distribution.axis((0.3, 0.5, 0.81), pq.lmax, 0), Distribution.watson(6.0, mu=(0, 0, 1), lmax=pq.lmax, nmax=0)):
         np.testing.assert_allclose(pc.compose(d), pq.compose(d), atol=3 * pq.misfit.max())
     # the parallel geometry the quadrature route had to handle specially (#155) is nothing special here
-    par = dict(kw, b0_dir=(1.0, 0.0, 0.0))
-    pp = pk.pose_response(seq, method="closed", keep=(8, 0), **par)
+    seq_x, R_x = field_along(seq, (1.0, 0.0, 0.0))
+    pp = pk.pose_response(seq_x, method="closed", keep=(8, 0), pose=R_x, **kw)
     for R in so3.haar_rotations(2, 9):
-        full = pk.pose_response(seq, method="closed", **par)
-        np.testing.assert_allclose(full.at(R), pk.replay(seq, orientation=R, complex_signal=True, **par), atol=2e-6)
+        full = pk.pose_response(seq_x, method="closed", pose=R_x, **kw)
+        np.testing.assert_allclose(full.at(R), pk.replay(seq_x, orientation=R_x @ R, complex_signal=True, **kw), atol=2e-6)
     assert np.isfinite(pp.coeffs).all()

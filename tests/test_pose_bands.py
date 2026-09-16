@@ -108,7 +108,7 @@ def test_the_phase_amplitude_is_the_accumulated_phase(pack):
     is derived rather than fitted, and it scales with the gradient as the phase does."""
     for amp in (0.02, 0.2, 0.6):
         seq = _Lobe(amp)
-        pr = pack.pose_response(seq, tissue=False)
+        pr = pack.pose_response(seq)
         expected = float(np.linalg.norm(_q_of(seq)) * np.linalg.norm(POS, axis=1).max())
         np.testing.assert_allclose(pr.phase_amplitude, expected, rtol=0.02)
 
@@ -119,7 +119,7 @@ def test_the_expansion_reproduces_the_analytic_response(pack):
     4e-3 at `Phi` = 0.2, 2.1 and 6.2 rad."""
     for amp, tol in ((0.02, 1e-5), (0.2, 2e-3), (0.6, 1e-2)):
         seq = _Lobe(amp)
-        pr = pack.pose_response(seq, tissue=False)
+        pr = pack.pose_response(seq)
         for R in so3.haar_rotations(8, seed=2):
             assert abs(float(np.abs(pr.at(R))[0]) - abs(analytic(_q_of(seq), R))) < tol
 
@@ -130,7 +130,7 @@ def test_the_band_follows_the_phase_amplitude_and_truncating_below_it_is_worse(p
     dropped -- a bound, not a spread (#197)."""
     from scipy.special import spherical_jn
     seq = _Lobe(0.6)
-    pr = pack.pose_response(seq, tissue=False)
+    pr = pack.pose_response(seq)
     assert pr.n_samples == 0 and pr.lmax >= int(np.ceil(pr.phase_amplitude))
     R = so3.haar_rotations(120, seed=3)
     truth = np.array([analytic(_q_of(seq), r) for r in R])
@@ -149,7 +149,7 @@ def test_the_band_follows_the_phase_amplitude_and_truncating_below_it_is_worse(p
 def test_composition_equals_the_analytic_pose_average(pack):
     """The composition against its definition: the density-weighted, azimuth-averaged closed form."""
     seq = _Lobe(0.2)
-    pr = pack.pose_response(seq, tissue=False)
+    pr = pack.pose_response(seq)
     for kappa in (1.0, 4.0):
         fod = FOD.watson(kappa, mu=(0.3, 0.5, 0.81), lmax=6)
         got = pr.compose(so3.Distribution.axis_density(fod, pr.lmax, pr.nmax))[0]
@@ -161,7 +161,7 @@ def test_one_stated_pose_needs_no_expansion(pack):
     nothing to certify -- the documented route when a single pose is all that is wanted."""
     seq = _Lobe(0.6)
     for R in so3.haar_rotations(4, seed=5):
-        got = pack.replay(seq, orientation=R, tissue=False, complex_signal=True)[0]
+        got = pack.replay(seq, orientation=R, complex_signal=True)[0]
         assert abs(abs(got) - abs(analytic(_q_of(seq), R))) < 1e-6
 
 
@@ -170,7 +170,7 @@ def test_a_sharp_acquisition_expands_in_closed_form(pack):
     """The quadrature route refused an acquisition past a band cap, because sampling it was dearer than a direct
     replay per pose; the closed form has no such cost, so a sharp response is simply a higher band, still exact."""
     seq = _Lobe(1.5)
-    pr = pack.pose_response(seq, tissue=False)
+    pr = pack.pose_response(seq)
     assert pr.n_samples == 0 and pr.lmax > 12
     for R in so3.haar_rotations(6, seed=8):
         assert abs(pr.at(R)[0] - analytic(_q_of(seq), R)) < 1e-6
@@ -178,7 +178,7 @@ def test_a_sharp_acquisition_expands_in_closed_form(pack):
 
 def test_no_azimuthal_truncation_is_a_valid_request(pack):
     """``nmax=None`` means "all of it" and used to raise ``int(None)``."""
-    pr = pack.pose_response(_Lobe(0.2), keep=(4, None), tissue=False)
+    pr = pack.pose_response(_Lobe(0.2), keep=(4, None))
     assert pr.lmax == 4 and pr.nmax >= 4
 
 
@@ -186,7 +186,7 @@ def test_a_waveform_on_its_own_grid_composes_correctly(pack):
     """The case that exposed a 20% error: a waveform sampled at its own rate, not the pack's."""
     seq = _Lobe(0.2, dt=DT / 3.0, n_t=3 * (N_T - 1) + 1)
     assert abs(seq.dt - pack.dt) > 1e-9
-    pr = pack.pose_response(seq, tissue=False)
+    pr = pack.pose_response(seq)
     for R in so3.haar_rotations(4, seed=6):
         assert abs(float(np.abs(pr.at(R))[0]) - abs(analytic(_q_of(seq), R))) < 2e-3
 
@@ -194,5 +194,5 @@ def test_a_waveform_on_its_own_grid_composes_correctly(pack):
 def test_the_projection_is_deterministic(pack):
     """Same inputs, same coefficients: a phantom built twice is the same phantom."""
     seq = _Lobe(0.2)
-    np.testing.assert_array_equal(pack.pose_response(seq, tissue=False).coeffs,
-                                  pack.pose_response(seq, tissue=False).coeffs)
+    np.testing.assert_array_equal(pack.pose_response(seq).coeffs,
+                                  pack.pose_response(seq).coeffs)

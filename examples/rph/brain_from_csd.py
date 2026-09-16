@@ -26,6 +26,7 @@ from dmipy_sim import Prescription, sequences
 from dmipy_sim.io.mrtrix import read_mif
 from dmipy_sim.phantom import FreeWater, Grid, Inert, ODF, PackSubstrate, Phantom
 from dmipy_sim.replay.so3 import rotate_sh
+from dmipy_sim.spec import Tissue
 
 # 5TT columns (MRtrix): cortical GM, sub-cortical GM, WM, CSF, pathological tissue
 GM_COLS, WM_COL, CSF_COL, PATH_COL = (0, 1), 2, 3, 4
@@ -36,16 +37,18 @@ T2 = {"gm": get_value("T2_grey_matter", 3.0), "csf": get_value("T2_csf", 3.0)}  
 WM_T2 = {"extra": "T2_extra_axonal", "intra": "T2_intra_axonal", "myelin": "T2_myelin"}   # by the pack's pool names
 
 
-def wm_T2(pack_path):
-    """None when the pack's pools carry their nominal T2 (the CACTUS pack does), else the table's compartment
-    values by the pack's pool names: a phantom is refused when one tissue relaxes and another would not."""
+def wm_tissue(pack_path):
+    """The white matter's tissue: the pack's nominal values (the CACTUS pack's pools carry their T2), with the
+    table's compartment values by the pack's pool names where they carry none -- a phantom is refused when one
+    tissue relaxes and another would not."""
     from dmipy_sim.replay import read_rpk
     spec = read_rpk(pack_path).substrate
-    if spec is not None and all(p.T2 is not None for p in spec.pools):
-        return None
     if spec is None:
-        return get_value(WM_T2["extra"], 3.0, allow_nearest=True)            # one value for every pool
-    return {p.name: get_value(WM_T2[p.name], 3.0, allow_nearest=True) for p in spec.pools}
+        return Tissue(T2=get_value(WM_T2["extra"], 3.0, allow_nearest=True))  # one value for every pool
+    nominal = Tissue.from_spec(spec)
+    if all(p.T2 is not None for p in spec.pools):
+        return nominal
+    return nominal.replace(T2={p.name: get_value(WM_T2[p.name], 3.0, allow_nearest=True) for p in spec.pools})
 
 
 def fractions_on(grid_img, target_affine, tt_img, sub=3):
@@ -83,10 +86,10 @@ def build(batman, wm_pack, gm_pack=None, slab=None):
     if slab is not None:                                                                   # a few slices, for speed
         keep = np.zeros(grid.shape, bool); keep[:, :, slab[0]:slab[1]] = True
         f_wm, f_gm, f_csf = f_wm * keep, f_gm * keep, f_csf * keep
-    wm = PackSubstrate(wm_pack, m0=M0["wm"], name="wm", T2_s=wm_T2(wm_pack))
-    gm = (PackSubstrate(gm_pack, m0=M0["gm"], name="gm", T2_s=T2["gm"]) if gm_pack
-          else FreeWater(D_m2_s=0.8e-9, m0=M0["gm"], name="gm/stand-in", T2_s=T2["gm"]))
-    csf = FreeWater(D_m2_s=3.0e-9, m0=M0["csf"], T2_s=T2["csf"])
+    wm = PackSubstrate(wm_pack, m0=M0["wm"], name="wm", tissue=wm_tissue(wm_pack))
+    gm = (PackSubstrate(gm_pack, m0=M0["gm"], name="gm", tissue=Tissue(T2=T2["gm"])) if gm_pack
+          else FreeWater(m0=M0["gm"], name="gm/stand-in", tissue=Tissue(D=0.8e-9, T2=T2["gm"])))
+    csf = FreeWater(m0=M0["csf"], tissue=Tissue(D=3.0e-9, T2=T2["csf"]))
     orientation = {wm: ODF(c, basis="mrtrix3")}
     if gm_pack:
         from dmipy_sim.replay.fod import FOD
@@ -98,14 +101,14 @@ def build(batman, wm_pack, gm_pack=None, slab=None):
     return ph, fod, R
 
 
-def acquisition(batman, R, grid, *, TE, delta, Delta):
-    """The tutorial's own gradient table (scanner space, b in s/mm^2) as one PGSE prescribed on the image."""
+def acquisition(batman, grid, *, TE, delta, Delta):
+    """The tutorial's own gradient table (scanner space, b in s/mm^2) as one PGSE prescribed on the image; the
+    phantom turns it into the image frame through its pose, the field with it."""
     g = np.loadtxt(os.path.join(batman, "dwipreproc_grad.b"))
     dirs_s, b = g[:, :3], g[:, 3] * 1e6
     n = np.linalg.norm(dirs_s, axis=1)
     dirs_s = np.where(n[:, None] > 0, dirs_s / np.where(n[:, None] > 0, n[:, None], 1.0), [0.0, 0.0, 1.0])
-    dirs_img = dirs_s @ R                                                                  # R^T g, row-wise
-    seq = sequences.pgse(dirs_img, delta, Delta, bvalues=b, TE=TE)
+    seq = sequences.pgse(dirs_s, delta, Delta, bvalues=b, TE=TE)
     return seq.with_prescription(Prescription(isocenter_m=(0.0, 0.0, 0.0), axes=grid.axes, voxel_size_m=grid.voxel_size_m,
                                               matrix=grid.shape, origin_m=grid.origin_m)), g
 
@@ -119,9 +122,9 @@ def main(argv=None):
     a = ap.parse_args(argv)
     out = a.out or os.path.dirname(os.path.abspath(__file__))
     ph, fod, R = build(a.batman, a.wm_pack, a.gm_pack, a.slab)
-    seq, g = acquisition(a.batman, R, ph.grid, TE=a.TE, delta=a.delta, Delta=a.Delta)
+    seq, g = acquisition(a.batman, ph.grid, TE=a.TE, delta=a.delta, Delta=a.Delta)
     t0 = time.time()
-    S = ph.replay(seq, b0_dir=tuple(R.T @ np.array([0.0, 0.0, 1.0])))
+    S = ph.replay(seq, pose=R)                                                             # the image frame in the bore
     print(f"  replayed {seq.n_meas} measurements in {time.time() - t0:.0f} s", flush=True)
     S = np.nan_to_num(S).astype(np.float32)
     if a.snr:                                                                              # SNR of the brain's mean b = 0

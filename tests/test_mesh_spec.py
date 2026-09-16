@@ -11,6 +11,8 @@ import dmipy_sim as d
 from dmipy_sim.geometry import mesh_shapes
 from dmipy_sim.spec import spec_of, geometry_from_spec, walk_spec, SubstrateSpec, SpecError
 from dmipy_sim.replay.bank import build_replay_pack
+from dmipy_sim.spec.tissue import Tissue
+from tests.replay_frames import field_along
 
 D = 2e-9
 ENV = dict(bvals=[0.0, 1e9], dirs=[[0, 0, 1]], ogse_periods=[2], shortd_b=1e9, shortd_deltas_frac=[0.05],
@@ -92,8 +94,9 @@ def test_a_multi_surface_bundle_is_walked_from_the_spec_alone(tmp_path):
     assert pk.meta["substrate"]["id"] == "test/bundle-2" and SubstrateSpec.from_dict(pk.meta["substrate"]) == spec
     assert "per_comp" not in pk.meta and pk.substrate == spec
     G0 = ScannerSequence(G=np.zeros((1, pk.n_t, 3)), dt=pk.dt)      # b = 0, no pulse: a gradient echo
-    e = pk.replay(G0, B0=3.0, b0_dir=(1, 0, 0), chi_iso=-1e-6)
-    assert pk.replay(G0, T2={"intra": 0.05, "extra": 0.08, "myelin": 0.01})[0] < 1.0     # T2 by pool name
+    G_lab, R = field_along(G0, (1, 0, 0))
+    e = pk.replay(G_lab, orientation=R, scanner=3.0, tissue=Tissue(chi_iso=-1e-6))
+    assert pk.replay(G0, tissue=Tissue(T2={"intra": 0.05, "extra": 0.08, "myelin": 0.01}))[0] < 1.0     # T2 by pool name
     assert 0 < e[0] <= 1.0
 
 

@@ -18,7 +18,9 @@ import numpy as np
 
 from dmipy_sim import sequences
 from dmipy_sim.phantom import Fan, FreeWater, Grid, Inert, PackSubstrate, Phantom
+from dmipy_sim.acquisition.waveforms import rotate_waveform
 from dmipy_sim.replay import read_rpk, so3
+from dmipy_sim.spec import Tissue
 
 N, R_IN, R_OUT = 40, 11.0, 17.0
 KAPPA, KAPPA_FAN = (16.0, 16.0), (1.0, 40.0)     # a cone around the ring, and a fan in one sector
@@ -75,9 +77,9 @@ def build(pack_path, out, n=N):
     """Three substrates and two volumes -- the phantom derives the sparse file (RPH.md 3)."""
     f_wm, f_csf = annulus(n)
     R, kappa = frames(n)
-    wm = PackSubstrate(pack_path, m0=0.75, name="cactus/bundle")
+    wm = PackSubstrate(pack_path, m0=0.75, name="cactus/bundle", tissue=Tissue(chi_iso=CHI_ISO, chi_aniso=CHI_ANISO))
     ph = Phantom.compose(Grid(shape=(n, n, 1), voxel_size_m=(1.5e-3, 1.5e-3, 1.5e-3)),
-                         fractions={wm: f_wm, FreeWater(D_m2_s=3.0e-9, m0=1.0): f_csf},
+                         fractions={wm: f_wm, FreeWater(m0=1.0, tissue=Tissue(D=3.0e-9)): f_csf},
                          remainder=Inert(),
                          orientation={wm: Fan(R, kappa=kappa)})
     ph.write(out, id="phantoms/circular-wm/cactus-annulus", license="CC-BY-4.0",
@@ -119,11 +121,15 @@ def sweeps(ph, pack_path, n_frames=36):
     ang = np.linspace(0.0, 2 * np.pi, n_frames, endpoint=False)
     dirs = np.stack([np.cos(ang), np.sin(ang), np.zeros_like(ang)], axis=1)
     pack = read_rpk(pack_path)
-    kw = dict(B0_T=B0_T, chi_iso=CHI_ISO, chi_aniso=CHI_ANISO)
-    seq = pgse(pack, dirs)
-    S_g = ph.sparse(ph.replay(seq, b0_dir=(0.0, 1.0, 0.0), **kw))[1]           # B0 north, g turning
+    def posed(seq, d):
+        """The field along ``d`` of the phantom's frame: the specimen posed with R (R^T z = d) under the acquisition
+        turned into the lab (G R^T), which the pose turns back into ``seq`` in the phantom's frame."""
+        R = np.asarray(so3.rotation_of(d), float).T
+        return rotate_waveform(seq, R), R
+    seq_n, R_n = posed(pgse(pack, dirs), (0.0, 1.0, 0.0))
+    S_g = ph.sparse(ph.replay(seq_n, pose=R_n, scanner=B0_T))[1]              # B0 north, g turning
     seq1 = pgse(pack, [[0.0, 0.0, 1.0]], refocus=False)                       # through the plane, across every fibre
-    S_b = np.stack([ph.sparse(ph.replay(seq1, **kw, b0_dir=d))[1][:, 0] for d in dirs], axis=1)
+    S_b = np.stack([ph.sparse(ph.replay(s_d, pose=R_d, scanner=B0_T))[1][:, 0] for s_d, R_d in (posed(seq1, d) for d in dirs)], axis=1)
     return ang, dirs, S_g, S_b
 
 

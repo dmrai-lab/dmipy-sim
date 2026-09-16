@@ -37,7 +37,7 @@ flowchart LR
     RPK["Replay Pack (.rpk)<br/>positions as bridge + K sine bands<br/>occupancy · wall contact · field basis<br/>+ the spec, no tissue value"]
     subgraph knobs["replay knobs"]
         direction TB
-        K1["tissue: T2 / T1 per pool · rho · chi · B0 and its direction"]
+        K1["tissue: T2 / T1 per pool · rho · chi<br/>scanner: B0 · pose: the field's direction"]
         K2["acquisition: any G(t) exactly · RF schedule (vector Bloch) · b-tensors · CPMG"]
         K3["pose: one rotation · or a distribution of rotations (SO(3) composition)"]
     end
@@ -99,16 +99,20 @@ pack.save("wm.rpk")
 # 3. anywhere, later: load it and fire a pulse at it
 pack = ReplayPack.load("wm.rpk")
 seq  = sequences.pgse([[1, 0, 0]], 0.01, 0.03, bvalues=[1e9])
-E    = pack.replay(seq)                             # the NOMINAL replay: the spec's T2 / T1 per pool, rho,
-                                                    # chi and calibration field (3 T here); all four tiers
-E2   = pack.replay(seq, B0=7.0, b0_dir=(1, 0, 0))   # any value is a knob: same walk, another scanner
+E    = pack.replay(seq)                             # the bare diffusion signal: no tissue, no field
+E1   = pack.replay(seq, tissue=pack.nominal, scanner=pack.nominal_field_T)      # the paper's replay: the spec's
+                                                    # T2 / T1 per pool, rho and chi at its calibration field (3 T here)
+E2   = pack.replay(seq, tissue=pack.nominal.replace(T2={"intra": 0.08}), scanner=7.0, orientation=(1, 0, 0))
+                                                    # every value is a knob: same walk, one T2 changed, another scanner, another pose
 ```
 
-The spec the pack embeds carries the substrate's nominal values, so a published pack reproduces its paper
-with no second file. `pack.replay(seq, tissue=False)` is the bare diffusion signal; `T2=` per pool id or
-`{"intra": 0.05, ...}` by pool name, `rho=`, `B0=`, `chi_iso=`, `chi_aniso=` override one value each;
-`tissue=Tissue(...)` supplies a whole set; `compartment=1` restricts the mean to one pool. The pose is a knob
-too: `orientation=` takes either **one pose** — a rotation, or the lab direction the substrate axis points
+Three things describe a replay setting, each stated once. `tissue=` is **what the material is**: a `Tissue`
+(T2 / T1 per pool by id or `{"intra": 0.05, ...}` by name, `rho`, `D`, `chi_iso`, `chi_aniso`) or `None`, the
+bare diffusion signal; the spec the pack embeds carries the substrate's nominal values as `pack.nominal`, so a
+published pack reproduces its paper with no second file, and `.replace(...)` changes one. `scanner=` is **what
+the scanner is**: its static field, from the catalogue (`ScannerLimits.of("connectom")`) or in tesla. A tier
+runs when its inputs are given and the pack carries it; `compartment=1` restricts the mean to one pool. The
+pose is the third: `orientation=` takes either **one pose** — a rotation, or the lab direction the substrate axis points
 along, exact by pose covariance since the gradient and the field rotate together — or **a distribution of
 poses**, composed on SO(3). A pose is a rotation and not an axis, so nothing assumes the substrate is axially
 symmetric: `pack.pose_response(seq)` expands the response in the real Wigner basis, and
@@ -150,29 +154,30 @@ samples depending on the angle between the field and the fibre.
 import numpy as np
 from dmipy_sim import sequences
 from dmipy_sim.phantom import Fan, FreeWater, Grid, Inert, PackSubstrate, Phantom
+from dmipy_sim.spec import Tissue
 
 n = 40
 grid = Grid(shape=(n, n, 1), voxel_size_m=(1.5e-3,) * 3)          # centred on the isocenter unless origin_m= says otherwise
 f_wm, f_csf = annulus(n)                                            # volume fractions on the grid (examples/rph/circular_wm_phantom.py)
 R, kappa = frames(n)                                                # a rotation per voxel: the fibre axis and the fan plane
 
-wm = PackSubstrate("cactus.rpk", m0=0.75)                           # m0 is required: proton density is relative
+wm = PackSubstrate("cactus.rpk", m0=0.75, tissue=Tissue(chi_iso=-1e-7))   # m0 is required: proton density is relative; the tissue is the substrate's
 ph = Phantom.compose(grid,
-                     fractions={wm: f_wm, FreeWater(D_m2_s=3e-9, m0=1.0): f_csf},
+                     fractions={wm: f_wm, FreeWater(m0=1.0, tissue=Tissue(D=3e-9)): f_csf},
                      remainder=Inert(),                             # a voxel is always full: no unmodelled slack
                      orientation={wm: Fan(R, kappa=kappa)})
 ph.write("wm.rph", id="phantoms/circular-wm", license="CC-BY-4.0", citation="...")   # provenance only when publishing
 
 seq = sequences.pgse(dirs, 0.006, 0.015, bvalues=[1.5e9] * len(dirs), TE=0.030)
-S = ph.replay(seq, B0_T=7.0, b0_dir=(0, 1, 0), chi_iso=-1e-7)     # (n, n, 1, n_dirs), NaN where the phantom has no voxel
+S = ph.replay(seq, scanner=7.0)                                   # (n, n, 1, n_dirs), NaN where the phantom has no voxel
 ```
 
 Every piece is an object with named, unit-bearing arguments, and the phantom is keyed by those objects:
 
 | piece | what it is |
 |---|---|
-| `PackSubstrate(pack_or_path, *, m0, T2_s=, T1_s=, rho_m_s=, chi_iso=, chi_aniso=)` | a solved pack; the tissue knobs (by the pack's pool names) are what it replays at, anything not given is the pack's nominal value |
-| `FreeWater(*, D_m2_s, m0)` | the one closed form: a pack cannot stand in for free water (its Monte-Carlo floor does not decay with b) |
+| `PackSubstrate(pack_or_path, *, m0, tissue=)` | a solved pack; its `Tissue` (`pack.nominal`, or `Tissue(T2={...by pool name}, rho=, chi_iso=)`) is what it replays at, none for the bare diffusion signal |
+| `FreeWater(*, m0, tissue=Tissue(D=, T2=, T1=))` | the one closed form: a pack cannot stand in for free water (its Monte-Carlo floor does not decay with b) |
 | `Inert()` | fills a voxel and emits nothing, so it has no `m0`; not air |
 | `Peaks(directions, weights=)`, `ODF(coeffs, *, basis)`, `Watson(*, mu, kappa)`, `Frames(rotations)`, `Fan(rotations, *, kappa)` / `Fan.from_axis(*, axis, fan_towards, kappa_fan, kappa_perp)` | a pose per voxel, from a direction to a whole rotation; `ODF` names its **source** basis (`"mrtrix3"`, `"mrtrix-legacy"`, `"dmipy-fit"`, ...), keeps a CSD's integral on `.integral` |
 | `Grid(*, shape, voxel_size_m, origin_m=, isocenter_m=, axes=)`, `Grid.from_affine(nifti_affine, shape)` | the voxels in the scanner |
@@ -201,7 +206,7 @@ from dmipy_sim.phantom import Grid, Inert, FreeWater, PackSubstrate, Phantom, Po
 pack = PackSubstrate("disco.rpk", m0=1.0)                           # ONE walk of a 1 mm^3 anatomy, spin_weights carried
 ph = Phantom.partition(pack, Grid(shape=(40, 40, 40), voxel_size_m=(25e-6,) * 3, attach="substrate"),
                        declared={Inert(name="myelin"): f_myelin},   # the walker-less slot declares its fraction
-                       outside=FreeWater(D_m2_s=0.6e-9, m0=1.0))    # voxels the walk did not seed
+                       outside=FreeWater(m0=1.0, tissue=Tissue(D=0.6e-9)))    # voxels the walk did not seed
 
 ph50 = ph.regrid(voxel_size_m=(50e-6,) * 3)                         # exact rebin of r(0): no re-walk, no re-encode
 ph_r = ph.with_pose(Pose(rotation))                                 # attach="substrate": physics only; "lab": walkers rebinned
