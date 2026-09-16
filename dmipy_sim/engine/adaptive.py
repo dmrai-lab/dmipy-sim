@@ -140,7 +140,11 @@ interval mean as before).
             bucket, _ = _bucket(d_wall, R_near)
             return jnp.bincount(bucket.astype(jnp.int32) + 1, length=n_classes + 1)
 
-        programs = {}
+        # the programs are kept on the geometry across walks (as the fused producer keeps its batch program): a fill
+        # walks block after block on one geometry, and a program takes seconds to compile
+        programs = geometry.__dict__.setdefault("_adaptive_programs", {})
+        program_key = (n_rounds, tuple(steps_c), tuple(float(x) for x in step_l_c), float(far_at), float(R_min), n_classes,
+                       bool(cached), field_basis is not None, int(walker_batch_size) if walker_batch_size else None)
 
         def _save_program(k_cand, pads):
             """ONE jitted program for a whole save interval: every round's placement, free steps, bucketing and the
@@ -218,10 +222,11 @@ interval mean as before).
             return jit_with_tables(geometry, geometry.TABLES, save)
 
         def program_for(k_cand, pads):
-            if (k_cand, pads) not in programs:
-                programs[(k_cand, pads)] = _save_program(k_cand, pads)
-                log.info("adaptive: a program for class windows %s (candidate list %d): %d so far", pads, k_cand, len(programs))
-            return programs[(k_cand, pads)]
+            key = program_key + (k_cand, pads)
+            if key not in programs:
+                programs[key] = _save_program(k_cand, pads)
+                log.info("adaptive: a program for class windows %s (candidate list %d): %d kept on the geometry", pads, k_cand, len(programs))
+            return programs[key]
 
         def pads_from(cmax):
             """The windows of the next chunk: each class's largest count seen, padded (a class within a tenth of its
