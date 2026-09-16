@@ -72,6 +72,12 @@ def test_a_429_is_retried_and_a_heartbeat_is_not(certified, monkeypatch):
     n = len(hub.log)
     assert heartbeat_once(hub, held, report) is True and len(hub.log) == n + 1        # every held claim in ONE commit
     assert json.load(open(hub.get(claimed["claim"])))["stage"] == "walking" and json.load(open(hub.get(other["claim"])))["stage"] == "uploading"
+    hub.delete(other["claim"], "test")
+    q = claim_next(hub, rc, "h2", claim_batch=2); queued = list(hub.queue); hub.queue = []   # a batch: the second claim is queued
+    assert queued and json.load(open(hub.get(queued[0]["claim"]))).get("heartbeat") is None
+    n = len(hub.log)
+    assert heartbeat_once(hub, {cur["name"]: cur}, report, queue=queued) is True and len(hub.log) == n + 1
+    d = json.load(open(hub.get(queued[0]["claim"]))); assert d["stage"] == "queued" and d["heartbeat"] and d["host"] == "h2"
 
 
 def test_the_claim_protocol(fake):
