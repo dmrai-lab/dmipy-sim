@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import logging
 import math
+import time
 
 import numpy as np
 import jax
@@ -219,6 +220,7 @@ interval mean as before).
         def program_for(k_cand, pads):
             if (k_cand, pads) not in programs:
                 programs[(k_cand, pads)] = _save_program(k_cand, pads)
+                log.info("adaptive: a program for class windows %s (candidate list %d): %d so far", pads, k_cand, len(programs))
             return programs[(k_cand, pads)]
 
         def pads_from(cmax):
@@ -326,6 +328,7 @@ interval mean as before).
                 # read once per chunk, and the chunk is redone from its start with wider windows or list when it
                 # happened; the saves' positions and contact are stacked on the device and copied to the host once
                 t_end = min(t + CHUNK_SAVES, n_t)
+                t_chunk = time.time()
                 r_c0, keys_c0 = r, keys
                 seg_c0 = (seg, keep, n_str) if sampling else None
                 while True:
@@ -365,6 +368,7 @@ interval mean as before).
                 if fs:
                     field_all[s:e, [tt // f_every for tt in range(t, t_end) if tt % f_every == 0]] = np.asarray(jnp.stack(fs, axis=1))
                 run.progress(s + nb * (t_end - 1) / n_t, n_walkers)              # the batch's fraction of its saves
+                log.debug("adaptive: saves %d-%d in %.2f s (windows %s)", t, t_end - 1, time.time() - t_chunk, pads)
                 t = t_end
             # the guarantee: nobody changed pool
             comp_end = np.minimum(np.asarray(geometry.classify_positions_exact(r), np.int32), 1)
