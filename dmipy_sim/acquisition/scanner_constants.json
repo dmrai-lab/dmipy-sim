@@ -1,6 +1,6 @@
 {
   "_schema": {
-    "description": "Per-vendor/per-model MR scanner deliverability constants (gradient, RF, safety) with full citation provenance. Mirrors dmipy_sim biophysical_constants schema. Sections: 'scanners' (real machines, per model), 'envelopes' (declared limit points that are not a specific machine: the replay band-limit certificate's classes, Pulseq presets, the Pulseq example system), 'classes' (the certificate's short names -> a scanners/envelopes key), 'aliases' (every other short name -> a key), 'safety'. Every scanner number in dmipy-sim is read from here; nothing in Python carries one.",
+    "description": "Per-vendor/per-model MR scanner deliverability constants (gradient, RF, safety) with full citation provenance. Mirrors dmipy_sim biophysical_constants schema. Sections: 'scanners' (real machines, per model), 'envelopes' (declared limit points that are not a specific machine: the Pulseq presets and the Pulseq example system), 'classes' (the certificate's short names -> a scanners/envelopes key), 'aliases' (every other short name -> a key), 'safety'. Every scanner number in dmipy-sim is read from here; nothing in Python carries one.",
     "entry_fields": [
       "value",
       "unit",
@@ -13,9 +13,10 @@
     "confidence_levels": {
       "cited": "value backed by a primary/authoritative source (vendor spec sheet, peer-reviewed methods paper, or IEC standard clause)",
       "widely-quoted": "value is consistently reported but its primary authoritative source is unclear or coil/patient-dependent",
-      "NEEDS VERIFICATION": "no authoritative public source found; typically service-manual-confidential"
+      "NEEDS VERIFICATION": "no authoritative public source found; typically service-manual-confidential",
+      "derived": "value computed from a cited quantity (a slew rate from a stated rise time and amplitude); the derivation and its direction (a bound) are in context"
     },
-    "compiled": "2026-06-26"
+    "compiled": "2026-06-26; Bruker systems and the Connectome 2.0 / MAGNUS notes 2026-09-16 (dmipy-sim#220)"
   },
   "citations": {
     "siemens_prisma_web": {
@@ -138,13 +139,53 @@
       "year": 2020,
       "doi_or_url": "https://github.com/filip-szczepankiewicz/safe_pns_prediction"
     },
-    "dmipy_sim_143": {
-      "key": "dmipy_sim_143",
-      "authors": "dmrai-lab",
-      "title": "dmipy-sim #143: the replay band-limit certificate and the save-grid rule -- the six scanner classes it is sized over",
-      "publisher": "GitHub issue",
+    "bruker_almanac_2011": {
+      "key": "bruker_almanac_2011",
+      "authors": "Bruker BioSpin",
+      "title": "Bruker Almanac 2011: BGA-S gradient system specification table (BGA-6S / 9S / 12S / 20S; 'Strength at Imax', 'Slew rate at Umax'; 'Output values have been measured on MRI system')",
+      "journal_or_publisher": "Bruker BioSpin (Almanac)",
+      "year": 2011,
+      "doi_or_url": "https://lsa.umich.edu/content/dam/chem-assets/chem-docs/techServices%20docs/BrukerAlmanac2011.pdf"
+    },
+    "bruker_biospec_70_20_web": {
+      "key": "bruker_biospec_70_20_web",
+      "authors": "Bruker BioSpin",
+      "title": "BioSpec 70/20 and 94/20 product page: BGA-12S HP, '660 mT/m with high power option', '4570 T/m/s with high power option'",
+      "journal_or_publisher": "Bruker BioSpin (product page)",
+      "year": 2024,
+      "doi_or_url": "https://www.bruker.com/en/products-and-solutions/preclinical-imaging/mri/biospec.html"
+    },
+    "bruker_micro2_5_web": {
+      "key": "bruker_micro2_5_web",
+      "authors": "Bruker BioSpin",
+      "title": "Micro2.5 and MicWB40 MR microscopy gradient probes: 1.5 T/m per direction, rise time (5-95 %) below 100 us at 60 A",
+      "journal_or_publisher": "Bruker BioSpin (product page)",
+      "year": 2024,
+      "doi_or_url": "https://www.bruker.com/en/products-and-solutions/mr/nmr/mr-microscopy-diffusion/mr-microscopy-probes/micro2-5-micwb40.html"
+    },
+    "bruker_micro5_web": {
+      "key": "bruker_micro5_web",
+      "authors": "Bruker BioSpin",
+      "title": "Micro5 MR microscopy gradient probe: 3 T/m per direction, rise time below 80 us at 60 A",
+      "journal_or_publisher": "Bruker BioSpin (product page)",
+      "year": 2024,
+      "doi_or_url": "https://www.bruker.com/en/products-and-solutions/mr/nmr/mr-microscopy-diffusion/mr-microscopy-probes/micro5.html"
+    },
+    "ramos_llorden2026_connectome2": {
+      "key": "ramos_llorden2026_connectome2",
+      "authors": "Ramos-Llorden G, Lee H-H, Davids M, Dietz P, Krug A, Kirsch JE, Mahmutovic M, Muller A, Ma Y, Lee H, Maffei C, Yendiki A, Bilgic B, Park DJ, Tian Q, Clifford B, Lo W-C, Stocker S, Fischer J, Ruyters G, Roesler M, Potthast A, Benner T, Rummert E, Schuster R, Basser PJ, Witzel T, Wald LL, Rosen BR, Keil B, Huang SY",
+      "title": "Ultra-high gradient connectomics and microstructure MRI scanner for imaging of human brain circuits across scales",
+      "journal_or_publisher": "Nature Biomedical Engineering 10:309-324",
       "year": 2026,
-      "doi_or_url": "https://github.com/dmrai-lab/dmipy-sim/issues/143"
+      "doi_or_url": "10.1038/s41551-025-01457-x"
+    },
+    "abad2025_magnus": {
+      "key": "abad2025_magnus",
+      "authors": "Abad N, et al.",
+      "title": "MAGNUS at 3 T: 'Gmax = 200-300 mT/m, and SRmax = 500-750 T/m/s' (the 1 MVA prototype and the 2 MVA product)",
+      "journal_or_publisher": "Imaging Neuroscience",
+      "year": 2025,
+      "doi_or_url": "10.1162/imag.a.68"
     }
   },
   "scanners": {
@@ -286,25 +327,25 @@
     },
     "siemens_magnetom_connectom_2_0_3T": {
       "vendor": "Siemens Healthineers / MGH",
-      "model": "Connectome 2.0 (next-gen head-only research system; target specs)",
+      "model": "Connectome 2.0 (head-only research system)",
       "field_T": 3.0,
       "gradient": {
         "max_amplitude": {
           "value": 500,
           "unit": "mT/m",
           "field_T": 3.0,
-          "context": "TARGET spec; 3-layer head-only gradient coil, 44 cm inner diameter",
+          "context": "design target (Huang 2021), reached per axis on the built scanner (Ramos-Llorden 2026: 500 mT/m and 600 T/m/s); 3-layer head-only gradient coil, 44 cm inner diameter",
           "source_key": "huang2021_connectome2",
-          "location": "Design section ('500 mT m-1')",
+          "location": "Design section ('500 mT m-1'); ramos_llorden2026_connectome2 (built scanner)",
           "confidence": "cited"
         },
         "max_slew_rate": {
           "value": 600,
           "unit": "T/m/s",
           "field_T": 3.0,
-          "context": "TARGET spec; head-only coil optimized to minimize PNS",
+          "context": "design target (Huang 2021), reached per axis on the built scanner (Ramos-Llorden 2026: 500 mT/m and 600 T/m/s); head-only coil optimized to minimize PNS",
           "source_key": "huang2021_connectome2",
-          "location": "Design section ('600 T m-1 s-1')",
+          "location": "Design section ('600 T m-1 s-1'); ramos_llorden2026_connectome2 (built scanner)",
           "confidence": "cited"
         },
         "gradient_coil_inner_diameter": {
@@ -317,7 +358,7 @@
           "confidence": "cited"
         }
       },
-      "notes": "These are DESIGN TARGETS published in 2021, not measured production specs; the head-only geometry is what permits the high slew without exceeding PNS."
+      "notes": "Published as design targets in 2021 (huang2021_connectome2); the built scanner reaches 500 mT/m and 600 T/m/s per axis (ramos_llorden2026_connectome2), so the numbers are measured on the machine."
     },
     "siemens_magnetom_terra_7T": {
       "vendor": "Siemens Healthineers",
@@ -565,6 +606,9 @@
       }
     },
     "ge_magnus_prototype_3T": {
+      "vendor": "GE HealthCare / NIH",
+      "model": "MAGNUS head-only gradient insert, 1 MVA prototype",
+      "field_T": 3.0,
       "gradient": {
         "max_amplitude": {
           "value": 200,
@@ -583,6 +627,132 @@
           "source_key": "foo2020_magnus",
           "location": "Foo et al. 2020, abstract",
           "confidence": "widely-quoted"
+        }
+      },
+      "notes": "The 1 MVA prototype (Foo et al. 2020: '200 mT/m and 500 T/m/s on each axis'). The FDA-cleared SIGNA MAGNUS (2024-11) is 300 mT/m / 750 T/m/s at 2 MVA (ge_signa_magnus_3T); Abad et al. 2025 give the pair as 'Gmax = 200-300 mT/m, and SRmax = 500-750 T/m/s'. The certificate class 'magnus' is the prototype."
+    },
+    "bruker_bga_9s": {
+      "vendor": "Bruker BioSpin",
+      "model": "BioSpec BGA-9S gradient system (90 mm ID)",
+      "field_T": null,
+      "gradient": {
+        "max_amplitude": {
+          "value": 760,
+          "unit": "mT/m",
+          "field_T": null,
+          "context": "per axis; the Almanac lists the peak per coil at Imax / Umax, with lower simultaneous-DC limits; 'Strength at Imax', measured on system",
+          "source_key": "bruker_almanac_2011",
+          "location": "BGA-S specification table, BGA-9S column",
+          "confidence": "cited"
+        },
+        "max_slew_rate": {
+          "value": 6840,
+          "unit": "T/m/s",
+          "field_T": null,
+          "context": "per axis; the Almanac lists the peak per coil at Imax / Umax, with lower simultaneous-DC limits; 'Slew rate at Umax', measured on system",
+          "source_key": "bruker_almanac_2011",
+          "location": "BGA-S specification table, BGA-9S column",
+          "confidence": "cited"
+        }
+      }
+    },
+    "bruker_bga_12s_hp": {
+      "vendor": "Bruker BioSpin",
+      "model": "BioSpec BGA-12S HP gradient system (114 mm ID, 300 A high-power option)",
+      "field_T": null,
+      "gradient": {
+        "max_amplitude": {
+          "value": 660,
+          "unit": "mT/m",
+          "field_T": null,
+          "context": "per axis; the Almanac lists the peak per coil at Imax / Umax, with lower simultaneous-DC limits; with the high power option",
+          "source_key": "bruker_almanac_2011",
+          "location": "BGA-S specification table, BGA-12S HP column; also bruker_biospec_70_20_web",
+          "confidence": "cited"
+        },
+        "max_slew_rate": {
+          "value": 4570,
+          "unit": "T/m/s",
+          "field_T": null,
+          "context": "per axis; the Almanac lists the peak per coil at Imax / Umax, with lower simultaneous-DC limits; with the high power option",
+          "source_key": "bruker_almanac_2011",
+          "location": "BGA-S specification table, BGA-12S HP column; also bruker_biospec_70_20_web",
+          "confidence": "cited"
+        }
+      }
+    },
+    "bruker_bga_6s": {
+      "vendor": "Bruker BioSpin",
+      "model": "BioSpec BGA-6S gradient system (60 mm ID)",
+      "field_T": null,
+      "gradient": {
+        "max_amplitude": {
+          "value": 1000,
+          "unit": "mT/m",
+          "field_T": null,
+          "context": "per axis; the Almanac lists the peak per coil at Imax / Umax, with lower simultaneous-DC limits; 'Strength at Imax', measured on system",
+          "source_key": "bruker_almanac_2011",
+          "location": "BGA-S specification table, BGA-6S column",
+          "confidence": "cited"
+        },
+        "max_slew_rate": {
+          "value": 11250,
+          "unit": "T/m/s",
+          "field_T": null,
+          "context": "per axis; the Almanac lists the peak per coil at Imax / Umax, with lower simultaneous-DC limits; 'Slew rate at Umax', measured on system",
+          "source_key": "bruker_almanac_2011",
+          "location": "BGA-S specification table, BGA-6S column",
+          "confidence": "cited"
+        }
+      }
+    },
+    "bruker_micro2_5": {
+      "vendor": "Bruker BioSpin",
+      "model": "Micro2.5 / MicWB40 MR microscopy gradient probe (40 mm ID)",
+      "field_T": null,
+      "gradient": {
+        "max_amplitude": {
+          "value": 1500,
+          "unit": "mT/m",
+          "field_T": null,
+          "context": "per direction, '1.5 T/m'",
+          "source_key": "bruker_micro2_5_web",
+          "location": "product page, specifications",
+          "confidence": "cited"
+        },
+        "max_slew_rate": {
+          "value": 15000,
+          "unit": "T/m/s",
+          "field_T": null,
+          "context": "DERIVED, not published: the page states a 5-95 % rise time below 100 us at 60 A, so the slew rate to 1.5 T/m is at least 1.5 T/m / 100 us = 15,000 T/m/s; a lower bound",
+          "source_key": "bruker_micro2_5_web",
+          "location": "product page, specifications (rise time)",
+          "confidence": "derived"
+        }
+      }
+    },
+    "bruker_micro5": {
+      "vendor": "Bruker BioSpin",
+      "model": "Micro5 MR microscopy gradient probe (19 mm ID)",
+      "field_T": null,
+      "gradient": {
+        "max_amplitude": {
+          "value": 3000,
+          "unit": "mT/m",
+          "field_T": null,
+          "context": "per direction, '3 T/m'",
+          "source_key": "bruker_micro5_web",
+          "location": "product page, specifications",
+          "confidence": "cited"
+        },
+        "max_slew_rate": {
+          "value": 37500,
+          "unit": "T/m/s",
+          "field_T": null,
+          "context": "DERIVED, not published: the page states a rise time below 80 us at 60 A, so the slew rate to 3 T/m is at least 3 T/m / 80 us = 37,500 T/m/s; a lower bound",
+          "source_key": "bruker_micro5_web",
+          "location": "product page, specifications (rise time)",
+          "confidence": "derived"
         }
       }
     }
@@ -827,72 +997,6 @@
     }
   },
   "envelopes": {
-    "certificate_bruker_bga_s": {
-      "gradient": {
-        "max_amplitude": {
-          "value": 750,
-          "unit": "mT/m",
-          "field_T": null,
-          "context": "declared envelope point of the replay band-limit certificate (dmipy-sim #143): a limit the certificate is sized over, NOT a specific machine's spec sheet",
-          "source_key": "dmipy_sim_143",
-          "location": null,
-          "confidence": "NEEDS VERIFICATION"
-        },
-        "max_slew_rate": {
-          "value": 6000,
-          "unit": "T/m/s",
-          "field_T": null,
-          "context": "declared envelope point of the replay band-limit certificate (dmipy-sim #143): a limit the certificate is sized over, NOT a specific machine's spec sheet",
-          "source_key": "dmipy_sim_143",
-          "location": null,
-          "confidence": "NEEDS VERIFICATION"
-        }
-      }
-    },
-    "certificate_micro_insert": {
-      "gradient": {
-        "max_amplitude": {
-          "value": 1500,
-          "unit": "mT/m",
-          "field_T": null,
-          "context": "declared envelope point of the replay band-limit certificate (dmipy-sim #143): a limit the certificate is sized over, NOT a specific machine's spec sheet",
-          "source_key": "dmipy_sim_143",
-          "location": null,
-          "confidence": "NEEDS VERIFICATION"
-        },
-        "max_slew_rate": {
-          "value": 10000,
-          "unit": "T/m/s",
-          "field_T": null,
-          "context": "declared envelope point of the replay band-limit certificate (dmipy-sim #143): a limit the certificate is sized over, NOT a specific machine's spec sheet",
-          "source_key": "dmipy_sim_143",
-          "location": null,
-          "confidence": "NEEDS VERIFICATION"
-        }
-      }
-    },
-    "certificate_extreme_insert": {
-      "gradient": {
-        "max_amplitude": {
-          "value": 3000,
-          "unit": "mT/m",
-          "field_T": null,
-          "context": "declared envelope point of the replay band-limit certificate (dmipy-sim #143): a limit the certificate is sized over, NOT a specific machine's spec sheet",
-          "source_key": "dmipy_sim_143",
-          "location": null,
-          "confidence": "NEEDS VERIFICATION"
-        },
-        "max_slew_rate": {
-          "value": 20000,
-          "unit": "T/m/s",
-          "field_T": null,
-          "context": "declared envelope point of the replay band-limit certificate (dmipy-sim #143): a limit the certificate is sized over, NOT a specific machine's spec sheet",
-          "source_key": "dmipy_sim_143",
-          "location": null,
-          "confidence": "NEEDS VERIFICATION"
-        }
-      }
-    },
     "pulseq_clinical_typical": {
       "gradient": {
         "max_amplitude": {
@@ -921,7 +1025,7 @@
           "value": 1000,
           "unit": "mT/m",
           "field_T": null,
-          "context": "the PULSEQ_SYSTEMS 'preclinical_bruker' preset: a nominal preclinical system, not a machine (distinct from certificate_bruker_bga_s)",
+          "context": "the PULSEQ_SYSTEMS 'preclinical_bruker' preset: a nominal preclinical system, not a machine (the cited Bruker systems are bruker_bga_9s, bruker_bga_12s_hp, bruker_bga_6s, bruker_micro2_5, bruker_micro5)",
           "source_key": "pulseq_spec",
           "location": null,
           "confidence": "NEEDS VERIFICATION"
@@ -974,9 +1078,9 @@
     "magnus": "ge_magnus_prototype_3T",
     "connectom": "siemens_magnetom_connectom_3T",
     "connectome_2": "siemens_magnetom_connectom_2_0_3T",
-    "bruker_bga_s": "certificate_bruker_bga_s",
-    "micro_insert": "certificate_micro_insert",
-    "extreme_insert": "certificate_extreme_insert"
+    "bruker_bga_s": "bruker_bga_9s",
+    "micro_insert": "bruker_micro2_5",
+    "extreme_insert": "bruker_micro5"
   },
   "aliases": {
     "siemens_prisma": "siemens_magnetom_prisma_3T",
@@ -989,6 +1093,11 @@
     "terra": "siemens_magnetom_terra_7T",
     "terra_x": "siemens_magnetom_terra_x_7T",
     "premier": "ge_signa_premier_3T",
-    "ingenia": "philips_ingenia_3T"
+    "ingenia": "philips_ingenia_3T",
+    "bga_9s": "bruker_bga_9s",
+    "bga_12s_hp": "bruker_bga_12s_hp",
+    "bga_6s": "bruker_bga_6s",
+    "micro2_5": "bruker_micro2_5",
+    "micro5": "bruker_micro5"
   }
 }
