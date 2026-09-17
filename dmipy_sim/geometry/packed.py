@@ -10,7 +10,7 @@ import numpy as np
 
 from ._boundary import (keep_side_radial, ray_sphere_t, specular, transmit_probability, off_wall,
                         bounce_loop, bounce_budget)
-from .base import Geometry, LengthScales, acquisition_rotation
+from .base import permeability_of, Geometry, LengthScales, acquisition_rotation
 from .packing import periodic_min_gap
 
 _TINY = 1e-30
@@ -205,9 +205,7 @@ class PackedCylinders(Geometry):
             float(surface_relaxivity_t2)
             if surface_relaxivity_t2 is not None else None
         )
-        self.permeability = (
-            float(permeability) if permeability is not None else None
-        )
+        self.permeability = permeability_of(permeability)
 
         self._L_float  = float(L)
         self._radii_np = radii.copy()
@@ -433,9 +431,7 @@ class PackedSpheres(Geometry):
             float(surface_relaxivity_t2)
             if surface_relaxivity_t2 is not None else None
         )
-        self.permeability = (
-            float(permeability) if permeability is not None else None
-        )
+        self.permeability = permeability_of(permeability)
 
         self._L_float   = float(L)
         self._radii_np  = radii.copy()

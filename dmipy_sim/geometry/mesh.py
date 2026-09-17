@@ -604,7 +604,7 @@ class Mesh(Geometry):
                 f"call .quality_report() for details.",
                 stacklevel=2)
 
-        step_l = self.radius / (25.0 if self.permeability is not None else 6.0)
+        step_l = self.radius / 6.0                             # the reflection step; the crossing rule is the walk's, not the grid's
         if cell_size is None:
             # a few triangles per cell, never finer than the step (the collision rule would then
             # ask for sub-steps below the R/6 rule) and never coarser than the previous 4 step.

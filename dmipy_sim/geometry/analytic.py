@@ -10,7 +10,7 @@ import numpy as np
 from ._boundary import (bounce_budget, bounce_loop, keep_side_radial, keep_side_planar, keep_side_quadric,
                         ray_sphere_t, ray_quadric_t, specular,
                         transmit_probability, off_wall, step_off_wall)
-from .base import Geometry, LengthScales, acquisition_rotation
+from .base import permeability_of, Geometry, LengthScales, acquisition_rotation
 
 
 class Sphere(Geometry):
@@ -47,9 +47,7 @@ class Sphere(Geometry):
         self.surface_relaxivity_t2 = (
             float(surface_relaxivity_t2) if surface_relaxivity_t2 is not None else None
         )
-        self.permeability = (
-            float(permeability) if permeability is not None else None
-        )
+        self.permeability = permeability_of(permeability)
 
     @property
     def length_scales(self):
@@ -196,9 +194,7 @@ class Cylinder(Geometry):
         self.surface_relaxivity_t2 = (
             float(surface_relaxivity_t2) if surface_relaxivity_t2 is not None else None
         )
-        self.permeability = (
-            float(permeability) if permeability is not None else None
-        )
+        self.permeability = permeability_of(permeability)
 
     @property
     def length_scales(self):
@@ -368,9 +364,7 @@ class Ellipsoid(Geometry):
         self.surface_relaxivity_t2 = (
             float(surface_relaxivity_t2) if surface_relaxivity_t2 is not None else None
         )
-        self.permeability = (
-            float(permeability) if permeability is not None else None
-        )
+        self.permeability = permeability_of(permeability)
 
     @property
     def length_scales(self):
@@ -508,7 +502,7 @@ class PermeableSlab1D(Geometry):
 
     def __init__(self, length, permeability, surface_relaxivity_t2=None):
         self.length = float(length)
-        self.permeability = float(permeability)
+        self.permeability = permeability_of(permeability)
         self.surface_relaxivity_t2 = (float(surface_relaxivity_t2)
                                       if surface_relaxivity_t2 is not None else None)
         self.radius = float(length) / 2.0     # one compartment's width
@@ -592,7 +586,7 @@ class PermeableShell(Geometry):
                  orientation=(0.0, 0.0, 1.0), surface_relaxivity_t2=None):
         assert kind in ('sphere', 'cylinder')
         self.r_inner = float(r_inner); self.r_outer = float(r_outer)
-        self.permeability = float(permeability)
+        self.permeability = permeability_of(permeability)
         self.kind = kind
         self.surface_relaxivity_t2 = (float(surface_relaxivity_t2)
                                       if surface_relaxivity_t2 is not None else None)

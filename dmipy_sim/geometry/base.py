@@ -45,6 +45,17 @@ class LengthScales(NamedTuple):
     min_gap: Optional[float] = None
 
 
+def permeability_of(value):
+    """A geometry's stored permeability: ``None`` for a reflecting wall, which a zero is (the reflect path,
+    the impermeable step rule, the compartment guard); a positive float otherwise; a negative one is refused."""
+    if value is None:
+        return None
+    k = float(value)
+    if k < 0.0:
+        raise ValueError(f"a permeability is a rate of crossing, non-negative; got {k}")
+    return k if k > 0.0 else None
+
+
 def initial_positions(geometry, n_walkers, key, r0=None):
     """Seed positions for a walk: ``r0`` when the caller supplied one, else the geometry's own.
 

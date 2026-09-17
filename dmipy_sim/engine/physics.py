@@ -50,20 +50,31 @@ def _geometry_radius(geometry):
     return length_scales_of(geometry).min_feature
 
 
-def permeable_sub_steps(geometry, diffusivity: float, dt: float) -> int:
-    """Number of fine sub-steps so a permeable walk resolves membrane crossing.
+CROSSING_P_MAX = 3e-3
+"""The largest per-hit crossing probability a permeable walk steps at: ``p = 2 (kappa / D) d_perp`` is the
+first-order transmission of a step ending ``d_perp`` past a membrane of permeability ``kappa``, exact as
+``p -> 0``. Measured on a periodic packing of 300 cylinders (radii 1-3 um, D = 2e-9 m^2/s, kappa = 30 um/s,
+0.2 ms saves, 100k walkers): the fraction of walkers exchanged by 5 ms is 0.2332, 0.2287, 0.2324 and 0.2313
+(each +/- 0.0013) at p = 3.7e-3, 2.3e-3, 1.2e-3 and 6.0e-4, flat within the 1 % resolution of the count over
+the whole range, and the PGSE signals move within their split-half errors; the constant sits just under the
+largest probability measured."""
 
-    Impermeable reflection is exact at any step (step_l = R/6 suffices), but
-    membrane *crossing* over-permeates at coarse steps — the transmission needs
-    the near-membrane motion spatially resolved (step_l ≈ R/25 for <1% bias).
-    Returns 1 when
-    no radius scale is available (free diffusion).
-    """
-    R = _geometry_radius(geometry)
-    if R is None:
+
+def crossing_sub_steps(geometry, diffusivity: float, dt: float) -> int:
+    """Sub-steps so a step's transmission stays at first order: ``d_perp <= CROSSING_P_MAX * D / (2 kappa)``,
+    ``d_perp`` the rms step; 1 for an impermeable geometry (``permeability`` None; a zero is stored as None)."""
+    kappa = getattr(geometry, 'permeability', None)
+    if kappa is None:
         return 1
-    dt_phys_max = R ** 2 / (3750.0 * diffusivity)   # step_l = R/25 (6·25²)
-    return max(1, int(np.ceil(dt / dt_phys_max)))
+    step_max = CROSSING_P_MAX * float(diffusivity) / (2.0 * float(kappa))
+    return max(1, int(np.ceil(dt / (step_max ** 2 / (6.0 * float(diffusivity))))))
+
+
+def permeable_sub_steps(geometry, diffusivity: float, dt: float) -> int:
+    """Sub-steps of a permeable walk: the reflection rule of :func:`walk_sub_steps` and the crossing rule of
+    :func:`crossing_sub_steps`, whichever is finer -- the count scales with ``kappa``, and an impermeable
+    geometry gets the reflection rule alone."""
+    return max(walk_sub_steps(geometry, diffusivity, dt), crossing_sub_steps(geometry, diffusivity, dt))
 
 
 def _surface_char_radius(geometry):
@@ -174,11 +185,12 @@ def mt_sub_steps(geometry, diffusivity: float, dt: float, dwell_time: float,
 def walk_sub_steps(geometry, diffusivity: float, dt: float) -> int:
     """Sub-steps for a plain diffusion walk (no MT, no surface tier of its own).
 
-    For an ANALYTIC pore this is the historical ``step_l = R/6`` (``R/25`` when the wall is permeable, since
-    the crossing probability is step-size sensitive and over-permeates at coarse steps). Reflection off an
-    analytic surface is exact at any step, so the criterion only has to keep a step from skipping the pore.
-    A geometry that has measured its own step declares it as ``reflection_step_fraction`` (the curved tubes:
-    see :class:`~dmipy_sim.geometry.curved_cylinder.PackedCurvedCylinders`).
+    For an ANALYTIC pore this is ``step_l = R/6``, ``R`` its smallest feature (a geometry that has measured its
+    own step declares it as ``reflection_step_fraction``: the curved tubes, see
+    :class:`~dmipy_sim.geometry.curved_cylinder.PackedCurvedCylinders`). Reflection off an analytic surface is
+    exact at any step, so the criterion only has to keep a step from skipping the pore. A permeable wall adds the
+    crossing rule of :func:`crossing_sub_steps`, which scales with ``kappa``; it is applied by
+    :func:`resolve_sub_steps`, not here.
 
     For a MESH it is :func:`collision_sub_steps` instead, because ``R/6`` is not a physical criterion there:
     ``_geometry_radius`` returns ``feature_radius``, a MESH-RESOLUTION parameter, so the rule tightened as a
@@ -191,16 +203,11 @@ def walk_sub_steps(geometry, diffusivity: float, dt: float) -> int:
     perpendicular diffusivity scatters +/-1.3% with no trend, the accumulated boundary local time moves
     +0.16%, and containment is flat (97.45% -> 97.02%). So the observables are converged at 97 and the extra
     13x was buying nothing.
-
-    A PERMEABLE mesh deliberately keeps the fine analytic rule: the crossing probability
-    ``p = 2(kappa/D) d_perp`` is step-size sensitive in a way the collision criterion says nothing about, and
-    that regime has not been measured here.
     """
-    has_perm = getattr(geometry, 'permeability', None) is not None
     ls = length_scales_of(geometry)
     R = ls.min_feature
     n_coll = 1
-    if ls.lookup_cell and not has_perm:
+    if ls.lookup_cell:
         n_coll = collision_sub_steps(geometry, diffusivity, dt)
         # A cell grid is not the same thing as a mesh. For a MESH the collision criterion
         # REPLACES R/6, because `_geometry_radius` there returns `feature_radius` -- a
@@ -237,7 +244,7 @@ def walk_sub_steps(geometry, diffusivity: float, dt: float) -> int:
                 f"wrong if that step is comparable to the pore. Expose `radius` (or `length`) on the "
                 f"geometry, or pass sub_steps explicitly.", UserWarning, stacklevel=3)
         return 1
-    frac = 25.0 if has_perm else float(getattr(geometry, 'reflection_step_fraction', None) or 6.0)
+    frac = float(getattr(geometry, 'reflection_step_fraction', None) or 6.0)
     dt_phys_max = (float(R) / frac) ** 2 / (6.0 * diffusivity)
     return max(n_coll, max(1, int(np.ceil(dt / dt_phys_max))))
 
@@ -318,9 +325,10 @@ def resolve_sub_steps(geometry, diffusivity: float, dt: float, *, surface: bool 
     resolution whichever way it is driven. The count is the maximum over the criteria that apply:
 
     * reflection, ``step_l <= min_feature / 6`` (:func:`walk_sub_steps`; a geometry's own measured
-      ``reflection_step_fraction`` in place of the 6), or ``min_feature / 25`` when the wall is
-      permeable, since the crossing probability is step-size sensitive; not applied when
-      ``min_feature`` is a meshing parameter;
+      ``reflection_step_fraction`` in place of the 6); not applied when ``min_feature`` is a meshing
+      parameter;
+    * crossing, ``step_l <= CROSSING_P_MAX D / (2 kappa)`` (:func:`crossing_sub_steps`), when the wall is
+      permeable: the per-hit transmission stays at first order, and the count scales with ``kappa``;
     * collision lookup, ``step_l <= 0.9 * lookup_cell`` (:func:`collision_sub_steps`), for a
       spatially indexed geometry;
     * surface local time, ``step_l <= surface_pore / 8`` (:func:`surface_sub_steps`), when
@@ -332,7 +340,8 @@ def resolve_sub_steps(geometry, diffusivity: float, dt: float, *, surface: bool 
     if override:
         return int(override)
     rules = {"reflection": walk_sub_steps(geometry, diffusivity, dt),
-             "collision lookup": collision_sub_steps(geometry, diffusivity, dt)}
+             "collision lookup": collision_sub_steps(geometry, diffusivity, dt),
+             "crossing": crossing_sub_steps(geometry, diffusivity, dt)}
     if surface:
         rules["surface local time"] = surface_sub_steps(geometry, diffusivity, dt)
     if mt_dwell_time is not None:
