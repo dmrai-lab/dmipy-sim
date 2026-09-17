@@ -817,6 +817,20 @@ def union_weights(w, shard, voxel, pool):
     return w
 
 
+def _spec_identity(spec):
+    """A spec dict without what a machine writes into it: the local ``path`` of a cited surface file (its sha256
+    stays, which is what identifies the file). Two shards of one fill embed the same spec but resolved it from
+    different caches."""
+    if not isinstance(spec, dict):
+        return spec
+    import copy
+    out = copy.deepcopy(spec)
+    for f in (out.get("provenance") or {}).get("files") or []:
+        if isinstance(f, dict):
+            f.pop("path", None)
+    return out
+
+
 def _agree(a, b, rtol=1e-9, atol=1e-12):
     """Whether two JSON-like values agree: floats to rounding, the rest exactly, recursively."""
     if isinstance(a, bool) or isinstance(b, bool):
@@ -861,7 +875,7 @@ def merge_packs(packs, *, id, out_path=None, overlap="refuse", envelope=None, de
             return vals[0]
         comp = same("compression", lambda pk: _codec_signature(pk.meta["compression"]))
         wp = same("walk_params", lambda pk: {k: v for k, v in pk.meta["walk_params"].items() if k not in ("n_walkers", "seed")})
-        same("substrate", lambda pk: pk.meta.get("substrate"))
+        same("substrate", lambda pk: _spec_identity(pk.meta.get("substrate")))
         same("replay_envelope", lambda pk: pk.meta.get("replay_envelope"))
         pv0 = same("per-voxel grid", lambda pk: ((pk.meta.get("fidelity") or {}).get("per_voxel") or {}).get("grid"))
         same("array names", lambda pk: sorted(pk.arrays))
