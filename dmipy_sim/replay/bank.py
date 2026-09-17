@@ -817,6 +817,31 @@ def union_weights(w, shard, voxel, pool):
     return w
 
 
+def _spec_identity(spec):
+    """What makes two embedded specs the same substrate: the spec without its ``provenance`` (who wrote it, when,
+    with which software, from which local path), plus the sha256 of every file it cites (the tracks ARE the
+    substrate). Two shards of one fill embed one spec written by two workers."""
+    if not isinstance(spec, dict):
+        return spec
+    out = {k: v for k, v in spec.items() if k != "provenance"}
+    files = (spec.get("provenance") or {}).get("files") or []
+    out["cited_sha256"] = sorted(str(f.get("sha256")) for f in files if isinstance(f, dict))
+    return out
+
+
+def _agree(a, b, rtol=1e-9, atol=1e-12):
+    """Whether two JSON-like values agree: floats to rounding, the rest exactly, recursively."""
+    if isinstance(a, bool) or isinstance(b, bool):
+        return a == b
+    if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+        return bool(np.isclose(a, b, rtol=rtol, atol=atol))
+    if isinstance(a, dict) and isinstance(b, dict):
+        return a.keys() == b.keys() and all(_agree(a[k], b[k]) for k in a)
+    if isinstance(a, (list, tuple)) and isinstance(b, (list, tuple)):
+        return len(a) == len(b) and all(_agree(x, y) for x, y in zip(a, b))
+    return a == b
+
+
 def merge_packs(packs, *, id, out_path=None, overlap="refuse", envelope=None, device="auto"):
     """One pack from the shards of one walk: the packs of voxel blocks of the same substrate, walked with the
     same parameters and codec (a distributed fill: each device seeds and walks its block and packs it with
@@ -839,13 +864,16 @@ def merge_packs(packs, *, id, out_path=None, overlap="refuse", envelope=None, de
         if len(pks) < 2:
             raise ValueError("merge_packs takes at least two shards")
         def same(key, get):
+            """The shards' value of ``key``, which must agree; floats agree to rounding (two shards of one spec
+            computed the substrate frame on different machines and differ by an ulp), everything else exactly."""
             vals = [get(pk) for pk in pks]
-            if any(v != vals[0] for v in vals[1:]):
-                raise ValueError(f"the shards differ in {key}: {vals[0]!r} vs {[v for v in vals[1:] if v != vals[0]][0]!r}")
+            for v in vals[1:]:
+                if not _agree(v, vals[0]):
+                    raise ValueError(f"the shards differ in {key}: {vals[0]!r} vs {v!r}")
             return vals[0]
         comp = same("compression", lambda pk: _codec_signature(pk.meta["compression"]))
         wp = same("walk_params", lambda pk: {k: v for k, v in pk.meta["walk_params"].items() if k not in ("n_walkers", "seed")})
-        same("substrate", lambda pk: pk.meta.get("substrate"))
+        same("substrate", lambda pk: _spec_identity(pk.meta.get("substrate")))
         same("replay_envelope", lambda pk: pk.meta.get("replay_envelope"))
         pv0 = same("per-voxel grid", lambda pk: ((pk.meta.get("fidelity") or {}).get("per_voxel") or {}).get("grid"))
         same("array names", lambda pk: sorted(pk.arrays))
