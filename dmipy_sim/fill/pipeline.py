@@ -55,12 +55,26 @@ class Options:
     certify: bool = False             # a certifying walk: measured fidelity, under certificate/
     batch: int = None                 # walker_batch_size (default: the manifest's)
     pack_device: str = "numpy"        # where the pack subprocess runs its transforms: numpy, jax, auto
+    duty: float = 1.0                 # the device's duty: after a walk the worker pauses for walk_time * (1 / duty - 1)
+    duty_file: str = None             # a file holding the duty, read before every walk (a shared box given back by the hour)
     require_gpu: bool = True
     devices: list = field(default_factory=list)
 
     @property
     def claims(self):
         return not (self.smoke or self.certify or self.no_upload)
+
+    def current_duty(self):
+        """The duty in force: the number in ``duty_file`` when that file exists and parses, else ``duty``; clamped
+        to (0, 1]. Read before every walk, so a shared box can be given half its device back during the day and
+        the whole of it at night without a restart."""
+        d = self.duty
+        if self.duty_file and os.path.isfile(self.duty_file):
+            try:
+                d = float(open(self.duty_file).read().strip())
+            except ValueError:
+                log.warning("duty file %s does not hold a number; duty %.2f kept", self.duty_file, self.duty)
+        return min(1.0, max(0.05, float(d)))
 
     @property
     def prefix(self):
@@ -382,8 +396,13 @@ class Fill:
                     cur = dict(block=block, variant=rc.variant, host=o.host, name=name, claim=claimed["claim"], round=(r if k > 1 else None), stage="walking",
                                **{"pass": P.get("pass")}, run_dir=round_paths(o.workdir, name, r, k)[0], commit=rc.commit, started=C.stamp())
                     self.state["walking"] = cur; self.state["held"][name] = cur
+                    duty = o.current_duty(); t_walk = time.time()
                     w, rd = walk_round(o, rc, row, name, r, k, P, seeds); rounds.append(rd)
                     self.state["walking"] = None
+                    if duty < 1.0:                             # the device given back: the pause the duty asks for
+                        pause = (time.time() - t_walk) * (1.0 / duty - 1.0)
+                        log.info("%s: duty %.2f, the device idles %.0f s", name, duty, pause)
+                        time.sleep(pause)
                     if r + 1 < k:
                         self.state["held"].pop(name, None)  # between rounds: covered again by the next round's walk
                     self.post_round(w, rd, self.job_of(claimed, rounds, out) if r + 1 == k else None)

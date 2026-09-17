@@ -1,5 +1,6 @@
 """The fill module against a fake hub (`dmipy_sim.fill.FakeHub`): one commit per block, the claim protocol, the
 429, the pipeline's rounds, the drain, the status."""
+import dataclasses
 import json
 import os
 import time
@@ -221,3 +222,23 @@ def test_a_read_that_fails_is_retried_and_a_missing_file_is_not(fake, monkeypatc
     hub.fail_read += ["exists"] * 8                                      # beyond READ_TRIES: the error surfaces
     with pytest.raises(Exception, match="the hub failed"):
         hub.exists("manifest.json")
+
+
+def test_the_duty_pauses_the_device_after_a_walk(certified, monkeypatch, tmp_path):
+    """A duty below one pauses the worker after each walk for walk_time * (1 / duty - 1), read from the duty file
+    before every walk so a shared box is given back by the hour without a restart."""
+    hub, work = certified
+    rc = Recipe(hub)
+    pauses = []
+    monkeypatch.setattr(hubmod.time, "sleep", lambda s: None)
+    import dmipy_sim.fill.pipeline as pl
+    monkeypatch.setattr(pl.time, "sleep", lambda s: pauses.append(s))
+    duty = tmp_path / "duty"; duty.write_text("0.5")
+    o = opts(work, host="h", block=0, loop=False); o = dataclasses.replace(o, duty_file=str(duty), no_upload=True)
+    assert o.current_duty() == 0.5
+    Fill(hub, rc, o).run(heartbeat_every=3600)
+    assert len(pauses) >= 1 and all(p > 0 for p in pauses)
+    duty.write_text("1")
+    assert o.current_duty() == 1.0
+    duty.write_text("nonsense")
+    assert o.current_duty() == 1.0                                      # unparsable: the option's value, logged

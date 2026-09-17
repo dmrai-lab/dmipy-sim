@@ -38,6 +38,8 @@ def main(argv=None):
     ap.add_argument("--claim-batch", type=int, default=3, help="with --next: claim this many blocks in one commit and fill them in turn")
     ap.add_argument("--pass", dest="only_pass", type=int, default=None, help="with a plan in passes: fill only this pass")
     ap.add_argument("--budget", type=int, default=None, help="scale the block's planned counts to this many walkers")
+    ap.add_argument("--duty", type=float, default=1.0, help="the device's duty (0-1]: after each walk the worker pauses walk_time * (1/duty - 1)")
+    ap.add_argument("--duty-file", default=None, help="a file holding the duty, read before every walk (change it without a restart)")
     ap.add_argument("--max-walkers", type=int, default=None, help="walk a block whose plan exceeds this in rounds of at most this many "
                     "walkers and merge the rounds (a walk file holds ~85 kB per walker; the pack of a round holds it in host memory)")
     ap.add_argument("--smoke", action="store_true", help="upload under smoke/ instead of blocks/ (never claims)")
@@ -69,7 +71,7 @@ def main(argv=None):
     o = Options(workdir=a.workdir, host=a.host or socket.gethostname(), repo=a.repo or f"local:{a.local}", block=a.block, loop=a.loop,
                 hours=a.hours, only_pass=a.only_pass, claim_batch=a.claim_batch, budget=a.budget, max_walkers=a.max_walkers, smoke=a.smoke,
                 no_upload=a.no_upload or bool(a.local), keep=a.keep, certify=a.certify, batch=a.batch, pack_device=a.pack_device,
-                require_gpu=not a.cpu, devices=devices)
+                duty=a.duty, duty_file=a.duty_file, require_gpu=not a.cpu, devices=devices)
     f = Fill(hub, rc, o)
     if a.drain:
         return f.drain()
