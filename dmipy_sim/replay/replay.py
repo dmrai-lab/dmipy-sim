@@ -377,13 +377,25 @@ class ReplayPack:
         """
         waveform = waveform.waveform if hasattr(waveform, "waveform") else waveform
         if b1_scale is None and off_resonance_T is None:
-            P = self._prepare(waveform, tissue=tissue, scanner=scanner, orientation=orientation, compartment=compartment)
-            w = np.asarray(self.spin_weights, np.float64)
-            return w, P["ew"], np.exp(1j * self._walker_phases(P, waveform))
+            w, ew, phi = self.walker_phases(waveform, tissue=tissue, scanner=scanner, orientation=orientation, compartment=compartment)
+            return w, ew, np.exp(1j * phi)
         E = self.replay_bloch(waveform, b1_scale=b1_scale, off_resonance_T=off_resonance_T, tissue=tissue, scanner=scanner,
                               orientation=orientation, compartment=compartment, complex_signal=True, per_walker=True)
         w = np.asarray(self.spin_weights, np.float64)
         return w, w, E
+
+    def walker_phases(self, waveform, *, tissue=None, scanner=None, orientation=None, compartment=None):
+        """:meth:`walker_signals` before the complex exponential: ``(w, ew, phi)`` with ``phi`` the accumulated
+        phase of every walker at every measurement, ``(n_w, n_meas)`` real, so that ``E = exp(1j * phi)``. A
+        consumer that reduces many walkers over its own groups (an image: the walkers of each voxel) takes the
+        phase and forms the exponential and the sums where it accumulates them, on its device; the exponential
+        over ``(n_w, n_meas)`` is the one host operation of a replay that does not amortise. Knobs resolve as in
+        :meth:`replay`; the RF-aware route has no phase (its signal is the magnetisation vector itself) and is
+        :meth:`walker_signals` with ``b1_scale`` or ``off_resonance_T``."""
+        waveform = waveform.waveform if hasattr(waveform, "waveform") else waveform
+        P = self._prepare(waveform, tissue=tissue, scanner=scanner, orientation=orientation, compartment=compartment)
+        w = np.asarray(self.spin_weights, np.float64)
+        return w, P["ew"], self._walker_phases(P, waveform)
 
     def _walker_phases(self, P, waveform):
         """``(n_w, n_meas)`` accumulated phase of every walker under the prepared acquisition ``P``: the gradient

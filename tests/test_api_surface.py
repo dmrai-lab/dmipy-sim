@@ -535,7 +535,7 @@ def test_replay_knobs_are_tissue_orientation_and_scanner():
     from dmipy_sim.phantom.partition import PartitionPhantom
     from dmipy_sim.phantom.substrates import PackSubstrate, FreeWater
     flat = {"T2", "T1", "rho", "D", "B0", "b0_dir", "chi_iso", "chi_aniso", "T2_s", "T1_s", "rho_m_s", "D_m2_s", "B0_T"}
-    entry_points = [ReplayPack.replay, ReplayPack.walker_signals, ReplayPack.replay_bloch, ReplayPack.pose_response,
+    entry_points = [ReplayPack.replay, ReplayPack.walker_signals, ReplayPack.walker_phases, ReplayPack.replay_bloch, ReplayPack.pose_response,
                     ReplayPhantom.replay, ReplayPhantom.replay_bloch, Phantom.replay, PartitionPhantom.replay,
                     PackSubstrate.__init__, FreeWater.__init__]
     for fn in entry_points:
@@ -543,6 +543,6 @@ def test_replay_knobs_are_tissue_orientation_and_scanner():
         assert not (flat & set(params)), f"{fn.__qualname__} takes a flat physical value: {sorted(flat & set(params))}"
         if "tissue" in params:
             assert params["tissue"].default in (None, inspect.Parameter.empty), fn.__qualname__
-    for fn in (ReplayPack.replay, ReplayPack.walker_signals, ReplayPack.replay_bloch, ReplayPack.pose_response,
+    for fn in (ReplayPack.replay, ReplayPack.walker_signals, ReplayPack.walker_phases, ReplayPack.replay_bloch, ReplayPack.pose_response,
                ReplayPhantom.replay, ReplayPhantom.replay_bloch, Phantom.replay, PartitionPhantom.replay):
         assert "scanner" in inspect.signature(fn).parameters, fn.__qualname__
