@@ -69,13 +69,17 @@ def test_an_analytic_pore_is_unchanged():
     assert walk_sub_steps(sph, D, dt) == _old_rule(sph, dt)
 
 
-def test_a_permeable_mesh_keeps_the_fine_rule():
-    """Deliberately out of scope: crossing probability is step-size sensitive in a way the collision
-    criterion says nothing about, and that regime is not measured here."""
+def test_a_permeable_mesh_takes_the_crossing_rule_beside_the_collision_rule():
+    """A permeable mesh steps at the finer of the collision rule (the wall must be found) and the crossing rule
+    (the transmission stays at first order, ``p = 2 (kappa/D) d_perp <= CROSSING_P_MAX``); the fixed R/25 of a
+    meshing parameter is not a rule of either."""
+    from dmipy_sim.engine.physics import crossing_sub_steps, resolve_sub_steps, CROSSING_P_MAX
     mesh = _mesh_sphere(permeability=1e-5)
     dt = 2e-5
-    assert walk_sub_steps(mesh, D, dt) == _old_rule(mesh, dt, divisor=3750.0)
-    assert walk_sub_steps(mesh, D, dt) > collision_sub_steps(mesh, D, dt)
+    assert walk_sub_steps(mesh, D, dt) == collision_sub_steps(mesh, D, dt)
+    n = resolve_sub_steps(mesh, D, dt)
+    assert n == max(collision_sub_steps(mesh, D, dt), crossing_sub_steps(mesh, D, dt))
+    assert 2 * 1e-5 / D * np.sqrt(6 * D * dt / n) <= CROSSING_P_MAX + 1e-12
 
 
 @pytest.mark.slow
