@@ -70,6 +70,22 @@ def test_relaxation_and_surface_weights_equal_the_decoded_ones(pack, make_seq):
     np.testing.assert_allclose(ew, expect, rtol=1e-6, atol=1e-14)          # the oracle decodes the bridge in float32
 
 
+def test_walker_phases_is_the_signal_before_the_exponential(pack, field_pack):
+    """``walker_phases`` gives ``(w, ew, phi)`` with ``exp(1j * phi)`` the ``E`` of ``walker_signals`` and the same
+    weights, on the gradient route and on the field route: a consumer that sums many walkers over its own groups
+    forms the exponential where it accumulates."""
+    seq = _seqmod.pgse([[1, 0, 0], [0, 1, 1]], 1e-3, 3e-3, bvalues=[1e9, 5e8], TE=6e-3, n_t=4 * pack.n_t + 1, slew_rate=np.inf)
+    t = Tissue(T2=[0.08, 0.03], rho=1e-5, D=D0)
+    w, ew, phi = pack.walker_phases(seq, tissue=t); w2, ew2, E = pack.walker_signals(seq, tissue=t)
+    assert phi.shape == E.shape == (pack.n_walkers, 2) and np.isrealobj(phi)
+    np.testing.assert_array_equal(w, w2); np.testing.assert_array_equal(ew, ew2); np.testing.assert_allclose(np.exp(1j * phi), E, rtol=0, atol=1e-12)
+    pk = field_pack
+    seq = _seqmod.gre(6e-4, gradient_directions=[[1, 0, 0]], bvalues=[5e8], delta=1e-4, Delta=3e-4, n_t=4 * pk.n_t + 1, slew_rate=np.inf)
+    tf = Tissue(chi_iso=-1e-7, chi_aniso=-5e-8)
+    _, _, phi = pk.walker_phases(seq, scanner=3.0, tissue=tf); _, _, E = pk.walker_signals(seq, scanner=3.0, tissue=tf)
+    np.testing.assert_allclose(np.exp(1j * phi), E, rtol=0, atol=1e-12)
+
+
 def test_the_field_phase_equals_the_decoded_path_integral(field_pack):
     """The path route: the per-channel path integrals are the cosine modes contracted with the gate's DCT; the
     decoded route (positions, the 13 channels on the save grid, the gate summed) is the oracle."""
