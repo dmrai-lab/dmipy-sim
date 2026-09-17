@@ -33,7 +33,7 @@ def test_a_zero_permeability_is_an_impermeable_wall(make):
 def test_the_crossing_rule_scales_with_kappa():
     """On the reporter's packing (radii floored at 1 um, rho 1.2 um/s, 0.2 ms saves) the impermeable count is the
     surface rule's; at 10 um/s the crossing rule asks for nothing finer, at 30 um/s it asks for the count that
-    keeps ``p`` at ``CROSSING_P_MAX``, a third of the fixed R/25 count of 1500."""
+    keeps ``p`` at ``CROSSING_P_MAX``, a sixth of the fixed R/25 count of 1500."""
     n0 = resolve_sub_steps(_packing(None), D, DT, surface=True)
     assert n0 == surface_sub_steps(_packing(None), D, DT) == 154
     n10 = resolve_sub_steps(_packing(10e-6), D, DT, surface=True)

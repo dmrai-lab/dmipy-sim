@@ -50,14 +50,14 @@ def _geometry_radius(geometry):
     return length_scales_of(geometry).min_feature
 
 
-CROSSING_P_MAX = 2e-3
+CROSSING_P_MAX = 3e-3
 """The largest per-hit crossing probability a permeable walk steps at: ``p = 2 (kappa / D) d_perp`` is the
 first-order transmission of a step ending ``d_perp`` past a membrane of permeability ``kappa``, exact as
-``p -> 0`` and biased in proportion to ``p`` at finite steps. Measured on a periodic packing of 300 cylinders
-(radii 1-3 um, D = 2e-9 m^2/s, kappa = 30 um/s, 0.2 ms saves): the fraction of walkers exchanged by 10 ms falls
-by 2.4 % between p = 3.8e-3 and 1.2e-3 while the PGSE signals move within their split-half errors, so the
-exchange rate carries a bias of about 1 % per 1e-3 of p; at 2e-3 the rule holds it near 2 %, inside the walk's
-own Monte-Carlo floor at practical walker counts."""
+``p -> 0``. Measured on a periodic packing of 300 cylinders (radii 1-3 um, D = 2e-9 m^2/s, kappa = 30 um/s,
+0.2 ms saves, 100k walkers): the fraction of walkers exchanged by 5 ms is 0.2332, 0.2287, 0.2324 and 0.2313
+(each +/- 0.0013) at p = 3.7e-3, 2.3e-3, 1.2e-3 and 6.0e-4, flat within the 1 % resolution of the count over
+the whole range, and the PGSE signals move within their split-half errors; the constant sits just under the
+largest probability measured."""
 
 
 def crossing_sub_steps(geometry, diffusivity: float, dt: float) -> int:
