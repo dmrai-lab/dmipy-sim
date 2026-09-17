@@ -124,6 +124,7 @@ def test_shards_agree_to_rounding_and_differ_for_real(shards, tmp_path):
     meta = copy.deepcopy(b.meta)                                                     # the cited file's local path is the machine's
     for f in (meta.get("substrate", {}).get("provenance") or {}).get("files") or []:
         f["path"] = "/another/machine/" + f["path"].split("/")[-1]
+    meta["substrate"].setdefault("provenance", {})["software"] = {"name": "dmipy-sim", "version": "0.0.0"}   # another writer
     assert merge_packs([a, ReplayPack(dict(b.arrays), meta)], id="t/path", overlap="refuse").n_walkers == m.n_walkers
     meta = copy.deepcopy(b.meta); meta["walk_params"]["T_max"] = meta["walk_params"]["T_max"] * 2
     with pytest.raises(ValueError, match="differ in walk_params"):

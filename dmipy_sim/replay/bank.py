@@ -818,16 +818,14 @@ def union_weights(w, shard, voxel, pool):
 
 
 def _spec_identity(spec):
-    """A spec dict without what a machine writes into it: the local ``path`` of a cited surface file (its sha256
-    stays, which is what identifies the file). Two shards of one fill embed the same spec but resolved it from
-    different caches."""
+    """What makes two embedded specs the same substrate: the spec without its ``provenance`` (who wrote it, when,
+    with which software, from which local path), plus the sha256 of every file it cites (the tracks ARE the
+    substrate). Two shards of one fill embed one spec written by two workers."""
     if not isinstance(spec, dict):
         return spec
-    import copy
-    out = copy.deepcopy(spec)
-    for f in (out.get("provenance") or {}).get("files") or []:
-        if isinstance(f, dict):
-            f.pop("path", None)
+    out = {k: v for k, v in spec.items() if k != "provenance"}
+    files = (spec.get("provenance") or {}).get("files") or []
+    out["cited_sha256"] = sorted(str(f.get("sha256")) for f in files if isinstance(f, dict))
     return out
 
 
