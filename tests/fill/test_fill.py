@@ -204,3 +204,20 @@ def test_a_batch_lost_entirely_is_not_the_end_of_the_loop(fake, monkeypatch):
     assert all(hub.exists(f) for f in first) and not any("second" in f and ".p1." in f for f in hub.files())
     hub.queue = []
     assert claim_next(hub, rc, "third", claim_batch=2) is None       # every (pass, block) is claimed: nothing open is None, still
+
+
+def test_a_read_that_fails_is_retried_and_a_missing_file_is_not(fake, monkeypatch):
+    """A listing, an exists or a download that meets a 5xx or a network error is retried with backoff (a worker's
+    loop ended on one, dmipy-sim#286); a file that is not there is an answer and is raised at once."""
+    hub, work = fake
+    waits = []
+    monkeypatch.setattr(hubmod.time, "sleep", lambda s: waits.append(s))
+    hub.fail_read += ["exists", "exists", "files", "get"]
+    assert hub.exists("manifest.json") and hub.files() and hub.get("manifest.json")
+    assert waits == [30, 60, 30, 30]
+    with pytest.raises(FileNotFoundError):
+        hub.get("nothing/here.json")
+    assert waits == [30, 60, 30, 30]                                     # not retried
+    hub.fail_read += ["exists"] * 8                                      # beyond READ_TRIES: the error surfaces
+    with pytest.raises(Exception, match="the hub failed"):
+        hub.exists("manifest.json")

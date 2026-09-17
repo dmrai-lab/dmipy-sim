@@ -26,6 +26,7 @@ RATE_LIMIT_WAIT_S = 600      # a 429 (128 commits an hour per repository) waits 
 UPLOAD_TRIES = 6             # a commit retried with backoff: a transient hub error must not lose a shard
 OUTAGE_WAIT_S = 60           # a 5xx (the hub refusing commits) waits this long before the retry ...
 OUTAGE_TRIES = 60            # ... up to this many times (an hour): a hub outage must not crash every worker
+READ_TRIES = 8               # a read (a listing, an exists, a download) retried with backoff 30, 60, ... s: a network blip must not end a loop
 log = logging.getLogger("dmipy_sim.fill")
 
 
@@ -61,9 +62,39 @@ def is_outage(e):
     return st is not None and 500 <= st < 600
 
 
+def is_not_found(e):
+    """Whether an exception says a file is not there (which a read reports, never retries)."""
+    if isinstance(e, FileNotFoundError):
+        return True
+    try:
+        from huggingface_hub.errors import EntryNotFoundError, RepositoryNotFoundError, RevisionNotFoundError
+    except ImportError:                                    # pragma: no cover
+        return _status(e) == 404
+    return isinstance(e, (EntryNotFoundError, RepositoryNotFoundError, RevisionNotFoundError)) or _status(e) == 404
+
+
 class HubBase:
-    """The write primitive's retry: :meth:`commit` calls the subclass's ``_commit`` up to ``tries`` times, a 429
-    after :data:`RATE_LIMIT_WAIT_S`, any other error after a backoff of 30, 60, 120... s."""
+    """The two primitives' retries: :meth:`commit` calls the subclass's ``_commit`` up to ``tries`` times, a 429
+    after :data:`RATE_LIMIT_WAIT_S`, any other error after a backoff of 30, 60, 120... s; :meth:`read` calls a
+    read (a listing, an exists, a download) up to :data:`READ_TRIES` times with the same backoff, since a
+    network blip or a 5xx on a read ended a worker's loop where a commit would have waited (dmipy-sim#286)."""
+
+    def read(self, what, fn, *, tries=READ_TRIES):
+        """``fn()`` with the retry of a read: any error but a not-found is retried after 30, 60, 120... s up to
+        ``tries`` times; a not-found is raised at once (it is an answer)."""
+        k = 0
+        while True:
+            try:
+                return fn()
+            except Exception as e:
+                if is_not_found(e):
+                    raise
+                k += 1
+                if k >= tries:
+                    raise
+                wait = RATE_LIMIT_WAIT_S if is_rate_limited(e) else 30 * 2 ** (k - 1)
+                log.warning("%s failed (%s); retry %d/%d in %d s", what, str(e).splitlines()[0][:160], k + 1, tries, wait)
+                time.sleep(wait)
 
     def commit(self, adds, deletes, message, *, tries=UPLOAD_TRIES):
         """ONE commit: ``adds`` is ``{remote path: local path or bytes}``, ``deletes`` a list of remote paths (a
@@ -113,18 +144,18 @@ class Hub(HubBase):
     def get(self, f):
         """A recipe file, at the revision the worker started on (a local path)."""
         from huggingface_hub import hf_hub_download
-        return hf_hub_download(self.repo, f, repo_type="dataset", revision=self.revision)
+        return self.read(f"download of {f}", lambda: hf_hub_download(self.repo, f, repo_type="dataset", revision=self.revision))
 
     def get_live(self, f):
         """A file as it is now (a claim, another worker's heartbeat)."""
         from huggingface_hub import hf_hub_download
-        return hf_hub_download(self.repo, f, repo_type="dataset")
+        return self.read(f"download of {f}", lambda: hf_hub_download(self.repo, f, repo_type="dataset"))
 
     def files(self):
-        return set(self.api.list_repo_files(self.repo, repo_type="dataset"))
+        return self.read("listing", lambda: set(self.api.list_repo_files(self.repo, repo_type="dataset")))
 
     def exists(self, path):
-        return self.api.file_exists(self.repo, path, repo_type="dataset")
+        return self.read(f"exists of {path}", lambda: self.api.file_exists(self.repo, path, repo_type="dataset"))
 
     def _commit(self, adds, deletes, message, expect):
         from huggingface_hub import CommitOperationAdd, CommitOperationDelete
@@ -149,33 +180,46 @@ class Hub(HubBase):
 class FakeHub(HubBase):
     """The same interface over a directory ``root``: what the tests of a fill run against. ``log`` holds every
     commit as ``dict(time, message, adds, deletes)``; ``fail_429`` is a list of message prefixes whose first
-    commit raises the hub's 429 (a retry then succeeds)."""
+    commit raises the hub's 429 (a retry then succeeds); ``fail_read`` a list of read names (``"exists"``,
+    ``"files"``, ``"get"``) each of which makes the next such read raise a 5xx once."""
 
-    def __init__(self, root, *, fail_429=(), fail_500=()):
+    def __init__(self, root, *, fail_429=(), fail_500=(), fail_read=()):
         self.root = os.path.abspath(root); self.repo = f"fake:{self.root}"
         os.makedirs(self.root, exist_ok=True)
         self.revision = "fake"; self.queue = []; self.log = []; self.fail_429 = list(fail_429); self.fail_500 = list(fail_500)
+        self.fail_read = list(fail_read)
+
+    def _maybe_fail(self, name):
+        if name in self.fail_read:
+            self.fail_read.remove(name)
+            raise _fake_http(f"{name}: the hub failed", 502, "Bad Gateway")
 
     def _p(self, f):
         return os.path.join(self.root, f)
 
     def get(self, f):
-        p = self._p(f)
-        if not os.path.isfile(p):
-            raise FileNotFoundError(f)
-        return p
+        def go():
+            self._maybe_fail("get")
+            p = self._p(f)
+            if not os.path.isfile(p):
+                raise FileNotFoundError(f)
+            return p
+        return self.read(f"download of {f}", go)
 
     get_live = get
 
     def files(self):
-        out = set()
-        for d, _, fs in os.walk(self.root):
-            for f in fs:
-                out.add(os.path.relpath(os.path.join(d, f), self.root))
-        return out
+        def go():
+            self._maybe_fail("files")
+            out = set()
+            for d, _, fs in os.walk(self.root):
+                for f in fs:
+                    out.add(os.path.relpath(os.path.join(d, f), self.root))
+            return out
+        return self.read("listing", go)
 
     def exists(self, path):
-        return os.path.isfile(self._p(path))
+        return self.read(f"exists of {path}", lambda: (self._maybe_fail("exists"), os.path.isfile(self._p(path)))[1])
 
     def _commit(self, adds, deletes, message, expect):
         for i, prefix in enumerate(self.fail_429):
