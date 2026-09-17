@@ -106,3 +106,21 @@ def test_passes_of_one_block_merge_with_the_union_weights(spec_grid):
     np.testing.assert_allclose(m.replay(seq), np.abs((wm[:, None] * E).sum(0) / wm.sum()), rtol=1e-6)
     alike = np.abs((ws[:, None] * E).sum(0) / ws.sum())
     assert not np.allclose(m.replay(seq), alike, rtol=1e-6)
+
+
+def test_shards_agree_to_rounding_and_differ_for_real(shards, tmp_path):
+    """Two shards of one spec computed on two machines differ in the substrate frame by an ulp (BLAS rounding); the
+    merge takes them as the same spec. A real difference in the walk parameters is still refused, naming it."""
+    import copy
+    from dmipy_sim.replay.replay import ReplayPack
+    packs, grid, tmp = shards
+    a, b = packs
+    meta = copy.deepcopy(b.meta)
+    frame = np.asarray(meta["walk_params"]["substrate_frame"], float)
+    meta["walk_params"]["substrate_frame"] = (frame * (1 + 2e-16)).tolist()          # an ulp: not a different spec
+    b_ulp = ReplayPack(dict(b.arrays), meta)
+    m = merge_packs([a, b_ulp], id="t/ulp", overlap="refuse")
+    assert m.n_walkers == a.n_walkers + b.n_walkers
+    meta = copy.deepcopy(b.meta); meta["walk_params"]["T_max"] = meta["walk_params"]["T_max"] * 2
+    with pytest.raises(ValueError, match="differ in walk_params"):
+        merge_packs([a, ReplayPack(dict(b.arrays), meta)], id="t/other", overlap="refuse")
