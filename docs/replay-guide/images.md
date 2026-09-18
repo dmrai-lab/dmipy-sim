@@ -83,7 +83,7 @@ consumer's error actually is.
 ## On the hub
 
 ```python
-# docs: skip -- needs a Hub token with access to the private dataset
+# docs: skip -- reads from the hub over the network
 pack = ReplayPack.open("hf://SubstrateCommons/disco-replay/disco")    # 150 M walkers; zero bytes so far
 print(pack.plan(seq))                                                 # what this acquisition would read: ~19 GB at 16 bands
 view = pack.view(K=32, voxels=[(20, 20, 20)])                         # ~1 MB, one second

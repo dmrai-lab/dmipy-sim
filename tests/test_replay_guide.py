@@ -1,5 +1,5 @@
 """The replay guide's code blocks run (docs/replay-guide): a page's blocks in order in one namespace, a block whose
-first line is ``# docs: skip`` left out (the hub, a token), on the CPU, in a temporary working directory. A block
+first line is ``# docs: skip`` left out (the hub, over the network), on the CPU, in a temporary working directory. A block
 that no longer runs is a page that lies."""
 from __future__ import annotations
 import os
