@@ -405,6 +405,20 @@ class ReplayPack:
         w = np.asarray(self.spin_weights, np.float64)
         return w, P["ew"], self._walker_phases(P, waveform)
 
+    def walker_primitives(self, acquisition):
+        """What ``acquisition`` (a :class:`~dmipy_sim.replay.study.Acquisition`, or a sequence) leaves of every
+        walker before any tissue or scanner is applied -- the bands and the path channel contracted once, the
+        exposures and the contact read once: a :class:`~dmipy_sim.replay.study.Primitives`, whose ``signals(tissue,
+        scanner)`` is :meth:`walker_signals` for every pair without touching the bands again (dmipy-sim#297)."""
+        from .study import walker_primitives
+        return walker_primitives(self, acquisition)
+
+    def study(self, study):
+        """The signal for every pair of a :class:`~dmipy_sim.replay.study.Study`, ``(pairs, n_meas)``: the
+        protocol's acquisitions contracted once each, every tissue and scanner applied elementwise."""
+        from .study import study_signals
+        return study_signals(self, study)
+
     def _walker_phases(self, P, waveform):
         """``(n_w, n_meas)`` accumulated phase of every walker under the prepared acquisition ``P``: the gradient
         as the bridge coefficients against the effective gradient's projection, and with a field the path channel's
@@ -631,7 +645,7 @@ class ReplayPack:
         norm = w.sum()
         ew, norm = self._select(compartment, ew, norm, w, ch, n_w)
         return dict(G=G, Geff=Geff, dt=dt, n_t=n_t, dt_wf=dt_wf, ch=ch, n_w=n_w, w=w, ew=ew, norm=norm, B0=B0,
-                    b0_dir=b0_dir, chi_iso=chi_iso, chi_aniso=chi_aniso, T2=T2, T1=T1, rho=rho, D=D)
+                    b0_dir=b0_dir, chi_iso=chi_iso, chi_aniso=chi_aniso, T2=T2, T1=T1, rho=rho, D=D, chi=chi, active=active)
 
     def pose_response(self, waveform, *, tissue=None, scanner=None, pose=None, compartment=None,
                       method="auto", keep=None, cache=None):

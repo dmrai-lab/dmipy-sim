@@ -299,6 +299,72 @@ class ColumnarPack:
 
     # ---- the image loop
     def image(self, seq, *, tissue=None, scanner=None, settings=None, tol=0.25, chunk_rows=2_000_000, progress=None):
+        from .study import Study
+        if isinstance(seq, Study):
+            return self.image_study(seq, tol=tol, chunk_rows=chunk_rows, progress=progress)
+        return self._image_settings(seq, tissue=tissue, scanner=scanner, settings=settings, tol=tol, chunk_rows=chunk_rows, progress=progress)
+
+    def image_study(self, study, *, tol=0.25, chunk_rows=2_000_000, progress=None):
+        """``(S, floor, plan)`` for a :class:`~dmipy_sim.replay.study.Study` (dmipy-sim#297): ``S`` is
+        ``(pairs, *grid, n_meas)``, ``floor`` ``(pairs, *grid)`` the split-half floor of each volume (the rows of a
+        voxel in two halves, ``max_m |S_a - S_b| / 2`` on the S0-normalised signal), ``plan`` what was read. One pass
+        over the rows: per row group the primitives of every acquisition once (the bands and the path channel
+        contracted, the exposures and the contact read), on the device; every (tissue, scanner) pair then an
+        elementwise term and two segment sums."""
+        import functools
+        import jax
+        import jax.numpy as jnp
+        jax.config.update("jax_enable_x64", True)
+        from .replay import _field_strength
+        pairs = [study.resolved(k) for k in range(len(study))]
+        plans = [self.plan(a.waveform, tissue=t_, scanner=s_, tol=tol) for a in study.protocol for t_, s_ in pairs]
+        plan = dict(plans[0], K=max(p["K"] for p in plans), modes=max(p["modes"] for p in plans), contact=any(p["contact"] for p in plans),
+                    relaxation=any(p["relaxation"] for p in plans), settings=len(pairs), study=study.to_meta())
+        self.src.bytes_read = self.src.requests = 0; t0 = time.time()
+        n_meas = study.protocol.n_meas; n_vox = int(np.prod(self.grid.shape))
+        num = np.zeros((len(pairs), 2, n_vox, n_meas), complex); den = np.zeros((2, n_vox)); rows = 0
+        ROWS, SEGS = 1 << 16, 256
+
+        @functools.partial(jax.jit, static_argnums=(9,))
+        def pair_sums(phi, fi, fa, et2, et1, ct, w, seg2, params, n_seg2):
+            a_i, a_a, rho_D, invT2, invT1 = params
+            logw = -(et2 @ invT2) - (et1 @ invT1) + rho_D * ct
+            ph = phi + (a_i * fi + a_a * fa)[:, None]
+            return jax.ops.segment_sum(jnp.exp(1j * ph) * (w * jnp.exp(logw))[:, None], seg2, num_segments=n_seg2)
+        for pk in self.iter_views(chunk_rows=chunk_rows, K=plan["K"], modes=plan["modes"], contact=plan["contact"]):
+            n = pk.n_walkers
+            ijk, _ = self.grid.bin(pk.r0); v = np.ravel_multi_index(ijk.T, self.grid.shape)
+            starts = np.flatnonzero(np.r_[True, v[1:] != v[:-1]]); n_seg = len(starts)
+            seg = np.repeat(np.arange(n_seg), np.diff(np.r_[starts, n])); half = (np.arange(n) - starts[seg]) % 2
+            n_pad = -(-n // ROWS) * ROWS; s_pad = -(-(n_seg + 1) // SEGS) * SEGS
+            seg2 = np.full(n_pad, 2 * n_seg, np.int32); seg2[:n] = 2 * seg + half
+            w_all = None
+            for a, sl in zip(study.protocol, study.protocol.slices):
+                prim = pk.walker_primitives(a); w_all = prim.w
+                pad = lambda x, shape: (np.zeros((n_pad,) + shape) if x is None else np.concatenate([np.asarray(x, np.float64), np.zeros((n_pad - n,) + shape)]))
+                n_pools = prim.n_pools or 1
+                phi = pad(prim.phi, (prim.phi.shape[1],)); fi = pad(prim.field_iso, ()); fa = pad(prim.field_aniso, ())
+                et2 = pad(prim.exposure_t2, (n_pools,)); et1 = pad(prim.exposure_t1, (n_pools,)); ct = pad(prim.contact, ()); w = pad(prim.w, ())
+                dev = [jnp.asarray(x) for x in (phi, fi, fa, et2, et1, ct, w)] + [jnp.asarray(seg2)]
+                for k, (t_, s_) in enumerate(pairs):
+                    invT2, invT1, rho_D = prim.rates(t_); a_i, a_a = prim.field_scalars(t_, s_)
+                    params = (jnp.float64(a_i), jnp.float64(a_a), jnp.float64(rho_D), jnp.asarray(invT2), jnp.asarray(invT1))
+                    sums = np.asarray(pair_sums(*dev, params, 2 * s_pad))[:2 * n_seg].reshape(n_seg, 2, -1)
+                    np.add.at(num[k, 0, :, sl], v[starts], sums[:, 0]); np.add.at(num[k, 1, :, sl], v[starts], sums[:, 1])
+            wh = np.zeros((2, n)); wh[half, np.arange(n)] = w_all
+            np.add.at(den[0], v[starts], np.add.reduceat(wh[0], starts)); np.add.at(den[1], v[starts], np.add.reduceat(wh[1], starts))
+            rows += n
+            if progress:
+                progress(rows, self.src.bytes_read, time.time() - t0)
+        S = np.full((len(pairs), n_vox, n_meas), np.nan); floor = np.full((len(pairs), n_vox), np.nan)
+        both = (den > 0).all(0); any_ = den.sum(0) > 0
+        tot = num.sum(1); S[:, any_] = np.abs(tot[:, any_] / den.sum(0)[any_][None, :, None])
+        Sa = np.abs(num[:, 0][:, both] / den[0][both][None, :, None]); Sb = np.abs(num[:, 1][:, both] / den[1][both][None, :, None])
+        floor[:, both] = 0.5 * np.abs(Sa - Sb).max(-1)
+        plan.update(bytes_read=self.src.bytes_read, requests=self.src.requests, seconds=time.time() - t0, rows=rows)
+        return S.reshape((len(pairs),) + tuple(self.grid.shape) + (n_meas,)), floor.reshape((len(pairs),) + tuple(self.grid.shape)), plan
+
+    def _image_settings(self, seq, *, tissue=None, scanner=None, settings=None, tol=0.25, chunk_rows=2_000_000, progress=None):
         """``(S, floor, plan)``: the signal of every voxel of the grid under ``seq`` (one sequence or a list, their
         measurements side by side; NaN where the pack has none), the certificate's floor beside it (the worst pool's),
         and the plan with what was read. One pass over the rows: the host fetches, dequantises and forms each
