@@ -123,6 +123,27 @@ exactly rather than sampled. A bare coefficient array is refused: the basis must
 refuses a truncation that cannot hold the response. A tier that is requested but not carried
 raises; nothing is silently skipped.
 
+**By reference, and in one pass.** A pack too large to load (DiSCo: 150 million walkers, 190 GB) is opened where
+it is and read by range: `ReplayPack.open("hf://SubstrateCommons/disco-replay/disco")` or a directory of the
+columnar layout, `pack.plan(seq)` says which bands, tiers and bytes an acquisition needs before any transfer,
+`pack.view(voxels=...)` is an ordinary pack of some voxels' rows, and `pack.image(...)` replays a whole grid in
+one pass over the rows. A `Study` names a protocol (acquisitions, each a sequence in a pose), the tissues and the
+scanners, and is replayed once: the bands are contracted per acquisition, every tissue and scanner is arithmetic
+on the result, and an image of every pair comes from one read with a certified floor per volume.
+
+```python
+from dmipy_sim.replay.study import Acquisition, Protocol, Study
+study = Study(Protocol([Acquisition(seq)]), tissues=[None, pack.nominal], scanners=[None, 3.0, 7.0],
+              pairs=[(0, 0), (1, 1), (1, 2)])                    # bare, white matter at 3 T, white matter at 7 T
+S = pack.study(study)                                            # (pairs, n_meas) on a loaded pack
+S, floor, plan = big.image(study)                                # (pairs, *grid, n_meas) on a pack opened by reference
+```
+
+**[The replay guide](docs/replay-guide/README.md)** is the manual for all of this: one page per object (pack,
+sequence, tissue, scanner, orientation), the knob table that says what each one touches in the contraction and
+which channel it needs, the operations from `replay` down to the per-walker primitives a study reuses, images
+from the hub, and two recipes. Every code block on its pages runs in the test suite.
+
 ## Replay phantoms: voxels from packs
 
 A pack answers for one microstructure at any pose. A **replay phantom** (`.rph`, spec in
@@ -300,7 +321,9 @@ meet in that substrate, not validated on an average case.
 dmipy_sim/
   geometry/     substrates: base, analytic, packed, myelin, packing, curved_cylinder, mesh, mesh_shapes
   engine/       core (simulate, simulate_trajectories), physics, bloch (simulate_bloch), pulse_sequence, mt, mt_walk, gpu
-  replay/       trajectories, compression, replay (ReplayPack), phantom, bank (build_replay_pack), fod, so3
+  replay/       trajectories, compression, replay (ReplayPack), columnar (ReplayPack.open: a pack by reference),
+                study (Acquisition, Protocol, Study), phantom, bank (build_replay_pack), fod, so3
+  fill/         a distributed fill of one recipe into shards (hub, claims, pipeline), consolidate (shards -> columns)
   acquisition/  scanner_sequence (ScannerSequence, Protocol, Encoding), rf (RFEvent, RFSchedule), timing (SequenceTiming),
                 scanners (ScannerLimits), waveforms (the integrals), noise
   sequences/    builders (pgse, pgste, ogse, cpmg, gre, ste, pte, from_waveform, ...), assemble (the mechanics), pulseq
@@ -310,7 +333,7 @@ dmipy_sim/
 ```
 
 `CLAUDE.md` is the operational guide for agents and contributors: the geometry contract, the step
-rules, the replay invariant, and how to add physics.
+rules, the replay invariant, and how to add physics. `docs/replay-guide/` is the user's manual for the replay side.
 
 ## Examples
 

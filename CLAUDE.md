@@ -47,7 +47,7 @@ JAX_PLATFORMS=cpu pytest tests/ -q -m "not slow and not gpu"   # fast: every PR
 
 Tests mirror the package where a module has a home: `tests/geometry/` holds the substrate tests (walls, bounces,
 packings, meshes, myelin, compartments, the per-geometry MC validations) — the test for `dmipy_sim/geometry/X` is under
-`tests/geometry/`. `tests/physics/` and `tests/validation/` assert physics across modules and stay as they are. `tests/fill/` holds the fill module's tests (a fake hub, CPU).
+`tests/geometry/`. `tests/physics/` and `tests/validation/` assert physics across modules and stay as they are. `tests/fill/` holds the fill module's tests (a fake hub, CPU). `tests/test_replay_guide.py` runs every ```python block of `docs/replay-guide/` (the user's manual of the replay side: one page per object, the knob table, two recipes) in order per page on the CPU, `# docs: skip` opting a block out (the hub); a page whose block no longer runs fails.
 
 When adding physics, assert against an **analytical** result or a **MISST** fixture
 (`tests/fixtures/misst_*.npy`). Isolate faceting/discretisation bias by running a mesh
