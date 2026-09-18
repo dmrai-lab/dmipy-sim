@@ -30,7 +30,7 @@ def _small_pack(R_um=0.5, n=8, seed=0, permeability=None):
     radii = np.full(n, R_um * UM)
     centers, L, _vf = pack_cylinders(radii, target_vf=0.35, seed=seed)
     return PackedCylinders(radii=radii, centers=centers, L=L,
-                           permeability=permeability)
+                           permeability=permeability, pool="extra")   # the intra walkers are placed by hand below
 
 
 # ---------------------------------------------------------------- storage dtype
@@ -83,8 +83,8 @@ def test_f16_in_metres_is_subnormal_and_ejects_confined_walkers_one_way():
 # ---------------------------------------------------------------- comp_traj
 
 def _intra_r0(geom, n, seed=0):
-    """Seed inside the pack's cylinders. `PackedCylinders.init_positions` seeds the
-    extra-axonal space only, so a two-pool test has to place these itself."""
+    """Seed inside the pack's cylinders, at chosen counts (the pack above seeds the extra space
+    only, so the intra count of a mixed walk is exact)."""
     rng = np.random.default_rng(seed)
     C = np.asarray(geom._centers_jax)
     Rk = np.asarray(geom._radii_jax)

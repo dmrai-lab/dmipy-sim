@@ -1116,8 +1116,15 @@ def _walk_master(walk, *, weights=None, field=None, diffusivity=None, substrate_
     spec = walk.spec if walk.spec is not None else (getattr(geometry, "spec", None) if geometry is not None else None)
     if weights is None and walk.weights is None and spec is not None and walk.compartment is not None:
         wf = [p.water_fraction for p in sorted(spec.pools, key=lambda p: p.id)]
+        pool0 = np.asarray(walk.compartment)[:, 0].astype(int)
+        dry = [(p, int(np.sum(pool0 == p.id))) for p in spec.pools if p.water_fraction == 0.0 and np.any(pool0 == p.id)]
+        if dry:
+            raise ValueError("the walk has walkers in a pool the spec says holds no water: "
+                             + ", ".join(f"{n:,} in pool {p.id} ({p.name})" for p, n in dry)
+                             + "; such walkers would weigh 0 and the pack would silently omit them. Seed the pools the "
+                               "spec gives water to, give the pool its water in the spec, or pass weights= explicitly")
         if any(f != 1.0 for f in wf):                     # the seeding rule's weights, from the spec
-            weights = np.asarray(wf, float)[np.asarray(walk.compartment)[:, 0].astype(int)]
+            weights = np.asarray(wf, float)[pool0]
     if field == "auto":
         field = None
         if walk.field_basis is not None:

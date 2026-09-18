@@ -172,7 +172,8 @@ def _spec_without_frame(geometry, *, id=None, provenance=None, surface_dir=None)
     if isinstance(g, (PackedCylinders, PackedSpheres)):
         kappa = _kappa(g)
         L = float(g._L_float)
-        pools = [Pool(0, "extra", None, water_fraction=1.0), Pool(1, "intra", None, water_fraction=0.0)]
+        pools = [Pool(0, "extra", None, water_fraction=1.0), Pool(1, "intra", None, water_fraction=1.0)]
+        seeded = {None: [0, 1], "extra": [0], "intra": [1]}[g.pool]
         centers = np.asarray(getattr(g, "_centers_np", None) if getattr(g, "_centers_np", None) is not None else g._centers_jax, float)
         if centers.shape[1] == 2:
             centers = np.column_stack([centers, np.zeros(len(centers))])
@@ -182,11 +183,13 @@ def _spec_without_frame(geometry, *, id=None, provenance=None, surface_dir=None)
         wall = Wall("objects", surf, 1, 0, Directional(kappa, kappa), Sided(_rho(g), _rho(g)))
         bc = ["periodic", "periodic", "open"] if kind == "cylinder" else ["periodic"] * 3
         dom = Domain([-L / 2] * 3, [L / 2] * 3, bc)
-        return SubstrateSpec(sid, dom, pools, [wall], Seeding([0]),
+        return SubstrateSpec(sid, dom, pools, [wall], Seeding(seeded),
                              Validity(float(np.min(g._radii_np)), _tiers([wall], pools),
                                       min_gap=float(periodic_min_gap(centers[:, :2] if kind == "cylinder" else centers,
                                                                      np.asarray(g._radii_np, float), L))),
-                             description=f"periodic cell of {len(centers)} {kind}s; extra-cellular walk", provenance=prov)
+                             description=f"periodic cell of {len(centers)} {kind}s; "
+                                         + {None: "both pools", "extra": "the extra-cellular pool", "intra": "the lumens"}[g.pool]
+                                         + " seeded", provenance=prov)
     if isinstance(g, MyelinatedCylinder):
         ax = [0.0, 0.0, 1.0]
         pools = _pools_from_compartments(g, ["extra", "intra", "myelin"],
@@ -499,11 +502,14 @@ def _geometry_from_spec(spec):
                                          box=((dom.box_min, dom.box_max) if "reflect" in dom.boundary else None))
             centers = np.asarray(s.instances["centers"], float)
             L = float(dom.box_max[0] - dom.box_min[0])
+            pool = {(0, 1): None, (0,): "extra", (1,): "intra"}.get(tuple(sorted(spec.seeding.pools)))
+            if pool is None and tuple(sorted(spec.seeding.pools)) != (0, 1):
+                raise SpecError(f"a packed cell seeds pools [0, 1], [0] or [1]; the spec seeds {spec.seeding.pools}")
             if s.kind == "cylinder":
                 return PackedCylinders(s.instances["radii"], centers[:, :2], L, orientation=tuple(s.axis or (0, 0, 1)),
-                                       surface_relaxivity_t2=rho(w), permeability=kappa(w))
+                                       surface_relaxivity_t2=rho(w), permeability=kappa(w), pool=pool)
             if s.kind == "sphere":
-                return PackedSpheres(s.instances["radii"], centers, L, surface_relaxivity_t2=rho(w), permeability=kappa(w))
+                return PackedSpheres(s.instances["radii"], centers, L, surface_relaxivity_t2=rho(w), permeability=kappa(w), pool=pool)
         if s.kind == "sphere":
             return Sphere(s.radius, surface_relaxivity_t2=rho(w), permeability=kappa(w))
         if s.kind == "cylinder":

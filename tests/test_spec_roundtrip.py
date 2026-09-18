@@ -74,7 +74,11 @@ def test_the_spec_says_what_the_constructor_left_unsaid():
     assert pm.domain.boundary == ["periodic", "periodic", "open"] and pm.seeding.pools == [0, 1, 2]
     assert [q.name for q in pm.field_source_pools] == ["myelin"] and pm.realisation["n_objects"] == 3
     assert pm.wall("axolemma").permeability.in_to_out == pytest.approx(1e-5, rel=1e-6) and pm.pool("myelin").T2 == 0.01
-    assert _packed_cyl().spec.seeding.pools == [0]          # extra-cellular walk only
+    assert _packed_cyl().spec.seeding.pools == [0, 1]       # both pools hold water and both are seeded
+    assert [p.water_fraction for p in _packed_cyl().spec.pools] == [1.0, 1.0]
+    extra = d.PackedCylinders([1e-6, 0.8e-6], [[-2e-6, 0.0], [2e-6, 0.0]], 8e-6, pool="extra").spec
+    assert extra.seeding.pools == [0] and [p.water_fraction for p in extra.pools] == [1.0, 1.0]
+    assert geometry_from_spec(extra).pool == "extra" and geometry_from_spec(_packed_cyl().spec).pool is None
 
 
 def test_the_published_examples_build_geometries(tmp_path):

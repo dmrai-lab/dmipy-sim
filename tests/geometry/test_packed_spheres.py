@@ -49,14 +49,15 @@ RHO        = 5e-5   # m/s  — surface relaxivity
 # Helpers
 # =============================================================================
 
-def _single_sphere_packed(permeability=None, surface_relaxivity_t2=None):
-    """Single sphere at origin in a periodic cubic box."""
+def _single_sphere_packed(permeability=None, surface_relaxivity_t2=None, pool="extra"):
+    """Single sphere at origin in a periodic cubic box; the exterior seeded unless ``pool`` says otherwise."""
     return PackedSpheres(
         radii=np.array([R]),
         centers=np.array([[0., 0., 0.]]),
         L=L,
         permeability=permeability,
         surface_relaxivity_t2=surface_relaxivity_t2,
+        pool=pool,
     )
 
 
@@ -166,8 +167,16 @@ def test_packed_spheres_volume():
 # 3. init_positions: all walkers outside spheres
 # =============================================================================
 
+def test_init_positions_both_pools_by_volume_by_default():
+    """The default seeding covers the whole cell: the sphere holds its volume fraction of the walkers."""
+    geom = _single_sphere_packed(pool=None)
+    r0 = np.array(geom.init_positions(40_000, jax.random.PRNGKey(SEED)))
+    inside = np.linalg.norm(r0, axis=1) < R
+    assert abs(inside.mean() - geom.volume_fraction()) < 0.01
+
+
 def test_init_positions_outside_spheres():
-    """init_positions: all walkers start strictly outside all spheres."""
+    """init_positions with ``pool="extra"``: all walkers start strictly outside all spheres."""
     geom = _single_sphere_packed()
     key  = jax.random.PRNGKey(SEED)
     r0   = np.array(geom.init_positions(N_WALKERS, key))
