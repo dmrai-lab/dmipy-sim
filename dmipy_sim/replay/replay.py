@@ -195,6 +195,14 @@ class ReplayPack:
     consume path, :meth:`replay`. Accessors mirror the walk parameters (``n_t``, ``dt``, ``K``,
     ``n_walkers``) and the tiers carried (``has_relaxation``, ``has_surface``, ``has_field``)."""
 
+    @staticmethod
+    def open(uri, workers=8):
+        """The columnar layout at ``uri`` (a directory, or ``hf://owner/name/prefix`` on the Hub), open by reference:
+        a :class:`~dmipy_sim.replay.columnar.ColumnarPack`, whose ``view`` gives a :class:`ReplayPack` of the rows
+        and bands an acquisition needs and whose ``image`` replays a whole grid in one pass over the rows."""
+        from .columnar import open_columnar
+        return open_columnar(uri, workers=workers)
+
     def __init__(self, arrays, meta, source=None):
         self.arrays = dict(arrays)
         self.meta = dict(meta)
