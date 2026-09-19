@@ -503,7 +503,7 @@ class ReplayPack:
         from .trajectories import replay_bloch as _rb, replay_bloch_jax as _rbj
         from .compression import decode_occupancy, decode_boundary_bridge
         P = self._prepare(waveform, tissue=tissue, scanner=scanner, orientation=orientation, compartment=compartment,
-                          relaxation=False, surface=False)
+                          relaxation=False, surface=False, pathway=False)
         rf = waveform.rf
         if not rf:
             raise ValueError("the Bloch route replays an RF schedule and this sequence carries none. Without a "
@@ -596,18 +596,23 @@ class ReplayPack:
                                           chi_aniso=P["chi_aniso"]),
                            pos, np.asarray(gm["origin"], float), gm["voxel_size"], periodic=False)
 
-    def _prepare(self, waveform, *, tissue, scanner, orientation, compartment, relaxation=True, surface=True):
+    def _prepare(self, waveform, *, tissue, scanner, orientation, compartment, relaxation=True, surface=True,
+                 pathway=True):
         """Everything a replay resolves before it reads positions: the waveform's exact per-save weights (rotated
         into the substrate frame when a pose is given), the tissue's values (none for ``None``), the scanner's
         field along the bore's z turned by the pose, the per-walker weights with the relaxation and surface terms
         applied, and the compartment selection.
 
-``pathway`` is the amplitude of the coherence pathway the sequence's readout IS
+``pathway`` asks for the amplitude of the coherence pathway the sequence's readout IS
         (:func:`~dmipy_sim.acquisition.epg.pathway_weight`): 1 for a refocused echo, and a stimulated echo's
         ``0.5 sin a1 sin a2 sin a3`` for a store-and-recall schedule. It is returned BESIDE the weights and
         not folded into them, because ``ew`` means the relaxation and surface terms and a codec oracle checks
         it means only that; each route that forms a signal applies it once. The vector-Bloch route does not:
-        it propagates the magnetisation through the actual pulses, so that amplitude is already in its answer."""
+        it propagates the magnetisation through the actual pulses, so that amplitude is already in its
+        answer, and it passes ``pathway=False``. That is not only to avoid applying the factor twice: a
+        readout no SINGLE amplitude describes -- a train at any flip but 180 -- is refused by
+        :func:`~dmipy_sim.acquisition.epg.pathway_weight`, and the vector route is precisely the one that
+        does not need one, since it carries every pathway itself."""
         from .compression import require_position_method, decode_occupancy, relaxation_logweight
         from ._replay_kernel import effective_gradient, bin_gate
         require_position_method(self.method)
@@ -674,7 +679,7 @@ class ReplayPack:
         ew, norm = self._select(compartment, ew, norm, w, ch, n_w)
         from ..acquisition.epg import pathway_weight
         return dict(G=G, Geff=Geff, dt=dt, n_t=n_t, dt_wf=dt_wf, ch=ch, n_w=n_w, w=w, ew=ew, norm=norm, B0=B0,
-                    pathway=pathway_weight(waveform),
+                    pathway=(pathway_weight(waveform) if pathway else 1.0),
                     b0_dir=b0_dir, chi_iso=chi_iso, chi_aniso=chi_aniso, T2=T2, T1=T1, rho=rho, D=D, chi=chi, active=active)
 
     def pose_response(self, waveform, *, tissue=None, scanner=None, pose=None, compartment=None,
