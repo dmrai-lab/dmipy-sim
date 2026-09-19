@@ -244,3 +244,45 @@ def test_a_split_pair_straddles_its_own_echo_and_the_grid_grows_to_hold_it():
         assert early < e < late and early + late == 2 * e
     assert sp.n_t > t.n_t          # the late family of the last pair is read past the builder's last echo
     sp.validate()
+
+
+def test_what_b_value_each_echo_of_a_split_train_actually_delivers():
+    """A split train does not deliver the b it was prepared with, and does not deliver the same b at every
+    echo. Measured, not fitted: free diffusion attenuates exactly as exp(-b D), so replaying the same train
+    on a static pack and a free one gives b = -ln(S/S0)/D directly. The crusher's per-walker phase is a fixed
+    random number, independent of position, so it divides out of the ratio exactly.
+
+    This matters for a low-field experiment (dmipy-sim#285), where the whole point is an ADC, and an ADC
+    computed against the prepared b is wrong by whatever this measures."""
+    D, n, prepared = 2.0e-9, 5, 0.945e9
+    mk = lambda diff: build_replay_pack(
+        d.simulate_trajectories(4_000, diff, d.FreeDiffusion(), 0.40, 2.5e-4, seed=0, require_gpu=False),
+        id="test/b", license="x", citation="x", K=8)
+    static, free = mk(1e-14), mk(D)
+
+    def delivered(beta, bval):
+        s = sequences.splice([[1.0, 0, 0]], 35e-3, 42e-3, n, 10e-3, bvalues=[bval], TE_prep=PREP,
+                             beta_deg=beta, n_t_per_echo=40).with_split_readout()
+        S0 = np.abs(np.asarray(static.replay_bloch(s)).reshape(-1))
+        S = np.abs(np.asarray(free.replay_bloch(s)).reshape(-1))
+        keep = (S0 > 0.05 * S0.max()) & (S > 0)
+        return -np.log(S[keep] / S0[keep]) / D
+
+    # With nothing prepared, nothing is delivered: the readout winding is voxel-scale, so it contributes no
+    # diffusion weighting at all. A physical readout gradient would, and this is the measurement that says
+    # how much is currently missing -- exactly zero.
+    np.testing.assert_allclose(delivered(120.0, 0.0), 0.0, atol=2e6)
+
+    # At 180 degrees one pathway survives, so every echo of both families delivers the SAME b -- which is
+    # what makes this measurement trustworthy. It is not the prepared b: reading a quarter-interval off the
+    # echo costs about an eighth of it.
+    at180 = delivered(180.0, prepared)
+    assert at180.std() < 0.01 * at180.mean()
+    assert 0.85 < at180.mean() / prepared < 0.91
+
+    # Below 180 the pathways part and the delivered b varies echo to echo by far more than it varies
+    # between the two families: about a quarter of the mean, against a few percent between families.
+    at120 = delivered(120.0, prepared)
+    spread = (at120.max() - at120.min()) / at120.mean()
+    assert 0.15 < spread < 0.40, f"echo-to-echo spread {spread:.3f}"
+    assert at120.min() / prepared > 0.6 and at120.max() / prepared < 1.0
