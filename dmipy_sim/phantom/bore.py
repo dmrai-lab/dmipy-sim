@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import numpy as np
 
-__all__ = ["b0_offset_map"]
+__all__ = ["b0_offset_map", "b1_scale_map"]
 
 
 def b0_offset_map(scanner, grid, *, to_scanner=None):
@@ -49,3 +49,31 @@ def b0_offset_map(scanner, grid, *, to_scanner=None):
         return scanner.b0_offset(d)
 
     return field
+
+
+def b1_scale_map(scanner, grid, *, to_scanner=None):
+    """A callable giving the transmit scale at each voxel of ``grid``: 1 nominal, what multiplies every flip
+    angle. Pass it to ``transmit=`` of :meth:`~dmipy_sim.phantom.Phantom.replay`.
+
+    Unlike :func:`b0_offset_map`, a phantom does NOT pick this up on its own from the scanner, and the
+    asymmetry is deliberate. A field offset is arithmetic on a contraction the replay was doing anyway; a
+    transmit scale acts on the pulses, so it moves the whole replay onto the vector-Bloch route -- one
+    magnetisation propagation per distinct scale and pose, instead of one contraction. Something that
+    changes the cost of a replay by orders of magnitude is asked for, not assumed.
+
+    It also only works on a frames-mode phantom, because that route does. See ``transmit_tolerance`` on
+    :meth:`~dmipy_sim.phantom.Phantom.replay` for what a smooth map costs and how to afford it.
+    """
+    if getattr(scanner, "b1_axial_falloff", None) is None and getattr(scanner, "b1_calibration_offset", None) is None:
+        return None
+    iso = np.asarray(grid.isocenter_m, dtype=np.float64)
+    R = grid.to_scanner if to_scanner is None else to_scanner
+    R = None if R is None else np.asarray(R, dtype=np.float64)
+
+    def transmit(positions_m):
+        d = np.asarray(positions_m, dtype=np.float64).reshape(-1, 3) - iso
+        if R is not None:
+            d = d @ R.T
+        return scanner.b1_scale(d)
+
+    return transmit

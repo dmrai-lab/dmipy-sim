@@ -61,7 +61,9 @@ _TO_SI = {"mT/m": 1e-3, "T/m": 1.0, "T/m/s": 1.0, "us": 1e-6, "ms": 1e-3,
           "ppm": 1e-6, "ppm/m": 1e-6, "ppm/m^2": 1e-6, "m": 1.0,
           # descriptive leaves nothing reads in SI yet, listed so the conformance check passes
           # rather than so they are used: an unlisted unit is the silent 1.0 conversion
-          "cm": 1e-2, "kW": 1e3, "MW": 1e6}
+          "cm": 1e-2, "kW": 1e3, "MW": 1e6,
+          # a transmit scale is dimensionless, and its fall-off is per square metre
+          "": 1.0, "1/m^2": 1.0}
 
 
 def resolve(name):

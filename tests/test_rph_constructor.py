@@ -643,13 +643,17 @@ def test_binning_the_transmit_map_moves_the_signal_by_no_more_than_the_tolerance
     np.testing.assert_allclose(_rows(ph, ph.replay(gre, transmit_tolerance=None)), exact, rtol=1e-12)
 
 
-def test_no_machine_publishes_a_transmit_profile_so_none_is_derived():
-    """B0 has a machine-side source because two figures about the Swoop's field are published and constrain
-    each other. B1 has none: the catalogue carries peak amplitudes and no uniformity figure for any machine,
-    so there is nothing to derive a law from and none is invented. A transmit map remains something a user
-    measures and supplies, and the binning above is what makes supplying a real one affordable."""
-    from dmipy_sim.acquisition import scanner_constants as scc
-    for name, entry in scc.SCANNER_CONSTANTS["scanners"].items():
-        for group, leaves in entry.items():
-            if isinstance(leaves, dict):
-                assert not any("uniform" in k or "profile" in k for k in leaves), f"{name}.{group}"
+def test_a_transmit_map_is_asked_for_rather_than_assumed(pack_path):
+    """A phantom picks up a machine's field OFFSET on its own but not its transmit scale, and the asymmetry
+    is deliberate: an offset is arithmetic on a contraction the replay was doing anyway, while a transmit
+    scale moves the whole replay onto the vector-Bloch route. Something that changes the cost of a replay by
+    orders of magnitude is asked for."""
+    from dmipy_sim.acquisition.scanners import ScannerLimits
+    from dmipy_sim.phantom import b0_offset_map, b1_scale_map
+    swoop = ScannerLimits.of("swoop")
+    grid = _swoop_grid()
+    assert b0_offset_map(swoop, grid) is not None and b1_scale_map(swoop, grid) is not None
+    ph, *_ = _phantom(pack_path, grid=grid)
+    gre, _ = _gre_and_se(pack_path)
+    ph.replay(gre, scanner=swoop)                       # the field comes along; the transmit scale does not
+    assert ScannerLimits.of("prisma").b1_scale([[0, 0, 0.05]]) is None

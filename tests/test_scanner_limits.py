@@ -279,3 +279,33 @@ def test_the_new_units_convert_and_the_group_is_scanned_for_verification():
     raw = scc.get_limit("hyperfine_swoop_64mT", "homogeneity", "b0_quadratic")["value"]
     assert scc.get_limit("hyperfine_swoop_64mT", "homogeneity", "b0_quadratic", si=True) == raw * 1e-6
     assert "homogeneity" in inspect.getsource(scc.needs_verification)
+
+
+# ── the machine's transmit profile (dmipy-sim#322 PR 5) ─────────────────────────────────────────────
+def test_the_transmit_profile_is_two_separate_things_that_multiply():
+    """`b1_axial_falloff` is SPATIAL: a coil's field weakens toward its ends, so the scale falls as
+    1 - a z^2 along the bore and is FLAT across it. That anisotropy is the measurement's, not a
+    simplification -- 'little appreciable inhomogeneity in the transverse plane ... 15%-20% variation in the
+    superior-inferior direction' over a 144 mm sphere. `b1_calibration_offset` is SYSTEMATIC and applies at
+    isocentre too, the machine's own transmit calibration sitting off nominal."""
+    s = ScannerLimits.of("swoop")
+    assert s.b1_calibration_offset == pytest.approx(190.0 / 180.0, rel=1e-3)   # the 180 null seen at 190
+    at_iso = float(s.b1_scale([[0, 0, 0]]))
+    assert at_iso == pytest.approx(s.b1_calibration_offset, rel=1e-9)          # systematic, so present at r=0
+    # flat transversally: the whole variation is along the bore
+    assert float(s.b1_scale([[0.072, 0, 0]])) == pytest.approx(at_iso, rel=1e-9)
+    assert float(s.b1_scale([[0, 0.072, 0]])) == pytest.approx(at_iso, rel=1e-9)
+    # and 15-20 % of fall-off across the sphere it was measured over
+    drop = 1.0 - float(s.b1_scale([[0, 0, 0.072]])) / at_iso
+    assert 0.15 <= drop <= 0.20
+
+
+def test_the_transmit_profile_is_a_machine_property_only_at_low_field():
+    """It may live in a catalogue of MACHINES at all because at 2.7 MHz the RF wavelength in tissue is
+    metres, so the profile is the coil's geometry and not the subject's: across 47-100 mT a 40-tissue head
+    model moves the pattern by 3 % while tissue permittivity changes by about 30 %. The leaf records that
+    number and the reason, and the claim is not extended upward -- no other machine carries one."""
+    leaf = scc.get_limit("hyperfine_swoop_64mT", "rf", "b1_load_independent")
+    assert leaf["value"] == pytest.approx(0.03) and "must NOT be extended" in leaf["context"]
+    for name in ("prisma", "connectom", "magnus"):
+        assert ScannerLimits.of(name).b1_axial_falloff is None

@@ -202,6 +202,30 @@
    "journal_or_publisher": "Proc. Intl. Soc. Mag. Reson. Med. 30, abstract 0043",
    "year": 2022,
    "doi_or_url": "https://archive.ismrm.org/2022/0043.html"
+  },
+  "padormo2023_t1_64mt": {
+   "key": "padormo2023_t1_64mt",
+   "authors": "Padormo F, Cawley P, Dillon L, Hughes E, Almalbis J, Robinson J, et al.",
+   "title": "In vivo T1 mapping of neonatal brain tissue at 64 mT",
+   "journal_or_publisher": "Magnetic Resonance in Medicine",
+   "year": 2023,
+   "doi_or_url": "10.1002/mrm.29509"
+  },
+  "balaji2025_mt_ulf": {
+   "key": "balaji2025_mt_ulf",
+   "authors": "Balaji S, Wiley N, Dvorak A, Padormo F, Teixeira RPAG, Poorman ME, et al.",
+   "title": "Magnetization transfer imaging using non-balanced SSFP at ultra-low field",
+   "journal_or_publisher": "Magnetic Resonance in Medicine",
+   "year": 2025,
+   "doi_or_url": "10.1002/mrm.30494"
+  },
+  "parsa2023_ulf_sar": {
+   "key": "parsa2023_ulf_sar",
+   "authors": "Parsa J, Webb A",
+   "title": "Specific absorption rate (SAR) simulations for low-field (< 0.1 T) MRI systems",
+   "journal_or_publisher": "Magnetic Resonance Materials in Physics, Biology and Medicine (MAGMA)",
+   "year": 2023,
+   "doi_or_url": "10.1007/s10334-023-01073-3"
   }
  },
  "scanners": {
@@ -843,7 +867,36 @@
      "confidence": "derived"
     }
    },
-   "notes": "A permanent magnet drifts with gradient heating (NdFeB remanence about -0.1 %/K); the Swoop re-centres f0 between every two DWIs, and its gradients are passively cooled, which caps protocols near an hour. Its diffusion sequence is a non-CPMG SPLICE split-echo train (ohalloran2022_dwi_64mt)."
+   "notes": "A permanent magnet drifts with gradient heating (NdFeB remanence about -0.1 %/K); the Swoop re-centres f0 between every two DWIs, and its gradients are passively cooled, which caps protocols near an hour. Its diffusion sequence is a non-CPMG SPLICE split-echo train (ohalloran2022_dwi_64mt).",
+   "rf": {
+    "b1_axial_falloff": {
+     "value": 33.76,
+     "unit": "1/m^2",
+     "field_T": 0.064,
+     "context": "the coefficient a of kappa_B1 = 1 - a z^2 about the coil's centre, z along the bore (superior-inferior). Derived from a measured B1+ map: 'little appreciable inhomogeneity in the transverse plane' and '15%-20% variation in the superior-inferior direction' over a 144 mm spherical phantom, so the fall-off is taken at the midpoint 17.5 % across the sphere's 72 mm half-extent. It is FLAT transversally, which is why this has no radial term -- the anisotropy is the citation's, not a simplification. A 180 degree pulse therefore delivers 148 degrees at the edge of that sphere",
+     "source_key": "padormo2023_t1_64mt",
+     "location": "Results, Figure 3A-B (actual flip-angle imaging, 144 mm spherical phantom)",
+     "confidence": "derived"
+    },
+    "b1_calibration_offset": {
+     "value": 1.0556,
+     "unit": "",
+     "field_T": 0.064,
+     "context": "a SYSTEMATIC transmit scale, not a spatial one: 'the expected signal null at 180 degrees was consistently offset to 190 degrees, perhaps due to B1 errors', which is a scale of 190/180. It applies everywhere including isocentre, so it is separate from b1_axial_falloff and multiplies it. The same source reports a spread of about +/- 20 degrees around 300, i.e. +/- 6.7 %",
+     "source_key": "balaji2025_mt_ulf",
+     "location": "Discussion, flip-angle sweep (1-420 degrees) on hardware v1.7",
+     "confidence": "cited"
+    },
+    "b1_load_independent": {
+     "value": 0.03,
+     "unit": "",
+     "field_T": 0.064,
+     "context": "why a transmit profile is a property of the MACHINE at this field and may live in a scanner catalogue at all. At 2.7 MHz the RF wavelength in tissue is metres, so dielectric and standing-wave effects vanish: simulation across 47-100 mT in a 40-tissue head model finds 'only a 3% spatial variation between the maps obtained at 47 mT and 100 mT' while tissue permittivity changes by about 30 %. This value is that 3 %. The same claim must NOT be extended to 3 T or 7 T, where the profile is substantially the subject's",
+     "source_key": "parsa2023_ulf_sar",
+     "location": "Results, normalized difference maps across 47/63.5/75/100 mT",
+     "confidence": "cited"
+    }
+   }
   }
  },
  "safety": {
