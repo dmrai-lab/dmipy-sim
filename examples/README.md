@@ -41,15 +41,21 @@ is between what changes the PATH and what changes the magnetisation carried alon
 ## Part III -- one walk, many acquisitions  (`replay/`)
 
 Part II established that the walk is prior to the measurement. This part is what that buys: the settings a
-study actually sweeps -- material, pose, echo time -- are all applied to the question, and the pack is read
-once for the whole grid.
+study actually sweeps -- material, pose, echo time, field -- are all applied to the question, and the pack is
+read once for the whole grid.
+
+Those settings are the arguments of one call, and each is stated once: `tissue=` is what the material is,
+`orientation=` is where the substrate sits, `scanner=` is what the machine is, and the sequence is what was
+asked. The reference form is the knob table in [the replay guide](../docs/replay-guide/README.md), which
+gives every knob's object, what it touches, what happens when it is not given, and which channel it needs.
 
 | | |
 |---|---|
-| [13 one read, many answers](replay/13_one_read_many_answers.py) | a study over tissues and fields in one pass, and which channels its pairs touch |
+| [13 one read, many answers](replay/13_one_read_many_answers.py) | a study over tissues and magnets in one pass, which channels its pairs touch, and why the grid is not rectangular |
 | [14 where the substrate sits](replay/14_where_the_substrate_sits.py) | a pose is applied to the gradient; one expansion covers every pose, so dispersion is a contraction |
 | [15 a shorter walk is inside a longer one](replay/15_a_shorter_walk_is_inside_a_longer_one.py) | multi-TE from one walk, at constant bands per second |
 | [16 what a pack is certified for](replay/16_what_a_pack_is_certified_for.py) | error against the floor, the tiers in the file, the envelope a consumer checks |
+| [25 the field needs both](replay/25_the_field_needs_both.py) | a susceptibility is the tissue's, the field is the magnet's, and the phase is their product |
 
 ## Part IV -- substrates in practice
 
