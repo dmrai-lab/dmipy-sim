@@ -65,8 +65,11 @@ def test_the_remaining_geometries_follow_the_same_convention():
     assert int(ms.classify_position(jnp.asarray([5e-6, 0, 0], jnp.float32))) == EXTRA
     for name in ("PackedCylinders", "PackedSpheres"):
         g = G[name]
-        r0 = g.init_positions(64, jax.random.PRNGKey(0))       # seeded in the extra space
-        assert (np.asarray(jax.vmap(g.classify_position)(r0)) == EXTRA).all()
+        ids = np.asarray(jax.vmap(g.classify_position)(g.init_positions(512, jax.random.PRNGKey(0))))
+        assert (ids == EXTRA).any() and (ids > 0).any()        # both pools seeded by default
+        centers = np.asarray(g._centers_jax) if name == "PackedCylinders" else g._centers_np
+        g_extra = type(g)(g._radii_np, centers, g._L_float, pool="extra")
+        assert (np.asarray(jax.vmap(g_extra.classify_position)(g_extra.init_positions(64, jax.random.PRNGKey(0)))) == EXTRA).all()
         assert int(g.classify_position(jnp.asarray(np.r_[g._centers_jax[0], 0.0][:3], jnp.float32))) == 1
     assert int(d.FreeDiffusion().classify_position(z)) == EXTRA
 

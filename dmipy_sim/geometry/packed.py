@@ -130,13 +130,42 @@ def packed_wall_kernel(centers, radii, L, eps, nudge, step_max, min_gap):
     return wall
 
 
-class PackedCylinders(Geometry):
-    """Extra-axonal diffusion in a periodic square domain packed with cylinders.
+def _seeded_pool(pool):
+    """The pool a packed cell seeds: ``None`` (both, by volume), ``"extra"`` or ``"intra"``."""
+    if pool is None or pool in ("extra", "intra"):
+        return pool
+    raise ValueError(f"pool is None (both pools, by volume), 'extra' or 'intra'; got {pool!r}")
 
-    Walkers are initialised in the interstitial space between cylinders and
-    are reflected specularly when they would enter any cylinder.  The
-    cross-section boundary is periodic (walkers wrap around the square box);
-    diffusion along the shared cylinder axis is unrestricted.
+
+def _seed_periodic(n_walkers, key, L, radii, centers, ndim, pool):
+    """``(n_walkers, ndim)`` points uniform over the periodic cell ``[-L/2, L/2)^ndim``, kept by membership when
+    ``pool`` names one: inside any object for ``"intra"``, outside every object for ``"extra"``."""
+    rng = np.random.default_rng(int(jax.random.randint(key, (), 0, 2 ** 30)))
+    accepted, n_have = [], 0
+    while n_have < n_walkers:
+        batch = max(n_walkers * 4, 1024) if pool is not None else n_walkers
+        pts = rng.uniform(-L / 2.0, L / 2.0, (batch, ndim))
+        if pool is not None:
+            inside = np.zeros(batch, dtype=bool)
+            for k in range(len(radii)):
+                dq = pts - centers[k]
+                dq -= L * np.round(dq / L)   # minimum-image
+                inside |= np.sum(dq ** 2, axis=1) < radii[k] ** 2
+            pts = pts[inside if pool == "intra" else ~inside]
+        accepted.append(pts)
+        n_have += len(pts)
+    return np.concatenate(accepted, axis=0)[:n_walkers].astype(np.float32)
+
+
+class PackedCylinders(Geometry):
+    """Diffusion in a periodic square domain packed with cylinders: two pools of water.
+
+    The lumens are pool 1 (intra) and the interstitial space pool 0 (extra); both hold water,
+    and walkers are seeded uniformly over the cell by default, so the intra fraction is the
+    cylinders' area fraction. ``pool="extra"`` or ``"intra"`` seeds one pool alone. A walker
+    is reflected specularly (or permeated, with ``permeability``) at a cylinder wall from
+    either side. The cross-section boundary is periodic (walkers wrap around the square
+    box); diffusion along the shared cylinder axis is unrestricted.
 
     All N cylinders are parallel along +z of the substrate frame.
     Use ``pack_cylinders()`` to generate collision-free centre positions.
@@ -192,9 +221,10 @@ class PackedCylinders(Geometry):
     classify_returns_object_id = True
 
     def __init__(self, radii, centers, L, orientation=(0., 0., 1.),
-                 surface_relaxivity_t2=None, permeability=None):
+                 surface_relaxivity_t2=None, permeability=None, pool=None):
         radii   = np.asarray(radii,   dtype=np.float64).ravel()
         centers = np.asarray(centers, dtype=np.float64)
+        self.pool = _seeded_pool(pool)
         if centers.shape != (len(radii), 2):
             raise ValueError(
                 f"centers shape {centers.shape} does not match "
@@ -240,29 +270,10 @@ class PackedCylinders(Geometry):
         return periodic_min_gap(centers, radii, L)
 
     def init_positions(self, n_walkers, key):
-        """Uniform placement in the periodic box, outside all cylinder cross-sections."""
-        L       = self._L_float
-        radii   = self._radii_np
-        centers = np.array(self._centers_jax)  # (N, 2)
-        rng = np.random.default_rng(
-            int(jax.random.randint(key, (), 0, 2 ** 30)))
-
-        accepted = []
-        n_have   = 0
-        while n_have < n_walkers:
-            batch = max(n_walkers * 4, 1024)
-            xy    = rng.uniform(-L / 2.0, L / 2.0, (batch, 2))
-            outside = np.ones(batch, dtype=bool)
-            for k in range(len(radii)):
-                dxy     = xy - centers[k]
-                dxy    -= L * np.round(dxy / L)   # minimum-image
-                outside &= np.sum(dxy ** 2, axis=1) > radii[k] ** 2
-            accepted.append(xy[outside])
-            n_have = sum(len(a) for a in accepted)
-
-        xy_out = np.concatenate(accepted, axis=0)[:n_walkers].astype(np.float32)
-        # z = 0; walkers are free along the cylinder axis
-        return jnp.array(np.concatenate([xy_out, np.zeros((n_walkers, 1), dtype=np.float32)], axis=1), dtype=jnp.float32)
+        """Uniform placement in the periodic box: over the whole cell (``pool=None``, so the lumens hold their
+        area fraction of the walkers), or in the one pool named. z = 0; walkers are free along the axis."""
+        xy = _seed_periodic(n_walkers, key, self._L_float, self._radii_np, np.array(self._centers_jax), 2, self.pool)
+        return jnp.array(np.concatenate([xy, np.zeros((n_walkers, 1), dtype=np.float32)], axis=1), dtype=jnp.float32)
 
     def reflect(self, r, step):
         """Impermeable wall interaction -- the kappa = 0 case of :meth:`permeate`.
@@ -377,11 +388,13 @@ class PackedCylinders(Geometry):
 
 
 class PackedSpheres(Geometry):
-    """Extra-axonal diffusion in a periodic cubic domain packed with spheres.
+    """Diffusion in a periodic cubic domain packed with spheres: two pools of water.
 
-    Walkers are initialised in the interstitial space between spheres and are
-    reflected (or permeated) when they would enter any sphere.  Periodic
-    boundary conditions are applied via minimum-image convention; positions are
+    The spheres' interiors are pool 1 (intra) and the interstitial space pool 0 (extra); both
+    hold water, and walkers are seeded uniformly over the cell by default, so the intra
+    fraction is the spheres' volume fraction. ``pool="extra"`` or ``"intra"`` seeds one pool
+    alone. A walker is reflected (or permeated) at a sphere's surface from either side.
+    Periodic boundary conditions are applied via minimum-image convention; positions are
     kept unfolded for correct phase accumulation.
 
     Parameters
@@ -418,9 +431,10 @@ class PackedSpheres(Geometry):
     classify_returns_object_id = True
 
     def __init__(self, radii, centers, L,
-                 surface_relaxivity_t2=None, permeability=None):
+                 surface_relaxivity_t2=None, permeability=None, pool=None):
         radii   = np.asarray(radii,   dtype=np.float64).ravel()
         centers = np.asarray(centers, dtype=np.float64)
+        self.pool = _seeded_pool(pool)
         if centers.shape != (len(radii), 3):
             raise ValueError(
                 f"centers shape {centers.shape} does not match "
@@ -462,28 +476,10 @@ class PackedSpheres(Geometry):
         return periodic_min_gap(centers, radii, L)
 
     def init_positions(self, n_walkers, key):
-        """Uniform placement in the periodic cube, outside all spheres."""
-        L       = self._L_float
-        radii   = self._radii_np
-        centers = self._centers_np
-        rng = np.random.default_rng(
-            int(jax.random.randint(key, (), 0, 2 ** 30)))
-
-        accepted = []
-        n_have   = 0
-        while n_have < n_walkers:
-            batch = max(n_walkers * 4, 1024)
-            pts   = rng.uniform(-L / 2.0, L / 2.0, (batch, 3))
-            outside = np.ones(batch, dtype=bool)
-            for k in range(len(radii)):
-                dq      = pts - centers[k]
-                dq     -= L * np.round(dq / L)   # minimum-image
-                outside &= np.sum(dq ** 2, axis=1) > radii[k] ** 2
-            accepted.append(pts[outside])
-            n_have = sum(len(a) for a in accepted)
-
-        pts_out = np.concatenate(accepted, axis=0)[:n_walkers].astype(np.float32)
-        return jnp.array(pts_out, dtype=jnp.float32)
+        """Uniform placement in the periodic cube: over the whole cell (``pool=None``, so the spheres hold their
+        volume fraction of the walkers), or in the one pool named."""
+        return jnp.array(_seed_periodic(n_walkers, key, self._L_float, self._radii_np, self._centers_np, 3, self.pool),
+                         dtype=jnp.float32)
 
     def reflect(self, r, step):
         """Impermeable wall interaction -- the kappa = 0 case of :meth:`permeate`.

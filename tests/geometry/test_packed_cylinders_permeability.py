@@ -54,6 +54,7 @@ def _single_cylinder_packed(permeability=None, surface_relaxivity_t2=None):
         orientation=[0., 0., 1.],
         permeability=permeability,
         surface_relaxivity_t2=surface_relaxivity_t2,
+        pool="extra",
     )
 
 

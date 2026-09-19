@@ -128,6 +128,7 @@ def _geom_packed(kappa_surf=None):
         centers=np.array([[0., 0., 0.]]),
         L=L_BOX,
         permeability=kappa_surf,
+        pool="extra",
     )
 
 

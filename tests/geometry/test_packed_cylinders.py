@@ -1,8 +1,8 @@
-"""PackedCylinders geometry — extra-axonal diffusion.
+"""PackedCylinders geometry: two pools of water, the extra-axonal physics measured with ``pool="extra"``.
 
 Tests cover:
   - RSA packing: no overlaps (including periodic images), correct VF
-  - init_positions: all walkers outside all cylinder cross-sections
+  - init_positions: both pools by area by default; one pool when named
   - Step-size assumption: σ << min_gap for default simulation parameters
   - Parallel gradient → free diffusion exp(-bD)  [exact, analytical]
   - Walker containment: no walker enters any cylinder during simulation
@@ -90,7 +90,32 @@ def _simple_geometry(n_cyl=4, radius=3e-6, target_vf=0.20, seed=0):
     radii = np.full(n_cyl, radius)
     centers, L, _ = pack_cylinders(radii, target_vf=target_vf, seed=seed)
     return PackedCylinders(radii=radii, centers=centers, L=L,
-                           orientation=[0., 0., 1.])
+                           orientation=[0., 0., 1.], pool="extra")
+
+
+def _inside_any(pos_xy, geom):
+    centers, radii, L = np.array(geom._centers_jax), geom._radii_np, geom._L_float
+    inside = np.zeros(len(pos_xy), bool)
+    for k in range(len(radii)):
+        dxy = pos_xy - centers[k]
+        dxy -= L * np.round(dxy / L)
+        inside |= np.sum(dxy ** 2, axis=1) < radii[k] ** 2
+    return inside
+
+
+def test_packed_cylinders_seeds_both_pools_by_area_by_default():
+    """The default seeding covers the whole cell: the lumens hold their area fraction of the walkers, and a named
+    pool holds all of them."""
+    radii = np.full(4, 3e-6)
+    centers, L, vf = pack_cylinders(radii, target_vf=0.20, seed=0)
+    both = PackedCylinders(radii=radii, centers=centers, L=L)
+    assert both.pool is None
+    pos = np.array(both.init_positions(20_000, jax.random.PRNGKey(0)))
+    assert abs(_inside_any(pos[:, :2], both).mean() - vf) < 0.01
+    intra = PackedCylinders(radii=radii, centers=centers, L=L, pool="intra")
+    assert _inside_any(np.array(intra.init_positions(2_000, jax.random.PRNGKey(1)))[:, :2], intra).all()
+    with pytest.raises(ValueError):
+        PackedCylinders(radii=radii, centers=centers, L=L, pool="lumen")
 
 
 def test_packed_cylinders_min_gap_positive():
@@ -119,7 +144,7 @@ def test_packed_cylinders_step_size_assumption():
 
 
 def test_packed_cylinders_init_outside():
-    """All initial walker positions lie outside every cylinder cross-section."""
+    """With ``pool="extra"`` every initial walker position lies outside every cylinder cross-section."""
     geom    = _simple_geometry()
     import jax
     key     = jax.random.PRNGKey(0)
@@ -202,7 +227,7 @@ def test_packed_cylinders_hindered_above_free():
     N_cyl = 6
     radii   = np.full(N_cyl, r)
     centers, L, vf = pack_cylinders(radii, target_vf=0.30, seed=5)
-    geom_packed = PackedCylinders(radii=radii, centers=centers, L=L)
+    geom_packed = PackedCylinders(radii=radii, centers=centers, L=L, pool="extra")
 
     b_values = np.array([3e9])
     bvecs    = np.array([[1., 0., 0.]])

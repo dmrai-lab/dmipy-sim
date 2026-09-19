@@ -43,7 +43,7 @@ def d_perp(scale, Delta, delta=3e-3, b=0.15e9, n_walk=30000, seed=0):
     base = np.maximum(np.random.default_rng(0).gamma(AL, SC, 40), 0.4e-6) / 2.0   # base radii
     radii = base * scale
     centers, L, vf = pack_cylinders(radii, target_vf=F, seed=0)
-    geom = PackedCylinders(radii, centers, L)
+    geom = PackedCylinders(radii, centers, L, pool="extra")
     step_target = float(radii.min()) / 3.0               # resolve the smallest cylinder
     n_t = int(np.ceil((delta + Delta) / (step_target ** 2 / (6.0 * D))))
     wf = set_b(pgse(np.array([[1., 0, 0]], np.float32), delta, Delta, gradient_strengths=0.05, n_t=n_t),

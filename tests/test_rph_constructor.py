@@ -16,7 +16,10 @@ from dmipy_sim.replay.so3 import n_sh_coeffs
 def _pack(tmp_path, n_walkers=400):
     import dmipy_sim as d
     from dmipy_sim.replay.bank import build_replay_pack
-    g = d.PackedCylinders([1e-6], [[0.0, 0.0]], 10e-6)
+    # pool="extra": the fixture is the extra-axonal water around one cylinder, which is the substrate the
+    # thresholds below were calibrated on (a packed cell seeds BOTH pools by default since #301, and a few
+    # per cent of restricted walkers move the pose response of a 400-walker pack).
+    g = d.PackedCylinders([1e-6], [[0.0, 0.0]], 10e-6, pool="extra")
     walk = d.simulate_trajectories(n_walkers, 2e-9, g, 4e-3, 5e-4, seed=0, require_gpu=False)
     out = tmp_path / "tiny.rpk"
     build_replay_pack(walk, id="test/tiny", license="x", citation="x", K=8, out_path=str(out))
