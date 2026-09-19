@@ -42,9 +42,11 @@ print("contact channel raises rather than returning the unrelaxed number.")
 # ---------------------------------------------------------------------------------------------------------
 # And what rung 10's time scaling does to these tiers, which is the question this rung invites.
 #
-# Speeding up the clock does compress the time a spin spends against a wall or inside a field gradient, per
-# save interval. What answers it is that a fixed acquisition then spans proportionately MORE save intervals.
-# The two meet, and what they do when they meet differs by tier.
+# Speeding up the clock compresses the time a spin spends against a wall or inside a field gradient, per save
+# interval. What answers it is that the acquisition is fixed in ITS OWN time, so it spans proportionately MORE
+# save intervals: a 180 at TE/2 lands further along the recorded path, a storage period covers a different
+# stretch of it, and a wall is met more often. Nothing cancels. Every tier's answer changes, which is what a
+# higher diffusivity is.
 print("\n" + "-" * 104)
 print("what each channel stores at save k, walked at D and at 2D on the halved clock -- the same path:\n")
 
@@ -57,20 +59,28 @@ for label, name in (("positions", "positions"), ("boundary local time", "boundar
     x, y = np.asarray(getattr(slow, name), float), np.asarray(getattr(fast, name), float)
     print(f"  {label:22s} max |difference| {np.abs(x - y).max():.3e}")
 
+# The surface term is the one that LOOKS like it cancels, because its weight carries a 1/D. Over a fixed echo
+# time the accumulated exposure doubles and the divisor doubles, so the MEAN exposure is invariant. The signal
+# is not the mean: it is an ensemble average of exp(exposure), and that distribution changes shape.
+TE, dt, rho, N = 2e-4, 1e-6, 3.5e-3, 3000
+w = simulate_trajectories(N, D2, Cylinder(4e-6, (0, 0, 1), surface_relaxivity_t2=rho),
+                          T_max=2 * TE, dt_save=dt, seed=0, require_gpu=False)
+ell = np.asarray(w.boundary_local_time, float)
+n = int(round(TE / dt))
+x_D = (rho / D2) * ell[:, :n + 1].sum(axis=1)            # exposure over TE at D
+x_2D = (rho / (2 * D2)) * ell.sum(axis=1)                # over TE at 2D: twice as far along, twice the divisor
+print(f"\nsurface relaxivity over the same {TE*1e3:g} ms echo time:")
+print(f"  exposure at  D: mean {x_D.mean():7.4f}  spread {x_D.std():.4f}")
+print(f"  exposure at 2D: mean {x_2D.mean():7.4f}  spread {x_2D.std():.4f}   <- same mean, narrower")
+print(f"  signal    at  D: {np.exp(x_D).mean():.6f}")
+print(f"  signal    at 2D: {np.exp(x_2D).mean():.6f}   <- NOT the same number")
+
 print("""
-None of them carries the clock. The boundary local time is a LENGTH, the occupancy is a pool per save, and
-the field sample is the field at a position. So over a fixed echo time:
+So the surface term does not cancel either. Its mean exposure does, which is why it looks as though it
+should; but faster diffusion mixes the walkers better, the spread of exposure across them narrows, and the
+average of an exponential moves when its distribution changes shape even at a fixed mean. The two agree only
+in the well-mixed limit, where the spread is small enough that the mean is the whole answer.
 
-  relaxation   the replay consumes twice the saves at half the step, so the total relaxed time is still TE.
-               What changes is how it splits across pools, because the walker explores more in the same TE.
-
-  relaxivity   twice the accumulated local time, divided by twice the diffusivity, since the weight is
-               (rho / D) times the sum. The two cancel exactly, and they should: the reaction-limited
-               surface rate is rho S/V and does not depend on D.
-
-  the field    twice the samples at half the step, along a path that covers more field. Nothing cancels
-               here, and nothing should -- a higher diffusivity really does narrow the dephasing at fixed TE.
-
-The relaxivity line is the one worth remembering, because it needs BOTH halves. Rescale the grid and leave
-the diffusivity alone, or the reverse, and the surface term is wrong by exactly that factor while still
-looking entirely reasonable.""")
+What IS exact is the replay. Reading the recorded path further along and dividing by the new diffusivity is
+bit-identical to a walk actually done at that diffusivity, walker for walker. The replay reproduces the
+change rather than cancelling it -- which is the only property it needs.""")
