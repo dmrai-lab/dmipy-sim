@@ -19,6 +19,10 @@ three containers is one field or one derivation here:
   constant a non-uniform static field contributes at this position (:meth:`ScannerSequence.with_background_gradient`).
   It is already folded into ``G``, so every derived quantity carries it; it is recorded separately because a
   builder's guarantees are about what the builder laid out, which is :attr:`ScannerSequence.designed_gradient`.
+* ``concomitant`` -- optionally, the position and static field at which the gradient coils' own Maxwell term
+  was evaluated (:meth:`ScannerSequence.with_concomitant`); like the background, already folded into ``G``.
+* ``imposed_gradient`` -- what those two transforms added, ``(n_meas, n_t, 3)``: the part of ``G`` no builder
+  designed. ``designed_gradient`` is ``G`` minus this.
 
 The scalar engine, the b integrals and the pack's replay read ``G_eff``; the vector-Bloch routes read ``G`` and
 apply ``rf`` themselves. A :class:`Protocol` is a tuple of these -- one echo time each -- for a multi-TE scheme.
@@ -106,6 +110,8 @@ class ScannerSequence:
     build_spec: tuple = None
     prescription: Prescription = None
     background_gradient: tuple = None
+    concomitant: dict = None
+    imposed_gradient: np.ndarray = None
 
     def __post_init__(self):
         _set = lambda k, v: object.__setattr__(self, k, v)
@@ -117,6 +123,11 @@ class ScannerSequence:
         if G.ndim != 3 or G.shape[2] != 3:
             raise ValueError(f"G must be (n_meas, n_t, 3), got {G.shape}")
         _set("G", G); _set("dt", float(self.dt)); _set("rf", RFSchedule(self.rf))
+        if self.imposed_gradient is not None:
+            imp = np.asarray(self.imposed_gradient, dtype=np.float32)
+            if imp.shape != G.shape:
+                raise ValueError(f"imposed_gradient must match G {G.shape}; got {imp.shape}")
+            _set("imposed_gradient", imp)
         if self.background_gradient is not None:
             bg = np.asarray(self.background_gradient, dtype=np.float64).reshape(-1, 3)
             if bg.shape[0] not in (1, G.shape[0]):
@@ -284,10 +295,9 @@ class ScannerSequence:
         unless :meth:`with_background_gradient` has been applied. This is what the builder's guarantees are
         about -- off through a finite pulse, off in a dead time -- because a background gradient is imposed by
         the magnet and obeys none of them."""
-        if self.background_gradient is None:
+        if self.imposed_gradient is None:
             return self.G
-        bg = np.asarray(self.background_gradient, dtype=np.float32).reshape(-1, 1, 3)
-        return self.G - bg
+        return self.G - self.imposed_gradient
 
     def with_background_gradient(self, g):
         """The same acquisition in a magnet whose own field is not uniform: a constant ``g`` (T/m, the field's
@@ -309,8 +319,49 @@ class ScannerSequence:
         if self.background_gradient is not None:
             raise ValueError("this acquisition already carries a background gradient; apply it to the "
                              "acquisition the builder returned, not on top of one that has it")
-        return replace(self, G=(self.G + g.astype(np.float32).reshape(-1, 1, 3)),
+        add = np.broadcast_to(g.astype(np.float32).reshape(-1, 1, 3), self.G.shape)
+        imposed = add if self.imposed_gradient is None else self.imposed_gradient + add
+        return replace(self, G=(self.G + add), imposed_gradient=np.ascontiguousarray(imposed),
                        background_gradient=tuple(tuple(float(v) for v in row) for row in g))
+
+    def with_concomitant(self, position_m, B0_T):
+        """The same acquisition as it is actually played at ``position_m``, with the gradient coils' own
+        concomitant (Maxwell) field included -- the term that makes a gradient system produce a field whose
+        magnitude, not just whose z component, varies.
+
+        For ``B0`` along the bore's z the field is
+        ``B_c = (Gx^2 + Gy^2) z^2 / 2B0 + Gz^2 (x^2 + y^2) / 8B0 - (Gx Gz x z + Gy Gz y z) / 2B0``
+        and what a spin at ``position_m`` sees as an extra encoding gradient is its spatial derivative there.
+        That derivative is **quadratic in G(t)**, so unlike a background gradient it varies through the
+        sequence, and unlike the pulsed gradient it does not change sign when the coils reverse: a symmetric
+        pair therefore leaves it almost intact where the pulsed gradient refocuses, and an unbalanced train
+        does not refocus it at all (dmipy-sim#285).
+
+        It scales as ``1 / B0``, which is why it is a low-field problem: at 64 mT it is some 47 times what the
+        same gradient produces at 3 T. Zero at isocentre, by construction.
+
+        ``position_m`` is ``(3,)`` or one per measurement, in the gradient's frame; ``B0_T`` is the static
+        field in tesla.
+        """
+        r = np.asarray(position_m, dtype=np.float64).reshape(-1, 3)
+        if r.shape[0] not in (1, self.n_meas):
+            raise ValueError(f"position_m is one point or one per measurement ({self.n_meas}); got {r.shape}")
+        B0 = float(B0_T)
+        if B0 <= 0.0:
+            raise ValueError(f"B0_T must be positive; got {B0}")
+        if self.concomitant is not None:
+            raise ValueError("this acquisition already carries a concomitant term; apply it once, at the "
+                             "position the measurement is made")
+        G = np.asarray(self.designed_gradient, dtype=np.float64)          # the coils' own, not the magnet's
+        Gx, Gy, Gz = G[..., 0], G[..., 1], G[..., 2]
+        x, y, z = (r[:, i][:, None] for i in range(3))
+        gc = np.stack([Gz * (Gz * x - 2.0 * Gx * z) / (4.0 * B0),
+                       Gz * (Gz * y - 2.0 * Gy * z) / (4.0 * B0),
+                       (2.0 * z * (Gx ** 2 + Gy ** 2) - Gz * (Gx * x + Gy * y)) / (2.0 * B0)], axis=-1)
+        gc = np.broadcast_to(gc.astype(np.float32), self.G.shape)
+        imposed = gc if self.imposed_gradient is None else self.imposed_gradient + gc
+        return replace(self, G=(self.G + gc), imposed_gradient=np.ascontiguousarray(imposed),
+                       concomitant={"position_m": tuple(tuple(float(v) for v in p) for p in r), "B0_T": B0})
 
     def with_gradient(self, G):
         """The same acquisition with another physical gradient of the same shape (a rescale, a rotation)."""

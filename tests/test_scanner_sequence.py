@@ -268,3 +268,52 @@ def test_a_background_gradient_may_be_given_per_measurement():
     b = bg.b()
     assert b[0] > float(two.b()[0]) > b[1]
     assert len(bg.background_gradient) == 2
+
+
+# ── the gradient coils' own concomitant field (dmipy-sim#285 item 4) ────────────────────────────────
+def test_the_concomitant_term_is_zero_at_isocentre_and_scales_as_one_over_B0():
+    """Maxwell's equations make a gradient coil produce more than its z component. The extra field vanishes
+    at isocentre and goes as 1/B0, which is the whole reason it is a low-field problem and not a 3 T one."""
+    seq = _pgse_1e9()
+    np.testing.assert_allclose(seq.with_concomitant([0, 0, 0], 0.064).G, seq.G, atol=1e-12)
+
+    off = lambda B0: np.abs(np.asarray(seq.with_concomitant([0, 0, 0.10], B0).G) - np.asarray(seq.G)).max()
+    low, high = off(0.064), off(3.0)
+    np.testing.assert_allclose(low / high, 3.0 / 0.064, rtol=1e-3)     # 47x, exactly the field ratio
+    assert low > 0.4 * 24.4e-3     # at 64 mT and 10 cm it is half a Swoop's entire gradient ceiling
+
+
+def test_the_concomitant_term_does_not_reverse_with_the_coils():
+    """It is QUADRATIC in G, so reversing the gradient leaves it identical -- which is why a symmetric pair
+    refocuses the pulsed gradient and not this, and why an unbalanced train does not refocus it at all."""
+    seq = _pgse_1e9()
+    flipped = seq.with_gradient(-np.asarray(seq.G))
+    gc = np.asarray(seq.with_concomitant([0.02, 0, 0.08], 0.064).G) - np.asarray(seq.G)
+    gc_flipped = np.asarray(flipped.with_concomitant([0.02, 0, 0.08], 0.064).G) - np.asarray(flipped.G)
+    np.testing.assert_allclose(gc, gc_flipped, rtol=1e-5, atol=1e-9)
+
+
+def test_the_two_magnet_terms_compose_and_are_recoverable():
+    """A voxel off isocentre sees both: the magnet's own gradient and the coils' concomitant field. They add,
+    and the builder's design is still recoverable from underneath both."""
+    seq = _pgse_1e9()
+    both = seq.with_background_gradient([1.4e-3, 0, 0]).with_concomitant([0, 0, 0.08], 0.064)
+    np.testing.assert_allclose(both.designed_gradient, seq.G, rtol=1e-4, atol=1e-7)
+    assert both.background_gradient is not None and both.concomitant["B0_T"] == 0.064
+    both.validate()                                     # the builder's guarantees are about the design
+    only_bg = seq.with_background_gradient([1.4e-3, 0, 0])
+    only_cc = seq.with_concomitant([0, 0, 0.08], 0.064)
+    np.testing.assert_allclose(np.asarray(both.G) - np.asarray(seq.G),
+                               (np.asarray(only_bg.G) - np.asarray(seq.G))
+                               + (np.asarray(only_cc.G) - np.asarray(seq.G)), rtol=1e-4, atol=1e-9)
+
+
+def test_the_concomitant_term_is_refused_twice_over_and_at_a_nonsense_field():
+    seq = _pgse_1e9()
+    with pytest.raises(ValueError, match="B0_T must be positive"):
+        seq.with_concomitant([0, 0, 0.1], 0.0)
+    with pytest.raises(ValueError, match="one point or one per measurement"):
+        seq.with_concomitant([[0, 0, 0.1], [0, 0, 0.2]], 0.064)
+    once = seq.with_concomitant([0, 0, 0.1], 0.064)
+    with pytest.raises(ValueError, match="already carries a concomitant term"):
+        once.with_concomitant([0, 0, 0.1], 0.064)
