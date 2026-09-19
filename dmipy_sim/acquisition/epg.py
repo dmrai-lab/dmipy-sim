@@ -35,7 +35,7 @@ from dataclasses import dataclass
 import numpy as np
 
 __all__ = ["Pulse", "Winding", "Schedule", "Pathway", "enumerate_pathways",
-           "cpmg_schedule", "ste_schedule", "ste_amplitude"]
+           "cpmg_schedule", "ste_schedule", "ste_amplitude", "pathway_weight"]
 
 
 @dataclass(frozen=True)
@@ -227,3 +227,28 @@ def ste_amplitude(alpha1_deg=90.0, alpha2_deg=90.0, alpha3_deg=90.0):
                                             threshold=1e-12)
               if any(st == "Z" for st, _ in p.intervals)]
     return float(abs(stored[0].eta)) if stored else 0.0
+
+
+def pathway_weight(sequence):
+    """The amplitude of the coherence pathway ``sequence``'s readout is, from its RF schedule alone.
+
+    A refocused echo is the whole magnetisation and weighs 1. A stimulated echo is the STORED pathway of a
+    store-and-recall schedule, which a real sequence isolates by crushing the rest, and it weighs
+    :func:`ste_amplitude` of the three pulses' flips: ``0.5`` at three 90s, and LESS at any other flip, so a
+    flat ``0.5`` is wrong for every schedule whose pulses are not 90 degrees.
+
+    Duck-typed on ``stimulated_echo`` and ``rf``, so it reads a
+    :class:`~dmipy_sim.acquisition.scanner_sequence.ScannerSequence` without importing one.
+    """
+    if not getattr(sequence, "stimulated_echo", False):
+        return 1.0
+    from .rf import role_of
+    flips = {}
+    for e in sequence.rf:
+        role = role_of(e)
+        if role in ("excite", "store", "recall") and role not in flips:
+            flips[role] = float(e.flip_deg)
+    if set(flips) != {"excite", "store", "recall"}:
+        raise ValueError("a stimulated echo needs an excite, a store and a recall in its RF schedule; "
+                         f"this one labels {sorted(flips)}")
+    return ste_amplitude(flips["excite"], flips["store"], flips["recall"])

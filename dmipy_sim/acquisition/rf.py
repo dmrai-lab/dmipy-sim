@@ -512,6 +512,12 @@ _ROLE_OF_LABEL = {"Mz→Mxy": "excite", "excitation": "excite", "store": "store"
                   "refocus": "refocus", "refocusing": "refocus"}
 
 
+def role_of(event):
+    """The coherence role an :class:`RFEvent`'s label declares -- ``'excite'``, ``'store'``, ``'recall'``,
+    ``'refocus'`` -- or ``None`` when it declares none. A labelled pulse plays its role whatever its flip."""
+    return _ROLE_OF_LABEL.get(event.label)
+
+
 class RFSchedule(tuple):
     """The RF schedule of an acquisition: its :class:`RFEvent`\ s in time order, valid by construction, and
     the one place anything is derived from them. Empty is a gradient echo (no pulse).
@@ -549,7 +555,7 @@ class RFSchedule(tuple):
         labelled ``refocus`` whatever its flip (an adiabatic passage's integrated nutation is far from 180), or
         an unlabelled 180."""
         for e in self:
-            if _ROLE_OF_LABEL.get(e.label) == "refocus" or (not e.label and int(round(e.flip_deg)) == 180):
+            if role_of(e) == "refocus" or (not e.label and int(round(e.flip_deg)) == 180):
                 return e.t_s
         return None
 
@@ -607,7 +613,7 @@ class RFSchedule(tuple):
             i = int(np.clip(int(round(t / dt)), 0, n_t))
             chi[i_prev:i] = transverse
             i_prev = i
-            role = _ROLE_OF_LABEL.get(e.label)
+            role = role_of(e)
             if role is None:                                    # unlabelled: infer from the flip and the state
                 flip = int(round(e.flip_deg))
                 if flip == 90:

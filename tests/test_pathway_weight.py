@@ -1,0 +1,97 @@
+"""A replay carries the amplitude of the pathway its readout IS, on every route.
+
+A stimulated echo is not the whole magnetisation: the store keeps one part and the rest is crushed away, so
+the readout carries ``0.5 sin a1 sin a2 sin a3`` of it. That number is derived from the RF schedule
+(:func:`dmipy_sim.acquisition.epg.pathway_weight`), not written down, so a schedule whose pulses are not 90
+degrees gets its own amplitude rather than a flat one half.
+"""
+import numpy as np
+import pytest
+
+import dmipy_sim as d
+from dmipy_sim import sequences
+from dmipy_sim.acquisition import epg
+from dmipy_sim.replay.bank import build_replay_pack
+from dmipy_sim.replay.study import Acquisition, Protocol, Study
+from dmipy_sim.spec.tissue import Tissue
+
+T2, T1, TM, DELTA = 0.08, 0.3, 0.02, 0.003
+
+
+@pytest.fixture(scope="module")
+def pack(tmp_path_factory):
+    """Free water, so the only thing left in a b = 0 readout is relaxation and the pathway's amplitude."""
+    walk = d.simulate_trajectories(600, 2e-9, d.FreeDiffusion(), 0.05, 5e-4, seed=0, require_gpu=False)
+    out = tmp_path_factory.mktemp("pw") / "free.rpk"
+    return build_replay_pack(walk, id="test/free", license="x", citation="x", K=8, out_path=str(out))
+
+
+def _pgste(dt_n=600, flips=(90.0, 90.0, 90.0), b=0.0):
+    return sequences.pgste([[1.0, 0.0, 0.0]], DELTA, TM, bvalues=[b], n_t=dt_n, slew_rate=np.inf,
+                           ste_flip_angles=flips)
+
+
+def _closed_form(seq, flips=(90.0, 90.0, 90.0)):
+    """``eta exp(-(TE - TM)/T2) exp(-TM/T1)``: transverse either side of the store, longitudinal across it."""
+    TE = float(np.asarray(seq.readout)[-1]) * float(seq.dt)
+    eta = 0.5 * np.prod(np.sin(np.radians(flips)))
+    return eta * np.exp(-(TE - TM) / T2) * np.exp(-TM / T1)
+
+
+def test_the_weight_comes_from_the_schedule_not_a_constant():
+    assert epg.pathway_weight(_pgste()) == pytest.approx(0.5, abs=1e-12)
+    assert epg.pathway_weight(_pgste(flips=(90.0, 60.0, 90.0))) == pytest.approx(0.5 * np.sin(np.radians(60)), abs=1e-12)
+    assert epg.pathway_weight(sequences.pgse([[1.0, 0, 0]], 5e-3, 0.02, bvalues=[1e9], n_t=400, slew_rate=np.inf)) == 1.0
+
+
+def test_a_stimulated_echo_replays_to_its_closed_form(pack):
+    seq = _pgste()
+    got = float(np.asarray(pack.replay(seq, tissue=Tissue(T2=T2, T1=T1)))[0])
+    assert got == pytest.approx(_closed_form(seq), rel=2e-3)
+
+
+@pytest.mark.parametrize("flips", [(90.0, 60.0, 90.0), (60.0, 60.0, 60.0), (90.0, 120.0, 90.0)])
+def test_the_flip_angles_set_the_amplitude(pack, flips):
+    """A flat one half is right only at three 90s; every other schedule carries less, and the difference is
+    far larger than the pack's floor."""
+    seq = _pgste(flips=flips)
+    got = float(np.asarray(pack.replay(seq, tissue=Tissue(T2=T2, T1=T1)))[0])
+    assert got == pytest.approx(_closed_form(seq, flips), rel=2e-3)
+    flat = _closed_form(seq, (90.0, 90.0, 90.0))                 # what a constant 0.5 would have given
+    assert abs(got - flat) > 0.02
+
+
+def test_a_spin_echo_is_untouched(pack):
+    """Its pathway is the whole magnetisation, so nothing is applied and the b = 0 readout is the T2 decay."""
+    seq = sequences.pgse([[1.0, 0, 0]], 5e-3, 0.02, bvalues=[0.0], TE=0.045, n_t=600, slew_rate=np.inf)
+    TE = float(np.asarray(seq.readout)[-1]) * float(seq.dt)
+    got = float(np.asarray(pack.replay(seq, tissue=Tissue(T2=T2, T1=T1)))[0])
+    assert got == pytest.approx(np.exp(-TE / T2), rel=2e-3)
+
+
+def test_every_route_agrees(pack):
+    """The weights are formed in two places -- the replay's preparation and a study's primitives -- so the
+    routes are held to each other, which is what stops the amplitude being applied twice or not at all."""
+    seq, tis = _pgste(flips=(90.0, 60.0, 90.0)), Tissue(T2=T2, T1=T1)
+    direct = float(np.asarray(pack.replay(seq, tissue=tis))[0])
+    w, ew, E = pack.walker_signals(seq, tissue=tis)
+    from_walkers = float(np.abs((ew[:, None] * E).sum(0) / w.sum())[0])
+    prim = float(np.abs(np.asarray(pack.study(Study(Protocol([Acquisition(seq)]), tissues=[tis], scanners=[None])))[0, 0]))
+    assert from_walkers == pytest.approx(direct, rel=1e-9)
+    assert prim == pytest.approx(direct, rel=1e-9)
+
+
+def test_the_amplitude_rides_beside_the_weights_not_inside_them(pack):
+    """``ew`` means the relaxation and surface terms and a codec oracle checks it means only that, so the
+    pathway's amplitude is returned beside it and each route that forms a signal applies it once. The
+    vector-Bloch route therefore needs no exemption: it reads the weights, which do not carry it, and gets
+    the amplitude from propagating the magnetisation through the actual pulses instead."""
+    seq = _pgste()
+    P = pack._prepare(seq, tissue=None, scanner=None, orientation=None, compartment=None)
+    assert P["pathway"] == pytest.approx(0.5, abs=1e-12)
+    assert np.allclose(P["ew"], P["w"])                      # no tissue asked for: the weights are the plain ones
+    _, ew, _ = pack.walker_phases(seq)                       # the public route folds it in, once
+    assert np.allclose(ew, 0.5 * P["ew"])
+    assert pack._prepare(sequences.pgse([[1.0, 0, 0]], 5e-3, 0.02, bvalues=[0.0], TE=0.045, n_t=600,
+                                        slew_rate=np.inf),
+                         tissue=None, scanner=None, orientation=None, compartment=None)["pathway"] == 1.0

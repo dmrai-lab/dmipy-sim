@@ -17,6 +17,7 @@ from dmipy_sim.replay import ReplayPack
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_sim.replay import compression as _cx
 from dmipy_sim.replay._replay_kernel import bin_gate
+from dmipy_sim.acquisition.epg import pathway_weight
 from dmipy_sim.spec.tissue import Tissue
 from tests.replay_frames import field_along
 
@@ -66,7 +67,10 @@ def test_relaxation_and_surface_weights_equal_the_decoded_ones(pack, make_seq):
     seq = make_seq(4 * pack.n_t + 1)
     T2, T1, rho = [0.08, 0.03], [1.0, 1.2], 1e-5
     w, ew, _ = pack.walker_signals(seq, tissue=Tissue(T2=T2, T1=T1, rho=rho, D=D0))
-    expect = w * np.exp(_dense_logweights(pack, seq, T2, T1, rho))
+    # the route's weights also carry the amplitude of the pathway the readout is (1 for the fid and the spin
+    # echo, 0.5 for the stimulated echo's store-and-recall), which is a property of the schedule and not of
+    # the codec this oracle checks
+    expect = pathway_weight(seq) * w * np.exp(_dense_logweights(pack, seq, T2, T1, rho))
     np.testing.assert_allclose(ew, expect, rtol=1e-6, atol=1e-14)          # the oracle decodes the bridge in float32
 
 
