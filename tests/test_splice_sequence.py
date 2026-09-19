@@ -144,11 +144,60 @@ def test_the_replayed_train_is_the_sum_over_pathways_at_every_echo(beta):
     assert np.abs(got - want).max() < 0.03, f"got {got}, enumeration {want}"
 
 
-# NOT IMPLEMENTED: the split readout itself. A train that reads BOTH families an interval needs an
-# unbalanced winding -- one extra coherence order between a pulse and its echo -- so that the refocused
-# family reaches order zero at the echo while a family stored through the previous interval, having missed
-# that winding, reaches it a quarter-interval earlier. Two attempts are recorded in dmipy-sim#329: a
-# balanced gradient lobe (which separates nothing, both readouts landing on the same echo) and a crusher
-# winding of one extra order (which separates something, but not into the two families -- the stimulated
-# side carries 0.175 of the refocused one at beta = 180 where it must carry 0, and heavier crushing makes
-# it worse rather than better). The oracle above is what a working one has to satisfy.
+def _families(n_echoes, beta):
+    """The two echo families of a SPLICE train: |E1| and |E2| at each refocusing interval."""
+    sched = epg.splice_schedule(n_echoes, beta)
+    tot = [abs(sum(p.eta for p in epg.enumerate_pathways(sched, threshold=1e-9) if p.readout_idx == k))
+           for k in range(2 * n_echoes)]
+    return np.array(tot[0::2]), np.array(tot[1::2])
+
+
+def test_the_splice_families_reproduce_the_reference_implementation():
+    """Against Rahbek et al. 2023 (MRM 89:1469) `epg_splice.m`, no relaxation, beta = 120 degrees. These are
+    the reference implementation's own numbers, so this is a cross-check against another engine and not
+    against ourselves."""
+    e1, e2 = _families(4, 120.0)
+    np.testing.assert_allclose(e1, [0.75, 0.375, 0.28125, 0.609375], rtol=1e-9)
+    np.testing.assert_allclose(e2, [0.0, 0.5625, 0.5625, 0.246094], rtol=1e-5, atol=1e-9)
+
+
+@pytest.mark.parametrize("beta", [180.0, 150.0, 120.0, 90.0])
+def test_the_first_splice_echoes_have_closed_forms(beta):
+    """The opening of the train is short enough to write down: the first E1 is the plain spin echo, the
+    second is the stimulated one, and E2 lags a family behind."""
+    b = np.deg2rad(beta)
+    e1, e2 = _families(4, beta)
+    assert e1[0] == pytest.approx(np.sin(b / 2) ** 2, rel=1e-9)                    # spin echo
+    assert e1[1] == pytest.approx(0.5 * np.sin(b) ** 2, rel=1e-9, abs=1e-12)       # stimulated
+    assert e2[0] == pytest.approx(0.0, abs=1e-12)                                  # E2 is empty first
+    assert e2[1] == pytest.approx(np.sin(b / 2) ** 4, rel=1e-9)                    # secondary spin echo
+    assert e2[2] == pytest.approx(np.sin(b / 2) ** 2 * np.sin(b) ** 2, rel=1e-9, abs=1e-12)
+
+
+def test_at_180_degrees_the_split_degenerates_into_alternate_lines():
+    """Nothing is stored along z at 180, so one pathway survives and it lands alternately in one family and
+    the other. Each k-space would then get every second phase encode, which is why a SPLICE train is never
+    run at 180 -- and is the sharpest statement there is that the two families are real and distinct."""
+    e1, e2 = _families(6, 180.0)
+    np.testing.assert_allclose(e1, [1, 0, 1, 0, 1, 0], atol=1e-12)
+    np.testing.assert_allclose(e2, [0, 1, 0, 1, 0, 1], atol=1e-12)
+    # and every echo is carried by exactly one family, never shared
+    np.testing.assert_allclose(np.minimum(e1, e2), 0.0, atol=1e-12)
+
+
+def test_a_reduced_flip_fills_both_families_at_once():
+    """Below 180 both families carry signal in the same interval, which is what makes the split worth doing:
+    two k-spaces from one train."""
+    for beta in (150.0, 120.0, 90.0):
+        e1, e2 = _families(6, beta)
+        assert (np.minimum(e1, e2)[1:] > 0.02).all(), f"beta={beta} leaves a family empty"
+
+
+# NOT IMPLEMENTED: the split readout on a ScannerSequence. The winding structure above is validated and
+# is what a builder has to lay down -- a pre-phaser of a QUARTER the readout's area, not the half an
+# ordinary fast spin echo uses, so the interval winds three orders and two echoes form in it. What is not
+# settled is how that maps onto a micron-scale Monte-Carlo cell, where a readout gradient winds essentially
+# nothing across the cell and the voxel-scale winding has to come from the crusher term instead. Three
+# attempts are recorded in dmipy-sim#329; all three placed the readouts by assuming the refocused family
+# stays at the nominal echo, and an unbalanced winding moves it. The tests above are the acceptance
+# criteria for a fourth.
