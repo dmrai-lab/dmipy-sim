@@ -317,3 +317,41 @@ def test_the_concomitant_term_is_refused_twice_over_and_at_a_nonsense_field():
     once = seq.with_concomitant([0, 0, 0.1], 0.064)
     with pytest.raises(ValueError, match="already carries a concomitant term"):
         once.with_concomitant([0, 0, 0.1], 0.064)
+
+
+# ── against the Swoop paper's reported numbers (dmipy-sim#285) ──────────────────────────────────────
+def _swoop_protocol(directions):
+    """The published protocol: b = 945 s/mm2, delta 35 ms, Delta 42 ms (Gholam 2025 / O'Halloran 2022)."""
+    n = len(directions)
+    return d.pgse(directions, 0.035, 0.042, bvalues=[945e6] * n, TE=0.090, n_t=900)
+
+
+def test_the_background_gradient_reproduces_the_papers_ADC_error_at_8_cm():
+    """Gholam 2025 corrects ADC errors of up to 16.1 % at 8 cm from isocentre, from a magnet gradient of up
+    to 1.4 mT/m there. Driving the transform with their gradient must land on their error, and it must be the
+    ALIGNED case that does: the error is a cross term, so it is largest when the two gradients are parallel
+    and vanishes when they are perpendicular."""
+    seq = _swoop_protocol([[1.0, 0, 0]])
+    b0 = float(seq.b()[0])
+    aligned = float(seq.with_background_gradient([1.4e-3, 0, 0]).b()[0]) / b0 - 1.0
+    against = float(seq.with_background_gradient([-1.4e-3, 0, 0]).b()[0]) / b0 - 1.0
+    across = float(seq.with_background_gradient([0, 1.4e-3, 0]).b()[0]) / b0 - 1.0
+
+    assert 0.10 < aligned < 0.30, f"aligned error {aligned:.3f} is nowhere near the paper's 0.161"
+    assert against < 0 < aligned and abs(abs(against) - aligned) < 0.3 * aligned
+    assert abs(across) < 0.05 * aligned            # perpendicular: the cross term is gone
+    # the paper's figure sits inside the range the directions span, which is what "up to 16.1 %" means
+    assert against < 0.161 < aligned
+
+
+def test_at_3_T_the_same_magnet_error_would_be_a_low_field_problem_only():
+    """The background gradient is a property of the magnet, so it does not scale with B0 -- but a 3 T magnet
+    is shimmed to parts per million and has no such gradient. The concomitant term DOES scale, and that one
+    is the reason the same sequence is safe at 3 T and not at 64 mT."""
+    seq = _swoop_protocol([[0.577, 0.577, 0.577]])
+    b0 = float(seq.b()[0])
+    at_64mT = float(seq.with_concomitant([0.0462, 0.0462, 0.0462], 0.064).b()[0]) / b0 - 1.0
+    at_3T = float(seq.with_concomitant([0.0462, 0.0462, 0.0462], 3.0).b()[0]) / b0 - 1.0
+    assert at_64mT > 20 * at_3T > 0.0
+    # and on a SYMMETRIC spin echo it stays small: the 180 cancels most of a term the coils do not reverse
+    assert at_64mT < 0.02, f"{at_64mT:.4f}: a symmetric PGSE should refocus most of the concomitant term"
