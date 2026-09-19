@@ -19,6 +19,18 @@ Pages: [pack](pack.md) · [sequence](sequence.md) · [tissue](tissue.md) · [sca
 [orientation](orientation.md) · [replay](replay.md) · [images from the hub](images.md) · [phantoms](phantoms.md) ·
 recipes: [a canonical pore](recipes/canonical_pore.md), [DiSCo from the hub](recipes/disco.md).
 
+## What this guide is not
+
+It is organised by OBJECT, which makes it a reference you can read in order rather than a cookbook. Three
+things it does not cover, so you know to look elsewhere:
+
+* **producing** a pack. The pack page builds one as a prop; the real path is a spec, `walk_spec`, and
+  `build_replay_pack`, and its cost model is the fill (`dmipy_sim/fill/`).
+* **extending** anything -- a sequence family, a scanner, a channel. Those are the engine's own contracts;
+  the geometry one is written out in `CLAUDE.md` and the others are not yet (dmipy-sim#315).
+* **troubleshooting**. Every refusal in this library names what it could not do; none of them are collected
+  here.
+
 ## The knobs, and what each one touches
 
 A replay is a contraction of the pack's stored channels against what the knobs ask for. The table is the spine of
