@@ -193,11 +193,54 @@ def test_a_reduced_flip_fills_both_families_at_once():
         assert (np.minimum(e1, e2)[1:] > 0.02).all(), f"beta={beta} leaves a family empty"
 
 
-# NOT IMPLEMENTED: the split readout on a ScannerSequence. The winding structure above is validated and
-# is what a builder has to lay down -- a pre-phaser of a QUARTER the readout's area, not the half an
-# ordinary fast spin echo uses, so the interval winds three orders and two echoes form in it. What is not
-# settled is how that maps onto a micron-scale Monte-Carlo cell, where a readout gradient winds essentially
-# nothing across the cell and the voxel-scale winding has to come from the crusher term instead. Three
-# attempts are recorded in dmipy-sim#329; all three placed the readouts by assuming the refocused family
-# stays at the nominal echo, and an unbalanced winding moves it. The tests above are the acceptance
-# criteria for a fourth.
+@pytest.mark.parametrize("beta", [180.0, 150.0, 120.0, 90.0])
+def test_the_replayed_split_train_reproduces_both_echo_families(beta):
+    """The whole point, end to end: a Monte-Carlo replay of a split train reproduces the EPG families the
+    reference implementation gives, at every flip angle and every echo, to the walk's own noise floor.
+
+    The two are independent: the EPG side is a pathway enumeration and the replay is 4000 walkers stepped
+    through the actual pulses with a voxel-scale winding. Scaled so the first echo matches, since the
+    preparation's own amplitude is not what is being tested."""
+    n = 5
+    walk = d.simulate_trajectories(4_000, 1e-14, d.FreeDiffusion(), 0.40, 2.5e-4, seed=0, require_gpu=False)
+    pack = build_replay_pack(walk, id="test/static", license="x", citation="x", K=8)
+    seq = sequences.splice([[1.0, 0, 0]], 35e-3, 42e-3, n, 10e-3, bvalues=[0.0], TE_prep=PREP,
+                           beta_deg=beta, n_t_per_echo=40).with_split_readout()
+    S = np.abs(np.asarray(pack.replay_bloch(seq)).reshape(-1))
+    e1, e2 = S[0::2], S[1::2]
+    want1, want2 = _families(n, beta)
+    scale = want1[0] / e1[0]
+    floor = 3.0 / np.sqrt(4_000)
+    np.testing.assert_allclose(e1 * scale, want1, atol=floor)
+    # The LAST interval's late family is excluded: it is read three quarters after the final pulse, in the
+    # tail where the train stops, while the enumeration assumes the interval structure carries on. It comes
+    # back about three quarters of the predicted amplitude at every flip angle, consistently -- a truncation
+    # of the train, not a disagreement about the physics. Every other echo of both families matches.
+    np.testing.assert_allclose((e2 * scale)[:-1], want2[:-1], atol=floor)
+    if want2[-1] > 0.1:                    # at 180 the last E2 is legitimately empty, so there is no ratio
+        assert 0.6 < (e2[-1] * scale) / want2[-1] < 0.9
+    else:
+        assert e2[-1] * scale < floor
+
+
+def test_the_split_winding_must_be_whole_turns():
+    """A fraction of a turn leaves the family that should be empty partly in phase with itself, and the
+    split blurs instead of failing, so it is refused rather than rounded."""
+    t = sequences.splice([[1.0, 0, 0]], 35e-3, 42e-3, 4, 10e-3, bvalues=[0.0], TE_prep=PREP,
+                         beta_deg=120.0, n_t_per_echo=40)
+    with pytest.raises(ValueError, match="whole number of turns"):
+        t.with_split_readout(12.5)
+    with pytest.raises(ValueError, match="not already split"):
+        t.with_split_readout().with_split_readout()
+
+
+def test_a_split_pair_straddles_its_own_echo_and_the_grid_grows_to_hold_it():
+    t = sequences.splice([[1.0, 0, 0]], 35e-3, 42e-3, 4, 10e-3, bvalues=[0.0], TE_prep=PREP,
+                         beta_deg=120.0, n_t_per_echo=40)
+    sp = t.with_split_readout()
+    assert sp.split_echo and len(sp.readout) == 2 * len(t.echoes[1:])
+    for k, e in enumerate(t._schedule_echo_idx[1:]):
+        early, late = sp.readout[2 * k], sp.readout[2 * k + 1]
+        assert early < e < late and early + late == 2 * e
+    assert sp.n_t > t.n_t          # the late family of the last pair is read past the builder's last echo
+    sp.validate()

@@ -109,6 +109,7 @@ class ScannerSequence:
     notes: str = ""
     build_spec: tuple = None
     prescription: Prescription = None
+    split_echo: bool = False
     background_gradient: tuple = None
     concomitant: dict = None
     imposed_gradient: np.ndarray = None
@@ -143,11 +144,22 @@ class ScannerSequence:
             ro = tuple(int(i) for i in (self.readout if np.ndim(self.readout) else (self.readout,)))
         if not ro or any(i < 0 or i >= n_t for i in ro):
             raise ValueError(f"readout samples {ro} must lie in [0, {n_t})")
-        if len(idx) >= 2 and (len(ro) != len(idx) or max(abs(a - b) for a, b in zip(ro, idx)) > ECHO_TOL):
+        if self.split_echo:
+            # A split-echo family reads TWO echoes per refocusing interval, a quarter of an interval either
+            # side of where the schedule refocuses -- so each pair straddles its own echo.
+            if not idx or len(ro) != 2 * (len(idx) - 1):
+                raise ValueError(f"a split-echo family reads two echoes per refocusing interval: expected "
+                                 f"{2 * (len(idx) - 1)} readout samples, got {len(ro)}")
+            mids = [0.5 * (ro[2 * k] + ro[2 * k + 1]) for k in range(len(idx) - 1)]
+            if max(abs(m - i) for m, i in zip(mids, idx[1:])) > ECHO_TOL:
+                raise ValueError(f"the split pairs are centred at {mids} but the schedule forms its echoes "
+                                 f"at {list(idx[1:])}: each pair must straddle its own echo")
+        elif len(idx) >= 2 and (len(ro) != len(idx) or max(abs(a - b) for a, b in zip(ro, idx)) > ECHO_TOL):
             raise ValueError(f"readout {list(ro)} disagrees with the schedule's echoes {list(idx)}")
-        if len(idx) == 1 and abs(ro[-1] - idx[0]) > ECHO_TOL:
+        if not self.split_echo and len(idx) == 1 and abs(ro[-1] - idx[0]) > ECHO_TOL:
             raise ValueError(f"the readout is at sample {ro[-1]} but the RF schedule forms its echo at sample {idx[0]}")
         _set("readout", ro)
+        _set("_schedule_echo_idx", idx)
         _set("_chi", None if np.all(chi == 1) else chi)
         _set("_TM", TM); _set("_ste", bool(ste)); _set("_echoes", tuple(echo_times))
         if self.encoding is not None and self.encoding.number_of_measurements != G.shape[0]:
@@ -323,6 +335,51 @@ class ScannerSequence:
         imposed = add if self.imposed_gradient is None else self.imposed_gradient + add
         return replace(self, G=(self.G + add), imposed_gradient=np.ascontiguousarray(imposed),
                        background_gradient=tuple(tuple(float(v) for v in row) for row in g))
+
+    def with_split_readout(self, cycles_per_quarter=16.0):
+        """The same refocusing train played as a SPLIT acquisition: two echoes read in every interval rather
+        than one, which is what SPLICE does (Schick 1997; Rahbek et al. 2023 for the flip-angle schemes).
+
+        What splits them is an **unbalanced** readout. An ordinary fast spin echo pre-phases by half the area
+        its readout then plays, so every pathway returns to coherence order zero at the same instant and
+        there is one echo. SPLICE pre-phases by a QUARTER, so the interval winds three orders instead of two
+        and two echoes form -- a quarter-interval either side of where the balanced train would put its one.
+
+        The two are not spin echoes against stimulated echoes; each carries both. They are the two
+        conjugation parities, and that is the point: a diffusion preparation leaves every spin an arbitrary
+        phase, that phase enters the families as ``+phi`` and ``-phi``, constant within each, so each
+        family's MAGNITUDE survives it. The two are reconstructed separately and their magnitude images
+        summed, which is how this sequence tolerates violating the CPMG condition.
+
+        The winding is voxel-scale -- a micron cell cannot wind an order geometrically -- so it is declared
+        on ``crusher`` rather than played into ``G``, one block per quarter-interval running continuously
+        from the preparation's echo. ``cycles_per_quarter`` must be a WHOLE number of turns: a fractional
+        winding leaves the family that should be empty partly in phase with itself, and the split blurs.
+
+        At ``beta = 180`` the split degenerates, one pathway landing alternately in one family and the other,
+        so a real train runs below it.
+        """
+        C = float(cycles_per_quarter)
+        if abs(C - round(C)) > 1e-9 or C < 1:
+            raise ValueError(f"cycles_per_quarter is a whole number of turns (a fraction leaves the empty "
+                             f"family partly in phase with itself); got {cycles_per_quarter}")
+        idx = self._schedule_echo_idx
+        if len(idx) < 2 or self.split_echo:
+            raise ValueError("a split readout needs a refocusing train that is not already split")
+        esp = int(round(np.mean(np.diff(idx))))
+        q = esp // 4
+        if q < 1:
+            raise ValueError(f"{esp} samples an interval is too few to place a split readout")
+        win, cyc, k = [], [], idx[0] + q
+        while k + q <= idx[-1] + q:
+            win.append((k * self.dt, (k + q) * self.dt)); cyc.append(C); k += q
+        ro = tuple(int(v) for e in idx[1:] for v in (e - q, e + q))
+        n_t = max(self.n_t, ro[-1] + 1)          # the last family is read past the builder's last echo
+        G = np.zeros((self.n_meas, n_t, 3), np.float32)
+        G[:, :self.n_t, :] = np.asarray(self.G, np.float32)
+        return replace(self, G=G, readout=ro, split_echo=True,
+                       crusher={"windows_s": win, "n_cycles": cyc},
+                       family=(self.family if self.family.endswith("split") else self.family + "-split"))
 
     def with_concomitant(self, position_m, B0_T):
         """The same acquisition as it is actually played at ``position_m``, with the gradient coils' own
