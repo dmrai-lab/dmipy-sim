@@ -21,12 +21,12 @@ def b0_offset_map(scanner, grid, *, to_scanner=None):
     Pass the result straight to ``off_resonance=`` of any :meth:`~dmipy_sim.phantom.Phantom.replay`; it has
     the signature a phantom already evaluates for a layer, ``f(positions_m) -> (n,)``.
 
-    ``to_scanner`` is the rotation taking the grid's axes to the scanner's -- the ``R`` that
-    :meth:`~dmipy_sim.phantom.Grid.from_oblique_affine` returns. It is REQUIRED for an oblique grid and must
-    be omitted for an axis-aligned one, because a field law is a function of position in the BORE and an
-    oblique grid's coordinates are not the bore's. Leaving it out does not fail: it silently evaluates the
-    law at the wrong place, and for a law with a preferred direction -- which a single-yoke magnet's is --
-    it gets the sign of the asymmetry wrong on part of the volume.
+    ``to_scanner`` is the rotation taking the grid's axes to the scanner's. It defaults to the grid's own
+    (:attr:`~dmipy_sim.phantom.Grid.to_scanner`, which :meth:`~dmipy_sim.phantom.Grid.from_oblique_affine`
+    sets), so an oblique grid is handled without the caller remembering -- which matters because forgetting
+    does not fail. It silently evaluates the law at the wrong place, and for a law with a preferred
+    direction, as a single-yoke magnet's is, it gets the sign of the asymmetry wrong over part of the
+    volume. Pass it explicitly only to override what the grid says.
 
     ``None`` when the machine publishes no profile, which is every machine but a permanent-magnet one;
     ``off_resonance=None`` is then exactly right, being what a replay already means by "no field offset".
@@ -34,7 +34,8 @@ def b0_offset_map(scanner, grid, *, to_scanner=None):
     if getattr(scanner, "b0_quadratic", None) is None:
         return None
     iso = np.asarray(grid.isocenter_m, dtype=np.float64)
-    R = None if to_scanner is None else np.asarray(to_scanner, dtype=np.float64)
+    R = grid.to_scanner if to_scanner is None else to_scanner
+    R = None if R is None else np.asarray(R, dtype=np.float64)
     if R is not None:
         if R.shape != (3, 3):
             raise ValueError(f"to_scanner is the 3x3 rotation taking grid axes to scanner axes; got {R.shape}")

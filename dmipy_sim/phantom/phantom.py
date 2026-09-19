@@ -329,6 +329,7 @@ class Phantom:
         """
         f = self.file
         self._check_prescription(seq)
+        off_resonance = self._machine_field(scanner, off_resonance)
         maps = dict(transmit=self._map(transmit, "transmit"), off_resonance=self._map(off_resonance, "off_resonance"),
                     proton_density=self._map(proton_density, "proton_density"))
         common = dict(scanner=scanner, pose=pose, packs=self._packs(packs), complex_signal=complex_signal,
@@ -348,6 +349,22 @@ class Phantom:
             raise ValueError(f"the acquisition is prescribed on axes {p.axes!r} and the phantom's grid on {self.grid.axes!r}: "
                              f"the gradient and B0 directions are given in the scanner frame, so the two must agree; "
                              f"build the grid with Grid.from_prescription(seq.prescription) or re-prescribe the sequence")
+
+    def _machine_field(self, scanner, off_resonance):
+        """The static field's own non-uniformity, where the machine publishes one and the caller did not
+        state the offset themselves.
+
+        A field a magnet imposes is a property of the machine, and a replay is already told which machine it
+        is on. So a scanner whose profile the catalogue carries brings it along rather than being silently
+        replayed as an ideal magnet -- which is what every replay did until now, and looks identical.
+
+        A stated ``off_resonance`` wins: it is a measurement, and a measured field map already contains
+        whatever the magnet does. Combining the two would count it twice.
+        """
+        from .bore import b0_offset_map
+        if off_resonance is not None or getattr(scanner, "b0_quadratic", None) is None:
+            return off_resonance
+        return b0_offset_map(scanner, self.grid)
 
     def _map(self, value, name):
         """A replay-time map as one value per occupied voxel, or None."""
