@@ -94,9 +94,16 @@ into voxels and regridding it; adding noise and fitting the result.
 Planned. Opening a pack by reference and reading one voxel; planning a transfer before making it; imaging a
 grid in one pass; running and consolidating a distributed fill.
 
-## Part IX -- rigour
+## Part IX -- rigour  (`rigour/`)
 
-Planned. Reading a certificate; sizing a run by the floor you need; validating against a published dataset.
+The two numbers a producer has to choose, and the criterion that removes the guesswork from each.
+
+| | |
+|---|---|
+| [20 how many walkers](rigour/20_how_many_walkers.py) | the one-over-root-N law, the margin a real battery adds to it, and sizing a run from both |
+| [21 how many bands](rigour/21_how_many_bands.py) | compress until the codec's error disappears under the walk's own noise, then stop |
+
+Validating against a published dataset is the DiSCo recipe in the replay guide; a rung here is planned.
 
 ## Part X -- extending
 
