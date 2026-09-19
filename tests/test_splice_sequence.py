@@ -76,9 +76,79 @@ def test_the_train_depends_on_its_refocusing_flip_as_the_pathways_say():
                     if p.readout_idx == k)) for k in range(N_ECHO)]
     assert ratio[0] == pytest.approx(want[0], abs=0.05)               # the first train echo, where the pathways part
     assert ratio.mean() < 0.95                                        # and the train as a whole carries less
-    # Only the FIRST train echo is compared to the enumeration. Beyond it the two describe different
-    # sequences: `cpmg_schedule` winds a whole coherence order every half interval, as an imaging train with a
-    # continuous readout does, while this builder winds only inside the crusher windows. The later echoes
-    # therefore sit above that prediction, and a like-for-like comparison needs the readout lobes this family
-    # does not yet carry. Individual echoes also recover nearly fully -- the Meiboom-Gill oscillation, where a
-    # flip error cancels every second echo -- so no per-echo bound holds.
+    # Only the FIRST train echo is compared here, against the sum of the pathways that reach it. The later
+    # echoes agree too, to better than 0.03 -- see
+    # `test_the_replayed_train_is_the_sum_over_pathways_at_every_echo`, which checks all five. Individual
+    # echoes recover nearly fully (the Meiboom-Gill oscillation, where a flip error cancels every second
+    # echo), so the `ratio.mean()` bound below is about the train as a whole and no per-echo bound holds.
+
+
+# ── analytic oracles for a refocusing train (dmipy-sim#285) ─────────────────────────────────────────
+# Two closed forms, written out here rather than taken from the enumeration, so they can judge it:
+#
+#   the refocused (SE) family at echo k        sin^2(beta/2) ^ (k+1)
+#   the fraction a pulse STORES along z        (1/2) sin(beta)
+#
+# The second is what a split-echo readout exists to catch, and it is IDENTICALLY ZERO at beta = 180: a
+# perfect train stores nothing and has exactly one coherence family. That statement needs no simulation,
+# and it is the acceptance test for any future split readout (see the note at the end of this file).
+
+def _se_closed_form(beta_deg, k):
+    return np.sin(np.deg2rad(beta_deg) / 2.0) ** (2 * (k + 1))
+
+
+def _stored_fraction(beta_deg):
+    return 0.5 * abs(np.sin(np.deg2rad(beta_deg)))
+
+
+@pytest.mark.parametrize("beta", [180.0, 150.0, 120.0, 90.0])
+def test_the_refocused_family_follows_sin_squared_half_beta(beta):
+    """Every pulse keeps sin^2(beta/2) of the transverse magnetisation on the refocused path, so the family
+    that never leaves it is that number to the power of the echoes it has passed."""
+    for k in range(3):
+        got = [abs(p.eta) for p in epg.enumerate_pathways(epg.cpmg_schedule(4, beta), threshold=1e-6)
+               if p.readout_idx == k
+               and [i[0] for i in p.intervals] == ['F+'] + ['F-'] * (len(p.intervals) - 1)]
+        assert len(got) == 1, f"the refocused family should be one pathway; got {len(got)}"
+        assert got[0] == pytest.approx(_se_closed_form(beta, k), rel=1e-9)
+
+
+def test_a_perfect_refocusing_train_stores_nothing_so_it_has_no_second_family():
+    """(1/2) sin(beta) is zero at 180 and maximal at 90. A train of perfect 180s therefore has exactly one
+    coherence family, which is why a split readout of one must find the other side empty."""
+    assert _stored_fraction(180.0) == pytest.approx(0.0, abs=1e-12)
+    assert _stored_fraction(90.0) == pytest.approx(0.5)
+    for beta, n_stored in ((180.0, 0), (120.0, 3)):
+        ps = [p for p in epg.enumerate_pathways(epg.cpmg_schedule(4, beta), threshold=1e-4)
+              if p.readout_idx == 2]
+        assert sum('Z' in [i[0] for i in p.intervals] for p in ps) == n_stored
+
+
+@pytest.mark.parametrize("beta", [150.0, 120.0, 90.0])
+def test_the_replayed_train_is_the_sum_over_pathways_at_every_echo(beta):
+    """What a readout measures is not one pathway but ALL of them arriving together, and the replayed train
+    reproduces that sum at every echo, not merely the first. Taken as a ratio to the 180 train so the
+    preparation, the relaxation and the diffusion weighting divide out."""
+    walk = d.simulate_trajectories(600, 1e-14, d.FreeDiffusion(), 0.30, 2.5e-4, seed=0, require_gpu=False)
+    pack = build_replay_pack(walk, id="test/static", license="x", citation="x", K=8)
+    n = 5
+
+    def replayed(b):
+        s = sequences.splice([[1.0, 0, 0]], 35e-3, 42e-3, n, 10e-3, bvalues=[0.0], TE_prep=PREP,
+                             beta_deg=b, n_t_per_echo=40)
+        return np.abs(np.asarray(pack.replay_bloch(s)).reshape(-1))
+
+    got = (replayed(beta) / np.maximum(replayed(180.0), 1e-12))[1:1 + n]
+    want = np.array([abs(sum(p.eta for p in epg.enumerate_pathways(epg.cpmg_schedule(n, beta), threshold=1e-5)
+                             if p.readout_idx == k)) for k in range(n)])
+    assert np.abs(got - want).max() < 0.03, f"got {got}, enumeration {want}"
+
+
+# NOT IMPLEMENTED: the split readout itself. A train that reads BOTH families an interval needs an
+# unbalanced winding -- one extra coherence order between a pulse and its echo -- so that the refocused
+# family reaches order zero at the echo while a family stored through the previous interval, having missed
+# that winding, reaches it a quarter-interval earlier. Two attempts are recorded in dmipy-sim#329: a
+# balanced gradient lobe (which separates nothing, both readouts landing on the same echo) and a crusher
+# winding of one extra order (which separates something, but not into the two families -- the stimulated
+# side carries 0.175 of the refocused one at beta = 180 where it must carry 0, and heavier crushing makes
+# it worse rather than better). The oracle above is what a working one has to satisfy.
