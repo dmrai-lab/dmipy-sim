@@ -69,10 +69,19 @@ CATERPillar, Winther).
 | [exchange](fexi_axr_demo.py) | FEXI and the AXR |
 | [extra-axonal tortuosity](validation/extra_axonal_tortuosity_scale.py) | the scale sweep |
 
-## Part VI -- acquisitions
+## Part VI -- acquisitions  (`acquisition/`)
 
-Planned. Realising an exact b and what a builder refuses; a multi-TE protocol from one walk; a pulse train
-and what its crusher selects; Pulseq in and out; the same scheme through the analytical model and this engine.
+Nothing in this part touches water. A sequence is an object that either realises what was asked of it on a
+stated scanner or refuses and says why, and every refusal here is a number a simulator without the check
+would have returned looking reasonable.
+
+| | |
+|---|---|
+| [17 an exact b, and what is refused](acquisition/17_an_exact_b_and_what_is_refused.py) | b is a functional of the waveform; three refusals that would otherwise be plausible wrong numbers |
+| [18 a train and what its crusher selects](acquisition/18_a_train_and_what_its_crusher_selects.py) | coherence pathways, the two closed forms the enumeration must reproduce, and why a train needs a crusher |
+| [19 Pulseq in and out](acquisition/19_pulseq_in_and_out.py) | the hardware raster, and the b a scanner would actually deliver |
+
+Multi-TE from one walk is rung 15. The same scheme through the analytical model and this engine is planned.
 
 ## Part VII -- voxels and phantoms
 
