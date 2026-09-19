@@ -38,10 +38,18 @@ is between what changes the PATH and what changes the magnetisation carried alon
 | [11 what changes the magnetisation](replay/11_what_changes_the_magnetisation.py) | relaxation, relaxivity, field: substrate properties that are still replay knobs |
 | [12 the channels](replay/12_the_channels.py) | what each records, what it costs, and what is refused without it |
 
-## Part III -- one walk, many acquisitions
+## Part III -- one walk, many acquisitions  (`replay/`)
 
-Planned. Sweep a tissue, a pose, a field without re-walking; a whole scheme; save a pack, load it elsewhere,
-read what it is certified for.
+Part II established that the walk is prior to the measurement. This part is what that buys: the settings a
+study actually sweeps -- material, pose, echo time -- are all applied to the question, and the pack is read
+once for the whole grid.
+
+| | |
+|---|---|
+| [13 one read, many answers](replay/13_one_read_many_answers.py) | a study over tissues and fields in one pass, and which channels its pairs touch |
+| [14 where the substrate sits](replay/14_where_the_substrate_sits.py) | a pose is applied to the gradient; one expansion covers every pose, so dispersion is a contraction |
+| [15 a shorter walk is inside a longer one](replay/15_a_shorter_walk_is_inside_a_longer_one.py) | multi-TE from one walk, at constant bands per second |
+| [16 what a pack is certified for](replay/16_what_a_pack_is_certified_for.py) | error against the floor, the tiers in the file, the envelope a consumer checks |
 
 ## Part IV -- substrates in practice
 
