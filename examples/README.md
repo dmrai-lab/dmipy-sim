@@ -83,11 +83,15 @@ would have returned looking reasonable.
 
 Multi-TE from one walk is rung 15. The same scheme through the analytical model and this engine is planned.
 
-## Part VII -- voxels and phantoms
+## Part VII -- voxels and phantoms  (`phantom/`, `rph/`)
+
+| | |
+|---|---|
+| [24 noise and what it costs](phantom/24_noise_and_what_it_costs.py) | Rician bias is one-sided, and which of the two floors binds decides whether more walkers buy anything |
 
 [Composing a phantom from packs](rph/circular_wm_phantom.py); [a brain from a measured
-FOD](rph/brain_from_csd.py) and [its round trip](rph/brain_from_csd_check.py). Planned: partitioning one walk
-into voxels and regridding it; adding noise and fitting the result.
+FOD](rph/brain_from_csd.py) and [its round trip](rph/brain_from_csd_check.py). Partitioning one walk into
+voxels and regridding it is planned.
 
 ## Part VIII -- at scale
 
