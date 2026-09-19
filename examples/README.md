@@ -34,7 +34,7 @@ is between what changes the PATH and what changes the magnetisation carried alon
 | | |
 |---|---|
 | [09 the scanner is an observer](replay/09_the_scanner_is_an_observer.py) | one walk, three acquisitions asked afterwards, each checked against the forward engine |
-| [10 what changes the path](replay/10_what_changes_the_path.py) | diffusivity, geometry, permeability -- each its own walk, and why |
+| [10 what changes the path](replay/10_what_changes_the_path.py) | only the geometry does: diffusivity is a time scaling, and permeability scales with it |
 | [11 what changes the magnetisation](replay/11_what_changes_the_magnetisation.py) | relaxation, relaxivity, field: substrate properties that are still replay knobs |
 | [12 the channels](replay/12_the_channels.py) | what each records, what it costs, and what is refused without it |
 

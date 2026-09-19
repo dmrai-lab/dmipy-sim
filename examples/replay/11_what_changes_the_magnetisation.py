@@ -2,6 +2,8 @@
 
 Relaxation, surface relaxivity and susceptibility are properties of the substrate, not of the scanner. They
 still do not move a walker: they change the magnetisation it carries along a path it would have taken anyway.
+That is a different statement from the previous rung's -- there the diffusivity moved the walker but only by
+rescaling the clock; here nothing moves at all, and the walk's own numbers are reused as they stand.
 So the walk records the EXPOSURE -- which pool a walker was in at each save, how long it spent against a
 wall, what field it passed through -- and the magnitude is applied afterwards.
 
