@@ -814,6 +814,33 @@
      "source_key": "gholam2025_swoop",
      "location": "Appendix, background-gradient correction",
      "confidence": "cited"
+    },
+    "b0_quadratic": {
+     "value": 108753.6,
+     "unit": "ppm/m^2",
+     "field_T": 0.064,
+     "context": "the even term c of dB/B0 = a x + c r^2 about isocentre: the isotropic bowl. Solved TOGETHER with b0_asymmetry_rl against both cited figures of this magnet, which it then reproduces exactly -- 1100 ppm peak-to-peak over the 16 cm DSV and a steepest 1.400 mT/m inside it. The two numbers determine the two coefficients between them: a purely linear field matching the DSV figure would need 0.44 mT/m rather than 1.4, and a purely isotropic one reaches only 80 % of the DSV figure, so the field needs both a bowl and a tilt",
+     "source_key": "gholam2025_swoop",
+     "location": "solved against the Methods' DSV homogeneity and the Appendix's background gradient",
+     "confidence": "derived"
+    },
+    "b0_validity_radius": {
+     "value": 0.08,
+     "unit": "m",
+     "field_T": 0.064,
+     "context": "how far from isocentre b0_quadratic is anchored: the radius the cited gradient was measured at. The law is an extrapolation beyond this and a consumer refuses rather than extrapolating",
+     "source_key": "gholam2025_swoop",
+     "location": "Appendix, background-gradient correction",
+     "confidence": "derived"
+    },
+    "b0_asymmetry_rl": {
+     "value": 4474.4,
+     "unit": "ppm/m",
+     "field_T": 0.064,
+     "context": "the ODD term a of dB/B0 = a x + c r^2, along the scanner's R/L axis: what 'the magnet is asymmetric in RL' means, and the term a bowl alone cannot express. A single yoke sits on one side, so the field is not mirror-symmetric about isocentre. It is substantial -- the field differs by 716 ppm between +8 and -8 cm, 1054 against 338 -- which is why an isotropic law is not good enough here. The SIGN is a convention: the source says the magnet is asymmetric but not which side is high, so +x (R) is assumed and a study that cares about the direction must check it",
+     "source_key": "gholam2025_swoop",
+     "location": "Methods, scanner description ('asymmetric in RL'); magnitude solved with b0_quadratic",
+     "confidence": "derived"
     }
    },
    "notes": "A permanent magnet drifts with gradient heating (NdFeB remanence about -0.1 %/K); the Swoop re-centres f0 between every two DWIs, and its gradients are passively cooled, which caps protocols near an hour. Its diffusion sequence is a non-CPMG SPLICE split-echo train (ohalloran2022_dwi_64mt)."

@@ -4,6 +4,7 @@ Every class of the band-limit certificate and every Pulseq preset is the cited J
 one scanner resolves from any of its names; a slew regime is a choice, not a second catalogue; and what the
 catalogue does not know is ``None`` and listed, never a number standing in for one.
 """
+import inspect
 import json
 
 import numpy as np
@@ -197,3 +198,84 @@ def test_an_alias_may_name_an_envelope_and_a_citation_may_be_prose_only():
     prose_only = set(cat["citations"]) - cited_by_a_leaf - {cat["safety"].get("source_key")}
     assert prose_only, "no prose-only citation left: the rule is untested"
     assert scc.conformance_problems() == []       # and they are not an error
+
+
+# ── the magnet's field SHAPE, not just a figure (dmipy-sim#322 PR 2) ────────────────────────────────
+def test_the_field_law_is_solved_against_both_cited_figures_at_once():
+    """The catalogue held two numbers about the Swoop's field -- 1100 ppm over a 16 cm DSV and up to 1.4
+    mT/m at 8 cm -- and nothing in Python read either. They determine the two coefficients BETWEEN them:
+    a purely linear field matching the DSV figure would need 0.44 mT/m rather than 1.4, and a purely
+    isotropic one reaches only 80 % of the DSV figure. The field needs both a bowl and a tilt, and with
+    both it reproduces each cited number exactly."""
+    s = ScannerLimits.of("swoop")
+    R, B0 = s.b0_validity_radius, s.field_T
+    x = np.linspace(-R, R, 20001)
+    ppm = 1e6 * (s.b0_asymmetry_rl * x + s.b0_quadratic * x ** 2)
+    assert ppm.max() - ppm.min() == pytest.approx(1100.0, rel=1e-3)                 # the DSV figure
+    grad = B0 * np.abs(s.b0_asymmetry_rl + 2 * s.b0_quadratic * x).max()
+    assert grad == pytest.approx(1.4e-3, rel=1e-3)                                  # the gradient figure
+    for leaf in ("b0_quadratic", "b0_asymmetry_rl"):
+        assert scc.get_limit("hyperfine_swoop_64mT", "homogeneity", leaf)["confidence"] == "derived"
+
+
+def test_the_field_law_carries_the_magnets_RL_asymmetry():
+    """'The magnet is asymmetric in RL' is an ODD term in x, which a bowl cannot express: a single yoke sits
+    on one side, so the field is not mirror-symmetric about isocentre. It is not a small correction -- the
+    Swoop's field differs by 716 ppm between +8 and -8 cm, 1054 against 338 -- so an isotropic law would be
+    visibly wrong on one side of the bore and not the other."""
+    s = ScannerLimits.of("swoop")
+    R = s.b0_validity_radius
+    plus, minus = (s.b0_offset([[v, 0, 0]])[0] / s.field_T * 1e6 for v in (R, -R))
+    assert plus == pytest.approx(1054.0, rel=0.01) and minus == pytest.approx(338.0, rel=0.01)
+    assert plus - minus == pytest.approx(716.0, rel=0.01)
+    # the odd term acts along R/L only, so a displacement along the bore keeps the bowl alone
+    along_z = s.b0_offset([[0, 0, R]])[0] / s.field_T * 1e6
+    assert along_z == pytest.approx(1e6 * s.b0_quadratic * R ** 2, rel=1e-9)
+    assert s.b0_offset([[0, R, 0]])[0] == pytest.approx(s.b0_offset([[0, 0, R]])[0], rel=1e-9)
+
+
+def test_the_field_law_is_none_for_a_machine_that_does_not_publish_one():
+    """Which is every machine but one. A shimmed superconducting magnet's residual is parts per million and
+    its shape is not published; a permanent magnet's is parts per thousand and is. `None` keeps meaning
+    'the catalogue does not know' rather than standing in for zero."""
+    for name in ("prisma", "connectom", "magnus"):
+        s = ScannerLimits.of(name)
+        assert s.b0_quadratic is None and s.b0_offset([[0, 0, 0.05]]) is None
+
+
+def test_the_field_offset_is_zero_at_isocentre_and_refused_beyond_its_anchor():
+    s = ScannerLimits.of("swoop")
+    assert s.b0_offset([[0.0, 0.0, 0.0]])[0] == pytest.approx(0.0, abs=1e-15)
+    at8 = s.b0_offset([[0.0, 0.0, 0.08]])[0]
+    # along the bore only the bowl acts, so half the radius is a quarter the offset
+    assert s.b0_offset([[0.0, 0.0, 0.04]])[0] == pytest.approx(at8 / 4, rel=1e-9)
+    # across it the odd term dominates near isocentre: 2.9 kHz at +8 cm against 0.9 at -8
+    assert 42.577e6 * s.b0_offset([[0.08, 0, 0]])[0] == pytest.approx(2872.0, rel=0.01)
+    assert 42.577e6 * s.b0_offset([[-0.08, 0, 0]])[0] == pytest.approx(921.0, rel=0.01)
+    with pytest.raises(ValueError, match="anchored at 8 cm"):
+        s.b0_offset([[0.0, 0.0, 0.12]])
+
+
+def test_every_leafs_unit_is_one_the_SI_view_knows():
+    """An unlisted unit converts by 1.0 and says nothing, which is the quietest failure mode in this file --
+    it cost a factor of a million when `ppm/m` was first added here. The conformance check now catches it,
+    and catching it turned up four leaves already in the catalogue (a coil diameter in cm, amplifier powers
+    in kW and MW) whose units were equally unknown."""
+    for table in ("scanners", "envelopes"):
+        for name, entry in scc.SCANNER_CONSTANTS[table].items():
+            for group, leaves in entry.items():
+                if not isinstance(leaves, dict):
+                    continue
+                for leaf_name, leaf in leaves.items():
+                    if isinstance(leaf, dict) and leaf.get("value") is not None and leaf.get("unit"):
+                        assert leaf["unit"] in scc._TO_SI, f"{table}.{name}.{group}.{leaf_name}"
+
+
+def test_the_new_units_convert_and_the_group_is_scanned_for_verification():
+    """`ppm` was not in the SI table, and an unknown unit converts silently by 1.0 -- the quietest failure
+    mode in this file. `needs_verification` also only scanned gradient and rf, so a homogeneity leaf was
+    invisible to it."""
+    assert scc._TO_SI["ppm"] == scc._TO_SI["ppm/m"] == scc._TO_SI["ppm/m^2"] == 1e-6
+    raw = scc.get_limit("hyperfine_swoop_64mT", "homogeneity", "b0_quadratic")["value"]
+    assert scc.get_limit("hyperfine_swoop_64mT", "homogeneity", "b0_quadratic", si=True) == raw * 1e-6
+    assert "homogeneity" in inspect.getsource(scc.needs_verification)

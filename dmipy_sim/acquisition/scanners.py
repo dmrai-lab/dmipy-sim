@@ -52,6 +52,9 @@ class ScannerLimits:
     adc_dead_time: float = None
     peak_B1: float = None      # T, body coil where the catalogue has it, else head coil
     field_T: float = None      # T, the static field; None for an envelope or an uncatalogued field
+    b0_quadratic: float = None        # 1/m^2, the even term c of dB/B0 = a x + c r^2
+    b0_asymmetry_rl: float = None     # 1/m, the odd term a, along the scanner's R/L axis
+    b0_validity_radius: float = None  # m, how far from isocentre that law is anchored
 
     @classmethod
     def of(cls, scanner, *, regime="default"):
@@ -79,7 +82,42 @@ class ScannerLimits:
                    peak_B1=(scc.leaf_si(entry, "rf", "peak_B1_body_coil")
                             if scc.leaf_si(entry, "rf", "peak_B1_body_coil") is not None
                             else scc.leaf_si(entry, "rf", "peak_B1_head_coil")),
-                   field_T=(float(entry["field_T"]) if entry.get("field_T") is not None else None))
+                   field_T=(float(entry["field_T"]) if entry.get("field_T") is not None else None),
+                   b0_quadratic=scc.leaf_si(entry, "homogeneity", "b0_quadratic"),
+                   b0_asymmetry_rl=scc.leaf_si(entry, "homogeneity", "b0_asymmetry_rl"),
+                   b0_validity_radius=scc.leaf_si(entry, "homogeneity", "b0_validity_radius"))
+
+    def b0_offset(self, offset_m):
+        """The static field's departure from uniformity at a displacement from isocentre, in **tesla**:
+        ``B0 * (a x + c r^2)`` for the catalogued shape. ``offset_m`` is ``(..., 3)`` in metres in the
+        bore's frame (x is R/L, as the grid's ``axes`` name them), and the result has its leading shape.
+
+        The two terms are different physics. ``c`` is the isotropic bowl every magnet has; ``a`` is the
+        R/L asymmetry a SINGLE-YOKE magnet has because its yoke sits on one side, so the field is not
+        mirror-symmetric about isocentre. Leaving the odd term out would be a visible error rather than a
+        small one -- for the Swoop the field differs by 716 ppm between +8 and -8 cm.
+
+        ``None`` when this machine's profile is not catalogued -- which is every machine but one, because a
+        shimmed superconducting magnet's residual is parts per million and nobody publishes its shape. A
+        permanent magnet's is parts per thousand and does get published, which is the case this exists for.
+
+        Beyond ``b0_validity_radius`` the law is an extrapolation and is refused: the coefficient is
+        anchored at one radius, and a magnet's profile steepens past the volume it was specified over.
+        """
+        if self.b0_quadratic is None or self.field_T is None:
+            return None
+        d = np.asarray(offset_m, dtype=np.float64)
+        r = np.linalg.norm(d, axis=-1)
+        if self.b0_validity_radius is not None and float(np.max(r)) > self.b0_validity_radius:
+            raise ValueError(
+                f"the field law for {self.name!r} is anchored at {self.b0_validity_radius*100:.0f} cm from "
+                f"isocentre and something here is {float(np.max(r))*100:.1f} cm out. A magnet's profile "
+                f"steepens beyond the volume it was specified over, so this is refused rather than "
+                f"extrapolated")
+        shape = self.b0_quadratic * r ** 2
+        if self.b0_asymmetry_rl:
+            shape = shape + self.b0_asymmetry_rl * d[..., 0]        # x is R/L
+        return self.field_T * shape
 
     @property
     def gradient_limits(self):

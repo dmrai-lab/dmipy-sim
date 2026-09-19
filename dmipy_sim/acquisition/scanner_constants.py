@@ -56,7 +56,12 @@ with open(Path(__file__).with_name("scanner_constants.json")) as _f:
 
 # catalogue stores convenient units; convert to SI for the solvers.
 _TO_SI = {"mT/m": 1e-3, "T/m": 1.0, "T/m/s": 1.0, "us": 1e-6, "ms": 1e-3,
-          "s": 1.0, "uT": 1e-6, "T": 1.0, "W/kg": 1.0}
+          "s": 1.0, "uT": 1e-6, "T": 1.0, "W/kg": 1.0,
+          # a field SHAPE is a fraction of B0, so ppm carries the 1e-6 and nothing else
+          "ppm": 1e-6, "ppm/m": 1e-6, "ppm/m^2": 1e-6, "m": 1.0,
+          # descriptive leaves nothing reads in SI yet, listed so the conformance check passes
+          # rather than so they are used: an unlisted unit is the silent 1.0 conversion
+          "cm": 1e-2, "kW": 1e3, "MW": 1e6}
 
 
 def resolve(name):
@@ -157,7 +162,7 @@ def needs_verification():
     """List ``(model, group, name)`` of every entry whose value is unverified/None."""
     out = []
     for m, sc in {**SCANNER_CONSTANTS["scanners"], **SCANNER_CONSTANTS["envelopes"]}.items():
-        for grp in ("gradient", "rf"):
+        for grp in ("gradient", "rf", "homogeneity"):
             for n, leaf in sc.get(grp, {}).items():
                 if isinstance(leaf, dict) and (leaf.get("confidence") == "NEEDS VERIFICATION"
                                                or leaf.get("value") is None):
@@ -203,6 +208,10 @@ def conformance_problems(catalogue=None):
                                    f"which is not one of {sorted(levels)}")
                     if not leaf.get("context"):
                         bad.append(f"{where} has no context: a bare number loses what it means")
+                    unit = leaf.get("unit")
+                    if leaf.get("value") is not None and unit is not None and unit not in _TO_SI:
+                        bad.append(f"{where} is in {unit!r}, which _TO_SI does not know: leaf_si would "
+                                   f"convert it by 1.0 and say nothing")
     known = set(cat.get("scanners", {})) | set(cat.get("envelopes", {}))
     for table in ("classes", "aliases"):
         for short, target in cat.get(table, {}).items():
