@@ -75,7 +75,19 @@ def _master_arrays(src) -> dict:
                 substrate_frame=g("substrate_frame"),
                 walkers_shuffled=bool(m.get("walkers_shuffled", False)),
                 substrate=(m.get("substrate") if isinstance(m, dict) else None),
-                n_walkers=int(traj.shape[0]), seed=int(np.asarray(m.get("seed", 0))))
+                n_walkers=int(traj.shape[0]), seed=seed_value(m.get("seed", 0)))
+
+
+def seed_value(seed):
+    """A walk's seed as provenance: an int for a walk, the list of shard seeds for a pack merged from a fill.
+
+    A merged pack has no single seed, so the list is what its provenance carries and what every derived
+    pack (a prefix, a re-encoding) carries on."""
+    if seed is None:
+        return 0
+    if isinstance(seed, (list, tuple, np.ndarray)):
+        return [int(v) for v in np.asarray(seed).reshape(-1)]
+    return int(seed)
 
 
 # --------------------------------------------------------------- substrate frames
@@ -1477,7 +1489,7 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto"
             rpk_schema_version=RPK_SCHEMA_VERSION, id=id,
             compression=comp_meta,
             walk_params=dict(n_walkers=int(m["n_walkers"]), n_t=int(n_t), dt_traj=dt,
-                             T_max=float(m["T_max"]), diffusivity=m.get("D_intra"), seed=int(m["seed"]),
+                             T_max=float(m["T_max"]), diffusivity=m.get("D_intra"), seed=seed_value(m["seed"]),
                              cell_size=m.get("cell_size"),
                              substrate_frame=(None if m.get("substrate_frame") is None
                                               else np.asarray(m["substrate_frame"], float).tolist())),

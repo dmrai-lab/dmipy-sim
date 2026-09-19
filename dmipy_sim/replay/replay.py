@@ -795,7 +795,7 @@ class ReplayPack:
         needs 12, not 6, at 12.5 ms). ``K=`` fixes the band instead and is refused as it stands.
         ``provenance.prefix`` records the parent (digest, id, T, K), the cut and every band tried.
         """
-        from .bank import build_replay_pack, susc_path_decode, susc_path_encode_series, susc_path_series_fidelity
+        from .bank import build_replay_pack, seed_value, susc_path_decode, susc_path_encode_series, susc_path_series_fidelity
         from .compression import decode_occupancy, decode_boundary_bridge, decode_boundary_local_time
         dt, n_t = float(self.dt), int(self.n_t)
         T = (n_t - 1) * dt
@@ -809,7 +809,7 @@ class ReplayPack:
         wp = dict(self.meta.get("walk_params", {}) or {})
         m = dict(traj=self.positions()[:, :n_cut, :], dt_traj=dt, T_max=T_cut,
                  walkers_shuffled=bool(self.meta.get("compression", {}).get("precision_tiers", {}).get("walkers_shuffled", False)),
-                 seed=int(wp.get("seed", 0)))
+                 seed=seed_value(wp.get("seed", 0)))
         if "spin_weights" in self.arrays:
             m["w"] = np.asarray(self.arrays["spin_weights"], np.float64)
         if self.meta.get("substrate") is not None:
