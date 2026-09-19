@@ -115,8 +115,11 @@ class Primitives:
     ``phi`` the gradient phase ``(n, m)``, ``field_iso`` / ``field_aniso`` the gated path integrals under the field
     direction ``(n,)`` (None without the path channel), ``exposure_t2`` / ``exposure_t1`` the transverse and
     longitudinal time per pool ``(n, n_pools)`` (None without the compartment channel), ``contact`` the gated
-    boundary local time ``(n,)`` (None without the contact channel), ``D_walk`` the walk's diffusivity. A tissue
-    and a scanner turn these into the per-walker weights and phases of :meth:`signals`."""
+    boundary local time ``(n,)`` (None without the contact channel), ``D_walk`` the walk's diffusivity, and
+    ``pathway`` the amplitude of the coherence pathway the acquisition's readout is
+    (:func:`~dmipy_sim.acquisition.epg.pathway_weight`; 1 for a refocused echo, a stimulated echo's
+    ``0.5 sin a1 sin a2 sin a3`` for a store-and-recall schedule). A tissue and a scanner turn these into the
+    per-walker weights and phases of :meth:`signals`."""
     w: np.ndarray
     phi: np.ndarray
     field_iso: Optional[np.ndarray]
@@ -125,6 +128,7 @@ class Primitives:
     exposure_t1: Optional[np.ndarray]
     contact: Optional[np.ndarray]
     D_walk: Optional[float]
+    pathway: float = 1.0
     by_pool: object = field(repr=False, default=None)          # the pack's resolver of a per-pool value
 
     @property
@@ -181,7 +185,7 @@ class Primitives:
         phi = self.phi
         if a_i or a_a:
             phi = phi + (a_i * self.field_iso + a_a * self.field_aniso)[:, None]
-        return self.w, self.w * np.exp(logw), np.exp(1j * phi)
+        return self.w, self.pathway * self.w * np.exp(logw), np.exp(1j * phi)
 
 
 def walker_primitives(pack, acquisition):
@@ -223,8 +227,10 @@ def walker_primitives(pack, acquisition):
         field_iso = Psi[:, names.index("iso_local")] - Psi[:, i_p:i_p + 6] @ q
         gm = ch.get("susceptibility_grid") or {}
         field_aniso = (Psi[:, names.index("aniso_G_xx"):names.index("aniso_G_xx") + 6] @ q) if (gm.get("has_aniso") and "aniso_G_xx" in names) else np.zeros(n_w)
+    from ..acquisition.epg import pathway_weight
     return Primitives(w=P["w"], phi=phi, field_iso=field_iso, field_aniso=field_aniso, exposure_t2=exposure_t2, exposure_t1=exposure_t1,
-                      contact=contact, D_walk=pack.diffusivity, by_pool=pack._by_pool)
+                      contact=contact, D_walk=pack.diffusivity, pathway=pathway_weight(acq.waveform),
+                      by_pool=pack._by_pool)
 
 
 def study_signals(pack, study):

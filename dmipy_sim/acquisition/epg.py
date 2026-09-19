@@ -35,7 +35,7 @@ from dataclasses import dataclass
 import numpy as np
 
 __all__ = ["Pulse", "Winding", "Schedule", "Pathway", "enumerate_pathways",
-           "cpmg_schedule", "ste_schedule", "ste_amplitude"]
+           "cpmg_schedule", "ste_schedule", "ste_amplitude", "pathway_weight"]
 
 
 @dataclass(frozen=True)
@@ -227,3 +227,53 @@ def ste_amplitude(alpha1_deg=90.0, alpha2_deg=90.0, alpha3_deg=90.0):
                                             threshold=1e-12)
               if any(st == "Z" for st, _ in p.intervals)]
     return float(abs(stored[0].eta)) if stored else 0.0
+
+
+def pathway_weight(sequence):
+    """The amplitude of the coherence pathway ``sequence``'s readout is, derived from its RF schedule.
+
+    Every case here is ENUMERATED rather than written down, and the cases are exactly those a single number
+    can express:
+
+    * no refocusing and no store -- a gradient echo, the whole magnetisation, 1;
+    * one refocused echo at flip ``beta`` -- ``sin^2(beta/2)``, one pathway, and 1 at a perfect 180;
+    * a store and a recall -- the stimulated echo, :func:`ste_amplitude`, which a real sequence isolates by
+      crushing the rest;
+    * a train of perfect 180s -- every echo is the same single pathway, 1.
+
+    A train whose refocusing pulses are NOT 180 is **refused**. Its echoes differ from one another (a six-echo
+    train at 120 degrees runs 0.75, 0.94, 0.84, 0.86, 0.88, 0.86) and each is a sum over several pathways, so
+    no single amplitude describes the readout: that needs the pathway sum, which is dmipy-sim#307, and on the
+    vector route it also needs the crusher the replay ignores, which is #305. Returning 1 there would be a
+    confident wrong answer of up to 25 per cent on the first echo alone.
+
+    Duck-typed on ``stimulated_echo``, ``rf`` and ``readout``, so it reads a
+    :class:`~dmipy_sim.acquisition.scanner_sequence.ScannerSequence` without importing one.
+    """
+    from .rf import role_of
+    rf = getattr(sequence, "rf", None) or ()
+    if getattr(sequence, "stimulated_echo", False):
+        flips = {}
+        for e in rf:
+            role = role_of(e)
+            if role in ("excite", "store", "recall") and role not in flips:
+                flips[role] = float(e.flip_deg)
+        if set(flips) != {"excite", "store", "recall"}:
+            raise ValueError("a stimulated echo needs an excite, a store and a recall in its RF schedule; "
+                             f"this one labels {sorted(flips)}")
+        return ste_amplitude(flips["excite"], flips["store"], flips["recall"])
+
+    refocus = [float(e.flip_deg) for e in rf if role_of(e) == "refocus"]
+    imperfect = [b for b in refocus if abs(b - 180.0) > 1e-6]
+    if not imperfect:
+        return 1.0                      # no refocusing at all, or every pulse a perfect 180: one pathway, whole
+    n_readout = len(tuple(getattr(sequence, "readout", ()) or ()))
+    if n_readout > 1 or len(refocus) > 1:
+        raise ValueError(
+            f"this schedule refocuses {len(refocus)} time(s) at {sorted(set(imperfect))} degrees and reads "
+            f"{n_readout} echo(es): its readout is a SUM over several coherence pathways, of different "
+            "amplitudes at each echo, so no single amplitude describes it. The pathway sum is dmipy-sim#307 "
+            "(enumerate_pathways gives the terms); on the vector-Bloch route it also needs the crusher that "
+            "route ignores, dmipy-sim#305. Use a perfect 180, or a single refocused echo.")
+    sch = Schedule((Pulse(90.0), Winding(+1, 1.0), Pulse(imperfect[0], 90.0), Winding(+1, 1.0, readout=True)))
+    return float(abs(sum(p.eta for p in enumerate_pathways(sch, threshold=1e-12))))
