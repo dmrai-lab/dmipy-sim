@@ -51,6 +51,15 @@ _CITATION_BARAKOVIC2023 = {
     'doi': '10.3389/fnins.2023.1209521',
 }
 
+_CITATION_JORDANOVA2023 = {
+    'key': 'jordanova2023',
+    'authors': 'Jordanova KV, Martin MN, Ogier SE, Poorman ME, Keenan KE',
+    'title': 'In vivo quantitative MRI: T1 and T2 measurements of the human brain at 0.064 T',
+    'journal': 'Magnetic Resonance Materials in Physics, Biology and Medicine (MAGMA)',
+    'year': 2023,
+    'doi': '10.1007/s10334-023-01095-x',
+}
+
 _CITATION_WEST2018 = {
     'key': 'west2018',
     'authors': 'West KL, Kelm ND, Carson RP, Gochberg DF, Ess KC, Does MD',
@@ -471,6 +480,42 @@ BIOPHYSICAL_CONSTANTS = {
                 'from microscopic relaxation, NOT the mesoscopic susceptibility the model '
                 'adds separately; that mesoscopic term is < 10 percent of the 3->7T shift).',
     },
+    'T2_white_matter': {
+        'default': {
+            'value': 0.069,
+            'unit': 's',
+            'field_T': 3.0,
+            'species': 'human',
+            'method': 'in vitro relaxometry at 37 C (white matter as ONE pool, NNLS spectrum mean)',
+            'source_key': 'stanisz2005',
+            'location': 'Table 1, white matter row: T2 = 69 +/- 3 ms at 3 T',
+        },
+        'alternatives': [
+            {
+                'value': 0.072,
+                'unit': 's',
+                'field_T': 1.5,
+                'species': 'human',
+                'method': 'in vitro relaxometry at 37 C (white matter, single pool)',
+                'source_key': 'stanisz2005',
+                'location': 'Table 1, white matter row: T2 = 72 +/- 4 ms at 1.5 T',
+            },
+            {
+                'value': 0.081,
+                'unit': 's',
+                'field_T': 0.064,
+                'species': 'human',
+                'method': 'in vivo multi-point spin echo, 10 volunteers, automatic segmentation (white matter)',
+                'source_key': 'jordanova2023',
+                'location': 'White matter T2 = 81 +/- 4 ms at 0.064 T, on a Hyperfine Swoop (dmipy-sim#285)',
+            },
+        ],
+        'citation': _CITATION_STANISZ2005,
+        'description': 'T2 relaxation time of white matter as ONE pool -- a whole-tissue figure, which is '
+                       'what a segmented image reports and NOT the three-pool decomposition. A replay of a '
+                       'myelinated substrate uses T2_intra_axonal / T2_extra_axonal / T2_myelin instead; '
+                       'this constant is for a white-matter voxel modelled without that structure.',
+    },
     'T2_grey_matter': {
         'default': {
             'value': 0.099,
@@ -490,6 +535,16 @@ BIOPHYSICAL_CONSTANTS = {
                 'method': 'in vitro relaxometry at 37 C (grey matter, single pool)',
                 'source_key': 'stanisz2005',
                 'location': 'Table 1, grey matter row: T2 = 95 +/- 8 ms at 1.5 T',
+            },
+            {
+                'value': 0.108,
+                'unit': 's',
+                'field_T': 0.064,
+                'species': 'human',
+                'method': 'in vivo multi-point spin echo, 10 volunteers, automatic segmentation (grey matter)',
+                'source_key': 'jordanova2023',
+                'location': 'Grey matter T2 = 108 +/- 22 ms at 0.064 T. The scanner is the Hyperfine Swoop '
+                            '(dmipy-sim#285); the spread across volunteers is a fifth of the value.',
             },
         ],
         'citation': _CITATION_STANISZ2005,
@@ -586,6 +641,16 @@ BIOPHYSICAL_CONSTANTS = {
                 'source_key': 'spijkerman2017',
                 'location': 'Ventricular CSF T2 ~1.0 s at 7T -- HALVES from ~2.0 s at 3T '
                             '(Spijkerman 2017). The 3T fallback would be ~2x too long here.',
+            },
+            {
+                'value': 1.166,
+                'unit': 's',
+                'field_T': 0.064,
+                'species': 'human',
+                'method': 'in vivo multi-point spin echo, 10 volunteers, automatic segmentation (CSF)',
+                'source_key': 'jordanova2023',
+                'location': 'CSF T2 = 1166 +/- 338 ms at 0.064 T (dmipy-sim#285). The spread is nearly a '
+                            'third of the value: CSF segments poorly at this resolution.',
             },
         ],
         'citation': {

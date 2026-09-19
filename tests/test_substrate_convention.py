@@ -103,6 +103,29 @@ def test_canonical_substrate_carries_a_physiological_fibre_size():
     assert s.mean_inner_radius < s.mean_outer_radius
 
 
+def test_the_64_mT_rows_are_cited_and_field_matched():
+    """A 64 mT replay reads its tissue from the table like any other field (dmipy-sim#285). The rows are
+    Jordanova 2023's in vivo measurements on a Hyperfine Swoop, and they do not follow the 3 T values by any
+    single rule: both tissues relax SLOWER at 64 mT than at 3 T, while the CSF figure is well under half of
+    it -- which is why the table stores them and refuses to interpolate."""
+    at64 = {n: bc.get_value(n, field_T=0.064) for n in ("T2_white_matter", "T2_grey_matter", "T2_csf")}
+    assert at64 == {"T2_white_matter": 0.081, "T2_grey_matter": 0.108, "T2_csf": 1.166}
+    assert at64["T2_white_matter"] > bc.get_value("T2_white_matter", field_T=3.0)      # 81 ms vs 69 ms
+    assert at64["T2_grey_matter"] > bc.get_value("T2_grey_matter", field_T=3.0)        # 108 ms vs 99 ms
+    assert at64["T2_csf"] < 0.6 * bc.get_value("T2_csf", field_T=3.0)                  # 1166 ms vs 2000 ms
+    for name in at64:
+        alt = [a for a in bc.get_constant(name)["alternatives"] if a["field_T"] == 0.064]
+        assert len(alt) == 1 and alt[0]["source_key"] == "jordanova2023" and alt[0]["location"]
+
+
+def test_whole_tissue_white_matter_is_not_the_three_pool_decomposition():
+    """`T2_white_matter` is what a segmented image reports, one pool. The myelinated substrate's three pools
+    are separate constants and must not be confused with it: the single pool sits between them."""
+    one = bc.get_value("T2_white_matter", field_T=3.0)
+    assert bc.get_value("T2_myelin") < one < bc.get_value("T2_extra_axonal")
+    assert "not the three-pool decomposition" in bc.get_constant("T2_white_matter")["description"].lower()
+
+
 def test_the_tissue_values_a_phantom_declares_are_catalogued_with_a_citation():
     """No magic numbers: a brain phantom's grey-matter T2, and every tissue's proton density, come from the
     table with a source key, a location and a citation; the field-dependent ones are field-matched."""
