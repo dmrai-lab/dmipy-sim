@@ -65,6 +65,11 @@ class Encoding:
     cpmg_TE: float = None
     cpmg_beta_deg: float = None
     cpmg_refocus_axis_deg: float = None
+    splice_n_echoes: int = None
+    splice_TE_echo: float = None
+    splice_TE_prep: float = None
+    splice_beta_deg: float = None
+    splice_refocus_axis_deg: float = None
     n_t_per_echo: int = None
     refocused: bool = None
 

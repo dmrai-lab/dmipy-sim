@@ -18,6 +18,8 @@ trains), :func:`cpmg` (a refocusing train at constant or alternating polarity), 
 """
 from __future__ import annotations
 
+from dataclasses import replace
+
 import numpy as np
 
 from ..acquisition.rf import RFEvent, RFSchedule
@@ -25,7 +27,7 @@ from ..acquisition.scanner_sequence import Encoding, ScannerSequence
 from ..constants import DEFAULT_SLEW_RATE
 from ..math.gradient_conversions import g_from_b, q_from_b
 from ._helpers import _calc_b_from_waveform, _resolve_te, unify_length_reference_delta_Delta
-from .assemble import (EchoTrain, GradientEcho, SpinEcho, StimulatedEcho, assemble, axis_pairs, bipolar, cosine,
+from .assemble import (PreparedEchoTrain, EchoTrain, GradientEcho, SpinEcho, StimulatedEcho, assemble, axis_pairs, bipolar, cosine,
                        ramp_of, trapezoid, trapezoid_train)
 
 __all__ = ["pgse", "pgste", "gre", "cpmg", "ogse", "ste", "pte", "from_waveform", "from_btensor_waveform",
@@ -311,6 +313,71 @@ def cpmg(n_echoes, TE, *, beta_deg=180.0, refocus_axis_deg=90.0, gradient_direct
         build_spec=('cpmg', dict(n_echoes=n_echoes, TE=TE, gradient_directions=gradient_directions, bvalues=bvalues,
                                  gradient_strengths=gradient_strengths, polarity=polarity, beta_deg=beta_deg,
                                  n_t_per_echo=n_t_per_echo, slew_rate=slew_rate, timing=timing)))
+
+
+def splice(gradient_directions, delta, Delta, n_echoes, TE_echo, *, bvalues=None, gradient_strengths=None,
+           TE_prep, beta_deg=180.0, refocus_axis_deg=90.0, n_t_per_echo=40, slew_rate=DEFAULT_SLEW_RATE,
+           crusher_cycles=16.0, crusher_width=None, timing=None):
+    """A diffusion-prepared refocusing train: the shape an ultra-low-field diffusion FSE plays.
+
+    A 90, a PGSE pair of ``delta`` at ``Delta`` about the preparation's 180, so the preparation's echo falls
+    at ``TE_prep``; then ``n_echoes`` refocusing pulses of ``beta_deg`` about ``refocus_axis_deg``, one every
+    ``TE_echo``, each with a **crusher pair** straddling it. ``bvalues`` is the b the preparation delivers;
+    the train carries no gradient of its own.
+
+    The crusher is what makes a train a train. Without voxel-scale dephasing every coherence pathway stays
+    degenerate and recombines, so the echoes barely depend on the refocusing flip angle -- and a real train's
+    behaviour at a reduced flip IS that dependence. It is declared here as ``crusher`` on the sequence, in
+    windows of ``crusher_width`` (default half a train interval) either side of every refocusing pulse,
+    winding ``crusher_cycles`` turns; :meth:`~dmipy_sim.replay.ReplayPack.replay_bloch` and
+    :func:`~dmipy_sim.simulate_bloch` both read it. The window is balanced about its pulse so the pulse
+    rewinds what the window wound, which is what preserves the refocused pathway while spoiling the ones that
+    were stored for part of it.
+
+    ``refocus_axis_deg`` is the Meiboom-Gill quarter turn from the excitation (90, the default), where a flip
+    error self-corrects every second echo; 0 is Carr-Purcell, where it accumulates. That choice is the CPMG
+    condition, and after a diffusion preparation it is violated walker by walker whatever the axis, which is
+    the loss this family exists to work around.
+
+    Every echo lands on a sample: ``n_t_per_echo`` samples fill each train interval and the preparation is a
+    whole number of them, or the build is refused.
+    """
+    n_echoes, TE_echo, delta_, Delta_ = int(n_echoes), float(TE_echo), float(delta), float(Delta)
+    if n_echoes < 1:
+        raise ValueError("splice needs at least one echo after the preparation")
+    _need_amplitude("splice", bvalues, gradient_strengths)
+    dirs, n_m, (delta_r, Delta_r) = _rows(gradient_directions, delta_, Delta_,
+                                          n=max(np.size(bvalues) if bvalues is not None else 1,
+                                                np.size(gradient_strengths) if gradient_strengths is not None else 1))
+    eps = lambda m, g: ramp_of(g, slew_rate)
+    train = PreparedEchoTrain(n_echoes, TE_echo, float(TE_prep),
+                              gap=lambda m, g: Delta_r[m] - delta_r[m] - eps(m, g),
+                              beta_deg=beta_deg, refocus_axis_deg=refocus_axis_deg, timing=timing)
+    TE = float(TE_prep) + n_echoes * TE_echo
+    seq = assemble(
+        train, gradient_directions=dirs, bvalues=bvalues, gradient_strengths=gradient_strengths, TE=TE,
+        n_t=n_t_per_echo, timing=timing, family='splice', q_width=delta_r,
+        span=lambda m, g: delta_r[m] + eps(m, g), sample=lambda m, g, dt: trapezoid(delta_r[m], eps(m, g), dt),
+        encoding=lambda g, te, te_min: dict(delta=delta_r, Delta=Delta_r, refocused=True,
+                                            splice_n_echoes=n_echoes, splice_TE_echo=TE_echo,
+                                            splice_TE_prep=float(TE_prep), splice_beta_deg=float(beta_deg),
+                                            splice_refocus_axis_deg=float(refocus_axis_deg),
+                                            n_t_per_echo=int(n_t_per_echo),
+                                            ramp_time=np.array([eps(m, g[m]) for m in range(n_m)])),
+        build_spec=('splice', dict(gradient_directions=gradient_directions, delta=delta, Delta=Delta,
+                                   n_echoes=n_echoes, TE_echo=TE_echo, bvalues=bvalues,
+                                   gradient_strengths=gradient_strengths, TE_prep=TE_prep, beta_deg=beta_deg,
+                                   refocus_axis_deg=refocus_axis_deg, n_t_per_echo=n_t_per_echo,
+                                   slew_rate=slew_rate, crusher_cycles=crusher_cycles,
+                                   crusher_width=crusher_width, timing=timing)))
+    half = 0.5 * TE_echo if crusher_width is None else float(crusher_width)
+    n_half = max(1, int(round(half / float(seq.dt))))                 # whole samples either side: a balanced pair
+    windows = []
+    for e in seq.rf:
+        if e.label == 'refocus':
+            i = int(round(float(e.t_s) / float(seq.dt)))
+            windows.append(((i - n_half) * float(seq.dt), (i + n_half) * float(seq.dt)))
+    return replace(seq, crusher={'windows_s': windows, 'n_cycles': float(crusher_cycles)})
 
 
 # ── readers of a played gradient ─────────────────────────────────────────────────────────────────────────────────
