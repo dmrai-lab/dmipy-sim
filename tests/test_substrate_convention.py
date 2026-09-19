@@ -118,6 +118,23 @@ def test_the_64_mT_rows_are_cited_and_field_matched():
         assert len(alt) == 1 and alt[0]["source_key"] == "jordanova2023" and alt[0]["location"]
 
 
+def test_the_64_mT_T1_rows_say_they_are_unverified():
+    """T1 at 64 mT is entered so the Swoop experiment has a number, and flagged so nobody mistakes it for a
+    checked one: the source is paywalled and the secondary figures disagreed. T2 at the same field was read
+    from two independent reports and carries no such flag. A row that loses its note has been promoted by
+    someone who must have verified it -- which is the point of asserting this."""
+    for name in ("T1_white_matter", "T1_grey_matter"):
+        alt = [a for a in bc.get_constant(name)["alternatives"] if a["field_T"] == 0.064]
+        assert len(alt) == 1, f"{name} has no 0.064 T row"
+        assert "UNVERIFIED" in alt[0]["note"] and alt[0]["source_key"] == "jordanova2023"
+    for name in ("T2_white_matter", "T2_grey_matter", "T2_csf"):
+        alt = [a for a in bc.get_constant(name)["alternatives"] if a["field_T"] == 0.064][0]
+        assert "UNVERIFIED" not in alt.get("note", "")
+    # T1 collapses at low field where T2 barely moves: the reason a field-matched read matters more for T1.
+    assert bc.get_value("T1_white_matter", 0.064) < 0.4 * bc.get_value("T1_white_matter", 3.0)
+    assert bc.get_value("T2_white_matter", 0.064) > 1.1 * bc.get_value("T2_white_matter", 3.0)
+
+
 def test_whole_tissue_white_matter_is_not_the_three_pool_decomposition():
     """`T2_white_matter` is what a segmented image reports, one pool. The myelinated substrate's three pools
     are separate constants and must not be confused with it: the single pool sits between them."""

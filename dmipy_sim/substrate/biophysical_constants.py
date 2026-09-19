@@ -551,6 +551,43 @@ BIOPHYSICAL_CONSTANTS = {
         'description': 'T2 relaxation time of grey matter as one pool (a sphere-packed cortex substrate '
                        'replays both of its pools at it)',
     },
+    'T1_white_matter': {
+        'default': {
+            'value': 1.084,
+            'unit': 's',
+            'field_T': 3.0,
+            'species': 'human',
+            'method': 'in vitro inversion recovery at 37 C (white matter as ONE pool, mono-exponential)',
+            'source_key': 'stanisz2005',
+            'location': 'Table 1, white matter row: T1 = 1084 +/- 45 ms at 3 T',
+        },
+        'alternatives': [
+            {
+                'value': 0.884,
+                'unit': 's',
+                'field_T': 1.5,
+                'species': 'human',
+                'method': 'in vitro inversion recovery at 37 C (white matter, single pool)',
+                'source_key': 'stanisz2005',
+                'location': 'Table 1, white matter row: T1 = 884 +/- 50 ms at 1.5 T',
+            },
+            {
+                'value': 0.294,
+                'unit': 's',
+                'field_T': 0.064,
+                'species': 'human',
+                'method': 'in vivo inversion recovery, 10 volunteers, automatic segmentation (white matter)',
+                'source_key': 'jordanova2023',
+                'location': 'White matter T1 ~294 +/- 18 ms at 0.064 T',
+                'note': 'UNVERIFIED (dmipy-sim#285): Jordanova 2023 reports T1 at 0.064 T but the paper is paywalled and the two secondary figures found disagree -- 294 +/- 18 ms at 0.064 T against 275 ms quoted at 50 mT. The value here is the one attributed to the 0.064 T in vivo cohort; CHECK IT AGAINST TABLE 2 OF THE PAPER before any published number rests on it. T2 at this field (T2_white_matter) IS verified.',
+            },
+        ],
+        'citation': _CITATION_STANISZ2005,
+        'description': 'T1 relaxation time of white matter as ONE pool -- the whole-tissue figure a segmented '
+                       'image reports, NOT the three-pool decomposition (T1_intra_axonal / T1_extra_axonal / '
+                       'T1_myelin). T1 falls steeply below 1 T, so a field-matched read matters more here '
+                       'than it does for T2.',
+    },
     'T1_grey_matter': {
         'default': {
             'value': 1.820,
@@ -562,6 +599,16 @@ BIOPHYSICAL_CONSTANTS = {
             'location': 'Table 1, grey matter row: T1 = 1820 +/- 114 ms at 3 T',
         },
         'alternatives': [
+            {
+                'value': 0.460,
+                'unit': 's',
+                'field_T': 0.064,
+                'species': 'human',
+                'method': 'in vivo inversion recovery, 10 volunteers, automatic segmentation (grey matter)',
+                'source_key': 'jordanova2023',
+                'location': 'Grey matter T1 ~460 +/- 126 ms at 0.064 T',
+                'note': 'UNVERIFIED (dmipy-sim#285): Jordanova 2023 reports T1 at 0.064 T but the paper is paywalled and the two secondary figures found disagree -- 460 +/- 126 ms at 0.064 T against 327 ms quoted at 50 mT. The value here is the one attributed to the 0.064 T in vivo cohort; CHECK IT AGAINST TABLE 2 OF THE PAPER before any published number rests on it. T2 at this field (same entry) IS verified.',
+            },
             {
                 'value': 1.124,
                 'unit': 's',
