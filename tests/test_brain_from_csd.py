@@ -90,3 +90,58 @@ def test_csd_on_the_synthetic_dwi_recovers_the_fod_that_built_it(example, wm_pac
     c_in = rotate_sh(fod.data, R.T)[tuple(voxels.T)]
     angle, acc = check.compare(c_in, c_out, check.fibonacci_sphere())
     assert angle.size >= 20 and np.median(angle) < 8.0 and np.mean(angle < 15.0) > 0.75 and np.median(acc) > 0.9
+
+
+# ── a machine's own field, rendered onto this oblique grid (dmipy-sim#322 PR 3) ─────────────────────
+def test_the_field_law_must_be_rendered_through_the_obliquity(example, wm_pack):
+    """The BATMAN acquisition is prescribed 2.58 degrees oblique, so the grid's axes are NOT the bore's.
+    A field law is a function of position in the BORE, and `Grid.from_oblique_affine` says plainly that
+    rotating scanner-frame quantities into the grid frame is the caller's job.
+
+    Forgetting it does not fail -- it evaluates the law at the wrong place and returns a plausible volume.
+    This is the test that catches it, and the Swoop's law makes it catchable: its R/L asymmetry is an ODD
+    term in x, so a rotation that is dropped shifts the field the wrong way on one side of the bore. An
+    isotropic law would have hidden the error almost entirely."""
+    from dmipy_sim.acquisition.scanners import ScannerLimits
+    from dmipy_sim.phantom import b0_offset_map
+
+    ph, fod, R = example.build(str(CROP), wm_pack)
+    grid = ph.grid
+    swoop = ScannerLimits.of("swoop")
+    pos = grid.positions_m(ph.voxel_index)
+
+    right = b0_offset_map(swoop, grid, to_scanner=R)(pos)
+    wrong = b0_offset_map(swoop, grid)(pos)                       # the rotation dropped
+
+    # rendering with R is the same as rotating the coordinates first and rendering without: the two routes
+    # to the same answer agree, which is what says the rotation is applied the right way round
+    by_hand = swoop.b0_offset((pos - np.asarray(grid.isocenter_m)) @ np.asarray(R).T)
+    np.testing.assert_allclose(right, by_hand, rtol=1e-9, atol=1e-15)
+
+    # and dropping it disagrees -- the assertion that would have caught the mistake
+    worst = np.abs(right - wrong).max() / swoop.field_T * 1e6
+    assert worst > 1.0, f"dropping the obliquity moved the field by only {worst:.3f} ppm: not a test"
+
+    # The crop is 2.5 x 2.5 x 0.75 cm, which understates it: the bowl goes as r^2 and the asymmetry as r,
+    # so the error grows with the field of view. Over the acquisition's real 24 x 24 x 15 cm, inside the
+    # law's anchor radius, it reaches about 9 ppm -- some 25 Hz at 64 mT, against a field that spans about
+    # 1050 ppm over the same volume. So it is roughly a percent: not catastrophic, and exactly the size
+    # that gets shipped unnoticed.
+    from dmipy_sim.phantom import Grid
+    full = Grid(shape=(96, 96, 60), voxel_size_m=grid.voxel_size_m, origin_m=grid.origin_m,
+                isocenter_m=grid.isocenter_m, axes=grid.axes)
+    p_full = full.positions_m(full.every_voxel)
+    inside = np.linalg.norm(p_full - np.asarray(full.isocenter_m), axis=-1) < swoop.b0_validity_radius
+    a = b0_offset_map(swoop, full, to_scanner=R)(p_full[inside])
+    b = b0_offset_map(swoop, full)(p_full[inside])
+    at_fov = np.abs(a - b).max() / swoop.field_T * 1e6
+    assert at_fov > 5.0, f"only {at_fov:.1f} ppm over the real field of view"
+
+
+def test_a_field_law_is_none_where_the_machine_publishes_none(example, wm_pack):
+    """Every machine but a permanent-magnet one, and `off_resonance=None` is exactly what a replay already
+    means by no field offset -- so a brain at 3 T composes as it always did."""
+    from dmipy_sim.acquisition.scanners import ScannerLimits
+    from dmipy_sim.phantom import b0_offset_map
+    ph, fod, R = example.build(str(CROP), wm_pack)
+    assert b0_offset_map(ScannerLimits.of("prisma"), ph.grid, to_scanner=R) is None
