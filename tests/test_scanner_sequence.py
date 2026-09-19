@@ -200,3 +200,71 @@ def test_a_prescription_places_the_acquisition_in_the_bore_and_derives_nothing()
     g = Grid.from_prescription(p)
     assert g.shape == (40, 40, 1) and g.axes == "RAS"
     np.testing.assert_allclose(g.origin_m, p.origin_m); np.testing.assert_allclose(g.isocenter_m, p.isocenter_m)
+
+
+# ── a magnet's own gradient (dmipy-sim#285 item 3) ──────────────────────────────────────────────────
+def _pgse_1e9():
+    return d.pgse([[1.0, 0, 0]], 0.008, 0.030, bvalues=[1e9], TE=0.05, n_t=600)
+
+
+def test_a_background_gradient_is_added_everywhere_and_remembered():
+    """A magnet does not switch off, so its gradient is on through the pulses and the dead times that a
+    builder guarantees are clear. The object therefore records what the magnet added, and the builder's
+    guarantees are judged on what the builder laid out."""
+    seq = _pgse_1e9()
+    g = [1.4e-3, 0.0, 0.0]
+    bg = seq.with_background_gradient(g)
+    # G is stored float32, so the difference carries the storage's rounding, not the transform's
+    np.testing.assert_allclose(np.asarray(bg.G) - np.asarray(seq.G),
+                               np.broadcast_to(np.float32(g), seq.G.shape), rtol=1e-5, atol=1e-8)
+    assert np.abs(np.asarray(bg.G)[..., 0]).min() > 0.0    # on at EVERY sample, dead time included
+    assert np.abs(np.asarray(seq.G)[..., 0]).min() == 0.0  # where the built waveform is off
+    np.testing.assert_allclose(bg.designed_gradient, seq.G, rtol=1e-5, atol=1e-8)
+    assert bg.background_gradient == ((1.4e-3, 0.0, 0.0),)
+    bg.validate()                                          # the builder's guarantees still hold of the design
+
+
+def test_the_background_gradients_effect_on_b_is_a_cross_term():
+    """The magnet's own b is negligible; what moves the b-value is its CROSS term with the pulsed gradient.
+    So reversing the background reverses the effect, and the two straddle the asked-for b symmetrically --
+    which is the ADC error a low-field magnet produces, and why it is signed per direction."""
+    seq = _pgse_1e9()
+    b0 = float(seq.b()[0])
+    plus = float(seq.with_background_gradient([1.4e-3, 0, 0]).b()[0])
+    minus = float(seq.with_background_gradient([-1.4e-3, 0, 0]).b()[0])
+    perp = float(seq.with_background_gradient([0, 0, 1.4e-3]).b()[0])
+    alone = float(seq.with_gradient(np.zeros_like(seq.G)).with_background_gradient([1.4e-3, 0, 0]).b()[0])
+
+    assert plus > b0 > minus                                          # signed: it is a cross term
+    assert abs((plus - b0) - (b0 - minus)) < 0.05 * (plus - b0)       # and very nearly antisymmetric
+    np.testing.assert_allclose(0.5 * (plus + minus) - b0, alone, rtol=0.05)   # what is left is its own b
+    assert alone < 1e-2 * b0                                          # which is negligible on its own
+    assert abs(perp - b0) < 0.1 * (plus - b0)                         # perpendicular: almost nothing
+    assert 0.05 < (plus - b0) / b0 < 0.10    # 1.4 mT/m on a Swoop: "up to 7 % of the diffusion gradient"
+
+
+def test_the_declared_b_is_what_was_asked_and_b_is_what_is_played():
+    """The encoding records the prescription at isocentre; `b()` reports the waveform that is actually
+    played. Away from isocentre they differ, and that difference IS the measurement error."""
+    seq = _pgse_1e9()
+    bg = seq.with_background_gradient([1.4e-3, 0, 0])
+    assert bg.encoding is not None and bg.encoding.bvalues[0] == seq.encoding.bvalues[0]
+    assert not np.isclose(float(bg.b()[0]), float(bg.encoding.bvalues[0]), rtol=1e-3)
+
+
+def test_a_background_gradient_is_refused_twice_over_and_in_the_wrong_shape():
+    seq = _pgse_1e9()
+    with pytest.raises(ValueError, match="one vector or one per measurement"):
+        seq.with_background_gradient([[1e-3, 0, 0], [2e-3, 0, 0]])
+    once = seq.with_background_gradient([1e-3, 0, 0])
+    with pytest.raises(ValueError, match="already carries a background gradient"):
+        once.with_background_gradient([1e-3, 0, 0])
+
+
+def test_a_background_gradient_may_be_given_per_measurement():
+    """Different voxels sit at different places in the bore, so an image asks for one vector per row."""
+    two = d.pgse([[1.0, 0, 0], [1.0, 0, 0]], 0.008, 0.030, bvalues=[1e9, 1e9], TE=0.05, n_t=600)
+    bg = two.with_background_gradient([[1.4e-3, 0, 0], [-1.4e-3, 0, 0]])
+    b = bg.b()
+    assert b[0] > float(two.b()[0]) > b[1]
+    assert len(bg.background_gradient) == 2

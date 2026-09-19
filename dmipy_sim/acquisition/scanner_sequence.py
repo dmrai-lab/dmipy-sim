@@ -15,6 +15,10 @@ three containers is one field or one derivation here:
 * ``crusher`` -- the emergent voxel-scale crusher the vector-Bloch engine models as windings over windows.
 * ``prescription`` -- optionally, where in the bore and on what voxels (:class:`~dmipy_sim.acquisition.prescription.Prescription`):
   the acquisition in space, as the rest of the object is the acquisition in time. Nothing is derived from it.
+* ``background_gradient`` -- optionally, how much of ``G`` is the MAGNET's rather than the builder's: the
+  constant a non-uniform static field contributes at this position (:meth:`ScannerSequence.with_background_gradient`).
+  It is already folded into ``G``, so every derived quantity carries it; it is recorded separately because a
+  builder's guarantees are about what the builder laid out, which is :attr:`ScannerSequence.designed_gradient`.
 
 The scalar engine, the b integrals and the pack's replay read ``G_eff``; the vector-Bloch routes read ``G`` and
 apply ``rf`` themselves. A :class:`Protocol` is a tuple of these -- one echo time each -- for a multi-TE scheme.
@@ -101,6 +105,7 @@ class ScannerSequence:
     notes: str = ""
     build_spec: tuple = None
     prescription: Prescription = None
+    background_gradient: tuple = None
 
     def __post_init__(self):
         _set = lambda k, v: object.__setattr__(self, k, v)
@@ -112,6 +117,12 @@ class ScannerSequence:
         if G.ndim != 3 or G.shape[2] != 3:
             raise ValueError(f"G must be (n_meas, n_t, 3), got {G.shape}")
         _set("G", G); _set("dt", float(self.dt)); _set("rf", RFSchedule(self.rf))
+        if self.background_gradient is not None:
+            bg = np.asarray(self.background_gradient, dtype=np.float64).reshape(-1, 3)
+            if bg.shape[0] not in (1, G.shape[0]):
+                raise ValueError(f"background_gradient is one vector or one per measurement "
+                                 f"({G.shape[0]}); got {bg.shape}")
+            _set("background_gradient", tuple(tuple(float(v) for v in row) for row in bg))
         n_t = G.shape[1]
         chi, TM, ste, echo_times = self.rf.coherence(n_t, self.dt)
         idx = tuple(int(i) for i in np.clip(np.rint(np.asarray(echo_times) / self.dt).astype(int), 0, n_t - 1)) if echo_times else ()
@@ -239,7 +250,7 @@ class ScannerSequence:
             if e.duration_s > 0.0:
                 t0, t1 = e.window
                 inside = (t >= t0 - 1e-9 * self.dt) & (t <= t1 + 1e-9 * self.dt)
-                if np.any(np.abs(self.G[:, inside, :]) > 0.0):
+                if np.any(np.abs(self.designed_gradient[:, inside, :]) > 0.0):
                     raise ValueError(f"the gradient is on during the {e.flip_deg:g} pulse at {e.t_s*1e3:.3f} ms "
                                      f"(window {t0*1e3:.3f}-{t1*1e3:.3f} ms): a finite pulse needs zero gradient")
         if self.timing is not None:                    # the budget's dead times: the lead-in and the readout tails
@@ -250,7 +261,7 @@ class ScannerSequence:
             windows += [(i * self.dt - self.timing.t_readout_pre_echo, i * self.dt, "readout") for i in self.readout]
             for t0, t1, what in windows:                # a step wholly inside a dead time; a straddling step is rounding
                 inside = (t >= t0 - 1e-9 * self.dt) & (t + self.dt <= t1 + 1e-9 * self.dt)
-                if np.any(np.abs(self.G[:, inside, :]) > 0.0):
+                if np.any(np.abs(self.designed_gradient[:, inside, :]) > 0.0):
                     raise ValueError(f"the gradient is on in the {what} window {t0*1e3:.3f}-{t1*1e3:.3f} ms of the "
                                      f"timing budget")
         res = self.refocusing_residual
@@ -266,6 +277,40 @@ class ScannerSequence:
         if not isinstance(prescription, Prescription):
             raise TypeError(f"prescription is a Prescription; got {type(prescription).__name__}")
         return replace(self, prescription=prescription)
+
+    @property
+    def designed_gradient(self):
+        """The gradient the BUILDER laid out, with the magnet's own contribution taken back out: ``G`` itself
+        unless :meth:`with_background_gradient` has been applied. This is what the builder's guarantees are
+        about -- off through a finite pulse, off in a dead time -- because a background gradient is imposed by
+        the magnet and obeys none of them."""
+        if self.background_gradient is None:
+            return self.G
+        bg = np.asarray(self.background_gradient, dtype=np.float32).reshape(-1, 1, 3)
+        return self.G - bg
+
+    def with_background_gradient(self, g):
+        """The same acquisition in a magnet whose own field is not uniform: a constant ``g`` (T/m, the field's
+        spatial gradient at this position, in the gradient's frame) added to the PHYSICAL gradient over the
+        whole grid -- through the pulses and the dead times alike, because a magnet does not switch off.
+
+        One vector, or one per measurement. The effective gradient then carries it through the RF sign like
+        anything else, so a symmetric spin echo refocuses the background's own moment while its CROSS term
+        with the pulsed gradient survives: that cross term is the ADC error a low-field magnet produces
+        (dmipy-sim#285), and it is why :meth:`b` of the result is not the b that was asked for.
+
+        ``encoding`` is left alone: it records what was PRESCRIBED at isocentre, and :meth:`b` reports what is
+        played here. The difference between them is the effect.
+        """
+        g = np.asarray(g, dtype=np.float64).reshape(-1, 3)
+        if g.shape[0] not in (1, self.n_meas):
+            raise ValueError(f"a background gradient is one vector or one per measurement ({self.n_meas}); "
+                             f"got {g.shape}")
+        if self.background_gradient is not None:
+            raise ValueError("this acquisition already carries a background gradient; apply it to the "
+                             "acquisition the builder returned, not on top of one that has it")
+        return replace(self, G=(self.G + g.astype(np.float32).reshape(-1, 1, 3)),
+                       background_gradient=tuple(tuple(float(v) for v in row) for row in g))
 
     def with_gradient(self, G):
         """The same acquisition with another physical gradient of the same shape (a rescale, a rotation)."""
