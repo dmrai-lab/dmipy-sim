@@ -2,9 +2,11 @@ name: Tests
 
 on:
   push:
-    branches: [ main ]
+    # `swoop` is a long-lived integration branch (dmipy-sim#285, #322): pieces land in it on green and it
+    # merges to main as one. It is listed here so that a push to it is tested like a push to main.
+    branches: [ main, swoop ]
   pull_request:
-    branches: [ master, main ]
+    branches: [ master, main, swoop ]
   schedule:
     - cron: '0 4 * * 0'    # weekly, Sunday 04:00 UTC — runs the heavy MC suite
   workflow_dispatch: {}     # run the heavy MC suite on demand
