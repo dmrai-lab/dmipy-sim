@@ -34,8 +34,8 @@ from dmipy_sim.spec.tissue import Tissue
 D, TE = 2e-9, 0.012
 
 # A sheathed axon, so that a susceptibility has something to be a property OF: myelin is the field source.
-pore = d.PackedMyelinatedCylinders([1.0e-6], 0.7, [[0.0, 0.0]], 30e-6, N_max=2, D_intra=D, D_extra=D)
-walk = d.simulate_trajectories(1_500, D, pore, TE, 4e-4, seed=0, require_gpu=False)
+axon = d.PackedMyelinatedCylinders([1.0e-6], 0.7, [[0.0, 0.0]], 30e-6, N_max=2, D_intra=D, D_extra=D)
+walk = d.simulate_trajectories(1_500, D, axon, TE, 4e-4, seed=0, require_gpu=False)
 pack = build_replay_pack(walk, id="cookbook/sheath", license="CC-BY-4.0", citation="the cookbook",
                          K=32, susc_path_K=32)
 

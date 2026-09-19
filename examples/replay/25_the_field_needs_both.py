@@ -30,8 +30,8 @@ DIR, BVAL, DELTA, BIG_DELTA = [[1.0, 0.0, 0.0]], [1e9], 0.003, 0.006
 
 # A sheathed axon: myelin is the field source, so this substrate HAS a susceptibility to declare.
 # `susc_path_K` records the field along the path (C3); the basis is derived from the geometry alone.
-pore = d.PackedMyelinatedCylinders([1.0e-6], 0.7, [[0.0, 0.0]], 30e-6, N_max=2, D_intra=D, D_extra=D)
-walk = d.simulate_trajectories(1_500, D, pore, TE, 4e-4, seed=0, require_gpu=False)
+axon = d.PackedMyelinatedCylinders([1.0e-6], 0.7, [[0.0, 0.0]], 30e-6, N_max=2, D_intra=D, D_extra=D)
+walk = d.simulate_trajectories(1_500, D, axon, TE, 4e-4, seed=0, require_gpu=False)
 pack = build_replay_pack(walk, id="cookbook/sheath", license="CC-BY-4.0", citation="the cookbook",
                          K=32, susc_path_K=32)
 print(f"channels this walk recorded: {sorted(pack.meta['compression']['channels'])}")
@@ -51,7 +51,7 @@ print(f"{swoop.name} from the catalogue: {swoop.field_T} T")
 spin_echo = d.pgse(DIR, DELTA, BIG_DELTA, bvalues=BVAL, TE=TE, n_t=300)
 ref = [float(np.abs(np.asarray(pack.replay(s))[0])) for s in (fid, spin_echo)]
 print(f"\nthe same b = {BVAL[0]/1e9:.0f} e9 s/m2, with the field switched on. The columns are the signal as a")
-print(f"fraction of its own no-field value, so what is left is the field's doing alone.")
+print("fraction of its own no-field value, so what is left is the field's doing alone.")
 print(f"\n{'scanner':22s} {'gradient echo':>14s} {'spin echo':>11s}")
 for label, scanner in ((swoop.name, swoop), ("1.5 T", 1.5), ("3 T", 3.0), ("7 T", 7.0)):
     S = [float(np.abs(np.asarray(pack.replay(s, tissue=myelin, scanner=scanner))[0])) for s in (fid, spin_echo)]
