@@ -6,6 +6,8 @@ pulse carries a balanced crusher pair. Without the first a pulse sits off centre
 dephases the echo the crusher exists to keep; without the second the coherence pathways stay degenerate and
 the train stops depending on its refocusing flip angle, which is the behaviour it is built to have.
 """
+from dataclasses import replace
+
 import numpy as np
 import pytest
 
@@ -286,3 +288,39 @@ def test_what_b_value_each_echo_of_a_split_train_actually_delivers():
     spread = (at120.max() - at120.min()) / at120.mean()
     assert 0.15 < spread < 0.40, f"echo-to-echo spread {spread:.3f}"
     assert at120.min() / prepared > 0.6 and at120.max() / prepared < 1.0
+
+
+def test_the_prolonged_readouts_own_diffusion_weighting_is_negligible():
+    """SPLICE's readout is single-polarity and never rewound within an interval, so its b accumulates over
+    the whole train instead of cancelling -- which is why it is worth checking rather than assuming, at low
+    field where the echo spacing is long (dmipy-sim#285).
+
+    It is negligible anyway, and the reason is that its amplitude is not free: the imaging resolution fixes
+    it through k_max = gamma_bar G ESP/4, and b goes as G^2. A 3 mm image needs 1.6 mT/m, against the ~11
+    mT/m the diffusion preparation plays, so the readout contributes about a ten-thousandth of the b.
+
+    Computed exactly from the waveform rather than measured: the effect is far below what 4000 walkers can
+    resolve, and a Monte-Carlo estimate of it comes back as noise of either sign."""
+    gamma_bar, prepared = 42.577e6, 0.945e9
+    esp, n = 10e-3, 5
+    base = sequences.splice([[1.0, 0, 0]], 35e-3, 42e-3, n, esp, bvalues=[0.0], TE_prep=PREP,
+                            beta_deg=180.0, n_t_per_echo=40).with_split_readout()
+    idx = [int(round(t / base.dt)) for t in base.echoes]
+    q = int(round(np.mean(np.diff(idx)))) // 4
+
+    def b_of_readout(res_m):
+        amp = (1.0 / (2 * res_m)) / (gamma_bar * esp / 4)          # k_max = gamma_bar G ESP/4
+        G = np.array(base.G, np.float64)
+        G[:, idx[0] + q:min(idx[-1] + q, base.n_t), 0] += amp      # single polarity, never rewound
+        return amp, float(replace(base, G=G.astype(np.float32)).b()[0])
+
+    amp3, b3 = b_of_readout(3e-3)
+    assert 1.4e-3 < amp3 < 1.8e-3, f"{amp3*1e3:.2f} mT/m for a 3 mm image"
+    assert b3 / prepared < 1e-3, f"readout carries {100*b3/prepared:.3f} % of the prepared b"
+
+    # finer images need a stronger readout and b goes as G^2, so it grows quadratically -- and is still
+    # nothing by 1.5 mm, which is far beyond what a 64 mT scanner images at
+    amp15, b15 = b_of_readout(1.5e-3)
+    assert amp15 == pytest.approx(2 * amp3, rel=1e-6)
+    assert b15 / b3 == pytest.approx(4.0, rel=0.05)
+    assert b15 / prepared < 1e-3
