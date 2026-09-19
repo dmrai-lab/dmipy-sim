@@ -53,6 +53,16 @@ When adding physics, assert against an **analytical** result or a **MISST** fixt
 (`tests/fixtures/misst_*.npy`). Isolate faceting/discretisation bias by running a mesh
 and the analytic geometry of the same shape through the identical waveform/seed/N.
 
+## The cookbook (`examples/README.md`)
+
+The ladder a newcomer is pointed at: each rung runs, adds one idea, and names the rung it assumes. It is
+ordered from the SUBSTRATE SPEC outward (`examples/spec/`, part I) because the spec fixes what every later
+step can do -- a pack cannot carry a channel the walk did not record, a replay cannot apply a tier the pack
+does not carry, and nothing downstream recovers what the spec did not state. `tests/test_examples.py` runs
+every rung and checks each is on the ladder; #317 tracks the parts still to write. **An example may not
+construct a `ScannerSequence`, a waveform or a crusher: if it needs one, the builder is missing and that is
+the work** (#315).
+
 ## Common tasks (copy-paste)
 
 **Forward signal** (b-values SI, s/m²; diffusivity m²/s; lengths m):
