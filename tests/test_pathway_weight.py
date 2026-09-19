@@ -95,3 +95,21 @@ def test_the_amplitude_rides_beside_the_weights_not_inside_them(pack):
     assert pack._prepare(sequences.pgse([[1.0, 0, 0]], 5e-3, 0.02, bvalues=[0.0], TE=0.045, n_t=600,
                                         slew_rate=np.inf),
                          tissue=None, scanner=None, orientation=None, compartment=None)["pathway"] == 1.0
+
+
+def test_a_single_reduced_flip_echo_is_one_pathway_and_has_a_closed_form():
+    """``sin^2(beta/2)``, enumerated rather than written down, and 1 at a perfect 180."""
+    for beta in (180.0, 150.0, 120.0, 90.0, 60.0):
+        seq = sequences.pgse([[1.0, 0, 0]], 5e-3, 0.02, bvalues=[0.0], TE=0.045, n_t=600, slew_rate=np.inf)
+        seq = seq.__class__(G=seq.G, dt=seq.dt, readout=seq.readout,
+                            rf=type(seq.rf)((seq.rf[0], seq.rf[1].__class__(seq.rf[1].t_s, beta, "refocus", 90.0))))
+        assert epg.pathway_weight(seq) == pytest.approx(np.sin(np.radians(beta) / 2) ** 2, abs=1e-9)
+
+
+def test_a_train_it_cannot_describe_is_refused_not_guessed():
+    """A six-echo train at 120 degrees runs 0.75, 0.94, 0.84, ... -- different at every echo and each a sum
+    over pathways, so no single amplitude describes the readout. Returning 1 would be wrong by a quarter on
+    the first echo; the refusal names what is needed instead."""
+    assert epg.pathway_weight(sequences.cpmg(6, 0.02, beta_deg=180.0, n_t_per_echo=60)) == 1.0
+    with pytest.raises(ValueError, match="SUM over several coherence pathways"):
+        epg.pathway_weight(sequences.cpmg(6, 0.02, beta_deg=120.0, n_t_per_echo=60))
