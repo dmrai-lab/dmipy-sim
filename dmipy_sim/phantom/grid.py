@@ -15,6 +15,11 @@ class Grid:
     indices run along (``"RAS"``: i -> +x, j -> +y, k -> +z), and is the frame the acquisition's gradient and
     B0 directions are given in. Both positions default to a grid centred on the isocenter at the origin.
 
+    ``origin_m`` and ``isocenter_m`` are what make a macroscopic layer a function of position in the bore
+    (RPH.md 7). A missing ``isocenter_m`` defaults to the grid centre; a missing ``origin_m`` defaults to a
+    grid centred on the scanner's origin, which is a GUESS about where the sample was put, so a phantom that
+    declares a layer refuses a grid whose origin was never stated (:attr:`placed_in_the_bore`).
+
     ``attach`` says what the grid is welded to when a phantom is **partitioned** from one walk and then posed
     (RPH.md, spec#3): ``"substrate"`` -- the grid follows the tissue, so a pose changes the physics only and
     voxel membership is invariant; ``"lab"`` -- the grid is the bore's, so a pose reassigns walkers to voxels.
@@ -47,6 +52,10 @@ class Grid:
             raise ValueError(f"axes names the scanner direction of each index, one of R/L, A/P, S/I each; got {axes!r}")
         object.__setattr__(self, "shape", sh); object.__setattr__(self, "voxel_size_m", vs)
         object.__setattr__(self, "origin_m", org); object.__setattr__(self, "isocenter_m", iso)
+        # RPH.md 7: a replayer MUST default a missing isocenter_m to the grid centre and MUST NOT default a
+        # missing origin_m when any layer is declared. The grid does not know about layers, so it records
+        # whether its placement was STATED and whoever declares a layer refuses on it.
+        object.__setattr__(self, "_origin_stated", origin_m is not None)
         object.__setattr__(self, "axes", ax)
         if attach not in ("substrate", "lab"):
             raise ValueError(f"attach is 'substrate' (the grid follows the tissue) or 'lab' (the grid is the bore's); got {attach!r}")
@@ -144,9 +153,32 @@ class Grid:
         """Scanner coordinates of the centres of the given voxels, ``(N, 3)``."""
         return np.asarray(self.origin_m) + np.asarray(voxel_index, np.float64) * np.asarray(self.voxel_size_m)
 
+    @property
+    def placed_in_the_bore(self):
+        """Whether this grid's ``origin_m`` was STATED rather than defaulted. A layer that varies over the
+        bore is meaningless on a grid whose position in it was guessed (RPH.md 7)."""
+        return bool(self._origin_stated)
+
+    def offset_m(self, voxel_index):
+        """Each voxel centre's displacement FROM the isocenter, ``(N, 3)``: what a field a magnet imposes is
+        a function of. A macroscopic layer that varies over the bore reads this; :meth:`radius_m` is its
+        norm, and is enough only for a law with no preferred direction, which a real magnet's is not."""
+        return self.positions_m(voxel_index) - np.asarray(self.isocenter_m, np.float64)
+
     def radius_m(self, voxel_index):
-        """Distance of each voxel centre from the isocenter: what a macroscopic layer varies over."""
-        return np.linalg.norm(self.positions_m(voxel_index) - np.asarray(self.isocenter_m), axis=-1)
+        """Distance of each voxel centre from the isocenter: the norm of :meth:`offset_m`."""
+        return np.linalg.norm(self.offset_m(voxel_index), axis=-1)
+
+    @property
+    def every_voxel(self):
+        """Every voxel index of the grid, ``(n_voxels, 3)``, in C order -- so that a law can be evaluated
+        over the whole grid and reshaped to :attr:`shape` as a dense volume."""
+        return np.argwhere(np.ones(self.shape, bool))
+
+    def offsets_volume_m(self):
+        """Every voxel centre's displacement from the isocenter as a dense ``shape + (3,)`` volume: the form
+        a layer is declared in (:meth:`Phantom.compose`), as opposed to the sparse rows a replay reads."""
+        return self.offset_m(self.every_voxel).reshape(tuple(self.shape) + (3,))
 
     @property
     def corner_m(self):

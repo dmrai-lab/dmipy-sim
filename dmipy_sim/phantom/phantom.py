@@ -137,6 +137,11 @@ class Phantom:
                 meta["substrates"][i]["uri"] = s.uri
         if layers:
             names = tuple(layers)
+            if not grid.placed_in_the_bore:
+                raise ValueError(
+                    "this grid's origin_m was never stated, so where it sits in the bore is a guess, and a "
+                    "macroscopic layer is a function of exactly that (RPH.md 7). Give origin_m -- and "
+                    "isocenter_m if the scanner is not focused on the grid's centre -- or declare no layer.")
             bad = [n for n in names if n not in SCALAR_REGISTRY]
             if bad:
                 raise ValueError(f"unknown macroscopic layer(s) {bad}: the registry is {list(SCALAR_REGISTRY)} (RPH.md 5.1). "

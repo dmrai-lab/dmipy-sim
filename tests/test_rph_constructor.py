@@ -57,7 +57,9 @@ def _tangential(n=8):
     return mu
 
 
-GRID8 = Grid(shape=(8, 8, 1), voxel_size_m=(1e-3, 1e-3, 1e-3))
+#: Layers are declared on this grid, so its placement in the bore is STATED, not defaulted
+#: (RPH.md 7): a field that varies over the bore is meaningless on a grid guessed into it.
+GRID8 = Grid(shape=(8, 8, 1), voxel_size_m=(1e-3, 1e-3, 1e-3), origin_m=(0.0, 0.0, 0.0))
 T2_CSF = 2.0
 
 
@@ -336,7 +338,7 @@ def test_the_transmit_layer_goes_through_the_bloch_route(pack_path):
     n = 2
     wm, *_ = _subs(pack_path)
     R = np.zeros((n, n, 1, 3, 3)); R[..., :, :] = np.eye(3)          # a stated pose: what a propagation needs
-    grid = Grid(shape=(n, n, 1), voxel_size_m=(1e-3,) * 3)
+    grid = Grid(shape=(n, n, 1), voxel_size_m=(1e-3,) * 3, origin_m=(0.0, 0.0, 0.0))
     full = {wm: np.ones((n, n, 1))}
     pk = read_rpk(pack_path)
     seq = _acq(pk, [[1, 0, 0], [0, 0, 1]], [1e9, 1e9])
@@ -382,7 +384,7 @@ def test_a_frame_is_one_pose_and_a_peak_is_that_pose_with_its_azimuth_unstated(p
     R0 = so3.rotation_of((0.3, 0.5, 0.81))
     R = np.zeros((n, n, 1, 3, 3)); R[..., :, :] = R0
     dirs = np.zeros((n, n, 1, 3)); dirs[..., :] = R0[:, 2]
-    grid = Grid(shape=(n, n, 1), voxel_size_m=(1e-3,) * 3)
+    grid = Grid(shape=(n, n, 1), voxel_size_m=(1e-3,) * 3, origin_m=(0.0, 0.0, 0.0))
     full = {wm: np.ones((n, n, 1))}
     frames = Phantom.compose(grid, fractions=full, orientation=Frames(R))
     peaks = Phantom.compose(grid, fractions=full, orientation=Peaks(dirs))
@@ -401,7 +403,7 @@ def test_a_fan_is_a_frame_with_two_concentrations_and_contains_the_watson(pack_p
     from dmipy_sim.replay import read_rpk, so3
     n = 2
     wm, *_ = _subs(pack_path)
-    grid = Grid(shape=(n, n, 1), voxel_size_m=(1e-3,) * 3)
+    grid = Grid(shape=(n, n, 1), voxel_size_m=(1e-3,) * 3, origin_m=(0.0, 0.0, 0.0))
     full = {wm: np.ones((n, n, 1))}
     axis = np.zeros((n, n, 1, 3)); axis[..., :] = (0.0, 0.0, 1.0)
     towards = np.zeros((n, n, 1, 3)); towards[..., :] = (1.0, 0.0, 0.3)          # not orthogonal: gets orthogonalised
@@ -429,7 +431,7 @@ def test_peaks_agree_with_a_concentrated_odf(pack_path):
     wm, *_ = _subs(pack_path)
     d = np.zeros((n, n, 1, 3)); d[..., :] = (0.3, 0.5, 0.81)
     d /= np.linalg.norm(d, axis=-1, keepdims=True)
-    grid = Grid(shape=(n, n, 1), voxel_size_m=(1e-3,) * 3)
+    grid = Grid(shape=(n, n, 1), voxel_size_m=(1e-3,) * 3, origin_m=(0.0, 0.0, 0.0))
     full = {wm: np.ones((n, n, 1))}
     peaks = Phantom.compose(grid, fractions=full, orientation=Peaks(d))
     sharp = Phantom.compose(grid, fractions=full, orientation=Watson(mu=d, kappa=400.0, lmax=12))
@@ -494,3 +496,39 @@ def test_a_prescribed_acquisition_must_share_the_grid_axes(pack_path):
     g = Grid.from_prescription(Prescription(voxel_size_m=(1e-3,) * 3, matrix=(8, 8, 1), axes="LPS"))
     ph2 = Phantom.compose(g, fractions={wm: np.ones((8, 8, 1))}, orientation=Watson(mu=_tangential(), kappa=12.0))
     assert np.isfinite(ph2.replay(seq.with_prescription(p_bad))).all()          # same axes: fine
+
+
+# ── where a voxel sits in the bore (dmipy-sim#322 PR 1) ─────────────────────────────────────────────
+def test_a_grid_says_where_each_voxel_sits_relative_to_the_isocenter():
+    """A field a magnet imposes is a function of position IN THE BORE, so a layer derived from one needs the
+    displacement from the isocenter, not merely the distance from it: a real magnet's profile has preferred
+    directions and `radius_m` alone cannot express them."""
+    g = Grid(shape=(4, 4, 2), voxel_size_m=(2e-3,) * 3, origin_m=(0.0, 0.0, 0.0), isocenter_m=(1e-3, 0.0, 0.0))
+    off = g.offset_m([[0, 0, 0], [1, 0, 0], [0, 2, 1]])
+    np.testing.assert_allclose(off, [[-1e-3, 0, 0], [1e-3, 0, 0], [-1e-3, 4e-3, 2e-3]], atol=1e-12)
+    np.testing.assert_allclose(g.radius_m(g.every_voxel), np.linalg.norm(g.offset_m(g.every_voxel), axis=-1))
+
+    # every voxel, and the same thing as the dense volume a layer is declared in
+    assert g.every_voxel.shape == (g.n_voxels, 3)
+    vol = g.offsets_volume_m()
+    assert vol.shape == tuple(g.shape) + (3,)
+    np.testing.assert_allclose(vol[1, 2, 0], g.offset_m([[1, 2, 0]])[0], atol=1e-12)
+
+
+def test_a_layer_needs_a_grid_whose_place_in_the_bore_was_stated():
+    """RPH.md 7: a replayer MUST default a missing isocenter_m to the grid centre and MUST NOT default a
+    missing origin_m when any layer is declared. The second half was not implemented -- a layer could be
+    hung on a grid whose position in the bore had been guessed, and it would replay looking right."""
+    assert Grid(shape=(4, 4, 2), voxel_size_m=(2e-3,) * 3, origin_m=(0, 0, 0)).placed_in_the_bore
+    assert not Grid(shape=(4, 4, 2), voxel_size_m=(2e-3,) * 3).placed_in_the_bore
+    # a missing isocenter_m still defaults, and to the grid's centre
+    g = Grid(shape=(4, 4, 2), voxel_size_m=(2e-3,) * 3, origin_m=(0, 0, 0))
+    np.testing.assert_allclose(g.isocenter_m, np.asarray(g.positions_m(g.every_voxel)).mean(axis=0), atol=1e-12)
+
+
+def test_a_phantom_refuses_a_layer_on_a_grid_it_only_guessed_the_place_of(pack_path):
+    b1 = np.ones((8, 8, 1))
+    guessed = Grid(shape=(8, 8, 1), voxel_size_m=(1e-3,) * 3)                 # origin_m defaulted
+    with pytest.raises(ValueError, match="origin_m was never stated"):
+        _phantom(pack_path, layers={"kappa_B1": b1}, grid=guessed)
+    _phantom(pack_path, layers={"kappa_B1": b1})                              # GRID8 states it: fine
