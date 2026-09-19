@@ -38,3 +38,39 @@ print("each one carries to the readout. A field is the same kind of knob -- the 
 print("the path and the susceptibility and B0 multiply it at replay -- shown in the susceptibility rung.")
 print("\nWhat a replay refuses: a tier the walk did not record. Asking for a relaxivity on a walk with no")
 print("contact channel raises rather than returning the unrelaxed number.")
+
+# ---------------------------------------------------------------------------------------------------------
+# And what rung 10's time scaling does to these tiers, which is the question this rung invites.
+#
+# Speeding up the clock does compress the time a spin spends against a wall or inside a field gradient, per
+# save interval. What answers it is that a fixed acquisition then spans proportionately MORE save intervals.
+# The two meet, and what they do when they meet differs by tier.
+print("\n" + "-" * 104)
+print("what each channel stores at save k, walked at D and at 2D on the halved clock -- the same path:\n")
+
+D2, T2_, dt2, a = 2e-9, 0.02, 1e-4, 2.0
+wall = Cylinder(4e-6, (0, 0, 1), surface_relaxivity_t2=1e-5)
+slow = simulate_trajectories(600, D2, wall, T_max=T2_, dt_save=dt2, seed=0, require_gpu=False)
+fast = simulate_trajectories(600, a * D2, wall, T_max=T2_ / a, dt_save=dt2 / a, seed=0, require_gpu=False)
+for label, name in (("positions", "positions"), ("boundary local time", "boundary_local_time"),
+                    ("compartment occupancy", "compartment")):
+    x, y = np.asarray(getattr(slow, name), float), np.asarray(getattr(fast, name), float)
+    print(f"  {label:22s} max |difference| {np.abs(x - y).max():.3e}")
+
+print("""
+None of them carries the clock. The boundary local time is a LENGTH, the occupancy is a pool per save, and
+the field sample is the field at a position. So over a fixed echo time:
+
+  relaxation   the replay consumes twice the saves at half the step, so the total relaxed time is still TE.
+               What changes is how it splits across pools, because the walker explores more in the same TE.
+
+  relaxivity   twice the accumulated local time, divided by twice the diffusivity, since the weight is
+               (rho / D) times the sum. The two cancel exactly, and they should: the reaction-limited
+               surface rate is rho S/V and does not depend on D.
+
+  the field    twice the samples at half the step, along a path that covers more field. Nothing cancels
+               here, and nothing should -- a higher diffusivity really does narrow the dephasing at fixed TE.
+
+The relaxivity line is the one worth remembering, because it needs BOTH halves. Rescale the grid and leave
+the diffusivity alone, or the reverse, and the surface term is wrong by exactly that factor while still
+looking entirely reasonable.""")
