@@ -122,3 +122,23 @@ def test_make_system_reads_the_catalogue_and_refuses_the_unknown():
     assert make_system("connectom").max_slew == pytest.approx(200.0 * 267.513e6 / (2 * np.pi))   # Hz/m/s
     with pytest.raises(ValueError, match="unknown scanner"):
         make_system("siemens")
+
+def test_the_low_field_class_is_the_cited_hyperfine_swoop():
+    """A 64 mT portable magnet is the other end of the catalogue from a Connectom, and the experiment that
+    needs it (dmipy-sim#285) must read its numbers here rather than spell them out. The schema carries ONE
+    amplitude and slew per model, so the entry is the WEAKEST axis -- what a deliverability check must use --
+    with all three in its context."""
+    lm = ScannerLimits.of("low_field")
+    assert lm.kind == "scanner" and lm.name == "hyperfine_swoop_64mT"
+    assert lm.field_T == pytest.approx(0.064)
+    assert lm.gradient_limits == pytest.approx((0.0244, 22.0))
+    for alias in ("swoop", "hyperfine_swoop", "hyperfine_swoop_64mT"):
+        assert ScannerLimits.of(alias).name == "hyperfine_swoop_64mT"
+    amp = scc.get_limit("hyperfine_swoop_64mT", "gradient", "max_amplitude")
+    assert amp["confidence"] == "cited" and "24.9 / 24.4 / 25.7" in amp["context"]
+    slew = scc.get_limit("hyperfine_swoop_64mT", "gradient", "max_slew_rate")
+    assert "23 / 22 / 67" in slew["context"]
+    for key in ("gholam2025_swoop", "ohalloran2022_dwi_64mt"):
+        assert scc.get_citation(key)["doi_or_url"]
+    # the magnet's own background gradient is a catalogued number, not a constant in an experiment script
+    assert scc.get_limit("hyperfine_swoop_64mT", "homogeneity", "background_gradient")["value"] == pytest.approx(1.4)
