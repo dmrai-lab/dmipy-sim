@@ -23,6 +23,11 @@ The assemblers:
 * :class:`EchoTrain` -- a 90 and ``n_echoes`` refocusing pulses at ``(k + 1/2) TE``, an echo at every ``k TE``.
   The gradient is on wherever the pulses and readouts leave room, at one polarity or alternating per interval
   (Carr-Purcell either way in ``G_eff``); each contiguous stretch is one lobe with its own ramps.
+* :class:`PreparedEchoTrain` -- a diffusion preparation whose own echo forms at ``TE_prep``, then ``n_echoes``
+  refocusing pulses of ``beta_deg`` every ``TE_echo``. The encoding sits either side of the preparation's 180
+  exactly as :class:`SpinEcho` places it; the train carries no gradient of its own, and what separates its
+  coherence pathways is the crusher the builder declares. This is the shape a diffusion-weighted fast spin
+  echo plays, and what :func:`~dmipy_sim.sequences.builders.splice` is built on.
 
 Slew is a LIMIT, never a fork: a finite ``slew_rate`` gives every lobe ramps of ``g / slew`` (a cosine, whose
 own slope must stay under the limit, gets ramped edges), ``np.inf`` gives vertical ones, and the structure is
@@ -48,7 +53,8 @@ from ..math.gradient_conversions import q_from_g
 from ._helpers import _calc_b_from_waveform
 
 __all__ = ["trapezoid", "trapezoid_train", "cosine", "bipolar", "axis_pairs",
-           "SpinEcho", "StimulatedEcho", "GradientEcho", "EchoTrain", "assemble", "ramp_of"]
+           "SpinEcho", "StimulatedEcho", "GradientEcho", "EchoTrain", "PreparedEchoTrain",
+           "assemble", "ramp_of"]
 
 _B_ITER = 16          # amplitude iterations (the ramps depend on the amplitude)
 _B_RTOL = 1e-10
