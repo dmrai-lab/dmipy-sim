@@ -105,11 +105,16 @@ The two numbers a producer has to choose, and the criterion that removes the gue
 
 Validating against a published dataset is the DiSCo recipe in the replay guide; a rung here is planned.
 
-## Part X -- extending
+## Part X -- extending  (`extending/`)
 
-Planned, and the part whose absence costs most. Adding a sequence family (the assembler, and the invariant
-that the schedule decides where the echoes are); adding a scanner to the catalogue; adding a channel. The
-geometry contract is already written, in `CLAUDE.md`, and is the model for the other three.
+The part whose absence costs most, because an extension point nobody finds is one that gets duplicated.
+
+| | |
+|---|---|
+| [22 adding a sequence family](extending/22_adding_a_sequence_family.py) | the assembler protocol in fifteen lines, and the invariant that the schedule decides where the echoes are |
+| [23 adding a scanner](extending/23_adding_a_scanner.py) | the catalogue, why every leaf carries its context and citation, and why no constant lives in Python |
+
+Adding a channel is planned. The geometry contract is already written, in `CLAUDE.md`, and is the model for it.
 
 ---
 
