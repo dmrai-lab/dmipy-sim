@@ -14,9 +14,17 @@ import pytest
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 RUNGS = sorted((ROOT / "examples").glob("*/[0-9][0-9]_*.py"))
 
+#: A rung that needs an optional interop dependency, and which one. The rung still runs wherever the
+#: dependency is installed; where it is not, the skip says so rather than the ladder going red for a
+#: reason that has nothing to do with the engine.
+OPTIONAL_DEPENDENCY = {"19_pulseq_in_and_out": "pypulseq"}
+
 
 @pytest.mark.parametrize("rung", RUNGS, ids=[p.stem for p in RUNGS])
 def test_the_rung_runs(rung, monkeypatch, tmp_path, capsys):
+    needs = OPTIONAL_DEPENDENCY.get(rung.stem)
+    if needs:
+        pytest.importorskip(needs)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("JAX_PLATFORMS", "cpu")
     runpy.run_path(str(rung), run_name="__cookbook__")
