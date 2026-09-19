@@ -28,7 +28,7 @@ from .viz.viz import (plot_waveform, plot_sequence_comparison,
                   plot_mesh_section, plot_walkers_3d, plot_cell_surface, plot_mesh_3d,
                   seed_in_cell, walk_paths, plot_trajectories, save_rotation)
 from .acquisition.scanner_sequence import ScannerSequence, Encoding, Protocol, Prescription
-from .sequences.builders import pgse, pgste, ogse, cpmg, gre, ste, pte
+from .sequences.builders import pgse, pgste, ogse, cpmg, splice, gre, ste, pte
 from .acquisition.waveforms import (set_b, calc_b, calc_btensor, btensor_invariants, rotate_waveform, tile_waveform)
 from .geometry import (FreeDiffusion, Box1D, Sphere, Cylinder, MyelinatedCylinder,
                          Ellipsoid,
@@ -74,7 +74,7 @@ __all__ = [
     "emergent_z_spectrum",
     "gpu_available", "check_gpu", "free_gpu_memory", "gpu_session", "list_gpu_processes",
     "ScannerLimits", "SCANNERS",
-    "pgse", "pgste", "ogse", "cpmg", "gre", "ste", "pte",
+    "pgse", "pgste", "ogse", "cpmg", "splice", "gre", "ste", "pte",
     "set_b", "calc_b", "calc_btensor", "btensor_invariants",
     "rotate_waveform", "tile_waveform",
     "FreeDiffusion", "Box1D", "Sphere", "Cylinder", "MyelinatedCylinder",

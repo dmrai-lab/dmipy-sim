@@ -236,6 +236,69 @@ class GradientEcho:
         return schedule, [[("start", _lead(self.timing), 1.0)] for _ in spans]
 
 
+class PreparedEchoTrain:
+    """A diffusion preparation, then a refocusing train: what a diffusion-weighted fast spin echo plays.
+
+    90 at 0 and the preparation's 180 at ``te_prep / 2``, with an encoding block either side of it exactly as
+    :class:`SpinEcho` places them, so the preparation's own echo forms at ``te_prep``; then ``n_echoes``
+    refocusing pulses of ``beta_deg`` about ``refocus_axis_deg``, one every ``TE_echo``, so an echo forms
+    halfway between consecutive pulses. ``TE_prep`` is the preparation's own echo, as a
+    :class:`StimulatedEcho`'s ``TM`` is its own mixing time, and the last echo is then
+    ``TE_prep + n_echoes * TE_echo``.
+
+    The train carries no gradient of its own. What separates its coherence pathways is the crusher the
+    builder declares -- the voxel-scale spoiler, which is what a train really uses and what a micron cell
+    cannot produce geometrically.
+
+    Every echo lands on a sample by construction (:meth:`n_t_of`), because a refocusing pulse half a sample
+    off centre leaves its crusher unbalanced and dephases the echo the crusher exists to keep.
+    """
+
+    def __init__(self, n_echoes, TE_echo, TE_prep, gap, prep_flip_deg=180.0, beta_deg=180.0,
+                 refocus_axis_deg=90.0, timing=None):
+        self.n_echoes, self.TE_echo, self.TE_prep = int(n_echoes), float(TE_echo), float(TE_prep)
+        self.gap = gap                    # callable (m, g) -> seconds between the preparation's two blocks
+        self.prep_flip, self.beta = float(prep_flip_deg), float(beta_deg)
+        self.refocus_axis = float(refocus_axis_deg)
+        self.timing = timing
+
+    def te_min(self, spans, g):
+        prep = SpinEcho(self.gap, self.timing).te_min(spans, g)
+        if self.TE_prep < prep - _EPS_T:
+            raise ValueError(f"TE_prep = {self.TE_prep*1e3:.3f} ms is below the {prep*1e3:.3f} ms the "
+                             "preparation's blocks, their gap and its pulse windows need")
+        return self.TE_prep + self.n_echoes * self.TE_echo
+
+    def n_t_of(self, n_t_per_echo):
+        """``n_t_per_echo`` samples fill each train interval and the preparation is a whole number of them, so
+        every echo lands on a sample. A preparation this grid cannot express is refused, not rounded."""
+        dt = self.TE_echo / int(n_t_per_echo)
+        n_prep = self.TE_prep / dt
+        if abs(n_prep - round(n_prep)) > 1e-6:
+            raise ValueError(
+                f"the preparation's echo at {self.TE_prep*1e3:.4f} ms is {n_prep:.4f} samples on this grid "
+                f"({dt*1e6:.3f} us, {int(n_t_per_echo)} per {self.TE_echo*1e3:.3f} ms interval), and an echo "
+                "must fall on a sample. Choose n_t_per_echo so the preparation is a whole number of them.")
+        return int(round(n_prep)) + self.n_echoes * int(n_t_per_echo) + 1
+
+    def windows(self):
+        return EchoTrain(self.n_echoes, self.TE_echo, beta_deg=self.beta,
+                         refocus_axis_deg=self.refocus_axis, timing=self.timing).windows()
+
+    def layout(self, spans, g, TE, dt, n_t):
+        te_prep = self.TE_prep
+        w = _dur(self.timing, "t_refocus")
+        ev = [RFEvent(_dur(self.timing, "t_prep"), 90, 'Mz→Mxy', duration_s=_dur(self.timing, "t_excite")),
+              RFEvent(te_prep / 2.0, self.prep_flip, 'refocus', axis_deg=self.refocus_axis, duration_s=w)]
+        ev += [RFEvent(te_prep + (k + 0.5) * self.TE_echo, self.beta, 'refocus', axis_deg=self.refocus_axis,
+                       duration_s=w) for k in range(self.n_echoes)]
+        placements = []
+        for m, span in enumerate(spans):
+            gap = self.gap(m, g[m])
+            placements.append([("end", te_prep / 2.0 - gap / 2.0, 1.0), ("start", te_prep / 2.0 + gap / 2.0, 1.0)])
+        return RFSchedule(ev), placements
+
+
 class EchoTrain:
     """90 about x at 0 and ``n_echoes`` refocusing pulses of ``beta_deg`` at ``(k + 1/2) TE`` about the axis
     ``refocus_axis_deg`` -- 90 (y) is Meiboom-Gill, where a flip-angle error self-corrects every second echo;
