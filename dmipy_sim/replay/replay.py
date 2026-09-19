@@ -473,7 +473,8 @@ class ReplayPack:
         return phi
 
     def replay_bloch(self, waveform, *, b1_scale=None, off_resonance_T=None, tissue=None, scanner=None,
-                     orientation=None, compartment=None, jax=False, complex_signal=False, per_walker=False):
+                     orientation=None, compartment=None, jax=False, complex_signal=False, per_walker=False,
+                     crusher_seed=0):
         """The RF-aware replay: each walker's magnetisation vector propagated through the actual sequence
         operators on this pack's walk (:func:`~dmipy_sim.replay.trajectories.replay_bloch`).
 
@@ -489,6 +490,15 @@ class ReplayPack:
         walker precesses in through the actual pulses -- what a macroscopic layer of a phantom is (RPH.md 5.1).
         ``per_walker`` returns every walker's transverse magnetisation at the readout, ``(n_w, n_meas)`` complex,
         unweighted, instead of the ensemble mean (single-readout sequences).
+
+        A sequence's ``crusher`` is applied here (dmipy-sim#305). It is the voxel-scale spoiler, which a
+        micron cell cannot produce geometrically -- a gradient cannot wind much beyond 2 pi across it -- so it
+        is modelled as the forward engine models it (:func:`~dmipy_sim.engine.bloch._build_crusher`): each
+        walker carries a macroscopic coordinate ``u`` in [0, 1) and accrues ``2 pi n_cycles u`` over each
+        crusher window, so the ensemble dephases over ``n_cycles`` turns. Without it every coherence pathway
+        of a pulse train stays degenerate and recombines, and the echo barely depends on the refocusing flip
+        angle, which is not what a train does. ``crusher_seed`` draws those coordinates, so a replay of one
+        pack and one sequence is reproducible.
         """
         from .trajectories import replay_bloch as _rb, replay_bloch_jax as _rbj
         from .compression import decode_occupancy, decode_boundary_bridge
@@ -536,6 +546,17 @@ class ReplayPack:
                 raise ValueError(f"off_resonance_T is a scalar or one value per walker ({pos.shape[0]}); got {off.shape}")
             uniform = GAMMA * dt * np.broadcast_to(off[:, None], (pos.shape[0], n_t))
             extra = uniform if extra is None else extra + uniform
+        if getattr(waveform, "crusher", None) is not None:
+            from ..engine.bloch import _build_crusher
+            from ._replay_kernel import gate_weights
+            rate, has = _build_crusher(waveform.crusher, P["dt_wf"], P["G"].shape[1])   # rad/step, waveform grid
+            if has and np.any(rate):
+                # the rate as a density (rad/s) carried onto the pack's save grid, then back to radians per
+                # save: the phase of each window is preserved however the two grids differ
+                per_save = np.asarray(gate_weights(rate / P["dt_wf"], P["dt_wf"], n_t, dt), np.float64) * dt
+                u = np.random.default_rng(int(crusher_seed)).random(pos.shape[0])
+                crush = u[:, None] * np.broadcast_to(per_save.reshape(-1, n_t)[0], (pos.shape[0], n_t))
+                extra = crush if extra is None else extra + crush
         if extra is not None:
             kw["extra_phase_per_step"] = extra
         if per_walker:
