@@ -163,3 +163,51 @@ def needs_verification():
                                                or leaf.get("value") is None):
                     out.append((m, grp, n))
     return out
+
+
+SCHEMA_PATH = Path(__file__).with_name("scanner_catalogue.schema.json")
+
+
+def conformance_problems(catalogue=None):
+    """Every way the catalogue departs from its own schema (ACQUISITION.md 8), as a list of sentences;
+    empty when it conforms. Checked here rather than with ``jsonschema`` so the package stays a test-time
+    convenience, exactly as the substrate spec's validator does.
+
+    The three referential rules are the ones a type schema cannot state: every leaf's ``source_key``
+    resolves in ``citations``; a ``classes`` or ``aliases`` value names a key of ``scanners`` OR of
+    ``envelopes``; and a citation MAY be referenced from an entry's prose ``notes`` alone, so an uncited
+    citation is not an error while an unresolved key is.
+    """
+    cat = SCANNER_CONSTANTS if catalogue is None else catalogue
+    schema = json.loads(SCHEMA_PATH.read_text())
+    fields = tuple(cat["_schema"]["entry_fields"])
+    levels = set(cat["_schema"]["confidence_levels"])
+    cites = set(cat.get("citations", {}))
+    bad = []
+    for table in ("scanners", "envelopes"):
+        for name, entry in cat.get(table, {}).items():
+            for group, leaves in entry.items():
+                if not isinstance(leaves, dict):
+                    continue
+                for leaf_name, leaf in leaves.items():
+                    if not isinstance(leaf, dict) or "value" not in leaf:
+                        continue
+                    where = f"{table}.{name}.{group}.{leaf_name}"
+                    missing = [f for f in fields if f not in leaf]
+                    if missing:
+                        bad.append(f"{where} is missing {missing}")
+                    if leaf.get("source_key") not in cites:
+                        bad.append(f"{where} cites {leaf.get('source_key')!r}, which is not in citations")
+                    if leaf.get("confidence") not in levels:
+                        bad.append(f"{where} has confidence {leaf.get('confidence')!r}, "
+                                   f"which is not one of {sorted(levels)}")
+                    if not leaf.get("context"):
+                        bad.append(f"{where} has no context: a bare number loses what it means")
+    known = set(cat.get("scanners", {})) | set(cat.get("envelopes", {}))
+    for table in ("classes", "aliases"):
+        for short, target in cat.get(table, {}).items():
+            if target not in known:
+                bad.append(f"{table}.{short} points at {target!r}, which is neither a scanner nor an envelope")
+    if schema.get("title", "").split()[0] != "Scanner":
+        bad.append("the shipped schema is not the scanner catalogue's")
+    return bad
