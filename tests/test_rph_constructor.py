@@ -597,3 +597,59 @@ def test_a_stated_field_map_wins_over_the_machines_own(pack_path):
     stated = _rows(ph, ph.replay(gre, scanner=swoop, off_resonance=1e-7, complex_signal=True))
     same_at_3T = _rows(ph, ph.replay(gre, scanner=3.0, off_resonance=1e-7, complex_signal=True))
     np.testing.assert_allclose(np.angle(stated), np.angle(same_at_3T), rtol=1e-9)
+
+
+# ── what a smooth transmit map costs, and how to afford it (dmipy-sim#322 PR 5) ─────────────────────
+def test_a_smooth_transmit_map_costs_one_propagation_per_distinct_scale():
+    """The RF-aware route propagates once per distinct transmit scale. A map a person writes by hand has a
+    few values; a map a MACHINE produces is continuous, so it has as many as the rounding allows -- 601
+    across a plausible 0.6 to 1.2 at the default, which is 601 vector-Bloch propagations of every pack in
+    the phantom. Binning is what makes such a map affordable, and it was not reachable at all from
+    `Phantom.replay` before."""
+    from dmipy_sim.replay.phantom import transmit_classes
+    kappa = np.linspace(0.6, 1.2, 4001)
+    assert len(np.unique(np.round(kappa, 3))) == 601                     # the default rounding
+    assert len(np.unique(transmit_classes(kappa, 1e-2))) == 61           # 1 % of the flip angle
+    assert len(np.unique(transmit_classes(kappa, 5e-2))) == 13
+    # binning is exact to the tolerance, which is the guarantee that makes it safe to use
+    for tol in (1e-2, 5e-2):
+        assert np.abs(transmit_classes(kappa, tol) - kappa).max() <= tol / 2 + 1e-12
+    with pytest.raises(ValueError, match="positive scale on a flip angle"):
+        transmit_classes(kappa, 0.0)
+
+
+def test_binning_the_transmit_map_moves_the_signal_by_no_more_than_the_tolerance(pack_path):
+    """The flip angle reaches the signal through a sine, so an error of `tol` in the scale is an error of
+    the same order in the signal and never larger. That is what lets a tolerance be chosen from what the
+    answer needs rather than guessed."""
+    from dmipy_sim.replay import read_rpk
+    n = 4
+    wm, *_ = _subs(pack_path)
+    R = np.zeros((n, n, 1, 3, 3)); R[..., :, :] = np.eye(3)          # a stated pose: the RF route needs one
+    grid = Grid(shape=(n, n, 1), voxel_size_m=(1e-3,) * 3, origin_m=(0.0, 0.0, 0.0))
+    pk = read_rpk(pack_path)
+    seq = _acq(pk, [[1, 0, 0]], [1e9])
+    rf = [RFEvent(0.0, 90.0, axis_deg=0.0), RFEvent((pk.n_t - 1) * pk.dt / 2, 180.0, axis_deg=90.0)]
+    gre = replace(seq, G=np.abs(np.asarray(seq.G)), rf=rf, family="pgse")
+    kap = np.linspace(0.85, 1.0, n * n).reshape(n, n, 1)              # smooth, as a real B1 map is
+    ph = Phantom.compose(grid, fractions={wm: np.ones((n, n, 1))}, orientation=Frames(R),
+                         layers={"kappa_B1": kap})
+    exact = _rows(ph, ph.replay(gre))
+    for tol in (1e-2, 5e-2):
+        binned = _rows(ph, ph.replay(gre, transmit_tolerance=tol))
+        rel = np.abs(binned - exact).max() / np.abs(exact).max()
+        assert rel < 2 * tol, f"tolerance {tol} moved the signal by {rel:.4f}"
+    # and the default is untouched, so nothing that replayed before changes
+    np.testing.assert_allclose(_rows(ph, ph.replay(gre, transmit_tolerance=None)), exact, rtol=1e-12)
+
+
+def test_no_machine_publishes_a_transmit_profile_so_none_is_derived():
+    """B0 has a machine-side source because two figures about the Swoop's field are published and constrain
+    each other. B1 has none: the catalogue carries peak amplitudes and no uniformity figure for any machine,
+    so there is nothing to derive a law from and none is invented. A transmit map remains something a user
+    measures and supplies, and the binning above is what makes supplying a real one affordable."""
+    from dmipy_sim.acquisition import scanner_constants as scc
+    for name, entry in scc.SCANNER_CONSTANTS["scanners"].items():
+        for group, leaves in entry.items():
+            if isinstance(leaves, dict):
+                assert not any("uniform" in k or "profile" in k for k in leaves), f"{name}.{group}"

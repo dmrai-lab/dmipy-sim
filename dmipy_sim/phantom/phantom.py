@@ -301,7 +301,7 @@ class Phantom:
         return out
 
     def replay(self, seq, *, scanner=None, pose=None, packs=None, complex_signal=False,
-               transmit=None, off_resonance=None, proton_density=None, cache=None):
+               transmit=None, off_resonance=None, proton_density=None, transmit_tolerance=None, cache=None):
         """The signal of every voxel under ``seq``: a dense volume ``grid.shape + (n_measurements,)``, NaN where
         the phantom has no voxel (:meth:`sparse` gives the rows).
 
@@ -336,7 +336,8 @@ class Phantom:
                       off_resonance=maps["off_resonance"], proton_density=maps["proton_density"],
                       forms={i: s for i, s in enumerate(self.substrates) if getattr(s, "kind", None) == "analytic"})
         if maps["transmit"] is not None or "kappa_B1" in f.scalar_names:
-            _, S = f.replay_bloch(seq, transmit=maps["transmit"], **common)
+            _, S = f.replay_bloch(seq, transmit=maps["transmit"],
+                                  transmit_tolerance=transmit_tolerance, **common)
         else:
             _, S = f.replay(seq, cache=cache, **common)
         return self.to_volume(S)

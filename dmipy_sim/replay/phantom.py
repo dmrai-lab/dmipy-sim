@@ -34,6 +34,21 @@ RPH_SCHEMA_VERSION = "0.4.0"
 SCALAR_REGISTRY = ("kappa_B1", "delta_B0_T", "m0_scale")
 
 
+def transmit_classes(kappa, tolerance):
+    """The transmit scales of ``kappa`` quantised to ``tolerance``: what decides how many vector-Bloch
+    propagations a phantom costs.
+
+    The RF-aware route propagates once per distinct transmit scale, so a SMOOTH map -- which is what a
+    machine's own transmit profile is -- costs one propagation per distinct value unless the values are
+    binned. Binning to a tolerance is exact to that tolerance in the flip angle, and the flip angle enters
+    the signal through a sine, so the signal error is of the same order and never larger.
+    """
+    tol = float(tolerance)
+    if not tol > 0:
+        raise ValueError(f"the transmit tolerance is a positive scale on a flip angle; got {tolerance}")
+    return np.round(np.asarray(kappa, np.float64) / tol) * tol
+
+
 def _lmax_of_n_coeffs(n_c):
     for l in range(0, 33, 2):
         if n_sh_coeffs(l) == n_c:
@@ -549,7 +564,8 @@ class ReplayPhantom:
         return pose, analytic, self._m0(proton_density)
 
     def replay_bloch(self, waveform, *, scanner=None, pose=None, packs=None, complex_signal=False,
-                     transmit=None, off_resonance=None, proton_density=None, decimals=3, forms=None):
+                     transmit=None, off_resonance=None, proton_density=None, decimals=3,
+                     transmit_tolerance=None, forms=None):
         """Replay the phantom through the RF-aware route: ``(voxel_index, S)``, one magnetisation propagation
         per distinct pose rather than one contraction per voxel.
 
@@ -570,6 +586,13 @@ class ReplayPhantom:
         refused instead of approximated. Distinct ``(substrate, rotation, transmit, off-resonance)`` tuples are
         propagated once each and scattered to every slot that shares them, ``decimals`` setting how finely
         they are distinguished; the cost is that count, not the voxel count.
+
+        ``transmit_tolerance`` bins the transmit scales before grouping, and is how a SMOOTH transmit map is
+        afforded. The route propagates once per distinct scale, so a map a machine produces -- continuous by
+        nature -- costs one propagation per distinct value: at the default rounding that is a thousand of
+        them across a unit range. Binning to a tolerance is exact to that tolerance in the flip angle, and
+        the flip angle reaches the signal through a sine, so the signal error is of the same order and never
+        larger. ``None`` keeps the ``decimals`` rounding, so nothing that ran before changes.
         """
         if self.mode != "frames":
             raise ValueError(f"replay_bloch propagates the magnetisation at a pose, so it needs a frames-mode "
@@ -605,7 +628,8 @@ class ReplayPhantom:
         R = R.reshape(-1, 9)
         # every slot's propagation key: substrate, rounded pose, rounded transmit scale, rounded field offset
         keys = np.concatenate([ids[:, None].astype(np.float64), np.round(R, int(decimals)),
-                               np.round(kappa[v_idx], int(decimals))[:, None],
+                               (transmit_classes(kappa[v_idx], transmit_tolerance)
+                                if transmit_tolerance else np.round(kappa[v_idx], int(decimals)))[:, None],
                                np.round(dB0[v_idx], int(decimals) + 9)[:, None]], axis=1)
         uniq, inverse = np.unique(keys, axis=0, return_inverse=True)
         inverse = np.asarray(inverse).reshape(-1)
