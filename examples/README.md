@@ -22,17 +22,26 @@ contract comes first and everything else is downstream of it.
 | [07 the fixed point](spec/07_the_fixed_point.py) | geometry to spec to geometry, walking to the same positions bit for bit |
 | [08 write your own](spec/08_write_your_own.py) | a spec by hand, and every way it is refused |
 
-## Part II -- what the walk fixes, and what replay leaves free
+## Part II -- the spins do this anyway; the scanner only asks  (`replay/`)
 
-Planned. The division the whole library rests on: the walk bakes in the geometry, the diffusivity and the
-permeability, because those change the paths; the tissue, the field, the pose and the acquisition are applied
-afterwards to the same paths. Rungs: what a walk fixes; what a replay leaves free; the channels that carry
-the free part and what refuses without them.
+> "Diffusion MRI altered this situation by encoding a physical process that exists independently of the
+> scanner: the thermally driven displacement of water molecules."
+> -- Le Bihan, *40 years of Diffusion MRI in the Brain*, Imaging Neuroscience 2026, doi 10.1162/IMAG.a.1365
+
+Replay is that sentence taken literally in a simulator. The boundary is not "substrate versus scanner": it
+is between what changes the PATH and what changes the magnetisation carried along it.
+
+| | |
+|---|---|
+| [09 the scanner is an observer](replay/09_the_scanner_is_an_observer.py) | one walk, three acquisitions asked afterwards, each checked against the forward engine |
+| [10 what changes the path](replay/10_what_changes_the_path.py) | diffusivity, geometry, permeability -- each its own walk, and why |
+| [11 what changes the magnetisation](replay/11_what_changes_the_magnetisation.py) | relaxation, relaxivity, field: substrate properties that are still replay knobs |
+| [12 the channels](replay/12_the_channels.py) | what each records, what it costs, and what is refused without it |
 
 ## Part III -- one walk, many acquisitions
 
-Planned. Walk once and replay a scheme; sweep a tissue, a pose, a field without re-walking; save a pack,
-load it elsewhere, read what it is certified for.
+Planned. Sweep a tissue, a pose, a field without re-walking; a whole scheme; save a pack, load it elsewhere,
+read what it is certified for.
 
 ## Part IV -- substrates in practice
 

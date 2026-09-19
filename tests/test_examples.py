@@ -1,8 +1,8 @@
 """The cookbook's rungs run (examples/).
 
 An example that no longer executes is documentation that lies, and these are the files a newcomer is told to
-start from. The spec rungs are pure CPU and take a second each; the heavier parts of the cookbook are not run
-here and are listed in `examples/README.md` as such.
+start from. Parts I and II are pure CPU, a second or two each; the heavier parts of the cookbook are not run here
+and are listed in `examples/README.md` as such.
 """
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ import runpy
 import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-RUNGS = sorted((ROOT / "examples" / "spec").glob("[0-9][0-9]_*.py"))
+RUNGS = sorted((ROOT / "examples").glob("*/[0-9][0-9]_*.py"))
 
 
 @pytest.mark.parametrize("rung", RUNGS, ids=[p.stem for p in RUNGS])
