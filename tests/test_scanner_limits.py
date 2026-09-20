@@ -4,6 +4,8 @@ Every class of the band-limit certificate and every Pulseq preset is the cited J
 one scanner resolves from any of its names; a slew regime is a choice, not a second catalogue; and what the
 catalogue does not know is ``None`` and listed, never a number standing in for one.
 """
+import json
+
 import numpy as np
 import pytest
 
@@ -142,3 +144,56 @@ def test_the_low_field_class_is_the_cited_hyperfine_swoop():
         assert scc.get_citation(key)["doi_or_url"]
     # the magnet's own background gradient is a catalogued number, not a constant in an experiment script
     assert scc.get_limit("hyperfine_swoop_64mT", "homogeneity", "background_gradient")["value"] == pytest.approx(1.4)
+
+
+# ── the catalogue conforms to its own schema (dmipy-sim#322 PR 0) ───────────────────────────────────
+def test_the_schema_ships_and_is_the_spec_repos():
+    """`ACQUISITION.md` 8 is the normative text and `scanner_catalogue.schema.json` beside the data is the
+    type schema, as `SUBSTRATE.md` and `substrate.schema.json` are for a substrate. Before this the scanner
+    catalogue was the one cited-data asset in the ecosystem with no machine-readable schema and no
+    conformance check, and three drifts had accumulated in the prose unnoticed."""
+    schema = json.loads(scc.SCHEMA_PATH.read_text())
+    assert schema["title"].startswith("Scanner limit catalogue")
+    assert schema["$schema"].endswith("2020-12/schema")
+    assert set(schema["required"]) == {"_schema", "citations", "scanners", "classes", "aliases"}
+    assert set(schema["$defs"]["leaf"]["required"]) == set(scc.SCANNER_CONSTANTS["_schema"]["entry_fields"])
+
+
+def test_the_catalogue_conforms_to_it():
+    """Every leaf carries the seven fields with a context and a citation that resolves, every confidence is
+    one the file declares, and every short name points at something. This is the guard that was missing."""
+    assert scc.conformance_problems() == []
+
+
+@pytest.mark.parametrize("break_it, expect", [
+    (lambda c: c["scanners"]["siemens_magnetom_prisma_3T"]["gradient"]["max_amplitude"].pop("context"), "no context"),
+    (lambda c: c["scanners"]["siemens_magnetom_prisma_3T"]["gradient"]["max_amplitude"].update(source_key="nobody"),
+     "not in citations"),
+    (lambda c: c["scanners"]["siemens_magnetom_prisma_3T"]["gradient"]["max_amplitude"].update(confidence="vibes"),
+     "not one of"),
+    (lambda c: c["aliases"].update(ghost="a_machine_that_does_not_exist"), "neither a scanner nor an envelope"),
+])
+def test_the_conformance_check_has_teeth(break_it, expect):
+    """A check that passes on a broken catalogue guards nothing, so each rule is shown failing."""
+    import copy
+    c = copy.deepcopy(scc.SCANNER_CONSTANTS)
+    break_it(c)
+    problems = scc.conformance_problems(c)
+    assert problems and any(expect in p for p in problems), f"{expect!r} not caught; got {problems}"
+
+
+def test_an_alias_may_name_an_envelope_and_a_citation_may_be_prose_only():
+    """Two rules found by checking rather than by reading, and both would make a naive schema reject a
+    conforming file: `clinical_typical` resolves into `envelopes`, not `scanners`, and several citations are
+    referenced only from an entry's prose `notes` -- a source for the machine rather than for one number."""
+    cat = scc.SCANNER_CONSTANTS
+    assert cat["aliases"]["clinical_typical"] in cat["envelopes"]
+    assert cat["aliases"]["clinical_typical"] not in cat["scanners"]
+    cited_by_a_leaf = {leaf.get("source_key")
+                       for table in ("scanners", "envelopes")
+                       for entry in cat[table].values()
+                       for group in entry.values() if isinstance(group, dict)
+                       for leaf in group.values() if isinstance(leaf, dict)}
+    prose_only = set(cat["citations"]) - cited_by_a_leaf - {cat["safety"].get("source_key")}
+    assert prose_only, "no prose-only citation left: the rule is untested"
+    assert scc.conformance_problems() == []       # and they are not an error

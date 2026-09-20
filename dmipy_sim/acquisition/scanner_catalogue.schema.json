@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dmrai.org/schema/scanner_catalogue.schema.json",
+  "title": "Scanner limit catalogue (ACQUISITION.md 8)",
+  "description": "The one JSON document a builder reads a scanner's limits from. Every number is a cited leaf; no other module carries a scanner number.",
+  "type": "object",
+  "required": ["_schema", "citations", "scanners", "classes", "aliases"],
+  "additionalProperties": false,
+  "properties": {
+    "_schema": {
+      "type": "object",
+      "required": ["description", "entry_fields", "confidence_levels"],
+      "properties": {
+        "description": {"type": "string"},
+        "entry_fields": {
+          "type": "array",
+          "description": "The keys of a cited leaf, stated in-band so the file describes itself.",
+          "items": {"type": "string"}
+        },
+        "confidence_levels": {
+          "type": "object",
+          "description": "The permitted values of a leaf's confidence, each with its one-line meaning.",
+          "additionalProperties": {"type": "string"}
+        },
+        "compiled": {"type": "string"}
+      }
+    },
+    "citations": {
+      "type": "object",
+      "description": "Keyed by source_key. A citation MAY be referenced only from an entry's prose notes rather than from a leaf.",
+      "additionalProperties": {"$ref": "#/$defs/citation"}
+    },
+    "scanners": {
+      "type": "object",
+      "description": "Real machines.",
+      "additionalProperties": {"$ref": "#/$defs/machine"}
+    },
+    "envelopes": {
+      "type": "object",
+      "description": "Declared limit points that are not a machine: a certificate's envelope, a Pulseq example system.",
+      "additionalProperties": {"$ref": "#/$defs/entry"}
+    },
+    "safety": {"type": "object"},
+    "classes": {
+      "type": "object",
+      "description": "Short names of scanner classes. A value MUST be a key of scanners or of envelopes.",
+      "additionalProperties": {"type": "string"}
+    },
+    "aliases": {
+      "type": "object",
+      "description": "Other short names. A value MUST be a key of scanners or of envelopes.",
+      "additionalProperties": {"type": "string"}
+    }
+  },
+  "$defs": {
+    "citation": {
+      "type": "object",
+      "required": ["key", "title"],
+      "properties": {
+        "key": {"type": "string"},
+        "authors": {"type": "string"},
+        "title": {"type": "string"},
+        "journal_or_publisher": {"type": "string"},
+        "year": {"type": ["integer", "string", "null"]},
+        "doi_or_url": {"type": ["string", "null"]}
+      }
+    },
+    "leaf": {
+      "type": "object",
+      "description": "A cited leaf. value MAY be null: the catalogue does not know, and a typed view returns None rather than a stand-in number.",
+      "required": ["value", "unit", "field_T", "context", "source_key", "location", "confidence"],
+      "additionalProperties": false,
+      "properties": {
+        "value": {"type": ["number", "array", "null"]},
+        "unit": {"type": ["string", "null"]},
+        "field_T": {"type": ["number", "null"]},
+        "context": {"type": "string", "description": "What the number actually means -- the part a bare number loses."},
+        "source_key": {"type": "string"},
+        "location": {"type": ["string", "null"], "description": "Where inside the source: a clause, table or figure."},
+        "confidence": {"type": "string"}
+      }
+    },
+    "group": {
+      "type": "object",
+      "additionalProperties": {"$ref": "#/$defs/leaf"}
+    },
+    "entry": {
+      "type": "object",
+      "properties": {
+        "gradient": {"$ref": "#/$defs/group"},
+        "rf": {"$ref": "#/$defs/group"},
+        "homogeneity": {"$ref": "#/$defs/group"}
+      }
+    },
+    "machine": {
+      "allOf": [{"$ref": "#/$defs/entry"}],
+      "type": "object",
+      "required": ["vendor", "model", "field_T"],
+      "properties": {
+        "vendor": {"type": "string"},
+        "model": {"type": "string"},
+        "field_T": {"type": ["number", "null"]},
+        "notes": {"type": "string", "description": "Free prose. It carries no provenance fields, so a number MUST NOT live here."},
+        "gradient": {"$ref": "#/$defs/group"},
+        "rf": {"$ref": "#/$defs/group"},
+        "homogeneity": {"$ref": "#/$defs/group"}
+      }
+    }
+  }
+}
