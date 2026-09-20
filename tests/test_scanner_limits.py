@@ -252,9 +252,9 @@ def test_the_field_law_carries_the_magnets_RL_asymmetry_at_order_three():
     hi = float(np.linalg.norm(s.b0_gradient(np.array([[R, 0, 0]]))[0]))
     lo = float(np.linalg.norm(s.b0_gradient(np.array([[-R, 0, 0]]))[0]))
     assert hi > 1.5 * lo, f"the two sides of the bore are alike: {hi*1e3:.3f} vs {lo*1e3:.3f} mT/m"
-    assert s.b0_harmonic_l3_m1 is not None and s.b0_asymmetry_axis == (1.0, 0.0, 0.0)
-    leaf = scc.get_limit("hyperfine_swoop_64mT", "homogeneity", "b0_harmonic_l3_m1")
-    assert "POST-LINEAR-SHIM" in leaf["context"] and "l>=3" in leaf["context"]
+    assert s.b0_harmonic_Z2X is not None and s.b0_asymmetry_axis == (1.0, 0.0, 0.0)
+    leaf = scc.get_limit("hyperfine_swoop_64mT", "homogeneity", "b0_harmonic_Z2X")
+    assert "POST-LINEAR-SHIM" in leaf["context"] and "l<=2 cannot" in leaf["context"]
 
 def test_the_field_law_is_none_for_a_machine_that_does_not_publish_one():
     """Which is every machine but one. A shimmed superconducting magnet's residual is parts per million and
@@ -262,7 +262,7 @@ def test_the_field_law_is_none_for_a_machine_that_does_not_publish_one():
     'the catalogue does not know' rather than standing in for zero."""
     for name in ("prisma", "connectom", "magnus"):
         s = ScannerLimits.of(name)
-        assert s.b0_harmonic_l2_m0 is None and s.b0_offset([[0, 0, 0.05]]) is None
+        assert s.b0_harmonic_Z2 is None and s.b0_offset([[0, 0, 0.05]]) is None
 
 
 def test_the_field_offset_is_zero_at_isocentre_and_refused_beyond_its_anchor():
@@ -305,10 +305,10 @@ def test_the_new_units_convert_and_the_group_is_scanned_for_verification():
     mode in this file. `needs_verification` also only scanned gradient and rf, so a homogeneity leaf was
     invisible to it."""
     assert scc._TO_SI["ppm"] == scc._TO_SI["ppm/m"] == scc._TO_SI["ppm/m^2"] == 1e-6
-    raw = scc.get_limit("hyperfine_swoop_64mT", "homogeneity", "b0_harmonic_l2_m0")["value"]
+    raw = scc.get_limit("hyperfine_swoop_64mT", "homogeneity", "b0_harmonic_Z2")["value"]
     # a solid-harmonic coefficient of dB/B0 is already dimensionless per length, so SI is a no-op --
     # unlike the ppm leaves beside it, which carry a factor of a million
-    assert scc.get_limit("hyperfine_swoop_64mT", "homogeneity", "b0_harmonic_l2_m0", si=True) == raw
+    assert scc.get_limit("hyperfine_swoop_64mT", "homogeneity", "b0_harmonic_Z2", si=True) == raw
     assert scc.get_limit("hyperfine_swoop_64mT", "homogeneity", "b0_homogeneity", si=True) == \
         scc.get_limit("hyperfine_swoop_64mT", "homogeneity", "b0_homogeneity")["value"] * 1e-6
     assert "homogeneity" in inspect.getsource(scc.needs_verification)
@@ -597,3 +597,35 @@ def test_the_conflict_and_the_measurement_that_narrows_it_are_both_written_down(
         assert phrase in leaf["context"], f"the leaf does not record {phrase!r}"
     # and the slew disagreement is explicitly marked as irrelevant to the concomitant field
     assert "never see a slew rate" in leaf["context"]
+
+
+def test_the_field_law_is_one_admissible_member_and_says_how_wide_the_family_is():
+    """Two published scalars against fifteen solid-harmonic coefficients is an underdetermined fit, and the
+    catalogue records the width of what is left open rather than presenting one member as the answer.
+
+    The split is the useful part. Both constraints are scale-like, so the SCALE is determined -- every
+    admissible law has the same steepest gradient, by construction. The SHAPE is not: sampled laws disagree
+    about the background gradient's direction by a median 71 degrees, which is not a correction to a known
+    field but a different one. So a quantity driven by the worst gradient is trustworthy and one driven by
+    where the gradient points is not."""
+    s = ScannerLimits.of("swoop")
+    assert s.b0_direction_spread_deg == pytest.approx(71.0)
+    leaf = scc.get_limit("hyperfine_swoop_64mT", "homogeneity", "b0_harmonic_Z2")
+    assert "ONE ADMISSIBLE LAW, NOT THE LAW" in leaf["context"]
+    assert "400 laws" in leaf["context"] and "18 per cent" in leaf["context"]
+    # the point spread is far wider than the shell-average one: shape is open where scale is not
+    point = scc.get_limit("hyperfine_swoop_64mT", "homogeneity", "b0_gradient_point_spread")["value"]
+    assert point == pytest.approx(0.36)
+    spread_leaf = scc.get_limit("hyperfine_swoop_64mT", "homogeneity", "b0_gradient_point_spread")
+    assert "1.400 mT/m" in spread_leaf["context"]     # the scale is fixed where the shape is not
+
+
+def test_the_order_three_argument_is_over_mixtures_not_pure_terms():
+    """The conclusion is right and the reasoning had to be fixed. Bounding each order by its PURE terms is
+    too weak -- pure l=3 reaches only 1.572 against a required 1.591, which would have argued for l=4.
+    Mixtures within an order do better: l<=3 reaches 1.971 and l<=2 only 1.364. So l>=3 is required and l=3
+    suffices, and the leaf states the bound over mixtures."""
+    leaf = scc.get_limit("hyperfine_swoop_64mT", "homogeneity", "b0_harmonic_Z2X")
+    assert "ALL MIXTURES" in leaf["context"]
+    for n in ("1.591", "1.364", "1.971"):
+        assert n in leaf["context"], f"the leaf does not record {n}"

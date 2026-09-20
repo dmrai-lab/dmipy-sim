@@ -1226,24 +1226,6 @@
      "location": "Appendix, background-gradient correction",
      "confidence": "derived"
     },
-    "b0_harmonic_l2_m0": {
-     "value": 0.0399124,
-     "unit": "1/m^2",
-     "field_T": 0.064,
-     "context": "the coefficient of the zonal harmonic Z2 = zeta^2 - (xi^2 + eta^2)/2, with zeta measured along B0. This is the 'bowl' every magnet has, in the only form a field can take it. A magnet's field in the imaging volume is a solution of Laplace's equation, so it is a sum of SOLID HARMONICS and nothing else. The previous description used an isotropic r^2 bowl, which is not a harmonic and therefore not a field: its entire harmonic content is a constant with zero gradient, so every background gradient derived from it was an artefact of the basis. It also put a strict minimum of the field at isocentre, which the maximum principle forbids. Solved together with b0_harmonic_l3_m1 against both cited figures of this magnet, which the pair then reproduces exactly: 1100 ppm peak-to-peak over the 16 cm DSV and a steepest 1.400 mT/m inside it",
-     "source_key": "gholam2025_swoop",
-     "location": "solved against the Methods' DSV homogeneity and the Appendix's background gradient",
-     "confidence": "derived"
-    },
-    "b0_harmonic_l3_m1": {
-     "value": 0.665784,
-     "unit": "1/m^3",
-     "field_T": 0.064,
-     "context": "the coefficient of the l=3, m=1 harmonic xi(4 zeta^2 - xi^2 - eta^2), odd in xi and therefore the magnet's R/L asymmetry. Why order THREE and not one: the 1100 ppm is a POST-LINEAR-SHIM residual (the source says the magnet was 'B0 shimmed, using linear (gradient) B0 shimming'), so the l=1 content has been nulled and cannot be fitted to that number -- but the magnet is still described as asymmetric in RL, and an odd asymmetry with no l=1 must live at l=3. Order three is independently REQUIRED by the two figures. For a pure zonal harmonic of order l the steepest gradient at a given peak-to-peak over a ball is fixed: 0.50 / 1.33 / 1.51 / 2.80 times (p-p)/R for l = 1 / 2 / 3 / 4. The cited 1.4 mT/m at 1100 ppm over a 16 cm DSV needs 1.59, which l<=2 cannot reach at all. So this magnet must carry l>=3 content, and that is an inference about the hardware rather than a modelling choice",
-     "source_key": "gholam2025_swoop",
-     "location": "Methods, scanner description ('asymmetric in RL'); magnitude solved with b0_harmonic_l2_m0",
-     "confidence": "derived"
-    },
     "b0_asymmetry_axis": {
      "value": "R",
      "unit": "",
@@ -1252,6 +1234,42 @@
      "source_key": "gholam2025_swoop",
      "location": "Methods, scanner description",
      "confidence": "cited"
+    },
+    "b0_harmonic_Z2": {
+     "value": 0.0199562,
+     "unit": "1/m^2",
+     "field_T": 0.064,
+     "context": "the coefficient of the standard shim term Z2 = 2 zeta^2 - xi^2 - eta^2, in the real solid-harmonic basis and nomenclature magnet builders and shim hardware use (Romeo & Hoult 1984) -- the same Z2 a console labels. Coordinates are the magnet's own: zeta along B0, xi along the declared asymmetry axis. THIS IS ONE ADMISSIBLE LAW, NOT THE LAW. Two published figures against fifteen solid-harmonic coefficients of order 2 to 4 is an underdetermined fit, and the degeneracy has been measured rather than assumed: 400 laws sampled, each harmonic and each reproducing BOTH figures exactly, disagree about the background gradient's DIRECTION by a median 71 degrees (90th percentile 134) and about its magnitude at a given point by 36 per cent. What they agree on is the scale -- the steepest gradient in the DSV is 1.400 mT/m in every one by construction, and the shell-average magnitude varies only 18 per cent. So a quantity driven by the WORST gradient is determined and one driven by the gradient's direction or its value at a particular place is not. See examples/rph/swoop_field_law_degeneracy.py.",
+     "source_key": "romeo1984_profiling",
+     "location": "solved against the Methods' DSV homogeneity and the Appendix's background gradient",
+     "confidence": "derived"
+    },
+    "b0_harmonic_Z2X": {
+     "value": 0.665784,
+     "unit": "1/m^3",
+     "field_T": 0.064,
+     "context": "the coefficient of the standard shim term Z2X = xi(4 zeta^2 - xi^2 - eta^2), odd in xi and therefore this magnet's R/L asymmetry. WHY ORDER THREE. The published homogeneity is a POST-LINEAR-SHIM residual -- the source says the magnet was 'B0 shimmed, using linear (gradient) B0 shimming' -- so the l=1 content is nulled and cannot be fitted to it. Order three is then forced by the two figures together. Both constraints scale with the coefficients, so what they pin is the scale-invariant ratio max|grad| / peak-to-peak x R, and the cited 1.4 mT/m at 1100 ppm over a 16 cm DSV requires 1.591. Maximising that ratio over ALL MIXTURES of a given order (not over pure terms, which is a weaker bound and reaches only 1.364 and 1.572 respectively) gives 1.364 through l=2 and 1.971 through l=3. So l<=2 cannot produce this magnet and l=3 can: order three is an inference about the hardware, not a modelling choice. THIS IS ONE ADMISSIBLE LAW, NOT THE LAW. Two published figures against fifteen solid-harmonic coefficients of order 2 to 4 is an underdetermined fit, and the degeneracy has been measured rather than assumed: 400 laws sampled, each harmonic and each reproducing BOTH figures exactly, disagree about the background gradient's DIRECTION by a median 71 degrees (90th percentile 134) and about its magnitude at a given point by 36 per cent. What they agree on is the scale -- the steepest gradient in the DSV is 1.400 mT/m in every one by construction, and the shell-average magnitude varies only 18 per cent. So a quantity driven by the WORST gradient is determined and one driven by the gradient's direction or its value at a particular place is not. See examples/rph/swoop_field_law_degeneracy.py.",
+     "source_key": "gholam2025_swoop",
+     "location": "Methods, scanner description ('asymmetric in RL'); magnitude solved with b0_harmonic_Z2",
+     "confidence": "derived"
+    },
+    "b0_direction_spread_deg": {
+     "value": 71.0,
+     "unit": "",
+     "field_T": 0.064,
+     "context": "the median angle by which admissible field laws disagree about the background gradient's DIRECTION at a point on the 7.55 cm shell; the 90th percentile is 134 degrees. Measured over 400 sampled laws, each harmonic and each reproducing both published figures exactly. This is not an error bar on a measurement -- nobody measured the direction -- it is the width of what two scalars leave open. Any quantity that depends on where the background gradient POINTS carries it; one that depends only on how steep the field gets does not",
+     "source_key": "romeo1984_profiling",
+     "location": "examples/rph/swoop_field_law_degeneracy.py, sampled over the admissible family",
+     "confidence": "derived"
+    },
+    "b0_gradient_point_spread": {
+     "value": 0.36,
+     "unit": "",
+     "field_T": 0.064,
+     "context": "the relative spread (sd/mean) of the background gradient's MAGNITUDE at a fixed point, across the same 400 admissible laws. For contrast the shell-AVERAGE magnitude varies only 18 per cent and the volume-steepest is identical in all of them at 1.400 mT/m, being one of the two fitted figures. So the scale of this field is determined and its shape is not",
+     "source_key": "romeo1984_profiling",
+     "location": "examples/rph/swoop_field_law_degeneracy.py",
+     "confidence": "derived"
     }
    },
    "notes": "A permanent magnet's field follows its temperature, and this one is passively cooled with no temperature control over its cleared 15-30 degC range (510(k)). The measured coefficient is -1400 Hz/K = -514 ppm/K (ljungberg2025_unity, 244 scans at 17 sites) -- about HALF the bulk NdFeB figure, and what the machine is actually made of is not public. Two things keep that from reaching the data: the pre-scan calibration removes the between-session ambient term entirely, and the protocol re-centres f0 after every two DWIs (every volume, for royer2026_tract_64mT), attributing the within-scan drift to GRADIENT heating. (The 50 mT Halbach is the other way round -- there the gradients heat the magnet negligibly and the body is the source.) The gradients are passively cooled, which caps protocols near an hour. Its diffusion sequence is a non-CPMG SPLICE split-echo train (ohalloran2022_dwi_64mt).",
