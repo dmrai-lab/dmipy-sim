@@ -136,7 +136,9 @@ def test_the_low_field_class_is_the_cited_hyperfine_swoop():
     lm = ScannerLimits.of("low_field")
     assert lm.kind == "scanner" and lm.name == "hyperfine_swoop_64mT"
     assert lm.field_T == pytest.approx(0.064)
-    assert lm.gradient_limits == pytest.approx((0.0244, 22.0))
+    # 23 mT/m, not the literature's 24.4: the FDA filing's weakest axis is 23 and the two specs conflict,
+    # so the only figure safe under either is the smaller. See per_axis_amplitude_* for the conflict.
+    assert lm.gradient_limits == pytest.approx((0.023, 22.0))
     for alias in ("swoop", "hyperfine_swoop", "hyperfine_swoop_64mT"):
         assert ScannerLimits.of(alias).name == "hyperfine_swoop_64mT"
     amp = scc.get_limit("hyperfine_swoop_64mT", "gradient", "max_amplitude")
@@ -556,3 +558,42 @@ def test_the_axial_profile_is_untouched_so_the_published_measurement_still_holds
     for t in (0.0, 0.04, 0.072):
         on_axis = float(s.b1_scale(np.array([[0, 0, t]]))[0])
         assert on_axis == pytest.approx(s.b1_calibration_offset * (1.0 - s.b1_axial_falloff * t ** 2), rel=1e-12)
+
+
+# ── a per-axis figure needs an axis assignment nobody has published (dmipy-sim#349) ──────────────────
+def test_the_two_published_gradient_specs_disagree_and_both_are_recorded():
+    """A regulatory filing and three peer-reviewed papers give different per-axis gradient amplitudes for the
+    same machine -- 39 against 25.7 mT/m on the third axis, a factor 1.52. It is not a hardware generation
+    and not one paper's error. The catalogue records BOTH rather than adjudicating, because adjudicating
+    would be inventing a fact."""
+    fda = scc.get_limit("hyperfine_swoop_64mT", "gradient", "per_axis_amplitude_fda")["value"]
+    lit = scc.get_limit("hyperfine_swoop_64mT", "gradient", "per_axis_amplitude_literature")["value"]
+    assert fda[2] / lit[2] == pytest.approx(1.52, rel=0.02)
+    assert max(fda[:2]) - min(fda[:2]) < 2.0 and max(lit[:2]) - min(lit[:2]) < 2.0   # first two axes agree
+    # the scalar the deliverability check uses is the WEAKEST axis, so it is safe under either spec
+    s = ScannerLimits.of("swoop")
+    assert s.G_max * 1e3 == pytest.approx(min(min(fda), min(lit)), rel=1e-9), \
+        "G_max must be the weakest axis across BOTH specs, not the weakest of one of them"
+
+
+def test_a_direction_dependent_maximum_is_refused_while_the_axis_mapping_is_unknown():
+    """The refusal is the feature. Per-axis amplitudes are unusable without knowing which physical direction
+    each vendor axis names, and for this machine that is not public: the filing and the literature conflict,
+    and Hyperfine's own hysteresis patent contradicts the inference the other sources support. Returning the
+    better-supported reading would produce a number indistinguishable from a measurement."""
+    s = ScannerLimits.of("swoop")
+    assert s.gradient_axis_assignment is None
+    with pytest.raises(ValueError, match="not public|does not declare"):
+        s.G_max_along([0, 1, 0])
+    # a machine that DOES declare one answers, and the answer respects the weakest axis along that direction
+    declared = replace(s, gradient_axis_assignment=((1.0, 0, 0), (0, 1.0, 0), (0, 0, 1.0)))
+    assert declared.G_max_along([1, 0, 0]) == pytest.approx(s.G_max)
+    assert declared.G_max_along([1, 1, 0]) > s.G_max        # an oblique direction shares the load
+
+
+def test_the_conflict_and_the_measurement_that_narrows_it_are_both_written_down():
+    leaf = scc.get_limit("hyperfine_swoop_64mT", "gradient", "per_axis_amplitude_literature")
+    for phrase in ("IRRECONCILABLE", "Not a hardware generation", "83.600", "hysteresis"):
+        assert phrase in leaf["context"], f"the leaf does not record {phrase!r}"
+    # and the slew disagreement is explicitly marked as irrelevant to the concomitant field
+    assert "never see a slew rate" in leaf["context"]

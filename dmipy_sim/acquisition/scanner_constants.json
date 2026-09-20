@@ -290,6 +290,14 @@
    "journal_or_publisher": "Magnetic Resonance in Medicine 1:44-65",
    "year": 1984,
    "doi_or_url": "https://doi.org/10.1002/mrm.1910010107"
+  },
+  "hyperfine_510k_k221923": {
+   "key": "hyperfine_510k_k221923",
+   "authors": "Hyperfine, Inc.",
+   "title": "510(k) K221923, Swoop Portable MR Imaging System -- technological characteristics table, per-axis gradient strength X 24 / Y 23 / Z 39 mT/m, rise time 2.1 / 2.0 / 3.8 ms, slew 24 / 22 / 21 T/m/s. NOTE the table is internally inconsistent: slew does not equal amplitude over rise time on any per-axis row (24/2.1 = 11.4 against a stated 24), while the predicate's single-axis row does check out, so the rise time there is a full bipolar swing mislabelled",
+   "journal_or_publisher": "U.S. Food and Drug Administration",
+   "year": 2022,
+   "doi_or_url": "https://www.accessdata.fda.gov/cdrh_docs/pdf22/K221923.pdf"
   }
  },
  "scanners": {
@@ -1146,12 +1154,12 @@
    "field_T": 0.064,
    "gradient": {
     "max_amplitude": {
-     "value": 24.4,
+     "value": 23.0,
      "unit": "mT/m",
      "field_T": 0.064,
-     "context": "the WEAKEST axis, which is what a deliverability check must use; per axis X / Y / Z = 24.9 / 24.4 / 25.7 mT/m",
-     "source_key": "gholam2025_swoop",
-     "location": "Methods, scanner description",
+     "context": "the WEAKEST axis across BOTH published specifications, which is what a deliverability check must use while they disagree. The regulatory filing gives X 24 / Y 23 / Z 39 mT/m and the literature gives 24.9 / 24.4 / 25.7; their minima are 23 and 24.4, so 23 is the only figure safe under either. Taking the literature's 24.4, as this leaf did, over-claims by 6 % if the filing is right -- and since the conflict is unresolved, the conservative reading is the correct one rather than the cautious one. Per-axis values and the conflict itself are in per_axis_amplitude_fda and per_axis_amplitude_literature; which physical direction each axis names is not public.",
+     "source_key": "hyperfine_510k_k221923",
+     "location": "Comparison of Technological Characteristics, Gradient: Strength (weakest axis)",
      "confidence": "cited"
     },
     "max_slew_rate": {
@@ -1161,6 +1169,32 @@
      "context": "the WEAKEST axis; per axis X / Y / Z = 23 / 22 / 67 T/m/s. No PNS derating applies at these slews",
      "source_key": "gholam2025_swoop",
      "location": "Methods, scanner description",
+     "confidence": "cited"
+    },
+    "per_axis_amplitude_fda": {
+     "value": [
+      24.0,
+      23.0,
+      39.0
+     ],
+     "unit": "mT/m",
+     "field_T": 0.064,
+     "context": "the regulatory filing's per-axis gradient strength, as vendor axes X / Y / Z. WHICH PHYSICAL DIRECTION EACH LABEL NAMES IS NOT PUBLIC, and the evidence conflicts. Three things point to the vendor's Z being the B0-parallel (vertical, anterior-posterior) axis: it is the outlier in both hardware generations' FDA tables, strong and slow, which is the signature of the plate-normal winding in a bi-planar set. Against it, Hyperfine's own hysteresis patent US 2024/0142556 A1 discusses MEASURED data and says 'the B0 field is oriented along the y-axis... the y-gradient coil induces magnetization along the y-axis' -- the only primary document binding a Hyperfine coil label to the field direction, and it says Y. A third source (the Leiden data descriptor) writes 'the AP direction is considered the z-axis', but the same document labels its 3 T scanner differently, so it is declaring the universal z-is-B0 convention rather than reporting vendor labels. One measurement narrows it: across the NIST database the per-axis echo times are identical for every subject and ordered image-x 83.600 < image-y 83.640 < image-z 84.110 ms, so the S/I axis is the most expensive and the vendor's outlier is probably not S/I -- which leaves A/P or R/L. Not decisive: 0.5 ms in 84 also carries slice selection and readout.",
+     "source_key": "hyperfine_510k_k221923",
+     "location": "Comparison of Technological Characteristics, Gradient: Strength",
+     "confidence": "cited"
+    },
+    "per_axis_amplitude_literature": {
+     "value": [
+      24.9,
+      24.4,
+      25.7
+     ],
+     "unit": "mT/m",
+     "field_T": 0.064,
+     "context": "the same three axes as reported in the peer-reviewed literature, and IRRECONCILABLE with the filing on the third: 25.7 against 39 mT/m, a factor 1.52. Not a hardware generation -- the filing, this paper (hardware 1.7) and two further studies all describe the 63.3 mT, 24-inch-bore machine -- and not one paper's error, the figure appearing in at least three, two of them with Hyperfine co-authors. A full-text search of the literature for this machine and '39 mT/m' returns nothing. The conflict is unresolved and is recorded rather than adjudicated. The companion slew disagreement (21 against 67 T/m/s on the third axis) does NOT affect concomitant fields, which go as G^2/B0 and never see a slew rate. WHICH PHYSICAL DIRECTION EACH LABEL NAMES IS NOT PUBLIC, and the evidence conflicts. Three things point to the vendor's Z being the B0-parallel (vertical, anterior-posterior) axis: it is the outlier in both hardware generations' FDA tables, strong and slow, which is the signature of the plate-normal winding in a bi-planar set. Against it, Hyperfine's own hysteresis patent US 2024/0142556 A1 discusses MEASURED data and says 'the B0 field is oriented along the y-axis... the y-gradient coil induces magnetization along the y-axis' -- the only primary document binding a Hyperfine coil label to the field direction, and it says Y. A third source (the Leiden data descriptor) writes 'the AP direction is considered the z-axis', but the same document labels its 3 T scanner differently, so it is declaring the universal z-is-B0 convention rather than reporting vendor labels. One measurement narrows it: across the NIST database the per-axis echo times are identical for every subject and ordered image-x 83.600 < image-y 83.640 < image-z 84.110 ms, so the S/I axis is the most expensive and the vendor's outlier is probably not S/I -- which leaves A/P or R/L. Not decisive: 0.5 ms in 84 also carries slice selection and readout.",
+     "source_key": "gholam2025_swoop",
+     "location": "Methods, Data Acquisition",
      "confidence": "cited"
     }
    },
