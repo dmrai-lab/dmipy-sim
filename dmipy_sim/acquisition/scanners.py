@@ -55,6 +55,8 @@ class ScannerLimits:
     b0_quadratic: float = None        # 1/m^2, the even term c of dB/B0 = a x + c r^2
     b0_asymmetry_rl: float = None     # 1/m, the odd term a, along the scanner's R/L axis
     b0_validity_radius: float = None  # m, how far from isocentre that law is anchored
+    b1_axial_falloff: float = None    # 1/m^2, the coefficient of kappa_B1 = 1 - a z^2 along the bore
+    b1_calibration_offset: float = None  # a systematic transmit scale, 1 = nominal
 
     @classmethod
     def of(cls, scanner, *, regime="default"):
@@ -85,7 +87,9 @@ class ScannerLimits:
                    field_T=(float(entry["field_T"]) if entry.get("field_T") is not None else None),
                    b0_quadratic=scc.leaf_si(entry, "homogeneity", "b0_quadratic"),
                    b0_asymmetry_rl=scc.leaf_si(entry, "homogeneity", "b0_asymmetry_rl"),
-                   b0_validity_radius=scc.leaf_si(entry, "homogeneity", "b0_validity_radius"))
+                   b0_validity_radius=scc.leaf_si(entry, "homogeneity", "b0_validity_radius"),
+                   b1_axial_falloff=scc.leaf_si(entry, "rf", "b1_axial_falloff"),
+                   b1_calibration_offset=scc.leaf_si(entry, "rf", "b1_calibration_offset"))
 
     def b0_offset(self, offset_m):
         """The static field's departure from uniformity at a displacement from isocentre, in **tesla**:
@@ -118,6 +122,30 @@ class ScannerLimits:
         if self.b0_asymmetry_rl:
             shape = shape + self.b0_asymmetry_rl * d[..., 0]        # x is R/L
         return self.field_T * shape
+
+    def b1_scale(self, offset_m):
+        """The transmit scale a pulse actually gets at a displacement from isocentre: 1 is nominal, and what
+        multiplies every flip angle (``kappa_B1``). ``None`` when the machine's profile is not catalogued.
+
+        Two separate things, and they multiply. ``b1_axial_falloff`` is SPATIAL -- a coil's field weakens
+        toward its ends, so the scale falls as ``1 - a z^2`` along the bore and is flat across it, which is
+        the anisotropy the measurement reports rather than a simplification. ``b1_calibration_offset`` is
+        SYSTEMATIC: it applies at isocentre too, being the machine's own transmit calibration sitting off
+        nominal.
+
+        That this is a property of the MACHINE at all is a low-field statement. At 2.7 MHz the RF wavelength
+        in tissue is metres, so the profile is the coil's geometry rather than the subject's; the same claim
+        must not be carried to 3 T, and emphatically not to 7 T.
+        """
+        if self.b1_axial_falloff is None and self.b1_calibration_offset is None:
+            return None
+        d = np.asarray(offset_m, dtype=np.float64)
+        scale = np.ones(d.shape[:-1]) if d.ndim > 1 else 1.0
+        if self.b1_axial_falloff is not None:
+            scale = scale * (1.0 - self.b1_axial_falloff * d[..., 2] ** 2)     # z is the bore
+        if self.b1_calibration_offset is not None:
+            scale = scale * self.b1_calibration_offset
+        return scale
 
     @property
     def gradient_limits(self):

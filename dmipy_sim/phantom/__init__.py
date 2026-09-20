@@ -9,12 +9,12 @@
   :class:`PartitionPhantom`, posed by a :class:`Pose`), :meth:`~Phantom.replay` under a ``ScannerSequence``,
   :meth:`~Phantom.write` / :meth:`~Phantom.read` the ``.rph`` file.
 """
-from .bore import b0_offset_map
+from .bore import b0_offset_map, b1_scale_map
 from .grid import Grid
 from .substrates import AnalyticSubstrate, FreeWater, Inert, PackSubstrate
 from .orientation import ODF, Fan, Frames, Peaks, Watson, SH_BASES
 from .phantom import Phantom
 from .partition import PartitionPhantom, Pose
 
-__all__ = ["Phantom", "PartitionPhantom", "Pose", "Grid", "b0_offset_map", "PackSubstrate", "FreeWater", "Inert", "AnalyticSubstrate",
+__all__ = ["Phantom", "PartitionPhantom", "Pose", "Grid", "b0_offset_map", "b1_scale_map", "PackSubstrate", "FreeWater", "Inert", "AnalyticSubstrate",
            "Peaks", "ODF", "Watson", "Frames", "Fan", "SH_BASES"]
