@@ -9,6 +9,8 @@ import json
 
 from dataclasses import replace
 
+import re
+
 import numpy as np
 import pytest
 
@@ -629,3 +631,38 @@ def test_the_order_three_argument_is_over_mixtures_not_pure_terms():
     assert "ALL MIXTURES" in leaf["context"]
     for n in ("1.591", "1.364", "1.971"):
         assert n in leaf["context"], f"the leaf does not record {n}"
+@pytest.mark.slow
+def test_every_catalogued_doi_resolves_to_the_paper_it_claims():
+    """A citation that does not resolve reads as provenance and is not. This caught a real one: the de Vos
+    concomitant-field DOI in this catalogue pointed at "2D sodium MRI of the human calf", and it was the
+    source the entire alpha = 1/2 inference rested on.
+
+    Network-gated and marked slow, because it is the only test here that leaves the machine. It checks that
+    the DOI resolves AND that the title it resolves to shares vocabulary with the title we recorded -- a DOI
+    that resolves to the wrong paper is exactly the failure mode, so mere resolution is not enough."""
+    import urllib.error
+    import urllib.request
+
+    cat = scc.SCANNER_CONSTANTS
+    dois = {k: re.search(r"10\.\d{4,9}/\S+", c.get("doi_or_url", ""))
+            for k, c in cat["citations"].items()}
+    dois = {k: m.group(0) for k, m in dois.items() if m}
+    assert len(dois) > 10, "the catalogue lost its DOIs"
+
+    bad = []
+    for key, doi in sorted(dois.items()):
+        try:
+            with urllib.request.urlopen(
+                    urllib.request.Request(f"https://api.crossref.org/works/{doi}",
+                                           headers={"Accept": "application/json"}), timeout=20) as r:
+                title = json.load(r)["message"]["title"][0]
+        except urllib.error.URLError as e:                      # offline, or Crossref is down
+            pytest.skip(f"no network for the DOI check: {e}")
+        except Exception:
+            bad.append(f"{key}: {doi} did not resolve")
+            continue
+        ours = set(re.findall(r"[a-z]{5,}", cat["citations"][key]["title"].lower()))
+        theirs = set(re.findall(r"[a-z]{5,}", re.sub(r"<[^>]+>", " ", title).lower()))
+        if ours and not (ours & theirs):
+            bad.append(f"{key}: {doi} resolves to {title[:60]!r}, which shares no words with ours")
+    assert not bad, "\n".join(bad)
