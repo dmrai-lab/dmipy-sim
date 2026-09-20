@@ -1538,6 +1538,15 @@
      "source_key": "nist2025_dualfield_dwi",
      "location": "derived from participants 00-09, per-axis diffusivity regressed on left-right position",
      "confidence": "derived"
+    },
+    "gradient_completion": {
+     "value": 0.5,
+     "unit": "",
+     "field_T": 0.064,
+     "context": "THE ONE NUMBER IN THIS TENSOR THAT IS CHOSEN RATHER THAN MEASURED, and it is bounded. The NIST regression measures the DIAGONAL of the gradient-nonlinearity tensor, dL_jj/dx. Completing each coil's field to a harmonic -- which it must be, since B_z solves Laplace's equation -- then determines the rest, and for the y and z coils it determines it UNIQUELY: d/dy (y + a_y x y) = 1 + a_y x and d/dz (z + a_z x z) = 1 + a_z x, and x y and x z are already harmonic, so XY and ZX are the only completions that exist. The off-diagonals L_xy = a_y y and L_xz = a_z z are therefore the measurement, not a modelling choice. The x coil is the exception, because its own derivative is along the axis the mis-scaling depends on: d/dx (x + a_x x^2 / 2) = 1 + a_x x needs x^2, which is NOT harmonic, so the curvature must be borrowed from y or from z. This is the share taken from y; 1/2 is the least-committed split. MEASURED COST OF THE CHOICE: over the 9 cm validity radius the whole family lam in [0, 1] spans 3.5 per cent of the nonlinearity and 0.001 per cent of a b value, because a_x (-0.0317 /m) is the smallest of the three coefficients at 7 per cent of the largest. Contrast the B0 law, where the analogous freedom is NOT small (71 degrees of background-gradient direction). A DIAGONAL L is not an option at any lam: it would make each coil's B_z depend on its own axis alone, and Laplace then forces that dependence to be linear, so a diagonal L is the identity or it is not a field at all.",
+     "source_key": "nist2025_dualfield_dwi",
+     "location": "not a location in the data: the share is fixed by convention, since the measurement constrains only the diagonal and the x coil's harmonic completion is one-parameter",
+     "confidence": "derived"
     }
    }
   }

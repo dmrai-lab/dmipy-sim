@@ -10,7 +10,9 @@ import numpy as np
 import pytest
 
 from dmipy_sim import sequences
-from dmipy_sim.acquisition import scanner_constants as scc
+from dataclasses import replace
+
+from dmipy_sim.acquisition import maxwell, scanner_constants as scc, solid_harmonics
 from dmipy_sim.acquisition.scanners import ScannerLimits
 from dmipy_sim.phantom import Grid
 from dmipy_sim.phantom.bore import gradient_tensor_map
@@ -35,7 +37,9 @@ def test_the_tensor_is_the_identity_at_isocentre_and_traceless_in_its_departure(
     for x in (0.05, -0.05, 0.08):
         L = s.gradient_tensor(np.array([[x, 0.0, 0.0]]))[0]
         assert np.linalg.det(L) == pytest.approx(1.0, abs=2e-3)      # unit determinant to first order
-        np.testing.assert_allclose(L - np.diag(np.diag(L)), 0.0, atol=1e-15)   # diagonal: nothing tilts
+        # ON THE X AXIS the off-diagonals vanish identically (they go as y and z), which is why probing
+        # only this line could never have told a diagonal L from an admissible one -- see the test below.
+        np.testing.assert_allclose(L - np.diag(np.diag(L)), 0.0, atol=1e-15)
 
 
 def test_the_delivered_b_is_the_squared_scale_so_a_gradient_error_arrives_doubled():
@@ -108,3 +112,75 @@ def test_it_is_refused_twice_and_absent_where_uncatalogued():
     for name in ("prisma", "connectom", "terra"):
         assert ScannerLimits.of(name).gradient_tensor(np.zeros((1, 3))) is None
         assert gradient_tensor_map(ScannerLimits.of(name), grid) is None
+
+
+def test_the_tensor_tilts_off_axis_because_a_diagonal_one_cannot_be_a_field():
+    """The #350 correction. A DIAGONAL L that is not the identity is impossible: a diagonal L makes each
+    coil's B_z depend on its own axis alone, and Laplace then forces that dependence to be linear, so a
+    diagonal L is the identity or it is nothing.
+
+    The off-diagonals are therefore not a refinement of this model, they are the measurement. Two of the
+    three coils have a UNIQUE harmonic completion -- d/dy (y + a_y x y) = 1 + a_y x and d/dz (z + a_z x z)
+    = 1 + a_z x, where x y and x z are already harmonic -- so L_xy = a_y y and L_xz = a_z z follow from the
+    measured diagonal with nothing chosen.
+
+    Measured over the validity radius they are the SAME SIZE as the diagonal departure, and they carry the
+    eigenframe rotation entirely, which is the part the previous diagonal tensor was structurally incapable
+    of expressing."""
+    s = ScannerLimits.of("swoop")
+    R = s.b0_validity_radius or 0.09
+
+    # the two forced off-diagonal terms, read straight off the measured coefficients
+    L = s.gradient_tensor(np.array([0.0, R, 0.0]))
+    assert L[0, 1] == pytest.approx(s.d_scale_y_dx * R, rel=1e-9), "L_xy is not a_y y"
+    L = s.gradient_tensor(np.array([0.0, 0.0, R]))
+    assert L[0, 2] == pytest.approx(s.d_scale_z_dx * R, rel=1e-9), "L_xz is not a_z z"
+
+    rng = np.random.default_rng(0)
+    q = rng.uniform(-R, R, (400, 3))
+    Ls = s.gradient_tensor(q)
+    off = np.abs(Ls[:, ~np.eye(3, dtype=bool)]).max()
+    dev = np.abs(np.einsum("nii->ni", Ls) - 1.0).max()
+    assert off == pytest.approx(dev, rel=0.05), f"off {off:.4f} vs diagonal departure {dev:.4f}"
+
+    tilt = []
+    for M in Ls:
+        w, V = np.linalg.eigh(0.5 * (M + M.T))
+        tilt.append(np.rad2deg(np.arccos(np.clip(np.abs(V[:, np.argmax(np.abs(w))]).max(), 0, 1))))
+    assert np.median(tilt) > 15.0, f"the eigenframe barely rotates (median {np.median(tilt):.1f} deg)"
+
+
+def test_the_tensor_is_admissible_under_tier_zero():
+    """It is built from harmonic potentials, so it cannot express an inadmissible L -- and the check that
+    refused the previous diagonal tensor now passes on this one."""
+    s = ScannerLimits.of("swoop")
+    rng = np.random.default_rng(1)
+    q = rng.uniform(-0.09, 0.09, (200, 3))
+    maxwell.require_gradient_tensor_admissible(s.gradient_tensor, q, "the Swoop L(r)")
+    for j, phi in s.gradient_potentials().items():
+        r = maxwell.harmonic_residual(lambda p, c=phi: solid_harmonics.evaluate(c, p), q[:20])
+        assert r < 1e-6, f"coil {j}'s potential is not harmonic ({r:.1e})"
+
+
+def test_the_one_free_parameter_is_bounded_and_attached_to_the_smallest_coefficient():
+    """The x coil is the only one with freedom, because its own derivative is along the axis the
+    mis-scaling depends on: d/dx (x + a_x x^2 / 2) needs x^2, which is not harmonic, so the curvature must
+    be borrowed from y or from z. That share is the only thing chosen in this model.
+
+    It costs little, and the catalogue should say so rather than leave it looking arbitrary: a_x is the
+    smallest of the three coefficients, so the whole family spans a few per cent of the nonlinearity and
+    essentially nothing of a b value."""
+    s = ScannerLimits.of("swoop")
+    assert abs(s.d_scale_x_dx) < 0.1 * max(abs(s.d_scale_y_dx), abs(s.d_scale_z_dx))
+
+    rng = np.random.default_rng(2)
+    q = rng.uniform(-0.09, 0.09, (300, 3))
+    ends = [replace(s, gradient_completion=lam).gradient_tensor(q) for lam in (0.0, 1.0)]
+    mid = replace(s, gradient_completion=0.5).gradient_tensor(q)
+    spread = max(np.abs(e - mid).max() for e in ends)
+    nonlin = np.abs(mid - np.eye(3)).max()
+    assert spread < 0.05 * nonlin, f"the completion choice moves L by {spread/nonlin:.1%} of its own size"
+
+    u = np.array([1.0, 0.0, 0.0])
+    b = [np.sum(np.einsum("nij,j->ni", L, u) ** 2, -1) for L in ends]
+    assert np.abs(b[0] - b[1]).max() < 1e-4, "the completion choice moves a b value"
