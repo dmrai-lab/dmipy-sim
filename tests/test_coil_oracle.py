@@ -21,7 +21,7 @@ def test_the_oracle_reproduces_the_analytic_loop_it_has_no_business_knowing():
     assert np.abs(num / ana - 1.0).max() < 1e-5
 
 
-@pytest.mark.parametrize("make", [coil.maxwell_pair, coil.golay_saddle])
+@pytest.mark.parametrize("make", [coil.maxwell_pair, coil.golay_saddle, coil.biplanar_pair])
 def test_the_field_it_produces_satisfies_maxwell_in_the_interior(make):
     """div B = 0 and curl B = 0 where there is no current. This checks the ORACLE, not the model -- if it
     failed, everything downstream of it would be worthless."""
@@ -100,14 +100,20 @@ def test_the_expansion_residual_is_truncation_and_says_where_the_basis_stops():
 def test_a_real_coil_cannot_have_a_diagonal_gradient_tensor():
     """The structural claim behind #350, from geometry alone. No step in building this tensor could have
     produced a diagonal one, and its off-diagonals are the same size as its diagonal departure."""
+    # The y coil must be a REAL rotation of the x saddle. Using the same object for both made two columns
+    # of L identical, so |det L| was 4.5e-18 -- and both the off-diagonal and the diagonal departure came
+    # out ~1 by construction rather than by physics, which is not evidence of anything.
+    rz = np.array([[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
+    gy = coil.Coil([(v @ rz.T, i) for v, i in coil.golay_saddle().turns], name="golay_y")
     coils = {"x": coil.GradientCoil(coil.golay_saddle(), "x"),
-             "y": coil.GradientCoil(coil.golay_saddle(), "x"),      # y is x rotated; same structure
+             "y": coil.GradientCoil(gy, "y"),
              "z": coil.GradientCoil(coil.maxwell_pair(), "z")}
     rng = np.random.default_rng(3)
     q = rng.uniform(-R, R, (60, 3))
     L = coil.gradient_tensor(coils, q)
     off = np.abs(L[:, ~np.eye(3, dtype=bool)]).max()
     dev = np.abs(np.einsum("nii->ni", L) - 1.0).max()
+    assert abs(np.linalg.det(L[0])) > 1e-3, "the three coils are not independent directions"
     assert off > 0.2 * dev, f"off-diagonals {off:.4f} are negligible against {dev:.4f}"
     maxwell.require_gradient_tensor_admissible(lambda p: coil.gradient_tensor(coils, p), q, "the coil L")
 
@@ -170,27 +176,52 @@ def test_a_transverse_coil_has_no_alpha_and_says_so():
         coil.concomitant_alpha(coil.maxwell_pair(), b0_axis=(1, 0, 0))
 
 
-def test_both_published_alphas_are_one_geometric_fact_at_two_aspect_ratios():
+def test_both_published_alphas_are_one_geometry_at_two_parameter_points():
     """The catalogue's concomitant_alpha = 1/2 for the Swoop is an INFERENCE from a class statement -- de
     Vos gives 1/2 for parallel-plate coils in an open C- or H-shaped magnet and 0 for a Halbach array, and
     the Swoop is taken to be the former. This measures the class statement instead of citing it.
 
-    Both values come out, from the same coil, by changing one number. Square plates are four-fold symmetric
-    about B0, the two transverse directions are equivalent, and alpha is forced to exactly 1/2. Long plates
-    approach translational invariance along their length, so dB/d(length) goes to zero and the whole
-    divergence is pushed into the one remaining transverse direction: alpha goes to 0.
+    Both values come out of the same coil family, so the unification is real. What sets alpha is the PAIR
+    (width/gap, length/gap) and not the plate aspect ratio: at a fixed aspect ratio of three, alpha runs
+    0.02 to 0.43 as the gap grows, because a pair whose gap dwarfs both plate dimensions degenerates to an
+    axially symmetric dipole pair. An earlier version of this test asserted the aspect ratio was the whole
+    physics, which is false and made the Swoop inference look better constrained than it is: it needs BOTH
+    ratios, and neither is public."""
+    B = (0.0, 1.0, 0.0)
+    # square plates are four-fold symmetric about B0 at ANY gap, so 1/2 is forced there
+    for gap in (0.05, 0.15, 0.45):
+        sq = coil.biplanar_pair(half_gap=gap, width=0.30, length=0.30)
+        assert coil.concomitant_alpha(sq, b0_axis=B) == pytest.approx(0.5, abs=1e-3)
+        assert coil.cross_term(sq, b0_axis=B) < 1e-6           # genuinely symmetric, not merely reading 1/2
 
-    So neither value is a property of "bi-planar" as such -- alpha is set by the plate ASPECT RATIO, which
-    the catalogue does not record and which is not public for this machine."""
-    sq = coil.biplanar_pair(width=0.30, length=0.30)
-    assert coil.concomitant_alpha(sq, b0_axis=(0, 1, 0)) == pytest.approx(0.5, abs=1e-3)
+    # away from square, BOTH knobs move it
+    by_aspect = [1 - coil.concomitant_alpha(coil.biplanar_pair(half_gap=0.15, width=0.30, length=0.30 * r),
+                                            b0_axis=B) for r in (1.0, 2.0, 3.0, 10.0)]
+    by_gap = [1 - coil.concomitant_alpha(coil.biplanar_pair(half_gap=g, width=0.30, length=0.90),
+                                         b0_axis=B) for g in (0.05, 0.15, 0.45, 1.00)]
+    assert by_aspect == sorted(by_aspect, reverse=True) and by_aspect[-1] < 0.01
+    assert by_gap == sorted(by_gap), f"the gap must move alpha too, got {by_gap}"
+    assert by_gap[-1] / by_gap[0] > 10.0, "alpha is not sensitive to the gap, contradicting the docstring"
 
-    alphas = [coil.concomitant_alpha(coil.biplanar_pair(width=0.30, length=0.30 * r), b0_axis=(0, 1, 0))
-              for r in (1.0, 2.0, 3.0, 10.0)]
-    assert alphas == sorted(alphas, reverse=True), f"alpha should fall with aspect ratio: {alphas}"
-    assert alphas[-1] < 0.01, f"a long bi-planar coil should approach alpha = 0, got {alphas[-1]:.4f}"
-    # and it collapses FAST -- by an aspect ratio of two it is already a third of the way from 1/2 to 0
-    assert alphas[1] < 0.2, f"alpha at aspect 2 is {alphas[1]:.3f}; the 1/2 inference is not robust"
+
+def test_alpha_is_a_property_of_the_coil_and_not_of_the_frame():
+    """Deriving the transverse frame from a global axis makes alpha a property of the coordinate system. An
+    aspect-ratio-three pair reported 0.05 at one azimuth and 0.95 rotated ninety degrees about its own B0 --
+    the same coil, the same physics, the whole range of the answer.
+
+    alpha is now read along the transverse block's own PRINCIPAL axes, which is the only choice that depends
+    on the coil. And alpha = 1/2 does not imply a symmetric coil: an asymmetric one read at 45 degrees to
+    its principal axes reads 1/2 too, which is why cross_term exists to tell them apart."""
+    rz = lambda t: np.array([[np.cos(t), 0, np.sin(t)], [0, 1, 0], [-np.sin(t), 0, np.cos(t)]])
+    base = coil.biplanar_pair(width=0.30, length=0.90)
+    B = (0.0, 1.0, 0.0)
+    got = [coil.concomitant_alpha(coil.Coil([(v @ rz(np.deg2rad(d)).T, i) for v, i in base.turns]), b0_axis=B)
+           for d in (0, 15, 30, 45, 60, 90)]
+    assert np.ptp(got) < 1e-5, f"alpha moved with the coil's azimuth: {got}"
+
+    tilted = coil.Coil([(v @ rz(np.deg2rad(45)).T, i) for v, i in base.turns])
+    assert coil.concomitant_alpha(tilted, b0_axis=B, transverse_axis=(1, 0, 0)) == pytest.approx(0.5, abs=1e-3)
+    assert coil.cross_term(tilted, b0_axis=B) > 0.5, "a 45-degree impostor must not look symmetric"
 
 
 def test_alpha_zero_moves_the_concomitant_field_transversally_as_de_vos_describes():

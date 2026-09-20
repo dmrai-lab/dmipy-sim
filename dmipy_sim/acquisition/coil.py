@@ -45,10 +45,20 @@ def segment_field(a, b, points, current=1.0):
     r1, r2 = a - P, b - P
     n1 = np.linalg.norm(r1, axis=-1, keepdims=True)
     n2 = np.linalg.norm(r2, axis=-1, keepdims=True)
+    cross = np.cross(r1, r2)
     denom = n1 * n2 * (n1 * n2 + np.sum(r1 * r2, axis=-1, keepdims=True))
-    with np.errstate(divide="ignore", invalid="ignore"):
-        out = (MU0 * current / (4.0 * np.pi)) * np.cross(r1, r2) * (n1 + n2) / denom
-    return np.nan_to_num(out, nan=0.0, posinf=0.0, neginf=0.0)
+    # ON the wire both the numerator and the denominator are rounding noise, and their ratio is a FINITE
+    # number of plausible size -- up to six orders above the field being measured. It is never a NaN, so it
+    # is never caught, and one such point in a probe set destroyed a whole fit. An oracle may not return a
+    # wrong number that looks right, so a denominator that is not resolvably non-zero is refused.
+    floor = 8.0 * np.finfo(np.float64).eps * (n1 * n2) ** 2
+    if np.any(np.abs(denom) <= floor):
+        bad = int(np.argmax(np.abs(denom) <= floor))
+        raise ValueError(
+            f"point {tuple(np.round(P[bad], 6))} lies on (or within rounding of) the segment "
+            f"{tuple(np.round(a, 4))} -> {tuple(np.round(b, 4))}, where the Biot-Savart integrand diverges. "
+            f"The field there is not defined; move the probe off the conductor")
+    return (MU0 * current / (4.0 * np.pi)) * cross * (n1 + n2) / denom
 
 
 def polyline_field(vertices, points, current=1.0):
@@ -91,7 +101,7 @@ def maxwell_pair(radius=0.3, current=1.0, n=SEGMENTS):
                  (circular_loop(radius, -h, n), -current)], name="maxwell_pair")
 
 
-def golay_saddle(radius=0.3, arc_deg=120.0, z_inner=0.15, z_outer=0.55, current=1.0, n=160):
+def golay_saddle(radius=0.3, arc_deg=120.0, z_inner=0.15, z_outer=0.55, current=1.0, n=320):
     """Four saddles on a cylinder -- a transverse (x) gradient.
 
     A teaching geometry, not a clinical coil: it is unshielded and its winding was chosen for symmetry
@@ -103,7 +113,7 @@ def golay_saddle(radius=0.3, arc_deg=120.0, z_inner=0.15, z_outer=0.55, current=
     for z_lo, z_hi in ((z_inner, z_outer), (-z_outer, -z_inner)):
         for phi0, sign in ((0.0, +1.0), (np.pi, -1.0)):
             s = sign * (1.0 if z_lo > 0 else -1.0)
-            t = np.linspace(phi0 - half, phi0 + half, 160)
+            t = np.linspace(phi0 - half, phi0 + half, int(n))
             lo = np.stack([radius * np.cos(t), radius * np.sin(t), np.full_like(t, z_lo)], -1)
             hi = np.stack([radius * np.cos(t[::-1]), radius * np.sin(t[::-1]),
                            np.full_like(t, z_hi)], -1)
@@ -135,12 +145,18 @@ def biplanar_pair(half_gap=0.15, width=0.30, length=0.30, axis=1, current=1.0, n
     whose divergence must be shared transversely and therefore the one that HAS an ``alpha``. The Swoop's
     ``b0_axis`` is ``(0, 1, 0)``, hence the default.
 
-    The aspect ratio ``length / width`` is the whole physics. At 1 the plates are four-fold symmetric about
-    B0, the two transverse directions are equivalent, and ``alpha`` is forced to 1/2. Made long, the
-    geometry approaches translational invariance along its length, ``dB/d(length)`` goes to zero, and the
-    entire divergence is pushed into the one remaining transverse direction -- ``alpha`` goes to 0. Both of
-    the values in the literature are therefore the same geometric fact at two aspect ratios, and neither is
-    a property of "bi-planar" as such.
+    What sets ``alpha`` is the pair ``(width / gap, length / gap)`` and NOT the plate aspect ratio alone.
+    Square plates are four-fold symmetric about B0, so the two transverse directions are equivalent and
+    ``alpha`` is forced to 1/2 whatever the gap. Away from square, both knobs move it over essentially the
+    whole range: at a fixed aspect ratio of three, ``alpha`` runs 0.02 to 0.43 as the gap grows, because a
+    pair whose gap dwarfs both plate dimensions degenerates to a dipole pair, which is axially symmetric
+    again. ``alpha`` approaches 0 only when one plate dimension greatly exceeds the gap, so that the
+    geometry approaches translational invariance along it and the whole divergence is pushed into the one
+    remaining transverse direction.
+
+    An earlier version of this docstring said the aspect ratio was the whole physics. It is not, and the
+    difference matters for what can be inferred about a real machine: a catalogued ``alpha`` needs BOTH
+    ratios, not one.
     """
     return Coil([(rectangular_loop(+half_gap, width, length, axis, n), +current),
                  (rectangular_loop(-half_gap, width, length, axis, n), -current)], name="biplanar_pair")
@@ -265,19 +281,13 @@ def concomitant_field(coil, points, b0_T, b0_axis=(0.0, 0.0, 1.0), gradient_T_m=
     return np.sum(perp ** 2, axis=-1) / (2.0 * float(b0_T))
 
 
-def concomitant_alpha(coil, b0_axis=(0.0, 0.0, 1.0), h=2e-3):
-    """The symmetry parameter ``alpha`` of an AXIAL gradient coil, measured from its geometry.
+def transverse_block(coil, b0_axis=(0.0, 0.0, 1.0), h=2e-3):
+    """``(eigenvalues, axes, g)`` of the coil's TRANSVERSE gradient block, in the plane perpendicular to B0.
 
-    ``alpha`` is how the coil's divergence is shared between the two directions transverse to B0:
-    ``dB_u/du = -alpha G`` and ``dB_v/dv = -(1 - alpha) G``, with ``(u, v, n)`` a right-handed frame on the
-    field. It is fixed entirely by where the wires are. Cylindrical symmetry forces the even 1/2; a geometry
-    without that symmetry need not give it, and that is the whole content of the claim that a Halbach's
-    gradients carry a different alpha from a cylindrical magnet's.
-
-    Nothing about the MAGNET enters -- only the direction of its field, because that is what defines
-    transverse. So an alpha can be measured for a coil without modelling the magnet it sits in, which is
-    what makes the claim testable at all: a Halbach's B0 comes from magnetised blocks rather than free
-    currents, and this needs none of them.
+    An axial coil's ``div B = 0`` forces ``dB_u/du + dB_v/dv = -g``, but how that total is shared is a 2x2
+    symmetric object, not a number: ``curl B = 0`` makes ``dB_u/dv = dB_v/du``, so the block has principal
+    axes of its own and a cross term in any other frame. Everything invariant about the sharing lives here;
+    a scalar alpha is a reading of it along a STATED direction.
     """
     n = np.asarray(b0_axis, dtype=np.float64)
     n = n / np.linalg.norm(n)
@@ -289,12 +299,66 @@ def concomitant_alpha(coil, b0_axis=(0.0, 0.0, 1.0), h=2e-3):
         d = float(h) * np.asarray(direction, dtype=np.float64)
         return float((coil.field(d[None]) - coil.field(-d[None]))[0] @ component) / (2.0 * float(h))
 
-    g, su, sv = slope(n, n), slope(u, u), slope(v, v)
-    if abs(g) < max(abs(su), abs(sv)):
+    g = slope(n, n)
+    M = np.array([[slope(u, u), slope(u, v)], [slope(v, u), slope(v, v)]])
+    M = 0.5 * (M + M.T)                       # curl-free makes it symmetric; symmetrise off the noise
+    w, V = np.linalg.eigh(M)
+    order = np.argsort(-np.abs(w))            # the axis carrying most of the sharing first
+    w = w[order]
+    axes = np.stack([V[0, order[0]] * u + V[1, order[0]] * v,
+                     V[0, order[1]] * u + V[1, order[1]] * v])
+    return w, axes, g
+
+
+def concomitant_alpha(coil, b0_axis=(0.0, 0.0, 1.0), transverse_axis=None, h=2e-3):
+    """The symmetry parameter ``alpha`` of an AXIAL gradient coil, measured from its geometry.
+
+    ``alpha`` is how the coil's divergence is shared between the two directions transverse to B0:
+    ``dB_u/du = -alpha g`` and ``dB_v/dv = -(1 - alpha) g``. That statement is incomplete on its own, because
+    the sharing is a 2x2 block and a scalar is a reading of it along ONE direction. Read along the block's
+    own PRINCIPAL axes by default, which is the only choice that depends on the coil rather than on the
+    frame the caller happens to be using; ``transverse_axis`` reads it along a stated direction instead.
+
+    The default matters: deriving the transverse frame from a global axis makes ``alpha`` a property of the
+    coordinate system. A bi-planar pair of aspect ratio three reports 0.05 at one azimuth and 0.95 rotated
+    ninety degrees about its own B0, which is the same coil and the same physics.
+
+    ``alpha = 1/2`` also does NOT imply a symmetric coil. Any block with equal eigenvalues reads 1/2, and so
+    does an asymmetric coil read at 45 degrees to its own principal axes, where the concomitant field the
+    alpha model predicts is wrong by orders of magnitude. :func:`transverse_block` is what to consult when
+    that distinction matters; ``cross_term`` below reports it.
+
+    Nothing about the MAGNET enters, only the direction of its field, because that is what defines
+    transverse. A Halbach's B0 comes from magnetised blocks rather than free currents, so a route to alpha
+    needing the magnet would leave this oracle's domain. This one does not.
+    """
+    w, axes, g = transverse_block(coil, b0_axis, h)
+    if abs(g) < max(abs(w[0]), abs(w[1])):
         raise ValueError(
             f"alpha is a property of the AXIAL coil -- the one whose gradient lies along B0, so that its "
             f"divergence must be shared between the two TRANSVERSE directions. This coil's steepest "
             f"variation is transverse to the b0_axis given (along-axis {g:.3e} T/m against transverse "
-            f"{max(abs(su), abs(sv)):.3e} T/m), so it is a transverse coil in this frame and has no alpha. "
-            f"Reading one anyway returns a finite number that means nothing")
-    return -su / g
+            f"{max(abs(w[0]), abs(w[1])):.3e} T/m), so it is a transverse coil in this frame and has no "
+            f"alpha. Reading one anyway returns a finite number that means nothing")
+    if transverse_axis is None:
+        return float(-w[0] / g)
+    t = np.asarray(transverse_axis, dtype=np.float64)
+    n = np.asarray(b0_axis, dtype=np.float64)
+    n = n / np.linalg.norm(n)
+    t = t - (t @ n) * n
+    if np.linalg.norm(t) < 1e-12:
+        raise ValueError("transverse_axis lies along b0_axis, so it names no transverse direction")
+    t /= np.linalg.norm(t)
+    c = axes @ t
+    return float(-(w[0] * c[0] ** 2 + w[1] * c[1] ** 2) / g)
+
+
+def cross_term(coil, b0_axis=(0.0, 0.0, 1.0), h=2e-3):
+    """How far the transverse sharing is from being describable by a single ``alpha``, as a fraction of ``g``.
+
+    Zero when the coil's principal axes are the ones alpha is read along. When it is not small the scalar
+    alpha is an incomplete description however it is read, and a concomitant field built from alpha alone
+    can be wrong by orders of magnitude rather than by a correction.
+    """
+    w, _axes, g = transverse_block(coil, b0_axis, h)
+    return float(abs(w[0] - w[1]) / abs(g)) if g else float("inf")
