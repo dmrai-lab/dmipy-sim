@@ -309,3 +309,27 @@ def test_the_gradient_guard_does_not_depend_on_the_winding_current():
         with pytest.raises(ValueError, match="no gradient along b0_axis"):
             coil.concomitant_field(coil.golay_saddle(current=current), np.array([[0.1, 0.0, 0.0]]),
                                    0.064, b0_axis=(0, 0, 1), gradient_T_m=0.023)
+
+
+def test_the_step_is_refined_until_the_divergence_identity_holds():
+    """div B = 0 is EXACT, so a finite difference that does not reproduce it is reporting truncation. At a
+    half gap of 2 cm the fixed 2 mm step broke the identity by four times alpha itself, which pushed a
+    transverse slope above the axial one and made the guard refuse a perfectly good axial coil while blaming
+    its geometry. The step now refines until the identity holds."""
+    for half_gap in (0.02, 0.05, 0.10, 0.15):
+        c = coil.biplanar_pair(half_gap=half_gap, width=0.30, length=3.00)
+        a = coil.concomitant_alpha(c, b0_axis=(0, 1, 0))
+        assert 0.0 <= a <= 1.0, f"half_gap {half_gap}: alpha {a}"
+    # and the identity itself, read back from the block
+    w, _axes, g = coil.transverse_block(coil.biplanar_pair(half_gap=0.02, width=0.30, length=3.00),
+                                        b0_axis=(0, 1, 0))
+    assert abs(w[0] + w[1] + g) < 1e-6 * abs(g), "div B is not satisfied by the differenced block"
+
+
+def test_subdividing_a_straight_side_buys_nothing():
+    """The sides are straight and the segment field is closed form, so two points per side is exact. 200
+    gave the same answer to ten digits at a hundred times the cost, and left the parameter looking like a
+    convergence knob when there is nothing to converge."""
+    a = [coil.concomitant_alpha(coil.biplanar_pair(n=n), b0_axis=(0, 1, 0)) for n in (2, 8, 64)]
+    assert np.ptp(a) < 1e-10, f"a straight side is not exact: {a}"
+    assert len(coil.biplanar_pair().turns[0][0]) <= 16

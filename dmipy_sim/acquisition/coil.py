@@ -121,8 +121,14 @@ def golay_saddle(radius=0.3, arc_deg=120.0, z_inner=0.15, z_outer=0.55, current=
     return Coil(turns, name="golay_saddle")
 
 
-def rectangular_loop(plane_coord, width, length, axis=1, n=200):
-    """One rectangular turn in the plane ``axis = plane_coord``, spanning ``width`` and ``length``."""
+def rectangular_loop(plane_coord, width, length, axis=1, n=2):
+    """One rectangular turn in the plane ``axis = plane_coord``, spanning ``width`` and ``length``.
+
+    ``n`` subdivides each side, and it buys NOTHING: the sides are straight and the segment field is closed
+    form, so two points per side is already exact and 200 gave the same answer to ten digits at a hundred
+    times the cost. It exists only so a caller can refine a side that has been bent; leaving it looking like
+    a convergence knob invited the belief that there was something to converge.
+    """
     a, b = float(width) / 2.0, float(length) / 2.0
     i, j = [k for k in range(3) if k != int(axis)]
     corners = []
@@ -138,7 +144,7 @@ def rectangular_loop(plane_coord, width, length, axis=1, n=200):
     return np.concatenate(out)
 
 
-def biplanar_pair(half_gap=0.15, width=0.30, length=0.30, axis=1, current=1.0, n=200):
+def biplanar_pair(half_gap=0.15, width=0.30, length=0.30, axis=1, current=1.0, n=2):
     """Two opposed rectangular plates -- the AXIAL gradient coil of an open, bi-planar magnet.
 
     ``axis`` is the normal of the plates and the direction of both B0 and the gradient, so this is the coil
@@ -334,13 +340,29 @@ def transverse_block(coil, b0_axis=(0.0, 0.0, 1.0), h=2e-3):
     u /= np.linalg.norm(u)
     v = np.cross(n, u)
 
-    def slope(direction, component):
-        d = float(h) * np.asarray(direction, dtype=np.float64)
-        return float((coil.field(d[None]) - coil.field(-d[None]))[0] @ component) / (2.0 * float(h))
+    def block(step):
+        def slope(direction, component):
+            d = float(step) * np.asarray(direction, dtype=np.float64)
+            return float((coil.field(d[None]) - coil.field(-d[None]))[0] @ component) / (2.0 * float(step))
+        gg = slope(n, n)
+        MM = np.array([[slope(u, u), slope(u, v)], [slope(v, u), slope(v, v)]])
+        return gg, 0.5 * (MM + MM.T)           # curl-free makes it symmetric; symmetrise off the noise
 
-    g = slope(n, n)
-    M = np.array([[slope(u, u), slope(u, v)], [slope(v, u), slope(v, v)]])
-    M = 0.5 * (M + M.T)                       # curl-free makes it symmetric; symmetrise off the noise
+    # div B = 0 is EXACT, so the finite difference must reproduce it. Where it does not, the step is too
+    # coarse for the geometry and the answer is truncation, not physics -- at a half gap of 2 cm the fixed
+    # 2 mm step broke the identity by 4x alpha itself and the guard below then refused a perfectly good
+    # axial coil, blaming its geometry. Refine until the identity holds, and say so if it never does.
+    step = float(h)
+    for _ in range(8):
+        g, M = block(step)
+        if g == 0.0 or abs(np.trace(M) + g) <= 1e-6 * abs(g):
+            break
+        step *= 0.25
+    else:
+        raise ValueError(
+            f"this coil's field cannot be differenced consistently near isocentre: div B comes out "
+            f"{abs(np.trace(M) + g) / max(abs(g), 1e-300):.1e} of the axial gradient at a step of {step:.1e} m, "
+            f"where it must be zero. The transverse sharing read from it would be truncation error")
     w, V = np.linalg.eigh(M)
     order = np.argsort(-np.abs(w))            # the axis carrying most of the sharing first
     w = w[order]
