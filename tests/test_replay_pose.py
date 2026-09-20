@@ -211,3 +211,40 @@ def test_a_response_the_truncation_cannot_hold_is_refused(ellipsoid):
     P = pk._prepare(seq, tissue=None, scanner=None, orientation=None, compartment=None)
     with pytest.raises(ValueError, match="not represented at"):
         pk._pose_coeffs(P, seq, band=0, n_check=200)                  # the sampled route, forced below its band
+
+
+# ── the field's DIRECTION is the machine's, not an assumption (dmipy-sim#349) ────────────────────────
+def test_the_susceptibility_field_points_where_the_machine_s_field_points(hollow):
+    """An anisotropic susceptibility is not isotropic in B0: the field a sheathed fibre produces depends on
+    the angle between the fibre and the field, so the field's DIRECTION enters every contraction. It was
+    hardcoded to +z -- the conventional bore geometry, where B0 runs along the patient's head-foot axis.
+
+    That is right for every cylindrical magnet and wrong for a bi-planar one, whose field runs ACROSS the
+    patient. The same fibre then sits at a different angle to B0 and produces a different phase. This fibre
+    lies along z, so a machine with B0 along z sees it end-on and one with B0 across it does not, and the two
+    must disagree."""
+    from dmipy_sim.acquisition.scanners import ScannerLimits
+    from dmipy_sim.replay.replay import _field_direction
+    pk, seq = hollow
+    swoop, prisma = ScannerLimits.of("swoop"), ScannerLimits.of("prisma")
+    assert _field_direction(prisma) == (0.0, 0.0, 1.0)          # along the bore
+    assert _field_direction(swoop)[1] == pytest.approx(1.0)     # across the patient
+    assert not np.allclose(_field_direction(swoop), _field_direction(prisma))
+
+    t = Tissue(chi_iso=-9.0e-6, chi_aniso=-1.0e-7)
+    along = pk.replay(seq, tissue=t, scanner=prisma)
+    across = pk.replay(seq, tissue=t, scanner=swoop)
+    assert not np.allclose(along, across), \
+        "the two field directions gave the same signal; the machine's axis is not reaching the contraction"
+
+
+def test_a_bare_field_strength_still_means_the_conventional_bore(hollow):
+    """A number carries no direction, so it keeps the conventional geometry -- B0 along the bore. That is a
+    stated default rather than a hidden one, and it must agree with a catalogued cylindrical machine
+    exactly, or the fallback and the catalogue would disagree about the same magnet."""
+    from dmipy_sim.acquisition.scanners import ScannerLimits
+    pk, seq = hollow
+    t = Tissue(chi_iso=-9.0e-6, chi_aniso=-1.0e-7)
+    prisma = ScannerLimits.of("prisma")
+    np.testing.assert_allclose(pk.replay(seq, tissue=t, scanner=prisma),
+                               pk.replay(seq, tissue=t, scanner=float(prisma.field_T)), rtol=1e-12)

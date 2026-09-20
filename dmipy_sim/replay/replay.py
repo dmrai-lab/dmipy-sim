@@ -167,6 +167,29 @@ class PoseResponse:
         return self.coeffs @ A[0]
 
 
+def _field_direction(scanner):
+    """The unit vector B0 points along, in the patient axes the scanner's frame is declared in.
+
+    A susceptibility field is not isotropic and neither is the phase it produces: an anisotropic
+    susceptibility depends on the angle between the source and B0, so the FIELD'S DIRECTION enters every
+    contraction. Taking it from the machine rather than assuming it is the difference between a phase that
+    is right and one that is plausible.
+
+    Falls back to ``+z`` for a bare field strength, which is the conventional bore geometry -- B0 along the
+    bore, which is the patient's head-foot direction. That is correct for every cylindrical magnet and wrong
+    for a bi-planar one, where B0 runs across the patient; such a machine declares ``b0_axis`` and this
+    returns it.
+    """
+    if scanner is None:
+        return (0.0, 0.0, 1.0)
+    from ..acquisition.scanners import ScannerLimits
+    if isinstance(scanner, ScannerLimits) and scanner.b0_axis is not None:
+        v = np.asarray(scanner.b0_axis, dtype=np.float64)
+        return tuple(v / np.linalg.norm(v))
+    return (0.0, 0.0, 1.0)
+
+
+
 def _field_strength(scanner):
     """The static field (T) of ``scanner``: a :class:`~dmipy_sim.acquisition.scanners.ScannerLimits` (its catalogue
     ``field_T``), a number in tesla, or ``None`` for no field."""
@@ -343,7 +366,8 @@ class ReplayPack:
           ``FOD.native``); a bare coefficient array is refused, since the convention cannot be inferred.
         * ``scanner`` -- **what the scanner is**: its static field, as a
           :class:`~dmipy_sim.acquisition.scanners.ScannerLimits` (the catalogue's ``field_T``) or a number in
-          tesla, or ``None`` for no field. The field points along the bore's z; the pose turns it.
+          tesla, or ``None`` for no field. Its DIRECTION comes from the machine too -- a bi-planar
+          magnet's field runs across the patient, not along the bore -- and the pose turns it.
 
         The tiers follow from those: **gradient** (C0) always, in mode space from the position coefficients;
         **bulk relaxation** (C1) with a T2 / T1 in the tissue, under the waveform's coherence gate, on the
@@ -600,7 +624,7 @@ class ReplayPack:
                  pathway=True):
         """Everything a replay resolves before it reads positions: the waveform's exact per-save weights (rotated
         into the substrate frame when a pose is given), the tissue's values (none for ``None``), the scanner's
-        field along the bore's z turned by the pose, the per-walker weights with the relaxation and surface terms
+        field along the machine's own B0 axis turned by the pose, the per-walker weights with the relaxation and surface terms
         applied, and the compartment selection.
 
 ``pathway`` asks for the amplitude of the coherence pathway the sequence's readout IS
@@ -643,7 +667,11 @@ class ReplayPack:
         t = tissue if tissue is not None else Tissue()
         T2, T1, rho, D, chi_iso, chi_aniso = t.T2, t.T1, t.rho, t.D, t.chi_iso, t.chi_aniso
         B0 = _field_strength(scanner)
-        b0_dir = (0.0, 0.0, 1.0)                                          # the bore's field; the pose turns it
+        # the MACHINE's field direction, not an assumed one. An anisotropic susceptibility depends on the
+        # angle between the source and B0, so this is not a labelling detail: on a bi-planar magnet B0 runs
+        # across the patient rather than along them, and every fibre sits at a different angle to it than it
+        # would in a bore. The pose then turns it, as it always did.
+        b0_dir = _field_direction(scanner)
         if orientation is not None:
             R = self.pose_rotation(orientation)
             G, G_eff = G @ R, G_eff @ R                                   # R^T g per sample: stored coordinates
