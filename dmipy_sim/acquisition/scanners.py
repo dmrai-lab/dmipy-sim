@@ -32,6 +32,25 @@ GAMMA_BAR = GAMMA / (2.0 * np.pi)
 __all__ = ["ScannerLimits", "SCANNERS", "FIELD_DT_CAP", "scanner_limits", "save_interval"]
 
 
+
+#: the patient-frame direction each letter names, in RAS -- the same language ``Grid.axes`` speaks, so a
+#: scanner's axes and a grid's axes are comparable without a second convention to keep true.
+_AXIS_LETTER = {"R": (1.0, 0.0, 0.0), "L": (-1.0, 0.0, 0.0),
+                "A": (0.0, 1.0, 0.0), "P": (0.0, -1.0, 0.0),
+                "S": (0.0, 0.0, 1.0), "I": (0.0, 0.0, -1.0)}
+
+
+def _axis(letter, what, name):
+    """A patient-frame unit vector from an axis letter, or ``None`` when the machine declares none."""
+    if letter is None:
+        return None
+    key = str(letter).upper()
+    if key not in _AXIS_LETTER:
+        raise ValueError(
+            f"{what} of {name!r} is an axis letter, one of {sorted(_AXIS_LETTER)}; got {letter!r}")
+    return _AXIS_LETTER[key]
+
+
 @dataclass(frozen=True)
 class ScannerLimits:
     """What a scanner can deliver, in SI, resolved from the catalogue.
@@ -54,6 +73,8 @@ class ScannerLimits:
     adc_dead_time: float = None
     peak_B1: float = None      # T, body coil where the catalogue has it, else head coil
     field_T: float = None      # T, the static field; None for an envelope or an uncatalogued field
+    b0_axis: tuple = None      # patient-frame unit vector along B0; the magnet frame's +z
+    b1_axis: tuple = None      # patient-frame unit vector along the transmit coil, None for a birdcage
     b0_quadratic: float = None        # 1/m^2, the even term c of dB/B0 = a x + c r^2
     b0_asymmetry_rl: float = None     # 1/m, the odd term a, along the scanner's R/L axis
     b0_validity_radius: float = None  # m, how far from isocentre that law is anchored
@@ -79,7 +100,7 @@ class ScannerLimits:
         G_max, slew = scc.leaf_si(entry, "gradient", "max_amplitude"), scc.leaf_si(entry, "gradient", slew_name)
         if G_max is None or slew is None:
             raise ValueError(f"{key!r} has no verified gradient amplitude / slew in the catalogue")
-        return cls(name=key, kind=kind, regime=regime, G_max=G_max, slew_max=slew,
+        limits = cls(name=key, kind=kind, regime=regime, G_max=G_max, slew_max=slew,
                    grad_raster=scc.leaf_si(entry, "gradient", "gradient_raster_time"),
                    rf_raster=scc.leaf_si(entry, "rf", "rf_raster_time"),
                    adc_raster=scc.leaf_si(entry, "rf", "adc_dwell_raster_time"),
@@ -98,7 +119,58 @@ class ScannerLimits:
                    b0_temperature_coefficient=scc.leaf_si(entry, "thermal",
                                                           "b0_temperature_coefficient"),
                    f0_recentering_interval=scc.leaf_si(entry, "thermal", "f0_recentering_interval"),
-                   f0_temperature_slope=scc.leaf_si(entry, "thermal", "f0_temperature_slope"))
+                   f0_temperature_slope=scc.leaf_si(entry, "thermal", "f0_temperature_slope"),
+                     b0_axis=_axis(scc.leaf_raw(entry, "frame", "b0_axis"), "b0_axis", key),
+                     b1_axis=_axis(scc.leaf_raw(entry, "frame", "b1_axis"), "b1_axis", key))
+        limits._check_frame()
+        return limits
+
+    def _check_frame(self):
+        """Refuse a machine whose transmit coil is not perpendicular to its field.
+
+        This is physics, not bookkeeping: what excites is the component of B1 perpendicular to B0, so a coil
+        with a principal axis along the field would excite nothing. A catalogue entry that says otherwise has
+        its axes confused, and the confusion is exactly the kind that never announces itself -- both axes are
+        plausible unit vectors and every downstream number stays finite.
+        """
+        if self.b0_axis is None or self.b1_axis is None:
+            return
+        b0 = np.asarray(self.b0_axis, dtype=np.float64)
+        b1 = np.asarray(self.b1_axis, dtype=np.float64)
+        dot = float(abs(b0 @ b1))
+        if dot > 1e-6:
+            raise ValueError(
+                f"{self.name!r} declares a transmit axis {self.b1_axis} that is not perpendicular to its "
+                f"field {self.b0_axis} (|cos| = {dot:.3f}). Only the component of B1 perpendicular to B0 "
+                f"excites, so this machine as described would not produce a signal -- the axes are confused")
+
+    def magnet_frame(self):
+        """The rotation taking PATIENT axes to the MAGNET frame, whose +z is B0 by construction.
+
+        Every piece of field physics -- the concomitant expansion, the EPG states, off-resonance, the
+        susceptibility contraction -- is written for B0 along +z, and none of them says so in a way a caller
+        can check. This is where that assumption becomes a value: the physics is evaluated in the frame this
+        returns, and a machine whose field is not along the patient's head-foot axis gets a rotation instead
+        of a silently wrong answer.
+
+        On a cylindrical magnet this is the identity up to the choice of transverse axes, which is why the
+        assumption has survived so long unexamined. On a bi-planar magnet with a vertical field it is not.
+
+        ``None`` when the machine declares no field direction.
+        """
+        if self.b0_axis is None:
+            return None
+        z = np.asarray(self.b0_axis, dtype=np.float64)
+        z = z / np.linalg.norm(z)
+        # a transverse axis to build the frame on: the coil's if there is one, else any vector not parallel
+        # to the field. Which one it is does not matter for anything axially symmetric about B0, and the
+        # cases that are not -- the magnet's own R/L asymmetry -- are catalogued in PATIENT axes anyway.
+        seed = np.asarray(self.b1_axis, dtype=np.float64) if self.b1_axis is not None else None
+        if seed is None or abs(float(z @ (seed / np.linalg.norm(seed)))) > 1 - 1e-9:
+            seed = np.eye(3)[int(np.argmin(np.abs(z)))]
+        x = seed - (seed @ z) * z
+        x = x / np.linalg.norm(x)
+        return np.stack([x, np.cross(z, x), z])          # rows: the magnet frame's axes in patient RAS
 
     def b0_offset(self, offset_m):
         """The static field's departure from uniformity at a displacement from isocentre, in **tesla**:
@@ -213,10 +285,22 @@ class ScannerLimits:
         """
         if self.b1_axial_falloff is None and self.b1_calibration_offset is None:
             return None
+        if self.b1_axial_falloff is not None and self.b1_axis is None:
+            raise ValueError(
+                f"{self.name!r} catalogues a transmit fall-off but declares no b1_axis for it to fall off "
+                f"along. A quadrature birdcage has no single B1 axis -- it drives two orthogonal transverse "
+                f"components -- so a fall-off law is meaningless for one and the catalogue should say which "
+                f"kind of coil this is")
         d = np.asarray(offset_m, dtype=np.float64)
         scale = np.ones(d.shape[:-1]) if d.ndim > 1 else 1.0
         if self.b1_axial_falloff is not None:
-            scale = scale * (1.0 - self.b1_axial_falloff * d[..., 2] ** 2)     # z is the bore
+            # the distance ALONG THE COIL, which is what the fall-off is a function of. Projecting rather
+            # than indexing is the whole point: on a cylindrical magnet the coil axis is the patient's
+            # head-foot direction and this is `d[..., 2]`, but on a bi-planar magnet with a vertical field it
+            # is not, and an index cannot tell the difference while a projection can.
+            axis = np.asarray(self.b1_axis, dtype=np.float64)
+            along = d @ (axis / np.linalg.norm(axis))
+            scale = scale * (1.0 - self.b1_axial_falloff * along ** 2)
         if self.b1_calibration_offset is not None:
             scale = scale * self.b1_calibration_offset
         return scale

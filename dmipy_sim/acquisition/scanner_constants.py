@@ -87,6 +87,13 @@ def resolve(name):
                      f"envelopes {sorted(SCANNER_CONSTANTS['envelopes'])}")
 
 
+def leaf_raw(entry, group, name):
+    """The leaf's value EXACTLY as catalogued, with no unit conversion -- for leaves whose value is not a
+    number. An axis letter is the case this exists for: ``leaf_si`` would try to float it."""
+    lf = entry.get(group, {}).get(name)
+    return None if lf is None else lf.get("value")
+
+
 def leaf_si(entry, group, name):
     """The SI value of ``entry[group][name]``, or ``None`` when the leaf is absent or unverified (its
     ``value`` is null). The typed :class:`~dmipy_sim.acquisition.scanners.ScannerLimits` carries ``None``

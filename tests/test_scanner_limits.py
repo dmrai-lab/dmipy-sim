@@ -7,6 +7,8 @@ catalogue does not know is ``None`` and listed, never a number standing in for o
 import inspect
 import json
 
+from dataclasses import replace
+
 import numpy as np
 import pytest
 
@@ -394,3 +396,84 @@ def test_a_derivative_is_refused_beyond_the_law_s_anchor_and_absent_without_one(
         s.b0_gradient(np.array([[0.12, 0, 0]]))
     for name in ("prisma", "connectom", "terra"):
         assert ScannerLimits.of(name).b0_gradient(np.array([[0, 0, 0.05]])) is None
+
+
+# ── which axis is the field, and which is the coil (dmipy-sim#349 item 0) ────────────────────────────
+def test_every_machine_declares_where_its_field_points():
+    """A missing axis and an axis that happens to be head-foot are not the same claim. Every cylindrical
+    magnet's B0 runs along the bore, which is the patient's head-foot direction, and that is stated rather
+    than assumed -- because one machine here does something else."""
+    for name in ("prisma", "connectom", "terra", "swoop"):
+        assert ScannerLimits.of(name).b0_axis is not None, f"{name} declares no field direction"
+    assert ScannerLimits.of("prisma").b0_axis == (0.0, 0.0, 1.0)          # S: along the bore
+    assert ScannerLimits.of("swoop").b0_axis == (0.0, 1.0, 0.0)           # A: across the patient
+
+
+def test_the_swoop_s_field_is_not_along_its_bore_which_is_the_whole_reason_for_a_magnet_frame():
+    """The fact that makes the frame necessary. On a cylindrical magnet the field, the bore and the transmit
+    coil all coincide, so nothing distinguishes them and a simulator can call them all 'z' forever. A
+    bi-planar magnet puts B0 across the patient and the coil along them -- and the two 'z's are ninety
+    degrees apart."""
+    sw = ScannerLimits.of("swoop")
+    b0, b1 = np.asarray(sw.b0_axis), np.asarray(sw.b1_axis)
+    assert abs(float(b0 @ b1)) < 1e-12                                   # perpendicular, as a solenoid must be
+    assert abs(float(b0 @ np.asarray(ScannerLimits.of("prisma").b0_axis))) < 1e-12   # and not the bore's axis
+    leaf = scc.get_limit("hyperfine_swoop_64mT", "frame", "b0_axis")
+    assert leaf["confidence"] == "cited" and "vertical" in leaf["context"]
+
+
+def test_a_coil_along_the_field_is_refused_because_it_would_not_excite():
+    """Physics, not bookkeeping: only the component of B1 perpendicular to B0 excites, so a machine whose
+    coil axis lies along its field would produce no signal. The confusion that produces such an entry is
+    exactly the kind that never announces itself -- both are plausible unit vectors and every number
+    downstream stays finite."""
+    sw = ScannerLimits.of("swoop")
+    with pytest.raises(ValueError, match="not perpendicular"):
+        replace(sw, b1_axis=sw.b0_axis)._check_frame()
+    with pytest.raises(ValueError, match="axis letter"):
+        ScannerLimits.of("swoop").__class__ and _axis_check()
+
+
+def _axis_check():
+    from dmipy_sim.acquisition.scanners import _axis
+    return _axis("Q", "b0_axis", "made-up")
+
+
+def test_the_magnet_frame_puts_the_field_on_z_by_construction():
+    """Every piece of field physics -- the concomitant expansion, the EPG states, off-resonance, the
+    susceptibility contraction -- is written for B0 along +z and none of them says so in a way a caller can
+    check. This is where that assumption becomes a value."""
+    for name in ("prisma", "swoop"):
+        s = ScannerLimits.of(name)
+        R = s.magnet_frame()
+        np.testing.assert_allclose(R @ R.T, np.eye(3), atol=1e-12)        # a rotation
+        assert np.linalg.det(R) == pytest.approx(1.0)                     # a PROPER one
+        np.testing.assert_allclose(R @ np.asarray(s.b0_axis), [0, 0, 1], atol=1e-12)
+    # on a cylindrical magnet it is the identity, which is why the assumption survived unexamined
+    np.testing.assert_allclose(ScannerLimits.of("prisma").magnet_frame(), np.eye(3), atol=1e-12)
+    assert not np.allclose(ScannerLimits.of("swoop").magnet_frame(), np.eye(3))
+
+
+def test_the_transmit_fall_off_is_projected_onto_the_coil_not_read_off_an_index():
+    """The discriminating test. For a coil along head-foot, projecting and indexing `[..., 2]` give the same
+    number, so a frame-conflated implementation passes anything built from this machine alone. Move the coil
+    to another axis and they part company -- which is what says the fall-off follows the COIL rather than a
+    coordinate that happens to coincide with it."""
+    sw = ScannerLimits.of("swoop")
+    d = np.array([[0.02, -0.01, 0.05], [0.0, 0.06, 0.0], [0.03, 0.0, 0.07]])
+    indexed = (1.0 - sw.b1_axial_falloff * d[:, 2] ** 2) * sw.b1_calibration_offset
+    np.testing.assert_allclose(sw.b1_scale(d), indexed, rtol=1e-12)        # coil along S: they agree
+    turned = replace(sw, b1_axis=(1.0, 0.0, 0.0), b0_axis=(0.0, 1.0, 0.0))  # coil moved to R/L
+    assert not np.allclose(turned.b1_scale(d), indexed)                     # ... and now they do not
+    expect = (1.0 - sw.b1_axial_falloff * d[:, 0] ** 2) * sw.b1_calibration_offset
+    np.testing.assert_allclose(turned.b1_scale(d), expect, rtol=1e-12)
+
+
+def test_a_fall_off_with_no_axis_to_fall_off_along_is_refused():
+    """A quadrature birdcage drives two orthogonal transverse components and so has no single B1 axis; a
+    fall-off law is meaningless for one. The catalogue says which kind of coil each machine has, and asking
+    for the law without the axis is refused rather than defaulted."""
+    assert ScannerLimits.of("prisma").b1_axis is None
+    bad = replace(ScannerLimits.of("swoop"), b1_axis=None)
+    with pytest.raises(ValueError, match="no b1_axis"):
+        bad.b1_scale(np.zeros((2, 3)))

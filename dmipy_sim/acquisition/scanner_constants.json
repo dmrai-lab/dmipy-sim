@@ -266,6 +266,22 @@
    "journal_or_publisher": "Frontiers in Neuroimaging",
    "year": 2026,
    "doi_or_url": "https://doi.org/10.3389/fnimg.2026.1845201"
+  },
+  "hyperfine_us12366622": {
+   "key": "hyperfine_us12366622",
+   "authors": "Boskamp E B, Poole M (Hyperfine, Inc.)",
+   "title": "Radio frequency coil for magnetic resonance imaging, US 12,366,622 B2, granted 2025-07-22 (states the B0 field is oriented along a VERTICAL axis in the bi-planar arrangement, and that the RF coil therefore has its principal axis along a horizontal axis orthogonal to it)",
+   "journal_or_publisher": "United States Patent and Trademark Office",
+   "year": 2025,
+   "doi_or_url": "https://patents.google.com/patent/US12366622B2/en"
+  },
+  "marques2019_lowfield": {
+   "key": "marques2019_lowfield",
+   "authors": "Marques J P, Simonis F F J, Webb A G",
+   "title": "Low-field MRI: an MR physics perspective (contrasts the conventional horizontal-bore geometry, where B0 runs along the bore and hence the patient's head-foot axis, with the transverse-B0 geometry of most point-of-care systems, where a solenoid transmit coil perpendicular to B0 becomes possible and a quadrature birdcage does not)",
+   "journal_or_publisher": "Journal of Magnetic Resonance Imaging 49:1528-1542",
+   "year": 2019,
+   "doi_or_url": "https://doi.org/10.1002/jmri.26637"
   }
  },
  "scanners": {
@@ -348,6 +364,26 @@
      "location": "n/a",
      "confidence": "NEEDS VERIFICATION"
     }
+   },
+   "frame": {
+    "b0_axis": {
+     "value": "S",
+     "unit": "",
+     "field_T": 3.0,
+     "context": "the bore axis, which for a cylindrical superconducting magnet is the patient's head-foot direction. This is the default every such machine shares and it is stated rather than assumed, because a MISSING axis and an axis that happens to be S are not the same claim",
+     "source_key": "marques2019_lowfield",
+     "location": "the geometry of a cylindrical bore magnet",
+     "confidence": "widely-quoted"
+    },
+    "b1_axis": {
+     "value": null,
+     "unit": "",
+     "field_T": 3.0,
+     "context": "NULL, and deliberately: a quadrature birdcage drives two orthogonal transverse components and so has no single B1 axis. A falloff law along 'the coil axis' is meaningless for it. Only a LINEAR volume coil -- a solenoid on a transverse-B0 magnet -- has one",
+     "source_key": "marques2019_lowfield",
+     "location": "coil geometry",
+     "confidence": "widely-quoted"
+    }
    }
   },
   "siemens_magnetom_connectom_3T": {
@@ -403,7 +439,27 @@
      "confidence": "widely-quoted"
     }
    },
-   "notes": "Diffusion-encoding slew is PNS-limited to 62.5 T/m/s, well below the 200 T/m/s hardware max (McNab 2013). See Jones 2018 (super-scanner) for the wider context of 300 mT/m systems."
+   "notes": "Diffusion-encoding slew is PNS-limited to 62.5 T/m/s, well below the 200 T/m/s hardware max (McNab 2013). See Jones 2018 (super-scanner) for the wider context of 300 mT/m systems.",
+   "frame": {
+    "b0_axis": {
+     "value": "S",
+     "unit": "",
+     "field_T": 3.0,
+     "context": "the bore axis, which for a cylindrical superconducting magnet is the patient's head-foot direction. This is the default every such machine shares and it is stated rather than assumed, because a MISSING axis and an axis that happens to be S are not the same claim",
+     "source_key": "marques2019_lowfield",
+     "location": "the geometry of a cylindrical bore magnet",
+     "confidence": "widely-quoted"
+    },
+    "b1_axis": {
+     "value": null,
+     "unit": "",
+     "field_T": 3.0,
+     "context": "NULL, and deliberately: a quadrature birdcage drives two orthogonal transverse components and so has no single B1 axis. A falloff law along 'the coil axis' is meaningless for it. Only a LINEAR volume coil -- a solenoid on a transverse-B0 magnet -- has one",
+     "source_key": "marques2019_lowfield",
+     "location": "coil geometry",
+     "confidence": "widely-quoted"
+    }
+   }
   },
   "siemens_magnetom_connectom_2_0_3T": {
    "vendor": "Siemens Healthineers / MGH",
@@ -438,7 +494,27 @@
      "confidence": "cited"
     }
    },
-   "notes": "Published as design targets in 2021 (huang2021_connectome2); the built scanner reaches 500 mT/m and 600 T/m/s per axis (ramos_llorden2026_connectome2), so the numbers are measured on the machine."
+   "notes": "Published as design targets in 2021 (huang2021_connectome2); the built scanner reaches 500 mT/m and 600 T/m/s per axis (ramos_llorden2026_connectome2), so the numbers are measured on the machine.",
+   "frame": {
+    "b0_axis": {
+     "value": "S",
+     "unit": "",
+     "field_T": 3.0,
+     "context": "the bore axis, which for a cylindrical superconducting magnet is the patient's head-foot direction. This is the default every such machine shares and it is stated rather than assumed, because a MISSING axis and an axis that happens to be S are not the same claim",
+     "source_key": "marques2019_lowfield",
+     "location": "the geometry of a cylindrical bore magnet",
+     "confidence": "widely-quoted"
+    },
+    "b1_axis": {
+     "value": null,
+     "unit": "",
+     "field_T": 3.0,
+     "context": "NULL, and deliberately: a quadrature birdcage drives two orthogonal transverse components and so has no single B1 axis. A falloff law along 'the coil axis' is meaningless for it. Only a LINEAR volume coil -- a solenoid on a transverse-B0 magnet -- has one",
+     "source_key": "marques2019_lowfield",
+     "location": "coil geometry",
+     "confidence": "widely-quoted"
+    }
+   }
   },
   "siemens_magnetom_terra_7T": {
    "vendor": "Siemens Healthineers",
@@ -493,7 +569,27 @@
      "confidence": "NEEDS VERIFICATION"
     }
    },
-   "notes": "Newer MAGNETOM Terra.X reaches 135 mT/m @ 250 T/m/s (separate model). Terra has no body transmit coil; transmit is via the head coil (1Tx or 8Tx pTx)."
+   "notes": "Newer MAGNETOM Terra.X reaches 135 mT/m @ 250 T/m/s (separate model). Terra has no body transmit coil; transmit is via the head coil (1Tx or 8Tx pTx).",
+   "frame": {
+    "b0_axis": {
+     "value": "S",
+     "unit": "",
+     "field_T": 7.0,
+     "context": "the bore axis, which for a cylindrical superconducting magnet is the patient's head-foot direction. This is the default every such machine shares and it is stated rather than assumed, because a MISSING axis and an axis that happens to be S are not the same claim",
+     "source_key": "marques2019_lowfield",
+     "location": "the geometry of a cylindrical bore magnet",
+     "confidence": "widely-quoted"
+    },
+    "b1_axis": {
+     "value": null,
+     "unit": "",
+     "field_T": 7.0,
+     "context": "NULL, and deliberately: a quadrature birdcage drives two orthogonal transverse components and so has no single B1 axis. A falloff law along 'the coil axis' is meaningless for it. Only a LINEAR volume coil -- a solenoid on a transverse-B0 magnet -- has one",
+     "source_key": "marques2019_lowfield",
+     "location": "coil geometry",
+     "confidence": "widely-quoted"
+    }
+   }
   },
   "ge_signa_premier_3T": {
    "vendor": "GE Healthcare",
@@ -557,7 +653,27 @@
      "confidence": "cited"
     }
    },
-   "notes": "Peak B1 (19 uT) is explicitly stated at a 75 kg load; it scales down with patient mass/loading."
+   "notes": "Peak B1 (19 uT) is explicitly stated at a 75 kg load; it scales down with patient mass/loading.",
+   "frame": {
+    "b0_axis": {
+     "value": "S",
+     "unit": "",
+     "field_T": 3.0,
+     "context": "the bore axis, which for a cylindrical superconducting magnet is the patient's head-foot direction. This is the default every such machine shares and it is stated rather than assumed, because a MISSING axis and an axis that happens to be S are not the same claim",
+     "source_key": "marques2019_lowfield",
+     "location": "the geometry of a cylindrical bore magnet",
+     "confidence": "widely-quoted"
+    },
+    "b1_axis": {
+     "value": null,
+     "unit": "",
+     "field_T": 3.0,
+     "context": "NULL, and deliberately: a quadrature birdcage drives two orthogonal transverse components and so has no single B1 axis. A falloff law along 'the coil axis' is meaningless for it. Only a LINEAR volume coil -- a solenoid on a transverse-B0 magnet -- has one",
+     "source_key": "marques2019_lowfield",
+     "location": "coil geometry",
+     "confidence": "widely-quoted"
+    }
+   }
   },
   "philips_ingenia_3T": {
    "vendor": "Philips Healthcare",
@@ -584,7 +700,27 @@
     }
    },
    "rf": {},
-   "notes": "Philips publishes gradient figures across configurations; the 45 mT/m / 200 T/m/s Omega HP figure is consistent across Ingenia/Achieva dStream 3T pages but the exact primary spec sheet was not pinned to a single PDF clause. Higher-end Philips gradients (e.g. 80 mT/m on some configs) exist - confirm per installed configuration."
+   "notes": "Philips publishes gradient figures across configurations; the 45 mT/m / 200 T/m/s Omega HP figure is consistent across Ingenia/Achieva dStream 3T pages but the exact primary spec sheet was not pinned to a single PDF clause. Higher-end Philips gradients (e.g. 80 mT/m on some configs) exist - confirm per installed configuration.",
+   "frame": {
+    "b0_axis": {
+     "value": "S",
+     "unit": "",
+     "field_T": 3.0,
+     "context": "the bore axis, which for a cylindrical superconducting magnet is the patient's head-foot direction. This is the default every such machine shares and it is stated rather than assumed, because a MISSING axis and an axis that happens to be S are not the same claim",
+     "source_key": "marques2019_lowfield",
+     "location": "the geometry of a cylindrical bore magnet",
+     "confidence": "widely-quoted"
+    },
+    "b1_axis": {
+     "value": null,
+     "unit": "",
+     "field_T": 3.0,
+     "context": "NULL, and deliberately: a quadrature birdcage drives two orthogonal transverse components and so has no single B1 axis. A falloff law along 'the coil axis' is meaningless for it. Only a LINEAR volume coil -- a solenoid on a transverse-B0 magnet -- has one",
+     "source_key": "marques2019_lowfield",
+     "location": "coil geometry",
+     "confidence": "widely-quoted"
+    }
+   }
   },
   "siemens_magnetom_terra_x_7T": {
    "vendor": "Siemens Healthineers",
@@ -638,6 +774,26 @@
      "location": "n/a",
      "confidence": "NEEDS VERIFICATION"
     }
+   },
+   "frame": {
+    "b0_axis": {
+     "value": "S",
+     "unit": "",
+     "field_T": 7.0,
+     "context": "the bore axis, which for a cylindrical superconducting magnet is the patient's head-foot direction. This is the default every such machine shares and it is stated rather than assumed, because a MISSING axis and an axis that happens to be S are not the same claim",
+     "source_key": "marques2019_lowfield",
+     "location": "the geometry of a cylindrical bore magnet",
+     "confidence": "widely-quoted"
+    },
+    "b1_axis": {
+     "value": null,
+     "unit": "",
+     "field_T": 7.0,
+     "context": "NULL, and deliberately: a quadrature birdcage drives two orthogonal transverse components and so has no single B1 axis. A falloff law along 'the coil axis' is meaningless for it. Only a LINEAR volume coil -- a solenoid on a transverse-B0 magnet -- has one",
+     "source_key": "marques2019_lowfield",
+     "location": "coil geometry",
+     "confidence": "widely-quoted"
+    }
    }
   },
   "ge_signa_magnus_3T": {
@@ -683,6 +839,26 @@
      "location": "n/a",
      "confidence": "NEEDS VERIFICATION"
     }
+   },
+   "frame": {
+    "b0_axis": {
+     "value": "S",
+     "unit": "",
+     "field_T": 3.0,
+     "context": "the bore axis, which for a cylindrical superconducting magnet is the patient's head-foot direction. This is the default every such machine shares and it is stated rather than assumed, because a MISSING axis and an axis that happens to be S are not the same claim",
+     "source_key": "marques2019_lowfield",
+     "location": "the geometry of a cylindrical bore magnet",
+     "confidence": "widely-quoted"
+    },
+    "b1_axis": {
+     "value": null,
+     "unit": "",
+     "field_T": 3.0,
+     "context": "NULL, and deliberately: a quadrature birdcage drives two orthogonal transverse components and so has no single B1 axis. A falloff law along 'the coil axis' is meaningless for it. Only a LINEAR volume coil -- a solenoid on a transverse-B0 magnet -- has one",
+     "source_key": "marques2019_lowfield",
+     "location": "coil geometry",
+     "confidence": "widely-quoted"
+    }
    }
   },
   "ge_magnus_prototype_3T": {
@@ -709,7 +885,27 @@
      "confidence": "widely-quoted"
     }
    },
-   "notes": "The 1 MVA prototype (Foo et al. 2020: '200 mT/m and 500 T/m/s on each axis'). The FDA-cleared SIGNA MAGNUS (2024-11) is 300 mT/m / 750 T/m/s at 2 MVA (ge_signa_magnus_3T); Abad et al. 2025 give the pair as 'Gmax = 200-300 mT/m, and SRmax = 500-750 T/m/s'. The certificate class 'magnus' is the prototype."
+   "notes": "The 1 MVA prototype (Foo et al. 2020: '200 mT/m and 500 T/m/s on each axis'). The FDA-cleared SIGNA MAGNUS (2024-11) is 300 mT/m / 750 T/m/s at 2 MVA (ge_signa_magnus_3T); Abad et al. 2025 give the pair as 'Gmax = 200-300 mT/m, and SRmax = 500-750 T/m/s'. The certificate class 'magnus' is the prototype.",
+   "frame": {
+    "b0_axis": {
+     "value": "S",
+     "unit": "",
+     "field_T": 3.0,
+     "context": "the bore axis, which for a cylindrical superconducting magnet is the patient's head-foot direction. This is the default every such machine shares and it is stated rather than assumed, because a MISSING axis and an axis that happens to be S are not the same claim",
+     "source_key": "marques2019_lowfield",
+     "location": "the geometry of a cylindrical bore magnet",
+     "confidence": "widely-quoted"
+    },
+    "b1_axis": {
+     "value": null,
+     "unit": "",
+     "field_T": 3.0,
+     "context": "NULL, and deliberately: a quadrature birdcage drives two orthogonal transverse components and so has no single B1 axis. A falloff law along 'the coil axis' is meaningless for it. Only a LINEAR volume coil -- a solenoid on a transverse-B0 magnet -- has one",
+     "source_key": "marques2019_lowfield",
+     "location": "coil geometry",
+     "confidence": "widely-quoted"
+    }
+   }
   },
   "bruker_bga_9s": {
    "vendor": "Bruker BioSpin",
@@ -733,6 +929,26 @@
      "source_key": "bruker_almanac_2011",
      "location": "BGA-S specification table, BGA-9S column",
      "confidence": "cited"
+    }
+   },
+   "frame": {
+    "b0_axis": {
+     "value": "S",
+     "unit": "",
+     "field_T": null,
+     "context": "the bore axis, which for a cylindrical superconducting magnet is the patient's head-foot direction. This is the default every such machine shares and it is stated rather than assumed, because a MISSING axis and an axis that happens to be S are not the same claim",
+     "source_key": "marques2019_lowfield",
+     "location": "the geometry of a cylindrical bore magnet",
+     "confidence": "widely-quoted"
+    },
+    "b1_axis": {
+     "value": null,
+     "unit": "",
+     "field_T": null,
+     "context": "NULL, and deliberately: a quadrature birdcage drives two orthogonal transverse components and so has no single B1 axis. A falloff law along 'the coil axis' is meaningless for it. Only a LINEAR volume coil -- a solenoid on a transverse-B0 magnet -- has one",
+     "source_key": "marques2019_lowfield",
+     "location": "coil geometry",
+     "confidence": "widely-quoted"
     }
    }
   },
@@ -759,6 +975,26 @@
      "location": "BGA-S specification table, BGA-12S HP column; also bruker_biospec_70_20_web",
      "confidence": "cited"
     }
+   },
+   "frame": {
+    "b0_axis": {
+     "value": "S",
+     "unit": "",
+     "field_T": null,
+     "context": "the bore axis, which for a cylindrical superconducting magnet is the patient's head-foot direction. This is the default every such machine shares and it is stated rather than assumed, because a MISSING axis and an axis that happens to be S are not the same claim",
+     "source_key": "marques2019_lowfield",
+     "location": "the geometry of a cylindrical bore magnet",
+     "confidence": "widely-quoted"
+    },
+    "b1_axis": {
+     "value": null,
+     "unit": "",
+     "field_T": null,
+     "context": "NULL, and deliberately: a quadrature birdcage drives two orthogonal transverse components and so has no single B1 axis. A falloff law along 'the coil axis' is meaningless for it. Only a LINEAR volume coil -- a solenoid on a transverse-B0 magnet -- has one",
+     "source_key": "marques2019_lowfield",
+     "location": "coil geometry",
+     "confidence": "widely-quoted"
+    }
    }
   },
   "bruker_bga_6s": {
@@ -783,6 +1019,26 @@
      "source_key": "bruker_almanac_2011",
      "location": "BGA-S specification table, BGA-6S column",
      "confidence": "cited"
+    }
+   },
+   "frame": {
+    "b0_axis": {
+     "value": "S",
+     "unit": "",
+     "field_T": null,
+     "context": "the bore axis, which for a cylindrical superconducting magnet is the patient's head-foot direction. This is the default every such machine shares and it is stated rather than assumed, because a MISSING axis and an axis that happens to be S are not the same claim",
+     "source_key": "marques2019_lowfield",
+     "location": "the geometry of a cylindrical bore magnet",
+     "confidence": "widely-quoted"
+    },
+    "b1_axis": {
+     "value": null,
+     "unit": "",
+     "field_T": null,
+     "context": "NULL, and deliberately: a quadrature birdcage drives two orthogonal transverse components and so has no single B1 axis. A falloff law along 'the coil axis' is meaningless for it. Only a LINEAR volume coil -- a solenoid on a transverse-B0 magnet -- has one",
+     "source_key": "marques2019_lowfield",
+     "location": "coil geometry",
+     "confidence": "widely-quoted"
     }
    }
   },
@@ -809,6 +1065,26 @@
      "location": "product page, specifications (rise time)",
      "confidence": "derived"
     }
+   },
+   "frame": {
+    "b0_axis": {
+     "value": "S",
+     "unit": "",
+     "field_T": null,
+     "context": "the bore axis, which for a cylindrical superconducting magnet is the patient's head-foot direction. This is the default every such machine shares and it is stated rather than assumed, because a MISSING axis and an axis that happens to be S are not the same claim",
+     "source_key": "marques2019_lowfield",
+     "location": "the geometry of a cylindrical bore magnet",
+     "confidence": "widely-quoted"
+    },
+    "b1_axis": {
+     "value": null,
+     "unit": "",
+     "field_T": null,
+     "context": "NULL, and deliberately: a quadrature birdcage drives two orthogonal transverse components and so has no single B1 axis. A falloff law along 'the coil axis' is meaningless for it. Only a LINEAR volume coil -- a solenoid on a transverse-B0 magnet -- has one",
+     "source_key": "marques2019_lowfield",
+     "location": "coil geometry",
+     "confidence": "widely-quoted"
+    }
    }
   },
   "bruker_micro5": {
@@ -833,6 +1109,26 @@
      "source_key": "bruker_micro5_web",
      "location": "product page, specifications (rise time)",
      "confidence": "derived"
+    }
+   },
+   "frame": {
+    "b0_axis": {
+     "value": "S",
+     "unit": "",
+     "field_T": null,
+     "context": "the bore axis, which for a cylindrical superconducting magnet is the patient's head-foot direction. This is the default every such machine shares and it is stated rather than assumed, because a MISSING axis and an axis that happens to be S are not the same claim",
+     "source_key": "marques2019_lowfield",
+     "location": "the geometry of a cylindrical bore magnet",
+     "confidence": "widely-quoted"
+    },
+    "b1_axis": {
+     "value": null,
+     "unit": "",
+     "field_T": null,
+     "context": "NULL, and deliberately: a quadrature birdcage drives two orthogonal transverse components and so has no single B1 axis. A falloff law along 'the coil axis' is meaningless for it. Only a LINEAR volume coil -- a solenoid on a transverse-B0 magnet -- has one",
+     "source_key": "marques2019_lowfield",
+     "location": "coil geometry",
+     "confidence": "widely-quoted"
     }
    }
   },
@@ -972,6 +1268,26 @@
      "context": "how long the field is left to drift before the centre frequency is re-set: the Swoop's diffusion protocol re-centres f0 after every TWO DWIs following a short calibration scan, 'to account for B0 drift induced by gradient heating'. Two volumes of 212 shots at TR 800 ms is 339 s. This is what makes drift a small effect rather than a large one -- the accumulated offset is discarded and only what accrues within the interval reaches the data. It is an UPPER bound on current practice: a second group re-centres between every diffusion volume (royer2026_tract_64mT), which halves it. NO within-scan drift RATE is published for this machine. The nearest analogues are 50 mT Halbach systems at 800-1300 Hz/h, which is 0.32-0.52 K/h at their own 2.5 kHz/K; carried over at the Swoop's measured 1400 Hz/K that is 450-730 Hz/h, so 42-69 Hz within this interval. That is an estimate from another magnet's warming rate, not a measurement of this one",
      "source_key": "gholam2025_swoop",
      "location": "Methods, diffusion acquisition; the shot count and TR from ohalloran2022_dwi_64mt",
+     "confidence": "cited"
+    }
+   },
+   "frame": {
+    "b0_axis": {
+     "value": "A",
+     "unit": "",
+     "field_T": 0.064,
+     "context": "the patient's ANTERIOR direction. Hyperfine's own patent states the bi-planar arrangement puts B0 'along a vertical axis', and that the RF coil therefore has 'a principal axis aligned with a horizontal axis orthogonal to the vertical axis'. For a supine patient vertical is anterior-posterior, so B0 runs across the patient rather than along them -- the opposite of every cylindrical magnet. This is the single fact that makes a magnet frame necessary at all: on a bore scanner B0, the bore and the coil axis coincide and nothing distinguishes them. The SIGN is a convention; no source says which way the field points, and nothing here depends on it",
+     "source_key": "hyperfine_us12366622",
+     "location": "specification, bi-planar B0 magnet and RF coil orientation",
+     "confidence": "cited"
+    },
+    "b1_axis": {
+     "value": "S",
+     "unit": "",
+     "field_T": 0.064,
+     "context": "the patient's head-foot direction: the transmit coil's principal axis, perpendicular to B0 as a solenoid's must be. The 510(k) designates the head coil 'Linear Volume' with a single transmit channel, which is consistent -- a quadrature birdcage CANNOT be used in this geometry, so the coil has one axis and the falloff law has something to be a function of",
+     "source_key": "hyperfine_us12366622",
+     "location": "specification, RF coil principal axis; coil class from FDA K221923",
      "confidence": "cited"
     }
    }
