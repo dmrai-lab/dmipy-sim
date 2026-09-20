@@ -265,3 +265,47 @@ def test_a_requested_gradient_is_referred_to_the_axis_b0_lies_along():
     with pytest.raises(ValueError, match="no gradient along b0_axis"):
         coil.concomitant_field(coil.golay_saddle(), np.array([[0.1, 0.0, 0.0]]), 0.064,
                                b0_axis=(0, 0, 1), gradient_T_m=0.023)
+
+
+def test_the_probe_is_a_quadrature_and_not_a_random_cloud():
+    """Solid harmonics are orthogonal over the sphere, but a RANDOM sample makes them only approximately so,
+    and the residual correlation lets a large odd coefficient leak into a small even one. A symmetric Maxwell
+    pair has exactly zero even content; 800 random points reported Z2 at 7e-4, and the Golay's Z2X moved
+    3.40 to 3.51 across seeds -- a 3 per cent spread on a number quoted to four figures."""
+    mp = coil.GradientCoil(coil.maxwell_pair(), "z")
+    assert abs(mp.potential(significant=False)["Z2"]) < 1e-5, "even content leaked into a symmetric coil"
+
+    z2x = [coil.GradientCoil(coil.golay_saddle(), "x", n_ang=a, n_shell=s).potential()["Z2X"]
+           for a, s in ((100, 8), (160, 5), (80, 10), (200, 4))]
+    assert np.ptp(z2x) / np.mean(z2x) < 5e-3, f"the coefficient moved with the quadrature split: {z2x}"
+
+
+def test_a_dropped_term_reports_the_size_it_could_have_had():
+    """potential() drops terms below its own residual, so a term under that is reported ABSENT rather than
+    small -- and absence reads like a symmetry. A Maxwell pair whose loops differ by half a per cent has a
+    genuine Z2 of -8e-3 and comes back perfectly linear. The floor is what makes that honest."""
+    def asymmetric(dr, R=0.3):
+        h = R * np.sqrt(3) / 2
+        return coil.Coil([(coil.circular_loop(R * (1 + dr), +h), +1.0),
+                          (coil.circular_loop(R, -h), -1.0)])
+
+    gc = coil.GradientCoil(asymmetric(5e-3), "z")
+    floor = gc.detection_floor()
+    z = np.array([[0.0, 0.0, -2e-3], [0.0, 0.0, 0.0], [0.0, 0.0, 2e-3]])
+    b = gc.coil.bz(z)
+    true_z2 = (b[0] - 2 * b[1] + b[2]) / (2e-3) ** 2 / (4 * gc.nominal_gradient())
+
+    assert "Z2" not in gc.potential(), "this pair's Z2 is below the residual and should be dropped"
+    assert abs(true_z2) < floor["Z2"], "a term above the floor must not be dropped"
+    assert floor["Z2"] < 1.0, "the floor is not informative"
+    # and a term well above the floor does survive
+    assert "Z2" in coil.GradientCoil(asymmetric(5e-2), "z").potential()
+
+
+def test_the_gradient_guard_does_not_depend_on_the_winding_current():
+    """g0 scales with the current, so an absolute floor let the SAME transverse coil refuse at 1 A and
+    return 1/noise at 10 A. A physical refusal cannot turn on how hard the coil is driven."""
+    for current in (1.0, 10.0, 1000.0):
+        with pytest.raises(ValueError, match="no gradient along b0_axis"):
+            coil.concomitant_field(coil.golay_saddle(current=current), np.array([[0.1, 0.0, 0.0]]),
+                                   0.064, b0_axis=(0, 0, 1), gradient_T_m=0.023)

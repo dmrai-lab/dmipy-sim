@@ -170,15 +170,30 @@ class GradientCoil:
     :meth:`ScannerLimits.gradient_potentials`, and :meth:`gradient_tensor`'s columns are its gradients.
     """
 
-    def __init__(self, coil, axis, radius=0.09):
+    def __init__(self, coil, axis, radius=0.09, n_ang=100, n_shell=8):
         self.coil, self.axis, self.radius = coil, str(axis), float(radius)
-        self._probe = self._sphere(800, seed=0)
+        self._probe = self._ball(int(n_ang), int(n_shell))
 
-    def _sphere(self, n, seed):
-        rng = np.random.default_rng(seed)
-        u = rng.normal(size=(n, 3))
-        u /= np.linalg.norm(u, axis=1, keepdims=True)
-        return u * (rng.uniform(0.0, 1.0, (n, 1)) ** (1.0 / 3.0)) * self.radius
+    def _ball(self, n_ang, n_shell):
+        """A deterministic near-uniform quadrature: a Fibonacci sphere per shell, shells uniform in volume.
+
+        NOT a random cloud. Solid harmonics are orthogonal over the sphere, but a random sample makes them
+        only approximately so, and the residual correlation lets a large odd coefficient leak into a small
+        even one. On a symmetric Maxwell pair, whose even content is EXACTLY zero, 800 random points
+        reported Z2 at 7e-4 and the Golay's Z2X moved 3.40 to 3.51 across seeds -- a 3 per cent spread on a
+        number quoted to four figures. The same count arranged as a quadrature gives 1.5e-7 and 0.04 per
+        cent. Each shell is rotated so the shells do not align.
+        """
+        i = np.arange(n_ang) + 0.5
+        phi = np.arccos(1.0 - 2.0 * i / n_ang)
+        theta = np.pi * (1.0 + 5.0 ** 0.5) * i
+        u = np.stack([np.cos(theta) * np.sin(phi), np.sin(theta) * np.sin(phi), np.cos(phi)], axis=-1)
+        out = []
+        for k in range(n_shell):
+            t = 2.0 * np.pi * k / n_shell
+            R = np.array([[np.cos(t), -np.sin(t), 0.0], [np.sin(t), np.cos(t), 0.0], [0.0, 0.0, 1.0]])
+            out.append(self.radius * ((k + 0.5) / n_shell) ** (1.0 / 3.0) * (u @ R.T))
+        return np.concatenate(out)
 
     def nominal_gradient(self, h=1e-3):
         """``dB_z/d(axis)`` at isocentre, in T/m -- what this coil calls unit gradient."""
@@ -228,6 +243,25 @@ class GradientCoil:
                 keep[n] = v
         return keep
 
+    def detection_floor(self, order=4, points=None):
+        """The smallest coefficient of each term this fit could have distinguished from its own residual.
+
+        :meth:`potential` drops terms contributing less than the residual, so a term below this is reported
+        as ABSENT rather than as small -- and absence reads like a symmetry. A Maxwell pair whose two loops
+        differ by 0.5 per cent has a genuine Z2 of -8e-3 and is reported as perfectly linear; the floor says
+        why. The floor is set by where the basis stops, so it is a statement about the expansion and not
+        about the coil.
+        """
+        P = self._probe if points is None else np.atleast_2d(np.asarray(points, dtype=np.float64))
+        f = self.coil.bz(P) / self.nominal_gradient()
+        bar = self.residual(order, P) * float(np.linalg.norm(f - np.mean(f)))
+        out = {}
+        for n in solid_harmonics.names_through(order):
+            t = solid_harmonics.evaluate({n: 1.0}, P)
+            spread = float(np.linalg.norm(t - np.mean(t)))
+            out[n] = bar / spread if spread > 0.0 else float("inf")
+        return out
+
     def residual(self, order=4, points=None):
         """The share of the varying ``B_z`` the expansion does NOT reproduce.
 
@@ -272,10 +306,15 @@ def concomitant_field(coil, points, b0_T, b0_axis=(0.0, 0.0, 1.0), gradient_T_m=
         # along a fixed z instead divides by nearly zero for any machine whose B0 is not the bore axis.
         d = 2e-3 * n
         g0 = float((coil.field(d[None]) - coil.field(-d[None]))[0] @ n) / (2.0 * 2e-3)
-        if abs(g0) < 1e-18:
+        # relative, not absolute: g0 scales with the winding current, so a fixed 1e-18 floor let the SAME
+        # transverse coil refuse at 1 A and return 1/noise at 10 A.
+        probe = np.eye(3) * 2e-3
+        scale = float(np.max(np.abs(coil.field(probe) - coil.field(-probe)))) / (2.0 * 2e-3)
+        if abs(g0) < 1e-9 * max(scale, 1e-300):
             raise ValueError(
-                "this coil delivers no gradient along b0_axis, so a requested gradient_T_m cannot be "
-                "referred to it -- scale a TRANSVERSE coil by its own axis instead")
+                f"this coil delivers no gradient along b0_axis ({g0:.2e} T/m against {scale:.2e} T/m "
+                f"across its own axes), so a requested gradient_T_m cannot be referred to it -- scale a "
+                f"TRANSVERSE coil by its own axis instead")
         B = B * (float(gradient_T_m) / g0)
     perp = B - np.outer(B @ n, n)
     return np.sum(perp ** 2, axis=-1) / (2.0 * float(b0_T))
