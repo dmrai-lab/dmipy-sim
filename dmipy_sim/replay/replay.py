@@ -416,7 +416,8 @@ class ReplayPack:
         w = np.asarray(self.spin_weights, np.float64)
         return w, w, E
 
-    def walker_phases(self, waveform, *, tissue=None, scanner=None, orientation=None, compartment=None):
+    def walker_phases(self, waveform, *, tissue=None, scanner=None, orientation=None, compartment=None,
+                      weights=None):
         """:meth:`walker_signals` before the complex exponential: ``(w, ew, phi)`` with ``phi`` the accumulated
         phase of every walker at every measurement, ``(n_w, n_meas)`` real, so that ``E = exp(1j * phi)``. A
         consumer that reduces many walkers over its own groups (an image: the walkers of each voxel) takes the
@@ -426,6 +427,15 @@ class ReplayPack:
         :meth:`walker_signals` with ``b1_scale`` or ``off_resonance_T``."""
         waveform = waveform.waveform if hasattr(waveform, "waveform") else waveform
         P = self._prepare(waveform, tissue=tissue, scanner=scanner, orientation=orientation, compartment=compartment)
+        if weights is not None:
+            W = np.asarray(weights, dtype=np.float64)
+            want = (self.n_coeffs * 3, P["Geff"].shape[0])
+            if W.shape != want:
+                raise ValueError(
+                    f"weights are this pack's replay weights for ONE position, {want} -- "
+                    f"(n_coeffs * 3, n_meas). Got {W.shape}. "
+                    f"dmipy_sim.phantom.bore.delivered_weights builds them per voxel")
+            P["W"] = W
         w = np.asarray(self.spin_weights, np.float64)
         return w, P["pathway"] * P["ew"], self._walker_phases(P, waveform)
 
@@ -453,7 +463,9 @@ class ReplayPack:
         n_w, dt, n_t, Geff = P["n_w"], P["dt"], P["n_t"], P["Geff"]
         if not self._field_active(P["B0"]):                                          # no field, or a field of zero
             C = read_position_coeffs(self.arrays, dtype=np.float64)
-            W = _compile_effective(Geff, dt, self.K, n_t)
+            W = P.get("W")
+            if W is None:
+                W = _compile_effective(Geff, dt, self.K, n_t)
             phi = C.reshape(n_w, self.n_coeffs * 3) @ W                              # (n_w, n_meas)
         else:
             from .bank import susc_path_decode, susc_path_field

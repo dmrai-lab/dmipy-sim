@@ -388,8 +388,19 @@ def delivered_weights(scanner, grid, sequence, *, K, n_t, dt_pack, voxels=None, 
     B0 = getattr(scanner, "field_T", None)
 
     def project(seq_like_G):
-        """W for a physical G, carried through the RF sign exactly as the replay does."""
-        return _compile_effective(_effective(sequence, seq_like_G), dt_pack, K, n_t)
+        """W for a physical G, carried through the RF sign AND onto the pack's save grid, exactly as the
+        replay does.
+
+        Both steps matter. ``ReplayPack._prepare`` builds its weights as
+        ``effective_gradient(G_eff, dt_waveform, n_t_pack, dt_pack)`` -- the sign folded in, then RESAMPLED
+        onto the grid the walk was saved on. Skipping the resample produces weights that are self-consistent
+        and incompatible with the pack, which a parity test between two routes that both skip it cannot
+        see.
+        """
+        from ..replay._replay_kernel import effective_gradient
+        on_pack = effective_gradient(_effective(sequence, seq_like_G), float(sequence.dt), int(n_t),
+                                     float(dt_pack))
+        return _compile_effective(on_pack, dt_pack, K, n_t)
 
     W = project(np.asarray(sequence.G, dtype=np.float64))                       # ((K+2)*3, n_meas)
     n_c = (K + 2)

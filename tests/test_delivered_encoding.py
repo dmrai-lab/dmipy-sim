@@ -36,15 +36,21 @@ ROT = np.array([[0.81971317, -0.19639803, 0.53805031],
                 [-0.29237170, 0.66430510, 0.68790807]])
 
 
-def _reference(seq, G, K, n_t):
-    """W built from ScannerSequence.G_eff -- the replay's OWN definition of the effective gradient.
+def _reference(seq, G, K, n_t, dt_pack=None):
+    """W built the way ``ReplayPack._prepare`` builds it: ``ScannerSequence.G_eff``, resampled onto the
+    pack's save grid, then projected.
 
-    Deliberately not bore._effective: a reference built from the module under test cannot fail when that
-    module is wrong, and the "carried through the RF sign" claim had no coverage at all while it was.
+    Deliberately not ``bore._effective``: a reference built from the module under test cannot fail when
+    that module is wrong, and the "carried through the RF sign" claim had no coverage at all while it was.
+    The RESAMPLE is here for the same reason -- weights on the sequence's own grid are self-consistent and
+    incompatible with a pack, and leaving it out of both routes made the parity test blind to it.
     """
     from dataclasses import replace
-    return np.stack([_compile_effective(replace(seq, G=np.asarray(g, np.float32)).G_eff, seq.dt, K, n_t)
-                     for g in G])
+    from dmipy_sim.replay._replay_kernel import effective_gradient
+    dt = seq.dt if dt_pack is None else dt_pack
+    return np.stack([_compile_effective(
+        effective_gradient(replace(seq, G=np.asarray(g, np.float32)).G_eff, seq.dt, n_t, dt), dt, K, n_t)
+        for g in G])
 
 
 @pytest.mark.parametrize("rotation", [None, ROT], ids=["aligned", "oblique"])
@@ -178,3 +184,68 @@ def test_the_nonlinearity_is_the_coils_gradient_and_not_the_magnets(setup):
     both = got.with_background_gradient(g0)
     np.testing.assert_allclose(np.asarray(both.designed_gradient, np.float64),
                                np.asarray(got.G, np.float64), atol=1e-9)
+
+
+# ── end to end: the delivered gradient through to a signal (dmipy-sim#369) ──────────────────────────
+@pytest.fixture(scope="module")
+def pack(tmp_path_factory):
+    import dmipy_sim as d
+    from dmipy_sim.replay.bank import build_replay_pack
+    from dmipy_sim.replay import read_rpk
+    out = tmp_path_factory.mktemp("pk") / "w.rpk"
+    walk = d.simulate_trajectories(400, 2e-9, d.FreeDiffusion(), 0.05, 1e-3, seed=0, require_gpu=False)
+    build_replay_pack(walk, id="t", license="x", citation="x", K=8, out_path=str(out))
+    return read_rpk(str(out))
+
+
+def _signal(phi):
+    return np.abs(np.mean(np.exp(1j * phi), axis=0))
+
+
+def test_the_weights_a_caller_supplies_are_the_ones_the_replay_would_have_built(setup, pack):
+    """The contract of ``walker_phases(weights=)``. Handing back the replay's OWN weights must change
+    nothing, or a per-voxel override is not substituting for the shared path but for something else."""
+    from dmipy_sim.replay.replay import _compile_effective
+    _s, _grid, seq = setup
+    P = pack._prepare(seq, tissue=None, scanner=None, orientation=None, compartment=None)
+    W = _compile_effective(P["Geff"], P["dt"], pack.K, P["n_t"])
+    _w, _e, base = pack.walker_phases(seq)
+    _w, _e, given = pack.walker_phases(seq, weights=W)
+    assert np.abs(base - given).max() == 0.0
+
+
+def test_delivered_weights_land_on_the_packs_save_grid_and_not_the_sequences(setup, pack):
+    """``_prepare`` resamples the effective gradient onto the grid the WALK was saved on before projecting.
+    Weights built on the sequence's own grid are self-consistent and incompatible with the pack, and a
+    parity test between two routes that both skip the resample cannot see it -- which is how this survived.
+
+    The check that catches it: at isocentre every scanner term vanishes, so the delivered weights must
+    reproduce the ideal-magnet replay EXACTLY, and they only can if they live on the same grid."""
+    s, grid, seq = setup
+    W = delivered_weights(s, grid, seq, K=pack.K, n_t=pack.n_t, dt_pack=pack.dt)
+    assert W.shape[1:] == (pack.n_coeffs * 3, seq.n_meas)
+    iso = int(np.argmin(np.linalg.norm(grid.offset_m(grid.every_voxel).reshape(-1, 3), axis=1)))
+    _w, _e, ideal = pack.walker_phases(seq)
+    _w, _e, at_iso = pack.walker_phases(seq, weights=W[iso])
+    assert np.abs(ideal - at_iso).max() == 0.0, "the scanner does not vanish at its own isocentre"
+
+
+def test_the_scanner_biases_the_signal_by_position_and_by_direction(setup, pack):
+    """What the wiring is FOR. The bias must depend on where the voxel is AND on which way the measurement
+    encodes -- a model that only rescaled would move every direction together, and that is the part a
+    diagonal L or a scalar b-correction cannot produce."""
+    s, grid, seq = setup
+    W = delivered_weights(s, grid, seq, K=pack.K, n_t=pack.n_t, dt_pack=pack.dt)
+    d_v = grid.offset_m(grid.every_voxel).reshape(-1, 3)
+    iso, corner = int(np.argmin(np.linalg.norm(d_v, axis=1))), int(np.argmax(np.linalg.norm(d_v, axis=1)))
+    _w, _e, p_iso = pack.walker_phases(seq, weights=W[iso])
+    _w, _e, p_cor = pack.walker_phases(seq, weights=W[corner])
+    s_iso, s_cor = _signal(p_iso), _signal(p_cor)
+    bias = np.log(s_cor / s_iso)
+    assert np.abs(bias).max() > 1e-3, "the scanner does not bias the signal at all"
+    assert np.ptp(bias) > 0.5 * np.abs(bias).max(), \
+        f"the bias is nearly the same for every direction ({bias}) -- that is a rescale, not an encoding error"
+    # and it must grow with distance rather than appear only at the edge
+    mid = int(np.argmin(np.abs(np.linalg.norm(d_v, axis=1) - 0.5 * np.linalg.norm(d_v[corner]))))
+    _w, _e, p_mid = pack.walker_phases(seq, weights=W[mid])
+    assert np.abs(np.log(_signal(p_mid) / s_iso)).max() < np.abs(bias).max()
