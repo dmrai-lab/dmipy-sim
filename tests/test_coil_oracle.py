@@ -133,3 +133,38 @@ def test_the_transverse_concomitant_term_is_bernstein_s_too_and_not_the_catalogu
     A = np.stack([q[:, 2] ** 2, q[:, 1] ** 2, q[:, 0] * q[:, 2]], -1) * (g ** 2 / (2.0 * B0))
     c, *_ = np.linalg.lstsq(A, coil.concomitant_field(gx, q, B0), rcond=None)
     assert c[0] == pytest.approx(1.0, abs=0.05), f"the z^2 coefficient is {c[0]:.3f}, not Bernstein's 1"
+
+
+def test_alpha_is_measured_from_geometry_and_needs_no_magnet():
+    """The symmetry parameter the catalogue states for the Swoop, measured instead of cited.
+
+    alpha is how an AXIAL coil's divergence is shared between the two directions transverse to B0. It is
+    fixed entirely by where the wires are, and cylindrical symmetry forces the even half -- which is what a
+    Maxwell pair must therefore give.
+
+    The part that makes the Swoop's claim testable at all: NOTHING about the magnet enters, only the
+    DIRECTION of its field, because that is what defines transverse. A Halbach's B0 comes from magnetised
+    blocks rather than free currents, and none of them are needed here."""
+    assert coil.concomitant_alpha(coil.maxwell_pair()) == pytest.approx(0.5, abs=1e-3)
+
+
+def test_the_concomitant_field_depends_on_which_way_b0_points():
+    """On a Halbach B0 is TRANSVERSE to the bore, so the two components that enter |B_perp|^2 are not the
+    two a cylindrical magnet's would be. Reading them as x and y regardless computes a real number for the
+    wrong machine -- this asserts the two frames genuinely differ, so the argument cannot be dropped."""
+    mp = coil.maxwell_pair()
+    q = np.array([[0.03, 0.02, 0.01], [-0.05, 0.01, 0.04]])
+    along = coil.concomitant_field(mp, q, 0.064, b0_axis=(0, 0, 1))
+    across = coil.concomitant_field(mp, q, 0.064, b0_axis=(1, 0, 0))
+    # atol=0 deliberately: these fields are ~1e-13 T, so np.allclose's default atol of 1e-8 calls any two
+    # of them equal and the check would pass whatever the code did.
+    assert not np.allclose(along, across, rtol=0.05, atol=0.0), "the b0_axis argument changes nothing"
+    assert np.abs(across / along - 1.0).max() > 0.3
+
+
+def test_a_transverse_coil_has_no_alpha_and_says_so():
+    """alpha belongs to the coil whose gradient lies ALONG B0. Asked for one from a coil that is transverse
+    in the given frame, a naive implementation returns a finite number -- 2.0 for this pair, outside the
+    [0, 1] a shared divergence can occupy -- rather than refusing."""
+    with pytest.raises(ValueError, match="AXIAL coil"):
+        coil.concomitant_alpha(coil.maxwell_pair(), b0_axis=(1, 0, 0))

@@ -199,17 +199,59 @@ def gradient_tensor(coils, points):
     return np.stack([solid_harmonics.gradient(coils[j].potential(), P) for j in ("x", "y", "z")], axis=-1)
 
 
-def concomitant_field(coil, points, b0_T, gradient_T_m=None):
+def concomitant_field(coil, points, b0_T, b0_axis=(0.0, 0.0, 1.0), gradient_T_m=None):
     """The concomitant (Maxwell) field of ``coil`` at ``points``, in tesla, EXACTLY.
 
-    A gradient coil cannot produce ``B_z`` alone: ``div B = 0`` and ``curl B = 0`` force transverse
-    components, and to first order in ``1/B0`` the magnitude the spins see gains
-    ``(B_x^2 + B_y^2) / (2 B0)``. That is the whole concomitant term, and here both components are
-    integrated rather than expanded, so this needs no symmetry parameter and assumes no coil geometry --
-    which is what lets it MEASURE the alpha that the catalogued expansion states.
+    A gradient coil cannot produce a field along B0 alone: ``div B = 0`` and ``curl B = 0`` force transverse
+    components, and to first order in ``1/B0`` the magnitude the spins see gains ``|B_perp|^2 / (2 B0)``,
+    where perpendicular means perpendicular to B0. Both components are INTEGRATED rather than expanded, so
+    this needs no symmetry parameter and assumes no coil geometry -- which is what lets it MEASURE the alpha
+    a catalogued expansion states.
+
+    ``b0_axis`` is which way the field points, and it is not decoration. On a Halbach magnet B0 is
+    TRANSVERSE to the bore, so the two components that count are not the two a cylindrical magnet's would
+    be; taking them to be x and y there computes a real number for the wrong machine.
     """
     P = np.atleast_2d(np.asarray(points, dtype=np.float64))
     B = coil.field(P)
     if gradient_T_m is not None:
         B = B * (float(gradient_T_m) / GradientCoil(coil, "z").nominal_gradient())
-    return (B[:, 0] ** 2 + B[:, 1] ** 2) / (2.0 * float(b0_T))
+    n = np.asarray(b0_axis, dtype=np.float64)
+    n = n / np.linalg.norm(n)
+    perp = B - np.outer(B @ n, n)
+    return np.sum(perp ** 2, axis=-1) / (2.0 * float(b0_T))
+
+
+def concomitant_alpha(coil, b0_axis=(0.0, 0.0, 1.0), h=2e-3):
+    """The symmetry parameter ``alpha`` of an AXIAL gradient coil, measured from its geometry.
+
+    ``alpha`` is how the coil's divergence is shared between the two directions transverse to B0:
+    ``dB_u/du = -alpha G`` and ``dB_v/dv = -(1 - alpha) G``, with ``(u, v, n)`` a right-handed frame on the
+    field. It is fixed entirely by where the wires are. Cylindrical symmetry forces the even 1/2; a geometry
+    without that symmetry need not give it, and that is the whole content of the claim that a Halbach's
+    gradients carry a different alpha from a cylindrical magnet's.
+
+    Nothing about the MAGNET enters -- only the direction of its field, because that is what defines
+    transverse. So an alpha can be measured for a coil without modelling the magnet it sits in, which is
+    what makes the claim testable at all: a Halbach's B0 comes from magnetised blocks rather than free
+    currents, and this needs none of them.
+    """
+    n = np.asarray(b0_axis, dtype=np.float64)
+    n = n / np.linalg.norm(n)
+    u = np.cross(n, (1.0, 0.0, 0.0) if abs(n[0]) < 0.9 else (0.0, 1.0, 0.0))
+    u /= np.linalg.norm(u)
+    v = np.cross(n, u)
+
+    def slope(direction, component):
+        d = float(h) * np.asarray(direction, dtype=np.float64)
+        return float((coil.field(d[None]) - coil.field(-d[None]))[0] @ component) / (2.0 * float(h))
+
+    g, su, sv = slope(n, n), slope(u, u), slope(v, v)
+    if abs(g) < max(abs(su), abs(sv)):
+        raise ValueError(
+            f"alpha is a property of the AXIAL coil -- the one whose gradient lies along B0, so that its "
+            f"divergence must be shared between the two TRANSVERSE directions. This coil's steepest "
+            f"variation is transverse to the b0_axis given (along-axis {g:.3e} T/m against transverse "
+            f"{max(abs(su), abs(sv)):.3e} T/m), so it is a transverse coil in this frame and has no alpha. "
+            f"Reading one anyway returns a finite number that means nothing")
+    return -su / g
