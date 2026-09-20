@@ -274,10 +274,30 @@ class ScannerLimits:
         multiplies every flip angle (``kappa_B1``). ``None`` when the machine's profile is not catalogued.
 
         Two separate things, and they multiply. ``b1_axial_falloff`` is SPATIAL -- a coil's field weakens
-        toward its ends, so the scale falls as ``1 - a z^2`` along the bore and is flat across it, which is
-        the anisotropy the measurement reports rather than a simplification. ``b1_calibration_offset`` is
-        SYSTEMATIC: it applies at isocentre too, being the machine's own transmit calibration sitting off
-        nominal.
+        toward its ends -- and ``b1_calibration_offset`` is SYSTEMATIC, applying at isocentre too, being the
+        machine's own transmit calibration sitting off nominal.
+
+        The spatial part is ``1 - a s^2 + a rho^2 / 2``, with ``s`` the distance along the coil and ``rho``
+        the distance from its axis. The transverse term is NOT a second measurement and carries no second
+        parameter: at 2.7 MHz the coil bore is quasi-static, so ``div B = 0`` and ``curl B = 0`` there, and
+        the paraxial expansion of any such field is ``B(s) - (rho^2/4) B''(s)``. Asserting the axial
+        behaviour therefore DETERMINES the transverse behaviour -- the field must rise off-axis at exactly
+        half the rate it falls along the axis. Saying it is "flat across the bore" is not a simplification of
+        a field but a statement about a field that cannot exist; the resulting scale is harmonic, as the
+        axial component of a quasi-static field must be, and the flat version was not.
+
+        What Laplace fixes is the SUM of the two transverse curvatures, not their split: it forces
+        ``d2/dx2 + d2/dy2 = -d2/ds2 = 2a``, and an azimuthally symmetric coil divides that equally, which is
+        the ``rho^2/2`` used here. The Swoop's transmit coil is oblong (205 x 240 mm), so its true split is
+        not equal and is not published -- one transverse axis carries more than half and the other less, with
+        the total pinned. That degeneracy is why the measurement can report "little appreciable inhomogeneity
+        in the transverse plane" without contradicting the physics: it constrains one direction, and the
+        constraint here is on the pair. An equal split is the symmetric choice, not a measured one.
+
+        What this returns is the scale on the AXIAL component of the coil's field. What actually excites is
+        the component of B1 perpendicular to B0; for a solenoid, whose axis is perpendicular to B0 by
+        construction, the axial component is entirely transverse to the field and so is the whole story to
+        this order. The radial component enters at the next one.
 
         That this is a property of the MACHINE at all is a low-field statement. At 2.7 MHz the RF wavelength
         in tissue is metres, so the profile is the coil's geometry rather than the subject's; the same claim
@@ -299,8 +319,11 @@ class ScannerLimits:
             # head-foot direction and this is `d[..., 2]`, but on a bi-planar magnet with a vertical field it
             # is not, and an index cannot tell the difference while a projection can.
             axis = np.asarray(self.b1_axis, dtype=np.float64)
-            along = d @ (axis / np.linalg.norm(axis))
-            scale = scale * (1.0 - self.b1_axial_falloff * along ** 2)
+            axis = axis / np.linalg.norm(axis)
+            along = d @ axis                                   # s, the distance along the coil
+            across2 = np.sum(d * d, axis=-1) - along ** 2      # rho^2, the distance from its axis
+            a = self.b1_axial_falloff
+            scale = scale * (1.0 - a * along ** 2 + 0.5 * a * across2)
         if self.b1_calibration_offset is not None:
             scale = scale * self.b1_calibration_offset
         return scale

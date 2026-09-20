@@ -292,13 +292,16 @@ def test_the_transmit_profile_is_two_separate_things_that_multiply():
     isocentre too, the machine's own transmit calibration sitting off nominal."""
     s = ScannerLimits.of("swoop")
     assert s.b1_calibration_offset == pytest.approx(190.0 / 180.0, rel=1e-3)   # the 180 null seen at 190
-    at_iso = float(s.b1_scale([[0, 0, 0]]))
+    at_iso = float(s.b1_scale(np.zeros((1, 3)))[0])
     assert at_iso == pytest.approx(s.b1_calibration_offset, rel=1e-9)          # systematic, so present at r=0
-    # flat transversally: the whole variation is along the bore
-    assert float(s.b1_scale([[0.072, 0, 0]])) == pytest.approx(at_iso, rel=1e-9)
-    assert float(s.b1_scale([[0, 0.072, 0]])) == pytest.approx(at_iso, rel=1e-9)
+    # NOT flat transversally, though the measurement is quoted that way: Laplace forbids it. What the
+    # measurement and the physics agree on is that the variation is much SMALLER across than along, and here
+    # it is exactly half -- see the harmonic tests below for why that half is not a free choice.
+    across = float(s.b1_scale(np.array([[0.072, 0, 0]]))[0]) / at_iso - 1.0
+    along = 1.0 - float(s.b1_scale(np.array([[0, 0, 0.072]]))[0]) / at_iso
+    assert 0.4 * along < across < 0.6 * along
     # and 15-20 % of fall-off across the sphere it was measured over
-    drop = 1.0 - float(s.b1_scale([[0, 0, 0.072]])) / at_iso
+    drop = 1.0 - float(s.b1_scale(np.array([[0, 0, 0.072]]))[0]) / at_iso
     assert 0.15 <= drop <= 0.20
 
 
@@ -461,12 +464,16 @@ def test_the_transmit_fall_off_is_projected_onto_the_coil_not_read_off_an_index(
     coordinate that happens to coincide with it."""
     sw = ScannerLimits.of("swoop")
     d = np.array([[0.02, -0.01, 0.05], [0.0, 0.06, 0.0], [0.03, 0.0, 0.07]])
-    indexed = (1.0 - sw.b1_axial_falloff * d[:, 2] ** 2) * sw.b1_calibration_offset
-    np.testing.assert_allclose(sw.b1_scale(d), indexed, rtol=1e-12)        # coil along S: they agree
-    turned = replace(sw, b1_axis=(1.0, 0.0, 0.0), b0_axis=(0.0, 1.0, 0.0))  # coil moved to R/L
-    assert not np.allclose(turned.b1_scale(d), indexed)                     # ... and now they do not
-    expect = (1.0 - sw.b1_axial_falloff * d[:, 0] ** 2) * sw.b1_calibration_offset
-    np.testing.assert_allclose(turned.b1_scale(d), expect, rtol=1e-12)
+    a, cal = sw.b1_axial_falloff, sw.b1_calibration_offset
+    r2 = np.sum(d * d, axis=1)
+
+    def law(along2):
+        return cal * (1.0 - a * along2 + 0.5 * a * (r2 - along2))
+
+    np.testing.assert_allclose(sw.b1_scale(d), law(d[:, 2] ** 2), rtol=1e-12)   # coil along S
+    turned = replace(sw, b1_axis=(1.0, 0.0, 0.0), b0_axis=(0.0, 1.0, 0.0))      # coil moved to R/L
+    assert not np.allclose(turned.b1_scale(d), sw.b1_scale(d))                  # ... and they part company
+    np.testing.assert_allclose(turned.b1_scale(d), law(d[:, 0] ** 2), rtol=1e-12)
 
 
 def test_a_fall_off_with_no_axis_to_fall_off_along_is_refused():
@@ -477,3 +484,44 @@ def test_a_fall_off_with_no_axis_to_fall_off_along_is_refused():
     bad = replace(ScannerLimits.of("swoop"), b1_axis=None)
     with pytest.raises(ValueError, match="no b1_axis"):
         bad.b1_scale(np.zeros((2, 3)))
+
+
+# ── the transmit profile is a field too (dmipy-sim#349 item 3) ───────────────────────────────────────
+def test_the_transmit_scale_is_harmonic_where_a_flat_one_would_not_be():
+    """At 2.7 MHz the coil bore is quasi-static, so the transmit field obeys div B = 0 and curl B = 0 there
+    and its axial component is harmonic. A profile that falls along the coil and is FLAT across it is not a
+    solution of those equations -- it is a statement about a field that cannot exist, in the same way an
+    isotropic r^2 static field cannot."""
+    s = ScannerLimits.of("swoop")
+    h, a = 1e-4, s.b1_axial_falloff
+    for p in ([0.0, 0.0, 0.05], [0.04, 0.02, 0.0], [0.03, -0.03, 0.06]):
+        p = np.asarray([p])
+        lap = sum(float(s.b1_scale(p + h * e)[0]) - 2 * float(s.b1_scale(p)[0]) + float(s.b1_scale(p - h * e)[0])
+                  for e in np.eye(3)) / h ** 2
+        assert abs(lap) < 1e-6, f"the transmit scale is not harmonic at {p}: laplacian {lap:.2e}"
+        # the flat version, for contrast: its laplacian is -2a, nowhere near zero
+        flat = lambda q: s.b1_calibration_offset * (1.0 - a * q[0, 2] ** 2)
+        lap_flat = sum(flat(p + h * e) - 2 * flat(p) + flat(p - h * e) for e in np.eye(3)) / h ** 2
+        assert abs(lap_flat) > 1e-6
+
+
+def test_the_transverse_rise_is_exactly_half_the_axial_fall_and_costs_no_parameter():
+    """The paraxial expansion of a quasi-static field is ``B(s) - (rho^2/4) B''(s)``, so asserting the axial
+    behaviour DETERMINES the transverse behaviour. There is nothing to fit: the field must rise off-axis at
+    exactly half the rate it falls along the axis, and a catalogue entry for it would be a second copy of a
+    number already there."""
+    s = ScannerLimits.of("swoop")
+    for t in (0.03, 0.05, 0.07):
+        fall = 1.0 - float(s.b1_scale(np.array([[0, 0, t]]))[0]) / s.b1_calibration_offset
+        rise = float(s.b1_scale(np.array([[t, 0, 0]]))[0]) / s.b1_calibration_offset - 1.0
+        assert rise / fall == pytest.approx(0.5, rel=1e-9)
+
+
+def test_the_axial_profile_is_untouched_so_the_published_measurement_still_holds():
+    """The correction adds a transverse term; it does not move the axis. What was measured and catalogued was
+    the fall-off ALONG the coil, and that is unchanged -- so this fixes a field without disturbing a
+    number."""
+    s = ScannerLimits.of("swoop")
+    for t in (0.0, 0.04, 0.072):
+        on_axis = float(s.b1_scale(np.array([[0, 0, t]]))[0])
+        assert on_axis == pytest.approx(s.b1_calibration_offset * (1.0 - s.b1_axial_falloff * t ** 2), rel=1e-12)
