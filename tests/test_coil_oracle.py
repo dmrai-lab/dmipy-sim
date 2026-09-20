@@ -168,3 +168,69 @@ def test_a_transverse_coil_has_no_alpha_and_says_so():
     [0, 1] a shared divergence can occupy -- rather than refusing."""
     with pytest.raises(ValueError, match="AXIAL coil"):
         coil.concomitant_alpha(coil.maxwell_pair(), b0_axis=(1, 0, 0))
+
+
+def test_both_published_alphas_are_one_geometric_fact_at_two_aspect_ratios():
+    """The catalogue's concomitant_alpha = 1/2 for the Swoop is an INFERENCE from a class statement -- de
+    Vos gives 1/2 for parallel-plate coils in an open C- or H-shaped magnet and 0 for a Halbach array, and
+    the Swoop is taken to be the former. This measures the class statement instead of citing it.
+
+    Both values come out, from the same coil, by changing one number. Square plates are four-fold symmetric
+    about B0, the two transverse directions are equivalent, and alpha is forced to exactly 1/2. Long plates
+    approach translational invariance along their length, so dB/d(length) goes to zero and the whole
+    divergence is pushed into the one remaining transverse direction: alpha goes to 0.
+
+    So neither value is a property of "bi-planar" as such -- alpha is set by the plate ASPECT RATIO, which
+    the catalogue does not record and which is not public for this machine."""
+    sq = coil.biplanar_pair(width=0.30, length=0.30)
+    assert coil.concomitant_alpha(sq, b0_axis=(0, 1, 0)) == pytest.approx(0.5, abs=1e-3)
+
+    alphas = [coil.concomitant_alpha(coil.biplanar_pair(width=0.30, length=0.30 * r), b0_axis=(0, 1, 0))
+              for r in (1.0, 2.0, 3.0, 10.0)]
+    assert alphas == sorted(alphas, reverse=True), f"alpha should fall with aspect ratio: {alphas}"
+    assert alphas[-1] < 0.01, f"a long bi-planar coil should approach alpha = 0, got {alphas[-1]:.4f}"
+    # and it collapses FAST -- by an aspect ratio of two it is already a third of the way from 1/2 to 0
+    assert alphas[1] < 0.2, f"alpha at aspect 2 is {alphas[1]:.3f}; the 1/2 inference is not robust"
+
+
+def test_alpha_zero_moves_the_concomitant_field_transversally_as_de_vos_describes():
+    """de Vos's qualitative claim for alpha = 0 -- 'a single cross-term of double amplitude replaces the
+    conventional pair' and the field 'grows transversally rather than axially' -- reproduced from geometry.
+
+    At alpha = 1/2 the two transverse directions carry the term equally. At alpha = 0 it is carried entirely
+    by one of them and VANISHES along the other, which is what 'a single term' means. This is a check on the
+    source, not on us: an independent derivation agreeing with a paper whose DOI was wrong is worth having.
+    """
+    B0, G = 0.064, 0.023
+    sq = coil.biplanar_pair(width=0.30, length=0.30)
+    lg = coil.biplanar_pair(width=0.30, length=3.00)
+    n = (0.0, 1.0, 0.0)
+    along_x = np.array([[0.10, 0.0, 0.0]])
+    along_z = np.array([[0.0, 0.0, 0.10]])
+
+    sq_x = coil.concomitant_field(sq, along_x, B0, b0_axis=n, gradient_T_m=G)[0]
+    sq_z = coil.concomitant_field(sq, along_z, B0, b0_axis=n, gradient_T_m=G)[0]
+    lg_x = coil.concomitant_field(lg, along_x, B0, b0_axis=n, gradient_T_m=G)[0]
+    lg_z = coil.concomitant_field(lg, along_z, B0, b0_axis=n, gradient_T_m=G)[0]
+
+    assert sq_x == pytest.approx(sq_z, rel=1e-6)          # alpha = 1/2: the two directions are equivalent
+    assert lg_z < 0.02 * lg_x                             # alpha = 0: one term survives, the other vanishes
+    assert lg_x > 3.0 * sq_x                              # and the survivor is much larger
+
+
+def test_a_requested_gradient_is_referred_to_the_axis_b0_lies_along():
+    """Scaling a coil to a stated gradient read along a fixed z divides by nearly zero for any machine whose
+    B0 is not the bore axis -- which is every Halbach, and the Swoop. It returned 1.1e8 uT before this.
+
+    The refusal is for a genuinely degenerate case and not for any off-axis reading: a TRANSVERSE coil has
+    no axial gradient at all (a Golay x-coil has ``dBz/dz = 3e-19 T/m`` at isocentre), so there is nothing
+    to refer a requested gradient to. An axial coil read in a rotated frame is a different matter -- its
+    along-frame gradient is half G, not zero -- and must still answer."""
+    c = coil.biplanar_pair(width=0.30, length=0.30)
+    got = coil.concomitant_field(c, np.array([[0.10, 0.0, 0.0]]), 0.064,
+                                 b0_axis=(0, 1, 0), gradient_T_m=0.023)[0]
+    assert 1e-6 < got < 1e-4, f"{got:.3e} T is not a physical concomitant field at 10 cm"
+
+    with pytest.raises(ValueError, match="no gradient along b0_axis"):
+        coil.concomitant_field(coil.golay_saddle(), np.array([[0.1, 0.0, 0.0]]), 0.064,
+                               b0_axis=(0, 0, 1), gradient_T_m=0.023)

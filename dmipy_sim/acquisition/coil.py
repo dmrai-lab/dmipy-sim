@@ -111,6 +111,41 @@ def golay_saddle(radius=0.3, arc_deg=120.0, z_inner=0.15, z_outer=0.55, current=
     return Coil(turns, name="golay_saddle")
 
 
+def rectangular_loop(plane_coord, width, length, axis=1, n=200):
+    """One rectangular turn in the plane ``axis = plane_coord``, spanning ``width`` and ``length``."""
+    a, b = float(width) / 2.0, float(length) / 2.0
+    i, j = [k for k in range(3) if k != int(axis)]
+    corners = []
+    for su, sv in ((-1, -1), (1, -1), (1, 1), (-1, 1), (-1, -1)):
+        p = np.zeros(3)
+        p[int(axis)] = float(plane_coord)
+        p[i], p[j] = su * a, sv * b
+        corners.append(p)
+    out = []
+    for p, q in zip(corners[:-1], corners[1:]):
+        t = np.linspace(0.0, 1.0, int(n))[:, None]
+        out.append(p + t * (q - p))
+    return np.concatenate(out)
+
+
+def biplanar_pair(half_gap=0.15, width=0.30, length=0.30, axis=1, current=1.0, n=200):
+    """Two opposed rectangular plates -- the AXIAL gradient coil of an open, bi-planar magnet.
+
+    ``axis`` is the normal of the plates and the direction of both B0 and the gradient, so this is the coil
+    whose divergence must be shared transversely and therefore the one that HAS an ``alpha``. The Swoop's
+    ``b0_axis`` is ``(0, 1, 0)``, hence the default.
+
+    The aspect ratio ``length / width`` is the whole physics. At 1 the plates are four-fold symmetric about
+    B0, the two transverse directions are equivalent, and ``alpha`` is forced to 1/2. Made long, the
+    geometry approaches translational invariance along its length, ``dB/d(length)`` goes to zero, and the
+    entire divergence is pushed into the one remaining transverse direction -- ``alpha`` goes to 0. Both of
+    the values in the literature are therefore the same geometric fact at two aspect ratios, and neither is
+    a property of "bi-planar" as such.
+    """
+    return Coil([(rectangular_loop(+half_gap, width, length, axis, n), +current),
+                 (rectangular_loop(-half_gap, width, length, axis, n), -current)], name="biplanar_pair")
+
+
 class GradientCoil:
     """A coil read as a gradient axis: its field expressed the way the scanner model expresses one.
 
@@ -214,10 +249,18 @@ def concomitant_field(coil, points, b0_T, b0_axis=(0.0, 0.0, 1.0), gradient_T_m=
     """
     P = np.atleast_2d(np.asarray(points, dtype=np.float64))
     B = coil.field(P)
-    if gradient_T_m is not None:
-        B = B * (float(gradient_T_m) / GradientCoil(coil, "z").nominal_gradient())
     n = np.asarray(b0_axis, dtype=np.float64)
     n = n / np.linalg.norm(n)
+    if gradient_T_m is not None:
+        # scale to a stated gradient, measured ALONG B0 -- the axial gradient this coil delivers. Reading it
+        # along a fixed z instead divides by nearly zero for any machine whose B0 is not the bore axis.
+        d = 2e-3 * n
+        g0 = float((coil.field(d[None]) - coil.field(-d[None]))[0] @ n) / (2.0 * 2e-3)
+        if abs(g0) < 1e-18:
+            raise ValueError(
+                "this coil delivers no gradient along b0_axis, so a requested gradient_T_m cannot be "
+                "referred to it -- scale a TRANSVERSE coil by its own axis instead")
+        B = B * (float(gradient_T_m) / g0)
     perp = B - np.outer(B @ n, n)
     return np.sum(perp ** 2, axis=-1) / (2.0 * float(b0_T))
 
