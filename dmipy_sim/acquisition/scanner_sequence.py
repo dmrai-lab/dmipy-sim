@@ -316,10 +316,35 @@ class ScannerSequence:
         spatial gradient at this position, in the gradient's frame) added to the PHYSICAL gradient over the
         whole grid -- through the pulses and the dead times alike, because a magnet does not switch off.
 
-        One vector, or one per measurement. The effective gradient then carries it through the RF sign like
-        anything else, so a symmetric spin echo refocuses the background's own moment while its CROSS term
-        with the pulsed gradient survives: that cross term is the ADC error a low-field magnet produces
-        (dmipy-sim#285), and it is why :meth:`b` of the result is not the b that was asked for.
+        One vector, or one per measurement. The effective gradient carries it through the RF sign like
+        anything else, so a symmetric spin echo refocuses the background's zeroth MOMENT -- and that is as
+        far as the refocusing goes. Its contribution to b does NOT vanish. Stejskal and Tanner say so in one
+        line of their 1965 paper: with the pulsed gradient off, "only the term in g0^2 remains", and that
+        term is ``gamma^2 g0^2 (2/3) tau^3`` with ``tau = TE/2``. For this magnet at TE = 84 ms it is about
+        7 s/mm^2, so even the b = 0 image is diffusion-weighted -- roughly 0.7 % of S0 at a typical brain
+        ADC -- and it grows as TE^3.
+
+        TWO TERMS, AND THEY BEHAVE DIFFERENTLY. The CROSS term with the pulsed gradient is linear in the
+        background and so flips sign with the diffusion direction; it is the large one, up to 16 % of ADC at
+        the edge of this magnet's DSV, and it is what a directional mean hides. The SELF term is quadratic,
+        unsigned, present in every measurement including the unweighted one, and much smaller. Reporting
+        only the first is the usual simplification and it is not quite true.
+
+        A REFOCUSING TRAIN IS NOT ONE LONG SPIN ECHO. The TE^3 above is a single echo. A train re-refocuses
+        the background at every pulse, so its self-term accrues per ECHO -- ``gamma^2 g0^2 esp^3 / 12`` each,
+        or ``gamma^2 g0^2 T esp^2 / 12`` over a readout of duration ``T`` -- which is ``(esp/T)^2`` of the
+        single-echo value. Treating a seventy-echo train as one spin echo of the same duration overestimates
+        it by a factor of about five thousand.
+
+        WHAT THIS DOES NOT MODEL. The background is taken as constant over a voxel, which is the standard
+        treatment, and two channels are neglected with it: intravoxel dephasing, which is a signal loss
+        rather than a b change, and intravoxel b dispersion, since a voxel's signal is the average of
+        ``exp(-b(r) D)`` and not ``exp(-b_mean D)`` -- by Jensen's inequality an ADC fitted from the average
+        is biased low. Both are small at 3 mm over this magnet's law and neither is included.
+
+        The cure, worth knowing because it says the effect belongs to the scheme rather than to low field:
+        a bipolar sensitising pair nulls the cross term exactly (Neeman 1991). The Swoop's monopolar
+        preparation does not.
 
         ``encoding`` is left alone: it records what was PRESCRIBED at isocentre, and :meth:`b` reports what is
         played here. The difference between them is the effect.

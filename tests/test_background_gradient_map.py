@@ -101,3 +101,59 @@ def test_a_voxel_grid_gets_one_b_per_voxel_per_measurement():
     spread = np.ptp(b, axis=0) / seq.b()
     assert spread.max() > 0.1, f"a magnet that varies by {spread.max():.1%} across the FOV is not an effect"
     assert delivered_b(ScannerLimits.of("prisma"), grid, seq) is None
+
+
+# ── what the background does on its own (dmipy-sim#349 item 6) ───────────────────────────────────────
+def test_the_background_s_own_b_survives_the_spin_echo_that_refocuses_its_moment():
+    """The claim this corrects. A symmetric spin echo refocuses the background's zeroth MOMENT, and it is
+    tempting to stop there and say only the cross term survives. Stejskal and Tanner 1965 say otherwise in
+    one line -- with the pulsed gradient off, "only the term in g0^2 remains" -- and that term is
+    ``gamma^2 g0^2 (2/3) tau^3``. So even the b = 0 image of this magnet is diffusion-weighted."""
+    from dmipy_sim.constants import GAMMA
+    g0 = 1.4e-3
+    for TE in (0.084, 0.150):
+        seq = sequences.pgse([[1, 0, 0]], 5e-3, 20e-3, gradient_strengths=[0.0], TE=TE, n_t=1200)
+        got = float(seq.with_background_gradient([g0, 0, 0]).b()[0])
+        closed = GAMMA ** 2 * g0 ** 2 * (2 / 3) * (TE / 2) ** 3
+        assert got == pytest.approx(closed, rel=5e-3)        # the residual is the discrete time grid
+        assert got > 0, "the background's own b vanished, which the 1965 paper says it does not"
+    # and it is not negligible: about 7 s/mm^2 at the Swoop's echo time
+    at84 = float(sequences.pgse([[1, 0, 0]], 5e-3, 20e-3, gradient_strengths=[0.0], TE=0.084, n_t=1200)
+                 .with_background_gradient([g0, 0, 0]).b()[0])
+    assert 6e6 < at84 < 8e6
+
+
+def test_the_background_s_own_b_grows_as_the_cube_of_the_echo_time():
+    from dmipy_sim.constants import GAMMA
+    g0 = 1.4e-3
+    b = {TE: float(sequences.pgse([[1, 0, 0]], 5e-3, 20e-3, gradient_strengths=[0.0], TE=TE, n_t=1500)
+                   .with_background_gradient([g0, 0, 0]).b()[0]) for TE in (0.084, 0.168)}
+    assert b[0.168] / b[0.084] == pytest.approx(8.0, rel=0.02)     # doubling TE is eight times the b
+
+
+def test_a_train_is_not_one_long_spin_echo_and_the_difference_is_orders_of_magnitude():
+    """A refocusing train re-refocuses the background at every pulse, so its self-term accrues per ECHO --
+    `gamma^2 g0^2 esp^3 / 12` each -- rather than over the whole readout. Computing it as a single spin echo
+    of the same duration overestimates by ``(T / esp)^2``, which for the Swoop's seventy-echo train is about
+    five thousand. This is the trap the correction exists to mark."""
+    from dmipy_sim.constants import GAMMA
+    g0, esp = 1.4e-3, 10e-3
+    for n in (4, 16):
+        seq = sequences.cpmg(n, esp, gradient_strengths=[0.0], n_t_per_echo=60)
+        got = float(seq.with_background_gradient([g0, 0, 0]).b()[0])
+        per_echo = GAMMA ** 2 * g0 ** 2 * (esp ** 3 / 12) * n
+        assert got == pytest.approx(per_echo, rel=0.02)
+        one_long = GAMMA ** 2 * g0 ** 2 * (2 / 3) * (n * esp / 2) ** 3
+        assert one_long / got == pytest.approx(n ** 2, rel=0.05)
+
+
+def test_the_cross_term_is_signed_and_the_self_term_is_not():
+    """The two behave differently and only one of them averages away. The cross term is linear in the
+    background so it flips with the diffusion direction; the self term is quadratic, unsigned, and present
+    in every measurement including the unweighted one."""
+    sw, seq = ScannerLimits.of("swoop"), _swoop_protocol()
+    g = np.atleast_2d(sw.b0_gradient(np.array([[0.0, 0.0755, 0.0]])))[0]
+    err = seq.with_background_gradient(g).b() / seq.b() - 1.0
+    assert err.min() < 0 < err.max()                              # signed, so it flips with direction
+    unweighted = sequences.pgse([[1, 0, 0]], 5e-3, 20e-3, gradient_strengths=[0.0], TE=0.084, n_t=1200)
+    assert float(unweighted.with_background_gradient(g).b()[0]) > 0     # unsigned, so it survives at b = 0
