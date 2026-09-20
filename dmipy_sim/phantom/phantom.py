@@ -363,7 +363,7 @@ class Phantom:
         whatever the magnet does. Combining the two would count it twice.
         """
         from .bore import b0_offset_map
-        if off_resonance is not None or getattr(scanner, "b0_harmonic_l2_m0", None) is None:
+        if off_resonance is not None or getattr(scanner, "b0_harmonic_Z2", None) is None:
             return off_resonance
         return b0_offset_map(scanner, self.grid)
 

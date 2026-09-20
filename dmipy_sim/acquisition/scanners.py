@@ -76,8 +76,9 @@ class ScannerLimits:
     b0_axis: tuple = None      # patient-frame unit vector along B0; the magnet frame's +z
     b1_axis: tuple = None      # patient-frame unit vector along the transmit coil, None for a birdcage
     gradient_axis_assignment: tuple = None  # which patient direction each vendor axis names; None = not known
-    b0_harmonic_l2_m0: float = None   # 1/m^2, the zonal Z2 coefficient of dB/B0
-    b0_harmonic_l3_m1: float = None   # 1/m^3, the l=3 m=1 coefficient: the magnet's R/L asymmetry
+    b0_harmonic_Z2: float = None      # 1/m^2, the standard shim term 2z^2-x^2-y^2, in magnet axes
+    b0_harmonic_Z2X: float = None     # 1/m^3, the standard shim term x(4z^2-x^2-y^2): the R/L asymmetry
+    b0_direction_spread_deg: float = None  # how far admissible laws disagree about the gradient direction
     b0_asymmetry_axis: tuple = None   # patient-frame unit vector the odd harmonic is odd along
     b0_validity_radius: float = None  # m, how far from isocentre that law is anchored
     b1_axial_falloff: float = None    # 1/m^2, the coefficient of kappa_B1 = 1 - a z^2 along the bore
@@ -113,8 +114,9 @@ class ScannerLimits:
                             if scc.leaf_si(entry, "rf", "peak_B1_body_coil") is not None
                             else scc.leaf_si(entry, "rf", "peak_B1_head_coil")),
                    field_T=(float(entry["field_T"]) if entry.get("field_T") is not None else None),
-                   b0_harmonic_l2_m0=scc.leaf_si(entry, "homogeneity", "b0_harmonic_l2_m0"),
-                   b0_harmonic_l3_m1=scc.leaf_si(entry, "homogeneity", "b0_harmonic_l3_m1"),
+                   b0_harmonic_Z2=scc.leaf_si(entry, "homogeneity", "b0_harmonic_Z2"),
+                   b0_harmonic_Z2X=scc.leaf_si(entry, "homogeneity", "b0_harmonic_Z2X"),
+                   b0_direction_spread_deg=scc.leaf_si(entry, "homogeneity", "b0_direction_spread_deg"),
                    b0_asymmetry_axis=_axis(scc.leaf_raw(entry, "homogeneity", "b0_asymmetry_axis"),
                                           "b0_asymmetry_axis", key),
                    b0_validity_radius=scc.leaf_si(entry, "homogeneity", "b0_validity_radius"),
@@ -194,12 +196,13 @@ class ScannerLimits:
     def _harmonics(self, offset_m):
         """``(value, gradient)`` of ``dB/B0`` in the magnet frame, from the catalogued solid harmonics."""
         zeta, xi, eta = self._field_coords(offset_m)
-        c2 = self.b0_harmonic_l2_m0 or 0.0
-        c3 = self.b0_harmonic_l3_m1 or 0.0
-        val = c2 * (zeta ** 2 - 0.5 * (xi ** 2 + eta ** 2)) + c3 * xi * (4.0 * zeta ** 2 - xi ** 2 - eta ** 2)
-        g_xi = -c2 * xi + c3 * (4.0 * zeta ** 2 - 3.0 * xi ** 2 - eta ** 2)
-        g_eta = -c2 * eta - 2.0 * c3 * xi * eta
-        g_zeta = 2.0 * c2 * zeta + 8.0 * c3 * xi * zeta
+        c2 = self.b0_harmonic_Z2 or 0.0            # Z2 = 2 zeta^2 - xi^2 - eta^2
+        c3 = self.b0_harmonic_Z2X or 0.0           # Z2X = xi (4 zeta^2 - xi^2 - eta^2)
+        val = (c2 * (2.0 * zeta ** 2 - xi ** 2 - eta ** 2)
+               + c3 * xi * (4.0 * zeta ** 2 - xi ** 2 - eta ** 2))
+        g_xi = -2.0 * c2 * xi + c3 * (4.0 * zeta ** 2 - 3.0 * xi ** 2 - eta ** 2)
+        g_eta = -2.0 * c2 * eta - 2.0 * c3 * xi * eta
+        g_zeta = 4.0 * c2 * zeta + 8.0 * c3 * xi * zeta
         return val, np.stack([g_xi, g_eta, g_zeta], axis=-1)
 
     def _refuse_outside(self, offset_m, what):
@@ -258,7 +261,7 @@ class ScannerLimits:
         itself. ``None`` when the machine publishes no profile, which is every machine but a permanent-magnet
         one. Refused beyond ``b0_validity_radius``.
         """
-        if self.b0_harmonic_l2_m0 is None or self.field_T is None:
+        if self.b0_harmonic_Z2 is None or self.field_T is None:
             return None
         self._refuse_outside(offset_m, "the field")
         val, _g = self._harmonics(offset_m)
@@ -278,7 +281,7 @@ class ScannerLimits:
         zero gradient at the origin. ``None`` when the machine publishes no profile; refused beyond the
         anchor radius, where a truncated expansion extrapolates in order as well as in radius.
         """
-        if self.b0_harmonic_l2_m0 is None or self.field_T is None:
+        if self.b0_harmonic_Z2 is None or self.field_T is None:
             return None
         self._refuse_outside(offset_m, "its derivative")
         _v, g_mag = self._harmonics(offset_m)

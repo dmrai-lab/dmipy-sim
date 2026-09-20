@@ -50,7 +50,7 @@ def b0_offset_map(scanner, grid, *, to_scanner=None, delta_T_K=0.0):
                 f"drift of {delta_T_K} K cannot be rendered. A superconducting magnet has none because it "
                 f"has no room temperature to drift with; this is refused rather than silently ignored")
         drift = float(drift)
-    if getattr(scanner, "b0_harmonic_l2_m0", None) is None:
+    if getattr(scanner, "b0_harmonic_Z2", None) is None:
         if not drift:
             return None
         return lambda positions_m: np.full(np.asarray(positions_m, np.float64).reshape(-1, 3).shape[0], drift)
@@ -114,7 +114,7 @@ def background_gradient_map(scanner, grid, *, to_scanner=None):
 
     ``None`` when the machine publishes no profile.
     """
-    if getattr(scanner, "b0_harmonic_l2_m0", None) is None:
+    if getattr(scanner, "b0_harmonic_Z2", None) is None:
         return None
     iso = np.asarray(grid.isocenter_m, dtype=np.float64)
     R = None if to_scanner is None else np.asarray(to_scanner, dtype=np.float64)
