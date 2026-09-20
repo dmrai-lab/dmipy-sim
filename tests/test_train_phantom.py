@@ -109,3 +109,62 @@ def test_the_accelerated_route_agrees_with_the_plain_one(brain):
     _vi, b = replay_train(ph, _train(), transmit=smooth, packs={0: pack}, jax=True)
     rel = np.nanmax(np.abs(np.abs(a) - np.abs(b))) / max(np.nanmax(np.abs(a)), 1e-30)
     assert rel < 1e-5, f"the two routes differ by {rel:.2e}"
+
+
+# ── a drifting magnet (dmipy-sim#285 item 5) ────────────────────────────────────────────────────────
+def test_off_resonance_is_gated_like_the_gradient_not_applied_at_the_end(brain):
+    """The correctness point. A field offset accrues only while magnetisation is TRANSVERSE, so it is gated
+    by the same F+/F-/Z pattern the gradient is. The refocused pathway comes back to zero signed transverse
+    time and so refocuses an offset exactly; a pathway that slept through an interval does not. A train
+    therefore has no single coherence gate, and applying one factor at the end would be wrong for every
+    pathway but one."""
+    from dmipy_sim.replay.pathways import train_response
+    _ph, pack, _g = brain
+    tr = train_response(pack, _train(), keep=(8, 0))
+    tau = tr.tau
+    assert any(abs(v) < 1e-9 for v in tau.values()), "no refocused pathway"
+    assert any(abs(v) > 1e-3 for v in tau.values()), "no pathway that sleeps"
+    # the one that never leaves the transverse plane accrues the whole preparation
+    assert max(tau.values()) == pytest.approx(2 * max(v for v in tau.values() if 0 < v < max(tau.values())),
+                                              rel=1e-6)
+
+
+def test_a_spin_echo_refocuses_a_drifting_magnet_exactly(brain):
+    """One pathway survives a perfect 180, its signed transverse time is zero, so a UNIFORM offset leaves
+    both magnitude and phase untouched however far the magnet has drifted."""
+    from dmipy_sim.replay.pathways import train_response
+    from dmipy_sim.replay import so3
+    _ph, pack, _g = brain
+    se = _train(n_echo=1, beta=180.0)
+    tr = train_response(pack, se, keep=(8, 0))
+    A = so3.so3_design(8, np.eye(3)[None], 0)
+    base = complex((A @ tr.at(1.0, echo=-1, dw=0.0).coeffs.T).reshape(-1)[0])
+    for hz in (100.0, 1000.0, 2725.0):                       # up to a kelvin of drift at 64 mT
+        s = complex((A @ tr.at(1.0, echo=-1, dw=2 * np.pi * hz).coeffs.T).reshape(-1)[0])
+        assert abs(s) / abs(base) == pytest.approx(1.0, abs=1e-9)
+        assert abs(np.angle(s / base)) < 1e-9
+
+
+def test_a_split_train_is_nearly_insensitive_to_drift_and_why(brain):
+    """#285 filed drift as low priority on the assumption that "the SPLICE magnitude combination is
+    insensitive to a slow phase ramp". It is, and this measures it rather than assuming it: a kelvin of
+    heating is 2.7 kHz at 64 mT -- more than twice the magnet's whole spatial inhomogeneity -- and moves the
+    train's magnitude by under two per cent.
+
+    The reason is not that the pathways do not feel it. They do: the stimulated ones carry 40 ms of signed
+    transverse time, which at 2.7 kHz is over a hundred phase cycles. It is that they wrap, so what they
+    contribute oscillates rather than accumulating."""
+    from dmipy_sim.replay.pathways import train_response
+    from dmipy_sim.replay import so3
+    _ph, pack, _g = brain
+    tr = train_response(pack, _train(n_echo=4, beta=150.0), keep=(8, 0))
+    A = so3.so3_design(8, np.eye(3)[None], 0)
+    base = complex((A @ tr.at(1.0, echo=-1, dw=0.0).coeffs.T).reshape(-1)[0])
+    ratios = []
+    for hz in (136.0, 272.0, 545.0, 1362.0, 2725.0):         # 0.05 K to 1 K of drift
+        s = complex((A @ tr.at(1.0, echo=-1, dw=2 * np.pi * hz).coeffs.T).reshape(-1)[0])
+        ratios.append(abs(s) / abs(base))
+    ratios = np.array(ratios)
+    assert np.abs(ratios - 1.0).max() < 0.02, f"drift moved the train by {np.abs(ratios-1).max():.3f}"
+    # and it oscillates rather than growing: the largest excursion is not at the largest drift
+    assert int(np.argmax(np.abs(ratios - 1.0))) != len(ratios) - 1 or np.ptp(np.abs(ratios - 1.0)) < 0.02

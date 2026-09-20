@@ -16,10 +16,13 @@ import numpy as np
 
 from ..constants import GAMMA
 
+GAMMA_BAR = GAMMA / (2.0 * np.pi)
+
 __all__ = ["replay_train"]
 
 
 def replay_train(phantom, waveform, *, echo=-1, transmit=None, transmit_tolerance=1e-2,
+                 off_resonance_tolerance=2.0,
                  off_resonance=None, scanner=None, pose=None, packs=None, proton_density=None,
                  keep=None, complex_signal=False, jax=None, report=None):
     """``(voxel_index, S)`` for an RF train over every voxel of ``phantom``, at one echo of the train.
@@ -87,14 +90,30 @@ def replay_train(phantom, waveform, *, echo=-1, transmit=None, transmit_toleranc
 
     # Every (substrate, transmit scale) pair has its own coefficients, and every slot belongs to exactly
     # one pair -- so the whole phantom is ONE gather and one contraction, rather than a loop over pairs.
+    # The field offset is carried THROUGH the train rather than applied at the end, because off-resonance
+    # is gated like the gradient: a pathway that spent an interval along z accrues none of it. So it enters
+    # the weights, and is binned for the same reason the transmit scale is -- a spatial field map is smooth,
+    # and a drifting magnet is uniform and needs one bin for a whole image.
+    dB0 = f.layer_values("delta_B0_T", off_resonance)
+    if dB0 is None:
+        dw_binned = np.zeros(f.n_voxels)
+    else:
+        dw = 2.0 * np.pi * GAMMA_BAR * np.asarray(dB0, np.float64)
+        dw_binned = np.round(dw / (2.0 * np.pi * float(off_resonance_tolerance))) * \
+            (2.0 * np.pi * float(off_resonance_tolerance))
+    offsets = np.unique(dw_binned)
+
     pairs, coeff = {}, []
     for i, tr in trains.items():
         for scale in scales:
-            pairs[(i, float(scale))] = len(coeff)
-            coeff.append(np.asarray(tr.at(float(scale), echo=echo).retained(keep_l, keep_n), np.complex128))
+            for dwv in offsets:
+                pairs[(i, float(scale), float(dwv))] = len(coeff)
+                coeff.append(np.asarray(tr.at(float(scale), echo=echo, dw=float(dwv))
+                                        .retained(keep_l, keep_n), np.complex128))
     coeff = np.stack(coeff)                                   # (n_pairs, n_meas, n_feat)
-    slot_scale = binned[vp[:, 0]]
-    which = np.array([pairs.get((int(i), float(sc)), -1) for i, sc in zip(ids, slot_scale)])
+    slot_scale, slot_dw = binned[vp[:, 0]], dw_binned[vp[:, 0]]
+    which = np.array([pairs.get((int(i), float(sc), float(dv)), -1)
+                      for i, sc, dv in zip(ids, slot_scale, slot_dw)])
     live = which >= 0
 
     if jax:
@@ -104,12 +123,9 @@ def replay_train(phantom, waveform, *, echo=-1, transmit=None, transmit_toleranc
         part = np.einsum("sf,smf->sm", F[live].astype(np.complex128), coeff[which[live]])
         np.add.at(S, vp[live, 0], weight[live][:, None] * part)
 
-    dB0 = f.layer_values("delta_B0_T", off_resonance)
-    if dB0 is not None:
-        S = S * np.exp(1j * GAMMA * dB0[:, None] * f.gate_integral(waveform))
     if report is not None:
-        report.update(n_scales=len(scales), n_gates=first.n_gates, lmax=keep_l,
-                      n_echoes=len(first.readouts))
+        report.update(n_scales=len(scales), n_offsets=len(offsets), n_gates=first.n_gates,
+                      lmax=keep_l, n_echoes=len(first.readouts), n_pairs=len(pairs))
     return f.voxel_index, (S if complex_signal else np.abs(S))
 
 
