@@ -298,6 +298,14 @@
    "journal_or_publisher": "U.S. Food and Drug Administration",
    "year": 2022,
    "doi_or_url": "https://www.accessdata.fda.gov/cdrh_docs/pdf22/K221923.pdf"
+  },
+  "devos2024_concomitant": {
+   "key": "devos2024_concomitant",
+   "authors": "de Vos B, Remis R F, Webb A G",
+   "title": "Characterization of concomitant gradient fields and their effects using a low-field point-of-care Halbach-based MRI system (the only published treatment of concomitant fields for a magnet whose B0 is not along the bore; states that the symmetry parameter alpha = 1/2 holds for parallel plate gradient coils in an open C- or H-shaped magnet, and alpha = 0 for a Halbach array, where a single cross-term of double amplitude replaces the conventional pair)",
+   "journal_or_publisher": "Magnetic Resonance in Medicine 91(2):828-841",
+   "year": 2023,
+   "doi_or_url": "https://doi.org/10.1002/mrm.29879"
   }
  },
  "scanners": {
@@ -331,6 +339,15 @@
      "context": "Siemens IDEA standard gradient raster (GradientRasterTime 1e-5 s)",
      "source_key": "pulseq_spec",
      "location": "DEFINITIONS block, GradientRasterTime 1e-05",
+     "confidence": "cited"
+    },
+    "concomitant_alpha": {
+     "value": 0.5,
+     "unit": "",
+     "field_T": 3.0,
+     "context": "the gradient coils' symmetry parameter: 1/2 for the cylindrically symmetric fingerprint coils of a conventional bore magnet. Stated rather than assumed, because it is not universal -- a Halbach array gives 0",
+     "source_key": "devos2024_concomitant",
+     "location": "Theory, alpha for conventional cylindrical gradient coils",
      "confidence": "cited"
     }
    },
@@ -442,6 +459,15 @@
      "source_key": "mcnab2013",
      "location": "Methods ('200 T/m/s ... de-rated to 62.5 T/m/s during the diffusion encoding')",
      "confidence": "cited"
+    },
+    "concomitant_alpha": {
+     "value": 0.5,
+     "unit": "",
+     "field_T": 3.0,
+     "context": "the gradient coils' symmetry parameter: 1/2 for the cylindrically symmetric fingerprint coils of a conventional bore magnet. Stated rather than assumed, because it is not universal -- a Halbach array gives 0",
+     "source_key": "devos2024_concomitant",
+     "location": "Theory, alpha for conventional cylindrical gradient coils",
+     "confidence": "cited"
     }
    },
    "rf": {
@@ -508,6 +534,15 @@
      "source_key": "huang2021_connectome2",
      "location": "Design section ('44 cm')",
      "confidence": "cited"
+    },
+    "concomitant_alpha": {
+     "value": 0.5,
+     "unit": "",
+     "field_T": 3.0,
+     "context": "the gradient coils' symmetry parameter: 1/2 for the cylindrically symmetric fingerprint coils of a conventional bore magnet. Stated rather than assumed, because it is not universal -- a Halbach array gives 0",
+     "source_key": "devos2024_concomitant",
+     "location": "Theory, alpha for conventional cylindrical gradient coils",
+     "confidence": "cited"
     }
    },
    "notes": "Published as design targets in 2021 (huang2021_connectome2); the built scanner reaches 500 mT/m and 600 T/m/s per axis (ramos_llorden2026_connectome2), so the numbers are measured on the machine.",
@@ -563,6 +598,15 @@
      "source_key": "pulseq_spec",
      "location": "DEFINITIONS block, GradientRasterTime 1e-05",
      "confidence": "widely-quoted"
+    },
+    "concomitant_alpha": {
+     "value": 0.5,
+     "unit": "",
+     "field_T": 7.0,
+     "context": "the gradient coils' symmetry parameter: 1/2 for the cylindrically symmetric fingerprint coils of a conventional bore magnet. Stated rather than assumed, because it is not universal -- a Halbach array gives 0",
+     "source_key": "devos2024_concomitant",
+     "location": "Theory, alpha for conventional cylindrical gradient coils",
+     "confidence": "cited"
     }
    },
    "rf": {
@@ -637,6 +681,15 @@
      "context": "SuperG gradient amplifier output power; peak current/voltage 1034 A / 2324 V",
      "source_key": "ge_premier_spec",
      "location": "Spec sheet, 'Gradient Amplifier & Coil'",
+     "confidence": "cited"
+    },
+    "concomitant_alpha": {
+     "value": 0.5,
+     "unit": "",
+     "field_T": 3.0,
+     "context": "the gradient coils' symmetry parameter: 1/2 for the cylindrically symmetric fingerprint coils of a conventional bore magnet. Stated rather than assumed, because it is not universal -- a Halbach array gives 0",
+     "source_key": "devos2024_concomitant",
+     "location": "Theory, alpha for conventional cylindrical gradient coils",
      "confidence": "cited"
     }
    },
@@ -713,6 +766,15 @@
      "source_key": "philips_ingenia_web",
      "location": "Product page / gradient specs",
      "confidence": "widely-quoted"
+    },
+    "concomitant_alpha": {
+     "value": 0.5,
+     "unit": "",
+     "field_T": 3.0,
+     "context": "the gradient coils' symmetry parameter: 1/2 for the cylindrically symmetric fingerprint coils of a conventional bore magnet. Stated rather than assumed, because it is not universal -- a Halbach array gives 0",
+     "source_key": "devos2024_concomitant",
+     "location": "Theory, alpha for conventional cylindrical gradient coils",
+     "confidence": "cited"
     }
    },
    "rf": {},
@@ -769,6 +831,15 @@
      "source_key": "pulseq_spec",
      "location": "DEFINITIONS block, GradientRasterTime 1e-05",
      "confidence": "widely-quoted"
+    },
+    "concomitant_alpha": {
+     "value": 0.5,
+     "unit": "",
+     "field_T": 7.0,
+     "context": "the gradient coils' symmetry parameter: 1/2 for the cylindrically symmetric fingerprint coils of a conventional bore magnet. Stated rather than assumed, because it is not universal -- a Halbach array gives 0",
+     "source_key": "devos2024_concomitant",
+     "location": "Theory, alpha for conventional cylindrical gradient coils",
+     "confidence": "cited"
     }
    },
    "rf": {
@@ -843,6 +914,15 @@
      "source_key": "ge_signa_magnus_fda",
      "location": "n/a",
      "confidence": "NEEDS VERIFICATION"
+    },
+    "concomitant_alpha": {
+     "value": 0.5,
+     "unit": "",
+     "field_T": 3.0,
+     "context": "the gradient coils' symmetry parameter: 1/2 for the cylindrically symmetric fingerprint coils of a conventional bore magnet. Stated rather than assumed, because it is not universal -- a Halbach array gives 0",
+     "source_key": "devos2024_concomitant",
+     "location": "Theory, alpha for conventional cylindrical gradient coils",
+     "confidence": "cited"
     }
    },
    "rf": {
@@ -899,6 +979,15 @@
      "source_key": "foo2020_magnus",
      "location": "Foo et al. 2020, abstract",
      "confidence": "widely-quoted"
+    },
+    "concomitant_alpha": {
+     "value": 0.5,
+     "unit": "",
+     "field_T": 3.0,
+     "context": "the gradient coils' symmetry parameter: 1/2 for the cylindrically symmetric fingerprint coils of a conventional bore magnet. Stated rather than assumed, because it is not universal -- a Halbach array gives 0",
+     "source_key": "devos2024_concomitant",
+     "location": "Theory, alpha for conventional cylindrical gradient coils",
+     "confidence": "cited"
     }
    },
    "notes": "The 1 MVA prototype (Foo et al. 2020: '200 mT/m and 500 T/m/s on each axis'). The FDA-cleared SIGNA MAGNUS (2024-11) is 300 mT/m / 750 T/m/s at 2 MVA (ge_signa_magnus_3T); Abad et al. 2025 give the pair as 'Gmax = 200-300 mT/m, and SRmax = 500-750 T/m/s'. The certificate class 'magnus' is the prototype.",
@@ -945,6 +1034,15 @@
      "source_key": "bruker_almanac_2011",
      "location": "BGA-S specification table, BGA-9S column",
      "confidence": "cited"
+    },
+    "concomitant_alpha": {
+     "value": 0.5,
+     "unit": "",
+     "field_T": null,
+     "context": "the gradient coils' symmetry parameter: 1/2 for the cylindrically symmetric fingerprint coils of a conventional bore magnet. Stated rather than assumed, because it is not universal -- a Halbach array gives 0",
+     "source_key": "devos2024_concomitant",
+     "location": "Theory, alpha for conventional cylindrical gradient coils",
+     "confidence": "cited"
     }
    },
    "frame": {
@@ -989,6 +1087,15 @@
      "context": "per axis; the Almanac lists the peak per coil at Imax / Umax, with lower simultaneous-DC limits; with the high power option",
      "source_key": "bruker_almanac_2011",
      "location": "BGA-S specification table, BGA-12S HP column; also bruker_biospec_70_20_web",
+     "confidence": "cited"
+    },
+    "concomitant_alpha": {
+     "value": 0.5,
+     "unit": "",
+     "field_T": null,
+     "context": "the gradient coils' symmetry parameter: 1/2 for the cylindrically symmetric fingerprint coils of a conventional bore magnet. Stated rather than assumed, because it is not universal -- a Halbach array gives 0",
+     "source_key": "devos2024_concomitant",
+     "location": "Theory, alpha for conventional cylindrical gradient coils",
      "confidence": "cited"
     }
    },
@@ -1035,6 +1142,15 @@
      "source_key": "bruker_almanac_2011",
      "location": "BGA-S specification table, BGA-6S column",
      "confidence": "cited"
+    },
+    "concomitant_alpha": {
+     "value": 0.5,
+     "unit": "",
+     "field_T": null,
+     "context": "the gradient coils' symmetry parameter: 1/2 for the cylindrically symmetric fingerprint coils of a conventional bore magnet. Stated rather than assumed, because it is not universal -- a Halbach array gives 0",
+     "source_key": "devos2024_concomitant",
+     "location": "Theory, alpha for conventional cylindrical gradient coils",
+     "confidence": "cited"
     }
    },
    "frame": {
@@ -1080,6 +1196,15 @@
      "source_key": "bruker_micro2_5_web",
      "location": "product page, specifications (rise time)",
      "confidence": "derived"
+    },
+    "concomitant_alpha": {
+     "value": 0.5,
+     "unit": "",
+     "field_T": null,
+     "context": "the gradient coils' symmetry parameter: 1/2 for the cylindrically symmetric fingerprint coils of a conventional bore magnet. Stated rather than assumed, because it is not universal -- a Halbach array gives 0",
+     "source_key": "devos2024_concomitant",
+     "location": "Theory, alpha for conventional cylindrical gradient coils",
+     "confidence": "cited"
     }
    },
    "frame": {
@@ -1125,6 +1250,15 @@
      "source_key": "bruker_micro5_web",
      "location": "product page, specifications (rise time)",
      "confidence": "derived"
+    },
+    "concomitant_alpha": {
+     "value": 0.5,
+     "unit": "",
+     "field_T": null,
+     "context": "the gradient coils' symmetry parameter: 1/2 for the cylindrically symmetric fingerprint coils of a conventional bore magnet. Stated rather than assumed, because it is not universal -- a Halbach array gives 0",
+     "source_key": "devos2024_concomitant",
+     "location": "Theory, alpha for conventional cylindrical gradient coils",
+     "confidence": "cited"
     }
    },
    "frame": {
@@ -1196,6 +1330,15 @@
      "source_key": "gholam2025_swoop",
      "location": "Methods, Data Acquisition",
      "confidence": "cited"
+    },
+    "concomitant_alpha": {
+     "value": 0.5,
+     "unit": "",
+     "field_T": 0.064,
+     "context": "the gradient coils' symmetry parameter in the concomitant-field expansion. It is NOT a universal constant, and treating it as one is the standard silent assumption: alpha = 1/2 follows from cylindrical symmetry and holds for the fingerprint coils of a conventional bore magnet, but a Halbach array gives alpha = 0, which produces a SINGLE cross-term of double amplitude instead of the conventional pair and makes the concomitant field grow transversally rather than axially. For this machine it is 1/2, and by an argument rather than by default: de Vos et al. state the value 'also holds for parallel plate gradient coils in an open C- or H-shaped magnet', and the Swoop is an H-shaped magnet with bi-planar gradient coils. Nobody has published concomitant fields for this machine or for any bi-planar 64 mT magnet, so this is an inference from a class statement. The companion parameter beta is taken as zero, which is the symmetric-coil case; an ASYMMETRIC gradient coil adds zeroth- and first-order concomitant terms that do not vanish at isocentre",
+     "source_key": "devos2024_concomitant",
+     "location": "Theory, the symmetry parameter for parallel-plate gradient coils",
+     "confidence": "derived"
     }
    },
    "homogeneity": {
