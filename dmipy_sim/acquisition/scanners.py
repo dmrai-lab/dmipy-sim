@@ -75,6 +75,7 @@ class ScannerLimits:
     field_T: float = None      # T, the static field; None for an envelope or an uncatalogued field
     b0_axis: tuple = None      # patient-frame unit vector along B0; the magnet frame's +z
     b1_axis: tuple = None      # patient-frame unit vector along the transmit coil, None for a birdcage
+    gradient_axis_assignment: tuple = None  # which patient direction each vendor axis names; None = not known
     b0_harmonic_l2_m0: float = None   # 1/m^2, the zonal Z2 coefficient of dB/B0
     b0_harmonic_l3_m1: float = None   # 1/m^3, the l=3 m=1 coefficient: the magnet's R/L asymmetry
     b0_asymmetry_axis: tuple = None   # patient-frame unit vector the odd harmonic is odd along
@@ -209,6 +210,33 @@ class ScannerLimits:
                 f"{self.b0_validity_radius*100:.0f} cm from isocentre and something here is "
                 f"{float(np.max(r))*100:.1f} cm out. Beyond it the truncation is an extrapolation in the "
                 f"orders that were never constrained as well as in radius, so {what} is refused")
+
+    def G_max_along(self, direction):
+        """The strongest gradient this machine can deliver along a patient-frame ``direction``, in T/m.
+
+        This exists to be REFUSED more often than answered, and the refusal is the point. A machine's per-axis
+        amplitudes are only usable if you know which physical direction each vendor axis names, and for a
+        bi-planar magnet that mapping is not in the public record: the regulatory filing and the peer-reviewed
+        literature disagree about the outlier axis by a factor of 1.5, and the one primary document that ties
+        a Hyperfine coil label to the field direction contradicts the inference every other source supports.
+
+        So a machine that has not declared ``gradient_axis_assignment`` raises, naming the conflict, rather
+        than picking the better-supported reading and returning a number that looks like a measurement. Use
+        :attr:`G_max` for a deliverability check -- it is the WEAKEST axis and is therefore safe whatever the
+        assignment turns out to be, which is why every builder already uses it.
+        """
+        if self.gradient_axis_assignment is None:
+            raise ValueError(
+                f"{self.name!r} does not declare which patient direction each of its gradient axes names, so "
+                f"the strongest gradient along a direction cannot be stated. For this machine the mapping is "
+                f"genuinely not public and the sources conflict -- see the catalogue's "
+                f"per_axis_amplitude_fda and per_axis_amplitude_literature leaves, which disagree by a "
+                f"factor of 1.5 on the third axis. Use G_max ({self.G_max*1e3:.1f} mT/m), the weakest axis, "
+                f"which is safe under every candidate assignment")
+        d = np.asarray(direction, dtype=np.float64)
+        d = d / np.linalg.norm(d)
+        A = np.asarray(self.gradient_axis_assignment, dtype=np.float64)   # rows: patient direction per axis
+        return float(np.min(self.G_max / np.abs(A @ d).clip(1e-12)))
 
     def b0_offset(self, offset_m):
         """The static field's departure from uniformity at a displacement from isocentre, in **tesla**.
