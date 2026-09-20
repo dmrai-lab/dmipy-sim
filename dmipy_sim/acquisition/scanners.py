@@ -25,7 +25,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from ..constants import GAMMA
-from . import scanner_constants as scc
+from . import maxwell, scanner_constants as scc, solid_harmonics
 
 GAMMA_BAR = GAMMA / (2.0 * np.pi)
 
@@ -132,23 +132,22 @@ class ScannerLimits:
         return limits
 
     def _check_frame(self):
-        """Refuse a machine whose transmit coil is not perpendicular to its field.
+        """Tier 0: refuse a machine whose transmit coil is not perpendicular to its field, and a field law
+        that does not solve Laplace's equation.
 
-        This is physics, not bookkeeping: what excites is the component of B1 perpendicular to B0, so a coil
-        with a principal axis along the field would excite nothing. A catalogue entry that says otherwise has
-        its axes confused, and the confusion is exactly the kind that never announces itself -- both axes are
-        plausible unit vectors and every downstream number stays finite.
+        Both are constraints Maxwell imposes for free (dmipy-sim#364) -- they need no oracle and no
+        measurement, and a catalogue entry that fails one describes something that is not a machine. The
+        law is checked at CONSTRUCTION rather than at first use, so a bad coefficient cannot reach a caller
+        that happens never to evaluate the field off-axis.
         """
-        if self.b0_axis is None or self.b1_axis is None:
-            return
-        b0 = np.asarray(self.b0_axis, dtype=np.float64)
-        b1 = np.asarray(self.b1_axis, dtype=np.float64)
-        dot = float(abs(b0 @ b1))
-        if dot > 1e-6:
-            raise ValueError(
-                f"{self.name!r} declares a transmit axis {self.b1_axis} that is not perpendicular to its "
-                f"field {self.b0_axis} (|cos| = {dot:.3f}). Only the component of B1 perpendicular to B0 "
-                f"excites, so this machine as described would not produce a signal -- the axes are confused")
+        maxwell.require_transverse(self.b0_axis, self.b1_axis, repr(self.name))
+        law = self.harmonic_law()
+        if law:
+            R = 0.5 * (self.b0_validity_radius or 0.1)
+            P = R * np.array([[0.31, -0.47, 0.23], [-0.19, 0.11, -0.53], [0.41, 0.37, 0.17],
+                              [0.57, 0.29, -0.31], [-0.43, -0.22, 0.44]])
+            maxwell.require_harmonic(lambda q: solid_harmonics.evaluate(law, q), P,
+                                     f"the catalogued B0 law for {self.name!r}")
 
     def magnet_frame(self):
         """The rotation taking PATIENT axes to the MAGNET frame, whose +z is B0 by construction.
@@ -193,17 +192,23 @@ class ScannerLimits:
         m = d @ R.T                                   # rows of R are the magnet axes in patient coordinates
         return m[..., 2], m[..., 0], m[..., 1]
 
+    def harmonic_law(self):
+        """The catalogued field law as ``{term name: coefficient}`` in the standard solid-harmonic basis."""
+        return {n: c for n, c in (("Z2", self.b0_harmonic_Z2), ("Z2X", self.b0_harmonic_Z2X)) if c}
+
     def _harmonics(self, offset_m):
-        """``(value, gradient)`` of ``dB/B0`` in the magnet frame, from the catalogued solid harmonics."""
+        """``(value, gradient)`` of ``dB/B0`` in the magnet frame, from the catalogued solid harmonics.
+
+        The terms and their gradients are :mod:`dmipy_sim.acquisition.solid_harmonics`' and are not written
+        out again here: a law and the basis it is written in must be the same objects, or the two drift and
+        only one of them is the one that was checked.
+        """
         zeta, xi, eta = self._field_coords(offset_m)
-        c2 = self.b0_harmonic_Z2 or 0.0            # Z2 = 2 zeta^2 - xi^2 - eta^2
-        c3 = self.b0_harmonic_Z2X or 0.0           # Z2X = xi (4 zeta^2 - xi^2 - eta^2)
-        val = (c2 * (2.0 * zeta ** 2 - xi ** 2 - eta ** 2)
-               + c3 * xi * (4.0 * zeta ** 2 - xi ** 2 - eta ** 2))
-        g_xi = -2.0 * c2 * xi + c3 * (4.0 * zeta ** 2 - 3.0 * xi ** 2 - eta ** 2)
-        g_eta = -2.0 * c2 * eta - 2.0 * c3 * xi * eta
-        g_zeta = 4.0 * c2 * zeta + 8.0 * c3 * xi * zeta
-        return val, np.stack([g_xi, g_eta, g_zeta], axis=-1)
+        r = np.stack([xi, eta, zeta], axis=-1)          # the basis is in (x, y, z) = (xi, eta, zeta)
+        law = self.harmonic_law()
+        if not law:
+            return np.zeros(zeta.shape), np.zeros(zeta.shape + (3,))
+        return solid_harmonics.evaluate(law, r), solid_harmonics.gradient(law, r)
 
     def _refuse_outside(self, offset_m, what):
         r = np.linalg.norm(np.atleast_2d(np.asarray(offset_m, dtype=np.float64)), axis=-1)
