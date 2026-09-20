@@ -15,7 +15,7 @@ import numpy as np
 __all__ = ["b0_offset_map", "b1_scale_map"]
 
 
-def b0_offset_map(scanner, grid, *, to_scanner=None):
+def b0_offset_map(scanner, grid, *, to_scanner=None, delta_T_K=0.0):
     """A callable giving the static field's departure from uniformity, in tesla, at each voxel of ``grid``.
 
     Pass the result straight to ``off_resonance=`` of any :meth:`~dmipy_sim.phantom.Phantom.replay`; it has
@@ -28,11 +28,30 @@ def b0_offset_map(scanner, grid, *, to_scanner=None):
     direction, as a single-yoke magnet's is, it gets the sign of the asymmetry wrong over part of the
     volume. Pass it explicitly only to override what the grid says.
 
-    ``None`` when the machine publishes no profile, which is every machine but a permanent-magnet one;
-    ``off_resonance=None`` is then exactly right, being what a replay already means by "no field offset".
+    ``delta_T_K`` adds the UNIFORM offset a magnet this much warmer holds
+    (:meth:`~dmipy_sim.acquisition.scanners.ScannerLimits.b0_drift`). It is a separate argument from the
+    shape rather than part of it because it is separate physics: the shape is fixed and spatial, the drift
+    is uniform and moves. A scanner cancels the uniform part by re-tuning and cannot cancel the shape, so
+    what belongs here is the drift ACCRUED SINCE THE LAST RE-CENTRING, not the drift since the magnet was
+    built. On the Swoop that interval is catalogued (``f0_recentering_interval``, 339 s).
+
+    ``None`` when the machine publishes no profile and no coefficient, which is every machine but a
+    permanent-magnet one; ``off_resonance=None`` is then exactly right, being what a replay already means
+    by "no field offset".
     """
+    drift = 0.0
+    if delta_T_K:
+        drift = getattr(scanner, "b0_drift", lambda _dT: None)(delta_T_K)
+        if drift is None:
+            raise ValueError(
+                f"{getattr(scanner, 'name', scanner)!r} has no catalogued temperature coefficient, so a "
+                f"drift of {delta_T_K} K cannot be rendered. A superconducting magnet has none because it "
+                f"has no room temperature to drift with; this is refused rather than silently ignored")
+        drift = float(drift)
     if getattr(scanner, "b0_quadratic", None) is None:
-        return None
+        if not drift:
+            return None
+        return lambda positions_m: np.full(np.asarray(positions_m, np.float64).reshape(-1, 3).shape[0], drift)
     iso = np.asarray(grid.isocenter_m, dtype=np.float64)
     R = grid.to_scanner if to_scanner is None else to_scanner
     R = None if R is None else np.asarray(R, dtype=np.float64)
@@ -46,7 +65,7 @@ def b0_offset_map(scanner, grid, *, to_scanner=None):
         d = np.asarray(positions_m, dtype=np.float64).reshape(-1, 3) - iso
         if R is not None:
             d = d @ R.T                      # the grid's frame into the bore's, where the law is stated
-        return scanner.b0_offset(d)
+        return scanner.b0_offset(d) + drift
 
     return field
 

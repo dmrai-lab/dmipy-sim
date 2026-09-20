@@ -27,6 +27,8 @@ import numpy as np
 from ..constants import GAMMA
 from . import scanner_constants as scc
 
+GAMMA_BAR = GAMMA / (2.0 * np.pi)
+
 __all__ = ["ScannerLimits", "SCANNERS", "FIELD_DT_CAP", "scanner_limits", "save_interval"]
 
 
@@ -57,6 +59,9 @@ class ScannerLimits:
     b0_validity_radius: float = None  # m, how far from isocentre that law is anchored
     b1_axial_falloff: float = None    # 1/m^2, the coefficient of kappa_B1 = 1 - a z^2 along the bore
     b1_calibration_offset: float = None  # a systematic transmit scale, 1 = nominal
+    b0_temperature_coefficient: float = None  # 1/K, dB0/B0 per kelvin of magnet temperature
+    f0_recentering_interval: float = None     # s, how long the field drifts before f0 is re-set
+    f0_temperature_slope: float = None        # Hz/K, the same coefficient as published
 
     @classmethod
     def of(cls, scanner, *, regime="default"):
@@ -89,7 +94,11 @@ class ScannerLimits:
                    b0_asymmetry_rl=scc.leaf_si(entry, "homogeneity", "b0_asymmetry_rl"),
                    b0_validity_radius=scc.leaf_si(entry, "homogeneity", "b0_validity_radius"),
                    b1_axial_falloff=scc.leaf_si(entry, "rf", "b1_axial_falloff"),
-                   b1_calibration_offset=scc.leaf_si(entry, "rf", "b1_calibration_offset"))
+                   b1_calibration_offset=scc.leaf_si(entry, "rf", "b1_calibration_offset"),
+                   b0_temperature_coefficient=scc.leaf_si(entry, "thermal",
+                                                          "b0_temperature_coefficient"),
+                   f0_recentering_interval=scc.leaf_si(entry, "thermal", "f0_recentering_interval"),
+                   f0_temperature_slope=scc.leaf_si(entry, "thermal", "f0_temperature_slope"))
 
     def b0_offset(self, offset_m):
         """The static field's departure from uniformity at a displacement from isocentre, in **tesla**:
@@ -122,6 +131,36 @@ class ScannerLimits:
         if self.b0_asymmetry_rl:
             shape = shape + self.b0_asymmetry_rl * d[..., 0]        # x is R/L
         return self.field_T * shape
+
+    def b0_drift(self, delta_T_K):
+        """The field a magnet this much warmer holds, minus the one it was tuned at, in **tesla**.
+
+        A permanent magnet's field follows its temperature. The coefficient is large by MRI standards: on
+        the Swoop it is a MEASURED -1400 Hz/K, so about two kelvin move the centre frequency as far as the
+        whole spatial inhomogeneity of the same magnet. ``None`` when the machine has no catalogued
+        coefficient, which is every superconducting one -- a magnet in liquid helium has no room temperature
+        to drift with.
+
+        The catalogued figure is the machine's, not its material's, and the distinction is worth a factor of
+        two: bulk NdFeB falls about 0.1 % per kelvin, which would be 2725 Hz/K here, but a yoked magnet is
+        not all permanent-magnet material and the measurement comes out at half that. Reaching for the
+        materials constant would overstate every number downstream.
+
+        Uniform in space, which is what separates it from :meth:`b0_offset`. The shape of the field is a
+        function of position and this is not, so a whole image needs ONE offset and a replay pays for it
+        once. That also means a scanner can cancel it by re-tuning, and the Swoop does: it re-centres f0
+        after every two DWIs, so what reaches the data is not the drift but the drift accrued within
+        ``f0_recentering_interval``. Ask for the residual, not the total, unless you mean the total.
+        """
+        if self.b0_temperature_coefficient is None or self.field_T is None:
+            return None
+        return self.field_T * self.b0_temperature_coefficient * np.asarray(delta_T_K, dtype=np.float64)
+
+    def b0_drift_hz(self, delta_T_K):
+        """The same drift as a frequency shift of the proton resonance, in hertz -- the unit a scanner's own
+        calibration reports it in, and the one every published measurement of it is quoted in."""
+        d = self.b0_drift(delta_T_K)
+        return None if d is None else GAMMA_BAR * d
 
     def b1_scale(self, offset_m):
         """The transmit scale a pulse actually gets at a displacement from isocentre: 1 is nominal, and what

@@ -139,32 +139,42 @@ def test_a_spin_echo_refocuses_a_drifting_magnet_exactly(brain):
     tr = train_response(pack, se, keep=(8, 0))
     A = so3.so3_design(8, np.eye(3)[None], 0)
     base = complex((A @ tr.at(1.0, echo=-1, dw=0.0).coeffs.T).reshape(-1)[0])
-    for hz in (100.0, 1000.0, 2725.0):                       # up to a kelvin of drift at 64 mT
+    for hz in (100.0, 1000.0, 2725.0):                       # far beyond any drift this magnet reaches
         s = complex((A @ tr.at(1.0, echo=-1, dw=2 * np.pi * hz).coeffs.T).reshape(-1)[0])
         assert abs(s) / abs(base) == pytest.approx(1.0, abs=1e-9)
         assert abs(np.angle(s / base)) < 1e-9
 
 
-def test_a_split_train_is_nearly_insensitive_to_drift_and_why(brain):
+def test_a_split_train_s_sensitivity_to_drift_is_bounded_rather_than_cumulative(brain):
     """#285 filed drift as low priority on the assumption that "the SPLICE magnitude combination is
-    insensitive to a slow phase ramp". It is, and this measures it rather than assuming it: a kelvin of
-    heating is 2.7 kHz at 64 mT -- more than twice the magnet's whole spatial inhomogeneity -- and moves the
-    train's magnitude by under two per cent.
+    insensitive to a slow phase ramp". It is -- but for a better reason than slowness, and this measures it.
 
-    The reason is not that the pathways do not feel it. They do: the stimulated ones carry 40 ms of signed
-    transverse time, which at 2.7 kHz is over a hundred phase cycles. It is that they wrap, so what they
-    contribute oscillates rather than accumulating."""
+    The train's magnitude is a BOUNDED oscillation in the offset, not a decay: the same one-and-a-half per
+    cent envelope over 0-100 Hz as over 1000-3000 Hz. So the answer does not depend on how far the magnet
+    has drifted, which is what makes the sequence robust rather than merely lucky. The mechanism is the
+    signed transverse time: the refocused gate carries none and is immune, and the stimulated gates carry
+    40 ms, which wraps every 25 Hz, so their contribution oscillates with a fixed amplitude instead of
+    accumulating.
+
+    For scale, the Swoop's measured coefficient is -1400 Hz/K and it re-centres f0 every 339 s, so the
+    residual within an interval is tens of hertz -- and even a whole un-recentred kelvin lands inside the
+    same envelope."""
     from dmipy_sim.replay.pathways import train_response
     from dmipy_sim.replay import so3
     _ph, pack, _g = brain
     tr = train_response(pack, _train(n_echo=4, beta=150.0), keep=(8, 0))
     A = so3.so3_design(8, np.eye(3)[None], 0)
-    base = complex((A @ tr.at(1.0, echo=-1, dw=0.0).coeffs.T).reshape(-1)[0])
-    ratios = []
-    for hz in (136.0, 272.0, 545.0, 1362.0, 2725.0):         # 0.05 K to 1 K of drift
-        s = complex((A @ tr.at(1.0, echo=-1, dw=2 * np.pi * hz).coeffs.T).reshape(-1)[0])
-        ratios.append(abs(s) / abs(base))
-    ratios = np.array(ratios)
-    assert np.abs(ratios - 1.0).max() < 0.02, f"drift moved the train by {np.abs(ratios-1).max():.3f}"
-    # and it oscillates rather than growing: the largest excursion is not at the largest drift
-    assert int(np.argmax(np.abs(ratios - 1.0))) != len(ratios) - 1 or np.ptp(np.abs(ratios - 1.0)) < 0.02
+
+    def ratio(hz):
+        c = tr.at(1.0, echo=-1, dw=2 * np.pi * hz).coeffs
+        return abs(complex((A @ c.T).reshape(-1)[0]))
+
+    base = ratio(0.0)
+    bands = {}
+    for lo, hi in ((0.0, 100.0), (100.0, 1000.0), (1000.0, 3000.0)):
+        r = np.array([ratio(f) / base for f in np.linspace(lo, hi, 60)])
+        bands[(lo, hi)] = float(np.abs(r - 1.0).max())
+        assert bands[(lo, hi)] < 0.02, f"{lo}-{hi} Hz moved the train by {bands[(lo,hi)]:.3f}"
+    # the envelope does not grow with the offset -- which is the claim that makes drift a non-issue
+    lo_band, hi_band = bands[(0.0, 100.0)], bands[(1000.0, 3000.0)]
+    assert hi_band < 1.5 * lo_band, f"the envelope grew: {lo_band:.4f} near zero, {hi_band:.4f} far out"

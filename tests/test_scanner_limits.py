@@ -12,7 +12,7 @@ import pytest
 
 import dmipy_sim
 from dmipy_sim.acquisition import scanner_constants as scc
-from dmipy_sim.acquisition.scanners import ScannerLimits, SCANNERS, scanner_limits
+from dmipy_sim.acquisition.scanners import GAMMA_BAR, ScannerLimits, SCANNERS, scanner_limits
 from dmipy_sim.constants import DEFAULT_SLEW_RATE
 from dmipy_sim.sequences.pulseq import PULSEQ_SYSTEMS
 
@@ -309,3 +309,44 @@ def test_the_transmit_profile_is_a_machine_property_only_at_low_field():
     assert leaf["value"] == pytest.approx(0.03) and "must NOT be extended" in leaf["context"]
     for name in ("prisma", "connectom", "magnus"):
         assert ScannerLimits.of(name).b1_axial_falloff is None
+
+
+# ── a magnet that drifts with its own temperature (dmipy-sim#285 item 5) ─────────────────────────────
+def test_the_drift_coefficient_is_the_machine_s_measured_one_not_its_material_s():
+    """The distinction is worth a factor of two, so it is worth a test. Bulk NdFeB remanence falls about
+    0.1 %/K, which at 64 mT would be 2725 Hz/K; the Swoop's own measured slope -- 244 phantom scans across
+    17 sites, regressed with site as a random effect -- is -1400 Hz/K, half that. A yoked magnet is not all
+    permanent-magnet material, and reaching for the materials constant would overstate everything
+    downstream. (What this magnet is MADE of is not public in any case: the FDA filings say only 'permanent
+    magnet'.)"""
+    sw = ScannerLimits.of("swoop")
+    assert sw.f0_temperature_slope == pytest.approx(-1400.0)
+    assert sw.b0_drift_hz(1.0) == pytest.approx(-1400.0, abs=1.0)
+    assert sw.b0_drift(2.0) == pytest.approx(2 * sw.b0_drift(1.0))        # linear, by construction
+    # the published Hz/K and the derived fraction are the same number, which is what makes them two leaves
+    assert sw.b0_temperature_coefficient * (GAMMA_BAR * sw.field_T) == pytest.approx(sw.f0_temperature_slope)
+    assert abs(sw.b0_temperature_coefficient) < 0.6e-3, "that is the materials constant, not the measurement"
+    # two kelvin to equal the magnet's whole spatial spread, not one
+    spread_ppm = scc.get_limit("hyperfine_swoop_64mT", "homogeneity", "b0_homogeneity")["value"]
+    assert 1.8 < spread_ppm / (abs(sw.b0_temperature_coefficient) * 1e6) < 2.5
+    leaf = scc.get_limit("hyperfine_swoop_64mT", "thermal", "b0_temperature_coefficient")
+    assert "say only 'permanent magnet'" in leaf["context"] and leaf["confidence"] == "derived"
+    for name in ("prisma", "connectom", "terra"):
+        assert ScannerLimits.of(name).b0_temperature_coefficient is None
+        assert ScannerLimits.of(name).b0_drift(1.0) is None
+
+
+def test_recentring_is_what_makes_the_drift_small_and_it_is_catalogued():
+    """A coefficient of 1400 Hz/K would matter enormously if it accumulated. It does not, for two reasons
+    the catalogue records: the pre-scan calibration removes the between-session ambient term entirely, and
+    within a scan the protocol re-centres f0 after every two DWIs. So what reaches the data is the drift
+    accrued within that interval and never the total. The leaf says plainly that no within-scan drift RATE
+    is published for this machine -- the residual quoted there is carried over from another magnet's
+    warming rate and is labelled as such."""
+    sw = ScannerLimits.of("swoop")
+    assert sw.f0_recentering_interval == pytest.approx(339.0)             # 2 x 212 shots at TR 800 ms
+    leaf = scc.get_limit("hyperfine_swoop_64mT", "thermal", "f0_recentering_interval")
+    assert leaf["confidence"] == "cited" and "NO within-scan drift RATE is published" in leaf["context"]
+    # the span the magnet is uncontrolled over is the reason f0 is a calibration, not an assumption
+    assert scc.get_limit("hyperfine_swoop_64mT", "thermal", "operating_temperature_span")["value"] == 15.0
+    assert abs(sw.b0_drift_hz(15.0)) > 20e3                               # twenty kilohertz across the range

@@ -657,3 +657,22 @@ def test_a_transmit_map_is_asked_for_rather_than_assumed(pack_path):
     gre, _ = _gre_and_se(pack_path)
     ph.replay(gre, scanner=swoop)                       # the field comes along; the transmit scale does not
     assert ScannerLimits.of("prisma").b1_scale([[0, 0, 0.05]]) is None
+
+
+def test_a_drifting_magnet_is_a_uniform_offset_on_top_of_a_fixed_shape():
+    """Two pieces of different physics, which is why they are two arguments rather than one. The magnet's
+    SHAPE is a function of position and cannot be tuned away; its DRIFT is uniform and is exactly what a
+    scanner cancels when it re-centres. So a drift adds a constant to every voxel and leaves the shape's
+    spread untouched, and a machine with no coefficient refuses the request rather than quietly ignoring it
+    -- a superconducting magnet has no room temperature to drift with."""
+    from dmipy_sim.acquisition.scanners import ScannerLimits
+    from dmipy_sim.phantom import b0_offset_map
+    swoop, grid = ScannerLimits.of("swoop"), _swoop_grid()
+    at = grid.offset_m(grid.every_voxel).reshape(-1, 3)
+    base = b0_offset_map(swoop, grid)(at)
+    warm = b0_offset_map(swoop, grid, delta_T_K=0.1)(at)
+    np.testing.assert_allclose(warm - base, swoop.b0_drift(0.1), atol=1e-18)   # uniform, to the bit
+    assert np.ptp(warm) == pytest.approx(np.ptp(base), rel=1e-9)               # the shape is unchanged
+    assert b0_offset_map(swoop, grid, delta_T_K=0.0) is not None               # no drift is still the shape
+    with pytest.raises(ValueError, match="no catalogued temperature coefficient"):
+        b0_offset_map(ScannerLimits.of("prisma"), grid, delta_T_K=1.0)
