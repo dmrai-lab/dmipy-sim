@@ -312,6 +312,23 @@ class ScannerSequence:
             return self.G
         return self.G - self.imposed_gradient
 
+    def with_gradient_tensor(self, L):
+        """The same acquisition as the COILS deliver it at a point: ``G -> L G``, the gradient-nonlinearity
+        tensor applied to the physical gradient.
+
+        ``L`` is ``(3, 3)`` in this sequence's own frame, with ``L(0) = I`` at isocentre
+        (:meth:`~dmipy_sim.acquisition.scanners.ScannerLimits.gradient_tensor`). It is a SIMILARITY on the
+        gradient vector and not a scale: away from isocentre the delivered encoding is both mis-scaled and
+        TILTED, so ``b`` becomes ``|L u|^2 b`` along a direction that is no longer ``u``. A model that
+        applied only the magnitude would keep the direction and lose the part that mixes the measurements.
+
+        Note ``G`` carries a measurement index, so this multiplies every row: ``G[m, t, :] -> L G[m, t, :]``.
+        """
+        A = np.asarray(L, dtype=np.float64)
+        if A.shape != (3, 3):
+            raise ValueError(f"the gradient-nonlinearity tensor is (3, 3) in this sequence's frame; got {A.shape}")
+        return replace(self, G=np.asarray(self.G, dtype=np.float64) @ A.T)
+
     def with_background_gradient(self, g):
         """The same acquisition in a magnet whose own field is not uniform: a constant ``g`` (T/m, the field's
         spatial gradient at this position, in the gradient's frame) added to the PHYSICAL gradient over the

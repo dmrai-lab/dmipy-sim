@@ -310,3 +310,139 @@ def gradient_tensor_map(scanner, grid, *, to_scanner=None):
         return L
 
     return tensor
+
+
+def delivered_gradient(scanner, grid, sequence, *, voxels=None, to_scanner=None,
+                       nonlinearity=True, background=True, concomitant=True):
+    """The gradient each voxel ACTUALLY receives: ``(n_voxels, n_meas, n_t, 3)`` in the grid's frame.
+
+    Three things stand between the gradient a sequence prescribes and the one a spin at ``r`` sees, and all
+    three are already modelled elsewhere in this package without ever reaching a signal (dmipy-sim#369):
+
+    * the coils' **nonlinearity**, ``g -> L(r) g``, which mis-scales and TILTS the encoding direction;
+    * the magnet's own **background** gradient, constant in time and non-zero at isocentre, which the RF
+      sign carries like any other gradient and whose contribution to ``b`` does not refocus;
+    * the coils' **concomitant** (Maxwell) term, whose extra encoding gradient is quadratic in ``G(t)`` --
+      so it varies through the sequence and does not reverse when the coils do.
+
+    This is the reference route: it builds the acquisition as played at each voxel through
+    :meth:`~dmipy_sim.acquisition.scanner_sequence.ScannerSequence.with_background_gradient` and
+    ``with_concomitant``, which is exact and costs a sequence per voxel. :func:`delivered_weights` is the
+    same thing in the replay's own coefficient space, at a few thousand flops per voxel, and the two are
+    held against each other by test.
+    """
+    idx = grid.every_voxel if voxels is None else voxels
+    d = grid.offset_m(idx).reshape(-1, 3)
+    R = None if to_scanner is None else np.asarray(to_scanner, dtype=np.float64)
+    if R is not None:
+        d = d @ R.T                                          # the grid's frame into the bore's
+    B0 = getattr(scanner, "field_T", None)
+    L = gradient_tensor_map(scanner, grid, to_scanner=to_scanner) if nonlinearity else None
+    out = np.empty((len(d), sequence.n_meas, sequence.G.shape[1], 3), dtype=np.float64)
+    Ls = None if L is None else L(grid.positions_m(idx))
+    for k, r in enumerate(d):
+        seq = sequence
+        if Ls is not None:
+            seq = seq.with_gradient_tensor(Ls[k])
+        if background and getattr(scanner, "b0_harmonic_Z2", None) is not None:
+            seq = seq.with_background_gradient(np.atleast_2d(scanner.b0_gradient(r[None]))[0])
+        if concomitant and B0:
+            seq = seq.with_concomitant(r, float(B0))
+        out[k] = seq.G
+    return out
+
+
+def delivered_weights(scanner, grid, sequence, *, K, n_t, dt_pack, voxels=None, to_scanner=None,
+                      nonlinearity=True, background=True, concomitant=True):
+    """Per-voxel replay weights ``W`` for the delivered gradient: ``(n_voxels, (K+2)*3, n_meas)``.
+
+    The same physics as :func:`delivered_gradient`, in the space the replay contracts in, at a few thousand
+    flops per voxel instead of a sequence build and a fresh projection. What makes that possible is that
+    ``compression.bridge_projection`` is EXACTLY linear in the gradient (checked to 1e-15), so each term
+    can be projected once and combined per voxel:
+
+    * ``L(r)`` is a 3x3 mix of the base weights' axis index -- projecting ``L G`` is ``L`` applied to the
+      projection of ``G``;
+    * the background is a constant vector times the RF sign, so its projection is an outer product of
+      ``g0(r)`` with one precomputed time course;
+    * the concomitant term's extra gradient is quadratic in ``G(t)`` but LINEAR IN POSITION (``B_c`` is
+      quadratic in ``r``), so three column projections done once combine by the voxel's own coordinates.
+
+    None of that is an approximation: it is the same sum in a different order, which is why the reference
+    route exists to check it rather than to be replaced by it.
+    """
+    from ..replay.replay import _compile_effective
+    from ..acquisition.rf import RFSchedule                      # noqa: F401  (documents where sign lives)
+
+    idx = grid.every_voxel if voxels is None else voxels
+    pos = grid.positions_m(idx)
+    d = grid.offset_m(idx).reshape(-1, 3)
+    R = None if to_scanner is None else np.asarray(to_scanner, dtype=np.float64)
+    d_bore = d if R is None else d @ R.T
+    B0 = getattr(scanner, "field_T", None)
+
+    def project(seq_like_G):
+        """W for a physical G, carried through the RF sign exactly as the replay does."""
+        return _compile_effective(_effective(sequence, seq_like_G), dt_pack, K, n_t)
+
+    W = project(np.asarray(sequence.G, dtype=np.float64))                       # ((K+2)*3, n_meas)
+    n_c = (K + 2)
+    out = np.repeat(W[None], len(d), axis=0)
+
+    if nonlinearity:
+        Lf = gradient_tensor_map(scanner, grid, to_scanner=to_scanner)
+        if Lf is not None:
+            base = W.reshape(n_c, 3, -1)
+            out = np.einsum("nij,kjm->nkim", Lf(pos), base).reshape(len(d), n_c * 3, -1)
+
+    if background and getattr(scanner, "b0_harmonic_Z2", None) is not None:
+        unit = [project(np.broadcast_to(e, sequence.G.shape)).reshape(n_c, 3, -1) for e in np.eye(3)]
+        g0 = scanner.b0_gradient(d_bore)
+        if R is not None:
+            g0 = g0 @ R                                                        # back into the grid's frame
+        out = out + np.einsum("ni,ikjm->nkjm", g0, np.stack(unit)).reshape(len(d), n_c * 3, -1)
+
+    if concomitant and B0:
+        linear_only = (not nonlinearity) and not (background and getattr(scanner, "b0_harmonic_Z2", None))
+        if concomitant == "linearised" or linear_only:
+            # The concomitant's extra gradient is quadratic in G(t) but LINEAR IN POSITION, so three column
+            # projections done once combine by the voxel's own coordinates. Exact when nothing else has
+            # changed the gradient -- and an APPROXIMATION when L or a background is also on, because the
+            # Maxwell term is then quadratic in the DELIVERED gradient and its cross terms are per voxel.
+            # Measured on this magnet over a 9 cm grid: 2.8 per cent of the concomitant term, 0.09 per cent
+            # of G. Cheap and bounded, but not the default.
+            cols = [project(sequence.with_concomitant(e, float(B0)).G
+                            - np.asarray(sequence.G, dtype=np.float64)).reshape(n_c, 3, -1)
+                    for e in np.eye(3)]
+            out = out + np.einsum("ni,ikjm->nkjm", d_bore, np.stack(cols)).reshape(len(d), n_c * 3, -1)
+        else:
+            # Exact: the Maxwell term is quadratic in the gradient the COILS deliver, so it must read
+            # L(r) G -- not the nominal G, and NOT the magnet's background. with_concomitant takes it from
+            # `designed_gradient` for exactly that reason: a static inhomogeneity is not produced by the
+            # gradient coils and does not contribute a Maxwell term. Feeding it one moves the answer by
+            # 4e-4, which is how this was found.
+            coil_G = delivered_gradient(scanner, grid, sequence, voxels=voxels, to_scanner=to_scanner,
+                                        nonlinearity=nonlinearity, background=False, concomitant=False)
+            for k in range(len(d)):
+                out[k] = out[k] + project(_concomitant_of(sequence, coil_G[k], d_bore[k], float(B0)))
+
+    return out
+
+
+def _concomitant_of(sequence, G_delivered, position_m, B0_T):
+    """The concomitant extra gradient of the gradient the COILS deliver, as a physical ``G`` increment.
+
+    ``G_delivered`` is ``L(r) G`` and must NOT include the magnet's background: the Maxwell term is a
+    quadratic form in the field the gradient coils produce, and a static inhomogeneity is not produced by
+    them. Substituting the nominal ``G`` instead drops the cross terms between the coils' nonlinearity and
+    their own concomitant field.
+    """
+    from dataclasses import replace as _replace
+    played = _replace(sequence, G=np.asarray(G_delivered, dtype=np.float64))
+    return played.with_concomitant(position_m, B0_T).G - np.asarray(G_delivered, dtype=np.float64)
+
+
+def _effective(sequence, G):
+    """``G_eff`` for a physical ``G`` under this sequence's RF schedule -- the sign the replay applies."""
+    sign = sequence.rf.sign(np.arange(np.asarray(G).shape[1]) * sequence.dt)
+    return np.asarray(G, dtype=np.float64) * np.asarray(sign, dtype=np.float64)[None, :, None]
