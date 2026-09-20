@@ -14,7 +14,7 @@ from itertools import product as _product
 
 import numpy as np
 
-__all__ = ["b0_offset_map", "b1_scale_map", "background_gradient_map", "delivered_b", "delivered_b_map", "b_polynomial"]
+__all__ = ["b0_offset_map", "b1_scale_map", "background_gradient_map", "delivered_b", "delivered_b_map", "b_polynomial", "gradient_tensor_map"]
 
 
 def b0_offset_map(scanner, grid, *, to_scanner=None, delta_T_K=0.0):
@@ -276,3 +276,37 @@ def delivered_b_map(scanner, grid, sequence, *, to_scanner=None, voxels=None,
         report.update(n_probes=len(_poly_exponents()), n_voxels=d.shape[0],
                       background=gmap is not None, concomitant=bool(concomitant and B0))
     return out
+
+
+def gradient_tensor_map(scanner, grid, *, to_scanner=None):
+    """A callable giving the gradient-nonlinearity tensor ``L`` at each voxel: ``(n, 3, 3)`` in the GRID's
+    frame, so it can multiply a sequence's ``G`` directly.
+
+    The rotation enters twice, as it does for
+    :func:`background_gradient_map`, but a TENSOR comes back differently from a vector: a position goes
+    forward into the bore as ``d R^T``, and the tensor evaluated there returns as ``R^T L R``, which is the
+    similarity transform rather than a single product. Getting that wrong leaves a tensor that is still
+    symmetric and still plausible, so it does not announce itself.
+
+    ``None`` when the machine has no catalogued coefficients.
+    """
+    if getattr(scanner, "d_scale_y_dx", None) is None:
+        return None
+    iso = np.asarray(grid.isocenter_m, dtype=np.float64)
+    R = None if to_scanner is None else np.asarray(to_scanner, dtype=np.float64)
+    if R is not None:
+        if R.shape != (3, 3):
+            raise ValueError(f"to_scanner is the 3x3 rotation taking grid axes to scanner axes; got {R.shape}")
+        if not np.allclose(R.T @ R, np.eye(3), atol=1e-6):
+            raise ValueError("to_scanner is not a rotation: a grid's axes are orthonormal in the scanner")
+
+    def tensor(positions_m):
+        d = np.asarray(positions_m, dtype=np.float64).reshape(-1, 3) - iso
+        if R is not None:
+            d = d @ R.T
+        L = np.atleast_3d(scanner.gradient_tensor(d)).reshape(-1, 3, 3)
+        if R is not None:
+            L = np.einsum("ji,njk,kl->nil", R, L, R)          # R^T L R, the similarity transform
+        return L
+
+    return tensor

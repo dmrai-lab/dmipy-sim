@@ -112,6 +112,7 @@ class ScannerSequence:
     split_echo: bool = False
     background_gradient: tuple = None
     concomitant: dict = None
+    gradient_nonlinearity: tuple = None
     imposed_gradient: np.ndarray = None
 
     def __post_init__(self):
@@ -444,6 +445,38 @@ class ScannerSequence:
         imposed = gc if self.imposed_gradient is None else self.imposed_gradient + gc
         return replace(self, G=(self.G + gc), imposed_gradient=np.ascontiguousarray(imposed),
                        concomitant={"position_m": tuple(tuple(float(v) for v in p) for p in r), "B0_T": B0})
+
+    def with_gradient_nonlinearity(self, L):
+        """The same acquisition as the COILS actually deliver it at one position: every commanded gradient
+        vector replaced by ``L @ g``, with ``L`` the gradient-nonlinearity tensor there
+        (:meth:`~dmipy_sim.acquisition.scanners.ScannerLimits.gradient_tensor`).
+
+        Unlike a background gradient this ADDS nothing -- it rescales and tilts what was already asked for,
+        so it vanishes wherever the commanded gradient does and cannot encode during a dead time. That is the
+        signature separating the two: a magnet's own gradient is on when nothing is played, a coil's
+        nonlinearity is not.
+
+        The consequence is an encoding error rather than a shading. The delivered b along a commanded unit
+        direction ``u`` is ``|L u|^2`` times the one asked for, along the rotated direction ``L u / |L u|``,
+        so a diffusivity fitted against the nominal b is wrong by that factor -- doubled, because b enters
+        the exponent through the square of the gradient.
+
+        ``L`` is one ``(3, 3)`` tensor or one per measurement.
+        """
+        L = np.asarray(L, dtype=np.float64)
+        if L.shape == (3, 3):
+            L = L[None]
+        if L.shape[1:] != (3, 3) or L.shape[0] not in (1, self.n_meas):
+            raise ValueError(f"L is one 3x3 tensor or one per measurement ({self.n_meas}); got {L.shape}")
+        if self.gradient_nonlinearity is not None:
+            raise ValueError("this acquisition already carries a gradient-nonlinearity tensor; apply it "
+                             "once, at the position the measurement is made")
+        G = np.asarray(self.G, dtype=np.float64)
+        new = np.einsum("mij,mtj->mti", np.broadcast_to(L, (self.n_meas, 3, 3)), G)
+        delta = (new - G).astype(np.float32)
+        imposed = delta if self.imposed_gradient is None else self.imposed_gradient + delta
+        return replace(self, G=new.astype(np.float32), imposed_gradient=np.ascontiguousarray(imposed),
+                       gradient_nonlinearity=tuple(tuple(float(v) for v in row.ravel()) for row in L))
 
     def with_gradient(self, G):
         """The same acquisition with another physical gradient of the same shape (a rescale, a rotation)."""
