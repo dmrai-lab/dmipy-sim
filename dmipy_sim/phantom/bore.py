@@ -117,7 +117,7 @@ def background_gradient_map(scanner, grid, *, to_scanner=None):
     if getattr(scanner, "b0_harmonic_Z2", None) is None:
         return None
     iso = np.asarray(grid.isocenter_m, dtype=np.float64)
-    R = None if to_scanner is None else np.asarray(to_scanner, dtype=np.float64)
+    R = _frame(grid, to_scanner)
     if R is not None:
         if R.shape != (3, 3):
             raise ValueError(f"to_scanner is the 3x3 rotation taking grid axes to scanner axes; got {R.shape}")
@@ -295,7 +295,7 @@ def gradient_tensor_map(scanner, grid, *, to_scanner=None):
     if getattr(scanner, "d_scale_y_dx", None) is None:
         return None
     iso = np.asarray(grid.isocenter_m, dtype=np.float64)
-    R = None if to_scanner is None else np.asarray(to_scanner, dtype=np.float64)
+    R = _frame(grid, to_scanner)
     if R is not None:
         if R.shape != (3, 3):
             raise ValueError(f"to_scanner is the 3x3 rotation taking grid axes to scanner axes; got {R.shape}")
@@ -339,7 +339,7 @@ def delivered_gradient(scanner, grid, sequence, *, voxels=None, to_scanner=None,
     R = _frame(grid, to_scanner)
     d = d_grid if R is None else d_grid @ R.T                # the grid's frame into the bore's
     B0 = getattr(scanner, "field_T", None)
-    L = gradient_tensor_map(scanner, grid, to_scanner=to_scanner) if nonlinearity else None
+    L = gradient_tensor_map(scanner, grid, to_scanner=R) if nonlinearity else None
     out = np.empty((len(d), sequence.n_meas, sequence.G.shape[1], 3), dtype=np.float64)
     Ls = None if L is None else L(grid.positions_m(idx))
     for k, r in enumerate(d):
@@ -407,7 +407,7 @@ def delivered_weights(scanner, grid, sequence, *, K, n_t, dt_pack, voxels=None, 
     out = np.repeat(W[None], len(d), axis=0)
 
     if nonlinearity:
-        Lf = gradient_tensor_map(scanner, grid, to_scanner=to_scanner)
+        Lf = gradient_tensor_map(scanner, grid, to_scanner=R)
         if Lf is not None:
             base = W.reshape(n_c, 3, -1)
             out = np.einsum("nij,kjm->nkim", Lf(pos), base).reshape(len(d), n_c * 3, -1)
@@ -424,7 +424,7 @@ def delivered_weights(scanner, grid, sequence, *, K, n_t, dt_pack, voxels=None, 
         # term by this module's own design (coil_G is built with background=False), so including it here
         # bought a bit-identical answer at 137x the cost.
         linear_only = not nonlinearity
-        if concomitant == "linearised" or linear_only:
+        if str(concomitant).lower() == "linearised" or linear_only:
             # The concomitant's extra gradient is quadratic in G(t) but LINEAR IN POSITION, so three column
             # projections done once combine by the voxel's own coordinates. Exact when nothing else has
             # changed the gradient -- and an APPROXIMATION when L or a background is also on, because the

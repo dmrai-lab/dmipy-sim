@@ -193,7 +193,11 @@ def pack(tmp_path_factory):
     from dmipy_sim.replay.bank import build_replay_pack
     from dmipy_sim.replay import read_rpk
     out = tmp_path_factory.mktemp("pk") / "w.rpk"
-    walk = d.simulate_trajectories(400, 2e-9, d.FreeDiffusion(), 0.05, 1e-3, seed=0, require_gpu=False)
+    # 40 000, not 400. At 400 the Monte-Carlo floor on this pack is 11-14 per cent in ADC against an
+    # effect of a few per cent, so a per-direction bias has an SNR under one and its SIGN is not determined.
+    # The assertions below still passed at 400 -- they compare two weight sets on the SAME walkers, which
+    # cancels most of the floor -- but any NUMBER read off such a fixture is a draw, not a measurement.
+    walk = d.simulate_trajectories(40_000, 2e-9, d.FreeDiffusion(), 0.05, 1e-3, seed=0, require_gpu=False)
     build_replay_pack(walk, id="t", license="x", citation="x", K=8, out_path=str(out))
     return read_rpk(str(out))
 
@@ -249,3 +253,94 @@ def test_the_scanner_biases_the_signal_by_position_and_by_direction(setup, pack)
     mid = int(np.argmin(np.abs(np.linalg.norm(d_v, axis=1) - 0.5 * np.linalg.norm(d_v[corner]))))
     _w, _e, p_mid = pack.walker_phases(seq, weights=W[mid])
     assert np.abs(np.log(_signal(p_mid) / s_iso)).max() < np.abs(bias).max()
+
+
+def test_the_delivered_weights_are_covariant_under_a_rigid_re_description(setup, pack):
+    """THE test the frame conventions needed, and the one every parity test is structurally blind to.
+
+    Describing the same physics in a rotated grid is not a different experiment. A voxel at bore position q
+    with gradient G, re-described in a grid carrying ``to_scanner = R``, sits at grid offset ``q R`` with
+    gradient ``G R`` -- and the delivered weights must be the aligned answer with only its AXIS index
+    rotated. Nothing about the magnet changed.
+
+    Parity cannot see a frame error because both routes share the convention, and the isocentre anchor
+    cannot either because every term vanishes there by construction. Three mutants survived the whole
+    90-test neighbourhood: the tensor similarity applied as ``R L R^T`` instead of ``R^T L R`` (worth 4.5
+    per cent in log S at a corner -- larger than the effect this branch exists to show, and it flips a
+    direction's sign), the concomitant read at a bore position instead of a grid one, and the background
+    rotated by ``R^T`` instead of ``R``. This kills all three, with no pack and no second route."""
+    from dataclasses import replace
+    s, _grid, seq = setup
+    R = ROT
+    q = np.array([0.03, -0.02, 0.025])                       # one bore position, well inside the anchor
+    shape, vs = (1, 1, 1), 0.01
+
+    aligned = Grid(shape=shape, voxel_size_m=(vs,) * 3, origin_m=tuple(q), isocenter_m=(0.0, 0.0, 0.0))
+    turned = Grid(shape=shape, voxel_size_m=(vs,) * 3, origin_m=tuple(q @ R), isocenter_m=(0.0, 0.0, 0.0))
+    posed = replace(seq, G=(np.asarray(seq.G, np.float64) @ R).astype(np.float32))
+
+    A = delivered_weights(s, aligned, seq, K=pack.K, n_t=pack.n_t, dt_pack=pack.dt)[0]
+    B = delivered_weights(s, turned, posed, K=pack.K, n_t=pack.n_t, dt_pack=pack.dt, to_scanner=R)[0]
+    A_rot = np.einsum("kjm,ji->kim", A.reshape(-1, 3, A.shape[-1]), R).reshape(A.shape)
+    rel = np.abs(B - A_rot).max() / max(np.abs(A).max(), 1e-300)
+    assert rel < 1e-5, f"the same physics re-described in a rotated grid gives a different answer: {rel:.2e}"
+
+
+def test_an_oblique_grid_is_not_silently_evaluated_in_the_wrong_frame(setup, pack):
+    """A grid that CARRIES its rotation must give the same answer as one told it explicitly. The tensor map
+    was handed the caller's raw ``to_scanner`` while the background and the concomitant got the resolved
+    frame, so an oblique grid mixed frames -- rotated for two terms, not for the third."""
+    s, _grid, seq = setup
+    shape, vs = (2, 2, 2), 0.02
+    org = tuple(-vs * (n - 1) / 2 for n in shape)
+    carried = Grid(shape=shape, voxel_size_m=(vs,) * 3, origin_m=org, isocenter_m=(0.0, 0.0, 0.0),
+                   to_scanner=ROT)
+    explicit = Grid(shape=shape, voxel_size_m=(vs,) * 3, origin_m=org, isocenter_m=(0.0, 0.0, 0.0))
+    a = delivered_weights(s, carried, seq, K=pack.K, n_t=pack.n_t, dt_pack=pack.dt)
+    b = delivered_weights(s, explicit, seq, K=pack.K, n_t=pack.n_t, dt_pack=pack.dt, to_scanner=ROT)
+    assert np.abs(a - b).max() / np.abs(b).max() < 1e-9
+
+
+def test_weights_refuse_the_two_routes_that_would_discard_them(setup, pack):
+    """Both were silent. A pose is carried by rotating the gradient BEFORE projection, so supplied weights
+    replace it wholesale and the pose vanishes (48 per cent of the signal). And the susceptibility-field
+    branches rebuild the gradient from the nominal sequence, so with a field active the result is
+    bit-identical to passing no weights at all -- including weights of zero, in exactly the low-field case
+    this feature exists for."""
+    s, grid, seq = setup
+    W = delivered_weights(s, grid, seq, K=pack.K, n_t=pack.n_t, dt_pack=pack.dt)[0]
+    with pytest.raises(ValueError, match="cannot both be given"):
+        pack.walker_phases(seq, weights=W, orientation=np.eye(3))
+    with pytest.raises(ValueError, match="not finite"):
+        pack.walker_phases(seq, weights=np.full_like(W, np.nan))
+    with pytest.raises(ValueError, match="real floating point"):
+        pack.walker_phases(seq, weights=np.ones(W.shape, dtype=np.int64))
+
+
+def test_the_signal_level_bias_is_the_b_level_prediction(setup, pack):
+    """The acceptance criterion of #369, end to end. For gradient nonlinearity alone the delivered b is
+    ``|L u|^2 b``, so a free-diffusion pack's ADC fitted against the NOMINAL b must be biased by exactly
+    ``|L u|^2 - 1``. That is a closed form, computed from the tensor and the direction, with no replay in
+    it -- so agreement tests the whole path from the catalogue through the contraction to a signal.
+
+    Sign convention, stated because I had it inverted: ``S = exp(-b_eff D)``, so fitting against nominal b
+    gives ``ADC_fit / D = b_eff / b_nom`` and the bias is ``log S_here / log S_iso - 1``. A voxel where
+    ``|L u| > 1`` receives MORE diffusion weighting than prescribed, so its signal is LOWER and its fitted
+    ADC HIGHER."""
+    s, grid, seq = setup
+    W = delivered_weights(s, grid, seq, K=pack.K, n_t=pack.n_t, dt_pack=pack.dt,
+                          background=False, concomitant=False)
+    d_v = grid.offset_m(grid.every_voxel).reshape(-1, 3)
+    iso, corner = int(np.argmin(np.linalg.norm(d_v, axis=1))), int(np.argmax(np.linalg.norm(d_v, axis=1)))
+    s_iso = _signal(pack.walker_phases(seq, weights=W[iso])[2])
+    s_cor = _signal(pack.walker_phases(seq, weights=W[corner])[2])
+    measured = np.log(s_cor) / np.log(s_iso) - 1.0
+
+    L = gradient_tensor_map(s, grid)(grid.positions_m(grid.every_voxel))[corner]
+    G = np.asarray(seq.G, np.float64)
+    u = np.stack([g[np.argmax(np.linalg.norm(g, axis=-1))] for g in G])
+    u = u / np.linalg.norm(u, axis=-1, keepdims=True)
+    predicted = np.array([float(np.sum((L @ v) ** 2)) for v in u]) - 1.0
+
+    np.testing.assert_allclose(measured, predicted, atol=2e-3)
+    assert np.abs(predicted).max() > 5e-3, "this fixture barely exercises the nonlinearity"
