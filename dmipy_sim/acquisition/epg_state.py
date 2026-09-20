@@ -90,6 +90,20 @@ class EPGState:
                 self.F[k:] = 0.0
         return self
 
+    def off_resonance(self, dt, dw):
+        """Advance every TRANSVERSE state by ``dw * dt`` radians, and the stored ones by nothing.
+
+        Off-resonance is gated exactly as the gradient is: magnetisation parked along z accumulates none of
+        it. That is why a refocusing train does not simply refocus a field offset -- the pathway that stayed
+        transverse throughout comes back to zero phase, and one that slept through an interval does not.
+        """
+        if dw:
+            ph = np.exp(1j * float(dw) * float(dt))
+            n = self.n
+            self.F[n:] *= ph                       # orders 0..N advance
+            self.F[:n] *= np.conj(ph)              # orders -N..-1 retard
+        return self
+
     def relax(self, dt, T1=None, T2=None):
         """Per-interval relaxation; longitudinal order zero regrows toward 1."""
         if T2:
@@ -150,7 +164,7 @@ def split_by_gate(events, n_orders, gradient_on):
     return branches
 
 
-def train_weights(prep_events, train_events, n_orders, gradient_on, readouts):
+def train_weights(prep_events, train_events, n_orders, gradient_on, readouts, dw=0.0, durations=None):
     """``{gate: [amplitude at each readout]}``: what each microscopic gate contributes to each echo.
 
     The preparation is split by gate; each branch is then propagated through the train as a state vector,
@@ -166,6 +180,8 @@ def train_weights(prep_events, train_events, n_orders, gradient_on, readouts):
                 s.pulse(ev[1], ev[2])
             else:
                 s.shift(ev[1])
+                if dw and durations is not None:
+                    s.off_resonance(durations[ev[2]] if ev[2] < len(durations) else 0.0, dw)
             if i in ro:
                 amps.append(s.signal)
         out[gate] = np.asarray(amps, np.complex128)

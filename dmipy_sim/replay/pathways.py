@@ -93,27 +93,40 @@ class TrainResponse:
     scale costs a state propagation and a handful of multiply-adds.
     """
 
-    def __init__(self, parts, waveform, pulse_times, TE, threshold, n_orders=None, readouts=()):
+    def __init__(self, parts, waveform, pulse_times, TE, threshold, n_orders=None, readouts=(),
+                 tau=None, durations=()):
         self.parts = dict(parts)                  # {gate: PoseResponse}
         self.waveform, self.pulse_times, self.TE = waveform, tuple(pulse_times), float(TE)
         self.threshold = float(threshold)
         self.n_orders = n_orders
         self.readouts = tuple(readouts)
+        #: each gate's SIGNED TRANSVERSE time over the preparation: what a uniform field offset
+        #: multiplies. Zero for the refocused pathway, which is why a spin echo refocuses an
+        #: offset and a stimulated one does not.
+        self.tau = dict(tau or {})
+        self.durations = tuple(durations)
 
     @property
     def n_gates(self):
         return len(self.parts)
 
-    def weights(self, b1_scale=1.0):
-        """``{gate: amplitude per readout}`` at this transmit scale: the RF's own doing, and all it does."""
+    def weights(self, b1_scale=1.0, dw=0.0):
+        """``{gate: amplitude per readout}`` at this transmit scale and field offset.
+
+        ``dw`` (rad/s) is a UNIFORM off-resonance carried through the train. It is not a phase applied at the
+        end: off-resonance is gated like the gradient, so a pathway that spent an interval along z accrues
+        none of it, and the train's own pulses then mix what is left. A drifting magnet is exactly this --
+        uniform in space, so one propagation serves a whole image.
+        """
         from ..acquisition.epg_state import train_weights
         prep, train, on, ro, _edges = sequence_events(self.waveform, b1_scale)
-        return train_weights(prep, train, int(self.n_orders), lambda i: on[i] if i < len(on) else False, ro)
+        return train_weights(prep, train, int(self.n_orders), lambda i: on[i] if i < len(on) else False, ro,
+                             dw=dw, durations=self.durations)
 
-    def at(self, b1_scale=1.0, echo=-1):
-        """The pose expansion of the whole train at this transmit scale, read at ``echo``."""
+    def at(self, b1_scale=1.0, echo=-1, dw=0.0):
+        """The pose expansion of the whole train at this transmit scale and field offset, at ``echo``."""
         from .replay import PoseResponse
-        w = self.weights(b1_scale)
+        w = self.weights(b1_scale, dw=dw)
         first = max(self.parts.values(), key=lambda r: r.lmax)      # the widest band carries the sum
         coeffs = np.zeros_like(np.asarray(first.coeffs, np.complex128))
         misfit = np.zeros_like(np.asarray(first.misfit, float))
@@ -122,6 +135,8 @@ class TrainResponse:
             if amp is None or not len(amp):
                 continue
             e = complex(amp[int(echo)])
+            if dw:                                    # the preparation's own share, gated per pathway
+                e = e * np.exp(1j * float(dw) * self.tau.get(gate, 0.0))
             if e == 0:
                 continue
             c = np.asarray(resp.coeffs, np.complex128)
@@ -218,4 +233,14 @@ def train_response(pack, waveform, *, keep=(None, 0), b1_reference=1.0, n_orders
     # `so3_index` lays coefficients out with `l` ascending, so a narrower gate's are a prefix of a wider
     # gate's and everything above its own band is genuinely zero.
     parts = {g: pack.pose_response(w, keep=keep, **kw) for g, w in gated.items()}
-    return TrainResponse(parts, waveform, edges[:-1], edges[-1], 0.0, n_orders=n_orders, readouts=ro)
+    tau = {}
+    for gate in gates:
+        v = 0.0
+        for k, kind in enumerate(gate):
+            if k + 1 >= len(edges):
+                break
+            v += _SIGN[kind] * float(np.sum((t >= edges[k]) & (t <= edges[k + 1] + 1e-12))) * dt
+        tau[gate] = v
+    durations = [edges[k + 1] - edges[k] for k in range(len(edges) - 1)]
+    return TrainResponse(parts, waveform, edges[:-1], edges[-1], 0.0, n_orders=n_orders, readouts=ro,
+                         tau=tau, durations=durations)
