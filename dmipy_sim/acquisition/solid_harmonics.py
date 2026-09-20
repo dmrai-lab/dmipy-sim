@@ -107,6 +107,5 @@ def check_harmonic(name, h=1e-4, points=None):
     :func:`dmipy_sim.acquisition.maxwell.harmonic_residual`, the same one every emitted field law is held
     to, so a term and a law cannot be judged by different rules.
     """
-    P = np.array([[0.031, -0.047, 0.023], [-0.019, 0.011, -0.053], [0.041, 0.037, 0.017]]) if points is None \
-        else np.asarray(points, dtype=np.float64)
+    P = maxwell.probe_points(0.05) if points is None else np.asarray(points, dtype=np.float64)
     return maxwell.harmonic_residual(lambda q: TERMS[name][1](q[:, 0], q[:, 1], q[:, 2]), P, h=h)

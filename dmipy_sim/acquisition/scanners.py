@@ -169,9 +169,7 @@ class ScannerLimits:
         maxwell.require_transverse(self.b0_axis, self.b1_axis, repr(self.name))
         law = self.harmonic_law()
         if law:
-            R = 0.5 * (self.b0_validity_radius or 0.1)
-            P = R * np.array([[0.31, -0.47, 0.23], [-0.19, 0.11, -0.53], [0.41, 0.37, 0.17],
-                              [0.57, 0.29, -0.31], [-0.43, -0.22, 0.44]])
+            P = maxwell.probe_points(0.5 * (self.b0_validity_radius or 0.1))
             maxwell.require_harmonic(lambda q: solid_harmonics.evaluate(law, q), P,
                                      f"the catalogued B0 law for {self.name!r}")
 
@@ -327,19 +325,32 @@ class ScannerLimits:
         Writing the coils this way is what makes the tensor a FIELD: a harmonic expansion cannot express an
         inadmissible ``L``, where a tensor assembled element by element can and did.
 
-        What the measurement gives and what Laplace then forces are different things, and the split is
-        sharp. The NIST regression measures the DIAGONAL: ``dL_jj/dx = a_j``. Completing each coil to a
-        harmonic then determines the rest, and for two of the three coils it determines it UNIQUELY --
-        ``d/dy (y + a_y x y) = 1 + a_y x`` and ``d/dz (z + a_z x z) = 1 + a_z x``, and ``xy`` and ``xz`` are
-        already harmonic, so ``XY`` and ``ZX`` are the only completions there are. The off-diagonals
-        ``L_xy = a_y y`` and ``L_xz = a_z z`` are therefore not a model choice; they are the measurement.
+        WHAT IS MEASURED AND WHAT IS CHOSEN. The NIST regression gives the DIAGONAL and nothing else:
+        ``dL_jj/dx = a_j``. Harmonicity and ``L(0) = I`` do NOT then determine the rest. For each coil the
+        admissible potentials are a four-parameter affine family in this basis (six in the full order-four
+        space, which this basis does not carry): any two-dimensional harmonic in the OTHER two coordinates,
+        with zero gradient at the origin, may be added without touching the measured diagonal -- for the y
+        coil ``x^2 - z^2``, ``xz`` and their cubic partners. The freedom is the same for all three coils.
 
-        The x coil is the one with freedom, because its own derivative is along the axis the mis-scaling
-        depends on: ``d/dx (x + a_x x^2 / 2) = 1 + a_x x`` needs ``x^2``, which is not harmonic, so the
-        curvature has to be borrowed from y or from z. ``gradient_completion`` is that one number -- the
-        share taken from y -- and it is the least-committed 1/2 by default. It costs little: over the 9 cm
-        validity radius the whole family spans 3.5 per cent of the nonlinearity and 0.001 per cent of a b
-        value, because ``a_x`` is the smallest of the three coefficients at 7 per cent of the largest.
+        What ships is the MINIMUM-NORM member of that family. That is not a tie-break dressed up: every free
+        direction is a distinct solid harmonic and so is L2-orthogonal to the particular solution, which
+        makes ``h = 0`` the unique minimiser of the added field energy rather than one of many. It is also
+        the lowest-order member, and the only one that keeps each coil's own reflection parity -- ``B_z`` odd
+        in the axis it encodes, the ideal Golay and Maxwell winding symmetry. Under that parity assumption
+        the family collapses to a point and the off-diagonals ``L_xy = a_y y`` and ``L_xz = a_z z`` follow
+        from the measured diagonal; without it they are a modelling choice, and the assumption is not in the
+        data. Note the model already asserts that ONE ideal parity is broken, since a non-zero ``a_j`` is
+        exactly a breach of parity in x.
+
+        The choice is not small. An admissible alternative that breaks the y coil's parity by as much as the
+        measured effect moves ``L`` by the whole modelled nonlinearity and a b value by a few per cent.
+
+        ``gradient_completion`` is the one member of that freedom this catalogue EXPOSES rather than the only
+        one that exists: the share of the x coil's curvature taken from y, at the least-committed 1/2, which
+        is also that sub-family's minimum-norm point. It costs little -- over the validity radius the whole
+        ``lam`` family spans 3.5 per cent of the nonlinearity and 0.001 per cent of a b value, because
+        ``a_x`` is the smallest of the three coefficients. It is one line inside the four-dimensional kernel
+        above, not a different kind of thing.
         """
         if self.d_scale_y_dx is None:
             return None
@@ -363,16 +374,22 @@ class ScannerLimits:
         this is an encoding error, not a shading.
 
         Column ``j`` is ``grad Phi_j`` from :meth:`gradient_potentials`, so the tensor is a field by
-        construction. The off-diagonals are not optional and not a refinement: a DIAGONAL ``L`` that is not
-        the identity is impossible, since a diagonal ``L`` makes each coil's ``B_z`` depend on its own axis
-        alone and Laplace then forces that dependence to be linear. Measured over this magnet's validity
-        radius the off-diagonal terms are the SAME SIZE as the diagonal departure and they carry the
-        eigenframe rotation entirely -- a median 26 and up to 48 degrees, which is the part a diagonal
-        tensor is structurally incapable of expressing.
+        construction. That off-diagonals EXIST is not optional: a diagonal ``L`` that is not the identity is
+        impossible, since a diagonal ``L`` makes each coil's ``B_z`` depend on its own axis alone and Laplace
+        then forces that dependence to be linear. Their particular VALUES are a modelling choice --
+        :meth:`gradient_potentials` says which one and why -- because the measurement constrains only the
+        diagonal.
 
-        One limit remains and it is the measurement's, not the representation's: only the TRACELESS part is
-        observable, because normalising each axis by the trace is what removes the unknown true
-        diffusivity. So ``L`` cannot express all three axes being mis-scaled together.
+        The principal frame of ``L`` is not the scanner frame, which is the part a diagonal tensor is
+        structurally incapable of expressing. A degree count for that rotation is easy to over-read: ``L`` is
+        the identity plus a perturbation whose eigenvalue spread is under a tenth, so its eigenvectors are
+        the ill-conditioned part and a large angle is arithmetic rather than physics. The bounded quantity is
+        the delivered ``|L u|^2``, which moves by up to about seven per cent over the validity radius.
+
+        One limit is the measurement's and not the representation's: only the TRACELESS part is OBSERVABLE,
+        because normalising each axis by the trace is what removes the unknown true diffusivity. A common
+        mode is perfectly expressible here -- three coils each carrying the same added curvature give
+        ``tr L = 3(1 + e x)`` -- so what is missing is the data to set it, not the freedom to state it.
 
         ``None`` when the machine has no catalogued coefficients -- which is every machine here but one, and
         not because the others are linear. Vendors do publish spherical-harmonic coil descriptions to
@@ -381,6 +398,7 @@ class ScannerLimits:
         phi = self.gradient_potentials()
         if phi is None:
             return None
+        self._refuse_outside(offset_m, "the gradient-nonlinearity tensor")
         d = np.atleast_2d(np.asarray(offset_m, dtype=np.float64))
         L = np.stack([solid_harmonics.gradient(phi[j], d) for j in ("x", "y", "z")], axis=-1)
         return L.reshape(np.shape(offset_m)[:-1] + (3, 3)) if np.ndim(offset_m) > 1 else L[0]
