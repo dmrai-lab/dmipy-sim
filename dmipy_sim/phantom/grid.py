@@ -15,6 +15,12 @@ class Grid:
     indices run along (``"RAS"``: i -> +x, j -> +y, k -> +z), and is the frame the acquisition's gradient and
     B0 directions are given in. Both positions default to a grid centred on the isocenter at the origin.
 
+    ``to_scanner`` is the rotation taking this grid's axes to the scanner's, for a grid prescribed obliquely
+    (:meth:`from_oblique_affine` sets it). It does not resample anything and nothing is straightened by it;
+    it is how the grid SAYS it is tilted, so that a field a machine imposes -- which is a function of
+    position in the bore and not in the image -- can be evaluated in the right frame without the caller
+    having to remember. ``None`` for an axis-aligned grid, whose axes are the scanner's already.
+
     ``origin_m`` and ``isocenter_m`` are what make a macroscopic layer a function of position in the bore
     (RPH.md 7). A missing ``isocenter_m`` defaults to the grid centre; a missing ``origin_m`` defaults to a
     grid centred on the scanner's origin, which is a GUESS about where the sample was put, so a phantom that
@@ -34,8 +40,10 @@ class Grid:
     isocenter_m: tuple = None
     axes: str = "RAS"
     attach: str = "substrate"
+    to_scanner: tuple = None
 
-    def __init__(self, *, shape, voxel_size_m, origin_m=None, isocenter_m=None, axes="RAS", attach="substrate"):
+    def __init__(self, *, shape, voxel_size_m, origin_m=None, isocenter_m=None, axes="RAS",
+                 attach="substrate", to_scanner=None):
         sh = tuple(int(v) for v in shape)
         vs = tuple(float(v) for v in voxel_size_m)
         if len(sh) != 3 or len(vs) != 3:
@@ -56,6 +64,13 @@ class Grid:
         # missing origin_m when any layer is declared. The grid does not know about layers, so it records
         # whether its placement was STATED and whoever declares a layer refuses on it.
         object.__setattr__(self, "_origin_stated", origin_m is not None)
+        if to_scanner is None:
+            object.__setattr__(self, "to_scanner", None)
+        else:
+            R = np.asarray(to_scanner, np.float64)
+            if R.shape != (3, 3) or not np.allclose(R.T @ R, np.eye(3), atol=1e-6):
+                raise ValueError("to_scanner is the 3x3 rotation taking this grid's axes to the scanner's")
+            object.__setattr__(self, "to_scanner", tuple(map(tuple, R)))
         object.__setattr__(self, "axes", ax)
         if attach not in ("substrate", "lab"):
             raise ValueError(f"attach is 'substrate' (the grid follows the tissue) or 'lab' (the grid is the bore's); got {attach!r}")
@@ -128,7 +143,8 @@ class Grid:
         else:
             axes = "RAS"
         grid = cls(shape=tuple(int(v) for v in shape)[:3], voxel_size_m=tuple(float(v) * 1e-3 for v in vs),
-                   origin_m=tuple(float(v) * 1e-3 for v in A[:3, 3]), isocenter_m=isocenter_m, axes=axes)
+                   origin_m=tuple(float(v) * 1e-3 for v in A[:3, 3]), isocenter_m=isocenter_m, axes=axes,
+                   to_scanner=R)
         return grid, R
 
     @classmethod
@@ -136,13 +152,14 @@ class Grid:
         g = meta["grid"] if "grid" in meta else meta
         return cls(shape=g["shape"], voxel_size_m=g["voxel_size_m"], origin_m=g.get("origin_m"),
                    isocenter_m=g.get("isocenter_m"), axes=g.get("axes", g.get("frame", "RAS")),
-                   attach=g.get("attach", "substrate"))
+                   attach=g.get("attach", "substrate"), to_scanner=g.get("to_scanner"))
 
     def to_meta(self):
         # RPH.md 0.4 spells the axes ``frame``; the reader accepts either
         return {"shape": list(self.shape), "voxel_size_m": list(self.voxel_size_m),
                 "origin_m": list(self.origin_m), "isocenter_m": list(self.isocenter_m), "frame": self.axes,
-                "attach": self.attach}
+                "attach": self.attach,
+                **({} if self.to_scanner is None else {"to_scanner": [list(r) for r in self.to_scanner]})}
 
     # ---- geometry ---------------------------------------------------------------------------------------------
     @property

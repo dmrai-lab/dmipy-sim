@@ -532,3 +532,68 @@ def test_a_phantom_refuses_a_layer_on_a_grid_it_only_guessed_the_place_of(pack_p
     with pytest.raises(ValueError, match="origin_m was never stated"):
         _phantom(pack_path, layers={"kappa_B1": b1}, grid=guessed)
     _phantom(pack_path, layers={"kappa_B1": b1})                              # GRID8 states it: fine
+
+
+# ── a machine's own field, end to end on a phantom (dmipy-sim#322 PR 4) ─────────────────────────────
+def _gre_and_se(pack_path):
+    """A gradient echo on the pack's grid and the same waveform refocused at TE/2."""
+    from dmipy_sim.replay import read_rpk
+    pk = read_rpk(pack_path)
+    gre = _acq(pk, [[1, 0, 0]], [0.0])
+    se = replace(gre, G=np.abs(np.asarray(gre.G)), family="pgse",
+                 rf=[RFEvent(0.0, 90), RFEvent((pk.n_t - 1) * pk.dt / 2, 180)])
+    return gre, se
+
+
+def _swoop_grid(shape=(8, 8, 1), vox=1e-2):
+    """Voxels spread across the bore, so the field law has somewhere to vary: 1 cm voxels, not 1 mm."""
+    return Grid(shape=shape, voxel_size_m=(vox, vox, vox), origin_m=(-0.035, -0.035, 0.0),
+                isocenter_m=(0.0, 0.0, 0.0))
+
+
+def test_a_scanner_that_publishes_a_field_brings_it_to_the_replay(pack_path):
+    """A field a magnet imposes is a property of the machine, and a replay is already told which machine it
+    is on -- so it comes along rather than the magnet being silently treated as ideal, which is what every
+    replay did until now and which looks identical."""
+    from dmipy_sim.acquisition.scanners import ScannerLimits
+    ph, *_ = _phantom(pack_path, grid=_swoop_grid())
+    swoop, prisma = ScannerLimits.of("swoop"), ScannerLimits.of("prisma")
+    gre, _ = _gre_and_se(pack_path)
+
+    ideal = _rows(ph, ph.replay(gre, scanner=0.064, complex_signal=True))       # a bare field strength
+    real = _rows(ph, ph.replay(gre, scanner=swoop, complex_signal=True))        # the machine itself
+    assert not np.allclose(np.angle(real), np.angle(ideal), atol=1e-3)
+
+    # a machine that publishes no profile is unchanged: every phantom that worked before still does
+    at3T = _rows(ph, ph.replay(gre, scanner=prisma, complex_signal=True))
+    np.testing.assert_allclose(at3T, _rows(ph, ph.replay(gre, scanner=3.0, complex_signal=True)), rtol=1e-9)
+
+
+def test_the_machines_field_refocuses_under_a_spin_echo_and_not_a_gradient_echo(pack_path):
+    """The physics assertion. A static offset is exactly what a 180 at TE/2 puts back, so the same machine
+    that dephases a gradient echo across the bore leaves a spin echo alone. If the field were entering as
+    anything other than a static offset this would not hold."""
+    from dmipy_sim.acquisition.scanners import ScannerLimits
+    ph, *_ = _phantom(pack_path, grid=_swoop_grid())
+    swoop = ScannerLimits.of("swoop")
+    gre, se = _gre_and_se(pack_path)
+
+    g_ideal = _rows(ph, ph.replay(gre, scanner=0.064, complex_signal=True))
+    g_real = _rows(ph, ph.replay(gre, scanner=swoop, complex_signal=True))
+    s_ideal = _rows(ph, ph.replay(se, scanner=0.064, complex_signal=True))
+    s_real = _rows(ph, ph.replay(se, scanner=swoop, complex_signal=True))
+
+    assert np.abs(np.angle(g_real / g_ideal)).max() > 0.05      # the gradient echo carries it
+    np.testing.assert_allclose(s_real, s_ideal, rtol=1e-9)      # the spin echo refocuses it exactly
+
+
+def test_a_stated_field_map_wins_over_the_machines_own(pack_path):
+    """A measured field map already contains whatever the magnet does, so adding the catalogue's law to it
+    would count the magnet twice. The stated map is used and the law stands down."""
+    from dmipy_sim.acquisition.scanners import ScannerLimits
+    ph, *_ = _phantom(pack_path, grid=_swoop_grid())
+    swoop = ScannerLimits.of("swoop")
+    gre, _ = _gre_and_se(pack_path)
+    stated = _rows(ph, ph.replay(gre, scanner=swoop, off_resonance=1e-7, complex_signal=True))
+    same_at_3T = _rows(ph, ph.replay(gre, scanner=3.0, off_resonance=1e-7, complex_signal=True))
+    np.testing.assert_allclose(np.angle(stated), np.angle(same_at_3T), rtol=1e-9)
