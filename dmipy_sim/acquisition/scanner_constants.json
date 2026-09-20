@@ -282,6 +282,14 @@
    "journal_or_publisher": "Journal of Magnetic Resonance Imaging 49:1528-1542",
    "year": 2019,
    "doi_or_url": "https://doi.org/10.1002/jmri.26637"
+  },
+  "romeo1984_profiling": {
+   "key": "romeo1984_profiling",
+   "authors": "Romeo F, Hoult D I",
+   "title": "Magnet field profiling: analysis and correcting coil design (the standard solid-harmonic description of a magnet's field, and the shim nomenclature every vendor uses)",
+   "journal_or_publisher": "Magnetic Resonance in Medicine 1:44-65",
+   "year": 1984,
+   "doi_or_url": "https://doi.org/10.1002/mrm.1910010107"
   }
  },
  "scanners": {
@@ -1175,32 +1183,41 @@
      "location": "Appendix, background-gradient correction",
      "confidence": "cited"
     },
-    "b0_quadratic": {
-     "value": 108753.6,
-     "unit": "ppm/m^2",
-     "field_T": 0.064,
-     "context": "the even term c of dB/B0 = a x + c r^2 about isocentre: the isotropic bowl. Solved TOGETHER with b0_asymmetry_rl against both cited figures of this magnet, which it then reproduces exactly -- 1100 ppm peak-to-peak over the 16 cm DSV and a steepest 1.400 mT/m inside it. The two numbers determine the two coefficients between them: a purely linear field matching the DSV figure would need 0.44 mT/m rather than 1.4, and a purely isotropic one reaches only 80 % of the DSV figure, so the field needs both a bowl and a tilt",
-     "source_key": "gholam2025_swoop",
-     "location": "solved against the Methods' DSV homogeneity and the Appendix's background gradient",
-     "confidence": "derived"
-    },
     "b0_validity_radius": {
      "value": 0.08,
      "unit": "m",
      "field_T": 0.064,
-     "context": "how far from isocentre b0_quadratic is anchored: the radius the cited gradient was measured at. The law is an extrapolation beyond this and a consumer refuses rather than extrapolating",
+     "context": "how far from isocentre b0_quadratic is anchored: the radius the cited gradient was measured at. The law is an extrapolation beyond this and a consumer refuses rather than extrapolating. The law is now a solid-harmonic expansion truncated at l=3, so beyond this radius it is doubly an extrapolation: in radius, and in the orders that were never constrained",
      "source_key": "gholam2025_swoop",
      "location": "Appendix, background-gradient correction",
      "confidence": "derived"
     },
-    "b0_asymmetry_rl": {
-     "value": 4474.4,
-     "unit": "ppm/m",
+    "b0_harmonic_l2_m0": {
+     "value": 0.0399124,
+     "unit": "1/m^2",
      "field_T": 0.064,
-     "context": "the ODD term a of dB/B0 = a x + c r^2, along the scanner's R/L axis: what 'the magnet is asymmetric in RL' means, and the term a bowl alone cannot express. A single yoke sits on one side, so the field is not mirror-symmetric about isocentre. It is substantial -- the field differs by 716 ppm between +8 and -8 cm, 1054 against 338 -- which is why an isotropic law is not good enough here. The SIGN is a convention: the source says the magnet is asymmetric but not which side is high, so +x (R) is assumed and a study that cares about the direction must check it",
+     "context": "the coefficient of the zonal harmonic Z2 = zeta^2 - (xi^2 + eta^2)/2, with zeta measured along B0. This is the 'bowl' every magnet has, in the only form a field can take it. A magnet's field in the imaging volume is a solution of Laplace's equation, so it is a sum of SOLID HARMONICS and nothing else. The previous description used an isotropic r^2 bowl, which is not a harmonic and therefore not a field: its entire harmonic content is a constant with zero gradient, so every background gradient derived from it was an artefact of the basis. It also put a strict minimum of the field at isocentre, which the maximum principle forbids. Solved together with b0_harmonic_l3_m1 against both cited figures of this magnet, which the pair then reproduces exactly: 1100 ppm peak-to-peak over the 16 cm DSV and a steepest 1.400 mT/m inside it",
      "source_key": "gholam2025_swoop",
-     "location": "Methods, scanner description ('asymmetric in RL'); magnitude solved with b0_quadratic",
+     "location": "solved against the Methods' DSV homogeneity and the Appendix's background gradient",
      "confidence": "derived"
+    },
+    "b0_harmonic_l3_m1": {
+     "value": 0.665784,
+     "unit": "1/m^3",
+     "field_T": 0.064,
+     "context": "the coefficient of the l=3, m=1 harmonic xi(4 zeta^2 - xi^2 - eta^2), odd in xi and therefore the magnet's R/L asymmetry. Why order THREE and not one: the 1100 ppm is a POST-LINEAR-SHIM residual (the source says the magnet was 'B0 shimmed, using linear (gradient) B0 shimming'), so the l=1 content has been nulled and cannot be fitted to that number -- but the magnet is still described as asymmetric in RL, and an odd asymmetry with no l=1 must live at l=3. Order three is independently REQUIRED by the two figures. For a pure zonal harmonic of order l the steepest gradient at a given peak-to-peak over a ball is fixed: 0.50 / 1.33 / 1.51 / 2.80 times (p-p)/R for l = 1 / 2 / 3 / 4. The cited 1.4 mT/m at 1100 ppm over a 16 cm DSV needs 1.59, which l<=2 cannot reach at all. So this magnet must carry l>=3 content, and that is an inference about the hardware rather than a modelling choice",
+     "source_key": "gholam2025_swoop",
+     "location": "Methods, scanner description ('asymmetric in RL'); magnitude solved with b0_harmonic_l2_m0",
+     "confidence": "derived"
+    },
+    "b0_asymmetry_axis": {
+     "value": "R",
+     "unit": "",
+     "field_T": 0.064,
+     "context": "the patient-frame direction the odd harmonic is odd along: the magnet is 'asymmetric in the RL-direction' because a single yoke sits on one side. The SIGN is a convention -- the source does not say which side is high -- and a study that cares about the direction must check it. This axis and b0_axis together fix the frame the harmonics are written in, so the law needs no third convention",
+     "source_key": "gholam2025_swoop",
+     "location": "Methods, scanner description",
+     "confidence": "cited"
     }
    },
    "notes": "A permanent magnet's field follows its temperature, and this one is passively cooled with no temperature control over its cleared 15-30 degC range (510(k)). The measured coefficient is -1400 Hz/K = -514 ppm/K (ljungberg2025_unity, 244 scans at 17 sites) -- about HALF the bulk NdFeB figure, and what the machine is actually made of is not public. Two things keep that from reaching the data: the pre-scan calibration removes the between-session ambient term entirely, and the protocol re-centres f0 after every two DWIs (every volume, for royer2026_tract_64mT), attributing the within-scan drift to GRADIENT heating. (The 50 mT Halbach is the other way round -- there the gradients heat the magnet negligibly and the body is the source.) The gradients are passively cooled, which caps protocols near an hour. Its diffusion sequence is a non-CPMG SPLICE split-echo train (ohalloran2022_dwi_64mt).",

@@ -75,8 +75,9 @@ class ScannerLimits:
     field_T: float = None      # T, the static field; None for an envelope or an uncatalogued field
     b0_axis: tuple = None      # patient-frame unit vector along B0; the magnet frame's +z
     b1_axis: tuple = None      # patient-frame unit vector along the transmit coil, None for a birdcage
-    b0_quadratic: float = None        # 1/m^2, the even term c of dB/B0 = a x + c r^2
-    b0_asymmetry_rl: float = None     # 1/m, the odd term a, along the scanner's R/L axis
+    b0_harmonic_l2_m0: float = None   # 1/m^2, the zonal Z2 coefficient of dB/B0
+    b0_harmonic_l3_m1: float = None   # 1/m^3, the l=3 m=1 coefficient: the magnet's R/L asymmetry
+    b0_asymmetry_axis: tuple = None   # patient-frame unit vector the odd harmonic is odd along
     b0_validity_radius: float = None  # m, how far from isocentre that law is anchored
     b1_axial_falloff: float = None    # 1/m^2, the coefficient of kappa_B1 = 1 - a z^2 along the bore
     b1_calibration_offset: float = None  # a systematic transmit scale, 1 = nominal
@@ -111,8 +112,10 @@ class ScannerLimits:
                             if scc.leaf_si(entry, "rf", "peak_B1_body_coil") is not None
                             else scc.leaf_si(entry, "rf", "peak_B1_head_coil")),
                    field_T=(float(entry["field_T"]) if entry.get("field_T") is not None else None),
-                   b0_quadratic=scc.leaf_si(entry, "homogeneity", "b0_quadratic"),
-                   b0_asymmetry_rl=scc.leaf_si(entry, "homogeneity", "b0_asymmetry_rl"),
+                   b0_harmonic_l2_m0=scc.leaf_si(entry, "homogeneity", "b0_harmonic_l2_m0"),
+                   b0_harmonic_l3_m1=scc.leaf_si(entry, "homogeneity", "b0_harmonic_l3_m1"),
+                   b0_asymmetry_axis=_axis(scc.leaf_raw(entry, "homogeneity", "b0_asymmetry_axis"),
+                                          "b0_asymmetry_axis", key),
                    b0_validity_radius=scc.leaf_si(entry, "homogeneity", "b0_validity_radius"),
                    b1_axial_falloff=scc.leaf_si(entry, "rf", "b1_axial_falloff"),
                    b1_calibration_offset=scc.leaf_si(entry, "rf", "b1_calibration_offset"),
@@ -165,78 +168,93 @@ class ScannerLimits:
         # a transverse axis to build the frame on: the coil's if there is one, else any vector not parallel
         # to the field. Which one it is does not matter for anything axially symmetric about B0, and the
         # cases that are not -- the magnet's own R/L asymmetry -- are catalogued in PATIENT axes anyway.
-        seed = np.asarray(self.b1_axis, dtype=np.float64) if self.b1_axis is not None else None
+        seed = self.b0_asymmetry_axis if self.b0_asymmetry_axis is not None else self.b1_axis
+        seed = None if seed is None else np.asarray(seed, dtype=np.float64)
         if seed is None or abs(float(z @ (seed / np.linalg.norm(seed)))) > 1 - 1e-9:
             seed = np.eye(3)[int(np.argmin(np.abs(z)))]
         x = seed - (seed @ z) * z
         x = x / np.linalg.norm(x)
         return np.stack([x, np.cross(z, x), z])          # rows: the magnet frame's axes in patient RAS
 
-    def b0_offset(self, offset_m):
-        """The static field's departure from uniformity at a displacement from isocentre, in **tesla**:
-        ``B0 * (a x + c r^2)`` for the catalogued shape. ``offset_m`` is ``(..., 3)`` in metres in the
-        bore's frame (x is R/L, as the grid's ``axes`` name them), and the result has its leading shape.
+    def _field_coords(self, offset_m):
+        """``(zeta, xi, eta)`` -- a displacement resolved onto the field law's own axes: ``zeta`` along B0,
+        ``xi`` along the magnet's asymmetry, ``eta`` completing a right-handed set.
 
-        The two terms are different physics. ``c`` is the isotropic bowl every magnet has; ``a`` is the
-        R/L asymmetry a SINGLE-YOKE magnet has because its yoke sits on one side, so the field is not
-        mirror-symmetric about isocentre. Leaving the odd term out would be a visible error rather than a
-        small one -- for the Swoop the field differs by 716 ppm between +8 and -8 cm.
-
-        ``None`` when this machine's profile is not catalogued -- which is every machine but one, because a
-        shimmed superconducting magnet's residual is parts per million and nobody publishes its shape. A
-        permanent magnet's is parts per thousand and does get published, which is the case this exists for.
-
-        Beyond ``b0_validity_radius`` the law is an extrapolation and is refused: the coefficient is
-        anchored at one radius, and a magnet's profile steepens past the volume it was specified over.
+        The harmonics are written in these coordinates and never in raw array indices, because an index means
+        whatever the caller's frame happens to be and these mean something about the magnet.
         """
-        if self.b0_quadratic is None or self.field_T is None:
-            return None
-        d = np.asarray(offset_m, dtype=np.float64)
-        r = np.linalg.norm(d, axis=-1)
+        d = np.atleast_2d(np.asarray(offset_m, dtype=np.float64))
+        R = self.magnet_frame()
+        if R is None:
+            raise ValueError(f"{self.name!r} declares no b0_axis, so its field law has no frame to live in")
+        m = d @ R.T                                   # rows of R are the magnet axes in patient coordinates
+        return m[..., 2], m[..., 0], m[..., 1]
+
+    def _harmonics(self, offset_m):
+        """``(value, gradient)`` of ``dB/B0`` in the magnet frame, from the catalogued solid harmonics."""
+        zeta, xi, eta = self._field_coords(offset_m)
+        c2 = self.b0_harmonic_l2_m0 or 0.0
+        c3 = self.b0_harmonic_l3_m1 or 0.0
+        val = c2 * (zeta ** 2 - 0.5 * (xi ** 2 + eta ** 2)) + c3 * xi * (4.0 * zeta ** 2 - xi ** 2 - eta ** 2)
+        g_xi = -c2 * xi + c3 * (4.0 * zeta ** 2 - 3.0 * xi ** 2 - eta ** 2)
+        g_eta = -c2 * eta - 2.0 * c3 * xi * eta
+        g_zeta = 2.0 * c2 * zeta + 8.0 * c3 * xi * zeta
+        return val, np.stack([g_xi, g_eta, g_zeta], axis=-1)
+
+    def _refuse_outside(self, offset_m, what):
+        r = np.linalg.norm(np.atleast_2d(np.asarray(offset_m, dtype=np.float64)), axis=-1)
         if self.b0_validity_radius is not None and float(np.max(r)) > self.b0_validity_radius:
             raise ValueError(
-                f"the field law for {self.name!r} is anchored at {self.b0_validity_radius*100:.0f} cm from "
-                f"isocentre and something here is {float(np.max(r))*100:.1f} cm out. A magnet's profile "
-                f"steepens beyond the volume it was specified over, so this is refused rather than "
-                f"extrapolated")
-        shape = self.b0_quadratic * r ** 2
-        if self.b0_asymmetry_rl:
-            shape = shape + self.b0_asymmetry_rl * d[..., 0]        # x is R/L
-        return self.field_T * shape
+                f"the field law for {self.name!r} is a solid-harmonic expansion anchored at "
+                f"{self.b0_validity_radius*100:.0f} cm from isocentre and something here is "
+                f"{float(np.max(r))*100:.1f} cm out. Beyond it the truncation is an extrapolation in the "
+                f"orders that were never constrained as well as in radius, so {what} is refused")
+
+    def b0_offset(self, offset_m):
+        """The static field's departure from uniformity at a displacement from isocentre, in **tesla**.
+
+        A magnet's field in the imaging volume solves Laplace's equation, so it is a sum of SOLID HARMONICS
+        and can be nothing else. This evaluates the catalogued expansion: a zonal Z2 -- the bowl every magnet
+        has -- plus an l=3, m=1 term odd along the magnet's declared asymmetry axis.
+
+        Why the asymmetry sits at order THREE rather than one. The published homogeneity is a post-linear-shim
+        residual, so the l=1 content has been nulled and cannot be fitted to it; but the magnet is still
+        asymmetric, and an odd asymmetry with no l=1 lives at l=3. Order three is independently required by
+        the two published figures, which no l<=2 expansion can reach.
+
+        A consequence worth knowing, because it reverses what an inadmissible bowl suggested: every harmonic
+        of order two or more has ZERO gradient at the origin, so a linearly shimmed magnet does not encode
+        diffusion at isocentre. The background gradient grows from nothing.
+
+        ``offset_m`` is ``(..., 3)`` in metres in PATIENT axes; the law resolves it onto its own frame
+        itself. ``None`` when the machine publishes no profile, which is every machine but a permanent-magnet
+        one. Refused beyond ``b0_validity_radius``.
+        """
+        if self.b0_harmonic_l2_m0 is None or self.field_T is None:
+            return None
+        self._refuse_outside(offset_m, "the field")
+        val, _g = self._harmonics(offset_m)
+        out = self.field_T * val
+        return out if np.ndim(offset_m) > 1 else float(out[0])
 
     def b0_gradient(self, offset_m):
         """The SPATIAL GRADIENT of the static field at a displacement from isocentre, in **T/m** -- the
-        magnet's own encoding gradient, which is on during every pulse and every dead time because a magnet
-        does not switch off.
+        magnet's own encoding gradient, on during every pulse and every dead time because a magnet does not
+        switch off.
 
-        It is the derivative of :meth:`b0_offset`, so it is the same law and not a second one:
-        ``grad B0 (a x + c r^2) = B0 (a xhat + 2 c r)``. Feed it to
-        :meth:`~dmipy_sim.acquisition.scanner_sequence.ScannerSequence.with_background_gradient` and the
-        effective gradient, the b value and the cross term with the pulsed gradient all follow exactly.
+        The analytic derivative of :meth:`b0_offset`, returned in PATIENT axes. Being the gradient of a
+        harmonic function it is divergence-free, which the r^2 bowl it replaces was not -- that one implied a
+        monopole in the gradient field.
 
-        It does NOT vanish at isocentre, and that is the odd term rather than an error: a single-yoke magnet
-        is not mirror-symmetric, so ``a`` survives differentiation where the bowl's ``2 c r`` does not. On
-        the Swoop that residue is 0.29 mT/m at the origin, against 1.40 mT/m at 8 cm on the high side and
-        0.83 mT/m on the low one. A magnet whose only term were the bowl would encode nothing at its centre;
-        this one encodes something everywhere.
-
-        ``None`` when the machine publishes no profile. Refused beyond ``b0_validity_radius``, for the
-        reason :meth:`b0_offset` gives -- and more sharply here, since a derivative extrapolates worse than
-        the quantity it came from.
+        It VANISHES at isocentre, and that is the linear shim rather than an accident: every l>=2 harmonic has
+        zero gradient at the origin. ``None`` when the machine publishes no profile; refused beyond the
+        anchor radius, where a truncated expansion extrapolates in order as well as in radius.
         """
-        if self.b0_quadratic is None or self.field_T is None:
+        if self.b0_harmonic_l2_m0 is None or self.field_T is None:
             return None
-        d = np.atleast_2d(np.asarray(offset_m, dtype=np.float64))
-        r = np.linalg.norm(d, axis=-1)
-        if self.b0_validity_radius is not None and float(np.max(r)) > self.b0_validity_radius:
-            raise ValueError(
-                f"the field law for {self.name!r} is anchored at {self.b0_validity_radius*100:.0f} cm from "
-                f"isocentre and something here is {float(np.max(r))*100:.1f} cm out. A derivative "
-                f"extrapolates worse than the law it came from, so this is refused")
-        g = 2.0 * self.b0_quadratic * d
-        if self.b0_asymmetry_rl:
-            g[..., 0] += self.b0_asymmetry_rl                        # x is R/L
-        out = self.field_T * g
+        self._refuse_outside(offset_m, "its derivative")
+        _v, g_mag = self._harmonics(offset_m)
+        out = self.field_T * (g_mag @ self.magnet_frame())      # magnet axes back into patient axes
         return out.reshape(np.shape(offset_m)) if np.ndim(offset_m) > 1 else out[0]
 
     def b0_drift(self, delta_T_K):

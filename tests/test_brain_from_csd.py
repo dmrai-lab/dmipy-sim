@@ -124,7 +124,9 @@ def test_the_field_law_must_be_rendered_through_the_obliquity(example, wm_pack):
 
     # and defeating it disagrees -- what the grid's own rotation is buying
     worst = np.abs(right - wrong).max() / swoop.field_T * 1e6
-    assert worst > 1.0, f"defeating the obliquity moved the field by only {worst:.3f} ppm: not a test"
+    # The crop is small and the harmonic law has no linear term, so it is flat near the centre and the
+    # obliquity has little to bite on there. The full-field-of-view check below is what carries the weight.
+    assert worst > 0.4, f"defeating the obliquity moved the field by only {worst:.3f} ppm: not a test"
 
     # The crop is 2.5 x 2.5 x 0.75 cm, which understates it: the bowl goes as r^2 and the asymmetry as r,
     # so the error grows with the field of view. Over the acquisition's real 24 x 24 x 15 cm, inside the
@@ -152,43 +154,44 @@ def test_a_field_law_is_none_where_the_machine_publishes_none(example, wm_pack):
 
 
 # ── what the magnet costs this brain (dmipy-sim#322 PR 8) ───────────────────────────────────────────
-def test_the_magnet_s_adc_bias_is_above_the_pack_s_own_floor_everywhere_in_the_brain():
-    """The result that decides whether any of this matters. A replay's answer is only as good as the pack's
-    Monte-Carlo floor, so a systematic error below that floor is invisible and can be ignored. This one is
-    not: over the BATMAN matrix centred in the bore, the Swoop's ADC bias exceeds the 1 s CACTUS pack's
-    floor of 0.0048 in EVERY voxel the field law is anchored over -- including at isocentre, where it is
-    still several times the floor because a single-yoke magnet's odd term survives differentiation.
+def test_the_magnet_s_adc_bias_clears_the_pack_s_floor_where_the_magnet_encodes():
+    """The result that decides whether any of this matters, and it is sharper than the version it replaces.
 
-    It also grows monotonically with radius, which is the signature of a field law rather than of noise."""
+    Over the BATMAN matrix centred in the bore the Swoop's ADC bias exceeds the 1 s CACTUS pack's floor of
+    0.0048 in 97.6 % of voxels -- so it is almost never lost in the Monte-Carlo error. But it does NOT exceed
+    it everywhere, and the exceptions are not noise: they sit near isocentre, where a linearly shimmed magnet
+    has no first-order field variation and therefore encodes nothing. Inside 2 cm only about half the voxels
+    clear the floor.
+
+    An earlier version asserted the bias cleared the floor essentially everywhere, including at isocentre.
+    That came from a field law with a free linear term fitted to a figure the source states is measured AFTER
+    linear shimming -- double-counting, and it manufactured a bias where the magnet has none. The worst-case
+    figure is unchanged by the correction (15.4 % against 15.3 %); the MEDIAN halves, because the old law was
+    wrong mostly in the middle."""
     import importlib.util
     from dmipy_sim.acquisition.scanners import ScannerLimits
     spec = importlib.util.spec_from_file_location("bias", ROOT / "examples" / "rph" / "swoop_brain_bias.py")
     mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
 
     swoop = ScannerLimits.of("swoop")
-    grid, R = mod.brain_grid(shape=(24, 24, 16), voxel_m=5e-3)          # the same volume, coarsely sampled
+    grid, R = mod.brain_grid(shape=(24, 24, 16), voxel_m=5e-3)
     seq = mod.swoop_protocol(n_dirs=6)
     vox, bias = mod.bias_map(swoop, grid, R, seq)
     worst_dir = np.abs(bias).max(axis=1)
-    above = worst_dir > mod.PACK_FLOOR
-    assert above.mean() > 0.999, f"only {above.mean():.3%} of voxels clear the pack floor"
-    # The handful that do not are a NULL SURFACE of this direction set rather than a quiet part of the
-    # magnet: a thin shell where the odd term and the bowl's share of the cross term cancel for every
-    # direction at once. It moves if the directions do, so it is not a property of the field.
-    if (~above).any():
-        r_null = np.linalg.norm(grid.positions_m(vox[~above]) - np.asarray(grid.isocenter_m), axis=-1)
-        assert r_null.min() > 0.01, "a null at the very centre would mean the odd term is missing"
-    assert 0.10 < np.abs(bias).max() < 0.20, f"worst bias {np.abs(bias).max():.1%}, not the measured ~15 %"
-
-    # monotone in radius, band by band
     rad = np.linalg.norm(grid.positions_m(vox) - np.asarray(grid.isocenter_m), axis=-1)
+
+    assert 0.10 < np.abs(bias).max() < 0.20, f"worst bias {np.abs(bias).max():.1%}, not the measured ~15 %"
+    above = worst_dir > mod.PACK_FLOOR
+    assert above.mean() > 0.9, f"only {above.mean():.1%} of voxels clear the pack floor"
+    # and the ones that do not are CENTRAL, which is the shim rather than an accident
+    assert np.median(rad[~above]) < np.median(rad[above])
+
     med = [np.median(worst_dir[(rad >= lo) & (rad < hi)])
            for lo, hi in ((0.0, 0.02), (0.02, 0.04), (0.04, 0.06), (0.06, 0.08))]
     assert all(np.diff(med) > 0), f"the bias is not monotone in radius: {np.round(med, 4)}"
-
-    # averaging over directions hides it: the cross term flips sign with the diffusion direction
+    assert med[0] < 2 * mod.PACK_FLOOR, "the innermost band should be near the floor, not far above it"
+    # averaging over directions still hides most of it
     assert np.abs(bias.mean(axis=1)).max() < 0.4 * np.abs(bias).max()
-
 
 def test_a_shimmed_superconducting_magnet_has_no_shape_to_render_and_that_is_the_comparison():
     """The 3 T half of the same figure. A clinical magnet's residual is parts per million, nobody publishes

@@ -203,38 +203,56 @@ def test_an_alias_may_name_an_envelope_and_a_citation_may_be_prose_only():
 
 
 # ── the magnet's field SHAPE, not just a figure (dmipy-sim#322 PR 2) ────────────────────────────────
-def test_the_field_law_is_solved_against_both_cited_figures_at_once():
-    """The catalogue held two numbers about the Swoop's field -- 1100 ppm over a 16 cm DSV and up to 1.4
-    mT/m at 8 cm -- and nothing in Python read either. They determine the two coefficients BETWEEN them:
-    a purely linear field matching the DSV figure would need 0.44 mT/m rather than 1.4, and a purely
-    isotropic one reaches only 80 % of the DSV figure. The field needs both a bowl and a tilt, and with
-    both it reproduces each cited number exactly."""
+def test_the_field_law_is_a_sum_of_solid_harmonics_and_nothing_else():
+    """The constraint that decides the form. A magnet's field in the imaging volume solves Laplace's
+    equation, so it is a sum of solid harmonics; anything else is not a field. The previous description used
+    an isotropic r^2 bowl, whose entire harmonic content is a constant with ZERO gradient -- so every
+    background gradient taken from it was an artefact of the basis, and it put a strict minimum of the field
+    at isocentre, which the maximum principle forbids."""
     s = ScannerLimits.of("swoop")
-    R, B0 = s.b0_validity_radius, s.field_T
-    x = np.linspace(-R, R, 20001)
-    ppm = 1e6 * (s.b0_asymmetry_rl * x + s.b0_quadratic * x ** 2)
-    assert ppm.max() - ppm.min() == pytest.approx(1100.0, rel=1e-3)                 # the DSV figure
-    grad = B0 * np.abs(s.b0_asymmetry_rl + 2 * s.b0_quadratic * x).max()
-    assert grad == pytest.approx(1.4e-3, rel=1e-3)                                  # the gradient figure
-    for leaf in ("b0_quadratic", "b0_asymmetry_rl"):
-        assert scc.get_limit("hyperfine_swoop_64mT", "homogeneity", leaf)["confidence"] == "derived"
+    h = 2e-4
+    for p in ([0.012, -0.019, 0.021], [-0.03, 0.01, 0.04], [0.0, 0.0, 0.0]):
+        p = np.asarray([p])
+        lap = sum(float(s.b0_offset(p + h * e)) - 2 * float(s.b0_offset(p)) + float(s.b0_offset(p - h * e))
+                  for e in np.eye(3)) / h ** 2
+        assert abs(lap) < 1e-9, f"the field is not harmonic at {p}: laplacian {lap:.2e}"
+        # and the gradient of a harmonic field is divergence-free -- the bowl's was not
+        div = sum((s.b0_gradient(p + h * e)[0][i] - s.b0_gradient(p - h * e)[0][i]) / (2 * h)
+                  for i, e in enumerate(np.eye(3)))
+        assert abs(div) < 1e-9, f"the gradient field has a source at {p}: div {div:.2e}"
 
 
-def test_the_field_law_carries_the_magnets_RL_asymmetry():
-    """'The magnet is asymmetric in RL' is an ODD term in x, which a bowl cannot express: a single yoke sits
-    on one side, so the field is not mirror-symmetric about isocentre. It is not a small correction -- the
-    Swoop's field differs by 716 ppm between +8 and -8 cm, 1054 against 338 -- so an isotropic law would be
-    visibly wrong on one side of the bore and not the other."""
+def test_the_field_law_reproduces_both_cited_figures_at_once():
+    """Two coefficients against two published numbers, and it is the ORDERS that are inferred rather than
+    fitted: for a pure zonal harmonic of order l the steepest gradient at a given peak-to-peak over a ball is
+    fixed at 0.50 / 1.33 / 1.51 / 2.80 times (p-p)/R for l = 1 / 2 / 3 / 4. The cited 1.4 mT/m at 1100 ppm
+    needs 1.59, which no expansion through l=2 can reach -- so this magnet must carry l>=3 content."""
     s = ScannerLimits.of("swoop")
     R = s.b0_validity_radius
-    plus, minus = (s.b0_offset([[v, 0, 0]])[0] / s.field_T * 1e6 for v in (R, -R))
-    assert plus == pytest.approx(1054.0, rel=0.01) and minus == pytest.approx(338.0, rel=0.01)
-    assert plus - minus == pytest.approx(716.0, rel=0.01)
-    # the odd term acts along R/L only, so a displacement along the bore keeps the bowl alone
-    along_z = s.b0_offset([[0, 0, R]])[0] / s.field_T * 1e6
-    assert along_z == pytest.approx(1e6 * s.b0_quadratic * R ** 2, rel=1e-9)
-    assert s.b0_offset([[0, R, 0]])[0] == pytest.approx(s.b0_offset([[0, 0, R]])[0], rel=1e-9)
+    rng = np.random.default_rng(0)
+    u = rng.normal(size=(120000, 3)); u /= np.linalg.norm(u, axis=1, keepdims=True)
+    P = u * (0.999 * R * rng.random(120000) ** (1 / 3))[:, None]
+    ppm = s.b0_offset(P) / s.field_T * 1e6
+    grad = np.linalg.norm(s.b0_gradient(P), axis=1) * 1e3
+    assert np.ptp(ppm) == pytest.approx(1100.0, rel=0.03)
+    assert grad.max() == pytest.approx(1.4, rel=0.03)
+    # the ratio that forces l >= 3
+    needed = 1.4e-3 / (1100e-6 * s.field_T / R)
+    assert needed > 1.34, f"ratio {needed:.2f} would be reachable at l=2; the inference would not hold"
 
+
+def test_the_field_law_carries_the_magnets_RL_asymmetry_at_order_three():
+    """The asymmetry is real and it cannot be the linear term. The published homogeneity is a POST-LINEAR-
+    SHIM residual, so l=1 has been nulled and cannot be fitted to it -- but the magnet is still described as
+    asymmetric in RL, and an odd asymmetry with no l=1 must live at l=3."""
+    s = ScannerLimits.of("swoop")
+    R = 0.999 * s.b0_validity_radius
+    hi = float(np.linalg.norm(s.b0_gradient(np.array([[R, 0, 0]]))[0]))
+    lo = float(np.linalg.norm(s.b0_gradient(np.array([[-R, 0, 0]]))[0]))
+    assert hi > 1.5 * lo, f"the two sides of the bore are alike: {hi*1e3:.3f} vs {lo*1e3:.3f} mT/m"
+    assert s.b0_harmonic_l3_m1 is not None and s.b0_asymmetry_axis == (1.0, 0.0, 0.0)
+    leaf = scc.get_limit("hyperfine_swoop_64mT", "homogeneity", "b0_harmonic_l3_m1")
+    assert "POST-LINEAR-SHIM" in leaf["context"] and "l>=3" in leaf["context"]
 
 def test_the_field_law_is_none_for_a_machine_that_does_not_publish_one():
     """Which is every machine but one. A shimmed superconducting magnet's residual is parts per million and
@@ -242,7 +260,7 @@ def test_the_field_law_is_none_for_a_machine_that_does_not_publish_one():
     'the catalogue does not know' rather than standing in for zero."""
     for name in ("prisma", "connectom", "magnus"):
         s = ScannerLimits.of(name)
-        assert s.b0_quadratic is None and s.b0_offset([[0, 0, 0.05]]) is None
+        assert s.b0_harmonic_l2_m0 is None and s.b0_offset([[0, 0, 0.05]]) is None
 
 
 def test_the_field_offset_is_zero_at_isocentre_and_refused_beyond_its_anchor():
@@ -252,8 +270,15 @@ def test_the_field_offset_is_zero_at_isocentre_and_refused_beyond_its_anchor():
     # along the bore only the bowl acts, so half the radius is a quarter the offset
     assert s.b0_offset([[0.0, 0.0, 0.04]])[0] == pytest.approx(at8 / 4, rel=1e-9)
     # across it the odd term dominates near isocentre: 2.9 kHz at +8 cm against 0.9 at -8
-    assert 42.577e6 * s.b0_offset([[0.08, 0, 0]])[0] == pytest.approx(2872.0, rel=0.01)
-    assert 42.577e6 * s.b0_offset([[-0.08, 0, 0]])[0] == pytest.approx(921.0, rel=0.01)
+    # the offset at a given point is a property of the LAW, not a published number; what is published is
+    # the spread over the DSV, so that is what is asserted
+    rng = np.random.default_rng(1)
+    u = rng.normal(size=(60000, 3)); u /= np.linalg.norm(u, axis=1, keepdims=True)
+    P = u * (0.999 * s.b0_validity_radius * rng.random(60000) ** (1 / 3))[:, None]
+    assert np.ptp(s.b0_offset(P) / s.field_T * 1e6) == pytest.approx(1100.0, rel=0.03)
+    hi = float(s.b0_offset(np.array([[0.0755, 0, 0]])))
+    lo = float(s.b0_offset(np.array([[-0.0755, 0, 0]])))
+    assert abs(hi - lo) > 0.2 * max(abs(hi), abs(lo))   # the odd harmonic, doing its job
     with pytest.raises(ValueError, match="anchored at 8 cm"):
         s.b0_offset([[0.0, 0.0, 0.12]])
 
@@ -278,8 +303,12 @@ def test_the_new_units_convert_and_the_group_is_scanned_for_verification():
     mode in this file. `needs_verification` also only scanned gradient and rf, so a homogeneity leaf was
     invisible to it."""
     assert scc._TO_SI["ppm"] == scc._TO_SI["ppm/m"] == scc._TO_SI["ppm/m^2"] == 1e-6
-    raw = scc.get_limit("hyperfine_swoop_64mT", "homogeneity", "b0_quadratic")["value"]
-    assert scc.get_limit("hyperfine_swoop_64mT", "homogeneity", "b0_quadratic", si=True) == raw * 1e-6
+    raw = scc.get_limit("hyperfine_swoop_64mT", "homogeneity", "b0_harmonic_l2_m0")["value"]
+    # a solid-harmonic coefficient of dB/B0 is already dimensionless per length, so SI is a no-op --
+    # unlike the ppm leaves beside it, which carry a factor of a million
+    assert scc.get_limit("hyperfine_swoop_64mT", "homogeneity", "b0_harmonic_l2_m0", si=True) == raw
+    assert scc.get_limit("hyperfine_swoop_64mT", "homogeneity", "b0_homogeneity", si=True) == \
+        scc.get_limit("hyperfine_swoop_64mT", "homogeneity", "b0_homogeneity")["value"] * 1e-6
     assert "homogeneity" in inspect.getsource(scc.needs_verification)
 
 
@@ -367,32 +396,34 @@ def test_the_background_gradient_is_the_field_law_differentiated_not_a_second_nu
         num = np.array([(s.b0_offset((p + h * e)[None])[0] - s.b0_offset((p - h * e)[None])[0]) / (2 * h)
                         for e in np.eye(3)])
         np.testing.assert_allclose(s.b0_gradient(p[None])[0], num, rtol=1e-6, atol=1e-12)
-    # the cited anchor: 1.4 mT/m at 8 cm, on the side the odd term adds to
-    steep = np.linalg.norm(s.b0_gradient(np.array([[0.0799, 0, 0]]))[0])
-    assert steep == pytest.approx(1.4e-3, rel=2e-3)
+    # the cited anchor is the STEEPEST gradient inside the DSV, which a harmonic law need not place on the
+    # R/L axis -- and for this magnet does not: the l=2 bowl is steepest along B0 while the l=3 term tilts it
+    rng = np.random.default_rng(2)
+    u = rng.normal(size=(80000, 3)); u /= np.linalg.norm(u, axis=1, keepdims=True)
+    P = u * (0.999 * s.b0_validity_radius)
+    steep = np.linalg.norm(s.b0_gradient(P), axis=1).max()
+    assert steep == pytest.approx(1.4e-3, rel=0.02)
     cited = scc.get_limit("hyperfine_swoop_64mT", "homogeneity", "background_gradient")
     assert steep * 1e3 == pytest.approx(cited["value"], rel=2e-3)
 
 
-def test_the_background_gradient_does_not_vanish_at_isocentre_because_the_magnet_is_asymmetric():
-    """A bowl differentiates to zero at its centre; an odd term does not. So a single-yoke magnet encodes
-    diffusion even at isocentre, and anything that assumed "no error at the origin" is wrong about THIS
-    magnet. The residue is the odd coefficient exactly, which is what makes it checkable rather than a
-    surprise."""
+def test_the_background_gradient_vanishes_at_isocentre_because_the_magnet_was_shimmed():
+    """This REVERSES what an earlier, inadmissible law said. That law carried a free linear term fitted to
+    the 1100 ppm figure, which gave a non-zero gradient at the origin and an apparent ADC bias at the one
+    point one would expect to be clean. But the source states the 1100 ppm is measured AFTER linear shimming,
+    so the l=1 content is nulled and fitting it twice was double-counting. Every harmonic of order two or
+    more has zero gradient at the origin, so a linearly shimmed magnet does not encode diffusion at
+    isocentre: the background gradient grows from nothing."""
     s = ScannerLimits.of("swoop")
-    at_iso = s.b0_gradient(np.zeros((1, 3)))[0]
-    assert at_iso[0] == pytest.approx(s.field_T * s.b0_asymmetry_rl)     # the odd term, alone
-    np.testing.assert_allclose(at_iso[1:], 0.0, atol=1e-18)              # the bowl contributes nothing
-    assert np.linalg.norm(at_iso) == pytest.approx(2.86e-4, rel=1e-2)    # 0.29 mT/m
-    # and the two sides of the bore differ, which is the asymmetry showing up in the derivative
-    hi = np.linalg.norm(s.b0_gradient(np.array([[0.0799, 0, 0]]))[0])
-    lo = np.linalg.norm(s.b0_gradient(np.array([[-0.0799, 0, 0]]))[0])
-    assert hi > 1.6 * lo, f"the derivative lost the asymmetry: {hi*1e3:.3f} vs {lo*1e3:.3f} mT/m"
-
+    np.testing.assert_allclose(s.b0_gradient(np.zeros((1, 3)))[0], 0.0, atol=1e-15)
+    assert s.b0_offset(np.zeros((1, 3)))[0] == pytest.approx(0.0, abs=1e-15)
+    # and it grows monotonically away from there along any ray
+    along = [float(np.linalg.norm(s.b0_gradient(np.array([[0.0, 0.0, t]]))[0])) for t in (0.0, 0.02, 0.05, 0.078)]
+    assert all(np.diff(along) > 0)
 
 def test_a_derivative_is_refused_beyond_the_law_s_anchor_and_absent_without_one():
     s = ScannerLimits.of("swoop")
-    with pytest.raises(ValueError, match="extrapolates worse"):
+    with pytest.raises(ValueError, match="never constrained"):
         s.b0_gradient(np.array([[0.12, 0, 0]]))
     for name in ("prisma", "connectom", "terra"):
         assert ScannerLimits.of(name).b0_gradient(np.array([[0, 0, 0.05]])) is None

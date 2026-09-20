@@ -12,33 +12,28 @@ Recorded numbers, 96 x 96 x 60 at 2.5 mm centred in the bore, 18 directions at b
 delta / Delta = 35 / 42 ms, against the pack floor 0.0048:
 
     inside the law's 8 cm anchor        136,584 of 552,960 voxels (25 %)
-    worst |ADC bias|                    15.33 %     (the paper measures up to 16.1 %)
-    median voxel, worst direction        9.15 %
-    direction-averaged, worst voxel      2.96 %
-    voxels above the pack's own floor    99.993 %  (10 of 136,584, all at r = 1.9-2.4 cm)
+    worst |ADC bias|                    15.38 %     (the paper measures up to 16.1 %)
+    median voxel, worst direction        4.14 %
+    direction-averaged, worst voxel      0.98 %
+    voxels above the pack's own floor   97.57 %
 
-    by radius      0-2 cm    2,176 voxels   worst  5.8 %   median  3.7 %
-                   2-4 cm   15,080 voxels   worst  8.9 %   median  5.5 %
-                   4-6 cm   40,600 voxels   worst 12.1 %   median  7.9 %
-                   6-8 cm   78,728 voxels   worst 15.3 %   median 10.5 %
+    by radius      0-2 cm    2,176 voxels   worst  1.51 %   median 0.47 %   above floor  48.1 %
+                   2-4 cm   15,080 voxels   worst  4.53 %   median 1.31 %   above floor  86.7 %
+                   4-6 cm   40,600 voxels   worst  9.07 %   median 3.06 %   above floor  99.6 %
+                   6-8 cm   78,728 voxels   worst 15.38 %   median 5.85 %   above floor 100.0 %
 
 Three things those numbers say.
 
-The bias exceeds the simulation's own noise floor in all but ten voxels out of 136,584, so it is essentially
-never the thing that gets lost in the Monte-Carlo error. Even at isocentre it is several times the floor,
-because a single-yoke magnet has an odd term that survives differentiation and the centre of the bore is
-therefore not clean.
+The bias clears the simulation's own noise floor in 97.6 % of voxels, so it is almost never the thing that
+gets lost in the Monte-Carlo error -- but it does not clear it everywhere, and where it fails is not random.
+Inside 2 cm of isocentre only about half the voxels clear the floor, because a linearly shimmed magnet has no
+first-order field variation there: every harmonic of order two and above has zero gradient at the origin, so
+the background gradient grows from nothing. The magnet genuinely does not encode at its own centre.
 
-The ten exceptions are not at the centre. They sit in a thin shell at r = 1.9-2.4 cm, where the odd term and
-the bowl's contribution to the cross term happen to cancel for every one of the eighteen directions at once.
-It is a null surface of this protocol, not a quiet region of the magnet: change the directions and it moves.
+Averaging over directions hides it. 15.4 % per direction becomes 1.0 % once averaged, since the cross term
+flips sign with the diffusion direction. A tensor fit sees the per-direction number, not the average.
 
-Averaging over directions hides it. The cross term is linear in the background gradient and flips sign with
-the diffusion direction, so 15.3 % per direction becomes 3.0 % once averaged. A tensor fit sees the
-per-direction number, not the average.
-
-The concomitant term is the small half: 15.25 % without it, 15.33 % with, and up to 1.19 % in the voxel it
-moves most. It is real, and it is an order of magnitude below the magnet's own gradient over this protocol.
+The concomitant term is the small half, an order of magnitude below the magnet's own gradient.
 
 At 3 T there is nothing to compute. A shimmed superconducting magnet publishes no field shape because its
 residual is parts per million rather than parts per thousand, so the catalogue carries none and this returns
@@ -82,7 +77,7 @@ def bias_map(scanner, grid, R, sequence, **kw):
     """``(voxels, bias)`` -- the fractional ADC bias per voxel per direction, for the voxels the magnet's
     law is actually anchored over. Beyond that radius the law is an extrapolation and is refused rather
     than guessed, so those voxels are not returned."""
-    if getattr(scanner, "b0_quadratic", None) is None:
+    if getattr(scanner, "b0_harmonic_l2_m0", None) is None:
         return grid.every_voxel, None          # no law: nothing to anchor, and nothing to bias
     pos = grid.positions_m(grid.every_voxel)
     inside = np.linalg.norm(pos - np.asarray(grid.isocenter_m), axis=-1) < scanner.b0_validity_radius

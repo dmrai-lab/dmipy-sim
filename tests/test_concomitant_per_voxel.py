@@ -10,7 +10,7 @@ import pytest
 from dmipy_sim import sequences
 from dmipy_sim.acquisition.scanners import ScannerLimits
 from dmipy_sim.phantom import Grid
-from dmipy_sim.phantom.bore import b_quadratic, delivered_b, delivered_b_map
+from dmipy_sim.phantom.bore import b_polynomial, delivered_b, delivered_b_map
 
 RNG = np.random.default_rng(0)
 DIRS = RNG.normal(size=(6, 3))
@@ -26,32 +26,51 @@ def _grid(n=5, fov=0.088):
                 origin_m=(-0.5 * (n - 1) * fov / n,) * 3, isocenter_m=(0.0, 0.0, 0.0))
 
 
-def test_the_delivered_b_is_an_exact_quadratic_in_position_so_a_grid_is_ten_probes():
-    """The cost claim, and it is exact rather than a fit. Both terms a magnet adds are AFFINE in position --
-    the background gradient by inspection, the Maxwell term because its gradient is `M(t) r` -- and b is a
-    quadratic functional of the effective gradient. So b(r) is a quadratic form, ten coefficients determine
-    it whatever the grid, and the batched answer must equal the per-voxel one to the precision the gradient
-    is stored in."""
+def test_the_delivered_b_is_an_exact_polynomial_in_position_so_a_grid_is_a_fixed_cost():
+    """The cost claim, and it is exact rather than a fit.
+
+    The DEGREE follows from the field law. The background gradient is the gradient of a solid-harmonic field
+    truncated at l=3, so it is quadratic in position; the Maxwell term's gradient is linear. q integrates
+    both, so it is quadratic, and b integrates |q|^2 -- which makes b quartic. Thirty-five coefficients
+    determine it whatever the grid, and the batched answer must equal the per-voxel one to the precision the
+    gradient is stored in.
+
+    Worth recording why it is not ten: an l<=2 field law would give an affine background gradient and hence a
+    quadratic b. The magnet needs l=3 content to reproduce its own published figures, and that raises the
+    degree of everything downstream. A quadratic fit leaves a residual of five parts in ten thousand here."""
     sw, grid, seq = ScannerLimits.of("swoop"), _grid(), _seq()
     oracle = delivered_b(sw, grid, seq)                       # one sequence rebuild per voxel
     rep = {}
     fast = delivered_b_map(sw, grid, seq, concomitant=False, report=rep)
     rel = np.abs(fast - oracle).max() / np.abs(oracle).max()
-    assert rel < 1e-6, f"the batched form differs from the oracle by {rel:.2e}"
-    assert rep["n_probes"] == 10 and rep["n_voxels"] == grid.shape[0] ** 3
+    # looser than the degree-2 version this replaces (1.3e-7): a 35-term Vandermonde solve is less well
+    # conditioned than a 10-term one, and G is stored in float32. Still five orders below the effect.
+    assert rel < 1e-5, f"the batched form differs from the oracle by {rel:.2e}"
+    assert rep["n_probes"] == 35 and rep["n_voxels"] == grid.shape[0] ** 3
 
 
-def test_the_maxwell_term_is_exactly_zero_at_isocentre_where_the_magnet_s_own_gradient_is_not():
-    """The cleanest way to tell the two terms apart. The Maxwell term's gradient is `M(t) r` with no constant
-    part, so it vanishes at isocentre identically. The magnet's own gradient does NOT, because a single-yoke
-    magnet's odd term survives differentiation -- so a voxel at the centre of the bore is clean of one and
-    not of the other."""
+def test_both_terms_vanish_at_isocentre_and_grow_at_different_rates():
+    """They are both zero at the centre of the bore, for different reasons, and that is worth pinning
+    because an earlier version of this test asserted the opposite for the magnet's own gradient.
+
+    The Maxwell term's gradient is `M(t) r` with no constant part, so it vanishes identically. The magnet's
+    own gradient vanishes because the field law is a sum of harmonics of order two and above -- the l=1
+    content having been removed by the linear shim the source describes -- and every such harmonic has zero
+    gradient at the origin. The earlier law carried a free linear term fitted to a post-shim number, which
+    double-counted and produced a spurious bias at the one point that should be clean.
+
+    They then grow at different rates, which is what still tells them apart: the magnet's own gradient rises
+    linearly out of the centre, the Maxwell term quadratically in the gradient amplitude."""
     sw, seq = ScannerLimits.of("swoop"), _seq()
-    at_iso = seq.with_concomitant(np.zeros(3), sw.field_T).b()
-    np.testing.assert_allclose(at_iso, seq.b(), rtol=1e-6)
+    np.testing.assert_allclose(seq.with_concomitant(np.zeros(3), sw.field_T).b(), seq.b(), rtol=1e-6)
     g0 = np.atleast_2d(sw.b0_gradient(np.zeros((1, 3))))[0]
-    assert np.linalg.norm(g0) > 1e-4                           # 0.29 mT/m, and it encodes
-    assert np.abs(seq.with_background_gradient(g0).b() / seq.b() - 1.0).max() > 0.01
+    np.testing.assert_allclose(g0, 0.0, atol=1e-15)
+    # away from the centre the magnet's own gradient dominates, which is the ordering that matters
+    at = np.array([0.0, 0.0755, 0.0])
+    g = np.atleast_2d(sw.b0_gradient(at[None]))[0]
+    back = float(np.abs(seq.with_background_gradient(g).b() / seq.b() - 1.0).max())
+    conc = float(np.abs(seq.with_concomitant(at, sw.field_T).b() / seq.b() - 1.0).max())
+    assert back > 5 * conc, f"background {back:.1%} vs concomitant {conc:.1%}"
 
 
 def test_the_maxwell_term_scales_as_one_over_the_static_field():
