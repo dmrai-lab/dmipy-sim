@@ -14,7 +14,7 @@ from itertools import product as _product
 
 import numpy as np
 
-__all__ = ["b0_offset_map", "b1_scale_map", "background_gradient_map", "delivered_b", "delivered_b_map", "b_polynomial", "gradient_tensor_map"]
+__all__ = ["b0_offset_map", "b1_scale_map", "background_gradient_map", "delivered_b", "delivered_b_map", "b_polynomial", "gradient_tensor_map", "delivered_gradient", "delivered_weights"]
 
 
 def b0_offset_map(scanner, grid, *, to_scanner=None, delta_T_K=0.0):
@@ -236,7 +236,9 @@ def delivered_b_map(scanner, grid, sequence, *, to_scanner=None, voxels=None,
     Two separate things a magnet does to a diffusion measurement, and they are different physics even
     though they arrive the same way:
 
-    ``background`` is the magnet's OWN field gradient, which is constant in time and non-zero at isocentre
+    ``background`` is the magnet's OWN field gradient, which is constant in TIME (it is on through the
+    pulses and the dead times alike, because a magnet does not switch off) though not in space -- the
+    catalogued law differentiates to exactly zero at isocentre and grows from there
     (a single-yoke magnet has an odd term that survives differentiation). Its cross term with the pulsed
     gradient flips sign with the diffusion direction.
 
@@ -262,7 +264,7 @@ def delivered_b_map(scanner, grid, sequence, *, to_scanner=None, voxels=None,
             g = np.atleast_2d(scanner.b0_gradient(np.asarray(r_bore, np.float64)[None]))[0]
             seq = seq.with_background_gradient(g)
         if concomitant and B0:
-            seq = seq.with_concomitant(np.asarray(r_bore, np.float64), B0)
+            seq = seq.with_concomitant(np.asarray(r_bore, np.float64), B0, b0_axis=_b0_axis(scanner))
         return seq
 
     coeff = b_polynomial(played_at, probe_radius=probe_radius)
@@ -320,7 +322,8 @@ def delivered_gradient(scanner, grid, sequence, *, voxels=None, to_scanner=None,
     three are already modelled elsewhere in this package without ever reaching a signal (dmipy-sim#369):
 
     * the coils' **nonlinearity**, ``g -> L(r) g``, which mis-scales and TILTS the encoding direction;
-    * the magnet's own **background** gradient, constant in time and non-zero at isocentre, which the RF
+    * the magnet's own **background** gradient, constant in time -- on through the pulses and the dead
+      times alike, because a magnet does not switch off -- which the RF
       sign carries like any other gradient and whose contribution to ``b`` does not refocus;
     * the coils' **concomitant** (Maxwell) term, whose extra encoding gradient is quadratic in ``G(t)`` --
       so it varies through the sequence and does not reverse when the coils do.
@@ -332,10 +335,9 @@ def delivered_gradient(scanner, grid, sequence, *, voxels=None, to_scanner=None,
     held against each other by test.
     """
     idx = grid.every_voxel if voxels is None else voxels
-    d = grid.offset_m(idx).reshape(-1, 3)
-    R = None if to_scanner is None else np.asarray(to_scanner, dtype=np.float64)
-    if R is not None:
-        d = d @ R.T                                          # the grid's frame into the bore's
+    d_grid = grid.offset_m(idx).reshape(-1, 3)
+    R = _frame(grid, to_scanner)
+    d = d_grid if R is None else d_grid @ R.T                # the grid's frame into the bore's
     B0 = getattr(scanner, "field_T", None)
     L = gradient_tensor_map(scanner, grid, to_scanner=to_scanner) if nonlinearity else None
     out = np.empty((len(d), sequence.n_meas, sequence.G.shape[1], 3), dtype=np.float64)
@@ -345,9 +347,13 @@ def delivered_gradient(scanner, grid, sequence, *, voxels=None, to_scanner=None,
         if Ls is not None:
             seq = seq.with_gradient_nonlinearity(Ls[k])
         if background and getattr(scanner, "b0_harmonic_Z2", None) is not None:
-            seq = seq.with_background_gradient(np.atleast_2d(scanner.b0_gradient(r[None]))[0])
+            g0 = np.atleast_2d(scanner.b0_gradient(r[None]))[0]
+            seq = seq.with_background_gradient(g0 if R is None else g0 @ R)   # bore's frame back to grid's
         if concomitant and B0:
-            seq = seq.with_concomitant(r, float(B0), b0_axis=_b0_axis(scanner))
+            # every argument in the SAME frame as G, which is the grid's: the position and the field axis
+            # both come back through R. Reading them in the bore while G is in the grid is a mixed frame,
+            # and it is 105 per cent of the concomitant term -- a different quantity, not a perturbation.
+            seq = seq.with_concomitant(d_grid[k], float(B0), b0_axis=_b0_axis(scanner, R))
         out[k] = seq.G
     return out
 
@@ -377,7 +383,7 @@ def delivered_weights(scanner, grid, sequence, *, K, n_t, dt_pack, voxels=None, 
     idx = grid.every_voxel if voxels is None else voxels
     pos = grid.positions_m(idx)
     d = grid.offset_m(idx).reshape(-1, 3)
-    R = None if to_scanner is None else np.asarray(to_scanner, dtype=np.float64)
+    R = _frame(grid, to_scanner)
     d_bore = d if R is None else d @ R.T
     B0 = getattr(scanner, "field_T", None)
 
@@ -403,18 +409,23 @@ def delivered_weights(scanner, grid, sequence, *, K, n_t, dt_pack, voxels=None, 
         out = out + np.einsum("ni,ikjm->nkjm", g0, np.stack(unit)).reshape(len(d), n_c * 3, -1)
 
     if concomitant and B0:
-        linear_only = (not nonlinearity) and not (background and getattr(scanner, "b0_harmonic_Z2", None))
+        # ONLY the nonlinearity can make the cheap path inexact. The background never enters the Maxwell
+        # term by this module's own design (coil_G is built with background=False), so including it here
+        # bought a bit-identical answer at 137x the cost.
+        linear_only = not nonlinearity
         if concomitant == "linearised" or linear_only:
             # The concomitant's extra gradient is quadratic in G(t) but LINEAR IN POSITION, so three column
             # projections done once combine by the voxel's own coordinates. Exact when nothing else has
             # changed the gradient -- and an APPROXIMATION when L or a background is also on, because the
             # Maxwell term is then quadratic in the DELIVERED gradient and its cross terms are per voxel.
-            # Measured on this magnet over a 9 cm grid: 2.8 per cent of the concomitant term, 0.09 per cent
-            # of G. Cheap and bounded, but not the default.
-            cols = [project(sequence.with_concomitant(e, float(B0), b0_axis=_b0_axis(scanner)).G
+            # Measured on this magnet: 2.5 per cent of the concomitant term and 0.085 per cent of |W| on a
+            # 9 cm grid at b = 1e9. That is a reading, NOT a bound -- it grows linearly with radius (3.8 per
+            # cent of the term at the 7.9 cm validity edge) and with gradient strength, and as 1/B0 (0.34
+            # per cent of |W| at 16 mT). Worst admissible on this machine is about 4 per cent of the term.
+            cols = [project(sequence.with_concomitant(e, float(B0), b0_axis=_b0_axis(scanner, R)).G
                             - np.asarray(sequence.G, dtype=np.float64)).reshape(n_c, 3, -1)
                     for e in np.eye(3)]
-            out = out + np.einsum("ni,ikjm->nkjm", d_bore, np.stack(cols)).reshape(len(d), n_c * 3, -1)
+            out = out + np.einsum("ni,ikjm->nkjm", d, np.stack(cols)).reshape(len(d), n_c * 3, -1)
         else:
             # The Maxwell term is quadratic in the gradient the COILS deliver, so it reads L(r) G rather
             # than the nominal G. The magnet's background is left out, and the honest reason is a SIZE and
@@ -428,16 +439,30 @@ def delivered_weights(scanner, grid, sequence, *, K, n_t, dt_pack, voxels=None, 
             coil_G = delivered_gradient(scanner, grid, sequence, voxels=voxels, to_scanner=to_scanner,
                                         nonlinearity=nonlinearity, background=False, concomitant=False)
             for k in range(len(d)):
-                out[k] = out[k] + project(_concomitant_of(sequence, coil_G[k], d_bore[k], float(B0),
-                                          b0_axis=_b0_axis(scanner)))
+                out[k] = out[k] + project(_concomitant_of(sequence, coil_G[k], d[k], float(B0),
+                                          b0_axis=_b0_axis(scanner, R)))
 
     return out
 
 
-def _b0_axis(scanner):
-    """The machine's field direction, defaulting to the bore axis the concomitant formula assumes."""
+def _frame(grid, to_scanner):
+    """The grid-to-scanner rotation, taken from the GRID when the caller does not state one.
+
+    Defaulting to ``None`` makes an oblique grid silently evaluate every law at the wrong place, which is
+    the failure ``b0_offset_map``'s own docstring warns about -- and that function already defaults to the
+    grid's. These did not, and the two disagreed by 7 per cent.
+    """
+    v = getattr(grid, "to_scanner", None) if to_scanner is None else to_scanner
+    return None if v is None else np.asarray(v, dtype=np.float64)
+
+
+def _b0_axis(scanner, R=None):
+    """The machine's field direction IN THE GRID'S FRAME, defaulting to the bore axis the formula assumes."""
     v = getattr(scanner, "b0_axis", None)
-    return (0.0, 0.0, 1.0) if v is None else v
+    if v is None:
+        return (0.0, 0.0, 1.0)
+    v = np.asarray(v, dtype=np.float64)
+    return v if R is None else v @ R
 
 
 def _concomitant_of(sequence, G_delivered, position_m, B0_T, b0_axis=(0.0, 0.0, 1.0)):

@@ -9,7 +9,7 @@ import pytest
 from dmipy_sim import sequences
 from dmipy_sim.acquisition.scanners import ScannerLimits
 from dmipy_sim.phantom import Grid
-from dmipy_sim.phantom.bore import (_effective, delivered_b, delivered_gradient, delivered_weights,
+from dmipy_sim.phantom.bore import (delivered_b, delivered_gradient, delivered_weights,
                                     gradient_tensor_map)
 from dmipy_sim.replay.replay import _compile_effective
 
@@ -22,10 +22,32 @@ def setup():
     s = ScannerLimits.of("swoop")
     grid = Grid(shape=SH, voxel_size_m=(0.03,) * 3,
                 origin_m=tuple(-0.03 * (n - 1) / 2 for n in SH), isocenter_m=(0.0, 0.0, 0.0))
-    seq = sequences.pgse([[1, 0, 0], [0, 1, 0], [0, 0, 1]], 0.01, 0.03, bvalues=[1e9], n_t=N_T)
+    # OBLIQUE on purpose. With cardinal directions the Gx Gz x z and Gy Gz y z cross terms of the Maxwell
+    # formula are identically zero, so 40 per cent of it is unreachable and deleting it passes every test
+    # in this file.
+    seq = sequences.pgse([[1, 1, 1], [1, 0, 1], [2, -1, 3]], 0.01, 0.03, bvalues=[1e9], n_t=N_T)
     return s, grid, seq
 
 
+#: A genuine rotation (Rz31 Ry17 Rx44), orthonormal to 1e-12. A hand-typed near-rotation is refused by
+#: gradient_tensor_map, correctly -- a grid's axes are orthonormal in the scanner.
+ROT = np.array([[0.81971317, -0.19639803, 0.53805031],
+                [0.49253336, 0.72119799, -0.48711841],
+                [-0.29237170, 0.66430510, 0.68790807]])
+
+
+def _reference(seq, G, K, n_t):
+    """W built from ScannerSequence.G_eff -- the replay's OWN definition of the effective gradient.
+
+    Deliberately not bore._effective: a reference built from the module under test cannot fail when that
+    module is wrong, and the "carried through the RF sign" claim had no coverage at all while it was.
+    """
+    from dataclasses import replace
+    return np.stack([_compile_effective(replace(seq, G=np.asarray(g, np.float32)).G_eff, seq.dt, K, n_t)
+                     for g in G])
+
+
+@pytest.mark.parametrize("rotation", [None, ROT], ids=["aligned", "oblique"])
 @pytest.mark.parametrize("flags", [
     {"nonlinearity": True, "background": False, "concomitant": False},
     {"nonlinearity": False, "background": True, "concomitant": False},
@@ -35,7 +57,7 @@ def setup():
     {"nonlinearity": False, "background": True, "concomitant": True},
     {"nonlinearity": True, "background": True, "concomitant": True},
 ])
-def test_the_fast_route_is_the_reference_route_in_another_order(setup, flags):
+def test_the_fast_route_is_the_reference_route_in_another_order(setup, flags, rotation):
     """``delivered_weights`` works in the replay's coefficient space at a few thousand flops per voxel, by
     exploiting that ``bridge_projection`` is exactly linear in the gradient. That is a reordering of the
     same sum, not an approximation, so it must agree with building the sequence per voxel.
@@ -44,11 +66,11 @@ def test_the_fast_route_is_the_reference_route_in_another_order(setup, flags):
     the combination was wrong by 4e-4, because the concomitant term is quadratic in the gradient the COILS
     deliver and composing it as if it were independent drops the cross terms."""
     s, grid, seq = setup
-    G = delivered_gradient(s, grid, seq, **flags)
-    ref = np.stack([_compile_effective(_effective(seq, g), seq.dt, K, N_T) for g in G])
-    fast = delivered_weights(s, grid, seq, K=K, n_t=N_T, dt_pack=seq.dt, **flags)
+    G = delivered_gradient(s, grid, seq, to_scanner=rotation, **flags)
+    ref = _reference(seq, G, K, N_T)
+    fast = delivered_weights(s, grid, seq, K=K, n_t=N_T, dt_pack=seq.dt, to_scanner=rotation, **flags)
     rel = np.abs(ref - fast).max() / max(np.abs(ref).max(), 1e-300)
-    assert rel < 1e-6, f"{flags} disagree by {rel:.2e}"
+    assert rel < 1e-6, f"{flags} at rotation={rotation is not None} disagree by {rel:.2e}"
 
 
 def test_the_concomitant_term_is_the_coils_and_not_the_magnets(setup):
@@ -76,10 +98,13 @@ def test_the_tensor_enters_as_a_similarity_and_not_a_scale(setup):
     _s, _grid, seq = setup
     L = np.eye(3)
     L[1, 1], L[0, 1] = 1.10, 0.05                        # asymmetric on purpose
+    G = np.asarray(seq.G, dtype=np.float64)                       # the direction actually played
+    u = np.stack([g[np.argmax(np.linalg.norm(g, axis=-1))] for g in G])
+    u = u / np.linalg.norm(u, axis=-1, keepdims=True)
     got = seq.with_gradient_nonlinearity(L).b() / seq.b()
-    want = [float(np.sum((L @ u) ** 2)) for u in np.eye(3)]
+    want = [float(np.sum((L @ v) ** 2)) for v in u]
     np.testing.assert_allclose(got, want, rtol=1e-6)
-    assert not np.allclose(got, [float(np.sum((L.T @ u) ** 2)) for u in np.eye(3)], rtol=1e-6), \
+    assert not np.allclose(got, [float(np.sum((L.T @ v) ** 2)) for v in u], rtol=1e-6), \
         "this L is symmetric enough that a transpose would pass -- the test cannot catch the bug it guards"
 
 
@@ -87,14 +112,16 @@ def test_the_delivered_b_agrees_with_the_gradient_route(setup):
     """The acceptance criterion of #369: ``delivered_b`` computes the b a voxel receives by its own route (a
     polynomial in position fitted from probe sequences), and ``delivered_gradient`` builds the acquisition
     per voxel. Two independent paths to the same number."""
-    s, grid, seq = setup
-    G = delivered_gradient(s, grid, seq, nonlinearity=False)      # delivered_b covers background+concomitant
-    from dmipy_sim.acquisition.waveforms import b_from_gradient
     from dataclasses import replace
-    direct = np.stack([replace(seq, G=g).b() for g in G])
+    s, grid, seq = setup
+    # delivered_b applies the BACKGROUND only -- not the concomitant and not the nonlinearity. Comparing it
+    # against a route that includes them is comparing different quantities; the discrepancy then grows
+    # LINEARLY with distance (the concomitant term), which is what gave this away.
+    G = delivered_gradient(s, grid, seq, nonlinearity=False, concomitant=False)
+    direct = np.stack([replace(seq, G=np.asarray(g, np.float32)).b() for g in G])
     poly = delivered_b(s, grid, seq)
     rel = np.abs(direct - poly).max() / np.abs(poly).max()
-    assert rel < 5e-3, f"the two routes to the delivered b differ by {rel:.2e}"
+    assert rel < 1e-5, f"the two routes to the delivered b differ by {rel:.2e}"
 
 
 def test_the_encoding_varies_across_the_grid_and_not_merely_in_scale(setup):
