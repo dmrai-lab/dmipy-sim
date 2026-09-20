@@ -10,9 +10,11 @@ macroscopic layers all along; this supplies one that a machine, rather than a pe
 """
 from __future__ import annotations
 
+from itertools import product as _product
+
 import numpy as np
 
-__all__ = ["b0_offset_map", "b1_scale_map", "background_gradient_map", "delivered_b", "b_quadratic", "delivered_b_map"]
+__all__ = ["b0_offset_map", "b1_scale_map", "background_gradient_map", "delivered_b", "delivered_b_map", "b_polynomial"]
 
 
 def b0_offset_map(scanner, grid, *, to_scanner=None, delta_T_K=0.0):
@@ -48,7 +50,7 @@ def b0_offset_map(scanner, grid, *, to_scanner=None, delta_T_K=0.0):
                 f"drift of {delta_T_K} K cannot be rendered. A superconducting magnet has none because it "
                 f"has no room temperature to drift with; this is refused rather than silently ignored")
         drift = float(drift)
-    if getattr(scanner, "b0_quadratic", None) is None:
+    if getattr(scanner, "b0_harmonic_l2_m0", None) is None:
         if not drift:
             return None
         return lambda positions_m: np.full(np.asarray(positions_m, np.float64).reshape(-1, 3).shape[0], drift)
@@ -112,7 +114,7 @@ def background_gradient_map(scanner, grid, *, to_scanner=None):
 
     ``None`` when the machine publishes no profile.
     """
-    if getattr(scanner, "b0_quadratic", None) is None:
+    if getattr(scanner, "b0_harmonic_l2_m0", None) is None:
         return None
     iso = np.asarray(grid.isocenter_m, dtype=np.float64)
     R = None if to_scanner is None else np.asarray(to_scanner, dtype=np.float64)
@@ -171,41 +173,60 @@ def delivered_b(scanner, grid, sequence, *, to_scanner=None, voxels=None):
 # makes `b(r)` an exact QUADRATIC FORM: `b(r) = b0 + v . r + r^T A r`. Ten coefficients per measurement,
 # whatever the grid. That is what turns an image from one sequence rebuild per voxel into ten.
 
-_QUADRATIC_TERMS = 10          # 1 + 3 linear + 6 symmetric-quadratic
+#: the delivered b is a polynomial in position of this degree, exactly. The background gradient is the
+#: gradient of a solid-harmonic field truncated at l=3, so it is QUADRATIC in position; the concomitant
+#: gradient is linear. q is the time integral of both, so it is quadratic, and b integrates |q|^2 -- which
+#: makes it quartic. A quadratic fit, which is what an l<=2 field law would have needed, leaves a residual
+#: of five parts in ten thousand; a quartic one is exact to the precision G is stored in.
+_POLY_DEGREE = 4
 
 
-def _quadratic_features(r):
-    """``(n, 10)``: the monomials of a general quadratic in three variables, in the order the coefficients
-    are solved for."""
-    x, y, z = r[:, 0], r[:, 1], r[:, 2]
-    one = np.ones_like(x)
-    return np.stack([one, x, y, z, x * x, y * y, z * z, x * y, x * z, y * z], axis=1)
+def _poly_exponents(degree=_POLY_DEGREE):
+    return [e for e in _product(range(degree + 1), repeat=3) if sum(e) <= degree]
 
 
-def b_quadratic(played_at, *, probe_radius=0.05):
-    """``(n_meas, 10)`` -- the coefficients of the exact quadratic ``b(r)`` that ``played_at`` produces.
+def _poly_features(r, degree=_POLY_DEGREE):
+    """``(n, n_terms)``: every monomial in three variables up to ``degree``, in a fixed order."""
+    r = np.asarray(r, dtype=np.float64).reshape(-1, 3)
+    return np.stack([r[:, 0] ** i * r[:, 1] ** j * r[:, 2] ** k
+                     for i, j, k in _poly_exponents(degree)], axis=1)
 
-    ``played_at(r)`` returns the acquisition as it is actually played at one position; this evaluates it at
-    ten probe positions and solves for the quadratic they determine. Ten is not a sampling: the dependence
-    IS quadratic, so ten well-placed points recover it exactly rather than approximately, and
-    :func:`delivered_b_map` then costs a matrix product per grid instead of a rebuild per voxel.
 
-    Solving for the coefficients rather than deriving them in closed form is deliberate. The b integral has
-    a quadrature convention -- rectangular q, trapezoidal in time -- and a second implementation of it here
-    would be a second thing to keep true. Probing uses the acquisition's own :meth:`b`, so the batched
-    answer cannot drift from the exact one; :func:`delivered_b` remains the oracle that says so.
+def _probe_points(radius, degree=_POLY_DEGREE):
+    """Positions that determine a polynomial of this degree: a deterministic quasi-lattice, sized to the
+    number of coefficients and conditioned well enough to solve exactly rather than in least squares."""
+    n = len(_poly_exponents(degree))
+    rng = np.random.default_rng(20260920)
+    best, best_cond = None, np.inf
+    for _ in range(40):
+        P = rng.uniform(-1.0, 1.0, size=(n, 3))
+        P[0] = 0.0
+        F = _poly_features(P * radius, degree)
+        c = np.linalg.cond(F)
+        if c < best_cond:
+            best, best_cond = P.copy(), c
+    return best * radius
+
+
+def b_polynomial(played_at, *, probe_radius=0.05, degree=_POLY_DEGREE):
+    """``(n_meas, n_terms)`` -- the coefficients of the exact polynomial ``b(r)`` that ``played_at`` produces.
+
+    ``played_at(r)`` returns the acquisition as it is actually played at one position. The dependence IS
+    polynomial of this degree, so evaluating at exactly as many well-conditioned points as there are
+    coefficients recovers it exactly rather than approximately, and :func:`delivered_b_map` then costs a
+    matrix product per grid instead of a sequence rebuild per voxel.
+
+    Solving for the coefficients rather than deriving them in closed form is deliberate. The b integral has a
+    quadrature convention, and a second implementation of it here would be a second thing to keep true.
+    Probing uses the acquisition's own :meth:`b`, so the batched answer cannot drift from the exact one;
+    :func:`delivered_b` remains the oracle that says so.
     """
-    # a well-conditioned probe set: the origin, +-one radius on each axis, and three diagonal points that
-    # pin the cross terms. Deliberately not random -- the solve should be reproducible.
-    u = float(probe_radius)
-    probes = np.array([[0.0, 0.0, 0.0],
-                       [u, 0, 0], [-u, 0, 0], [0, u, 0], [0, -u, 0], [0, 0, u], [0, 0, -u],
-                       [u, u, 0], [u, 0, u], [0, u, u]], dtype=np.float64)
-    F = _quadratic_features(probes)
-    if np.linalg.matrix_rank(F) < _QUADRATIC_TERMS:
-        raise ValueError("the probe set does not determine a quadratic; probe_radius must be non-zero")
-    B = np.stack([np.asarray(played_at(p).b(), dtype=np.float64) for p in probes])   # (10, n_meas)
-    return np.linalg.solve(F, B).T                                                   # (n_meas, 10)
+    probes = _probe_points(float(probe_radius), degree)
+    F = _poly_features(probes, degree)
+    if np.linalg.matrix_rank(F) < F.shape[1]:
+        raise ValueError(f"the probe set does not determine a degree-{degree} polynomial")
+    B = np.stack([np.asarray(played_at(p).b(), dtype=np.float64) for p in probes])
+    return np.linalg.solve(F, B).T
 
 
 def delivered_b_map(scanner, grid, sequence, *, to_scanner=None, voxels=None,
@@ -244,14 +265,14 @@ def delivered_b_map(scanner, grid, sequence, *, to_scanner=None, voxels=None,
             seq = seq.with_concomitant(np.asarray(r_bore, np.float64), B0)
         return seq
 
-    coeff = b_quadratic(played_at, probe_radius=probe_radius)
+    coeff = b_polynomial(played_at, probe_radius=probe_radius)
 
     idx = grid.every_voxel if voxels is None else voxels
     d = grid.offset_m(idx).reshape(-1, 3)
     if R is not None:
         d = d @ R.T                                    # the grid's frame into the bore's
-    out = _quadratic_features(d) @ coeff.T             # (n_vox, n_meas)
+    out = _poly_features(d) @ coeff.T             # (n_vox, n_meas)
     if report is not None:
-        report.update(n_probes=_QUADRATIC_TERMS, n_voxels=d.shape[0],
+        report.update(n_probes=len(_poly_exponents()), n_voxels=d.shape[0],
                       background=gmap is not None, concomitant=bool(concomitant and B0))
     return out
