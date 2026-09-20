@@ -91,17 +91,21 @@ class EPGState:
         return self
 
     def off_resonance(self, dt, dw):
-        """Advance every TRANSVERSE state by ``dw * dt`` radians, and the stored ones by nothing.
+        """Advance EVERY transverse state by ``dw * dt`` radians, and the stored ones by nothing.
 
-        Off-resonance is gated exactly as the gradient is: magnetisation parked along z accumulates none of
-        it. That is why a refocusing train does not simply refocus a field offset -- the pathway that stayed
-        transverse throughout comes back to zero phase, and one that slept through an interval does not.
+        Off-resonance is gated like the gradient in one respect only -- magnetisation parked along z
+        accumulates none of it -- and NOT in the other. The dephasing index does not enter. This array holds
+        the F+ coefficients over the whole integer range, and they are all ordinary transverse
+        magnetisation, so a uniform offset advances them all by the same angle whatever their winding.
+
+        What reverses the accumulated phase is the RF, not the index: a refocusing pulse conjugates the
+        state, which negates everything accrued so far. That is why a spin echo refocuses an offset and a
+        gradient echo does not, and why the answer is the same whether a bipolar pair was wound +/- or -/+.
+        Keying the sign to the index instead gets the second of those backwards -- it reports zero for a
+        gradient echo wound negative-first, where the truth is the same phase as positive-first.
         """
         if dw:
-            ph = np.exp(1j * float(dw) * float(dt))
-            n = self.n
-            self.F[n:] *= ph                       # orders 0..N advance
-            self.F[:n] *= np.conj(ph)              # orders -N..-1 retard
+            self.F *= np.exp(1j * float(dw) * float(dt))
         return self
 
     def relax(self, dt, T1=None, T2=None):
