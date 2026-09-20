@@ -1,6 +1,7 @@
 """``dmipy_sim.phantom``: replay phantoms, built from volumes and replayed as volumes (RPH.md).
 
 * :class:`Grid` -- the voxels, placed in the scanner.
+* :func:`b0_offset_map` -- a machine's own field non-uniformity, rendered onto those voxels.
 * :class:`PackSubstrate`, :class:`FreeWater`, :class:`Inert` -- what a voxel may hold; each carries its own name
   and proton density, and a phantom is keyed by these objects.
 * :class:`Peaks`, :class:`ODF`, :class:`Watson`, :class:`Frames`, :class:`Fan` -- a pose per voxel.
@@ -8,11 +9,12 @@
   :class:`PartitionPhantom`, posed by a :class:`Pose`), :meth:`~Phantom.replay` under a ``ScannerSequence``,
   :meth:`~Phantom.write` / :meth:`~Phantom.read` the ``.rph`` file.
 """
+from .bore import b0_offset_map
 from .grid import Grid
 from .substrates import AnalyticSubstrate, FreeWater, Inert, PackSubstrate
 from .orientation import ODF, Fan, Frames, Peaks, Watson, SH_BASES
 from .phantom import Phantom
 from .partition import PartitionPhantom, Pose
 
-__all__ = ["Phantom", "PartitionPhantom", "Pose", "Grid", "PackSubstrate", "FreeWater", "Inert", "AnalyticSubstrate",
+__all__ = ["Phantom", "PartitionPhantom", "Pose", "Grid", "b0_offset_map", "PackSubstrate", "FreeWater", "Inert", "AnalyticSubstrate",
            "Peaks", "ODF", "Watson", "Frames", "Fan", "SH_BASES"]
