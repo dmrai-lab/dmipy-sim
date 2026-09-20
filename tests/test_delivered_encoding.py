@@ -76,7 +76,7 @@ def test_the_tensor_enters_as_a_similarity_and_not_a_scale(setup):
     _s, _grid, seq = setup
     L = np.eye(3)
     L[1, 1], L[0, 1] = 1.10, 0.05                        # asymmetric on purpose
-    got = seq.with_gradient_tensor(L).b() / seq.b()
+    got = seq.with_gradient_nonlinearity(L).b() / seq.b()
     want = [float(np.sum((L @ u) ** 2)) for u in np.eye(3)]
     np.testing.assert_allclose(got, want, rtol=1e-6)
     assert not np.allclose(got, [float(np.sum((L.T @ u) ** 2)) for u in np.eye(3)], rtol=1e-6), \
@@ -110,3 +110,44 @@ def test_the_encoding_varies_across_the_grid_and_not_merely_in_scale(setup):
     u = np.array([0.0, 1.0, 0.0])
     tilt = [np.rad2deg(np.arccos(np.clip(abs((M @ u) @ u) / np.linalg.norm(M @ u), 0, 1))) for M in L]
     assert max(tilt) > 0.5, f"the encoding direction never tilts (max {max(tilt):.2f} deg)"
+
+
+def test_the_concomitant_is_computed_for_the_field_direction_the_machine_declares(setup):
+    """The formula is written for B0 along the third component, which is right for every cylindrical magnet
+    and WRONG for a bi-planar one. The Swoop declares ``b0_axis = (0, 1, 0)``, and nothing on this path
+    rotated into the magnet's frame: the whole quadratic form sat 90 degrees out. It moves the concomitant
+    contribution to b by about a factor of two and permutes it between directions, so a marginal min/max
+    over a symmetric grid would not have noticed."""
+    s, _grid, seq = setup
+    r = np.array([0.04, 0.03, -0.02])
+    assumed = seq.with_concomitant(r, s.field_T).b() / seq.b() - 1.0
+    actual = seq.with_concomitant(r, s.field_T, b0_axis=s.b0_axis).b() / seq.b() - 1.0
+    assert not np.allclose(assumed, actual, rtol=0.2), "the b0_axis argument changes nothing"
+
+    # a cylindrical magnet must be untouched, and the rotation must be a rotation
+    z = seq.with_concomitant(r, s.field_T, b0_axis=(0, 0, 1))
+    assert np.abs(np.asarray(z.G, np.float64) - np.asarray(seq.with_concomitant(r, s.field_T).G,
+                                                           np.float64)).max() == 0.0
+    for bad in ((0, 0, 0), (np.nan, 0, 1), (0, 1)):
+        with pytest.raises(ValueError, match="b0_axis"):
+            seq.with_concomitant(r, s.field_T, b0_axis=bad)
+
+
+def test_the_nonlinearity_is_the_coils_gradient_and_not_the_magnets(setup):
+    """``imposed_gradient`` means what the MAGNET imposes, and ``designed_gradient`` subtracts it so the
+    builder's guarantees still read true. A coil's nonlinearity obeys those guarantees -- it vanishes where
+    the commanded gradient does -- and it IS the gradient the coils design, which is what the Maxwell term
+    must be a quadratic form in. Booking it as the magnet's left ``designed_gradient`` at the nominal G and
+    silently dropped every cross term between the nonlinearity and the concomitant field."""
+    _s, _grid, seq = setup
+    L = np.eye(3)
+    L[1, 1], L[0, 1] = 1.10, 0.05
+    got = seq.with_gradient_nonlinearity(L)
+    np.testing.assert_allclose(np.asarray(got.designed_gradient, np.float64),
+                               np.asarray(got.G, np.float64), atol=0)
+    assert got.imposed_gradient is None, "a coil's nonlinearity is not imposed by the magnet"
+    # and a background still books as the magnet's, so designed_gradient takes it back out
+    g0 = np.array([1e-3, -5e-4, 2e-4])
+    both = got.with_background_gradient(g0)
+    np.testing.assert_allclose(np.asarray(both.designed_gradient, np.float64),
+                               np.asarray(got.G, np.float64), atol=1e-9)

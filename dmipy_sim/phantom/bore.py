@@ -343,11 +343,11 @@ def delivered_gradient(scanner, grid, sequence, *, voxels=None, to_scanner=None,
     for k, r in enumerate(d):
         seq = sequence
         if Ls is not None:
-            seq = seq.with_gradient_tensor(Ls[k])
+            seq = seq.with_gradient_nonlinearity(Ls[k])
         if background and getattr(scanner, "b0_harmonic_Z2", None) is not None:
             seq = seq.with_background_gradient(np.atleast_2d(scanner.b0_gradient(r[None]))[0])
         if concomitant and B0:
-            seq = seq.with_concomitant(r, float(B0))
+            seq = seq.with_concomitant(r, float(B0), b0_axis=_b0_axis(scanner))
         out[k] = seq.G
     return out
 
@@ -411,35 +411,52 @@ def delivered_weights(scanner, grid, sequence, *, K, n_t, dt_pack, voxels=None, 
             # Maxwell term is then quadratic in the DELIVERED gradient and its cross terms are per voxel.
             # Measured on this magnet over a 9 cm grid: 2.8 per cent of the concomitant term, 0.09 per cent
             # of G. Cheap and bounded, but not the default.
-            cols = [project(sequence.with_concomitant(e, float(B0)).G
+            cols = [project(sequence.with_concomitant(e, float(B0), b0_axis=_b0_axis(scanner)).G
                             - np.asarray(sequence.G, dtype=np.float64)).reshape(n_c, 3, -1)
                     for e in np.eye(3)]
             out = out + np.einsum("ni,ikjm->nkjm", d_bore, np.stack(cols)).reshape(len(d), n_c * 3, -1)
         else:
-            # Exact: the Maxwell term is quadratic in the gradient the COILS deliver, so it must read
-            # L(r) G -- not the nominal G, and NOT the magnet's background. with_concomitant takes it from
-            # `designed_gradient` for exactly that reason: a static inhomogeneity is not produced by the
-            # gradient coils and does not contribute a Maxwell term. Feeding it one moves the answer by
-            # 4e-4, which is how this was found.
+            # The Maxwell term is quadratic in the gradient the COILS deliver, so it reads L(r) G rather
+            # than the nominal G. The magnet's background is left out, and the honest reason is a SIZE and
+            # not a principle: div B = 0 forces transverse components on the magnet's inhomogeneity too,
+            # and those beat against the coils' in |B| to give a real cross term, linear in G(t). Measured
+            # on this machine over the 8 cm validity sphere it is 2-10 per cent of the modelled concomitant
+            # gradient and 1.7e-3 of b -- smaller than the concomitant term itself and far smaller than the
+            # background's own 22 per cent, but not zero. Carrying it properly needs the magnet's TRANSVERSE
+            # field, which the catalogue does not record; feeding g0 to a formula written for a coil is a
+            # different wrong answer, not a better one.
             coil_G = delivered_gradient(scanner, grid, sequence, voxels=voxels, to_scanner=to_scanner,
                                         nonlinearity=nonlinearity, background=False, concomitant=False)
             for k in range(len(d)):
-                out[k] = out[k] + project(_concomitant_of(sequence, coil_G[k], d_bore[k], float(B0)))
+                out[k] = out[k] + project(_concomitant_of(sequence, coil_G[k], d_bore[k], float(B0),
+                                          b0_axis=_b0_axis(scanner)))
 
     return out
 
 
-def _concomitant_of(sequence, G_delivered, position_m, B0_T):
+def _b0_axis(scanner):
+    """The machine's field direction, defaulting to the bore axis the concomitant formula assumes."""
+    v = getattr(scanner, "b0_axis", None)
+    return (0.0, 0.0, 1.0) if v is None else v
+
+
+def _concomitant_of(sequence, G_delivered, position_m, B0_T, b0_axis=(0.0, 0.0, 1.0)):
     """The concomitant extra gradient of the gradient the COILS deliver, as a physical ``G`` increment.
 
-    ``G_delivered`` is ``L(r) G`` and must NOT include the magnet's background: the Maxwell term is a
-    quadratic form in the field the gradient coils produce, and a static inhomogeneity is not produced by
-    them. Substituting the nominal ``G`` instead drops the cross terms between the coils' nonlinearity and
-    their own concomitant field.
+    ``G_delivered`` is ``L(r) G``. Substituting the nominal ``G`` drops the cross terms between the coils'
+    nonlinearity and their own concomitant field; substituting ``L G`` is the best LOCAL approximation and
+    not the exact field of a nonlinear coil, whose transverse completion depends on its whole harmonic
+    expansion rather than on the gradient at one point (measured residual ~2 per cent of the term, against
+    ~3 per cent for the nominal gradient).
+
+    The magnet's background is deliberately absent, for a reason of SIZE rather than principle: it does
+    produce a genuine cross term (1.7e-3 of b here), but carrying it needs the magnet's transverse field,
+    which the catalogue does not record.
     """
     from dataclasses import replace as _replace
     played = _replace(sequence, G=np.asarray(G_delivered, dtype=np.float64))
-    return played.with_concomitant(position_m, B0_T).G - np.asarray(G_delivered, dtype=np.float64)
+    return (played.with_concomitant(position_m, B0_T, b0_axis=b0_axis).G
+            - np.asarray(G_delivered, dtype=np.float64))
 
 
 def _effective(sequence, G):
