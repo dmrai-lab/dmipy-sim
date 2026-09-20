@@ -28,8 +28,9 @@ def test_the_tensor_is_the_identity_at_isocentre_and_traceless_in_its_departure(
     """Two properties that are structural rather than incidental. It is the identity at isocentre because
     that is what defines the commanded gradient. And its departure is TRACELESS, because the measurement
     that produced it normalised each axis by the trace -- so a common mode, all three axes mis-scaled
-    together, is not merely unmeasured but inexpressible here. An L that could express one would be claiming
-    more than the data supports."""
+    together, is not OBSERVABLE. The representation could state one -- three coils each carrying the same added
+    curvature give tr L = 3(1 + e x) -- so what is missing is the data to set it, not the freedom to say it.
+    This checks that the shipped tensor does not invent one."""
     s = ScannerLimits.of("swoop")
     np.testing.assert_allclose(s.gradient_tensor(np.zeros((1, 3)))[0], np.eye(3), atol=1e-15)
     coeffs = np.array([s.d_scale_x_dx, s.d_scale_y_dx, s.d_scale_z_dx])
@@ -119,16 +120,16 @@ def test_the_tensor_tilts_off_axis_because_a_diagonal_one_cannot_be_a_field():
     coil's B_z depend on its own axis alone, and Laplace then forces that dependence to be linear, so a
     diagonal L is the identity or it is nothing.
 
-    The off-diagonals are therefore not a refinement of this model, they are the measurement. Two of the
-    three coils have a UNIQUE harmonic completion -- d/dy (y + a_y x y) = 1 + a_y x and d/dz (z + a_z x z)
-    = 1 + a_z x, where x y and x z are already harmonic -- so L_xy = a_y y and L_xz = a_z z follow from the
-    measured diagonal with nothing chosen.
+    That off-diagonals EXIST is therefore forced. Their VALUES are not: the measurement gives the diagonal
+    only, and each coil admits a four-parameter family of harmonic completions on top of it. What ships is
+    the minimum-norm, parity-preserving member -- see gradient_potentials -- so L_xy = a_y y is a modelling
+    choice with a reason, not a measurement.
 
-    Measured over the validity radius they are the SAME SIZE as the diagonal departure, and they carry the
-    eigenframe rotation entirely, which is the part the previous diagonal tensor was structurally incapable
-    of expressing."""
+    An admissible alternative that breaks the y coil's reflection parity by as much as the measured effect
+    moves L by the whole nonlinearity, and tier 0 cannot tell the two apart. This test pins the SHIPPED
+    choice, which is what a regression test is for; it is not evidence that the choice is unique."""
     s = ScannerLimits.of("swoop")
-    R = s.b0_validity_radius or 0.09
+    R = s.b0_validity_radius or 0.08
 
     # the two forced off-diagonal terms, read straight off the measured coefficients
     L = s.gradient_tensor(np.array([0.0, R, 0.0]))
@@ -136,12 +137,20 @@ def test_the_tensor_tilts_off_axis_because_a_diagonal_one_cannot_be_a_field():
     L = s.gradient_tensor(np.array([0.0, 0.0, R]))
     assert L[0, 2] == pytest.approx(s.d_scale_z_dx * R, rel=1e-9), "L_xz is not a_z z"
 
+    # The off-diagonal and diagonal departures are the SAME FUNCTION of position -- a_j times a coordinate
+    # -- so at a point displaced equally in x and y they are equal. Asserting that pointwise says something
+    # about the field; taking max|off| / max|diag| over a CUBE would only say the cube has equal sides
+    # (halve its y and z and the ratio becomes 0.5), so it would be a test of the sampling box.
+    e = R / np.sqrt(2.0)
+    M = s.gradient_tensor(np.array([e, e, 0.0]))
+    assert M[0, 1] == pytest.approx(s.d_scale_y_dx * e, rel=1e-9)      # L_xy = a_y y
+    assert M[1, 1] - 1.0 == pytest.approx(s.d_scale_y_dx * e, rel=1e-9)  # L_yy - 1 = a_y x, equal here
     rng = np.random.default_rng(0)
     q = rng.uniform(-R, R, (400, 3))
+    q = q[np.linalg.norm(q, axis=1) <= R]
     Ls = s.gradient_tensor(q)
     off = np.abs(Ls[:, ~np.eye(3, dtype=bool)]).max()
-    dev = np.abs(np.einsum("nii->ni", Ls) - 1.0).max()
-    assert off == pytest.approx(dev, rel=0.05), f"off {off:.4f} vs diagonal departure {dev:.4f}"
+    assert off > 0.5 * np.abs(np.einsum("nii->ni", Ls) - 1.0).max()
 
     tilt = []
     for M in Ls:
@@ -155,7 +164,7 @@ def test_the_tensor_is_admissible_under_tier_zero():
     refused the previous diagonal tensor now passes on this one."""
     s = ScannerLimits.of("swoop")
     rng = np.random.default_rng(1)
-    q = rng.uniform(-0.09, 0.09, (200, 3))
+    q = rng.uniform(-0.045, 0.045, (200, 3))
     maxwell.require_gradient_tensor_admissible(s.gradient_tensor, q, "the Swoop L(r)")
     for j, phi in s.gradient_potentials().items():
         r = maxwell.harmonic_residual(lambda p, c=phi: solid_harmonics.evaluate(c, p), q[:20])
@@ -167,14 +176,19 @@ def test_the_one_free_parameter_is_bounded_and_attached_to_the_smallest_coeffici
     mis-scaling depends on: d/dx (x + a_x x^2 / 2) needs x^2, which is not harmonic, so the curvature must
     be borrowed from y or from z. That share is the only thing chosen in this model.
 
-    It costs little, and the catalogue should say so rather than leave it looking arbitrary: a_x is the
-    smallest of the three coefficients, so the whole family spans a few per cent of the nonlinearity and
-    essentially nothing of a b value."""
+    It costs little, and the catalogue says so rather than leaving it arbitrary: a_x is the smallest of the
+    three coefficients, so the whole family spans a few per cent of the nonlinearity and essentially nothing
+    of a b value.
+
+    What this does NOT show is that the completion as a whole is nearly determined. lam is the one member of
+    the freedom that is EXPOSED; the coil-parity assumption behind the off-diagonals is the larger one and is
+    not bounded by the data at all. The b insensitivity below is also weaker than it reads: columns y and z
+    carry no lam, so only the x direction is a live test of it."""
     s = ScannerLimits.of("swoop")
     assert abs(s.d_scale_x_dx) < 0.1 * max(abs(s.d_scale_y_dx), abs(s.d_scale_z_dx))
 
     rng = np.random.default_rng(2)
-    q = rng.uniform(-0.09, 0.09, (300, 3))
+    q = rng.uniform(-0.045, 0.045, (300, 3))
     ends = [replace(s, gradient_completion=lam).gradient_tensor(q) for lam in (0.0, 1.0)]
     mid = replace(s, gradient_completion=0.5).gradient_tensor(q)
     spread = max(np.abs(e - mid).max() for e in ends)

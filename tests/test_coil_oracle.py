@@ -61,7 +61,12 @@ def test_an_axially_symmetric_coil_produces_only_the_harmonics_its_symmetry_allo
     p = coil.GradientCoil(coil.maxwell_pair(), "z").potential()
     assert set(p) == {"Z"}, f"an axially symmetric pair produced {sorted(p)}"
     assert p["Z"] == pytest.approx(1.0, abs=1e-3)
-    assert len(coil.GradientCoil(coil.maxwell_pair(), "z").potential(significant=False)) == 18
+    # NOT an assertion that the basis has N terms -- that would be a test of solid_harmonics, not of this
+    # coil. What matters is that the unfiltered fit carries the whole basis and the FILTER is what reduces
+    # it to Z, so the symmetry conclusion is the coil's and not the expansion's.
+    unfiltered = coil.GradientCoil(coil.maxwell_pair(), "z").potential(significant=False)
+    assert set(unfiltered) == set(sh.names_through(4))
+    assert len(unfiltered) > len(p)
 
 
 def test_a_transverse_coil_produces_its_axis_and_the_nonlinearity_that_names_it():
