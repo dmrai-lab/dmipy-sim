@@ -145,36 +145,36 @@ def test_a_spin_echo_refocuses_a_drifting_magnet_exactly(brain):
         assert abs(np.angle(s / base)) < 1e-9
 
 
-def test_a_split_train_s_sensitivity_to_drift_is_bounded_rather_than_cumulative(brain):
+def test_a_refocusing_train_is_exactly_insensitive_to_a_uniform_offset(brain):
     """#285 filed drift as low priority on the assumption that "the SPLICE magnitude combination is
-    insensitive to a slow phase ramp". It is -- but for a better reason than slowness, and this measures it.
+    insensitive to a slow phase ramp". It is more than insensitive: with hard pulses it is EXACT, and the
+    reason is structural rather than a cancellation that happens to be good.
 
-    The train's magnitude is a BOUNDED oscillation in the offset, not a decay: the same one-and-a-half per
-    cent envelope over 0-100 Hz as over 1000-3000 Hz. So the answer does not depend on how far the magnet
-    has drifted, which is what makes the sequence robust rather than merely lucky. The mechanism is the
-    signed transverse time: the refocused gate carries none and is immune, and the stimulated gates carry
-    40 ms, which wraps every 25 Hz, so their contribution oscillates with a fixed amplitude instead of
-    accumulating.
+    A uniform offset multiplies every transverse coefficient by the same factor, so it can rotate the
+    signal but never redistribute it between coherence orders. The train's echo is carried by the refocused
+    pathway, whose signed transverse time is zero, so there is no second pathway to interfere with and the
+    magnitude is untouched at any offset.
 
-    For scale, the Swoop's measured coefficient is -1400 Hz/K and it re-centres f0 every 339 s, so the
-    residual within an interval is tens of hertz -- and even a whole un-recentred kelvin lands inside the
-    same envelope."""
+    An earlier version of this test recorded a bounded +-1.5 % envelope. That was an artefact: the
+    off-resonance operator conjugated by the sign of the dephasing index, which made it non-uniform and let
+    it move amplitude between orders -- something no static field offset can do. See
+    tests/test_epg_off_resonance.py, which checks the operator against an isochromat sum.
+
+    What this does NOT say is that a real magnet's drift is harmless. It says a UNIFORM offset is refocused
+    under HARD pulses. Finite pulses excite about a tilted effective field when off-resonant, so the flip
+    angle itself becomes offset-dependent -- a channel this route does not model."""
     from dmipy_sim.replay.pathways import train_response
     from dmipy_sim.replay import so3
     _ph, pack, _g = brain
     tr = train_response(pack, _train(n_echo=4, beta=150.0), keep=(8, 0))
     A = so3.so3_design(8, np.eye(3)[None], 0)
 
-    def ratio(hz):
-        c = tr.at(1.0, echo=-1, dw=2 * np.pi * hz).coeffs
-        return abs(complex((A @ c.T).reshape(-1)[0]))
+    def at(hz):
+        return complex((A @ tr.at(1.0, echo=-1, dw=2 * np.pi * hz).coeffs.T).reshape(-1)[0])
 
-    base = ratio(0.0)
-    bands = {}
-    for lo, hi in ((0.0, 100.0), (100.0, 1000.0), (1000.0, 3000.0)):
-        r = np.array([ratio(f) / base for f in np.linspace(lo, hi, 60)])
-        bands[(lo, hi)] = float(np.abs(r - 1.0).max())
-        assert bands[(lo, hi)] < 0.02, f"{lo}-{hi} Hz moved the train by {bands[(lo,hi)]:.3f}"
-    # the envelope does not grow with the offset -- which is the claim that makes drift a non-issue
-    lo_band, hi_band = bands[(0.0, 100.0)], bands[(1000.0, 3000.0)]
-    assert hi_band < 1.5 * lo_band, f"the envelope grew: {lo_band:.4f} near zero, {hi_band:.4f} far out"
+    base = at(0.0)
+    for hz in (13.0, 100.0, 545.0, 1400.0, 2725.0):
+        assert abs(at(hz)) / abs(base) == pytest.approx(1.0, abs=1e-9)
+    # the echo really is carried by the pathway that refocuses, which is why
+    live = [g for g, w in tr.weights(1.0).items() if abs(w[-1]) > 1e-6]
+    assert len(live) == 1 and tr.tau[live[0]] == pytest.approx(0.0, abs=1e-12)
