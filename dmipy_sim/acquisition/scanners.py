@@ -86,6 +86,9 @@ class ScannerLimits:
     b0_temperature_coefficient: float = None  # 1/K, dB0/B0 per kelvin of magnet temperature
     f0_recentering_interval: float = None     # s, how long the field drifts before f0 is re-set
     f0_temperature_slope: float = None        # Hz/K, the same coefficient as published
+    d_scale_x_dx: float = None    # 1/m, dL_xx/dx -- the gradient-nonlinearity tensor's x dependence
+    d_scale_y_dx: float = None    # 1/m, dL_yy/dx
+    d_scale_z_dx: float = None    # 1/m, dL_zz/dx
 
     @classmethod
     def of(cls, scanner, *, regime="default"):
@@ -126,6 +129,9 @@ class ScannerLimits:
                                                           "b0_temperature_coefficient"),
                    f0_recentering_interval=scc.leaf_si(entry, "thermal", "f0_recentering_interval"),
                    f0_temperature_slope=scc.leaf_si(entry, "thermal", "f0_temperature_slope"),
+                     d_scale_x_dx=scc.leaf_si(entry, "gradient_nonlinearity", "d_scale_x_dx"),
+                     d_scale_y_dx=scc.leaf_si(entry, "gradient_nonlinearity", "d_scale_y_dx"),
+                     d_scale_z_dx=scc.leaf_si(entry, "gradient_nonlinearity", "d_scale_z_dx"),
                      b0_axis=_axis(scc.leaf_raw(entry, "frame", "b0_axis"), "b0_axis", key),
                      b1_axis=_axis(scc.leaf_raw(entry, "frame", "b1_axis"), "b1_axis", key))
         limits._check_frame()
@@ -287,6 +293,38 @@ class ScannerLimits:
         _v, g_mag = self._harmonics(offset_m)
         out = self.field_T * (g_mag @ self.magnet_frame())      # magnet axes back into patient axes
         return out.reshape(np.shape(offset_m)) if np.ndim(offset_m) > 1 else out[0]
+
+    def gradient_tensor(self, offset_m):
+        """The 3x3 tensor ``L`` taking a COMMANDED gradient vector to the one actually delivered at a
+        displacement from isocentre: ``g_delivered = L(r) g_commanded``, with ``L(0) = I``.
+
+        A gradient coil's field is only linear near isocentre. Away from it the delivered gradient is
+        mis-scaled and tilted, which is the standard gradient-nonlinearity tensor, and it matters here
+        because the b value a voxel receives is ``b_delivered = |L u|^2 b`` along a rotated direction --
+        so this is an encoding error, not a shading.
+
+        Only what has been MEASURED is carried: the diagonal's dependence on left-right position, from the
+        NIST dual-field database. Two things are therefore absent by construction rather than by oversight.
+        The common mode is unobservable in that measurement (normalising by the trace is what removes the
+        unknown true diffusivity, and it forces the three coefficients to sum to zero), so ``L`` here has
+        unit determinant to first order and cannot express all three axes being mis-scaled together. And the
+        off-diagonal terms are not measured at all, so this ``L`` is diagonal and tilts nothing.
+
+        ``None`` when the machine has no catalogued coefficients -- which is every machine here but one, and
+        not because the others are linear. Vendors do publish spherical-harmonic coil descriptions to
+        service channels; none of them is in the open literature.
+        """
+        if self.d_scale_y_dx is None:
+            return None
+        d = np.atleast_2d(np.asarray(offset_m, dtype=np.float64))
+        x = d[..., 0]
+        diag = np.stack([1.0 + (self.d_scale_x_dx or 0.0) * x,
+                         1.0 + (self.d_scale_y_dx or 0.0) * x,
+                         1.0 + (self.d_scale_z_dx or 0.0) * x], axis=-1)
+        L = np.zeros(diag.shape + (3,), dtype=np.float64)
+        idx = np.arange(3)
+        L[..., idx, idx] = diag
+        return L.reshape(np.shape(offset_m)[:-1] + (3, 3)) if np.ndim(offset_m) > 1 else L[0]
 
     def b0_drift(self, delta_T_K):
         """The field a magnet this much warmer holds, minus the one it was tuned at, in **tesla**.

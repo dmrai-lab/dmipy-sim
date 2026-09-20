@@ -69,7 +69,9 @@ _TO_SI = {"mT/m": 1e-3, "T/m": 1.0, "T/m/s": 1.0, "us": 1e-6, "ms": 1e-3,
           # and this table can only scale
           "1/K": 1.0, "K": 1.0, "Hz/K": 1.0,
           # a solid-harmonic coefficient of dB/B0 has the reciprocal length of its order
-          "1/m^3": 1.0}
+          "1/m^3": 1.0,
+          # a gradient-nonlinearity coefficient is a fraction per metre
+          "1/m": 1.0}
 
 
 def resolve(name):

@@ -306,6 +306,14 @@
    "journal_or_publisher": "Magnetic Resonance in Medicine 91(2):828-841",
    "year": 2023,
    "doi_or_url": "https://doi.org/10.1002/mrm.29879"
+  },
+  "nist2025_dualfield_dwi": {
+   "key": "nist2025_dualfield_dwi",
+   "authors": "Dienstfrey A, Keenan K E, Stupic K F, et al. (National Institute of Standards and Technology)",
+   "title": "Database of Diffusion MRI Brain Scans at 64 mT and 3 T (20 participants on a Hyperfine Swoop, hardware 1.8 / software rc8.6.0, with the diffusivity fitted separately along x, y and z on an FOV-centred grid, plus a co-registered 3 T reference; report NISTIR 8580, doi 10.6028/NIST.IR.8580)",
+   "journal_or_publisher": "National Institute of Standards and Technology, public data repository",
+   "year": 2025,
+   "doi_or_url": "https://doi.org/10.18434/mds2-3896"
   }
  },
  "scanners": {
@@ -1501,6 +1509,35 @@
      "source_key": "hyperfine_us12366622",
      "location": "specification, RF coil principal axis; coil class from FDA K221923",
      "confidence": "cited"
+    }
+   },
+   "gradient_nonlinearity": {
+    "d_scale_x_dx": {
+     "value": -0.0317,
+     "unit": "1/m",
+     "field_T": 0.064,
+     "context": "how the gradient actually delivered along x mis-scales per metre of LEFT-RIGHT displacement: the xx element of the gradient-nonlinearity tensor L, whose derivative with respect to x this is. Standard error 0.0539 /m over 10 participants (not significant). Measured, not vendor-published: regressed from the NIST dual-field database, where each participant's diffusivity is fitted separately along x, y and z. Encoding along u and fitting against the NOMINAL b measures ADC_u = (L u)^T D (L u), so a fractional gradient error appears DOUBLED in the diffusivity and the slope is halved to get this. TWO LIMITS, both structural. (1) Only the TRACELESS part is observable: normalising each axis by the trace is what removes the unknown true diffusivity, and it forces the three coefficients to sum to zero, so a common mode -- all three axes mis-scaled together -- is invisible here and is NOT included. (2) The x dependence is the only one that can be claimed: every per-axis diffusivity is invariant under a left-right mirror, so mirror-symmetric anatomy cannot make a linear term in x and any such term is instrumental, while a trend in y or z would be indistinguishable from anatomy. Attributing it to gradient AMPLITUDE rather than to a rotation of the encoding frame is an inference: a rotation enters at second order and would need an implausible 0.3 rad/m, whereas an amplitude error enters at first order and needs 0.45 %/cm. Eddy currents and any vendor distortion correction already in the product reconstruction are NOT excluded",
+     "source_key": "nist2025_dualfield_dwi",
+     "location": "derived from participants 00-09, per-axis diffusivity regressed on left-right position",
+     "confidence": "derived"
+    },
+    "d_scale_y_dx": {
+     "value": 0.4549,
+     "unit": "1/m",
+     "field_T": 0.064,
+     "context": "how the gradient actually delivered along y mis-scales per metre of LEFT-RIGHT displacement: the yy element of the gradient-nonlinearity tensor L, whose derivative with respect to x this is. Standard error 0.0586 /m over 10 participants (t = +7.8). Measured, not vendor-published: regressed from the NIST dual-field database, where each participant's diffusivity is fitted separately along x, y and z. Encoding along u and fitting against the NOMINAL b measures ADC_u = (L u)^T D (L u), so a fractional gradient error appears DOUBLED in the diffusivity and the slope is halved to get this. TWO LIMITS, both structural. (1) Only the TRACELESS part is observable: normalising each axis by the trace is what removes the unknown true diffusivity, and it forces the three coefficients to sum to zero, so a common mode -- all three axes mis-scaled together -- is invisible here and is NOT included. (2) The x dependence is the only one that can be claimed: every per-axis diffusivity is invariant under a left-right mirror, so mirror-symmetric anatomy cannot make a linear term in x and any such term is instrumental, while a trend in y or z would be indistinguishable from anatomy. Attributing it to gradient AMPLITUDE rather than to a rotation of the encoding frame is an inference: a rotation enters at second order and would need an implausible 0.3 rad/m, whereas an amplitude error enters at first order and needs 0.45 %/cm. Eddy currents and any vendor distortion correction already in the product reconstruction are NOT excluded",
+     "source_key": "nist2025_dualfield_dwi",
+     "location": "derived from participants 00-09, per-axis diffusivity regressed on left-right position",
+     "confidence": "derived"
+    },
+    "d_scale_z_dx": {
+     "value": -0.4232,
+     "unit": "1/m",
+     "field_T": 0.064,
+     "context": "how the gradient actually delivered along z mis-scales per metre of LEFT-RIGHT displacement: the zz element of the gradient-nonlinearity tensor L, whose derivative with respect to x this is. Standard error 0.0673 /m over 10 participants (t = -6.3). Measured, not vendor-published: regressed from the NIST dual-field database, where each participant's diffusivity is fitted separately along x, y and z. Encoding along u and fitting against the NOMINAL b measures ADC_u = (L u)^T D (L u), so a fractional gradient error appears DOUBLED in the diffusivity and the slope is halved to get this. TWO LIMITS, both structural. (1) Only the TRACELESS part is observable: normalising each axis by the trace is what removes the unknown true diffusivity, and it forces the three coefficients to sum to zero, so a common mode -- all three axes mis-scaled together -- is invisible here and is NOT included. (2) The x dependence is the only one that can be claimed: every per-axis diffusivity is invariant under a left-right mirror, so mirror-symmetric anatomy cannot make a linear term in x and any such term is instrumental, while a trend in y or z would be indistinguishable from anatomy. Attributing it to gradient AMPLITUDE rather than to a rotation of the encoding frame is an inference: a rotation enters at second order and would need an implausible 0.3 rad/m, whereas an amplitude error enters at first order and needs 0.45 %/cm. Eddy currents and any vendor distortion correction already in the product reconstruction are NOT excluded",
+     "source_key": "nist2025_dualfield_dwi",
+     "location": "derived from participants 00-09, per-axis diffusivity regressed on left-right position",
+     "confidence": "derived"
     }
    }
   }
