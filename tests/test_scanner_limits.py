@@ -350,3 +350,47 @@ def test_recentring_is_what_makes_the_drift_small_and_it_is_catalogued():
     # the span the magnet is uncontrolled over is the reason f0 is a calibration, not an assumption
     assert scc.get_limit("hyperfine_swoop_64mT", "thermal", "operating_temperature_span")["value"] == 15.0
     assert abs(sw.b0_drift_hz(15.0)) > 20e3                               # twenty kilohertz across the range
+
+
+# ── the magnet's own encoding gradient (dmipy-sim#322 PR 6) ──────────────────────────────────────────
+def test_the_background_gradient_is_the_field_law_differentiated_not_a_second_number():
+    """The catalogue publishes a background gradient AND a field shape, and they must be the same magnet.
+    `b0_gradient` is the shape's derivative in closed form, so it agrees with a finite difference of
+    `b0_offset` to machine precision -- and it lands on the independently cited 1.4 mT/m at 8 cm, which is
+    the check that the shape was solved correctly in the first place."""
+    s = ScannerLimits.of("swoop")
+    h = 1e-6
+    for p in ([0.0, 0, 0], [0.05, 0, 0], [-0.05, 0, 0], [0, 0.06, 0], [0.03, -0.02, 0.05]):
+        p = np.asarray(p, float)
+        num = np.array([(s.b0_offset((p + h * e)[None])[0] - s.b0_offset((p - h * e)[None])[0]) / (2 * h)
+                        for e in np.eye(3)])
+        np.testing.assert_allclose(s.b0_gradient(p[None])[0], num, rtol=1e-6, atol=1e-12)
+    # the cited anchor: 1.4 mT/m at 8 cm, on the side the odd term adds to
+    steep = np.linalg.norm(s.b0_gradient(np.array([[0.0799, 0, 0]]))[0])
+    assert steep == pytest.approx(1.4e-3, rel=2e-3)
+    cited = scc.get_limit("hyperfine_swoop_64mT", "homogeneity", "background_gradient")
+    assert steep * 1e3 == pytest.approx(cited["value"], rel=2e-3)
+
+
+def test_the_background_gradient_does_not_vanish_at_isocentre_because_the_magnet_is_asymmetric():
+    """A bowl differentiates to zero at its centre; an odd term does not. So a single-yoke magnet encodes
+    diffusion even at isocentre, and anything that assumed "no error at the origin" is wrong about THIS
+    magnet. The residue is the odd coefficient exactly, which is what makes it checkable rather than a
+    surprise."""
+    s = ScannerLimits.of("swoop")
+    at_iso = s.b0_gradient(np.zeros((1, 3)))[0]
+    assert at_iso[0] == pytest.approx(s.field_T * s.b0_asymmetry_rl)     # the odd term, alone
+    np.testing.assert_allclose(at_iso[1:], 0.0, atol=1e-18)              # the bowl contributes nothing
+    assert np.linalg.norm(at_iso) == pytest.approx(2.86e-4, rel=1e-2)    # 0.29 mT/m
+    # and the two sides of the bore differ, which is the asymmetry showing up in the derivative
+    hi = np.linalg.norm(s.b0_gradient(np.array([[0.0799, 0, 0]]))[0])
+    lo = np.linalg.norm(s.b0_gradient(np.array([[-0.0799, 0, 0]]))[0])
+    assert hi > 1.6 * lo, f"the derivative lost the asymmetry: {hi*1e3:.3f} vs {lo*1e3:.3f} mT/m"
+
+
+def test_a_derivative_is_refused_beyond_the_law_s_anchor_and_absent_without_one():
+    s = ScannerLimits.of("swoop")
+    with pytest.raises(ValueError, match="extrapolates worse"):
+        s.b0_gradient(np.array([[0.12, 0, 0]]))
+    for name in ("prisma", "connectom", "terra"):
+        assert ScannerLimits.of(name).b0_gradient(np.array([[0, 0, 0.05]])) is None
