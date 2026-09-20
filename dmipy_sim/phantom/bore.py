@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import numpy as np
 
-__all__ = ["b0_offset_map", "b1_scale_map", "background_gradient_map", "delivered_b"]
+__all__ = ["b0_offset_map", "b1_scale_map", "background_gradient_map", "delivered_b", "b_quadratic", "delivered_b_map"]
 
 
 def b0_offset_map(scanner, grid, *, to_scanner=None, delta_T_K=0.0):
@@ -157,4 +157,101 @@ def delivered_b(scanner, grid, sequence, *, to_scanner=None, voxels=None):
     out = np.empty((g.shape[0], sequence.n_meas), dtype=np.float64)
     for i, gv in enumerate(g):
         out[i] = sequence.with_background_gradient(gv).b()
+    return out
+
+
+# ── the delivered b over a whole grid, in one pass ──────────────────────────────────────────────────
+#
+# Both of the terms a magnet adds to an acquisition are AFFINE in position. The background gradient is
+# `B0 (a xhat + 2 c r)`, affine by inspection. The concomitant field's gradient is `M(t) r` with `M`
+# built from the coils' own G and nothing else -- also affine, and with no constant part, which is why
+# it vanishes at isocentre where the background one does not.
+#
+# The b value is a quadratic functional of the effective gradient, so an affine dependence on position
+# makes `b(r)` an exact QUADRATIC FORM: `b(r) = b0 + v . r + r^T A r`. Ten coefficients per measurement,
+# whatever the grid. That is what turns an image from one sequence rebuild per voxel into ten.
+
+_QUADRATIC_TERMS = 10          # 1 + 3 linear + 6 symmetric-quadratic
+
+
+def _quadratic_features(r):
+    """``(n, 10)``: the monomials of a general quadratic in three variables, in the order the coefficients
+    are solved for."""
+    x, y, z = r[:, 0], r[:, 1], r[:, 2]
+    one = np.ones_like(x)
+    return np.stack([one, x, y, z, x * x, y * y, z * z, x * y, x * z, y * z], axis=1)
+
+
+def b_quadratic(played_at, *, probe_radius=0.05):
+    """``(n_meas, 10)`` -- the coefficients of the exact quadratic ``b(r)`` that ``played_at`` produces.
+
+    ``played_at(r)`` returns the acquisition as it is actually played at one position; this evaluates it at
+    ten probe positions and solves for the quadratic they determine. Ten is not a sampling: the dependence
+    IS quadratic, so ten well-placed points recover it exactly rather than approximately, and
+    :func:`delivered_b_map` then costs a matrix product per grid instead of a rebuild per voxel.
+
+    Solving for the coefficients rather than deriving them in closed form is deliberate. The b integral has
+    a quadrature convention -- rectangular q, trapezoidal in time -- and a second implementation of it here
+    would be a second thing to keep true. Probing uses the acquisition's own :meth:`b`, so the batched
+    answer cannot drift from the exact one; :func:`delivered_b` remains the oracle that says so.
+    """
+    # a well-conditioned probe set: the origin, +-one radius on each axis, and three diagonal points that
+    # pin the cross terms. Deliberately not random -- the solve should be reproducible.
+    u = float(probe_radius)
+    probes = np.array([[0.0, 0.0, 0.0],
+                       [u, 0, 0], [-u, 0, 0], [0, u, 0], [0, -u, 0], [0, 0, u], [0, 0, -u],
+                       [u, u, 0], [u, 0, u], [0, u, u]], dtype=np.float64)
+    F = _quadratic_features(probes)
+    if np.linalg.matrix_rank(F) < _QUADRATIC_TERMS:
+        raise ValueError("the probe set does not determine a quadratic; probe_radius must be non-zero")
+    B = np.stack([np.asarray(played_at(p).b(), dtype=np.float64) for p in probes])   # (10, n_meas)
+    return np.linalg.solve(F, B).T                                                   # (n_meas, 10)
+
+
+def delivered_b_map(scanner, grid, sequence, *, to_scanner=None, voxels=None,
+                    background=True, concomitant=True, probe_radius=0.05, report=None):
+    """``(n_voxels, n_meas)`` -- the b every voxel actually receives, in ONE pass over the grid.
+
+    Two separate things a magnet does to a diffusion measurement, and they are different physics even
+    though they arrive the same way:
+
+    ``background`` is the magnet's OWN field gradient, which is constant in time and non-zero at isocentre
+    (a single-yoke magnet has an odd term that survives differentiation). Its cross term with the pulsed
+    gradient flips sign with the diffusion direction.
+
+    ``concomitant`` is the gradient coils' Maxwell term, which is quadratic in ``G(t)`` and therefore varies
+    through the sequence and does NOT flip when the coils reverse. It is exactly zero at isocentre and
+    scales as ``1 / B0``, which is what makes it a low-field problem rather than a clinical one.
+
+    Both are affine in position, so the delivered b is an exact quadratic form and the whole grid costs ten
+    probe evaluations. ``None`` when the machine publishes neither.
+    """
+    gmap = background_gradient_map(scanner, grid, to_scanner=to_scanner) if background else None
+    B0 = getattr(scanner, "field_T", None)
+    if gmap is None and not (concomitant and B0):
+        return None
+
+    R = None if to_scanner is None else np.asarray(to_scanner, dtype=np.float64)
+
+    def played_at(r_bore):
+        """The acquisition as played at one point, stated in the BORE's frame -- which is the frame both
+        the field law and the Maxwell formula are written in."""
+        seq = sequence
+        if gmap is not None:
+            g = np.atleast_2d(scanner.b0_gradient(np.asarray(r_bore, np.float64)[None]))[0]
+            seq = seq.with_background_gradient(g)
+        if concomitant and B0:
+            seq = seq.with_concomitant(np.asarray(r_bore, np.float64), B0)
+        return seq
+
+    coeff = b_quadratic(played_at, probe_radius=probe_radius)
+
+    idx = grid.every_voxel if voxels is None else voxels
+    d = grid.offset_m(idx).reshape(-1, 3)
+    if R is not None:
+        d = d @ R.T                                    # the grid's frame into the bore's
+    out = _quadratic_features(d) @ coeff.T             # (n_vox, n_meas)
+    if report is not None:
+        report.update(n_probes=_QUADRATIC_TERMS, n_voxels=d.shape[0],
+                      background=gmap is not None, concomitant=bool(concomitant and B0))
     return out
