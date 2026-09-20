@@ -57,7 +57,7 @@ TERMS = {
                  lambda x, y, z: (3 * x ** 2 - 3 * y ** 2, -6 * x * y, np.zeros_like(z))),
     "Y3":       (3, lambda x, y, z: y * (3 * x ** 2 - y ** 2),
                  lambda x, y, z: (6 * x * y, 3 * x ** 2 - 3 * y ** 2, np.zeros_like(z))),
-    # ── order 4, zonal and the two tesseral terms a yoked magnet is most likely to carry ────────────
+    # ── order 4, complete: 9 terms ───────────────────────────────────────────────────────────────
     "Z4":       (4, lambda x, y, z: 8 * z ** 4 - 24 * z ** 2 * (x ** 2 + y ** 2) + 3 * (x ** 2 + y ** 2) ** 2,
                  lambda x, y, z: (-48 * z ** 2 * x + 12 * x * (x ** 2 + y ** 2),
                                   -48 * z ** 2 * y + 12 * y * (x ** 2 + y ** 2),
@@ -68,6 +68,24 @@ TERMS = {
     "Z3Y":      (4, lambda x, y, z: y * z * (4 * z ** 2 - 3 * x ** 2 - 3 * y ** 2),
                  lambda x, y, z: (-6 * x * y * z, z * (4 * z ** 2 - 3 * x ** 2 - 9 * y ** 2),
                                   y * (12 * z ** 2 - 3 * x ** 2 - 3 * y ** 2))),
+    "Z2X2Y2":   (4, lambda x, y, z: (x ** 2 - y ** 2) * (6 * z ** 2 - x ** 2 - y ** 2),
+                 lambda x, y, z: (-4 * x * (x ** 2 - 3 * z ** 2), 4 * y * (y ** 2 - 3 * z ** 2),
+                                  12 * z * (x ** 2 - y ** 2))),
+    "Z2XY":     (4, lambda x, y, z: x * y * (6 * z ** 2 - x ** 2 - y ** 2),
+                 lambda x, y, z: (-y * (3 * x ** 2 + y ** 2 - 6 * z ** 2),
+                                  -x * (x ** 2 + 3 * y ** 2 - 6 * z ** 2), 12 * x * y * z)),
+    "ZX3":      (4, lambda x, y, z: x * z * (x ** 2 - 3 * y ** 2),
+                 lambda x, y, z: (3 * z * (x ** 2 - y ** 2), -6 * x * y * z,
+                                  x * (x ** 2 - 3 * y ** 2))),
+    "ZY3":      (4, lambda x, y, z: y * z * (3 * x ** 2 - y ** 2),
+                 lambda x, y, z: (6 * x * y * z, 3 * z * (x ** 2 - y ** 2),
+                                  y * (3 * x ** 2 - y ** 2))),
+    "X4":       (4, lambda x, y, z: x ** 4 - 6 * x ** 2 * y ** 2 + y ** 4,
+                 lambda x, y, z: (4 * x * (x ** 2 - 3 * y ** 2), -4 * y * (3 * x ** 2 - y ** 2),
+                                  np.zeros_like(z))),
+    "Y4":       (4, lambda x, y, z: x * y * (x ** 2 - y ** 2),
+                 lambda x, y, z: (y * (3 * x ** 2 - y ** 2), x * (x ** 2 - 3 * y ** 2),
+                                  np.zeros_like(z))),
 }
 
 

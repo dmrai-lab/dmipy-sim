@@ -90,6 +90,30 @@ def test_every_term_of_the_standard_basis_passes_the_check_a_law_does():
     assert max(sh.check_harmonic(n) for n in sh.TERMS) < 1e-8
 
 
+def test_the_basis_is_complete_at_every_order_it_claims():
+    """An order-l space has 2l+1 members, and a basis missing some of them does not truncate a field, it
+    ABSORBS the missing content into the orders below. Order four carried 3 of its 9 terms, so a coil with
+    genuine l=4, m=2..4 content -- which a bi-planar or saddle winding has -- had it silently redistributed
+    into lower orders that then read as measurements of something else."""
+    from collections import Counter
+    per_order = Counter(l for _n, (l, _f, _g) in sh.TERMS.items())
+    for l in range(1, max(per_order) + 1):
+        assert per_order[l] == 2 * l + 1, f"order {l} has {per_order[l]} terms, not {2 * l + 1}"
+
+
+def test_every_analytic_gradient_matches_a_finite_difference():
+    """The gradients are written out by hand beside the values, so nothing but this says they belong to the
+    same function."""
+    P = maxwell.probe_points(0.05)
+    h = 1e-6
+    for n in sh.TERMS:
+        g = np.asarray(sh.gradient({n: 1.0}, P))
+        for k, e in enumerate(np.eye(3)):
+            fd = (sh.evaluate({n: 1.0}, P + h * e) - sh.evaluate({n: 1.0}, P - h * e)) / (2 * h)
+            rel = np.abs(fd - g[:, k]).max() / max(np.abs(g).max(), 1e-30)
+            assert rel < 1e-6, f"{n} d/d{'xyz'[k]} disagrees with a finite difference by {rel:.1e}"
+
+
 def test_every_catalogued_field_law_is_a_field():
     checked = 0
     for name in SCANNERS:
