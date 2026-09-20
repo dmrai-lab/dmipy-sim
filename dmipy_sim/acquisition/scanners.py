@@ -105,6 +105,8 @@ class ScannerLimits:
     d_scale_x_dx: float = None    # 1/m, dL_xx/dx -- the gradient-nonlinearity tensor's x dependence
     d_scale_y_dx: float = None    # 1/m, dL_yy/dx
     d_scale_z_dx: float = None    # 1/m, dL_zz/dx
+    gradient_completion: float = None   # share of the x coil's curvature borrowed from y (see
+                                        # gradient_potentials); the even 1/2 when unstated
 
     @classmethod
     def of(cls, scanner, *, regime="default"):
@@ -148,6 +150,8 @@ class ScannerLimits:
                      d_scale_x_dx=scc.leaf_si(entry, "gradient_nonlinearity", "d_scale_x_dx"),
                      d_scale_y_dx=scc.leaf_si(entry, "gradient_nonlinearity", "d_scale_y_dx"),
                      d_scale_z_dx=scc.leaf_si(entry, "gradient_nonlinearity", "d_scale_z_dx"),
+                     gradient_completion=scc.leaf_si(entry, "gradient_nonlinearity",
+                                                     "gradient_completion"),
                      b0_axis=_axis(scc.leaf_raw(entry, "frame", "b0_axis"), "b0_axis", key),
                      b1_axis=_axis(scc.leaf_raw(entry, "frame", "b1_axis"), "b1_axis", key))
         limits._check_frame()
@@ -315,36 +319,70 @@ class ScannerLimits:
         out = self.field_T * (g_mag @ self.magnet_frame())      # magnet axes back into patient axes
         return out.reshape(np.shape(offset_m)) if np.ndim(offset_m) > 1 else out[0]
 
+    def gradient_potentials(self):
+        """Each gradient coil's field as a SOLID-HARMONIC expansion, ``{axis: {term: coefficient}}``.
+
+        ``Phi_j`` is coil ``j``'s ``B_z`` divided by the gradient it delivers at isocentre, so its leading
+        term is the linear harmonic of that axis and ``grad Phi_j`` is column ``j`` of :meth:`gradient_tensor`.
+        Writing the coils this way is what makes the tensor a FIELD: a harmonic expansion cannot express an
+        inadmissible ``L``, where a tensor assembled element by element can and did.
+
+        What the measurement gives and what Laplace then forces are different things, and the split is
+        sharp. The NIST regression measures the DIAGONAL: ``dL_jj/dx = a_j``. Completing each coil to a
+        harmonic then determines the rest, and for two of the three coils it determines it UNIQUELY --
+        ``d/dy (y + a_y x y) = 1 + a_y x`` and ``d/dz (z + a_z x z) = 1 + a_z x``, and ``xy`` and ``xz`` are
+        already harmonic, so ``XY`` and ``ZX`` are the only completions there are. The off-diagonals
+        ``L_xy = a_y y`` and ``L_xz = a_z z`` are therefore not a model choice; they are the measurement.
+
+        The x coil is the one with freedom, because its own derivative is along the axis the mis-scaling
+        depends on: ``d/dx (x + a_x x^2 / 2) = 1 + a_x x`` needs ``x^2``, which is not harmonic, so the
+        curvature has to be borrowed from y or from z. ``gradient_completion`` is that one number -- the
+        share taken from y -- and it is the least-committed 1/2 by default. It costs little: over the 9 cm
+        validity radius the whole family spans 3.5 per cent of the nonlinearity and 0.001 per cent of a b
+        value, because ``a_x`` is the smallest of the three coefficients at 7 per cent of the largest.
+        """
+        if self.d_scale_y_dx is None:
+            return None
+        ax = self.d_scale_x_dx or 0.0
+        lam = 0.5 if self.gradient_completion is None else float(self.gradient_completion)
+        # (a_x/2)(x^2 - y^2) = (a_x/2) X2Y2 ; (a_x/2)(x^2 - z^2) = (a_x/4)(X2Y2 - Z2)
+        return {
+            "x": {"X": 1.0, "X2Y2": 0.5 * ax * lam + 0.25 * ax * (1.0 - lam),
+                  "Z2": -0.25 * ax * (1.0 - lam)},
+            "y": {"Y": 1.0, "XY": self.d_scale_y_dx or 0.0},
+            "z": {"Z": 1.0, "ZX": self.d_scale_z_dx or 0.0},
+        }
+
     def gradient_tensor(self, offset_m):
         """The 3x3 tensor ``L`` taking a COMMANDED gradient vector to the one actually delivered at a
         displacement from isocentre: ``g_delivered = L(r) g_commanded``, with ``L(0) = I``.
 
         A gradient coil's field is only linear near isocentre. Away from it the delivered gradient is
-        mis-scaled and tilted, which is the standard gradient-nonlinearity tensor, and it matters here
-        because the b value a voxel receives is ``b_delivered = |L u|^2 b`` along a rotated direction --
-        so this is an encoding error, not a shading.
+        mis-scaled AND TILTED, which is the standard gradient-nonlinearity tensor, and it matters here
+        because the b value a voxel receives is ``b_delivered = |L u|^2 b`` along a rotated direction -- so
+        this is an encoding error, not a shading.
 
-        Only what has been MEASURED is carried: the diagonal's dependence on left-right position, from the
-        NIST dual-field database. Two things are therefore absent by construction rather than by oversight.
-        The common mode is unobservable in that measurement (normalising by the trace is what removes the
-        unknown true diffusivity, and it forces the three coefficients to sum to zero), so ``L`` here has
-        unit determinant to first order and cannot express all three axes being mis-scaled together. And the
-        off-diagonal terms are not measured at all, so this ``L`` is diagonal and tilts nothing.
+        Column ``j`` is ``grad Phi_j`` from :meth:`gradient_potentials`, so the tensor is a field by
+        construction. The off-diagonals are not optional and not a refinement: a DIAGONAL ``L`` that is not
+        the identity is impossible, since a diagonal ``L`` makes each coil's ``B_z`` depend on its own axis
+        alone and Laplace then forces that dependence to be linear. Measured over this magnet's validity
+        radius the off-diagonal terms are the SAME SIZE as the diagonal departure and they carry the
+        eigenframe rotation entirely -- a median 26 and up to 48 degrees, which is the part a diagonal
+        tensor is structurally incapable of expressing.
+
+        One limit remains and it is the measurement's, not the representation's: only the TRACELESS part is
+        observable, because normalising each axis by the trace is what removes the unknown true
+        diffusivity. So ``L`` cannot express all three axes being mis-scaled together.
 
         ``None`` when the machine has no catalogued coefficients -- which is every machine here but one, and
         not because the others are linear. Vendors do publish spherical-harmonic coil descriptions to
         service channels; none of them is in the open literature.
         """
-        if self.d_scale_y_dx is None:
+        phi = self.gradient_potentials()
+        if phi is None:
             return None
         d = np.atleast_2d(np.asarray(offset_m, dtype=np.float64))
-        x = d[..., 0]
-        diag = np.stack([1.0 + (self.d_scale_x_dx or 0.0) * x,
-                         1.0 + (self.d_scale_y_dx or 0.0) * x,
-                         1.0 + (self.d_scale_z_dx or 0.0) * x], axis=-1)
-        L = np.zeros(diag.shape + (3,), dtype=np.float64)
-        idx = np.arange(3)
-        L[..., idx, idx] = diag
+        L = np.stack([solid_harmonics.gradient(phi[j], d) for j in ("x", "y", "z")], axis=-1)
         return L.reshape(np.shape(offset_m)[:-1] + (3, 3)) if np.ndim(offset_m) > 1 else L[0]
 
     def b0_drift(self, delta_T_K):
