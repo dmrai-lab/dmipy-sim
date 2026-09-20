@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import numpy as np
 
+from . import maxwell
+
 __all__ = ["TERMS", "names_through", "evaluate", "gradient", "check_harmonic"]
 
 #: ``name -> (order, value(x, y, z), gradient(x, y, z))``. Orders 1 to 4, in the conventional shim order.
@@ -98,14 +100,13 @@ def gradient(coeffs, r):
 
 
 def check_harmonic(name, h=1e-4, points=None):
-    """The largest ``|laplacian|`` of one term over a few points, scaled by its own curvature.
+    """The scaled ``|laplacian|`` of one term over a few points; every entry in :data:`TERMS` gives ~0.
 
-    Every entry in :data:`TERMS` must return ~0. This is what makes a written-out table safe: a mistyped
-    coefficient stops being a harmonic and the check finds it, where an eye would not.
+    This is what makes a written-out table safe: a mistyped coefficient stops being a harmonic and the
+    check finds it, where an eye would not. The Laplacian itself is
+    :func:`dmipy_sim.acquisition.maxwell.harmonic_residual`, the same one every emitted field law is held
+    to, so a term and a law cannot be judged by different rules.
     """
     P = np.array([[0.031, -0.047, 0.023], [-0.019, 0.011, -0.053], [0.041, 0.037, 0.017]]) if points is None \
         else np.asarray(points, dtype=np.float64)
-    f = lambda q: TERMS[name][1](q[:, 0], q[:, 1], q[:, 2])
-    lap = sum(f(P + h * e) - 2 * f(P) + f(P - h * e) for e in np.eye(3)) / h ** 2
-    scale = max(np.abs(sum(np.abs(f(P + h * e)) + np.abs(f(P - h * e)) for e in np.eye(3))).max(), 1e-12)
-    return float(np.abs(lap).max() / (scale / h ** 2))
+    return maxwell.harmonic_residual(lambda q: TERMS[name][1](q[:, 0], q[:, 1], q[:, 2]), P, h=h)
