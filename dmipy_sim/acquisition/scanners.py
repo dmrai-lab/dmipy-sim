@@ -1,9 +1,25 @@
-"""The scanner: its deliverability limits as one typed object, and the save-interval rule a persistent walk
+"""The scanner as a parameterised forward model of a machine, and the save-interval rule a persistent walk
 derives its grid from.
 
+:class:`ScannerLimits` is not a limits table with fields bolted on: it is the model, and the catalogue is a set of
+parameter vectors for it -- one per machine there are citable numbers for. A consumer never asks which machine it
+has and branches; it asks the model for a field, a gradient, a transmit scale or a drift at a point, and the model
+answers from whatever parameters it was given. An entry resolved by name and one a site constructs from its own
+measurements take the identical path, which is what makes this a catalogue of TWINS rather than of presets: the
+published entries characterise a model of machine, and the same parameter vector filled in for one serial number
+is a twin of that unit. See ``docs/scanner-model.md``.
+
 Every number here is read from :mod:`dmipy_sim.acquisition.scanner_constants` (the cited catalogue); this module
-carries none. :class:`ScannerLimits` is what a consumer takes -- a designer's constraint set, a Pulseq exporter's
-``Opts``, the walk's save grid -- resolved from any of a scanner's names and a slew ``regime``. :data:`SCANNERS` is
+carries none. A consumer takes it as a designer's constraint set, a Pulseq exporter's ``Opts``, the walk's save
+grid, or a field law -- resolved from any of a scanner's names and a slew ``regime``.
+
+The frames are three and are not conflated: the substrate's (the walk and the pack), the patient's (RAS: the
+phantom grid), and the magnet's (+z along ``b0_axis``, where the field maths is written). ``b0_axis`` and
+``b1_axis`` are parameters and not constants, since a Halbach magnet's B0 is not along its bore; ``magnet_frame``
+is the rotation between the last two, and a catalogue entry whose transmit axis is not perpendicular to its B0 is
+refused rather than expressed. A field law is evaluated only in the harmonic basis
+(:mod:`dmipy_sim.acquisition.solid_harmonics`), because ``B_z`` satisfies Laplace's equation in a current-free
+region and a law that does not is not a magnetic field. :data:`SCANNERS` is
 the replay band-limit certificate's class table (dmipy-sim #143), the same classes that size K per scanner, as a
 view of the catalogue: ``(G_max, slew_max)`` per class.
 
