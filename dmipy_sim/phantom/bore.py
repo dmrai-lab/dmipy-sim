@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import numpy as np
 
-__all__ = ["b0_offset_map", "b1_scale_map"]
+__all__ = ["b0_offset_map", "b1_scale_map", "background_gradient_map", "delivered_b"]
 
 
 def b0_offset_map(scanner, grid, *, to_scanner=None, delta_T_K=0.0):
@@ -96,3 +96,65 @@ def b1_scale_map(scanner, grid, *, to_scanner=None):
         return scanner.b1_scale(d)
 
     return transmit
+
+
+def background_gradient_map(scanner, grid, *, to_scanner=None):
+    """A callable giving the magnet's OWN encoding gradient, in T/m, at each voxel of ``grid``: ``(n, 3)``
+    in the GRID's frame, ready for
+    :meth:`~dmipy_sim.acquisition.scanner_sequence.ScannerSequence.with_background_gradient`.
+
+    This is :func:`b0_offset_map`'s companion and the same law differentiated, but the rotation enters
+    TWICE and in opposite directions, which is the one thing to get right. A position goes forward into the
+    bore to evaluate the law there; the gradient that comes back is a VECTOR in the bore's frame and has to
+    be brought back into the grid's, because that is the frame the sequence's ``G`` is written in. An offset
+    is a scalar and needs only the first half, so the asymmetry between the two functions is real rather
+    than an oversight.
+
+    ``None`` when the machine publishes no profile.
+    """
+    if getattr(scanner, "b0_quadratic", None) is None:
+        return None
+    iso = np.asarray(grid.isocenter_m, dtype=np.float64)
+    R = None if to_scanner is None else np.asarray(to_scanner, dtype=np.float64)
+    if R is not None:
+        if R.shape != (3, 3):
+            raise ValueError(f"to_scanner is the 3x3 rotation taking grid axes to scanner axes; got {R.shape}")
+        if not np.allclose(R.T @ R, np.eye(3), atol=1e-6):
+            raise ValueError("to_scanner is not a rotation: a grid's axes are orthonormal in the scanner")
+
+    def gradient(positions_m):
+        d = np.asarray(positions_m, dtype=np.float64).reshape(-1, 3) - iso
+        if R is not None:
+            d = d @ R.T                      # position: the grid's frame into the bore's
+        g = np.atleast_2d(scanner.b0_gradient(d))
+        if R is not None:
+            g = g @ R                        # gradient: the bore's frame back into the grid's
+        return g
+
+    return gradient
+
+
+def delivered_b(scanner, grid, sequence, *, to_scanner=None, voxels=None):
+    """``(n_voxels, n_meas)`` -- the b value each voxel actually receives, against the one the sequence
+    prescribes at isocentre.
+
+    A magnet's own gradient encodes diffusion alongside the pulsed one, so what a voxel is measured at is
+    not what was asked for. The ratio ``delivered_b / sequence.b()`` is the Swoop paper's ``a(r)``, and
+    because an ADC fitted against the prescribed b absorbs the whole discrepancy, ``a - 1`` IS the
+    fractional ADC error at that voxel -- which is how the paper's up-to-16.1 % figure is reproduced rather
+    than asserted.
+
+    The cross term is what dominates and what makes this a per-DIRECTION effect rather than a scale: it is
+    linear in the background gradient, so it changes sign with the diffusion direction, and a symmetric
+    direction set therefore has its mean error largely cancel while each individual measurement keeps its
+    own. Reporting only the mean would hide the effect entirely.
+    """
+    gmap = background_gradient_map(scanner, grid, to_scanner=to_scanner)
+    if gmap is None:
+        return None
+    idx = grid.every_voxel if voxels is None else voxels
+    g = gmap(grid.offset_m(idx).reshape(-1, 3) + np.asarray(grid.isocenter_m, dtype=np.float64))
+    out = np.empty((g.shape[0], sequence.n_meas), dtype=np.float64)
+    for i, gv in enumerate(g):
+        out[i] = sequence.with_background_gradient(gv).b()
+    return out

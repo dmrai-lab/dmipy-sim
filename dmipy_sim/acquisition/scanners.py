@@ -132,6 +132,41 @@ class ScannerLimits:
             shape = shape + self.b0_asymmetry_rl * d[..., 0]        # x is R/L
         return self.field_T * shape
 
+    def b0_gradient(self, offset_m):
+        """The SPATIAL GRADIENT of the static field at a displacement from isocentre, in **T/m** -- the
+        magnet's own encoding gradient, which is on during every pulse and every dead time because a magnet
+        does not switch off.
+
+        It is the derivative of :meth:`b0_offset`, so it is the same law and not a second one:
+        ``grad B0 (a x + c r^2) = B0 (a xhat + 2 c r)``. Feed it to
+        :meth:`~dmipy_sim.acquisition.scanner_sequence.ScannerSequence.with_background_gradient` and the
+        effective gradient, the b value and the cross term with the pulsed gradient all follow exactly.
+
+        It does NOT vanish at isocentre, and that is the odd term rather than an error: a single-yoke magnet
+        is not mirror-symmetric, so ``a`` survives differentiation where the bowl's ``2 c r`` does not. On
+        the Swoop that residue is 0.29 mT/m at the origin, against 1.40 mT/m at 8 cm on the high side and
+        0.83 mT/m on the low one. A magnet whose only term were the bowl would encode nothing at its centre;
+        this one encodes something everywhere.
+
+        ``None`` when the machine publishes no profile. Refused beyond ``b0_validity_radius``, for the
+        reason :meth:`b0_offset` gives -- and more sharply here, since a derivative extrapolates worse than
+        the quantity it came from.
+        """
+        if self.b0_quadratic is None or self.field_T is None:
+            return None
+        d = np.atleast_2d(np.asarray(offset_m, dtype=np.float64))
+        r = np.linalg.norm(d, axis=-1)
+        if self.b0_validity_radius is not None and float(np.max(r)) > self.b0_validity_radius:
+            raise ValueError(
+                f"the field law for {self.name!r} is anchored at {self.b0_validity_radius*100:.0f} cm from "
+                f"isocentre and something here is {float(np.max(r))*100:.1f} cm out. A derivative "
+                f"extrapolates worse than the law it came from, so this is refused")
+        g = 2.0 * self.b0_quadratic * d
+        if self.b0_asymmetry_rl:
+            g[..., 0] += self.b0_asymmetry_rl                        # x is R/L
+        out = self.field_T * g
+        return out.reshape(np.shape(offset_m)) if np.ndim(offset_m) > 1 else out[0]
+
     def b0_drift(self, delta_T_K):
         """The field a magnet this much warmer holds, minus the one it was tuned at, in **tesla**.
 
