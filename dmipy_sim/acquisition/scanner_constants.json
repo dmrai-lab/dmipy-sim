@@ -189,10 +189,10 @@
   },
   "gholam2025_swoop": {
    "key": "gholam2025_swoop",
-   "authors": "Gholam J, Kumar D, Ha J, Chen Y, Wong K, Kim J, Sheth K N, Rosen M S, Sze G, Kimberly W T, Cui J, Yuan J, Ji Y, Dong S, Gallagher M, Rutledge J, Welch E B, Poole M, O'Halloran R, Deoni S C L, By S",
+   "authors": "Gholam J, Schmid P, Ametepe J, Plumley A, Beltrachini L, Padormo F, Teixeira R, O'Halloran R, Petkov K, Engel K, Williams S C R, Deoni S, Cercignani M, Jones D K",
    "title": "Diffusion Tensor MRI and Spherical-Deconvolution-Based Tractography on an Ultra-Low Field Portable MRI System (Hyperfine Swoop, 0.064 T: per-axis gradients 24.9 / 24.4 / 25.7 mT/m, slew 23 / 22 / 67 T/m/s)",
-   "journal_or_publisher": "Human Brain Mapping",
-   "year": 2025,
+   "journal_or_publisher": "Human Brain Mapping 47(2)",
+   "year": 2026,
    "doi_or_url": "https://doi.org/10.1002/hbm.70454"
   },
   "ohalloran2022_dwi_64mt": {
