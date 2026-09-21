@@ -224,12 +224,12 @@ def test_the_susceptibility_field_points_where_the_machine_s_field_points(hollow
     lies along z, so a machine with B0 along z sees it end-on and one with B0 across it does not, and the two
     must disagree."""
     from dmipy_sim.acquisition.scanners import ScannerLimits
-    from dmipy_sim.replay.replay import _field_direction
+    from dmipy_sim.replay.replay import scanner_field
     pk, seq = hollow
     swoop, prisma = ScannerLimits.of("swoop"), ScannerLimits.of("prisma")
-    assert _field_direction(prisma) == (0.0, 0.0, 1.0)          # along the bore
-    assert _field_direction(swoop)[1] == pytest.approx(1.0)     # across the patient
-    assert not np.allclose(_field_direction(swoop), _field_direction(prisma))
+    assert scanner_field(prisma).axis == (0.0, 0.0, 1.0)          # along the bore
+    assert scanner_field(swoop).axis[1] == pytest.approx(1.0)     # across the patient
+    assert not np.allclose(scanner_field(swoop).axis, scanner_field(prisma).axis)
 
     t = Tissue(chi_iso=-9.0e-6, chi_aniso=-1.0e-7)
     along = pk.replay(seq, tissue=t, scanner=prisma)

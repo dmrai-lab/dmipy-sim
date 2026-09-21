@@ -40,8 +40,8 @@ def _reference(seq, G, K, n_t, dt_pack=None):
     """W built the way ``ReplayPack._prepare`` builds it: ``ScannerSequence.G_eff``, resampled onto the
     pack's save grid, then projected.
 
-    Deliberately not ``bore._effective``: a reference built from the module under test cannot fail when
-    that module is wrong, and the "carried through the RF sign" claim had no coverage at all while it was.
+    Deliberately not built from ``bore`` itself: a reference built from the module under test cannot fail
+    when that module is wrong, and the "carried through the RF sign" claim needs coverage of its own.
     The RESAMPLE is here for the same reason -- weights on the sequence's own grid are self-consistent and
     incompatible with a pack, and leaving it out of both routes made the parity test blind to it.
     """

@@ -137,10 +137,10 @@ class ColumnarPack:
         """``(M, error)``: the fewest stored field modes for a replay at the scanner's field with the tissue's chi (0
         without either): the dropped modes' phase variance ``(gamma dt_f B0 chi)^2 sum_{k>M} gate_hat_k^2 sum_ch
         var_{ch,k}``, halved, against ``tol`` x the floor; the channel sum is the worst case over field directions."""
-        from .replay import GAMMA, _field_strength, _path_grid
+        from .replay import GAMMA, scanner_field, _path_grid
         from ._replay_kernel import field_gate
         from scipy.fft import dct
-        B0 = _field_strength(scanner); chi = None if tissue is None else tissue.chi_iso
+        B0 = scanner_field(scanner).B0; chi = None if tissue is None else tissue.chi_iso
         if B0 is None or chi is None or not self.path_groups:
             return 0, 0.0
         pm = self.meta["compression"]["channels"]["susceptibility_path"]
@@ -315,7 +315,6 @@ class ColumnarPack:
         import jax
         import jax.numpy as jnp
         jax.config.update("jax_enable_x64", True)
-        from .replay import _field_strength
         pairs = [study.resolved(k) for k in range(len(study))]
         plans = [self.plan(a.waveform, tissue=t_, scanner=s_, tol=tol) for a in study.protocol for t_, s_ in pairs]
         plan = dict(plans[0], K=max(p["K"] for p in plans), modes=max(p["modes"] for p in plans), contact=any(p["contact"] for p in plans),
