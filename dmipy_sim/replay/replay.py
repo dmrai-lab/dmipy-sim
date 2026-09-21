@@ -416,7 +416,8 @@ class ReplayPack:
         w = np.asarray(self.spin_weights, np.float64)
         return w, w, E
 
-    def walker_phases(self, waveform, *, tissue=None, scanner=None, orientation=None, compartment=None):
+    def walker_phases(self, waveform, *, tissue=None, scanner=None, orientation=None, compartment=None,
+                      weights=None):
         """:meth:`walker_signals` before the complex exponential: ``(w, ew, phi)`` with ``phi`` the accumulated
         phase of every walker at every measurement, ``(n_w, n_meas)`` real, so that ``E = exp(1j * phi)``. A
         consumer that reduces many walkers over its own groups (an image: the walkers of each voxel) takes the
@@ -426,6 +427,8 @@ class ReplayPack:
         :meth:`walker_signals` with ``b1_scale`` or ``off_resonance_T``."""
         waveform = waveform.waveform if hasattr(waveform, "waveform") else waveform
         P = self._prepare(waveform, tissue=tissue, scanner=scanner, orientation=orientation, compartment=compartment)
+        if weights is not None:
+            P["W"] = self._check_weights(weights, P, orientation)
         w = np.asarray(self.spin_weights, np.float64)
         return w, P["pathway"] * P["ew"], self._walker_phases(P, waveform)
 
@@ -443,6 +446,42 @@ class ReplayPack:
         from .study import study_signals
         return study_signals(self, study)
 
+    def _check_weights(self, weights, P, orientation):
+        """Validate a caller's per-position replay weights, and refuse the cases this route cannot serve.
+
+        Shape alone is not enough to make weights the right ones. It is identical for every save grid once
+        ``K`` and ``n_meas`` match, so weights built on the SEQUENCE's grid rather than the pack's pass a
+        shape test and encode a 45 per cent error in b. The dtype matters too: an integer array is silently
+        truncated and a complex one silently loses its imaginary part.
+        """
+        W = np.asarray(weights)
+        if not np.issubdtype(W.dtype, np.floating):
+            raise ValueError(
+                f"weights must be real floating point; got {W.dtype}. An integer array is truncated and a "
+                f"complex one loses its imaginary part, both silently")
+        W = W.astype(np.float64)
+        want = (self.n_coeffs * 3, P["Geff"].shape[0])
+        if W.shape != want:
+            raise ValueError(
+                f"weights are this pack's replay weights for ONE position, {want} -- (n_coeffs * 3, "
+                f"n_meas). Got {W.shape}. dmipy_sim.phantom.bore.delivered_weights builds them per voxel, "
+                f"and must be given THIS pack's save grid: K={self.K}, n_t={self.n_t}, dt={self.dt!r}")
+        if not np.all(np.isfinite(W)):
+            raise ValueError("weights are not finite, so the phase they produce is not a signal")
+        if orientation is not None:
+            raise ValueError(
+                "weights= and orientation= cannot both be given. A pose is carried by ROTATING the gradient "
+                "before it is projected, and supplied weights replace that projection wholesale -- so the "
+                "pose would be silently discarded (measured: 48 per cent of the signal). Build the weights "
+                "for the posed gradient instead, which reproduces the pose exactly")
+        if self._field_active(P["B0"]):
+            raise ValueError(
+                "weights= cannot be combined with an active susceptibility field yet. The field branches of "
+                "this contraction rebuild the gradient from the nominal sequence and do not read supplied "
+                "weights, so the result would be bit-identical to passing none -- including for weights of "
+                "zero. That is silently wrong in exactly the low-field case this exists for (dmipy-sim#369)")
+        return W
+
     def _walker_phases(self, P, waveform):
         """``(n_w, n_meas)`` accumulated phase of every walker under the prepared acquisition ``P``: the gradient
         as the bridge coefficients against the effective gradient's projection, and with a field the path channel's
@@ -453,7 +492,9 @@ class ReplayPack:
         n_w, dt, n_t, Geff = P["n_w"], P["dt"], P["n_t"], P["Geff"]
         if not self._field_active(P["B0"]):                                          # no field, or a field of zero
             C = read_position_coeffs(self.arrays, dtype=np.float64)
-            W = _compile_effective(Geff, dt, self.K, n_t)
+            W = P.get("W")
+            if W is None:
+                W = _compile_effective(Geff, dt, self.K, n_t)
             phi = C.reshape(n_w, self.n_coeffs * 3) @ W                              # (n_w, n_meas)
         else:
             from .bank import susc_path_decode, susc_path_field

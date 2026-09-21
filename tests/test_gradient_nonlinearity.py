@@ -71,7 +71,11 @@ def test_a_coil_error_vanishes_where_the_gradient_does_and_a_magnet_s_own_does_n
     bg = seq.with_background_gradient([1.0e-3, 0.0, 0.0])          # any constant the magnet might add
     off = np.abs(np.asarray(seq.G)).max(axis=-1) < 1e-12                  # samples with nothing commanded
     assert off.any(), "the fixture has no dead time to test with"
-    assert np.abs(np.asarray(nl.imposed_gradient)[off]).max() < 1e-12
+    # A coil's nonlinearity is NOT recorded in imposed_gradient, which means what the MAGNET imposes and
+    # which designed_gradient subtracts back out. It vanishes in a dead time because it multiplies a
+    # gradient that is already zero there -- checked on G itself, which is the property being claimed.
+    assert nl.imposed_gradient is None
+    assert np.abs(np.asarray(nl.G, np.float64)[off]).max() < 1e-12
     assert np.abs(np.asarray(bg.imposed_gradient)[off]).max() > 1e-6
 
 

@@ -407,7 +407,7 @@ class ScannerSequence:
                        crusher={"windows_s": win, "n_cycles": cyc},
                        family=(self.family if self.family.endswith("split") else self.family + "-split"))
 
-    def with_concomitant(self, position_m, B0_T):
+    def with_concomitant(self, position_m, B0_T, b0_axis=(0.0, 0.0, 1.0)):
         """The same acquisition as it is actually played at ``position_m``, with the gradient coils' own
         concomitant (Maxwell) field included -- the term that makes a gradient system produce a field whose
         magnitude, not just whose z component, varies.
@@ -425,7 +425,34 @@ class ScannerSequence:
 
         ``position_m`` is ``(3,)`` or one per measurement, in the gradient's frame; ``B0_T`` is the static
         field in tesla.
+
+        ``b0_axis`` is which way the field points IN THAT FRAME, and it is not decoration. The formula above
+        is written for B0 along the third component, which is right for every cylindrical magnet and wrong
+        for a bi-planar one: the Hyperfine Swoop declares ``b0_axis = (0, 1, 0)``, so computing its Maxwell
+        term as though the field ran along the bore puts the whole quadratic form 90 degrees out. Measured
+        on that machine over a 10 cm grid it moves the concomitant contribution to b by 1.7 per cent and
+        gets its SIGN wrong in 31 per cent of (voxel, direction) pairs. The default is the convention the
+        formula assumes; a caller that knows better says so.
         """
+        n = np.asarray(b0_axis, dtype=np.float64).ravel()
+        if n.shape != (3,) or not np.isfinite(n).all() or np.linalg.norm(n) == 0.0:
+            raise ValueError(f"b0_axis is the field's direction in this frame, a non-zero 3-vector; got {b0_axis!r}")
+        n = n / np.linalg.norm(n)
+        if abs(n[2]) < 1.0 - 1e-12:                      # work in the magnet's frame and come back
+            e1 = np.cross(n, (1.0, 0.0, 0.0) if abs(n[0]) < 0.9 else (0.0, 1.0, 0.0))
+            e1 /= np.linalg.norm(e1)
+            Rm = np.stack([e1, np.cross(n, e1), n])      # rows: the magnet's axes in this frame
+            # EVERY gradient-valued field turns, not just G. Rotating G alone leaves imposed_gradient in
+            # the old frame, so designed_gradient -- which is G minus it, and is what the Maxwell term
+            # reads -- comes out of a mixed frame whenever a background has been applied.
+            imposed = (None if self.imposed_gradient is None
+                       else np.asarray(self.imposed_gradient, dtype=np.float64) @ Rm.T)
+            played = replace(self, G=np.asarray(self.G, dtype=np.float64) @ Rm.T,
+                             imposed_gradient=None if imposed is None else imposed.astype(np.float32))
+            turned = played.with_concomitant(np.asarray(position_m, dtype=np.float64) @ Rm.T, B0_T)
+            return replace(self, G=(np.asarray(turned.G, dtype=np.float64) @ Rm).astype(np.float32),
+                           concomitant=turned.concomitant)
+
         r = np.asarray(position_m, dtype=np.float64).reshape(-1, 3)
         if r.shape[0] not in (1, self.n_meas):
             raise ValueError(f"position_m is one point or one per measurement ({self.n_meas}); got {r.shape}")
@@ -473,9 +500,13 @@ class ScannerSequence:
                              "once, at the position the measurement is made")
         G = np.asarray(self.G, dtype=np.float64)
         new = np.einsum("mij,mtj->mti", np.broadcast_to(L, (self.n_meas, 3, 3)), G)
-        delta = (new - G).astype(np.float32)
-        imposed = delta if self.imposed_gradient is None else self.imposed_gradient + delta
-        return replace(self, G=new.astype(np.float32), imposed_gradient=np.ascontiguousarray(imposed),
+        # NOT recorded in imposed_gradient. That field means what the MAGNET imposes, which designed_gradient
+        # subtracts back out so the builder's guarantees (off through a pulse, off in a dead time) still
+        # read true. A coil's nonlinearity obeys those guarantees -- it vanishes wherever the commanded
+        # gradient does -- and it IS the gradient the coils design, which is what the concomitant term must
+        # be a quadratic form in. Booking it as the magnet's left designed_gradient at the NOMINAL G, so the
+        # Maxwell term silently dropped every cross term with the nonlinearity: 1.5e-4 in b.
+        return replace(self, G=new.astype(np.float32),
                        gradient_nonlinearity=tuple(tuple(float(v) for v in row.ravel()) for row in L))
 
     def with_gradient(self, G):
