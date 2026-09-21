@@ -794,3 +794,42 @@ def test_every_three_tesla_homogeneity_is_vrms_at_a_stated_dsv():
         assert leaf["value"] == value and leaf["unit"] == "ppm"
         assert "20 cm DSV" in leaf["context"] and "VRMS" in leaf["context"]
         assert leaf["confidence"] == "cited"
+
+
+def test_thermal_drift_is_the_same_order_as_the_static_homogeneity_it_sits_beside():
+    """A magnet's published homogeneity describes a STATIONARY residual. Over a 30-minute diffusion protocol
+    the field also moves, and Hui 2021 measured how much on 95 machines.
+
+    The point of catalogueing the two together is that they are comparable: on all three 3 T machines the
+    median 30-min drift lands within an order of magnitude of the guaranteed static spec, and on the Philips it
+    exceeds it. So a replay that models only the static residual is not modelling the larger of the two."""
+    one_ppm_Hz = GAMMA_BAR * 3.0 * 1e-6
+    for key in ("siemens_magnetom_prisma_3T", "ge_signa_premier_3T", "philips_ingenia_3T"):
+        entry = scc.get_scanner(key)
+        drift_ppm = scc.leaf_si(entry, "thermal", "f0_drift_post_fmri_30min") / one_ppm_Hz
+        static_ppm = scc.leaf_si(entry, "homogeneity", "b0_homogeneity_vrms") / 1e-6
+        assert 0.1 < drift_ppm / static_ppm < 10.0, (
+            f"{key}: 30-min drift {drift_ppm:.4f} ppm vs static spec {static_ppm:.4f} ppm -- if these have "
+            f"stopped being the same order, the claim they are catalogued together to make is gone")
+    # and Hz really is converted, not silently passed through
+    assert scc.leaf_si(scc.get_scanner("siemens_magnetom_prisma_3T"),
+                       "thermal", "f0_drift_post_fmri_30min") == pytest.approx(0.82)
+
+
+def test_one_model_is_not_one_machine():
+    """Seventeen Prismas with identical gradients split into two groups 47x apart in drift. The catalogue's
+    per-model number is therefore a median with a range beside it, and the leaf has to say so -- a reader who
+    takes it as a prediction for their own scanner would be wrong by up to two orders of magnitude."""
+    leaf = scc.get_limit("siemens_magnetom_prisma_3T", "thermal", "f0_drift_baseline")
+    assert leaf["value"] == 0.08 and leaf["unit"] == "Hz"
+    for token in ("0.02-2.63", "47", "MEDIAN"):
+        assert token in leaf["context"], f"the leaf no longer records {token}"
+
+
+def test_a_model_name_that_spans_several_gradients_says_so():
+    """'Ingenia' covers 33, 45 and 80 mT/m units in Hui's table, so matching a dataset to this entry by model
+    name alone is unsafe. The entry records the modal configuration and the caveat together, because the
+    number without the caveat is the more dangerous of the two."""
+    leaf = scc.get_limit("philips_ingenia_3T", "gradient", "max_amplitude")
+    assert leaf["value"] == 45
+    assert "FAMILY" in leaf["context"] and "33/200" in leaf["context"] and "80/200" in leaf["context"]

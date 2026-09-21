@@ -338,6 +338,14 @@
    "journal_or_publisher": "University of Minnesota (CMRR equipment page)",
    "year": 2026,
    "doi_or_url": "https://www.cmrr.umn.edu/magnets/7t90AS.shtml"
+  },
+  "hui2021_frequency_drift": {
+   "key": "hui2021_frequency_drift",
+   "authors": "Hui SCN, Mikkelsen M, Zollner HJ, Ahluwalia V, Alcauter S, et al. (Big GABA / multi-site)",
+   "title": "Frequency drift in MR spectroscopy at 3T",
+   "journal_or_publisher": "NeuroImage",
+   "year": 2021,
+   "doi_or_url": "10.1016/j.neuroimage.2021.118430"
   }
  },
  "scanners": {
@@ -486,6 +494,26 @@
      "source_key": "gach2020_b0_homogeneity",
      "location": "Supplementary material, Table S10 ('VRMS Maxima for different DSVs from 3 T Siemens MRI phase maps'), Prisma 'Without 2nd order shimming' column",
      "confidence": "derived"
+    }
+   },
+   "thermal": {
+    "f0_drift_baseline": {
+     "value": 0.08,
+     "unit": "Hz",
+     "field_T": 3.0,
+     "context": "MEDIAN across the 17 Prisma datasets of each unit's mean absolute water-frequency offset over a 5:20 min PRESS acquisition with no preceding fMRI; range 0.02-2.63 Hz. That range is the finding. The 17 units are sharply BIMODAL -- 12 sit at a median of 0.05 Hz and 5 at a median of 2.36 Hz, a factor of 47 between two groups of the same model with identical 80 mT/m / 200 T/m/s gradients. Unit-to-unit variation on one model is far larger here than the difference between models, so a single per-model drift number is a median and never a prediction for a given scanner. Cohort context, all 95 datasets: median drift 0.44 Hz before fMRI and 0.83 Hz after over 5:20 min, rising to 3.15 Hz over a full 30 min; average drift rates 0.29 Hz/min before and 0.43 Hz/min after. At 3 T, 1 ppm is 127.7 Hz. The measurement is an MRS water-frequency offset, so it is a WHOLE-VOLUME f0 shift over time and not a spatial inhomogeneity -- it adds to the static residual rather than replacing it, and unlike the static residual it cannot be shimmed away because it is not stationary",
+     "source_key": "hui2021_frequency_drift",
+     "location": "Table 2, the 17 Siemens Prisma rows, 'Mean absolute frequency offsets (Hz), Pre-fMRI' column",
+     "confidence": "cited"
+    },
+    "f0_drift_post_fmri_30min": {
+     "value": 0.82,
+     "unit": "Hz",
+     "field_T": 3.0,
+     "context": "MEDIAN across the same 17 Prisma datasets over a full 30:00 min acquisition following fMRI; range 0.13-11.39 Hz. The median is 0.0064 ppm at 3 T, against a guaranteed static homogeneity of 0.02 ppm VRMS over 20 cm DSV -- so typically a third of the static spec. The worst unit reaches 11.39 Hz = 0.089 ppm, 4.5x the guaranteed static spec. What makes this worth cataloguing next to b0_homogeneity_vrms: over a 30-minute acquisition the THERMAL field change is the same order as the magnet's STATIC homogeneity specification, and at the tail it is several times larger. For a long diffusion protocol the time-varying field is therefore the bigger field error, not the static one",
+     "source_key": "hui2021_frequency_drift",
+     "location": "Table 2, the 17 Siemens Prisma rows, 'Post-fMRI (30:00 min)' column",
+     "confidence": "cited"
     }
    }
   },
@@ -832,6 +860,26 @@
      "location": "Supplementary material, Table S2, 'Architect, Premier, PET/MR' column (fit over the 20/30/40/45/50 cm rows)",
      "confidence": "derived"
     }
+   },
+   "thermal": {
+    "f0_drift_baseline": {
+     "value": 0.22,
+     "unit": "Hz",
+     "field_T": 3.0,
+     "context": "median of the TWO usable SIGNA Premier datasets (0.13 and 0.31 Hz); a third Premier row is n/a. Two units is not a distribution and this number should be read as an order of magnitude, not a central value. Cohort context, all 95 datasets: median drift 0.44 Hz before fMRI and 0.83 Hz after over 5:20 min, rising to 3.15 Hz over a full 30 min; average drift rates 0.29 Hz/min before and 0.43 Hz/min after. At 3 T, 1 ppm is 127.7 Hz. The measurement is an MRS water-frequency offset, so it is a WHOLE-VOLUME f0 shift over time and not a spatial inhomogeneity -- it adds to the static residual rather than replacing it, and unlike the static residual it cannot be shimmed away because it is not stationary",
+     "source_key": "hui2021_frequency_drift",
+     "location": "Table 2, the GE SIGNA Premier rows (G08a, G09a), 'Pre-fMRI' column",
+     "confidence": "cited"
+    },
+    "f0_drift_post_fmri_30min": {
+     "value": 7.64,
+     "unit": "Hz",
+     "field_T": 3.0,
+     "context": "median of the same two units over 30 min after fMRI (4.11 and 11.18 Hz) = 0.060 ppm at 3 T, which is 3x this machine's own guaranteed static homogeneity of 0.02 ppm VRMS at 20 cm DSV. n=2. What makes this worth cataloguing next to b0_homogeneity_vrms: over a 30-minute acquisition the THERMAL field change is the same order as the magnet's STATIC homogeneity specification, and at the tail it is several times larger. For a long diffusion protocol the time-varying field is therefore the bigger field error, not the static one",
+     "source_key": "hui2021_frequency_drift",
+     "location": "Table 2, the GE SIGNA Premier rows (G08a, G09a), 'Post-fMRI (30:00 min)' column",
+     "confidence": "cited"
+    }
    }
   },
   "philips_ingenia_3T": {
@@ -843,7 +891,7 @@
      "value": 45,
      "unit": "mT/m",
      "field_T": 3.0,
-     "context": "per axis, Omega HP gradient system",
+     "context": "per axis, Omega HP gradient system. CAUTION, from Hui 2021 Table 2: 'Ingenia' is a FAMILY, not a gradient specification. Among the ten plain-Ingenia units it lists, the gradients are 33/200, 45/120, 45/200, 45/220 and 80/200 mT/m per T/m/s -- 45/200 is the modal configuration and is what this leaf records, but an Ingenia can be any of them. The named variants differ again (Ingenia CX 40/200, Ingenia Elition 45/220). Matching a dataset to this entry by the word 'Ingenia' alone is therefore unsafe; the acquisition's own header is the authority",
      "source_key": "philips_ingenia_web",
      "location": "Product page / gradient specs",
      "confidence": "widely-quoted"
@@ -868,7 +916,7 @@
     }
    },
    "rf": {},
-   "notes": "Philips publishes gradient figures across configurations; the 45 mT/m / 200 T/m/s Omega HP figure is consistent across Ingenia/Achieva dStream 3T pages but the exact primary spec sheet was not pinned to a single PDF clause. Higher-end Philips gradients (e.g. 80 mT/m on some configs) exist - confirm per installed configuration.",
+   "notes": "Philips publishes gradient figures across configurations; the 45 mT/m / 200 T/m/s Omega HP figure is consistent across Ingenia/Achieva dStream 3T pages but the exact primary spec sheet was not pinned to a single PDF clause. Higher-end Philips gradients (e.g. 80 mT/m on some configs) exist - confirm per installed configuration. Hui 2021 Table 2 independently lists many of these units with their gradient specs, which is the closest thing to a primary spec sheet found so far: it corroborates 45 mT/m / 200 T/m/s as the modal Ingenia configuration while showing the model name spans 33-80 mT/m.",
    "frame": {
     "b0_axis": {
      "value": "S",
@@ -907,6 +955,26 @@
      "source_key": "gach2020_b0_homogeneity",
      "location": "Supplementary material, Table S3, 3 T 'Ingenia' column (fit over the 10/20/30/40/45 cm rows)",
      "confidence": "derived"
+    }
+   },
+   "thermal": {
+    "f0_drift_baseline": {
+     "value": 0.91,
+     "unit": "Hz",
+     "field_T": 3.0,
+     "context": "median across the 10 plain-'Ingenia' datasets of the mean absolute water-frequency offset over 5:20 min with no preceding fMRI; range 0.07-1.50 Hz. Higher than the Prisma's median by an order of magnitude, and Hui notes Philips units show drift behaviour 'that is not smooth, presumably reflecting au[tomatic frequency adjustment]'. Cohort context, all 95 datasets: median drift 0.44 Hz before fMRI and 0.83 Hz after over 5:20 min, rising to 3.15 Hz over a full 30 min; average drift rates 0.29 Hz/min before and 0.43 Hz/min after. At 3 T, 1 ppm is 127.7 Hz. The measurement is an MRS water-frequency offset, so it is a WHOLE-VOLUME f0 shift over time and not a spatial inhomogeneity -- it adds to the static residual rather than replacing it, and unlike the static residual it cannot be shimmed away because it is not stationary",
+     "source_key": "hui2021_frequency_drift",
+     "location": "Table 2, the ten 'Philips Ingenia' rows, 'Pre-fMRI' column",
+     "confidence": "cited"
+    },
+    "f0_drift_post_fmri_30min": {
+     "value": 3.75,
+     "unit": "Hz",
+     "field_T": 3.0,
+     "context": "median across the same 10 units over 30 min after fMRI; range 1.56-7.69 Hz. 0.029 ppm at 3 T, against a guaranteed static homogeneity of 0.022 ppm VRMS at 20 cm DSV -- here the thermal term EXCEEDS the static one outright. What makes this worth cataloguing next to b0_homogeneity_vrms: over a 30-minute acquisition the THERMAL field change is the same order as the magnet's STATIC homogeneity specification, and at the tail it is several times larger. For a long diffusion protocol the time-varying field is therefore the bigger field error, not the static one",
+     "source_key": "hui2021_frequency_drift",
+     "location": "Table 2, the ten 'Philips Ingenia' rows, 'Post-fMRI (30:00 min)' column",
+     "confidence": "cited"
     }
    }
   },

@@ -68,6 +68,9 @@ _TO_SI = {"mT/m": 1e-3, "T/m": 1.0, "T/m/s": 1.0, "us": 1e-6, "ms": 1e-3,
           # which is why the catalogue stores a span and not a degC endpoint -- degC to K is an offset,
           # and this table can only scale
           "1/K": 1.0, "K": 1.0, "Hz/K": 1.0,
+          # a frequency offset is already SI; it is catalogued in Hz rather than converted to ppm
+          # because the measurement is a frequency and the ppm depends on which B0 you divide by
+          "Hz": 1.0,
           # a solid-harmonic coefficient of dB/B0 has the reciprocal length of its order
           "1/m^3": 1.0,
           # a gradient-nonlinearity coefficient is a fraction per metre
