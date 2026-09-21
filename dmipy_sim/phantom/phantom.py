@@ -346,6 +346,29 @@ class Phantom:
             _, S = f.replay(seq, cache=cache, **common)
         return self.to_volume(S)
 
+    def replay_train(self, seq, *, echo=-1, transmit=None, transmit_tolerance=1e-2, off_resonance=None,
+                     off_resonance_tolerance=2.0, scanner=None, pose=None, packs=None, proton_density=None,
+                     keep=None, complex_signal=False, jax=None, report=None):
+        """The signal of every voxel at one ``echo`` of a diffusion-prepared RF train ``seq``: a dense volume
+        ``grid.shape + (n_measurements,)``, as :meth:`replay` returns.
+
+        A train reaches an orientation-distribution phantom -- a brain -- through its coherence pathways
+        (:meth:`~dmipy_sim.replay.phantom.ReplayPhantom.replay_train`), where the RF-aware route of
+        :meth:`replay` cannot. The maps and ``scanner`` mean what they mean on :meth:`replay`: ``transmit`` and
+        ``off_resonance`` are binned to their tolerances (``off_resonance_tolerance`` in hertz), and a machine
+        that publishes a field law brings it along as the offset.
+        """
+        f = self.file
+        self._check_prescription(seq)
+        off_resonance = self._machine_field(scanner, off_resonance)
+        _, S = f.replay_train(seq, echo=echo, transmit=self._map(transmit, "transmit"),
+                              transmit_tolerance=transmit_tolerance,
+                              off_resonance=self._map(off_resonance, "off_resonance"),
+                              off_resonance_tolerance=off_resonance_tolerance, scanner=scanner, pose=pose,
+                              packs=self._packs(packs), proton_density=self._map(proton_density, "proton_density"),
+                              keep=keep, complex_signal=complex_signal, jax=jax, report=report)
+        return self.to_volume(S)
+
     def _check_prescription(self, seq):
         """A prescribed acquisition and this grid must agree on the scanner axes: the gradient and B0
         directions are given in them (ACQUISITION.md 4.1), so a mismatch is refused rather than rotated."""

@@ -12,7 +12,6 @@ from dmipy_sim import sequences
 from dmipy_sim.phantom import Grid, Inert, ODF, PackSubstrate, Phantom
 from dmipy_sim.replay import read_rpk
 from dmipy_sim.replay.bank import build_replay_pack
-from dmipy_sim.replay.train_phantom import replay_train
 
 SH = (6, 6, 2)
 
@@ -49,8 +48,8 @@ def test_a_train_replays_over_an_odf_phantom_which_the_bloch_route_refuses(brain
     assert ph.mode == "odf_sh"
     with pytest.raises(ValueError, match="frames-mode"):
         ph.file.replay_bloch(_train(), packs={0: pack})
-    _vi, S = replay_train(ph, _train(), packs={0: pack})
-    assert S.shape[0] == ph.n_voxels and np.all(np.isfinite(S))
+    S = ph.replay_train(_train(), packs={0: pack})
+    assert S.shape[:3] == SH and np.all(np.isfinite(S))
     assert np.nanmean(np.abs(S)) > 0
 
 
@@ -58,15 +57,13 @@ def test_the_flip_angle_changes_the_signal_as_the_pathways_say(brain):
     """A reduced flip is not a scale factor: the pathways part and the echoes stop being equal. A route that
     merely attenuated would pass a weaker test than this one."""
     ph, pack, _g = brain
-    perfect = np.abs(replay_train(ph, _train(beta=180.0), packs={0: pack})[1])
-    reduced = np.abs(replay_train(ph, _train(beta=120.0), packs={0: pack})[1])
+    perfect = np.abs(ph.replay_train(_train(beta=180.0), packs={0: pack}))
+    reduced = np.abs(ph.replay_train(_train(beta=120.0), packs={0: pack}))
     assert np.nanmean(reduced) < np.nanmean(perfect)
 
     # and echo to echo, a perfect train is flat where a reduced one is not (no relaxation, no train gradient)
-    flat = [np.nanmean(np.abs(replay_train(ph, _train(beta=180.0), echo=e, packs={0: pack})[1]))
-            for e in range(3)]
-    bent = [np.nanmean(np.abs(replay_train(ph, _train(beta=120.0), echo=e, packs={0: pack})[1]))
-            for e in range(3)]
+    flat = [np.nanmean(np.abs(ph.replay_train(_train(beta=180.0), echo=e, packs={0: pack}))) for e in range(3)]
+    bent = [np.nanmean(np.abs(ph.replay_train(_train(beta=120.0), echo=e, packs={0: pack}))) for e in range(3)]
     assert np.ptp(flat) < 1e-6 * np.mean(flat)
     assert np.ptp(bent) > 1e-2 * np.mean(bent)
 
@@ -78,10 +75,8 @@ def test_a_transmit_map_costs_a_reweighting_not_a_reexpansion(brain):
     ph, pack, grid = brain
     smooth = np.linspace(0.8, 1.0, ph.n_voxels).reshape(SH)
     fine, coarse = {}, {}
-    _vi, S_fine = replay_train(ph, _train(), transmit=smooth, transmit_tolerance=1e-2,
-                               packs={0: pack}, report=fine)
-    _vi, S_coarse = replay_train(ph, _train(), transmit=smooth, transmit_tolerance=1e-1,
-                                 packs={0: pack}, report=coarse)
+    S_fine = ph.replay_train(_train(), transmit=smooth, transmit_tolerance=1e-2, packs={0: pack}, report=fine)
+    S_coarse = ph.replay_train(_train(), transmit=smooth, transmit_tolerance=1e-1, packs={0: pack}, report=coarse)
     assert fine["n_scales"] > coarse["n_scales"]                 # binning is what bounds the count
     assert coarse["n_gates"] == fine["n_gates"]                  # and it does not touch the expansions
     rel = np.nanmax(np.abs(np.abs(S_fine) - np.abs(S_coarse))) / np.nanmax(np.abs(S_fine))
@@ -94,7 +89,7 @@ def test_the_gate_count_is_set_by_the_preparation_not_the_train(brain):
     counts = []
     for n_echo in (2, 4, 8):
         rep = {}
-        replay_train(ph, _train(n_echo=n_echo), packs={0: pack}, report=rep)
+        ph.replay_train(_train(n_echo=n_echo), packs={0: pack}, report=rep)
         counts.append(rep["n_gates"])
     assert len(set(counts)) == 1, f"gate count moved with the train: {counts}"
 
@@ -105,8 +100,8 @@ def test_the_accelerated_route_agrees_with_the_plain_one(brain):
     jax = pytest.importorskip("jax")
     ph, pack, _g = brain
     smooth = np.linspace(0.85, 1.0, ph.n_voxels).reshape(SH)
-    _vi, a = replay_train(ph, _train(), transmit=smooth, packs={0: pack}, jax=False)
-    _vi, b = replay_train(ph, _train(), transmit=smooth, packs={0: pack}, jax=True)
+    a = ph.replay_train(_train(), transmit=smooth, packs={0: pack}, jax=False)
+    b = ph.replay_train(_train(), transmit=smooth, packs={0: pack}, jax=True)
     rel = np.nanmax(np.abs(np.abs(a) - np.abs(b))) / max(np.nanmax(np.abs(a)), 1e-30)
     assert rel < 1e-5, f"the two routes differ by {rel:.2e}"
 
