@@ -114,9 +114,12 @@ def test_it_is_refused_twice_and_absent_where_uncatalogued():
     with pytest.raises(ValueError, match="one 3x3 tensor"):
         seq.with_gradient_nonlinearity(np.eye(2))
     grid = Grid(shape=(2, 2, 2), voxel_size_m=(0.02,) * 3, origin_m=(-0.01,) * 3, isocenter_m=(0.0,) * 3)
-    for name in ("prisma", "connectom", "terra"):
+    for name in ("connectom", "premier", "ingenia"):                          # no measurement, no class model
         assert ScannerLimits.of(name).gradient_tensor(np.zeros((1, 3))) is None
         assert gradient_tensor_map(ScannerLimits.of(name), grid) is None
+    for name in ("prisma", "terra"):                                          # a class model, inferred and said so
+        assert np.allclose(ScannerLimits.of(name).gradient_tensor(np.zeros((1, 3)))[0], np.eye(3))
+        assert gradient_tensor_map(ScannerLimits.of(name), grid) is not None
 
 
 def test_the_tensor_tilts_off_axis_because_a_diagonal_one_cannot_be_a_field():
