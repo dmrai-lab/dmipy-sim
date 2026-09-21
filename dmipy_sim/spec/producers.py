@@ -58,6 +58,40 @@ def _g_ratio(inner, outer):
     return float(np.sqrt(_volume(*inner) / _volume(*outer)))
 
 
+def shell_thickness(inner, outer, *, k=8):
+    """The thickness (metres) of the shell between two closed surfaces ``(V, F)``: the median over the inner
+    surface's vertices of the distance to the outer surface, every vertex against the ``k`` outer faces nearest by
+    centroid (a k-d tree) with the point-triangle distance exact on those. The median, not the minimum: a meshed
+    surface is bumpy at its own resolution (the CACTUS erode meshes: a sheath of 0.11 um has spots of 0.003 um
+    where the inner surface grazes the outer), so the minimum is a property of the mesh and the median is the
+    sheath's; the thinnest SHELL of a substrate is the smallest of its shells' thicknesses. An outer face lying in
+    one of the outer surface's bounding planes is a cap of a tube cut there (a domain face): the inner tube is cut
+    in the same plane, so its rim sits on that face at no distance, and such faces are not the shell. Computed in
+    units of the outer mesh's median edge, since trimesh's triangle geometry carries absolute tolerances."""
+    from scipy.spatial import cKDTree
+    from trimesh.triangles import closest_point
+    Vi = np.asarray(inner[0], float)
+    Vo, Fo = np.asarray(outer[0], float), np.asarray(outer[1], np.int64)
+    lo, hi = Vo.min(0), Vo.max(0)
+    tol = 1e-4 * float((hi - lo).max())
+    on_plane = np.zeros(len(Fo), bool)
+    for a in range(3):
+        for plane in (lo[a], hi[a]):
+            on_plane |= (np.abs(Vo[Fo][:, :, a] - plane) < tol).all(axis=1)
+    Fo = Fo[~on_plane]
+    if len(Fo) == 0:
+        raise SpecError("the outer surface has no face off its bounding planes; it is not a closed shell")
+    unit = float(np.median(np.linalg.norm(Vo[Fo[:, 0]] - Vo[Fo[:, 1]], axis=1)))
+    tri = Vo[Fo] / unit
+    P = Vi / unit
+    kk = min(int(k), len(tri))
+    _, idx = cKDTree(tri.mean(1)).query(P, k=kk, workers=-1)
+    idx = np.asarray(idx).reshape(len(P), kk)
+    q = np.repeat(P, kk, axis=0)
+    c = closest_point(tri[idx.ravel()], q)
+    return float(np.median(np.linalg.norm(c - q, axis=1).reshape(len(P), kk).min(1))) * unit
+
+
 def _surface_stats(paths, scale):
     """Per-file (V, F) in metres, the smallest edge-based feature, the median edge and watertightness."""
     from ..geometry.mesh import load_ply
@@ -210,6 +244,7 @@ def cactus_spec(run_dir, *, scale=_UM, side_um=None, field_T=3.0, rho2=None, on_
                 raise SpecError("every strand has an open surface")
         else:
             transformations.append(f"{len(open_files)} non-watertight surface(s) kept (on_open_surface='warn')")
+    thinnest = min(shell_thickness(by_path[v[0]], by_path[v[1]]) for v in pairs.values())   # over the strands kept
     rho = float(rho2 if rho2 is not None else canonical_white_matter(field_T=field_T)["rho2"])
     pools = wm_pools(field_T)
     walls = _walls(pairs, scale, rho, rho)
@@ -221,7 +256,8 @@ def cactus_spec(run_dir, *, scale=_UM, side_um=None, field_T=3.0, rho2=None, on_
     spec = SubstrateSpec(
         id or f"cactus/{os.path.basename(os.path.normpath(run_dir))}",
         Domain(lo, hi, ["periodic", "periodic", "periodic"]), pools, walls, Seeding([0, 1, 2], "uniform_by_volume", "thin"),
-        Validity(smallest, ["gradient", "relaxation", "surface", "field"], mesh_edge_feature_ratio=edge_med / smallest),
+        Validity(smallest, ["gradient", "relaxation", "surface", "field"], mesh_edge_feature_ratio=edge_med / smallest,
+                 thinnest_shell=thinnest),
         frame=frame, nominal_field_T=float(field_T),
         description=f"CACTUS bundle: {len(pairs)} strands, each an inner (axon) and outer (myelin) surface, in a periodic cell",
         realisation={"n_objects": len(pairs), "cell_side": L, **({} if bundles is None else {"bundles": bundles}),
@@ -250,7 +286,8 @@ def winther_spec(inner_ply, outer_ply, *, scale=_UM, pad=1.0e-6, field_T=3.0, rh
     spec = SubstrateSpec(
         id or f"winther/{os.path.splitext(os.path.basename(inner_ply))[0]}",
         Domain(lo, hi, ["open", "open", "open"]), pools, walls, Seeding([1, 2], "uniform_by_volume", "thin"),
-        Validity(smallest, ["gradient", "relaxation", "surface", "field"], mesh_edge_feature_ratio=edge_med / smallest),
+        Validity(smallest, ["gradient", "relaxation", "surface", "field"], mesh_edge_feature_ratio=edge_med / smallest,
+                 thinnest_shell=shell_thickness(meshes[0], meshes[1])),
         nominal_field_T=float(field_T),
         description="one Winther axon: inner and outer surface, surroundings free water",
         realisation={"g_ratio": _g_ratio(meshes[0], meshes[1])},
@@ -291,6 +328,8 @@ def caterpillar_spec(path, *, scale=_UM, box=None, glia=True, field_T=3.0, rho2=
                        f"{int((t['r_out'][ax] <= t['r_in'][ax] + 1e-15).sum())} unmyelinated axon sphere(s): sheath coincides with axolemma",
                        "blood vessels dropped (no flow model)", "nominal pool values from the catalogued white matter"]
     smallest = float(np.minimum(t["r_in"][ax], t["r_out"][ax]).min())
+    sheath = (t["r_out"][ax] - t["r_in"][ax])[t["r_out"][ax] > t["r_in"][ax] + 1e-15]     # the myelinated spheres' sheaths
+    thinnest = float(sheath.min()) if sheath.size else None
     F, axis = chain_frame(t["centers"][ax], t["r_in"][ax], t["cell_id"][ax])      # the axons declare the frame
     transformations.append(f"substrate frame from the axon sphere chains: the principal axis of their intra-volume-weighted "
                            f"direction dyadic, {np.degrees(np.arccos(min(1.0, abs(float(axis[2]))))):.1f} deg from stored z")
@@ -305,7 +344,7 @@ def caterpillar_spec(path, *, scale=_UM, box=None, glia=True, field_T=3.0, rho2=
         id or f"caterpillar/{os.path.splitext(os.path.basename(path))[0]}",
         Domain(lo.tolist(), hi.tolist(), ["reflect"] * 3), pools, walls,
         Seeding([p.id for p in pools if p.water_fraction > 0], "uniform_by_volume", "water_fraction"),
-        Validity(smallest, ["gradient", "relaxation", "surface", "field"]),
+        Validity(smallest, ["gradient", "relaxation", "surface", "field"], thinnest_shell=thinnest),
         frame=Frame(F[:, 2].tolist(), F[:, 1].tolist()), nominal_field_T=float(field_T),
         description=f"CATERPillar voxel: {len(np.unique(t['cell_id'][ax]))} axons as sphere chains"
                     + (f", {len(np.unique(t['cell_id'][gl]))} glial cells" if gl.any() else ""),
@@ -426,7 +465,7 @@ def _strands_spec(centerlines, R, lo, hi, *, boundary, g_ratio, field_T, rho2, i
         pools = pools[:2]
         walls = [Wall("cylinders", surf(R), 1, 0, Directional(), Sided(rho, rho))]
         transformations.append("inside a strand = intra (1), outside all = extra (0); no myelin")
-        smallest = float(R.min())
+        smallest = float(R.min()); thinnest = None
     else:
         R_in = np.asarray(R_inner, float) if R_inner is not None else g_ratio * R
         if R_in.shape != R.shape or (R_in >= R).any():
@@ -438,7 +477,7 @@ def _strands_spec(centerlines, R, lo, hi, *, boundary, g_ratio, field_T, rho2, i
         if not sheath_water or not sheath_field:
             pools = pools[:2] + [dataclasses.replace(pools[2], water_fraction=(pools[2].water_fraction if sheath_water else 0.0),
                                                      susceptibility=(pools[2].susceptibility if sheath_field else None))]
-        smallest = float(R_in.min())
+        smallest = float(R_in.min()); thinnest = float((R - R_in).min())
     F, bundles = strand_frame([np.asarray(c, float) for c in centerlines])
     transformations.append(f"substrate frame from the strand chords in {len(bundles)} bundle(s), z the largest bundle's mean axis")
     spec = SubstrateSpec(
@@ -446,7 +485,8 @@ def _strands_spec(centerlines, R, lo, hi, *, boundary, g_ratio, field_T, rho2, i
         Seeding([p.id for p in pools if p.water_fraction > 0], "uniform_by_volume", "water_fraction"),
         # the curved tubes record their wall contact (surface); a sheath is a field source (the per-segment closed
         # form along each path, or the raster within walk_spec's field_budget)
-        Validity(smallest, ["gradient", "relaxation", "surface"] + (["field"] if any(p.susceptibility is not None for p in pools) else [])),
+        Validity(smallest, ["gradient", "relaxation", "surface"] + (["field"] if any(p.susceptibility is not None for p in pools) else []),
+                 thinnest_shell=thinnest),
         frame=Frame(F[:, 2].tolist(), F[:, 1].tolist()), nominal_field_T=float(field_T),
         description=f"{source}: {len(R)} strands as sphere-swept polylines"
                     + ("" if g_ratio is None else (" with a sheath" if sheath_water else

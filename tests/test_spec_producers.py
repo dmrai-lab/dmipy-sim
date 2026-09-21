@@ -68,7 +68,7 @@ def test_a_strand_without_its_inner_surface_is_dropped_and_recorded(tmp_path):
 def test_cactus_spec_walks_into_a_pack(tmp_path):
     run = _cactus_run_dir(tmp_path, n_strands=2, side=12.0, g=0.7)
     spec = cactus_spec(run)
-    walk = walk_spec(spec, 150, 6e-4, 2e-4, seed=0, n_probe=10_000, field_res=0.5e-6, require_gpu=False)
+    walk = walk_spec(spec, 150, 6e-4, 2e-4, seed=0, n_probe=10_000, require_gpu=False)   # the raster at the sheath's own spacing
     ids = np.asarray(walk.compartment)[:, 0]
     assert set(np.unique(ids)) == {0, 1, 2} and walk.spec is spec
     pk = build_replay_pack(walk, id="test/cactus", license="x", citation="x", K=8, envelope=ENV)

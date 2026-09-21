@@ -97,6 +97,7 @@
         "smallest_feature": {"type": "number", "exclusiveMinimum": 0},
         "min_gap": {"type": ["number", "null"], "exclusiveMinimum": 0},
         "mesh_edge_feature_ratio": {"type": ["number", "null"], "exclusiveMinimum": 0},
+        "thinnest_shell": {"type": ["number", "null"], "exclusiveMinimum": 0},
         "tiers": {"type": "array", "items": {"type": "string", "enum": ["gradient", "relaxation", "surface", "field", "exchange"]}, "uniqueItems": true}
       }
     },

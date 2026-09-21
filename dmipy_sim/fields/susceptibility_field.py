@@ -47,6 +47,7 @@ echo, so this choice is physically inert for SE/STE signals.
 
 from __future__ import annotations
 
+import os
 import warnings
 from typing import NamedTuple, Optional
 
@@ -54,6 +55,41 @@ import numpy as np
 
 # Symmetric 3x3 tensor stored as 6 components in this fixed order.
 _SYM6 = ((0, 0), (1, 1), (2, 2), (0, 1), (0, 2), (1, 2))
+
+# The node spacing of a rasterised field basis follows the field source's thinnest shell (dmipy-sim#304). MEASURED
+# against the Wharton-Bowtell hollow cylinder with a 0.120 um sheath (the CACTUS bundle's thinnest), the boundary
+# voxels supersampled 4 x 4 x 4 (tests/test_field_resolution.py): the lumen's anisotropic term is off by 1.4 % at one
+# node across the sheath, 0.6 % at one and a half, 0.27 % at two and 0.38 % at three, the isotropic lumen null 1.1 %,
+# 0.3 %, 0.3 % and 0.2 % of chi -- two nodes across reach the reference's own floor. The dipole kernel does not decay
+# with |k|, so a hard binary edge rings into the lumen (2.6 % of chi B0 where the exact answer is 0); the supersample
+# of the boundary voxels brings that to ~0.1 %, and four is where it settles.
+FIELD_NODES_ACROSS = 2.0
+FIELD_MASK_SUPERSAMPLE = 4
+# The peak host bytes a basis build takes per node, MEASURED (a meshed hollow cylinder at 4.1e6 and 1.7e7 nodes: the
+# slope of the process's peak RSS is 655 B/node, the 13 float64 channels, the k-space solve's complex temporaries and
+# the membership tests of the supersampled edge in chunks of _EDGE_CHUNK_POINTS), rounded up.
+FIELD_BYTES_PER_NODE = 700
+_EDGE_CHUNK_POINTS = 20_000_000                 # sub-samples per membership call on the boundary voxels (~0.5 GB)
+
+
+def field_resolution(thinnest_shell):
+    """The node spacing (metres) that resolves a field source whose thinnest shell is ``thinnest_shell`` (metres):
+    :data:`FIELD_NODES_ACROSS` nodes across it."""
+    t = float(thinnest_shell)
+    if not t > 0:
+        raise ValueError(f"the thinnest shell must be a positive length, got {thinnest_shell!r}")
+    return t / FIELD_NODES_ACROSS
+
+
+def field_node_budget(ceiling=None):
+    """The nodes a field basis may have on this host: half of the memory ceiling (``ceiling`` bytes, else
+    :func:`dmipy_sim.run.memory_ceiling`) over the build's peak bytes per node (:data:`FIELD_BYTES_PER_NODE`)."""
+    if ceiling is None:
+        from ..run import memory_ceiling
+        ceiling = memory_ceiling()
+    if ceiling is None:
+        raise RuntimeError("no memory ceiling is readable on this host: pass field_budget= (nodes) explicitly")
+    return float(0.5 * float(ceiling) / FIELD_BYTES_PER_NODE)
 
 
 
@@ -64,10 +100,13 @@ class FieldGrid(NamedTuple):
     ``iso_local``, ``iso_P``, optional ``aniso_G``, ``shape``, ``voxel_size``) from which
     :func:`assemble_field` builds the field for any (B0 direction, B0, chi_iso, chi_aniso) at
     replay; ``origin`` is the world position of voxel (0, 0, 0). No susceptibility value lives here:
-    the grid is the substrate's shape, the field is a replay knob.
+    the grid is the substrate's shape, the field is a replay knob. ``certificate`` is the raster's record when
+    a spec built it (:func:`dmipy_sim.spec.field_grid_of_spec`): the node spacing, the nodes across the thinnest
+    shell, and the shell fraction the raster holds against a Monte-Carlo membership estimate.
     """
     basis: dict
     origin: np.ndarray
+    certificate: Optional[dict] = None
 
     @property
     def channel_names(self):
@@ -92,14 +131,15 @@ class FieldGrid(NamedTuple):
         return contract(self.channels(points), b0_dir, B0=B0, chi_iso=chi_iso, chi_aniso=chi_aniso)
 
 
-def field_grid_of(geometry, *, res=0.1e-6, include_aniso=True, box=None, margin=None, n_z=4,
-                  mask_supersample=4, kspace_lowpass=0.5):
+def field_grid_of(geometry, *, res=None, include_aniso=True, box=None, margin=None, n_z=4,
+                  mask_supersample=FIELD_MASK_SUPERSAMPLE, kspace_lowpass=0.5):
     """The :class:`FieldGrid` of an analytic myelinated substrate, for a pack's field tier.
 
     Rasterises the sheath of a :class:`~dmipy_sim.geometry.MyelinatedCylinder` or
     :class:`~dmipy_sim.geometry.PackedMyelinatedCylinders` (every voxel's myelin occupancy, partial
     volume at the two walls from ``mask_supersample``^2 sub-samples, and the radial director toward the
-    nearest axon) onto a voxel grid of pitch ``res`` and calls :func:`field_basis`, exactly as
+    nearest axon) onto a voxel grid of pitch ``res`` (default :func:`field_resolution` of the thinnest sheath:
+    :data:`FIELD_NODES_ACROSS` nodes across it) and calls :func:`field_basis`, exactly as
     :func:`mesh_field_basis` does for a meshed axon -- so a myelinated cylinder's pack carries the
     same C3 channel as a mesh pack and is replayed by the same code.
 
@@ -131,6 +171,8 @@ def field_grid_of(geometry, *, res=0.1e-6, include_aniso=True, box=None, margin=
     else:
         raise TypeError(f"field_grid_of takes a MyelinatedCylinder or PackedMyelinatedCylinders, got "
                         f"{type(geometry).__name__}; a mesh substrate uses mesh_field_basis")
+    if res is None:
+        res = field_resolution(float(np.min(outer - inner)))
     side = hi - lo
     n_xy = np.maximum(2, np.round(side / res).astype(int))
     vs_xy = side / n_xy
@@ -159,6 +201,7 @@ def field_grid_of(geometry, *, res=0.1e-6, include_aniso=True, box=None, margin=
     radial = np.zeros(mask.shape + (3,)); radial[..., 0] = rad[:, :, None, 0]; radial[..., 1] = rad[:, :, None, 1]
     basis = field_basis(mask, radial, vs, include_aniso=bool(include_aniso),
                         kspace_lowpass=(None if periodic else kspace_lowpass))
+    basis["shell_fraction"] = float(mask.mean())
     origin = np.array([lo[0], lo[1], -0.5 * int(n_z) * vs[2]])
     return FieldGrid(basis, origin)
 
@@ -645,22 +688,169 @@ def mesh_contains(V, F, pts, *, method="grid", prefilter=False, chunk=2_000_000)
     return out
 
 
-def mesh_field_basis(inner, outer, box_min, box_max, *, res=0.1e-6, include_aniso=True,
-                     mask_supersample=2, kspace_lowpass=0.5, clip_axis=2, director=None):
-    """Geometry-only myelin susceptibility field basis on a voxel grid, from inner (axonal) and
-    outer (myelin) surface meshes ``(V, F)`` (metres): :func:`predicate_field_basis` with
-    :func:`mesh_inside` as the two membership tests and, by default, the closest point on the axon surface as
-    the radial director (:func:`mesh_directors`). ``director=`` overrides it; ``director=False`` falls back to
-    the gradient of the voxelised mask (dmipy-sim#213: ~28 % off on the anisotropic term across the axis)."""
+def _forked_map(fn, items, workers):
+    """``[fn(item) for item in items]`` over ``workers`` forked processes: the parent's arrays are shared
+    copy-on-write, so a query over a grid of 1e8 points is spread over the host without a copy per worker.
+    ``fn`` may be a closure; it is never pickled (a fork carries it). Falls back to the caller's process when the
+    platform cannot fork."""
+    import multiprocessing as mp
+    items = list(items)
+    if workers <= 1 or len(items) <= 1:
+        return [fn(it) for it in items]
+    try:
+        ctx = mp.get_context("fork")
+    except ValueError:
+        return [fn(it) for it in items]
+    global _FORKED_FN
+    _FORKED_FN = fn
+    try:
+        with ctx.Pool(min(int(workers), len(items))) as pool:
+            return pool.map(_forked_call_item, items, chunksize=1)
+    finally:
+        _FORKED_FN = None
+
+
+_FORKED_FN = None
+
+
+def _forked_call_item(item):
+    return _FORKED_FN(item)
+
+
+class MeshBodies:
+    """Closed triangle surfaces ``[(V, F), ...]`` (metres) as ONE boundary: the membership, the signed distance and
+    the radial director a field raster and a walk's seeding read.
+
+    Membership is ray parity per BODY (:func:`mesh_contains_fast`), a point inside the boundary when it is inside
+    any body. Two things make that the test rather than the union's parity or a nearest-face sidedness: bodies
+    overlap (the sheath tubes of a packed bundle), and inside an overlap the union's parity is even; and a
+    nearest-face test reads a neighbour's wall from inside a tube -- on the CACTUS bundle it misses 0.9 % of the
+    cell, up to a micron inside a strand, spread over most strands. Each body's rays run along its axis of
+    smallest extent, so a tube open at its ends is cast across, never along, and a closed body pays the least.
+    ``signed_distance`` is the distance to the closest point on the boundary, exact on the ``k`` faces nearest by
+    centroid, positive inside, with the outward normal of that face: what a node's partial volume is taken from.
+    A centroid is a proxy for a face only when the face is small against the distance asked, so the faces are
+    first split until no edge exceeds ``resolve_m`` (:func:`trimesh.remesh.subdivide_to_size`; a 30 um sliver of
+    a coarse tube mesh puts its centroid 15 um from the wall it bounds). ``directors`` is :func:`mesh_directors`
+    on the union. The union's ``V``, ``F`` are exposed for the walk.
+    """
+
+    def __init__(self, bodies, *, k=16, workers=None):
+        self.bodies = [(np.asarray(V, float), np.asarray(F, np.int64)) for V, F in bodies]
+        if not self.bodies:
+            raise ValueError("MeshBodies needs at least one (V, F) surface")
+        offs = np.cumsum([0] + [len(V) for V, _ in self.bodies])
+        self.V = np.concatenate([V for V, _ in self.bodies])
+        self.F = np.concatenate([F + o for (_, F), o in zip(self.bodies, offs[:-1])])
+        self.bounds = [(V.min(0), V.max(0)) for V, _ in self.bodies]
+        self.k = int(k)
+        # the processes a large query is spread over (forked, the arrays shared): a share of the host, never all of it
+        self.workers = int(workers) if workers is not None else max(1, min(16, (os.cpu_count() or 4) // 4))
+        self._near = {}
+
+    def _contains_body(self, i, pts):
+        """The indices of ``pts`` inside body ``i``: those in its bounding box, by ray parity across its smallest
+        extent, the bins of the parity index sized to the body's faces (256 bins over 7 000 faces spent 90 % of the
+        call in empty bins)."""
+        (V, F), (lo, hi) = self.bodies[i], self.bounds[i]
+        sel = np.flatnonzero(np.all((pts >= lo) & (pts <= hi), axis=1))
+        if sel.size == 0:
+            return sel
+        a = int(np.argmin(hi - lo))                                  # the ray axis: across a tube, never along it
+        perm = [j for j in range(3) if j != a] + [a]
+        n_bins = int(np.clip(np.sqrt(len(F) / 2.0), 8, 256))
+        return sel[mesh_contains_fast(V[:, perm], F, pts[sel][:, perm], n_bins=n_bins)]
+
+    @classmethod
+    def of(cls, surfaces):
+        """``surfaces`` as a :class:`MeshBodies`: one already, one ``(V, F)`` pair, or a list of pairs."""
+        if isinstance(surfaces, cls):
+            return surfaces
+        if len(surfaces) == 2 and not isinstance(surfaces[0], (tuple, list)) and np.asarray(surfaces[0]).ndim == 2:
+            return cls([surfaces])                                   # one (V, F) pair
+        return cls(list(surfaces))
+
+    def contains(self, pts):
+        pts = np.asarray(pts, float).reshape(-1, 3)
+        out = np.zeros(len(pts), bool)
+        if self.workers > 1 and len(self.bodies) > 1 and len(pts) >= 1_000_000:
+            for idx in _forked_map(lambda i: self._contains_body(i, pts), range(len(self.bodies)), self.workers):
+                out[idx] = True
+        else:
+            for i in range(len(self.bodies)):
+                out[self._contains_body(i, pts)] = True
+        return out
+
+    def _nearest(self, resolve_m):
+        key = None if resolve_m is None else float(resolve_m)
+        if key not in self._near:
+            from scipy.spatial import cKDTree
+            V, F = self.V, self.F
+            if key is not None:
+                from trimesh.remesh import subdivide_to_size
+                unit = float(np.median(np.linalg.norm(V[F[:, 0]] - V[F[:, 1]], axis=1)))
+                V, F = subdivide_to_size(V / unit, F, max_edge=key / unit, max_iter=12)
+                V = np.asarray(V, float) * unit; F = np.asarray(F, np.int64)
+            tri = V[F]
+            n = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
+            ln = np.linalg.norm(n, axis=1); good = ln > 0
+            tri = tri[good]; n = n[good] / ln[good][:, None]
+            unit = float(np.median(np.linalg.norm(tri[:, 0] - tri[:, 1], axis=1)))    # trimesh's triangle geometry
+            self._near[key] = (tri / unit, n, unit, cKDTree(tri.mean(1) / unit))       # carries absolute tolerances
+        return self._near[key]
+
+    def _distance_chunk(self, pts, resolve_m):
+        from trimesh.triangles import closest_point
+        tri, nrm, unit, tree = self._nearest(resolve_m)
+        k = min(self.k, len(tri))
+        p = pts / unit
+        _, idx = tree.query(p, k=k, workers=1)
+        idx = np.asarray(idx).reshape(len(p), k)
+        c = closest_point(tri[idx.ravel()], np.repeat(p, k, axis=0)).reshape(len(p), k, 3)
+        d = np.linalg.norm(c - p[:, None, :], axis=2)
+        j = d.argmin(1); rows = np.arange(len(p))
+        return d[rows, j] * unit, nrm[idx[rows, j]]
+
+    def signed_distance(self, pts, *, resolve_m=None, inside=None, chunk=200_000):
+        """``(s, n)`` at ``pts`` ``(m, 3)``: the distance to the closest point on the boundary, positive inside, and
+        the outward unit normal of the face that carries it; ``resolve_m`` the edge length the faces are split to
+        first (the scale of the distances asked, a voxel), ``None`` for the faces as they are; ``inside`` the
+        points' membership when the caller has it, else :meth:`contains` decides the sign."""
+        pts = np.asarray(pts, float).reshape(-1, 3)
+        self._nearest(resolve_m)                                     # built once, before any fork shares it
+        chunks = [pts[i:i + chunk] for i in range(0, len(pts), chunk)]
+        if self.workers > 1 and len(chunks) > 1:
+            parts = _forked_map(lambda c: self._distance_chunk(c, resolve_m), chunks, self.workers)
+        else:
+            parts = [self._distance_chunk(c, resolve_m) for c in chunks]
+        dist = np.concatenate([d for d, _ in parts]) if parts else np.zeros(0)
+        normal = np.concatenate([n for _, n in parts]) if parts else np.zeros((0, 3))
+        if inside is None:
+            inside = self.contains(pts)
+        return np.where(np.asarray(inside, bool), dist, -dist), normal
+
+    def directors(self, pts):
+        return mesh_directors(self.V, self.F, pts)
+
+
+def mesh_field_basis(inner, outer, box_min, box_max, *, res, include_aniso=True,
+                     mask_supersample=FIELD_MASK_SUPERSAMPLE, kspace_lowpass=0.5, director=None):
+    """Geometry-only myelin susceptibility field basis on a voxel grid, from inner (axonal) and outer (myelin)
+    surface meshes (metres; each a :class:`MeshBodies`, one ``(V, F)`` pair or a list of pairs):
+    :func:`predicate_field_basis` with the bodies' membership as the two tests, their signed distances for the
+    partial volume at the boundary, and, by default, the nearest face of the axon surface as the radial director
+    (:func:`mesh_directors`). ``director=`` overrides it; ``director=False`` falls back to the gradient of the
+    voxelised mask (dmipy-sim#213: ~28 % off on the anisotropic term across the axis)."""
+    bi = MeshBodies.of(inner) if inner is not None else None
+    bo = MeshBodies.of(outer)
     if director is False:
         director = None
     elif director is None:
-        ref = inner if inner is not None else outer
-        director = lambda q: mesh_directors(ref[0], ref[1], q)
-    return predicate_field_basis(lambda q: mesh_inside(inner[0], inner[1], q, clip_axis=clip_axis),
-                                 lambda q: mesh_inside(outer[0], outer[1], q, clip_axis=clip_axis),
+        director = (bi if bi is not None else bo).directors
+    return predicate_field_basis(bi.contains if bi is not None else None, bo.contains,
                                  box_min, box_max, res=res, include_aniso=include_aniso,
-                                 mask_supersample=mask_supersample, kspace_lowpass=kspace_lowpass, director=director)
+                                 mask_supersample=mask_supersample, kspace_lowpass=kspace_lowpass, director=director,
+                                 signed_distance=(bi.signed_distance if bi is not None else None, bo.signed_distance))
 
 
 def mesh_directors(V, F, pts, *, chunk=2_000_000):
@@ -689,8 +879,9 @@ def mesh_directors(V, F, pts, *, chunk=2_000_000):
     return out
 
 
-def predicate_field_basis(inside_inner, inside_outer, box_min, box_max, *, res=0.1e-6, include_aniso=True,
-                          mask_supersample=2, kspace_lowpass=0.5, director=None):
+def predicate_field_basis(inside_inner, inside_outer, box_min, box_max, *, res, include_aniso=True,
+                          mask_supersample=FIELD_MASK_SUPERSAMPLE, kspace_lowpass=0.5, director=None,
+                          signed_distance=None):
     """Geometry-only myelin susceptibility field basis on a voxel grid from two membership tests on
     points (metres): ``inside_inner`` (the axon) and ``inside_outer`` (the sheath's outer surface); any
     surface family that can answer "is this point inside" (a mesh, a sphere union, a strand pack).
@@ -699,10 +890,16 @@ def predicate_field_basis(inside_inner, inside_outer, box_min, box_max, *, res=0
     -- a callable ``(n, 3) points -> (n, 3)`` unit vectors, the geometry's own radial vector (a strand pack's
     nearest-segment normal, :meth:`PackedCurvedCylinders.radial_directors`) -- when given, else from the
     signed distance to the inner surface (or to the shell itself when ``inside_inner`` is ``None``: a
-    solid source), then calls :func:`field_basis`. ``mask_supersample`` (default 2) gives a
-    partial-volume occupancy in ``[0,1]`` at the boundary — essential because the dipole kernel
-    ``k̂ᵢk̂ⱼ`` does not decay with ``|k|`` so a hard binary edge rings into the interior. Returns
-    ``(basis, origin, voxel_size)`` with ``origin`` = box corner (the :func:`sample_grid` convention)."""
+    solid source), then calls :func:`field_basis`. ``res`` is the node spacing (metres): a caller derives it from
+    the source's thinnest shell with :func:`field_resolution`. ``mask_supersample`` (default
+    :data:`FIELD_MASK_SUPERSAMPLE`) gives a partial-volume occupancy in ``[0,1]`` at the boundary — essential
+    because the dipole kernel ``k̂ᵢk̂ⱼ`` does not decay with ``|k|`` so a hard binary edge rings into the interior.
+    The sub-samples are put to the membership tests, or, with ``signed_distance=(inner, outer)`` (callables
+    ``points -> (s, n)``, the signed distance positive inside and the outward normal at the closest point; the inner
+    one ``None`` for a solid source), to the local plane of each surface: a sub-sample at offset ``o`` from the node
+    is inside where ``s - o . n > 0``, which is exact for a surface flat across a voxel and costs arithmetic rather
+    than a membership test per sub-sample. Returns ``(basis, origin, voxel_size)`` with ``origin`` = box corner
+    (the :func:`sample_grid` convention); ``basis["shell_fraction"]`` is the mask's mean, the shell's share of the box."""
     from scipy import ndimage
 
     box_min = np.asarray(box_min, float); box_max = np.asarray(box_max, float)
@@ -733,10 +930,23 @@ def predicate_field_basis(inside_inner, inside_outer, box_min, box_max, *, res=0
             sub = (np.arange(SS) + 0.5) / SS - 0.5                  # sub-voxel offsets in [-0.5,0.5)
             ox, oy, oz = np.meshgrid(sub * vs[0], sub * vs[1], sub * vs[2], indexing="ij")
             off = np.stack([ox.ravel(), oy.ravel(), oz.ravel()], axis=1)      # (SS^3, 3)
-            base = pts[ei]                                                    # (n_edge, 3) voxel centres
-            q = (base[:, None, :] + off[None, :, :]).reshape(-1, 3)
-            occ = np.asarray(inside_outer(q), bool) & ~(inside_inner(q) if inside_inner is not None else np.zeros(len(q), bool))
-            myelin_mask.ravel()[ei] = occ.reshape(len(ei), -1).mean(axis=1)
+            flat = myelin_mask.ravel()
+            chunk = max(1, _EDGE_CHUNK_POINTS // len(off))                    # boundary voxels per membership call
+            for i in range(0, ei.size, chunk):
+                base = pts[ei[i:i + chunk]]                                   # (n, 3) voxel centres
+                if signed_distance is None:
+                    q = (base[:, None, :] + off[None, :, :]).reshape(-1, 3)
+                    occ = np.asarray(inside_outer(q), bool) & ~(inside_inner(q) if inside_inner is not None else np.zeros(len(q), bool))
+                    occ = occ.reshape(len(base), -1)
+                else:
+                    sd_in, sd_out = signed_distance
+                    sel = ei[i:i + chunk]
+                    s_o, n_o = sd_out(base, resolve_m=float(vs.max()), inside=in_out.ravel()[sel])
+                    occ = (s_o[:, None] - n_o @ off.T) > 0.0                  # (n, SS^3): inside the outer's local plane
+                    if sd_in is not None:
+                        s_i, n_i = sd_in(base, resolve_m=float(vs.max()), inside=in_in.ravel()[sel])
+                        occ &= (s_i[:, None] - n_i @ off.T) <= 0.0             # and outside the inner's
+                flat[ei[i:i + chunk]] = occ.mean(axis=1)
     if director is not None:                                       # the geometry's own radial vector at every voxel
         radial_dir = _unit(np.asarray(director(pts), float), axis=-1).reshape(tuple(N) + (3,))
     else:                                                          # the gradient of the voxelised mask's signed distance
@@ -746,6 +956,7 @@ def predicate_field_basis(inside_inner, inside_outer, box_min, box_max, *, res=0
         radial_dir = radial_from_sdf(sdf, vs)
     basis = field_basis(myelin_mask, radial_dir, vs, include_aniso=include_aniso,
                         kspace_lowpass=kspace_lowpass)
+    basis["shell_fraction"] = float(myelin_mask.mean())
     return basis, box_min, vs
 
 

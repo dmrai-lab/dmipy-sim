@@ -70,6 +70,7 @@ def _master_arrays(src) -> dict:
                 susc_field_samples=(m.get("susc_field_samples") if isinstance(m, dict) else None),
                 susc_field_every=int(m.get("susc_field_every", 1) or 1) if isinstance(m, dict) else 1,
                 susc_grid_origin=(np.asarray(m["susc_grid_origin"]) if "susc_grid_origin" in m else None),
+                susc_grid_raster=m.get("susc_grid_raster"),
                 susc_chi_iso=scal("susc_chi_iso"), delta_chi_a=scal("delta_chi_a"),
                 cell_size=scal("cell_size"), R=g("R"), D_intra=scal("D_intra"),
                 substrate_frame=g("substrate_frame"),
@@ -1160,7 +1161,8 @@ def _walk_master(walk, *, weights=None, field=None, diffusivity=None, substrate_
     if field is not None:
         from ..fields.strand_field import StrandFieldBasis, StrandFieldRecord
         if isinstance(field, FieldGrid):
-            extra.update(susc_field_basis=field.basis, susc_grid_origin=np.asarray(field.origin, float))
+            extra.update(susc_field_basis=field.basis, susc_grid_origin=np.asarray(field.origin, float),
+                         susc_grid_raster=getattr(field, "certificate", None))
         elif isinstance(field, (StrandFieldBasis, StrandFieldRecord)):
             if isinstance(field, StrandFieldRecord) and walk.field_samples is None:
                 raise ValueError("the walk carries the record of its field basis but no field samples: rebuild the basis from "
@@ -1349,7 +1351,8 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto"
                 shape=[int(s) for s in fb["shape"]], has_aniso=(fb.get("aniso_G") is not None),
                 arrays_in_pack=bool(_grid_in_pack),
                 replay_route=("grid+path" if (_grid_in_pack and susc_path_K)
-                              else ("path" if susc_path_K else "grid")))
+                              else ("path" if susc_path_K else "grid")),
+                raster=m.get("susc_grid_raster"))
             channels["susceptibility"] = True
             # PATH form (C3, preferred): the field sampled along each walker's FULL-RESOLUTION path and
             # compressed in time. Decouples the susceptibility tier from the position codec -- which is
