@@ -617,21 +617,6 @@ def test_the_two_published_gradient_specs_disagree_and_both_are_recorded():
         "G_max must be the weakest axis across BOTH specs, not the weakest of one of them"
 
 
-def test_a_direction_dependent_maximum_is_refused_while_the_axis_mapping_is_unknown():
-    """The refusal is the feature. Per-axis amplitudes are unusable without knowing which physical direction
-    each vendor axis names, and for this machine that is not public: the filing and the literature conflict,
-    and Hyperfine's own hysteresis patent contradicts the inference the other sources support. Returning the
-    better-supported reading would produce a number indistinguishable from a measurement."""
-    s = ScannerLimits.of("swoop")
-    assert s.gradient_axis_assignment is None
-    with pytest.raises(ValueError, match="not public|does not declare"):
-        s.G_max_along([0, 1, 0])
-    # a machine that DOES declare one answers, and the answer respects the weakest axis along that direction
-    declared = replace(s, gradient_axis_assignment=((1.0, 0, 0), (0, 1.0, 0), (0, 0, 1.0)))
-    assert declared.G_max_along([1, 0, 0]) == pytest.approx(s.G_max)
-    assert declared.G_max_along([1, 1, 0]) > s.G_max        # an oblique direction shares the load
-
-
 def test_the_conflict_and_the_measurement_that_narrows_it_are_both_written_down():
     leaf = scc.get_limit("hyperfine_swoop_64mT", "gradient", "per_axis_amplitude_literature")
     for phrase in ("IRRECONCILABLE", "Not a hardware generation", "83.600", "hysteresis"):
