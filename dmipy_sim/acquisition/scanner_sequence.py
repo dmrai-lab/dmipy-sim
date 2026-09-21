@@ -33,7 +33,14 @@ three containers is one field or one derivation here:
 * ``concomitant`` -- optionally, the position and static field at which the gradient coils' own Maxwell term
   was evaluated (:meth:`ScannerSequence.with_concomitant`); like the background, already folded into ``G``.
 * ``imposed_gradient`` -- what those two transforms added, ``(n_meas, n_t, 3)``: the part of ``G`` no builder
-  designed. ``designed_gradient`` is ``G`` minus this.
+  designed. ``designed_gradient`` is ``G`` minus this and minus the readout.
+* ``readout_window`` -- optionally, ``(t0, t1)`` in seconds: the span over which the coils' gradient is the
+  READOUT's, played to read the echo rather than to encode (:meth:`ScannerSequence.with_readout_window`). A
+  timing budget's dead windows constrain ENCODING, so a readout gradient inside the budget's readout window is
+  what a scanner plays and is accepted; a gradient on a finite pulse is refused whoever placed it. The extent
+  is declared, never inferred from the ADC: a diffusion lobe still ramping down when the ADC opens is not a
+  readout (dmipy-sim#374). Balanced about the echo, a readout leaves no net moment there; what it leaves at any
+  other sample is the imaging kernel, outside a pack (dmipy-sim#375).
 
 The scalar engine, the b integrals and the pack's replay read ``G_eff``; the vector-Bloch routes read ``G`` and
 apply ``rf`` themselves. A :class:`Protocol` is a tuple of these -- one echo time each -- for a multi-TE scheme.
@@ -122,6 +129,7 @@ class ScannerSequence:
     build_spec: tuple = None
     prescription: Prescription = None
     voxel_scale: str = "derived"
+    readout_window: tuple = None
     split_echo: bool = False
     background_gradient: tuple = None
     concomitant: dict = None
@@ -132,6 +140,11 @@ class ScannerSequence:
         _set = lambda k, v: object.__setattr__(self, k, v)
         if self.prescription is not None and not isinstance(self.prescription, Prescription):
             raise TypeError(f"prescription is a Prescription; got {type(self.prescription).__name__}")
+        if self.readout_window is not None:
+            rw = tuple(float(v) for v in self.readout_window)
+            if len(rw) != 2 or not rw[0] < rw[1]:
+                raise ValueError(f"readout_window is (t0, t1) in seconds with t0 < t1; got {self.readout_window!r}")
+            _set("readout_window", rw)
         if self.voxel_scale not in ("derived", "declared", "substrate"):
             raise ValueError(f"voxel_scale is 'derived' (from the waveform and the prescription), 'declared' "
                              f"(carried by a crusher or by a pathway sum's coherence orders) or 'substrate' (the "
@@ -268,17 +281,35 @@ class ScannerSequence:
         from .waveforms import btensor_from_gradient
         return btensor_from_gradient(self.G_eff, self.dt)
 
-    @property
-    def refocusing_residual(self):
-        """max over measurements of the relative net gradient moment |q(TE)| / max|q| of the effective gradient.
-        ``q`` at sample ``i`` is what the walk has accumulated by then: ``G[k]`` acts over ``[k dt, (k + 1) dt)``,
-        so the samples before ``i`` count and the one at the readout does not."""
-        G_eff = np.asarray(self.G_eff, dtype=np.float64)
-        q = np.cumsum(G_eff * self.dt, axis=1)
+    def _moment_at_readout(self, G):
+        """``(q_echo, qmax)`` of an effective gradient ``G`` ``(n_meas, n_t, 3)``: the net moment at the readout,
+        ``(n_meas, 3)``, and the largest moment reached, ``(n_meas,)``. ``q`` at sample ``i`` is what the walk
+        has accumulated by then: ``G[k]`` acts over ``[k dt, (k + 1) dt)``, so the samples before ``i`` count
+        and the one at the readout does not."""
+        q = np.cumsum(np.asarray(G, dtype=np.float64) * self.dt, axis=1)
         qmax = np.max(np.abs(q), axis=(1, 2))
         q_echo = q[:, self.echo_idx - 1, :] if self.echo_idx > 0 else np.zeros_like(q[:, 0, :])
+        return q_echo, qmax
+
+    @staticmethod
+    def _relative_residual(q_echo, qmax):
         res = np.where(qmax > 0, np.max(np.abs(q_echo), axis=1) / np.where(qmax > 0, qmax, 1.0), 0.0)
         return float(np.max(res))
+
+    @property
+    def refocusing_residual(self):
+        """max over measurements of the relative net gradient moment |q(TE)| / max|q| of the effective gradient,
+        the magnet's own included (:meth:`_moment_at_readout`)."""
+        return self._relative_residual(*self._moment_at_readout(self.G_eff))
+
+    @property
+    def _imposed_sample(self):
+        """One sample's worth of the imposed gradient, ``(n_meas,)`` in T s/m: the moment this grid cannot
+        resolve. A 180 between two samples leaves a magnet's constant gradient one sample out of balance in
+        the effective integral, which is the grid's rounding and not a winding."""
+        if self.imposed_gradient is None:
+            return np.zeros(self.n_meas)
+        return float(self.dt) * np.max(np.abs(np.asarray(self.imposed_gradient, dtype=np.float64)), axis=(1, 2))
 
     @property
     def net_moment(self):
@@ -294,10 +325,14 @@ class ScannerSequence:
 
     @property
     def unbalanced(self):
-        """Whether the effective gradient leaves a net moment at the readout beyond ``REFOCUS_ATOL`` of its
-        largest: the reading :meth:`validate` refuses for a family that promises an echo, and the one a
-        replay reads to decide whether the voxel enters."""
-        return self.refocusing_residual > REFOCUS_ATOL and float(np.abs(self.G).max()) > 0.0
+        """Whether the effective gradient -- the magnet's own included -- leaves a net moment at the readout
+        beyond what the grid can resolve: ``REFOCUS_ATOL`` of the largest moment reached, plus one sample of
+        the imposed gradient (:attr:`_imposed_sample`). This is the reading a replay takes to decide whether
+        the voxel enters; :meth:`validate` reads the played gradient's residual, which is the builder's."""
+        if float(np.abs(self.G).max()) == 0.0:
+            return False
+        q_echo, qmax = self._moment_at_readout(self.G_eff)
+        return bool(np.any(np.max(np.abs(q_echo), axis=1) > REFOCUS_ATOL * qmax + self._imposed_sample))
 
     @property
     def voxel_declared(self):
@@ -345,13 +380,20 @@ class ScannerSequence:
         in the lead-in and the readout tail before every readout sample of the budget it was built to, and the
         effective gradient refocuses at the echo. Raises naming the failure; returns ``self``."""
         t = np.arange(self.n_t) * self.dt
+        # what the coils play is the encoding plus the readout, less the magnet's own; the two checks below read
+        # different parts of it, and both to float32's rounding rather than to zero, since G, the imposed part
+        # and the readout are stored in float32 and their difference cancels inexactly
+        played = np.asarray(self.played_gradient, dtype=np.float64)
+        designed = np.asarray(self.designed_gradient, dtype=np.float64)
+        floor = 1e-6 * max(float(np.abs(np.asarray(self.G)).max()), 1e-30)
         for e in self.rf:
             if e.duration_s > 0.0:
                 t0, t1 = e.window
                 inside = (t >= t0 - 1e-9 * self.dt) & (t <= t1 + 1e-9 * self.dt)
-                if np.any(np.abs(self.designed_gradient[:, inside, :]) > 0.0):
+                if np.any(np.abs(played[:, inside, :]) > floor):
                     raise ValueError(f"the gradient is on during the {e.flip_deg:g} pulse at {e.t_s*1e3:.3f} ms "
-                                     f"(window {t0*1e3:.3f}-{t1*1e3:.3f} ms): a finite pulse needs zero gradient")
+                                     f"(window {t0*1e3:.3f}-{t1*1e3:.3f} ms): a finite pulse needs zero gradient, "
+                                     f"whether the encoding's or a readout's")
         if self.timing is not None:                    # the budget's dead times: the lead-in and the readout tails
             if self.T < self.timing.min_TE() - 1e-9:
                 raise ValueError(f"TE = {self.T*1e3:.3f} ms is below min_TE = {self.timing.min_TE()*1e3:.3f} ms of the "
@@ -360,12 +402,17 @@ class ScannerSequence:
             windows += [(i * self.dt - self.timing.t_readout_pre_echo, i * self.dt, "readout") for i in self.readout]
             for t0, t1, what in windows:                # a step wholly inside a dead time; a straddling step is rounding
                 inside = (t >= t0 - 1e-9 * self.dt) & (t + self.dt <= t1 + 1e-9 * self.dt)
-                if np.any(np.abs(self.designed_gradient[:, inside, :]) > 0.0):
-                    raise ValueError(f"the gradient is on in the {what} window {t0*1e3:.3f}-{t1*1e3:.3f} ms of the "
-                                     f"timing budget")
-        res = self.refocusing_residual
+                if np.any(np.abs(designed[:, inside, :]) > floor):
+                    raise ValueError(f"the encoding gradient is on in the {what} window {t0*1e3:.3f}-{t1*1e3:.3f} ms "
+                                     f"of the timing budget. A budget's dead windows constrain the ENCODING; a "
+                                     f"readout gradient played there is accepted once its span is declared "
+                                     f"(with_readout_window, or from_pulseq(readout_s=))")
+        # the builder's promise is about what the coils play; the magnet's own gradient refocuses or not by
+        # physics, and by the grid's rounding of where the 180 falls, neither of which is the builder's
+        s = self.rf.sign(t)
+        res = self._relative_residual(*self._moment_at_readout(played * s[None, :, None]))
         if res > REFOCUS_ATOL and float(np.abs(self.G).max()) > 0.0:
-            raise ValueError(f"the effective gradient is not refocused at the echo (|q(TE)|/max|q| = {res:.2e} > "
+            raise ValueError(f"the played gradient is not refocused at the echo (|q(TE)|/max|q| = {res:.2e} > "
                              f"{REFOCUS_ATOL:.0e})")
         return self
 
@@ -378,14 +425,40 @@ class ScannerSequence:
         return replace(self, prescription=prescription)
 
     @property
-    def designed_gradient(self):
-        """The gradient the BUILDER laid out, with the magnet's own contribution taken back out: ``G`` itself
-        unless :meth:`with_background_gradient` has been applied. This is what the builder's guarantees are
-        about -- off through a finite pulse, off in a dead time -- because a background gradient is imposed by
-        the magnet and obeys none of them."""
+    def played_gradient(self):
+        """The gradient the COILS play: ``G`` with the magnet's own contribution taken back out -- the encoding
+        and the readout together. A finite pulse needs this to be zero across it, whoever placed what."""
         if self.imposed_gradient is None:
             return self.G
         return self.G - self.imposed_gradient
+
+    @property
+    def readout_gradient(self):
+        """The part of the played gradient inside :attr:`readout_window`, ``(n_meas, n_t, 3)``, zero elsewhere
+        and everywhere when no window is declared."""
+        out = np.zeros_like(np.asarray(self.G))
+        if self.readout_window is None:
+            return out
+        t = np.arange(self.n_t) * self.dt
+        t0, t1 = self.readout_window
+        inside = (t >= t0 - 1e-9 * self.dt) & (t <= t1 + 1e-9 * self.dt)
+        out[:, inside, :] = np.asarray(self.played_gradient)[:, inside, :]
+        return out
+
+    @property
+    def designed_gradient(self):
+        """The ENCODING the builder laid out: ``G`` with the magnet's own contribution and the readout taken
+        back out. This is what a timing budget's guarantees are about -- off in the lead-in, off in the readout
+        tail -- because a background gradient is imposed by the magnet and a readout is played to read, and
+        neither is encoding."""
+        return self.played_gradient - self.readout_gradient
+
+    def with_readout_window(self, t0_s, t1_s):
+        """The same acquisition with the coils' gradient over ``[t0_s, t1_s]`` declared the READOUT's: played
+        to read the echo, not to encode, so a timing budget's readout window does not refuse it. Declared by
+        whoever knows the sequence -- the builder, or the caller importing a file -- and never inferred from
+        the ADC, since a gradient under an ADC is not thereby a readout."""
+        return replace(self, readout_window=(float(t0_s), float(t1_s)))
 
     def with_background_gradient(self, g):
         """The same acquisition in a magnet whose own field is not uniform: a constant ``g`` (T/m, the field's
@@ -539,7 +612,10 @@ class ScannerSequence:
             played = replace(self, G=np.asarray(self.G, dtype=np.float64) @ Rm.T,
                              imposed_gradient=None if imposed is None else imposed.astype(np.float32))
             turned = played.with_concomitant(np.asarray(position_m, dtype=np.float64) @ Rm.T, B0_T)
+            # EVERY gradient-valued field turns back, the imposed one included: the Maxwell increment was booked
+            # as imposed in the magnet frame and must stay booked, or designed_gradient reads it as encoding
             return replace(self, G=(np.asarray(turned.G, dtype=np.float64) @ Rm).astype(np.float32),
+                           imposed_gradient=(np.asarray(turned.imposed_gradient, dtype=np.float64) @ Rm).astype(np.float32),
                            concomitant=turned.concomitant)
 
         r = np.asarray(position_m, dtype=np.float64).reshape(-1, 3)

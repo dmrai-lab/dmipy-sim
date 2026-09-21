@@ -312,6 +312,8 @@ def _write_defs(seq, waveform, dt, n_t, echo_idx=None):
         p = waveform.prescription
         seq.set_definition('FOV', list(p.fov_m))                                    # Pulseq's own field-of-view key
         seq.set_definition('dmipy_prescription', json.dumps(p.to_dict(), separators=(',', ':')))
+    if getattr(waveform, 'readout_window', None) is not None:
+        seq.set_definition('dmipy_readout_window', json.dumps(list(waveform.readout_window)))
 
 
 
@@ -340,7 +342,7 @@ def _rf_from_pulseq(seq):
 
 
 # -- import: .seq -> ScannerSequence -------------------------------------------------
-def from_pulseq(src, *, dt=None):
+def from_pulseq(src, *, dt=None, readout_s=None):
     """Read a Pulseq ``.seq`` (path or ``pypulseq.Sequence``) and rasterise it to
     a Monte-Carlo-simulable :class:`dmipy_sim.acquisition.scanner_sequence.ScannerSequence` (single
     measurement, shape (1, n_t, 3) in T/m).
@@ -350,6 +352,11 @@ def from_pulseq(src, *, dt=None):
     when present (our own files), otherwise from Pulseq's native excitation/
     refocusing event times (external files); a 90/180 flip is assumed for
     excitation/refocusing when only times are available.
+    
+    ``readout_s`` declares the span ``(t0, t1)`` in seconds, from the excitation, over which the file's gradient
+    is its READOUT's -- played to read the echo, not to encode -- so a budget read from the file's blocks does
+    not refuse it (dmipy-sim#374). It is stated by the caller, who knows the sequence, and never inferred from
+    the ADC. A file this package wrote carries its own window and needs none.
     """
     pp = _require_pypulseq()
     
@@ -434,8 +441,10 @@ def from_pulseq(src, *, dt=None):
     if 'dmipy_echo_idx' in defs:
         echo_idx = int(defs['dmipy_echo_idx'])
     else:
+        # a foreign file reads at its ADC's CENTRE: a readout gradient is balanced about the echo there, and its
+        # last sample sits at the edge of k-space, which is the imaging kernel and not the echo (dmipy-sim#375)
         ta = _event_times(t_adc)
-        echo_idx = (int(round((float(ta[-1]) - t0) / dt)) if ta.size else n_t - 1)
+        echo_idx = (int(round((0.5 * (float(ta[0]) + float(ta[-1])) - t0) / dt)) if ta.size else n_t - 1)
     echo_idx = int(np.clip(echo_idx, 0, n_t - 1))
 
     # TM / stimulated-echo state / chi_perp are the ScannerSequence's own derivations from the schedule: the
@@ -456,8 +465,14 @@ def from_pulseq(src, *, dt=None):
           and sched.mixing_time == (None, False) and _has_adc(seq)):
         timing = SequenceTiming.from_pulseq(seq)   # a foreign spin echo: its budget is what its blocks say
 
+    readout_window = None
+    if defs.get('dmipy_readout_window'):
+        readout_window = tuple(json.loads(defs['dmipy_readout_window']))
+    elif readout_s is not None:
+        readout_window = (float(readout_s[0]), float(readout_s[1]))
+
     return ScannerSequence(G=G[None], dt=dt, rf=rf_events, readout=(echo_idx,), timing=timing, family="pulseq",
-                           prescription=prescription)
+                           prescription=prescription, readout_window=readout_window)
 
 
 def _has_adc(seq):
