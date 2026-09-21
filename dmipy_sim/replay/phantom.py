@@ -24,6 +24,8 @@ from ..constants import GAMMA
 from ..phantom.substrates import substrate_from_meta, _echo_time
 from .so3 import n_sh_coeffs
 
+GAMMA_BAR = GAMMA / (2.0 * np.pi)
+
 __all__ = ["ReplayPhantom", "read_rph", "write_rph", "Grid", "SUBSTRATE_KINDS", "SCALAR_REGISTRY", "RPH_SCHEMA_VERSION"]
 
 SUBSTRATE_KINDS = ("pack", "analytic", "inert")
@@ -34,19 +36,23 @@ RPH_SCHEMA_VERSION = "0.4.0"
 SCALAR_REGISTRY = ("kappa_B1", "delta_B0_T", "m0_scale")
 
 
-def transmit_classes(kappa, tolerance):
-    """The transmit scales of ``kappa`` quantised to ``tolerance``: what decides how many vector-Bloch
+def quantise(values, tolerance):
+    """``values`` binned to multiples of ``tolerance``, or untouched for ``None``: what decides how many distinct
     propagations a phantom costs.
 
-    The RF-aware route propagates once per distinct transmit scale, so a SMOOTH map -- which is what a
-    machine's own transmit profile is -- costs one propagation per distinct value unless the values are
-    binned. Binning to a tolerance is exact to that tolerance in the flip angle, and the flip angle enters
-    the signal through a sine, so the signal error is of the same order and never larger.
+    A route that propagates once per distinct value of something -- a transmit scale, a field offset, a pose
+    -- pays one propagation per distinct value, and a SMOOTH map, which is what a machine's own profile is,
+    has as many distinct values as voxels. Binning to a tolerance bounds that count, and the error it
+    introduces is of the tolerance's own order: a flip angle reaches the signal through a sine, an offset
+    through a phase linear in it. ``None`` bins nothing, so every distinct value is its own class.
     """
+    v = np.asarray(values, np.float64)
+    if tolerance is None:
+        return v
     tol = float(tolerance)
     if not tol > 0:
-        raise ValueError(f"the transmit tolerance is a positive scale on a flip angle; got {tolerance}")
-    return np.round(np.asarray(kappa, np.float64) / tol) * tol
+        raise ValueError(f"a tolerance is a positive width to bin to, or None for no binning; got {tolerance}")
+    return np.round(v / tol) * tol
 
 
 def _lmax_of_n_coeffs(n_c):
@@ -564,8 +570,8 @@ class ReplayPhantom:
         return pose, analytic, self._m0(proton_density)
 
     def replay_bloch(self, waveform, *, scanner=None, pose=None, packs=None, complex_signal=False,
-                     transmit=None, off_resonance=None, proton_density=None, decimals=3,
-                     transmit_tolerance=None, forms=None):
+                     transmit=None, off_resonance=None, proton_density=None, transmit_tolerance=1e-3,
+                     pose_tolerance=1e-3, off_resonance_tolerance=1e-4, forms=None):
         """Replay the phantom through the RF-aware route: ``(voxel_index, S)``, one magnetisation propagation
         per distinct pose rather than one contraction per voxel.
 
@@ -584,15 +590,16 @@ class ReplayPhantom:
         of poses under a scaled RF pulse is not the composition of one propagation, and a mode that leaves the
         substrate's azimuth unstated leaves the propagation undefined rather than merely dispersed. Both are
         refused instead of approximated. Distinct ``(substrate, rotation, transmit, off-resonance)`` tuples are
-        propagated once each and scattered to every slot that shares them, ``decimals`` setting how finely
-        they are distinguished; the cost is that count, not the voxel count.
+        propagated once each and scattered to every slot that shares them; the cost is that count, not the
+        voxel count.
 
-        ``transmit_tolerance`` bins the transmit scales before grouping, and is how a SMOOTH transmit map is
-        afforded. The route propagates once per distinct scale, so a map a machine produces -- continuous by
-        nature -- costs one propagation per distinct value: at the default rounding that is a thousand of
-        them across a unit range. Binning to a tolerance is exact to that tolerance in the flip angle, and
-        the flip angle reaches the signal through a sine, so the signal error is of the same order and never
-        larger. ``None`` keeps the ``decimals`` rounding, so nothing that ran before changes.
+        The three tolerances set how finely those tuples are told apart, each in the unit of the thing it bins
+        (:func:`quantise`): ``transmit_tolerance`` on the flip-angle scale, ``pose_tolerance`` on the entries
+        of the rotation, ``off_resonance_tolerance`` in hertz. That is how a SMOOTH map is afforded -- a
+        transmit profile a machine produces is continuous, and unbinned it costs one propagation per voxel.
+        Binning is exact to the tolerance in the quantity binned, and each reaches the signal through a
+        function of slope at most one there, so the signal error is of the same order and never larger.
+        ``None`` bins nothing.
         """
         if self.mode != "frames":
             raise ValueError(f"replay_bloch propagates the magnetisation at a pose, so it needs a frames-mode "
@@ -627,10 +634,10 @@ class ReplayPhantom:
             R = np.einsum("ij,njk->nik", R_s, R)                       # substrate -> specimen -> lab
         R = R.reshape(-1, 9)
         # every slot's propagation key: substrate, rounded pose, rounded transmit scale, rounded field offset
-        keys = np.concatenate([ids[:, None].astype(np.float64), np.round(R, int(decimals)),
-                               (transmit_classes(kappa[v_idx], transmit_tolerance)
-                                if transmit_tolerance else np.round(kappa[v_idx], int(decimals)))[:, None],
-                               np.round(dB0[v_idx], int(decimals) + 9)[:, None]], axis=1)
+        keys = np.concatenate([ids[:, None].astype(np.float64), quantise(R, pose_tolerance),
+                               quantise(kappa[v_idx], transmit_tolerance)[:, None],
+                               quantise(dB0[v_idx], None if off_resonance_tolerance is None
+                                        else float(off_resonance_tolerance) / GAMMA_BAR)[:, None]], axis=1)
         uniq, inverse = np.unique(keys, axis=0, return_inverse=True)
         inverse = np.asarray(inverse).reshape(-1)
         gate = self.gate_integral(waveform)

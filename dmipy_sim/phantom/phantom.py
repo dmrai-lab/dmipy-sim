@@ -301,7 +301,7 @@ class Phantom:
         return out
 
     def replay(self, seq, *, scanner=None, pose=None, packs=None, complex_signal=False,
-               transmit=None, off_resonance=None, proton_density=None, transmit_tolerance=None, cache=None):
+               transmit=None, off_resonance=None, proton_density=None, transmit_tolerance=1e-3, cache=None):
         """The signal of every voxel under ``seq``: a dense volume ``grid.shape + (n_measurements,)``, NaN where
         the phantom has no voxel (:meth:`sparse` gives the rows).
 
@@ -322,6 +322,10 @@ class Phantom:
         * ``off_resonance`` -- a field-map value in T, added to a ``delta_B0_T`` layer: a uniform precession over
           the voxel through the acquisition's own coherence gate (zero for a 180 at TE/2).
         * ``proton_density`` -- multiplies every slot's ``m0`` in the voxel (and an ``m0_scale`` layer).
+
+        ``transmit_tolerance`` bins the transmit scales the RF-aware route propagates at, so a smooth map costs a
+        bounded number of propagations rather than one per voxel; ``None`` bins nothing
+        (:func:`~dmipy_sim.replay.phantom.quantise`).
 
         ``cache`` (a directory, or ``True``) keeps each pack's expansion on disk under the acquisition and the knobs,
         so a phantom replayed twice under the same acquisition pays the expansion once

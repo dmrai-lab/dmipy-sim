@@ -37,7 +37,7 @@ def replay_train(phantom, waveform, *, echo=-1, transmit=None, transmit_toleranc
     acquisition's own coherence gate.
     """
     from .pathways import train_response
-    from ..replay.phantom import transmit_classes
+    from ..replay.phantom import quantise
     from ..spec.tissue import Tissue
 
     f = phantom.file if hasattr(phantom, "file") else phantom
@@ -56,7 +56,7 @@ def replay_train(phantom, waveform, *, echo=-1, transmit=None, transmit_toleranc
     if kappa is None:
         kappa = np.ones(f.n_voxels)
     kappa = np.broadcast_to(np.asarray(kappa, np.float64), (f.n_voxels,))
-    binned = transmit_classes(kappa, transmit_tolerance)
+    binned = quantise(kappa, transmit_tolerance)
     scales = np.unique(binned)
 
     loaded = f._loaded_packs(packs)
@@ -98,9 +98,8 @@ def replay_train(phantom, waveform, *, echo=-1, transmit=None, transmit_toleranc
     if dB0 is None:
         dw_binned = np.zeros(f.n_voxels)
     else:
-        dw = 2.0 * np.pi * GAMMA_BAR * np.asarray(dB0, np.float64)
-        dw_binned = np.round(dw / (2.0 * np.pi * float(off_resonance_tolerance))) * \
-            (2.0 * np.pi * float(off_resonance_tolerance))
+        dw_binned = quantise(2.0 * np.pi * GAMMA_BAR * np.asarray(dB0, np.float64),
+                             None if off_resonance_tolerance is None else 2.0 * np.pi * float(off_resonance_tolerance))
     offsets = np.unique(dw_binned)
 
     pairs, coeff = {}, []
