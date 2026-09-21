@@ -108,8 +108,16 @@ def test_a_multi_axis_waveform_is_expanded_too(hollow):
     pk, seq = hollow
     G = np.asarray(seq.G_eff).copy()
     n_t = G.shape[1]
-    G[1, : n_t // 4, 1] = G[1, : n_t // 4, 0] * 0.7                  # a second axis during the first lobe
+    # a second axis with its OWN time profile -- the first half of each lobe -- so the gradient turns during
+    # the measurement (rank two), with the same number of samples on either side of the 180 so the encoding
+    # still refocuses: an unbalanced one would need a voxel to wind across (dmipy-sim#375)
+    gx = G[1, :, 0]
+    lobe1, lobe2 = np.flatnonzero(gx > 0), np.flatnonzero(gx < 0)
+    n = min(len(lobe1), len(lobe2)) // 2
+    pick = np.concatenate([lobe1[:n], lobe2[:n]])
+    G[1, pick, 1] = 0.7 * gx[pick]
     twisted = _Acq(G, seq.dt)
+    assert not twisted.unbalanced
     pr = pk.pose_response(twisted, **BAND, **KW)
     for R in so3.haar_rotations(3, seed=9):
         np.testing.assert_allclose(pr.at(R), pk.replay(twisted, orientation=R, complex_signal=True, **KW),

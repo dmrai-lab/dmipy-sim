@@ -12,9 +12,20 @@ three containers is one field or one derivation here:
   grid ends at the readout), or to every echo of a multi-echo train; it must agree with where the schedule forms its echo.
 * ``timing`` -- the :class:`~dmipy_sim.acquisition.timing.SequenceTiming` budget, when built to one.
 * ``encoding`` -- the per-measurement :class:`Encoding` an analytical layer reads (b, directions, delta, ...).
-* ``crusher`` -- the emergent voxel-scale crusher the vector-Bloch engine models as windings over windows.
+* ``crusher`` -- a DECLARED voxel-scale winding over windows, for a spoiler the waveform does not play in ``G``
+  (a split readout's, a train's crusher pair); a spoiler that IS played in ``G`` is not declared, its winding
+  following from the waveform and the prescription (:meth:`ScannerSequence.voxel_factor`).
+* ``voxel_scale`` -- who carries the voxel-scale winding of an encoding that leaves a net moment at the readout:
+  ``"derived"`` (the default) from the waveform and the prescription; ``"declared"`` elsewhere -- by a
+  ``crusher``, or by the coherence orders of a pathway sum, whose gated waveforms carry a pathway's MICROSCOPIC
+  gradient alone (:func:`dmipy_sim.replay.pathways.train_response`); or ``"substrate"`` -- no voxel is claimed
+  at all, and the response is the substrate's own to that gradient, which is what a probe of a pack's response
+  function or of its expansion measures and what NO image is made of. :attr:`ScannerSequence.voxel_declared`
+  is the one reading of the last two.
 * ``prescription`` -- optionally, where in the bore and on what voxels (:class:`~dmipy_sim.acquisition.prescription.Prescription`):
-  the acquisition in space, as the rest of the object is the acquisition in time. Nothing is derived from it.
+  the acquisition in space, as the rest of the object is the acquisition in time. One thing is derived from
+  it: for an encoding that leaves a net moment at the readout, the voxel's extent is what that winding is
+  averaged over (:meth:`ScannerSequence.voxel_factor`, dmipy-sim#375).
 * ``background_gradient`` -- optionally, how much of ``G`` is the MAGNET's rather than the builder's: the
   constant a non-uniform static field contributes at this position (:meth:`ScannerSequence.with_background_gradient`).
   It is already folded into ``G``, so every derived quantity carries it; it is recorded separately because a
@@ -31,6 +42,7 @@ from dataclasses import dataclass, field, replace
 
 import numpy as np
 
+from ..constants import GAMMA
 from .prescription import Prescription
 from .rf import RFSchedule
 from .timing import SequenceTiming
@@ -109,6 +121,7 @@ class ScannerSequence:
     notes: str = ""
     build_spec: tuple = None
     prescription: Prescription = None
+    voxel_scale: str = "derived"
     split_echo: bool = False
     background_gradient: tuple = None
     concomitant: dict = None
@@ -119,6 +132,10 @@ class ScannerSequence:
         _set = lambda k, v: object.__setattr__(self, k, v)
         if self.prescription is not None and not isinstance(self.prescription, Prescription):
             raise TypeError(f"prescription is a Prescription; got {type(self.prescription).__name__}")
+        if self.voxel_scale not in ("derived", "declared", "substrate"):
+            raise ValueError(f"voxel_scale is 'derived' (from the waveform and the prescription), 'declared' "
+                             f"(carried by a crusher or by a pathway sum's coherence orders) or 'substrate' (the "
+                             f"substrate's own response, no voxel claimed); got {self.voxel_scale!r}")
         G = np.asarray(self.G, dtype=np.float32)
         if G.ndim == 2:
             G = G[None]
@@ -262,6 +279,64 @@ class ScannerSequence:
         q_echo = q[:, self.echo_idx - 1, :] if self.echo_idx > 0 else np.zeros_like(q[:, 0, :])
         res = np.where(qmax > 0, np.max(np.abs(q_echo), axis=1) / np.where(qmax > 0, qmax, 1.0), 0.0)
         return float(np.max(res))
+
+    @property
+    def net_moment(self):
+        """``gamma q`` at the readout, ``(n_meas, 3)`` in rad/m: the winding per metre the effective gradient
+        leaves at the echo, read as :attr:`refocusing_residual` reads it. Zero for a refocused encoding. For
+        anything else it is the part of the encoding a micron-scale substrate cannot carry -- a winding of
+        ``L |k| / 2 pi`` turns across a voxel of edge ``L`` -- which is what :meth:`voxel_factor` averages
+        over (dmipy-sim#375)."""
+        G_eff = np.asarray(self.G_eff, dtype=np.float64)
+        q = np.cumsum(G_eff * self.dt, axis=1)
+        q_echo = q[:, self.echo_idx - 1, :] if self.echo_idx > 0 else np.zeros_like(q[:, 0, :])
+        return GAMMA * q_echo
+
+    @property
+    def unbalanced(self):
+        """Whether the effective gradient leaves a net moment at the readout beyond ``REFOCUS_ATOL`` of its
+        largest: the reading :meth:`validate` refuses for a family that promises an echo, and the one a
+        replay reads to decide whether the voxel enters."""
+        return self.refocusing_residual > REFOCUS_ATOL and float(np.abs(self.G).max()) > 0.0
+
+    @property
+    def voxel_declared(self):
+        """Whether the voxel-scale winding is carried outside the contraction -- a declared ``crusher``, or
+        ``voxel_scale="declared"`` -- so that :meth:`voxel_factor` is 1 and the vector-Bloch route places no
+        walker in the voxel; the crusher or the coherence orders do that."""
+        return self.crusher is not None or self.voxel_scale in ("declared", "substrate")
+
+    def voxel_factor(self):
+        """``(n_meas,)``: what the voxel's extent multiplies the substrate's signal by at the readout.
+
+        Position enters a walker's phase linearly -- ``phi = r_v . k + gamma int G . u dt``, with ``r_v`` the
+        walker's place in the voxel and ``u`` its own micron-scale excursion -- so the voxel's signal is the
+        substrate's times the voxel's average of ``exp(i r_v . k)``: for a box of edges ``L`` that is
+        ``prod_i sinc(k_i L_i / 2)`` with ``k`` the :attr:`net_moment` (dmipy-sim#375). Exactly 1 for a
+        refocused encoding, whatever the voxel. For an unbalanced one this IS the spoiler, derived from the
+        waveform and the prescription rather than declared as a number of turns.
+
+        REFUSED without a prescription. The un-crushed substrate signal is not an approximation of the
+        crushed one but a different number, tens of times larger for a spoiler of a few turns, and a voxel
+        size that was never stated cannot be guessed. The scalar routes apply this factor to the ensemble,
+        the pose expansion to each measurement's coefficients, and the vector-Bloch route puts each walker at
+        its own drawn place in the voxel (:meth:`~dmipy_sim.replay.ReplayPack.replay_bloch`): the same average,
+        taken analytically where the ensemble is formed and per walker where walkers are propagated. Exactly
+        1 as well when the winding is :attr:`voxel_declared` -- a crusher, or a pathway sum's orders.
+        """
+        if self.voxel_declared or not self.unbalanced:
+            return np.ones(self.n_meas)
+        k = self.net_moment
+        if self.prescription is None:
+            k_max = float(np.abs(k).max())
+            raise ValueError(
+                f"the effective gradient leaves a net moment at the readout ({k_max:.3g} rad/m, "
+                f"{k_max * 1e-3 / (2.0 * np.pi):.2f} turns per millimetre) and no voxel size is declared. A pack's "
+                f"substrate is microns across and cannot wind that geometrically; the voxel can, and the voxel's "
+                f"signal is the substrate's times its average of exp(i k . r), which needs the voxel's extent. "
+                f"Give with_prescription(Prescription(voxel_size_m=..., matrix=...)), or balance the encoding")
+        L = np.asarray(self.prescription.voxel_size_m, dtype=np.float64)
+        return np.prod(np.sinc(k * L[None, :] / (2.0 * np.pi)), axis=1)
 
     # ── validity ───────────────────────────────────────────────────────────────────────────────────
     def validate(self):

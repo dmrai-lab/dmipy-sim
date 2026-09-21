@@ -191,8 +191,10 @@ def train_response(pack, waveform, *, keep=(None, 0), b1_reference=1.0, n_orders
     G = np.asarray(waveform.G, np.float64)
     n_t, dt = int(waveform.n_t), float(waveform.dt)
     signs = {gate: gate_sign(gate, edges, n_t, dt) for gate in gates}
+    # a gate's waveform is a pathway's MICROSCOPIC gradient alone; its voxel-scale winding is the coherence
+    # order the state propagation carries, so it is declared rather than derived from the moment it leaves
     gated = {gate: replace(waveform, G=(G * s[None, :, None]).astype(np.float32), rf=None,
-                           family="waveform", crusher=None, readout=None)
+                           family="waveform", crusher=None, readout=None, voxel_scale="declared")
              for gate, s in signs.items()}
 
     # The gates do not reach the same band: one that spends an interval STORED accumulates no phase there

@@ -227,9 +227,11 @@ def _build_crusher(crusher, dt, n_t):
     ``crusher`` = ``{'windows_s': [(t0,t1), ...], 'n_cycles': float | [float, ...]}`` or None.  Over a
     window of ``n_win`` steps the rate is ``2 pi n_cycles / n_win``, so a walker at
     macroscopic coordinate ``u`` accrues ``2 pi n_cycles u`` across the window and the
-    ensemble (u ~ U[0,1)) dephases over ``n_cycles`` turns -- the voxel-scale spoiler.
+    ensemble (u ~ U[0,1)) dephases over ``n_cycles`` turns -- a DECLARED voxel-scale spoiler, for a winding the
+    waveform does not play in ``G``. A spoiler that is played in ``G`` is not declared here: its winding follows
+    from the waveform and the prescription (``ScannerSequence.voxel_factor``, dmipy-sim#375).
 
-    ``n_cycles`` may be one number for every window or one per window, and windows ADD where they overlap:
+    ``n_cycles`` is stated, one number for every window or one per window, and windows ADD where they overlap:
     a spoiler and an unbalanced readout wind different amounts over the same interval and cannot share a
     figure.
     """
@@ -237,7 +239,11 @@ def _build_crusher(crusher, dt, n_t):
     if crusher is None:
         return rate, False
     windows = list(crusher.get('windows_s', []))
-    cyc = crusher.get('n_cycles', 16.0)
+    if 'n_cycles' not in crusher:
+        raise ValueError("a declared crusher states its winding: crusher = {'windows_s': [...], 'n_cycles': ...}. "
+                         "There is no default number of turns; a spoiler played in G needs no declaration, since its "
+                         "winding follows from the waveform and the prescription (dmipy-sim#375)")
+    cyc = crusher['n_cycles']
     cyc = [float(cyc)] * len(windows) if np.ndim(cyc) == 0 else [float(c) for c in cyc]
     if len(cyc) != len(windows):
         raise ValueError(f"n_cycles is one number or one per window ({len(windows)}); got {len(cyc)}")
