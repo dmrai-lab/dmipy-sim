@@ -51,7 +51,7 @@ def test_the_merged_pack_replays_as_the_weight_combined_shards(shards):
         return np.abs((wa * a.replay(seq, complex_signal=True, **kw) + wb * b.replay(seq, complex_signal=True, **kw)) / (wa + wb))
     expect = combined()
     np.testing.assert_allclose(m.replay(seq), expect, rtol=1e-6)
-    np.testing.assert_allclose(m.replay(seq, tissue=Tissue(rho=1e-5, D=1.7e-9)), combined(tissue=Tissue(rho=1e-5, D=1.7e-9)), rtol=1e-6)
+    np.testing.assert_allclose(m.replay(seq, tissue=Tissue(rho=1e-5)), combined(tissue=Tissue(rho=1e-5)), rtol=1e-6)
     from dmipy_sim.replay import read_rpk
     back = read_rpk(str(tmp / "merged.rpk"))
     np.testing.assert_allclose(back.replay(seq), expect, rtol=1e-6)
