@@ -16,10 +16,12 @@ three containers is one field or one derivation here:
   (a split readout's, a train's crusher pair); a spoiler that IS played in ``G`` is not declared, its winding
   following from the waveform and the prescription (:meth:`ScannerSequence.voxel_factor`).
 * ``voxel_scale`` -- who carries the voxel-scale winding of an encoding that leaves a net moment at the readout:
-  ``"derived"`` (the default) from the waveform and the prescription, or ``"declared"`` elsewhere -- by a
+  ``"derived"`` (the default) from the waveform and the prescription; ``"declared"`` elsewhere -- by a
   ``crusher``, or by the coherence orders of a pathway sum, whose gated waveforms carry a pathway's MICROSCOPIC
-  gradient alone (:func:`dmipy_sim.replay.pathways.train_response`). :attr:`ScannerSequence.voxel_declared` is
-  the one reading of it.
+  gradient alone (:func:`dmipy_sim.replay.pathways.train_response`); or ``"substrate"`` -- no voxel is claimed
+  at all, and the response is the substrate's own to that gradient, which is what a probe of a pack's response
+  function or of its expansion measures and what NO image is made of. :attr:`ScannerSequence.voxel_declared`
+  is the one reading of the last two.
 * ``prescription`` -- optionally, where in the bore and on what voxels (:class:`~dmipy_sim.acquisition.prescription.Prescription`):
   the acquisition in space, as the rest of the object is the acquisition in time. One thing is derived from
   it: for an encoding that leaves a net moment at the readout, the voxel's extent is what that winding is
@@ -130,9 +132,10 @@ class ScannerSequence:
         _set = lambda k, v: object.__setattr__(self, k, v)
         if self.prescription is not None and not isinstance(self.prescription, Prescription):
             raise TypeError(f"prescription is a Prescription; got {type(self.prescription).__name__}")
-        if self.voxel_scale not in ("derived", "declared"):
-            raise ValueError(f"voxel_scale is 'derived' (from the waveform and the prescription) or 'declared' "
-                             f"(carried by a crusher or by a pathway sum's coherence orders); got {self.voxel_scale!r}")
+        if self.voxel_scale not in ("derived", "declared", "substrate"):
+            raise ValueError(f"voxel_scale is 'derived' (from the waveform and the prescription), 'declared' "
+                             f"(carried by a crusher or by a pathway sum's coherence orders) or 'substrate' (the "
+                             f"substrate's own response, no voxel claimed); got {self.voxel_scale!r}")
         G = np.asarray(self.G, dtype=np.float32)
         if G.ndim == 2:
             G = G[None]
@@ -301,7 +304,7 @@ class ScannerSequence:
         """Whether the voxel-scale winding is carried outside the contraction -- a declared ``crusher``, or
         ``voxel_scale="declared"`` -- so that :meth:`voxel_factor` is 1 and the vector-Bloch route places no
         walker in the voxel; the crusher or the coherence orders do that."""
-        return self.crusher is not None or self.voxel_scale == "declared"
+        return self.crusher is not None or self.voxel_scale in ("declared", "substrate")
 
     def voxel_factor(self):
         """``(n_meas,)``: what the voxel's extent multiplies the substrate's signal by at the readout.
