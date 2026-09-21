@@ -355,8 +355,22 @@ class ReplayPhantom:
                 f"without it.")
 
     # ---- replay
+    def _encoding_classes(self, waveform, scanner, tolerance, report=None):
+        """The acquisition as the machine plays it per voxel, binned (:func:`~dmipy_sim.phantom.bore.encoding_classes`),
+        or ``None`` for a scanner that brings no gradient-side term -- a bare field strength, or a machine with
+        no catalogued shape, tensor or field."""
+        from ..acquisition.scanners import ScannerLimits
+        from ..phantom.bore import encoding_classes
+        out = None
+        if isinstance(scanner, ScannerLimits):
+            out = encoding_classes(scanner, self.grid, waveform, self.voxel_index, tolerance=tolerance)
+        if report is not None:
+            report.update(n_encoding_classes=1 if out is None else len(out[1]))
+        return out
+
     def replay(self, waveform, *, scanner=None, pose=None, packs=None, complex_signal=False,
-               off_resonance=None, proton_density=None, cache=None, forms=None):
+               off_resonance=None, proton_density=None, cache=None, forms=None, encoding_tolerance=1e-3,
+               report=None):
         """Replay the whole phantom through the pose expansion: ``(voxel_index, S)`` with ``S`` of shape
         ``(n_voxels, n_measurements)``.
 
@@ -379,6 +393,14 @@ class ReplayPhantom:
         ``off_resonance`` (T) adds to a ``delta_B0_T`` layer and ``proton_density`` multiplies an ``m0_scale``
         layer. A ``kappa_B1`` layer cannot be carried here -- it acts on the magnetisation, not on a phase sum --
         and is refused with the route that can (:meth:`replay_bloch`), never dropped.
+
+        **The machine's gradient side** (dmipy-sim#377). A :class:`~dmipy_sim.acquisition.scanners.ScannerLimits`
+        that catalogues a gradient-nonlinearity tensor, a field shape or a field strength delivers a different
+        gradient at every voxel -- the tensor's tilt and scale, the magnet's own background, the coils' Maxwell
+        term -- and each pack is replayed once per distinct delivered gradient rather than once. The voxels are
+        binned to ``encoding_tolerance``, a fraction of ``b`` (:func:`~dmipy_sim.phantom.bore.encoding_classes`;
+        ``None`` for exact, one class per distinct voxel), and ``report`` receives ``n_encoding_classes``, which
+        is the cost.
         """
         if "kappa_B1" in self.scalar_names:
             raise ValueError(
@@ -386,7 +408,10 @@ class ReplayPhantom:
                 "RF-aware (vector-Bloch) replay of each pack at the voxel's pose. A magnitude gradient replay "
                 "cannot carry it, and dropping it would return a signal that looks right and is not. Use "
                 "ReplayPhantom.replay_bloch, which propagates the magnetisation per pose.")
-        pose, analytic, m0 = self._responses(waveform, scanner, pose, packs, keep=self.retained_band(),
+        classes = self._encoding_classes(waveform, scanner, encoding_tolerance, report)
+        waveforms = [waveform] if classes is None else classes[1]
+        cls_of_voxel = np.zeros(self.n_voxels, int) if classes is None else classes[0]
+        pose, analytic, m0 = self._responses(waveforms, scanner, pose, packs, keep=self.retained_band(),
                                              proton_density=proton_density, cache=cache, forms=forms)
         sid, frac = self.substrate_id, self.geometric_fraction
         n_meas = next(iter(pose.values())).n_meas if pose else len(np.atleast_1d(next(iter(analytic.values()))))
@@ -394,14 +419,16 @@ class ReplayPhantom:
         keep_l, keep_n = self._resolve_band(pose)
         vp, F = self.slot_coefficients(keep_l, keep_n)
         ids = sid[vp[:, 0], vp[:, 1]].astype(int)
+        cv = cls_of_voxel[vp[:, 0]]
         weight = frac[vp[:, 0], vp[:, 1]].astype(np.float64) * m0[vp[:, 0], ids]
-        for i in analytic:                                             # a closed form has no pose
-            m = ids == i
-            np.add.at(S, vp[m, 0], weight[m][:, None] * np.atleast_1d(analytic[i])[None, :])
+        for (i, c), resp in analytic.items():                          # a closed form has no pose
+            m = (ids == i) & (cv == c)
+            np.add.at(S, vp[m, 0], weight[m][:, None] * np.atleast_1d(resp)[None, :])
         if pose:                                                       # one product for every slot citing a pack
             order = sorted(pose)
-            coeff = np.stack([np.asarray(pose[i].retained(keep_l, keep_n), np.complex128) for i in order])
-            which = np.array([order.index(int(i)) if int(i) in pose else -1 for i in ids])
+            coeff = np.stack([np.asarray(pose[k].retained(keep_l, keep_n), np.complex128) for k in order])
+            lookup = {k: j for j, k in enumerate(order)}
+            which = np.array([lookup.get((int(i), int(c)), -1) for i, c in zip(ids, cv)])
             _gather(S, vp, F, weight, which, coeff)
         dB0 = self.layer_values("delta_B0_T", off_resonance)
         if dB0 is not None:
@@ -583,38 +610,42 @@ class ReplayPhantom:
                   "by pool, or pack.nominal; FreeWater(tissue=Tissue(D=..., T2=...))), or declare none anywhere for "
                   "a phantom with no relaxation (RPH.md 3.2).")
 
-    def _responses(self, waveform, scanner, specimen, packs, keep=None, proton_density=None, cache=None, forms=None):
-        """One response per substrate: a :class:`PoseResponse` for a pack, a closed form for an analytic
-        substrate, nothing for an inert one. Plus the per-voxel ``m0``. ``specimen`` is the specimen's rotation in
-        the bore: a pack's expansion runs in that frame, and an analytic form sees the acquisition turned into it."""
+    def _responses(self, waveforms, scanner, specimen, packs, keep=None, proton_density=None, cache=None, forms=None):
+        """One response per (substrate, encoding class): a :class:`PoseResponse` for a pack, a closed form for
+        an analytic substrate, nothing for an inert one -- keyed ``(i, c)`` with ``c`` indexing ``waveforms``,
+        the acquisition as played in each class. Plus the per-voxel ``m0``. ``specimen`` is the specimen's
+        rotation in the bore: a pack's expansion runs in that frame, and an analytic form sees the acquisition
+        turned into it."""
         from ..spec.tissue import Tissue
         from ..acquisition.waveforms import rotate_waveform
         from .replay import _pose_matrix
         pose, analytic = {}, {}
         loaded = self._loaded_packs(packs)
-        self._check_relaxation(waveform, loaded, forms)
+        self._check_relaxation(waveforms[0], loaded, forms)
         R_s = _pose_matrix(specimen)
-        turned = waveform if R_s is None else rotate_waveform(waveform, R_s.T)        # G @ R_s: the acquisition in the specimen frame
-        for i, sub in enumerate(self.substrates):
-            if sub["kind"] == "inert":
-                continue
-            if sub["kind"] == "analytic":
-                form = self._form(i, sub, forms)                               # refuses an unknown closed form
-                if sub.get("oriented", False) or getattr(form, "oriented", False):   # a form with an axis: expanded over
-                    from .replay import analytic_pose_response               # SO(3) like a pack, then contracted
-                    pose[i] = analytic_pose_response(form, turned, keep)
-                else:
-                    analytic[i] = form.response(turned)
-                continue
-            pose[i] = loaded[i].pose_response(waveform, tissue=Tissue.from_meta(sub.get("tissue")), scanner=scanner,
-                                              pose=R_s, keep=keep, cache=cache)
+        for c, waveform in enumerate(waveforms):
+            turned = waveform if R_s is None else rotate_waveform(waveform, R_s.T)    # G @ R_s: the acquisition in the specimen frame
+            for i, sub in enumerate(self.substrates):
+                if sub["kind"] == "inert":
+                    continue
+                if sub["kind"] == "analytic":
+                    form = self._form(i, sub, forms)                               # refuses an unknown closed form
+                    if sub.get("oriented", False) or getattr(form, "oriented", False):   # a form with an axis: expanded over
+                        from .replay import analytic_pose_response               # SO(3) like a pack, then contracted
+                        pose[(i, c)] = analytic_pose_response(form, turned, keep)
+                    else:
+                        analytic[(i, c)] = form.response(turned)
+                    continue
+                pose[(i, c)] = loaded[i].pose_response(waveform, tissue=Tissue.from_meta(sub.get("tissue")),
+                                                       scanner=scanner, pose=R_s, keep=keep, cache=cache)
         if not pose and not analytic:
             raise ValueError("the phantom cites no signal-bearing substrate")
         return pose, analytic, self._m0(proton_density)
 
     def replay_bloch(self, waveform, *, scanner=None, pose=None, packs=None, complex_signal=False,
                      transmit=None, off_resonance=None, proton_density=None, transmit_tolerance=1e-3,
-                     pose_tolerance=1e-3, off_resonance_tolerance=1e-4, forms=None):
+                     pose_tolerance=1e-3, off_resonance_tolerance=1e-4, forms=None, encoding_tolerance=1e-3,
+                     report=None):
         """Replay the phantom through the RF-aware route: ``(voxel_index, S)``, one magnetisation propagation
         per distinct pose rather than one contraction per voxel.
 
@@ -642,7 +673,8 @@ class ReplayPhantom:
         transmit profile a machine produces is continuous, and unbinned it costs one propagation per voxel.
         Binning is exact to the tolerance in the quantity binned, and each reaches the signal through a
         function of slope at most one there, so the signal error is of the same order and never larger.
-        ``None`` bins nothing.
+        ``None`` bins nothing. ``encoding_tolerance`` bins the machine's gradient-side terms per voxel as
+        :meth:`replay` does, and each class propagates the acquisition as played there.
         """
         if self.mode != "frames":
             raise ValueError(f"replay_bloch propagates the magnetisation at a pose, so it needs a frames-mode "
@@ -676,8 +708,13 @@ class ReplayPhantom:
         if R_s is not None:
             R = np.einsum("ij,njk->nik", R_s, R)                       # substrate -> specimen -> lab
         R = R.reshape(-1, 9)
-        # every slot's propagation key: substrate, rounded pose, rounded transmit scale, rounded field offset
-        keys = np.concatenate([ids[:, None].astype(np.float64), quantise(R, pose_tolerance),
+        classes = self._encoding_classes(waveform, scanner, encoding_tolerance, report)
+        waveforms = [waveform] if classes is None else classes[1]
+        cls_of_voxel = np.zeros(self.n_voxels, int) if classes is None else classes[0]
+        # every slot's propagation key: substrate, encoding class, rounded pose, rounded transmit scale, rounded
+        # field offset
+        keys = np.concatenate([ids[:, None].astype(np.float64), cls_of_voxel[v_idx][:, None].astype(np.float64),
+                               quantise(R, pose_tolerance),
                                quantise(kappa[v_idx], transmit_tolerance)[:, None],
                                quantise(dB0[v_idx], None if off_resonance_tolerance is None
                                         else float(off_resonance_tolerance) / GAMMA_BAR)[:, None]], axis=1)
@@ -688,15 +725,16 @@ class ReplayPhantom:
         for u in range(uniq.shape[0]):
             first = int(np.flatnonzero(inverse == u)[0])
             i, kap, off = int(ids[first]), float(kappa[v_idx[first]]), float(dB0[v_idx[first]])
+            played = waveforms[int(cls_of_voxel[v_idx[first]])]
             sub = self.substrates[i]
             if sub["kind"] == "analytic":
                 form = self._form(i, sub, forms)
                 pose_R = R[first].reshape(3, 3) if (sub.get("oriented", False) or getattr(form, "oriented", False)) else None
-                resp = form.response(waveform, pose=pose_R) * _static_spin_rf(waveform, kap)
+                resp = form.response(played, pose=pose_R) * _static_spin_rf(played, kap)
                 if off != 0.0:
                     resp = resp * np.exp(1j * GAMMA * off * gate)
             else:
-                resp = loaded[i].replay_bloch(waveform, b1_scale=kap, off_resonance_T=(off or None),
+                resp = loaded[i].replay_bloch(played, b1_scale=kap, off_resonance_T=(off or None),
                                               tissue=Tissue.from_meta(sub.get("tissue")), scanner=scanner,
                                               orientation=R[first].reshape(3, 3), complex_signal=True)
             resp = np.atleast_1d(np.asarray(resp, np.complex128))
@@ -733,6 +771,12 @@ class ReplayPhantom:
 
         if self.mode not in ("odf_sh", "peaks", "frames", "bingham"):
             raise ValueError(f"unknown orientation mode {self.mode!r}")
+        if self._encoding_classes(waveform, scanner, None) is not None:
+            raise ValueError(
+                "a train replay builds one set of gate expansions per substrate from the waveform as prescribed, and "
+                "this scanner delivers a different gradient at every voxel (a nonlinearity tensor, a field shape or "
+                "the coils' Maxwell term; dmipy-sim#377). Carrying that here means one gate set per encoding class, "
+                "which is not done; replay at the field alone (scanner=<tesla>), or use replay / replay_bloch")
         R_s = _pose_matrix(pose)
         loaded = self._loaded_packs(packs)
         kappa = self.layer_values("kappa_B1", transmit, combine="mul")

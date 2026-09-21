@@ -301,7 +301,8 @@ class Phantom:
         return out
 
     def replay(self, seq, *, scanner=None, pose=None, packs=None, complex_signal=False,
-               transmit=None, off_resonance=None, proton_density=None, transmit_tolerance=1e-3, cache=None):
+               transmit=None, off_resonance=None, proton_density=None, transmit_tolerance=1e-3,
+               encoding_tolerance=1e-3, cache=None, report=None):
         """The signal of every voxel under ``seq``: a dense volume ``grid.shape + (n_measurements,)``, NaN where
         the phantom has no voxel (:meth:`sparse` gives the rows).
 
@@ -327,17 +328,30 @@ class Phantom:
         bounded number of propagations rather than one per voxel; ``None`` bins nothing
         (:func:`~dmipy_sim.replay.phantom.quantise`).
 
+        **What the machine does to the encoding** (dmipy-sim#377). A ``scanner`` that catalogues a
+        gradient-nonlinearity tensor, a field shape or a field strength delivers a different gradient at every
+        voxel, and each pack is replayed once per distinct delivered gradient; ``encoding_tolerance`` is the
+        fraction of ``b`` the voxels are binned to (``None`` for exact), and ``report`` receives the class
+        count, which is the cost (:func:`~dmipy_sim.phantom.bore.encoding_classes`). A machine's static offset
+        arrives as ``off_resonance`` the same way (:func:`~dmipy_sim.phantom.bore.b0_offset_map`).
+
+        The grid's voxels are the acquisition's: a sequence with no prescription is given this grid's, so an
+        encoding that leaves a net moment at the readout is averaged over this voxel
+        (:meth:`~dmipy_sim.acquisition.scanner_sequence.ScannerSequence.voxel_factor`).
+
         ``cache`` (a directory, or ``True``) keeps each pack's expansion on disk under the acquisition and the knobs,
         so a phantom replayed twice under the same acquisition pays the expansion once
         (:meth:`ReplayPack.pose_response`). A declared layer this route cannot carry raises rather than being dropped.
         """
         f = self.file
         self._check_prescription(seq)
+        seq = self._on_this_grid(seq)
         off_resonance = self._machine_field(scanner, off_resonance)
         maps = dict(transmit=self._map(transmit, "transmit"), off_resonance=self._map(off_resonance, "off_resonance"),
                     proton_density=self._map(proton_density, "proton_density"))
         common = dict(scanner=scanner, pose=pose, packs=self._packs(packs), complex_signal=complex_signal,
                       off_resonance=maps["off_resonance"], proton_density=maps["proton_density"],
+                      encoding_tolerance=encoding_tolerance, report=report,
                       forms={i: s for i, s in enumerate(self.substrates) if getattr(s, "kind", None) == "analytic"})
         if maps["transmit"] is not None or "kappa_B1" in f.scalar_names:
             _, S = f.replay_bloch(seq, transmit=maps["transmit"],
@@ -345,6 +359,16 @@ class Phantom:
         else:
             _, S = f.replay(seq, cache=cache, **common)
         return self.to_volume(S)
+
+    def _on_this_grid(self, seq):
+        """The acquisition prescribed on this grid's voxels when it states no prescription of its own: the
+        voxel an unbalanced encoding is averaged over is this phantom's."""
+        if getattr(seq, "prescription", None) is not None:
+            return seq
+        from ..acquisition.prescription import Prescription
+        g = self.grid
+        return seq.with_prescription(Prescription(isocenter_m=g.isocenter_m, voxel_size_m=g.voxel_size_m,
+                                                  matrix=g.shape, axes=g.axes, origin_m=g.origin_m))
 
     def replay_train(self, seq, *, echo=-1, transmit=None, transmit_tolerance=1e-2, off_resonance=None,
                      off_resonance_tolerance=2.0, scanner=None, pose=None, packs=None, proton_density=None,
@@ -360,6 +384,7 @@ class Phantom:
         """
         f = self.file
         self._check_prescription(seq)
+        seq = self._on_this_grid(seq)
         off_resonance = self._machine_field(scanner, off_resonance)
         _, S = f.replay_train(seq, echo=echo, transmit=self._map(transmit, "transmit"),
                               transmit_tolerance=transmit_tolerance,
