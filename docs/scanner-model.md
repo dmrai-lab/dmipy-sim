@@ -68,6 +68,42 @@ gradient) while the **shape** is not (sampled laws disagree about the background
 direction by a median 71°). A quantity driven by the worst gradient is therefore trustworthy; one
 driven by where the gradient points is not. That split is recorded in the leaf, not in a comment.
 
+## What reaches a signal, and how
+
+Every term the model carries reaches a replayed signal, each through the route its physics allows:
+
+| term | how it enters a replay | cost |
+|---|---|---|
+| `field_T`, `b0_axis` | the susceptibility phase and its direction, per pack | none |
+| the field law (`b0_offset`) | `off_resonance`, a uniform offset per voxel through the coherence gate; a machine brings its own (`bore.b0_offset_map`) | none |
+| the transmit profile (`b1_scale`) | `transmit`, on the RF-aware routes only, binned to a tolerance | one propagation per class |
+| the gradient tensor `L(r)`, the background gradient, the concomitant field | the acquisition **as played at the voxel** (`ScannerSequence.with_gradient_nonlinearity`, `with_background_gradient`, `with_concomitant`), one pose expansion per distinct delivered gradient (`bore.encoding_classes`, `Phantom.replay(encoding_tolerance=)`) | one expansion per class; the count is reported and follows the size of the effect |
+| an encoding that leaves a net moment at the readout | the voxel's average of the winding, `ScannerSequence.voxel_factor`, from the prescription; refused without one | none |
+
+The concomitant term is the exact field magnitude of an ideal linear coil with the symmetric transverse
+sharing (`alpha = 1/2`), not its first order: at a permanent magnet's field and gradient the first order is
+short by percent of the term (`tests/test_concomitant_oracle.py` holds both against the Biot-Savart field of
+a wire). A readout gradient is represented and accepted once its span is declared, and is not simulated as
+encoding (`readout_window`).
+
+## What the model infers rather than measures
+
+The mathematics above is checked against Maxwell (tier 0) and against a coil that exists only as geometry
+(tier 1). Four of the Swoop's parameter values are choices the published data does not fix, and each says so
+where it lives:
+
+- the field law's **shape**: two published scalars against fifteen coefficients; admissible laws disagree
+  about the background gradient's direction by a median of 71 degrees (`b0_direction_spread_deg`);
+- the gradient tensor's **off-diagonals and common mode**: the NIST regression gives the traceless diagonal,
+  the rest is the minimum-norm completion (`gradient_potentials`);
+- the coil symmetry **`alpha = 1/2`**: an inference from a class statement, and the coil oracle shows a
+  bi-planar pair can sit anywhere in `[0.02, 0.5]` by plate geometry;
+- the transmit profile's **transverse split**: Laplace fixes the sum of the two curvatures, not their share.
+
+Two things are omitted, bounded and stated: the magnet's own transverse field in the Maxwell term
+(1.7e-3 of b on the Swoop, and not derivable from the axial law), and the dispersion of the delivered b
+across a voxel (every term is read at the voxel's centre).
+
 ## Reading it
 
 - `dmipy_sim/acquisition/scanner_constants.json` — the catalogue. Every leaf is
