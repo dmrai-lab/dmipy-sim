@@ -459,9 +459,8 @@ def delivered_weights(scanner, grid, sequence, *, K, n_t, dt_pack, voxels=None, 
 def _frame(grid, to_scanner):
     """The grid-to-scanner rotation, taken from the GRID when the caller does not state one.
 
-    Defaulting to ``None`` makes an oblique grid silently evaluate every law at the wrong place, which is
-    the failure ``b0_offset_map``'s own docstring warns about -- and that function already defaults to the
-    grid's. These did not, and the two disagreed by 7 per cent.
+    Defaulting to ``None`` instead would make an oblique grid silently evaluate every law at the wrong
+    place, which is the failure ``b0_offset_map``'s docstring warns about.
     """
     v = getattr(grid, "to_scanner", None) if to_scanner is None else to_scanner
     return None if v is None else np.asarray(v, dtype=np.float64)

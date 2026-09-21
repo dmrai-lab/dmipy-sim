@@ -357,7 +357,7 @@ class Phantom:
 
         A field a magnet imposes is a property of the machine, and a replay is already told which machine it
         is on. So a scanner whose profile the catalogue carries brings it along rather than being silently
-        replayed as an ideal magnet -- which is what every replay did until now, and looks identical.
+        replayed as an ideal magnet, which looks identical.
 
         A stated ``off_resonance`` wins: it is a measurement, and a measured field map already contains
         whatever the magnet does. Combining the two would count it twice.
