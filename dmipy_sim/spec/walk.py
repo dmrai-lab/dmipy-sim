@@ -134,6 +134,70 @@ def walk_spec(spec, n_walkers=None, T_max=None, dt_save=None, *, scanner="connec
                             field_cutoff_max_m=field_cutoff_max_m, adaptive_steps=adaptive_steps, field_sample_every=int(field_sample_every), field_far=field_far, field_gather_every=int(field_gather_every), context=context, spool=bool(spool))
 
 
+def field_grid_of_spec(spec, *, field_res=None, field_budget=None, context=None, n_check=400_000, seed=0):
+    """The rasterised field basis of ``spec``'s field source, a :class:`~dmipy_sim.fields.susceptibility_field.FieldGrid`:
+    the one raster a walk records (:func:`walk_spec`) and a re-pack of a kept walk samples
+    (:func:`~dmipy_sim.replay.bank.build_replay_pack` with ``field=``). The shell pool's occupancy comes from the
+    spec's own membership tests on the domain grid, the directors from its inner surface, at the node spacing the
+    thinnest shell sets (:func:`~dmipy_sim.fields.susceptibility_field.field_resolution` of
+    ``spec.validity.thinnest_shell``; ``field_res`` in metres overrides it, and a spec that records no shell needs
+    it) within ``field_budget`` nodes (default the host's,
+    :func:`~dmipy_sim.fields.susceptibility_field.field_node_budget`); a basis beyond the budget is refused
+    naming the shell, never coarsened. The raster is checked before it is returned: the shell fraction it holds
+    against the fraction of ``n_check`` uniform points the spec's exact membership tests put in the shell, recorded
+    in the grid's ``certificate`` and refused past one percent of the shell (a raster that has lost its sheath's
+    volume has lost its field). ``context`` is a :class:`WalkContext` of the spec whose tests are reused."""
+    from ..fields.susceptibility_field import (FieldGrid, FIELD_NODES_ACROSS, field_node_budget, field_resolution,
+                                               mesh_field_basis, predicate_field_basis)
+    if not spec.field_source_pools:
+        raise SpecError(f"spec {spec.id!r} has no field-source pool (a pool with a susceptibility); there is no field to rasterise")
+    g = context.tests if context is not None else _PoolTests(spec)
+    src = spec.field_source_pools[0].id
+    outer_b = g.boundary(g.inside_w[src]) if g.inside_w[src] else None
+    inner_b = g.boundary(g.outside_w[src]) if g.outside_w[src] else None
+    if outer_b is None:
+        raise SpecError(f"field-source pool {g.pools[src].name!r} is bounded by no wall; its occupancy cannot be rasterised")
+    lo, hi = g.lo, g.hi
+    strands = outer_b.kind == "swept_polyline" and inner_b is not None and inner_b.kind == "swept_polyline"
+    shell = spec.validity.thinnest_shell
+    if field_res is None:
+        if shell is None:
+            raise SpecError(f"the field basis's node spacing follows the field source's thinnest shell, and spec "
+                            f"{spec.id!r} records none (validity.thinnest_shell); pass field_res= (metres) or record it")
+        field_res = field_resolution(shell)
+        spacing = f"{field_res * 1e6:.3f} um, {FIELD_NODES_ACROSS:g} nodes across its thinnest shell of {shell * 1e6:.3f} um"
+    else:
+        spacing = f"the given field_res of {field_res * 1e6:.3f} um"
+    budget = float(field_budget) if field_budget is not None else field_node_budget()
+    n_vox = int(np.prod(np.ceil((hi - lo) / float(field_res))))
+    if n_vox > budget:
+        raise SpecError(f"the field basis of this substrate would be {n_vox:.2e} nodes at {spacing} over its "
+                        f"{np.round((hi - lo) * 1e6, 1).tolist()} um domain, beyond the voxel budget of {budget:.1e} nodes "
+                        + ("(field_budget=)" if field_budget is not None else
+                           "(half this host's memory ceiling at the build's measured bytes per node)")
+                        + ". Raise field_budget= on a host with the memory, walk it with field=False"
+                        + (", or field=True evaluates a strand substrate's per-segment closed form instead" if strands else "")
+                        + "; a coarser field_res= is a choice to under-resolve the sheath, never the default")
+    if inner_b is not None and inner_b.kind == "mesh" and outer_b.kind == "mesh":
+        basis, origin, _ = mesh_field_basis(inner_b.bodies, outer_b.bodies, lo, hi, res=field_res, include_aniso=True)
+    else:
+        ref_b = inner_b if inner_b is not None else outer_b
+        director = ref_b.director if ref_b.kind == "swept_polyline" else None
+        basis, origin, _ = predicate_field_basis(inner_b.contains if inner_b is not None else None, outer_b.contains,
+                                                 lo, hi, res=field_res, include_aniso=True, director=director)
+    frac_raster = float(basis["shell_fraction"])                  # the raster against the membership it was made from
+    q = lo + np.random.default_rng(int(seed)).random((int(n_check), 3)) * (hi - lo)
+    member = outer_b.contains(q) & ~(inner_b.contains(q) if inner_b is not None else np.zeros(len(q), bool))
+    frac = float(member.mean()); se = float(np.sqrt(max(frac * (1.0 - frac), 1e-12) / len(q)))
+    cert = dict(res_m=float(field_res), nodes_across_thinnest_shell=(None if shell is None else float(shell / field_res)),
+                shape=[int(s) for s in basis["shape"]], shell_fraction_raster=frac_raster, shell_fraction_sampled=frac,
+                shell_fraction_se=se, n_sampled=int(n_check))
+    if abs(frac_raster - frac) > max(0.01 * frac, 4.0 * se):
+        raise SpecError(f"the field raster at {spacing} holds {frac_raster:.4f} of the domain as shell where the spec's "
+                        f"membership puts {frac:.4f} +- {se:.4f}: the grid does not resolve the shell")
+    return FieldGrid(basis, np.asarray(origin, float), cert)
+
+
 def _needs_bundle_walk(spec):
     """A spec whose walls are closed surfaces (meshes, sphere unions, strand packs) with more than one wall or
     more than one seeded pool has no single Geometry: it is walked pool by pool."""
@@ -158,11 +222,9 @@ class _Boundary:
         self._geom = {}
         if self.kind == "mesh":
             from ..geometry.mesh import load_ply
-            Vs, Fs, off = [], [], 0
-            for w in walls:
-                V, F = load_ply(w.surface.file, scale=(w.surface.scale or 1.0))
-                Vs.append(np.asarray(V, float)); Fs.append(np.asarray(F, np.int64) + off); off += len(V)
-            self.V, self.F = np.concatenate(Vs), np.concatenate(Fs)
+            from ..fields.susceptibility_field import MeshBodies
+            self.bodies = MeshBodies([load_ply(w.surface.file, scale=(w.surface.scale or 1.0)) for w in walls])
+            self.V, self.F = self.bodies.V, self.bodies.F
         elif self.kind == "sphere_union":
             from .build import sphere_union_arrays
             parts = [sphere_union_arrays(w.surface) for w in walls]
@@ -215,8 +277,7 @@ class _Boundary:
     def contains(self, pts):
         pts = np.asarray(pts, float)
         if self.kind == "mesh":
-            from ..fields.susceptibility_field import mesh_contains
-            return np.asarray(mesh_contains(self.V, self.F, pts), bool)
+            return self.bodies.contains(pts)
         if self.kind == "sphere_union":
             from ..io.caterpillar import points_inside_union
             return points_inside_union(self.centers, self.radii, pts)
@@ -408,8 +469,6 @@ def _walk_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field, field_re
     outside-walls (extra); a shell pool at D = 0 (myelin) is frozen where it was seeded; the field basis is
     rasterised from the same membership tests."""
     from ..engine.core import simulate_trajectories
-    from ..fields.susceptibility_field import (FieldGrid, FIELD_NODES_ACROSS, field_node_budget, field_resolution,
-                                               mesh_field_basis, predicate_field_basis)
     from ..persistent_walk import PersistentWalk
     log = logging.getLogger("dmipy_sim")
     ctx = context if context is not None else WalkContext(spec, field_far=field_far)
@@ -532,40 +591,12 @@ def _walk_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field, field_re
         src = spec.field_source_pools[0].id
         outer_b = boundary(inside_w[src]) if inside_w[src] else None
         inner_b = boundary(outside_w[src]) if outside_w[src] else None
-        if outer_b is None:
-            raise SpecError(f"field-source pool {pools[src].name!r} is bounded by no wall; its occupancy cannot be rasterised")
-        strands = outer_b.kind == "swept_polyline" and inner_b is not None and inner_b.kind == "swept_polyline"
+        strands = (outer_b is not None and outer_b.kind == "swept_polyline" and inner_b is not None
+                   and inner_b.kind == "swept_polyline")
         if strands and field != "grid":
             fg = sf                                                          # built and certified on the start positions
         else:
-            shell = spec.validity.thinnest_shell
-            if field_res is None:
-                if shell is None:
-                    raise SpecError(f"the field basis's node spacing follows the field source's thinnest shell, and spec "
-                                    f"{spec.id!r} records none (validity.thinnest_shell); pass field_res= (metres) or record it")
-                field_res = field_resolution(shell)
-                spacing = f"{field_res * 1e6:.3f} um, {FIELD_NODES_ACROSS:g} nodes across its thinnest shell of {shell * 1e6:.3f} um"
-            else:
-                spacing = f"the given field_res of {field_res * 1e6:.3f} um"
-            budget = float(field_budget) if field_budget is not None else field_node_budget()
-            n_vox = int(np.prod(np.ceil((hi - lo) / float(field_res))))
-            if n_vox > budget:
-                raise SpecError(f"the field basis of this substrate would be {n_vox:.2e} nodes at {spacing} over its "
-                                f"{np.round((hi - lo) * 1e6, 1).tolist()} um domain, beyond the voxel budget of {budget:.1e} nodes "
-                                + ("(field_budget=)" if field_budget is not None else
-                                   "(half this host's memory ceiling at the build's measured bytes per node)")
-                                + ". Raise field_budget= on a host with the memory, walk it with field=False"
-                                + (", or field=True evaluates a strand substrate's per-segment closed form instead" if strands else "")
-                                + "; a coarser field_res= is a choice to under-resolve the sheath, never the default")
-            if inner_b is not None and inner_b.kind == "mesh" and outer_b.kind == "mesh":
-                basis, origin, _ = mesh_field_basis((inner_b.V, inner_b.F), (outer_b.V, outer_b.F), lo, hi, res=field_res,
-                                                    include_aniso=True)
-            else:
-                ref_b = inner_b if inner_b is not None else outer_b
-                director = ref_b.director if ref_b.kind == "swept_polyline" else None
-                basis, origin, _ = predicate_field_basis(inner_b.contains if inner_b is not None else None, outer_b.contains,
-                                                         lo, hi, res=field_res, include_aniso=True, director=director)
-            fg = FieldGrid(basis, np.asarray(origin, float))
+            fg = field_grid_of_spec(spec, field_res=field_res, field_budget=field_budget, context=ctx)
     by_name = {p.name: p for p in spec.pools}
     D_ref = by_name["intra"].D if ("intra" in by_name and by_name["intra"].D) else float(walked.diffusivity)
     walk = PersistentWalk(traj, float(walked.dt), int(walked.sub_steps), float(walked.dt_sim), boundary_local_time=dlog,
