@@ -179,13 +179,18 @@ def get_citation(source_key):
 
 
 def needs_verification():
-    """List ``(model, group, name)`` of every entry whose value is unverified/None."""
+    """List ``(model, group, name)`` of every leaf, in every group, whose confidence is ``NEEDS VERIFICATION``.
+
+    A null value is not by itself a gap: a null under a stated confidence is a CLAIM that there is no such
+    number (a quadrature birdcage has no single ``b1_axis``), and it is the confidence that says which.
+    """
     out = []
     for m, sc in {**SCANNER_CONSTANTS["scanners"], **SCANNER_CONSTANTS["envelopes"]}.items():
-        for grp in ("gradient", "rf", "homogeneity"):
-            for n, leaf in sc.get(grp, {}).items():
-                if isinstance(leaf, dict) and (leaf.get("confidence") == "NEEDS VERIFICATION"
-                                               or leaf.get("value") is None):
+        for grp, leaves in sc.items():
+            if not isinstance(leaves, dict):
+                continue
+            for n, leaf in leaves.items():
+                if isinstance(leaf, dict) and leaf.get("confidence") == "NEEDS VERIFICATION":
                     out.append((m, grp, n))
     return out
 

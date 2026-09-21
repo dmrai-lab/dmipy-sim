@@ -4,7 +4,6 @@ Every class of the band-limit certificate and every Pulseq preset is the cited J
 one scanner resolves from any of its names; a slew regime is a choice, not a second catalogue; and what the
 catalogue does not know is ``None`` and listed, never a number standing in for one.
 """
-import inspect
 import json
 
 from dataclasses import replace
@@ -168,8 +167,22 @@ def test_the_schema_ships_and_is_the_spec_repos():
 
 def test_the_catalogue_conforms_to_it():
     """Every leaf carries the seven fields with a context and a citation that resolves, every confidence is
-    one the file declares, and every short name points at something. This is the guard that was missing."""
+    one the file declares, and every short name points at something."""
     assert scc.conformance_problems() == []
+
+
+def test_the_catalogue_validates_against_the_shipped_schema():
+    """The referential rules above are the ones a type schema cannot state; the type schema is the one it
+    can. Both have to hold, and only running the schema shows the second: an axis letter is a string, and a
+    group the schema does not name is a typo it must refuse."""
+    jsonschema = pytest.importorskip("jsonschema")
+    schema = json.loads(scc.SCHEMA_PATH.read_text())
+    errors = list(jsonschema.Draft202012Validator(schema).iter_errors(scc.SCANNER_CONSTANTS))
+    assert not errors, [f"{'/'.join(map(str, e.path))}: {e.message}" for e in errors]
+    import copy
+    broken = copy.deepcopy(scc.SCANNER_CONSTANTS)
+    broken["scanners"]["hyperfine_swoop_64mT"]["thermel"] = broken["scanners"]["hyperfine_swoop_64mT"].pop("thermal")
+    assert list(jsonschema.Draft202012Validator(schema).iter_errors(broken)), "a misspelt group must be refused"
 
 
 @pytest.mark.parametrize("break_it, expect", [
@@ -334,7 +347,12 @@ def test_the_new_units_convert_and_the_group_is_scanned_for_verification():
     assert scc.get_limit("hyperfine_swoop_64mT", "homogeneity", "b0_harmonic_Z2", si=True) == raw
     assert scc.get_limit("hyperfine_swoop_64mT", "homogeneity", "b0_homogeneity", si=True) == \
         scc.get_limit("hyperfine_swoop_64mT", "homogeneity", "b0_homogeneity")["value"] * 1e-6
-    assert "homogeneity" in inspect.getsource(scc.needs_verification)
+    # every group is scanned, not a named few; and a null under a STATED confidence is a claim, not a gap
+    listed = scc.needs_verification()
+    assert ("siemens_connectome_skyra_3T", "gradient_nonlinearity", "spherical_harmonic_coefficients") in listed
+    assert ("siemens_magnetom_prisma_3T", "frame", "b1_axis") not in listed          # a birdcage: null, widely-quoted
+    tables = {**scc.SCANNER_CONSTANTS["scanners"], **scc.SCANNER_CONSTANTS["envelopes"]}
+    assert all(tables[m][g][n]["confidence"] == "NEEDS VERIFICATION" for m, g, n in listed)
 
 
 # ── the machine's transmit profile (dmipy-sim#322 PR 5) ─────────────────────────────────────────────
