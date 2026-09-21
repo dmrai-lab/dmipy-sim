@@ -114,6 +114,7 @@ class ScannerSequence:
     concomitant: dict = None
     gradient_nonlinearity: tuple = None
     imposed_gradient: np.ndarray = None
+    readout_gradient: np.ndarray = None
 
     def __post_init__(self):
         _set = lambda k, v: object.__setattr__(self, k, v)
@@ -253,10 +254,16 @@ class ScannerSequence:
 
     @property
     def refocusing_residual(self):
-        """max over measurements of the relative net gradient moment |q(TE)| / max|q| of the effective gradient.
-        ``q`` at sample ``i`` is what the walk has accumulated by then: ``G[k]`` acts over ``[k dt, (k + 1) dt)``,
-        so the samples before ``i`` count and the one at the readout does not."""
-        G_eff = np.asarray(self.G_eff, dtype=np.float64)
+        """max over measurements of the relative net gradient moment |q(TE)| / max|q| of the effective ENCODING
+        gradient. ``q`` at sample ``i`` is what the walk has accumulated by then: ``G[k]`` acts over
+        ``[k dt, (k + 1) dt)``, so the samples before ``i`` count and the one at the readout does not.
+
+        The readout's own lobe is excluded, and that is physics rather than convenience: a readout traverses
+        k-space, so its ``q`` at the sample is non-zero BY DESIGN. Requiring the total to refocus would refuse
+        every real imaging readout, and would refuse an UNBALANCED one hardest -- which is the one case where
+        the readout matters most, since SPLICE uses exactly that to split its echo families."""
+        G_eff = np.asarray(self.encoding_gradient, dtype=np.float64) * np.asarray(
+            self.rf.sign(np.arange(np.shape(self.G)[1]) * self.dt), dtype=np.float64)[None, :, None]
         q = np.cumsum(G_eff * self.dt, axis=1)
         qmax = np.max(np.abs(q), axis=(1, 2))
         q_echo = q[:, self.echo_idx - 1, :] if self.echo_idx > 0 else np.zeros_like(q[:, 0, :])
@@ -274,7 +281,7 @@ class ScannerSequence:
             if e.duration_s > 0.0:
                 t0, t1 = e.window
                 inside = (t >= t0 - 1e-9 * self.dt) & (t <= t1 + 1e-9 * self.dt)
-                if np.any(np.abs(self.designed_gradient[:, inside, :]) > 0.0):
+                if np.any(np.abs(self.encoding_gradient[:, inside, :]) > 0.0):
                     raise ValueError(f"the gradient is on during the {e.flip_deg:g} pulse at {e.t_s*1e3:.3f} ms "
                                      f"(window {t0*1e3:.3f}-{t1*1e3:.3f} ms): a finite pulse needs zero gradient")
         if self.timing is not None:                    # the budget's dead times: the lead-in and the readout tails
@@ -285,7 +292,7 @@ class ScannerSequence:
             windows += [(i * self.dt - self.timing.t_readout_pre_echo, i * self.dt, "readout") for i in self.readout]
             for t0, t1, what in windows:                # a step wholly inside a dead time; a straddling step is rounding
                 inside = (t >= t0 - 1e-9 * self.dt) & (t + self.dt <= t1 + 1e-9 * self.dt)
-                if np.any(np.abs(self.designed_gradient[:, inside, :]) > 0.0):
+                if np.any(np.abs(self.encoding_gradient[:, inside, :]) > 0.0):
                     raise ValueError(f"the gradient is on in the {what} window {t0*1e3:.3f}-{t1*1e3:.3f} ms of the "
                                      f"timing budget")
         res = self.refocusing_residual
@@ -472,6 +479,42 @@ class ScannerSequence:
         imposed = gc if self.imposed_gradient is None else self.imposed_gradient + gc
         return replace(self, G=(self.G + gc), imposed_gradient=np.ascontiguousarray(imposed),
                        concomitant={"position_m": tuple(tuple(float(v) for v in p) for p in r), "B0_T": B0})
+
+    @property
+    def encoding_gradient(self):
+        """The gradient the builder placed to ENCODE, with the readout's own lobe taken back out.
+
+        This is what a timing budget's dead windows constrain, and it is not the same quantity as
+        :attr:`designed_gradient`. A readout gradient is real coil current -- it diffusion-weights, it carries
+        the RF sign, and it makes a concomitant field, so ``designed_gradient`` must include it. But it is not
+        what the builder laid out for encoding, and the budget's windows say where ENCODING may not go, not
+        where no gradient may exist. Reading them as the latter refuses a sequence the scanner actually plays,
+        which is what happened to every imported Pulseq file carrying a readout (dmipy-sim#373).
+        """
+        G = self.designed_gradient
+        if self.readout_gradient is None:
+            return G
+        return np.asarray(G, dtype=np.float64) - np.asarray(self.readout_gradient, dtype=np.float64)
+
+    def with_readout_gradient(self, g):
+        """The same acquisition with the readout's own gradient included in what is played.
+
+        ``g`` is the readout lobe on this sequence's grid, ``(n_meas, n_t, 3)`` or broadcastable. It is added
+        to the PHYSICAL gradient, so it encodes diffusion and contributes to ``b`` like anything else, and it
+        is recorded separately so the budget's dead windows still constrain only the encoding.
+
+        Its contribution is usually small -- a self term of order 0.05 s/mm^2 -- with one exception that
+        matters: a BALANCED readout's cross term with the diffusion gradient averages away, and an
+        UNBALANCED one's does not. SPLICE's readout is unbalanced by design, which is how it splits the
+        spin-echo and stimulated-echo families for magnitude combination, so there the cross term survives and
+        is first order in the diffusion gradient rather than second order like the self term.
+        """
+        g = np.broadcast_to(np.asarray(g, dtype=np.float64), np.shape(self.G)).astype(np.float64)
+        if self.readout_gradient is not None:
+            raise ValueError("this acquisition already carries a readout gradient; state it once")
+        prev = np.asarray(self.G, dtype=np.float64)
+        return replace(self, G=(prev + g).astype(np.float32),
+                       readout_gradient=np.ascontiguousarray(g.astype(np.float32)))
 
     def with_gradient_nonlinearity(self, L):
         """The same acquisition as the COILS actually deliver it at one position: every commanded gradient

@@ -308,6 +308,14 @@ def _write_defs(seq, waveform, dt, n_t, echo_idx=None):
     seq.set_definition('dmipy_gradient', 'physical')     # what G is: the scanner's, pulses as blocks or metadata
     if getattr(waveform, 'timing', None) is not None:
         seq.set_definition('dmipy_timing', json.dumps(waveform.timing.to_dict(), separators=(',', ':')))
+    if waveform.readout_gradient is not None:
+        # The readout lobe's extent cannot be recovered from our own ADC, which is a single sample at the
+        # echo. Without it a re-imported file declares one sample of the lobe and validate() refuses the
+        # rest as encoding in a dead window.
+        ro = np.abs(np.asarray(waveform.readout_gradient, np.float64))   # same window every measurement
+        nz = np.nonzero(ro.sum(axis=(0, 2)) > 0.0)[0]
+        if nz.size:
+            seq.set_definition('dmipy_readout_span', f"{int(nz[0])} {int(nz[-1])}")
     if getattr(waveform, 'prescription', None) is not None:
         p = waveform.prescription
         seq.set_definition('FOV', list(p.fov_m))                                    # Pulseq's own field-of-view key
@@ -456,8 +464,35 @@ def from_pulseq(src, *, dt=None):
           and sched.mixing_time == (None, False) and _has_adc(seq)):
         timing = SequenceTiming.from_pulseq(seq)   # a foreign spin echo: its budget is what its blocks say
 
+    # Whatever gradient the file plays WHILE THE ADC IS OPEN is the readout's own lobe, and it must be
+    # declared as such. The ADC is the physical definition of a readout and needs no timing budget -- a
+    # foreign .seq often yields none, and hanging the detection on the budget found nothing. Undeclared, a
+    # real readout is refused twice over: "the gradient is on in the readout window", and "the effective
+    # gradient is not refocused at the echo" -- the second because a readout TRAVERSES k-space, so its q at
+    # the sample is non-zero by design (dmipy-sim#373).
+    readout_gradient = None
+    window = None
+    span = defs.get('dmipy_readout_span')                   # our own file: the lobe's extent, exactly
+    # pypulseq parses a space-separated definition into an array, so this is not a string round trip
+    span = None if span is None else np.atleast_1d(np.asarray(span)).ravel()
+    if span is not None and span.size >= 2:
+        a, b_ = int(span[0]), int(span[-1])
+        window = np.zeros(n_t, dtype=bool)
+        window[max(a, 0):min(b_, n_t - 1) + 1] = True
+    else:                                                   # a foreign file: the ADC's own extent
+        ta_all = np.asarray(t_adc, dtype=np.float64).ravel() if t_adc is not None else np.array([])
+        if ta_all.size:
+            idx = np.clip(np.round((ta_all - t0) / dt).astype(int), 0, n_t - 1)
+            window = np.zeros(n_t, dtype=bool)
+            window[idx.min():idx.max() + 1] = True
+    if window is not None:
+        if np.any(np.abs(G[window]) > 0.0):
+            readout_gradient = np.zeros_like(G)
+            readout_gradient[window] = G[window]
+            readout_gradient = readout_gradient[None].astype(np.float32)
+
     return ScannerSequence(G=G[None], dt=dt, rf=rf_events, readout=(echo_idx,), timing=timing, family="pulseq",
-                           prescription=prescription)
+                           prescription=prescription, readout_gradient=readout_gradient)
 
 
 def _has_adc(seq):
