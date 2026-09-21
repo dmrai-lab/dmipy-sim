@@ -26,6 +26,7 @@ per-walker reweight by ``exp((rho/D) * sum_t chi(t) ell_i(t))``, optionally cohe
 occupancy schedule ``chi`` (:func:`surface_logweight`).
 """
 import json
+from dataclasses import dataclass
 from functools import cached_property
 
 import numpy as np
@@ -167,19 +168,41 @@ class PoseResponse:
         return self.coeffs @ A[0]
 
 
-def _field_strength(scanner):
-    """The static field (T) of ``scanner``: a :class:`~dmipy_sim.acquisition.scanners.ScannerLimits` (its catalogue
-    ``field_T``), a number in tesla, or ``None`` for no field."""
+@dataclass(frozen=True)
+class ScannerField:
+    """What a replay reads from its one ``scanner=`` knob: the static field's strength in tesla (``None``
+    for no field) and the patient-frame unit vector it points along, plus the machine's name for provenance.
+
+    The direction is not a labelling detail. A susceptibility field is not isotropic and neither is the
+    phase it produces: an anisotropic susceptibility depends on the angle between the source and B0, so the
+    field's direction enters every contraction. A bare strength carries no direction and keeps the
+    conventional bore geometry -- B0 along the bore, the patient's head-foot axis -- which is right for every
+    cylindrical magnet and wrong for a bi-planar one, where B0 runs across the patient; such a machine is
+    given as a :class:`~dmipy_sim.acquisition.scanners.ScannerLimits` and declares ``b0_axis``.
+    """
+    B0: object = None
+    axis: tuple = (0.0, 0.0, 1.0)
+    name: str = None
+
+
+def scanner_field(scanner):
+    """Resolve ``scanner=`` -- ``None``, a field strength in tesla, or a
+    :class:`~dmipy_sim.acquisition.scanners.ScannerLimits` -- into a :class:`ScannerField`. A name is refused:
+    resolving it is the catalogue's job (``ScannerLimits.of``), not a replay's."""
     if scanner is None:
-        return None
+        return ScannerField()
     from ..acquisition.scanners import ScannerLimits
     if isinstance(scanner, ScannerLimits):
         if scanner.field_T is None:
             raise ValueError(f"the catalogue knows no field strength for {scanner.name!r}; give the field in tesla")
-        return float(scanner.field_T)
+        axis = (0.0, 0.0, 1.0)
+        if scanner.b0_axis is not None:
+            v = np.asarray(scanner.b0_axis, dtype=np.float64)
+            axis = tuple(float(x) for x in v / np.linalg.norm(v))
+        return ScannerField(B0=float(scanner.field_T), axis=axis, name=scanner.name)
     if isinstance(scanner, str):
         raise TypeError("scanner is a ScannerLimits (ScannerLimits.of('connectom')) or a field strength in tesla, not a name")
-    return float(scanner)
+    return ScannerField(B0=float(scanner))
 
 
 def _pose_matrix(pose):
@@ -343,7 +366,8 @@ class ReplayPack:
           ``FOD.native``); a bare coefficient array is refused, since the convention cannot be inferred.
         * ``scanner`` -- **what the scanner is**: its static field, as a
           :class:`~dmipy_sim.acquisition.scanners.ScannerLimits` (the catalogue's ``field_T``) or a number in
-          tesla, or ``None`` for no field. The field points along the bore's z; the pose turns it.
+          tesla, or ``None`` for no field. Its DIRECTION comes from the machine too -- a bi-planar
+          magnet's field runs across the patient, not along the bore -- and the pose turns it.
 
         The tiers follow from those: **gradient** (C0) always, in mode space from the position coefficients;
         **bulk relaxation** (C1) with a T2 / T1 in the tissue, under the waveform's coherence gate, on the
@@ -367,7 +391,7 @@ class ReplayPack:
             return S if complex_signal else np.abs(S)
         P = self._prepare(waveform, tissue=tissue, scanner=scanner, orientation=orientation, compartment=compartment)
         phi = self._walker_phases(P, waveform)
-        S = P["pathway"] * (P["ew"][:, None] * np.exp(1j * phi)).sum(0) / P["norm"]
+        S = P["pathway"] * P["voxel"] * (P["ew"][:, None] * np.exp(1j * phi)).sum(0) / P["norm"]
         return S if complex_signal else np.abs(S)
 
     def walker_signals(self, waveform, *, tissue=None, scanner=None, orientation=None, compartment=None,
@@ -378,30 +402,45 @@ class ReplayPack:
 
         :meth:`replay` is ``(ew[:, None] * E).sum(0) / w.sum()``; any other grouping of the walkers -- by the
         voxel they started in, which is what partitions one walk into a phantom (RPH.md) -- is the same sum
-        over its members with its own normaliser. Knobs resolve as in :meth:`replay`. With ``b1_scale`` (a
-        scalar or per walker) or ``off_resonance_T`` (a scalar or per walker) given, ``E`` comes from the
-        RF-aware route (:meth:`replay_bloch`): the transverse magnetisation of each walker at the readout,
-        with the relaxation the route applied itself, so ``ew`` is then ``w``.
+        over its members with its own normaliser. Knobs resolve as in :meth:`replay`. An unbalanced encoding's
+        voxel factor (:meth:`ScannerSequence.voxel_factor`) is carried in ``E`` as a per-measurement scale,
+        so the sum above is the voxel's signal. With ``b1_scale`` (a scalar or per walker) or
+        ``off_resonance_T`` (a scalar or per walker) given, ``E`` comes from the RF-aware route
+        (:meth:`replay_bloch`): the transverse magnetisation of each walker at the readout, with the relaxation
+        the route applied itself, so ``ew`` is then ``w``.
         """
         waveform = waveform.waveform if hasattr(waveform, "waveform") else waveform
         if b1_scale is None and off_resonance_T is None:
-            w, ew, phi = self.walker_phases(waveform, tissue=tissue, scanner=scanner, orientation=orientation, compartment=compartment)
-            return w, ew, np.exp(1j * phi)
+            P = self._prepare(waveform, tissue=tissue, scanner=scanner, orientation=orientation, compartment=compartment)
+            w = np.asarray(self.spin_weights, np.float64)
+            E = np.exp(1j * self._walker_phases(P, waveform)) * P["voxel"][None, :]
+            return w, P["pathway"] * P["ew"], E
         E = self.replay_bloch(waveform, b1_scale=b1_scale, off_resonance_T=off_resonance_T, tissue=tissue, scanner=scanner,
                               orientation=orientation, compartment=compartment, complex_signal=True, per_walker=True)
         w = np.asarray(self.spin_weights, np.float64)
         return w, w, E
 
-    def walker_phases(self, waveform, *, tissue=None, scanner=None, orientation=None, compartment=None):
+    def walker_phases(self, waveform, *, tissue=None, scanner=None, orientation=None, compartment=None,
+                      weights=None):
         """:meth:`walker_signals` before the complex exponential: ``(w, ew, phi)`` with ``phi`` the accumulated
         phase of every walker at every measurement, ``(n_w, n_meas)`` real, so that ``E = exp(1j * phi)``. A
         consumer that reduces many walkers over its own groups (an image: the walkers of each voxel) takes the
         phase and forms the exponential and the sums where it accumulates them, on its device; the exponential
         over ``(n_w, n_meas)`` is the one host operation of a replay that does not amortise. Knobs resolve as in
         :meth:`replay`; the RF-aware route has no phase (its signal is the magnetisation vector itself) and is
-        :meth:`walker_signals` with ``b1_scale`` or ``off_resonance_T``."""
+        :meth:`walker_signals` with ``b1_scale`` or ``off_resonance_T``. An unbalanced encoding is refused
+        here: its voxel factor is an amplitude per measurement, which a phase cannot carry, and a consumer
+        that formed its own sums would silently omit it -- :meth:`walker_signals` carries it in ``E``."""
         waveform = waveform.waveform if hasattr(waveform, "waveform") else waveform
         P = self._prepare(waveform, tissue=tissue, scanner=scanner, orientation=orientation, compartment=compartment)
+        if np.any(P["voxel"] != 1.0):
+            raise ValueError(
+                "this encoding leaves a net moment at the readout, so the voxel's extent multiplies the signal by "
+                "a factor per measurement (ScannerSequence.voxel_factor). A phase cannot carry an amplitude, and a "
+                "consumer forming its own sums from these phases would omit it silently; use walker_signals, "
+                "whose E carries it, or replay")
+        if weights is not None:
+            P["W"] = self._check_weights(weights, P, orientation)
         w = np.asarray(self.spin_weights, np.float64)
         return w, P["pathway"] * P["ew"], self._walker_phases(P, waveform)
 
@@ -419,6 +458,42 @@ class ReplayPack:
         from .study import study_signals
         return study_signals(self, study)
 
+    def _check_weights(self, weights, P, orientation):
+        """Validate a caller's per-position replay weights, and refuse the cases this route cannot serve.
+
+        Shape alone is not enough to make weights the right ones. It is identical for every save grid once
+        ``K`` and ``n_meas`` match, so weights built on the SEQUENCE's grid rather than the pack's pass a
+        shape test and encode a 45 per cent error in b. The dtype matters too: an integer array is silently
+        truncated and a complex one silently loses its imaginary part.
+        """
+        W = np.asarray(weights)
+        if not np.issubdtype(W.dtype, np.floating):
+            raise ValueError(
+                f"weights must be real floating point; got {W.dtype}. An integer array is truncated and a "
+                f"complex one loses its imaginary part, both silently")
+        W = W.astype(np.float64)
+        want = (self.n_coeffs * 3, P["Geff"].shape[0])
+        if W.shape != want:
+            raise ValueError(
+                f"weights are this pack's replay weights for ONE position, {want} -- (n_coeffs * 3, "
+                f"n_meas). Got {W.shape}. dmipy_sim.phantom.bore.delivered_weights builds them per voxel, "
+                f"and must be given THIS pack's save grid: K={self.K}, n_t={self.n_t}, dt={self.dt!r}")
+        if not np.all(np.isfinite(W)):
+            raise ValueError("weights are not finite, so the phase they produce is not a signal")
+        if orientation is not None:
+            raise ValueError(
+                "weights= and orientation= cannot both be given. A pose is carried by ROTATING the gradient "
+                "before it is projected, and supplied weights replace that projection wholesale -- so the "
+                "pose would be silently discarded (measured: 48 per cent of the signal). Build the weights "
+                "for the posed gradient instead, which reproduces the pose exactly")
+        if self._field_active(P["B0"]):
+            raise ValueError(
+                "weights= cannot be combined with an active susceptibility field yet. The field branches of "
+                "this contraction rebuild the gradient from the nominal sequence and do not read supplied "
+                "weights, so the result would be bit-identical to passing none -- including for weights of "
+                "zero. That is silently wrong in exactly the low-field case this exists for (dmipy-sim#369)")
+        return W
+
     def _walker_phases(self, P, waveform):
         """``(n_w, n_meas)`` accumulated phase of every walker under the prepared acquisition ``P``: the gradient
         as the bridge coefficients against the effective gradient's projection, and with a field the path channel's
@@ -429,7 +504,9 @@ class ReplayPack:
         n_w, dt, n_t, Geff = P["n_w"], P["dt"], P["n_t"], P["Geff"]
         if not self._field_active(P["B0"]):                                          # no field, or a field of zero
             C = read_position_coeffs(self.arrays, dtype=np.float64)
-            W = _compile_effective(Geff, dt, self.K, n_t)
+            W = P.get("W")
+            if W is None:
+                W = _compile_effective(Geff, dt, self.K, n_t)
             phi = C.reshape(n_w, self.n_coeffs * 3) @ W                              # (n_w, n_meas)
         else:
             from .bank import susc_path_decode, susc_path_field
@@ -491,7 +568,10 @@ class ReplayPack:
         ``per_walker`` returns every walker's transverse magnetisation at the readout, ``(n_w, n_meas)`` complex,
         unweighted, instead of the ensemble mean (single-readout sequences).
 
-        A sequence's ``crusher`` is applied here (dmipy-sim#305). It is the voxel-scale spoiler, which a
+        A sequence's ``crusher`` is applied here (dmipy-sim#305), and so is the voxel itself for an encoding
+        that leaves a net moment at the readout (dmipy-sim#375): each walker is placed at its own drawn
+        offset in the prescribed voxel, which is what a played spoiler winds across; a declared ``crusher`` is
+        for a winding the waveform does not play in ``G``. The declared one is the voxel-scale spoiler, which a
         micron cell cannot produce geometrically -- a gradient cannot wind much beyond 2 pi across it -- so it
         is modelled as the forward engine models it (:func:`~dmipy_sim.engine.bloch._build_crusher`): each
         walker carries a macroscopic coordinate ``u`` in [0, 1) and accrues ``2 pi n_cycles u`` over each
@@ -559,6 +639,18 @@ class ReplayPack:
                 extra = crush if extra is None else extra + crush
         if extra is not None:
             kw["extra_phase_per_step"] = extra
+        if waveform.unbalanced and not waveform.voxel_declared:
+            # dmipy-sim#375: an encoding that leaves a net moment at the readout winds across the VOXEL, and a
+            # micron-scale substrate cannot. Each walker is put at its own drawn place in the voxel -- the walk
+            # translated by r_v, which adds exactly gamma int G . r_v dt to its phase, per measurement, with the
+            # RF applied by the propagator as to every other phase. The scalar routes take the same average
+            # analytically (ScannerSequence.voxel_factor); this is it per walker. The voxel is the scanner's, so
+            # r_v is drawn in the lab and turned into the stored frame with the gradient.
+            L = np.asarray(waveform.prescription.voxel_size_m, np.float64)     # _prepare refused without one
+            r_v = (np.random.default_rng(int(crusher_seed) + 1).random((pos.shape[0], 3)) - 0.5) * L
+            if orientation is not None:
+                r_v = r_v @ np.asarray(self.pose_rotation(orientation), np.float64)
+            pos = pos + r_v[:, None, :]
         if per_walker:
             if kw.get("echo_steps") is not None:
                 raise ValueError("per_walker reads each walker at the readout of a single-echo sequence")
@@ -600,7 +692,7 @@ class ReplayPack:
                  pathway=True):
         """Everything a replay resolves before it reads positions: the waveform's exact per-save weights (rotated
         into the substrate frame when a pose is given), the tissue's values (none for ``None``), the scanner's
-        field along the bore's z turned by the pose, the per-walker weights with the relaxation and surface terms
+        field along the machine's own B0 axis turned by the pose, the per-walker weights with the relaxation and surface terms
         applied, and the compartment selection.
 
 ``pathway`` asks for the amplitude of the coherence pathway the sequence's readout IS
@@ -642,8 +734,8 @@ class ReplayPack:
                             f"got {type(tissue).__name__}")
         t = tissue if tissue is not None else Tissue()
         T2, T1, rho, D, chi_iso, chi_aniso = t.T2, t.T1, t.rho, t.D, t.chi_iso, t.chi_aniso
-        B0 = _field_strength(scanner)
-        b0_dir = (0.0, 0.0, 1.0)                                          # the bore's field; the pose turns it
+        field = scanner_field(scanner)
+        B0, b0_dir = field.B0, field.axis                            # the MACHINE's field; the pose turns it
         if orientation is not None:
             R = self.pose_rotation(orientation)
             G, G_eff = G @ R, G_eff @ R                                   # R^T g per sample: stored coordinates
@@ -678,8 +770,12 @@ class ReplayPack:
         norm = w.sum()
         ew, norm = self._select(compartment, ew, norm, w, ch, n_w)
         from ..acquisition.epg import pathway_weight
+        # the voxel's factor for an unbalanced encoding (dmipy-sim#375), or the refusal without a voxel size;
+        # read on the LAB waveform, since the voxel is the scanner's and the dot product k . r_v is the same in
+        # every frame. The vector-Bloch route does not apply this scale: it places each walker in the voxel.
+        voxel = np.asarray(waveform.voxel_factor(), np.float64)
         return dict(G=G, Geff=Geff, dt=dt, n_t=n_t, dt_wf=dt_wf, ch=ch, n_w=n_w, w=w, ew=ew, norm=norm, B0=B0,
-                    pathway=(pathway_weight(waveform) if pathway else 1.0),
+                    pathway=(pathway_weight(waveform) if pathway else 1.0), voxel=voxel,
                     b0_dir=b0_dir, chi_iso=chi_iso, chi_aniso=chi_aniso, T2=T2, T1=T1, rho=rho, D=D, chi=chi, active=active)
 
     def pose_response(self, waveform, *, tissue=None, scanner=None, pose=None, compartment=None,
@@ -733,6 +829,13 @@ class ReplayPack:
                                  "this acquisition has a b-tensor or multi-axis waveform, so use method='quadrature'")
         if out is None:
             out = self._pose_coeffs(P, waveform, keep=keep)
+        if np.any(P["voxel"] != 1.0):
+            # an unbalanced encoding: the voxel's factor scales each measurement's expansion, and its misfit with
+            # it. The pose does not enter -- k . r_v is the same dot product in the lab and in the substrate.
+            f = P["voxel"]
+            out.coeffs = out.coeffs * f[:, None]
+            m = np.asarray(out.misfit, float)
+            out.misfit = m * np.abs(f) if m.shape == f.shape else m * float(np.abs(f).max())
         if path is not None:
             path.parent.mkdir(parents=True, exist_ok=True)
             out.save(path)
@@ -753,7 +856,8 @@ class ReplayPack:
         h.update(np.ascontiguousarray(self.substrate_frame).tobytes())
         rf = waveform.rf.refocus_time if waveform.rf else None
         h.update(repr((float(P["norm"]), P["B0"], tuple(np.round(np.asarray(P["b0_dir"], float), 12)), P["chi_iso"],
-                       P["chi_aniso"], rf, method, None if keep is None else tuple(keep))).encode())
+                       P["chi_aniso"], rf, method, None if keep is None else tuple(keep),
+                       tuple(np.round(np.asarray(P["voxel"], float), 12)))).encode())
         return root / (h.hexdigest() + ".npz")
 
     def _select(self, compartment, ew, norm, w, ch, n_w):

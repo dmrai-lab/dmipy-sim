@@ -34,7 +34,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-__all__ = ["Pulse", "Winding", "Schedule", "Pathway", "enumerate_pathways",
+__all__ = ["Pulse", "Winding", "Schedule", "Pathway", "enumerate_pathways", "splice_schedule",
            "cpmg_schedule", "ste_schedule", "ste_amplitude", "pathway_weight"]
 
 
@@ -182,6 +182,42 @@ def enumerate_pathways(schedule, threshold=1e-2):
                 readout_idx += 1
     out.sort(key=lambda p: (p.readout_idx, -abs(p.eta)))
     return out
+
+
+def splice_schedule(n_echoes, beta_deg, ESP=1.0, refocus_phase_deg=90.0):
+    """A SPLICE train: the split acquisition of fast spin-echo signals (Schick 1997).
+
+    The readout gradient is **prolonged and unbalanced** -- the pre-phaser carries a quarter of the area the
+    readout then plays, not the half an ordinary fast spin echo uses -- so the interval winds three orders
+    instead of two and TWO echoes form in it rather than one. Written as the winding structure alone:
+
+        pre-phaser   +1 over ESP / 4
+        refocus      beta
+        E1           +1 over ESP / 4   read here
+        E2           +1 over ESP / 2   read here
+
+    What the two echoes separate is **not** spin echoes from stimulated echoes: each family carries both.
+    They are the two CONJUGATION PARITIES -- pathways refocused an even and an odd number of times -- which
+    is why the split works at all after a diffusion preparation. The preparation leaves every spin an
+    arbitrary phase, and that phase enters the two families as ``+phi`` and ``-phi``, constant within each,
+    so each family's MAGNITUDE is insensitive to it. The two are reconstructed separately and their
+    magnitude images summed. That is what lets this family violate the CPMG condition and survive.
+
+    At ``beta_deg = 180`` the split degenerates: nothing is stored along z, one pathway survives, and it
+    lands alternately in one family and the other (1, 0, 1, 0 against 0, 1, 0, 1), so each k-space would get
+    only every second line. A real SPLICE train therefore runs below 180.
+
+    Amplitudes reproduce the reference implementation of Rahbek et al. 2023 (MRM 89:1469, ``epg_splice.m``)
+    exactly; the first few have closed forms: ``sin^2(beta/2)`` and ``(1/2) sin^2(beta)`` for E1's first two
+    echoes, ``sin^4(beta/2)`` and ``sin^2(beta/2) sin^2(beta)`` for E2's second and third.
+    """
+    ev = [Pulse(90.0)]
+    for _ in range(int(n_echoes)):
+        ev += [Winding(+1, float(ESP) / 4),
+               Pulse(float(beta_deg), float(refocus_phase_deg)),
+               Winding(+1, float(ESP) / 4, readout=True),
+               Winding(+1, float(ESP) / 2, readout=True)]
+    return Schedule(tuple(ev))
 
 
 def cpmg_schedule(n_echoes, beta_deg=180.0, TE=1.0, refocus_phase_deg=90.0):

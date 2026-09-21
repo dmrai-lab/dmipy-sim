@@ -12,9 +12,35 @@ three containers is one field or one derivation here:
   grid ends at the readout), or to every echo of a multi-echo train; it must agree with where the schedule forms its echo.
 * ``timing`` -- the :class:`~dmipy_sim.acquisition.timing.SequenceTiming` budget, when built to one.
 * ``encoding`` -- the per-measurement :class:`Encoding` an analytical layer reads (b, directions, delta, ...).
-* ``crusher`` -- the emergent voxel-scale crusher the vector-Bloch engine models as windings over windows.
+* ``crusher`` -- a DECLARED voxel-scale winding over windows, for a spoiler the waveform does not play in ``G``
+  (a split readout's, a train's crusher pair); a spoiler that IS played in ``G`` is not declared, its winding
+  following from the waveform and the prescription (:meth:`ScannerSequence.voxel_factor`).
+* ``voxel_scale`` -- who carries the voxel-scale winding of an encoding that leaves a net moment at the readout:
+  ``"derived"`` (the default) from the waveform and the prescription; ``"declared"`` elsewhere -- by a
+  ``crusher``, or by the coherence orders of a pathway sum, whose gated waveforms carry a pathway's MICROSCOPIC
+  gradient alone (:func:`dmipy_sim.replay.pathways.train_response`); or ``"substrate"`` -- no voxel is claimed
+  at all, and the response is the substrate's own to that gradient, which is what a probe of a pack's response
+  function or of its expansion measures and what NO image is made of. :attr:`ScannerSequence.voxel_declared`
+  is the one reading of the last two.
 * ``prescription`` -- optionally, where in the bore and on what voxels (:class:`~dmipy_sim.acquisition.prescription.Prescription`):
-  the acquisition in space, as the rest of the object is the acquisition in time. Nothing is derived from it.
+  the acquisition in space, as the rest of the object is the acquisition in time. One thing is derived from
+  it: for an encoding that leaves a net moment at the readout, the voxel's extent is what that winding is
+  averaged over (:meth:`ScannerSequence.voxel_factor`, dmipy-sim#375).
+* ``background_gradient`` -- optionally, how much of ``G`` is the MAGNET's rather than the builder's: the
+  constant a non-uniform static field contributes at this position (:meth:`ScannerSequence.with_background_gradient`).
+  It is already folded into ``G``, so every derived quantity carries it; it is recorded separately because a
+  builder's guarantees are about what the builder laid out, which is :attr:`ScannerSequence.designed_gradient`.
+* ``concomitant`` -- optionally, the position and static field at which the gradient coils' own Maxwell term
+  was evaluated (:meth:`ScannerSequence.with_concomitant`); like the background, already folded into ``G``.
+* ``imposed_gradient`` -- what those two transforms added, ``(n_meas, n_t, 3)``: the part of ``G`` no builder
+  designed. ``designed_gradient`` is ``G`` minus this and minus the readout.
+* ``readout_window`` -- optionally, ``(t0, t1)`` in seconds: the span over which the coils' gradient is the
+  READOUT's, played to read the echo rather than to encode (:meth:`ScannerSequence.with_readout_window`). A
+  timing budget's dead windows constrain ENCODING, so a readout gradient inside the budget's readout window is
+  what a scanner plays and is accepted; a gradient on a finite pulse is refused whoever placed it. The extent
+  is declared, never inferred from the ADC: a diffusion lobe still ramping down when the ADC opens is not a
+  readout (dmipy-sim#374). Balanced about the echo, a readout leaves no net moment there; what it leaves at any
+  other sample is the imaging kernel, outside a pack (dmipy-sim#375).
 
 The scalar engine, the b integrals and the pack's replay read ``G_eff``; the vector-Bloch routes read ``G`` and
 apply ``rf`` themselves. A :class:`Protocol` is a tuple of these -- one echo time each -- for a multi-TE scheme.
@@ -23,6 +49,7 @@ from dataclasses import dataclass, field, replace
 
 import numpy as np
 
+from ..constants import GAMMA
 from .prescription import Prescription
 from .rf import RFSchedule
 from .timing import SequenceTiming
@@ -101,17 +128,44 @@ class ScannerSequence:
     notes: str = ""
     build_spec: tuple = None
     prescription: Prescription = None
+    voxel_scale: str = "derived"
+    readout_window: tuple = None
+    split_echo: bool = False
+    background_gradient: tuple = None
+    concomitant: dict = None
+    gradient_nonlinearity: tuple = None
+    imposed_gradient: np.ndarray = None
 
     def __post_init__(self):
         _set = lambda k, v: object.__setattr__(self, k, v)
         if self.prescription is not None and not isinstance(self.prescription, Prescription):
             raise TypeError(f"prescription is a Prescription; got {type(self.prescription).__name__}")
+        if self.readout_window is not None:
+            rw = tuple(float(v) for v in self.readout_window)
+            if len(rw) != 2 or not rw[0] < rw[1]:
+                raise ValueError(f"readout_window is (t0, t1) in seconds with t0 < t1; got {self.readout_window!r}")
+            _set("readout_window", rw)
+        if self.voxel_scale not in ("derived", "declared", "substrate"):
+            raise ValueError(f"voxel_scale is 'derived' (from the waveform and the prescription), 'declared' "
+                             f"(carried by a crusher or by a pathway sum's coherence orders) or 'substrate' (the "
+                             f"substrate's own response, no voxel claimed); got {self.voxel_scale!r}")
         G = np.asarray(self.G, dtype=np.float32)
         if G.ndim == 2:
             G = G[None]
         if G.ndim != 3 or G.shape[2] != 3:
             raise ValueError(f"G must be (n_meas, n_t, 3), got {G.shape}")
         _set("G", G); _set("dt", float(self.dt)); _set("rf", RFSchedule(self.rf))
+        if self.imposed_gradient is not None:
+            imp = np.asarray(self.imposed_gradient, dtype=np.float32)
+            if imp.shape != G.shape:
+                raise ValueError(f"imposed_gradient must match G {G.shape}; got {imp.shape}")
+            _set("imposed_gradient", imp)
+        if self.background_gradient is not None:
+            bg = np.asarray(self.background_gradient, dtype=np.float64).reshape(-1, 3)
+            if bg.shape[0] not in (1, G.shape[0]):
+                raise ValueError(f"background_gradient is one vector or one per measurement "
+                                 f"({G.shape[0]}); got {bg.shape}")
+            _set("background_gradient", tuple(tuple(float(v) for v in row) for row in bg))
         n_t = G.shape[1]
         chi, TM, ste, echo_times = self.rf.coherence(n_t, self.dt)
         idx = tuple(int(i) for i in np.clip(np.rint(np.asarray(echo_times) / self.dt).astype(int), 0, n_t - 1)) if echo_times else ()
@@ -121,11 +175,22 @@ class ScannerSequence:
             ro = tuple(int(i) for i in (self.readout if np.ndim(self.readout) else (self.readout,)))
         if not ro or any(i < 0 or i >= n_t for i in ro):
             raise ValueError(f"readout samples {ro} must lie in [0, {n_t})")
-        if len(idx) >= 2 and (len(ro) != len(idx) or max(abs(a - b) for a, b in zip(ro, idx)) > ECHO_TOL):
+        if self.split_echo:
+            # A split-echo family reads TWO echoes per refocusing interval, a quarter of an interval either
+            # side of where the schedule refocuses -- so each pair straddles its own echo.
+            if not idx or len(ro) != 2 * (len(idx) - 1):
+                raise ValueError(f"a split-echo family reads two echoes per refocusing interval: expected "
+                                 f"{2 * (len(idx) - 1)} readout samples, got {len(ro)}")
+            mids = [0.5 * (ro[2 * k] + ro[2 * k + 1]) for k in range(len(idx) - 1)]
+            if max(abs(m - i) for m, i in zip(mids, idx[1:])) > ECHO_TOL:
+                raise ValueError(f"the split pairs are centred at {mids} but the schedule forms its echoes "
+                                 f"at {list(idx[1:])}: each pair must straddle its own echo")
+        elif len(idx) >= 2 and (len(ro) != len(idx) or max(abs(a - b) for a, b in zip(ro, idx)) > ECHO_TOL):
             raise ValueError(f"readout {list(ro)} disagrees with the schedule's echoes {list(idx)}")
-        if len(idx) == 1 and abs(ro[-1] - idx[0]) > ECHO_TOL:
+        if not self.split_echo and len(idx) == 1 and abs(ro[-1] - idx[0]) > ECHO_TOL:
             raise ValueError(f"the readout is at sample {ro[-1]} but the RF schedule forms its echo at sample {idx[0]}")
         _set("readout", ro)
+        _set("_schedule_echo_idx", idx)
         _set("_chi", None if np.all(chi == 1) else chi)
         _set("_TM", TM); _set("_ste", bool(ste)); _set("_echoes", tuple(echo_times))
         if self.encoding is not None and self.encoding.number_of_measurements != G.shape[0]:
@@ -216,17 +281,97 @@ class ScannerSequence:
         from .waveforms import btensor_from_gradient
         return btensor_from_gradient(self.G_eff, self.dt)
 
-    @property
-    def refocusing_residual(self):
-        """max over measurements of the relative net gradient moment |q(TE)| / max|q| of the effective gradient.
-        ``q`` at sample ``i`` is what the walk has accumulated by then: ``G[k]`` acts over ``[k dt, (k + 1) dt)``,
-        so the samples before ``i`` count and the one at the readout does not."""
-        G_eff = np.asarray(self.G_eff, dtype=np.float64)
-        q = np.cumsum(G_eff * self.dt, axis=1)
+    def _moment_at_readout(self, G):
+        """``(q_echo, qmax)`` of an effective gradient ``G`` ``(n_meas, n_t, 3)``: the net moment at the readout,
+        ``(n_meas, 3)``, and the largest moment reached, ``(n_meas,)``. ``q`` at sample ``i`` is what the walk
+        has accumulated by then: ``G[k]`` acts over ``[k dt, (k + 1) dt)``, so the samples before ``i`` count
+        and the one at the readout does not."""
+        q = np.cumsum(np.asarray(G, dtype=np.float64) * self.dt, axis=1)
         qmax = np.max(np.abs(q), axis=(1, 2))
         q_echo = q[:, self.echo_idx - 1, :] if self.echo_idx > 0 else np.zeros_like(q[:, 0, :])
+        return q_echo, qmax
+
+    @staticmethod
+    def _relative_residual(q_echo, qmax):
         res = np.where(qmax > 0, np.max(np.abs(q_echo), axis=1) / np.where(qmax > 0, qmax, 1.0), 0.0)
         return float(np.max(res))
+
+    @property
+    def refocusing_residual(self):
+        """max over measurements of the relative net gradient moment |q(TE)| / max|q| of the effective gradient,
+        the magnet's own included (:meth:`_moment_at_readout`)."""
+        return self._relative_residual(*self._moment_at_readout(self.G_eff))
+
+    @property
+    def _imposed_sample(self):
+        """One sample's worth of the imposed gradient, ``(n_meas,)`` in T s/m: the moment this grid cannot
+        resolve. A 180 between two samples leaves a magnet's constant gradient one sample out of balance in
+        the effective integral, which is the grid's rounding and not a winding."""
+        if self.imposed_gradient is None:
+            return np.zeros(self.n_meas)
+        return float(self.dt) * np.max(np.abs(np.asarray(self.imposed_gradient, dtype=np.float64)), axis=(1, 2))
+
+    @property
+    def net_moment(self):
+        """``gamma q`` at the readout, ``(n_meas, 3)`` in rad/m: the winding per metre the effective gradient
+        leaves at the echo, read as :attr:`refocusing_residual` reads it. Zero for a refocused encoding. For
+        anything else it is the part of the encoding a micron-scale substrate cannot carry -- a winding of
+        ``L |k| / 2 pi`` turns across a voxel of edge ``L`` -- which is what :meth:`voxel_factor` averages
+        over (dmipy-sim#375)."""
+        G_eff = np.asarray(self.G_eff, dtype=np.float64)
+        q = np.cumsum(G_eff * self.dt, axis=1)
+        q_echo = q[:, self.echo_idx - 1, :] if self.echo_idx > 0 else np.zeros_like(q[:, 0, :])
+        return GAMMA * q_echo
+
+    @property
+    def unbalanced(self):
+        """Whether the effective gradient -- the magnet's own included -- leaves a net moment at the readout
+        beyond what the grid can resolve: ``REFOCUS_ATOL`` of the largest moment reached, plus one sample of
+        the imposed gradient (:attr:`_imposed_sample`). This is the reading a replay takes to decide whether
+        the voxel enters; :meth:`validate` reads the played gradient's residual, which is the builder's."""
+        if float(np.abs(self.G).max()) == 0.0:
+            return False
+        q_echo, qmax = self._moment_at_readout(self.G_eff)
+        return bool(np.any(np.max(np.abs(q_echo), axis=1) > REFOCUS_ATOL * qmax + self._imposed_sample))
+
+    @property
+    def voxel_declared(self):
+        """Whether the voxel-scale winding is carried outside the contraction -- a declared ``crusher``, or
+        ``voxel_scale="declared"`` -- so that :meth:`voxel_factor` is 1 and the vector-Bloch route places no
+        walker in the voxel; the crusher or the coherence orders do that."""
+        return self.crusher is not None or self.voxel_scale in ("declared", "substrate")
+
+    def voxel_factor(self):
+        """``(n_meas,)``: what the voxel's extent multiplies the substrate's signal by at the readout.
+
+        Position enters a walker's phase linearly -- ``phi = r_v . k + gamma int G . u dt``, with ``r_v`` the
+        walker's place in the voxel and ``u`` its own micron-scale excursion -- so the voxel's signal is the
+        substrate's times the voxel's average of ``exp(i r_v . k)``: for a box of edges ``L`` that is
+        ``prod_i sinc(k_i L_i / 2)`` with ``k`` the :attr:`net_moment` (dmipy-sim#375). Exactly 1 for a
+        refocused encoding, whatever the voxel. For an unbalanced one this IS the spoiler, derived from the
+        waveform and the prescription rather than declared as a number of turns.
+
+        REFUSED without a prescription. The un-crushed substrate signal is not an approximation of the
+        crushed one but a different number, tens of times larger for a spoiler of a few turns, and a voxel
+        size that was never stated cannot be guessed. The scalar routes apply this factor to the ensemble,
+        the pose expansion to each measurement's coefficients, and the vector-Bloch route puts each walker at
+        its own drawn place in the voxel (:meth:`~dmipy_sim.replay.ReplayPack.replay_bloch`): the same average,
+        taken analytically where the ensemble is formed and per walker where walkers are propagated. Exactly
+        1 as well when the winding is :attr:`voxel_declared` -- a crusher, or a pathway sum's orders.
+        """
+        if self.voxel_declared or not self.unbalanced:
+            return np.ones(self.n_meas)
+        k = self.net_moment
+        if self.prescription is None:
+            k_max = float(np.abs(k).max())
+            raise ValueError(
+                f"the effective gradient leaves a net moment at the readout ({k_max:.3g} rad/m, "
+                f"{k_max * 1e-3 / (2.0 * np.pi):.2f} turns per millimetre) and no voxel size is declared. A pack's "
+                f"substrate is microns across and cannot wind that geometrically; the voxel can, and the voxel's "
+                f"signal is the substrate's times its average of exp(i k . r), which needs the voxel's extent. "
+                f"Give with_prescription(Prescription(voxel_size_m=..., matrix=...)), or balance the encoding")
+        L = np.asarray(self.prescription.voxel_size_m, dtype=np.float64)
+        return np.prod(np.sinc(k * L[None, :] / (2.0 * np.pi)), axis=1)
 
     # ── validity ───────────────────────────────────────────────────────────────────────────────────
     def validate(self):
@@ -235,13 +380,20 @@ class ScannerSequence:
         in the lead-in and the readout tail before every readout sample of the budget it was built to, and the
         effective gradient refocuses at the echo. Raises naming the failure; returns ``self``."""
         t = np.arange(self.n_t) * self.dt
+        # what the coils play is the encoding plus the readout, less the magnet's own; the two checks below read
+        # different parts of it, and both to float32's rounding rather than to zero, since G, the imposed part
+        # and the readout are stored in float32 and their difference cancels inexactly
+        played = np.asarray(self.played_gradient, dtype=np.float64)
+        designed = np.asarray(self.designed_gradient, dtype=np.float64)
+        floor = 1e-6 * max(float(np.abs(np.asarray(self.G)).max()), 1e-30)
         for e in self.rf:
             if e.duration_s > 0.0:
                 t0, t1 = e.window
                 inside = (t >= t0 - 1e-9 * self.dt) & (t <= t1 + 1e-9 * self.dt)
-                if np.any(np.abs(self.G[:, inside, :]) > 0.0):
+                if np.any(np.abs(played[:, inside, :]) > floor):
                     raise ValueError(f"the gradient is on during the {e.flip_deg:g} pulse at {e.t_s*1e3:.3f} ms "
-                                     f"(window {t0*1e3:.3f}-{t1*1e3:.3f} ms): a finite pulse needs zero gradient")
+                                     f"(window {t0*1e3:.3f}-{t1*1e3:.3f} ms): a finite pulse needs zero gradient, "
+                                     f"whether the encoding's or a readout's")
         if self.timing is not None:                    # the budget's dead times: the lead-in and the readout tails
             if self.T < self.timing.min_TE() - 1e-9:
                 raise ValueError(f"TE = {self.T*1e3:.3f} ms is below min_TE = {self.timing.min_TE()*1e3:.3f} ms of the "
@@ -250,12 +402,17 @@ class ScannerSequence:
             windows += [(i * self.dt - self.timing.t_readout_pre_echo, i * self.dt, "readout") for i in self.readout]
             for t0, t1, what in windows:                # a step wholly inside a dead time; a straddling step is rounding
                 inside = (t >= t0 - 1e-9 * self.dt) & (t + self.dt <= t1 + 1e-9 * self.dt)
-                if np.any(np.abs(self.G[:, inside, :]) > 0.0):
-                    raise ValueError(f"the gradient is on in the {what} window {t0*1e3:.3f}-{t1*1e3:.3f} ms of the "
-                                     f"timing budget")
-        res = self.refocusing_residual
+                if np.any(np.abs(designed[:, inside, :]) > floor):
+                    raise ValueError(f"the encoding gradient is on in the {what} window {t0*1e3:.3f}-{t1*1e3:.3f} ms "
+                                     f"of the timing budget. A budget's dead windows constrain the ENCODING; a "
+                                     f"readout gradient played there is accepted once its span is declared "
+                                     f"(with_readout_window, or from_pulseq(readout_s=))")
+        # the builder's promise is about what the coils play; the magnet's own gradient refocuses or not by
+        # physics, and by the grid's rounding of where the 180 falls, neither of which is the builder's
+        s = self.rf.sign(t)
+        res = self._relative_residual(*self._moment_at_readout(played * s[None, :, None]))
         if res > REFOCUS_ATOL and float(np.abs(self.G).max()) > 0.0:
-            raise ValueError(f"the effective gradient is not refocused at the echo (|q(TE)|/max|q| = {res:.2e} > "
+            raise ValueError(f"the played gradient is not refocused at the echo (|q(TE)|/max|q| = {res:.2e} > "
                              f"{REFOCUS_ATOL:.0e})")
         return self
 
@@ -266,6 +423,263 @@ class ScannerSequence:
         if not isinstance(prescription, Prescription):
             raise TypeError(f"prescription is a Prescription; got {type(prescription).__name__}")
         return replace(self, prescription=prescription)
+
+    @property
+    def played_gradient(self):
+        """The gradient the COILS play: ``G`` with the magnet's own contribution taken back out -- the encoding
+        and the readout together. A finite pulse needs this to be zero across it, whoever placed what."""
+        if self.imposed_gradient is None:
+            return self.G
+        return self.G - self.imposed_gradient
+
+    @property
+    def readout_gradient(self):
+        """The part of the played gradient inside :attr:`readout_window`, ``(n_meas, n_t, 3)``, zero elsewhere
+        and everywhere when no window is declared."""
+        out = np.zeros_like(np.asarray(self.G))
+        if self.readout_window is None:
+            return out
+        t = np.arange(self.n_t) * self.dt
+        t0, t1 = self.readout_window
+        inside = (t >= t0 - 1e-9 * self.dt) & (t <= t1 + 1e-9 * self.dt)
+        out[:, inside, :] = np.asarray(self.played_gradient)[:, inside, :]
+        return out
+
+    @property
+    def designed_gradient(self):
+        """The ENCODING the builder laid out: ``G`` with the magnet's own contribution and the readout taken
+        back out. This is what a timing budget's guarantees are about -- off in the lead-in, off in the readout
+        tail -- because a background gradient is imposed by the magnet and a readout is played to read, and
+        neither is encoding."""
+        return self.played_gradient - self.readout_gradient
+
+    def with_readout_window(self, t0_s, t1_s):
+        """The same acquisition with the coils' gradient over ``[t0_s, t1_s]`` declared the READOUT's: played
+        to read the echo, not to encode, so a timing budget's readout window does not refuse it. Declared by
+        whoever knows the sequence -- the builder, or the caller importing a file -- and never inferred from
+        the ADC, since a gradient under an ADC is not thereby a readout."""
+        return replace(self, readout_window=(float(t0_s), float(t1_s)))
+
+    def with_background_gradient(self, g):
+        """The same acquisition in a magnet whose own field is not uniform: a constant ``g`` (T/m, the field's
+        spatial gradient at this position, in the gradient's frame) added to the PHYSICAL gradient over the
+        whole grid -- through the pulses and the dead times alike, because a magnet does not switch off.
+
+        One vector, or one per measurement. The effective gradient carries it through the RF sign like
+        anything else, so a symmetric spin echo refocuses the background's zeroth MOMENT -- and that is as
+        far as the refocusing goes. Its contribution to b does NOT vanish. Stejskal and Tanner say so in one
+        line of their 1965 paper: with the pulsed gradient off, "only the term in g0^2 remains", and that
+        term is ``gamma^2 g0^2 (2/3) tau^3`` with ``tau = TE/2``. For this magnet at TE = 84 ms it is about
+        7 s/mm^2, so even the b = 0 image is diffusion-weighted -- roughly 0.7 % of S0 at a typical brain
+        ADC -- and it grows as TE^3.
+
+        TWO TERMS, AND THEY BEHAVE DIFFERENTLY. The CROSS term with the pulsed gradient is linear in the
+        background and so flips sign with the diffusion direction; it is the large one, up to 16 % of ADC at
+        the edge of this magnet's DSV, and it is what a directional mean hides. The SELF term is quadratic,
+        unsigned, present in every measurement including the unweighted one, and much smaller. Reporting
+        only the first is the usual simplification and it is not quite true.
+
+        A REFOCUSING TRAIN IS NOT ONE LONG SPIN ECHO. The TE^3 above is a single echo. A train re-refocuses
+        the background at every pulse, so its self-term accrues per ECHO -- ``gamma^2 g0^2 esp^3 / 12`` each,
+        or ``gamma^2 g0^2 T esp^2 / 12`` over a readout of duration ``T`` -- which is ``(esp/T)^2`` of the
+        single-echo value. Treating a seventy-echo train as one spin echo of the same duration overestimates
+        it by a factor of about five thousand.
+
+        WHAT THIS DOES NOT MODEL. The background is taken as constant over a voxel, which is the standard
+        treatment, and two channels are neglected with it: intravoxel dephasing, which is a signal loss
+        rather than a b change, and intravoxel b dispersion, since a voxel's signal is the average of
+        ``exp(-b(r) D)`` and not ``exp(-b_mean D)`` -- by Jensen's inequality an ADC fitted from the average
+        is biased low. Both are small at 3 mm over this magnet's law and neither is included.
+
+        The cure, worth knowing because it says the effect belongs to the scheme rather than to low field:
+        a bipolar sensitising pair nulls the cross term exactly (Neeman 1991). The Swoop's monopolar
+        preparation does not.
+
+        ``encoding`` is left alone: it records what was PRESCRIBED at isocentre, and :meth:`b` reports what is
+        played here. The difference between them is the effect.
+        """
+        g = np.asarray(g, dtype=np.float64).reshape(-1, 3)
+        if g.shape[0] not in (1, self.n_meas):
+            raise ValueError(f"a background gradient is one vector or one per measurement ({self.n_meas}); "
+                             f"got {g.shape}")
+        if self.background_gradient is not None:
+            raise ValueError("this acquisition already carries a background gradient; apply it to the "
+                             "acquisition the builder returned, not on top of one that has it")
+        add = np.broadcast_to(g.astype(np.float32).reshape(-1, 1, 3), self.G.shape)
+        imposed = add if self.imposed_gradient is None else self.imposed_gradient + add
+        return replace(self, G=(self.G + add), imposed_gradient=np.ascontiguousarray(imposed),
+                       background_gradient=tuple(tuple(float(v) for v in row) for row in g))
+
+    def with_split_readout(self, cycles_per_quarter=16.0):
+        """The same refocusing train played as a SPLIT acquisition: two echoes read in every interval rather
+        than one, which is what SPLICE does (Schick 1997; Rahbek et al. 2023 for the flip-angle schemes).
+
+        What splits them is an **unbalanced** readout. An ordinary fast spin echo pre-phases by half the area
+        its readout then plays, so every pathway returns to coherence order zero at the same instant and
+        there is one echo. SPLICE pre-phases by a QUARTER, so the interval winds three orders instead of two
+        and two echoes form -- a quarter-interval either side of where the balanced train would put its one.
+
+        The two are not spin echoes against stimulated echoes; each carries both. They are the two
+        conjugation parities, and that is the point: a diffusion preparation leaves every spin an arbitrary
+        phase, that phase enters the families as ``+phi`` and ``-phi``, constant within each, so each
+        family's MAGNITUDE survives it. The two are reconstructed separately and their magnitude images
+        summed, which is how this sequence tolerates violating the CPMG condition.
+
+        The winding is voxel-scale -- a micron cell cannot wind an order geometrically -- so it is declared
+        on ``crusher`` rather than played into ``G``, one block per quarter-interval running continuously
+        from the preparation's echo. ``cycles_per_quarter`` must be a WHOLE number of turns: a fractional
+        winding leaves the family that should be empty partly in phase with itself, and the split blurs.
+
+        At ``beta = 180`` the split degenerates, one pathway landing alternately in one family and the other,
+        so a real train runs below it.
+        """
+        C = float(cycles_per_quarter)
+        if abs(C - round(C)) > 1e-9 or C < 1:
+            raise ValueError(f"cycles_per_quarter is a whole number of turns (a fraction leaves the empty "
+                             f"family partly in phase with itself); got {cycles_per_quarter}")
+        idx = self._schedule_echo_idx
+        if len(idx) < 2 or self.split_echo:
+            raise ValueError("a split readout needs a refocusing train that is not already split")
+        esp = int(round(np.mean(np.diff(idx))))
+        q = esp // 4
+        if q < 1:
+            raise ValueError(f"{esp} samples an interval is too few to place a split readout")
+        win, cyc, k = [], [], idx[0] + q
+        while k + q <= idx[-1] + q:
+            win.append((k * self.dt, (k + q) * self.dt)); cyc.append(C); k += q
+        ro = tuple(int(v) for e in idx[1:] for v in (e - q, e + q))
+        n_t = max(self.n_t, ro[-1] + 1)          # the last family is read past the builder's last echo
+        G = np.zeros((self.n_meas, n_t, 3), np.float32)
+        G[:, :self.n_t, :] = np.asarray(self.G, np.float32)
+        return replace(self, G=G, readout=ro, split_echo=True,
+                       crusher={"windows_s": win, "n_cycles": cyc},
+                       family=(self.family if self.family.endswith("split") else self.family + "-split"))
+
+    def with_concomitant(self, position_m, B0_T, b0_axis=(0.0, 0.0, 1.0)):
+        """The same acquisition as it is actually played at ``position_m``, with the gradient coils' own
+        concomitant (Maxwell) field included -- the term that makes a gradient system produce a field whose
+        magnitude, not just whose z component, varies.
+
+        A gradient coil cannot make a field along B0 alone: ``div B = 0`` and ``curl B = 0`` force transverse
+        components, and for a coil with the symmetric transverse sharing (``alpha = 1/2``) and ``B0`` along
+        the frame's z they are ``B_x = Gx z - Gz x / 2`` and ``B_y = Gy z - Gz y / 2``, beside
+        ``B_n = Gx x + Gy y + Gz z`` along the field. What a spin precesses at is the MAGNITUDE,
+        ``|B| = sqrt((B0 + B_n)^2 + B_x^2 + B_y^2)``, and the concomitant field is everything in it beyond
+        ``B0 + B_n``: ``B_c = |B| - B0 - B_n``, exactly. The extra encoding gradient a spin at ``position_m``
+        sees is its spatial derivative there, ``[(B0 + B_n) grad B_n + B_x grad B_x + B_y grad B_y] / |B|
+        - grad B_n``.
+
+        The usual statement of this term is its first order in ``|B_perp| / B0``,
+        ``B_c = (Gx^2 + Gy^2) z^2 / 2B0 + Gz^2 (x^2 + y^2) / 8B0 - (Gx Gz x z + Gy Gz y z) / 2B0``, which is
+        what this reduces to as ``B_n / B0 -> 0``. That form is not used here because at 64 mT the field the
+        gradient itself makes is percent of ``B0`` across a head, and the next order -- ``-B_n |B_perp|^2 /
+        2 B0^2`` and its derivative -- is then percent of the term (four per cent of it at 8 cm and 67 mT/m,
+        eight per cent of its effect on a signal; ``tests/test_concomitant_oracle.py`` holds both forms
+        against the Biot-Savart field of a wire). Nothing at 3 T; at a permanent magnet it is the accuracy
+        the term is stated to.
+
+        The derivative is **quadratic in G(t)** to leading order, so unlike a background gradient it varies
+        through the sequence, and unlike the pulsed gradient it does not change sign when the coils reverse:
+        a symmetric pair therefore leaves it almost intact where the pulsed gradient refocuses, and an
+        unbalanced train does not refocus it at all (dmipy-sim#285). It scales as ``1 / B0`` to leading
+        order, which is why it is a low-field problem: at 64 mT it is some 47 times what the same gradient
+        produces at 3 T. Zero at isocentre, by construction.
+
+        ``position_m`` is ``(3,)`` or one per measurement, in the gradient's frame; ``B0_T`` is the static
+        field in tesla.
+
+        ``b0_axis`` is which way the field points IN THAT FRAME, and it is not decoration. The formula above
+        is written for B0 along the third component, which is right for every cylindrical magnet and wrong
+        for a bi-planar one: the Hyperfine Swoop declares ``b0_axis = (0, 1, 0)``, so computing its Maxwell
+        term as though the field ran along the bore puts the whole quadratic form 90 degrees out. Measured
+        on that machine over a 10 cm grid it moves the concomitant contribution to b by 1.7 per cent and
+        gets its SIGN wrong in 31 per cent of (voxel, direction) pairs. The default is the convention the
+        formula assumes; a caller that knows better says so.
+        """
+        n = np.asarray(b0_axis, dtype=np.float64).ravel()
+        if n.shape != (3,) or not np.isfinite(n).all() or np.linalg.norm(n) == 0.0:
+            raise ValueError(f"b0_axis is the field's direction in this frame, a non-zero 3-vector; got {b0_axis!r}")
+        n = n / np.linalg.norm(n)
+        if abs(n[2]) < 1.0 - 1e-12:                      # work in the magnet's frame and come back
+            e1 = np.cross(n, (1.0, 0.0, 0.0) if abs(n[0]) < 0.9 else (0.0, 1.0, 0.0))
+            e1 /= np.linalg.norm(e1)
+            Rm = np.stack([e1, np.cross(n, e1), n])      # rows: the magnet's axes in this frame
+            # EVERY gradient-valued field turns, not just G. Rotating G alone leaves imposed_gradient in
+            # the old frame, so designed_gradient -- which is G minus it, and is what the Maxwell term
+            # reads -- comes out of a mixed frame whenever a background has been applied.
+            imposed = (None if self.imposed_gradient is None
+                       else np.asarray(self.imposed_gradient, dtype=np.float64) @ Rm.T)
+            played = replace(self, G=np.asarray(self.G, dtype=np.float64) @ Rm.T,
+                             imposed_gradient=None if imposed is None else imposed.astype(np.float32))
+            turned = played.with_concomitant(np.asarray(position_m, dtype=np.float64) @ Rm.T, B0_T)
+            # EVERY gradient-valued field turns back, the imposed one included: the Maxwell increment was booked
+            # as imposed in the magnet frame and must stay booked, or designed_gradient reads it as encoding
+            return replace(self, G=(np.asarray(turned.G, dtype=np.float64) @ Rm).astype(np.float32),
+                           imposed_gradient=(np.asarray(turned.imposed_gradient, dtype=np.float64) @ Rm).astype(np.float32),
+                           concomitant=turned.concomitant)
+
+        r = np.asarray(position_m, dtype=np.float64).reshape(-1, 3)
+        if r.shape[0] not in (1, self.n_meas):
+            raise ValueError(f"position_m is one point or one per measurement ({self.n_meas}); got {r.shape}")
+        B0 = float(B0_T)
+        if B0 <= 0.0:
+            raise ValueError(f"B0_T must be positive; got {B0}")
+        if self.concomitant is not None:
+            raise ValueError("this acquisition already carries a concomitant term; apply it once, at the "
+                             "position the measurement is made")
+        G = np.asarray(self.designed_gradient, dtype=np.float64)          # the coils' own, not the magnet's
+        Gx, Gy, Gz = G[..., 0], G[..., 1], G[..., 2]
+        x, y, z = (r[:, i][:, None] for i in range(3))
+        # the ideal linear coil's field at r, exactly: along B0 and the two transverse components
+        Bn = Gx * x + Gy * y + Gz * z
+        Bx = Gx * z - 0.5 * Gz * x
+        By = Gy * z - 0.5 * Gz * y
+        mag = np.sqrt((B0 + Bn) ** 2 + Bx ** 2 + By ** 2)
+        # grad|B| - grad B_n, with grad B_n = G, grad B_x = (-Gz/2, 0, Gx), grad B_y = (0, -Gz/2, Gy)
+        w = (B0 + Bn) / mag - 1.0                                          # the coefficient of grad B_n
+        gc = np.stack([w * Gx - 0.5 * Gz * Bx / mag,
+                       w * Gy - 0.5 * Gz * By / mag,
+                       w * Gz + (Gx * Bx + Gy * By) / mag], axis=-1)
+        gc = np.broadcast_to(gc.astype(np.float32), self.G.shape)
+        imposed = gc if self.imposed_gradient is None else self.imposed_gradient + gc
+        return replace(self, G=(self.G + gc), imposed_gradient=np.ascontiguousarray(imposed),
+                       concomitant={"position_m": tuple(tuple(float(v) for v in p) for p in r), "B0_T": B0})
+
+    def with_gradient_nonlinearity(self, L):
+        """The same acquisition as the COILS actually deliver it at one position: every commanded gradient
+        vector replaced by ``L @ g``, with ``L`` the gradient-nonlinearity tensor there
+        (:meth:`~dmipy_sim.acquisition.scanners.ScannerLimits.gradient_tensor`).
+
+        Unlike a background gradient this ADDS nothing -- it rescales and tilts what was already asked for,
+        so it vanishes wherever the commanded gradient does and cannot encode during a dead time. That is the
+        signature separating the two: a magnet's own gradient is on when nothing is played, a coil's
+        nonlinearity is not.
+
+        The consequence is an encoding error rather than a shading. The delivered b along a commanded unit
+        direction ``u`` is ``|L u|^2`` times the one asked for, along the rotated direction ``L u / |L u|``,
+        so a diffusivity fitted against the nominal b is wrong by that factor -- doubled, because b enters
+        the exponent through the square of the gradient.
+
+        ``L`` is one ``(3, 3)`` tensor or one per measurement.
+        """
+        L = np.asarray(L, dtype=np.float64)
+        if L.shape == (3, 3):
+            L = L[None]
+        if L.shape[1:] != (3, 3) or L.shape[0] not in (1, self.n_meas):
+            raise ValueError(f"L is one 3x3 tensor or one per measurement ({self.n_meas}); got {L.shape}")
+        if self.gradient_nonlinearity is not None:
+            raise ValueError("this acquisition already carries a gradient-nonlinearity tensor; apply it "
+                             "once, at the position the measurement is made")
+        G = np.asarray(self.G, dtype=np.float64)
+        new = np.einsum("mij,mtj->mti", np.broadcast_to(L, (self.n_meas, 3, 3)), G)
+        # NOT recorded in imposed_gradient. That field means what the MAGNET imposes, which designed_gradient
+        # subtracts back out so the builder's guarantees (off through a pulse, off in a dead time) still
+        # read true. A coil's nonlinearity obeys those guarantees -- it vanishes wherever the commanded
+        # gradient does -- and it IS the gradient the coils design, which is what the concomitant term must
+        # be a quadratic form in. Booking it as the magnet's left designed_gradient at the NOMINAL G, so the
+        # Maxwell term silently dropped every cross term with the nonlinearity: 1.5e-4 in b.
+        return replace(self, G=new.astype(np.float32),
+                       gradient_nonlinearity=tuple(tuple(float(v) for v in row.ravel()) for row in L))
 
     def with_gradient(self, G):
         """The same acquisition with another physical gradient of the same shape (a rescale, a rotation)."""

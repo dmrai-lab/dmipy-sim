@@ -202,6 +202,150 @@
    "journal_or_publisher": "Proc. Intl. Soc. Mag. Reson. Med. 30, abstract 0043",
    "year": 2022,
    "doi_or_url": "https://archive.ismrm.org/2022/0043.html"
+  },
+  "padormo2023_t1_64mt": {
+   "key": "padormo2023_t1_64mt",
+   "authors": "Padormo F, Cawley P, Dillon L, Hughes E, Almalbis J, Robinson J, et al.",
+   "title": "In vivo T1 mapping of neonatal brain tissue at 64 mT",
+   "journal_or_publisher": "Magnetic Resonance in Medicine",
+   "year": 2023,
+   "doi_or_url": "10.1002/mrm.29509"
+  },
+  "balaji2025_mt_ulf": {
+   "key": "balaji2025_mt_ulf",
+   "authors": "Balaji S, Wiley N, Dvorak A, Padormo F, Teixeira RPAG, Poorman ME, et al.",
+   "title": "Magnetization transfer imaging using non-balanced SSFP at ultra-low field",
+   "journal_or_publisher": "Magnetic Resonance in Medicine",
+   "year": 2025,
+   "doi_or_url": "10.1002/mrm.30494"
+  },
+  "parsa2023_ulf_sar": {
+   "key": "parsa2023_ulf_sar",
+   "authors": "Parsa J, Webb A",
+   "title": "Specific absorption rate (SAR) simulations for low-field (< 0.1 T) MRI systems",
+   "journal_or_publisher": "Magnetic Resonance Materials in Physics, Biology and Medicine (MAGMA)",
+   "year": 2023,
+   "doi_or_url": "10.1007/s10334-023-01073-3"
+  },
+  "cooley2021_portable": {
+   "key": "cooley2021_portable",
+   "authors": "Cooley C Z, McDaniel P C, Stockmann J P, Srinivas S A, Cauley S F, Sliwiak M, Sappo C R, Vaughn C F, Guerin B, Rosen M S, Lev M H, Wald L L",
+   "title": "A portable scanner for magnetic resonance imaging of the brain (a 641-cube N42/N52 NdFeB sparse-Halbach head magnet; states the NdFeB remanence temperature coefficient and that the centre Larmor frequency is re-set before each data set to reduce off-resonance from thermal drift)",
+   "journal_or_publisher": "Nature Biomedical Engineering",
+   "year": 2021,
+   "doi_or_url": "https://doi.org/10.1038/s41551-020-00641-5"
+  },
+  "oreilly2021_halbach": {
+   "key": "oreilly2021_halbach",
+   "authors": "O'Reilly T, Teeuwisse W M, de Gans D, Koolstra K, Webb A G",
+   "title": "In vivo 3D brain and extremity MRI at 50 mT using a permanent magnet Halbach array (measures the drift spectroscopically: ~800 Hz/h in vivo, 160 Hz over a 12-minute session; the gradients heat the magnet negligibly and the BODY is the source; thermal sensitivity ~2.5 kHz/degC from N48 NdFeB at -0.12 %/degC)",
+   "journal_or_publisher": "Magnetic Resonance in Medicine 85(1):495-505",
+   "year": 2021,
+   "doi_or_url": "https://doi.org/10.1002/mrm.28396"
+  },
+  "hyperfine_510k_k250236": {
+   "key": "hyperfine_510k_k250236",
+   "authors": "Hyperfine, Inc.",
+   "title": "510(k) Premarket Notification K250236, Swoop Portable MR Imaging System (V2) -- indications and technological comparison table: 63.3 mT permanent magnet, per-axis gradients X 24 / Y 23 / Z 39 mT/m, operating temperature 15-30 degC, temperature control: No, humidity control: No",
+   "journal_or_publisher": "U.S. Food and Drug Administration",
+   "year": 2025,
+   "doi_or_url": "https://www.accessdata.fda.gov/cdrh_docs/pdf25/K250236.pdf"
+  },
+  "ljungberg2025_unity": {
+   "key": "ljungberg2025_unity",
+   "authors": "Ljungberg E, Padormo F, Poorman M, et al. (UNITY consortium)",
+   "title": "Characterization of portable ultra-low field MRI scanners for multi-center structural neuroimaging (244 phantom scans, 17 sites, 12 countries; regresses the DICOM centre frequency on phantom temperature with site as a random effect and finds a slope of -0.0014 MHz/degC -- the only MEASURED B0 temperature coefficient of this machine)",
+   "journal_or_publisher": "Human Brain Mapping 46:e70217",
+   "year": 2025,
+   "doi_or_url": "https://doi.org/10.1002/hbm.70217"
+  },
+  "royer2026_tract_64mT": {
+   "key": "royer2026_tract_64mT",
+   "authors": "Royer W, Gholam J, Cercignani M, Jones D K, Kopanoglu E",
+   "title": "Repeatable tract-based diffusion metrics on a portable 64 mT MRI: a foundation for global population neuroscience (re-centres f0 between EVERY diffusion volume, not every two)",
+   "journal_or_publisher": "Frontiers in Neuroimaging",
+   "year": 2026,
+   "doi_or_url": "https://doi.org/10.3389/fnimg.2026.1845201"
+  },
+  "hyperfine_us12366622": {
+   "key": "hyperfine_us12366622",
+   "authors": "Boskamp E B, Poole M (Hyperfine, Inc.)",
+   "title": "Radio frequency coil for magnetic resonance imaging, US 12,366,622 B2, granted 2025-07-22 (states the B0 field is oriented along a VERTICAL axis in the bi-planar arrangement, and that the RF coil therefore has its principal axis along a horizontal axis orthogonal to it)",
+   "journal_or_publisher": "United States Patent and Trademark Office",
+   "year": 2025,
+   "doi_or_url": "https://patents.google.com/patent/US12366622B2/en"
+  },
+  "marques2019_lowfield": {
+   "key": "marques2019_lowfield",
+   "authors": "Marques J P, Simonis F F J, Webb A G",
+   "title": "Low-field MRI: an MR physics perspective (contrasts the conventional horizontal-bore geometry, where B0 runs along the bore and hence the patient's head-foot axis, with the transverse-B0 geometry of most point-of-care systems, where a solenoid transmit coil perpendicular to B0 becomes possible and a quadrature birdcage does not)",
+   "journal_or_publisher": "Journal of Magnetic Resonance Imaging 49:1528-1542",
+   "year": 2019,
+   "doi_or_url": "https://doi.org/10.1002/jmri.26637"
+  },
+  "romeo1984_profiling": {
+   "key": "romeo1984_profiling",
+   "authors": "Romeo F, Hoult D I",
+   "title": "Magnet field profiling: analysis and correcting coil design (the standard solid-harmonic description of a magnet's field, and the shim nomenclature every vendor uses)",
+   "journal_or_publisher": "Magnetic Resonance in Medicine 1:44-65",
+   "year": 1984,
+   "doi_or_url": "https://doi.org/10.1002/mrm.1910010107"
+  },
+  "hyperfine_510k_k221923": {
+   "key": "hyperfine_510k_k221923",
+   "authors": "Hyperfine, Inc.",
+   "title": "510(k) K221923, Swoop Portable MR Imaging System -- technological characteristics table, per-axis gradient strength X 24 / Y 23 / Z 39 mT/m, rise time 2.1 / 2.0 / 3.8 ms, slew 24 / 22 / 21 T/m/s. NOTE the table is internally inconsistent: slew does not equal amplitude over rise time on any per-axis row (24/2.1 = 11.4 against a stated 24), while the predicate's single-axis row does check out, so the rise time there is a full bipolar swing mislabelled",
+   "journal_or_publisher": "U.S. Food and Drug Administration",
+   "year": 2022,
+   "doi_or_url": "https://www.accessdata.fda.gov/cdrh_docs/pdf22/K221923.pdf"
+  },
+  "devos2024_concomitant": {
+   "key": "devos2024_concomitant",
+   "authors": "de Vos B, Remis R F, Webb A G",
+   "title": "Characterization of concomitant gradient fields and their effects using a low-field point-of-care Halbach-based MRI system (the only published treatment of concomitant fields for a magnet whose B0 is not along the bore; states that the symmetry parameter alpha = 1/2 holds for parallel plate gradient coils in an open C- or H-shaped magnet, and alpha = 0 for a Halbach array, where a single cross-term of double amplitude replaces the conventional pair)",
+   "journal_or_publisher": "Magnetic Resonance in Medicine 91(2):828-841",
+   "year": 2023,
+   "doi_or_url": "https://doi.org/10.1002/mrm.29879"
+  },
+  "nist2025_dualfield_dwi": {
+   "key": "nist2025_dualfield_dwi",
+   "authors": "Dienstfrey A, Keenan K E, Stupic K F, et al. (National Institute of Standards and Technology)",
+   "title": "Database of Diffusion MRI Brain Scans at 64 mT and 3 T (20 participants on a Hyperfine Swoop, hardware 1.8 / software rc8.6.0, with the diffusivity fitted separately along x, y and z on an FOV-centred grid, plus a co-registered 3 T reference; report NISTIR 8580, doi 10.6028/NIST.IR.8580)",
+   "journal_or_publisher": "National Institute of Standards and Technology, public data repository",
+   "year": 2025,
+   "doi_or_url": "https://doi.org/10.18434/mds2-3896"
+  },
+  "gach2020_b0_homogeneity": {
+   "key": "gach2020_b0_homogeneity",
+   "authors": "Gach HM, Curcuru AN, Mutic S, Kim T",
+   "title": "B0 field homogeneity recommendations, specifications, and measurement units for MRI in radiation therapy",
+   "journal_or_publisher": "Medical Physics",
+   "year": 2020,
+   "doi_or_url": "10.1002/mp.14306"
+  },
+  "hcp_s1200_manual": {
+   "key": "hcp_s1200_manual",
+   "authors": "WU-Minn Consortium Human Connectome Project",
+   "title": "WU-Minn HCP 1200 Subjects Data Release: Reference Manual (updated April 2018); the scanner hardware of record for every HCP 3T and 7T subject",
+   "journal_or_publisher": "Washington University in St. Louis / University of Minnesota",
+   "year": 2018,
+   "doi_or_url": "https://www.humanconnectome.org/storage/app/media/documentation/s1200/HCP_S1200_Release_Reference_Manual.pdf"
+  },
+  "cmrr_7t_magnet_web": {
+   "key": "cmrr_7t_magnet_web",
+   "authors": "Center for Magnetic Resonance Research, University of Minnesota",
+   "title": "7T/AS: Siemens MAGNETOM 7T Plus -- magnet, console, shim and gradient specification table (accessed 2026-09-21). This is the page the HCP S1200 Reference Manual names by URL for its 7T scanner",
+   "journal_or_publisher": "University of Minnesota (CMRR equipment page)",
+   "year": 2026,
+   "doi_or_url": "https://www.cmrr.umn.edu/magnets/7t90AS.shtml"
+  },
+  "hui2021_frequency_drift": {
+   "key": "hui2021_frequency_drift",
+   "authors": "Hui SCN, Mikkelsen M, Zollner HJ, Ahluwalia V, Alcauter S, et al. (Big GABA / multi-site)",
+   "title": "Frequency drift in MR spectroscopy at 3T",
+   "journal_or_publisher": "NeuroImage",
+   "year": 2021,
+   "doi_or_url": "10.1016/j.neuroimage.2021.118430"
   }
  },
  "scanners": {
@@ -235,6 +379,15 @@
      "context": "Siemens IDEA standard gradient raster (GradientRasterTime 1e-5 s)",
      "source_key": "pulseq_spec",
      "location": "DEFINITIONS block, GradientRasterTime 1e-05",
+     "confidence": "cited"
+    },
+    "concomitant_alpha": {
+     "value": 0.5,
+     "unit": "",
+     "field_T": 3.0,
+     "context": "the gradient coils' symmetry parameter: 1/2 for the cylindrically symmetric fingerprint coils of a conventional bore magnet. Stated rather than assumed, because it is not universal -- a Halbach array gives 0",
+     "source_key": "devos2024_concomitant",
+     "location": "Theory, alpha for conventional cylindrical gradient coils",
      "confidence": "cited"
     }
    },
@@ -284,6 +437,84 @@
      "location": "n/a",
      "confidence": "NEEDS VERIFICATION"
     }
+   },
+   "frame": {
+    "b0_axis": {
+     "value": "S",
+     "unit": "",
+     "field_T": 3.0,
+     "context": "the bore axis, which for a cylindrical superconducting magnet is the patient's head-foot direction. This is the default every such machine shares and it is stated rather than assumed, because a MISSING axis and an axis that happens to be S are not the same claim",
+     "source_key": "marques2019_lowfield",
+     "location": "the geometry of a cylindrical bore magnet",
+     "confidence": "widely-quoted"
+    },
+    "b1_axis": {
+     "value": null,
+     "unit": "",
+     "field_T": 3.0,
+     "context": "NULL, and deliberately: a quadrature birdcage drives two orthogonal transverse components and so has no single B1 axis. A falloff law along 'the coil axis' is meaningless for it. Only a LINEAR volume coil -- a solenoid on a transverse-B0 magnet -- has one",
+     "source_key": "marques2019_lowfield",
+     "location": "coil geometry",
+     "confidence": "widely-quoted"
+    }
+   },
+   "homogeneity": {
+    "b0_homogeneity": {
+     "value": 0.386,
+     "unit": "ppm",
+     "field_T": 3.0,
+     "context": "peak-to-peak over a 24 cm DSV, MEASURED on a named Prisma with full (first- and second-order) active shimming; the same table gives VRMS 0.024 ppm, SD 0.023 and FWHM 0.107 at that DSV, 2.378 / 0.067 / 0.067 / 0.158 over 35 cm, and 0.696 pk-pk at 24 cm with gradshim only. THE MAGNITUDE IS PUBLISHED AND THE SHAPE IS NOT, so this machine has no field law and b0_harmonic_Z2 is deliberately absent: a shape-free spread over a sphere does not determine a harmonic expansion. That the shape is not a simple bowl is already visible in the two DSV rows -- a pure Z2 anchored to the 24 cm figure predicts 0.821 ppm over 35 cm against the 2.378 measured, so orders above two carry most of the residual further out, and fitting one anyway would ship a shape the same table refutes. Scale for comparison: a pure Z2 at this magnitude gives a background gradient of 0.0086 mT/m at 8 cm from isocentre against the Hyperfine Swoop's catalogued 1.4, i.e. 163x smaller, and since a self-term in b goes as the square of the background it is ~2.7e4 times smaller in its effect on a diffusion measurement -- which is why a clinical 3 T magnet's own field is negligible for diffusion encoding and a 64 mT one's is not. The vendor's own VRMS-vs-DSV series and the effective orders derived from it now sit alongside in b0_homogeneity_vrms, b0_spec_radial_order and b0_measured_radial_order; they quantify this refusal rather than overturn it",
+     "source_key": "gach2020_b0_homogeneity",
+     "location": "Table III, 'Maxima from 3 T Siemens MRI field homogeneity measurements for 24 and 35 cm DSV phantoms', Prisma column",
+     "confidence": "cited"
+    },
+    "b0_homogeneity_vrms": {
+     "value": 0.02,
+     "unit": "ppm",
+     "field_T": 3.0,
+     "context": "guaranteed MAXIMUM VRMS over a 20 cm DSV; typical 0.008. 20 cm is used as the headline across the 3 T entries because it is head-scale and every vendor publishes that row, so the three are comparable. The full guaranteed/typical series in ppm is 10 cm 0.001/0.0008, 20 cm 0.02/0.008, 30 cm 0.10/0.045, 40 cm 0.20/0.10, 45 cm 0.50/0.325, 50 cm 1.50/1.20, on a 60 cm bore, 198 cm magnet. These are VRMS and are labelled as such, unlike the bare 'ppm' a facility or brochure page usually quotes -- Gach measured 0.386 pk-pk against 0.024 VRMS on this same machine, a factor of 16, so a homogeneity figure without its metric is not comparable with this one",
+     "source_key": "gach2020_b0_homogeneity",
+     "location": "Supplementary material, Table S5 ('Siemens 3 T magnet homogeneity VRMS values (Maximum/Typical) in ppm'), Prisma column",
+     "confidence": "cited"
+    },
+    "b0_spec_radial_order": {
+     "value": 4.23,
+     "unit": "",
+     "field_T": 3.0,
+     "context": "the effective radial order of the VENDOR SPEC ENVELOPE, fitted over 10-50 cm DSV (guaranteed maxima; the typical series gives 4.21, so the envelope's shape does not depend on which is used). DERIVED, method stated so it can be rechecked: a solid harmonic of degree n has |dB| proportional to r^n, so VRMS over a sphere scales as R^n and the slope of log(VRMS) against log(DSV/2) IS n. Gach's 35 cm rows are his own interpolation ('Interpolated from specifications using minima') and are excluded from every fit here. Order ~4 rather than 2 is the rule and not a Prisma quirk: the same fit gives 4.03 for the Philips Ingenia 3 T and 4.58 for the GE Premier. A magnet is designed to cancel its low orders over the imaging volume, so what is left is high-order and grows steeply towards the bore wall. This constrains the RADIAL order and nothing else. VRMS over a sphere is angularly blind: degree 2 contains Z2, ZX, ZY, X2Y2 and XY, and this number cannot tell them apart. Scale plus order is still not a field law -- the Swoop earns its b0_harmonic_Z2 only because its source ALSO names an asymmetry axis -- which is why this entry carries no b0_harmonic_Z2",
+     "source_key": "gach2020_b0_homogeneity",
+     "location": "Supplementary material, Table S5, Prisma column (fit over the 10/20/30/40/45/50 cm rows)",
+     "confidence": "derived"
+    },
+    "b0_measured_radial_order": {
+     "value": 1.92,
+     "unit": "",
+     "field_T": 3.0,
+     "context": "the effective radial order of the MEASURED residual over 10-35 cm with gradshim only (Gach's 'Without 2nd order shimming' state), from VRMS 0.012/0.040/0.058/0.094/0.136 ppm at 10/20/24/30/35 cm. DERIVED, method stated so it can be rechecked: a solid harmonic of degree n has |dB| proportional to r^n, so VRMS over a sphere scales as R^n and the slope of log(VRMS) against log(DSV/2) IS n. Gach's 35 cm rows are his own interpolation ('Interpolated from specifications using minima') and are excluded from every fit here. The piecewise slopes are 1.74, 2.04, 2.16, 2.40 -- stable about 2, so this magnet's un-2nd-order-shimmed residual really is dominated by a degree-2 harmonic. Two things stop that from becoming a field law. (a) This constrains the RADIAL order and nothing else. VRMS over a sphere is angularly blind: degree 2 contains Z2, ZX, ZY, X2Y2 and XY, and this number cannot tell them apart. Scale plus order is still not a field law -- the Swoop earns its b0_harmonic_Z2 only because its source ALSO names an asymmetry axis -- which is why this entry carries no b0_harmonic_Z2. (b) It is NOT a property of 3 T magnets in general: the same fit on Gach's Vida gives 1.21, so the degree-2 signature is this magnet's, not the class's. With FULL shimming the residual is not a single harmonic at all -- its piecewise order runs 1.00, 1.67, 2.99, 3.85 across the same intervals, a mixture with a leftover linear term at small radius and a high-order term taking over at large, which is the quantitative form of the refusal already recorded in b0_homogeneity",
+     "source_key": "gach2020_b0_homogeneity",
+     "location": "Supplementary material, Table S10 ('VRMS Maxima for different DSVs from 3 T Siemens MRI phase maps'), Prisma 'Without 2nd order shimming' column",
+     "confidence": "derived"
+    }
+   },
+   "thermal": {
+    "f0_drift_baseline": {
+     "value": 0.08,
+     "unit": "Hz",
+     "field_T": 3.0,
+     "context": "MEDIAN across the 17 Prisma datasets of each unit's mean absolute water-frequency offset over a 5:20 min PRESS acquisition with no preceding fMRI; range 0.02-2.63 Hz. That range is the finding. The 17 units are sharply BIMODAL -- 12 sit at a median of 0.05 Hz and 5 at a median of 2.36 Hz, a factor of 47 between two groups of the same model with identical 80 mT/m / 200 T/m/s gradients. Unit-to-unit variation on one model is far larger here than the difference between models, so a single per-model drift number is a median and never a prediction for a given scanner. Cohort context, all 95 datasets: median drift 0.44 Hz before fMRI and 0.83 Hz after over 5:20 min, rising to 3.15 Hz over a full 30 min; average drift rates 0.29 Hz/min before and 0.43 Hz/min after. At 3 T, 1 ppm is 127.7 Hz. The measurement is an MRS water-frequency offset, so it is a WHOLE-VOLUME f0 shift over time and not a spatial inhomogeneity -- it adds to the static residual rather than replacing it, and unlike the static residual it cannot be shimmed away because it is not stationary",
+     "source_key": "hui2021_frequency_drift",
+     "location": "Table 2, the 17 Siemens Prisma rows, 'Mean absolute frequency offsets (Hz), Pre-fMRI' column",
+     "confidence": "cited"
+    },
+    "f0_drift_post_fmri_30min": {
+     "value": 0.82,
+     "unit": "Hz",
+     "field_T": 3.0,
+     "context": "MEDIAN across the same 17 Prisma datasets over a full 30:00 min acquisition following fMRI; range 0.13-11.39 Hz. The median is 0.0064 ppm at 3 T, against a guaranteed static homogeneity of 0.02 ppm VRMS over 20 cm DSV -- so typically a third of the static spec. The worst unit reaches 11.39 Hz = 0.089 ppm, 4.5x the guaranteed static spec. What makes this worth cataloguing next to b0_homogeneity_vrms: over a 30-minute acquisition the THERMAL field change is the same order as the magnet's STATIC homogeneity specification, and at the tail it is several times larger. For a long diffusion protocol the time-varying field is therefore the bigger field error, not the static one",
+     "source_key": "hui2021_frequency_drift",
+     "location": "Table 2, the 17 Siemens Prisma rows, 'Post-fMRI (30:00 min)' column",
+     "confidence": "cited"
+    }
    }
   },
   "siemens_magnetom_connectom_3T": {
@@ -326,6 +557,15 @@
      "source_key": "mcnab2013",
      "location": "Methods ('200 T/m/s ... de-rated to 62.5 T/m/s during the diffusion encoding')",
      "confidence": "cited"
+    },
+    "concomitant_alpha": {
+     "value": 0.5,
+     "unit": "",
+     "field_T": 3.0,
+     "context": "the gradient coils' symmetry parameter: 1/2 for the cylindrically symmetric fingerprint coils of a conventional bore magnet. Stated rather than assumed, because it is not universal -- a Halbach array gives 0",
+     "source_key": "devos2024_concomitant",
+     "location": "Theory, alpha for conventional cylindrical gradient coils",
+     "confidence": "cited"
     }
    },
    "rf": {
@@ -339,7 +579,27 @@
      "confidence": "widely-quoted"
     }
    },
-   "notes": "Diffusion-encoding slew is PNS-limited to 62.5 T/m/s, well below the 200 T/m/s hardware max (McNab 2013). See Jones 2018 (super-scanner) for the wider context of 300 mT/m systems."
+   "notes": "Diffusion-encoding slew is PNS-limited to 62.5 T/m/s, well below the 200 T/m/s hardware max (McNab 2013). See Jones 2018 (super-scanner) for the wider context of 300 mT/m systems.",
+   "frame": {
+    "b0_axis": {
+     "value": "S",
+     "unit": "",
+     "field_T": 3.0,
+     "context": "the bore axis, which for a cylindrical superconducting magnet is the patient's head-foot direction. This is the default every such machine shares and it is stated rather than assumed, because a MISSING axis and an axis that happens to be S are not the same claim",
+     "source_key": "marques2019_lowfield",
+     "location": "the geometry of a cylindrical bore magnet",
+     "confidence": "widely-quoted"
+    },
+    "b1_axis": {
+     "value": null,
+     "unit": "",
+     "field_T": 3.0,
+     "context": "NULL, and deliberately: a quadrature birdcage drives two orthogonal transverse components and so has no single B1 axis. A falloff law along 'the coil axis' is meaningless for it. Only a LINEAR volume coil -- a solenoid on a transverse-B0 magnet -- has one",
+     "source_key": "marques2019_lowfield",
+     "location": "coil geometry",
+     "confidence": "widely-quoted"
+    }
+   }
   },
   "siemens_magnetom_connectom_2_0_3T": {
    "vendor": "Siemens Healthineers / MGH",
@@ -372,9 +632,38 @@
      "source_key": "huang2021_connectome2",
      "location": "Design section ('44 cm')",
      "confidence": "cited"
+    },
+    "concomitant_alpha": {
+     "value": 0.5,
+     "unit": "",
+     "field_T": 3.0,
+     "context": "the gradient coils' symmetry parameter: 1/2 for the cylindrically symmetric fingerprint coils of a conventional bore magnet. Stated rather than assumed, because it is not universal -- a Halbach array gives 0",
+     "source_key": "devos2024_concomitant",
+     "location": "Theory, alpha for conventional cylindrical gradient coils",
+     "confidence": "cited"
     }
    },
-   "notes": "Published as design targets in 2021 (huang2021_connectome2); the built scanner reaches 500 mT/m and 600 T/m/s per axis (ramos_llorden2026_connectome2), so the numbers are measured on the machine."
+   "notes": "Published as design targets in 2021 (huang2021_connectome2); the built scanner reaches 500 mT/m and 600 T/m/s per axis (ramos_llorden2026_connectome2), so the numbers are measured on the machine.",
+   "frame": {
+    "b0_axis": {
+     "value": "S",
+     "unit": "",
+     "field_T": 3.0,
+     "context": "the bore axis, which for a cylindrical superconducting magnet is the patient's head-foot direction. This is the default every such machine shares and it is stated rather than assumed, because a MISSING axis and an axis that happens to be S are not the same claim",
+     "source_key": "marques2019_lowfield",
+     "location": "the geometry of a cylindrical bore magnet",
+     "confidence": "widely-quoted"
+    },
+    "b1_axis": {
+     "value": null,
+     "unit": "",
+     "field_T": 3.0,
+     "context": "NULL, and deliberately: a quadrature birdcage drives two orthogonal transverse components and so has no single B1 axis. A falloff law along 'the coil axis' is meaningless for it. Only a LINEAR volume coil -- a solenoid on a transverse-B0 magnet -- has one",
+     "source_key": "marques2019_lowfield",
+     "location": "coil geometry",
+     "confidence": "widely-quoted"
+    }
+   }
   },
   "siemens_magnetom_terra_7T": {
    "vendor": "Siemens Healthineers",
@@ -407,6 +696,15 @@
      "source_key": "pulseq_spec",
      "location": "DEFINITIONS block, GradientRasterTime 1e-05",
      "confidence": "widely-quoted"
+    },
+    "concomitant_alpha": {
+     "value": 0.5,
+     "unit": "",
+     "field_T": 7.0,
+     "context": "the gradient coils' symmetry parameter: 1/2 for the cylindrically symmetric fingerprint coils of a conventional bore magnet. Stated rather than assumed, because it is not universal -- a Halbach array gives 0",
+     "source_key": "devos2024_concomitant",
+     "location": "Theory, alpha for conventional cylindrical gradient coils",
+     "confidence": "cited"
     }
    },
    "rf": {
@@ -429,7 +727,27 @@
      "confidence": "NEEDS VERIFICATION"
     }
    },
-   "notes": "Newer MAGNETOM Terra.X reaches 135 mT/m @ 250 T/m/s (separate model). Terra has no body transmit coil; transmit is via the head coil (1Tx or 8Tx pTx)."
+   "notes": "Newer MAGNETOM Terra.X reaches 135 mT/m @ 250 T/m/s (separate model). Terra has no body transmit coil; transmit is via the head coil (1Tx or 8Tx pTx).",
+   "frame": {
+    "b0_axis": {
+     "value": "S",
+     "unit": "",
+     "field_T": 7.0,
+     "context": "the bore axis, which for a cylindrical superconducting magnet is the patient's head-foot direction. This is the default every such machine shares and it is stated rather than assumed, because a MISSING axis and an axis that happens to be S are not the same claim",
+     "source_key": "marques2019_lowfield",
+     "location": "the geometry of a cylindrical bore magnet",
+     "confidence": "widely-quoted"
+    },
+    "b1_axis": {
+     "value": null,
+     "unit": "",
+     "field_T": 7.0,
+     "context": "NULL, and deliberately: a quadrature birdcage drives two orthogonal transverse components and so has no single B1 axis. A falloff law along 'the coil axis' is meaningless for it. Only a LINEAR volume coil -- a solenoid on a transverse-B0 magnet -- has one",
+     "source_key": "marques2019_lowfield",
+     "location": "coil geometry",
+     "confidence": "widely-quoted"
+    }
+   }
   },
   "ge_signa_premier_3T": {
    "vendor": "GE Healthcare",
@@ -462,6 +780,15 @@
      "source_key": "ge_premier_spec",
      "location": "Spec sheet, 'Gradient Amplifier & Coil'",
      "confidence": "cited"
+    },
+    "concomitant_alpha": {
+     "value": 0.5,
+     "unit": "",
+     "field_T": 3.0,
+     "context": "the gradient coils' symmetry parameter: 1/2 for the cylindrically symmetric fingerprint coils of a conventional bore magnet. Stated rather than assumed, because it is not universal -- a Halbach array gives 0",
+     "source_key": "devos2024_concomitant",
+     "location": "Theory, alpha for conventional cylindrical gradient coils",
+     "confidence": "cited"
     }
    },
    "rf": {
@@ -493,7 +820,67 @@
      "confidence": "cited"
     }
    },
-   "notes": "Peak B1 (19 uT) is explicitly stated at a 75 kg load; it scales down with patient mass/loading."
+   "notes": "Peak B1 (19 uT) is explicitly stated at a 75 kg load; it scales down with patient mass/loading.",
+   "frame": {
+    "b0_axis": {
+     "value": "S",
+     "unit": "",
+     "field_T": 3.0,
+     "context": "the bore axis, which for a cylindrical superconducting magnet is the patient's head-foot direction. This is the default every such machine shares and it is stated rather than assumed, because a MISSING axis and an axis that happens to be S are not the same claim",
+     "source_key": "marques2019_lowfield",
+     "location": "the geometry of a cylindrical bore magnet",
+     "confidence": "widely-quoted"
+    },
+    "b1_axis": {
+     "value": null,
+     "unit": "",
+     "field_T": 3.0,
+     "context": "NULL, and deliberately: a quadrature birdcage drives two orthogonal transverse components and so has no single B1 axis. A falloff law along 'the coil axis' is meaningless for it. Only a LINEAR volume coil -- a solenoid on a transverse-B0 magnet -- has one",
+     "source_key": "marques2019_lowfield",
+     "location": "coil geometry",
+     "confidence": "widely-quoted"
+    }
+   },
+   "homogeneity": {
+    "b0_homogeneity_vrms": {
+     "value": 0.05,
+     "unit": "ppm",
+     "field_T": 3.0,
+     "context": "guaranteed MAXIMUM VRMS over a 20 cm DSV; typical 0.03. Full guaranteed/typical series in ppm: 10 cm NA/0.02, 20 cm 0.05/0.03, 30 cm 0.15/0.08, 40 cm 0.50/0.27, 45 cm 1.50/0.70, 50 cm 4.00/2.50, 50x50x45 cm DEV 3.00/1.80, on a 70 cm bore, 174 cm magnet. GE publish one column for 'Architect, Premier, PET/MR', so this figure is shared across those three systems and is not specific to the Premier",
+     "source_key": "gach2020_b0_homogeneity",
+     "location": "Supplementary material, Table S2 ('GE 3 T magnet homogeneity VRMS values (Maximum/Typical) in ppm'), 'Architect, Premier, PET/MR' column",
+     "confidence": "cited"
+    },
+    "b0_spec_radial_order": {
+     "value": 4.58,
+     "unit": "",
+     "field_T": 3.0,
+     "context": "the effective radial order of the vendor spec envelope, fitted over 20-50 cm DSV (guaranteed maxima; the typical series has a 10 cm row and fits 2.75, and that spread between the two is itself a warning that a spec envelope is a design bound and not a measured field). DERIVED, method stated so it can be rechecked: a solid harmonic of degree n has |dB| proportional to r^n, so VRMS over a sphere scales as R^n and the slope of log(VRMS) against log(DSV/2) IS n. Gach's 35 cm rows are his own interpolation ('Interpolated from specifications using minima') and are excluded from every fit here. This constrains the RADIAL order and nothing else. VRMS over a sphere is angularly blind: degree 2 contains Z2, ZX, ZY, X2Y2 and XY, and this number cannot tell them apart. Scale plus order is still not a field law -- the Swoop earns its b0_harmonic_Z2 only because its source ALSO names an asymmetry axis -- which is why this entry carries no b0_harmonic_Z2",
+     "source_key": "gach2020_b0_homogeneity",
+     "location": "Supplementary material, Table S2, 'Architect, Premier, PET/MR' column (fit over the 20/30/40/45/50 cm rows)",
+     "confidence": "derived"
+    }
+   },
+   "thermal": {
+    "f0_drift_baseline": {
+     "value": 0.22,
+     "unit": "Hz",
+     "field_T": 3.0,
+     "context": "median of the TWO usable SIGNA Premier datasets (0.13 and 0.31 Hz); a third Premier row is n/a. Two units is not a distribution and this number should be read as an order of magnitude, not a central value. Cohort context, all 95 datasets: median drift 0.44 Hz before fMRI and 0.83 Hz after over 5:20 min, rising to 3.15 Hz over a full 30 min; average drift rates 0.29 Hz/min before and 0.43 Hz/min after. At 3 T, 1 ppm is 127.7 Hz. The measurement is an MRS water-frequency offset, so it is a WHOLE-VOLUME f0 shift over time and not a spatial inhomogeneity -- it adds to the static residual rather than replacing it, and unlike the static residual it cannot be shimmed away because it is not stationary",
+     "source_key": "hui2021_frequency_drift",
+     "location": "Table 2, the GE SIGNA Premier rows (G08a, G09a), 'Pre-fMRI' column",
+     "confidence": "cited"
+    },
+    "f0_drift_post_fmri_30min": {
+     "value": 7.64,
+     "unit": "Hz",
+     "field_T": 3.0,
+     "context": "median of the same two units over 30 min after fMRI (4.11 and 11.18 Hz) = 0.060 ppm at 3 T, which is 3x this machine's own guaranteed static homogeneity of 0.02 ppm VRMS at 20 cm DSV. n=2. What makes this worth cataloguing next to b0_homogeneity_vrms: over a 30-minute acquisition the THERMAL field change is the same order as the magnet's STATIC homogeneity specification, and at the tail it is several times larger. For a long diffusion protocol the time-varying field is therefore the bigger field error, not the static one",
+     "source_key": "hui2021_frequency_drift",
+     "location": "Table 2, the GE SIGNA Premier rows (G08a, G09a), 'Post-fMRI (30:00 min)' column",
+     "confidence": "cited"
+    }
+   }
   },
   "philips_ingenia_3T": {
    "vendor": "Philips Healthcare",
@@ -504,7 +891,7 @@
      "value": 45,
      "unit": "mT/m",
      "field_T": 3.0,
-     "context": "per axis, Omega HP gradient system",
+     "context": "per axis, Omega HP gradient system. CAUTION, from Hui 2021 Table 2: 'Ingenia' is a FAMILY, not a gradient specification. Among the ten plain-Ingenia units it lists, the gradients are 33/200, 45/120, 45/200, 45/220 and 80/200 mT/m per T/m/s -- 45/200 is the modal configuration and is what this leaf records, but an Ingenia can be any of them. The named variants differ again (Ingenia CX 40/200, Ingenia Elition 45/220). Matching a dataset to this entry by the word 'Ingenia' alone is therefore unsafe; the acquisition's own header is the authority",
      "source_key": "philips_ingenia_web",
      "location": "Product page / gradient specs",
      "confidence": "widely-quoted"
@@ -517,10 +904,79 @@
      "source_key": "philips_ingenia_web",
      "location": "Product page / gradient specs",
      "confidence": "widely-quoted"
+    },
+    "concomitant_alpha": {
+     "value": 0.5,
+     "unit": "",
+     "field_T": 3.0,
+     "context": "the gradient coils' symmetry parameter: 1/2 for the cylindrically symmetric fingerprint coils of a conventional bore magnet. Stated rather than assumed, because it is not universal -- a Halbach array gives 0",
+     "source_key": "devos2024_concomitant",
+     "location": "Theory, alpha for conventional cylindrical gradient coils",
+     "confidence": "cited"
     }
    },
    "rf": {},
-   "notes": "Philips publishes gradient figures across configurations; the 45 mT/m / 200 T/m/s Omega HP figure is consistent across Ingenia/Achieva dStream 3T pages but the exact primary spec sheet was not pinned to a single PDF clause. Higher-end Philips gradients (e.g. 80 mT/m on some configs) exist - confirm per installed configuration."
+   "notes": "Philips publishes gradient figures across configurations; the 45 mT/m / 200 T/m/s Omega HP figure is consistent across Ingenia/Achieva dStream 3T pages but the exact primary spec sheet was not pinned to a single PDF clause. Higher-end Philips gradients (e.g. 80 mT/m on some configs) exist - confirm per installed configuration. Hui 2021 Table 2 independently lists many of these units with their gradient specs, which is the closest thing to a primary spec sheet found so far: it corroborates 45 mT/m / 200 T/m/s as the modal Ingenia configuration while showing the model name spans 33-80 mT/m.",
+   "frame": {
+    "b0_axis": {
+     "value": "S",
+     "unit": "",
+     "field_T": 3.0,
+     "context": "the bore axis, which for a cylindrical superconducting magnet is the patient's head-foot direction. This is the default every such machine shares and it is stated rather than assumed, because a MISSING axis and an axis that happens to be S are not the same claim",
+     "source_key": "marques2019_lowfield",
+     "location": "the geometry of a cylindrical bore magnet",
+     "confidence": "widely-quoted"
+    },
+    "b1_axis": {
+     "value": null,
+     "unit": "",
+     "field_T": 3.0,
+     "context": "NULL, and deliberately: a quadrature birdcage drives two orthogonal transverse components and so has no single B1 axis. A falloff law along 'the coil axis' is meaningless for it. Only a LINEAR volume coil -- a solenoid on a transverse-B0 magnet -- has one",
+     "source_key": "marques2019_lowfield",
+     "location": "coil geometry",
+     "confidence": "widely-quoted"
+    }
+   },
+   "homogeneity": {
+    "b0_homogeneity_vrms": {
+     "value": 0.022,
+     "unit": "ppm",
+     "field_T": 3.0,
+     "context": "guaranteed MAXIMUM VRMS over a 20 cm DSV; typical 0.02. Full guaranteed/typical series in ppm: 10 cm 0.0022/0.002, 20 cm 0.022/0.02, 30 cm 0.08/0.07, 40 cm 0.45/0.40, 45 cm 1.20/1.10, 50x50x45 cm DEV 2.00/1.80, on a 70 cm bore, 162 cm magnet. TAKEN FROM THE 70 cm 'Ingenia' COLUMN, which is the plain Ingenia this entry describes. The 60 cm 'Ingenia CX' in the same table is a DIFFERENT magnet and roughly twice as inhomogeneous at head scale (0.04/0.025 at 20 cm), so a CX must not use this number",
+     "source_key": "gach2020_b0_homogeneity",
+     "location": "Supplementary material, Table S3 ('Philips magnet homogeneity VRMS values (Maximum/Typical) in ppm'), 3 T / 70 cm 'Ingenia' column",
+     "confidence": "cited"
+    },
+    "b0_spec_radial_order": {
+     "value": 4.03,
+     "unit": "",
+     "field_T": 3.0,
+     "context": "the effective radial order of the vendor spec envelope, fitted over 10-45 cm DSV (typical series gives 4.02). DERIVED, method stated so it can be rechecked: a solid harmonic of degree n has |dB| proportional to r^n, so VRMS over a sphere scales as R^n and the slope of log(VRMS) against log(DSV/2) IS n. Gach's 35 cm rows are his own interpolation ('Interpolated from specifications using minima') and are excluded from every fit here. This constrains the RADIAL order and nothing else. VRMS over a sphere is angularly blind: degree 2 contains Z2, ZX, ZY, X2Y2 and XY, and this number cannot tell them apart. Scale plus order is still not a field law -- the Swoop earns its b0_harmonic_Z2 only because its source ALSO names an asymmetry axis -- which is why this entry carries no b0_harmonic_Z2. No MEASURED series exists for a 3 T Ingenia: Gach's phase-map tables cover the 1.5 T Ingenia (Table S8), not this machine",
+     "source_key": "gach2020_b0_homogeneity",
+     "location": "Supplementary material, Table S3, 3 T 'Ingenia' column (fit over the 10/20/30/40/45 cm rows)",
+     "confidence": "derived"
+    }
+   },
+   "thermal": {
+    "f0_drift_baseline": {
+     "value": 0.91,
+     "unit": "Hz",
+     "field_T": 3.0,
+     "context": "median across the 10 plain-'Ingenia' datasets of the mean absolute water-frequency offset over 5:20 min with no preceding fMRI; range 0.07-1.50 Hz. Higher than the Prisma's median by an order of magnitude, and Hui notes Philips units show drift behaviour 'that is not smooth, presumably reflecting au[tomatic frequency adjustment]'. Cohort context, all 95 datasets: median drift 0.44 Hz before fMRI and 0.83 Hz after over 5:20 min, rising to 3.15 Hz over a full 30 min; average drift rates 0.29 Hz/min before and 0.43 Hz/min after. At 3 T, 1 ppm is 127.7 Hz. The measurement is an MRS water-frequency offset, so it is a WHOLE-VOLUME f0 shift over time and not a spatial inhomogeneity -- it adds to the static residual rather than replacing it, and unlike the static residual it cannot be shimmed away because it is not stationary",
+     "source_key": "hui2021_frequency_drift",
+     "location": "Table 2, the ten 'Philips Ingenia' rows, 'Pre-fMRI' column",
+     "confidence": "cited"
+    },
+    "f0_drift_post_fmri_30min": {
+     "value": 3.75,
+     "unit": "Hz",
+     "field_T": 3.0,
+     "context": "median across the same 10 units over 30 min after fMRI; range 1.56-7.69 Hz. 0.029 ppm at 3 T, against a guaranteed static homogeneity of 0.022 ppm VRMS at 20 cm DSV -- here the thermal term EXCEEDS the static one outright. What makes this worth cataloguing next to b0_homogeneity_vrms: over a 30-minute acquisition the THERMAL field change is the same order as the magnet's STATIC homogeneity specification, and at the tail it is several times larger. For a long diffusion protocol the time-varying field is therefore the bigger field error, not the static one",
+     "source_key": "hui2021_frequency_drift",
+     "location": "Table 2, the ten 'Philips Ingenia' rows, 'Post-fMRI (30:00 min)' column",
+     "confidence": "cited"
+    }
+   }
   },
   "siemens_magnetom_terra_x_7T": {
    "vendor": "Siemens Healthineers",
@@ -553,6 +1009,15 @@
      "source_key": "pulseq_spec",
      "location": "DEFINITIONS block, GradientRasterTime 1e-05",
      "confidence": "widely-quoted"
+    },
+    "concomitant_alpha": {
+     "value": 0.5,
+     "unit": "",
+     "field_T": 7.0,
+     "context": "the gradient coils' symmetry parameter: 1/2 for the cylindrically symmetric fingerprint coils of a conventional bore magnet. Stated rather than assumed, because it is not universal -- a Halbach array gives 0",
+     "source_key": "devos2024_concomitant",
+     "location": "Theory, alpha for conventional cylindrical gradient coils",
+     "confidence": "cited"
     }
    },
    "rf": {
@@ -573,6 +1038,26 @@
      "source_key": "siemens_terra_x_web",
      "location": "n/a",
      "confidence": "NEEDS VERIFICATION"
+    }
+   },
+   "frame": {
+    "b0_axis": {
+     "value": "S",
+     "unit": "",
+     "field_T": 7.0,
+     "context": "the bore axis, which for a cylindrical superconducting magnet is the patient's head-foot direction. This is the default every such machine shares and it is stated rather than assumed, because a MISSING axis and an axis that happens to be S are not the same claim",
+     "source_key": "marques2019_lowfield",
+     "location": "the geometry of a cylindrical bore magnet",
+     "confidence": "widely-quoted"
+    },
+    "b1_axis": {
+     "value": null,
+     "unit": "",
+     "field_T": 7.0,
+     "context": "NULL, and deliberately: a quadrature birdcage drives two orthogonal transverse components and so has no single B1 axis. A falloff law along 'the coil axis' is meaningless for it. Only a LINEAR volume coil -- a solenoid on a transverse-B0 magnet -- has one",
+     "source_key": "marques2019_lowfield",
+     "location": "coil geometry",
+     "confidence": "widely-quoted"
     }
    }
   },
@@ -607,6 +1092,15 @@
      "source_key": "ge_signa_magnus_fda",
      "location": "n/a",
      "confidence": "NEEDS VERIFICATION"
+    },
+    "concomitant_alpha": {
+     "value": 0.5,
+     "unit": "",
+     "field_T": 3.0,
+     "context": "the gradient coils' symmetry parameter: 1/2 for the cylindrically symmetric fingerprint coils of a conventional bore magnet. Stated rather than assumed, because it is not universal -- a Halbach array gives 0",
+     "source_key": "devos2024_concomitant",
+     "location": "Theory, alpha for conventional cylindrical gradient coils",
+     "confidence": "cited"
     }
    },
    "rf": {
@@ -619,6 +1113,26 @@
      "location": "n/a",
      "confidence": "NEEDS VERIFICATION"
     }
+   },
+   "frame": {
+    "b0_axis": {
+     "value": "S",
+     "unit": "",
+     "field_T": 3.0,
+     "context": "the bore axis, which for a cylindrical superconducting magnet is the patient's head-foot direction. This is the default every such machine shares and it is stated rather than assumed, because a MISSING axis and an axis that happens to be S are not the same claim",
+     "source_key": "marques2019_lowfield",
+     "location": "the geometry of a cylindrical bore magnet",
+     "confidence": "widely-quoted"
+    },
+    "b1_axis": {
+     "value": null,
+     "unit": "",
+     "field_T": 3.0,
+     "context": "NULL, and deliberately: a quadrature birdcage drives two orthogonal transverse components and so has no single B1 axis. A falloff law along 'the coil axis' is meaningless for it. Only a LINEAR volume coil -- a solenoid on a transverse-B0 magnet -- has one",
+     "source_key": "marques2019_lowfield",
+     "location": "coil geometry",
+     "confidence": "widely-quoted"
+    }
    }
   },
   "ge_magnus_prototype_3T": {
@@ -629,7 +1143,7 @@
     "max_amplitude": {
      "value": 200,
      "unit": "mT/m",
-     "field_T": null,
+     "field_T": 3.0,
      "context": "MAGNUS head-only gradient insert PROTOTYPE (GE / NIH). The FDA-cleared product, ge_signa_magnus_3T, is 300 mT/m / 750 T/m/s; the two are different machines.",
      "source_key": "foo2020_magnus",
      "location": "Foo et al. 2020, abstract",
@@ -638,14 +1152,43 @@
     "max_slew_rate": {
      "value": 500,
      "unit": "T/m/s",
-     "field_T": null,
+     "field_T": 3.0,
      "context": "MAGNUS prototype; head-only asymmetric coil, PNS-limited well above whole-body coils",
      "source_key": "foo2020_magnus",
      "location": "Foo et al. 2020, abstract",
      "confidence": "widely-quoted"
+    },
+    "concomitant_alpha": {
+     "value": 0.5,
+     "unit": "",
+     "field_T": 3.0,
+     "context": "the gradient coils' symmetry parameter: 1/2 for the cylindrically symmetric fingerprint coils of a conventional bore magnet. Stated rather than assumed, because it is not universal -- a Halbach array gives 0",
+     "source_key": "devos2024_concomitant",
+     "location": "Theory, alpha for conventional cylindrical gradient coils",
+     "confidence": "cited"
     }
    },
-   "notes": "The 1 MVA prototype (Foo et al. 2020: '200 mT/m and 500 T/m/s on each axis'). The FDA-cleared SIGNA MAGNUS (2024-11) is 300 mT/m / 750 T/m/s at 2 MVA (ge_signa_magnus_3T); Abad et al. 2025 give the pair as 'Gmax = 200-300 mT/m, and SRmax = 500-750 T/m/s'. The certificate class 'magnus' is the prototype."
+   "notes": "The 1 MVA prototype (Foo et al. 2020: '200 mT/m and 500 T/m/s on each axis'). The FDA-cleared SIGNA MAGNUS (2024-11) is 300 mT/m / 750 T/m/s at 2 MVA (ge_signa_magnus_3T); Abad et al. 2025 give the pair as 'Gmax = 200-300 mT/m, and SRmax = 500-750 T/m/s'. The certificate class 'magnus' is the prototype.",
+   "frame": {
+    "b0_axis": {
+     "value": "S",
+     "unit": "",
+     "field_T": 3.0,
+     "context": "the bore axis, which for a cylindrical superconducting magnet is the patient's head-foot direction. This is the default every such machine shares and it is stated rather than assumed, because a MISSING axis and an axis that happens to be S are not the same claim",
+     "source_key": "marques2019_lowfield",
+     "location": "the geometry of a cylindrical bore magnet",
+     "confidence": "widely-quoted"
+    },
+    "b1_axis": {
+     "value": null,
+     "unit": "",
+     "field_T": 3.0,
+     "context": "NULL, and deliberately: a quadrature birdcage drives two orthogonal transverse components and so has no single B1 axis. A falloff law along 'the coil axis' is meaningless for it. Only a LINEAR volume coil -- a solenoid on a transverse-B0 magnet -- has one",
+     "source_key": "marques2019_lowfield",
+     "location": "coil geometry",
+     "confidence": "widely-quoted"
+    }
+   }
   },
   "bruker_bga_9s": {
    "vendor": "Bruker BioSpin",
@@ -669,6 +1212,35 @@
      "source_key": "bruker_almanac_2011",
      "location": "BGA-S specification table, BGA-9S column",
      "confidence": "cited"
+    },
+    "concomitant_alpha": {
+     "value": 0.5,
+     "unit": "",
+     "field_T": null,
+     "context": "the gradient coils' symmetry parameter: 1/2 for the cylindrically symmetric fingerprint coils of a conventional bore magnet. Stated rather than assumed, because it is not universal -- a Halbach array gives 0",
+     "source_key": "devos2024_concomitant",
+     "location": "Theory, alpha for conventional cylindrical gradient coils",
+     "confidence": "cited"
+    }
+   },
+   "frame": {
+    "b0_axis": {
+     "value": "S",
+     "unit": "",
+     "field_T": null,
+     "context": "the bore axis, which for a cylindrical superconducting magnet is the patient's head-foot direction. This is the default every such machine shares and it is stated rather than assumed, because a MISSING axis and an axis that happens to be S are not the same claim",
+     "source_key": "marques2019_lowfield",
+     "location": "the geometry of a cylindrical bore magnet",
+     "confidence": "widely-quoted"
+    },
+    "b1_axis": {
+     "value": null,
+     "unit": "",
+     "field_T": null,
+     "context": "NULL, and deliberately: a quadrature birdcage drives two orthogonal transverse components and so has no single B1 axis. A falloff law along 'the coil axis' is meaningless for it. Only a LINEAR volume coil -- a solenoid on a transverse-B0 magnet -- has one",
+     "source_key": "marques2019_lowfield",
+     "location": "coil geometry",
+     "confidence": "widely-quoted"
     }
    }
   },
@@ -694,6 +1266,35 @@
      "source_key": "bruker_almanac_2011",
      "location": "BGA-S specification table, BGA-12S HP column; also bruker_biospec_70_20_web",
      "confidence": "cited"
+    },
+    "concomitant_alpha": {
+     "value": 0.5,
+     "unit": "",
+     "field_T": null,
+     "context": "the gradient coils' symmetry parameter: 1/2 for the cylindrically symmetric fingerprint coils of a conventional bore magnet. Stated rather than assumed, because it is not universal -- a Halbach array gives 0",
+     "source_key": "devos2024_concomitant",
+     "location": "Theory, alpha for conventional cylindrical gradient coils",
+     "confidence": "cited"
+    }
+   },
+   "frame": {
+    "b0_axis": {
+     "value": "S",
+     "unit": "",
+     "field_T": null,
+     "context": "the bore axis, which for a cylindrical superconducting magnet is the patient's head-foot direction. This is the default every such machine shares and it is stated rather than assumed, because a MISSING axis and an axis that happens to be S are not the same claim",
+     "source_key": "marques2019_lowfield",
+     "location": "the geometry of a cylindrical bore magnet",
+     "confidence": "widely-quoted"
+    },
+    "b1_axis": {
+     "value": null,
+     "unit": "",
+     "field_T": null,
+     "context": "NULL, and deliberately: a quadrature birdcage drives two orthogonal transverse components and so has no single B1 axis. A falloff law along 'the coil axis' is meaningless for it. Only a LINEAR volume coil -- a solenoid on a transverse-B0 magnet -- has one",
+     "source_key": "marques2019_lowfield",
+     "location": "coil geometry",
+     "confidence": "widely-quoted"
     }
    }
   },
@@ -719,6 +1320,35 @@
      "source_key": "bruker_almanac_2011",
      "location": "BGA-S specification table, BGA-6S column",
      "confidence": "cited"
+    },
+    "concomitant_alpha": {
+     "value": 0.5,
+     "unit": "",
+     "field_T": null,
+     "context": "the gradient coils' symmetry parameter: 1/2 for the cylindrically symmetric fingerprint coils of a conventional bore magnet. Stated rather than assumed, because it is not universal -- a Halbach array gives 0",
+     "source_key": "devos2024_concomitant",
+     "location": "Theory, alpha for conventional cylindrical gradient coils",
+     "confidence": "cited"
+    }
+   },
+   "frame": {
+    "b0_axis": {
+     "value": "S",
+     "unit": "",
+     "field_T": null,
+     "context": "the bore axis, which for a cylindrical superconducting magnet is the patient's head-foot direction. This is the default every such machine shares and it is stated rather than assumed, because a MISSING axis and an axis that happens to be S are not the same claim",
+     "source_key": "marques2019_lowfield",
+     "location": "the geometry of a cylindrical bore magnet",
+     "confidence": "widely-quoted"
+    },
+    "b1_axis": {
+     "value": null,
+     "unit": "",
+     "field_T": null,
+     "context": "NULL, and deliberately: a quadrature birdcage drives two orthogonal transverse components and so has no single B1 axis. A falloff law along 'the coil axis' is meaningless for it. Only a LINEAR volume coil -- a solenoid on a transverse-B0 magnet -- has one",
+     "source_key": "marques2019_lowfield",
+     "location": "coil geometry",
+     "confidence": "widely-quoted"
     }
    }
   },
@@ -744,6 +1374,35 @@
      "source_key": "bruker_micro2_5_web",
      "location": "product page, specifications (rise time)",
      "confidence": "derived"
+    },
+    "concomitant_alpha": {
+     "value": 0.5,
+     "unit": "",
+     "field_T": null,
+     "context": "the gradient coils' symmetry parameter: 1/2 for the cylindrically symmetric fingerprint coils of a conventional bore magnet. Stated rather than assumed, because it is not universal -- a Halbach array gives 0",
+     "source_key": "devos2024_concomitant",
+     "location": "Theory, alpha for conventional cylindrical gradient coils",
+     "confidence": "cited"
+    }
+   },
+   "frame": {
+    "b0_axis": {
+     "value": "S",
+     "unit": "",
+     "field_T": null,
+     "context": "the bore axis, which for a cylindrical superconducting magnet is the patient's head-foot direction. This is the default every such machine shares and it is stated rather than assumed, because a MISSING axis and an axis that happens to be S are not the same claim",
+     "source_key": "marques2019_lowfield",
+     "location": "the geometry of a cylindrical bore magnet",
+     "confidence": "widely-quoted"
+    },
+    "b1_axis": {
+     "value": null,
+     "unit": "",
+     "field_T": null,
+     "context": "NULL, and deliberately: a quadrature birdcage drives two orthogonal transverse components and so has no single B1 axis. A falloff law along 'the coil axis' is meaningless for it. Only a LINEAR volume coil -- a solenoid on a transverse-B0 magnet -- has one",
+     "source_key": "marques2019_lowfield",
+     "location": "coil geometry",
+     "confidence": "widely-quoted"
     }
    }
   },
@@ -769,6 +1428,35 @@
      "source_key": "bruker_micro5_web",
      "location": "product page, specifications (rise time)",
      "confidence": "derived"
+    },
+    "concomitant_alpha": {
+     "value": 0.5,
+     "unit": "",
+     "field_T": null,
+     "context": "the gradient coils' symmetry parameter: 1/2 for the cylindrically symmetric fingerprint coils of a conventional bore magnet. Stated rather than assumed, because it is not universal -- a Halbach array gives 0",
+     "source_key": "devos2024_concomitant",
+     "location": "Theory, alpha for conventional cylindrical gradient coils",
+     "confidence": "cited"
+    }
+   },
+   "frame": {
+    "b0_axis": {
+     "value": "S",
+     "unit": "",
+     "field_T": null,
+     "context": "the bore axis, which for a cylindrical superconducting magnet is the patient's head-foot direction. This is the default every such machine shares and it is stated rather than assumed, because a MISSING axis and an axis that happens to be S are not the same claim",
+     "source_key": "marques2019_lowfield",
+     "location": "the geometry of a cylindrical bore magnet",
+     "confidence": "widely-quoted"
+    },
+    "b1_axis": {
+     "value": null,
+     "unit": "",
+     "field_T": null,
+     "context": "NULL, and deliberately: a quadrature birdcage drives two orthogonal transverse components and so has no single B1 axis. A falloff law along 'the coil axis' is meaningless for it. Only a LINEAR volume coil -- a solenoid on a transverse-B0 magnet -- has one",
+     "source_key": "marques2019_lowfield",
+     "location": "coil geometry",
+     "confidence": "widely-quoted"
     }
    }
   },
@@ -778,12 +1466,12 @@
    "field_T": 0.064,
    "gradient": {
     "max_amplitude": {
-     "value": 24.4,
+     "value": 23.0,
      "unit": "mT/m",
      "field_T": 0.064,
-     "context": "the WEAKEST axis, which is what a deliverability check must use; per axis X / Y / Z = 24.9 / 24.4 / 25.7 mT/m",
-     "source_key": "gholam2025_swoop",
-     "location": "Methods, scanner description",
+     "context": "the WEAKEST axis across BOTH published specifications, which is what a deliverability check must use while they disagree. The regulatory filing gives X 24 / Y 23 / Z 39 mT/m and the literature gives 24.9 / 24.4 / 25.7; their minima are 23 and 24.4, so 23 is the only figure safe under either. Taking the literature's 24.4, as this leaf did, over-claims by 6 % if the filing is right -- and since the conflict is unresolved, the conservative reading is the correct one rather than the cautious one. Per-axis values and the conflict itself are in per_axis_amplitude_fda and per_axis_amplitude_literature; which physical direction each axis names is not public.",
+     "source_key": "hyperfine_510k_k221923",
+     "location": "Comparison of Technological Characteristics, Gradient: Strength (weakest axis)",
      "confidence": "cited"
     },
     "max_slew_rate": {
@@ -794,6 +1482,41 @@
      "source_key": "gholam2025_swoop",
      "location": "Methods, scanner description",
      "confidence": "cited"
+    },
+    "per_axis_amplitude_fda": {
+     "value": [
+      24.0,
+      23.0,
+      39.0
+     ],
+     "unit": "mT/m",
+     "field_T": 0.064,
+     "context": "the regulatory filing's per-axis gradient strength, as vendor axes X / Y / Z. WHICH PHYSICAL DIRECTION EACH LABEL NAMES IS NOT PUBLIC, and the evidence conflicts. Three things point to the vendor's Z being the B0-parallel (vertical, anterior-posterior) axis: it is the outlier in both hardware generations' FDA tables, strong and slow, which is the signature of the plate-normal winding in a bi-planar set. Against it, Hyperfine's own hysteresis patent US 2024/0142556 A1 discusses MEASURED data and says 'the B0 field is oriented along the y-axis... the y-gradient coil induces magnetization along the y-axis' -- the only primary document binding a Hyperfine coil label to the field direction, and it says Y. A third source (the Leiden data descriptor) writes 'the AP direction is considered the z-axis', but the same document labels its 3 T scanner differently, so it is declaring the universal z-is-B0 convention rather than reporting vendor labels. One measurement narrows it: across the NIST database the per-axis echo times are identical for every subject and ordered image-x 83.600 < image-y 83.640 < image-z 84.110 ms, so the S/I axis is the most expensive and the vendor's outlier is probably not S/I -- which leaves A/P or R/L. Not decisive: 0.5 ms in 84 also carries slice selection and readout.",
+     "source_key": "hyperfine_510k_k221923",
+     "location": "Comparison of Technological Characteristics, Gradient: Strength",
+     "confidence": "cited"
+    },
+    "per_axis_amplitude_literature": {
+     "value": [
+      24.9,
+      24.4,
+      25.7
+     ],
+     "unit": "mT/m",
+     "field_T": 0.064,
+     "context": "the same three axes as reported in the peer-reviewed literature, and IRRECONCILABLE with the filing on the third: 25.7 against 39 mT/m, a factor 1.52. Not a hardware generation -- the filing, this paper (hardware 1.7) and two further studies all describe the 63.3 mT, 24-inch-bore machine -- and not one paper's error, the figure appearing in at least three, two of them with Hyperfine co-authors. A full-text search of the literature for this machine and '39 mT/m' returns nothing. The conflict is unresolved and is recorded rather than adjudicated. The companion slew disagreement (21 against 67 T/m/s on the third axis) does NOT affect concomitant fields, which go as G^2/B0 and never see a slew rate. WHICH PHYSICAL DIRECTION EACH LABEL NAMES IS NOT PUBLIC, and the evidence conflicts. Three things point to the vendor's Z being the B0-parallel (vertical, anterior-posterior) axis: it is the outlier in both hardware generations' FDA tables, strong and slow, which is the signature of the plate-normal winding in a bi-planar set. Against it, Hyperfine's own hysteresis patent US 2024/0142556 A1 discusses MEASURED data and says 'the B0 field is oriented along the y-axis... the y-gradient coil induces magnetization along the y-axis' -- the only primary document binding a Hyperfine coil label to the field direction, and it says Y. A third source (the Leiden data descriptor) writes 'the AP direction is considered the z-axis', but the same document labels its 3 T scanner differently, so it is declaring the universal z-is-B0 convention rather than reporting vendor labels. One measurement narrows it: across the NIST database the per-axis echo times are identical for every subject and ordered image-x 83.600 < image-y 83.640 < image-z 84.110 ms, so the S/I axis is the most expensive and the vendor's outlier is probably not S/I -- which leaves A/P or R/L. Not decisive: 0.5 ms in 84 also carries slice selection and readout.",
+     "source_key": "gholam2025_swoop",
+     "location": "Methods, Data Acquisition",
+     "confidence": "cited"
+    },
+    "concomitant_alpha": {
+     "value": 0.5,
+     "unit": "",
+     "field_T": 0.064,
+     "context": "the gradient coils' symmetry parameter in the concomitant-field expansion. It is NOT a universal constant, and treating it as one is the standard silent assumption: alpha = 1/2 follows from cylindrical symmetry and holds for the fingerprint coils of a conventional bore magnet, but a Halbach array gives alpha = 0, which produces a SINGLE cross-term of double amplitude instead of the conventional pair and makes the concomitant field grow transversally rather than axially. For this machine it is 1/2, and by an argument rather than by default: de Vos et al. state the value 'also holds for parallel plate gradient coils in an open C- or H-shaped magnet', and the Swoop is an H-shaped magnet with bi-planar gradient coils. Nobody has published concomitant fields for this machine or for any bi-planar 64 mT magnet, so this is an inference from a class statement. The companion parameter beta is taken as zero, which is the symmetric-coil case; an ASYMMETRIC gradient coil adds zeroth- and first-order concomitant terms that do not vanish at isocentre MEASURED FROM GEOMETRY (dmipy-sim#364 tier 1): a Biot-Savart bi-planar pair gives alpha = 0.5000 for SQUARE plates at any gap, since square plates are four-fold symmetric about B0 and the two transverse directions are then equivalent. Both of the published values come out of that one family, so de Vos's 1/2 and 0 are one geometry at two parameter points rather than two facts. BUT THE CONTROLLING PARAMETER IS THE PAIR (width/gap, length/gap), NOT the plate aspect ratio: at a fixed aspect ratio of three, alpha runs 0.02 to 0.43 as the gap grows, because a pair whose gap dwarfs both plate dimensions degenerates to an axially symmetric dipole pair; alpha approaches 0 only when one plate dimension greatly exceeds the gap. So the inference for this machine needs BOTH ratios and this catalogue records neither, which makes 1/2 less constrained than it reads rather than more. It is not a safe default: at 64 mT with 23 mT/m over TE 110 ms, alpha = 1/2 against alpha = 0 differs by 3.85x in the concomitant field 10 cm along x and by hundreds of radians of phase, and at alpha = 0 the field VANISHES along z while growing along x, which independently reproduces de Vos's description of a single cross-term growing transversally rather than axially. One further caution the measurement exposed: alpha = 1/2 does NOT by itself mean a symmetric coil, since an asymmetric one read at 45 degrees to its own principal axes reads 1/2 as well while the concomitant field the alpha model predicts is wrong by orders of magnitude there.",
+     "source_key": "devos2024_concomitant",
+     "location": "Theory, the symmetry parameter for parallel-plate gradient coils",
+     "confidence": "derived"
     }
    },
    "homogeneity": {
@@ -814,9 +1537,407 @@
      "source_key": "gholam2025_swoop",
      "location": "Appendix, background-gradient correction",
      "confidence": "cited"
+    },
+    "b0_validity_radius": {
+     "value": 0.08,
+     "unit": "m",
+     "field_T": 0.064,
+     "context": "how far from isocentre b0_quadratic is anchored: the radius the cited gradient was measured at. The law is an extrapolation beyond this and a consumer refuses rather than extrapolating. The law is now a solid-harmonic expansion truncated at l=3, so beyond this radius it is doubly an extrapolation: in radius, and in the orders that were never constrained",
+     "source_key": "gholam2025_swoop",
+     "location": "Appendix, background-gradient correction",
+     "confidence": "derived"
+    },
+    "b0_asymmetry_axis": {
+     "value": "R",
+     "unit": "",
+     "field_T": 0.064,
+     "context": "the patient-frame direction the odd harmonic is odd along: the magnet is 'asymmetric in the RL-direction' because a single yoke sits on one side. The SIGN is a convention -- the source does not say which side is high -- and a study that cares about the direction must check it. This axis and b0_axis together fix the frame the harmonics are written in, so the law needs no third convention",
+     "source_key": "gholam2025_swoop",
+     "location": "Methods, scanner description",
+     "confidence": "cited"
+    },
+    "b0_harmonic_Z2": {
+     "value": 0.0199562,
+     "unit": "1/m^2",
+     "field_T": 0.064,
+     "context": "the coefficient of the standard shim term Z2 = 2 zeta^2 - xi^2 - eta^2, in the real solid-harmonic basis and nomenclature magnet builders and shim hardware use (Romeo & Hoult 1984) -- the same Z2 a console labels. Coordinates are the magnet's own: zeta along B0, xi along the declared asymmetry axis. THIS IS ONE ADMISSIBLE LAW, NOT THE LAW. Two published figures against fifteen solid-harmonic coefficients of order 2 to 4 is an underdetermined fit, and the degeneracy has been measured rather than assumed: 400 laws sampled, each harmonic and each reproducing BOTH figures exactly, disagree about the background gradient's DIRECTION by a median 71 degrees (90th percentile 134) and about its magnitude at a given point by 36 per cent. What they agree on is the scale -- the steepest gradient in the DSV is 1.400 mT/m in every one by construction, and the shell-average magnitude varies only 18 per cent. So a quantity driven by the WORST gradient is determined and one driven by the gradient's direction or its value at a particular place is not. See examples/rph/swoop_field_law_degeneracy.py.",
+     "source_key": "romeo1984_profiling",
+     "location": "solved against the Methods' DSV homogeneity and the Appendix's background gradient",
+     "confidence": "derived"
+    },
+    "b0_harmonic_Z2X": {
+     "value": 0.665784,
+     "unit": "1/m^3",
+     "field_T": 0.064,
+     "context": "the coefficient of the standard shim term Z2X = xi(4 zeta^2 - xi^2 - eta^2), odd in xi and therefore this magnet's R/L asymmetry. WHY ORDER THREE. The published homogeneity is a POST-LINEAR-SHIM residual -- the source says the magnet was 'B0 shimmed, using linear (gradient) B0 shimming' -- so the l=1 content is nulled and cannot be fitted to it. Order three is then forced by the two figures together. Both constraints scale with the coefficients, so what they pin is the scale-invariant ratio max|grad| / peak-to-peak x R, and the cited 1.4 mT/m at 1100 ppm over a 16 cm DSV requires 1.591. Maximising that ratio over ALL MIXTURES of a given order (not over pure terms, which is a weaker bound and reaches only 1.364 and 1.572 respectively) gives 1.364 through l=2 and 1.971 through l=3. So l<=2 cannot produce this magnet and l=3 can: order three is an inference about the hardware, not a modelling choice. THIS IS ONE ADMISSIBLE LAW, NOT THE LAW. Two published figures against fifteen solid-harmonic coefficients of order 2 to 4 is an underdetermined fit, and the degeneracy has been measured rather than assumed: 400 laws sampled, each harmonic and each reproducing BOTH figures exactly, disagree about the background gradient's DIRECTION by a median 71 degrees (90th percentile 134) and about its magnitude at a given point by 36 per cent. What they agree on is the scale -- the steepest gradient in the DSV is 1.400 mT/m in every one by construction, and the shell-average magnitude varies only 18 per cent. So a quantity driven by the WORST gradient is determined and one driven by the gradient's direction or its value at a particular place is not. See examples/rph/swoop_field_law_degeneracy.py.",
+     "source_key": "gholam2025_swoop",
+     "location": "Methods, scanner description ('asymmetric in RL'); magnitude solved with b0_harmonic_Z2",
+     "confidence": "derived"
+    },
+    "b0_direction_spread_deg": {
+     "value": 71.0,
+     "unit": "",
+     "field_T": 0.064,
+     "context": "the median angle by which admissible field laws disagree about the background gradient's DIRECTION at a point on the 7.55 cm shell; the 90th percentile is 134 degrees. Measured over 400 sampled laws, each harmonic and each reproducing both published figures exactly. This is not an error bar on a measurement -- nobody measured the direction -- it is the width of what two scalars leave open. Any quantity that depends on where the background gradient POINTS carries it; one that depends only on how steep the field gets does not",
+     "source_key": "romeo1984_profiling",
+     "location": "examples/rph/swoop_field_law_degeneracy.py, sampled over the admissible family",
+     "confidence": "derived"
+    },
+    "b0_gradient_point_spread": {
+     "value": 0.36,
+     "unit": "",
+     "field_T": 0.064,
+     "context": "the relative spread (sd/mean) of the background gradient's MAGNITUDE at a fixed point, across the same 400 admissible laws. For contrast the shell-AVERAGE magnitude varies only 18 per cent and the volume-steepest is identical in all of them at 1.400 mT/m, being one of the two fitted figures. So the scale of this field is determined and its shape is not",
+     "source_key": "romeo1984_profiling",
+     "location": "examples/rph/swoop_field_law_degeneracy.py",
+     "confidence": "derived"
     }
    },
-   "notes": "A permanent magnet drifts with gradient heating (NdFeB remanence about -0.1 %/K); the Swoop re-centres f0 between every two DWIs, and its gradients are passively cooled, which caps protocols near an hour. Its diffusion sequence is a non-CPMG SPLICE split-echo train (ohalloran2022_dwi_64mt)."
+   "notes": "A permanent magnet's field follows its temperature, and this one is passively cooled with no temperature control over its cleared 15-30 degC range (510(k)). The measured coefficient is -1400 Hz/K = -514 ppm/K (ljungberg2025_unity, 244 scans at 17 sites) -- about HALF the bulk NdFeB figure, and what the machine is actually made of is not public. Two things keep that from reaching the data: the pre-scan calibration removes the between-session ambient term entirely, and the protocol re-centres f0 after every two DWIs (every volume, for royer2026_tract_64mT), attributing the within-scan drift to GRADIENT heating. (The 50 mT Halbach is the other way round -- there the gradients heat the magnet negligibly and the body is the source.) The gradients are passively cooled, which caps protocols near an hour. Its diffusion sequence is a non-CPMG SPLICE split-echo train (ohalloran2022_dwi_64mt).",
+   "rf": {
+    "b1_axial_falloff": {
+     "value": 33.76,
+     "unit": "1/m^2",
+     "field_T": 0.064,
+     "context": "the coefficient a of kappa_B1 = 1 - a z^2 about the coil's centre, z along the bore (superior-inferior). Derived from a measured B1+ map: 'little appreciable inhomogeneity in the transverse plane' and '15%-20% variation in the superior-inferior direction' over a 144 mm spherical phantom, so the fall-off is taken at the midpoint 17.5 % across the sphere's 72 mm half-extent. It is FLAT transversally, which is why this has no radial term -- the anisotropy is the citation's, not a simplification. A 180 degree pulse therefore delivers 148 degrees at the edge of that sphere. The transverse behaviour is NOT a second measurement and carries no second leaf: at 2.7 MHz the coil bore is quasi-static, so the paraxial expansion of the field is B(s) - (rho^2/4) B''(s) and asserting the axial fall-off DETERMINES a transverse rise. Laplace pins the SUM of the two transverse curvatures at 2a and an azimuthally symmetric coil splits it equally, giving rho^2/2. This coil is oblong (205 x 240 mm), so its true split is unequal and unpublished -- which is also why the source can report 'little appreciable inhomogeneity in the transverse plane' without contradicting the physics: it constrains one direction where the constraint is on the pair. An equal split is the symmetric choice, not a measured one",
+     "source_key": "padormo2023_t1_64mt",
+     "location": "Results, Figure 3A-B (actual flip-angle imaging, 144 mm spherical phantom)",
+     "confidence": "derived"
+    },
+    "b1_calibration_offset": {
+     "value": 1.0556,
+     "unit": "",
+     "field_T": 0.064,
+     "context": "a SYSTEMATIC transmit scale, not a spatial one: 'the expected signal null at 180 degrees was consistently offset to 190 degrees, perhaps due to B1 errors', which is a scale of 190/180. It applies everywhere including isocentre, so it is separate from b1_axial_falloff and multiplies it. The same source reports a spread of about +/- 20 degrees around 300, i.e. +/- 6.7 %",
+     "source_key": "balaji2025_mt_ulf",
+     "location": "Discussion, flip-angle sweep (1-420 degrees) on hardware v1.7",
+     "confidence": "cited"
+    },
+    "b1_load_independent": {
+     "value": 0.03,
+     "unit": "",
+     "field_T": 0.064,
+     "context": "why a transmit profile is a property of the MACHINE at this field and may live in a scanner catalogue at all. At 2.7 MHz the RF wavelength in tissue is metres, so dielectric and standing-wave effects vanish: simulation across 47-100 mT in a 40-tissue head model finds 'only a 3% spatial variation between the maps obtained at 47 mT and 100 mT' while tissue permittivity changes by about 30 %. This value is that 3 %. The same claim must NOT be extended to 3 T or 7 T, where the profile is substantially the subject's",
+     "source_key": "parsa2023_ulf_sar",
+     "location": "Results, normalized difference maps across 47/63.5/75/100 mT",
+     "confidence": "cited"
+    }
+   },
+   "thermal": {
+    "f0_temperature_slope": {
+     "value": -1400.0,
+     "unit": "Hz/K",
+     "field_T": 0.064,
+     "context": "how far the centre frequency moves per kelvin of ambient temperature, as PUBLISHED: a slope of -0.0014 MHz/degC from a linear mixed-effects regression of the DICOM centre frequency on phantom temperature over 244 scans at 17 sites, with site as a random effect (the sites differ in baseline frequency but not in slope). This is the only measured temperature coefficient of THIS machine. Its scope is narrow and matters: it is an AMBIENT sensitivity BETWEEN sessions over 18-24.5 degC, not a within-scan drift rate, and the phantom thermometer was discrete vials about a kelvin apart and censored at 24.5 degC, so the slope is more likely biased toward zero than away from it",
+     "source_key": "ljungberg2025_unity",
+     "location": "Results, Larmor frequency vs temperature (Figure 4)",
+     "confidence": "cited"
+    },
+    "b0_temperature_coefficient": {
+     "value": -0.0005137869135128141,
+     "unit": "1/K",
+     "field_T": 0.064,
+     "context": "the same measured slope as a fraction of B0: -1400 Hz / 2.725 MHz = -514 ppm/K. Divided out here rather than in a consumer, because the published figure is in hertz and the field law is a fraction. Worth knowing that this is about HALF the bulk NdFeB remanence coefficient (-0.09 to -0.12 %/K, quoted as ~-0.1 %/K by cooley2021_portable and measured as 2.5 kHz/degC at 50 mT by oreilly2021_halbach): the magnet is not all permanent-magnet material -- a steel yoke captures part of the flux and its permeability has a different, smaller temperature dependence. So the materials constant OVERSTATES this machine by a factor of two, and the measured figure is the one to use. Note also that no public document states what the Swoop's magnet is MADE of; the FDA filings and the specification sheet say only 'permanent magnet', and NdFeB appears in Hyperfine's patent US11215685B2 only as an example alongside SmCo, which is explicitly offered as the lower-drift alternative. At 514 ppm/K it takes about 2.1 K to equal this magnet's whole 1100 ppm spatial inhomogeneity",
+     "source_key": "ljungberg2025_unity",
+     "location": "derived from the Results slope at f0 = gamma_bar x 0.064 T = 2.7249 MHz",
+     "confidence": "derived"
+    },
+    "operating_temperature_span": {
+     "value": 15.0,
+     "unit": "K",
+     "field_T": 0.064,
+     "context": "the width of the ambient range the scanner is cleared for, 15-30 degC, over which it has NO temperature control and no humidity control -- the 510(k) comparison table says so in as many words, alongside 'warm up time < 3 minutes' and no helium. The span matters because the magnet is uncontrolled across it: at the measured 514 ppm/K the two ends of the cleared range are 7700 ppm apart, 21 kHz, which is why the centre frequency is a calibration and never an assumption. The between-session ambient spread is in practice the LARGEST thermal term -- the UNITY sites span 18 to over 24.5 degC and many sit in unregulated rooms -- and it is entirely removed by the pre-scan calibration, which is why it never reaches the data",
+     "source_key": "hyperfine_510k_k250236",
+     "location": "technological characteristics comparison table, Operation Temperature / Temperature Control",
+     "confidence": "cited"
+    },
+    "f0_recentering_interval": {
+     "value": 339.0,
+     "unit": "s",
+     "field_T": 0.064,
+     "context": "how long the field is left to drift before the centre frequency is re-set: the Swoop's diffusion protocol re-centres f0 after every TWO DWIs following a short calibration scan, 'to account for B0 drift induced by gradient heating'. Two volumes of 212 shots at TR 800 ms is 339 s. This is what makes drift a small effect rather than a large one -- the accumulated offset is discarded and only what accrues within the interval reaches the data. It is an UPPER bound on current practice: a second group re-centres between every diffusion volume (royer2026_tract_64mT), which halves it. NO within-scan drift RATE is published for this machine. The nearest analogues are 50 mT Halbach systems at 800-1300 Hz/h, which is 0.32-0.52 K/h at their own 2.5 kHz/K; carried over at the Swoop's measured 1400 Hz/K that is 450-730 Hz/h, so 42-69 Hz within this interval. That is an estimate from another magnet's warming rate, not a measurement of this one",
+     "source_key": "gholam2025_swoop",
+     "location": "Methods, diffusion acquisition; the shot count and TR from ohalloran2022_dwi_64mt",
+     "confidence": "cited"
+    }
+   },
+   "frame": {
+    "b0_axis": {
+     "value": "A",
+     "unit": "",
+     "field_T": 0.064,
+     "context": "the patient's ANTERIOR direction. Hyperfine's own patent states the bi-planar arrangement puts B0 'along a vertical axis', and that the RF coil therefore has 'a principal axis aligned with a horizontal axis orthogonal to the vertical axis'. For a supine patient vertical is anterior-posterior, so B0 runs across the patient rather than along them -- the opposite of every cylindrical magnet. This is the single fact that makes a magnet frame necessary at all: on a bore scanner B0, the bore and the coil axis coincide and nothing distinguishes them. The SIGN is a convention; no source says which way the field points, and nothing here depends on it",
+     "source_key": "hyperfine_us12366622",
+     "location": "specification, bi-planar B0 magnet and RF coil orientation",
+     "confidence": "cited"
+    },
+    "b1_axis": {
+     "value": "S",
+     "unit": "",
+     "field_T": 0.064,
+     "context": "the patient's head-foot direction: the transmit coil's principal axis, perpendicular to B0 as a solenoid's must be. The 510(k) designates the head coil 'Linear Volume' with a single transmit channel, which is consistent -- a quadrature birdcage CANNOT be used in this geometry, so the coil has one axis and the falloff law has something to be a function of",
+     "source_key": "hyperfine_us12366622",
+     "location": "specification, RF coil principal axis; coil class from FDA K221923",
+     "confidence": "cited"
+    }
+   },
+   "gradient_nonlinearity": {
+    "d_scale_x_dx": {
+     "value": -0.0317,
+     "unit": "1/m",
+     "field_T": 0.064,
+     "context": "how the gradient actually delivered along x mis-scales per metre of LEFT-RIGHT displacement: the xx element of the gradient-nonlinearity tensor L, whose derivative with respect to x this is. Standard error 0.0539 /m over 10 participants (not significant). Measured, not vendor-published: regressed from the NIST dual-field database, where each participant's diffusivity is fitted separately along x, y and z. Encoding along u and fitting against the NOMINAL b measures ADC_u = (L u)^T D (L u), so a fractional gradient error appears DOUBLED in the diffusivity and the slope is halved to get this. TWO LIMITS, both structural. (1) Only the TRACELESS part is observable: normalising each axis by the trace is what removes the unknown true diffusivity, and it forces the three coefficients to sum to zero, so a common mode -- all three axes mis-scaled together -- is invisible here and is NOT included. (2) The x dependence is the only one that can be claimed: every per-axis diffusivity is invariant under a left-right mirror, so mirror-symmetric anatomy cannot make a linear term in x and any such term is instrumental, while a trend in y or z would be indistinguishable from anatomy. Attributing it to gradient AMPLITUDE rather than to a rotation of the encoding frame is an inference: a rotation enters at second order and would need an implausible 0.3 rad/m, whereas an amplitude error enters at first order and needs 0.45 %/cm. Eddy currents and any vendor distortion correction already in the product reconstruction are NOT excluded",
+     "source_key": "nist2025_dualfield_dwi",
+     "location": "derived from participants 00-09, per-axis diffusivity regressed on left-right position",
+     "confidence": "derived"
+    },
+    "d_scale_y_dx": {
+     "value": 0.4549,
+     "unit": "1/m",
+     "field_T": 0.064,
+     "context": "how the gradient actually delivered along y mis-scales per metre of LEFT-RIGHT displacement: the yy element of the gradient-nonlinearity tensor L, whose derivative with respect to x this is. Standard error 0.0586 /m over 10 participants (t = +7.8). Measured, not vendor-published: regressed from the NIST dual-field database, where each participant's diffusivity is fitted separately along x, y and z. Encoding along u and fitting against the NOMINAL b measures ADC_u = (L u)^T D (L u), so a fractional gradient error appears DOUBLED in the diffusivity and the slope is halved to get this. TWO LIMITS, both structural. (1) Only the TRACELESS part is observable: normalising each axis by the trace is what removes the unknown true diffusivity, and it forces the three coefficients to sum to zero, so a common mode -- all three axes mis-scaled together -- is invisible here and is NOT included. (2) The x dependence is the only one that can be claimed: every per-axis diffusivity is invariant under a left-right mirror, so mirror-symmetric anatomy cannot make a linear term in x and any such term is instrumental, while a trend in y or z would be indistinguishable from anatomy. Attributing it to gradient AMPLITUDE rather than to a rotation of the encoding frame is an inference: a rotation enters at second order and would need an implausible 0.3 rad/m, whereas an amplitude error enters at first order and needs 0.45 %/cm. Eddy currents and any vendor distortion correction already in the product reconstruction are NOT excluded",
+     "source_key": "nist2025_dualfield_dwi",
+     "location": "derived from participants 00-09, per-axis diffusivity regressed on left-right position",
+     "confidence": "derived"
+    },
+    "d_scale_z_dx": {
+     "value": -0.4232,
+     "unit": "1/m",
+     "field_T": 0.064,
+     "context": "how the gradient actually delivered along z mis-scales per metre of LEFT-RIGHT displacement: the zz element of the gradient-nonlinearity tensor L, whose derivative with respect to x this is. Standard error 0.0673 /m over 10 participants (t = -6.3). Measured, not vendor-published: regressed from the NIST dual-field database, where each participant's diffusivity is fitted separately along x, y and z. Encoding along u and fitting against the NOMINAL b measures ADC_u = (L u)^T D (L u), so a fractional gradient error appears DOUBLED in the diffusivity and the slope is halved to get this. TWO LIMITS, both structural. (1) Only the TRACELESS part is observable: normalising each axis by the trace is what removes the unknown true diffusivity, and it forces the three coefficients to sum to zero, so a common mode -- all three axes mis-scaled together -- is invisible here and is NOT included. (2) The x dependence is the only one that can be claimed: every per-axis diffusivity is invariant under a left-right mirror, so mirror-symmetric anatomy cannot make a linear term in x and any such term is instrumental, while a trend in y or z would be indistinguishable from anatomy. Attributing it to gradient AMPLITUDE rather than to a rotation of the encoding frame is an inference: a rotation enters at second order and would need an implausible 0.3 rad/m, whereas an amplitude error enters at first order and needs 0.45 %/cm. Eddy currents and any vendor distortion correction already in the product reconstruction are NOT excluded",
+     "source_key": "nist2025_dualfield_dwi",
+     "location": "derived from participants 00-09, per-axis diffusivity regressed on left-right position",
+     "confidence": "derived"
+    },
+    "gradient_completion": {
+     "value": 0.5,
+     "unit": "",
+     "field_T": 0.064,
+     "context": "THE ONE MEMBER OF THIS TENSOR'S FREEDOM THAT IS EXPOSED -- not the only one that exists. The NIST regression measures the DIAGONAL of the gradient-nonlinearity tensor, dL_jj/dx, and nothing else. Harmonicity and L(0) = I do not then determine the rest: for EACH of the three coils the admissible potentials form a four-parameter affine family in this basis (six in the full order-four space), since any two-dimensional harmonic in the other two coordinates with zero gradient at the origin may be added without touching the measured diagonal. What ships is the MINIMUM-NORM member, which is provably unique (every free direction is a distinct solid harmonic and so is orthogonal to the particular solution, making zero the unique minimiser of added field energy), is the lowest-order member, and is the only one keeping each coil's reflection parity -- B_z odd in the axis it encodes, the ideal Golay and Maxwell winding symmetry. Under that parity assumption the family collapses to a point; the assumption is a modelling choice and is NOT in the data, and note the model already asserts one ideal parity is broken, since a non-zero a_j is a breach of parity in x. THE UNSTATED CHOICE IS THE LARGER ONE: an admissible alternative breaking the y coil's parity by as much as the measured effect moves L by the whole modelled nonlinearity and a b value by a few per cent, and the tier-0 admissibility gate cannot distinguish it. This leaf's own number is the share of the x coil's curvature taken from y; 1/2 is the least-committed split and is that sub-family's minimum-norm point. It is cheap -- over the validity radius the whole lam family spans 3.5 per cent of the nonlinearity and 0.001 per cent of a b value, because a_x is the smallest of the three coefficients at 7 per cent of the largest -- but it is one line inside the four-dimensional freedom above, not a different kind of thing. A DIAGONAL L is not an option at any lam: it would make each coil's B_z depend on its own axis alone, and Laplace then forces that dependence to be linear, so a diagonal L is the identity or it is not a field at all.",
+     "source_key": "nist2025_dualfield_dwi",
+     "location": "not a location in the data: the share is fixed by convention, since the measurement constrains only the diagonal and the x coil's harmonic completion is one-parameter",
+     "confidence": "derived"
+    }
+   }
+  },
+  "siemens_connectome_skyra_3T": {
+   "vendor": "Siemens Healthineers",
+   "model": "customized MAGNETOM Skyra ('Connectome Skyra'): SC72 gradient insert, 56 cm bore body transmit coil (the WU-Minn HCP 3T)",
+   "field_T": 3.0,
+   "gradient": {
+    "max_amplitude": {
+     "value": 100,
+     "unit": "mT/m",
+     "field_T": 3.0,
+     "context": "DIFFUSION regime. The manual gives two regimes: 'diffusion: Gmax = 100 mT/m, max slew rate = 91 mT/m/ms; readout/imaging: Gmax = 42 mT/m, max slew rate = 200 mT/m/ms'. The customization raises Gmax 'from 40 mT/m to 100 mT/m on the WU-Minn 3T' relative to a stock Skyra",
+     "source_key": "hcp_s1200_manual",
+     "location": "'3T MR scanner and other hardware', p. 34",
+     "confidence": "cited"
+    },
+    "max_slew_rate": {
+     "value": 200,
+     "unit": "T/m/s",
+     "field_T": 3.0,
+     "context": "READOUT/IMAGING regime: the manual's '200 mT/m/ms' is 200 T/m/s. The diffusion slew is less than half this (max_slew_rate_diffusion) -- quoting 200 T/m/s for a diffusion waveform on this machine is wrong by 2.2x",
+     "source_key": "hcp_s1200_manual",
+     "location": "'3T MR scanner and other hardware', p. 34",
+     "confidence": "cited"
+    },
+    "max_slew_rate_diffusion": {
+     "value": 91,
+     "unit": "T/m/s",
+     "field_T": 3.0,
+     "context": "the manual's '91 mT/m/ms' is 91 T/m/s, the binding slew for diffusion encoding and so the one a diffusion waveform designer must use. Unlike the Connectom's 62.5 T/m/s this is published as the regime limit itself, not derived from a PNS argument",
+     "source_key": "hcp_s1200_manual",
+     "location": "'3T MR scanner and other hardware', p. 34",
+     "confidence": "cited"
+    },
+    "max_amplitude_readout": {
+     "value": 42,
+     "unit": "mT/m",
+     "field_T": 3.0,
+     "context": "READOUT/IMAGING regime Gmax. Recorded separately because the two regimes trade off oppositely on this machine: diffusion gets the amplitude (100 mT/m) at low slew, readout gets the slew (200 T/m/s) at low amplitude",
+     "source_key": "hcp_s1200_manual",
+     "location": "'3T MR scanner and other hardware', p. 34",
+     "confidence": "cited"
+    },
+    "gradient_raster_time": {
+     "value": 10,
+     "unit": "us",
+     "field_T": 3.0,
+     "context": "Siemens IDEA standard gradient raster",
+     "source_key": "pulseq_spec",
+     "location": "DEFINITIONS block, GradientRasterTime 1e-05",
+     "confidence": "widely-quoted"
+    },
+    "concomitant_alpha": {
+     "value": 0.5,
+     "unit": "",
+     "field_T": 3.0,
+     "context": "the gradient coils' symmetry parameter: 1/2 for the cylindrically symmetric fingerprint coils of a conventional bore magnet. Stated rather than assumed, because it is not universal -- a Halbach array gives 0",
+     "source_key": "devos2024_concomitant",
+     "location": "Theory, alpha for conventional cylindrical gradient coils",
+     "confidence": "cited"
+    }
+   },
+   "rf": {
+    "rf_raster_time": {
+     "value": 1,
+     "unit": "us",
+     "field_T": 3.0,
+     "context": "Siemens IDEA standard RF raster",
+     "source_key": "pulseq_spec",
+     "location": "DEFINITIONS block, RadiofrequencyRasterTime 1e-06",
+     "confidence": "widely-quoted"
+    }
+   },
+   "homogeneity": {
+    "shim_max_order": {
+     "value": 2,
+     "unit": "",
+     "field_T": 3.0,
+     "context": "'The HCP Skyra has the standard set of Siemen's shim coils (up to 2nd order).' Bounds the correction, not the residual: any third-order or higher term survives shimming untouched. No homogeneity figure in ppm is published for this machine anywhere in the HCP documentation",
+     "source_key": "hcp_s1200_manual",
+     "location": "'3T MR scanner and other hardware', p. 34",
+     "confidence": "cited"
+    }
+   },
+   "gradient_nonlinearity": {
+    "spherical_harmonic_coefficients": {
+     "value": null,
+     "unit": "",
+     "field_T": 3.0,
+     "context": "REFUSED AT SOURCE, and cited as such. The HCP S1200 Reference Manual states verbatim: 'The gradient field nonlinearity coefficients for the Connectome Skyra are considered by Siemens to be proprietary information. To request access to these coefficients, please contact your Siemens collaboration manager.' The same manual is emphatic that the effect is NOT negligible here: 'Unusually large gradient nonlinearities are present in the raw images for ALL modalities', and 'the gradient nonlinearities associated with all Connectome Skyra scans exceed those of a conventional clinical 3T scanner', because 'technical limitations prevent centering of the subjects' heads in the bore isocenter'. So the correction is known to matter, is applied in the HCP processed data, and the coefficients that define it cannot be obtained. A null with a citation is the honest record: it is a MEASURED ABSENCE, not an unfilled field",
+     "source_key": "hcp_s1200_manual",
+     "location": "'Gradient nonlinearities in unprocessed datasets', p. 21",
+     "confidence": "NEEDS VERIFICATION"
+    }
+   },
+   "notes": "Three different machines are routinely confused and the catalogue keeps them apart: this Connectome Skyra (WU-Minn HCP 3T, 100 mT/m diffusion), siemens_magnetom_connectom_3T (the MGH/UCLA AS302 machine, 300 mT/m), and a stock Skyra (40 mT/m). The HCP manual itself draws the line: the WU-Minn gradients are 'not as much as the 300 mT/m customized gradients used by the MGH/UCLA HCP consortium'. All 184 HCP 7T subjects were also scanned here, which is the co-registration; the 7T machine is siemens_magnetom_7t_plus_cmrr. No homogeneity figure is published for THIS machine. Gach 2020 Table S5 gives a stock 70 cm Skyra magnet as 0.05/0.03 ppm VRMS at 20 cm DSV, and the HCP customization is the gradient insert and transmit coil rather than the magnet -- but that the magnet is unmodified is an inference and nobody has published it, so it is recorded here as prose and not as a leaf.",
+   "frame": {
+    "b0_axis": {
+     "value": "S",
+     "unit": "",
+     "field_T": 3.0,
+     "context": "the bore axis, which for a cylindrical superconducting magnet is the patient's head-foot direction. This is the default every such machine shares and it is stated rather than assumed, because a MISSING axis and an axis that happens to be S are not the same claim",
+     "source_key": "marques2019_lowfield",
+     "location": "the geometry of a cylindrical bore magnet",
+     "confidence": "widely-quoted"
+    },
+    "b1_axis": {
+     "value": null,
+     "unit": "",
+     "field_T": 3.0,
+     "context": "NULL, and deliberately: a quadrature birdcage drives two orthogonal transverse components and so has no single B1 axis. A falloff law along 'the coil axis' is meaningless for it. Only a LINEAR volume coil -- a solenoid on a transverse-B0 magnet -- has one",
+     "source_key": "marques2019_lowfield",
+     "location": "coil geometry",
+     "confidence": "widely-quoted"
+    }
+   }
+  },
+  "siemens_magnetom_7t_plus_cmrr": {
+   "vendor": "Agilent (magnet) / Siemens Healthineers (console)",
+   "model": "MAGNETOM 7T Plus on a 900 mm actively-shielded Agilent magnet, SC72 gradient (the CMRR 7T, installed 2011)",
+   "field_T": 7.0,
+   "gradient": {
+    "max_amplitude": {
+     "value": 70,
+     "unit": "mT/m",
+     "field_T": 7.0,
+     "context": "per axis, SC72 gradient. The HCP manual independently calls it a 'standard SC72CD 7T gradient insert', so the coil is corroborated by the data provider as well as the site",
+     "source_key": "cmrr_7t_magnet_web",
+     "location": "Primary Gradient table, 'Gradient Model: SC72' / 'Maximum Strength: 70 mT/m'",
+     "confidence": "cited"
+    },
+    "max_slew_rate": {
+     "value": 200,
+     "unit": "T/m/s",
+     "field_T": 7.0,
+     "context": "per axis, SC72 gradient. No de-rated diffusion slew is published for this machine, so unlike the Connectom there is no max_slew_rate_diffusion leaf here -- the PNS-limited value is simply not known",
+     "source_key": "cmrr_7t_magnet_web",
+     "location": "Primary Gradient table, 'Slew Rate: 200 T/m/s'",
+     "confidence": "cited"
+    },
+    "gradient_raster_time": {
+     "value": 10,
+     "unit": "us",
+     "field_T": 7.0,
+     "context": "Siemens IDEA standard gradient raster",
+     "source_key": "pulseq_spec",
+     "location": "DEFINITIONS block, GradientRasterTime 1e-05",
+     "confidence": "widely-quoted"
+    },
+    "concomitant_alpha": {
+     "value": 0.5,
+     "unit": "",
+     "field_T": 7.0,
+     "context": "the gradient coils' symmetry parameter: 1/2 for the cylindrically symmetric fingerprint coils of a conventional bore magnet. Stated rather than assumed, because it is not universal -- a Halbach array gives 0",
+     "source_key": "devos2024_concomitant",
+     "location": "Theory, alpha for conventional cylindrical gradient coils",
+     "confidence": "cited"
+    }
+   },
+   "rf": {
+    "rf_raster_time": {
+     "value": 1,
+     "unit": "us",
+     "field_T": 7.0,
+     "context": "Siemens IDEA standard RF raster",
+     "source_key": "pulseq_spec",
+     "location": "DEFINITIONS block, RadiofrequencyRasterTime 1e-06",
+     "confidence": "widely-quoted"
+    },
+    "peak_B1_head_coil": {
+     "value": null,
+     "unit": "uT",
+     "field_T": 7.0,
+     "context": "the HCP 7T protocol used a Nova Medical Nova32 32-channel receive array with a head-only transmit coil; CMRR lists 16 transmit channels at 1 kW each (8 kW combined). Peak B1 in uT is coil-, load- and RF-shim-dependent and is published nowhere for this configuration",
+     "source_key": "cmrr_7t_magnet_web",
+     "location": "RF Transmit and Receive Information table",
+     "confidence": "NEEDS VERIFICATION"
+    }
+   },
+   "homogeneity": {
+    "b0_homogeneity": {
+     "value": 5.0,
+     "unit": "ppm",
+     "field_T": 7.0,
+     "context": "CMRR quote the magnet's homogeneity as '5.0 (450) ppm (mm)': 5.0 ppm over a 450 mm DSV. TWO CAVEATS TRAVEL WITH THIS NUMBER AND NEITHER IS OPTIONAL. (1) THE METRIC IS NOT STATED. Peak-to-peak, VRMS and FWHM differ by more than an order of magnitude on one machine -- Gach 2020 measured 0.386 ppm pk-pk against 0.024 ppm VRMS on a Prisma, a factor of 16 -- so this 5.0 CANNOT be compared with the Prisma's cited 0.386 pk-pk without knowing which it is. That ambiguity is the very thing Gach 2020 was written to fix. (2) It is a MAGNET SPEC over a 450 mm DSV, not a measurement in a shimmed head: a 450 mm sphere is ~3.5x the linear size of the 24 cm DSV Gach measured over, and the number says nothing about what survives shimming. As always, a shape-free spread over a sphere does not determine a harmonic expansion, which is why this entry carries NO b0_harmonic_Z2. Recorded because it is the only published homogeneity figure for the machine the HCP 7T release was acquired on",
+     "source_key": "cmrr_7t_magnet_web",
+     "location": "Magnet Information table, 'Field Homogeneity: 5.0 (450) ppm (mm)'",
+     "confidence": "cited"
+    },
+    "shim_max_order": {
+     "value": 2,
+     "unit": "",
+     "field_T": 7.0,
+     "context": "CMRR list '2nd Order Shims: True (12.5 A/ch)' and '3rd Order Shims: False'. This BOUNDS what shimming can remove and nothing else: every residual term of order 3 or higher survives the shim untouched. It is a statement about the correction, not about the residual -- it does not say what the field IS",
+     "source_key": "cmrr_7t_magnet_web",
+     "location": "Primary Gradient table, '2nd Order Shims' / '3rd Order Shims' rows",
+     "confidence": "cited"
+    }
+   },
+   "notes": "THIS IS NOT A MAGNETOM TERRA, and the distinction is the reason the entry exists. The HCP 7T data were acquired on an Agilent 900 mm actively-shielded magnet with a Siemens MAGNETOM 7T Plus console and an SC72 gradient (70 mT/m, 200 T/m/s); a Terra is a Siemens magnet with XR gradients (80 mT/m, 200 T/m/s). Different magnet, different gradient, different homogeneity. Replaying HCP 7T data against siemens_magnetom_terra_7T would overstate the available gradient by 14%. All 184 HCP 7T subjects were also scanned at 3 T on siemens_connectome_skyra_3T, which is what makes the pair co-registered.",
+   "frame": {
+    "b0_axis": {
+     "value": "S",
+     "unit": "",
+     "field_T": 7.0,
+     "context": "the bore axis, which for a cylindrical superconducting magnet is the patient's head-foot direction. This is the default every such machine shares and it is stated rather than assumed, because a MISSING axis and an axis that happens to be S are not the same claim",
+     "source_key": "marques2019_lowfield",
+     "location": "the geometry of a cylindrical bore magnet",
+     "confidence": "widely-quoted"
+    },
+    "b1_axis": {
+     "value": null,
+     "unit": "",
+     "field_T": 7.0,
+     "context": "NULL, and deliberately: a quadrature birdcage drives two orthogonal transverse components and so has no single B1 axis. A falloff law along 'the coil axis' is meaningless for it. Only a LINEAR volume coil -- a solenoid on a transverse-B0 magnet -- has one",
+     "source_key": "marques2019_lowfield",
+     "location": "coil geometry",
+     "confidence": "widely-quoted"
+    }
+   }
   }
  },
  "safety": {

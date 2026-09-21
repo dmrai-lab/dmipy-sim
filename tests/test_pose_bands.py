@@ -39,10 +39,13 @@ def pack():
 
 def _Lobe(amp, axis=(1.0, 0.0, 0.0), dt=DT, n_t=N_T):
     """One unrefocused constant gradient lobe, no pulse: its zeroth moment survives, so a static walker accrues
-    ``q . r``. Built deliberately unrefocused, so not through a builder (which would refuse it)."""
+    ``q . r``. Built deliberately unrefocused, so not through a builder (which would refuse it), and probing the
+    SUBSTRATE's response to it -- no voxel is claimed (``voxel_scale="substrate"``; a replay of an image would
+    need one, dmipy-sim#375)."""
     G = np.zeros((1, n_t, 3))
     G[0, :, :] = amp * np.asarray(axis, float)
-    return ScannerSequence(G=G, dt=dt, family="lobe", encoding=Encoding(bvalues=np.array([0.0]), gradient_directions=np.asarray([axis], float)))
+    return ScannerSequence(G=G, dt=dt, family="lobe", voxel_scale="substrate",
+                           encoding=Encoding(bvalues=np.array([0.0]), gradient_directions=np.asarray([axis], float)))
 
 
 def _q_of(seq):

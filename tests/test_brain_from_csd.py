@@ -90,3 +90,138 @@ def test_csd_on_the_synthetic_dwi_recovers_the_fod_that_built_it(example, wm_pac
     c_in = rotate_sh(fod.data, R.T)[tuple(voxels.T)]
     angle, acc = check.compare(c_in, c_out, check.fibonacci_sphere())
     assert angle.size >= 20 and np.median(angle) < 8.0 and np.mean(angle < 15.0) > 0.75 and np.median(acc) > 0.9
+
+
+# ── a machine's own field, rendered onto this oblique grid (dmipy-sim#322 PR 3) ─────────────────────
+def test_the_field_law_must_be_rendered_through_the_obliquity(example, wm_pack):
+    """The BATMAN acquisition is prescribed 2.58 degrees oblique, so the grid's axes are NOT the bore's.
+    A field law is a function of position in the BORE, so the grid records how it is tilted in it and the
+    renderer uses that by default -- because forgetting would not fail, it would evaluate the law at the
+    wrong place and return an entirely plausible volume.
+
+    What this measures is what that record buys, by defeating it with an identity rotation. The Swoop's law
+    is what makes it visible: its R/L asymmetry is an ODD term in x, so getting the frame wrong shifts the
+    field the wrong way on one side of the bore. An isotropic law would have hidden almost all of it."""
+    from dmipy_sim.acquisition.scanners import ScannerLimits
+    from dmipy_sim.phantom import b0_offset_map
+
+    ph, fod, R = example.build(str(CROP), wm_pack)
+    grid = ph.grid
+    swoop = ScannerLimits.of("swoop")
+    pos = grid.positions_m(ph.voxel_index)
+
+    # the grid CARRIES its obliquity, so the default is already right and forgetting is not possible
+    assert grid.to_scanner is not None
+    np.testing.assert_allclose(grid.to_scanner, R, atol=1e-12)
+    right = b0_offset_map(swoop, grid)(pos)
+    np.testing.assert_allclose(b0_offset_map(swoop, grid, to_scanner=R)(pos), right, rtol=1e-12)
+    wrong = b0_offset_map(swoop, grid, to_scanner=np.eye(3))(pos)      # the obliquity defeated
+
+    # rendering with R is the same as rotating the coordinates first and rendering without: the two routes
+    # to the same answer agree, which is what says the rotation is applied the right way round
+    by_hand = swoop.b0_offset((pos - np.asarray(grid.isocenter_m)) @ np.asarray(R).T)
+    np.testing.assert_allclose(right, by_hand, rtol=1e-9, atol=1e-15)
+
+    # and defeating it disagrees -- what the grid's own rotation is buying
+    worst = np.abs(right - wrong).max() / swoop.field_T * 1e6
+    # The crop is small and the harmonic law has no linear term, so it is flat near the centre and the
+    # obliquity has little to bite on there. The full-field-of-view check below is what carries the weight.
+    assert worst > 0.4, f"defeating the obliquity moved the field by only {worst:.3f} ppm: not a test"
+
+    # The crop is 2.5 x 2.5 x 0.75 cm, which understates it: the bowl goes as r^2 and the asymmetry as r,
+    # so the error grows with the field of view. Over the acquisition's real 24 x 24 x 15 cm, inside the
+    # law's anchor radius, it reaches about 9 ppm -- some 25 Hz at 64 mT, against a field that spans about
+    # 1050 ppm over the same volume. So it is roughly a percent: not catastrophic, and exactly the size
+    # that gets shipped unnoticed.
+    from dmipy_sim.phantom import Grid
+    full = Grid(shape=(96, 96, 60), voxel_size_m=grid.voxel_size_m, origin_m=grid.origin_m,
+                isocenter_m=grid.isocenter_m, axes=grid.axes)
+    p_full = full.positions_m(full.every_voxel)
+    inside = np.linalg.norm(p_full - np.asarray(full.isocenter_m), axis=-1) < swoop.b0_validity_radius
+    a = b0_offset_map(swoop, full, to_scanner=R)(p_full[inside])
+    b = b0_offset_map(swoop, full, to_scanner=np.eye(3))(p_full[inside])
+    at_fov = np.abs(a - b).max() / swoop.field_T * 1e6
+    assert at_fov > 5.0, f"only {at_fov:.1f} ppm over the real field of view"
+
+
+def test_a_field_law_is_none_where_the_machine_publishes_none(example, wm_pack):
+    """Every machine but a permanent-magnet one, and `off_resonance=None` is exactly what a replay already
+    means by no field offset -- so a brain at 3 T composes as it always did."""
+    from dmipy_sim.acquisition.scanners import ScannerLimits
+    from dmipy_sim.phantom import b0_offset_map
+    ph, fod, R = example.build(str(CROP), wm_pack)
+    assert b0_offset_map(ScannerLimits.of("prisma"), ph.grid, to_scanner=R) is None
+
+
+# ── what the magnet costs this brain (dmipy-sim#322 PR 8) ───────────────────────────────────────────
+def test_the_magnet_s_adc_bias_clears_the_pack_s_floor_where_the_magnet_encodes():
+    """The result that decides whether any of this matters, and it is sharper than the version it replaces.
+
+    Over the BATMAN matrix centred in the bore the Swoop's ADC bias exceeds the 1 s CACTUS pack's floor of
+    0.0048 in 97.6 % of voxels -- so it is almost never lost in the Monte-Carlo error. But it does NOT exceed
+    it everywhere, and the exceptions are not noise: they sit near isocentre, where a linearly shimmed magnet
+    has no first-order field variation and therefore encodes nothing. Inside 2 cm only about half the voxels
+    clear the floor.
+
+    An earlier version asserted the bias cleared the floor essentially everywhere, including at isocentre.
+    That came from a field law with a free linear term fitted to a figure the source states is measured AFTER
+    linear shimming -- double-counting, and it manufactured a bias where the magnet has none. The worst-case
+    figure is unchanged by the correction (15.4 % against 15.3 %); the MEDIAN halves, because the old law was
+    wrong mostly in the middle."""
+    import importlib.util
+    from dmipy_sim.acquisition.scanners import ScannerLimits
+    spec = importlib.util.spec_from_file_location("bias", ROOT / "examples" / "rph" / "swoop_brain_bias.py")
+    mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+
+    swoop = ScannerLimits.of("swoop")
+    grid, R = mod.brain_grid(shape=(24, 24, 16), voxel_m=5e-3)
+    seq = mod.swoop_protocol(n_dirs=6)
+    vox, bias = mod.bias_map(swoop, grid, R, seq)
+    worst_dir = np.abs(bias).max(axis=1)
+    rad = np.linalg.norm(grid.positions_m(vox) - np.asarray(grid.isocenter_m), axis=-1)
+
+    assert 0.10 < np.abs(bias).max() < 0.20, f"worst bias {np.abs(bias).max():.1%}, not the measured ~15 %"
+    above = worst_dir > mod.PACK_FLOOR
+    assert above.mean() > 0.9, f"only {above.mean():.1%} of voxels clear the pack floor"
+    # and the ones that do not are CENTRAL, which is the shim rather than an accident
+    assert np.median(rad[~above]) < np.median(rad[above])
+
+    med = [np.median(worst_dir[(rad >= lo) & (rad < hi)])
+           for lo, hi in ((0.0, 0.02), (0.02, 0.04), (0.04, 0.06), (0.06, 0.08))]
+    assert all(np.diff(med) > 0), f"the bias is not monotone in radius: {np.round(med, 4)}"
+    assert med[0] < 2 * mod.PACK_FLOOR, "the innermost band should be near the floor, not far above it"
+    # averaging over directions still hides most of it
+    assert np.abs(bias.mean(axis=1)).max() < 0.4 * np.abs(bias).max()
+
+def test_a_shimmed_superconducting_magnet_has_no_shape_to_render_and_that_is_the_comparison():
+    """The 3 T half of the same figure. A clinical magnet's residual is parts per million, nobody publishes
+    its shape, and the catalogue carries none -- so the bias map is `None` rather than small. That is an
+    answer about the machines, not a missing feature."""
+    import importlib.util
+    from dmipy_sim.acquisition.scanners import ScannerLimits
+    spec = importlib.util.spec_from_file_location("bias", ROOT / "examples" / "rph" / "swoop_brain_bias.py")
+    mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+    grid, R = mod.brain_grid(shape=(8, 8, 6), voxel_m=10e-3)
+    seq = mod.swoop_protocol(n_dirs=3)
+    for name in ("prisma", "connectom", "terra"):
+        _vox, bias = mod.bias_map(ScannerLimits.of(name), grid, R, seq)
+        assert bias is None, f"{name} suddenly has a field shape"
+
+
+def test_the_catalogued_machine_reaches_the_brain_s_signal(example, wm_pack):
+    """The check that failed on the branch before dmipy-sim#377: the crop replayed on ``ScannerLimits.of("swoop")``
+    was bit-identical to the crop on a bare 64 mT field, while the reference route said the delivered b differed
+    by percent. Now the machine's tensor, background and Maxwell term reach every voxel, through the grid's own
+    obliquity, once per distinct delivered gradient."""
+    from dmipy_sim import sequences
+    from dmipy_sim.acquisition.scanners import ScannerLimits
+    ph, fod, R = example.build(str(CROP), wm_pack)
+    dirs = np.array([[1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 0], [0, 1, 1], [1, 0, 1]], float)
+    seq = sequences.pgse(dirs.tolist(), 0.006, 0.015, bvalues=[1e9] * 6, TE=0.030, n_t=61)   # on the grid's own voxels
+    rep = {}
+    S_sw = ph.replay(seq, pose=R, scanner=ScannerLimits.of("swoop"), encoding_tolerance=0.05, report=rep)
+    S_b0 = ph.replay(seq, pose=R, scanner=0.064)
+    m = np.isfinite(S_sw)
+    moved = np.abs(S_sw - S_b0)[m].max() / np.abs(S_b0)[m].max()
+    assert 1 < rep["n_encoding_classes"] < ph.n_voxels
+    assert 2e-3 < moved < 0.2, f"the machine moved the crop's signal by {moved:.2e} of its largest value"

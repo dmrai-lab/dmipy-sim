@@ -200,3 +200,172 @@ def test_a_prescription_places_the_acquisition_in_the_bore_and_derives_nothing()
     g = Grid.from_prescription(p)
     assert g.shape == (40, 40, 1) and g.axes == "RAS"
     np.testing.assert_allclose(g.origin_m, p.origin_m); np.testing.assert_allclose(g.isocenter_m, p.isocenter_m)
+
+
+# ── a magnet's own gradient (dmipy-sim#285 item 3) ──────────────────────────────────────────────────
+def _pgse_1e9():
+    return d.pgse([[1.0, 0, 0]], 0.008, 0.030, bvalues=[1e9], TE=0.05, n_t=600)
+
+
+def test_a_background_gradient_is_added_everywhere_and_remembered():
+    """A magnet does not switch off, so its gradient is on through the pulses and the dead times that a
+    builder guarantees are clear. The object therefore records what the magnet added, and the builder's
+    guarantees are judged on what the builder laid out."""
+    seq = _pgse_1e9()
+    g = [1.4e-3, 0.0, 0.0]
+    bg = seq.with_background_gradient(g)
+    # G is stored float32, so the difference carries the storage's rounding, not the transform's
+    np.testing.assert_allclose(np.asarray(bg.G) - np.asarray(seq.G),
+                               np.broadcast_to(np.float32(g), seq.G.shape), rtol=1e-5, atol=1e-8)
+    assert np.abs(np.asarray(bg.G)[..., 0]).min() > 0.0    # on at EVERY sample, dead time included
+    assert np.abs(np.asarray(seq.G)[..., 0]).min() == 0.0  # where the built waveform is off
+    np.testing.assert_allclose(bg.designed_gradient, seq.G, rtol=1e-5, atol=1e-8)
+    assert bg.background_gradient == ((1.4e-3, 0.0, 0.0),)
+    bg.validate()                                          # the builder's guarantees still hold of the design
+
+
+def test_the_background_gradients_effect_on_b_is_a_cross_term():
+    """The magnet's own b is negligible; what moves the b-value is its CROSS term with the pulsed gradient.
+    So reversing the background reverses the effect, and the two straddle the asked-for b symmetrically --
+    which is the ADC error a low-field magnet produces, and why it is signed per direction."""
+    seq = _pgse_1e9()
+    b0 = float(seq.b()[0])
+    plus = float(seq.with_background_gradient([1.4e-3, 0, 0]).b()[0])
+    minus = float(seq.with_background_gradient([-1.4e-3, 0, 0]).b()[0])
+    perp = float(seq.with_background_gradient([0, 0, 1.4e-3]).b()[0])
+    alone = float(seq.with_gradient(np.zeros_like(seq.G)).with_background_gradient([1.4e-3, 0, 0]).b()[0])
+
+    assert plus > b0 > minus                                          # signed: it is a cross term
+    assert abs((plus - b0) - (b0 - minus)) < 0.05 * (plus - b0)       # and very nearly antisymmetric
+    np.testing.assert_allclose(0.5 * (plus + minus) - b0, alone, rtol=0.05)   # what is left is its own b
+    assert alone < 1e-2 * b0                                          # which is negligible on its own
+    assert abs(perp - b0) < 0.1 * (plus - b0)                         # perpendicular: almost nothing
+    assert 0.05 < (plus - b0) / b0 < 0.10    # 1.4 mT/m on a Swoop: "up to 7 % of the diffusion gradient"
+
+
+def test_the_declared_b_is_what_was_asked_and_b_is_what_is_played():
+    """The encoding records the prescription at isocentre; `b()` reports the waveform that is actually
+    played. Away from isocentre they differ, and that difference IS the measurement error."""
+    seq = _pgse_1e9()
+    bg = seq.with_background_gradient([1.4e-3, 0, 0])
+    assert bg.encoding is not None and bg.encoding.bvalues[0] == seq.encoding.bvalues[0]
+    assert not np.isclose(float(bg.b()[0]), float(bg.encoding.bvalues[0]), rtol=1e-3)
+
+
+def test_a_background_gradient_is_refused_twice_over_and_in_the_wrong_shape():
+    seq = _pgse_1e9()
+    with pytest.raises(ValueError, match="one vector or one per measurement"):
+        seq.with_background_gradient([[1e-3, 0, 0], [2e-3, 0, 0]])
+    once = seq.with_background_gradient([1e-3, 0, 0])
+    with pytest.raises(ValueError, match="already carries a background gradient"):
+        once.with_background_gradient([1e-3, 0, 0])
+
+
+def test_a_background_gradient_may_be_given_per_measurement():
+    """Different voxels sit at different places in the bore, so an image asks for one vector per row."""
+    two = d.pgse([[1.0, 0, 0], [1.0, 0, 0]], 0.008, 0.030, bvalues=[1e9, 1e9], TE=0.05, n_t=600)
+    bg = two.with_background_gradient([[1.4e-3, 0, 0], [-1.4e-3, 0, 0]])
+    b = bg.b()
+    assert b[0] > float(two.b()[0]) > b[1]
+    assert len(bg.background_gradient) == 2
+
+
+# ── the gradient coils' own concomitant field (dmipy-sim#285 item 4) ────────────────────────────────
+def test_the_concomitant_term_is_zero_at_isocentre_and_scales_as_one_over_B0():
+    """Maxwell's equations make a gradient coil produce more than its z component. The extra field vanishes
+    at isocentre and goes as 1/B0 to leading order, which is the whole reason it is a low-field problem and
+    not a 3 T one. The term is the exact field magnitude's departure from ``B0 + B_n``, so the 1/B0 law
+    holds up to the next order, ``(|B_perp| / B0)^2``: two per cent here, where the transverse field the
+    89 mT/m gradient makes at 10 cm is a seventh of the 64 mT field."""
+    seq = _pgse_1e9()
+    np.testing.assert_allclose(seq.with_concomitant([0, 0, 0], 0.064).G, seq.G, atol=1e-12)
+
+    off = lambda B0: np.abs(np.asarray(seq.with_concomitant([0, 0, 0.10], B0).G) - np.asarray(seq.G)).max()
+    low, high = off(0.064), off(3.0)
+    np.testing.assert_allclose(low / high, 3.0 / 0.064, rtol=0.02)      # 47x, the field ratio to leading order
+    assert not np.isclose(low / high, 3.0 / 0.064, rtol=1e-3)           # and NOT exactly: the next order is real
+    assert low > 0.4 * 24.4e-3     # at 64 mT and 10 cm it is half a Swoop's entire gradient ceiling
+
+
+def test_the_concomitant_term_does_not_reverse_with_the_coils():
+    """It is QUADRATIC in G to leading order, so reversing the gradient leaves it the same -- which is why a
+    symmetric pair refocuses the pulsed gradient and not this, and why an unbalanced train does not refocus
+    it at all. The exact magnitude adds an odd part: the field the gradient itself makes along B0 either
+    adds to or subtracts from it, and ``|B|`` knows which. In the extra GRADIENT that part is
+    ``-G |B_perp|^2 / B0^2`` to leading order, which is ``|B_perp| / B0`` of the even term -- eleven per cent
+    here, where 89 mT/m at 8 cm makes a transverse field a ninth of the 64 mT static one. It is linear in
+    ``G``, so it is an encoding-gradient rescale of ``(|B_perp| / B0)^2``, and a 180 refocuses it like the
+    pulsed gradient."""
+    seq = _pgse_1e9()
+    flipped = seq.with_gradient(-np.asarray(seq.G))
+    gc = np.asarray(seq.with_concomitant([0.02, 0, 0.08], 0.064).G) - np.asarray(seq.G)
+    gc_flipped = np.asarray(flipped.with_concomitant([0.02, 0, 0.08], 0.064).G) - np.asarray(flipped.G)
+    scale = np.abs(gc).max()
+    odd = np.abs(gc - gc_flipped).max() / scale
+    B_perp_over_B0 = 0.089 * 0.08 / 0.064
+    assert odd < 1.5 * B_perp_over_B0, f"the odd part is {odd:.1%} of the term, more than |B_perp| / B0 allows"
+    assert odd > 0.5 * B_perp_over_B0, "the odd part vanished: the term has been truncated back to its even leading order"
+
+
+def test_the_two_magnet_terms_compose_and_are_recoverable():
+    """A voxel off isocentre sees both: the magnet's own gradient and the coils' concomitant field. They add,
+    and the builder's design is still recoverable from underneath both."""
+    seq = _pgse_1e9()
+    both = seq.with_background_gradient([1.4e-3, 0, 0]).with_concomitant([0, 0, 0.08], 0.064)
+    np.testing.assert_allclose(both.designed_gradient, seq.G, rtol=1e-4, atol=1e-7)
+    assert both.background_gradient is not None and both.concomitant["B0_T"] == 0.064
+    both.validate()                                     # the builder's guarantees are about the design
+    only_bg = seq.with_background_gradient([1.4e-3, 0, 0])
+    only_cc = seq.with_concomitant([0, 0, 0.08], 0.064)
+    np.testing.assert_allclose(np.asarray(both.G) - np.asarray(seq.G),
+                               (np.asarray(only_bg.G) - np.asarray(seq.G))
+                               + (np.asarray(only_cc.G) - np.asarray(seq.G)), rtol=1e-4, atol=1e-9)
+
+
+def test_the_concomitant_term_is_refused_twice_over_and_at_a_nonsense_field():
+    seq = _pgse_1e9()
+    with pytest.raises(ValueError, match="B0_T must be positive"):
+        seq.with_concomitant([0, 0, 0.1], 0.0)
+    with pytest.raises(ValueError, match="one point or one per measurement"):
+        seq.with_concomitant([[0, 0, 0.1], [0, 0, 0.2]], 0.064)
+    once = seq.with_concomitant([0, 0, 0.1], 0.064)
+    with pytest.raises(ValueError, match="already carries a concomitant term"):
+        once.with_concomitant([0, 0, 0.1], 0.064)
+
+
+# ── against the Swoop paper's reported numbers (dmipy-sim#285) ──────────────────────────────────────
+def _swoop_protocol(directions):
+    """The published protocol: b = 945 s/mm2, delta 35 ms, Delta 42 ms (Gholam 2025 / O'Halloran 2022)."""
+    n = len(directions)
+    return d.pgse(directions, 0.035, 0.042, bvalues=[945e6] * n, TE=0.090, n_t=900)
+
+
+def test_the_background_gradient_reproduces_the_papers_ADC_error_at_8_cm():
+    """Gholam 2025 corrects ADC errors of up to 16.1 % at 8 cm from isocentre, from a magnet gradient of up
+    to 1.4 mT/m there. Driving the transform with their gradient must land on their error, and it must be the
+    ALIGNED case that does: the error is a cross term, so it is largest when the two gradients are parallel
+    and vanishes when they are perpendicular."""
+    seq = _swoop_protocol([[1.0, 0, 0]])
+    b0 = float(seq.b()[0])
+    aligned = float(seq.with_background_gradient([1.4e-3, 0, 0]).b()[0]) / b0 - 1.0
+    against = float(seq.with_background_gradient([-1.4e-3, 0, 0]).b()[0]) / b0 - 1.0
+    across = float(seq.with_background_gradient([0, 1.4e-3, 0]).b()[0]) / b0 - 1.0
+
+    assert 0.10 < aligned < 0.30, f"aligned error {aligned:.3f} is nowhere near the paper's 0.161"
+    assert against < 0 < aligned and abs(abs(against) - aligned) < 0.3 * aligned
+    assert abs(across) < 0.05 * aligned            # perpendicular: the cross term is gone
+    # the paper's figure sits inside the range the directions span, which is what "up to 16.1 %" means
+    assert against < 0.161 < aligned
+
+
+def test_at_3_T_the_same_magnet_error_would_be_a_low_field_problem_only():
+    """The background gradient is a property of the magnet, so it does not scale with B0 -- but a 3 T magnet
+    is shimmed to parts per million and has no such gradient. The concomitant term DOES scale, and that one
+    is the reason the same sequence is safe at 3 T and not at 64 mT."""
+    seq = _swoop_protocol([[0.577, 0.577, 0.577]])
+    b0 = float(seq.b()[0])
+    at_64mT = float(seq.with_concomitant([0.0462, 0.0462, 0.0462], 0.064).b()[0]) / b0 - 1.0
+    at_3T = float(seq.with_concomitant([0.0462, 0.0462, 0.0462], 3.0).b()[0]) / b0 - 1.0
+    assert at_64mT > 20 * at_3T > 0.0
+    # and on a SYMMETRIC spin echo it stays small: the 180 cancels most of a term the coils do not reverse
+    assert at_64mT < 0.02, f"{at_64mT:.4f}: a symmetric PGSE should refocus most of the concomitant term"

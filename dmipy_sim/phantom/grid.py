@@ -15,6 +15,17 @@ class Grid:
     indices run along (``"RAS"``: i -> +x, j -> +y, k -> +z), and is the frame the acquisition's gradient and
     B0 directions are given in. Both positions default to a grid centred on the isocenter at the origin.
 
+    ``to_scanner`` is the rotation taking this grid's axes to the scanner's, for a grid prescribed obliquely
+    (:meth:`from_oblique_affine` sets it). It does not resample anything and nothing is straightened by it;
+    it is how the grid SAYS it is tilted, so that a field a machine imposes -- which is a function of
+    position in the bore and not in the image -- can be evaluated in the right frame without the caller
+    having to remember. ``None`` for an axis-aligned grid, whose axes are the scanner's already.
+
+    ``origin_m`` and ``isocenter_m`` are what make a macroscopic layer a function of position in the bore
+    (RPH.md 7). A missing ``isocenter_m`` defaults to the grid centre; a missing ``origin_m`` defaults to a
+    grid centred on the scanner's origin, which is a GUESS about where the sample was put, so a phantom that
+    declares a layer refuses a grid whose origin was never stated (:attr:`placed_in_the_bore`).
+
     ``attach`` says what the grid is welded to when a phantom is **partitioned** from one walk and then posed
     (RPH.md, spec#3): ``"substrate"`` -- the grid follows the tissue, so a pose changes the physics only and
     voxel membership is invariant; ``"lab"`` -- the grid is the bore's, so a pose reassigns walkers to voxels.
@@ -29,8 +40,10 @@ class Grid:
     isocenter_m: tuple = None
     axes: str = "RAS"
     attach: str = "substrate"
+    to_scanner: tuple = None
 
-    def __init__(self, *, shape, voxel_size_m, origin_m=None, isocenter_m=None, axes="RAS", attach="substrate"):
+    def __init__(self, *, shape, voxel_size_m, origin_m=None, isocenter_m=None, axes="RAS",
+                 attach="substrate", to_scanner=None):
         sh = tuple(int(v) for v in shape)
         vs = tuple(float(v) for v in voxel_size_m)
         if len(sh) != 3 or len(vs) != 3:
@@ -47,6 +60,17 @@ class Grid:
             raise ValueError(f"axes names the scanner direction of each index, one of R/L, A/P, S/I each; got {axes!r}")
         object.__setattr__(self, "shape", sh); object.__setattr__(self, "voxel_size_m", vs)
         object.__setattr__(self, "origin_m", org); object.__setattr__(self, "isocenter_m", iso)
+        # RPH.md 7: a replayer MUST default a missing isocenter_m to the grid centre and MUST NOT default a
+        # missing origin_m when any layer is declared. The grid does not know about layers, so it records
+        # whether its placement was STATED and whoever declares a layer refuses on it.
+        object.__setattr__(self, "_origin_stated", origin_m is not None)
+        if to_scanner is None:
+            object.__setattr__(self, "to_scanner", None)
+        else:
+            R = np.asarray(to_scanner, np.float64)
+            if R.shape != (3, 3) or not np.allclose(R.T @ R, np.eye(3), atol=1e-6):
+                raise ValueError("to_scanner is the 3x3 rotation taking this grid's axes to the scanner's")
+            object.__setattr__(self, "to_scanner", tuple(map(tuple, R)))
         object.__setattr__(self, "axes", ax)
         if attach not in ("substrate", "lab"):
             raise ValueError(f"attach is 'substrate' (the grid follows the tissue) or 'lab' (the grid is the bore's); got {attach!r}")
@@ -100,8 +124,9 @@ class Grid:
         """The grid of an image whose voxel axes are **rotated** in the scanner (an oblique prescription), and
         the rotation that says so: ``(grid, R)`` with ``R`` the proper rotation taking image axes to scanner axes,
         ``affine[:3, :3] = R @ diag(voxel_size)``. Nothing is resampled and nothing is straightened: the grid's
-        axes are the image's, the origin is the image's, and it is the **caller's** job to rotate everything given
-        in scanner coordinates -- an FOD's harmonics, the gradient directions, the field direction -- by ``R.T``
+        axes are the image's and the origin is the image's. The grid carries ``R`` as :attr:`to_scanner`, so a
+        field the MACHINE imposes is evaluated in the bore without the caller's help; what the caller gives in
+        scanner coordinates -- an FOD's harmonics, the gradient directions -- is the caller's to rotate by ``R.T``
         into the grid frame before composing. A shear or a non-orthogonal block is refused."""
         A = np.asarray(affine, np.float64)
         if A.shape != (4, 4):
@@ -119,7 +144,8 @@ class Grid:
         else:
             axes = "RAS"
         grid = cls(shape=tuple(int(v) for v in shape)[:3], voxel_size_m=tuple(float(v) * 1e-3 for v in vs),
-                   origin_m=tuple(float(v) * 1e-3 for v in A[:3, 3]), isocenter_m=isocenter_m, axes=axes)
+                   origin_m=tuple(float(v) * 1e-3 for v in A[:3, 3]), isocenter_m=isocenter_m, axes=axes,
+                   to_scanner=R)
         return grid, R
 
     @classmethod
@@ -127,13 +153,14 @@ class Grid:
         g = meta["grid"] if "grid" in meta else meta
         return cls(shape=g["shape"], voxel_size_m=g["voxel_size_m"], origin_m=g.get("origin_m"),
                    isocenter_m=g.get("isocenter_m"), axes=g.get("axes", g.get("frame", "RAS")),
-                   attach=g.get("attach", "substrate"))
+                   attach=g.get("attach", "substrate"), to_scanner=g.get("to_scanner"))
 
     def to_meta(self):
         # RPH.md 0.4 spells the axes ``frame``; the reader accepts either
         return {"shape": list(self.shape), "voxel_size_m": list(self.voxel_size_m),
                 "origin_m": list(self.origin_m), "isocenter_m": list(self.isocenter_m), "frame": self.axes,
-                "attach": self.attach}
+                "attach": self.attach,
+                **({} if self.to_scanner is None else {"to_scanner": [list(r) for r in self.to_scanner]})}
 
     # ---- geometry ---------------------------------------------------------------------------------------------
     @property
@@ -144,9 +171,32 @@ class Grid:
         """Scanner coordinates of the centres of the given voxels, ``(N, 3)``."""
         return np.asarray(self.origin_m) + np.asarray(voxel_index, np.float64) * np.asarray(self.voxel_size_m)
 
+    @property
+    def placed_in_the_bore(self):
+        """Whether this grid's ``origin_m`` was STATED rather than defaulted. A layer that varies over the
+        bore is meaningless on a grid whose position in it was guessed (RPH.md 7)."""
+        return bool(self._origin_stated)
+
+    def offset_m(self, voxel_index):
+        """Each voxel centre's displacement FROM the isocenter, ``(N, 3)``: what a field a magnet imposes is
+        a function of. A macroscopic layer that varies over the bore reads this; :meth:`radius_m` is its
+        norm, and is enough only for a law with no preferred direction, which a real magnet's is not."""
+        return self.positions_m(voxel_index) - np.asarray(self.isocenter_m, np.float64)
+
     def radius_m(self, voxel_index):
-        """Distance of each voxel centre from the isocenter: what a macroscopic layer varies over."""
-        return np.linalg.norm(self.positions_m(voxel_index) - np.asarray(self.isocenter_m), axis=-1)
+        """Distance of each voxel centre from the isocenter: the norm of :meth:`offset_m`."""
+        return np.linalg.norm(self.offset_m(voxel_index), axis=-1)
+
+    @property
+    def every_voxel(self):
+        """Every voxel index of the grid, ``(n_voxels, 3)``, in C order -- so that a law can be evaluated
+        over the whole grid and reshaped to :attr:`shape` as a dense volume."""
+        return np.argwhere(np.ones(self.shape, bool))
+
+    def offsets_volume_m(self):
+        """Every voxel centre's displacement from the isocenter as a dense ``shape + (3,)`` volume: the form
+        a layer is declared in (:meth:`Phantom.compose`), as opposed to the sparse rows a replay reads."""
+        return self.offset_m(self.every_voxel).reshape(tuple(self.shape) + (3,))
 
     @property
     def corner_m(self):

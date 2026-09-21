@@ -89,8 +89,8 @@ class Study:
 
     @property
     def needs_field(self):
-        from .replay import _field_strength
-        return any(_field_strength(s) not in (None, 0.0) and t is not None and t.chi_iso is not None for t, s in (self.resolved(k) for k in range(len(self))))
+        from .replay import scanner_field
+        return any(scanner_field(s).B0 not in (None, 0.0) and t is not None and t.chi_iso is not None for t, s in (self.resolved(k) for k in range(len(self))))
 
     @property
     def needs_contact(self):
@@ -101,11 +101,12 @@ class Study:
         return any(t is not None and t.relaxes for t, _ in (self.resolved(k) for k in range(len(self))))
 
     def to_meta(self):
-        from .replay import _field_strength
+        from .replay import scanner_field
         out = []
         for k in range(len(self)):
             t, s = self.resolved(k)
-            out.append(dict(tissue=(None if t is None else t.to_meta()), scanner=(None if s is None else dict(field_T=_field_strength(s), name=getattr(s, "name", None)))))
+            f = scanner_field(s)
+            out.append(dict(tissue=(None if t is None else t.to_meta()), scanner=(None if s is None else dict(field_T=f.B0, name=f.name))))
         return dict(name=self.name, protocol=self.protocol.to_meta(), pairs=out)
 
 
@@ -164,8 +165,8 @@ class Primitives:
 
     def field_scalars(self, tissue, scanner):
         """``(B0 chi_iso, B0 chi_aniso)`` for a pair, ``(0, 0)`` without a field."""
-        from .replay import _field_strength
-        B0 = _field_strength(scanner)
+        from .replay import scanner_field
+        B0 = scanner_field(scanner).B0
         if B0 is None or float(B0) == 0.0:
             return 0.0, 0.0
         if tissue is None or tissue.chi_iso is None:

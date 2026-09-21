@@ -108,8 +108,16 @@ def test_a_multi_axis_waveform_is_expanded_too(hollow):
     pk, seq = hollow
     G = np.asarray(seq.G_eff).copy()
     n_t = G.shape[1]
-    G[1, : n_t // 4, 1] = G[1, : n_t // 4, 0] * 0.7                  # a second axis during the first lobe
+    # a second axis with its OWN time profile -- the first half of each lobe -- so the gradient turns during
+    # the measurement (rank two), with the same number of samples on either side of the 180 so the encoding
+    # still refocuses: an unbalanced one would need a voxel to wind across (dmipy-sim#375)
+    gx = G[1, :, 0]
+    lobe1, lobe2 = np.flatnonzero(gx > 0), np.flatnonzero(gx < 0)
+    n = min(len(lobe1), len(lobe2)) // 2
+    pick = np.concatenate([lobe1[:n], lobe2[:n]])
+    G[1, pick, 1] = 0.7 * gx[pick]
     twisted = _Acq(G, seq.dt)
+    assert not twisted.unbalanced
     pr = pk.pose_response(twisted, **BAND, **KW)
     for R in so3.haar_rotations(3, seed=9):
         np.testing.assert_allclose(pr.at(R), pk.replay(twisted, orientation=R, complex_signal=True, **KW),
@@ -211,3 +219,40 @@ def test_a_response_the_truncation_cannot_hold_is_refused(ellipsoid):
     P = pk._prepare(seq, tissue=None, scanner=None, orientation=None, compartment=None)
     with pytest.raises(ValueError, match="not represented at"):
         pk._pose_coeffs(P, seq, band=0, n_check=200)                  # the sampled route, forced below its band
+
+
+# ── the field's DIRECTION is the machine's, not an assumption (dmipy-sim#349) ────────────────────────
+def test_the_susceptibility_field_points_where_the_machine_s_field_points(hollow):
+    """An anisotropic susceptibility is not isotropic in B0: the field a sheathed fibre produces depends on
+    the angle between the fibre and the field, so the field's DIRECTION enters every contraction. It was
+    hardcoded to +z -- the conventional bore geometry, where B0 runs along the patient's head-foot axis.
+
+    That is right for every cylindrical magnet and wrong for a bi-planar one, whose field runs ACROSS the
+    patient. The same fibre then sits at a different angle to B0 and produces a different phase. This fibre
+    lies along z, so a machine with B0 along z sees it end-on and one with B0 across it does not, and the two
+    must disagree."""
+    from dmipy_sim.acquisition.scanners import ScannerLimits
+    from dmipy_sim.replay.replay import scanner_field
+    pk, seq = hollow
+    swoop, prisma = ScannerLimits.of("swoop"), ScannerLimits.of("prisma")
+    assert scanner_field(prisma).axis == (0.0, 0.0, 1.0)          # along the bore
+    assert scanner_field(swoop).axis[1] == pytest.approx(1.0)     # across the patient
+    assert not np.allclose(scanner_field(swoop).axis, scanner_field(prisma).axis)
+
+    t = Tissue(chi_iso=-9.0e-6, chi_aniso=-1.0e-7)
+    along = pk.replay(seq, tissue=t, scanner=prisma)
+    across = pk.replay(seq, tissue=t, scanner=swoop)
+    assert not np.allclose(along, across), \
+        "the two field directions gave the same signal; the machine's axis is not reaching the contraction"
+
+
+def test_a_bare_field_strength_still_means_the_conventional_bore(hollow):
+    """A number carries no direction, so it keeps the conventional geometry -- B0 along the bore. That is a
+    stated default rather than a hidden one, and it must agree with a catalogued cylindrical machine
+    exactly, or the fallback and the catalogue would disagree about the same magnet."""
+    from dmipy_sim.acquisition.scanners import ScannerLimits
+    pk, seq = hollow
+    t = Tissue(chi_iso=-9.0e-6, chi_aniso=-1.0e-7)
+    prisma = ScannerLimits.of("prisma")
+    np.testing.assert_allclose(pk.replay(seq, tissue=t, scanner=prisma),
+                               pk.replay(seq, tissue=t, scanner=float(prisma.field_T)), rtol=1e-12)

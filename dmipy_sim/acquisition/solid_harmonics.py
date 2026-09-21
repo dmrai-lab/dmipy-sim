@@ -1,0 +1,129 @@
+"""The real solid harmonics a magnet's field is described in, in the standard shim nomenclature.
+
+A magnetic field component in a current-free region satisfies Laplace's equation, so ``dB_z`` is a sum of
+solid harmonics and can be nothing else. Which ones, and how they are normalised and named, is not a free
+choice either: Romeo and Hoult (1984) fixed the description magnet builders and shim hardware have used ever
+since, and a shim coil labelled "Z2" on a console is the term of that name here.
+
+This is a BASIS, not a model. Nothing in it decides which coefficients a particular magnet has -- that is
+what a catalogue entry is for, and what the published figures of a machine do or do not determine.
+
+The polynomials are written out rather than generated, because the standard forms are what a reader will
+want to check against a reference; and every one of them is verified harmonic by
+:func:`check_harmonic`, so a typo cannot survive.
+"""
+from __future__ import annotations
+
+import numpy as np
+
+from . import maxwell
+
+__all__ = ["TERMS", "names_through", "evaluate", "gradient", "check_harmonic"]
+
+#: ``name -> (order, value(x, y, z), gradient(x, y, z))``. Orders 1 to 4, in the conventional shim order.
+#: Order 0 is the constant and is omitted: a uniform offset of the static field is the centre frequency,
+#: not a field shape, and re-centring removes it.
+TERMS = {
+    # ── order 1: the linear shims, which are the imaging gradients ──────────────────────────────────
+    "Z":        (1, lambda x, y, z: z,
+                 lambda x, y, z: (np.zeros_like(x), np.zeros_like(y), np.ones_like(z))),
+    "X":        (1, lambda x, y, z: x,
+                 lambda x, y, z: (np.ones_like(x), np.zeros_like(y), np.zeros_like(z))),
+    "Y":        (1, lambda x, y, z: y,
+                 lambda x, y, z: (np.zeros_like(x), np.ones_like(y), np.zeros_like(z))),
+    # ── order 2 ────────────────────────────────────────────────────────────────────────────────────
+    "Z2":       (2, lambda x, y, z: 2 * z ** 2 - x ** 2 - y ** 2,
+                 lambda x, y, z: (-2 * x, -2 * y, 4 * z)),
+    "ZX":       (2, lambda x, y, z: x * z,
+                 lambda x, y, z: (z, np.zeros_like(y), x)),
+    "ZY":       (2, lambda x, y, z: y * z,
+                 lambda x, y, z: (np.zeros_like(x), z, y)),
+    "X2Y2":     (2, lambda x, y, z: x ** 2 - y ** 2,
+                 lambda x, y, z: (2 * x, -2 * y, np.zeros_like(z))),
+    "XY":       (2, lambda x, y, z: x * y,
+                 lambda x, y, z: (y, x, np.zeros_like(z))),
+    # ── order 3 ────────────────────────────────────────────────────────────────────────────────────
+    "Z3":       (3, lambda x, y, z: z * (2 * z ** 2 - 3 * x ** 2 - 3 * y ** 2),
+                 lambda x, y, z: (-6 * x * z, -6 * y * z, 6 * z ** 2 - 3 * x ** 2 - 3 * y ** 2)),
+    "Z2X":      (3, lambda x, y, z: x * (4 * z ** 2 - x ** 2 - y ** 2),
+                 lambda x, y, z: (4 * z ** 2 - 3 * x ** 2 - y ** 2, -2 * x * y, 8 * x * z)),
+    "Z2Y":      (3, lambda x, y, z: y * (4 * z ** 2 - x ** 2 - y ** 2),
+                 lambda x, y, z: (-2 * x * y, 4 * z ** 2 - x ** 2 - 3 * y ** 2, 8 * y * z)),
+    "ZX2Y2":    (3, lambda x, y, z: z * (x ** 2 - y ** 2),
+                 lambda x, y, z: (2 * x * z, -2 * y * z, x ** 2 - y ** 2)),
+    "XYZ":      (3, lambda x, y, z: x * y * z,
+                 lambda x, y, z: (y * z, x * z, x * y)),
+    "X3":       (3, lambda x, y, z: x * (x ** 2 - 3 * y ** 2),
+                 lambda x, y, z: (3 * x ** 2 - 3 * y ** 2, -6 * x * y, np.zeros_like(z))),
+    "Y3":       (3, lambda x, y, z: y * (3 * x ** 2 - y ** 2),
+                 lambda x, y, z: (6 * x * y, 3 * x ** 2 - 3 * y ** 2, np.zeros_like(z))),
+    # ── order 4, complete: 9 terms ───────────────────────────────────────────────────────────────
+    "Z4":       (4, lambda x, y, z: 8 * z ** 4 - 24 * z ** 2 * (x ** 2 + y ** 2) + 3 * (x ** 2 + y ** 2) ** 2,
+                 lambda x, y, z: (-48 * z ** 2 * x + 12 * x * (x ** 2 + y ** 2),
+                                  -48 * z ** 2 * y + 12 * y * (x ** 2 + y ** 2),
+                                  32 * z ** 3 - 48 * z * (x ** 2 + y ** 2))),
+    "Z3X":      (4, lambda x, y, z: x * z * (4 * z ** 2 - 3 * x ** 2 - 3 * y ** 2),
+                 lambda x, y, z: (z * (4 * z ** 2 - 9 * x ** 2 - 3 * y ** 2), -6 * x * y * z,
+                                  x * (12 * z ** 2 - 3 * x ** 2 - 3 * y ** 2))),
+    "Z3Y":      (4, lambda x, y, z: y * z * (4 * z ** 2 - 3 * x ** 2 - 3 * y ** 2),
+                 lambda x, y, z: (-6 * x * y * z, z * (4 * z ** 2 - 3 * x ** 2 - 9 * y ** 2),
+                                  y * (12 * z ** 2 - 3 * x ** 2 - 3 * y ** 2))),
+    "Z2X2Y2":   (4, lambda x, y, z: (x ** 2 - y ** 2) * (6 * z ** 2 - x ** 2 - y ** 2),
+                 lambda x, y, z: (-4 * x * (x ** 2 - 3 * z ** 2), 4 * y * (y ** 2 - 3 * z ** 2),
+                                  12 * z * (x ** 2 - y ** 2))),
+    "Z2XY":     (4, lambda x, y, z: x * y * (6 * z ** 2 - x ** 2 - y ** 2),
+                 lambda x, y, z: (-y * (3 * x ** 2 + y ** 2 - 6 * z ** 2),
+                                  -x * (x ** 2 + 3 * y ** 2 - 6 * z ** 2), 12 * x * y * z)),
+    "ZX3":      (4, lambda x, y, z: x * z * (x ** 2 - 3 * y ** 2),
+                 lambda x, y, z: (3 * z * (x ** 2 - y ** 2), -6 * x * y * z,
+                                  x * (x ** 2 - 3 * y ** 2))),
+    "ZY3":      (4, lambda x, y, z: y * z * (3 * x ** 2 - y ** 2),
+                 lambda x, y, z: (6 * x * y * z, 3 * z * (x ** 2 - y ** 2),
+                                  y * (3 * x ** 2 - y ** 2))),
+    "X4":       (4, lambda x, y, z: x ** 4 - 6 * x ** 2 * y ** 2 + y ** 4,
+                 lambda x, y, z: (4 * x * (x ** 2 - 3 * y ** 2), -4 * y * (3 * x ** 2 - y ** 2),
+                                  np.zeros_like(z))),
+    "Y4":       (4, lambda x, y, z: x * y * (x ** 2 - y ** 2),
+                 lambda x, y, z: (y * (3 * x ** 2 - y ** 2), x * (x ** 2 - 3 * y ** 2),
+                                  np.zeros_like(z))),
+}
+
+
+def names_through(order):
+    """Every term name up to and including ``order``, in the conventional order."""
+    return [n for n, (l, _f, _g) in TERMS.items() if l <= int(order)]
+
+
+def evaluate(coeffs, r):
+    """``dB/B0`` at ``r`` (``(..., 3)``, metres) from ``{name: coefficient}``."""
+    r = np.atleast_2d(np.asarray(r, dtype=np.float64))
+    x, y, z = r[..., 0], r[..., 1], r[..., 2]
+    out = np.zeros(x.shape, dtype=np.float64)
+    for name, c in coeffs.items():
+        if c:
+            out = out + c * TERMS[name][1](x, y, z)
+    return out
+
+
+def gradient(coeffs, r):
+    """The spatial gradient of :func:`evaluate`, ``(..., 3)``, analytically."""
+    r = np.atleast_2d(np.asarray(r, dtype=np.float64))
+    x, y, z = r[..., 0], r[..., 1], r[..., 2]
+    gx, gy, gz = (np.zeros(x.shape) for _ in range(3))
+    for name, c in coeffs.items():
+        if c:
+            dx, dy, dz = TERMS[name][2](x, y, z)
+            gx, gy, gz = gx + c * dx, gy + c * dy, gz + c * dz
+    return np.stack([gx, gy, gz], axis=-1)
+
+
+def check_harmonic(name, h=1e-4, points=None):
+    """The scaled ``|laplacian|`` of one term over a few points; every entry in :data:`TERMS` gives ~0.
+
+    This is what makes a written-out table safe: a mistyped coefficient stops being a harmonic and the
+    check finds it, where an eye would not. The Laplacian itself is
+    :func:`dmipy_sim.acquisition.maxwell.harmonic_residual`, the same one every emitted field law is held
+    to, so a term and a law cannot be judged by different rules.
+    """
+    P = maxwell.probe_points(0.05) if points is None else np.asarray(points, dtype=np.float64)
+    return maxwell.harmonic_residual(lambda q: TERMS[name][1](q[:, 0], q[:, 1], q[:, 2]), P, h=h)

@@ -56,7 +56,25 @@ with open(Path(__file__).with_name("scanner_constants.json")) as _f:
 
 # catalogue stores convenient units; convert to SI for the solvers.
 _TO_SI = {"mT/m": 1e-3, "T/m": 1.0, "T/m/s": 1.0, "us": 1e-6, "ms": 1e-3,
-          "s": 1.0, "uT": 1e-6, "T": 1.0, "W/kg": 1.0}
+          "s": 1.0, "uT": 1e-6, "T": 1.0, "W/kg": 1.0,
+          # a field SHAPE is a fraction of B0, so ppm carries the 1e-6 and nothing else
+          "ppm": 1e-6, "ppm/m": 1e-6, "ppm/m^2": 1e-6, "m": 1.0,
+          # descriptive leaves nothing reads in SI yet, listed so the conformance check passes
+          # rather than so they are used: an unlisted unit is the silent 1.0 conversion
+          "cm": 1e-2, "kW": 1e3, "MW": 1e6,
+          # a transmit scale is dimensionless, and its fall-off is per square metre
+          "": 1.0, "1/m^2": 1.0,
+          # a temperature coefficient is a fraction per kelvin; a temperature SPAN is kelvin either way,
+          # which is why the catalogue stores a span and not a degC endpoint -- degC to K is an offset,
+          # and this table can only scale
+          "1/K": 1.0, "K": 1.0, "Hz/K": 1.0,
+          # a frequency offset is already SI; it is catalogued in Hz rather than converted to ppm
+          # because the measurement is a frequency and the ppm depends on which B0 you divide by
+          "Hz": 1.0,
+          # a solid-harmonic coefficient of dB/B0 has the reciprocal length of its order
+          "1/m^3": 1.0,
+          # a gradient-nonlinearity coefficient is a fraction per metre
+          "1/m": 1.0}
 
 
 def resolve(name):
@@ -74,6 +92,13 @@ def resolve(name):
     raise ValueError(f"unknown scanner {name!r}; known: classes {sorted(SCANNER_CONSTANTS['classes'])}, "
                      f"aliases {sorted(SCANNER_CONSTANTS['aliases'])}, models {sorted(SCANNER_CONSTANTS['scanners'])}, "
                      f"envelopes {sorted(SCANNER_CONSTANTS['envelopes'])}")
+
+
+def leaf_raw(entry, group, name):
+    """The leaf's value EXACTLY as catalogued, with no unit conversion -- for leaves whose value is not a
+    number. An axis letter is the case this exists for: ``leaf_si`` would try to float it."""
+    lf = entry.get(group, {}).get(name)
+    return None if lf is None else lf.get("value")
 
 
 def leaf_si(entry, group, name):
@@ -154,12 +179,69 @@ def get_citation(source_key):
 
 
 def needs_verification():
-    """List ``(model, group, name)`` of every entry whose value is unverified/None."""
+    """List ``(model, group, name)`` of every leaf, in every group, whose confidence is ``NEEDS VERIFICATION``.
+
+    A null value is not by itself a gap: a null under a stated confidence is a CLAIM that there is no such
+    number (a quadrature birdcage has no single ``b1_axis``), and it is the confidence that says which.
+    """
     out = []
     for m, sc in {**SCANNER_CONSTANTS["scanners"], **SCANNER_CONSTANTS["envelopes"]}.items():
-        for grp in ("gradient", "rf"):
-            for n, leaf in sc.get(grp, {}).items():
-                if isinstance(leaf, dict) and (leaf.get("confidence") == "NEEDS VERIFICATION"
-                                               or leaf.get("value") is None):
+        for grp, leaves in sc.items():
+            if not isinstance(leaves, dict):
+                continue
+            for n, leaf in leaves.items():
+                if isinstance(leaf, dict) and leaf.get("confidence") == "NEEDS VERIFICATION":
                     out.append((m, grp, n))
     return out
+
+
+SCHEMA_PATH = Path(__file__).with_name("scanner_catalogue.schema.json")
+
+
+def conformance_problems(catalogue=None):
+    """Every way the catalogue departs from its own schema (ACQUISITION.md 8), as a list of sentences;
+    empty when it conforms. Checked here rather than with ``jsonschema`` so the package stays a test-time
+    convenience, exactly as the substrate spec's validator does.
+
+    The three referential rules are the ones a type schema cannot state: every leaf's ``source_key``
+    resolves in ``citations``; a ``classes`` or ``aliases`` value names a key of ``scanners`` OR of
+    ``envelopes``; and a citation MAY be referenced from an entry's prose ``notes`` alone, so an uncited
+    citation is not an error while an unresolved key is.
+    """
+    cat = SCANNER_CONSTANTS if catalogue is None else catalogue
+    schema = json.loads(SCHEMA_PATH.read_text())
+    fields = tuple(cat["_schema"]["entry_fields"])
+    levels = set(cat["_schema"]["confidence_levels"])
+    cites = set(cat.get("citations", {}))
+    bad = []
+    for table in ("scanners", "envelopes"):
+        for name, entry in cat.get(table, {}).items():
+            for group, leaves in entry.items():
+                if not isinstance(leaves, dict):
+                    continue
+                for leaf_name, leaf in leaves.items():
+                    if not isinstance(leaf, dict) or "value" not in leaf:
+                        continue
+                    where = f"{table}.{name}.{group}.{leaf_name}"
+                    missing = [f for f in fields if f not in leaf]
+                    if missing:
+                        bad.append(f"{where} is missing {missing}")
+                    if leaf.get("source_key") not in cites:
+                        bad.append(f"{where} cites {leaf.get('source_key')!r}, which is not in citations")
+                    if leaf.get("confidence") not in levels:
+                        bad.append(f"{where} has confidence {leaf.get('confidence')!r}, "
+                                   f"which is not one of {sorted(levels)}")
+                    if not leaf.get("context"):
+                        bad.append(f"{where} has no context: a bare number loses what it means")
+                    unit = leaf.get("unit")
+                    if leaf.get("value") is not None and unit is not None and unit not in _TO_SI:
+                        bad.append(f"{where} is in {unit!r}, which _TO_SI does not know: leaf_si would "
+                                   f"convert it by 1.0 and say nothing")
+    known = set(cat.get("scanners", {})) | set(cat.get("envelopes", {}))
+    for table in ("classes", "aliases"):
+        for short, target in cat.get(table, {}).items():
+            if target not in known:
+                bad.append(f"{table}.{short} points at {target!r}, which is neither a scanner nor an envelope")
+    if schema.get("title", "").split()[0] != "Scanner":
+        bad.append("the shipped schema is not the scanner catalogue's")
+    return bad

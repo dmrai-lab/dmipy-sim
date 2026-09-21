@@ -77,19 +77,26 @@ def test_a_finite_pulse_makes_the_coherence_mask_a_pathway_profile_and_a_hard_on
 
 def test_the_scalar_engine_gates_relaxation_by_the_fractional_mask():
     """Zero gradient, a finite 180: the signal is exp(-(T_perp / T2) - (T_par / T1)) with the transverse and
-    longitudinal times read off the profile -- the check #25 could not write while nothing produced one."""
+    longitudinal times read off the profile -- the check #25 could not write while nothing produced one.
+
+    The LAST sample is excluded from both sums, and that is the gate-extent rule of dmipy-sim#225 rather
+    than a fudge: a gate of ``n`` samples spans ``n - 1`` steps, because the final sample IS the readout and
+    is held over nothing. Summing all ``n`` charges the walk one extra step of decay -- here one part in
+    three hundred, which is larger than this test's tolerance and was silently failing. Excluding it agrees
+    with the engine to eight digits, so the assertion is tight rather than approximate."""
     n_t, dt, T2, T1 = 401, 1e-4, 30e-3, 300e-3
     rf = RFSchedule((RFEvent(0.0, 90, 'Mz→Mxy'), RFEvent(20e-3, 180, 'refocus', duration_s=8e-3)))
     wf = d.ScannerSequence(G=np.zeros((1, n_t, 3), np.float32), dt=dt, readout=(n_t - 1,), rf=rf)
     chi = np.asarray(wf.chi_perp, float)
     assert 0.0 < chi.min() < 1.0                                            # fractional, and reachable
     S_ = d.simulate(500, 2e-9, wf, d.FreeDiffusion(), T2=T2, T1=T1, seed=0, require_gpu=False)
-    expected = np.exp(-(chi.sum() * dt) / T2 - ((1.0 - chi).sum() * dt) / T1)
-    assert float(S_[0]) == pytest.approx(expected, rel=2e-3)
+    held = chi[:-1]                                                         # the readout is held over nothing
+    expected = np.exp(-(held.sum() * dt) / T2 - ((1.0 - held).sum() * dt) / T1)
+    assert float(S_[0]) == pytest.approx(expected, rel=1e-6)
     hard = d.ScannerSequence(G=np.zeros((1, n_t, 3), np.float32), dt=dt, readout=(n_t - 1,),
                       rf=RFSchedule((RFEvent(0.0, 90, 'Mz→Mxy'), RFEvent(20e-3, 180, 'refocus'))))
     S_hard = d.simulate(500, 2e-9, hard, d.FreeDiffusion(), T2=T2, T1=T1, seed=0, require_gpu=False)
-    assert float(S_hard[0]) == pytest.approx(np.exp(-n_t * dt / T2), rel=2e-3) and S_[0] > S_hard[0]
+    assert float(S_hard[0]) == pytest.approx(np.exp(-(n_t - 1) * dt / T2), rel=1e-6) and S_[0] > S_hard[0]
 
 
 def test_from_pgse_builds_to_a_budget():

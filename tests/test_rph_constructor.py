@@ -57,7 +57,9 @@ def _tangential(n=8):
     return mu
 
 
-GRID8 = Grid(shape=(8, 8, 1), voxel_size_m=(1e-3, 1e-3, 1e-3))
+#: Layers are declared on this grid, so its placement in the bore is STATED, not defaulted
+#: (RPH.md 7): a field that varies over the bore is meaningless on a grid guessed into it.
+GRID8 = Grid(shape=(8, 8, 1), voxel_size_m=(1e-3, 1e-3, 1e-3), origin_m=(0.0, 0.0, 0.0))
 T2_CSF = 2.0
 
 
@@ -336,7 +338,7 @@ def test_the_transmit_layer_goes_through_the_bloch_route(pack_path):
     n = 2
     wm, *_ = _subs(pack_path)
     R = np.zeros((n, n, 1, 3, 3)); R[..., :, :] = np.eye(3)          # a stated pose: what a propagation needs
-    grid = Grid(shape=(n, n, 1), voxel_size_m=(1e-3,) * 3)
+    grid = Grid(shape=(n, n, 1), voxel_size_m=(1e-3,) * 3, origin_m=(0.0, 0.0, 0.0))
     full = {wm: np.ones((n, n, 1))}
     pk = read_rpk(pack_path)
     seq = _acq(pk, [[1, 0, 0], [0, 0, 1]], [1e9, 1e9])
@@ -382,7 +384,7 @@ def test_a_frame_is_one_pose_and_a_peak_is_that_pose_with_its_azimuth_unstated(p
     R0 = so3.rotation_of((0.3, 0.5, 0.81))
     R = np.zeros((n, n, 1, 3, 3)); R[..., :, :] = R0
     dirs = np.zeros((n, n, 1, 3)); dirs[..., :] = R0[:, 2]
-    grid = Grid(shape=(n, n, 1), voxel_size_m=(1e-3,) * 3)
+    grid = Grid(shape=(n, n, 1), voxel_size_m=(1e-3,) * 3, origin_m=(0.0, 0.0, 0.0))
     full = {wm: np.ones((n, n, 1))}
     frames = Phantom.compose(grid, fractions=full, orientation=Frames(R))
     peaks = Phantom.compose(grid, fractions=full, orientation=Peaks(dirs))
@@ -401,7 +403,7 @@ def test_a_fan_is_a_frame_with_two_concentrations_and_contains_the_watson(pack_p
     from dmipy_sim.replay import read_rpk, so3
     n = 2
     wm, *_ = _subs(pack_path)
-    grid = Grid(shape=(n, n, 1), voxel_size_m=(1e-3,) * 3)
+    grid = Grid(shape=(n, n, 1), voxel_size_m=(1e-3,) * 3, origin_m=(0.0, 0.0, 0.0))
     full = {wm: np.ones((n, n, 1))}
     axis = np.zeros((n, n, 1, 3)); axis[..., :] = (0.0, 0.0, 1.0)
     towards = np.zeros((n, n, 1, 3)); towards[..., :] = (1.0, 0.0, 0.3)          # not orthogonal: gets orthogonalised
@@ -429,7 +431,7 @@ def test_peaks_agree_with_a_concentrated_odf(pack_path):
     wm, *_ = _subs(pack_path)
     d = np.zeros((n, n, 1, 3)); d[..., :] = (0.3, 0.5, 0.81)
     d /= np.linalg.norm(d, axis=-1, keepdims=True)
-    grid = Grid(shape=(n, n, 1), voxel_size_m=(1e-3,) * 3)
+    grid = Grid(shape=(n, n, 1), voxel_size_m=(1e-3,) * 3, origin_m=(0.0, 0.0, 0.0))
     full = {wm: np.ones((n, n, 1))}
     peaks = Phantom.compose(grid, fractions=full, orientation=Peaks(d))
     sharp = Phantom.compose(grid, fractions=full, orientation=Watson(mu=d, kappa=400.0, lmax=12))
@@ -494,3 +496,191 @@ def test_a_prescribed_acquisition_must_share_the_grid_axes(pack_path):
     g = Grid.from_prescription(Prescription(voxel_size_m=(1e-3,) * 3, matrix=(8, 8, 1), axes="LPS"))
     ph2 = Phantom.compose(g, fractions={wm: np.ones((8, 8, 1))}, orientation=Watson(mu=_tangential(), kappa=12.0))
     assert np.isfinite(ph2.replay(seq.with_prescription(p_bad))).all()          # same axes: fine
+
+
+# ── where a voxel sits in the bore (dmipy-sim#322 PR 1) ─────────────────────────────────────────────
+def test_a_grid_says_where_each_voxel_sits_relative_to_the_isocenter():
+    """A field a magnet imposes is a function of position IN THE BORE, so a layer derived from one needs the
+    displacement from the isocenter, not merely the distance from it: a real magnet's profile has preferred
+    directions and `radius_m` alone cannot express them."""
+    g = Grid(shape=(4, 4, 2), voxel_size_m=(2e-3,) * 3, origin_m=(0.0, 0.0, 0.0), isocenter_m=(1e-3, 0.0, 0.0))
+    off = g.offset_m([[0, 0, 0], [1, 0, 0], [0, 2, 1]])
+    np.testing.assert_allclose(off, [[-1e-3, 0, 0], [1e-3, 0, 0], [-1e-3, 4e-3, 2e-3]], atol=1e-12)
+    np.testing.assert_allclose(g.radius_m(g.every_voxel), np.linalg.norm(g.offset_m(g.every_voxel), axis=-1))
+
+    # every voxel, and the same thing as the dense volume a layer is declared in
+    assert g.every_voxel.shape == (g.n_voxels, 3)
+    vol = g.offsets_volume_m()
+    assert vol.shape == tuple(g.shape) + (3,)
+    np.testing.assert_allclose(vol[1, 2, 0], g.offset_m([[1, 2, 0]])[0], atol=1e-12)
+
+
+def test_a_layer_needs_a_grid_whose_place_in_the_bore_was_stated():
+    """RPH.md 7: a replayer MUST default a missing isocenter_m to the grid centre and MUST NOT default a
+    missing origin_m when any layer is declared. The second half was not implemented -- a layer could be
+    hung on a grid whose position in the bore had been guessed, and it would replay looking right."""
+    assert Grid(shape=(4, 4, 2), voxel_size_m=(2e-3,) * 3, origin_m=(0, 0, 0)).placed_in_the_bore
+    assert not Grid(shape=(4, 4, 2), voxel_size_m=(2e-3,) * 3).placed_in_the_bore
+    # a missing isocenter_m still defaults, and to the grid's centre
+    g = Grid(shape=(4, 4, 2), voxel_size_m=(2e-3,) * 3, origin_m=(0, 0, 0))
+    np.testing.assert_allclose(g.isocenter_m, np.asarray(g.positions_m(g.every_voxel)).mean(axis=0), atol=1e-12)
+
+
+def test_a_phantom_refuses_a_layer_on_a_grid_it_only_guessed_the_place_of(pack_path):
+    b1 = np.ones((8, 8, 1))
+    guessed = Grid(shape=(8, 8, 1), voxel_size_m=(1e-3,) * 3)                 # origin_m defaulted
+    with pytest.raises(ValueError, match="origin_m was never stated"):
+        _phantom(pack_path, layers={"kappa_B1": b1}, grid=guessed)
+    _phantom(pack_path, layers={"kappa_B1": b1})                              # GRID8 states it: fine
+
+
+# ── a machine's own field, end to end on a phantom (dmipy-sim#322 PR 4) ─────────────────────────────
+def _gre_and_se(pack_path):
+    """A gradient echo on the pack's grid and the same waveform refocused at TE/2."""
+    from dmipy_sim.replay import read_rpk
+    pk = read_rpk(pack_path)
+    gre = _acq(pk, [[1, 0, 0]], [0.0])
+    se = replace(gre, G=np.abs(np.asarray(gre.G)), family="pgse",
+                 rf=[RFEvent(0.0, 90), RFEvent((pk.n_t - 1) * pk.dt / 2, 180)])
+    return gre, se
+
+
+def _swoop_grid(shape=(8, 8, 1), vox=1e-2):
+    """Voxels spread across the bore, so the field law has somewhere to vary: 1 cm voxels, not 1 mm."""
+    return Grid(shape=shape, voxel_size_m=(vox, vox, vox), origin_m=(-0.035, -0.035, 0.0),
+                isocenter_m=(0.0, 0.0, 0.0))
+
+
+def test_a_scanner_that_publishes_a_field_brings_it_to_the_replay(pack_path):
+    """A field a magnet imposes is a property of the machine, and a replay is already told which machine it
+    is on -- so it comes along rather than the magnet being silently treated as ideal, which is what every
+    replay did until now and which looks identical."""
+    from dmipy_sim.acquisition.scanners import ScannerLimits
+    ph, *_ = _phantom(pack_path, grid=_swoop_grid())
+    swoop, prisma = ScannerLimits.of("swoop"), ScannerLimits.of("prisma")
+    gre, _ = _gre_and_se(pack_path)
+
+    ideal = _rows(ph, ph.replay(gre, scanner=0.064, complex_signal=True))       # a bare field strength
+    real = _rows(ph, ph.replay(gre, scanner=swoop, complex_signal=True))        # the machine itself
+    assert not np.allclose(np.angle(real), np.angle(ideal), atol=1e-3)
+
+    # a machine that publishes no profile is unchanged: every phantom that worked before still does
+    at3T = _rows(ph, ph.replay(gre, scanner=prisma, complex_signal=True))
+    np.testing.assert_allclose(at3T, _rows(ph, ph.replay(gre, scanner=3.0, complex_signal=True)), rtol=1e-9)
+
+
+def test_the_machines_field_refocuses_under_a_spin_echo_and_not_a_gradient_echo(pack_path):
+    """The physics assertion. A static offset is exactly what a 180 at TE/2 puts back, so the machine's field
+    LAW dephases a gradient echo across the bore and leaves a spin echo alone. If the law were entering as
+    anything other than a static offset this would not hold. The law is what the machine brings as
+    ``off_resonance``; the machine's gradient side -- its tensor, background and Maxwell term -- is a b-level
+    effect a spin echo does not refocus, reaches the phantom separately (dmipy-sim#377), and is why the
+    whole machine is NOT bit-identical to the bare field under the spin echo."""
+    from dmipy_sim.acquisition.scanners import ScannerLimits
+    from dmipy_sim.phantom.bore import b0_offset_map
+    ph, *_ = _phantom(pack_path, grid=_swoop_grid())
+    swoop = ScannerLimits.of("swoop")
+    gre, se = _gre_and_se(pack_path)
+    law = b0_offset_map(swoop, ph.grid)
+
+    g_ideal = _rows(ph, ph.replay(gre, scanner=0.064, complex_signal=True))
+    g_real = _rows(ph, ph.replay(gre, scanner=0.064, off_resonance=law, complex_signal=True))
+    s_ideal = _rows(ph, ph.replay(se, scanner=0.064, complex_signal=True))
+    s_real = _rows(ph, ph.replay(se, scanner=0.064, off_resonance=law, complex_signal=True))
+
+    assert np.abs(np.angle(g_real / g_ideal)).max() > 0.05      # the gradient echo carries the law
+    np.testing.assert_allclose(s_real, s_ideal, rtol=1e-9)      # the spin echo refocuses it exactly
+    s_machine = _rows(ph, ph.replay(se, scanner=swoop, complex_signal=True))
+    assert not np.array_equal(s_machine, s_ideal)               # the gradient side is not a static offset
+
+
+def test_a_stated_field_map_wins_over_the_machines_own(pack_path):
+    """A measured field map already contains whatever the magnet does, so adding the catalogue's law to it
+    would count the magnet twice. The stated map is used and the law stands down."""
+    from dmipy_sim.acquisition.scanners import ScannerLimits
+    ph, *_ = _phantom(pack_path, grid=_swoop_grid())
+    swoop = ScannerLimits.of("swoop")
+    gre, _ = _gre_and_se(pack_path)
+    stated = _rows(ph, ph.replay(gre, scanner=swoop, off_resonance=1e-7, complex_signal=True))
+    same_at_3T = _rows(ph, ph.replay(gre, scanner=3.0, off_resonance=1e-7, complex_signal=True))
+    np.testing.assert_allclose(np.angle(stated), np.angle(same_at_3T), rtol=1e-9)
+
+
+# ── what a smooth transmit map costs, and how to afford it (dmipy-sim#322 PR 5) ─────────────────────
+def test_a_smooth_transmit_map_costs_one_propagation_per_distinct_scale():
+    """The RF-aware route propagates once per distinct transmit scale. A map a person writes by hand has a
+    few values; a map a MACHINE produces is continuous, so it has as many as the rounding allows -- 601
+    across a plausible 0.6 to 1.2 at the default, which is 601 vector-Bloch propagations of every pack in
+    the phantom. Binning is what makes such a map affordable, and it was not reachable at all from
+    `Phantom.replay` before."""
+    from dmipy_sim.replay.phantom import quantise
+    kappa = np.linspace(0.6, 1.2, 4001)
+    assert len(np.unique(quantise(kappa, 1e-3))) == 601                  # the default tolerance
+    assert len(np.unique(quantise(kappa, None))) == 4001                 # None bins nothing
+    assert len(np.unique(quantise(kappa, 1e-2))) == 61           # 1 % of the flip angle
+    assert len(np.unique(quantise(kappa, 5e-2))) == 13
+    # binning is exact to the tolerance, which is the guarantee that makes it safe to use
+    for tol in (1e-2, 5e-2):
+        assert np.abs(quantise(kappa, tol) - kappa).max() <= tol / 2 + 1e-12
+    with pytest.raises(ValueError, match="positive width"):
+        quantise(kappa, 0.0)
+
+
+def test_binning_the_transmit_map_moves_the_signal_by_no_more_than_the_tolerance(pack_path):
+    """The flip angle reaches the signal through a sine, so an error of `tol` in the scale is an error of
+    the same order in the signal and never larger. That is what lets a tolerance be chosen from what the
+    answer needs rather than guessed."""
+    from dmipy_sim.replay import read_rpk
+    n = 4
+    wm, *_ = _subs(pack_path)
+    R = np.zeros((n, n, 1, 3, 3)); R[..., :, :] = np.eye(3)          # a stated pose: the RF route needs one
+    grid = Grid(shape=(n, n, 1), voxel_size_m=(1e-3,) * 3, origin_m=(0.0, 0.0, 0.0))
+    pk = read_rpk(pack_path)
+    seq = _acq(pk, [[1, 0, 0]], [1e9])
+    rf = [RFEvent(0.0, 90.0, axis_deg=0.0), RFEvent((pk.n_t - 1) * pk.dt / 2, 180.0, axis_deg=90.0)]
+    gre = replace(seq, G=np.abs(np.asarray(seq.G)), rf=rf, family="pgse")
+    kap = np.linspace(0.85, 1.0, n * n).reshape(n, n, 1)              # smooth, as a real B1 map is
+    ph = Phantom.compose(grid, fractions={wm: np.ones((n, n, 1))}, orientation=Frames(R),
+                         layers={"kappa_B1": kap})
+    exact = _rows(ph, ph.replay(gre, transmit_tolerance=None))          # None bins nothing
+    for tol in (1e-2, 5e-2):
+        binned = _rows(ph, ph.replay(gre, transmit_tolerance=tol))
+        rel = np.abs(binned - exact).max() / np.abs(exact).max()
+        assert rel < 2 * tol, f"tolerance {tol} moved the signal by {rel:.4f}"
+    # the default is a stated tolerance, not a rounding of its own
+    np.testing.assert_allclose(_rows(ph, ph.replay(gre)), _rows(ph, ph.replay(gre, transmit_tolerance=1e-3)), rtol=1e-12)
+
+
+def test_a_transmit_map_is_asked_for_rather_than_assumed(pack_path):
+    """A phantom picks up a machine's field OFFSET on its own but not its transmit scale, and the asymmetry
+    is deliberate: an offset is arithmetic on a contraction the replay was doing anyway, while a transmit
+    scale moves the whole replay onto the vector-Bloch route. Something that changes the cost of a replay by
+    orders of magnitude is asked for."""
+    from dmipy_sim.acquisition.scanners import ScannerLimits
+    from dmipy_sim.phantom import b0_offset_map, b1_scale_map
+    swoop = ScannerLimits.of("swoop")
+    grid = _swoop_grid()
+    assert b0_offset_map(swoop, grid) is not None and b1_scale_map(swoop, grid) is not None
+    ph, *_ = _phantom(pack_path, grid=grid)
+    gre, _ = _gre_and_se(pack_path)
+    ph.replay(gre, scanner=swoop)                       # the field comes along; the transmit scale does not
+    assert ScannerLimits.of("prisma").b1_scale([[0, 0, 0.05]]) is None
+
+
+def test_a_drifting_magnet_is_a_uniform_offset_on_top_of_a_fixed_shape():
+    """Two pieces of different physics, which is why they are two arguments rather than one. The magnet's
+    SHAPE is a function of position and cannot be tuned away; its DRIFT is uniform and is exactly what a
+    scanner cancels when it re-centres. So a drift adds a constant to every voxel and leaves the shape's
+    spread untouched, and a machine with no coefficient refuses the request rather than quietly ignoring it
+    -- a superconducting magnet has no room temperature to drift with."""
+    from dmipy_sim.acquisition.scanners import ScannerLimits
+    from dmipy_sim.phantom import b0_offset_map
+    swoop, grid = ScannerLimits.of("swoop"), _swoop_grid()
+    at = grid.offset_m(grid.every_voxel).reshape(-1, 3)
+    base = b0_offset_map(swoop, grid)(at)
+    warm = b0_offset_map(swoop, grid, delta_T_K=0.1)(at)
+    np.testing.assert_allclose(warm - base, swoop.b0_drift(0.1), atol=1e-18)   # uniform, to the bit
+    assert np.ptp(warm) == pytest.approx(np.ptp(base), rel=1e-9)               # the shape is unchanged
+    assert b0_offset_map(swoop, grid, delta_T_K=0.0) is not None               # no drift is still the shape
+    with pytest.raises(ValueError, match="no catalogued temperature coefficient"):
+        b0_offset_map(ScannerLimits.of("prisma"), grid, delta_T_K=1.0)

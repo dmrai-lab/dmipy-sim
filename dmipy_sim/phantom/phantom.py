@@ -137,6 +137,11 @@ class Phantom:
                 meta["substrates"][i]["uri"] = s.uri
         if layers:
             names = tuple(layers)
+            if not grid.placed_in_the_bore:
+                raise ValueError(
+                    "this grid's origin_m was never stated, so where it sits in the bore is a guess, and a "
+                    "macroscopic layer is a function of exactly that (RPH.md 7). Give origin_m -- and "
+                    "isocenter_m if the scanner is not focused on the grid's centre -- or declare no layer.")
             bad = [n for n in names if n not in SCALAR_REGISTRY]
             if bad:
                 raise ValueError(f"unknown macroscopic layer(s) {bad}: the registry is {list(SCALAR_REGISTRY)} (RPH.md 5.1). "
@@ -296,7 +301,8 @@ class Phantom:
         return out
 
     def replay(self, seq, *, scanner=None, pose=None, packs=None, complex_signal=False,
-               transmit=None, off_resonance=None, proton_density=None, cache=None):
+               transmit=None, off_resonance=None, proton_density=None, transmit_tolerance=1e-3,
+               encoding_tolerance=1e-3, cache=None, report=None):
         """The signal of every voxel under ``seq``: a dense volume ``grid.shape + (n_measurements,)``, NaN where
         the phantom has no voxel (:meth:`sparse` gives the rows).
 
@@ -318,21 +324,74 @@ class Phantom:
           the voxel through the acquisition's own coherence gate (zero for a 180 at TE/2).
         * ``proton_density`` -- multiplies every slot's ``m0`` in the voxel (and an ``m0_scale`` layer).
 
+        ``transmit_tolerance`` bins the transmit scales the RF-aware route propagates at, so a smooth map costs a
+        bounded number of propagations rather than one per voxel; ``None`` bins nothing
+        (:func:`~dmipy_sim.replay.phantom.quantise`).
+
+        **What the machine does to the encoding** (dmipy-sim#377). A ``scanner`` that catalogues a
+        gradient-nonlinearity tensor, a field shape or a field strength delivers a different gradient at every
+        voxel, and each pack is replayed once per distinct delivered gradient; ``encoding_tolerance`` is the
+        fraction of ``b`` the voxels are binned to (``None`` for exact), and ``report`` receives the class
+        count, which is the cost (:func:`~dmipy_sim.phantom.bore.encoding_classes`). A machine's static offset
+        arrives as ``off_resonance`` the same way (:func:`~dmipy_sim.phantom.bore.b0_offset_map`).
+
+        The grid's voxels are the acquisition's: a sequence with no prescription is given this grid's, so an
+        encoding that leaves a net moment at the readout is averaged over this voxel
+        (:meth:`~dmipy_sim.acquisition.scanner_sequence.ScannerSequence.voxel_factor`).
+
         ``cache`` (a directory, or ``True``) keeps each pack's expansion on disk under the acquisition and the knobs,
         so a phantom replayed twice under the same acquisition pays the expansion once
         (:meth:`ReplayPack.pose_response`). A declared layer this route cannot carry raises rather than being dropped.
         """
         f = self.file
         self._check_prescription(seq)
+        seq = self._on_this_grid(seq)
+        off_resonance = self._machine_field(scanner, off_resonance)
         maps = dict(transmit=self._map(transmit, "transmit"), off_resonance=self._map(off_resonance, "off_resonance"),
                     proton_density=self._map(proton_density, "proton_density"))
         common = dict(scanner=scanner, pose=pose, packs=self._packs(packs), complex_signal=complex_signal,
                       off_resonance=maps["off_resonance"], proton_density=maps["proton_density"],
+                      encoding_tolerance=encoding_tolerance, report=report,
                       forms={i: s for i, s in enumerate(self.substrates) if getattr(s, "kind", None) == "analytic"})
         if maps["transmit"] is not None or "kappa_B1" in f.scalar_names:
-            _, S = f.replay_bloch(seq, transmit=maps["transmit"], **common)
+            _, S = f.replay_bloch(seq, transmit=maps["transmit"],
+                                  transmit_tolerance=transmit_tolerance, **common)
         else:
             _, S = f.replay(seq, cache=cache, **common)
+        return self.to_volume(S)
+
+    def _on_this_grid(self, seq):
+        """The acquisition prescribed on this grid's voxels when it states no prescription of its own: the
+        voxel an unbalanced encoding is averaged over is this phantom's."""
+        if getattr(seq, "prescription", None) is not None:
+            return seq
+        from ..acquisition.prescription import Prescription
+        g = self.grid
+        return seq.with_prescription(Prescription(isocenter_m=g.isocenter_m, voxel_size_m=g.voxel_size_m,
+                                                  matrix=g.shape, axes=g.axes, origin_m=g.origin_m))
+
+    def replay_train(self, seq, *, echo=-1, transmit=None, transmit_tolerance=1e-2, off_resonance=None,
+                     off_resonance_tolerance=2.0, scanner=None, pose=None, packs=None, proton_density=None,
+                     keep=None, complex_signal=False, jax=None, report=None):
+        """The signal of every voxel at one ``echo`` of a diffusion-prepared RF train ``seq``: a dense volume
+        ``grid.shape + (n_measurements,)``, as :meth:`replay` returns.
+
+        A train reaches an orientation-distribution phantom -- a brain -- through its coherence pathways
+        (:meth:`~dmipy_sim.replay.phantom.ReplayPhantom.replay_train`), where the RF-aware route of
+        :meth:`replay` cannot. The maps and ``scanner`` mean what they mean on :meth:`replay`: ``transmit`` and
+        ``off_resonance`` are binned to their tolerances (``off_resonance_tolerance`` in hertz), and a machine
+        that publishes a field law brings it along as the offset.
+        """
+        f = self.file
+        self._check_prescription(seq)
+        seq = self._on_this_grid(seq)
+        off_resonance = self._machine_field(scanner, off_resonance)
+        _, S = f.replay_train(seq, echo=echo, transmit=self._map(transmit, "transmit"),
+                              transmit_tolerance=transmit_tolerance,
+                              off_resonance=self._map(off_resonance, "off_resonance"),
+                              off_resonance_tolerance=off_resonance_tolerance, scanner=scanner, pose=pose,
+                              packs=self._packs(packs), proton_density=self._map(proton_density, "proton_density"),
+                              keep=keep, complex_signal=complex_signal, jax=jax, report=report)
         return self.to_volume(S)
 
     def _check_prescription(self, seq):
@@ -343,6 +402,23 @@ class Phantom:
             raise ValueError(f"the acquisition is prescribed on axes {p.axes!r} and the phantom's grid on {self.grid.axes!r}: "
                              f"the gradient and B0 directions are given in the scanner frame, so the two must agree; "
                              f"build the grid with Grid.from_prescription(seq.prescription) or re-prescribe the sequence")
+
+    def _machine_field(self, scanner, off_resonance):
+        """The static field's own non-uniformity, where the machine publishes one and the caller did not
+        state the offset themselves.
+
+        A field a magnet imposes is a property of the machine, and a replay is already told which machine it
+        is on. So a scanner whose profile the catalogue carries brings it along rather than being silently
+        replayed as an ideal magnet, which looks identical.
+
+        A stated ``off_resonance`` wins: it is a measurement, and a measured field map already contains
+        whatever the magnet does. Combining the two would count it twice.
+        """
+        from .bore import b0_offset_map
+        from ..acquisition.scanners import ScannerLimits
+        if off_resonance is not None or not (isinstance(scanner, ScannerLimits) and scanner.has_field_law):
+            return off_resonance
+        return b0_offset_map(scanner, self.grid)
 
     def _map(self, value, name):
         """A replay-time map as one value per occupied voxel, or None."""
