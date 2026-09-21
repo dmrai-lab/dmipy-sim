@@ -206,3 +206,22 @@ def test_a_shimmed_superconducting_magnet_has_no_shape_to_render_and_that_is_the
     for name in ("prisma", "connectom", "terra"):
         _vox, bias = mod.bias_map(ScannerLimits.of(name), grid, R, seq)
         assert bias is None, f"{name} suddenly has a field shape"
+
+
+def test_the_catalogued_machine_reaches_the_brain_s_signal(example, wm_pack):
+    """The check that failed on the branch before dmipy-sim#377: the crop replayed on ``ScannerLimits.of("swoop")``
+    was bit-identical to the crop on a bare 64 mT field, while the reference route said the delivered b differed
+    by percent. Now the machine's tensor, background and Maxwell term reach every voxel, through the grid's own
+    obliquity, once per distinct delivered gradient."""
+    from dmipy_sim import sequences
+    from dmipy_sim.acquisition.scanners import ScannerLimits
+    ph, fod, R = example.build(str(CROP), wm_pack)
+    dirs = np.array([[1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 0], [0, 1, 1], [1, 0, 1]], float)
+    seq = sequences.pgse(dirs.tolist(), 0.006, 0.015, bvalues=[1e9] * 6, TE=0.030, n_t=61)   # on the grid's own voxels
+    rep = {}
+    S_sw = ph.replay(seq, pose=R, scanner=ScannerLimits.of("swoop"), encoding_tolerance=0.05, report=rep)
+    S_b0 = ph.replay(seq, pose=R, scanner=0.064)
+    m = np.isfinite(S_sw)
+    moved = np.abs(S_sw - S_b0)[m].max() / np.abs(S_b0)[m].max()
+    assert 1 < rep["n_encoding_classes"] < ph.n_voxels
+    assert 2e-3 < moved < 0.2, f"the machine moved the crop's signal by {moved:.2e} of its largest value"

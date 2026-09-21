@@ -570,21 +570,28 @@ def test_a_scanner_that_publishes_a_field_brings_it_to_the_replay(pack_path):
 
 
 def test_the_machines_field_refocuses_under_a_spin_echo_and_not_a_gradient_echo(pack_path):
-    """The physics assertion. A static offset is exactly what a 180 at TE/2 puts back, so the same machine
-    that dephases a gradient echo across the bore leaves a spin echo alone. If the field were entering as
-    anything other than a static offset this would not hold."""
+    """The physics assertion. A static offset is exactly what a 180 at TE/2 puts back, so the machine's field
+    LAW dephases a gradient echo across the bore and leaves a spin echo alone. If the law were entering as
+    anything other than a static offset this would not hold. The law is what the machine brings as
+    ``off_resonance``; the machine's gradient side -- its tensor, background and Maxwell term -- is a b-level
+    effect a spin echo does not refocus, reaches the phantom separately (dmipy-sim#377), and is why the
+    whole machine is NOT bit-identical to the bare field under the spin echo."""
     from dmipy_sim.acquisition.scanners import ScannerLimits
+    from dmipy_sim.phantom.bore import b0_offset_map
     ph, *_ = _phantom(pack_path, grid=_swoop_grid())
     swoop = ScannerLimits.of("swoop")
     gre, se = _gre_and_se(pack_path)
+    law = b0_offset_map(swoop, ph.grid)
 
     g_ideal = _rows(ph, ph.replay(gre, scanner=0.064, complex_signal=True))
-    g_real = _rows(ph, ph.replay(gre, scanner=swoop, complex_signal=True))
+    g_real = _rows(ph, ph.replay(gre, scanner=0.064, off_resonance=law, complex_signal=True))
     s_ideal = _rows(ph, ph.replay(se, scanner=0.064, complex_signal=True))
-    s_real = _rows(ph, ph.replay(se, scanner=swoop, complex_signal=True))
+    s_real = _rows(ph, ph.replay(se, scanner=0.064, off_resonance=law, complex_signal=True))
 
-    assert np.abs(np.angle(g_real / g_ideal)).max() > 0.05      # the gradient echo carries it
+    assert np.abs(np.angle(g_real / g_ideal)).max() > 0.05      # the gradient echo carries the law
     np.testing.assert_allclose(s_real, s_ideal, rtol=1e-9)      # the spin echo refocuses it exactly
+    s_machine = _rows(ph, ph.replay(se, scanner=swoop, complex_signal=True))
+    assert not np.array_equal(s_machine, s_ideal)               # the gradient side is not a static offset
 
 
 def test_a_stated_field_map_wins_over_the_machines_own(pack_path):

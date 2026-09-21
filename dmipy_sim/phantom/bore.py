@@ -18,7 +18,7 @@ from __future__ import annotations
 import numpy as np
 
 __all__ = ["b0_offset_map", "b1_scale_map", "background_gradient_map", "gradient_tensor_map",
-           "delivered_gradient", "delivered_weights"]
+           "delivered_gradient", "delivered_weights", "encoding_classes"]
 
 
 def _model(scanner):
@@ -218,6 +218,67 @@ def delivered_gradient(scanner, grid, sequence, *, voxels=None, to_scanner=None,
             seq = seq.with_concomitant(d_grid[k], float(B0), b0_axis=_b0_axis(scanner, R))
         out[k] = seq.G
     return out
+
+
+def encoding_classes(scanner, grid, sequence, voxel_index, *, tolerance=1e-3, to_scanner=None,
+                     nonlinearity=True, background=True, concomitant=True):
+    """The acquisition as the machine plays it at each voxel of ``voxel_index``, BINNED into the distinct
+    ways the gradient is delivered: ``(class_of_voxel, played)`` with ``class_of_voxel`` ``(n,)`` an index
+    into ``played``, a list of :class:`~dmipy_sim.acquisition.scanner_sequence.ScannerSequence` composed as
+    :func:`delivered_gradient` composes them. ``None`` when the machine brings none of the three terms
+    (dmipy-sim#377).
+
+    A phantom replays each pack once per pose expansion, so a machine whose gradient depends on where the
+    voxel sits would cost one expansion per voxel. The three terms are binned on their inputs instead, each
+    to what a fraction ``tolerance`` of ``b`` allows -- the tensor to ``tolerance / 2`` (``b`` goes as the
+    square of the gradient), the background to that fraction of the largest commanded gradient, and the
+    position the Maxwell term is read at to ``tolerance B0 / G_max`` -- and one acquisition is composed per
+    distinct bin from a member's exact values. The count is the cost, and it follows the size of the effect:
+    a 3 T magnet with no catalogued shape has only the concomitant term, a few centimetres wide in position,
+    so a head is a handful of classes; a permanent magnet's tensor varies by percent across a head and costs
+    hundreds at a tolerance of a thousandth. ``tolerance=None`` bins nothing: every distinct voxel its own
+    class, exact.
+    """
+    from ..replay.phantom import quantise
+    scanner = _model(scanner)
+    B0 = scanner.field_T
+    has_L = bool(nonlinearity and scanner.has_gradient_nonlinearity)
+    has_g0 = bool(background and scanner.has_field_law)
+    has_c = bool(concomitant and B0 is not None)
+    if not (has_L or has_g0 or has_c):
+        return None
+    idx = np.asarray(voxel_index)
+    pos = grid.positions_m(idx)
+    R, _into_bore = _bore(grid, to_scanner)
+    d_grid = np.asarray(pos, dtype=np.float64).reshape(-1, 3) - np.asarray(grid.isocenter_m, dtype=np.float64)
+    n = d_grid.shape[0]
+    G_max = max(float(np.abs(np.asarray(sequence.G)).max()), 1e-30)
+    tol = None if tolerance is None else float(tolerance)
+    Ls = gradient_tensor_map(scanner, grid, to_scanner=R)(pos) if has_L else None
+    g0 = background_gradient_map(scanner, grid, to_scanner=R)(pos) if has_g0 else None
+    parts = []
+    if has_L:
+        parts.append(quantise(Ls.reshape(n, 9), None if tol is None else 0.5 * tol))
+    if has_g0:
+        parts.append(quantise(g0, None if tol is None else 0.5 * tol * G_max))
+    if has_c:
+        parts.append(quantise(d_grid, None if tol is None else tol * float(B0) / G_max))
+    key = np.concatenate(parts, axis=1)
+    _uniq, inverse = np.unique(key, axis=0, return_inverse=True)
+    inverse = np.asarray(inverse).reshape(-1)
+    b0_axis = _b0_axis(scanner, R)
+    played = []
+    for c in range(int(inverse.max()) + 1):
+        k = int(np.flatnonzero(inverse == c)[0])                  # a member's exact values stand for the bin
+        seq = sequence
+        if has_L:
+            seq = seq.with_gradient_nonlinearity(Ls[k])
+        if has_g0:
+            seq = seq.with_background_gradient(g0[k])
+        if has_c:
+            seq = seq.with_concomitant(d_grid[k], float(B0), b0_axis=b0_axis)
+        played.append(seq)
+    return inverse, played
 
 
 def delivered_weights(scanner, grid, sequence, *, K, n_t, dt_pack, voxels=None, to_scanner=None,
