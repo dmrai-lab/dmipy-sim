@@ -68,6 +68,9 @@ _TO_SI = {"mT/m": 1e-3, "T/m": 1.0, "T/m/s": 1.0, "us": 1e-6, "ms": 1e-3,
           # which is why the catalogue stores a span and not a degC endpoint -- degC to K is an offset,
           # and this table can only scale
           "1/K": 1.0, "K": 1.0, "Hz/K": 1.0,
+          # a frequency offset is already SI; it is catalogued in Hz rather than converted to ppm
+          # because the measurement is a frequency and the ppm depends on which B0 you divide by
+          "Hz": 1.0,
           # a solid-harmonic coefficient of dB/B0 has the reciprocal length of its order
           "1/m^3": 1.0,
           # a gradient-nonlinearity coefficient is a fraction per metre
@@ -176,13 +179,18 @@ def get_citation(source_key):
 
 
 def needs_verification():
-    """List ``(model, group, name)`` of every entry whose value is unverified/None."""
+    """List ``(model, group, name)`` of every leaf, in every group, whose confidence is ``NEEDS VERIFICATION``.
+
+    A null value is not by itself a gap: a null under a stated confidence is a CLAIM that there is no such
+    number (a quadrature birdcage has no single ``b1_axis``), and it is the confidence that says which.
+    """
     out = []
     for m, sc in {**SCANNER_CONSTANTS["scanners"], **SCANNER_CONSTANTS["envelopes"]}.items():
-        for grp in ("gradient", "rf", "homogeneity"):
-            for n, leaf in sc.get(grp, {}).items():
-                if isinstance(leaf, dict) and (leaf.get("confidence") == "NEEDS VERIFICATION"
-                                               or leaf.get("value") is None):
+        for grp, leaves in sc.items():
+            if not isinstance(leaves, dict):
+                continue
+            for n, leaf in leaves.items():
+                if isinstance(leaf, dict) and leaf.get("confidence") == "NEEDS VERIFICATION":
                     out.append((m, grp, n))
     return out
 

@@ -314,6 +314,38 @@
    "journal_or_publisher": "National Institute of Standards and Technology, public data repository",
    "year": 2025,
    "doi_or_url": "https://doi.org/10.18434/mds2-3896"
+  },
+  "gach2020_b0_homogeneity": {
+   "key": "gach2020_b0_homogeneity",
+   "authors": "Gach HM, Curcuru AN, Mutic S, Kim T",
+   "title": "B0 field homogeneity recommendations, specifications, and measurement units for MRI in radiation therapy",
+   "journal_or_publisher": "Medical Physics",
+   "year": 2020,
+   "doi_or_url": "10.1002/mp.14306"
+  },
+  "hcp_s1200_manual": {
+   "key": "hcp_s1200_manual",
+   "authors": "WU-Minn Consortium Human Connectome Project",
+   "title": "WU-Minn HCP 1200 Subjects Data Release: Reference Manual (updated April 2018); the scanner hardware of record for every HCP 3T and 7T subject",
+   "journal_or_publisher": "Washington University in St. Louis / University of Minnesota",
+   "year": 2018,
+   "doi_or_url": "https://www.humanconnectome.org/storage/app/media/documentation/s1200/HCP_S1200_Release_Reference_Manual.pdf"
+  },
+  "cmrr_7t_magnet_web": {
+   "key": "cmrr_7t_magnet_web",
+   "authors": "Center for Magnetic Resonance Research, University of Minnesota",
+   "title": "7T/AS: Siemens MAGNETOM 7T Plus -- magnet, console, shim and gradient specification table (accessed 2026-09-21). This is the page the HCP S1200 Reference Manual names by URL for its 7T scanner",
+   "journal_or_publisher": "University of Minnesota (CMRR equipment page)",
+   "year": 2026,
+   "doi_or_url": "https://www.cmrr.umn.edu/magnets/7t90AS.shtml"
+  },
+  "hui2021_frequency_drift": {
+   "key": "hui2021_frequency_drift",
+   "authors": "Hui SCN, Mikkelsen M, Zollner HJ, Ahluwalia V, Alcauter S, et al. (Big GABA / multi-site)",
+   "title": "Frequency drift in MR spectroscopy at 3T",
+   "journal_or_publisher": "NeuroImage",
+   "year": 2021,
+   "doi_or_url": "10.1016/j.neuroimage.2021.118430"
   }
  },
  "scanners": {
@@ -424,6 +456,64 @@
      "source_key": "marques2019_lowfield",
      "location": "coil geometry",
      "confidence": "widely-quoted"
+    }
+   },
+   "homogeneity": {
+    "b0_homogeneity": {
+     "value": 0.386,
+     "unit": "ppm",
+     "field_T": 3.0,
+     "context": "peak-to-peak over a 24 cm DSV, MEASURED on a named Prisma with full (first- and second-order) active shimming; the same table gives VRMS 0.024 ppm, SD 0.023 and FWHM 0.107 at that DSV, 2.378 / 0.067 / 0.067 / 0.158 over 35 cm, and 0.696 pk-pk at 24 cm with gradshim only. THE MAGNITUDE IS PUBLISHED AND THE SHAPE IS NOT, so this machine has no field law and b0_harmonic_Z2 is deliberately absent: a shape-free spread over a sphere does not determine a harmonic expansion. That the shape is not a simple bowl is already visible in the two DSV rows -- a pure Z2 anchored to the 24 cm figure predicts 0.821 ppm over 35 cm against the 2.378 measured, so orders above two carry most of the residual further out, and fitting one anyway would ship a shape the same table refutes. Scale for comparison: a pure Z2 at this magnitude gives a background gradient of 0.0086 mT/m at 8 cm from isocentre against the Hyperfine Swoop's catalogued 1.4, i.e. 163x smaller, and since a self-term in b goes as the square of the background it is ~2.7e4 times smaller in its effect on a diffusion measurement -- which is why a clinical 3 T magnet's own field is negligible for diffusion encoding and a 64 mT one's is not. The vendor's own VRMS-vs-DSV series and the effective orders derived from it now sit alongside in b0_homogeneity_vrms, b0_spec_radial_order and b0_measured_radial_order; they quantify this refusal rather than overturn it",
+     "source_key": "gach2020_b0_homogeneity",
+     "location": "Table III, 'Maxima from 3 T Siemens MRI field homogeneity measurements for 24 and 35 cm DSV phantoms', Prisma column",
+     "confidence": "cited"
+    },
+    "b0_homogeneity_vrms": {
+     "value": 0.02,
+     "unit": "ppm",
+     "field_T": 3.0,
+     "context": "guaranteed MAXIMUM VRMS over a 20 cm DSV; typical 0.008. 20 cm is used as the headline across the 3 T entries because it is head-scale and every vendor publishes that row, so the three are comparable. The full guaranteed/typical series in ppm is 10 cm 0.001/0.0008, 20 cm 0.02/0.008, 30 cm 0.10/0.045, 40 cm 0.20/0.10, 45 cm 0.50/0.325, 50 cm 1.50/1.20, on a 60 cm bore, 198 cm magnet. These are VRMS and are labelled as such, unlike the bare 'ppm' a facility or brochure page usually quotes -- Gach measured 0.386 pk-pk against 0.024 VRMS on this same machine, a factor of 16, so a homogeneity figure without its metric is not comparable with this one",
+     "source_key": "gach2020_b0_homogeneity",
+     "location": "Supplementary material, Table S5 ('Siemens 3 T magnet homogeneity VRMS values (Maximum/Typical) in ppm'), Prisma column",
+     "confidence": "cited"
+    },
+    "b0_spec_radial_order": {
+     "value": 4.23,
+     "unit": "",
+     "field_T": 3.0,
+     "context": "the effective radial order of the VENDOR SPEC ENVELOPE, fitted over 10-50 cm DSV (guaranteed maxima; the typical series gives 4.21, so the envelope's shape does not depend on which is used). DERIVED, method stated so it can be rechecked: a solid harmonic of degree n has |dB| proportional to r^n, so VRMS over a sphere scales as R^n and the slope of log(VRMS) against log(DSV/2) IS n. Gach's 35 cm rows are his own interpolation ('Interpolated from specifications using minima') and are excluded from every fit here. Order ~4 rather than 2 is the rule and not a Prisma quirk: the same fit gives 4.03 for the Philips Ingenia 3 T and 4.58 for the GE Premier. A magnet is designed to cancel its low orders over the imaging volume, so what is left is high-order and grows steeply towards the bore wall. This constrains the RADIAL order and nothing else. VRMS over a sphere is angularly blind: degree 2 contains Z2, ZX, ZY, X2Y2 and XY, and this number cannot tell them apart. Scale plus order is still not a field law -- the Swoop earns its b0_harmonic_Z2 only because its source ALSO names an asymmetry axis -- which is why this entry carries no b0_harmonic_Z2",
+     "source_key": "gach2020_b0_homogeneity",
+     "location": "Supplementary material, Table S5, Prisma column (fit over the 10/20/30/40/45/50 cm rows)",
+     "confidence": "derived"
+    },
+    "b0_measured_radial_order": {
+     "value": 1.92,
+     "unit": "",
+     "field_T": 3.0,
+     "context": "the effective radial order of the MEASURED residual over 10-35 cm with gradshim only (Gach's 'Without 2nd order shimming' state), from VRMS 0.012/0.040/0.058/0.094/0.136 ppm at 10/20/24/30/35 cm. DERIVED, method stated so it can be rechecked: a solid harmonic of degree n has |dB| proportional to r^n, so VRMS over a sphere scales as R^n and the slope of log(VRMS) against log(DSV/2) IS n. Gach's 35 cm rows are his own interpolation ('Interpolated from specifications using minima') and are excluded from every fit here. The piecewise slopes are 1.74, 2.04, 2.16, 2.40 -- stable about 2, so this magnet's un-2nd-order-shimmed residual really is dominated by a degree-2 harmonic. Two things stop that from becoming a field law. (a) This constrains the RADIAL order and nothing else. VRMS over a sphere is angularly blind: degree 2 contains Z2, ZX, ZY, X2Y2 and XY, and this number cannot tell them apart. Scale plus order is still not a field law -- the Swoop earns its b0_harmonic_Z2 only because its source ALSO names an asymmetry axis -- which is why this entry carries no b0_harmonic_Z2. (b) It is NOT a property of 3 T magnets in general: the same fit on Gach's Vida gives 1.21, so the degree-2 signature is this magnet's, not the class's. With FULL shimming the residual is not a single harmonic at all -- its piecewise order runs 1.00, 1.67, 2.99, 3.85 across the same intervals, a mixture with a leftover linear term at small radius and a high-order term taking over at large, which is the quantitative form of the refusal already recorded in b0_homogeneity",
+     "source_key": "gach2020_b0_homogeneity",
+     "location": "Supplementary material, Table S10 ('VRMS Maxima for different DSVs from 3 T Siemens MRI phase maps'), Prisma 'Without 2nd order shimming' column",
+     "confidence": "derived"
+    }
+   },
+   "thermal": {
+    "f0_drift_baseline": {
+     "value": 0.08,
+     "unit": "Hz",
+     "field_T": 3.0,
+     "context": "MEDIAN across the 17 Prisma datasets of each unit's mean absolute water-frequency offset over a 5:20 min PRESS acquisition with no preceding fMRI; range 0.02-2.63 Hz. That range is the finding. The 17 units are sharply BIMODAL -- 12 sit at a median of 0.05 Hz and 5 at a median of 2.36 Hz, a factor of 47 between two groups of the same model with identical 80 mT/m / 200 T/m/s gradients. Unit-to-unit variation on one model is far larger here than the difference between models, so a single per-model drift number is a median and never a prediction for a given scanner. Cohort context, all 95 datasets: median drift 0.44 Hz before fMRI and 0.83 Hz after over 5:20 min, rising to 3.15 Hz over a full 30 min; average drift rates 0.29 Hz/min before and 0.43 Hz/min after. At 3 T, 1 ppm is 127.7 Hz. The measurement is an MRS water-frequency offset, so it is a WHOLE-VOLUME f0 shift over time and not a spatial inhomogeneity -- it adds to the static residual rather than replacing it, and unlike the static residual it cannot be shimmed away because it is not stationary",
+     "source_key": "hui2021_frequency_drift",
+     "location": "Table 2, the 17 Siemens Prisma rows, 'Mean absolute frequency offsets (Hz), Pre-fMRI' column",
+     "confidence": "cited"
+    },
+    "f0_drift_post_fmri_30min": {
+     "value": 0.82,
+     "unit": "Hz",
+     "field_T": 3.0,
+     "context": "MEDIAN across the same 17 Prisma datasets over a full 30:00 min acquisition following fMRI; range 0.13-11.39 Hz. The median is 0.0064 ppm at 3 T, against a guaranteed static homogeneity of 0.02 ppm VRMS over 20 cm DSV -- so typically a third of the static spec. The worst unit reaches 11.39 Hz = 0.089 ppm, 4.5x the guaranteed static spec. What makes this worth cataloguing next to b0_homogeneity_vrms: over a 30-minute acquisition the THERMAL field change is the same order as the magnet's STATIC homogeneity specification, and at the tail it is several times larger. For a long diffusion protocol the time-varying field is therefore the bigger field error, not the static one",
+     "source_key": "hui2021_frequency_drift",
+     "location": "Table 2, the 17 Siemens Prisma rows, 'Post-fMRI (30:00 min)' column",
+     "confidence": "cited"
     }
    }
   },
@@ -750,6 +840,46 @@
      "location": "coil geometry",
      "confidence": "widely-quoted"
     }
+   },
+   "homogeneity": {
+    "b0_homogeneity_vrms": {
+     "value": 0.05,
+     "unit": "ppm",
+     "field_T": 3.0,
+     "context": "guaranteed MAXIMUM VRMS over a 20 cm DSV; typical 0.03. Full guaranteed/typical series in ppm: 10 cm NA/0.02, 20 cm 0.05/0.03, 30 cm 0.15/0.08, 40 cm 0.50/0.27, 45 cm 1.50/0.70, 50 cm 4.00/2.50, 50x50x45 cm DEV 3.00/1.80, on a 70 cm bore, 174 cm magnet. GE publish one column for 'Architect, Premier, PET/MR', so this figure is shared across those three systems and is not specific to the Premier",
+     "source_key": "gach2020_b0_homogeneity",
+     "location": "Supplementary material, Table S2 ('GE 3 T magnet homogeneity VRMS values (Maximum/Typical) in ppm'), 'Architect, Premier, PET/MR' column",
+     "confidence": "cited"
+    },
+    "b0_spec_radial_order": {
+     "value": 4.58,
+     "unit": "",
+     "field_T": 3.0,
+     "context": "the effective radial order of the vendor spec envelope, fitted over 20-50 cm DSV (guaranteed maxima; the typical series has a 10 cm row and fits 2.75, and that spread between the two is itself a warning that a spec envelope is a design bound and not a measured field). DERIVED, method stated so it can be rechecked: a solid harmonic of degree n has |dB| proportional to r^n, so VRMS over a sphere scales as R^n and the slope of log(VRMS) against log(DSV/2) IS n. Gach's 35 cm rows are his own interpolation ('Interpolated from specifications using minima') and are excluded from every fit here. This constrains the RADIAL order and nothing else. VRMS over a sphere is angularly blind: degree 2 contains Z2, ZX, ZY, X2Y2 and XY, and this number cannot tell them apart. Scale plus order is still not a field law -- the Swoop earns its b0_harmonic_Z2 only because its source ALSO names an asymmetry axis -- which is why this entry carries no b0_harmonic_Z2",
+     "source_key": "gach2020_b0_homogeneity",
+     "location": "Supplementary material, Table S2, 'Architect, Premier, PET/MR' column (fit over the 20/30/40/45/50 cm rows)",
+     "confidence": "derived"
+    }
+   },
+   "thermal": {
+    "f0_drift_baseline": {
+     "value": 0.22,
+     "unit": "Hz",
+     "field_T": 3.0,
+     "context": "median of the TWO usable SIGNA Premier datasets (0.13 and 0.31 Hz); a third Premier row is n/a. Two units is not a distribution and this number should be read as an order of magnitude, not a central value. Cohort context, all 95 datasets: median drift 0.44 Hz before fMRI and 0.83 Hz after over 5:20 min, rising to 3.15 Hz over a full 30 min; average drift rates 0.29 Hz/min before and 0.43 Hz/min after. At 3 T, 1 ppm is 127.7 Hz. The measurement is an MRS water-frequency offset, so it is a WHOLE-VOLUME f0 shift over time and not a spatial inhomogeneity -- it adds to the static residual rather than replacing it, and unlike the static residual it cannot be shimmed away because it is not stationary",
+     "source_key": "hui2021_frequency_drift",
+     "location": "Table 2, the GE SIGNA Premier rows (G08a, G09a), 'Pre-fMRI' column",
+     "confidence": "cited"
+    },
+    "f0_drift_post_fmri_30min": {
+     "value": 7.64,
+     "unit": "Hz",
+     "field_T": 3.0,
+     "context": "median of the same two units over 30 min after fMRI (4.11 and 11.18 Hz) = 0.060 ppm at 3 T, which is 3x this machine's own guaranteed static homogeneity of 0.02 ppm VRMS at 20 cm DSV. n=2. What makes this worth cataloguing next to b0_homogeneity_vrms: over a 30-minute acquisition the THERMAL field change is the same order as the magnet's STATIC homogeneity specification, and at the tail it is several times larger. For a long diffusion protocol the time-varying field is therefore the bigger field error, not the static one",
+     "source_key": "hui2021_frequency_drift",
+     "location": "Table 2, the GE SIGNA Premier rows (G08a, G09a), 'Post-fMRI (30:00 min)' column",
+     "confidence": "cited"
+    }
    }
   },
   "philips_ingenia_3T": {
@@ -761,7 +891,7 @@
      "value": 45,
      "unit": "mT/m",
      "field_T": 3.0,
-     "context": "per axis, Omega HP gradient system",
+     "context": "per axis, Omega HP gradient system. CAUTION, from Hui 2021 Table 2: 'Ingenia' is a FAMILY, not a gradient specification. Among the ten plain-Ingenia units it lists, the gradients are 33/200, 45/120, 45/200, 45/220 and 80/200 mT/m per T/m/s -- 45/200 is the modal configuration and is what this leaf records, but an Ingenia can be any of them. The named variants differ again (Ingenia CX 40/200, Ingenia Elition 45/220). Matching a dataset to this entry by the word 'Ingenia' alone is therefore unsafe; the acquisition's own header is the authority",
      "source_key": "philips_ingenia_web",
      "location": "Product page / gradient specs",
      "confidence": "widely-quoted"
@@ -786,7 +916,7 @@
     }
    },
    "rf": {},
-   "notes": "Philips publishes gradient figures across configurations; the 45 mT/m / 200 T/m/s Omega HP figure is consistent across Ingenia/Achieva dStream 3T pages but the exact primary spec sheet was not pinned to a single PDF clause. Higher-end Philips gradients (e.g. 80 mT/m on some configs) exist - confirm per installed configuration.",
+   "notes": "Philips publishes gradient figures across configurations; the 45 mT/m / 200 T/m/s Omega HP figure is consistent across Ingenia/Achieva dStream 3T pages but the exact primary spec sheet was not pinned to a single PDF clause. Higher-end Philips gradients (e.g. 80 mT/m on some configs) exist - confirm per installed configuration. Hui 2021 Table 2 independently lists many of these units with their gradient specs, which is the closest thing to a primary spec sheet found so far: it corroborates 45 mT/m / 200 T/m/s as the modal Ingenia configuration while showing the model name spans 33-80 mT/m.",
    "frame": {
     "b0_axis": {
      "value": "S",
@@ -805,6 +935,46 @@
      "source_key": "marques2019_lowfield",
      "location": "coil geometry",
      "confidence": "widely-quoted"
+    }
+   },
+   "homogeneity": {
+    "b0_homogeneity_vrms": {
+     "value": 0.022,
+     "unit": "ppm",
+     "field_T": 3.0,
+     "context": "guaranteed MAXIMUM VRMS over a 20 cm DSV; typical 0.02. Full guaranteed/typical series in ppm: 10 cm 0.0022/0.002, 20 cm 0.022/0.02, 30 cm 0.08/0.07, 40 cm 0.45/0.40, 45 cm 1.20/1.10, 50x50x45 cm DEV 2.00/1.80, on a 70 cm bore, 162 cm magnet. TAKEN FROM THE 70 cm 'Ingenia' COLUMN, which is the plain Ingenia this entry describes. The 60 cm 'Ingenia CX' in the same table is a DIFFERENT magnet and roughly twice as inhomogeneous at head scale (0.04/0.025 at 20 cm), so a CX must not use this number",
+     "source_key": "gach2020_b0_homogeneity",
+     "location": "Supplementary material, Table S3 ('Philips magnet homogeneity VRMS values (Maximum/Typical) in ppm'), 3 T / 70 cm 'Ingenia' column",
+     "confidence": "cited"
+    },
+    "b0_spec_radial_order": {
+     "value": 4.03,
+     "unit": "",
+     "field_T": 3.0,
+     "context": "the effective radial order of the vendor spec envelope, fitted over 10-45 cm DSV (typical series gives 4.02). DERIVED, method stated so it can be rechecked: a solid harmonic of degree n has |dB| proportional to r^n, so VRMS over a sphere scales as R^n and the slope of log(VRMS) against log(DSV/2) IS n. Gach's 35 cm rows are his own interpolation ('Interpolated from specifications using minima') and are excluded from every fit here. This constrains the RADIAL order and nothing else. VRMS over a sphere is angularly blind: degree 2 contains Z2, ZX, ZY, X2Y2 and XY, and this number cannot tell them apart. Scale plus order is still not a field law -- the Swoop earns its b0_harmonic_Z2 only because its source ALSO names an asymmetry axis -- which is why this entry carries no b0_harmonic_Z2. No MEASURED series exists for a 3 T Ingenia: Gach's phase-map tables cover the 1.5 T Ingenia (Table S8), not this machine",
+     "source_key": "gach2020_b0_homogeneity",
+     "location": "Supplementary material, Table S3, 3 T 'Ingenia' column (fit over the 10/20/30/40/45 cm rows)",
+     "confidence": "derived"
+    }
+   },
+   "thermal": {
+    "f0_drift_baseline": {
+     "value": 0.91,
+     "unit": "Hz",
+     "field_T": 3.0,
+     "context": "median across the 10 plain-'Ingenia' datasets of the mean absolute water-frequency offset over 5:20 min with no preceding fMRI; range 0.07-1.50 Hz. Higher than the Prisma's median by an order of magnitude, and Hui notes Philips units show drift behaviour 'that is not smooth, presumably reflecting au[tomatic frequency adjustment]'. Cohort context, all 95 datasets: median drift 0.44 Hz before fMRI and 0.83 Hz after over 5:20 min, rising to 3.15 Hz over a full 30 min; average drift rates 0.29 Hz/min before and 0.43 Hz/min after. At 3 T, 1 ppm is 127.7 Hz. The measurement is an MRS water-frequency offset, so it is a WHOLE-VOLUME f0 shift over time and not a spatial inhomogeneity -- it adds to the static residual rather than replacing it, and unlike the static residual it cannot be shimmed away because it is not stationary",
+     "source_key": "hui2021_frequency_drift",
+     "location": "Table 2, the ten 'Philips Ingenia' rows, 'Pre-fMRI' column",
+     "confidence": "cited"
+    },
+    "f0_drift_post_fmri_30min": {
+     "value": 3.75,
+     "unit": "Hz",
+     "field_T": 3.0,
+     "context": "median across the same 10 units over 30 min after fMRI; range 1.56-7.69 Hz. 0.029 ppm at 3 T, against a guaranteed static homogeneity of 0.022 ppm VRMS at 20 cm DSV -- here the thermal term EXCEEDS the static one outright. What makes this worth cataloguing next to b0_homogeneity_vrms: over a 30-minute acquisition the THERMAL field change is the same order as the magnet's STATIC homogeneity specification, and at the tail it is several times larger. For a long diffusion protocol the time-varying field is therefore the bigger field error, not the static one",
+     "source_key": "hui2021_frequency_drift",
+     "location": "Table 2, the ten 'Philips Ingenia' rows, 'Post-fMRI (30:00 min)' column",
+     "confidence": "cited"
     }
    }
   },
@@ -973,7 +1143,7 @@
     "max_amplitude": {
      "value": 200,
      "unit": "mT/m",
-     "field_T": null,
+     "field_T": 3.0,
      "context": "MAGNUS head-only gradient insert PROTOTYPE (GE / NIH). The FDA-cleared product, ge_signa_magnus_3T, is 300 mT/m / 750 T/m/s; the two are different machines.",
      "source_key": "foo2020_magnus",
      "location": "Foo et al. 2020, abstract",
@@ -982,7 +1152,7 @@
     "max_slew_rate": {
      "value": 500,
      "unit": "T/m/s",
-     "field_T": null,
+     "field_T": 3.0,
      "context": "MAGNUS prototype; head-only asymmetric coil, PNS-limited well above whole-body coils",
      "source_key": "foo2020_magnus",
      "location": "Foo et al. 2020, abstract",
@@ -1547,6 +1717,225 @@
      "source_key": "nist2025_dualfield_dwi",
      "location": "not a location in the data: the share is fixed by convention, since the measurement constrains only the diagonal and the x coil's harmonic completion is one-parameter",
      "confidence": "derived"
+    }
+   }
+  },
+  "siemens_connectome_skyra_3T": {
+   "vendor": "Siemens Healthineers",
+   "model": "customized MAGNETOM Skyra ('Connectome Skyra'): SC72 gradient insert, 56 cm bore body transmit coil (the WU-Minn HCP 3T)",
+   "field_T": 3.0,
+   "gradient": {
+    "max_amplitude": {
+     "value": 100,
+     "unit": "mT/m",
+     "field_T": 3.0,
+     "context": "DIFFUSION regime. The manual gives two regimes: 'diffusion: Gmax = 100 mT/m, max slew rate = 91 mT/m/ms; readout/imaging: Gmax = 42 mT/m, max slew rate = 200 mT/m/ms'. The customization raises Gmax 'from 40 mT/m to 100 mT/m on the WU-Minn 3T' relative to a stock Skyra",
+     "source_key": "hcp_s1200_manual",
+     "location": "'3T MR scanner and other hardware', p. 34",
+     "confidence": "cited"
+    },
+    "max_slew_rate": {
+     "value": 200,
+     "unit": "T/m/s",
+     "field_T": 3.0,
+     "context": "READOUT/IMAGING regime: the manual's '200 mT/m/ms' is 200 T/m/s. The diffusion slew is less than half this (max_slew_rate_diffusion) -- quoting 200 T/m/s for a diffusion waveform on this machine is wrong by 2.2x",
+     "source_key": "hcp_s1200_manual",
+     "location": "'3T MR scanner and other hardware', p. 34",
+     "confidence": "cited"
+    },
+    "max_slew_rate_diffusion": {
+     "value": 91,
+     "unit": "T/m/s",
+     "field_T": 3.0,
+     "context": "the manual's '91 mT/m/ms' is 91 T/m/s, the binding slew for diffusion encoding and so the one a diffusion waveform designer must use. Unlike the Connectom's 62.5 T/m/s this is published as the regime limit itself, not derived from a PNS argument",
+     "source_key": "hcp_s1200_manual",
+     "location": "'3T MR scanner and other hardware', p. 34",
+     "confidence": "cited"
+    },
+    "max_amplitude_readout": {
+     "value": 42,
+     "unit": "mT/m",
+     "field_T": 3.0,
+     "context": "READOUT/IMAGING regime Gmax. Recorded separately because the two regimes trade off oppositely on this machine: diffusion gets the amplitude (100 mT/m) at low slew, readout gets the slew (200 T/m/s) at low amplitude",
+     "source_key": "hcp_s1200_manual",
+     "location": "'3T MR scanner and other hardware', p. 34",
+     "confidence": "cited"
+    },
+    "gradient_raster_time": {
+     "value": 10,
+     "unit": "us",
+     "field_T": 3.0,
+     "context": "Siemens IDEA standard gradient raster",
+     "source_key": "pulseq_spec",
+     "location": "DEFINITIONS block, GradientRasterTime 1e-05",
+     "confidence": "widely-quoted"
+    },
+    "concomitant_alpha": {
+     "value": 0.5,
+     "unit": "",
+     "field_T": 3.0,
+     "context": "the gradient coils' symmetry parameter: 1/2 for the cylindrically symmetric fingerprint coils of a conventional bore magnet. Stated rather than assumed, because it is not universal -- a Halbach array gives 0",
+     "source_key": "devos2024_concomitant",
+     "location": "Theory, alpha for conventional cylindrical gradient coils",
+     "confidence": "cited"
+    }
+   },
+   "rf": {
+    "rf_raster_time": {
+     "value": 1,
+     "unit": "us",
+     "field_T": 3.0,
+     "context": "Siemens IDEA standard RF raster",
+     "source_key": "pulseq_spec",
+     "location": "DEFINITIONS block, RadiofrequencyRasterTime 1e-06",
+     "confidence": "widely-quoted"
+    }
+   },
+   "homogeneity": {
+    "shim_max_order": {
+     "value": 2,
+     "unit": "",
+     "field_T": 3.0,
+     "context": "'The HCP Skyra has the standard set of Siemen's shim coils (up to 2nd order).' Bounds the correction, not the residual: any third-order or higher term survives shimming untouched. No homogeneity figure in ppm is published for this machine anywhere in the HCP documentation",
+     "source_key": "hcp_s1200_manual",
+     "location": "'3T MR scanner and other hardware', p. 34",
+     "confidence": "cited"
+    }
+   },
+   "gradient_nonlinearity": {
+    "spherical_harmonic_coefficients": {
+     "value": null,
+     "unit": "",
+     "field_T": 3.0,
+     "context": "REFUSED AT SOURCE, and cited as such. The HCP S1200 Reference Manual states verbatim: 'The gradient field nonlinearity coefficients for the Connectome Skyra are considered by Siemens to be proprietary information. To request access to these coefficients, please contact your Siemens collaboration manager.' The same manual is emphatic that the effect is NOT negligible here: 'Unusually large gradient nonlinearities are present in the raw images for ALL modalities', and 'the gradient nonlinearities associated with all Connectome Skyra scans exceed those of a conventional clinical 3T scanner', because 'technical limitations prevent centering of the subjects' heads in the bore isocenter'. So the correction is known to matter, is applied in the HCP processed data, and the coefficients that define it cannot be obtained. A null with a citation is the honest record: it is a MEASURED ABSENCE, not an unfilled field",
+     "source_key": "hcp_s1200_manual",
+     "location": "'Gradient nonlinearities in unprocessed datasets', p. 21",
+     "confidence": "NEEDS VERIFICATION"
+    }
+   },
+   "notes": "Three different machines are routinely confused and the catalogue keeps them apart: this Connectome Skyra (WU-Minn HCP 3T, 100 mT/m diffusion), siemens_magnetom_connectom_3T (the MGH/UCLA AS302 machine, 300 mT/m), and a stock Skyra (40 mT/m). The HCP manual itself draws the line: the WU-Minn gradients are 'not as much as the 300 mT/m customized gradients used by the MGH/UCLA HCP consortium'. All 184 HCP 7T subjects were also scanned here, which is the co-registration; the 7T machine is siemens_magnetom_7t_plus_cmrr. No homogeneity figure is published for THIS machine. Gach 2020 Table S5 gives a stock 70 cm Skyra magnet as 0.05/0.03 ppm VRMS at 20 cm DSV, and the HCP customization is the gradient insert and transmit coil rather than the magnet -- but that the magnet is unmodified is an inference and nobody has published it, so it is recorded here as prose and not as a leaf.",
+   "frame": {
+    "b0_axis": {
+     "value": "S",
+     "unit": "",
+     "field_T": 3.0,
+     "context": "the bore axis, which for a cylindrical superconducting magnet is the patient's head-foot direction. This is the default every such machine shares and it is stated rather than assumed, because a MISSING axis and an axis that happens to be S are not the same claim",
+     "source_key": "marques2019_lowfield",
+     "location": "the geometry of a cylindrical bore magnet",
+     "confidence": "widely-quoted"
+    },
+    "b1_axis": {
+     "value": null,
+     "unit": "",
+     "field_T": 3.0,
+     "context": "NULL, and deliberately: a quadrature birdcage drives two orthogonal transverse components and so has no single B1 axis. A falloff law along 'the coil axis' is meaningless for it. Only a LINEAR volume coil -- a solenoid on a transverse-B0 magnet -- has one",
+     "source_key": "marques2019_lowfield",
+     "location": "coil geometry",
+     "confidence": "widely-quoted"
+    }
+   }
+  },
+  "siemens_magnetom_7t_plus_cmrr": {
+   "vendor": "Agilent (magnet) / Siemens Healthineers (console)",
+   "model": "MAGNETOM 7T Plus on a 900 mm actively-shielded Agilent magnet, SC72 gradient (the CMRR 7T, installed 2011)",
+   "field_T": 7.0,
+   "gradient": {
+    "max_amplitude": {
+     "value": 70,
+     "unit": "mT/m",
+     "field_T": 7.0,
+     "context": "per axis, SC72 gradient. The HCP manual independently calls it a 'standard SC72CD 7T gradient insert', so the coil is corroborated by the data provider as well as the site",
+     "source_key": "cmrr_7t_magnet_web",
+     "location": "Primary Gradient table, 'Gradient Model: SC72' / 'Maximum Strength: 70 mT/m'",
+     "confidence": "cited"
+    },
+    "max_slew_rate": {
+     "value": 200,
+     "unit": "T/m/s",
+     "field_T": 7.0,
+     "context": "per axis, SC72 gradient. No de-rated diffusion slew is published for this machine, so unlike the Connectom there is no max_slew_rate_diffusion leaf here -- the PNS-limited value is simply not known",
+     "source_key": "cmrr_7t_magnet_web",
+     "location": "Primary Gradient table, 'Slew Rate: 200 T/m/s'",
+     "confidence": "cited"
+    },
+    "gradient_raster_time": {
+     "value": 10,
+     "unit": "us",
+     "field_T": 7.0,
+     "context": "Siemens IDEA standard gradient raster",
+     "source_key": "pulseq_spec",
+     "location": "DEFINITIONS block, GradientRasterTime 1e-05",
+     "confidence": "widely-quoted"
+    },
+    "concomitant_alpha": {
+     "value": 0.5,
+     "unit": "",
+     "field_T": 7.0,
+     "context": "the gradient coils' symmetry parameter: 1/2 for the cylindrically symmetric fingerprint coils of a conventional bore magnet. Stated rather than assumed, because it is not universal -- a Halbach array gives 0",
+     "source_key": "devos2024_concomitant",
+     "location": "Theory, alpha for conventional cylindrical gradient coils",
+     "confidence": "cited"
+    }
+   },
+   "rf": {
+    "rf_raster_time": {
+     "value": 1,
+     "unit": "us",
+     "field_T": 7.0,
+     "context": "Siemens IDEA standard RF raster",
+     "source_key": "pulseq_spec",
+     "location": "DEFINITIONS block, RadiofrequencyRasterTime 1e-06",
+     "confidence": "widely-quoted"
+    },
+    "peak_B1_head_coil": {
+     "value": null,
+     "unit": "uT",
+     "field_T": 7.0,
+     "context": "the HCP 7T protocol used a Nova Medical Nova32 32-channel receive array with a head-only transmit coil; CMRR lists 16 transmit channels at 1 kW each (8 kW combined). Peak B1 in uT is coil-, load- and RF-shim-dependent and is published nowhere for this configuration",
+     "source_key": "cmrr_7t_magnet_web",
+     "location": "RF Transmit and Receive Information table",
+     "confidence": "NEEDS VERIFICATION"
+    }
+   },
+   "homogeneity": {
+    "b0_homogeneity": {
+     "value": 5.0,
+     "unit": "ppm",
+     "field_T": 7.0,
+     "context": "CMRR quote the magnet's homogeneity as '5.0 (450) ppm (mm)': 5.0 ppm over a 450 mm DSV. TWO CAVEATS TRAVEL WITH THIS NUMBER AND NEITHER IS OPTIONAL. (1) THE METRIC IS NOT STATED. Peak-to-peak, VRMS and FWHM differ by more than an order of magnitude on one machine -- Gach 2020 measured 0.386 ppm pk-pk against 0.024 ppm VRMS on a Prisma, a factor of 16 -- so this 5.0 CANNOT be compared with the Prisma's cited 0.386 pk-pk without knowing which it is. That ambiguity is the very thing Gach 2020 was written to fix. (2) It is a MAGNET SPEC over a 450 mm DSV, not a measurement in a shimmed head: a 450 mm sphere is ~3.5x the linear size of the 24 cm DSV Gach measured over, and the number says nothing about what survives shimming. As always, a shape-free spread over a sphere does not determine a harmonic expansion, which is why this entry carries NO b0_harmonic_Z2. Recorded because it is the only published homogeneity figure for the machine the HCP 7T release was acquired on",
+     "source_key": "cmrr_7t_magnet_web",
+     "location": "Magnet Information table, 'Field Homogeneity: 5.0 (450) ppm (mm)'",
+     "confidence": "cited"
+    },
+    "shim_max_order": {
+     "value": 2,
+     "unit": "",
+     "field_T": 7.0,
+     "context": "CMRR list '2nd Order Shims: True (12.5 A/ch)' and '3rd Order Shims: False'. This BOUNDS what shimming can remove and nothing else: every residual term of order 3 or higher survives the shim untouched. It is a statement about the correction, not about the residual -- it does not say what the field IS",
+     "source_key": "cmrr_7t_magnet_web",
+     "location": "Primary Gradient table, '2nd Order Shims' / '3rd Order Shims' rows",
+     "confidence": "cited"
+    }
+   },
+   "notes": "THIS IS NOT A MAGNETOM TERRA, and the distinction is the reason the entry exists. The HCP 7T data were acquired on an Agilent 900 mm actively-shielded magnet with a Siemens MAGNETOM 7T Plus console and an SC72 gradient (70 mT/m, 200 T/m/s); a Terra is a Siemens magnet with XR gradients (80 mT/m, 200 T/m/s). Different magnet, different gradient, different homogeneity. Replaying HCP 7T data against siemens_magnetom_terra_7T would overstate the available gradient by 14%. All 184 HCP 7T subjects were also scanned at 3 T on siemens_connectome_skyra_3T, which is what makes the pair co-registered.",
+   "frame": {
+    "b0_axis": {
+     "value": "S",
+     "unit": "",
+     "field_T": 7.0,
+     "context": "the bore axis, which for a cylindrical superconducting magnet is the patient's head-foot direction. This is the default every such machine shares and it is stated rather than assumed, because a MISSING axis and an axis that happens to be S are not the same claim",
+     "source_key": "marques2019_lowfield",
+     "location": "the geometry of a cylindrical bore magnet",
+     "confidence": "widely-quoted"
+    },
+    "b1_axis": {
+     "value": null,
+     "unit": "",
+     "field_T": 7.0,
+     "context": "NULL, and deliberately: a quadrature birdcage drives two orthogonal transverse components and so has no single B1 axis. A falloff law along 'the coil axis' is meaningless for it. Only a LINEAR volume coil -- a solenoid on a transverse-B0 magnet -- has one",
+     "source_key": "marques2019_lowfield",
+     "location": "coil geometry",
+     "confidence": "widely-quoted"
     }
    }
   }

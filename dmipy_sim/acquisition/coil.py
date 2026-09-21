@@ -160,9 +160,7 @@ def biplanar_pair(half_gap=0.15, width=0.30, length=0.30, axis=1, current=1.0, n
     geometry approaches translational invariance along it and the whole divergence is pushed into the one
     remaining transverse direction.
 
-    An earlier version of this docstring said the aspect ratio was the whole physics. It is not, and the
-    difference matters for what can be inferred about a real machine: a catalogued ``alpha`` needs BOTH
-    ratios, not one.
+    The aspect ratio alone is therefore not the physics: a catalogued ``alpha`` needs BOTH ratios, not one.
     """
     return Coil([(rectangular_loop(+half_gap, width, length, axis, n), +current),
                  (rectangular_loop(-half_gap, width, length, axis, n), -current)], name="biplanar_pair")

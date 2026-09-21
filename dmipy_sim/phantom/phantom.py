@@ -301,7 +301,7 @@ class Phantom:
         return out
 
     def replay(self, seq, *, scanner=None, pose=None, packs=None, complex_signal=False,
-               transmit=None, off_resonance=None, proton_density=None, transmit_tolerance=None, cache=None):
+               transmit=None, off_resonance=None, proton_density=None, transmit_tolerance=1e-3, cache=None):
         """The signal of every voxel under ``seq``: a dense volume ``grid.shape + (n_measurements,)``, NaN where
         the phantom has no voxel (:meth:`sparse` gives the rows).
 
@@ -323,6 +323,10 @@ class Phantom:
           the voxel through the acquisition's own coherence gate (zero for a 180 at TE/2).
         * ``proton_density`` -- multiplies every slot's ``m0`` in the voxel (and an ``m0_scale`` layer).
 
+        ``transmit_tolerance`` bins the transmit scales the RF-aware route propagates at, so a smooth map costs a
+        bounded number of propagations rather than one per voxel; ``None`` bins nothing
+        (:func:`~dmipy_sim.replay.phantom.quantise`).
+
         ``cache`` (a directory, or ``True``) keeps each pack's expansion on disk under the acquisition and the knobs,
         so a phantom replayed twice under the same acquisition pays the expansion once
         (:meth:`ReplayPack.pose_response`). A declared layer this route cannot carry raises rather than being dropped.
@@ -342,6 +346,29 @@ class Phantom:
             _, S = f.replay(seq, cache=cache, **common)
         return self.to_volume(S)
 
+    def replay_train(self, seq, *, echo=-1, transmit=None, transmit_tolerance=1e-2, off_resonance=None,
+                     off_resonance_tolerance=2.0, scanner=None, pose=None, packs=None, proton_density=None,
+                     keep=None, complex_signal=False, jax=None, report=None):
+        """The signal of every voxel at one ``echo`` of a diffusion-prepared RF train ``seq``: a dense volume
+        ``grid.shape + (n_measurements,)``, as :meth:`replay` returns.
+
+        A train reaches an orientation-distribution phantom -- a brain -- through its coherence pathways
+        (:meth:`~dmipy_sim.replay.phantom.ReplayPhantom.replay_train`), where the RF-aware route of
+        :meth:`replay` cannot. The maps and ``scanner`` mean what they mean on :meth:`replay`: ``transmit`` and
+        ``off_resonance`` are binned to their tolerances (``off_resonance_tolerance`` in hertz), and a machine
+        that publishes a field law brings it along as the offset.
+        """
+        f = self.file
+        self._check_prescription(seq)
+        off_resonance = self._machine_field(scanner, off_resonance)
+        _, S = f.replay_train(seq, echo=echo, transmit=self._map(transmit, "transmit"),
+                              transmit_tolerance=transmit_tolerance,
+                              off_resonance=self._map(off_resonance, "off_resonance"),
+                              off_resonance_tolerance=off_resonance_tolerance, scanner=scanner, pose=pose,
+                              packs=self._packs(packs), proton_density=self._map(proton_density, "proton_density"),
+                              keep=keep, complex_signal=complex_signal, jax=jax, report=report)
+        return self.to_volume(S)
+
     def _check_prescription(self, seq):
         """A prescribed acquisition and this grid must agree on the scanner axes: the gradient and B0
         directions are given in them (ACQUISITION.md 4.1), so a mismatch is refused rather than rotated."""
@@ -357,13 +384,14 @@ class Phantom:
 
         A field a magnet imposes is a property of the machine, and a replay is already told which machine it
         is on. So a scanner whose profile the catalogue carries brings it along rather than being silently
-        replayed as an ideal magnet -- which is what every replay did until now, and looks identical.
+        replayed as an ideal magnet, which looks identical.
 
         A stated ``off_resonance`` wins: it is a measurement, and a measured field map already contains
         whatever the magnet does. Combining the two would count it twice.
         """
         from .bore import b0_offset_map
-        if off_resonance is not None or getattr(scanner, "b0_harmonic_Z2", None) is None:
+        from ..acquisition.scanners import ScannerLimits
+        if off_resonance is not None or not (isinstance(scanner, ScannerLimits) and scanner.has_field_law):
             return off_resonance
         return b0_offset_map(scanner, self.grid)
 

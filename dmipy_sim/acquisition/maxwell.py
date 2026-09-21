@@ -90,12 +90,11 @@ def harmonic_residual(field, points, h=DEFAULT_H):
     field's multiplicative scale and of its units: a harmonic gives roundoff because the three CANCEL,
     ``c r^2`` gives exactly 1.
 
-    The magnitude scale is taken over EVERY evaluation, not over ``f0`` alone. Two failures follow from
-    getting that wrong, and both were live. Scaling by ``max|f0|`` lets an additive offset raise the noise
-    floor above a real violation, so ``1e3 + r^2`` -- the same defect written in absolute tesla rather than
-    as ``dB/B0`` -- scored a clean 0. And where the law VANISHES on the probe set, ``max|f0|`` is zero, so
-    the floor is zero and roundoff is divided by roundoff: a plain linear gradient probed on the bore axis
-    was reported as not a magnetic field.
+    The magnitude scale is taken over EVERY evaluation, not over ``f0`` alone, for two reasons. Scaling by
+    ``max|f0|`` lets an additive offset raise the noise floor above a real violation, so ``1e3 + r^2`` -- the
+    same defect written in absolute tesla rather than as ``dB/B0`` -- scores a clean 0. And where the law
+    VANISHES on the probe set, ``max|f0|`` is zero, so the floor is zero and roundoff is divided by roundoff:
+    a plain linear gradient probed on the bore axis is reported as not a magnetic field.
 
     A field whose variation is lost in its own offset is REFUSED rather than answered, because double
     precision cannot resolve it and "harmonic" would be a guess wearing a number's clothes.

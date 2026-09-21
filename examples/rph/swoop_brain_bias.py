@@ -9,31 +9,33 @@ Run it: `python examples/rph/swoop_brain_bias.py`. It needs no pack and no walk;
 the acquisition and the magnet, not of the substrate.
 
 Recorded numbers, 96 x 96 x 60 at 2.5 mm centred in the bore, 18 directions at b = 945 s/mm^2,
-delta / Delta = 35 / 42 ms, against the pack floor 0.0048:
+delta / Delta = 35 / 42 ms, against the pack floor 0.0048, by the reference route (one acquisition per voxel,
+the Maxwell term the exact field magnitude):
 
     inside the law's 8 cm anchor        136,584 of 552,960 voxels (25 %)
-    worst |ADC bias|                    15.38 %     (the paper measures up to 16.1 %)
-    median voxel, worst direction        4.14 %
-    direction-averaged, worst voxel      0.98 %
-    voxels above the pack's own floor   97.57 %
+    worst |ADC bias|                    15.5 %      (the paper measures up to 16.1 %)
+    median voxel, worst direction        4.3 %
+    direction-averaged, worst voxel      1.4 %
+    voxels above the pack's own floor   98.1 %
 
-    by radius      0-2 cm    2,176 voxels   worst  1.51 %   median 0.47 %   above floor  48.1 %
-                   2-4 cm   15,080 voxels   worst  4.53 %   median 1.31 %   above floor  86.7 %
-                   4-6 cm   40,600 voxels   worst  9.07 %   median 3.06 %   above floor  99.6 %
-                   6-8 cm   78,728 voxels   worst 15.38 %   median 5.85 %   above floor 100.0 %
+    by radius      0-2 cm    2,176 voxels   worst  1.6 %   median 0.6 %
+                   2-4 cm   15,080 voxels   worst  4.6 %   median 1.6 %
+                   4-6 cm   40,600 voxels   worst  9.2 %   median 3.3 %
+                   6-8 cm   78,728 voxels   worst 15.5 %   median 6.1 %
 
 Three things those numbers say.
 
-The bias clears the simulation's own noise floor in 97.6 % of voxels, so it is almost never the thing that
-gets lost in the Monte-Carlo error -- but it does not clear it everywhere, and where it fails is not random.
-Inside 2 cm of isocentre only about half the voxels clear the floor, because a linearly shimmed magnet has no
-first-order field variation there: every harmonic of order two and above has zero gradient at the origin, so
-the background gradient grows from nothing. The magnet genuinely does not encode at its own centre.
+The bias clears the simulation's own noise floor in 98 % of voxels, so it is almost never the thing that gets
+lost in the Monte-Carlo error -- but it does not clear it everywhere, and where it fails is not random. It
+fails near isocentre, because a linearly shimmed magnet has no first-order field variation there: every
+harmonic of order two and above has zero gradient at the origin, so the background gradient grows from
+nothing. The magnet genuinely does not encode at its own centre.
 
-Averaging over directions hides it. 15.4 % per direction becomes 1.0 % once averaged, since the cross term
+Averaging over directions hides it. 15.5 % per direction becomes 1.4 % once averaged, since the cross term
 flips sign with the diffusion direction. A tensor fit sees the per-direction number, not the average.
 
-The concomitant term is the small half, an order of magnitude below the magnet's own gradient.
+The concomitant term is the small half: 0.06 % on the worst voxel and up to 1.2 % in some voxel, an order of
+magnitude below the magnet's own gradient.
 
 At 3 T there is nothing to compute. A shimmed superconducting magnet publishes no field shape because its
 residual is parts per million rather than parts per thousand, so the catalogue carries none and this returns
@@ -44,7 +46,7 @@ import numpy as np
 from dmipy_sim import sequences
 from dmipy_sim.acquisition.scanners import ScannerLimits
 from dmipy_sim.phantom import Grid
-from dmipy_sim.phantom.bore import delivered_b_map
+from dmipy_sim.phantom.bore import delivered_gradient
 
 SHAPE, VOXEL_M = (96, 96, 60), 2.5e-3
 PACK_FLOOR = 0.0048                 # fill/swoop/cactus_1s.rpk, the experiment's own substrate
@@ -77,14 +79,15 @@ def bias_map(scanner, grid, R, sequence, **kw):
     """``(voxels, bias)`` -- the fractional ADC bias per voxel per direction, for the voxels the magnet's
     law is actually anchored over. Beyond that radius the law is an extrapolation and is refused rather
     than guessed, so those voxels are not returned."""
-    if getattr(scanner, "b0_harmonic_Z2", None) is None:
+    if not scanner.has_field_law:
         return grid.every_voxel, None          # no law: nothing to anchor, and nothing to bias
     pos = grid.positions_m(grid.every_voxel)
     inside = np.linalg.norm(pos - np.asarray(grid.isocenter_m), axis=-1) < scanner.b0_validity_radius
     vox = grid.every_voxel[inside]
-    delivered = delivered_b_map(scanner, grid, sequence, to_scanner=R, voxels=vox, **kw)
-    if delivered is None:
-        return vox, None
+    # the reference route, one acquisition per voxel: the Maxwell term is the exact field magnitude and is
+    # not polynomial in position, so there is no batched form to check it against -- this IS the check
+    G = delivered_gradient(scanner, grid, sequence, to_scanner=R, voxels=vox, nonlinearity=False, **kw)
+    delivered = np.stack([sequence.with_gradient(g).b() for g in G])
     return vox, delivered / sequence.b() - 1.0
 
 

@@ -124,8 +124,9 @@ class Grid:
         """The grid of an image whose voxel axes are **rotated** in the scanner (an oblique prescription), and
         the rotation that says so: ``(grid, R)`` with ``R`` the proper rotation taking image axes to scanner axes,
         ``affine[:3, :3] = R @ diag(voxel_size)``. Nothing is resampled and nothing is straightened: the grid's
-        axes are the image's, the origin is the image's, and it is the **caller's** job to rotate everything given
-        in scanner coordinates -- an FOD's harmonics, the gradient directions, the field direction -- by ``R.T``
+        axes are the image's and the origin is the image's. The grid carries ``R`` as :attr:`to_scanner`, so a
+        field the MACHINE imposes is evaluated in the bore without the caller's help; what the caller gives in
+        scanner coordinates -- an FOD's harmonics, the gradient directions -- is the caller's to rotate by ``R.T``
         into the grid frame before composing. A shear or a non-orthogonal block is refused."""
         A = np.asarray(affine, np.float64)
         if A.shape != (4, 4):

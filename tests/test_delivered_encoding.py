@@ -9,7 +9,7 @@ import pytest
 from dmipy_sim import sequences
 from dmipy_sim.acquisition.scanners import ScannerLimits
 from dmipy_sim.phantom import Grid
-from dmipy_sim.phantom.bore import (delivered_b, delivered_gradient, delivered_weights,
+from dmipy_sim.phantom.bore import (background_gradient_map, delivered_gradient, delivered_weights,
                                     gradient_tensor_map)
 from dmipy_sim.replay.replay import _compile_effective
 
@@ -40,8 +40,8 @@ def _reference(seq, G, K, n_t, dt_pack=None):
     """W built the way ``ReplayPack._prepare`` builds it: ``ScannerSequence.G_eff``, resampled onto the
     pack's save grid, then projected.
 
-    Deliberately not ``bore._effective``: a reference built from the module under test cannot fail when
-    that module is wrong, and the "carried through the RF sign" claim had no coverage at all while it was.
+    Deliberately not built from ``bore`` itself: a reference built from the module under test cannot fail
+    when that module is wrong, and the "carried through the RF sign" claim needs coverage of its own.
     The RESAMPLE is here for the same reason -- weights on the sequence's own grid are self-consistent and
     incompatible with a pack, and leaving it out of both routes made the parity test blind to it.
     """
@@ -114,20 +114,14 @@ def test_the_tensor_enters_as_a_similarity_and_not_a_scale(setup):
         "this L is symmetric enough that a transpose would pass -- the test cannot catch the bug it guards"
 
 
-def test_the_delivered_b_agrees_with_the_gradient_route(setup):
-    """The acceptance criterion of #369: ``delivered_b`` computes the b a voxel receives by its own route (a
-    polynomial in position fitted from probe sequences), and ``delivered_gradient`` builds the acquisition
-    per voxel. Two independent paths to the same number."""
-    from dataclasses import replace
+def test_the_background_alone_is_the_magnets_gradient_added_and_nothing_else(setup):
+    """With the nonlinearity and the Maxwell term off, the delivered gradient is the prescribed one plus the
+    magnet's own at the voxel, in the grid's frame -- ``with_background_gradient`` per voxel and no more."""
     s, grid, seq = setup
-    # delivered_b applies the BACKGROUND only -- not the concomitant and not the nonlinearity. Comparing it
-    # against a route that includes them is comparing different quantities; the discrepancy then grows
-    # LINEARLY with distance (the concomitant term), which is what gave this away.
     G = delivered_gradient(s, grid, seq, nonlinearity=False, concomitant=False)
-    direct = np.stack([replace(seq, G=np.asarray(g, np.float32)).b() for g in G])
-    poly = delivered_b(s, grid, seq)
-    rel = np.abs(direct - poly).max() / np.abs(poly).max()
-    assert rel < 1e-5, f"the two routes to the delivered b differ by {rel:.2e}"
+    g0 = background_gradient_map(s, grid)(grid.positions_m(grid.every_voxel))
+    for k in range(len(g0)):
+        np.testing.assert_allclose(G[k], seq.with_background_gradient(g0[k]).G, rtol=1e-6, atol=1e-12)
 
 
 def test_the_encoding_varies_across_the_grid_and_not_merely_in_scale(setup):

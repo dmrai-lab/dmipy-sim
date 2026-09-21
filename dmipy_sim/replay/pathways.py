@@ -32,53 +32,28 @@ from dataclasses import replace
 
 import numpy as np
 
-__all__ = ["TrainResponse", "pathway_gate", "train_schedule"]
+__all__ = ["TrainResponse", "gate_sign", "train_response", "sequence_events"]
 
 #: A pathway's coherence sign while it is in each state: transverse, conjugated, or stored.
 _SIGN = {"F+": +1.0, "F-": -1.0, "Z": 0.0}
 
 
-def train_schedule(waveform, b1_scale=1.0, TE=None):
-    """``(schedule, pulse_times, TE)`` for this waveform's RF, every flip scaled by ``b1_scale``.
+def gate_sign(gate, edges, n_t, dt):
+    """The coherence sign of one microscopic gate at every sample of the grid, ``(n_t,)``.
 
-    One winding per interval between consecutive pulses, carrying the real gap as its duration, so a
-    pathway's intervals lie directly on the waveform's own grid and :func:`pathway_gate` can read them off.
+    ``gate`` is the tuple of states (``"F+"``, ``"F-"``, ``"Z"``) a pathway was in over the consecutive
+    intervals ``edges`` cut the timeline into. This is the whole of what distinguishes one gate's phase from
+    another's: the SAME walk, read with a different sign pattern. Zero where the pathway is stored along z,
+    because stored magnetisation accumulates no gradient phase -- which is exactly why a stimulated echo
+    carries the diffusion weighting it does and not the weighting of the interval it slept through.
     """
-    from ..acquisition import epg
-    rf = [e for e in (waveform.rf or ()) if float(e.flip_deg) != 0.0]
-    if not rf:
-        raise ValueError("a pathway sum describes an RF train, and this waveform carries no pulses")
-    times = [float(e.t_s) for e in rf]
-    TE = float(TE if TE is not None else (waveform.n_t - 1) * waveform.dt)
-    if TE < times[-1]:
-        raise ValueError(f"the last pulse is at {times[-1]*1e3:.3f} ms, after the readout at {TE*1e3:.3f} ms")
-    ev = [epg.Pulse(float(rf[0].flip_deg) * float(b1_scale), float(getattr(rf[0], "axis_deg", 0.0) or 0.0))]
-    edges = times + [TE]
-    for k in range(1, len(rf)):
-        ev.append(epg.Winding(+1, edges[k] - edges[k - 1]))
-        ev.append(epg.Pulse(float(rf[k].flip_deg) * float(b1_scale),
-                            float(getattr(rf[k], "axis_deg", 90.0) or 0.0)))
-    ev.append(epg.Winding(+1, edges[len(rf)] - edges[len(rf) - 1], readout=True))
-    return epg.Schedule(tuple(ev)), times, TE
-
-
-def pathway_gate(pathway, pulse_times, TE, n_t, dt):
-    """The pathway's coherence sign at every sample of the grid, ``(n_t,)``.
-
-    This is the whole of what distinguishes one pathway's phase from another's: the SAME walk, read with a
-    different sign pattern. Zero where the pathway is stored along z, because stored magnetisation
-    accumulates no gradient phase -- which is exactly why a stimulated echo carries the diffusion weighting
-    it does and not the weighting of the interval it slept through.
-    """
-    states = [i[0] for i in pathway.intervals]
     t = np.arange(int(n_t)) * float(dt)
-    edges = list(pulse_times) + [float(TE)]
-    gate = np.zeros(int(n_t))
-    for k, st in enumerate(states):
+    sign = np.zeros(int(n_t))
+    for k, kind in enumerate(gate):
         if k + 1 >= len(edges):
             break
-        gate[(t >= edges[k]) & (t <= edges[k + 1] + 1e-12)] = _SIGN[st]
-    return gate
+        sign[(t >= edges[k]) & (t <= edges[k + 1] + 1e-12)] = _SIGN[kind]
+    return sign
 
 
 class TrainResponse:
@@ -93,11 +68,9 @@ class TrainResponse:
     scale costs a state propagation and a handful of multiply-adds.
     """
 
-    def __init__(self, parts, waveform, pulse_times, TE, threshold, n_orders=None, readouts=(),
-                 tau=None, durations=()):
+    def __init__(self, parts, waveform, pulse_times, TE, n_orders=None, readouts=(), tau=None, durations=()):
         self.parts = dict(parts)                  # {gate: PoseResponse}
         self.waveform, self.pulse_times, self.TE = waveform, tuple(pulse_times), float(TE)
-        self.threshold = float(threshold)
         self.n_orders = n_orders
         self.readouts = tuple(readouts)
         #: each gate's SIGNED TRANSVERSE time over the preparation: what a uniform field offset
@@ -217,30 +190,20 @@ def train_response(pack, waveform, *, keep=(None, 0), b1_reference=1.0, n_orders
     gates = split_by_gate(prep, n_orders, lambda i: on[i] if i < len(on) else False)
     G = np.asarray(waveform.G, np.float64)
     n_t, dt = int(waveform.n_t), float(waveform.dt)
-    t = np.arange(n_t) * dt
-    gated = {}
-    for gate in gates:
-        sign = np.zeros(n_t)
-        for k, kind in enumerate(gate):
-            if k + 1 >= len(edges):
-                break
-            sign[(t >= edges[k]) & (t <= edges[k + 1] + 1e-12)] = _SIGN[kind]
-        gated[gate] = replace(waveform, G=(G * sign[None, :, None]).astype(np.float32), rf=None,
-                              family="waveform", crusher=None, readout=None)
+    signs = {gate: gate_sign(gate, edges, n_t, dt) for gate in gates}
+    gated = {gate: replace(waveform, G=(G * s[None, :, None]).astype(np.float32), rf=None,
+                           family="waveform", crusher=None, readout=None)
+             for gate, s in signs.items()}
 
     # The gates do not reach the same band: one that spends an interval STORED accumulates no phase there
     # and so is smoother. They are summed at the widest of them, which is exact rather than a choice --
     # `so3_index` lays coefficients out with `l` ascending, so a narrower gate's are a prefix of a wider
     # gate's and everything above its own band is genuinely zero.
     parts = {g: pack.pose_response(w, keep=keep, **kw) for g, w in gated.items()}
-    tau = {}
-    for gate in gates:
-        v = 0.0
-        for k, kind in enumerate(gate):
-            if k + 1 >= len(edges):
-                break
-            v += _SIGN[kind] * float(np.sum((t >= edges[k]) & (t <= edges[k + 1] + 1e-12))) * dt
-        tau[gate] = v
     durations = [edges[k + 1] - edges[k] for k in range(len(edges) - 1)]
-    return TrainResponse(parts, waveform, edges[:-1], edges[-1], 0.0, n_orders=n_orders, readouts=ro,
+    # each gate's SIGNED transverse time over the preparation, from the interval durations themselves rather
+    # than from a sample count, so that a refocused pathway's tau is exactly zero on any grid
+    tau = {gate: float(sum(_SIGN[kind] * durations[k] for k, kind in enumerate(gate) if k < len(durations)))
+           for gate in gates}
+    return TrainResponse(parts, waveform, edges[:-1], edges[-1], n_orders=n_orders, readouts=ro,
                          tau=tau, durations=durations)

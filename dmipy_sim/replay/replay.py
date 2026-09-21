@@ -26,6 +26,7 @@ per-walker reweight by ``exp((rho/D) * sum_t chi(t) ell_i(t))``, optionally cohe
 occupancy schedule ``chi`` (:func:`surface_logweight`).
 """
 import json
+from dataclasses import dataclass
 from functools import cached_property
 
 import numpy as np
@@ -167,42 +168,41 @@ class PoseResponse:
         return self.coeffs @ A[0]
 
 
-def _field_direction(scanner):
-    """The unit vector B0 points along, in the patient axes the scanner's frame is declared in.
+@dataclass(frozen=True)
+class ScannerField:
+    """What a replay reads from its one ``scanner=`` knob: the static field's strength in tesla (``None``
+    for no field) and the patient-frame unit vector it points along, plus the machine's name for provenance.
 
-    A susceptibility field is not isotropic and neither is the phase it produces: an anisotropic
-    susceptibility depends on the angle between the source and B0, so the FIELD'S DIRECTION enters every
-    contraction. Taking it from the machine rather than assuming it is the difference between a phase that
-    is right and one that is plausible.
-
-    Falls back to ``+z`` for a bare field strength, which is the conventional bore geometry -- B0 along the
-    bore, which is the patient's head-foot direction. That is correct for every cylindrical magnet and wrong
-    for a bi-planar one, where B0 runs across the patient; such a machine declares ``b0_axis`` and this
-    returns it.
+    The direction is not a labelling detail. A susceptibility field is not isotropic and neither is the
+    phase it produces: an anisotropic susceptibility depends on the angle between the source and B0, so the
+    field's direction enters every contraction. A bare strength carries no direction and keeps the
+    conventional bore geometry -- B0 along the bore, the patient's head-foot axis -- which is right for every
+    cylindrical magnet and wrong for a bi-planar one, where B0 runs across the patient; such a machine is
+    given as a :class:`~dmipy_sim.acquisition.scanners.ScannerLimits` and declares ``b0_axis``.
     """
+    B0: object = None
+    axis: tuple = (0.0, 0.0, 1.0)
+    name: str = None
+
+
+def scanner_field(scanner):
+    """Resolve ``scanner=`` -- ``None``, a field strength in tesla, or a
+    :class:`~dmipy_sim.acquisition.scanners.ScannerLimits` -- into a :class:`ScannerField`. A name is refused:
+    resolving it is the catalogue's job (``ScannerLimits.of``), not a replay's."""
     if scanner is None:
-        return (0.0, 0.0, 1.0)
-    from ..acquisition.scanners import ScannerLimits
-    if isinstance(scanner, ScannerLimits) and scanner.b0_axis is not None:
-        v = np.asarray(scanner.b0_axis, dtype=np.float64)
-        return tuple(v / np.linalg.norm(v))
-    return (0.0, 0.0, 1.0)
-
-
-
-def _field_strength(scanner):
-    """The static field (T) of ``scanner``: a :class:`~dmipy_sim.acquisition.scanners.ScannerLimits` (its catalogue
-    ``field_T``), a number in tesla, or ``None`` for no field."""
-    if scanner is None:
-        return None
+        return ScannerField()
     from ..acquisition.scanners import ScannerLimits
     if isinstance(scanner, ScannerLimits):
         if scanner.field_T is None:
             raise ValueError(f"the catalogue knows no field strength for {scanner.name!r}; give the field in tesla")
-        return float(scanner.field_T)
+        axis = (0.0, 0.0, 1.0)
+        if scanner.b0_axis is not None:
+            v = np.asarray(scanner.b0_axis, dtype=np.float64)
+            axis = tuple(float(x) for x in v / np.linalg.norm(v))
+        return ScannerField(B0=float(scanner.field_T), axis=axis, name=scanner.name)
     if isinstance(scanner, str):
         raise TypeError("scanner is a ScannerLimits (ScannerLimits.of('connectom')) or a field strength in tesla, not a name")
-    return float(scanner)
+    return ScannerField(B0=float(scanner))
 
 
 def _pose_matrix(pose):
@@ -707,12 +707,8 @@ class ReplayPack:
                             f"got {type(tissue).__name__}")
         t = tissue if tissue is not None else Tissue()
         T2, T1, rho, D, chi_iso, chi_aniso = t.T2, t.T1, t.rho, t.D, t.chi_iso, t.chi_aniso
-        B0 = _field_strength(scanner)
-        # the MACHINE's field direction, not an assumed one. An anisotropic susceptibility depends on the
-        # angle between the source and B0, so this is not a labelling detail: on a bi-planar magnet B0 runs
-        # across the patient rather than along them, and every fibre sits at a different angle to it than it
-        # would in a bore. The pose then turns it, as it always did.
-        b0_dir = _field_direction(scanner)
+        field = scanner_field(scanner)
+        B0, b0_dir = field.B0, field.axis                            # the MACHINE's field; the pose turns it
         if orientation is not None:
             R = self.pose_rotation(orientation)
             G, G_eff = G @ R, G_eff @ R                                   # R^T g per sample: stored coordinates

@@ -11,7 +11,7 @@ import pytest
 from dmipy_sim import sequences
 from dmipy_sim.acquisition.scanners import ScannerLimits
 from dmipy_sim.phantom import Grid
-from dmipy_sim.phantom.bore import background_gradient_map, delivered_b
+from dmipy_sim.phantom.bore import background_gradient_map, delivered_gradient
 
 DIRS = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, 0, 1]]
 
@@ -26,6 +26,12 @@ def _grid(n=5, fov=0.088):
     sqrt(3)/2 fov, so a 12 cm cube is 8.3 cm out at its corners and the law refuses it -- correctly."""
     return Grid(shape=(n, n, n), voxel_size_m=(fov / n,) * 3,
                 origin_m=(-0.5 * (n - 1) * fov / n,) * 3, isocenter_m=(0.0, 0.0, 0.0))
+
+
+def _delivered_b(scanner, grid, seq):
+    """The b every voxel receives from the magnet's own gradient alone, by the reference route."""
+    return np.stack([seq.with_gradient(G).b()
+                     for G in delivered_gradient(scanner, grid, seq, nonlinearity=False, concomitant=False)])
 
 
 def test_the_map_is_the_law_s_derivative_at_every_voxel():
@@ -94,13 +100,13 @@ def test_the_error_is_signed_per_direction_so_a_mean_hides_it():
 def test_a_voxel_grid_gets_one_b_per_voxel_per_measurement():
     sw, grid = ScannerLimits.of("swoop"), _grid(n=3, fov=0.10)
     seq = _swoop_protocol()
-    b = delivered_b(sw, grid, seq)
+    b = _delivered_b(sw, grid, seq)
     assert b.shape == (grid.shape[0] * grid.shape[1] * grid.shape[2], seq.n_meas)
     assert np.all(np.isfinite(b)) and np.all(b > 0)
     # the spread across the volume is the effect, and it is large
     spread = np.ptp(b, axis=0) / seq.b()
     assert spread.max() > 0.1, f"a magnet that varies by {spread.max():.1%} across the FOV is not an effect"
-    assert delivered_b(ScannerLimits.of("prisma"), grid, seq) is None
+    assert background_gradient_map(ScannerLimits.of("prisma"), grid) is None
 
 
 # ── what the background does on its own (dmipy-sim#349 item 6) ───────────────────────────────────────

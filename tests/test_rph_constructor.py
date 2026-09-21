@@ -606,16 +606,17 @@ def test_a_smooth_transmit_map_costs_one_propagation_per_distinct_scale():
     across a plausible 0.6 to 1.2 at the default, which is 601 vector-Bloch propagations of every pack in
     the phantom. Binning is what makes such a map affordable, and it was not reachable at all from
     `Phantom.replay` before."""
-    from dmipy_sim.replay.phantom import transmit_classes
+    from dmipy_sim.replay.phantom import quantise
     kappa = np.linspace(0.6, 1.2, 4001)
-    assert len(np.unique(np.round(kappa, 3))) == 601                     # the default rounding
-    assert len(np.unique(transmit_classes(kappa, 1e-2))) == 61           # 1 % of the flip angle
-    assert len(np.unique(transmit_classes(kappa, 5e-2))) == 13
+    assert len(np.unique(quantise(kappa, 1e-3))) == 601                  # the default tolerance
+    assert len(np.unique(quantise(kappa, None))) == 4001                 # None bins nothing
+    assert len(np.unique(quantise(kappa, 1e-2))) == 61           # 1 % of the flip angle
+    assert len(np.unique(quantise(kappa, 5e-2))) == 13
     # binning is exact to the tolerance, which is the guarantee that makes it safe to use
     for tol in (1e-2, 5e-2):
-        assert np.abs(transmit_classes(kappa, tol) - kappa).max() <= tol / 2 + 1e-12
-    with pytest.raises(ValueError, match="positive scale on a flip angle"):
-        transmit_classes(kappa, 0.0)
+        assert np.abs(quantise(kappa, tol) - kappa).max() <= tol / 2 + 1e-12
+    with pytest.raises(ValueError, match="positive width"):
+        quantise(kappa, 0.0)
 
 
 def test_binning_the_transmit_map_moves_the_signal_by_no_more_than_the_tolerance(pack_path):
@@ -634,13 +635,13 @@ def test_binning_the_transmit_map_moves_the_signal_by_no_more_than_the_tolerance
     kap = np.linspace(0.85, 1.0, n * n).reshape(n, n, 1)              # smooth, as a real B1 map is
     ph = Phantom.compose(grid, fractions={wm: np.ones((n, n, 1))}, orientation=Frames(R),
                          layers={"kappa_B1": kap})
-    exact = _rows(ph, ph.replay(gre))
+    exact = _rows(ph, ph.replay(gre, transmit_tolerance=None))          # None bins nothing
     for tol in (1e-2, 5e-2):
         binned = _rows(ph, ph.replay(gre, transmit_tolerance=tol))
         rel = np.abs(binned - exact).max() / np.abs(exact).max()
         assert rel < 2 * tol, f"tolerance {tol} moved the signal by {rel:.4f}"
-    # and the default is untouched, so nothing that replayed before changes
-    np.testing.assert_allclose(_rows(ph, ph.replay(gre, transmit_tolerance=None)), exact, rtol=1e-12)
+    # the default is a stated tolerance, not a rounding of its own
+    np.testing.assert_allclose(_rows(ph, ph.replay(gre)), _rows(ph, ph.replay(gre, transmit_tolerance=1e-3)), rtol=1e-12)
 
 
 def test_a_transmit_map_is_asked_for_rather_than_assumed(pack_path):

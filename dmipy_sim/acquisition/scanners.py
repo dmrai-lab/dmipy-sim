@@ -91,7 +91,6 @@ class ScannerLimits:
     field_T: float = None      # T, the static field; None for an envelope or an uncatalogued field
     b0_axis: tuple = None      # patient-frame unit vector along B0; the magnet frame's +z
     b1_axis: tuple = None      # patient-frame unit vector along the transmit coil, None for a birdcage
-    gradient_axis_assignment: tuple = None  # which patient direction each vendor axis names; None = not known
     b0_harmonic_Z2: float = None      # 1/m^2, the standard shim term 2z^2-x^2-y^2, in magnet axes
     b0_harmonic_Z2X: float = None     # 1/m^3, the standard shim term x(4z^2-x^2-y^2): the R/L asymmetry
     b0_direction_spread_deg: float = None  # how far admissible laws disagree about the gradient direction
@@ -220,6 +219,25 @@ class ScannerLimits:
         """The catalogued field law as ``{term name: coefficient}`` in the standard solid-harmonic basis."""
         return {n: c for n, c in (("Z2", self.b0_harmonic_Z2), ("Z2X", self.b0_harmonic_Z2X)) if c}
 
+    @property
+    def has_field_law(self):
+        """Whether the static field has a catalogued SHAPE and a strength to scale it by. This is the one test
+        of it: :meth:`b0_offset` and :meth:`b0_gradient` answer ``None`` exactly when it is false, and a
+        consumer deciding whether a machine brings a field to a phantom asks this rather than a coefficient."""
+        return bool(self.harmonic_law()) and self.field_T is not None
+
+    @property
+    def has_gradient_nonlinearity(self):
+        """Whether the coils' nonlinearity is catalogued: :meth:`gradient_tensor` answers ``None`` exactly when
+        this is false."""
+        return self.d_scale_y_dx is not None
+
+    @property
+    def has_transmit_profile(self):
+        """Whether the transmit scale departs from 1 anywhere: :meth:`b1_scale` answers ``None`` exactly when
+        this is false."""
+        return self.b1_axial_falloff is not None or self.b1_calibration_offset is not None
+
     def _harmonics(self, offset_m):
         """``(value, gradient)`` of ``dB/B0`` in the magnet frame, from the catalogued solid harmonics.
 
@@ -243,33 +261,6 @@ class ScannerLimits:
                 f"{float(np.max(r))*100:.1f} cm out. Beyond it the truncation is an extrapolation in the "
                 f"orders that were never constrained as well as in radius, so {what} is refused")
 
-    def G_max_along(self, direction):
-        """The strongest gradient this machine can deliver along a patient-frame ``direction``, in T/m.
-
-        This exists to be REFUSED more often than answered, and the refusal is the point. A machine's per-axis
-        amplitudes are only usable if you know which physical direction each vendor axis names, and for a
-        bi-planar magnet that mapping is not in the public record: the regulatory filing and the peer-reviewed
-        literature disagree about the outlier axis by a factor of 1.5, and the one primary document that ties
-        a Hyperfine coil label to the field direction contradicts the inference every other source supports.
-
-        So a machine that has not declared ``gradient_axis_assignment`` raises, naming the conflict, rather
-        than picking the better-supported reading and returning a number that looks like a measurement. Use
-        :attr:`G_max` for a deliverability check -- it is the WEAKEST axis and is therefore safe whatever the
-        assignment turns out to be, which is why every builder already uses it.
-        """
-        if self.gradient_axis_assignment is None:
-            raise ValueError(
-                f"{self.name!r} does not declare which patient direction each of its gradient axes names, so "
-                f"the strongest gradient along a direction cannot be stated. For this machine the mapping is "
-                f"genuinely not public and the sources conflict -- see the catalogue's "
-                f"per_axis_amplitude_fda and per_axis_amplitude_literature leaves, which disagree by a "
-                f"factor of 1.5 on the third axis. Use G_max ({self.G_max*1e3:.1f} mT/m), the weakest axis, "
-                f"which is safe under every candidate assignment")
-        d = np.asarray(direction, dtype=np.float64)
-        d = d / np.linalg.norm(d)
-        A = np.asarray(self.gradient_axis_assignment, dtype=np.float64)   # rows: patient direction per axis
-        return float(np.min(self.G_max / np.abs(A @ d).clip(1e-12)))
-
     def b0_offset(self, offset_m):
         """The static field's departure from uniformity at a displacement from isocentre, in **tesla**.
 
@@ -282,15 +273,14 @@ class ScannerLimits:
         asymmetric, and an odd asymmetry with no l=1 lives at l=3. Order three is independently required by
         the two published figures, which no l<=2 expansion can reach.
 
-        A consequence worth knowing, because it reverses what an inadmissible bowl suggested: every harmonic
-        of order two or more has ZERO gradient at the origin, so a linearly shimmed magnet does not encode
-        diffusion at isocentre. The background gradient grows from nothing.
+        Every harmonic of order two or more has ZERO gradient at the origin, so a linearly shimmed magnet does
+        not encode diffusion at isocentre: the background gradient grows from nothing.
 
         ``offset_m`` is ``(..., 3)`` in metres in PATIENT axes; the law resolves it onto its own frame
         itself. ``None`` when the machine publishes no profile, which is every machine but a permanent-magnet
         one. Refused beyond ``b0_validity_radius``.
         """
-        if self.b0_harmonic_Z2 is None or self.field_T is None:
+        if not self.has_field_law:
             return None
         self._refuse_outside(offset_m, "the field")
         val, _g = self._harmonics(offset_m)
@@ -303,14 +293,13 @@ class ScannerLimits:
         switch off.
 
         The analytic derivative of :meth:`b0_offset`, returned in PATIENT axes. Being the gradient of a
-        harmonic function it is divergence-free, which the r^2 bowl it replaces was not -- that one implied a
-        monopole in the gradient field.
+        harmonic function it is divergence-free, as the magnet's own field must be.
 
         It VANISHES at isocentre, and that is the linear shim rather than an accident: every l>=2 harmonic has
         zero gradient at the origin. ``None`` when the machine publishes no profile; refused beyond the
         anchor radius, where a truncated expansion extrapolates in order as well as in radius.
         """
-        if self.b0_harmonic_Z2 is None or self.field_T is None:
+        if not self.has_field_law:
             return None
         self._refuse_outside(offset_m, "its derivative")
         _v, g_mag = self._harmonics(offset_m)
@@ -352,7 +341,7 @@ class ScannerLimits:
         ``a_x`` is the smallest of the three coefficients. It is one line inside the four-dimensional kernel
         above, not a different kind of thing.
         """
-        if self.d_scale_y_dx is None:
+        if not self.has_gradient_nonlinearity:
             return None
         ax = self.d_scale_x_dx or 0.0
         lam = 0.5 if self.gradient_completion is None else float(self.gradient_completion)
@@ -446,9 +435,9 @@ class ScannerLimits:
         parameter: at 2.7 MHz the coil bore is quasi-static, so ``div B = 0`` and ``curl B = 0`` there, and
         the paraxial expansion of any such field is ``B(s) - (rho^2/4) B''(s)``. Asserting the axial
         behaviour therefore DETERMINES the transverse behaviour -- the field must rise off-axis at exactly
-        half the rate it falls along the axis. Saying it is "flat across the bore" is not a simplification of
-        a field but a statement about a field that cannot exist; the resulting scale is harmonic, as the
-        axial component of a quasi-static field must be, and the flat version was not.
+        half the rate it falls along the axis. A scale that is "flat across the bore" is not a simplification
+        of a field but a statement about a field that cannot exist; this one is harmonic, as the axial
+        component of a quasi-static field must be.
 
         What Laplace fixes is the SUM of the two transverse curvatures, not their split: it forces
         ``d2/dx2 + d2/dy2 = -d2/ds2 = 2a``, and an azimuthally symmetric coil divides that equally, which is
@@ -467,7 +456,7 @@ class ScannerLimits:
         in tissue is metres, so the profile is the coil's geometry rather than the subject's; the same claim
         must not be carried to 3 T, and emphatically not to 7 T.
         """
-        if self.b1_axial_falloff is None and self.b1_calibration_offset is None:
+        if not self.has_transmit_profile:
             return None
         if self.b1_axial_falloff is not None and self.b1_axis is None:
             raise ValueError(

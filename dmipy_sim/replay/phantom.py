@@ -24,6 +24,8 @@ from ..constants import GAMMA
 from ..phantom.substrates import substrate_from_meta, _echo_time
 from .so3 import n_sh_coeffs
 
+GAMMA_BAR = GAMMA / (2.0 * np.pi)
+
 __all__ = ["ReplayPhantom", "read_rph", "write_rph", "Grid", "SUBSTRATE_KINDS", "SCALAR_REGISTRY", "RPH_SCHEMA_VERSION"]
 
 SUBSTRATE_KINDS = ("pack", "analytic", "inert")
@@ -34,19 +36,64 @@ RPH_SCHEMA_VERSION = "0.4.0"
 SCALAR_REGISTRY = ("kappa_B1", "delta_B0_T", "m0_scale")
 
 
-def transmit_classes(kappa, tolerance):
-    """The transmit scales of ``kappa`` quantised to ``tolerance``: what decides how many vector-Bloch
+def quantise(values, tolerance):
+    """``values`` binned to multiples of ``tolerance``, or untouched for ``None``: what decides how many distinct
     propagations a phantom costs.
 
-    The RF-aware route propagates once per distinct transmit scale, so a SMOOTH map -- which is what a
-    machine's own transmit profile is -- costs one propagation per distinct value unless the values are
-    binned. Binning to a tolerance is exact to that tolerance in the flip angle, and the flip angle enters
-    the signal through a sine, so the signal error is of the same order and never larger.
+    A route that propagates once per distinct value of something -- a transmit scale, a field offset, a pose
+    -- pays one propagation per distinct value, and a SMOOTH map, which is what a machine's own profile is,
+    has as many distinct values as voxels. Binning to a tolerance bounds that count, and the error it
+    introduces is of the tolerance's own order: a flip angle reaches the signal through a sine, an offset
+    through a phase linear in it. ``None`` bins nothing, so every distinct value is its own class.
     """
+    v = np.asarray(values, np.float64)
+    if tolerance is None:
+        return v
     tol = float(tolerance)
     if not tol > 0:
-        raise ValueError(f"the transmit tolerance is a positive scale on a flip angle; got {tolerance}")
-    return np.round(np.asarray(kappa, np.float64) / tol) * tol
+        raise ValueError(f"a tolerance is a positive width to bin to, or None for no binning; got {tolerance}")
+    return np.round(v / tol) * tol
+
+
+def _gather(S, vp, F, weight, which, coeff):
+    """Every slot's contribution into its voxel, in place: ``S[v] += weight * F[slot] . coeff[which[slot]]``.
+
+    The one contraction a replay phantom is -- a slot's orientation features ``F`` against the SO(3)
+    coefficients of the response it cites -- shared by every route that expands over poses. A slot whose
+    ``which`` is negative cites nothing here and is skipped.
+    """
+    live = which >= 0
+    if np.any(live):
+        part = np.einsum("sf,smf->sm", np.asarray(F[live], np.complex128), coeff[which[live]])
+        np.add.at(S, vp[live, 0], weight[live][:, None] * part)
+    return S
+
+
+def _gather_jax(S, vp, F, weight, which, coeff):
+    """:func:`_gather` on an accelerator: a gather of each slot's coefficients, one contraction over the
+    orientation features, then a segment sum into voxels. Complex is carried as a real pair because a segment
+    sum over complex is not uniformly supported."""
+    import jax, jax.numpy as jnp
+    live = which >= 0
+    Fj = jnp.asarray(np.ascontiguousarray(F[live]), jnp.float32)
+    Cr = jnp.asarray(np.ascontiguousarray(coeff.real), jnp.float32)
+    Ci = jnp.asarray(np.ascontiguousarray(coeff.imag), jnp.float32)
+    wj = jnp.asarray(np.ascontiguousarray(weight[live]), jnp.float32)
+    idx = jnp.asarray(np.ascontiguousarray(which[live]), jnp.int32)
+    vox = jnp.asarray(np.ascontiguousarray(vp[live, 0]), jnp.int32)
+    n_voxels = S.shape[0]
+
+    @jax.jit
+    def go(Fj, Cr, Ci, wj, idx, vox):
+        gr, gi = Cr[idx], Ci[idx]                                  # (n_slots, n_meas, n_feat)
+        re = jnp.einsum("sf,smf->sm", Fj, gr) * wj[:, None]
+        im = jnp.einsum("sf,smf->sm", Fj, gi) * wj[:, None]
+        return (jax.ops.segment_sum(re, vox, num_segments=n_voxels),
+                jax.ops.segment_sum(im, vox, num_segments=n_voxels))
+
+    re, im = go(Fj, Cr, Ci, wj, idx, vox)
+    S += np.asarray(re, np.float64) + 1j * np.asarray(im, np.float64)
+    return S
 
 
 def _lmax_of_n_coeffs(n_c):
@@ -348,12 +395,14 @@ class ReplayPhantom:
         vp, F = self.slot_coefficients(keep_l, keep_n)
         ids = sid[vp[:, 0], vp[:, 1]].astype(int)
         weight = frac[vp[:, 0], vp[:, 1]].astype(np.float64) * m0[vp[:, 0], ids]
-        for i in set(ids.tolist()):
+        for i in analytic:                                             # a closed form has no pose
             m = ids == i
-            if i in analytic:                                          # a closed form has no pose
-                np.add.at(S, vp[m, 0], weight[m][:, None] * np.atleast_1d(analytic[i])[None, :])
-            elif i in pose:                                            # one product for every slot citing it
-                np.add.at(S, vp[m, 0], weight[m][:, None] * (F[m] @ pose[i].retained(keep_l, keep_n).T))
+            np.add.at(S, vp[m, 0], weight[m][:, None] * np.atleast_1d(analytic[i])[None, :])
+        if pose:                                                       # one product for every slot citing a pack
+            order = sorted(pose)
+            coeff = np.stack([np.asarray(pose[i].retained(keep_l, keep_n), np.complex128) for i in order])
+            which = np.array([order.index(int(i)) if int(i) in pose else -1 for i in ids])
+            _gather(S, vp, F, weight, which, coeff)
         dB0 = self.layer_values("delta_B0_T", off_resonance)
         if dB0 is not None:
             S = S * np.exp(1j * GAMMA * dB0[:, None] * self.gate_integral(waveform))
@@ -564,8 +613,8 @@ class ReplayPhantom:
         return pose, analytic, self._m0(proton_density)
 
     def replay_bloch(self, waveform, *, scanner=None, pose=None, packs=None, complex_signal=False,
-                     transmit=None, off_resonance=None, proton_density=None, decimals=3,
-                     transmit_tolerance=None, forms=None):
+                     transmit=None, off_resonance=None, proton_density=None, transmit_tolerance=1e-3,
+                     pose_tolerance=1e-3, off_resonance_tolerance=1e-4, forms=None):
         """Replay the phantom through the RF-aware route: ``(voxel_index, S)``, one magnetisation propagation
         per distinct pose rather than one contraction per voxel.
 
@@ -584,15 +633,16 @@ class ReplayPhantom:
         of poses under a scaled RF pulse is not the composition of one propagation, and a mode that leaves the
         substrate's azimuth unstated leaves the propagation undefined rather than merely dispersed. Both are
         refused instead of approximated. Distinct ``(substrate, rotation, transmit, off-resonance)`` tuples are
-        propagated once each and scattered to every slot that shares them, ``decimals`` setting how finely
-        they are distinguished; the cost is that count, not the voxel count.
+        propagated once each and scattered to every slot that shares them; the cost is that count, not the
+        voxel count.
 
-        ``transmit_tolerance`` bins the transmit scales before grouping, and is how a SMOOTH transmit map is
-        afforded. The route propagates once per distinct scale, so a map a machine produces -- continuous by
-        nature -- costs one propagation per distinct value: at the default rounding that is a thousand of
-        them across a unit range. Binning to a tolerance is exact to that tolerance in the flip angle, and
-        the flip angle reaches the signal through a sine, so the signal error is of the same order and never
-        larger. ``None`` keeps the ``decimals`` rounding, so nothing that ran before changes.
+        The three tolerances set how finely those tuples are told apart, each in the unit of the thing it bins
+        (:func:`quantise`): ``transmit_tolerance`` on the flip-angle scale, ``pose_tolerance`` on the entries
+        of the rotation, ``off_resonance_tolerance`` in hertz. That is how a SMOOTH map is afforded -- a
+        transmit profile a machine produces is continuous, and unbinned it costs one propagation per voxel.
+        Binning is exact to the tolerance in the quantity binned, and each reaches the signal through a
+        function of slope at most one there, so the signal error is of the same order and never larger.
+        ``None`` bins nothing.
         """
         if self.mode != "frames":
             raise ValueError(f"replay_bloch propagates the magnetisation at a pose, so it needs a frames-mode "
@@ -627,10 +677,10 @@ class ReplayPhantom:
             R = np.einsum("ij,njk->nik", R_s, R)                       # substrate -> specimen -> lab
         R = R.reshape(-1, 9)
         # every slot's propagation key: substrate, rounded pose, rounded transmit scale, rounded field offset
-        keys = np.concatenate([ids[:, None].astype(np.float64), np.round(R, int(decimals)),
-                               (transmit_classes(kappa[v_idx], transmit_tolerance)
-                                if transmit_tolerance else np.round(kappa[v_idx], int(decimals)))[:, None],
-                               np.round(dB0[v_idx], int(decimals) + 9)[:, None]], axis=1)
+        keys = np.concatenate([ids[:, None].astype(np.float64), quantise(R, pose_tolerance),
+                               quantise(kappa[v_idx], transmit_tolerance)[:, None],
+                               quantise(dB0[v_idx], None if off_resonance_tolerance is None
+                                        else float(off_resonance_tolerance) / GAMMA_BAR)[:, None]], axis=1)
         uniq, inverse = np.unique(keys, axis=0, return_inverse=True)
         inverse = np.asarray(inverse).reshape(-1)
         gate = self.gate_integral(waveform)
@@ -655,6 +705,92 @@ class ReplayPhantom:
             members = np.flatnonzero(inverse == u)
             w = frac[v_idx[members], p_idx[members]].astype(np.float64) * m0[v_idx[members], ids[members]]
             np.add.at(S, v_idx[members], w[:, None] * resp[None, :])
+        return self.voxel_index, (S if complex_signal else np.abs(S))
+
+    def replay_train(self, waveform, *, echo=-1, transmit=None, transmit_tolerance=1e-2, off_resonance=None,
+                     off_resonance_tolerance=2.0, scanner=None, pose=None, packs=None, proton_density=None,
+                     keep=None, complex_signal=False, jax=None, report=None):
+        """A diffusion-prepared RF train over every voxel, at one echo: ``(voxel_index, S)``.
+
+        This is what :mod:`dmipy_sim.replay.pathways` is for. :meth:`replay_bloch` needs one rotation per slot
+        and so refuses an orientation distribution (dmipy-sim#338); a train decomposed into microscopic gates
+        does not, because each gate is an ordinary phase sum and the pose expansion already carries those. The
+        gate expansions are built ONCE per substrate and are the expensive part; the transmit scale then
+        enters as a re-weighting of coefficients already built, and a uniform field offset is carried THROUGH
+        the train rather than applied at the end, because off-resonance is gated like the gradient -- a
+        pathway that spent an interval along z accrues none of it.
+
+        ``transmit`` and ``off_resonance`` are per voxel as :meth:`replay_bloch` takes them, each binned by
+        its tolerance (:func:`quantise`; ``off_resonance_tolerance`` in hertz), so a smooth map costs one
+        state propagation per distinct value and a drifting magnet, uniform in space, costs one.
+
+        The phantom's every signal-bearing substrate must be a pack: a closed form's response to a train is
+        not modelled here, and dropping it would return a signal that looks right and is not.
+        """
+        from .pathways import train_response
+        from .replay import _pose_matrix
+        from ..spec.tissue import Tissue
+
+        if self.mode not in ("odf_sh", "peaks", "frames", "bingham"):
+            raise ValueError(f"unknown orientation mode {self.mode!r}")
+        R_s = _pose_matrix(pose)
+        loaded = self._loaded_packs(packs)
+        kappa = self.layer_values("kappa_B1", transmit, combine="mul")
+        kappa = np.ones(self.n_voxels) if kappa is None else np.broadcast_to(np.asarray(kappa, np.float64), (self.n_voxels,))
+        binned = quantise(kappa, transmit_tolerance)
+        dB0 = self.layer_values("delta_B0_T", off_resonance)
+        dw_binned = (np.zeros(self.n_voxels) if dB0 is None else
+                     quantise(2.0 * np.pi * GAMMA_BAR * np.asarray(dB0, np.float64),
+                              None if off_resonance_tolerance is None else 2.0 * np.pi * float(off_resonance_tolerance)))
+        scales, offsets = np.unique(binned), np.unique(dw_binned)
+        m0 = self._m0(proton_density)
+
+        # The band to expand at is the one the DISTRIBUTION retains, not the one the response reaches: composing
+        # is an inner product, so an ODF of order 8 cannot see a response's order 38, and for a brain that is
+        # the difference between seconds and minutes.
+        if keep is None:
+            keep = (int(self.meta["orientation"].get("lmax", 8)), 0)
+
+        trains = {}
+        for i, sub in enumerate(self.substrates):
+            if sub["kind"] == "inert":
+                continue
+            if sub["kind"] != "pack":
+                raise ValueError(f"a train replay expands packs over poses, and substrate {i} ({sub.get('name', sub['kind'])!r}) "
+                                 f"is a closed form whose response to an RF train is not modelled; it cannot be "
+                                 f"dropped without misrepresenting the voxel")
+            trains[i] = train_response(loaded[i], waveform, keep=keep,
+                                       tissue=Tissue.from_meta(sub.get("tissue")), scanner=scanner, pose=R_s)
+        if not trains:
+            raise ValueError("a train replay needs at least one pack substrate")
+
+        first = next(iter(trains.values()))
+        probe = first.at(1.0, echo=echo)
+        keep_l, keep_n = probe.lmax, probe.nmax
+        vp, F = self.slot_coefficients(keep_l, keep_n)
+        sid, frac = self.substrate_id, self.geometric_fraction
+        ids = sid[vp[:, 0], vp[:, 1]].astype(int)
+        weight = frac[vp[:, 0], vp[:, 1]].astype(np.float64) * m0[vp[:, 0], ids]
+        n_meas = probe.coeffs.shape[0]
+
+        # every (substrate, transmit scale, offset) triple has its own coefficients and every slot belongs to
+        # exactly one, so the whole phantom is one gather and one contraction
+        pairs, coeff = {}, []
+        for i, tr in trains.items():
+            for scale in scales:
+                for dwv in offsets:
+                    pairs[(i, float(scale), float(dwv))] = len(coeff)
+                    coeff.append(np.asarray(tr.at(float(scale), echo=echo, dw=float(dwv)).retained(keep_l, keep_n),
+                                            np.complex128))
+        coeff = np.stack(coeff)                                   # (n_classes, n_meas, n_feat)
+        which = np.array([pairs.get((int(i), float(sc), float(dv)), -1)
+                          for i, sc, dv in zip(ids, binned[vp[:, 0]], dw_binned[vp[:, 0]])])
+        S = np.zeros((self.n_voxels, n_meas), np.complex128)
+        (_gather_jax if jax else _gather)(S, vp, F, weight, which, coeff)
+
+        if report is not None:
+            report.update(n_scales=len(scales), n_offsets=len(offsets), n_gates=first.n_gates,
+                          lmax=keep_l, n_echoes=len(first.readouts), n_pairs=len(pairs))
         return self.voxel_index, (S if complex_signal else np.abs(S))
 
     def to_volume(self, values, fill=np.nan):
