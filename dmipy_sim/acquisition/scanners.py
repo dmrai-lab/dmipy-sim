@@ -219,6 +219,25 @@ class ScannerLimits:
         """The catalogued field law as ``{term name: coefficient}`` in the standard solid-harmonic basis."""
         return {n: c for n, c in (("Z2", self.b0_harmonic_Z2), ("Z2X", self.b0_harmonic_Z2X)) if c}
 
+    @property
+    def has_field_law(self):
+        """Whether the static field has a catalogued SHAPE and a strength to scale it by. This is the one test
+        of it: :meth:`b0_offset` and :meth:`b0_gradient` answer ``None`` exactly when it is false, and a
+        consumer deciding whether a machine brings a field to a phantom asks this rather than a coefficient."""
+        return bool(self.harmonic_law()) and self.field_T is not None
+
+    @property
+    def has_gradient_nonlinearity(self):
+        """Whether the coils' nonlinearity is catalogued: :meth:`gradient_tensor` answers ``None`` exactly when
+        this is false."""
+        return self.d_scale_y_dx is not None
+
+    @property
+    def has_transmit_profile(self):
+        """Whether the transmit scale departs from 1 anywhere: :meth:`b1_scale` answers ``None`` exactly when
+        this is false."""
+        return self.b1_axial_falloff is not None or self.b1_calibration_offset is not None
+
     def _harmonics(self, offset_m):
         """``(value, gradient)`` of ``dB/B0`` in the magnet frame, from the catalogued solid harmonics.
 
@@ -261,7 +280,7 @@ class ScannerLimits:
         itself. ``None`` when the machine publishes no profile, which is every machine but a permanent-magnet
         one. Refused beyond ``b0_validity_radius``.
         """
-        if self.b0_harmonic_Z2 is None or self.field_T is None:
+        if not self.has_field_law:
             return None
         self._refuse_outside(offset_m, "the field")
         val, _g = self._harmonics(offset_m)
@@ -280,7 +299,7 @@ class ScannerLimits:
         zero gradient at the origin. ``None`` when the machine publishes no profile; refused beyond the
         anchor radius, where a truncated expansion extrapolates in order as well as in radius.
         """
-        if self.b0_harmonic_Z2 is None or self.field_T is None:
+        if not self.has_field_law:
             return None
         self._refuse_outside(offset_m, "its derivative")
         _v, g_mag = self._harmonics(offset_m)
@@ -322,7 +341,7 @@ class ScannerLimits:
         ``a_x`` is the smallest of the three coefficients. It is one line inside the four-dimensional kernel
         above, not a different kind of thing.
         """
-        if self.d_scale_y_dx is None:
+        if not self.has_gradient_nonlinearity:
             return None
         ax = self.d_scale_x_dx or 0.0
         lam = 0.5 if self.gradient_completion is None else float(self.gradient_completion)
@@ -437,7 +456,7 @@ class ScannerLimits:
         in tissue is metres, so the profile is the coil's geometry rather than the subject's; the same claim
         must not be carried to 3 T, and emphatically not to 7 T.
         """
-        if self.b1_axial_falloff is None and self.b1_calibration_offset is None:
+        if not self.has_transmit_profile:
             return None
         if self.b1_axial_falloff is not None and self.b1_axis is None:
             raise ValueError(

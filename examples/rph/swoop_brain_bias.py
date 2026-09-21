@@ -77,7 +77,7 @@ def bias_map(scanner, grid, R, sequence, **kw):
     """``(voxels, bias)`` -- the fractional ADC bias per voxel per direction, for the voxels the magnet's
     law is actually anchored over. Beyond that radius the law is an extrapolation and is refused rather
     than guessed, so those voxels are not returned."""
-    if getattr(scanner, "b0_harmonic_Z2", None) is None:
+    if not scanner.has_field_law:
         return grid.every_voxel, None          # no law: nothing to anchor, and nothing to bias
     pos = grid.positions_m(grid.every_voxel)
     inside = np.linalg.norm(pos - np.asarray(grid.isocenter_m), axis=-1) < scanner.b0_validity_radius
