@@ -28,10 +28,14 @@ Schema
   * ``safety``     — IEC 60601-2-33 SAR / B1+rms / dB-dt-PNS / SAFE-model (field-independent).
 Each leaf entry carries ``value``, ``unit``, ``field_T`` (or null), ``context``,
 ``source_key``, ``location`` (the specific clause/table/figure), and ``confidence``
-(``cited`` / ``derived`` / ``widely-quoted`` / ``NEEDS VERIFICATION``).  ``derived`` is a
+(``cited`` / ``derived`` / ``widely-quoted`` / ``inferred`` / ``NEEDS VERIFICATION``).  ``derived`` is a
 number computed from a cited one (a microscopy probe's slew rate from its stated rise time
-and amplitude: a lower bound, said so in ``context``).  ``value`` may be ``null`` for a
-NEEDS-VERIFICATION entry (vendor-confidential / coil-dependent).
+and amplitude: a lower bound, said so in ``context``).  ``inferred`` is a number for this machine
+carried over from a measurement on a machine of the same class because none exists for this one
+(a Prisma's gradient nonlinearity from a Philips whole-body coil's), with the anchor and the
+uncertainty in ``context``: returned by the typed view, never listed as a gap, and never called a
+measurement.  ``value`` may be ``null`` for a NEEDS-VERIFICATION entry (vendor-confidential /
+coil-dependent).
 
 Caveats that travel with these numbers
 ---------------------------------------

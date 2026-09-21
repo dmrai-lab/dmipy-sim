@@ -836,3 +836,63 @@ def test_a_model_name_that_spans_several_gradients_says_so():
     leaf = scc.get_limit("philips_ingenia_3T", "gradient", "max_amplitude")
     assert leaf["value"] == 45
     assert "FAMILY" in leaf["context"] and "33/200" in leaf["context"] and "80/200" in leaf["context"]
+
+
+def test_the_terra_publishes_its_homogeneity_in_both_metrics_and_still_no_law():
+    """The 7 T datasheet gives the magnet's guaranteed VRMS and peak-to-peak per DSV: the same VRMS series as the
+    Prisma's, a vendor-stated ratio between the two metrics, and a magnitude over a sphere that is not a shape."""
+    import json
+    from dmipy_sim.acquisition import scanner_constants as scc
+    cat = json.load(open(scc.__file__.replace(".py", ".json")))
+    t = cat["scanners"]["siemens_magnetom_terra_7T"]["homogeneity"]
+    assert t["b0_homogeneity_vrms"]["value"] == 0.02 and t["b0_homogeneity"]["value"] == 0.15
+    assert "VRMS" in t["b0_homogeneity_vrms"]["context"] and "PEAK-TO-PEAK" in t["b0_homogeneity"]["context"]
+    terra, prisma = ScannerLimits.of("terra"), ScannerLimits.of("siemens_prisma")
+    assert not terra.has_field_law and terra.b0_offset([0.0, 0.0, 0.05]) is None
+    assert t["b0_spec_radial_order"]["value"] == pytest.approx(3.67, abs=0.05)
+    assert terra.shim_max_order == 3 and prisma.shim_max_order == 2
+    assert "Z3, Z2X, Z2Y" in t["shim_max_order"]["context"]                   # four of the seven third-degree terms
+
+
+def test_the_class_nonlinearity_is_an_isotropic_scaling_that_says_it_is_inferred():
+    """A Prisma's and a Terra's nonlinearity is a class model: the quadratic order measured across fourteen
+    systems, the magnitude measured on one whole-body 3 T coil, carried over as an isotropic scaling of b and
+    refused beyond the anchor; the leaves say 'inferred' and their context says why."""
+    import json
+    from dmipy_sim.acquisition import scanner_constants as scc
+    from dmipy_sim.phantom import Grid
+    from dmipy_sim.phantom.bore import gradient_tensor_map
+    cat = json.load(open(scc.__file__.replace(".py", ".json")))
+    for name in ("siemens_prisma", "terra"):
+        s = ScannerLimits.of(name)
+        assert s.has_gradient_nonlinearity
+        z = np.array([0.0, 0.0, 0.08]); x = np.array([0.08, 0.0, 0.0])
+        for u in (z, x, np.array([0.0, 0.08, 0.0])):
+            L = s.gradient_tensor(z)
+            assert np.allclose(L, L[0, 0] * np.eye(3))                               # isotropic: no direction invented
+        assert np.linalg.norm(s.gradient_tensor(z) @ [0, 0, 1.0]) ** 2 - 1 == pytest.approx(-0.050, abs=0.002)
+        assert np.linalg.norm(s.gradient_tensor(x) @ [0, 0, 1.0]) ** 2 - 1 == pytest.approx(+0.025, abs=0.002)
+        with pytest.raises(ValueError, match="anchored"):
+            s.gradient_tensor([0.0, 0.0, 0.12])
+        g = cat["scanners"][scc.resolve(name)[0]]["gradient_nonlinearity"]
+        for leaf in g.values():
+            assert leaf["confidence"] == "inferred"
+        assert "CLASS INFERENCE" in g["b_error_quadratic_axial"]["context"]
+    grid = Grid(shape=(1, 1, 1), voxel_size_m=(1e-3,) * 3, origin_m=(0.0, 0.0, 0.0), isocenter_m=(0.0, 0.0, 0.0))
+    T = gradient_tensor_map(ScannerLimits.of("siemens_prisma"), grid)(np.array([[0.0, 0.0, 0.05], [0.03, 0.0, 0.0]]))
+    assert T.shape == (2, 3, 3) and T[0, 2, 2] < 1.0 < T[1, 0, 0]
+    assert ScannerLimits.of("swoop").gradient_tensor([0.01, 0.0, 0.0])[0, 0] != ScannerLimits.of("swoop").gradient_tensor([0.01, 0.0, 0.0])[1, 1]   # the measured one stays a tensor
+    assert "inferred" not in {n for _m, _g, n in scc.needs_verification()}
+
+
+def test_the_transmit_ranges_are_class_numbers_with_open_maps_behind_them():
+    prisma, terra = ScannerLimits.of("siemens_prisma"), ScannerLimits.of("terra")
+    assert prisma.b1_brain_range == (0.7, 1.2) and terra.b1_brain_range == (0.4, 1.5)
+    assert ScannerLimits.of("swoop").b1_brain_range is None                    # the Swoop has a LAW instead
+    import json
+    from dmipy_sim.acquisition import scanner_constants as scc
+    cat = json.load(open(scc.__file__.replace(".py", ".json")))
+    for key in ("siemens_magnetom_prisma_3T", "siemens_magnetom_terra_7T"):
+        rf = cat["scanners"][key]["rf"]
+        assert rf["b1_brain_range"]["confidence"] == "inferred" and rf["b1_map_dataset"]["confidence"] == "cited"
+        assert cat["citations"][rf["b1_map_dataset"]["source_key"]]["doi_or_url"]

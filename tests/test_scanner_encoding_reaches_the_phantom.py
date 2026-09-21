@@ -115,16 +115,30 @@ def test_binning_costs_what_the_tolerance_allows_and_no_more(phantom, exact):
 
 
 def test_a_three_tesla_magnet_costs_a_handful_of_classes(phantom):
-    """A shimmed superconducting magnet catalogues no shape and no tensor, so only the Maxwell term remains,
-    and its position is binned to ``tolerance B0 / G_max`` -- at 3 T a quarter of a metre at a hundredth --
-    so a whole head is one class and within a percent of the bare field."""
+    """A shimmed superconducting magnet catalogues no field shape, so its Maxwell term is one class over a head
+    (binned to ``tolerance B0 / G_max``, a quarter of a metre at a hundredth). What a 3 T machine does catalogue
+    is a CLASS MODEL of its coils' nonlinearity, inferred and said so, which moves the delivered b by
+    ``a_t rho^2`` across the transverse plane, half a percent at this grid's corners: the classes then cost what
+    that model costs and no more, and a machine that catalogues neither is one class within a percent of the
+    bare field."""
     ph, pack = phantom
     seq = _seq()
+    S0 = ph.replay(seq, scanner=3.0, packs={0: pack})
     rep = {}
     S = ph.replay(seq, scanner=ScannerLimits.of("prisma"), packs={0: pack}, encoding_tolerance=1e-2, report=rep)
-    S0 = ph.replay(seq, scanner=3.0, packs={0: pack})
+    prisma = ScannerLimits.of("prisma")
+    assert prisma.has_gradient_nonlinearity and not prisma.has_field_law
+    r2 = 2 * VOX ** 2                                                     # the corner voxels, transverse to B0
+    bound = 1.5 * abs(prisma.b_error_quadratic_transverse) * r2 * 1e9 * D0 + 1e-2       # b D0 = 2 here
+    dev = np.nanmax(np.abs(S - S0) / np.abs(S0))
+    assert 2e-3 < dev < bound, (dev, bound)                               # the model reaches the signal, and only it
+    assert 1 <= rep["n_encoding_classes"] <= ph.n_voxels
+    rep = {}
+    premier = ScannerLimits.of("premier")
+    assert not premier.has_gradient_nonlinearity and not premier.has_field_law
+    Sg = ph.replay(seq, scanner=premier, packs={0: pack}, encoding_tolerance=1e-2, report=rep)
     assert rep["n_encoding_classes"] == 1
-    assert np.nanmax(np.abs(S - S0) / np.abs(S0)) < 1e-2
+    assert np.nanmax(np.abs(Sg - S0) / np.abs(S0)) < 1e-2
 
 
 def test_the_bloch_route_carries_the_same_classes(pack_path):
