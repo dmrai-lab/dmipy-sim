@@ -154,6 +154,12 @@ class Primitives:
                 v = np.asarray(T2v, float)[:n]; invT2 = np.where(v > 0, 1.0 / np.maximum(v, 1e-30), 0.0)
             if T1v is not None:
                 v = np.asarray(T1v, float)[:n]; invT1 = np.where(v > 0, 1.0 / np.maximum(v, 1e-30), 0.0)
+        if t is not None and t.D is not None and self.D_walk is not None and float(t.D) != float(self.D_walk):
+            raise ValueError(
+                f"the primitives were contracted on the walked grid, at D = {float(self.D_walk):.3g} m^2/s, and a "
+                f"tissue at D = {float(t.D):.3g} reads the pack on another grid (dmipy-sim#289): every term "
+                f"changes, not the surface divisor alone. Contract the view instead -- "
+                f"pack.at_diffusivity(D).study(...) or .walker_primitives(...)")
         if t is not None and t.rho is not None and float(t.rho) != 0.0:
             if self.contact is None:
                 raise ValueError("surface relaxivity was requested but this pack carries no C2 channel")

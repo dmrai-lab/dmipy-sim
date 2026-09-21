@@ -299,6 +299,155 @@ class ReplayPack:
         return self.meta.get("walk_params", {}).get("diffusivity")
 
     @property
+    def permeability(self):
+        """The permeability (m/s) the walk realised across its walls, from the embedded spec: one number when
+        every permeable wall and direction shares it, ``None`` when no wall is permeable, and a dict
+        ``{"wall_i.side": kappa}`` when they differ."""
+        spec = self.substrate
+        if spec is None:
+            return None
+        found = {}
+        for i, w in enumerate(getattr(spec, "walls", ()) or ()):
+            perm = getattr(w, "permeability", None)
+            for side in ("in_to_out", "out_to_in"):
+                v = getattr(perm, side, None) if perm is not None else None
+                if v:
+                    found[f"wall_{i}.{side}"] = float(v)
+        if not found:
+            return None
+        vals = set(found.values())
+        return found[next(iter(found))] if len(vals) == 1 else found
+
+    def at_permeability(self, kappa):
+        """This pack read at the wall permeability ``kappa`` (m/s): the view at ``a = kappa / permeability``,
+        which is also the view at ``a`` times the walked diffusivity, since the same path is the walk at
+        ``(a D, a kappa)`` and at no other pair (:meth:`at_diffusivity`). Needs a walk whose permeable walls
+        share one permeability; a spec with several is read by its diffusivity instead."""
+        k0 = self.permeability
+        if k0 is None:
+            raise ValueError("this pack's walls are impermeable (or it embeds no spec), so a permeability has no "
+                             "walked value to be read against; give the diffusivity instead")
+        if isinstance(k0, dict):
+            raise ValueError(f"this pack's walls have different permeabilities, {k0}, which one number cannot "
+                             f"rescale; read it by diffusivity (at_diffusivity), which scales them all together")
+        return self.at_diffusivity(float(self.diffusivity) * float(kappa) / float(k0))
+
+    def at_diffusivity(self, D):
+        """This pack read at the bulk diffusivity ``D``: the same arrays on the save grid divided by
+        ``a = D / diffusivity`` (dmipy-sim#289).
+
+        THE PAIR, AND THE COMPUTE IT SAVES. Across a permeable wall the walk realised a crossing probability
+        per encounter of about ``kappa sqrt(dt / D)``, which the rescale leaves unchanged only when the
+        permeability scales with the diffusivity: the view is the walk at ``(a D, a kappa)`` -- the pair with
+        the walked ratio ``kappa / D`` -- and at no other. So one walk at the SLOWEST diffusivity a study needs,
+        over the LONGEST time, serves every faster setting on that line at its shorter time as a view, and a
+        setting off the line needs its own walk. :attr:`~dmipy_sim.spec.Tissue.kappa` states the permeability
+        wanted and :attr:`~dmipy_sim.spec.Tissue.D` the diffusivity; given both, they must sit on the line.
+
+        A path walked at ``D0`` and read on a grid divided by ``a`` IS a path walked at ``a D0``: the stored
+        coefficients are duration-agnostic, so nothing is decoded and every channel follows on the new grid in
+        its own space -- the gradient's per-save weights, the relaxation gates, the surface term (whose weight
+        divides by the new ``D``), the field's gate. This is what a change of the substrate's temperature does,
+        about 2.5 per cent per kelvin for water. The same path is the walk at ``(a D0, a kappa)`` across a
+        permeable wall and at no other pair, and the pair is recorded in ``provenance.diffusivity_scaled``.
+
+        Only faster than walked is served (``a >= 1``). The certificate was measured at the walked grid: the
+        split-half floor and the codec error are the same statistics on the same coefficients, but the in-step
+        integration bias goes as ``D dt^2``, which is ``D0 dt0^2 / a`` -- it falls for ``a > 1`` and grows for
+        ``a < 1``, past what the walk's save interval was chosen to keep below the floor. A published pack does
+        not carry what would re-certify it, so a slower replay is refused rather than returned uncertified;
+        walk the pack at the slower diffusivity. The acquisition must still fit the shortened walk, ``T / a``,
+        which the replay checks as it checks every waveform.
+
+        The result is an ordinary :class:`ReplayPack` sharing this one's arrays, so :meth:`prefix`, the pose
+        cache and every route read it as they read any pack; :attr:`~dmipy_sim.spec.Tissue.D` on a replay
+        resolves to it.
+        """
+        import copy
+        D0 = self.diffusivity
+        if D0 is None:
+            raise ValueError("this pack records no diffusivity (walk_params.diffusivity), so a replay at another "
+                             "one has no ratio to read the grid by")
+        a = float(D) / float(D0)
+        if not np.isfinite(a) or a <= 0.0:
+            raise ValueError(f"a diffusivity is a positive number; got {D!r} against the walk's {D0!r}")
+        if a == 1.0:
+            return self
+        if a < 1.0:
+            raise ValueError(
+                f"a replay at D = {float(D):.3g} m^2/s is slower than the walk's {float(D0):.3g} (a = {a:.3f}), "
+                f"which stretches the save grid and grows the in-step integration bias as 1/a beyond what the "
+                f"pack's certificate covers. Faster than walked is free; slower needs a walk at that "
+                f"diffusivity, or a pack that recorded enough to re-certify a stretched grid, which this one did "
+                f"not (dmipy-sim#289)")
+        meta = copy.deepcopy(self.meta)
+        wp = meta.setdefault("walk_params", {})
+        wp["diffusivity"] = float(D)
+        for k in ("dt", "dt_traj", "T_max"):
+            if wp.get(k) is not None:
+                wp[k] = float(wp[k]) / a
+        if meta.get("dt") is not None:
+            meta["dt"] = float(meta["dt"]) / a
+        cx = meta.get("compression") or {}
+        if cx.get("temporal_bandwidth_hz") is not None:
+            cx["temporal_bandwidth_hz"] = float(cx["temporal_bandwidth_hz"]) * a
+        pm = (cx.get("channels") or {}).get("susceptibility_path")
+        if pm is not None and pm.get("dt") is not None:
+            pm["dt"] = float(pm["dt"]) / a                   # the path channel's own grid follows too
+        # the view's situation IS the walk at (a D, a kappa): the embedded spec says so, wall by wall and pool by
+        # pool, so that the view's own permeability and diffusivity read as what it realises
+        kappa = {}
+        sd = meta.get("substrate")
+        if isinstance(sd, dict):
+            for i, w in enumerate(sd.get("walls") or []):
+                perm = w.get("permeability") if isinstance(w, dict) else None
+                if isinstance(perm, dict):
+                    for side in ("in_to_out", "out_to_in"):
+                        v = perm.get(side)
+                        if v:
+                            kappa[f"wall_{i}.{side}"] = {"walked": float(v), "replayed": float(v) * a}
+                            perm[side] = float(v) * a
+            for pool in sd.get("pools") or []:
+                if isinstance(pool, dict):
+                    for key in ("diffusivity", "D"):
+                        if isinstance(pool.get(key), (int, float)) and pool[key]:
+                            pool[key] = float(pool[key]) * a
+        prov = meta.setdefault("provenance", {})
+        prov["diffusivity_scaled"] = dict(walked=float(D0), replayed=float(D), a=a,
+                                          grid_dt=dict(walked=float(self.dt), replayed=float(self.dt) / a),
+                                          permeability=kappa,
+                                          certificate="measured at the walked grid; the in-step bias falls as 1/a")
+        out = ReplayPack(self.arrays, meta, source=self.source)
+        return out
+
+    def _at_tissue(self, tissue):
+        """The pack a replay with ``tissue`` reads: this one, or its view at the tissue's diffusivity and
+        permeability. Both stated, they must sit on the walk's line ``kappa / D = kappa_walk / D_walk``."""
+        D = getattr(tissue, "D", None)
+        kappa = getattr(tissue, "kappa", None)
+        if kappa is None and (D is None or self.diffusivity is None or float(D) == float(self.diffusivity)):
+            return self
+        if kappa is None:
+            return self.at_diffusivity(D)
+        k0 = self.permeability
+        if k0 is None or isinstance(k0, dict):
+            raise ValueError(
+                "a tissue states a wall permeability, and this pack "
+                + ("has no permeable wall to read it against" if k0 is None else f"has walls of different permeabilities {k0}")
+                + ": a replay cannot make a wall permeable or change one wall alone; walk the spec wanted (dmipy-sim#289)")
+        a_k = float(kappa) / float(k0)
+        if D is not None and self.diffusivity is not None:
+            a_d = float(D) / float(self.diffusivity)
+            if abs(a_d - a_k) > 1e-9 * max(a_d, a_k):
+                raise ValueError(
+                    f"the pair (D = {float(D):.3g} m^2/s, kappa = {float(kappa):.3g} m/s) is not on this walk's line: "
+                    f"the walk realised kappa / D = {float(k0) / float(self.diffusivity):.3g} s/m^2 and a rescale "
+                    f"keeps that ratio, so it serves (a D_walk, a kappa_walk) for any a >= 1 and no other pair. "
+                    f"D asks for a = {a_d:.4g}, kappa for a = {a_k:.4g}; a setting off the line needs its own "
+                    f"walk (dmipy-sim#289)")
+        return self.at_permeability(kappa)
+
+    @property
     def nominal(self):
         """The embedded spec's values as a :class:`~dmipy_sim.spec.Tissue`: what a paper's replay applies,
         ``replay(seq, tissue=pack.nominal, scanner=pack.nominal_field_T)``; ``None`` for a pack without a spec."""
@@ -385,6 +534,10 @@ class ReplayPack:
         if isinstance(waveform, Protocol):                # a multi-TE scheme: each sequence replayed, placed at its rows
             kw = dict(tissue=tissue, scanner=scanner, orientation=orientation, compartment=compartment, complex_signal=complex_signal)
             return waveform.scatter([self.replay(seq, **kw) for seq in waveform])
+        view = self._at_tissue(tissue)
+        if view is not self:
+            return view.replay(waveform, tissue=tissue, scanner=scanner, orientation=orientation,
+                               compartment=compartment, complex_signal=complex_signal)
         dist = _as_distribution(orientation)
         if dist is not None:
             S = self.pose_response(waveform, tissue=tissue, scanner=scanner, compartment=compartment).compose(dist)
@@ -410,6 +563,10 @@ class ReplayPack:
         the route applied itself, so ``ew`` is then ``w``.
         """
         waveform = waveform.waveform if hasattr(waveform, "waveform") else waveform
+        view = self._at_tissue(tissue)
+        if view is not self:
+            return view.walker_signals(waveform, tissue=tissue, scanner=scanner, orientation=orientation,
+                                       compartment=compartment, b1_scale=b1_scale, off_resonance_T=off_resonance_T)
         if b1_scale is None and off_resonance_T is None:
             P = self._prepare(waveform, tissue=tissue, scanner=scanner, orientation=orientation, compartment=compartment)
             w = np.asarray(self.spin_weights, np.float64)
@@ -432,6 +589,10 @@ class ReplayPack:
         here: its voxel factor is an amplitude per measurement, which a phase cannot carry, and a consumer
         that formed its own sums would silently omit it -- :meth:`walker_signals` carries it in ``E``."""
         waveform = waveform.waveform if hasattr(waveform, "waveform") else waveform
+        view = self._at_tissue(tissue)
+        if view is not self:
+            return view.walker_phases(waveform, tissue=tissue, scanner=scanner, orientation=orientation,
+                                      compartment=compartment, weights=weights)
         P = self._prepare(waveform, tissue=tissue, scanner=scanner, orientation=orientation, compartment=compartment)
         if np.any(P["voxel"] != 1.0):
             raise ValueError(
@@ -580,6 +741,9 @@ class ReplayPack:
         angle, which is not what a train does. ``crusher_seed`` draws those coordinates, so a replay of one
         pack and one sequence is reproducible.
         """
+        view = self._at_tissue(tissue)
+        if view is not self:
+            return view.replay_bloch(waveform, b1_scale=b1_scale, off_resonance_T=off_resonance_T, tissue=tissue, scanner=scanner, orientation=orientation, compartment=compartment, jax=jax, complex_signal=complex_signal, per_walker=per_walker, crusher_seed=crusher_seed)
         from .trajectories import replay_bloch as _rb, replay_bloch_jax as _rbj
         from .compression import decode_occupancy, decode_boundary_bridge
         P = self._prepare(waveform, tissue=tissue, scanner=scanner, orientation=orientation, compartment=compartment,
@@ -807,6 +971,9 @@ class ReplayPack:
         resolved knobs, the frame, the method and the band, and read back instead of recomputed the next time
         the same pack meets the same acquisition. Off unless asked for.
         """
+        view = self._at_tissue(tissue)
+        if view is not self:
+            return view.pose_response(waveform, tissue=tissue, scanner=scanner, pose=pose, compartment=compartment, method=method, keep=keep, cache=cache)
         R_s = _pose_matrix(pose)
         if R_s is not None:                                       # the acquisition in the specimen frame: what the
             from ..acquisition.waveforms import rotate_waveform   # expansion reads, in P and from the waveform itself

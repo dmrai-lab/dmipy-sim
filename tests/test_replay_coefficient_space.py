@@ -121,6 +121,6 @@ def test_no_route_decodes_a_track_or_a_trajectory(field_pack, monkeypatch):
     monkeypatch.setattr(ReplayPack, "positions", lambda self: (_ for _ in ()).throw(AssertionError("positions() was decoded")))
     seq = _seqmod.pgse([[1, 0, 0]], 1e-4, 3e-4, bvalues=[5e8], TE=6e-4, n_t=4 * pk.n_t + 1, slew_rate=np.inf)
     pk.walker_signals(seq, tissue=Tissue(T2={"extra": 0.08, "intra": 0.03, "myelin": 0.01}, T1={"extra": 1.0, "intra": 1.2, "myelin": 0.3}))
-    pk.walker_signals(seq, tissue=Tissue(rho=1e-5, D=D0))
+    pk.walker_signals(seq, tissue=Tissue(rho=1e-5))                 # rho over the WALK's D; another D is a rescale (#289)
     pk.walker_signals(seq, scanner=3.0, tissue=Tissue(chi_iso=-1e-7, chi_aniso=-5e-8))
     pk.walker_signals(seq, tissue=pk.nominal, scanner=3.0)

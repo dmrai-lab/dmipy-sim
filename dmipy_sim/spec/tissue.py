@@ -17,13 +17,20 @@ class Tissue:
       id, or one value for every pool.
     * ``rho`` (m/s): the walls' surface relaxivity (C2), scaled by ``D``.
     * ``D`` (m^2/s): the bulk diffusivity -- the walk's recorded value unless given, for a pack; a closed form's
-      diffusion coefficient.
+      diffusion coefficient. Given on a pack, the pack is READ at that diffusivity
+      (:meth:`~dmipy_sim.replay.ReplayPack.at_diffusivity`): the save grid divided by ``D / D_walk``, every
+      channel following in its own space, which is what a change of temperature does. Faster than walked only.
+    * ``kappa`` (m/s): the walls' permeability the pack is READ at (:meth:`~dmipy_sim.replay.ReplayPack.at_permeability`).
+      A walk realised one ratio ``kappa / D``, and the same path is the walk at ``(a D, a kappa)`` for any
+      ``a >= 1``: stating ``kappa`` picks ``a``, stating ``D`` too must agree, and a pair off the walk's line is
+      refused. One walk at the slowest, longest setting of a study serves every faster one on its line.
     * ``chi_iso`` / ``chi_aniso``: the field source's susceptibility (C3), evaluated at the scanner's field.
     """
     T2: Optional[object] = None
     T1: Optional[object] = None
     rho: Optional[float] = None
     D: Optional[float] = None
+    kappa: Optional[float] = None
     chi_iso: Optional[float] = None
     chi_aniso: float = 0.0
 
@@ -56,7 +63,7 @@ class Tissue:
         """The declared values as a JSON-ready dict (a ``.rph`` substrate's ``tissue`` entry): only what is set."""
         import numpy as np
         out = {}
-        for k in ("T2", "T1", "rho", "D", "chi_iso", "chi_aniso"):
+        for k in ("T2", "T1", "rho", "D", "kappa", "chi_iso", "chi_aniso"):
             v = getattr(self, k)
             if v is None or (k == "chi_aniso" and v == 0.0):
                 continue
@@ -68,7 +75,7 @@ class Tissue:
     def from_meta(cls, meta):
         """A tissue back from :meth:`to_meta`; ``None`` for an empty or absent entry."""
         m = dict(meta or {})
-        unknown = set(m) - {"T2", "T1", "rho", "D", "chi_iso", "chi_aniso"}
+        unknown = set(m) - {"T2", "T1", "rho", "D", "kappa", "chi_iso", "chi_aniso"}
         if unknown:
-            raise ValueError(f"a tissue entry declares {sorted(unknown)}; it takes T2, T1, rho, D, chi_iso, chi_aniso")
+            raise ValueError(f"a tissue entry declares {sorted(unknown)}; it takes T2, T1, rho, D, kappa, chi_iso, chi_aniso")
         return cls(**m) if m else None
