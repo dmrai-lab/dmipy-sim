@@ -200,7 +200,8 @@ def _spec_without_frame(geometry, *, id=None, provenance=None, surface_dir=None)
         outer = Wall("sheath", Surface("cylinder", center=[0.0] * 3, axis=ax, radius=g.outer_radius), 2, 0, Directional(ko, ko))
         return SubstrateSpec(sid, Domain(*_box(MARGIN * g.outer_radius), ["open"] * 3), pools, [inner, outer],
                              Seeding(_seeded(pools)), Validity(min(g.inner_radius, g.outer_radius - g.inner_radius),
-                                                          _tiers([inner, outer], pools)),
+                                                          _tiers([inner, outer], pools),
+                                                          thinnest_shell=g.outer_radius - g.inner_radius),
                              description="isolated myelinated cylinder: lumen, sheath, extra", provenance=prov)
     if isinstance(g, PackedMyelinatedCylinders):
         N = g.N_actual
@@ -225,7 +226,8 @@ def _spec_without_frame(geometry, *, id=None, provenance=None, surface_dir=None)
         dom = Domain([-L / 2, -L / 2, -L / 2], [L / 2, L / 2, L / 2], ["periodic", "periodic", "open"])
         return SubstrateSpec(sid, dom, pools, [w_in, w_out], Seeding(_seeded(pools)),
                              Validity(float(min(inner.min(), (outer - inner).min())), _tiers([w_in, w_out], pools),
-                                      min_gap=float(periodic_min_gap(centers[:, :2], outer, L))),
+                                      min_gap=float(periodic_min_gap(centers[:, :2], outer, L)),
+                                      thinnest_shell=float((outer - inner).min())),
                              realisation={"n_objects": int(N), "packing_fraction": float(np.pi * np.sum(outer ** 2) / L ** 2),
                                           "cell_side": L, "g_ratio": float(np.mean(inner / outer))},
                              description=f"periodic cell of {N} myelinated cylinders", provenance=prov)
@@ -237,7 +239,8 @@ def _spec_without_frame(geometry, *, id=None, provenance=None, surface_dir=None)
         lo = (cl.min(0) - MARGIN * g.r_out).tolist(); hi = (cl.max(0) + MARGIN * g.r_out).tolist()
         seeded = {"intra": 1, "myelin": 2, "extra": 0}[g.pool]
         return SubstrateSpec(sid, Domain(lo, hi, ["open"] * 3), pools, [inner, outer], Seeding([seeded]),
-                             Validity(min(g.r_in, g.r_out - g.r_in), _tiers([inner, outer], pools)),
+                             Validity(min(g.r_in, g.r_out - g.r_in), _tiers([inner, outer], pools),
+                                      thinnest_shell=g.r_out - g.r_in),
                              description="myelinated curved axon: concentric shells swept along a polyline", provenance=prov)
     if isinstance(g, CurvedCylinder):
         cl = np.asarray(g.centerline, float)

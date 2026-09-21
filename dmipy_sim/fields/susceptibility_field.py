@@ -55,6 +55,41 @@ import numpy as np
 # Symmetric 3x3 tensor stored as 6 components in this fixed order.
 _SYM6 = ((0, 0), (1, 1), (2, 2), (0, 1), (0, 2), (1, 2))
 
+# The node spacing of a rasterised field basis follows the field source's thinnest shell (dmipy-sim#304). MEASURED
+# against the Wharton-Bowtell hollow cylinder with a 0.120 um sheath (the CACTUS bundle's thinnest), the boundary
+# voxels supersampled 4 x 4 x 4 (tests/test_field_resolution.py): the lumen's anisotropic term is off by 1.4 % at one
+# node across the sheath, 0.6 % at one and a half, 0.27 % at two and 0.38 % at three, the isotropic lumen null 1.1 %,
+# 0.3 %, 0.3 % and 0.2 % of chi -- two nodes across reach the reference's own floor. The dipole kernel does not decay
+# with |k|, so a hard binary edge rings into the lumen (2.6 % of chi B0 where the exact answer is 0); the supersample
+# of the boundary voxels brings that to ~0.1 %, and four is where it settles.
+FIELD_NODES_ACROSS = 2.0
+FIELD_MASK_SUPERSAMPLE = 4
+# The peak host bytes a basis build takes per node, MEASURED (a meshed hollow cylinder at 4.1e6 and 1.7e7 nodes: the
+# slope of the process's peak RSS is 655 B/node, the 13 float64 channels, the k-space solve's complex temporaries and
+# the membership tests of the supersampled edge in chunks of _EDGE_CHUNK_POINTS), rounded up.
+FIELD_BYTES_PER_NODE = 700
+_EDGE_CHUNK_POINTS = 20_000_000                 # sub-samples per membership call on the boundary voxels (~0.5 GB)
+
+
+def field_resolution(thinnest_shell):
+    """The node spacing (metres) that resolves a field source whose thinnest shell is ``thinnest_shell`` (metres):
+    :data:`FIELD_NODES_ACROSS` nodes across it."""
+    t = float(thinnest_shell)
+    if not t > 0:
+        raise ValueError(f"the thinnest shell must be a positive length, got {thinnest_shell!r}")
+    return t / FIELD_NODES_ACROSS
+
+
+def field_node_budget(ceiling=None):
+    """The nodes a field basis may have on this host: half of the memory ceiling (``ceiling`` bytes, else
+    :func:`dmipy_sim.run.memory_ceiling`) over the build's peak bytes per node (:data:`FIELD_BYTES_PER_NODE`)."""
+    if ceiling is None:
+        from ..run import memory_ceiling
+        ceiling = memory_ceiling()
+    if ceiling is None:
+        raise RuntimeError("no memory ceiling is readable on this host: pass field_budget= (nodes) explicitly")
+    return float(0.5 * float(ceiling) / FIELD_BYTES_PER_NODE)
+
 
 
 class FieldGrid(NamedTuple):
@@ -92,14 +127,15 @@ class FieldGrid(NamedTuple):
         return contract(self.channels(points), b0_dir, B0=B0, chi_iso=chi_iso, chi_aniso=chi_aniso)
 
 
-def field_grid_of(geometry, *, res=0.1e-6, include_aniso=True, box=None, margin=None, n_z=4,
-                  mask_supersample=4, kspace_lowpass=0.5):
+def field_grid_of(geometry, *, res=None, include_aniso=True, box=None, margin=None, n_z=4,
+                  mask_supersample=FIELD_MASK_SUPERSAMPLE, kspace_lowpass=0.5):
     """The :class:`FieldGrid` of an analytic myelinated substrate, for a pack's field tier.
 
     Rasterises the sheath of a :class:`~dmipy_sim.geometry.MyelinatedCylinder` or
     :class:`~dmipy_sim.geometry.PackedMyelinatedCylinders` (every voxel's myelin occupancy, partial
     volume at the two walls from ``mask_supersample``^2 sub-samples, and the radial director toward the
-    nearest axon) onto a voxel grid of pitch ``res`` and calls :func:`field_basis`, exactly as
+    nearest axon) onto a voxel grid of pitch ``res`` (default :func:`field_resolution` of the thinnest sheath:
+    :data:`FIELD_NODES_ACROSS` nodes across it) and calls :func:`field_basis`, exactly as
     :func:`mesh_field_basis` does for a meshed axon -- so a myelinated cylinder's pack carries the
     same C3 channel as a mesh pack and is replayed by the same code.
 
@@ -131,6 +167,8 @@ def field_grid_of(geometry, *, res=0.1e-6, include_aniso=True, box=None, margin=
     else:
         raise TypeError(f"field_grid_of takes a MyelinatedCylinder or PackedMyelinatedCylinders, got "
                         f"{type(geometry).__name__}; a mesh substrate uses mesh_field_basis")
+    if res is None:
+        res = field_resolution(float(np.min(outer - inner)))
     side = hi - lo
     n_xy = np.maximum(2, np.round(side / res).astype(int))
     vs_xy = side / n_xy
@@ -645,8 +683,8 @@ def mesh_contains(V, F, pts, *, method="grid", prefilter=False, chunk=2_000_000)
     return out
 
 
-def mesh_field_basis(inner, outer, box_min, box_max, *, res=0.1e-6, include_aniso=True,
-                     mask_supersample=2, kspace_lowpass=0.5, clip_axis=2, director=None):
+def mesh_field_basis(inner, outer, box_min, box_max, *, res, include_aniso=True,
+                     mask_supersample=FIELD_MASK_SUPERSAMPLE, kspace_lowpass=0.5, clip_axis=2, director=None):
     """Geometry-only myelin susceptibility field basis on a voxel grid, from inner (axonal) and
     outer (myelin) surface meshes ``(V, F)`` (metres): :func:`predicate_field_basis` with
     :func:`mesh_inside` as the two membership tests and, by default, the closest point on the axon surface as
@@ -689,8 +727,8 @@ def mesh_directors(V, F, pts, *, chunk=2_000_000):
     return out
 
 
-def predicate_field_basis(inside_inner, inside_outer, box_min, box_max, *, res=0.1e-6, include_aniso=True,
-                          mask_supersample=2, kspace_lowpass=0.5, director=None):
+def predicate_field_basis(inside_inner, inside_outer, box_min, box_max, *, res, include_aniso=True,
+                          mask_supersample=FIELD_MASK_SUPERSAMPLE, kspace_lowpass=0.5, director=None):
     """Geometry-only myelin susceptibility field basis on a voxel grid from two membership tests on
     points (metres): ``inside_inner`` (the axon) and ``inside_outer`` (the sheath's outer surface); any
     surface family that can answer "is this point inside" (a mesh, a sphere union, a strand pack).
@@ -699,10 +737,11 @@ def predicate_field_basis(inside_inner, inside_outer, box_min, box_max, *, res=0
     -- a callable ``(n, 3) points -> (n, 3)`` unit vectors, the geometry's own radial vector (a strand pack's
     nearest-segment normal, :meth:`PackedCurvedCylinders.radial_directors`) -- when given, else from the
     signed distance to the inner surface (or to the shell itself when ``inside_inner`` is ``None``: a
-    solid source), then calls :func:`field_basis`. ``mask_supersample`` (default 2) gives a
-    partial-volume occupancy in ``[0,1]`` at the boundary — essential because the dipole kernel
-    ``k̂ᵢk̂ⱼ`` does not decay with ``|k|`` so a hard binary edge rings into the interior. Returns
-    ``(basis, origin, voxel_size)`` with ``origin`` = box corner (the :func:`sample_grid` convention)."""
+    solid source), then calls :func:`field_basis`. ``res`` is the node spacing (metres): a caller derives it from
+    the source's thinnest shell with :func:`field_resolution`. ``mask_supersample`` (default
+    :data:`FIELD_MASK_SUPERSAMPLE`) gives a partial-volume occupancy in ``[0,1]`` at the boundary — essential
+    because the dipole kernel ``k̂ᵢk̂ⱼ`` does not decay with ``|k|`` so a hard binary edge rings into the interior.
+    Returns ``(basis, origin, voxel_size)`` with ``origin`` = box corner (the :func:`sample_grid` convention)."""
     from scipy import ndimage
 
     box_min = np.asarray(box_min, float); box_max = np.asarray(box_max, float)
@@ -733,10 +772,13 @@ def predicate_field_basis(inside_inner, inside_outer, box_min, box_max, *, res=0
             sub = (np.arange(SS) + 0.5) / SS - 0.5                  # sub-voxel offsets in [-0.5,0.5)
             ox, oy, oz = np.meshgrid(sub * vs[0], sub * vs[1], sub * vs[2], indexing="ij")
             off = np.stack([ox.ravel(), oy.ravel(), oz.ravel()], axis=1)      # (SS^3, 3)
-            base = pts[ei]                                                    # (n_edge, 3) voxel centres
-            q = (base[:, None, :] + off[None, :, :]).reshape(-1, 3)
-            occ = np.asarray(inside_outer(q), bool) & ~(inside_inner(q) if inside_inner is not None else np.zeros(len(q), bool))
-            myelin_mask.ravel()[ei] = occ.reshape(len(ei), -1).mean(axis=1)
+            flat = myelin_mask.ravel()
+            chunk = max(1, _EDGE_CHUNK_POINTS // len(off))                    # boundary voxels per membership call
+            for i in range(0, ei.size, chunk):
+                base = pts[ei[i:i + chunk]]                                   # (n, 3) voxel centres
+                q = (base[:, None, :] + off[None, :, :]).reshape(-1, 3)
+                occ = np.asarray(inside_outer(q), bool) & ~(inside_inner(q) if inside_inner is not None else np.zeros(len(q), bool))
+                flat[ei[i:i + chunk]] = occ.reshape(len(base), -1).mean(axis=1)
     if director is not None:                                       # the geometry's own radial vector at every voxel
         radial_dir = _unit(np.asarray(director(pts), float), axis=-1).reshape(tuple(N) + (3,))
     else:                                                          # the gradient of the voxelised mask's signed distance

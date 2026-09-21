@@ -124,6 +124,7 @@ class Validity:
     tiers: list
     min_gap: Optional[float] = None
     mesh_edge_feature_ratio: Optional[float] = None
+    thinnest_shell: Optional[float] = None        # the thickness of the thinnest shell pool (a sheath), metres
 
 
 @dataclass(frozen=True)
@@ -362,6 +363,9 @@ def validate(d):
     sf = _req(val, "smallest_feature", "validity")
     if not (isinstance(sf, (int, float)) and sf > 0):
         raise SpecError(f"validity.smallest_feature must be > 0, got {sf!r}")
+    ts = val.get("thinnest_shell")
+    if ts is not None and not (isinstance(ts, (int, float)) and ts > 0):
+        raise SpecError(f"validity.thinnest_shell must be > 0 or null, got {ts!r}")
     tiers = _req(val, "tiers", "validity")
     if any(t not in TIERS for t in tiers) or len(set(tiers)) != len(tiers):
         raise SpecError(f"validity.tiers must be distinct entries of {TIERS}, got {tiers!r}")

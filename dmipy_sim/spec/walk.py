@@ -22,7 +22,7 @@ from .build import geometry_from_spec
 
 
 def walk_spec(spec, n_walkers=None, T_max=None, dt_save=None, *, scanner="connectom", floor_fraction=0.1, diffusivity=None,
-              seed=0, n_probe=200_000, field=True, field_res=0.2e-6, field_budget=5e7, field_cutoff_m=25e-6,
+              seed=0, n_probe=200_000, field=True, field_res=None, field_budget=None, field_cutoff_m=25e-6,
               field_cutoff_tol=0.02, field_cutoff_max_m=50e-6, require_gpu=None, walker_batch_size=50_000, tiers="all",
               seeding=None, adaptive_steps=False, field_sample_every=1, field_far=None, field_gather_every=4, run_dir=None,
               spool=False, context=None):
@@ -66,8 +66,13 @@ def walk_spec(spec, n_walkers=None, T_max=None, dt_save=None, *, scanner="connec
     last doubling still made when the bound stopped it (``converged: False``): over a domain that is mostly
     sparse (DiSCo) the 1/r^2 fields of distant bundles are a share of the field's variance that a cutoff sum
     reaches only as 1/cutoff, which a far-field grid, not a larger cutoff, will settle. Every other substrate, and a strand substrate
-    with ``field="grid"``, rasterises within ``field_budget`` voxels (13 float32 channels each) at
-    ``field_res``, the cross-check of the closed form on a small strand voxel.
+    with ``field="grid"`` (the cross-check of the closed form on a small strand voxel), rasterises the field basis on
+    the domain grid at the node spacing the field source's thinnest shell sets
+    (:func:`~dmipy_sim.fields.susceptibility_field.field_resolution` of ``spec.validity.thinnest_shell``:
+    :data:`~dmipy_sim.fields.susceptibility_field.FIELD_NODES_ACROSS` nodes across it, measured; ``field_res`` in
+    metres overrides it, and a spec that records no shell needs it) within ``field_budget`` nodes (default the
+    host's, :func:`~dmipy_sim.fields.susceptibility_field.field_node_budget`: half the memory ceiling at the
+    build's measured bytes per node); a basis beyond the budget is refused, never coarsened.
     
     ``run_dir`` is where the walk's record goes (:mod:`dmipy_sim.run`; the default root otherwise); with ``spool``
     every finished walker batch is written into it at once, and a call with the same arguments and the same
@@ -125,7 +130,7 @@ def walk_spec(spec, n_walkers=None, T_max=None, dt_save=None, *, scanner="connec
             return PersistentWalk(w.positions, w.dt, w.sub_steps, w.dt_sim, w.boundary_local_time, w.compartment,
                                   w.bound_frac, w.illegal_crossings, w.seed, w.diffusivity, geometry=g, spec=spec, run=w.run)
         return _walk_bundle(spec, int(n_walkers), float(T_max), float(dt_save), seed, n_probe, field, field_res,
-                            require_gpu, walker_batch_size, field_budget=float(field_budget), field_cutoff_m=field_cutoff_m, field_cutoff_tol=field_cutoff_tol, seeding=seeding,
+                            require_gpu, walker_batch_size, field_budget=field_budget, field_cutoff_m=field_cutoff_m, field_cutoff_tol=field_cutoff_tol, seeding=seeding,
                             field_cutoff_max_m=field_cutoff_max_m, adaptive_steps=adaptive_steps, field_sample_every=int(field_sample_every), field_far=field_far, field_gather_every=int(field_gather_every), context=context, spool=bool(spool))
 
 
@@ -396,14 +401,15 @@ def draw_seeds(spec, seeding, seed, *, context=None):
     return DrawnSeeds(positions=positions, weights=weights, grid=grid, seed=int(seed), drawn_from=seeding)
 
 
-def _walk_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field, field_res, require_gpu, batch, field_budget=5e7,
+def _walk_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field, field_res, require_gpu, batch, field_budget=None,
                  field_cutoff_m=25e-6, field_cutoff_tol=0.02, seeding=None, field_cutoff_max_m=50e-6, adaptive_steps=False, field_sample_every=1, field_far=None, field_gather_every=4, context=None, spool=False):
     """Walk a multi-surface spec pool by pool: every seeded pool is defined by the walls it is inside and the walls it
     is outside; a pool with D > 0 walks the interior of its inside-walls (intra, glia) or the exterior of its
     outside-walls (extra); a shell pool at D = 0 (myelin) is frozen where it was seeded; the field basis is
     rasterised from the same membership tests."""
     from ..engine.core import simulate_trajectories
-    from ..fields.susceptibility_field import FieldGrid, mesh_field_basis, predicate_field_basis
+    from ..fields.susceptibility_field import (FieldGrid, FIELD_NODES_ACROSS, field_node_budget, field_resolution,
+                                               mesh_field_basis, predicate_field_basis)
     from ..persistent_walk import PersistentWalk
     log = logging.getLogger("dmipy_sim")
     ctx = context if context is not None else WalkContext(spec, field_far=field_far)
@@ -532,13 +538,25 @@ def _walk_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field, field_re
         if strands and field != "grid":
             fg = sf                                                          # built and certified on the start positions
         else:
+            shell = spec.validity.thinnest_shell
+            if field_res is None:
+                if shell is None:
+                    raise SpecError(f"the field basis's node spacing follows the field source's thinnest shell, and spec "
+                                    f"{spec.id!r} records none (validity.thinnest_shell); pass field_res= (metres) or record it")
+                field_res = field_resolution(shell)
+                spacing = f"{field_res * 1e6:.3f} um, {FIELD_NODES_ACROSS:g} nodes across its thinnest shell of {shell * 1e6:.3f} um"
+            else:
+                spacing = f"the given field_res of {field_res * 1e6:.3f} um"
+            budget = float(field_budget) if field_budget is not None else field_node_budget()
             n_vox = int(np.prod(np.ceil((hi - lo) / float(field_res))))
-            if n_vox > field_budget:
-                raise SpecError(f"the field basis of this substrate would be {n_vox:.2e} voxels at {field_res * 1e6:.2f} um over its "
-                                f"{np.round((hi - lo) * 1e6, 1).tolist()} um domain, beyond the {field_budget:.0e}-voxel budget "
-                                f"(13 float32 channels per voxel). Coarsen field_res=, raise field_budget=, or walk it with "
-                                f"field=False" + ("; field=True evaluates a strand substrate's per-segment closed form instead"
-                                                  if strands else ""))
+            if n_vox > budget:
+                raise SpecError(f"the field basis of this substrate would be {n_vox:.2e} nodes at {spacing} over its "
+                                f"{np.round((hi - lo) * 1e6, 1).tolist()} um domain, beyond the voxel budget of {budget:.1e} nodes "
+                                + ("(field_budget=)" if field_budget is not None else
+                                   "(half this host's memory ceiling at the build's measured bytes per node)")
+                                + ". Raise field_budget= on a host with the memory, walk it with field=False"
+                                + (", or field=True evaluates a strand substrate's per-segment closed form instead" if strands else "")
+                                + "; a coarser field_res= is a choice to under-resolve the sheath, never the default")
             if inner_b is not None and inner_b.kind == "mesh" and outer_b.kind == "mesh":
                 basis, origin, _ = mesh_field_basis((inner_b.V, inner_b.F), (outer_b.V, outer_b.F), lo, hi, res=field_res,
                                                     include_aniso=True)
