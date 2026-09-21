@@ -47,6 +47,7 @@ echo, so this choice is physically inert for SE/STE signals.
 
 from __future__ import annotations
 
+import os
 import warnings
 from typing import NamedTuple, Optional
 
@@ -687,6 +688,35 @@ def mesh_contains(V, F, pts, *, method="grid", prefilter=False, chunk=2_000_000)
     return out
 
 
+def _forked_map(fn, items, workers):
+    """``[fn(item) for item in items]`` over ``workers`` forked processes: the parent's arrays are shared
+    copy-on-write, so a query over a grid of 1e8 points is spread over the host without a copy per worker.
+    ``fn`` may be a closure; it is never pickled (a fork carries it). Falls back to the caller's process when the
+    platform cannot fork."""
+    import multiprocessing as mp
+    items = list(items)
+    if workers <= 1 or len(items) <= 1:
+        return [fn(it) for it in items]
+    try:
+        ctx = mp.get_context("fork")
+    except ValueError:
+        return [fn(it) for it in items]
+    global _FORKED_FN
+    _FORKED_FN = fn
+    try:
+        with ctx.Pool(min(int(workers), len(items))) as pool:
+            return pool.map(_forked_call_item, items, chunksize=1)
+    finally:
+        _FORKED_FN = None
+
+
+_FORKED_FN = None
+
+
+def _forked_call_item(item):
+    return _FORKED_FN(item)
+
+
 class MeshBodies:
     """Closed triangle surfaces ``[(V, F), ...]`` (metres) as ONE boundary: the membership, the signed distance and
     the radial director a field raster and a walk's seeding read.
@@ -705,7 +735,7 @@ class MeshBodies:
     on the union. The union's ``V``, ``F`` are exposed for the walk.
     """
 
-    def __init__(self, bodies, *, k=16):
+    def __init__(self, bodies, *, k=16, workers=None):
         self.bodies = [(np.asarray(V, float), np.asarray(F, np.int64)) for V, F in bodies]
         if not self.bodies:
             raise ValueError("MeshBodies needs at least one (V, F) surface")
@@ -714,7 +744,22 @@ class MeshBodies:
         self.F = np.concatenate([F + o for (_, F), o in zip(self.bodies, offs[:-1])])
         self.bounds = [(V.min(0), V.max(0)) for V, _ in self.bodies]
         self.k = int(k)
+        # the processes a large query is spread over (forked, the arrays shared): a share of the host, never all of it
+        self.workers = int(workers) if workers is not None else max(1, min(16, (os.cpu_count() or 4) // 4))
         self._near = {}
+
+    def _contains_body(self, i, pts):
+        """The indices of ``pts`` inside body ``i``: those in its bounding box, by ray parity across its smallest
+        extent, the bins of the parity index sized to the body's faces (256 bins over 7 000 faces spent 90 % of the
+        call in empty bins)."""
+        (V, F), (lo, hi) = self.bodies[i], self.bounds[i]
+        sel = np.flatnonzero(np.all((pts >= lo) & (pts <= hi), axis=1))
+        if sel.size == 0:
+            return sel
+        a = int(np.argmin(hi - lo))                                  # the ray axis: across a tube, never along it
+        perm = [j for j in range(3) if j != a] + [a]
+        n_bins = int(np.clip(np.sqrt(len(F) / 2.0), 8, 256))
+        return sel[mesh_contains_fast(V[:, perm], F, pts[sel][:, perm], n_bins=n_bins)]
 
     @classmethod
     def of(cls, surfaces):
@@ -728,13 +773,12 @@ class MeshBodies:
     def contains(self, pts):
         pts = np.asarray(pts, float).reshape(-1, 3)
         out = np.zeros(len(pts), bool)
-        for (V, F), (lo, hi) in zip(self.bodies, self.bounds):
-            sel = np.flatnonzero(~out & np.all((pts >= lo) & (pts <= hi), axis=1))
-            if sel.size == 0:
-                continue
-            a = int(np.argmin(hi - lo))                              # the ray axis: across a tube, never along it
-            perm = [i for i in range(3) if i != a] + [a]
-            out[sel] = mesh_contains_fast(V[:, perm], F, pts[sel][:, perm])
+        if self.workers > 1 and len(self.bodies) > 1 and len(pts) >= 1_000_000:
+            for idx in _forked_map(lambda i: self._contains_body(i, pts), range(len(self.bodies)), self.workers):
+                out[idx] = True
+        else:
+            for i in range(len(self.bodies)):
+                out[self._contains_body(i, pts)] = True
         return out
 
     def _nearest(self, resolve_m):
@@ -755,25 +799,35 @@ class MeshBodies:
             self._near[key] = (tri / unit, n, unit, cKDTree(tri.mean(1) / unit))       # carries absolute tolerances
         return self._near[key]
 
-    def signed_distance(self, pts, *, resolve_m=None, chunk=500_000):
-        """``(s, n)`` at ``pts`` ``(m, 3)``: the distance to the closest point on the boundary, positive inside, and
-        the outward unit normal of the face that carries it; ``resolve_m`` the edge length the faces are split to
-        first (the scale of the distances asked, a voxel), ``None`` for the faces as they are."""
+    def _distance_chunk(self, pts, resolve_m):
         from trimesh.triangles import closest_point
         tri, nrm, unit, tree = self._nearest(resolve_m)
-        pts = np.asarray(pts, float).reshape(-1, 3)
         k = min(self.k, len(tri))
-        dist = np.empty(len(pts)); normal = np.empty((len(pts), 3))
-        for i in range(0, len(pts), chunk):
-            p = pts[i:i + chunk] / unit
-            _, idx = tree.query(p, k=k, workers=-1)
-            idx = np.asarray(idx).reshape(len(p), k)
-            c = closest_point(tri[idx.ravel()], np.repeat(p, k, axis=0)).reshape(len(p), k, 3)
-            d = np.linalg.norm(c - p[:, None, :], axis=2)
-            j = d.argmin(1); rows = np.arange(len(p))
-            dist[i:i + chunk] = d[rows, j] * unit
-            normal[i:i + chunk] = nrm[idx[rows, j]]
-        return np.where(self.contains(pts), dist, -dist), normal
+        p = pts / unit
+        _, idx = tree.query(p, k=k, workers=1)
+        idx = np.asarray(idx).reshape(len(p), k)
+        c = closest_point(tri[idx.ravel()], np.repeat(p, k, axis=0)).reshape(len(p), k, 3)
+        d = np.linalg.norm(c - p[:, None, :], axis=2)
+        j = d.argmin(1); rows = np.arange(len(p))
+        return d[rows, j] * unit, nrm[idx[rows, j]]
+
+    def signed_distance(self, pts, *, resolve_m=None, inside=None, chunk=200_000):
+        """``(s, n)`` at ``pts`` ``(m, 3)``: the distance to the closest point on the boundary, positive inside, and
+        the outward unit normal of the face that carries it; ``resolve_m`` the edge length the faces are split to
+        first (the scale of the distances asked, a voxel), ``None`` for the faces as they are; ``inside`` the
+        points' membership when the caller has it, else :meth:`contains` decides the sign."""
+        pts = np.asarray(pts, float).reshape(-1, 3)
+        self._nearest(resolve_m)                                     # built once, before any fork shares it
+        chunks = [pts[i:i + chunk] for i in range(0, len(pts), chunk)]
+        if self.workers > 1 and len(chunks) > 1:
+            parts = _forked_map(lambda c: self._distance_chunk(c, resolve_m), chunks, self.workers)
+        else:
+            parts = [self._distance_chunk(c, resolve_m) for c in chunks]
+        dist = np.concatenate([d for d, _ in parts]) if parts else np.zeros(0)
+        normal = np.concatenate([n for _, n in parts]) if parts else np.zeros((0, 3))
+        if inside is None:
+            inside = self.contains(pts)
+        return np.where(np.asarray(inside, bool), dist, -dist), normal
 
     def directors(self, pts):
         return mesh_directors(self.V, self.F, pts)
@@ -886,10 +940,11 @@ def predicate_field_basis(inside_inner, inside_outer, box_min, box_max, *, res, 
                     occ = occ.reshape(len(base), -1)
                 else:
                     sd_in, sd_out = signed_distance
-                    s_o, n_o = sd_out(base, resolve_m=float(vs.max()))
+                    sel = ei[i:i + chunk]
+                    s_o, n_o = sd_out(base, resolve_m=float(vs.max()), inside=in_out.ravel()[sel])
                     occ = (s_o[:, None] - n_o @ off.T) > 0.0                  # (n, SS^3): inside the outer's local plane
                     if sd_in is not None:
-                        s_i, n_i = sd_in(base, resolve_m=float(vs.max()))
+                        s_i, n_i = sd_in(base, resolve_m=float(vs.max()), inside=in_in.ravel()[sel])
                         occ &= (s_i[:, None] - n_i @ off.T) <= 0.0             # and outside the inner's
                 flat[ei[i:i + chunk]] = occ.mean(axis=1)
     if director is not None:                                       # the geometry's own radial vector at every voxel
