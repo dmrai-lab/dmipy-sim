@@ -259,12 +259,33 @@ def test_the_field_law_carries_the_magnets_RL_asymmetry_at_order_three():
     assert "POST-LINEAR-SHIM" in leaf["context"] and "l<=2 cannot" in leaf["context"]
 
 def test_the_field_law_is_none_for_a_machine_that_does_not_publish_one():
-    """Which is every machine but one. A shimmed superconducting magnet's residual is parts per million and
-    its shape is not published; a permanent magnet's is parts per thousand and is. `None` keeps meaning
-    'the catalogue does not know' rather than standing in for zero."""
+    """Which is every machine but one, and the reason is the SHAPE rather than the magnitude. A shimmed
+    superconducting magnet's residual is parts per million and a permanent magnet's parts per thousand, but
+    what decides whether a law exists is whether the spatial form was published. `None` keeps meaning 'the
+    catalogue does not know' rather than standing in for zero."""
     for name in ("prisma", "connectom", "magnus"):
         s = ScannerLimits.of(name)
         assert s.b0_harmonic_Z2 is None and s.b0_offset([[0, 0, 0.05]]) is None
+
+
+def test_a_published_homogeneity_is_a_magnitude_and_not_a_law():
+    """The Prisma's homogeneity IS published and measured -- Gach 2020 Table III, 0.386 ppm pk-pk over a
+    24 cm DSV -- and it still buys no field law, because a shape-free spread over a sphere does not
+    determine a harmonic expansion. The same table refutes the obvious guess: a pure Z2 anchored to the
+    24 cm figure predicts 0.821 ppm over 35 cm where 2.378 was measured, so the residual is not a bowl.
+    Recording the magnitude while leaving the law absent is the distinction this catalogue has to keep."""
+    entry = scc.get_scanner("siemens_magnetom_prisma_3T")
+    assert scc.leaf_si(entry, "homogeneity", "b0_homogeneity") == pytest.approx(0.386e-6)
+    assert ScannerLimits.of("prisma").b0_harmonic_Z2 is None       # magnitude known, shape not
+
+    # the two DSV rows, which is what makes "not a bowl" a measurement rather than an opinion
+    from dmipy_sim.acquisition import solid_harmonics as sh
+    rng = np.random.default_rng(0)
+    u = rng.normal(size=(200000, 3)); u /= np.linalg.norm(u, axis=1, keepdims=True)
+    pk = lambda R: np.ptp(sh.evaluate({"Z2": 1.0}, u * R))
+    predicted_35 = 0.386 * pk(0.175) / pk(0.12)
+    assert predicted_35 == pytest.approx(0.821, rel=0.01)          # a pure bowl's prediction
+    assert predicted_35 < 0.5 * 2.378                              # against the measured 35 cm figure
 
 
 def test_the_field_offset_is_zero_at_isocentre_and_refused_beyond_its_anchor():
@@ -666,3 +687,110 @@ def test_every_catalogued_doi_resolves_to_the_paper_it_claims():
         if ours and not (ours & theirs):
             bad.append(f"{key}: {doi} resolves to {title[:60]!r}, which shares no words with ours")
     assert not bad, "\n".join(bad)
+
+
+def test_the_hcp_pair_are_two_machines_and_neither_is_the_one_they_are_mistaken_for():
+    """HCP's co-registered 3 T / 7 T subjects were scanned on two machines the catalogue holds separately,
+    because in both cases the obvious nearby entry is the wrong one.
+
+    The 7 T is an Agilent magnet with a MAGNETOM 7T Plus console and an SC72 gradient, not a Terra; the 3 T is
+    the WU-Minn Connectome Skyra, not the MGH Connectom and not a stock Skyra. Reaching for the lookalike
+    overstates the 7 T gradient by 14 % and the 3 T gradient by 3x, which is why the separation is a test and
+    not a comment."""
+    hcp7 = scc.get_scanner("siemens_magnetom_7t_plus_cmrr")
+    terra = scc.get_scanner("siemens_magnetom_terra_7T")
+    assert hcp7["field_T"] == terra["field_T"] == 7.0
+    assert scc.leaf_si(hcp7, "gradient", "max_amplitude") == pytest.approx(70e-3)
+    assert scc.leaf_si(terra, "gradient", "max_amplitude") == pytest.approx(80e-3)
+
+    skyra = scc.get_scanner("siemens_connectome_skyra_3T")
+    assert scc.leaf_si(skyra, "gradient", "max_amplitude") == pytest.approx(100e-3)
+    assert scc.leaf_si(scc.get_scanner("siemens_magnetom_connectom_3T"),
+                       "gradient", "max_amplitude") == pytest.approx(300e-3)
+
+
+def test_the_connectome_skyra_trades_amplitude_against_slew_by_regime():
+    """Its two published regimes go opposite ways: diffusion gets the amplitude, readout gets the slew. A
+    single (Gmax, slew) pair cannot describe this machine, so asking for the bare maxima and using them
+    together would describe a waveform it cannot play."""
+    e = scc.get_scanner("siemens_connectome_skyra_3T")
+    assert scc.leaf_si(e, "gradient", "max_amplitude") > scc.leaf_si(e, "gradient", "max_amplitude_readout")
+    assert scc.leaf_si(e, "gradient", "max_slew_rate_diffusion") < scc.leaf_si(e, "gradient", "max_slew_rate")
+
+
+def test_a_refused_coefficient_is_recorded_with_its_refusal_and_not_left_blank():
+    """The Connectome Skyra's gradient-nonlinearity coefficients are withheld by the vendor. That is a fact
+    about the world with a citation, so it is a leaf carrying the quote -- not a missing key, which would be
+    indistinguishable from nobody having looked."""
+    leaf = scc.get_limit("siemens_connectome_skyra_3T", "gradient_nonlinearity",
+                         "spherical_harmonic_coefficients")
+    assert leaf["value"] is None
+    assert leaf["confidence"] == "NEEDS VERIFICATION"
+    assert "proprietary information" in leaf["context"]
+    assert leaf["source_key"] in scc.SCANNER_CONSTANTS["citations"]
+
+
+def test_a_homogeneity_without_a_stated_metric_says_so():
+    """A ppm figure is meaningless until it says pk-pk, VRMS or FWHM: Gach 2020 measured 0.386 against 0.024
+    on one Prisma, a factor of 16. CMRR's 7 T figure does not state its metric, so the leaf must carry that
+    caveat rather than let the number be compared with one that does."""
+    leaf = scc.get_limit("siemens_magnetom_7t_plus_cmrr", "homogeneity", "b0_homogeneity")
+    assert leaf["value"] == 5.0 and leaf["unit"] == "ppm"
+    assert "METRIC IS NOT STATED" in leaf["context"]
+    assert ScannerLimits.of("siemens_magnetom_7t_plus_cmrr").b0_harmonic_Z2 is None
+
+
+def test_the_vendor_homogeneity_series_is_order_four_and_still_not_a_field_law():
+    """A spread over ONE sphere fixes only a magnitude, but a series over NESTED spheres fixes a radial order:
+    a degree-n solid harmonic has VRMS proportional to R**n, so the log-log slope is n.
+
+    Three vendors' published series all give n ~ 4, not the 2 a bowl-shaped residual would give -- a magnet
+    cancels its low orders over the imaging volume and what survives is high-order. The order is re-derived
+    here from the raw rows rather than read back, so a mistyped leaf fails. It still licenses no field law:
+    VRMS over a sphere is angularly blind, and degree 2 alone holds five different terms."""
+    series = {                                    # DSV cm -> guaranteed maximum VRMS ppm, Gach Tables S2/S3/S5
+        "siemens_magnetom_prisma_3T": {10: 0.001, 20: 0.02, 30: 0.10, 40: 0.20, 45: 0.50, 50: 1.50},
+        "philips_ingenia_3T": {10: 0.0022, 20: 0.022, 30: 0.08, 40: 0.45, 45: 1.20},
+        "ge_signa_premier_3T": {20: 0.05, 30: 0.15, 40: 0.50, 45: 1.50, 50: 4.00},
+    }
+    for key, rows in series.items():
+        dsv = sorted(rows)
+        n = np.polyfit(np.log(np.array(dsv) / 2.0), np.log([rows[k] for k in dsv]), 1)[0]
+        leaf = scc.get_limit(key, "homogeneity", "b0_spec_radial_order")
+        assert leaf["value"] == pytest.approx(n, abs=0.01), f"{key}: leaf says {leaf['value']}, rows give {n}"
+        assert leaf["confidence"] == "derived"
+        assert 3.0 < n < 5.0, f"{key}: order {n} is nowhere near the published envelope"
+        assert ScannerLimits.of(key).b0_harmonic_Z2 is None, f"{key} grew a field law from a radial order"
+
+
+def test_the_prisma_residual_is_degree_two_only_before_the_second_order_shim():
+    """The one place a degree-2 residual is measurable is the gradshim-only state, and it does not survive
+    shimming: the same magnet's full-shim residual is not a single harmonic at all, its piecewise order running
+    1.0 at 10-20 cm to 3.9 at 30-35 cm. That contrast is why b0_homogeneity records a magnitude and refuses a
+    shape, and it is a fact about this magnet -- Gach's Vida fits 1.21 in the same state."""
+    def order(rows):
+        dsv = sorted(rows)
+        return np.polyfit(np.log(np.array(dsv) / 2.0), np.log([rows[k] for k in dsv]), 1)[0]
+
+    gradshim = {10: 0.012, 20: 0.040, 24: 0.058, 30: 0.094, 35: 0.136}      # Gach Table S10, Prisma
+    full = {10: 0.007, 20: 0.014, 24: 0.019, 30: 0.037, 35: 0.067}
+    leaf = scc.get_limit("siemens_magnetom_prisma_3T", "homogeneity", "b0_measured_radial_order")
+    assert leaf["value"] == pytest.approx(order(gradshim), abs=0.01)
+    assert order(gradshim) == pytest.approx(2.0, abs=0.15), "the gradshim-only residual stopped looking degree-2"
+
+    lo = np.log(full[20] / full[10]) / np.log(2.0)
+    hi = np.log(full[35] / full[30]) / np.log(35 / 30)
+    assert lo < 1.5 < hi, "the full-shim residual is supposed to be a MIXTURE, not one harmonic"
+    assert ScannerLimits.of("prisma").b0_harmonic_Z2 is None
+
+
+def test_every_three_tesla_homogeneity_is_vrms_at_a_stated_dsv():
+    """Gach 2020 exists because a bare 'ppm' is ambiguous between pk-pk, VRMS and FWHM, which differ 16x on one
+    machine. So every homogeneity number the catalogue carries must say its metric and its DSV in the leaf, or
+    it cannot be compared with the others -- the CMRR 7 T figure is recorded precisely as the case that cannot."""
+    for key, value in (("siemens_magnetom_prisma_3T", 0.02), ("philips_ingenia_3T", 0.022),
+                       ("ge_signa_premier_3T", 0.05)):
+        leaf = scc.get_limit(key, "homogeneity", "b0_homogeneity_vrms")
+        assert leaf["value"] == value and leaf["unit"] == "ppm"
+        assert "20 cm DSV" in leaf["context"] and "VRMS" in leaf["context"]
+        assert leaf["confidence"] == "cited"
