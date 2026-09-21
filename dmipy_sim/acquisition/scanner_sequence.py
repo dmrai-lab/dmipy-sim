@@ -412,16 +412,30 @@ class ScannerSequence:
         concomitant (Maxwell) field included -- the term that makes a gradient system produce a field whose
         magnitude, not just whose z component, varies.
 
-        For ``B0`` along the bore's z the field is
-        ``B_c = (Gx^2 + Gy^2) z^2 / 2B0 + Gz^2 (x^2 + y^2) / 8B0 - (Gx Gz x z + Gy Gz y z) / 2B0``
-        and what a spin at ``position_m`` sees as an extra encoding gradient is its spatial derivative there.
-        That derivative is **quadratic in G(t)**, so unlike a background gradient it varies through the
-        sequence, and unlike the pulsed gradient it does not change sign when the coils reverse: a symmetric
-        pair therefore leaves it almost intact where the pulsed gradient refocuses, and an unbalanced train
-        does not refocus it at all (dmipy-sim#285).
+        A gradient coil cannot make a field along B0 alone: ``div B = 0`` and ``curl B = 0`` force transverse
+        components, and for a coil with the symmetric transverse sharing (``alpha = 1/2``) and ``B0`` along
+        the frame's z they are ``B_x = Gx z - Gz x / 2`` and ``B_y = Gy z - Gz y / 2``, beside
+        ``B_n = Gx x + Gy y + Gz z`` along the field. What a spin precesses at is the MAGNITUDE,
+        ``|B| = sqrt((B0 + B_n)^2 + B_x^2 + B_y^2)``, and the concomitant field is everything in it beyond
+        ``B0 + B_n``: ``B_c = |B| - B0 - B_n``, exactly. The extra encoding gradient a spin at ``position_m``
+        sees is its spatial derivative there, ``[(B0 + B_n) grad B_n + B_x grad B_x + B_y grad B_y] / |B|
+        - grad B_n``.
 
-        It scales as ``1 / B0``, which is why it is a low-field problem: at 64 mT it is some 47 times what the
-        same gradient produces at 3 T. Zero at isocentre, by construction.
+        The usual statement of this term is its first order in ``|B_perp| / B0``,
+        ``B_c = (Gx^2 + Gy^2) z^2 / 2B0 + Gz^2 (x^2 + y^2) / 8B0 - (Gx Gz x z + Gy Gz y z) / 2B0``, which is
+        what this reduces to as ``B_n / B0 -> 0``. That form is not used here because at 64 mT the field the
+        gradient itself makes is percent of ``B0`` across a head, and the next order -- ``-B_n |B_perp|^2 /
+        2 B0^2`` and its derivative -- is then percent of the term (four per cent of it at 8 cm and 67 mT/m,
+        eight per cent of its effect on a signal; ``tests/test_concomitant_oracle.py`` holds both forms
+        against the Biot-Savart field of a wire). Nothing at 3 T; at a permanent magnet it is the accuracy
+        the term is stated to.
+
+        The derivative is **quadratic in G(t)** to leading order, so unlike a background gradient it varies
+        through the sequence, and unlike the pulsed gradient it does not change sign when the coils reverse:
+        a symmetric pair therefore leaves it almost intact where the pulsed gradient refocuses, and an
+        unbalanced train does not refocus it at all (dmipy-sim#285). It scales as ``1 / B0`` to leading
+        order, which is why it is a low-field problem: at 64 mT it is some 47 times what the same gradient
+        produces at 3 T. Zero at isocentre, by construction.
 
         ``position_m`` is ``(3,)`` or one per measurement, in the gradient's frame; ``B0_T`` is the static
         field in tesla.
@@ -465,9 +479,16 @@ class ScannerSequence:
         G = np.asarray(self.designed_gradient, dtype=np.float64)          # the coils' own, not the magnet's
         Gx, Gy, Gz = G[..., 0], G[..., 1], G[..., 2]
         x, y, z = (r[:, i][:, None] for i in range(3))
-        gc = np.stack([Gz * (Gz * x - 2.0 * Gx * z) / (4.0 * B0),
-                       Gz * (Gz * y - 2.0 * Gy * z) / (4.0 * B0),
-                       (2.0 * z * (Gx ** 2 + Gy ** 2) - Gz * (Gx * x + Gy * y)) / (2.0 * B0)], axis=-1)
+        # the ideal linear coil's field at r, exactly: along B0 and the two transverse components
+        Bn = Gx * x + Gy * y + Gz * z
+        Bx = Gx * z - 0.5 * Gz * x
+        By = Gy * z - 0.5 * Gz * y
+        mag = np.sqrt((B0 + Bn) ** 2 + Bx ** 2 + By ** 2)
+        # grad|B| - grad B_n, with grad B_n = G, grad B_x = (-Gz/2, 0, Gx), grad B_y = (0, -Gz/2, Gy)
+        w = (B0 + Bn) / mag - 1.0                                          # the coefficient of grad B_n
+        gc = np.stack([w * Gx - 0.5 * Gz * Bx / mag,
+                       w * Gy - 0.5 * Gz * By / mag,
+                       w * Gz + (Gx * Bx + Gy * By) / mag], axis=-1)
         gc = np.broadcast_to(gc.astype(np.float32), self.G.shape)
         imposed = gc if self.imposed_gradient is None else self.imposed_gradient + gc
         return replace(self, G=(self.G + gc), imposed_gradient=np.ascontiguousarray(imposed),

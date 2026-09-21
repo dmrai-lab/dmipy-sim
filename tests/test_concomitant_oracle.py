@@ -16,11 +16,12 @@ expansion's FORM, its derivative, its frame and its wiring into a phase. It says
 coil symmetry is not published; the Swoop's ``alpha`` is an inference (see ``test_coil_oracle``), and this
 oracle cannot make it a measurement.
 
-What it found, measured here and recorded as its own test: the expansion is FIRST ORDER in ``G r / B0``.
-Against the full ``|B0 n + B|`` its gradient is short by about ``1.3 B_n / B0`` with ``B_n = G . r`` -- 4 per
-cent at 8 cm and 67 mT/m at 64 mT, which reaches the signal as 8 per cent of the concomitant effect. At 3 T
-that is nothing; at the Swoop's own field, gradient and field of view it is the accuracy the term is stated to,
-and the exact magnitude ``sqrt((B0 + B_n)^2 + |B_perp|^2) - B0 - B_n`` is one line (dmipy-sim#377).
+What it found, and what changed because of it. The usual first-order form of the term,
+``|B_perp|^2 / 2 B0``, is short of the full ``|B0 n + B|`` by about ``1.3 B_n / B0`` in its gradient with
+``B_n = G . r``: 4 per cent at 8 cm and 67 mT/m at 64 mT, which reached the signal as 8 per cent of the
+concomitant effect. ``with_concomitant`` now applies the exact magnitude ``sqrt((B0 + B_n)^2 + |B_perp|^2) -
+B0 - B_n``, and the end-to-end residual is the coil's own: 0.2 per cent of the effect. The truncation is
+recorded as its own test so the reason stays measurable (dmipy-sim#377).
 """
 import numpy as np
 import pytest
@@ -82,7 +83,7 @@ def _nonlinearity(coils, r, R, h=1e-4):
     return L
 
 
-def _extra_gradient(coils, R, G_vec, r):
+def _extra_gradient(coils, R, G_vec, r, B0_T=B0):
     """``(got, want)``: the extra gradient ``with_concomitant`` adds at ``r`` for the constant command
     ``G_vec``, and the numerical gradient of the coils' exact ``|B_perp|^2 / 2 B0`` there."""
     n = R @ np.array([0.0, 0.0, 1.0])
@@ -90,13 +91,13 @@ def _extra_gradient(coils, R, G_vec, r):
     def B_c(points):
         B = _field(coils, G_vec, np.atleast_2d(points), R)
         perp = B - np.outer(B @ n, n)
-        return np.sum(perp ** 2, axis=-1) / (2.0 * B0)
+        return np.sum(perp ** 2, axis=-1) / (2.0 * B0_T)
 
     h = 1e-4
     want = np.array([(B_c(r + h * e) - B_c(r - h * e))[0] / (2.0 * h) for e in np.eye(3)])
     seq = sequences.pgse([[1.0, 0.0, 0.0]], 0.01, 0.03, gradient_strengths=[1.0], n_t=201)
     G = np.zeros_like(np.asarray(seq.G, np.float64)); G[:, :, :] = G_vec               # constant, so pointwise
-    played = seq.with_gradient(G).with_concomitant(r, B0, b0_axis=tuple(n))
+    played = seq.with_gradient(G).with_concomitant(r, B0_T, b0_axis=tuple(n))
     return np.asarray(played.G, np.float64)[0, 0] - G_vec, want
 
 
@@ -131,12 +132,13 @@ def test_a_coils_nonlinearity_moves_the_concomitant_gradient_by_more_than_it_mov
 
 
 @pytest.mark.parametrize("B0_T", [0.064, 0.256])
-def test_the_expansion_is_first_order_in_the_gradient_field_over_b0(B0_T):
-    """The truncation law, measured. The expansion keeps ``|B_perp|^2 / 2 B0`` and drops the next order,
-    ``-B_n |B_perp|^2 / 2 B0^2`` with ``B_n = G . r`` the gradient's own field; its GRADIENT is then short of
-    the full ``|B0 n + B|``'s by about ``1.3 B_n / B0``, the factor coming from ``grad B_n = G`` multiplying
-    ``|B_perp|^2`` as well. Linear in ``B_n / B0``, so halving the field doubles it: at 64 mT and 67 mT/m it
-    is 4 per cent of the term at 8 cm and nothing at 3 T."""
+def test_the_first_order_form_is_short_by_the_gradients_own_field_over_b0_and_the_exact_one_is_not(B0_T):
+    """The truncation law, measured, and why ``with_concomitant`` does not use the usual form. The first-order
+    expansion keeps ``|B_perp|^2 / 2 B0`` and drops the next order, ``-B_n |B_perp|^2 / 2 B0^2`` with
+    ``B_n = G . r`` the gradient's own field; its GRADIENT is then short of the full ``|B0 n + B|``'s by about
+    ``1.3 B_n / B0``, the factor coming from ``grad B_n = G`` multiplying ``|B_perp|^2`` as well. Linear in
+    ``B_n / B0``, so halving the field doubles it: at 64 mT and 67 mT/m it is 4 per cent of the term at 8 cm
+    and nothing at 3 T. The exact magnitude the sequence applies is within the coil's residual of the wire."""
     R = np.eye(3)
     n = np.array([0.0, 0.0, 1.0])
     coils = _coils(R)
@@ -156,12 +158,18 @@ def test_the_expansion_is_first_order_in_the_gradient_field_over_b0(B0_T):
         return np.sum(perp ** 2, axis=-1) / (2.0 * B0_T)
 
     grad = lambda f: np.array([(f(r + h * e) - f(r - h * e))[0] / (2.0 * h) for e in np.eye(3)])
-    beyond_bz = grad(full) - grad(b_z)                          # everything the expansion is meant to carry
+    beyond_bz = grad(full) - grad(b_z)                          # everything the term is meant to carry
     short = np.linalg.norm(grad(truncated) - beyond_bz) / np.linalg.norm(beyond_bz)
     ratio = short / (b_z(r[None])[0] / B0_T)
     assert 1.0 < ratio < 1.6, f"the truncation is {short:.1%} at B_n / B0 = {b_z(r[None])[0] / B0_T:.3f}"
     if B0_T < 0.1:
         assert short > 0.03, "at the Swoop's own field and gradient the first-order form is short by percent"
+    # and the sequence's own term, the exact magnitude, is not short: what is left is the coil's residual
+    got, _want = _extra_gradient(coils, R, G_vec, r, B0_T=B0_T)
+    exact = np.linalg.norm(got - beyond_bz) / np.linalg.norm(beyond_bz)
+    assert exact < 0.02, f"the exact form misses the full magnitude's gradient by {exact:.1%}"
+    if B0_T < 0.1:
+        assert exact < 0.5 * short          # at 256 mT the truncation is already below the coil's own residual
 
 
 @pytest.fixture(scope="module")
@@ -232,10 +240,10 @@ def test_a_replayed_walk_sees_the_field_the_coils_actually_make(pack, frame):
     S = lambda phi: np.abs(np.mean(np.exp(1j * GAMMA * phi), axis=0))
     effect = np.abs(S(phi_true) - S(phi_without)).max()
     err = np.abs(S(phi_true) - S(phi_with)).max()
-    # the residual is the expansion's own first-order truncation (below), measured at 8.3 per cent of the
-    # effect at this voxel; a frame, sign or alpha error is the whole term
+    # what is left is the coil's residual nonlinearity: 0.2 per cent of the effect here. The first-order form
+    # of the term left 8.3 per cent (the law below); a frame, sign or alpha error is the whole term
     assert effect > 1.5e-3, f"the Maxwell term moves this signal by only {effect:.2e}; the check would be empty"
-    assert err < 0.12 * effect, f"walker by walker, the composed gradient misses the true field by {err:.2e} " \
+    assert err < 0.01 * effect, f"walker by walker, the composed gradient misses the true field by {err:.2e} " \
                                 f"against an effect of {effect:.2e}"
 
     # (2) through the pack: the numerical gradient of |B| at the voxel, per save, as the played gradient
@@ -253,7 +261,7 @@ def test_a_replayed_walk_sees_the_field_the_coils_actually_make(pack, frame):
     effect_pack = np.abs(S_true - S_without).max()
     err_pack = np.abs(S_true - S_with).max()
     assert effect_pack > 1.5e-3
-    assert err_pack < 0.12 * effect_pack, f"through the pack, the composed sequence misses the true field's " \
+    assert err_pack < 0.01 * effect_pack, f"through the pack, the composed sequence misses the true field's " \
                                           f"gradient by {err_pack:.2e} against an effect of {effect_pack:.2e}"
     # and the walker-level sum with that same numerical gradient IS the true path integral: the term's
     # second order in the walker's own excursion is nothing, so the residual above is all at the voxel

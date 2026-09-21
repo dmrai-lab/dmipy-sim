@@ -15,11 +15,10 @@ term".
 """
 from __future__ import annotations
 
-from itertools import product as _product
-
 import numpy as np
 
-__all__ = ["b0_offset_map", "b1_scale_map", "background_gradient_map", "delivered_b", "delivered_b_map", "b_polynomial", "gradient_tensor_map", "delivered_gradient", "delivered_weights"]
+__all__ = ["b0_offset_map", "b1_scale_map", "background_gradient_map", "gradient_tensor_map",
+           "delivered_gradient", "delivered_weights"]
 
 
 def _model(scanner):
@@ -175,148 +174,6 @@ def gradient_tensor_map(scanner, grid, *, to_scanner=None):
     return tensor
 
 
-def delivered_b(scanner, grid, sequence, *, to_scanner=None, voxels=None):
-    """``(n_voxels, n_meas)`` -- the b value each voxel actually receives, against the one the sequence
-    prescribes at isocentre.
-
-    A magnet's own gradient encodes diffusion alongside the pulsed one, so what a voxel is measured at is
-    not what was asked for. The ratio ``delivered_b / sequence.b()`` is the Swoop paper's ``a(r)``, and
-    because an ADC fitted against the prescribed b absorbs the whole discrepancy, ``a - 1`` IS the
-    fractional ADC error at that voxel -- which is how the paper's up-to-16.1 % figure is reproduced rather
-    than asserted.
-
-    The cross term is what dominates and what makes this a per-DIRECTION effect rather than a scale: it is
-    linear in the background gradient, so it changes sign with the diffusion direction, and a symmetric
-    direction set therefore has its mean error largely cancel while each individual measurement keeps its
-    own. Reporting only the mean would hide the effect entirely.
-    """
-    gmap = background_gradient_map(scanner, grid, to_scanner=to_scanner)
-    if gmap is None:
-        return None
-    idx = grid.every_voxel if voxels is None else voxels
-    g = gmap(grid.positions_m(idx))
-    out = np.empty((g.shape[0], sequence.n_meas), dtype=np.float64)
-    for i, gv in enumerate(g):
-        out[i] = sequence.with_background_gradient(gv).b()
-    return out
-
-
-# ── the delivered b over a whole grid, in one pass ──────────────────────────────────────────────────
-#
-# Both of the terms a magnet adds to an acquisition are AFFINE in position. The background gradient is
-# `B0 (a xhat + 2 c r)`, affine by inspection. The concomitant field's gradient is `M(t) r` with `M`
-# built from the coils' own G and nothing else -- also affine, and with no constant part, which is why
-# it vanishes at isocentre where the background one does not.
-#
-# The b value is a quadratic functional of the effective gradient, so an affine dependence on position
-# makes `b(r)` an exact QUADRATIC FORM: `b(r) = b0 + v . r + r^T A r`. Ten coefficients per measurement,
-# whatever the grid. That is what turns an image from one sequence rebuild per voxel into ten.
-
-#: the delivered b is a polynomial in position of this degree, exactly. The background gradient is the
-#: gradient of a solid-harmonic field truncated at l=3, so it is QUADRATIC in position; the concomitant
-#: gradient is linear. q is the time integral of both, so it is quadratic, and b integrates |q|^2 -- which
-#: makes it quartic. A quadratic fit, which is what an l<=2 field law would have needed, leaves a residual
-#: of five parts in ten thousand; a quartic one is exact to the precision G is stored in.
-_POLY_DEGREE = 4
-
-
-def _poly_exponents(degree=_POLY_DEGREE):
-    return [e for e in _product(range(degree + 1), repeat=3) if sum(e) <= degree]
-
-
-def _poly_features(r, degree=_POLY_DEGREE):
-    """``(n, n_terms)``: every monomial in three variables up to ``degree``, in a fixed order."""
-    r = np.asarray(r, dtype=np.float64).reshape(-1, 3)
-    return np.stack([r[:, 0] ** i * r[:, 1] ** j * r[:, 2] ** k
-                     for i, j, k in _poly_exponents(degree)], axis=1)
-
-
-def _probe_points(radius, degree=_POLY_DEGREE):
-    """Positions that determine a polynomial of this degree: a deterministic quasi-lattice, sized to the
-    number of coefficients and conditioned well enough to solve exactly rather than in least squares."""
-    n = len(_poly_exponents(degree))
-    rng = np.random.default_rng(20260920)
-    best, best_cond = None, np.inf
-    for _ in range(40):
-        P = rng.uniform(-1.0, 1.0, size=(n, 3))
-        P[0] = 0.0
-        F = _poly_features(P * radius, degree)
-        c = np.linalg.cond(F)
-        if c < best_cond:
-            best, best_cond = P.copy(), c
-    return best * radius
-
-
-def b_polynomial(played_at, *, probe_radius=0.05, degree=_POLY_DEGREE):
-    """``(n_meas, n_terms)`` -- the coefficients of the exact polynomial ``b(r)`` that ``played_at`` produces.
-
-    ``played_at(r)`` returns the acquisition as it is actually played at one position. The dependence IS
-    polynomial of this degree, so evaluating at exactly as many well-conditioned points as there are
-    coefficients recovers it exactly rather than approximately, and :func:`delivered_b_map` then costs a
-    matrix product per grid instead of a sequence rebuild per voxel.
-
-    Solving for the coefficients rather than deriving them in closed form is deliberate. The b integral has a
-    quadrature convention, and a second implementation of it here would be a second thing to keep true.
-    Probing uses the acquisition's own :meth:`b`, so the batched answer cannot drift from the exact one;
-    :func:`delivered_b` remains the oracle that says so.
-    """
-    probes = _probe_points(float(probe_radius), degree)
-    F = _poly_features(probes, degree)
-    if np.linalg.matrix_rank(F) < F.shape[1]:
-        raise ValueError(f"the probe set does not determine a degree-{degree} polynomial")
-    B = np.stack([np.asarray(played_at(p).b(), dtype=np.float64) for p in probes])
-    return np.linalg.solve(F, B).T
-
-
-def delivered_b_map(scanner, grid, sequence, *, to_scanner=None, voxels=None,
-                    background=True, concomitant=True, probe_radius=0.05, report=None):
-    """``(n_voxels, n_meas)`` -- the b every voxel actually receives, in ONE pass over the grid.
-
-    Two separate things a magnet does to a diffusion measurement, and they are different physics even
-    though they arrive the same way:
-
-    ``background`` is the magnet's OWN field gradient, which is constant in TIME (it is on through the
-    pulses and the dead times alike, because a magnet does not switch off) though not in space -- the
-    catalogued law differentiates to exactly zero at isocentre and grows from there
-    (a single-yoke magnet has an odd term that survives differentiation). Its cross term with the pulsed
-    gradient flips sign with the diffusion direction.
-
-    ``concomitant`` is the gradient coils' Maxwell term, which is quadratic in ``G(t)`` and therefore varies
-    through the sequence and does NOT flip when the coils reverse. It is exactly zero at isocentre and
-    scales as ``1 / B0``, which is what makes it a low-field problem rather than a clinical one.
-
-    Both are affine in position, so the delivered b is an exact quadratic form and the whole grid costs ten
-    probe evaluations. ``None`` when the machine publishes neither.
-    """
-    scanner = _model(scanner)
-    gmap = background_gradient_map(scanner, grid, to_scanner=to_scanner) if background else None
-    B0 = scanner.field_T
-    if gmap is None and not (concomitant and B0):
-        return None
-    _R, into_bore = _bore(grid, to_scanner)
-
-    def played_at(r_bore):
-        """The acquisition as played at one point, stated in the BORE's frame -- which is the frame both
-        the field law and the Maxwell formula are written in."""
-        seq = sequence
-        if gmap is not None:
-            g = np.atleast_2d(scanner.b0_gradient(np.asarray(r_bore, np.float64)[None]))[0]
-            seq = seq.with_background_gradient(g)
-        if concomitant and B0:
-            seq = seq.with_concomitant(np.asarray(r_bore, np.float64), B0, b0_axis=_b0_axis(scanner))
-        return seq
-
-    coeff = b_polynomial(played_at, probe_radius=probe_radius)
-
-    idx = grid.every_voxel if voxels is None else voxels
-    d = into_bore(grid.positions_m(idx))
-    out = _poly_features(d) @ coeff.T             # (n_vox, n_meas)
-    if report is not None:
-        report.update(n_probes=len(_poly_exponents()), n_voxels=d.shape[0],
-                      background=gmap is not None, concomitant=bool(concomitant and B0))
-    return out
-
-
 def delivered_gradient(scanner, grid, sequence, *, voxels=None, to_scanner=None,
                        nonlinearity=True, background=True, concomitant=True):
     """The gradient each voxel ACTUALLY receives: ``(n_voxels, n_meas, n_t, 3)`` in the grid's frame.
@@ -376,16 +233,15 @@ def delivered_weights(scanner, grid, sequence, *, K, n_t, dt_pack, voxels=None, 
       projection of ``G``;
     * the background is a constant vector times the RF sign, so its projection is an outer product of
       ``g0(r)`` with one precomputed time course;
-    * the concomitant term's extra gradient is quadratic in ``G(t)`` but LINEAR IN POSITION (``B_c`` is
-      quadratic in ``r``), so three column projections done once combine by the voxel's own coordinates --
-      exact while nothing else has changed the gradient. With the nonlinearity on, the Maxwell term is
-      quadratic in the DELIVERED gradient ``L(r) G`` and its cross terms are per voxel, so it is projected
-      per voxel from the composed acquisition instead. The magnet's background is left out of the Maxwell
-      term either way, for a reason of SIZE rather than principle: ``div B = 0`` forces transverse
-      components on the magnet's inhomogeneity too, and those beat against the coils' in ``|B|`` to give a
-      real cross term, measured on the Swoop at 2-10 per cent of the concomitant gradient and 1.7e-3 of
-      ``b`` over the 8 cm validity sphere. Carrying it needs the magnet's TRANSVERSE field, which the
-      catalogue does not record.
+    * the concomitant term is the exact field magnitude's departure from ``B0 + B_n`` at the voxel
+      (:meth:`~dmipy_sim.acquisition.scanner_sequence.ScannerSequence.with_concomitant`), which is not
+      polynomial in position and is quadratic in the DELIVERED gradient ``L(r) G``, so it is projected per
+      voxel from the composed acquisition -- one projection of a single increment per voxel. The magnet's
+      background is left out of it, for a reason of SIZE rather than principle: ``div B = 0`` forces
+      transverse components on the magnet's inhomogeneity too, and those beat against the coils' in ``|B|``
+      to give a real cross term, measured on the Swoop at 2-10 per cent of the concomitant gradient and
+      1.7e-3 of ``b`` over the 8 cm validity sphere. Carrying it needs the magnet's TRANSVERSE field, which
+      the catalogue does not record.
 
     None of that is an approximation: it is the same sum in a different order, which is why the reference
     route exists to check it rather than to be replaced by it.
@@ -428,16 +284,10 @@ def delivered_weights(scanner, grid, sequence, *, K, n_t, dt_pack, voxels=None, 
         out = out + np.einsum("ni,ikjm->nkjm", gmap(pos), np.stack(unit)).reshape(len(d), n_c * 3, -1)
 
     if concomitant and B0:
-        if Ls is None:
-            cols = [project(sequence.with_concomitant(e, float(B0), b0_axis=b0_axis).G
-                            - np.asarray(sequence.G, dtype=np.float64)).reshape(n_c, 3, -1)
-                    for e in np.eye(3)]
-            out = out + np.einsum("ni,ikjm->nkjm", d, np.stack(cols)).reshape(len(d), n_c * 3, -1)
-        else:
-            for k in range(len(d)):
-                played = sequence.with_gradient_nonlinearity(Ls[k])
-                extra = (np.asarray(played.with_concomitant(d[k], float(B0), b0_axis=b0_axis).G, dtype=np.float64)
-                         - np.asarray(played.G, dtype=np.float64))
-                out[k] = out[k] + project(extra)
+        for k in range(len(d)):
+            played = sequence if Ls is None else sequence.with_gradient_nonlinearity(Ls[k])
+            extra = (np.asarray(played.with_concomitant(d[k], float(B0), b0_axis=b0_axis).G, dtype=np.float64)
+                     - np.asarray(played.G, dtype=np.float64))
+            out[k] = out[k] + project(extra)
 
     return out

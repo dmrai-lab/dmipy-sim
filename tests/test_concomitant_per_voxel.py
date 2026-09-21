@@ -1,8 +1,8 @@
 """The gradient coils' own Maxwell field, per voxel (dmipy-sim#322 PR 7, #285 item 4).
 
 A gradient coil cannot produce a field whose z component alone varies -- Maxwell forbids it. The residue is
-the concomitant field, quadratic in G(t) and scaling as 1/B0, which is what makes it an ultra-low-field
-problem rather than a clinical one. This is that term over a whole grid, and what it actually costs.
+the concomitant field, quadratic in G(t) and scaling as 1/B0 to leading order, which is what makes it an
+ultra-low-field problem rather than a clinical one. This is that term over a whole grid.
 """
 import numpy as np
 import pytest
@@ -10,7 +10,7 @@ import pytest
 from dmipy_sim import sequences
 from dmipy_sim.acquisition.scanners import ScannerLimits
 from dmipy_sim.phantom import Grid
-from dmipy_sim.phantom.bore import b_polynomial, delivered_b, delivered_b_map
+from dmipy_sim.phantom.bore import delivered_gradient
 
 RNG = np.random.default_rng(0)
 DIRS = RNG.normal(size=(6, 3))
@@ -26,27 +26,9 @@ def _grid(n=5, fov=0.088):
                 origin_m=(-0.5 * (n - 1) * fov / n,) * 3, isocenter_m=(0.0, 0.0, 0.0))
 
 
-def test_the_delivered_b_is_an_exact_polynomial_in_position_so_a_grid_is_a_fixed_cost():
-    """The cost claim, and it is exact rather than a fit.
-
-    The DEGREE follows from the field law. The background gradient is the gradient of a solid-harmonic field
-    truncated at l=3, so it is quadratic in position; the Maxwell term's gradient is linear. q integrates
-    both, so it is quadratic, and b integrates |q|^2 -- which makes b quartic. Thirty-five coefficients
-    determine it whatever the grid, and the batched answer must equal the per-voxel one to the precision the
-    gradient is stored in.
-
-    Worth recording why it is not ten: an l<=2 field law would give an affine background gradient and hence a
-    quadratic b. The magnet needs l=3 content to reproduce its own published figures, and that raises the
-    degree of everything downstream. A quadratic fit leaves a residual of five parts in ten thousand here."""
-    sw, grid, seq = ScannerLimits.of("swoop"), _grid(), _seq()
-    oracle = delivered_b(sw, grid, seq)                       # one sequence rebuild per voxel
-    rep = {}
-    fast = delivered_b_map(sw, grid, seq, concomitant=False, report=rep)
-    rel = np.abs(fast - oracle).max() / np.abs(oracle).max()
-    # looser than the degree-2 version this replaces (1.3e-7): a 35-term Vandermonde solve is less well
-    # conditioned than a 10-term one, and G is stored in float32. Still five orders below the effect.
-    assert rel < 1e-5, f"the batched form differs from the oracle by {rel:.2e}"
-    assert rep["n_probes"] == 35 and rep["n_voxels"] == grid.shape[0] ** 3
+def _b_per_voxel(scanner, grid, seq, **flags):
+    """The b every voxel receives, by the reference route: the acquisition as played there."""
+    return np.stack([seq.with_gradient(G).b() for G in delivered_gradient(scanner, grid, seq, **flags)])
 
 
 def test_both_terms_vanish_at_isocentre_and_grow_at_different_rates():
@@ -130,12 +112,11 @@ def test_both_terms_together_are_the_quadratic_of_their_sum_not_the_sum_of_their
     """They share the b integral, so they cross-couple: applying both is not applying each and adding the
     errors. Worth a test because treating them as independent corrections is the obvious wrong move."""
     sw, grid, seq = ScannerLimits.of("swoop"), _grid(n=3), _seq()
-    both = delivered_b_map(sw, grid, seq)
-    only_b = delivered_b_map(sw, grid, seq, concomitant=False)
-    only_c = delivered_b_map(sw, grid, seq, background=False)
+    both = _b_per_voxel(sw, grid, seq, nonlinearity=False)
+    only_b = _b_per_voxel(sw, grid, seq, nonlinearity=False, concomitant=False)
+    only_c = _b_per_voxel(sw, grid, seq, nonlinearity=False, background=False)
     naive = only_b + only_c - seq.b()                          # what adding the two corrections would give
     # small in absolute terms -- 6e-4 of b -- but it is a real term and it is not zero, which is the point:
     # the two share one b integral, so their q vectors cross-multiply inside it
     coupling = np.abs(both - naive).max() / np.abs(seq.b()).max()
     assert 1e-5 < coupling < 1e-2, f"cross-coupling came out {coupling:.2e}"
-    assert delivered_b_map(ScannerLimits.of("prisma"), grid, seq, concomitant=False) is None

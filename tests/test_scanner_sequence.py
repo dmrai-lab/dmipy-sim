@@ -273,24 +273,38 @@ def test_a_background_gradient_may_be_given_per_measurement():
 # ── the gradient coils' own concomitant field (dmipy-sim#285 item 4) ────────────────────────────────
 def test_the_concomitant_term_is_zero_at_isocentre_and_scales_as_one_over_B0():
     """Maxwell's equations make a gradient coil produce more than its z component. The extra field vanishes
-    at isocentre and goes as 1/B0, which is the whole reason it is a low-field problem and not a 3 T one."""
+    at isocentre and goes as 1/B0 to leading order, which is the whole reason it is a low-field problem and
+    not a 3 T one. The term is the exact field magnitude's departure from ``B0 + B_n``, so the 1/B0 law
+    holds up to the next order, ``(|B_perp| / B0)^2``: two per cent here, where the transverse field the
+    89 mT/m gradient makes at 10 cm is a seventh of the 64 mT field."""
     seq = _pgse_1e9()
     np.testing.assert_allclose(seq.with_concomitant([0, 0, 0], 0.064).G, seq.G, atol=1e-12)
 
     off = lambda B0: np.abs(np.asarray(seq.with_concomitant([0, 0, 0.10], B0).G) - np.asarray(seq.G)).max()
     low, high = off(0.064), off(3.0)
-    np.testing.assert_allclose(low / high, 3.0 / 0.064, rtol=1e-3)     # 47x, exactly the field ratio
+    np.testing.assert_allclose(low / high, 3.0 / 0.064, rtol=0.02)      # 47x, the field ratio to leading order
+    assert not np.isclose(low / high, 3.0 / 0.064, rtol=1e-3)           # and NOT exactly: the next order is real
     assert low > 0.4 * 24.4e-3     # at 64 mT and 10 cm it is half a Swoop's entire gradient ceiling
 
 
 def test_the_concomitant_term_does_not_reverse_with_the_coils():
-    """It is QUADRATIC in G, so reversing the gradient leaves it identical -- which is why a symmetric pair
-    refocuses the pulsed gradient and not this, and why an unbalanced train does not refocus it at all."""
+    """It is QUADRATIC in G to leading order, so reversing the gradient leaves it the same -- which is why a
+    symmetric pair refocuses the pulsed gradient and not this, and why an unbalanced train does not refocus
+    it at all. The exact magnitude adds an odd part: the field the gradient itself makes along B0 either
+    adds to or subtracts from it, and ``|B|`` knows which. In the extra GRADIENT that part is
+    ``-G |B_perp|^2 / B0^2`` to leading order, which is ``|B_perp| / B0`` of the even term -- eleven per cent
+    here, where 89 mT/m at 8 cm makes a transverse field a ninth of the 64 mT static one. It is linear in
+    ``G``, so it is an encoding-gradient rescale of ``(|B_perp| / B0)^2``, and a 180 refocuses it like the
+    pulsed gradient."""
     seq = _pgse_1e9()
     flipped = seq.with_gradient(-np.asarray(seq.G))
     gc = np.asarray(seq.with_concomitant([0.02, 0, 0.08], 0.064).G) - np.asarray(seq.G)
     gc_flipped = np.asarray(flipped.with_concomitant([0.02, 0, 0.08], 0.064).G) - np.asarray(flipped.G)
-    np.testing.assert_allclose(gc, gc_flipped, rtol=1e-5, atol=1e-9)
+    scale = np.abs(gc).max()
+    odd = np.abs(gc - gc_flipped).max() / scale
+    B_perp_over_B0 = 0.089 * 0.08 / 0.064
+    assert odd < 1.5 * B_perp_over_B0, f"the odd part is {odd:.1%} of the term, more than |B_perp| / B0 allows"
+    assert odd > 0.5 * B_perp_over_B0, "the odd part vanished: the term has been truncated back to its even leading order"
 
 
 def test_the_two_magnet_terms_compose_and_are_recoverable():
