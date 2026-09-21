@@ -182,3 +182,57 @@ def test_a_permeability_needs_a_permeable_wall(free):
         pk_d.replay(_seq(T / 2), tissue=Tissue(kappa=1e-5))
     t = Tissue(D=2 * D0, kappa=3e-5)
     assert Tissue.from_meta(t.to_meta()) == t
+
+
+@pytest.fixture(scope="module")
+def sheathed(tmp_path_factory):
+    """A sheathed axon with its field basis, walked at (D, T, dt) and at (2D, T/2, dt/2) from one seed: three
+    pools, walls with contact, and the susceptibility path channel -- every tier a pack can carry."""
+    from dmipy_sim.fields.susceptibility_field import field_grid_of
+    tmp = tmp_path_factory.mktemp("sheath")
+    g = d.PackedMyelinatedCylinders([1.0e-6], 0.7, [[0.0, 0.0]], 30e-6, N_max=2, D_intra=D0, D_extra=D0)
+    g2 = d.PackedMyelinatedCylinders([1.0e-6], 0.7, [[0.0, 0.0]], 30e-6, N_max=2, D_intra=2 * D0, D_extra=2 * D0)
+    out = []
+    for geom, D, T_, dt, name in ((g, D0, 6e-3, 3e-4, "d"), (g2, 2 * D0, 3e-3, 1.5e-4, "2d")):
+        walk = d.simulate_trajectories(1500, D, geom, T_, dt, seed=0, require_gpu=False)
+        path = tmp / f"{name}.rpk"
+        build_replay_pack(walk, id=f"test/{name}", license="x", citation="x", K=8,
+                          field=field_grid_of(geom, res=0.2e-6), susc_path_K=16, out_path=str(path))
+        out.append(read_rpk(str(path)))
+    return out
+
+
+def test_the_field_and_the_relaxation_channels_follow_the_rescale_to_the_bit(sheathed):
+    """The path channel is the field per save, a function of position only; the occupancy runs are per save.
+    Both follow the new grid in their own space: the field's gate is taken on it and its phase carries the
+    new dt, the relaxation gates read the new dt. The view of the pack walked at D must replay as the pack
+    walked at 2D from the same seed does, under a field, under T2 per pool, and under both with a pose."""
+    pk_d, pk_2d = sheathed
+    assert pk_d.has_field and pk_2d.has_field and pk_d.has_relaxation
+    for k in ("pos_x", "pos_y", "pos_z"):
+        if k in pk_d.arrays:
+            np.testing.assert_array_equal(pk_d.arrays[k], pk_2d.arrays[k])
+    n_t, dt = pk_2d.n_t, pk_2d.dt
+    seq = sequences.pgse([[0.0, 0.0, 1.0], [1.0, 0.0, 0.0]], 0.4e-3, 1.2e-3, bvalues=[2e8, 2e8],
+                         TE=(n_t - 1) * dt, n_t=n_t, slew_rate=np.inf)
+    chi = Tissue(chi_iso=-0.1e-6, chi_aniso=-0.1e-6)
+    t2 = Tissue(T2={"extra": 0.08, "intra": 0.03, "myelin": 0.01})
+    both = Tissue(chi_iso=-0.1e-6, chi_aniso=-0.1e-6, T2={"extra": 0.08, "intra": 0.03, "myelin": 0.01})
+    bare = pk_2d.replay(seq, complex_signal=True)
+    # the tier is live: a spin echo refocuses the static part of the field, so what survives of it is the
+    # diffusion through it, small at this TE; the relaxation moves the signal by percent
+    for tissue, kw, live in ((chi, dict(scanner=3.0), 1e-7), (t2, {}, 1e-3), (both, dict(scanner=7.0), 1e-3)):
+        own = pk_2d.replay(seq, tissue=tissue, complex_signal=True, **kw)
+        view = pk_d.replay(seq, tissue=tissue.replace(D=2 * D0), complex_signal=True, **kw)
+        np.testing.assert_allclose(view, own, rtol=1e-9, err_msg=repr(tissue))
+        assert np.abs(view - bare).max() > live * np.abs(bare).max(), repr(tissue)
+    # and through the pose expansion, which reads the field's grid on its own
+    R = so3_rotation(0.3, 0.7, -0.4)
+    own = pk_2d.replay(seq, tissue=both, scanner=3.0, orientation=R, complex_signal=True)
+    view = pk_d.replay(seq, tissue=both.replace(D=2 * D0), scanner=3.0, orientation=R, complex_signal=True)
+    np.testing.assert_allclose(view, own, rtol=1e-9)
+
+
+def so3_rotation(a, b, c):
+    from scipy.spatial.transform import Rotation
+    return Rotation.from_euler("zyx", [a, b, c]).as_matrix()
