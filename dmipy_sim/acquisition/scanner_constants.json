@@ -14,7 +14,8 @@
    "cited": "value backed by a primary/authoritative source (vendor spec sheet, peer-reviewed methods paper, or IEC standard clause)",
    "widely-quoted": "value is consistently reported but its primary authoritative source is unclear or coil/patient-dependent",
    "NEEDS VERIFICATION": "no authoritative public source found; typically service-manual-confidential",
-   "derived": "value computed from a cited quantity (a slew rate from a stated rise time and amplitude); the derivation and its direction (a bound) are in context"
+   "derived": "value computed from a cited quantity (a slew rate from a stated rise time and amplitude); the derivation and its direction (a bound) are in context",
+   "inferred": "a number for this machine carried over from a measurement on a machine of the same class, because none exists for this one; the context names the anchor and the uncertainty, the typed view returns it, needs_verification does not list it, and it is never called a measurement"
   },
   "compiled": "2026-06-26; Bruker systems and the Connectome 2.0 / MAGNUS notes 2026-09-16 (dmipy-sim#220)"
  },
@@ -346,6 +347,94 @@
    "journal_or_publisher": "NeuroImage",
    "year": 2021,
    "doi_or_url": "10.1016/j.neuroimage.2021.118430"
+  },
+  "siemens_terra_datasheet_ve12": {
+   "key": "siemens_terra_datasheet_ve12",
+   "authors": "Siemens Healthineers",
+   "title": "Datasheet MAGNETOM Terra, A Tim + Dot System, syngo MR VE12 (USA)",
+   "journal_or_publisher": "Siemens Healthineers, cdn0.scrvt.com/39b415fb07de4d9656c7b516d8e2d907/1800000007484744/4402e89c070d/MR-MAGNETOM-Terra_Datasheet_USA_1800000007484744.pdf",
+   "year": null,
+   "doi_or_url": "https://cdn0.scrvt.com/39b415fb07de4d9656c7b516d8e2d907/1800000007484744/4402e89c070d/MR-MAGNETOM-Terra_Datasheet_USA_1800000007484744.pdf"
+  },
+  "fda_k170840_terra": {
+   "key": "fda_k170840_terra",
+   "authors": "U.S. Food and Drug Administration",
+   "title": "510(k) summary K170840, MAGNETOM Terra (Siemens Medical Solutions USA), cleared 2017-10-12",
+   "journal_or_publisher": "FDA CDRH",
+   "year": 2017,
+   "doi_or_url": "https://www.accessdata.fda.gov/cdrh_docs/pdf17/K170840.pdf"
+  },
+  "boulant2024_third_order_shims": {
+   "key": "boulant2024_third_order_shims",
+   "authors": "Boulant N, Le Ster C, Amadon A, Aubert G, Beckett A, Belorgey J, Bonnelye C, Bosch D, et al.",
+   "title": "The possible influence of third-order shim coils on gradient-magnet interactions: an inter-field and inter-site study",
+   "journal_or_publisher": "Magnetic Resonance Materials in Physics, Biology and Medicine 37(2):169-183",
+   "year": 2024,
+   "doi_or_url": "10.1007/s10334-023-01138-3"
+  },
+  "rogers2017_gnl_b": {
+   "key": "rogers2017_gnl_b",
+   "authors": "Rogers B P, Blaber J, Welch E B, Ding Z, Anderson A W, Landman B A",
+   "title": "Stability of gradient field corrections for quantitative diffusion MRI",
+   "journal_or_publisher": "Proc. SPIE 10132, Medical Imaging 2017: Physics of Medical Imaging",
+   "year": 2017,
+   "doi_or_url": "10.1117/12.2254609"
+  },
+  "malyarenko2016_gnl_adc": {
+   "key": "malyarenko2016_gnl_adc",
+   "authors": "Malyarenko D I, Newitt D, Wilmes L J, Tudorica A, Helmer K G, Arlinghaus L R, et al.",
+   "title": "Demonstration of nonlinearity bias in the measurement of the apparent diffusion coefficient in multicenter trials",
+   "journal_or_publisher": "Magnetic Resonance in Medicine 75(3)",
+   "year": 2016,
+   "doi_or_url": "10.1002/mrm.25754"
+  },
+  "sotiropoulos2013_hcp_dmri": {
+   "key": "sotiropoulos2013_hcp_dmri",
+   "authors": "Sotiropoulos S N, Jbabdi S, Xu J, Andersson J L, Moeller S, Auerbach E J, et al.",
+   "title": "Advances in diffusion MRI acquisition and processing in the Human Connectome Project",
+   "journal_or_publisher": "NeuroImage 80:125-143",
+   "year": 2013,
+   "doi_or_url": "10.1016/j.neuroimage.2013.05.057"
+  },
+  "lutti2010_b1_3t": {
+   "key": "lutti2010_b1_3t",
+   "authors": "Lutti A, Hutton C, Finsterbusch J, Helms G, Weiskopf N",
+   "title": "Optimization and validation of methods for mapping of the radiofrequency transmit field at 3T",
+   "journal_or_publisher": "Magnetic Resonance in Medicine 64(1):229-238",
+   "year": 2010,
+   "doi_or_url": "10.1002/mrm.22421"
+  },
+  "lutti2012_b1_7t": {
+   "key": "lutti2012_b1_7t",
+   "authors": "Lutti A, Stadler J, Josephs O, Windischberger C, Speck O, Bernarding J, Hutton C, Weiskopf N",
+   "title": "Robust and fast whole brain mapping of the RF transmit field B1 at 7T",
+   "journal_or_publisher": "PLoS ONE 7(3):e32379",
+   "year": 2012,
+   "doi_or_url": "10.1371/journal.pone.0032379"
+  },
+  "clarke2020_uk7t": {
+   "key": "clarke2020_uk7t",
+   "authors": "Clarke W T, Mougin O, Driver I D, Rua C, Morgan A T, Asghar M, Clare S, Francis S, Wise R G, Rodgers C T, Carpenter A, Muir K, Bowtell R",
+   "title": "Multi-site harmonization of 7 tesla MRI neuroimaging protocols",
+   "journal_or_publisher": "NeuroImage 206:116335",
+   "year": 2020,
+   "doi_or_url": "10.1016/j.neuroimage.2019.116335"
+  },
+  "uk7t_2018_dataset": {
+   "key": "uk7t_2018_dataset",
+   "authors": "Clarke W T (University of Oxford)",
+   "title": "UK7T Network harmonized neuroimaging protocols: data (one subject, four 7 T sites, Nova 1Tx32Rx, 3D DREAM B1+ maps at 4.9 mm; ODC-By)",
+   "journal_or_publisher": "Oxford University Research Archive, https://ora.ox.ac.uk/objects/uuid:55ca977f-62df-4cbf-b300-2dc893e36647",
+   "year": 2018,
+   "doi_or_url": "10.5287/bodleian:mzROQd2N8"
+  },
+  "callaghan2019_hmri_data": {
+   "key": "callaghan2019_hmri_data",
+   "authors": "Callaghan M F, Lutti A, Ashburner J, Balteau E, Corbin N, Draganski B, et al.",
+   "title": "Example dataset for the hMRI toolbox (github.com/hMRI-group/hMRI-toolbox-demodata, CC-BY-4.0; BIDS copy osf.io/k4bs5): a Siemens Prisma_fit at 3 T, body transmit coil, SE/STE 3D-EPI B1+ map",
+   "journal_or_publisher": "Data in Brief 25:104132",
+   "year": 2019,
+   "doi_or_url": "10.1016/j.dib.2019.104132"
   }
  },
  "scanners": {
@@ -436,6 +525,27 @@
      "source_key": "pulseq_spec",
      "location": "n/a",
      "confidence": "NEEDS VERIFICATION"
+    },
+    "b1_brain_range": {
+     "value": [
+      0.7,
+      1.2
+     ],
+     "unit": "",
+     "field_T": 3.0,
+     "context": "the transmit scale over a human brain with the BODY transmit coil, as a fraction of nominal: 'Local flip angles vary between ~70 p.u. and 120 p.u. of the nominal value over the brain volume', 'typical variations of ~50 p.u. observed at 3T across the brain' -- measured on a Magnetom TIM Trio with the body coil (Lutti et al. 2010, n = 8), the same coil class as the Prisma's; a measured MAP of a Prisma_fit with its body coil is the hMRI toolbox's example dataset (b1_map_dataset)",
+     "source_key": "lutti2010_b1_3t",
+     "location": "Lutti 2010, Results",
+     "confidence": "inferred"
+    },
+    "b1_map_dataset": {
+     "value": "hMRI-toolbox-demodata: derivatives/hmri/sub-01/fmap/sub-01_TB1map.nii",
+     "unit": null,
+     "field_T": 3.0,
+     "context": "an open measured B1+ map of THIS machine class with its body coil (Siemens Prisma_fit, TransmitCoilName 'Body', SE/STE 3D-EPI, in percent of nominal), CC-BY-4.0; the map a figure of the transmit scale draws",
+     "source_key": "callaghan2019_hmri_data",
+     "location": "raw-data/mfc_seste_b1map_v1e_0004 sidecar; BIDS copy osf.io/k4bs5, ds-mpm",
+     "confidence": "cited"
     }
    },
    "frame": {
@@ -494,6 +604,15 @@
      "source_key": "gach2020_b0_homogeneity",
      "location": "Supplementary material, Table S10 ('VRMS Maxima for different DSVs from 3 T Siemens MRI phase maps'), Prisma 'Without 2nd order shimming' column",
      "confidence": "derived"
+    },
+    "shim_max_order": {
+     "value": 2,
+     "unit": "",
+     "field_T": 3.0,
+     "context": "first- and second-order shims: the Terra's gradient coil is the Prisma's design with 'the additional 3rd order shims' added (FDA K170840), so the Prisma's coil carries none; the linear terms are the imaging gradients' offsets",
+     "source_key": "fda_k170840_terra",
+     "location": "K170840, 'New Gradient Coil'",
+     "confidence": "derived"
     }
    },
    "thermal": {
@@ -514,6 +633,35 @@
      "source_key": "hui2021_frequency_drift",
      "location": "Table 2, the 17 Siemens Prisma rows, 'Post-fMRI (30:00 min)' column",
      "confidence": "cited"
+    }
+   },
+   "gradient_nonlinearity": {
+    "b_error_quadratic_axial": {
+     "value": -7.8,
+     "unit": "1/m^2",
+     "field_T": 3.0,
+     "context": "A CLASS INFERENCE, not a measurement of this machine: no measurement of the gradient-nonlinearity tensor of a MAGNETOM Prisma has been published, the vendor's spherical-harmonic coil description is not in the open literature, and neither the datasheet nor the FDA clearance quotes a linearity figure. What is measured is the FORM -- across 14 clinical systems of three vendors the ADC error 'scaled quadratically with offset from isocenter' (Malyarenko et al. 2016) -- and, on one whole-body 3 T coil of the same class (a Philips Achieva), the MAGNITUDE: 'At 80 mm from isocenter along the longitudinal axis of the scanner bore, achieved b-values were consistently lower than intended by 4-6%' and '80 mm transverse from isocenter were higher than intended by 1-4%' (Rogers et al. 2017). So the delivered b along any direction is modelled as b (1 + a_z z^2 + a_t (x^2 + y^2)), with a_z the mid-point of -4..-6 % at 8 cm and a_t of +1..+4 %, and the tensor as the isotropic scaling L = sqrt(1 + a_z z^2 + a_t rho^2) I. Uncertain to a factor of two in magnitude, and the sign of the transverse term is not safe; the Prisma sits at the better end of the class, being 'a more typical whole-body coil ... with a 50 cm FOV' beside the 20 cm / 6 % Connectom coil (Fan et al. 2022). A class number carried over from another vendor's machine, said so here, and returned by the typed view as such. Axial: -5 % at 8 cm along the bore",
+     "source_key": "rogers2017_gnl_b",
+     "location": "Rogers 2017, Results; Malyarenko 2016, Abstract",
+     "confidence": "inferred"
+    },
+    "b_error_quadratic_transverse": {
+     "value": 3.9,
+     "unit": "1/m^2",
+     "field_T": 3.0,
+     "context": "The transverse coefficient of the same class model: +2.5 % at 8 cm across the bore, the mid-point of Rogers 2017's '1-4%'. See b_error_quadratic_axial for the inference and its uncertainty",
+     "source_key": "rogers2017_gnl_b",
+     "location": "Rogers 2017, Results",
+     "confidence": "inferred"
+    },
+    "validity_radius": {
+     "value": 0.113,
+     "unit": "m",
+     "field_T": 3.0,
+     "context": "how far from isocentre the class model is anchored: the furthest point Rogers 2017 measured ('At 113 mm from isocenter (80 mm displaced on both axes), achieved b-values were up to 4% different from intended'); the tensor is refused beyond it rather than extrapolated",
+     "source_key": "rogers2017_gnl_b",
+     "location": "Rogers 2017, Results",
+     "confidence": "inferred"
     }
    }
   },
@@ -725,6 +873,27 @@
      "source_key": "siemens_terra_web",
      "location": "n/a",
      "confidence": "NEEDS VERIFICATION"
+    },
+    "b1_brain_range": {
+     "value": [
+      0.4,
+      1.5
+     ],
+     "unit": "",
+     "field_T": 7.0,
+     "context": "the transmit scale over a human brain with a single-channel head coil (Nova CP transmit, 24-channel receive), as a fraction of nominal: 'The local B1+ values ranged from 40 to 150 p.u.', lowest 'in the temporal lobes and cerebellum' -- measured on a Siemens 7 T whole-body system with that coil (Lutti et al. 2012, n = 3), the coil class the Terra ships with (Nova 1Tx32Rx, Clarke et al. 2020); the vendor's calibration leaves the whole-brain MEAN at 0.6-0.9 of nominal before manual calibration (Clarke 2020: 'Before calibration the range of mean values was 0.6-0.9 with an average of 0.73'), so a map's shape is read after normalising to its own brain median",
+     "source_key": "lutti2012_b1_7t",
+     "location": "Lutti 2012, Results; Clarke 2020, Sec. 3.3",
+     "confidence": "inferred"
+    },
+    "b1_map_dataset": {
+     "value": "UK7T 2018: NIfTI/cam/DREAM_FA.nii.gz, NIfTI/gla/DREAM_FA.nii.gz",
+     "unit": null,
+     "field_T": 7.0,
+     "context": "open measured B1+ maps of THIS machine (MAGNETOM Terra at Cambridge and Glasgow, Nova 1Tx32Rx, 3D DREAM, 4.9 mm, one travelling subject), ODC-By; two more sites on a classic Magnetom 7T and a Philips Achieva 7T in the same archive",
+     "source_key": "uk7t_2018_dataset",
+     "location": "NIfTI/<site>/DREAM_FA.nii.gz",
+     "confidence": "cited"
     }
    },
    "notes": "Newer MAGNETOM Terra.X reaches 135 mT/m @ 250 T/m/s (separate model). Terra has no body transmit coil; transmit is via the head coil (1Tx or 8Tx pTx).",
@@ -746,6 +915,73 @@
      "source_key": "marques2019_lowfield",
      "location": "coil geometry",
      "confidence": "widely-quoted"
+    }
+   },
+   "homogeneity": {
+    "b0_homogeneity_vrms": {
+     "value": 0.02,
+     "unit": "ppm",
+     "field_T": 7.0,
+     "context": "guaranteed VRMS over a 20 cm DSV, 'based on highly accurate 24 plane' mapping; the full guaranteed series in ppm is 10 cm 0.002, 20 cm 0.02, 30 cm 0.1, 40 cm 0.2, 45 cm 0.5 -- the same series the Prisma's vendor table gives at 3 T, on a 60 cm bore. 20 cm is the head-scale row used across the entries so they are comparable. Labelled VRMS by the vendor, beside the peak-to-peak column (b0_homogeneity). A magnitude over a sphere, not a shape: no field law is fitted from it (see the Prisma's entry for why), and the derived radial order beside it quantifies how steeply the series climbs",
+     "source_key": "siemens_terra_datasheet_ve12",
+     "location": "Magnet, 'Homogeneity' table, Vrms column",
+     "confidence": "cited"
+    },
+    "b0_homogeneity": {
+     "value": 0.15,
+     "unit": "ppm",
+     "field_T": 7.0,
+     "context": "guaranteed PEAK-TO-PEAK over a 20 cm DSV ('< 0.15'); the full guaranteed series is 10 cm < 0.015, 20 cm < 0.15, 30 cm < 0.5, 40 cm < 2, 45 cm < 5 ppm. This is the number a review table quotes as 'approximately 2 ppm peak to peak over 40 cm' (Ineichen et al. 2021, Invest Radiol 56:773) and the 5 ppm over 450 mm a facility page quotes for the 7T Plus, so those two agree with the datasheet once the DSV and the metric are read. The ratio to the VRMS column (7.5 at 20 cm, 10 at 40 cm) is the vendor's own, where Gach 2020 measured 6-21 on other systems",
+     "source_key": "siemens_terra_datasheet_ve12",
+     "location": "Magnet, 'Homogeneity' table, Peak to Peak column",
+     "confidence": "cited"
+    },
+    "b0_spec_radial_order": {
+     "value": 3.67,
+     "unit": "",
+     "field_T": 7.0,
+     "context": "the slope of log VRMS against log DSV over the vendor's guaranteed series (0.002 ppm at 10 cm to 0.5 ppm at 45 cm): the effective order of the harmonics the residual field climbs with over a sphere. A degree-n solid harmonic's VRMS over a sphere scales as R^n, so this is the order of the spec, not of any measured head field",
+     "source_key": "siemens_terra_datasheet_ve12",
+     "location": "Magnet, 'Homogeneity' table, derived",
+     "confidence": "derived"
+    },
+    "shim_max_order": {
+     "value": 3,
+     "unit": "",
+     "field_T": 7.0,
+     "context": "first- and second-order shims plus FOUR of the seven third-degree terms, Z3, Z2X, Z2Y and Z(X2-Y2), built into the gradient coil (the Prisma's coil design 'modified ... to accommodate the wider magnet bore diameter and the additional 3rd order shims', FDA K170840; the term list and the 20 V / 20 A shim amplifiers from Boulant et al. 2024, Table 1 and text). 'Order 3' therefore means those four terms and not the full degree; in the solid-harmonic names of dmipy_sim.acquisition.solid_harmonics they are Z3, Z2X, Z2Y, ZX2Y2",
+     "source_key": "fda_k170840_terra",
+     "location": "K170840, 'New Gradient Coil'; Boulant 2024, Sec. 2 and Table 1",
+     "confidence": "cited"
+    }
+   },
+   "gradient_nonlinearity": {
+    "b_error_quadratic_axial": {
+     "value": -7.8,
+     "unit": "1/m^2",
+     "field_T": 7.0,
+     "context": "A CLASS INFERENCE carried over from the Prisma's entry, whose coil design this one is (FDA K170840: the Prisma's gradient coil 'modified ... to accommodate the wider magnet bore diameter'); no measurement of the Terra's tensor is published. Bounded above by the one measured brain-scale figure on a same-family coil: 'the b values within the brain can deviate up to 15% from their nominal value' on the HCP-YA customized SC72 (100 mT/m, 56 cm bore, head 5 cm above isocentre), which that paper says is 'higher than in a standard 3T scanner' (Sotiropoulos et al. 2013). Uncertain to a factor of two; see the Prisma's leaf for the model",
+     "source_key": "fda_k170840_terra",
+     "location": "K170840, 'New Gradient Coil'; Sotiropoulos 2013, Sec. 2.2",
+     "confidence": "inferred"
+    },
+    "b_error_quadratic_transverse": {
+     "value": 3.9,
+     "unit": "1/m^2",
+     "field_T": 7.0,
+     "context": "The transverse coefficient, carried over with the axial one; see b_error_quadratic_axial",
+     "source_key": "fda_k170840_terra",
+     "location": "K170840, 'New Gradient Coil'",
+     "confidence": "inferred"
+    },
+    "validity_radius": {
+     "value": 0.113,
+     "unit": "m",
+     "field_T": 7.0,
+     "context": "how far from isocentre the class model is anchored: the furthest point Rogers 2017 measured ('At 113 mm from isocenter (80 mm displaced on both axes), achieved b-values were up to 4% different from intended'); the tensor is refused beyond it rather than extrapolated",
+     "source_key": "rogers2017_gnl_b",
+     "location": "Rogers 2017, Results",
+     "confidence": "inferred"
     }
    }
   },

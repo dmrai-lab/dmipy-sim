@@ -106,6 +106,11 @@ class ScannerLimits:
     d_scale_z_dx: float = None    # 1/m, dL_zz/dx
     gradient_completion: float = None   # share of the x coil's curvature borrowed from y (see
                                         # gradient_potentials); the even 1/2 when unstated
+    b_error_quadratic_axial: float = None       # 1/m^2, a class model: b delivered = b (1 + a_z z^2 + a_t rho^2)
+    b_error_quadratic_transverse: float = None  # 1/m^2, its transverse coefficient
+    gnl_validity_radius: float = None           # m, how far the class model is anchored
+    shim_max_order: float = None                # the highest solid-harmonic degree the shim set reaches
+    b1_brain_range: tuple = None                # (low, high) of the transmit scale over a brain, fraction of nominal
 
     @classmethod
     def of(cls, scanner, *, regime="default"):
@@ -151,6 +156,13 @@ class ScannerLimits:
                      d_scale_z_dx=scc.leaf_si(entry, "gradient_nonlinearity", "d_scale_z_dx"),
                      gradient_completion=scc.leaf_si(entry, "gradient_nonlinearity",
                                                      "gradient_completion"),
+                     b_error_quadratic_axial=scc.leaf_si(entry, "gradient_nonlinearity", "b_error_quadratic_axial"),
+                     b_error_quadratic_transverse=scc.leaf_si(entry, "gradient_nonlinearity",
+                                                              "b_error_quadratic_transverse"),
+                     gnl_validity_radius=scc.leaf_si(entry, "gradient_nonlinearity", "validity_radius"),
+                     shim_max_order=scc.leaf_si(entry, "homogeneity", "shim_max_order"),
+                     b1_brain_range=(None if scc.leaf_raw(entry, "rf", "b1_brain_range") is None
+                                     else tuple(float(v) for v in scc.leaf_raw(entry, "rf", "b1_brain_range"))),
                      b0_axis=_axis(scc.leaf_raw(entry, "frame", "b0_axis"), "b0_axis", key),
                      b1_axis=_axis(scc.leaf_raw(entry, "frame", "b1_axis"), "b1_axis", key))
         limits._check_frame()
@@ -228,9 +240,9 @@ class ScannerLimits:
 
     @property
     def has_gradient_nonlinearity(self):
-        """Whether the coils' nonlinearity is catalogued: :meth:`gradient_tensor` answers ``None`` exactly when
-        this is false."""
-        return self.d_scale_y_dx is not None
+        """Whether the coils' nonlinearity is catalogued, as a measured diagonal (the Swoop) or as a class model
+        (``b_error_quadratic_axial``): :meth:`gradient_tensor` answers ``None`` exactly when this is false."""
+        return self.d_scale_y_dx is not None or self.b_error_quadratic_axial is not None
 
     @property
     def has_transmit_profile(self):
@@ -380,10 +392,29 @@ class ScannerLimits:
         mode is perfectly expressible here -- three coils each carrying the same added curvature give
         ``tr L = 3(1 + e x)`` -- so what is missing is the data to set it, not the freedom to state it.
 
-        ``None`` when the machine has no catalogued coefficients -- which is every machine here but one, and
-        not because the others are linear. Vendors do publish spherical-harmonic coil descriptions to
-        service channels; none of them is in the open literature.
+        ``None`` when the machine has no catalogued coefficients, and not because it is linear: vendors publish
+        spherical-harmonic coil descriptions to service channels and none is in the open literature. Two
+        catalogued forms exist. The Swoop's is a MEASURED diagonal (the NIST regression, above). A Prisma's and a
+        Terra's is a CLASS MODEL, ``b_error_quadratic_axial`` / ``_transverse``: the quadratic order measured
+        across fourteen clinical systems and the magnitude measured on one whole-body 3 T coil of the same
+        class, carried over with a stated factor-two uncertainty (the leaves' context), and returned as the
+        isotropic scaling that determines -- the direction dependence is not known and is not invented.
         """
+        if self.b_error_quadratic_axial is not None:
+            # the class model: the delivered b along any direction is b (1 + a_z z^2 + a_t rho^2), z the field
+            # axis, so the tensor is the isotropic scaling sqrt(1 + a_z z^2 + a_t rho^2) I -- the one tensor the
+            # catalogued magnitudes determine, and a statement that the direction dependence is NOT known
+            d = np.atleast_2d(np.asarray(offset_m, dtype=np.float64))
+            r = np.linalg.norm(d, axis=-1)
+            if self.gnl_validity_radius is not None and float(np.max(r)) > self.gnl_validity_radius:
+                raise ValueError(f"the gradient-nonlinearity class model of {self.name!r} is anchored at "
+                                 f"{self.gnl_validity_radius*100:.1f} cm from isocentre and something here is "
+                                 f"{float(np.max(r))*100:.1f} cm out; it is refused there rather than extrapolated")
+            n = np.asarray(self.b0_axis if self.b0_axis is not None else (0.0, 0.0, 1.0), dtype=np.float64)
+            z2 = (d @ n) ** 2
+            s = np.sqrt(1.0 + self.b_error_quadratic_axial * z2 + self.b_error_quadratic_transverse * (r ** 2 - z2))
+            L = s[:, None, None] * np.eye(3)[None]
+            return L.reshape(np.shape(offset_m)[:-1] + (3, 3)) if np.ndim(offset_m) > 1 else L[0]
         phi = self.gradient_potentials()
         if phi is None:
             return None
