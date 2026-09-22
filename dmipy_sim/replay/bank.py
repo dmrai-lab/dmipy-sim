@@ -555,6 +555,70 @@ def _susc_path_bloch_fidelity(m, arrays, pm, gm, env, n_sub=8000):
     return dict(err=float(err), floor=float(floor), n_pulses=n_p, n_walkers=k)
 
 
+#: the bands the field tier is tried at, in order, when its band is derived on the walk
+SUSC_PATH_LADDER = (16, 32, 64, 128, 256, 512, 1024, 2048)
+
+
+def derive_susc_path_K(m, field, env, *, K_max, bits=8, ladder=SUSC_PATH_LADDER):
+    """The field tier's band, derived on the walk it will store: ``(K, record)``.
+
+    The path channel's band is the pack's to choose per substrate, since what it must resolve is the field a
+    walker sees along its path, and that depends on the geometry (a sheath two nodes wide changes the field at
+    every step, a smooth far field does not) and on the gates the tier serves. So it is measured rather than
+    fixed: the field is encoded once at the top of ``ladder`` (capped at ``K_max``, the position channel's band,
+    beyond which the tier would cost more than the walk it rides on), and each rung is read as the pack's own
+    certificate reads it -- the coefficients truncated to the rung and quantised at ``bits``, contracted for each
+    field strength and direction of the envelope's battery, decoded and gated by GRE, spin echo and the CPMG train
+    the rung serves (:func:`_susc_path_fidelity`) -- against the split-half floor of the reference. The smallest
+    rung whose worst error is within the floor is the band; when none is, the top rung, and the certificate
+    the pack then measures at it says how far it sits. ``record`` lists every rung's error and floor.
+    """
+    from scipy.fft import idct
+    traj = np.asarray(m["traj"], np.float64); n_w = traj.shape[0]
+    every = int(m.get("susc_field_every", 1) or 1)
+    n_t = len(range(0, traj.shape[1], every)); dt = float(m["dt_traj"]) * every
+    rungs = [k for k in ladder if k <= int(K_max)]
+    if not rungs or rungs[-1] < int(K_max) and int(K_max) < ladder[-1]:
+        rungs = rungs + [int(K_max)]                      # the position band itself closes the ladder
+    rungs = sorted(set(min(k, n_t) for k in rungs))
+    top = rungs[-1]
+    if m.get("susc_field_samples") is not None:
+        from ..fields.hollow_cylinder import CHANNEL_NAMES
+        arrays_top, meta_top = susc_path_encode_series(np.asarray(m["susc_field_samples"]), CHANNEL_NAMES, K=top, bits=None,
+                                                       layout="wtc", dt=dt)
+    else:
+        arrays_top, meta_top = susc_path_encode(field, traj, K=top, bits=None)
+    coeffs = np.asarray(arrays_top["susc_path_dct"], np.float64)               # (n_w, n_ch, top), float
+    has_aniso = coeffs.shape[1] >= 12
+    w = np.asarray(m["w"], np.float64) if m.get("w") is not None else np.ones(n_w)
+    chi_i = float(m.get("susc_chi_iso") or 1.06e-6)
+    ca = float(m.get("delta_chi_a") or 0.0)
+    if has_aniso and ca == 0.0:
+        ca = 0.1 * chi_i
+    if not has_aniso:
+        ca = 0.0
+    perm = np.random.RandomState(0).permutation(n_w); A, B = perm[:n_w // 2], perm[n_w // 2:]
+    err = {k: 0.0 for k in rungs}; floor = {k: 0.0 for k in rungs}
+    for B0 in (env.get("B0_list") or [3.0, 7.0]):
+        for th in (env.get("theta_deg") or [0, 90]):
+            t = np.deg2rad(float(th)); d = [np.sin(t), 0.0, np.cos(t)]
+            f_raw = _raw_field(m, field, traj, d, B0=B0, chi_iso=chi_i, chi_aniso=ca)
+            for k in rungs:
+                a_k, m_k = _quantise_susc_path(coeffs[:, :, :k], dict(meta_top, K=k, max_refocus_pulses=k // 2), bits)
+                C, _names = susc_path_coeffs(a_k, m_k)                                     # dequantised, zz re-inserted
+                cd = susc_path_field(C, d, B0=B0, chi_iso=chi_i, chi_aniso=ca, has_aniso=has_aniso)   # (n_w, k): linear in the channels
+                f_dec = idct(np.pad(cd, ((0, 0), (0, n_t - k))), type=2, norm="ortho", axis=1)
+                gates = [np.ones(n_t), _cpmg_gate(n_t, 1), _cpmg_gate(n_t, max(1, k // 2))]
+                e, f = _gate_battery(f_raw, f_dec, gates, w, A, B, dt)
+                err[k], floor[k] = max(err[k], e), max(floor[k], f)
+    within = [k for k in rungs if err[k] <= floor[k]]
+    K = within[0] if within else top
+    record = dict(rule="derived", criterion="the smallest band on the ladder whose codec error on the certificate's battery is within its floor",
+                  ladder=[dict(K=int(k), err=float(err[k]), floor=float(floor[k])) for k in rungs],
+                  K_max=int(K_max), within_floor=bool(within))
+    return int(K), record
+
+
 def _susc_path_fidelity(m, arrays, pm, gm, env):
     """Certify the susc_path_dct tier AT ITS DECLARED CAPABILITY.
 
@@ -1223,8 +1287,11 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto"
     :class:`~dmipy_sim.fields.strand_field.StrandFieldBasis` the per-segment closed form of a strand substrate
     (path channel only: it has no grid),
     ``field=False`` leaves the tier out; the basis is geometry only, and B0, its direction and the
-    susceptibilities are replay knobs. ``weights`` are per-walker proton-density weights (default:
-    the pools' water fractions by compartment, else uniform).
+    susceptibilities are replay knobs. ``susc_path_K`` is the field tier's own band: a number, ``"auto"`` --
+    derived on this walk as the smallest band whose codec error on the certificate's battery is within its
+    floor (:func:`derive_susc_path_K`; the grid route, exact, when the positions are lossless) -- or ``None``
+    for the grid alone. ``weights`` are per-walker proton-density weights (default: the pools' water fractions
+    by compartment, else uniform).
 
     The position ensemble is compressed by ``method`` (default ``bridge_dst``: endpoints plus a
     Brownian bridge on the sine basis, which holds both endpoints exactly and pairs its first two
@@ -1313,6 +1380,17 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto"
         # the pos-codec-decoded trajectory (ReplayPack.replay with a field). O(N_vox) not O(N_w*N_t) and SE-exact (a static
         # field at a frozen point cancels under the SE gate to machine precision). f16 grids: O(1) geometry.
         _field = _field_of(m)
+        _band_record = None
+        if isinstance(susc_path_K, str):
+            if susc_path_K != "auto":
+                raise ValueError(f"susc_path_K is a band, 'auto' (derived on the walk) or None; got {susc_path_K!r}")
+            if _field is None:
+                susc_path_K = None
+            elif m.get("susc_field_basis") is not None and _cx.is_lossless_at(method, int(K), int(X.shape[1])):
+                susc_path_K = None                             # lossless positions: the grid route is exact and costs no channel
+            else:
+                run.phase("field band")
+                susc_path_K, _band_record = derive_susc_path_K(m, _field, env, K_max=int(K), bits=susc_path_bits)
         if _field is not None and m.get("susc_field_basis") is None:
             # a strand substrate's per-segment field: no grid to store, the path channel is the tier
             if not susc_path_K:
@@ -1327,6 +1405,8 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto"
                 _pm["sampling"] = "interval_mean_in_walk"
             else:
                 _a, _pm = susc_path_encode(_field, np.asarray(m["traj"], np.float64), K=int(susc_path_K), bits=susc_path_bits)
+            if _band_record is not None:
+                _pm["band"] = _band_record
             arrays.update(_a); chan_meta["susceptibility_path"] = _pm
         if m.get("susc_field_basis") is not None:
             fb = m["susc_field_basis"]
@@ -1362,6 +1442,8 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto"
             if susc_path_K:
                 _a, _pm = susc_path_encode(_field, np.asarray(m["traj"], np.float64),
                                            K=int(susc_path_K), bits=susc_path_bits)
+                if _band_record is not None:
+                    _pm["band"] = _band_record
                 arrays.update(_a); chan_meta["susceptibility_path"] = _pm
         if wp_method:
             # C1 (occupancy): the geometric compartment plus, when the walk bound spins, the MT bound

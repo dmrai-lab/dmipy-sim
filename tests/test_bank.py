@@ -378,3 +378,39 @@ def test_builder_takes_a_persistent_walk_and_assembles_the_tiers_it_carries():
         build_replay_pack(_slab_master(), id="x", weights=np.ones(3), K=8, envelope=_lean_env(), license="x", citation="x")
     fb, origin = _field_basis_for_slab()
     assert FieldGrid(fb, origin).origin is origin
+
+
+def test_the_field_tiers_band_is_derived_on_the_walk():
+    """``susc_path_K="auto"``: the band is the smallest rung of the ladder whose codec error on the certificate's
+    battery is within its floor, measured on this walk, and the record of every rung travels with the channel. The
+    pack's own certificate at the chosen band then agrees with the rung's reading, since it is the same battery."""
+    from dmipy_sim.replay.bank import SUSC_PATH_LADDER
+    env = dict(_lean_env(), B0_list=[7.0], theta_deg=[0, 90])
+    pk = build_replay_pack(_susc_master(), id="test/slab-susc-auto", method="bridge_dst",
+                           envelope=env, K=64, susc_path_K="auto", license="CC-BY-4.0", citation="test")
+    pm = pk.meta["compression"]["channels"]["susceptibility_path"]
+    band = pm["band"]
+    assert band["rule"] == "derived" and pm["K"] in SUSC_PATH_LADDER and pm["K"] <= 64
+    rungs = {r["K"]: r for r in band["ladder"]}
+    assert list(rungs) == sorted(rungs) and rungs[pm["K"]]["floor"] > 0
+    if band["within_floor"]:
+        assert rungs[pm["K"]]["err"] <= rungs[pm["K"]]["floor"]
+        assert all(rungs[k]["err"] > rungs[k]["floor"] for k in rungs if k < pm["K"])   # the smallest such rung
+    else:
+        assert pm["K"] == max(rungs)
+    fid = pk.meta["fidelity"]
+    assert abs(fid["err_susc_path"] - rungs[pm["K"]]["err"]) <= 0.25 * rungs[pm["K"]]["err"] + 1e-6   # the same battery, the native container
+    assert pm["max_refocus_pulses"] == pm["K"] // 2
+
+
+def test_lossless_positions_take_the_grid_route_under_auto():
+    """With the positions stored losslessly the grid route is exact and costs no channel, so ``"auto"`` stores no
+    path channel there; a band that is not a number, ``"auto"`` or ``None`` is refused."""
+    env = dict(_lean_env(), B0_list=[7.0], theta_deg=[0])
+    pk = build_replay_pack(_susc_master(), id="test/slab-susc-grid", method="bridge_dst",
+                           envelope=env, K=N_T, susc_path_K="auto", license="CC-BY-4.0", citation="test")
+    ch = pk.meta["compression"]["channels"]
+    assert "susceptibility_path" not in ch and ch["susceptibility_grid"]["arrays_in_pack"]
+    with pytest.raises(ValueError, match="'auto'"):
+        build_replay_pack(_susc_master(), id="test/x", method="bridge_dst", envelope=env, K=64, susc_path_K="derived",
+                          license="CC-BY-4.0", citation="test")
