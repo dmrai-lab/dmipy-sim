@@ -32,7 +32,7 @@ from dataclasses import replace
 
 import numpy as np
 
-__all__ = ["TrainResponse", "gate_sign", "train_response", "sequence_events"]
+__all__ = ["TrainResponse", "ClosedFormTrain", "gate_sign", "train_response", "closed_form_train", "sequence_events"]
 
 #: A pathway's coherence sign while it is in each state: transverse, conjugated, or stored.
 _SIGN = {"F+": +1.0, "F-": -1.0, "Z": 0.0}
@@ -176,13 +176,42 @@ def sequence_events(waveform, b1_scale=1.0):
     return prep, train, on, ro, edges
 
 
-def train_response(pack, waveform, *, keep=(None, 0), b1_reference=1.0, n_orders=None, **kw):
-    """Build a :class:`TrainResponse` by the STATE route: one pose expansion per microscopic gate.
+class ClosedFormTrain(TrainResponse):
+    """A closed form's response to an RF train: the same pathway sum, each gate's factor the form's own
+    response to that gate's gradient -- a number per measurement -- in place of a pose expansion.
 
-    The pathway explosion lives entirely in the weights, which a configuration-state propagation handles in
-    quadratic time -- a seventy-echo train costs ten milliseconds and would be 10^68 pathways enumerated.
-    What is expanded over poses is one walk per distinct GATE, and for a diffusion-prepared train there are
-    a handful of those however long the train is.
+    An isotropic closed form has no pose, so nothing is expanded; what the train needs from it is its
+    response to each microscopic gate, ``exp(-b_gate D)`` for free water with the form's bulk relaxation over
+    the waveform, exactly what a pack's walkers deliver for the same gate. :meth:`at` returns the composed
+    ``(n_measurements,)`` signal rather than a :class:`~dmipy_sim.replay.PoseResponse`.
+    """
+
+    def at(self, b1_scale=1.0, echo=-1, dw=0.0):
+        w = self.weights(b1_scale, dw=dw)
+        out = np.zeros(int(self.waveform.n_meas), np.complex128)
+        for gate, resp in self.parts.items():
+            amp = w.get(gate)
+            if amp is None or not len(amp):
+                continue
+            e = complex(amp[int(echo)])
+            if dw:
+                e = e * np.exp(1j * float(dw) * self.tau.get(gate, 0.0))
+            if e == 0:
+                continue
+            out = out + e * np.asarray(resp, np.complex128)
+        return out
+
+    def __repr__(self):
+        return f"ClosedFormTrain(gates={self.n_gates}, echoes={len(self.readouts)})"
+
+
+def _gates(waveform, b1_reference, n_orders, **strip):
+    """The train's microscopic gates: ``(gated waveforms, edges, n_orders, readouts, tau, durations)``.
+
+    A gate's waveform is a pathway's MICROSCOPIC gradient alone -- the acquisition's gradient under the gate's
+    sign pattern, no RF, no crusher, no readout -- and its voxel-scale winding is the coherence order the state
+    propagation carries, so it is declared rather than derived from the moment it leaves. ``strip`` sets any
+    further field of the copies.
     """
     from ..acquisition.epg_state import split_by_gate
     prep, train, on, ro, edges = sequence_events(waveform, b1_reference)
@@ -191,21 +220,49 @@ def train_response(pack, waveform, *, keep=(None, 0), b1_reference=1.0, n_orders
     G = np.asarray(waveform.G, np.float64)
     n_t, dt = int(waveform.n_t), float(waveform.dt)
     signs = {gate: gate_sign(gate, edges, n_t, dt) for gate in gates}
-    # a gate's waveform is a pathway's MICROSCOPIC gradient alone; its voxel-scale winding is the coherence
-    # order the state propagation carries, so it is declared rather than derived from the moment it leaves
     gated = {gate: replace(waveform, G=(G * s[None, :, None]).astype(np.float32), rf=None,
-                           family="waveform", crusher=None, readout=None, voxel_scale="declared")
+                           family="waveform", crusher=None, readout=None, voxel_scale="declared", **strip)
              for gate, s in signs.items()}
-
-    # The gates do not reach the same band: one that spends an interval STORED accumulates no phase there
-    # and so is smoother. They are summed at the widest of them, which is exact rather than a choice --
-    # `so3_index` lays coefficients out with `l` ascending, so a narrower gate's are a prefix of a wider
-    # gate's and everything above its own band is genuinely zero.
-    parts = {g: pack.pose_response(w, keep=keep, **kw) for g, w in gated.items()}
     durations = [edges[k + 1] - edges[k] for k in range(len(edges) - 1)]
     # each gate's SIGNED transverse time over the preparation, from the interval durations themselves rather
     # than from a sample count, so that a refocused pathway's tau is exactly zero on any grid
     tau = {gate: float(sum(_SIGN[kind] * durations[k] for k, kind in enumerate(gate) if k < len(durations)))
            for gate in gates}
+    return gated, edges, n_orders, ro, tau, durations
+
+
+def train_response(pack, waveform, *, keep=(None, 0), b1_reference=1.0, n_orders=None, **kw):
+    """Build a :class:`TrainResponse` by the STATE route: one pose expansion per microscopic gate.
+
+    The pathway explosion lives entirely in the weights, which a configuration-state propagation handles in
+    quadratic time -- a seventy-echo train costs ten milliseconds and would be 10^68 pathways enumerated.
+    What is expanded over poses is one walk per distinct GATE, and for a diffusion-prepared train there are
+    a handful of those however long the train is.
+    """
+    gated, edges, n_orders, ro, tau, durations = _gates(waveform, b1_reference, n_orders)
+    # The gates do not reach the same band: one that spends an interval STORED accumulates no phase there
+    # and so is smoother. They are summed at the widest of them, which is exact rather than a choice --
+    # `so3_index` lays coefficients out with `l` ascending, so a narrower gate's are a prefix of a wider
+    # gate's and everything above its own band is genuinely zero.
+    parts = {g: pack.pose_response(w, keep=keep, **kw) for g, w in gated.items()}
     return TrainResponse(parts, waveform, edges[:-1], edges[-1], n_orders=n_orders, readouts=ro,
                          tau=tau, durations=durations)
+
+
+def closed_form_train(form, waveform, *, b1_reference=1.0, n_orders=None):
+    """Build a :class:`ClosedFormTrain`: the closed form's response to each microscopic gate's own gradient.
+
+    The gate's waveform carries no prescription: its ``b`` is the integral of the gated gradient -- the
+    pathway's own weighting, a stimulated echo's included -- and its echo time the waveform's span, which is
+    the same reading a pack's walkers get for the gate. An oriented form is refused: its response depends on
+    the slot's pose, which an orientation distribution does not state, and expanding it over poses is what a
+    pack does and a closed form here does not.
+    """
+    if getattr(form, "oriented", False):
+        raise ValueError(f"{form!r} is an oriented closed form: its response to a gate depends on the slot's pose, "
+                         f"which a pathway sum over an orientation distribution does not state. A train reaches an "
+                         f"oriented substrate through a pack's pose expansion, not a closed form")
+    gated, edges, n_orders, ro, tau, durations = _gates(waveform, b1_reference, n_orders, encoding=None)
+    parts = {g: np.atleast_1d(np.asarray(form.response(w), np.complex128)) for g, w in gated.items()}
+    return ClosedFormTrain(parts, waveform, edges[:-1], edges[-1], n_orders=n_orders, readouts=ro,
+                           tau=tau, durations=durations)

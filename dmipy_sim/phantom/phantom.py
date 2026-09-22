@@ -391,7 +391,8 @@ class Phantom:
                               off_resonance=self._map(off_resonance, "off_resonance"),
                               off_resonance_tolerance=off_resonance_tolerance, scanner=scanner, pose=pose,
                               packs=self._packs(packs), proton_density=self._map(proton_density, "proton_density"),
-                              keep=keep, complex_signal=complex_signal, jax=jax, report=report)
+                              keep=keep, complex_signal=complex_signal, jax=jax, report=report,
+                              forms={i: s for i, s in enumerate(self.substrates) if getattr(s, "kind", None) == "analytic"})
         return self.to_volume(S)
 
     def _check_prescription(self, seq):

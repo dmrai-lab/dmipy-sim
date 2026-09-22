@@ -173,3 +173,92 @@ def test_a_refocusing_train_is_exactly_insensitive_to_a_uniform_offset(brain):
     # the echo really is carried by the pathway that refocuses, which is why
     live = [g for g, w in tr.weights(1.0).items() if abs(w[-1]) > 1e-6]
     assert len(live) == 1 and tr.tau[live[0]] == pytest.approx(0.0, abs=1e-12)
+
+
+def _free_water_brain(T2=None):
+    """A phantom of free water alone on the small grid: the closed form's train has no pose to expand."""
+    from dmipy_sim.phantom import FreeWater
+    from dmipy_sim.spec import Tissue
+    grid = Grid(shape=SH, voxel_size_m=(2.5e-2,) * 3,
+                origin_m=tuple(-0.5 * (n - 1) * 2.5e-2 for n in SH), isocenter_m=(0.0, 0.0, 0.0))
+    csf = FreeWater(m0=1.0, name="csf", tissue=Tissue(D=3e-9, T2=T2))
+    return Phantom.compose(grid, fractions={csf: np.ones(SH, np.float32)}, orientation={}, remainder=Inert(name="bg"))
+
+
+def test_a_closed_form_under_a_train_is_the_pack_route_at_b_zero(brain):
+    """With no gradient every gate's factor is one, so the closed form's pathway sum must equal the pack's to
+    the arithmetic, at every echo and transmit scale -- and below one where the crushers have removed
+    pathways, which a single static spin under the same pulses would keep."""
+    ph_pack, pack, _grid = brain
+    ph = _free_water_brain()
+    for beta, kappa in ((180.0, 1.0), (150.0, 1.0), (150.0, 0.8)):
+        train = sequences.splice([[1.0, 0, 0]], 15e-3, 25e-3, 3, 10e-3, bvalues=[0.0],
+                                 TE_prep=80e-3, beta_deg=beta, n_t_per_echo=40)
+        for echo in (0, 1, 2):
+            got = np.nanmean(ph.replay_train(train, echo=echo, transmit=kappa, complex_signal=True)[..., 0])
+            want = np.nanmean(ph_pack.replay_train(train, echo=echo, transmit=kappa, packs={0: pack}, complex_signal=True)[..., 0]) / 0.7
+            assert abs(got - want) < 1e-6, (beta, kappa, echo, got, want)
+            if beta < 180.0 and echo > 0:
+                assert abs(got) < 1.0 - 1e-3
+
+
+def test_a_closed_form_takes_each_pathway_at_its_own_b_and_the_pack_agrees(brain):
+    """Under a diffusion preparation the stimulated pathways carry their own b: free water's amplitude must fall
+    below its b = 0 value by the pathways' own Gaussian factors, and a free-water pack under the same train
+    must agree with the closed form to its Monte-Carlo scatter."""
+    from dmipy_sim.phantom import FreeWater
+    from dmipy_sim.spec import Tissue
+    ph_pack, pack, grid = brain
+    D = float(pack.meta["walk_params"]["diffusivity"])
+    csf = FreeWater(m0=0.7, name="fw", tissue=Tissue(D=D))
+    ph_form = Phantom.compose(grid, fractions={csf: np.ones(SH, np.float32)}, orientation={}, remainder=Inert(name="bg"))
+    for beta in (180.0, 120.0):
+        train = _train(beta=beta)
+        S_form = np.abs(np.nanmean(ph_form.replay_train(train, echo=1)[..., 0]))
+        S_pack = np.abs(np.nanmean(ph_pack.replay_train(train, echo=1, packs={0: pack})[..., 0]))
+        assert 0 < S_form < 0.7                                                # attenuated below m0
+        if beta == 180.0:                                                      # one pathway: the preparation's own b
+            assert abs(S_form - 0.7 * np.exp(-float(train.b()[0]) * D)) < 1e-6 * S_form
+        # the fixture pack is 600 walkers at K = 10 over 56 saves: its codec error at b = 1000 s/mm^2 is
+        # the pack's, not the closed form's, and is what the tolerance here allows for
+        assert abs(S_form - S_pack) < 0.12 * S_pack, (beta, S_form, S_pack)
+
+
+def test_a_mixed_phantom_composes_a_pack_and_a_closed_form():
+    """White matter from a pack beside cerebrospinal fluid in closed form, in one train replay: the voxel is
+    the fraction-weighted sum of the two routes, and neither is refused or dropped."""
+    from dmipy_sim.phantom import FreeWater
+    from dmipy_sim.spec import Tissue
+    import tempfile, os
+    out = os.path.join(tempfile.mkdtemp(), "wm.rpk")
+    walk = d.simulate_trajectories(300, 2e-9, d.FreeDiffusion(), 0.14, 2.5e-4, seed=1, require_gpu=False)
+    build_replay_pack(walk, id="test/wm2", license="x", citation="x", K=10, out_path=out)
+    pack = read_rpk(out)
+    grid = Grid(shape=SH, voxel_size_m=(2.5e-2,) * 3,
+                origin_m=tuple(-0.5 * (n - 1) * 2.5e-2 for n in SH), isocenter_m=(0.0, 0.0, 0.0))
+    c = np.zeros(SH + (45,), np.float32); c[..., 0] = 1.0 / np.sqrt(4 * np.pi)
+    wm = PackSubstrate(out, m0=0.7, name="wm"); csf = FreeWater(m0=1.0, name="csf", tissue=Tissue(D=3e-9))
+    f_wm = np.full(SH, 0.6, np.float32); f_csf = np.full(SH, 0.4, np.float32)
+    both = Phantom.compose(grid, fractions={wm: f_wm, csf: f_csf}, orientation={wm: ODF(c, basis="mrtrix3")}, remainder=Inert(name="bg"))
+    only_wm = Phantom.compose(grid, fractions={wm: f_wm}, orientation={wm: ODF(c, basis="mrtrix3")}, remainder=Inert(name="bg"))
+    only_csf = Phantom.compose(grid, fractions={csf: f_csf}, orientation={}, remainder=Inert(name="bg"))
+    train = _train(beta=150.0)
+    rep = {}
+    S = both.replay_train(train, packs={0: pack}, complex_signal=True, report=rep)
+    S1 = only_wm.replay_train(train, packs={0: pack}, complex_signal=True)
+    S2 = only_csf.replay_train(train, complex_signal=True)
+    assert rep["n_closed_forms"] == 1 and rep["n_gates"] >= 1
+    np.testing.assert_allclose(S, S1 + S2, rtol=1e-6, atol=1e-9)
+
+
+def test_an_oriented_closed_form_is_refused_under_a_train():
+    from dmipy_sim.replay.pathways import closed_form_train
+
+    class Stick:
+        oriented = True
+
+        def response(self, seq, pose=None):
+            return np.ones(seq.n_meas)
+
+    with pytest.raises(ValueError, match="oriented closed form"):
+        closed_form_train(Stick(), _train())
