@@ -6,6 +6,9 @@ three containers is one field or one derivation here:
 
 * ``G`` -- the PHYSICAL gradient ``(n_meas, n_t, 3)`` in T/m on ``dt``; a spin echo's lobes share a sign.
   :attr:`G_eff` is the effective gradient the phase integral walks, ``G * rf.sign(t)`` (RPK.md 6.6), derived.
+* ``gate`` -- a pathway-gated waveform's coherence sign per sample (+1 transverse, -1 conjugated, 0 stored), set
+  by :mod:`dmipy_sim.replay.pathways` in place of an RF schedule: the static field is folded with it and the
+  relaxation follows it (T2 while transverse, T1 while stored).
 * ``rf`` -- the :class:`~dmipy_sim.acquisition.rf.RFSchedule`. :attr:`chi_perp`, :attr:`TM`,
   :attr:`stimulated_echo`, :attr:`echoes` and :attr:`refocus_gap` are derived from it and ``G``.
 * ``readout`` -- the sample indices read; :attr:`echo_idx` is the last. Defaults to the grid's last sample (the
@@ -135,6 +138,7 @@ class ScannerSequence:
     concomitant: dict = None
     gradient_nonlinearity: tuple = None
     imposed_gradient: np.ndarray = None
+    gate: np.ndarray = None
 
     def __post_init__(self):
         _set = lambda k, v: object.__setattr__(self, k, v)
@@ -191,6 +195,18 @@ class ScannerSequence:
             raise ValueError(f"the readout is at sample {ro[-1]} but the RF schedule forms its echo at sample {idx[0]}")
         _set("readout", ro)
         _set("_schedule_echo_idx", idx)
+        if self.gate is not None:
+            # A pathway-gated waveform (replay.pathways): the coherence sign of ONE pathway per sample, +1 transverse,
+            # -1 conjugated, 0 stored, in place of the schedule's coherence. It is what the static field is folded
+            # with and what relaxes at T2 (|gate| = 1) or T1 (0) within the acquisition's extent.
+            gate = np.asarray(self.gate, dtype=np.float32).reshape(-1)
+            if gate.shape[0] != n_t or not np.all(np.isin(gate, (-1.0, 0.0, 1.0))):
+                raise ValueError(f"gate is one coherence sign per sample of the waveform's grid ({n_t}), each -1, 0 or 1")
+            if len(self.rf):
+                raise ValueError("a pathway-gated waveform carries its pathway's sign in place of an RF schedule; give one or the other")
+            _set("gate", gate)
+            chi = np.abs(gate)
+            TM = float(np.sum(gate[:-1] == 0.0)) * self.dt or None            # the stored time: each sample held to the next
         _set("_chi", None if np.all(chi == 1) else chi)
         _set("_TM", TM); _set("_ste", bool(ste)); _set("_echoes", tuple(echo_times))
         if self.encoding is not None and self.encoding.number_of_measurements != G.shape[0]:

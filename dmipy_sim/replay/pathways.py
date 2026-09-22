@@ -38,7 +38,7 @@ __all__ = ["TrainResponse", "ClosedFormTrain", "gate_sign", "train_response", "c
 _SIGN = {"F+": +1.0, "F-": -1.0, "Z": 0.0}
 
 
-def gate_sign(gate, edges, n_t, dt):
+def gate_sign(gate, edges, n_t, dt, train=()):
     """The coherence sign of one microscopic gate at every sample of the grid, ``(n_t,)``.
 
     ``gate`` is the tuple of states (``"F+"``, ``"F-"``, ``"Z"``) a pathway was in over the consecutive
@@ -46,13 +46,29 @@ def gate_sign(gate, edges, n_t, dt):
     another's: the SAME walk, read with a different sign pattern. Zero where the pathway is stored along z,
     because stored magnetisation accumulates no gradient phase -- which is exactly why a stimulated echo
     carries the diffusion weighting it does and not the weighting of the interval it slept through.
+
+    Over the ``train`` that follows the preparation (its events, from :func:`sequence_events`) the sign
+    continues as the refocused pathway's: transverse, flipped at every pulse. That is exact for the pathway
+    every refocusing pulse refocuses and is the reading the train's other pathways take for the microscopic
+    field and the relaxation there; their RF amplitudes are the state propagation's own.
     """
     t = np.arange(int(n_t)) * float(dt)
     sign = np.zeros(int(n_t))
+    last = 1.0
     for k, kind in enumerate(gate):
         if k + 1 >= len(edges):
             break
         sign[(t >= edges[k]) & (t <= edges[k + 1] + 1e-12)] = _SIGN[kind]
+        if _SIGN[kind] != 0.0:
+            last = _SIGN[kind]
+    cur = last
+    for ev in train:
+        if ev[0] == "pulse":
+            cur = -cur
+        elif ev[0] == "interval":
+            k = ev[2]
+            if k + 1 < len(edges):
+                sign[(t >= edges[k]) & (t <= edges[k + 1] + 1e-12)] = cur
     return sign
 
 
@@ -219,8 +235,10 @@ def _gates(waveform, b1_reference, n_orders, **strip):
     gates = split_by_gate(prep, n_orders, lambda i: on[i] if i < len(on) else False)
     G = np.asarray(waveform.G, np.float64)
     n_t, dt = int(waveform.n_t), float(waveform.dt)
-    signs = {gate: gate_sign(gate, edges, n_t, dt) for gate in gates}
-    gated = {gate: replace(waveform, G=(G * s[None, :, None]).astype(np.float32), rf=None,
+    signs = {gate: gate_sign(gate, edges, n_t, dt, train=train) for gate in gates}
+    # the gate's sign is the waveform's own coherence: the static field is folded with it and the relaxation
+    # follows it, in place of the RF schedule the gated copy no longer carries
+    gated = {gate: replace(waveform, G=(G * s[None, :, None]).astype(np.float32), rf=None, gate=s.astype(np.float32),
                            family="waveform", crusher=None, readout=None, voxel_scale="declared", **strip)
              for gate, s in signs.items()}
     durations = [edges[k + 1] - edges[k] for k in range(len(edges) - 1)]

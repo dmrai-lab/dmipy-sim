@@ -296,3 +296,71 @@ def test_a_b_zero_train_composes_packs_of_different_bands(brain):
     S2 = two.replay_train(train, echo=1, packs={0: pack, 1: pack}, complex_signal=True)
     S1 = ph.replay_train(train, echo=1, packs={0: pack}, complex_signal=True)
     np.testing.assert_allclose(S2, S1, rtol=1e-9, atol=1e-12)
+
+
+def test_a_pathway_gated_waveform_carries_its_sign_as_its_coherence():
+    """The gated copy of a waveform has no RF schedule: its pathway's sign is what the static field is folded
+    with and what the relaxation follows -- transverse where |sign| = 1, stored where 0 -- and a closed form reads
+    the transverse time as its echo time and the stored time as its mixing time."""
+    from dataclasses import replace
+    from dmipy_sim.phantom.substrates import _echo_time
+    from dmipy_sim.replay._replay_kernel import field_gate
+    from dmipy_sim.replay.pathways import gate_sign, sequence_events
+    train = _train(n_echo=2, beta=150.0)
+    n_t, dt = train.n_t, float(train.dt)
+    prep, tr, on, ro, edges = sequence_events(train)
+    # a stored-then-recalled pathway: +1 over the first gradient, 0 while stored, -1 after the recall; and over
+    # the train the refocused reading, flipped at every pulse
+    kinds = ("F+", "Z", "F-")
+    s = gate_sign(kinds[:len(edges) - 1] if len(edges) - 1 <= 3 else kinds + ("F-",) * (len(edges) - 4), edges, n_t, dt, train=tr)
+    assert set(np.unique(s)) <= {-1.0, 0.0, 1.0} and (s == 0).any() and (s == -1).any() and (s == 1).any()
+    w = replace(train, G=np.zeros_like(np.asarray(train.G)), rf=None, gate=s.astype(np.float32), family="waveform",
+                crusher=None, readout=None, voxel_scale="declared", encoding=None)
+    np.testing.assert_array_equal(w.chi_perp, np.abs(s))
+    assert abs(w.TM - dt * np.sum(s[:-1] == 0)) < 1e-12
+    assert abs(_echo_time(w) - (w.T - w.TM)) < 1e-12
+    # the field gate is the sign itself, integrated: zero net for a balanced sign, the sign's sum otherwise
+    fg = field_gate(w, n_t, dt)
+    assert abs(fg.sum() - s[:-1].sum()) < 1e-6
+    with pytest.raises(ValueError, match="-1, 0 or 1"):
+        replace(w, gate=np.full(n_t, 0.5, np.float32))
+    with pytest.raises(ValueError, match="one or the other"):
+        replace(train, gate=s.astype(np.float32))
+
+
+@pytest.fixture(scope="module")
+def field_pack(tmp_path_factory):
+    """A sheathed axon alone in a wide cell with its field basis: the pack a static field needs (C3 path)."""
+    from dmipy_sim.fields.susceptibility_field import field_grid_of
+    D0 = 2.0e-9
+    g = d.PackedMyelinatedCylinders([1.0e-6], 0.7, [[0.0, 0.0]], 30e-6, N_max=2, D_intra=D0, D_extra=D0)
+    walk = d.simulate_trajectories(2000, D0, g, 6e-3, 3e-4, seed=0, require_gpu=False)
+    out = tmp_path_factory.mktemp("pk") / "sheathed.rpk"
+    build_replay_pack(walk, id="test/sheathed", license="x", citation="x", K=8, out_path=str(out),
+                      envelope=dict(bvals=[0.0, 1e8], dirs=[[0, 0, 1], [1, 0, 0]], delta_frac=0.2, Delta_frac=0.5,
+                                    ogse_periods=[1], shortd_b=1e8, shortd_deltas_frac=[0.2]),
+                      field=field_grid_of(g, res=0.2e-6), susc_path_K=16)
+    return str(out)
+
+
+def test_a_spin_echo_under_a_field_refocuses_on_the_train_route_as_on_the_phase_sum(field_pack):
+    """A spin echo at b = 0 in a field is one pathway with the sign (+1, -1): the train route must return what the
+    phase-sum route returns for the same sequence, which it did not while the gated copy carried no sign and the
+    field went unrefocused (a T2*-like loss of a tenth at 7 T)."""
+    from dmipy_sim.spec import Tissue
+    pack = read_rpk(field_pack)
+    grid = Grid(shape=SH, voxel_size_m=(2.5e-2,) * 3,
+                origin_m=tuple(-0.5 * (n - 1) * 2.5e-2 for n in SH), isocenter_m=(0.0, 0.0, 0.0))
+    c = np.zeros(SH + (45,), np.float32); c[..., 0] = 1.0 / np.sqrt(4 * np.pi); c[..., 3] = 0.3
+    wm = PackSubstrate(field_pack, m0=1.0, name="wm", tissue=Tissue(chi_iso=-1e-5, chi_aniso=0.0))   # a large chi: the fixture walk is 6 ms
+    ph = Phantom.compose(grid, fractions={wm: np.ones(SH, np.float32)}, orientation={wm: ODF(c, basis="mrtrix3")}, remainder=Inert(name="bg"))
+    se = sequences.pgse([[0.0, 0.0, 1.0]], 1e-3, 3e-3, bvalues=[0.0], TE=6e-3, n_t=60)
+    for B0 in (None, 7.0):                                   # in magnitude: the pathway carries the pulses' phase, the phase sum does not
+        S_sum = np.abs(ph.replay(se, scanner=B0, packs={0: pack}, complex_signal=True)[..., 0])
+        S_train = np.abs(ph.replay_train(se, scanner=B0, packs={0: pack}, complex_signal=True)[..., 0])
+        np.testing.assert_allclose(S_train, S_sum, rtol=1e-6, atol=1e-9)
+    # and the field does something at 7 T on a gradient echo, so the agreement is not trivial
+    gre = sequences.gre(6e-3, n_t=60)
+    S_none = ph.replay(gre, scanner=None, packs={0: pack})[..., 0]
+    S_7 = ph.replay(gre, scanner=7.0, packs={0: pack})[..., 0]
+    assert np.nanmax(np.abs(S_7 / S_none - 1.0)) > 1e-3

@@ -234,7 +234,10 @@ def substrate_from_meta(meta, *, pack=None):
 
 
 def _echo_time(seq):
-    """The sequence's echo time (s): its encoding's, else its duration."""
+    """The sequence's echo time (s): its encoding's, else its duration; for a pathway-gated waveform the time
+    its pathway spends transverse, the stored time being its ``TM``."""
+    if getattr(seq, "gate", None) is not None:
+        return float(seq.T) - float(seq.TM or 0.0)
     enc = getattr(seq, "encoding", None)
     TE = getattr(enc, "TE", None) if enc is not None else None
     if TE is None:
