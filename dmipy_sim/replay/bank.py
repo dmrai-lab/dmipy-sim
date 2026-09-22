@@ -559,19 +559,23 @@ def _susc_path_bloch_fidelity(m, arrays, pm, gm, env, n_sub=8000):
 SUSC_PATH_LADDER = (16, 32, 64, 128, 256, 512, 1024, 2048)
 
 
-def derive_susc_path_K(m, field, env, *, K_max, bits=8, ladder=SUSC_PATH_LADDER):
-    """The field tier's band, derived on the walk it will store: ``(K, record)``.
+def derive_susc_path_K(m, field, env, *, K_max, ladder=SUSC_PATH_LADDER, containers=(8, 16)):
+    """The field tier's band and container, derived on the walk it will store: ``(K, bits, record)``.
 
     The path channel's band is the pack's to choose per substrate, since what it must resolve is the field a
     walker sees along its path, and that depends on the geometry (a sheath two nodes wide changes the field at
-    every step, a smooth far field does not) and on the gates the tier serves. So it is measured rather than
-    fixed: the field is encoded once at the top of ``ladder`` (capped at ``K_max``, the position channel's band,
-    beyond which the tier would cost more than the walk it rides on), and each rung is read as the pack's own
-    certificate reads it -- the coefficients truncated to the rung and quantised at ``bits``, contracted for each
-    field strength and direction of the envelope's battery, decoded and gated by GRE, spin echo and the CPMG train
-    the rung serves (:func:`_susc_path_fidelity`) -- against the split-half floor of the reference. The smallest
-    rung whose worst error is within the floor is the band; when none is, the top rung, and the certificate
-    the pack then measures at it says how far it sits. ``record`` lists every rung's error and floor.
+    every step, a smooth far field does not) and on the gates the tier serves; and its container is the pack's
+    too, since an integer container's error is set by the largest coefficient of a band over the walkers and does
+    not fall with the band (on the CATERPillar pilot the 8-bit tier sits at 1.6 times its floor at every band, the
+    16-bit one at a third of it by 256). So both are measured rather than fixed: the field is encoded once at the
+    top of ``ladder`` (capped at ``K_max``, the position channel's band, beyond which the tier would cost more than
+    the walk it rides on), and each (band, container) pair is read as the pack's own certificate reads it -- the
+    coefficients truncated to the rung and quantised, contracted for each field strength and direction of the
+    envelope's battery, decoded and gated by GRE, spin echo and the CPMG train the rung serves
+    (:func:`_susc_path_fidelity`) -- against the split-half floor of the reference. The pair kept is the cheapest
+    in bytes per walker whose worst error is within the floor; when none is, the widest container at the top rung,
+    and the certificate the pack then measures at it says how far it sits. ``record`` lists every pair's error
+    and floor.
     """
     from scipy.fft import idct
     traj = np.asarray(m["traj"], np.float64); n_w = traj.shape[0]
@@ -598,25 +602,28 @@ def derive_susc_path_K(m, field, env, *, K_max, bits=8, ladder=SUSC_PATH_LADDER)
     if not has_aniso:
         ca = 0.0
     perm = np.random.RandomState(0).permutation(n_w); A, B = perm[:n_w // 2], perm[n_w // 2:]
-    err = {k: 0.0 for k in rungs}; floor = {k: 0.0 for k in rungs}
+    pairs = [(k, b) for k in rungs for b in containers]
+    err = {p: 0.0 for p in pairs}; floor = {p: 0.0 for p in pairs}
     for B0 in (env.get("B0_list") or [3.0, 7.0]):
         for th in (env.get("theta_deg") or [0, 90]):
             t = np.deg2rad(float(th)); d = [np.sin(t), 0.0, np.cos(t)]
             f_raw = _raw_field(m, field, traj, d, B0=B0, chi_iso=chi_i, chi_aniso=ca)
-            for k in rungs:
-                a_k, m_k = _quantise_susc_path(coeffs[:, :, :k], dict(meta_top, K=k, max_refocus_pulses=k // 2), bits)
+            for k, b in pairs:
+                a_k, m_k = _quantise_susc_path(coeffs[:, :, :k], dict(meta_top, K=k, max_refocus_pulses=k // 2), b)
                 C, _names = susc_path_coeffs(a_k, m_k)                                     # dequantised, zz re-inserted
                 cd = susc_path_field(C, d, B0=B0, chi_iso=chi_i, chi_aniso=ca, has_aniso=has_aniso)   # (n_w, k): linear in the channels
                 f_dec = idct(np.pad(cd, ((0, 0), (0, n_t - k))), type=2, norm="ortho", axis=1)
                 gates = [np.ones(n_t), _cpmg_gate(n_t, 1), _cpmg_gate(n_t, max(1, k // 2))]
                 e, f = _gate_battery(f_raw, f_dec, gates, w, A, B, dt)
-                err[k], floor[k] = max(err[k], e), max(floor[k], f)
-    within = [k for k in rungs if err[k] <= floor[k]]
-    K = within[0] if within else top
-    record = dict(rule="derived", criterion="the smallest band on the ladder whose codec error on the certificate's battery is within its floor",
-                  ladder=[dict(K=int(k), err=float(err[k]), floor=float(floor[k])) for k in rungs],
+                err[(k, b)], floor[(k, b)] = max(err[(k, b)], e), max(floor[(k, b)], f)
+    cost = lambda p: p[0] * p[1]                                                          # bytes per walker per channel, to a factor
+    within = sorted([p for p in pairs if err[p] <= floor[p]], key=lambda p: (cost(p), p[0]))
+    K, bits = within[0] if within else (top, max(containers))
+    record = dict(rule="derived",
+                  criterion="the cheapest (band, container) pair, in bytes per walker, whose codec error on the certificate's battery is within its floor",
+                  ladder=[dict(K=int(k), bits=int(b), err=float(err[(k, b)]), floor=float(floor[(k, b)])) for k, b in pairs],
                   K_max=int(K_max), within_floor=bool(within))
-    return int(K), record
+    return int(K), int(bits), record
 
 
 def _susc_path_fidelity(m, arrays, pm, gm, env):
@@ -1288,9 +1295,9 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto"
     (path channel only: it has no grid),
     ``field=False`` leaves the tier out; the basis is geometry only, and B0, its direction and the
     susceptibilities are replay knobs. ``susc_path_K`` is the field tier's own band: a number, ``"auto"`` --
-    derived on this walk as the smallest band whose codec error on the certificate's battery is within its
-    floor (:func:`derive_susc_path_K`; the grid route, exact, when the positions are lossless) -- or ``None``
-    for the grid alone. ``weights`` are per-walker proton-density weights (default: the pools' water fractions
+    the band and the container (``susc_path_bits``) derived on this walk as the cheapest pair whose codec
+    error on the certificate's battery is within its floor (:func:`derive_susc_path_K`; the grid route, exact,
+    when the positions are lossless) -- or ``None`` for the grid alone. ``weights`` are per-walker proton-density weights (default: the pools' water fractions
     by compartment, else uniform).
 
     The position ensemble is compressed by ``method`` (default ``bridge_dst``: endpoints plus a
@@ -1390,7 +1397,7 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto"
                 susc_path_K = None                             # lossless positions: the grid route is exact and costs no channel
             else:
                 run.phase("field band")
-                susc_path_K, _band_record = derive_susc_path_K(m, _field, env, K_max=int(K), bits=susc_path_bits)
+                susc_path_K, susc_path_bits, _band_record = derive_susc_path_K(m, _field, env, K_max=int(K))
         if _field is not None and m.get("susc_field_basis") is None:
             # a strand substrate's per-segment field: no grid to store, the path channel is the tier
             if not susc_path_K:
