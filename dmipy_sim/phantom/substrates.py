@@ -242,8 +242,15 @@ def _echo_time(seq):
     return float(np.max(np.atleast_1d(TE)))
 
 
+_DELIVERED = ("imposed_gradient", "background_gradient", "concomitant", "gradient_nonlinearity")
+
+
 def _b_values(seq):
+    """The b a closed form responds to: the encoding's declared value, unless the sequence has been composed with
+    a machine's gradient terms (``with_background_gradient``, ``with_concomitant``, ``with_gradient_nonlinearity``),
+    whose ``encoding`` still records what was prescribed while ``b()`` reports what is delivered."""
     enc = getattr(seq, "encoding", None)
-    if enc is not None and getattr(enc, "bvalues", None) is not None:
+    delivered = any(getattr(seq, k, None) is not None for k in _DELIVERED)
+    if enc is not None and getattr(enc, "bvalues", None) is not None and not delivered:
         return np.asarray(enc.bvalues, np.float64).reshape(-1)
     return np.atleast_1d(np.asarray(seq.b(), np.float64))
