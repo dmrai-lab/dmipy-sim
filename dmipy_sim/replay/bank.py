@@ -567,32 +567,31 @@ def derive_susc_path_K(m, field, env, *, K_max, ladder=SUSC_PATH_LADDER, contain
     every step, a smooth far field does not) and on the gates the tier serves; and its container is the pack's
     too, since an integer container's error is set by the largest coefficient of a band over the walkers and does
     not fall with the band (on the CATERPillar pilot the 8-bit tier sits at 1.6 times its floor at every band, the
-    16-bit one at a third of it by 256). So both are measured rather than fixed: the field is encoded once at the
-    top of ``ladder`` (capped at ``K_max``, the position channel's band, beyond which the tier would cost more than
-    the walk it rides on), and each (band, container) pair is read as the pack's own certificate reads it -- the
-    coefficients truncated to the rung and quantised, contracted for each field strength and direction of the
-    envelope's battery, decoded and gated by GRE, spin echo and the CPMG train the rung serves
-    (:func:`_susc_path_fidelity`) -- against the split-half floor of the reference. The pair kept is the cheapest
-    in bytes per walker whose worst error is within the floor; when none is, the widest container at the top rung,
-    and the certificate the pack then measures at it says how far it sits. ``record`` lists every pair's error
-    and floor.
+    16-bit one at a third of it by 256). So both are measured rather than fixed. The field is encoded once at the
+    top of ``ladder`` (the exact series, ``n_t`` bands, closes it), and the rungs are read in ascending band, the
+    narrower container first, each as the pack's own certificate reads it -- the coefficients truncated to the
+    rung and quantised, contracted for each field strength and direction of the envelope's battery, decoded and
+    gated by GRE, spin echo and the CPMG train the rung serves (:func:`_susc_path_fidelity`) -- against the
+    split-half floor of the reference. The first pair within the floor is the band and the container: the
+    cheapest in bytes per walker that keeps the tier's accuracy. ``K_max``, the position channel's band, is the
+    point past which the tier costs more than the walk it rides on; the ladder continues beyond it when the
+    floor is not yet reached, and the record says so. When no pair reaches the floor at all (a container's own
+    error above it at the exact series), the pair of least error is taken, the cheapest among those within
+    three per cent of it. ``record`` lists every pair read.
     """
     from scipy.fft import idct
     traj = np.asarray(m["traj"], np.float64); n_w = traj.shape[0]
     every = int(m.get("susc_field_every", 1) or 1)
     n_t = len(range(0, traj.shape[1], every)); dt = float(m["dt_traj"]) * every
-    rungs = [k for k in ladder if k <= int(K_max)]
-    if not rungs or rungs[-1] < int(K_max) and int(K_max) < ladder[-1]:
-        rungs = rungs + [int(K_max)]                      # the position band itself closes the ladder
-    rungs = sorted(set(min(k, n_t) for k in rungs))
+    rungs = sorted(set([min(int(k), n_t) for k in ladder if k < n_t] + [n_t]))
     top = rungs[-1]
     if m.get("susc_field_samples") is not None:
         from ..fields.hollow_cylinder import CHANNEL_NAMES
         arrays_top, meta_top = susc_path_encode_series(np.asarray(m["susc_field_samples"]), CHANNEL_NAMES, K=top, bits=None,
-                                                       layout="wtc", dt=dt)
+                                                       layout="wtc", dt=dt, dtype=np.float32)
     else:
-        arrays_top, meta_top = susc_path_encode(field, traj, K=top, bits=None)
-    coeffs = np.asarray(arrays_top["susc_path_dct"], np.float64)               # (n_w, n_ch, top), float
+        arrays_top, meta_top = susc_path_encode(field, traj, K=top, bits=None, dtype=np.float32)
+    coeffs = np.asarray(arrays_top["susc_path_dct"], np.float32)               # (n_w, n_ch, top)
     has_aniso = coeffs.shape[1] >= 12
     w = np.asarray(m["w"], np.float64) if m.get("w") is not None else np.ones(n_w)
     chi_i = float(m.get("susc_chi_iso") or 1.06e-6)
@@ -602,27 +601,39 @@ def derive_susc_path_K(m, field, env, *, K_max, ladder=SUSC_PATH_LADDER, contain
     if not has_aniso:
         ca = 0.0
     perm = np.random.RandomState(0).permutation(n_w); A, B = perm[:n_w // 2], perm[n_w // 2:]
-    pairs = [(k, b) for k in rungs for b in containers]
-    err = {p: 0.0 for p in pairs}; floor = {p: 0.0 for p in pairs}
-    for B0 in (env.get("B0_list") or [3.0, 7.0]):
-        for th in (env.get("theta_deg") or [0, 90]):
-            t = np.deg2rad(float(th)); d = [np.sin(t), 0.0, np.cos(t)]
-            f_raw = _raw_field(m, field, traj, d, B0=B0, chi_iso=chi_i, chi_aniso=ca)
-            for k, b in pairs:
-                a_k, m_k = _quantise_susc_path(coeffs[:, :, :k], dict(meta_top, K=k, max_refocus_pulses=k // 2), b)
-                C, _names = susc_path_coeffs(a_k, m_k)                                     # dequantised, zz re-inserted
+    settings = [(B0, th) for B0 in (env.get("B0_list") or [3.0, 7.0]) for th in (env.get("theta_deg") or [0, 90])]
+    raw = {}                                                                                    # the reference per setting, once
+    for B0, th in settings:
+        t = np.deg2rad(float(th)); d = [np.sin(t), 0.0, np.cos(t)]
+        raw[(B0, th)] = np.asarray(_raw_field(m, field, traj, d, B0=B0, chi_iso=chi_i, chi_aniso=ca), np.float32)
+    err, floor, order = {}, {}, []
+    chosen = None
+    for k in rungs:
+        for bits in containers:
+            e_max = f_max = 0.0
+            a_k, m_k = _quantise_susc_path(np.asarray(coeffs[:, :, :k], np.float64), dict(meta_top, K=k, max_refocus_pulses=k // 2), bits)
+            C, _names = susc_path_coeffs(a_k, m_k)                                                 # dequantised, zz re-inserted
+            gates = [np.ones(n_t), _cpmg_gate(n_t, 1), _cpmg_gate(n_t, max(1, k // 2))]
+            for B0, th in settings:
+                t = np.deg2rad(float(th)); d = [np.sin(t), 0.0, np.cos(t)]
                 cd = susc_path_field(C, d, B0=B0, chi_iso=chi_i, chi_aniso=ca, has_aniso=has_aniso)   # (n_w, k): linear in the channels
                 f_dec = idct(np.pad(cd, ((0, 0), (0, n_t - k))), type=2, norm="ortho", axis=1)
-                gates = [np.ones(n_t), _cpmg_gate(n_t, 1), _cpmg_gate(n_t, max(1, k // 2))]
-                e, f = _gate_battery(f_raw, f_dec, gates, w, A, B, dt)
-                err[(k, b)], floor[(k, b)] = max(err[(k, b)], e), max(floor[(k, b)], f)
-    cost = lambda p: p[0] * p[1]                                                          # bytes per walker per channel, to a factor
-    within = sorted([p for p in pairs if err[p] <= floor[p]], key=lambda p: (cost(p), p[0]))
-    K, bits = within[0] if within else (top, max(containers))
+                e, f = _gate_battery(raw[(B0, th)], f_dec, gates, w, A, B, dt)
+                e_max, f_max = max(e_max, e), max(f_max, f)
+            err[(k, bits)], floor[(k, bits)] = e_max, f_max; order.append((k, bits))
+            if e_max <= f_max:
+                chosen = (k, bits); break
+        if chosen is not None:
+            break
+    if chosen is None:                                                    # nothing within the floor: the least error, cheaply
+        best = min(err.values())
+        chosen = min([p for p in order if err[p] <= 1.03 * best], key=lambda p: (p[0] * p[1], p[0]))
+    K, bits = chosen
     record = dict(rule="derived",
-                  criterion="the cheapest (band, container) pair, in bytes per walker, whose codec error on the certificate's battery is within its floor",
-                  ladder=[dict(K=int(k), bits=int(b), err=float(err[(k, b)]), floor=float(floor[(k, b)])) for k, b in pairs],
-                  K_max=int(K_max), within_floor=bool(within))
+                  criterion="the first (band, container) pair in ascending band, the narrower container first, whose codec error on "
+                            "the certificate's battery is within its floor; failing every pair, the cheapest among the least errors",
+                  ladder=[dict(K=int(k), bits=int(b), err=float(err[(k, b)]), floor=float(floor[(k, b)])) for k, b in order],
+                  K_max=int(K_max), above_position_band=bool(K > int(K_max)), within_floor=bool(err[chosen] <= floor[chosen]))
     return int(K), int(bits), record
 
 

@@ -381,25 +381,30 @@ def test_builder_takes_a_persistent_walk_and_assembles_the_tiers_it_carries():
 
 
 def test_the_field_tiers_band_is_derived_on_the_walk():
-    """``susc_path_K="auto"``: the band and the container are the cheapest pair whose codec error on the certificate's
-    battery is within its floor, measured on this walk, and the record of every pair travels with the channel. The
-    pack's own certificate at the chosen pair then agrees with its reading, since it is the same battery."""
+    """``susc_path_K="auto"``: the band and the container are the first pair, in ascending band with the narrower
+    container first, whose codec error on the certificate's battery is within its floor, measured on this walk, and
+    the record of every pair read travels with the channel. The pack's own certificate at the chosen pair then agrees
+    with its reading, since it is the same battery."""
     from dmipy_sim.replay.bank import SUSC_PATH_LADDER
     env = dict(_lean_env(), B0_list=[7.0], theta_deg=[0, 90])
     pk = build_replay_pack(_susc_master(), id="test/slab-susc-auto", method="bridge_dst",
                            envelope=env, K=64, susc_path_K="auto", license="CC-BY-4.0", citation="test")
     pm = pk.meta["compression"]["channels"]["susceptibility_path"]
     band = pm["band"]
-    assert band["rule"] == "derived" and pm["K"] in SUSC_PATH_LADDER and pm["K"] <= 64 and pm["bits"] in (8, 16)
+    assert band["rule"] == "derived" and (pm["K"] in SUSC_PATH_LADDER or pm["K"] == N_T) and pm["bits"] in (8, 16)
+    order = [(r["K"], r["bits"]) for r in band["ladder"]]
     rungs = {(r["K"], r["bits"]): r for r in band["ladder"]}
     chosen = rungs[(pm["K"], pm["bits"])]
-    assert chosen["floor"] > 0
+    assert chosen["floor"] > 0 and order == sorted(order)                             # ascending band, narrower container first
     if band["within_floor"]:
         assert chosen["err"] <= chosen["floor"]
-        cheaper = [r for (k, b), r in rungs.items() if k * b < pm["K"] * pm["bits"]]
-        assert all(r["err"] > r["floor"] for r in cheaper)                              # the cheapest such pair
+        before = order[:order.index((pm["K"], pm["bits"]))]
+        assert all(rungs[p]["err"] > rungs[p]["floor"] for p in before)                # the first pair within the floor
+        assert order[-1] == (pm["K"], pm["bits"])                                     # and the ladder stopped there
     else:
-        assert pm["K"] == max(k for k, _b in rungs) and pm["bits"] == 16
+        best = min(r["err"] for r in rungs.values())
+        assert chosen["err"] <= 1.03 * best
+    assert band["above_position_band"] == (pm["K"] > 64)
     fid = pk.meta["fidelity"]
     assert abs(fid["err_susc_path"] - chosen["err"]) <= 0.25 * chosen["err"] + 1e-6      # the same battery, the native container
     assert pm["max_refocus_pulses"] == pm["K"] // 2
