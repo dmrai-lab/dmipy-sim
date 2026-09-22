@@ -815,9 +815,14 @@ class ReplayPhantom:
         S = np.zeros((self.n_voxels, n_meas), np.complex128)
         gates = None
         if trains:
+            from .so3 import rebanded
             first = next(iter(trains.values()))
-            probe = first.at(1.0, echo=echo)
-            keep_l, keep_n = probe.lmax, probe.nmax
+            probes = {i: tr.at(1.0, echo=echo) for i, tr in trains.items()}
+            # each pack's train is expanded at the band its own response needs (a b = 0 gate reaches order two,
+            # a diffusion preparation higher); the composition reads them all at the widest, zeros above a
+            # narrower one's own band being exact, and no wider than the distribution can use
+            keep_l = min(int(keep[0]), max(pr.lmax for pr in probes.values()))
+            keep_n = max(pr.nmax for pr in probes.values())
             gates, readouts = first.n_gates, first.readouts
             vp, F = self.slot_coefficients(keep_l, keep_n)
             ids = sid[vp[:, 0], vp[:, 1]].astype(int)
@@ -829,8 +834,8 @@ class ReplayPhantom:
                 for scale in scales:
                     for dwv in offsets:
                         pairs[(i, float(scale), float(dwv))] = len(coeff)
-                        coeff.append(np.asarray(tr.at(float(scale), echo=echo, dw=float(dwv)).retained(keep_l, keep_n),
-                                                np.complex128))
+                        resp = tr.at(float(scale), echo=echo, dw=float(dwv))
+                        coeff.append(np.asarray(rebanded(resp.coeffs, resp.lmax, resp.nmax, keep_l, keep_n), np.complex128))
             coeff = np.stack(coeff)                                   # (n_classes, n_meas, n_feat)
             which = np.array([pairs.get((int(i), float(sc), float(dv)), -1)
                               for i, sc, dv in zip(ids, binned[vp[:, 0]], dw_binned[vp[:, 0]])])

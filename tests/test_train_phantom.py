@@ -262,3 +262,37 @@ def test_an_oriented_closed_form_is_refused_under_a_train():
 
     with pytest.raises(ValueError, match="oriented closed form"):
         closed_form_train(Stick(), _train())
+
+
+def test_a_band_is_read_wider_by_zeros_and_narrower_by_truncation():
+    """Two packs whose responses were projected at different bands compose at one: the narrower is zero-extended
+    (exact, since a projection at the band a response needs has nothing above it), the wider truncated; a band
+    narrower in one index and wider in the other is refused."""
+    from dmipy_sim.replay.so3 import rebanded, so3_index, extend_coeffs, truncate_coeffs
+    rng = np.random.default_rng(0)
+    c2 = rng.normal(size=(3, len(so3_index(2, 0))))
+    wide = rebanded(c2, 2, 0, 8, 0)
+    assert wide.shape == (3, len(so3_index(8, 0)))
+    np.testing.assert_array_equal(truncate_coeffs(wide, 8, 0, 2, 0), c2)      # the round trip is exact
+    assert np.count_nonzero(wide) == np.count_nonzero(c2)                    # and nothing was invented above
+    c8 = rng.normal(size=(3, len(so3_index(8, 0))))
+    np.testing.assert_array_equal(rebanded(c8, 8, 0, 2, 0), truncate_coeffs(c8, 8, 0, 2, 0))
+    np.testing.assert_array_equal(extend_coeffs(c2, 2, 0, 2, 0), c2)
+    with pytest.raises(ValueError, match="narrower in one"):
+        rebanded(rng.normal(size=(1, len(so3_index(4, 2)))), 4, 2, 8, 0)
+
+
+def test_a_b_zero_train_composes_packs_of_different_bands(brain):
+    """The case that was refused: a b = 0 preparation, whose gate a pack expands at order two, beside a
+    substrate expanded wider -- here the same pack asked for the distribution's order eight -- replays and equals
+    the single-pack replay, since the zeros above order two are exact."""
+    ph, pack, grid = brain
+    train = sequences.splice([[1.0, 0, 0]], 15e-3, 25e-3, 3, 10e-3, bvalues=[0.0],
+                             TE_prep=80e-3, beta_deg=150.0, n_t_per_echo=40)
+    c = np.zeros(SH + (45,), np.float32); c[..., 0] = 1.0 / np.sqrt(4 * np.pi); c[..., 3] = 0.3
+    wm = PackSubstrate(pack, m0=0.7, name="wm"); wm2 = PackSubstrate(pack, m0=0.7, name="wm2")
+    two = Phantom.compose(grid, fractions={wm: np.full(SH, 0.5, np.float32), wm2: np.full(SH, 0.5, np.float32)},
+                          orientation={wm: ODF(c, basis="mrtrix3"), wm2: ODF(c, basis="mrtrix3")}, remainder=Inert(name="bg"))
+    S2 = two.replay_train(train, echo=1, packs={0: pack, 1: pack}, complex_signal=True)
+    S1 = ph.replay_train(train, echo=1, packs={0: pack}, complex_signal=True)
+    np.testing.assert_allclose(S2, S1, rtol=1e-9, atol=1e-12)
