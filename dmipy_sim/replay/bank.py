@@ -575,15 +575,22 @@ def derive_susc_path_K(m, field, env, *, K_max, ladder=SUSC_PATH_LADDER, contain
     split-half floor of the reference. The first pair within the floor is the band and the container: the
     cheapest in bytes per walker that keeps the tier's accuracy. ``K_max``, the position channel's band, is the
     point past which the tier costs more than the walk it rides on; the ladder continues beyond it when the
-    floor is not yet reached, and the record says so. When no pair reaches the floor at all (a container's own
-    error above it at the exact series), the pair of least error is taken, the cheapest among those within
-    three per cent of it. ``record`` lists every pair read.
+    floor is not yet reached, and the record says so. A refocusing depth the envelope declares
+    (``max_refocus_pulses``) puts a floor of twice that under the ladder, since the tier serves ``K / 2``
+    pulses. When no pair reaches the floor at all (a container's own error above it at the exact series), the
+    pair of least error is taken, the cheapest among those within three per cent of it. ``record`` lists every
+    pair read.
     """
     from scipy.fft import idct
     traj = np.asarray(m["traj"], np.float64); n_w = traj.shape[0]
     every = int(m.get("susc_field_every", 1) or 1)
     n_t = len(range(0, traj.shape[1], every)); dt = float(m["dt_traj"]) * every
-    rungs = sorted(set([min(int(k), n_t) for k in ladder if k < n_t] + [n_t]))
+    # the band sets the refocusing depth the tier serves, K / 2 pulses: a train the envelope declares puts a floor
+    # under the ladder, so a pack built for a twelve-pulse train is never derived at eight
+    depth = int(env.get("max_refocus_pulses") or 0)
+    min_K = 2 * depth
+    rungs = sorted(set([min(int(k), n_t) for k in ladder if k < n_t] + [n_t] + ([min(min_K, n_t)] if min_K else [])))
+    rungs = [k for k in rungs if k >= min_K] or [n_t]
     top = rungs[-1]
     if m.get("susc_field_samples") is not None:
         from ..fields.hollow_cylinder import CHANNEL_NAMES
@@ -633,7 +640,8 @@ def derive_susc_path_K(m, field, env, *, K_max, ladder=SUSC_PATH_LADDER, contain
                   criterion="the first (band, container) pair in ascending band, the narrower container first, whose codec error on "
                             "the certificate's battery is within its floor; failing every pair, the cheapest among the least errors",
                   ladder=[dict(K=int(k), bits=int(b), err=float(err[(k, b)]), floor=float(floor[(k, b)])) for k, b in order],
-                  K_max=int(K_max), above_position_band=bool(K > int(K_max)), within_floor=bool(err[chosen] <= floor[chosen]))
+                  K_max=int(K_max), min_K=int(min_K), above_position_band=bool(K > int(K_max)),
+                  within_floor=bool(err[chosen] <= floor[chosen]))
     return int(K), int(bits), record
 
 

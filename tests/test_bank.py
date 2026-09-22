@@ -410,6 +410,17 @@ def test_the_field_tiers_band_is_derived_on_the_walk():
     assert pm["max_refocus_pulses"] == pm["K"] // 2
 
 
+def test_a_declared_train_depth_puts_a_floor_under_the_ladder():
+    """A pack built for a train of n pulses must serve n: the tier serves K / 2, so the envelope's
+    ``max_refocus_pulses`` keeps every rung at or above twice it, whatever the floor would have allowed."""
+    env = dict(_lean_env(), B0_list=[7.0], theta_deg=[0], max_refocus_pulses=20)
+    pk = build_replay_pack(_susc_master(), id="test/slab-susc-depth", method="bridge_dst",
+                           envelope=env, K=64, susc_path_K="auto", license="CC-BY-4.0", citation="test")
+    pm = pk.meta["compression"]["channels"]["susceptibility_path"]
+    assert pm["band"]["min_K"] == 40 and pm["K"] >= 40 and pm["max_refocus_pulses"] >= 20
+    assert all(r["K"] >= 40 for r in pm["band"]["ladder"])
+
+
 def test_lossless_positions_take_the_grid_route_under_auto():
     """With the positions stored losslessly the grid route is exact and costs no channel, so ``"auto"`` stores no
     path channel there; a band that is not a number, ``"auto"`` or ``None`` is refused."""
