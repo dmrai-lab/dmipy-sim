@@ -417,8 +417,8 @@ def test_a_declared_train_depth_puts_a_floor_under_the_ladder():
     pk = build_replay_pack(_susc_master(), id="test/slab-susc-depth", method="bridge_dst",
                            envelope=env, K=64, susc_path_K="auto", license="CC-BY-4.0", citation="test")
     pm = pk.meta["compression"]["channels"]["susceptibility_path"]
-    assert pm["band"]["min_K"] == 40 and pm["K"] >= 40 and pm["max_refocus_pulses"] >= 20
-    assert all(r["K"] >= 40 for r in pm["band"]["ladder"])
+    assert pm["band"]["min_K"] == 40 and pm["K"] >= 40 and pm["max_refocus_pulses"] == 20      # the declared depth, not K / 2
+    assert pm["band"]["depth"] == 20 and all(r["K"] >= 40 for r in pm["band"]["ladder"])
 
 
 def test_lossless_positions_take_the_grid_route_under_auto():

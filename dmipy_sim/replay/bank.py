@@ -585,8 +585,9 @@ def derive_susc_path_K(m, field, env, *, K_max, ladder=SUSC_PATH_LADDER, contain
     traj = np.asarray(m["traj"], np.float64); n_w = traj.shape[0]
     every = int(m.get("susc_field_every", 1) or 1)
     n_t = len(range(0, traj.shape[1], every)); dt = float(m["dt_traj"]) * every
-    # the band sets the refocusing depth the tier serves, K / 2 pulses: a train the envelope declares puts a floor
-    # under the ladder, so a pack built for a twelve-pulse train is never derived at eight
+    # the band bounds the refocusing depth the tier serves, K / 2 pulses; a train the envelope declares is the depth
+    # every rung is read at and certified for, and a floor under the ladder, so a pack built for a twelve-pulse train
+    # is never derived at eight and a wide band is not tested as a claim to a thousand pulses
     depth = int(env.get("max_refocus_pulses") or 0)
     min_K = 2 * depth
     rungs = sorted(set([min(int(k), n_t) for k in ladder if k < n_t] + [n_t] + ([min(min_K, n_t)] if min_K else [])))
@@ -618,9 +619,10 @@ def derive_susc_path_K(m, field, env, *, K_max, ladder=SUSC_PATH_LADDER, contain
     for k in rungs:
         for bits in containers:
             e_max = f_max = 0.0
-            a_k, m_k = _quantise_susc_path(np.asarray(coeffs[:, :, :k], np.float64), dict(meta_top, K=k, max_refocus_pulses=k // 2), bits)
+            n_p = _depth(k, depth)                                                                 # the depth this rung would serve
+            a_k, m_k = _quantise_susc_path(np.asarray(coeffs[:, :, :k], np.float64), dict(meta_top, K=k, max_refocus_pulses=n_p), bits)
             C, _names = susc_path_coeffs(a_k, m_k)                                                 # dequantised, zz re-inserted
-            gates = [np.ones(n_t), _cpmg_gate(n_t, 1), _cpmg_gate(n_t, max(1, k // 2))]
+            gates = [np.ones(n_t), _cpmg_gate(n_t, 1), _cpmg_gate(n_t, max(1, n_p))]
             for B0, th in settings:
                 t = np.deg2rad(float(th)); d = [np.sin(t), 0.0, np.cos(t)]
                 cd = susc_path_field(C, d, B0=B0, chi_iso=chi_i, chi_aniso=ca, has_aniso=has_aniso)   # (n_w, k): linear in the channels
@@ -640,7 +642,7 @@ def derive_susc_path_K(m, field, env, *, K_max, ladder=SUSC_PATH_LADDER, contain
                   criterion="the first (band, container) pair in ascending band, the narrower container first, whose codec error on "
                             "the certificate's battery is within its floor; failing every pair, the cheapest among the least errors",
                   ladder=[dict(K=int(k), bits=int(b), err=float(err[(k, b)]), floor=float(floor[(k, b)])) for k, b in order],
-                  K_max=int(K_max), min_K=int(min_K), above_position_band=bool(K > int(K_max)),
+                  K_max=int(K_max), min_K=int(min_K), depth=(int(depth) or None), above_position_band=bool(K > int(K_max)),
                   within_floor=bool(err[chosen] <= floor[chosen]))
     return int(K), int(bits), record
 
@@ -728,7 +730,7 @@ def susc_path_series_fidelity(series_raw, arrays, pm, gm, *, w, dt, env=None, ch
     return dict(err=float(err), floor=float(floor), n_pulses_certified=n_p)
 
 
-def susc_path_encode(field, traj, *, K=32, bits=8, dtype=np.float16, atol_trace=1e-6):
+def susc_path_encode(field, traj, *, K=32, bits=8, dtype=np.float16, atol_trace=1e-6, max_refocus_pulses=None):
     """Encode the off-resonance field ALONG each walker's path as K temporal DCT-II coefficients.
 
     ``field`` is the substrate's field source -- a :class:`~dmipy_sim.fields.susceptibility_field.FieldGrid` or a
@@ -758,7 +760,7 @@ def susc_path_encode(field, traj, *, K=32, bits=8, dtype=np.float16, atol_trace=
             coeffs[i:i + step, c, :] = dct(ch[:, :, col], type=2, norm="ortho", axis=1)[:, :K]
     meta = dict(channel="susc_path_dct", K=K, n_t=int(n_t), n_ch=len(grids), channels=names,
                 iso_P_zz=("implied" if drop_zz else "stored"), trace_residual=trace_res,
-                max_refocus_pulses=K // 2)
+                max_refocus_pulses=_depth(K, max_refocus_pulses))
     if bits is None:
         meta["bits"] = None; meta["dtype"] = np.dtype(dtype).name
         return {"susc_path_dct": np.asarray(coeffs, dtype)}, meta
@@ -779,8 +781,14 @@ def _quantise_susc_path(coeffs, meta, bits):
     return {"susc_path_dct": q, "susc_path_scale": np.asarray(scale, np.float32)}, meta
 
 
+def _depth(K, declared):
+    """The refocusing depth a path channel of ``K`` bands serves: the declared train when there is one, never more than
+    the ``K / 2`` pulses the band can gate; ``K / 2`` itself when none is declared."""
+    return int(min(int(K) // 2, int(declared))) if declared else int(K) // 2
+
+
 def susc_path_encode_series(series, names, *, K=32, bits=8, dtype=np.float16, layout="wct", atol_trace=1e-4, device="auto",
-                            chunk=20_000, dt=None):
+                            chunk=20_000, dt=None, max_refocus_pulses=None):
     """:func:`susc_path_encode` from the per-save field series itself, in the canonical channel order with
     ``names``: ``(n_w, n_ch, n_t)`` (``layout="wct"``, what a decoded path channel gives) or ``(n_w, n_t, n_ch)``
     (``layout="wtc"``, the interval means a walk sampled), encoded in walker chunks of ``chunk`` on ``device``
@@ -815,7 +823,8 @@ def susc_path_encode_series(series, names, *, K=32, bits=8, dtype=np.float16, la
         b = _cx.dct_bands(np.asarray(ch)[:, :, keep], K, device=device)             # (rows, K, n_keep)
         coeffs[i:i + chunk] = np.transpose(b, (0, 2, 1))
     meta = dict(channel="susc_path_dct", K=K, n_t=int(n_t), n_ch=len(keep), channels=[names[i] for i in keep],
-                iso_P_zz=("implied" if drop_zz else "stored"), trace_residual=trace_res, max_refocus_pulses=K // 2)
+                iso_P_zz=("implied" if drop_zz else "stored"), trace_residual=trace_res,
+                max_refocus_pulses=_depth(K, max_refocus_pulses))
     if dt is not None:
         meta["dt"] = float(dt)
     if bits is None:
@@ -886,7 +895,7 @@ def _pack_positions(pack):
 
 # --------------------------------------------------------------- pack generation
 #: per-channel numbers a codec MEASURES on the walk it encoded (not parameters): two shards of one fill differ in them
-_MEASURED_CHANNEL_KEYS = ("trace_residual",)
+_MEASURED_CHANNEL_KEYS = ("trace_residual", "band")
 
 
 def _codec_signature(comp):
@@ -1427,10 +1436,12 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto"
                 from ..fields.hollow_cylinder import CHANNEL_NAMES
                 _a, _pm = susc_path_encode_series(np.asarray(m["susc_field_samples"]), CHANNEL_NAMES, K=int(susc_path_K),
                                                   bits=susc_path_bits, layout="wtc", device=device,    # no copy of the samples
-                                                  dt=float(m["dt_traj"]) * int(m.get("susc_field_every", 1)))
+                                                  dt=float(m["dt_traj"]) * int(m.get("susc_field_every", 1)),
+                                                  max_refocus_pulses=env.get("max_refocus_pulses"))
                 _pm["sampling"] = "interval_mean_in_walk"
             else:
-                _a, _pm = susc_path_encode(_field, np.asarray(m["traj"], np.float64), K=int(susc_path_K), bits=susc_path_bits)
+                _a, _pm = susc_path_encode(_field, np.asarray(m["traj"], np.float64), K=int(susc_path_K), bits=susc_path_bits,
+                                           max_refocus_pulses=env.get("max_refocus_pulses"))
             if _band_record is not None:
                 _pm["band"] = _band_record
             arrays.update(_a); chan_meta["susceptibility_path"] = _pm
@@ -1467,7 +1478,7 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto"
             # gate-bandwidth capability rather than a fidelity knob.
             if susc_path_K:
                 _a, _pm = susc_path_encode(_field, np.asarray(m["traj"], np.float64),
-                                           K=int(susc_path_K), bits=susc_path_bits)
+                                           K=int(susc_path_K), bits=susc_path_bits, max_refocus_pulses=env.get("max_refocus_pulses"))
                 if _band_record is not None:
                     _pm["band"] = _band_record
                 arrays.update(_a); chan_meta["susceptibility_path"] = _pm
