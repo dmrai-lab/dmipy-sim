@@ -249,8 +249,7 @@ def test_a_split_pair_straddles_its_own_echo_and_the_grid_grows_to_hold_it():
 
 
 def test_what_b_value_each_echo_of_a_split_train_actually_delivers():
-    """A split train does not deliver the b it was prepared with, and does not deliver the same b at every
-    echo. Measured, not fitted: free diffusion attenuates exactly as exp(-b D), so replaying the same train
+    """A split train does not deliver the b it was prepared with. Measured, not fitted: free diffusion attenuates exactly as exp(-b D), so replaying the same train
     on a static pack and a free one gives b = -ln(S/S0)/D directly. The crusher's per-walker phase is a fixed
     random number, independent of position, so it divides out of the ratio exactly.
 
@@ -258,7 +257,7 @@ def test_what_b_value_each_echo_of_a_split_train_actually_delivers():
     computed against the prepared b is wrong by whatever this measures."""
     D, n, prepared = 2.0e-9, 5, 0.945e9
     mk = lambda diff: build_replay_pack(
-        d.simulate_trajectories(4_000, diff, d.FreeDiffusion(), 0.40, 2.5e-4, seed=0, require_gpu=False),
+        d.simulate_trajectories(16_000, diff, d.FreeDiffusion(), 0.40, 2.5e-4, seed=0, require_gpu=False),
         id="test/b", license="x", citation="x", K=8)
     static, free = mk(1e-14), mk(D)
 
@@ -282,12 +281,16 @@ def test_what_b_value_each_echo_of_a_split_train_actually_delivers():
     assert at180.std() < 0.01 * at180.mean()
     assert 0.85 < at180.mean() / prepared < 0.91
 
-    # Below 180 the pathways part and the delivered b varies echo to echo by far more than it varies
-    # between the two families: about a quarter of the mean, against a few percent between families.
+    # Below 180 the pathways part, and the delivered b is read off ratios of signals that carry the pack's own
+    # Monte-Carlo noise, which at 4 000 walkers spread the echoes by a quarter and at 16 000 by a tenth: that
+    # number is resolved to the walker count, not a property of the train. What holds is the mean, about
+    # 0.86 of the prepared b (0.84 to 0.89 over crusher seeds and walker counts from 16 000 to 32 000), and
+    # a spread well under the quarter a noisier pack shows.
     at120 = delivered(120.0, prepared)
     spread = (at120.max() - at120.min()) / at120.mean()
-    assert 0.15 < spread < 0.40, f"echo-to-echo spread {spread:.3f}"
-    assert at120.min() / prepared > 0.6 and at120.max() / prepared < 1.0
+    assert spread < 0.25, f"echo-to-echo spread {spread:.3f}"
+    assert 0.80 < at120.mean() / prepared < 0.92
+    assert at120.min() / prepared > 0.7 and at120.max() / prepared < 1.0
 
 
 def test_the_prolonged_readouts_own_diffusion_weighting_is_negligible():

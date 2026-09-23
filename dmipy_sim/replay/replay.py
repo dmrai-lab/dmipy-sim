@@ -798,7 +798,12 @@ class ReplayPack:
                 # the rate as a density (rad/s) carried onto the pack's save grid, then back to radians per
                 # save: the phase of each window is preserved however the two grids differ
                 per_save = np.asarray(gate_weights(rate / P["dt_wf"], P["dt_wf"], n_t, dt), np.float64) * dt
-                u = np.random.default_rng(int(crusher_seed)).random(pos.shape[0])
+                # the macroscopic coordinate is STRATIFIED over the ensemble, (i + 1/2) / n_w dealt to the walkers
+                # by the seed: a declared winding of a whole number of turns then cancels the crushed pathways
+                # exactly, where n_w uniform draws leave them at 1/sqrt(n_w) (dmipy-sim#393: a 0.2 % offset on a
+                # crushed spin echo against the enumeration)
+                rng = np.random.default_rng(int(crusher_seed))
+                u = rng.permutation((np.arange(pos.shape[0]) + 0.5) / pos.shape[0])
                 crush = u[:, None] * np.broadcast_to(per_save.reshape(-1, n_t)[0], (pos.shape[0], n_t))
                 extra = crush if extra is None else extra + crush
         if extra is not None:
