@@ -297,7 +297,8 @@ def test_the_prolonged_readouts_own_diffusion_weighting_is_negligible():
 
     It is negligible anyway, and the reason is that its amplitude is not free: the imaging resolution fixes
     it through k_max = gamma_bar G ESP/4, and b goes as G^2. A 3 mm image needs 1.6 mT/m, against the ~11
-    mT/m the diffusion preparation plays, so the readout contributes about a ten-thousandth of the b.
+    mT/m the diffusion preparation plays, so the readout contributes a few thousandths of the b: the b of an
+    unrewound gradient is read with its moment anchored at the readout, as the walk accrues it (dmipy-sim#392).
 
     Computed exactly from the waveform rather than measured: the effect is far below what 4000 walkers can
     resolve, and a Monte-Carlo estimate of it comes back as noise of either sign."""
@@ -316,11 +317,11 @@ def test_the_prolonged_readouts_own_diffusion_weighting_is_negligible():
 
     amp3, b3 = b_of_readout(3e-3)
     assert 1.4e-3 < amp3 < 1.8e-3, f"{amp3*1e3:.2f} mT/m for a 3 mm image"
-    assert b3 / prepared < 1e-3, f"readout carries {100*b3/prepared:.3f} % of the prepared b"
+    assert b3 / prepared < 5e-3, f"readout carries {100*b3/prepared:.3f} % of the prepared b"
 
     # finer images need a stronger readout and b goes as G^2, so it grows quadratically -- and is still
     # nothing by 1.5 mm, which is far beyond what a 64 mT scanner images at
     amp15, b15 = b_of_readout(1.5e-3)
     assert amp15 == pytest.approx(2 * amp3, rel=1e-6)
     assert b15 / b3 == pytest.approx(4.0, rel=0.05)
-    assert b15 / prepared < 1e-3
+    assert b15 / prepared < 2e-2
