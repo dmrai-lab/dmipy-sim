@@ -637,7 +637,7 @@ def _simulate_in_walker_batches(n_walkers, walker_batch_size, *, seed,
     sig_acc = None
     pos_l, origin_l, comp_l, lw_l, phi_l = [], [], [], [], []
 
-    for start, end in current().batches(n_walkers, walker_batch_size, what="simulate"):
+    for b, (start, end) in enumerate(current().batches(n_walkers, walker_batch_size, what="simulate")):
         nb = end - start
         out = simulate(
             n_walkers=nb, diffusivity=diffusivity, waveform=waveform,
@@ -768,7 +768,7 @@ def simulate_cpmg(n_walkers, diffusivity, waveform, geometry, *,
         # Walker batching: one echo-signal accumulator, size-weighted mean over chunks.
         if walker_batch_size is not None and walker_batch_size < n_walkers:
             acc = None
-            for start, end in run.batches(n_walkers, walker_batch_size):
+            for b, (start, end) in enumerate(run.batches(n_walkers, walker_batch_size)):
                 nb = end - start
                 s = simulate_cpmg(nb, diffusivity, waveform, geometry, T2=T2,
                                   seed=seed + 1 + b, walker_batch_size=None,

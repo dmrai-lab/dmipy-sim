@@ -75,3 +75,15 @@ def test_walker_batching_matches_single_shot_and_analytic():
     assert abs(batched[1] - single[1]) < tol         # batched ~ single-shot (diff seeds)
     # b=0 normalisation preserved through batching
     assert abs(batched[0] - 1.0) < 1e-3
+
+
+def test_walker_batches_run_and_carry_distinct_seeds():
+    """A batched walk runs, and each batch walks its own seed: the halves of a two-batch walk differ."""
+    from dmipy_sim import simulate, pgse, set_b, FreeDiffusion
+
+    bvecs = np.array([[1.0, 0.0, 0.0]])
+    wf = set_b(pgse(bvecs, 0.005, 0.01, gradient_strengths=1.0, n_t=40), np.array([1.0e9]))
+    _, _, phi = simulate(n_walkers=400, diffusivity=2.0e-9, waveform=wf, geometry=FreeDiffusion(),
+                         seed=3, walker_batch_size=200, return_walker_signals=True, require_gpu=False)
+    phi = np.asarray(phi).reshape(400, -1)
+    assert not np.allclose(phi[:200], phi[200:])
