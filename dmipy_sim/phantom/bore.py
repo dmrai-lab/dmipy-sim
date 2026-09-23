@@ -205,18 +205,47 @@ def delivered_gradient(scanner, grid, sequence, *, voxels=None, to_scanner=None,
     gmap = background_gradient_map(scanner, grid, to_scanner=R) if background else None
     g0 = None if gmap is None else gmap(pos)
     out = np.empty((len(d_grid), sequence.n_meas, sequence.G.shape[1], 3), dtype=np.float64)
+    for k, seq in enumerate(_delivered(scanner, R, d_grid, sequence, Ls, g0, concomitant and B0)):
+        out[k] = seq.G
+    return out
+
+
+def _delivered(scanner, R, d_grid, sequence, Ls, g0, concomitant_B0):
+    """The acquisition as played at each voxel, one sequence at a time, in the grid's frame."""
     for k in range(len(d_grid)):
         seq = sequence
         if Ls is not None:
             seq = seq.with_gradient_nonlinearity(Ls[k])
         if g0 is not None:
             seq = seq.with_background_gradient(g0[k])
-        if concomitant and B0:
+        if concomitant_B0:
             # every argument in the SAME frame as G, which is the grid's: the position and the field axis
             # both come back through R. Reading them in the bore while G is in the grid is a mixed frame,
             # and it is 105 per cent of the concomitant term -- a different quantity, not a perturbation.
-            seq = seq.with_concomitant(d_grid[k], float(B0), b0_axis=_b0_axis(scanner, R))
-        out[k] = seq.G
+            seq = seq.with_concomitant(d_grid[k], float(concomitant_B0), b0_axis=_b0_axis(scanner, R))
+        yield seq
+
+
+def concomitant_phase_map(scanner, grid, sequence, *, voxels=None, to_scanner=None):
+    """The order-0 concomitant phase of every voxel, ``(n_voxels, n_meas, n_readouts)`` in radians: the Maxwell
+    term's VALUE at the voxel's centre integrated through the coherence sign to each readout, which the
+    voxel's whole signal turns by (:attr:`ScannerSequence.concomitant_phase_rad`, dmipy-sim#394). Read from the
+    same per-voxel sequences as :func:`delivered_gradient`, the nonlinearity applied first since the term is
+    the coil's own gradient's. ``None`` for a scanner without a field strength."""
+    scanner = _model(scanner)
+    B0 = scanner.field_T
+    if not B0:
+        return None
+    idx = grid.every_voxel if voxels is None else voxels
+    pos = grid.positions_m(idx)
+    R, _into = _bore(grid, to_scanner)
+    d_grid = np.asarray(pos, dtype=np.float64).reshape(-1, 3) - np.asarray(grid.isocenter_m, dtype=np.float64)
+    Lf = gradient_tensor_map(scanner, grid, to_scanner=R)
+    Ls = None if Lf is None else Lf(pos)
+    n_read = len(sequence.readout) if sequence.readout else 1
+    out = np.zeros((len(d_grid), sequence.n_meas, n_read))
+    for k, seq in enumerate(_delivered(scanner, R, d_grid, sequence, Ls, None, B0)):
+        out[k] = seq.concomitant_phase_rad
     return out
 
 
