@@ -13,26 +13,40 @@ import numpy as np
 from ..constants import GAMMA
 
 
-def b_from_gradient(G, dt):
-    """b (s/m²) per measurement from a gradient array ``(n_measurements, n_t, 3)`` and its step.
+def _moment_to_readout(G, dt):
+    """``k(t) = q(t) - q(T)``, the gradient moment still to come at each sample, ``(n_m, n_t, 3)`` in rad/m:
+    ``q`` accumulates by the rectangular (left-point) rule, matching the walk's phase accumulation
+    (``dphi = GAMMA dt G[t] . r``), and is anchored at the array's last sample, the readout.
 
-    ``q(t)`` accumulates by the rectangular (left-point) rule, matching the phase accumulation of
-    the walk (``dphi = GAMMA dt G[t] . r``); ``b = ∫ |q|² dt`` by the trapezoidal rule. This is
-    the one b integral of the package: :func:`calc_b`, :meth:`Sequence.btensor` and every
-    constructor's numeric scaling read it.
+    It is the moment the diffusion weighting reads: a walker from a fixed start accrues
+    ``phi = sum_s dr_s . (q(T) - q(s))`` over its Brownian increments, so the attenuation is
+    ``exp(-D int |q(t) - q(T)|^2 dt)`` whether or not the waveform is balanced. Anchoring at ``t = 0`` is the
+    same number only when ``q(T) = 0``; on a spoiler or an unrefocused concomitant gradient the two differ
+    by ``int (|k|^2 - 2 k.q) dt`` (dmipy-sim#392). What ``q(T)`` itself does, wind a phase across the voxel,
+    is :meth:`ScannerSequence.voxel_factor`'s.
     """
     G = np.asarray(G, dtype=np.float64)
     q = np.cumsum(G * float(dt), axis=1) * GAMMA        # (n_m, n_t, 3)
-    return np.trapezoid(np.sum(q ** 2, axis=2), dx=float(dt), axis=1).astype(np.float64)
+    return q - q[:, -1:, :]
+
+
+def b_from_gradient(G, dt):
+    """b (s/m²) per measurement from a gradient array ``(n_measurements, n_t, 3)`` and its step:
+    ``b = ∫ |k|² dt`` by the trapezoidal rule, with ``k`` the moment to the readout of
+    :func:`_moment_to_readout`. This is the one b integral of the package: :func:`calc_b`,
+    :meth:`ScannerSequence.btensor` and every constructor's numeric scaling read it. For a balanced waveform
+    it is the textbook ``∫ |q|² dt``; for an unbalanced one it is the attenuation the walk produces.
+    """
+    k = _moment_to_readout(G, dt)
+    return np.trapezoid(np.sum(k ** 2, axis=2), dx=float(dt), axis=1).astype(np.float64)
 
 
 def btensor_from_gradient(G, dt):
-    """B-tensor ``B_ij = ∫ q_i q_j dt`` per measurement, ``(n_measurements, 3, 3)``, by the same
+    """B-tensor ``B_ij = ∫ k_i k_j dt`` per measurement, ``(n_measurements, 3, 3)``, by the same
     rules as :func:`b_from_gradient`, so ``trace(B) == b`` to float64 precision."""
-    G = np.asarray(G, dtype=np.float64)
-    q = np.cumsum(G * float(dt), axis=1) * GAMMA
-    qq = q[:, :, :, None] * q[:, :, None, :]
-    return np.trapezoid(qq, dx=float(dt), axis=1).astype(np.float64)
+    k = _moment_to_readout(G, dt)
+    kk = k[:, :, :, None] * k[:, :, None, :]
+    return np.trapezoid(kk, dx=float(dt), axis=1).astype(np.float64)
 
 
 def calc_b(waveform):
@@ -62,7 +76,7 @@ def calc_b(waveform):
 def calc_btensor(waveform):
     """Compute the B-tensor for each measurement.
 
-    B_ij = ∫ q_i(t) q_j(t) dt   where q(t) = γ ∫₀ᵗ G(t') dt'
+    B_ij = ∫ k_i(t) k_j(t) dt   where k(t) = q(t) - q(T), q(t) = γ ∫₀ᵗ G(t') dt'
 
     Evaluated with the same rectangular rule as calc_b(), so
     trace(calc_btensor(wf)) == calc_b(wf) to float64 precision.
