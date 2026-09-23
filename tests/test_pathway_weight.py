@@ -113,3 +113,37 @@ def test_a_train_it_cannot_describe_is_refused_not_guessed():
     assert epg.pathway_weight(sequences.cpmg(6, 0.02, beta_deg=180.0, n_t_per_echo=60)) == 1.0
     with pytest.raises(ValueError, match="SUM over several coherence pathways"):
         epg.pathway_weight(sequences.cpmg(6, 0.02, beta_deg=120.0, n_t_per_echo=60))
+
+
+def _scaled(seq, kappa, both):
+    """The sequence with its flips scaled by ``kappa``: both pulses, or the refocusing pulse alone."""
+    ex, rf180 = seq.rf[0], seq.rf[1]
+    ex2 = ex.__class__(ex.t_s, ex.flip_deg * kappa if both else ex.flip_deg, ex.label, ex.axis_deg)
+    rf2 = rf180.__class__(rf180.t_s, rf180.flip_deg * kappa, rf180.label, rf180.axis_deg)
+    return seq.__class__(G=seq.G, dt=seq.dt, readout=seq.readout, rf=type(seq.rf)((ex2, rf2)))
+
+
+def test_a_transmit_scale_on_both_pulses_scales_the_excitation_too():
+    """A B1 scale acts on every pulse, so the amplitude is ``sin(90 kappa) sin^2(90 kappa)``, the enumeration's
+    own number, and not the refocusing factor alone (dmipy-sim#391: 12 % high at kappa 0.7)."""
+    seq = sequences.pgse([[1.0, 0, 0]], 5e-3, 0.02, bvalues=[0.0], TE=0.045, n_t=600, slew_rate=np.inf)
+    for kappa in (0.7, 0.85, 1.0, 1.15, 1.3):
+        a, b = np.radians(90.0 * kappa), np.radians(180.0 * kappa)
+        assert epg.pathway_weight(_scaled(seq, kappa, both=True)) == pytest.approx(abs(np.sin(a)) * np.sin(b / 2) ** 2, abs=1e-9)
+        assert epg.pathway_weight(_scaled(seq, kappa, both=False)) == pytest.approx(np.sin(b / 2) ** 2, abs=1e-9)
+        sch = epg.Schedule((epg.Pulse(90.0 * kappa), epg.Winding(+1, 1.0), epg.Pulse(180.0 * kappa, 90.0), epg.Winding(+1, 1.0, readout=True)))
+        assert epg.pathway_weight(_scaled(seq, kappa, both=True)) == pytest.approx(
+            abs(sum(p.eta for p in epg.enumerate_pathways(sch, threshold=1e-12))), abs=1e-12)
+
+
+def test_a_gradient_echo_and_a_perfect_train_carry_the_excitation_sine():
+    gre = sequences.gre(0.02, n_t=200)
+    ex = gre.rf[0]
+    gre60 = gre.__class__(G=gre.G, dt=gre.dt, readout=gre.readout, rf=type(gre.rf)((ex.__class__(ex.t_s, 60.0, ex.label, ex.axis_deg),)))
+    assert epg.pathway_weight(gre) == pytest.approx(1.0, abs=1e-12)
+    assert epg.pathway_weight(gre60) == pytest.approx(np.sin(np.radians(60.0)), abs=1e-12)
+    train = sequences.cpmg(6, 0.02, beta_deg=180.0, n_t_per_echo=60)
+    ex = train.rf[0]
+    train60 = train.__class__(G=train.G, dt=train.dt, readout=train.readout,
+                              rf=type(train.rf)((ex.__class__(ex.t_s, 60.0, ex.label, ex.axis_deg),) + tuple(train.rf[1:])))
+    assert epg.pathway_weight(train60) == pytest.approx(np.sin(np.radians(60.0)), abs=1e-12)
