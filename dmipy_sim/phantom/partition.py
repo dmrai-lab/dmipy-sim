@@ -309,6 +309,12 @@ class PartitionPhantom(Phantom):
             from ..constants import GAMMA
             from ..replay.phantom import ReplayPhantom
             S = S * np.exp(1j * GAMMA * maps["off_resonance"][:, None] * ReplayPhantom.gate_integral(seq))
+        from ..acquisition.scanners import ScannerLimits
+        if isinstance(scanner, ScannerLimits):                       # the Maxwell term's value at each voxel (#394)
+            from .bore import concomitant_phase_map
+            ph = concomitant_phase_map(scanner, g, seq, voxels=vi)
+            if ph is not None:
+                S = S * np.exp(1j * ph[:, :, -1])
         if maps["proton_density"] is not None:
             S = S * maps["proton_density"][:, None]
         out = np.full(tuple(g.shape) + (S.shape[1],), np.nan, dtype=np.complex128 if complex_signal else np.float64)

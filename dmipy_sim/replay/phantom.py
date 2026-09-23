@@ -355,6 +355,19 @@ class ReplayPhantom:
                 f"without it.")
 
     # ---- replay
+    def _concomitant_phase(self, waveform, scanner, echo=None):
+        """The order-0 concomitant phase of every voxel, ``(n_voxels, n_meas)`` at one readout (the last, or
+        ``echo``), for a catalogued machine with a field strength; ``None`` otherwise
+        (:func:`~dmipy_sim.phantom.bore.concomitant_phase_map`, dmipy-sim#394)."""
+        from ..acquisition.scanners import ScannerLimits
+        from ..phantom.bore import concomitant_phase_map
+        if not isinstance(scanner, ScannerLimits):
+            return None
+        ph = concomitant_phase_map(scanner, self.grid, waveform, voxels=self.voxel_index)
+        if ph is None:
+            return None
+        return ph[:, :, -1 if echo is None else int(echo)]
+
     def _encoding_classes(self, waveform, scanner, tolerance, report=None):
         """The acquisition as the machine plays it per voxel, binned (:func:`~dmipy_sim.phantom.bore.encoding_classes`),
         or ``None`` for a scanner that brings no gradient-side term -- a bare field strength, or a machine with
@@ -433,6 +446,9 @@ class ReplayPhantom:
         dB0 = self.layer_values("delta_B0_T", off_resonance)
         if dB0 is not None:
             S = S * np.exp(1j * GAMMA * dB0[:, None] * self.gate_integral(waveform))
+        ph = self._concomitant_phase(waveform, scanner)
+        if ph is not None:
+            S = S * np.exp(1j * ph)
         return self.voxel_index, (S if complex_signal else np.abs(S))
 
     def layer_values(self, name, extra=None, combine="add"):
@@ -743,6 +759,9 @@ class ReplayPhantom:
             members = np.flatnonzero(inverse == u)
             w = frac[v_idx[members], p_idx[members]].astype(np.float64) * m0[v_idx[members], ids[members]]
             np.add.at(S, v_idx[members], w[:, None] * resp[None, :])
+        ph = self._concomitant_phase(waveform, scanner)
+        if ph is not None:
+            S = S * np.exp(1j * ph)
         return self.voxel_index, (S if complex_signal else np.abs(S))
 
     def replay_train(self, waveform, *, echo=-1, transmit=None, transmit_tolerance=1e-2, off_resonance=None,
@@ -835,6 +854,9 @@ class ReplayPhantom:
         if report is not None:
             report.update(n_scales=len(scales), n_offsets=len(offsets), n_gates=first.n_gates,
                           lmax=keep_l, n_echoes=len(first.readouts), n_pairs=len(pairs))
+        ph = self._concomitant_phase(waveform, scanner, echo=echo)
+        if ph is not None:
+            S = S * np.exp(1j * ph)
         return self.voxel_index, (S if complex_signal else np.abs(S))
 
     def to_volume(self, values, fill=np.nan):

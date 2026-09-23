@@ -642,8 +642,28 @@ class ScannerSequence:
                        w * Gz + (Gx * Bx + Gy * By) / mag], axis=-1)
         gc = np.broadcast_to(gc.astype(np.float32), self.G.shape)
         imposed = gc if self.imposed_gradient is None else self.imposed_gradient + gc
+        # the term's VALUE at the position, B_c = |B| - B0 - B_n, is the order-0 part: one phase per measurement
+        # and readout, gamma int s(t) B_c(t) dt through the coherence sign, the same for every spin of the voxel.
+        # It is quadratic in G(t), so a spin echo with identical lobes cancels it and a gradient echo keeps it
+        # (dmipy-sim#394); the phantom multiplies each voxel's signal by it
+        from ..constants import GAMMA
+        Bc = np.broadcast_to(mag - B0 - Bn, (self.n_meas, self.n_t))
+        sgn = self.rf.sign(np.arange(self.n_t) * float(self.dt)) if self.rf else np.ones(self.n_t)
+        cum = np.cumsum(sgn[None, :] * Bc, axis=1) * (GAMMA * float(self.dt))
+        reads = tuple(int(i) for i in self.readout) if self.readout else (self.n_t - 1,)
+        phase = tuple(tuple(float(cum[m, i]) for i in reads) for m in range(self.n_meas))
         return replace(self, G=(self.G + gc), imposed_gradient=np.ascontiguousarray(imposed),
-                       concomitant={"position_m": tuple(tuple(float(v) for v in p) for p in r), "B0_T": B0})
+                       concomitant={"position_m": tuple(tuple(float(v) for v in p) for p in r), "B0_T": B0,
+                                    "phase_rad": phase})
+
+    @property
+    def concomitant_phase_rad(self):
+        """The order-0 concomitant phase per measurement and readout, ``(n_meas, n_readouts)`` in radians: what
+        :meth:`with_concomitant` recorded, zeros when no concomitant term has been applied."""
+        n_read = len(self.readout) if self.readout else 1
+        if self.concomitant is None or "phase_rad" not in self.concomitant:
+            return np.zeros((self.n_meas, n_read))
+        return np.asarray(self.concomitant["phase_rad"], np.float64).reshape(self.n_meas, n_read)
 
     def with_gradient_nonlinearity(self, L):
         """The same acquisition as the COILS actually deliver it at one position: every commanded gradient
