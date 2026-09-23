@@ -43,7 +43,7 @@ def _train(beta, n_echoes=6, n_cycles=16.0, crushed=True):
 
 
 def _epg_echoes(beta, n_echoes=6):
-    p = epg.enumerate_pathways(epg.cpmg_schedule(n_echoes, beta), threshold=1e-4)
+    p = epg.enumerate_pathways(epg.cpmg_schedule(n_echoes, beta), threshold=1e-8)
     return np.array([abs(sum(x.eta for x in p if x.readout_idx == k)) for k in range(n_echoes)])
 
 
@@ -62,9 +62,13 @@ def test_a_crusher_straddling_a_refocusing_pulse_is_rewound_by_it(pack):
 @pytest.mark.parametrize("beta", [180.0, 150.0, 120.0, 90.0])
 def test_a_crushed_train_reproduces_the_pathway_enumeration(pack, beta):
     """Two routes that share no code: an analytic enumeration of the coherence pathways, and a vector
-    propagation through the actual pulses on a Monte-Carlo walk. With the spoiler in place they agree."""
+    propagation through the actual pulses on a Monte-Carlo walk. With the spoiler in place they agree, and
+    with the crusher coordinate stratified over the ensemble they agree to rounding: a whole number of turns
+    cancels every crushed pathway exactly, whatever the seed deals the coordinates (dmipy-sim#393)."""
     S = np.abs(np.asarray(pack.replay_bloch(_train(beta)))).reshape(-1)[:6]
-    assert np.max(np.abs(S - _epg_echoes(beta))) < 0.05
+    assert np.max(np.abs(S - _epg_echoes(beta))) < 1e-9
+    S7 = np.abs(np.asarray(pack.replay_bloch(_train(beta), crusher_seed=7))).reshape(-1)[:6]
+    assert np.max(np.abs(S7 - _epg_echoes(beta))) < 1e-9
 
 
 def test_without_the_crusher_a_train_does_not_depend_on_its_flip_angle(pack):
