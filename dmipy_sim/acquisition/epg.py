@@ -271,11 +271,17 @@ def pathway_weight(sequence):
     Every case here is ENUMERATED rather than written down, and the cases are exactly those a single number
     can express:
 
-    * no refocusing and no store -- a gradient echo, the whole magnetisation, 1;
-    * one refocused echo at flip ``beta`` -- ``sin^2(beta/2)``, one pathway, and 1 at a perfect 180;
+    * no refocusing and no store -- a gradient echo, the magnetisation the excitation ``alpha`` tips,
+      ``sin(alpha)``, 1 at a 90;
+    * one refocused echo at flip ``beta`` -- ``sin(alpha) sin^2(beta/2)``, one pathway, and 1 at a 90 and a
+      perfect 180;
     * a store and a recall -- the stimulated echo, :func:`ste_amplitude`, which a real sequence isolates by
       crushing the rest;
-    * a train of perfect 180s -- every echo is the same single pathway, 1.
+    * a train of perfect 180s -- every echo is the same single pathway, ``sin(alpha)``.
+
+    The excitation is the pulse labelled ``excite``, else the schedule's first pulse, at the flip it carries: a
+    transmit scale that acts on every pulse of a sequence scales the excitation too, and its ``sin`` is part of
+    the amplitude (dmipy-sim#391).
 
     A train whose refocusing pulses are NOT 180 is **refused**. Its echoes differ from one another (a six-echo
     train at 120 degrees runs 0.75, 0.94, 0.84, 0.86, 0.88, 0.86) and each is a sum over several pathways, so
@@ -299,10 +305,13 @@ def pathway_weight(sequence):
                              f"this one labels {sorted(flips)}")
         return ste_amplitude(flips["excite"], flips["store"], flips["recall"])
 
+    excite = [float(e.flip_deg) for e in rf if role_of(e) == "excite"] or [float(e.flip_deg) for e in rf if float(e.flip_deg) != 0.0]
+    alpha = excite[0] if excite else 90.0
+    tipped = float(abs(np.sin(np.radians(alpha))))            # what the excitation puts in the plane
     refocus = [float(e.flip_deg) for e in rf if role_of(e) == "refocus"]
     imperfect = [b for b in refocus if abs(b - 180.0) > 1e-6]
     if not imperfect:
-        return 1.0                      # no refocusing at all, or every pulse a perfect 180: one pathway, whole
+        return tipped                   # no refocusing at all, or every pulse a perfect 180: one pathway, whole
     n_readout = len(tuple(getattr(sequence, "readout", ()) or ()))
     if n_readout > 1 or len(refocus) > 1:
         raise ValueError(
@@ -311,5 +320,5 @@ def pathway_weight(sequence):
             "amplitudes at each echo, so no single amplitude describes it. The pathway sum is dmipy-sim#307 "
             "(enumerate_pathways gives the terms); on the vector-Bloch route it also needs the crusher that "
             "route ignores, dmipy-sim#305. Use a perfect 180, or a single refocused echo.")
-    sch = Schedule((Pulse(90.0), Winding(+1, 1.0), Pulse(imperfect[0], 90.0), Winding(+1, 1.0, readout=True)))
+    sch = Schedule((Pulse(alpha), Winding(+1, 1.0), Pulse(imperfect[0], 90.0), Winding(+1, 1.0, readout=True)))
     return float(abs(sum(p.eta for p in enumerate_pathways(sch, threshold=1e-12))))
