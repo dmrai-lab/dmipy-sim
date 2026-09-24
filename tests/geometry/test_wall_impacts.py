@@ -130,7 +130,18 @@ OFFSETS = [("far", 0.5 * R), ("one_step", 2.0e-8), ("sub_nudge", 1.0e-11)]
 DISTANCES = [("short", 2.0e-8), ("comparable", 0.5 * R), ("spanning", 2.5 * R),
              ("many_diameters", 12.0 * R)]
 # incidence angle from the inward normal
-ANGLES = [("head_on", 0.0), ("oblique", 45.0), ("grazing", 89.0)]
+ANGLES = [("head_on", 0.0), ("oblique", 45.0), ("grazing", 89.0), ("tangent", 90.0)]
+
+
+def _fibonacci_sphere(n):
+    """``n`` directions spread evenly over the sphere, plus the six axes and the eight body diagonals: the same
+    set every run, with the directions a random draw is least likely to give."""
+    k = np.arange(n) + 0.5
+    phi = np.arccos(1 - 2 * k / n); th = np.pi * (1 + np.sqrt(5)) * k
+    d = np.stack([np.cos(th) * np.sin(phi), np.sin(th) * np.sin(phi), np.cos(phi)], 1)
+    axes = np.concatenate([np.eye(3), -np.eye(3)])
+    diag = np.array([[sx, sy, sz] for sx in (1, -1) for sy in (1, -1) for sz in (1, -1)]) / np.sqrt(3)
+    return np.concatenate([d, axes, diag])
 
 
 def _first_centre(name):
@@ -266,10 +277,8 @@ def test_a_step_that_spans_the_object_still_confines(name):
     a 5 um sphere never sees it and a 1 um cylinder fails hard.
     """
     rad = _radial(name)
-    n = 400
-    rng = np.random.default_rng(0)
-    # start near the centre, aim in every direction, step several diameters
-    d = rng.normal(size=(n, 3)); d /= np.linalg.norm(d, axis=1, keepdims=True)
+    # start at the centre, aim evenly over the sphere and along every axis and diagonal, step several diameters
+    d = _fibonacci_sphere(400); n = len(d)
     c = _first_centre(name)
     starts = jnp.asarray(np.broadcast_to(c, (n, 3)).astype(np.float32))
     steps = jnp.asarray((d * 6.0 * R).astype(np.float32))
@@ -278,6 +287,74 @@ def test_a_step_that_spans_the_object_still_confines(name):
     assert (r_end <= R * (1 + 1e-6)).all(), (
         f"{name}: {(r_end > R).sum()}/{n} walkers crossed the wall on a step of 6 R "
         f"(max {r_end.max() / R:.2f} R). A step spanning the object needs multiple bounces.")
+
+
+@pytest.mark.parametrize("name", _PACKED)
+def test_a_walker_at_the_seam_meets_the_periodic_image(name):
+    """A packing's wall can be the image of an object across the box edge. A walker just inside the +x face of
+    the box, aimed across the seam at the image of the object nearest the -x face, must reflect off that image
+    as off the object itself: it ends outside every object under the minimum image, at every offset, angle and
+    step of the table."""
+    geom = _build(name)
+    centers, L = _PACK[name]
+    rad = _radial(name)
+    dim = centers.shape[1]
+    i = int(np.argmin(centers[:, 0])); c = np.zeros(3); c[:dim] = centers[i]
+    x_img = c[0] + L                                      # the image's centre, across the seam
+    cases = []
+    for oname, off in (("far", 0.25 * R), ("one_step", 2.0e-8), ("sub_nudge", 1.0e-11)):
+        for dname, dist in (("short", 2.0e-8), ("comparable", 0.5 * R), ("two_radii", 2.0 * R)):
+            for aname, deg in ANGLES:
+                th = np.deg2rad(deg)
+                start = np.array([min(L / 2 - 1e-9, x_img - R - off), c[1], c[2]])   # inside the box, `off` outside the image
+                d = np.array([np.cos(th), np.sin(th), 0.0])                          # towards the image, turned by the angle
+                cases.append((f"{oname}/{dname}/{aname}", start.astype(np.float32), (d * dist).astype(np.float32)))
+    starts = jnp.asarray(np.stack([k[1] for k in cases])); steps = jnp.asarray(np.stack([k[2] for k in cases]))
+    out = np.asarray(jax.jit(jax.vmap(lambda p, s: geom.interact(p, s).r))(starts, steps))
+    r_end = rad(out)
+    entered = r_end < R * (1 - 1e-6)
+    if entered.any():
+        rows = "\n".join(f"      {cases[i][0]:30} -> {r_end[i] / R:.3f} R from the nearest object" for i in np.flatnonzero(entered)[:12])
+        pytest.fail(f"{name}: {entered.sum()}/{len(cases)} impacts at the seam ended inside an object:\n{rows}")
+    moved = np.linalg.norm(out - np.asarray(starts), axis=1); asked = np.linalg.norm(np.asarray(steps), axis=1)
+    assert not (moved > asked * (1 + 1e-4) + 1e-12).any(), f"{name}: a reflection at the seam added distance"
+
+
+def test_a_walker_in_a_two_nanometre_junction_stays_outside_every_cylinder():
+    """Three cylinders whose walls are 2 nm apart around a junction, the dense pack's worst case, where a
+    reflection off one wall lands the walker in the neighbour and the single-hit rule once kept 18,033 of 20,000
+    walkers inside: a walker at the junction fired in every direction of the Fibonacci set, for steps from a
+    nanometre to a radius, ends outside all three and moves no further than it stepped."""
+    r = np.array([1.0e-6, 1.3e-6, 0.8e-6])
+    gap = 2e-9
+    d01, d02, d12 = r[0] + r[1] + gap, r[0] + r[2] + gap, r[1] + r[2] + gap       # every pair of walls `gap` apart
+    x2 = (d02 ** 2 - d12 ** 2 + d01 ** 2) / (2 * d01); y2 = np.sqrt(d02 ** 2 - x2 ** 2)
+    cen = np.array([[0.0, 0.0], [d01, 0.0], [x2, y2]]); cen = cen - cen.mean(0)
+    L = 12e-6
+    geom = PackedCylinders(centers=cen, radii=r, L=L, orientation=[0, 0, 1.0], permeability=0.0)
+    from scipy.optimize import minimize
+    pore = minimize(lambda p: np.var(np.linalg.norm(cen - p, axis=1) - r), cen.mean(0)).x   # equidistant from the three walls
+    slots = [cen[a] + (cen[b] - cen[a]) * (r[a] + 0.5 * gap) / np.linalg.norm(cen[b] - cen[a])   # the middle of each 2 nm slot
+             for a, b in ((0, 1), (0, 2), (1, 2))]
+    origins = [("pore", pore)] + [(f"slot{k}", q) for k, q in enumerate(slots)]
+    for name, q in origins:
+        clear = (np.linalg.norm(cen - q, axis=1) - r).min()
+        assert 0 < clear < (0.2 * r.min() if name == "pore" else gap), (name, clear)
+    d = _fibonacci_sphere(200)
+    starts, steps, labels = [], [], []
+    for oname, q in origins:
+        for lname, dist in (("nm", 1e-9), ("gap", gap), ("ten_gaps", 10 * gap), ("radius", r.min())):
+            for k, dk in enumerate(d):
+                starts.append(np.array([q[0], q[1], 0.0])); steps.append(dk * dist); labels.append(f"{oname}/{lname}/dir{k}")
+    starts = jnp.asarray(np.stack(starts), jnp.float32); steps = jnp.asarray(np.stack(steps), jnp.float32)
+    out = np.asarray(jax.jit(jax.vmap(lambda p, s: geom.interact(p, s).r))(starts, steps))
+    q = out[:, None, :2] - cen[None]; q -= L * np.floor(q / L + 0.5)
+    inside = (np.linalg.norm(q, axis=2) < r[None] * (1 - 1e-6)).any(1)
+    if inside.any():
+        rows = "\n".join(f"      {labels[i]}" for i in np.flatnonzero(inside)[:12])
+        pytest.fail(f"{inside.sum()}/{len(labels)} impacts from the junction ended inside a cylinder:\n{rows}")
+    moved = np.linalg.norm(out - np.asarray(starts), axis=1); asked = np.linalg.norm(np.asarray(steps), axis=1)
+    assert not (moved > asked * (1 + 1e-4) + 1e-12).any(), "a reflection in the junction added distance"
 
 
 @pytest.mark.parametrize("name", _NAMES)
