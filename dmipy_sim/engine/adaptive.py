@@ -30,6 +30,7 @@ import jax.numpy as jnp
 
 from ..persistent_walk import PersistentWalk
 from .tables import jit_with_tables
+from .physics import seed_walkers, isotropic_unit_step
 from ..run import Run
 
 log = logging.getLogger("dmipy_sim")
@@ -117,8 +118,7 @@ interval mean as before).
                 def body(_, carry):
                     r, key, dlog = carry
                     key, sub = jax.random.split(key)
-                    noise = jax.random.normal(sub, (3,), dtype=jnp.float32)
-                    step = noise / jnp.linalg.norm(noise) * step_l
+                    step = isotropic_unit_step(sub) * step_l
                     if cached:
                         r_new, d_perp = geometry._step_with(r, step, cand, valid)
                         dlw = -2.0 * d_perp
@@ -187,12 +187,8 @@ interval mean as before).
             g = jnp.where(norm > cap, g * cap / jnp.maximum(norm, 1e-30), g)
             return jnp.where(far[:, None], r + g, r), jnp.where(far[:, None], keys_new, keys)
 
-        # seeds and keys, as the fused producer draws them
-        from .core import initial_positions
-        key = jax.random.PRNGKey(int(seed))
-        pos_key, walker_key = jax.random.split(key)
-        r0_all = np.asarray(initial_positions(geometry, n_walkers, pos_key, r0), np.float32)
-        keys_all = jax.random.split(walker_key, n_walkers)
+        _, r0_all, keys_all = seed_walkers(geometry, n_walkers, seed, r0)      # the fused producer's own draws
+        r0_all = np.asarray(r0_all, np.float32)
         # the pool (0 free, 1 enclosed), not the object: a packed classify returns the tube's id, and a walker inside two
         # overlapping tubes is labelled by either
         comp_all = np.minimum(np.asarray(geometry.classify_positions_exact(jnp.asarray(r0_all)), np.int32), 1)

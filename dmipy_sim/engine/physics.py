@@ -50,6 +50,27 @@ def _geometry_radius(geometry):
     return length_scales_of(geometry).min_feature
 
 
+def seed_walkers(geometry, n_walkers, seed, r0=None):
+    """The walk's random state from its seed: ``(master_key, r0, walker_keys)``.
+
+    The master key splits once into the position key and the walker key. The position key places the walkers
+    (:func:`~dmipy_sim.geometry.initial_positions`; unused when ``r0`` is given) and the walker key splits into one
+    step stream per walker. Every engine entry point draws its state here, which is what makes their walks one
+    walk; a driver that needs a further independent stream folds it off the master key."""
+    from ..geometry import initial_positions
+    master_key = jax.random.PRNGKey(int(seed))
+    pos_key, walker_key = jax.random.split(master_key)
+    r0 = initial_positions(geometry, n_walkers, pos_key, r0)
+    walker_keys = jax.random.split(walker_key, n_walkers)
+    return master_key, r0, walker_keys
+
+
+def isotropic_unit_step(key):
+    """A direction uniform over the sphere, as float32: a standard Gaussian triple from ``key``, normalised."""
+    noise = jax.random.normal(key, (3,), dtype=jnp.float32)
+    return noise / jnp.linalg.norm(noise)
+
+
 CROSSING_P_MAX = 3e-3
 """The largest per-hit crossing probability a permeable walk steps at: ``p = 2 (kappa / D) d_perp`` is the
 first-order transmission of a step ending ``d_perp`` past a membrane of permeability ``kappa``, exact as
@@ -478,8 +499,7 @@ def make_step_fn(geometry, diffusivity: float, dt: float, T2: float = None,
             else:
                 key, k_step = jax.random.split(key)
                 k_wall = None
-            noise = jax.random.normal(k_step, (3,), dtype=jnp.float32)
-            step = (noise / jnp.linalg.norm(noise)) * jnp.sqrt(6.0 * _D_at(comp) * dt_sub_f32)
+            step = isotropic_unit_step(k_step) * jnp.sqrt(6.0 * _D_at(comp) * dt_sub_f32)
 
             r_new, dlog_w = _move(r, step, comp, k_wall)
             comp_new = carry_fn(r_new, comp) if carry_comp else comp
@@ -545,8 +565,7 @@ def make_myelin_substep(geometry, dt: float, rho_weights=None):
         geometry._eps, geometry._nudge, step_max, geometry.min_gap)
     def sub(r, step_key, u, comp_id):
         pool, k = _pool_and_axon(geometry, comp_id)
-        noise = jax.random.normal(step_key, (3,), dtype=jnp.float32)
-        unit = noise / jnp.linalg.norm(noise)
+        unit = isotropic_unit_step(step_key)
         step_l = jnp.where(pool == 1, step_i[k], jnp.where(pool == 2, step_m[k], step_e[k]))
         r_c = r
         s_c = unit * step_l

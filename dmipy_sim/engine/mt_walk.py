@@ -40,9 +40,8 @@ import jax
 import jax.numpy as jnp
 from ..geometry._boundary import bind_probability
 
-from .physics import _geometry_radius, resolve_sub_steps
+from .physics import _geometry_radius, resolve_sub_steps, seed_walkers, isotropic_unit_step
 from . import mt as _mt
-from ..geometry import initial_positions
 from ..persistent_walk import PersistentWalk
 from ..run import Run
 
@@ -179,8 +178,7 @@ def simulate_mt_trajectories(
             is_bound = bound_rem > jnp.float32(0.0)
 
             # free-move proposal + per-step boundary local time (surface + binding)
-            noise = jax.random.normal(step_key, (3,), dtype=jnp.float32)
-            unit = noise / jnp.linalg.norm(noise)
+            unit = isotropic_unit_step(step_key)
             step = unit * step_l
             r_free, dlog_free, local_time = _move(r, step)   # dlog_free <= 0, local_time >= 0
             if not mt_on:
@@ -225,10 +223,7 @@ def simulate_mt_trajectories(
 
         batch = jax.jit(jax.vmap(one_walker, in_axes=(0, 0, 0)))
 
-        master_key = jax.random.PRNGKey(seed)
-        pos_key, walker_key = jax.random.split(master_key)
-        r0_all = initial_positions(geometry, n_walkers, pos_key, r0)
-        walker_keys = jax.random.split(walker_key, n_walkers)
+        _, r0_all, walker_keys = seed_walkers(geometry, n_walkers, seed, r0)
 
         # ── bound-pool equilibration ──
         # An all-free start under-fills the macromolecular pool; equilibrate to f_b BEFORE

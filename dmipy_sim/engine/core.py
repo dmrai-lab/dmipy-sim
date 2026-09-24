@@ -18,8 +18,7 @@ import logging
 log = logging.getLogger(__name__)
 
 from .physics import (make_step_fn, make_myelin_step_fn, make_packed_myelin_step_fn,
-                      make_packed_myelin_traj_step_fn)
-from ..geometry import initial_positions
+                      make_packed_myelin_traj_step_fn, seed_walkers, isotropic_unit_step)
 from ..persistent_walk import PersistentWalk
 from ..run import Run, current
 from ..acquisition.scanner_sequence import Protocol
@@ -461,14 +460,8 @@ def simulate(
             chi_perp_scan = jnp.ones((n_t,), dtype=jnp.float32)
         scan_inputs = (G_scan, chi_perp_scan)
 
-        # Build per-walker PRNG keys
-        master_key = jax.random.PRNGKey(seed)
-        pos_key, walker_key = jax.random.split(master_key)
-        walker_keys = jax.random.split(walker_key, n_walkers)
-
-        # Initial positions — use caller-supplied r0 or let geometry place walkers
         _r0_user_supplied = r0 is not None
-        r0 = initial_positions(geometry, n_walkers, pos_key, r0)   # (n_walkers, 3)
+        _, r0, walker_keys = seed_walkers(geometry, n_walkers, seed, r0)   # r0 (n_walkers, 3)
 
         # Check if this is a MyelinatedCylinder or LabelMap2D (custom step function path)
         is_myelin = geometry._is_myelinated
@@ -790,10 +783,7 @@ def simulate_cpmg(n_walkers, diffusivity, waveform, geometry, *,
             chi_perp_scan = jnp.ones((n_t,), dtype=jnp.float32)
         scan_inputs = (G_scan, chi_perp_scan)
 
-        master_key = jax.random.PRNGKey(seed)
-        pos_key, walker_key = jax.random.split(master_key)
-        walker_keys = jax.random.split(walker_key, n_walkers)
-        r0 = initial_positions(geometry, n_walkers, pos_key, r0)
+        _, r0, walker_keys = seed_walkers(geometry, n_walkers, seed, r0)
 
         step_fn, _ = make_step_fn(geometry, diffusivity, dt, T2=T2, sub_steps=sub_steps)
         per_comp = any(a is not None for a in (geometry._D_comp_jax, geometry._inv_T2_comp_jax,
@@ -999,8 +989,7 @@ def simulate_trajectories(
             def inner_step(carry, _):
                 r, key, side, bad = carry
                 key, step_key, perm_key = jax.random.split(key, 3)
-                noise = jax.random.normal(step_key, (3,), dtype=jnp.float32)
-                unit_noise = noise / jnp.linalg.norm(noise)
+                unit_noise = isotropic_unit_step(step_key)
                 step = unit_noise * step_l_sim
                 if _carries_side:
                     r_new, _dlog_w, crossed, illegal = permeate(
@@ -1017,8 +1006,7 @@ def simulate_trajectories(
             def inner_step(carry, _):
                 r, key, side, bad = carry
                 key, subkey = jax.random.split(key)
-                noise = jax.random.normal(subkey, (3,), dtype=jnp.float32)
-                unit_noise = noise / jnp.linalg.norm(noise)
+                unit_noise = isotropic_unit_step(subkey)
                 step = unit_noise * step_l_sim
                 r_new = reflect(r, step)
                 return (r_new, key, side, bad), None
@@ -1170,8 +1158,7 @@ def simulate_trajectories(
                 def inner_step_relax(carry, _):
                     r, key, dlog_accum, comp_sum, side, bad, comp = carry
                     key, step_key, perm_key = jax.random.split(key, 3)
-                    noise = jax.random.normal(step_key, (3,), dtype=jnp.float32)
-                    unit_noise = noise / jnp.linalg.norm(noise)
+                    unit_noise = isotropic_unit_step(step_key)
                     step = unit_noise * step_l_sim
                     if _carries_side:
                         r_new, dlog_w_unit, crossed, illegal = permeate_relax(
@@ -1199,8 +1186,7 @@ def simulate_trajectories(
                 def inner_step_relax(carry, _):
                     r, key, dlog_accum, comp_sum, side, bad, comp = carry
                     key, subkey = jax.random.split(key)
-                    noise = jax.random.normal(subkey, (3,), dtype=jnp.float32)
-                    unit_noise = noise / jnp.linalg.norm(noise)
+                    unit_noise = isotropic_unit_step(subkey)
                     step = unit_noise * step_l_sim
                     r_new, dlog_w_unit = reflect_with_log_weight(r, step, jnp.float32(1.0))
                     comp = geometry.classify_position_carry(r_new, comp)
@@ -1214,8 +1200,7 @@ def simulate_trajectories(
                 def inner_step_relax(carry, _):
                     r, key, dlog_accum, comp_sum, side, bad, comp = carry
                     key, subkey = jax.random.split(key)
-                    noise = jax.random.normal(subkey, (3,), dtype=jnp.float32)
-                    unit_noise = noise / jnp.linalg.norm(noise)
+                    unit_noise = isotropic_unit_step(subkey)
                     step = unit_noise * step_l_sim
                     r_new = reflect_free(r, step)
                     comp = geometry.classify_position_carry(r_new, comp)
@@ -1275,11 +1260,7 @@ def simulate_trajectories(
             _illegal_crossings[0] += int(jnp.sum(bad_f))
             return positions
 
-        master_key = jax.random.PRNGKey(seed)
-        pos_key, walker_key = jax.random.split(master_key)
-
-        r0_all = initial_positions(geometry, n_walkers, pos_key, r0)   # (n_walkers, 3)
-        walker_keys_all = jax.random.split(walker_key, n_walkers)
+        _, r0_all, walker_keys_all = seed_walkers(geometry, n_walkers, seed, r0)   # r0_all (n_walkers, 3)
 
         comp0_all = (jnp.asarray(geometry._init_compartments)
                      if (record and is_packed_myelin_geom) else None)
