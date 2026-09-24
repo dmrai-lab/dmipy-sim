@@ -261,13 +261,23 @@ def test_what_b_value_each_echo_of_a_split_train_actually_delivers():
         id="test/b", license="x", citation="x", K=8)
     static, free = mk(1e-14), mk(D)
 
+    for pk in (static, free):                                            # a b read off an uncertified pack is the codec's
+        assert pk.fidelity["within_2x_floor"], pk.fidelity
+
     def delivered(beta, bval):
         s = sequences.splice([[1.0, 0, 0]], 35e-3, 42e-3, n, 10e-3, bvalues=[bval], TE_prep=PREP,
                              beta_deg=beta, n_t_per_echo=40).with_split_readout()
         S0 = np.abs(np.asarray(static.replay_bloch(s)).reshape(-1))
         S = np.abs(np.asarray(free.replay_bloch(s)).reshape(-1))
         keep = (S0 > 0.05 * S0.max()) & (S > 0)
+        delivered.S = S[keep]
         return -np.log(S[keep] / S0[keep]) / D
+
+    def b_tolerance(S):
+        """What the packs' Monte-Carlo floors allow the delivered b to miss the prepared one by, as a fraction: a
+        signal error of the floor at signal S is an error of floor / (S D) in b."""
+        floor = max(static.fidelity["floor_max"], free.fidelity["floor_max"])
+        return 3.0 * floor / (float(np.mean(S)) * D * prepared)
 
     # With nothing prepared, nothing is delivered: the readout winding is voxel-scale, so it contributes no
     # diffusion weighting at all. A physical readout gradient would, and this is the measurement that says
@@ -276,11 +286,11 @@ def test_what_b_value_each_echo_of_a_split_train_actually_delivers():
 
     # At 180 degrees one pathway survives, so every echo of both families delivers the SAME b -- which is
     # what makes this measurement trustworthy -- and it is the prepared b: no gradient plays past the
-    # preparation, so a readout off the echo adds no weighting. Read to the pack's Monte-Carlo floor, a tenth
-    # of b at this walker count (S = 0.15 against a floor of 0.014; dmipy-sim#408).
+    # preparation, so a readout off the echo adds no weighting. Read to the tolerance the packs' own
+    # certificates allow (dmipy-sim#408), never to a bracket.
     at180 = delivered(180.0, prepared)
     assert at180.std() < 0.01 * at180.mean()
-    assert 0.9 < at180.mean() / prepared < 1.1
+    assert abs(at180.mean() / prepared - 1.0) < b_tolerance(delivered.S)
 
     # Below 180 the pathways part, and the delivered b is read off ratios of signals that carry the pack's own
     # Monte-Carlo noise, which at 4 000 walkers spread the echoes by a quarter and at 16 000 by a tenth: that
@@ -289,8 +299,9 @@ def test_what_b_value_each_echo_of_a_split_train_actually_delivers():
     at120 = delivered(120.0, prepared)
     spread = (at120.max() - at120.min()) / at120.mean()
     assert spread < 0.25, f"echo-to-echo spread {spread:.3f}"
-    assert 0.9 < at120.mean() / prepared < 1.1
-    assert at120.min() / prepared > 0.85 and at120.max() / prepared < 1.15
+    tol = b_tolerance(delivered.S)
+    assert abs(at120.mean() / prepared - 1.0) < tol
+    assert at120.min() / prepared > 1.0 - 2.0 * tol and at120.max() / prepared < 1.0 + 2.0 * tol
 
 
 def test_the_prolonged_readouts_own_diffusion_weighting_is_negligible():
