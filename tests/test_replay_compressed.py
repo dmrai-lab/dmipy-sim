@@ -23,18 +23,27 @@ def _grad_battery(n_t):
     return np.stack(G, 0)
 
 
-def test_compressed_gradient_replay_matches_raw():
-    D, R = 2e-9, 5e-6
+def test_compressed_gradient_replay_matches_raw_within_the_codecs_certificate():
+    """The walk-time compressed master and the raw walk replay the same battery to within what the codec certifies
+    for that walk at that K: the pack built from the raw walk measures its truncation error on the certification
+    battery, and the compressed master's replay on that battery may differ from the raw one by no more than it.
+    Two deterministic quantities, compared against a bound, not against the Monte-Carlo floor."""
+    from dmipy_sim.replay.bank import build_replay_pack
+    from dmipy_sim.replay.compression import acquisition_battery, default_envelope
+    D, R, K = 2e-9, 5e-6, 32
     kw = dict(T_max=0.05, dt_save=1e-4, seed=1, require_gpu=False)
     raw = simulate_trajectories(N, D, Cylinder(radius=R, orientation=[0, 0, 1.]), **kw)
-    mst = simulate_trajectories(N, D, Cylinder(radius=R, orientation=[0, 0, 1.]),
-                                compress=32, **kw)
+    mst = simulate_trajectories(N, D, Cylinder(radius=R, orientation=[0, 0, 1.]), compress=K, **kw)
     assert isinstance(mst, dict) and mst["compressed"]
     traj, dt = np.asarray(raw.positions), raw.dt
-    G = _grad_battery(traj.shape[1])
+    env = default_envelope()
+    pk = build_replay_pack(raw, id="test/certified", license="x", citation="x", K=K, envelope=env, verbose=False)
+    G, _meta = acquisition_battery(traj.shape[1], dt, env)
     S_raw = np.asarray(replay(traj, dt, G, dt))
     S_cmp = np.asarray(replay(mst, mst["dt_traj"], G, dt))
-    assert np.abs(S_cmp - S_raw).max() < 2 * MC
+    err = float(pk.fidelity["err_max"])
+    assert np.abs(S_cmp - S_raw).max() <= err * (1 + 1e-6) + 1e-9, (np.abs(S_cmp - S_raw).max(), err)
+    assert err < 2 * MC                                             # and the certificate itself sits below the floor at this K
     # host memory: modes are far smaller than the raw trajectory
     assert mst["pos_modes"].nbytes < 0.25 * traj.astype(np.float16).nbytes
 
