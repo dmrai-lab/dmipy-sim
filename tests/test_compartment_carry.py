@@ -47,16 +47,28 @@ def _thick_tube(radius=3.0, height=24.0, sections=96, subdivisions=1):
     return mesh, m
 
 
-def test_initial_labels_are_exact_not_defaulted():
-    """Seeds inside the tube must be labelled interior, including the deep ones the gather cannot see."""
-    mesh, tri = _thick_tube()
-    pts = np.asarray(mesh.init_positions(400, jax.random.PRNGKey(0), pool="intra"), float)
-    lab = np.asarray(mesh.classify_positions_exact(pts))
+def _interior_grid(radius_um=3.0, height_um=24.0, margin_um=0.25):
+    """Points of the tube's interior on a grid that stays ``margin_um`` clear of its wall and its caps: the
+    set on which the exact classifier has no float32 excuse, so every one of them must read interior."""
+    rr = np.linspace(0.0, radius_um - margin_um, 12) * UM
+    ph = np.linspace(0.0, 2 * np.pi, 24, endpoint=False)
+    zz = np.linspace(-0.5 * height_um + margin_um, 0.5 * height_um - margin_um, 13) * UM
+    R_, P_, Z_ = np.meshgrid(rr, ph, zz, indexing="ij")
+    return np.stack([(R_ * np.cos(P_)).ravel(), (R_ * np.sin(P_)).ravel(), Z_.ravel()], 1)
 
-    truth = contains(tri, pts / UM)      # tri is in unit coordinates
-    assert truth.mean() > 0.97, "precondition: seeds should be inside"
-    assert (lab[truth] == 1).mean() > 0.98, (
-        f"only {100*(lab[truth]==1).mean():.1f}% of genuinely interior seeds labelled interior")
+
+def test_initial_labels_are_exact_not_defaulted():
+    """Every point of the interior, deep ones the gather cannot see included, is labelled interior; and every seed the
+    tube draws is labelled interior where exact containment puts it clear of the wall."""
+    mesh, tri = _thick_tube()
+    pts = _interior_grid()
+    assert contains(tri, pts / UM).all(), "precondition: the grid is inside the tube"
+    lab = np.asarray(mesh.classify_positions_exact(pts))
+    assert (lab == 1).all(), f"{(lab != 1).sum()} of {len(pts)} interior points labelled exterior"
+    seeds = np.asarray(mesh.init_positions(400, jax.random.PRNGKey(0), pool="intra"), float)
+    clear = contains(tri, seeds / UM) & (np.linalg.norm(seeds[:, :2], axis=1) < 3.0 * UM - 0.05 * UM) & (np.abs(seeds[:, 2]) < 12.0 * UM - 0.05 * UM)
+    assert clear.sum() > 300, "precondition: most seeds sit clear of the wall"
+    assert (np.asarray(mesh.classify_positions_exact(seeds))[clear] == 1).all()
 
 
 @pytest.mark.parametrize("subdivisions", [0, 2])
@@ -67,11 +79,8 @@ def test_a_walker_the_gather_cannot_see_keeps_its_label(subdivisions):
     calls them exterior -- the defect's signature -- and the carried label does not move."""
     from dmipy_sim.geometry.mesh import _gather_is_populated, _classify_arr
     mesh, tri = _thick_tube(subdivisions=subdivisions)
-    rng = np.random.default_rng(subdivisions)
-    n = 2000
-    rr = 3.0 * UM * np.sqrt(rng.uniform(0, 1, n)); ph = rng.uniform(0, 2 * np.pi, n)
-    pts = np.stack([rr * np.cos(ph), rr * np.sin(ph), rng.uniform(-8e-6, 8e-6, n)], 1)      # inside the tube
-    pts = pts[contains(tri, pts / UM)]
+    pts = _interior_grid(height_um=16.0)                                                    # inside the tube, clear of its wall
+    assert contains(tri, pts / UM).all()
     P = jax.numpy.asarray(pts, jax.numpy.float32)
     seen = np.asarray(jax.vmap(lambda r: _gather_is_populated(mesh._A, r))(P))
     raw = np.asarray(jax.vmap(lambda r: _classify_arr(mesh._A, r))(P))
@@ -79,10 +88,10 @@ def test_a_walker_the_gather_cannot_see_keeps_its_label(subdivisions):
     keep0 = np.asarray(jax.vmap(lambda r: mesh.classify_position_carry(r, jax.numpy.int32(0)))(P))
     assert (keep1[~seen] == 1).all() and (keep0[~seen] == 0).all()             # nothing in reach: carried
     assert (keep1[seen] == raw[seen]).all() and (keep0[seen] == raw[seen]).all()  # a wall in reach: classified
-    assert (raw[seen] == 1).mean() > 0.98                                       # and classified right
+    assert (raw[seen] == 1).all()                                               # and classified right
     if subdivisions == 2:
         assert (~seen).mean() > 0.3 and (raw[~seen] == 0).all()                 # the raw label reads exterior deep inside
-    assert (keep1 == 1).mean() > 0.98                                           # an interior walker stays interior
+    assert (keep1 == 1).all()                                                   # an interior walker stays interior
 
 
 def test_labels_agree_with_exact_containment_at_the_end_of_a_short_walk():
@@ -100,9 +109,11 @@ def test_labels_agree_with_exact_containment_at_the_end_of_a_short_walk():
     comp = [a for a in arrs if a.ndim == 1 and a.dtype.kind in "iu"][-1]
 
     inside = contains(tri, pos / UM)
-    assert inside.sum() > 100, "precondition: some walkers must end inside"
-    assert (comp[inside] == 1).mean() > 0.98, (
-        f"only {100*(comp[inside]==1).mean():.1f}% of walkers that ARE inside are labelled interior")
-    if (~inside).sum() > 50:
-        assert (comp[~inside] == 0).mean() > 0.90, (
-            f"only {100*(comp[~inside]==0).mean():.1f}% of walkers outside are labelled exterior")
+    # the wall is where float32 and exact containment may disagree by rounding; clear of it they may not
+    dist = np.minimum(3.0 * UM - np.linalg.norm(pos[:, :2], axis=1), 12.0 * UM - np.abs(pos[:, 2]))
+    clear = np.abs(dist) > 0.02 * UM
+    assert (inside & clear).sum() > 100, "precondition: some walkers must end inside, clear of the wall"
+    assert (comp[inside & clear] == 1).all(), (
+        f"{(comp[inside & clear] != 1).sum()} walkers that ARE inside, clear of the wall, are labelled exterior")
+    assert (comp[~inside & clear] == 0).all(), (
+        f"{(comp[~inside & clear] != 0).sum()} walkers outside, clear of the wall, are labelled interior")
