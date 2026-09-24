@@ -151,7 +151,7 @@ re-export their same-named module. There are NO flat-path shims: import the pack
 
 ## Geometry contract (duck-typed by `simulate`/`make_step_fn`)
 
-A geometry subclasses `geometry.base.Geometry` and provides `init_positions(n, key)` (seeding the pool it declares: `Mesh(..., pool="intra"|"extra")`, `CurvedMyelinatedCylinder(..., pool=)`; the old `intra=`/`shell=` seeding flags warn),
+A geometry subclasses `geometry.base.Geometry` and provides `init_positions(n, key)` (seeding the pool it declares: `Mesh(..., pool="intra"|"extra")`, `CurvedMyelinatedCylinder(..., pool=)`),
 `classify_position(r)` (compartment tag), `length_scales` (a `LengthScales` tuple:
 `min_feature`, `surface_pore`, `lookup_cell`, `is_mesh_feature`, `min_gap` — what the sub-step
 rules divide; read it via `physics.length_scales_of`, never by probing `radius`/`cell_size`),
@@ -165,8 +165,8 @@ new `getattr(geometry, …)` probe.
 free pool, enclosed pools are positive — 1 intra (the lumen / inside a closed surface), 2 myelin.
 Packed geometries (`classify_returns_object_id`) return 1..N for the object a walker is in.
 `geometry.classify_position(r)` is the one source; `comp_traj`, `return_compartments`, per-compartment
-`T2_per_comp`/`intra=`/`extra=` arrays are all indexed by that id (a `Mesh(intra={"T2":…}, extra={"T2":…})`
-stores `(T2_extra, T2_intra)`). `PackedMyelinatedCylinders` carries an encoded id (`k+1` lumen of
+`T2_per_comp` and `Compartments` are all indexed by that id (a `Mesh(compartments=Compartments(intra=Pool(T2=…),
+extra=Pool(T2=…)))` stores `(T2_extra, T2_intra)`). `PackedMyelinatedCylinders` carries an encoded id (`k+1` lumen of
 axon k, `N_max+k+1` its sheath) and maps it with `geometry.pool_of(...)` at the API boundary.
 **Per-compartment properties have one spelling**: `compartments=Compartments(extra=Pool(T2=…, D=…), intra=Pool(…), myelin=Pool(…))`
 (`dmipy_sim.compartments`; `pool_id(name)` is the only name→id map; `Substrate.compartments` builds one). `Mesh(intra=, extra=)`
@@ -239,8 +239,8 @@ meshes:
   rotation* — the walk stays in the mesh frame.
 - **Compartment (intra/extra) wall properties.** The membrane can relax and permit
   crossing differently by side/direction — the side is known at the collision
-  (`sign(step·outward_normal)`). `intra={"surface_relaxivity_t2": ρ_i}`,
-  `extra={"surface_relaxivity_t2": ρ_e}` → side-dependent ρ; `permeability={
+  (`sign(step·outward_normal)`). `compartments=Compartments(intra=Pool(surface_relaxivity_t2=ρ_i),
+  extra=Pool(surface_relaxivity_t2=ρ_e))` → side-dependent ρ; `permeability={
   "intra_to_extra": κ_out, "extra_to_intra": κ_in}` → direction-dependent κ (scalar
   = symmetric, the default). Stored as a nominal value × per-side/-direction
   multipliers applied in `reflect_with_log_weight` / `permeate` (per sub-step, so an

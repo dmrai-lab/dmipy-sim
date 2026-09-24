@@ -45,7 +45,7 @@ diameter distribution, and the surface relaxivity `rho2`.
 ```{code-cell} ipython3
 import numpy as np
 from dmipy_sim.substrate.biophysical_constants import canonical_white_matter, get_value
-from dmipy_sim import pack_myelinated_cylinders, PackedMyelinatedCylinders, simulate, pgse
+from dmipy_sim import pack_myelinated_cylinders, PackedMyelinatedCylinders, Compartments, Pool, simulate, pgse
 
 C = canonical_white_matter(3.0)                       # at 3 T
 D, G, RHO = C['D_intra'], C['g_ratio'], C['rho2']
@@ -66,7 +66,7 @@ def build_substrate(surface_on, seed=0):
     g = PackedMyelinatedCylinders(
         inner_radii=inner, g_ratios=gr, centers=cen, cell_size=cell,
         N_max=len(inner) + 1, D_intra=D, D_extra=D, D_myelin=0.0,
-        T2_intra=T2I, T2_extra=T2E, T2_myelin=T2M,
+        compartments=Compartments(intra=Pool(T2=T2I), extra=Pool(T2=T2E), myelin=Pool(T2=T2M)),
         rho_inner=(RHO if surface_on else 0.0),
         rho_outer=(RHO if surface_on else 0.0),
         kappa_inner=0.0, kappa_outer=0.0)
