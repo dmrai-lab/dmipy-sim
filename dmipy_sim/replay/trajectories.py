@@ -544,20 +544,19 @@ def replay(
     return signals
 
 
-def _rf_increment(M, flip, ax):
-    """Rotate M (3, N) by ``flip`` rad about the in-plane B1 axis ``ax`` rad (Rodrigues,
-    axis (cos ax, sin ax, 0)).  One partial B1 step of a finite pulse; the free
-    precession between successive increments (in the main loop) supplies the
-    off-resonance tilt.  ``flip`` may be scalar (uniform B1) or a per-walker (N,) array
-    (B1+ transmit inhomogeneity)."""
-    ux, uy = np.cos(ax), np.sin(ax)
-    c, s = np.cos(flip), np.sin(flip)                          # scalar or (N,)
+def _rf_increment(M, flip, ax, xp=np):
+    """``M`` (3, N) rotated by ``flip`` rad about the in-plane B1 axis ``ax`` rad (Rodrigues, axis
+    ``(cos ax, sin ax, 0)``): one partial B1 step of a finite pulse, the free precession between increments
+    supplying the off-resonance tilt. ``flip`` is a scalar (uniform B1) or per-walker ``(N,)`` (B1+ transmit
+    inhomogeneity); ``flip = 0`` is the identity. ``xp`` is numpy or jax.numpy: the one RF rotation of the
+    package, on host arrays and on traced operands alike."""
+    ux, uy = xp.cos(ax), xp.sin(ax)
+    c, s = xp.cos(flip), xp.sin(flip)
     omc = 1.0 - c
     Mx, My, Mz = M[0], M[1], M[2]
-    Mx2 = (c + ux * ux * omc) * Mx + (ux * uy * omc) * My + (uy * s) * Mz
-    My2 = (ux * uy * omc) * Mx + (c + uy * uy * omc) * My + (-ux * s) * Mz
-    Mz2 = (-uy * s) * Mx + (ux * s) * My + c * Mz
-    return np.stack([Mx2, My2, Mz2])
+    return xp.stack([(c + ux * ux * omc) * Mx + (ux * uy * omc) * My + (uy * s) * Mz,
+                     (ux * uy * omc) * Mx + (c + uy * uy * omc) * My + (-ux * s) * Mz,
+                     (-uy * s) * Mx + (ux * s) * My + c * Mz])
 
 
 def finite_180_longitudinal_dwell(phi_pre, tau_180, phi_B1=0.0):
@@ -951,17 +950,6 @@ def replay_bloch_jax(trajectory, dt_traj, G, dt_wf, rf_events, *,
     return (M_all, out) if return_state else out
 
 
-def _bloch_rotate(M, flip, ax):
-    """:func:`_rf_increment` on traced operands."""
-    ux, uy = jnp.cos(ax), jnp.sin(ax)
-    c, s = jnp.cos(flip), jnp.sin(flip)
-    omc = 1.0 - c
-    Mx, My, Mz = M[0], M[1], M[2]
-    return jnp.stack([(c + ux * ux * omc) * Mx + (ux * uy * omc) * My + (uy * s) * Mz,
-                      (ux * uy * omc) * Mx + (c + uy * uy * omc) * My + (-ux * s) * Mz,
-                      (-uy * s) * Mx + (ux * s) * My + c * Mz])
-
-
 if _JAX_AVAILABLE:
     @functools.partial(jax.jit, static_argnames=("echo_idx", "per_walker"))
     def _bloch_scan_batch(W_b, M0_b, r_lo, r_hi, flips, axes, b1, dphi_extra, surf, E2, E1, wn, *, echo_idx, per_walker):
@@ -983,7 +971,7 @@ if _JAX_AVAILABLE:
             def step(M, x):
                 fl, ax, dphi_t, e2, e1, sf = x
                 for j in range(n_ev):
-                    M = _bloch_rotate(M, fl[j] * b1, ax[j])
+                    M = _rf_increment(M, fl[j] * b1, ax[j], xp=jnp)
                 c, s = jnp.cos(dphi_t), jnp.sin(dphi_t)
                 Mx = (c * M[0] - s * M[1]) * sf * e2
                 My = (s * M[0] + c * M[1]) * sf * e2

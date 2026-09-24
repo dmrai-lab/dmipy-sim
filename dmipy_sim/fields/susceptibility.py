@@ -32,7 +32,6 @@ import jax.numpy as jnp
 from .susceptibility_field import _as_voxel_size, dipole_field, myelin_susceptibility_tensor
 from ..replay.so3 import rotation_of
 
-from ..constants import GAMMA  # noqa: F401  (re-exported convenience)
 
 # Symmetric 3x3 tensor stored as 6 components in this fixed order.
 _SYM6 = ((0, 0), (1, 1), (2, 2), (0, 1), (0, 2), (1, 2))
