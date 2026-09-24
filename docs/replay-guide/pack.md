@@ -75,6 +75,7 @@ same = ReplayPack.load(os.path.join(tmp, "cylinder.rpk"))
 assert same.n_walkers == pack.n_walkers
 ```
 
-`ReplayPack.load` reads one `.rpk` file whole. `ReplayPack.open(uri)` opens the columnar layout of a large pack
+`ReplayPack.load` reads one `.rpk` file whole, from a local path or from a hub (`hf://owner/name/path.rpk`, checked
+against the dataset's manifest; see [publishing](README.md#publishing-a-pack)). `ReplayPack.open(uri)` opens the columnar layout of a large pack
 by reference, on a directory or on the Hub, and reads only the rows and bands an acquisition needs; that is the
 subject of [images](images.md).

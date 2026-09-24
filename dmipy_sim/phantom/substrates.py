@@ -93,11 +93,15 @@ class PackSubstrate(_Declared):
     def pack(self):
         """The pack: loaded from ``uri`` on first use, and a missing file is reported by its path."""
         if self._pack is None:
-            from ..replay.replay import read_rpk
-            if not Path(self.uri).exists():
-                raise FileNotFoundError(f"substrate {self.name!r} cites the pack {self.uri!r}, which does not exist here; "
-                                        f"pass it in memory with packs={{...}} or restore the file")
-            self._pack = read_rpk(self.uri)
+            from ..replay.replay import ReplayPack, read_rpk
+            from ..replay.publish import is_hub_uri
+            if is_hub_uri(self.uri):                                       # a published pack, fetched and checked by its URI
+                self._pack = ReplayPack.load(self.uri)
+            else:
+                if not Path(self.uri).exists():
+                    raise FileNotFoundError(f"substrate {self.name!r} cites the pack {self.uri!r}, which does not exist here; "
+                                            f"pass it in memory with packs={{...}} or restore the file")
+                self._pack = read_rpk(self.uri)
         return self._pack
 
     def to_meta(self):

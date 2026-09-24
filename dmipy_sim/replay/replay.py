@@ -233,14 +233,22 @@ class ReplayPack:
 
     @classmethod
     def load(cls, path):
-        """Read a ``.rpk`` file."""
-        return read_rpk(path)
+        """Read a ``.rpk`` file: a local path, or ``hf://owner/name/path/to/file.rpk`` fetched from the hub into the
+        local cache and checked against the dataset's ``manifest.json`` (:func:`~dmipy_sim.replay.publish.fetch`)."""
+        from .publish import fetch, is_hub_uri
+        return read_rpk(fetch(path) if is_hub_uri(path) else path)
 
     def save(self, path):
         """Write this pack to a ``.rpk`` file."""
         write_rpk(path, {k: v for k, v in self.arrays.items() if v is not None}, self.meta)
         self.source = str(path)
         return path
+
+    def publish(self, repo, **kw):
+        """Put this pack in the dataset ``repo`` (``owner/name``) and return its ``hf://`` URI:
+        :func:`dmipy_sim.replay.publish.publish`, which takes ``path=``, ``hub=`` and ``message=``."""
+        from .publish import publish
+        return publish(self, repo, **kw)
 
     # ---- segments (RPK.md 4.3): the walk stored in windows of one duration ----
     @property
