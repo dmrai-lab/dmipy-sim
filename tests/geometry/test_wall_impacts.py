@@ -55,11 +55,14 @@ def _lattice(n_side, radius, dim=2):
 
 def _radial(name):
     """Distance from the object's axis/centre -- the quantity the wall is a level set of."""
-    if name == "PackedCylinders":
+    if name in _PACKED:
         # a packing has objects at arbitrary centres, so "distance from the wall" is measured
         # against the nearest one under the minimum image, not against the origin
-        def _f(p, centers=_PACK_CENTERS, L=_PACK_L):
-            q = np.atleast_2d(p)[:, None, :2] - centers[None, :, :]
+        centers, L = _PACK[name]
+        dim = centers.shape[1]
+
+        def _f(p):
+            q = np.atleast_2d(p)[:, None, :dim] - centers[None, :, :]
             q -= L * np.floor(q / L + 0.5)
             return np.linalg.norm(q, axis=2).min(axis=1)
         return _f
@@ -71,10 +74,10 @@ def _radial(name):
     return lambda p: np.linalg.norm(np.atleast_2d(p), axis=1)
 
 
-_PACK_L = None
 _SEMI = np.array([R, 0.6 * R, 0.8 * R])          # ellipsoid semi-axes; the +x wall is at R
-_NAMES = ["Sphere", "Cylinder", "Ellipsoid", "PackedCylinders"]
-_PACK_CENTERS = None
+_PACKED = ("PackedCylinders", "PackedSpheres")
+_NAMES = ["Sphere", "Cylinder", "Ellipsoid", *_PACKED]
+_PACK = {}                                        # name -> (centres, L) of the packing built for it
 
 
 _CACHE = {}
@@ -101,12 +104,15 @@ def _build_uncached(name):
     alone and fails in a full run with "Array has been deleted". That is exactly what
     happened, in this file, after the note above was written and not acted on.
     """
-    global _PACK_CENTERS, _PACK_L
     if name == "PackedCylinders":
-        c2, _PACK_L = _lattice(3, R, 2)      # 9 cylinders, box sized to fit them
-        _PACK_CENTERS = c2
-        return PackedCylinders(centers=c2, radii=np.full(len(c2), R), L=_PACK_L,
+        c2, L = _lattice(3, R, 2)            # 9 cylinders, box sized to fit them
+        _PACK[name] = (c2, L)
+        return PackedCylinders(centers=c2, radii=np.full(len(c2), R), L=L,
                                orientation=[0, 0, 1.0], permeability=0.0)
+    if name == "PackedSpheres":
+        c3, L = _lattice(2, R, 3)            # 8 spheres on a cubic lattice, box sized to fit them
+        _PACK[name] = (c3, L)
+        return PackedSpheres(centers=c3, radii=np.full(len(c3), R), L=L, permeability=0.0)
     if name == "Sphere":
         return Sphere(radius=R, permeability=0.0)
     if name == "Ellipsoid":
@@ -127,14 +133,21 @@ DISTANCES = [("short", 2.0e-8), ("comparable", 0.5 * R), ("spanning", 2.5 * R),
 ANGLES = [("head_on", 0.0), ("oblique", 45.0), ("grazing", 89.0)]
 
 
+def _first_centre(name):
+    """The centre of the object the table fires at: the packing's first object, else the origin."""
+    if name not in _PACK:
+        return np.zeros(3)
+    c = np.zeros(3); c[:_PACK[name][0].shape[1]] = _PACK[name][0][0]
+    return c
+
+
 def _impacts(name):
     """(start, step) pairs: a walker inside, placed `off` from the wall on +x, aimed out."""
     out = []
     for oname, off in OFFSETS:
         for dname, dist in DISTANCES:
             for aname, deg in ANGLES:
-                c = (np.array([_PACK_CENTERS[0][0], _PACK_CENTERS[0][1], 0.0])
-                     if name == "PackedCylinders" else np.zeros(3))
+                c = _first_centre(name)
                 start = c + np.array([R - off, 0.0, 0.0], np.float64)
                 th = np.deg2rad(deg)
                 # outward normal is +x here; rotate the aim by `th` towards +y
@@ -152,8 +165,7 @@ def _exterior_impacts(name):
     for oname, off in OFFSETS:
         for dname, dist in DISTANCES:
             for aname, deg in ANGLES:
-                c = (np.array([_PACK_CENTERS[0][0], _PACK_CENTERS[0][1], 0.0])
-                     if name == "PackedCylinders" else np.zeros(3))
+                c = _first_centre(name)
                 start = c + np.array([R + off, 0.0, 0.0], np.float64)
                 th = np.deg2rad(deg)
                 d = np.array([-np.cos(th), np.sin(th), 0.0])          # aimed at the wall
@@ -167,7 +179,7 @@ def test_impermeable_wall_never_lets_a_walker_in(name):
     """The exterior twin: a walker outside an impermeable wall stays outside -- it is neither
     absorbed by a clamp nor teleported inside. Path length is conserved as for interior impacts."""
     geom = _build(name)
-    if name == "PackedCylinders":
+    if name in _PACKED:
         pytest.skip("a packed exterior walker meets the NEIGHBOURING objects too; covered by the "
                     "confinement tests on the packed geometries")
     rad = _radial(name)
@@ -258,8 +270,7 @@ def test_a_step_that_spans_the_object_still_confines(name):
     rng = np.random.default_rng(0)
     # start near the centre, aim in every direction, step several diameters
     d = rng.normal(size=(n, 3)); d /= np.linalg.norm(d, axis=1, keepdims=True)
-    c = (np.array([_PACK_CENTERS[0][0], _PACK_CENTERS[0][1], 0.0])
-         if name == "PackedCylinders" else np.zeros(3))
+    c = _first_centre(name)
     starts = jnp.asarray(np.broadcast_to(c, (n, 3)).astype(np.float32))
     steps = jnp.asarray((d * 6.0 * R).astype(np.float32))
     out = np.asarray(jax.jit(jax.vmap(lambda p, s: geom.interact(p, s).r))(starts, steps))
@@ -288,8 +299,7 @@ def test_on_wall_needs_a_carried_side(name):
     d = rng.normal(size=(n, 3)); d /= np.linalg.norm(d, axis=1, keepdims=True)
     if name == "Cylinder":
         d[:, 2] = 0.0; d /= np.linalg.norm(d, axis=1, keepdims=True)
-    c = (np.array([_PACK_CENTERS[0][0], _PACK_CENTERS[0][1], 0.0])
-         if name == "PackedCylinders" else np.zeros(3))
+    c = _first_centre(name)
     starts = jnp.asarray((c + d * R).astype(np.float32))       # exactly on the wall
     steps = jnp.asarray((d * 0.4 * R).astype(np.float32))     # aimed straight out
 

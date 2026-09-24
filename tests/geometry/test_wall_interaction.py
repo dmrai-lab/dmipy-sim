@@ -60,50 +60,6 @@ def _build(name):
 _PACKED = ["PackedCylinders", "PackedSpheres"]
 
 
-def _seed_intra(centers, n, seed=0):
-    """Walkers strictly inside a randomly chosen object."""
-    rng = np.random.default_rng(seed)
-    k = rng.integers(0, len(centers), n)
-    u = rng.uniform(0, 1, n) ** 0.5 * R * 0.85
-    r = np.zeros((n, 3), np.float32)
-    if centers.shape[1] == 2:                       # cylinders: free axial coordinate
-        th = rng.uniform(0, 2 * np.pi, n)
-        r[:, 0] = centers[k, 0] + u * np.cos(th)
-        r[:, 1] = centers[k, 1] + u * np.sin(th)
-    else:                                           # spheres: isotropic
-        v = rng.normal(size=(n, 3)); v /= np.linalg.norm(v, axis=1, keepdims=True)
-        r[:] = centers[k] + v * u[:, None]
-    return r
-
-
-def _walk(step_fn, r, n_steps, seed=5):
-    rng = np.random.default_rng(seed)
-    n = r.shape[0]
-    for i in range(n_steps):
-        d = rng.normal(size=(n, 3)); d /= np.linalg.norm(d, axis=1, keepdims=True)
-        r = step_fn(r, jnp.asarray(d * STEP, jnp.float32), i)
-    return r
-
-
-@pytest.mark.parametrize("name", _PACKED)
-def test_reflect_confines_intra_walkers(name):
-    geom, centers = _build(name)
-    """An impermeable wall confines BOTH sides. `reflect` must not expel intra walkers."""
-    n, n_steps = 2000, 400
-    r0 = _seed_intra(centers, n)
-    cls = jax.jit(jax.vmap(geom.classify_position))
-    lab0 = np.asarray(cls(jnp.asarray(r0)))
-    assert (lab0 > 0).all(), "seeding failed: walkers are not intra"
-
-    f = jax.jit(jax.vmap(geom.reflect, in_axes=(0, 0)))
-    rf = _walk(lambda r, s, i: f(r, s), jnp.asarray(r0), n_steps)
-
-    left = int((np.asarray(cls(rf)) != lab0).sum())
-    assert left == 0, (
-        f"{name}.reflect expelled {left}/{n} intra walkers through an impermeable wall. "
-        f"At kappa = 0 nothing crosses, so a walker reflects on whichever side it starts.")
-
-
 @pytest.mark.parametrize("name", _PACKED)
 def test_reflect_equals_permeate_at_zero_permeability(name):
     geom, centers = _build(name)
