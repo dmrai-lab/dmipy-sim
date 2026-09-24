@@ -196,3 +196,51 @@ def test_the_bloch_route_reads_at_the_acquisitions_readout(packs):
     c = two.segment(0).replay_bloch(short, tissue=TIS, complex_signal=True)
     npt.assert_allclose(b, a, atol=1e-8); npt.assert_allclose(c, a, atol=1e-8)
     npt.assert_allclose(np.abs(a), one.replay(short, tissue=TIS), rtol=1e-4)
+
+
+def test_a_walk_continues_from_its_end_and_appends_as_segments():
+    """A 10 ms pack extended by 10 ms with a fresh seed has the layout of a 20 ms walk stored in two segments, its
+    second segment starts exactly where the first ended, its table records both walks, its certificate is the bound
+    over the segments, and it replays a 20 ms acquisition as the one-walk pack does within the floor."""
+    from dmipy_sim.replay.continuation import append_segments, continue_walk, end_state
+    g = d.Cylinder(2e-6, (0, 0, 1))
+    kw = dict(license="x", citation="x", K=16, blt_temporal_K=16, segment_T=0.01)
+    two = build_replay_pack(d.simulate_trajectories(2000, 2e-9, g, 0.02, 5e-4, seed=0, require_gpu=False), id="t/two", **kw)
+    one = build_replay_pack(d.simulate_trajectories(2000, 2e-9, g, 0.01, 5e-4, seed=0, require_gpu=False), id="t/one", **kw)
+    r_end, pool = end_state(one)
+    assert pool is not None and np.all(pool == 1)                                   # every walker in the lumen
+    cont = continue_walk(one, 0.01, seed=7, require_gpu=False)
+    npt.assert_array_equal(np.asarray(cont.positions[:, 0, :], np.float32), r_end.astype(np.float32))
+    ext = append_segments(one, cont, seed=7)
+    assert sorted(ext.arrays) == sorted(two.arrays) and ext.n_t == two.n_t == 41 and ext.n_segments == 2
+    assert ext.segments["walks"] == [dict(first=0, last=0, seed=0), dict(first=1, last=1, seed=7)]
+    npt.assert_array_equal(ext.segment(1).r0, r_end.astype(np.float32))
+    assert ext.fidelity["certified"] == "bounded" and len(ext.fidelity["segments"]) == 2
+    assert ext.meta["provenance"]["continuations"][0]["seed"] == 7
+    seq = _seq()
+    tis = Tissue(T2=[0.05, 0.02], rho=1e-5)
+    a, b = two.replay(seq, tissue=tis), ext.replay(seq, tissue=tis)
+    assert np.abs(a - b).max() < 2.0 * max(two.fidelity["floor_max"], ext.fidelity["floor_max"])
+    with pytest.raises(ValueError, match="whole number"):
+        continue_walk(one, 0.015, seed=1, require_gpu=False)
+    longer = ext.extend(0.02, seed=9, require_gpu=False)
+    assert longer.n_segments == 4 and longer.n_t == 81 and longer.segments["walks"][-1] == dict(first=2, last=3, seed=9)
+    long_seq = d.pgse([[1, 0, 0]], 0.005, 0.02, gradient_strengths=0.2, n_t=61, slew_rate=np.inf)   # 30 ms: three windows
+    assert 0.0 < float(longer.replay(long_seq)[0]) < 1.0
+
+
+def test_shards_of_a_segmented_walk_merge(packs, tmp_path):
+    """Two shards of the same substrate, each stored in two segments with a field path channel, merge into one pack
+    of two segments whose every segment's scale table carries a block axis and whose replay is the weight-combined shards'."""
+    from dmipy_sim.replay.bank import merge_packs
+    m, one, two = packs
+    m2 = dict(m); rng = np.random.default_rng(3)
+    m2["traj"] = np.asarray(m["traj"]) + rng.normal(0, 1e-7, np.asarray(m["traj"]).shape); m2["seed"] = 5
+    env = dict(_lean_env(), B0_list=[3.0], theta_deg=[0])
+    kw = dict(license="CC-BY-4.0", citation="test", envelope=env, blt_dtype=np.float32, susc_path_bits=16, K=19, blt_temporal_K=19, susc_path_K=21, segment_T=0.01)
+    b = build_replay_pack(m2, id="t/b", **kw)
+    merged = merge_packs([two, b], id="t/merged")
+    assert merged.n_segments == 2 and merged.n_walkers == 2 * N_W and merged.arrays["s1/susc_path_scale"].shape[0] == 2
+    seq = _seq()
+    Sa, Sb = two.replay(seq, tissue=TIS, scanner=3.0, complex_signal=True), b.replay(seq, tissue=TIS, scanner=3.0, complex_signal=True)
+    npt.assert_allclose(merged.replay(seq, tissue=TIS, scanner=3.0, complex_signal=True), (Sa + Sb) / 2.0, atol=1e-6)

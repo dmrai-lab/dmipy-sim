@@ -1002,10 +1002,10 @@ def merge_packs(packs, *, id, out_path=None, overlap="refuse", envelope=None, de
         same("array names", lambda pk: sorted(pk.arrays))
         n = [int(pk.meta["walk_params"]["n_walkers"]) for pk in pks]
         arrays = {}
-        scale_keys = [k for k in pks[0].arrays if k.endswith("_band_scale") or k == "susc_path_scale"]
+        scale_keys = [k for k in pks[0].arrays if k.endswith("_band_scale") or k.split("/")[-1] == "susc_path_scale"]   # every segment's
         # a scale table with a block axis: the band scales carry one from the start ((n_blocks, ...)); the path channel's
         # (n_ch, K) gains one here
-        table = lambda pk, k: (np.asarray(pk.arrays[k])[None] if (k == "susc_path_scale" and np.asarray(pk.arrays[k]).ndim == 2) else np.asarray(pk.arrays[k]))
+        table = lambda pk, k: (np.asarray(pk.arrays[k])[None] if (k.split("/")[-1] == "susc_path_scale" and np.asarray(pk.arrays[k]).ndim == 2) else np.asarray(pk.arrays[k]))
         if scale_keys:                                                   # per-pack scale tables: stack the shards' and give
             blocks, off = [], 0                                          # every walker its block
             for pk, m in zip(pks, n):
@@ -1018,7 +1018,17 @@ def merge_packs(packs, *, id, out_path=None, overlap="refuse", envelope=None, de
         for k in pks[0].arrays:
             if k in ("voxel_ijk", "voxel_certificate", "band_block") or k in scale_keys:
                 continue
+            if k.startswith("susc_grid_"):                                    # the substrate's field grid: one table, every shard's
+                for pk in pks[1:]:
+                    if not np.array_equal(np.asarray(pk.arrays[k]), np.asarray(pks[0].arrays[k])):
+                        raise ValueError(f"the shards differ in the field grid {k!r}")
+                arrays[k] = np.asarray(pks[0].arrays[k])
+                continue
             parts = [np.asarray(pk.arrays[k]) for pk in pks]
+            base = k.split("/")[-1]
+            if base.endswith(("_rle_vals", "_rle_lens")):                      # a stream (RPK.md 9.4 rule 7): the shards'
+                arrays[k] = np.concatenate(parts)                             # records follow each other in walker order
+                continue
             if not all(a.shape[0] == m and a.shape[1:] == parts[0].shape[1:] for a, m in zip(parts, n)):
                 raise ValueError(f"array {k!r} is not walker-leading in every shard; it cannot be concatenated")
             arrays[k] = np.concatenate(parts)
@@ -1748,7 +1758,7 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto"
 
 
 def _build_segmented(m, n_segments, n_seg, run, walk, out_path, *, id, K, temporal_bandwidth_hz, blt_temporal_K, susc_path_K,
-                     fidelity, fidelity_from, envelope, **kw):
+                     fidelity, fidelity_from, envelope, sigma_star=None, **kw):
     """:func:`build_replay_pack` for a walk of ``n_segments`` windows of ``n_seg`` saves: every window built as a
     pack of its own from the walk's arrays of that window (:func:`_window_master`), with segment 0's band, contact
     codec and occupancy form, then assembled -- the windows' tensors under ``s{i}/`` beside the tensors the walk
@@ -1766,8 +1776,11 @@ def _build_segmented(m, n_segments, n_seg, run, walk, out_path, *, id, K, tempor
         w = _window_master(m, i * steps, (i + 1) * steps)
         if i == 0:
             pk = build_replay_pack(w, id=f"{id}", K=K, blt_temporal_K=blt_temporal_K, susc_path_K=susc_path_K, fidelity=fidelity,
-                                   fidelity_from=fidelity_from, envelope=envelope, segment_T=T_seg, _occupancy_runs=crosses, **kw)
+                                   fidelity_from=fidelity_from, envelope=envelope, segment_T=T_seg, _occupancy_runs=crosses, sigma_star=sigma_star, **kw)
             K = int(pk.K)
+            pm0 = (pk.meta["compression"].get("channels") or {}).get("susceptibility_path")
+            if pm0 is not None:
+                susc_path_K = int(pm0["K"])                   # a band derived on window 0 is every window's
             c2 = (pk.meta["compression"].get("channels") or {}).get("boundary_local_time")
             if c2 is not None:
                 if c2.get("mode") != "bridge_dst":
@@ -1776,7 +1789,7 @@ def _build_segmented(m, n_segments, n_seg, run, walk, out_path, *, id, K, tempor
                 blt_temporal_K = int(c2["K"])
         else:
             pk = build_replay_pack(w, id=f"{id}", K=K, blt_temporal_K=blt_temporal_K, susc_path_K=susc_path_K, fidelity=fidelity,
-                                   fidelity_from=fidelity_from, envelope=envelope, segment_T=T_seg, _occupancy_runs=crosses,
+                                   fidelity_from=fidelity_from, envelope=envelope, segment_T=T_seg, _occupancy_runs=crosses, sigma_star=sigma_star,
                                    voxel_grid=None, **{k_: v_ for k_, v_ in kw.items() if k_ != "voxel_grid"})
         packs.append(pk)
     arrays = dict(packs[0].arrays)
@@ -1801,6 +1814,8 @@ def _build_segmented(m, n_segments, n_seg, run, walk, out_path, *, id, K, tempor
                    err_max=float(max([whole["err_max"]] + tier_err)), floor_max=float(max([whole["floor_max"]] + tier_floor)),
                    certified="measured", positions="measured over the whole walk", tiers="bounded over the segments")
         fid["within_2x_floor"] = bool(fid["err_max"] <= 2.0 * fid["floor_max"])
+    if sigma_star is not None:                                 # the floor-target policy's verdict on the whole
+        fid.update(target_floor=float(sigma_star), meets_target=bool(fid["err_max"] <= sigma_star and fid["floor_max"] <= sigma_star))
     meta = json.loads(json.dumps(packs[0].meta))
     n_t = n_segments * steps + 1
     cm = meta["compression"]
