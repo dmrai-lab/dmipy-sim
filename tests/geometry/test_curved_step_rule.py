@@ -41,7 +41,8 @@ def _impacts(g, gap):
     """(label, start, step): an interior walker of tube 1 placed ``off`` inside its wall facing tube 2, aimed at
     that wall at ``deg`` from its normal, for a step of ``dist``; and the mirror image starting in tube 2."""
     offsets = [("nudge", g.nudge_m), ("1e-3R", 1e-3 * R), ("0.1R", 0.1 * R)]
-    dists = [("half_gap", 0.5 * gap), ("gap", gap), ("3gap", 3 * gap), ("10gap", 10 * gap), ("R/3", R / 3)]
+    dists = [("half_gap", 0.5 * gap), ("gap", gap), ("3gap", 3 * gap), ("10gap", 10 * gap), ("R/3", R / 3),
+             ("rule", R / STEP_FRACTION), ("2rule", 2 * R / STEP_FRACTION)]     # the walk's own step, and past it
     angles = [("head_on", 0.0), ("oblique", 45.0), ("grazing", 89.0), ("tangent", 90.0)]
     out = []
     for x in (-20e-6, 0.0, 20e-6):
