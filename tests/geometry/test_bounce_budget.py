@@ -93,15 +93,39 @@ def test_no_lane_reaches_the_cap_at_the_dispatched_step(make):
         assert (out[2][20_000:] != out[1][20_000:]).any()               # a cap of 1 does cut the grazing lanes: the test has teeth
 
 
+def _mesh_grazing_lane(m, V, F, rng):
+    """The mesh's grazing lane, which ``_dispatched_steps`` cannot build (a mesh has no one radius): a start two
+    nudges inside every facet's centroid, aimed along the facet for the dispatched sub-step's length, plus the
+    same starts aimed at the facet's nearest edge midpoint. The lane the cap is derived from, on the wall itself."""
+    from dmipy_sim.engine.physics import resolve_sub_steps
+    dt = 1e-4; n_sub = resolve_sub_steps(m, D, dt)
+    step_l = float(np.sqrt(6.0 * D * dt / n_sub))
+    tri = V[F]; cen = tri.mean(1)
+    n = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0]); n /= np.linalg.norm(n, axis=1, keepdims=True)
+    n *= np.sign((n * cen).sum(1, keepdims=True))                        # outward, for a body around the origin
+    start = cen - 2.0 * float(m._NUDGE) * n
+    t = rng.normal(size=cen.shape); t -= (t * n).sum(1, keepdims=True) * n; t /= np.linalg.norm(t, axis=1, keepdims=True)
+    mid = 0.5 * (tri[:, 0] + tri[:, 1]); to_edge = mid - start; to_edge /= np.linalg.norm(to_edge, axis=1, keepdims=True)
+    return (np.concatenate([start, start]).astype(np.float32),
+            (step_l * np.concatenate([t, to_edge])).astype(np.float32))
+
+
 def test_no_mesh_lane_reaches_the_cap_at_the_dispatched_step():
+    """Doubling the cap changes nothing on a mesh either: the Gaussian set at the dispatched sub-step, and the
+    grazing lane on the facets, under the cap and under twice the cap, to the bit; and a cap of one does cut the
+    grazing lane, so the test has teeth."""
     import jax, jax.numpy as jnp
     V, F = mesh_shapes.icosphere(1e-6, subdivisions=2)
     m = d.Mesh(V, F, feature_radius=0.5e-6)
-    r0, step = _dispatched_steps(m, 5_000, np.random.default_rng(2), jax.random.PRNGKey(2))
-    r0, step = r0[:5_000], step[:5_000]                                  # the Gaussian set: a mesh has no one radius
+    rng = np.random.default_rng(2)
+    r0, step = _dispatched_steps(m, 5_000, rng, jax.random.PRNGKey(2))
+    r0, step = r0[:5_000], step[:5_000]                                  # the Gaussian set; the mesh's own graze lane follows
+    g0, gs = _mesh_grazing_lane(m, V, F, rng)
+    r0, step = np.concatenate([r0, g0]), np.concatenate([step, gs])
     out = [np.asarray(jax.jit(jax.vmap(d.Mesh(V, F, feature_radius=0.5e-6, max_bounces=c).reflect))(jnp.asarray(r0), jnp.asarray(step)))
-           for c in (m._MAX_BOUNCES, 2 * m._MAX_BOUNCES)]
+           for c in (m._MAX_BOUNCES, 2 * m._MAX_BOUNCES, 1)]
     np.testing.assert_array_equal(out[0], out[1])
+    assert (out[2][5_000:] != out[1][5_000:]).any()                      # a cap of 1 does cut the grazing lane
 
 
 def test_the_cap_still_bounds_a_pathological_lane():
