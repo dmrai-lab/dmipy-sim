@@ -35,9 +35,9 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from ._grid import NEIGHBOUR_OFFSETS, gather
 from .base import Geometry, LengthScales
 
-_OFFSETS = np.array([[dx, dy, dz] for dx in (-1, 0, 1) for dy in (-1, 0, 1) for dz in (-1, 0, 1)], np.int32)
 # Plain numpy constants only at module scope: a module-level jnp scalar is a live DEVICE buffer, and
 # `free_gpu_memory(aggressive=True)` deletes every live array in the process.
 _INF = np.float32(np.inf)
@@ -63,12 +63,7 @@ class _Level(NamedTuple):
 
 def _gather(L, r):
     """Candidate sphere ids in the walker's 27-cell neighbourhood of one level + validity."""
-    c = jnp.clip(jnp.floor((r - L.GMIN) / L.CS).astype(jnp.int32), 0, L.DIMS - 1)
-    nb = jnp.clip(c[None, :] + L.OFF, 0, L.DIMS - 1)
-    cid = (nb[:, 0] * L.DIMS[1] + nb[:, 1]) * L.DIMS[2] + nb[:, 2]
-    cand = L.CELL[cid].reshape(-1)
-    valid = cand >= 0
-    return jnp.where(valid, cand, 0), valid
+    return gather(L.CELL, L.OFF, L.GMIN, L.CS, L.DIMS, r)
 
 
 def _inside(levels, r):
@@ -298,7 +293,7 @@ class SphereUnion(Geometry):
         level = _Level(CEN=jnp.asarray(cen, jnp.float32), RAD=jnp.asarray(rad, jnp.float32),
                        CELL=jnp.asarray(cell, jnp.int32), DIMS=jnp.asarray(plan["dims"], jnp.int32),
                        GMIN=jnp.asarray(plan["gmin"], jnp.float32), CS=jnp.float32(plan["cs"]),
-                       OFF=jnp.asarray(_OFFSETS, jnp.int32))
+                       OFF=jnp.asarray(NEIGHBOUR_OFFSETS, jnp.int32))
         report = dict(n_spheres=int(len(rad)), cells=plan["n_cells"], C=plan["C"],
                       entries=plan["n_ent"], cell_size=plan["cs"],
                       r_min=float(rad.min()), r_max=float(rad.max()))

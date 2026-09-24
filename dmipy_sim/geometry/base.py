@@ -378,39 +378,9 @@ def acquisition_rotation(orientation):
     """The ``_orient_R`` (substrate frame -> lab, 3x3 float32) of a substrate whose axis lies along the lab
     direction ``orientation``: ``R @ [0, 0, 1] = orientation``. ``None`` when that is +z already, so the engine
     skips the rotation. The walk runs in the substrate frame; this is applied to the ACQUISITION."""
+    from ..replay.so3 import rotation_of
     a = np.asarray(orientation, np.float64).reshape(3)
-    a = a / np.linalg.norm(a)
-    R = _rotation_to_z(a).T
+    R = rotation_of(a / np.linalg.norm(a))
     return None if np.allclose(R, np.eye(3)) else np.ascontiguousarray(R, np.float32)
 
 
-def _rotation_to_z(v):
-    """Compute 3x3 rotation matrix R such that R @ v = [0, 0, 1].
-
-    Uses Rodrigues' formula. Handles parallel and anti-parallel cases.
-    """
-    v = np.asarray(v, dtype=np.float64)
-    v = v / np.linalg.norm(v)
-    k = np.array([0.0, 0.0, 1.0])
-
-    dot = np.dot(v, k)
-    if abs(dot - 1.0) < 1e-10:
-        return np.eye(3)
-    if abs(dot + 1.0) < 1e-10:
-        # Anti-parallel: rotate 180° about x-axis
-        return np.diag([1.0, -1.0, -1.0])
-
-    axis = np.cross(v, k)
-    axis = axis / np.linalg.norm(axis)
-    angle = np.arccos(np.clip(dot, -1.0, 1.0))
-
-    # Rodrigues: R = I + sin(θ)K + (1-cos(θ))K²
-    K = np.array([
-        [0, -axis[2], axis[1]],
-        [axis[2], 0, -axis[0]],
-        [-axis[1], axis[0], 0],
-    ], dtype=np.float64)
-    R = (np.eye(3)
-         + np.sin(angle) * K
-         + (1 - np.cos(angle)) * (K @ K))
-    return R
