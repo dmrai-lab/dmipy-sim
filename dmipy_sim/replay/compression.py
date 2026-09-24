@@ -192,17 +192,55 @@ def dst_bands(u, K, *, device="auto", chunk_bytes=1 << 30):
     K = int(K)
     if resolve_device(device) == "numpy":
         return np.asarray(_dst(np.asarray(u, np.float64), axis=1, type=1, norm="ortho")[:, :K], np.float64)
-    import jax
     import jax.numpy as jnp
-    N = int(u.shape[1])
-    n = np.arange(1, N + 1)[:, None]; k = np.arange(1, K + 1)[None, :]
-    S = jnp.asarray(np.sqrt(2.0 / (N + 1)) * np.sin(np.pi * n * k / (N + 1)), jnp.float32)          # (N, K)
-    f = jax.jit(lambda x: jnp.einsum("wn...,nk->wk...", x, S, precision=jax.lax.Precision.HIGHEST))
     rows = max(1, int(chunk_bytes // max(int(np.prod(u.shape[1:])) * 4, 1)))
     out = np.empty((u.shape[0], K) + tuple(u.shape[2:]), np.float64)
     for i in range(0, u.shape[0], rows):
-        out[i:i + rows] = np.asarray(f(jnp.asarray(np.asarray(u[i:i + rows], np.float32))), np.float64)
+        out[i:i + rows] = np.asarray(_dst_bands_device(jnp.asarray(np.asarray(u[i:i + rows], np.float32)), K), np.float64)
     return out
+
+
+def _sine_matrix(N, K):
+    """``(N, K)`` float32 device matrix of the lowest ``K`` orthonormal DST-I vectors of length ``N``."""
+    import jax.numpy as jnp
+    n = np.arange(1, N + 1)[:, None]; k = np.arange(1, K + 1)[None, :]
+    return jnp.asarray(np.sqrt(2.0 / (N + 1)) * np.sin(np.pi * n * k / (N + 1)), jnp.float32)
+
+
+def _dst_bands_device(u, K):
+    """The lowest ``K`` DST-I bands along axis 1 of the device array ``u``, one matmul at full precision
+    (``Precision.HIGHEST``: a float32 matmul on a CUDA device is TF32 otherwise)."""
+    import jax
+    import jax.numpy as jnp
+    return jnp.einsum("wn...,nk->wk...", u, _sine_matrix(int(u.shape[1]), int(K)), precision=jax.lax.Precision.HIGHEST)
+
+
+def bridge_dst_device(X, K):
+    """The C0 coefficients ``(N_w, K+2, 3)`` of the device paths ``X`` ``(N_w, N_t, 3)``, computed on the device:
+    ``[r(0), r(T) - r(0), beta_1..beta_K]`` per axis (:func:`encode_bridge_dst`), float32, the raw paths never
+    leaving the device. ``K`` is at most ``N_t - 2``."""
+    import jax.numpy as jnp
+    X = jnp.asarray(X, jnp.float32)
+    n_t = int(X.shape[1])
+    a = X[:, 0, :]
+    v = X[:, -1, :] - a
+    tau = jnp.asarray(np.arange(n_t) / (n_t - 1.0), jnp.float32)
+    u = X - (a[:, None, :] + v[:, None, :] * tau[None, :, None])
+    return jnp.concatenate([a[:, None, :], v[:, None, :], _dst_bands_device(u[:, 1:-1, :], K)], axis=1)
+
+
+def boundary_bridge_device(dlog, K):
+    """The C2 coefficients of the device local-time increments ``dlog`` ``(N_w, N_t)``, computed on the device:
+    ``(B(0), B(T), bands (N_w, K))`` of the cumulative local time ``B = cumsum(dlog)`` (:func:`encode_boundary_bridge`),
+    float32. The device cumsum is a parallel scan: its error is a few float32 ulps of ``B(T)`` at any ``N_t``, the
+    precision the endpoints are stored at."""
+    import jax.numpy as jnp
+    B = jnp.cumsum(jnp.asarray(dlog, jnp.float32), axis=1)
+    n_t = int(B.shape[1])
+    a, endpoint = B[:, 0], B[:, -1]
+    tau = jnp.asarray(np.linspace(0.0, 1.0, n_t), jnp.float32)
+    resid = B - (a[:, None] + (endpoint - a)[:, None] * tau[None, :])
+    return a, endpoint, _dst_bands_device(resid[:, 1:-1], K)
 
 
 def dct_bands(u, K, *, device="auto", chunk_bytes=1 << 30):
@@ -304,12 +342,10 @@ def encode_bridge_dst(X, K, container=None, *, device="auto"):
     if resolve_device(device) == "numpy":
         u = np.asarray(X, np.float64) - (a[:, None, :] + v[:, None, :] * tau[None, :, None])
         B = dst_bands(u[:, 1:-1, :], K, device="numpy")
-    else:                                                            # the residual per chunk, the bands on the device
+    else:                                                            # per walker chunk, on the device
         B = np.empty((Nw, K, 3), np.float64); rows = max(1, int((1 << 30) // max(Nt * 3 * 4, 1)))
         for i in range(0, Nw, rows):
-            sl = slice(i, i + rows)
-            u = np.asarray(X[sl], np.float32) - np.asarray(a[sl, None, :] + v[sl, None, :] * tau[None, :, None], np.float32)
-            B[sl] = dst_bands(u[:, 1:-1, :], K, device="jax")
+            B[i:i + rows] = np.asarray(bridge_dst_device(np.asarray(X[i:i + rows], np.float32), K)[:, 2:, :], np.float64)
     C = np.concatenate([a[:, None, :], v[:, None, :], B], axis=1)   # (Nw, K+2, 3)
     meta = {"method": "bridge_dst", "K": K, "n_t": int(Nt)}
     if container is None:                                            # the float32 container, one tensor per axis
@@ -467,14 +503,18 @@ def encode_boundary_bridge(dlog, K=16, dtype=np.float32, container=None, *, devi
     K = int(min(K, nt - 2))
     tau = np.linspace(0.0, 1.0, nt)[None, :]
     a = np.empty(nw); endpoint = np.empty(nw); C = np.empty((nw, K), np.float64)
-    rows = nw if resolve_device(device) == "numpy" else max(1, int((1 << 30) // max(nt * 8, 1)))
-    for i in range(0, nw, rows):                               # the cumulative time per chunk (float64), its bands
-        sl = slice(i, i + rows)
-        B = np.cumsum(np.asarray(A[sl], np.float64), axis=1)   # (rows, n_t) smooth
-        a[sl] = B[:, 0]                                        # exact B(0)
-        endpoint[sl] = B[:, -1]                                # exact total local time B(T)
-        resid = B - (a[sl, None] + (endpoint[sl] - a[sl])[:, None] * tau)   # exactly 0 at BOTH ends
-        C[sl] = dst_bands(resid[:, 1:-1], K, device=device)
+    if resolve_device(device) == "numpy":                      # the cumulative time in float64, its bands
+        B = np.cumsum(np.asarray(A, np.float64), axis=1)       # (n_w, n_t) smooth
+        a[:] = B[:, 0]                                         # exact B(0)
+        endpoint[:] = B[:, -1]                                 # exact total local time B(T)
+        resid = B - (a[:, None] + (endpoint - a)[:, None] * tau)   # exactly 0 at BOTH ends
+        C[:] = dst_bands(resid[:, 1:-1], K, device="numpy")
+    else:                                                      # per walker chunk, on the device
+        rows = max(1, int((1 << 30) // max(nt * 8, 1)))
+        for i in range(0, nw, rows):
+            sl = slice(i, i + rows)
+            a_s, e_s, c_s = boundary_bridge_device(np.asarray(A[sl], np.float32), K)
+            a[sl], endpoint[sl], C[sl] = np.asarray(a_s), np.asarray(e_s), np.asarray(c_s)
     # ``dtype`` sets the band precision; packs pass f16 via build_replay_pack's ``blt_dtype``. The
     # two ENDPOINTS are always f32 -- they are the exact quantities the rho attenuation and the
     # segment chaining read, where f16's ~3 significant digits would be a real error, not a rounding.

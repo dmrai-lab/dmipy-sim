@@ -16,38 +16,39 @@ from ..constants import GAMMA
 
 
 def length_scales_of(geometry):
-    """The geometry's :class:`~dmipy_sim.geometry.base.LengthScales`.
-
-    Shipped geometries declare them. An object that is not a :class:`Geometry` is read through
-    the legacy attributes (``radius``, ``sphere_radius``, ``length``, ``_radii_np``,
-    ``_inner_radii_np``, ``cell_size``, ``radius_is_mesh_feature``), here and nowhere else.
-    """
+    """The geometry's :class:`~dmipy_sim.geometry.base.LengthScales`: what it declares as ``length_scales``.
+    Every geometry the engine walks declares them; there is no other way to read them."""
     ls = getattr(geometry, 'length_scales', None)
-    if ls is not None:
-        return ls
-    from ..geometry.base import LengthScales
-    R = getattr(geometry, 'radius', None)
-    if R is None:
-        R = getattr(geometry, 'sphere_radius', None)
-    if R is None:
-        R = getattr(geometry, 'length', None)
-    if R is None:
-        radii = getattr(geometry, '_radii_np', None)
-        if radii is not None and len(radii) > 0:
-            R = float(np.min(radii))
-    if R is None:
-        inner = getattr(geometry, '_inner_radii_np', None)
-        if inner is not None and len(inner) > 0 and np.any(inner > 0):
-            R = float(np.min(inner[inner > 0]))
-    cell = getattr(geometry, 'cell_size', None)
-    return LengthScales(min_feature=None if R is None else float(R),
-                        lookup_cell=None if not cell else float(cell),
-                        is_mesh_feature=bool(getattr(geometry, 'radius_is_mesh_feature', False)))
+    if ls is None:
+        raise TypeError(f"{type(geometry).__name__} declares no length_scales; a geometry the engine walks declares "
+                        "them (LengthScales(min_feature=..., lookup_cell=..., is_mesh_feature=...))")
+    return ls
 
 
 def _geometry_radius(geometry):
     """Smallest confining length scale (m), or None -- ``length_scales_of(geometry).min_feature``."""
     return length_scales_of(geometry).min_feature
+
+
+def seed_walkers(geometry, n_walkers, seed, r0=None):
+    """The walk's random state from its seed: ``(master_key, r0, walker_keys)``.
+
+    The master key splits once into the position key and the walker key. The position key places the walkers
+    (:func:`~dmipy_sim.geometry.initial_positions`; unused when ``r0`` is given) and the walker key splits into one
+    step stream per walker. Every engine entry point draws its state here, which is what makes their walks one
+    walk; a driver that needs a further independent stream folds it off the master key."""
+    from ..geometry import initial_positions
+    master_key = jax.random.PRNGKey(int(seed))
+    pos_key, walker_key = jax.random.split(master_key)
+    r0 = initial_positions(geometry, n_walkers, pos_key, r0)
+    walker_keys = jax.random.split(walker_key, n_walkers)
+    return master_key, r0, walker_keys
+
+
+def isotropic_unit_step(key):
+    """A direction uniform over the sphere, as float32: a standard Gaussian triple from ``key``, normalised."""
+    noise = jax.random.normal(key, (3,), dtype=jnp.float32)
+    return noise / jnp.linalg.norm(noise)
 
 
 CROSSING_P_MAX = 3e-3
@@ -478,8 +479,7 @@ def make_step_fn(geometry, diffusivity: float, dt: float, T2: float = None,
             else:
                 key, k_step = jax.random.split(key)
                 k_wall = None
-            noise = jax.random.normal(k_step, (3,), dtype=jnp.float32)
-            step = (noise / jnp.linalg.norm(noise)) * jnp.sqrt(6.0 * _D_at(comp) * dt_sub_f32)
+            step = isotropic_unit_step(k_step) * jnp.sqrt(6.0 * _D_at(comp) * dt_sub_f32)
 
             r_new, dlog_w = _move(r, step, comp, k_wall)
             comp_new = carry_fn(r_new, comp) if carry_comp else comp
@@ -545,8 +545,7 @@ def make_myelin_substep(geometry, dt: float, rho_weights=None):
         geometry._eps, geometry._nudge, step_max, geometry.min_gap)
     def sub(r, step_key, u, comp_id):
         pool, k = _pool_and_axon(geometry, comp_id)
-        noise = jax.random.normal(step_key, (3,), dtype=jnp.float32)
-        unit = noise / jnp.linalg.norm(noise)
+        unit = isotropic_unit_step(step_key)
         step_l = jnp.where(pool == 1, step_i[k], jnp.where(pool == 2, step_m[k], step_e[k]))
         r_c = r
         s_c = unit * step_l
