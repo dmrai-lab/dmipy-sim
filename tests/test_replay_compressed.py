@@ -1,9 +1,7 @@
-"""End-to-end IR-basis compression: producer streaming (piece 1) -> replay routing (piece 2).
-
-simulate_trajectories(compress=K) emits a compressed master (DCT position modes + boundary
-endpoint/modes) instead of the raw trajectory; replay() dispatches that master through
-mode-space phase + boundary/relaxation weights, never reconstructing positions. Same seed as
-the raw walk, so the only difference is DCT truncation -- checked below the MC floor.
+"""The compressed producer and its replay: simulate_trajectories(compress=K) emits a master of the pack's own
+coefficients (two exact endpoints and K sine bands of the bridge per axis, the cumulative local time in the same
+form) instead of the raw trajectory, and replay() reads that master in coefficient space, never reconstructing
+positions. Same seed as the raw walk, so the only difference is the band truncation -- checked below the MC floor.
 """
 import numpy as np
 import pytest

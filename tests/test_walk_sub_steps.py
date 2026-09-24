@@ -145,16 +145,18 @@ def test_a_slab_is_sub_stepped_by_its_width():
 def test_a_walled_geometry_without_a_recognised_scale_warns():
     """One sub-step is right for free diffusion and wrong for anything with walls, so it must not be silent."""
     from dmipy_sim.engine.physics import walk_sub_steps
+    from dmipy_sim.geometry import LengthScales
 
     class WalledButUnrecognised:
+        length_scales = LengthScales()      # declared, with no smallest feature
         surface_area = 1e-11
-        volume = 1e-17                      # finite walls, but no radius/length/_radii_np
+        volume = 1e-17                      # finite walls
 
     with pytest.warns(UserWarning, match="no length scale"):
         assert walk_sub_steps(WalledButUnrecognised(), 2e-9, 3e-3) == 1
 
     class Unbounded:                        # free diffusion: one sub-step, no warning
-        pass
+        length_scales = LengthScales()
 
     import warnings as _w
     with _w.catch_warnings():
