@@ -659,9 +659,7 @@ def _bloch_timeline(rf_events, n_t, dt_traj, t0=None):
             if inside(t):
                 rots.append((t, float(f), float(ax)))
                 instants.append(t)
-        w0, w1 = max(start, t_s - dur / 2.0), min(end, t_s + dur / 2.0)
-        if w1 > w0:
-            windows.append((w0, w1, 2.0 * np.pi * e.offset_hz))
+        windows.append((max(start, t_s - dur / 2.0), min(end, t_s + dur / 2.0), 2.0 * np.pi * e.offset_hz))   # one per event; empty outside the window
     times = np.sort(np.concatenate([saves, np.asarray(instants, np.float64)]))
     edges = [times[0]]
     for t in times[1:]:
