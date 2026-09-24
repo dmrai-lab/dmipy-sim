@@ -120,18 +120,28 @@ def q_of_H(b0_dir):
     return np.array([h[0] ** 2, h[1] ** 2, h[2] ** 2, 2 * h[0] * h[1], 2 * h[0] * h[2], 2 * h[1] * h[2]])
 
 
-def contract(channels, b0_dir, *, B0, chi_iso=0.0, chi_aniso=0.0):
-    """``dB`` (Tesla) at each point from its 13 channels ``(..., 13)`` for one configuration: the same
-    contraction :func:`dmipy_sim.fields.susceptibility_field.assemble_field` applies to grids."""
-    c = np.asarray(channels, float)
+def field_terms(channels, b0_dir, axis=-1):
+    """The two susceptibility terms of the channels along ``axis`` (``iso_local, iso_P (6), aniso_G (6)`` in that
+    order, 7 or 13 of them) for a field direction: ``(iso, aniso)`` with ``iso = iso_local - Q . iso_P`` and
+    ``aniso = Q . aniso_G`` (``None`` when the channels carry no anisotropic basis). ``dB = B0 (chi_iso iso +
+    chi_aniso aniso)``: the one contraction of every route, grid, path and pack."""
+    c = np.moveaxis(np.asarray(channels, float), axis, -1)
     q = q_of_H(b0_dir)
-    dB = np.zeros(c.shape[:-1], float)
+    iso = c[..., 0] - c[..., 1:7] @ q
+    aniso = c[..., 7:13] @ q if c.shape[-1] >= 13 else None
+    return iso, aniso
+
+
+def contract(channels, b0_dir, *, B0, chi_iso=0.0, chi_aniso=0.0, axis=-1):
+    """``dB`` (Tesla) at each point from its channels for one configuration (:func:`field_terms`)."""
+    iso, aniso = field_terms(channels, b0_dir, axis=axis)
+    dB = np.zeros(iso.shape, float)
     if chi_iso:
-        dB = dB + float(chi_iso) * (c[..., 0] - c[..., 1:7] @ q)
+        dB = dB + float(chi_iso) * iso
     if chi_aniso:
-        if c.shape[-1] < 13:
+        if aniso is None:
             raise ValueError("these channels carry no anisotropic basis (7 of 13); chi_aniso must be 0")
-        dB = dB + float(chi_aniso) * (c[..., 7:13] @ q)
+        dB = dB + float(chi_aniso) * aniso
     return dB * float(B0)
 
 

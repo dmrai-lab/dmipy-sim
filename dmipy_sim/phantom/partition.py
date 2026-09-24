@@ -219,11 +219,9 @@ class PartitionPhantom(Phantom):
         return out
 
     def to_volume(self, values, fill=np.nan):
-        v = np.asarray(values)
-        g = self._need_grid()
-        out = np.full(tuple(g.shape) + v.shape[1:], fill, dtype=np.result_type(v.dtype, type(fill)))
-        out[tuple(self.voxel_index.T)] = v
-        return out
+        """Per-voxel values back on the dense grid (:func:`~dmipy_sim.replay.phantom.scatter_volume`)."""
+        from ..replay.phantom import scatter_volume
+        return scatter_volume(self._need_grid().shape, self.voxel_index, values, fill)
 
     def __repr__(self):
         g = "scanner-prescribed" if self._grid is None else f"{list(self._grid.shape)} attach={self._grid.attach!r}"
@@ -368,14 +366,9 @@ class PartitionPhantom(Phantom):
             # argwhere returns a Fortran-ordered view; safetensors writes the buffer as it lies
             tensors[f"declared{self.index_of(s)}/voxel_index"] = np.ascontiguousarray(idx.astype(np.int32))
             tensors[f"declared{self.index_of(s)}/fraction"] = np.ascontiguousarray(np.asarray(vol, np.float32)[tuple(idx.T)])
+        from ..replay.phantom import embed_pack
         for i, pk in embed_packs.items():
-            import hashlib
-            subs[i]["sha256"] = hashlib.sha256(b"".join(np.ascontiguousarray(v).tobytes()
-                                                          for _, v in sorted(pk.arrays.items()))).hexdigest()
-            for k, v in pk.arrays.items():
-                tensors[f"substrate{i}/{k}"] = np.ascontiguousarray(v)
-            subs[i]["embedded"] = True
-            subs[i]["pack_meta"] = pk.meta
+            embed_pack(subs, tensors, i, pk)
         if not tensors:
             tensors["_empty"] = np.zeros(1, np.int8)
         meta = {"rph_schema_version": "0.5.0-draft", "id": id, "addressing": "partition",

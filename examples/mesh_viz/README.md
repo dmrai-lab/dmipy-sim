@@ -38,8 +38,8 @@ inside the cells:
 
 ## Compartments
 
-`init_positions(intra=…)` seeds inside or outside the cells; here the intra/extra
-split matches the ~0.6 volume fraction.
+`Mesh(pool=…)` names the pool `init_positions` seeds, inside or outside the cells; here the
+intra/extra split matches the ~0.6 volume fraction.
 
 ![walkers coloured by compartment in 3D](compartments_3d.png)
 

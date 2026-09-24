@@ -403,7 +403,7 @@ class TestE_T2MultiTE:
                 orientation=[0, 0, 1],
                 D_intra=2e-9, D_extra=2e-9,
                 kappa_inner=None, kappa_outer=None,
-                T2_intra=T2_intra, T2_myelin=T2_myelin, T2_extra=T2_extra,
+                compartments={"intra": {"T2": T2_intra}, "myelin": {"T2": T2_myelin}, "extra": {"T2": T2_extra}},
                 water_fractions=wf_weights,
             )
 
@@ -438,7 +438,7 @@ class TestE_T2MultiTE:
                 orientation=[0, 0, 1],
                 D_intra=2e-9, D_extra=2e-9,
                 kappa_inner=None, kappa_outer=None,
-                T2_intra=None, T2_myelin=T2_myelin, T2_extra=None,
+                compartments={"myelin": {"T2": T2_myelin}},
                 water_fractions=(0.0, 1.0, 0.0),
             )
 

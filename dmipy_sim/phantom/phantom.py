@@ -11,6 +11,8 @@ from pathlib import Path
 
 import numpy as np
 
+from ..replay.so3 import n_sh_coeffs
+
 from .grid import Grid
 from .substrates import Inert, PackSubstrate, substrate_from_meta
 
@@ -60,7 +62,7 @@ class Phantom:
             raise ValueError(f"a phantom declares exactly one orientation mode (RPH.md 4); got {sorted(modes)}")
         mode = modes.pop() if modes else "peaks"
         lmax = max((getattr(f, "lmax", 0) for f in fields.values()), default=0)
-        n_c = _n_sh(lmax)
+        n_c = n_sh_coeffs(lmax)
 
         bearing = np.array([s.kind != "inert" for s in subs])
         live = (F[bearing] > 0).any(axis=0) if bearing.any() else np.zeros(grid.shape, bool)
@@ -550,6 +552,3 @@ def _quats_of(R):
     return np.where(q[:, 3:4] < 0, -q, q)
 
 
-def _n_sh(lmax):
-    from ..replay.so3 import n_sh_coeffs
-    return n_sh_coeffs(lmax)

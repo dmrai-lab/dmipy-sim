@@ -17,17 +17,6 @@ from dmipy_sim.spec import disco_spec, walk_spec, StratifiedByVoxel
 from dmipy_sim.spec.tissue import Tissue
 
 
-@pytest.fixture(scope="module")
-def spec_grid(tmp_path_factory):
-    tmp = tmp_path_factory.mktemp("columnar")
-    cls_ = [np.array([[x, 0, -12e-6], [x, 0.5e-6, 0], [x, 0, 12e-6]]) + 10e-6 for x in (-5e-6, 0, 5e-6)]
-    tck, dia = str(tmp / "t.tck"), str(tmp / "d.txt")
-    write_tck(tck, cls_, coordinate_unit_m=25e-6); np.savetxt(dia, np.array([2 * r for r in (1.5e-6, 1.0e-6, 2.0e-6)]) / 1e-3)
-    spec = disco_spec(tck, dia, side_m=20e-6)
-    grid = Grid(shape=(2, 2, 2), voxel_size_m=(10e-6,) * 3, origin_m=(5e-6,) * 3)
-    return spec, grid, tmp
-
-
 def _shard(spec, grid, tmp, name, block, per, seed):
     want = np.zeros(grid.shape, np.int64); want[block] = per
     w = walk_spec(spec, T_max=8e-4, dt_save=2e-4, seed=seed, require_gpu=False, field=False,

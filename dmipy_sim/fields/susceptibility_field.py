@@ -418,19 +418,13 @@ def field_basis(myelin_mask, radial_dir, voxel_size, include_aniso=True, kspace_
     }
 
 
-def _q_of_H(b0_dir):
-    """Symmetric-contraction weights ``Q(H)`` for the 6-component basis."""
-    h = _unit(np.asarray(b0_dir, float).ravel())
-    return np.array([h[0] ** 2, h[1] ** 2, h[2] ** 2,
-                     2 * h[0] * h[1], 2 * h[0] * h[2], 2 * h[1] * h[2]])
-
-
 def assemble_field(basis, b0_dir, B0=1.0, chi_iso=0.0, chi_aniso=0.0):
     """Assemble ``dB(r)`` (Tesla) from a :func:`field_basis` for one configuration.
 
     Cheap real contraction — no FFT.  Sweep ``b0_dir``/``B0``/``chi_*`` for free.
     """
-    q = _q_of_H(b0_dir)
+    from .hollow_cylinder import q_of_H
+    q = q_of_H(b0_dir)
     dB = np.zeros(basis["shape"], float)
     if chi_iso != 0.0:
         contr = np.tensordot(q, basis["iso_P"], axes=(0, 0))     # Q . iso_P

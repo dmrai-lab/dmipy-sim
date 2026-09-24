@@ -40,10 +40,9 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from ..constants import GAMMA
+from ..constants import GAMMA, GAMMA_BAR
 from . import maxwell, scanner_constants as scc, solid_harmonics
 
-GAMMA_BAR = GAMMA / (2.0 * np.pi)
 
 __all__ = ["ScannerLimits", "SCANNERS", "FIELD_DT_CAP", "scanner_limits", "save_interval"]
 

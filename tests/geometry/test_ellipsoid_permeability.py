@@ -31,6 +31,8 @@ Parameters: a=3 µm, c=9 µm (prolate, aspect ratio 3), D=2e-9 m²/s
 """
 
 import numpy as np
+
+from tests.conftest import pgse_wf
 import numpy.testing as npt
 
 from dmipy_sim import simulate, Ellipsoid, set_b
@@ -44,16 +46,6 @@ SEMIAXES   = [A, A, C_AXIS]
 KAPPA_MED  = 1e-5   # m/s
 KAPPA_HIGH = 5e-3   # m/s
 RHO        = 5e-4   # m/s
-
-
-def _pgse_wf(TE_s, n_t=500):
-    delta  = max(TE_s * 0.05, 5e-6)
-    DELTA  = TE_s - delta
-    b_values = np.array([0.0, 500e6, 1000e6, 2000e6])  # s/m²
-    bvecs    = np.tile([1., 0., 0.], (4, 1))
-    return set_b(
-        pgse(bvecs, delta, DELTA, gradient_strengths=1.0, n_t=n_t),
-        b_values)
 
 
 # ---------------------------------------------------------------------------
@@ -78,7 +70,7 @@ def test_permeability_none_not_set():
 
 def test_permeability_none_matches_impermeable():
     """Ellipsoid(permeability=None) == Ellipsoid() — identical signal."""
-    wf           = _pgse_wf(100e-3)
+    wf           = pgse_wf(100e-3)
     geom_default = Ellipsoid(semiaxes=SEMIAXES)
     geom_none    = Ellipsoid(semiaxes=SEMIAXES, permeability=None)
     # exact-equality assertion -> scale-free; see N_EXACT in conftest (#93)
@@ -98,7 +90,7 @@ def test_permeability_reduces_signal_at_high_b():
     Escaping walkers have access to the long axis → larger ADC_app →
     faster signal decay at high b compared to fully confined walkers.
     """
-    wf        = _pgse_wf(100e-3)
+    wf        = pgse_wf(100e-3)
     geom_imp  = Ellipsoid(semiaxes=SEMIAXES)
     geom_perm = Ellipsoid(semiaxes=SEMIAXES, permeability=KAPPA_MED)
     S_imp     = simulate(N_WALKERS, D, wf, geom_imp,  seed=SEED)
@@ -121,7 +113,7 @@ def test_permeability_high_kappa_approaches_free_diffusion():
     """
     TE    = 20e-3
     b_idx = 1   # b = 500 s/mm²
-    wf    = _pgse_wf(TE, n_t=2000)
+    wf    = pgse_wf(TE, n_t=2000)
 
     geom_perm = Ellipsoid(semiaxes=SEMIAXES, permeability=KAPPA_HIGH)
     S_perm    = simulate(N_WALKERS, D, wf, geom_perm, seed=SEED)
@@ -141,7 +133,7 @@ def test_permeability_high_kappa_approaches_free_diffusion():
 
 def test_permeability_with_relaxivity_reduces_signal():
     """Adding surface relaxivity to a permeable ellipsoid must reduce signal."""
-    wf            = _pgse_wf(100e-3)
+    wf            = pgse_wf(100e-3)
     geom_perm     = Ellipsoid(semiaxes=SEMIAXES, permeability=KAPPA_MED)
     geom_perm_rho = Ellipsoid(semiaxes=SEMIAXES, permeability=KAPPA_MED,
                                surface_relaxivity_t2=RHO)
@@ -158,7 +150,7 @@ def test_permeability_with_relaxivity_reduces_signal():
 
 def test_permeability_signal_monotone_in_kappa():
     """Signal at b=2000 s/mm² decreases monotonically with κ."""
-    wf      = _pgse_wf(100e-3)
+    wf      = pgse_wf(100e-3)
     kappas  = [0.0, 1e-6, 1e-5, 1e-4]
     signals = []
     for kappa in kappas:

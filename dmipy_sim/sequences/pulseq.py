@@ -36,13 +36,12 @@ import warnings
 
 import numpy as np
 
-from ..constants import GAMMA
+from ..constants import GAMMA, GAMMA_BAR
 from ..acquisition.scanners import ScannerLimits
 from ..acquisition.rf import RFEvent, RFSchedule
 from ..acquisition.timing import SequenceTiming
 from ..acquisition.scanner_sequence import ScannerSequence
 
-GAMMA_HZ = GAMMA / (2.0 * np.pi)   # Hz/T (proton); pypulseq's gamma convention
 
 
 def _require_pypulseq():
@@ -75,7 +74,7 @@ def make_system(scanner=None, *, grad_raster_time=None, **overrides):
     """
     pp = _require_pypulseq()
     kw = dict(ScannerLimits.of(scanner).pulseq_dict()) if scanner is not None else {}
-    kw.setdefault('gamma', GAMMA_HZ)
+    kw.setdefault('gamma', GAMMA_BAR)
     if grad_raster_time is not None:
         kw['grad_raster_time'] = float(grad_raster_time)
     kw.update(overrides)
@@ -90,7 +89,7 @@ def _permissive_system(dt):
                    grad_raster_time=float(dt), rf_raster_time=float(dt),
                    block_duration_raster=float(dt),
                    rf_dead_time=0.0, rf_ringdown_time=0.0, adc_dead_time=0.0,
-                   gamma=GAMMA_HZ)
+                   gamma=GAMMA_BAR)
 
 
 def _encode_rf_events(rf_events):
@@ -171,7 +170,7 @@ def to_pulseq(waveform, m=0, *, system=None, filename=None,
     # waveform.G is the PHYSICAL gradient, what a scanner plays; the pulses are their own blocks.
     G = np.asarray(waveform.G)[m].astype(float)
     sys = system or _permissive_system(dt)
-    gamma_hz = float(getattr(sys, 'gamma', GAMMA_HZ))
+    gamma_hz = float(getattr(sys, 'gamma', GAMMA_BAR))
     raster = float(getattr(sys, 'grad_raster_time', dt) or dt)
     up = dt / raster                                  # rasters per grid step
     if abs(up - round(up)) > 1e-6:
@@ -369,7 +368,7 @@ def from_pulseq(src, *, dt=None, readout_s=None):
         seq.read(str(src))
 
     defs = getattr(seq, 'definitions', {}) or {}
-    gamma_hz = float(getattr(getattr(seq, 'system', None), 'gamma', GAMMA_HZ) or GAMMA_HZ)
+    gamma_hz = float(getattr(getattr(seq, 'system', None), 'gamma', GAMMA_BAR) or GAMMA_BAR)
 
     wav = seq.waveforms_and_times()
     gw = wav[0]                       # list of 3 channels, each (2, N): [t_s; amp Hz/m]

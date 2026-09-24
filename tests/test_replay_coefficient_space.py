@@ -24,26 +24,6 @@ from tests.replay_frames import field_along
 D0 = 2e-9
 
 
-@pytest.fixture(scope="module")
-def pack():
-    walk = d.simulate_trajectories(300, D0, d.Cylinder(2e-6, (0, 0, 1)), 0.01, 5e-4, seed=0, require_gpu=False)
-    return build_replay_pack(walk, id="test/full", K=8, license="x", citation="x")
-
-
-@pytest.fixture(scope="module")
-def field_pack(tmp_path_factory):
-    """A strand pack with the path channel (C3), from the three-strand fixture with a sheath."""
-    from dmipy_sim.io.strands import write_tck
-    from dmipy_sim.spec import disco_spec, walk_spec
-    tmp = tmp_path_factory.mktemp("field")
-    cls_ = [np.array([[x, 0, -12e-6], [x, 0.5e-6, 0], [x, 0, 12e-6]]) + 10e-6 for x in (-5e-6, 0, 5e-6)]
-    tck, dia = str(tmp / "t.tck"), str(tmp / "d.txt")
-    write_tck(tck, cls_, coordinate_unit_m=25e-6); np.savetxt(dia, np.array([2 * r for r in (1.5e-6, 1.0e-6, 2.0e-6)]) / 1e-3)
-    spec = disco_spec(tck, dia, side_m=20e-6)
-    w = walk_spec(spec, 90, 8e-4, 2e-4, seed=0, n_probe=20_000, field_res=0.5e-6, require_gpu=False)
-    return build_replay_pack(w, id="test/field", license="x", citation="x", K=4, susc_path_K=4)
-
-
 def _dense_logweights(pk, seq, T2, T1, rho):
     """The decoded computation of the relaxation and surface log-weights: the oracle."""
     ch = pk.meta["compression"]["channels"]

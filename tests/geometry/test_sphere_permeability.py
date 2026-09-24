@@ -35,6 +35,8 @@ For the high-κ test we use a short TE (20 ms) with fine time-stepping:
 """
 
 import numpy as np
+
+from tests.conftest import pgse_wf
 import numpy.testing as npt
 import pytest
 
@@ -47,16 +49,6 @@ R          = 5e-6   # m
 KAPPA_MED  = 1e-5   # m/s  — exchange time τ = R/(3κ) ≈ 167 ms
 KAPPA_HIGH = 1e-2   # m/s  — exchange time τ ≈ 0.17 ms (fast exchange)
 RHO        = 5e-4   # m/s  — surface relaxivity for combination test
-
-
-def _pgse_wf(TE_s, n_t=500):
-    delta  = max(TE_s * 0.05, 5e-6)
-    DELTA  = TE_s - delta
-    b_values = np.array([0.0, 500e6, 1000e6, 2000e6])  # s/m²
-    bvecs    = np.tile([1., 0., 0.], (4, 1))
-    return set_b(
-        pgse(bvecs, delta, DELTA, gradient_strengths=1.0, n_t=n_t),
-        b_values)
 
 
 # ---------------------------------------------------------------------------
@@ -81,7 +73,7 @@ def test_permeability_none_not_set():
 
 def test_permeability_none_matches_impermeable():
     """Sphere(permeability=None) == Sphere() — identical signal."""
-    wf = _pgse_wf(100e-3)
+    wf = pgse_wf(100e-3)
     geom_default = Sphere(radius=R)
     geom_none    = Sphere(radius=R, permeability=None)
     # exact-equality assertion -> scale-free; see N_EXACT in conftest (#93)
@@ -102,7 +94,7 @@ def test_permeability_reduces_signal_at_high_b():
     Walkers that escape diffuse more freely → larger phase accumulation →
     lower signal.  So: S_perm < S_imp at high b.
     """
-    wf = _pgse_wf(100e-3)
+    wf = pgse_wf(100e-3)
     geom_imp  = Sphere(radius=R)
     geom_perm = Sphere(radius=R, permeability=KAPPA_MED)
     S_imp  = simulate(N_WALKERS, D, wf, geom_imp,  seed=SEED)
@@ -126,7 +118,7 @@ def test_permeability_high_kappa_approaches_free_diffusion():
     """
     TE    = 20e-3
     b_idx = 1   # b = 500 s/mm²
-    wf    = _pgse_wf(TE, n_t=2000)
+    wf    = pgse_wf(TE, n_t=2000)
 
     geom_perm = Sphere(radius=R, permeability=KAPPA_HIGH)
     S_perm    = simulate(N_WALKERS, D, wf, geom_perm, seed=SEED)
@@ -151,7 +143,7 @@ def test_permeability_with_relaxivity_reduces_signal():
     do not.  The ensemble signal must therefore be ≤ the permeability-only
     signal.
     """
-    wf = _pgse_wf(100e-3)
+    wf = pgse_wf(100e-3)
     geom_perm     = Sphere(radius=R, permeability=KAPPA_MED)
     geom_perm_rho = Sphere(radius=R, permeability=KAPPA_MED,
                             surface_relaxivity_t2=RHO)
@@ -172,7 +164,7 @@ def test_permeability_signal_monotone_in_kappa():
     Higher κ → more walkers escape → less restriction → faster decay →
     lower signal at high b.
     """
-    wf     = _pgse_wf(100e-3)
+    wf     = pgse_wf(100e-3)
     kappas = [0.0, 1e-6, 1e-5, 1e-4]
     signals = []
     for kappa in kappas:

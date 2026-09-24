@@ -106,13 +106,13 @@ def test_side_dependent_surface_relaxivity():
     wf = _pgse(4, 300, TE=40e-3)
     rho = 5e-6
     s_scalar = np.asarray(simulate(3000, D, wf, Mesh(V, F, surface_relaxivity_t2=rho), seed=SEED))
-    s_dict = np.asarray(simulate(3000, D, wf, Mesh(V, F, intra={"surface_relaxivity_t2": rho},
-                                                   extra={"surface_relaxivity_t2": rho}), seed=SEED))
+    s_dict = np.asarray(simulate(3000, D, wf, Mesh(V, F, compartments={"intra": {"surface_relaxivity_t2": rho},
+                                                   "extra": {"surface_relaxivity_t2": rho}}), seed=SEED))
     npt.assert_array_equal(s_scalar, s_dict)
-    s_in = np.asarray(simulate(3000, D, wf, Mesh(V, F, intra={"surface_relaxivity_t2": rho},
-                                                 extra={"surface_relaxivity_t2": 0.0}), seed=SEED))
-    s_ex = np.asarray(simulate(3000, D, wf, Mesh(V, F, intra={"surface_relaxivity_t2": 0.0},
-                                                 extra={"surface_relaxivity_t2": rho}), seed=SEED))
+    s_in = np.asarray(simulate(3000, D, wf, Mesh(V, F, compartments={"intra": {"surface_relaxivity_t2": rho},
+                                                 "extra": {"surface_relaxivity_t2": 0.0}}), seed=SEED))
+    s_ex = np.asarray(simulate(3000, D, wf, Mesh(V, F, compartments={"intra": {"surface_relaxivity_t2": 0.0},
+                                                 "extra": {"surface_relaxivity_t2": rho}}), seed=SEED))
     assert s_in[0] < 0.99 and s_ex[0] > 0.999
 
 
@@ -142,11 +142,11 @@ def test_per_compartment_t2():
     V, F = _ico(4)
     wf = _pgse(5, 250, TE=40e-3)
     s_global = np.asarray(simulate(4000, D, wf, Mesh(V, F), seed=SEED, T2=0.05))
-    s_comp = np.asarray(simulate(4000, D, wf, Mesh(V, F, intra={"T2": 0.05},
-                                                   extra={"T2": 0.05}), seed=SEED))
+    s_comp = np.asarray(simulate(4000, D, wf, Mesh(V, F, compartments={"intra": {"T2": 0.05},
+                                                   "extra": {"T2": 0.05}}), seed=SEED))
     npt.assert_array_equal(s_global, s_comp)
-    s_short = np.asarray(simulate(4000, D, wf, Mesh(V, F, intra={"T2": 0.02},
-                                                    extra={"T2": 0.20}), seed=SEED))
+    s_short = np.asarray(simulate(4000, D, wf, Mesh(V, F, compartments={"intra": {"T2": 0.02},
+                                                    "extra": {"T2": 0.20}}), seed=SEED))
     assert s_short[0] < 0.5                     # seeded intra + short intra T2
 
 
@@ -157,14 +157,14 @@ def test_per_compartment_t1_pgste_gating():
     V, F = _ico(4)
     # PGSTE with a long mixing time -> a chi_perp=0 storage block where T1 acts
     wf_ste = set_b(pgste([[1, 0, 0]], 5e-3, 100e-3, gradient_strengths=0.05, n_t=400), 1e9)
-    s_t1 = np.asarray(simulate(3000, D, wf_ste, Mesh(V, F, intra={"T1": 0.3}, extra={"T1": 3.0}), seed=SEED))
+    s_t1 = np.asarray(simulate(3000, D, wf_ste, Mesh(V, F, compartments={"intra": {"T1": 0.3}, "extra": {"T1": 3.0}}), seed=SEED))
     s_no = np.asarray(simulate(3000, D, wf_ste, Mesh(V, F), seed=SEED))
     assert s_t1[0] < 0.95 * s_no[0]                 # short intra T1 attenuates during TM
 
     # spin echo: chi_t ≡ 1 -> the T1 term is identically zero, so per-compartment T1
     # leaves the signal identical to the no-T1 mesh.
     wf_se = set_b(pgse([[1, 0, 0]], 5e-3, 0.05, gradient_strengths=0.05, n_t=400), 1e9)
-    a = np.asarray(simulate(3000, D, wf_se, Mesh(V, F, intra={"T1": 0.3}, extra={"T1": 3.0}), seed=SEED))
+    a = np.asarray(simulate(3000, D, wf_se, Mesh(V, F, compartments={"intra": {"T1": 0.3}, "extra": {"T1": 3.0}}), seed=SEED))
     b = np.asarray(simulate(3000, D, wf_se, Mesh(V, F), seed=SEED))
     npt.assert_array_equal(a, b)
 
@@ -174,8 +174,8 @@ def test_per_compartment_diffusivity():
     materially different, monotone signal depending on which compartment is fast."""
     V, F = _ico(4)
     wf = _pgse(5, 250, TE=40e-3)
-    s1 = np.asarray(simulate(4000, None, wf, Mesh(V, F, intra={"D": 1e-9}, extra={"D": 3e-9}), seed=SEED))
-    s2 = np.asarray(simulate(4000, None, wf, Mesh(V, F, intra={"D": 3e-9}, extra={"D": 1e-9}), seed=SEED))
+    s1 = np.asarray(simulate(4000, None, wf, Mesh(V, F, compartments={"intra": {"D": 1e-9}, "extra": {"D": 3e-9}}), seed=SEED))
+    s2 = np.asarray(simulate(4000, None, wf, Mesh(V, F, compartments={"intra": {"D": 3e-9}, "extra": {"D": 1e-9}}), seed=SEED))
     assert np.all(np.diff(s1) <= 1e-6) and np.all(np.diff(s2) <= 1e-6)   # monotone
     assert np.sqrt(np.mean((s1 - s2) ** 2)) > 0.02                        # clearly different
 

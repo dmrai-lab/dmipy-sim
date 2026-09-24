@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from ..replay.so3 import n_sh_coeffs
+from ..replay.so3 import n_sh_coeffs, lmax_of
 
 __all__ = ["Peaks", "ODF", "Watson", "Frames", "Fan"]
 
@@ -124,7 +124,7 @@ class ODF(_Field):
         self.coeffs = self._volume(c, (c.shape[-1],), "odf coefficients")
         self._shape = self.coeffs.shape[:4]
         self.weights = self._weights(weights, self._shape)
-        self.lmax = _lmax_of_n_coeffs(self.coeffs.shape[-1])
+        self.lmax = lmax_of(self.coeffs.shape[-1])
         self.integral = self.coeffs[..., 0] / _C00                      # grid + (K,): what each block integrates to
         self._FOD = FOD
 
@@ -308,8 +308,3 @@ def _with_population_axis(a, shape, trailing, name):
                      f"{trailing} for a {shape[3]}-population field")
 
 
-def _lmax_of_n_coeffs(n_c):
-    for l in range(0, 33, 2):
-        if n_sh_coeffs(l) == n_c:
-            return l
-    raise ValueError(f"{n_c} coefficients is not an even-order real SH block")

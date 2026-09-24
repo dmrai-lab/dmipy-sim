@@ -32,35 +32,20 @@ import warnings
 import numpy as np
 import jax
 import jax.numpy as jnp
+
+from ..replay.trajectories import _rf_increment
 from ..geometry._boundary import bind_probability
 
 from ..constants import GAMMA
 from ..acquisition.rf import RFSchedule
 from .gpu import gpu_available
 from ..run import Run
-from ..geometry import initial_positions
-from .physics import resolve_sub_steps, _warn_if_step_outruns_the_lookup
+from .physics import resolve_sub_steps, _warn_if_step_outruns_the_lookup, seed_walkers, isotropic_unit_step
 
 __all__ = ["simulate_bloch"]
 
 
 # ── per-step RF rotation (Rodrigues about the in-plane B1 axis) ──────────────────
-def _rf_increment_jax(M, flip, ax):
-    """Rotate ``M`` (n_meas, 3) by ``flip`` rad about the in-plane axis ``ax`` rad.
-
-    Rotation axis ``u = (cos ax, sin ax, 0)`` (ax = 0 -> +x, ax = pi/2 -> +y).
-    ``flip = 0`` is the identity, so a step with no pulse leaves M untouched.
-    """
-    ux, uy = jnp.cos(ax), jnp.sin(ax)
-    c, s = jnp.cos(flip), jnp.sin(flip)
-    omc = 1.0 - c
-    Mx, My, Mz = M[:, 0], M[:, 1], M[:, 2]
-    Mx2 = (c + ux * ux * omc) * Mx + (ux * uy * omc) * My + (uy * s) * Mz
-    My2 = (ux * uy * omc) * Mx + (c + uy * uy * omc) * My + (-ux * s) * Mz
-    Mz2 = (-uy * s) * Mx + (ux * s) * My + c * Mz
-    return jnp.stack([Mx2, My2, Mz2], axis=1)
-
-
 def _sequence_inputs(waveform, geometry):
     """The sequence behind ``waveform`` (a scheme wraps one as ``.waveform``), its PHYSICAL gradient in the
     substrate frame, its step, and the echo samples to read (``None`` when the readout is the last sample)."""
@@ -137,7 +122,7 @@ def _make_bloch_step_fn(geometry, D, dt, T2, T1, M0, off_resonance_hz, rho=0.0,
         (a per-walker macroscopic phase that dephases the transverse residual while leaving
         the longitudinally-stored magnetisation untouched), and an optional susceptibility
         field — are added here at the dt grid."""
-        M = _rf_increment_jax(M, rf_dflip, rf_axis)         # RF rotation (0 -> identity)
+        M = _rf_increment(M.T, rf_dflip, rf_axis, xp=jnp).T   # RF rotation (0 -> identity)
         dphi = phi_grad + global_carrier + rf_carrier + crush_rate * uc     # (n_meas,)
         if phi_field is not None:
             dphi = dphi + phi_field                         # accumulated per sub-step by the caller
@@ -169,8 +154,7 @@ def _make_bloch_step_fn(geometry, D, dt, T2, T1, M0, off_resonance_hz, rho=0.0,
             def _sub(c, _):
                 r, phi, logw, key = c
                 key, sk_step, sk_perm = jax.random.split(key, 3)
-                noise = jax.random.normal(sk_step, (3,), dtype=jnp.float32)
-                unit = noise / jnp.linalg.norm(noise)
+                unit = isotropic_unit_step(sk_step)
                 r_new, dlog_w = permeate(r, unit * step_len_sub, kappa_over_D,
                                          rho_over_D, sk_perm)   # dlog_w already scaled by rho/D
                 phi_new = phi + gamma_dt_sub * (g_t @ r_new)    # (n_meas,)
@@ -198,8 +182,7 @@ def _make_bloch_step_fn(geometry, D, dt, T2, T1, M0, off_resonance_hz, rho=0.0,
         def _sub(c, _):
             r, phi, phi_f, logw, key = c
             key, subkey = jax.random.split(key)
-            noise = jax.random.normal(subkey, (3,), dtype=jnp.float32)
-            unit = noise / jnp.linalg.norm(noise)
+            unit = isotropic_unit_step(subkey)
             if has_surf:
                 r_new, dlog = reflect_lw(r, unit * step_len_sub, jnp.float32(1.0))
             else:
@@ -287,8 +270,8 @@ def simulate_bloch(n_walkers, diffusivity, waveform, geometry, *,
         (geometry-agnostic).  ``'fast'`` seeds the equilibrium occupancy directly (mid-air,
         no walk) -- allowed only when it is provably position-invariant (no gradient, or an
         MR-dark bound pool) with a known S/V, else it warns and falls back to ``'burnin'``.
-        ``'off'`` keeps the legacy all-free start (correct only if you equilibrate yourself,
-        e.g. a burn-in block inside the waveform).
+        ``'off'`` starts every walker in the free pool: the initial condition of an oracle that
+        excites the free pool alone, or of a sequence whose own burn-in block equilibrates it.
     sub_steps : int, optional
         Fine sub-steps per waveform step; pins the count :func:`dmipy_sim.engine.physics.resolve_sub_steps`
         otherwise chooses from the geometry's length scales (the same dispatch the scalar engine
@@ -340,12 +323,8 @@ def simulate_bloch(n_walkers, diffusivity, waveform, geometry, *,
                        jnp.asarray(carrier, dtype=jnp.float32),
                        jnp.asarray(crush_rate, dtype=jnp.float32))
 
-        # pos_key / walker_key keep the SAME 2-way split as core.simulate (identical walk
-        # for parity); the crusher's per-walker macro coordinate is an independent stream.
-        master_key = jax.random.PRNGKey(seed)
-        pos_key, walker_key = jax.random.split(master_key)
-        walker_keys = jax.random.split(walker_key, n_walkers)
-        r0 = initial_positions(geometry, n_walkers, pos_key, r0)   # (n_walkers, 3)
+        # the crusher's per-walker macro coordinate is an independent stream off the master key
+        master_key, r0, walker_keys = seed_walkers(geometry, n_walkers, seed, r0)   # r0 (n_walkers, 3)
         if has_crush:
             uw = jax.random.uniform(jax.random.fold_in(master_key, 0xC0FFEE), (n_walkers,),
                                     dtype=jnp.float32)
@@ -484,8 +463,7 @@ def _make_bloch_mt_step_fn(geometry, D, dt, n_sub, T2, T1, M0, off_res_global,
             r, M, key, bound_rem = c
             key, step_key, stick_key, dwell_key = jax.random.split(key, 4)
             is_bound = bound_rem > jnp.float32(0.0)
-            noise = jax.random.normal(step_key, (3,), dtype=jnp.float32)
-            unit = noise / jnp.linalg.norm(noise)
+            unit = isotropic_unit_step(step_key)
             # rho_over_D = 1 -> dlog = -2 Sum d_perp; the binding local time is -dlog
             r_free, dlog = reflect_lw(r, unit * step_len, jnp.float32(1.0))
             local_time = -dlog
@@ -587,10 +565,7 @@ def _simulate_bloch_mt(n_walkers, diffusivity, waveform, geometry, *,
                    jnp.asarray(carrier, dtype=jnp.float32),
                    jnp.asarray(crush_rate, dtype=jnp.float32))
 
-    master_key = jax.random.PRNGKey(seed)
-    pos_key, walker_key = jax.random.split(master_key)
-    walker_keys = jax.random.split(walker_key, n_walkers)
-    r0 = initial_positions(geometry, n_walkers, pos_key, r0)
+    master_key, r0, walker_keys = seed_walkers(geometry, n_walkers, seed, r0)
     uw = (jax.random.uniform(jax.random.fold_in(master_key, 0xC0FFEE), (n_walkers,),
                              dtype=jnp.float32) if has_crush
           else jnp.zeros((n_walkers,), dtype=jnp.float32))
@@ -623,7 +598,7 @@ def _simulate_bloch_mt(n_walkers, diffusivity, waveform, geometry, *,
     elif mode == 'burnin':
         r0, bound_rem0, run_keys, occ_burn, converged = _equilibrate_burnin(
             step_fn, r0, walker_keys, uw, M_init, n_meas, dt, dwell_time)
-    else:  # 'off' -- legacy all-free start
+    else:                                                   # 'off': every walker starts free
         bound_rem0 = jnp.zeros((n_walkers,), dtype=jnp.float32)
         run_keys = walker_keys
 

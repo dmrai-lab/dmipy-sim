@@ -227,7 +227,7 @@ def voxelize_shell(inner, outer, voxel_size, *, bbox=None, pad=1, origin=None,
     except ImportError as exc:  # pragma: no cover
         raise ImportError("voxelize_shell requires trimesh (pip install 'dmipy-sim[mesh]')."
                           ) from exc
-    from ..fields.susceptibility import radial_from_sdf, _as_voxel_size
+    from ..fields.susceptibility_field import radial_from_sdf, _as_voxel_size
 
     m_out = trimesh.Trimesh(vertices=np.asarray(outer[0], float),
                             faces=np.asarray(outer[1], np.int64), process=False)

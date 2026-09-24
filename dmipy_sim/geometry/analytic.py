@@ -13,6 +13,46 @@ from ._boundary import (bounce_budget, bounce_loop, keep_side_radial, keep_side_
 from .base import permeability_of, Geometry, LengthScales, acquisition_rotation
 
 
+def _radial_hit_once(R, EPS, NUDGE, u, kappa_over_D, rho_over_D):
+    """The single-collision rule of a wall at radius ``R`` about the origin, in the plane or in space: the ray
+    ``r + t d`` is tested against the sphere of that radius (the circle when ``r`` and ``d`` are 2-vectors), the
+    walker reflects specularly and is set ``NUDGE`` off the wall on its own side, and the FIRST hit of the step
+    may cross with the membrane's probability at the one draw ``u``. Returns the ``hit_once`` that
+    :func:`bounce_loop` runs to exhaustion.
+    """
+    def hit_once(rr, dd, remaining, decided):
+        t_entry, t_exit, disc = ray_sphere_t(rr, dd, R)
+        disc_s = jnp.maximum(disc, jnp.float32(0.0))
+        inside = jnp.dot(rr, rr) < R * R
+        t_hit  = jnp.where(inside, t_exit, t_entry)
+        any_hit = ((disc > 0) & (t_hit > EPS) & (t_hit < remaining) & (remaining > 0))
+        t_safe = jnp.where(any_hit, t_hit, jnp.float32(0.0))
+        raw    = rr + t_safe * dd
+        n_out  = raw / jnp.maximum(jnp.linalg.norm(raw), jnp.float32(1e-30))
+        r_hit  = R * n_out                                                # snapped: |r_hit| = R exactly
+        rem    = remaining - t_safe
+        d_perp = jnp.where(any_hit, rem * jnp.sqrt(disc_s) / R, jnp.float32(0.0))
+        first    = any_hit & (~decided)
+        transmit = first & (u < transmit_probability(kappa_over_D, d_perp))
+        d_refl = specular(dd, n_out)
+        d_refl = d_refl / jnp.maximum(jnp.linalg.norm(d_refl), jnp.float32(1e-30))
+        r_off  = off_wall(r_hit, n_out, inside, NUDGE)                     # off the wall on the side the walker stays on
+        r_off, _ = keep_side_radial(r_off, r_off, R, inside, NUDGE, active=~transmit)
+        reflecting = any_hit & (~transmit)
+        r_new  = jnp.where(reflecting, r_off, rr + remaining * dd)
+        d_new  = jnp.where(reflecting, d_refl, dd)
+        rem_n  = jnp.where(reflecting, jnp.maximum(rem - NUDGE, jnp.float32(0.0)), jnp.float32(0.0))
+        dlw = jnp.where(reflecting, -jnp.float32(2.0) * rho_over_D * d_perp, jnp.float32(0.0))
+        return r_new, d_new, rem_n, decided | first, dlw, transmit
+    return hit_once
+
+
+def _radial_bounce_budget(self):
+    """Reflections a grazing walker can need in one R/6 step (:func:`bounce_budget`)."""
+    R = self.length_scales.min_feature
+    return bounce_budget(R, 1e-4 * R, float('inf'), R / 6.0)
+
+
 class Sphere(Geometry):
     """Reflecting sphere of given radius centred at the origin.
 
@@ -33,11 +73,7 @@ class Sphere(Geometry):
     """
     replay_parity = True
 
-    @property
-    def _MAX_BOUNCES(self):
-        """Reflections a grazing walker can need in one R/6 step (:func:`bounce_budget`)."""
-        R = self.length_scales.min_feature
-        return bounce_budget(R, 1e-4 * R, float('inf'), R / 6.0)
+    _MAX_BOUNCES = property(_radial_bounce_budget)
 
     supports_permeability = True   #: has a membrane a walker can cross
 
@@ -110,31 +146,7 @@ class Sphere(Geometry):
                           jnp.zeros(3, jnp.float32))
         u = jax.random.uniform(perm_key, dtype=jnp.float32)
 
-        def hit_once(rr, dd, remaining, decided):
-            t_entry, t_exit, disc = ray_sphere_t(rr, dd, R)
-            disc_s = jnp.maximum(disc, jnp.float32(0.0))
-            inside = jnp.dot(rr, rr) < R * R
-            t_hit  = jnp.where(inside, t_exit, t_entry)
-            any_hit = ((disc > 0) & (t_hit > EPS) & (t_hit < remaining) & (remaining > 0))
-            t_safe = jnp.where(any_hit, t_hit, jnp.float32(0.0))
-            raw    = rr + t_safe * dd
-            n_out  = raw / jnp.maximum(jnp.linalg.norm(raw), jnp.float32(1e-30))
-            r_hit  = R * n_out
-            rem    = remaining - t_safe
-            d_perp = jnp.where(any_hit, rem * jnp.sqrt(disc_s) / R, jnp.float32(0.0))
-            first    = any_hit & (~decided)
-            transmit = first & (u < transmit_probability(kappa_over_D, d_perp))
-            d_refl = specular(dd, n_out)
-            d_refl = d_refl / jnp.maximum(jnp.linalg.norm(d_refl), jnp.float32(1e-30))
-            r_off  = off_wall(r_hit, n_out, inside, NUDGE)
-            r_off, _ = keep_side_radial(r_off, r_off, R, inside, NUDGE, active=~transmit)
-            reflecting = any_hit & (~transmit)
-            r_new  = jnp.where(reflecting, r_off, rr + remaining * dd)
-            d_new  = jnp.where(reflecting, d_refl, dd)
-            rem_n  = jnp.where(reflecting, jnp.maximum(rem - NUDGE, jnp.float32(0.0)),
-                               jnp.float32(0.0))
-            dlw = jnp.where(reflecting, -jnp.float32(2.0) * rho_over_D * d_perp, jnp.float32(0.0))
-            return r_new, d_new, rem_n, decided | first, dlw, transmit
+        hit_once = _radial_hit_once(R, EPS, NUDGE, u, kappa_over_D, rho_over_D)
 
         r_out, dlog_w, crossed = bounce_loop(hit_once, r, d_hat, step_l, self._MAX_BOUNCES)
         # Final-position sentinel (#86): a step whose exit time marginally exceeds its length
@@ -177,11 +189,7 @@ class Cylinder(Geometry):
     """
     replay_parity = True
 
-    @property
-    def _MAX_BOUNCES(self):
-        """Reflections a grazing walker can need in one R/6 step (:func:`bounce_budget`)."""
-        R = self.length_scales.min_feature
-        return bounce_budget(R, 1e-4 * R, float('inf'), R / 6.0)
+    _MAX_BOUNCES = property(_radial_bounce_budget)
 
     supports_permeability = True   #: has a membrane a walker can cross
 
@@ -249,35 +257,7 @@ class Cylinder(Geometry):
                              jnp.zeros(2, jnp.float32))
         u = jax.random.uniform(perm_key, dtype=jnp.float32)
 
-        def hit_once(r2, d2, remaining, decided):
-            t_entry, t_exit, disc = ray_sphere_t(r2, d2, R)
-            disc_s = jnp.maximum(disc, jnp.float32(0.0))
-            inside = jnp.dot(r2, r2) < R * R
-            t_hit  = jnp.where(inside, t_exit, t_entry)
-            any_hit = ((disc > 0) & (t_hit > EPS) & (t_hit < remaining) & (remaining > 0))
-            t_safe = jnp.where(any_hit, t_hit, jnp.float32(0.0))
-            raw    = r2 + t_safe * d2
-            n_out  = raw / jnp.maximum(jnp.linalg.norm(raw), jnp.float32(1e-30))
-            r2_hit = R * n_out                       # snapped: |r2_hit| = R exactly
-            rem    = remaining - t_safe
-            d_perp = jnp.where(any_hit, rem * jnp.sqrt(disc_s) / R, jnp.float32(0.0))
-
-            first = any_hit & (~decided)
-            transmit = first & (u < transmit_probability(kappa_over_D, d_perp))
-
-            d_refl = specular(d2, n_out)
-            d_refl = d_refl / jnp.maximum(jnp.linalg.norm(d_refl), jnp.float32(1e-30))
-            # off the wall on the side the walker stays on, then carry on with what is left
-            r2_off = off_wall(r2_hit, n_out, inside, NUDGE)
-            r2_off, _ = keep_side_radial(r2_off, r2_off, R, inside, NUDGE,
-                                         active=~transmit)
-            reflecting = any_hit & (~transmit)
-            r2_new  = jnp.where(reflecting, r2_off, r2 + remaining * d2)
-            d2_new  = jnp.where(reflecting, d_refl, d2)
-            rem_new = jnp.where(reflecting, jnp.maximum(rem - NUDGE, jnp.float32(0.0)),
-                                jnp.float32(0.0))
-            dlw = jnp.where(reflecting, -jnp.float32(2.0) * rho_over_D * d_perp, jnp.float32(0.0))
-            return r2_new, d2_new, rem_new, decided | first, dlw, transmit
+        hit_once = _radial_hit_once(R, EPS, NUDGE, u, kappa_over_D, rho_over_D)
 
         xy_final, dlog_w, crossed = bounce_loop(hit_once, r_c[:2], d_hat_xy, step_l_xy,
                                                 self._MAX_BOUNCES)
@@ -337,11 +317,7 @@ class Ellipsoid(Geometry):
     """
     replay_parity = True
 
-    @property
-    def _MAX_BOUNCES(self):
-        """Reflections a grazing walker can need in one R/6 step (:func:`bounce_budget`)."""
-        R = self.length_scales.min_feature
-        return bounce_budget(R, 1e-4 * R, float('inf'), R / 6.0)
+    _MAX_BOUNCES = property(_radial_bounce_budget)
 
     supports_permeability = True   #: has a membrane a walker can cross
 
