@@ -60,6 +60,25 @@ _CITATION_JORDANOVA2023 = {
     'doi': '10.1007/s10334-023-01095-x',
 }
 
+_CITATION_OREILLY2022 = {
+    'key': 'oreilly2022',
+    'authors': "O'Reilly T, Webb AG",
+    'title': 'In vivo T1 and T2 relaxation time maps of brain tissue, skeletal muscle, and lipid measured in healthy '
+             'volunteers at 50 mT',
+    'journal': 'Magnetic Resonance in Medicine',
+    'year': 2022,
+    'doi': '10.1002/mrm.29009',
+}
+
+_CITATION_COX2010 = {
+    'key': 'cox2010',
+    'authors': 'Cox EF, Gowland PA',
+    'title': "Simultaneous quantification of T2 and T2' using a combined gradient echo-spin echo sequence at ultrahigh field",
+    'journal': 'Magnetic Resonance in Medicine',
+    'year': 2010,
+    'doi': '10.1002/mrm.22522',
+}
+
 _CITATION_WEST2018 = {
     'key': 'west2018',
     'authors': 'West KL, Kelm ND, Carson RP, Gochberg DF, Ess KC, Does MD',
@@ -505,9 +524,11 @@ BIOPHYSICAL_CONSTANTS = {
                 'unit': 's',
                 'field_T': 0.064,
                 'species': 'human',
-                'method': 'in vivo multi-point spin echo, 10 volunteers, automatic segmentation (white matter)',
+                'method': 'in vivo multi-echo spin echo, 10 volunteers, manual ROI (white matter), Hyperfine Swoop',
                 'source_key': 'jordanova2023',
-                'location': 'White matter T2 = 81 +/- 4 ms at 0.064 T, on a Hyperfine Swoop (dmipy-sim#285)',
+                'location': 'Results and Supplementary Table S.2, All row: "For T2, the manual ROI averages are 0.081 s '
+                            '+/- 0.0024 s for WM"; the automatic segmentation could not separate WM from GM in T2 '
+                            '(0.097 +/- 0.0016 s combined)',
             },
         ],
         'citation': _CITATION_STANISZ2005,
@@ -537,14 +558,28 @@ BIOPHYSICAL_CONSTANTS = {
                 'location': 'Table 1, grey matter row: T2 = 95 +/- 8 ms at 1.5 T',
             },
             {
-                'value': 0.108,
+                'value': 0.105,
                 'unit': 's',
                 'field_T': 0.064,
                 'species': 'human',
-                'method': 'in vivo multi-point spin echo, 10 volunteers, automatic segmentation (grey matter)',
+                'method': 'in vivo multi-echo spin echo, 10 volunteers, manual ROI (grey matter), Hyperfine Swoop',
                 'source_key': 'jordanova2023',
-                'location': 'Grey matter T2 = 108 +/- 22 ms at 0.064 T. The scanner is the Hyperfine Swoop '
-                            '(dmipy-sim#285); the spread across volunteers is a fifth of the value.',
+                'location': 'Results and Supplementary Table S.2, All row: "0.105 s +/- 0.0241 s for GM" (manual ROI); '
+                            'the automatic segmentation could not separate WM from GM in T2. The spread across '
+                            'volunteers is a quarter of the value.',
+            },
+            {
+                'value': 0.047,
+                'unit': 's',
+                'field_T': 7.0,
+                'species': 'human',
+                'method': 'in vivo combined gradient echo-spin echo at 7 T (frontal grey matter)',
+                'source_key': 'cox2010',
+                'location': 'Abstract: "T2 having a linear dependence (frontal gray matter: 87, 76, 47 ms, occipital '
+                            'gray matter: 80, 68, 46 ms and white matter: 80, 71, 47 ms at 1.5, 3.0 and 7.0 T, '
+                            'respectively)"',
+                'note': 'The abstract values; the table with the uncertainties was not accessible when this was '
+                        'recorded (Wiley full text).',
             },
         ],
         'citation': _CITATION_STANISZ2005,
@@ -576,10 +611,12 @@ BIOPHYSICAL_CONSTANTS = {
                 'unit': 's',
                 'field_T': 0.064,
                 'species': 'human',
-                'method': 'in vivo inversion recovery, 10 volunteers, automatic segmentation (white matter)',
+                'method': 'in vivo inversion recovery, 10 volunteers, automatic segmentation (white matter), Hyperfine Swoop',
                 'source_key': 'jordanova2023',
-                'location': 'White matter T1 ~294 +/- 18 ms at 0.064 T',
-                'note': 'UNVERIFIED (dmipy-sim#285): Jordanova 2023 reports T1 at 0.064 T but the paper is paywalled and the two secondary figures found disagree -- 294 +/- 18 ms at 0.064 T against 275 ms quoted at 50 mT. The value here is the one attributed to the 0.064 T in vivo cohort; CHECK IT AGAINST TABLE 2 OF THE PAPER before any published number rests on it. T2 at this field (T2_white_matter) IS verified.',
+                'location': 'Results and Supplementary Table S.2, All row: "the automatically segmented averages are '
+                            '0.294 s +/- 0.0179 s for WM"; the manual-ROI average is 0.254 +/- 0.0179 s',
+                'note': 'The 0.275 s sometimes quoted beside it is O\'Reilly and Webb\'s 50 mT value, which Jordanova '
+                        'quotes in the Discussion; it is not a 0.064 T measurement.',
             },
         ],
         'citation': _CITATION_STANISZ2005,
@@ -604,10 +641,22 @@ BIOPHYSICAL_CONSTANTS = {
                 'unit': 's',
                 'field_T': 0.064,
                 'species': 'human',
-                'method': 'in vivo inversion recovery, 10 volunteers, automatic segmentation (grey matter)',
+                'method': 'in vivo inversion recovery, 10 volunteers, automatic segmentation (grey matter), Hyperfine Swoop',
                 'source_key': 'jordanova2023',
-                'location': 'Grey matter T1 ~460 +/- 126 ms at 0.064 T',
-                'note': 'UNVERIFIED (dmipy-sim#285): Jordanova 2023 reports T1 at 0.064 T but the paper is paywalled and the two secondary figures found disagree -- 460 +/- 126 ms at 0.064 T against 327 ms quoted at 50 mT. The value here is the one attributed to the 0.064 T in vivo cohort; CHECK IT AGAINST TABLE 2 OF THE PAPER before any published number rests on it. T2 at this field (same entry) IS verified.',
+                'location': 'Results and Supplementary Table S.2, All row: "0.46 s +/- 0.1258 s for GM" (automatic '
+                            'segmentation); the manual-ROI average is 0.377 +/- 0.0351 s',
+                'note': 'The 0.327 s sometimes quoted beside it is O\'Reilly and Webb\'s 50 mT value, which Jordanova '
+                        'quotes in the Discussion; it is not a 0.064 T measurement.',
+            },
+            {
+                'value': 2.132,
+                'unit': 's',
+                'field_T': 7.0,
+                'species': 'human',
+                'method': 'Look-Locker adiabatic inversion recovery at 7 T (cortical grey matter)',
+                'source_key': 'rooney2007',
+                'location': 'Table 1, row 7.0 T: cortical GM T1 = 2132 +/- 103 ms (WM 1220 +/- 36, caudate 1745 +/- 64, '
+                            'putamen 1700 +/- 66, thalamus 1656 +/- 84 ms)',
             },
             {
                 'value': 1.124,
@@ -690,14 +739,15 @@ BIOPHYSICAL_CONSTANTS = {
                             '(Spijkerman 2017). The 3T fallback would be ~2x too long here.',
             },
             {
-                'value': 1.166,
+                'value': 1.172,
                 'unit': 's',
                 'field_T': 0.064,
                 'species': 'human',
-                'method': 'in vivo multi-point spin echo, 10 volunteers, automatic segmentation (CSF)',
+                'method': 'in vivo multi-echo spin echo, 10 volunteers, manual ROI (CSF), Hyperfine Swoop',
                 'source_key': 'jordanova2023',
-                'location': 'CSF T2 = 1166 +/- 338 ms at 0.064 T (dmipy-sim#285). The spread is nearly a '
-                            'third of the value: CSF segments poorly at this resolution.',
+                'location': 'Results and Supplementary Table S.2, All row: "1.172 s +/- 0.3234 s for CSF" (manual ROI); '
+                            'the automatic segmentation gives 0.553 +/- 0.1422 s, and the authors state that their '
+                            'protocol underestimates the T2 of CSF. The spread is a quarter of the value.',
             },
         ],
         'citation': {
@@ -886,6 +936,19 @@ BIOPHYSICAL_CONSTANTS = {
                 'location': 'CSF T1 is field-INDEPENDENT at 4.3 +/- 0.2 s across 0.2-7T '
                             '(Rooney 2007) -- the one relaxation value that does not change '
                             'with B0; the 7T entry equals the 3T one by physics, not fallback.',
+            },
+            {
+                'value': 3.695,
+                'unit': 's',
+                'field_T': 0.05,
+                'species': 'human',
+                'method': 'in vivo inversion-recovery turbo spin echo at 50 mT, 3 volunteers (ventricular CSF)',
+                'source_key': 'oreilly2022',
+                'location': 'Results: "The mean T1 in the CSF is measured to be 3695 +/- 287 ms, and the mean T2 is '
+                            '1584 +/- 124 ms"; Table 1 per subject 3528 +/- 192, 4033 +/- 325, 3546 +/- 134 ms',
+                'note': 'The nearest measured CSF T1 to 0.064 T: Jordanova 2023 reports 2.07 s (manual) / 1.85 s '
+                        '(automatic) at 0.064 T and states that their protocol cannot measure it ("Future work is '
+                        'needed to accurately measure T1 relaxation in CSF at 0.064 T").',
             },
         ],
         'citation': {

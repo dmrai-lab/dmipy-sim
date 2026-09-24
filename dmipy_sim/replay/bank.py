@@ -556,6 +556,98 @@ def _susc_path_bloch_fidelity(m, arrays, pm, gm, env, n_sub=8000):
     return dict(err=float(err), floor=float(floor), n_pulses=n_p, n_walkers=k)
 
 
+#: the bands the field tier is tried at, in order, when its band is derived on the walk
+SUSC_PATH_LADDER = (16, 32, 64, 128, 256, 512, 1024, 2048)
+
+
+def derive_susc_path_K(m, field, env, *, K_max, ladder=SUSC_PATH_LADDER, containers=(8, 16)):
+    """The field tier's band and container, derived on the walk it will store: ``(K, bits, record)``.
+
+    The path channel's band is the pack's to choose per substrate, since what it must resolve is the field a
+    walker sees along its path, and that depends on the geometry (a sheath two nodes wide changes the field at
+    every step, a smooth far field does not) and on the gates the tier serves; and its container is the pack's
+    too, since an integer container's error is set by the largest coefficient of a band over the walkers and does
+    not fall with the band (on the CATERPillar pilot the 8-bit tier sits at 1.6 times its floor at every band, the
+    16-bit one at a third of it by 256). So both are measured rather than fixed. The field is encoded once at the
+    top of ``ladder`` (the exact series, ``n_t`` bands, closes it), and the rungs are read in ascending band, the
+    narrower container first, each as the pack's own certificate reads it -- the coefficients truncated to the
+    rung and quantised, contracted for each field strength and direction of the envelope's battery, decoded and
+    gated by GRE, spin echo and the CPMG train the rung serves (:func:`_susc_path_fidelity`) -- against the
+    split-half floor of the reference. The first pair within the floor is the band and the container: the
+    cheapest in bytes per walker that keeps the tier's accuracy. ``K_max``, the position channel's band, is the
+    point past which the tier costs more than the walk it rides on; the ladder continues beyond it when the
+    floor is not yet reached, and the record says so. A refocusing depth the envelope declares
+    (``max_refocus_pulses``) puts a floor of twice that under the ladder, since the tier serves ``K / 2``
+    pulses. When no pair reaches the floor at all (a container's own error above it at the exact series), the
+    pair of least error is taken, the cheapest among those within three per cent of it. ``record`` lists every
+    pair read.
+    """
+    from scipy.fft import idct
+    traj = np.asarray(m["traj"], np.float64); n_w = traj.shape[0]
+    every = int(m.get("susc_field_every", 1) or 1)
+    n_t = len(range(0, traj.shape[1], every)); dt = float(m["dt_traj"]) * every
+    # the band bounds the refocusing depth the tier serves, K / 2 pulses; a train the envelope declares is the depth
+    # every rung is read at and certified for, and a floor under the ladder, so a pack built for a twelve-pulse train
+    # is never derived at eight and a wide band is not tested as a claim to a thousand pulses
+    depth = int(env.get("max_refocus_pulses") or 0)
+    min_K = 2 * depth
+    rungs = sorted(set([min(int(k), n_t) for k in ladder if k < n_t] + [n_t] + ([min(min_K, n_t)] if min_K else [])))
+    rungs = [k for k in rungs if k >= min_K] or [n_t]
+    top = rungs[-1]
+    if m.get("susc_field_samples") is not None:
+        from ..fields.hollow_cylinder import CHANNEL_NAMES
+        arrays_top, meta_top = susc_path_encode_series(np.asarray(m["susc_field_samples"]), CHANNEL_NAMES, K=top, bits=None,
+                                                       layout="wtc", dt=dt, dtype=np.float32)
+    else:
+        arrays_top, meta_top = susc_path_encode(field, traj, K=top, bits=None, dtype=np.float32)
+    coeffs = np.asarray(arrays_top["susc_path_dct"], np.float32)               # (n_w, n_ch, top)
+    has_aniso = coeffs.shape[1] >= 12
+    w = np.asarray(m["w"], np.float64) if m.get("w") is not None else np.ones(n_w)
+    chi_i = float(m.get("susc_chi_iso") or 1.06e-6)
+    ca = float(m.get("delta_chi_a") or 0.0)
+    if has_aniso and ca == 0.0:
+        ca = 0.1 * chi_i
+    if not has_aniso:
+        ca = 0.0
+    perm = np.random.RandomState(0).permutation(n_w); A, B = perm[:n_w // 2], perm[n_w // 2:]
+    settings = [(B0, th) for B0 in (env.get("B0_list") or [3.0, 7.0]) for th in (env.get("theta_deg") or [0, 90])]
+    raw = {}                                                                                    # the reference per setting, once
+    for B0, th in settings:
+        t = np.deg2rad(float(th)); d = [np.sin(t), 0.0, np.cos(t)]
+        raw[(B0, th)] = np.asarray(_raw_field(m, field, traj, d, B0=B0, chi_iso=chi_i, chi_aniso=ca), np.float32)
+    err, floor, order = {}, {}, []
+    chosen = None
+    for k in rungs:
+        for bits in containers:
+            e_max = f_max = 0.0
+            n_p = _depth(k, depth)                                                                 # the depth this rung would serve
+            a_k, m_k = _quantise_susc_path(np.asarray(coeffs[:, :, :k], np.float64), dict(meta_top, K=k, max_refocus_pulses=n_p), bits)
+            C, _names = susc_path_coeffs(a_k, m_k)                                                 # dequantised, zz re-inserted
+            gates = [np.ones(n_t), _cpmg_gate(n_t, 1), _cpmg_gate(n_t, max(1, n_p))]
+            for B0, th in settings:
+                t = np.deg2rad(float(th)); d = [np.sin(t), 0.0, np.cos(t)]
+                cd = susc_path_field(C, d, B0=B0, chi_iso=chi_i, chi_aniso=ca, has_aniso=has_aniso)   # (n_w, k): linear in the channels
+                f_dec = idct(np.pad(cd, ((0, 0), (0, n_t - k))), type=2, norm="ortho", axis=1)
+                e, f = _gate_battery(raw[(B0, th)], f_dec, gates, w, A, B, dt)
+                e_max, f_max = max(e_max, e), max(f_max, f)
+            err[(k, bits)], floor[(k, bits)] = e_max, f_max; order.append((k, bits))
+            if e_max <= f_max:
+                chosen = (k, bits); break
+        if chosen is not None:
+            break
+    if chosen is None:                                                    # nothing within the floor: the least error, cheaply
+        best = min(err.values())
+        chosen = min([p for p in order if err[p] <= 1.03 * best], key=lambda p: (p[0] * p[1], p[0]))
+    K, bits = chosen
+    record = dict(rule="derived",
+                  criterion="the first (band, container) pair in ascending band, the narrower container first, whose codec error on "
+                            "the certificate's battery is within its floor; failing every pair, the cheapest among the least errors",
+                  ladder=[dict(K=int(k), bits=int(b), err=float(err[(k, b)]), floor=float(floor[(k, b)])) for k, b in order],
+                  K_max=int(K_max), min_K=int(min_K), depth=(int(depth) or None), above_position_band=bool(K > int(K_max)),
+                  within_floor=bool(err[chosen] <= floor[chosen]))
+    return int(K), int(bits), record
+
+
 def _susc_path_fidelity(m, arrays, pm, gm, env):
     """Certify the susc_path_dct tier AT ITS DECLARED CAPABILITY.
 
@@ -639,7 +731,7 @@ def susc_path_series_fidelity(series_raw, arrays, pm, gm, *, w, dt, env=None, ch
     return dict(err=float(err), floor=float(floor), n_pulses_certified=n_p)
 
 
-def susc_path_encode(field, traj, *, K=32, bits=8, dtype=np.float16, atol_trace=1e-6):
+def susc_path_encode(field, traj, *, K=32, bits=8, dtype=np.float16, atol_trace=1e-6, max_refocus_pulses=None):
     """Encode the off-resonance field ALONG each walker's path as K temporal DCT-II coefficients.
 
     ``field`` is the substrate's field source -- a :class:`~dmipy_sim.fields.susceptibility_field.FieldGrid` or a
@@ -669,7 +761,7 @@ def susc_path_encode(field, traj, *, K=32, bits=8, dtype=np.float16, atol_trace=
             coeffs[i:i + step, c, :] = dct(ch[:, :, col], type=2, norm="ortho", axis=1)[:, :K]
     meta = dict(channel="susc_path_dct", K=K, n_t=int(n_t), n_ch=len(grids), channels=names,
                 iso_P_zz=("implied" if drop_zz else "stored"), trace_residual=trace_res,
-                max_refocus_pulses=K // 2)
+                max_refocus_pulses=_depth(K, max_refocus_pulses))
     if bits is None:
         meta["bits"] = None; meta["dtype"] = np.dtype(dtype).name
         return {"susc_path_dct": np.asarray(coeffs, dtype)}, meta
@@ -690,8 +782,14 @@ def _quantise_susc_path(coeffs, meta, bits):
     return {"susc_path_dct": q, "susc_path_scale": np.asarray(scale, np.float32)}, meta
 
 
+def _depth(K, declared):
+    """The refocusing depth a path channel of ``K`` bands serves: the declared train when there is one, never more than
+    the ``K / 2`` pulses the band can gate; ``K / 2`` itself when none is declared."""
+    return int(min(int(K) // 2, int(declared))) if declared else int(K) // 2
+
+
 def susc_path_encode_series(series, names, *, K=32, bits=8, dtype=np.float16, layout="wct", atol_trace=1e-4, device="auto",
-                            chunk=20_000, dt=None):
+                            chunk=20_000, dt=None, max_refocus_pulses=None):
     """:func:`susc_path_encode` from the per-save field series itself, in the canonical channel order with
     ``names``: ``(n_w, n_ch, n_t)`` (``layout="wct"``, what a decoded path channel gives) or ``(n_w, n_t, n_ch)``
     (``layout="wtc"``, the interval means a walk sampled), encoded in walker chunks of ``chunk`` on ``device``
@@ -726,7 +824,8 @@ def susc_path_encode_series(series, names, *, K=32, bits=8, dtype=np.float16, la
         b = _cx.dct_bands(np.asarray(ch)[:, :, keep], K, device=device)             # (rows, K, n_keep)
         coeffs[i:i + chunk] = np.transpose(b, (0, 2, 1))
     meta = dict(channel="susc_path_dct", K=K, n_t=int(n_t), n_ch=len(keep), channels=[names[i] for i in keep],
-                iso_P_zz=("implied" if drop_zz else "stored"), trace_residual=trace_res, max_refocus_pulses=K // 2)
+                iso_P_zz=("implied" if drop_zz else "stored"), trace_residual=trace_res,
+                max_refocus_pulses=_depth(K, max_refocus_pulses))
     if dt is not None:
         meta["dt"] = float(dt)
     if bits is None:
@@ -797,7 +896,7 @@ def _pack_positions(pack):
 
 # --------------------------------------------------------------- pack generation
 #: per-channel numbers a codec MEASURES on the walk it encoded (not parameters): two shards of one fill differ in them
-_MEASURED_CHANNEL_KEYS = ("trace_residual",)
+_MEASURED_CHANNEL_KEYS = ("trace_residual", "band")
 
 
 def _codec_signature(comp):
@@ -1335,8 +1434,11 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto"
     :class:`~dmipy_sim.fields.strand_field.StrandFieldBasis` the per-segment closed form of a strand substrate
     (path channel only: it has no grid),
     ``field=False`` leaves the tier out; the basis is geometry only, and B0, its direction and the
-    susceptibilities are replay knobs. ``weights`` are per-walker proton-density weights (default:
-    the pools' water fractions by compartment, else uniform).
+    susceptibilities are replay knobs. ``susc_path_K`` is the field tier's own band: a number, ``"auto"`` --
+    the band and the container (``susc_path_bits``) derived on this walk as the cheapest pair whose codec
+    error on the certificate's battery is within its floor (:func:`derive_susc_path_K`; the grid route, exact,
+    when the positions are lossless) -- or ``None`` for the grid alone. ``weights`` are per-walker proton-density weights (default: the pools' water fractions
+    by compartment, else uniform).
 
     The position ensemble is compressed by ``method`` (default ``bridge_dst``: endpoints plus a
     Brownian bridge on the sine basis, which holds both endpoints exactly and pairs its first two
@@ -1433,6 +1535,17 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto"
         # the pos-codec-decoded trajectory (ReplayPack.replay with a field). O(N_vox) not O(N_w*N_t) and SE-exact (a static
         # field at a frozen point cancels under the SE gate to machine precision). f16 grids: O(1) geometry.
         _field = _field_of(m)
+        _band_record = None
+        if isinstance(susc_path_K, str):
+            if susc_path_K != "auto":
+                raise ValueError(f"susc_path_K is a band, 'auto' (derived on the walk) or None; got {susc_path_K!r}")
+            if _field is None:
+                susc_path_K = None
+            elif m.get("susc_field_basis") is not None and _cx.is_lossless_at(method, int(K), int(X.shape[1])):
+                susc_path_K = None                             # lossless positions: the grid route is exact and costs no channel
+            else:
+                run.phase("field band")
+                susc_path_K, susc_path_bits, _band_record = derive_susc_path_K(m, _field, env, K_max=int(K))
         if _field is not None and m.get("susc_field_basis") is None:
             # a strand substrate's per-segment field: no grid to store, the path channel is the tier
             if not susc_path_K:
@@ -1443,10 +1556,14 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto"
                 from ..fields.hollow_cylinder import CHANNEL_NAMES
                 _a, _pm = susc_path_encode_series(np.asarray(m["susc_field_samples"]), CHANNEL_NAMES, K=int(susc_path_K),
                                                   bits=susc_path_bits, layout="wtc", device=device,    # no copy of the samples
-                                                  dt=float(m["dt_traj"]) * int(m.get("susc_field_every", 1)))
+                                                  dt=float(m["dt_traj"]) * int(m.get("susc_field_every", 1)),
+                                                  max_refocus_pulses=env.get("max_refocus_pulses"))
                 _pm["sampling"] = "interval_mean_in_walk"
             else:
-                _a, _pm = susc_path_encode(_field, np.asarray(m["traj"], np.float64), K=int(susc_path_K), bits=susc_path_bits)
+                _a, _pm = susc_path_encode(_field, np.asarray(m["traj"], np.float64), K=int(susc_path_K), bits=susc_path_bits,
+                                           max_refocus_pulses=env.get("max_refocus_pulses"))
+            if _band_record is not None:
+                _pm["band"] = _band_record
             arrays.update(_a); chan_meta["susceptibility_path"] = _pm
         if m.get("susc_field_basis") is not None:
             fb = m["susc_field_basis"]
@@ -1481,7 +1598,9 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto"
             # gate-bandwidth capability rather than a fidelity knob.
             if susc_path_K:
                 _a, _pm = susc_path_encode(_field, np.asarray(m["traj"], np.float64),
-                                           K=int(susc_path_K), bits=susc_path_bits)
+                                           K=int(susc_path_K), bits=susc_path_bits, max_refocus_pulses=env.get("max_refocus_pulses"))
+                if _band_record is not None:
+                    _pm["band"] = _band_record
                 arrays.update(_a); chan_meta["susceptibility_path"] = _pm
         if wp_method:
             # C1 (occupancy): the geometric compartment plus, when the walk bound spins, the MT bound

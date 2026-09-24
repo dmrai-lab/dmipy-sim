@@ -109,30 +109,42 @@ def test_the_64_mT_rows_are_cited_and_field_matched():
     single rule: both tissues relax SLOWER at 64 mT than at 3 T, while the CSF figure is well under half of
     it -- which is why the table stores them and refuses to interpolate."""
     at64 = {n: bc.get_value(n, field_T=0.064) for n in ("T2_white_matter", "T2_grey_matter", "T2_csf")}
-    assert at64 == {"T2_white_matter": 0.081, "T2_grey_matter": 0.108, "T2_csf": 1.166}
+    assert at64 == {"T2_white_matter": 0.081, "T2_grey_matter": 0.105, "T2_csf": 1.172}   # the manual-ROI averages
     assert at64["T2_white_matter"] > bc.get_value("T2_white_matter", field_T=3.0)      # 81 ms vs 69 ms
-    assert at64["T2_grey_matter"] > bc.get_value("T2_grey_matter", field_T=3.0)        # 108 ms vs 99 ms
-    assert at64["T2_csf"] < 0.6 * bc.get_value("T2_csf", field_T=3.0)                  # 1166 ms vs 2000 ms
+    assert at64["T2_grey_matter"] > bc.get_value("T2_grey_matter", field_T=3.0)        # 105 ms vs 99 ms
+    assert at64["T2_csf"] < 0.6 * bc.get_value("T2_csf", field_T=3.0)                  # 1172 ms vs 2000 ms
     for name in at64:
         alt = [a for a in bc.get_constant(name)["alternatives"] if a["field_T"] == 0.064]
         assert len(alt) == 1 and alt[0]["source_key"] == "jordanova2023" and alt[0]["location"]
 
 
-def test_the_64_mT_T1_rows_say_they_are_unverified():
-    """T1 at 64 mT is entered so the Swoop experiment has a number, and flagged so nobody mistakes it for a
-    checked one: the source is paywalled and the secondary figures disagreed. T2 at the same field was read
-    from two independent reports and carries no such flag. A row that loses its note has been promoted by
-    someone who must have verified it -- which is the point of asserting this."""
-    for name in ("T1_white_matter", "T1_grey_matter"):
+def test_the_64_mT_T1_rows_are_read_from_the_paper():
+    """T1 at 64 mT is Jordanova 2023's automatic-segmentation average, read from the paper's Results and its
+    Supplementary Table S.2 (the paper is open access at PMC), with the manual-ROI average beside it; the
+    0.275 / 0.327 s figures that once seemed to contradict it are O'Reilly and Webb's 50 mT values quoted in the
+    Discussion. No row at this field carries an unverified flag any more."""
+    for name in ("T1_white_matter", "T1_grey_matter", "T2_white_matter", "T2_grey_matter", "T2_csf"):
         alt = [a for a in bc.get_constant(name)["alternatives"] if a["field_T"] == 0.064]
         assert len(alt) == 1, f"{name} has no 0.064 T row"
-        assert "UNVERIFIED" in alt[0]["note"] and alt[0]["source_key"] == "jordanova2023"
-    for name in ("T2_white_matter", "T2_grey_matter", "T2_csf"):
-        alt = [a for a in bc.get_constant(name)["alternatives"] if a["field_T"] == 0.064][0]
-        assert "UNVERIFIED" not in alt.get("note", "")
+        assert alt[0]["source_key"] == "jordanova2023" and "Table S.2" in alt[0]["location"]
+        assert "UNVERIFIED" not in alt[0].get("note", "")
+    assert bc.get_value("T1_white_matter", 0.064) == 0.294 and bc.get_value("T1_grey_matter", 0.064) == 0.46
     # T1 collapses at low field where T2 barely moves: the reason a field-matched read matters more for T1.
     assert bc.get_value("T1_white_matter", 0.064) < 0.4 * bc.get_value("T1_white_matter", 3.0)
     assert bc.get_value("T2_white_matter", 0.064) > 1.1 * bc.get_value("T2_white_matter", 3.0)
+
+
+def test_the_7_T_grey_matter_and_the_50_mT_csf_rows_are_cited():
+    """The rows the three-machine brain needed and the table lacked: grey-matter T1 and T2 at 7 T (Rooney 2007
+    Table 1; Cox and Gowland 2010) and the CSF T1 at 50 mT (O'Reilly and Webb 2022), the nearest measured value
+    to 64 mT, where Jordanova 2023's own protocol could not measure it."""
+    assert bc.get_value("T1_grey_matter", 7.0) == 2.132 and bc.get_value("T2_grey_matter", 7.0) == 0.047
+    assert bc.get_value("T1_csf", 0.05) == 3.695
+    with pytest.raises(ValueError):
+        bc.get_value("T1_csf", 0.064)                                             # not measured there: no silent nearest
+    for name, field, key in (("T1_grey_matter", 7.0, "rooney2007"), ("T2_grey_matter", 7.0, "cox2010"), ("T1_csf", 0.05, "oreilly2022")):
+        alt = [a for a in bc.get_constant(name)["alternatives"] if a["field_T"] == field]
+        assert len(alt) == 1 and alt[0]["source_key"] == key and alt[0]["location"]
 
 
 def test_whole_tissue_white_matter_is_not_the_three_pool_decomposition():

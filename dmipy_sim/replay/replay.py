@@ -1245,8 +1245,9 @@ class ReplayPack:
         h.update(np.ascontiguousarray(P["ew"], np.float64).tobytes())        # the weights with every tissue knob applied
         h.update(np.ascontiguousarray(self.substrate_frame).tobytes())
         rf = waveform.rf.refocus_time if waveform.rf else None
+        gate = None if getattr(waveform, "gate", None) is None else np.asarray(waveform.gate, np.float32).tobytes()
         h.update(repr((float(P["norm"]), P["B0"], tuple(np.round(np.asarray(P["b0_dir"], float), 12)), P["chi_iso"],
-                       P["chi_aniso"], rf, method, None if keep is None else tuple(keep),
+                       P["chi_aniso"], rf, gate, method, None if keep is None else tuple(keep),
                        tuple(np.round(np.asarray(P["voxel"], float), 12)))).encode())
         return root / (h.hexdigest() + ".npz")
 
@@ -1367,7 +1368,8 @@ class ReplayPack:
             K_new = min(2 * K_new, int(self.K))
         if path_series is not None:
             series, names, Kp, bits = path_series
-            a, pm = susc_path_encode_series(series, names, K=Kp, bits=bits, dt=_dt_f)
+            a, pm = susc_path_encode_series(series, names, K=Kp, bits=bits, dt=_dt_f,
+                                            max_refocus_pulses=self.meta["compression"]["channels"]["susceptibility_path"].get("max_refocus_pulses"))
             pk.arrays.update(a)
             pk.meta["compression"]["channels"]["susceptibility_path"] = pm
             g = dict(ch.get("susceptibility_grid", {})); g.update(arrays_in_pack=False, replay_route="path")
@@ -1670,22 +1672,35 @@ class ReplayPack:
         A = np.einsum("ab,wbc,cd->wad", F.T, A, F)
         return a, A
 
-    def _field_harmonics(self, field, tol=1e-8, l_cap=48):
+    def _field_harmonics(self, field, tol=1e-8, l_cap=64):
         """The harmonics of ``exp(i (a_w + u^T A_w u))`` over the sphere per walker, ``(n_w, (L'+1)^2)``, by a product
         quadrature exact to the band ``L'`` chosen from the phase amplitude: orders are added until the energy in
-        the last one is below ``tol`` of the total."""
+        the last one is below ``tol`` of the total (``4 pi`` per walker, the phase having unit modulus). A phase
+        whose band lies past ``l_cap`` is refused: the expansion is not the route for it, a replay per pose is."""
         from . import so3
         a, A = field
         amp = float(np.abs(np.linalg.eigvalsh(A)).max()) if A.size else 0.0
         Lp = int(np.ceil(2.0 * amp)) + 4
+        if Lp > l_cap:
+            raise ValueError(
+                f"the scanner's field sweeps {amp:.1f} radians of phase on this pack, so its pose response reaches "
+                f"order ~{Lp}, beyond the cap of {l_cap}. That is a real cost, not a setting: the expansion is "
+                f"worth building to share one walk over many poses, and at this sharpness a direct replay per pose "
+                f"(orientation=R) is the exact route for it.")
+        n_w = a.shape[0]
         while True:
             dirs, wq = so3.sphere_quadrature(Lp + 2, 2 * Lp + 2)
-            q = np.einsum("qa,wab,qb->wq", dirs, A, dirs)                     # (n_w, n_q)
-            f = np.exp(1j * (a[:, None] + q))
             Y = so3.real_sh(Lp, dirs, full=True)                               # (n_q, (Lp+1)^2)
-            F = (f * wq[None, :]) @ Y                                           # (n_w, (Lp+1)^2)
+            Yw = Y * wq[:, None]
+            F = np.empty((n_w, Y.shape[1]), np.complex128)
+            step = max(1, int(2.5e8 / (16 * dirs.shape[0])))                   # walkers per ~256 MB of phase
+            for lo in range(0, n_w, step):
+                sl = slice(lo, min(lo + step, n_w))
+                q = np.einsum("qa,wab,qb->wq", dirs, A[sl], dirs)              # (n_c, n_q)
+                f = np.exp(1j * (a[sl, None] + q))
+                F[sl] = (f.real @ Yw) + 1j * (f.imag @ Yw)                     # real products
             top = so3.sh_block(Lp, True)
-            if (np.abs(F[:, top]) ** 2).sum(1).max() <= tol * (np.abs(F) ** 2).sum(1).max() or Lp >= l_cap:
+            if (np.abs(F[:, top]) ** 2).sum(1).max() <= tol * 4.0 * np.pi or Lp + 4 > l_cap:
                 return F, Lp
             Lp += 4
 
