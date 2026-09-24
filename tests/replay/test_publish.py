@@ -37,10 +37,28 @@ def _manifest(hub):
     return json.load(open(os.path.join(hub.root, "manifest.json")))
 
 
+def _hub_module(monkeypatch):
+    """The ``huggingface_hub`` module, or a stub of the two names the load path reads (``hf_hub_download`` and the
+    not-found errors) when the optional dependency is not installed, so the path is tested without it."""
+    import sys
+    import types
+    try:
+        import huggingface_hub
+    except ImportError:
+        huggingface_hub = types.ModuleType("huggingface_hub"); errors = types.ModuleType("huggingface_hub.errors")
+        for name in ("EntryNotFoundError", "RepositoryNotFoundError", "RevisionNotFoundError", "HfHubHTTPError"):
+            setattr(errors, name, type(name, (Exception,), {}))
+        huggingface_hub.errors = errors; huggingface_hub.hf_hub_download = None
+        monkeypatch.setitem(sys.modules, "huggingface_hub", huggingface_hub)
+        monkeypatch.setitem(sys.modules, "huggingface_hub.errors", errors)
+    return huggingface_hub
+
+
 def _serve_from(hub, monkeypatch):
     """``hf_hub_download`` reading the fake hub's directory, so ``ReplayPack.load("hf://...")`` runs without the network."""
-    import huggingface_hub
-    from huggingface_hub.errors import EntryNotFoundError
+    huggingface_hub = _hub_module(monkeypatch)
+    import huggingface_hub.errors
+    EntryNotFoundError = huggingface_hub.errors.EntryNotFoundError
 
     def fake_download(repo_id, filename, *, repo_type=None, **kw):
         assert repo_id == REPO and repo_type == "dataset"
@@ -170,8 +188,7 @@ def test_parse_uri():
 
 
 def test_a_local_load_never_touches_the_hub(pack, tmp_path, monkeypatch):
-    import huggingface_hub
-    monkeypatch.setattr(huggingface_hub, "hf_hub_download", lambda *a, **k: pytest.fail("the hub was asked for a local file"))
+    monkeypatch.setattr(_hub_module(monkeypatch), "hf_hub_download", lambda *a, **k: pytest.fail("the hub was asked for a local file"))
     p = tmp_path / "cyl.rpk"
     pack.save(str(p))
     assert ReplayPack.load(str(p)).digest == pack.digest and ReplayPack.load(p).source == str(p)

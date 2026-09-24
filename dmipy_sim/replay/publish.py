@@ -228,7 +228,10 @@ def _publish_file(local, meta, repo, *, path, hub, message):
 def fetch(uri):
     """``hf://owner/name/path.rpk`` -> the file's local cache path, its sha256 checked against the dataset's
     manifest when the manifest has a row for it (a mismatch raises). Refuses a URI that is not a ``.rpk``."""
-    from huggingface_hub import hf_hub_download
+    try:
+        from huggingface_hub import hf_hub_download
+    except ImportError as e:
+        raise ImportError(f"loading {uri} needs huggingface_hub: pip install \"dmipy-sim[bank]\"") from e
     repo, path = parse_uri(uri)
     if not path.endswith(".rpk"):
         raise ValueError(f"{uri}: ReplayPack.load takes a pack (.rpk); the manifest and the card are not packs")
