@@ -18,6 +18,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from .so3 import lmax_of
+
 _C00 = 1.0 / (2.0 * np.sqrt(np.pi))          # the l = 0 coefficient of a unit-integral density
 
 
@@ -25,13 +27,6 @@ def _block(l):
     """First index of the order-``l`` block in the compact even-order layout."""
     M = l // 2
     return M * (2 * M - 1) if M > 0 else 0
-
-
-def _lmax_of(n):
-    l = int(round((-3 + np.sqrt(1 + 8 * n)) / 2))
-    if (l + 1) * (l + 2) // 2 != n or l % 2:
-        raise ValueError(f"{n} coefficients is not an even-order compact SH array ((l+1)(l+2)/2 for even l)")
-    return l
 
 
 @dataclass(frozen=True)
@@ -46,7 +41,7 @@ class FOD:
         """Coefficients already in the required basis. Refuses one that is not a unit-integral density unless
         ``normalize`` says to scale it (a CSD output's integral is the apparent fibre density)."""
         c = np.asarray(coeffs, np.float64).reshape(-1)
-        lmax = _lmax_of(c.size)
+        lmax = lmax_of(c.size)
         if c[0] <= 0:
             raise ValueError(f"the l = 0 coefficient is {c[0]:.3g}: not a density (negative or zero integral)")
         if normalize:
@@ -68,7 +63,7 @@ class FOD:
           ``s_m = (-1)^m`` for ``m > 0`` and ``+1`` otherwise.
         """
         c_in = np.asarray(coeffs, np.float64).reshape(-1)
-        lmax = _lmax_of(c_in.size)
+        lmax = lmax_of(c_in.size)
         c = c_in.copy()
         if basis == "tournier07":
             if legacy:

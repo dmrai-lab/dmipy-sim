@@ -22,11 +22,8 @@ _UM = 1e-6
 
 
 def _sha(path):
-    h = hashlib.sha256()
-    with open(path, "rb") as fh:
-        for chunk in iter(lambda: fh.read(1 << 20), b""):
-            h.update(chunk)
-    return h.hexdigest()
+    from ..fill.hub import sha256_of
+    return sha256_of(path)
 
 
 def wm_pools(field_T=3.0, *, myelin_chi_iso=None, myelin_chi_aniso=None, D_myelin=0.0):
@@ -500,8 +497,5 @@ def _strands_spec(centerlines, R, lo, hi, *, boundary, g_ratio, field_T, rho2, i
 
 
 def _version():
-    try:
-        from importlib.metadata import version
-        return version("dmipy-sim")
-    except Exception:
-        return "dev"
+    from ..run import package_version
+    return package_version()

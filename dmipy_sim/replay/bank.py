@@ -887,6 +887,14 @@ _PATH_CHANNELS = ("iso_local", "iso_P_xx", "iso_P_yy", "iso_P_zz", "iso_P_xy", "
                   "aniso_G_xx", "aniso_G_yy", "aniso_G_zz", "aniso_G_xy", "aniso_G_xz", "aniso_G_yz")
 
 
+def held_voxels(cert):
+    """The rows of a voxel certificate ``(n_v, n_pools, 3)`` (walkers, floor, err per pool) a shard certifies: walkers
+    in the voxel and a floor measured for at least one pool. A row with walkers but no floor is a stray, a walker
+    seeded on a block's face and binned into the neighbour's voxel."""
+    c = np.asarray(cert, np.float64)
+    return (c[:, :, 0].sum(1) > 0) & np.isfinite(c[:, :, 1]).any(1)
+
+
 def grid_basis_of(arrays, grid_meta):
     """The pack's stored field basis as :func:`~dmipy_sim.fields.susceptibility_field.assemble_field` reads it."""
     return {"iso_local": np.asarray(arrays["susc_grid_iso_local"], np.float64),
@@ -1081,7 +1089,7 @@ def merge_packs(packs, *, id, out_path=None, overlap="refuse", envelope=None, de
                     out[:, pools.index(p_)] = c_[:, j_]
                 return out
             cert = np.concatenate([aligned(pk, own) for pk, own in zip(pks, pools_of)])
-            held = cert[:, :, 0].sum(1) > 0                                   # a voxel a shard put walkers in
+            held = held_voxels(cert)
             key = np.ravel_multi_index(tuple(ijk[held].T), tuple(Grid.from_meta(pv0).shape))
             uk, cnt = np.unique(key, return_counts=True)
             if (cnt > 1).any() and overlap == "refuse":

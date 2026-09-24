@@ -408,9 +408,8 @@ class Consolidator:
             return out
         ijk = np.concatenate([c[0] for c in self.certs]); cert = np.concatenate([aligned(c[1], c[2]) for c in self.certs])
         keys_all = np.ravel_multi_index(tuple(ijk.T), tuple(self.grid.shape))
-        # a shard certifies a voxel where it measured a floor; a row with walkers but no floor is a stray (a walker
-        # seeded on the block's face and binned into the neighbour's voxel)
-        held = (cert[:, :, 0].sum(1) > 0) & np.isfinite(cert[:, :, 1]).any(1)
+        from ..replay.bank import held_voxels
+        held = held_voxels(cert)
         rep = self.repaired
         if rep:                                                # a repaired voxel's row is the repair's
             first = sum(len(c_[0]) for c_ in self.certs[:rep["first_shard"]])
@@ -498,8 +497,10 @@ class Consolidator:
 
 
 def _shard_name(b, shards, pass_):
-    p = f"block-{b:04d}.p{pass_}.rpk"
-    return p if p in shards else f"block-{b:04d}.rpk"
+    """The shard file of block ``b``: its pass file when the pass wrote one, else the whole block's."""
+    from .claims import shard_name
+    p = shard_name(b, {"pass": pass_}) + ".rpk"
+    return p if p in shards else shard_name(b, {}) + ".rpk"
 
 
 def consolidate(shards, out_dir, *, blocks, id, pass_=1, repo=None, upload=None, cap_bytes=1e9, resume=False):

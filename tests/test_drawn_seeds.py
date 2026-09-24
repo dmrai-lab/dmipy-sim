@@ -9,17 +9,8 @@ from dmipy_sim.phantom import Grid
 from dmipy_sim.spec import DrawnSeeds, StratifiedByVoxel, disco_spec, draw_seeds, walk_spec
 
 
-@pytest.fixture(scope="module")
-def spec_grid(tmp_path_factory):
-    tmp = tmp_path_factory.mktemp("drawn")
-    cls_ = [np.array([[x, 0, -12e-6], [x, 0.5e-6, 0], [x, 0, 12e-6]]) + 10e-6 for x in (-5e-6, 0, 5e-6)]
-    tck, dia = str(tmp / "t.tck"), str(tmp / "d.txt")
-    write_tck(tck, cls_, coordinate_unit_m=25e-6); np.savetxt(dia, np.array([2 * r for r in (1.5e-6, 1.0e-6, 2.0e-6)]) / 1e-3)
-    return disco_spec(tck, dia, side_m=20e-6), Grid(shape=(2, 2, 2), voxel_size_m=(10e-6,) * 3, origin_m=(5e-6,) * 3)
-
-
 def test_a_walk_from_drawn_seeds_is_the_walk_from_the_seeding(spec_grid):
-    spec, grid = spec_grid
+    spec, grid, _ = spec_grid
     want = np.zeros(grid.shape, np.int64); want[0] = 6
     seeding = StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want})
     drawn = draw_seeds(spec, seeding, 11)
@@ -34,7 +25,7 @@ def test_a_walk_from_drawn_seeds_is_the_walk_from_the_seeding(spec_grid):
 
 
 def test_drawn_seeds_are_checked(spec_grid):
-    spec, grid = spec_grid
+    spec, grid, _ = spec_grid
     with pytest.raises(ValueError, match="different pools"):
         DrawnSeeds(positions={"extra": np.zeros((2, 3))}, weights={"intra": np.ones(2)}, grid=grid, seed=0)
     with pytest.raises(ValueError, match="positions must be"):
@@ -47,7 +38,7 @@ def test_a_walk_context_is_kept_across_walks(spec_grid):
     """A walk with a `WalkContext` equals the walk without one; the same context serves a second walk with another
     seeding; a context of another spec, or one given beside `field_far`, is refused."""
     from dmipy_sim.spec import WalkContext
-    spec, grid = spec_grid
+    spec, grid, _ = spec_grid
     want = np.zeros(grid.shape, np.int64); want[0] = 5
     seeding = StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want})
     kw = dict(T_max=8e-4, dt_save=2e-4, require_gpu=False, field=False)
@@ -71,7 +62,7 @@ def test_a_pool_the_seeding_wants_nowhere_is_not_walked(spec_grid, tmp_path):
     the union; a pool wanted somewhere that no draw lands in, or a seeding with nothing in it, is refused."""
     from dmipy_sim.replay.bank import build_replay_pack, merge_packs, voxel_fidelity_volumes
     from dmipy_sim.spec import SpecError
-    spec, grid = spec_grid
+    spec, grid, _ = spec_grid
     want = np.zeros(grid.shape, np.int64); want[0] = 6
     none = np.zeros(grid.shape, np.int64)
     kw = dict(T_max=8e-4, dt_save=2e-4, require_gpu=False, field=False)

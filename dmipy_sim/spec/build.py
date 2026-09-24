@@ -8,7 +8,11 @@ a packed cell is ``periodic`` in the plane and ``open`` along the axis, its obje
 with per-instance arrays; the walk's diffusivity is the driver's (``Pool.D`` null) unless the geometry
 carries per-pool diffusivities.
 """
+import hashlib
+
 import numpy as np
+
+from ..compartments import POOL_IDS
 
 from ..geometry.packing import periodic_min_gap
 from .substrate import (SubstrateSpec, Domain, Frame, Pool, Susceptibility, Surface, Wall, Directional, Sided,
@@ -237,7 +241,7 @@ def _spec_without_frame(geometry, *, id=None, provenance=None, surface_dir=None)
         inner = Wall("axolemma", Surface("swept_polyline", centerline=cl.tolist(), radius=g.r_in), 1, 2)
         outer = Wall("sheath", Surface("swept_polyline", centerline=cl.tolist(), radius=g.r_out), 2, 0)
         lo = (cl.min(0) - MARGIN * g.r_out).tolist(); hi = (cl.max(0) + MARGIN * g.r_out).tolist()
-        seeded = {"intra": 1, "myelin": 2, "extra": 0}[g.pool]
+        seeded = POOL_IDS[g.pool]
         return SubstrateSpec(sid, Domain(lo, hi, ["open"] * 3), pools, [inner, outer], Seeding([seeded]),
                              Validity(min(g.r_in, g.r_out - g.r_in), _tiers([inner, outer], pools),
                                       thinnest_shell=g.r_out - g.r_in),
@@ -271,12 +275,8 @@ def _spec_without_frame(geometry, *, id=None, provenance=None, surface_dir=None)
 
 
 def _sha256(path):
-    import hashlib
-    h = hashlib.sha256()
-    with open(path, "rb") as fh:
-        for chunk in iter(lambda: fh.read(1 << 20), b""):
-            h.update(chunk)
-    return h.hexdigest()
+    from ..fill.hub import sha256_of
+    return sha256_of(path)
 
 
 def surface_cache_dir():
