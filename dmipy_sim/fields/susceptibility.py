@@ -26,7 +26,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
+import jax
 import jax.numpy as jnp
+
+from .susceptibility_field import _as_voxel_size, dipole_field, myelin_susceptibility_tensor
+from ..replay.so3 import rotation_of
 
 from ..constants import GAMMA  # noqa: F401  (re-exported convenience)
 
@@ -145,7 +149,7 @@ class MyelinSusceptibility:
         axis = axis / np.linalg.norm(axis)
         b0 = np.asarray(b0_dir, float); b0 = b0 / np.linalg.norm(b0)
         theta = float(np.arccos(np.clip(abs(np.dot(axis, b0)), 0.0, 1.0)))
-        b0_perp = _axis_to_z_rotation(axis) @ b0
+        b0_perp = rotation_of(axis).T @ b0                      # the axis to +z
         alpha = float(np.arctan2(b0_perp[1], b0_perp[0]))
         return cls(centers=centers, inner_radii=inner, outer_radii=outer, L=L,
                    delta_chi_a=delta_chi_a, B0=B0, theta=theta, alpha=alpha, R=None,
@@ -169,7 +173,7 @@ class MyelinSusceptibility:
         wrap = bool(self.periodic)
 
         def delta_bz(r):
-            r_perp = r if R is None else R @ r
+            r_perp = r if R is None else jnp.matmul(R, r, precision=jax.lax.Precision.HIGHEST)   # no TF32 on a position
             x, y = r_perp[0], r_perp[1]
             if wrap:
                 x = ((x + 0.5 * Lf) % Lf) - 0.5 * Lf
@@ -187,117 +191,6 @@ class MyelinSusceptibility:
 # =============================================================================== #
 # Arbitrary 3-D distribution on a grid (the mesh route)
 # =============================================================================== #
-def _unit(v, axis=-1, eps=1e-30):
-    v = np.asarray(v, float)
-    n = np.linalg.norm(v, axis=axis, keepdims=True)
-    return v / np.maximum(n, eps)
-
-
-def _as_voxel_size(voxel_size, ndim=3):
-    vs = np.atleast_1d(np.asarray(voxel_size, float))
-    if vs.size == 1:
-        vs = np.repeat(vs, ndim)
-    if vs.size != ndim:
-        raise ValueError(f"voxel_size must be a scalar or length-{ndim}, got {vs}")
-    return vs
-
-
-def _khat(shape, voxel_size):
-    """Unit wave-vector component grids ``khat_i`` (zero at DC) and the DC mask."""
-    vs = _as_voxel_size(voxel_size, len(shape))
-    ks = [2.0 * np.pi * np.fft.fftfreq(n, d=d) for n, d in zip(shape, vs)]
-    K = np.meshgrid(*ks, indexing="ij")
-    k2 = sum(k ** 2 for k in K)
-    dc = k2 == 0.0
-    inv = np.where(dc, 0.0, 1.0 / np.sqrt(np.where(dc, 1.0, k2)))
-    khat = np.stack([k * inv for k in K], axis=0)
-    return khat, dc
-
-
-def myelin_susceptibility_tensor(myelin_mask, radial_dir, chi_iso=0.0, chi_aniso=0.0):
-    """Per-voxel symmetric χ tensor ``χ = χ_iso·I + χ_aniso·(n n^T − I/3)`` in the mask.
-
-    ``myelin_mask`` (Nx,Ny,Nz) fraction in [0,1]; ``radial_dir`` (Nx,Ny,Nz,3) local
-    membrane-normal (re-normalised).  Returns ``chi6`` (Nx,Ny,Nz,6): xx,yy,zz,xy,xz,yz.
-    """
-    m = np.asarray(myelin_mask, float)
-    n = _unit(np.asarray(radial_dir, float), axis=-1)
-    chi6 = np.zeros(m.shape + (6,), float)
-    for c, (i, j) in enumerate(_SYM6):
-        term = 0.0
-        if chi_aniso != 0.0:
-            term = term + chi_aniso * (n[..., i] * n[..., j] - (1.0 / 3.0 if i == j else 0.0))
-        if chi_iso != 0.0 and i == j:
-            term = term + chi_iso
-        chi6[..., c] = m * term
-    return chi6
-
-
-def dipole_field(chi6, voxel_size, b0_dir, B0=1.0):
-    """Off-resonance field ``ΔBz(r)`` (T) of a χ-tensor grid (one forward + inverse FFT).
-
-    Lorentz-sphere-corrected k-space dipole (Salomir 2003; Marques & Bowtell 2005;
-    Wharton & Bowtell 2012 for the anisotropic tensor):
-
-        ΔB(k)/B0 = (1/3) H·χ(k)·H − (H·k̂)(k̂·χ(k)·H) ,
-
-    with the k=0 term zeroed (Lorentz-sphere / zero-mean reference).  ``chi6`` is the
-    symmetric tensor per voxel (see :func:`myelin_susceptibility_tensor`); ``voxel_size``
-    m; ``b0_dir`` the main-field direction in the grid frame; ``B0`` tesla.
-    """
-    chi6 = np.asarray(chi6, float)
-    shape = chi6.shape[:3]
-    H = _unit(np.asarray(b0_dir, float).ravel())
-    khat, dc = _khat(shape, voxel_size)
-    chik = np.stack([np.fft.fftn(chi6[..., c]) for c in range(6)], axis=0)
-
-    def full(t6):
-        M = [[None] * 3 for _ in range(3)]
-        for c, (i, j) in enumerate(_SYM6):
-            M[i][j] = t6[c]
-            M[j][i] = t6[c]
-        return M
-
-    C = full(chik)
-    chiH = [sum(C[i][j] * H[j] for j in range(3)) for i in range(3)]
-    HchiH = sum(H[i] * chiH[i] for i in range(3))
-    khat_chiH = sum(khat[i] * chiH[i] for i in range(3))
-    Hkhat = sum(H[i] * khat[i] for i in range(3))
-    kernel = (1.0 / 3.0) * HchiH - Hkhat * khat_chiH
-    kernel[dc] = 0.0
-    return np.real(np.fft.ifftn(kernel)) * float(B0)
-
-
-def radial_from_sdf(sdf, voxel_size):
-    """Local radial (membrane-normal) unit field ``n = grad(sdf)/|grad(sdf)|``."""
-    vs = _as_voxel_size(np.asarray(voxel_size, float), 3)
-    g = np.gradient(np.asarray(sdf, float), *vs, edge_order=2)
-    return _unit(np.stack(g, axis=-1), axis=-1)
-
-
-def sample_grid(grid, positions, origin, voxel_size, periodic=False, order=1):
-    """Host (scipy) trilinear sample of a field grid at continuous positions.
-
-    ``origin`` is the world coordinate of the corner of voxel ``(0,0,0)`` (voxel centre
-    at ``origin + 0.5*voxel_size``).  Used for analysis/tests; the Bloch walk uses the
-    JAX sampler in :meth:`GridSusceptibility.delta_bz_fn`.
-    """
-    from scipy.ndimage import map_coordinates
-
-    pos = np.asarray(positions, float)
-    lead = pos.shape[:-1]
-    vs = _as_voxel_size(voxel_size, 3)
-    org = np.asarray(origin, float).ravel()
-    idx = (pos.reshape(-1, 3) - org) / vs - 0.5
-    if isinstance(periodic, bool):
-        periodic = (periodic, periodic, periodic)
-    coords = np.empty((3, idx.shape[0]), float)
-    for a in range(3):
-        coords[a] = np.mod(idx[:, a], grid.shape[a]) if periodic[a] else idx[:, a]
-    mode = "grid-wrap" if any(periodic) else "nearest"
-    return map_coordinates(grid, coords, order=order, mode=mode).reshape(lead)
-
-
 @dataclass
 class GridSusceptibility:
     """Off-resonance field of an arbitrary χ distribution sampled from a solved grid.
@@ -346,8 +239,3 @@ class GridSusceptibility:
 
         return delta_bz
 
-
-def _axis_to_z_rotation(axis):
-    """Rotation mapping unit ``axis`` -> +z: :func:`dmipy_sim.geometry.base._rotation_to_z`."""
-    from ..geometry.base import _rotation_to_z
-    return _rotation_to_z(axis)

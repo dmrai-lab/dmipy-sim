@@ -20,11 +20,10 @@ from pathlib import Path
 import numpy as np
 
 from ..phantom.grid import Grid
-from ..constants import GAMMA
+from ..constants import GAMMA, GAMMA_BAR
 from ..phantom.substrates import substrate_from_meta, _echo_time
 from .so3 import n_sh_coeffs
 
-GAMMA_BAR = GAMMA / (2.0 * np.pi)
 
 __all__ = ["ReplayPhantom", "read_rph", "write_rph", "Grid", "SUBSTRATE_KINDS", "SCALAR_REGISTRY", "RPH_SCHEMA_VERSION"]
 

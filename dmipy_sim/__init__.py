@@ -40,9 +40,8 @@ from .geometry import (FreeDiffusion, Box1D, Sphere, Cylinder, MyelinatedCylinde
 from .geometry.curved_cylinder import CurvedCylinder, CurvedMyelinatedCylinder, PackedCurvedCylinders
 from .geometry.sphere_union import SphereUnion
 from .geometry.mesh import Mesh, load_ply
-from .fields.susceptibility import (SusceptibilitySources, MyelinSusceptibility,
-                             GridSusceptibility, dipole_field,
-                             myelin_susceptibility_tensor, radial_from_sdf, sample_grid)
+from .fields.susceptibility import SusceptibilitySources, MyelinSusceptibility, GridSusceptibility
+from .fields.susceptibility_field import dipole_field, myelin_susceptibility_tensor, radial_from_sdf, sample_grid
 from .geometry import mesh_shapes
 from .constants import GAMMA
 from .acquisition.noise import add_rician_noise, add_rician_noise_batch, add_nc_chi_noise, estimate_sigma
