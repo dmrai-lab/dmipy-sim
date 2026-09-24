@@ -110,3 +110,52 @@ def test_an_impact_on_a_closed_mesh_never_ends_outside(request, name, start_kind
         lines = "\n".join(f"      {lab:16} {n}/{k} outside, worst {d * 1e6:.3f} um" for lab, d, n, k in leaked)
         pytest.fail(f"{name} {start_kind} {direction}: impacts ended outside the mesh:\n{lines}")
     assert not any(far.any() for _, _, far in rows), f"{name} {start_kind} {direction}: a reflection added distance"
+
+
+def _periodic_tube(R=4e-6, L=12e-6, nt=32, nz=24):
+    """An open tube along z whose ends are the periodic faces of the box: the triangles at each end are
+    replicated as ghosts across the seam, so a walker crossing z = L meets the tube's own wall on the far side."""
+    th = np.linspace(0, 2 * np.pi, nt, endpoint=False); zs = np.linspace(0, L, nz)
+    V = np.array([[R * np.cos(t), R * np.sin(t), z] for z in zs for t in th])
+    F = []
+    for iz in range(nz - 1):
+        for j in range(nt):
+            a = iz * nt + j; b = iz * nt + (j + 1) % nt; c = (iz + 1) * nt + j; d = (iz + 1) * nt + (j + 1) % nt
+            F.append([a, b, d]); F.append([a, d, c])
+    mesh = Mesh(V, np.array(F), periodic=(False, False, True), voxel_min=[-6e-6, -6e-6, 0.0], voxel_max=[6e-6, 6e-6, L],
+                feature_radius=R)
+    return mesh, R, L
+
+
+def test_a_walker_crossing_the_periodic_seam_keeps_to_its_tube():
+    """The rows the closed bodies cannot give: a walker just inside the +z face of the box, at the tube's axis,
+    halfway out, and a nudge and an epsilon inside its wall, fired across the seam along z, across it and at the
+    wall at 45 and 89 degrees, along the wall, and radially, for a tenth of a step, half a cell and the rule's
+    step. Wrapped back into the box, every impact is still inside the tube and moved no further than it stepped;
+    the ghost triangles across the seam are what makes that hold."""
+    mesh, R, L = _periodic_tube()
+    fire = jax.jit(jax.vmap(lambda p, s: mesh.interact(p, s).r))
+    nudge, eps = float(mesh._NUDGE), float(mesh._EPS)
+    cases = []
+    for zname, z in (("eps", L - eps), ("nudge", L - nudge), ("1e-3step", L - 1e-3 * STEP), ("half_step", L - 0.5 * STEP)):
+        for rname, rho in (("axis", 0.0), ("half", 0.5 * R), ("wall_nudge", R - nudge), ("wall_eps", R - eps)):
+            start = np.array([rho, 0.0, z])
+            out_n = np.array([1.0, 0.0, 0.0])                                # the wall's outward normal here
+            for dname, d in (("+z", [0, 0, 1.0]), ("-z", [0, 0, -1.0]), ("45_to_wall", [1.0, 0, 1.0]), ("89_to_wall", [1.0, 0, np.tan(np.deg2rad(1))]),
+                             ("along_wall", [0, 1.0, 1.0]), ("radial", [1.0, 0, 0])):
+                d = np.asarray(d, float); d /= np.linalg.norm(d)
+                for lname, dist in (("short", 0.1 * STEP), ("half_cell", 0.5 * mesh.cell_size), ("rule", 0.9 * mesh.cell_size)):
+                    cases.append((f"{zname}/{rname}/{dname}/{lname}", start, d * dist))
+    starts = np.stack([c[1] for c in cases]); steps = np.stack([c[2] for c in cases])
+    r = np.asarray(fire(jnp.asarray(starts, jnp.float32), jnp.asarray(steps, jnp.float32)))
+    # the interaction leaves a crossing walker beyond the face (the walk wraps it afterwards); the tube is the
+    # same at every z, so its radius is the test either side of the seam
+    radial = np.linalg.norm(r[:, :2], axis=1)
+    out = radial > R * (1 + 1e-6)
+    if out.any():
+        rows = "\n".join(f"      {cases[i][0]:36} -> radial {radial[i] / R:.4f} R, z {r[i, 2] * 1e6:.3f} um" for i in np.flatnonzero(out)[:12])
+        pytest.fail(f"{out.sum()}/{len(cases)} impacts across the seam ended outside the tube:\n{rows}")
+    moved = np.linalg.norm(r - starts, axis=1); asked = np.linalg.norm(steps, axis=1)
+    assert not (moved > asked * (1 + 1e-4) + 1e-12).any(), "a reflection at the seam added distance"
+    crossed = (r[:, 2] > L) | (r[:, 2] < 0.0)
+    assert crossed.sum() >= len(cases) // 6, f"only {crossed.sum()} of {len(cases)} impacts crossed the seam: the rows barely reach it"
