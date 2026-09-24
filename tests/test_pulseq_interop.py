@@ -65,13 +65,20 @@ def test_roundtrip_square_incurs_expected_ramp_cost():
     Exported with native_rf=False so this measures the RASTER cost alone. With native RF the excitation of
     a square waveform lands on live gradient and must interrupt it, which adds its own duration -- a real
     and separately-tested cost, but not the one this test is about."""
-    wf = pgse(BVEC, 0.01, 0.04, gradient_strengths=0.05, n_t=200, slew_rate=np.inf)   # explicitly the idealized square waveform
-    with tempfile.TemporaryDirectory() as d:
-        p = os.path.join(d, "sq.seq")
-        to_pulseq(wf, filename=p, native_rf=False)
-        wf2 = from_pulseq(p)
-    rel = abs(_b(wf2) - _b(wf)) / _b(wf)
-    assert rel < 0.05            # bounded edge-ramp cost, not exact
+    def cost(n_t):
+        wf = pgse(BVEC, 0.01, 0.04, gradient_strengths=0.05, n_t=n_t, slew_rate=np.inf)   # explicitly the idealized square waveform
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "sq.seq")
+            to_pulseq(wf, filename=p, native_rf=False)
+            wf2 = from_pulseq(p)
+        return abs(_b(wf2) - _b(wf)) / _b(wf), float(wf.dt) / 0.01
+    # The cost is the raster's: every edge of a lobe becomes a one-sample ramp, so b moves by a few samples' worth
+    # of a lobe and halves when the grid is halved (measured 2.2 dt / delta at 200, 400 and 800 samples;
+    # dmipy-sim#405). A fixed percentage would encode one grid's cost.
+    rel_200, frac_200 = cost(200)
+    rel_400, frac_400 = cost(400)
+    assert rel_200 < 3.0 * frac_200 and rel_400 < 3.0 * frac_400
+    assert rel_200 / rel_400 == pytest.approx(2.0, rel=0.1)
 
 
 def test_from_pulseq_native_file():
