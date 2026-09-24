@@ -25,6 +25,7 @@ import numpy.testing as npt
 import pytest
 
 import dmipy_sim as d
+from dmipy_sim import Compartments, Pool
 from dmipy_sim import simulate
 from dmipy_sim.geometry import pack_cylinders, pack_spheres
 
@@ -78,7 +79,7 @@ def _mesh_rho():
     m = trimesh.creation.icosphere(subdivisions=2, radius=R)
     return d.Mesh(np.asarray(m.vertices, np.float64),
                   np.asarray(m.faces, np.int32), feature_radius=_MESH_FEATURE,
-                  compartments={"intra": {"surface_relaxivity_t2": RHO}})
+                  compartments=Compartments(intra=Pool(surface_relaxivity_t2=RHO)))
 
 
 # ── (base geom, surface-relaxivity geom or None, n_walkers, waveform) ─────────

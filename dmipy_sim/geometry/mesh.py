@@ -307,7 +307,7 @@ class Mesh(Geometry):
         the default). A dict ``{"intra_to_extra": κ_out, "extra_to_intra": κ_in}``
         makes it direction-dependent — note asymmetric κ is a *pump* (net flux, not
         passive equilibrium). None → impermeable.
-    compartments : Compartments or {"intra": Pool | dict, "extra": Pool | dict}, optional
+    compartments : Compartments, optional
         Per-compartment properties of the ``intra`` (inside a cell, id 1) and ``extra`` (id 0)
         pools, e.g. ``Compartments(intra=Pool(T2=0.05, D=1.7e-9), extra=Pool(T2=0.08, D=1.7e-9))``.
         ``surface_relaxivity_t2`` is a wall effect seen from that pool's side: a spin hitting the

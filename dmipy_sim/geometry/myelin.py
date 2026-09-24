@@ -200,7 +200,7 @@ class MyelinatedCylinder(Geometry):
         Permeability at inner boundary (m/s). Default None (impermeable).
     kappa_outer : float, optional
         Permeability at outer boundary (m/s). Default None (impermeable).
-    compartments : Compartments or {name: Pool | dict}, optional
+    compartments : Compartments, optional
         Per-pool ``T2`` (s) and, optionally, ``D`` / ``water_fraction`` for ``extra``, ``intra``
         and ``myelin``: ``Compartments(intra=Pool(T2=0.05), myelin=Pool(T2=0.01), extra=Pool(T2=0.08))``.
         A pool's ``D`` or ``water_fraction`` must agree with the ``D_*`` / ``water_fractions``
@@ -517,7 +517,7 @@ class PackedMyelinatedCylinders(Geometry):
     D_intra, D_myelin, D_extra : float or array-like (N_actual,)
         Diffusivities in m^2/s.  Scalar is broadcast to all cylinders.  ``D_myelin``
         defaults to 0 (stuck myelin water; set > 0 to let it diffuse).
-    compartments : Compartments or {name: Pool | dict}, optional
+    compartments : Compartments, optional
         Per-pool ``T2`` (s) shared by all cylinders (``Compartments(intra=Pool(T2=...), ...)``); a
         pool's ``D`` must agree with the scalar ``D_*`` kwarg when both are given.
     T2_intra, T2_myelin, T2_extra : array-like (N_actual,) or None

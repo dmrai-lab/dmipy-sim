@@ -19,7 +19,8 @@ signals. Any refactor/backend change is fine as long as the suite stays green.
 
 Progress and diagnostics go to the `dmipy_sim.*` loggers (`logging.getLogger("dmipy_sim")`; silent unless you configure
 logging), never `print`. A run that outlives ten seconds also leaves a record on disk (`run.py`, below): where it is, what it uses, how it ended. Warning categories: a physics-regime warning is a `UserWarning`, an environment / GPU / OOM warning a
-`RuntimeWarning`, a retired spelling a `DeprecationWarning`.
+`RuntimeWarning`. There is no `DeprecationWarning`: a representation has one spelling, and any other is refused
+(`TypeError` / `ValueError` naming the one spelling), never accepted with a warning.
 
 Install: `pip install -e ".[dev]"` (add `[mesh]` for PLY loading, `[cuda12]` for GPU).
 Large Monte-Carlo runs belong on GPU; use `float32` on GPU. If a CUDA jaxlib is
@@ -169,9 +170,10 @@ Packed geometries (`classify_returns_object_id`) return 1..N for the object a wa
 extra=Pool(T2=…)))` stores `(T2_extra, T2_intra)`). `PackedMyelinatedCylinders` carries an encoded id (`k+1` lumen of
 axon k, `N_max+k+1` its sheath) and maps it with `geometry.pool_of(...)` at the API boundary.
 **Per-compartment properties have one spelling**: `compartments=Compartments(extra=Pool(T2=…, D=…), intra=Pool(…), myelin=Pool(…))`
-(`dmipy_sim.compartments`; `pool_id(name)` is the only name→id map; `Substrate.compartments` builds one). `Mesh(intra=, extra=)`
-dicts and the `T2_intra/T2_myelin/T2_extra` kwargs are the previous spelling and warn `DeprecationWarning`; per-axon arrays on
-`PackedMyelinatedCylinders` stay kwargs because they are per object, not per pool.
+(`dmipy_sim.compartments`; `pool_id(name)` is the only name→id map; `Substrate.compartments` builds one). A pool is a
+`Pool` and `compartments=` is a `Compartments`: a mapping of properties is refused with a `TypeError` naming that spelling,
+and a pool's T2 / T1 have no keyword argument of their own on a geometry; per-axon arrays on `PackedMyelinatedCylinders` stay kwargs
+because they are per object, not per pool.
 
 **Myelinated substrates** (`MyelinatedCylinder`, `PackedMyelinatedCylinders`) are stepped by one
 kernel, `physics.make_myelin_substep`, whose wall physics is

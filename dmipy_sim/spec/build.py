@@ -490,7 +490,7 @@ def _geometry_from_spec(spec):
                     if w.permeability.in_to_out != w.permeability.out_to_in else w.permeability.in_to_out)
         m = Mesh.from_ply(s.file, scale=(s.scale or 1.0), periodic=[b == "periodic" for b in dom.boundary],
                           voxel_min=dom.box_min, voxel_max=dom.box_max, feature_radius=spec.validity.smallest_feature,
-                          permeability=perm, compartments=(Compartments(comps) if comps else None),
+                          permeability=perm, compartments=(Compartments(**comps) if comps else None),
                           pool={1: "intra", 0: "extra"}[spec.seeding.pools[0]],
                           box_reflect=("reflect" in dom.boundary))
         return m
@@ -531,7 +531,7 @@ def _geometry_from_spec(spec):
         if {a.name, b.name} == {"axolemma", "sheath"}:
             inner = spec.wall("axolemma"); outer = spec.wall("sheath")
             pools = {p.name: p for p in spec.pools}
-            comps = Compartments({n: CPool(T2=pools[n].T2, T1=pools[n].T1, water_fraction=pools[n].water_fraction)
+            comps = Compartments(**{n: CPool(T2=pools[n].T2, T1=pools[n].T1, water_fraction=pools[n].water_fraction)
                                   for n in ("extra", "intra", "myelin")
                                   if pools[n].T2 is not None or pools[n].T1 is not None})
             if inner.surface.kind == "swept_polyline":

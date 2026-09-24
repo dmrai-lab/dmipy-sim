@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+from dmipy_sim import Compartments, Pool
 
 D = 2e-9
 EXTRA, INTRA, MYELIN = 0, 1, 2
@@ -132,7 +133,7 @@ def test_permeable_mesh_with_per_compartment_T2_replays_the_fused_engine():
     """Per-compartment T2 on a permeable mesh: the occupancy channel and the T2 array share the id."""
     from dmipy_sim.geometry import mesh_shapes
     V, F = mesh_shapes.icosphere(3e-6, subdivisions=3)
-    m = d.Mesh(V, F, feature_radius=0.5e-6, permeability=2e-5, compartments={"intra": {"T2": 0.03}, "extra": {"T2": 0.3}})
+    m = d.Mesh(V, F, feature_radius=0.5e-6, permeability=2e-5, compartments=Compartments(intra=Pool(T2=0.03), extra=Pool(T2=0.3)))
     wf = d.set_b(d.pgse([[1, 0, 0]], 3e-3, 9e-3, gradient_strengths=0.1, n_t=120, slew_rate=np.inf), 5e8)
     N = 6_000
     s_f = np.asarray(d.simulate(N, D, wf, m, seed=2, engine="fused", require_gpu=False)).ravel()
