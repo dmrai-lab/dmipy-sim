@@ -139,3 +139,76 @@ def test_cost_does_not_scale_with_the_triangle_count_per_point():
     assert growth < 0.5 * (n_hi / n_lo), (
         f"cost grew {growth:.1f}x for a {n_hi/n_lo:.0f}x triangle increase — that is "
         f"brute-force scaling, so the bin index is not doing its job")
+
+
+def _grazing_points(V, F, n_bins=256):
+    """Points whose +z ray grazes the mesh in projection: the xy of every vertex and edge midpoint and of points
+    along projected edges, and the xy-bin boundaries of the grid, each nudged 1e-9 to either side; with the z
+    that puts them inside (z = 0) and outside (above the top). The analytic truth comes with them."""
+    from dmipy_sim.fields.susceptibility_field import _xy_bins
+    xy = [V[:, :2]]
+    E = np.unique(np.sort(np.concatenate([F[:, [0, 1]], F[:, [1, 2]], F[:, [2, 0]]]), axis=1), axis=0)
+    for t in (0.5, 0.25, 0.75):
+        xy.append((1 - t) * V[E[:, 0], :2] + t * V[E[:, 1], :2])
+    xy = np.concatenate(xy)
+    scale = 1.0 / float(np.median(np.linalg.norm(V[F[:, 0]] - V[F[:, 1]], axis=1)))
+    _o, _t, lo, inv = _xy_bins(V[F] * scale, n_bins)
+    k = np.arange(1, n_bins, 37)
+    bx = np.stack([lo[0] + k / inv[0], np.full(k.size, lo[1] + 0.5 * n_bins / inv[1])], 1) / scale
+    by = np.stack([np.full(k.size, lo[0] + 0.5 * n_bins / inv[0]), lo[1] + k / inv[1]], 1) / scale
+    xy = np.concatenate([xy, bx, by])
+    out = []
+    for d in (-1e-9, 0.0, 1e-9):
+        out.append(xy + d)
+    return np.concatenate(out)
+
+
+def test_rays_that_graze_an_edge_in_projection_are_retried_and_decided_right():
+    """The grid path counts crossings of a +z ray; a ray through a projected edge or vertex meets the shared edge of two
+    triangles twice or not at all, so it is re-cast from a jittered origin. Uniform random points never reach that
+    path. On a box every such point has an analytic answer: with z = 0 it is inside wherever its xy is inside the
+    footprint, and above the box it is outside; both must come back right, and the points must actually have been
+    ambiguous on the first cast."""
+    from dmipy_sim.fields.susceptibility_field import _parity_vertical, _xy_bins
+    box = trimesh.creation.box(extents=(1.0, 2.0, 3.0))
+    V = np.asarray(box.vertices, float); F = np.asarray(box.faces, np.int64)
+    xy = _grazing_points(V, F)
+    # The box's outline is where its vertical faces project to edges: a ray there is re-cast from an origin
+    # jittered by a thousandth of an edge, so a point within that of the outline is decided by where the jitter
+    # lands -- at the wall, which is the one place a side is not a property of the point. The rows here are the
+    # grazes INSIDE the footprint: the two face diagonals and the grid's bin boundaries, where the answer is exact.
+    interior = (np.abs(xy[:, 0]) < 0.5 - 0.02) & (np.abs(xy[:, 1]) < 1.0 - 0.02)
+    xy = xy[interior]
+    P = np.concatenate([np.column_stack([xy, np.zeros(len(xy))]), np.column_stack([xy, np.full(len(xy), 2.0)])])
+    truth = np.concatenate([np.ones(len(xy), bool), np.zeros(len(xy), bool)])
+    scale = 1.0 / float(np.median(np.linalg.norm(V[F[:, 0]] - V[F[:, 1]], axis=1)))
+    tri = V[F] * scale
+    offsets, tri_ids, lo, inv = _xy_bins(tri, 256)
+    _ins, ambiguous = _parity_vertical(tri, P * scale, offsets, tri_ids, lo, inv, 256, 1e-9)
+    E = np.unique(np.sort(np.concatenate([F[:, [0, 1]], F[:, [1, 2]], F[:, [2, 0]]]), axis=1), axis=0)
+    A, B = V[E[:, 0], :2], V[E[:, 1], :2]                                    # every projected edge, as a segment
+    keep = np.linalg.norm(B - A, axis=1) > 0                                 # a vertical edge projects to a point
+    A, B = A[keep], B[keep]
+    d = A[None] - P[:, None, :2]; e = B[None] - A[None]
+    t = np.clip(-(d * e).sum(2) / (e * e).sum(2), 0.0, 1.0)
+    on_edge = (np.linalg.norm(d + t[..., None] * e, axis=2).min(1) * scale < 1e-12) & (P[:, 2] == 0.0)   # exactly on an edge, below the top
+    # a ray from the bottom face's diagonal crosses the top face's interior and is not a graze; the top's is
+    assert ambiguous[on_edge].sum() >= 3, "no ray through the top face's projected diagonal was flagged ambiguous: the retry path is not reached"
+    got = mesh_contains_fast(V, F, P)
+    wrong = got != truth
+    assert not wrong.any(), f"{wrong.sum()} of {len(P)} grazing points decided wrong (e.g. {P[wrong][:3]})"
+    with pytest.warns(RuntimeWarning, match="graze"):                       # and an unresolved graze is said, not trusted
+        mesh_contains_fast(V, F, P[ambiguous][:8], max_retries=0)
+
+
+def test_grazing_rays_on_an_icosphere_agree_with_the_solid():
+    """The same construction on a facetted sphere, where the truth is the inscribed solid: at z = 0 a point within
+    0.9 R of the axis is inside every facet, at z = 1.5 R it is outside."""
+    m = trimesh.creation.icosphere(subdivisions=3, radius=1.0)
+    V = np.asarray(m.vertices, float); F = np.asarray(m.faces, np.int64)
+    xy = _grazing_points(V, F)
+    xy = xy[np.linalg.norm(xy, axis=1) < 0.9]
+    P = np.concatenate([np.column_stack([xy, np.zeros(len(xy))]), np.column_stack([xy, np.full(len(xy), 1.5)])])
+    truth = np.concatenate([np.ones(len(xy), bool), np.zeros(len(xy), bool)])
+    got = mesh_contains_fast(V, F, P)
+    assert np.array_equal(got, truth), f"{(got != truth).sum()} of {len(P)} grazing points on the icosphere decided wrong"
