@@ -1639,7 +1639,7 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto"
 
 
 def _build_segmented(m, n_segments, n_seg, run, walk, out_path, *, id, K, temporal_bandwidth_hz, blt_temporal_K, susc_path_K,
-                     fidelity, fidelity_from, envelope, **kw):
+                     fidelity, fidelity_from, envelope, sigma_star=None, **kw):
     """:func:`build_replay_pack` for a walk of ``n_segments`` windows of ``n_seg`` saves: every window built as a
     pack of its own from the walk's arrays of that window (:func:`_window_master`), with segment 0's band, contact
     codec and occupancy form, then assembled -- the windows' tensors under ``s{i}/`` beside the tensors the walk
@@ -1657,7 +1657,7 @@ def _build_segmented(m, n_segments, n_seg, run, walk, out_path, *, id, K, tempor
         w = _window_master(m, i * steps, (i + 1) * steps)
         if i == 0:
             pk = build_replay_pack(w, id=f"{id}", K=K, blt_temporal_K=blt_temporal_K, susc_path_K=susc_path_K, fidelity=fidelity,
-                                   fidelity_from=fidelity_from, envelope=envelope, segment_T=T_seg, _occupancy_runs=crosses, **kw)
+                                   fidelity_from=fidelity_from, envelope=envelope, segment_T=T_seg, _occupancy_runs=crosses, sigma_star=sigma_star, **kw)
             K = int(pk.K)
             pm0 = (pk.meta["compression"].get("channels") or {}).get("susceptibility_path")
             if pm0 is not None:
@@ -1670,7 +1670,7 @@ def _build_segmented(m, n_segments, n_seg, run, walk, out_path, *, id, K, tempor
                 blt_temporal_K = int(c2["K"])
         else:
             pk = build_replay_pack(w, id=f"{id}", K=K, blt_temporal_K=blt_temporal_K, susc_path_K=susc_path_K, fidelity=fidelity,
-                                   fidelity_from=fidelity_from, envelope=envelope, segment_T=T_seg, _occupancy_runs=crosses,
+                                   fidelity_from=fidelity_from, envelope=envelope, segment_T=T_seg, _occupancy_runs=crosses, sigma_star=sigma_star,
                                    voxel_grid=None, **{k_: v_ for k_, v_ in kw.items() if k_ != "voxel_grid"})
         packs.append(pk)
     arrays = dict(packs[0].arrays)
@@ -1695,6 +1695,8 @@ def _build_segmented(m, n_segments, n_seg, run, walk, out_path, *, id, K, tempor
                    err_max=float(max([whole["err_max"]] + tier_err)), floor_max=float(max([whole["floor_max"]] + tier_floor)),
                    certified="measured", positions="measured over the whole walk", tiers="bounded over the segments")
         fid["within_2x_floor"] = bool(fid["err_max"] <= 2.0 * fid["floor_max"])
+    if sigma_star is not None:                                 # the floor-target policy's verdict on the whole
+        fid.update(target_floor=float(sigma_star), meets_target=bool(fid["err_max"] <= sigma_star and fid["floor_max"] <= sigma_star))
     meta = json.loads(json.dumps(packs[0].meta))
     n_t = n_segments * steps + 1
     cm = meta["compression"]
