@@ -16,33 +16,13 @@ from ..constants import GAMMA
 
 
 def length_scales_of(geometry):
-    """The geometry's :class:`~dmipy_sim.geometry.base.LengthScales`.
-
-    Shipped geometries declare them. An object that is not a :class:`Geometry` is read through
-    the legacy attributes (``radius``, ``sphere_radius``, ``length``, ``_radii_np``,
-    ``_inner_radii_np``, ``cell_size``, ``radius_is_mesh_feature``), here and nowhere else.
-    """
+    """The geometry's :class:`~dmipy_sim.geometry.base.LengthScales`: what it declares as ``length_scales``.
+    Every geometry the engine walks declares them; there is no other way to read them."""
     ls = getattr(geometry, 'length_scales', None)
-    if ls is not None:
-        return ls
-    from ..geometry.base import LengthScales
-    R = getattr(geometry, 'radius', None)
-    if R is None:
-        R = getattr(geometry, 'sphere_radius', None)
-    if R is None:
-        R = getattr(geometry, 'length', None)
-    if R is None:
-        radii = getattr(geometry, '_radii_np', None)
-        if radii is not None and len(radii) > 0:
-            R = float(np.min(radii))
-    if R is None:
-        inner = getattr(geometry, '_inner_radii_np', None)
-        if inner is not None and len(inner) > 0 and np.any(inner > 0):
-            R = float(np.min(inner[inner > 0]))
-    cell = getattr(geometry, 'cell_size', None)
-    return LengthScales(min_feature=None if R is None else float(R),
-                        lookup_cell=None if not cell else float(cell),
-                        is_mesh_feature=bool(getattr(geometry, 'radius_is_mesh_feature', False)))
+    if ls is None:
+        raise TypeError(f"{type(geometry).__name__} declares no length_scales; a geometry the engine walks declares "
+                        "them (LengthScales(min_feature=..., lookup_cell=..., is_mesh_feature=...))")
+    return ls
 
 
 def _geometry_radius(geometry):

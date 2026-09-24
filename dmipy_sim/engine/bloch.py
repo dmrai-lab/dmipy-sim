@@ -284,8 +284,8 @@ def simulate_bloch(n_walkers, diffusivity, waveform, geometry, *,
         (geometry-agnostic).  ``'fast'`` seeds the equilibrium occupancy directly (mid-air,
         no walk) -- allowed only when it is provably position-invariant (no gradient, or an
         MR-dark bound pool) with a known S/V, else it warns and falls back to ``'burnin'``.
-        ``'off'`` keeps the legacy all-free start (correct only if you equilibrate yourself,
-        e.g. a burn-in block inside the waveform).
+        ``'off'`` starts every walker in the free pool: the initial condition of an oracle that
+        excites the free pool alone, or of a sequence whose own burn-in block equilibrates it.
     sub_steps : int, optional
         Fine sub-steps per waveform step; pins the count :func:`dmipy_sim.engine.physics.resolve_sub_steps`
         otherwise chooses from the geometry's length scales (the same dispatch the scalar engine
@@ -612,7 +612,7 @@ def _simulate_bloch_mt(n_walkers, diffusivity, waveform, geometry, *,
     elif mode == 'burnin':
         r0, bound_rem0, run_keys, occ_burn, converged = _equilibrate_burnin(
             step_fn, r0, walker_keys, uw, M_init, n_meas, dt, dwell_time)
-    else:  # 'off' -- legacy all-free start
+    else:                                                   # 'off': every walker starts free
         bound_rem0 = jnp.zeros((n_walkers,), dtype=jnp.float32)
         run_keys = walker_keys
 

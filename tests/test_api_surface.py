@@ -174,25 +174,20 @@ def test_length_scales_match_the_geometry_definition():
     assert ls("PackedCurvedCylinders") == LengthScales(min_feature=2e-6, lookup_cell=pk.cell_size)
 
 
-def test_duck_typed_objects_still_read_through_the_legacy_attributes():
-    """An object that is not a Geometry is sized from its legacy attributes, in one place."""
+def test_an_object_without_length_scales_is_refused():
+    """The engine sizes a geometry from what it declares as ``length_scales``; an object without them is refused,
+    not guessed at from its attributes."""
     from dmipy_sim.engine.physics import length_scales_of
 
-    class Slab:
-        length = 3e-6
-
-    class Indexed:
-        radius = 2e-6
-        cell_size = 5e-7
-        radius_is_mesh_feature = True
+    class Declared:
+        length_scales = LengthScales(min_feature=2e-6, lookup_cell=5e-7, is_mesh_feature=True)
 
     class Bare:
-        pass
+        radius = 2e-6
 
-    assert length_scales_of(Slab()) == LengthScales(min_feature=3e-6)
-    assert length_scales_of(Indexed()) == LengthScales(min_feature=2e-6, lookup_cell=5e-7,
-                                                       is_mesh_feature=True)
-    assert length_scales_of(Bare()) == LengthScales()
+    assert length_scales_of(Declared()) == LengthScales(min_feature=2e-6, lookup_cell=5e-7, is_mesh_feature=True)
+    with pytest.raises(TypeError, match="declares no length_scales"):
+        length_scales_of(Bare())
 
 
 # ── the engine reads the protocol, not attribute probes ──────────────────────────────────
@@ -200,9 +195,8 @@ _ENGINE_MODULES = ["engine/core.py", "engine/physics.py", "engine/bloch.py", "en
                    "spec/walk.py"]
 # Probes that remain, and why. Every other property is a declared attribute.
 _ALLOWED_PROBES = {
-    # physics.length_scales_of: the ONE reader of legacy attributes for non-Geometry objects
-    "length_scales", "radius", "sphere_radius", "length", "_radii_np", "_inner_radii_np",
-    "cell_size", "radius_is_mesh_feature",
+    # physics.length_scales_of: the one reader of the declared length scales, which refuses their absence
+    "length_scales",
     # sub-step helpers accept duck-typed objects (tests pass bare classes)
     "permeability", "surface_substep_frac", "reflection_step_fraction",
     # optional methods: not every geometry records a boundary local time / binding / membrane
