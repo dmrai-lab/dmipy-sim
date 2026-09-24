@@ -1233,8 +1233,9 @@ class ReplayPack:
         h.update(np.ascontiguousarray(P["ew"], np.float64).tobytes())        # the weights with every tissue knob applied
         h.update(np.ascontiguousarray(self.substrate_frame).tobytes())
         rf = waveform.rf.refocus_time if waveform.rf else None
+        gate = None if getattr(waveform, "gate", None) is None else np.asarray(waveform.gate, np.float32).tobytes()
         h.update(repr((float(P["norm"]), P["B0"], tuple(np.round(np.asarray(P["b0_dir"], float), 12)), P["chi_iso"],
-                       P["chi_aniso"], rf, method, None if keep is None else tuple(keep),
+                       P["chi_aniso"], rf, gate, method, None if keep is None else tuple(keep),
                        tuple(np.round(np.asarray(P["voxel"], float), 12)))).encode())
         return root / (h.hexdigest() + ".npz")
 

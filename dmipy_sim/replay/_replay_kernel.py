@@ -163,6 +163,8 @@ def field_gate(waveform, n_t, dt_pack, t0=None):
     and zero beyond its echo -- so an acquisition shorter than the walk ends at its echo, and the gate is the one
     ``G_eff`` was folded with. ``(n_t,)``; multiply per-save values by ``dt_pack`` and these weights. ``t0`` reads
     the window of the walk starting there."""
+    if getattr(waveform, "gate", None) is not None:                     # a pathway's own sign (replay.pathways)
+        return gate_weights(np.asarray(waveform.gate, np.float64), float(waveform.dt), n_t, dt_pack, t0=t0)[0]
     t = np.arange(int(waveform.n_t)) * float(waveform.dt)
     return gate_weights(waveform.rf.sign(t), float(waveform.dt), n_t, dt_pack, t0=t0)[0]
 

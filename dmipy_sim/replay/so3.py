@@ -598,6 +598,29 @@ def truncate_coeffs(coeffs, lmax, nmax, keep_lmax, keep_nmax):
     return c[..., idx]
 
 
+def extend_coeffs(coeffs, lmax, nmax, to_lmax, to_nmax):
+    """Place coefficients of one band in a wider one, zeros above: exact when the band was the response's own,
+    since a projection at the band a response needs has nothing above it (the inverse of :func:`truncate_coeffs`)."""
+    c = np.asarray(coeffs)
+    idx = _truncation_index(int(to_lmax), to_nmax, int(lmax), nmax)
+    out = np.zeros(c.shape[:-1] + (len(so3_index(int(to_lmax), to_nmax)),), c.dtype)
+    out[..., idx] = c
+    return out
+
+
+def rebanded(coeffs, lmax, nmax, to_lmax, to_nmax):
+    """Coefficients read at another band: truncated where the target is narrower, zero-extended where it is
+    wider, so that responses projected at their own bands compose at one common band. A band that is narrower
+    in ``l`` and wider in ``n`` (or the reverse) is refused, since neither operation alone reaches it."""
+    wide_l, wide_n = int(to_lmax) >= int(lmax), (nmax is None or (to_nmax is not None and to_nmax >= nmax))
+    if wide_l and wide_n:
+        return extend_coeffs(coeffs, lmax, nmax, to_lmax, to_nmax)
+    if (not wide_l) and (to_nmax is None or (nmax is not None and to_nmax <= nmax)):
+        return truncate_coeffs(coeffs, lmax, nmax, to_lmax, to_nmax)
+    raise ValueError(f"cannot read a ({lmax}, {nmax}) expansion at ({to_lmax}, {to_nmax}): the band is narrower in one "
+                     f"index and wider in the other")
+
+
 def _lmax_of(n_c):
     for l in range(0, 33, 2):
         if n_sh_coeffs(l) == n_c:

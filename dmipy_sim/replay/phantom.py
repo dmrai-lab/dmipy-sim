@@ -766,7 +766,7 @@ class ReplayPhantom:
 
     def replay_train(self, waveform, *, echo=-1, transmit=None, transmit_tolerance=1e-2, off_resonance=None,
                      off_resonance_tolerance=2.0, scanner=None, pose=None, packs=None, proton_density=None,
-                     keep=None, complex_signal=False, jax=None, report=None):
+                     keep=None, complex_signal=False, jax=None, forms=None, report=None):
         """A diffusion-prepared RF train over every voxel, at one echo: ``(voxel_index, S)``.
 
         This is what :mod:`dmipy_sim.replay.pathways` is for. :meth:`replay_bloch` needs one rotation per slot
@@ -781,10 +781,13 @@ class ReplayPhantom:
         its tolerance (:func:`quantise`; ``off_resonance_tolerance`` in hertz), so a smooth map costs one
         state propagation per distinct value and a drifting magnet, uniform in space, costs one.
 
-        The phantom's every signal-bearing substrate must be a pack: a closed form's response to a train is
-        not modelled here, and dropping it would return a signal that looks right and is not.
+        A closed form takes the same pathway sum with its own response to each gate's gradient in place of a
+        pose expansion (:func:`~dmipy_sim.replay.pathways.closed_form_train`): free water under a train is
+        ``exp(-b_gate D)`` per pathway with its bulk relaxation over the waveform, the reading a pack's walkers
+        get for the same gate. An oriented closed form is refused, since its response depends on a pose the
+        distribution does not state.
         """
-        from .pathways import train_response
+        from .pathways import train_response, closed_form_train
         from .replay import _pose_matrix
         from ..spec.tissue import Tissue
 
@@ -814,46 +817,68 @@ class ReplayPhantom:
         if keep is None:
             keep = (int(self.meta["orientation"].get("lmax", 8)), 0)
 
-        trains = {}
+        trains, forms_ = {}, {}
         for i, sub in enumerate(self.substrates):
             if sub["kind"] == "inert":
                 continue
-            if sub["kind"] != "pack":
-                raise ValueError(f"a train replay expands packs over poses, and substrate {i} ({sub.get('name', sub['kind'])!r}) "
-                                 f"is a closed form whose response to an RF train is not modelled; it cannot be "
-                                 f"dropped without misrepresenting the voxel")
-            trains[i] = train_response(loaded[i], waveform, keep=keep,
-                                       tissue=Tissue.from_meta(sub.get("tissue")), scanner=scanner, pose=R_s)
-        if not trains:
-            raise ValueError("a train replay needs at least one pack substrate")
+            if sub["kind"] == "pack":
+                trains[i] = train_response(loaded[i], waveform, keep=keep,
+                                           tissue=Tissue.from_meta(sub.get("tissue")), scanner=scanner, pose=R_s)
+            else:
+                forms_[i] = closed_form_train(self._form(i, sub, forms), waveform)
+        if not trains and not forms_:
+            raise ValueError("the phantom cites no signal-bearing substrate")
 
-        first = next(iter(trains.values()))
-        probe = first.at(1.0, echo=echo)
-        keep_l, keep_n = probe.lmax, probe.nmax
-        vp, F = self.slot_coefficients(keep_l, keep_n)
         sid, frac = self.substrate_id, self.geometric_fraction
-        ids = sid[vp[:, 0], vp[:, 1]].astype(int)
-        weight = frac[vp[:, 0], vp[:, 1]].astype(np.float64) * m0[vp[:, 0], ids]
-        n_meas = probe.coeffs.shape[0]
-
-        # every (substrate, transmit scale, offset) triple has its own coefficients and every slot belongs to
-        # exactly one, so the whole phantom is one gather and one contraction
-        pairs, coeff = {}, []
-        for i, tr in trains.items():
-            for scale in scales:
-                for dwv in offsets:
-                    pairs[(i, float(scale), float(dwv))] = len(coeff)
-                    coeff.append(np.asarray(tr.at(float(scale), echo=echo, dw=float(dwv)).retained(keep_l, keep_n),
-                                            np.complex128))
-        coeff = np.stack(coeff)                                   # (n_classes, n_meas, n_feat)
-        which = np.array([pairs.get((int(i), float(sc), float(dv)), -1)
-                          for i, sc, dv in zip(ids, binned[vp[:, 0]], dw_binned[vp[:, 0]])])
+        n_meas = int(waveform.n_meas)
         S = np.zeros((self.n_voxels, n_meas), np.complex128)
-        (_gather_jax if jax else _gather)(S, vp, F, weight, which, coeff)
+        gates = None
+        if trains:
+            from .so3 import rebanded
+            first = next(iter(trains.values()))
+            probes = {i: tr.at(1.0, echo=echo) for i, tr in trains.items()}
+            # each pack's train is expanded at the band its own response needs (a b = 0 gate reaches order two,
+            # a diffusion preparation higher); the composition reads them all at the widest, zeros above a
+            # narrower one's own band being exact, and no wider than the distribution can use
+            keep_l = min(int(keep[0]), max(pr.lmax for pr in probes.values()))
+            keep_n = max(pr.nmax for pr in probes.values())
+            gates, readouts = first.n_gates, first.readouts
+            vp, F = self.slot_coefficients(keep_l, keep_n)
+            ids = sid[vp[:, 0], vp[:, 1]].astype(int)
+            weight = frac[vp[:, 0], vp[:, 1]].astype(np.float64) * m0[vp[:, 0], ids]
+            # every (substrate, transmit scale, offset) triple has its own coefficients and every slot belongs
+            # to exactly one, so the whole phantom is one gather and one contraction
+            pairs, coeff = {}, []
+            for i, tr in trains.items():
+                for scale in scales:
+                    for dwv in offsets:
+                        pairs[(i, float(scale), float(dwv))] = len(coeff)
+                        resp = tr.at(float(scale), echo=echo, dw=float(dwv))
+                        coeff.append(np.asarray(rebanded(resp.coeffs, resp.lmax, resp.nmax, keep_l, keep_n), np.complex128))
+            coeff = np.stack(coeff)                                   # (n_classes, n_meas, n_feat)
+            which = np.array([pairs.get((int(i), float(sc), float(dv)), -1)
+                              for i, sc, dv in zip(ids, binned[vp[:, 0]], dw_binned[vp[:, 0]])])
+            (_gather_jax if jax else _gather)(S, vp, F, weight, which, coeff)
+        else:
+            pairs, keep_l = {}, None
+        # a closed form has no pose: its slots take its train amplitude at their own transmit scale and offset
+        n_form_pairs = 0
+        for i, cf in forms_.items():
+            if gates is None:
+                gates, readouts = cf.n_gates, cf.readouts
+            v_idx, p_idx = np.nonzero((sid == i) & (frac > 0.0))
+            w = frac[v_idx, p_idx].astype(np.float64) * m0[v_idx, i]
+            key = np.stack([binned[v_idx], dw_binned[v_idx]], axis=1)
+            for sc, dv in np.unique(key, axis=0):
+                m = (key[:, 0] == sc) & (key[:, 1] == dv)
+                amp = cf.at(float(sc), echo=echo, dw=float(dv))
+                np.add.at(S, v_idx[m], w[m][:, None] * amp[None, :])
+                n_form_pairs += 1
 
         if report is not None:
-            report.update(n_scales=len(scales), n_offsets=len(offsets), n_gates=first.n_gates,
-                          lmax=keep_l, n_echoes=len(first.readouts), n_pairs=len(pairs))
+            report.update(n_scales=len(scales), n_offsets=len(offsets), n_gates=gates,
+                          lmax=keep_l, n_echoes=len(readouts), n_pairs=len(pairs) + n_form_pairs,
+                          n_closed_forms=len(forms_))
         ph = self._concomitant_phase(waveform, scanner, echo=echo)
         if ph is not None:
             S = S * np.exp(1j * ph)
