@@ -32,6 +32,8 @@ import warnings
 import numpy as np
 import jax
 import jax.numpy as jnp
+
+from ..replay.trajectories import _rf_increment
 from ..geometry._boundary import bind_probability
 
 from ..constants import GAMMA
@@ -44,22 +46,6 @@ __all__ = ["simulate_bloch"]
 
 
 # ── per-step RF rotation (Rodrigues about the in-plane B1 axis) ──────────────────
-def _rf_increment_jax(M, flip, ax):
-    """Rotate ``M`` (n_meas, 3) by ``flip`` rad about the in-plane axis ``ax`` rad.
-
-    Rotation axis ``u = (cos ax, sin ax, 0)`` (ax = 0 -> +x, ax = pi/2 -> +y).
-    ``flip = 0`` is the identity, so a step with no pulse leaves M untouched.
-    """
-    ux, uy = jnp.cos(ax), jnp.sin(ax)
-    c, s = jnp.cos(flip), jnp.sin(flip)
-    omc = 1.0 - c
-    Mx, My, Mz = M[:, 0], M[:, 1], M[:, 2]
-    Mx2 = (c + ux * ux * omc) * Mx + (ux * uy * omc) * My + (uy * s) * Mz
-    My2 = (ux * uy * omc) * Mx + (c + uy * uy * omc) * My + (-ux * s) * Mz
-    Mz2 = (-uy * s) * Mx + (ux * s) * My + c * Mz
-    return jnp.stack([Mx2, My2, Mz2], axis=1)
-
-
 def _sequence_inputs(waveform, geometry):
     """The sequence behind ``waveform`` (a scheme wraps one as ``.waveform``), its PHYSICAL gradient in the
     substrate frame, its step, and the echo samples to read (``None`` when the readout is the last sample)."""
@@ -136,7 +122,7 @@ def _make_bloch_step_fn(geometry, D, dt, T2, T1, M0, off_resonance_hz, rho=0.0,
         (a per-walker macroscopic phase that dephases the transverse residual while leaving
         the longitudinally-stored magnetisation untouched), and an optional susceptibility
         field — are added here at the dt grid."""
-        M = _rf_increment_jax(M, rf_dflip, rf_axis)         # RF rotation (0 -> identity)
+        M = _rf_increment(M.T, rf_dflip, rf_axis, xp=jnp).T   # RF rotation (0 -> identity)
         dphi = phi_grad + global_carrier + rf_carrier + crush_rate * uc     # (n_meas,)
         if phi_field is not None:
             dphi = dphi + phi_field                         # accumulated per sub-step by the caller
