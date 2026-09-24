@@ -3,7 +3,7 @@
 Tests:
   1. Zero-padding: 3-cylinder cell with N_max=3 vs N_max=8 produces same VFs.
   2. Volume fractions: intra + myelin + extra ≈ 1.0.
-  3. Periodic BCs: walker near x=+L/2 can wrap to x≈-L/2 side.
+  3. Periodic BCs: a step across the cell's edge or corner is wrapped, exactly.
   4. Different N_max with same N_actual=3 produces identical signals (JIT shape
      is the same from JAX's perspective).
   5. Dummy cylinders (r=0) never receive any walkers.
@@ -93,42 +93,45 @@ def test_volume_fractions_sum_to_one():
 # Test 3: periodic BCs — walker initialised near x=+L/2 wraps to x≈-L/2
 # ---------------------------------------------------------------------------
 
-@pytest.mark.skip(reason="simulate() on PackedMyelinatedCylinders (multi-compartment myelin) is not in the open release; geometry construction is tested above")
-def test_periodic_boundary_wrap():
-    """Extra-axonal walker near cell edge is wrapped after stepping."""
+def test_the_cell_wraps_a_step_across_its_edge_and_its_corner():
+    """The fused kernel carries the cell's periodic wrap. Two extra-axonal walkers given the SAME step key draw the
+    same displacement, so their positions after one step differ by their starting separation under the minimum
+    image: a walker at the +x edge of the cell and its partner at the -x edge, at the edge and one ulp, one nudge
+    and one step inside it, across the edge and across a corner, all land in [-L/2, L/2) at that separation. No
+    wall is in reach (the axon sits 15 um away), so the wrap is the only thing the step does."""
+    from dmipy_sim.engine.physics import make_packed_myelin_traj_step_fn
     L = 40e-6
-    inner_radii = np.array([3e-6])
-    g_ratios    = np.array([0.7])
-    centers     = np.array([[0.0, 0.0]])
-
-    geom = PackedMyelinatedCylinders(
-        inner_radii=inner_radii,
-        g_ratios=g_ratios,
-        centers=centers,
-        cell_size=L,
-        N_max=4,
-        D_intra=2e-9,
-        D_myelin=0.1e-9,
-        D_extra=2e-9,
-    )
-
-    # Single gradient measurement along x
-    wf = set_b(pgse(np.array([[1., 0., 0.]]), 2e-3, 6e-3, gradient_strengths=1.0, n_t=200),
-               np.array([1e9]))
-
-    _, final_pos = simulate(500, waveform=wf, geometry=geom, seed=SEED,
-                            return_positions=True)
-
-    # All final positions must be within [-L/2, L/2) in x and y
-    half = L / 2.0
-    x = final_pos[:, 0]
-    y = final_pos[:, 1]
-    assert np.all(x >= -half - 1e-8) and np.all(x <= half + 1e-8), (
-        f"x positions outside [-L/2, L/2]: min={x.min()*1e6:.2f}µm, "
-        f"max={x.max()*1e6:.2f}µm, L/2={half*1e6:.2f}µm")
-    assert np.all(y >= -half - 1e-8) and np.all(y <= half + 1e-8), (
-        f"y positions outside [-L/2, L/2]: min={y.min()*1e6:.2f}µm, "
-        f"max={y.max()*1e6:.2f}µm")
+    geom = PackedMyelinatedCylinders(inner_radii=np.array([3e-6]), g_ratios=np.array([0.7]), centers=np.array([[0.0, 0.0]]),
+                                     cell_size=L, N_max=4, D_intra=2e-9, D_myelin=0.1e-9, D_extra=2e-9)
+    dt = 1e-4                                                     # a 1.1 um extra-axonal step
+    step = jax.jit(lambda carry: make_packed_myelin_traj_step_fn(geom, dt)(carry, None)[0])
+    half = np.float32(L / 2)
+    ulp = float(np.spacing(half)); nudge = 1e-4 * 3e-6 / 0.7
+    insets = [0.0, ulp, nudge, np.sqrt(6 * 2e-9 * dt)]
+    y_edge = 15e-6                                                # away from the axon; also an edge row for y
+    pairs = []
+    for ins in insets:
+        for name, a, b in (("edge", [half - ins, y_edge, 0.0], [-half + ins, y_edge, 0.0]),
+                           ("corner", [half - ins, half - ins, 0.0], [-half + ins, -half + ins, 0.0]),
+                           ("y_edge", [y_edge, half - ins, 0.0], [y_edge, -half + ins, 0.0])):
+            pairs.append((f"{name}/inset={ins:.2e}", np.array(a, np.float32), np.array(b, np.float32)))
+    A = jnp.asarray(np.stack([p[1] for p in pairs])); B = jnp.asarray(np.stack([p[2] for p in pairs]))
+    n = A.shape[0]
+    keys = jax.random.split(jax.random.PRNGKey(SEED), n)
+    comp = jnp.zeros(n, jnp.int32)                                # extra-axonal
+    zero = jnp.zeros(n, jnp.float32)
+    ra = np.asarray(jax.vmap(step)((A, keys, zero, comp))[0])
+    rb = np.asarray(jax.vmap(step)((B, keys, zero, comp))[0])    # the same keys: the same displacement
+    for r in (ra, rb):
+        assert (r[:, :2] >= -half).all() and (r[:, :2] < half).all(), "a wrapped position is outside the cell"
+    crossed = (np.sign(ra[:, 0]) != np.sign(np.asarray(A)[:, 0])) | (np.sign(rb[:, 0]) != np.sign(np.asarray(B)[:, 0]))
+    assert crossed.sum() >= n // 4, f"only {crossed.sum()} of {n} pairs crossed the edge: the wrap was barely exercised"
+    sep = np.asarray(A - B, np.float64); sep -= L * np.round(sep / L)             # the starts' minimum-image separation
+    got = ra.astype(np.float64) - rb.astype(np.float64); got -= L * np.round(got / L)
+    bad = np.abs(got - sep).max(1) > 4 * ulp
+    if bad.any():
+        rows = "\n".join(f"      {pairs[i][0]:28} separation {sep[i] * 1e6} um -> {got[i] * 1e6} um" for i in np.flatnonzero(bad)[:8])
+        pytest.fail(f"{bad.sum()}/{n} pairs did not keep their separation through the wrap:\n{rows}")
 
 
 # ---------------------------------------------------------------------------
