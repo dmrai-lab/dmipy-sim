@@ -336,6 +336,18 @@ class ReplayPack:
             out.save(out_path)
         return out
 
+    def end_state(self):
+        """``(r_end, pool)``: where every walker is at the walk's last save and the pool it is in
+        (:func:`~dmipy_sim.replay.continuation.end_state`)."""
+        from .continuation import end_state
+        return end_state(self)
+
+    def extend(self, T_add, *, seed, out_path=None, require_gpu=None, field=True, envelope=None, device="auto"):
+        """This pack lengthened by ``T_add`` seconds of new segments: the walk continued from its end on its own
+        substrate with a fresh seed and appended (:func:`~dmipy_sim.replay.continuation.extend_pack`)."""
+        from .continuation import extend_pack
+        return extend_pack(self, T_add, seed=seed, out_path=out_path, require_gpu=require_gpu, field=field, envelope=envelope, device=device)
+
     def _decoded_channels(self):
         """The per-save channels of the whole walk decoded window by window and joined on the shared saves:
         ``comp`` / ``bound`` tracks ``(n_w, n_t)``, the contact increments ``ell`` ``(n_w, n_t)`` and the path

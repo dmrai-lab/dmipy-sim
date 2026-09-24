@@ -149,3 +149,34 @@ def test_the_bound_over_segments():
 def test_a_pack_without_the_table_is_refused():
     with pytest.raises(ValueError, match="walk_params.segments"):
         d.replay.ReplayPack({"pos_x": np.zeros((2, 4), np.float32)}, {"walk_params": {"n_t": 3}}).n_segments
+
+
+def test_a_walk_continues_from_its_end_and_appends_as_segments():
+    """A 10 ms pack extended by 10 ms with a fresh seed has the layout of a 20 ms walk stored in two segments, its
+    second segment starts exactly where the first ended, its table records both walks, its certificate is the bound
+    over the segments, and it replays a 20 ms acquisition as the one-walk pack does within the floor."""
+    from dmipy_sim.replay.continuation import append_segments, continue_walk, end_state
+    g = d.Cylinder(2e-6, (0, 0, 1))
+    kw = dict(license="x", citation="x", K=16, blt_temporal_K=16, segment_T=0.01)
+    two = build_replay_pack(d.simulate_trajectories(2000, 2e-9, g, 0.02, 5e-4, seed=0, require_gpu=False), id="t/two", **kw)
+    one = build_replay_pack(d.simulate_trajectories(2000, 2e-9, g, 0.01, 5e-4, seed=0, require_gpu=False), id="t/one", **kw)
+    r_end, pool = end_state(one)
+    assert pool is not None and np.all(pool == 1)                                   # every walker in the lumen
+    cont = continue_walk(one, 0.01, seed=7, require_gpu=False)
+    npt.assert_array_equal(np.asarray(cont.positions[:, 0, :], np.float32), r_end.astype(np.float32))
+    ext = append_segments(one, cont, seed=7)
+    assert sorted(ext.arrays) == sorted(two.arrays) and ext.n_t == two.n_t == 41 and ext.n_segments == 2
+    assert ext.segments["walks"] == [dict(first=0, last=0, seed=0), dict(first=1, last=1, seed=7)]
+    npt.assert_array_equal(ext.segment(1).r0, r_end.astype(np.float32))
+    assert ext.fidelity["certified"] == "bounded" and len(ext.fidelity["segments"]) == 2
+    assert ext.meta["provenance"]["continuations"][0]["seed"] == 7
+    seq = _seq()
+    tis = Tissue(T2=[0.05, 0.02], rho=1e-5)
+    a, b = two.replay(seq, tissue=tis), ext.replay(seq, tissue=tis)
+    assert np.abs(a - b).max() < 2.0 * max(two.fidelity["floor_max"], ext.fidelity["floor_max"])
+    with pytest.raises(ValueError, match="whole number"):
+        continue_walk(one, 0.015, seed=1, require_gpu=False)
+    longer = ext.extend(0.02, seed=9, require_gpu=False)
+    assert longer.n_segments == 4 and longer.n_t == 81 and longer.segments["walks"][-1] == dict(first=2, last=3, seed=9)
+    long_seq = d.pgse([[1, 0, 0]], 0.005, 0.02, gradient_strengths=0.2, n_t=61, slew_rate=np.inf)   # 30 ms: three windows
+    assert 0.0 < float(longer.replay(long_seq)[0]) < 1.0
