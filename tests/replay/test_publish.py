@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 
+import numpy as np
 import pytest
 
 import dmipy_sim as d
@@ -88,7 +89,7 @@ def test_publish_puts_the_file_the_manifest_row_and_the_card_up_in_one_commit(pa
     assert row["floor_max"] == pack.fidelity["floor_max"] and row["err_max"] == pack.fidelity["err_max"]
     assert row["within_2x_floor"] is True and row["license"] == "CC-BY-4.0" and row["citation"] == "a test pack"
     assert row["substrate"] == "analytic/cylinder" and len(row["commit"]) == 40
-    assert "segments" not in row
+    assert row["segments"]["n"] == 1                                      # every pack declares its table (RPK.md 4.3)
     assert man["substrate"]["id"] == "analytic/cylinder" and [p["name"] for p in man["substrate"]["pools"]] == ["extra", "intra"]
     readme = open(os.path.join(hub.root, "README.md")).read()
     assert readme.startswith("---\nlicense: cc-by-4.0\npretty_name: packs\n---\n")
