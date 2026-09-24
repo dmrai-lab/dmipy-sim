@@ -67,7 +67,7 @@ jobs:
           # slow / GPU-only Monte Carlo tests (mark heavy tests with @pytest.mark.gpu
           # or @pytest.mark.slow as they are identified).
           case "${{ matrix.group }}" in
-            dirs) PATHS="tests/geometry tests/physics tests/validation" ;;
+            dirs) PATHS="tests/geometry tests/physics tests/validation tests/replay" ;;
             a-l)  PATHS=$(ls tests/test_[a-l]*.py) ;;
             m-z)  PATHS=$(ls tests/test_[m-z]*.py) ;;
           esac
