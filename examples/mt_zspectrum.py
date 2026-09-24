@@ -4,7 +4,7 @@
 Runs :func:`dmipy_sim.emergent_z_spectrum` (a real forward vector-Bloch Monte-Carlo walk:
 spins bind to the wall, the short-T2 bound pool saturates off-resonance) over a set of
 saturation offsets on ONE substrate, and overlays the analytic two-pool Bloch--McConnell
-Z-spectrum (:func:`dmipy_sim.mt.mt_z_spectrum`) it is validated against. No super-Lorentzian
+Z-spectrum (:func:`dmipy_sim.engine.mt.mt_z_spectrum`) it is validated against. No super-Lorentzian
 lineshape is assumed on either side — the MT dip emerges from real short-T2b spins.
 
 Heavy Monte-Carlo -> GPU-recommended.  Reduce ``N_WALKERS`` / ``OFFSETS`` for a quick look,

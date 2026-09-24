@@ -211,7 +211,7 @@ def test_viz_helpers_that_touch_geometry_still_resolve(tmp_path):
 
         walk_paths (an MC walk, run purely to have something to plot)   12.2 s
         the matplotlib calls                                            ~20   s
-        seed_in_cell + _split_cells -- the parts that touch geometry     0.44 s
+        seed_in_cell + split_cells -- the parts that touch geometry     0.44 s
 
     Matplotlib is not physics and rasterising it asserts nothing about the simulator. What
     IS worth protecting is that these helpers still reach into the geometry modules: they
@@ -224,11 +224,11 @@ def test_viz_helpers_that_touch_geometry_still_resolve(tmp_path):
     physics (#91).
     """
     from dmipy_sim import seed_in_cell
-    from dmipy_sim.viz.viz import _split_cells
+    from dmipy_sim.viz import split_cells
 
     V, F = _icosphere(2)
     g = Mesh(V, F)
-    cell = _split_cells(g)[0]                        # geometry split
+    cell = split_cells(g)[0]                        # geometry split
     pts = np.asarray(seed_in_cell(cell, 8, seed=0))   # the deferred import lives in here
     assert pts.shape == (8, 3)
     # and the points it returns must actually be inside the cell it was given

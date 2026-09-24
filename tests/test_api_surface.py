@@ -61,6 +61,17 @@ def test_submodule_imports(name):
     importlib.import_module(name)
 
 
+def test_a_module_has_one_path_and_a_package_exports_only_public_names():
+    """A module is reached at its own path: no top-level alias of a subpackage's module, and a package's
+    namespace carries its module's public names, never its private ones."""
+    import dmipy_sim.replay as replay_pkg
+    import dmipy_sim.viz as viz_pkg
+    assert not hasattr(dmipy_sim, "bank") and not hasattr(dmipy_sim, "mt")
+    for pkg, allowed in ((replay_pkg, {"_replay_kernel"}), (viz_pkg, set())):     # a submodule is an attribute of its package
+        leaked = {k for k in vars(pkg) if k.startswith("_") and not k.startswith("__")} - allowed
+        assert not leaked, f"{pkg.__name__} carries private names of its module: {sorted(leaked)}"
+
+
 # ── every exported geometry, built small ─────────────────────────────────────────────────
 # Built inside the test, never at collection: a geometry holds device buffers.
 def _all_geometries():

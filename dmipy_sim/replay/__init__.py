@@ -1,6 +1,4 @@
-"""``dmipy_sim.replay``: the package, re-exporting :mod:`dmipy_sim.replay.replay` so the
-flat name keeps its public surface."""
+"""``dmipy_sim.replay``: the package, exporting the public surface of :mod:`dmipy_sim.replay.replay` and
+:class:`~dmipy_sim.replay.fod.FOD`."""
 from .replay import *          # noqa: F401,F403
-from . import replay as _m     # noqa: E402
-globals().update({k: v for k, v in vars(_m).items() if k.startswith("_") and not k.startswith("__")})
-from .fod import FOD                    # noqa: E402,F401
+from .fod import FOD           # noqa: E402,F401

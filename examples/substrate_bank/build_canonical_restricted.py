@@ -2,7 +2,7 @@
 
 One ``.rpk`` per ``(shape, diameter, D0)``: walk an impermeable ``Cylinder(radius, axis=z)`` or
 ``Sphere(radius)`` to ``T_max``, recording C0 (gradient) + C1 (bulk T2/T1) + C2 (surface local-time)
-channels, then freeze via :func:`dmipy_sim.bank.build_replay_pack`. Diameter is fixed at walk time
+channels, then freeze via :func:`dmipy_sim.replay.bank.build_replay_pack`. Diameter is fixed at walk time
 (the substrate); orientation (cylinder) and the acquisition are replay knobs. These are the reference
 substrates behind dmipy-fit's ``C5MonteCarloReplayCylinder`` / ``S5MonteCarloReplaySphere``.
 
