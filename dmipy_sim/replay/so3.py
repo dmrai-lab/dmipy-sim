@@ -626,7 +626,7 @@ def lmax_of(n_c):
     n_c = int(n_c)
     l = int(round((-3 + np.sqrt(1 + 8 * n_c)) / 2))
     if l % 2 or n_sh_coeffs(l) != n_c:
-        raise ValueError(f"{n_c} coefficients is not an even-order real spherical-harmonic block ((l + 1)(l + 2) / 2 for even l)")
+        raise ValueError(f"{n_c} coefficients is not an even-order compact real spherical-harmonic block ((l + 1)(l + 2) / 2 for even l)")
     return l
 
 
