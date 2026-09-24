@@ -180,3 +180,20 @@ def test_a_walk_continues_from_its_end_and_appends_as_segments():
     assert longer.n_segments == 4 and longer.n_t == 81 and longer.segments["walks"][-1] == dict(first=2, last=3, seed=9)
     long_seq = d.pgse([[1, 0, 0]], 0.005, 0.02, gradient_strengths=0.2, n_t=61, slew_rate=np.inf)   # 30 ms: three windows
     assert 0.0 < float(longer.replay(long_seq)[0]) < 1.0
+
+
+def test_shards_of_a_segmented_walk_merge(packs, tmp_path):
+    """Two shards of the same substrate, each stored in two segments with a field path channel, merge into one pack
+    of two segments whose every segment's scale table carries a block axis and whose replay is the weight-combined shards'."""
+    from dmipy_sim.replay.bank import merge_packs
+    m, one, two = packs
+    m2 = dict(m); rng = np.random.default_rng(3)
+    m2["traj"] = np.asarray(m["traj"]) + rng.normal(0, 1e-7, np.asarray(m["traj"]).shape); m2["seed"] = 5
+    env = dict(_lean_env(), B0_list=[3.0], theta_deg=[0])
+    kw = dict(license="CC-BY-4.0", citation="test", envelope=env, blt_dtype=np.float32, susc_path_bits=16, K=19, blt_temporal_K=19, susc_path_K=21, segment_T=0.01)
+    b = build_replay_pack(m2, id="t/b", **kw)
+    merged = merge_packs([two, b], id="t/merged")
+    assert merged.n_segments == 2 and merged.n_walkers == 2 * N_W and merged.arrays["s1/susc_path_scale"].shape[0] == 2
+    seq = _seq()
+    Sa, Sb = two.replay(seq, tissue=TIS, scanner=3.0, complex_signal=True), b.replay(seq, tissue=TIS, scanner=3.0, complex_signal=True)
+    npt.assert_allclose(merged.replay(seq, tissue=TIS, scanner=3.0, complex_signal=True), (Sa + Sb) / 2.0, atol=1e-6)

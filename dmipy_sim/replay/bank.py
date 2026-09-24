@@ -903,10 +903,10 @@ def merge_packs(packs, *, id, out_path=None, overlap="refuse", envelope=None, de
         same("array names", lambda pk: sorted(pk.arrays))
         n = [int(pk.meta["walk_params"]["n_walkers"]) for pk in pks]
         arrays = {}
-        scale_keys = [k for k in pks[0].arrays if k.endswith("_band_scale") or k == "susc_path_scale"]
+        scale_keys = [k for k in pks[0].arrays if k.endswith("_band_scale") or k.split("/")[-1] == "susc_path_scale"]   # every segment's
         # a scale table with a block axis: the band scales carry one from the start ((n_blocks, ...)); the path channel's
         # (n_ch, K) gains one here
-        table = lambda pk, k: (np.asarray(pk.arrays[k])[None] if (k == "susc_path_scale" and np.asarray(pk.arrays[k]).ndim == 2) else np.asarray(pk.arrays[k]))
+        table = lambda pk, k: (np.asarray(pk.arrays[k])[None] if (k.split("/")[-1] == "susc_path_scale" and np.asarray(pk.arrays[k]).ndim == 2) else np.asarray(pk.arrays[k]))
         if scale_keys:                                                   # per-pack scale tables: stack the shards' and give
             blocks, off = [], 0                                          # every walker its block
             for pk, m in zip(pks, n):
@@ -919,7 +919,17 @@ def merge_packs(packs, *, id, out_path=None, overlap="refuse", envelope=None, de
         for k in pks[0].arrays:
             if k in ("voxel_ijk", "voxel_certificate", "band_block") or k in scale_keys:
                 continue
+            if k.startswith("susc_grid_"):                                    # the substrate's field grid: one table, every shard's
+                for pk in pks[1:]:
+                    if not np.array_equal(np.asarray(pk.arrays[k]), np.asarray(pks[0].arrays[k])):
+                        raise ValueError(f"the shards differ in the field grid {k!r}")
+                arrays[k] = np.asarray(pks[0].arrays[k])
+                continue
             parts = [np.asarray(pk.arrays[k]) for pk in pks]
+            base = k.split("/")[-1]
+            if base.endswith(("_rle_vals", "_rle_lens")):                      # a stream (RPK.md 9.4 rule 7): the shards'
+                arrays[k] = np.concatenate(parts)                             # records follow each other in walker order
+                continue
             if not all(a.shape[0] == m and a.shape[1:] == parts[0].shape[1:] for a, m in zip(parts, n)):
                 raise ValueError(f"array {k!r} is not walker-leading in every shard; it cannot be concatenated")
             arrays[k] = np.concatenate(parts)
