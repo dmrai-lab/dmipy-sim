@@ -66,21 +66,18 @@ def test_mesh_takes_compartments_and_the_dict_spelling_is_the_same_walk():
     m = d.Mesh(V, F, feature_radius=1e-6, compartments=comps)
     assert m.compartments == comps and m._T2_comp == (0.2, 0.02) and m._D_comp == (1e-9, 1e-9)
     assert m.surface_relaxivity_t2 == 2e-6
-    with pytest.warns(DeprecationWarning, match="compartments="):
-        old = d.Mesh(V, F, feature_radius=1e-6, intra={"T2": 0.02, "D": 1e-9, "surface_relaxivity_t2": 2e-6},
-                     extra={"T2": 0.2, "D": 1e-9})
-    assert old.compartments == comps
+    as_dicts = d.Mesh(V, F, feature_radius=1e-6, compartments={"intra": {"T2": 0.02, "D": 1e-9, "surface_relaxivity_t2": 2e-6},
+                                                                "extra": {"T2": 0.2, "D": 1e-9}})
+    assert as_dicts.compartments == comps
     s_new = d.simulate(300, None, _wf(), m, seed=0, require_gpu=False, engine="fused")
-    s_old = d.simulate(300, None, _wf(), old, seed=0, require_gpu=False, engine="fused")
-    np.testing.assert_array_equal(np.asarray(s_new), np.asarray(s_old))
+    s_dicts = d.simulate(300, None, _wf(), as_dicts, seed=0, require_gpu=False, engine="fused")
+    np.testing.assert_array_equal(np.asarray(s_new), np.asarray(s_dicts))
     with pytest.raises(ValueError, match="no myelin pool"):
         d.Mesh(V, F, compartments={"myelin": {"T2": 0.01}})
-    with pytest.raises(ValueError, match="not both"):
-        with pytest.warns(DeprecationWarning):
-            d.Mesh(V, F, compartments=comps, intra={"T2": 0.02})
-    with pytest.raises(NotImplementedError):
-        with pytest.warns(DeprecationWarning):
-            d.Mesh(V, F, intra={"kurtosis": 1.0})
+    with pytest.raises(TypeError):                                     # the pools have one spelling
+        d.Mesh(V, F, intra={"T2": 0.02})
+    with pytest.raises(KeyError, match="kurtosis"):
+        d.Mesh(V, F, compartments={"intra": {"kurtosis": 1.0}})
 
 
 def test_myelinated_cylinder_takes_compartments():
@@ -88,15 +85,14 @@ def test_myelinated_cylinder_takes_compartments():
     comps = Compartments(intra=Pool(T2=0.05), myelin=Pool(T2=0.01), extra=Pool(T2=0.08))
     g = d.MyelinatedCylinder(2e-6, 3e-6, compartments=comps, **kw)
     assert (g.T2_extra, g.T2_intra, g.T2_myelin) == (0.08, 0.05, 0.01) and g.compartments == comps
-    with pytest.warns(DeprecationWarning, match="compartments="):
-        old = d.MyelinatedCylinder(2e-6, 3e-6, T2_intra=0.05, T2_myelin=0.01, T2_extra=0.08, **kw)
-    assert (old.T2_extra, old.T2_intra, old.T2_myelin) == (0.08, 0.05, 0.01)
+    as_dicts = d.MyelinatedCylinder(2e-6, 3e-6, compartments={"intra": {"T2": 0.05}, "myelin": {"T2": 0.01},
+                                                             "extra": {"T2": 0.08}}, **kw)
+    assert (as_dicts.T2_extra, as_dicts.T2_intra, as_dicts.T2_myelin) == (0.08, 0.05, 0.01)
     s_new = d.simulate(300, None, _wf(), g, seed=0, require_gpu=False, engine="fused")
-    s_old = d.simulate(300, None, _wf(), old, seed=0, require_gpu=False, engine="fused")
-    np.testing.assert_array_equal(np.asarray(s_new), np.asarray(s_old))
-    with pytest.raises(ValueError, match="both"):
-        with pytest.warns(DeprecationWarning):
-            d.MyelinatedCylinder(2e-6, 3e-6, compartments=comps, T2_intra=0.05, **kw)
+    s_dicts = d.simulate(300, None, _wf(), as_dicts, seed=0, require_gpu=False, engine="fused")
+    np.testing.assert_array_equal(np.asarray(s_new), np.asarray(s_dicts))
+    with pytest.raises(TypeError):                                     # a pool's T2 has one spelling
+        d.MyelinatedCylinder(2e-6, 3e-6, T2_intra=0.05, **kw)
     with pytest.raises(ValueError, match="given twice"):
         d.MyelinatedCylinder(2e-6, 3e-6, compartments=Compartments(intra=Pool(D=1e-9)), **kw)
     # the Substrate's pools drive a geometry directly
@@ -113,16 +109,13 @@ def test_packed_myelinated_cylinders_take_compartments_and_keep_per_axon_arrays(
     _, _, c = d.pack_myelinated_cylinders([1e-6] * 3, 0.7, None, cell_size=L, seed=0)
     comps = Compartments(intra=Pool(T2=0.05), myelin=Pool(T2=0.01), extra=Pool(T2=0.08))
     pm = d.PackedMyelinatedCylinders([1e-6] * 3, 0.7, c, L, N_max=4, compartments=comps)
-    with pytest.warns(DeprecationWarning, match="compartments="):
-        old = d.PackedMyelinatedCylinders([1e-6] * 3, 0.7, c, L, N_max=4, T2_intra=0.05, T2_myelin=0.01,
-                                          T2_extra=0.08)
-    for a in ("_T2_intra_jax", "_T2_myelin_jax", "_T2_extra_jax"):
-        np.testing.assert_array_equal(np.asarray(getattr(pm, a)), np.asarray(getattr(old, a)))
-    import warnings
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")                          # per-axon arrays are not the old spelling
-        arr = d.PackedMyelinatedCylinders([1e-6] * 3, 0.7, c, L, N_max=4, T2_intra=[0.05, 0.06, 0.07],
-                                          compartments=Compartments(myelin=Pool(T2=0.01)))
+    with pytest.raises(ValueError, match="per cylinder"):            # a pool-wide T2 is a pool property
+        d.PackedMyelinatedCylinders([1e-6] * 3, 0.7, c, L, N_max=4, T2_intra=0.05, T2_myelin=0.01, T2_extra=0.08)
+    with pytest.raises(ValueError, match="both"):
+        d.PackedMyelinatedCylinders([1e-6] * 3, 0.7, c, L, N_max=4, T2_intra=[0.05, 0.06, 0.07],
+                                    compartments=Compartments(intra=Pool(T2=0.05)))
+    arr = d.PackedMyelinatedCylinders([1e-6] * 3, 0.7, c, L, N_max=4, T2_intra=[0.05, 0.06, 0.07],
+                                      compartments=Compartments(myelin=Pool(T2=0.01)))
     assert np.asarray(arr._T2_intra_jax)[:3].tolist() == pytest.approx([0.05, 0.06, 0.07])
     with pytest.raises(ValueError, match="both"):
         d.PackedMyelinatedCylinders([1e-6] * 3, 0.7, c, L, N_max=4, T2_intra=[0.05] * 3, compartments=comps)
