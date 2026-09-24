@@ -299,7 +299,7 @@ class Mesh(Geometry):
     surface_relaxivity_t2 : float, optional
         Surface relaxivity ρ₂ (m/s), symmetric (same on both sides of the wall).
         Applies a Brownstein–Tarr weight at the wall. A side-dependent ρ is given per pool
-        through ``compartments=``.
+        through ``compartments=`` instead; giving both raises.
     permeability : float or dict, optional
         Membrane permeability κ (m/s).  A float is symmetric (same both directions,
         the default). A dict ``{"intra_to_extra": κ_out, "extra_to_intra": κ_in}``
@@ -473,6 +473,11 @@ class Mesh(Geometry):
         self.compartments = comps
         intra = comps["intra"] if "intra" in comps else Pool()
         extra = comps["extra"] if "extra" in comps else Pool()
+        per_pool = [name for name, pool in (("intra", intra), ("extra", extra)) if pool.surface_relaxivity_t2 is not None]
+        if surface_relaxivity_t2 is not None and per_pool:
+            raise ValueError(f"the wall's relaxivity is given twice: surface_relaxivity_t2= and the {per_pool} pool's "
+                             "surface_relaxivity_t2. Give one: the scalar for a symmetric wall, or every side through "
+                             "compartments=Compartments(intra=Pool(surface_relaxivity_t2=...), extra=Pool(...))")
         rho_i = intra.surface_relaxivity_t2 if intra.surface_relaxivity_t2 is not None else surface_relaxivity_t2
         rho_e = extra.surface_relaxivity_t2 if extra.surface_relaxivity_t2 is not None else surface_relaxivity_t2
         rho_i = float(rho_i) if rho_i is not None else 0.0

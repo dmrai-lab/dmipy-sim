@@ -839,7 +839,7 @@ def simulate_trajectories(
     r0=None,
     kappa_MT: float = 0.0,
     dwell_time: float = 0.0,
-    equilibrate_binding="auto",
+    equilibrate_binding="burnin",
     compress: int = None,
     enforce_compartment: bool = False,
 ) -> PersistentWalk:
@@ -899,7 +899,7 @@ def simulate_trajectories(
         channel.  (For analytic geometries use :func:`dmipy_sim.simulate_mt_trajectories`.)
     dwell_time : float
         Mean bound-pool residence time (s); must be ``> 0`` when ``kappa_MT > 0``.
-    equilibrate_binding : {'auto', 'burnin', 'off'}
+    equilibrate_binding : {'burnin', 'fast', 'off'}
         How the bound pool reaches thermal-equilibrium occupancy before t=0 (MT only);
         see :func:`dmipy_sim.engine.mt.resolve_equilibrate_mode`.
 

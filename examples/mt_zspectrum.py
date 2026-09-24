@@ -54,7 +54,7 @@ def main():
     mc = emergent_z_spectrum(offsets, Sphere(radius=R), n_walkers=args.walkers,
                              diffusivity=D, w1_hz=W1_HZ, t_sat=T_SAT, dt=DT,
                              T2=T2A, T1=T1A, kappa_MT=KAPPA_MT, dwell_time=DWELL,
-                             T2_bound=T2B, T1_bound=T1B, equilibrate_binding="auto", seed=3)
+                             T2_bound=T2B, T1_bound=T1B, equilibrate_binding="burnin", seed=3)
     an = oracle_total(offsets)
     rel = np.abs(mc - an) / np.maximum(np.abs(an), 0.05)
 

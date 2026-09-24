@@ -257,7 +257,7 @@ def simulate_bloch(n_walkers, diffusivity, waveform, geometry, *,
                    return_mz=False, surface_relaxivity=0.0,
                    kappa_MT=0.0, dwell_time=0.0, T2_bound=1e-5, T1_bound=1.0,
                    off_resonance_bound=0.0, sub_steps=None, return_bound_frac=False,
-                   equilibrate_binding="auto", susceptibility=None, require_gpu=None):
+                   equilibrate_binding="burnin", susceptibility=None, require_gpu=None):
     """Forward vector-Bloch signal of a :class:`~dmipy_sim.acquisition.scanner_sequence.ScannerSequence`:
     its PHYSICAL gradient ``G``, its RF schedule ``rf`` (each pulse a Rodrigues rotation about its B1 axis;
     ``duration_s = 0`` an instantaneous hard pulse, ``offset_hz`` an off-resonance carrier), its emergent
@@ -275,12 +275,12 @@ def simulate_bloch(n_walkers, diffusivity, waveform, geometry, *,
         Global spin off-resonance (Hz) applied every step (a voxel B0 offset).
     return_mz : bool
         Also return the final walker-mean ``Mz`` (n_meas,).
-    equilibrate_binding : {'auto', 'burnin', 'fast', 'off'}
+    equilibrate_binding : {'burnin', 'fast', 'off'}
         (MT only, ``kappa_MT > 0``.)  How to reach the thermal-equilibrium bound-pool
         occupancy ``k_f/(k_f+k_r)`` BEFORE the sequence -- the macromolecular pool exists
         before the pulse, so an all-free start under-fills it and biases the transfer
-        whenever ``1/k_f`` is not ``<<`` the sequence duration.  ``'burnin'`` (the ``'auto'``
-        default when MT is on) runs an adaptive RF-off burn-in until the occupancy plateaus
+        whenever ``1/k_f`` is not ``<<`` the sequence duration.  ``'burnin'`` (the
+        default) runs an adaptive RF-off burn-in until the occupancy plateaus
         (geometry-agnostic).  ``'fast'`` seeds the equilibrium occupancy directly (mid-air,
         no walk) -- allowed only when it is provably position-invariant (no gradient, or an
         MR-dark bound pool) with a known S/V, else it warns and falls back to ``'burnin'``.
@@ -553,7 +553,7 @@ def _simulate_bloch_mt(n_walkers, diffusivity, waveform, geometry, *,
                        T2, T1, M0, off_resonance_hz, seed, r0, return_mz,
                        surface_relaxivity, kappa_MT, dwell_time, T2_bound,
                        T1_bound, off_resonance_bound, sub_steps, return_bound_frac,
-                       equilibrate_binding="auto", susceptibility=None):
+                       equilibrate_binding="burnin", susceptibility=None):
     """MT forward path (see ``simulate_bloch``).  Returns ``signals`` then, in order,
     ``mz`` (if ``return_mz``) and the walker-mean ``bound_frac`` time series (n_t,)
     (if ``return_bound_frac``)."""

@@ -125,7 +125,7 @@ def test_equilibrate_binding_is_named():
     """The equilibration mode is one of its names; a bool or None is refused, naming them."""
     from dmipy_sim import Sphere
     g = Sphere(radius=2e-6)
-    assert [mt.resolve_equilibrate_mode(m, g) for m in ("off", "auto", "burnin")] == ["off", "burnin", "burnin"]
-    for bad in (None, False, True, 0, 1):
-        with pytest.raises(ValueError, match="'auto'\\|'burnin'\\|'fast'\\|'off'"):
+    assert [mt.resolve_equilibrate_mode(m, g) for m in ("off", "burnin")] == ["off", "burnin"]
+    for bad in (None, False, True, 0, 1, "auto"):
+        with pytest.raises(ValueError, match="'burnin'\\|'fast'\\|'off'"):
             mt.resolve_equilibrate_mode(bad, g)

@@ -58,7 +58,7 @@ def simulate_mt_trajectories(
     r0=None,
     walker_batch_size: int = 50_000,
     sub_steps: int = None,
-    equilibrate_binding="auto",
+    equilibrate_binding="burnin",
     require_gpu=None,
     storage_dtype=np.float32,
 ) -> tuple:
@@ -99,7 +99,7 @@ def simulate_mt_trajectories(
         Fine sub-steps per saved step.  Default: auto to step_l ~ R/25 (binding
         is trajectory-altering, like permeability, so it needs the finer step,
         not reflection's R/6).
-    equilibrate_binding : {'auto', 'burnin', 'fast', 'off'}
+    equilibrate_binding : {'burnin', 'fast', 'off'}
         How the bound pool reaches its thermal-equilibrium occupancy BEFORE t=0;
         see :func:`dmipy_sim.engine.mt.resolve_equilibrate_mode`.
     storage_dtype : numpy dtype

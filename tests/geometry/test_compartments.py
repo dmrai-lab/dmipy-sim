@@ -81,6 +81,8 @@ def test_mesh_takes_compartments():
         d.Mesh(V, F, intra=Pool(T2=0.02))
     with pytest.raises(TypeError, match="is a Compartments"):
         d.Mesh(V, F, compartments={"intra": {"T2": 0.02}})
+    with pytest.raises(ValueError, match="given twice"):                # the wall's relaxivity is stated once
+        d.Mesh(V, F, surface_relaxivity_t2=1e-6, compartments=comps)
 
 
 def test_myelinated_cylinder_takes_compartments():
