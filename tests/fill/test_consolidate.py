@@ -66,7 +66,7 @@ def test_the_layout_holds_the_merged_pack_bit_for_bit(layout):
     full = pack.view(contact=True)                                         # every row, every band, every tier: the merged pack
     seq = _seq(merged.n_t)
     np.testing.assert_allclose(full.replay(seq), merged.replay(seq), rtol=1e-9)
-    np.testing.assert_allclose(full.replay(seq, tissue=Tissue(rho=1e-5, D=1.7e-9)), merged.replay(seq, tissue=Tissue(rho=1e-5, D=1.7e-9)), rtol=1e-9)
+    np.testing.assert_allclose(full.replay(seq, tissue=Tissue(rho=1e-5)), merged.replay(seq, tissue=Tissue(rho=1e-5)), rtol=1e-9)   # the surface term at the walked D
     keys_m, S_m = _per_voxel(merged, seq, grid); keys_c, S_c = _per_voxel(full, seq, grid)
     np.testing.assert_array_equal(keys_m, keys_c); np.testing.assert_allclose(S_c, S_m, rtol=1e-9)
 
@@ -89,7 +89,7 @@ def test_a_view_reads_its_voxels_rows_and_nothing_else(layout):
 def test_the_image_is_the_per_voxel_replay_and_settings_share_the_pass(layout):
     out, manifest, index, (a, b), merged, grid, spec, tmp = layout
     pack = ReplayPack.open(out); seq = _seq(merged.n_t)
-    t = Tissue(rho=1e-5, D=1.7e-9)
+    t = Tissue(rho=1e-5)
     S, floor, plan = pack.image([seq], settings=[(None, None), (t, None)], tol=1e-9, chunk_rows=5)
     assert S.shape == (2,) + tuple(grid.shape) + (2,) and plan["K"] == 3 and plan["rows"] == merged.n_walkers
     for si, kw in enumerate(({}, {"tissue": t})):
