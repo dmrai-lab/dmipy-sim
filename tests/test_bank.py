@@ -103,6 +103,19 @@ def test_build_to_floor_converges_and_records_target():
     assert "meets_target" in pk.fidelity
 
 
+def test_build_to_floor_keeps_the_pilot_walk_when_it_meets_the_floor():
+    """A pilot whose floor is already under sigma* is the walk: the builder asks for no second one."""
+    calls = []
+
+    def make(n):
+        calls.append(n)
+        return _slab_master(n_w=n, seed=1)
+
+    pk = build_to_floor(make, id="test/floor-pilot", envelope=_lean_env(), method="bridge_dst", K=48, sigma_star=10.0,
+                        pilot_n=800, max_n=6000, license="CC-BY-4.0", citation="test", verbose=False)
+    assert calls == [800] and pk.n_walkers == 800
+
+
 # ------------------------------------------------------------------ susceptibility path channel (C3)
 def _field_basis_for_slab(shape=(24, 24, 24), seed=3):
     """A smooth synthetic field basis on a grid spanning the slab walk.

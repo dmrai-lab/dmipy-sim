@@ -1853,11 +1853,15 @@ def build_to_floor(make_model, *, id, envelope=None, sigma_star=1e-3, pilot_n=80
     """
     env = envelope or _cx.default_envelope()
     _walk = walk or _master_arrays
-    f0 = _measure_floor(_walk(make_model(pilot_n)), env)
+    model = make_model(pilot_n)
+    f0 = _measure_floor(_walk(model), env)
     n_star = int(min(max_n, max(pilot_n, round(pilot_n * (f0 / sigma_star) ** 2 * safety))))
     if verbose:
         log.info(f"[floor-target] pilot N={pilot_n}: floor={f0:.4g}; sigma*={sigma_star:.4g} -> N*~{n_star}")
-    model = make_model(n_star); f = _measure_floor(_walk(model), env)
+    if n_star == pilot_n:                            # the pilot meets the floor: it is the walk
+        f = f0
+    else:
+        model = make_model(n_star); f = _measure_floor(_walk(model), env)
     if f > sigma_star and n_star < max_n:            # undershoot -> one re-estimate/top-up
         n_star = int(min(max_n, round(n_star * (f / sigma_star) ** 2 * safety)))
         if verbose:
