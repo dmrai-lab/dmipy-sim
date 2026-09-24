@@ -58,6 +58,25 @@ Three rules follow from the table and hold everywhere:
 3. **The sequence and the pose set the contraction; the tissue and the scanner are arithmetic on it.** That is
    what makes a study one pass over the rows for every tissue and scanner it names.
 
+## Publishing a pack
+
+There is one way to build a pack (`build_replay_pack`) and one way to put it on a hub and get it back: `publish`
+uploads the file with the dataset's `manifest.json` (one row per pack: its sha256, size, walk and codec
+parameters, fidelity, code commit, license, citation) and the card `README.md` rendered from that manifest, in
+one commit, and `ReplayPack.load("hf://owner/name/path.rpk")` fetches it and checks the sha256 against the
+manifest. Which dataset is the hub is the publisher's business: `repo` is `owner/name`. A pack without an `id`,
+`license`, `citation` or `fidelity` is refused.
+
+```bash
+python -m dmipy_sim.replay.publish my_pack.rpk --repo owner/name        # prints hf://owner/name/packs/<id>.rpk
+```
+
+```python
+# docs: skip -- the hub, over the network
+uri = pack.publish("owner/name")                     # or publish(path, "owner/name", hub=...) from dmipy_sim.replay.publish
+same = ReplayPack.load(uri)                          # fetched into the cache, sha256 checked against the manifest
+```
+
 ## Reading order
 
 Start with [pack](pack.md) and [replay](replay.md); the rest are the knobs one by one. For DiSCo from the hub go
