@@ -942,7 +942,7 @@ class ReplayPack:
             off = np.asarray(off_resonance_T, np.float64).reshape(-1)
             if off.size not in (1, n_w):
                 raise ValueError(f"off_resonance_T is a scalar or one value per walker ({n_w}); got {off.shape}")
-        crush_rate = None
+        per_save_all = None
         if getattr(waveform, "crusher", None) is not None:
             from ..engine.bloch import _build_crusher
             rate, has = _build_crusher(waveform.crusher, P["dt_wf"], P["G"].shape[1])   # rad/step, waveform grid
@@ -951,7 +951,11 @@ class ReplayPack:
                 # by the seed: a declared winding of a whole number of turns then cancels the crushed pathways
                 # exactly, where n_w uniform draws leave them at 1/sqrt(n_w) (dmipy-sim#393: a 0.2 % offset on a
                 # crushed spin echo against the enumeration)
-                crush_rate = rate / P["dt_wf"]
+                # the rate as a density (rad/s) carried onto the pack's save grid, then back to radians per save: the
+                # phase of each window is preserved however the two grids differ. The propagator reads these as SAMPLES
+                # at the saves (a sampled rate, integrated with the path interpolant), so a window takes the whole
+                # grid's samples sliced, never a window's own weights, whose shared save would be halved
+                per_save_all = np.asarray(gate_weights(rate / P["dt_wf"], P["dt_wf"], n_t, dt), np.float64).reshape(-1, n_t)[0] * dt
                 u = np.random.default_rng(int(crusher_seed)).permutation((np.arange(n_w) + 0.5) / n_w)
         r_v = None
         if waveform.unbalanced and not waveform.voxel_declared:
@@ -989,11 +993,8 @@ class ReplayPack:
             if off is not None:
                 uniform = GAMMA * dt * np.broadcast_to(off[:, None], (n_w, n_s))
                 extra = uniform if extra is None else extra + uniform
-            if crush_rate is not None:
-                # the rate as a density (rad/s) carried onto this window's save grid, then back to radians per
-                # save: the phase of each window is preserved however the two grids differ
-                per_save = np.asarray(gate_weights(crush_rate, P["dt_wf"], n_s, dt, t0=t0), np.float64) * dt
-                crush = u[:, None] * np.broadcast_to(per_save.reshape(-1, n_s)[0], (n_w, n_s))
+            if per_save_all is not None:
+                crush = u[:, None] * np.broadcast_to(per_save_all[k0:k0 + n_s], (n_w, n_s))
                 extra = crush if extra is None else extra + crush
             if extra is not None:
                 kw["extra_phase_per_step"] = extra
