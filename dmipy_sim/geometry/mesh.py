@@ -48,7 +48,7 @@ from ._boundary import specular, transmit_probability, off_wall
 import numpy as np
 
 from .base import Geometry, LengthScales
-from ..compartments import POOL_NAMES, Compartments, Pool
+from ..compartments import POOL_IDS, POOL_NAMES, Compartments, Pool
 
 # Above this median-edge / feature-radius ratio the surface is too coarsely
 # tessellated for membrane permeability to reach the MC noise floor (its faceting
@@ -269,11 +269,9 @@ _populated_batch = jax.jit(jax.vmap(_gather_is_populated, in_axes=(None, 0)))
 
 
 def _seed_pool(pool):
-    """Pool id of a seeding request: ``"intra"`` / 1 -> 1, ``"extra"`` / 0 -> 0."""
-    if pool in ("intra", 1, True):
-        return 1
-    if pool in ("extra", 0, False):
-        return 0
+    """Pool id of a seeding request: ``"intra"`` -> 1, ``"extra"`` -> 0."""
+    if isinstance(pool, str) and pool in ("intra", "extra"):
+        return POOL_IDS[pool]
     raise ValueError(f"pool must be 'intra' or 'extra', got {pool!r}")
 
 

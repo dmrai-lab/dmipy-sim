@@ -33,6 +33,9 @@ def test_the_constructor_pool_is_what_a_driver_seeds():
     assert (w.compartment[:, 0] == 0).all()
     with pytest.raises(ValueError, match="pool must be"):
         d.Mesh(V, F, pool="myelin")
+    for bad in (True, False, 1, 0):                                  # a pool is named, not numbered or flagged
+        with pytest.raises(ValueError, match="pool must be 'intra' or 'extra'"):
+            d.Mesh(V, F, pool=bad)
 
 
 def test_the_call_can_name_a_pool_and_the_pool_has_one_spelling():
@@ -41,6 +44,8 @@ def test_the_call_can_name_a_pool_and_the_pool_has_one_spelling():
     assert not _inside(V, F, m.init_positions(200, k, pool="extra")).any()
     with pytest.raises(TypeError):
         m.init_positions(200, k, intra=False)
+    with pytest.raises(ValueError, match="pool must be 'intra' or 'extra'"):
+        m.init_positions(200, k, pool=False)
 
 
 def test_curved_cylinder_shells_are_pools_too():
