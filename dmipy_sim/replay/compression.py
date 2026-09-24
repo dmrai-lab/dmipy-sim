@@ -54,7 +54,6 @@ from ..constants import GAMMA
 
 POSITION_METHOD = "bridge_dst"          # the only C0 representation; see encode_bridge_dst
 WALKER_PRESERVING = (POSITION_METHOD,)
-ALL_METHODS = WALKER_PRESERVING
 
 _RETIRED = {
     "temporal_dct": "cosine bands of the whole path",

@@ -223,8 +223,8 @@ class ReplayPack:
         """The columnar layout at ``uri`` (a directory, or ``hf://owner/name/prefix`` on the Hub), open by reference:
         a :class:`~dmipy_sim.replay.columnar.ColumnarPack`, whose ``view`` gives a :class:`ReplayPack` of the rows
         and bands an acquisition needs and whose ``image`` replays a whole grid in one pass over the rows."""
-        from .columnar import open_columnar
-        return open_columnar(uri, workers=workers)
+        from .columnar import ColumnarPack
+        return ColumnarPack(uri, workers=workers)
 
     def __init__(self, arrays, meta, source=None):
         self.arrays = dict(arrays)

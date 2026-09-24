@@ -75,7 +75,7 @@ def test_the_field_phase_equals_the_decoded_path_integral(field_pack):
     decoded route (positions, the 13 channels on the save grid, the gate summed) is the oracle."""
     from dmipy_sim.replay.bank import susc_path_decode, susc_path_field
     from dmipy_sim.replay._replay_kernel import field_gate, gradient_phase, effective_gradient
-    from dmipy_sim.replay.replay import GAMMA
+    from dmipy_sim.constants import GAMMA
     pk = field_pack
     seq = _seqmod.gre(6e-4, gradient_directions=[[1, 0, 0]], bvalues=[5e8], delta=1e-4, Delta=3e-4, n_t=4 * pk.n_t + 1, slew_rate=np.inf)
     b0_dir = (0.6, 0.0, 0.8)

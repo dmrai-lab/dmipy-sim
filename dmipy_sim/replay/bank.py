@@ -30,7 +30,6 @@ from ..persistent_walk import PersistentWalk
 from ..run import Run
 
 from . import compression as _cx
-from ._replay_kernel import se_gate, gradient_phase
 from ..acquisition.rf import RFEvent
 from .replay import ReplayPack, read_rpk, write_rpk
 

@@ -182,7 +182,7 @@ def test_replay_signal_jax_takes_the_host_surface_logweight():
 # ── one spin-echo gate ────────────────────────────────────────────────────────────────────
 def test_one_spin_echo_gate():
     from dmipy_sim.replay import bank
-    assert bank.se_gate is se_gate and not hasattr(bank, "_se_gate")
+    assert not hasattr(bank, "se_gate") and not hasattr(bank, "_se_gate")    # the kernel's, not re-exported
     s = se_gate(N_T, DT, T_TOTAL / 2)                                  # a 180 between two saves
     assert s.sum() == pytest.approx(0.0, abs=1e-12)                    # a static field refocuses exactly
     assert (s[1: N_T // 4] == 1).all() and (s[-N_T // 4:-1] == -1).all()
