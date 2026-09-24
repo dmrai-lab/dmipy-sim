@@ -31,7 +31,10 @@ windows sharing their boundary save: a walk within one window is one segment, a 
 each encoded with the same `K` and certified on its own. Segment 0's tensors sit under the channel names and segment
 `i` under `s{i}/`, so `pack.segment(i)` is a pack of that window, `pack.truncate(k)` the first `k` windows without
 re-encoding, and an acquisition reads only the windows it reaches; a replay across windows is the sum of their
-contractions. `pack.segments` is the table.
+contractions. `pack.segments` is the table. A walk is continued rather than re-walked: `pack.extend(0.1, seed=17)`
+resumes every walker from the last segment's exact endpoint in the pool it is in, walks one more segment on the
+pack's own substrate with the fresh seed, and appends it with its own certificate (`pack.end_state()` is where the
+walkers are; `replay.continuation` holds the two steps).
 
 ## What it holds
 

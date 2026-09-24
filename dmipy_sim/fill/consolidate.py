@@ -303,8 +303,8 @@ class Consolidator:
             s = (np.asarray(Cs, np.float64) ** 2).sum(axis=0)
             self.acc["path_sq"] = s if self.acc["path_sq"] is None else self.acc["path_sq"] + s; self.acc["path_n"] += n
         # the scale tables with their block axis; every row's block
-        scale_keys = [k for k in pk.arrays if k.endswith("_band_scale") or k == "susc_path_scale"]
-        table = lambda k: (np.asarray(pk.arrays[k])[None] if (k == "susc_path_scale" and np.asarray(pk.arrays[k]).ndim == 2) else np.asarray(pk.arrays[k]))
+        scale_keys = [k for k in pk.arrays if k.endswith("_band_scale") or k.split("/")[-1] == "susc_path_scale"]
+        table = lambda k: (np.asarray(pk.arrays[k])[None] if (k.split("/")[-1] == "susc_path_scale" and np.asarray(pk.arrays[k]).ndim == 2) else np.asarray(pk.arrays[k]))
         nb = int(table(scale_keys[0]).shape[0]) if scale_keys else 0
         blk = (np.asarray(pk.arrays["band_block"], np.int64) if "band_block" in pk.arrays else np.zeros(n, np.int64))[order] + self.n_blocks
         for k in scale_keys:
