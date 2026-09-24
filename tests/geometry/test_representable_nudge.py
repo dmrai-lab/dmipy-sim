@@ -43,14 +43,25 @@ def test_every_walker_bounced_off_a_wall_a_millimetre_away_is_still_inside_its_t
     assert (tube == 1).all(), f"{(tube != 1).sum()} of {n} walkers read as outside their tube after the bounce"
 
 
-def test_the_geometry_seeds_inside_by_its_nudge_at_a_millimetre():
-    """The packed and the single-strand seeders draw the disc to the wall less the nudge: at 1 mm every seed reads
-    as inside to the geometry's own float32 classification (drawn to the wall, 11 of a million seeds on DiSCo sat
-    within rounding of it, read as outside, and the adaptive walk refused the pool)."""
+def test_every_point_at_the_seeders_radius_reads_inside_at_a_millimetre():
+    """The packed and the single-strand seeders draw the disc to the wall less the nudge, so the farthest point a
+    seed can sit is at ``R - nudge`` from the axis. Every such point, around the whole circle, along the whole
+    tube and at 1 mm, reads as inside to the geometry's own float32 classification; the wall itself, one nudge
+    further, is where that stops being decidable."""
     off = np.array([1e-3, 1e-3, 1e-3])
     g = _pack(off)
-    P = np.asarray(g.init_positions(400_000, jax.random.PRNGKey(5)))
-    assert (np.asarray(g.classify_positions_exact(P)) > 0).all()
+    ph = np.linspace(0.0, 2 * np.pi, 3600, endpoint=False)
+    xs = np.array([-30e-6, -29.9e-6, -15e-6, 0.0, 15e-6, 29.9e-6, 30e-6])
+    rho = R - g.nudge_m
+    for y0, tube in ((0.0, 1), (3 * R, 2)):                         # both strands of the pack
+        P = np.stack([np.repeat(xs, ph.size), np.tile(y0 + rho * np.cos(ph), xs.size), np.tile(rho * np.sin(ph), xs.size)], 1) + off
+        lab = np.asarray(g.classify_positions_exact(P))
+        assert (lab == tube).all(), f"{(lab != tube).sum()} of {P.shape[0]} points at R - nudge read outside strand {tube}"
     one = d.CurvedCylinder(np.array([[-30e-6, 0, 0], [30e-6, 0, 0]]) + off, R)
-    Q = np.asarray(one.init_positions(200_000, jax.random.PRNGKey(6)))
+    rho1 = R - one.nudge_m
+    Q = np.stack([np.repeat(xs, ph.size), np.tile(rho1 * np.cos(ph), xs.size), np.tile(rho1 * np.sin(ph), xs.size)], 1) + off
     assert (np.asarray(one.classify_positions_exact(Q)) == 1).all()
+    # and the seeders do stay within that radius: a draw is never past R - nudge
+    S = np.asarray(g.init_positions(4_000, jax.random.PRNGKey(5)), np.float64) - off
+    r_axis = np.sqrt(np.minimum(S[:, 1] ** 2, (S[:, 1] - 3 * R) ** 2) + S[:, 2] ** 2)
+    assert (r_axis <= rho * (1 + 1e-6)).all()
