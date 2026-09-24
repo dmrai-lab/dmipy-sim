@@ -86,9 +86,15 @@ def test_myelin_kernels_report_pool_ids():
     pm = d.PackedMyelinatedCylinders([1e-6] * 3, 0.7, c, L, N_max=4)
     enc = jnp.asarray([0, 1, 3, 5, 8])
     assert [int(v) for v in pm.pool_of(enc)] == [EXTRA, INTRA, INTRA, MYELIN, MYELIN]
-    r0 = pm.init_positions(200, jax.random.PRNGKey(0))
-    assert (np.asarray(pm.pool_of(pm._init_compartments))
-            == np.asarray(pm.pool_of(jax.vmap(pm.classify_position)(r0)))).mean() > 0.99
+    # the seeded pool and the classified pool agree exactly wherever a seed is clear of a wall; at a wall the
+    # float32 classifier and the seeder may round to different sides, so those seeds are not asserted
+    r0 = np.asarray(pm.init_positions(2000, jax.random.PRNGKey(0)), np.float64)
+    q = r0[:, None, :2] - np.asarray(c)[None]; q -= L * np.floor(q / L + 0.5)
+    rho = np.linalg.norm(q, axis=2)
+    clear = (np.abs(rho - 1e-6) > 5e-9).all(1) & (np.abs(rho - 1e-6 / 0.7) > 5e-9).all(1)
+    assert clear.sum() > 1900, "precondition: almost every seed sits clear of the walls"
+    seeded = np.asarray(pm.pool_of(pm._init_compartments)); classified = np.asarray(pm.pool_of(jax.vmap(pm.classify_position)(jnp.asarray(r0, jnp.float32))))
+    assert (seeded[clear] == classified[clear]).all(), f"{(seeded[clear] != classified[clear]).sum()} seeds clear of every wall are classified into another pool than they were seeded in"
 
 
 def test_simulate_and_simulate_trajectories_report_the_same_ids():
