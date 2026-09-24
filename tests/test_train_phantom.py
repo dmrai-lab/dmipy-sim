@@ -20,7 +20,7 @@ SH = (6, 6, 2)
 def pack_path(tmp_path_factory):
     out = tmp_path_factory.mktemp("pk") / "wm.rpk"
     walk = d.simulate_trajectories(600, 2e-9, d.FreeDiffusion(), 0.14, 2.5e-4, seed=0, require_gpu=False)
-    build_replay_pack(walk, id="test/wm", license="x", citation="x", K=10, out_path=str(out))
+    build_replay_pack(walk, id="test/wm", license="x", citation="x", K=10, out_path=str(out), segment_T=0.14)   # one 140 ms window
     return str(out)
 
 
