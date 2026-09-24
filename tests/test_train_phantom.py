@@ -232,7 +232,7 @@ def test_a_mixed_phantom_composes_a_pack_and_a_closed_form():
     import tempfile, os
     out = os.path.join(tempfile.mkdtemp(), "wm.rpk")
     walk = d.simulate_trajectories(300, 2e-9, d.FreeDiffusion(), 0.14, 2.5e-4, seed=1, require_gpu=False)
-    build_replay_pack(walk, id="test/wm2", license="x", citation="x", K=10, out_path=out)
+    build_replay_pack(walk, id="test/wm2", license="x", citation="x", K=10, out_path=out, segment_T=0.14)   # one 140 ms window
     pack = read_rpk(out)
     grid = Grid(shape=SH, voxel_size_m=(2.5e-2,) * 3,
                 origin_m=tuple(-0.5 * (n - 1) * 2.5e-2 for n in SH), isocenter_m=(0.0, 0.0, 0.0))
