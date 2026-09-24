@@ -546,8 +546,9 @@ def decode_boundary_bridge(arrays, meta):
 _EXCLUSIVE_COLUMN = "comp"          # the geometric axis: mutually exclusive, may be an int label
 
 
-def _encode_occupancy_column(x, name, Q):
-    """One C1 column -> RLE arrays under ``{name}_rle_*`` + its descriptor.
+def _encode_occupancy_column(x, name, Q, force_runs=False):
+    """One C1 column -> RLE arrays under ``{name}_rle_*`` + its descriptor. ``force_runs`` stores a track no walker
+    crosses in as runs rather than the static label: a window of a walk whose other windows cross.
 
     Integer labels on the exclusive axis are RLE'd losslessly; everything else is an occupancy in
     [0, scale] quantized to Q levels then RLE'd (integer RLE would lossily int-cast the fractions).
@@ -556,7 +557,7 @@ def _encode_occupancy_column(x, name, Q):
     C1 carries the realised exchange statistics rather than a summarising mean rate.
     """
     A = np.asarray(x)
-    if name == _EXCLUSIVE_COLUMN and np.array_equal(A, np.round(A)) and A.ndim == 2 and (A == A[:, :1]).all():
+    if name == _EXCLUSIVE_COLUMN and not force_runs and np.array_equal(A, np.round(A)) and A.ndim == 2 and (A == A[:, :1]).all():
         # nothing crosses: one label per walker, the static column (an impermeable substrate)
         return ({f"{name}_static": A[:, 0].astype(np.int8)}, {"name": name, "kind": "static", "n_t": int(A.shape[1])})
     if name == _EXCLUSIVE_COLUMN and np.array_equal(A, np.round(A)):
@@ -586,7 +587,7 @@ def _decode_occupancy_column(arrays, d):
     return (q.astype(np.float32) / float(d["Q"] - 1)) * float(d.get("scale", 1.0))
 
 
-def encode_occupancy(columns, Q=256):
+def encode_occupancy(columns, Q=256, force_runs=False):
     """C1 codec. ``columns`` maps a pool-axis name to its (N_w, N_t) track.
 
     ``comp`` is the exclusive geometric axis (integer labels, or a fraction for a permeable
@@ -597,7 +598,7 @@ def encode_occupancy(columns, Q=256):
         raise ValueError(f"C1 needs the {_EXCLUSIVE_COLUMN!r} column; got {sorted(columns)}")
     arrays, cols = {}, []
     for name, x in columns.items():
-        a, d = _encode_occupancy_column(x, name, Q)
+        a, d = _encode_occupancy_column(x, name, Q, force_runs=force_runs)
         arrays.update(a); cols.append(d)
     n_t = {d["n_t"] for d in cols}
     if len(n_t) != 1:

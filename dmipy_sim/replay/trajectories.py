@@ -629,26 +629,37 @@ class _BlochTerms(NamedTuple):
     echo_pieces: object         # tuple of piece indices after which the echoes are read, or None
 
 
-def _bloch_timeline(rf_events, n_t, dt_traj):
+def _bloch_timeline(rf_events, n_t, dt_traj, t0=None):
     """Cut the walk at the saves and at every RF instant. Returns the edges (sorted, ``(n_p + 1,)``), the
     rotations opening each piece ``[(piece, flip, axis), ...]`` and the pulse windows
-    ``[(t0, t1, carrier rad/s), ...]`` over which a carrier offset and slice-select off-resonance act."""
+    ``[(t0, t1, carrier rad/s), ...]`` over which a carrier offset and slice-select off-resonance act.
+
+    With ``t0`` the saves are those of the WINDOW of the walk starting at ``t0`` on the schedule's clock (RPK.md
+    4.3), every time on that clock: an instant belongs to the window ``(t0, t0 + T]`` (and ``t = 0`` to the first),
+    a finite pulse's sub-rotations each to theirs, its carrier window clipped to the walk's window; nothing is
+    refused, since what lies outside is another window's (the whole schedule is checked against the whole walk
+    once, without ``t0``)."""
     T = (int(n_t) - 1) * float(dt_traj)
     tol = 1e-9 * float(dt_traj)
-    saves = np.arange(int(n_t)) * float(dt_traj)
+    start = 0.0 if t0 is None else float(t0)
+    end = start + T
+    saves = start + np.arange(int(n_t)) * float(dt_traj)
+    inside = (lambda t: (t > start + tol or (start == 0.0 and t >= -tol)) and t <= end + tol)
     rots, windows, instants = [], [], []
     for e in RFSchedule(rf_events):
         t_s, dur = e.t_s, e.duration_s
-        if t_s < -tol or t_s > T + tol:
+        if t0 is None and (t_s < -tol or t_s > T + tol):
             raise ValueError(f"RF event at t = {t_s:.6g} s lies outside the walk [0, {T:.6g}] s")
         nsub = max(1, int(round(dur / float(dt_traj)))) if dur > 0.0 else 1
-        ts = (np.clip(t_s - dur / 2.0 + (np.arange(nsub) + 0.5) * dur / nsub, 0.0, T) if dur > 0.0
+        ts = (np.clip(t_s - dur / 2.0 + (np.arange(nsub) + 0.5) * dur / nsub, 0.0, None) if dur > 0.0
               else np.array([t_s]))
         dflips, axes = e.flip_split(nsub)                                  # even, or by the pulse's envelope
         for t, f, ax in zip(ts, dflips, axes):
-            rots.append((float(t), float(f), float(ax)))
-            instants.append(float(t))
-        windows.append((max(0.0, t_s - dur / 2.0), min(T, t_s + dur / 2.0), 2.0 * np.pi * e.offset_hz))
+            t = min(float(t), end) if t0 is None else float(t)
+            if inside(t):
+                rots.append((t, float(f), float(ax)))
+                instants.append(t)
+        windows.append((max(start, t_s - dur / 2.0), min(end, t_s + dur / 2.0), 2.0 * np.pi * e.offset_hz))   # one per event; empty outside the window
     times = np.sort(np.concatenate([saves, np.asarray(instants, np.float64)]))
     edges = [times[0]]
     for t in times[1:]:
@@ -668,7 +679,7 @@ def _bloch_replay_terms(trajectory, dt_traj, G, dt_wf, rf_events, *, T2, T1, com
                         T2_per_comp, T1_per_comp, susceptibility, extra_phase_per_step,
                         dlog_boundary_unit, surface_relaxivity, D, b1_scale, slice_offsets,
                         slice_gradient, bound_frac, T2_bound, T1_bound, off_resonance_bound,
-                        weights, echo_steps=None):
+                        weights, echo_steps=None, t0=None):
     """Resolve the sequence and substrate inputs of :func:`replay_bloch` into per-piece terms.
 
     Both Bloch replays consume this; the numpy loop and the JAX scan then differ only in how they iterate the
@@ -687,9 +698,10 @@ def _bloch_replay_terms(trajectory, dt_traj, G, dt_wf, rf_events, *, T2, T1, com
     n_meas = G.shape[0]
     n_w, n_t, _ = trajectory.shape
     dt = float(dt_traj)
-    edges, rotations, windows = _bloch_timeline(rf_events, n_t, dt)
-    w_lo, w_hi, k = piece_phase_weights(G, dt_wf, edges, n_t, dt)              # (n_meas, n_p, 3), (n_p,)
+    edges, rotations, windows = _bloch_timeline(rf_events, n_t, dt, t0=t0)
+    w_lo, w_hi, k = piece_phase_weights(G, dt_wf, edges, n_t, dt, t0=t0)       # (n_meas, n_p, 3), (n_p,)
     n_p = k.size
+    start = 0.0 if t0 is None else float(t0)
     ell = np.diff(edges)                                                      # (n_p,) piece durations
     frac = ell / dt
 
@@ -705,7 +717,7 @@ def _bloch_replay_terms(trajectory, dt_traj, G, dt_wf, rf_events, *, T2, T1, com
     # save interval [t_k, t_{k+1}] reads them at k + 1; a sampled quantity (a field at the saves) is read through
     # the path interpolant with the piece's unit moments (lo on save k, hi on save k + 1)
     k1 = np.minimum(k + 1, n_t - 1)
-    a_rel, b_rel = edges[:-1] - k * dt, edges[1:] - k * dt
+    a_rel, b_rel = edges[:-1] - start - k * dt, edges[1:] - start - k * dt
     u_hi = (b_rel ** 2 - a_rel ** 2) / (2.0 * dt)                            # int (t - t_k) dt / dt
     u_lo = ell - u_hi
 
@@ -765,7 +777,7 @@ def _bloch_replay_terms(trajectory, dt_traj, G, dt_wf, rf_events, *, T2, T1, com
     echo_pieces = None
     if echo_steps is not None:
         ends = edges[1:]
-        echo_pieces = tuple(int(np.argmin(np.abs(ends - int(e) * dt))) for e in echo_steps)
+        echo_pieces = tuple(int(np.argmin(np.abs(ends - (start + int(e) * dt)))) for e in echo_steps)
     return _BlochTerms(k, w_lo, w_hi, flips, axes, b1, dphi_extra, surf, E2, E1, wn, echo_pieces)
 
 
@@ -786,7 +798,7 @@ def replay_bloch(trajectory, dt_traj, G, dt_wf, rf_events, *,
                  weights=None, return_walker_signals=False,
                  b1_scale=None, slice_offsets=None, slice_gradient=0.0,
                  bound_frac=None, T2_bound=None, T1_bound=None,
-                 off_resonance_bound=0.0):
+                 off_resonance_bound=0.0, t0=None, M_init=None, return_state=False):
     """Emergent per-walker vector-Bloch replay on the stored (field-independent) walk.
 
     Propagates each walker's magnetisation ``M = (Mx, My, Mz)`` through the ACTUAL sequence operators -- RF
@@ -816,12 +828,18 @@ def replay_bloch(trajectory, dt_traj, G, dt_wf, rf_events, *,
     slice_offsets, slice_gradient : slice-select off-resonance ``gamma G_slice z_w`` during finite pulses.
     weights : (n_w,) ensemble weights of the walker mean.
     echo_steps, echo_per_walker : record ``Mxy`` at these SAVE indices, per walker if asked.
+    t0, M_init, return_state : ``trajectory`` as ONE WINDOW of a longer walk (RPK.md 4.3): its first save sits
+        at ``t0`` on the sequence's clock, every walker starts the window at ``M_init`` ``(n_meas, 3, n_w)`` (the
+        state the previous window left it in; equilibrium when None), and with ``return_state`` the state every
+        measurement leaves every walker in at the window's end, ``(n_meas, 3, n_w)``, is returned before the
+        signals, for the next window to start from.
 
     Returns
     -------
     signals : (n_meas,) complex walker-mean ``Mx + i My`` at the end, or ``(n_meas, n_echo)`` (``(n_meas,
         n_echo, n_w)`` with ``echo_per_walker``) when ``echo_steps`` is given, or ``(M_final, signals)`` with the
-        per-walker (3, n_w) final magnetisation of the last measurement when ``return_walker_signals``.
+        per-walker (3, n_w) final magnetisation of the last measurement when ``return_walker_signals``; with
+        ``return_state``, ``(M_all, <the above>)``.
     """
     tm = _bloch_replay_terms(trajectory, dt_traj, G, dt_wf, rf_events, T2=T2, T1=T1,
                              comp_traj=comp_traj, T2_per_comp=T2_per_comp, T1_per_comp=T1_per_comp,
@@ -830,7 +848,7 @@ def replay_bloch(trajectory, dt_traj, G, dt_wf, rf_events, *,
                              surface_relaxivity=surface_relaxivity, D=D, b1_scale=b1_scale,
                              slice_offsets=slice_offsets, slice_gradient=slice_gradient,
                              bound_frac=bound_frac, T2_bound=T2_bound, T1_bound=T1_bound,
-                             off_resonance_bound=off_resonance_bound, weights=weights, echo_steps=echo_steps)
+                             off_resonance_bound=off_resonance_bound, weights=weights, echo_steps=echo_steps, t0=t0)
     traj = np.asarray(trajectory, np.float64)
     n_meas = tm.w_lo.shape[0]
     n_w = traj.shape[0]
@@ -840,9 +858,13 @@ def replay_bloch(trajectory, dt_traj, G, dt_wf, rf_events, *,
     signals = np.empty(n_meas, np.complex128)
     echo_out = None
     M = None
+    M_all = np.empty((n_meas, 3, n_w))
     for m in range(n_meas):
-        M = np.zeros((3, n_w))
-        M[2] = 1.0                                              # equilibrium along +z
+        if M_init is None:
+            M = np.zeros((3, n_w))
+            M[2] = 1.0                                          # equilibrium along +z
+        else:
+            M = np.array(np.asarray(M_init, np.float64)[m], copy=True)
         rec = []
         for p in range(n_p):
             for f, a in zip(tm.flips[p], tm.axes[p]):
@@ -863,11 +885,13 @@ def replay_bloch(trajectory, dt_traj, G, dt_wf, rf_events, *,
                 for _ in range(tm.echo_pieces.count(p)):
                     rec.append(mxy.copy() if echo_per_walker else wmean(mxy))
         signals[m] = wmean(M[0] + 1j * M[1])
+        M_all[m] = M
         if echo_set is not None:
             if echo_out is None:
                 echo_out = np.empty((n_meas, len(rec)) + ((n_w,) if echo_per_walker else ()), np.complex128)
             echo_out[m] = np.asarray(rec)
-    return _bloch_replay_output(signals, M, echo_out, echo_steps, return_walker_signals)
+    out = _bloch_replay_output(signals, M, echo_out, echo_steps, return_walker_signals)
+    return (M_all, out) if return_state else out
 
 
 def replay_bloch_jax(trajectory, dt_traj, G, dt_wf, rf_events, *,
@@ -879,7 +903,8 @@ def replay_bloch_jax(trajectory, dt_traj, G, dt_wf, rf_events, *,
                      weights=None, return_walker_signals=False,
                      b1_scale=None, slice_offsets=None, slice_gradient=0.0,
                      bound_frac=None, T2_bound=None, T1_bound=None,
-                     off_resonance_bound=0.0, phase_table_bytes=_BLOCH_PHASE_TABLE_BYTES):
+                     off_resonance_bound=0.0, phase_table_bytes=_BLOCH_PHASE_TABLE_BYTES,
+                     t0=None, M_init=None, return_state=False):
     """:func:`replay_bloch` as a jitted ``lax.scan`` over the pieces of the walk, vectorised over measurements.
 
     Same arguments, same per-piece operator and same outputs as the numpy reference. Arithmetic is float32 on
@@ -896,7 +921,7 @@ def replay_bloch_jax(trajectory, dt_traj, G, dt_wf, rf_events, *,
                              surface_relaxivity=surface_relaxivity, D=D, b1_scale=b1_scale,
                              slice_offsets=slice_offsets, slice_gradient=slice_gradient,
                              bound_frac=bound_frac, T2_bound=T2_bound, T1_bound=T1_bound,
-                             off_resonance_bound=off_resonance_bound, weights=weights, echo_steps=echo_steps)
+                             off_resonance_bound=off_resonance_bound, weights=weights, echo_steps=echo_steps, t0=t0)
     n_w, n_t, _ = trajectory.shape
     n_p = tm.k.size
     f32 = jnp.float32
@@ -911,14 +936,19 @@ def replay_bloch_jax(trajectory, dt_traj, G, dt_wf, rf_events, *,
     n_meas = tm.w_lo.shape[0]
     per_batch = max(1, int(phase_table_bytes // (4 * n_p * n_w)))
     W = jnp.asarray(np.stack([tm.w_lo, tm.w_hi], axis=1), f32)                        # (n_meas, 2, n_p, 3)
-    parts = [_bloch_scan_batch(W[a:a + per_batch], *arrays, echo_idx=tm.echo_pieces, per_walker=bool(echo_per_walker))
+    if M_init is None:
+        M0 = np.zeros((n_meas, 3, n_w), np.float32); M0[:, 2, :] = 1.0
+    else:
+        M0 = np.asarray(M_init, np.float32)
+    M0 = jnp.asarray(M0)
+    parts = [_bloch_scan_batch(W[a:a + per_batch], M0[a:a + per_batch], *arrays, echo_idx=tm.echo_pieces, per_walker=bool(echo_per_walker))
              for a in range(0, n_meas, per_batch)]
-    M_last = parts[-1][0][-1]
+    M_all = np.concatenate([np.asarray(p[0], np.float64) for p in parts])
     rec = np.concatenate([np.asarray(p[1], np.complex128) for p in parts])
     last = np.concatenate([np.asarray(p[2], np.complex128) for p in parts])
     echo_out = None if tm.echo_pieces is None else rec
-    return _bloch_replay_output(last, np.asarray(M_last, np.float64), echo_out,
-                                echo_steps, return_walker_signals)
+    out = _bloch_replay_output(last, M_all[-1], echo_out, echo_steps, return_walker_signals)
+    return (M_all, out) if return_state else out
 
 
 def _bloch_rotate(M, flip, ax):
@@ -934,10 +964,11 @@ def _bloch_rotate(M, flip, ax):
 
 if _JAX_AVAILABLE:
     @functools.partial(jax.jit, static_argnames=("echo_idx", "per_walker"))
-    def _bloch_scan_batch(W_b, r_lo, r_hi, flips, axes, b1, dphi_extra, surf, E2, E1, wn, *, echo_idx, per_walker):
+    def _bloch_scan_batch(W_b, M0_b, r_lo, r_hi, flips, axes, b1, dphi_extra, surf, E2, E1, wn, *, echo_idx, per_walker):
         """One batch of measurements of :func:`replay_bloch_jax`: ``vmap`` over ``W_b`` ``(n_b, 2, n_p, 3)`` (the
-        piece weights on the two bounding saves) of a ``lax.scan`` over the pieces. Module-level and jitted on
-        array arguments, so the executable is reused by every call of the same shapes."""
+        piece weights on the two bounding saves) and ``M0_b`` ``(n_b, 3, n_w)`` (the state every walker starts in)
+        of a ``lax.scan`` over the pieces. Module-level and jitted on array arguments, so the executable is reused
+        by every call of the same shapes."""
         n_w = r_lo.shape[0]
         n_ev = flips.shape[1]
 
@@ -945,7 +976,7 @@ if _JAX_AVAILABLE:
             mxy = M[0] + 1j * M[1]
             return mxy if per_walker else jnp.sum(mxy * wn)
 
-        def run_meas(Wm):
+        def run_meas(Wm, M0):
             dphi = (jnp.einsum("pd,wpd->pw", Wm[0], r_lo, precision=jax.lax.Precision.HIGHEST)
                     + jnp.einsum("pd,wpd->pw", Wm[1], r_hi, precision=jax.lax.Precision.HIGHEST) + dphi_extra)
 
@@ -958,9 +989,8 @@ if _JAX_AVAILABLE:
                 My = (s * M[0] + c * M[1]) * sf * e2
                 M = jnp.stack([Mx, My, M[2] * e1])
                 return M, readout(M)
-            M0 = jnp.stack([jnp.zeros(n_w, r_lo.dtype), jnp.zeros(n_w, r_lo.dtype), jnp.ones(n_w, r_lo.dtype)])
-            M_last, out_t = jax.lax.scan(step, M0, (flips, axes, dphi, E2, E1, surf))
+            M_last, out_t = jax.lax.scan(step, M0.astype(r_lo.dtype), (flips, axes, dphi, E2, E1, surf))
             rec = out_t[-1] if echo_idx is None else out_t[jnp.asarray(echo_idx)]
             last = jnp.sum(out_t[-1] * wn) if per_walker else out_t[-1]
             return M_last, rec, last
-        return jax.vmap(run_meas)(W_b)
+        return jax.vmap(run_meas)(W_b, M0_b)

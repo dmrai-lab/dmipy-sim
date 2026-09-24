@@ -26,6 +26,13 @@ print(pack.n_walkers, pack.K, pack.n_t, pack.dt)                 # 300 walkers, 
 acquisition's gradient content is checked against. The walk's length `T` is the longest echo time the pack can
 replay; a shorter one is a prefix.
 
+A pack stores its walk in **segments** of one duration, 100 ms by default (`build_replay_pack(segment_T=)`), consecutive
+windows sharing their boundary save: a walk within one window is one segment, a longer walk a whole number of them,
+each encoded with the same `K` and certified on its own. Segment 0's tensors sit under the channel names and segment
+`i` under `s{i}/`, so `pack.segment(i)` is a pack of that window, `pack.truncate(k)` the first `k` windows without
+re-encoding, and an acquisition reads only the windows it reaches; a replay across windows is the sum of their
+contractions. `pack.segments` is the table.
+
 ## What it holds
 
 ```python

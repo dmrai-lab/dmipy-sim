@@ -121,7 +121,7 @@ def _duration(row):
     T = row.get("T_max")
     s = "—" if T is None else f"{T * 1e3:g} ms"
     seg = row.get("segments")
-    if seg:
+    if seg and int(seg.get("n") or 1) > 1:                       # a walk in several windows: how many of what length
         s += f" ({seg.get('n')} × {_fmt(None if seg.get('T') is None else seg['T'] * 1e3, 'g')} ms)"
     return s
 

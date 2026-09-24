@@ -197,39 +197,49 @@ class Primitives:
 
 def walker_primitives(pack, acquisition):
     """The :class:`Primitives` of ``pack`` under ``acquisition``: the bands contracted once, the path channel
-    contracted once under the pose's field direction, the exposures and the contact read once."""
+    contracted once under the pose's field direction, the exposures and the contact read once -- each a sum over
+    the windows the walk is stored in (RPK.md 4.3)."""
     from .compression import read_position_coeffs, relaxation_logweight_runs
     from .replay import _compile_effective, _path_grid, surface_logweight, GAMMA
-    from ._replay_kernel import field_gate
+    from ._replay_kernel import field_gate, effective_gradient
     acq = acquisition if isinstance(acquisition, Acquisition) else Acquisition(acquisition)
     P = pack._prepare(acq.waveform, tissue=None, scanner=None, orientation=acq.orientation, compartment=None)
-    n_w, dt, n_t, Geff, ch = P["n_w"], P["dt"], P["n_t"], P["Geff"], P["ch"]
-    C = read_position_coeffs(pack.arrays, dtype=np.float64)
-    phi = C.reshape(n_w, pack.n_coeffs * 3) @ _compile_effective(Geff, dt, pack.K, n_t)
-    exposure_t2 = exposure_t1 = None
+    n_w, dt, ch = P["n_w"], P["dt"], P["ch"]
+    col = n_ids = None
     if pack.has_relaxation:
         from .compression import is_current_c1, decode_occupancy
         if not is_current_c1(ch["compartment"]):
             decode_occupancy(pack.arrays, ch["compartment"])
         col = next(d for d in ch["compartment"]["columns"] if d["name"] == "comp")
-        n_ids = 2 if col["kind"] == "fraction" else int(np.max(pack.arrays["comp_static" if col["kind"] == "static" else "comp_rle_vals"])) + 1
+        n_ids = pack._n_pool_ids(col)
         unit = np.eye(n_ids); zero = [0.0] * n_ids
-        exposure_t2 = np.stack([-relaxation_logweight_runs(pack.arrays, col, unit[p].tolist(), zero, dt, P["chi"], P["active"]) for p in range(n_ids)], axis=1)
-        exposure_t1 = np.stack([-relaxation_logweight_runs(pack.arrays, col, zero, unit[p].tolist(), dt, P["chi"], P["active"]) for p in range(n_ids)], axis=1)
-    contact = None
     from .compression import has_c2
-    if has_c2(pack.arrays):
-        contact = np.asarray(surface_logweight(pack.arrays, 1.0, ch.get("boundary_local_time"), P["chi"]), np.float64)
-    field_iso = field_aniso = None
     pm = ch.get("susceptibility_path")
+    phi = exposure_t2 = exposure_t1 = contact = Psi = None
+    for (seg, t0, n_s), (chi_s, act_s) in zip(P["windows"], P["window_gates"]):
+        Geff_s = effective_gradient(P["G_eff_wf"], P["dt_wf"], n_s, dt, t0=t0)
+        C = read_position_coeffs(seg.arrays, dtype=np.float64)
+        phi_s = C.reshape(n_w, seg.n_coeffs * 3) @ _compile_effective(Geff_s, dt, seg.K, n_s)
+        phi = phi_s if phi is None else phi + phi_s
+        if col is not None:
+            e2 = np.stack([-relaxation_logweight_runs(seg.arrays, col, unit[p].tolist(), zero, dt, chi_s, act_s) for p in range(n_ids)], axis=1)
+            e1 = np.stack([-relaxation_logweight_runs(seg.arrays, col, zero, unit[p].tolist(), dt, chi_s, act_s) for p in range(n_ids)], axis=1)
+            exposure_t2 = e2 if exposure_t2 is None else exposure_t2 + e2
+            exposure_t1 = e1 if exposure_t1 is None else exposure_t1 + e1
+        if has_c2(seg.arrays):
+            c_s = np.asarray(surface_logweight(seg.arrays, 1.0, ch.get("boundary_local_time"), chi_s), np.float64)
+            contact = c_s if contact is None else contact + c_s
+        if pm is not None:
+            from scipy.fft import dct
+            from .bank import susc_path_coeffs
+            Cs, names = susc_path_coeffs(seg.arrays, pm); Cs = Cs[:n_w]
+            n_tf, dt_f = _path_grid(pm, n_s, dt)
+            gate_hat = dct(field_gate(acq.waveform, n_tf, dt_f, t0=t0), type=2, norm="ortho")[:Cs.shape[2]]
+            Psi_s = (GAMMA * dt_f) * np.einsum("k,wck->wc", gate_hat, Cs)
+            Psi = Psi_s if Psi is None else Psi + Psi_s
+    field_iso = field_aniso = None
     if pm is not None:
-        from scipy.fft import dct
-        from .bank import susc_path_coeffs
         from ..fields.susceptibility_field import _q_of_H
-        Cs, names = susc_path_coeffs(pack.arrays, pm); Cs = Cs[:n_w]
-        n_tf, dt_f = _path_grid(pm, n_t, dt)
-        gate_hat = dct(field_gate(acq.waveform, n_tf, dt_f), type=2, norm="ortho")[:Cs.shape[2]]
-        Psi = (GAMMA * dt_f) * np.einsum("k,wck->wc", gate_hat, Cs)
         q = _q_of_H(P["b0_dir"]); i_p = names.index("iso_P_xx")
         field_iso = Psi[:, names.index("iso_local")] - Psi[:, i_p:i_p + 6] @ q
         gm = ch.get("susceptibility_grid") or {}

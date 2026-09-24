@@ -52,29 +52,33 @@ def _cumulative_at(G, dt_wf, times):
     return Q0p, Q1p
 
 
-def piece_moments(G, dt_wf, edges, n_t, dt_pack):
+def piece_moments(G, dt_wf, edges, n_t, dt_pack, t0=None):
     """Moments of the sample-and-hold waveform ``G`` over the **pieces** ``[edges[p], edges[p+1]]`` of the
     walk, a cut of the save grid at the saves and at any further instants (an RF pulse, an echo): returns
     ``A0`` = int G dt, ``A1`` = int G (t - t_k) dt with ``t_k`` the start of the save interval the piece lies in,
     both ``(n_meas, n_pieces, 3)``, and ``k`` ``(n_pieces,)`` that save interval's index. A piece must not
     straddle a save (the saves are among the edges). Exact. A waveform with a non-zero sample starting beyond
-    ``T = (n_t - 1) dt_pack`` is refused: the stored path ends there.
+    ``T = (n_t - 1) dt_pack`` is refused: the stored path ends there. With ``t0`` the saves are those of the
+    window of the walk starting at ``t0`` on the waveform's clock (RPK.md 4.3), the edges on that clock, and the
+    waveform beyond the window is another window's.
     """
     G = np.asarray(G, np.float64)
     dt_wf, dt_pack = float(dt_wf), float(dt_pack)
     T = (int(n_t) - 1) * dt_pack
-    e_wf = np.arange(G.shape[1] + 1) * dt_wf
-    beyond = e_wf[:-1] > T * (1.0 + 1e-9)
-    if beyond.any() and np.any(G[:, beyond, :] != 0.0):
-        raise ValueError(f"the waveform has a non-zero gradient beyond the pack's T_max = {T:.6g} s "
-                         f"(its own extent is {e_wf[-1]:.6g} s); the stored path ends there")
+    start = 0.0 if t0 is None else float(t0)
+    if t0 is None:
+        e_wf = np.arange(G.shape[1] + 1) * dt_wf
+        beyond = e_wf[:-1] > T * (1.0 + 1e-9)
+        if beyond.any() and np.any(G[:, beyond, :] != 0.0):
+            raise ValueError(f"the waveform has a non-zero gradient beyond the pack's T_max = {T:.6g} s "
+                             f"(its own extent is {e_wf[-1]:.6g} s); the stored path ends there")
     edges = np.asarray(edges, np.float64)
     if edges.ndim != 1 or edges.size < 2 or np.any(np.diff(edges) < -1e-12 * max(T, 1e-30)):
         raise ValueError("edges must be a sorted 1-D array of at least two instants")
-    k = np.clip(np.floor(edges[:-1] / dt_pack + 1e-9).astype(int), 0, int(n_t) - 2)
+    k = np.clip(np.floor((edges[:-1] - start) / dt_pack + 1e-9).astype(int), 0, int(n_t) - 2)
     Q0, Q1 = _cumulative_at(G, dt_wf, edges)
     A0 = np.diff(Q0, axis=1)
-    A1 = np.diff(Q1, axis=1) - (k * dt_pack)[None, :, None] * A0
+    A1 = np.diff(Q1, axis=1) - (start + k * dt_pack)[None, :, None] * A0
     return A0, A1, k
 
 
@@ -85,11 +89,25 @@ def waveform_moments(G, dt_wf, n_t, dt_pack):
     return A0, A1
 
 
-def piece_phase_weights(G, dt_wf, edges, n_t, dt_pack):
+def window_moments(G, dt_wf, n_t, dt_pack, t0):
+    """:func:`waveform_moments` over the WINDOW of the walk that starts at ``t0`` on the waveform's clock (RPK.md
+    4.3): the save intervals ``[t0 + k dt_pack, t0 + (k + 1) dt_pack]``, ``k = 0 .. n_t - 2``, the first moment
+    taken from each interval's own start. The waveform beyond the window belongs to the walk's other windows and
+    is not refused here; :func:`piece_moments` refuses what lies beyond the whole walk."""
+    G = np.asarray(G, np.float64)
+    edges = float(t0) + np.arange(int(n_t)) * float(dt_pack)
+    Q0, Q1 = _cumulative_at(G, dt_wf, edges)
+    A0 = np.diff(Q0, axis=1)
+    A1 = np.diff(Q1, axis=1) - edges[:-1][None, :, None] * A0
+    return A0, A1
+
+
+def piece_phase_weights(G, dt_wf, edges, n_t, dt_pack, t0=None):
     """The precession of each piece as weights on the two saves bounding its interval: the phase of piece
     ``p`` is ``w_lo[p] . r[k_p] + w_hi[p] . r[k_p + 1]`` (radians, gamma included), exact for the
-    piecewise-linear path. Returns ``(w_lo, w_hi, k)`` with the weights ``(n_meas, n_pieces, 3)``."""
-    A0, A1, k = piece_moments(G, dt_wf, edges, n_t, dt_pack)
+    piecewise-linear path. Returns ``(w_lo, w_hi, k)`` with the weights ``(n_meas, n_pieces, 3)``; ``t0`` as in
+    :func:`piece_moments`."""
+    A0, A1, k = piece_moments(G, dt_wf, edges, n_t, dt_pack, t0=t0)
     w_hi = GAMMA * A1 / float(dt_pack)
     return GAMMA * A0 - w_hi, w_hi, k
 
@@ -104,7 +122,7 @@ def _held_samples(chi):
     return chi[:, :-1]
 
 
-def bin_gate(chi, dt_wf, n_t, dt_pack):
+def bin_gate(chi, dt_wf, n_t, dt_pack, t0=None):
     """The fraction of each save's ACCUMULATION interval during which the gate ``chi`` is on. A save's boundary
     local time, occupancy and bound fraction are accumulated over the step that ends at that save, so a gate on
     them is the gate's average over ``[t_k - dt_pack, t_k]``, not its value at a sample: ``bin_gate(ones) == 1``
@@ -114,38 +132,42 @@ def bin_gate(chi, dt_wf, n_t, dt_pack):
     A gate of ``n`` samples on a grid of ``dt_wf`` spans ``(n - 1) dt_wf``: its last sample sits at the readout
     (the sequence convention -- ``n_t`` samples at ``dt = TE / (n_t - 1)``, the readout at ``n_t - 1`` acting over
     nothing) and is held over nothing, so an acquisition of ``TE`` relaxes and accrues contact over ``TE``, not
-    over ``TE + dt_wf`` (dmipy-sim#225: one save interval of contact too many, 1 % at 0.2 um)."""
+    over ``TE + dt_wf`` (dmipy-sim#225: one save interval of contact too many, 1 % at 0.2 um).
+
+    With ``t0`` the saves are those of the WINDOW of the walk starting at ``t0`` on the gate's clock (RPK.md 4.3);
+    the window's first save ends no step of the window, so it weighs 0 as the walk's first save does."""
     chi = _held_samples(chi)
     Gc = np.zeros(chi.shape + (3,)); Gc[..., 0] = chi
-    t_hi = np.arange(int(n_t)) * float(dt_pack)
+    t_hi = float(t0 or 0.0) + np.arange(int(n_t)) * float(dt_pack)
     t_lo = t_hi - float(dt_pack)
     Q_hi = _cumulative_at(Gc, dt_wf, t_hi)[0][..., 0]
     Q_lo = _cumulative_at(Gc, dt_wf, np.clip(t_lo, 0.0, None))[0][..., 0]
     out = (Q_hi - Q_lo) / float(dt_pack)
-    out[:, 0] = 0.0                                                   # nothing accumulates before t = 0
+    out[:, 0] = 0.0                                                   # nothing accumulates before the window's start
     return out
 
 
-def gate_weights(chi, dt_wf, n_t, dt_pack):
+def gate_weights(chi, dt_wf, n_t, dt_pack, t0=None):
     """Per-save weights of a scalar sample-and-hold gate (a coherence gate ``chi(t)``, ``(n_wf,)`` or
     ``(n_meas, n_wf)`` on its own grid): :func:`effective_gradient` of one component, ``(n_meas|1, n_t)``.
     ``gate_weights(ones) `` sums to ``TE / dt_pack``: the exact duration in save units, the last sample being the
-    readout and held over nothing (as in :func:`bin_gate`)."""
+    readout and held over nothing (as in :func:`bin_gate`). ``t0`` reads the window of the walk starting there."""
     chi = _held_samples(chi)
     Gc = np.zeros(chi.shape + (3,)); Gc[..., 0] = chi
-    return effective_gradient(Gc, dt_wf, n_t, dt_pack)[..., 0]
+    return effective_gradient(Gc, dt_wf, n_t, dt_pack, t0=t0)[..., 0]
 
 
-def field_gate(waveform, n_t, dt_pack):
+def field_gate(waveform, n_t, dt_pack, t0=None):
     """The per-save weights that integrate a field SAMPLED at the saves over an acquisition: the sequence's own
     sign ``s(t)`` (its refocusing pulses, RPK.md 6.6) read on its grid onto the pack grid by :func:`gate_weights`,
     and zero beyond its echo -- so an acquisition shorter than the walk ends at its echo, and the gate is the one
-    ``G_eff`` was folded with. ``(n_t,)``; multiply per-save values by ``dt_pack`` and these weights."""
+    ``G_eff`` was folded with. ``(n_t,)``; multiply per-save values by ``dt_pack`` and these weights. ``t0`` reads
+    the window of the walk starting there."""
     t = np.arange(int(waveform.n_t)) * float(waveform.dt)
-    return gate_weights(waveform.rf.sign(t), float(waveform.dt), n_t, dt_pack)[0]
+    return gate_weights(waveform.rf.sign(t), float(waveform.dt), n_t, dt_pack, t0=t0)[0]
 
 
-def effective_gradient(G, dt_wf, n_t, dt_pack):
+def effective_gradient(G, dt_wf, n_t, dt_pack, t0=None):
     """The per-save weights of a waveform against the path: ``(n_meas, n_t, n_c)`` for a waveform of ``n_c``
     components (three, or the subset a consumer reads), such that
     ``gamma dt_pack sum_k Geff[k] . r[k]`` is **exactly** ``gamma int G(t) . r(t) dt`` for the piecewise-linear
@@ -156,8 +178,12 @@ def effective_gradient(G, dt_wf, n_t, dt_pack):
 
     On the pack's own grid this is the trapezoid rule; off it there is no interpolation of ``G`` at all, so
     an edge between two saves carries exactly its b. Every replay route reads this one function.
+
+    With ``t0`` the saves are those of the WINDOW of the walk starting at ``t0`` on the waveform's clock (RPK.md
+    4.3): the weights of a save shared by two windows are split into the two half-intervals exactly, so the
+    windows' phases sum to the whole walk's. Without it the whole walk is read and a gradient beyond it refused.
     """
-    A0, A1 = waveform_moments(G, dt_wf, n_t, dt_pack)
+    A0, A1 = waveform_moments(G, dt_wf, n_t, dt_pack) if t0 is None else window_moments(G, dt_wf, n_t, dt_pack, t0)
     n_meas = A0.shape[0]
     W = np.zeros((n_meas, int(n_t), A0.shape[2]))              # as many components as the waveform carries
     W[:, :-1, :] += A0 - A1 / float(dt_pack)

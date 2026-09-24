@@ -19,6 +19,7 @@ per-walker susceptibility-basis channel and its ``Q(H)`` contraction (a separate
 assembled here yet.
 """
 from __future__ import annotations
+import json
 import logging
 
 log = logging.getLogger(__name__)
@@ -830,6 +831,16 @@ def union_weights(w, shard, voxel, pool):
     return w
 
 
+def _walk_identity(wp):
+    """The walk parameters that shards of one walk share: everything but the walker count and the seeds, the
+    segment table's walks compared without theirs."""
+    out = {k: v for k, v in wp.items() if k not in ("n_walkers", "seed")}
+    seg = out.get("segments")
+    if isinstance(seg, dict):
+        out["segments"] = dict(seg, walks=[{k: v for k, v in w.items() if k != "seed"} for w in seg.get("walks", [])])
+    return out
+
+
 def _spec_identity(spec):
     """What makes two embedded specs the same substrate: the spec without its ``provenance`` (who wrote it, when,
     with which software, from which local path), plus the sha256 of every file it cites (the tracks ARE the
@@ -885,7 +896,7 @@ def merge_packs(packs, *, id, out_path=None, overlap="refuse", envelope=None, de
                     raise ValueError(f"the shards differ in {key}: {vals[0]!r} vs {v!r}")
             return vals[0]
         comp = same("compression", lambda pk: _codec_signature(pk.meta["compression"]))
-        wp = same("walk_params", lambda pk: {k: v for k, v in pk.meta["walk_params"].items() if k not in ("n_walkers", "seed")})
+        wp = same("walk_params", lambda pk: _walk_identity(pk.meta["walk_params"]))
         same("substrate", lambda pk: _spec_identity(pk.meta.get("substrate")))
         same("replay_envelope", lambda pk: pk.meta.get("replay_envelope"))
         pv0 = same("per-voxel grid", lambda pk: ((pk.meta.get("fidelity") or {}).get("per_voxel") or {}).get("grid"))
@@ -996,13 +1007,97 @@ def merge_packs(packs, *, id, out_path=None, overlap="refuse", envelope=None, de
         if comp_meta.get("walker_preserving"):
             comp_meta["precision_tiers"] = _precision_tiers(arrays, n_all, float(fid.get("floor_max") or 0.0), False)
         meta = dict(pks[0].meta)
+        seeds = [pk.meta["walk_params"]["seed"] for pk in pks]
+        seg0 = pks[0].meta["walk_params"].get("segments") or {}
         meta.update(id=id, compression=comp_meta, fidelity=fid,
-                    walk_params=dict(pks[0].meta["walk_params"], n_walkers=n_all, seed=[int(pk.meta["walk_params"]["seed"]) for pk in pks]),
+                    walk_params=dict(pks[0].meta["walk_params"], n_walkers=n_all, seed=seeds,
+                                     segments=dict(seg0, walks=[dict(w, seed=seeds) for w in seg0.get("walks", [])])),
                     provenance=dict(pks[0].meta.get("provenance") or {}, shards=[dict(id=pk.meta.get("id"), n_walkers=int(m)) for pk, m in zip(pks, n)]))
         if out_path is not None:
             write_rpk(out_path, arrays, meta)
             run.artifact(out_path)
         return ReplayPack(arrays, meta)
+
+
+SEGMENT_T = 0.1          #: the storage rule's window (s): a pack stores its walk in windows of this duration (RPK.md 4.3)
+_SHARED_KEYS = ("spin_weights", "comp_static", "band_block", "voxel_ijk", "voxel_certificate")
+
+
+def _is_shared_key(k):
+    """Whether a tensor is the walk's rather than a window's: per-walker constants and substrate tables."""
+    return k in _SHARED_KEYS or k.startswith("susc_grid_")
+
+
+def segment_plan(n_t, dt, segment_T):
+    """``(n_segments, n_t per segment)`` for a walk of ``n_t`` saves at ``dt`` stored in windows of ``segment_T``
+    seconds (RPK.md 4.3): one window when the walk is within it, else the walk must be a whole number of windows
+    on its save grid, and is refused otherwise. A pack declares its segment length; there is no other layout."""
+    n_t = int(n_t); dt = float(dt)
+    if segment_T is None or not float(segment_T) > 0.0:
+        raise ValueError("segment_T is the duration of the windows a pack stores its walk in (RPK.md 4.3), the storage "
+                         f"rule's {SEGMENT_T:g} s by default; got {segment_T!r}")
+    T = (n_t - 1) * dt
+    if T <= float(segment_T) * (1.0 + 1e-9):
+        return 1, n_t
+    steps = int(round(float(segment_T) / dt))
+    if steps < 2 or abs(steps * dt - float(segment_T)) > 1e-9 * float(segment_T):
+        raise ValueError(f"a segment of {float(segment_T):.6g} s is not a whole number of saves at dt = {dt:.6g} s; "
+                         "walk on a save grid that divides the segment")
+    if (n_t - 1) % steps:
+        raise ValueError(f"the walk's {T:.6g} s is not a whole number of {float(segment_T):.6g} s segments on its save "
+                         f"grid ({n_t - 1} steps, {steps} per segment); walk a whole number of segments, or pass the "
+                         "segment_T that divides it")
+    return (n_t - 1) // steps, steps + 1
+
+
+def _window_master(m, k0, k1):
+    """The master arrays of the window of saves ``[k0, k1]`` as a fresh walk of that window would have recorded
+    them: positions and tracks sliced, the contact of the window's first save 0 (it ends no step of the window),
+    the field samples the window's on the field's own grid, everything else the walk's."""
+    w = dict(m)
+    w["traj"] = np.asarray(m["traj"])[:, k0:k1 + 1]
+    w["T_max"] = float(k1 - k0) * float(m["dt_traj"])
+    for key in ("comp", "bfrac"):
+        a = m.get(key)
+        if a is not None and np.asarray(a).ndim == 2:
+            w[key] = np.asarray(a)[:, k0:k1 + 1]
+    if m.get("dlog_b") is not None:
+        d = np.array(np.asarray(m["dlog_b"])[:, k0:k1 + 1], copy=True)
+        if k0 > 0:
+            d[:, 0] = 0.0
+        w["dlog_b"] = d
+    if m.get("susc_field_samples") is not None:
+        every = int(m.get("susc_field_every", 1) or 1)
+        if k0 % every or k1 % every:
+            raise ValueError(f"the field was sampled every {every} saves and a segment boundary at save {k0 if k0 % every else k1} "
+                             "is not on that grid; walk with a segment that is a whole number of field samples")
+        w["susc_field_samples"] = np.asarray(m["susc_field_samples"])[:, k0 // every:k1 // every + 1]
+    return w
+
+
+def combine_segment_fidelity(fids):
+    """The whole walk's certificate as the BOUND over its segments' (RPK.md 4.3): every error term the sum over
+    the windows (a replay across them sums their contributions, which may add coherently), every floor the largest,
+    and ``certified = "bounded"``. What a prefix of whole windows or an appended continuation carries; a walk built
+    in one go measures the positions battery over the whole instead."""
+    fids = [dict(f) for f in fids]
+    out = dict(metric=fids[0].get("metric"), certified="bounded", segments=fids)
+    keys = sorted({k for f in fids for k in f if k.startswith(("err_", "floor_"))})
+    for k in keys:
+        vals = [f.get(k) for f in fids]
+        if any(v is None for v in vals):
+            continue
+        out[k] = float(sum(vals)) if k.startswith("err_") else float(max(vals))
+    fams = sorted({fam for f in fids for fam in (f.get("per_family") or {})})
+    if fams:
+        out["per_family"] = {fam: dict(err_max=float(sum(f["per_family"][fam]["err_max"] for f in fids if fam in (f.get("per_family") or {}))),
+                                       floor_max=float(max(f["per_family"][fam]["floor_max"] for f in fids if fam in (f.get("per_family") or {}))))
+                             for fam in fams}
+    if "noise_floor" in fids[0]:
+        out["noise_floor"] = float(max(f.get("noise_floor", 0.0) for f in fids))
+    if "err_max" in out and "floor_max" in out:
+        out["within_2x_floor"] = bool(out["err_max"] <= 2.0 * out["floor_max"])
+    return out
 
 
 def _run_provenance(run, walk):
@@ -1199,8 +1294,15 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto"
                       blt_temporal_K=None, blt_dtype=np.float16, susc_path_K=None, susc_path_bits=8, voxel_grid=None,
                       position_container=None, blt_container=None,
                       diffusivity=None, substrate_frame=None, out_path=None, verbose=False,
-                      fidelity="measured", fidelity_from=None, device="auto"):
+                      fidelity="measured", fidelity_from=None, device="auto", segment_T=SEGMENT_T, _occupancy_runs=False):
     """Compress a persistent walk and assemble a self-certifying replay pack.
+
+    The walk is stored in SEGMENTS of ``segment_T`` seconds (RPK.md 4.3; the storage rule's 100 ms): a walk within
+    one is one segment, a longer one a whole number of them on its save grid (refused otherwise), each window
+    encoded with the same codec at the same ``K`` and certified on its own, the whole certified over the full
+    walk; segment 0's tensors under the channel names, segment ``i`` under ``s{i}/``. ``K`` and ``susc_path_K``
+    are per segment. A prefix of whole segments is then a range of the file, and a walk is continued by
+    appending segments (:meth:`~dmipy_sim.replay.replay.ReplayPack.truncate`, :func:`continue_walk`).
 
     ``fidelity`` is what this pack certifies (RPK.md 9.4 rule 4): ``"measured"`` replays the envelope's battery
     on the raw and the decoded walk and reports the codec error against the split-half floor, per tier; a pack
@@ -1243,6 +1345,14 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto"
         src = _walk_master(walk, weights=weights, field=field, diffusivity=diffusivity, substrate_frame=substrate_frame)
         _cx.require_position_method(method)
         m = _master_arrays(src)
+        n_segments, n_seg = segment_plan(np.asarray(m["traj"]).shape[1], m["dt_traj"], segment_T)
+        if n_segments > 1:
+            kw = dict(id=id, license=license, citation=citation, method=method, envelope=envelope, tol=tol, K=K,
+                      temporal_bandwidth_hz=temporal_bandwidth_hz, err_target=err_target, sigma_star=sigma_star,
+                      provenance=provenance, blt_temporal_K=blt_temporal_K, blt_dtype=blt_dtype, susc_path_K=susc_path_K,
+                      susc_path_bits=susc_path_bits, voxel_grid=voxel_grid, position_container=position_container,
+                      blt_container=blt_container, verbose=verbose, fidelity=fidelity, fidelity_from=fidelity_from, device=device)
+            return _build_segmented(m, n_segments, n_seg, run, walk, out_path, **kw)
         if m.get("substrate_frame") is not None:              # a declared frame the walk contradicts is refused (#194)
             sub = m.get("substrate") or {}
             bundles = (sub.get("realisation") or {}).get("bundles") if isinstance(sub, dict) else None
@@ -1372,7 +1482,7 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto"
                 _cols = {"comp": np.asarray(m["comp"])}
                 if m.get("bfrac") is not None:
                     _cols["bound"] = np.asarray(m["bfrac"]); channels["mt"] = True
-                _a, _cm = _cx.encode_occupancy(_cols)
+                _a, _cm = _cx.encode_occupancy(_cols, force_runs=_occupancy_runs)
                 arrays.update(_a); chan_meta["compartment"] = _cm
                 if m.get("w") is not None:
                     arrays["spin_weights"] = np.asarray(m["w"], np.float32)
@@ -1493,6 +1603,8 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto"
             compression=comp_meta,
             walk_params=dict(n_walkers=int(m["n_walkers"]), n_t=int(n_t), dt_traj=dt,
                              T_max=float(m["T_max"]), diffusivity=m.get("D_intra"), seed=seed_value(m["seed"]),
+                             segments=dict(n=1, n_t=int(n_t), T=float((int(n_t) - 1) * dt),
+                                           walks=[dict(first=0, last=0, seed=seed_value(m["seed"]))]),
                              cell_size=m.get("cell_size"),
                              substrate_frame=(None if m.get("substrate_frame") is None
                                               else np.asarray(m["substrate_frame"], float).tolist())),
@@ -1514,6 +1626,85 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto"
             log.info(f"[pack] {id} method={method} K={K} err={fid['err_max']:.4f} "
                   f"floor={fid['floor_max']:.4f} within2x={fid['within_2x_floor']}")
         return pack
+
+
+def _build_segmented(m, n_segments, n_seg, run, walk, out_path, *, id, K, temporal_bandwidth_hz, blt_temporal_K, susc_path_K,
+                     fidelity, fidelity_from, envelope, **kw):
+    """:func:`build_replay_pack` for a walk of ``n_segments`` windows of ``n_seg`` saves: every window built as a
+    pack of its own from the walk's arrays of that window (:func:`_window_master`), with segment 0's band, contact
+    codec and occupancy form, then assembled -- the windows' tensors under ``s{i}/`` beside the tensors the walk
+    shares, the whole's positions battery measured over the full walk and its tier terms the bound over the
+    windows (:func:`combine_segment_fidelity`), every window's certificate kept under ``fidelity.segments``."""
+    dt = float(m["dt_traj"]); steps = n_seg - 1
+    T_seg = steps * dt
+    comp = m.get("comp")
+    crosses = comp is not None and np.asarray(comp).ndim == 2 and bool(np.any(np.asarray(comp)[:, 1:] != np.asarray(comp)[:, :-1]))
+    if temporal_bandwidth_hz is not None and K is None:
+        K = max(2, int(np.ceil(2.0 * float(temporal_bandwidth_hz) * T_seg)))
+    packs = []
+    for i in range(n_segments):
+        run.phase(f"segment {i + 1} of {n_segments}")
+        w = _window_master(m, i * steps, (i + 1) * steps)
+        if i == 0:
+            pk = build_replay_pack(w, id=f"{id}", K=K, blt_temporal_K=blt_temporal_K, susc_path_K=susc_path_K, fidelity=fidelity,
+                                   fidelity_from=fidelity_from, envelope=envelope, segment_T=T_seg, _occupancy_runs=crosses, **kw)
+            K = int(pk.K)
+            c2 = (pk.meta["compression"].get("channels") or {}).get("boundary_local_time")
+            if c2 is not None:
+                if c2.get("mode") != "bridge_dst":
+                    raise ValueError("a walk stored in segments keeps its contact channel in the bridge form, and segment 0 chose "
+                                     f"{c2.get('mode')!r}; pass blt_temporal_K=")
+                blt_temporal_K = int(c2["K"])
+        else:
+            pk = build_replay_pack(w, id=f"{id}", K=K, blt_temporal_K=blt_temporal_K, susc_path_K=susc_path_K, fidelity=fidelity,
+                                   fidelity_from=fidelity_from, envelope=envelope, segment_T=T_seg, _occupancy_runs=crosses,
+                                   voxel_grid=None, **{k_: v_ for k_, v_ in kw.items() if k_ != "voxel_grid"})
+        packs.append(pk)
+    arrays = dict(packs[0].arrays)
+    for i, pk in enumerate(packs[1:], start=1):
+        for k, v in pk.arrays.items():
+            if _is_shared_key(k):
+                if not np.array_equal(np.asarray(v), np.asarray(arrays[k])):
+                    raise ValueError(f"segment {i} disagrees with segment 0 in the shared tensor {k!r}")
+                continue
+            arrays[f"s{i}/{k}"] = v
+    # the whole: the positions battery measured over the full walk (the walk is in hand), the tier terms bounded
+    fid = combine_segment_fidelity([pk.meta["fidelity"] for pk in packs])
+    if fidelity == "measured":
+        run.phase("certificate whole")
+        X = np.asarray(m["traj"], np.float64)
+        pos = np.concatenate([pk.positions()[:, (0 if j == 0 else 1):] for j, pk in enumerate(packs)], axis=1)
+        whole = _cx.measure_fidelity(X, dt, pos, envelope or _cx.default_envelope())
+        del X, pos
+        tier_err = [fid[k] for k in fid if k.startswith("err_") and k != "err_max"]
+        tier_floor = [fid[k] for k in fid if k.startswith("floor_") and k != "floor_max"]
+        fid.update(per_family=whole["per_family"], noise_floor=whole["noise_floor"],
+                   err_max=float(max([whole["err_max"]] + tier_err)), floor_max=float(max([whole["floor_max"]] + tier_floor)),
+                   certified="measured", positions="measured over the whole walk", tiers="bounded over the segments")
+        fid["within_2x_floor"] = bool(fid["err_max"] <= 2.0 * fid["floor_max"])
+    meta = json.loads(json.dumps(packs[0].meta))
+    n_t = n_segments * steps + 1
+    cm = meta["compression"]
+    chans = cm.get("channels") or {}
+    for c, mm in chans.items():                                   # the measured numbers: the worst over the windows
+        if isinstance(mm, dict):
+            for k in _MEASURED_CHANNEL_KEYS:
+                vals = [((pk.meta["compression"].get("channels") or {}).get(c) or {}).get(k) for pk in packs]
+                if all(v is not None for v in vals):
+                    mm[k] = float(max(vals))
+    if cm.get("walker_preserving"):
+        cm["precision_tiers"] = _precision_tiers(arrays, int(m["n_walkers"]), float(fid.get("floor_max") or 0.0), bool(m.get("walkers_shuffled")))
+    meta["walk_params"].update(n_t=int(n_t), T_max=float(m["T_max"]),
+                               segments=dict(n=int(n_segments), n_t=int(n_seg), T=float(T_seg),
+                                             walks=[dict(first=0, last=int(n_segments) - 1, seed=seed_value(m["seed"]))]))
+    meta["fidelity"] = fid
+    meta["provenance"] = dict(meta.get("provenance") or {}, run=_run_provenance(run, walk))
+    run.phase("write")
+    pack = ReplayPack(arrays, meta, source=out_path)
+    if out_path is not None:
+        write_rpk(out_path, {k: v for k, v in arrays.items() if v is not None}, meta)
+        run.artifact(out_path)
+    return pack
 
 
 def build_to_floor(make_model, *, id, envelope=None, sigma_star=1e-3, pilot_n=8000,

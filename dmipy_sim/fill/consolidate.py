@@ -262,13 +262,13 @@ class Consolidator:
         return meta
 
     def add(self, name, pk):
-        from ..replay.bank import _codec_signature, _agree, _spec_identity, _MEASURED_CHANNEL_KEYS
+        from ..replay.bank import _codec_signature, _agree, _spec_identity, _walk_identity, _MEASURED_CHANNEL_KEYS
         from ..replay.compression import read_position_coeffs
         from ..phantom.grid import Grid
         meta = pk.meta; n = int(meta["walk_params"]["n_walkers"])
         meta = self.normalise_path(name, pk, meta)
         ident = dict(compression=_codec_signature(meta["compression"]),
-                     walk_params={k: v for k, v in meta["walk_params"].items() if k not in ("n_walkers", "seed")},
+                     walk_params=_walk_identity(meta["walk_params"]),
                      substrate=_spec_identity(meta.get("substrate")), replay_envelope=meta.get("replay_envelope"),
                      grid=meta["fidelity"]["per_voxel"]["grid"], names=sorted(k for k in pk.arrays if k != "band_block"))
         if self.meta0 is None:
