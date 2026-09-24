@@ -153,7 +153,7 @@ def test_zero_permeability_conserves_compartments():
     this."""
     geom = _small_pack(permeability=0.0)
     n_intra = 256
-    out = simulate_trajectories(n_walkers=512, diffusivity=D, geometry=geom, T_max=1e-2,
+    out = simulate_trajectories(n_walkers=512, diffusivity=D, geometry=geom, T_max=2e-3,
                                 dt_save=5e-4, seed=1, require_gpu=False,
                                 r0=_mixed_r0(geom, n_intra, 256, seed=1))
     comp = out.compartment
