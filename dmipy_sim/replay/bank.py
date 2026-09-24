@@ -1659,6 +1659,9 @@ def _build_segmented(m, n_segments, n_seg, run, walk, out_path, *, id, K, tempor
             pk = build_replay_pack(w, id=f"{id}", K=K, blt_temporal_K=blt_temporal_K, susc_path_K=susc_path_K, fidelity=fidelity,
                                    fidelity_from=fidelity_from, envelope=envelope, segment_T=T_seg, _occupancy_runs=crosses, **kw)
             K = int(pk.K)
+            pm0 = (pk.meta["compression"].get("channels") or {}).get("susceptibility_path")
+            if pm0 is not None:
+                susc_path_K = int(pm0["K"])                   # a band derived on window 0 is every window's
             c2 = (pk.meta["compression"].get("channels") or {}).get("boundary_local_time")
             if c2 is not None:
                 if c2.get("mode") != "bridge_dst":
