@@ -35,12 +35,18 @@ def test_check_gpu_silent_small_run_and_optout(monkeypatch, recwarn):
 
 
 def test_free_gpu_memory_safe_and_aggressive():
+    """The safe release deletes nothing; the aggressive one deletes every live array, so it runs in a process of its
+    own, where the arrays it deletes are its own and not a compiled program another test still reads (dmipy-sim#407)."""
+    import subprocess, sys
     import jax.numpy as jnp
     x = jnp.ones((128, 128))          # a live array
     assert free_gpu_memory() == 0     # safe default deletes nothing
     assert float(x.sum()) == 128 * 128  # still usable
-    n = free_gpu_memory(aggressive=True)  # nuclear: deletes live arrays
-    assert isinstance(n, int) and n >= 1
+    code = ("import jax.numpy as jnp\nfrom dmipy_sim.engine.gpu import free_gpu_memory\n"
+            "x = jnp.ones((128, 128)); n = free_gpu_memory(aggressive=True)\nassert isinstance(n, int) and n >= 1, n\nprint(n)")
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=600)
+    assert out.returncode == 0, out.stderr[-2000:]
+    assert int(out.stdout.strip().splitlines()[-1]) >= 1
 
 
 def test_list_gpu_processes_returns_list():
