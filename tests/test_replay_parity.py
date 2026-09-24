@@ -78,7 +78,7 @@ def _mesh_spec():
     V = np.asarray(m.vertices, np.float64)
     F = np.asarray(m.faces, np.int32)
     return (d.Mesh(V, F, feature_radius=_MESH_FEATURE),
-            d.Mesh(V, F, feature_radius=_MESH_FEATURE, intra={"surface_relaxivity_t2": RHO}),
+            d.Mesh(V, F, feature_radius=_MESH_FEATURE, compartments=d.Compartments(intra=d.Pool(surface_relaxivity_t2=RHO))),
             _N_MESH, _WF_MESH)
 
 
