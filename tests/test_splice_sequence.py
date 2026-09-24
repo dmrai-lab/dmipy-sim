@@ -275,22 +275,22 @@ def test_what_b_value_each_echo_of_a_split_train_actually_delivers():
     np.testing.assert_allclose(delivered(120.0, 0.0), 0.0, atol=2e6)
 
     # At 180 degrees one pathway survives, so every echo of both families delivers the SAME b -- which is
-    # what makes this measurement trustworthy. It is not the prepared b: reading a quarter-interval off the
-    # echo costs about an eighth of it.
+    # what makes this measurement trustworthy -- and it is the prepared b: no gradient plays past the
+    # preparation, so a readout off the echo adds no weighting. Read to the pack's Monte-Carlo floor, a tenth
+    # of b at this walker count (S = 0.15 against a floor of 0.014; dmipy-sim#408).
     at180 = delivered(180.0, prepared)
     assert at180.std() < 0.01 * at180.mean()
-    assert 0.85 < at180.mean() / prepared < 0.91
+    assert 0.9 < at180.mean() / prepared < 1.1
 
     # Below 180 the pathways part, and the delivered b is read off ratios of signals that carry the pack's own
     # Monte-Carlo noise, which at 4 000 walkers spread the echoes by a quarter and at 16 000 by a tenth: that
-    # number is resolved to the walker count, not a property of the train. What holds is the mean, about
-    # 0.86 of the prepared b (0.84 to 0.89 over crusher seeds and walker counts from 16 000 to 32 000), and
-    # a spread well under the quarter a noisier pack shows.
+    # spread is resolved to the walker count, not a property of the train. What holds is the mean, the
+    # prepared b within the floor, and a spread well under the quarter a noisier pack shows.
     at120 = delivered(120.0, prepared)
     spread = (at120.max() - at120.min()) / at120.mean()
     assert spread < 0.25, f"echo-to-echo spread {spread:.3f}"
-    assert 0.80 < at120.mean() / prepared < 0.92
-    assert at120.min() / prepared > 0.7 and at120.max() / prepared < 1.0
+    assert 0.9 < at120.mean() / prepared < 1.1
+    assert at120.min() / prepared > 0.85 and at120.max() / prepared < 1.15
 
 
 def test_the_prolonged_readouts_own_diffusion_weighting_is_negligible():

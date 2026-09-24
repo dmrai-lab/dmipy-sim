@@ -149,3 +149,50 @@ def test_the_bound_over_segments():
 def test_a_pack_without_the_table_is_refused():
     with pytest.raises(ValueError, match="walk_params.segments"):
         d.replay.ReplayPack({"pos_x": np.zeros((2, 4), np.float32)}, {"walk_params": {"n_t": 3}}).n_segments
+
+
+def _crushed_train(n_echoes=8, beta=120.0):
+    """A refocusing train of 2 ms echoes over 16 ms with a crusher pair about every pulse: echoes in both windows."""
+    import dataclasses
+    from dmipy_sim import sequences
+    s = sequences.cpmg(n_echoes, 2e-3, beta_deg=beta, gradient_directions=[[1.0, 0, 0]], bvalues=[0.0], n_t_per_echo=40)
+    wins = [(float(e.t_s) - 0.5e-3, float(e.t_s) + 0.5e-3) for e in s.rf if e.label in ("refocus", "refocusing")]
+    return dataclasses.replace(s, crusher={"windows_s": wins, "n_cycles": 16.0})
+
+
+@pytest.mark.parametrize("engine", ["numpy", "jax"])
+@pytest.mark.parametrize("knobs", [dict(), dict(tissue=TIS, scanner=3.0), dict(tissue=TIS, b1_scale=0.9), dict(off_resonance_T=2e-7)])
+def test_the_bloch_route_hands_the_state_across_windows(packs, knobs, engine):
+    """The vector-Bloch propagation over two windows, the refocusing pulse exactly on the join, equals the one-window
+    propagation to rounding; the state every walker leaves a window in is the state it starts the next in."""
+    m, one, two = packs
+    seq = _seq()                                                                  # the 180 at 10 ms: the boundary save
+    a = one.replay_bloch(seq, complex_signal=True, jax=(engine == "jax"), **knobs)
+    b = two.replay_bloch(seq, complex_signal=True, jax=(engine == "jax"), **knobs)
+    npt.assert_allclose(b, a, atol=1e-6)
+    if engine == "numpy":
+        w, ew, E1 = one.walker_signals(seq, **knobs) if "b1_scale" in knobs or "off_resonance_T" in knobs else (None, None, None)
+        if E1 is not None:
+            w, ew, E2 = two.walker_signals(seq, **knobs)
+            npt.assert_allclose(E2, E1, atol=1e-5)
+
+
+def test_a_crushed_train_spans_the_windows(packs):
+    m, one, two = packs
+    train = _crushed_train()
+    a = one.replay_bloch(train, tissue=TIS, complex_signal=True, jax=True)
+    b = two.replay_bloch(train, tissue=TIS, complex_signal=True, jax=True)
+    assert a.shape == (1, 8)
+    npt.assert_allclose(b, a, atol=1e-5)
+
+
+def test_the_bloch_route_reads_at_the_acquisitions_readout(packs):
+    """A short acquisition on a long pack is read at its own readout, not at the walk's end: the two-window pack,
+    the one-window pack and the first window alone agree, and with an ideal pulse the scalar route agrees too."""
+    m, one, two = packs
+    short = d.pgse([[1, 0, 0]], 0.002, 0.006, gradient_strengths=0.3, n_t=21, slew_rate=np.inf)   # TE = 10 ms of 20
+    a = one.replay_bloch(short, tissue=TIS, complex_signal=True)
+    b = two.replay_bloch(short, tissue=TIS, complex_signal=True)
+    c = two.segment(0).replay_bloch(short, tissue=TIS, complex_signal=True)
+    npt.assert_allclose(b, a, atol=1e-8); npt.assert_allclose(c, a, atol=1e-8)
+    npt.assert_allclose(np.abs(a), one.replay(short, tissue=TIS), rtol=1e-4)
