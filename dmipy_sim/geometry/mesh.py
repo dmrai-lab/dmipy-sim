@@ -43,35 +43,18 @@ from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
-from ._grid import bucket_by_bbox
+from ._grid import bucket_by_bbox, NEIGHBOUR_OFFSETS, gather, wrap_periodic
 from ._boundary import specular, transmit_probability, off_wall
 import numpy as np
 
 from .base import Geometry, LengthScales
-from ..compartments import Compartments, Pool
+from ..compartments import POOL_NAMES, Compartments, Pool
 
 # Above this median-edge / feature-radius ratio the surface is too coarsely
 # tessellated for membrane permeability to reach the MC noise floor (its faceting
 # bias falls ~O(h^2); measured: ratio 0.075 -> ~8x noise, 0.038 -> at noise floor).
 # Restricted diffusion and surface relaxivity are unaffected at these ratios.
 _PERM_EDGE_RATIO_MAX = 0.05
-
-
-def _rotation_from_z(axis):
-    """Rotation matrix R (mesh->lab) with R @ [0,0,1] = axis / |axis|.
-
-    The in-plane (azimuthal) choice is arbitrary; pass an explicit ``R`` instead
-    for meshes whose in-plane orientation matters.
-    """
-    a = np.asarray(axis, float)
-    a = a / np.linalg.norm(a)
-    z = np.array([0.0, 0.0, 1.0])
-    v = np.cross(z, a)
-    c = float(np.dot(z, a))
-    if np.linalg.norm(v) < 1e-12:                 # parallel or anti-parallel
-        return np.eye(3) if c > 0 else np.diag([1.0, -1.0, -1.0])
-    vx = np.array([[0, -v[2], v[1]], [v[2], 0, -v[0]], [-v[1], v[0], 0]])
-    return np.eye(3) + vx + vx @ vx * (1.0 / (1.0 + c))   # Rodrigues
 
 
 def _smooth_vertex_normals(V, F):
@@ -226,18 +209,11 @@ class _MeshArrays(NamedTuple):
 
 
 def _wrap_arr(A, r):
-    w = A.VMIN + jnp.mod(r - A.VMIN, A.L)
-    return jnp.where(A.PER > 0, w, r)
+    return wrap_periodic(A.VMIN, A.L, A.PER, r)
 
 
 def _gather_arr(A, r_w):
-    c = jnp.clip(jnp.floor((r_w - A.GMIN) / A.CS).astype(jnp.int32), 0, A.dims_arr - 1)
-    nb = jnp.clip(c[None, :] + A.OFF, 0, A.dims_arr - 1)
-    # dims taken from the traced array, not as static Python ints, so nothing is baked in
-    cids = (nb[:, 0] * A.dims_arr[1] + nb[:, 1]) * A.dims_arr[2] + nb[:, 2]
-    cand = A.CELL[cids].reshape(-1)
-    valid = cand >= 0
-    return jnp.where(valid, cand, 0), valid
+    return gather(A.CELL, A.OFF, A.GMIN, A.CS, A.dims_arr, r_w)
 
 
 def _gather_is_populated(A, r):
@@ -292,9 +268,6 @@ _populated_batch = jax.jit(jax.vmap(_gather_is_populated, in_axes=(None, 0)))
 
 
 
-POOL_NAMES = ("extra", "intra")
-
-
 def _seed_pool(pool):
     """Pool id of a seeding request: ``"intra"`` / 1 -> 1, ``"extra"`` / 0 -> 0."""
     if pool in ("intra", 1, True):
@@ -320,15 +293,15 @@ class Mesh(Geometry):
     voxel_min, voxel_max : (3,) array-like, optional
         The simulation box.  Defaults to the mesh bounding box (closed meshes only).
     feature_radius : float, optional
-        Characteristic feature size (e.g. a cell/pore radius), used to size the
-        diffusion sub-step (``step ~ feature_radius/6``, or ``/25`` when permeable)
-        and, through it, the grid.  Defaults to half the smallest box side, which is
+        Characteristic feature size (e.g. a cell/pore radius), used to size the grid
+        cell and, through the collision criterion on that cell, the diffusion sub-step
+        (a step may not outrun the 27-cell gather).  Defaults to half the smallest box side, which is
         the pore of a closed cell and far too large for a bundle in a big box: **pass
         the real cell radius for packed substrates**, otherwise the step is too coarse.
     surface_relaxivity_t2 : float, optional
         Surface relaxivity ρ₂ (m/s), symmetric (same on both sides of the wall).
-        Applies a Brownstein–Tarr weight at the wall. For a side-dependent ρ, use
-        ``intra=``/``extra=`` instead.
+        Applies a Brownstein–Tarr weight at the wall. A side-dependent ρ is given per pool
+        through ``compartments=``.
     permeability : float or dict, optional
         Membrane permeability κ (m/s).  A float is symmetric (same both directions,
         the default). A dict ``{"intra_to_extra": κ_out, "extra_to_intra": κ_in}``
@@ -344,8 +317,6 @@ class Mesh(Geometry):
         1/T2 · χ + 1/T1 · (1−χ)); if given, a value is required for BOTH pools. T1 only acts
         during longitudinal storage (χ=0, e.g. a PGSTE mixing time). Unequal ``D`` across a
         permeable wall is rejected (diffusivity-discontinuity interface).
-    intra, extra : dict, optional
-        The previous spelling of ``compartments``; accepted with a ``DeprecationWarning``.
     pool : {"intra", "extra"}
         The pool a driver seeds when it is given no ``r0``: inside the surface (``"intra"``, id 1)
         or outside it (``"extra"``, id 0). Stated at construction so that "which pool did this run
@@ -389,7 +360,7 @@ class Mesh(Geometry):
 
     def __init__(self, vertices, faces, *, periodic=False, voxel_min=None,
                  voxel_max=None, feature_radius=None, surface_relaxivity_t2=None,
-                 permeability=None, compartments=None, intra=None, extra=None, orientation=None,
+                 permeability=None, compartments=None, orientation=None,
                  R=None, cell_size=None, cap=None, max_bounces=None, pool="intra", reject_escape=True,
                  box_reflect=True, adaptive_nudge=False):
         V = np.asarray(vertices, np.float64)
@@ -494,21 +465,6 @@ class Mesh(Geometry):
         # engine's step builder) times a per-side/-direction multiplier applied in
         # reflect_with_log_weight / permeate.  Bulk diffusivity and T2 remain single
         # (set on simulate()); per-compartment D/T2 is a later layer.
-        _allowed = {"surface_relaxivity_t2", "D", "T2", "T1"}
-        if intra is not None or extra is not None:
-            warnings.warn("Mesh(intra=, extra=) is spelled Mesh(compartments=Compartments(intra=Pool(...), "
-                          "extra=Pool(...))); the dicts go away next release.", DeprecationWarning,
-                          stacklevel=2)
-            if compartments is not None:
-                raise ValueError("give the per-compartment properties through compartments= OR "
-                                 "intra=/extra=, not both")
-            for _side, _d in (("intra", intra or {}), ("extra", extra or {})):
-                _bad = set(_d) - _allowed
-                if _bad:
-                    raise NotImplementedError(
-                        f"Mesh {_side}={sorted(_bad)}: supported per-compartment properties are "
-                        f"{sorted(_allowed)}.")
-            compartments = {k: v for k, v in (("intra", intra), ("extra", extra)) if v}
         comps = Compartments.coerce(compartments)
         if "myelin" in comps:
             raise ValueError("a Mesh has two pools, extra (0) and intra (1); it has no myelin pool")
@@ -586,7 +542,8 @@ class Mesh(Geometry):
         if R is not None:
             Rm = np.asarray(R, np.float64).reshape(3, 3)
         elif orientation is not None:
-            Rm = _rotation_from_z(orientation)
+            from ..replay.so3 import rotation_of                          # R z = orientation; the azimuth is the convention's
+            Rm = rotation_of(orientation)
         else:
             Rm = None
         # mesh->lab rotation; None when unoriented (simulate skips the hook).
@@ -710,8 +667,7 @@ class Mesh(Geometry):
             chord_floor = 2.0 * float(self._GRAZE) * float(self.radius)
             max_bounces = max(10, int(np.ceil(0.9 * float(self.cell_size) / chord_floor)) + 2)
         self._MAX_BOUNCES = int(max_bounces)
-        self._OFF = jnp.asarray([[dx, dy, dz] for dx in (-1, 0, 1)
-                                 for dy in (-1, 0, 1) for dz in (-1, 0, 1)], jnp.int32)
+        self._OFF = jnp.asarray(NEIGHBOUR_OFFSETS)
         self._A = _MeshArrays(NRM=self._NRM, CENT=self._CENT, CELL=self._CELL,
                               dims_arr=self._dims_arr, GMIN=self._GMIN, CS=self._CS,
                               VMIN=self._VMIN, L=self._L, PER=self._PER, OFF=self._OFF)
@@ -724,17 +680,10 @@ class Mesh(Geometry):
 
     # ------------------------------------------------------------------
     def _wrap(self, r):
-        w = self._VMIN + jnp.mod(r - self._VMIN, self._L)
-        return jnp.where(self._PER > 0, w, r)
+        return wrap_periodic(self._VMIN, self._L, self._PER, r)
 
     def _gather(self, r_w):
-        c = jnp.clip(jnp.floor((r_w - self._GMIN) / self._CS).astype(jnp.int32),
-                     0, self._dims_arr - 1)
-        nb = jnp.clip(c[None, :] + self._OFF, 0, self._dims_arr - 1)
-        cids = (nb[:, 0] * self._DIMS[1] + nb[:, 1]) * self._DIMS[2] + nb[:, 2]
-        cand = self._CELL[cids].reshape(-1)
-        valid = cand >= 0
-        return jnp.where(valid, cand, 0), valid
+        return gather(self._CELL, self._OFF, self._GMIN, self._CS, self._dims_arr, r_w)
 
     def _hit_floor(self, bouncing):
         """Lower bound on an accepted hit distance, conditioned on whether the walker is MID-BOUNCE.
@@ -1013,37 +962,16 @@ class Mesh(Geometry):
         return t[ax], n, ax
 
     # ------------------------------------------------------------------
-    def init_positions(self, n_walkers, key, pool=None, intra=None):
+    def init_positions(self, n_walkers, key, pool=None):
         """Seed walkers in ``pool`` (default: the geometry's ``pool``) by exact rejection sampling.
 
-        Every candidate is decided by :func:`mesh_contains` -- ray-crossing parity, a global test.
-
-        It used to be decided by the cell-gather classifier, with the exact test reserved for points
-        whose gather was empty. That is the wrong way round. The classifier is nearest-CENTROID
-        sidedness, so the points it is least able to judge are the ones NEAR a wall, which are exactly
-        the points with a populated gather; the branch that got the exact treatment was the one that
-        needed it least. Measured on a closed cylinder, seeding "intra" put 6.3% of the pool OUTSIDE the
-        surface at the coarsest grid setting, 1.1% and 0.7% as it was refined -- coarser mesh, bigger
-        triangles, worse. Walkers that were never inside then read as walkers that escaped, which is how
-        this masqueraded as a leak while #40/#41 were being chased.
-
-        The cost is bearable because ``mesh_contains`` is itself a cascade: ``mesh_inside`` proposes and
-        only the proposals are ray cast, and it has no false-OUTSIDE, so nothing genuinely inside is
-        discarded before the exact stage sees it. Seeding happens once per simulation, at setup.
-
-        Parity needs a CLOSED surface. A deliberately open one -- a periodic tube, whose rims are open
-        because the geometry continues through them -- has no parity, so those keep the old cell-gather
-        path and its known inaccuracy. That is a preserved behaviour, not an endorsement; the accurate
-        treatment for an open surface is tracked with this issue.
+        On a closed surface every candidate is decided by :func:`mesh_contains`, ray-crossing parity, a global
+        test: ``mesh_inside`` proposes, only the proposals are ray cast, and nothing genuinely inside is discarded
+        before the exact stage sees it. An open surface (a periodic tube, whose rims are open because the geometry
+        continues through them) has no parity, so it is seeded by the cell-gather classifier, nearest-centroid
+        sidedness, which is inexact near a wall (#400).
         """
         from ..fields.susceptibility_field import mesh_contains
-        if intra is not None:
-            warnings.warn("init_positions(intra=...) is spelled pool='intra' / pool='extra', and the pool a "
-                          "driver seeds is the geometry's constructor argument Mesh(pool=...)",
-                          DeprecationWarning, stacklevel=2)
-            if pool is not None:
-                raise ValueError("give pool= or intra=, not both")
-            pool = "intra" if intra else "extra"
         intra = _seed_pool(self.pool if pool is None else pool) == 1
         rng = np.random.default_rng(int(jax.random.randint(key, (), 0, 2**30)))
         V = np.asarray(self.vertices, float)

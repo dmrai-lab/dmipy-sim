@@ -75,9 +75,9 @@ def test_caterpillar_spec_declares_the_frame_the_axons_run_along(caterpillar_csv
     t = read_caterpillar(caterpillar_csv)
     ax = t["cell_type"] == "axon"
     tilt = np.array([np.sin(np.radians(12.0)), 0.0, np.cos(np.radians(12.0))])
-    z = np.array([0.0, 0.0, 1.0]); v = np.cross(z, tilt); c = float(z @ tilt)
-    vx = np.array([[0, -v[2], v[1]], [v[2], 0, -v[0]], [-v[1], v[0], 0]])
-    R = np.eye(3) + vx + vx @ vx / (1.0 + c)                              # Rodrigues: R z = tilt
+    from dmipy_sim.replay.so3 import rotation_of
+    z = np.array([0.0, 0.0, 1.0])
+    R = rotation_of(tilt)                                                 # R z = tilt
     csv = str(tmp_path / "tilted.csv")
     write_caterpillar(csv, t["centers"] @ R.T, t["r_in"], t["r_out"], t["cell_type"], t["cell_id"], t["comp_id"])
     spec = caterpillar_spec(csv, glia=False)
