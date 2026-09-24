@@ -195,37 +195,29 @@ def test_reflect_landing_on_a_wall_never_changes_compartment(name, geom):
 
 
 def test_the_sentinel_does_not_seal_the_membrane():
-    """A cheap fast-lane guard on the OTHER failure mode of the compartment sentinel.
+    """The other failure mode of the compartment sentinel: rejecting the legal crossings too, which at kappa = 0 a
+    sealed wall and a correct wall cannot distinguish. One walker fired at the slab's membrane from a nudge, a
+    thousandth and a tenth of the width inside it, for one, three and ten times that offset: at kappa = 0 none
+    crosses; with ``2 kappa/D d_perp = 1`` for the shortest crossing every crossing impact does, whatever its key.
+    The rate against the two-compartment law is `test_permeable_crossings`, marked slow."""
+    xm = 2.5e-6
+    cases = []
+    for off in (1e-4 * xm, 1e-3 * xm, 0.1 * xm):
+        for mult in (1.0, 3.0, 10.0):
+            cases.append((np.array([xm - off, 0.0, 0.0]), np.array([mult * off, 0.0, 0.0])))
+    starts = jnp.asarray(np.stack([c[0] for c in cases]), jnp.float32)
+    steps = jnp.asarray(np.stack([c[1] for c in cases]), jnp.float32)
+    keys = jax.random.split(jax.random.PRNGKey(3), len(cases))
+    crossing = np.array([c[1][0] > 1.0001 * (xm - c[0][0]) for c in cases])
+    d_min = min(c[0][0] + c[1][0] - xm for c, x in zip(cases, crossing) if x)
+    D = 2.0e-9
 
-    The sentinel rejects a compartment change that no crossing granted. Get that wrong in
-    the obvious way and it rejects the legal ones too, silencing the physics instead of the
-    bug -- and at kappa = 0 a sealed wall and a correct wall are indistinguishable, so every
-    impermeable test above would still pass.
-
-    The quantitative check (crossing rate vs the closed two-compartment law) is a heavy MC
-    walk and lives in `test_permeable_crossings`, marked slow. This is the one-bit version:
-    an impermeable wall grants nothing, a permeable one grants something.
-    """
-    # kappa chosen so crossings appear in few steps: p_transmit = 2 (kappa/D) d_perp
-    # = 0.2 per wall hit, so a short walk suffices and the guard stays cheap.
-    n, n_steps, kappa_open = 1200, 700, 1.0e-2
-    D, step = 2.0e-9, SUB_STEP
-
-    def crossings(kappa):
+    def side(kappa):
         g = PermeableSlab1D(length=5e-6, permeability=kappa)
-        kod = jnp.float32(kappa / D)
-        f = jax.jit(jax.vmap(lambda p, s, k: g.permeate(p, s, kod, jnp.float32(0.0), k)[0],
-                             in_axes=(0, 0, 0)))
-        r = g.init_positions(n, jax.random.PRNGKey(0))       # all seeded in compartment A
-        rng = np.random.default_rng(3)
-        for i in range(n_steps):
-            d = rng.normal(size=(n, 3)); d /= np.linalg.norm(d, axis=1, keepdims=True)
-            r = f(r, jnp.asarray(d * step, jnp.float32),
-                  jax.random.split(jax.random.PRNGKey(i), n))
-        return int((np.asarray(r)[:, 0] >= 2.5e-6).sum())
+        f = jax.jit(jax.vmap(lambda p, s, k: g.permeate(p, s, jnp.float32(kappa / D), jnp.float32(0.0), k)[0]))
+        return np.asarray(jax.vmap(g.classify_position)(f(starts, steps, keys)))
 
-    assert crossings(0.0) == 0, "walkers crossed an impermeable membrane"
-    n_open = crossings(kappa_open)
-    assert n_open > 0, (
-        "no walker crossed a permeable membrane -- the sentinel has sealed the wall, "
-        "which no kappa=0 test can detect")
+    assert (side(0.0) == 1).all(), "a walker crossed an impermeable membrane"
+    lab = side(D / (2.0 * d_min))
+    assert (lab[crossing] == 0).all(), "a crossing the membrane must grant was refused: the sentinel has sealed the wall"
+    assert (lab[~crossing] == 1).all()
