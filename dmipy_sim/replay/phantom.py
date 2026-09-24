@@ -20,11 +20,10 @@ from pathlib import Path
 import numpy as np
 
 from ..phantom.grid import Grid
-from ..constants import GAMMA
+from ..constants import GAMMA, GAMMA_BAR
 from ..phantom.substrates import substrate_from_meta, _echo_time
-from .so3 import n_sh_coeffs
+from .so3 import n_sh_coeffs, lmax_of
 
-GAMMA_BAR = GAMMA / (2.0 * np.pi)
 
 __all__ = ["ReplayPhantom", "read_rph", "write_rph", "Grid", "SUBSTRATE_KINDS", "SCALAR_REGISTRY", "RPH_SCHEMA_VERSION"]
 
@@ -96,13 +95,6 @@ def _gather_jax(S, vp, F, weight, which, coeff):
     return S
 
 
-def _lmax_of_n_coeffs(n_c):
-    for l in range(0, 33, 2):
-        if n_sh_coeffs(l) == n_c:
-            return l
-    raise ValueError(f"{n_c} coefficients is not an even-order real SH block")
-
-
 
 # ------------------------------------------------------------------ writing
 def write_rph(path, *, voxel_index, substrate_id, geometric_fraction, substrates, grid, id, license, citation,
@@ -142,7 +134,7 @@ def write_rph(path, *, voxel_index, substrate_id, geometric_fraction, substrates
                "geometric_fraction": gf}
     if odf_sh is not None:
         tensors["odf_sh"] = np.asarray(odf_sh, np.float32)
-        ori_meta = {"mode": "odf_sh", "lmax": int(lmax if lmax is not None else _lmax_of_n_coeffs(tensors["odf_sh"].shape[-1])),
+        ori_meta = {"mode": "odf_sh", "lmax": int(lmax if lmax is not None else lmax_of(tensors["odf_sh"].shape[-1])),
                     "basis": "real", "convention": "orthonormal"}
     elif peak_dir is not None:
         tensors["peak_dir"] = np.asarray(peak_dir, np.float32)
@@ -168,19 +160,7 @@ def write_rph(path, *, voxel_index, substrate_id, geometric_fraction, substrates
 
     subs = [dict(s) for s in substrates]
     for i, rpk in (embed_packs or {}).items():
-        from .replay import read_rpk
-        import hashlib
-        if isinstance(rpk, (str, Path)):
-            pk = read_rpk(rpk)
-            subs[i]["sha256"] = hashlib.sha256(open(rpk, "rb").read()).hexdigest()
-        else:
-            pk = rpk
-            subs[i]["sha256"] = hashlib.sha256(
-                b"".join(np.ascontiguousarray(v).tobytes() for _, v in sorted(pk.arrays.items()))).hexdigest()
-        for k, v in pk.arrays.items():
-            tensors[f"substrate{i}/{k}"] = np.ascontiguousarray(v)
-        subs[i]["embedded"] = True
-        subs[i]["pack_meta"] = pk.meta
+        embed_pack(subs, tensors, i, rpk)
 
     meta = {"rph_schema_version": RPH_SCHEMA_VERSION, "id": id, "grid": g.to_meta(),
             "orientation": ori_meta, "substrates": subs, "license": license, "citation": citation}
@@ -190,6 +170,29 @@ def write_rph(path, *, voxel_index, substrate_id, geometric_fraction, substrates
     tensors = {k: np.ascontiguousarray(v) for k, v in tensors.items()}      # safetensors writes a buffer as it lies
     save_file(tensors, str(path), metadata={"rph": json.dumps(meta)})
     return meta
+
+
+def embed_pack(subs, tensors, i, rpk):
+    """Substrate ``i`` carried inside the phantom file: the pack's arrays under ``substrate{i}/``, its meta on the
+    row, and its identity -- the file's sha256 for a pack given by path, :attr:`ReplayPack.digest` for one in memory."""
+    from .replay import read_rpk
+    if isinstance(rpk, (str, Path)):
+        from ..fill.hub import sha256_of
+        pk, subs[i]["sha256"] = read_rpk(rpk), sha256_of(rpk)
+    else:
+        pk, subs[i]["sha256"] = rpk, rpk.digest
+    for k, v in pk.arrays.items():
+        tensors[f"substrate{i}/{k}"] = np.ascontiguousarray(v)
+    subs[i]["embedded"] = True
+    subs[i]["pack_meta"] = pk.meta
+
+
+def scatter_volume(shape, voxel_index, values, fill=np.nan):
+    """Per-voxel values back on the dense grid, ``shape + values.shape[1:]``, ``fill`` where there is no voxel."""
+    v = np.asarray(values)
+    out = np.full(tuple(shape) + v.shape[1:], fill, dtype=np.result_type(v.dtype, type(fill)))
+    out[tuple(np.asarray(voxel_index).T)] = v
+    return out
 
 
 # ------------------------------------------------------------------ reading
@@ -508,11 +511,11 @@ class ReplayPhantom:
                 d = d / np.maximum(np.linalg.norm(d, axis=1, keepdims=True), 1e-30)
                 sh = so3.real_sh(lmax, d, full=True)
             else:
-                from .fod import _C00, _lmax_of
+                from .fod import _C00
                 c = self.odf_sh[idx[:, 0], idx[:, 1]].astype(np.float64)            # (n_posed, n_c), compact even
                 if np.any(np.abs(c[:, 0] - _C00) > 1e-6 * _C00):
                     raise ValueError("an ODF slot is not a unit-integral density in the required basis")
-                l_odf = _lmax_of(c.shape[1])
+                l_odf = lmax_of(c.shape[1])
                 sh = np.zeros((c.shape[0], so3.n_sh_coeffs(int(lmax), full=True)))
                 for l in range(0, min(l_odf, int(lmax)) + 1, 2):                    # compact even -> full layout
                     sh[:, so3.sh_block(l, True)] = c[:, so3.sh_block(l, False)]
@@ -887,10 +890,7 @@ class ReplayPhantom:
     def to_volume(self, values, fill=np.nan):
         """Scatter per-voxel values back onto the dense grid: ``(nx, ny, nz) + values.shape[1:]``, with ``fill``
         where the sparse phantom has no voxel."""
-        v = np.asarray(values)
-        out = np.full(tuple(self.grid.shape) + v.shape[1:], fill, dtype=np.result_type(v.dtype, type(fill)))
-        out[tuple(self.voxel_index.T)] = v
-        return out
+        return scatter_volume(self.grid.shape, self.voxel_index, values, fill)
 
 
 def _static_spin_rf(waveform, b1_scale):

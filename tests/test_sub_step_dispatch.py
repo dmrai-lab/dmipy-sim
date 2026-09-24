@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+from dmipy_sim import Compartments, Pool
 from dmipy_sim.engine.physics import (resolve_sub_steps, walk_sub_steps, surface_sub_steps,
                                permeable_sub_steps, collision_sub_steps, mt_sub_steps,
                                make_step_fn, make_packed_myelin_step_fn)
@@ -25,7 +26,7 @@ def _sphere_rho():
 def _mesh_rho():
     from dmipy_sim.geometry import mesh_shapes
     V, F = mesh_shapes.icosphere(2e-6, subdivisions=2)
-    return d.Mesh(V, F, feature_radius=0.4e-6, intra={"surface_relaxivity_t2": 1e-6})
+    return d.Mesh(V, F, feature_radius=0.4e-6, compartments=Compartments(intra=Pool(surface_relaxivity_t2=1e-6)))
 
 
 def _packed_myelin():

@@ -147,9 +147,9 @@ def surface_to_volume(geometry):
 
 
 def resolve_equilibrate_mode(equilibrate_binding, geometry, *, G=None, T2=None, T2_bound=None):
-    """Map ``equilibrate_binding`` -> 'off' | 'burnin' | 'fast' for every MT driver.
+    """The binding equilibration an MT driver runs, 'off' | 'burnin' | 'fast', from ``equilibrate_binding``.
 
-    'auto' (the default when MT is on) -> 'burnin' (safe, geometry-agnostic). 'fast' seeds the
+    'burnin' (every driver's default) is geometry-agnostic. 'fast' seeds the
     equilibrium occupancy mid-air, so it needs a known S/V, else it warns and falls back to
     'burnin'. A driver with a readout passes ``G``, ``T2`` and ``T2_bound``: mid-air bound
     positions are position-invariant only when no gradient is on (``G == 0``) or the bound pool
@@ -158,9 +158,11 @@ def resolve_equilibrate_mode(equilibrate_binding, geometry, *, G=None, T2=None, 
     """
     import warnings
     eb = equilibrate_binding
-    if eb in (None, False, "off"):
+    if not isinstance(eb, str):
+        raise ValueError(f"equilibrate_binding must be 'burnin'|'fast'|'off', got {eb!r}")
+    if eb == "off":
         return "off"
-    if eb in ("auto", True, "burnin"):
+    if eb == "burnin":
         return "burnin"
     if eb == "fast":
         if surface_to_volume(geometry) is None:
@@ -177,7 +179,7 @@ def resolve_equilibrate_mode(equilibrate_binding, geometry, *, G=None, T2=None, 
                               stacklevel=3)
                 return "burnin"
         return "fast"
-    raise ValueError(f"equilibrate_binding must be 'auto'|'burnin'|'fast'|'off', got {eb!r}")
+    raise ValueError(f"equilibrate_binding must be 'burnin'|'fast'|'off', got {eb!r}")
 
 
 def equilibrate_burnin_plateau(chunk_fn, r0, keys, brem0, tol=0.01, max_chunks=40):

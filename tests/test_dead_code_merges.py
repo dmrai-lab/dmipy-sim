@@ -12,13 +12,12 @@ import dmipy_sim as d
 
 
 def test_one_axis_to_z_rotation():
-    from dmipy_sim.geometry.base import _rotation_to_z
-    from dmipy_sim.fields.susceptibility import _axis_to_z_rotation
+    """The one rotation between an axis and +z is ``so3.rotation_of``; its transpose takes the axis to +z."""
+    from dmipy_sim.replay.so3 import rotation_of
     rng = np.random.default_rng(0)
     for axis in list(rng.normal(size=(20, 3))) + [np.array([0, 0, 1.0]), np.array([0, 0, -1.0]),
                                                   np.array([1e-9, 0, 1.0])]:
-        R = _axis_to_z_rotation(axis)
-        np.testing.assert_allclose(R, _rotation_to_z(axis), atol=1e-12)
+        R = rotation_of(axis).T
         np.testing.assert_allclose(R @ (axis / np.linalg.norm(axis)), [0, 0, 1], atol=1e-9)
         np.testing.assert_allclose(R @ R.T, np.eye(3), atol=1e-12)
 

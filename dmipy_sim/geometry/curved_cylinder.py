@@ -35,7 +35,7 @@ import jax.numpy as jnp
 
 from ..engine.tables import jit_with_tables
 from ._boundary import keep_side_radial, ray_quadric_t, specular, off_wall, representable_nudge
-from ._grid import bucket_by_bbox
+from ._grid import bucket_by_bbox, NEIGHBOUR_OFFSETS, gather
 import numpy as np
 
 from .base import Geometry, LengthScales
@@ -279,8 +279,8 @@ class CurvedMyelinatedCylinder(CurvedCylinder):
     curved centerline. Compartment by distance-to-centerline d:
       1 intra  (d < r_in),  2 myelin (r_in <= d < r_out),  0 extra (d >= r_out).
     Impermeable band-confined reflection keeps each walker in the shell it started in, so
-    the three compartments are independent: seed a population with ``init_positions(...,
-    shell=...)`` and walk it with that compartment's diffusivity (intra ~free, myelin
+    the three compartments are independent: ``init_positions`` seeds the pool named at construction
+    (``pool=``) and the walk takes that compartment's diffusivity (intra ~free, myelin
     ~stuck D->0, extra free). Because the local tangent varies along the strand, the
     myelin annulus carries the orientation-varying susceptibility source. (Single-pass
     per-walker-D, mirroring ``MyelinatedCylinder._is_myelinated``, is the later
@@ -335,14 +335,8 @@ class CurvedMyelinatedCylinder(CurvedCylinder):
         dt = jnp.clip(dt, lo + NUDGE, jnp.where(jnp.isfinite(hi), hi - NUDGE, dt))
         return Q + dt * n, d_perp
 
-    def init_positions(self, n_walkers, key, pool=None, shell=None):
-        if shell is not None:
-            import warnings
-            warnings.warn("init_positions(shell=...) is spelled pool=..., and the pool a driver seeds is the "
-                          "constructor argument CurvedMyelinatedCylinder(pool=...)", DeprecationWarning, stacklevel=2)
-            if pool is not None:
-                raise ValueError("give pool= or shell=, not both")
-            pool = shell
+    def init_positions(self, n_walkers, key, pool=None):
+        """Walkers seeded uniformly in the shell ``pool`` (default: the geometry's ``pool``) along the strand."""
         shell = self.pool if pool is None else pool
         lo, hi = {"intra": (0.0, self.r_in),
                   "myelin": (self.r_in, self.r_out),
@@ -426,8 +420,7 @@ class PackedCurvedCylinders(Geometry):
         self._dims_arr = jnp.asarray(self._DIMS, jnp.int32)
         self._GMIN = jnp.asarray(self.gmin, jnp.float32)
         self._CS = jnp.float32(cs)
-        self._OFF = jnp.asarray([[dx, dy, dz] for dx in (-1, 0, 1)
-                                 for dy in (-1, 0, 1) for dz in (-1, 0, 1)], jnp.int32)
+        self._OFF = jnp.asarray(NEIGHBOUR_OFFSETS)
 
     #: the device tables every jitted program of this geometry reads -- passed as arguments at every call
     #: (:func:`~dmipy_sim.engine.tables.jit_with_tables`), never captured: a program per batch shape and candidate
@@ -444,12 +437,7 @@ class PackedCurvedCylinders(Geometry):
         return jnp.concatenate([f(jnp.asarray(pts[i:i + chunk])) for i in range(0, pts.shape[0], chunk)])
 
     def _gather(self, r):
-        c = jnp.clip(jnp.floor((r - self._GMIN) / self._CS).astype(jnp.int32), 0, self._dims_arr - 1)
-        nb = jnp.clip(c[None, :] + self._OFF, 0, self._dims_arr - 1)
-        cids = (nb[:, 0] * self._DIMS[1] + nb[:, 1]) * self._DIMS[2] + nb[:, 2]
-        cand = self._CELL[cids].reshape(-1)
-        valid = cand >= 0
-        return jnp.where(valid, cand, 0), valid
+        return gather(self._CELL, self._OFF, self._GMIN, self._CS, self._dims_arr, r)
 
     @property
     def length_scales(self):

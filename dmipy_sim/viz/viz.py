@@ -495,7 +495,7 @@ def plot_cell_surface(mesh, index=0, units=1e6, unit_label='µm', ax=None, save=
     return ax
 
 
-def _split_cells(mesh):
+def split_cells(mesh):
     """Connected components of the mesh, largest first (needs trimesh)."""
     try:
         import trimesh
@@ -525,7 +525,7 @@ def seed_in_cell(cell, n_walkers, seed=0):
     return np.concatenate(out)[:n_walkers]
 
 
-def walk_paths(mesh, n_walkers, n_steps, diffusivity, dt, seed=0, pool=None, r0=None, intra=None):
+def walk_paths(mesh, n_walkers, n_steps, diffusivity, dt, seed=0, pool=None, r0=None):
     """Record plain reflecting random-walk paths for visualisation.
 
     A diffusion-only walk (no gradient, no phase) that just steps the geometry's
@@ -539,7 +539,7 @@ def walk_paths(mesh, n_walkers, n_steps, diffusivity, dt, seed=0, pool=None, r0=
     key = jax.random.PRNGKey(seed)
     k0, kw = jax.random.split(key)
     if r0 is None:
-        r0 = mesh.init_positions(n_walkers, k0, pool=pool, intra=intra)
+        r0 = mesh.init_positions(n_walkers, k0, pool=pool)
     else:
         r0 = jnp.asarray(r0, jnp.float32)
     step_l = jnp.float32(np.sqrt(6.0 * diffusivity * dt))
@@ -623,7 +623,7 @@ def plot_mesh_3d(mesh, cells=(0,), paths=None, wrap=True, alpha=0.13,
     Returns the matplotlib Axes.
     """
     _require_mpl()
-    comps = _split_cells(mesh)
+    comps = split_cells(mesh)
     if ax is None:
         fig = plt.figure(figsize=(7, 7))
         ax = fig.add_subplot(111, projection='3d')

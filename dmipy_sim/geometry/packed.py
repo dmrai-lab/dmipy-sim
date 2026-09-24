@@ -16,11 +16,6 @@ from .packing import periodic_min_gap
 _TINY = 1e-30
 
 
-def packed_bounce_budget(R_min, nudge, min_gap, step_max):
-    """:func:`dmipy_sim.geometry._boundary.bounce_budget` for a pack."""
-    return bounce_budget(R_min, nudge, min_gap, step_max)
-
-
 def packed_candidate_count(N, R_min, step_max, dim):
     """Objects whose wall can lie within one step of a point: disjoint objects of radius at least
     ``R_min`` each subtend, from that point, an angle of at least ``2 asin(R / (R + step))``, so at
@@ -55,7 +50,7 @@ def packed_wall_kernel(centers, radii, L, eps, nudge, step_max, min_gap):
     visit.
 
     The bounce budget and the candidate count come from the worst case a step of ``step_max``
-    can meet (:func:`packed_bounce_budget`, :func:`packed_candidate_count`).
+    can meet (:func:`~dmipy_sim.geometry._boundary.bounce_budget`, :func:`packed_candidate_count`).
 
     Returns ``wall(p, d_hat, step_l, inside0, kappa_over_D, rho_over_D, key)`` giving
     ``(p_new, dlog_w, crossed, illegal)``: the end position, the surface log-weight increment
@@ -64,7 +59,7 @@ def packed_wall_kernel(centers, radii, L, eps, nudge, step_max, min_gap):
     """
     N, dim = int(centers.shape[0]), int(centers.shape[1])
     R_min = float(np.min(np.asarray(radii)))
-    max_bounces = packed_bounce_budget(R_min, nudge, min_gap, step_max)
+    max_bounces = bounce_budget(R_min, nudge, min_gap, step_max)
     n_cand = packed_candidate_count(N, R_min, step_max, dim)
     f32 = jnp.float32
     ar = jnp.arange(n_cand)
@@ -137,10 +132,12 @@ def _seeded_pool(pool):
     raise ValueError(f"pool is None (both pools, by volume), 'extra' or 'intra'; got {pool!r}")
 
 
-def _seed_periodic(n_walkers, key, L, radii, centers, ndim, pool):
+def _seed_periodic(n_walkers, key, L, radii, centers, ndim, pool, rng=None):
     """``(n_walkers, ndim)`` points uniform over the periodic cell ``[-L/2, L/2)^ndim``, kept by membership when
-    ``pool`` names one: inside any object for ``"intra"``, outside every object for ``"extra"``."""
-    rng = np.random.default_rng(int(jax.random.randint(key, (), 0, 2 ** 30)))
+    ``pool`` names one: inside any object for ``"intra"``, outside every object for ``"extra"``. The draws come from
+    ``rng`` when one is given (a seeding that continues another's stream), else from a generator seeded by ``key``."""
+    if rng is None:
+        rng = np.random.default_rng(int(jax.random.randint(key, (), 0, 2 ** 30)))
     accepted, n_have = [], 0
     while n_have < n_walkers:
         batch = max(n_walkers * 4, 1024) if pool is not None else n_walkers

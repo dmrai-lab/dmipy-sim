@@ -46,11 +46,12 @@ from dataclasses import dataclass
 from functools import cached_property
 
 import numpy as np
+
+from ..geometry._grid import NEIGHBOUR_OFFSETS, bucket_by_bbox, gather
 import jax
 import jax.numpy as jnp
 
 from .hollow_cylinder import hollow_cylinder_basis, segment_basis, contract, annulus_mean_log, CHANNEL_NAMES
-from ..geometry._grid import bucket_by_bbox
 from ..engine.tables import jit_with_tables
 from ..run import Run
 
@@ -204,7 +205,7 @@ class StrandFieldBasis:
         self._CELL = jnp.asarray(cell, jnp.int32); self._dims = tuple(int(x) for x in dims)
         self._dims_arr = jnp.asarray(self._dims, jnp.int32); self._GMIN = jnp.asarray(self._gmin, jnp.float32)
         self._CS = jnp.float32(cs)
-        self._OFF = jnp.asarray([[dx, dy, dz] for dx in (-1, 0, 1) for dy in (-1, 0, 1) for dz in (-1, 0, 1)], jnp.int32)
+        self._OFF = jnp.asarray(NEIGHBOUR_OFFSETS)
         self._mean = self._domain_mean()
         self._batch = None
         #: the device tables every jitted program reads, passed as arguments at every call (never captured: a
@@ -275,15 +276,13 @@ class StrandFieldBasis:
             cache = self._within_batches = {}
         f = cache.get((radius, k_max))
         if f is None:
-            OFF, GMIN, CS, dims_arr, DIMS = self._OFF, self._GMIN, self._CS, self._dims_arr, self._dims
+            OFF, GMIN, CS, dims_arr = self._OFF, self._GMIN, self._CS, self._dims_arr
             cutoff = jnp.float32(radius)
 
             def one(p):
                 A, AB, AB2, CELL = self._A, self._AB, self._AB2, self._CELL       # read at the trace: arguments
-                c = jnp.clip(jnp.floor((p - GMIN) / CS).astype(jnp.int32), 0, dims_arr - 1)
-                nb = jnp.clip(c[None, :] + OFF, 0, dims_arr - 1)
-                cids = (nb[:, 0] * DIMS[1] + nb[:, 1]) * DIMS[2] + nb[:, 2]
-                raw = CELL[cids].reshape(-1); valid = raw >= 0; cand = jnp.where(valid, raw, 0)
+                cand, valid = gather(CELL, OFF, GMIN, CS, dims_arr, p)
+                raw = jnp.where(valid, cand, -1)
                 # a segment crossing several of the 27 cells is gathered once per cell: keep one copy (the padding,
                 # -1, sorts first and is never valid, so a real segment is never taken for its duplicate)
                 order = jnp.argsort(raw); rs = raw[order]

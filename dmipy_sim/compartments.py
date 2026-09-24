@@ -30,14 +30,13 @@ def pool_id(name):
 class Pool:
     """Tissue properties of one water pool. Bulk: ``D`` (m^2/s), ``T2``, ``T1`` (s),
     ``water_fraction`` (proton-density weight). Wall, seen from this pool's side of its membrane:
-    ``surface_relaxivity_t2`` (rho, m/s) and ``permeability`` (kappa, m/s, crossing OUT of this
-    pool). ``None`` leaves a property to the geometry / driver default."""
+    ``surface_relaxivity_t2`` (rho, m/s). ``None`` leaves a property to the geometry / driver
+    default. A membrane's permeability is the geometry's (``permeability=``), not a pool's."""
     D: Optional[float] = None
     T2: Optional[float] = None
     T1: Optional[float] = None
     water_fraction: Optional[float] = None
     surface_relaxivity_t2: Optional[float] = None
-    permeability: Optional[float] = None
 
     def __post_init__(self):
         for f in fields(self):
@@ -48,20 +47,9 @@ class Pool:
                     raise ValueError(f"Pool.{f.name} must be {'positive' if f.name in ('T2', 'T1') else 'non-negative'}, got {v}")
                 object.__setattr__(self, f.name, v)
 
-    @classmethod
-    def coerce(cls, value):
-        if isinstance(value, cls):
-            return value
-        if isinstance(value, Mapping):
-            bad = set(value) - {f.name for f in fields(cls)}
-            if bad:
-                raise KeyError(f"unknown Pool properties {sorted(bad)}; known: {[f.name for f in fields(cls)]}")
-            return cls(**value)
-        raise TypeError(f"a pool is a Pool or a mapping of its properties, got {type(value).__name__}")
-
 
 class Compartments(Mapping):
-    """Pools by name: ``Compartments(extra=Pool(T2=0.08), intra={"T2": 0.05, "D": 1.7e-9})``.
+    """Pools by name: ``Compartments(extra=Pool(T2=0.08), intra=Pool(T2=0.05, D=1.7e-9))``.
 
     A read-only mapping ordered by pool id. ``by_id(prop)`` returns the property for every pool
     the substrate has, in id order, and requires it on all of them or none: a per-compartment
@@ -69,15 +57,17 @@ class Compartments(Mapping):
     case, so it raises.
     """
 
-    def __init__(self, pools=None, /, **by_name):
-        given = dict(pools or {})
-        given.update(by_name)
+    def __init__(self, **given):
         self._pools = {}
+        unknown = sorted(set(given) - set(POOL_NAMES))
+        if unknown:
+            raise KeyError(f"unknown pools {unknown}; pools are {POOL_NAMES}")
         for name in POOL_NAMES:                       # id order
             if name in given:
-                self._pools[name] = Pool.coerce(given.pop(name))
-        if given:
-            raise KeyError(f"unknown pools {sorted(given)}; pools are {POOL_NAMES}")
+                pool = given[name]
+                if not isinstance(pool, Pool):
+                    raise TypeError(f"the {name} pool is a Pool ({name}=Pool(T2=..., D=...)), got {type(pool).__name__}")
+                self._pools[name] = pool
 
     def __getitem__(self, name):
         return self._pools[POOL_NAMES[pool_id(name)]]
@@ -120,16 +110,14 @@ class Compartments(Mapping):
         """A copy with the named pools replaced or added."""
         merged = dict(self._pools)
         merged.update(by_name)
-        return Compartments(merged)
+        return Compartments(**merged)
 
     @classmethod
     def coerce(cls, value):
-        """A Compartments from a Compartments, a ``{name: Pool | mapping}`` mapping, or None (empty)."""
+        """The ``compartments=`` argument of a geometry: a Compartments, or None (no pool declared)."""
         if value is None:
             return cls()
         if isinstance(value, cls):
             return value
-        if isinstance(value, Mapping):
-            return cls(value)
-        raise TypeError(f"compartments must be a Compartments or a mapping of pool name -> Pool, "
+        raise TypeError(f"compartments is a Compartments (Compartments(intra=Pool(T2=...), extra=Pool(T2=...))), "
                         f"got {type(value).__name__}")

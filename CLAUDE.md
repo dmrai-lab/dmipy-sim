@@ -19,7 +19,8 @@ signals. Any refactor/backend change is fine as long as the suite stays green.
 
 Progress and diagnostics go to the `dmipy_sim.*` loggers (`logging.getLogger("dmipy_sim")`; silent unless you configure
 logging), never `print`. A run that outlives ten seconds also leaves a record on disk (`run.py`, below): where it is, what it uses, how it ended. Warning categories: a physics-regime warning is a `UserWarning`, an environment / GPU / OOM warning a
-`RuntimeWarning`, a retired spelling a `DeprecationWarning`.
+`RuntimeWarning`. There is no `DeprecationWarning`: a representation has one spelling, and any other is refused
+(`TypeError` / `ValueError` naming the one spelling), never accepted with a warning.
 
 Install: `pip install -e ".[dev]"` (add `[mesh]` for PLY loading, `[cuda12]` for GPU).
 Large Monte-Carlo runs belong on GPU; use `float32` on GPU. If a CUDA jaxlib is
@@ -137,7 +138,7 @@ re-export their same-named module. There are NO flat-path shims: import the pack
 | `acquisition/waveforms.py` | **the** b / B-tensor integrals `b_from_gradient`, `btensor_from_gradient` (rectangular q, trapezoidal ∫; `calc_b` / `calc_btensor` read a sequence's `G_eff`), `btensor_invariants`, and the measurement-axis transforms `set_b`, `rotate_waveform`, `tile_waveform` (the `Encoding` follows). No builders live here |
 | `sequences/` | **the builders, one per family, one mechanics** (#173 piece 5b). `assemble.py`: SHAPES (`trapezoid`, `trapezoid_train`, `cosine`, `bipolar`, `axis_pairs` -- unit blocks sampled mid-step, ramps `g / slew` on every edge, vertical at `np.inf`; a block that cannot reach its amplitude is refused, never clipped) × ASSEMBLERS (`SpinEcho`: the same block on both sides of the 180 at TE/2, every row centred on it, `q(TE) = 0` sample for sample; `StimulatedEcho`: block, store, TM, recall, block, `TE = 2 t_store + TM`; `GradientEcho`: a self-refocusing block after the lead-in; `EchoTrain`: one lobe per stretch the pulses and readouts leave, constant or alternating polarity, every echo refocused) and the driver `assemble()` (grid 0..TE, the amplitude iterated to an exact b or taken as given, the `Encoding`, `validate()`). `builders.py`: `splice(dirs, delta, Delta, n_echoes, TE_echo, *, bvalues=, TE_prep=, beta_deg=, refocus_axis_deg=, n_t_per_echo=, crusher_cycles=)` -- a diffusion preparation then a refocusing train (the ultra-low-field diffusion FSE, #285): `PreparedEchoTrain` places the PGSE pair about the preparation's 180 exactly as `SpinEcho` does and the train's pulses every `TE_echo` after it, `n_t_of` puts every echo on a sample (a preparation the grid cannot express is REFUSED, since a pulse off centre unbalances its own crusher), and the builder declares the `crusher` pair straddling every refocusing pulse -- without which the pathways stay degenerate and the train stops depending on its flip angle; `pgse(dirs, delta, Delta, *, bvalues= | gradient_strengths=, TE=, n_t=, slew_rate=, timing=)`, `pgste(dirs, delta, TM, ...)`, `ogse(dirs, f, sigma, *, shape='trapezoid'|'cosine', Delta=, ...)`, `cpmg(n_echoes, TE, *, polarity='constant'|'alternate', beta_deg=, n_t_per_echo=, ...)`, `gre(TE, ...)`, `ste(duration, ...)`, `pte(normal, duration, ...)`, the readers `from_waveform`, `from_btensor_waveform`, `from_pgste_waveform`, and `instantaneous`, `to_gradient_array`; the top-level `dmipy_sim.pgse` etc. ARE these. Exactly one of `bvalues` / `gradient_strengths`; `TE=` beyond the minimum adds dead time symmetrically; `timing=` makes the pulses finite and keeps the gradient out of the lead-in, the pulse windows and the readout tails. `pulseq` import/export |
 | `engine/gpu.py`, `engine/_gpu_config.py` | GPU guard/session, device-memory cap |
-| `replay/columnar.py` | **a pack in columns, read by reference** (#290): `ReplayPack.open(uri)` / `open_columnar(uri)` on a directory or `hf://owner/name/prefix` (HTTP range reads, a keep-alive session per thread, the CDN location resolved once, ranges fetched concurrently and retried); `bands_for` / `modes_for` / `plan` decide the bands, field modes, tiers and bytes an acquisition needs from the manifest's variance tables BEFORE any transfer; `view(K=, modes=, voxels=, contact=)` is an ordinary `ReplayPack` of those rows and bands; `iter_views` prefetches row groups; `image(seqs, settings=[(tissue, scanner), ...])` replays a whole grid in ONE pass over the rows -- host fetch + dequantise + `walker_phases`, device exp + `segment_sum` in float64 (a float32 sum over thousands of unit phasors loses 1e-3), every acquisition and every setting that shares the rows shares the pass |
+| `replay/columnar.py` | **a pack in columns, read by reference** (#290): `ReplayPack.open(uri)` on a directory or `hf://owner/name/prefix` (HTTP range reads, a keep-alive session per thread, the CDN location resolved once, ranges fetched concurrently and retried); `bands_for` / `modes_for` / `plan` decide the bands, field modes, tiers and bytes an acquisition needs from the manifest's variance tables BEFORE any transfer; `view(K=, modes=, voxels=, contact=)` is an ordinary `ReplayPack` of those rows and bands; `iter_views` prefetches row groups; `image(seqs, settings=[(tissue, scanner), ...])` replays a whole grid in ONE pass over the rows -- host fetch + dequantise + `walker_phases`, device exp + `segment_sum` in float64 (a float32 sum over thousands of unit phasors loses 1e-3), every acquisition and every setting that shares the rows shares the pass |
 | `replay/publish.py` | **the one path from a pack to a hub and back**: `publish(pack_or_path, repo, path=, hub=, message=)` / `pack.publish(repo)` / `python -m dmipy_sim.replay.publish PACK.rpk --repo OWNER/NAME` puts the `.rpk`, one row of the dataset's `manifest.json` (`{"schema": "substratecommons/1", "substrate", "packs": [row]}`: id, path, sha256, bytes, walk and codec parameters, channels, floor / err, commit, license, citation, substrate id, `segments` when the walk has them; keyed on the path, so a republish replaces) and the card `README.md` rendered from the manifest alone up in ONE `hub.commit`, then reads back the sha256 the hub holds (an LFS file's from the hub, else the file); a pack with no `id`, `license`, `citation` or `fidelity` is refused. `hub=` is a `fill.hub.Hub`-like object (`FakeHub` in the tests). `ReplayPack.load("hf://owner/name/path.rpk")` goes through `fetch`: `hf_hub_download` into the cache, the sha256 checked against the manifest's row when there is one; `parse_uri` is the one reader of `hf://owner/name/path`. Tests in `tests/replay/test_publish.py` (a 200-walker cylinder pack on the `FakeHub`) |
 | `replay/study.py` | **a protocol on tissues on scanners, replayed once** (#297): `Acquisition(sequence, orientation)`, `Protocol([...])` (measurements side by side, `slices`), `Study(protocol, tissues, scanners, pairs=None)` -- the cross product by default; a tissue may be a callable `scanner -> Tissue` (the catalogue at the scanner's field), resolved per pair and recorded by `to_meta`; tissue and scanner are NEVER merged into one object (the sample and the machine). `ReplayPack.walker_primitives(acquisition)` -> `Primitives`: the bands contracted once (`phi`), the path channel contracted once under the pose's field direction (`field_iso`, `field_aniso`: the field phase is `B0 (chi_iso A + chi_aniso B)`), the transverse / longitudinal exposure per pool (`exposure_t2/t1`, via `relaxation_logweight_runs` with unit rates) and the gated contact (`contact`); `Primitives.signals(tissue, scanner)` is `walker_signals` for any pair without touching the bands (tests: to 1e-12). `ReplayPack.study(study)` -> `(pairs, n_meas)`; `ColumnarPack.image(study)` -> `(pairs, *grid, n_meas)` plus a split-half floor per volume, one pass over the rows: primitives per acquisition on the device, every pair an elementwise term and two `segment_sum`s |
 | `fill/consolidate.py` | **shards -> the columnar layout**, streaming (#290): every shard fetched, split into columns, appended to the open part of each column, deleted; parts close at `cap_bytes` and upload while the pass goes on (six per commit, under the hub's commit rate), so the machine holds only the open parts; checkpoint after every shard, `--resume`; rows ordered by (block, voxel, pool), the row index exact after each shard; the shard variants a fill produces are absorbed (a stored path trace channel dropped to implied, multi-round shards' stacked scale tables, stray certificate rows -- a row without a floor certifies nothing); `append(...)` adds a later pass of some blocks IN PLACE: rows after the others, both row ranges in the index, the union weights (`union_weights`' rule) on both sides with the old rows patched in their weights part, the repaired pools' certificate rows the union's count with the new pass's floor |
@@ -151,7 +152,7 @@ re-export their same-named module. There are NO flat-path shims: import the pack
 
 ## Geometry contract (duck-typed by `simulate`/`make_step_fn`)
 
-A geometry subclasses `geometry.base.Geometry` and provides `init_positions(n, key)` (seeding the pool it declares: `Mesh(..., pool="intra"|"extra")`, `CurvedMyelinatedCylinder(..., pool=)`; the old `intra=`/`shell=` seeding flags warn),
+A geometry subclasses `geometry.base.Geometry` and provides `init_positions(n, key)` (seeding the pool it declares: `Mesh(..., pool="intra"|"extra")`, `CurvedMyelinatedCylinder(..., pool=)`),
 `classify_position(r)` (compartment tag), `length_scales` (a `LengthScales` tuple:
 `min_feature`, `surface_pore`, `lookup_cell`, `is_mesh_feature`, `min_gap` — what the sub-step
 rules divide; read it via `physics.length_scales_of`, never by probing `radius`/`cell_size`),
@@ -165,13 +166,14 @@ new `getattr(geometry, …)` probe.
 free pool, enclosed pools are positive — 1 intra (the lumen / inside a closed surface), 2 myelin.
 Packed geometries (`classify_returns_object_id`) return 1..N for the object a walker is in.
 `geometry.classify_position(r)` is the one source; `comp_traj`, `return_compartments`, per-compartment
-`T2_per_comp`/`intra=`/`extra=` arrays are all indexed by that id (a `Mesh(intra={"T2":…}, extra={"T2":…})`
-stores `(T2_extra, T2_intra)`). `PackedMyelinatedCylinders` carries an encoded id (`k+1` lumen of
+`T2_per_comp` and `Compartments` are all indexed by that id (a `Mesh(compartments=Compartments(intra=Pool(T2=…),
+extra=Pool(T2=…)))` stores `(T2_extra, T2_intra)`). `PackedMyelinatedCylinders` carries an encoded id (`k+1` lumen of
 axon k, `N_max+k+1` its sheath) and maps it with `geometry.pool_of(...)` at the API boundary.
 **Per-compartment properties have one spelling**: `compartments=Compartments(extra=Pool(T2=…, D=…), intra=Pool(…), myelin=Pool(…))`
-(`dmipy_sim.compartments`; `pool_id(name)` is the only name→id map; `Substrate.compartments` builds one). `Mesh(intra=, extra=)`
-dicts and the `T2_intra/T2_myelin/T2_extra` kwargs are the previous spelling and warn `DeprecationWarning`; per-axon arrays on
-`PackedMyelinatedCylinders` stay kwargs because they are per object, not per pool.
+(`dmipy_sim.compartments`; `pool_id(name)` is the only name→id map; `Substrate.compartments` builds one). A pool is a
+`Pool` and `compartments=` is a `Compartments`: a mapping of properties is refused with a `TypeError` naming that spelling,
+and a pool's T2 / T1 have no keyword argument of their own on a geometry; per-axon arrays on `PackedMyelinatedCylinders` stay kwargs
+because they are per object, not per pool.
 
 **Myelinated substrates** (`MyelinatedCylinder`, `PackedMyelinatedCylinders`) are stepped by one
 kernel, `physics.make_myelin_substep`, whose wall physics is
@@ -186,7 +188,7 @@ diffusivity of the pool the walker is in.
 **Packed substrates** (`PackedCylinders`, `PackedSpheres`) are stepped by
 `geometry.packed.packed_wall_kernel`: the same ray-traced multi-bounce rule, tested against the
 objects within reach of the step (`packed_candidate_count`), with the budget
-`packed_bounce_budget` derived from the narrowest passage (`min_gap` or the nudged grazing
+`bounce_budget` derived from the narrowest passage (`min_gap` or the nudged grazing
 chord). **Every wall encounter is its own Powles trial** with an independent uniform: summed over
 a step that is `κ/D` times the boundary local time the reflections record, so transmission does
 not depend on how many walls a sub-step meets and no gap-based sub-step rule is needed. A
@@ -239,8 +241,8 @@ meshes:
   rotation* — the walk stays in the mesh frame.
 - **Compartment (intra/extra) wall properties.** The membrane can relax and permit
   crossing differently by side/direction — the side is known at the collision
-  (`sign(step·outward_normal)`). `intra={"surface_relaxivity_t2": ρ_i}`,
-  `extra={"surface_relaxivity_t2": ρ_e}` → side-dependent ρ; `permeability={
+  (`sign(step·outward_normal)`). `compartments=Compartments(intra=Pool(surface_relaxivity_t2=ρ_i),
+  extra=Pool(surface_relaxivity_t2=ρ_e))` → side-dependent ρ; `permeability={
   "intra_to_extra": κ_out, "extra_to_intra": κ_in}` → direction-dependent κ (scalar
   = symmetric, the default). Stored as a nominal value × per-side/-direction
   multipliers applied in `reflect_with_log_weight` / `permeate` (per sub-step, so an

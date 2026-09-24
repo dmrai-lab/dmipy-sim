@@ -5,7 +5,7 @@ layout where it is -- a directory, or ``hf://owner/name/prefix`` on the Hugging 
 gets :class:`~dmipy_sim.replay.replay.ReplayPack` VIEWS of the rows and bands an acquisition needs; nothing is
 downloaded whole, and every byte fetched is one the replay uses.
 
-    pack = open_columnar("hf://SubstrateCommons/disco-replay/disco")      # or ReplayPack.open(...)
+    pack = ReplayPack.open("hf://SubstrateCommons/disco-replay/disco")
     plan = pack.plan(seq, tissue=..., scanner=...)                          # bands, modes, tiers, bytes: before any transfer
     view = pack.view(K=32, voxels=[(20, 20, 20)])                           # one voxel's rows at 32 bands: an ordinary ReplayPack
     S, floor, plan = pack.image([seq], settings=[(None, None), (tissue, 3.0)])   # every setting's volume from one pass
@@ -118,7 +118,8 @@ class ColumnarPack:
         on the pack grid, ``(gamma dt)^2 sum_{k>K'} sum_d var_{k,d} W_{m,k,d}^2``, halved (a dropped independent
         phase under-attenuates the signal by that much), from the manifest's per-band variance of the worst
         populated voxel. The walk is not read."""
-        from .replay import _compile_effective, GAMMA
+        from ..constants import GAMMA
+        from .replay import _compile_effective
         from ._replay_kernel import effective_gradient
         K = self.K; n_t = int(self.meta["walk_params"]["n_t"]); dt = float(self.meta["walk_params"]["dt_traj"])
         G = np.asarray(seq.G_eff, np.float64)
@@ -137,7 +138,8 @@ class ColumnarPack:
         """``(M, error)``: the fewest stored field modes for a replay at the scanner's field with the tissue's chi (0
         without either): the dropped modes' phase variance ``(gamma dt_f B0 chi)^2 sum_{k>M} gate_hat_k^2 sum_ch
         var_{ch,k}``, halved, against ``tol`` x the floor; the channel sum is the worst case over field directions."""
-        from .replay import GAMMA, scanner_field, _path_grid
+        from ..constants import GAMMA
+        from .replay import scanner_field, _path_grid
         from ._replay_kernel import field_gate
         from scipy.fft import dct
         B0 = scanner_field(scanner).B0; chi = None if tissue is None else tissue.chi_iso
@@ -414,7 +416,3 @@ class ColumnarPack:
         S = S.reshape((len(settings),) + tuple(self.grid.shape) + (n_meas,))
         return (S if multi else S[0]), floor.reshape(self.grid.shape), plan
 
-
-def open_columnar(uri, workers=8):
-    """The columnar layout at ``uri`` (a directory, or ``hf://owner/name/prefix``) as a :class:`ColumnarPack`."""
-    return ColumnarPack(uri, workers=workers)

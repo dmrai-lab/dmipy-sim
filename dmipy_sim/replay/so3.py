@@ -316,7 +316,7 @@ def rotate_sh(coeffs, R, lmax=None):
     c = np.asarray(coeffs, np.float64)
     n_c = c.shape[-1]
     if lmax is None:
-        lmax = int(round((-3 + np.sqrt(1 + 8 * n_c)) / 2))
+        lmax = lmax_of(n_c)
     if n_sh_coeffs(lmax) != n_c:
         raise ValueError(f"{n_c} coefficients is not an even-order compact block")
     blocks = wigner_blocks(lmax, np.asarray(R, np.float64).reshape(1, 3, 3))
@@ -621,11 +621,13 @@ def rebanded(coeffs, lmax, nmax, to_lmax, to_nmax):
                      f"index and wider in the other")
 
 
-def _lmax_of(n_c):
-    for l in range(0, 33, 2):
-        if n_sh_coeffs(l) == n_c:
-            return l
-    raise ValueError(f"{n_c} coefficients is not an even-order real spherical-harmonic block")
+def lmax_of(n_c):
+    """The even order whose compact real spherical-harmonic block has ``n_c = (l + 1)(l + 2) / 2`` coefficients."""
+    n_c = int(n_c)
+    l = int(round((-3 + np.sqrt(1 + 8 * n_c)) / 2))
+    if l % 2 or n_sh_coeffs(l) != n_c:
+        raise ValueError(f"{n_c} coefficients is not an even-order compact real spherical-harmonic block ((l + 1)(l + 2) / 2 for even l)")
+    return l
 
 
 # ------------------------------------------------------------------ fitting

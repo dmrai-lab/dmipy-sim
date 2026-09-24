@@ -1,13 +1,36 @@
-"""Setup-time bucketing of primitives into a uniform grid, vectorised.
+"""The uniform cell grid every accelerated geometry shares: primitives bucketed into the cells their bounding
+boxes overlap at setup, and the walker's 27-cell gather of those primitives inside the kernels.
 
-A `Mesh` buckets its triangles and `PackedCurvedCylinders` its segments into the cells their
-bounding boxes overlap, so a walker's 27-cell gather tests only what lies near it. The
-per-primitive Python triple loop that did this cost seconds on a 20k-triangle mesh; here the
-(primitive, cell) pairs are generated with numpy and sorted once. The result is the same table:
-primitive ids in ascending order within each cell, ``-1`` padding, and the same overflow rule when
-a cap is given.
+A `Mesh` buckets its triangles, `PackedCurvedCylinders` and a `StrandFieldBasis` their segments, a `SphereUnion` its
+spheres. The (primitive, cell) pairs are generated with numpy and sorted once: primitive ids ascending within each
+cell, ``-1`` padding, and a fixed overflow rule when a cap is given. The gather is traceable and runs under jit.
 """
+import jax.numpy as jnp
 import numpy as np
+
+NEIGHBOUR_OFFSETS = np.array([[dx, dy, dz] for dx in (-1, 0, 1) for dy in (-1, 0, 1) for dz in (-1, 0, 1)], np.int32)
+"""``(27, 3)`` cell offsets of a point's own cell and its 26 neighbours, x-major."""
+
+
+def gather(CELL, OFF, GMIN, CS, dims, r):
+    """The primitive ids in the 27 cells around the point ``r`` and their validity.
+
+    ``CELL`` is the ``(n_cells, C)`` table, ``OFF`` the ``(27, 3)`` offsets, ``GMIN`` the grid origin, ``CS`` the
+    cell size and ``dims`` the ``(3,)`` grid dimensions, all device arrays. Returns ``(cand, valid)`` of length
+    ``27 C``: the ids with the padding replaced by 0, and the mask of the real entries.
+    """
+    c = jnp.clip(jnp.floor((r - GMIN) / CS).astype(jnp.int32), 0, dims - 1)
+    nb = jnp.clip(c[None, :] + OFF, 0, dims - 1)
+    cids = (nb[:, 0] * dims[1] + nb[:, 1]) * dims[2] + nb[:, 2]
+    cand = CELL[cids].reshape(-1)
+    valid = cand >= 0
+    return jnp.where(valid, cand, 0), valid
+
+
+def wrap_periodic(VMIN, L, PER, r):
+    """``r`` wrapped into the box ``[VMIN, VMIN + L)`` on the axes where ``PER > 0``, unchanged on the others."""
+    w = VMIN + jnp.mod(r - VMIN, L)
+    return jnp.where(PER > 0, w, r)
 
 
 def bucket_by_bbox(lo, hi, dims, cap=None):

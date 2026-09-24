@@ -20,7 +20,7 @@ import numpy.testing as npt
 import jax
 import jax.numpy as jnp
 
-from dmipy_sim import simulate, Cylinder, FreeDiffusion, MyelinatedCylinder, set_b
+from dmipy_sim import simulate, Cylinder, FreeDiffusion, MyelinatedCylinder, set_b, Compartments, Pool
 from dmipy_sim.acquisition.waveforms import tile_waveform
 from dmipy_sim.sequences import pgse
 from dmipy_sim.acquisition.scanner_sequence import ScannerSequence
@@ -403,7 +403,7 @@ class TestE_T2MultiTE:
                 orientation=[0, 0, 1],
                 D_intra=2e-9, D_extra=2e-9,
                 kappa_inner=None, kappa_outer=None,
-                T2_intra=T2_intra, T2_myelin=T2_myelin, T2_extra=T2_extra,
+                compartments=Compartments(intra=Pool(T2=T2_intra), myelin=Pool(T2=T2_myelin), extra=Pool(T2=T2_extra)),
                 water_fractions=wf_weights,
             )
 
@@ -438,7 +438,7 @@ class TestE_T2MultiTE:
                 orientation=[0, 0, 1],
                 D_intra=2e-9, D_extra=2e-9,
                 kappa_inner=None, kappa_outer=None,
-                T2_intra=None, T2_myelin=T2_myelin, T2_extra=None,
+                compartments=Compartments(myelin=Pool(T2=T2_myelin)),
                 water_fractions=(0.0, 1.0, 0.0),
             )
 
@@ -595,7 +595,7 @@ class TestG_BoundaryReflection:
             orientation=[0, 0, 1],
             D_intra=2e-9, D_extra=2e-9,
             kappa_inner=None, kappa_outer=None,
-            T2_myelin=T2_myelin,
+            compartments=Compartments(myelin=Pool(T2=T2_myelin)),
             water_fractions=(0.0, 1.0, 0.0),
         )
 

@@ -1,7 +1,7 @@
 """The pool a geometry seeds is declared on the geometry, not defaulted inside the seeding call.
 
 `Mesh(pool=)` and `CurvedMyelinatedCylinder(pool=)` say which pool `init_positions` fills when a driver
-is given no `r0`; the call can still name a pool explicitly; the old `intra=` / `shell=` flags warn.
+is given no `r0`; the call can still name a pool explicitly; a pool has that one spelling.
 """
 import jax
 import numpy as np
@@ -33,18 +33,19 @@ def test_the_constructor_pool_is_what_a_driver_seeds():
     assert (w.compartment[:, 0] == 0).all()
     with pytest.raises(ValueError, match="pool must be"):
         d.Mesh(V, F, pool="myelin")
+    for bad in (True, False, 1, 0):                                  # a pool is named, not numbered or flagged
+        with pytest.raises(ValueError, match="pool must be 'intra' or 'extra'"):
+            d.Mesh(V, F, pool=bad)
 
 
-def test_the_call_can_name_a_pool_and_the_old_flag_warns():
+def test_the_call_can_name_a_pool_and_the_pool_has_one_spelling():
     m, V, F = _mesh("intra")
     k = jax.random.PRNGKey(1)
     assert not _inside(V, F, m.init_positions(200, k, pool="extra")).any()
-    with pytest.warns(DeprecationWarning, match="pool="):
-        old = m.init_positions(200, k, intra=False)
-    np.testing.assert_array_equal(np.asarray(old), np.asarray(m.init_positions(200, k, pool="extra")))
-    with pytest.raises(ValueError, match="not both"):
-        with pytest.warns(DeprecationWarning):
-            m.init_positions(10, k, pool="extra", intra=True)
+    with pytest.raises(TypeError):
+        m.init_positions(200, k, intra=False)
+    with pytest.raises(ValueError, match="pool must be 'intra' or 'extra'"):
+        m.init_positions(200, k, pool=False)
 
 
 def test_curved_cylinder_shells_are_pools_too():
@@ -54,8 +55,7 @@ def test_curved_cylinder_shells_are_pools_too():
     k = jax.random.PRNGKey(2)
     r = np.linalg.norm(np.asarray(g.init_positions(500, k))[:, :2], axis=1)
     assert (r >= 1e-6).all() and (r <= 2e-6).all()
-    with pytest.warns(DeprecationWarning, match="pool="):
-        old = g.init_positions(500, k, shell="myelin")
-    np.testing.assert_array_equal(np.asarray(old), np.asarray(g.init_positions(500, k)))
+    with pytest.raises(TypeError):
+        g.init_positions(500, k, shell="myelin")
     with pytest.raises(ValueError, match="pool must be"):
         d.CurvedMyelinatedCylinder(cl, 1e-6, 2e-6, pool="csf")

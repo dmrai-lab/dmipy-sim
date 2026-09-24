@@ -4,6 +4,8 @@ import numpy as np
 # Proton gyromagnetic ratio in rad / (s * T)
 # Matches disimpy's value exactly.
 GAMMA = 267.513e6
+# The same ratio per cycle, Hz / T.
+GAMMA_BAR = GAMMA / (2.0 * np.pi)
 
 # Default gradient slew rate (T/m/s) for the physical sequence constructors.
 # dmipy-sim is the forward truth -- a real scanner -- so its sequences are

@@ -103,17 +103,21 @@ def current():
 _CODE = None
 
 
+def package_version():
+    """The installed dmipy-sim version, ``"dev"`` for a checkout that is not installed."""
+    try:
+        from importlib.metadata import version
+        return version("dmipy-sim")
+    except Exception:
+        return "dev"
+
+
 def _code():
     """The package's version and, in a checkout, its commit (read once, on the first record: not at import)."""
     global _CODE
     if _CODE is not None:
         return _CODE
-    out = {}
-    try:
-        from importlib.metadata import version
-        out["version"] = version("dmipy-sim")
-    except Exception:
-        pass
+    out = {"version": package_version()}
     here = os.path.dirname(os.path.abspath(__file__))
     try:
         r = subprocess.run(["git", "-C", here, "rev-parse", "HEAD"], capture_output=True, text=True, timeout=5)

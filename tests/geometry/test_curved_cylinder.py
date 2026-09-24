@@ -120,7 +120,7 @@ def test_multishell_separates_lumen_from_sheath():
     r_intra = np.linalg.norm(intra[:, :2], axis=1)
     assert r_intra.max() <= 3e-6, "an intra seed outside the inner wall"
 
-    sheath = np.asarray(g.init_positions(2000, jax.random.PRNGKey(SEED + 1), shell="myelin"))
+    sheath = np.asarray(g.init_positions(2000, jax.random.PRNGKey(SEED + 1), pool="myelin"))
     r_sheath = np.linalg.norm(sheath[:, :2], axis=1)
     assert r_sheath.min() >= 3e-6 * 0.98, "a sheath seed inside the lumen"
     assert r_sheath.max() <= 5e-6, "a sheath seed outside the outer wall"

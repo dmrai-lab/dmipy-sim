@@ -544,8 +544,8 @@ def magnitude_movie(geometry, waveform, save, *, rho, T2_per_comp, n_walkers=400
     D_w = D_by_lab[origin][:, None]
     weight = np.exp(logw_t2 + (rho / D_w) * dlog)             # dlog <= 0 -> weight in (0, 1]
 
-    name2lab = {'extra': 0, 'intra': 1, 'myelin': 2}         # pool ids
-    panel_labs = [name2lab[p] for p in panels]
+    from ..compartments import POOL_IDS
+    panel_labs = [POOL_IDS[p] for p in panels]
     idx_by_panel = [np.where(origin == pl)[0] for pl in panel_labs]
 
     t_ms = np.arange(n_t) * dt * 1e3

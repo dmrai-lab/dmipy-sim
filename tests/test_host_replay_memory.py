@@ -10,7 +10,8 @@ import tracemalloc
 import numpy as np
 import pytest
 
-from dmipy_sim.replay._replay_kernel import GAMMA, gradient_phase
+from dmipy_sim.constants import GAMMA
+from dmipy_sim.replay._replay_kernel import gradient_phase
 from dmipy_sim.replay.compression import pack_position_arrays
 from dmipy_sim.replay.replay import ReplayPack
 

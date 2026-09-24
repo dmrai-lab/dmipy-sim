@@ -178,3 +178,53 @@ def assert_step_resolves_the_collision_lookup(geometry, step_length, *, bound=0.
         f"step {float(step_length):.3e} m is {ratio:.2f} x the collision-lookup cell "
         f"({float(cell):.3e} m); the bound is {bound}. Above it the walk misses walls and any confinement or "
         f"exchange number measured here is an artefact of the lookup, not physics. Use more sub-steps.")
+
+
+# ------------------------------------------------------------------ the packs and specs several test modules share
+def pgse_wf(TE_s, n_t=500, slew_rate=None):
+    """The permeability tests' PGSE along x at b = 0, 0.5, 1 and 2 ms/um^2, its lobes 5 % of ``TE_s`` (5 us at the
+    least); ``slew_rate=np.inf`` for the square lobes the restricted-diffusion checks were validated against."""
+    from dmipy_sim import set_b
+    from dmipy_sim.sequences import pgse
+    delta = max(TE_s * 0.05, 5e-6)
+    kw = {} if slew_rate is None else {"slew_rate": slew_rate}
+    return set_b(pgse(np.tile([1.0, 0.0, 0.0], (4, 1)), delta, TE_s - delta, gradient_strengths=1.0, n_t=n_t, **kw),
+                 np.array([0.0, 500e6, 1000e6, 2000e6]))
+
+
+@pytest.fixture(scope="module")
+def pack():
+    """A 300-walker cylinder walk packed at K = 8: the small pack of the replay tests."""
+    import dmipy_sim as d
+    from dmipy_sim.replay.bank import build_replay_pack
+    walk = d.simulate_trajectories(300, 2e-9, d.Cylinder(2e-6, (0, 0, 1)), 0.01, 5e-4, seed=0, require_gpu=False)
+    return build_replay_pack(walk, id="test/full", K=8, license="x", citation="x")
+
+
+def _three_strands(tmp):
+    """The three-strand DiSCo-format fixture (a sheath on each) written under ``tmp``: its spec."""
+    from dmipy_sim.io.strands import write_tck
+    from dmipy_sim.spec import disco_spec
+    cls_ = [np.array([[x, 0, -12e-6], [x, 0.5e-6, 0], [x, 0, 12e-6]]) + 10e-6 for x in (-5e-6, 0, 5e-6)]
+    tck, dia = str(tmp / "t.tck"), str(tmp / "d.txt")
+    write_tck(tck, cls_, coordinate_unit_m=25e-6)
+    np.savetxt(dia, np.array([2 * r for r in (1.5e-6, 1.0e-6, 2.0e-6)]) / 1e-3)
+    return disco_spec(tck, dia, side_m=20e-6)
+
+
+@pytest.fixture(scope="module")
+def field_pack(tmp_path_factory):
+    """A strand pack with the path channel (C3), from the three-strand fixture with a sheath."""
+    from dmipy_sim.spec import walk_spec
+    from dmipy_sim.replay.bank import build_replay_pack
+    spec = _three_strands(tmp_path_factory.mktemp("field"))
+    w = walk_spec(spec, 90, 8e-4, 2e-4, seed=0, n_probe=20_000, field_res=0.5e-6, require_gpu=False)
+    return build_replay_pack(w, id="test/field", license="x", citation="x", K=4, susc_path_K=4)
+
+
+@pytest.fixture(scope="module")
+def spec_grid(tmp_path_factory):
+    """The three-strand spec on a 2 x 2 x 2 grid of 10 um voxels: ``(spec, grid, tmp)``."""
+    from dmipy_sim.phantom.grid import Grid
+    tmp = tmp_path_factory.mktemp("strands")
+    return _three_strands(tmp), Grid(shape=(2, 2, 2), voxel_size_m=(10e-6,) * 3, origin_m=(5e-6,) * 3), tmp

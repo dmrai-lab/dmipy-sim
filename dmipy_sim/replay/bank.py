@@ -30,7 +30,6 @@ from ..persistent_walk import PersistentWalk
 from ..run import Run
 
 from . import compression as _cx
-from ._replay_kernel import se_gate, gradient_phase
 from ..acquisition.rf import RFEvent
 from .replay import ReplayPack, read_rpk, write_rpk
 
@@ -439,10 +438,7 @@ def _susc_grid_fidelity(m, arrays, gm, decoded_pos, dt, env):
     braw = {"iso_local": np.asarray(fb["iso_local"], np.float64), "iso_P": np.asarray(fb["iso_P"], np.float64),
             "aniso_G": (np.asarray(fb["aniso_G"], np.float64) if fb.get("aniso_G") is not None else None),
             "shape": tuple(fb["shape"]), "voxel_size": vs}
-    bsto = {"iso_local": np.asarray(arrays["susc_grid_iso_local"], np.float64),
-            "iso_P": np.asarray(arrays["susc_grid_iso_P"], np.float64),
-            "aniso_G": (np.asarray(arrays["susc_grid_aniso_G"], np.float64) if "susc_grid_aniso_G" in arrays else None),
-            "shape": tuple(gm["shape"]), "voxel_size": vs}
+    bsto = grid_basis_of(arrays, gm)
     chi_i = float(m.get("susc_chi_iso") or 1.06e-6)
     # Certify the ANISOTROPIC channels even when the substrate's reference delta_chi_a is 0 (Winther
     # used isotropic myelin). The channels are geometry only and chi_aniso is a replay knob, so if we
@@ -879,13 +875,51 @@ def susc_path_decode(arrays, meta, *, n_w=None):
 
 
 def susc_path_field(b, b0_dir, *, B0, chi_iso, chi_aniso=0.0, has_aniso=False):
-    """Contract decoded path channels into dB(t) for one (B0, direction, chi) -- mirrors assemble_field."""
-    from ..fields.susceptibility_field import _q_of_H
-    q = _q_of_H(b0_dir)
-    dB = chi_iso * B0 * (b[:, 0] - np.einsum("c,cwt->wt", q, np.swapaxes(b[:, 1:7], 0, 1)))
-    if has_aniso and chi_aniso and b.shape[1] >= 13:
-        dB = dB + chi_aniso * B0 * np.einsum("c,cwt->wt", q, np.swapaxes(b[:, 7:13], 0, 1))
-    return dB
+    """``dB(t)`` per walker ``(n_w, n_t)`` from the decoded path channels ``(n_w, n_ch, n_t)`` for one
+    ``(B0, direction, chi)``: :func:`~dmipy_sim.fields.hollow_cylinder.contract` along the channel axis."""
+    from ..fields.hollow_cylinder import contract
+    aniso = chi_aniso if (has_aniso and chi_aniso and b.shape[1] >= 13) else 0.0
+    return contract(b, b0_dir, B0=B0, chi_iso=chi_iso, chi_aniso=aniso, axis=1)
+
+
+_PATH_CHANNELS = ("iso_local", "iso_P_xx", "iso_P_yy", "iso_P_zz", "iso_P_xy", "iso_P_xz", "iso_P_yz",
+                  "aniso_G_xx", "aniso_G_yy", "aniso_G_zz", "aniso_G_xy", "aniso_G_xz", "aniso_G_yz")
+
+
+def held_voxels(cert):
+    """The rows of a voxel certificate ``(n_v, n_pools, 3)`` (walkers, floor, err per pool) a shard certifies: walkers
+    in the voxel and a floor measured for at least one pool. A row with walkers but no floor is a stray, a walker
+    seeded on a block's face and binned into the neighbour's voxel."""
+    c = np.asarray(cert, np.float64)
+    return (c[:, :, 0].sum(1) > 0) & np.isfinite(c[:, :, 1]).any(1)
+
+
+def grid_basis_of(arrays, grid_meta):
+    """The pack's stored field basis as :func:`~dmipy_sim.fields.susceptibility_field.assemble_field` reads it."""
+    return {"iso_local": np.asarray(arrays["susc_grid_iso_local"], np.float64),
+            "iso_P": np.asarray(arrays["susc_grid_iso_P"], np.float64),
+            "aniso_G": (np.asarray(arrays["susc_grid_aniso_G"], np.float64) if "susc_grid_aniso_G" in arrays else None),
+            "shape": tuple(grid_meta["shape"]), "voxel_size": np.asarray(grid_meta["voxel_size"], float)}
+
+
+def path_field_integral(arrays, meta, waveform, n_t, dt, *, t0=None, n_w=None):
+    """The gated path integral of every field channel per walker, ``(Psi (n_w, n_ch), names)``: ``Psi = gamma dt_f
+    sum_t gate(t) c_w(t)``, read from the channel's DCT coefficients against the DCT of the field gate on the
+    channel's own grid, for the window starting at ``t0`` on the waveform clock. The names are in the canonical
+    order (``iso_local``, the six ``iso_P``, then the six ``aniso_G`` when stored), which is what the contraction
+    :func:`~dmipy_sim.fields.hollow_cylinder.field_terms` reads."""
+    from scipy.fft import dct
+    from ..constants import GAMMA
+    from ._replay_kernel import field_gate
+    from .replay import _path_grid
+    Cs, names = susc_path_coeffs(arrays, meta)
+    if tuple(names) != _PATH_CHANNELS[:len(names)]:
+        raise ValueError(f"the path channels are stored as {names}, not in the canonical order {_PATH_CHANNELS[:len(names)]}")
+    if n_w is not None:
+        Cs = Cs[:n_w]
+    n_tf, dt_f = _path_grid(meta, n_t, dt)
+    gate_hat = dct(field_gate(waveform, n_tf, dt_f, t0=t0), type=2, norm="ortho")[:Cs.shape[2]]
+    return (GAMMA * dt_f) * np.einsum("k,wck->wc", gate_hat, Cs), names
 
 
 # --------------------------------------------------------------- susceptibility replay (consume)
@@ -1054,7 +1088,7 @@ def merge_packs(packs, *, id, out_path=None, overlap="refuse", envelope=None, de
                     out[:, pools.index(p_)] = c_[:, j_]
                 return out
             cert = np.concatenate([aligned(pk, own) for pk, own in zip(pks, pools_of)])
-            held = cert[:, :, 0].sum(1) > 0                                   # a voxel a shard put walkers in
+            held = held_voxels(cert)
             key = np.ravel_multi_index(tuple(ijk[held].T), tuple(Grid.from_meta(pv0).shape))
             uk, cnt = np.unique(key, return_counts=True)
             if (cnt > 1).any() and overlap == "refuse":
@@ -1318,14 +1352,14 @@ def preflight_master(m, *, susc_path_K=None, sigma_star=None, K=None):
 
 
 
-def _walk_master(walk, *, weights=None, field=None, diffusivity=None, substrate_frame=None):
+def _walk_master(walk, *, weights=None, field="auto", diffusivity=None, substrate_frame=None):
     """The bank's master dict from a PersistentWalk plus the substrate metadata; a bank dict / .npz passes
     through."""
     from ..persistent_walk import PersistentWalk
     from ..compartments import Compartments
     from ..fields.susceptibility_field import FieldGrid, field_grid_of
     if not isinstance(walk, PersistentWalk):
-        if any(v is not None for v in (weights, diffusivity, substrate_frame)) or field not in ("auto", None, False):
+        if any(v is not None for v in (weights, diffusivity, substrate_frame)) or field not in ("auto", False):
             raise TypeError("weights=, field=, diffusivity= and substrate_frame= go with a PersistentWalk; a master "
                             "dict carries them as its own keys")
         return walk
@@ -1342,7 +1376,9 @@ def _walk_master(walk, *, weights=None, field=None, diffusivity=None, substrate_
                                "spec gives water to, give the pool its water in the spec, or pass weights= explicitly")
         if any(f != 1.0 for f in wf):                     # the seeding rule's weights, from the spec
             weights = np.asarray(wf, float)[pool0]
-    if field == "auto":
+    if field is None:
+        raise TypeError("field is 'auto', False (no field tier), a FieldGrid or a StrandFieldBasis; got None")
+    if isinstance(field, str) and field == "auto":
         field = None
         if walk.field_basis is not None:
             field = walk.field_basis

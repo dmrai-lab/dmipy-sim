@@ -1,9 +1,7 @@
-"""End-to-end IR-basis compression: producer streaming (piece 1) -> replay routing (piece 2).
-
-simulate_trajectories(compress=K) emits a compressed master (DCT position modes + boundary
-endpoint/modes) instead of the raw trajectory; replay() dispatches that master through
-mode-space phase + boundary/relaxation weights, never reconstructing positions. Same seed as
-the raw walk, so the only difference is DCT truncation -- checked below the MC floor.
+"""The compressed producer and its replay: simulate_trajectories(compress=K) emits a master of the pack's own
+coefficients (two exact endpoints and K sine bands of the bridge per axis, the cumulative local time in the same
+form) instead of the raw trajectory, and replay() reads that master in coefficient space, never reconstructing
+positions. Same seed as the raw walk, so the only difference is the band truncation -- checked below the MC floor.
 """
 import numpy as np
 import pytest
@@ -52,6 +50,26 @@ def test_compressed_surface_replay_matches_raw():
                                     surface_relaxivity=rho, D=D))[0])
     # ungated surface uses the stored endpoint B(T) -> exact (not just within the MC floor)
     assert abs(S_cmp - S_raw) < 1e-4
+
+
+def test_the_compressed_master_is_the_codec_of_the_raw_walk():
+    """compress=K encodes each batch on the device with the pack's own codec: the master equals
+    encode_bridge_dst / encode_boundary_bridge of the raw walk of the same seed, computed on the host in float64,
+    to float32 rounding -- one codec, no TF32."""
+    from dmipy_sim.replay.compression import encode_bridge_dst, encode_boundary_bridge, read_position_coeffs
+    D, R, K = 2e-9, 2e-6, 16
+    kw = dict(T_max=0.02, dt_save=1e-4, seed=3, require_gpu=False)
+    raw = simulate_trajectories(512, D, Box1D(length=R), **kw)
+    mst = simulate_trajectories(512, D, Box1D(length=R), compress=K, **kw)
+    arrays, _, _ = encode_bridge_dst(np.asarray(raw.positions, np.float32), K, device="numpy")
+    C = read_position_coeffs(arrays, dtype=np.float64)
+    scale = np.abs(C).max()
+    assert np.abs(mst["pos_modes"] - C).max() <= 1e-5 * scale
+    b, _ = encode_boundary_bridge(np.asarray(raw.boundary_local_time, np.float32), K, device="numpy")
+    B_T = np.abs(b["blt_endpoint"]).max()
+    assert np.abs(mst["blt_endpoint"] - b["blt_endpoint"]).max() <= 1e-5 * B_T
+    assert np.abs(mst["blt_start"] - b["blt_start"]).max() <= 1e-5 * B_T
+    assert np.abs(mst["blt_modes"] - b["blt_bridge_dst"]).max() <= 1e-5 * B_T
 
 
 def test_compressed_susceptibility_is_rejected():

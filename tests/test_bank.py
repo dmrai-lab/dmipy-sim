@@ -387,6 +387,8 @@ def test_builder_takes_a_persistent_walk_and_assembles_the_tiers_it_carries():
         build_replay_pack(walk, id="x", weights=np.ones(7), K=8, envelope=_lean_env(), license="x", citation="x")
     with pytest.raises(TypeError, match="FieldGrid"):
         build_replay_pack(walk, id="x", field={"iso_local": 1}, K=8, envelope=_lean_env(), license="x", citation="x")
+    with pytest.raises(TypeError, match="False \\(no field tier\\)"):             # no field has one spelling
+        build_replay_pack(walk, id="x", field=None, K=8, envelope=_lean_env(), license="x", citation="x")
     with pytest.raises(TypeError, match="go with a PersistentWalk"):
         build_replay_pack(_slab_master(), id="x", weights=np.ones(3), K=8, envelope=_lean_env(), license="x", citation="x")
     fb, origin = _field_basis_for_slab()

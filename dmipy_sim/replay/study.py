@@ -200,8 +200,8 @@ def walker_primitives(pack, acquisition):
     contracted once under the pose's field direction, the exposures and the contact read once -- each a sum over
     the windows the walk is stored in (RPK.md 4.3)."""
     from .compression import read_position_coeffs, relaxation_logweight_runs
-    from .replay import _compile_effective, _path_grid, surface_logweight, GAMMA
-    from ._replay_kernel import field_gate, effective_gradient
+    from .replay import _compile_effective, surface_logweight
+    from ._replay_kernel import effective_gradient
     acq = acquisition if isinstance(acquisition, Acquisition) else Acquisition(acquisition)
     P = pack._prepare(acq.waveform, tissue=None, scanner=None, orientation=acq.orientation, compartment=None)
     n_w, dt, ch = P["n_w"], P["dt"], P["ch"]
@@ -230,20 +230,15 @@ def walker_primitives(pack, acquisition):
             c_s = np.asarray(surface_logweight(seg.arrays, 1.0, ch.get("boundary_local_time"), chi_s), np.float64)
             contact = c_s if contact is None else contact + c_s
         if pm is not None:
-            from scipy.fft import dct
-            from .bank import susc_path_coeffs
-            Cs, names = susc_path_coeffs(seg.arrays, pm); Cs = Cs[:n_w]
-            n_tf, dt_f = _path_grid(pm, n_s, dt)
-            gate_hat = dct(field_gate(acq.waveform, n_tf, dt_f, t0=t0), type=2, norm="ortho")[:Cs.shape[2]]
-            Psi_s = (GAMMA * dt_f) * np.einsum("k,wck->wc", gate_hat, Cs)
+            from .bank import path_field_integral
+            Psi_s, names = path_field_integral(seg.arrays, pm, acq.waveform, n_s, dt, t0=t0, n_w=n_w)
             Psi = Psi_s if Psi is None else Psi + Psi_s
     field_iso = field_aniso = None
     if pm is not None:
-        from ..fields.susceptibility_field import _q_of_H
-        q = _q_of_H(P["b0_dir"]); i_p = names.index("iso_P_xx")
-        field_iso = Psi[:, names.index("iso_local")] - Psi[:, i_p:i_p + 6] @ q
+        from ..fields.hollow_cylinder import field_terms
+        field_iso, aniso = field_terms(Psi, P["b0_dir"])
         gm = ch.get("susceptibility_grid") or {}
-        field_aniso = (Psi[:, names.index("aniso_G_xx"):names.index("aniso_G_xx") + 6] @ q) if (gm.get("has_aniso") and "aniso_G_xx" in names) else np.zeros(n_w)
+        field_aniso = aniso if (gm.get("has_aniso") and aniso is not None) else np.zeros(n_w)
     from ..acquisition.epg import pathway_weight
     return Primitives(w=P["w"], phi=phi, field_iso=field_iso, field_aniso=field_aniso, exposure_t2=exposure_t2, exposure_t1=exposure_t1,
                       contact=contact, D_walk=pack.diffusivity, pathway=pathway_weight(acq.waveform),

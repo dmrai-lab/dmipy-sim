@@ -223,8 +223,8 @@ class ReplayPack:
         """The columnar layout at ``uri`` (a directory, or ``hf://owner/name/prefix`` on the Hub), open by reference:
         a :class:`~dmipy_sim.replay.columnar.ColumnarPack`, whose ``view`` gives a :class:`ReplayPack` of the rows
         and bands an acquisition needs and whose ``image`` replays a whole grid in one pass over the rows."""
-        from .columnar import open_columnar
-        return open_columnar(uri, workers=workers)
+        from .columnar import ColumnarPack
+        return ColumnarPack(uri, workers=workers)
 
     def __init__(self, arrays, meta, source=None):
         self.arrays = dict(arrays)
@@ -851,31 +851,18 @@ class ReplayPack:
             chi_i = float(P["chi_iso"])
             pm = ch.get("susceptibility_path")
             if pm is not None:                                                        # the path route: every term a contraction
-                from scipy.fft import dct
-                from .bank import susc_path_coeffs
-                from ..fields.susceptibility_field import _q_of_H
+                from .bank import path_field_integral
+                from ..fields.hollow_cylinder import contract
                 C = read_position_coeffs(self.arrays, dtype=np.float64)
                 phi = C.reshape(n_w, self.n_coeffs * 3) @ _compile_effective(Geff, dt, self.K, n_t)     # the gradient, as without a field
-                Cs, names = susc_path_coeffs(self.arrays, pm)
-                Cs = Cs[:n_w]
-                n_tf, dt_f = _path_grid(pm, n_t, dt)                                  # the channel's own grid
-                gate_hat = dct(field_gate(waveform, n_tf, dt_f, t0=t0), type=2, norm="ortho")[:Cs.shape[2]]
-                Psi = (GAMMA * dt_f) * np.einsum("k,wck->wc", gate_hat, Cs)           # (n_w, n_ch): the gated path integral per channel
-                q = _q_of_H(b0_dir)
-                i_p = names.index("iso_P_xx")
-                phi_x = chi_i * float(B0) * (Psi[:, names.index("iso_local")] - Psi[:, i_p:i_p + 6] @ q)
-                if bool(gm.get("has_aniso")) and chi_aniso and "aniso_G_xx" in names:
-                    i_a = names.index("aniso_G_xx")
-                    phi_x = phi_x + float(chi_aniso) * float(B0) * (Psi[:, i_a:i_a + 6] @ q)
+                Psi, names = path_field_integral(self.arrays, pm, waveform, n_t, dt, t0=t0, n_w=n_w)
+                aniso = chi_aniso if (bool(gm.get("has_aniso")) and chi_aniso and "aniso_G_xx" in names) else 0.0
+                phi_x = contract(Psi, b0_dir, B0=float(B0), chi_iso=chi_i, chi_aniso=aniso)
                 return phi + phi_x[:, None]
             pos = self.positions()                                                    # the grid route samples the field along the path
             if True:
-                basis = {"iso_local": np.asarray(self.arrays["susc_grid_iso_local"], np.float64),
-                         "iso_P": np.asarray(self.arrays["susc_grid_iso_P"], np.float64),
-                         "aniso_G": (np.asarray(self.arrays["susc_grid_aniso_G"], np.float64)
-                                     if "susc_grid_aniso_G" in self.arrays else None),
-                         "shape": tuple(gm["shape"]), "voxel_size": np.asarray(gm["voxel_size"], float)}
-                dB = sample_grid(assemble_field(basis, b0_dir, B0=float(B0), chi_iso=chi_i, chi_aniso=chi_aniso),
+                from .bank import grid_basis_of
+                dB = sample_grid(assemble_field(grid_basis_of(self.arrays, gm), b0_dir, B0=float(B0), chi_iso=chi_i, chi_aniso=chi_aniso),
                                  pos, np.asarray(gm["origin"], float), gm["voxel_size"], periodic=False)
             phi_x = GAMMA * dt * (dB * field_gate(waveform, n_t, dt, t0=t0)[None, :]).sum(1)    # (n_w,)
             phi = gradient_phase(Geff, pos, dt).T + phi_x[:, None]                             # (n_w, n_meas)
@@ -1046,12 +1033,8 @@ class ReplayPack:
             b, _ = susc_path_decode(self.arrays, pm, n_w=P["n_w"])
             return susc_path_field(b, P["b0_dir"], B0=float(P["B0"]), chi_iso=float(P["chi_iso"]),
                                    chi_aniso=P["chi_aniso"], has_aniso=bool(gm.get("has_aniso")))
-        basis = {"iso_local": np.asarray(self.arrays["susc_grid_iso_local"], np.float64),
-                 "iso_P": np.asarray(self.arrays["susc_grid_iso_P"], np.float64),
-                 "aniso_G": (np.asarray(self.arrays["susc_grid_aniso_G"], np.float64)
-                             if "susc_grid_aniso_G" in self.arrays else None),
-                 "shape": tuple(gm["shape"]), "voxel_size": np.asarray(gm["voxel_size"], float)}
-        return sample_grid(assemble_field(basis, P["b0_dir"], B0=float(P["B0"]), chi_iso=float(P["chi_iso"]),
+        from .bank import grid_basis_of
+        return sample_grid(assemble_field(grid_basis_of(self.arrays, gm), P["b0_dir"], B0=float(P["B0"]), chi_iso=float(P["chi_iso"]),
                                           chi_aniso=P["chi_aniso"]),
                            pos, np.asarray(gm["origin"], float), gm["voxel_size"], periodic=False)
 
@@ -1641,8 +1624,7 @@ class ReplayPack:
         route) scaled by ``B0``, ``chi_iso``, ``chi_aniso``. Raises, as the quadrature route does, when the pack
         cannot supply it."""
         from scipy.fft import dct
-        from ._replay_kernel import field_gate
-        from .bank import susc_path_coeffs
+        from .bank import path_field_integral
         B0, chi_iso, chi_aniso = P["B0"], P["chi_iso"], P["chi_aniso"]
         self._field_active(B0)
         pm = self.meta.get("compression", {}).get("channels", {}).get("susceptibility_path")
@@ -1653,10 +1635,7 @@ class ReplayPack:
         dt = P["dt"]
         Psi = None
         for seg, t0, n_s in P["windows"]:                                        # the windows' path integrals sum
-            Cs, names = susc_path_coeffs(seg.arrays, pm)
-            n_tf, dt_f = _path_grid(pm, n_s, dt)
-            gate_hat = dct(field_gate(waveform, n_tf, dt_f, t0=t0), type=2, norm="ortho")[:Cs.shape[2]]
-            Psi_s = (GAMMA * dt_f) * np.einsum("k,wck->wc", gate_hat, Cs)       # (n_w, n_ch)
+            Psi_s, names = path_field_integral(seg.arrays, pm, waveform, n_s, dt, t0=t0)          # (n_w, n_ch)
             Psi = Psi_s if Psi is None else Psi + Psi_s
         i_p = names.index("iso_P_xx")
         i_a = names.index("aniso_G_xx") if "aniso_G_xx" in names else None
@@ -1747,11 +1726,8 @@ class ReplayPack:
                 raise ValueError("the pose expansion with a field needs the pack's susc_path channel (C3 path route)")
             if chi_iso is None:
                 raise ValueError("a scanner field was given without a chi_iso in the tissue; give chi_iso (and chi_aniso)")
-            from .bank import susc_path_coeffs
-            Cs, names = susc_path_coeffs(self.arrays, pm)
-            n_tf, dt_f = _path_grid(pm, n_t, dt)
-            gate_hat = dct(field_gate(waveform, n_tf, dt_f), type=2, norm="ortho")[:Cs.shape[2]]
-            Psi = (GAMMA * dt_f) * np.einsum("k,wck->wc", gate_hat, Cs)             # (n_w, n_ch)
+            from .bank import path_field_integral
+            Psi, names = path_field_integral(self.arrays, pm, waveform, n_t, dt)         # (n_w, n_ch)
             i_p = names.index("iso_P_xx")
             i_a = names.index("aniso_G_xx") if "aniso_G_xx" in names else None
         b = np.asarray(b0_dir, float); b = b / np.linalg.norm(b)

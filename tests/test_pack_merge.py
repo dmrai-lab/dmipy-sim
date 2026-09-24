@@ -18,17 +18,6 @@ from dmipy_sim.spec.tissue import Tissue
 
 
 @pytest.fixture(scope="module")
-def spec_grid(tmp_path_factory):
-    tmp = tmp_path_factory.mktemp("shards")
-    cls_ = [np.array([[x, 0, -12e-6], [x, 0.5e-6, 0], [x, 0, 12e-6]]) + 10e-6 for x in (-5e-6, 0, 5e-6)]
-    tck, dia = str(tmp / "t.tck"), str(tmp / "d.txt")
-    write_tck(tck, cls_, coordinate_unit_m=25e-6); np.savetxt(dia, np.array([2 * r for r in (1.5e-6, 1.0e-6, 2.0e-6)]) / 1e-3)
-    spec = disco_spec(tck, dia, side_m=20e-6)
-    grid = Grid(shape=(2, 2, 2), voxel_size_m=(10e-6,) * 3, origin_m=(5e-6,) * 3)
-    return spec, grid, tmp
-
-
-@pytest.fixture(scope="module")
 def shards(spec_grid):
     spec, grid, tmp = spec_grid
     packs = []
