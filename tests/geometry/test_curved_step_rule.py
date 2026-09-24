@@ -32,20 +32,49 @@ def _n_sub(frac, dt_save=2e-4):
     return int(np.ceil(dt_save / ((R / frac) ** 2 / (6 * D0))))
 
 
-def test_an_interior_walker_never_changes_tube():
-    """Two thin strands whose walls are 14 nm apart, a step of R / STEP_FRACTION (240 nm) across it: every walker ends in
-    the tube it started in. The nearest-axis mirror moved walkers across."""
-    gap = 0.02 * R
+def _two_tubes(gap):
     cl1 = np.array([[-30e-6, 0, 0], [30e-6, 0, 0]]); cl2 = np.array([[-30e-6, 2 * R + gap, 0], [30e-6, 2 * R + gap, 0]])
-    g = d.PackedCurvedCylinders([cl1, cl2], [R, R], interior=True)
-    r0 = np.asarray(g.init_positions(20_000, jax.random.PRNGKey(0)))
-    tube0 = np.asarray(jax.vmap(g.classify_position)(jnp.asarray(r0)))
-    assert set(np.unique(tube0)) == {1, 2}
-    w = _walk(g, r0, _n_sub(STEP_FRACTION))
-    pos = np.asarray(w.positions)
-    for k in range(pos.shape[1]):
-        tube = np.asarray(jax.vmap(g.classify_position)(jnp.asarray(pos[:, k])))
-        assert np.array_equal(tube, tube0), (k, (tube != tube0).sum(), (tube == 0).sum())
+    return d.PackedCurvedCylinders([cl1, cl2], [R, R], interior=True)
+
+
+def _impacts(g, gap):
+    """(label, start, step): an interior walker of tube 1 placed ``off`` inside its wall facing tube 2, aimed at
+    that wall at ``deg`` from its normal, for a step of ``dist``; and the mirror image starting in tube 2."""
+    offsets = [("nudge", g.nudge_m), ("1e-3R", 1e-3 * R), ("0.1R", 0.1 * R)]
+    dists = [("half_gap", 0.5 * gap), ("gap", gap), ("3gap", 3 * gap), ("10gap", 10 * gap), ("R/3", R / 3)]
+    angles = [("head_on", 0.0), ("oblique", 45.0), ("grazing", 89.0), ("tangent", 90.0)]
+    out = []
+    for x in (-20e-6, 0.0, 20e-6):
+        for oname, off in offsets:
+            for dname, dist in dists:
+                for aname, deg in angles:
+                    th = np.deg2rad(deg)
+                    for tube, y_wall, sign in ((1, R, 1.0), (2, R + gap, -1.0)):      # the facing walls
+                        start = np.array([x, y_wall - sign * off, 0.0])
+                        aim = np.array([np.sin(th), sign * np.cos(th), 0.0])         # towards the other tube
+                        out.append((f"x{x * 1e6:+.0f}/{oname}/{dname}/{aname}/tube{tube}", tube, start, aim * dist))
+    return out
+
+
+def test_an_interior_walker_never_changes_tube():
+    """Two thin strands whose walls are 14 nm apart: a walker fired from just inside one wall at the other, at every
+    offset, distance and angle of the table, ends in the tube it started in and never further than it stepped.
+    The nearest-axis mirror moved such walkers across."""
+    gap = 0.02 * R
+    g = _two_tubes(gap)
+    cases = _impacts(g, gap)
+    starts = jnp.asarray(np.stack([c[2] for c in cases]), jnp.float32)
+    steps = jnp.asarray(np.stack([c[3] for c in cases]), jnp.float32)
+    tube0 = np.array([c[1] for c in cases])
+    assert np.array_equal(np.asarray(jax.vmap(g.classify_position)(starts)), tube0), "a start is not in its tube"
+    r = np.asarray(jax.jit(jax.vmap(g.reflect))(starts, steps))
+    tube = np.asarray(jax.vmap(g.classify_position)(jnp.asarray(r)))
+    moved = tube != tube0
+    if moved.any():
+        rows = "\n".join(f"      {cases[i][0]:40} -> tube {tube[i]}" for i in np.flatnonzero(moved)[:12])
+        pytest.fail(f"{moved.sum()}/{len(cases)} impacts changed tube:\n{rows}")
+    gone = np.linalg.norm(r - np.asarray(starts), axis=1); asked = np.linalg.norm(np.asarray(steps), axis=1)
+    assert not (gone > asked * (1 + 1e-4) + 1e-12).any(), "a reflection added distance"
 
 
 @pytest.mark.slow
