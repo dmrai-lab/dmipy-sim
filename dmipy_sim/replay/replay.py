@@ -907,12 +907,9 @@ class ReplayPack:
         view = self._at_tissue(tissue)
         if view is not self:
             return view.replay_bloch(waveform, b1_scale=b1_scale, off_resonance_T=off_resonance_T, tissue=tissue, scanner=scanner, orientation=orientation, compartment=compartment, jax=jax, complex_signal=complex_signal, per_walker=per_walker, crusher_seed=crusher_seed)
-        from .trajectories import replay_bloch as _rb, replay_bloch_jax as _rbj
+        from .trajectories import replay_bloch as _rb, replay_bloch_jax as _rbj, _bloch_timeline
         from .compression import decode_occupancy, decode_boundary_bridge
-        if self.n_segments > 1:
-            raise NotImplementedError("the vector-Bloch route propagates each walker's magnetisation through the walk in "
-                                      "time, and this pack stores its walk in segments; the propagation across segments "
-                                      "is the next change (dmipy-sim: replay/segments-bloch)")
+        from ._replay_kernel import gate_weights
         P = self._prepare(waveform, tissue=tissue, scanner=scanner, orientation=orientation, compartment=compartment,
                           relaxation=False, surface=False, pathway=False)
         rf = waveform.rf
@@ -920,15 +917,21 @@ class ReplayPack:
             raise ValueError("the Bloch route replays an RF schedule and this sequence carries none. Without a "
                              "pulse there is nothing this route adds over replay().")
         ch, dt, n_t = P["ch"], P["dt"], P["n_t"]
-        pos = self.positions()
-        kw = dict(weights=P["ew"] / P["norm"], echo_steps=_echo_saves(waveform, dt))
-        if b1_scale is not None:
-            kw["b1_scale"] = b1_scale
+        _bloch_timeline(rf, n_t, dt)                                    # the whole schedule against the whole walk, once
+        # the readouts on the pack grid: the sequence's echoes, else its last sample -- the acquisition's own end,
+        # never the walk's, so a shorter acquisition on a longer pack is read at its readout
+        echoes = _echo_saves(waveform, dt)
+        single = echoes is None
+        if single:
+            echoes = [int(round((int(waveform.n_t) - 1) * float(waveform.dt) / dt))]
+        if per_walker and not single:
+            raise ValueError("per_walker reads each walker at the readout of a single-echo sequence")
         T2v, T1v = P["T2"], P["T1"]
+        relax = None
         if T2v is not None or T1v is not None:
-            comp = decode_occupancy(self.arrays, ch["compartment"])["comp"]
-            n_ids = 2 if (np.issubdtype(np.asarray(comp).dtype, np.floating) and not np.array_equal(comp, np.round(comp))) \
-                else int(np.max(comp)) + 1                            # a fractional occupancy is two pools, whatever its maximum
+            col = next(d for d in ch["compartment"]["columns"] if d["name"] == "comp")
+            n_ids = 2 if col["kind"] == "fraction" else self._n_pool_ids(col)   # a fractional occupancy is two pools
+
             # the Bloch route reads a rate as 1/T, so "no decay in this pool" is an infinite time, not a zero
             # one; a zero would make the rate infinite and return an identically dark signal
             def per_pool(v, what):
@@ -936,45 +939,37 @@ class ReplayPack:
                 if out is None:
                     return [np.inf] * n_ids
                 return [np.inf if t is None or float(t) <= 0.0 else float(t) for t in out]
-            kw.update(comp_traj=comp, T2_per_comp=per_pool(T2v, "T2"), T1_per_comp=per_pool(T1v, "T1"))
+            relax = dict(T2_per_comp=per_pool(T2v, "T2"), T1_per_comp=per_pool(T1v, "T1"))
+        surface = None
         if P["rho"] is not None and float(P["rho"]) != 0.0:
             D_walk = self.diffusivity if P["D"] is None else P["D"]
             if D_walk is None:
                 raise ValueError("rho needs the walk's diffusivity: the pack did not record it, pass D=")
             if not self.has_surface:
                 raise ValueError("surface relaxivity was requested but this pack carries no C2 channel")
-            meta = dict(ch.get("boundary_local_time") or {})
-            meta.setdefault("n_t", n_t)
-            meta.setdefault("K", _cx_bands_K(self.arrays, meta))
-            kw.update(dlog_boundary_unit=decode_boundary_bridge(self.arrays, meta),
-                      surface_relaxivity=float(P["rho"]), D=float(D_walk))
-        extra = None
-        if P["B0"] is not None:
-            extra = GAMMA * dt * self._field_along_walk(P, pos)
+            surface = dict(surface_relaxivity=float(P["rho"]), D=float(D_walk))
+        n_w = P["n_w"]
+        off = None
         if off_resonance_T is not None and np.any(np.asarray(off_resonance_T, np.float64) != 0.0):
             off = np.asarray(off_resonance_T, np.float64).reshape(-1)
-            if off.size not in (1, pos.shape[0]):
-                raise ValueError(f"off_resonance_T is a scalar or one value per walker ({pos.shape[0]}); got {off.shape}")
-            uniform = GAMMA * dt * np.broadcast_to(off[:, None], (pos.shape[0], n_t))
-            extra = uniform if extra is None else extra + uniform
+            if off.size not in (1, n_w):
+                raise ValueError(f"off_resonance_T is a scalar or one value per walker ({n_w}); got {off.shape}")
+        per_save_all = None
         if getattr(waveform, "crusher", None) is not None:
             from ..engine.bloch import _build_crusher
-            from ._replay_kernel import gate_weights
             rate, has = _build_crusher(waveform.crusher, P["dt_wf"], P["G"].shape[1])   # rad/step, waveform grid
             if has and np.any(rate):
-                # the rate as a density (rad/s) carried onto the pack's save grid, then back to radians per
-                # save: the phase of each window is preserved however the two grids differ
-                per_save = np.asarray(gate_weights(rate / P["dt_wf"], P["dt_wf"], n_t, dt), np.float64) * dt
                 # the macroscopic coordinate is STRATIFIED over the ensemble, (i + 1/2) / n_w dealt to the walkers
                 # by the seed: a declared winding of a whole number of turns then cancels the crushed pathways
                 # exactly, where n_w uniform draws leave them at 1/sqrt(n_w) (dmipy-sim#393: a 0.2 % offset on a
                 # crushed spin echo against the enumeration)
-                rng = np.random.default_rng(int(crusher_seed))
-                u = rng.permutation((np.arange(pos.shape[0]) + 0.5) / pos.shape[0])
-                crush = u[:, None] * np.broadcast_to(per_save.reshape(-1, n_t)[0], (pos.shape[0], n_t))
-                extra = crush if extra is None else extra + crush
-        if extra is not None:
-            kw["extra_phase_per_step"] = extra
+                # the rate as a density (rad/s) carried onto the pack's save grid, then back to radians per save: the
+                # phase of each window is preserved however the two grids differ. The propagator reads these as SAMPLES
+                # at the saves (a sampled rate, integrated with the path interpolant), so a window takes the whole
+                # grid's samples sliced, never a window's own weights, whose shared save would be halved
+                per_save_all = np.asarray(gate_weights(rate / P["dt_wf"], P["dt_wf"], n_t, dt), np.float64).reshape(-1, n_t)[0] * dt
+                u = np.random.default_rng(int(crusher_seed)).permutation((np.arange(n_w) + 0.5) / n_w)
+        r_v = None
         if waveform.unbalanced and not waveform.voxel_declared:
             # dmipy-sim#375: an encoding that leaves a net moment at the readout winds across the VOXEL, and a
             # micron-scale substrate cannot. Each walker is put at its own drawn place in the voxel -- the walk
@@ -983,20 +978,48 @@ class ReplayPack:
             # analytically (ScannerSequence.voxel_factor); this is it per walker. The voxel is the scanner's, so
             # r_v is drawn in the lab and turned into the stored frame with the gradient.
             L = np.asarray(waveform.prescription.voxel_size_m, np.float64)     # _prepare refused without one
-            r_v = (np.random.default_rng(int(crusher_seed) + 1).random((pos.shape[0], 3)) - 0.5) * L
+            r_v = (np.random.default_rng(int(crusher_seed) + 1).random((n_w, 3)) - 0.5) * L
             if orientation is not None:
                 r_v = r_v @ np.asarray(self.pose_rotation(orientation), np.float64)
-            pos = pos + r_v[:, None, :]
+        # the windows of the walk in turn (RPK.md 4.3): each propagated from the state the previous one left every
+        # walker in, its own positions decoded and its own channels read, the readouts it holds recorded
+        M = None; recs = []
+        for seg, t0, n_s in P["windows"]:
+            k0 = int(round(t0 / dt))
+            pos = seg.positions()
+            local = [e - k0 for e in echoes if (k0 < e <= k0 + n_s - 1) or (k0 == 0 and e == 0)]
+            kw = dict(weights=P["ew"] / P["norm"], t0=t0, M_init=M, return_state=True,
+                      echo_steps=(local or None), echo_per_walker=bool(per_walker and local))
+            if b1_scale is not None:
+                kw["b1_scale"] = b1_scale
+            if relax is not None:
+                kw.update(comp_traj=decode_occupancy(seg.arrays, ch["compartment"])["comp"], **relax)
+            if surface is not None:
+                meta = dict(ch.get("boundary_local_time") or {})
+                meta.setdefault("n_t", n_s)
+                meta.setdefault("K", _cx_bands_K(seg.arrays, meta))
+                kw.update(dlog_boundary_unit=decode_boundary_bridge(seg.arrays, meta), **surface)
+            extra = None
+            if P["B0"] is not None:
+                extra = GAMMA * dt * seg._field_along_walk(P, pos)
+            if off is not None:
+                uniform = GAMMA * dt * np.broadcast_to(off[:, None], (n_w, n_s))
+                extra = uniform if extra is None else extra + uniform
+            if per_save_all is not None:
+                crush = u[:, None] * np.broadcast_to(per_save_all[k0:k0 + n_s], (n_w, n_s))
+                extra = crush if extra is None else extra + crush
+            if extra is not None:
+                kw["extra_phase_per_step"] = extra
+            if r_v is not None:
+                pos = pos + r_v[:, None, :]
+            M, out = (_rbj if jax else _rb)(pos, dt, P["G"], P["dt_wf"], rf, **kw)
+            if local:
+                recs.append(np.asarray(out))
+        E = np.concatenate(recs, axis=1)                                          # (n_meas, n_echo[, n_w])
         if per_walker:
-            if kw.get("echo_steps") is not None:
-                raise ValueError("per_walker reads each walker at the readout of a single-echo sequence")
-            kw.update(echo_steps=[n_t - 1], echo_per_walker=True)
-            out = (_rbj if jax else _rb)(pos, dt, P["G"], P["dt_wf"], rf, **kw)
-            E = np.asarray(out[0] if isinstance(out, tuple) else out)                # (n_meas, 1, n_w)
-            E = np.asarray(E).reshape(E.shape[0], -1, pos.shape[0])[:, -1, :].T     # (n_w, n_meas)
+            E = E[:, 0, :].T                                                     # (n_w, n_meas)
             return E if complex_signal else np.abs(E)
-        out = (_rbj if jax else _rb)(pos, dt, P["G"], P["dt_wf"], rf, **kw)
-        S = np.asarray(out[0] if isinstance(out, tuple) else out)
+        S = E[:, 0] if single else E
         return S if complex_signal else np.abs(S)
 
     def _field_along_walk(self, P, pos):

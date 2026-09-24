@@ -52,29 +52,33 @@ def _cumulative_at(G, dt_wf, times):
     return Q0p, Q1p
 
 
-def piece_moments(G, dt_wf, edges, n_t, dt_pack):
+def piece_moments(G, dt_wf, edges, n_t, dt_pack, t0=None):
     """Moments of the sample-and-hold waveform ``G`` over the **pieces** ``[edges[p], edges[p+1]]`` of the
     walk, a cut of the save grid at the saves and at any further instants (an RF pulse, an echo): returns
     ``A0`` = int G dt, ``A1`` = int G (t - t_k) dt with ``t_k`` the start of the save interval the piece lies in,
     both ``(n_meas, n_pieces, 3)``, and ``k`` ``(n_pieces,)`` that save interval's index. A piece must not
     straddle a save (the saves are among the edges). Exact. A waveform with a non-zero sample starting beyond
-    ``T = (n_t - 1) dt_pack`` is refused: the stored path ends there.
+    ``T = (n_t - 1) dt_pack`` is refused: the stored path ends there. With ``t0`` the saves are those of the
+    window of the walk starting at ``t0`` on the waveform's clock (RPK.md 4.3), the edges on that clock, and the
+    waveform beyond the window is another window's.
     """
     G = np.asarray(G, np.float64)
     dt_wf, dt_pack = float(dt_wf), float(dt_pack)
     T = (int(n_t) - 1) * dt_pack
-    e_wf = np.arange(G.shape[1] + 1) * dt_wf
-    beyond = e_wf[:-1] > T * (1.0 + 1e-9)
-    if beyond.any() and np.any(G[:, beyond, :] != 0.0):
-        raise ValueError(f"the waveform has a non-zero gradient beyond the pack's T_max = {T:.6g} s "
-                         f"(its own extent is {e_wf[-1]:.6g} s); the stored path ends there")
+    start = 0.0 if t0 is None else float(t0)
+    if t0 is None:
+        e_wf = np.arange(G.shape[1] + 1) * dt_wf
+        beyond = e_wf[:-1] > T * (1.0 + 1e-9)
+        if beyond.any() and np.any(G[:, beyond, :] != 0.0):
+            raise ValueError(f"the waveform has a non-zero gradient beyond the pack's T_max = {T:.6g} s "
+                             f"(its own extent is {e_wf[-1]:.6g} s); the stored path ends there")
     edges = np.asarray(edges, np.float64)
     if edges.ndim != 1 or edges.size < 2 or np.any(np.diff(edges) < -1e-12 * max(T, 1e-30)):
         raise ValueError("edges must be a sorted 1-D array of at least two instants")
-    k = np.clip(np.floor(edges[:-1] / dt_pack + 1e-9).astype(int), 0, int(n_t) - 2)
+    k = np.clip(np.floor((edges[:-1] - start) / dt_pack + 1e-9).astype(int), 0, int(n_t) - 2)
     Q0, Q1 = _cumulative_at(G, dt_wf, edges)
     A0 = np.diff(Q0, axis=1)
-    A1 = np.diff(Q1, axis=1) - (k * dt_pack)[None, :, None] * A0
+    A1 = np.diff(Q1, axis=1) - (start + k * dt_pack)[None, :, None] * A0
     return A0, A1, k
 
 
@@ -98,11 +102,12 @@ def window_moments(G, dt_wf, n_t, dt_pack, t0):
     return A0, A1
 
 
-def piece_phase_weights(G, dt_wf, edges, n_t, dt_pack):
+def piece_phase_weights(G, dt_wf, edges, n_t, dt_pack, t0=None):
     """The precession of each piece as weights on the two saves bounding its interval: the phase of piece
     ``p`` is ``w_lo[p] . r[k_p] + w_hi[p] . r[k_p + 1]`` (radians, gamma included), exact for the
-    piecewise-linear path. Returns ``(w_lo, w_hi, k)`` with the weights ``(n_meas, n_pieces, 3)``."""
-    A0, A1, k = piece_moments(G, dt_wf, edges, n_t, dt_pack)
+    piecewise-linear path. Returns ``(w_lo, w_hi, k)`` with the weights ``(n_meas, n_pieces, 3)``; ``t0`` as in
+    :func:`piece_moments`."""
+    A0, A1, k = piece_moments(G, dt_wf, edges, n_t, dt_pack, t0=t0)
     w_hi = GAMMA * A1 / float(dt_pack)
     return GAMMA * A0 - w_hi, w_hi, k
 
