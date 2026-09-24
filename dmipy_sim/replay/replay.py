@@ -1356,7 +1356,8 @@ class ReplayPack:
             K_new = min(2 * K_new, int(self.K))
         if path_series is not None:
             series, names, Kp, bits = path_series
-            a, pm = susc_path_encode_series(series, names, K=Kp, bits=bits, dt=_dt_f)
+            a, pm = susc_path_encode_series(series, names, K=Kp, bits=bits, dt=_dt_f,
+                                            max_refocus_pulses=self.meta["compression"]["channels"]["susceptibility_path"].get("max_refocus_pulses"))
             pk.arrays.update(a)
             pk.meta["compression"]["channels"]["susceptibility_path"] = pm
             g = dict(ch.get("susceptibility_grid", {})); g.update(arrays_in_pack=False, replay_route="path")
