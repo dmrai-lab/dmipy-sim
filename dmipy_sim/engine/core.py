@@ -1286,17 +1286,14 @@ def simulate_trajectories(
                     return r_f, key_f, comp_f, brem_f, bacc / jnp.float32(_n_chunk)
                 _burn = jax.jit(jax.vmap(_burn_walker, in_axes=(0, 0, 0, 0)))
 
-                _r, _k, _c = r0_all, walker_keys_all, comp0_all
-                _brem = brem0_all
-                _occ_prev, _converged = -1.0, False
-                for _ in range(40):
-                    _r, _k, _c, _brem, _bf = _burn(_r, _k, _c, _brem)
-                    _occ = float(jnp.mean(_bf))
-                    if _occ_prev >= 0.0 and abs(_occ - _occ_prev) <= 0.01 * max(_occ, 1e-6):
-                        _occ_prev, _converged = _occ, True
-                        break
-                    _occ_prev = _occ
-                r0_all, walker_keys_all, comp0_all, brem0_all = _r, _k, _c, _brem
+                _comp = [comp0_all]                                   # the compartment state rides along the chunks
+
+                def _chunk(r, k, brem):
+                    r, k, _comp[0], brem, bf = _burn(r, k, _comp[0], brem)
+                    return r, k, brem, jnp.mean(bf)
+                r0_all, walker_keys_all, brem0_all, _occ_prev, _converged = _mt.equilibrate_burnin_plateau(
+                    _chunk, r0_all, walker_keys_all, brem0_all)
+                comp0_all = _comp[0]
                 log.info(f"  [mt] equilibrate 'burnin': <bound>={_occ_prev:.4f}")
                 if not _converged:
                     import warnings
@@ -1309,66 +1306,28 @@ def simulate_trajectories(
         all_comp_batches = [] if record else None
         all_bound_batches = [] if _mt_on else None
 
-        # ── IR-basis streaming compression (piece 1) ────────────────────────────────
-        # When compress=K, DCT each batch's positions/boundary channel ON DEVICE and pull
-        # only (batch, K, 3) / (batch, K+1) to the host — the raw (batch, n_t, 3) trajectory
-        # never leaves the GPU, so the producer's host-RAM footprint drops ~n_t/K. The DCT is
-        # a matmul against the SAME orthonormal DCT-II basis compression.py uses (built from
-        # scipy so the stored modes decode/mode-space-replay bit-consistently).
+        # compress=K: each batch leaves the device as the pack's own C0/C2 coefficients (two exact endpoints and K
+        # sine bands of the bridge per axis; the cumulative local time in the same form), so the host holds a
+        # batch of raw positions at a time and the walk at K+2 numbers per axis per walker
         _compress = compress is not None
-        _cx = {"K": int(compress) if _compress else 0, "Phi": None, "Psi": None, "ramp": None, "n_t": None}
+        _cx = {"K": int(compress) if _compress else 0, "n_t": None}
         all_blt_endpoints = [] if (_compress and record) else None
         all_blt_starts = [] if (_compress and record) else None
         if _compress and is_packed_myelin_geom:
-            raise NotImplementedError(
-                "compress= is not yet wired for packed-myelin walks (extra MT bound channel); "
-                "piece 1 covers the generic reflect/surface-relaxivity producer.")
+            raise NotImplementedError("compress= is not wired for packed-myelin walks (the MT bound channel has no "
+                                      "bridge form); walk them uncompressed and pack with build_replay_pack.")
+        from ..replay.compression import encode_bridge_dst, encode_boundary_bridge, read_position_coeffs
 
-        def _dct_basis(n_t):
-            from scipy.fft import dct as _sdct
-            # dct(I, axis=0)[k, n] = DCT-II coeff k of basis vector e_n  ->  Phi @ x == dct(x)
-            Phi = _sdct(np.eye(n_t, dtype=np.float64), type=2, norm="ortho", axis=0)[:_cx["K"]]
-            return jnp.asarray(Phi, jnp.float32)
+        def _compress_pos(pos_dev):
+            """The batch's positions in the pack's C0 form, ``(b, K+2, 3)``, from the one codec."""
+            arrays, meta, _nbytes = encode_bridge_dst(np.asarray(pos_dev, np.float32), _cx["K"])
+            _cx["K"], _cx["n_t"] = int(meta["K"]), int(meta["n_t"])
+            return read_position_coeffs(arrays, dtype=np.float32)
 
-        def _sine_basis(n_t):
-            from scipy.fft import dst as _sdst
-            # dst(I, axis=0)[k, n] over the INTERIOR: Psi @ u_int == dst-I(u_int)
-            Psi = _sdst(np.eye(n_t - 2, dtype=np.float64), type=1, norm="ortho",
-                        axis=0)[:_cx["K"]]
-            return jnp.asarray(Psi, jnp.float32)
-
-        def _compress_pos(pos_dev):                  # (b, n_t, 3) device -> (b, K+2, 3) host
-            """Positions in the same representation build_replay_pack writes: two exact endpoints
-            then sine bands of the pinned residual.  Producing DCT bands here instead would put a
-            second, differently-meaning C0 layout into masters that the reader cannot distinguish
-            by shape."""
-            n_t = int(pos_dev.shape[1])
-            if _cx["Psi"] is None:
-                _cx["n_t"] = n_t; _cx["Psi"] = _sine_basis(n_t)
-            a = pos_dev[:, 0, :]
-            v = pos_dev[:, -1, :] - a
-            tau = jnp.linspace(jnp.float32(0.0), jnp.float32(1.0), n_t)
-            u = pos_dev - (a[:, None, :] + v[:, None, :] * tau[None, :, None])
-            B = jnp.einsum("kt,btd->bkd", _cx["Psi"], u[:, 1:-1, :])
-            return np.asarray(jnp.concatenate([a[:, None, :], v[:, None, :], B],
-                                              axis=1)).astype(np.float32)
-
-        def _compress_blt(dlog_dev):          # (b, n_t) -> start (b,), endpoint (b,), modes (b, K)
-            """The cumulative local time in the SAME bridge form as positions: both endpoints exact,
-            then sine bands of the pinned residual. Emitting detrended cosine bands here instead would
-            put a second, differently-meaning C2 layout into masters that the reader cannot tell apart
-            from this one -- and a truncated cosine residual misses the stored endpoint by percent."""
-            n_t = int(dlog_dev.shape[1])
-            if _cx["Psi"] is None:
-                _cx["n_t"] = n_t; _cx["Psi"] = _sine_basis(n_t)
-            if _cx["ramp"] is None:
-                _cx["ramp"] = jnp.linspace(jnp.float32(0.0), jnp.float32(1.0), n_t)
-            B = jnp.cumsum(dlog_dev, axis=1)
-            a, endpoint = B[:, 0], B[:, -1]
-            resid = B - (a[:, None] + (endpoint - a)[:, None] * _cx["ramp"][None, :])   # 0 at BOTH ends
-            modes = jnp.einsum("kt,bt->bk", _cx["Psi"], resid[:, 1:-1])
-            return (np.asarray(a).astype(np.float32), np.asarray(endpoint).astype(np.float32),
-                    np.asarray(modes).astype(np.float32))
+        def _compress_blt(dlog_dev):
+            """The batch's cumulative local time in the pack's C2 form: ``(start (b,), endpoint (b,), bands (b, K))``."""
+            arrays, _meta = encode_boundary_bridge(np.asarray(dlog_dev, np.float32), _cx["K"])
+            return arrays["blt_start"], arrays["blt_endpoint"], np.asarray(arrays["blt_bridge_dst"], np.float32)
 
         for batch_idx, (start, end) in enumerate(run.batches(n_walkers, walker_batch_size)):
             batch_size = end - start
