@@ -158,9 +158,11 @@ def resolve_equilibrate_mode(equilibrate_binding, geometry, *, G=None, T2=None, 
     """
     import warnings
     eb = equilibrate_binding
-    if eb in (None, False, "off"):
+    if not isinstance(eb, str):
+        raise ValueError(f"equilibrate_binding must be 'auto'|'burnin'|'fast'|'off', got {eb!r}")
+    if eb == "off":
         return "off"
-    if eb in ("auto", True, "burnin"):
+    if eb in ("auto", "burnin"):
         return "burnin"
     if eb == "fast":
         if surface_to_volume(geometry) is None:
