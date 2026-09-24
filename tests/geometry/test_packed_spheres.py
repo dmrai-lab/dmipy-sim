@@ -28,6 +28,8 @@ Parameters: R=5 µm, L=20 µm, D=2e-9 m²/s, TE=100 ms
 """
 
 import numpy as np
+
+from tests.conftest import pgse_wf
 import numpy.testing as npt
 import jax
 import jax.numpy as jnp
@@ -59,18 +61,6 @@ def _single_sphere_packed(permeability=None, surface_relaxivity_t2=None, pool="e
         surface_relaxivity_t2=surface_relaxivity_t2,
         pool=pool,
     )
-
-
-def _pgse_wf(TE_s, n_t=500):
-    delta    = max(TE_s * 0.05, 5e-6)
-    DELTA    = TE_s - delta
-    b_values = np.array([0.0, 500e6, 1000e6, 2000e6])  # s/m²
-    bvecs    = np.tile([1., 0., 0.], (4, 1))
-    # square (instantaneous) lobes: these restricted-diffusion checks were
-    # validated against the idealized waveform (sim now defaults to slew-limited)
-    return set_b(
-        pgse(bvecs, delta, DELTA, gradient_strengths=1.0, n_t=n_t, slew_rate=np.inf),
-        b_values)
 
 
 # =============================================================================
@@ -200,7 +190,7 @@ def test_init_positions_inside_box():
 
 def test_permeability_none_matches_impermeable():
     """PackedSpheres(permeability=None) == default — identical signal."""
-    wf            = _pgse_wf(100e-3)
+    wf            = pgse_wf(100e-3, slew_rate=np.inf)
     geom_default  = _single_sphere_packed(permeability=None)
     geom_explicit = PackedSpheres(
         radii=np.array([R]),
@@ -241,7 +231,7 @@ def _matched_signal(kappa):
     """Signal for a single-sphere pack at `kappa` (None = impermeable), matched sub-steps."""
     if kappa not in _MATCHED:
         geom = _single_sphere_packed(permeability=kappa)
-        _MATCHED[kappa] = np.asarray(simulate(N_WALKERS, D, _pgse_wf(100e-3), geom,
+        _MATCHED[kappa] = np.asarray(simulate(N_WALKERS, D, pgse_wf(100e-3, slew_rate=np.inf), geom,
                                               seed=SEED, sub_steps=SUB_STEPS_MATCHED))
     return _MATCHED[kappa]
 
@@ -286,7 +276,7 @@ def test_permeability_high_kappa_between_compartments():
     """
     b_idx = 2      # b = 1000 s/mm²
     b_val = 1000e6 # s/m²
-    wf = _pgse_wf(100e-3, n_t=1000)
+    wf = pgse_wf(100e-3, n_t=1000, slew_rate=np.inf)
 
     geom_mixed = _single_sphere_packed(permeability=KAPPA_HIGH)
     geom_intra = Sphere(radius=R)
@@ -313,7 +303,7 @@ def test_permeability_with_relaxivity_reduces_signal():
     Reflected walkers get the Brownstein-Tarr weight; transmitted ones do not.
     The ensemble signal at b=0 is below the permeability-only signal.
     """
-    wf            = _pgse_wf(100e-3)
+    wf            = pgse_wf(100e-3, slew_rate=np.inf)
     geom_perm     = _single_sphere_packed(permeability=KAPPA_MED)
     geom_perm_rho = _single_sphere_packed(permeability=KAPPA_MED,
                                           surface_relaxivity_t2=RHO)

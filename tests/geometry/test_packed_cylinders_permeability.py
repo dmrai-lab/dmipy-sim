@@ -32,6 +32,8 @@ Parameters: R=5 µm, L=20 µm, D=2e-9 m²/s, TE=100 ms
 """
 
 import numpy as np
+
+from tests.conftest import pgse_wf
 import numpy.testing as npt
 
 from dmipy_sim import simulate, PackedCylinders, Cylinder, set_b
@@ -58,16 +60,6 @@ def _single_cylinder_packed(permeability=None, surface_relaxivity_t2=None):
     )
 
 
-def _pgse_wf(TE_s, n_t=500):
-    delta  = max(TE_s * 0.05, 5e-6)
-    DELTA  = TE_s - delta
-    b_values = np.array([0.0, 500e6, 1000e6, 2000e6])  # s/m²
-    bvecs    = np.tile([1., 0., 0.], (4, 1))
-    return set_b(
-        pgse(bvecs, delta, DELTA, gradient_strengths=1.0, n_t=n_t),
-        b_values)
-
-
 # ---------------------------------------------------------------------------
 # 1. Attribute storage
 # ---------------------------------------------------------------------------
@@ -90,7 +82,7 @@ def test_permeability_none_not_set():
 
 def test_permeability_none_matches_impermeable():
     """PackedCylinders(permeability=None) == default — identical signal."""
-    wf           = _pgse_wf(100e-3)
+    wf           = pgse_wf(100e-3)
     geom_default = _single_cylinder_packed(permeability=None)
     geom_explicit = PackedCylinders(
         radii=np.array([R]),
@@ -116,7 +108,7 @@ def test_permeability_increases_signal_at_high_b():
     (ADC_app decreases) → slower decay → higher signal at high b.
     So: S_perm > S_imp at high b.
     """
-    wf = _pgse_wf(100e-3)
+    wf = pgse_wf(100e-3)
     geom_imp  = _single_cylinder_packed(permeability=None)
     geom_perm = _single_cylinder_packed(permeability=KAPPA_MED)
     S_imp  = simulate(N_WALKERS, D, wf, geom_imp,  seed=SEED)
@@ -145,7 +137,7 @@ def test_permeability_high_kappa_between_compartments():
     """
     b_idx = 2   # b = 1000 s/mm²
     b_val = 1000e6   # s/m²
-    wf = _pgse_wf(100e-3, n_t=1000)
+    wf = pgse_wf(100e-3, n_t=1000)
 
     geom_mixed = _single_cylinder_packed(permeability=KAPPA_HIGH)
     geom_intra = Cylinder(radius=R, orientation=[0., 0., 1.])
@@ -173,7 +165,7 @@ def test_permeability_with_relaxivity_reduces_signal():
     do not.  The ensemble signal must therefore be below the permeability-only
     signal at b=0 where only relaxation (not diffusion) drives the difference.
     """
-    wf            = _pgse_wf(100e-3)
+    wf            = pgse_wf(100e-3)
     geom_perm     = _single_cylinder_packed(permeability=KAPPA_MED)
     geom_perm_rho = _single_cylinder_packed(permeability=KAPPA_MED,
                                              surface_relaxivity_t2=RHO)
@@ -194,7 +186,7 @@ def test_permeability_signal_monotone_in_kappa():
     Higher κ → more walkers inside cylinders → more restricted → higher
     signal at high b.
     """
-    wf      = _pgse_wf(100e-3)
+    wf      = pgse_wf(100e-3)
     kappas  = [0.0, 1e-6, 1e-5]
     signals = []
     for kappa in kappas:
