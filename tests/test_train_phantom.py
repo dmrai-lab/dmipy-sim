@@ -352,7 +352,7 @@ def test_a_spin_echo_under_a_field_refocuses_on_the_train_route_as_on_the_phase_
     grid = Grid(shape=SH, voxel_size_m=(2.5e-2,) * 3,
                 origin_m=tuple(-0.5 * (n - 1) * 2.5e-2 for n in SH), isocenter_m=(0.0, 0.0, 0.0))
     c = np.zeros(SH + (45,), np.float32); c[..., 0] = 1.0 / np.sqrt(4 * np.pi); c[..., 3] = 0.3
-    wm = PackSubstrate(field_pack, m0=1.0, name="wm", tissue=Tissue(chi_iso=-1e-5, chi_aniso=0.0))   # a large chi: the fixture walk is 6 ms
+    wm = PackSubstrate(field_pack, m0=1.0, name="wm", tissue=Tissue(chi_iso=-1e-6, chi_aniso=0.0))   # a large chi: the fixture walk is 6 ms
     ph = Phantom.compose(grid, fractions={wm: np.ones(SH, np.float32)}, orientation={wm: ODF(c, basis="mrtrix3")}, remainder=Inert(name="bg"))
     se = sequences.pgse([[0.0, 0.0, 1.0]], 1e-3, 3e-3, bvalues=[0.0], TE=6e-3, n_t=60)
     for B0 in (None, 7.0):                                   # in magnitude: the pathway carries the pulses' phase, the phase sum does not
