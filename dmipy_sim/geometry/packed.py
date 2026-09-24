@@ -137,10 +137,12 @@ def _seeded_pool(pool):
     raise ValueError(f"pool is None (both pools, by volume), 'extra' or 'intra'; got {pool!r}")
 
 
-def _seed_periodic(n_walkers, key, L, radii, centers, ndim, pool):
+def _seed_periodic(n_walkers, key, L, radii, centers, ndim, pool, rng=None):
     """``(n_walkers, ndim)`` points uniform over the periodic cell ``[-L/2, L/2)^ndim``, kept by membership when
-    ``pool`` names one: inside any object for ``"intra"``, outside every object for ``"extra"``."""
-    rng = np.random.default_rng(int(jax.random.randint(key, (), 0, 2 ** 30)))
+    ``pool`` names one: inside any object for ``"intra"``, outside every object for ``"extra"``. The draws come from
+    ``rng`` when one is given (a seeding that continues another's stream), else from a generator seeded by ``key``."""
+    if rng is None:
+        rng = np.random.default_rng(int(jax.random.randint(key, (), 0, 2 ** 30)))
     accepted, n_have = [], 0
     while n_have < n_walkers:
         batch = max(n_walkers * 4, 1024) if pool is not None else n_walkers
