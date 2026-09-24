@@ -183,3 +183,25 @@ def test_an_unbalanced_encoding_takes_its_voxel_from_the_grid(phantom):
     np.testing.assert_array_equal(S, ph.replay(stated, scanner=0.064, packs={0: pack}))
     tiny = spoiled.with_prescription(Prescription(voxel_size_m=(1e-9,) * 3, matrix=SH))
     assert np.nanmax(np.abs(S)) < 0.3 * np.nanmin(np.abs(ph.replay(tiny, scanner=0.064, packs={0: pack})))
+
+
+def test_a_closed_form_decays_at_the_b_the_machine_delivers_too(phantom, exact):
+    """Free water in CLOSED FORM beside the pack: the sequence a class plays keeps the prescribed encoding on
+    record, and the closed form must read the delivered ``b()`` rather than that record -- which it did not,
+    so a ventricle on a permanent magnet decayed at the prescribed b while the tissue around it decayed at the
+    delivered one (a 13 % error at 8 cm)."""
+    from dmipy_sim.phantom import FreeWater
+    from dmipy_sim.spec import Tissue
+    grid = _grid()
+    csf = FreeWater(m0=1.0, name="csf", tissue=Tissue(D=D0))
+    ph = Phantom.compose(grid, fractions={csf: np.ones(SH, np.float32)}, orientation={}, remainder=Inert(name="bg"))
+    seq = _seq()
+    sw = ScannerLimits.of("swoop")
+    S_sw = ph.replay(seq, scanner=sw, encoding_tolerance=None)
+    S_b0 = ph.replay(seq, scanner=0.064)
+    b = np.stack([exact["played"][c].b() for c in exact["cls"]])
+    _vi, sw_ = ph.sparse(S_sw)
+    _vi, b0_ = ph.sparse(S_b0)
+    want = np.exp(-(b - np.asarray(seq.b())[None, :]) * D0)
+    np.testing.assert_allclose(sw_ / b0_, want, rtol=1e-6, atol=1e-9)          # the closed form is exact (the gradient is float32)
+    assert np.abs(want - 1.0).max() > 3e-2
