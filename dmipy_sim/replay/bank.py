@@ -1353,14 +1353,14 @@ def preflight_master(m, *, susc_path_K=None, sigma_star=None, K=None):
 
 
 
-def _walk_master(walk, *, weights=None, field=None, diffusivity=None, substrate_frame=None):
+def _walk_master(walk, *, weights=None, field="auto", diffusivity=None, substrate_frame=None):
     """The bank's master dict from a PersistentWalk plus the substrate metadata; a bank dict / .npz passes
     through."""
     from ..persistent_walk import PersistentWalk
     from ..compartments import Compartments
     from ..fields.susceptibility_field import FieldGrid, field_grid_of
     if not isinstance(walk, PersistentWalk):
-        if any(v is not None for v in (weights, diffusivity, substrate_frame)) or field not in ("auto", None, False):
+        if any(v is not None for v in (weights, diffusivity, substrate_frame)) or field not in ("auto", False):
             raise TypeError("weights=, field=, diffusivity= and substrate_frame= go with a PersistentWalk; a master "
                             "dict carries them as its own keys")
         return walk
@@ -1377,7 +1377,9 @@ def _walk_master(walk, *, weights=None, field=None, diffusivity=None, substrate_
                                "spec gives water to, give the pool its water in the spec, or pass weights= explicitly")
         if any(f != 1.0 for f in wf):                     # the seeding rule's weights, from the spec
             weights = np.asarray(wf, float)[pool0]
-    if field == "auto":
+    if field is None:
+        raise TypeError("field is 'auto', False (no field tier), a FieldGrid or a StrandFieldBasis; got None")
+    if isinstance(field, str) and field == "auto":
         field = None
         if walk.field_basis is not None:
             field = walk.field_basis
