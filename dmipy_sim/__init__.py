@@ -10,8 +10,8 @@ from .engine._gpu_config import apply_gpu_mem_cap as _apply_gpu_mem_cap, configu
 _apply_gpu_mem_cap()
 
 from .engine.core import simulate, simulate_mixture, simulate_cpmg, simulate_trajectories
-# NB: the scalar trajectory-replay entrypoint is `dmipy_sim.trajectories.replay`, NOT a bare
-# top-level `replay` — the name `dmipy_sim.replay.replay` is the .rpk pack-forward module (see below).
+# NB: the scalar trajectory-replay entrypoint is `dmipy_sim.replay.trajectories.replay`, NOT a bare
+# top-level `replay` — the name `dmipy_sim.replay` is the package of the .rpk pack forward (see below).
 from .replay.trajectories import (unwrap_periodic, replay_jax,
                            replay_bloch, replay_bloch_jax,
                            finite_180_longitudinal_dwell, pre_pulse_gradient_phase,

@@ -10,7 +10,7 @@ costs one matrix multiply per pulse and one shift per interval. What it gives up
 and those are exactly what a replay needs, because a pathway's label is what says how much gradient phase
 it accumulated.
 
-:func:`gate_channels` is the reconciliation. A pathway's microscopic phase comes only from intervals where
+:func:`split_by_gate` is the reconciliation. A pathway's microscopic phase comes only from intervals where
 the gradient is ON, so pathways that differ only in what they did while it was OFF share a phase. For a
 diffusion-prepared train -- a preparation that encodes, then a train that reads -- that collapses tens of
 thousands of pathways onto a handful of distinct gates, and the explosion stays entirely inside the

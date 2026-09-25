@@ -1,7 +1,7 @@
 """GPU device guard + memory management for Monte Carlo runs.
 
-Project rule (see CLAUDE.md): **large MC runs MUST be on GPU — never a silent
-CPU fallback.**  A heavy walk that quietly drops to CPU looks like it is working
+**Large MC runs belong on a GPU, and a missing GPU is never a silent CPU
+fallback.**  A heavy walk that quietly drops to CPU looks like it is working
 but is ~100× slower; this module makes that loud.
 
 It also gives you the tools to keep a long interactive/batch session from leaving

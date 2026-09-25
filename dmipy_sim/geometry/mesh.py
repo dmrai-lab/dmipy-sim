@@ -243,7 +243,7 @@ def _classify_arr(A, r):
 
     Use :func:`_gather_is_populated` to tell "outside" from "cannot tell", and resolve the latter with an
     exact test (:func:`dmipy_sim.fields.susceptibility_field.mesh_contains`). :meth:`Mesh.init_positions` does
-    exactly that. Per-step compartment tracking in the walk does NOT yet -- see dmrai-lab/dmipy-sim#33.
+    exactly that; the walk carries each walker's compartment from step to step (:meth:`Mesh.classify_position_carry`).
     """
     r_w = _wrap_arr(A, r)
     ci, valid = _gather_arr(A, r_w)

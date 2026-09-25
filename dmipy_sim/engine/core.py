@@ -300,7 +300,7 @@ def simulate(
           the pre-replay code).
         - ``'replay'`` — walk once with :func:`simulate_trajectories` then apply
           the waveform + relaxation with
-          :func:`~dmipy_sim.trajectories.replay`
+          :func:`~dmipy_sim.replay.trajectories.replay`
           (gradient phase + scalar/per-comp T2 + T1 + surface relaxivity).
           Raises :class:`NotImplementedError` (naming the gap) for a path the
           replay backend cannot serve exactly — MyelinatedCylinder /
@@ -872,7 +872,7 @@ def simulate_trajectories(
     Unlike :func:`simulate`, this applies NO gradient waveform: it stores
     ``r(t)`` for all walkers so any waveform / relaxation hypothesis can be
     applied post-hoc via
-    :func:`~dmipy_sim.trajectories.replay`.  This is the
+    :func:`~dmipy_sim.replay.trajectories.replay`.  This is the
     walk-once half of the replay invariant (positions depend only on
     ``geometry, diffusivity, seed`` — see the module CLAUDE guide).
 

@@ -1,41 +1,25 @@
-"""IR-basis compression of a master walk — the replay representation, compressed.
+"""Compression of a master walk: the codecs a replay pack stores its channels in.
 
-A Monte-Carlo master walk is a large object (N_w walkers x N_t steps x 3). Every
-replay observable is a functional of the stored walk, and the walk compresses along
-two physical redundancies:
+A Monte-Carlo master walk is large (N_w walkers x N_t saves x 3), and every replay observable is a
+functional of it. The codecs keep walker identity, so the per-walker channels stay aligned and replay
+together:
 
-  * TEMPORAL — a deliverable gradient waveform is band-limited, so only the low-order
-    temporal content of a path is ever probed. ``bridge_dst`` -- the only C0 representation --
-    splits each path into its two exact endpoints and a residual pinned at both, keeping the
-    lowest ``K`` sine bands of the residual: lossless for any acquisition inside that band, and
-    it PRESERVES walker identity (so the per-walker relaxation / boundary / MT channels stay
-    aligned and replay too).
-  * ENSEMBLE — walkers are exchangeable samples. ``lowrank`` keeps ``K`` Karhunen-
-    Loeve modes + exact per-walker coefficients (walker-preserving, storage ~ N_w).
-    ``gaussian`` / ``marginal`` store only a coefficient DISTRIBUTION and resample at
-    replay (walker-count-independent, sub-MB) — exact in the Gaussian limit, gradient
-    replay only (they do not preserve walker identity).
+  * positions (C0) -- ``bridge_dst``, the one representation (:func:`encode_bridge_dst`): per axis the
+    path's two exact endpoints and the lowest ``K`` DST-I bands of the residual pinned at both. A
+    deliverable gradient is band-limited, so the replay is exact for every acquisition inside the band.
+    The retired codecs (``temporal_dct``, ``lowrank``, ``gaussian``, ``marginal``) are refused by name.
+  * compartment occupancy (C1) -- named columns, piecewise-constant per walker, stored as row run
+    lengths (:func:`rle_encode_rows`) or one static label per walker. The MT bound pool is one of these
+    columns, not a channel of its own.
+  * boundary local time (C2, rho/D = 1) -- the cumulative local time ``B(t) = cumsum(ell)`` in the same
+    bridge form as the positions (:func:`encode_boundary_bridge`): its two endpoints exact, its residual as
+    sine bands. :func:`encode_boundary_local_time` is the per-step sparse/dense form, lossless to its value quantisation. The
+    detrended-cosine ``dct`` form is retired.
 
-The physics channels get their own codecs (positions are smooth+low-rank; these are not):
-
-  * ``compartment`` (C1) — named occupancy columns, piecewise-constant per walker -> row
-    RLE. The MT bound pool is one of these columns, not a channel of its own.
-  * ``boundary_local_time`` (surface relaxivity ell(t), rho/D=1) — two codecs:
-      - ``boundary_local_time`` : DENSITY-AWARE sparse-CSR / dense-int8 of the *per-step*
-        signal. Lossless to the value quant; but the per-step signal is dense at small R
-        (every step hits a wall) so it caps at ~2x there.
-      - ``boundary_dct`` (this port's addition): DCT of the *cumulative* boundary time
-        B(t)=cumsum(ell). B is an integral -> smooth+monotone -> a handful of modes
-        reproduce it (and hence any TE truncation / gate) losslessly to the MC floor,
-        at a ratio that GROWS with n_t. This is the codec that makes surface-relaxivity
-        replay memory-viable at the fine, high-n_t fidelity we walk once and keep.
-
-``mode_space_signal`` computes the replay signal directly from the compressed basis,
-never reconstructing the trajectory. ``auto_select_modes`` picks the smallest K that
-meets a fidelity tolerance against the uncompressed walk.
-
-Ported from the private replay-pack pipeline; the fidelity scorer here is self-contained
-numpy (phase integral + separable log-weights) so this module depends only on numpy+scipy.
+:func:`mode_space_signal` computes the replay signal from the coefficients without reconstructing the
+trajectory, and :func:`auto_select_modes` picks the smallest ``K`` that meets a fidelity tolerance against
+the uncompressed walk. The band transforms run in numpy/scipy on the host and, on a GPU, as full-precision
+JAX matmuls (:func:`dst_bands`).
 """
 from __future__ import annotations
 import logging

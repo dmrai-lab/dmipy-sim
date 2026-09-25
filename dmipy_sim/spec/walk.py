@@ -59,13 +59,13 @@ def walk_spec(spec, n_walkers=None, T_max=None, dt_save=None, *, scanner="connec
     ``field`` is the susceptibility field basis the walk carries for the pack's C3 tier: ``True`` builds it,
     ``False`` leaves it out, ``"grid"`` forces the rasterised k-space route. A strand substrate (sheathed swept
     polylines) takes the per-segment closed form by default
-    (:class:`~dmipy_sim.fields.strand_field.StrandFieldBasis`): every strand within ``field_cutoff_m`` of a
-    point contributes its nearest segment's hollow-cylinder field, and the cutoff doubles until the channels
-    at a sample of the walk's start positions change by less than ``field_cutoff_tol`` (relative rms) when
-    it doubles again, up to ``field_cutoff_max_m`` -- the certificate the basis records, with the change the
-    last doubling still made when the bound stopped it (``converged: False``): over a domain that is mostly
-    sparse (DiSCo) the 1/r^2 fields of distant bundles are a share of the field's variance that a cutoff sum
-    reaches only as 1/cutoff, which a far-field grid, not a larger cutoff, will settle. Every other substrate, and a strand substrate
+    (:class:`~dmipy_sim.fields.strand_field.StrandFieldBasis`): every segment within ``field_cutoff_m`` of a
+    point contributes its exact finite-segment field (a strand's own term, within its gate, is its nearest
+    segment's cylinder), and the cutoff doubles until the channels at a sample of the walk's start positions
+    change by less than ``field_cutoff_tol`` (relative rms) when it doubles again, up to
+    ``field_cutoff_max_m`` -- the certificate the basis records, with the change the last doubling still made
+    when the bound stopped it (``converged: False``). With ``field_far`` the part beyond the grid's ``near_m``
+    is read from that grid instead of summed, and the cutoff is the grid's. Every other substrate, and a strand substrate
     with ``field="grid"`` (the cross-check of the closed form on a small strand voxel), rasterises the field basis on
     the domain grid at the node spacing the field source's thinnest shell sets
     (:func:`~dmipy_sim.fields.susceptibility_field.field_resolution` of ``spec.validity.thinnest_shell``:

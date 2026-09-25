@@ -1,13 +1,12 @@
-# FEXI / AXR — status & testing notes (WIP branch `feat/bloch-permeation`)
+# FEXI / AXR — status & testing notes
 
-Dev notes for the filter-exchange (FEXI) work. **Not for immediate merge** — the sequence and
-the engine feature are solid; the packed-substrate AXR *demo figure* still needs a substrate with
+Dev notes for the filter-exchange (FEXI) work. The sequence and the engine feature are solid; the packed-substrate AXR *demo figure* still needs a substrate with
 real pool contrast (below). Parked here so we can pick it up later.
 
 ## What's implemented (and solid)
-- **`dmipy_sim.bloch.simulate_bloch` — membrane permeation.** The vector-Bloch step now does the
-  Powles crossing (`geometry.permeate`), sub-stepped to ~R/25, reusing the scalar engine's
-  `permeable_sub_steps`. Reflecting path unchanged when `permeability is None`. Tests:
+- **`dmipy_sim.engine.bloch.simulate_bloch` — membrane permeation.** The vector-Bloch step does the
+  Powles crossing (`geometry.permeate`), sub-stepped by `engine.physics.resolve_sub_steps`, the count
+  every driver uses. Reflecting path unchanged when `permeability is None`. Tests:
   `tests/test_bloch_permeation.py` (slow tier) — κ-monotone + high-κ→free. **This is the reusable
   win** (any Bloch exchange work needs it), independent of FEXI.
 - **`dmipy_sim.engine.pulse_sequence.fexi(...)` — the FEXI sequence.** Bipolar filter + 90 store +
