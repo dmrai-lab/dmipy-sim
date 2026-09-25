@@ -27,6 +27,7 @@ import logging
 log = logging.getLogger(__name__)
 
 import re
+import functools
 import numpy as np
 
 try:
@@ -496,6 +497,54 @@ def encode_boundary_bridge(dlog, K=16, dtype=np.float32, container=None, *, devi
         q, qm = quantise_bands(C, container, "blt", "blt_band_scale")
         arrays.update(q); meta["container"] = qm["container"]; meta["dtype"] = "bands"
     return arrays, meta
+
+
+# --------------------------------------------------------- the bridge on the device
+@functools.lru_cache(maxsize=None)
+def _device_bridge(n_t, K):
+    """The jitted bridge of a device batch of ``n_t`` saves at ``K`` bands: ``(positions (b, n_t, 3)) -> (b, K+2, 3)``
+    and ``(local time (b, n_t)) -> (start (b,), endpoint (b,), bands (b, K))``, both float32, the bands as one
+    matmul against the DST-I matrix at ``Precision.HIGHEST`` (a float32 ``@`` on a CUDA device is TF32 otherwise)."""
+    import jax
+    import jax.numpy as jnp
+    N = n_t - 2
+    n = np.arange(1, N + 1)[:, None]; k = np.arange(1, K + 1)[None, :]
+    S = jnp.asarray(np.sqrt(2.0 / (N + 1)) * np.sin(np.pi * n * k / (N + 1)), jnp.float32)      # (N, K)
+    tau = jnp.asarray(np.arange(n_t) / (n_t - 1.0), jnp.float32)
+    hi = jax.lax.Precision.HIGHEST
+
+    @jax.jit
+    def positions(pos):
+        pos = pos.astype(jnp.float32)
+        a = pos[:, 0, :]; v = pos[:, -1, :] - a
+        u = pos - (a[:, None, :] + v[:, None, :] * tau[None, :, None])                          # 0 at both ends
+        bands = jnp.einsum("wnd,nk->wkd", u[:, 1:-1, :], S, precision=hi)
+        return jnp.concatenate([a[:, None, :], v[:, None, :], bands], axis=1)
+
+    @jax.jit
+    def local_time(dlog):
+        B = jnp.cumsum(dlog.astype(jnp.float32), axis=1)                                          # a tree scan: no drift
+        a = B[:, 0]; e = B[:, -1]
+        u = B - (a[:, None] + (e - a)[:, None] * tau[None, :])
+        return a, e, jnp.matmul(u[:, 1:-1], S, precision=hi)
+
+    return positions, local_time
+
+
+def bridge_coefficients_device(pos, K):
+    """The C0 coefficients ``(b, K+2, 3)`` float32 of a batch of positions that is on the device: what
+    :func:`encode_bridge_dst` computes, formed where the batch is so that only the coefficients cross to the
+    host (dmrai-lab/dmipy-sim#446). ``K`` is capped at ``n_t - 2`` as the host encoder caps it."""
+    n_t = int(pos.shape[1]); K = int(min(K, n_t - 2))
+    return np.asarray(_device_bridge(n_t, K)[0](pos), np.float32), K
+
+
+def boundary_coefficients_device(dlog, K):
+    """The C2 coefficients of a batch of per-save local time on the device: ``(start (b,), endpoint (b,),
+    bands (b, K))`` float32, what :func:`encode_boundary_bridge` computes, formed where the batch is."""
+    n_t = int(dlog.shape[1]); K = int(min(K, n_t - 2))
+    a, e, bands = _device_bridge(n_t, K)[1](dlog)
+    return np.asarray(a, np.float32), np.asarray(e, np.float32), np.asarray(bands, np.float32)
 
 
 def has_c2(arrays):

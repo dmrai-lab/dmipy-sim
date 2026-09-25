@@ -1339,18 +1339,19 @@ def simulate_trajectories(
         if _compress and is_packed_myelin_geom:
             raise NotImplementedError("compress= is not wired for packed-myelin walks (the MT bound channel has no "
                                       "bridge form); walk them uncompressed and pack with build_replay_pack.")
-        from ..replay.compression import encode_bridge_dst, encode_boundary_bridge, read_position_coeffs
+        from ..replay.compression import bridge_coefficients_device, boundary_coefficients_device
 
         def _compress_pos(pos_dev):
-            """The batch's positions in the pack's C0 form, ``(b, K+2, 3)``, from the one codec."""
-            arrays, meta, _nbytes = encode_bridge_dst(np.asarray(pos_dev, np.float32), _cx["K"])
-            _cx["K"], _cx["n_t"] = int(meta["K"]), int(meta["n_t"])
-            return read_position_coeffs(arrays, dtype=np.float32)
+            """The batch's positions in the pack's C0 form, ``(b, K+2, 3)``, formed on the device: only the
+            coefficients cross to the host (#446)."""
+            C, K = bridge_coefficients_device(pos_dev, _cx["K"])
+            _cx["K"], _cx["n_t"] = int(K), int(pos_dev.shape[1])
+            return C
 
         def _compress_blt(dlog_dev):
-            """The batch's cumulative local time in the pack's C2 form: ``(start (b,), endpoint (b,), bands (b, K))``."""
-            arrays, _meta = encode_boundary_bridge(np.asarray(dlog_dev, np.float32), _cx["K"])
-            return arrays["blt_start"], arrays["blt_endpoint"], np.asarray(arrays["blt_bridge_dst"], np.float32)
+            """The batch's cumulative local time in the pack's C2 form: ``(start (b,), endpoint (b,), bands (b, K))``,
+            formed on the device."""
+            return boundary_coefficients_device(dlog_dev, _cx["K"])
 
         for batch_idx, (start, end) in enumerate(run.batches(n_walkers, walker_batch_size)):
             batch_size = end - start
