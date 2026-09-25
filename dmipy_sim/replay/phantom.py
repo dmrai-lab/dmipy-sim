@@ -15,6 +15,8 @@ signal without it.
 from __future__ import annotations
 
 import json
+import logging
+import time
 from pathlib import Path
 
 import numpy as np
@@ -23,6 +25,9 @@ from ..phantom.grid import Grid
 from ..constants import GAMMA, GAMMA_BAR
 from ..phantom.substrates import substrate_from_meta, _echo_time
 from .so3 import n_sh_coeffs, lmax_of
+from ..run import Run, current
+
+log = logging.getLogger(__name__)
 
 
 __all__ = ["ReplayPhantom", "read_rph", "write_rph", "Grid", "SUBSTRATE_KINDS", "SCALAR_REGISTRY", "RPH_SCHEMA_VERSION"]
@@ -424,35 +429,42 @@ class ReplayPhantom:
                 "RF-aware (vector-Bloch) replay of each pack at the voxel's pose. A magnitude gradient replay "
                 "cannot carry it, and dropping it would return a signal that looks right and is not. Use "
                 "ReplayPhantom.replay_bloch, which propagates the magnetisation per pose.")
-        classes = self._encoding_classes(waveform, scanner, encoding_tolerance, report)
-        waveforms = [waveform] if classes is None else classes[1]
-        cls_of_voxel = np.zeros(self.n_voxels, int) if classes is None else classes[0]
-        pose, analytic, m0 = self._responses(waveforms, scanner, pose, packs, keep=self.retained_band(),
-                                             proton_density=proton_density, cache=cache, forms=forms)
-        sid, frac = self.substrate_id, self.geometric_fraction
-        n_meas = next(iter(pose.values())).n_meas if pose else len(np.atleast_1d(next(iter(analytic.values()))))
-        S = np.zeros((self.n_voxels, n_meas), np.complex128)
-        keep_l, keep_n = self._resolve_band(pose)
-        vp, F = self.slot_coefficients(keep_l, keep_n)
-        ids = sid[vp[:, 0], vp[:, 1]].astype(int)
-        cv = cls_of_voxel[vp[:, 0]]
-        weight = frac[vp[:, 0], vp[:, 1]].astype(np.float64) * m0[vp[:, 0], ids]
-        for (i, c), resp in analytic.items():                          # a closed form has no pose
-            m = (ids == i) & (cv == c)
-            np.add.at(S, vp[m, 0], weight[m][:, None] * np.atleast_1d(resp)[None, :])
-        if pose:                                                       # one product for every slot citing a pack
-            order = sorted(pose)
-            coeff = np.stack([np.asarray(pose[k].retained(keep_l, keep_n), np.complex128) for k in order])
-            lookup = {k: j for j, k in enumerate(order)}
-            which = np.array([lookup.get((int(i), int(c)), -1) for i, c in zip(ids, cv)])
-            _gather(S, vp, F, weight, which, coeff)
-        dB0 = self.layer_values("delta_B0_T", off_resonance)
-        if dB0 is not None:
-            S = S * np.exp(1j * GAMMA * dB0[:, None] * self.gate_integral(waveform))
-        ph = self._concomitant_phase(waveform, scanner)
-        if ph is not None:
-            S = S * np.exp(1j * ph)
-        return self.voxel_index, (S if complex_signal else np.abs(S))
+        with Run("phantom.replay", params=dict(n_voxels=int(self.n_voxels), n_meas=int(waveform.n_meas), encoding_tolerance=encoding_tolerance,
+                                         scanner=(scanner if scanner is None or isinstance(scanner, (int, float)) else type(scanner).__name__))) as run:
+            classes = self._encoding_classes(waveform, scanner, encoding_tolerance, report)
+            waveforms = [waveform] if classes is None else classes[1]
+            cls_of_voxel = np.zeros(self.n_voxels, int) if classes is None else classes[0]
+            run.phase("classes", n_classes=len(waveforms))
+            pose, analytic, m0 = self._responses(waveforms, scanner, pose, packs, keep=self.retained_band(),
+                                                 proton_density=proton_density, cache=cache, forms=forms, report=report)
+            run.phase("gather")
+            sid, frac = self.substrate_id, self.geometric_fraction
+            n_meas = next(iter(pose.values())).n_meas if pose else len(np.atleast_1d(next(iter(analytic.values()))))
+            S = np.zeros((self.n_voxels, n_meas), np.complex128)
+            keep_l, keep_n = self._resolve_band(pose)
+            vp, F = self.slot_coefficients(keep_l, keep_n)
+            ids = sid[vp[:, 0], vp[:, 1]].astype(int)
+            cv = cls_of_voxel[vp[:, 0]]
+            weight = frac[vp[:, 0], vp[:, 1]].astype(np.float64) * m0[vp[:, 0], ids]
+            for (i, c), resp in analytic.items():                          # a closed form has no pose
+                m = (ids == i) & (cv == c)
+                np.add.at(S, vp[m, 0], weight[m][:, None] * np.atleast_1d(resp)[None, :])
+            if pose:                                                       # one product for every slot citing a pack
+                order = sorted(pose)
+                coeff = np.stack([np.asarray(pose[k].retained(keep_l, keep_n), np.complex128) for k in order])
+                lookup = {k: j for j, k in enumerate(order)}
+                which = np.array([lookup.get((int(i), int(c)), -1) for i, c in zip(ids, cv)])
+                _gather(S, vp, F, weight, which, coeff)
+            run.phase("layers")
+            dB0 = self.layer_values("delta_B0_T", off_resonance)
+            if dB0 is not None:
+                S = S * np.exp(1j * GAMMA * dB0[:, None] * self.gate_integral(waveform))
+            ph = self._concomitant_phase(waveform, scanner)
+            if ph is not None:
+                S = S * np.exp(1j * ph)
+            if report is not None:
+                report["seconds"] = run.phase_seconds()
+            return self.voxel_index, (S if complex_signal else np.abs(S))
 
     def layer_values(self, name, extra=None, combine="add"):
         """One macroscopic layer per voxel, ``(n_voxels,)``: the file's column (if declared) combined with a
@@ -629,7 +641,8 @@ class ReplayPhantom:
                   "by pool, or pack.nominal; FreeWater(tissue=Tissue(D=..., T2=...))), or declare none anywhere for "
                   "a phantom with no relaxation (RPH.md 3.2).")
 
-    def _responses(self, waveforms, scanner, specimen, packs, keep=None, proton_density=None, cache=None, forms=None):
+    def _responses(self, waveforms, scanner, specimen, packs, keep=None, proton_density=None, cache=None, forms=None,
+                   report=None):
         """One response per (substrate, encoding class): a :class:`PoseResponse` for a pack, a closed form for
         an analytic substrate, nothing for an inert one -- keyed ``(i, c)`` with ``c`` indexing ``waveforms``,
         the acquisition as played in each class. Plus the per-voxel ``m0``. ``specimen`` is the specimen's
@@ -642,7 +655,9 @@ class ReplayPhantom:
         loaded = self._loaded_packs(packs)
         self._check_relaxation(waveforms[0], loaded, forms)
         R_s = _pose_matrix(specimen)
+        run, t_start, rows = current(), time.time(), []
         for c, waveform in enumerate(waveforms):
+            t_c = time.time()
             turned = waveform if R_s is None else rotate_waveform(waveform, R_s.T)    # G @ R_s: the acquisition in the specimen frame
             for i, sub in enumerate(self.substrates):
                 if sub["kind"] == "inert":
@@ -655,10 +670,20 @@ class ReplayPhantom:
                     else:
                         analytic[(i, c)] = form.response(turned)
                     continue
-                pose[(i, c)] = loaded[i].pose_response(waveform, tissue=Tissue.from_meta(sub.get("tissue")),
-                                                       scanner=scanner, pose=R_s, keep=keep, cache=cache)
+                pose[(i, c)] = resp = loaded[i].pose_response(waveform, tissue=Tissue.from_meta(sub.get("tissue")),
+                                                              scanner=scanner, pose=R_s, keep=keep, cache=cache)
+                rows.append(dict(cls=c, substrate=i, route=resp.route, lmax=resp.lmax, nmax=resp.nmax,
+                                 field_lmax=int(resp.field_lmax), n_bodies=resp.n_bodies, seconds=time.time() - t_c))
+            if len(waveforms) > 1:                                                # the classes of a machine pass
+                per = (time.time() - t_start) / (c + 1)
+                log.info("phantom.replay: class %d/%d in %.0f s (%.0f s/class, ETA %.0f min)", c + 1, len(waveforms),
+                         time.time() - t_c, per, per * (len(waveforms) - c - 1) / 60.0)
+            if run is not None:
+                run.progress(c + 1, len(waveforms), unit="classes")
         if not pose and not analytic:
             raise ValueError("the phantom cites no signal-bearing substrate")
+        if report is not None:
+            report["responses"] = rows
         return pose, analytic, self._m0(proton_density)
 
     def replay_bloch(self, waveform, *, scanner=None, pose=None, packs=None, complex_signal=False,
@@ -704,68 +729,76 @@ class ReplayPhantom:
         rf = waveform.rf
         if not rf:
             raise ValueError("the Bloch route replays an RF schedule and this sequence carries none")
-        loaded = self._loaded_packs(packs)
-        kappa = self.layer_values("kappa_B1", transmit, combine="mul")
-        kappa = np.ones(self.n_voxels) if kappa is None else kappa
-        dB0 = self.layer_values("delta_B0_T", off_resonance)
-        dB0 = np.zeros(self.n_voxels) if dB0 is None else dB0
-        self._check_relaxation(waveform, loaded, forms)
-        m0 = self._m0(proton_density)
-        from .so3 import rotations_from_quaternions
-        from .replay import _pose_matrix
-        from ..spec.tissue import Tissue
-        R_s = _pose_matrix(pose)
-        sid, frac = self.substrate_id, self.geometric_fraction
-        live = [(v, p) for v in range(self.n_voxels) for p in range(sid.shape[1])
-                if sid[v, p] >= 0 and frac[v, p] > 0.0 and self.substrates[int(sid[v, p])]["kind"] != "inert"]
-        if not live:
-            raise ValueError("the phantom cites no signal-bearing substrate")
-        vp = np.array(live, np.int64)
-        v_idx, p_idx = vp[:, 0], vp[:, 1]
-        ids = sid[v_idx, p_idx].astype(int)
-        R = rotations_from_quaternions(self.pose_quat[v_idx, p_idx])
-        if R_s is not None:
-            R = np.einsum("ij,njk->nik", R_s, R)                       # substrate -> specimen -> lab
-        R = R.reshape(-1, 9)
-        classes = self._encoding_classes(waveform, scanner, encoding_tolerance, report)
-        waveforms = [waveform] if classes is None else classes[1]
-        cls_of_voxel = np.zeros(self.n_voxels, int) if classes is None else classes[0]
-        # every slot's propagation key: substrate, encoding class, rounded pose, rounded transmit scale, rounded
-        # field offset
-        keys = np.concatenate([ids[:, None].astype(np.float64), cls_of_voxel[v_idx][:, None].astype(np.float64),
-                               quantise(R, pose_tolerance),
-                               quantise(kappa[v_idx], transmit_tolerance)[:, None],
-                               quantise(dB0[v_idx], None if off_resonance_tolerance is None
-                                        else float(off_resonance_tolerance) / GAMMA_BAR)[:, None]], axis=1)
-        uniq, inverse = np.unique(keys, axis=0, return_inverse=True)
-        inverse = np.asarray(inverse).reshape(-1)
-        gate = self.gate_integral(waveform)
-        S = None
-        for u in range(uniq.shape[0]):
-            first = int(np.flatnonzero(inverse == u)[0])
-            i, kap, off = int(ids[first]), float(kappa[v_idx[first]]), float(dB0[v_idx[first]])
-            played = waveforms[int(cls_of_voxel[v_idx[first]])]
-            sub = self.substrates[i]
-            if sub["kind"] == "analytic":
-                form = self._form(i, sub, forms)
-                pose_R = R[first].reshape(3, 3) if (sub.get("oriented", False) or getattr(form, "oriented", False)) else None
-                resp = form.response(played, pose=pose_R) * _static_spin_rf(played, kap)
-                if off != 0.0:
-                    resp = resp * np.exp(1j * GAMMA * off * gate)
-            else:
-                resp = loaded[i].replay_bloch(played, b1_scale=kap, off_resonance_T=(off or None),
-                                              tissue=Tissue.from_meta(sub.get("tissue")), scanner=scanner,
-                                              orientation=R[first].reshape(3, 3), complex_signal=True)
-            resp = np.atleast_1d(np.asarray(resp, np.complex128))
-            if S is None:
-                S = np.zeros((self.n_voxels, resp.shape[0]), np.complex128)
-            members = np.flatnonzero(inverse == u)
-            w = frac[v_idx[members], p_idx[members]].astype(np.float64) * m0[v_idx[members], ids[members]]
-            np.add.at(S, v_idx[members], w[:, None] * resp[None, :])
-        ph = self._concomitant_phase(waveform, scanner)
-        if ph is not None:
-            S = S * np.exp(1j * ph)
-        return self.voxel_index, (S if complex_signal else np.abs(S))
+        with Run("phantom.replay_bloch", params=dict(n_voxels=int(self.n_voxels), n_meas=int(waveform.n_meas),
+                                               encoding_tolerance=encoding_tolerance,
+                                               scanner=(scanner if scanner is None or isinstance(scanner, (int, float)) else type(scanner).__name__))) as run:
+            loaded = self._loaded_packs(packs)
+            kappa = self.layer_values("kappa_B1", transmit, combine="mul")
+            kappa = np.ones(self.n_voxels) if kappa is None else kappa
+            dB0 = self.layer_values("delta_B0_T", off_resonance)
+            dB0 = np.zeros(self.n_voxels) if dB0 is None else dB0
+            self._check_relaxation(waveform, loaded, forms)
+            m0 = self._m0(proton_density)
+            from .so3 import rotations_from_quaternions
+            from .replay import _pose_matrix
+            from ..spec.tissue import Tissue
+            R_s = _pose_matrix(pose)
+            sid, frac = self.substrate_id, self.geometric_fraction
+            live = [(v, p) for v in range(self.n_voxels) for p in range(sid.shape[1])
+                    if sid[v, p] >= 0 and frac[v, p] > 0.0 and self.substrates[int(sid[v, p])]["kind"] != "inert"]
+            if not live:
+                raise ValueError("the phantom cites no signal-bearing substrate")
+            vp = np.array(live, np.int64)
+            v_idx, p_idx = vp[:, 0], vp[:, 1]
+            ids = sid[v_idx, p_idx].astype(int)
+            R = rotations_from_quaternions(self.pose_quat[v_idx, p_idx])
+            if R_s is not None:
+                R = np.einsum("ij,njk->nik", R_s, R)                       # substrate -> specimen -> lab
+            R = R.reshape(-1, 9)
+            classes = self._encoding_classes(waveform, scanner, encoding_tolerance, report)
+            waveforms = [waveform] if classes is None else classes[1]
+            cls_of_voxel = np.zeros(self.n_voxels, int) if classes is None else classes[0]
+            # every slot's propagation key: substrate, encoding class, rounded pose, rounded transmit scale, rounded
+            # field offset
+            keys = np.concatenate([ids[:, None].astype(np.float64), cls_of_voxel[v_idx][:, None].astype(np.float64),
+                                   quantise(R, pose_tolerance),
+                                   quantise(kappa[v_idx], transmit_tolerance)[:, None],
+                                   quantise(dB0[v_idx], None if off_resonance_tolerance is None
+                                            else float(off_resonance_tolerance) / GAMMA_BAR)[:, None]], axis=1)
+            uniq, inverse = np.unique(keys, axis=0, return_inverse=True)
+            inverse = np.asarray(inverse).reshape(-1)
+            gate = self.gate_integral(waveform)
+            S = None
+            run.phase("poses", n_propagations=int(uniq.shape[0]), n_classes=len(waveforms))
+            for u in range(uniq.shape[0]):
+                run.progress(u, uniq.shape[0], unit="propagations")
+                first = int(np.flatnonzero(inverse == u)[0])
+                i, kap, off = int(ids[first]), float(kappa[v_idx[first]]), float(dB0[v_idx[first]])
+                played = waveforms[int(cls_of_voxel[v_idx[first]])]
+                sub = self.substrates[i]
+                if sub["kind"] == "analytic":
+                    form = self._form(i, sub, forms)
+                    pose_R = R[first].reshape(3, 3) if (sub.get("oriented", False) or getattr(form, "oriented", False)) else None
+                    resp = form.response(played, pose=pose_R) * _static_spin_rf(played, kap)
+                    if off != 0.0:
+                        resp = resp * np.exp(1j * GAMMA * off * gate)
+                else:
+                    resp = loaded[i].replay_bloch(played, b1_scale=kap, off_resonance_T=(off or None),
+                                                  tissue=Tissue.from_meta(sub.get("tissue")), scanner=scanner,
+                                                  orientation=R[first].reshape(3, 3), complex_signal=True)
+                resp = np.atleast_1d(np.asarray(resp, np.complex128))
+                if S is None:
+                    S = np.zeros((self.n_voxels, resp.shape[0]), np.complex128)
+                members = np.flatnonzero(inverse == u)
+                w = frac[v_idx[members], p_idx[members]].astype(np.float64) * m0[v_idx[members], ids[members]]
+                np.add.at(S, v_idx[members], w[:, None] * resp[None, :])
+            ph = self._concomitant_phase(waveform, scanner)
+            if ph is not None:
+                S = S * np.exp(1j * ph)
+            run.progress(uniq.shape[0], uniq.shape[0], unit="propagations")
+            if report is not None:
+                report["seconds"] = run.phase_seconds()
+            return self.voxel_index, (S if complex_signal else np.abs(S))
 
     def replay_train(self, waveform, *, echo=-1, transmit=None, transmit_tolerance=1e-2, off_resonance=None,
                      off_resonance_tolerance=2.0, scanner=None, pose=None, packs=None, proton_density=None,
@@ -803,89 +836,96 @@ class ReplayPhantom:
                 "the coils' Maxwell term; dmipy-sim#377). Carrying that here means one gate set per encoding class, "
                 "which is not done; replay at the field alone (scanner=<tesla>), or use replay / replay_bloch")
         R_s = _pose_matrix(pose)
-        loaded = self._loaded_packs(packs)
-        kappa = self.layer_values("kappa_B1", transmit, combine="mul")
-        kappa = np.ones(self.n_voxels) if kappa is None else np.broadcast_to(np.asarray(kappa, np.float64), (self.n_voxels,))
-        binned = quantise(kappa, transmit_tolerance)
-        dB0 = self.layer_values("delta_B0_T", off_resonance)
-        dw_binned = (np.zeros(self.n_voxels) if dB0 is None else
-                     quantise(2.0 * np.pi * GAMMA_BAR * np.asarray(dB0, np.float64),
-                              None if off_resonance_tolerance is None else 2.0 * np.pi * float(off_resonance_tolerance)))
-        scales, offsets = np.unique(binned), np.unique(dw_binned)
-        m0 = self._m0(proton_density)
+        with Run("phantom.replay_train", params=dict(n_voxels=int(self.n_voxels), n_meas=int(waveform.n_meas), echo=echo,
+                                               scanner=(scanner if scanner is None or isinstance(scanner, (int, float)) else type(scanner).__name__))) as run:
+            loaded = self._loaded_packs(packs)
+            kappa = self.layer_values("kappa_B1", transmit, combine="mul")
+            kappa = np.ones(self.n_voxels) if kappa is None else np.broadcast_to(np.asarray(kappa, np.float64), (self.n_voxels,))
+            binned = quantise(kappa, transmit_tolerance)
+            dB0 = self.layer_values("delta_B0_T", off_resonance)
+            dw_binned = (np.zeros(self.n_voxels) if dB0 is None else
+                         quantise(2.0 * np.pi * GAMMA_BAR * np.asarray(dB0, np.float64),
+                                  None if off_resonance_tolerance is None else 2.0 * np.pi * float(off_resonance_tolerance)))
+            scales, offsets = np.unique(binned), np.unique(dw_binned)
+            m0 = self._m0(proton_density)
 
-        # The band to expand at is the one the DISTRIBUTION retains, not the one the response reaches: composing
-        # is an inner product, so an ODF of order 8 cannot see a response's order 38, and for a brain that is
-        # the difference between seconds and minutes.
-        if keep is None:
-            keep = (int(self.meta["orientation"].get("lmax", 8)), 0)
+            # The band to expand at is the one the DISTRIBUTION retains, not the one the response reaches: composing
+            # is an inner product, so an ODF of order 8 cannot see a response's order 38, and for a brain that is
+            # the difference between seconds and minutes.
+            if keep is None:
+                keep = (int(self.meta["orientation"].get("lmax", 8)), 0)
 
-        trains, forms_ = {}, {}
-        for i, sub in enumerate(self.substrates):
-            if sub["kind"] == "inert":
-                continue
-            if sub["kind"] == "pack":
-                trains[i] = train_response(loaded[i], waveform, keep=keep,
-                                           tissue=Tissue.from_meta(sub.get("tissue")), scanner=scanner, pose=R_s)
+            trains, forms_ = {}, {}
+            run.phase("gates", n_substrates=len(self.substrates))
+            for i, sub in enumerate(self.substrates):
+                if sub["kind"] == "inert":
+                    continue
+                if sub["kind"] == "pack":
+                    trains[i] = train_response(loaded[i], waveform, keep=keep,
+                                               tissue=Tissue.from_meta(sub.get("tissue")), scanner=scanner, pose=R_s)
+                else:
+                    forms_[i] = closed_form_train(self._form(i, sub, forms), waveform)
+                run.progress(i + 1, len(self.substrates), unit="substrates")
+            if not trains and not forms_:
+                raise ValueError("the phantom cites no signal-bearing substrate")
+            run.phase("gather")
+
+            sid, frac = self.substrate_id, self.geometric_fraction
+            n_meas = int(waveform.n_meas)
+            S = np.zeros((self.n_voxels, n_meas), np.complex128)
+            gates = None
+            if trains:
+                from .so3 import rebanded
+                first = next(iter(trains.values()))
+                probes = {i: tr.at(1.0, echo=echo) for i, tr in trains.items()}
+                # each pack's train is expanded at the band its own response needs (a b = 0 gate reaches order two,
+                # a diffusion preparation higher); the composition reads them all at the widest, zeros above a
+                # narrower one's own band being exact, and no wider than the distribution can use
+                keep_l = min(int(keep[0]), max(pr.lmax for pr in probes.values()))
+                keep_n = max(pr.nmax for pr in probes.values())
+                gates, readouts = first.n_gates, first.readouts
+                vp, F = self.slot_coefficients(keep_l, keep_n)
+                ids = sid[vp[:, 0], vp[:, 1]].astype(int)
+                weight = frac[vp[:, 0], vp[:, 1]].astype(np.float64) * m0[vp[:, 0], ids]
+                # every (substrate, transmit scale, offset) triple has its own coefficients and every slot belongs
+                # to exactly one, so the whole phantom is one gather and one contraction
+                pairs, coeff = {}, []
+                for i, tr in trains.items():
+                    for scale in scales:
+                        for dwv in offsets:
+                            pairs[(i, float(scale), float(dwv))] = len(coeff)
+                            resp = tr.at(float(scale), echo=echo, dw=float(dwv))
+                            coeff.append(np.asarray(rebanded(resp.coeffs, resp.lmax, resp.nmax, keep_l, keep_n), np.complex128))
+                coeff = np.stack(coeff)                                   # (n_classes, n_meas, n_feat)
+                which = np.array([pairs.get((int(i), float(sc), float(dv)), -1)
+                                  for i, sc, dv in zip(ids, binned[vp[:, 0]], dw_binned[vp[:, 0]])])
+                (_gather_jax if jax else _gather)(S, vp, F, weight, which, coeff)
             else:
-                forms_[i] = closed_form_train(self._form(i, sub, forms), waveform)
-        if not trains and not forms_:
-            raise ValueError("the phantom cites no signal-bearing substrate")
+                pairs, keep_l = {}, None
+            # a closed form has no pose: its slots take its train amplitude at their own transmit scale and offset
+            n_form_pairs = 0
+            for i, cf in forms_.items():
+                if gates is None:
+                    gates, readouts = cf.n_gates, cf.readouts
+                v_idx, p_idx = np.nonzero((sid == i) & (frac > 0.0))
+                w = frac[v_idx, p_idx].astype(np.float64) * m0[v_idx, i]
+                key = np.stack([binned[v_idx], dw_binned[v_idx]], axis=1)
+                for sc, dv in np.unique(key, axis=0):
+                    m = (key[:, 0] == sc) & (key[:, 1] == dv)
+                    amp = cf.at(float(sc), echo=echo, dw=float(dv))
+                    np.add.at(S, v_idx[m], w[m][:, None] * amp[None, :])
+                    n_form_pairs += 1
 
-        sid, frac = self.substrate_id, self.geometric_fraction
-        n_meas = int(waveform.n_meas)
-        S = np.zeros((self.n_voxels, n_meas), np.complex128)
-        gates = None
-        if trains:
-            from .so3 import rebanded
-            first = next(iter(trains.values()))
-            probes = {i: tr.at(1.0, echo=echo) for i, tr in trains.items()}
-            # each pack's train is expanded at the band its own response needs (a b = 0 gate reaches order two,
-            # a diffusion preparation higher); the composition reads them all at the widest, zeros above a
-            # narrower one's own band being exact, and no wider than the distribution can use
-            keep_l = min(int(keep[0]), max(pr.lmax for pr in probes.values()))
-            keep_n = max(pr.nmax for pr in probes.values())
-            gates, readouts = first.n_gates, first.readouts
-            vp, F = self.slot_coefficients(keep_l, keep_n)
-            ids = sid[vp[:, 0], vp[:, 1]].astype(int)
-            weight = frac[vp[:, 0], vp[:, 1]].astype(np.float64) * m0[vp[:, 0], ids]
-            # every (substrate, transmit scale, offset) triple has its own coefficients and every slot belongs
-            # to exactly one, so the whole phantom is one gather and one contraction
-            pairs, coeff = {}, []
-            for i, tr in trains.items():
-                for scale in scales:
-                    for dwv in offsets:
-                        pairs[(i, float(scale), float(dwv))] = len(coeff)
-                        resp = tr.at(float(scale), echo=echo, dw=float(dwv))
-                        coeff.append(np.asarray(rebanded(resp.coeffs, resp.lmax, resp.nmax, keep_l, keep_n), np.complex128))
-            coeff = np.stack(coeff)                                   # (n_classes, n_meas, n_feat)
-            which = np.array([pairs.get((int(i), float(sc), float(dv)), -1)
-                              for i, sc, dv in zip(ids, binned[vp[:, 0]], dw_binned[vp[:, 0]])])
-            (_gather_jax if jax else _gather)(S, vp, F, weight, which, coeff)
-        else:
-            pairs, keep_l = {}, None
-        # a closed form has no pose: its slots take its train amplitude at their own transmit scale and offset
-        n_form_pairs = 0
-        for i, cf in forms_.items():
-            if gates is None:
-                gates, readouts = cf.n_gates, cf.readouts
-            v_idx, p_idx = np.nonzero((sid == i) & (frac > 0.0))
-            w = frac[v_idx, p_idx].astype(np.float64) * m0[v_idx, i]
-            key = np.stack([binned[v_idx], dw_binned[v_idx]], axis=1)
-            for sc, dv in np.unique(key, axis=0):
-                m = (key[:, 0] == sc) & (key[:, 1] == dv)
-                amp = cf.at(float(sc), echo=echo, dw=float(dv))
-                np.add.at(S, v_idx[m], w[m][:, None] * amp[None, :])
-                n_form_pairs += 1
-
-        if report is not None:
-            report.update(n_scales=len(scales), n_offsets=len(offsets), n_gates=gates,
-                          lmax=keep_l, n_echoes=len(readouts), n_pairs=len(pairs) + n_form_pairs,
-                          n_closed_forms=len(forms_))
-        ph = self._concomitant_phase(waveform, scanner, echo=echo)
-        if ph is not None:
-            S = S * np.exp(1j * ph)
-        return self.voxel_index, (S if complex_signal else np.abs(S))
+            if report is not None:
+                report.update(n_scales=len(scales), n_offsets=len(offsets), n_gates=gates,
+                              lmax=keep_l, n_echoes=len(readouts), n_pairs=len(pairs) + n_form_pairs,
+                              n_closed_forms=len(forms_))
+            ph = self._concomitant_phase(waveform, scanner, echo=echo)
+            if ph is not None:
+                S = S * np.exp(1j * ph)
+            if report is not None:
+                report["seconds"] = run.phase_seconds()
+            return self.voxel_index, (S if complex_signal else np.abs(S))
 
     def to_volume(self, values, fill=np.nan):
         """Scatter per-voxel values back onto the dense grid: ``(nx, ny, nz) + values.shape[1:]``, with ``fill``

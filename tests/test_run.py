@@ -116,9 +116,12 @@ def test_every_long_producer_opens_a_run():
     from dmipy_sim.spec import walk
     from dmipy_sim.replay import bank
     from dmipy_sim.fields.strand_field import StrandFieldBasis
+    from dmipy_sim.replay.phantom import ReplayPhantom
+    from dmipy_sim.replay.replay import ReplayPack
     for f in (core.simulate, core.simulate_cpmg, core.simulate_trajectories, adaptive.simulate_trajectories_adaptive,
               bloch.simulate_bloch, mt_walk.simulate_mt_trajectories, walk.walk_spec, bank.build_replay_pack, bank.merge_packs,
-              StrandFieldBasis.build_far_grid):
+              StrandFieldBasis.build_far_grid, ReplayPhantom.replay, ReplayPhantom.replay_train, ReplayPhantom.replay_bloch,
+              ReplayPack.pose_response):
         assert "with Run(" in inspect.getsource(f), f.__name__
     # and ONE batch loop: no producer counts its own batches
     for mod in (core, adaptive, bloch, mt_walk):
