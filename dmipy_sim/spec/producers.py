@@ -10,6 +10,7 @@ import dataclasses
 import glob
 import hashlib
 import os
+import warnings
 import re
 from datetime import date
 
@@ -89,23 +90,34 @@ def shell_thickness(inner, outer, *, k=8):
     return float(np.median(np.linalg.norm(c - q, axis=1).reshape(len(P), kk).min(1))) * unit
 
 
-def _surface_stats(paths, scale):
-    """Per-file (V, F) in metres, the smallest edge-based feature, the median edge and watertightness."""
-    from ..geometry.mesh import load_ply
+def _surface_stats(paths, scale, notes=None):
+    """Per-file (V, F) in metres, the smallest edge-based feature, the median edge and the files that are OPEN: a
+    surface with a boundary edge does not enclose a volume. A surface pinched along an edge shared by three or
+    more faces still does; such edges, and the degenerate faces the loader dropped, are counted into ``notes``
+    (a list the spec's transformations take) rather than refused (dmrai-lab/dmipy-sim#452)."""
+    from ..geometry.mesh import load_ply, surface_topology
     feats, edges, open_files, meshes = [], [], [], []
     for p in paths:
-        V, F = load_ply(p, scale=scale)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            V, F = load_ply(p, scale=scale)
+        dropped = [str(w.message) for w in caught if "degenerate face" in str(w.message)]
+        for w in caught:                                                # recorded here, and still said
+            warnings.warn(w.message, w.category)
         meshes.append((V, F))
         e = np.linalg.norm(V[F[:, 0]] - V[F[:, 1]], axis=1)
         edges.append(np.median(e))
         ext = V.max(0) - V.min(0)
         feats.append(0.5 * float(np.sort(ext)[0]))                # half the thinnest extent: the radius of a tube
         try:
-            import trimesh
-            if not trimesh.Trimesh(V, F, process=False).is_watertight:
-                open_files.append(p)
+            topo = surface_topology(V, F)
         except ImportError:
-            pass
+            continue
+        if topo["boundary_edges"] > 0:
+            open_files.append(p)
+        elif notes is not None and (topo["nonmanifold_edges"] or dropped):
+            notes.append(f"{os.path.basename(p)}: closed; {topo['nonmanifold_edges']} edge(s) on three or more faces kept"
+                         + (f"; the loader {dropped[0].split(': ', 1)[1].split('; a face')[0]}" if dropped else ""))
     return meshes, float(min(feats)), float(np.median(edges)), open_files
 
 
@@ -228,7 +240,7 @@ def cactus_spec(run_dir, *, scale=_UM, side_um=None, field_T=3.0, rho2=None, on_
         transformations.append("no strand list: the frame is undeclared (z), which a walk along another axis refuses at build")
     L = float(side_um) * scale
     files = [p for pr in pairs.values() for p in pr]
-    meshes, smallest, edge_med, open_files = _surface_stats(files, scale)
+    meshes, smallest, edge_med, open_files = _surface_stats(files, scale, transformations)
     by_path = dict(zip(files, meshes))
     if open_files:
         if on_open_surface == "raise":
@@ -271,7 +283,8 @@ def winther_spec(inner_ply, outer_ply, *, scale=_UM, pad=1.0e-6, field_T=3.0, rh
     """The spec of one Winther axon: inner + outer surface in an open box padded by ``pad``; the
     surroundings are free water, so only intra and myelin are seeded."""
     from ..substrate.biophysical_constants import canonical_white_matter
-    meshes, smallest, edge_med, open_files = _surface_stats([inner_ply, outer_ply], scale)
+    notes = []
+    meshes, smallest, edge_med, open_files = _surface_stats([inner_ply, outer_ply], scale, notes)
     if open_files:
         raise SpecError(f"an isolated axon needs closed surfaces; open: {open_files}")
     Vo = meshes[1][0]
@@ -291,7 +304,7 @@ def winther_spec(inner_ply, outer_ply, *, scale=_UM, pad=1.0e-6, field_T=3.0, rh
         provenance={"source": "Winther", "scale": scale, "files": [{"path": p, "sha256": _sha(p)} for p in (inner_ply, outer_ply)],
                     "transformations": [f"box = outer surface padded by {pad} m", "extra pool declared free water (water_fraction 0, not seeded)",
                                         "nominal pool values from the catalogued white matter",
-                                        "myelin chi_iso = +1.06e-6, isotropic: the convention the Winther meshes were published with"],
+                                        "myelin chi_iso = +1.06e-6, isotropic: the convention the Winther meshes were published with"] + notes,
                     "created": date.today().isoformat(), "software": {"name": "dmipy-sim", "version": _version()}})
     return spec.validate()
 
