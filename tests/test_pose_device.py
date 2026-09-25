@@ -31,7 +31,8 @@ def test_the_numpy_route_is_chunk_independent():
     Yw = so3.real_sh(Lp, dirs, full=True) * wq[:, None]
     whole = field_factor(a, A, dirs, Yw, device="numpy")
     parts = field_factor(a, A, dirs, Yw, device="numpy", chunk_bytes=1 << 16)
-    assert np.array_equal(whole, parts)
+    # a BLAS may block a product differently by its row count, so the chunks agree to rounding, not to the bit
+    assert np.abs(whole - parts).max() <= 1e-12 * np.abs(whole).max()
 
 
 def test_the_field_products_on_the_device_are_the_numpy_ones_to_float32_rounding():
