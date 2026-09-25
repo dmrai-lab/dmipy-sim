@@ -824,6 +824,29 @@ def _record_channels(tiers):
     raise ValueError(f"tiers must be 'all' (record every channel the geometry supports) or () "
                      f"(positions only), got {tiers!r}")
 
+class _Rows:
+    """The rows of one walk channel, written into a single preallocated array as the walker batches arrive.
+
+    The host holds the channel once. A list of batches concatenated at the end held it twice, the list beside
+    its concatenation, at the moment the walk is largest (dmrai-lab/dmipy-sim#438).
+    """
+
+    def __init__(self, n_rows):
+        self.n_rows = int(n_rows); self.array_ = None; self.filled = 0
+
+    def append(self, rows):
+        rows = np.asarray(rows)
+        if self.array_ is None:
+            self.array_ = np.empty((self.n_rows,) + rows.shape[1:], rows.dtype)
+        self.array_[self.filled:self.filled + rows.shape[0]] = rows
+        self.filled += rows.shape[0]
+
+    def array(self):
+        if self.array_ is None:
+            return np.empty((0,), np.float32)
+        return self.array_ if self.filled == self.n_rows else self.array_[:self.filled]
+
+
 def simulate_trajectories(
     n_walkers: int,
     diffusivity: float,
@@ -1301,10 +1324,10 @@ def simulate_trajectories(
                                   "the burn-in cap; the saved walk may be under-equilibrated.",
                                   stacklevel=2)
 
-        all_batches = []
-        all_dlog_batches = [] if record else None
-        all_comp_batches = [] if record else None
-        all_bound_batches = [] if _mt_on else None
+        all_batches = _Rows(n_walkers)                   # each channel written into one array as its batches arrive
+        all_dlog_batches = _Rows(n_walkers) if record else None
+        all_comp_batches = _Rows(n_walkers) if record else None
+        all_bound_batches = _Rows(n_walkers) if _mt_on else None
 
         # compress=K: each batch leaves the device as the pack's own C0/C2 coefficients (two exact endpoints and K
         # sine bands of the bridge per axis; the cumulative local time in the same form), so the host holds a
@@ -1447,17 +1470,17 @@ def simulate_trajectories(
                 "compressed": True, "method": "bridge_dst", "K": _cx["K"],
                 "n_t": int(_cx["n_t"]), "dt_traj": dt_actual,
                 "sub_steps": sub_steps, "dt_sim": dt_sim,
-                "pos_modes": np.concatenate(all_batches, axis=0),        # (N, K, 3) f32
+                "pos_modes": all_batches.array(),        # (N, K, 3) f32
             }
             if record:
                 master["blt_endpoint"] = np.concatenate(all_blt_endpoints, axis=0)  # (N,)
                 master["blt_start"] = np.concatenate(all_blt_starts, axis=0)        # (N,)
-                master["blt_modes"] = np.concatenate(all_dlog_batches, axis=0)      # (N, K)
-                master["comp_traj"] = np.concatenate(all_comp_batches, axis=0)      # (N, n_t)
+                master["blt_modes"] = all_dlog_batches.array()      # (N, K)
+                master["comp_traj"] = all_comp_batches.array()      # (N, n_t)
             return master
 
         D_walk = None if diffusivity is None else float(diffusivity)
-        walk = PersistentWalk(np.concatenate(all_batches, axis=0), float(dt_actual), int(sub_steps),
+        walk = PersistentWalk(all_batches.array(), float(dt_actual), int(sub_steps),
                           float(dt_sim), illegal_crossings=illegal, seed=int(seed), diffusivity=D_walk,
                           geometry=geometry)
         if record:
@@ -1465,11 +1488,11 @@ def simulate_trajectories(
             # NOT a record of zero contact but the absence of a record, and a pack built from it must not claim the
             # surface tier (a replay at rho would return an unattenuated signal without a word)
             records_surface = has_reflect_with_log_weight or geometry._is_myelinated or geometry._is_packed_myelinated
-            blt = np.concatenate(all_dlog_batches, axis=0) if records_surface else None   # the myelin kernels accumulate it too
+            blt = all_dlog_batches.array() if records_surface else None   # the myelin kernels accumulate it too
             walk = PersistentWalk(walk.positions, walk.dt, walk.sub_steps, walk.dt_sim,
                               boundary_local_time=blt,
-                              compartment=np.concatenate(all_comp_batches, axis=0),
-                              bound_frac=(np.concatenate(all_bound_batches, axis=0) if _mt_on else None),
+                              compartment=all_comp_batches.array(),
+                              bound_frac=(all_bound_batches.array() if _mt_on else None),
                               illegal_crossings=illegal, seed=int(seed), diffusivity=D_walk, geometry=geometry)
         object.__setattr__(walk, "run", run)
         return walk
