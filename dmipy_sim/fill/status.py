@@ -127,7 +127,7 @@ def summarise(st):
         remaining_w = sum(planned[b] * sc for b in planned if b not in done_blocks)
         per_pass[P] = dict(scale=sc, blocks_done=len(done_blocks), blocks=st["n_blocks"], walkers_done=int(done_w), walkers_remaining=int(remaining_w),
                            hours_left=(remaining_w / rate_w) if rate_w > 0 else None)
-    return dict(time=dt.datetime.utcfromtimestamp(now).strftime("%Y-%m-%d %H:%M UTC"), window_h=window / 3600,
+    return dict(time=dt.datetime.fromtimestamp(now, tz=dt.timezone.utc).strftime("%Y-%m-%d %H:%M UTC"), window_h=window / 3600,
                 blocks_per_hour=len(recent) * 3600 / window, walkers_per_hour=rate_w, per_pass=per_pass, contributors=contributors,
                 commits_last_hour=st["commits_last_hour"], commits_cap=COMMITS_PER_HOUR, shards=len(shards),
                 bytes_on_hub=sum(s["size"] for s in shards), claims=st["claims"], stale_s=stale_s)

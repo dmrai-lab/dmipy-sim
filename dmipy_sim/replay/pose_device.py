@@ -58,6 +58,13 @@ def field_factor(a, A, dirs, Yw, *, device="auto", chunk_bytes=1 << 30):
     return out
 
 
+def _field_quadratic(bs, xp):
+    """``(c, 6)``: the quadratic form of the field directions ``bs`` ``(c, 3)`` in the substrate frame -- ``[x^2, y^2,
+    z^2, 2xy, 2xz, 2yz]`` -- against which a path channel's six field moments contract; ``xp`` is numpy or jax.numpy."""
+    return xp.stack([bs[:, 0] ** 2, bs[:, 1] ** 2, bs[:, 2] ** 2, 2 * bs[:, 0] * bs[:, 1],
+                     2 * bs[:, 0] * bs[:, 2], 2 * bs[:, 1] * bs[:, 2]], axis=1)
+
+
 @functools.lru_cache(maxsize=8)
 def _samples_kernel(n_meas, with_field):
     """``(Rc (c, 3, 3), Q (w, n_meas, 9), ew (w), [b (3), s_loc (w), P6 (w, 6), A6 (w, 6) or zeros, k_iso, k_aniso])
@@ -74,8 +81,7 @@ def _samples_kernel(n_meas, with_field):
         ph = jnp.einsum("ck,wmk->cwm", Rc.reshape(c, 9), Q, precision=hi)          # (c, w, n_meas) radians
         if with_field:
             bs = jnp.einsum("cji,j->ci", Rc, b, precision=hi)                       # the field in the substrate frame
-            Qf = jnp.stack([bs[:, 0] ** 2, bs[:, 1] ** 2, bs[:, 2] ** 2, 2 * bs[:, 0] * bs[:, 1],
-                            2 * bs[:, 0] * bs[:, 2], 2 * bs[:, 1] * bs[:, 2]], axis=1)      # (c, 6)
+            Qf = _field_quadratic(bs, jnp)                                          # (c, 6)
             phi = k_iso * (s_loc[None, :] - jnp.matmul(Qf, P6.T, precision=hi)) + k_aniso * jnp.matmul(Qf, A6.T, precision=hi)
             ph = ph + phi[:, :, None]
         wc, ws = ew[None, :, None] * jnp.cos(ph), ew[None, :, None] * jnp.sin(ph)
@@ -108,8 +114,7 @@ def pose_samples(R, Q, ew, norm, *, field=None, device="auto", chunk_bytes=1 << 
                 Ew = np.broadcast_to(ew[None, :].astype(np.complex128), (Rc.shape[0], n_w))
             else:
                 bs = np.einsum("nji,j->ni", Rc, b)
-                Qf = np.stack([bs[:, 0] ** 2, bs[:, 1] ** 2, bs[:, 2] ** 2, 2 * bs[:, 0] * bs[:, 1],
-                               2 * bs[:, 0] * bs[:, 2], 2 * bs[:, 1] * bs[:, 2]], axis=1)
+                Qf = _field_quadratic(bs, np)
                 phi = float(k_iso) * (s_loc[None, :] - Qf @ P6.T) + float(k_aniso) * (Qf @ A6.T)
                 Ew = np.exp(1j * phi) * ew[None, :]
             for i in range(n_meas):
@@ -226,12 +231,12 @@ def _spherical_jn_kernel(L, N):
 
 
 def spherical_jn_all(L, x, *, device="auto", extra=24, chunk_bytes=1 << 30):
-    """``j_0(x) .. j_L(x)`` for every entry of ``x``, ``(L+1,) + x.shape`` float64: :func:`replay._spherical_jn_all`
+    """``j_0(x) .. j_L(x)`` for every entry of ``x``, ``(L+1,) + x.shape`` float64: :func:`so3.spherical_jn_all`
     on the device in chunks, numpy's when there is none."""
-    from .replay import _spherical_jn_all
+    from . import so3
     x = np.asarray(x, np.float64)
     if resolve_device(device) == "numpy":
-        return _spherical_jn_all(L, x, extra=extra)
+        return so3.spherical_jn_all(L, x, extra=extra)
     import jax.numpy as jnp
     L = int(L); N = L + int(extra) + int(np.ceil(np.abs(x).max())) if x.size else L + int(extra)
     kernel = _spherical_jn_kernel(L, int(N))
@@ -271,6 +276,24 @@ def _field_bodies_kernel(nc, L, l_used, N_bessel, n_f):
     return kernel
 
 
+def host_bodies(kappa, m_hat, w, L, l_used, keep_n=None, J=None):
+    """``{l: (n_w, nc, 2k+1)}``: the bodies ``w_w j_l(kappa_wg) Y_ln(m^_wg)`` of every walker and group for the orders
+    ``l_used``, ``n`` within ``keep_n`` of zero (every ``2l+1`` column when ``None``), on the host. The gradient-only
+    expansion sums them over the walkers; the field expansion's host route contracts them against the field factor.
+    ``J`` ``(L+1, n_w, nc)`` supplies the Bessel values when a device already formed them."""
+    from . import so3
+    kappa = np.asarray(kappa, np.float64); m_hat = np.asarray(m_hat, np.float64); w = np.asarray(w, np.float64)
+    n_w, nc = kappa.shape
+    L = int(L)
+    Y = so3.real_sh(L, m_hat.reshape(-1, 3), full=True).reshape(n_w, nc, (L + 1) ** 2)
+    J = so3.spherical_jn_all(max(l_used), kappa) if J is None else np.asarray(J)
+    out = {}
+    for l in l_used:
+        k = so3._n_cols(l, keep_n) // 2
+        out[l] = (w[:, None] * J[l])[:, :, None] * Y[:, :, l * l + l - k:l * l + l + k + 1]
+    return out
+
+
 def field_bodies(kappa, m_hat, w, F_re, F_im, L, l_used, *, n_bessel, device="auto", chunk_bytes=1 << 30):
     """``B[(l, g, n), (l', m')] = sum_w w_w j_l(kappa_wg) Y_ln(m^_wg) F_w,l'm'`` for the groups of one chunk, ``(rows, n_f)``
     complex128, ``rows = nc * sum(2l+1 for l in l_used)``: the closed form's bodies against the field factor. On the
@@ -282,12 +305,8 @@ def field_bodies(kappa, m_hat, w, F_re, F_im, L, l_used, *, n_bessel, device="au
     l_used = tuple(int(l) for l in l_used)
     rows = nc * sum(2 * l + 1 for l in l_used)
     if resolve_device(device) == "numpy":
-        from . import so3
-        from .replay import _spherical_jn_all
-        Ym = so3.real_sh(int(L), m_hat.reshape(-1, 3), full=True).reshape(n_w, nc, (int(L) + 1) ** 2)
-        J = _spherical_jn_all(max(l_used), kappa)
-        X = np.concatenate([((w[:, None] * J[l])[:, :, None] * Ym[:, :, l * l:l * l + 2 * l + 1]).reshape(n_w, -1)
-                            for l in l_used], axis=1)
+        bodies = host_bodies(kappa, m_hat, w, L, l_used)
+        X = np.concatenate([bodies[l].reshape(n_w, -1) for l in l_used], axis=1)
         return (X.T @ F_re) + 1j * (X.T @ F_im)
     import jax.numpy as jnp
     kernel = _field_bodies_kernel(int(nc), int(L), l_used, int(n_bessel), int(F_re.shape[1]))
@@ -323,10 +342,10 @@ def bessel_tails(kappa, w, L_hi, *, device="auto", chunk_bytes=1 << 30):
     """``(L_hi+1, n_grp)`` float64: ``sum_w |w_w| |j_l(kappa_wg)|`` per order and group, the weighted Bessel magnitudes the
     closed form's band and tail bound read. On the device per walker chunk, summed on the host in float64; numpy's
     recurrence when there is none."""
-    from .replay import _spherical_jn_all
+    from . import so3
     kappa = np.asarray(kappa, np.float64); w = np.asarray(w, np.float64)
     if resolve_device(device) == "numpy":
-        J = _spherical_jn_all(int(L_hi), kappa)
+        J = so3.spherical_jn_all(int(L_hi), kappa)
         return np.einsum("lwg,w->lg", np.abs(J), np.abs(w))
     import jax.numpy as jnp
     n_w, nc = kappa.shape
@@ -337,49 +356,4 @@ def bessel_tails(kappa, w, L_hi, *, device="auto", chunk_bytes=1 << 30):
     for lo in range(0, n_w, step):
         sl = slice(lo, min(lo + step, n_w))
         out += np.asarray(kernel(jnp.asarray(kappa[sl], jnp.float32), jnp.asarray(w[sl], jnp.float32)), np.float64)
-    return out
-
-
-
-
-@functools.lru_cache(maxsize=8)
-def _prefix_decode_kernel(n_t, n_cut, K):
-    """``C (c, K+2, 3) -> positions (c, n_cut, 3)`` float32: the first ``n_cut`` saves of a bridge-coded walk of
-    ``n_t`` saves, the sine bands evaluated only where they are read."""
-    import jax
-    import jax.numpy as jnp
-    hi = jax.lax.Precision.HIGHEST
-    N = n_t - 2
-    n = np.arange(1, N + 1)[None, :]; k = np.arange(1, K + 1)[:, None]
-    Sk = np.sqrt(2.0 / (N + 1)) * np.sin(np.pi * n * k / (N + 1))              # (K, N): DST-I, ortho, as scipy's idst reads it
-    inner = min(n_cut, n_t - 1) - 1                                             # interior saves 1 .. n_cut-1 (the last save is a band end)
-    S_part = jnp.asarray(Sk[:, :max(inner, 0)], jnp.float32)                    # (K, inner)
-    tau = jnp.asarray(np.arange(n_cut) / (n_t - 1.0), jnp.float32)
-
-    @jax.jit
-    def kernel(C):
-        a, v, B = C[:, 0, :], C[:, 1, :], C[:, 2:, :]
-        u = jnp.einsum("wkd,kn->wnd", B, S_part, precision=hi)                  # (c, inner, 3)
-        pad = jnp.zeros((C.shape[0], 1, 3), jnp.float32)
-        u = jnp.concatenate([pad, u] + ([pad] if n_cut == n_t else []), axis=1)[:, :n_cut, :]
-        return a[:, None, :] + v[:, None, :] * tau[None, :, None] + u
-
-    return kernel
-
-
-def decode_prefix(C, n_t, n_cut, *, device="auto", chunk_bytes=1 << 30):
-    """The first ``n_cut`` saves ``(n_w, n_cut, 3)`` float32 of a bridge-coded walk of ``n_t`` saves from its coefficients
-    ``C`` ``(n_w, K+2, 3)``: on the device per walker chunk; numpy's whole decode cut to ``n_cut`` when there is none."""
-    from .compression import _bridge_positions
-    C = np.asarray(C, np.float64)
-    n_w, K = C.shape[0], C.shape[1] - 2
-    if resolve_device(device) == "numpy":
-        return _bridge_positions(C, int(n_t))[:, :int(n_cut), :].astype(np.float32)
-    import jax.numpy as jnp
-    kernel = _prefix_decode_kernel(int(n_t), int(n_cut), int(K))
-    out = np.empty((n_w, int(n_cut), 3), np.float32)
-    step = max(1, int(chunk_bytes // (4 * 3 * (int(n_cut) + K + 2))))
-    for lo in range(0, n_w, step):
-        sl = slice(lo, min(lo + step, n_w))
-        out[sl] = np.asarray(kernel(jnp.asarray(C[sl], jnp.float32)), np.float32)
     return out

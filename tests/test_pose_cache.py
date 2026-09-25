@@ -10,7 +10,8 @@ from dmipy_sim import sequences
 from dmipy_sim.phantom import Grid, PackSubstrate, Phantom, Watson
 from dmipy_sim.replay import read_rpk
 from dmipy_sim.replay.bank import build_replay_pack
-from dmipy_sim.replay.replay import PoseResponse, _spherical_jn_all
+from dmipy_sim.replay.replay import PoseResponse
+from dmipy_sim.replay.so3 import spherical_jn_all as _spherical_jn_all
 from dmipy_sim.spec.tissue import Tissue
 
 

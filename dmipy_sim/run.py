@@ -1,7 +1,8 @@
 """The record of a run: what every long producer leaves behind while it runs and when it stops.
 
-A producer (``simulate``, the trajectory walks, ``walk_spec``, ``build_replay_pack``, ``merge_packs``) opens a
-:class:`Run`; a caller never does. The run keeps its events in memory from the first moment and PERSISTS itself
+A producer (``simulate``, the trajectory walks, ``walk_spec``, ``build_replay_pack``, ``merge_packs``,
+``StrandFieldBasis.build_far_grid``, ``ReplayPack.pose_responses``, ``ReplayPhantom.replay`` / ``replay_train`` /
+``replay_bloch``) opens a :class:`Run`; a caller never does. The run keeps its events in memory from the first moment and PERSISTS itself
 -- a directory under ``$DMIPY_SIM_RUN_DIR`` (default ``~/.cache/dmipy-sim/runs``), or ``run_dir=`` at once -- the
 first time it outlives the sampling interval, so a half-second call in a test suite touches no disk and a walk of
 minutes has a record that covers it from its start. A producer opened inside another joins the outer run (a
@@ -314,13 +315,6 @@ class Run:
             self._phases.append(_Phase(str(name), now))
         self._event("phase", name=str(name), **{k: _jsonable(v) for k, v in fields.items()})
 
-    def _end_phase(self, name):
-        now = time.time()
-        with self._lock:
-            for ph in reversed(self._phases):
-                if ph.name == name and ph.ended is None:
-                    ph.ended = now; break
-
     def progress(self, done, total, *, unit="walkers"):
         """Where the current phase is: rate and ETA from the phase's first report; written at most every
         ``PROGRESS_S`` (always when ``done == total``)."""
@@ -444,11 +438,8 @@ class Run:
     def summary(self):
         """The run in a few hundred bytes: what a pack records about the run that made it."""
         now = time.time()
-        phases = {}
-        for ph in self._phases:
-            phases[ph.name] = phases.get(ph.name, 0.0) + ((ph.ended or now) - ph.started)
         return dict(id=self.id, producer=self.producer, status=self.status or "running", started=_iso(self.started),
-                    wall_s=now - self.started, phases_s=phases, peak_rss_bytes=self._peak_rss or None,
+                    wall_s=now - self.started, phases_s=self.phase_seconds(), peak_rss_bytes=self._peak_rss or None,
                     peak_device_bytes=self._peak_dev or None, host=socket.gethostname(), record=self._dir, code=_code())
 
     def _manifest(self):

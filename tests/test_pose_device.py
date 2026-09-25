@@ -75,7 +75,7 @@ def test_the_harmonics_on_the_device_are_the_numpy_ones_to_float32_rounding():
 
 
 def test_the_bessel_values_on_the_device_are_the_numpy_ones_to_float32_rounding():
-    from dmipy_sim.replay.replay import _spherical_jn_all
+    from dmipy_sim.replay.so3 import spherical_jn_all as _spherical_jn_all
     from dmipy_sim.replay.pose_device import spherical_jn_all
     rng = np.random.default_rng(5)
     x = rng.uniform(0.0, 30.0, size=(700, 3)); x[0, 0] = 0.0; x[1, 1] = 1e-9

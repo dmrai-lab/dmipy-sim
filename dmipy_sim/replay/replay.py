@@ -37,7 +37,6 @@ from .compression import c2_bands_K as _cx_bands_K
 
 from ..constants import GAMMA
 from ..run import Run, current
-from ..acquisition.rf import RFSchedule
 from ..acquisition.scanner_sequence import Protocol, ScannerSequence
 
 __all__ = ["ReplayPack", "PoseResponse", "read_rpk", "write_rpk", "analytic_pose_response",
@@ -635,14 +634,13 @@ class ReplayPack:
     def positions(self):
         """The ``(n_walkers, n_t, 3)`` trajectory decoded from the position codec (float64); a pack of several
         segments decodes each window and joins them on the shared saves."""
-        from .compression import decode, is_walker_preserving, require_position_method
+        from .compression import decode, require_position_method
         if self.n_segments > 1:
             return np.concatenate([w.positions()[:, (0 if j == 0 else 1):] for j, (w, _, _) in enumerate(self._windows())], axis=1)
         cx = self.meta.get("compression", {})
         meta = {"method": require_position_method(cx.get("method")), "K": int(cx.get("K", 0)),
                 "n_t": int(cx.get("n_t") or self.n_t)}
-        wp = is_walker_preserving(meta["method"])
-        return np.asarray(decode(self.arrays, meta, n_walkers=(self.n_walkers if wp else None)), np.float64)
+        return np.asarray(decode(self.arrays, meta), np.float64)
 
     def _by_pool(self, values, what, n=None):
         """Per-pool values as a list by id; a ``{name: value}`` dict resolves through the embedded spec, and a
@@ -700,8 +698,6 @@ class ReplayPack:
 
         ``compartment`` restricts the ensemble mean to one pool id (or a boolean walker mask).
         """
-        from .compression import read_position_coeffs
-        from ._replay_kernel import gradient_phase, field_gate
         waveform = waveform.waveform if hasattr(waveform, "waveform") else waveform
         if isinstance(waveform, Protocol):                # a multi-TE scheme: each sequence replayed, placed at its rows
             kw = dict(tissue=tissue, scanner=scanner, orientation=orientation, compartment=compartment, complex_signal=complex_signal)
@@ -855,7 +851,6 @@ class ReplayPack:
                 W = _compile_effective(Geff, dt, self.K, n_t)
             phi = C.reshape(n_w, self.n_coeffs * 3) @ W                              # (n_w, n_meas)
         else:
-            from .bank import susc_path_decode, susc_path_field
             from ..fields.susceptibility_field import assemble_field, sample_grid
             ch, b0_dir, B0, chi_aniso = P["ch"], P["b0_dir"], P["B0"], P["chi_aniso"]
             gm = ch["susceptibility_grid"]
@@ -1069,7 +1064,7 @@ class ReplayPack:
         readout no SINGLE amplitude describes -- a train at any flip but 180 -- is refused by
         :func:`~dmipy_sim.acquisition.epg.pathway_weight`, and the vector route is precisely the one that
         does not need one, since it carries every pathway itself."""
-        from .compression import require_position_method, decode_occupancy, relaxation_logweight
+        from .compression import require_position_method, decode_occupancy
         from ._replay_kernel import effective_gradient, bin_gate
         require_position_method(self.method)
         # two gradients: the PHYSICAL one (``G``, for the vector-Bloch route, which applies the pulses itself)
@@ -1308,15 +1303,12 @@ class ReplayPack:
         needs 12, not 6, at 12.5 ms). ``K=`` fixes the band instead and is refused as it stands.
         ``provenance.prefix`` records the parent (digest, id, T, K), the cut and every band tried.
         """
-        from .bank import build_replay_pack, seed_value, susc_path_decode, susc_path_encode_series, susc_path_series_fidelity
-        from .compression import decode_occupancy, decode_boundary_bridge, decode_boundary_local_time
         dt, n_t = float(self.dt), int(self.n_t)
         T = (n_t - 1) * dt
         n_cut = int(round(float(TE) / dt)) + 1
         if n_cut < 3 or n_cut > n_t:
             raise ValueError(f"TE = {TE * 1e3:.3f} ms is not a prefix of this {T * 1e3:.3f} ms walk (dt {dt * 1e6:.1f} us): "
                              f"it needs at least three saves and at most the walk's {n_t}")
-        T_cut = (n_cut - 1) * dt
         if self.n_segments > 1:
             steps = int(self.segments["n_t"]) - 1
             whole = (n_cut - 1) // steps + (1 if (n_cut - 1) % steps else 0)      # the windows the prefix lies in
@@ -1329,8 +1321,7 @@ class ReplayPack:
     def _prefix_within(self, TE, *, K=None, out_path=None, tol=2.0, id=None, provenance=None):
         """:meth:`prefix` by re-encoding: every channel decoded over the windows the prefix spans, cut and
         re-encoded as one window through :func:`~dmipy_sim.replay.bank.build_replay_pack`."""
-        from .bank import build_replay_pack, seed_value, susc_path_decode, susc_path_encode_series, susc_path_series_fidelity
-        from .compression import decode_occupancy, decode_boundary_bridge, decode_boundary_local_time
+        from .bank import build_replay_pack, seed_value, susc_path_encode_series, susc_path_series_fidelity
         dt, n_t = float(self.dt), int(self.n_t)
         T = (n_t - 1) * dt
         n_cut = int(round(float(TE) / dt)) + 1
@@ -1341,8 +1332,7 @@ class ReplayPack:
         wp = dict(self.meta.get("walk_params", {}) or {})
         # the prefix's positions are never held whole: the builder, its encoder and its certificate read them per
         # walker range, decoded from the parent's coefficients where they are read, window by window (#449 item 3)
-        from .compression import LazyWalk, read_position_coeffs
-        from .pose_device import decode_prefix
+        from .compression import LazyWalk, decode_prefix, read_position_coeffs
         spans = []                                                     # (coefficients, saves of the window, first save kept, saves kept)
         done = 0
         for j, (w, _, n_seg) in enumerate(self._windows()):
@@ -1534,7 +1524,7 @@ class ReplayPack:
         from . import so3
         from .compression import read_position_coeffs
         from ._replay_kernel import effective_gradient
-        from .pose_device import bessel_tails, real_sh as _real_sh, spherical_jn_all as _jn_all
+        from .pose_device import bessel_tails, host_bodies, spherical_jn_all as _jn_all
         n_acq = len(Ps)
         P0 = Ps[0]
         dt, n_t, ew, norm = P0["dt"], P0["n_t"], P0["pathway"] * P0["ew"], P0["norm"]
@@ -1627,7 +1617,7 @@ class ReplayPack:
             bodies = [None] * (keep_l + 1)                                      # per order: (n_grp, 2k+1)
             if keep_n == 0:                                                     # n = 0 only: the Legendre of the angle to the axis
                 for l in range(keep_l + 1):
-                    bodies[l] = np.sqrt((2 * l + 1) / (4 * np.pi)) * ((w[:, None] * J[l]) * _legendre(l, cos_z)).sum(0)[:, None]
+                    bodies[l] = np.sqrt((2 * l + 1) / (4 * np.pi)) * ((w[:, None] * J[l]) * so3.legendre(l, cos_z)).sum(0)[:, None]
             else:
                 # the body side: every walker's moment direction's harmonics, all orders in one recurrence pass,
                 # in chunks of groups sized to ~256 MB
@@ -1640,12 +1630,9 @@ class ReplayPack:
                     nc = sl.stop - sl.start
                     if run is not None:
                         run.progress(lo, n_grp, unit="groups")
-                    Y = _real_sh(keep_l, m_hat[:, sl, :].reshape(-1, 3)).reshape(n_w, nc, n_cols)
+                    X = host_bodies(kappa[:, sl], m_hat[:, sl, :], w, keep_l, range(keep_l + 1), keep_n, J=J_all[:, :, sl])
                     for l in range(keep_l + 1):
-                        k = so3._n_cols(l, keep_n) // 2
-                        blk = so3.sh_block(l, True)
-                        Yl = Y[:, :, blk.start + l - k:blk.start + l + k + 1]                 # (n_w, nc, 2k+1)
-                        bodies[l][sl] = np.einsum("wi,wim->im", w[:, None] * J[l][:, sl], Yl)
+                        bodies[l][sl] = X[l].sum(0)                                          # (nc, 2k+1)
         else:
             # ---- gradient x field: the outer product of the two body expansions per walker, summed over the
             # walkers per group, then coupled on both indices into the total order L_tot
@@ -1762,7 +1749,6 @@ class ReplayPack:
         the CANONICAL frame: ``(a (n_w,), A (n_w, 3, 3))``, the gate-integrated path field basis of the pack (C3 path
         route) scaled by ``B0``, ``chi_iso``, ``chi_aniso``. Raises, as the quadrature route does, when the pack
         cannot supply it."""
-        from scipy.fft import dct
         from .bank import path_field_integral
         B0, chi_iso, chi_aniso = P["B0"], P["chi_iso"], P["chi_aniso"]
         self._field_active(B0)
@@ -1795,7 +1781,6 @@ class ReplayPack:
         quadrature exact to the band ``L'`` chosen from the phase amplitude: orders are added until the energy in
         the last one is below ``tol`` of the total (``4 pi`` per walker, the phase having unit modulus). A phase
         whose band lies past ``l_cap`` is refused: the expansion is not the route for it, a replay per pose is."""
-        from . import so3
         import hashlib
         a, A = field
         # the factor depends on the gate and the field, not on the gradient: the encoding classes of a machine pass
@@ -1849,11 +1834,14 @@ class ReplayPack:
         the projection band, because a rule exact only for the band being kept folds everything above it into
         those coefficients, and does so differently at different frames. The misfit is measured at rotations off
         that grid, where such folding cannot hide, and as a worst case rather than a spread.
+
+        The samples themselves -- the phasor sum over the walkers at every rotation of the design, with the field
+        term's quadratic form in the rotated field direction -- are :func:`pose_device.pose_samples`, on the device
+        in chunks of rotations with the numpy route as its oracle; this method prepares the contractions, projects
+        the samples and checks the projection.
         """
-        from scipy.fft import dct
         from . import so3
         from .compression import read_position_coeffs
-        from ._replay_kernel import field_gate
         Geff, dt, n_t, ew, norm, B0 = P["Geff"], P["dt"], P["n_t"], P["pathway"] * P["ew"], P["norm"], P["B0"]
         b0_dir, chi_iso, chi_aniso = P["b0_dir"], P["chi_iso"], P["chi_aniso"]
         n_meas, n_w = Geff.shape[0], ew.shape[0]
@@ -2206,46 +2194,6 @@ def _group_waveforms(s, rtol=1e-5):
         group[same] = len(first)
         first.append(i)
     return group, np.asarray(first, np.int64)
-
-
-def _spherical_jn_all(L, x, extra=24):
-    """``j_0(x) .. j_L(x)`` for every entry of ``x``, ``(L+1,) + x.shape``, by the downward (Miller) recurrence
-    started ``extra`` orders above ``L`` and normalised to ``j_0 = sin x / x``: stable for every order and
-    argument, exact to 1e-12 against scipy, and one pass instead of one call per order."""
-    x = np.asarray(x, np.float64)
-    L = int(L)
-    N = L + int(extra) + int(np.ceil(np.abs(x).max())) if x.size else L + int(extra)
-    small = np.abs(x) < 1e-12
-    xs = np.where(small, 1.0, x)
-    hi, lo = np.zeros_like(xs), np.full_like(xs, 1e-30)           # j_{N+1} := 0, j_N := tiny, then downward
-    out = np.empty((L + 1,) + x.shape, np.float64)
-    for l in range(N, -1, -1):
-        cur = (2 * l + 3) / xs * lo - hi                            # j_l = (2l+3)/x j_{l+1} - j_{l+2}
-        hi, lo = lo, cur
-        if l <= L:
-            out[l] = cur
-        m = np.abs(cur) > 1e200                                     # rescale before it overflows; the ratio is what matters
-        if m.any():
-            hi = np.where(m, hi * 1e-200, hi); lo = np.where(m, lo * 1e-200, lo)
-            if l <= L:
-                out[l:] = np.where(m[None, ...], out[l:] * 1e-200, out[l:])
-    j0 = np.where(small, 1.0, np.sin(xs) / xs)
-    scale = j0 / np.where(out[0] == 0, 1.0, out[0])
-    out = out * scale[None, ...]
-    if small.any():
-        out[1:, small] = 0.0; out[0, small] = 1.0
-    return out
-
-
-def _legendre(l, x):
-    """``P_l(x)`` by the three-term recurrence, vectorised over ``x``."""
-    x = np.asarray(x, np.float64)
-    if l == 0:
-        return np.ones_like(x)
-    p0, p1 = np.ones_like(x), x.copy()
-    for k in range(1, l):
-        p0, p1 = p1, ((2 * k + 1) * x * p1 - k * p0) / (k + 1)
-    return p1
 
 
 def _path_grid(pm, n_t, dt):

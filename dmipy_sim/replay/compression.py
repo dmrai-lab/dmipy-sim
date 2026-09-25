@@ -38,8 +38,7 @@ except ImportError as _e:  # pragma: no cover
 from ..constants import GAMMA
 
 POSITION_METHOD = "bridge_dst"          # the only C0 representation; see encode_bridge_dst
-WALKER_PRESERVING = (POSITION_METHOD,)
-ALL_METHODS = WALKER_PRESERVING
+ALL_METHODS = (POSITION_METHOD,)
 
 _RETIRED = {
     "temporal_dct": "cosine bands of the whole path",
@@ -180,6 +179,14 @@ def _chunk(chunk_bytes):
     return int(CHUNK_BYTES if chunk_bytes is None else chunk_bytes)
 
 
+def _dst_matrix(N, K):
+    """The orthonormal DST-I matrix ``(N, K)``: ``sqrt(2 / (N + 1)) sin(pi n k / (N + 1))`` for ``n = 1..N`` and
+    ``k = 1..K``, as scipy's ``dst(type=1, norm="ortho")`` reads it. The one sine matrix every device band, bridge
+    and prefix decode contracts against."""
+    n = np.arange(1, int(N) + 1)[:, None]; k = np.arange(1, int(K) + 1)[None, :]
+    return np.sqrt(2.0 / (N + 1)) * np.sin(np.pi * n * k / (N + 1))
+
+
 def dst_bands(u, K, *, device="auto", chunk_bytes=None):
     """The lowest ``K`` orthonormal DST-I bands along axis 1 of ``u`` ``(N_w, N, ...)``, as float64: scipy on the
     host, or on the JAX device as one matmul against the sine matrix at full precision (``Precision.HIGHEST``:
@@ -189,9 +196,7 @@ def dst_bands(u, K, *, device="auto", chunk_bytes=None):
         return np.asarray(_dst(np.asarray(u, np.float64), axis=1, type=1, norm="ortho")[:, :K], np.float64)
     import jax
     import jax.numpy as jnp
-    N = int(u.shape[1])
-    n = np.arange(1, N + 1)[:, None]; k = np.arange(1, K + 1)[None, :]
-    S = jnp.asarray(np.sqrt(2.0 / (N + 1)) * np.sin(np.pi * n * k / (N + 1)), jnp.float32)          # (N, K)
+    S = jnp.asarray(_dst_matrix(int(u.shape[1]), K), jnp.float32)                                    # (N, K)
     f = jax.jit(lambda x: jnp.einsum("wn...,nk->wk...", x, S, precision=jax.lax.Precision.HIGHEST))
     rows = max(1, int(_chunk(chunk_bytes) // max(int(np.prod(u.shape[1:])) * 4, 1)))
     out = np.empty((u.shape[0], K) + tuple(u.shape[2:]), np.float64)
@@ -507,9 +512,7 @@ def _device_bridge(n_t, K):
     matmul against the DST-I matrix at ``Precision.HIGHEST`` (a float32 ``@`` on a CUDA device is TF32 otherwise)."""
     import jax
     import jax.numpy as jnp
-    N = n_t - 2
-    n = np.arange(1, N + 1)[:, None]; k = np.arange(1, K + 1)[None, :]
-    S = jnp.asarray(np.sqrt(2.0 / (N + 1)) * np.sin(np.pi * n * k / (N + 1)), jnp.float32)      # (N, K)
+    S = jnp.asarray(_dst_matrix(n_t - 2, K), jnp.float32)                                         # (N, K)
     tau = jnp.asarray(np.arange(n_t) / (n_t - 1.0), jnp.float32)
     hi = jax.lax.Precision.HIGHEST
 
@@ -529,6 +532,45 @@ def _device_bridge(n_t, K):
         return a, e, jnp.matmul(u[:, 1:-1], S, precision=hi)
 
     return positions, local_time
+
+
+@functools.lru_cache(maxsize=8)
+def _prefix_decode_kernel(n_t, n_cut, K):
+    """``C (c, K+2, 3) -> positions (c, n_cut, 3)`` float32: the first ``n_cut`` saves of a bridge-coded walk of
+    ``n_t`` saves, the sine bands evaluated only where they are read."""
+    import jax
+    import jax.numpy as jnp
+    hi = jax.lax.Precision.HIGHEST
+    inner = min(n_cut, n_t - 1) - 1                                             # interior saves 1 .. n_cut-1 (the last save is a band end)
+    S_part = jnp.asarray(_dst_matrix(n_t - 2, K)[:max(inner, 0)].T, jnp.float32)  # (K, inner)
+    tau = jnp.asarray(np.arange(n_cut) / (n_t - 1.0), jnp.float32)
+
+    @jax.jit
+    def kernel(C):
+        a, v, B = C[:, 0, :], C[:, 1, :], C[:, 2:, :]
+        u = jnp.einsum("wkd,kn->wnd", B, S_part, precision=hi)                  # (c, inner, 3)
+        pad = jnp.zeros((C.shape[0], 1, 3), jnp.float32)
+        u = jnp.concatenate([pad, u] + ([pad] if n_cut == n_t else []), axis=1)[:, :n_cut, :]
+        return a[:, None, :] + v[:, None, :] * tau[None, :, None] + u
+
+    return kernel
+
+
+def decode_prefix(C, n_t, n_cut, *, device="auto", chunk_bytes=1 << 30):
+    """The first ``n_cut`` saves ``(n_w, n_cut, 3)`` float32 of a bridge-coded walk of ``n_t`` saves from its coefficients
+    ``C`` ``(n_w, K+2, 3)``: on the device per walker chunk; numpy's whole decode cut to ``n_cut`` when there is none."""
+    C = np.asarray(C, np.float64)
+    n_w, K = C.shape[0], C.shape[1] - 2
+    if resolve_device(device) == "numpy":
+        return _bridge_positions(C, int(n_t))[:, :int(n_cut), :].astype(np.float32)
+    import jax.numpy as jnp
+    kernel = _prefix_decode_kernel(int(n_t), int(n_cut), int(K))
+    out = np.empty((n_w, int(n_cut), 3), np.float32)
+    step = max(1, int(chunk_bytes // (4 * 3 * (int(n_cut) + K + 2))))
+    for lo in range(0, n_w, step):
+        sl = slice(lo, min(lo + step, n_w))
+        out[sl] = np.asarray(kernel(jnp.asarray(C[sl], jnp.float32)), np.float32)
+    return out
 
 
 def bridge_coefficients_device(pos, K):
@@ -586,11 +628,10 @@ def decode_boundary_bridge(arrays, meta, walkers=None, n_cut=None):
     a = np.asarray(arrays["blt_start"], np.float64)[sl]
     endpoint = np.asarray(arrays["blt_endpoint"], np.float64)[sl]
     if n_cut is not None and int(n_cut) < nt:
-        n_cut = int(n_cut); N = nt - 2; K = C.shape[1]
-        n = np.arange(1, min(n_cut, nt - 1))[None, :]; k = np.arange(1, K + 1)[:, None]
-        Sk = np.sqrt(2.0 / (N + 1)) * np.sin(np.pi * n * k / (N + 1))              # (K, n_cut-1): DST-I at the read saves
+        n_cut = int(n_cut); inner = min(n_cut, nt - 1) - 1
+        Sk = _dst_matrix(nt - 2, C.shape[1])[:inner].T                                  # (K, n_cut-1): DST-I at the read saves
         u = np.zeros((C.shape[0], n_cut), np.float64)
-        u[:, 1:n.shape[1] + 1] = C @ Sk
+        u[:, 1:inner + 1] = C @ Sk
         tau = (np.arange(n_cut) / (nt - 1.0))[None, :]
         B = u + (a[:, None] + (endpoint - a)[:, None] * tau)
         return np.diff(B, axis=1, prepend=B[:, :1] * 0.0).astype(np.float32)
@@ -694,7 +735,6 @@ def is_current_c1(meta):
     return isinstance(meta, dict) and "columns" in meta
 
 
-CHANNEL_ENCODERS = {POSITION_METHOD: encode_bridge_dst}
 CHANNEL_DECODERS = {"boundary_local_time": decode_boundary_local_time,
                     "boundary_bridge": decode_boundary_bridge,
                     "compartment": decode_occupancy}
@@ -795,7 +835,7 @@ def read_position_coeffs(arrays, axes=None, dtype=np.float64):
         f"where silent errors live.")
 
 
-def decode(arrays, meta, n_walkers=None, seed=0, walkers=None):
+def decode(arrays, meta, walkers=None):
     """Reconstruct positions (n_walkers, n_t, 3) from a pack's stored arrays, or those of the slice ``walkers``."""
     require_position_method(meta["method"])
     return decode_bridge_dst(arrays, meta, walkers)
@@ -817,12 +857,8 @@ def is_lossless_at(method, K, n_t):
     return method == POSITION_METHOD and int(K) >= rank_of(method, n_t)
 
 
-def is_walker_preserving(method):
-    return method == POSITION_METHOD
-
-
 # ------------------------------------------------------------ mode-space replay
-def mode_space_phi(arrays, meta, G, dt, n_walkers=None, seed=0, *, dt_wf=None):
+def mode_space_phi(arrays, meta, G, dt, *, dt_wf=None):
     """Gradient phase phi_i (N_w, n_meas) in the compressed basis, WITHOUT reconstructing the trajectory:
     the exact integral of the waveform ``G`` (on its own grid ``dt_wf``, default the pack's ``dt``) against
     the piecewise-linear path through the saves, read through the per-save weights of
@@ -839,12 +875,11 @@ def mode_space_phi(arrays, meta, G, dt, n_walkers=None, seed=0, *, dt_wf=None):
     return (GAMMA * dt) * np.einsum("wkd,mkd->wm", C, W)
 
 
-def mode_space_signal(arrays, meta, G, dt, logw=None, weights=None,
-                      n_walkers=None, seed=0):
+def mode_space_signal(arrays, meta, G, dt, logw=None, weights=None):
     """Mode-space signal S = <w exp(logw + i phi)> (n_meas,) complex, computing phi
     (mode_space_phi) and the exp reduction, never reconstructing the trajectory. `logw`
     (N_w,) carries the separable relaxation/surface log-weight (see *_logweight)."""
-    phi = mode_space_phi(arrays, meta, G, dt, n_walkers=n_walkers, seed=seed)
+    phi = mode_space_phi(arrays, meta, G, dt)
     n_w = phi.shape[0]
     lw = np.zeros(n_w) if logw is None else np.asarray(logw, float)
     w = np.ones(n_w) if weights is None else np.asarray(weights, float)
@@ -1006,38 +1041,27 @@ def _walker_phases(pos, dt, G):
 
 class LazyWalk:
     """A walk read per walker range from a decoder rather than held whole: ``shape`` ``(n_w, n_t, 3)`` and
-    ``walk[lo:hi]`` (a walker slice), ``walk[:, i, :]`` (one save of every walker) and ``walk(lo, hi)``, each
-    decoded on demand. What the pack builder, its encoder and its certificate read when the walk is the decoded
+    ``walk[lo:hi]`` (a walker slice) and ``walk[:, i, :]`` (one save of every walker), each decoded on demand. What the pack builder, its encoder and its certificate read when the walk is the decoded
     prefix of a pack (dmrai-lab/dmipy-sim#449 item 3): none of them needs the walk whole, and this refuses to
     become one (``np.asarray`` raises) so that no caller does so by accident."""
 
     def __init__(self, decoder, shape, dtype=np.float32, chunk_bytes=None):
         self._decoder = decoder; self.shape = tuple(int(x) for x in shape); self.dtype = np.dtype(dtype)
-        self.ndim = len(self.shape); self.chunk_bytes = _chunk(chunk_bytes)
-
-    def __len__(self):
-        return self.shape[0]
-
-    @property
-    def nbytes(self):
-        return int(np.prod(self.shape)) * self.dtype.itemsize
-
-    def __call__(self, lo, hi):
-        return np.asarray(self._decoder(int(lo), int(hi)), self.dtype)
+        self.chunk_bytes = _chunk(chunk_bytes)
 
     def __getitem__(self, key):
         if isinstance(key, slice):
             lo, hi, step = key.indices(self.shape[0])
             if step != 1:
                 raise IndexError("a lazy walk is read in contiguous walker ranges")
-            return self(lo, hi)
+            return np.asarray(self._decoder(int(lo), int(hi)), self.dtype)
         if isinstance(key, tuple) and len(key) == 3 and key[0] == slice(None) and key[2] == slice(None) and np.ndim(key[1]) == 0:
             i = int(key[1]) % self.shape[1]                            # one save of every walker, per chunk
             out = np.empty((self.shape[0], 3), self.dtype)
             step = max(1, int(self.chunk_bytes // (4 * 3 * self.shape[1])))
             for lo in range(0, self.shape[0], step):
                 hi = min(lo + step, self.shape[0])
-                out[lo:hi] = self(lo, hi)[:, i, :]
+                out[lo:hi] = self[lo:hi][:, i, :]
             return out
         raise IndexError("a lazy walk is read as walk[lo:hi] (walkers) or walk[:, i, :] (one save)")
 
@@ -1049,18 +1073,17 @@ def is_lazy(x):
     return isinstance(x, LazyWalk)
 
 
-def _phases_by_chunk(pos, dt, G, chunk_bytes=None, shape=None):
+def _phases_by_chunk(pos, dt, G, shape=None):
     """:func:`_walker_phases` of every walker, ``(N_w, n_meas)`` float64, taken in walker chunks so that no more
-    than ``chunk_bytes`` of the positions is held in float64 at once: the phases are 40 MB where the trajectory
-    is 12 GB, and the certificate needs only the phases. ``pos`` is the positions ``(N_w, n_t, 3)`` or a callable
-    ``(lo, hi) -> positions of walkers lo:hi`` (a :func:`decoder`), whose ``shape`` ``(N_w, n_t)`` is then given."""
-    if is_lazy(pos):
-        n_w, n_t = pos.shape[0], pos.shape[1]; chunk = pos
-    elif callable(pos):
+    than :data:`CHUNK_BYTES` of the positions is held in float64 at once: the phases are 40 MB where the trajectory
+    is 12 GB, and the certificate needs only the phases. ``pos`` is the positions ``(N_w, n_t, 3)``, a
+    :class:`LazyWalk` (read per walker range), or a callable ``(lo, hi) -> positions of walkers lo:hi`` (a
+    :func:`decoder`), whose ``shape`` ``(N_w, n_t)`` is then given."""
+    if callable(pos) and not is_lazy(pos):
         n_w, n_t = shape; chunk = pos
     else:
-        pos = np.asarray(pos); n_w, n_t = pos.shape[0], pos.shape[1]; chunk = lambda lo, hi: pos[lo:hi]
-    step = max(1, int(_chunk(chunk_bytes) // (8 * 3 * n_t)))
+        pos = pos if is_lazy(pos) else np.asarray(pos); n_w, n_t = pos.shape[0], pos.shape[1]; chunk = lambda lo, hi: pos[lo:hi]
+    step = max(1, int(_chunk(None) // (8 * 3 * n_t)))
     out = np.empty((n_w, G.shape[0]), np.float64)
     for lo in range(0, n_w, step):
         out[lo:lo + step] = _walker_phases(chunk(lo, min(lo + step, n_w)), dt, G)
@@ -1075,26 +1098,20 @@ def _mean_signal(phi, w=None, logw=None):
     return (np.exp(lw[:, None] + 1j * phi) * (ww / ww.sum())[:, None]).sum(0)
 
 
-def _replay_complex_np(pos, dt, G, *, w=None, logw=None):
-    """Self-contained numpy replay <w exp(logw) exp(i phi)> over :func:`_walker_phases`. Ground truth for the
-    fidelity scorer."""
-    return _mean_signal(_phases_by_chunk(pos, dt, G), w, logw)
-
-
-def measure_fidelity(traj, dt_traj, decoded_pos, env=None, w=None, logw=None, chunk_bytes=None):
+def measure_fidelity(traj, dt_traj, decoded_pos, env=None, w=None, logw=None):
     """Max complex replay error per acquisition family, decoded vs raw positions, against
     a split-half Monte-Carlo floor. `logw` (optional) applies the same separable weight to
     both so surface/relaxation packs are scored with their physics on. The positions are read
-    in walker chunks of at most ``chunk_bytes`` (default :data:`CHUNK_BYTES`) in float64; ``decoded_pos`` may be a
+    in walker chunks of at most :data:`CHUNK_BYTES` in float64; ``decoded_pos`` may be a
     :func:`decoder` so that the decoded walk is never held whole; when it is ``traj`` itself
     (a raw walk's floor) the phases are read once."""
     env = env or default_envelope()
     r = traj if is_lazy(traj) else np.asarray(traj); dt = float(dt_traj)      # the walk as stored; float64 per chunk below
     G, meta = acquisition_battery(r.shape[1], dt, env)
-    phi_raw = _phases_by_chunk(r, dt, G, chunk_bytes)                          # (N_w, n_meas): all the certificate reads
+    phi_raw = _phases_by_chunk(r, dt, G)                          # (N_w, n_meas): all the certificate reads
     S_raw = _mean_signal(phi_raw, w, logw)
     S_dec = S_raw if decoded_pos is traj else _mean_signal(
-        _phases_by_chunk(decoded_pos if callable(decoded_pos) else np.asarray(decoded_pos), dt, G, chunk_bytes,
+        _phases_by_chunk(decoded_pos if callable(decoded_pos) else np.asarray(decoded_pos), dt, G,
                          shape=r.shape[:2]), w, logw)
     idx = np.random.default_rng(0).permutation(r.shape[0]); h = r.shape[0] // 2
     ia, ib = idx[:h], idx[h:]
@@ -1125,12 +1142,10 @@ def auto_select_modes(X, traj, dt_traj, method=POSITION_METHOD, env=None, tol=2.
     tol * split-half floor). Returns (K, fidelity_report); falls back to the largest K."""
     env = env or default_envelope()
     require_position_method(method)
-    cache = None
     best = None
     for K in K_grid:
-        arrays, meta, _ = (ENCODERS[method](X, K, _cache=cache) if cache
-                           else ENCODERS[method](X, K))
-        pos = decode(arrays, meta, n_walkers=(X.shape[0] if is_walker_preserving(method) else None))
+        arrays, meta, _ = ENCODERS[method](X, K)
+        pos = decode(arrays, meta)
         fid = measure_fidelity(traj, dt_traj, pos, env, w=w, logw=logw)
         if verbose:
             log.info(f"  K={K}: err={fid['err_max']:.4f} floor={fid['floor_max']:.4f} "

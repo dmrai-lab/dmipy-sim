@@ -1,7 +1,6 @@
 """The pose expansion in closed form (#197): for a single-direction encoding the response over poses is a sum of
 plane waves whose harmonics are the Rayleigh expansion, computed per walker with no quadrature. Certified against
 the direct posed replay (exact), against the quadrature route (to that route's own misfit), and by its band bound."""
-import time
 
 import numpy as np
 import pytest
@@ -88,9 +87,9 @@ def test_encodings_the_closed_form_does_not_take_fall_back_or_refuse(pack):
         pack.pose_response(ste, method="magic")
 
 
-def test_the_closed_form_is_fast_on_a_real_pack(seq):
-    """The cost is one contraction over walkers per order: the 8k-walker CACTUS pack at four measurements in well
-    under a second, where the quadrature route needs seconds per measurement."""
+def test_the_closed_form_composes_the_direct_replay_on_a_real_pack(seq):
+    """The 8k-walker CACTUS pack at four measurements: the closed form takes no samples, and its n = 0 column
+    composes the roll-averaged direct replay (the wall-clock is a measurement, not a test: #455)."""
     import os
     path = "/home/rutger/dmrai-ws/packs/cactus_demo_xframe.rpk"
     if not os.path.exists(path):
@@ -98,8 +97,8 @@ def test_the_closed_form_is_fast_on_a_real_pack(seq):
     pk = read_rpk(path)
     seq30 = sequences.pgse([[1, 0, 0], [0, 0, 1], [0.6, 0.8, 0.0], [0.0, 0.6, 0.8]], 8e-3, 16e-3, bvalues=[3e9] * 4, TE=30e-3)
     # no tissue, no scanner: this pack's spec declares a nominal field, and a field response still takes the quadrature
-    t0 = time.time(); pr = pk.pose_response(seq30, keep=(8, 0)); dt = time.time() - t0
-    assert dt < 5.0 and pr.n_samples == 0 and pr.phase_amplitude > 5.0     # a sharp response, still cheap at n = 0
+    pr = pk.pose_response(seq30, keep=(8, 0))
+    assert pr.n_samples == 0 and pr.phase_amplitude > 5.0                    # a sharp response, closed (no samples) at n = 0
     # and the n = 0 column composes the same signal as the direct replay averaged over the roll about an axis
     axis = np.array([0.3, 0.5, 0.81]); axis /= np.linalg.norm(axis)
     rolls = np.linspace(0, 2 * np.pi, 24, endpoint=False)
