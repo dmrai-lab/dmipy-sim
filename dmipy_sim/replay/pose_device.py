@@ -277,3 +277,61 @@ def spherical_jn_all(L, x, *, device="auto", extra=24, chunk_bytes=1 << 30):
         sl = slice(lo, min(lo + step, flat.size))
         out[:, sl] = np.asarray(kernel(jnp.asarray(flat[sl], jnp.float32)), np.float64)
     return out.reshape((L + 1,) + x.shape)
+
+
+@functools.lru_cache(maxsize=8)
+def _field_bodies_kernel(nc, L, l_used, N_bessel, n_f):
+    """``(kappa (c, nc), m_hat (c, nc, 3), w (c,), F_re (c, n_f), F_im (c, n_f)) -> (B_re, B_im) (rows, n_f)`` float32 with
+    ``rows = nc * sum(2l+1 for l in l_used)``, rows ordered ``(l, g, n)``: the stacked bodies of every gradient order
+    and group against the field factor for one chunk of walkers, the Bessel values and the harmonics formed on the
+    device and never returned."""
+    import jax
+    import jax.numpy as jnp
+    hi = jax.lax.Precision.HIGHEST
+    sh = _real_sh_kernel(L)
+    jn = _spherical_jn_kernel(max(l_used), N_bessel)
+
+    @jax.jit
+    def kernel(kappa, m_hat, w, F_re, F_im):
+        c = kappa.shape[0]
+        Y = sh(m_hat.reshape(-1, 3)).reshape(c, nc, (L + 1) ** 2)                  # (c, nc, (L+1)^2)
+        J = jn(kappa.reshape(-1)).reshape(-1, c, nc)                               # (lmax+1, c, nc)
+        cols = []
+        for l in l_used:
+            Xl = (w[:, None] * J[l])[:, :, None] * Y[:, :, l * l:l * l + 2 * l + 1]  # (c, nc, 2l+1)
+            cols.append(Xl.reshape(c, -1))
+        X = jnp.concatenate(cols, axis=1)                                           # (c, rows)
+        return jnp.matmul(X.T, F_re, precision=hi), jnp.matmul(X.T, F_im, precision=hi)
+
+    return kernel
+
+
+def field_bodies(kappa, m_hat, w, F_re, F_im, L, l_used, *, n_bessel, device="auto", chunk_bytes=1 << 30):
+    """``B[(l, g, n), (l', m')] = sum_w w_w j_l(kappa_wg) Y_ln(m^_wg) F_w,l'm'`` for the groups of one chunk, ``(rows, n_f)``
+    complex128, ``rows = nc * sum(2l+1 for l in l_used)``: the closed form's bodies against the field factor. On the
+    device per walker chunk (:func:`_field_bodies_kernel`), the partial sums accumulated on the host in float64; the
+    host route (numpy harmonics, Bessel values and products) when there is none."""
+    kappa = np.asarray(kappa, np.float64); m_hat = np.asarray(m_hat, np.float64); w = np.asarray(w, np.float64)
+    F_re = np.asarray(F_re, np.float64); F_im = np.asarray(F_im, np.float64)
+    n_w, nc = kappa.shape
+    l_used = tuple(int(l) for l in l_used)
+    rows = nc * sum(2 * l + 1 for l in l_used)
+    if resolve_device(device) == "numpy":
+        from . import so3
+        from .replay import _spherical_jn_all
+        Ym = so3.real_sh(int(L), m_hat.reshape(-1, 3), full=True).reshape(n_w, nc, (int(L) + 1) ** 2)
+        J = _spherical_jn_all(max(l_used), kappa)
+        X = np.concatenate([((w[:, None] * J[l])[:, :, None] * Ym[:, :, l * l:l * l + 2 * l + 1]).reshape(n_w, -1)
+                            for l in l_used], axis=1)
+        return (X.T @ F_re) + 1j * (X.T @ F_im)
+    import jax.numpy as jnp
+    kernel = _field_bodies_kernel(int(nc), int(L), l_used, int(n_bessel), int(F_re.shape[1]))
+    out = np.zeros((rows, F_re.shape[1]), np.complex128)
+    per_walker = 4 * (nc * ((int(L) + 1) ** 2 + int(n_bessel) + 4) + rows + 2 * F_re.shape[1])
+    step = max(1, int(chunk_bytes // per_walker))
+    for lo in range(0, n_w, step):
+        sl = slice(lo, min(lo + step, n_w))
+        re, im = kernel(jnp.asarray(kappa[sl], jnp.float32), jnp.asarray(m_hat[sl], jnp.float32), jnp.asarray(w[sl], jnp.float32),
+                        jnp.asarray(F_re[sl], jnp.float32), jnp.asarray(F_im[sl], jnp.float32))
+        out += np.asarray(re, np.float64) + 1j * np.asarray(im, np.float64)
+    return out

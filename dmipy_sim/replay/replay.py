@@ -1632,16 +1632,16 @@ class ReplayPack:
             # the bodies of every gradient order against every field order in ONE product over the walkers per chunk
             # of groups: B[g, (l, n), (l', m')] = sum_w w j_l(kappa) Y_ln(m^) a_l'm'(w)
             B_full = np.empty((n_grp, n_rows, F_sh.shape[1]), np.complex128)
+            from .pose_device import field_bodies
+            n_bessel = J_all.shape[0] - 1
             step = max(1, int(2.5e8 / (8 * n_w * n_cols)))
             for lo in range(0, n_grp, step):
                 sl = slice(lo, min(lo + step, n_grp)); nc = sl.stop - sl.start
                 if run is not None:
                     run.progress(lo, n_grp, unit="groups")
-                Ym = _real_sh(L, m_hat[:, sl, :].reshape(-1, 3)).reshape(n_w, nc, n_cols)
-                X_c = np.concatenate([((w[:, None] * J[l][:, sl])[:, :, None] * Ym[:, :, so3.sh_block(l, True)]).reshape(n_w, -1)
-                                      for l in l_used], axis=1)                                   # (n_w, nc sum(2l+1))
-                B_c = field_products(X_c, F_re, F_im)                                              # (sum nc (2l+1), (L_f+1)^2)
-                del X_c, Ym
+                # the Bessel values, the harmonics and the stacked bodies of this chunk of groups against the field
+                # factor, formed where the walkers are; only the (rows, (L_f+1)^2) result returns
+                B_c = field_bodies(kappa[:, sl], m_hat[:, sl, :], w, F_re, F_im, L, l_used, n_bessel=n_bessel)
                 row = 0
                 for l in l_used:
                     B_full[sl, l_off[l]:l_off[l] + 2 * l + 1] = B_c[row:row + nc * (2 * l + 1)].reshape(nc, 2 * l + 1, -1)

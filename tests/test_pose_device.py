@@ -96,3 +96,18 @@ def test_the_bessel_values_on_the_device_are_the_numpy_ones_to_float32_rounding(
         assert dev.shape == ref.shape
         # a float32 recurrence over up to 60 orders at 30 rad: 1e-5 absolute, three orders under any response floor
         assert np.abs(dev - ref).max() <= 2e-5, (L, np.abs(dev - ref).max())
+
+
+def test_the_field_bodies_on_the_device_are_the_numpy_ones_to_float32_rounding():
+    from dmipy_sim.replay.pose_device import field_bodies
+    rng = np.random.default_rng(6)
+    n_w, nc, L, n_f = 3000, 3, 9, 25
+    kappa = rng.uniform(0.0, 9.0, size=(n_w, nc))
+    m = rng.normal(size=(n_w, nc, 3)); m_hat = m / np.linalg.norm(m, axis=2, keepdims=True)
+    w = rng.uniform(0.5, 1.5, n_w) / n_w
+    F = rng.normal(size=(n_w, n_f)) + 1j * rng.normal(size=(n_w, n_f))
+    l_used = tuple(range(L + 1))
+    ref = field_bodies(kappa, m_hat, w, F.real, F.imag, L, l_used, n_bessel=L + 24 + 9, device="numpy")
+    dev = field_bodies(kappa, m_hat, w, F.real, F.imag, L, l_used, n_bessel=L + 24 + 9, device="jax", chunk_bytes=1 << 20)
+    assert dev.shape == ref.shape == (nc * (L + 1) ** 2, n_f)
+    assert np.abs(dev - ref).max() <= 1e-5 * np.abs(ref).max(), np.abs(dev - ref).max() / np.abs(ref).max()
