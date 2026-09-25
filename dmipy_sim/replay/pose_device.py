@@ -338,3 +338,48 @@ def bessel_tails(kappa, w, L_hi, *, device="auto", chunk_bytes=1 << 30):
         sl = slice(lo, min(lo + step, n_w))
         out += np.asarray(kernel(jnp.asarray(kappa[sl], jnp.float32), jnp.asarray(w[sl], jnp.float32)), np.float64)
     return out
+
+
+
+
+@functools.lru_cache(maxsize=8)
+def _prefix_decode_kernel(n_t, n_cut, K):
+    """``C (c, K+2, 3) -> positions (c, n_cut, 3)`` float32: the first ``n_cut`` saves of a bridge-coded walk of
+    ``n_t`` saves, the sine bands evaluated only where they are read."""
+    import jax
+    import jax.numpy as jnp
+    hi = jax.lax.Precision.HIGHEST
+    N = n_t - 2
+    n = np.arange(1, N + 1)[None, :]; k = np.arange(1, K + 1)[:, None]
+    Sk = np.sqrt(2.0 / (N + 1)) * np.sin(np.pi * n * k / (N + 1))              # (K, N): DST-I, ortho, as scipy's idst reads it
+    inner = min(n_cut, n_t - 1) - 1                                             # interior saves 1 .. n_cut-1 (the last save is a band end)
+    S_part = jnp.asarray(Sk[:, :max(inner, 0)], jnp.float32)                    # (K, inner)
+    tau = jnp.asarray(np.arange(n_cut) / (n_t - 1.0), jnp.float32)
+
+    @jax.jit
+    def kernel(C):
+        a, v, B = C[:, 0, :], C[:, 1, :], C[:, 2:, :]
+        u = jnp.einsum("wkd,kn->wnd", B, S_part, precision=hi)                  # (c, inner, 3)
+        pad = jnp.zeros((C.shape[0], 1, 3), jnp.float32)
+        u = jnp.concatenate([pad, u] + ([pad] if n_cut == n_t else []), axis=1)[:, :n_cut, :]
+        return a[:, None, :] + v[:, None, :] * tau[None, :, None] + u
+
+    return kernel
+
+
+def decode_prefix(C, n_t, n_cut, *, device="auto", chunk_bytes=1 << 30):
+    """The first ``n_cut`` saves ``(n_w, n_cut, 3)`` float32 of a bridge-coded walk of ``n_t`` saves from its coefficients
+    ``C`` ``(n_w, K+2, 3)``: on the device per walker chunk; numpy's whole decode cut to ``n_cut`` when there is none."""
+    from .compression import _bridge_positions
+    C = np.asarray(C, np.float64)
+    n_w, K = C.shape[0], C.shape[1] - 2
+    if resolve_device(device) == "numpy":
+        return _bridge_positions(C, int(n_t))[:, :int(n_cut), :].astype(np.float32)
+    import jax.numpy as jnp
+    kernel = _prefix_decode_kernel(int(n_t), int(n_cut), int(K))
+    out = np.empty((n_w, int(n_cut), 3), np.float32)
+    step = max(1, int(chunk_bytes // (4 * 3 * (int(n_cut) + K + 2))))
+    for lo in range(0, n_w, step):
+        sl = slice(lo, min(lo + step, n_w))
+        out[sl] = np.asarray(kernel(jnp.asarray(C[sl], jnp.float32)), np.float32)
+    return out

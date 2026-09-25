@@ -141,3 +141,74 @@ def test_a_prefix_is_one_window_whatever_the_parents_save_grid(tmp_path):
     assert parent.n_segments == 1
     pre = parent.prefix(0.15, out_path=str(tmp_path / "prefix.rpk"))
     assert pre.n_segments == 1 and abs((pre.n_t - 1) * pre.dt - 0.15) < pre.dt
+
+
+def test_a_pack_built_from_a_lazy_walk_is_the_pack_of_the_array(tmp_path):
+    """The builder, its encoder, its certificate and its frame check read a LazyWalk per walker range and build the
+    same pack, to the bit, as from the array."""
+    from dmipy_sim.replay.compression import LazyWalk
+    g = d.Cylinder(radius=3e-6, orientation=(0.0, 0.0, 1.0))
+    walk = d.simulate_trajectories(300, 2e-9, g, 8e-3, 2.5e-4, seed=5, require_gpu=False)
+    X = np.asarray(walk.positions)
+    m = walk._bank_dict()
+    a = build_replay_pack(dict(m, traj=X), id="t/array", license="x", citation="x", K=12, out_path=str(tmp_path / "a.rpk"))
+    lazy = LazyWalk(lambda lo, hi: X[lo:hi], X.shape, chunk_bytes=1 << 14)
+    b = build_replay_pack(dict(m, traj=lazy), id="t/lazy", license="x", citation="x", K=12, out_path=str(tmp_path / "b.rpk"))
+    for k in ("pos_x", "pos_y", "pos_z"):
+        assert np.array_equal(np.asarray(a.arrays[k]), np.asarray(b.arrays[k])), k
+    assert a.meta["fidelity"]["err_max"] == pytest.approx(b.meta["fidelity"]["err_max"], rel=1e-9)
+    assert a.meta["fidelity"]["floor_max"] == pytest.approx(b.meta["fidelity"]["floor_max"], rel=1e-9)
+    with pytest.raises(TypeError, match="LazyWalk"):
+        np.asarray(lazy)
+
+
+def test_the_prefix_decoder_on_the_device_is_the_numpy_one_to_float32_rounding():
+    from dmipy_sim.replay.compression import encode, _bridge_positions, read_position_coeffs
+    from dmipy_sim.replay.pose_device import decode_prefix
+    rng = np.random.default_rng(3)
+    traj = np.cumsum(rng.normal(size=(400, 300, 3)).astype(np.float32) * np.float32(1e-7), axis=1)
+    arrays, meta, _ = encode(traj, "bridge_dst", 24, device="numpy")
+    C = read_position_coeffs(arrays, dtype=np.float64)
+    for n_cut in (2, 150, 299, 300):
+        ref = _bridge_positions(C, 300)[:, :n_cut, :]
+        cpu = decode_prefix(C, 300, n_cut, device="numpy")
+        dev = decode_prefix(C, 300, n_cut, device="jax", chunk_bytes=1 << 16)
+        assert np.abs(cpu - ref).max() <= 1e-9 and np.abs(dev - ref).max() <= 2e-6 * np.abs(ref).max(), n_cut
+
+
+def test_the_channels_decoded_at_the_prefix_are_the_whole_ones_cut():
+    """The boundary bridge and the path series evaluated at the first saves only equal the whole decode cut."""
+    from dmipy_sim.replay import compression as cx
+    from dmipy_sim.replay.bank import susc_path_decode
+    rng = np.random.default_rng(8)
+    n_w, n_t = 300, 240
+    dlog = -(rng.exponential(1e-3, size=(n_w, n_t)).astype(np.float32) * (rng.uniform(size=(n_w, n_t)) < 0.2))
+    arrays, meta = cx.encode_boundary_bridge(dlog, K=12, device="numpy")
+    whole = cx.decode_boundary_bridge(arrays, meta)
+    for n_cut in (2, 100, 239, 240):
+        part = cx.decode_boundary_bridge(arrays, meta, n_cut=n_cut)
+        assert part.shape == (n_w, n_cut) and np.abs(part - whole[:, :n_cut]).max() <= 1e-6 * np.abs(whole).max()
+    # the path series: a synthetic DCT-II coefficient block with the pack's reader convention
+    K = 9; C = rng.normal(size=(n_w, 7, K))
+    from scipy.fft import idct
+    ref = idct(np.pad(C, ((0, 0), (0, 0), (0, n_t - K))), type=2, norm="ortho", axis=2)
+    for n_cut in (1, 50, 239):
+        k = np.arange(K)[:, None]; n = np.arange(n_cut)[None, :]
+        D = np.sqrt(2.0 / n_t) * np.cos(np.pi * k * (2 * n + 1) / (2.0 * n_t)); D[0] = np.sqrt(1.0 / n_t)
+        assert np.abs(np.einsum("wck,kn->wcn", C, D) - ref[:, :, :n_cut]).max() <= 1e-9
+
+
+def test_a_prefix_inside_a_later_window_reads_across_the_windows(tmp_path):
+    """A parent of three 0.1 s windows prefixed to 0.25 s: the lazy positions are the windows' decoded saves joined
+    on their shared save, cut, and the prefix replays like the parent."""
+    g = d.Cylinder(radius=3e-6, orientation=(0.0, 0.0, 1.0))
+    dt = 0.1 / 200
+    walk = d.simulate_trajectories(300, 2e-9, g, 0.3, dt, seed=9, require_gpu=False)
+    p = tmp_path / "parent.rpk"
+    build_replay_pack(walk, id="t/windows", license="x", citation="x", K=16, out_path=str(p))
+    parent = read_rpk(str(p))
+    assert parent.n_segments == 3
+    pre = parent.prefix(0.25, out_path=str(tmp_path / "prefix.rpk"))
+    assert pre.n_segments == 1 and abs((pre.n_t - 1) * pre.dt - 0.25) < dt
+    seq = sequences.pgse([[1, 0, 0], [0, 0, 1]], 20e-3, 60e-3, gradient_strengths=[0.05, 0.05], TE=0.25)
+    np.testing.assert_allclose(pre.replay(seq), parent.replay(seq), atol=3 * pre.meta["fidelity"]["floor_max"])
