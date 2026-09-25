@@ -113,7 +113,7 @@ class PoseResponse:
         out = cls(z["coeffs"], int(z["lmax"]), int(z["nmax"]), z["misfit"], float(z["floor"]), float(z["phase_amplitude"]),
                   int(z["n_samples"]))
         out.route = str(z["route"]); nb = int(z["n_bodies"]); out.n_bodies = None if nb < 0 else nb
-        out.field_lmax = int(z["field_lmax"])
+        out.field_lmax = int(z["field_lmax"]) if "field_lmax" in z.files else 0   # a cache written before the field tier
         return out
 
     @property
@@ -1181,43 +1181,62 @@ class ReplayPack:
         resolved knobs, the frame, the method and the band, and read back instead of recomputed the next time
         the same pack meets the same acquisition. Off unless asked for.
         """
+        return self.pose_responses([waveform], tissue=tissue, scanner=scanner, pose=pose, compartment=compartment,
+                                   method=method, keep=keep, cache=cache)[0]
+
+    def pose_responses(self, waveforms, *, tissue=None, scanner=None, pose=None, compartment=None,
+                       method="auto", keep=None, cache=None):
+        """:meth:`pose_response` for a batch of acquisitions on this pack -- the encoding classes of a machine pass,
+        or one per voxel -- as ONE pass over the walkers: the closed form takes every single-direction acquisition
+        of the batch together (:meth:`_pose_coeffs_closed_many`), the others take the quadrature one by one. The
+        knobs, the pose and the cache are as for :meth:`pose_response`; returns one :class:`PoseResponse` per
+        acquisition, in order (dmrai-lab/dmipy-sim#449)."""
         view = self._at_tissue(tissue)
         if view is not self:
-            return view.pose_response(waveform, tissue=tissue, scanner=scanner, pose=pose, compartment=compartment, method=method, keep=keep, cache=cache)
+            return view.pose_responses(waveforms, tissue=tissue, scanner=scanner, pose=pose, compartment=compartment,
+                                       method=method, keep=keep, cache=cache)
+        waveforms = list(waveforms)
         R_s = _pose_matrix(pose)
         if R_s is not None:                                       # the acquisition in the specimen frame: what the
             from ..acquisition.waveforms import rotate_waveform   # expansion reads, in P and from the waveform itself
-            waveform = rotate_waveform(waveform, R_s.T)
-        with Run("pose_response", params=dict(id=self.id, n_meas=int(waveform.n_meas), method=method,
+            waveforms = [rotate_waveform(wf, R_s.T) for wf in waveforms]
+        if method not in ("auto", "closed", "quadrature"):
+            raise ValueError("method is 'auto', 'closed' (the per-walker Rayleigh expansion) or 'quadrature'")
+        with Run("pose_response", params=dict(id=self.id, n_acq=len(waveforms), n_meas=int(waveforms[0].n_meas), method=method,
                                         keep=(None if keep is None else [None if k is None else int(k) for k in keep]))):
-            P = self._prepare(waveform, tissue=tissue, scanner=scanner, orientation=None, compartment=compartment)
-            if R_s is not None:
-                P["b0_dir"] = tuple(R_s.T @ np.array([0.0, 0.0, 1.0]))   # the bore's field, seen from the specimen
-            if method not in ("auto", "closed", "quadrature"):
-                raise ValueError("method is 'auto', 'closed' (the per-walker Rayleigh expansion) or 'quadrature'")
-            path = None
-            if cache is not None and cache is not False:
-                path = self._pose_cache_path(cache, P, waveform, method, keep)
-                if path.exists():
-                    return PoseResponse.load(path)
-            out = None
-            if method != "quadrature":
-                out = self._pose_coeffs_closed(P, waveform, keep=keep)
-                if out is None and method == "closed":
-                    raise ValueError("the closed-form pose expansion needs a single-direction encoding on every measurement: "
-                                     "this acquisition has a b-tensor or multi-axis waveform, so use method='quadrature'")
-            if out is None:
-                out = self._pose_coeffs(P, waveform, keep=keep)
-            if np.any(P["voxel"] != 1.0):
-                # an unbalanced encoding: the voxel's factor scales each measurement's expansion, and its misfit with
-                # it. The pose does not enter -- k . r_v is the same dot product in the lab and in the substrate.
-                f = P["voxel"]
-                out.coeffs = out.coeffs * f[:, None]
-                m = np.asarray(out.misfit, float)
-                out.misfit = m * np.abs(f) if m.shape == f.shape else m * float(np.abs(f).max())
-            if path is not None:
-                path.parent.mkdir(parents=True, exist_ok=True)
-                out.save(path)
+            Ps, paths, out = [], [], [None] * len(waveforms)
+            for c, wf in enumerate(waveforms):
+                P = self._prepare(wf, tissue=tissue, scanner=scanner, orientation=None, compartment=compartment)
+                if R_s is not None:
+                    P["b0_dir"] = tuple(R_s.T @ np.array([0.0, 0.0, 1.0]))   # the bore's field, seen from the specimen
+                path = None
+                if cache is not None and cache is not False:
+                    path = self._pose_cache_path(cache, P, wf, method, keep)
+                    if path.exists():
+                        out[c] = PoseResponse.load(path)
+                Ps.append(P); paths.append(path)
+            todo = [c for c in range(len(waveforms)) if out[c] is None]
+            if todo and method != "quadrature":
+                closed = self._pose_coeffs_closed_many([Ps[c] for c in todo], [waveforms[c] for c in todo], keep=keep)
+                for c, resp in zip(todo, closed):
+                    if resp is None and method == "closed":
+                        raise ValueError("the closed-form pose expansion needs a single-direction encoding on every measurement: "
+                                         "this acquisition has a b-tensor or multi-axis waveform, so use method='quadrature'")
+                    out[c] = resp
+            for c in todo:
+                if out[c] is None:
+                    out[c] = self._pose_coeffs(Ps[c], waveforms[c], keep=keep)
+                P = Ps[c]
+                if np.any(P["voxel"] != 1.0):
+                    # an unbalanced encoding: the voxel's factor scales each measurement's expansion, and its misfit with
+                    # it. The pose does not enter -- k . r_v is the same dot product in the lab and in the substrate.
+                    f = P["voxel"]
+                    out[c].coeffs = out[c].coeffs * f[:, None]
+                    m = np.asarray(out[c].misfit, float)
+                    out[c].misfit = m * np.abs(f) if m.shape == f.shape else m * float(np.abs(f).max())
+                if paths[c] is not None:
+                    paths[c].parent.mkdir(parents=True, exist_ok=True)
+                    out[c].save(paths[c])
             return out
 
     def _pose_cache_path(self, cache, P, waveform, method, keep):
@@ -1448,25 +1467,32 @@ class ReplayPack:
         raise ValueError("orientation is a (3, 3) rotation, a (3,) axis direction, or a distribution of poses "
                          "(dmipy_sim.replay.so3.Distribution, or an FOD read as an axis density)")
 
-    def _pose_coeffs_closed(self, P, waveform, keep=None, tol=1e-8, l_cap=64):
-        """The pose expansion in closed form (#197): the response of a single-direction encoding is a sum of plane
-        waves in the rotated moment of each walker, and a plane wave's harmonics are the Rayleigh expansion.
+    def _pose_coeffs_closed_many(self, Ps, waveforms, keep=None, tol=1e-8, l_cap=64):
+        """The pose expansion in closed form (#197) for a batch of acquisitions on this pack -- the encoding classes
+        of a machine pass, or one class per voxel -- in ONE pass over the walkers: every acquisition's waveform
+        groups lie along one group axis, so the moments, the Bessel values, the moment harmonics and the products
+        against the field factor run once for all of them, in chunks of groups, and the lab-side assembly is per
+        acquisition. The field factor is one for the batch (the gate and the field are the acquisition's, not the
+        gradient's). Returns one :class:`PoseResponse` per acquisition, ``None`` where an acquisition is not
+        single-direction (dmrai-lab/dmipy-sim#449).
 
+        waves in the rotated moment of each walker, and a plane wave's harmonics are the Rayleigh expansion.
+        
         Measurement ``i`` plays ``G_i(t) = g_i s_i(t)``; walker ``w``'s phase at pose ``R`` is ``kappa g^ . R m^``
         with ``m_w = gamma sum_t s_i(t) r_w(t) dt`` (the moment, in the canonical frame) and ``kappa = |g||m|``. Then
-
+        
             exp(i kappa g^.R m^) = 4 pi sum_l i^l j_l(kappa) sum_m Y_lm(g^) sum_n M^l(R)[m, n] Y_ln(m^)
-
+        
         so in the basis ``sqrt(2l+1) M^l(R)[m, n]`` the ``(l, m, n)`` coefficient of the ensemble is
-
+        
             c^l_mn = 4 pi i^l / sqrt(2l+1) * Y_lm(g^_i) * sum_w ew_w j_l(kappa_w) Y_ln(m^_w) / norm
-
+        
         -- one contraction over walkers per order, no rotation ever evaluated. ``j_l(kappa)`` dies above
         ``l ~ kappa``, so the band is the largest phase amplitude and nothing is chosen: orders are added until
         their weighted Bessel tail is below ``tol``. ``keep`` restrains the band as before: an ODF or peaks
         composition keeps ``n = 0`` only, which here is the Legendre polynomial of the moment's angle to the
         substrate axis and never a roll quadrature.
-
+        
         **The field.** The susceptibility phase of a walker is ``a_w + u^T A_w u`` in the field direction
         ``u = R^T b`` (:meth:`_field_quadratic`), a function on the sphere whose harmonics ``a_l'm'`` are read
         off a product quadrature exact to its own band (the band follows the phase amplitude ``|A_w|``, orders
@@ -1474,45 +1500,62 @@ class ReplayPack:
         contracted with the real coupling tables (:func:`so3.coupling`) on the lab index (``Y_lm(g^)`` with
         ``Y_l'n'(b^)``) and on the body index (``j_l Y_ln(m^)`` with ``a_l'm'``); no ``g x B0`` frame exists.
         Returns None when a measurement is not single-direction (a b-tensor encoding): that takes the quadrature.
+        
         """
         from . import so3
         from .compression import read_position_coeffs
-        Geff, dt, n_t, ew, norm = P["Geff"], P["dt"], P["n_t"], P["pathway"] * P["ew"], P["norm"]
-        n_meas, n_w = Geff.shape[0], ew.shape[0]
-        field = self._field_quadratic(P, waveform) if self._field_active(P["B0"]) else None   # (a_w, A_w) or None
+        from ._replay_kernel import effective_gradient
+        from .pose_device import bessel_tails, real_sh as _real_sh, spherical_jn_all as _jn_all
+        n_acq = len(Ps)
+        P0 = Ps[0]
+        dt, n_t, ew, norm = P0["dt"], P0["n_t"], P0["pathway"] * P0["ew"], P0["norm"]
+        n_w = ew.shape[0]
+        field = self._field_quadratic(P0, waveforms[0]) if self._field_active(P0["B0"]) else None   # (a_w, A_w) or None
         run = current()
         _ph = (lambda name, **f: run.phase(name, **f)) if run is not None else (lambda name, **f: None)
-        _ph("moments", n_meas=int(n_meas), n_w=int(n_w))
-        G = np.asarray(Geff, np.float64)
-        g_hat = np.zeros((n_meas, 3)); s_wave = np.zeros((n_meas, n_t))
-        for i in range(n_meas):
-            Gi = G[i]
-            if not np.any(Gi):
-                g_hat[i] = (0.0, 0.0, 1.0)                                     # a b = 0 row: no phase at any pose
-                continue
-            _u, sv, vt = np.linalg.svd(Gi, full_matrices=False)
-            if sv[1] > 1e-6 * sv[0]:                                    # G is stored float32; a direction is one to that
-                return None                                                    # rank > 1: not a single direction
-            g, sw = vt[0], Gi @ vt[0]
-            lead = int(np.flatnonzero(np.abs(sw) > 1e-6 * np.abs(sw).max())[0])
-            if sw[lead] < 0:                       # one spelling of (direction, waveform): the first lobe positive
-                g, sw = -g, -sw
-            g_hat[i] = g; s_wave[i] = sw
-        # the body of a coefficient depends on the waveform's shape and amplitude only, never on its direction:
-        # measurements that play the same s_i(t) -- a shell -- share one body, and their directions enter as
-        # harmonics afterwards. Group by the played waveform, exactly, and contract once per group.
-        group, first = _group_waveforms(s_wave, rtol=1e-5)                   # float32 G: 1e-5 is the same waveform
-        n_grp = len(first)
-        s_grp = s_wave[first]                                                  # (n_grp, n_t)
-        from ._replay_kernel import effective_gradient
+        _ph("moments", n_acq=int(n_acq), n_w=int(n_w))
+        # every acquisition's directions and grouped profiles; an acquisition with a multi-axis measurement is left out
+        per = []
+        for P, wf in zip(Ps, waveforms):
+            G = np.asarray(P["Geff"], np.float64); n_meas = G.shape[0]
+            g_hat = np.zeros((n_meas, 3)); s_wave = np.zeros((n_meas, n_t)); single = True
+            for i in range(n_meas):
+                Gi = G[i]
+                if not np.any(Gi):
+                    g_hat[i] = (0.0, 0.0, 1.0)                                     # a b = 0 row: no phase at any pose
+                    continue
+                _u, sv, vt = np.linalg.svd(Gi, full_matrices=False)
+                if sv[1] > 1e-6 * sv[0]:                                    # G is stored float32; a direction is one to that
+                    single = False; break                                          # rank > 1: not a single direction
+                g, sw = vt[0], Gi @ vt[0]
+                lead = int(np.flatnonzero(np.abs(sw) > 1e-6 * np.abs(sw).max())[0])
+                if sw[lead] < 0:                       # one spelling of (direction, waveform): the first lobe positive
+                    g, sw = -g, -sw
+                g_hat[i] = g; s_wave[i] = sw
+            if not single:
+                per.append(None); continue
+            # the body of a coefficient depends on the waveform's shape and amplitude only, never on its direction:
+            # measurements that play the same s_i(t) -- a shell -- share one body, and their directions enter as
+            # harmonics afterwards. Group by the played waveform, exactly, and contract once per group.
+            group, first = _group_waveforms(s_wave, rtol=1e-5)                   # float32 G: 1e-5 is the same waveform
+            per.append(dict(P=P, G=G, g_hat=g_hat, group=group, first=first, n_meas=n_meas))
+        live = [c for c in range(n_acq) if per[c] is not None]
+        if not live:
+            return [None] * n_acq
+        g_off, n_grp = {}, 0                                                      # every live acquisition's groups on one axis
+        for c in live:
+            g_off[c] = n_grp; n_grp += len(per[c]["first"])
         e = np.eye(3)
         m = np.zeros((n_w, n_grp, 3))
-        for seg, t0, n_s in P["windows"]:                                      # the windows' moments sum (RPK.md 4.3)
-            G_s = effective_gradient(P["G_eff_wf"], P["dt_wf"], n_s, dt, t0=t0) if self.n_segments > 1 else G
-            s_s = np.einsum("mtc,mc->mt", G_s[first], g_hat[first])            # each group's profile over this window
+        for seg, t0, n_s in P0["windows"]:                                     # the windows' moments sum (RPK.md 4.3)
             C = read_position_coeffs(seg.arrays, dtype=np.float64).reshape(n_w, -1)
+            s_all = np.zeros((n_grp, n_s))
+            for c in live:
+                q = per[c]
+                G_s = effective_gradient(q["P"]["G_eff_wf"], q["P"]["dt_wf"], n_s, dt, t0=t0) if self.n_segments > 1 else q["G"]
+                s_all[g_off[c]:g_off[c] + len(q["first"])] = np.einsum("mtc,mc->mt", G_s[q["first"]], q["g_hat"][q["first"]])
             for b_ in range(3):                                                # m_w[b] = gamma sum_t s(t) r_w(t)_b dt
-                W = _compile_effective(s_s[:, :, None] * e[b_][None, None, :], dt, self.K, n_s)
+                W = _compile_effective(s_all[:, :, None] * e[b_][None, None, :], dt, self.K, n_s)
                 m[:, :, b_] += C @ W
         m = m @ self.substrate_frame                                           # stored -> canonical: F^T m, per walker
         kappa = np.linalg.norm(m, axis=2)                                      # (n_w, n_grp), radians
@@ -1525,11 +1568,13 @@ class ReplayPack:
         k_max = float(kappa.max()) if kappa.size else 0.0
         _ph("bessel", n_grp=int(n_grp), phase_amplitude=k_max)
         L = int(np.ceil(k_max)) + 2
-        J_all = _spherical_jn_all(min(l_cap, L + 12), kappa)                  # (L_hi+1, n_w, n_grp)
+        # the weighted Bessel magnitudes per order and group, from the device it can use: the values themselves
+        # stay where the bodies are formed (pose_device.field_bodies); only these sums come back
+        T_ab = bessel_tails(kappa, w, min(l_cap, L + 12))                       # (L_hi+1, n_grp)
         while L < l_cap:
-            if L + 1 >= J_all.shape[0]:
-                J_all = _spherical_jn_all(min(l_cap, J_all.shape[0] + 12), kappa)
-            tail = (2 * (L + 1) + 1) * (np.abs(w)[:, None] * np.abs(J_all[L + 1])).sum(0).max()
+            if L + 1 >= T_ab.shape[0]:
+                T_ab = bessel_tails(kappa, w, min(l_cap, T_ab.shape[0] + 12))
+            tail = (2 * (L + 1) + 1) * T_ab[L + 1].max()
             if tail < tol:
                 break
             L += 1
@@ -1545,11 +1590,10 @@ class ReplayPack:
         keep_n = L_tot if want_n is None else min(int(want_n), L_tot)
         n_feat = so3.n_so3_coeffs(keep_l, keep_n)
         _ph("harmonics", L=int(L), L_f=int(L_f), keep_l=int(keep_l), keep_n=int(keep_n), n_feat=int(n_feat))
-        coeffs = np.zeros((n_meas, n_feat), np.complex128)
         cos_z = m_hat[:, :, 2]
-        J = [J_all[l] for l in range(L + 1)]                                    # (n_w, n_grp) per order
-        Yg = so3.real_sh(L, g_hat, full=True)                                   # (n_meas, (L+1)^2): the lab side
         if field is None:
+            J_all = _jn_all(L, kappa)                                          # (L+1, n_w, n_grp): the bodies read them here
+            J = [J_all[l] for l in range(L + 1)]
             # ---- gradient only: one body per order and group, outer product with the direction harmonics
             bodies = [None] * (keep_l + 1)                                      # per order: (n_grp, 2k+1)
             if keep_n == 0:                                                     # n = 0 only: the Legendre of the angle to the axis
@@ -1567,81 +1611,106 @@ class ReplayPack:
                     nc = sl.stop - sl.start
                     if run is not None:
                         run.progress(lo, n_grp, unit="groups")
-                    Y = so3.real_sh(keep_l, m_hat[:, sl, :].reshape(-1, 3), full=True).reshape(n_w, nc, n_cols)
+                    Y = _real_sh(keep_l, m_hat[:, sl, :].reshape(-1, 3)).reshape(n_w, nc, n_cols)
                     for l in range(keep_l + 1):
                         k = so3._n_cols(l, keep_n) // 2
                         blk = so3.sh_block(l, True)
                         Yl = Y[:, :, blk.start + l - k:blk.start + l + k + 1]                 # (n_w, nc, 2k+1)
                         bodies[l][sl] = np.einsum("wi,wim->im", w[:, None] * J[l][:, sl], Yl)
-            off = 0
-            for l in range(keep_l + 1):
-                k = so3._n_cols(l, keep_n) // 2
-                blk = so3.sh_block(l, True)
-                body_i = bodies[l][group]                                                      # (n_meas, 2k+1)
-                block = (4 * np.pi * (1j ** l) / np.sqrt(2 * l + 1)) * Yg[:, blk][:, :, None] * body_i[:, None, :]
-                coeffs[:, off:off + (2 * l + 1) * (2 * k + 1)] = block.reshape(n_meas, -1)
-                off += (2 * l + 1) * (2 * k + 1)
         else:
             # ---- gradient x field: the outer product of the two body expansions per walker, summed over the
             # walkers per group, then coupled on both indices into the total order L_tot
-            b_lab = np.asarray(P["b0_dir"], np.float64); b_lab = b_lab / np.linalg.norm(b_lab)
+            b_lab = np.asarray(P0["b0_dir"], np.float64); b_lab = b_lab / np.linalg.norm(b_lab)
             Yb = so3.real_sh(L_f, b_lab[None, :], full=True)[0]                 # ((L_f+1)^2,): the field direction, lab side
-            # the field factor as two contiguous real blocks: a .real view of a complex array strides 16 bytes on
-            # its last axis, which BLAS does not take, and numpy's fallback loop is twenty times slower per product
+            # the field factor as two contiguous real blocks, for field_bodies' host route (BLAS does not take a
+            # .real view's 16-byte stride) and for the float32 copies its device route makes
             F_re, F_im = np.ascontiguousarray(F_sh.real), np.ascontiguousarray(F_sh.imag)
             n_cols = (L + 1) ** 2
-            Ym = np.empty((n_w, n_grp, n_cols))                                # the moment harmonics, all groups
-            step = max(1, int(2.5e8 / (8 * n_w * n_cols)))
+            l_used = [l for l in range(L + 1) if l <= keep_l + L_f]
+            l_off = {}; n_rows = 0
+            for l in l_used:
+                l_off[l] = n_rows; n_rows += 2 * l + 1
+            # the bodies of every gradient order against every field order in ONE product over the walkers per chunk
+            # of groups: B[g, (l, n), (l', m')] = sum_w w j_l(kappa) Y_ln(m^) a_l'm'(w)
+            B_full = np.empty((n_grp, n_rows, F_sh.shape[1]), np.complex128)
+            from .pose_device import field_bodies
+            n_bessel = max(l_used) + 24 + int(np.ceil(k_max))                   # the Miller recurrence's start order
+            step = max(1, int(2.5e8 / (8 * n_w * n_cols)))                       # groups per ~256 MB of host harmonics (the numpy route)
             for lo in range(0, n_grp, step):
                 sl = slice(lo, min(lo + step, n_grp)); nc = sl.stop - sl.start
                 if run is not None:
                     run.progress(lo, n_grp, unit="groups")
-                Ym[:, sl, :] = so3.real_sh(L, m_hat[:, sl, :].reshape(-1, 3), full=True).reshape(n_w, nc, n_cols)
+                # the Bessel values, the harmonics and the stacked bodies of this chunk of groups against the field
+                # factor, formed where the walkers are; only the (rows, (L_f+1)^2) result returns
+                B_c = field_bodies(kappa[:, sl], m_hat[:, sl, :], w, F_re, F_im, L, l_used, n_bessel=n_bessel)
+                row = 0
+                for l in l_used:
+                    B_full[sl, l_off[l]:l_off[l] + 2 * l + 1] = B_c[row:row + nc * (2 * l + 1)].reshape(nc, 2 * l + 1, -1)
+                    row += nc * (2 * l + 1)
             _ph("couplings", L=int(L), L_f=int(L_f))
             offs = {}
             off = 0
             for Lc in range(keep_l + 1):
                 offs[Lc] = off; off += (2 * Lc + 1) * (2 * (so3._n_cols(Lc, keep_n) // 2) + 1)
-            # the bodies of every gradient order against every field order in ONE product over the walkers:
-            # B[(l, g, n), (l', m')] = sum_w w j_l(kappa) Y_ln(m^) a_l'm'(w), the orders stacked along the rows
-            from .pose_device import field_products
-            l_used = [l for l in range(L + 1) if l <= keep_l + L_f]
-            X_all = np.concatenate([((w[:, None] * J[l])[:, :, None] * Ym[:, :, so3.sh_block(l, True)]).reshape(n_w, -1)
-                                    for l in l_used], axis=1)                                        # (n_w, n_grp sum(2l+1))
-            B_stack = field_products(X_all, F_re, F_im)                                            # (sum n_grp (2l+1), (L_f+1)^2)
-            del X_all
-            row = 0
+            # the body side of every coupling once for all groups; the lab side per acquisition below
+            bodies_c = {}                                                       # (l, lp, Lc) -> (n_grp, 2kk+1)
             for l in l_used:
-                bl = so3.sh_block(l, True)
-                B_all = B_stack[row:row + n_grp * (2 * l + 1)].reshape(n_grp, 2 * l + 1, -1)     # (n_grp, 2l+1, (L_f+1)^2)
-                row += n_grp * (2 * l + 1)
+                B_all = B_full[:, l_off[l]:l_off[l] + 2 * l + 1, :]              # (n_grp, 2l+1, (L_f+1)^2)
                 for lp in range(L_f + 1):
                     blp = so3.sh_block(lp, True)
                     Ls = [Lc for Lc in range(abs(l - lp), min(l + lp, keep_l) + 1)]
                     if not Ls:
                         continue
                     B = B_all[:, :, blp].reshape(n_grp, -1)                                 # (n_grp, (2l+1)(2l'+1))
-                    # lab: Lam[i, (m, n')] = Y_lm(g^_i) Y_l'n'(b^)
-                    Lam = (Yg[:, bl][:, :, None] * Yb[blp][None, None, :]).reshape(n_meas, -1)
                     K = so3.coupling(l, lp)
                     for Lc in Ls:
-                        KL = K[Lc]                                              # ((2l+1)(2l'+1), 2Lc+1)
                         kk = so3._n_cols(Lc, keep_n) // 2
-                        lab = Lam @ KL                                          # (n_meas, 2Lc+1)
-                        body = B @ KL.conj()[:, Lc - kk:Lc + kk + 1]            # (n_grp, 2kk+1)
-                        block = (4 * np.pi * (1j ** l) / np.sqrt(2 * Lc + 1)) * lab[:, :, None] * body[group][:, None, :]
-                        o = offs[Lc]
-                        coeffs[:, o:o + (2 * Lc + 1) * (2 * kk + 1)] += block.reshape(n_meas, -1)
+                        bodies_c[(l, lp, Lc)] = B @ K[Lc].conj()[:, Lc - kk:Lc + kk + 1]      # (n_grp, 2kk+1)
         # what the expansion cannot hold pointwise: the orders above the band it was built to, as a bound from
         # |P_l| <= 1 -- below tol by construction
-        tail = np.zeros(n_grp)
-        for l in range(L + 1, min(L + 4, J_all.shape[0])):
-            tail += (2 * l + 1) * (np.abs(w)[:, None] * np.abs(J_all[l])).sum(0)
-        out = PoseResponse(coeffs, keep_l, keep_n, misfit=tail[group], floor=1.0 / np.sqrt(n_w), phase_amplitude=k_max,
-                           n_samples=0)
-        out.n_bodies = n_grp                                                   # the distinct waveforms contracted
-        out.field_lmax = L_f
-        out.route = "closed"
+        tail_all = np.zeros(n_grp)
+        for l in range(L + 1, min(L + 4, T_ab.shape[0])):
+            tail_all += (2 * l + 1) * T_ab[l]
+        # ---- the lab side and the assembly, per acquisition
+        out = [None] * n_acq
+        for c in live:
+            q = per[c]; n_meas = q["n_meas"]; group = q["group"] + g_off[c]     # the measurements' groups on the axis
+            g_sl = slice(g_off[c], g_off[c] + len(q["first"]))
+            Yg = so3.real_sh(L, q["g_hat"], full=True)                             # (n_meas, (L+1)^2): the lab side
+            coeffs = np.zeros((n_meas, n_feat), np.complex128)
+            if field is None:
+                off = 0
+                for l in range(keep_l + 1):
+                    k = so3._n_cols(l, keep_n) // 2
+                    blk = so3.sh_block(l, True)
+                    body_i = bodies[l][group]                                                      # (n_meas, 2k+1)
+                    block = (4 * np.pi * (1j ** l) / np.sqrt(2 * l + 1)) * Yg[:, blk][:, :, None] * body_i[:, None, :]
+                    coeffs[:, off:off + (2 * l + 1) * (2 * k + 1)] = block.reshape(n_meas, -1)
+                    off += (2 * l + 1) * (2 * k + 1)
+            else:
+                for l in l_used:
+                    bl = so3.sh_block(l, True)
+                    for lp in range(L_f + 1):
+                        blp = so3.sh_block(lp, True)
+                        Ls = [Lc for Lc in range(abs(l - lp), min(l + lp, keep_l) + 1)]
+                        if not Ls:
+                            continue
+                        # lab: Lam[i, (m, n')] = Y_lm(g^_i) Y_l'n'(b^)
+                        Lam = (Yg[:, bl][:, :, None] * Yb[blp][None, None, :]).reshape(n_meas, -1)
+                        K = so3.coupling(l, lp)
+                        for Lc in Ls:
+                            kk = so3._n_cols(Lc, keep_n) // 2
+                            lab = Lam @ K[Lc]                                       # (n_meas, 2Lc+1)
+                            body = bodies_c[(l, lp, Lc)][group]                    # (n_meas, 2kk+1)
+                            block = (4 * np.pi * (1j ** l) / np.sqrt(2 * Lc + 1)) * lab[:, :, None] * body[:, None, :]
+                            o = offs[Lc]
+                            coeffs[:, o:o + (2 * Lc + 1) * (2 * kk + 1)] += block.reshape(n_meas, -1)
+            resp = PoseResponse(coeffs, keep_l, keep_n, misfit=tail_all[group], floor=1.0 / np.sqrt(n_w),
+                                phase_amplitude=float(kappa[:, g_sl].max()) if kappa.size else 0.0, n_samples=0)
+            resp.n_bodies = len(q["first"])                                        # the distinct waveforms contracted
+            resp.field_lmax = L_f
+            resp.route = "closed"
+            out[c] = resp
         return out
 
     def _field_quadratic(self, P, waveform):

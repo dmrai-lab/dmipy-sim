@@ -655,31 +655,33 @@ class ReplayPhantom:
         loaded = self._loaded_packs(packs)
         self._check_relaxation(waveforms[0], loaded, forms)
         R_s = _pose_matrix(specimen)
-        run, t_start, rows = current(), time.time(), []
-        for c, waveform in enumerate(waveforms):
-            t_c = time.time()
-            turned = waveform if R_s is None else rotate_waveform(waveform, R_s.T)    # G @ R_s: the acquisition in the specimen frame
-            for i, sub in enumerate(self.substrates):
-                if sub["kind"] == "inert":
-                    continue
-                if sub["kind"] == "analytic":
-                    form = self._form(i, sub, forms)                               # refuses an unknown closed form
+        run, rows = current(), []
+        turned = [wf if R_s is None else rotate_waveform(wf, R_s.T) for wf in waveforms]   # G @ R_s: the acquisition in the specimen frame
+        for i, sub in enumerate(self.substrates):
+            if sub["kind"] == "inert":
+                continue
+            t_i = time.time()
+            if sub["kind"] == "analytic":
+                form = self._form(i, sub, forms)                               # refuses an unknown closed form
+                for c, wf in enumerate(turned):
                     if sub.get("oriented", False) or getattr(form, "oriented", False):   # a form with an axis: expanded over
                         from .replay import analytic_pose_response               # SO(3) like a pack, then contracted
-                        pose[(i, c)] = analytic_pose_response(form, turned, keep)
+                        pose[(i, c)] = analytic_pose_response(form, wf, keep)
                     else:
-                        analytic[(i, c)] = form.response(turned)
-                    continue
-                pose[(i, c)] = resp = loaded[i].pose_response(waveform, tissue=Tissue.from_meta(sub.get("tissue")),
-                                                              scanner=scanner, pose=R_s, keep=keep, cache=cache)
+                        analytic[(i, c)] = form.response(wf)
+                continue
+            # every class of this pack in one pass over its walkers (#449)
+            resps = loaded[i].pose_responses(waveforms, tissue=Tissue.from_meta(sub.get("tissue")),
+                                             scanner=scanner, pose=R_s, keep=keep, cache=cache)
+            secs = time.time() - t_i
+            for c, resp in enumerate(resps):
+                pose[(i, c)] = resp
                 rows.append(dict(cls=c, substrate=i, route=resp.route, lmax=resp.lmax, nmax=resp.nmax,
-                                 field_lmax=int(resp.field_lmax), n_bodies=resp.n_bodies, seconds=time.time() - t_c))
+                                 field_lmax=int(resp.field_lmax), n_bodies=resp.n_bodies, seconds=secs / len(resps)))
             if len(waveforms) > 1:                                                # the classes of a machine pass
-                per = (time.time() - t_start) / (c + 1)
-                log.info("phantom.replay: class %d/%d in %.0f s (%.0f s/class, ETA %.0f min)", c + 1, len(waveforms),
-                         time.time() - t_c, per, per * (len(waveforms) - c - 1) / 60.0)
+                log.info("phantom.replay: substrate %d, %d classes in %.0f s (%.1f s/class)", i, len(waveforms), secs, secs / len(waveforms))
             if run is not None:
-                run.progress(c + 1, len(waveforms), unit="classes")
+                run.progress(i + 1, len(self.substrates), unit="substrates")
         if not pose and not analytic:
             raise ValueError("the phantom cites no signal-bearing substrate")
         if report is not None:

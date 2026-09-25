@@ -38,7 +38,7 @@ def test_the_cache_is_hit_only_by_the_same_expansion(pack, tmp_path, monkeypatch
     files = sorted(cache.glob("*.npz"))
     assert len(files) == 1 and first.route == "closed"
     # a hit: the computation is not run again and the numbers are the stored ones
-    monkeypatch.setattr(pack, "_pose_coeffs_closed", lambda *a, **k: (_ for _ in ()).throw(AssertionError("recomputed")))
+    monkeypatch.setattr(pack, "_pose_coeffs_closed_many", lambda *a, **k: (_ for _ in ()).throw(AssertionError("recomputed")))
     second = pack.pose_response(seq, keep=(8, 0), cache=cache)
     np.testing.assert_array_equal(second.coeffs, first.coeffs)
     assert (second.lmax, second.nmax, second.n_bodies, second.route) == (first.lmax, first.nmax, first.n_bodies, first.route)
