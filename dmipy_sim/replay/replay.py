@@ -1585,6 +1585,9 @@ class ReplayPack:
             # walkers per group, then coupled on both indices into the total order L_tot
             b_lab = np.asarray(P["b0_dir"], np.float64); b_lab = b_lab / np.linalg.norm(b_lab)
             Yb = so3.real_sh(L_f, b_lab[None, :], full=True)[0]                 # ((L_f+1)^2,): the field direction, lab side
+            # the field factor as two contiguous real blocks: a .real view of a complex array strides 16 bytes on
+            # its last axis, which BLAS does not take, and numpy's fallback loop is twenty times slower per product
+            F_re, F_im = np.ascontiguousarray(F_sh.real), np.ascontiguousarray(F_sh.imag)
             n_cols = (L + 1) ** 2
             Ym = np.empty((n_w, n_grp, n_cols))                                # the moment harmonics, all groups
             step = max(1, int(2.5e8 / (8 * n_w * n_cols)))
@@ -1605,7 +1608,7 @@ class ReplayPack:
                 # body for every field order at once: B_all[(g, n), (l', m')] = sum_w w j_l(kappa) Y_ln(m^) a_l'm'(w),
                 # one matrix product over the walkers per gradient order
                 X = ((w[:, None] * J[l])[:, :, None] * Ym[:, :, bl]).reshape(n_w, -1)       # (n_w, n_grp (2l+1))
-                B_all = (X.T @ F_sh.real + 1j * (X.T @ F_sh.imag)).reshape(n_grp, 2 * l + 1, -1)   # (n_grp, 2l+1, (L_f+1)^2); real products
+                B_all = (X.T @ F_re + 1j * (X.T @ F_im)).reshape(n_grp, 2 * l + 1, -1)   # (n_grp, 2l+1, (L_f+1)^2); real products
                 for lp in range(L_f + 1):
                     blp = so3.sh_block(lp, True)
                     Ls = [Lc for Lc in range(abs(l - lp), min(l + lp, keep_l) + 1)]
