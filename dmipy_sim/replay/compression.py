@@ -301,15 +301,15 @@ def encode_bridge_dst(X, K, container=None, *, device="auto"):
     v = np.asarray(X[:, -1, :], np.float64) - a
     tau = np.arange(Nt) / (Nt - 1.0)
     K = int(min(K, Nt - 2))
-    if resolve_device(device) == "numpy":
-        u = np.asarray(X, np.float64) - (a[:, None, :] + v[:, None, :] * tau[None, :, None])
-        B = dst_bands(u[:, 1:-1, :], K, device="numpy")
-    else:                                                            # the residual per chunk, the bands on the device
-        B = np.empty((Nw, K, 3), np.float64); rows = max(1, int((1 << 30) // max(Nt * 3 * 4, 1)))
-        for i in range(0, Nw, rows):
-            sl = slice(i, i + rows)
+    dev = "numpy" if resolve_device(device) == "numpy" else "jax"
+    B = np.empty((Nw, K, 3), np.float64); rows = max(1, int((1 << 30) // max(Nt * 3 * 4, 1)))
+    for i in range(0, Nw, rows):                                     # the residual per walker chunk, never the whole walk again
+        sl = slice(i, i + rows)
+        if dev == "numpy":
+            u = np.asarray(X[sl], np.float64) - (a[sl, None, :] + v[sl, None, :] * tau[None, :, None])
+        else:
             u = np.asarray(X[sl], np.float32) - np.asarray(a[sl, None, :] + v[sl, None, :] * tau[None, :, None], np.float32)
-            B[sl] = dst_bands(u[:, 1:-1, :], K, device="jax")
+        B[sl] = dst_bands(u[:, 1:-1, :], K, device=dev)
     C = np.concatenate([a[:, None, :], v[:, None, :], B], axis=1)   # (Nw, K+2, 3)
     meta = {"method": "bridge_dst", "K": K, "n_t": int(Nt)}
     if container is None:                                            # the float32 container, one tensor per axis
@@ -320,16 +320,28 @@ def encode_bridge_dst(X, K, container=None, *, device="auto"):
     return arrays, meta, int(sum(int(np.asarray(v).nbytes) for v in arrays.values()))
 
 
-def decode_bridge_dst(arrays, meta):
-    """Reconstruct positions from endpoints plus sine bands."""
-    Nt = int(meta["n_t"])
-    C = read_position_coeffs(arrays, dtype=np.float64)
+def _bridge_positions(C, Nt):
+    """Positions ``(n, Nt, 3)`` of the bridge coefficients ``C`` ``(n, K+2, 3)``."""
     a, v, B = C[:, 0, :], C[:, 1, :], C[:, 2:, :]
     tau = np.arange(Nt) / (Nt - 1.0)
     u = np.zeros((C.shape[0], Nt, 3))
     if B.shape[1]:
         u[:, 1:-1, :] = _idst(B, axis=1, type=1, norm="ortho", n=Nt - 2)
     return a[:, None, :] + v[:, None, :] * tau[None, :, None] + u
+
+
+def decode_bridge_dst(arrays, meta, walkers=None):
+    """Reconstruct positions from endpoints plus sine bands, of every walker or of the slice ``walkers``."""
+    C = read_position_coeffs(arrays, dtype=np.float64)
+    return _bridge_positions(C if walkers is None else C[walkers], int(meta["n_t"]))
+
+
+def decoder(arrays, meta):
+    """``(lo, hi) -> positions (hi - lo, n_t, 3)`` of walkers ``lo:hi``, the coefficients read once: what the
+    certificate reads instead of a decoded copy of the whole walk."""
+    require_position_method(meta["method"])
+    C = read_position_coeffs(arrays, dtype=np.float64); Nt = int(meta["n_t"])
+    return lambda lo, hi: _bridge_positions(C[lo:hi], Nt)
 
 
 def bridge_moment_rows(G, n_t):
@@ -725,10 +737,10 @@ def read_position_coeffs(arrays, axes=None, dtype=np.float64):
         f"where silent errors live.")
 
 
-def decode(arrays, meta, n_walkers=None, seed=0):
-    """Reconstruct positions (n_walkers, n_t, 3) from a pack's stored arrays."""
+def decode(arrays, meta, n_walkers=None, seed=0, walkers=None):
+    """Reconstruct positions (n_walkers, n_t, 3) from a pack's stored arrays, or those of the slice ``walkers``."""
     require_position_method(meta["method"])
-    return decode_bridge_dst(arrays, meta)
+    return decode_bridge_dst(arrays, meta, walkers)
 
 
 def rank_of(method=POSITION_METHOD, n_t=None):
@@ -934,16 +946,19 @@ def _walker_phases(pos, dt, G):
     return (GAMMA * dt) * np.einsum("mtd,ntd->nm", effective_gradient(G, dt, pos.shape[1], dt), pos)
 
 
-def _phases_by_chunk(pos, dt, G, chunk_bytes=2 << 30):
+def _phases_by_chunk(pos, dt, G, chunk_bytes=2 << 30, shape=None):
     """:func:`_walker_phases` of every walker, ``(N_w, n_meas)`` float64, taken in walker chunks so that no more
     than ``chunk_bytes`` of the positions is held in float64 at once: the phases are 40 MB where the trajectory
-    is 12 GB, and the certificate needs only the phases."""
-    pos = np.asarray(pos)
-    n_w, n_t = pos.shape[0], pos.shape[1]
+    is 12 GB, and the certificate needs only the phases. ``pos`` is the positions ``(N_w, n_t, 3)`` or a callable
+    ``(lo, hi) -> positions of walkers lo:hi`` (a :func:`decoder`), whose ``shape`` ``(N_w, n_t)`` is then given."""
+    if callable(pos):
+        n_w, n_t = shape; chunk = pos
+    else:
+        pos = np.asarray(pos); n_w, n_t = pos.shape[0], pos.shape[1]; chunk = lambda lo, hi: pos[lo:hi]
     step = max(1, int(chunk_bytes // (8 * 3 * n_t)))
     out = np.empty((n_w, G.shape[0]), np.float64)
     for lo in range(0, n_w, step):
-        out[lo:lo + step] = _walker_phases(pos[lo:lo + step], dt, G)
+        out[lo:lo + step] = _walker_phases(chunk(lo, min(lo + step, n_w)), dt, G)
     return out
 
 
@@ -965,15 +980,17 @@ def measure_fidelity(traj, dt_traj, decoded_pos, env=None, w=None, logw=None, ch
     """Max complex replay error per acquisition family, decoded vs raw positions, against
     a split-half Monte-Carlo floor. `logw` (optional) applies the same separable weight to
     both so surface/relaxation packs are scored with their physics on. The positions are read
-    in walker chunks of at most ``chunk_bytes`` in float64; when ``decoded_pos`` is ``traj``
-    itself (a raw walk's floor) the phases are read once."""
+    in walker chunks of at most ``chunk_bytes`` in float64; ``decoded_pos`` may be a
+    :func:`decoder` so that the decoded walk is never held whole; when it is ``traj`` itself
+    (a raw walk's floor) the phases are read once."""
     env = env or default_envelope()
     r = np.asarray(traj); dt = float(dt_traj)                                 # the walk as stored; float64 per chunk below
     G, meta = acquisition_battery(r.shape[1], dt, env)
     phi_raw = _phases_by_chunk(r, dt, G, chunk_bytes)                          # (N_w, n_meas): all the certificate reads
     S_raw = _mean_signal(phi_raw, w, logw)
     S_dec = S_raw if decoded_pos is traj else _mean_signal(
-        _phases_by_chunk(np.asarray(decoded_pos), dt, G, chunk_bytes), w, logw)
+        _phases_by_chunk(decoded_pos if callable(decoded_pos) else np.asarray(decoded_pos), dt, G, chunk_bytes,
+                         shape=r.shape[:2]), w, logw)
     idx = np.random.default_rng(0).permutation(r.shape[0]); h = r.shape[0] // 2
     ia, ib = idx[:h], idx[h:]
     la = None if logw is None else np.asarray(logw)[ia]

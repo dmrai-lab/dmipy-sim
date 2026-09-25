@@ -51,3 +51,34 @@ def test_raw_floor_reads_the_walk_once_and_in_place():
     assert peak < traj.nbytes, f"peak {peak / 1e6:.1f} MB for a {traj.nbytes / 1e6:.1f} MB float32 walk"
     ref = measure_fidelity(traj, dt, traj.copy())
     assert np.isclose(bank._measure_floor(m, None), ref["floor_max"], rtol=1e-12, atol=1e-15)
+
+
+def test_the_decoder_reconstructs_the_same_positions_per_walker_range():
+    from dmipy_sim.replay.compression import decode, decoder, encode
+    traj, dt = _walk(n_w=500, n_t=120)
+    arrays, meta, _ = encode(traj, "bridge_dst", 16, device="numpy")
+    whole = decode(arrays, meta)
+    dec = decoder(arrays, meta)
+    parts = np.concatenate([dec(lo, min(lo + 128, 500)) for lo in range(0, 500, 128)])
+    assert np.array_equal(parts, whole)
+    assert np.array_equal(decode(arrays, meta, walkers=slice(37, 91)), whole[37:91])
+
+
+def test_the_certificate_of_a_decoder_matches_the_decoded_walk():
+    from dmipy_sim.replay.compression import decode, decoder, encode
+    traj, dt = _walk(n_w=600, n_t=120)
+    arrays, meta, _ = encode(traj, "bridge_dst", 16, device="numpy")
+    ref = measure_fidelity(traj, dt, decode(arrays, meta))
+    got = measure_fidelity(traj, dt, decoder(arrays, meta), chunk_bytes=traj.nbytes // 7)
+    assert np.isclose(ref["err_max"], got["err_max"], rtol=1e-12, atol=1e-15)
+    assert np.isclose(ref["floor_max"], got["floor_max"], rtol=1e-12, atol=1e-15)
+
+
+def test_a_pack_built_from_a_float32_walk_is_the_pack_of_its_float64_copy():
+    """The codec reads the walk as stored: encoding the float32 walk and its float64 copy gives the same tensors."""
+    from dmipy_sim.replay.compression import encode
+    traj, dt = _walk(n_w=300, n_t=90)
+    a32, _, _ = encode(traj, "bridge_dst", 12, device="numpy")
+    a64, _, _ = encode(traj.astype(np.float64), "bridge_dst", 12, device="numpy")
+    for k in a32:
+        assert np.array_equal(np.asarray(a32[k]), np.asarray(a64[k])), k

@@ -1524,7 +1524,7 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto"
                 raise ValueError("a certifying pack carries a measured fidelity; a pack that inherited one cannot certify another")
         elif fidelity_from is not None:
             raise ValueError("fidelity_from= goes with fidelity='inherited'")
-        X = np.asarray(m["traj"], np.float64) if fidelity == "measured" else np.asarray(m["traj"])
+        X = np.asarray(m["traj"])                    # as stored: the codec and the certificate read it per walker chunk
         dt = float(m["dt_traj"])
         wp_method = _cx.is_walker_preserving(method)
         if K is None and temporal_bandwidth_hz is not None:
@@ -1554,9 +1554,8 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto"
             pos_arrays, pos_meta, _ = _cx.encode(X, method, K, container=_container(position_container), device=device)
         else:
             pos_arrays, pos_meta, _ = _cx.encode(X, method, K, container=_container(position_container), device=device)
-            pos = _cx.decode(pos_arrays, pos_meta, n_walkers=(X.shape[0] if wp_method else None))
             run.phase("certificate positions")
-            fid = _cx.measure_fidelity(X, dt, pos, env)
+            fid = _cx.measure_fidelity(X, dt, _cx.decoder(pos_arrays, pos_meta), env)   # decoded per chunk, never whole
         if cert is None:
             fid["certified"] = "measured"
         if sigma_star is not None:                       # adaptive floor-target policy (build_to_floor)
