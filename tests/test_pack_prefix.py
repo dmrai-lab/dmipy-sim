@@ -126,3 +126,18 @@ def test_a_short_acquisition_dephases_in_the_field_to_its_own_echo(tmp_path):
     assert abs(S_p - S_hand) < 5e-3
     phi_full = GAMMA * parent.dt * dB.sum(1)                                       # what the old gate integrated
     assert abs(S_p - np.exp(1j * phi_full).mean()) > 5e-2 or abs(S_hand - np.exp(1j * phi_full).mean()) < 5e-3
+
+
+def test_a_prefix_is_one_window_whatever_the_parents_save_grid(tmp_path):
+    """A parent declared as one window of its own duration, on a save grid that does not divide the storage rule's
+    0.1 s, prefixed past 0.1 s: the prefix is one window of its own duration, not a refusal of the default windows
+    (found by the paper's Swoop train on the 1 s grey-matter pack)."""
+    g = d.Cylinder(radius=3e-6, orientation=(0.0, 0.0, 1.0))
+    T, n_t = 0.3, 1302                                                  # dt = 0.3 / 1301: 0.1 s is not a whole number of saves
+    walk = d.simulate_trajectories(200, 2e-9, g, T, T / (n_t - 1), seed=3, require_gpu=False)
+    p = tmp_path / "parent.rpk"
+    build_replay_pack(walk, id="test/one-window", license="x", citation="x", K=16, out_path=str(p), segment_T=T)
+    parent = read_rpk(str(p))
+    assert parent.n_segments == 1
+    pre = parent.prefix(0.15, out_path=str(tmp_path / "prefix.rpk"))
+    assert pre.n_segments == 1 and abs((pre.n_t - 1) * pre.dt - 0.15) < pre.dt

@@ -1349,7 +1349,8 @@ class ReplayPack:
                                   note="re-encoded from the parent's decoded prefix; the band starts at the parent's bands "
                                        "per second and doubles until the certificate passes")
             pk = build_replay_pack(m, id=id or f"{self.meta.get('id')}/prefix-{T_cut * 1e3:.0f}ms", license=self.license,
-                                   citation=self.citation, K=K_new, tol=tol, field=False, blt_temporal_K=blt_K, provenance=prov)
+                                   citation=self.citation, K=K_new, tol=tol, field=False, blt_temporal_K=blt_K, provenance=prov,
+                                   segment_T=T_cut)                          # a prefix is one window of its own duration
             fid = pk.meta.get("fidelity", {})
             if K is not None or fid.get("within_2x_floor", True) or K_new >= int(self.K):
                 break
