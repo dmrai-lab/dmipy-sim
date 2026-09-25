@@ -961,16 +961,19 @@ def _replay_complex_np(pos, dt, G, *, w=None, logw=None):
     return _mean_signal(_phases_by_chunk(pos, dt, G), w, logw)
 
 
-def measure_fidelity(traj, dt_traj, decoded_pos, env=None, w=None, logw=None):
+def measure_fidelity(traj, dt_traj, decoded_pos, env=None, w=None, logw=None, chunk_bytes=2 << 30):
     """Max complex replay error per acquisition family, decoded vs raw positions, against
     a split-half Monte-Carlo floor. `logw` (optional) applies the same separable weight to
-    both so surface/relaxation packs are scored with their physics on."""
+    both so surface/relaxation packs are scored with their physics on. The positions are read
+    in walker chunks of at most ``chunk_bytes`` in float64; when ``decoded_pos`` is ``traj``
+    itself (a raw walk's floor) the phases are read once."""
     env = env or default_envelope()
     r = np.asarray(traj); dt = float(dt_traj)                                 # the walk as stored; float64 per chunk below
     G, meta = acquisition_battery(r.shape[1], dt, env)
-    phi_raw = _phases_by_chunk(r, dt, G)                                       # (N_w, n_meas): all the certificate reads
+    phi_raw = _phases_by_chunk(r, dt, G, chunk_bytes)                          # (N_w, n_meas): all the certificate reads
     S_raw = _mean_signal(phi_raw, w, logw)
-    S_dec = _mean_signal(_phases_by_chunk(np.asarray(decoded_pos), dt, G), w, logw)
+    S_dec = S_raw if decoded_pos is traj else _mean_signal(
+        _phases_by_chunk(np.asarray(decoded_pos), dt, G, chunk_bytes), w, logw)
     idx = np.random.default_rng(0).permutation(r.shape[0]); h = r.shape[0] // 2
     ia, ib = idx[:h], idx[h:]
     la = None if logw is None else np.asarray(logw)[ia]

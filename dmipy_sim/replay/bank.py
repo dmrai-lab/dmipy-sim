@@ -210,11 +210,13 @@ def _envelope_summary(env):
                 note="temporal band set by max OGSE period / min delta")
 
 
-def _measure_floor(m, env):
+def _measure_floor(m, env, chunk_bytes=2 << 30):
     """Split-half Monte-Carlo floor of the RAW walk over the envelope (decoded == raw ->
-    fidelity err is 0, so ``floor_max`` is the substrate's own finite-N statistical noise)."""
-    traj = np.asarray(m["traj"], np.float64)
-    return float(_cx.measure_fidelity(traj, float(m["dt_traj"]), traj, env)["floor_max"])
+    fidelity err is 0, so ``floor_max`` is the substrate's own finite-N statistical noise).
+    The walk is read as stored, in float64 chunks of at most ``chunk_bytes``."""
+    traj = np.asarray(m["traj"])
+    return float(_cx.measure_fidelity(traj, float(m["dt_traj"]), traj, env,
+                                      chunk_bytes=chunk_bytes)["floor_max"])
 
 
 def _surface_fidelity(m, arrays, chan_meta, env):
