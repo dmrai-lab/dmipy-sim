@@ -1507,7 +1507,7 @@ class ReplayPack:
         from . import so3
         from .compression import read_position_coeffs
         from ._replay_kernel import effective_gradient
-        from .pose_device import field_products
+        from .pose_device import field_products, real_sh as _real_sh, spherical_jn_all as _jn_all
         n_acq = len(Ps)
         P0 = Ps[0]
         dt, n_t, ew, norm = P0["dt"], P0["n_t"], P0["pathway"] * P0["ew"], P0["norm"]
@@ -1570,10 +1570,10 @@ class ReplayPack:
         k_max = float(kappa.max()) if kappa.size else 0.0
         _ph("bessel", n_grp=int(n_grp), phase_amplitude=k_max)
         L = int(np.ceil(k_max)) + 2
-        J_all = _spherical_jn_all(min(l_cap, L + 12), kappa)                  # (L_hi+1, n_w, n_grp)
+        J_all = _jn_all(min(l_cap, L + 12), kappa)                             # (L_hi+1, n_w, n_grp), on the device it can use
         while L < l_cap:
             if L + 1 >= J_all.shape[0]:
-                J_all = _spherical_jn_all(min(l_cap, J_all.shape[0] + 12), kappa)
+                J_all = _jn_all(min(l_cap, J_all.shape[0] + 12), kappa)
             tail = (2 * (L + 1) + 1) * (np.abs(w)[:, None] * np.abs(J_all[L + 1])).sum(0).max()
             if tail < tol:
                 break
@@ -1610,7 +1610,7 @@ class ReplayPack:
                     nc = sl.stop - sl.start
                     if run is not None:
                         run.progress(lo, n_grp, unit="groups")
-                    Y = so3.real_sh(keep_l, m_hat[:, sl, :].reshape(-1, 3), full=True).reshape(n_w, nc, n_cols)
+                    Y = _real_sh(keep_l, m_hat[:, sl, :].reshape(-1, 3)).reshape(n_w, nc, n_cols)
                     for l in range(keep_l + 1):
                         k = so3._n_cols(l, keep_n) // 2
                         blk = so3.sh_block(l, True)
@@ -1637,7 +1637,7 @@ class ReplayPack:
                 sl = slice(lo, min(lo + step, n_grp)); nc = sl.stop - sl.start
                 if run is not None:
                     run.progress(lo, n_grp, unit="groups")
-                Ym = so3.real_sh(L, m_hat[:, sl, :].reshape(-1, 3), full=True).reshape(n_w, nc, n_cols)
+                Ym = _real_sh(L, m_hat[:, sl, :].reshape(-1, 3)).reshape(n_w, nc, n_cols)
                 X_c = np.concatenate([((w[:, None] * J[l][:, sl])[:, :, None] * Ym[:, :, so3.sh_block(l, True)]).reshape(n_w, -1)
                                       for l in l_used], axis=1)                                   # (n_w, nc sum(2l+1))
                 B_c = field_products(X_c, F_re, F_im)                                              # (sum nc (2l+1), (L_f+1)^2)

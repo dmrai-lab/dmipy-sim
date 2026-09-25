@@ -169,3 +169,111 @@ def pose_samples(R, Q, ew, norm, *, field=None, device="auto", chunk_bytes=1 << 
             re, im = kernel(jnp.asarray(R[sl], jnp.float32), d_Q, d_ew, d_b, d_s, d_P, d_A, jnp.float32(ki), jnp.float32(ka))
             E[sl] += (np.asarray(re, np.float64) + 1j * np.asarray(im, np.float64)) / norm
     return E
+
+
+@functools.lru_cache(maxsize=16)
+def _real_sh_kernel(L):
+    """``dirs (n, 3) -> (n, (L+1)^2)`` float32: :func:`so3.real_sh` (full layout) as one jitted pass of the same
+    three-term recurrences on the fully normalised associated Legendre functions."""
+    import jax
+    import jax.numpy as jnp
+
+    @jax.jit
+    def kernel(dirs):
+        x = jnp.clip(dirs[:, 2], -1.0, 1.0)
+        phi = jnp.arctan2(dirs[:, 1], dirs[:, 0])
+        s = jnp.sqrt(jnp.clip(1.0 - x * x, 0.0, 1.0))
+        P = {}
+        P[(0, 0)] = jnp.full(dirs.shape[0], 1.0 / np.sqrt(4.0 * np.pi), jnp.float32)
+        for m in range(1, L + 1):
+            P[(m, m)] = -np.float32(np.sqrt((2.0 * m + 1.0) / (2.0 * m))) * s * P[(m - 1, m - 1)]
+        for m in range(0, L):
+            P[(m + 1, m)] = np.float32(np.sqrt(2.0 * m + 3.0)) * x * P[(m, m)]
+        for m in range(0, L + 1):
+            for l in range(m + 2, L + 1):
+                a = np.float32(np.sqrt((4.0 * l * l - 1.0) / (l * l - m * m)))
+                b = np.float32(np.sqrt(((l - 1.0) ** 2 - m * m) / (4.0 * (l - 1.0) ** 2 - 1.0)))
+                P[(l, m)] = a * x * P[(l - 1, m)] - a * b * P[(l - 2, m)]
+        cols = []
+        r2 = np.float32(np.sqrt(2.0))
+        for l in range(L + 1):
+            block = [None] * (2 * l + 1)
+            block[l] = P[(l, 0)]
+            for m in range(1, l + 1):
+                cm, sm = jnp.cos(m * phi), jnp.sin(m * phi)
+                block[l + m] = r2 * P[(l, m)] * cm
+                block[l - m] = r2 * P[(l, m)] * sm
+            cols.extend(block)
+        return jnp.stack(cols, axis=1)
+
+    return kernel
+
+
+def real_sh(L, dirs, *, device="auto", chunk_bytes=1 << 30):
+    """Orthonormal real spherical harmonics ``(n, (L+1)^2)`` of unit directions ``dirs`` ``(n, 3)`` in the full layout of
+    :func:`so3.real_sh`: on the device in chunks of directions, float64 on the host; numpy's when there is none."""
+    from . import so3
+    dirs = np.asarray(dirs, np.float64).reshape(-1, 3)
+    if resolve_device(device) == "numpy":
+        return so3.real_sh(int(L), dirs, full=True)
+    import jax.numpy as jnp
+    kernel = _real_sh_kernel(int(L))
+    n_cols = (int(L) + 1) ** 2
+    out = np.empty((dirs.shape[0], n_cols), np.float64)
+    step = max(1, int(chunk_bytes // (4 * (n_cols + 8))))
+    for lo in range(0, dirs.shape[0], step):
+        sl = slice(lo, min(lo + step, dirs.shape[0]))
+        out[sl] = np.asarray(kernel(jnp.asarray(dirs[sl], jnp.float32)), np.float64)
+    return out
+
+
+@functools.lru_cache(maxsize=16)
+def _spherical_jn_kernel(L, N):
+    """``x (n,) -> (L+1, n)`` float32: ``j_0..j_L(x)`` by the downward (Miller) recurrence from order ``N``, normalised
+    to ``j_0 = sin x / x``, as one jitted scan with the same rescaling against overflow as the host's."""
+    import jax
+    import jax.numpy as jnp
+
+    @jax.jit
+    def kernel(x):
+        small = jnp.abs(x) < 1e-6
+        xs = jnp.where(small, 1.0, x)
+        hi, lo = jnp.zeros_like(xs), jnp.full_like(xs, 1e-30)
+
+        def body(carry, l):
+            hi, lo, out = carry
+            cur = (2 * l + 3) / xs * lo - hi
+            big = jnp.abs(cur) > 1e18
+            scale = jnp.where(big, 1e-18, 1.0)
+            out = out * scale[None, :]
+            out = jnp.where((jnp.arange(out.shape[0]) == l)[:, None], cur[None, :] * scale[None, :], out)
+            return (lo * scale, cur * scale, out), None
+
+        out0 = jnp.zeros((N + 1, x.shape[0]), jnp.float32)
+        (hi, lo, out), _ = jax.lax.scan(body, (hi, lo, out0), jnp.arange(N, -1, -1))
+        j0 = jnp.where(small, 1.0, jnp.sin(xs) / xs)
+        scale = j0 / jnp.where(out[0] == 0, 1.0, out[0])
+        out = out[:L + 1] * scale[None, :]
+        out = jnp.where(small[None, :], jnp.zeros_like(out).at[0].set(1.0), out)
+        return out
+
+    return kernel
+
+
+def spherical_jn_all(L, x, *, device="auto", extra=24, chunk_bytes=1 << 30):
+    """``j_0(x) .. j_L(x)`` for every entry of ``x``, ``(L+1,) + x.shape`` float64: :func:`replay._spherical_jn_all`
+    on the device in chunks, numpy's when there is none."""
+    from .replay import _spherical_jn_all
+    x = np.asarray(x, np.float64)
+    if resolve_device(device) == "numpy":
+        return _spherical_jn_all(L, x, extra=extra)
+    import jax.numpy as jnp
+    L = int(L); N = L + int(extra) + int(np.ceil(np.abs(x).max())) if x.size else L + int(extra)
+    kernel = _spherical_jn_kernel(L, int(N))
+    flat = x.reshape(-1)
+    out = np.empty((L + 1, flat.size), np.float64)
+    step = max(1, int(chunk_bytes // (4 * (N + 4))))
+    for lo in range(0, flat.size, step):
+        sl = slice(lo, min(lo + step, flat.size))
+        out[:, sl] = np.asarray(kernel(jnp.asarray(flat[sl], jnp.float32)), np.float64)
+    return out.reshape((L + 1,) + x.shape)

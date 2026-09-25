@@ -71,3 +71,28 @@ def test_pose_samples_numpy_route_is_chunk_independent():
     whole = pose_samples(R, Q, ew, ew.sum(), field=field, device="numpy")
     parts = pose_samples(R, Q, ew, ew.sum(), field=field, device="numpy", chunk_bytes=1 << 14)
     assert np.abs(whole - parts).max() <= 1e-13
+
+
+def test_the_harmonics_on_the_device_are_the_numpy_ones_to_float32_rounding():
+    from dmipy_sim.replay import so3
+    from dmipy_sim.replay.pose_device import real_sh
+    rng = np.random.default_rng(4)
+    d = rng.normal(size=(3000, 3)); d /= np.linalg.norm(d, axis=1, keepdims=True)
+    for L in (0, 3, 15, 28):
+        ref = so3.real_sh(L, d, full=True)
+        dev = real_sh(L, d, device="jax", chunk_bytes=1 << 16)
+        assert dev.shape == ref.shape
+        assert np.abs(dev - ref).max() <= 3e-5 * np.abs(ref).max(), (L, np.abs(dev - ref).max())
+
+
+def test_the_bessel_values_on_the_device_are_the_numpy_ones_to_float32_rounding():
+    from dmipy_sim.replay.replay import _spherical_jn_all
+    from dmipy_sim.replay.pose_device import spherical_jn_all
+    rng = np.random.default_rng(5)
+    x = rng.uniform(0.0, 30.0, size=(700, 3)); x[0, 0] = 0.0; x[1, 1] = 1e-9
+    for L in (2, 12, 30):
+        ref = _spherical_jn_all(L, x)
+        dev = spherical_jn_all(L, x, device="jax", chunk_bytes=1 << 14)
+        assert dev.shape == ref.shape
+        # a float32 recurrence over up to 60 orders at 30 rad: 1e-5 absolute, three orders under any response floor
+        assert np.abs(dev - ref).max() <= 2e-5, (L, np.abs(dev - ref).max())
