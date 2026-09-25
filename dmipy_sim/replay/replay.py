@@ -1601,14 +1601,19 @@ class ReplayPack:
             off = 0
             for Lc in range(keep_l + 1):
                 offs[Lc] = off; off += (2 * Lc + 1) * (2 * (so3._n_cols(Lc, keep_n) // 2) + 1)
-            for l in range(L + 1):
+            # the bodies of every gradient order against every field order in ONE product over the walkers:
+            # B[(l, g, n), (l', m')] = sum_w w j_l(kappa) Y_ln(m^) a_l'm'(w), the orders stacked along the rows
+            from .pose_device import field_products
+            l_used = [l for l in range(L + 1) if l <= keep_l + L_f]
+            X_all = np.concatenate([((w[:, None] * J[l])[:, :, None] * Ym[:, :, so3.sh_block(l, True)]).reshape(n_w, -1)
+                                    for l in l_used], axis=1)                                        # (n_w, n_grp sum(2l+1))
+            B_stack = field_products(X_all, F_re, F_im)                                            # (sum n_grp (2l+1), (L_f+1)^2)
+            del X_all
+            row = 0
+            for l in l_used:
                 bl = so3.sh_block(l, True)
-                if l > keep_l + L_f:
-                    break
-                # body for every field order at once: B_all[(g, n), (l', m')] = sum_w w j_l(kappa) Y_ln(m^) a_l'm'(w),
-                # one matrix product over the walkers per gradient order
-                X = ((w[:, None] * J[l])[:, :, None] * Ym[:, :, bl]).reshape(n_w, -1)       # (n_w, n_grp (2l+1))
-                B_all = (X.T @ F_re + 1j * (X.T @ F_im)).reshape(n_grp, 2 * l + 1, -1)   # (n_grp, 2l+1, (L_f+1)^2); real products
+                B_all = B_stack[row:row + n_grp * (2 * l + 1)].reshape(n_grp, 2 * l + 1, -1)     # (n_grp, 2l+1, (L_f+1)^2)
+                row += n_grp * (2 * l + 1)
                 for lp in range(L_f + 1):
                     blp = so3.sh_block(lp, True)
                     Ls = [Lc for Lc in range(abs(l - lp), min(l + lp, keep_l) + 1)]
@@ -1692,8 +1697,9 @@ class ReplayPack:
         cache[key] = out
         return out
 
-    def _field_harmonics_of(self, a, A, tol=1e-8, l_cap=64):
-        """:meth:`_field_harmonics` computed: the quadrature and its band."""
+    def _field_harmonics_of(self, a, A, tol=1e-8, l_cap=64, device="auto"):
+        """:meth:`_field_harmonics` computed: the quadrature and its band, the walkers' factor on the device
+        (:func:`pose_device.field_factor`) or in numpy when there is none."""
         from . import so3
         amp = float(np.abs(np.linalg.eigvalsh(A)).max()) if A.size else 0.0
         Lp = int(np.ceil(2.0 * amp)) + 4
@@ -1703,21 +1709,11 @@ class ReplayPack:
                 f"order ~{Lp}, beyond the cap of {l_cap}. That is a real cost, not a setting: the expansion is "
                 f"worth building to share one walk over many poses, and at this sharpness a direct replay per pose "
                 f"(orientation=R) is the exact route for it.")
-        n_w = a.shape[0]
-        run = current()
+        from .pose_device import field_factor
         while True:
             dirs, wq = so3.sphere_quadrature(Lp + 2, 2 * Lp + 2)
             Y = so3.real_sh(Lp, dirs, full=True)                               # (n_q, (Lp+1)^2)
-            Yw = Y * wq[:, None]
-            F = np.empty((n_w, Y.shape[1]), np.complex128)
-            step = max(1, int(2.5e8 / (16 * dirs.shape[0])))                   # walkers per ~256 MB of phase
-            for lo in range(0, n_w, step):
-                sl = slice(lo, min(lo + step, n_w))
-                if run is not None:
-                    run.progress(lo, n_w, unit="walkers")
-                q = np.einsum("qa,wab,qb->wq", dirs, A[sl], dirs)              # (n_c, n_q)
-                f = np.exp(1j * (a[sl, None] + q))
-                F[sl] = (f.real @ Yw) + 1j * (f.imag @ Yw)                     # real products
+            F = field_factor(a, A, dirs, Y * wq[:, None], device=device)       # (n_w, (Lp+1)^2), on the device it can use
             top = so3.sh_block(Lp, True)
             if (np.abs(F[:, top]) ** 2).sum(1).max() <= tol * 4.0 * np.pi or Lp + 4 > l_cap:
                 return F, Lp
