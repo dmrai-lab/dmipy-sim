@@ -60,7 +60,7 @@ def _master_arrays(src) -> dict:
     keys = src.files if hasattr(src, "files") else src.keys()
     m = {k: src[k] for k in keys}
     g = lambda k, d=None: (np.asarray(m[k]) if k in m and m[k] is not None else d)
-    traj = np.asarray(m["traj"])
+    traj = m["traj"] if _cx.is_lazy(m["traj"]) else np.asarray(m["traj"])
     scal = lambda k: (float(np.asarray(m[k])) if m.get(k) is not None else None)   # idempotent re-normalise
     return dict(traj=traj, dt_traj=float(np.asarray(m["dt_traj"])),
                 T_max=float(np.asarray(m["T_max"])), comp=g("comp"), comp0=g("comp0"),
@@ -135,7 +135,7 @@ def check_frame_against_walk(traj, F, *, w=None, bundle_axes=None, tol_deg=5.0, 
     small walk of free water is not read as oriented by its noise (113 free walkers gave a ratio of 1.56 on
     one platform's realisation and passed on another's). A walk with two comparable axes is checked against the plane only when
     two or more bundles are declared. Returns the angle (degrees)."""
-    X = np.asarray(traj)                                          # only the two endpoints of each walker are read
+    X = traj if _cx.is_lazy(traj) else np.asarray(traj)           # only the two endpoints of each walker are read
     d = np.asarray(X[:, -1, :], np.float64) - np.asarray(X[:, 0, :], np.float64)
     w = np.ones(d.shape[0]) if w is None else np.asarray(w, np.float64)
     ok = np.isfinite(d).all(1) & np.isfinite(w) & (w > 0)        # a walker with no position at the end says nothing
@@ -214,7 +214,7 @@ def _measure_floor(m, env, chunk_bytes=None):
     """Split-half Monte-Carlo floor of the RAW walk over the envelope (decoded == raw ->
     fidelity err is 0, so ``floor_max`` is the substrate's own finite-N statistical noise).
     The walk is read as stored, in float64 chunks of at most ``chunk_bytes`` (default :data:`compression.CHUNK_BYTES`)."""
-    traj = np.asarray(m["traj"])
+    traj = m["traj"] if _cx.is_lazy(m["traj"]) else np.asarray(m["traj"])
     return float(_cx.measure_fidelity(traj, float(m["dt_traj"]), traj, env,
                                       chunk_bytes=chunk_bytes)["floor_max"])
 
@@ -866,17 +866,24 @@ def susc_path_coeffs(arrays, meta):
     return C, names
 
 
-def susc_path_decode(arrays, meta, *, n_w=None):
+def susc_path_decode(arrays, meta, *, n_w=None, n_cut=None):
     """Reconstruct b_c(t) per walker from the stored coefficients; re-inserts iso_P_zz if implied.
 
     Returns ``(field, names)`` with field ``(n_w, n_ch_full, n_t)`` in the canonical channel order
-    (iso_local, iso_P_xx..yz, [aniso_G_xx..yz]) so the Q(H) contraction indexes it directly.
+    (iso_local, iso_P_xx..yz, [aniso_G_xx..yz]) so the Q(H) contraction indexes it directly. ``n_cut`` asks for
+    the first ``n_cut`` saves only: one product against the inverse DCT-II basis evaluated there, which a prefix
+    reads instead of the whole series (dmrai-lab/dmipy-sim#449 item 3).
     """
     from scipy.fft import idct
     C, names = susc_path_coeffs(arrays, meta)
     if n_w is not None:
         C = C[:int(n_w)]
     n_t = int(meta["n_t"])
+    if n_cut is not None and int(n_cut) < n_t:
+        n_cut = int(n_cut); K = C.shape[2]
+        k = np.arange(K)[:, None]; n = np.arange(n_cut)[None, :]
+        D = np.sqrt(2.0 / n_t) * np.cos(np.pi * k * (2 * n + 1) / (2.0 * n_t)); D[0] = np.sqrt(1.0 / n_t)   # (K, n_cut)
+        return np.einsum("wck,kn->wcn", C, D), names
     b = idct(C, type=2, norm="ortho", axis=2, n=n_t) if C.shape[2] == n_t else \
         idct(np.pad(C, ((0, 0), (0, 0), (0, n_t - C.shape[2]))), type=2, norm="ortho", axis=2)
     return b, names
@@ -1499,7 +1506,7 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto"
         src = _walk_master(walk, weights=weights, field=field, diffusivity=diffusivity, substrate_frame=substrate_frame)
         _cx.require_position_method(method)
         m = _master_arrays(src)
-        n_segments, n_seg = segment_plan(np.asarray(m["traj"]).shape[1], m["dt_traj"], segment_T)
+        n_segments, n_seg = segment_plan(m["traj"].shape[1], m["dt_traj"], segment_T)
         if n_segments > 1:
             kw = dict(id=id, license=license, citation=citation, method=method, envelope=envelope, tol=tol, K=K,
                       temporal_bandwidth_hz=temporal_bandwidth_hz, err_target=err_target, sigma_star=sigma_star,
@@ -1529,7 +1536,7 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto"
                 raise ValueError("a certifying pack carries a measured fidelity; a pack that inherited one cannot certify another")
         elif fidelity_from is not None:
             raise ValueError("fidelity_from= goes with fidelity='inherited'")
-        X = np.asarray(m["traj"])                    # as stored: the codec and the certificate read it per walker chunk
+        X = m["traj"] if _cx.is_lazy(m["traj"]) else np.asarray(m["traj"])   # as stored, or lazily: read per walker chunk
         dt = float(m["dt_traj"])
         wp_method = _cx.is_walker_preserving(method)
         if K is None and temporal_bandwidth_hz is not None:

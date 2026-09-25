@@ -290,7 +290,7 @@ def encode_bridge_dst(X, K, container=None, *, device="auto"):
     ``c_k(n) - c_k(n-1) = -2 sin(pi k / 2N) s_{k-1}(n)``, so a cosine expansion of the path is a
     sine expansion of its increments and the two truncate to the same subspaces.
     """
-    X = np.asarray(X)
+    X = X if is_lazy(X) else np.asarray(X)
     Nw, Nt, _ = X.shape
     a = np.asarray(X[:, 0, :], np.float64)
     v = np.asarray(X[:, -1, :], np.float64) - a
@@ -576,14 +576,24 @@ def bridge_bands(arrays, meta, key="blt", scale_key="blt_band_scale", dtype=np.f
     return dequantise_bands(arrays, meta["container"], key, scale_key, dtype)
 
 
-def decode_boundary_bridge(arrays, meta, walkers=None):
+def decode_boundary_bridge(arrays, meta, walkers=None, n_cut=None):
     """Reconstruct per-save ell(t) = diff(B) from the two endpoints + the pinned sine bands, of every walker
-    or of the slice ``walkers``."""
+    or of the slice ``walkers``; the first ``n_cut`` saves only when asked, the bands evaluated there as one
+    product (the same numbers as the whole decode cut, to rounding)."""
     nt = int(meta["n_t"])
     sl = slice(None) if walkers is None else walkers
     C = bridge_bands(arrays, meta)[sl]
     a = np.asarray(arrays["blt_start"], np.float64)[sl]
     endpoint = np.asarray(arrays["blt_endpoint"], np.float64)[sl]
+    if n_cut is not None and int(n_cut) < nt:
+        n_cut = int(n_cut); N = nt - 2; K = C.shape[1]
+        n = np.arange(1, min(n_cut, nt - 1))[None, :]; k = np.arange(1, K + 1)[:, None]
+        Sk = np.sqrt(2.0 / (N + 1)) * np.sin(np.pi * n * k / (N + 1))              # (K, n_cut-1): DST-I at the read saves
+        u = np.zeros((C.shape[0], n_cut), np.float64)
+        u[:, 1:n.shape[1] + 1] = C @ Sk
+        tau = (np.arange(n_cut) / (nt - 1.0))[None, :]
+        B = u + (a[:, None] + (endpoint - a)[:, None] * tau)
+        return np.diff(B, axis=1, prepend=B[:, :1] * 0.0).astype(np.float32)
     tau = np.linspace(0.0, 1.0, nt)[None, :]
     u = np.zeros((C.shape[0], nt), np.float64)
     u[:, 1:-1] = _idst(C, axis=1, type=1, norm="ortho", n=nt - 2)
@@ -994,12 +1004,59 @@ def _walker_phases(pos, dt, G):
     return (GAMMA * dt) * np.einsum("mtd,ntd->nm", effective_gradient(G, dt, pos.shape[1], dt), pos)
 
 
+class LazyWalk:
+    """A walk read per walker range from a decoder rather than held whole: ``shape`` ``(n_w, n_t, 3)`` and
+    ``walk[lo:hi]`` (a walker slice), ``walk[:, i, :]`` (one save of every walker) and ``walk(lo, hi)``, each
+    decoded on demand. What the pack builder, its encoder and its certificate read when the walk is the decoded
+    prefix of a pack (dmrai-lab/dmipy-sim#449 item 3): none of them needs the walk whole, and this refuses to
+    become one (``np.asarray`` raises) so that no caller does so by accident."""
+
+    def __init__(self, decoder, shape, dtype=np.float32, chunk_bytes=None):
+        self._decoder = decoder; self.shape = tuple(int(x) for x in shape); self.dtype = np.dtype(dtype)
+        self.ndim = len(self.shape); self.chunk_bytes = _chunk(chunk_bytes)
+
+    def __len__(self):
+        return self.shape[0]
+
+    @property
+    def nbytes(self):
+        return int(np.prod(self.shape)) * self.dtype.itemsize
+
+    def __call__(self, lo, hi):
+        return np.asarray(self._decoder(int(lo), int(hi)), self.dtype)
+
+    def __getitem__(self, key):
+        if isinstance(key, slice):
+            lo, hi, step = key.indices(self.shape[0])
+            if step != 1:
+                raise IndexError("a lazy walk is read in contiguous walker ranges")
+            return self(lo, hi)
+        if isinstance(key, tuple) and len(key) == 3 and key[0] == slice(None) and key[2] == slice(None) and np.ndim(key[1]) == 0:
+            i = int(key[1]) % self.shape[1]                            # one save of every walker, per chunk
+            out = np.empty((self.shape[0], 3), self.dtype)
+            step = max(1, int(self.chunk_bytes // (4 * 3 * self.shape[1])))
+            for lo in range(0, self.shape[0], step):
+                hi = min(lo + step, self.shape[0])
+                out[lo:hi] = self(lo, hi)[:, i, :]
+            return out
+        raise IndexError("a lazy walk is read as walk[lo:hi] (walkers) or walk[:, i, :] (one save)")
+
+    def __array__(self, dtype=None, copy=None):
+        raise TypeError(f"this walk of {self.shape} is read per walker range, not held whole (LazyWalk)")
+
+
+def is_lazy(x):
+    return isinstance(x, LazyWalk)
+
+
 def _phases_by_chunk(pos, dt, G, chunk_bytes=None, shape=None):
     """:func:`_walker_phases` of every walker, ``(N_w, n_meas)`` float64, taken in walker chunks so that no more
     than ``chunk_bytes`` of the positions is held in float64 at once: the phases are 40 MB where the trajectory
     is 12 GB, and the certificate needs only the phases. ``pos`` is the positions ``(N_w, n_t, 3)`` or a callable
     ``(lo, hi) -> positions of walkers lo:hi`` (a :func:`decoder`), whose ``shape`` ``(N_w, n_t)`` is then given."""
-    if callable(pos):
+    if is_lazy(pos):
+        n_w, n_t = pos.shape[0], pos.shape[1]; chunk = pos
+    elif callable(pos):
         n_w, n_t = shape; chunk = pos
     else:
         pos = np.asarray(pos); n_w, n_t = pos.shape[0], pos.shape[1]; chunk = lambda lo, hi: pos[lo:hi]
@@ -1032,7 +1089,7 @@ def measure_fidelity(traj, dt_traj, decoded_pos, env=None, w=None, logw=None, ch
     :func:`decoder` so that the decoded walk is never held whole; when it is ``traj`` itself
     (a raw walk's floor) the phases are read once."""
     env = env or default_envelope()
-    r = np.asarray(traj); dt = float(dt_traj)                                 # the walk as stored; float64 per chunk below
+    r = traj if is_lazy(traj) else np.asarray(traj); dt = float(dt_traj)      # the walk as stored; float64 per chunk below
     G, meta = acquisition_battery(r.shape[1], dt, env)
     phi_raw = _phases_by_chunk(r, dt, G, chunk_bytes)                          # (N_w, n_meas): all the certificate reads
     S_raw = _mean_signal(phi_raw, w, logw)

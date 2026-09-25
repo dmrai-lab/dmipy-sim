@@ -360,35 +360,45 @@ class ReplayPack:
         from .continuation import extend_pack
         return extend_pack(self, T_add, seed=seed, out_path=out_path, require_gpu=require_gpu, field=field, envelope=envelope, device=device)
 
-    def _decoded_channels(self):
-        """The per-save channels of the whole walk decoded window by window and joined on the shared saves:
+    def _decoded_channels(self, n_cut=None):
+        """The per-save channels of the walk decoded window by window and joined on the shared saves:
         ``comp`` / ``bound`` tracks ``(n_w, n_t)``, the contact increments ``ell`` ``(n_w, n_t)`` and the path
-        series ``(series (n_w, n_ch, n_tf), names)`` -- each ``None`` when the pack lacks the channel."""
+        series ``(series (n_w, n_ch, n_tf), names)`` -- each ``None`` when the pack lacks the channel. ``n_cut``
+        asks for the first ``n_cut`` saves only: the windows past them are not read, and the bridge and path
+        channels are evaluated at those saves alone."""
         from .bank import susc_path_decode
         from .compression import decode_occupancy, decode_boundary_bridge, decode_boundary_local_time
         ch = dict(self.meta.get("compression", {}).get("channels", {}) or {})
         out = dict(comp=None, bound=None, ell=None, path=None)
         comps, bounds, ells, series = [], [], [], []
         names = None
+        done = 0                                                       # saves of the walk delivered so far
         for j, (w, _, n_seg) in enumerate(self._windows()):
+            if n_cut is not None and done >= int(n_cut):
+                break
             cut = 0 if j == 0 else 1                                   # the shared save is the previous window's
+            want = None if n_cut is None else min(n_seg, int(n_cut) - done + cut)   # saves of this window to read
             if "compartment" in ch:
                 occ = decode_occupancy(w.arrays, ch["compartment"])
                 comp = np.asarray(occ["comp"])
-                comps.append(comp[:, cut:] if comp.ndim == 2 else comp)
+                comps.append(comp[:, cut:want] if comp.ndim == 2 else comp)
                 if "bound" in occ:
-                    b = np.asarray(occ["bound"]); bounds.append(b[:, cut:] if b.ndim == 2 else b)
+                    b = np.asarray(occ["bound"]); bounds.append(b[:, cut:want] if b.ndim == 2 else b)
             if "boundary_local_time" in ch:
                 bm = dict(ch["boundary_local_time"]); bm.setdefault("n_t", n_seg)
                 if w.has_surface:
                     bm.setdefault("K", _cx_bands_K(w.arrays, bm))
-                    ell = decode_boundary_bridge(w.arrays, bm)
+                    ell = decode_boundary_bridge(w.arrays, bm, n_cut=want)
                 else:
                     ell = decode_boundary_local_time(w.arrays, bm)
-                ells.append(np.asarray(ell)[:, cut:])
+                ells.append(np.asarray(ell)[:, cut:want])
             if "susceptibility_path" in ch:
-                ser, names = susc_path_decode(w.arrays, ch["susceptibility_path"], n_w=self.n_walkers)
-                series.append(ser[:, :, cut:])
+                pm = ch["susceptibility_path"]
+                n_tf, dt_f = _path_grid(pm, n_seg, float(self.dt))
+                want_f = None if want is None else len(range(0, want, max(1, int(round(dt_f / float(self.dt))))))
+                ser, names = susc_path_decode(w.arrays, pm, n_w=self.n_walkers, n_cut=want_f)
+                series.append(ser[:, :, cut:want_f])
+            done += n_seg - cut
         if comps:
             out["comp"] = np.concatenate(comps, axis=1) if comps[0].ndim == 2 else comps[0]
         if bounds:
@@ -1327,9 +1337,28 @@ class ReplayPack:
         T_cut = (n_cut - 1) * dt
         K_new = int(K) if K is not None else max(2, int(np.ceil(self.K * T_cut / T)))
         ch = dict(self.meta.get("compression", {}).get("channels", {}) or {})
-        decoded = self._decoded_channels()
+        decoded = self._decoded_channels(n_cut=n_cut)                 # the channels at the prefix's saves only
         wp = dict(self.meta.get("walk_params", {}) or {})
-        m = dict(traj=self.positions()[:, :n_cut, :], dt_traj=dt, T_max=T_cut,
+        # the prefix's positions are never held whole: the builder, its encoder and its certificate read them per
+        # walker range, decoded from the parent's coefficients where they are read, window by window (#449 item 3)
+        from .compression import LazyWalk, read_position_coeffs
+        from .pose_device import decode_prefix
+        spans = []                                                     # (coefficients, saves of the window, first save kept, saves kept)
+        done = 0
+        for j, (w, _, n_seg) in enumerate(self._windows()):
+            if done >= n_cut:
+                break
+            cut = 0 if j == 0 else 1
+            want = min(n_seg, n_cut - done + cut)
+            spans.append((read_position_coeffs(w.arrays, dtype=np.float64), n_seg, cut, want))
+            done += want - cut
+        n_w = spans[0][0].shape[0]
+
+        def _positions(lo, hi):
+            return np.concatenate([decode_prefix(C[lo:hi], n_seg, want)[:, cut:, :] for C, n_seg, cut, want in spans], axis=1)
+
+        lazy = LazyWalk(_positions, (n_w, n_cut, 3))
+        m = dict(traj=lazy, dt_traj=dt, T_max=T_cut,
                  walkers_shuffled=bool(self.meta.get("compression", {}).get("precision_tiers", {}).get("walkers_shuffled", False)),
                  seed=seed_value(wp.get("seed", 0)))
         if "spin_weights" in self.arrays:
