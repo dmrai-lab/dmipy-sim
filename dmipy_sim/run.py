@@ -423,6 +423,14 @@ class Run:
         """Something written to disk, as it is written."""
         self._event("artifact", path=str(path), **{k: _jsonable(v) for k, v in fields.items()})
 
+    def phase_seconds(self):
+        """Seconds spent in each phase so far, ``{name: seconds}`` (a phase entered twice sums)."""
+        now = time.time(); out = {}
+        with self._lock:
+            for ph in self._phases:
+                out[ph.name] = out.get(ph.name, 0.0) + ((ph.ended or now) - ph.started)
+        return out
+
     def warning(self, message, **fields):
         self._event("warning", message=str(message), **{k: _jsonable(v) for k, v in fields.items()})
 

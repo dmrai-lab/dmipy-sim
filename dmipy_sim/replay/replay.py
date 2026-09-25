@@ -36,6 +36,7 @@ import numpy as np
 from .compression import c2_bands_K as _cx_bands_K
 
 from ..constants import GAMMA
+from ..run import Run, current
 from ..acquisition.rf import RFSchedule
 from ..acquisition.scanner_sequence import Protocol, ScannerSequence
 
@@ -1187,35 +1188,37 @@ class ReplayPack:
         if R_s is not None:                                       # the acquisition in the specimen frame: what the
             from ..acquisition.waveforms import rotate_waveform   # expansion reads, in P and from the waveform itself
             waveform = rotate_waveform(waveform, R_s.T)
-        P = self._prepare(waveform, tissue=tissue, scanner=scanner, orientation=None, compartment=compartment)
-        if R_s is not None:
-            P["b0_dir"] = tuple(R_s.T @ np.array([0.0, 0.0, 1.0]))   # the bore's field, seen from the specimen
-        if method not in ("auto", "closed", "quadrature"):
-            raise ValueError("method is 'auto', 'closed' (the per-walker Rayleigh expansion) or 'quadrature'")
-        path = None
-        if cache is not None and cache is not False:
-            path = self._pose_cache_path(cache, P, waveform, method, keep)
-            if path.exists():
-                return PoseResponse.load(path)
-        out = None
-        if method != "quadrature":
-            out = self._pose_coeffs_closed(P, waveform, keep=keep)
-            if out is None and method == "closed":
-                raise ValueError("the closed-form pose expansion needs a single-direction encoding on every measurement: "
-                                 "this acquisition has a b-tensor or multi-axis waveform, so use method='quadrature'")
-        if out is None:
-            out = self._pose_coeffs(P, waveform, keep=keep)
-        if np.any(P["voxel"] != 1.0):
-            # an unbalanced encoding: the voxel's factor scales each measurement's expansion, and its misfit with
-            # it. The pose does not enter -- k . r_v is the same dot product in the lab and in the substrate.
-            f = P["voxel"]
-            out.coeffs = out.coeffs * f[:, None]
-            m = np.asarray(out.misfit, float)
-            out.misfit = m * np.abs(f) if m.shape == f.shape else m * float(np.abs(f).max())
-        if path is not None:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            out.save(path)
-        return out
+        with Run("pose_response", params=dict(id=self.id, n_meas=int(waveform.n_meas), method=method,
+                                        keep=(None if keep is None else [None if k is None else int(k) for k in keep]))):
+            P = self._prepare(waveform, tissue=tissue, scanner=scanner, orientation=None, compartment=compartment)
+            if R_s is not None:
+                P["b0_dir"] = tuple(R_s.T @ np.array([0.0, 0.0, 1.0]))   # the bore's field, seen from the specimen
+            if method not in ("auto", "closed", "quadrature"):
+                raise ValueError("method is 'auto', 'closed' (the per-walker Rayleigh expansion) or 'quadrature'")
+            path = None
+            if cache is not None and cache is not False:
+                path = self._pose_cache_path(cache, P, waveform, method, keep)
+                if path.exists():
+                    return PoseResponse.load(path)
+            out = None
+            if method != "quadrature":
+                out = self._pose_coeffs_closed(P, waveform, keep=keep)
+                if out is None and method == "closed":
+                    raise ValueError("the closed-form pose expansion needs a single-direction encoding on every measurement: "
+                                     "this acquisition has a b-tensor or multi-axis waveform, so use method='quadrature'")
+            if out is None:
+                out = self._pose_coeffs(P, waveform, keep=keep)
+            if np.any(P["voxel"] != 1.0):
+                # an unbalanced encoding: the voxel's factor scales each measurement's expansion, and its misfit with
+                # it. The pose does not enter -- k . r_v is the same dot product in the lab and in the substrate.
+                f = P["voxel"]
+                out.coeffs = out.coeffs * f[:, None]
+                m = np.asarray(out.misfit, float)
+                out.misfit = m * np.abs(f) if m.shape == f.shape else m * float(np.abs(f).max())
+            if path is not None:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                out.save(path)
+            return out
 
     def _pose_cache_path(self, cache, P, waveform, method, keep):
         """``<dir>/<key>.npz`` with the key over everything the expansion depends on."""
@@ -1476,6 +1479,9 @@ class ReplayPack:
         Geff, dt, n_t, ew, norm = P["Geff"], P["dt"], P["n_t"], P["pathway"] * P["ew"], P["norm"]
         n_meas, n_w = Geff.shape[0], ew.shape[0]
         field = self._field_quadratic(P, waveform) if self._field_active(P["B0"]) else None   # (a_w, A_w) or None
+        run = current()
+        _ph = (lambda name, **f: run.phase(name, **f)) if run is not None else (lambda name, **f: None)
+        _ph("moments", n_meas=int(n_meas), n_w=int(n_w))
         G = np.asarray(Geff, np.float64)
         g_hat = np.zeros((n_meas, 3)); s_wave = np.zeros((n_meas, n_t))
         for i in range(n_meas):
@@ -1516,6 +1522,7 @@ class ReplayPack:
         # the band: orders until the weighted Bessel tail is below tol for the worst group, every order from one
         # downward recurrence
         k_max = float(kappa.max()) if kappa.size else 0.0
+        _ph("bessel", n_grp=int(n_grp), phase_amplitude=k_max)
         L = int(np.ceil(k_max)) + 2
         J_all = _spherical_jn_all(min(l_cap, L + 12), kappa)                  # (L_hi+1, n_w, n_grp)
         while L < l_cap:
@@ -1529,12 +1536,14 @@ class ReplayPack:
         if field is None:
             L_f, F_sh = 0, None
         else:
+            _ph("field")
             F_sh, L_f = self._field_harmonics(field, tol=tol, l_cap=l_cap)      # (n_w, (L_f+1)^2) complex
         L_tot = L + L_f
         want_l, want_n = (None, None) if keep is None else (keep[0], keep[1])
         keep_l = L_tot if want_l is None else min(int(want_l), L_tot)
         keep_n = L_tot if want_n is None else min(int(want_n), L_tot)
         n_feat = so3.n_so3_coeffs(keep_l, keep_n)
+        _ph("harmonics", L=int(L), L_f=int(L_f), keep_l=int(keep_l), keep_n=int(keep_n), n_feat=int(n_feat))
         coeffs = np.zeros((n_meas, n_feat), np.complex128)
         cos_z = m_hat[:, :, 2]
         J = [J_all[l] for l in range(L + 1)]                                    # (n_w, n_grp) per order
@@ -1555,6 +1564,8 @@ class ReplayPack:
                 for lo in range(0, n_grp, step):
                     sl = slice(lo, min(lo + step, n_grp))
                     nc = sl.stop - sl.start
+                    if run is not None:
+                        run.progress(lo, n_grp, unit="groups")
                     Y = so3.real_sh(keep_l, m_hat[:, sl, :].reshape(-1, 3), full=True).reshape(n_w, nc, n_cols)
                     for l in range(keep_l + 1):
                         k = so3._n_cols(l, keep_n) // 2
@@ -1579,7 +1590,10 @@ class ReplayPack:
             step = max(1, int(2.5e8 / (8 * n_w * n_cols)))
             for lo in range(0, n_grp, step):
                 sl = slice(lo, min(lo + step, n_grp)); nc = sl.stop - sl.start
+                if run is not None:
+                    run.progress(lo, n_grp, unit="groups")
                 Ym[:, sl, :] = so3.real_sh(L, m_hat[:, sl, :].reshape(-1, 3), full=True).reshape(n_w, nc, n_cols)
+            _ph("couplings", L=int(L), L_f=int(L_f))
             offs = {}
             off = 0
             for Lc in range(keep_l + 1):
@@ -1670,6 +1684,7 @@ class ReplayPack:
                 f"worth building to share one walk over many poses, and at this sharpness a direct replay per pose "
                 f"(orientation=R) is the exact route for it.")
         n_w = a.shape[0]
+        run = current()
         while True:
             dirs, wq = so3.sphere_quadrature(Lp + 2, 2 * Lp + 2)
             Y = so3.real_sh(Lp, dirs, full=True)                               # (n_q, (Lp+1)^2)
@@ -1678,6 +1693,8 @@ class ReplayPack:
             step = max(1, int(2.5e8 / (16 * dirs.shape[0])))                   # walkers per ~256 MB of phase
             for lo in range(0, n_w, step):
                 sl = slice(lo, min(lo + step, n_w))
+                if run is not None:
+                    run.progress(lo, n_w, unit="walkers")
                 q = np.einsum("qa,wab,qb->wq", dirs, A[sl], dirs)              # (n_c, n_q)
                 f = np.exp(1j * (a[sl, None] + q))
                 F[sl] = (f.real @ Yw) + 1j * (f.imag @ Yw)                     # real products
