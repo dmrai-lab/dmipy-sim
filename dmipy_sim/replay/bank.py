@@ -1902,11 +1902,13 @@ def build_to_floor(make_model, *, id, envelope=None, sigma_star=1e-3, pilot_n=80
     if n_star == pilot_n:                            # the pilot meets the floor: it is the walk
         f = f0
     else:
+        model = None                                 # the pilot is released before the sized walk is made, not after
         model = make_model(n_star); f = _measure_floor(_walk(model), env)
     while f > sigma_star and n_star < max_n:         # undershoot -> re-estimate from the last measurement and walk again,
         n_star = int(min(max_n, max(n_star + 1, round(n_star * (f / sigma_star) ** 2 * safety))))   # until met or capped
         if verbose:
             log.info(f"[floor-target] floor={f:.4g} > sigma*; topping up to N*={n_star}")
+        model = None                                 # one walk in memory at a time: a rebinding would hold both
         model = make_model(n_star); f = _measure_floor(_walk(model), env)
     if verbose:
         log.info(f"[floor-target] N={n_star}: achieved floor={f:.4g} "
