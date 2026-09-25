@@ -135,3 +135,23 @@ def test_an_open_surface_is_still_refused(tmp_path):
     trimesh.Trimesh(np.asarray(m.vertices), np.asarray(m.faces)[1:], process=False).export(inner)     # one face removed
     with pytest.raises(SpecError, match="closed surfaces; open"):
         winther_spec(inner, outer, scale=1e-6, pad=1e-6)
+
+
+def test_a_crack_of_near_duplicate_vertices_is_closed_by_the_loader(tmp_path):
+    """axon08's case (dmrai-lab/dmipy-sim#452): a vertex written twice a few nanometres apart, one face on each copy,
+    leaves two boundary edges; the loader merges the crack's lips and the surface is closed."""
+    from dmipy_sim.geometry.mesh import load_ply, surface_topology
+    inner, outer = _tube_pair(tmp_path, prefix="crack")
+    m = trimesh.load(inner, process=False)
+    V, F = np.asarray(m.vertices), np.asarray(m.faces).copy()
+    a = F[0, 0]
+    edge = float(np.median(np.linalg.norm(V[F[:, 0]] - V[F[:, 1]], axis=1)))
+    V2 = np.vstack([V, V[a] + 0.1 * edge * np.array([1.0, 0.0, 0.0])])       # the copy, a tenth of an edge away
+    F[0, 0] = len(V)                                                            # one face moves to the copy: a crack
+    trimesh.Trimesh(V2, F, process=False).export(inner)
+    raw = trimesh.load(inner, process=False)
+    assert surface_topology(np.asarray(raw.vertices), np.asarray(raw.faces))["boundary_edges"] == 2
+    with pytest.warns(UserWarning, match="1 duplicate vertex"):
+        Vr, Fr = load_ply(inner, scale=1e-6)
+    assert surface_topology(Vr, Fr)["boundary_edges"] == 0 and len(Vr) == len(V)
+    winther_spec(inner, outer, scale=1e-6, pad=1e-6)                            # accepted

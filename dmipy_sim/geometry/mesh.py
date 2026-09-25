@@ -184,9 +184,8 @@ def load_ply(path, scale=1.0, recenter=False):
                  f"(max index now {int(Ff.max())}).")
             V, F = Vf.astype(np.float64), Ff.astype(np.int64)
     keep = nondegenerate_faces(V, F)
-    if not keep.all():
-        F = F[keep]
-        V, F, n_merged = merge_duplicate_vertices(V, F)                      # the sheets a degenerate face bridged
+    V, F, n_merged = merge_duplicate_vertices(V, F[keep])                     # near-duplicate vertices: cracks and pinches
+    if not keep.all() or n_merged:
         warnings.warn(f"{path}: {int((~keep).sum())} degenerate face(s) (zero area or a repeated vertex) dropped and "
                       f"{n_merged} duplicate vertex(es) merged; a face without a normal cannot reflect a walker")
     if recenter:
@@ -194,17 +193,48 @@ def load_ply(path, scale=1.0, recenter=False):
     return V * scale, F
 
 
-def merge_duplicate_vertices(V, F):
-    """``(V, F, n_merged)`` with vertices at exactly the same position made one: what a writer that duplicates a
-    vertex where two sheets meet leaves behind, and what turns a boundary edge there into a shared one."""
+def _boundary_vertices(V, F):
+    """The vertices on an edge that only one face holds."""
+    e = np.sort(F[:, [0, 1, 1, 2, 2, 0]].reshape(-1, 2), axis=1)
+    u, cnt = np.unique(e, axis=0, return_counts=True)
+    return np.unique(u[cnt == 1])
+
+
+def merge_duplicate_vertices(V, F, rel_tol=1e-3, crack_rel_tol=0.5):
+    """``(V, F, n_merged)`` with vertices closer than ``rel_tol`` of the median edge made one, and, where that
+    leaves a boundary edge, the boundary's vertices closer than ``crack_rel_tol`` of the median edge: what a writer
+    that duplicates a vertex where two sheets meet leaves behind, exactly or to its own rounding (a crack: two
+    boundary edges on vertices a few nanometres apart). Faces that lose a distinct vertex to a merge are dropped."""
+    from scipy.spatial import cKDTree
     V = np.asarray(V, np.float64); F = np.asarray(F, np.int64)
-    _, first, inverse = np.unique(V, axis=0, return_index=True, return_inverse=True)
-    inverse = np.asarray(inverse).reshape(-1)
-    if len(first) == len(V):
+    if F.size == 0:
         return V, F, 0
-    order = np.argsort(first)                                             # keep the vertices in their first-seen order
-    rank = np.empty(len(first), np.int64); rank[order] = np.arange(len(first))
-    return V[np.sort(first)], rank[inverse][F], int(len(V) - len(first))
+    edge = float(np.median(np.linalg.norm(V[F[:, 0]] - V[F[:, 1]], axis=1)))
+    pairs = cKDTree(V).query_pairs(rel_tol * edge, output_type="ndarray")
+    bnd = _boundary_vertices(V, F)
+    if len(bnd) > 1:                                                     # a crack: its lips, within a fraction of an edge
+        near = cKDTree(V[bnd]).query_pairs(crack_rel_tol * edge, output_type="ndarray")
+        if len(near):
+            pairs = np.concatenate([pairs.reshape(-1, 2), bnd[near]], axis=0)
+    if len(pairs) == 0:
+        return V, F, 0
+    parent = np.arange(len(V))                                            # union-find over the near pairs
+
+    def root(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]; i = parent[i]
+        return i
+
+    for a, b in pairs:
+        ra, rb = root(a), root(b)
+        if ra != rb:
+            parent[max(ra, rb)] = min(ra, rb)                                # the earlier vertex stays
+    rep = np.array([root(i) for i in range(len(V))])
+    keep = np.flatnonzero(rep == np.arange(len(V)))
+    rank = np.full(len(V), -1, np.int64); rank[keep] = np.arange(len(keep))
+    F = rank[rep[F]]
+    distinct = (F[:, 0] != F[:, 1]) & (F[:, 1] != F[:, 2]) & (F[:, 0] != F[:, 2])
+    return V[keep], F[distinct], int(len(V) - len(keep))
 
 
 def nondegenerate_faces(V, F):
