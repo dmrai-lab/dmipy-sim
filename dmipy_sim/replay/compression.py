@@ -934,15 +934,31 @@ def _walker_phases(pos, dt, G):
     return (GAMMA * dt) * np.einsum("mtd,ntd->nm", effective_gradient(G, dt, pos.shape[1], dt), pos)
 
 
-def _replay_complex_np(pos, dt, G, *, w=None, logw=None):
-    """Self-contained numpy replay <w exp(logw) exp(i phi)> over :func:`_walker_phases`. Ground truth for the
-    fidelity scorer."""
-    pos = np.asarray(pos, np.float64)
-    nw = pos.shape[0]
-    phi = _walker_phases(pos, dt, G)                                          # (N_w, n_meas)
+def _phases_by_chunk(pos, dt, G, chunk_bytes=2 << 30):
+    """:func:`_walker_phases` of every walker, ``(N_w, n_meas)`` float64, taken in walker chunks so that no more
+    than ``chunk_bytes`` of the positions is held in float64 at once: the phases are 40 MB where the trajectory
+    is 12 GB, and the certificate needs only the phases."""
+    pos = np.asarray(pos)
+    n_w, n_t = pos.shape[0], pos.shape[1]
+    step = max(1, int(chunk_bytes // (8 * 3 * n_t)))
+    out = np.empty((n_w, G.shape[0]), np.float64)
+    for lo in range(0, n_w, step):
+        out[lo:lo + step] = _walker_phases(pos[lo:lo + step], dt, G)
+    return out
+
+
+def _mean_signal(phi, w=None, logw=None):
+    """``<w exp(logw) exp(i phi)>`` over the walkers of ``phi`` ``(N_w, n_meas)``, weights normalised."""
+    nw = phi.shape[0]
     ww = np.ones(nw) if w is None else np.asarray(w, float)
     lw = np.zeros(nw) if logw is None else np.asarray(logw, float)
     return (np.exp(lw[:, None] + 1j * phi) * (ww / ww.sum())[:, None]).sum(0)
+
+
+def _replay_complex_np(pos, dt, G, *, w=None, logw=None):
+    """Self-contained numpy replay <w exp(logw) exp(i phi)> over :func:`_walker_phases`. Ground truth for the
+    fidelity scorer."""
+    return _mean_signal(_phases_by_chunk(pos, dt, G), w, logw)
 
 
 def measure_fidelity(traj, dt_traj, decoded_pos, env=None, w=None, logw=None):
@@ -950,18 +966,19 @@ def measure_fidelity(traj, dt_traj, decoded_pos, env=None, w=None, logw=None):
     a split-half Monte-Carlo floor. `logw` (optional) applies the same separable weight to
     both so surface/relaxation packs are scored with their physics on."""
     env = env or default_envelope()
-    r = np.asarray(traj, np.float64); dt = float(dt_traj)
+    r = np.asarray(traj); dt = float(dt_traj)                                 # the walk as stored; float64 per chunk below
     G, meta = acquisition_battery(r.shape[1], dt, env)
-    S_raw = _replay_complex_np(r, dt, G, w=w, logw=logw)
-    S_dec = _replay_complex_np(np.asarray(decoded_pos, np.float64), dt, G, w=w, logw=logw)
+    phi_raw = _phases_by_chunk(r, dt, G)                                       # (N_w, n_meas): all the certificate reads
+    S_raw = _mean_signal(phi_raw, w, logw)
+    S_dec = _mean_signal(_phases_by_chunk(np.asarray(decoded_pos), dt, G), w, logw)
     idx = np.random.default_rng(0).permutation(r.shape[0]); h = r.shape[0] // 2
     ia, ib = idx[:h], idx[h:]
     la = None if logw is None else np.asarray(logw)[ia]
     lb = None if logw is None else np.asarray(logw)[ib]
     wa = None if w is None else np.asarray(w)[ia]
     wb = None if w is None else np.asarray(w)[ib]
-    Sa = _replay_complex_np(r[ia], dt, G, w=wa, logw=la)
-    Sb = _replay_complex_np(r[ib], dt, G, w=wb, logw=lb)
+    Sa = _mean_signal(phi_raw[ia], wa, la)
+    Sb = _mean_signal(phi_raw[ib], wb, lb)
     floor = np.abs(Sa - Sb) / 2.0
     fams = sorted({m["fam"] for m in meta})
     per_fam = {}
