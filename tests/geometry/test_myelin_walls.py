@@ -197,7 +197,7 @@ def test_bare_pack_extra_axonal_signal_matches_packed_cylinders():
     radii = [1.0e-6, 1.3e-6, 0.8e-6, 1.1e-6, 0.9e-6, 1.2e-6]
     g = 0.999
     c, L = _pack(radii, g, 0.35, seed=1)
-    pm = d.PackedMyelinatedCylinders(radii, g, c, L, N_max=8, T2_intra=1e-6, T2_myelin=1e-6)
+    pm = d.PackedMyelinatedCylinders(radii, g, c, L, N_max=8, compartments=d.Compartments(intra=d.Pool(T2=1e-6), myelin=d.Pool(T2=1e-6)))
     pc = d.PackedCylinders(np.asarray(radii) / g, c, L)
     wf = d.set_b(d.pgse([[1, 0, 0]], 5e-3, 15e-3, gradient_strengths=0.1, n_t=200, slew_rate=np.inf), 1.5e9)
     N = 60_000
@@ -244,9 +244,9 @@ def test_per_axon_properties_are_per_axon():
     wf = d.set_b(d.pgse([[1, 0, 0]], 2e-3, 28e-3, gradient_strengths=0.01, n_t=300, slew_rate=np.inf), 1e6)
     N = 20_000
     mixed = d.PackedMyelinatedCylinders(radii, 0.7, c, L, N_max=8, T2_intra=[0.01] * 3 + [1.0] * 3,
-                                        T2_extra=1e-6, T2_myelin=1e-6)
-    first = d.PackedMyelinatedCylinders(radii, 0.7, c, L, N_max=8, T2_intra=0.01,
-                                        T2_extra=1e-6, T2_myelin=1e-6)
+                                        compartments=d.Compartments(extra=d.Pool(T2=1e-6), myelin=d.Pool(T2=1e-6)))
+    first = d.PackedMyelinatedCylinders(radii, 0.7, c, L, N_max=8, compartments=d.Compartments(
+                                        intra=d.Pool(T2=0.01), extra=d.Pool(T2=1e-6), myelin=d.Pool(T2=1e-6)))
     s_mixed, o, _ = d.simulate(N, None, wf, mixed, seed=6, return_compartments="final", require_gpu=False)
     s_first, _, _ = d.simulate(N, None, wf, first, seed=6, return_compartments="final", require_gpu=False)
     n = np.bincount(o, minlength=3)
@@ -259,14 +259,14 @@ def test_per_axon_properties_are_per_axon():
         f"intra b0 signal {intra_mixed:.4f} does not decay by the per-axon T2 mixture"
 
     rho_in = d.PackedMyelinatedCylinders(radii, 0.7, c, L, N_max=8, rho_inner=2e-6,
-                                         T2_intra=1e-6, T2_myelin=1e-6)
-    plain = d.PackedMyelinatedCylinders(radii, 0.7, c, L, N_max=8, T2_intra=1e-6, T2_myelin=1e-6)
+                                         compartments=d.Compartments(intra=d.Pool(T2=1e-6), myelin=d.Pool(T2=1e-6)))
+    plain = d.PackedMyelinatedCylinders(radii, 0.7, c, L, N_max=8, compartments=d.Compartments(intra=d.Pool(T2=1e-6), myelin=d.Pool(T2=1e-6)))
     s_rho, n_e = _extra_only_signal(rho_in, wf, N, seed=7)
     s_plain, _ = _extra_only_signal(plain, wf, N, seed=7)
     assert abs(s_rho[0] - s_plain[0]) < 4.0 * np.sqrt(2.0 / n_e), \
         f"an inner-wall relaxivity changed the extra-axonal signal: {s_rho[0]:.4f} vs {s_plain[0]:.4f}"
     only_intra = d.PackedMyelinatedCylinders(radii, 0.7, c, L, N_max=8, rho_inner=2e-6,
-                                             T2_extra=1e-6, T2_myelin=1e-6)
+                                             compartments=d.Compartments(extra=d.Pool(T2=1e-6), myelin=d.Pool(T2=1e-6)))
     s_i, o_i, _ = d.simulate(N, None, wf, only_intra, seed=7, return_compartments="final", require_gpu=False)
     n_i = np.bincount(o_i, minlength=3)
     intra_rho = float(s_i[0]) * (n_i[0] + n_i[1] + only_intra._myelin_proton_density * n_i[2]) / n_i[1]
