@@ -135,8 +135,8 @@ def check_frame_against_walk(traj, F, *, w=None, bundle_axes=None, tol_deg=5.0, 
     small walk of free water is not read as oriented by its noise (113 free walkers gave a ratio of 1.56 on
     one platform's realisation and passed on another's). A walk with two comparable axes is checked against the plane only when
     two or more bundles are declared. Returns the angle (degrees)."""
-    X = np.asarray(traj, np.float64)
-    d = X[:, -1, :] - X[:, 0, :]
+    X = np.asarray(traj)                                          # only the two endpoints of each walker are read
+    d = np.asarray(X[:, -1, :], np.float64) - np.asarray(X[:, 0, :], np.float64)
     w = np.ones(d.shape[0]) if w is None else np.asarray(w, np.float64)
     ok = np.isfinite(d).all(1) & np.isfinite(w) & (w > 0)        # a walker with no position at the end says nothing
     d, w = d[ok], w[ok]
@@ -210,11 +210,13 @@ def _envelope_summary(env):
                 note="temporal band set by max OGSE period / min delta")
 
 
-def _measure_floor(m, env):
+def _measure_floor(m, env, chunk_bytes=None):
     """Split-half Monte-Carlo floor of the RAW walk over the envelope (decoded == raw ->
-    fidelity err is 0, so ``floor_max`` is the substrate's own finite-N statistical noise)."""
-    traj = np.asarray(m["traj"], np.float64)
-    return float(_cx.measure_fidelity(traj, float(m["dt_traj"]), traj, env)["floor_max"])
+    fidelity err is 0, so ``floor_max`` is the substrate's own finite-N statistical noise).
+    The walk is read as stored, in float64 chunks of at most ``chunk_bytes`` (default :data:`compression.CHUNK_BYTES`)."""
+    traj = np.asarray(m["traj"])
+    return float(_cx.measure_fidelity(traj, float(m["dt_traj"]), traj, env,
+                                      chunk_bytes=chunk_bytes)["floor_max"])
 
 
 def _surface_fidelity(m, arrays, chan_meta, env):
@@ -225,20 +227,25 @@ def _surface_fidelity(m, arrays, chan_meta, env):
     has_stored = _cx.has_c2(arrays) or any(k in arrays for k in ("blt_dense_q", "blt_counts"))
     if raw is None or not has_stored:
         return None
-    raw = np.asarray(raw, np.float64); n_w = raw.shape[0]
+    raw = np.asarray(raw); n_w, n_t = raw.shape[0], raw.shape[1]         # as stored; float64 per walker chunk below
     w = np.asarray(m["w"], np.float64) if m.get("w") is not None else np.ones(n_w)
     D = float(m.get("D_intra") or 0.0) or 1.0
-    if _cx.has_c2(arrays):
-        decoded = _cx.decode_boundary_bridge(arrays, chan_meta)
-    else:
-        decoded = _cx.decode_boundary_local_time(arrays, chan_meta)
+    decode = _cx.decode_boundary_bridge if _cx.has_c2(arrays) else _cx.decode_boundary_local_time
+    # the log-weight at rho/D = 1 is each walker's summed local time: raw and decoded, taken per chunk so
+    # that neither the raw channel in float64 nor the decoded channel is ever held whole
+    s_raw = np.empty(n_w); s_dec = np.empty(n_w)
+    step = max(1, int(_cx.CHUNK_BYTES // (8 * n_t)))
+    for lo in range(0, n_w, step):
+        hi = min(lo + step, n_w)
+        s_raw[lo:hi] = _cx.surface_logweight_series(raw[lo:hi], 1.0)
+        s_dec[lo:hi] = _cx.surface_logweight_series(decode(arrays, chan_meta, slice(lo, hi)), 1.0)
     perm = np.random.RandomState(0).permutation(n_w); A, B = perm[:n_w // 2], perm[n_w // 2:]
     fac = lambda sl, idx: float(np.sum(w[idx] * np.exp(sl[idx])) / np.sum(w[idx]))
     err = floor = 0.0
     for rho in (env.get("rho_list") or [1e-5, 3e-5, 1e-4]):
         rd = float(rho) / D
-        sl_raw = _cx.surface_logweight_series(raw, rd)
-        sl_dec = _cx.surface_logweight_series(decoded, rd)
+        sl_raw = rd * s_raw
+        sl_dec = rd * s_dec
         err = max(err, abs(fac(sl_raw, slice(None)) - fac(sl_dec, slice(None))))
         floor = max(floor, abs(fac(sl_raw, A) - fac(sl_raw, B)))
     return dict(err=float(err), floor=float(floor))
@@ -1522,7 +1529,7 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto"
                 raise ValueError("a certifying pack carries a measured fidelity; a pack that inherited one cannot certify another")
         elif fidelity_from is not None:
             raise ValueError("fidelity_from= goes with fidelity='inherited'")
-        X = np.asarray(m["traj"], np.float64) if fidelity == "measured" else np.asarray(m["traj"])
+        X = np.asarray(m["traj"])                    # as stored: the codec and the certificate read it per walker chunk
         dt = float(m["dt_traj"])
         wp_method = _cx.is_walker_preserving(method)
         if K is None and temporal_bandwidth_hz is not None:
@@ -1552,9 +1559,8 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto"
             pos_arrays, pos_meta, _ = _cx.encode(X, method, K, container=_container(position_container), device=device)
         else:
             pos_arrays, pos_meta, _ = _cx.encode(X, method, K, container=_container(position_container), device=device)
-            pos = _cx.decode(pos_arrays, pos_meta, n_walkers=(X.shape[0] if wp_method else None))
             run.phase("certificate positions")
-            fid = _cx.measure_fidelity(X, dt, pos, env)
+            fid = _cx.measure_fidelity(X, dt, _cx.decoder(pos_arrays, pos_meta), env)   # decoded per chunk, never whole
         if cert is None:
             fid["certified"] = "measured"
         if sigma_star is not None:                       # adaptive floor-target policy (build_to_floor)
