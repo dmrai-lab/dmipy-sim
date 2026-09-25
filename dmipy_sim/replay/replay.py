@@ -1677,7 +1677,24 @@ class ReplayPack:
         the last one is below ``tol`` of the total (``4 pi`` per walker, the phase having unit modulus). A phase
         whose band lies past ``l_cap`` is refused: the expansion is not the route for it, a replay per pose is."""
         from . import so3
+        import hashlib
         a, A = field
+        # the factor depends on the gate and the field, not on the gradient: the encoding classes of a machine pass
+        # and the passes of one acquisition share it, keyed by its inputs' bytes (dmrai-lab/dmipy-sim#449)
+        key = (hashlib.sha1(np.ascontiguousarray(a, np.float64).tobytes()).hexdigest(),
+               hashlib.sha1(np.ascontiguousarray(A, np.float64).tobytes()).hexdigest(), float(tol), int(l_cap))
+        cache = self.__dict__.setdefault("_field_factor_cache", {})
+        if key in cache:
+            return cache[key]
+        out = self._field_harmonics_of(a, A, tol=tol, l_cap=l_cap)
+        if len(cache) >= 2:
+            cache.pop(next(iter(cache)))
+        cache[key] = out
+        return out
+
+    def _field_harmonics_of(self, a, A, tol=1e-8, l_cap=64):
+        """:meth:`_field_harmonics` computed: the quadrature and its band."""
+        from . import so3
         amp = float(np.abs(np.linalg.eigvalsh(A)).max()) if A.size else 0.0
         Lp = int(np.ceil(2.0 * amp)) + 4
         if Lp > l_cap:
