@@ -98,26 +98,21 @@ def _surface_stats(paths, scale, notes=None):
     from ..geometry.mesh import load_ply, surface_topology
     feats, edges, open_files, meshes = [], [], [], []
     for p in paths:
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            V, F = load_ply(p, scale=scale)
-        dropped = [str(w.message) for w in caught if "degenerate face" in str(w.message)]
-        for w in caught:                                                # recorded here, and still said
-            warnings.warn(w.message, w.category)
+        repairs = {}
+        V, F = load_ply(p, scale=scale, repairs=repairs)
         meshes.append((V, F))
         e = np.linalg.norm(V[F[:, 0]] - V[F[:, 1]], axis=1)
         edges.append(np.median(e))
         ext = V.max(0) - V.min(0)
         feats.append(0.5 * float(np.sort(ext)[0]))                # half the thinnest extent: the radius of a tube
-        try:
-            topo = surface_topology(V, F)
-        except ImportError:
-            continue
+        topo = surface_topology(V, F)
+        n_drop, n_merge = repairs["degenerate_faces_dropped"], repairs["duplicate_vertices_merged"]
         if topo["boundary_edges"] > 0:
             open_files.append(p)
-        elif notes is not None and (topo["nonmanifold_edges"] or dropped):
+        elif notes is not None and (topo["nonmanifold_edges"] or n_drop or n_merge):
             notes.append(f"{os.path.basename(p)}: closed; {topo['nonmanifold_edges']} edge(s) on three or more faces kept"
-                         + (f"; the loader {dropped[0].split(': ', 1)[1].split('; a face')[0]}" if dropped else ""))
+                         + (f"; the loader dropped {n_drop} degenerate face(s) and merged {n_merge} duplicate vertex(es)"
+                            if (n_drop or n_merge) else ""))
     return meshes, float(min(feats)), float(np.median(edges)), open_files
 
 

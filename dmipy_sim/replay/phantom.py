@@ -656,13 +656,15 @@ class ReplayPhantom:
         self._check_relaxation(waveforms[0], loaded, forms)
         R_s = _pose_matrix(specimen)
         run, rows = current(), []
-        turned = [wf if R_s is None else rotate_waveform(wf, R_s.T) for wf in waveforms]   # G @ R_s: the acquisition in the specimen frame
+        turned = None                                                           # G @ R_s, the acquisition in the specimen frame: what a closed form reads
         for i, sub in enumerate(self.substrates):
             if sub["kind"] == "inert":
                 continue
             t_i = time.time()
             if sub["kind"] == "analytic":
                 form = self._form(i, sub, forms)                               # refuses an unknown closed form
+                if turned is None:
+                    turned = [wf if R_s is None else rotate_waveform(wf, R_s.T) for wf in waveforms]
                 for c, wf in enumerate(turned):
                     if sub.get("oriented", False) or getattr(form, "oriented", False):   # a form with an axis: expanded over
                         from .replay import analytic_pose_response               # SO(3) like a pack, then contracted

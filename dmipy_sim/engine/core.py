@@ -1334,8 +1334,8 @@ def simulate_trajectories(
         # batch of raw positions at a time and the walk at K+2 numbers per axis per walker
         _compress = compress is not None
         _cx = {"K": int(compress) if _compress else 0, "n_t": None}
-        all_blt_endpoints = [] if (_compress and record) else None
-        all_blt_starts = [] if (_compress and record) else None
+        all_blt_endpoints = _Rows(n_walkers) if (_compress and record) else None
+        all_blt_starts = _Rows(n_walkers) if (_compress and record) else None
         if _compress and is_packed_myelin_geom:
             raise NotImplementedError("compress= is not wired for packed-myelin walks (the MT bound channel has no "
                                       "bridge form); walk them uncompressed and pack with build_replay_pack.")
@@ -1347,11 +1347,6 @@ def simulate_trajectories(
             C, K = bridge_coefficients_device(pos_dev, _cx["K"])
             _cx["K"], _cx["n_t"] = int(K), int(pos_dev.shape[1])
             return C
-
-        def _compress_blt(dlog_dev):
-            """The batch's cumulative local time in the pack's C2 form: ``(start (b,), endpoint (b,), bands (b, K))``,
-            formed on the device."""
-            return boundary_coefficients_device(dlog_dev, _cx["K"])
 
         for batch_idx, (start, end) in enumerate(run.batches(n_walkers, walker_batch_size)):
             batch_size = end - start
@@ -1377,7 +1372,8 @@ def simulate_trajectories(
                         pos_f32, dlog_f32, comp_f32 = simulate_batch_relax(current_r0, current_keys)
                         if _compress:
                             all_batches.append(_compress_pos(pos_f32))
-                            _start, _end, _bmodes = _compress_blt(dlog_f32)
+                            # the cumulative local time in the pack's C2 form, formed on the device
+                            _start, _end, _bmodes = boundary_coefficients_device(dlog_f32, _cx["K"])
                             all_blt_starts.append(_start)
                             all_blt_endpoints.append(_end)
                             all_dlog_batches.append(_bmodes)
@@ -1464,18 +1460,17 @@ def simulate_trajectories(
                 f"See PersistentWalk.illegal_crossings.", RuntimeWarning, stacklevel=2)
 
         if _compress:
-            # Compressed master: IR modes instead of the raw trajectory. Decode with
-            # compression.decode / replay via compression.mode_space_signal (piece 2 wires
-            # this into replay() directly). `pos_modes` are [r(0), r(T)-r(0), sine bands].
+            # the walk in the pack's own coefficient form: `pos_modes` holds [r(0), r(T) - r(0), the K sine bands]
+            # per axis, which `build_replay_pack` stores as they are and `compression.decode` expands
             master = {
                 "compressed": True, "method": "bridge_dst", "K": _cx["K"],
                 "n_t": int(_cx["n_t"]), "dt_traj": dt_actual,
                 "sub_steps": sub_steps, "dt_sim": dt_sim,
-                "pos_modes": all_batches.array(),        # (N, K, 3) f32
+                "pos_modes": all_batches.array(),        # (N, K+2, 3) f32
             }
             if record:
-                master["blt_endpoint"] = np.concatenate(all_blt_endpoints, axis=0)  # (N,)
-                master["blt_start"] = np.concatenate(all_blt_starts, axis=0)        # (N,)
+                master["blt_endpoint"] = all_blt_endpoints.array()  # (N,)
+                master["blt_start"] = all_blt_starts.array()        # (N,)
                 master["blt_modes"] = all_dlog_batches.array()      # (N, K)
                 master["comp_traj"] = all_comp_batches.array()      # (N, n_t)
             return master

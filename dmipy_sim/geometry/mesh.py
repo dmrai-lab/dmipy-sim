@@ -141,7 +141,7 @@ def mesh_feature_radius(V, F):
     return 0.5 * float(np.median(e))
 
 
-def load_ply(path, scale=1.0, recenter=False):
+def load_ply(path, scale=1.0, recenter=False, repairs=None):
     """Load vertices and faces from a mesh file (PLY/STL/OBJ/...).
 
     Uses :mod:`trimesh` (install the ``mesh`` extra: ``pip install dmipy-sim[mesh]``).
@@ -153,6 +153,9 @@ def load_ply(path, scale=1.0, recenter=False):
     scale : float
         Multiply all coordinates by this factor — use it to convert a mesh stored
         in arbitrary/normalised units into **metres** (the simulator's unit).
+    repairs : dict, optional
+        Filled with what the loader repaired: ``degenerate_faces_dropped`` and ``duplicate_vertices_merged``
+        (the counts the warning states).
     recenter : bool
         If True, translate the mesh so its bounding box is centred on the origin.
 
@@ -185,6 +188,8 @@ def load_ply(path, scale=1.0, recenter=False):
             V, F = Vf.astype(np.float64), Ff.astype(np.int64)
     keep = nondegenerate_faces(V, F)
     V, F, n_merged = merge_duplicate_vertices(V, F[keep])                     # near-duplicate vertices: cracks and pinches
+    if repairs is not None:
+        repairs.update(degenerate_faces_dropped=int((~keep).sum()), duplicate_vertices_merged=int(n_merged))
     if not keep.all() or n_merged:
         warnings.warn(f"{path}: {int((~keep).sum())} degenerate face(s) (zero area or a repeated vertex) dropped and "
                       f"{n_merged} duplicate vertex(es) merged; a face without a normal cannot reflect a walker")
@@ -246,17 +251,13 @@ def nondegenerate_faces(V, F):
 
 
 def surface_topology(V, F):
-    """What closes a surface and what does not: ``dict(boundary_edges, nonmanifold_edges, degenerate_faces,
-    watertight)``. A surface with no boundary edge encloses its volume; an edge on three or more faces (a pinch
-    where two sheets touch) is reported and does not open it, while ``watertight`` is trimesh's stricter word for
-    every edge on exactly two faces."""
-    import trimesh
-    V = np.asarray(V, np.float64); F = np.asarray(F, np.int64)
-    m = trimesh.Trimesh(V, F, process=False)
+    """What closes a surface and what does not: ``dict(boundary_edges, nonmanifold_edges)``. A surface with no
+    boundary edge (an edge on one face) encloses its volume; an edge on three or more faces (a pinch where two
+    sheets touch) is reported and does not open it."""
+    F = np.asarray(F, np.int64)
     edges = np.sort(F[:, [0, 1, 1, 2, 2, 0]].reshape(-1, 2), axis=1)
     _, counts = np.unique(edges, axis=0, return_counts=True)
-    return dict(boundary_edges=int((counts == 1).sum()), nonmanifold_edges=int((counts > 2).sum()),
-                degenerate_faces=int((~nondegenerate_faces(V, F)).sum()), watertight=bool(m.is_watertight))
+    return dict(boundary_edges=int((counts == 1).sum()), nonmanifold_edges=int((counts > 2).sum()))
 
 
 class _MeshArrays(NamedTuple):
