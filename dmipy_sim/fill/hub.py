@@ -44,11 +44,8 @@ def _expected(adds):
 
 
 def _status(e):
-    try:
-        from huggingface_hub.errors import HfHubHTTPError
-    except ImportError:                                    # pragma: no cover
-        return None
-    return getattr(getattr(e, "response", None), "status_code", None) if isinstance(e, HfHubHTTPError) else None
+    """The HTTP status an exception carries (``e.response.status_code``: the hub's errors, and the fake hub's), else None."""
+    return getattr(getattr(e, "response", None), "status_code", None)
 
 
 def is_rate_limited(e):
@@ -280,9 +277,20 @@ class FakeHub(HubBase):
         return [(c["time"], c["message"]) for c in reversed(self.log)]
 
 
+class _HubHTTPError(Exception):
+    """The fake hub's HTTP error where ``huggingface_hub`` is not installed: the status on ``response`` like the real one's."""
+
+    def __init__(self, message, response):
+        super().__init__(message); self.response = response
+
+
 def _fake_http(message, code, reason):
-    import requests
-    from huggingface_hub.errors import HfHubHTTPError
+    import types
+    try:
+        import requests
+        from huggingface_hub.errors import HfHubHTTPError
+    except ImportError:
+        return _HubHTTPError(f"{code} Error: {reason} ({message})", types.SimpleNamespace(status_code=code, reason=reason))
     r = requests.Response(); r.status_code = code; r.reason = reason; r._content = reason.encode()
     r.request = requests.Request("POST", "https://fake/api/commit").prepare()
     return HfHubHTTPError(f"{code} Error: {reason} ({message})", response=r)
