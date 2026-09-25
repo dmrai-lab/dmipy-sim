@@ -231,12 +231,12 @@ def _spherical_jn_kernel(L, N):
 
 
 def spherical_jn_all(L, x, *, device="auto", extra=24, chunk_bytes=1 << 30):
-    """``j_0(x) .. j_L(x)`` for every entry of ``x``, ``(L+1,) + x.shape`` float64: :func:`replay._spherical_jn_all`
+    """``j_0(x) .. j_L(x)`` for every entry of ``x``, ``(L+1,) + x.shape`` float64: :func:`so3.spherical_jn_all`
     on the device in chunks, numpy's when there is none."""
-    from .replay import _spherical_jn_all
+    from . import so3
     x = np.asarray(x, np.float64)
     if resolve_device(device) == "numpy":
-        return _spherical_jn_all(L, x, extra=extra)
+        return so3.spherical_jn_all(L, x, extra=extra)
     import jax.numpy as jnp
     L = int(L); N = L + int(extra) + int(np.ceil(np.abs(x).max())) if x.size else L + int(extra)
     kernel = _spherical_jn_kernel(L, int(N))
@@ -276,6 +276,24 @@ def _field_bodies_kernel(nc, L, l_used, N_bessel, n_f):
     return kernel
 
 
+def host_bodies(kappa, m_hat, w, L, l_used, keep_n=None, J=None):
+    """``{l: (n_w, nc, 2k+1)}``: the bodies ``w_w j_l(kappa_wg) Y_ln(m^_wg)`` of every walker and group for the orders
+    ``l_used``, ``n`` within ``keep_n`` of zero (every ``2l+1`` column when ``None``), on the host. The gradient-only
+    expansion sums them over the walkers; the field expansion's host route contracts them against the field factor.
+    ``J`` ``(L+1, n_w, nc)`` supplies the Bessel values when a device already formed them."""
+    from . import so3
+    kappa = np.asarray(kappa, np.float64); m_hat = np.asarray(m_hat, np.float64); w = np.asarray(w, np.float64)
+    n_w, nc = kappa.shape
+    L = int(L)
+    Y = so3.real_sh(L, m_hat.reshape(-1, 3), full=True).reshape(n_w, nc, (L + 1) ** 2)
+    J = so3.spherical_jn_all(max(l_used), kappa) if J is None else np.asarray(J)
+    out = {}
+    for l in l_used:
+        k = so3._n_cols(l, keep_n) // 2
+        out[l] = (w[:, None] * J[l])[:, :, None] * Y[:, :, l * l + l - k:l * l + l + k + 1]
+    return out
+
+
 def field_bodies(kappa, m_hat, w, F_re, F_im, L, l_used, *, n_bessel, device="auto", chunk_bytes=1 << 30):
     """``B[(l, g, n), (l', m')] = sum_w w_w j_l(kappa_wg) Y_ln(m^_wg) F_w,l'm'`` for the groups of one chunk, ``(rows, n_f)``
     complex128, ``rows = nc * sum(2l+1 for l in l_used)``: the closed form's bodies against the field factor. On the
@@ -287,12 +305,8 @@ def field_bodies(kappa, m_hat, w, F_re, F_im, L, l_used, *, n_bessel, device="au
     l_used = tuple(int(l) for l in l_used)
     rows = nc * sum(2 * l + 1 for l in l_used)
     if resolve_device(device) == "numpy":
-        from . import so3
-        from .replay import _spherical_jn_all
-        Ym = so3.real_sh(int(L), m_hat.reshape(-1, 3), full=True).reshape(n_w, nc, (int(L) + 1) ** 2)
-        J = _spherical_jn_all(max(l_used), kappa)
-        X = np.concatenate([((w[:, None] * J[l])[:, :, None] * Ym[:, :, l * l:l * l + 2 * l + 1]).reshape(n_w, -1)
-                            for l in l_used], axis=1)
+        bodies = host_bodies(kappa, m_hat, w, L, l_used)
+        X = np.concatenate([bodies[l].reshape(n_w, -1) for l in l_used], axis=1)
         return (X.T @ F_re) + 1j * (X.T @ F_im)
     import jax.numpy as jnp
     kernel = _field_bodies_kernel(int(nc), int(L), l_used, int(n_bessel), int(F_re.shape[1]))
@@ -328,10 +342,10 @@ def bessel_tails(kappa, w, L_hi, *, device="auto", chunk_bytes=1 << 30):
     """``(L_hi+1, n_grp)`` float64: ``sum_w |w_w| |j_l(kappa_wg)|`` per order and group, the weighted Bessel magnitudes the
     closed form's band and tail bound read. On the device per walker chunk, summed on the host in float64; numpy's
     recurrence when there is none."""
-    from .replay import _spherical_jn_all
+    from . import so3
     kappa = np.asarray(kappa, np.float64); w = np.asarray(w, np.float64)
     if resolve_device(device) == "numpy":
-        J = _spherical_jn_all(int(L_hi), kappa)
+        J = so3.spherical_jn_all(int(L_hi), kappa)
         return np.einsum("lwg,w->lg", np.abs(J), np.abs(w))
     import jax.numpy as jnp
     n_w, nc = kappa.shape

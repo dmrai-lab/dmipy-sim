@@ -30,7 +30,6 @@ from ..persistent_walk import PersistentWalk
 from ..run import Run
 
 from . import compression as _cx
-from ._replay_kernel import se_gate, gradient_phase
 from ..acquisition.rf import RFEvent
 from .replay import ReplayPack, read_rpk, write_rpk
 
@@ -659,7 +658,6 @@ def _susc_path_fidelity(m, arrays, pm, gm, env):
     train at ``max_refocus_pulses``. The CPMG gate is the binding one: truncation error grows with
     gate bandwidth, so certifying on SE alone would pass a pack that fails the trains it advertises.
     """
-    from ..constants import GAMMA
     field = _field_of(m)
     if field is None or "susc_path_dct" not in arrays:
         return None
@@ -682,7 +680,6 @@ def _susc_path_fidelity(m, arrays, pm, gm, env):
     n_p = int(pm.get("max_refocus_pulses") or 1)
     gates = [np.ones(n_t), _cpmg_gate(n_t, 1), _cpmg_gate(n_t, n_p)]
     perm = np.random.RandomState(0).permutation(n_w); A, B = perm[:n_w // 2], perm[n_w // 2:]
-    wmean = lambda c, idx: float(np.sum(w[idx] * c[idx]) / np.sum(w[idx]))
     err = floor = 0.0
     for B0 in (env.get("B0_list") or [3.0, 7.0]):
         for th in (env.get("theta_deg") or [0, 90]):
@@ -1365,7 +1362,6 @@ def _walk_master(walk, *, weights=None, field=None, diffusivity=None, substrate_
     """The bank's master dict from a PersistentWalk plus the substrate metadata; a bank dict / .npz passes
     through."""
     from ..persistent_walk import PersistentWalk
-    from ..compartments import Compartments
     from ..fields.susceptibility_field import FieldGrid, field_grid_of
     if not isinstance(walk, PersistentWalk):
         if any(v is not None for v in (weights, diffusivity, substrate_frame)) or field not in ("auto", None, False):
