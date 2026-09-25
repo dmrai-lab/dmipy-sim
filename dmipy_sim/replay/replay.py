@@ -1773,26 +1773,18 @@ class ReplayPack:
         # (F^T, RPK.md 4.2) and then by R -- the identity for a pack whose frame is the identity
         Qf_axis = self.substrate_frame.T
 
+        from .pose_device import pose_samples
+        field_terms = None
+        if Psi is not None:
+            field_terms = (float(chi_iso) * float(B0), (float(chi_aniso) * float(B0) if (chi_aniso and i_a is not None) else 0.0), b,
+                           Psi[:, names.index("iso_local")], Psi[:, i_p:i_p + 6], (Psi[:, i_a:i_a + 6] if i_a is not None else None))
+        run = current()
+        _ph = (lambda name, **f: run.phase(name, **f)) if run is not None else (lambda name, **f: None)
+
         def response(R):
-            """The ensemble signal of every measurement at every one of these poses."""
-            E = np.empty((R.shape[0], n_meas), np.complex128)
-            for lo in range(0, R.shape[0], int(chunk)):
-                sl = slice(lo, min(lo + int(chunk), R.shape[0]))
-                Rc = R[sl] @ Qf_axis
-                if Psi is None:
-                    Ew = np.broadcast_to(ew[None, :].astype(np.complex128), (Rc.shape[0], n_w))
-                else:
-                    bs = np.einsum("nji,j->ni", Rc, b)                              # the field in the substrate frame
-                    Qf = np.stack([bs[:, 0] ** 2, bs[:, 1] ** 2, bs[:, 2] ** 2, 2 * bs[:, 0] * bs[:, 1],
-                                   2 * bs[:, 0] * bs[:, 2], 2 * bs[:, 1] * bs[:, 2]], axis=1)
-                    phi_chi = float(chi_iso) * float(B0) * (Psi[:, names.index("iso_local")][None, :]
-                                                            - Qf @ Psi[:, i_p:i_p + 6].T)
-                    if chi_aniso and i_a is not None:
-                        phi_chi = phi_chi + float(chi_aniso) * float(B0) * (Qf @ Psi[:, i_a:i_a + 6].T)
-                    Ew = np.exp(1j * phi_chi) * ew[None, :]
-                for i in range(n_meas):
-                    E[sl, i] = (Ew * np.exp(1j * np.einsum("nab,wab->nw", Rc, Q[:, i]))).sum(1) / norm
-            return E
+            """The ensemble signal of every measurement at every one of these poses: the sampling on the device it can
+            use (:func:`pose_device.pose_samples`), the poses turned into the canonical frame first."""
+            return pose_samples(R @ Qf_axis, Q, ew, norm, field=field_terms)
 
         # the phase the pose modulates, per measurement: the sampling band follows this, not a setting
         amp = np.linalg.norm(Q.reshape(n_w, n_meas, 9), axis=2)
@@ -1817,12 +1809,16 @@ class ReplayPack:
         # folds everything above it into those coefficients (and differently at different frames)
         Rq, wq, _dirs, _rolls = so3.so3_quadrature(S_L + int(over), S_N + int(over))
         n_feat = so3.n_so3_coeffs(keep_l, keep_n)
+        _ph("quadrature", n_nodes=int(Rq.shape[0]), S_L=int(S_L), keep_l=int(keep_l), keep_n=int(keep_n), n_feat=int(n_feat),
+            phase_amplitude=phi_amp)
         coeffs = np.zeros((n_feat, n_meas), np.complex128)
-        for lo in range(0, Rq.shape[0], int(chunk)):
+        E_q = response(Rq)                                                     # every node's signal, one sampling
+        for lo in range(0, Rq.shape[0], int(chunk)):                           # the projection, in blocks of nodes
             sl = slice(lo, min(lo + int(chunk), Rq.shape[0]))
             A = so3.so3_design(keep_l, Rq[sl], keep_n)
-            coeffs += (A * wq[sl, None]).T @ response(Rq[sl])
+            coeffs += (A * wq[sl, None]).T @ E_q[sl]
         floor = 1.0 / np.sqrt(n_w)
+        _ph("misfit")
 
         Rc, Ac = so3.haar_design(keep_l, keep_n, int(n_check), int(seed))
         if (keep_l, keep_n) == (S_L, S_N):
@@ -1833,10 +1829,11 @@ class ReplayPack:
             # hold is that the retained coefficients are alias-free: refine the grid and require them to stand.
             Rf, wf, _d, _r = so3.so3_quadrature(S_L + 2 * int(over) + 1, S_N + 2 * int(over) + 1)
             fine = np.zeros_like(coeffs)
+            E_f = response(Rf)
             for lo in range(0, Rf.shape[0], int(chunk)):
                 sl = slice(lo, min(lo + int(chunk), Rf.shape[0]))
                 A = so3.so3_design(keep_l, Rf[sl], keep_n)
-                fine += (A * wf[sl, None]).T @ response(Rf[sl])
+                fine += (A * wf[sl, None]).T @ E_f[sl]
             misfit = np.abs(Ac @ (coeffs - fine)).max(axis=0)
         if misfit.max() > floor:
             msg = (

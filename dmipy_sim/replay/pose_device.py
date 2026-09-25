@@ -91,3 +91,81 @@ def field_products(X, F_re, F_im, *, device="auto", chunk_bytes=1 << 30):
         re, im = kernel(jnp.asarray(X[sl], jnp.float32), jnp.asarray(F_re[sl], jnp.float32), jnp.asarray(F_im[sl], jnp.float32))
         out += np.asarray(re, np.float64) + 1j * np.asarray(im, np.float64)
     return out
+
+
+@functools.lru_cache(maxsize=8)
+def _samples_kernel(n_meas, with_field):
+    """``(Rc (c, 3, 3), Q (w, n_meas, 9), ew (w), [b (3), s_loc (w), P6 (w, 6), A6 (w, 6) or zeros, k_iso, k_aniso])
+    -> (E_re, E_im) (c, n_meas)`` float32: the ensemble signal of every measurement at every rotation of the chunk,
+    the walkers' phases ``<R, M_w>`` as one contraction and the field's quadratic form in the rotated field
+    direction when the pack carries one."""
+    import jax
+    import jax.numpy as jnp
+    hi = jax.lax.Precision.HIGHEST
+
+    @jax.jit
+    def kernel(Rc, Q, ew, b, s_loc, P6, A6, k_iso, k_aniso):
+        c = Rc.shape[0]
+        ph = jnp.einsum("ck,wmk->cwm", Rc.reshape(c, 9), Q, precision=hi)          # (c, w, n_meas) radians
+        if with_field:
+            bs = jnp.einsum("cji,j->ci", Rc, b, precision=hi)                       # the field in the substrate frame
+            Qf = jnp.stack([bs[:, 0] ** 2, bs[:, 1] ** 2, bs[:, 2] ** 2, 2 * bs[:, 0] * bs[:, 1],
+                            2 * bs[:, 0] * bs[:, 2], 2 * bs[:, 1] * bs[:, 2]], axis=1)      # (c, 6)
+            phi = k_iso * (s_loc[None, :] - jnp.matmul(Qf, P6.T, precision=hi)) + k_aniso * jnp.matmul(Qf, A6.T, precision=hi)
+            ph = ph + phi[:, :, None]
+        wc, ws = ew[None, :, None] * jnp.cos(ph), ew[None, :, None] * jnp.sin(ph)
+        return wc.sum(1), ws.sum(1)
+
+    return kernel
+
+
+def pose_samples(R, Q, ew, norm, *, field=None, device="auto", chunk_bytes=1 << 30):
+    """The ensemble signal ``(n_R, n_meas)`` complex128 of every measurement at every rotation of ``R``
+    ``(n_R, 3, 3)``: ``E[r, i] = sum_w ew_w exp(i (<R_r, M_w,i> + phi_w(R_r))) / norm`` with ``Q`` the walkers'
+    moment tensors ``(n_w, n_meas, 3, 3)`` and, when ``field`` is given, ``phi`` the susceptibility phase
+    ``(k_iso, k_aniso, b, s_loc (n_w,), P6 (n_w, 6), A6 (n_w, 6) or None)`` in the rotated field direction.
+    The quadrature route's sampling (:meth:`ReplayPack._pose_coeffs`): on the device in chunks of rotations and
+    walkers sized to ``chunk_bytes`` of phase, every chunk's partial sum accumulated on the host in float64; the
+    numpy route when there is none."""
+    R = np.asarray(R, np.float64); Q = np.asarray(Q, np.float64); ew = np.asarray(ew, np.float64)
+    n_R, n_w, n_meas = R.shape[0], Q.shape[0], Q.shape[1]
+    E = np.zeros((n_R, n_meas), np.complex128)
+    if field is not None:
+        k_iso, k_aniso, b, s_loc, P6, A6 = field
+        b = np.asarray(b, np.float64); b = b / np.linalg.norm(b)
+        s_loc = np.asarray(s_loc, np.float64); P6 = np.asarray(P6, np.float64)
+        A6 = np.zeros_like(P6) if A6 is None else np.asarray(A6, np.float64)
+    if resolve_device(device) == "numpy":
+        step = max(1, int(chunk_bytes // (16 * n_w * n_meas)))
+        for lo in range(0, n_R, step):
+            sl = slice(lo, min(lo + step, n_R)); Rc = R[sl]
+            if field is None:
+                Ew = np.broadcast_to(ew[None, :].astype(np.complex128), (Rc.shape[0], n_w))
+            else:
+                bs = np.einsum("nji,j->ni", Rc, b)
+                Qf = np.stack([bs[:, 0] ** 2, bs[:, 1] ** 2, bs[:, 2] ** 2, 2 * bs[:, 0] * bs[:, 1],
+                               2 * bs[:, 0] * bs[:, 2], 2 * bs[:, 1] * bs[:, 2]], axis=1)
+                phi = float(k_iso) * (s_loc[None, :] - Qf @ P6.T) + float(k_aniso) * (Qf @ A6.T)
+                Ew = np.exp(1j * phi) * ew[None, :]
+            for i in range(n_meas):
+                E[sl, i] = (Ew * np.exp(1j * np.einsum("nab,wab->nw", Rc, Q[:, i]))).sum(1) / norm
+        return E
+    import jax.numpy as jnp
+    kernel = _samples_kernel(int(n_meas), field is not None)
+    Q9 = Q.reshape(n_w, n_meas, 9)
+    w_step = max(1, int(chunk_bytes // (8 * 64 * n_meas)))                           # walkers per 64-rotation chunk
+    w_step = min(w_step, n_w); r_step = max(1, int(chunk_bytes // (8 * w_step * n_meas)))
+    zeros3 = jnp.zeros(3, jnp.float32)
+    for wlo in range(0, n_w, w_step):
+        ws = slice(wlo, min(wlo + w_step, n_w))
+        d_Q = jnp.asarray(Q9[ws], jnp.float32); d_ew = jnp.asarray(ew[ws], jnp.float32)
+        if field is None:
+            d_b, d_s, d_P, d_A, ki, ka = zeros3, jnp.zeros(ws.stop - ws.start, jnp.float32), jnp.zeros((ws.stop - ws.start, 6), jnp.float32), jnp.zeros((ws.stop - ws.start, 6), jnp.float32), 0.0, 0.0
+        else:
+            d_b = jnp.asarray(b, jnp.float32); d_s = jnp.asarray(s_loc[ws], jnp.float32)
+            d_P = jnp.asarray(P6[ws], jnp.float32); d_A = jnp.asarray(A6[ws], jnp.float32); ki, ka = float(k_iso), float(k_aniso)
+        for lo in range(0, n_R, r_step):
+            sl = slice(lo, min(lo + r_step, n_R))
+            re, im = kernel(jnp.asarray(R[sl], jnp.float32), d_Q, d_ew, d_b, d_s, d_P, d_A, jnp.float32(ki), jnp.float32(ka))
+            E[sl] += (np.asarray(re, np.float64) + 1j * np.asarray(im, np.float64)) / norm
+    return E

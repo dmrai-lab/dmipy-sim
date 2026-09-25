@@ -44,3 +44,30 @@ def test_the_field_products_on_the_device_are_the_numpy_ones_to_float32_rounding
     ref = field_products(X, F.real, F.imag, device="numpy")
     dev = field_products(X, F.real, F.imag, device="jax", chunk_bytes=1 << 18)         # several chunks
     assert np.abs(dev - ref).max() <= 1e-6 * np.abs(ref).max()
+
+
+def _samples_case(n_w=2000, n_meas=3, n_R=50, seed=2):
+    from dmipy_sim.replay import so3
+    rng = np.random.default_rng(seed)
+    Q = rng.normal(size=(n_w, n_meas, 3, 3)) * 1.5
+    ew = rng.uniform(0.5, 1.5, n_w)
+    R = so3.haar_rotations(n_R, seed)
+    field = (0.7, 0.2, np.array([0.1, 0.3, 0.9]), rng.normal(size=n_w), rng.normal(size=(n_w, 6)), rng.normal(size=(n_w, 6)))
+    return R, Q, ew, field
+
+
+def test_pose_samples_on_the_device_are_the_numpy_ones_to_float32_rounding():
+    from dmipy_sim.replay.pose_device import pose_samples
+    R, Q, ew, field = _samples_case()
+    for f in (None, field):
+        ref = pose_samples(R, Q, ew, ew.sum(), field=f, device="numpy")
+        dev = pose_samples(R, Q, ew, ew.sum(), field=f, device="jax", chunk_bytes=1 << 18)   # several chunks both ways
+        assert np.abs(dev - ref).max() <= 3e-6, np.abs(dev - ref).max()
+
+
+def test_pose_samples_numpy_route_is_chunk_independent():
+    from dmipy_sim.replay.pose_device import pose_samples
+    R, Q, ew, field = _samples_case(n_w=400, n_R=20)
+    whole = pose_samples(R, Q, ew, ew.sum(), field=field, device="numpy")
+    parts = pose_samples(R, Q, ew, ew.sum(), field=field, device="numpy", chunk_bytes=1 << 14)
+    assert np.abs(whole - parts).max() <= 1e-13
