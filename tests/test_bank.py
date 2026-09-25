@@ -445,3 +445,36 @@ def test_lossless_positions_take_the_grid_route_under_auto():
     with pytest.raises(ValueError, match="'auto'"):
         build_replay_pack(_susc_master(), id="test/x", method="bridge_dst", envelope=env, K=64, susc_path_K="derived",
                           license="CC-BY-4.0", citation="test")
+
+
+def _small_master(n, n_w=64, seed=0):
+    """A small real walk standing in for a walk of ``n`` walkers; the floor stubs below read the count asked for."""
+    return _slab_master(n_w=n_w, seed=seed)
+
+
+def test_build_to_floor_keeps_topping_up_until_the_floor_is_met(monkeypatch):
+    """The floor of the pilot underestimates and the floor falls slower than N^-1/2, so every estimate
+    undershoots: one top-up leaves the target unmet (#441). The policy walks again from the last
+    measurement until the floor is met, and the pack records that it is."""
+    from dmipy_sim.replay import bank
+    asked = []
+    floor_of = lambda n: 0.01 if n == 8000 else 0.02 * (8000 / n) ** 0.25
+    monkeypatch.setattr(bank, "_measure_floor", lambda m, env, **kw: floor_of(asked[-1]))
+    pk = build_to_floor(lambda n: (asked.append(int(n)), _small_master(n))[1], id="test/floor-loop",
+                        sigma_star=5e-3, pilot_n=8000, max_n=10_000_000, verbose=False,
+                        license="CC0-1.0", citation="test")
+    assert len(asked) >= 4, asked                                   # pilot, N*, and at least two top-ups
+    assert all(b > a for a, b in zip(asked, asked[1:])), asked        # the count only grows
+    assert floor_of(asked[-1]) <= 5e-3                                # and the last walk meets the floor
+    assert pk.fidelity.get("target_floor") == 5e-3
+
+
+def test_build_to_floor_stops_at_the_cap_and_says_the_target_is_not_met(monkeypatch):
+    from dmipy_sim.replay import bank
+    asked = []
+    monkeypatch.setattr(bank, "_measure_floor", lambda m, env, **kw: 0.02)   # never met
+    pk = build_to_floor(lambda n: (asked.append(int(n)), _small_master(n))[1], id="test/floor-cap",
+                        sigma_star=5e-3, pilot_n=8000, max_n=50_000, verbose=False,
+                        license="CC0-1.0", citation="test")
+    assert asked[-1] == 50_000 and asked.count(50_000) == 1, asked   # walked the cap once, then stopped
+    assert pk.fidelity.get("target_floor") == 5e-3
