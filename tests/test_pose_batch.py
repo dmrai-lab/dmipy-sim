@@ -41,13 +41,12 @@ def test_a_batch_gives_each_acquisition_its_own_response(pack):
 
 def test_a_multi_axis_member_of_a_batch_takes_the_quadrature_alone(pack):
     a, b, _ = _acquisitions()
+    import dataclasses
     tensor = sequences.pgse([[1, 0, 0]], 2e-3, 5e-3, gradient_strengths=[0.3], TE=10e-3)
-    from dmipy_sim.acquisition.waveforms import rotate_waveform
     G = np.asarray(tensor.G).copy()
-    G[:, :, 1] = 0.5 * G[:, :, 0] * np.linspace(0, 1, G.shape[1])[None, :]         # a second axis with another shape: rank 2
-    tensor = tensor.replace(G=G) if hasattr(tensor, "replace") else tensor
-    if not np.linalg.matrix_rank(np.asarray(tensor.G)[0]) > 1:
-        pytest.skip("could not build a multi-axis measurement on this sequence type")
+    G[:, :, 1] = 0.5 * G[:, ::-1, 0]                                              # a second axis, balanced, with another shape: rank 2
+    tensor = dataclasses.replace(tensor, G=G)
+    assert np.linalg.matrix_rank(np.asarray(tensor.G)[0]) == 2
     batch = pack.pose_responses([a, tensor, b], keep=(6, 0))
     assert batch[0].route == "closed" and batch[2].route == "closed"
     assert batch[1].route == "quadrature"

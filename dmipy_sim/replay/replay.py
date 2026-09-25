@@ -113,7 +113,7 @@ class PoseResponse:
         out = cls(z["coeffs"], int(z["lmax"]), int(z["nmax"]), z["misfit"], float(z["floor"]), float(z["phase_amplitude"]),
                   int(z["n_samples"]))
         out.route = str(z["route"]); nb = int(z["n_bodies"]); out.n_bodies = None if nb < 0 else nb
-        out.field_lmax = int(z["field_lmax"])
+        out.field_lmax = int(z["field_lmax"]) if "field_lmax" in z.files else 0   # a cache written before the field tier
         return out
 
     @property
@@ -1467,25 +1467,32 @@ class ReplayPack:
         raise ValueError("orientation is a (3, 3) rotation, a (3,) axis direction, or a distribution of poses "
                          "(dmipy_sim.replay.so3.Distribution, or an FOD read as an axis density)")
 
-    def _pose_coeffs_closed(self, P, waveform, keep=None, tol=1e-8, l_cap=64):
-        """The pose expansion in closed form (#197): the response of a single-direction encoding is a sum of plane
-        waves in the rotated moment of each walker, and a plane wave's harmonics are the Rayleigh expansion.
+    def _pose_coeffs_closed_many(self, Ps, waveforms, keep=None, tol=1e-8, l_cap=64):
+        """The pose expansion in closed form (#197) for a batch of acquisitions on this pack -- the encoding classes
+        of a machine pass, or one class per voxel -- in ONE pass over the walkers: every acquisition's waveform
+        groups lie along one group axis, so the moments, the Bessel values, the moment harmonics and the products
+        against the field factor run once for all of them, in chunks of groups, and the lab-side assembly is per
+        acquisition. The field factor is one for the batch (the gate and the field are the acquisition's, not the
+        gradient's). Returns one :class:`PoseResponse` per acquisition, ``None`` where an acquisition is not
+        single-direction (dmrai-lab/dmipy-sim#449).
 
+        waves in the rotated moment of each walker, and a plane wave's harmonics are the Rayleigh expansion.
+        
         Measurement ``i`` plays ``G_i(t) = g_i s_i(t)``; walker ``w``'s phase at pose ``R`` is ``kappa g^ . R m^``
         with ``m_w = gamma sum_t s_i(t) r_w(t) dt`` (the moment, in the canonical frame) and ``kappa = |g||m|``. Then
-
+        
             exp(i kappa g^.R m^) = 4 pi sum_l i^l j_l(kappa) sum_m Y_lm(g^) sum_n M^l(R)[m, n] Y_ln(m^)
-
+        
         so in the basis ``sqrt(2l+1) M^l(R)[m, n]`` the ``(l, m, n)`` coefficient of the ensemble is
-
+        
             c^l_mn = 4 pi i^l / sqrt(2l+1) * Y_lm(g^_i) * sum_w ew_w j_l(kappa_w) Y_ln(m^_w) / norm
-
+        
         -- one contraction over walkers per order, no rotation ever evaluated. ``j_l(kappa)`` dies above
         ``l ~ kappa``, so the band is the largest phase amplitude and nothing is chosen: orders are added until
         their weighted Bessel tail is below ``tol``. ``keep`` restrains the band as before: an ODF or peaks
         composition keeps ``n = 0`` only, which here is the Legendre polynomial of the moment's angle to the
         substrate axis and never a roll quadrature.
-
+        
         **The field.** The susceptibility phase of a walker is ``a_w + u^T A_w u`` in the field direction
         ``u = R^T b`` (:meth:`_field_quadratic`), a function on the sphere whose harmonics ``a_l'm'`` are read
         off a product quadrature exact to its own band (the band follows the phase amplitude ``|A_w|``, orders
@@ -1493,21 +1500,12 @@ class ReplayPack:
         contracted with the real coupling tables (:func:`so3.coupling`) on the lab index (``Y_lm(g^)`` with
         ``Y_l'n'(b^)``) and on the body index (``j_l Y_ln(m^)`` with ``a_l'm'``); no ``g x B0`` frame exists.
         Returns None when a measurement is not single-direction (a b-tensor encoding): that takes the quadrature.
+        
         """
-        return self._pose_coeffs_closed_many([P], [waveform], keep=keep, tol=tol, l_cap=l_cap)[0]
-
-    def _pose_coeffs_closed_many(self, Ps, waveforms, keep=None, tol=1e-8, l_cap=64):
-        """:meth:`_pose_coeffs_closed` for a batch of acquisitions on this pack -- the encoding classes of a machine
-        pass, or one class per voxel -- in ONE pass over the walkers: every acquisition's waveform groups lie along
-        one group axis, so the moments, the Bessel values, the moment harmonics and the products against the field
-        factor run once for all of them, in chunks of groups, and the lab-side assembly is per acquisition. The
-        field factor is one for the batch (the gate and the field are the acquisition's, not the gradient's).
-        Returns one :class:`PoseResponse` per acquisition, ``None`` where an acquisition is not single-direction
-        (dmrai-lab/dmipy-sim#449)."""
         from . import so3
         from .compression import read_position_coeffs
         from ._replay_kernel import effective_gradient
-        from .pose_device import field_products, real_sh as _real_sh, spherical_jn_all as _jn_all
+        from .pose_device import bessel_tails, real_sh as _real_sh, spherical_jn_all as _jn_all
         n_acq = len(Ps)
         P0 = Ps[0]
         dt, n_t, ew, norm = P0["dt"], P0["n_t"], P0["pathway"] * P0["ew"], P0["norm"]
@@ -1570,11 +1568,13 @@ class ReplayPack:
         k_max = float(kappa.max()) if kappa.size else 0.0
         _ph("bessel", n_grp=int(n_grp), phase_amplitude=k_max)
         L = int(np.ceil(k_max)) + 2
-        J_all = _jn_all(min(l_cap, L + 12), kappa)                             # (L_hi+1, n_w, n_grp), on the device it can use
+        # the weighted Bessel magnitudes per order and group, from the device it can use: the values themselves
+        # stay where the bodies are formed (pose_device.field_bodies); only these sums come back
+        T_ab = bessel_tails(kappa, w, min(l_cap, L + 12))                       # (L_hi+1, n_grp)
         while L < l_cap:
-            if L + 1 >= J_all.shape[0]:
-                J_all = _jn_all(min(l_cap, J_all.shape[0] + 12), kappa)
-            tail = (2 * (L + 1) + 1) * (np.abs(w)[:, None] * np.abs(J_all[L + 1])).sum(0).max()
+            if L + 1 >= T_ab.shape[0]:
+                T_ab = bessel_tails(kappa, w, min(l_cap, T_ab.shape[0] + 12))
+            tail = (2 * (L + 1) + 1) * T_ab[L + 1].max()
             if tail < tol:
                 break
             L += 1
@@ -1591,8 +1591,9 @@ class ReplayPack:
         n_feat = so3.n_so3_coeffs(keep_l, keep_n)
         _ph("harmonics", L=int(L), L_f=int(L_f), keep_l=int(keep_l), keep_n=int(keep_n), n_feat=int(n_feat))
         cos_z = m_hat[:, :, 2]
-        J = [J_all[l] for l in range(L + 1)]                                    # (n_w, n_grp) per order
         if field is None:
+            J_all = _jn_all(L, kappa)                                          # (L+1, n_w, n_grp): the bodies read them here
+            J = [J_all[l] for l in range(L + 1)]
             # ---- gradient only: one body per order and group, outer product with the direction harmonics
             bodies = [None] * (keep_l + 1)                                      # per order: (n_grp, 2k+1)
             if keep_n == 0:                                                     # n = 0 only: the Legendre of the angle to the axis
@@ -1621,8 +1622,8 @@ class ReplayPack:
             # walkers per group, then coupled on both indices into the total order L_tot
             b_lab = np.asarray(P0["b0_dir"], np.float64); b_lab = b_lab / np.linalg.norm(b_lab)
             Yb = so3.real_sh(L_f, b_lab[None, :], full=True)[0]                 # ((L_f+1)^2,): the field direction, lab side
-            # the field factor as two contiguous real blocks: a .real view of a complex array strides 16 bytes on
-            # its last axis, which BLAS does not take, and numpy's fallback loop is twenty times slower per product
+            # the field factor as two contiguous real blocks, for field_bodies' host route (BLAS does not take a
+            # .real view's 16-byte stride) and for the float32 copies its device route makes
             F_re, F_im = np.ascontiguousarray(F_sh.real), np.ascontiguousarray(F_sh.imag)
             n_cols = (L + 1) ** 2
             l_used = [l for l in range(L + 1) if l <= keep_l + L_f]
@@ -1633,8 +1634,8 @@ class ReplayPack:
             # of groups: B[g, (l, n), (l', m')] = sum_w w j_l(kappa) Y_ln(m^) a_l'm'(w)
             B_full = np.empty((n_grp, n_rows, F_sh.shape[1]), np.complex128)
             from .pose_device import field_bodies
-            n_bessel = J_all.shape[0] - 1
-            step = max(1, int(2.5e8 / (8 * n_w * n_cols)))
+            n_bessel = max(l_used) + 24 + int(np.ceil(k_max))                   # the Miller recurrence's start order
+            step = max(1, int(2.5e8 / (8 * n_w * n_cols)))                       # groups per ~256 MB of host harmonics (the numpy route)
             for lo in range(0, n_grp, step):
                 sl = slice(lo, min(lo + step, n_grp)); nc = sl.stop - sl.start
                 if run is not None:
@@ -1668,8 +1669,8 @@ class ReplayPack:
         # what the expansion cannot hold pointwise: the orders above the band it was built to, as a bound from
         # |P_l| <= 1 -- below tol by construction
         tail_all = np.zeros(n_grp)
-        for l in range(L + 1, min(L + 4, J_all.shape[0])):
-            tail_all += (2 * l + 1) * (np.abs(w)[:, None] * np.abs(J_all[l])).sum(0)
+        for l in range(L + 1, min(L + 4, T_ab.shape[0])):
+            tail_all += (2 * l + 1) * T_ab[l]
         # ---- the lab side and the assembly, per acquisition
         out = [None] * n_acq
         for c in live:

@@ -1,4 +1,4 @@
-"""The pose expansion's device kernels: what the closed form (:meth:`ReplayPack._pose_coeffs_closed`) computes over
+"""The pose expansion's device kernels: what the closed form (:meth:`ReplayPack._pose_coeffs_closed_many`) computes over
 every walker, formed on the device it can use, in walker chunks (dmrai-lab/dmipy-sim#449).
 
 Every kernel has the host route as its oracle: the numpy computation it replaces is what the tests compare it to,
@@ -55,41 +55,6 @@ def field_factor(a, A, dirs, Yw, *, device="auto", chunk_bytes=1 << 30):
         sl = slice(lo, min(lo + step, n_w))
         out[sl] = np.asarray(kernel(jnp.asarray(a[sl], jnp.float32), jnp.asarray(A[sl], jnp.float32), d_dirs, d_Yw),
                              np.complex128)
-    return out
-
-
-@functools.lru_cache(maxsize=8)
-def _products_kernel(n_rows, n_cols):
-    """``(X (c, n_rows), F_re (c, n_cols), F_im (c, n_cols)) -> (X^T F_re, X^T F_im)`` float32 for one chunk of walkers."""
-    import jax
-    import jax.numpy as jnp
-    hi = jax.lax.Precision.HIGHEST
-
-    @jax.jit
-    def kernel(X, F_re, F_im):
-        Xt = X.T
-        return jnp.matmul(Xt, F_re, precision=hi), jnp.matmul(Xt, F_im, precision=hi)
-
-    return kernel
-
-
-def field_products(X, F_re, F_im, *, device="auto", chunk_bytes=1 << 30):
-    """``X^T (F_re + i F_im)`` over the walkers, ``(n_rows, n_cols)`` complex128: every gradient order's body against
-    the field factor as one product. On the device per walker chunk (float32 at ``HIGHEST``), each chunk's partial
-    sum accumulated on the host in float64 so that the sum over the walkers never rounds in float32; the numpy
-    route when there is none."""
-    X = np.asarray(X, np.float64); F_re = np.asarray(F_re, np.float64); F_im = np.asarray(F_im, np.float64)
-    n_w = X.shape[0]
-    if resolve_device(device) == "numpy":
-        return (X.T @ F_re) + 1j * (X.T @ F_im)
-    import jax.numpy as jnp
-    kernel = _products_kernel(int(X.shape[1]), int(F_re.shape[1]))
-    out = np.zeros((X.shape[1], F_re.shape[1]), np.complex128)
-    step = max(1, int(chunk_bytes // (4 * (X.shape[1] + 2 * F_re.shape[1]))))
-    for lo in range(0, n_w, step):
-        sl = slice(lo, min(lo + step, n_w))
-        re, im = kernel(jnp.asarray(X[sl], jnp.float32), jnp.asarray(F_re[sl], jnp.float32), jnp.asarray(F_im[sl], jnp.float32))
-        out += np.asarray(re, np.float64) + 1j * np.asarray(im, np.float64)
     return out
 
 
@@ -334,4 +299,42 @@ def field_bodies(kappa, m_hat, w, F_re, F_im, L, l_used, *, n_bessel, device="au
         re, im = kernel(jnp.asarray(kappa[sl], jnp.float32), jnp.asarray(m_hat[sl], jnp.float32), jnp.asarray(w[sl], jnp.float32),
                         jnp.asarray(F_re[sl], jnp.float32), jnp.asarray(F_im[sl], jnp.float32))
         out += np.asarray(re, np.float64) + 1j * np.asarray(im, np.float64)
+    return out
+
+
+@functools.lru_cache(maxsize=8)
+def _bessel_tails_kernel(L_hi, N):
+    """``(kappa (c, nc), w (c,)) -> (L_hi+1, nc)`` float32: ``sum_w |w_w| |j_l(kappa_wg)|`` for every order and group of
+    one chunk of walkers -- what the band and the tail bound of the closed form read; the values never return."""
+    import jax
+    import jax.numpy as jnp
+    jn = _spherical_jn_kernel(L_hi, N)
+
+    @jax.jit
+    def kernel(kappa, w):
+        c, nc = kappa.shape
+        J = jn(kappa.reshape(-1)).reshape(-1, c, nc)                               # (L_hi+1, c, nc)
+        return jnp.einsum("lwg,w->lg", jnp.abs(J), jnp.abs(w))
+
+    return kernel
+
+
+def bessel_tails(kappa, w, L_hi, *, device="auto", chunk_bytes=1 << 30):
+    """``(L_hi+1, n_grp)`` float64: ``sum_w |w_w| |j_l(kappa_wg)|`` per order and group, the weighted Bessel magnitudes the
+    closed form's band and tail bound read. On the device per walker chunk, summed on the host in float64; numpy's
+    recurrence when there is none."""
+    from .replay import _spherical_jn_all
+    kappa = np.asarray(kappa, np.float64); w = np.asarray(w, np.float64)
+    if resolve_device(device) == "numpy":
+        J = _spherical_jn_all(int(L_hi), kappa)
+        return np.einsum("lwg,w->lg", np.abs(J), np.abs(w))
+    import jax.numpy as jnp
+    n_w, nc = kappa.shape
+    N = int(L_hi) + 24 + int(np.ceil(np.abs(kappa).max())) if kappa.size else int(L_hi) + 24
+    kernel = _bessel_tails_kernel(int(L_hi), N)
+    out = np.zeros((int(L_hi) + 1, nc), np.float64)
+    step = max(1, int(chunk_bytes // (4 * nc * (N + 4))))
+    for lo in range(0, n_w, step):
+        sl = slice(lo, min(lo + step, n_w))
+        out += np.asarray(kernel(jnp.asarray(kappa[sl], jnp.float32), jnp.asarray(w[sl], jnp.float32)), np.float64)
     return out

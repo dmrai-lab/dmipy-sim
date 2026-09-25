@@ -35,17 +35,6 @@ def test_the_numpy_route_is_chunk_independent():
     assert np.abs(whole - parts).max() <= 1e-12 * np.abs(whole).max()
 
 
-def test_the_field_products_on_the_device_are_the_numpy_ones_to_float32_rounding():
-    from dmipy_sim.replay.pose_device import field_products
-    rng = np.random.default_rng(1)
-    n_w = 5000
-    X = rng.normal(size=(n_w, 30)) / n_w
-    F = rng.normal(size=(n_w, 49)) + 1j * rng.normal(size=(n_w, 49))
-    ref = field_products(X, F.real, F.imag, device="numpy")
-    dev = field_products(X, F.real, F.imag, device="jax", chunk_bytes=1 << 18)         # several chunks
-    assert np.abs(dev - ref).max() <= 1e-6 * np.abs(ref).max()
-
-
 def _samples_case(n_w=2000, n_meas=3, n_R=50, seed=2):
     from dmipy_sim.replay import so3
     rng = np.random.default_rng(seed)
@@ -111,3 +100,13 @@ def test_the_field_bodies_on_the_device_are_the_numpy_ones_to_float32_rounding()
     dev = field_bodies(kappa, m_hat, w, F.real, F.imag, L, l_used, n_bessel=L + 24 + 9, device="jax", chunk_bytes=1 << 20)
     assert dev.shape == ref.shape == (nc * (L + 1) ** 2, n_f)
     assert np.abs(dev - ref).max() <= 1e-5 * np.abs(ref).max(), np.abs(dev - ref).max() / np.abs(ref).max()
+
+
+def test_the_bessel_tails_on_the_device_are_the_numpy_ones_to_float32_rounding():
+    from dmipy_sim.replay.pose_device import bessel_tails
+    rng = np.random.default_rng(7)
+    kappa = rng.uniform(0.0, 12.0, size=(4000, 3)); w = rng.uniform(0.5, 1.5, 4000) / 4000
+    ref = bessel_tails(kappa, w, 20, device="numpy")
+    dev = bessel_tails(kappa, w, 20, device="jax", chunk_bytes=1 << 16)
+    assert dev.shape == ref.shape == (21, 3)
+    assert np.abs(dev - ref).max() <= 1e-5 * np.abs(ref).max()
