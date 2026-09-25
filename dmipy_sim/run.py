@@ -241,7 +241,7 @@ class Run:
                                  f"this is {self.producer} {self.params}")
             self.resumed = True
         self.started = time.time()
-        self.id = f"{_dt.datetime.utcfromtimestamp(self.started).strftime('%Y%m%dT%H%M%S')}-{self.producer}-{os.getpid()}"
+        self.id = f"{_dt.datetime.fromtimestamp(self.started, tz=_dt.timezone.utc).strftime('%Y%m%dT%H%M%S')}-{self.producer}-{os.getpid()}"
         self._events = []                            # buffered until persisted
         self._fh = None
         self._dir = None
