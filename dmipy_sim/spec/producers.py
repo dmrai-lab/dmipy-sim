@@ -117,7 +117,7 @@ def _surface_stats(paths, scale, notes=None):
             open_files.append(p)
         elif notes is not None and (topo["nonmanifold_edges"] or dropped):
             notes.append(f"{os.path.basename(p)}: closed; {topo['nonmanifold_edges']} edge(s) on three or more faces kept"
-                         + (f", {dropped[0].split(': ', 1)[1].split(' dropped')[0]} dropped by the loader" if dropped else ""))
+                         + (f"; the loader {dropped[0].split(': ', 1)[1].split('; a face')[0]}" if dropped else ""))
     return meshes, float(min(feats)), float(np.median(edges)), open_files
 
 

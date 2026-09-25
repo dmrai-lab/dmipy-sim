@@ -185,12 +185,26 @@ def load_ply(path, scale=1.0, recenter=False):
             V, F = Vf.astype(np.float64), Ff.astype(np.int64)
     keep = nondegenerate_faces(V, F)
     if not keep.all():
-        warnings.warn(f"{path}: {int((~keep).sum())} degenerate face(s) (zero area or a repeated vertex) dropped; a face "
-                      f"without a normal cannot reflect a walker")
         F = F[keep]
+        V, F, n_merged = merge_duplicate_vertices(V, F)                      # the sheets a degenerate face bridged
+        warnings.warn(f"{path}: {int((~keep).sum())} degenerate face(s) (zero area or a repeated vertex) dropped and "
+                      f"{n_merged} duplicate vertex(es) merged; a face without a normal cannot reflect a walker")
     if recenter:
         V = V - 0.5 * (V.min(0) + V.max(0))
     return V * scale, F
+
+
+def merge_duplicate_vertices(V, F):
+    """``(V, F, n_merged)`` with vertices at exactly the same position made one: what a writer that duplicates a
+    vertex where two sheets meet leaves behind, and what turns a boundary edge there into a shared one."""
+    V = np.asarray(V, np.float64); F = np.asarray(F, np.int64)
+    _, first, inverse = np.unique(V, axis=0, return_index=True, return_inverse=True)
+    inverse = np.asarray(inverse).reshape(-1)
+    if len(first) == len(V):
+        return V, F, 0
+    order = np.argsort(first)                                             # keep the vertices in their first-seen order
+    rank = np.empty(len(first), np.int64); rank[order] = np.arange(len(first))
+    return V[np.sort(first)], rank[inverse][F], int(len(V) - len(first))
 
 
 def nondegenerate_faces(V, F):

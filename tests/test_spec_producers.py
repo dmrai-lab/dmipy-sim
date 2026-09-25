@@ -115,8 +115,8 @@ def _pinched_tube(dir_path, r_out=2.0, height=20.0):
     V, F = np.asarray(m.vertices), np.asarray(m.faces)
     a, b, c = F[0]
     V2 = V + np.array([0.0, 0.0, 2.0 * height]); F2 = F + len(V)
-    F2 = np.where(F2 == a + len(V), a, F2); F2 = np.where(F2 == b + len(V), b, F2)      # the copy shares the edge (a, b)
-    F_all = np.vstack([F, F2, [a, b, a]])                                                   # and one face with a repeated vertex
+    V2[a] = V[a]; V2[b] = V[b]                                    # the copy's a, b sit exactly on the original's: duplicates
+    F_all = np.vstack([F, F2, [a, b, a]])                          # and one face with a repeated vertex, as the writer left it
     trimesh.Trimesh(np.vstack([V, V2]), F_all, process=False).export(inner)
     return inner, outer
 
@@ -126,7 +126,7 @@ def test_a_pinched_closed_surface_is_accepted_and_the_pinch_recorded(tmp_path):
     with pytest.warns(UserWarning, match="degenerate face"):
         spec = winther_spec(inner, outer, scale=1e-6, pad=1e-6)
     notes = [t for t in spec.provenance["transformations"] if "three or more faces" in t]
-    assert len(notes) == 1 and "1 edge(s)" in notes[0] and "1 degenerate face(s)" in notes[0]
+    assert len(notes) == 1 and "1 edge(s)" in notes[0] and "1 degenerate face(s)" in notes[0] and "2 duplicate vertex" in notes[0]
 
 
 def test_an_open_surface_is_still_refused(tmp_path):
