@@ -164,7 +164,7 @@ def test_a_pack_built_from_a_lazy_walk_is_the_pack_of_the_array(tmp_path):
 
 def test_the_prefix_decoder_on_the_device_is_the_numpy_one_to_float32_rounding():
     from dmipy_sim.replay.compression import encode, _bridge_positions, read_position_coeffs
-    from dmipy_sim.replay.pose_device import decode_prefix
+    from dmipy_sim.replay.compression import decode_prefix
     rng = np.random.default_rng(3)
     traj = np.cumsum(rng.normal(size=(400, 300, 3)).astype(np.float32) * np.float32(1e-7), axis=1)
     arrays, meta, _ = encode(traj, "bridge_dst", 24, device="numpy")

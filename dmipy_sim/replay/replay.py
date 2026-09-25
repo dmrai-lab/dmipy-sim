@@ -635,14 +635,13 @@ class ReplayPack:
     def positions(self):
         """The ``(n_walkers, n_t, 3)`` trajectory decoded from the position codec (float64); a pack of several
         segments decodes each window and joins them on the shared saves."""
-        from .compression import decode, is_walker_preserving, require_position_method
+        from .compression import decode, require_position_method
         if self.n_segments > 1:
             return np.concatenate([w.positions()[:, (0 if j == 0 else 1):] for j, (w, _, _) in enumerate(self._windows())], axis=1)
         cx = self.meta.get("compression", {})
         meta = {"method": require_position_method(cx.get("method")), "K": int(cx.get("K", 0)),
                 "n_t": int(cx.get("n_t") or self.n_t)}
-        wp = is_walker_preserving(meta["method"])
-        return np.asarray(decode(self.arrays, meta, n_walkers=(self.n_walkers if wp else None)), np.float64)
+        return np.asarray(decode(self.arrays, meta), np.float64)
 
     def _by_pool(self, values, what, n=None):
         """Per-pool values as a list by id; a ``{name: value}`` dict resolves through the embedded spec, and a
@@ -1341,8 +1340,7 @@ class ReplayPack:
         wp = dict(self.meta.get("walk_params", {}) or {})
         # the prefix's positions are never held whole: the builder, its encoder and its certificate read them per
         # walker range, decoded from the parent's coefficients where they are read, window by window (#449 item 3)
-        from .compression import LazyWalk, read_position_coeffs
-        from .pose_device import decode_prefix
+        from .compression import LazyWalk, decode_prefix, read_position_coeffs
         spans = []                                                     # (coefficients, saves of the window, first save kept, saves kept)
         done = 0
         for j, (w, _, n_seg) in enumerate(self._windows()):

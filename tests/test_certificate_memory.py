@@ -27,29 +27,34 @@ def _peak(fn):
         tracemalloc.stop()
 
 
-def test_certificate_peak_is_bounded_by_the_chunk_not_the_walk():
+def test_certificate_peak_is_bounded_by_the_chunk_not_the_walk(monkeypatch):
+    from dmipy_sim.replay import compression as cx
     traj, dt = _walk()
     dec = traj + np.float32(1e-9)
-    chunk = traj.nbytes // 8
-    peak = _peak(lambda: measure_fidelity(traj, dt, dec, chunk_bytes=chunk))
+    monkeypatch.setattr(cx, "CHUNK_BYTES", traj.nbytes // 8)
+    peak = _peak(lambda: measure_fidelity(traj, dt, dec))
     assert peak < traj.nbytes, f"peak {peak / 1e6:.1f} MB for a {traj.nbytes / 1e6:.1f} MB float32 walk"
 
 
-def test_chunking_does_not_change_the_verdict():
+def test_chunking_does_not_change_the_verdict(monkeypatch):
+    from dmipy_sim.replay import compression as cx
     traj, dt = _walk(n_w=600, n_t=120)
     dec = traj + np.float32(1e-9)
     whole = measure_fidelity(traj, dt, dec)
-    chunked = measure_fidelity(traj, dt, dec, chunk_bytes=traj.nbytes // 7)
+    monkeypatch.setattr(cx, "CHUNK_BYTES", traj.nbytes // 7)
+    chunked = measure_fidelity(traj, dt, dec)
     assert np.isclose(whole["err_max"], chunked["err_max"], rtol=1e-12, atol=1e-15)
     assert np.isclose(whole["floor_max"], chunked["floor_max"], rtol=1e-12, atol=1e-15)
 
 
-def test_raw_floor_reads_the_walk_once_and_in_place():
+def test_raw_floor_reads_the_walk_once_and_in_place(monkeypatch):
+    from dmipy_sim.replay import compression as cx
     traj, dt = _walk()
     m = dict(traj=traj, dt_traj=dt)
-    peak = _peak(lambda: bank._measure_floor(m, None, chunk_bytes=traj.nbytes // 8))
-    assert peak < traj.nbytes, f"peak {peak / 1e6:.1f} MB for a {traj.nbytes / 1e6:.1f} MB float32 walk"
     ref = measure_fidelity(traj, dt, traj.copy())
+    monkeypatch.setattr(cx, "CHUNK_BYTES", traj.nbytes // 8)
+    peak = _peak(lambda: bank._measure_floor(m, None))
+    assert peak < traj.nbytes, f"peak {peak / 1e6:.1f} MB for a {traj.nbytes / 1e6:.1f} MB float32 walk"
     assert np.isclose(bank._measure_floor(m, None), ref["floor_max"], rtol=1e-12, atol=1e-15)
 
 
@@ -64,12 +69,14 @@ def test_the_decoder_reconstructs_the_same_positions_per_walker_range():
     assert np.array_equal(decode(arrays, meta, walkers=slice(37, 91)), whole[37:91])
 
 
-def test_the_certificate_of_a_decoder_matches_the_decoded_walk():
+def test_the_certificate_of_a_decoder_matches_the_decoded_walk(monkeypatch):
+    from dmipy_sim.replay import compression as cx
     from dmipy_sim.replay.compression import decode, decoder, encode
     traj, dt = _walk(n_w=600, n_t=120)
     arrays, meta, _ = encode(traj, "bridge_dst", 16, device="numpy")
     ref = measure_fidelity(traj, dt, decode(arrays, meta))
-    got = measure_fidelity(traj, dt, decoder(arrays, meta), chunk_bytes=traj.nbytes // 7)
+    monkeypatch.setattr(cx, "CHUNK_BYTES", traj.nbytes // 7)
+    got = measure_fidelity(traj, dt, decoder(arrays, meta))
     assert np.isclose(ref["err_max"], got["err_max"], rtol=1e-12, atol=1e-15)
     assert np.isclose(ref["floor_max"], got["floor_max"], rtol=1e-12, atol=1e-15)
 

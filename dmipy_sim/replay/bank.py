@@ -210,13 +210,12 @@ def _envelope_summary(env):
                 note="temporal band set by max OGSE period / min delta")
 
 
-def _measure_floor(m, env, chunk_bytes=None):
+def _measure_floor(m, env):
     """Split-half Monte-Carlo floor of the RAW walk over the envelope (decoded == raw ->
     fidelity err is 0, so ``floor_max`` is the substrate's own finite-N statistical noise).
-    The walk is read as stored, in float64 chunks of at most ``chunk_bytes`` (default :data:`compression.CHUNK_BYTES`)."""
+    The walk is read as stored, in float64 chunks of at most :data:`compression.CHUNK_BYTES`."""
     traj = m["traj"] if _cx.is_lazy(m["traj"]) else np.asarray(m["traj"])
-    return float(_cx.measure_fidelity(traj, float(m["dt_traj"]), traj, env,
-                                      chunk_bytes=chunk_bytes)["floor_max"])
+    return float(_cx.measure_fidelity(traj, float(m["dt_traj"]), traj, env)["floor_max"])
 
 
 def _surface_fidelity(m, arrays, chan_meta, env):
@@ -938,11 +937,6 @@ def path_field_integral(arrays, meta, waveform, n_t, dt, *, t0=None, n_w=None):
 
 
 # --------------------------------------------------------------- susceptibility replay (consume)
-def _pack_positions(pack):
-    """The pack's decoded trajectory (see :meth:`ReplayPack.positions`)."""
-    return pack.positions()
-
-
 # --------------------------------------------------------------- pack generation
 #: per-channel numbers a codec MEASURES on the walk it encoded (not parameters): two shards of one fill differ in them
 _MEASURED_CHANNEL_KEYS = ("trace_residual", "band")
@@ -1538,7 +1532,6 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto"
             raise ValueError("fidelity_from= goes with fidelity='inherited'")
         X = m["traj"] if _cx.is_lazy(m["traj"]) else np.asarray(m["traj"])   # as stored, or lazily: read per walker chunk
         dt = float(m["dt_traj"])
-        wp_method = _cx.is_walker_preserving(method)
         if K is None and temporal_bandwidth_hz is not None:
             # the band as a frequency (#199): K bands over T resolve up to K / (2T)
             K = max(2, int(np.ceil(2.0 * float(temporal_bandwidth_hz) * (X.shape[1] - 1) * dt)))
@@ -1650,43 +1643,42 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto"
                 if _band_record is not None:
                     _pm["band"] = _band_record
                 arrays.update(_a); chan_meta["susceptibility_path"] = _pm
-        if wp_method:
-            # C1 (occupancy): the geometric compartment plus, when the walk bound spins, the MT bound
-            # pool as a SECOND COLUMN on an independent axis -- not a channel of its own. Replay weights
-            # the per-pool rates by occupancy either way; what makes MT a distinct tier is the replay
-            # side (vector-Bloch RF, bound-pool knobs, equilibrium start), not the storage.
-            if m.get("comp") is not None:
-                _cols = {"comp": np.asarray(m["comp"])}
-                if m.get("bfrac") is not None:
-                    _cols["bound"] = np.asarray(m["bfrac"]); channels["mt"] = True
-                _a, _cm = _cx.encode_occupancy(_cols, force_runs=_occupancy_runs)
-                arrays.update(_a); chan_meta["compartment"] = _cm
-                if m.get("w") is not None:
-                    arrays["spin_weights"] = np.asarray(m["w"], np.float32)
-                channels["T1T2"] = True
-            elif m.get("bfrac") is not None:
-                raise ValueError("an MT (C4) pack carries its bound pool as a C1 occupancy column, so "
-                                 "it needs the compartment channel too.")
-            # dense per-walker physics channels get their own codecs (compression.py):
-            # boundary local time -> sparse/dense or the cumulative bridge.
-            if m.get("dlog_b") is not None:
-                if cert is not None:                                   # the cited pack's channel, parameter for parameter
-                    _cb = (cert["compression"].get("channels") or {}).get("boundary_local_time")
-                    if _cb is None:
-                        raise ValueError("this walk records wall contact but the certifying pack carries no C2 channel")
-                    if blt_temporal_K is not None and int(blt_temporal_K) != int(_cb["K"]):
-                        raise ValueError(f"blt_temporal_K={blt_temporal_K} but the certifying pack's C2 has K={_cb['K']}")
-                    _a, _mm = _cx.encode_boundary_bridge(np.asarray(m["dlog_b"]), K=int(_cb["K"]), dtype=blt_dtype,
-                                                         container=_container(blt_container), device=device)
-                    if _mm.get("container") != _cb.get("container") or _mm.get("dtype") != _cb.get("dtype"):
-                        raise ValueError("the C2 container or dtype differs from the certifying pack's")
-                elif blt_temporal_K:
-                    _a, _mm = _cx.encode_boundary_bridge(np.asarray(m["dlog_b"]), K=int(blt_temporal_K),
-                                                     dtype=blt_dtype, container=_container(blt_container), device=device)
-                else:
-                    _a, _mm = _select_boundary_codec(m, np.asarray(m["dlog_b"]), env, tol,
-                                                     blt_dtype, verbose, container=_container(blt_container))
-                arrays.update(_a); chan_meta["boundary_local_time"] = _mm; channels["rho"] = True
+        # C1 (occupancy): the geometric compartment plus, when the walk bound spins, the MT bound
+        # pool as a SECOND COLUMN on an independent axis -- not a channel of its own. Replay weights
+        # the per-pool rates by occupancy either way; what makes MT a distinct tier is the replay
+        # side (vector-Bloch RF, bound-pool knobs, equilibrium start), not the storage.
+        if m.get("comp") is not None:
+            _cols = {"comp": np.asarray(m["comp"])}
+            if m.get("bfrac") is not None:
+                _cols["bound"] = np.asarray(m["bfrac"]); channels["mt"] = True
+            _a, _cm = _cx.encode_occupancy(_cols, force_runs=_occupancy_runs)
+            arrays.update(_a); chan_meta["compartment"] = _cm
+            if m.get("w") is not None:
+                arrays["spin_weights"] = np.asarray(m["w"], np.float32)
+            channels["T1T2"] = True
+        elif m.get("bfrac") is not None:
+            raise ValueError("an MT (C4) pack carries its bound pool as a C1 occupancy column, so "
+                             "it needs the compartment channel too.")
+        # dense per-walker physics channels get their own codecs (compression.py):
+        # boundary local time -> sparse/dense or the cumulative bridge.
+        if m.get("dlog_b") is not None:
+            if cert is not None:                                   # the cited pack's channel, parameter for parameter
+                _cb = (cert["compression"].get("channels") or {}).get("boundary_local_time")
+                if _cb is None:
+                    raise ValueError("this walk records wall contact but the certifying pack carries no C2 channel")
+                if blt_temporal_K is not None and int(blt_temporal_K) != int(_cb["K"]):
+                    raise ValueError(f"blt_temporal_K={blt_temporal_K} but the certifying pack's C2 has K={_cb['K']}")
+                _a, _mm = _cx.encode_boundary_bridge(np.asarray(m["dlog_b"]), K=int(_cb["K"]), dtype=blt_dtype,
+                                                     container=_container(blt_container), device=device)
+                if _mm.get("container") != _cb.get("container") or _mm.get("dtype") != _cb.get("dtype"):
+                    raise ValueError("the C2 container or dtype differs from the certifying pack's")
+            elif blt_temporal_K:
+                _a, _mm = _cx.encode_boundary_bridge(np.asarray(m["dlog_b"]), K=int(blt_temporal_K),
+                                                 dtype=blt_dtype, container=_container(blt_container), device=device)
+            else:
+                _a, _mm = _select_boundary_codec(m, np.asarray(m["dlog_b"]), env, tol,
+                                                 blt_dtype, verbose, container=_container(blt_container))
+            arrays.update(_a); chan_meta["boundary_local_time"] = _mm; channels["rho"] = True
 
         # Surface tier (C2) fidelity: certify the boundary channel reproduces the surface-relaxivity
         # signal from its stored coeffs, vs the raw boundary local time.
@@ -1730,7 +1722,7 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto"
             fid.update({k: v for k, v in cert["fidelity"].items()
                         if k.startswith(("err_", "floor_", "susc_")) and k not in ("err_max", "floor_max")})
         if channels["susceptibility"] and m.get("susc_field_basis") is not None and cert is None:
-            _dpos = _cx.decode(pos_arrays, pos_meta, n_walkers=(X.shape[0] if wp_method else None))
+            _dpos = _cx.decode(pos_arrays, pos_meta)
             run.phase("certificate grid")
             _gf = _susc_grid_fidelity(m, arrays, chan_meta["susceptibility_grid"], _dpos, dt, env)
             if _gf is not None:
@@ -1750,7 +1742,7 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto"
             if cert is not None:
                 _ijk, _pools, _n, _floor, _err = voxel_floor_coded(_Cc, dt, X.shape[1], voxel_grid, m.get("comp"), env, w=_w, device=device)
             else:
-                _dpos = _cx.decode(pos_arrays, pos_meta, n_walkers=(X.shape[0] if wp_method else None))
+                _dpos = _cx.decode(pos_arrays, pos_meta)
                 run.phase("certificate per voxel")
                 _ijk, _pools, _n, _floor, _err = voxel_fidelity(X, dt, _dpos, voxel_grid, m.get("comp"), env, w=_w)
             arrays["voxel_ijk"] = _ijk.astype(np.int32)
@@ -1766,13 +1758,12 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto"
             if sigma_star is not None and _ok.any():
                 fid["per_voxel"]["meets_target"] = bool(np.nanmax(_floor) <= sigma_star and np.nanmax(_err) <= sigma_star)
         comp_meta = dict(method=method, K=int(pos_meta.get("K", K)),        # the K stored: the codec clamps a short walk
-                         walker_preserving=bool(wp_method), n_t=int(n_t),
+                         walker_preserving=True, n_t=int(n_t),
                          container=pos_meta.get("container"),               # None: the float container; else the band ranges
                          temporal_bandwidth_hz=float(int(pos_meta.get("K", K)) / (2.0 * (int(n_t) - 1) * dt)))   # K bands over T (#199)
-        if wp_method:
-            comp_meta["precision_tiers"] = _precision_tiers(arrays, int(m["n_walkers"]),
-                                                            float(fid.get("floor_max") or 0.0),
-                                                            bool(m.get("walkers_shuffled")))
+        comp_meta["precision_tiers"] = _precision_tiers(arrays, int(m["n_walkers"]),
+                                                        float(fid.get("floor_max") or 0.0),
+                                                        bool(m.get("walkers_shuffled")))
         if chan_meta:
             comp_meta["channels"] = chan_meta      # per-channel codec params (Q, scale, ...)
         meta = dict(

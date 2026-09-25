@@ -41,7 +41,7 @@ def test_mode_space_signal_matches_raw_reduction():
     X = np.cumsum(rng.standard_normal((N, n_t, 3)) * 1e-7, axis=1)
     G = rng.standard_normal((M, n_t, 3)) * 0.1
     dt = 1e-4
-    S_raw = cx._replay_complex_np(X, dt, G)
+    S_raw = cx._mean_signal(cx._phases_by_chunk(X, dt, G))
     arrays, meta, _ = cx.encode_bridge_dst(X, K=n_t - 2)
     S_mode = cx.mode_space_signal(arrays, meta, G, dt)
     assert np.allclose(S_mode, S_raw, atol=1e-9)
