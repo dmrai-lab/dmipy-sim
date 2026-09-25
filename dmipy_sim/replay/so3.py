@@ -287,7 +287,20 @@ def _real_from_complex(l):
     return U
 
 
-@functools.lru_cache(maxsize=256)
+COUPLING_CACHE_VERSION = 1
+
+
+def _coupling_cache_dir():
+    """Where the coupling tables persist between processes: ``$DMIPY_SIM_CACHE`` or ``~/.cache/dmipy_sim``, under
+    ``so3``; ``None`` when ``$DMIPY_SIM_CACHE`` is ``0`` (no disk cache)."""
+    import os
+    root = os.environ.get("DMIPY_SIM_CACHE")
+    if root == "0":
+        return None
+    return os.path.join(root or os.path.join(os.path.expanduser("~"), ".cache", "dmipy_sim"), "so3")
+
+
+@functools.lru_cache(maxsize=2048)
 def coupling(l1, l2):
     """How two real Wigner blocks multiply: ``{L: K_L}`` with
 
@@ -296,10 +309,33 @@ def coupling(l1, l2):
     for ``L = |l1 - l2| .. l1 + l2``, ``K_L = (U_l1 (x) U_l2) C_L U_L^H`` (``((2l1+1)(2l2+1), 2L+1)`` complex). The
     product of two expansions on SO(3) -- a plane wave in the rotated gradient and a field factor in the rotated
     field direction -- is then a contraction with these tables on the lab index and on the body index.
+
+    The tables are constants of ``(l1, l2)``; a pass at band 30 with a field band 22 needs about seven hundred of
+    them, forty seconds to build. They are kept on disk (:func:`_coupling_cache_dir`, one ``.npz`` per pair,
+    written whole then renamed) so that a process pays them once ever, and in memory for the process.
     """
+    import os, tempfile
     l1, l2 = int(l1), int(l2)
+    root = _coupling_cache_dir()
+    path = None if root is None else os.path.join(root, f"coupling-v{COUPLING_CACHE_VERSION}-{l1}-{l2}.npz")
+    if path is not None and os.path.exists(path):
+        try:
+            with np.load(path) as z:
+                return {int(k[1:]): z[k] for k in z.files}
+        except Exception:                                                  # a torn or foreign file: rebuilt below
+            pass
     U12 = np.kron(_real_from_complex(l1), _real_from_complex(l2))
-    return {L: U12 @ clebsch_gordan(l1, l2, L) @ _real_from_complex(L).conj().T for L in range(abs(l1 - l2), l1 + l2 + 1)}
+    out = {L: U12 @ clebsch_gordan(l1, l2, L) @ _real_from_complex(L).conj().T for L in range(abs(l1 - l2), l1 + l2 + 1)}
+    if path is not None:
+        try:
+            os.makedirs(root, exist_ok=True)
+            fd, tmp = tempfile.mkstemp(dir=root, suffix=".tmp")
+            with os.fdopen(fd, "wb") as fh:                                   # a file object: savez adds no extension
+                np.savez(fh, **{f"L{L}": K for L, K in out.items()})
+            os.replace(tmp, path)
+        except OSError:
+            pass                                                           # a read-only cache is no cache, not an error
+    return out
 
 
 # ------------------------------------------------------------------ sampling

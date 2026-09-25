@@ -1682,19 +1682,33 @@ class ReplayPack:
             for Lc in range(keep_l + 1):
                 offs[Lc] = off; off += (2 * Lc + 1) * (2 * (so3._n_cols(Lc, keep_n) // 2) + 1)
             # the body side of every coupling once for all groups; the lab side per acquisition below
-            bodies_c = {}                                                       # (l, lp, Lc) -> (n_grp, 2kk+1)
+            # the coupling tables of every (l, l') pair, their coupled orders side by side: one product per pair on the
+            # body index (all groups) and one per pair and acquisition on the lab index, instead of one per order
+            tables = {}                                                         # (l, lp) -> (Ls, K_lab, K_body, lab slices, body slices)
             for l in l_used:
-                B_all = B_full[:, l_off[l]:l_off[l] + 2 * l + 1, :]              # (n_grp, 2l+1, (L_f+1)^2)
                 for lp in range(L_f + 1):
-                    blp = so3.sh_block(lp, True)
                     Ls = [Lc for Lc in range(abs(l - lp), min(l + lp, keep_l) + 1)]
                     if not Ls:
                         continue
-                    B = B_all[:, :, blp].reshape(n_grp, -1)                                 # (n_grp, (2l+1)(2l'+1))
                     K = so3.coupling(l, lp)
+                    K_lab = np.concatenate([K[Lc] for Lc in Ls], axis=1)                     # ((2l+1)(2l'+1), sum 2Lc+1)
+                    K_body = np.concatenate([K[Lc].conj()[:, Lc - so3._n_cols(Lc, keep_n) // 2:Lc + so3._n_cols(Lc, keep_n) // 2 + 1]
+                                             for Lc in Ls], axis=1)                            # ((2l+1)(2l'+1), sum 2kk+1)
+                    lab_sl, body_sl, o1, o2 = {}, {}, 0, 0
                     for Lc in Ls:
                         kk = so3._n_cols(Lc, keep_n) // 2
-                        bodies_c[(l, lp, Lc)] = B @ K[Lc].conj()[:, Lc - kk:Lc + kk + 1]      # (n_grp, 2kk+1)
+                        lab_sl[Lc] = slice(o1, o1 + 2 * Lc + 1); o1 += 2 * Lc + 1
+                        body_sl[Lc] = slice(o2, o2 + 2 * kk + 1); o2 += 2 * kk + 1
+                    tables[(l, lp)] = (Ls, K_lab, K_body, lab_sl, body_sl)
+            bodies_c = {}                                                       # (l, lp) -> (n_grp, sum 2kk+1)
+            for l in l_used:
+                B_all = B_full[:, l_off[l]:l_off[l] + 2 * l + 1, :]              # (n_grp, 2l+1, (L_f+1)^2)
+                for lp in range(L_f + 1):
+                    if (l, lp) not in tables:
+                        continue
+                    blp = so3.sh_block(lp, True)
+                    B = B_all[:, :, blp].reshape(n_grp, -1)                                 # (n_grp, (2l+1)(2l'+1))
+                    bodies_c[(l, lp)] = B @ tables[(l, lp)][2]
         # what the expansion cannot hold pointwise: the orders above the band it was built to, as a bound from
         # |P_l| <= 1 -- below tol by construction
         tail_all = np.zeros(n_grp)
@@ -1720,17 +1734,18 @@ class ReplayPack:
                 for l in l_used:
                     bl = so3.sh_block(l, True)
                     for lp in range(L_f + 1):
-                        blp = so3.sh_block(lp, True)
-                        Ls = [Lc for Lc in range(abs(l - lp), min(l + lp, keep_l) + 1)]
-                        if not Ls:
+                        if (l, lp) not in tables:
                             continue
-                        # lab: Lam[i, (m, n')] = Y_lm(g^_i) Y_l'n'(b^)
+                        Ls, K_lab, _K_body, lab_sl, body_sl = tables[(l, lp)]
+                        blp = so3.sh_block(lp, True)
+                        # lab: Lam[i, (m, n')] = Y_lm(g^_i) Y_l'n'(b^), against every coupled order at once
                         Lam = (Yg[:, bl][:, :, None] * Yb[blp][None, None, :]).reshape(n_meas, -1)
-                        K = so3.coupling(l, lp)
+                        lab_all = Lam @ K_lab                                       # (n_meas, sum 2Lc+1)
+                        body_all = bodies_c[(l, lp)][group]                         # (n_meas, sum 2kk+1)
                         for Lc in Ls:
                             kk = so3._n_cols(Lc, keep_n) // 2
-                            lab = Lam @ K[Lc]                                       # (n_meas, 2Lc+1)
-                            body = bodies_c[(l, lp, Lc)][group]                    # (n_meas, 2kk+1)
+                            lab = lab_all[:, lab_sl[Lc]]                           # (n_meas, 2Lc+1)
+                            body = body_all[:, body_sl[Lc]]                        # (n_meas, 2kk+1)
                             block = (4 * np.pi * (1j ** l) / np.sqrt(2 * Lc + 1)) * lab[:, :, None] * body[:, None, :]
                             o = offs[Lc]
                             coeffs[:, o:o + (2 * Lc + 1) * (2 * kk + 1)] += block.reshape(n_meas, -1)
