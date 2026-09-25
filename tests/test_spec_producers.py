@@ -105,3 +105,33 @@ def test_producers_record_the_calibration_field_and_the_datasets_chi_convention(
     assert w.nominal_field_T == 7.0 and w.pool("myelin").susceptibility.chi_iso == 1.06e-6      # Winther's own convention
     c = cactus_spec(_cactus_run_dir(tmp_path))
     assert c.nominal_field_T == 3.0 and c.pool("myelin").susceptibility.chi_iso == -0.1e-6     # the catalogue's
+
+
+def _pinched_tube(dir_path, r_out=2.0, height=20.0):
+    """The Winther case (dmrai-lab/dmipy-sim#452): a closed inner surface with one degenerate face and one edge
+    shared by four faces (two closed sheets welded along it: no boundary anywhere), and its closed outer tube."""
+    inner, outer = _tube_pair(dir_path, g=0.62, r_out=r_out, height=height, prefix="pinch")
+    m = trimesh.load(inner, process=False)
+    V, F = np.asarray(m.vertices), np.asarray(m.faces)
+    a, b, c = F[0]
+    V2 = V + np.array([0.0, 0.0, 2.0 * height]); F2 = F + len(V)
+    F2 = np.where(F2 == a + len(V), a, F2); F2 = np.where(F2 == b + len(V), b, F2)      # the copy shares the edge (a, b)
+    F_all = np.vstack([F, F2, [a, b, a]])                                                   # and one face with a repeated vertex
+    trimesh.Trimesh(np.vstack([V, V2]), F_all, process=False).export(inner)
+    return inner, outer
+
+
+def test_a_pinched_closed_surface_is_accepted_and_the_pinch_recorded(tmp_path):
+    inner, outer = _pinched_tube(tmp_path)
+    with pytest.warns(UserWarning, match="degenerate face"):
+        spec = winther_spec(inner, outer, scale=1e-6, pad=1e-6)
+    notes = [t for t in spec.provenance["transformations"] if "three or more faces" in t]
+    assert len(notes) == 1 and "1 edge(s)" in notes[0] and "1 degenerate face(s)" in notes[0]
+
+
+def test_an_open_surface_is_still_refused(tmp_path):
+    inner, outer = _tube_pair(tmp_path, prefix="open")
+    m = trimesh.load(inner, process=False)
+    trimesh.Trimesh(np.asarray(m.vertices), np.asarray(m.faces)[1:], process=False).export(inner)     # one face removed
+    with pytest.raises(SpecError, match="closed surfaces; open"):
+        winther_spec(inner, outer, scale=1e-6, pad=1e-6)

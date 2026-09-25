@@ -183,9 +183,36 @@ def load_ply(path, scale=1.0, recenter=False):
                  f"(max index {int(F.max())} for {len(V)} vertices); re-parsed the ASCII payload "
                  f"(max index now {int(Ff.max())}).")
             V, F = Vf.astype(np.float64), Ff.astype(np.int64)
+    keep = nondegenerate_faces(V, F)
+    if not keep.all():
+        warnings.warn(f"{path}: {int((~keep).sum())} degenerate face(s) (zero area or a repeated vertex) dropped; a face "
+                      f"without a normal cannot reflect a walker")
+        F = F[keep]
     if recenter:
         V = V - 0.5 * (V.min(0) + V.max(0))
     return V * scale, F
+
+
+def nondegenerate_faces(V, F):
+    """Which faces have three distinct vertices and a non-zero area."""
+    V = np.asarray(V, np.float64); F = np.asarray(F, np.int64)
+    distinct = (F[:, 0] != F[:, 1]) & (F[:, 1] != F[:, 2]) & (F[:, 0] != F[:, 2])
+    n = np.cross(V[F[:, 1]] - V[F[:, 0]], V[F[:, 2]] - V[F[:, 0]])
+    return distinct & (np.linalg.norm(n, axis=1) > 0.0)
+
+
+def surface_topology(V, F):
+    """What closes a surface and what does not: ``dict(boundary_edges, nonmanifold_edges, degenerate_faces,
+    watertight)``. A surface with no boundary edge encloses its volume; an edge on three or more faces (a pinch
+    where two sheets touch) is reported and does not open it, while ``watertight`` is trimesh's stricter word for
+    every edge on exactly two faces."""
+    import trimesh
+    V = np.asarray(V, np.float64); F = np.asarray(F, np.int64)
+    m = trimesh.Trimesh(V, F, process=False)
+    edges = np.sort(F[:, [0, 1, 1, 2, 2, 0]].reshape(-1, 2), axis=1)
+    _, counts = np.unique(edges, axis=0, return_counts=True)
+    return dict(boundary_edges=int((counts == 1).sum()), nonmanifold_edges=int((counts > 2).sum()),
+                degenerate_faces=int((~nondegenerate_faces(V, F)).sum()), watertight=bool(m.is_watertight))
 
 
 class _MeshArrays(NamedTuple):
