@@ -135,8 +135,8 @@ def check_frame_against_walk(traj, F, *, w=None, bundle_axes=None, tol_deg=5.0, 
     small walk of free water is not read as oriented by its noise (113 free walkers gave a ratio of 1.56 on
     one platform's realisation and passed on another's). A walk with two comparable axes is checked against the plane only when
     two or more bundles are declared. Returns the angle (degrees)."""
-    X = np.asarray(traj, np.float64)
-    d = X[:, -1, :] - X[:, 0, :]
+    X = np.asarray(traj)                                          # only the two endpoints of each walker are read
+    d = np.asarray(X[:, -1, :], np.float64) - np.asarray(X[:, 0, :], np.float64)
     w = np.ones(d.shape[0]) if w is None else np.asarray(w, np.float64)
     ok = np.isfinite(d).all(1) & np.isfinite(w) & (w > 0)        # a walker with no position at the end says nothing
     d, w = d[ok], w[ok]

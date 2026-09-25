@@ -127,3 +127,13 @@ def test_the_surface_certificate_peak_is_bounded_by_the_chunk(monkeypatch):
     monkeypatch.setattr(cx, "CHUNK_BYTES", dlog.nbytes // 8)
     peak = _peak(lambda: bank._surface_fidelity(m, arrays, meta, {}))
     assert peak < dlog.nbytes, f"peak {peak / 1e6:.1f} MB for a {dlog.nbytes / 1e6:.1f} MB float32 channel"
+
+
+def test_the_frame_check_reads_only_the_endpoints():
+    traj, _ = _walk(n_w=3000, n_t=400)
+    traj[:, -1, 2] += np.float32(5e-6)                              # an oriented walk along z
+    F = np.eye(3)
+    ref = bank.check_frame_against_walk(traj.astype(np.float64), F)
+    peak = _peak(lambda: bank.check_frame_against_walk(traj, F))
+    assert bank.check_frame_against_walk(traj, F) == ref
+    assert peak < traj.nbytes // 4, f"peak {peak / 1e6:.1f} MB for a {traj.nbytes / 1e6:.1f} MB walk"
