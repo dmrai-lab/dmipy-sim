@@ -210,10 +210,10 @@ def _envelope_summary(env):
                 note="temporal band set by max OGSE period / min delta")
 
 
-def _measure_floor(m, env, chunk_bytes=2 << 30):
+def _measure_floor(m, env, chunk_bytes=None):
     """Split-half Monte-Carlo floor of the RAW walk over the envelope (decoded == raw ->
     fidelity err is 0, so ``floor_max`` is the substrate's own finite-N statistical noise).
-    The walk is read as stored, in float64 chunks of at most ``chunk_bytes``."""
+    The walk is read as stored, in float64 chunks of at most ``chunk_bytes`` (default :data:`compression.CHUNK_BYTES`)."""
     traj = np.asarray(m["traj"])
     return float(_cx.measure_fidelity(traj, float(m["dt_traj"]), traj, env,
                                       chunk_bytes=chunk_bytes)["floor_max"])
@@ -227,20 +227,25 @@ def _surface_fidelity(m, arrays, chan_meta, env):
     has_stored = _cx.has_c2(arrays) or any(k in arrays for k in ("blt_dense_q", "blt_counts"))
     if raw is None or not has_stored:
         return None
-    raw = np.asarray(raw, np.float64); n_w = raw.shape[0]
+    raw = np.asarray(raw); n_w, n_t = raw.shape[0], raw.shape[1]         # as stored; float64 per walker chunk below
     w = np.asarray(m["w"], np.float64) if m.get("w") is not None else np.ones(n_w)
     D = float(m.get("D_intra") or 0.0) or 1.0
-    if _cx.has_c2(arrays):
-        decoded = _cx.decode_boundary_bridge(arrays, chan_meta)
-    else:
-        decoded = _cx.decode_boundary_local_time(arrays, chan_meta)
+    decode = _cx.decode_boundary_bridge if _cx.has_c2(arrays) else _cx.decode_boundary_local_time
+    # the log-weight at rho/D = 1 is each walker's summed local time: raw and decoded, taken per chunk so
+    # that neither the raw channel in float64 nor the decoded channel is ever held whole
+    s_raw = np.empty(n_w); s_dec = np.empty(n_w)
+    step = max(1, int(_cx.CHUNK_BYTES // (8 * n_t)))
+    for lo in range(0, n_w, step):
+        hi = min(lo + step, n_w)
+        s_raw[lo:hi] = _cx.surface_logweight_series(raw[lo:hi], 1.0)
+        s_dec[lo:hi] = _cx.surface_logweight_series(decode(arrays, chan_meta, slice(lo, hi)), 1.0)
     perm = np.random.RandomState(0).permutation(n_w); A, B = perm[:n_w // 2], perm[n_w // 2:]
     fac = lambda sl, idx: float(np.sum(w[idx] * np.exp(sl[idx])) / np.sum(w[idx]))
     err = floor = 0.0
     for rho in (env.get("rho_list") or [1e-5, 3e-5, 1e-4]):
         rd = float(rho) / D
-        sl_raw = _cx.surface_logweight_series(raw, rd)
-        sl_dec = _cx.surface_logweight_series(decoded, rd)
+        sl_raw = rd * s_raw
+        sl_dec = rd * s_dec
         err = max(err, abs(fac(sl_raw, slice(None)) - fac(sl_dec, slice(None))))
         floor = max(floor, abs(fac(sl_raw, A) - fac(sl_raw, B)))
     return dict(err=float(err), floor=float(floor))

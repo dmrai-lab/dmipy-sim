@@ -185,7 +185,17 @@ def resolve_device(device):
     return device
 
 
-def dst_bands(u, K, *, device="auto", chunk_bytes=1 << 30):
+CHUNK_BYTES = 1 << 30
+"""Bytes of the walk a host pass holds at once: every codec and certificate pass over the walkers runs in chunks
+of at most this many bytes of positions, so the builder's peak memory is the walk plus this, not a multiple of
+the walk."""
+
+
+def _chunk(chunk_bytes):
+    return int(CHUNK_BYTES if chunk_bytes is None else chunk_bytes)
+
+
+def dst_bands(u, K, *, device="auto", chunk_bytes=None):
     """The lowest ``K`` orthonormal DST-I bands along axis 1 of ``u`` ``(N_w, N, ...)``, as float64: scipy on the
     host, or on the JAX device as one matmul against the sine matrix at full precision (``Precision.HIGHEST``:
     a float32 ``@`` on a CUDA device is TF32 otherwise), in walker chunks of ``chunk_bytes``."""
@@ -198,14 +208,14 @@ def dst_bands(u, K, *, device="auto", chunk_bytes=1 << 30):
     n = np.arange(1, N + 1)[:, None]; k = np.arange(1, K + 1)[None, :]
     S = jnp.asarray(np.sqrt(2.0 / (N + 1)) * np.sin(np.pi * n * k / (N + 1)), jnp.float32)          # (N, K)
     f = jax.jit(lambda x: jnp.einsum("wn...,nk->wk...", x, S, precision=jax.lax.Precision.HIGHEST))
-    rows = max(1, int(chunk_bytes // max(int(np.prod(u.shape[1:])) * 4, 1)))
+    rows = max(1, int(_chunk(chunk_bytes) // max(int(np.prod(u.shape[1:])) * 4, 1)))
     out = np.empty((u.shape[0], K) + tuple(u.shape[2:]), np.float64)
     for i in range(0, u.shape[0], rows):
         out[i:i + rows] = np.asarray(f(jnp.asarray(np.asarray(u[i:i + rows], np.float32))), np.float64)
     return out
 
 
-def dct_bands(u, K, *, device="auto", chunk_bytes=1 << 30):
+def dct_bands(u, K, *, device="auto", chunk_bytes=None):
     """The lowest ``K`` orthonormal DCT-II bands along axis 1 of ``u`` ``(N_w, N, ...)``, as float64 -- the cosine
     twin of :func:`dst_bands` for the path field channel: scipy on the host, or one full-precision matmul against
     the cosine matrix on the JAX device, in walker chunks."""
@@ -220,14 +230,14 @@ def dct_bands(u, K, *, device="auto", chunk_bytes=1 << 30):
     Cm = np.sqrt(2.0 / N) * np.cos(np.pi * (2 * n + 1) * k / (2 * N)); Cm[:, 0] /= np.sqrt(2.0)
     Cd = jnp.asarray(Cm, jnp.float32)                                                                 # (N, K)
     f = jax.jit(lambda x: jnp.einsum("wn...,nk->wk...", x, Cd, precision=jax.lax.Precision.HIGHEST))
-    rows = max(1, int(chunk_bytes // max(int(np.prod(u.shape[1:])) * 4, 1)))
+    rows = max(1, int(_chunk(chunk_bytes) // max(int(np.prod(u.shape[1:])) * 4, 1)))
     out = np.empty((u.shape[0], K) + tuple(u.shape[2:]), np.float64)
     for i in range(0, u.shape[0], rows):
         out[i:i + rows] = np.asarray(f(jnp.asarray(np.asarray(u[i:i + rows], np.float32))), np.float64)
     return out
 
 
-def coded_phases(C, dt, G, n_t, *, device="auto", chunk_bytes=1 << 30):
+def coded_phases(C, dt, G, n_t, *, device="auto", chunk_bytes=None):
     """``(N_w, n_meas)`` gradient phase of every walker under the waveforms ``G`` ``(n_meas, n_t, 3)`` from the
     bridge coefficients ``C`` ``(N_w, K+2, 3)`` alone: ``gamma dt sum C W`` with ``W`` the bridge projection of the
     waveforms' exact per-save weights (:func:`_replay_kernel.effective_gradient`) -- the replay's own reading of a
@@ -244,7 +254,7 @@ def coded_phases(C, dt, G, n_t, *, device="auto", chunk_bytes=1 << 30):
     import jax.numpy as jnp
     Wd = jnp.asarray(W2, jnp.float32)
     f = jax.jit(lambda x: jnp.matmul(x, Wd, precision=jax.lax.Precision.HIGHEST))
-    rows = max(1, int(chunk_bytes // max(Cf.shape[1] * 4, 1)))
+    rows = max(1, int(_chunk(chunk_bytes) // max(Cf.shape[1] * 4, 1)))
     out = np.empty((Cf.shape[0], W2.shape[1]), np.float64)
     for i in range(0, Cf.shape[0], rows):
         out[i:i + rows] = np.asarray(f(jnp.asarray(np.asarray(Cf[i:i + rows], np.float32))), np.float64)
@@ -302,7 +312,7 @@ def encode_bridge_dst(X, K, container=None, *, device="auto"):
     tau = np.arange(Nt) / (Nt - 1.0)
     K = int(min(K, Nt - 2))
     dev = "numpy" if resolve_device(device) == "numpy" else "jax"
-    B = np.empty((Nw, K, 3), np.float64); rows = max(1, int((1 << 30) // max(Nt * 3 * 4, 1)))
+    B = np.empty((Nw, K, 3), np.float64); rows = max(1, int(CHUNK_BYTES // max(Nt * 3 * 4, 1)))
     for i in range(0, Nw, rows):                                     # the residual per walker chunk, never the whole walk again
         sl = slice(i, i + rows)
         if dev == "numpy":
@@ -430,15 +440,18 @@ def encode_boundary_local_time(dlog, nlevels=4096):
                                 "n_t": int(nt), "scale": scale, "nlevels": 127}
 
 
-def decode_boundary_local_time(arrays, meta):
+def decode_boundary_local_time(arrays, meta, walkers=None):
+    """Per-save ell(t) of every walker, or of the slice ``walkers``, from the quantised container."""
     nt = int(meta["n_t"]); scale = float(meta["scale"]); nl = int(meta["nlevels"])
+    sl = slice(None) if walkers is None else walkers
     if meta.get("mode") == "dense" or "blt_dense_q" in arrays:
-        q = np.asarray(arrays["blt_dense_q"], np.float64)
+        q = np.asarray(np.asarray(arrays["blt_dense_q"])[sl], np.float64)
         return (q * scale / nl).astype(np.float32)
     counts = np.asarray(arrays["blt_counts"]); cols = np.asarray(arrays["blt_cols"])
     qvals = np.asarray(arrays["blt_qvals"], np.float64)
-    out = np.zeros((counts.size, nt), np.float32); p = 0
-    for i, c in enumerate(counts):
+    lo, hi, _ = sl.indices(counts.size)
+    out = np.zeros((hi - lo, nt), np.float32); p = int(counts[:lo].sum())
+    for i, c in enumerate(counts[lo:hi]):
         c = int(c)
         out[i, cols[p:p + c]] = (qvals[p:p + c] * scale / (nl - 1)).astype(np.float32)
         p += c
@@ -479,7 +492,7 @@ def encode_boundary_bridge(dlog, K=16, dtype=np.float32, container=None, *, devi
     K = int(min(K, nt - 2))
     tau = np.linspace(0.0, 1.0, nt)[None, :]
     a = np.empty(nw); endpoint = np.empty(nw); C = np.empty((nw, K), np.float64)
-    rows = nw if resolve_device(device) == "numpy" else max(1, int((1 << 30) // max(nt * 8, 1)))
+    rows = max(1, int(CHUNK_BYTES // max(nt * 8, 1)))
     for i in range(0, nw, rows):                               # the cumulative time per chunk (float64), its bands
         sl = slice(i, i + rows)
         B = np.cumsum(np.asarray(A[sl], np.float64), axis=1)   # (rows, n_t) smooth
@@ -530,12 +543,14 @@ def bridge_bands(arrays, meta, key="blt", scale_key="blt_band_scale", dtype=np.f
     return dequantise_bands(arrays, meta["container"], key, scale_key, dtype)
 
 
-def decode_boundary_bridge(arrays, meta):
-    """Reconstruct per-save ell(t) = diff(B) from the two endpoints + the pinned sine bands."""
+def decode_boundary_bridge(arrays, meta, walkers=None):
+    """Reconstruct per-save ell(t) = diff(B) from the two endpoints + the pinned sine bands, of every walker
+    or of the slice ``walkers``."""
     nt = int(meta["n_t"])
-    C = bridge_bands(arrays, meta)
-    a = np.asarray(arrays["blt_start"], np.float64)
-    endpoint = np.asarray(arrays["blt_endpoint"], np.float64)
+    sl = slice(None) if walkers is None else walkers
+    C = bridge_bands(arrays, meta)[sl]
+    a = np.asarray(arrays["blt_start"], np.float64)[sl]
+    endpoint = np.asarray(arrays["blt_endpoint"], np.float64)[sl]
     tau = np.linspace(0.0, 1.0, nt)[None, :]
     u = np.zeros((C.shape[0], nt), np.float64)
     u[:, 1:-1] = _idst(C, axis=1, type=1, norm="ortho", n=nt - 2)
@@ -946,7 +961,7 @@ def _walker_phases(pos, dt, G):
     return (GAMMA * dt) * np.einsum("mtd,ntd->nm", effective_gradient(G, dt, pos.shape[1], dt), pos)
 
 
-def _phases_by_chunk(pos, dt, G, chunk_bytes=2 << 30, shape=None):
+def _phases_by_chunk(pos, dt, G, chunk_bytes=None, shape=None):
     """:func:`_walker_phases` of every walker, ``(N_w, n_meas)`` float64, taken in walker chunks so that no more
     than ``chunk_bytes`` of the positions is held in float64 at once: the phases are 40 MB where the trajectory
     is 12 GB, and the certificate needs only the phases. ``pos`` is the positions ``(N_w, n_t, 3)`` or a callable
@@ -955,7 +970,7 @@ def _phases_by_chunk(pos, dt, G, chunk_bytes=2 << 30, shape=None):
         n_w, n_t = shape; chunk = pos
     else:
         pos = np.asarray(pos); n_w, n_t = pos.shape[0], pos.shape[1]; chunk = lambda lo, hi: pos[lo:hi]
-    step = max(1, int(chunk_bytes // (8 * 3 * n_t)))
+    step = max(1, int(_chunk(chunk_bytes) // (8 * 3 * n_t)))
     out = np.empty((n_w, G.shape[0]), np.float64)
     for lo in range(0, n_w, step):
         out[lo:lo + step] = _walker_phases(chunk(lo, min(lo + step, n_w)), dt, G)
@@ -976,11 +991,11 @@ def _replay_complex_np(pos, dt, G, *, w=None, logw=None):
     return _mean_signal(_phases_by_chunk(pos, dt, G), w, logw)
 
 
-def measure_fidelity(traj, dt_traj, decoded_pos, env=None, w=None, logw=None, chunk_bytes=2 << 30):
+def measure_fidelity(traj, dt_traj, decoded_pos, env=None, w=None, logw=None, chunk_bytes=None):
     """Max complex replay error per acquisition family, decoded vs raw positions, against
     a split-half Monte-Carlo floor. `logw` (optional) applies the same separable weight to
     both so surface/relaxation packs are scored with their physics on. The positions are read
-    in walker chunks of at most ``chunk_bytes`` in float64; ``decoded_pos`` may be a
+    in walker chunks of at most ``chunk_bytes`` (default :data:`CHUNK_BYTES`) in float64; ``decoded_pos`` may be a
     :func:`decoder` so that the decoded walk is never held whole; when it is ``traj`` itself
     (a raw walk's floor) the phases are read once."""
     env = env or default_envelope()

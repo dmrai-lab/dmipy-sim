@@ -82,3 +82,48 @@ def test_a_pack_built_from_a_float32_walk_is_the_pack_of_its_float64_copy():
     a64, _, _ = encode(traj.astype(np.float64), "bridge_dst", 12, device="numpy")
     for k in a32:
         assert np.array_equal(np.asarray(a32[k]), np.asarray(a64[k])), k
+
+
+def _blt(n_w=700, n_t=150, seed=3):
+    rng = np.random.default_rng(seed)
+    ell = rng.exponential(1e-3, size=(n_w, n_t)).astype(np.float32) * (rng.uniform(size=(n_w, n_t)) < 0.2)
+    return -ell                                                     # <= 0, as the engine stores it
+
+
+def test_the_boundary_decoders_reconstruct_the_same_channel_per_walker_range():
+    from dmipy_sim.replay import compression as cx
+    dlog = _blt()
+    for arrays, meta in (cx.encode_boundary_bridge(dlog, K=16, device="numpy")[:2],
+                         cx.encode_boundary_local_time(dlog)[:2]):
+        dec = cx.decode_boundary_bridge if cx.has_c2(arrays) else cx.decode_boundary_local_time
+        whole = dec(arrays, meta)
+        parts = np.concatenate([dec(arrays, meta, slice(lo, min(lo + 128, 700))) for lo in range(0, 700, 128)])
+        assert np.array_equal(parts, whole)
+        assert np.array_equal(dec(arrays, meta, slice(41, 97)), whole[41:97])
+
+
+def test_the_surface_certificate_is_the_same_in_chunks(monkeypatch):
+    from dmipy_sim.replay import compression as cx
+    dlog = _blt()
+    arrays, meta = cx.encode_boundary_bridge(dlog, K=16, device="numpy")
+    m = dict(dlog_b=dlog, w=None, D_intra=2e-9)
+    env = {"rho_list": [1e-5, 3e-5, 1e-4]}
+    whole = bank._surface_fidelity(m, arrays, meta, env)
+    monkeypatch.setattr(cx, "CHUNK_BYTES", dlog.nbytes // 9)
+    chunked = bank._surface_fidelity(m, arrays, meta, env)
+    assert chunked == whole, (chunked, whole)
+    # and it is the certificate of the whole decoded channel against the raw one, as before
+    raw = cx.surface_logweight_series(dlog, 1.0)
+    dec = cx.surface_logweight_series(cx.decode_boundary_bridge(arrays, meta), 1.0)
+    rd = 1e-4 / 2e-9
+    assert np.isclose(whole["err"], abs(np.exp(rd * raw).mean() - np.exp(rd * dec).mean()), rtol=1e-9)
+
+
+def test_the_surface_certificate_peak_is_bounded_by_the_chunk(monkeypatch):
+    from dmipy_sim.replay import compression as cx
+    dlog = _blt(n_w=3000, n_t=400)
+    arrays, meta = cx.encode_boundary_bridge(dlog, K=16, device="numpy")
+    m = dict(dlog_b=dlog, w=None, D_intra=2e-9)
+    monkeypatch.setattr(cx, "CHUNK_BYTES", dlog.nbytes // 8)
+    peak = _peak(lambda: bank._surface_fidelity(m, arrays, meta, {}))
+    assert peak < dlog.nbytes, f"peak {peak / 1e6:.1f} MB for a {dlog.nbytes / 1e6:.1f} MB float32 channel"
