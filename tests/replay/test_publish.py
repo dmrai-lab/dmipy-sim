@@ -120,6 +120,33 @@ def test_publishing_twice_replaces_the_row(pack, hub):
     assert _manifest(hub)["substrate"]["id"] == "analytic/cylinder"
 
 
+def test_two_publishers_keep_both_rows(pack, hub, tmp_path):
+    """Two publishers read the manifest, add their row and write it back. The commit declares the head it was
+    prepared against; when the other publisher's commit has moved the head, the hub refuses it (412) and the
+    publish is prepared again from the new manifest, so neither row is lost (the canonical pores lost nine)."""
+    from dmipy_sim.fill.hub import StaleParent
+    other = tmp_path / "other.rpk"
+    pack.save(str(other))
+    interleaved = []
+    real_commit = hub._commit
+
+    def racing(adds, deletes, message, expect, parent=None):
+        if not interleaved:                                    # the other publisher lands between our read and our write
+            interleaved.append(True)
+            pub.publish(str(other), "owner/set", path="packs/other.rpk", hub=hub, message="other")
+        return real_commit(adds, deletes, message, expect, parent)
+
+    hub._commit = racing
+    pub.publish(pack, "owner/set", path="packs/mine.rpk", hub=hub, message="mine")
+    rows = {r["path"] for r in json.load(open(hub.get(pub.MANIFEST)))["packs"]}
+    assert rows == {"packs/other.rpk", "packs/mine.rpk"}
+    assert [c["message"] for c in hub.log] == ["other", "mine"]          # the refused attempt is not a commit
+    # and a stale parent is refused at once, never retried with a backoff
+    hub._commit = real_commit
+    with pytest.raises(StaleParent):
+        hub.commit({"x": b"1"}, [], "stale", parent="fake-0")
+
+
 def test_a_pack_without_its_contract_is_refused(hub, tmp_path):
     p = _pack(id="test/nolic")
     del p.meta["license"]
@@ -146,8 +173,8 @@ def test_segments_are_carried_into_the_row_and_the_card(pack, hub):
 class _CorruptingHub(FakeHub):
     """A hub that flips a byte of every ``.rpk`` it stores: what the verification after the commit must catch."""
 
-    def _commit(self, adds, deletes, message, expect):
-        super()._commit(adds, deletes, message, expect)
+    def _commit(self, adds, deletes, message, expect, parent=None):
+        super()._commit(adds, deletes, message, expect, parent)
         for r in adds:
             if r.endswith(".rpk"):
                 b = bytearray(open(self._p(r), "rb").read()); b[-1] ^= 0xFF; open(self._p(r), "wb").write(b)
