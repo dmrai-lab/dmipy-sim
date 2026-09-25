@@ -815,10 +815,11 @@ def replay_bloch(trajectory, dt_traj, G, dt_wf, rf_events, *,
 
     Parameters
     ----------
-    rf_events : list of dict
-        Each ``{'t_s', 'flip_deg', 'axis_deg', 'duration_s', 'offset_hz'}``; ``axis_deg`` is the B1 phase
-        (0 = x, 90 = y); ``duration_s = 0`` is an instantaneous hard pulse at ``t_s`` (any instant, not a save);
-        ``offset_hz`` an off-resonance carrier over a finite pulse.
+    rf_events : RFSchedule or sequence of RFEvent
+        The pulses (:class:`~dmipy_sim.acquisition.rf.RFEvent`, fields ``t_s``, ``flip_deg``, ``axis_deg``,
+        ``duration_s``, ``offset_hz``); ``axis_deg`` is the B1 phase (0 = x, 90 = y); ``duration_s = 0`` is an
+        instantaneous hard pulse at ``t_s`` (any instant, not a save); ``offset_hz`` an off-resonance carrier
+        over a finite pulse.
     T2, T1 / T2_per_comp, T1_per_comp, comp_traj : as in :func:`replay`.
     susceptibility : a :mod:`dmipy_sim.fields.susceptibility` provider or ``r -> dBz`` callable, sampled along
         the walk; mutually exclusive with ``extra_phase_per_step`` (the pre-baked per-save increment).

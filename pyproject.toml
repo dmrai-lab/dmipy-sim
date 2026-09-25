@@ -51,7 +51,7 @@ dev = [
 ]
 
 # ORACLE-ONLY, and deliberately NOT in `dev`. Nothing in dmipy_sim imports dipy -- the normative
-# spherical-harmonic basis (RPH.md Sec. 4.1) is implemented here as `gaunt.real_sh`. But "real SH"
+# spherical-harmonic basis (RPH.md Sec. 4.1) is implemented here as `replay.so3.real_sh`. But "real SH"
 # alone pins no convention: MRtrix/legacy-Tournier is not orthonormal and Descoteaux is a signed
 # m -> -m permutation, so the claim that our basis IS dipy's non-legacy `tournier` can only be
 # checked against dipy itself. Those few tests skip without it; CI installs this extra so the

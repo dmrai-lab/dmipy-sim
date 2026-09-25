@@ -22,7 +22,7 @@ and the free-pool boundary local time ``dlog_boundary_unit`` (for surface
 relaxivity of the free pool at replay).
 
 The bound spins' relaxation / RF (the actual MT saturation transfer) is applied at
-REPLAY by :func:`dmipy_sim.trajectories.replay_bloch`, consuming
+REPLAY by :func:`dmipy_sim.replay.trajectories.replay_bloch`, consuming
 ``bound_frac`` -- positions while bound are irrelevant to the MT observables (a
 bound spin has ~zero transverse via its huge R2b).  This is the replay counterpart
 of the fused forward path ``bloch.simulate_bloch(kappa_MT=...)``.
@@ -96,9 +96,8 @@ def simulate_mt_trajectories(
     dwell_time : float
         Mean bound-pool residence time (s).  Must be > 0 when kappa_MT > 0.
     sub_steps : int, optional
-        Fine sub-steps per saved step.  Default: auto to step_l ~ R/25 (binding
-        is trajectory-altering, like permeability, so it needs the finer step,
-        not reflection's R/6).
+        Fine sub-steps per saved step.  Default: :func:`dmipy_sim.engine.physics.resolve_sub_steps`
+        with the surface and binding criteria (:func:`dmipy_sim.engine.physics.mt_sub_steps`).
     equilibrate_binding : {'auto', 'burnin', 'fast', 'off'}
         How the bound pool reaches its thermal-equilibrium occupancy BEFORE t=0;
         see :func:`dmipy_sim.engine.mt.resolve_equilibrate_mode`.

@@ -285,9 +285,8 @@ def pathway_weight(sequence):
 
     A train whose refocusing pulses are NOT 180 is **refused**. Its echoes differ from one another (a six-echo
     train at 120 degrees runs 0.75, 0.94, 0.84, 0.86, 0.88, 0.86) and each is a sum over several pathways, so
-    no single amplitude describes the readout: that needs the pathway sum, which is dmipy-sim#307, and on the
-    vector route it also needs the crusher the replay ignores, which is #305. Returning 1 there would be a
-    confident wrong answer of up to 25 per cent on the first echo alone.
+    no single amplitude describes the readout: that needs the pathway sum (dmipy-sim#307). Returning 1 there
+    would be wrong by up to 25 per cent on the first echo alone.
 
     Duck-typed on ``stimulated_echo``, ``rf`` and ``readout``, so it reads a
     :class:`~dmipy_sim.acquisition.scanner_sequence.ScannerSequence` without importing one.

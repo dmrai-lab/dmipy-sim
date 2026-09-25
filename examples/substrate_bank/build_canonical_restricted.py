@@ -53,7 +53,7 @@ def walk_restricted_master(shape, diameter, D0, *, T_max=200e-3, n_t=2000, n_wal
 
 def restricted_envelope():
     """Lean gradient+relaxation fidelity battery for a single restricted pore (no field/MT tier).
-    The lowrank codec compresses *positions* (acquisition-agnostic), so a small PGSE/OGSE/short-δ
+    The bridge_dst codec compresses *positions* (acquisition-agnostic), so a small PGSE/OGSE/short-δ
     battery over ⊥/∥ directions certifies the reconstruction — vs the ~87-waveform default that makes
     ``measure_fidelity`` (host-numpy) the build bottleneck."""
     return dict(bvals=[0.0, 1.5e9, 3e9], dirs=[[0, 0, 1], [1, 0, 0]],

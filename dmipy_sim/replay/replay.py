@@ -1,21 +1,24 @@
 """Replay packs (``.rpk``) and the compiled-scheme forward — the shared replay primitive.
 
-A **replay pack** stores the state of one converged Monte-Carlo walk (walker trajectories as truncated
-DCT-II coefficients, plus a spin weight and an optional surface boundary-local-time channel) so the
+A **replay pack** stores the state of one converged Monte-Carlo walk (walker trajectories in the bridge form:
+per axis the two endpoints and the lowest ``K`` sine bands of the path pinned at both, plus a spin weight and
+optional channels) so the
 diffusion-weighted signal for *any* gradient waveform can be reconstructed without re-simulating. It is a
 single ``safetensors`` file: the arrays are the tensors, the JSON metadata sits in the ``"rpk"`` header
 key. Producers (e.g. the substrate generator) write them; consumers (dmipy-fit compartments, dmipy-design
 waveform optimization) replay them.
 
-The forward is exact and cheap. For a stored trajectory ``r_i(t) = idct(C_i)`` the signal is
+The forward is exact and cheap. The signal is
 
     E = < w_i exp(i phi_i) > / < w_i > ,   phi_i(m) = gamma * dt * sum_t G_m(t) . r_i(t)
 
-and because the phase is linear in position and the DCT-II is orthonormal (Parseval),
+and because the phase is linear in position it is a contraction of the stored coefficients ``C_i`` (the two
+endpoints and the ``K`` bands, :func:`~dmipy_sim.replay.compression.encode_bridge_dst`) with the waveform's
+projection on the same basis,
 
-    phi_i(m) = sum_{k,c} C_{i,k,c} * Ghat_{m,k,c},   Ghat = gamma * dt * DCT(G_m)[:K].
+    phi_i(m) = sum_{k,c} C_{i,k,c} * W_{m,k,c},
 
-The waveform projection ``Ghat`` (= :func:`compile_scheme`) is independent of the walkers; each forward is
+exact for every waveform inside the stored band. The projection ``W`` (= :func:`compile_scheme`) is independent of the walkers; each forward is
 then one dense matmul ``C @ W`` + a weighted complex mean (:func:`replay_signal`). This is the SAME math
 whether the acquisition is fixed and the substrate varies (fitting) or the substrate is fixed and the
 waveform varies (design) — in the latter it is differentiable in ``G``, so it drives gradient-based

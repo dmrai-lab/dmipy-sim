@@ -135,8 +135,8 @@ def _make_bloch_step_fn(geometry, D, dt, T2, T1, M0, off_resonance_hz, rho=0.0,
         return jnp.stack([Mx, My, Mz], axis=1), (Mx + 1j * My)
 
     if has_perm:
-        # Membrane crossing (Powles) is step-size sensitive, so sub-step the permeable
-        # walk to step_l ~ R/25 within each waveform dt; the gradient phase accumulates
+        # Membrane crossing (Powles) is step-size sensitive, so the permeable walk takes
+        # resolve_sub_steps' count within each waveform dt; the gradient phase accumulates
         # per fine sub-step. Same crossing physics as the scalar core.simulate walk, now
         # carried on the vector-Bloch M -- so a longitudinally-stored pool that EXCHANGES
         # across membranes during a mixing time is modelled correctly (e.g. FEXI).

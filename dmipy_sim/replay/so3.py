@@ -24,7 +24,7 @@ what the axis-only representation could not give:
   through the response values themselves -- there is no ``g x B0`` axis to become degenerate when the gradient
   and the field are parallel.
 
-Truncation is rectangular, ``l <= lmax`` and ``|n| <= nmax``, and is meant to be **measured**: :func:`fit`
+Truncation is rectangular, ``l <= lmax`` and ``|n| <= nmax``, and is meant to be **measured**: :func:`energy`
 reports the energy per ``l`` and per ``n``, so ``nmax`` states how non-axisymmetric a substrate is rather than
 hiding it.
 """

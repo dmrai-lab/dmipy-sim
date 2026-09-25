@@ -178,8 +178,7 @@ def delivered_gradient(scanner, grid, sequence, *, voxels=None, to_scanner=None,
                        nonlinearity=True, background=True, concomitant=True):
     """The gradient each voxel ACTUALLY receives: ``(n_voxels, n_meas, n_t, 3)`` in the grid's frame.
 
-    Three things stand between the gradient a sequence prescribes and the one a spin at ``r`` sees, and all
-    three are already modelled elsewhere in this package without ever reaching a signal (dmipy-sim#369):
+    Three things stand between the gradient a sequence prescribes and the one a spin at ``r`` sees:
 
     * the coils' **nonlinearity**, ``g -> L(r) g``, which mis-scales and TILTS the encoding direction;
     * the magnet's own **background** gradient, constant in time -- on through the pulses and the dead

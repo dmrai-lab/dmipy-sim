@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """FEXI apparent-exchange-rate (AXR) demo — WORK IN PROGRESS, see FEXI_AXR_NOTES.md.
 
-Runs the ``dmipy_sim.pulse_sequence.fexi`` stimulated-echo filter-exchange sequence on a
+Runs the ``dmipy_sim.engine.pulse_sequence.fexi`` stimulated-echo filter-exchange sequence on a
 permeable packed substrate through the vector-Bloch engine (which now models membrane
 permeation), sweeps the mixing time, and fits the AXR recovery model
 
