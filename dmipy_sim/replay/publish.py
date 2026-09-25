@@ -17,6 +17,7 @@ edited by hand.
 """
 import argparse
 import json
+import logging
 import os
 import sys
 import tempfile
@@ -24,6 +25,7 @@ import tempfile
 from ..fill.hub import is_not_found, sha256_of
 
 SCHEMA = "substratecommons/1"
+log = logging.getLogger("dmipy_sim.replay")
 MANIFEST = "manifest.json"
 README = "README.md"
 CONTRACT = ("id", "license", "citation", "fidelity")     # what a published pack must carry in its header
@@ -164,11 +166,15 @@ def render_readme(manifest, repo):
 
 
 # ------------------------------- publish -------------------------------
-def _load_manifest(hub):
+def _load_manifest(hub, revision=None):
+    """The dataset's manifest as it is now, or as it was at ``revision`` (a head a commit will declare as its parent)."""
     if hub.exists(MANIFEST):
-        with open(hub.get_live(MANIFEST)) as f:
+        with open(hub.get_live(MANIFEST) if revision is None else hub.get_at(MANIFEST, revision)) as f:
             return json.load(f)
     return {"schema": SCHEMA, "packs": []}
+
+
+MANIFEST_TRIES = 8           # a commit refused because another publisher moved the head is prepared again from the new head
 
 
 def _hub_sha256(hub, path):
@@ -210,14 +216,26 @@ def _publish_file(local, meta, repo, *, path, hub, message):
     path = path or f"packs/{str(meta['id']).replace('/', '-')}.rpk"
     sha, nbytes = sha256_of(local), os.path.getsize(local)
     row = manifest_row(meta, path, sha, nbytes)
-    manifest = _load_manifest(hub)
-    manifest["schema"] = manifest.get("schema") or SCHEMA
-    manifest["packs"] = [r for r in manifest.get("packs") or [] if r.get("path") != path] + [row]
-    if not manifest.get("substrate"):
-        manifest["substrate"] = _substrate_summary(meta.get("substrate"))
-    readme = render_readme(manifest, repo)
-    hub.commit({path: local, MANIFEST: json.dumps(manifest, indent=1).encode(), README: readme.encode()}, [],
-               message or f"publish {meta['id']} ({path})")
+    from ..fill.hub import StaleParent
+    for attempt in range(MANIFEST_TRIES):
+        # the manifest is read at the head and the commit declares that head as its parent: two publishers of one
+        # dataset (a build and a sync loop) each read, add a row and write, and without the parent the later
+        # write silently dropped the earlier one's row (nine packs of the canonical pores had none)
+        head = hub.head()
+        manifest = _load_manifest(hub, head)
+        manifest["schema"] = manifest.get("schema") or SCHEMA
+        manifest["packs"] = [r for r in manifest.get("packs") or [] if r.get("path") != path] + [row]
+        if not manifest.get("substrate"):
+            manifest["substrate"] = _substrate_summary(meta.get("substrate"))
+        readme = render_readme(manifest, repo)
+        try:
+            hub.commit({path: local, MANIFEST: json.dumps(manifest, indent=1).encode(), README: readme.encode()}, [],
+                       message or f"publish {meta['id']} ({path})", parent=head)
+            break
+        except StaleParent:
+            log.info("publish %s: the manifest moved past %s; prepared again (%d/%d)", path, head[:8], attempt + 2, MANIFEST_TRIES)
+    else:
+        raise RuntimeError(f"{uri_of(repo, path)}: the manifest moved under every one of {MANIFEST_TRIES} attempts")
     held = _hub_sha256(hub, path)
     if held != sha:
         raise RuntimeError(f"{uri_of(repo, path)}: the hub holds sha256 {held}, the manifest says {sha}")

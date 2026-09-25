@@ -44,11 +44,8 @@ def _expected(adds):
 
 
 def _status(e):
-    try:
-        from huggingface_hub.errors import HfHubHTTPError
-    except ImportError:                                    # pragma: no cover
-        return None
-    return getattr(getattr(e, "response", None), "status_code", None) if isinstance(e, HfHubHTTPError) else None
+    """The HTTP status an exception carries (``e.response.status_code``: the hub's errors, and the fake hub's), else None."""
+    return getattr(getattr(e, "response", None), "status_code", None)
 
 
 def is_rate_limited(e):
@@ -60,6 +57,15 @@ def is_outage(e):
     """Whether an exception is the hub failing on its side (a 5xx)."""
     st = _status(e)
     return st is not None and 500 <= st < 600
+
+
+def is_stale_parent(e):
+    """The hub refused a commit whose declared parent is no longer the head (HTTP 412): another writer got there."""
+    return _status(e) == 412
+
+
+class StaleParent(RuntimeError):
+    """A commit declared ``parent=`` and the repository's head had moved: the caller re-reads and commits again."""
 
 
 def is_not_found(e):
@@ -96,19 +102,26 @@ class HubBase:
                 log.warning("%s failed (%s); retry %d/%d in %d s", what, str(e).splitlines()[0][:160], k + 1, tries, wait)
                 time.sleep(wait)
 
-    def commit(self, adds, deletes, message, *, tries=UPLOAD_TRIES):
+    def commit(self, adds, deletes, message, *, tries=UPLOAD_TRIES, parent=None):
         """ONE commit: ``adds`` is ``{remote path: local path or bytes}``, ``deletes`` a list of remote paths (a
         path that is not there -- a claim released before -- is skipped). Returns ``{remote path: sha256}``.
         ``tries`` bounds the retries of an error of ours (backoff 30, 60, 120... s) and of a 429 (a wait of
         :data:`RATE_LIMIT_WAIT_S`); a 5xx is the hub's outage and is retried every :data:`OUTAGE_WAIT_S` up to
-        :data:`OUTAGE_TRIES` times on its own count (``tries=1`` skips every retry: a heartbeat)."""
+        :data:`OUTAGE_TRIES` times on its own count (``tries=1`` skips every retry: a heartbeat). ``parent`` is
+        the head (:meth:`head`) the commit was prepared against: a commit on a file two writers read, modify and
+        write (a manifest) declares it, and the hub refuses it when the head has moved -- raised at once as
+        :class:`StaleParent`, never retried, since the caller must read again."""
         expect = _expected(adds)
         k = outages = 0
         while True:
             try:
-                self._commit(dict(adds), list(deletes), message, expect)
+                self._commit(dict(adds), list(deletes), message, expect, parent)
                 return {r: expect[r][0] for r in adds}
+            except StaleParent:
+                raise
             except Exception as e:
+                if is_stale_parent(e):
+                    raise StaleParent(f"commit {message!r}: the head moved past {parent}") from e
                 if tries <= 1:
                     raise
                 if is_outage(e):
@@ -151,13 +164,22 @@ class Hub(HubBase):
         from huggingface_hub import hf_hub_download
         return self.read(f"download of {f}", lambda: hf_hub_download(self.repo, f, repo_type="dataset"))
 
+    def head(self):
+        """The repository's current commit."""
+        return self.read("head", lambda: self.api.dataset_info(self.repo).sha)
+
+    def get_at(self, f, revision):
+        """A file at ``revision`` (a local path): what a read-modify-write reads, so its commit can declare that parent."""
+        from huggingface_hub import hf_hub_download
+        return self.read(f"download of {f}@{revision[:8]}", lambda: hf_hub_download(self.repo, f, repo_type="dataset", revision=revision))
+
     def files(self):
         return self.read("listing", lambda: set(self.api.list_repo_files(self.repo, repo_type="dataset")))
 
     def exists(self, path):
         return self.read(f"exists of {path}", lambda: self.api.file_exists(self.repo, path, repo_type="dataset"))
 
-    def _commit(self, adds, deletes, message, expect):
+    def _commit(self, adds, deletes, message, expect, parent=None):
         from huggingface_hub import CommitOperationAdd, CommitOperationDelete
         if deletes:
             deletes = [i.path for i in self.api.get_paths_info(self.repo, deletes, repo_type="dataset")]
@@ -165,7 +187,8 @@ class Hub(HubBase):
                + [CommitOperationDelete(path_in_repo=d) for d in deletes])
         if not ops:
             return
-        self.api.create_commit(repo_id=self.repo, repo_type="dataset", operations=ops, commit_message=message)
+        self.api.create_commit(repo_id=self.repo, repo_type="dataset", operations=ops, commit_message=message,
+                               parent_commit=parent)
         if adds:                                           # verified: the hub holds what was sent
             for info in self.api.get_paths_info(self.repo, list(adds), repo_type="dataset"):
                 sha, size = expect[info.path]
@@ -208,6 +231,12 @@ class FakeHub(HubBase):
 
     get_live = get
 
+    def head(self):
+        return f"fake-{len(self.log)}"
+
+    def get_at(self, f, revision):
+        return self.get(f)                                     # the directory holds the latest only
+
     def files(self):
         def go():
             self._maybe_fail("files")
@@ -221,7 +250,9 @@ class FakeHub(HubBase):
     def exists(self, path):
         return self.read(f"exists of {path}", lambda: (self._maybe_fail("exists"), os.path.isfile(self._p(path)))[1])
 
-    def _commit(self, adds, deletes, message, expect):
+    def _commit(self, adds, deletes, message, expect, parent=None):
+        if parent is not None and parent != self.head():
+            raise _fake_http(f"{message}: parent {parent} is not the head {self.head()}", 412, "Precondition Failed")
         for i, prefix in enumerate(self.fail_429):
             if message.startswith(prefix):
                 del self.fail_429[i]
@@ -246,9 +277,20 @@ class FakeHub(HubBase):
         return [(c["time"], c["message"]) for c in reversed(self.log)]
 
 
+class _HubHTTPError(Exception):
+    """The fake hub's HTTP error where ``huggingface_hub`` is not installed: the status on ``response`` like the real one's."""
+
+    def __init__(self, message, response):
+        super().__init__(message); self.response = response
+
+
 def _fake_http(message, code, reason):
-    import requests
-    from huggingface_hub.errors import HfHubHTTPError
+    import types
+    try:
+        import requests
+        from huggingface_hub.errors import HfHubHTTPError
+    except ImportError:
+        return _HubHTTPError(f"{code} Error: {reason} ({message})", types.SimpleNamespace(status_code=code, reason=reason))
     r = requests.Response(); r.status_code = code; r.reason = reason; r._content = reason.encode()
     r.request = requests.Request("POST", "https://fake/api/commit").prepare()
     return HfHubHTTPError(f"{code} Error: {reason} ({message})", response=r)
