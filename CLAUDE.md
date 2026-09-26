@@ -58,7 +58,7 @@ its own fixtures (`tests/validation/test_cross_engine_parity.py`, `examples/vali
 `io/mcdc.py`, `spec.mcdc_axon_spec`): MC/DC's released undulating-axon signals and Disimpy's cylinder mesh,
 each walked on THEIR surface at THEIR acquisition, with the tolerance measured from the floors of both runs --
 theirs from the walker count their unnormalised `b = 0` entry states, ours from our split half. The packs are
-`SubstrateCommons/parity-fixtures`, built by `parity-fixtures/build.py`.
+`SubstrateCommons/parity-fixtures`, built by `parity-fixtures/build.py`, which runs the reference-pack protocol (#482) as stages that each write one record (`records/source.json` with the host's licence copied verbatim, `reference.json` with the DOI resolved and **which side is a Monte-Carlo estimate**, `design.json` with a pilot MEASURED on the real window and the trade when the target floor and the memory budget cannot both hold, `build.json`, `gate.json`) and a gate that reads only recorded numbers and refuses the publish. Its parity thresholds are DERIVED from the measurement count, never typed: comparing `max|dS|` with `tol_max` compares a maximum with a maximum and hid 2 of 372 measurements outside their own 3-sigma band, and requiring zero of them is equally wrong since chance gives 1.00 over 372 -- so the design record carries at most 5 exceedances (the Poisson 3-sigma bound on that mean) and the worst measurement inside the 3.206-sigma family-wise band.
 
 ## Common tasks (copy-paste)
 
