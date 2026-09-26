@@ -325,10 +325,10 @@ def _spec_of_mesh(g, sid, prov, surface_dir):
     bc = ["periodic" if p else ("reflect" if g.box_reflect else "open") for p in g.periodic]
     dom = Domain(np.asarray(g.vmin, float).tolist(), np.asarray(g.vmax, float).tolist(), bc)
     seeded = 1 if g.pool == "intra" else 0
-    # A geometry cannot know that its walkers came from a cited list, so `geometry_from_spec` hands the spec's
-    # own seeding back through `_spec_seeding` and the round trip keeps it; without that, `explicit` silently
-    # became `uniform_by_volume` and a re-walk seeded the whole tube.
-    seeding = getattr(g, "_spec_seeding", None) or Seeding([seeded])
+    # A surface cannot know that its walkers came from a cited list, so the seeding is a CONSTRUCTOR argument
+    # (`Mesh(..., seeding=)`) that `geometry_from_spec` fills from the spec and this reads back as a field.
+    # Without it `explicit` silently became `uniform_by_volume` and a re-walk seeded the whole 250 um tube.
+    seeding = g.seeding or Seeding([seeded])
     return SubstrateSpec(sid, dom, pools, [wall], seeding,
                          Validity(float(g.radius), _tiers([wall], pools), mesh_edge_feature_ratio=float(g.edge_median / g.radius)),
                          description="one closed (or periodic) triangle surface: inside is intra, outside extra",
@@ -624,8 +624,7 @@ def _geometry_from_spec(spec):
                           voxel_min=dom.box_min, voxel_max=dom.box_max, feature_radius=spec.validity.smallest_feature,
                           permeability=perm, compartments=(Compartments(comps) if comps else None),
                           pool={1: "intra", 0: "extra"}[spec.seeding.pools[0]],
-                          box_reflect=("reflect" in dom.boundary))
-        m._spec_seeding = spec.seeding          # so spec_of(geometry_from_spec(spec)) keeps an explicit rule
+                          box_reflect=("reflect" in dom.boundary), seeding=spec.seeding)
         return m
     if len(walls) == 1:
         w = walls[0]; s = w.surface

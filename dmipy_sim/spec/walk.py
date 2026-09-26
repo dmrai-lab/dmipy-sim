@@ -425,7 +425,7 @@ class WalkContext:
         return self._basis
 
 
-def _explicit_seeds(spec, pid, n):
+def _explicit_seeds(spec, pid, n, member=None):
     """``(positions, weights)`` for a pool whose spec seeds it from a CITED list of start positions.
 
     The list is read from ``spec.seeding.positions`` -- resolved and sha256-checked like any other file a spec
@@ -449,6 +449,18 @@ def _explicit_seeds(spec, pid, n):
     read = (pos.get("read") or "cyclic").lower()
     if read != "cyclic":
         raise SpecError(f"seeding.positions.read {read!r} is not a rule this knows; 'cyclic' is i mod n")
+    if member is not None:
+        # chunked: a membership test is a device kernel compiled for its batch shape, and the file may hold
+        # more rows than one batch
+        inside = np.concatenate([np.asarray(member(A[i:i + 512]), bool).ravel()
+                                 for i in range(0, len(A), 512)])
+        if not inside.all():
+            bad = np.flatnonzero(~inside)
+            raise SpecError(
+                f"{path}: {bad.size} of {len(A)} cited start positions are not inside pool {pid} -- lines "
+                f"{(bad[:8] + 1).tolist()}{' ...' if bad.size > 8 else ''}, e.g. "
+                f"{np.round(A[bad[0]] * 1e6, 4).tolist()} um. A walker started on the wrong side of a wall "
+                f"walks a different substrate, so the list is refused rather than used")
     r0 = A[np.arange(int(n)) % len(A)]
     return r0, np.ones(len(r0))
 
@@ -509,7 +521,7 @@ def _walk_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field, field_re
         probe = np.random.default_rng(int(seed) + 99).uniform(lo, hi, (int(n_probe), 3))
         frac = {pid: float(member(pid)(probe).mean()) for pid in seeded}
         if spec.seeding.rule == "explicit":
-            return _explicit_seeds(spec, pid, n)
+            return _explicit_seeds(spec, pid, n, member(pid))
         if spec.seeding.weights == "thin":                 # seed by volume x water fraction, every walker weight 1
             mass = {pid: frac[pid] * wf[pid] for pid in seeded}
         else:                                              # seed by volume, carry the water fraction as a weight

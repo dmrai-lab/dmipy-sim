@@ -591,7 +591,12 @@ class Mesh(Geometry):
                  voxel_max=None, feature_radius=None, surface_relaxivity_t2=None,
                  permeability=None, compartments=None, orientation=None,
                  R=None, cell_size=None, cap=None, max_bounces=None, pool="intra", reject_escape=True,
-                 box_reflect=True, adaptive_nudge=False):
+                 box_reflect=True, adaptive_nudge=False, seeding=None):
+        #: Where this surface's walkers start, when that is not a property of the surface: the
+        #: :class:`~dmipy_sim.spec.substrate.Seeding` the spec it was built from declares, so
+        #: :func:`~dmipy_sim.spec.spec_of` can write it back and ``spec -> geometry -> spec`` stays a fixed
+        #: point. ``None`` for a mesh built from arrays, whose seeding is the default uniform draw.
+        self.seeding = seeding
         V = np.asarray(vertices, np.float64)
         F = np.asarray(faces, np.int64)
         # A face normal is the surface's statement about which side is inside, and the interior/exterior

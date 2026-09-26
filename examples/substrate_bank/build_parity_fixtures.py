@@ -720,8 +720,20 @@ def stage_spec(a, X):
             f"pickle ({rep['vertices_before']} -> {rep['vertices_after']} vertices, then oriented)")
     return _write_record("spec", dict(stage="spec", written=time.strftime("%Y-%m-%dT%H:%M:%SZ"),
                                       reference_sha256=_digest(os.path.join(RECORDS, "reference.json"))["sha256"],
-                                      round_trip_rule="spec_of(geometry_from_spec(spec)) == spec on every field "
-                                                      "listed; a field that does not survive is refused, not noted",
+                                      round_trip_rule=(
+                                          "NOT full equality: the fields listed per fixture under `round_trip` "
+                                          "are compared one by one through spec_of(geometry_from_spec(spec)), "
+                                          "and one that does not survive is refused rather than noted. The set "
+                                          "is the fields a re-walk would get WRONG if the geometry could not "
+                                          "carry them -- seeding.rule and seeding.positions (which list the "
+                                          "walkers started on), the two pools' water fractions (which say "
+                                          "which pool was seeded and read at all) and the domain's box and "
+                                          "boundary. Everything else a spec holds -- its id, description, "
+                                          "provenance, validity and the wall's rho / permeability -- is "
+                                          "deliberately NOT compared: a geometry does not carry it and is not "
+                                          "asked to."),
+                                      round_trip_fields_checked=sorted(
+                                          {f for v in specs.values() for f in v["round_trip"]}),
                                       fixtures=specs))
 
 
