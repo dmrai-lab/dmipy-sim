@@ -11,6 +11,7 @@ frame helper, and *nothing else* crosses these boundaries.
     myelin      concentric multi-compartment (carried state, fused kernels)
     packing     position generators for the packed geometries
     curved_cylinder sphere-swept polylines
+    label_volume a segmented image: the wall is the faces between voxels of different pools
     mesh        arbitrary triangular meshes, grid-accelerated
     mesh_shapes procedural mesh + susceptibility-source builders
 
@@ -24,6 +25,7 @@ from .packing import pack_cylinders, pack_spheres, pack_myelinated_cylinders
 from .curved_cylinder import CurvedCylinder, CurvedMyelinatedCylinder, PackedCurvedCylinders
 from .mesh import Mesh
 from .sphere_union import SphereUnion
+from .label_volume import LabelVolume
 
 __all__ = [
     "Geometry", "LengthScales", "FreeDiffusion", "Box1D", "initial_positions",
@@ -31,5 +33,5 @@ __all__ = [
     "PackedCylinders", "PackedSpheres",
     "MyelinatedCylinder", "PackedMyelinatedCylinders",
     "pack_cylinders", "pack_spheres", "pack_myelinated_cylinders",
-    "CurvedCylinder", "CurvedMyelinatedCylinder", "PackedCurvedCylinders", "SphereUnion", "Mesh",
+    "CurvedCylinder", "CurvedMyelinatedCylinder", "PackedCurvedCylinders", "SphereUnion", "LabelVolume", "Mesh",
 ]

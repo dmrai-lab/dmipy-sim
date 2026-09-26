@@ -118,6 +118,9 @@ _SLOW_MC_MODULES = {
     # 6000 walkers x 10000 sub-steps. The cheap sealed-wall detector that guards the same
     # property lives in the fast lane, in test_boundary_compartment_integrity.
     "test_permeable_crossings",
+    # One 200,000-walker, 6000-step walk per rock on a 300^3 micro-CT image, against Talabi 2008
+    # (needs DMIPY_SIM_IMPERIAL2007_DIR; skipped without it).
+    "test_talabi_rocks",
 }
 
 

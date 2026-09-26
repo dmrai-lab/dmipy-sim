@@ -39,6 +39,7 @@ from .geometry import (FreeDiffusion, Box1D, Sphere, Cylinder, MyelinatedCylinde
                          PermeableSlab1D)
 from .geometry.curved_cylinder import CurvedCylinder, CurvedMyelinatedCylinder, PackedCurvedCylinders
 from .geometry.sphere_union import SphereUnion
+from .geometry.label_volume import LabelVolume
 from .geometry.mesh import Mesh, load_ply
 from .fields.susceptibility import SusceptibilitySources, MyelinSusceptibility, GridSusceptibility
 from .fields.susceptibility_field import dipole_field, myelin_susceptibility_tensor, radial_from_sdf, sample_grid
@@ -82,7 +83,7 @@ __all__ = [
     "PackedSpheres", "pack_spheres",
     "PackedMyelinatedCylinders", "pack_myelinated_cylinders",
     "PermeableSlab1D",
-    "CurvedCylinder", "CurvedMyelinatedCylinder", "PackedCurvedCylinders", "SphereUnion",
+    "CurvedCylinder", "CurvedMyelinatedCylinder", "PackedCurvedCylinders", "SphereUnion", "LabelVolume",
     "Mesh", "load_ply",
     # susceptibility off-resonance fields (forward Bloch)
     "SusceptibilitySources", "MyelinSusceptibility", "GridSusceptibility",

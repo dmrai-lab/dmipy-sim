@@ -361,6 +361,112 @@ def caterpillar_spec(path, *, scale=_UM, box=None, glia=True, field_T=3.0, rho2=
     return spec.validate()
 
 
+def label_volume_spec(path, *, pools=None, voxel_size=None, origin=None, crop=None, periodic=False,
+                      D=None, rho=0.0, T2=None, T2_pools=None, nominal_field_T=None, walk=None,
+                      format=None, cite_image_as=None, id=None, description=None, source=None):
+    """The spec of a **segmented image**: one pool per label, one wall per pair of pools that share a
+    voxel face, the image cited as a file.
+
+    ``pools`` maps each label value to a pool name, in pool-id order, and defaults to the micro-CT
+    convention ``{0: "free", 1: "grain"}`` (void 0, solid 1). ``walk`` names the pool the walkers
+    occupy (the first by default), the only pool that holds water: a solid is a pool with
+    ``water_fraction`` 0. ``rho`` is the transverse surface relaxivity (m/s) of every wall, per side;
+    ``D`` and ``T2`` are the walking pool's bulk values, ``T2_pools`` a T2 per pool name where they
+    differ. ``crop`` is the ``(i0, j0, k0, i1, j1, k1)`` sub-volume that IS the substrate; ``periodic``
+    says which axes repeat (a rock crop does not: its faces reflect). ``voxel_size`` (metres) supplies
+    a spacing the container does not carry, and contradicts a header that does.
+
+    The image is read only to measure what the spec must declare -- its labels, its extent and the
+    pools that actually touch -- and nothing is constructed: ``spec.geometry_from_spec`` reads it back
+    into a :class:`~dmipy_sim.geometry.label_volume.LabelVolume`. ``cite_image_as`` is the path a
+    dataset distributes the image at, when that is not where it is being read from.
+    """
+    from ..io.label_volume import read_label_volume, crop_labels, format_of
+    fmt = str(format).lower() if format is not None else format_of(path)
+    vol = read_label_volume(path, format=fmt, voxel_size=voxel_size)
+    if crop is not None:
+        vol = crop_labels(vol, crop)
+    lab, vox = vol.labels, vol.voxel_size
+    org = np.asarray(origin, float) if origin is not None else vol.origin
+    per = np.broadcast_to(np.asarray(periodic, bool).ravel(), (3,))
+
+    pool_map = dict(pools if pools is not None else {0: "free", 1: "grain"})
+    names = list(pool_map.values())
+    present = sorted(int(v) for v in np.unique(lab))
+    unknown = [v for v in present if v not in {int(k) for k in pool_map}]
+    if unknown:
+        raise SpecError(f"{path}: the image holds labels {unknown} that `pools` does not name (pools = {pool_map})")
+    walking = str(walk) if walk is not None else names[0]
+    if walking not in names:
+        raise SpecError(f"{path}: walk={walking!r} is not one of the pools {names}")
+    wid = names.index(walking)
+    if names[0] not in ("extra", "free"):
+        raise SpecError(f"{path}: pool 0 is the free pool and is named 'extra' or 'free', got {names[0]!r}")
+
+    t2 = dict(T2_pools or {})
+    if T2 is not None:
+        t2[walking] = float(T2)
+    spec_pools = [Pool(i, n, (float(D) if (D is not None and i == wid) else None),
+                       water_fraction=(1.0 if i == wid else 0.0), T2=t2.get(n))
+                  for i, n in enumerate(names)]
+
+    ids = np.full(256, -1, np.int32)
+    for i, v in enumerate(pool_map):
+        ids[int(v)] = i
+    g = np.take(ids, lab)
+    pairs = set()
+    for ax in range(3):
+        a = np.swapaxes(g, 0, ax)
+        slabs = [(a[:-1], a[1:])] + ([(a[-1:], a[:1])] if per[ax] else [])
+        for left, right in slabs:
+            lo, hi = np.minimum(left, right), np.maximum(left, right)
+            sel = lo != hi
+            if sel.any():
+                pairs.update(zip(lo[sel].tolist(), hi[sel].tolist()))
+    if not pairs:
+        raise SpecError(f"{path}: no two pools of this image share a voxel face, so it has no wall")
+
+    cited = str(cite_image_as if cite_image_as is not None else path)
+    surf_kw = dict(file=cited, format=fmt, sha256=_sha(path),
+                   voxel_size=[float(x) for x in vox], origin=[float(x) for x in org],
+                   labels={str(int(v)): n for v, n in pool_map.items()},
+                   crop=([int(x) for x in crop] if crop is not None else None))
+    rho = float(rho)
+    walls = [Wall(f"{names[j]}|{names[i]}", Surface("label_volume", **surf_kw), j, i,
+                  Directional(), Sided(rho, rho)) for i, j in sorted(pairs)]
+    dom = Domain(org.tolist(), (org + np.asarray(lab.shape) * vox).tolist(),
+                 ["periodic" if p else "reflect" for p in per])
+    phi = float(np.mean(g == wid))
+    area = 0.0
+    for ax in range(3):
+        a = np.swapaxes(g == wid, 0, ax)
+        n = int(np.count_nonzero(a[:-1] != a[1:])) + (int(np.count_nonzero(a[-1] != a[0])) if per[ax] else 0)
+        area += n * float(np.prod(vox) / vox[ax])
+    s_over_v = area / (phi * float(np.prod(lab.shape)) * float(np.prod(vox)))
+    transformations = [
+        f"labels -> pools {pool_map}; the {walking!r} pool holds the water, the others water_fraction 0",
+        "the wall is every voxel face between two pools (the Manhattan surface of the segmentation): "
+        f"measured S/V of the {walking!r} pool {s_over_v:.6g} 1/m at porosity {phi:.6g}",
+        ("the crop's own outer faces are not a wall: they are the domain's " +
+         ", ".join(f"{'periodic' if p else 'reflect'} {ax}" for ax, p in zip("xyz", per))),
+    ]
+    if crop is not None:
+        transformations.append(f"crop {list(int(x) for x in crop)} of the released image, half-open, in voxels")
+    return SubstrateSpec(
+        id or f"label_volume/{os.path.splitext(os.path.basename(str(path)))[0]}",
+        dom, spec_pools, walls, Seeding([wid], "uniform_by_volume", "water_fraction"),
+        Validity(float(np.min(vox)), ["gradient"] + (["relaxation"] if any(p.T2 for p in spec_pools) else []) + ["surface"]),
+        nominal_field_T=(float(nominal_field_T) if nominal_field_T is not None else None),
+        description=description or (f"a segmented {'x'.join(str(int(n)) for n in lab.shape)} image at "
+                                   f"{float(np.min(vox)) * 1e6:.4g} um; the {walking!r} pool walks between its voxel faces"),
+        realisation={"shape": [int(n) for n in lab.shape], "porosity": phi, "surface_to_volume": s_over_v,
+                     "voxel_size_m": [float(x) for x in vox]},
+        provenance={"source": source or "segmented image", "files": [{"path": cited, "sha256": surf_kw["sha256"]}],
+                    "transformations": transformations,
+                    "created": date.today().isoformat(), "software": {"name": "dmipy-sim", "version": _version()}}
+    ).validate()
+
+
 def strands_spec(path, *, scale=_UM, g_ratio=None, boundary="reflect", field_T=3.0, rho2=None, id=None,
                  radius_tol=1e-3, source="EPFL strand list"):
     """The spec of an EPFL strand list (CACTUS ``.init`` / ``optimized_final.txt``): every strand a sphere-swept
