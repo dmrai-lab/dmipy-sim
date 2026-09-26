@@ -125,8 +125,9 @@ def read_nrrd(path, *, voxel_size=None):
     """A NRRD image: a detached header (``.nhdr`` naming its ``data file``) or a single ``.nrrd``.
 
     The voxel size is the norm of each ``space directions`` vector, or ``spacings``, in the header's
-    ``space units`` (metres when it names none); the origin is ``space origin``. ``raw``, ``gzip``
-    and ``gz`` encodings are read.
+    ``space units``; the origin is ``space origin``, in the same unit. A header that states a spacing
+    and no ``space units`` states no LENGTH -- NRRD leaves the unit unspecified -- so it is refused
+    unless ``voxel_size=`` supplies one. ``raw``, ``gzip`` and ``gz`` encodings are read.
     """
     path = os.fspath(path)
     with open(path, "rb") as fh:
@@ -159,14 +160,14 @@ def read_nrrd(path, *, voxel_size=None):
     if len(shape) != 3:
         raise LabelVolumeError(f"{path}: a label volume is 3-D, the header declares sizes {shape}")
 
-    unit = 1.0
+    unit, unit_stated = 1.0, False
     if "space units" in hdr:
         units = re.findall(r'"([^"]*)"', hdr["space units"]) or hdr["space units"].split()
         us = {_unit(u, path) for u in units}
         if len(us) != 1:
             raise LabelVolumeError(f"{path}: 'space units' mixes units ({hdr['space units']!r}); "
                                    f"one length unit per image")
-        unit = us.pop()
+        unit, unit_stated = us.pop(), True
     vox = None
     if "space directions" in hdr:
         vecs = [[float(x) for x in g.split(",")] for g in re.findall(r"\(([^)]*)\)", hdr["space directions"])]
@@ -196,6 +197,15 @@ def read_nrrd(path, *, voxel_size=None):
     a = np.frombuffer(payload, dtype=dtype).reshape(shape[::-1]).transpose(2, 1, 0)
     if hdr.get("endian", "little").strip().lower() == "big" and np.dtype(dtype).itemsize > 1:
         a = a.byteswap().view(a.dtype.newbyteorder("="))
+    if vox is not None and not unit_stated:
+        # NRRD leaves the unit of `space directions` / `spacings` unspecified when there is no
+        # `space units`, so the number in the header is not a length. Reading it as metres is a guess
+        # that puts a 10 um rock at 10 m; the caller has to state the unit.
+        if voxel_size is None:
+            raise LabelVolumeError(
+                f"{path}: the header states a spacing ({[float(v) for v in vox]}) but no 'space units', "
+                f"so NRRD leaves its unit unspecified and it is not a length. Pass voxel_size= in metres.")
+        vox = None
     return LabelVolumeFile(_as_labels(a, path), _voxel_size(vox, voxel_size, path), origin)
 
 
@@ -207,7 +217,10 @@ _MHD_TYPES = {"MET_UCHAR": np.uint8, "MET_CHAR": np.int8, "MET_USHORT": np.uint1
 def read_mhd(path, *, voxel_size=None):
     """A MetaImage: a ``.mhd`` header with its ``ElementDataFile``, or a self-contained ``.mha``.
 
-    ``ElementSpacing`` and ``Offset`` are in millimetres, the format's unit.
+    ``ElementSpacing`` and the origin are in millimetres, the format's unit. The origin is
+    ``Offset``, ``Origin`` or ``Position``, and a big-endian payload is declared by either
+    ``BinaryDataByteOrderMSB`` or ``ElementByteOrderMSB``: MetaIO spells both of those two ways and
+    either spelling means the same thing.
     """
     path = os.fspath(path)
     with open(path, "rb") as fh:
@@ -237,8 +250,10 @@ def read_mhd(path, *, voxel_size=None):
         raise LabelVolumeError(f"{path}: a label volume is 3-D, the header declares DimSize {shape}")
     spacing = hdr.get("ElementSpacing") or hdr.get("ElementSize")
     vox = (np.array([float(x) for x in spacing.split()], np.float64) * 1e-3) if spacing else None
-    origin = (np.array([float(x) for x in hdr["Offset"].split()], np.float64) * 1e-3
-              if "Offset" in hdr else np.zeros(3))
+    # MetaIO spells the origin three ways and they mean the same thing; reading only one of them put
+    # an image that used another at the coordinate origin, silently.
+    off = next((hdr[k] for k in ("Offset", "Origin", "Position") if k in hdr), None)
+    origin = (np.array([float(x) for x in off.split()], np.float64) * 1e-3) if off else np.zeros(3)
 
     src = hdr["ElementDataFile"]
     if src.upper() == "LOCAL":
@@ -251,7 +266,9 @@ def read_mhd(path, *, voxel_size=None):
             payload = fh.read()
     _check_payload(len(payload), shape, np.dtype(dtype).itemsize, data_path)
     a = np.frombuffer(payload, dtype=dtype).reshape(shape[::-1]).transpose(2, 1, 0)
-    if hdr.get("BinaryDataByteOrderMSB", "False").strip().lower() == "true" and np.dtype(dtype).itemsize > 1:
+    # and it spells the byte order two ways, either of which means the payload is big-endian
+    msb = next((hdr[k] for k in ("BinaryDataByteOrderMSB", "ElementByteOrderMSB") if k in hdr), "False")
+    if msb.strip().lower() == "true" and np.dtype(dtype).itemsize > 1:
         a = a.byteswap().view(a.dtype.newbyteorder("="))
     return LabelVolumeFile(_as_labels(a, path), _voxel_size(vox, voxel_size, path), origin)
 
@@ -271,10 +288,10 @@ def read_nifti(path, *, voxel_size=None):
     unit = 1e-3
     try:
         name = hdr.get_xyzt_units()[0]
-        if name and name != "unknown":
-            unit = _unit(name, path)
     except Exception:                                  # a header with no unit field: the format's mm
-        pass
+        name = None
+    if name and name != "unknown":
+        unit = _unit(name, path)                       # an unknown unit is refused, not ignored
     vox = zooms * unit if np.all(zooms > 0) else None
     origin = np.asarray(img.affine, np.float64)[:3, 3] * unit
     return LabelVolumeFile(_as_labels(np.asanyarray(img.dataobj), path),

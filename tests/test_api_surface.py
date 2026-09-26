@@ -182,9 +182,9 @@ def test_length_scales_match_the_geometry_definition():
     pk = G["PackedCurvedCylinders"]
     assert ls("PackedCurvedCylinders") == LengthScales(min_feature=2e-6, lookup_cell=pk.cell_size)
     # a label volume: the voxel, and the walking pool's measured V/S (a 10 um slab pore -> 5 um)
-    lv = ls("LabelVolume")
-    assert lv.min_feature == 0.5e-6 and lv.surface_pore == pytest.approx(5e-6)
-    assert lv.lookup_cell is None and lv.is_mesh_feature is False and lv.min_gap is None
+    # a label volume: the voxel, and no separate pore -- V/S is a mean, and the surface rule divides
+    # the worst case a segmentation can hold, which is one voxel
+    assert ls("LabelVolume") == LengthScales(min_feature=0.5e-6)
 
 
 def test_an_object_without_length_scales_is_refused():

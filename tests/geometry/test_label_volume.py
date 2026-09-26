@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 
 from dmipy_sim.geometry import LabelVolume
-from dmipy_sim.geometry.base import Box1D
+from dmipy_sim.geometry.base import Box1D, LengthScales
 from dmipy_sim.io.label_volume import (LabelVolumeError, crop_labels, read_label_volume, read_mhd,
                                        read_nrrd, write_nrrd)
 
@@ -130,6 +130,71 @@ def test_a_payload_that_does_not_match_its_header_is_refused(tmp_path):
                  "spacings: 1e-6 1e-6 1e-6\ndata file: short.raw\n")
     with pytest.raises(LabelVolumeError, match="do not describe the same image"):
         read_nrrd(p)
+
+
+def test_a_nrrd_spacing_without_a_space_unit_is_not_a_length(tmp_path):
+    """NRRD leaves the unit of ``space directions`` / ``spacings`` unspecified when the header carries
+    no ``space units``, so the number there is not a length: reading it as metres would put a 10 um
+    rock at 10 m. It is refused, naming the spacing it found, and ``voxel_size=`` then supplies the
+    unit and the header's own number is not used as a second opinion."""
+    lab = np.zeros((4, 3, 2), np.uint8)
+    body = np.ascontiguousarray(lab.transpose(2, 1, 0)).tobytes()
+    p = tmp_path / "nounit.nrrd"
+    p.write_bytes(b"NRRD0004\ntype: uchar\nencoding: raw\ndimension: 3\nsizes: 4 3 2\n"
+                  b"spacings: 10.002 10.002 10.002\n\n" + body)
+    with pytest.raises(LabelVolumeError, match="no 'space units'"):
+        read_nrrd(p)
+    v = read_nrrd(p, voxel_size=10.002e-6)
+    assert np.allclose(v.voxel_size, 10.002e-6)
+
+
+def test_a_nifti_with_a_unit_the_reader_does_not_know_is_refused(tmp_path):
+    """``_unit`` refuses a unit it cannot convert; the NIfTI reader must not swallow that refusal while
+    catching the absence of the field. A header whose ``xyzt_units`` is an unreadable code is refused,
+    and one that declares none reads as the format's millimetres."""
+    nib = pytest.importorskip("nibabel")
+    img = nib.Nifti1Image(np.zeros((3, 3, 3), np.uint8), np.diag([2.0, 2.0, 2.0, 1.0]))
+    img.header.set_xyzt_units(None)
+    nib.save(img, str(tmp_path / "nounit.nii"))
+    assert np.allclose(read_label_volume(tmp_path / "nounit.nii").voxel_size, 2e-3)
+
+    from dmipy_sim.io import label_volume as io_lv
+
+    class Furlongs:
+        """A NIfTI header that declares a unit no reader converts."""
+        header = type("H", (), {"get_zooms": lambda self: (2.0, 2.0, 2.0),
+                                "get_xyzt_units": lambda self: ("furlong", "sec")})()
+        affine = np.eye(4)
+        dataobj = np.zeros((3, 3, 3), np.uint8)
+
+    real_load = nib.load
+    try:
+        nib.load = lambda p: Furlongs()
+        with pytest.raises(LabelVolumeError, match="furlong"):
+            io_lv.read_nifti(tmp_path / "nounit.nii")
+    finally:
+        nib.load = real_load
+
+
+def test_metaimage_spells_its_origin_and_byte_order_more_than_one_way(tmp_path):
+    """MetaIO writes the origin as ``Offset``, ``Origin`` or ``Position`` and a big-endian payload as
+    ``BinaryDataByteOrderMSB`` or ``ElementByteOrderMSB``; each pair means one thing. Reading only one
+    spelling put an image that used the other at the coordinate origin, or read its bytes the wrong way
+    round, silently."""
+    lab = np.arange(4 * 3 * 2, dtype=np.uint16).reshape(4, 3, 2) % 3
+    head = ("ObjectType = Image\nNDims = 3\nDimSize = 4 3 2\nElementType = MET_USHORT\n"
+            "ElementSpacing = 0.01 0.01 0.01\n")
+    for key in ("Offset", "Origin", "Position"):
+        (tmp_path / f"{key}.raw").write_bytes(np.ascontiguousarray(lab.transpose(2, 1, 0)).tobytes())
+        (tmp_path / f"{key}.mhd").write_text(head + f"{key} = 1 2 3\nElementDataFile = {key}.raw\n")
+        v = read_mhd(tmp_path / f"{key}.mhd")
+        assert np.allclose(v.origin, [1e-3, 2e-3, 3e-3]), key
+        assert np.array_equal(v.labels, lab), key
+    big = np.ascontiguousarray(lab.transpose(2, 1, 0)).astype(">u2").tobytes()
+    for key in ("BinaryDataByteOrderMSB", "ElementByteOrderMSB"):
+        (tmp_path / f"{key}.raw").write_bytes(big)
+        (tmp_path / f"{key}.mhd").write_text(head + f"{key} = True\nElementDataFile = {key}.raw\n")
+        assert np.array_equal(read_mhd(tmp_path / f"{key}.mhd").labels, lab), key
 
 
 def test_metaimage_is_read_in_millimetres(tmp_path):
@@ -250,15 +315,21 @@ def test_a_label_no_pool_names_is_refused():
         LabelVolume(np.zeros((4, 4, 4), np.uint8), 0.0)
 
 
-def test_length_scales_are_the_voxel_and_the_pore():
-    """``min_feature`` is the voxel -- the smallest feature a segmentation can express -- and
-    ``surface_pore`` the walking pool's measured ``V/S``. There is no ``lookup_cell``: the traversal
-    visits every voxel the path enters, so no step can outrun a candidate gather."""
+def test_length_scales_are_the_voxel_and_nothing_else():
+    """``min_feature`` is the voxel -- the smallest feature a segmentation can express, and so the
+    narrowest pore one can hold. ``surface_pore`` is unset, so the surface-relaxivity rule divides that
+    worst case and not ``V/S``, which is a mean (a slab's is half its width, ten times its voxel here).
+    There is no ``lookup_cell``: the traversal visits every voxel the path enters, so no step can
+    outrun a candidate gather, and the engine resolves a quarter of a voxel per step for the surface
+    tier and one voxel without it."""
+    from dmipy_sim.engine.physics import resolve_sub_steps
     g, d = slab()
     ls = g.length_scales
-    assert ls.min_feature == pytest.approx(0.5e-6)
-    assert ls.surface_pore == pytest.approx(d / 2)          # a slab's V/S is half its width
-    assert ls.lookup_cell is None and ls.is_mesh_feature is False
+    assert ls == LengthScales(min_feature=pytest.approx(0.5e-6))
+    assert g.surface_to_volume() == pytest.approx(2 / d)    # measured, and not a step rule
+    dt = (0.5e-6) ** 2 / (6 * D)                            # one voxel per step
+    assert resolve_sub_steps(g, D, dt, surface=True) == 16   # (4 voxels)^2: a quarter of a voxel
+    assert resolve_sub_steps(g, D, dt, surface=False) == 1
 
 
 def test_the_voxelised_surface_is_the_manhattan_surface():

@@ -45,14 +45,23 @@ from .base import Geometry, LengthScales, permeability_of
 #: keeps a factor two of margin on the coarsest step that was measured to be right.
 SPECULAR_STEP_FRACTION = 1.0
 
-#: The surface tier's rule, ``step_l <= (V/S) / SURFACE_STEP_FRACTION`` with ``V/S`` the walking pool's
-#: pore, in place of the ``(V/S) / 8`` a curved analytic wall needs. A voxel face is exactly flat, so
-#: the overshoot estimator has no curvature bias: measured on a voxelised 10 um slab at 200,000
-#: walkers, ``-E[dlog_w] / T`` at ``rho / D = 1`` is 1.0015 / 1.0020 / 1.0039 / 0.9980 of ``D S/V`` at
-#: 2 / 1 / 0.5 / 0.25 voxels per step (floor 2.9e-3), and ``Box1D`` of the same width gives
-#: 1.0005 / 1.0011 / 0.9986 / 0.9954. There is no trend to resolve, so the rule is set by the pore and
-#: not by the estimator.
-SURFACE_STEP_FRACTION = 2.0
+#: The surface tier's rule, ``step_l <= min(voxel_size) / SURFACE_STEP_FRACTION``: a quarter of a VOXEL,
+#: which is the smallest pore a segmentation can express, and not a fraction of ``V/S``.
+#:
+#: The estimator itself needs nothing finer than the voxel. A voxel face is exactly flat, so the
+#: overshoot has no curvature bias: on a voxelised 10 um slab at 200,000 walkers, ``-E[dlog_w] / T`` at
+#: ``rho / D = 1`` is 1.0015 / 1.0020 / 1.0039 / 0.9980 of ``D S/V`` at 2 / 1 / 0.5 / 0.25 voxels per
+#: step (floor 2.9e-3), and ``Box1D`` of the same width gives 1.0005 / 1.0011 / 0.9986 / 0.9954.
+#:
+#: What needs the finer step is a REAL substrate, whose pores are not all the size of its mean. ``V/S``
+#: is that mean: on the Imperial LV60A sand pack it is 1.67 voxels while the narrowest pores are one
+#: voxel, and gating on ``(V/S) / 2`` licensed a 0.835-voxel step at which the rock's log-mean T2 was
+#: still moving -- 493.0 / 490.7 / 487.6 / 487.0 / 486.1 ms at 0.835 / 0.591 / 0.249 / 0.176 / 0.125
+#: voxels, monotone, a 1.4 % drift across a range the rule called converged. Against the voxel it is
+#: flat over the whole range the rule licenses: 487.6 / 487.0 / 486.1 ms at a quarter, an eighth and a
+#: sixteenth of a voxel, 0.3 % over a four-fold refinement and within the walkers' own 0.22 % floor.
+#: The worst case a segmentation can hold is one voxel, so that is what the rule divides.
+SURFACE_STEP_FRACTION = 4.0
 
 
 class LabelVolume(Geometry):
@@ -211,7 +220,15 @@ class LabelVolume(Geometry):
 
     @property
     def length_scales(self):
-        return LengthScales(min_feature=float(self.voxel_size.min()), surface_pore=float(self._v_over_s))
+        """The voxel, and no separate pore.
+
+        ``min_feature`` is the voxel: the smallest feature a segmentation can express, and therefore
+        the narrowest pore one can hold. ``surface_pore`` is left unset so the surface-relaxivity rule
+        divides that same worst case rather than ``V/S``, which is a MEAN and on a real rock is larger
+        than the pores that set the bias (see :data:`SURFACE_STEP_FRACTION`). ``V/S`` is measured and
+        reported by :meth:`surface_to_volume`; it is a property of the substrate, not a step rule.
+        """
+        return LengthScales(min_feature=float(self.voxel_size.min()))
 
     # ------------------------------------------------------------------ labelling
     def _wrap(self, r):
