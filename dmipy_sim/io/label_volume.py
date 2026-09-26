@@ -417,6 +417,13 @@ def read_amira(path, *, voxel_size=None):
     unit states no LENGTH and is refused unless ``voxel_size=`` supplies one, as a NRRD without
     ``space units`` is.
 
+    Only a ``uniform`` lattice is read. AmiraMesh also spells ``rectilinear``, ``curvilinear`` and
+    ``stacked``, whose ``BoundingBox`` is not a uniform grid's -- a rectilinear lattice carries its own
+    per-axis coordinate arrays and its voxels are NOT all the same size -- so reading one as uniform
+    gives a substrate at the wrong scale everywhere and nowhere visibly. A file that declares another
+    ``CoordType`` is refused by name; one that declares none is uniform, which is the format's default
+    for a lattice with a bounding box.
+
     One lattice component is read (a segmentation has one label per voxel); a file whose ``Lattice``
     block declares more than one, or more than one data block, is refused by name rather than read
     half. The payload is x-fastest, the format's order.
@@ -470,6 +477,13 @@ def read_amira(path, *, voxel_size=None):
     dtype = _AMIRA_TYPES.get(tname)
     if dtype is None:
         raise LabelVolumeError(f"{path}: AmiraMesh type {tname!r} is not one of {sorted(_AMIRA_TYPES)}")
+
+    ct = re.search(r'(?m)^\s*CoordType\s+"?([A-Za-z]+)"?', head_text)
+    if ct is not None and ct.group(1).strip().lower() != "uniform":
+        raise LabelVolumeError(
+            f"{path}: CoordType is {ct.group(1)!r}; only 'uniform' is read here. A rectilinear, "
+            f"curvilinear or stacked lattice does not have one voxel size, so its BoundingBox is not "
+            f"a spacing and reading it as one puts every wall in the wrong place.")
 
     unit, unit_stated = 1.0, False
     um = re.search(r'Coordinates\s+"([^"]*)"', head_text)

@@ -351,6 +351,15 @@ def test_amira_single_digit_fast_path_and_the_general_one_agree(tmp_path):
     assert np.array_equal(read_amira(amira_file(tmp_path / "s.am", small)).labels, small)
 
 
+def test_a_lattice_with_no_coord_type_is_uniform(tmp_path):
+    """AmiraMesh's default for a lattice with a bounding box is a uniform grid, so a header that states
+    no ``CoordType`` reads as one; only a DIFFERENT one is refused (see the refusal table)."""
+    lab = (np.arange(4 * 3 * 2, dtype=np.uint8).reshape(4, 3, 2) % 2)
+    head = AMIRA_HEAD.format(magic="Avizo 3D ASCII 3.0").replace('    CoordType "uniform"\n', "")
+    v = read_amira(amira_file(tmp_path / "nocoordtype.am", lab, head=head))
+    assert np.array_equal(v.labels, lab) and np.allclose(v.voxel_size, 10e-6)
+
+
 def test_amira_without_a_coordinate_unit_is_not_a_length(tmp_path):
     """A ``BoundingBox`` with no ``Units {{ Coordinates ... }}`` carries no unit, so reading it as metres
     would put a 1.77 mm sand pack at 1.77 km. Refused, and ``voxel_size=`` then supplies the length."""
@@ -370,6 +379,8 @@ def test_amira_without_a_coordinate_unit_is_not_a_length(tmp_path):
     (lambda h: h.replace("byte Labels", "complex Labels"), "is not one of"),
     (lambda h: h.replace("BoundingBox 0 30 0 20 0 10", "BoundingBox 0 30 0 20"), "six numbers"),
     (lambda h: h.replace("define Lattice 4 3 2", "define Lattice 4 3 1"), "states no voxel size"),
+    (lambda h: h.replace('CoordType "uniform"', 'CoordType "rectilinear"'), "only 'uniform' is read"),
+    (lambda h: h.replace('CoordType "uniform"', 'CoordType "stacked"'), "only 'uniform' is read"),
 ])
 def test_an_amira_refusal_names_what_is_wrong(tmp_path, break_it, message):
     """Each refusal names the field, because an image read half is an image walked wrong."""
