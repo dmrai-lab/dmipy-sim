@@ -42,11 +42,15 @@ pytestmark = [pytest.mark.slow,
 #: pack's own released window. A mixture has two mineral surfaces and two of their relaxivities, and
 #: this geometry accumulates ONE boundary local time over both walls, so no single-rho walk of a mixture
 #: is their simulation and none is asserted here.
+#: 19,998 walkers in six folds, dt = 500 us x 8 sub-steps, the pack's own released window; the same
+#: numbers the family's ``direct.json`` records and its gate reads.
 OURS = {
-    "6_Q100": dict(window=3.5, porosity=0.38896, s_over_v=76606, T2_fd=0.7746,
-                   T2_lm=0.8611, T2_lm_measured=0.72708, ratio_to_theirs=1.184),
-    "1_G100": dict(window=2.0, porosity=0.39893, s_over_v=71962, T2_fd=None,
-                   T2_lm=None, T2_lm_measured=0.17845, ratio_to_theirs=None),
+    "6_Q100": dict(window=3.5, porosity=0.38896, s_over_v=76606, T2_fd=0.77465,
+                   T2_lm=0.85304, T2_lm_measured=0.72708, ratio_to_theirs=1.1733,
+                   rho_V_over_S_over_D=0.071),
+    "1_G100": dict(window=2.0, porosity=0.39893, s_over_v=71960, T2_fd=0.13475,
+                   T2_lm=0.22118, T2_lm_measured=0.17845, ratio_to_theirs=1.2394,
+                   rho_V_over_S_over_D=0.596),
 }
 
 
@@ -80,30 +84,37 @@ def test_the_T2_decay_is_what_we_recorded_against_the_CPMG_of_the_same_pack(samp
     the CPMG they measured on that same pack.
 
     This test locks the REPRODUCTION, not an agreement claim. It does not agree to within the walk's
-    floor and it is not made to: with their fitted relaxivity, our Manhattan S/V and our declared
-    T2B = 3.0 s, the quartz pack's log-mean is **861 ms against their 727 ms, +18.4 %** (measured, at
-    8,000 walkers in two halves whose split-half floor is 0.41 %, so the gap is not noise). Bulk T2
-    cannot explain it: the T2B that would close it is 1.83 s, far below any brine's. The gap lives in
-    the relaxivity or in the surface it was fitted against -- their own §3.2 gives 12.5 um/s from their
-    T2 fit and 22 um/s from their maximal-ball S/V, a factor of 1.8, which is the size of the question.
-    So the assertion is on OUR number and on THEIR number, each to its own precision, and on the ratio
-    we measured; a future change that moves either has to move this line and say why.
+    standard error and it is not made to: with their fitted relaxivity, our Manhattan S/V and our
+    declared T2B = 3.0 s, the log-mean is **853 ms against their 727 ms (+17.3 %)** on the quartz pack
+    and **221 ms against their 178 ms (+24 %)** on the garnet one, at standard errors of 0.4 % and
+    0.8 %, so neither gap is noise.
 
-    What the walk must get right and a formula cannot: ``rho (V/S) / D`` is 0.07 for the quartz pack and
-    0.60 for the garnet one, so ``1 / (rho S/V + 1/T2B)`` is a fair estimate for the first and low for
-    the second. The log-mean sits ABOVE the single rate on both, by more on the garnet pack.
+    Bulk T2 cannot explain it -- the T2B that would close each gap is 1.88 s and 0.82 s, both far below
+    any brine's -- and the two gaps are not independent: subtracting ``1/T2B`` from each rate leaves a
+    surface term that is **1.248** and **1.263** times ours, so ONE factor of about 1.25 on their fitted
+    relaxivity reconciles both packs, whose relaxivities differ by a factor of eight. The gap lives in
+    the relaxivity or in the surface it was fitted against, not in the walk: their own §3.2 gives
+    12.5 um/s from their T2 fit and 22 um/s from their maximal-ball S/V, a factor of 1.8, which is the
+    size of the question. So the assertion is on OUR number and on THEIR number, each to its own
+    precision, and on the ratio we measured; a change that moves either has to move this line and say why.
+
+    What the walk must get right and a formula cannot: ``rho (V/S) / D`` is 0.071 for the quartz pack and
+    0.596 for the garnet one, so ``1 / (rho S/V + 1/T2B)`` is within 10 % for the first and 39 % low for
+    the second. The log-mean sits ABOVE the single rate on both, by far more on the garnet pack.
     """
     ling = script()
     ref = OURS[sample]
-    r = ling.run_pack(sample, DATA, n_walkers=8_000, T_max=ref["window"], sample_ms=1.0,
-                      walker_batch=20_000, seed=0, halves=2)
+    r = ling.run_pack(sample, DATA, n_walkers=19_998, T_max=ref["window"], sample_ms=1.0,
+                      walker_batch=25_000, seed=0, halves=6)
     m = ling.measured_log_mean(sample, CPMG, sample_ms=1.0)
     assert r["T2_lm"] == pytest.approx(ref["T2_lm"], rel=0.02)
     assert m["T2_lm"] == pytest.approx(ref["T2_lm_measured"], rel=1e-3)      # their data, not our walk
     assert r["T2_lm"] / m["T2_lm"] == pytest.approx(ref["ratio_to_theirs"], rel=0.03)
+    assert r["T2_fd"] == pytest.approx(ref["T2_fd"], rel=1e-3)
+    assert r["rho_V_over_S_over_D"] == pytest.approx(ref["rho_V_over_S_over_D"], rel=1e-2)
     assert r["T2_lm"] > r["T2_fd"]                        # multi-exponential, so above the single rate
     assert np.all(np.diff(r["S"]) <= 1e-6)                # a relaxation decay is monotone
-    assert r["floor"] < 0.02                              # the log-mean's own split-half floor
+    assert r["floor"] < 0.02                              # the log-mean's own standard error
 
 
 @pytest.mark.skipif(not CPMG, reason="set DMIPY_SIM_LING2022_CPMG_DIR to the released echo trains")
