@@ -50,6 +50,44 @@ def _volume(V, F):
     return abs(float(np.einsum("ij,ij->i", a, np.cross(b, c)).sum()) / 6.0)
 
 
+def _consistently_wound(V, F):
+    """Is every face of a closed surface wound the same way round? A **combinatorial** test: on a closed,
+    consistently oriented triangle mesh every edge is shared by exactly two faces which traverse it in
+    OPPOSITE directions, so each directed edge ``(a, b)`` occurs once and its reverse ``(b, a)`` occurs once.
+
+    An inconsistently wound surface is not a substrate: ray parity reads part of the interior as exterior, and
+    the divergence-theorem volume is a cancelling sum rather than the volume. Disimpy's cylinder fixture has
+    294 of 588 faces reversed, 784 of its directed edges unpaired, and a signed volume of 0.332 of
+    ``pi r^2 L`` while its AREA is 0.999 of the ideal -- dmrai-lab/dmipy-sim#479, fixed by #483.
+
+    Two wrong ways to ask this, both tried here first:
+
+    * the sign of each face's outward term against the centroid needs the body to be **star-shaped**, which an
+      undulating tube is not: it calls all three MC/DC axons inconsistent when they are fine.
+    * that test with an ABSOLUTE tolerance is worse still -- on a micrometre object in metres every term is
+      ~1e-17, so any fixed cut calls every surface consistent, including the one this exists to catch.
+
+    Being combinatorial, this has no tolerance and no length scale to get wrong.
+    """
+    F = np.asarray(F)
+    if not F.size:
+        return True
+    d = np.concatenate([F[:, [0, 1]], F[:, [1, 2]], F[:, [2, 0]]])          # directed edges
+    key = d[:, 0].astype(np.int64) * (int(F.max()) + 1) + d[:, 1]
+    rev = d[:, 1].astype(np.int64) * (int(F.max()) + 1) + d[:, 0]
+    seen, counts = np.unique(key, return_counts=True)
+    if int(counts.max()) != 1:                      # a directed edge used twice: two faces wound the same way
+        return False
+    return bool(np.isin(rev, seen).all())
+
+
+def _area(V, F):
+    """Area of a triangle surface."""
+    V = np.asarray(V, float); F = np.asarray(F)
+    a, b, c = V[F[:, 0]], V[F[:, 1]], V[F[:, 2]]
+    return float(0.5 * np.linalg.norm(np.cross(b - a, c - a), axis=1).sum())
+
+
 def _g_ratio(inner, outer):
     """The g-ratio a pair of tube surfaces realises: for a tube V ~ r^2 L, so g = sqrt(V_in / V_out). Measured,
     never taken from an argument (the Winther axons realise 0.70; CACTUS strands 0.56-0.87)."""
@@ -624,3 +662,105 @@ def _strands_spec(centerlines, R, lo, hi, *, boundary, g_ratio, field_T, rho2, i
 def _version():
     from ..run import package_version
     return package_version()
+
+
+_MCDC_MM = 1e-3      #: MC/DC writes its initial-walker positions in millimetres
+
+
+def mcdc_axon_spec(ply, *, scale=_UM, D=None, voxel=None, pad=1.0e-6, boundary="reflect",
+                   ini_walkers=None, rho2=0.0, id=None, source=None, description=None, cite_ply_as=None,
+                   cite_ini_as=None):
+    """The spec of ONE closed MC/DC axon surface: a bare lumen, no sheath.
+
+    The undulating axons of Rafael-Patino et al. (2020) are single closed tubes with nothing around them, so
+    the spec has two pools -- ``intra`` (1) inside the surface and ``extra`` (0) outside, declared with
+    ``water_fraction = 0`` because MC/DC seeded and read only the intra particles -- and one wall. There is no
+    myelin pool: the mesh is an axolemma and a pool with no wall of its own is not a situation.
+
+    ``D`` is the configuration's own diffusivity (``read_conf(...)["diffusivity"]``), applied to both pools, and
+    ``rho2`` defaults to 0 because MC/DC's walls are purely reflecting: relaxation is a replay knob, never in
+    the walk.
+
+    ``voxel`` is MC/DC's ``<voxels>`` block in metres (``read_conf(...)["voxel_min"], ["voxel_max"]``) and is
+    used when it contains the surface; the released ``uAxon_d_1.0_amp_0.0_wL_4.0.conf`` states a 3 x 3 x 250 um
+    voxel, which the amplitude > 1.5 um meshes leave, so the default domain is the surface's own bounding box
+    padded by ``pad`` and the stated voxel goes into the provenance. For an intra-only walk the domain is never
+    met -- the surface encloses every walker -- and the run states the measured excursion.
+
+    ``ini_walkers`` is the path of MC/DC's released initial-walker list for this mesh; it is cited by path and
+    sha256 on the seeding, and the rule is then ``explicit`` rather than ``uniform_by_volume``, because the
+    released list spans only the central ~40 um of a 250 um tube and is NOT a uniform draw over the lumen.
+    A spec whose rule is ``explicit`` and which cites no positions cannot be re-walked as it was walked, so
+    :func:`~dmipy_sim.spec.walk_spec` refuses it rather than seeding the whole tube.
+    """
+    notes = []
+    (mesh,), smallest, edge_med, open_files = _surface_stats([ply], scale, notes)
+    if open_files:
+        raise SpecError(f"an isolated axon needs a closed surface; {os.path.basename(ply)} has boundary edges "
+                        f"(an uncapped tube encloses no volume). MC/DC walks it anyway because its walkers "
+                        f"never reach the rim; a spec cannot, because the pool is not defined")
+    if not _consistently_wound(*mesh):
+        raise SpecError(f"{os.path.basename(ply)}: the surface's face winding is not consistent, so which side "
+                        f"is inside is undefined and the enclosed volume is not a volume (dmrai-lab/"
+                        f"dmipy-sim#483). Orient it before making it a substrate")
+    V = mesh[0]
+    # The feature scale of a tube is its RADIUS, and `_surface_stats` reads half the thinnest bounding-box
+    # extent -- which for an undulating tube is the undulation envelope (1.5 um where the lumen is 0.5 um),
+    # three times too coarse for the sub-step rule. For a swept tube V / S = r / 2 exactly, so 2 V / S is the
+    # radius, measured off the surface itself: 0.493 um on most of the closed set and 0.489 um on the most
+    # strongly bent of them (amp 2.6 / wL 4 um), against the 0.5 um the axons are built at. It is only valid
+    # for a CLOSED surface -- the enclosed volume of an open or inconsistently wound one is not a volume --
+    # which is why the boundary-edge refusal above comes first.
+    smallest = min(smallest, 2.0 * _volume(*mesh) / _area(*mesh))
+    lo, hi = (V.min(0) - pad), (V.max(0) + pad)
+    voxel_note = None
+    if voxel is not None:
+        vlo, vhi = np.asarray(voxel[0], float), np.asarray(voxel[1], float)
+        if (vlo <= V.min(0)).all() and (vhi >= V.max(0)).all():
+            lo, hi = vlo, vhi
+            voxel_note = "domain = MC/DC's own <voxels> block"
+        else:
+            voxel_note = (f"MC/DC's <voxels> block {(vlo * 1e6).round(2).tolist()}..{(vhi * 1e6).round(2).tolist()} um "
+                          f"does not contain this surface {(V.min(0) * 1e6).round(2).tolist()}.."
+                          f"{(V.max(0) * 1e6).round(2).tolist()} um; the domain is the surface's bounding box "
+                          f"padded by {pad} m instead")
+    D = 0.6e-9 if D is None else float(D)
+    pools = [Pool(0, "extra", D, water_fraction=0.0, T2=0.08, T1=1.0),
+             Pool(1, "intra", D, water_fraction=1.0, T2=0.08, T1=1.0)]
+    cite = cite_ply_as or os.path.basename(ply)
+    wall = Wall("axolemma", Surface("mesh", file=cite, format=ply.rsplit(".", 1)[-1].lower(), scale=float(scale),
+                                    sha256=_sha(ply)), 1, 0, Directional(), Sided(float(rho2), float(rho2)))
+    seeding_positions = None
+    if ini_walkers:
+        seeding_positions = dict(file=(cite_ini_as or os.path.basename(ini_walkers)), format="xyz",
+                                 scale=_MCDC_MM, sha256=_sha(ini_walkers),
+                                 count=int(sum(1 for line in open(ini_walkers) if line.strip())),
+                                 read="cyclic",
+                                 note="MC/DC's initial-walker list in millimetres, read cyclically (walker i "
+                                      "starts at line i mod n; DynamicsSimulation::initWalkerPosition)")
+    rule = "explicit" if ini_walkers else "uniform_by_volume"
+    transformations = [f"inside the surface = intra (1), outside = extra (0)",
+                       "extra declared free water with water_fraction 0: MC/DC seeded and read intra particles only",
+                       f"walls purely reflecting (rho = {rho2} m/s): MC/DC's are, and relaxation is a replay knob",
+                       f"domain faces {boundary}"] + notes
+    if voxel_note:
+        transformations.append(voxel_note)
+    prov = {"source": source or "MC/DC Robust-Monte-Carlo-Simulations (Rafael-Patino et al. 2020), LGPL-2.1",
+            "scale": float(scale), "files": [{"path": os.fspath(ply), "sha256": _sha(ply)}],
+            "transformations": transformations,
+            "created": date.today().isoformat(), "software": {"name": "dmipy-sim", "version": _version()}}
+    if ini_walkers:
+        prov["files"].append({"path": os.fspath(ini_walkers), "sha256": _sha(ini_walkers),
+                              "role": "MC/DC initial-walker list, millimetres, read cyclically (i mod n)"})
+        transformations.append("seeding: MC/DC's released initial-walker list, not a uniform draw over the "
+                               "lumen (the list spans the central part of the tube only)")
+    spec = SubstrateSpec(
+        id or f"mcdc/{os.path.splitext(os.path.basename(ply))[0]}",
+        Domain(lo.tolist(), hi.tolist(), [boundary] * 3), pools, [wall],
+        Seeding([1], rule, "water_fraction", positions=seeding_positions),
+        Validity(smallest, ["gradient", "relaxation", "surface"], mesh_edge_feature_ratio=edge_med / smallest),
+        description=description or f"one MC/DC undulating axon: {os.path.basename(ply)}, a closed lumen in free space",
+        realisation={"enclosed_volume_m3": _volume(*mesh), "surface_area_m2": _area(*mesh),
+                     "tube_radius_m": 2.0 * _volume(*mesh) / _area(*mesh), "n_vertices": int(len(mesh[0])), "n_faces": int(len(mesh[1]))},
+        provenance=prov)
+    return spec.validate()

@@ -206,24 +206,41 @@ def _boundary_vertices(V, F):
 
 
 def merge_duplicate_vertices(V, F, rel_tol=1e-3, crack_rel_tol=0.5):
-    """``(V, F, n_merged)`` with vertices closer than ``rel_tol`` of the median edge made one, and, where that
-    leaves a boundary edge, the boundary's vertices closer than ``crack_rel_tol`` of the median edge: what a writer
-    that duplicates a vertex where two sheets meet leaves behind, exactly or to its own rounding (a crack: two
-    boundary edges on vertices a few nanometres apart). Faces that lose a distinct vertex to a merge are dropped."""
+    """``(V, F, n_merged)`` with vertices closer than ``rel_tol`` of the median edge made one, and, where THAT
+    leaves a boundary edge, the boundary's vertices closer than ``crack_rel_tol`` of the median edge: what a
+    writer that duplicates a vertex where two sheets meet leaves behind, exactly or to its own rounding (a
+    crack: two boundary edges on vertices a few nanometres apart). Faces that lose a distinct vertex to a merge
+    are dropped.
+
+    **The two passes are ordered, and the order is load-bearing.** The crack pass is far looser than the
+    duplicate pass -- half a median edge against a thousandth of one -- so it sees only the boundary that
+    SURVIVES the duplicate pass. On a fine ring every neighbour is within half an edge of the next, so a crack
+    pass given the raw boundary would read a merely duplicated seam as a pair of lips and union-find would
+    chain the whole ring into one vertex. Both tolerances are relative to the median edge, so the result does
+    not depend on the unit the mesh is written in. Tests: ``tests/geometry/test_mesh_repair_passes.py``.
+    """
     from scipy.spatial import cKDTree
     V = np.asarray(V, np.float64); F = np.asarray(F, np.int64)
     if F.size == 0:
         return V, F, 0
     edge = float(np.median(np.linalg.norm(V[F[:, 0]] - V[F[:, 1]], axis=1)))
-    pairs = cKDTree(V).query_pairs(rel_tol * edge, output_type="ndarray")
-    bnd = _boundary_vertices(V, F)
-    if len(bnd) > 1:                                                     # a crack: its lips, within a fraction of an edge
+    n0 = len(V)
+    V, F = _merge_pairs(V, F, cKDTree(V).query_pairs(rel_tol * edge, output_type="ndarray"))
+    bnd = _boundary_vertices(V, F)                       # the boundary the duplicate pass LEAVES, not the raw one
+    if crack_rel_tol > 0 and len(bnd) > 1:               # a crack: its lips, within a fraction of an edge
         near = cKDTree(V[bnd]).query_pairs(crack_rel_tol * edge, output_type="ndarray")
         if len(near):
-            pairs = np.concatenate([pairs.reshape(-1, 2), bnd[near]], axis=0)
-    if len(pairs) == 0:
-        return V, F, 0
-    parent = np.arange(len(V))                                            # union-find over the near pairs
+            V, F = _merge_pairs(V, F, bnd[near])
+    return V, F, int(n0 - len(V))
+
+
+def _merge_pairs(V, F, pairs):
+    """``(V, F)`` with every pair of vertex indices in ``pairs`` made one (union-find, the earlier index stays);
+    faces that lose a distinct vertex are dropped."""
+    pairs = np.asarray(pairs, np.int64).reshape(-1, 2)
+    if not len(pairs):
+        return V, F
+    parent = np.arange(len(V))
 
     def root(i):
         while parent[i] != i:
@@ -233,13 +250,13 @@ def merge_duplicate_vertices(V, F, rel_tol=1e-3, crack_rel_tol=0.5):
     for a, b in pairs:
         ra, rb = root(a), root(b)
         if ra != rb:
-            parent[max(ra, rb)] = min(ra, rb)                                # the earlier vertex stays
+            parent[max(ra, rb)] = min(ra, rb)
     rep = np.array([root(i) for i in range(len(V))])
     keep = np.flatnonzero(rep == np.arange(len(V)))
     rank = np.full(len(V), -1, np.int64); rank[keep] = np.arange(len(keep))
     F = rank[rep[F]]
     distinct = (F[:, 0] != F[:, 1]) & (F[:, 1] != F[:, 2]) & (F[:, 0] != F[:, 2])
-    return V[keep], F[distinct], int(len(V) - len(keep))
+    return V[keep], F[distinct]
 
 
 def nondegenerate_faces(V, F):
