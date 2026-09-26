@@ -8,9 +8,9 @@ half a collision cell and the collision rule's own step (0.9 of a cell). Steps l
 rows: the collision sub-step rule (physics.collision_sub_steps) is what keeps a walk from taking them, and that
 rule has its own test.
 
-A walker fired from an edge midpoint or a vertex of a closed cylinder mesh, head-on or along the edge, passes
-through the shared edge (dmrai-lab/dmipy-sim#430); those rows are expected failures against that issue and
-the walk-level tests keep their tolerance until it is fixed.
+Every row holds, the edge and vertex rows of the cylinder included (dmrai-lab/dmipy-sim#430: a hit within the
+edge margin of a facet seam is back-scattered, as MC/DC does, since a specular bounce off one facet at a rim can
+leave the walker on the neighbouring facet's plane, where that wall no longer registers).
 """
 import jax
 import jax.numpy as jnp
@@ -45,8 +45,6 @@ def _mesh(name):
 
 STARTS = ("centroid", "edge_mid", "vertex")
 DIRECTIONS = ("head_on", "45", "89", "tangent", "at_edge", "at_vertex")
-_CRACK = {("cyl", "edge_mid", "head_on"), ("cyl", "edge_mid", "at_edge"), ("cyl", "vertex", "head_on"),
-          ("cyl", "vertex", "at_vertex")}
 
 
 def _table(name, start_kind, direction, n_per=20, seed=0):
@@ -98,11 +96,8 @@ def _fire(name, start_kind, direction):
 @pytest.mark.parametrize("name", ["ico-2", "cyl-24"])
 @pytest.mark.parametrize("start_kind", STARTS)
 @pytest.mark.parametrize("direction", DIRECTIONS)
-def test_an_impact_on_a_closed_mesh_never_ends_outside(request, name, start_kind, direction):
+def test_an_impact_on_a_closed_mesh_never_ends_outside(name, start_kind, direction):
     """Every impact of the table ends inside the mesh (to a nanometre) and moves no further than it stepped."""
-    if (name.split("-")[0], start_kind, direction) in _CRACK:
-        request.node.add_marker(pytest.mark.xfail(reason="a walker through a shared edge or vertex of a closed "
-                                                         "cylinder mesh (dmrai-lab/dmipy-sim#430)", strict=False))
     rows = _fire(name, start_kind, direction)
     assert rows, "no start of this kind lies inside the mesh"
     leaked = [(label, float(depth.max()), int((depth > LEAK).sum()), len(depth)) for label, depth, _ in rows if (depth > LEAK).any()]
