@@ -344,6 +344,11 @@ def orient_faces(V, F):
     F[flip] = F[flip][:, [0, 2, 1]]
     t = V[F]
     dv = np.einsum("ij,ij->i", t[:, 0], np.cross(t[:, 1], t[:, 2]))
+    # A pinch (an edge on three or more faces) cuts the adjacency graph, so a component of it can be an open
+    # patch with no boundary edge of its own and no volume: a signed volume per patch is then origin-dependent
+    # noise. Measured on the UNWELDED read of the Winther G6 inner surfaces (7,652 / 1,806 / 15,830 pinched
+    # edges before the loader's weld, 14 after it): deciding a patch's sense by that number turned 812 / 146 /
+    # 1,827 faces of a consistently wound surface inside out and moved its enclosed volume by up to 22 %.
     encloses = np.bincount(comp, weights=pinched, minlength=n_comp) == 0
     volume = np.bincount(comp, weights=dv, minlength=n_comp)
     majority = np.bincount(comp, weights=flip, minlength=n_comp) * 2 > np.bincount(comp, minlength=n_comp)
@@ -1181,9 +1186,9 @@ class Mesh(Geometry):
         """Wall interaction with a permeable membrane (Powles crossing).
 
         ``(r, dlog_w, crossed, refused)``: a step ``reject_escape`` discarded -- the walker held where it
-        started -- is the fourth flag, so `PersistentWalk.illegal_crossings` counts it the way a voxel wall's
-        refusal is counted. Unreported, 15.6 % of the steps of a walk could be refused and the walk's own
-        counter still read 0 (dmrai-lab/dmipy-sim#479).
+        started -- is the fourth flag, so `PersistentWalk.illegal_crossings` counts it. It is the escape
+        refusal alone; `LabelVolume` counts its bounce budget's exhaustion in the same field, so the two
+        geometries' `illegal_crossings` are not the same quantity.
         """
         return self._wall(r, step, kappa_over_D, rho_over_D, perm_key)
 

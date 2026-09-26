@@ -7,12 +7,17 @@ random walk and no statistics:
 uniform points in the lumen, the classifier's answer on them, and one step each through
 :meth:`~dmipy_sim.geometry.mesh.Mesh.reflect`.
 
-Measured on that surface with the file's own normals (dmrai-lab/dmipy-sim#479): the classifier calls **50.5 %**
-of the lumen exterior, so ``reject_escape`` discards **15.6 %** of 775 nm steps -- the walker does not move at
-all -- and the mean squared displacement per step falls to 0.81 of a free step against the analytic cylinder's
-0.97. A 70 ms PGSE walk of it (8,000 walkers, b to 3e9 s/m^2 along x) then sits 1.97e-2 below MISST where the
-analytic cylinder of the same radius sits 2.6e-3 from it. Reoriented, the same surface refuses no step and
-lands 2.3e-3 from MISST.
+Measured on that surface with the file's own normals (dmrai-lab/dmipy-sim#479): the classifier calls **50.0 %**
+of the lumen exterior, so ``reject_escape`` discards **15.65 %** of these 775 nm steps -- the walker does not
+move at all -- and over a walk the mean squared displacement per step falls to 0.81 of a free step against the
+analytic cylinder's 0.97. A 70 ms PGSE walk of the fixture (8,000 walkers, b to 3e9 s/m^2 along x, sub_steps 1)
+then sits **1.97e-2** below the MISST signal it ships.
+
+Reoriented, the same surface refuses **0** of these impacts and the walk lands **2.8e-3** from MISST at
+sub_steps 1 and 1.3e-3 at 8, against split-half floors of 3.2e-3 and 1.5e-3 -- where the analytic cylinder of
+the same radius sits 2.6e-3 away. That walk still records 868 refused steps of 1.12e7, every one of them the
+same single walker, frozen for the rest of the walk in a pocket its own position is misclassified in (the 1 of
+these 4,000 points below); at 4,000 walkers none lands in one and the count is 0.
 """
 import jax
 import jax.numpy as jnp
@@ -130,14 +135,14 @@ def test_the_lumen_reads_as_interior_and_no_step_is_refused_once_the_faces_agree
     reflect = jax.jit(jax.vmap(mesh.reflect))
     interior = np.asarray(classify(jnp.asarray(p)))
     refused = np.asarray(np.abs(np.asarray(reflect(jnp.asarray(p), step)) - p).max(1) == 0)
-    assert interior.mean() > 0.999, "the classifier does not read the lumen of an oriented surface as interior"
+    assert interior.mean() > 0.9995, "the classifier does not read the lumen of an oriented surface as interior"
     assert refused.mean() == 0.0, "reject_escape discards a step inside an oriented surface"
 
     raw = _with_normals_of(mesh, written)
     interior_raw = np.asarray(jax.jit(jax.vmap(raw.classify_position))(jnp.asarray(p)))
     refused_raw = np.asarray(np.abs(np.asarray(jax.jit(jax.vmap(raw.reflect))(jnp.asarray(p), step)) - p).max(1) == 0)
-    assert interior_raw.mean() < 0.6, "the file's own normals no longer misclassify the lumen"
-    assert refused_raw.mean() > 0.1, "the file's own normals no longer cost the walk its steps"
+    assert 0.49 < interior_raw.mean() < 0.51, "the file's own normals no longer misclassify half the lumen"
+    assert refused_raw.mean() > 0.15, "the file's own normals no longer cost the walk its steps"
 
     reported = np.asarray(jax.jit(jax.vmap(lambda q, s: raw.interact(q, s).illegal))(jnp.asarray(p), step))
     assert (reported == refused_raw).all(), "a refused step is not the one PersistentWalk.illegal_crossings counts"

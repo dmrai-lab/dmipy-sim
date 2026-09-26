@@ -271,9 +271,11 @@ meshes:
   `cylinder_mesh_closed.pkl`, which writes 294 of its 588 triangles the other way round: the classifier called
   50.5% of the lumen exterior, `reject_escape` discarded 15.6% of 775 nm steps (the walker does not move at
   all), boundary local time was 0.70 of the same surface oriented, and the 70 ms PGSE signal sat 1.97e-2 below
-  MISST -- against 2.8e-3, its floor, once oriented. A refused step is now counted
-  (`PersistentWalk.illegal_crossings`, through `WallHit.illegal`); it was invisible on a mesh. Every published
-  mesh substrate here (CACTUS, Winther G6, MC/DC) is already consistent, so nothing else moves.
+  MISST -- against 2.8e-3, inside its 3.2e-3 floor, once oriented. A refused step is now counted
+  (`PersistentWalk.illegal_crossings`, through `WallHit.illegal`); it was invisible on a mesh. Through
+  `load_ply` -- which welds duplicate vertices and cracks first -- every published mesh substrate here is
+  already consistent and outward and reorients 0 faces: all 58 Winther G6 surfaces, all 31 MC/DC axons, 60
+  sampled CACTUS strands. So nothing else moves.
 - **Collision-response flags** are constructor kwargs with the validated defaults (`reject_escape=True`,
   `box_reflect=True`, `adaptive_nudge=False`), documented in `Mesh.__init__`; nothing is set on the instance after
   construction. They are measurement switches for the engine's tests, not physics. MC/DC's edge rule is ON
