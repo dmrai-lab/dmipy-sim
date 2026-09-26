@@ -213,8 +213,8 @@ def family(a, X):
             name = "disimpy-cylinder"
             seq = X.disimpy_sequence()
             ref, n_theirs = X.disimpy_reference(a.disimpy_data), None
-            walk = X.disimpy_walk(a.disimpy_data, a.n_walkers, require_gpu=a.require_gpu,
-                                  sub_steps=a.disimpy_sub_steps)
+            walk = X.disimpy_walk(a.disimpy_data, (a.disimpy_n_walkers or a.n_walkers),
+                                  require_gpu=a.require_gpu, sub_steps=a.disimpy_sub_steps)
             env, lic, cit, seg = X.disimpy_envelope(), X.DISIMPY_LICENSE, X.DISIMPY_CITATION, X.DISIMPY_TE
             pid = "parity-fixtures/disimpy-cylinder_mesh_closed"
             prov = {"family": "parity-fixtures", "engine_compared": "MISST (exact), via Disimpy's fixture",
@@ -457,6 +457,7 @@ REFERENCES = {
         their_step_source="the released .conf's `T`; at TE 53.52 ms that is a 10.7 us step, 196 nm",
         their_uncertainty="none stated; it is one realisation, so its floor is derived as the standard error "
                           "at 50,000 walkers with the variance of cos(phi) measured on OUR walk",
+        value_quantisation=None,     # filled by stage_reference from the module's measured constant
         monte_carlo_sides="BOTH: theirs (50,000 walkers) and ours (the pack's walkers). The gate tolerance is "
                           "3 sqrt(ours^2 + theirs^2).",
         free_parameters={"diffusivity": "theirs (the .conf's 0.6e-9 m^2/s)",
@@ -481,7 +482,10 @@ REFERENCES = {
                                   "(Drobnjak, Zhang, Hall, Alexander)",
         their_steps=None,
         their_step_source=None,
-        their_uncertainty="exact to the solver's truncation; no Monte-Carlo floor",
+        their_uncertainty="exact to the solver's truncation; no Monte-Carlo floor -- but the FILE is "
+                          "distributed to seven decimal places, which is the resolution any comparison against "
+                          "it is limited to",
+        value_quantisation=None,     # filled by stage_reference from the module's measured constant
         monte_carlo_sides="OURS ONLY. The gate tolerance is 3 x our floor alone.",
         free_parameters={"diffusivity": "theirs (2e-9 m^2/s, test_mesh_diffusion)",
                          "radius / delta / Delta / TE / b": "theirs (the fixture and the file's name)",
@@ -590,12 +594,22 @@ def stage_reference(a, X):
     Monte-Carlo estimate -- the fact that sets the gate's tolerance. Refused without a DOI or a digest."""
     src = _read_record("source")
     out = {}
+    quant = dict(mcdc=float(X.MCDC_QUANTISATION), disimpy=float(X.DISIMPY_QUANTISATION))
     for key, ref in REFERENCES.items():
         if not ref.get("doi"):
             raise SystemExit(f"reference {key}: no DOI; a reference record without one is refused")
         if not ref.get("crossref_checked"):
             raise SystemExit(f"reference {key}: the DOI was not resolved and its title compared")
-        out[key] = dict(ref)
+        out[key] = dict(ref, value_quantisation=quant[key],
+                        value_quantisation_why=(
+                            "a float32 sum over 50,000 walkers: half an ulp of the stored value over the count"
+                            if key == "mcdc" else
+                            "seven decimal places as distributed (1.0000000, 0.8763042): a half-ulp of 5e-8"),
+                        value_quantisation_enters="the per-measurement band, in quadrature with the floors -- "
+                                                  "at b = 1 s/m^2 the walk's own standard error is 1.6e-11 and "
+                                                  "the file states the value to 5e-8, so without it the "
+                                                  "comparison asks the file for digits it does not have (68 "
+                                                  "sigma, measured)")
     # the reference QUANTITY as data: the digest of the file that holds it, per fixture
     files = {}
     if a.mcdc_data:
@@ -649,6 +663,26 @@ def stage_spec(a, X):
                            seeded_positions=dict(spec.seeding.positions or {}))
         log(f"  {name}: spec round-trips ({len(fields)} fields checked), seeds from "
             f"{spec.seeding.positions['count']} cited positions read {spec.seeding.positions['read']}")
+    if a.disimpy_data:
+        spec = X.disimpy_spec(a.disimpy_data)
+        back = spec_of(geometry_from_spec(spec), id=spec.id)
+        fields = {f: dict(round_trips=bool(got == want), value=want) for f, got, want in (
+            ("seeding.rule", back.seeding.rule, spec.seeding.rule),
+            ("pools[extra].water_fraction", back.pools[0].water_fraction, spec.pools[0].water_fraction),
+            ("pools[intra].water_fraction", back.pools[1].water_fraction, spec.pools[1].water_fraction),
+            ("domain.box_max", list(back.domain.box_max), list(spec.domain.box_max)),
+            ("domain.boundary", list(back.domain.boundary), list(spec.domain.boundary)))}
+        lost = sorted(k for k, v in fields.items() if not v["round_trips"])
+        if lost:
+            raise SystemExit(f"disimpy-cylinder: {lost} do not survive spec -> geometry -> spec")
+        # The surface is DERIVED from the pickle -- merged, then oriented by `Mesh.__init__` (#483) -- so the
+        # record states the repair as well as the digest, since neither is the pickle's own bytes.
+        V, F, rep = X.disimpy_mesh(a.disimpy_data)
+        specs["disimpy-cylinder"] = dict(spec=spec.to_dict(), round_trip=fields, seeded_positions={},
+                                         derived_surface=dict(rep, winding=getattr(
+                                             geometry_from_spec(spec), "winding", None)))
+        log(f"  disimpy-cylinder: spec round-trips ({len(fields)} fields checked), surface derived from the "
+            f"pickle ({rep['vertices_before']} -> {rep['vertices_after']} vertices, then oriented)")
     return _write_record("spec", dict(stage="spec", written=time.strftime("%Y-%m-%dT%H:%M:%SZ"),
                                       reference_sha256=_digest(os.path.join(RECORDS, "reference.json"))["sha256"],
                                       round_trip_rule="spec_of(geometry_from_spec(spec)) == spec on every field "
@@ -709,6 +743,34 @@ def stage_design(a, X):
                  f"{n_chosen:,}, at which ours is ~{floor0 * (n0 / n_chosen) ** 0.5 / their_floor:.1f}x "
                  f"theirs and the combined band is within {((1 + (floor0 ** 2 * n0 / n_chosen) / their_floor ** 2) ** 0.5 / 2 ** 0.5 - 1) * 100:+.0f}% "
                  f"of what matching would give, so the extra walkers are not worth their memory.")
+    # The Disimpy fixture has its own window (TE 70 ms, 1401 saves), its own diffusivity and an EXACT
+    # reference, so its walker count cannot be inherited from the MC/DC pilot: with no Monte-Carlo floor on
+    # their side the band is ours alone, and the count is set by the floor the comparison needs rather than by
+    # matching anybody. Piloted on its own real window.
+    dis, n_live_dis = None, len(X.DISIMPY_BVALUES)
+    if a.disimpy_data:
+        t2 = time.time(); rss2 = X.peak_rss_gb()
+        dw = X.disimpy_walk(a.disimpy_data, a.pilot_n, require_gpu=a.require_gpu,
+                            sub_steps=a.disimpy_sub_steps)
+        dfloor = float(_measure_floor(_master_arrays(dw), X.disimpy_envelope()))
+        dpar = X.parity(X.walk_cos_phi(dw, X.disimpy_sequence()), X.disimpy_reference(a.disimpy_data),
+                        reference_quantisation=X.DISIMPY_QUANTISATION)
+        n_live_dis = int(dpar["n_live"])
+        d_rss = (X.peak_rss_gb() - rss2) * 1024 ** 3 / a.pilot_n
+        n_dis = int(a.disimpy_n_walkers or a.pilot_n)
+        dis = dict(n_walkers=a.pilot_n, on_real_window=True, window_s=X.DISIMPY_TE, n_t=X.DISIMPY_N_T,
+                   envelope_floor=dfloor, sub_steps=int(dw.sub_steps),
+                   step_m=float(np.sqrt(6 * X.DISIMPY_D * dw.dt_sim)),
+                   illegal_crossings=int(dw.illegal_crossings), seconds=round(time.time() - t2, 1),
+                   rss_bytes_per_walker=round(d_rss, 1), winding=getattr(dw, "winding", None),
+                   parity_at_pilot={k: dpar[k] for k in ("max_abs_diff", "floor_ours_max", "worst_sigma",
+                                                         "n_over_k_sigma", "n_live", "n_exact")},
+                   n_walkers_chosen=n_dis,
+                   reference="MISST, exact: the band is OUR standard error alone, so the count is set by the "
+                             "precision the comparison needs, not by matching a reference's own floor")
+        log(f"design disimpy pilot: N={a.pilot_n}, sub_steps {dw.sub_steps}, envelope floor {dfloor:.5f}; "
+            f"parity max|dS| {dpar['max_abs_diff']:.5f} worst {dpar['worst_sigma']:.3f} sigma; chose {n_dis:,}")
+        del dw
     rec = dict(stage="design", written=time.strftime("%Y-%m-%dT%H:%M:%SZ"),
                spec_sha256=_digest(os.path.join(RECORDS, "spec.json"))["sha256"],
                envelope=dict(mcdc=X.mcdc_envelope(), disimpy=X.disimpy_envelope()),
@@ -728,10 +790,12 @@ def stage_design(a, X):
                             n_walkers=n_chosen,
                             rule="measured pilot floor scaled as 1/sqrt(N) with a 1.4 safety factor, capped by "
                                  "the measured bytes per walker against the budget; never an estimate"),
+               disimpy_pilot=dis,
                gate_tolerance=dict(
                    policy=dict(k_per=3.0, expected_family_wise=0.5, poisson_sigma=3.0,
-                               derived_by="parity-fixtures/build.py::_multiplicity"),
-                   mcdc=_multiplicity(n_live_mcdc, n_chosen - 1), disimpy=_multiplicity(100, n_chosen - 1),
+                               derived_by="examples/validation/cross_engine_parity.multiplicity_thresholds"),
+                   mcdc=_multiplicity(n_live_mcdc, n_chosen - 1),
+                   disimpy=_multiplicity(n_live_dis, (dis or {}).get("n_walkers_chosen", n_chosen) - 1),
                    note="the per-measurement band is 3 sqrt(ours^2 + theirs^2) where the reference is itself "
                         "Monte-Carlo and 3 x ours alone where it is exact (reference.json's "
                         "monte_carlo_sides), with the standard error taken analytically from the walkers; "
@@ -760,8 +824,8 @@ def stage_records_from_build(a, X):
     from dmipy_sim.replay.publish import header_of
     from dmipy_sim.replay import ReplayPack
     from dmipy_sim.io import mcdc
-    seq_mcdc = mcdc.read_scheme(os.path.join(a.mcdc_data, "Simulator-Conf-files", X.MCDC_SCHEME),
-                                n_t=X.MCDC_N_T)
+    seq_mcdc = (mcdc.read_scheme(os.path.join(a.mcdc_data, "Simulator-Conf-files", X.MCDC_SCHEME),
+                                 n_t=X.MCDC_N_T) if a.mcdc_data else None)
     status = os.path.join(HERE, "status.jsonl")
     if not os.path.exists(status):
         raise SystemExit(f"{status} is missing: the family stage has not run")
@@ -779,15 +843,21 @@ def stage_records_from_build(a, X):
         prov = meta.get("provenance") or {}
         par = prov.get("parity") or {}
         fid = meta["fidelity"]
-        amp, wL = name.split("-")[1], name.split("-")[2]
-        ref, n_theirs = X.mcdc_reference(a.mcdc_data, float(amp), float(wL), seq_mcdc)
+        if name.startswith("disimpy"):
+            seq, ref, n_theirs, quant = (X.disimpy_sequence(), X.disimpy_reference(a.disimpy_data), None,
+                                         X.DISIMPY_QUANTISATION)
+        else:
+            amp, wL = name.split("-")[1], name.split("-")[2]
+            seq = seq_mcdc
+            ref, n_theirs = X.mcdc_reference(a.mcdc_data, float(amp), float(wL), seq_mcdc)
+            quant = X.MCDC_QUANTISATION
         pk = ReplayPack.load(local)
-        served = X.pack_cos_phi(pk, seq_mcdc)                  # the bands a consumer contracts, not a walk
-        recomputed = X.parity(served, ref, n_theirs)
+        served = X.pack_cos_phi(pk, seq)                       # the bands a consumer contracts, not a walk
+        recomputed = X.parity(served, ref, n_theirs, reference_quantisation=quant)
         # served vs decoded, PER MEASUREMENT: the pack's two routes to the same signal -- the per-walker one
         # (`walker_primitives`, the bands contracted once) against the scalar one (`replay`). Both read this
         # pack and nothing else, so no walk is involved.
-        direct = np.asarray(pk.replay(seq_mcdc), float).ravel()
+        direct = np.asarray(pk.replay(seq), float).ravel()
         served_gap = float(np.abs(served.mean(axis=1) - direct).max())
         del pk, served, direct
         log(f"  {name}: recomputed parity max|dS| {recomputed['max_abs_diff']:.6f}, worst "
@@ -805,6 +875,8 @@ def stage_records_from_build(a, X):
                       illegal_crossings=r["illegal_crossings"], seconds=r["seconds"],
                       peak_rss_gb=r["peak_rss_gb"], code_commit=r.get("code_commit")),
             parity=dict(served=recomputed, served_vs_walk_max_per_measurement=served_gap,
+                        monte_carlo_sides=(REFERENCES["disimpy"] if name.startswith("disimpy")
+                                           else REFERENCES["mcdc"])["monte_carlo_sides"],
                         served_vs_decoded="max over measurements of |walker_primitives route - replay route|, "
                                           "both read from this pack",
                         superseded_in_pack=par.get("pack"),
@@ -812,9 +884,7 @@ def stage_records_from_build(a, X):
                                         "`served` is the same replay against the analytic standard error, and "
                                         "is what the gate reads. The pack is not re-encoded.",
                         envelope_band_hz=par.get("envelope_band_hz"), pack_band_hz=par.get("pack_band_hz"),
-                        in_band=par.get("in_band"),
-                        monte_carlo_sides=REFERENCES["mcdc"]["monte_carlo_sides"] if name.startswith("mcdc")
-                        else REFERENCES["disimpy"]["monte_carlo_sides"]),
+                        in_band=par.get("in_band")),
             reference=dict(signal=prov.get("reference_signal"), walkers=prov.get("reference_walkers"),
                            commit=prov.get("reference_commit"), repo=prov.get("reference_repo")))
     if not packs:
@@ -822,7 +892,8 @@ def stage_records_from_build(a, X):
     return _write_record("build", dict(stage="build", written=time.strftime("%Y-%m-%dT%H:%M:%SZ"),
                                        design_sha256=_digest(os.path.join(RECORDS, "design.json"))["sha256"],
                                        fixtures=packs,
-                                       held={k: v["held"] for k, v in REFERENCES.items() if v.get("held")}))
+                                       held={k: v["held"] for k, v in REFERENCES.items()
+                                             if v.get("held") and not any(n.startswith(k) for n in packs)}))
 
 
 def stage_gate(a, X):
@@ -865,9 +936,14 @@ def stage_gate(a, X):
         check(not lost, f"{name}/spec-round-trips",
               f"{len(f['round_trip'])} fields survive spec -> geometry -> spec"
               + (f"; LOST {lost}" if lost else ""))
-        check(bool(f["seeded_positions"].get("sha256")), f"{name}/seeding-cites-its-positions",
-              f"rule {f['spec']['seeding']['rule']}, {f['seeded_positions'].get('count')} positions read "
-              f"{f['seeded_positions'].get('read')} from {f['seeded_positions'].get('file')}")
+        rule = f["spec"]["seeding"]["rule"]
+        if rule == "explicit":
+            check(bool(f["seeded_positions"].get("sha256")), f"{name}/seeding-cites-its-positions",
+                  f"rule explicit, {f['seeded_positions'].get('count')} positions read "
+                  f"{f['seeded_positions'].get('read')} from {f['seeded_positions'].get('file')}")
+        else:
+            check(not f["seeded_positions"], f"{name}/seeding-rule-needs-no-positions",
+                  f"rule {rule}: the walk draws its own seeds, so there are no positions to cite")
     for key, r in ref["references"].items():
         check(bool(r.get("doi")) and bool(r.get("crossref_checked")), f"reference/{key}/doi",
               f"{r.get('doi')} resolved and its title compared")
@@ -906,6 +982,10 @@ def stage_gate(a, X):
               f"(measurement {pp['worst_sigma_at']}; max|dS| {pp['max_abs_diff']:.5f}; our floor "
               f"{pp['floor_ours_max']:.5f}, theirs {pp['floor_theirs_max']:.5f}), against the family-wise "
               f"band {mult['k_family_wise']:.3f} sigma")
+        q_rec = float(ref["references"]["disimpy" if "disimpy" in name else "mcdc"]["value_quantisation"])
+        check(float(pp["reference_quantisation"]) == q_rec, f"{name}/band-uses-the-recorded-quantisation",
+              f"the band was widened by the reference's own {q_rec:.2e} resolution, as the reference record "
+              f"states; a band finer than the reference's resolution asks it for digits it does not have")
         check(float(pp["max_abs_diff_exact"]) == 0.0, f"{name}/zero-variance-measurements-are-exact",
               f"the {pp['n_exact']} measurements with no per-walker spread (b = 0) differ by "
               f"{pp['max_abs_diff_exact']:.3e}, which must be 0: there is no band for them to be inside")
@@ -965,6 +1045,8 @@ def main():
     ap.add_argument("--repo", default=REPO)
     ap.add_argument("--K", type=int, default=128)
     ap.add_argument("--n-walkers", type=int, default=100_000)
+    ap.add_argument("--disimpy-n-walkers", type=int, default=None,
+                    help="the Disimpy pack's walker count (its reference is exact, so its band is ours alone)")
     ap.add_argument("--disimpy-sub-steps", type=int, default=None,
                     help="pin the Disimpy walk's sub-steps (the MISST gap is first order in the step)")
     ap.add_argument("--pilot", action="store_true")

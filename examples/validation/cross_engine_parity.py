@@ -49,6 +49,9 @@ MCDC_CITATION = ("Rafael-Patino J, Romascano D, Ramirez-Manzanares A, Canales-Ro
 #: the rim (the released initial-walker lists span the central ~40 um of a 250 um tube); a spec cannot,
 #: because an open surface does not say which side is intra.
 MCDC_FIXTURES = [(0.2, 32.0), (1.0, 12.0), (2.6, 4.0)]
+#: The resolution MC/DC's reference is DISTRIBUTED at: a float32 sum over 50,000 walkers, so a half-ulp of the
+#: stored value divided by the count -- eps(5e4)/2/5e4 = 3.9e-8 for a b = 0 entry, less for a smaller one.
+MCDC_QUANTISATION = float(np.spacing(np.float32(50_000.0)) / 2 / 50_000)
 
 # -------------------------------------------------------------------------------------- Disimpy, their test
 DISIMPY_D = 2e-9             #: m^2/s, `test_mesh_diffusion`
@@ -58,6 +61,11 @@ DISIMPY_BIGDELTA = 40e-3     #: s
 DISIMPY_N_T = 1401           #: saves over TE -> dt 50 us; 1400 = 7 x 200, so 30 ms, 40 ms and TE are on samples
 DISIMPY_BVALUES = np.linspace(1.0, 3e9, 100)
 DISIMPY_RADIUS = 5e-6
+#: The resolution the MISST reference is DISTRIBUTED at: seven decimal places in
+#: ``misst_cylinder_signal_smalldelta_30ms_bigdelta_40ms_radius_5um.txt`` (``1.0000000``, ``0.8763042``), so a
+#: half-ulp of 5e-8. The solution is exact; the FILE is not, and at b = 1 s/m^2 the walk's own standard error is
+#: 1.6e-11, four thousand times finer than the number it is compared against.
+DISIMPY_QUANTISATION = 5e-8
 DISIMPY_LICENSE = "MIT"
 DISIMPY_CITATION = ("Kerkelae L, Nery F, Hall MG, Clark CA (2020) Disimpy: A massively parallel Monte Carlo "
                     "simulator for generating diffusion-weighted MRI data in Python. JOSS 5(52):2527, the "
@@ -297,15 +305,25 @@ def floors(per_walker, n_theirs=None):
     return ours, theirs, int(n_w - 1), (sd == 0.0)
 
 
-def parity(cos_phi, reference, n_theirs=None, *, k=3.0):
+def parity(cos_phi, reference, n_theirs=None, *, k=3.0, reference_quantisation=0.0):
     """The parity record of one fixture: our signal, theirs, the floors, and the worst measurement in sigma.
 
     ``n_theirs`` is their walker count when their reference is itself a Monte-Carlo estimate (MC/DC) and
     ``None`` when it is exact (MISST), in which case only our floor enters the band.
 
-    Every number here is a property of the walkers and the reference, not of a seed. The zero-variance
-    measurements are reported separately (``n_exact``, ``max_abs_diff_exact``) because they have no band; the
-    sigma statistics are over the rest, and ``n_live`` is how many that is -- which is what the family-wise
+    ``reference_quantisation`` is the resolution the reference is DISTRIBUTED at, added to the band in
+    quadrature, and it is not optional. Monte-Carlo noise vanishes as the signal stops depending on the
+    substrate: Disimpy's lowest measurement is ``b = 1 s/m^2``, where ``sigma_phi^2 = 2e-9`` gives a per-walker
+    spread of 1.4e-9 and a standard error of **1.6e-11** at 8,000 walkers -- while the MISST file states that
+    value as ``1.0000000``, i.e. to 5e-8. Comparing against a band of 1.6e-11 asks the file for six digits it
+    does not have, and the measurement came out at **68 sigma** for a difference of ~1e-9. The reference's own
+    resolution is a property of the reference (dmrai-lab/dmipy-sim#482 puts it in the reference record), so it
+    belongs in the band. On MC/DC, whose floors are ~3e-3, a 1e-7 quantisation changes the verdict by nothing,
+    which is how one can tell it is not a tuning.
+
+    Every other number here is a property of the walkers and the reference, not of a seed. The zero-variance
+    measurements are reported separately (``n_exact``, ``max_abs_diff_exact``) because they have no band at all;
+    the sigma statistics are over the rest, and ``n_live`` is how many that is -- which is what the family-wise
     threshold must be derived for.
     """
     cos_phi = np.asarray(cos_phi, float)
@@ -316,12 +334,13 @@ def parity(cos_phi, reference, n_theirs=None, *, k=3.0):
     f_ours, f_theirs, dof, exact = floors(cos_phi, n_theirs)
     d = np.abs(ours - ref)
     live = ~exact
-    se = np.sqrt(f_ours ** 2 + f_theirs ** 2)
+    q = float(reference_quantisation)
+    se = np.sqrt(f_ours ** 2 + f_theirs ** 2 + q ** 2)
     sigma = np.where(live, d / np.where(live, se, 1.0), 0.0)
     i = int(np.argmax(d))
     j = int(np.flatnonzero(live)[np.argmax(sigma[live])]) if live.any() else -1
     return dict(n_meas=int(len(ours)), n_live=int(live.sum()), n_exact=int(exact.sum()), dof=int(dof),
-                k=float(k), max_abs_diff=float(d.max()), at_measurement=i,
+                k=float(k), reference_quantisation=q, max_abs_diff=float(d.max()), at_measurement=i,
                 ours_at=float(ours[i]), theirs_at=float(ref[i]), rms_diff=float(np.sqrt((d ** 2).mean())),
                 max_abs_diff_exact=float(d[exact].max()) if exact.any() else 0.0,
                 floor_ours_max=float(f_ours.max()), floor_ours_med=float(np.median(f_ours)),
@@ -399,8 +418,12 @@ def disimpy_envelope():
 
 
 # ------------------------------------------------------------------------------- the step, not the engine
-def step_ladder(walks, reference, *, n_theirs=None):
+def step_ladder(walks, reference, *, n_theirs=None, reference_quantisation=0.0):
     """Is what is left between two engines the ENGINE, or the step?
+
+    Post-#483 this is a regression guard rather than a diagnosis: a converged walk's signal does not depend on
+    the step beyond its own noise, so ``step_independent`` is the property to hold. A sidedness or confinement
+    defect reintroduces a step dependence, which is how #479 showed itself.
 
     ``walks`` is ``[(step_m, PersistentWalk, sequence), ...]`` at decreasing sub-step length on the same
     substrate, seed and acquisition. Returns the signed difference from ``reference`` at each step, the
@@ -421,8 +444,12 @@ def step_ladder(walks, reference, *, n_theirs=None):
     extrap = (d[-1] * h1 - d[-2] * h2) / (h1 - h2)                 # d(h) = d0 + c h, at h = 0
     f_ours, f_theirs, dof, exact = floors(cos[-1], n_theirs)
     live = ~exact
-    se = np.sqrt(f_ours ** 2 + f_theirs ** 2)
+    q = float(reference_quantisation)
+    se = np.sqrt(f_ours ** 2 + f_theirs ** 2 + q ** 2)
+    worst_sigma = [float(np.abs(x[live] / se[live]).max()) if live.any() else 0.0 for x in d]
+    spread = float(np.abs(d[0][live] - d[-1][live]).max() / se[live].max()) if live.any() else 0.0
     return dict(steps_m=steps.tolist(), dof=int(dof), n_live=int(live.sum()),
+                worst_sigma=worst_sigma, coarsest_to_finest_sigma=spread,
                 max_abs_diff=[float(np.abs(x).max()) for x in d],
                 extrapolated_max_abs_diff=float(np.abs(extrap).max()),
                 floor_ours_max=float(f_ours.max()), floor_theirs_max=float(f_theirs.max()),
@@ -431,7 +458,7 @@ def step_ladder(walks, reference, *, n_theirs=None):
                 monotone=bool(np.all(np.diff([float(np.abs(x).max()) for x in d]) < 0)))
 
 
-def disimpy_step_ladder(data, n, sub_steps=(1, 2, 4), *, require_gpu=None):
+def disimpy_step_ladder(data, n, sub_steps=(4, 8), *, require_gpu=None):
     """``step_ladder`` on the Disimpy cylinder against MISST: one walk per sub-step count, same seed."""
     import dmipy_sim as d
     dt = DISIMPY_TE / (DISIMPY_N_T - 1)
@@ -440,7 +467,7 @@ def disimpy_step_ladder(data, n, sub_steps=(1, 2, 4), *, require_gpu=None):
     for ss in sub_steps:
         w = disimpy_walk(data, n, require_gpu=require_gpu, sub_steps=int(ss))
         walks.append((float(np.sqrt(6 * DISIMPY_D * w.dt_sim)), w, seq))
-    return step_ladder(walks, disimpy_reference(data))
+    return step_ladder(walks, disimpy_reference(data), reference_quantisation=DISIMPY_QUANTISATION)
 
 
 # ------------------------------------------------------------------------------------------- the reproduction
@@ -462,13 +489,14 @@ def main():
         for amp, wL in MCDC_FIXTURES:
             ref, n_theirs = mcdc_reference(a.mcdc_data, amp, wL, seq)
             walk = mcdc_walk(a.mcdc_data, amp, wL, a.n_walkers)
-            p = parity(walk_cos_phi(walk, seq), ref, n_theirs)
+            p = parity(walk_cos_phi(walk, seq), ref, n_theirs, reference_quantisation=MCDC_QUANTISATION)
             print(f"| MC/DC amp {amp} wL {wL} | {a.n_walkers:,} | {p['max_abs_diff']:.5f} | {p['rms_diff']:.5f} "
                   f"| {p['floor_ours_max']:.5f} | {p['floor_theirs_max']:.5f} | {p['tol_max']:.5f} "
                   f"| {p['worst_sigma']:.2f} |")
     if a.disimpy_data:
         walk = disimpy_walk(a.disimpy_data, a.n_walkers)
-        p = parity(walk_cos_phi(walk, disimpy_sequence()), disimpy_reference(a.disimpy_data))
+        p = parity(walk_cos_phi(walk, disimpy_sequence()), disimpy_reference(a.disimpy_data),
+                   reference_quantisation=DISIMPY_QUANTISATION)
         print(f"| Disimpy cylinder vs MISST | {a.n_walkers:,} | {p['max_abs_diff']:.5f} | {p['rms_diff']:.5f} "
               f"| {p['floor_ours_max']:.5f} | exact | {p['tol_max']:.5f} "
               f"| {p['worst_sigma']:.2f} |")

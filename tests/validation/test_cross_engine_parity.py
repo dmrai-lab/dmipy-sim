@@ -13,9 +13,10 @@ is this walk's split half. The test asserts ``|dS| <= 3 sqrt(ours^2 + theirs^2)`
 
 **Disimpy** (Kerkelae et al. 2020, JOSS 5(52):2527, MIT) released ``tests/cylinder_mesh_closed.pkl`` and the
 MISST signal it is asserted against. MISST is an exact eigenfunction solution, so the tolerance is our floor
-alone -- and the ANALYTIC cylinder of the same radius meets it while the MESH of the same cylinder does not,
-by 1.3-2.1e-2 at b = 3000 s/mm^2, a gap that does not close with the step. That is what this fixture found:
-dmrai-lab/dmipy-sim#479.
+alone. Both the analytic cylinder and the mesh meet it -- the mesh only since dmrai-lab/dmipy-sim#483, which
+this fixture found (#479): 294 of the pickle's 588 faces are wound the other way, so the sidedness test called
+half the lumen exterior and ``reject_escape`` discarded 15.6 % of steps, putting the walk 1.3-2.1e-2 below
+MISST with a gap that did not close with the step.
 
 Measured on an L40S at ``N_WALKERS`` = 8,000 -- **this test's own default** -- and recorded so the numbers can
 be checked rather than trusted. Every fixture passes here, which is the point of a default: 0 of the 360 live
@@ -96,7 +97,8 @@ def test_the_signal_reproduces_mcdcs_released_dwi_within_the_two_floors(mcdc_sch
     assert n_theirs == 50_000
     walk = X.mcdc_walk(MCDC, amp, wL, N_WALKERS)
     assert walk.illegal_crossings == 0
-    p = X.parity(X.walk_cos_phi(walk, mcdc_scheme), ref, n_theirs)
+    p = X.parity(X.walk_cos_phi(walk, mcdc_scheme), ref, n_theirs,
+                 reference_quantisation=X.MCDC_QUANTISATION)
     mult = _thresholds(p)
     assert (p["n_meas"], p["n_live"], p["n_exact"]) == (372, 360, 12)
     assert p["max_abs_diff_exact"] == 0.0, "a b = 0 measurement must agree exactly: it has no band"
@@ -148,7 +150,8 @@ def test_the_analytic_cylinder_of_the_same_radius_lands_on_misst():
     """
     X = fixtures()
     walk = X.disimpy_analytic_walk(N_WALKERS, sub_steps=2)
-    p = X.parity(X.walk_cos_phi(walk, X.disimpy_sequence()), X.disimpy_reference(DISIMPY))
+    p = X.parity(X.walk_cos_phi(walk, X.disimpy_sequence()), X.disimpy_reference(DISIMPY),
+                 reference_quantisation=X.DISIMPY_QUANTISATION)
     assert p["n_meas"] == 100
     assert p["max_abs_diff"] <= max(4e-3, 3 * p["floor_ours_max"]), (
         f"max|dS| {p['max_abs_diff']:.5f} at measurement {p['at_measurement']} (ours {p['ours_at']:.5f}, "
@@ -156,75 +159,90 @@ def test_the_analytic_cylinder_of_the_same_radius_lands_on_misst():
 
 
 @needs_disimpy
-def test_the_cylinder_mesh_gap_to_misst_shrinks_with_the_step_but_not_to_the_floor():
-    r"""The fixture itself: Disimpy's ``cylinder_mesh_closed.pkl`` against the MISST signal it ships.
+def test_the_cylinder_mesh_signal_does_not_depend_on_the_step():
+    r"""A converged walk's signal does not move with the step beyond its own noise -- the property that #479
+    broke and #483 restored, kept as a regression guard.
 
-    The mesh **under-restricts**. Measured at 8,000 walkers (the worst measurement is always the last,
-    b = 3000 s/mm^2, where MISST gives 0.87630):
-
-    | sub_steps | step | ours | max\|dS\| | our floor |
-    |---|---|---|---|---|
-    | 1 (auto) | 775 nm | 0.85554 | 0.02077 | 0.00086 |
-    | 2 | 548 nm | 0.86051 | 0.01579 | 0.00145 |
-    | 4 | 387 nm | 0.86147 | 0.01483 | 0.00207 |
-    | 8 | 274 nm | 0.86332 | 0.01299 | 0.00118 |
-
-    Refining the step by three closes a third of the gap, so extrapolating it does not reach the floor, and
-    the analytic control above does. **That is dmrai-lab/dmipy-sim#479**, open, and this test asserts only
-    what is true today: the gap shrinks monotonically with the step, and it stays inside 2.5e-2 -- the bound
-    the repo's own ``tests/geometry/test_cylinder.py::test_cylinder_misst_config1`` already carries (0.02) for
-    the same MISST configuration, with the measurement's own margin. The floor-level assertion that #479 is
-    about is the strict xfail below.
+    Before #483 the gap to MISST was 2.08e-2 at a 775 nm step, 1.58e-2 at 548, 1.48e-2 at 387 and 1.30e-2 at
+    274: a step dependence that did not extrapolate to the floor, because ``reject_escape`` discarded the steps
+    of the walkers the sidedness test put outside the lumen, and the fraction it discarded depends on the step.
+    A sidedness or confinement defect shows itself exactly that way, so what is asserted is that refining the
+    step by a factor of two changes nothing the floor cannot explain.
     """
     X = fixtures()
-    lad = X.disimpy_step_ladder(DISIMPY, N_WALKERS, sub_steps=(1, 2, 4))
-    assert lad["monotone"], f"the gap does not shrink with the step: {lad['max_abs_diff']} at {lad['steps_m']}"
-    assert lad["max_abs_diff"][-1] <= 2.5e-2, (
-        f"gaps {[round(v, 5) for v in lad['max_abs_diff']]} at steps "
-        f"{[round(h * 1e9) for h in lad['steps_m']]} nm")
+    lad = X.disimpy_step_ladder(DISIMPY, N_WALKERS, sub_steps=(4, 8))
+    mult = fixtures().multiplicity_thresholds(lad["n_live"], lad["dof"])
+    assert lad["coarsest_to_finest_sigma"] <= mult["k_family_wise"], (
+        f"halving the step moved the signal by {lad['coarsest_to_finest_sigma']:.2f} sigma of our own floor "
+        f"(gaps {[round(v, 5) for v in lad['max_abs_diff']]} at steps "
+        f"{[round(h * 1e9) for h in lad['steps_m']]} nm), which a converged walk does not do")
+    assert max(lad["worst_sigma"]) <= mult["k_family_wise"], (
+        f"worst measurement per step: {[round(v, 2) for v in lad['worst_sigma']]} sigma, band "
+        f"{mult['k_family_wise']:.3f}")
 
 
 @needs_disimpy
-def test_the_disimpy_pickle_is_inconsistently_wound():
-    """The cause of #479, measured on the fixture itself: the surface's face winding is not consistent.
+def test_the_disimpy_pickle_needs_orienting_and_gets_it():
+    """The fixture's stored winding, and that the walked geometry no longer has it.
 
-    Of its 588 faces **294 point outward and 294 inward**, and no directed edge is paired exactly once each
-    way. A ray-parity classifier reads half the lumen as exterior, so ``reject_escape`` discards the steps of
-    the walkers that are in it -- which is the under-restriction, not a step-size effect. It is also why the
-    divergence-theorem volume of this surface is 0.332 of ``pi r^2 L`` while its AREA is 0.999 of the ideal:
-    the signed contributions cancel.
+    Of the merged pickle's 588 faces **294 point one way and 294 the other**, and 784 of its directed edges are
+    unpaired, so its divergence-theorem volume is 0.332 of ``pi r^2 L`` while its AREA is 0.999 of the ideal --
+    the signed contributions cancel. Reflection never cared (a facet normal is signed by the step), which is why
+    the leak was nil and the defect silent; everything that reads the SIGN of a normal did, and
+    ``_classify_arr`` called half the lumen exterior.
 
-    dmrai-lab/dmipy-sim#483 orients the faces in ``Mesh.__init__``. This test measures the input and so keeps
-    passing either way; what flips is
-    :func:`test_the_cylinder_mesh_lands_on_misst_within_our_floor` below.
+    ``orient_faces`` at ``Mesh.__init__`` (dmrai-lab/dmipy-sim#483) reorients 294 of them and leaves 0
+    inconsistent edges, so the geometry the walk sees is consistent and its enclosed volume is 0.997 of the
+    ideal. Both halves are asserted here: the input still needs the repair, and the geometry has had it.
     """
     X = fixtures()
+    from dmipy_sim.geometry.mesh import orient_faces
     V, F, _ = X.disimpy_mesh(DISIMPY)
-    centre = V.mean(0)
-    a, b, c = V[F[:, 0]], V[F[:, 1]], V[F[:, 2]]
-    outward = (np.cross(b - a, c - a) * ((a + b + c) / 3.0 - centre)).sum(1)
-    assert int((outward > 0).sum()) == 294 and int((outward < 0).sum()) == 294
+    _, winding = orient_faces(V, F)
+    assert (winding["inconsistent_edges"], winding["reoriented"]) == (784, 294)
+    assert winding["inconsistent_edges_after"] == 0
+    got = X.disimpy_geometry(DISIMPY).winding
+    assert got["inconsistent_edges_after"] == 0
+    assert abs(got["volume_after"]) / (np.pi * X.DISIMPY_RADIUS ** 2 * 25e-6) == pytest.approx(0.997, abs=0.002)
 
 
 @needs_disimpy
-@pytest.mark.xfail(strict=True, reason="dmrai-lab/dmipy-sim#479, fixed by #483: the fixture's face winding is "
-                                      "inconsistent (294 of 588 reversed), a ray-parity classifier calls half "
-                                      "the lumen exterior and reject_escape discards 15.6 % of steps, so the "
-                                      "mesh under-restricts. Flips to green on a rebase once #483 orients "
-                                      "faces in Mesh.__init__")
 def test_the_cylinder_mesh_lands_on_misst_within_our_floor():
-    """The mesh, like the analytic cylinder, inside the floor -- which needs the ORIENTED surface.
+    """The fixture itself: Disimpy's cylinder mesh against the MISST signal it ships, at MISST's exact
+    30 / 40 ms timing, on the ORIENTED surface.
 
-    With #483's orientation the mesh cylinder lands on MISST at the floor (its author measures 0.00142 against
-    a floor of 0.0015 at sub_steps 8). Until then the walk sees the surface as stored and this is red, so it is
-    a strict xfail: it will fail *as an xpass* the moment #483 lands, which is the notification that the hold
-    on the Disimpy pack can be lifted.
+    MISST is an exact eigenfunction solution, so the band here is OUR standard error alone -- there is no second
+    Monte-Carlo run to widen it -- and the mesh meets it. Before #483 oriented the faces it did not: the walk sat
+    1.3-2.1e-2 below MISST and the gap did not close with the step, because ``reject_escape`` discarded the steps
+    of every walker the sidedness test put on the wrong side.
+
+    The analytic cylinder of the same radius is the control
+    (:func:`test_the_analytic_cylinder_of_the_same_radius_lands_on_misst`): whatever the two share is the
+    engine's, and what differs is the surface's representation.
     """
     X = fixtures()
     walk = X.disimpy_walk(DISIMPY, N_WALKERS, sub_steps=8)
-    p = X.parity(X.walk_cos_phi(walk, X.disimpy_sequence()), X.disimpy_reference(DISIMPY))
+    # A capped cylinder's rim is a sharp edge where the wall meets a cap, and the confinement guard refuses the
+    # occasional step there rather than letting it through; #483 made those refusals countable. Measured: 4 of
+    # 8,000 x 1400 x 8 steps at sub_steps 8 and 1 of 8,000 x 1400 at sub_steps 1, i.e. a rate below 1e-7. What
+    # must hold is that the guard is RARE, not that it never fires -- a guard that never fires on a rim is a
+    # guard that is not looking.
+    steps = N_WALKERS * (X.DISIMPY_N_T - 1) * int(walk.sub_steps)
+    assert walk.illegal_crossings / steps <= 1e-6, (
+        f"{walk.illegal_crossings} refused steps of {steps} is a rate of "
+        f"{walk.illegal_crossings / steps:.2e}, which is not the rim")
+    p = X.parity(X.walk_cos_phi(walk, X.disimpy_sequence()), X.disimpy_reference(DISIMPY),
+                 reference_quantisation=X.DISIMPY_QUANTISATION)
     mult = _thresholds(p)
-    assert p["worst_sigma"] <= mult["k_family_wise"] and p["n_over_k_sigma"] <= mult["max_exceedances"]
+    assert p["n_meas"] == 100
+    assert p["worst_sigma"] <= mult["k_family_wise"], (
+        f"the worst measurement is at {p['worst_sigma']:.3f} sigma of our own standard error (measurement "
+        f"{p['worst_sigma_at']}; max|dS| {p['max_abs_diff']:.5f}, our floor {p['floor_ours_max']:.5f}) against "
+        f"the family-wise band {mult['k_family_wise']:.3f} sigma for {p['n_live']} measurements on "
+        f"{p['dof']} dof")
+    assert p["n_over_k_sigma"] <= mult["max_exceedances"], (
+        f"{p['n_over_k_sigma']} of {p['n_live']} measurements outside their own {p['k']:g}-sigma band, against "
+        f"the {mult['max_exceedances']} chance allows")
 
 
 @needs_disimpy
