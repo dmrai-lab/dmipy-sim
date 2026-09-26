@@ -98,7 +98,7 @@ SNIPPET_CEILING_S = 60.0
 __all__ = ["ReferenceFamily", "ReferenceRefusal", "Records", "STAGES", "GRADES", "grade_of", "crossref",
            "code_commit", "tolerance_of", "gate_verdict", "pass_band", "grade_reason", "Source", "SourceFile", "Reference",
            "ReferenceQuantity", "Published", "Direct", "FreeParameter", "Design", "Tier", "Systematic",
-           "Tolerance", "Build", "RecordedWalk", "Publication", "organisation_index", "organisation_card",
+           "Tolerance", "Build", "RecordedWalk", "Publication", "organisation_index", "organisation_card", "organisation_example",
            "ORGANISATION"]
 
 
@@ -1592,10 +1592,9 @@ def _render_card(name, repo, rec, gate, previews, snippet_shown, snippet_ran, hu
           "[dmipy-sim#482](https://github.com/dmrai-lab/dmipy-sim/issues/482)); none of it is transcribed, so "
           "this card, the gate and any paper read the same files.", ""]
 
-    L += ["## The packs", "",
-          "| pack | substrate | channels | K | band (Hz) | T | walkers | "
-          + " | ".join(f"{t['name']}: floor / err / target" for t in des["tiers"])
-          + " | size | licence | commit |", "|" + "---|" * (9 + len(des["tiers"]))]
+    head = (["pack", "substrate", "channels", "K", "band (Hz)", "T", "walkers"]
+            + [f"{t['name']}: floor / err / target" for t in des["tiers"]] + ["size", "licence", "commit"])
+    L += ["## The packs", "", "| " + " | ".join(head) + " |", "|" + "---|" * len(head)]
     for n, v in sorted(pk["substrates"].items()):
         row, tiers = v["pack"], v["tiers"]
         cells = [f"`{row['id']}`", f"`{row['substrate_id']}`", ", ".join(row["channels"]), str(row["K"]),
@@ -1643,20 +1642,27 @@ def _render_card(name, repo, rec, gate, previews, snippet_shown, snippet_ran, hu
     else:
         L += [f"**Grade {grade}.** " + grade_reason(ref),
               f"Their sample: {ref['sample']} ({ref['sample_relation']}).", "",
-              "| substrate | quantity | replayed (this pack) | our direct walk | theirs | printed in | "
-              "|replayed - direct| | tolerance | holds |", "|" + "---|" * 9]
+              "| substrate | quantity | replayed (this pack) | our direct walk | theirs | from | "
+              "vs direct | band | holds | vs theirs |", "|" + "---|" * 10]
         for q in sorted(ref["quantities"], key=lambda x: (x["substrate"], x["name"])):
             got = pk["substrates"][q["substrate"]]["reproduced"].get(q["name"], {})
             c = next((c for c in gate["checks"]
                       if c["check"] == f"{q['substrate']}/reproduces-{q['name']}"), None)
-            rel = None if not c else f"{c['relative']:.3%}"
-            tol = None if not c else f"{c['tolerance']:.3%}"
+            pubc = next((x for x in gate["checks"]
+                         if x["check"] == f"{q['substrate']}/published-{q['name']}"), None)
+            rel = "—" if not c else f"{c['relative']:.3%} ({c['sigma']:.2g} σ)"
+            tol = "—" if not c else f"{c['k']:.3g} σ = {c['tolerance']:.3%}"
+            vs_them = "—"
+            if pubc and pubc.get("relative") is not None:
+                vs_them = (f"{pubc['relative']:.3%} ({pubc['sigma']:.2g} σ)"
+                           + ("" if pubc["passed"] else " **fails**")
+                           + ("" if pubc.get("uncertainty_stated") else ", no uncertainty stated"))
             L.append(f"| {q['substrate']} | {q['name']} | **{_fmt(got.get('value'), '.6g')} "
                      f"{q['direct']['unit']}** | {q['direct']['value']:.6g} (SE {q['direct']['se']:.2%}, "
                      f"{q['direct']['se_kind']}, {q['direct']['n_walkers']:,} walkers) | "
                      f"{_fmt(q['published']['value'], '.6g')} {q['published']['unit']} | "
-                     f"{q['published']['printed_in']}, {q['published']['locator']} | {rel or '—'} | {tol or '—'} | "
-                     f"{'yes' if (c and c['passed']) else 'NO'} |")
+                     f"{q['published']['locator']} | {rel} | {tol} | "
+                     f"{'yes' if (c and c['passed']) else 'NO'} | {vs_them} |")
         L += ["", "The quantity is compared on the grid the reference record states, with the solver it states; "
                   "the gate refuses a reproduction on any other grid, because the grid is part of the "
                   "measurement.", "",
@@ -1738,7 +1744,7 @@ def organisation_index(org=ORGANISATION, *, api=None, get=None):
     for d in api.list_datasets(author=org):
         name = d.id.split("/", 1)[1]
         n = total = None
-        reference = None
+        reference, packs = None, []
         try:
             m = json.load(open(get(d.id, "manifest.json")))
             packs = m.get("packs")
@@ -1750,12 +1756,17 @@ def organisation_index(org=ORGANISATION, *, api=None, get=None):
             reference = json.load(open(get(d.id, "records/reference.json")))
         except Exception:
             pass
-        rows.append(dict(name=name, repo=d.id, packs=n, bytes=total, reference=reference))
+        rows.append(dict(name=name, repo=d.id, packs=n, bytes=total, reference=reference,
+                         packs_rows=(packs if isinstance(packs, list) else [])))
     return sorted(rows, key=lambda r: r["name"])
 
 
-def organisation_card(rows):
+def organisation_card(rows, *, example=None):
     """The organisation page, rendered from :func:`organisation_index`.
+
+    ``example`` is the pack the "Use a pack" snippet reads -- ``owner/name/path`` of a pack a family's manifest
+    holds and its gate PASSED. It hardcoded a path that did not exist and named the one pack the gate withheld;
+    :func:`organisation_example` picks one from the index instead.
 
     Refused when any listed dataset has no ``records/reference.json``: the page states each family's grade and
     what it reproduces, and those are the reference record's words. A family that has not run the protocol has
@@ -1783,7 +1794,7 @@ def organisation_card(rows):
            "# pip install dmipy-sim\n"
            "from dmipy_sim.replay import ReplayPack\n"
            "from dmipy_sim import sequences\n"
-           f"pack = ReplayPack.load('hf://{ORGANISATION}/imperial-rocks/packs/imperial-rocks-f42a.rpk')\n"
+           f"pack = ReplayPack.load('hf://{example or ORGANISATION + '/<family>/packs/<pack>.rpk'}')\n"
            "seq = sequences.pgse([[1, 0, 0]], 0.04, 0.08, bvalues=[1e9], TE=0.15)\n"
            "S = pack.replay(seq)                                              # the bare diffusion signal\n"
            "S = pack.replay(seq, tissue=pack.nominal)                         # the paper's replay\n"
@@ -1836,6 +1847,16 @@ def _is_the_real_hub(hub):
     return isinstance(hub, Hub)
 
 
+def organisation_example(rows):
+    """``owner/name/path`` of a pack the snippet on the organisation page may read: the first row of the first
+    family whose manifest marks it gate-passed, so the page cannot teach a withheld pack."""
+    for r in sorted(rows, key=lambda x: x["name"]):
+        for row in r.get("packs_rows") or ():
+            if row.get("gate") in (None, "pass") and not row.get("withheld") and row.get("path"):
+                return f"{r['repo']}/{row['path']}"
+    return None
+
+
 def _organisation_after_publish(repo, *, skip):
     """Regenerate the organisation page from the hub after a publish, and record what happened.
 
@@ -1851,7 +1872,7 @@ def _organisation_after_publish(repo, *, skip):
     try:
         rows = organisation_index()
         out["families"] = [r["name"] for r in rows]
-        text = organisation_card(rows)
+        text = organisation_card(rows, example=organisation_example(rows))
         out["rendered"] = True
     except ReferenceRefusal as e:
         out["refused"] = str(e)

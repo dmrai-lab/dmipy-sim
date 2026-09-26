@@ -806,17 +806,58 @@ def _prepared(tmp_path, monkeypatch, **kw):
 
 
 # --------------------------------------------------------------- the organisation page
+def _md_tables(text):
+    """Every GFM table in ``text`` as ``(header cells, separator cells, row cell counts)``."""
+    out, lines = [], text.splitlines()
+    for i, line in enumerate(lines[:-1]):
+        if line.startswith("|") and set(lines[i + 1].replace("|", "").replace(" ", "")) == {"-"}:
+            head = [c for c in line.strip().strip("|").split("|")]
+            sep = [c for c in lines[i + 1].strip().strip("|").split("|")]
+            rows = []
+            for r in lines[i + 2:]:
+                if not r.startswith("|"):
+                    break
+                rows.append(len(r.strip().strip("|").split("|")))
+            out.append((len(head), len(sep), rows))
+    return out
+
+
+def test_every_card_table_is_a_table(ran):
+    """GFM drops a column whose separator is short and refuses a table whose header has an unescaped pipe: the
+    packs table had 12 header cells against an 11-cell separator (the `commit` column vanished) and the
+    reproduction header carried a literal `|replayed - direct|`."""
+    fam, rec = ran
+    card = open(os.path.join(fam.dir, "README.md")).read()
+    tables = _md_tables(card)
+    assert len(tables) >= 4
+    for head, sep, rows in tables:
+        assert head == sep, (head, sep)
+        assert all(r == head for r in rows), (head, rows)
+
+
 def test_the_organisation_page_refuses_a_family_with_no_reference_record():
-    rows = [dict(name="a", repo="O/a", packs=1, bytes=10, reference=dict(published_kind="figure",
-                                                                        same_released_geometry=False,
-                                                                        description="x", source_note="y",
-                                                                        licence_note="z", sample="s",
-                                                                        sample_relation="the same material")),
-            dict(name="b", repo="O/b", packs=2, bytes=20, reference=None)]
+    rows = [dict(name="a", repo="O/a", packs=1, bytes=10,
+                 reference=dict(published_kind="figure", same_released_geometry=False, description="x",
+                                source_note="y", licence_note="z", sample="s",
+                                sample_relation="the same material"),
+                 packs_rows=[dict(path="packs/withheld.rpk", gate="fail", withheld=True),
+                             dict(path="packs/good.rpk", gate="pass", withheld=False)]),
+            dict(name="b", repo="O/b", packs=2, bytes=20, reference=None, packs_rows=[])]
     with pytest.raises(R.ReferenceRefusal, match="publish no records/reference.json"):
         R.organisation_card(rows)
-    page = R.organisation_card(rows[:1])
+    page = R.organisation_card(rows[:1], example=R.organisation_example(rows[:1]))
     assert "| **B** |" in page and "[a](https://huggingface.co/datasets/O/a)" in page
+    # the snippet must read a pack the index holds and the gate passed, not the one it withheld
+    assert "hf://O/a/packs/good.rpk" in page
+    assert "withheld.rpk" not in page
+
+
+def test_the_organisation_snippet_never_names_a_withheld_pack():
+    rows = [dict(name="a", repo="O/a", packs=2, bytes=10, reference={},
+                 packs_rows=[dict(path="packs/withheld.rpk", gate="fail", withheld=True),
+                             dict(path="packs/good.rpk", gate="pass", withheld=False)])]
+    assert R.organisation_example(rows) == "O/a/packs/good.rpk"
+    assert R.organisation_example([dict(name="b", repo="O/b", packs_rows=[])]) is None
 
 
 # --------------------------------------------------------------- the estimator's analytic error bar
