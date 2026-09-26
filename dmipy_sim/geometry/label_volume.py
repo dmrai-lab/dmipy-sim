@@ -68,6 +68,17 @@ SPECULAR_STEP_FRACTION = 1.0
 #: segmentation can hold is one voxel, so that is what the rule divides.
 SURFACE_STEP_FRACTION = 4.0
 
+#: The largest share of a voxel the representable nudge may be. The nudge is ``1e-4`` of the voxel by
+#: design, raised to eight float32 ulps at the box's extent where that is larger
+#: (:func:`~dmipy_sim.geometry._boundary.representable_nudge`), and a volume far from the origin drives it
+#: up until "just inside this voxel" is no longer a float32 position: the Ling 2022 sand packs are
+#: distributed at the micro-CT stage's absolute coordinates, near ``-717 mm`` at a 3.93 um voxel, where
+#: the ulp is 1/65 of a voxel and the nudge becomes 0.12 of one. MEASURED there: 739 walker-steps of
+#: 8,000 walkers x 500 saves were refused for ending in another pool without a granted crossing, against
+#: 6 for the same volume translated to the origin -- a factor of 123. So a nudge above this fraction is
+#: a substrate that cannot be walked where it sits, and it is refused with the translation that fixes it.
+NUDGE_FRACTION_MAX = 1e-2
+
 
 class LabelVolume(Geometry):
     """Diffusion in one pool of a segmented 3-D image (metres).
@@ -148,6 +159,17 @@ class LabelVolume(Geometry):
         self.box_max = self.origin + self.dims * self.voxel_size
         extent = float(np.max(np.abs(np.concatenate([self.box_min, self.box_max]))) + self.voxel_size.max())
         self._nudge = float(representable_nudge(1e-4 * float(self.voxel_size.min()), extent))
+        frac = self._nudge / float(self.voxel_size.min())
+        if frac > NUDGE_FRACTION_MAX:
+            raise ValueError(
+                f"this volume cannot be walked where it sits: a float32 coordinate at "
+                f"{extent:.4g} m has an ulp of {np.spacing(np.float32(extent)):.3g} m, so the smallest "
+                f"nudge that moves a walker off a voxel face is {self._nudge:.3g} m = {frac:.3g} of the "
+                f"{self.voxel_size.min():.4g} m voxel, above the {NUDGE_FRACTION_MAX:g} this geometry "
+                f"allows (it is designed to be 1e-4). The origin is {list(self.origin)} m -- a scanner's "
+                f"absolute stage coordinates, most likely. Translate the volume: the substrate's position "
+                f"is nothing, and origin=-0.5 * shape * voxel_size centres it."
+            )
 
         self._porosity = float(np.mean(self._pool_grid == self.pool_index))
         if self._porosity <= 0.0:

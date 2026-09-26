@@ -398,6 +398,24 @@ def test_a_label_volume_walks_an_amira_image_as_it_walks_a_nrrd_one(tmp_path):
     assert np.array_equal(np.asarray(ga.classify_position(r)), np.asarray(gn.classify_position(r)))
 
 
+def test_a_volume_at_a_scanners_absolute_coordinates_is_refused_with_the_fix(tmp_path):
+    """The Ling 2022 sand packs are distributed at the micro-CT stage's absolute coordinates, near
+    -717 mm at a 3.93 um voxel. A float32 there has an ulp of 6e-8 m, 1/65 of a voxel, so the nudge that
+    keeps a walker off a face rises to 0.12 of a voxel and "just inside this voxel" stops being a
+    float32 position: MEASURED on 6_Q100, 739 walker-steps of 8,000 walkers x 500 saves were refused for
+    ending in another pool without a granted crossing, against 6 for the same volume translated to the
+    origin. The refusal names the ulp, the fraction and the translation; the translated volume walks."""
+    lab = np.zeros((8, 8, 8), np.uint8)
+    lab[3:5, 3:5, 3:5] = 1
+    h = np.full(3, 3.93e-6)
+    with pytest.raises(ValueError, match="cannot be walked where it sits"):
+        LabelVolume(lab, h, origin=np.full(3, -0.717), pools={0: "free", 1: "grain"})
+    g = LabelVolume(lab, h, origin=-0.5 * np.asarray(lab.shape) * h, pools={0: "free", 1: "grain"})
+    assert g._nudge / h.min() <= 1e-2
+    r = g.init_positions(64, jax.random.PRNGKey(0))
+    assert np.all(np.asarray(g.classify_position(r)) == 0)
+
+
 def test_a_crop_moves_the_origin_and_an_impossible_one_is_refused():
     """The crop IS part of the substrate (a published measurement is made on a stated sub-volume), so
     its lower corner becomes the origin; a crop outside the image is refused."""
