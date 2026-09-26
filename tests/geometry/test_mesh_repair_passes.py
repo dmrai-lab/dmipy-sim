@@ -20,11 +20,131 @@ R = 5.0e-6           #: ring radius, metres
 DZ = 5.0e-6          #: ring spacing, metres -- the median edge, so the ring pitch is the smaller length
 
 
+def split_ring_tube():
+    """A closed tube whose faces above and below one interior ring hold their OWN coincident copies of it.
+
+    Returns ``(V, F)``. Every vertex of that ring appears twice at exactly the same point, so the RAW surface
+    has the whole ring -- ``2 * N_SIDE`` vertices, ``2 * N_SIDE`` boundary edges -- on its boundary. That is the
+    shape of the defect: Disimpy's ``cylinder_mesh_closed.pkl`` writes 352 vertices for 296 distinct ones and
+    carries 112 raw boundary edges for the same reason.
+
+    It is what the earlier version of this fixture failed to be. Duplicating only one vertex per ring left 10
+    vertices on the raw boundary, far fewer than a ring, so the crack pass had nothing to chain and the test
+    passed against the broken function as well as the fixed one -- it asserted the right property about a
+    surface that could not exhibit the failure.
+    """
+    th = np.arange(N_SIDE) * 2 * np.pi / N_SIDE
+    V, rings = [], []
+    for k in range(N_RING):
+        idx = []
+        for j in range(N_SIDE):
+            V.append([R * np.cos(th[j]), R * np.sin(th[j]), k * DZ]); idx.append(len(V) - 1)
+        rings.append(idx)
+    split = N_RING // 2                                   # the ring the two halves each get a copy of
+    upper = []
+    for j in range(N_SIDE):
+        V.append(list(V[rings[split][j]])); upper.append(len(V) - 1)     # exactly coincident
+    F = []
+    for k in range(N_RING - 1):
+        lo = rings[k] if k != split else upper            # faces above the split use the copy
+        hi = rings[k + 1]
+        if k == split - 1:
+            lo, hi = rings[k], rings[k + 1]               # faces below it keep the original
+        for j in range(N_SIDE):
+            jn = (j + 1) % N_SIDE
+            # Wound so that each triangle's FIRST edge is axial. `merge_duplicate_vertices` takes its length
+            # scale from the median of edge (0, 1) alone, so the scale -- and therefore whether a ring's
+            # neighbours fall within half of it -- depends on the winding. Disimpy's pickle is wound this way;
+            # a fixture wound the other way makes the median equal the ring gap and cannot exhibit the failure.
+            F += [[lo[j], hi[j], hi[jn]], [lo[j], hi[jn], lo[jn]]]
+    for cap, z, flip in ((rings[0], -DZ, False), (rings[-1], N_RING * DZ, True)):
+        V.append([0.0, 0.0, z]); c = len(V) - 1
+        for j in range(N_SIDE):
+            jn = (j + 1) % N_SIDE
+            F.append([c, cap[jn], cap[j]] if flip else [c, cap[j], cap[jn]])
+    return np.asarray(V, float), np.asarray(F, np.int64)
+
+
+def mains_merge(V, F, rel_tol=1e-3, crack_rel_tol=0.5):
+    """``merge_duplicate_vertices`` as it stood before the passes were ordered: the crack pass is given the RAW
+    boundary. Kept here, not imported, so the test states the thing it is guarding against instead of depending
+    on a revision that will move.
+    """
+    from scipy.spatial import cKDTree
+    from dmipy_sim.geometry.mesh import _boundary_vertices
+    V = np.asarray(V, np.float64); F = np.asarray(F, np.int64)
+    edge = float(np.median(np.linalg.norm(V[F[:, 0]] - V[F[:, 1]], axis=1)))
+    pairs = cKDTree(V).query_pairs(rel_tol * edge, output_type="ndarray")
+    bnd = _boundary_vertices(V, F)
+    if len(bnd) > 1:
+        near = cKDTree(V[bnd]).query_pairs(crack_rel_tol * edge, output_type="ndarray")
+        if len(near):
+            pairs = np.concatenate([pairs.reshape(-1, 2), bnd[near]], axis=0)
+    parent = np.arange(len(V))
+
+    def root(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]; i = parent[i]
+        return i
+
+    for x, y in pairs:
+        rx, ry = root(x), root(y)
+        if rx != ry:
+            parent[max(rx, ry)] = min(rx, ry)
+    rep = np.array([root(i) for i in range(len(V))])
+    keep = np.flatnonzero(rep == np.arange(len(V)))
+    rank = np.full(len(V), -1, np.int64); rank[keep] = np.arange(len(keep))
+    Fm = rank[rep[F]]
+    ok = (Fm[:, 0] != Fm[:, 1]) & (Fm[:, 1] != Fm[:, 2]) & (Fm[:, 0] != Fm[:, 2])
+    return V[keep], Fm[ok], int(len(V) - len(keep))
+
+
+def test_the_fixture_puts_a_whole_ring_on_the_raw_boundary():
+    """Without this the rest proves nothing: the crack pass can only chain what is on the boundary it sees."""
+    V, F = split_ring_tube()
+    from dmipy_sim.geometry.mesh import _boundary_vertices
+    assert len(_boundary_vertices(V, F)) == 2 * N_SIDE
+    assert surface_topology(V, F)["boundary_edges"] == 2 * N_SIDE
+    ring_gap = 2 * np.pi * R / N_SIDE
+    # the length scale the function itself uses: the median of edge (0, 1), not of all three
+    edge = float(np.median(np.linalg.norm(V[F[:, 0]] - V[F[:, 1]], axis=1)))
+    assert ring_gap < 0.5 * edge, (
+        f"neighbouring ring vertices are {ring_gap:.3g} m apart and half a median edge is {0.5 * edge:.3g} m; "
+        f"unless the first is smaller the crack pass would not chain them and the fixture is inert")
+
+
+def test_the_unordered_crack_pass_collapses_the_ring_and_the_ordered_one_does_not():
+    """The whole point, both ways round on the same surface.
+
+    Given the raw boundary, the crack pass reads a ring of coincident copies as a rank of crack lips: every
+    neighbour is within half a median edge of the next, so union-find chains the ring into ONE vertex. Given the
+    boundary the duplicate pass leaves, there is no boundary at all and nothing to chain.
+    """
+    V, F = split_ring_tube()
+    n_distinct = len(V) - N_SIDE
+    Vb, Fb, nb = mains_merge(V, F)
+    Vg, Fg, merged = merge_duplicate_vertices(V, F)
+    # Measured against `origin/main`'s own function, extracted from git rather than transcribed: 147 vertices
+    # of 194 and 95 merged where 48 are duplicates, with the rings destroyed. The transcription above agrees
+    # with it exactly, which is what licenses keeping a copy here instead of a git dependency.
+    assert (len(Vb), nb) == (147, 95), f"the unordered pass gave {(len(Vb), nb)}, not the measured (147, 95)"
+    assert len(Vb) < n_distinct - N_SIDE // 2, (
+        f"the unordered pass left {len(Vb)} vertices; it is supposed to collapse the ring, so this fixture no "
+        f"longer exhibits the failure it guards")
+    assert len(Vg) == n_distinct and merged == N_SIDE
+    assert surface_topology(Vg, Fg)["boundary_edges"] == 0
+    for k in range(N_RING):
+        ring = Vg[np.isclose(Vg[:, 2], k * DZ)]
+        assert len(ring) == N_SIDE
+        np.testing.assert_allclose(np.linalg.norm(ring[:, :2], axis=1), R, rtol=1e-12)
+
+
 def duplicated_seam_tube():
     """A closed tube with caps, whose seam column of vertices is written TWICE (once per adjoining quad).
 
-    Returns ``(V, F)`` with 2 coincident copies of every seam vertex, so the surface reads as open until they
-    are welded -- which is what the duplicate pass is for.
+    Returns ``(V, F)``. This one duplicates a single vertex per ring, which is a real writer defect and is what
+    the duplicate pass is for, but it leaves only 10 vertices on the raw boundary and so cannot exhibit the
+    ordering failure -- see :func:`split_ring_tube`.
     """
     th = np.arange(N_SIDE) * 2 * np.pi / N_SIDE
     rings, V = [], []
@@ -32,9 +152,8 @@ def duplicated_seam_tube():
         idx = []
         for j in range(N_SIDE):
             V.append([R * np.cos(th[j]), R * np.sin(th[j]), k * DZ]); idx.append(len(V) - 1)
-        # the seam: one extra, coincident copy of vertex 0 of this ring
         V.append([R * np.cos(th[0]), R * np.sin(th[0]), k * DZ])
-        idx.append(len(V) - 1)                       # used as the "wrap" vertex by the last quad
+        idx.append(len(V) - 1)
         rings.append(idx)
     F = []
     for k in range(N_RING - 1):
