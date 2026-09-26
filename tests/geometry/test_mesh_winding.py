@@ -164,3 +164,33 @@ def test_one_inward_cell_of_a_bundle_is_turned_though_the_bundle_looks_consisten
     with pytest.warns(UserWarning, match="mesh winding"):
         mesh = _mesh(V, F, pad=8 * UM)
     assert mesh.n_faces_reoriented == len(F2)
+
+
+def _open_tube(F):
+    """The prism's wall alone: the cap fans dropped, so the surface has two rims and encloses nothing."""
+    return F[:2 * SIDES * (len(Z_RINGS) - 1)]
+
+
+def test_an_open_surface_cannot_be_oriented_and_is_not_announced_as_if_it_were():
+    """A component holding a boundary edge has no volume to take a sign from, so the pass can make the winding
+    consistent and leave the surface inside-out -- which the warning must say rather than report a repair.
+
+    Measured on the RAW (unwelded) ``cylinder_mesh_closed.pkl`` a user passes straight to ``Mesh``: 112
+    boundary edges, 730 -> 0 inconsistent edges, 245 faces reoriented, and still -3.92e-16 m^3 with 40.3 % of
+    the lumen classified exterior and 1.65 % of 775 nm steps refused.
+    """
+    V, F = _prism()
+    tube = _open_tube(F)
+    for faces in (tube, tube[:, [0, 2, 1]]):                      # outward, then every normal inward
+        kept, report = orient_faces(V, faces)
+        assert (report["open_components"], report["components"], report["reoriented"]) == (1, 1, 0)
+        assert np.array_equal(kept, faces)                        # left exactly as written: nothing decides it
+        assert np.sign(enclosed_volume(V, kept)) == np.sign(enclosed_volume(V, faces))
+
+    written, _ = _as_written(F)
+    _, report = orient_faces(V, _open_tube(written))
+    assert report["inconsistent_edges"] > 0 and report["inconsistent_edges_after"] == 0
+    assert report["open_components"] == 1
+    with pytest.warns(UserWarning, match="NOT decided for them") as rec:
+        _mesh(V, _open_tube(written), pad=UM)
+    assert "weld it first" in str(rec[0].message)

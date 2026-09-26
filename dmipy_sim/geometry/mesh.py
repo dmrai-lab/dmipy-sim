@@ -582,12 +582,29 @@ class Mesh(Geometry):
         self.winding_inconsistent_edges = self.winding["inconsistent_edges"]
         self.n_faces_reoriented = self.winding["reoriented"]
         if self.n_faces_reoriented:
+            w = self.winding
+            why = (f"{self.winding_inconsistent_edges} manifold edge(s) were traversed the same way by both "
+                   f"their faces" if self.winding_inconsistent_edges else
+                   "every edge agreed, so a whole component was written inside-out")
+            if w["open_components"]:
+                # An open component has no volume to take a sign from, so the repair can make the winding
+                # consistent and still leave the surface inside-out. Measured on the RAW (unwelded)
+                # cylinder_mesh_closed.pkl: 112 boundary edges, 730 -> 0 inconsistent edges, 245 faces
+                # reoriented, and still -3.92e-16 m^3 with 40.3% of the lumen classified exterior and 1.65% of
+                # 775 nm steps refused. Welding it (load_ply merges duplicate vertices and cracks) closes the
+                # surface and the same pass then turns it outward.
+                what = (f"{w['open_components']} of {w['components']} component(s) hold a boundary or pinched "
+                        f"edge and enclose no volume, so which side is inside is NOT decided for them: the "
+                        f"surface still encloses {w['volume_after']:.4g} m^3. A cracked surface cannot be "
+                        f"oriented -- weld it first (geometry.mesh.load_ply merges duplicate vertices and "
+                        f"cracks)")
+            else:
+                what = (f"every one of {w['components']} component(s) encloses a volume and now faces outward "
+                        f"({w['volume']:.4g} -> {w['volume_after']:.4g} m^3)")
             warnings.warn(
-                f"mesh winding: {self.n_faces_reoriented} face(s) of {len(F)} were reoriented "
-                f"({self.winding_inconsistent_edges} manifold edge(s) were traversed the same way by both "
-                f"their faces). A surface whose normals disagree, or point inward, cannot say which side is "
-                f"inside: unrepaired, its classifier, its escape net and its interpolated normals read the "
-                f"wrong sign.", stacklevel=2)
+                f"mesh winding: {self.n_faces_reoriented} face(s) of {len(F)} were reoriented ({why}); {what}. "
+                f"A surface whose normals disagree, or point inward, cannot say which side is inside: its "
+                f"classifier, its escape net and its interpolated normals all read that sign.", stacklevel=2)
         self.vertices = V
         self.pool = POOL_NAMES[_seed_pool(pool)]           # the pool init_positions seeds
         self.faces = F
