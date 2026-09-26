@@ -262,7 +262,12 @@ meshes:
   construction warning flag a too-coarse mesh.
 - **Collision-response flags** are constructor kwargs with the validated defaults (`reject_escape=True`,
   `box_reflect=True`, `adaptive_nudge=False`), documented in `Mesh.__init__`; nothing is set on the instance after
-  construction. They are measurement switches for the engine's tests, not physics.
+  construction. They are measurement switches for the engine's tests, not physics. MC/DC's edge rule is ON
+  (`edge_backscatter`, `edge_margin` 1e-4 barycentric, #430): a hit within the margin of a facet seam is sent back
+  along its own direction, since a specular bounce off one facet at a rim keeps the outward component, lands the
+  walker on the neighbouring facet's plane, and that wall then reads as a non-hit; the impact table leaked 96 of
+  55,848 rows that way and 0 with it, and `reject_escape` cannot catch those (its classifier signs by the nearest
+  centroid, which at a seam is the facet whose plane still says inside).
 - **No mesh files in the repo** — tests generate meshes on the fly (icosphere / open
   tube); large research PLYs are a manual stress test only.
 

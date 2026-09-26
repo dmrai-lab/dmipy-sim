@@ -481,7 +481,10 @@ class Mesh(Geometry):
         # reflection rather than specular, but at a seam any choice is arbitrary and this one cannot send the
         # walker through the wall. On 0.25 um CACTUS facets, margin 1e-4 in barycentric units is ~2.5e-11 m,
         # comparable to _NUDGE, so it fires on a narrow band of hits and costs little in physics.
-        self.edge_backscatter = False
+        # DEFAULT ON (#430): a specular bounce at the rim of a closed cylinder mesh keeps the walker's outward
+        # component, puts it on the neighbouring facet's plane, and that wall then reads as a non-hit
+        # (t <= 0); the impact table leaked 96 of 55,848 rows that way, and 0 with the back-scatter.
+        self.edge_backscatter = True
         self.edge_margin = 1e-4
         # How to bounce when the hit is within `edge_margin` of a facet seam.
         #   'backscatter' -- MC/DC's choice, d_ref = -dh. Cannot escape, but retro-reflection is unphysical
