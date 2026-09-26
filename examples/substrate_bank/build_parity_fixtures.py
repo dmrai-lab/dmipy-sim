@@ -330,16 +330,26 @@ def render_card(a, X, rows, sources):
 def _held_section():
     """What the family deliberately does NOT publish, and why -- so a reader does not look for it in the table.
 
-    The card used to advertise the Disimpy pack twice in text while publishing three MC/DC axons, which is the
-    one thing a card must not do: name a file that is not there.
+    Two kinds of hold, and the card must show both: a fixture whose pack was BUILT and whose gate HELD it
+    (read from the gate's per-fixture verdict, with the reference record's reason), and a reference this family
+    reproduces but has built no pack for at all. Reading only the second is how a card comes to promise three
+    packs and describe four -- the one thing a card must not do.
     """
-    held = (_read_record("build").get("held") or {})
-    if not held:
+    per = (_read_record("gate").get("per_fixture") or {})
+    built = set((_read_record("build").get("fixtures") or {}))
+    out = []
+    for name in sorted(n for n in built if not per.get(n, {}).get("passed")):
+        key = "disimpy" if name.startswith("disimpy") else "mcdc"
+        ref = REFERENCES.get(key, {}).get("held") or {}
+        fails = ", ".join(f"`{f}`" for f in per.get(name, {}).get("failures", []))
+        out.append(f"* **{name}** -- its pack is built, recorded and gated, and the gate HELD it on {fails}. "
+                   + (f"{ref.get('issue')}: {ref.get('why')}" if ref else ""))
+    for key, v in sorted(REFERENCES.items()):
+        if v.get("held") and not any(n.startswith(key) for n in built):
+            out.append(f"* **{key}** -- no pack built. {v['held'].get('issue')}: {v['held'].get('why')}")
+    if not out:
         return ""
-    out = ["\n## Not published\n"]
-    for k, v in sorted(held.items()):
-        out.append(f"* **{k}** -- {v.get('issue')}: {v.get('why')}")
-    return "\n".join(out) + "\n"
+    return "\n## Not published\n\n" + "\n".join(out) + "\n"
 
 
 def publish_only(a):
