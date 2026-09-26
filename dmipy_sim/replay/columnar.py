@@ -325,11 +325,14 @@ class ColumnarPack:
         ROWS, SEGS = 1 << 16, 256
 
         @functools.partial(jax.jit, static_argnums=(9,))
-        def pair_sums(phi, fi, fa, et2, et1, ct, w, seg2, params, n_seg2):
-            a_i, a_a, rho_D, invT2, invT1 = params
+        def pair_sums(phi, fi, fa, et2, et1, ct, w, seg2, terms, n_seg2):
+            """``Primitives.signals`` on the device: `(ew[:, None] * E)` summed over each voxel's rows, with every
+            term taken from :meth:`~dmipy_sim.replay.study.Primitives.reduction_terms` and none re-derived here."""
+            a_i, a_a, rho_D, invT2, invT1, amp, vox = terms
             logw = -(et2 @ invT2) - (et1 @ invT1) + rho_D * ct
             ph = phi + (a_i * fi + a_a * fa)[:, None]
-            return jax.ops.segment_sum(jnp.exp(1j * ph) * (w * jnp.exp(logw))[:, None], seg2, num_segments=n_seg2)
+            E = jnp.exp(1j * ph) * vox[None, :]                       # replay._signal_factor
+            return jax.ops.segment_sum(E * (amp * w * jnp.exp(logw))[:, None], seg2, num_segments=n_seg2)
         for pk in self.iter_views(chunk_rows=chunk_rows, K=plan["K"], modes=plan["modes"], contact=plan["contact"]):
             n = pk.n_walkers
             ijk, _ = self.grid.bin(pk.r0); v = np.ravel_multi_index(ijk.T, self.grid.shape)
@@ -346,9 +349,11 @@ class ColumnarPack:
                 et2 = pad(prim.exposure_t2, (n_pools,)); et1 = pad(prim.exposure_t1, (n_pools,)); ct = pad(prim.contact, ()); w = pad(prim.w, ())
                 dev = [jnp.asarray(x) for x in (phi, fi, fa, et2, et1, ct, w)] + [jnp.asarray(seg2)]
                 for k, (t_, s_) in enumerate(pairs):
-                    invT2, invT1, rho_D = prim.rates(t_); a_i, a_a = prim.field_scalars(t_, s_)
-                    params = (jnp.float64(a_i), jnp.float64(a_a), jnp.float64(rho_D), jnp.asarray(invT2), jnp.asarray(invT1))
-                    sums = np.asarray(pair_sums(*dev, params, 2 * s_pad))[:2 * n_seg].reshape(n_seg, 2, -1)
+                    rt = prim.reduction_terms(t_, s_)                        # every per-pair term, resolved once
+                    terms = (jnp.float64(rt["a_iso"]), jnp.float64(rt["a_aniso"]), jnp.float64(rt["rho_over_D"]),
+                             jnp.asarray(rt["invT2"]), jnp.asarray(rt["invT1"]), jnp.float64(rt["amplitude"]),
+                             jnp.asarray(rt["voxel"], jnp.float64))
+                    sums = np.asarray(pair_sums(*dev, terms, 2 * s_pad))[:2 * n_seg].reshape(n_seg, 2, -1)
                     np.add.at(num[k, 0, :, sl], v[starts], sums[:, 0]); np.add.at(num[k, 1, :, sl], v[starts], sums[:, 1])
             wh = np.zeros((2, n)); wh[half, np.arange(n)] = w_all
             np.add.at(den[0], v[starts], np.add.reduceat(wh[0], starts)); np.add.at(den[1], v[starts], np.add.reduceat(wh[1], starts))

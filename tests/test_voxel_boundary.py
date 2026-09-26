@@ -117,9 +117,13 @@ def test_the_voxel_signal_is_the_substrate_signal_times_the_factor(pack):
     S_enc = np.abs(pack.replay(_pgse()))                          # the encoding alone: exp(-bD) and its noise
     assert np.abs(S_sub).min() > 0.8 * S_enc.min(), "the substrate alone barely dephases under this spoiler"
     assert np.abs(S_vox).max() < 0.2 * S_enc.max(), "the voxel is crushed"
-    # walker_signals carries the factor in E, so its ensemble sum is the voxel's signal
-    w, ew, E = pack.walker_signals(mm)
-    np.testing.assert_allclose((ew[:, None] * E).sum(0) / w.sum(), S_vox, rtol=1e-12)
+    # every per-walker depth carries the factor in E, so each one's ensemble sum is the voxel's signal. The
+    # primitives did not, and served the un-crushed substrate signal -- 15.4x the voxel's here (dmipy-sim#484).
+    prim = pack.walker_primitives(mm)
+    np.testing.assert_allclose(prim.voxel, mm.voxel_factor(), rtol=0, atol=0)
+    for w, ew, E in (pack.walker_signals(mm), prim.signals(None, None)):
+        np.testing.assert_allclose((ew[:, None] * E).sum(0) / w.sum(), S_vox, rtol=1e-12)
+    np.testing.assert_allclose(prim.signal(), np.abs(S_vox), rtol=1e-12)
 
 
 def test_the_pose_expansion_carries_the_factor_and_the_cache_knows_the_voxel(pack, tmp_path):

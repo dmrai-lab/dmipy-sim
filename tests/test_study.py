@@ -17,6 +17,61 @@ T2A, T1A = {"extra": 0.08, "intra": 0.03}, {"extra": 1.0, "intra": 1.2}
 T2B = {"extra": 0.05, "intra": 0.02}
 
 
+@pytest.fixture(scope="module")
+def high_b_pack():
+    """A 2000-walker cylinder walk packed at K = 64, whose band carries the ActiveAx scheme's b = 13,190 s/mm^2:
+    there the phases are 5.9 rad mean and 26 rad at most, the scale at which #484 found the replay's depths
+    compared apart."""
+    walk = d.simulate_trajectories(2000, D0, d.Cylinder(2e-6, (0, 0, 1)), 0.01, 1e-4, seed=0, require_gpu=False)
+    return build_replay_pack(walk, id="test/high-b", K=64, license="x", citation="x")
+
+
+@pytest.mark.parametrize("b", [0.0, 1.0e9, 3.094e9, 1.319e10])
+def test_every_depth_of_a_replay_is_the_same_number_at_every_b(high_b_pack, b):
+    """``replay``, ``walker_signals`` and ``walker_primitives(...).signals`` are ONE computation at three depths --
+    one band contraction (:func:`~dmipy_sim.replay.replay._band_phase`), one complex factor
+    (:func:`~dmipy_sim.replay.replay._signal_factor`) -- so the weighted ensemble mean of either per-walker route IS
+    ``replay``, to double-precision rounding and not to a tolerance, at b = 13,190 s/mm^2 as at b = 0.
+
+    dmipy-sim#484 compared them per measurement at these b on a published pack and read a growing gap; the gap was
+    the reduction, not the routes (see the test below), but nothing made the depths' equality structural."""
+    pk = high_b_pack
+    seq = _seqmod.pgse([[0.0, 0.0, 1.0]], 1e-3, 3e-3, bvalues=[b], TE=6e-3, n_t=4 * pk.n_t + 1, slew_rate=np.inf)
+    S = np.asarray(pk.replay(seq)).ravel()
+    w, ew, E = pk.walker_signals(seq)
+    prim = pk.walker_primitives(seq)
+    w2, ew2, E2 = prim.signals(None, None)
+    for depth in (np.abs((ew[:, None] * E).sum(0) / w.sum()), np.abs((ew2[:, None] * E2).sum(0) / w2.sum()), prim.signal()):
+        np.testing.assert_allclose(depth, S, rtol=0, atol=1e-14)
+    np.testing.assert_array_equal(np.asarray(prim.phi), np.asarray(pk.walker_phases(seq)[2]))
+    np.testing.assert_allclose(E, E2, rtol=0, atol=1e-15)
+
+
+def test_the_real_part_of_the_per_walker_phases_is_not_the_signal(high_b_pack):
+    """The reduction #484 measured, named: ``cos(phi).mean(0)`` is the real part of the ensemble, and the signal is
+    its MODULUS. The difference is the quadrature the ensemble carries, ``sqrt(c^2 + s^2) - c``, which is exactly 0
+    at b = 0 (every phase is 0) and signed one way everywhere.
+
+    It scales with the phase spread and not with the codec, which is what the ordering below asserts. To second
+    order the gap is ``s^2 / 2c``: ``c`` falls with b (0.118, 0.0068, 0.0041 here) while ``|s|`` does not, so the
+    gap climbs even where ``|s|`` is flat, and it crosses the pack's certified error between the first shell and
+    the second. Measured on this fixture as multiples of ``err_max`` = 5.84e-4: 0, **0.31**, **17.5**, **9.5** --
+    so the bound is the crossing itself and carries an order of magnitude of headroom either side, rather than a
+    multiple chosen to pass. ``s`` is one draw of a zero-mean quantity of scale ``sd(sin phi)/sqrt(N)``, so its
+    square is a one-degree-of-freedom draw and a fixed multiple would be fragile between fixtures; the seed is
+    fixed, so these three numbers are not."""
+    pk = high_b_pack
+    bvals = [0.0, 1.0e9, 3.094e9, 1.319e10]
+    seq = _seqmod.pgse([[0.0, 0.0, 1.0]] * 4, 1e-3, 3e-3, bvalues=bvals, TE=6e-3, n_t=4 * pk.n_t + 1, slew_rate=np.inf)
+    phi = np.asarray(pk.walker_primitives(seq).phi, np.float64)
+    S = np.asarray(pk.replay(seq)).ravel()
+    c, s = np.cos(phi).mean(0), np.sin(phi).mean(0)
+    np.testing.assert_allclose(S, np.sqrt(c ** 2 + s ** 2), rtol=0, atol=1e-14)      # the modulus, exactly
+    gap, err = S - c, float(pk.meta["fidelity"]["err_max"])
+    assert gap[0] == 0.0 and (gap[1:] > 0).all()                                     # signed one way, 0 at b = 0
+    assert gap[1] < err < min(gap[2], gap[3]), f"gap {gap} does not cross the codec error {err:.3g} between shells"
+
+
 def test_the_primitives_give_every_pairs_signals_as_the_replay_does(pack):
     """Relaxation, contact, both, none: the primitives formed once reproduce ``walker_signals`` for each tissue to
     rounding, the bands never contracted again."""
@@ -91,17 +146,23 @@ def test_the_columnar_image_of_a_study_is_one_pass_with_a_floor_per_volume(tmp_p
     merged = merge_packs(packs, id="t/merged"); col = ReplayPack.open(str(tmp_path / "layout"))
     seq1 = d.set_b(d.pgse([[1, 0, 0], [0, 0, 1]], 0.2e-3, 0.5e-3, gradient_strengths=0.1, n_t=merged.n_t, slew_rate=np.inf), [1e9, 1e9])
     seq2 = d.set_b(d.pgse([[0, 1, 0]], 0.2e-3, 0.4e-3, gradient_strengths=0.1, n_t=merged.n_t, slew_rate=np.inf), [5e8])
+    # a stimulated echo among the acquisitions: its readout's pathway amplitude is 0.5, which the device
+    # reduction must apply exactly as walker_signals does (#484 review item 1: it did not, and every voxel of a
+    # PGSTE volume came out 1/eta = 2.000x too high)
+    seq3 = d.pgste([[1, 0, 0]], 0.2e-3, 0.4e-3, bvalues=[5e8], n_t=merged.n_t, slew_rate=np.inf, ste_flip_angles=(90.0, 90.0, 90.0))
+    from dmipy_sim.acquisition.epg import pathway_weight
+    assert pathway_weight(seq3) == pytest.approx(0.5, abs=1e-12) and pathway_weight(seq1) == 1.0
     t = Tissue(T2={"intra": 0.03, "extra": 0.08, "myelin": 0.01}, rho=1e-5)
-    study = Study(Protocol([seq1, seq2]), tissues=[None, t], scanners=[None])
+    study = Study(Protocol([seq1, seq2, seq3]), tissues=[None, t], scanners=[None])
     S, floor, plan = col.image(study, tol=1e-9, chunk_rows=5)
-    assert S.shape == (2,) + tuple(grid.shape) + (3,) and floor.shape == (2,) + tuple(grid.shape) and plan["settings"] == 2
+    assert S.shape == (2,) + tuple(grid.shape) + (4,) and floor.shape == (2,) + tuple(grid.shape) and plan["settings"] == 2
     ijk, _ = grid.bin(merged.r0); v = np.ravel_multi_index(ijk.T, grid.shape)
     for k in range(2):
         tk, sk = study.resolved(k)
-        for s, sl in zip((seq1, seq2), study.protocol.slices):
+        for s, sl in zip((seq1, seq2, seq3), study.protocol.slices):
             w, ew, E = merged.walker_signals(s, tissue=tk, scanner=sk)
             keys, inv = np.unique(v, return_inverse=True); num = np.zeros((len(keys), E.shape[1]), complex); den = np.zeros(len(keys))
             np.add.at(num, inv, ew[:, None] * E); np.add.at(den, inv, w)
-            np.testing.assert_allclose(S[k].reshape(-1, 3)[keys][:, sl], np.abs(num / den[:, None]), rtol=1e-9, atol=1e-12)
+            np.testing.assert_allclose(S[k].reshape(-1, 4)[keys][:, sl], np.abs(num / den[:, None]), rtol=1e-9, atol=1e-12)
         f = floor[k].reshape(-1)[np.unique(v)]
         assert np.isfinite(f).all() and (f >= 0).all() and (f < 1).all()

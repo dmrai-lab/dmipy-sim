@@ -42,6 +42,23 @@ Any other grouping of the walkers, by the voxel they started in for a partitione
 its members with its own normaliser. `walker_phases` is the same without the exponential, for a consumer that
 forms it where it accumulates (a GPU).
 
+The sum above is the reduction, and both halves of it matter. `np.cos(phi).mean(0)` is **not** the signal, for
+two separate reasons: it drops the `ew` weights (the relaxation and contact terms, 0.876-0.885 of `w` for the
+tissue on this page), and it takes the real part where the signal is the modulus. Weight the walkers first and
+what is left is the quadrature the ensemble carries, `sqrt(c^2 + s^2) - c`: zero at b = 0 and growing with the
+phase spread -- 6.8e-4 and 1.1e-4 on this page's two measurements, and 3.1e-3 at b = 13,190 s/mm^2 on
+`parity-fixtures/mcdc-0.2-32.0` against that pack's codec error of 4.8e-5 (dmipy-sim#484).
+
+```python
+_, ew2, phi = pack.walker_phases(seq, tissue=wm)
+u = ew2 / w.sum()                                                   # the replay's own weights, not a plain mean
+c = (u[:, None] * np.cos(phi)).sum(0); si = (u[:, None] * np.sin(phi)).sum(0)
+print(np.allclose(np.sqrt(c ** 2 + si ** 2), S))                     # the modulus of the weighted sum IS replay
+print(np.abs(c - S).round(6), np.abs(np.cos(phi).mean(0) - S).round(4))   # the quadrature, then unweighted too
+```
+
+The second number is 137 times the first: drop the weights and you are no longer measuring the reduction at all.
+
 ## `walker_primitives`: before the tissue and the scanner
 
 The tissue and the scanner never touch the bands. What an acquisition leaves of every walker before any of them
@@ -54,6 +71,7 @@ print(prim.phi.shape, prim.exposure_t2.shape, prim.contact.shape, prim.field_iso
 w2, ew2, E2 = prim.signals(wm, None)
 print(np.allclose(ew2, ew) and np.allclose(E2, E))                  # the same as walker_signals, the bands untouched
 w3, ew3, E3 = prim.signals(wm.replace(T2={"intra": 0.08}, rho=2e-6), None)   # another tissue: no contraction repeated
+print(np.allclose(prim.signal(wm, None), S))                        # the ensemble mean of them: replay
 ```
 
 ## `study`: a protocol on tissues on scanners
