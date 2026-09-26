@@ -662,10 +662,22 @@ def _gate_checks(rec):
               f"the signal the pack serves differs from its decoded channel by {sub['served_vs_channel']:.3g}, "
               f"against the codec's own error {bound:.3g} on that channel")
 
+        predicted = set(des["derived"]["tiers_that_hold"])
         for tier, t in sorted(sub["tiers"].items()):
-            check(t["meets_target"] or bool(des.get("trade")), f"{name}/tier-{tier}-target-or-trade",
-                  f"floor {t['floor']:.3g} and codec error {t['err']:.3g} against the target {t['target_floor']:.3g}"
-                  + ("" if t["meets_target"] else f"; the design record states the trade: {str(des.get('trade'))[:160]}"))
+            # a tier the design PREDICTED would hold must hold: `trade` excuses the tiers the design already
+            # said would not, and it excused every tier, so a falsified prediction passed unseen (F42A's
+            # contact floor came out 0.00589 where the pilot's 1/sqrt(N) scaling said 0.00488, under a trade
+            # note naming contact as the tier that holds)
+            says = tier in predicted
+            ok = t["meets_target"] or (not says and bool(des.get("trade")))
+            check(ok, f"{name}/tier-{tier}-{'holds-as-designed' if says else 'target-or-trade'}",
+                  f"floor {t['floor']:.3g} and codec error {t['err']:.3g} against the target "
+                  f"{t['target_floor']:.3g}; the design record "
+                  + (f"predicted this tier would hold at {des['derived']['n_walkers']:,} walkers"
+                     if says else "did not predict this tier would hold")
+                  + (" and it does" if t["meets_target"] else
+                     (" and it does NOT: the pilot's scaling was falsified by the pack's own certificate"
+                      if says else f", and states the trade: {str(des.get('trade'))[:160]}")))
 
         declared = {w["label"] for w in des["waveforms"]}
         served = {w["label"] for w in sub["waveforms"]}

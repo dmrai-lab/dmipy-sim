@@ -589,11 +589,31 @@ def test_the_gate_fails_served_beyond_the_codec(ran):
     assert not [c for c in checks if c["check"].endswith("served-equals-decoded")][0]["passed"]
 
 
+def test_a_tier_the_design_promised_must_hold(ran):
+    """`trade` excused EVERY tier, so the design's own prediction could be falsified unseen: F42A's contact
+    floor came out 0.00589 where the pilot's 1/sqrt(N) scaling predicted 0.00488, under a trade note naming
+    contact as the tier that holds."""
+    fam, rec = ran
+    pk = json.loads(json.dumps(rec["pack"]))
+    des = json.loads(json.dumps(rec["design"]))
+    des["derived"]["tiers_that_hold"] = ["positions"]
+    des["trade"] = "the budget allows fewer walkers than the floor asks"
+    pk["substrates"]["sphere"]["tiers"]["positions"]["meets_target"] = False
+    c = [c for c in R._gate_checks(dict(rec, pack=pk, design=des))
+         if c["check"] == "sphere/tier-positions-holds-as-designed"]
+    assert c and not c[0]["passed"] and "falsified" in c[0]["detail"]
+    des["derived"]["tiers_that_hold"] = []               # the design never promised it: the trade excuses it
+    c = [c for c in R._gate_checks(dict(rec, pack=pk, design=des))
+         if c["check"] == "sphere/tier-positions-target-or-trade"]
+    assert c and c[0]["passed"]
+
+
 def test_a_tier_below_target_needs_the_design_records_trade(ran):
     fam, rec = ran
     pk = json.loads(json.dumps(rec["pack"]))
     pk["substrates"]["sphere"]["tiers"]["positions"]["meets_target"] = False
     des = json.loads(json.dumps(rec["design"]))
+    des["derived"]["tiers_that_hold"] = []
     des["trade"] = None
     assert not [c for c in R._gate_checks(dict(rec, pack=pk, design=des))
                 if c["check"].endswith("tier-positions-target-or-trade")][0]["passed"]
