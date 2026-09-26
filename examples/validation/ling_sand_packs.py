@@ -23,8 +23,10 @@ Three rungs, each printed with their number beside it:
    released data by :func:`measured_log_mean` and not transcribed from the paper.
 
 Their surface relaxivities are **theirs**: 12.5 um/s (quartz) and 98.5 um/s (garnet), fitted by them to
-their own te = 100 us T2 distributions (SS3.2), with an independent maximal-ball estimate of 22 and
-80 um/s in the same section. The bulk T2 of the brine is **ours**: the paper states none.
+their own te = 100 us T2 distributions (SS3.2) by overlaying whole distributions, not by matching any
+number -- the paper prints no T2 value anywhere -- with an independent maximal-ball estimate of 22 and
+80 um/s in the same section. The bulk T2 of the brine is **ours**: the paper states none. The
+diffusivity is theirs only in the sense that 2.3e-9 is the "e.g." beside their step equation; see D0.
 
 A pack of two minerals has two of their relaxivities on two walls, and this geometry accumulates one
 boundary local time over both, so ``--rho`` is one number and a mixture is walked at a stated single
@@ -52,9 +54,13 @@ from dmipy_sim.spec import geometry_from_spec, label_volume_spec
 # that module states what its penalty family and grid are worth. It is imported, never copied.
 from examples.validation.talabi_micro_ct_rocks import log_mean_T2, t2_distribution
 
-D0 = 2.3e-9       # m^2/s, water at 25 C -- the value beside their step-length equation (SS2.4, Eq. 6)
-D0_ALT = 2.2e-9   # m^2/s, the brine value they use for a diffusion-length check (SS2.5); which one the
-                  # random walk takes is not stated, so the difference is a recorded uncertainty
+# The paper states NO diffusivity for its walk. SS2.4 introduces D0 in the step-length equation with an
+# example -- "e.g. for water at 25 C, D0 = 2.3e-9 m^2/s" -- and SS2.5 uses 2.2e-9 for "the self-diffusion
+# coefficient of the brine solutions" in a diffusion-length check. Neither sentence says which the
+# simulations took. 2.3e-9 is the value used here because it is the one attached to the walk's own
+# equation; the 4.5 % to 2.2e-9 is an uncertainty this family carries, not one it resolves.
+D0 = 2.3e-9       # m^2/s, the "e.g." beside their step-length equation (SS2.4, Eq. 6)
+D0_ALT = 2.2e-9   # m^2/s, the brine value in their diffusion-length check (SS2.5)
 T2B = 3.0         # s, the brine's bulk T2 -- OURS: the paper states none
 
 #: Their fitted surface relaxivity per mineral (SS3.2), and the independent maximal-ball estimate.
