@@ -302,6 +302,10 @@ def _spec_of_mesh(g, sid, prov, surface_dir):
             write_ply(path, V, F)
         src = {"file": path, "scale": 1.0}
         g.source = dict(src, recenter=False)          # from now on the mesh knows its file
+    if getattr(g, "n_faces_reoriented", 0):
+        prov.setdefault("transformations", []).append(
+            f"{g.n_faces_reoriented} face(s) reoriented so the surface's normals agree and face outward "
+            f"(enclosed volume {g.winding['volume']:.4g} -> {g.winding['volume_after']:.4g} m^3)")
     surf = Surface("mesh", file=src["file"], format=str(src["file"]).rsplit(".", 1)[-1].lower(), scale=float(src.get("scale", 1.0)),
                    sha256=_sha256(src["file"]))
     comps = g.compartments

@@ -262,6 +262,18 @@ meshes:
 - **Resolution:** diffusion & surface relaxivity hit the noise floor at coarse
   resolution; permeability needs `edge/feature ≲ 0.04`. `Mesh.quality_report()` and a
   construction warning flag a too-coarse mesh.
+- **Consistent winding, before any normal is taken** (`winding_inconsistency`, `orient_faces`, #479). A face
+  normal is the surface's statement about which side is inside, and `_classify_arr` (hence `_escaped`,
+  `reject_escape` and the seeding), the vertex-interpolated normal and the side a wall is hit from all read its
+  SIGN; reflection does not (the facet normal is signed by the step), which is what makes a file wound both ways
+  a silent error. `Mesh.__init__` propagates the winding across shared edges per connected component and turns a
+  component enclosing a negative volume outward, warning with the counts. Measured on Disimpy's
+  `cylinder_mesh_closed.pkl`, which writes 294 of its 588 triangles the other way round: the classifier called
+  50.5% of the lumen exterior, `reject_escape` discarded 15.6% of 775 nm steps (the walker does not move at
+  all), boundary local time was 0.70 of the same surface oriented, and the 70 ms PGSE signal sat 1.97e-2 below
+  MISST -- against 2.8e-3, its floor, once oriented. A refused step is now counted
+  (`PersistentWalk.illegal_crossings`, through `WallHit.illegal`); it was invisible on a mesh. Every published
+  mesh substrate here (CACTUS, Winther G6, MC/DC) is already consistent, so nothing else moves.
 - **Collision-response flags** are constructor kwargs with the validated defaults (`reject_escape=True`,
   `box_reflect=True`, `adaptive_nudge=False`), documented in `Mesh.__init__`; nothing is set on the instance after
   construction. They are measurement switches for the engine's tests, not physics. MC/DC's edge rule is ON
