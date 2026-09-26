@@ -141,7 +141,7 @@ def _make_bloch_step_fn(geometry, D, dt, T2, T1, M0, off_resonance_hz, rho=0.0,
         # carried on the vector-Bloch M -- so a longitudinally-stored pool that EXCHANGES
         # across membranes during a mixing time is modelled correctly (e.g. FEXI).
         kappa_over_D = jnp.float32(geometry.permeability / D)
-        permeate = geometry.permeate
+        interact = geometry.interact               # absorbs a geometry that also reports crossing / refusal
         n_sub = resolve_sub_steps(geometry, float(D), dt, surface=rho > 0.0, override=sub_steps)
         _warn_if_step_outruns_the_lookup(geometry, float(D), dt, n_sub, 'Bloch walk')
         step_len_sub = jnp.float32(np.sqrt(6.0 * D * dt / n_sub))
@@ -155,8 +155,9 @@ def _make_bloch_step_fn(geometry, D, dt, T2, T1, M0, off_resonance_hz, rho=0.0,
                 r, phi, logw, key = c
                 key, sk_step, sk_perm = jax.random.split(key, 3)
                 unit = isotropic_unit_step(sk_step)
-                r_new, dlog_w = permeate(r, unit * step_len_sub, kappa_over_D,
-                                         rho_over_D, sk_perm)   # dlog_w already scaled by rho/D
+                hit = interact(r, unit * step_len_sub, kappa_over_D=kappa_over_D,
+                               rho_over_D=rho_over_D, key=sk_perm)
+                r_new, dlog_w = hit.r, hit.dlog_w                # dlog_w already scaled by rho/D
                 phi_new = phi + gamma_dt_sub * (g_t @ r_new)    # (n_meas,)
                 return (r_new, phi_new, logw + dlog_w, key), None
 

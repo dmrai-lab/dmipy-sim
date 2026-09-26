@@ -1016,6 +1016,7 @@ def simulate_trajectories(
             # walker's `initial_location` and re-runs it (dynamicsSimulation.finalPositionCheck).
             import inspect as _inspect
             _carries_side = "side" in _inspect.signature(permeate).parameters
+            interact = geometry.interact
 
             def inner_step(carry, _):
                 r, key, side, bad = carry
@@ -1029,7 +1030,11 @@ def simulate_trajectories(
                     side = jnp.where(crossed, -side, side)
                     bad = bad + illegal.astype(jnp.int32)
                 else:
-                    r_new, _dlog_w = permeate(r, step, kappa_over_D, jnp.float32(0.0), perm_key)
+                    # `interact`, not `permeate`: a geometry that reports its own refusal returns it on the
+                    # WallHit, and a mesh does (#479), so a step held still is counted here rather than lost.
+                    hit = interact(r, step, kappa_over_D=kappa_over_D, key=perm_key)
+                    r_new = hit.r
+                    bad = bad + hit.illegal.astype(jnp.int32)
                 return (r_new, key, side, bad), None
         else:
             reflect = geometry.reflect
@@ -1185,6 +1190,7 @@ def simulate_trajectories(
             if has_permeability:
                 kappa_over_D_relax = jnp.float32(float(permeability) / diffusivity)
                 permeate_relax = geometry.permeate
+                interact_relax = geometry.interact
 
                 def inner_step_relax(carry, _):
                     r, key, dlog_accum, comp_sum, side, bad, comp = carry
@@ -1202,8 +1208,10 @@ def simulate_trajectories(
                         # the coordinate. 0 = extra, 1 = intra, as `_get_comp_id`.
                         comp_id = jnp.where(side < 0, jnp.float32(1.0), jnp.float32(0.0))
                     else:
-                        r_new, dlog_w_unit = permeate_relax(
-                            r, step, kappa_over_D_relax, jnp.float32(1.0), perm_key)
+                        hit = interact_relax(r, step, kappa_over_D=kappa_over_D_relax,
+                                             rho_over_D=jnp.float32(1.0), key=perm_key)
+                        r_new, dlog_w_unit = hit.r, hit.dlog_w
+                        bad = bad + hit.illegal.astype(jnp.int32)
                         comp = geometry.classify_position_carry(r_new, comp)
                         comp_id = _pool2(comp)
                     # Per-sub-step compartment id -> fractional occupancy (resolves

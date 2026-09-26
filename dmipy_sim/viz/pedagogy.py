@@ -76,9 +76,9 @@ def _walk_record(geometry, diffusivity, n_t, dt, n_walkers, seed):
         if has_perm:
             key, pk = jax.random.split(key)
             n = jax.random.normal(sk, (3,), jnp.float32)
-            r2, _dw = geometry.permeate(r, n / jnp.linalg.norm(n) * step_l,
-                                        jnp.float32(geometry.permeability / diffusivity),
-                                        jnp.float32(0.0), pk)
+            r2 = geometry.interact(r, n / jnp.linalg.norm(n) * step_l,
+                                   kappa_over_D=jnp.float32(geometry.permeability / diffusivity),
+                                   key=pk).r
         else:
             n = jax.random.normal(sk, (3,), jnp.float32)
             r2 = reflect(r, n / jnp.linalg.norm(n) * step_l)
