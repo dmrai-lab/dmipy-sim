@@ -363,7 +363,7 @@ def caterpillar_spec(path, *, scale=_UM, box=None, glia=True, field_T=3.0, rho2=
 
 def label_volume_spec(path, *, pools=None, voxel_size=None, origin=None, crop=None, periodic=False,
                       D=None, rho=0.0, T2=None, T2_pools=None, nominal_field_T=None, walk=None,
-                      format=None, cite_image_as=None, id=None, description=None, source=None):
+                      frame=None, format=None, cite_image_as=None, id=None, description=None, source=None):
     """The spec of a **segmented image**: one pool per label, one wall per pair of pools that share a
     voxel face, the image cited as a file.
 
@@ -374,7 +374,11 @@ def label_volume_spec(path, *, pools=None, voxel_size=None, origin=None, crop=No
     ``D`` and ``T2`` are the walking pool's bulk values, ``T2_pools`` a T2 per pool name where they
     differ. ``crop`` is the ``(i0, j0, k0, i1, j1, k1)`` sub-volume that IS the substrate; ``periodic``
     says which axes repeat (a rock crop does not: its faces reflect). ``voxel_size`` (metres) supplies
-    a spacing the container does not carry, and contradicts a header that does.
+    a spacing the container does not carry, and contradicts a header that does. ``frame`` is the
+    substrate's own structural axis in the grid's index frame, for an image that HAS one (a segmented
+    nerve, a vessel along an axis): the default is the grid's ``+z``, which is what an isotropic
+    segmentation has, and a pack of an anisotropic walk is refused against a frame that does not
+    describe it (RPK.md 4.2).
 
     The image is read only to measure what the spec must declare -- its labels, its extent and the
     pools that actually touch -- and nothing is constructed: ``spec.geometry_from_spec`` reads it back
@@ -456,6 +460,7 @@ def label_volume_spec(path, *, pools=None, voxel_size=None, origin=None, crop=No
         id or f"label_volume/{os.path.splitext(os.path.basename(str(path)))[0]}",
         dom, spec_pools, walls, Seeding([wid], "uniform_by_volume", "water_fraction"),
         Validity(float(np.min(vox)), ["gradient"] + (["relaxation"] if any(p.T2 for p in spec_pools) else []) + ["surface"]),
+        frame=(Frame(np.asarray(frame, float).ravel().tolist()) if frame is not None else Frame()),
         nominal_field_T=(float(nominal_field_T) if nominal_field_T is not None else None),
         description=description or (f"a segmented {'x'.join(str(int(n)) for n in lab.shape)} image at "
                                    f"{float(np.min(vox)) * 1e6:.4g} um; the {walking!r} pool walks between its voxel faces"),
