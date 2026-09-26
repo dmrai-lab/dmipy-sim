@@ -79,11 +79,9 @@ def _inside_fn(spec):
     geom = geometry_from_spec(spec)
     def member(pid):
         def pred(pts):
-            comp = geom.classify_positions_exact(np.asarray(pts, float))
-            # a packed geometry's classifier returns the OBJECT (or an encoded lumen/sheath id); `pool_of` is the
-            # one map to the pool the spec names, and is the identity where the classifier already gives one
-            comp = np.asarray(geom.pool_of(comp) if hasattr(geom, "pool_of") else comp)
-            return comp == pid
+            # a packed geometry's classifier returns the OBJECT (or an encoded lumen/sheath id); `pool_of` is
+            # the one map to the pool the spec names, and is the identity where the classifier gives one already
+            return np.asarray(geom.pool_of(geom.classify_positions_exact(np.asarray(pts, float)))) == pid
         return pred
     return {p.id: member(p.id) for p in spec.pools}
 

@@ -46,6 +46,43 @@ def test_a_packed_cell_in_section_is_its_packing_fraction():
     assert f["extra"] + f["intra"] + f["myelin"] == pytest.approx(1.0, abs=1e-6)
 
 
+def test_every_section_assigns_every_pixel_to_a_pool():
+    """The area fractions sum to 1, which is what says the picture is of the whole substrate.
+
+    They did not: `classify_positions_exact` returns the OBJECT a packed walker is in and the mapping branched
+    on whether the geometry happened to define `pool_of`, so object #1 alone was counted as intra -- measured on
+    four cylinders at an area fraction of 0.5454, intra came out 0.1365 with 41 % of the plane assigned to no
+    pool at all. `Geometry.pool_of` is now the base class's, so there is nothing to branch on.
+    """
+    from dmipy_sim.geometry.packed import PackedCylinders, PackedSpheres
+    L = 12e-6
+    cyl = PackedCylinders(np.full(4, 2.5e-6),
+                          np.array([[-3e-6, -3e-6], [3e-6, -3e-6], [-3e-6, 3e-6], [3e-6, 3e-6]]), L)
+    rec = S.preview(cyl.spec)
+    assert _fracs(rec, 2)["intra"] == pytest.approx(np.pi * 2.5e-6 ** 2 * 4 / L ** 2, abs=2e-3)
+    sph = PackedSpheres(np.full(2, 2.5e-6), np.array([[-3e-6, 0.0, 0.0], [3e-6, 0.0, 0.0]]), L)
+    for spec in (cyl.spec, sph.spec, d.Cylinder(radius=5e-6, orientation=(0, 0, 1)).spec):
+        for plane in S.preview(spec)["planes"]:
+            assert sum(plane["pool_area_fraction"].values()) == pytest.approx(1.0, abs=1e-9)
+    # the y and z planes cut BOTH spheres, the x plane at the centre passes between them
+    ysec = _fracs(S.preview(sph.spec), 1)
+    assert ysec["intra"] == pytest.approx(2 * np.pi * 2.5e-6 ** 2 / L ** 2, abs=2e-3)
+    assert _fracs(S.preview(sph.spec), 0)["intra"] == 0.0
+
+
+def test_pool_of_is_the_base_class_map_and_needs_no_probe():
+    """Every geometry answers `pool_of`, so a caller at the API boundary never branches on the flag."""
+    from dmipy_sim.geometry.myelin import MyelinatedCylinder
+    from dmipy_sim.geometry.packed import PackedCylinders
+    packed = PackedCylinders(np.full(2, 2.5e-6), np.array([[-3e-6, 0.0], [3e-6, 0.0]]), 12e-6)
+    assert list(np.asarray(packed.pool_of(np.array([0, 1, 2])))) == [0, 1, 1]
+    plain = d.Sphere(radius=5e-6)
+    assert list(np.asarray(plain.pool_of(np.array([0, 1])))) == [0, 1]
+    myel = MyelinatedCylinder(inner_radius=4e-6, outer_radius=5e-6, orientation=(0, 0, 1), D_intra=2e-9,
+                              D_extra=2e-9)
+    assert list(np.asarray(myel.pool_of(np.array([0, 1, 2])))) == [0, 1, 2]
+
+
 def test_a_spec_with_no_wall_has_no_cross_section():
     from dataclasses import replace
     spec = replace(d.Sphere(radius=5e-6).spec, walls=[])
