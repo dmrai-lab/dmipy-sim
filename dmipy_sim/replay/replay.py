@@ -1335,7 +1335,10 @@ class ReplayPack:
 
     def _check_band(self, waveform):
         """Refuse a waveform whose gradient needs more temporal band than this pack stores (#277): the replay
-        would otherwise return a smooth, plausible, wrong signal."""
+        would otherwise return a smooth, plausible, wrong signal. A pack that records no diffusivity (a synthetic
+        master) cannot be judged and is not refused."""
+        if self.diffusivity is None:
+            return
         hz, bands, err = self.waveform_band(waveform)
         if bands <= self.K:
             return
