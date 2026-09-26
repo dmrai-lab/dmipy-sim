@@ -302,10 +302,10 @@ def read_tiff(path, *, voxel_size=None):
         planes = [tifffile.imread(os.path.join(path, f)) for f in files]
         if any(p.ndim != 2 or p.shape != planes[0].shape for p in planes):
             raise LabelVolumeError(f"{path}: the slices are not 2-D images of one shape")
-        a = np.stack(planes, axis=-1)
+        a = np.stack(planes, axis=0)                    # (z, y, x): the slice index is slowest
     else:
         with tifffile.TiffFile(path) as tf:
-            a = tf.asarray()
+            a = tf.asarray()                            # (z, y, x)
             ij = tf.imagej_metadata or {}
             page = tf.pages[0]
             xres = page.tags.get("XResolution")
@@ -313,9 +313,12 @@ def read_tiff(path, *, voxel_size=None):
                 unit = _unit(ij.get("unit", "um"), path)
                 inplane = float(xres.value[1]) / float(xres.value[0]) * unit
                 vox = np.array([inplane, inplane, float(ij["spacing"]) * unit], np.float64)
-        if a.ndim != 3:
-            raise LabelVolumeError(f"{path}: a label volume is 3-D, the file holds shape {a.shape}")
-        a = np.transpose(a, (2, 1, 0))                  # tifffile gives (z, y, x)
+    if a.ndim != 3:
+        raise LabelVolumeError(f"{path}: a label volume is 3-D, the stack holds shape {a.shape}")
+    # ONE transpose for both containers. A directory of slices and the multi-page file of the same
+    # slices are the same image, so they are read into the same (i, j, k) order: each plane is
+    # (y, x) and the slice index is z, which is (z, y, x) either way.
+    a = np.transpose(a, (2, 1, 0))
     return LabelVolumeFile(_as_labels(a, path), _voxel_size(vox, voxel_size, path), np.zeros(3))
 
 

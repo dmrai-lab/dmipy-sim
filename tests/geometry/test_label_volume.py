@@ -146,6 +146,81 @@ def test_metaimage_is_read_in_millimetres(tmp_path):
     assert np.allclose(v.voxel_size, [1e-5, 2e-5, 3e-5]) and np.allclose(v.origin, [1e-3, 2e-3, 3e-3])
 
 
+def test_a_tiff_stack_is_one_image_whether_it_is_a_directory_or_a_multi_page_file(tmp_path):
+    """The same volume in the two TIFF containers reads back as the same array.
+
+    A directory of slices and the multi-page file of those slices are one image; reading them into
+    two different index orders would make them two substrates, silently, and no shape check catches
+    it on a non-cubic volume. Measured on a 4x6x10 volume: both come back equal to the source, and to
+    each other; before, the directory branch returned `vol.transpose(1, 0, 2)`.
+    """
+    tifffile = pytest.importorskip("tifffile")
+    vol = (np.arange(4 * 6 * 10, dtype=np.uint8).reshape(4, 6, 10) % 3)     # (nx, ny, nz), non-cubic
+    tifffile.imwrite(tmp_path / "multi.tif", np.transpose(vol, (2, 1, 0)))  # (z, y, x)
+    d = tmp_path / "slices"
+    d.mkdir()
+    for k in range(vol.shape[2]):
+        tifffile.imwrite(d / f"s{k:03d}.tif", vol[:, :, k].T)               # (y, x)
+    a = read_label_volume(tmp_path / "multi.tif", voxel_size=1e-6)
+    b = read_label_volume(d, voxel_size=1e-6)
+    assert np.array_equal(a.labels, vol) and np.array_equal(b.labels, vol)
+    assert np.allclose(a.voxel_size, 1e-6) and np.allclose(b.voxel_size, 1e-6)
+
+
+def test_a_tiff_stack_takes_its_voxel_size_from_the_imagej_tags_when_it_has_them(tmp_path):
+    """A TIFF carries in-plane resolution at best and no slice spacing, so the voxel size comes from
+    ``voxel_size=``; an ImageJ stack that states ``spacing`` and ``unit`` is read from the tags, in
+    that unit -- 0.5 um in plane and 2 um between slices here."""
+    tifffile = pytest.importorskip("tifffile")
+    vol = np.zeros((4, 6, 3), np.uint8)
+    vol[1, 2, 1] = 1
+    tifffile.imwrite(tmp_path / "ij.tif", np.transpose(vol, (2, 1, 0)), imagej=True,
+                     resolution=(1 / 0.5, 1 / 0.5), metadata={"spacing": 2.0, "unit": "um"})
+    v = read_label_volume(tmp_path / "ij.tif")
+    assert np.array_equal(v.labels, vol)
+    assert np.allclose(v.voxel_size, [0.5e-6, 0.5e-6, 2e-6])
+    with pytest.raises(LabelVolumeError, match="one of the two is wrong"):
+        read_label_volume(tmp_path / "ij.tif", voxel_size=1e-6)
+
+
+def test_nifti_is_read_in_the_units_its_header_declares(tmp_path):
+    """NIfTI's zooms are in the unit of ``xyzt_units``, millimetres being the format's default, and the
+    origin is the affine's translation in the same unit: a 0.3 mm isotropic volume at an offset of
+    (1, 2, 3) mm reads as 3e-4 m and (1e-3, 2e-3, 3e-3) m."""
+    nib = pytest.importorskip("nibabel")
+    vol = (np.arange(4 * 6 * 3, dtype=np.uint8).reshape(4, 6, 3) % 2)
+    aff = np.diag([0.3, 0.3, 0.3, 1.0])
+    aff[:3, 3] = (1.0, 2.0, 3.0)
+    nib.save(nib.Nifti1Image(vol, aff), str(tmp_path / "v.nii"))
+    v = read_label_volume(tmp_path / "v.nii")
+    assert np.array_equal(v.labels, vol)
+    assert np.allclose(v.voxel_size, 3e-4) and np.allclose(v.origin, [1e-3, 2e-3, 3e-3])
+
+
+def test_hdf5_reads_element_size_um_slowest_axis_first(tmp_path):
+    """The ilastik / ImageJ ``element_size_um`` attribute is in micrometres, slowest axis first, and an
+    h5py dataset is written ``(z, y, x)``: ``[3, 2, 1]`` um is a voxel of (1, 2, 3) um in ``(i, j, k)``.
+    A file with more than one 3-D dataset is refused unless one is named."""
+    h5py = pytest.importorskip("h5py")
+    vol = (np.arange(4 * 6 * 3, dtype=np.uint8).reshape(4, 6, 3) % 2)
+    with h5py.File(tmp_path / "v.h5", "w") as fh:
+        d = fh.create_dataset("labels", data=np.transpose(vol, (2, 1, 0)))
+        d.attrs["element_size_um"] = np.array([3.0, 2.0, 1.0])
+    v = read_label_volume(tmp_path / "v.h5")
+    assert np.array_equal(v.labels, vol)
+    assert np.allclose(v.voxel_size, [1e-6, 2e-6, 3e-6])
+
+    with h5py.File(tmp_path / "two.h5", "w") as fh:
+        fh.create_dataset("a", data=np.zeros((2, 2, 2), np.uint8))
+        fh.create_dataset("b", data=np.zeros((2, 2, 2), np.uint8))
+    with pytest.raises(LabelVolumeError, match="holds 2 3-D datasets"):
+        read_label_volume(tmp_path / "two.h5", voxel_size=1e-6)
+    v2 = read_label_volume(tmp_path / "two.h5", dataset="b", voxel_size=1e-6)
+    assert v2.labels.shape == (2, 2, 2)
+    with pytest.raises(LabelVolumeError, match="names an HDF5 dataset"):
+        read_label_volume(tmp_path / "v.h5", format="nrrd", dataset="labels")
+
+
 def test_a_crop_moves_the_origin_and_an_impossible_one_is_refused():
     """The crop IS part of the substrate (a published measurement is made on a stated sub-volume), so
     its lower corner becomes the origin; a crop outside the image is refused."""
