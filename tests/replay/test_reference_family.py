@@ -1,0 +1,588 @@
+"""The reference-pack protocol (dmipy_sim.replay.reference, dmipy-sim#482) and its card stage (#480), on a
+synthetic family: a sphere large enough that its diffusion is free, whose reference quantity is therefore the
+closed form ``exp(-b D)``.
+
+Everything here is deterministic and runs on the CPU: one 300-walker walk, one pack, one pilot. What it covers
+is the protocol's REFUSALS -- the whole point of the module -- the order rule, the record's write-once
+behaviour, the grade rule, the gate's freedom from typed tolerances, and the card's executed snippet.
+"""
+import inspect
+import json
+import os
+import re
+
+import numpy as np
+import pytest
+
+import dmipy_sim as d
+from dmipy_sim.replay import reference as R
+
+D0 = 2e-9
+R_SPHERE = 2e-4            # 200 um: sqrt(2 D T) is 4 um over the window, so the diffusion is free to < 1e-4
+T_WIN = 4e-3
+DT = 2.5e-4
+N_T = 17
+N_WALK = 300
+B = 1e8
+DELTA = 8e-4
+BIGDELTA = 2.4e-3
+SEED = 0
+ENV = dict(bvals=[0.0, B], dirs=[[1, 0, 0]], ogse_periods=[2], shortd_b=B, shortd_deltas_frac=[0.05],
+           delta_frac=0.2, Delta_frac=0.5, rho_list=[])
+LICENCE_TEXT = "SYNTHETIC LICENCE\n\n" + ("This is the verbatim text of a licence that does not exist. " * 12)
+GRID = dict(kind="none", solver="exp(-b D), the closed form of free diffusion")
+
+
+def _seq():
+    return d.pgse([[1, 0, 0]], DELTA, BIGDELTA, bvalues=[B], n_t=64, slew_rate=np.inf)
+
+
+def waveforms():
+    return (("pgse", _seq()),)
+
+
+def _spec():
+    return d.Sphere(radius=R_SPHERE).spec
+
+
+def _walk(spec, n, *, n_t):
+    from dmipy_sim.spec import geometry_from_spec
+    return d.simulate_trajectories(int(n), D0, geometry_from_spec(spec), T_max=(n_t - 1) * DT, dt_save=DT,
+                                   seed=SEED, tiers="all", require_gpu=False)
+
+
+def _per_walker(pack):
+    """The per-walker contribution to the ensemble mean: ``ew * E`` over ``sum(w)`` (replay's own reduction)."""
+    w, ew, E = pack.walker_signals(_seq())
+    return np.asarray(ew)[:, None] * np.asarray(E) / np.asarray(w).sum()
+
+
+def _reproduce(pack, quantity, grid):
+    """The replayed signal and the ANALYTIC standard error of its ensemble mean."""
+    c = _per_walker(pack)[:, -1] * len(np.asarray(pack.walker_signals(_seq())[0]))
+    value = float(abs(c.mean()))
+    return dict(value=value, se=float(np.std(c.real, ddof=1) / np.sqrt(len(c)) / value),
+                se_kind="analytic_mean", solver=grid["solver"],
+                se_derivation="sd of the per-walker signal over sqrt(N), the standard error of the mean")
+
+
+def _served(pack):
+    a = float(np.asarray(pack.replay(_seq())).ravel()[-1])
+    return abs(a - float(abs(_per_walker(pack)[:, -1].sum())))
+
+
+def _snippet(uri):
+    return (f"import numpy as np\n"
+            f"import dmipy_sim as d\n"
+            f"from dmipy_sim.replay import ReplayPack\n"
+            f"pk = ReplayPack.load({uri!r})\n"
+            f"seq = d.pgse([[1, 0, 0]], {DELTA!r}, {BIGDELTA!r}, bvalues=[{B!r}], n_t=64, slew_rate=np.inf)\n"
+            f"print('S = %.5f' % float(np.asarray(pk.replay(seq)).ravel()[-1]))\n")
+
+
+def _bad_snippet(uri):
+    return "raise SystemExit('this snippet does not work')\n"
+
+
+# --------------------------------------------------------------- the declaration
+def _sources(tmp_path, *, licence_text=LICENCE_TEXT, host_record="synthetic v1", missing=False):
+    p = tmp_path / "grain.raw"
+    p.write_bytes(b"\x00\x01" * 64)
+    return [R.Source(key="synthetic", url="https://example.invalid/record", host_record=host_record,
+                     licence_id="SYNTHETIC-1.0", licence_url="https://example.invalid/licence",
+                     licence_text=licence_text,
+                     files=(R.SourceFile(path=str(tmp_path / ("absent.raw" if missing else "grain.raw")),
+                                         cite_as="grain.raw", role="the synthetic input"),))]
+
+
+def _quantity(direct_value, direct_se, *, grid=GRID, verbatim="S(b) = exp(-b D)", se_kind="analytic_mean"):
+    return R.ReferenceQuantity(
+        substrate="sphere", name="signal_at_b",
+        published=R.Published(value=float(np.exp(-B * D0)), unit="-", uncertainty=0.0,
+                              uncertainty_is="exact: it is a closed form",
+                              printed_in="the closed form of free diffusion", locator="exp(-b D)",
+                              verbatim=verbatim),
+        direct=R.Direct(value=direct_value, unit="-", se=direct_se, se_kind=se_kind,
+                        se_derivation="the closed form evaluated exactly, with the standard error the same "
+                                      "walker count would give a Monte-Carlo estimate of it",
+                        n_walkers=N_WALK, grid=grid, solver=grid["solver"],
+                        source="the closed form; tests/replay/test_reference_family.py asserts it"))
+
+
+def _reference(direct_value=None, direct_se=0.05, **kw):
+    q = kw.pop("quantities", None) or (_quantity(direct_value or float(np.exp(-B * D0)), direct_se),)
+    base = dict(doi="10.1103/PhysRevE.80.036307", title="Pore-network extraction from "
+                                                        "micro-computerized-tomography images",
+                published_kind="analytic", same_released_geometry=True,
+                sample="free diffusion in an unbounded medium", sample_relation="the same material",
+                quantities=q,
+                parameters=(R.FreeParameter(name="D", value=D0, unit="m^2/s", whose="ours",
+                                            where="this test", how="chosen"),),
+                description="a synthetic family", source_note="none", licence_note="synthetic")
+    base.update(kw)
+    return R.Reference(**base)
+
+
+def _design(**kw):
+    base = dict(window_s=T_WIN, dt_save_s=DT, save_grid_why="the test's own grid", K=8, envelope=ENV,
+                waveforms=waveforms,
+                tiers=(R.Tier(name="positions", floor_key="floor_max", err_key="err_max", target_floor=0.1),),
+                memory_budget_bytes=200_000_000_000, pilot_n=N_WALK, safety=1.4,
+                tolerance=R.Tolerance(terms=("quantity.direct.se", "quantity.replay_se",
+                                             "quantity.published.uncertainty")),
+                systematics=())
+    base.update(kw)
+    return R.Design(**base)
+
+
+NO_REFERENCE = object()
+
+
+def _family(tmp_path, *, sources=None, reference=NO_REFERENCE, design=None, build=None, publication=None,
+            resolver=None):
+    build = build or R.Build(specs={"sphere": _spec}, pack_id={"sphere": "synthetic/sphere"},
+                             reproduce=_reproduce, served_vs_channel=_served, served_tier="positions",
+                             walk=_walk)
+    publication = publication or R.Publication(repo="owner/synthetic", licence="CC-BY-4.0",
+                                               citation="a test family", snippet=_snippet,
+                                               snippet_substrate="sphere", dry=True)
+    return R.ReferenceFamily("synthetic", str(tmp_path), sources=sources or _sources(tmp_path),
+                             reference=_reference() if reference is NO_REFERENCE else reference,
+                             design=design or _design(), build=build, publication=publication,
+                             resolver=resolver or _resolver)
+
+
+def _resolver(doi, **kw):
+    return dict(doi=doi, title="Pore-network extraction from micro-computerized-tomography images",
+                type="journal-article", container="Physical Review E", resolved="2026-01-01T00:00:00Z")
+
+
+# --------------------------------------------------------------- the happy path, once
+@pytest.fixture(scope="module")
+def ran(tmp_path_factory, monkeypatch_module):
+    """The whole pipeline on the synthetic family, with the direct number taken from the closed form."""
+    tmp = tmp_path_factory.mktemp("synthetic")
+    fam = _family(tmp)
+    monkeypatch_module.setattr(R, "code_commit", lambda **kw: "0" * 40)
+    rec = fam.run()
+    return fam, rec
+
+
+@pytest.fixture(scope="module")
+def monkeypatch_module():
+    from _pytest.monkeypatch import MonkeyPatch
+    mp = MonkeyPatch()
+    yield mp
+    mp.undo()
+
+
+def test_every_stage_writes_its_record(ran):
+    fam, rec = ran
+    assert sorted(rec) == sorted(R.STAGES)
+    for s in R.STAGES:
+        assert os.path.exists(fam.records.path(s)), s
+        assert rec[s]["stage"] == s
+    assert rec["gate"]["passed"], rec["gate"]["failures"]
+    assert rec["spec"]["substrates"]["sphere"]["round_trips"]
+    assert rec["walk"]["substrates"]["sphere"]["n_t"] == N_T
+    assert rec["design"]["pilot"]["on_real_window"]
+    assert rec["design"]["derived"]["n_walkers"] > 0
+
+
+def test_a_stage_on_unchanged_inputs_returns_the_record_it_wrote(ran):
+    fam, rec = ran
+    before = (fam.records.digest("source"), os.path.getmtime(fam.records.path("source")))
+    again = fam.stage("source")
+    assert again == rec["source"]
+    assert (fam.records.digest("source"), os.path.getmtime(fam.records.path("source"))) == before
+
+
+def test_a_stage_whose_inputs_changed_is_refused(ran, tmp_path):
+    fam, _ = ran
+    other = _family(fam.dir, sources=_sources(tmp_path, host_record="synthetic v2"))
+    with pytest.raises(R.ReferenceRefusal, match="written for other inputs"):
+        other.stage("source")
+
+
+def test_a_record_changed_after_its_successor_read_it_is_refused(ran):
+    fam, _ = ran
+    body = open(fam.records.path("source")).read()
+    try:
+        with open(fam.records.path("source"), "a") as fh:
+            fh.write("\n")
+        with pytest.raises(R.ReferenceRefusal, match="has changed since the reference stage read it"):
+            fam.stage("spec")
+    finally:
+        with open(fam.records.path("source"), "w") as fh:
+            fh.write(body)
+
+
+def test_the_gate_names_what_it_checked(ran):
+    _, rec = ran
+    names = {c["check"] for c in rec["gate"]["checks"]}
+    assert "source/synthetic/licence" in names
+    assert "source/synthetic/digests" in names
+    assert "reference/doi" in names
+    assert "sphere/served-equals-decoded" in names
+    assert "sphere/reproduces-signal_at_b" in names
+    assert "sphere/pgse-in-band" in names
+    assert "sphere/spec-round-trips" in names
+    assert rec["gate"]["per_substrate"]["sphere"]["passed"]
+
+
+def test_the_card_runs_its_snippet_and_states_the_grade(ran):
+    fam, rec = ran
+    card = open(os.path.join(fam.dir, "README.md")).read()
+    assert rec["card"]["snippet"]["stdout"].startswith("S = ")
+    assert rec["card"]["snippet"]["seconds"] <= R.SNIPPET_CEILING_S
+    assert rec["card"]["grade"] == "analytic"
+    assert "**Grade analytic.**" in card
+    assert rec["card"]["snippet"]["stdout"] in card
+    assert "previews/sphere.png" in card
+    assert os.path.exists(os.path.join(fam.dir, "previews", "sphere.png"))
+    assert "| `synthetic/sphere` |" in card
+
+
+def test_publish_records_what_it_would_upload(ran):
+    _, rec = ran
+    p = rec["publish"]
+    assert p["dry"] and p["withheld"] == []
+    assert [u["substrate"] for u in p["uploaded"]] == ["sphere"]
+    assert "records/gate.json" in p["files"] and "README.md" in p["files"]
+    assert "records/source.json" in p["files"] and "previews/sphere.png" in p["files"]
+    assert "records/publish.json" not in p["files"]              # a record cannot publish itself
+
+
+# --------------------------------------------------------------- the order rule
+@pytest.mark.parametrize("stage", ["reference", "spec", "design", "walk", "pack", "gate", "card", "publish"])
+def test_no_stage_runs_before_the_one_before_it(tmp_path, stage):
+    fam = _family(tmp_path)
+    with pytest.raises(R.ReferenceRefusal, match="is missing; run the .* stage first"):
+        fam.stage(stage)
+
+
+def test_a_name_that_is_not_a_stage_is_refused(tmp_path):
+    with pytest.raises(R.ReferenceRefusal, match="is not a stage"):
+        _family(tmp_path).stage("finalize")
+
+
+# --------------------------------------------------------------- the source stage's refusals
+def test_a_licence_title_is_not_a_licence_text(tmp_path):
+    fam = _family(tmp_path, sources=_sources(tmp_path, licence_text="CC BY 4.0"))
+    with pytest.raises(R.ReferenceRefusal, match="a licence TITLE is not a licence text"):
+        fam.stage("source")
+
+
+def test_a_source_without_a_host_record_is_refused(tmp_path):
+    fam = _family(tmp_path, sources=_sources(tmp_path, host_record=""))
+    with pytest.raises(R.ReferenceRefusal, match="no host_record"):
+        fam.stage("source")
+
+
+def test_a_file_that_cannot_be_digested_is_refused(tmp_path):
+    fam = _family(tmp_path, sources=_sources(tmp_path, missing=True))
+    with pytest.raises(R.ReferenceRefusal, match="without a digest per file is refused"):
+        fam.stage("source")
+
+
+# --------------------------------------------------------------- the reference stage's refusals
+def _upto_source(tmp_path, **kw):
+    fam = _family(tmp_path, **kw)
+    fam.stage("source")
+    return fam
+
+
+def test_a_reference_without_a_doi_is_refused(tmp_path):
+    fam = _upto_source(tmp_path, reference=_reference(doi=""))
+    with pytest.raises(R.ReferenceRefusal, match="no DOI"):
+        fam.stage("reference")
+
+
+def test_a_doi_whose_title_does_not_match_is_refused(tmp_path):
+    fam = _upto_source(tmp_path, reference=_reference(title="Something else entirely"))
+    with pytest.raises(R.ReferenceRefusal, match="do not describe one work"):
+        fam.stage("reference")
+
+
+def test_a_doi_that_does_not_resolve_is_refused(tmp_path):
+    def dead(doi, **kw):
+        raise R.ReferenceRefusal(f"reference: the DOI {doi!r} did not resolve through Crossref")
+    fam = _upto_source(tmp_path, resolver=dead)
+    with pytest.raises(R.ReferenceRefusal, match="did not resolve through Crossref"):
+        fam.stage("reference")
+
+
+def test_a_free_parameter_with_no_owner_is_refused(tmp_path):
+    ref = _reference(parameters=(R.FreeParameter(name="D", value=D0, unit="m^2/s", whose="assumed",
+                                                 where="x", how="y"),))
+    fam = _upto_source(tmp_path, reference=ref)
+    with pytest.raises(R.ReferenceRefusal, match="every free parameter is one of"):
+        fam.stage("reference")
+
+
+def test_a_reference_number_without_a_verbatim_quote_is_refused(tmp_path):
+    ref = _reference(quantities=(_quantity(0.5, 0.05, verbatim="  "),))
+    fam = _upto_source(tmp_path, reference=ref)
+    with pytest.raises(R.ReferenceRefusal, match="quotes nothing from"):
+        fam.stage("reference")
+
+
+def test_a_resampled_error_bar_is_not_a_standard_error(tmp_path):
+    ref = _reference(quantities=(_quantity(0.5, 0.05, se_kind="fold_spread"),))
+    fam = _upto_source(tmp_path, reference=ref)
+    with pytest.raises(R.ReferenceRefusal, match="never a fold spread or a split half"):
+        fam.stage("reference")
+
+
+def test_a_direct_measurement_without_a_grid_is_refused(tmp_path):
+    q = _quantity(0.5, 0.05)
+    q = R.ReferenceQuantity(substrate=q.substrate, name=q.name, published=q.published,
+                            direct=R.Direct(value=0.5, unit="-", se=0.05, se_kind="analytic_mean",
+                                            se_derivation="x", n_walkers=N_WALK, grid={}, solver="x",
+                                            source="y"))
+    fam = _upto_source(tmp_path, reference=_reference(quantities=(q,)))
+    with pytest.raises(R.ReferenceRefusal, match="states no se derivation, grid or solver"):
+        fam.stage("reference")
+
+
+def test_a_quantity_about_no_substrate_of_the_family_is_refused(tmp_path):
+    q = _quantity(0.5, 0.05)
+    q = R.ReferenceQuantity(substrate="granite", name=q.name, published=q.published, direct=q.direct)
+    fam = _upto_source(tmp_path, reference=_reference(quantities=(q,)))
+    with pytest.raises(R.ReferenceRefusal, match="not one of this family's substrates"):
+        fam.stage("reference")
+
+
+def test_a_family_with_no_reference_records_none_and_may_publish(tmp_path):
+    fam = _upto_source(tmp_path, reference=None)
+    rec = fam.stage("reference")
+    assert rec["absent"]
+    assert R.grade_of(rec) == "none"
+
+
+# --------------------------------------------------------------- the spec stage's refusals
+def test_a_spec_citing_a_digest_no_source_holds_is_refused(tmp_path, monkeypatch):
+    fam = _upto_source(tmp_path)
+    fam.stage("reference")
+    def forged():
+        spec = _spec()
+        from dataclasses import replace
+        from dmipy_sim.spec import Surface, Wall
+        w = spec.walls[0]
+        return replace(spec, walls=[replace(w, surface=Surface(**{**w.surface.__dict__, "file": "x.ply",
+                                                                 "format": "ply", "sha256": "ab" * 32}))])
+    fam.build.specs["sphere"] = forged
+    with pytest.raises(R.ReferenceRefusal, match="the source record does not hold"):
+        fam.stage("spec")
+
+
+# --------------------------------------------------------------- the tolerance
+def test_a_tolerance_term_that_is_a_literal_is_refused():
+    with pytest.raises(R.ReferenceRefusal, match="is a literal"):
+        R.tolerance_of(dict(terms=[0.005], combine="quadrature"), {})
+
+
+def test_a_coverage_factor_is_not_a_tolerance_term():
+    with pytest.raises(R.ReferenceRefusal, match="no coverage factor"):
+        R.tolerance_of(dict(terms=["design.coverage_factor"], combine="quadrature"),
+                       dict(design=dict(coverage_factor=2.0)))
+
+
+def test_a_fold_spread_is_not_a_tolerance_term():
+    with pytest.raises(R.ReferenceRefusal, match="no coverage factor and no resampled error bar"):
+        R.tolerance_of(dict(terms=["quantity.fold_spread"], combine="quadrature"),
+                       dict(quantity=dict(fold_spread=0.01)))
+
+
+def test_a_term_that_does_not_resolve_is_refused():
+    with pytest.raises(R.ReferenceRefusal, match="does not resolve"):
+        R.tolerance_of(dict(terms=["quantity.direct.se"], combine="quadrature"), dict(quantity={}))
+
+
+def test_no_terms_is_not_a_gate():
+    with pytest.raises(R.ReferenceRefusal, match="a gate with no budget is not a gate"):
+        R.tolerance_of(dict(terms=[], combine="quadrature"), {})
+
+
+def test_terms_are_combined_in_quadrature_and_nothing_else():
+    ctx = dict(a=dict(x=0.003), b=dict(y=0.004))
+    terms, tol = R.tolerance_of(dict(terms=["a.x", "b.y"], combine="quadrature"), ctx)
+    assert terms == {"a.x": 0.003, "b.y": 0.004}
+    assert tol == pytest.approx(0.005)
+    with pytest.raises(R.ReferenceRefusal, match="combined in quadrature"):
+        R.tolerance_of(dict(terms=["a.x"], combine="sum"), ctx)
+
+
+def test_the_gate_contains_no_typed_tolerance():
+    """Every threshold the gate applies comes from a record. A float literal in its body would be one that
+    does not, which is how a pack 2.2x off its reference passed (#482)."""
+    src = inspect.getsource(R._gate_checks)
+    body = "\n".join(l for l in src.splitlines() if not l.strip().startswith("#"))
+    assert not re.findall(r"\d+\.\d|\d+[eE][-+]?\d", body), re.findall(r"\d+\.\d|\d+[eE][-+]?\d", body)
+
+
+# --------------------------------------------------------------- the gate's verdicts
+def test_the_gate_fails_a_reproduction_outside_the_tolerance(ran):
+    fam, rec = ran
+    pk = json.loads(json.dumps(rec["pack"]))
+    q = pk["substrates"]["sphere"]["reproduced"]["signal_at_b"]
+    q["value"] = q["value"] * 2.2
+    checks = R._gate_checks(dict(rec, pack=pk))
+    bad = [c for c in checks if c["check"] == "sphere/reproduces-signal_at_b"]
+    assert bad and not bad[0]["passed"] and bad[0]["relative"] > bad[0]["tolerance"]
+    passed, failures, per = R.gate_verdict(checks)
+    assert not passed and not per["sphere"]["passed"]
+
+
+def test_the_gate_fails_a_reproduction_on_another_grid(ran):
+    fam, rec = ran
+    pk = json.loads(json.dumps(rec["pack"]))
+    pk["substrates"]["sphere"]["reproduced"]["signal_at_b"]["grid"] = dict(kind="coarser")
+    checks = R._gate_checks(dict(rec, pack=pk))
+    bad = [c for c in checks if c["check"].endswith("-on-the-recorded-grid")]
+    assert bad and not bad[0]["passed"]
+
+
+def test_the_gate_fails_a_waveform_out_of_band(ran):
+    fam, rec = ran
+    pk = json.loads(json.dumps(rec["pack"]))
+    pk["substrates"]["sphere"]["waveforms"][0].update(in_band=False)
+    checks = R._gate_checks(dict(rec, pack=pk))
+    assert not [c for c in checks if c["check"] == "sphere/pgse-in-band"][0]["passed"]
+
+
+def test_the_gate_fails_a_dropped_waveform(ran):
+    fam, rec = ran
+    pk = json.loads(json.dumps(rec["pack"]))
+    pk["substrates"]["sphere"]["waveforms"] = []
+    checks = R._gate_checks(dict(rec, pack=pk))
+    assert not [c for c in checks if c["check"].endswith("envelope-is-the-declared-one")][0]["passed"]
+
+
+def test_the_gate_fails_served_beyond_the_codec(ran):
+    fam, rec = ran
+    pk = json.loads(json.dumps(rec["pack"]))
+    sub = pk["substrates"]["sphere"]
+    sub["served_vs_channel"] = sub["served_vs_channel_bound"] * 10 + 1e-9
+    checks = R._gate_checks(dict(rec, pack=pk))
+    assert not [c for c in checks if c["check"].endswith("served-equals-decoded")][0]["passed"]
+
+
+def test_a_tier_below_target_needs_the_design_records_trade(ran):
+    fam, rec = ran
+    pk = json.loads(json.dumps(rec["pack"]))
+    pk["substrates"]["sphere"]["tiers"]["positions"]["meets_target"] = False
+    des = json.loads(json.dumps(rec["design"]))
+    des["trade"] = None
+    assert not [c for c in R._gate_checks(dict(rec, pack=pk, design=des))
+                if c["check"].endswith("tier-positions-target-or-trade")][0]["passed"]
+    des["trade"] = "the budget allows fewer walkers than the floor asks"
+    assert [c for c in R._gate_checks(dict(rec, pack=pk, design=des))
+            if c["check"].endswith("tier-positions-target-or-trade")][0]["passed"]
+
+
+# --------------------------------------------------------------- the grade rule
+@pytest.mark.parametrize("record,grade", [
+    (dict(published_kind="number", same_released_geometry=True), "A"),
+    (dict(published_kind="number", same_released_geometry=False), "B"),
+    (dict(published_kind="figure", same_released_geometry=True), "B"),
+    (dict(published_kind="figure", same_released_geometry=False), "B"),
+    (dict(published_kind="analytic", same_released_geometry=True), "analytic"),
+    (dict(published_kind="none", same_released_geometry=True), "none"),
+    (dict(absent="no published quantity"), "none"),
+    (None, "none"),
+])
+def test_the_grade_follows_from_the_reference_record(record, grade):
+    assert R.grade_of(record) == grade
+
+
+def test_a_reference_record_cannot_state_its_own_grade(tmp_path):
+    """The grade is not a field: it is computed. `ling-sand-packs` wrote "A" for a paper with no number."""
+    assert "grade" not in {f.name for f in R.Reference.__dataclass_fields__.values()}
+    assert "grade" not in {f.name for f in R.Published.__dataclass_fields__.values()}
+
+
+# --------------------------------------------------------------- the card stage
+def test_a_card_whose_snippet_fails_is_not_written(tmp_path, monkeypatch):
+    fam, _ = _prepared(tmp_path, monkeypatch, snippet=_bad_snippet)
+    with pytest.raises(R.ReferenceRefusal, match="does not produce"):
+        fam.stage("card")
+    assert not os.path.exists(os.path.join(fam.dir, "README.md"))
+
+
+def test_a_snippet_that_does_not_finish_is_refused(tmp_path, monkeypatch):
+    monkeypatch.setattr(R, "SNIPPET_CEILING_S", 1.0)
+    with pytest.raises(R.ReferenceRefusal, match="did not finish in"):
+        R._run_snippet("import time\ntime.sleep(30)\n", str(tmp_path))
+
+
+def test_a_snippet_is_run_against_the_code_that_built_the_card(tmp_path):
+    out = R._run_snippet("import dmipy_sim, os\nprint(os.path.dirname(os.path.dirname(dmipy_sim.__file__)))\n",
+                         str(tmp_path))
+    assert out["stdout"] == os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(R.__file__))))
+
+
+# --------------------------------------------------------------- the publish stage
+def test_publish_refuses_when_the_gate_passed_no_pack(tmp_path, monkeypatch):
+    fam, rec = _prepared(tmp_path, monkeypatch)
+    gate = json.loads(open(fam.records.path("gate")).read())
+    gate["per_substrate"]["sphere"]["passed"] = False
+    gate["failures"] = ["sphere/reproduces-signal_at_b: it does not"]
+    with open(fam.records.path("gate"), "w") as fh:
+        json.dump(gate, fh, indent=1, sort_keys=True)
+    fam.stage("card")                                  # the card is written, and states the failure
+    assert "**FAIL**" in open(os.path.join(fam.dir, "README.md")).read()
+    with pytest.raises(R.ReferenceRefusal, match="the gate passed no pack"):
+        fam.stage("publish")
+
+
+def test_publish_refuses_a_record_changed_after_the_gate(tmp_path, monkeypatch):
+    fam, rec = _prepared(tmp_path, monkeypatch)
+    fam.stage("card")
+    with open(fam.records.path("design"), "a") as fh:
+        fh.write("\n")
+    with pytest.raises(R.ReferenceRefusal, match="changed since"):
+        fam.stage("publish")
+
+
+def _prepared(tmp_path, monkeypatch, **kw):
+    """The synthetic family run as far as the gate, in its own directory."""
+    pub = R.Publication(repo="owner/synthetic", licence="CC-BY-4.0", citation="a test family",
+                        snippet=kw.pop("snippet", _snippet), snippet_substrate="sphere", dry=True)
+    fam = _family(tmp_path, publication=pub, **kw)
+    monkeypatch.setattr(R, "code_commit", lambda **k: "0" * 40)
+    for s in ("source", "reference", "spec", "design", "walk", "pack", "gate"):
+        fam.stage(s)
+    return fam, fam.read_all("pack")
+
+
+# --------------------------------------------------------------- the organisation page
+def test_the_organisation_page_refuses_a_family_with_no_reference_record():
+    rows = [dict(name="a", repo="O/a", packs=1, bytes=10, reference=dict(published_kind="figure",
+                                                                        same_released_geometry=False,
+                                                                        description="x", source_note="y",
+                                                                        licence_note="z", sample="s",
+                                                                        sample_relation="the same material")),
+            dict(name="b", repo="O/b", packs=2, bytes=20, reference=None)]
+    with pytest.raises(R.ReferenceRefusal, match="publish no records/reference.json"):
+        R.organisation_card(rows)
+    page = R.organisation_card(rows[:1])
+    assert "| **B** |" in page and "[a](https://huggingface.co/datasets/O/a)" in page
+
+
+# --------------------------------------------------------------- the estimator's analytic error bar
+def test_the_log_mean_gradient_is_the_estimators_own_derivative():
+    """The delta method needs the log-mean's derivative with respect to the decay; a fold spread does not, and
+    is seed-dependent, which is why the protocol will not take one (#482)."""
+    from examples.validation.talabi_micro_ct_rocks import log_mean_T2, log_mean_gradient, t2_distribution
+    rng = np.random.default_rng(0)
+    t = np.arange(1, 400) * 1e-3
+    S = 0.6 * np.exp(-t / 0.4) + 0.4 * np.exp(-t / 1.2)
+    grid = np.logspace(-3, 1, 60)
+    lm, g = log_mean_gradient(t, S, grid)
+    assert lm == pytest.approx(log_mean_T2(grid, t2_distribution(t, S, grid)))
+    for eps in (1e-6, 1e-5):
+        v = rng.normal(size=S.shape); v /= np.linalg.norm(v)
+        fd = (log_mean_T2(grid, t2_distribution(t, S + eps * v, grid))
+              - log_mean_T2(grid, t2_distribution(t, S - eps * v, grid))) / (2 * eps)
+        assert g @ v == pytest.approx(fd, rel=1e-5)
