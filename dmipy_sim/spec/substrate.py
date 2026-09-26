@@ -64,7 +64,7 @@ class Pool:
 
 
 #: Containers a ``label_volume`` surface's ``format`` may name (`dmipy_sim.io.label_volume`).
-LABEL_VOLUME_FORMATS = ("nrrd", "mhd", "nifti", "tiff", "hdf5")
+LABEL_VOLUME_FORMATS = ("nrrd", "mhd", "nifti", "tiff", "hdf5", "amira")
 
 
 @dataclass(frozen=True)

@@ -270,7 +270,8 @@
          "mhd",
          "nifti",
          "tiff",
-         "hdf5"
+         "hdf5",
+         "amira"
         ]
        },
        "column": {
