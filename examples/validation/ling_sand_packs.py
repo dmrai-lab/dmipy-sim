@@ -133,7 +133,14 @@ def run_pack(sample, data_dir, *, rho=None, n_walkers=200_000, T_max=3.5, sample
     if rho is None:
         raise ValueError(f"{sample} has two mineral surfaces and no single relaxivity; pass rho=")
     path = image_path(sample, data_dir)
-    spec = label_volume_spec(path, pools=dict(ref["pools"]), rho=rho, D=D0, T2=T2B,
+    # The substrate goes to the ORIGIN. These images are deposited at the micro-CT stage's absolute
+    # coordinates, near (-717, -717, -458) mm, where a float32 ulp is 1/65 of the 3.93 um voxel and
+    # `LabelVolume` refuses to walk them (`NUDGE_FRACTION_MAX`): the nudge that keeps a walker off a face
+    # is no longer small against a voxel. Translating the volume is physically nothing.
+    from dmipy_sim.io.label_volume import read_label_volume
+    vol = read_label_volume(path)
+    origin = -0.5 * np.asarray(vol.labels.shape, float) * np.asarray(vol.voxel_size, float)
+    spec = label_volume_spec(path, pools=dict(ref["pools"]), rho=rho, D=D0, T2=T2B, origin=origin,
                              id=f"ling2022/{sample.lower()}",
                              source="Ling et al. 2022 model synthetic sediment samples, figshare "
                                     "doi:10.6084/m9.figshare.17161730, CC BY 4.0")
