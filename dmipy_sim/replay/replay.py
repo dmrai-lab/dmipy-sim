@@ -1794,19 +1794,13 @@ class ReplayPack:
         the CANONICAL frame: ``(a (n_w,), A (n_w, 3, 3))``, the gate-integrated path field basis of the pack (C3 path
         route) scaled by ``B0``, ``chi_iso``, ``chi_aniso``. Raises, as the quadrature route does, when the pack
         cannot supply it."""
-        from .bank import path_field_integral
         B0, chi_iso, chi_aniso = P["B0"], P["chi_iso"], P["chi_aniso"]
         self._field_active(B0)
-        pm = self.meta.get("compression", {}).get("channels", {}).get("susceptibility_path")
-        if pm is None:
+        if P["ch"].get("susceptibility_path") is None:
             raise ValueError("the pose expansion with a field needs the pack's susc_path channel (C3 path route)")
         if chi_iso is None:
             raise ValueError("a scanner field was given without a chi_iso in the tissue; give chi_iso (and chi_aniso)")
-        dt = P["dt"]
-        Psi = None
-        for seg, t0, n_s in P["windows"]:                                        # the windows' path integrals sum
-            Psi_s, names = path_field_integral(seg.arrays, pm, waveform, n_s, dt, t0=t0)          # (n_w, n_ch)
-            Psi = Psi_s if Psi is None else Psi + Psi_s
+        Psi, names = _path_field_channels(P, waveform)                           # the one read of C3, windows summed
         i_p = names.index("iso_P_xx")
         i_a = names.index("aniso_G_xx") if "aniso_G_xx" in names else None
         a = float(chi_iso) * float(B0) * Psi[:, names.index("iso_local")]
