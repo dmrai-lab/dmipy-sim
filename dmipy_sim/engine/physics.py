@@ -448,11 +448,11 @@ def make_step_fn(geometry, diffusivity: float, dt: float, T2: float = None,
         kappa_over_D = jnp.float32(geometry.permeability / float(_D0))
         rho_over_D   = (jnp.float32(geometry.surface_relaxivity_t2 / float(_D0))
                         if has_surf else jnp.float32(0.0))
-        permeate = geometry.permeate
+        interact = geometry.interact               # absorbs a geometry that also reports crossing / refusal
 
         def _move(r, step, comp, key):
-            r_new, dlog_w = permeate(r, step, kappa_over_D, rho_over_D, key)
-            return r_new, dlog_w
+            hit = interact(r, step, kappa_over_D=kappa_over_D, rho_over_D=rho_over_D, key=key)
+            return hit.r, hit.dlog_w
 
     elif has_surf:
         rho_nom = jnp.float32(geometry.surface_relaxivity_t2)
