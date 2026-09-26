@@ -19,7 +19,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from dmipy_sim.geometry.mesh import Mesh, orient_faces, winding_inconsistency
+from dmipy_sim.geometry.mesh import Mesh, enclosed_volume, orient_faces, winding_inconsistency
 
 UM = 1e-6
 RADIUS = 5 * UM
@@ -108,6 +108,10 @@ def test_the_fixtures_winding_is_found_and_the_faces_are_reoriented():
     assert (mesh.winding_inconsistent_edges, mesh.n_faces_reoriented) == (686, 294)
     assert winding_inconsistency(V, mesh.faces) == 0
     assert _mesh(V, F).n_faces_reoriented == 0              # a consistent surface is left alone
+
+    with pytest.warns(UserWarning, match="mesh winding"):    # consistent, and every normal pointing in
+        turned = _mesh(V, F[:, [0, 2, 1]])
+    assert turned.n_faces_reoriented == len(F) and enclosed_volume(V, turned.faces) > 0
 
 
 def test_the_lumen_reads_as_interior_and_no_step_is_refused_once_the_faces_agree():

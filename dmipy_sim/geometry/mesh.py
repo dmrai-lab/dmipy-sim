@@ -289,6 +289,15 @@ def winding_inconsistency(V, F):
     return int((~_half_edge_pairs(F)[2]).sum())
 
 
+def enclosed_volume(V, F):
+    """The signed volume a closed surface encloses: positive when its faces face outward.
+
+    Meaningless on an open surface, where no test can say which side is inside.
+    """
+    t = np.asarray(V, np.float64)[np.asarray(F, np.int64)]
+    return float(np.einsum("ij,ij->i", t[:, 0], np.cross(t[:, 1], t[:, 2])).sum() / 6.0)
+
+
 def orient_faces(V, F):
     """``(F, n_reoriented)``: the same triangles wound consistently within each connected component, and
     outward wherever the component encloses a volume.
@@ -331,21 +340,32 @@ def orient_faces(V, F):
     F[flip] = F[flip][:, [0, 2, 1]]
     t = V[F]
     dv = np.einsum("ij,ij->i", t[:, 0], np.cross(t[:, 1], t[:, 2]))
-    closed = np.bincount(comp, weights=_boundary_face(F), minlength=n_comp) == 0
     volume = np.bincount(comp, weights=dv, minlength=n_comp)
     majority = np.bincount(comp, weights=flip, minlength=n_comp) * 2 > np.bincount(comp, minlength=n_comp)
-    reverse = np.where(closed, volume < 0, majority)
+    reverse = np.where(_component_encloses(F, comp, n_comp), volume < 0, majority)
     back = reverse[comp]
     F[back] = F[back][:, [0, 2, 1]]
     return F, int((flip ^ back).sum())
 
 
-def _boundary_face(F):
-    """1.0 for each face holding an edge no other face holds."""
-    F = np.asarray(F, np.int64)
-    edges = np.sort(np.concatenate([F[:, [0, 1]], F[:, [1, 2]], F[:, [2, 0]]]), axis=1)
-    _, inv, counts = np.unique(edges, axis=0, return_inverse=True, return_counts=True)
-    return (counts[inv].reshape(3, len(F)) == 1).any(axis=0).astype(float)
+def _component_encloses(F, comp, n_comp):
+    """Which components hold every edge of their own faces on exactly two of them, i.e. enclose a volume.
+
+    A pinch (an edge on three or more faces) cuts the adjacency graph, so a component of it can be an open
+    patch with no boundary EDGE of its own and no volume: on the Winther axon06-inner surface (7,652
+    non-manifold edges) a signed volume per patch is origin-dependent noise, and deciding a patch's sense by
+    it turned 0.5 % of a consistently wound surface inside out.
+    """
+    e = np.sort(np.concatenate([F[:, [0, 1]], F[:, [1, 2]], F[:, [2, 0]]]), axis=1)
+    c = np.tile(np.asarray(comp), 3)
+    order = np.lexsort((e[:, 1], e[:, 0], c))
+    cs, es = c[order], e[order]
+    start = np.ones(len(order), bool)
+    start[1:] = (cs[1:] != cs[:-1]) | (es[1:] != es[:-1]).any(axis=1)
+    counts = np.bincount(np.cumsum(start) - 1)
+    encloses = np.ones(n_comp, bool)
+    encloses[cs[start][counts != 2]] = False
+    return encloses
 
 
 class _MeshArrays(NamedTuple):
@@ -532,14 +552,17 @@ class Mesh(Geometry):
         # classifier called 50.5% of the lumen exterior, `reject_escape` then discarded 15.6% of 775 nm
         # steps outright, and the PGSE signal sat 2.0e-2 below MISST (dmrai-lab/dmipy-sim#479).
         self.winding_inconsistent_edges = winding_inconsistency(V, F)
+        inward = (not self.winding_inconsistent_edges and enclosed_volume(V, F) < 0
+                  and surface_topology(V, F)["boundary_edges"] == 0)
         self.n_faces_reoriented = 0
-        if self.winding_inconsistent_edges:
+        if self.winding_inconsistent_edges or inward:
             F, self.n_faces_reoriented = orient_faces(V, F)
+        if self.n_faces_reoriented:
             warnings.warn(
                 f"mesh winding: {self.winding_inconsistent_edges} manifold edge(s) were traversed the same "
-                f"way by both their faces, so {self.n_faces_reoriented} face(s) were reoriented. A surface "
-                f"whose normals disagree cannot say which side is inside: unrepaired, its classifier, its "
-                f"escape net and its interpolated normals read the wrong sign.", stacklevel=2)
+                f"way by both their faces, and {self.n_faces_reoriented} face(s) were reoriented. A surface "
+                f"whose normals disagree, or point inward, cannot say which side is inside: unrepaired, its "
+                f"classifier, its escape net and its interpolated normals read the wrong sign.", stacklevel=2)
         self.vertices = V
         self.pool = POOL_NAMES[_seed_pool(pool)]           # the pool init_positions seeds
         self.faces = F
