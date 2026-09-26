@@ -259,9 +259,11 @@ everywhere: 0 extra-cellular, 1 intra (the lumen / inside a closed surface), 2 m
 | curved fibres | `CurvedCylinder`, `CurvedMyelinatedCylinder`, `PackedCurvedCylinders` — sphere-swept polylines |
 | meshes | `Mesh` / `Mesh.from_ply` — any closed or 3-D-periodic triangle mesh, grid-accelerated |
 | sphere-grown cells | `SphereUnion` — the outer boundary of a union of overlapping spheres (CATERPillar), no meshing |
+| segmented images | `LabelVolume` — a label grid, where the wall is every face between voxels of different pools; no isosurface, and the Manhattan surface of the segmentation is what relaxes |
 
 Datasets enter as **specs**: `spec.cactus_spec(run_dir)`, `spec.winther_spec(inner, outer)`,
-`spec.caterpillar_spec(csv)`, `spec.strands_spec(txt)` / `spec.disco_spec(txt)` read the files and write down
+`spec.caterpillar_spec(csv)`, `spec.label_volume_spec(image)` (a segmented micro-CT / EM / mask volume in NRRD,
+MetaImage, NIfTI, TIFF or HDF5), `spec.strands_spec(txt)` / `spec.disco_spec(txt)` read the files and write down
 domain, pools, walls and seeding; `walk_spec(spec, ...)` walks them pool by pool and the pack embeds the spec.
 The save grid is not a knob: `walk_spec` derives `dt_save` from the strongest waveform a scanner class can
 deliver (`scanner="prisma" | "magnus" | "connectom" | ...`, or `(G_max, slew)`), the walker count and `T_max`,
@@ -342,7 +344,9 @@ rules, the replay invariant, and how to add physics. `docs/replay-guide/` is the
   substrate, forward signal with surface relaxivity, parity with dmipy-fit's analytical model.
 - **[Mesh loading and visualisation](examples/mesh_ply_and_viz.ipynb)** — build or load a mesh, run
   diffusion, relaxivity and permeability, select permeated walkers, render the viewer.
-- **[Validation ladders](examples/validation/)** — surface relaxivity and permeability from 1-D to 3-D
+- **[Validation ladders](examples/validation/)** — surface relaxivity and permeability from 1-D to 3-D,
+  and [the Imperial micro-CT rocks](examples/validation/talabi_micro_ct_rocks.py) against Talabi 2008's
+  random-walk NMR on the same voxels
   against exact eigenvalues; extra-axonal tortuosity scale sweep.
 - **[Substrate bank](examples/substrate_bank/)** — building canonical-pore packs with a fidelity target.
 - **[Circular white-matter phantom](examples/rph/circular_wm_phantom.py)** — one CACTUS pack composed into a

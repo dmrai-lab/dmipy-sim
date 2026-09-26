@@ -41,6 +41,7 @@ _DOWNSTREAM_MODULES = [
     # the replay package; dmipy_sim.replay is the package and keeps replay.py's surface
     "dmipy_sim.replay._replay_kernel", "dmipy_sim.spec", "dmipy_sim.spec.build", "dmipy_sim.spec.walk",
     "dmipy_sim.spec.producers", "dmipy_sim.io.caterpillar", "dmipy_sim.io.strands", "dmipy_sim.geometry.sphere_union",
+    "dmipy_sim.io.label_volume", "dmipy_sim.geometry.label_volume",
     # acquisition / fields / viz; dmipy_sim.viz is the package re-exporting viz.py
     "dmipy_sim.acquisition.noise", "dmipy_sim.acquisition.scanners", "dmipy_sim.acquisition.scanner_constants",
     "dmipy_sim.acquisition.timing",
@@ -63,12 +64,19 @@ def test_submodule_imports(name):
 
 # ── every exported geometry, built small ─────────────────────────────────────────────────
 # Built inside the test, never at collection: a geometry holds device buffers.
+def _slab_labels():
+    """A 10 um slab pore between two grain slabs, the smallest label volume with a wall."""
+    lab = np.ones((40, 8, 8), np.uint8)
+    lab[10:30] = 0
+    return lab
+
+
 def _all_geometries():
     from dmipy_sim.geometry import mesh_shapes
     from dmipy_sim.geometry import (FreeDiffusion, Box1D, Sphere, Cylinder, Ellipsoid,
                                     PermeableSlab1D, PermeableShell, PackedCylinders, PackedSpheres,
                                     MyelinatedCylinder, PackedMyelinatedCylinders, CurvedCylinder,
-                                    CurvedMyelinatedCylinder, PackedCurvedCylinders, Mesh,
+                                    CurvedMyelinatedCylinder, PackedCurvedCylinders, Mesh, LabelVolume,
                                     pack_cylinders, pack_spheres, pack_myelinated_cylinders)
     R = 1e-6
     c2, L2, _ = pack_cylinders([R] * 4, target_vf=0.3, seed=0)
@@ -93,13 +101,14 @@ def _all_geometries():
         "CurvedMyelinatedCylinder": CurvedMyelinatedCylinder(cl, r_in=2e-6, r_out=3e-6),
         "PackedCurvedCylinders": PackedCurvedCylinders([cl], [2e-6]),
         "Mesh": Mesh(V, F, feature_radius=1e-6),
+        "LabelVolume": LabelVolume(_slab_labels(), 0.5e-6),
     }
 
 
 _NAMES = ["FreeDiffusion", "Box1D", "Sphere", "Cylinder", "Ellipsoid", "PermeableSlab1D",
           "PermeableShell", "PackedCylinders", "PackedSpheres", "MyelinatedCylinder",
           "PackedMyelinatedCylinders", "CurvedCylinder", "CurvedMyelinatedCylinder", "PackedCurvedCylinders",
-          "Mesh"]
+          "Mesh", "LabelVolume"]
 # stepped by their own fused kernel; `reflect` raises by design
 _NO_REFLECT = {"MyelinatedCylinder", "PackedMyelinatedCylinders"}
 
@@ -172,6 +181,10 @@ def test_length_scales_match_the_geometry_definition():
     assert ls("Mesh") == LengthScales(min_feature=1e-6, lookup_cell=m.cell_size, is_mesh_feature=True)
     pk = G["PackedCurvedCylinders"]
     assert ls("PackedCurvedCylinders") == LengthScales(min_feature=2e-6, lookup_cell=pk.cell_size)
+    # a label volume: the voxel, and the walking pool's measured V/S (a 10 um slab pore -> 5 um)
+    # a label volume: the voxel, and no separate pore -- V/S is a mean, and the surface rule divides
+    # the worst case a segmentation can hold, which is one voxel
+    assert ls("LabelVolume") == LengthScales(min_feature=0.5e-6)
 
 
 def test_an_object_without_length_scales_is_refused():

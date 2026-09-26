@@ -236,6 +236,12 @@ class Geometry(ABC):
             # `permeate` signatures. Costs one `classify_position` per call, on the
             # permeable path only.
             zero = jnp.zeros((), bool)
+            if kappa_is_zero:
+                # kappa = 0 grants no crossing, so there is nothing to derive and the two
+                # `classify_position` gathers that would derive it are not paid for. This is the
+                # path a purely reflecting walk takes through `interact` on a geometry that has a
+                # membrane it is not using -- a mesh, an analytic wall -- and it is per sub-step.
+                return WallHit(out[0], out[1], zero, zero)
             if not hasattr(self, "classify_position"):
                 return WallHit(out[0], out[1], zero, zero)
             crossed = self.classify_position(out[0]) != self.classify_position(r)

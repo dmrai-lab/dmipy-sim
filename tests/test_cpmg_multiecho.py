@@ -3,6 +3,7 @@
 No EPG, no trajectory replay — one walk through the ideal-180 train, signal sampled at
 each echo. At b=0 the per-echo signal is the pure T2 decay exp(-k*TE/T2).
 """
+import pytest
 import numpy as np
 import numpy.testing as npt
 
@@ -41,3 +42,35 @@ def test_meiboom_gill_is_the_default_and_carr_purcell_the_option():
     S_cp = np.abs(np.asarray(simulate_bloch(400, 2e-9, cp, FreeDiffusion(), seed=0, require_gpu=False))).ravel()
     assert S_mg.shape == (8,) and S_mg[1] > 0.95 and S_mg[7] > 0.9            # the even echoes recover
     assert S_cp[7] < 0.6 < S_mg[7]                                              # Carr-Purcell decays with the error
+
+
+def test_walker_batching_carries_every_argument_that_shapes_the_walk():
+    """A batched `simulate_cpmg` must walk the same physics as an unbatched one.
+
+    The recursive per-batch call passed `T2` and the seed and nothing else, so `sub_steps` was dropped:
+    a caller who pinned the count got the auto-tuned walk and no sign of it, which is how a step-rule
+    measurement can be taken on a walk that never used the step it reports. `r0` cannot be split by a
+    recursive call at all, so it is refused rather than silently walked whole in every batch.
+    """
+    from dmipy_sim.engine import core
+    seq = cpmg(8, 2e-3, n_t_per_echo=2)
+    geom = Sphere(radius=5e-6, surface_relaxivity_t2=1e-5)
+    seen, real = [], core.make_step_fn
+
+    def spy(g, D, dt, **kw):
+        seen.append(kw.get("sub_steps"))
+        return real(g, D, dt, **kw)
+
+    core.make_step_fn = spy
+    try:
+        for asked in (None, 1, 7):
+            seen.clear()
+            simulate_cpmg(400, 2e-9, seq, geom, T2=3.1, seed=0, sub_steps=asked,
+                          walker_batch_size=100, require_gpu=False)
+            assert len(seen) == 4 and set(seen) == {asked}, (asked, seen)
+    finally:
+        core.make_step_fn = real
+
+    r0 = np.zeros((400, 3), np.float32)
+    with pytest.raises(ValueError, match="cannot batch an explicit r0"):
+        simulate_cpmg(400, 2e-9, seq, geom, r0=r0, walker_batch_size=100, require_gpu=False)

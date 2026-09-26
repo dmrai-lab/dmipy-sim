@@ -48,6 +48,11 @@ dev = [
     # engine needs rtree, and trimesh.repair.fill_holes needs networkx. Both are trimesh EXTRAS, so a bare
     # install imports fine and then raises ModuleNotFoundError deep inside a containment call.
     "trimesh[easy]>=4.0",   # mesh tests load/generate PLY meshes (dmipy_sim.geometry.mesh)
+    # the segmented-image containers io.label_volume does not read with the standard library, so
+    # their readers are TESTED rather than assumed to work (tests/geometry/test_label_volume.py)
+    "nibabel>=5.0",
+    "tifffile>=2023.1",
+    "h5py>=3.8",
 ]
 
 # ORACLE-ONLY, and deliberately NOT in `dev`. Nothing in dmipy_sim imports dipy -- the normative
@@ -64,6 +69,14 @@ interop = [
 # to READ mesh files, and its [easy] extras (rtree, networkx) for ray parity and hole repair.
 mesh = [
     "trimesh[easy]>=4.0",
+]
+# Segmented-image containers (dmipy_sim.io.label_volume). NRRD and MetaImage are read with the
+# standard library and need nothing; NIfTI needs nibabel, a TIFF stack tifffile, HDF5 h5py. Each
+# reader names its own missing package when asked for a format it cannot open.
+images = [
+    "nibabel>=5.0",
+    "tifffile>=2023.1",
+    "h5py>=3.8",
 ]
 # The cross-engine flagship example (examples/canonical_wm_parity_from_sim.py) additionally
 # needs the analytical engine dmipy-fit. It is an OPTIONAL example dependency only -- the

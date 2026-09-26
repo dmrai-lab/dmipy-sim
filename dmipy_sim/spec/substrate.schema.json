@@ -60,16 +60,22 @@
           "surface": {
             "type": "object", "required": ["kind"],
             "properties": {
-              "kind": {"type": "string", "enum": ["sphere", "cylinder", "ellipsoid", "plane", "swept_polyline", "sphere_union", "mesh"]},
+              "kind": {"type": "string", "enum": ["sphere", "cylinder", "ellipsoid", "plane", "swept_polyline", "sphere_union", "mesh", "label_volume"]},
               "center": {"$ref": "#/$defs/vec3"}, "radius": {"type": "number", "exclusiveMinimum": 0},
               "axis": {"$ref": "#/$defs/vec3"}, "length": {"type": "number", "exclusiveMinimum": 0},
               "semiaxes": {"$ref": "#/$defs/vec3"}, "rotation": {"type": "array"},
               "point": {"$ref": "#/$defs/vec3"}, "normal": {"$ref": "#/$defs/vec3"},
               "centerline": {"type": "array", "items": {"$ref": "#/$defs/vec3"}},
-              "file": {"type": "string"}, "format": {"type": "string", "enum": ["ply", "obj", "stl", "caterpillar"]},
+              "file": {"type": "string"}, "format": {"type": "string", "enum": ["ply", "obj", "stl", "caterpillar", "tck", "strands", "nrrd", "mhd", "nifti", "tiff", "hdf5"]},
               "column": {"type": "string", "enum": ["inner_radius", "outer_radius"]},
               "cell_type": {"type": "string", "enum": ["axon", "glial_cell", "blood_vessel"]},
               "scale": {"type": "number", "exclusiveMinimum": 0}, "sha256": {"type": "string"},
+              "voxel_size": {"$ref": "#/$defs/vec3", "description": "label_volume: the voxel's extent along each index axis, metres"},
+              "origin": {"$ref": "#/$defs/vec3", "description": "label_volume: the lower corner of the CROPPED grid's voxel (0, 0, 0), metres; the crop offset is already in it"},
+              "labels": {"type": "object", "description": "label_volume: {label value: pool name}; every label present in the crop, every name a pool of the spec",
+                         "additionalProperties": {"type": "string"}},
+              "crop": {"type": "array", "minItems": 6, "maxItems": 6, "items": {"type": "integer"},
+                       "description": "label_volume: (i0, j0, k0, i1, j1, k1), half-open, in voxels"},
               "instances": {"type": "object", "description": "per-instance parameter arrays (centers, radii, ...) of equal length"}
             }
           },

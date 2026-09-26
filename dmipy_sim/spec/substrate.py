@@ -16,7 +16,8 @@ from typing import Optional
 SPEC_VERSION = "0.1"
 SCHEMA_PATH = Path(__file__).with_name("substrate.schema.json")
 BOUNDARIES = ("periodic", "reflect", "open")
-SURFACE_KINDS = ("sphere", "cylinder", "ellipsoid", "plane", "swept_polyline", "sphere_union", "mesh")
+SURFACE_KINDS = ("sphere", "cylinder", "ellipsoid", "plane", "swept_polyline", "sphere_union", "mesh",
+                 "label_volume")
 DIRECTORS = ("none", "radial", "file")
 SEEDING_RULES = ("uniform_by_volume", "explicit")
 WEIGHT_RULES = ("water_fraction", "thin")
@@ -62,11 +63,20 @@ class Pool:
     susceptibility: Optional[Susceptibility] = None
 
 
+#: Containers a ``label_volume`` surface's ``format`` may name (`dmipy_sim.io.label_volume`).
+LABEL_VOLUME_FORMATS = ("nrrd", "mhd", "nifti", "tiff", "hdf5")
+
+
 @dataclass(frozen=True)
 class Surface:
-    """An analytic surface, a sphere union or a mesh file; ``instances`` holds per-instance parameter arrays.
-    A ``sphere_union`` is inline (``instances.centers`` / ``radii``) or a CATERPillar table (``file``,
-    ``format: caterpillar``, ``column`` = which radius, ``cell_type`` = which rows)."""
+    """An analytic surface, a sphere union, a mesh file or a segmented label volume; ``instances`` holds
+    per-instance parameter arrays. A ``sphere_union`` is inline (``instances.centers`` / ``radii``) or a
+    CATERPillar table (``file``, ``format: caterpillar``, ``column`` = which radius, ``cell_type`` = which
+    rows). A ``label_volume`` is the ``file`` of a segmented image with its ``format``, ``voxel_size``,
+    ``origin``, the ``labels`` map from label value to pool name and the ``crop`` of it that is the
+    substrate: the wall is every face between two pools of that grid. ``origin`` is the lower corner of
+    the CROPPED grid's first voxel, so a reader applies the crop and then takes ``origin`` as it
+    stands; adding ``crop * voxel_size`` to it reads the crop twice."""
     kind: str
     center: Optional[list] = None
     radius: Optional[float] = None
@@ -83,6 +93,10 @@ class Surface:
     format: Optional[str] = None
     scale: Optional[float] = None
     sha256: Optional[str] = None
+    voxel_size: Optional[list] = None   # label_volume: the voxel's extent per index axis, metres
+    origin: Optional[list] = None       # label_volume: the lower corner of the CROPPED grid's voxel (0,0,0), m
+    labels: Optional[dict] = None       # label_volume: {label value: pool name}, insertion order = pool id
+    crop: Optional[list] = None         # label_volume: (i0, j0, k0, i1, j1, k1), half-open, in voxels
     instances: Optional[dict] = None
 
 
@@ -222,7 +236,8 @@ def _strip(x):
     if isinstance(x, dict):
         return {k: _strip(v) for k, v in x.items()
                 if not (v is None and k in ("center", "radius", "axis", "length", "semiaxes", "rotation", "point",
-                                            "normal", "centerline", "file", "format", "scale", "sha256", "instances"))}
+                                            "normal", "centerline", "file", "format", "scale", "sha256", "instances",
+                                            "column", "cell_type", "voxel_size", "origin", "labels", "crop"))}
     if isinstance(x, list):
         return [_strip(v) for v in x]
     return x
@@ -243,6 +258,45 @@ def _vec3(v, where):
 def _nonneg(v, where):
     if not isinstance(v, (int, float)) or v < 0:
         raise SpecError(f"{where}: expected a number >= 0, got {v!r}")
+
+
+def _label_volume_surface(s, where, pool_names):
+    """Validate a ``label_volume`` surface: the image it cites, its scale, and its label -> pool map.
+
+    A label volume's geometry IS the file, so the spec cannot describe the substrate without the file's
+    path, container and voxel size; the ``labels`` map is what makes a label value a pool, and a value
+    mapped to a pool the spec does not declare is refused rather than dropped.
+    """
+    if not s.get("file"):
+        raise SpecError(f"{where}.surface: a label_volume needs 'file', the segmented image it cites")
+    if s.get("format") not in LABEL_VOLUME_FORMATS:
+        raise SpecError(f"{where}.surface: a label_volume needs 'format' in {LABEL_VOLUME_FORMATS}, "
+                        f"got {s.get('format')!r}")
+    vox = s.get("voxel_size")
+    if vox is None:
+        raise SpecError(f"{where}.surface: a label_volume needs 'voxel_size', three lengths in metres")
+    _vec3(vox, f"{where}.surface.voxel_size")
+    if any(v <= 0 for v in vox):
+        raise SpecError(f"{where}.surface.voxel_size must be positive on every axis, got {vox}")
+    if s.get("origin") is not None:
+        _vec3(s["origin"], f"{where}.surface.origin")
+    lab = s.get("labels")
+    if not isinstance(lab, dict) or not lab:
+        raise SpecError(f"{where}.surface: a label_volume needs 'labels', a map of label value to pool name")
+    for k, v in lab.items():
+        if not str(k).lstrip("-").isdigit() or not (0 <= int(k) <= 255):
+            raise SpecError(f"{where}.surface.labels: {k!r} is not a label value (0..255)")
+        if v not in pool_names:
+            raise SpecError(f"{where}.surface.labels: label {k} is pool {v!r}, which the spec does not declare "
+                            f"(pools are {pool_names})")
+    if len(set(lab.values())) != len(lab):
+        raise SpecError(f"{where}.surface.labels maps two label values to one pool: {lab}")
+    crop = s.get("crop")
+    if crop is not None:
+        if not (isinstance(crop, (list, tuple)) and len(crop) == 6 and all(isinstance(x, int) for x in crop)):
+            raise SpecError(f"{where}.surface.crop is six voxel indices (i0, j0, k0, i1, j1, k1), got {crop!r}")
+        if any(a < 0 for a in crop[:3]) or any(b <= a for a, b in zip(crop[:3], crop[3:])):
+            raise SpecError(f"{where}.surface.crop must be a non-empty half-open box, got {crop!r}")
 
 
 def validate(d):
@@ -324,6 +378,8 @@ def validate(d):
                                     f"'inner_radius' or 'outer_radius'")
             elif not (inst.get("centers") and inst.get("radii")):
                 raise SpecError(f"{where}.surface: a sphere_union needs 'file' or instances.centers and instances.radii")
+        if s["kind"] == "label_volume":
+            _label_volume_surface(s, where, names)
         if s["kind"] in ("sphere", "cylinder") and s.get("radius") is None and not (s.get("instances") or {}).get("radii"):
             raise SpecError(f"{where}.surface: a {s['kind']} needs 'radius' or instances.radii")
         inst = s.get("instances")

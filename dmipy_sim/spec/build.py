@@ -112,7 +112,7 @@ def _spec_without_frame(geometry, *, id=None, provenance=None, surface_dir=None)
     the file it came from."""
     from ..geometry import (FreeDiffusion, Box1D, Sphere, Cylinder, Ellipsoid, PackedCylinders, PackedSpheres,
                             MyelinatedCylinder, PackedMyelinatedCylinders, CurvedCylinder, CurvedMyelinatedCylinder,
-                            PackedCurvedCylinders, SphereUnion)
+                            PackedCurvedCylinders, SphereUnion, LabelVolume)
     from ..geometry.analytic import PermeableSlab1D, PermeableShell
     g = geometry
     name = type(g).__name__
@@ -126,6 +126,8 @@ def _spec_without_frame(geometry, *, id=None, provenance=None, surface_dir=None)
             f"a replay knob for a pack")
     if isinstance(g, SphereUnion):
         return _spec_of_sphere_union(g, sid, prov)
+    if isinstance(g, LabelVolume):
+        return _spec_of_label_volume(g, id, prov, surface_dir)
     extra0 = Pool(0, "extra", None, water_fraction=0.0)
     if isinstance(g, FreeDiffusion):
         half = 1e-4
@@ -338,6 +340,95 @@ def _spec_of_sphere_union(g, sid, prov):
                          description=f"union of {len(g.radii)} spheres; the {g.pool} pool", provenance=prov)
 
 
+def _spec_of_label_volume(g, id, prov, surface_dir=None):
+    """The spec of a :class:`~dmipy_sim.geometry.label_volume.LabelVolume`: its image cited as a file,
+    one pool per label and one wall per pair of pools that share a face.
+
+    A segmented image is not embeddable, so the surface carries the path, the container, the sha256,
+    the voxel size, the origin, the label map and the crop, exactly as a strand spec cites its track
+    file. ``g.source`` is the citation the geometry was built from, so a geometry that came from a spec
+    is written back citing the SAME image at the SAME path and digest and the same crop; only a
+    geometry built from an array in memory has an image written for it.
+
+    Four things a grid cannot hold are taken from the spec the geometry was built from
+    (``_spec_source``), so ``spec_of(geometry_from_spec(spec))`` is that spec: the pools' bulk ``D`` /
+    ``T2`` / ``T1``, the frame, ``realisation`` and ``provenance``. They are properties of the fluid,
+    the pose and the source, not of the voxels; a geometry built from an array has none of them and
+    gets the walking pool's water fraction and nothing else, which is all its own walk demonstrates.
+    """
+    import os
+    import dataclasses
+    src = _label_volume_source(g, surface_dir)
+    was = getattr(g, "_spec_source", None)
+    sid = id or (was.id if was is not None
+                 else f"label_volume/{os.path.splitext(os.path.basename(src['file']))[0]}")
+    names = list(g.pools.values())
+    said = {p.name: p for p in (was.pools if was is not None else [])}
+    pools = [Pool(i, n, (said[n].D if n in said else None), water_fraction=(1.0 if i == g.pool_index else 0.0),
+                  T2=(said[n].T2 if n in said else None), T1=(said[n].T1 if n in said else None))
+             for i, n in enumerate(names)]
+    surf_kw = dict(file=src["file"], format=src["format"], sha256=src.get("sha256"),
+                   voxel_size=np.asarray(g.voxel_size, float).tolist(),
+                   origin=np.asarray(g.origin, float).tolist(),
+                   labels={str(v): n for v, n in g.pools.items()},
+                   crop=(list(int(x) for x in src["crop"]) if src.get("crop") is not None else None))
+    rho, kappa = _rho(g), _kappa(g)
+    walls = [Wall(f"{names[j]}|{names[i]}", Surface("label_volume", **surf_kw), j, i,
+                  Directional(kappa, kappa), Sided(rho, rho))
+             for (i, j) in sorted(g.interfaces())]
+    bc = ["periodic" if p else "reflect" for p in g.periodic]
+    dom = Domain(np.asarray(g.box_min, float).tolist(), np.asarray(g.box_max, float).tolist(), bc)
+    spec = SubstrateSpec(sid, dom, pools, walls, Seeding([g.pool_index]),
+                         Validity(float(g.voxel_size.min()), _tiers(walls, pools, kappa)),
+                         description=(was.description if was is not None else
+                                      f"a segmented {'x'.join(str(int(d)) for d in g.dims)} label volume; "
+                                      f"the {g.pool} pool walks between its voxel faces"),
+                         provenance=(was.provenance if was is not None
+                                     else dict(prov, files=[{"path": src["file"], "sha256": surf_kw["sha256"]}])))
+    if was is None:
+        return spec
+    return dataclasses.replace(spec, frame=was.frame, realisation=was.realisation, request=was.request,
+                               nominal_field_T=was.nominal_field_T,
+                               validity=dataclasses.replace(spec.validity, tiers=list(was.validity.tiers)))
+
+
+def _label_volume_source(g, surface_dir):
+    """The file a :class:`~dmipy_sim.geometry.label_volume.LabelVolume` is cited by: the one it was read
+    from, else the grid written into :func:`surface_cache_dir` under its content hash -- the same rule a
+    ``Mesh`` built from arrays follows, since a spec references surfaces as files."""
+    src = getattr(g, "source", None)
+    if src is not None:
+        return src
+    import os
+    from ..io.label_volume import write_nrrd
+    digest = hashlib.sha256(np.ascontiguousarray(g.labels).tobytes()
+                            + np.asarray(g.voxel_size, np.float64).tobytes()).hexdigest()[:24]
+    d = surface_dir if surface_dir is not None else surface_cache_dir()
+    os.makedirs(d, exist_ok=True)
+    path = os.path.join(d, f"labels-{digest}.nrrd")
+    if not os.path.exists(path):
+        write_nrrd(path, g.labels, g.voxel_size, g.origin)
+    g.source = {"file": path, "format": "nrrd", "sha256": _sha256(path), "crop": None}
+    return g.source
+
+
+def label_volume_arrays(surface):
+    """``(labels, voxel_size, origin, pools)`` of a ``label_volume`` surface: the image read back from
+    the file it cites (its sha256 checked when the spec states one), cropped as the spec says, and the
+    label -> pool-name map in pool-id order."""
+    s = surface
+    path = resolve_surface_file(s.file)
+    if s.sha256 and _sha256(path) != s.sha256:
+        raise SpecError(f"{path} does not match the sha256 the spec cites")
+    from ..io.label_volume import read_label_volume, crop_labels
+    vol = read_label_volume(path, format=s.format, voxel_size=s.voxel_size)
+    if s.crop is not None:
+        vol = crop_labels(vol, s.crop)
+    origin = np.asarray(s.origin, float) if s.origin is not None else vol.origin
+    pools = {int(k): v for k, v in s.labels.items()}
+    return vol.labels, vol.voxel_size, origin, pools
+
+
 def sphere_union_arrays(surface):
     """``(centers, radii)`` in metres of a ``sphere_union`` surface: inline instances, or the rows of a
     CATERPillar table selected by ``cell_type`` with the ``column`` radius."""
@@ -433,7 +524,7 @@ def geometry_from_spec(spec):
 def _geometry_from_spec(spec):
     from ..geometry import (FreeDiffusion, Box1D, Sphere, Cylinder, Ellipsoid, PackedCylinders, PackedSpheres,
                             MyelinatedCylinder, PackedMyelinatedCylinders, CurvedCylinder, CurvedMyelinatedCylinder,
-                            PackedCurvedCylinders, SphereUnion)
+                            PackedCurvedCylinders, SphereUnion, LabelVolume)
     from ..geometry.analytic import PermeableSlab1D, PermeableShell
     from ..compartments import Compartments, Pool as CPool
     spec = SubstrateSpec.from_dict(spec) if isinstance(spec, dict) else spec
@@ -457,6 +548,26 @@ def _geometry_from_spec(spec):
             return Box1D(dom.box_max[0] - dom.box_min[0], surface_relaxivity_t2=rho_dom)
         raise SpecError("a wall-less spec is free diffusion (open) or a 1-D slab (reflect in x)")
     kinds = [w.surface.kind for w in walls]
+    if any(k == "label_volume" for k in kinds):
+        if len({w.surface.file for w in walls}) != 1:
+            raise SpecError("a label_volume spec's walls are all faces of ONE segmented image; these cite "
+                            f"{sorted({w.surface.file for w in walls})}")
+        if len(spec.seeding.pools) != 1:
+            raise SpecError(f"a label_volume is walked one pool at a time; the spec seeds {spec.seeding.pools}")
+        w = walls[0]
+        labels, vox, origin, pool_map = label_volume_arrays(w.surface)
+        by_id = {p.id: p.name for p in spec.pools}
+        order = {p.name: p.id for p in spec.pools}
+        pools = dict(sorted(pool_map.items(), key=lambda kv: order[kv[1]]))
+        g = LabelVolume(labels, vox, origin=origin,
+                        periodic=[b == "periodic" for b in dom.boundary], pools=pools,
+                        pool=by_id[spec.seeding.pools[0]], surface_relaxivity_t2=rho(w),
+                        permeability=kappa(w))
+        # the image the spec cites, as the spec cites it: a geometry built from a spec must be written
+        # back citing the SAME file, and not a private copy of its voxels in the surface cache
+        g.source = {"file": w.surface.file, "format": w.surface.format, "sha256": w.surface.sha256,
+                    "crop": (list(int(x) for x in w.surface.crop) if w.surface.crop is not None else None)}
+        return g
     if any(k == "sphere_union" for k in kinds) or (len(walls) > 1 and any(w.surface.instances for w in walls)
                                                     and any(k == "swept_polyline" for k in kinds)):
         if len(walls) != 1 or len(spec.seeding.pools) != 1:
