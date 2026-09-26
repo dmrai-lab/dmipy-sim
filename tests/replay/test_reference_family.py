@@ -560,6 +560,58 @@ def test_a_tier_below_target_needs_the_design_records_trade(ran):
             if c["check"].endswith("tier-positions-target-or-trade")][0]["passed"]
 
 
+def test_the_gate_compares_us_with_them_and_not_only_with_ourselves(ran):
+    """A `reproduces-` check compares two routes of one engine; the family exists to reproduce a PUBLISHED
+    number, and the gate must say how far it is. `ling-sand-packs` sat 17.7 % from its measurement under a card
+    saying every check passed."""
+    fam, rec = ran
+    names = {c["check"] for c in rec["gate"]["checks"]}
+    assert "sphere/published-signal_at_b" in names
+    c = next(c for c in rec["gate"]["checks"] if c["check"] == "sphere/published-signal_at_b")
+    published = next(q for q in rec["reference"]["quantities"] if q["substrate"] == "sphere")["published"]
+    got = rec["pack"]["substrates"]["sphere"]["reproduced"]["signal_at_b"]["value"]
+    assert c["relative"] == pytest.approx(abs(got - published["value"]) / abs(published["value"]))
+    assert c["uncertainty_stated"] is False              # the closed form states none, so it cannot fail
+
+
+def test_a_published_disagreement_reaches_paragraph_one_even_when_it_cannot_fail(ran):
+    """A publication with no stated uncertainty cannot be failed against; the disagreement is recorded as a
+    number and the card's first paragraph states it, which is the whole of the Ling lesson."""
+    fam, rec = ran
+    gate = json.loads(json.dumps(rec["gate"]))
+    c = next(c for c in gate["checks"] if c["check"] == "sphere/published-signal_at_b")
+    c.update(relative=c["tolerance"] * 10 + 1.0, uncertainty_stated=False, passed=True)
+    bad = R._disagreements(gate)
+    assert [x["check"] for x in bad if x["check"].startswith("sphere/published-")] == \
+        ["sphere/published-signal_at_b"]
+    card = R._render_card("synthetic", "owner/synthetic", fam.read_all("pack"), gate,
+                          fam.records.read("card")["previews"], "print(1)", dict(stdout="1", seconds=0.1),
+                          "packs/x.rpk")
+    opening = card.split("## The packs")[0]
+    assert "`sphere`: " in opening and "cannot be failed on and is recorded instead" in opening
+    only_published = json.loads(json.dumps(gate))
+    for x in only_published["checks"]:                      # with nothing FAILING, the wording is the milder one
+        x["passed"] = True if "/reproduces-" in x["check"] else x["passed"]
+    only_published["failures"] = []
+    card2 = R._render_card("synthetic", "owner/synthetic", fam.read_all("pack"), only_published,
+                           fam.records.read("card")["previews"], "print(1)", dict(stdout="1", seconds=0.1),
+                           "packs/x.rpk")
+    assert "disagree with the published number" in card2.split("## The packs")[0]
+
+
+def test_a_published_value_with_a_stated_uncertainty_can_fail(ran):
+    fam, rec = ran
+    pk = json.loads(json.dumps(rec["pack"]))
+    ref = json.loads(json.dumps(rec["reference"]))
+    for q in ref["quantities"]:
+        q["published"]["uncertainty"] = 1e-4                         # they state one, tightly
+        q["published"]["uncertainty_is"] = "stated in the paper"
+    pk["substrates"]["sphere"]["reproduced"]["signal_at_b"]["value"] *= 1.5
+    c = next(c for c in R._gate_checks(dict(rec, pack=pk, reference=ref))
+             if c["check"] == "sphere/published-signal_at_b")
+    assert c["uncertainty_stated"] and not c["passed"]
+
+
 # --------------------------------------------------------------- the grade rule
 @pytest.mark.parametrize("record,grade", [
     (dict(published_kind="number", same_released_geometry=True), "A"),

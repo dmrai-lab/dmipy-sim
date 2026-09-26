@@ -500,6 +500,11 @@ def _resolve(path, context):
     return node
 
 
+def _quadrature(*terms):
+    """Independent standard uncertainties combined: the root of the sum of squares."""
+    return float(sum(float(t) ** 2 for t in terms) ** 0.5)
+
+
 def tolerance_of(tol, context):
     """``(terms, tolerance)``: every term of ``tol`` resolved over the records, combined in quadrature.
 
@@ -530,7 +535,7 @@ def tolerance_of(tol, context):
             raise ReferenceRefusal(f"tolerance: the term {p!r} is {v!r}; a relative standard uncertainty is finite "
                                    f"and non-negative")
         out[p] = v
-    return out, float(sum(v * v for v in out.values()) ** 0.5)
+    return out, _quadrature(*out.values())
 
 
 def pass_band(n_comparisons, dof, *, false_failure_rate):
@@ -655,6 +660,31 @@ def _gate_checks(rec):
                   f"comparisons; the uncertainty is "
                   + ", ".join(f"{p}={v:.3g}" for p, v in sorted(terms.items())),
                   relative=rel, tolerance=tol, sigma=rel / u, standard_uncertainty=u, k=k, terms=terms)
+
+            # and against THEM. The `reproduces-` check above compares us with our own direct walk, which two
+            # routes of one engine agreeing says nothing about; the published number is what the family exists
+            # to reproduce. A publication that states an uncertainty is compared with it; one that states none
+            # cannot be failed on, so the disagreement is RECORDED as a number and the card's first paragraph
+            # states it -- `ling-sand-packs` sat 17.7 % from its measurement under a card saying every check
+            # passed.
+            pub = q["published"]
+            if pub["value"] is None:
+                check(True, f"{name}/published-{qname}",
+                      f"{pub['printed_in']} states no value for this quantity ({pub['uncertainty_is']})",
+                      uncertainty_stated=False, relative=None)
+            else:
+                rel_pub = abs(got["value"] - pub["value"]) / abs(pub["value"])
+                u_pub = _quadrature(u, pub["uncertainty"])
+                stated = bool(pub["uncertainty"])
+                tol_pub = k * u_pub
+                check(rel_pub <= tol_pub if stated else True, f"{name}/published-{qname}",
+                      f"replayed {got['value']:.6g} against {pub['value']:.6g} printed in {pub['printed_in']}, "
+                      f"{pub['locator']}: {rel_pub:.3%} of it, {rel_pub / u_pub:.3g} standard uncertainties"
+                      + (f", against the band of {k:.4g} ({tol_pub:.3%})" if stated else
+                         f". The publication states no uncertainty ({pub['uncertainty_is']}), so this "
+                         f"disagreement cannot be failed on and is recorded instead"),
+                      relative=rel_pub, tolerance=tol_pub, sigma=rel_pub / u_pub, standard_uncertainty=u_pub,
+                      k=k, uncertainty_stated=stated)
     return checks
 
 
@@ -1413,7 +1443,18 @@ def _run_snippet(source, cwd):
 
 
 def _disagreements(gate):
-    return [c for c in gate["checks"] if not c["passed"] and "/reproduces-" in c["check"]]
+    """Every comparison the card's first paragraph must state: a failed one, and a `published-` comparison
+    whose disagreement is outside its band although the publication states no uncertainty to fail it on."""
+    out = []
+    for c in gate["checks"]:
+        if "/reproduces-" not in c["check"] and "/published-" not in c["check"]:
+            continue
+        if not c["passed"]:
+            out.append(c)
+        elif c.get("relative") is not None and c.get("tolerance") is not None \
+                and not c.get("uncertainty_stated", True) and c["relative"] > c["tolerance"]:
+            out.append(c)
+    return out
 
 
 def _render_card(name, repo, rec, gate, previews, snippet_shown, snippet_ran, hub_path):
@@ -1437,10 +1478,16 @@ def _render_card(name, repo, rec, gate, previews, snippet_shown, snippet_ran, hu
                        f"{ref['sample_relation']}: **grade {grade}** by the rule of "
                        f"[dmipy-sim#459](https://github.com/dmrai-lab/dmipy-sim/issues/459).")
     if bad:
-        opening.append("**The comparison does not hold.** " + " ".join(
-            f"`{c['check'].split('/')[0]}`: {c['detail']}." for c in bad)
-            + " The packs below are certified for what their certificate states; the reproduction of that "
-              "quantity is outside the tolerance the design record derives, and the gate says so.")
+        failed = [c for c in bad if not c["passed"]]
+        stated = [c for c in bad if c["passed"]]
+        opening.append(("**The comparison does not hold.** " if failed else
+                        "**These packs disagree with the published number.** ")
+                       + " ".join(f"`{c['check'].split('/')[0]}`: {c['detail']}." for c in bad)
+                       + (" The packs below are certified for what their certificate states; the gate says so."
+                          if failed else "")
+                       + (" No gate check fails on this: the publication states no uncertainty to fail it "
+                          "against, so the disagreement is a recorded number rather than a verdict."
+                          if stated else ""))
     if gate["passed"]:
         opening.append(f"Every one of the gate's {gate['n_checks']} checks passed.")
     else:
