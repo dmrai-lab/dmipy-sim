@@ -34,8 +34,11 @@ def read_scheme(path, *, n_t=None, gradient_directions=None, min_samples_per_del
     ``n_t`` defaults to the coarsest grid on which every ``delta``, ``Delta``, ``pad`` and ``TE`` of the file is
     a whole number of samples -- so no lobe edge is quantised -- refined until the shortest lobe holds
     ``min_samples_per_delta`` samples (:func:`_exact_n_t`); an ``n_t`` that is not a coarsening of that lattice
-    is refused. Measured on ``ActiveAxG140_PM.scheme``: 10,705 samples over TE, and the realised ``b`` is the
-    Stejskal-Tanner value of the file's own columns to 3.1e-5 relative.
+    is refused. Measured on ``ActiveAxG140_PM.scheme``: the default is 10,705 samples over TE and the realised
+    ``b`` is the Stejskal-Tanner value of the file's own columns to **3.1e-5** relative; at the coarsening the
+    parity family uses, ``n_t = 2677``, it is **1.7e-3**, which changes no signal (the two grids give parity
+    numbers identical to 1e-12, since what matters is that the lobe EDGES stay on samples and both grids keep
+    them there).
 
     Refused by name, because the format states no answer: a header that is not ``STEJSKALTANNER`` (``APGSE``
     and ``WAVEFORM`` are other layouts, not this one); a token count that is not a multiple of seven; a
@@ -67,7 +70,7 @@ def read_scheme(path, *, n_t=None, gradient_directions=None, min_samples_per_del
     if bad.any():
         raise ValueError(f"{path}: row(s) {np.flatnonzero(bad).tolist()[:8]} have a direction of length "
                          f"{norm[bad][:8].tolist()}, neither unit nor zero")
-    mismatch = (np.isclose(norm, 0.0, atol=1e-12) & (G != 0)) | ((norm > 0.5) & False)
+    mismatch = np.isclose(norm, 0.0, atol=1e-12) & (G != 0)
     if mismatch.any():
         raise ValueError(f"{path}: row(s) {np.flatnonzero(mismatch).tolist()[:8]} carry an amplitude "
                          f"{G[mismatch][:8].tolist()} T/m along a zero direction")

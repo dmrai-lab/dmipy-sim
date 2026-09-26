@@ -213,11 +213,13 @@ def disimpy_sequence(*, delta=DISIMPY_DELTA, Delta=DISIMPY_BIGDELTA, n_t=DISIMPY
                 TE=DISIMPY_TE, n_t=int(n_t), slew_rate=np.inf)
 
 
-def disimpy_walk(data, n, *, n_t=DISIMPY_N_T, batch=50_000, require_gpu=None):
+def disimpy_walk(data, n, *, n_t=DISIMPY_N_T, batch=50_000, require_gpu=None, sub_steps=None):
+    """One trajectory walk of the Disimpy cylinder. ``sub_steps`` pins the sub-step count for the ladder."""
     import dmipy_sim as d
-    dt = DISIMPY_TE / (n_t - 1)
+    dt = DISIMPY_TE / (int(n_t) - 1)
     return d.simulate_trajectories(int(n), DISIMPY_D, disimpy_geometry(data), T_max=DISIMPY_TE, dt_save=dt,
-                                   seed=SEED, tiers="all", walker_batch_size=batch, require_gpu=require_gpu)
+                                   seed=SEED, tiers="all", walker_batch_size=batch, require_gpu=require_gpu,
+                                   sub_steps=sub_steps)
 
 
 def disimpy_analytic_walk(n, *, n_t=DISIMPY_N_T, require_gpu=None, sub_steps=None):
@@ -327,6 +329,49 @@ def parity(cos_phi, reference, n_theirs=None, *, k=3.0):
                 worst_sigma=float(sigma[live].max()) if live.any() else 0.0, worst_sigma_at=j,
                 n_over_k_sigma=int((sigma[live] > k).sum()) if live.any() else 0,
                 tol_max=float(k * se.max()))
+
+
+def multiplicity_thresholds(n_live, dof, *, k_per=3.0, expected_family_wise=0.5, poisson_sigma=3.0):
+    """The two thresholds a parity comparison over ``n_live`` measurements needs, derived under H0 **with the
+    estimator the gate actually uses** -- the analytic standard error of the ensemble mean, whose studentised
+    statistic is Student-t on ``dof = N - 1`` degrees of freedom.
+
+    Deriving them under the wrong estimator is how this went wrong the first time. With the split half that
+    stood here, the per-measurement statistic has ONE degree of freedom, its 3-sigma exceedance rate over 372
+    measurements is 2.5 rather than 1.0, and the family-wise expectation at k = 3.206 is 1.34 rather than 0.5 --
+    so the thresholds were a normal-quantile calculation about a statistic that was not normal, and the pass
+    margin was 0.6 %. The estimator is now the analytic one, ``dof`` is ~1e5, and these ARE the t-quantiles.
+
+    * ``max_exceedances`` -- the Poisson upper bound ``mean + poisson_sigma sqrt(mean)`` on the expected count
+      ``n_live * p(k_per)``, rounded up. A SYSTEMATIC offset pushes many measurements out at once and breaks
+      this; noise does not.
+    * ``k_family_wise`` -- the band at which the expected number of exceedances over the whole family drops
+      below ``expected_family_wise``, so nothing at all should cross it. One wild measurement breaks this.
+
+    ``n_live`` excludes the zero-variance measurements: a ``b = 0`` row has no spread, no band and no degrees of
+    freedom, and is compared exactly instead (12 of the ActiveAx scheme's 372).
+    """
+    from math import ceil, sqrt
+    from scipy.stats import t as student
+    m, nu = int(n_live), int(dof)
+    if m < 1 or nu < 1:
+        raise ValueError(f"n_live {m} and dof {nu} must both be positive")
+    p_per = 2.0 * float(student.sf(k_per, nu))                        # two-sided, on the estimator's own dof
+    mean = m * p_per
+    max_exc = int(ceil(mean + poisson_sigma * sqrt(mean)))
+    k_fw = float(student.isf(0.5 * float(expected_family_wise) / m, nu))
+    return dict(n_live=m, dof=nu, estimator="analytic standard error of the ensemble mean, sd/sqrt(N)",
+                distribution=f"Student-t on {nu} dof", k_per_measurement=float(k_per),
+                p_per_measurement=p_per, expected_exceedances=mean, poisson_sigma=float(poisson_sigma),
+                max_exceedances=max_exc, expected_family_wise=float(expected_family_wise),
+                k_family_wise=k_fw,
+                rule=(f"a {k_per:g}-sigma per-measurement band over {m} measurements with a standard error on "
+                      f"{nu} degrees of freedom is exceeded {mean:.3f} times by chance, so the gate allows up "
+                      f"to {max_exc} exceedances (the Poisson {poisson_sigma:g}-sigma upper bound on that "
+                      f"count) and requires the WORST measurement inside {k_fw:.3f} sigma, the band whose "
+                      f"expected family-wise exceedance count is {expected_family_wise:g}. Both are derived "
+                      f"from the measurement count and the estimator's degrees of freedom, never from the "
+                      f"data being gated."))
 
 
 # --------------------------------------------------------------------------------------------- the envelope

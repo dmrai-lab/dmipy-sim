@@ -50,6 +50,37 @@ def _volume(V, F):
     return abs(float(np.einsum("ij,ij->i", a, np.cross(b, c)).sum()) / 6.0)
 
 
+def _consistently_wound(V, F):
+    """Is every face of a closed surface wound the same way round? A **combinatorial** test: on a closed,
+    consistently oriented triangle mesh every edge is shared by exactly two faces which traverse it in
+    OPPOSITE directions, so each directed edge ``(a, b)`` occurs once and its reverse ``(b, a)`` occurs once.
+
+    An inconsistently wound surface is not a substrate: ray parity reads part of the interior as exterior, and
+    the divergence-theorem volume is a cancelling sum rather than the volume. Disimpy's cylinder fixture has
+    294 of 588 faces reversed, 784 of its directed edges unpaired, and a signed volume of 0.332 of
+    ``pi r^2 L`` while its AREA is 0.999 of the ideal -- dmrai-lab/dmipy-sim#479, fixed by #483.
+
+    Two wrong ways to ask this, both tried here first:
+
+    * the sign of each face's outward term against the centroid needs the body to be **star-shaped**, which an
+      undulating tube is not: it calls all three MC/DC axons inconsistent when they are fine.
+    * that test with an ABSOLUTE tolerance is worse still -- on a micrometre object in metres every term is
+      ~1e-17, so any fixed cut calls every surface consistent, including the one this exists to catch.
+
+    Being combinatorial, this has no tolerance and no length scale to get wrong.
+    """
+    F = np.asarray(F)
+    if not F.size:
+        return True
+    d = np.concatenate([F[:, [0, 1]], F[:, [1, 2]], F[:, [2, 0]]])          # directed edges
+    key = d[:, 0].astype(np.int64) * (int(F.max()) + 1) + d[:, 1]
+    rev = d[:, 1].astype(np.int64) * (int(F.max()) + 1) + d[:, 0]
+    seen, counts = np.unique(key, return_counts=True)
+    if int(counts.max()) != 1:                      # a directed edge used twice: two faces wound the same way
+        return False
+    return bool(np.isin(rev, seen).all())
+
+
 def _area(V, F):
     """Area of a triangle surface."""
     V = np.asarray(V, float); F = np.asarray(F)
@@ -653,8 +684,10 @@ def mcdc_axon_spec(ply, *, scale=_UM, D=None, voxel=None, pad=1.0e-6, boundary="
     met -- the surface encloses every walker -- and the run states the measured excursion.
 
     ``ini_walkers`` is the path of MC/DC's released initial-walker list for this mesh; it is cited by path and
-    sha256, and the seeding rule is then ``explicit`` rather than ``uniform_by_volume``, because the released
-    list spans only the central ~40 um of a 250 um tube and is NOT a uniform draw over the lumen.
+    sha256 on the seeding, and the rule is then ``explicit`` rather than ``uniform_by_volume``, because the
+    released list spans only the central ~40 um of a 250 um tube and is NOT a uniform draw over the lumen.
+    A spec whose rule is ``explicit`` and which cites no positions cannot be re-walked as it was walked, so
+    :func:`~dmipy_sim.spec.walk_spec` refuses it rather than seeding the whole tube.
     """
     notes = []
     (mesh,), smallest, edge_med, open_files = _surface_stats([ply], scale, notes)
@@ -662,12 +695,18 @@ def mcdc_axon_spec(ply, *, scale=_UM, D=None, voxel=None, pad=1.0e-6, boundary="
         raise SpecError(f"an isolated axon needs a closed surface; {os.path.basename(ply)} has boundary edges "
                         f"(an uncapped tube encloses no volume). MC/DC walks it anyway because its walkers "
                         f"never reach the rim; a spec cannot, because the pool is not defined")
+    if not _consistently_wound(*mesh):
+        raise SpecError(f"{os.path.basename(ply)}: the surface's face winding is not consistent, so which side "
+                        f"is inside is undefined and the enclosed volume is not a volume (dmrai-lab/"
+                        f"dmipy-sim#483). Orient it before making it a substrate")
     V = mesh[0]
     # The feature scale of a tube is its RADIUS, and `_surface_stats` reads half the thinnest bounding-box
     # extent -- which for an undulating tube is the undulation envelope (1.5 um where the lumen is 0.5 um),
     # three times too coarse for the sub-step rule. For a swept tube V / S = r / 2 exactly, so 2 V / S is the
-    # radius, measured off the surface itself and conservative where the bends add surface (0.34 um on the
-    # amp 0.2 / wL 4 um mesh, whose centreline curvature is comparable with its radius).
+    # radius, measured off the surface itself: 0.493 um on most of the closed set and 0.489 um on the most
+    # strongly bent of them (amp 2.6 / wL 4 um), against the 0.5 um the axons are built at. It is only valid
+    # for a CLOSED surface -- the enclosed volume of an open or inconsistently wound one is not a volume --
+    # which is why the boundary-edge refusal above comes first.
     smallest = min(smallest, 2.0 * _volume(*mesh) / _area(*mesh))
     lo, hi = (V.min(0) - pad), (V.max(0) + pad)
     voxel_note = None
