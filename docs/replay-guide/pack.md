@@ -23,7 +23,8 @@ print(pack.n_walkers, pack.K, pack.n_t, pack.dt)                 # 300 walkers, 
 ```
 
 `K` is the number of sine bands kept per axis: the pack's temporal band, `K / (2 T)` in hertz, which is what an
-acquisition's gradient content is checked against. The walk's length `T` is the longest echo time the pack can
+acquisition's gradient content is checked against (`pack.waveform_band(seq)` says which band a sequence needs, and a
+replay beyond the pack's band is refused; see [the sequence](sequence.md)). The walk's length `T` is the longest echo time the pack can
 replay; a shorter one is a prefix.
 
 A pack stores its walk in **segments** of one duration, 100 ms by default (`build_replay_pack(segment_T=)`), consecutive
