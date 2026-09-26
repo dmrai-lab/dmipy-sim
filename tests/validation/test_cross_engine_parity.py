@@ -28,7 +28,10 @@ The second row is the point of the MC/DC fixture. MC/DC walked these axons in T 
 196 nm step against a 500 nm lumen radius -- and this engine's sub-step rule takes its own, which on this
 substrate comes out COARSER (268 nm). Walking at their step moves our signal a third of the way to theirs, so
 part of what is left between the two engines is the step and not the engine, which is what their paper is
-about. At the walker count the packs are built with the tolerance is set by their 50,000 walkers, not by ours.
+about. At the walker count the packs are built with, the tolerance is set by THEIR 50,000 walkers rather than
+by ours -- measured on amp 0.2 / wL 32 um at 100,000 walkers: max abs dS **0.00688** against a tolerance of
+**0.01344** (our floor 0.00360 against their 0.00317), and the published pack reproduces the walk's own number
+to 7e-6.
 
 The data are not in the repository. Point ``DMIPY_SIM_MCDC_ROBUST_DIR`` at a checkout of
 Robust-Monte-Carlo-Simulations and ``DMIPY_SIM_DISIMPY_DIR`` at a checkout of disimpy to run this.
