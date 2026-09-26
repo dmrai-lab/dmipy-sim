@@ -38,12 +38,13 @@ def script():
 pytestmark = [pytest.mark.slow,
               pytest.mark.skipif(not DATA, reason="set DMIPY_SIM_LING2022_DIR to the Ling 2022 images")]
 
-#: What this walk measured on the two PURE packs, at 20,000 walkers in two halves, dt = 500 us and the
-#: pack's own released window. A mixture has two mineral surfaces and two of their relaxivities, and
-#: this geometry accumulates ONE boundary local time over both walls, so no single-rho walk of a mixture
-#: is their simulation and none is asserted here.
-#: 19,998 walkers in six folds, dt = 500 us x 8 sub-steps, the pack's own released window; the same
-#: numbers the family's ``direct.json`` records and its gate reads.
+#: What this walk measured on the two PURE packs: 19,998 walkers, dt = 500 us x 8 sub-steps, the pack's
+#: own released window, at Ling's relaxivity for that mineral. The same numbers the family's
+#: ``records/`` carries and its gate reads.
+#:
+#: A mixture has two mineral surfaces and two of their relaxivities, and this geometry accumulates ONE
+#: boundary local time over both walls, so no single-rho walk of a mixture is their simulation and none
+#: is asserted here (dmrai-lab/dmipy-sim#491).
 OURS = {
     "6_Q100": dict(window=3.5, porosity=0.38896, s_over_v=76606, T2_fd=0.77465,
                    T2_lm=0.85304, T2_lm_measured=0.72708, ratio_to_theirs=1.1733,
