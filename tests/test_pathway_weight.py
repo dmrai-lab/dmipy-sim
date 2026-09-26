@@ -46,7 +46,7 @@ def test_the_weight_comes_from_the_schedule_not_a_constant():
 
 def test_a_stimulated_echo_replays_to_its_closed_form(pack):
     seq = _pgste()
-    got = float(np.asarray(pack.replay(seq, tissue=Tissue(T2=T2, T1=T1)))[0])
+    got = float(np.asarray(pack.replay(seq, tissue=Tissue(T2={"extra": T2}, T1={"extra": T1})))[0])
     assert got == pytest.approx(_closed_form(seq), rel=2e-3)
 
 
@@ -55,7 +55,7 @@ def test_the_flip_angles_set_the_amplitude(pack, flips):
     """A flat one half is right only at three 90s; every other schedule carries less, and the difference is
     far larger than the pack's floor."""
     seq = _pgste(flips=flips)
-    got = float(np.asarray(pack.replay(seq, tissue=Tissue(T2=T2, T1=T1)))[0])
+    got = float(np.asarray(pack.replay(seq, tissue=Tissue(T2={"extra": T2}, T1={"extra": T1})))[0])
     assert got == pytest.approx(_closed_form(seq, flips), rel=2e-3)
     flat = _closed_form(seq, (90.0, 90.0, 90.0))                 # what a constant 0.5 would have given
     assert abs(got - flat) > 0.02
@@ -65,14 +65,14 @@ def test_a_spin_echo_is_untouched(pack):
     """Its pathway is the whole magnetisation, so nothing is applied and the b = 0 readout is the T2 decay."""
     seq = sequences.pgse([[1.0, 0, 0]], 5e-3, 0.02, bvalues=[0.0], TE=0.045, n_t=600, slew_rate=np.inf)
     TE = float(np.asarray(seq.readout)[-1]) * float(seq.dt)
-    got = float(np.asarray(pack.replay(seq, tissue=Tissue(T2=T2, T1=T1)))[0])
+    got = float(np.asarray(pack.replay(seq, tissue=Tissue(T2={"extra": T2}, T1={"extra": T1})))[0])
     assert got == pytest.approx(np.exp(-TE / T2), rel=2e-3)
 
 
 def test_every_route_agrees(pack):
     """The weights are formed in two places -- the replay's preparation and a study's primitives -- so the
     routes are held to each other, which is what stops the amplitude being applied twice or not at all."""
-    seq, tis = _pgste(flips=(90.0, 60.0, 90.0)), Tissue(T2=T2, T1=T1)
+    seq, tis = _pgste(flips=(90.0, 60.0, 90.0)), Tissue(T2={"extra": T2}, T1={"extra": T1})
     direct = float(np.asarray(pack.replay(seq, tissue=tis))[0])
     w, ew, E = pack.walker_signals(seq, tissue=tis)
     from_walkers = float(np.abs((ew[:, None] * E).sum(0) / w.sum())[0])

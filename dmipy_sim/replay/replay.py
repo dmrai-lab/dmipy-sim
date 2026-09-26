@@ -618,7 +618,9 @@ class ReplayPack:
     @property
     def nominal(self):
         """The embedded spec's values as a :class:`~dmipy_sim.spec.Tissue`: what a paper's replay applies,
-        ``replay(seq, tissue=pack.nominal, scanner=pack.nominal_field_T)``; ``None`` for a pack without a spec."""
+        ``replay(seq, tissue=pack.nominal, scanner=pack.nominal_field_T)``; ``None`` for a pack without a spec.
+        Its ``T2`` / ``T1`` map the pools that declare one by name (``None`` when none does), so a spec that
+        declares a T2 in some pools only gives a tissue the replay refuses, naming the rest."""
         spec = self.substrate
         if spec is None:
             return None
@@ -642,23 +644,22 @@ class ReplayPack:
                 "n_t": int(cx.get("n_t") or self.n_t)}
         return np.asarray(decode(self.arrays, meta), np.float64)
 
-    def _by_pool(self, values, what, n=None):
-        """Per-pool values as a list by id; a ``{name: value}`` dict resolves through the embedded spec, and a
-        scalar is every pool's value (``n`` pools, else the spec's). A list is by id and must cover every id."""
+    def _by_pool(self, values, what):
+        """A tissue's per-pool ``T2`` / ``T1`` as the list by pool id over every pool of the embedded spec:
+        ``None`` for none, else the ``{pool name: seconds}`` mapping resolved through the spec, which refuses a
+        missing pool, an unknown name, a number for every pool, and any per-pool value on a pack without a spec
+        (RPK.md 8.5: such a pack replays the gradient alone)."""
         if values is None:
             return None
-        if isinstance(values, dict):
-            spec = self.substrate
-            if spec is None:
-                raise ValueError(f"{what} given by pool name but the pack embeds no substrate spec; give a list by id")
-            out = [0.0] * len(spec.pools)
-            for name, v in values.items():
-                out[spec.pool(name).id] = float(v)
-            return out
-        if np.ndim(values) == 0:                                   # one value is every pool's
-            spec = self.substrate
-            return [float(values)] * (int(n) if n is not None else (len(spec.pools) if spec is not None else 1))
-        return [float(v) for v in np.asarray(values, float).reshape(-1)]
+        spec = self.substrate
+        if spec is None:
+            raise ValueError(f"{what} was given by pool but this pack embeds no substrate spec, so it has no pool "
+                             f"names: it replays the gradient alone (RPK.md 8.5)")
+        if not isinstance(values, dict):
+            raise ValueError(f"{what} on a pack is {{pool name: seconds}} over every pool of its spec "
+                             f"{[p.name for p in spec.pools]}; one number is the closed form's (got {values!r})")
+        from ..spec.tissue import _by_pool_id
+        return [float(v) for v in _by_pool_id(spec, values, what)]
 
     def replay(self, waveform, *, tissue=None, scanner=None, orientation=None, compartment=None, complex_signal=False):
         """The signal of ``waveform`` on this pack: the gradient always, and every other tier whose inputs are given
@@ -672,9 +673,10 @@ class ReplayPack:
         Three things describe a replay setting, each stated once:
 
         * ``tissue`` -- **what the material is**: a :class:`~dmipy_sim.spec.Tissue` (pool T2 / T1, the walls'
-          rho, the bulk D, the field source's chi) or ``None``, the bare diffusion signal. ``pack.nominal`` is
-          the embedded spec's values, so a paper's replay is ``replay(seq, tissue=pack.nominal,
-          scanner=pack.nominal_field_T)``; ``pack.nominal.replace(T2={"intra": 0.08})`` changes one.
+          rho, the bulk D, the field source's chi) or ``None``, the bare diffusion signal. T2 / T1 are
+          ``{pool name: seconds}`` over every pool of the embedded spec, ``inf`` for no decay. ``pack.nominal``
+          is the embedded spec's values, so a paper's replay is ``replay(seq, tissue=pack.nominal,
+          scanner=pack.nominal_field_T)``; ``pack.nominal.replace(T2={"intra": 0.08})`` changes one pool.
         * ``orientation`` -- **where the substrate sits**: its pose. **One pose** -- a 3x3 rotation (substrate
           frame -> lab), or the lab direction its axis (``spec.frame.axis``, default z) points along -- is exact by
           pose covariance: the gradient and the field are rotated into the substrate frame together, and no
@@ -936,13 +938,15 @@ class ReplayPack:
             col = next(d for d in ch["compartment"]["columns"] if d["name"] == "comp")
             n_ids = 2 if col["kind"] == "fraction" else self._n_pool_ids(col)   # a fractional occupancy is two pools
 
-            # the Bloch route reads a rate as 1/T, so "no decay in this pool" is an infinite time, not a zero
-            # one; a zero would make the rate infinite and return an identically dark signal
+            # the Bloch route reads a rate as 1/T: "no decay in this pool" is an infinite time
             def per_pool(v, what):
-                out = self._by_pool(v, what, n=n_ids)
+                out = self._by_pool(v, what)
                 if out is None:
                     return [np.inf] * n_ids
-                return [np.inf if t is None or float(t) <= 0.0 else float(t) for t in out]
+                if len(out) < n_ids:
+                    raise ValueError(f"the compartment channel addresses pool id {n_ids - 1} and the embedded spec "
+                                     f"declares {len(out)} pools: the pack is inconsistent")
+                return out
             relax = dict(T2_per_comp=per_pool(T2v, "T2"), T1_per_comp=per_pool(T1v, "T1"))
         surface = None
         if P["rho"] is not None and float(P["rho"]) != 0.0:
@@ -1120,14 +1124,14 @@ class ReplayPack:
                 decode_occupancy(self.arrays, ch["compartment"])              # raises with the re-encode message
             col = next(d for d in ch["compartment"]["columns"] if d["name"] == "comp")
             n_ids = self._n_pool_ids(col)
-            T2v = self._by_pool(T2, "T2", n=n_ids); T1v = self._by_pool(T1, "T1", n=n_ids)
+            T2v = self._by_pool(T2, "T2"); T1v = self._by_pool(T1, "T1")
             if T2v is None:
-                T2v = [0.0] * n_ids                                   # no T2 decay, T1 only
+                T2v = [np.inf] * n_ids                                # no T2 decay, T1 only
             if T1v is None:
-                T1v = [0.0] * n_ids                                   # no T1 term
-            if len(T2v) < n_ids or (T1v is not None and len(T1v) < n_ids):
-                raise ValueError(f"the compartment channel uses pool ids up to {n_ids - 1}; T2 / T1 must be given "
-                                 f"for every id (got {len(T2v)}{'' if T1v is None else f' / {len(T1v)}'})")
+                T1v = [np.inf] * n_ids                                # no T1 term
+            if len(T2v) < n_ids or len(T1v) < n_ids:
+                raise ValueError(f"the compartment channel addresses pool id {n_ids - 1} and the embedded spec "
+                                 f"declares {min(len(T2v), len(T1v))} pools: the pack is inconsistent")
             for (seg, _, _), (chi_s, act_s) in zip(windows, window_gates):
                 logw = logw + relaxation_logweight_runs(seg.arrays, col, T2v, T1v, dt, chi_s, act_s)   # on the runs, never a track
         if rho is not None and float(rho) != 0.0 and surface:

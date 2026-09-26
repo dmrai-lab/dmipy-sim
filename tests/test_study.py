@@ -13,6 +13,8 @@ from dmipy_sim.spec.tissue import Tissue
 from tests.replay_frames import field_along
 
 D0 = 2e-9
+T2A, T1A = {"extra": 0.08, "intra": 0.03}, {"extra": 1.0, "intra": 1.2}
+T2B = {"extra": 0.05, "intra": 0.02}
 
 
 def test_the_primitives_give_every_pairs_signals_as_the_replay_does(pack):
@@ -21,7 +23,7 @@ def test_the_primitives_give_every_pairs_signals_as_the_replay_does(pack):
     seq = _seqmod.pgse([[1, 0, 0], [0, 1, 1]], 1e-3, 3e-3, bvalues=[1e9, 5e8], TE=6e-3, n_t=4 * pack.n_t + 1, slew_rate=np.inf)
     prim = pack.walker_primitives(seq)
     assert prim.phi.shape == (pack.n_walkers, 2) and prim.exposure_t2.shape[0] == pack.n_walkers and prim.contact.shape == (pack.n_walkers,)
-    for t in (None, Tissue(T2=[0.08, 0.03]), Tissue(T1=[1.0, 1.2]), Tissue(rho=1e-5, D=D0), Tissue(T2=[0.08, 0.03], T1=[1.0, 1.2], rho=1e-5, D=D0)):
+    for t in (None, Tissue(T2=T2A), Tissue(T1=T1A), Tissue(rho=1e-5, D=D0), Tissue(T2=T2A, T1=T1A, rho=1e-5, D=D0)):
         w, ew, E = prim.signals(t, None); w2, ew2, E2 = pack.walker_signals(seq, tissue=t)
         np.testing.assert_array_equal(w, w2); np.testing.assert_allclose(ew, ew2, rtol=1e-12, atol=1e-300); np.testing.assert_allclose(E, E2, rtol=0, atol=1e-12)
 
@@ -47,7 +49,7 @@ def test_a_study_is_the_per_pair_replay(pack):
     per-pair replays side by side, and its record carries the resolved values."""
     seq1 = _seqmod.pgse([[1, 0, 0], [0, 1, 1]], 1e-3, 3e-3, bvalues=[1e9, 5e8], TE=6e-3, n_t=4 * pack.n_t + 1, slew_rate=np.inf)
     seq2 = _seqmod.pgse([[0, 0, 1]], 1e-3, 2e-3, bvalues=[2e9], TE=5e-3, n_t=4 * pack.n_t + 1, slew_rate=np.inf)
-    catalogue = lambda scanner: Tissue(T2=[0.08, 0.03] if scanner is None else [0.05, 0.02], rho=1e-5, D=D0)   # a tissue resolved on the scanner
+    catalogue = lambda scanner: Tissue(T2=T2A if scanner is None else T2B, rho=1e-5, D=D0)   # a tissue resolved on the scanner
     study = Study(Protocol([seq1, Acquisition(seq2, name="axial")]), tissues=[None, catalogue], scanners=[None, 0.0], pairs=[(0, 0), (1, 0), (1, 1)], name="t")
     assert len(study) == 3 and study.protocol.n_meas == 3 and study.needs_contact and study.needs_relaxation and not study.needs_field
     S = pack.study(study)
@@ -57,7 +59,7 @@ def test_a_study_is_the_per_pair_replay(pack):
         expect = np.concatenate([pack.replay(seq1, tissue=t, scanner=s), pack.replay(seq2, tissue=t, scanner=s)])
         np.testing.assert_allclose(S[k], expect, rtol=1e-9)
     meta = study.to_meta()
-    assert meta["pairs"][1]["tissue"]["T2"] == [0.08, 0.03] and meta["pairs"][2]["tissue"]["T2"] == [0.05, 0.02] and meta["protocol"]["acquisitions"][1]["name"] == "axial"
+    assert meta["pairs"][1]["tissue"]["T2"] == T2A and meta["pairs"][2]["tissue"]["T2"] == T2B and meta["protocol"]["acquisitions"][1]["name"] == "axial"
     with pytest.raises(IndexError):
         Study(Protocol([seq1]), tissues=[None], scanners=[None], pairs=[(1, 0)])
     with pytest.raises(ValueError, match="chi_iso"):                      # a field on a tissue without a susceptibility is refused, as replay refuses it

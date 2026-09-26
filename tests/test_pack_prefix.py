@@ -41,7 +41,7 @@ def test_a_prefix_keeps_the_bands_per_second_and_replays_like_the_parent(parent,
     S_half = half.replay(seq, complex_signal=True)
     np.testing.assert_allclose(S_half, S_parent, atol=3 * half.meta["fidelity"]["err_max"] + 1e-6)
     # with the compartment channel: relaxation replays on both
-    np.testing.assert_allclose(half.replay(seq, tissue=Tissue(T2=[0.02, 0.02, 0.02])), parent.replay(seq, tissue=Tissue(T2=[0.02, 0.02, 0.02])),
+    np.testing.assert_allclose(half.replay(seq, tissue=Tissue(T2={"extra": 0.02, "intra": 0.02})), parent.replay(seq, tissue=Tissue(T2={"extra": 0.02, "intra": 0.02})),
                                atol=3 * half.meta["fidelity"]["err_max"] + 1e-6)
     # the start positions are the parent's, exactly
     np.testing.assert_allclose(half.r0, parent.r0, atol=1e-12)
@@ -68,7 +68,7 @@ def test_a_short_acquisition_relaxes_to_its_own_echo_on_a_longer_walk(parent):
     relaxation and surface terms stop there, whatever the pack's length."""
     seq = sequences.pgse([[1, 0, 0]], 2e-3, 5e-3, gradient_strengths=[0.3], TE=10e-3)
     S0 = parent.replay(seq)
-    S = parent.replay(seq, tissue=Tissue(T2=[0.02, 0.02, 0.02]))
+    S = parent.replay(seq, tissue=Tissue(T2={"extra": 0.02, "intra": 0.02}))
     assert S[0] / S0[0] == pytest.approx(np.exp(-10e-3 / 0.02), rel=2e-2)          # exp(-TE/T2), not exp(-T/T2)
 
 

@@ -15,7 +15,7 @@ from dmipy_sim.spec.tissue import Tissue
 from tests.test_bank import _lean_env, _susc_master
 
 N_T, DT, N_W = 41, 5e-4, 600                 # 20 ms of walk; two windows of 10 ms
-TIS = Tissue(T2=[0.05, 0.02], T1=[1.0, 0.5], rho=2e-5, chi_iso=1e-7)
+TIS = Tissue(T2={"extra": 0.05, "intra": 0.02}, T1={"extra": 1.0, "intra": 0.5}, rho=2e-5, chi_iso=1e-7)
 
 
 def _master():
@@ -25,6 +25,7 @@ def _master():
     m["T_max"] = (N_T - 1) * DT
     comp = np.zeros((N_W, N_T), np.int8); comp[:200, 25:] = 1          # a third of the walkers cross in window 1
     m["comp"] = comp
+    m["substrate"] = d.PackedCylinders([1e-6], [[0.0, 0.0]], 10e-6).spec.to_dict()   # names for the two pools the walk labels
     return m
 
 
@@ -218,7 +219,7 @@ def test_a_walk_continues_from_its_end_and_appends_as_segments():
     assert ext.fidelity["certified"] == "bounded" and len(ext.fidelity["segments"]) == 2
     assert ext.meta["provenance"]["continuations"][0]["seed"] == 7
     seq = _seq()
-    tis = Tissue(T2=[0.05, 0.02], rho=1e-5)
+    tis = Tissue(T2={"extra": 0.05, "intra": 0.02}, rho=1e-5)
     a, b = two.replay(seq, tissue=tis), ext.replay(seq, tissue=tis)
     assert np.abs(a - b).max() < 2.0 * max(two.fidelity["floor_max"], ext.fidelity["floor_max"])
     with pytest.raises(ValueError, match="whole number"):

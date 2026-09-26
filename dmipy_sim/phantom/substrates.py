@@ -65,10 +65,13 @@ class PackSubstrate(_Declared):
     ``pack`` is a ``.rpk`` path or an in-memory :class:`~dmipy_sim.replay.replay.ReplayPack`. ``m0`` is required:
     proton density only means anything relative to the other substrates of the same phantom, so there is no
     default, the same way there is no default pack. ``tissue`` is the :class:`~dmipy_sim.spec.Tissue` this
-    substrate replays at (RPH.md 3.2: pool T2 / T1 by the pack's pool names or ids, the walls' rho, the bulk D,
-    the field source's chi) -- ``pack.nominal`` for the pack's own specification's values -- or ``None``, the bare
-    diffusion signal, which a phantom refuses beside a substrate that does relax (:meth:`Phantom.replay`,
-    dmipy-sim#238). The scanner's field is the replay's, not the substrate's.
+    substrate replays at (RPH.md 3.2: pool T2 / T1 as ``{pool name: seconds}`` over every pool of the pack's
+    spec, the walls' rho, the bulk D, the field source's chi) -- ``pack.nominal`` for the pack's own
+    specification's values -- or ``None``, the bare diffusion signal, which a phantom refuses beside a substrate
+    that does relax (:meth:`Phantom.replay`, dmipy-sim#238). The scanner's field is the replay's, not the
+    substrate's. In the file the per-pool values are a list by pool id, one entry per pool of the pack's
+    spec, ``null`` for no decay; this substrate writes and reads that form through the pack's spec, so a
+    tissue on a pack whose path is only resolved later is read when the pack is.
     """
 
     kind = "pack"
@@ -87,7 +90,25 @@ class PackSubstrate(_Declared):
         super().__init__(name, m0)
         if tissue is not None and not isinstance(tissue, Tissue):
             raise TypeError(f"tissue is a Tissue (pack.nominal, Tissue(...)) or None; got {type(tissue).__name__}")
-        self.tissue = tissue
+        self._tissue, self._tissue_meta = tissue, None
+        if tissue is not None and self._pack is not None:
+            self._check_pools(tissue, self._pack)                     # an in-memory pack is checked now, a path when read
+
+    @staticmethod
+    def _check_pools(tissue, pack):
+        """The tissue's per-pool values against the pack's spec: complete, by name, or refused naming the pool."""
+        for k in ("T2", "T1"):
+            pack._by_pool(getattr(tissue, k), k)
+
+    @property
+    def tissue(self):
+        """The tissue this substrate replays at; one read from a file resolves its per-pool values through the
+        pack's spec on first use."""
+        if self._tissue is None and self._tissue_meta is not None:
+            from ..spec.tissue import Tissue
+            self._tissue = Tissue.from_meta(self._tissue_meta, spec=self.pack.substrate)
+            self._tissue_meta = None
+        return self._tissue
 
     @property
     def pack(self):
@@ -106,15 +127,28 @@ class PackSubstrate(_Declared):
 
     def to_meta(self):
         m = self._base_meta()
-        t = self.tissue.to_meta() if self.tissue is not None else {}
-        if t:
-            m["tissue"] = t
+        t = self.tissue
+        if t is not None:
+            spec = self.pack.substrate if (t.T2 is not None or t.T1 is not None) else None
+            if spec is None and (t.T2 is not None or t.T1 is not None):
+                raise ValueError(f"substrate {self.name!r} declares a per-pool T2 / T1 but its pack embeds no substrate "
+                                 f"spec, so the file has no pool ids to write them by (RPK.md 8.5)")
+            entry = t.to_meta(spec=spec)
+            if entry:
+                m["tissue"] = entry
         return m
 
     @classmethod
     def from_meta(cls, meta, *, pack):
         from ..spec.tissue import Tissue
-        return cls(pack, m0=meta["m0"], name=meta["id"], tissue=Tissue.from_meta(meta.get("tissue")))
+        entry = meta.get("tissue")
+        per_pool = bool(entry) and any(entry.get(k) is not None for k in ("T2", "T1"))
+        out = cls(pack, m0=meta["m0"], name=meta["id"], tissue=None if per_pool else Tissue.from_meta(entry))
+        if per_pool:
+            out._tissue_meta = dict(entry)
+            if out._pack is not None:
+                out.tissue                                             # an in-memory pack resolves the form now
+        return out
 
 
 class FreeWater(_Declared):

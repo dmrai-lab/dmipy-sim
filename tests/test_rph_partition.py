@@ -236,7 +236,7 @@ def test_a_partition_writes_and_reads_back(pack_paths, tmp_path):
     pk = read_rpk(pack_paths[6])
     grid = _grid(pk, attach="lab")
     myelin = Inert(name="myelin")
-    ph = Phantom.partition(PackSubstrate(pk, m0=0.7, name="wm", tissue=Tissue(T2=[0.06, 0.06, 0.06])), grid,
+    ph = Phantom.partition(PackSubstrate(pk, m0=0.7, name="wm", tissue=Tissue(T2={"extra": 0.06, "intra": 0.06})), grid,
                            declared={myelin: np.full(grid.shape, 0.2)}, outside=FreeWater(m0=1.0, tissue=Tissue(D=3e-9, T2=2.0)),   # both relax (#238)
                            pose=Pose(np.eye(3)))
     meta = ph.write(tmp_path / "part.rph", id="t/part", license="x", citation="x", embed=True)
@@ -246,4 +246,4 @@ def test_a_partition_writes_and_reads_back(pack_paths, tmp_path):
     seq = _acq(pk, [[1, 0, 0], [0, 0, 1]], [1e9, 1e9])
     np.testing.assert_allclose(np.nan_to_num(back.replay(seq)), np.nan_to_num(ph.replay(seq)), rtol=1e-6)
     np.testing.assert_allclose(back.fraction("myelin"), ph.fraction(myelin))
-    assert back.substrates[0].tissue.to_meta() == {"T2": [0.06, 0.06, 0.06]}
+    assert back.substrates[0].tissue.to_meta() == {"T2": {"extra": 0.06, "intra": 0.06}} and back.substrates[0].to_meta()["tissue"] == {"T2": [0.06, 0.06]}

@@ -107,9 +107,10 @@ E2   = pack.replay(seq, tissue=pack.nominal.replace(T2={"intra": 0.08}), scanner
 ```
 
 Three things describe a replay setting, each stated once. `tissue=` is **what the material is**: a `Tissue`
-(T2 / T1 per pool by id or `{"intra": 0.05, ...}` by name, `rho`, `D`, `chi_iso`, `chi_aniso`) or `None`, the
-bare diffusion signal; the spec the pack embeds carries the substrate's nominal values as `pack.nominal`, so a
-published pack reproduces its paper with no second file, and `.replace(...)` changes one. `scanner=` is **what
+(T2 / T1 as `{"intra": 0.05, ...}` over every pool of the pack's spec, `rho`, `D`, `chi_iso`, `chi_aniso`) or
+`None`, the bare diffusion signal; the spec the pack embeds carries the substrate's nominal values as
+`pack.nominal`, so a published pack reproduces its paper with no second file, and `.replace(...)` changes one
+pool and keeps the rest. `scanner=` is **what
 the scanner is**: its static field, from the catalogue (`ScannerLimits.of("connectom")`) or in tesla. A tier
 runs when its inputs are given and the pack carries it; `compartment=1` restricts the mean to one pool. The
 pose is the third: `orientation=` takes either **one pose** — a rotation, or the lab direction the substrate axis points

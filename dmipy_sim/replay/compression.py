@@ -886,6 +886,15 @@ def mode_space_signal(arrays, meta, G, dt, logw=None, weights=None):
     return (np.exp(lw[:, None] + 1j * phi) * (w / w.sum())[:, None]).sum(0)
 
 
+def _rates(times):
+    """Per-pool rates ``1 / T`` of a list of times by pool id: ``inf`` is no decay; a time that is not positive is
+    refused, since a zero would be an infinite rate and an identically dark signal, not "no decay"."""
+    T = np.asarray(times, np.float64).reshape(-1)
+    if not (T > 0).all():
+        raise ValueError(f"a relaxation time by pool must be positive, float('inf') for no decay; got {T.tolist()}")
+    return 1.0 / T
+
+
 def relaxation_logweight(comp, T2_per_comp, T1_per_comp, dt, chi=None, active=None):
     """Per-walker relaxation log-weight from the compartment channel -- O(N_w N_t), no trajectory. ``comp`` is
     integer labels OR fractional 2-compartment occupancy, one per save; a save's occupancy is accumulated over the
@@ -896,8 +905,7 @@ def relaxation_logweight(comp, T2_per_comp, T1_per_comp, dt, chi=None, active=No
     stimulated echo relaxes at T1, the walk beyond the echo relaxes at nothing; a gate without its extent is
     refused, since nothing in ``chi`` says where the acquisition ends."""
     comp = np.asarray(comp)
-    invT2 = np.where(np.asarray(T2_per_comp) > 0, 1.0 / np.maximum(np.asarray(T2_per_comp, float), 1e-30), 0.0)
-    invT1 = np.where(np.asarray(T1_per_comp) > 0, 1.0 / np.maximum(np.asarray(T1_per_comp, float), 1e-30), 0.0)
+    invT2, invT1 = _rates(T2_per_comp), _rates(T1_per_comp)
     if np.issubdtype(comp.dtype, np.floating) and not np.array_equal(comp, np.round(comp)):
         f = np.clip(comp, 0.0, 1.0)
         r2 = (1.0 - f) * invT2[0] + f * invT2[1]
@@ -937,8 +945,7 @@ def relaxation_logweight_runs(arrays, column, T2_per_comp, T1_per_comp, dt, chi=
         vals, lens, counts = lab, np.full(lab.shape[0], n_t, np.int64), np.ones(lab.shape[0], np.int64)
     else:
         vals = np.asarray(arrays[f"{name}_rle_vals"]); lens = np.asarray(arrays[f"{name}_rle_lens"]); counts = np.asarray(arrays[f"{name}_rle_counts"])
-    invT2 = np.where(np.asarray(T2_per_comp) > 0, 1.0 / np.maximum(np.asarray(T2_per_comp, float), 1e-30), 0.0)
-    invT1 = np.where(np.asarray(T1_per_comp) > 0, 1.0 / np.maximum(np.asarray(T1_per_comp, float), 1e-30), 0.0)
+    invT2, invT1 = _rates(T2_per_comp), _rates(T1_per_comp)
     if column["kind"] in ("label", "static"):
         v = vals.astype(np.int64); r2 = invT2[v]; r1 = invT1[v]
     else:
