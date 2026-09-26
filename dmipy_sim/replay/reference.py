@@ -72,8 +72,11 @@ GRADES = ("A", "B", "analytic", "none")
 #: Whose a free parameter is. A parameter without one of these is not a recorded parameter.
 WHOSE = ("theirs", "literature", "ours")
 
-#: What the publication states about the quantity: a number, a figure, a closed form, or nothing.
-PUBLISHED_KINDS = ("number", "figure", "analytic", "none")
+#: What the publication states about the quantity: a number in a document, released DATA (a signal, a set of
+#: per-object signals, a volume), a figure, a closed form, or nothing. ``data`` is graded like a number, since a
+#: released array IS the measurement and needs no printed line -- which is what parity-fixtures,
+#: winther-g6-axons and disco-replay reproduce, and what the "verbatim line" rule forced them to fabricate.
+PUBLISHED_KINDS = ("number", "data", "figure", "analytic", "none")
 
 #: How a standard error was obtained. Both are analytic; neither resamples one realisation.
 SE_KINDS = ("analytic_mean", "delta_method")
@@ -144,10 +147,16 @@ class FreeParameter:
 
 @dataclass(frozen=True)
 class Published:
-    """Their number, and the document that PRINTS it, quoted verbatim so the citation is checkable.
+    """Their number and where it comes from: the document that PRINTS it, quoted verbatim, or the released DATA
+    it is read from, digested.
 
     ``uncertainty`` is RELATIVE (a fraction of ``value``). A publication that states none records ``0.0`` and
-    says so in ``uncertainty_is``; it is never left unstated, since the gate's tolerance reads it.
+    says so in ``uncertainty_is``; it is never left unstated, since the gate reads it.
+
+    ``document`` is the persistent identifier of the thing ``printed_in`` names, RESOLVED at record time with
+    its title compared -- a DOI through Crossref or DataCite (a thesis's Spiral DOI is a DataCite one), never
+    left as prose. ``data_url`` and ``data_sha256`` are the released array a ``data`` reference reads its value
+    from; a ``data`` reference needs them and no verbatim line, and a ``number`` reference needs the line.
     """
     value: Optional[float]
     unit: str
@@ -155,7 +164,10 @@ class Published:
     uncertainty_is: str
     printed_in: str
     locator: str
-    verbatim: str
+    verbatim: str = ""
+    document: Optional[str] = None
+    data_url: Optional[str] = None
+    data_sha256: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -341,7 +353,7 @@ def grade_of(reference_record):
         return "analytic"
     if kind == "none":
         return "none"
-    if kind == "number" and reference_record["same_released_geometry"]:
+    if kind in ("number", "data") and reference_record["same_released_geometry"]:
         return "A"
     return "B"
 
@@ -351,13 +363,14 @@ def grade_reason(reference_record):
     if not reference_record or reference_record.get("absent"):
         return "no published reference."
     kind, ours = reference_record["published_kind"], reference_record.get("geometry_parameters_ours") or []
-    what = {"number": "a published number", "figure": "a published figure",
-            "analytic": "a closed form", "none": "no published reference"}[kind]
+    what = {"number": "a published number", "data": "the released data itself",
+            "figure": "a published figure", "analytic": "a closed form",
+            "none": "no published reference"}[kind]
     if kind in ("analytic", "none"):
         return what + "."
     if reference_record["same_released_geometry"]:
         return (f"{what} on the same released geometry: no free parameter marked 'ours' changes it."
-                if kind == "number" else f"{what}: a figure is read, not a number.")
+                if kind in ("number", "data") else f"{what}: a figure is read, not a number.")
     return (f"{what}, but NOT on the released geometry -- "
             f"{', '.join(ours)} {'is' if len(ours) == 1 else 'are'} ours and change"
             f"{'s' if len(ours) == 1 else ''} it, so the grade is B rather than A.")
@@ -368,25 +381,42 @@ def _normalise_title(s):
     return re.sub(r"[^a-z0-9]+", " ", str(s).lower()).strip()
 
 
-def crossref(doi, *, timeout=30.0):
-    """Resolve ``doi`` through Crossref and return ``dict(doi, title, type, container, resolved)``.
-
-    This is the default resolver of the reference stage. It is one HTTP GET against ``api.crossref.org``; a
-    DOI that does not resolve is a refusal, not a warning, since the record's whole point is that the citation
-    was checked rather than typed.
-    """
+def _get_json(url, *, timeout, accept=None):
     import urllib.request
-    url = f"https://api.crossref.org/works/{doi}"
-    req = urllib.request.Request(url, headers={"User-Agent": "dmipy-sim (https://github.com/dmrai-lab/dmipy-sim)"})
+    headers = {"User-Agent": "dmipy-sim (https://github.com/dmrai-lab/dmipy-sim)"}
+    if accept:
+        headers["Accept"] = accept
+    with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=timeout) as fh:
+        return json.load(fh)
+
+
+def crossref(doi, *, timeout=30.0):
+    """Resolve ``doi`` and return ``dict(doi, title, type, container, agency, resolved)``.
+
+    This is the default resolver of the reference stage. Crossref first, then DataCite: a journal article is
+    registered with Crossref and a thesis or a dataset with DataCite (Imperial's Spiral gives Talabi's thesis
+    the DOI ``10.25560/4261``, which Crossref answers 404 for), and a protocol that could only resolve one of
+    them pushed a family into citing the paper for a number printed in the thesis. A DOI that resolves with
+    neither is a refusal, not a warning: the record's whole point is that the citation was checked.
+    """
+    tried = {}
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as fh:
-            msg = json.load(fh)["message"]
+        msg = _get_json(f"https://api.crossref.org/works/{doi}", timeout=timeout)["message"]
+        return dict(doi=msg.get("DOI"), title=(msg.get("title") or [""])[0], type=msg.get("type"),
+                    container=(msg.get("container-title") or [None])[0], agency="crossref",
+                    resolved=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
     except Exception as e:
-        raise ReferenceRefusal(f"reference: the DOI {doi!r} did not resolve through Crossref ({type(e).__name__}: {e}); "
-                               f"a reference record without a resolved DOI is refused") from e
-    return dict(doi=msg.get("DOI"), title=(msg.get("title") or [""])[0], type=msg.get("type"),
-                container=(msg.get("container-title") or [None])[0],
-                resolved=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+        tried["crossref"] = f"{type(e).__name__}: {e}"
+    try:
+        a = _get_json(f"https://api.datacite.org/dois/{doi}", timeout=timeout,
+                      accept="application/json")["data"]["attributes"]
+        return dict(doi=a.get("doi"), title=(a.get("titles") or [{}])[0].get("title", ""),
+                    type=(a.get("types") or {}).get("resourceTypeGeneral"), container=a.get("publisher"),
+                    agency="datacite", resolved=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+    except Exception as e:
+        tried["datacite"] = f"{type(e).__name__}: {e}"
+    raise ReferenceRefusal(f"reference: the DOI {doi!r} resolved with neither registration agency "
+                           f"({tried}); a reference record without a resolved identifier is refused")
 
 
 # --------------------------------------------------------------- the code commit
@@ -955,12 +985,33 @@ class ReferenceFamily:
                 raise ReferenceRefusal(f"reference: the quantity {q.name!r} is about {q.substrate!r}, which is not "
                                        f"one of this family's substrates {sorted(known)}")
             pub, dr = q.published, q.direct
-            if not pub.verbatim.strip():
+            if not pub.printed_in or not pub.locator:
+                raise ReferenceRefusal(f"reference: {q.substrate}/{q.name} names no document or no locator")
+            documents = {}
+            if r.published_kind == "data":
+                if not pub.data_url or not pub.data_sha256:
+                    raise ReferenceRefusal(
+                        f"reference: {q.substrate}/{q.name} is read from released data, so it records the data's "
+                        f"URL and its sha256; it states {pub.data_url!r} and {pub.data_sha256!r}. A released "
+                        f"array is the measurement and needs no printed line, but it needs its digest")
+            elif not pub.verbatim.strip():
                 raise ReferenceRefusal(f"reference: {q.substrate}/{q.name} quotes nothing from {pub.printed_in!r}; a "
                                        f"reference number is recorded with the verbatim line that prints it, so the "
                                        f"citation can be checked against the document rather than against us")
-            if not pub.printed_in or not pub.locator:
-                raise ReferenceRefusal(f"reference: {q.substrate}/{q.name} names no document or no locator")
+            if pub.document:
+                doc = self.resolver(pub.document)
+                if _normalise_title(doc.get("title")) not in _normalise_title(pub.printed_in):
+                    raise ReferenceRefusal(
+                        f"reference: {q.substrate}/{q.name} says the number is printed in {pub.printed_in!r} and "
+                        f"cites {pub.document!r}, which resolves to {doc.get('title')!r}; the identifier and the "
+                        f"document do not describe one thing")
+                documents[pub.document] = doc
+            elif r.published_kind in ("number", "figure"):
+                raise ReferenceRefusal(
+                    f"reference: {q.substrate}/{q.name} names {pub.printed_in!r} as the document that prints the "
+                    f"number but cites no identifier for it; the document the number comes FROM is resolved and "
+                    f"title-compared, not left as prose (a thesis's DOI is a DataCite one -- Talabi's is "
+                    f"10.25560/4261 -- so 'Crossref only' is not a reason to cite the paper instead)")
             if pub.uncertainty is None or not pub.uncertainty_is:
                 raise ReferenceRefusal(f"reference: {q.substrate}/{q.name} states no uncertainty; a publication that "
                                        f"states none records 0.0 and says so in uncertainty_is")
@@ -974,7 +1025,8 @@ class ReferenceFamily:
             if not dr.se_derivation or not dr.grid or not dr.solver:
                 raise ReferenceRefusal(f"reference: {q.substrate}/{q.name}'s direct measurement states no se "
                                        f"derivation, grid or solver; the grid is part of the measurement")
-            quantities.append(dict(substrate=q.substrate, name=q.name, published=asdict(pub), direct=asdict(dr)))
+            quantities.append(dict(substrate=q.substrate, name=q.name, published=asdict(pub), direct=asdict(dr),
+                                   documents=documents))
         if not quantities:
             raise ReferenceRefusal("reference: a reference record with a DOI records at least one quantity")
         ours_geometry = sorted(p["name"] for p in params if p["whose"] == "ours" and p["changes_geometry"])
@@ -1599,10 +1651,16 @@ def _render_card(name, repo, rec, gate, previews, snippet_shown, snippet_ran, hu
               "**The free parameters, and whose they are:**", ""]
         for p in ref["parameters"]:
             L.append(f"* `{p['name']}` = {p['value']} {p['unit']} -- **{p['whose']}** ({p['where']}): {p['how']}")
-        L += ["", "**Verbatim, from the document that prints the number:**", ""]
+        L += ["", "**Where each number comes from:**", ""]
         for q in sorted(ref["quantities"], key=lambda x: x["substrate"]):
-            L += [f"> {q['published']['printed_in']}, {q['published']['locator']}: "
-                  f"`{q['published']['verbatim'].strip()}`", ""]
+            pub = q["published"]
+            head = f"> {q['substrate']} -- {pub['printed_in']}, {pub['locator']}"
+            for ident, doc in sorted((q.get("documents") or {}).items()):
+                head += (f" ([{ident}](https://doi.org/{ident}), resolved via {doc.get('agency')} at "
+                         f"{doc.get('resolved')} as {doc.get('title')!r})")
+            L += [head + (f": `{pub['verbatim'].strip()}`" if pub.get("verbatim", "").strip() else
+                          f": read from [{pub.get('data_url')}]({pub.get('data_url')}), sha256 "
+                          f"`{str(pub.get('data_sha256'))[:12]}`"), ""]
         if ref.get("caveats"):
             L += ["**Caveats:**", ""] + [f"* **{k}** -- {v}" for k, v in sorted(ref["caveats"].items())] + [""]
 

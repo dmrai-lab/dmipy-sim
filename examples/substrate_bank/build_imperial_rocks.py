@@ -50,6 +50,12 @@ SEED = 0
 FALSE_FAILURE_RATE = 0.01   #: the probability this gate fails a CORRECT family, DECLARED before it runs; the
                             #: band per comparison follows from it and the comparison count (`reference.pass_band`)
 INVERT_MS = 1.0     #: the sampling of the decay the log-mean is inverted on -- part of the measurement
+
+#: The DOI of the DOCUMENT that prints the numbers: the thesis itself, in Imperial's Spiral (a DataCite DOI,
+#: which Crossref answers 404 for). ``REFERENCE_DOI`` is the peer-reviewed publication of the same chapter --
+#: both are resolved and title-compared, so the record never implies the paper prints a table it was not read for.
+THESIS_DOI = "10.25560/4261"
+REFERENCE_DOI = "10.1016/j.petrol.2009.05.013"
 T2_GRID = dict(kind="log", n=60, from_s=1e-3, to_s=10.0)
 SOLVER = "non-negative least squares with a second-difference penalty, lam = 0.1 (t2_distribution)"
 
@@ -261,7 +267,8 @@ def family(data_dir, work_dir, *, rocks, dry, create_dataset):
             uncertainty_is=("none stated: Table 7-2 prints one figure per sample with no error bar and the "
                             "thesis quotes none, so the gate's budget rests on our own standard error alone"),
             printed_in="Talabi O (2008), Pore Scale Simulation of NMR Response in Porous Media, Imperial "
-                       "College London PhD thesis, http://hdl.handle.net/10044/1/4261",
+                       "College London PhD thesis",
+            document=THESIS_DOI,
             locator="Table 7-2, p. 63, the 'Micro-CT' column of Mean T2 (ms)",
             verbatim=ROCKS[rock]["verbatim"]),
         direct=Direct(
@@ -278,7 +285,7 @@ def family(data_dir, work_dir, *, rocks, dry, create_dataset):
                    "tests/validation/test_talabi_rocks.py")) for rock in rocks)
 
     reference = Reference(
-        doi="10.1016/j.petrol.2009.05.013", title="Pore-scale simulation of NMR response",
+        doi=REFERENCE_DOI, title="Pore-scale simulation of NMR response",
         published_kind="number",
         sample=("the same released micro-CT images: his 'Micro-CT' column is a random walk on these very "
                 "volumes, on the central 300^3 section (App. A-1), and his 'Experiment' column is a CPMG "

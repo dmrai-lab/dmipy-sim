@@ -101,13 +101,13 @@ def _sources(tmp_path, *, licence_text=LICENCE_TEXT, host_record="synthetic v1",
 
 
 def _quantity(direct_value, direct_se, *, grid=GRID, verbatim="S(b) = exp(-b D)", se_kind="analytic_mean",
-              substrate="sphere"):
+              substrate="sphere", published=None):
     return R.ReferenceQuantity(
         substrate=substrate, name="signal_at_b",
-        published=R.Published(value=float(np.exp(-B * D0)), unit="-", uncertainty=0.0,
-                              uncertainty_is="exact: it is a closed form",
-                              printed_in="the closed form of free diffusion", locator="exp(-b D)",
-                              verbatim=verbatim),
+        published=published or R.Published(value=float(np.exp(-B * D0)), unit="-", uncertainty=0.0,
+                                           uncertainty_is="exact: it is a closed form",
+                                           printed_in="the closed form of free diffusion", locator="exp(-b D)",
+                                           verbatim=verbatim),
         direct=R.Direct(value=direct_value, unit="-", se=direct_se, se_kind=se_kind,
                         se_derivation="the closed form evaluated exactly, with the standard error the same "
                                       "walker count would give a Monte-Carlo estimate of it",
@@ -325,6 +325,7 @@ def test_a_file_that_cannot_be_digested_is_refused(tmp_path):
 
 # --------------------------------------------------------------- the reference stage's refusals
 def _upto_source(tmp_path, **kw):
+    os.makedirs(tmp_path, exist_ok=True)
     fam = _family(tmp_path, **kw)
     fam.stage("source")
     return fam
@@ -370,6 +371,47 @@ def test_a_resampled_error_bar_is_not_a_standard_error(tmp_path):
     fam = _upto_source(tmp_path, reference=ref)
     with pytest.raises(R.ReferenceRefusal, match="never a fold spread or a split half"):
         fam.stage("reference")
+
+
+def test_a_number_from_a_document_needs_that_documents_identifier(tmp_path):
+    """The verified DOI was the 2009 paper; the number is printed in the thesis, whose identifier was an hdl
+    handle in prose, never resolved or title-compared. A thesis HAS a DOI -- Talabi's is the DataCite
+    10.25560/4261 -- so the document the number comes from is resolved too."""
+    pub = R.Published(value=0.5, unit="-", uncertainty=0.0, uncertainty_is="none stated",
+                      printed_in="Somebody (2008), A thesis", locator="Table 1", verbatim="a row")
+    fam = _upto_source(tmp_path, reference=_reference(published_kind="number",
+                                                      quantities=(_quantity(0.5, 0.05, published=pub),)))
+    with pytest.raises(R.ReferenceRefusal, match="cites no identifier for it"):
+        fam.stage("reference")
+
+
+def test_a_documents_identifier_must_describe_that_document(tmp_path):
+    pub = R.Published(value=0.5, unit="-", uncertainty=0.0, uncertainty_is="none stated",
+                      printed_in="Somebody (2008), Quite another thesis", locator="Table 1", verbatim="a row",
+                      document="10.0/x")
+    fam = _upto_source(tmp_path, reference=_reference(published_kind="number",
+                                                      quantities=(_quantity(0.5, 0.05, published=pub),)))
+    with pytest.raises(R.ReferenceRefusal, match="do not describe one thing"):
+        fam.stage("reference")
+
+
+def test_released_data_is_a_reference_kind_and_needs_its_digest(tmp_path):
+    """parity-fixtures, winther-g6-axons and disco-replay reproduce released DATA -- a signal, per-axon signals,
+    a volume. The vocabulary could not say so, and the "verbatim line" rule would have made them invent one."""
+    bare = R.Published(value=0.5, unit="-", uncertainty=0.0, uncertainty_is="none stated",
+                       printed_in="their released DWI", locator="the b = 0 rows")
+    fam = _upto_source(tmp_path / "bare", reference=_reference(published_kind="data",
+                                                              quantities=(_quantity(0.5, 0.05, published=bare),)))
+    with pytest.raises(R.ReferenceRefusal, match="records the data's URL and its sha256"):
+        fam.stage("reference")
+    good = R.Published(value=0.5, unit="-", uncertainty=0.0, uncertainty_is="none stated",
+                       printed_in="their released DWI", locator="the b = 0 rows",
+                       data_url="https://example.invalid/dwi.bfloat", data_sha256="ab" * 32)
+    fam2 = _upto_source(tmp_path / "good", reference=_reference(published_kind="data",
+                                                               quantities=(_quantity(0.5, 0.05, published=good),)))
+    rec = fam2.stage("reference")
+    assert R.grade_of(rec) == "A"                      # released data on the released geometry is an A
+    assert "the released data itself" in R.grade_reason(rec)
 
 
 def test_a_direct_measurement_without_a_grid_is_refused(tmp_path):
@@ -624,8 +666,12 @@ def test_the_released_geometry_is_derived_from_the_parameters(tmp_path):
     for params, same, grade in ((theirs, True, "A"), (geo, False, "B")):
         here = tmp_path / ("same" if same else "ours")
         here.mkdir()
+        doc = R.Published(value=0.5, unit="-", uncertainty=0.0, uncertainty_is="none stated",
+                          printed_in="Pore-network extraction from micro-computerized-tomography images",
+                          locator="Table 1", verbatim="a row", document="10.1103/PhysRevE.80.036307")
         fam = _upto_source(here,
                            reference=_reference(published_kind="number",
+                                                quantities=(_quantity(0.5, 0.05, published=doc),),
                                                 parameters=(params, R.FreeParameter(
                                                     name="D", value=D0, unit="m^2/s", whose="ours",
                                                     where="x", how="y"))))
