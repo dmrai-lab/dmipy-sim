@@ -398,13 +398,29 @@ def direct_se(rock, work_dir, grid):
     not retained. The relative per-echo spread is a property of the substrate and the estimator, not of the
     pack, which is what makes the substitution legitimate; the record states it and the numbers it rests on.
     """
+    import hashlib
+    import json
+    from dmipy_sim.fill.hub import sha256_of
     from dmipy_sim.replay import ReplayPack
     ref = ROCKS[rock]
-    pack = ReplayPack.load(os.path.join(work_dir, "packs", f"{rock.lower()}.rpk"))
+    path = os.path.join(work_dir, "packs", f"{rock.lower()}.rpk")
+    # keyed on the pack's own bytes and the grid, so the measurement is made once and re-made the moment either
+    # changes; every stage of a run would otherwise decode both contact channels again
+    key = hashlib.sha256(json.dumps([sha256_of(path), grid], sort_keys=True).encode()).hexdigest()
+    cache_path = os.path.join(work_dir, ".direct-se-cache.json")
+    cache = json.load(open(cache_path)) if os.path.exists(cache_path) else {}
+    if cache.get(rock, {}).get("key") == key:
+        return cache[rock]["value"]
+    pack = ReplayPack.load(path)
     _t, _S, _lm, se_pack = decay_and_projection(pack, float(ref["rho"]), grid)
     n_pack = int(pack.n_walkers)
     scale = (n_pack / float(ref["direct_n"])) ** 0.5
-    return dict(se=se_pack * scale, se_pack=se_pack, n_pack=n_pack, n_direct=int(ref["direct_n"]), scale=scale)
+    value = dict(se=se_pack * scale, se_pack=se_pack, n_pack=n_pack, n_direct=int(ref["direct_n"]), scale=scale,
+                 measured_on=os.path.basename(path), pack_sha256=sha256_of(path))
+    cache[rock] = dict(key=key, value=value)
+    with open(cache_path, "w") as fh:
+        json.dump(cache, fh, indent=1, sort_keys=True)
+    return value
 
 
 def main(argv=None):
