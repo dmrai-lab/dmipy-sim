@@ -1,6 +1,6 @@
 """The parity fixtures as published replay packs: one certified pack per fixture, to SubstrateCommons.
 
-The fixtures, the walks, the references and the X.floors are
+The fixtures, the walks, the references and the floors are
 ``examples/validation/cross_engine_parity.py`` in dmipy-sim; this script is the pack builder and the hub
 path, and nothing else. Two published Monte-Carlo references:
 
@@ -79,19 +79,23 @@ def code_commit(*, require_clean=True):
     return head
 
 
-def fixtures(sim_root):
-    """``examples.validation.cross_engine_parity`` of the dmipy-sim checkout at ``sim_root``: the one place the
-    fixtures, the walks, the references and the X.floors are defined."""
-    sys.path.insert(0, os.path.abspath(sim_root))
+def fixtures(sim_root=None):
+    """``examples.validation.cross_engine_parity``: the one place the fixtures, the walks, the references, the
+    floors and the gate's threshold derivation are defined. This script lives beside it in the same checkout,
+    so ``sim_root`` defaults to that checkout and only needs giving when the module is elsewhere."""
+    root = os.path.abspath(sim_root or os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__)))))
+    sys.path.insert(0, root)
+    os.environ.setdefault("DMIPY_SIM_ROOT", root)
     import importlib
     return importlib.import_module("examples.validation.cross_engine_parity")
 
 
 # ----------------------------------------------------------------------------------------------- the pilot
 def pilot(a, X):
-    """Measure what the family's parameters must be, on a short walk of each fixture: the split-half floor at
-    the pilot count, the walker count a floor of X.SIGMA needs, K against the fixture's own scheme, the timing
-    and the memory. Publishes nothing."""
+    """Measure what the family's parameters must be, on a short walk of each fixture: the envelope floor at the pilot
+    count, the walker count that floor implies, K against the fixture's own scheme, the timing and the memory.
+    Publishes nothing."""
     from dmipy_sim.replay.bank import _measure_floor, _master_arrays, build_replay_pack
     from dmipy_sim.io import mcdc
     import tempfile
@@ -253,7 +257,7 @@ def family(a, X):
                 f"{pk.temporal_bandwidth_hz:.0f} Hz -- NOT published"); continue
         if not a.dry:
             rec["uri"] = publish(local, a.repo, path=f"packs/{name}.rpk",
-                                 message=f"X.parity fixtures: {name} ({rec['n_walkers']:,} walkers, K={rec['K']})")
+                                 message=f"parity fixtures: {name} ({rec['n_walkers']:,} walkers, K={rec['K']})")
             log(f"  {rec['uri']}")
         with open(status, "a") as fh:
             fh.write(json.dumps(rec) + "\n")
@@ -876,8 +880,11 @@ def stage_gate(a, X):
         # 1 -- served == decoded, PER MEASUREMENT
         served_gap = float(f["parity"]["served_vs_walk_max_per_measurement"])
         check(served_gap <= max(codec, 1e-9), f"{name}/served-equals-decoded",
-              f"the largest per-measurement difference between what the pack SERVES and what the walk gave "
-              f"is {served_gap:.2e}, against the certified codec error {codec:.2e}")
+              f"the largest PER-MEASUREMENT difference between the pack's two serving routes "
+              f"(walker_primitives and replay) is {served_gap:.2e}, against the certified codec error "
+              f"{codec:.2e}" + ("" if served_gap <= max(codec, 1e-9) else
+                                " -- dmrai-lab/dmipy-sim#484, systematic and growing with b (1.2e-5 at "
+                                "b = 1925 s/mm^2, 3.1e-3 at 13190); not loosened to pass"))
         check(codec <= float(cert["floor_max"]), f"{name}/codec-below-floor",
               f"codec error {codec:.2e} <= the walk's own split-half floor {cert['floor_max']:.5f}")
         # 2 -- ours against theirs, within the recorded floors, at the design record's derived thresholds.
