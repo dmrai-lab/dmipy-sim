@@ -357,18 +357,31 @@ def publish_only(a):
     # The gate's own record names the fixtures it passed. Globbing `packs/*.rpk` made the hold on a fixture a
     # convention -- drop a file in the directory and it ships -- so the list comes from the gate.
     bld = _read_record("build")
-    passed = sorted(bld["fixtures"])
+    per = gate["per_fixture"]
+    passed = sorted(n for n in bld["fixtures"] if per.get(n, {}).get("passed"))
+    withheld = sorted(n for n in bld["fixtures"] if not per.get(n, {}).get("passed"))
+    for n in withheld:
+        log(f"HELD by the gate, not published: {n} -- {per[n]['failures']}")
+    if not passed:
+        raise SystemExit("the gate cleared no pack")
     files = [f"{n}.rpk" for n in passed]
     missing = [f for f in files if not os.path.exists(os.path.join(out, f))]
     if missing:
         raise SystemExit(f"the gate passed {missing} but they are not in {out}")
-    stray = sorted(set(f for f in os.listdir(out) if f.endswith(".rpk")) - set(files))
+    stray = sorted(set(f for f in os.listdir(out) if f.endswith(".rpk"))
+                   - set(files) - {f"{n}.rpk" for n in withheld})
     if stray:
-        raise SystemExit(f"{out} holds {stray}, which the gate did not pass. Gate them or move them out; "
+        raise SystemExit(f"{out} holds {stray}, which the gate did not see. Gate them or move them out; "
                          f"publishing what the gate has not seen is exactly what the gate is for.")
     held = bld.get("held") or {}
     if held:
         log(f"held, not published: {', '.join(held)} -- " + "; ".join(v.get("issue", "?") for v in held.values()))
+    from dmipy_sim.fill.hub import sha256_of
+    already = {}
+    if not a.dry:
+        from dmipy_sim.fill.hub import Hub
+        from dmipy_sim.replay.publish import _load_manifest
+        already = {r["path"]: r.get("sha256") for r in (_load_manifest(Hub(a.repo)).get("packs") or [])}
     rows, sources, uris = [], [], []
     for f in files:
         local = os.path.join(out, f)
@@ -385,6 +398,10 @@ def publish_only(a):
                        f"{par.get('max_abs_diff', float('nan')):.5f} over {par.get('n_meas')} measurements, "
                        f"tolerance {par.get('tol_max', float('nan')):.5f}")
         if not a.dry:
+            if already.get(f"packs/{f}") == sha256_of(local):
+                log(f"  already published with these bytes, not re-uploaded")
+                uris.append(f"hf://{a.repo}/packs/{f}")
+                continue
             uris.append(publish(local, a.repo, path=f"packs/{f}",
                                 message=f"parity fixtures: {f[:-4]} ({meta.get('n_walkers')} walkers)"))
             log(f"  {uris[-1]}")
@@ -492,11 +509,16 @@ REFERENCES = {
                          "surface relaxivity": "none in the walk",
                          "sub-step rule": "ours"},
         grade_459="A",
-        held=dict(issue="dmrai-lab/dmipy-sim#479",
-                  why="the mesh of this cylinder under-restricts by 1.3-2.1e-2 at b = 3000 s/mm^2 where the "
-                      "analytic cylinder of the same radius lands on MISST at the Monte-Carlo floor, and the "
-                      "gap does not close with the step. A pack would be a faithful record of a walk known "
-                      "to be 1.5 % off an exact reference, so it is not published while #479 is open.")),
+        held=dict(issue="dmrai-lab/dmipy-sim#488",
+                  why="#479 (the pickle's face winding) is fixed by #483 and the mesh now walks correctly, but "
+                      "at 100,000 walkers neither the mesh NOR the analytic cylinder of the same radius "
+                      "reproduces this MISST reference to the Monte-Carlo floor: 1.97e-3 and 1.31e-3 "
+                      "respectively, 7.27 and 5.66 sigma, 31 and 26 of 100 measurements outside their own "
+                      "3-sigma band. So the residual is not the mesh and not the faceting (a 49-gon's second "
+                      "moment is 0.27 % low, worth 4e-6 here). It is invisible below ~30,000 walkers and the "
+                      "repo's own cylinder-vs-MISST test carries atol=0.02, forty times the floor at this "
+                      "count, so nothing has probed it before. Held until #488 says whether the 1.3e-3 is "
+                      "MISST's own truncation -- the reference's uncertainty -- or ours.")),
 }
 
 
@@ -1006,7 +1028,17 @@ def stage_gate(a, X):
                   f"{des['target_floor']:g}; the design record states the trade"
                   + ("" if des.get("trade") else " -- IT DOES NOT"))
 
-    verdict = dict(stage="gate", written=time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+    # The verdict is PER FIXTURE as well as whole. A family's fourth pack failing must not stop the three that
+    # passed from being published, and a pack must not be published because the others passed: a pack ships iff
+    # every check naming it passed AND every family-level check (the source and reference records) passed.
+    family_ok = [c for c in checks if c["check"].startswith(("source/", "reference/"))]
+    names = sorted({c["check"].split("/")[0] for c in checks if not c["check"].startswith(("source/", "reference/"))})
+    per_fixture = {}
+    for n in names:
+        mine = [c for c in checks if c["check"].startswith(n + "/")]
+        bad = [c["check"] for c in mine + family_ok if not c["passed"]]
+        per_fixture[n] = dict(passed=not bad, n_checks=len(mine), failures=bad)
+    verdict = dict(stage="gate", written=time.strftime("%Y-%m-%dT%H:%M:%SZ"), per_fixture=per_fixture,
                    inputs={n: _digest(os.path.join(RECORDS, f"{n}.json"))["sha256"]
                            for n in ("source", "reference", "spec", "design", "build")},
                    passed=not fails, n_checks=len(checks), failures=fails, checks=checks,
@@ -1014,18 +1046,28 @@ def stage_gate(a, X):
     for c in checks:
         log(f"  {'PASS' if c['passed'] else 'FAIL'}  {c['check']}: {c['detail']}")
     path, _ = _write_record("gate", verdict)
+    ok = sorted(n for n, v in per_fixture.items() if v["passed"])
+    bad = sorted(n for n, v in per_fixture.items() if not v["passed"])
+    log(f"GATE: {len(checks) - len(fails)} of {len(checks)} checks passed; "
+        f"{len(ok)} of {len(per_fixture)} fixtures clear ({', '.join(ok) or 'none'})"
+        + (f"; HELD: {', '.join(bad)}" if bad else ""))
     if fails:
-        raise SystemExit(f"GATE FAILED ({len(fails)} of {len(checks)} checks): " + "; ".join(fails))
-    log(f"GATE PASSED: {len(checks)} checks; {path}")
+        log("GATE FAILED on: " + "; ".join(fails))
+    log(f"  {path}")
     return path, None
 
 
 def _gate_allows_publish():
-    """The gate's verdict, and that its inputs still hash to what it gated. Publication reads this and
-    nothing else."""
+    """The gate's verdict, and that its inputs still hash to what it gated. Publication reads this and nothing
+    else, and it reads the PER-FIXTURE verdict: a pack ships iff every check naming it passed and every
+    family-level check passed, so one failing fixture holds itself and not the family."""
     g = _read_record("gate")
-    if not g.get("passed"):
-        raise SystemExit(f"records/gate.json says the family did not pass: {g.get('failures')}")
+    per = g.get("per_fixture") or {}
+    if not per:
+        raise SystemExit("records/gate.json has no per-fixture verdict; re-run the gate")
+    if not any(v["passed"] for v in per.values()):
+        raise SystemExit(f"records/gate.json clears no fixture: "
+                         f"{ {k: v['failures'] for k, v in per.items()} }")
     for n, sha in g["inputs"].items():
         now = _digest(os.path.join(RECORDS, f"{n}.json"))["sha256"]
         if now != sha:
