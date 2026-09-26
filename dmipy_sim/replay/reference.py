@@ -93,7 +93,7 @@ FORBIDDEN_TOLERANCE_KEYS = ("coverage", "coverage_factor", "k", "fold_spread", "
 SNIPPET_CEILING_S = 60.0
 
 __all__ = ["ReferenceFamily", "ReferenceRefusal", "Records", "STAGES", "GRADES", "grade_of", "crossref",
-           "code_commit", "tolerance_of", "gate_verdict", "Source", "SourceFile", "Reference",
+           "code_commit", "tolerance_of", "gate_verdict", "pass_band", "grade_reason", "Source", "SourceFile", "Reference",
            "ReferenceQuantity", "Published", "Direct", "FreeParameter", "Design", "Tier", "Systematic",
            "Tolerance", "Build", "RecordedWalk", "Publication", "organisation_index", "organisation_card",
            "ORGANISATION"]
@@ -127,13 +127,19 @@ class Source:
 
 @dataclass(frozen=True)
 class FreeParameter:
-    """A parameter the comparison rests on, and whose it is: fitted by them, a literature value, or ours."""
+    """A parameter the comparison rests on, and whose it is: fitted by them, a literature value, or ours.
+
+    ``changes_geometry`` says whether the parameter decides WHICH object was walked -- a crop, an offset, a
+    decimation, a synthetic sheath. One of those marked ``ours`` means the geometry is not the released one, and
+    the grade follows (:func:`grade_of`): it is not a boolean anyone sets by hand.
+    """
     name: str
     value: object
     unit: str
     whose: str
     where: str
     how: str
+    changes_geometry: bool = False
 
 
 @dataclass(frozen=True)
@@ -187,8 +193,9 @@ class ReferenceQuantity:
 @dataclass(frozen=True)
 class Reference:
     """The published reference, as data. ``doi`` is resolved through Crossref at record time and its title
-    compared with ``title``; ``published_kind`` and ``same_released_geometry`` are the two facts the grade of
-    dmipy-sim#459 follows from, and the record never states a grade (:func:`grade_of` assigns it).
+    compared with ``title``; the grade of dmipy-sim#459 follows from ``published_kind`` and from whether the
+    geometry is the released one, which the reference stage DERIVES from the parameters (no free parameter
+    marked ``ours`` may change it) -- neither the grade nor that fact is a field anyone sets.
 
     ``description``, ``source_note`` and ``licence_note`` are the family's own row on the organisation page:
     the descriptions live with the family, not in the page's renderer.
@@ -196,7 +203,6 @@ class Reference:
     doi: str
     title: str
     published_kind: str
-    same_released_geometry: bool
     sample: str
     sample_relation: str
     quantities: tuple
@@ -338,6 +344,23 @@ def grade_of(reference_record):
     if kind == "number" and reference_record["same_released_geometry"]:
         return "A"
     return "B"
+
+
+def grade_reason(reference_record):
+    """Why :func:`grade_of` gave that grade, as one sentence the card prints."""
+    if not reference_record or reference_record.get("absent"):
+        return "no published reference."
+    kind, ours = reference_record["published_kind"], reference_record.get("geometry_parameters_ours") or []
+    what = {"number": "a published number", "figure": "a published figure",
+            "analytic": "a closed form", "none": "no published reference"}[kind]
+    if kind in ("analytic", "none"):
+        return what + "."
+    if reference_record["same_released_geometry"]:
+        return (f"{what} on the same released geometry: no free parameter marked 'ours' changes it."
+                if kind == "number" else f"{what}: a figure is read, not a number.")
+    return (f"{what}, but NOT on the released geometry -- "
+            f"{', '.join(ours)} {'is' if len(ours) == 1 else 'are'} ours and change"
+            f"{'s' if len(ours) == 1 else ''} it, so the grade is B rather than A.")
 
 
 # --------------------------------------------------------------- Crossref
@@ -954,8 +977,14 @@ class ReferenceFamily:
             quantities.append(dict(substrate=q.substrate, name=q.name, published=asdict(pub), direct=asdict(dr)))
         if not quantities:
             raise ReferenceRefusal("reference: a reference record with a DOI records at least one quantity")
+        ours_geometry = sorted(p["name"] for p in params if p["whose"] == "ours" and p["changes_geometry"])
         rec = dict(doi=r.doi, title=r.title, crossref=cr, title_matches=bool(matches),
-                   published_kind=r.published_kind, same_released_geometry=bool(r.same_released_geometry),
+                   published_kind=r.published_kind, same_released_geometry=not ours_geometry,
+                   geometry_parameters_ours=ours_geometry,
+                   geometry_derivation=(
+                       "the geometry is the released one when no free parameter marked 'ours' changes it; "
+                       + (f"these do: {', '.join(ours_geometry)}" if ours_geometry else
+                          "none of this family's parameters does")),
                    sample=r.sample, sample_relation=r.sample_relation, quantities=quantities, parameters=params,
                    description=r.description, source_note=r.source_note, licence_note=r.licence_note,
                    caveats=dict(r.caveats))
@@ -1548,11 +1577,7 @@ def _render_card(name, repo, rec, gate, previews, snippet_shown, snippet_ran, hu
     if ref.get("absent"):
         L += [f"There is none: {ref['absent']}. The grade is `none`.", ""]
     else:
-        L += [f"**Grade {grade}.** " + {"A": "a published number on the same released geometry.",
-                                        "B": "a published figure, or a number measured on something that is not the "
-                                             "released geometry.",
-                                        "analytic": "a closed form.",
-                                        "none": "no published reference."}[grade],
+        L += [f"**Grade {grade}.** " + grade_reason(ref),
               f"Their sample: {ref['sample']} ({ref['sample_relation']}).", "",
               "| substrate | quantity | replayed (this pack) | our direct walk | theirs | printed in | "
               "|replayed - direct| | tolerance | holds |", "|" + "---|" * 9]

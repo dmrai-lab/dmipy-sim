@@ -121,7 +121,7 @@ def _reference(direct_value=None, direct_se=0.05, **kw):
                                        _quantity(1.25 * exact, 0.002, substrate="sphere-off"))
     base = dict(doi="10.1103/PhysRevE.80.036307", title="Pore-network extraction from "
                                                         "micro-computerized-tomography images",
-                published_kind="analytic", same_released_geometry=True,
+                published_kind="analytic",
                 sample="free diffusion in an unbounded medium", sample_relation="the same material",
                 quantities=q,
                 parameters=(R.FreeParameter(name="D", value=D0, unit="m^2/s", whose="ours",
@@ -613,6 +613,30 @@ def test_a_published_value_with_a_stated_uncertainty_can_fail(ran):
 
 
 # --------------------------------------------------------------- the grade rule
+def test_the_released_geometry_is_derived_from_the_parameters(tmp_path):
+    """`same_released_geometry` was a hand-set boolean the family's own record contradicted: imperial-rocks
+    marked its crop `ours` -- Talabi's 0.377 porosity is unreachable over all 3,442,951 crops -- and still
+    claimed A. A parameter marked `ours` that changes the geometry now makes it B, and the card says which."""
+    geo = R.FreeParameter(name="crop", value="central 300^3", unit="voxels", whose="ours",
+                          changes_geometry=True, where="theirs states the size, not the offset", how="ours")
+    theirs = R.FreeParameter(name="crop", value="theirs", unit="voxels", whose="theirs",
+                             changes_geometry=True, where="stated", how="theirs")
+    for params, same, grade in ((theirs, True, "A"), (geo, False, "B")):
+        here = tmp_path / ("same" if same else "ours")
+        here.mkdir()
+        fam = _upto_source(here,
+                           reference=_reference(published_kind="number",
+                                                parameters=(params, R.FreeParameter(
+                                                    name="D", value=D0, unit="m^2/s", whose="ours",
+                                                    where="x", how="y"))))
+        rec = fam.stage("reference")
+        assert rec["same_released_geometry"] is same
+        assert R.grade_of(rec) == grade
+        assert rec["geometry_parameters_ours"] == ([] if same else ["crop"])
+    assert "NOT on the released geometry" in R.grade_reason(rec)
+    assert "same_released_geometry" not in {f.name for f in R.Reference.__dataclass_fields__.values()}
+
+
 @pytest.mark.parametrize("record,grade", [
     (dict(published_kind="number", same_released_geometry=True), "A"),
     (dict(published_kind="number", same_released_geometry=False), "B"),

@@ -279,7 +279,7 @@ def family(data_dir, work_dir, *, rocks, dry, create_dataset):
 
     reference = Reference(
         doi="10.1016/j.petrol.2009.05.013", title="Pore-scale simulation of NMR response",
-        published_kind="number", same_released_geometry=True,
+        published_kind="number",
         sample=("the same released micro-CT images: his 'Micro-CT' column is a random walk on these very "
                 "volumes, on the central 300^3 section (App. A-1), and his 'Experiment' column is a CPMG "
                 "measured on the sand the images are of"),
@@ -297,6 +297,7 @@ def family(data_dir, work_dir, *, rocks, dry, create_dataset):
                           where="thesis eq. 7.2", how="the brine's bulk T2, stated; applied at replay, not in "
                                                       "the walk"),
             FreeParameter(name="crop", value=f"central {CROP}^3", unit="voxels", whose="ours",
+                          changes_geometry=True,
                           where="thesis App. A-1 states the size, not the offset",
                           how="a central cube: over all 3,442,951 possible 300^3 crops of LV60A the porosity "
                               "spans [0.3555, 0.3713] and his 0.377 is not reachable, so the offset is ours"),
