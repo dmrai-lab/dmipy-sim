@@ -1266,7 +1266,7 @@ class ReferenceFamily:
             created = dict(repo=self.publication.repo, at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
             log.info("publish: dataset %s created (explicit)", self.publication.repo)
         hub = None if dry else self.hub()
-        from .publish import _load_manifest, publish as publish_pack
+        from .publish import MANIFEST, _load_manifest, publish as publish_pack
         already = {} if dry else {r.get("path"): r.get("sha256") for r in (_load_manifest(hub).get("packs") or [])}
         uploaded, kept = [], []
         for name in passing:
@@ -1285,7 +1285,24 @@ class ReferenceFamily:
                                message=f"{self.name}: {name} ({row['n_walkers']:,} walkers, K={row['K']}, "
                                        f"{row['T_s']:g} s at {row['dt_s'] * 1e6:.0f} us)")
             uploaded.append(dict(substrate=name, path=path, sha256=row["sha256"], uri=uri))
+        # the gate's verdict belongs in the manifest, which is what a consumer reads: a withheld pack was left
+        # advertised beside the others with nothing to say it had failed (its bytes are the maintainer's to
+        # delete, not this stage's). Every row this family owns gets its verdict, including one uploaded by an
+        # earlier run.
+        verdicts = {}
+        manifest = None if dry else _load_manifest(hub)
+        for name, sub in sorted(rec["pack"]["substrates"].items()):
+            v = per.get(name, {})
+            verdicts[self._hub_path(name, sub["pack"])] = dict(
+                gate="pass" if v.get("passed") else "fail", withheld=not v.get("passed"),
+                gate_failures=sorted(v.get("failures") or []), gate_record="records/gate.json")
+        if manifest is not None:
+            for row in manifest.get("packs") or []:
+                if row.get("path") in verdicts:
+                    row.update(verdicts[row["path"]])
         adds = {"README.md": os.path.join(self.dir, "README.md")}
+        if manifest is not None:
+            adds[MANIFEST] = json.dumps(manifest, indent=1).encode()
         for s in STAGES[:STAGES.index("card") + 1]:
             adds[f"records/{s}.json"] = self.records.path(s)
         for f in sorted(os.listdir(os.path.join(self.records.dir, "licences"))):
@@ -1297,7 +1314,7 @@ class ReferenceFamily:
                        parent=hub.head())
         org = _organisation_after_publish(self.publication.repo, skip=(dry or not _is_the_real_hub(hub)))
         out = dict(repo=self.publication.repo, code_commit=commit, dataset_created=created, dry=bool(dry),
-                   uploaded=uploaded, kept=kept, withheld=withheld,
+                   uploaded=uploaded, kept=kept, withheld=withheld, manifest_verdicts=verdicts,
                    files=sorted(adds), organisation=org,
                    actor=dict(user=os.environ.get("USER"), host=os.uname().nodename,
                               at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())))

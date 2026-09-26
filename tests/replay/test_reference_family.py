@@ -45,6 +45,11 @@ def _spec():
     return d.Sphere(radius=R_SPHERE).spec
 
 
+def _spec_off():
+    """A second free sphere, declared against a direct number that is 5 % off: the pack the gate must fail."""
+    return d.Sphere(radius=0.75 * R_SPHERE).spec
+
+
 def _walk(spec, n, *, n_t):
     from dmipy_sim.spec import geometry_from_spec
     return d.simulate_trajectories(int(n), D0, geometry_from_spec(spec), T_max=(n_t - 1) * DT, dt_save=DT,
@@ -95,9 +100,10 @@ def _sources(tmp_path, *, licence_text=LICENCE_TEXT, host_record="synthetic v1",
                                          cite_as="grain.raw", role="the synthetic input"),))]
 
 
-def _quantity(direct_value, direct_se, *, grid=GRID, verbatim="S(b) = exp(-b D)", se_kind="analytic_mean"):
+def _quantity(direct_value, direct_se, *, grid=GRID, verbatim="S(b) = exp(-b D)", se_kind="analytic_mean",
+              substrate="sphere"):
     return R.ReferenceQuantity(
-        substrate="sphere", name="signal_at_b",
+        substrate=substrate, name="signal_at_b",
         published=R.Published(value=float(np.exp(-B * D0)), unit="-", uncertainty=0.0,
                               uncertainty_is="exact: it is a closed form",
                               printed_in="the closed form of free diffusion", locator="exp(-b D)",
@@ -110,7 +116,9 @@ def _quantity(direct_value, direct_se, *, grid=GRID, verbatim="S(b) = exp(-b D)"
 
 
 def _reference(direct_value=None, direct_se=0.05, **kw):
-    q = kw.pop("quantities", None) or (_quantity(direct_value or float(np.exp(-B * D0)), direct_se),)
+    exact = float(np.exp(-B * D0))
+    q = kw.pop("quantities", None) or (_quantity(direct_value or exact, direct_se),
+                                       _quantity(1.25 * exact, 0.002, substrate="sphere-off"))
     base = dict(doi="10.1103/PhysRevE.80.036307", title="Pore-network extraction from "
                                                         "micro-computerized-tomography images",
                 published_kind="analytic", same_released_geometry=True,
@@ -140,7 +148,8 @@ NO_REFERENCE = object()
 
 def _family(tmp_path, *, sources=None, reference=NO_REFERENCE, design=None, build=None, publication=None,
             resolver=None):
-    build = build or R.Build(specs={"sphere": _spec}, pack_id={"sphere": "synthetic/sphere"},
+    build = build or R.Build(specs={"sphere": _spec, "sphere-off": _spec_off},
+                             pack_id={"sphere": "synthetic/sphere", "sphere-off": "synthetic/sphere-off"},
                              reproduce=_reproduce, served_vs_channel=_served, served_tier="positions",
                              walk=_walk)
     publication = publication or R.Publication(repo="owner/synthetic", licence="CC-BY-4.0",
@@ -182,7 +191,12 @@ def test_every_stage_writes_its_record(ran):
     for s in R.STAGES:
         assert os.path.exists(fam.records.path(s)), s
         assert rec[s]["stage"] == s
-    assert rec["gate"]["passed"], rec["gate"]["failures"]
+    # `sphere` reproduces its declared direct number; `sphere-off` is declared against one 25 % away, so the
+    # gate fails THAT pack and only that pack -- the per-pack verdict is what the publish stage reads
+    assert not rec["gate"]["passed"]
+    assert rec["gate"]["per_substrate"]["sphere"]["passed"]
+    assert not rec["gate"]["per_substrate"]["sphere-off"]["passed"]
+    assert rec["gate"]["per_substrate"]["sphere-off"]["failures"] == ["sphere-off/reproduces-signal_at_b"]
     assert rec["spec"]["substrates"]["sphere"]["round_trips"]
     assert rec["walk"]["substrates"]["sphere"]["n_t"] == N_T
     assert rec["design"]["pilot"]["on_real_window"]
@@ -236,6 +250,7 @@ def test_the_card_runs_its_snippet_and_states_the_grade(ran):
     assert rec["card"]["snippet"]["stdout"].startswith("S = ")
     assert rec["card"]["snippet"]["seconds"] <= R.SNIPPET_CEILING_S
     assert rec["card"]["grade"] == "analytic"
+    assert "**The comparison does not hold.**" in card
     assert "**Grade analytic.**" in card
     assert rec["card"]["snippet"]["stdout"] in card
     assert "previews/sphere.png" in card
@@ -246,8 +261,11 @@ def test_the_card_runs_its_snippet_and_states_the_grade(ran):
 def test_publish_records_what_it_would_upload(ran):
     _, rec = ran
     p = rec["publish"]
-    assert p["dry"] and p["withheld"] == []
+    assert p["dry"] and p["withheld"] == ["sphere-off"]
     assert [u["substrate"] for u in p["uploaded"]] == ["sphere"]
+    assert p["manifest_verdicts"]["packs/synthetic-sphere.rpk"]["gate"] == "pass"
+    off = p["manifest_verdicts"]["packs/synthetic-sphere-off.rpk"]
+    assert off["gate"] == "fail" and off["withheld"] and off["gate_failures"]
     assert "records/gate.json" in p["files"] and "README.md" in p["files"]
     assert "records/source.json" in p["files"] and "previews/sphere.png" in p["files"]
     assert "records/publish.json" not in p["files"]              # a record cannot publish itself
@@ -543,6 +561,34 @@ def test_publish_refuses_a_record_changed_after_the_gate(tmp_path, monkeypatch):
         fh.write("\n")
     with pytest.raises(R.ReferenceRefusal, match="changed since"):
         fam.stage("publish")
+
+
+def test_the_manifest_carries_the_gate_verdict_per_pack(tmp_path, monkeypatch):
+    """A withheld pack is not deleted -- its bytes are the maintainer's -- but it must not sit in the manifest
+    with nothing to say the gate failed it."""
+    from dmipy_sim.fill import FakeHub
+    from dmipy_sim.replay import publish as pub
+    hub = FakeHub(str(tmp_path / "hub"))
+    pubn = R.Publication(repo="owner/synthetic", licence="CC-BY-4.0", citation="a test family",
+                         snippet=_snippet, snippet_substrate="sphere", dry=False)
+    fam = _family(tmp_path, publication=pubn)
+    fam._hub = hub
+    monkeypatch.setattr(R, "code_commit", lambda **k: "0" * 40)
+    for st in ("source", "reference", "spec", "design", "walk", "pack", "gate", "card"):
+        fam.stage(st)
+    rec = fam.read_all("pack")
+    off = rec["pack"]["substrates"]["sphere-off"]["pack"]
+    local = os.path.join(fam.dir, off["path_local"])
+    pub.publish(local, "owner/synthetic", path="packs/synthetic-sphere-off.rpk", hub=hub)  # an earlier run's
+    fam.stage("publish")
+    rows = {r["path"]: r for r in json.load(open(os.path.join(hub.root, "manifest.json")))["packs"]}
+    assert rows["packs/synthetic-sphere.rpk"]["gate"] == "pass"
+    assert rows["packs/synthetic-sphere.rpk"]["withheld"] is False
+    assert rows["packs/synthetic-sphere-off.rpk"]["gate"] == "fail"
+    assert rows["packs/synthetic-sphere-off.rpk"]["withheld"] is True
+    assert rows["packs/synthetic-sphere-off.rpk"]["gate_failures"] == ["sphere-off/reproduces-signal_at_b"]
+    assert rows["packs/synthetic-sphere-off.rpk"]["gate_record"] == "records/gate.json"
+    assert rows["packs/synthetic-sphere-off.rpk"]["sha256"] == off["sha256"]      # the bytes are untouched
 
 
 def _prepared(tmp_path, monkeypatch, **kw):
