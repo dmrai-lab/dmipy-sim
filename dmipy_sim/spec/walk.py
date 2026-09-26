@@ -223,7 +223,9 @@ class _Boundary:
         if self.kind == "mesh":
             from ..geometry.mesh import load_ply
             from ..fields.susceptibility_field import MeshBodies
-            self.bodies = MeshBodies([load_ply(w.surface.file, scale=(w.surface.scale or 1.0)) for w in walls])
+            from .build import mesh_surface_file
+            self.bodies = MeshBodies([load_ply(mesh_surface_file(w.surface), scale=(w.surface.scale or 1.0))
+                                      for w in walls])
             self.V, self.F = self.bodies.V, self.bodies.F
         elif self.kind == "sphere_union":
             from .build import sphere_union_arrays
@@ -423,6 +425,46 @@ class WalkContext:
         return self._basis
 
 
+def _explicit_seeds(spec, pid, n, member=None):
+    """``(positions, weights)`` for a pool whose spec seeds it from a CITED list of start positions.
+
+    The list is read from ``spec.seeding.positions`` -- resolved and sha256-checked like any other file a spec
+    cites -- and consumed by the rule the citation states. ``read: "cyclic"`` is MC/DC's
+    ``DynamicsSimulation::initWalkerPosition``: walker ``i`` starts at line ``i mod n``, so a run of more
+    walkers than the file has lines repeats it. Every position is checked to be inside the pool it seeds; one
+    that is not is refused rather than walked from the wrong side.
+    """
+    from .build import resolve_surface_file, _sha256
+    pos = spec.seeding.positions
+    path = resolve_surface_file(pos["file"])
+    if pos.get("sha256") and _sha256(path) != pos["sha256"]:
+        raise SpecError(f"{path} does not match the sha256 seeding.positions cites")
+    fmt = (pos.get("format") or "xyz").lower()
+    if fmt != "xyz":
+        raise SpecError(f"seeding.positions.format {fmt!r} is not a format this reads; 'xyz' is three numbers "
+                        f"per line")
+    A = np.loadtxt(path, dtype=np.float64) * float(pos.get("scale") or 1.0)
+    if A.ndim != 2 or A.shape[1] != 3:
+        raise SpecError(f"{path}: {A.shape} is not (n, 3) start positions")
+    read = (pos.get("read") or "cyclic").lower()
+    if read != "cyclic":
+        raise SpecError(f"seeding.positions.read {read!r} is not a rule this knows; 'cyclic' is i mod n")
+    if member is not None:
+        # chunked: a membership test is a device kernel compiled for its batch shape, and the file may hold
+        # more rows than one batch
+        inside = np.concatenate([np.asarray(member(A[i:i + 512]), bool).ravel()
+                                 for i in range(0, len(A), 512)])
+        if not inside.all():
+            bad = np.flatnonzero(~inside)
+            raise SpecError(
+                f"{path}: {bad.size} of {len(A)} cited start positions are not inside pool {pid} -- lines "
+                f"{(bad[:8] + 1).tolist()}{' ...' if bad.size > 8 else ''}, e.g. "
+                f"{np.round(A[bad[0]] * 1e6, 4).tolist()} um. A walker started on the wrong side of a wall "
+                f"walks a different substrate, so the list is refused rather than used")
+    r0 = A[np.arange(int(n)) % len(A)]
+    return r0, np.ones(len(r0))
+
+
 def draw_seeds(spec, seeding, seed, *, context=None):
     """The stratified seeds of ``spec`` drawn on the CPU: every seeded pool's start positions and weights on
     ``seeding``'s grid, as a :class:`~dmipy_sim.spec.seeding.DrawnSeeds` that :func:`walk_spec` takes in place
@@ -478,6 +520,8 @@ def _walk_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field, field_re
     if seeding is None:
         probe = np.random.default_rng(int(seed) + 99).uniform(lo, hi, (int(n_probe), 3))
         frac = {pid: float(member(pid)(probe).mean()) for pid in seeded}
+        if spec.seeding.rule == "explicit":
+            return _explicit_seeds(spec, pid, n, member(pid))
         if spec.seeding.weights == "thin":                 # seed by volume x water fraction, every walker weight 1
             mass = {pid: frac[pid] * wf[pid] for pid in seeded}
         else:                                              # seed by volume, carry the water fraction as a weight
