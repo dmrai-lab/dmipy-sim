@@ -17,6 +17,55 @@ T2A, T1A = {"extra": 0.08, "intra": 0.03}, {"extra": 1.0, "intra": 1.2}
 T2B = {"extra": 0.05, "intra": 0.02}
 
 
+@pytest.fixture(scope="module")
+def high_b_pack():
+    """A 2000-walker cylinder walk packed at K = 64, whose band carries the ActiveAx scheme's b = 13,190 s/mm^2:
+    there the phases are 5.9 rad mean and 26 rad at most, the scale at which #484 found the replay's depths
+    compared apart."""
+    walk = d.simulate_trajectories(2000, D0, d.Cylinder(2e-6, (0, 0, 1)), 0.01, 1e-4, seed=0, require_gpu=False)
+    return build_replay_pack(walk, id="test/high-b", K=64, license="x", citation="x")
+
+
+@pytest.mark.parametrize("b", [0.0, 1.0e9, 3.094e9, 1.319e10])
+def test_every_depth_of_a_replay_is_the_same_number_at_every_b(high_b_pack, b):
+    """``replay``, ``walker_signals`` and ``walker_primitives(...).signals`` are ONE computation at three depths --
+    one band contraction (:func:`~dmipy_sim.replay.replay.band_phase`), one complex factor
+    (:func:`~dmipy_sim.replay.replay.signal_factor`) -- so the weighted ensemble mean of either per-walker route IS
+    ``replay``, to double-precision rounding and not to a tolerance, at b = 13,190 s/mm^2 as at b = 0.
+
+    dmipy-sim#484 compared them per measurement at these b on a published pack and read a growing gap; the gap was
+    the reduction, not the routes (see the test below), but nothing made the depths' equality structural."""
+    pk = high_b_pack
+    seq = _seqmod.pgse([[0.0, 0.0, 1.0]], 1e-3, 3e-3, bvalues=[b], TE=6e-3, n_t=4 * pk.n_t + 1, slew_rate=np.inf)
+    S = np.asarray(pk.replay(seq)).ravel()
+    w, ew, E = pk.walker_signals(seq)
+    prim = pk.walker_primitives(seq)
+    w2, ew2, E2 = prim.signals(None, None)
+    for depth in (np.abs((ew[:, None] * E).sum(0) / w.sum()), np.abs((ew2[:, None] * E2).sum(0) / w2.sum()), prim.signal()):
+        np.testing.assert_allclose(depth, S, rtol=0, atol=1e-14)
+    np.testing.assert_array_equal(np.asarray(prim.phi), np.asarray(pk.walker_phases(seq)[2]))
+    np.testing.assert_allclose(E, E2, rtol=0, atol=1e-15)
+
+
+def test_the_real_part_of_the_per_walker_phases_is_not_the_signal(high_b_pack):
+    """The reduction #484 measured, named: ``cos(phi).mean(0)`` is the real part of the ensemble, and the signal is
+    its MODULUS. The difference is the quadrature the ensemble carries, ``sqrt(c^2 + s^2) - c``, which is exactly 0
+    at b = 0 (every phase is 0) and signed one way everywhere. It scales with the phase spread, not with the codec:
+    at b = 1e9 it is under this pack's own certified error and at b = 3094 and 13,190 s/mm^2 it is many
+    times over it -- which is why only a per-measurement comparison at high b saw it, and why no certificate
+    of the pack's data could."""
+    pk = high_b_pack
+    bvals = [0.0, 1.0e9, 3.094e9, 1.319e10]
+    seq = _seqmod.pgse([[0.0, 0.0, 1.0]] * 4, 1e-3, 3e-3, bvalues=bvals, TE=6e-3, n_t=4 * pk.n_t + 1, slew_rate=np.inf)
+    phi = np.asarray(pk.walker_primitives(seq).phi, np.float64)
+    S = np.asarray(pk.replay(seq)).ravel()
+    c, s = np.cos(phi).mean(0), np.sin(phi).mean(0)
+    np.testing.assert_allclose(S, np.sqrt(c ** 2 + s ** 2), rtol=0, atol=1e-14)      # the modulus, exactly
+    gap, err = S - c, float(pk.meta["fidelity"]["err_max"])
+    assert gap[0] == 0.0 and (gap[1:] > 0).all()                                     # signed one way, 0 at b = 0
+    assert gap[1] < err and min(gap[2], gap[3]) > 5 * err, f"gap {gap} against a codec error of {err:.3g}"
+
+
 def test_the_primitives_give_every_pairs_signals_as_the_replay_does(pack):
     """Relaxation, contact, both, none: the primitives formed once reproduce ``walker_signals`` for each tissue to
     rounding, the bands never contracted again."""

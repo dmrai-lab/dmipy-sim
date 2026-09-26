@@ -42,6 +42,17 @@ Any other grouping of the walkers, by the voxel they started in for a partitione
 its members with its own normaliser. `walker_phases` is the same without the exponential, for a consumer that
 forms it where it accumulates (a GPU).
 
+The sum above is the reduction. `np.cos(phi).mean(0)` is **not** the signal: it is the real part of the ensemble
+mean, and it drops the quadrature the ensemble carries. For a substrate seeded or shaped asymmetrically that is
+`sqrt(c^2 + s^2) - c`, zero at b = 0 and growing with the phase spread -- 3.1e-3 at b = 13,190 s/mm^2 on the MC/DC
+parity fixture, against a codec error of 4.8e-5 (dmipy-sim#484).
+
+```python
+_, _, phi = pack.walker_phases(seq, tissue=wm)
+c = np.cos(phi).mean(0); si = np.sin(phi).mean(0)                   # unit weights, so the mean is the ensemble's
+print(np.allclose(np.sqrt(c ** 2 + si ** 2), np.abs(np.exp(1j * phi).mean(0))), np.abs(c - S).max())
+```
+
 ## `walker_primitives`: before the tissue and the scanner
 
 The tissue and the scanner never touch the bands. What an acquisition leaves of every walker before any of them
@@ -54,6 +65,7 @@ print(prim.phi.shape, prim.exposure_t2.shape, prim.contact.shape, prim.field_iso
 w2, ew2, E2 = prim.signals(wm, None)
 print(np.allclose(ew2, ew) and np.allclose(E2, E))                  # the same as walker_signals, the bands untouched
 w3, ew3, E3 = prim.signals(wm.replace(T2={"intra": 0.08}, rho=2e-6), None)   # another tissue: no contraction repeated
+print(np.allclose(prim.signal(wm, None), S))                        # the ensemble mean of them: replay
 ```
 
 ## `study`: a protocol on tissues on scanners

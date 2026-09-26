@@ -324,12 +324,13 @@ class ColumnarPack:
         num = np.zeros((len(pairs), 2, n_vox, n_meas), complex); den = np.zeros((2, n_vox)); rows = 0
         ROWS, SEGS = 1 << 16, 256
 
-        @functools.partial(jax.jit, static_argnums=(9,))
-        def pair_sums(phi, fi, fa, et2, et1, ct, w, seg2, params, n_seg2):
+        @functools.partial(jax.jit, static_argnums=(10,))
+        def pair_sums(phi, fi, fa, et2, et1, ct, w, vox, seg2, params, n_seg2):
             a_i, a_a, rho_D, invT2, invT1 = params
             logw = -(et2 @ invT2) - (et1 @ invT1) + rho_D * ct
             ph = phi + (a_i * fi + a_a * fa)[:, None]
-            return jax.ops.segment_sum(jnp.exp(1j * ph) * (w * jnp.exp(logw))[:, None], seg2, num_segments=n_seg2)
+            E = jnp.exp(1j * ph) * vox[None, :]                       # the voxel's factor, as replay.signal_factor
+            return jax.ops.segment_sum(E * (w * jnp.exp(logw))[:, None], seg2, num_segments=n_seg2)
         for pk in self.iter_views(chunk_rows=chunk_rows, K=plan["K"], modes=plan["modes"], contact=plan["contact"]):
             n = pk.n_walkers
             ijk, _ = self.grid.bin(pk.r0); v = np.ravel_multi_index(ijk.T, self.grid.shape)
@@ -344,7 +345,8 @@ class ColumnarPack:
                 n_pools = prim.n_pools or 1
                 phi = pad(prim.phi, (prim.phi.shape[1],)); fi = pad(prim.field_iso, ()); fa = pad(prim.field_aniso, ())
                 et2 = pad(prim.exposure_t2, (n_pools,)); et1 = pad(prim.exposure_t1, (n_pools,)); ct = pad(prim.contact, ()); w = pad(prim.w, ())
-                dev = [jnp.asarray(x) for x in (phi, fi, fa, et2, et1, ct, w)] + [jnp.asarray(seg2)]
+                vox = np.ones(prim.phi.shape[1]) if prim.voxel is None else np.asarray(prim.voxel, np.float64)
+                dev = [jnp.asarray(x) for x in (phi, fi, fa, et2, et1, ct, w, vox)] + [jnp.asarray(seg2)]
                 for k, (t_, s_) in enumerate(pairs):
                     invT2, invT1, rho_D = prim.rates(t_); a_i, a_a = prim.field_scalars(t_, s_)
                     params = (jnp.float64(a_i), jnp.float64(a_a), jnp.float64(rho_D), jnp.asarray(invT2), jnp.asarray(invT1))
