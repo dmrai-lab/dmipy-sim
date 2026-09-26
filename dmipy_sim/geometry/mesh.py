@@ -206,24 +206,44 @@ def _boundary_vertices(V, F):
 
 
 def merge_duplicate_vertices(V, F, rel_tol=1e-3, crack_rel_tol=0.5):
-    """``(V, F, n_merged)`` with vertices closer than ``rel_tol`` of the median edge made one, and, where that
-    leaves a boundary edge, the boundary's vertices closer than ``crack_rel_tol`` of the median edge: what a writer
-    that duplicates a vertex where two sheets meet leaves behind, exactly or to its own rounding (a crack: two
-    boundary edges on vertices a few nanometres apart). Faces that lose a distinct vertex to a merge are dropped."""
+    """``(V, F, n_merged)`` with vertices closer than ``rel_tol`` of the median edge made one, and, where THAT
+    leaves a boundary edge, the boundary's vertices closer than ``crack_rel_tol`` of the median edge: what a
+    writer that duplicates a vertex where two sheets meet leaves behind, exactly or to its own rounding (a
+    crack: two boundary edges on vertices a few nanometres apart). Faces that lose a distinct vertex to a merge
+    are dropped.
+
+    **The two passes are ordered, and the order is the whole point.** The crack pass is far looser than the
+    duplicate pass -- half a median edge against a thousandth of one -- so it may only ever see the boundary
+    that SURVIVES the duplicate pass. Run against the raw boundary it treats a merely duplicated seam as a
+    pair of crack lips, and union-find then chains a whole rim of a tube into one vertex, because on a
+    polygonal ring every neighbour is within half an edge of the next. Measured on Disimpy's
+    ``cylinder_mesh_closed.pkl`` (296 distinct vertices written as 352, a 49-gon tube of radius 5 um): the
+    ordered passes merge 56 duplicates and leave a closed surface whose area is 0.999 of the ideal cylinder's,
+    while the unordered one collapsed three rings to a point, shrank the surface, and made ray-parity seeding
+    place walkers 7.06 um from a 5 um axis.
+    """
     from scipy.spatial import cKDTree
     V = np.asarray(V, np.float64); F = np.asarray(F, np.int64)
     if F.size == 0:
         return V, F, 0
     edge = float(np.median(np.linalg.norm(V[F[:, 0]] - V[F[:, 1]], axis=1)))
-    pairs = cKDTree(V).query_pairs(rel_tol * edge, output_type="ndarray")
-    bnd = _boundary_vertices(V, F)
-    if len(bnd) > 1:                                                     # a crack: its lips, within a fraction of an edge
+    n0 = len(V)
+    V, F = _merge_pairs(V, F, cKDTree(V).query_pairs(rel_tol * edge, output_type="ndarray"))
+    bnd = _boundary_vertices(V, F)                       # the boundary the duplicate pass LEAVES, not the raw one
+    if crack_rel_tol > 0 and len(bnd) > 1:               # a crack: its lips, within a fraction of an edge
         near = cKDTree(V[bnd]).query_pairs(crack_rel_tol * edge, output_type="ndarray")
         if len(near):
-            pairs = np.concatenate([pairs.reshape(-1, 2), bnd[near]], axis=0)
-    if len(pairs) == 0:
-        return V, F, 0
-    parent = np.arange(len(V))                                            # union-find over the near pairs
+            V, F = _merge_pairs(V, F, bnd[near])
+    return V, F, int(n0 - len(V))
+
+
+def _merge_pairs(V, F, pairs):
+    """``(V, F)`` with every pair of vertex indices in ``pairs`` made one (union-find, the earlier index stays);
+    faces that lose a distinct vertex are dropped."""
+    pairs = np.asarray(pairs, np.int64).reshape(-1, 2)
+    if not len(pairs):
+        return V, F
+    parent = np.arange(len(V))
 
     def root(i):
         while parent[i] != i:
@@ -233,13 +253,13 @@ def merge_duplicate_vertices(V, F, rel_tol=1e-3, crack_rel_tol=0.5):
     for a, b in pairs:
         ra, rb = root(a), root(b)
         if ra != rb:
-            parent[max(ra, rb)] = min(ra, rb)                                # the earlier vertex stays
+            parent[max(ra, rb)] = min(ra, rb)
     rep = np.array([root(i) for i in range(len(V))])
     keep = np.flatnonzero(rep == np.arange(len(V)))
     rank = np.full(len(V), -1, np.int64); rank[keep] = np.arange(len(keep))
     F = rank[rep[F]]
     distinct = (F[:, 0] != F[:, 1]) & (F[:, 1] != F[:, 2]) & (F[:, 0] != F[:, 2])
-    return V[keep], F[distinct], int(len(V) - len(keep))
+    return V[keep], F[distinct]
 
 
 def nondegenerate_faces(V, F):

@@ -441,6 +441,16 @@ def sphere_union_arrays(surface):
     return np.asarray(s.instances["centers"], float), np.asarray(s.instances["radii"], float)
 
 
+def mesh_surface_file(surface):
+    """The PLY/STL a ``mesh`` surface cites, found by :func:`resolve_surface_file` and checked against the
+    ``sha256`` the spec states -- the same rule a ``label_volume`` or a ``swept_polyline`` surface goes
+    through, so a dataset's mesh may be cited by the relative path it is distributed at."""
+    path = resolve_surface_file(surface.file)
+    if surface.sha256 and _sha256(path) != surface.sha256:
+        raise SpecError(f"{path} does not match the sha256 the spec cites")
+    return path
+
+
 def resolve_surface_file(path):
     """The file a surface cites, found: as given (absolute, or relative to the working directory), else under
     :func:`surface_cache_dir`; a dataset's strand or mesh files are cited by the relative path they are
@@ -599,7 +609,7 @@ def _geometry_from_spec(spec):
         if w.permeability.in_to_out > 0 or w.permeability.out_to_in > 0:
             perm = ({"intra_to_extra": w.permeability.in_to_out, "extra_to_intra": w.permeability.out_to_in}
                     if w.permeability.in_to_out != w.permeability.out_to_in else w.permeability.in_to_out)
-        m = Mesh.from_ply(s.file, scale=(s.scale or 1.0), periodic=[b == "periodic" for b in dom.boundary],
+        m = Mesh.from_ply(mesh_surface_file(s), scale=(s.scale or 1.0), periodic=[b == "periodic" for b in dom.boundary],
                           voxel_min=dom.box_min, voxel_max=dom.box_max, feature_radius=spec.validity.smallest_feature,
                           permeability=perm, compartments=(Compartments(comps) if comps else None),
                           pool={1: "intra", 0: "extra"}[spec.seeding.pools[0]],
