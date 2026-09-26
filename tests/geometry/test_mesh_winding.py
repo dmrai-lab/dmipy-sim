@@ -2,7 +2,8 @@
 
 The laboratory case is the shape of Disimpy's ``tests/cylinder_mesh_closed.pkl``: a capped regular 49-gon
 prism of circumradius 5 um and length 25 um, with one triangle of every wall quad and the whole top cap
-written the other way round -- 294 of 588 faces, 784 of 882 manifold edges. No random walk and no statistics:
+written the other way round: 294 of 588 faces, 686 of 882 manifold edges here, 784 in the file itself. No
+random walk and no statistics:
 uniform points in the lumen, the classifier's answer on them, and one step each through
 :meth:`~dmipy_sim.geometry.mesh.Mesh.reflect`.
 
@@ -91,7 +92,7 @@ def test_the_fixtures_winding_is_found_and_the_faces_are_reoriented():
     V, F = _prism()
     written, n_reversed = _as_written(F)
     assert (n_reversed, winding_inconsistency(V, F)) == (294, 0)
-    assert winding_inconsistency(V, written) == 784
+    assert winding_inconsistency(V, written) == 686
 
     fixed, n_flipped = orient_faces(V, written)
     assert winding_inconsistency(V, fixed) == 0
@@ -104,7 +105,7 @@ def test_the_fixtures_winding_is_found_and_the_faces_are_reoriented():
 
     with pytest.warns(UserWarning, match="mesh winding"):
         mesh = _mesh(V, written)
-    assert (mesh.winding_inconsistent_edges, mesh.n_faces_reoriented) == (784, 294)
+    assert (mesh.winding_inconsistent_edges, mesh.n_faces_reoriented) == (686, 294)
     assert winding_inconsistency(V, mesh.faces) == 0
     assert _mesh(V, F).n_faces_reoriented == 0              # a consistent surface is left alone
 
@@ -132,3 +133,6 @@ def test_the_lumen_reads_as_interior_and_no_step_is_refused_once_the_faces_agree
     refused_raw = np.asarray(np.abs(np.asarray(jax.jit(jax.vmap(raw.reflect))(jnp.asarray(p), step)) - p).max(1) == 0)
     assert interior_raw.mean() < 0.6, "the file's own normals no longer misclassify the lumen"
     assert refused_raw.mean() > 0.1, "the file's own normals no longer cost the walk its steps"
+
+    reported = np.asarray(jax.jit(jax.vmap(lambda q, s: raw.interact(q, s).illegal))(jnp.asarray(p), step))
+    assert (reported == refused_raw).all(), "a refused step is not the one PersistentWalk.illegal_crossings counts"

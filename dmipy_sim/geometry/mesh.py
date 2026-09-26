@@ -1093,12 +1093,13 @@ class Mesh(Geometry):
         # precisely the statement that nothing lies within `rem` of here. If it DID hit, the
         # bounce budget ran out mid-step and the leftover is untested.
         r_out = r + (rf + df * jnp.where(refls[-1], 0.0, jnp.maximum(remf, 0.0)) - r_w)
+        refused = jnp.zeros((), bool)
         if self.reject_escape:
             # a GRANTED crossing is an escape from the starting compartment and must be kept;
             # everything else that changed side did so without permission
-            r_out = jnp.where(crossed_f, r_out,
-                              jnp.where(self._escaped(r, r_out), r, r_out))
-        return r_out, dlogw, crossed_f
+            refused = self._escaped(r, r_out) & jnp.logical_not(crossed_f)
+            r_out = jnp.where(refused, r, r_out)
+        return r_out, dlogw, crossed_f, refused
 
     def reflect(self, r, step):
         """Impermeable wall interaction -- the kappa = 0 case of :meth:`_wall`."""
@@ -1107,14 +1108,19 @@ class Mesh(Geometry):
 
     def reflect_with_log_weight(self, r, step, rho_over_D):
         """Impermeable wall interaction that also accrues surface relaxation."""
-        r_out, dlogw, _ = self._wall(r, step, jnp.float32(0.0), rho_over_D,
-                                     jax.random.PRNGKey(0))
+        r_out, dlogw, _crossed, _refused = self._wall(r, step, jnp.float32(0.0), rho_over_D,
+                                                      jax.random.PRNGKey(0))
         return r_out, dlogw
 
     def permeate(self, r, step, kappa_over_D, rho_over_D, perm_key):
-        """Wall interaction with a permeable membrane (Powles crossing)."""
-        r_out, dlogw, _ = self._wall(r, step, kappa_over_D, rho_over_D, perm_key)
-        return r_out, dlogw
+        """Wall interaction with a permeable membrane (Powles crossing).
+
+        ``(r, dlog_w, crossed, refused)``: a step ``reject_escape`` discarded -- the walker held where it
+        started -- is the fourth flag, so `PersistentWalk.illegal_crossings` counts it the way a voxel wall's
+        refusal is counted. Unreported, 15.6 % of the steps of a walk could be refused and the walk's own
+        counter still read 0 (dmrai-lab/dmipy-sim#479).
+        """
+        return self._wall(r, step, kappa_over_D, rho_over_D, perm_key)
 
     def _box_face_hit(self, r0, dh, rem):
         """Distance along ``dh`` to the nearest voxel face within ``rem``, and that face's inward normal.
