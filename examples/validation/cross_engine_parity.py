@@ -268,10 +268,38 @@ def walk_cos_phi(walk, seq, *, chunk=4000):
     return np.concatenate(out, axis=1)
 
 
-def pack_cos_phi(pack, seq):
-    """Per-walker ``cos(phi)`` the PUBLISHED pack gives: ``walker_primitives(seq).phi``, the bands contracted
+def pack_walker_phase(pack, seq):
+    """Per-walker gradient phase the PUBLISHED pack gives: ``walker_primitives(seq).phi``, the bands contracted
     once. ``(n_meas, n_w)``, so it lines up with :func:`walk_cos_phi`."""
-    return np.cos(np.asarray(pack.walker_primitives(seq).phi, np.float64)).T
+    return np.asarray(pack.walker_primitives(seq).phi, np.float64).T
+
+
+def pack_cos_phi(pack, seq):
+    """Per-walker ``cos(phi)`` from the pack: the REAL part of each walker's transverse magnetisation.
+
+    That is the reduction both references use, which is why the parity is computed on it: MC/DC accumulates
+    ``DWI[s] += cos(phase_shift)`` (``PGSESequence::update_DWI_signal``) and Disimpy's simulator likewise sums
+    cosines, so the published numbers are real parts, not moduli.
+    """
+    return np.cos(pack_walker_phase(pack, seq))
+
+
+def ensemble_modulus(phi, weights=None):
+    """``|mean(exp(i phi))|`` per measurement: the MODULUS of the complex ensemble mean.
+
+    This is what :meth:`ReplayPack.replay` returns, and it is NOT ``mean(cos phi)``. The two differ by the
+    quadrature term -- ``|z| = sqrt(c^2 + s^2) = c + s^2/(2c) + ...`` -- which vanishes when the phase
+    distribution is symmetric and grows as it stops being, i.e. with b. Comparing one against the other made
+    the served-vs-decoded gate check read 1.18e-05 at b = 1925 s/mm^2 and 3.10e-03 at 13190 and filed
+    dmrai-lab/dmipy-sim#484 against the engine; the per-walker phases are in fact bit-identical across the
+    routes and neither is wrong. Any check of one route against another must reduce them the same way.
+    """
+    phi = np.asarray(phi, np.float64)
+    z = np.exp(1j * phi)
+    if weights is None:
+        return np.abs(z.mean(axis=1))
+    w = np.asarray(weights, np.float64)
+    return np.abs((z * w[None, :]).sum(axis=1) / w.sum())
 
 
 def floors(per_walker, n_theirs=None):

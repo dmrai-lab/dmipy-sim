@@ -852,14 +852,17 @@ def stage_records_from_build(a, X):
             ref, n_theirs = X.mcdc_reference(a.mcdc_data, float(amp), float(wL), seq_mcdc)
             quant = X.MCDC_QUANTISATION
         pk = ReplayPack.load(local)
-        served = X.pack_cos_phi(pk, seq)                       # the bands a consumer contracts, not a walk
-        recomputed = X.parity(served, ref, n_theirs, reference_quantisation=quant)
-        # served vs decoded, PER MEASUREMENT: the pack's two routes to the same signal -- the per-walker one
-        # (`walker_primitives`, the bands contracted once) against the scalar one (`replay`). Both read this
-        # pack and nothing else, so no walk is involved.
-        direct = np.asarray(pk.replay(seq), float).ravel()
-        served_gap = float(np.abs(served.mean(axis=1) - direct).max())
-        del pk, served, direct
+        phi = X.pack_walker_phase(pk, seq)                     # the bands a consumer contracts, not a walk
+        recomputed = X.parity(np.cos(phi), ref, n_theirs, reference_quantisation=quant)
+        # Served vs decoded, PER MEASUREMENT: the pack's two routes to the same signal -- the per-walker one
+        # (`walker_primitives`, the bands contracted once) against the scalar one (`replay`) -- reduced THE SAME
+        # WAY. `replay` returns the modulus of the complex ensemble mean; `mean(cos phi)` is its real part, and
+        # the two differ by the quadrature term s^2/(2c), which grows with b. Comparing them across reductions
+        # is what made this check read 3.10e-03 at b = 13190 s/mm^2 and put #484 on the engine; the phases are
+        # bit-identical across the routes. Both read this pack only, so no walk is involved.
+        served_gap = float(np.abs(X.ensemble_modulus(phi, np.asarray(pk.spin_weights, float))
+                                  - np.asarray(pk.replay(seq), float).ravel()).max())
+        del pk, phi
         log(f"  {name}: recomputed parity max|dS| {recomputed['max_abs_diff']:.6f}, worst "
             f"{recomputed['worst_sigma']:.3f} sigma over {recomputed['n_live']} live measurements, "
             f"{recomputed['n_over_k_sigma']} over {recomputed['k']:g} sigma "
@@ -901,11 +904,14 @@ def stage_gate(a, X):
 
     Four checks per fixture, each against a tolerance derived in the records rather than typed here:
 
-    1. **the served replay equals the decoded channel, PER MEASUREMENT.** The largest difference over all
-       measurements between what the pack serves through ``walker_primitives`` (the bands a consumer
-       contracts) and what the walk gave, against the pack's certified codec error. Comparing one maximum
-       with another -- which this did, and which check 2 was rewritten to stop doing -- passes a pack whose
-       served and stored maxima happen to be equal at different measurements.
+    1. **the served replay equals the decoded channel, PER MEASUREMENT, in the same reduction.** The largest
+       difference over all measurements between the pack's per-walker route (``walker_primitives``, the bands
+       contracted once) and its scalar route (``replay``). Two mistakes are possible here and both were made:
+       comparing one MAXIMUM with another passes a pack whose maxima merely coincide at different
+       measurements; and comparing ``mean(cos phi)`` (the real part) with ``replay`` (the MODULUS of the
+       complex ensemble mean) reads the quadrature term ``s^2/(2c)`` as a disagreement that grows with b, which
+       is what produced dmrai-lab/dmipy-sim#484 against an engine whose routes are bit-identical. Reduced the
+       same way the difference is exactly 0.
     2. **our signal against theirs, within the combined floors.** ``3 sqrt(ours^2 + theirs^2)`` for a
        reference that is itself Monte-Carlo, and ``3 x ours`` alone for MISST, as the reference record says,
        with the standard error taken analytically from the walkers. Per measurement at the design record's
@@ -957,10 +963,8 @@ def stage_gate(a, X):
         served_gap = float(f["parity"]["served_vs_walk_max_per_measurement"])
         check(served_gap <= max(codec, 1e-9), f"{name}/served-equals-decoded",
               f"the largest PER-MEASUREMENT difference between the pack's two serving routes "
-              f"(walker_primitives and replay) is {served_gap:.2e}, against the certified codec error "
-              f"{codec:.2e}" + ("" if served_gap <= max(codec, 1e-9) else
-                                " -- dmrai-lab/dmipy-sim#484, systematic and growing with b (1.2e-5 at "
-                                "b = 1925 s/mm^2, 3.1e-3 at 13190); not loosened to pass"))
+              f"(walker_primitives and replay), both reduced to the modulus of the complex ensemble mean, is "
+              f"{served_gap:.2e}, against the certified codec error {codec:.2e}")
         check(codec <= float(cert["floor_max"]), f"{name}/codec-below-floor",
               f"codec error {codec:.2e} <= the walk's own split-half floor {cert['floor_max']:.5f}")
         # 2 -- ours against theirs, within the recorded floors, at the design record's derived thresholds.
