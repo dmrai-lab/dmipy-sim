@@ -16,7 +16,9 @@ Three rungs, each printed with the thesis number beside it:
 2. **the T2 decay**, from one walk per rock under a gradient-free CPMG train, against the
    fast-diffusion rate ``rho S/V + 1/T2B`` (eq. 3.13) and its own single-exponential fit.
 3. **the log-mean T2** of the decay's regularised inverse Laplace transform (eq. 3.16) against the
-   simulated mean T2 of Table 7-2 / Table 8-5, and against his measured T2lm.
+   simulated mean T2 of Table 7-2 / Table 8-5, and against his measured T2lm. The inversion here is
+   the same penalty family as his, not the same estimator -- :func:`t2_distribution` says which, and
+   what the difference is worth.
 
 Because neither his walk nor this one carries a gradient (he zeroes the diffusion term, thesis
 §7.6.1), the echo spacing is a sampling interval for S(t) and not a sequence parameter: the train
@@ -88,8 +90,20 @@ def central_crop(shape, n):
 
 def t2_distribution(t, S, T2_grid, lam=0.1):
     """Amplitudes of ``S(t) = sum_i a_i exp(-t / T2_i)``, ``a_i >= 0``, by non-negative least squares
-    with a second-difference smoothing term of weight ``lam`` -- the curvature regularisation Talabi
-    inverted his decays with (thesis App. A-3, after Chen et al. 1999).
+    with a second-difference penalty of weight ``lam`` on a log-spaced grid.
+
+    This is the same penalty FAMILY as the thesis's inversion and not the same estimator. Talabi's
+    App. A-3 (after Chen et al. 1999) is an unconstrained normal-equation solve,
+    ``A = (K'K + lam^2 W)^-1 K' M``, with ``W`` a fourth-derivative matrix, ``lam`` fixed by his
+    eq. A.2.6 and 100 grid points from 0.1 ms; this is a non-negative solve, a second-difference
+    penalty, ``lam`` fixed at 0.1 and 60 points from 1 ms. So the log-mean below is comparable to his
+    Table 7-2 rather than computed the same way.
+
+    How much of the comparison that costs is measured rather than argued: over ``lam`` in
+    [0.003, 1] and five grids (40/60/100/150 points, from 0.1 ms and from 1 ms), the log-mean of this
+    walk's LV60A decay spans 479.6-494.6 ms about a median of 487.8 (3.1 %) and Berea's 519.0-541.7
+    about 539.3 (4.2 %). The inversion is therefore not what puts Berea 7.5 % under his number, and it
+    is about half of what would be needed to explain it.
 
     The log-mean of the result (his eq. 3.16) is what Table 7-2 reports as the mean T2.
     """
