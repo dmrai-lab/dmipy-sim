@@ -137,8 +137,8 @@ def log_mean_gradient(t, S, T2_grid, lam=0.1):
 
     The delta method then gives the standard error of the log-mean from the per-walker decays without any
     resampling: ``SE = std_k(g . s^k) / sqrt(N)``, where ``s^k`` is walker ``k``'s own decay on this ``t``.
-    A fold spread or a split half estimates the same quantity from one realisation and is seed-dependent
-    (measured elsewhere: 0.0019-0.0059 over ten seeds at six folds), so it cannot be a gate threshold.
+    A fold spread or a split half estimates the same quantity by resampling ONE realisation, so it is
+    seed-dependent and cannot be a gate threshold.
 
     Verified against a finite difference of the estimator itself in ``tests/replay/test_reference_family.py``.
     """

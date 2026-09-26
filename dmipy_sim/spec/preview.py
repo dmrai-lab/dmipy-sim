@@ -107,6 +107,12 @@ def _section_by_membership(spec):
     return out, [p.name for p in spec.pools], float(step)
 
 
+def _title(spec, names, kinds, pixel):
+    """One line naming the substrate, what it is made of and its scale -- never a clipped paragraph of prose."""
+    return (f"{spec.id}  |  {', '.join(kinds)}  |  {', '.join(names)}  |  "
+            f"{pixel * 1e6:.4g} um per pixel")
+
+
 def preview(spec, path=None, *, dpi=110, title=None):
     """Three orthogonal cross-sections through the centre of ``spec``'s domain, written to ``path`` as one PNG.
 
@@ -146,10 +152,11 @@ def preview(spec, path=None, *, dpi=110, title=None):
             ax.set_xlabel(f"{'xyz'[a1]}, {'xyz'[a2]}", fontsize=7)
             ax.set_xticks([]); ax.set_yticks([])
             px = bar / (s["extent_m"][0] / s["ids"].shape[0])
-            x0, y0 = 0.06 * s["ids"].shape[0], 0.055 * s["ids"].shape[1]
+            x0, y0 = 0.06 * s["ids"].shape[0], 0.09 * s["ids"].shape[1]
             ax.plot([x0, x0 + px], [y0, y0], lw=2.5, color="tab:red")
-            ax.text(x0, y0 + 0.03 * s["ids"].shape[1], f"{bar * 1e6:g} um", color="tab:red", fontsize=7)
-        fig.suptitle(title or f"{spec.id}: {', '.join(names)} ({', '.join(kinds)})", fontsize=9)
+            ax.text(x0, y0 - 0.075 * s["ids"].shape[1], f"{bar * 1e6:g} um", color="tab:red", fontsize=7,
+                    va="bottom")                                   # under the bar, never across it
+        fig.suptitle(_title(spec, names, kinds, pixel) if title is None else title, fontsize=9)
         fig.tight_layout(rect=(0, 0, 1, 0.94))
         os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
         fig.savefig(path)

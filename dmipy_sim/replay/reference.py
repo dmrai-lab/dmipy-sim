@@ -84,8 +84,8 @@ SE_KINDS = ("analytic_mean", "delta_method")
 #: What the reference's sample is to ours.
 SAMPLE_RELATIONS = ("the same object", "the same material", "a matched statistic")
 
-#: A licence TITLE is not a licence text (`ling-sand-packs` recorded "CC BY 4.0" as its verbatim licence).
-#: The shortest licence text in use (the CC BY 4.0 deed) is some 1.5 kB; an MIT licence is 1.0 kB.
+#: A licence text is the licence, not its title: the shortest in use (the CC BY 4.0 deed) is some 1.5 kB and
+#: an MIT licence 1.0 kB, so a record under this many characters is a name and not a text.
 MIN_LICENCE_TEXT_CHARS = 400
 
 #: Names a tolerance term may not end in: each is a way of widening a threshold without measuring anything.
@@ -342,9 +342,10 @@ class Publication:
 def grade_of(reference_record):
     """The grade of dmipy-sim#459, from the reference record and nothing else.
 
-    ``A`` a published NUMBER on the same released geometry; ``B`` a published figure, or a number measured on
-    something that is not the released geometry; ``analytic`` a closed form; ``none`` no reference at all. A
-    family cannot state its own grade: `ling-sand-packs` wrote "A" for a paper that prints no number.
+    ``A`` a published NUMBER, or released DATA, on the same released geometry; ``B`` a published figure, or a
+    number or data on something that is not the released geometry; ``analytic`` a closed form; ``none`` no
+    reference at all. A grade is not a field a record states: it follows from what the publication gives and
+    from whether the geometry is the released one, both of which the reference record carries.
     """
     if not reference_record or reference_record.get("absent"):
         return "none"
@@ -514,10 +515,8 @@ class Records:
     def write(self, stage, payload, *, inputs_digest, previous_sha256):
         """Write one record, or return the one already there when it is BYTE-IDENTICAL to what this run measured.
 
-        The comparison is over the canonical body and not over the digest fields inside it: comparing only
-        those made a hand-edited record indistinguishable from the measured one, so deleting `gate.json` and
-        re-running the pack stage returned the edited number without measuring anything. A record whose body
-        differs is refused, and the message says which keys moved.
+        The comparison is over the canonical body, so a record whose numbers have been edited is not the record
+        the stage measured and is refused, naming the keys that moved.
         """
         body = _canonical(dict(payload, stage=stage, inputs_sha256=inputs_digest,
                               previous_sha256=previous_sha256))
@@ -664,10 +663,8 @@ def _gate_checks(rec):
 
         predicted = set(des["derived"]["tiers_that_hold"])
         for tier, t in sorted(sub["tiers"].items()):
-            # a tier the design PREDICTED would hold must hold: `trade` excuses the tiers the design already
-            # said would not, and it excused every tier, so a falsified prediction passed unseen (F42A's
-            # contact floor came out 0.00589 where the pilot's 1/sqrt(N) scaling said 0.00488, under a trade
-            # note naming contact as the tier that holds)
+            # a tier the design PREDICTED would hold must hold; the trade note excuses only the tiers the
+            # design already said would not, since otherwise a falsified prediction passes unseen
             says = tier in predicted
             ok = t["meets_target"] or (not says and bool(des.get("trade")))
             check(ok, f"{name}/tier-{tier}-{'holds-as-designed' if says else 'target-or-trade'}",
@@ -726,12 +723,10 @@ def _gate_checks(rec):
                   + ", ".join(f"{p}={v:.3g}" for p, v in sorted(terms.items())),
                   relative=rel, tolerance=tol, sigma=rel / u, standard_uncertainty=u, k=k, terms=terms)
 
-            # and against THEM. The `reproduces-` check above compares us with our own direct walk, which two
-            # routes of one engine agreeing says nothing about; the published number is what the family exists
-            # to reproduce. A publication that states an uncertainty is compared with it; one that states none
-            # cannot be failed on, so the disagreement is RECORDED as a number and the card's first paragraph
-            # states it -- `ling-sand-packs` sat 17.7 % from its measurement under a card saying every check
-            # passed.
+            # and against THEM: the `reproduces-` check above compares two routes of one engine, and the
+            # published number is what the family exists to reproduce. A publication that states an uncertainty
+            # is compared within it; one that states none cannot be failed on, so the disagreement is RECORDED
+            # as a number and the card's first paragraph states it.
             pub = q["published"]
             if pub["value"] is None:
                 check(True, f"{name}/published-{qname}",
@@ -827,16 +822,16 @@ def _walk_from_pack(name, recorded, budget, design_n):
     if not os.path.exists(recorded.pack_path):
         raise ReferenceRefusal(f"walk {name!r}: {recorded.pack_path} is not there; a recorded walk is read from the "
                                f"pack it produced")
+    if recorded.sub_steps is None or recorded.illegal_crossings is None or not recorded.evidence:
+        raise ReferenceRefusal(f"walk {name!r}: a walk record carries the engine's own counters (sub_steps, "
+                               f"illegal_crossings) and the log they were reported in; this one states "
+                               f"{recorded.sub_steps!r}, {recorded.illegal_crossings!r}, {recorded.evidence!r}")
     meta = header_of(recorded.pack_path)
     wp = meta.get("walk_params") or {}
     run = ((meta.get("provenance") or {}).get("run") or {}).get("walk") or {}
     if not wp.get("n_walkers") or not run.get("peak_rss_bytes"):
         raise ReferenceRefusal(f"walk {name!r}: {os.path.basename(recorded.pack_path)} carries no walk_params or no "
                                f"run record, so its walk cannot be recorded from it")
-    if recorded.sub_steps is None or recorded.illegal_crossings is None or not recorded.evidence:
-        raise ReferenceRefusal(f"walk {name!r}: a walk record carries the engine's own counters (sub_steps, "
-                               f"illegal_crossings) and the log they were reported in; this one states "
-                               f"{recorded.sub_steps!r}, {recorded.illegal_crossings!r}, {recorded.evidence!r}")
     cert = ((meta.get("provenance") or {}).get("certified") or {})
     peak = int(max(int(run["peak_rss_bytes"]), int(float(cert.get("peak_rss_gb") or 0.0) * 1e9)))
     if peak > budget:

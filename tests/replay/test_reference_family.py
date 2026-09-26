@@ -17,6 +17,8 @@ import pytest
 import dmipy_sim as d
 from dmipy_sim.replay import reference as R
 
+REAL_CODE_COMMIT = R.code_commit        # the module fixture patches R.code_commit; its own test needs the real one
+
 D0 = 2e-9
 R_SPHERE = 2e-4            # 200 um: sqrt(2 D T) is 4 um over the window, so the diffusion is free to < 1e-4
 T_WIN = 4e-3
@@ -500,6 +502,124 @@ def test_the_walk_is_held_to_its_MEASURED_peak(tmp_path, monkeypatch):
     monkeypatch.setattr(R, "_PeakRSS", lambda *a, **k: _Big())
     with pytest.raises(R.ReferenceRefusal, match="the measurement, not the projection"):
         fam.stage("walk")
+
+
+def test_a_design_without_a_walk_is_refused(tmp_path):
+    """The pilot walks, so a family whose packs already exist still declares how to walk: the pilot is what
+    makes the walker count measured."""
+    one = _reference(quantities=(_quantity(float(np.exp(-B * D0)), 0.05),))
+    fam = _upto_spec(tmp_path, reference=one,
+                     build=R.Build(specs={"sphere": _spec}, pack_id={"sphere": "synthetic/sphere"},
+                                   reproduce=_reproduce, served_vs_channel=_served, served_tier="positions",
+                                   walk=None,
+                                   recorded={"sphere": R.RecordedWalk(pack_path="x.rpk", sub_steps=1,
+                                                                      illegal_crossings=0, evidence="a log")}))
+    with pytest.raises(R.ReferenceRefusal, match="build.walk is required"):
+        fam.stage("design")
+
+
+def test_a_family_with_neither_a_walk_nor_a_recorded_one_is_refused(tmp_path):
+    with pytest.raises(R.ReferenceRefusal, match="declares neither a walk nor a recorded walk"):
+        _family(tmp_path, build=R.Build(specs={"sphere": _spec}, pack_id={"sphere": "s"}, reproduce=_reproduce,
+                                        served_vs_channel=_served, served_tier="positions"))
+
+
+def test_a_tier_the_pack_does_not_certify_is_refused(tmp_path):
+    """"Not applicable" is not a certificate: a declared tier reads a field the pack's own fidelity carries."""
+    fam = _upto_spec(tmp_path, design=_design(tiers=(R.Tier(name="field", floor_key="floor_field",
+                                                            err_key="err_field", target_floor=0.1),)))
+    with pytest.raises(R.ReferenceRefusal, match="a declared tier is certified, never 'not applicable'"):
+        fam.stage("design")
+
+
+def test_a_served_tier_the_design_does_not_declare_is_refused(tmp_path, monkeypatch):
+    build = R.Build(specs={"sphere": _spec}, pack_id={"sphere": "synthetic/sphere"}, reproduce=_reproduce,
+                    served_vs_channel=_served, served_tier="contact", walk=_walk)
+    fam = _upto_spec(tmp_path, build=build,
+                     reference=_reference(quantities=(_quantity(float(np.exp(-B * D0)), 0.05),)))
+    fam.stage("design")
+    fam.stage("walk")
+    with pytest.raises(R.ReferenceRefusal, match="the served-vs-decoded check is declared against the tier"):
+        fam.stage("pack")
+
+
+def test_a_recorded_walk_without_the_engines_counters_is_refused(tmp_path):
+    """A walk record carries the counters the engine reported and the log they were reported in."""
+    import dataclasses
+    from dmipy_sim.replay.bank import build_replay_pack
+    plain = _family(tmp_path, reference=_reference(quantities=(_quantity(float(np.exp(-B * D0)), 0.05),)))
+    for st in ("source", "reference", "spec", "design", "walk"):
+        plain.stage(st)
+    real = os.path.join(plain.dir, "packs", "real.rpk")
+    os.makedirs(os.path.dirname(real), exist_ok=True)
+    from dmipy_sim.persistent_walk import PersistentWalk
+    walk = PersistentWalk.load(os.path.join(plain.dir, plain.records.read("walk")["substrates"]["sphere"]["walk_path"]))
+    build_replay_pack(walk, id="synthetic/sphere", K=8, envelope=ENV, license="CC-BY-4.0",
+                      citation="a test pack", position_container="bands", blt_container="bands",
+                      verbose=False).save(real)
+    (tmp_path / "bare").mkdir(exist_ok=True)
+    fam = _family(tmp_path / "bare",
+                  reference=_reference(quantities=(_quantity(float(np.exp(-B * D0)), 0.05),)),
+                  build=dataclasses.replace(
+                      R.Build(specs={"sphere": _spec}, pack_id={"sphere": "synthetic/sphere"},
+                              reproduce=_reproduce, served_vs_channel=_served, served_tier="positions",
+                              walk=_walk),
+                      recorded={"sphere": R.RecordedWalk(pack_path=real, sub_steps=1, illegal_crossings=None,
+                                                         evidence="")}))
+    for st in ("source", "reference", "spec", "design"):
+        fam.stage(st)
+    with pytest.raises(R.ReferenceRefusal, match="the engine's own counters"):
+        fam.stage("walk")
+    # with the counters declared, a pack too short-lived to have left a run record is refused on that
+    import dataclasses
+    fam2 = R.ReferenceFamily("synthetic", str(tmp_path / "bare"), sources=fam.sources, reference=fam.reference,
+                             design=fam.design, publication=fam.publication, resolver=_resolver,
+                             build=dataclasses.replace(fam.build, recorded={
+                                 "sphere": R.RecordedWalk(pack_path=real, sub_steps=1, illegal_crossings=0,
+                                                          evidence="a log")}))
+    with pytest.raises(R.ReferenceRefusal, match="carries no walk_params or no run record"):
+        fam2.stage("walk")
+
+
+def test_a_spec_that_does_not_round_trip_is_refused(tmp_path, monkeypatch):
+    fam = _family(tmp_path)
+    fam.stage("source")
+    fam.stage("reference")
+    from dmipy_sim import spec as spec_pkg
+    real = spec_pkg.spec_of
+
+    def lossy(geom):
+        from dataclasses import replace
+        back = real(geom)
+        return replace(back, domain=replace(back.domain, boundary=["open", "open", "reflect"]))
+
+    monkeypatch.setattr("dmipy_sim.spec.spec_of", lossy)
+    with pytest.raises(R.ReferenceRefusal, match="a spec the engine cannot rebuild"):
+        fam.stage("spec")
+
+
+def test_code_commit_refuses_a_dirty_or_unpushed_tree(monkeypatch):
+    """A manifest row that names a commit nobody can fetch is not provenance."""
+    import subprocess as sp
+    calls = {}
+
+    def fake(args, **kw):
+        key = tuple(args[3:])
+        calls.setdefault("seen", []).append(key)
+        out = {("rev-parse", "HEAD"): "f" * 40,
+               ("status", "--porcelain"): calls.get("dirty", ""),
+               ("branch", "-r", "--contains", "f" * 40): calls.get("remote", "  origin/main")}[key]
+        return sp.CompletedProcess(args, 0, out, "")
+
+    monkeypatch.setattr(R.subprocess, "run", fake)
+    assert REAL_CODE_COMMIT() == "f" * 40
+    calls["dirty"] = " M dmipy_sim/replay/reference.py"
+    with pytest.raises(R.ReferenceRefusal, match="is dirty"):
+        REAL_CODE_COMMIT()
+    calls["dirty"], calls["remote"] = "", ""
+    with pytest.raises(R.ReferenceRefusal, match="is on no remote branch"):
+        REAL_CODE_COMMIT()
+    assert REAL_CODE_COMMIT(require_clean=False) == "f" * 40
 
 
 # --------------------------------------------------------------- the tolerance
