@@ -70,7 +70,7 @@ def test_the_train_depends_on_its_refocusing_flip_as_the_pathways_say():
     one. Compared as a ratio to the 180 train, so the preparation and the relaxation divide out."""
     walk = d.simulate_trajectories(1500, 2e-9, d.FreeDiffusion(), 0.30, 2.5e-4, seed=0, require_gpu=False)
     pack = build_replay_pack(walk, id="test/free", license="x", citation="x", K=8)
-    tissue = Tissue(T2=0.081, T1=0.275)
+    tissue = Tissue(T2={"extra": 0.081}, T1={"extra": 0.275})   # the free pack's one pool is named
     ref = np.abs(np.asarray(pack.replay_bloch(_seq(180.0), tissue=tissue))).reshape(-1)
     got = np.abs(np.asarray(pack.replay_bloch(_seq(120.0), tissue=tissue))).reshape(-1)
     ratio = got[1:] / ref[1:]                                         # echo 0 is the preparation's own

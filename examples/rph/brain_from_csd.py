@@ -43,12 +43,17 @@ def wm_tissue(pack_path):
     tissue relaxes and another would not."""
     from dmipy_sim.replay import read_rpk
     spec = read_rpk(pack_path).substrate
-    if spec is None:
-        return Tissue(T2=get_value(WM_T2["extra"], 3.0, allow_nearest=True))  # one value for every pool
     nominal = Tissue.from_spec(spec)
     if all(p.T2 is not None for p in spec.pools):
         return nominal
-    return nominal.replace(T2={p.name: get_value(WM_T2[p.name], 3.0, allow_nearest=True) for p in spec.pools})
+    return nominal.replace(T2={p.name: get_value(WM_T2[p.name], 3.0, allow_nearest=True) for p in spec.pools
+                               if p.T2 is None})
+
+
+def gm_tissue(pack_path):
+    """The grey matter's tissue: the table's one value for every pool of the spheres pack, by the pack's names."""
+    from dmipy_sim.replay import read_rpk
+    return Tissue(T2={p.name: T2["gm"] for p in read_rpk(pack_path).substrate.pools})
 
 
 def fractions_on(grid_img, target_affine, tt_img, sub=3):
@@ -87,7 +92,7 @@ def build(batman, wm_pack, gm_pack=None, slab=None):
         keep = np.zeros(grid.shape, bool); keep[:, :, slab[0]:slab[1]] = True
         f_wm, f_gm, f_csf = f_wm * keep, f_gm * keep, f_csf * keep
     wm = PackSubstrate(wm_pack, m0=M0["wm"], name="wm", tissue=wm_tissue(wm_pack))
-    gm = (PackSubstrate(gm_pack, m0=M0["gm"], name="gm", tissue=Tissue(T2=T2["gm"])) if gm_pack
+    gm = (PackSubstrate(gm_pack, m0=M0["gm"], name="gm", tissue=gm_tissue(gm_pack)) if gm_pack
           else FreeWater(m0=M0["gm"], name="gm/stand-in", tissue=Tissue(D=0.8e-9, T2=T2["gm"])))
     csf = FreeWater(m0=M0["csf"], tissue=Tissue(D=3.0e-9, T2=T2["csf"]))
     orientation = {wm: ODF(c, basis="mrtrix3")}

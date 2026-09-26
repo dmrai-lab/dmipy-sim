@@ -102,6 +102,32 @@ def _gather_jax(S, vp, F, weight, which, coeff):
 
 
 # ------------------------------------------------------------------ writing
+def _check_tissue_entry(sub, pack=None):
+    """A pack substrate's ``tissue`` entry in the file form (RPH.md 3.2): ``T2`` / ``T1`` a list by pool id of
+    positive seconds, ``null`` for no decay, one entry per pool of the pack's spec when the pack is at hand; a
+    dict, a number, a zero or a list of another length is refused."""
+    entry = sub.get("tissue")
+    if sub.get("kind") != "pack" or not entry:
+        return
+    for k in ("T2", "T1"):
+        v = entry.get(k)
+        if v is None:
+            continue
+        if not isinstance(v, list):
+            raise ValueError(f"substrate {sub.get('id')!r}: {k} in a .rph is a list by pool id (null for no decay), "
+                             f"not {v!r}; PackSubstrate.to_meta writes it from a {{pool name: seconds}} tissue")
+        for t in v:
+            if t is not None and (isinstance(t, bool) or not isinstance(t, (int, float)) or not t > 0):
+                raise ValueError(f"substrate {sub.get('id')!r}: {k} entries are positive seconds or null; got {t!r}")
+        if pack is not None and not isinstance(pack, (str, Path)):
+            spec = getattr(pack, "substrate", None)
+            if spec is None:
+                raise ValueError(f"substrate {sub.get('id')!r} declares {k} by pool but its pack embeds no spec (RPK.md 8.5)")
+            if len(v) != len(spec.pools):
+                raise ValueError(f"substrate {sub.get('id')!r}: {k} lists {len(v)} value(s) for a pack whose spec has "
+                                 f"{len(spec.pools)} pools {[p.name for p in spec.pools]}")
+
+
 def write_rph(path, *, voxel_index, substrate_id, geometric_fraction, substrates, grid, id, license, citation,
               odf_sh=None, peak_dir=None, pose_quat=None, bingham_kappa=None, roll_kappa=None, lmax=None,
               scalars=None, scalar_names=(), embed_packs=None, extra_meta=None):
@@ -125,9 +151,10 @@ def write_rph(path, *, voxel_index, substrate_id, geometric_fraction, substrates
             f"{int(bad.sum())} voxel(s) have geometric fractions summing to "
             f"{gf.sum(axis=1)[bad][:3]} rather than 1. A voxel is always full; give the "
             f"remainder to an 'inert' substrate rather than leaving it unmodelled.")
-    for s in substrates:
+    for i, s in enumerate(substrates):
         if s.get("kind") not in SUBSTRATE_KINDS:
             raise ValueError(f"substrate kind {s.get('kind')!r} not in {SUBSTRATE_KINDS}")
+        _check_tissue_entry(s, (embed_packs or {}).get(i))
     given = [k for k, v in (("odf_sh", odf_sh), ("peak_dir", peak_dir), ("pose_quat", pose_quat)) if v is not None]
     if len(given) != 1:
         raise ValueError(f"give exactly one of odf_sh=, peak_dir= or pose_quat=: a phantom declares one "
@@ -609,6 +636,15 @@ class ReplayPhantom:
         return m0 if pd is None else m0 * pd[:, None]
 
     @staticmethod
+    def _tissue(sub, pack):
+        """A pack substrate's tissue from its file entry: the per-pool values, a list by pool id in the file,
+        resolved by name through the pack's embedded spec (RPH.md 3.2); ``None`` for none."""
+        from ..spec.tissue import Tissue
+        entry = sub.get("tissue")
+        per_pool = bool(entry) and any(entry.get(k) is not None for k in ("T2", "T1"))
+        return Tissue.from_meta(entry, spec=pack.substrate) if per_pool else Tissue.from_meta(entry)
+
+    @staticmethod
     def _form(i, sub, forms):
         """The closed form of substrate ``i``: the live object when the caller holds one (``forms``, an in-memory
         phantom's own declarations), else the one its ``model`` names, read back from the file's record."""
@@ -628,7 +664,7 @@ class ReplayPhantom:
         for i, sub in enumerate(self.substrates):
             if sub["kind"] == "inert":
                 continue
-            t = self._form(i, sub, forms).tissue if sub["kind"] == "analytic" else Tissue.from_meta(sub.get("tissue"))
+            t = self._form(i, sub, forms).tissue if sub["kind"] == "analytic" else self._tissue(sub, loaded[i])
             (relaxes if (t is not None and t.relaxes) else missing).append(sub["id"])
         if relaxes and missing:
             TE = _echo_time(waveform)
@@ -673,7 +709,7 @@ class ReplayPhantom:
                         analytic[(i, c)] = form.response(wf)
                 continue
             # every class of this pack in one pass over its walkers (#449)
-            resps = loaded[i].pose_responses(waveforms, tissue=Tissue.from_meta(sub.get("tissue")),
+            resps = loaded[i].pose_responses(waveforms, tissue=self._tissue(sub, loaded[i]),
                                              scanner=scanner, pose=R_s, keep=keep, cache=cache)
             secs = time.time() - t_i
             for c, resp in enumerate(resps):
@@ -788,7 +824,7 @@ class ReplayPhantom:
                         resp = resp * np.exp(1j * GAMMA * off * gate)
                 else:
                     resp = loaded[i].replay_bloch(played, b1_scale=kap, off_resonance_T=(off or None),
-                                                  tissue=Tissue.from_meta(sub.get("tissue")), scanner=scanner,
+                                                  tissue=self._tissue(sub, loaded[i]), scanner=scanner,
                                                   orientation=R[first].reshape(3, 3), complex_signal=True)
                 resp = np.atleast_1d(np.asarray(resp, np.complex128))
                 if S is None:
@@ -866,7 +902,7 @@ class ReplayPhantom:
                     continue
                 if sub["kind"] == "pack":
                     trains[i] = train_response(loaded[i], waveform, keep=keep,
-                                               tissue=Tissue.from_meta(sub.get("tissue")), scanner=scanner, pose=R_s)
+                                               tissue=self._tissue(sub, loaded[i]), scanner=scanner, pose=R_s)
                 else:
                     forms_[i] = closed_form_train(self._form(i, sub, forms), waveform)
                 run.progress(i + 1, len(self.substrates), unit="substrates")

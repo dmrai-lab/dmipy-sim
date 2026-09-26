@@ -137,23 +137,26 @@ class Primitives:
         return None if self.exposure_t2 is None else int(self.exposure_t2.shape[1])
 
     def rates(self, tissue):
-        """``(invT2, invT1, rho_over_D)`` of a tissue on this pack's pools: per-pool rates (0 where a value is None
-        or non-positive) and the contact rate (0 without a relaxivity)."""
+        """``(invT2, invT1, rho_over_D)`` of a tissue on this pack's pools: per-pool rates (0 where the tissue
+        declares no time, or ``inf``) and the contact rate (0 without a relaxivity). A per-pool value is judged
+        complete on the pack's spec, not on the pools this chunk of walkers labels."""
         t = tissue
         n = self.n_pools or 1
         invT2 = np.zeros(n); invT1 = np.zeros(n); rho_D = 0.0
         if t is not None and (t.T2 is not None or t.T1 is not None):
             if self.exposure_t2 is None:
                 raise ValueError("T2 / T1 were given but the pack carries no compartment channel (C1)")
-            T2v = self.by_pool(t.T2, "T2", n=n) if t.T2 is not None else None
-            T1v = self.by_pool(t.T1, "T1", n=n) if t.T1 is not None else None
-            for name, vals in (("T2", T2v), ("T1", T1v)):
-                if vals is not None and len(vals) < n:
-                    raise ValueError(f"the compartment channel uses pool ids up to {n - 1}; {name} must be given for every id (got {len(vals)})")
-            if T2v is not None:                                # the spec may name more pools than the channel labels (a dry sheath)
-                v = np.asarray(T2v, float)[:n]; invT2 = np.where(v > 0, 1.0 / np.maximum(v, 1e-30), 0.0)
-            if T1v is not None:
-                v = np.asarray(T1v, float)[:n]; invT1 = np.where(v > 0, 1.0 / np.maximum(v, 1e-30), 0.0)
+            for name, vals in (("T2", self.by_pool(t.T2, "T2")), ("T1", self.by_pool(t.T1, "T1"))):
+                if vals is None:
+                    continue
+                if len(vals) < n:
+                    raise ValueError(f"the compartment channel addresses pool id {n - 1} and the embedded spec "
+                                     f"declares {len(vals)} pools: the pack is inconsistent")
+                rate = 1.0 / np.asarray(vals, float)[:n]           # the spec may name more pools than the channel labels (a dry sheath)
+                if name == "T2":
+                    invT2 = rate
+                else:
+                    invT1 = rate
         if t is not None and t.D is not None and self.D_walk is not None and float(t.D) != float(self.D_walk):
             raise ValueError(
                 f"the primitives were contracted on the walked grid, at D = {float(self.D_walk):.3g} m^2/s, and a "
@@ -212,7 +215,8 @@ def walker_primitives(pack, acquisition):
             decode_occupancy(pack.arrays, ch["compartment"])
         col = next(d for d in ch["compartment"]["columns"] if d["name"] == "comp")
         n_ids = pack._n_pool_ids(col)
-        unit = np.eye(n_ids); zero = [0.0] * n_ids
+        # exposure per pool: a unit rate in one pool and none (an infinite time) in the others
+        unit = np.where(np.eye(n_ids) > 0, 1.0, np.inf); zero = [np.inf] * n_ids
     from .compression import has_c2
     pm = ch.get("susceptibility_path")
     phi = exposure_t2 = exposure_t1 = contact = Psi = None

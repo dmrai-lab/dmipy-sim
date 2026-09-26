@@ -41,7 +41,7 @@ where its nominal value lives, and which channel of the pack it needs.
 |---|---|---|---|---|---|
 | gradients, RF, timing | sequence | the bands (the gradient phase of every walker) and the coherence gate | required | — | positions (C0) |
 | `orientation` | replay call / `Acquisition` | rotates the waveform into the pack's frame, and the field direction with it | the pack's own frame | — | C0 (C3 for the field) |
-| `T2`, `T1` per pool | tissue | a weight per walker from its transverse and longitudinal exposure in each pool | no relaxation | `pack.nominal` | occupancy (C1) |
+| `T2`, `T1` per pool (`{pool name: seconds}` over every pool of the spec, `inf` for no decay) | tissue | a weight per walker from its transverse and longitudinal exposure in each pool | no relaxation | `pack.nominal` | occupancy (C1) |
 | `rho` | tissue | a weight per walker from its gated wall contact, scaled by `D` | no surface relaxation | `pack.nominal` | contact (C2) |
 | `D` | tissue | the diffusivity the pack is READ at: the save grid divided by `D / D_walk`, every channel following in its own space (faster than walked only); `rho` is scaled by it | the walk's | the walk's | — |
 | `kappa` | tissue | the wall permeability the pack is read at, which picks the same ratio: a walk serves `(a D_walk, a kappa_walk)` and no other pair | the walk's | the walk's | a permeable wall |

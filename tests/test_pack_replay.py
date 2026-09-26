@@ -14,7 +14,7 @@ from dmipy_sim.spec.tissue import Tissue
 D0 = 2e-9
 ENV = dict(bvals=[0.0, 1e9, 3e9], dirs=[[1, 0, 0], [0, 0, 1]], ogse_periods=[2], shortd_b=1e9,
            shortd_deltas_frac=[0.05], B0_list=[], theta_deg=[0], delta_frac=0.2, Delta_frac=0.5, rho_list=[1e-5])
-T2 = [0.08, 0.03]; T1 = [1.0, 1.2]                                  # per pool id, given at replay
+T2 = {"extra": 0.08, "intra": 0.03}; T1 = {"extra": 1.0, "intra": 1.2}    # by pool name, given at replay
 
 
 @pytest.fixture(scope="module")
@@ -60,10 +60,14 @@ def test_relaxation_applies_the_packs_per_pool_rates(packs):
     assert full.replay(wf, tissue=Tissue(T2=T2, T1=T1))[0] < full.replay(wf)[0]         # T2 costs signal, also at b = 0
     with pytest.raises(ValueError, match="no compartment channel"):
         plain.replay(wf, tissue=Tissue(T2=T2))
-    with pytest.raises(ValueError, match="every id"):
-        full.replay(wf, tissue=Tissue(T2=[0.08]))
-    np.testing.assert_allclose(full.replay(wf, tissue=Tissue(T2={"extra": 0.08, "intra": 0.03}, T1=T1)),
-                               full.replay(wf, tissue=Tissue(T2=T2, T1=T1)))                # names resolve through the spec
+    with pytest.raises(ValueError, match=r"no value for the pool\(s\) \['intra'\]"):
+        full.replay(wf, tissue=Tissue(T2={"extra": 0.08}))                      # a partial mapping is refused, not zero-filled
+    with pytest.raises(ValueError, match="does not have"):
+        full.replay(wf, tissue=Tissue(T2={"extra": 0.08, "intra": 0.03, "lumen": 0.1}))
+    with pytest.raises(ValueError, match="one number is the closed form's"):
+        full.replay(wf, tissue=Tissue(T2=0.08))                                 # a pack has named pools
+    with pytest.raises(TypeError, match="list by pool id"):
+        Tissue(T2=[0.08, 0.03])                                                 # the file form is not a call form
     for key in ("per_comp", "mt", "T2", "rho"):
         assert key not in full.meta, "a pack carries channels, never a physical value"
     np.testing.assert_array_equal(full.replay(wf), full.replay(wf, tissue=full.nominal))   # a bare geometry declares no values
@@ -158,10 +162,10 @@ def test_relaxation_and_contact_end_at_the_readout(packs):
     full, _ = packs
     n = 8; TE = n * full.dt
     fid = _seqmod.gre(TE, n_t=n * 4 + 1)                                        # a pure FID on a finer grid
-    s = full.replay(fid, tissue=Tissue(T2=[TE, TE], T1=[1e9, 1e9]))
+    s = full.replay(fid, tissue=Tissue(T2={"extra": TE, "intra": TE}, T1={"extra": np.inf, "intra": np.inf}))
     np.testing.assert_allclose(np.abs(s), np.exp(-1.0), rtol=1e-9)
     # an FID has no longitudinal period: T1 acts over none of it, and none of the walk beyond its echo
-    np.testing.assert_allclose(np.abs(full.replay(fid, tissue=Tissue(T2=[1e9, 1e9], T1=[TE, TE]))), 1.0, rtol=1e-9)
+    np.testing.assert_allclose(np.abs(full.replay(fid, tissue=Tissue(T2={"extra": np.inf, "intra": np.inf}, T1={"extra": TE, "intra": TE}))), 1.0, rtol=1e-9)
     # the contact term against the walk's own cumulative local time at save n (not n + 1)
     walk = d.simulate_trajectories(300, D0, d.Cylinder(2e-6, (0, 0, 1)), 0.01, 5e-4, seed=0, require_gpu=False)
     pk = build_replay_pack(walk, id="test/blt", K=8, blt_temporal_K=full.n_t, envelope=ENV, license="x", citation="x")

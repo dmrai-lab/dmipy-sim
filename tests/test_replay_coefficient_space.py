@@ -45,8 +45,8 @@ def _dense_logweights(pk, seq, T2, T1, rho):
 ], ids=["fid", "pgse", "pgste"])
 def test_relaxation_and_surface_weights_equal_the_decoded_ones(pack, make_seq):
     seq = make_seq(4 * pack.n_t + 1)
-    T2, T1, rho = [0.08, 0.03], [1.0, 1.2], 1e-5
-    w, ew, _ = pack.walker_signals(seq, tissue=Tissue(T2=T2, T1=T1, rho=rho, D=D0))
+    T2, T1, rho = [0.08, 0.03], [1.0, 1.2], 1e-5                                   # by pool id, for the oracle
+    w, ew, _ = pack.walker_signals(seq, tissue=Tissue(T2={"extra": 0.08, "intra": 0.03}, T1={"extra": 1.0, "intra": 1.2}, rho=rho, D=D0))
     # the route's weights also carry the amplitude of the pathway the readout is (1 for the fid and the spin
     # echo, 0.5 for the stimulated echo's store-and-recall), which is a property of the schedule and not of
     # the codec this oracle checks
@@ -59,7 +59,7 @@ def test_walker_phases_is_the_signal_before_the_exponential(pack, field_pack):
     weights, on the gradient route and on the field route: a consumer that sums many walkers over its own groups
     forms the exponential where it accumulates."""
     seq = _seqmod.pgse([[1, 0, 0], [0, 1, 1]], 1e-3, 3e-3, bvalues=[1e9, 5e8], TE=6e-3, n_t=4 * pack.n_t + 1, slew_rate=np.inf)
-    t = Tissue(T2=[0.08, 0.03], rho=1e-5, D=D0)
+    t = Tissue(T2={"extra": 0.08, "intra": 0.03}, rho=1e-5, D=D0)
     w, ew, phi = pack.walker_phases(seq, tissue=t); w2, ew2, E = pack.walker_signals(seq, tissue=t)
     assert phi.shape == E.shape == (pack.n_walkers, 2) and np.isrealobj(phi)
     np.testing.assert_array_equal(w, w2); np.testing.assert_array_equal(ew, ew2); np.testing.assert_allclose(np.exp(1j * phi), E, rtol=0, atol=1e-12)
