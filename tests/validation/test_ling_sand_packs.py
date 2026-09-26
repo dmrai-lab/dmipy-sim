@@ -105,8 +105,8 @@ def test_the_T2_decay_is_what_we_recorded_against_the_CPMG_of_the_same_pack(samp
     """
     ling = script()
     ref = OURS[sample]
-    r = ling.run_pack(sample, DATA, n_walkers=19_998, T_max=ref["window"], sample_ms=1.0,
-                      walker_batch=25_000, seed=0, halves=6)
+    r = ling.run_pack(sample, DATA, n_walkers=200_000, T_max=ref["window"], sample_ms=1.0,
+                      walker_batch=25_000, seed=0, folds=1)
     m = ling.measured_log_mean(sample, CPMG, sample_ms=1.0)
     assert r["T2_lm"] == pytest.approx(ref["T2_lm"], rel=0.02)
     assert m["T2_lm"] == pytest.approx(ref["T2_lm_measured"], rel=1e-3)      # their data, not our walk

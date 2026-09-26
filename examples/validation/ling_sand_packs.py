@@ -113,26 +113,21 @@ def measured_log_mean(sample, cpmg_dir, *, te=100e-6, sample_ms=1.0, grid=None):
 
 
 def run_pack(sample, data_dir, *, rho=None, n_walkers=200_000, T_max=3.5, sample_ms=1.0,
-             D0=D0, T2B=T2B, walker_batch=20_000, seed=0, sub_steps=None, halves=6):
+             D0=D0, T2B=T2B, walker_batch=20_000, seed=0, sub_steps=None, folds=1):
     """One direct fused walk: the substrate with ``rho`` baked in, its decay, and the decay's log-mean.
 
     This is the OTHER route to the quantity a replay pack serves as a knob, which is what makes it the
     reference a pack is gated against: same image, same D0, same T2B, same inversion, ``rho`` in the
     walk instead of in the replay.
 
-    The walk is run as ``halves`` independent walks of ``n_walkers // halves`` on consecutive seeds, and
-    their decays averaged. That is the same estimator as one walk of ``n_walkers``, it costs the same,
-    and it buys the **standard error of the log-mean itself** -- the error bar a gate on a log-mean
-    needs. ``1 / sqrt(N)`` is the floor of the SIGNAL, and over a window many T2 long the worst row of
-    a relaxation battery is a signal of size 1e-12 whose absolute floor is pure shot noise: a number
-    that says nothing about this one.
-
-    ``halves`` is 6 and not 2 because a TWO-fold split gives ``|lm_a - lm_b| / 2``, which is a
-    one-degree-of-freedom estimate of a standard error and is itself about 76 % uncertain -- as a gate
-    threshold it fails a good fraction of the time whatever the pack does (measured: on the first gate
-    run of this family it passed 2 of 5 packs with two-fold floors of 0.10-0.69 %, an implausible spread
-    at one walker count). Six folds estimate the same standard error with five degrees of freedom, at
-    the same total cost. ``halves=1`` gives one walk and no error bar.
+    ``folds`` splits the walkers into that many independent walks on consecutive seeds and averages
+    their decays, which is the same estimator as one walk of ``n_walkers`` at the same cost. It is a
+    convenience for walking a count larger than one device pass, and it is NOT the log-mean's error bar:
+    a fold spread is a seed-dependent estimate of one (measured on 1_G100: 0.00189-0.00589 over ten
+    seeds at six folds), and a gate threshold cannot be seed-dependent. The error bar is the ANALYTIC
+    standard error of the log-mean -- the delta method over walkers, no folds, no seed and no coverage
+    factor -- which the family's ``records/design.json`` derives and its gate uses. ``1 / sqrt(N)`` is
+    the floor of the SIGNAL and is reported beside it as exactly that.
     """
     ref = LING[sample]
     rho = default_rho(sample) if rho is None else float(rho)
@@ -159,24 +154,23 @@ def run_pack(sample, data_dir, *, rho=None, n_walkers=200_000, T_max=3.5, sample
     from dmipy_sim.engine.physics import resolve_sub_steps
     n_sub = int(sub_steps) if sub_steps else resolve_sub_steps(g, D0, dt, surface=True)
     step = float(np.sqrt(6 * D0 * dt / n_sub))
-    n_each = int(n_walkers) // int(halves)
+    n_each = int(n_walkers) // int(folds)
     t0 = time.time()
     parts = [simulate_cpmg(n_each, D0, seq, g, T2=T2B, seed=seed + i, sub_steps=sub_steps,
-                           walker_batch_size=walker_batch).ravel() for i in range(int(halves))]
+                           walker_batch_size=walker_batch).ravel() for i in range(int(folds))]
     wall = time.time() - t0
     S = np.mean(parts, axis=0)
     t = np.arange(1, n_echoes + 1) * sample_ms * 1e-3
     grid = np.logspace(-3, 1, 60)
     lm = log_mean_T2(grid, t2_distribution(t, S, grid))
     lms = [log_mean_T2(grid, t2_distribution(t, p, grid)) for p in parts] if len(parts) > 1 else []
-    # The standard error of the combined log-mean from k independent folds: the folds' sample standard
-    # deviation over sqrt(k), relative. With k = 2 this IS |lm_a - lm_b| / 2, with one degree of freedom.
-    floor = (float(np.std(lms, ddof=1) / np.sqrt(len(lms)) / lm) if len(lms) > 1
-             else 1.0 / np.sqrt(n_each * len(parts)))
+    # Reported, never a tolerance: the spread of the folds when there are any, and the SIGNAL's shot
+    # noise. The log-mean's error bar is analytic and lives with the gate.
+    fold_spread = float(np.std(lms, ddof=1) / np.sqrt(len(lms)) / lm) if len(lms) > 1 else None
     return dict(name=sample, spec=spec, phi=phi, s_over_v=sv, rho=rho, t=t, S=S, dt=dt, step=step,
                 n_walkers=int(n_each * len(parts)), n_folds=int(len(parts)), wall=wall, sub_steps=n_sub,
                 T2_fd=1.0 / (rho * sv + 1.0 / T2B), rho_V_over_S_over_D=rho / sv / D0,
-                T2_lm=lm, T2_lm_folds=[float(x) for x in lms], floor=float(floor),
+                T2_lm=lm, T2_lm_folds=[float(x) for x in lms], fold_spread=fold_spread,
                 signal_floor=1.0 / np.sqrt(n_each * len(parts)))
 
 
@@ -188,8 +182,8 @@ def main():
     p.add_argument("--samples", nargs="+", default=["6_Q100", "1_G100"], choices=sorted(LING))
     p.add_argument("--rho", type=float, default=None, help="m/s; default is their value for the mineral")
     p.add_argument("--walkers", type=int, default=200_000)
-    p.add_argument("--halves", type=int, default=6,
-                   help="independent folds to average; k > 1 gives the log-mean's standard error")
+    p.add_argument("--folds", type=int, default=1,
+                   help="independent walks to average (a convenience for a large count, not an error bar)")
     p.add_argument("--T-max", type=float, default=3.5, help="seconds (their longest released train)")
     p.add_argument("--sample-ms", type=float, default=1.0, help="S(t) sampling interval, ms")
     p.add_argument("--sub-steps", type=int, default=None,
@@ -205,7 +199,7 @@ def main():
     for name in args.samples:
         r = run_pack(name, args.data, rho=args.rho, n_walkers=args.walkers, T_max=args.T_max,
                      sample_ms=args.sample_ms, sub_steps=args.sub_steps, D0=args.D0, T2B=args.T2B,
-                     walker_batch=args.walker_batch, seed=args.seed, halves=args.halves)
+                     walker_batch=args.walker_batch, seed=args.seed, folds=args.folds)
         if args.measured:
             r["measured"] = measured_log_mean(name, args.measured, sample_ms=args.sample_ms)
         rows.append(r)
@@ -221,8 +215,8 @@ def main():
               f"   (<< 1 is where the fast-diffusion formula holds)")
         print(f"  T2 fast-diffusion 1/(rho S/V + 1/T2B)                {r['T2_fd'] * 1e3:.1f} ms")
         print(f"  T2 log-mean of the inverted decay                    {r['T2_lm'] * 1e3:.1f} ms"
-              + (f"   ({len(r['T2_lm_folds'])} folds, standard error {r['floor'] * 100:.2f} %)"
-                 if r["T2_lm_folds"] else ""))
+              + (f"   ({len(r['T2_lm_folds'])} folds, spread {r['fold_spread'] * 100:.2f} %)"
+                 if r["T2_lm_folds"] else f"   (signal floor {r['signal_floor'] * 100:.2f} %)"))
         if "measured" in r:
             m = r["measured"]
             print(f"  Ling's MEASURED train, same inversion                {m['T2_lm'] * 1e3:.1f} ms"
