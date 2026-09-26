@@ -316,6 +316,29 @@ def test_amira_ascii_and_binary_are_the_same_image_and_the_box_is_voxel_centres(
     assert np.array_equal(w.labels, v.labels) and np.allclose(w.voxel_size, v.voxel_size)
 
 
+def test_the_amira_fast_path_counts_tokens_not_digits(tmp_path):
+    """A payload of two-digit labels whose DIGITS number ``n`` must not be read as ``n`` single digits.
+
+    Guarded on the digit count, 24 values of ``10 11 12 ...`` under a header declaring 48 pass the guard
+    (48 digits) and the reader silently returns a different image. Guarded on the token count it does
+    not, and the general route refuses with both counts. Reachable for any segmentation with a label
+    above 9, which every accepted component type allows.
+    """
+    lab = np.zeros((4, 4, 3), np.uint8)                       # 48 values declared
+    body = b" ".join(f"{10 + i % 90}".encode() for i in range(24))     # 24 tokens, 48 digits
+    with pytest.raises(LabelVolumeError, match="48 lattice values and the ASCII payload holds 24"):
+        read_amira(amira_file(tmp_path / "twodigit.am", lab, body=body,
+                              head=AMIRA_HEAD.format(magic="Avizo 3D ASCII 3.0")
+                              .replace("define Lattice 4 3 2", "define Lattice 4 4 3")))
+    # and the honest 48 two-digit values read as themselves
+    vals = np.arange(10, 58, dtype=np.uint8).reshape(4, 4, 3)
+    ok = b" ".join(str(int(v)).encode() for v in np.ascontiguousarray(vals.transpose(2, 1, 0)).ravel())
+    got = read_amira(amira_file(tmp_path / "ok.am", vals, body=ok,
+                                head=AMIRA_HEAD.format(magic="Avizo 3D ASCII 3.0")
+                                .replace("define Lattice 4 3 2", "define Lattice 4 4 3")))
+    assert np.array_equal(got.labels, vals)
+
+
 def test_amira_single_digit_fast_path_and_the_general_one_agree(tmp_path):
     """A segmentation's labels are single digits, and the reader takes them straight off the buffer's
     digit bytes -- 91 million tokens is minutes through ``str.split``. The general route reads the same

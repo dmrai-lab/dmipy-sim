@@ -384,11 +384,21 @@ def _amira_ascii_labels(payload, n, dtype, path):
     splitting 91 million tokens into Python strings is minutes and gigabytes. The slow general route
     is kept for a payload whose values are not all single digits, and the fast one is taken only after
     the buffer is checked to hold nothing but digits and whitespace.
+
+    The fast path is guarded on the TOKEN count, not the digit count. Guarded on digits, a payload of
+    two-digit labels whose digits happen to number ``n`` is read as ``n`` single digits and silently
+    becomes a different image -- 48 values of ``10 11 12 ...`` under a header declaring 48 read as
+    ``1 0 1 1 1 2 ...``, which is reachable for any segmentation with a label above 9. So a run of
+    digits is counted as one token, the path is taken only when there are ``n`` tokens AND every token
+    is one digit long, and anything else goes to the general route, which counts tokens itself and
+    refuses a mismatch.
     """
     buf = np.frombuffer(payload, np.uint8)
     digit = (buf >= 48) & (buf <= 57)
     other = np.isin(buf[~digit], np.array(_ASCII_WS, np.uint8))
-    if bool(other.all()) and int(digit.sum()) == n:
+    n_digits = int(digit.sum())
+    starts = digit & ~np.concatenate((np.zeros(1, bool), digit[:-1]))
+    if bool(other.all()) and int(starts.sum()) == n and n_digits == n:
         return (buf[digit] - 48).astype(dtype)
     vals = np.array(payload.split(), dtype=dtype)       # multi-digit, signed or floating values
     if vals.size != n:
