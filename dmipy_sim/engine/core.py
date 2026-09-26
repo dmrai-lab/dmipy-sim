@@ -758,13 +758,21 @@ def simulate_cpmg(n_walkers, diffusivity, waveform, geometry, *,
         if echo_indices.shape[0] < 2:
             raise ValueError("simulate_cpmg needs a multi-echo readout: build the train with cpmg(...)")
 
-        # Walker batching: one echo-signal accumulator, size-weighted mean over chunks.
+        # Walker batching: one echo-signal accumulator, size-weighted mean over chunks. Every argument
+        # that shapes the WALK has to travel with it -- `sub_steps` did not, so a batched call silently
+        # ran at the auto-tuned count and an override was measured as if it had been applied. `r0` is
+        # per walker and cannot be split by a recursive call, so it is refused rather than ignored.
         if walker_batch_size is not None and walker_batch_size < n_walkers:
+            if r0 is not None:
+                raise ValueError(
+                    "simulate_cpmg cannot batch an explicit r0: the positions would have to be split "
+                    "across the batches, and passing them whole would walk the same starts in each. "
+                    "Call it once per batch with that batch's r0, or drop walker_batch_size.")
             acc = None
             for b, (start, end) in enumerate(run.batches(n_walkers, walker_batch_size)):
                 nb = end - start
                 s = simulate_cpmg(nb, diffusivity, waveform, geometry, T2=T2,
-                                  seed=seed + 1 + b, walker_batch_size=None,
+                                  seed=seed + 1 + b, sub_steps=sub_steps, walker_batch_size=None,
                                   require_gpu=False)
                 acc = s * nb if acc is None else acc + s * nb
             return acc / n_walkers

@@ -74,7 +74,9 @@ class Surface:
     CATERPillar table (``file``, ``format: caterpillar``, ``column`` = which radius, ``cell_type`` = which
     rows). A ``label_volume`` is the ``file`` of a segmented image with its ``format``, ``voxel_size``,
     ``origin``, the ``labels`` map from label value to pool name and the ``crop`` of it that is the
-    substrate: the wall is every face between two pools of that grid."""
+    substrate: the wall is every face between two pools of that grid. ``origin`` is the lower corner of
+    the CROPPED grid's first voxel, so a reader applies the crop and then takes ``origin`` as it
+    stands; adding ``crop * voxel_size`` to it reads the crop twice."""
     kind: str
     center: Optional[list] = None
     radius: Optional[float] = None
@@ -92,7 +94,7 @@ class Surface:
     scale: Optional[float] = None
     sha256: Optional[str] = None
     voxel_size: Optional[list] = None   # label_volume: the voxel's extent per index axis, metres
-    origin: Optional[list] = None       # label_volume: the lower corner of voxel (0, 0, 0), metres
+    origin: Optional[list] = None       # label_volume: the lower corner of the CROPPED grid's voxel (0,0,0), m
     labels: Optional[dict] = None       # label_volume: {label value: pool name}, insertion order = pool id
     crop: Optional[list] = None         # label_volume: (i0, j0, k0, i1, j1, k1), half-open, in voxels
     instances: Optional[dict] = None

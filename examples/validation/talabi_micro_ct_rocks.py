@@ -23,7 +23,8 @@ Three rungs, each printed with the thesis number beside it:
 Because neither his walk nor this one carries a gradient (he zeroes the diffusion term, thesis
 §7.6.1), the echo spacing is a sampling interval for S(t) and not a sequence parameter: the train
 below samples every ``--sample-ms`` instead of at his 200 us, and the walk's step is set by
-``--sub-echo`` samples per interval.
+``--sub-echo`` samples per interval, each of which the engine divides into the sub-steps its rules ask
+for (``--sub-steps`` overrides that, which is how the rules are measured).
 
 Data (not in the repository; ~4 MB per archive, CC BY 4.0):
 
@@ -125,7 +126,8 @@ def log_mean_T2(T2_grid, a):
     return float(np.exp((a * np.log(T2_grid)).sum() / w)) if w > 0 else float("nan")
 
 
-def run_rock(name, data_dir, *, n_walkers, T_max, sample_ms, sub_echo, walker_batch, seed=0):
+def run_rock(name, data_dir, *, n_walkers, T_max, sample_ms, sub_echo, walker_batch, seed=0,
+             sub_steps=None):
     ref = TALABI[name]
     path = os.path.join(data_dir, f"{name}.nhdr")
     from dmipy_sim.io.label_volume import read_label_volume
@@ -141,9 +143,15 @@ def run_rock(name, data_dir, *, n_walkers, T_max, sample_ms, sub_echo, walker_ba
     n_echoes = int(round(T_max / (sample_ms * 1e-3)))
     seq = cpmg(n_echoes, sample_ms * 1e-3, n_t_per_echo=int(sub_echo))
     dt = seq.dt
-    step = float(np.sqrt(6 * D0 * dt))
+    # The WALK's step, which is what the physics is resolved at: the engine divides the sequence's dt
+    # into `resolve_sub_steps` fine steps (here the surface-relaxivity rule's quarter of a voxel), so
+    # sqrt(6 D dt) is the save interval's displacement and not the step. `sub_steps` overrides the
+    # rule, which is how the rule itself is measured.
+    from dmipy_sim.engine.physics import resolve_sub_steps
+    n_sub = int(sub_steps) if sub_steps else resolve_sub_steps(g, D0, dt, surface=True)
+    step = float(np.sqrt(6 * D0 * dt / n_sub))
     t0 = time.time()
-    S = simulate_cpmg(n_walkers, D0, seq, g, T2=T2B, seed=seed,
+    S = simulate_cpmg(n_walkers, D0, seq, g, T2=T2B, seed=seed, sub_steps=sub_steps,
                       walker_batch_size=walker_batch).ravel()
     wall = time.time() - t0
     t = np.arange(1, n_echoes + 1) * sample_ms * 1e-3
@@ -154,7 +162,7 @@ def run_rock(name, data_dir, *, n_walkers, T_max, sample_ms, sub_echo, walker_ba
     T2_grid = np.logspace(np.log10(1e-3), np.log10(10.0), 60)
     a = t2_distribution(t, S, T2_grid)
     return dict(name=name, spec=spec, phi=phi, s_over_v=sv, ref=ref, t=t, S=S, dt=dt, step=step,
-                n_walkers=n_walkers, wall=wall, sub_steps=None,
+                n_walkers=n_walkers, wall=wall, sub_steps=n_sub,
                 T2_fd=1.0 / rate_fd, T2_fit=1.0 / rate_fit, T2_lm=log_mean_T2(T2_grid, a),
                 floor=1.0 / np.sqrt(n_walkers))
 
@@ -166,7 +174,9 @@ def main():
     p.add_argument("--walkers", type=int, default=200_000)
     p.add_argument("--T-max", type=float, default=3.0, help="seconds (his plotted window)")
     p.add_argument("--sample-ms", type=float, default=1.0, help="S(t) sampling interval, ms")
-    p.add_argument("--sub-echo", type=int, default=2, help="walk steps per sampling interval")
+    p.add_argument("--sub-echo", type=int, default=2, help="sequence samples per sampling interval")
+    p.add_argument("--sub-steps", type=int, default=None,
+                   help="override the engine's sub-step count (for measuring the step rule itself)")
     p.add_argument("--walker-batch", type=int, default=25_000)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--save", default=None, help="write the decays to this .npz")
@@ -175,15 +185,15 @@ def main():
     rows = []
     for name in args.rocks:
         r = run_rock(name, args.data, n_walkers=args.walkers, T_max=args.T_max,
-                     sample_ms=args.sample_ms, sub_echo=args.sub_echo,
+                     sample_ms=args.sample_ms, sub_echo=args.sub_echo, sub_steps=args.sub_steps,
                      walker_batch=args.walker_batch, seed=args.seed)
         rows.append(r)
         ref = r["ref"]
         print(f"\n=== {name}  ({ref['table']};  rho = {ref['rho'] * 1e6:.0f} um/s, {ref['rho_from']}) ===")
         print(f"  crop {r['spec'].walls[0].surface.crop}   voxel "
               f"{r['spec'].walls[0].surface.voxel_size[0] * 1e6:.4g} um   "
-              f"walkers {r['n_walkers']:,}   dt {r['dt'] * 1e6:.1f} us   step {r['step'] * 1e6:.3f} um   "
-              f"{r['wall']:.1f} s")
+              f"walkers {r['n_walkers']:,}   dt {r['dt'] * 1e6:.1f} us x {r['sub_steps']} sub-steps   "
+              f"step {r['step'] * 1e6:.3f} um   {r['wall']:.1f} s")
         print(f"  porosity      ours {r['phi']:.4f}      Talabi {ref['porosity']:.4f}"
               f"      ({100 * (r['phi'] / ref['porosity'] - 1):+.2f} %)")
         print(f"  S/V (1/m)     ours {r['s_over_v']:.0f}       Talabi {ref['s_over_v']:.0f}"

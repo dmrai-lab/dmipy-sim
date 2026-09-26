@@ -46,7 +46,8 @@ class LabelVolumeFile(NamedTuple):
     voxel_size : (3,) float64
         The voxel's extent along each index axis, in metres.
     origin : (3,) float64
-        The lower corner of voxel ``(0, 0, 0)``, in metres.
+        The lower corner of voxel ``(0, 0, 0)``, in metres. :func:`crop_labels` moves it to the crop's
+        own first voxel, so a cropped volume's origin already carries the crop's offset.
     """
     labels: np.ndarray
     voxel_size: np.ndarray

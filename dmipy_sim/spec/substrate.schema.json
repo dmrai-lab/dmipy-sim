@@ -71,7 +71,7 @@
               "cell_type": {"type": "string", "enum": ["axon", "glial_cell", "blood_vessel"]},
               "scale": {"type": "number", "exclusiveMinimum": 0}, "sha256": {"type": "string"},
               "voxel_size": {"$ref": "#/$defs/vec3", "description": "label_volume: the voxel's extent along each index axis, metres"},
-              "origin": {"$ref": "#/$defs/vec3", "description": "label_volume: the lower corner of voxel (0, 0, 0), metres"},
+              "origin": {"$ref": "#/$defs/vec3", "description": "label_volume: the lower corner of the CROPPED grid's voxel (0, 0, 0), metres; the crop offset is already in it"},
               "labels": {"type": "object", "description": "label_volume: {label value: pool name}; every label present in the crop, every name a pool of the spec",
                          "additionalProperties": {"type": "string"}},
               "crop": {"type": "array", "minItems": 6, "maxItems": 6, "items": {"type": "integer"},

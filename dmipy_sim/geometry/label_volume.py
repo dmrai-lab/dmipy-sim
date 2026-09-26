@@ -55,12 +55,17 @@ SPECULAR_STEP_FRACTION = 1.0
 #:
 #: What needs the finer step is a REAL substrate, whose pores are not all the size of its mean. ``V/S``
 #: is that mean: on the Imperial LV60A sand pack it is 1.67 voxels while the narrowest pores are one
-#: voxel, and gating on ``(V/S) / 2`` licensed a 0.835-voxel step at which the rock's log-mean T2 was
-#: still moving -- 493.0 / 490.7 / 487.6 / 487.0 / 486.1 ms at 0.835 / 0.591 / 0.249 / 0.176 / 0.125
-#: voxels, monotone, a 1.4 % drift across a range the rule called converged. Against the voxel it is
-#: flat over the whole range the rule licenses: 487.6 / 487.0 / 486.1 ms at a quarter, an eighth and a
-#: sixteenth of a voxel, 0.3 % over a four-fold refinement and within the walkers' own 0.22 % floor.
-#: The worst case a segmentation can hold is one voxel, so that is what the rule divides.
+#: voxel, so gating on ``(V/S) / 2`` licensed a 0.84-voxel step. Measured there, at 200,000 walkers on
+#: one sampling grid with the sub-step count pinned so that only the WALK's step changes, the T2 decay
+#: is still changing at that step: its single-exponential fit (which does not go through a Laplace
+#: inversion, so it reads the decay and not the estimator) is 563.2 / 562.2 / 560.6 / 560.3 ms at
+#: 0.836 / 0.591 / 0.418 / 0.241 voxels -- moving by 0.18 %, then 0.28 %, then 0.05 %. It has stopped
+#: by a quarter of a voxel and not before.
+#:
+#: Past that limit nothing moves: at the grid the reproduction uses, the log-mean T2 is
+#: 487.6 / 487.0 / 486.1 ms and the fit 558.8 / 557.0 / 556.7 ms at 0.249 / 0.176 / 0.125 voxels, 0.31 %
+#: and 0.38 % over a four-fold refinement, inside the walkers' own 0.22 % floor. The worst case a
+#: segmentation can hold is one voxel, so that is what the rule divides.
 SURFACE_STEP_FRACTION = 4.0
 
 
