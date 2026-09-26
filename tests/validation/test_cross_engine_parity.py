@@ -55,6 +55,12 @@ def fixtures():
     return importlib.import_module("examples.validation.cross_engine_parity")
 
 
+def _thresholds(parity):
+    """The derived thresholds for a parity record -- the same derivation the gate uses, from the same place, so
+    a test cannot assert a looser rule than the family publishes under."""
+    return fixtures().multiplicity_thresholds(parity["n_live"], parity["dof"], k_per=parity["k"])
+
+
 needs_mcdc = pytest.mark.skipif(not MCDC, reason="set DMIPY_SIM_MCDC_ROBUST_DIR to the MC/DC data checkout")
 needs_disimpy = pytest.mark.skipif(not DISIMPY, reason="set DMIPY_SIM_DISIMPY_DIR to a disimpy checkout")
 
@@ -160,14 +166,46 @@ def test_the_cylinder_mesh_gap_to_misst_shrinks_with_the_step_but_not_to_the_flo
 
 
 @needs_disimpy
-@pytest.mark.xfail(strict=True, reason="dmrai-lab/dmipy-sim#479: the mesh of a cylinder under-restricts by "
-                                      "1.3-2.1e-2 at b = 3000 s/mm^2 and the gap does not close with the step")
-def test_the_cylinder_mesh_lands_on_misst_within_our_floor():
-    """What the fixture would assert if #479 were fixed: the mesh, like the analytic cylinder, within the floor."""
+def test_the_disimpy_pickle_is_inconsistently_wound():
+    """The cause of #479, measured on the fixture itself: the surface's face winding is not consistent.
+
+    Of its 588 faces **294 point outward and 294 inward**, and no directed edge is paired exactly once each
+    way. A ray-parity classifier reads half the lumen as exterior, so ``reject_escape`` discards the steps of
+    the walkers that are in it -- which is the under-restriction, not a step-size effect. It is also why the
+    divergence-theorem volume of this surface is 0.332 of ``pi r^2 L`` while its AREA is 0.999 of the ideal:
+    the signed contributions cancel.
+
+    dmrai-lab/dmipy-sim#483 orients the faces in ``Mesh.__init__``. This test measures the input and so keeps
+    passing either way; what flips is
+    :func:`test_the_cylinder_mesh_lands_on_misst_within_our_floor` below.
+    """
     X = fixtures()
-    walk = X.disimpy_walk(DISIMPY, N_WALKERS, sub_steps=4)
+    V, F, _ = X.disimpy_mesh(DISIMPY)
+    centre = V.mean(0)
+    a, b, c = V[F[:, 0]], V[F[:, 1]], V[F[:, 2]]
+    outward = (np.cross(b - a, c - a) * ((a + b + c) / 3.0 - centre)).sum(1)
+    assert int((outward > 0).sum()) == 294 and int((outward < 0).sum()) == 294
+
+
+@needs_disimpy
+@pytest.mark.xfail(strict=True, reason="dmrai-lab/dmipy-sim#479, fixed by #483: the fixture's face winding is "
+                                      "inconsistent (294 of 588 reversed), a ray-parity classifier calls half "
+                                      "the lumen exterior and reject_escape discards 15.6 % of steps, so the "
+                                      "mesh under-restricts. Flips to green on a rebase once #483 orients "
+                                      "faces in Mesh.__init__")
+def test_the_cylinder_mesh_lands_on_misst_within_our_floor():
+    """The mesh, like the analytic cylinder, inside the floor -- which needs the ORIENTED surface.
+
+    With #483's orientation the mesh cylinder lands on MISST at the floor (its author measures 0.00142 against
+    a floor of 0.0015 at sub_steps 8). Until then the walk sees the surface as stored and this is red, so it is
+    a strict xfail: it will fail *as an xpass* the moment #483 lands, which is the notification that the hold
+    on the Disimpy pack can be lifted.
+    """
+    X = fixtures()
+    walk = X.disimpy_walk(DISIMPY, N_WALKERS, sub_steps=8)
     p = X.parity(X.walk_cos_phi(walk, X.disimpy_sequence()), X.disimpy_reference(DISIMPY))
-    assert p["worst_in_tolerance_units"] <= 1.0
+    mult = _thresholds(p)
+    assert p["worst_sigma"] <= mult["k_family_wise"] and p["n_over_k_sigma"] <= mult["max_exceedances"]
 
 
 @needs_disimpy
