@@ -42,16 +42,22 @@ Any other grouping of the walkers, by the voxel they started in for a partitione
 its members with its own normaliser. `walker_phases` is the same without the exponential, for a consumer that
 forms it where it accumulates (a GPU).
 
-The sum above is the reduction. `np.cos(phi).mean(0)` is **not** the signal: it is the real part of the ensemble
-mean, and it drops the quadrature the ensemble carries. For a substrate seeded or shaped asymmetrically that is
-`sqrt(c^2 + s^2) - c`, zero at b = 0 and growing with the phase spread -- 3.1e-3 at b = 13,190 s/mm^2 on the MC/DC
-parity fixture, against a codec error of 4.8e-5 (dmipy-sim#484).
+The sum above is the reduction, and both halves of it matter. `np.cos(phi).mean(0)` is **not** the signal, for
+two separate reasons: it drops the `ew` weights (the relaxation and contact terms, 0.876-0.885 of `w` for the
+tissue on this page), and it takes the real part where the signal is the modulus. Weight the walkers first and
+what is left is the quadrature the ensemble carries, `sqrt(c^2 + s^2) - c`: zero at b = 0 and growing with the
+phase spread -- 6.8e-4 and 1.1e-4 on this page's two measurements, and 3.1e-3 at b = 13,190 s/mm^2 on
+`parity-fixtures/mcdc-0.2-32.0` against that pack's codec error of 4.8e-5 (dmipy-sim#484).
 
 ```python
-_, _, phi = pack.walker_phases(seq, tissue=wm)
-c = np.cos(phi).mean(0); si = np.sin(phi).mean(0)                   # unit weights, so the mean is the ensemble's
-print(np.allclose(np.sqrt(c ** 2 + si ** 2), np.abs(np.exp(1j * phi).mean(0))), np.abs(c - S).max())
+_, ew2, phi = pack.walker_phases(seq, tissue=wm)
+u = ew2 / w.sum()                                                   # the replay's own weights, not a plain mean
+c = (u[:, None] * np.cos(phi)).sum(0); si = (u[:, None] * np.sin(phi)).sum(0)
+print(np.allclose(np.sqrt(c ** 2 + si ** 2), S))                     # the modulus of the weighted sum IS replay
+print(np.abs(c - S).round(6), np.abs(np.cos(phi).mean(0) - S).round(4))   # the quadrature, then unweighted too
 ```
+
+The second number is 137 times the first: drop the weights and you are no longer measuring the reduction at all.
 
 ## `walker_primitives`: before the tissue and the scanner
 
