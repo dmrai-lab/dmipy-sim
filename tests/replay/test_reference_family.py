@@ -211,10 +211,30 @@ def test_a_stage_on_unchanged_inputs_returns_the_record_it_wrote(ran):
     assert (fam.records.digest("source"), os.path.getmtime(fam.records.path("source"))) == before
 
 
+def test_an_edited_record_is_not_a_measurement(ran):
+    """The write-once check compares the BODY. It compared only the digest fields, so editing a number in
+    `pack.json` and deleting `gate.json` re-ran the pack stage and got the edited number back unmeasured."""
+    fam, rec = ran
+    held = open(fam.records.path("pack")).read()
+    gate = open(fam.records.path("gate")).read()
+    try:
+        forged = json.loads(held)
+        forged["substrates"]["sphere"]["reproduced"]["signal_at_b"]["value"] *= 2.2
+        with open(fam.records.path("pack"), "w") as fh:
+            json.dump(forged, fh, indent=1, sort_keys=True)
+        os.remove(fam.records.path("gate"))
+        with pytest.raises(R.ReferenceRefusal, match="is not what this run measured"):
+            fam.stage("pack")
+    finally:
+        for path, body in ((fam.records.path("pack"), held), (fam.records.path("gate"), gate)):
+            with open(path, "w") as fh:
+                fh.write(body)
+
+
 def test_a_stage_whose_inputs_changed_is_refused(ran, tmp_path):
     fam, _ = ran
     other = _family(fam.dir, sources=_sources(tmp_path, host_record="synthetic v2"))
-    with pytest.raises(R.ReferenceRefusal, match="written for other inputs"):
+    with pytest.raises(R.ReferenceRefusal, match="is not what this run measured"):
         other.stage("source")
 
 

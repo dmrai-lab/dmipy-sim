@@ -453,17 +453,29 @@ class Records:
                                        f"and run the stages again")
 
     def write(self, stage, payload, *, inputs_digest, previous_sha256):
-        """Write one record, or return the one already there when its inputs are unchanged."""
+        """Write one record, or return the one already there when it is BYTE-IDENTICAL to what this run measured.
+
+        The comparison is over the canonical body and not over the digest fields inside it: comparing only
+        those made a hand-edited record indistinguishable from the measured one, so deleting `gate.json` and
+        re-running the pack stage returned the edited number without measuring anything. A record whose body
+        differs is refused, and the message says which keys moved.
+        """
         body = _canonical(dict(payload, stage=stage, inputs_sha256=inputs_digest,
                               previous_sha256=previous_sha256))
         if self.exists(stage):
-            old = self.read(stage)
-            if old.get("inputs_sha256") == inputs_digest and old.get("previous_sha256") == previous_sha256:
-                return old                                    # unchanged inputs: the record it already wrote
+            with open(self.path(stage), "rb") as fh:
+                held = fh.read()
+            if held == body:
+                return json.loads(held)                       # unchanged inputs: the record it already wrote
+            old = json.loads(held)
+            fresh = json.loads(body)
+            moved = sorted(k for k in set(old) | set(fresh) if old.get(k) != fresh.get(k))
             raise ReferenceRefusal(
-                f"{stage}: {self.path(stage)} was written for other inputs "
-                f"({str(old.get('inputs_sha256'))[:12]} -> {inputs_digest[:12]}); a record is written once by the "
-                f"stage that measured it -- delete it and the records after it deliberately to re-measure")
+                f"{stage}: {self.path(stage)} is not what this run measured -- {', '.join(moved)} "
+                f"differ{'s' if len(moved) == 1 else ''} (inputs {str(old.get('inputs_sha256'))[:12]} -> "
+                f"{inputs_digest[:12]}); a record is written once by the stage that measured it, and a record "
+                f"that has been edited is not a measurement -- delete it and the records after it deliberately "
+                f"to re-measure")
         os.makedirs(self.dir, exist_ok=True)
         with open(self.path(stage), "wb") as fh:
             fh.write(body)
