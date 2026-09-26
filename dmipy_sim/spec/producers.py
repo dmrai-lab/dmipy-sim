@@ -50,6 +50,13 @@ def _volume(V, F):
     return abs(float(np.einsum("ij,ij->i", a, np.cross(b, c)).sum()) / 6.0)
 
 
+def _area(V, F):
+    """Area of a triangle surface."""
+    V = np.asarray(V, float); F = np.asarray(F)
+    a, b, c = V[F[:, 0]], V[F[:, 1]], V[F[:, 2]]
+    return float(0.5 * np.linalg.norm(np.cross(b - a, c - a), axis=1).sum())
+
+
 def _g_ratio(inner, outer):
     """The g-ratio a pair of tube surfaces realises: for a tube V ~ r^2 L, so g = sqrt(V_in / V_out). Measured,
     never taken from an argument (the Winther axons realise 0.70; CACTUS strands 0.56-0.87)."""
@@ -624,3 +631,84 @@ def _strands_spec(centerlines, R, lo, hi, *, boundary, g_ratio, field_T, rho2, i
 def _version():
     from ..run import package_version
     return package_version()
+
+
+def mcdc_axon_spec(ply, *, scale=_UM, D=None, voxel=None, pad=1.0e-6, boundary="reflect",
+                   ini_walkers=None, rho2=0.0, id=None, source=None, description=None, cite_ply_as=None):
+    """The spec of ONE closed MC/DC axon surface: a bare lumen, no sheath.
+
+    The undulating axons of Rafael-Patino et al. (2020) are single closed tubes with nothing around them, so
+    the spec has two pools -- ``intra`` (1) inside the surface and ``extra`` (0) outside, declared with
+    ``water_fraction = 0`` because MC/DC seeded and read only the intra particles -- and one wall. There is no
+    myelin pool: the mesh is an axolemma and a pool with no wall of its own is not a situation.
+
+    ``D`` is the configuration's own diffusivity (``read_conf(...)["diffusivity"]``), applied to both pools, and
+    ``rho2`` defaults to 0 because MC/DC's walls are purely reflecting: relaxation is a replay knob, never in
+    the walk.
+
+    ``voxel`` is MC/DC's ``<voxels>`` block in metres (``read_conf(...)["voxel_min"], ["voxel_max"]``) and is
+    used when it contains the surface; the released ``uAxon_d_1.0_amp_0.0_wL_4.0.conf`` states a 3 x 3 x 250 um
+    voxel, which the amplitude > 1.5 um meshes leave, so the default domain is the surface's own bounding box
+    padded by ``pad`` and the stated voxel goes into the provenance. For an intra-only walk the domain is never
+    met -- the surface encloses every walker -- and the run states the measured excursion.
+
+    ``ini_walkers`` is the path of MC/DC's released initial-walker list for this mesh; it is cited by path and
+    sha256, and the seeding rule is then ``explicit`` rather than ``uniform_by_volume``, because the released
+    list spans only the central ~40 um of a 250 um tube and is NOT a uniform draw over the lumen.
+    """
+    notes = []
+    (mesh,), smallest, edge_med, open_files = _surface_stats([ply], scale, notes)
+    if open_files:
+        raise SpecError(f"an isolated axon needs a closed surface; {os.path.basename(ply)} has boundary edges "
+                        f"(an uncapped tube encloses no volume). MC/DC walks it anyway because its walkers "
+                        f"never reach the rim; a spec cannot, because the pool is not defined")
+    V = mesh[0]
+    # The feature scale of a tube is its RADIUS, and `_surface_stats` reads half the thinnest bounding-box
+    # extent -- which for an undulating tube is the undulation envelope (1.5 um where the lumen is 0.5 um),
+    # three times too coarse for the sub-step rule. For a swept tube V / S = r / 2 exactly, so 2 V / S is the
+    # radius, measured off the surface itself and conservative where the bends add surface (0.34 um on the
+    # amp 0.2 / wL 4 um mesh, whose centreline curvature is comparable with its radius).
+    smallest = min(smallest, 2.0 * _volume(*mesh) / _area(*mesh))
+    lo, hi = (V.min(0) - pad), (V.max(0) + pad)
+    voxel_note = None
+    if voxel is not None:
+        vlo, vhi = np.asarray(voxel[0], float), np.asarray(voxel[1], float)
+        if (vlo <= V.min(0)).all() and (vhi >= V.max(0)).all():
+            lo, hi = vlo, vhi
+            voxel_note = "domain = MC/DC's own <voxels> block"
+        else:
+            voxel_note = (f"MC/DC's <voxels> block {(vlo * 1e6).round(2).tolist()}..{(vhi * 1e6).round(2).tolist()} um "
+                          f"does not contain this surface {(V.min(0) * 1e6).round(2).tolist()}.."
+                          f"{(V.max(0) * 1e6).round(2).tolist()} um; the domain is the surface's bounding box "
+                          f"padded by {pad} m instead")
+    D = 0.6e-9 if D is None else float(D)
+    pools = [Pool(0, "extra", D, water_fraction=0.0, T2=0.08, T1=1.0),
+             Pool(1, "intra", D, water_fraction=1.0, T2=0.08, T1=1.0)]
+    cite = cite_ply_as or os.path.basename(ply)
+    wall = Wall("axolemma", Surface("mesh", file=cite, format=ply.rsplit(".", 1)[-1].lower(), scale=float(scale),
+                                    sha256=_sha(ply)), 1, 0, Directional(), Sided(float(rho2), float(rho2)))
+    rule = "explicit" if ini_walkers else "uniform_by_volume"
+    transformations = [f"inside the surface = intra (1), outside = extra (0)",
+                       "extra declared free water with water_fraction 0: MC/DC seeded and read intra particles only",
+                       f"walls purely reflecting (rho = {rho2} m/s): MC/DC's are, and relaxation is a replay knob",
+                       f"domain faces {boundary}"] + notes
+    if voxel_note:
+        transformations.append(voxel_note)
+    prov = {"source": source or "MC/DC Robust-Monte-Carlo-Simulations (Rafael-Patino et al. 2020), LGPL-2.1",
+            "scale": float(scale), "files": [{"path": os.fspath(ply), "sha256": _sha(ply)}],
+            "transformations": transformations,
+            "created": date.today().isoformat(), "software": {"name": "dmipy-sim", "version": _version()}}
+    if ini_walkers:
+        prov["files"].append({"path": os.fspath(ini_walkers), "sha256": _sha(ini_walkers),
+                              "role": "MC/DC initial-walker list, millimetres, read cyclically (i mod n)"})
+        transformations.append("seeding: MC/DC's released initial-walker list, not a uniform draw over the "
+                               "lumen (the list spans the central part of the tube only)")
+    spec = SubstrateSpec(
+        id or f"mcdc/{os.path.splitext(os.path.basename(ply))[0]}",
+        Domain(lo.tolist(), hi.tolist(), [boundary] * 3), pools, [wall], Seeding([1], rule, "water_fraction"),
+        Validity(smallest, ["gradient", "relaxation", "surface"], mesh_edge_feature_ratio=edge_med / smallest),
+        description=description or f"one MC/DC undulating axon: {os.path.basename(ply)}, a closed lumen in free space",
+        realisation={"enclosed_volume_m3": _volume(*mesh), "surface_area_m2": _area(*mesh),
+                     "tube_radius_m": 2.0 * _volume(*mesh) / _area(*mesh), "n_vertices": int(len(mesh[0])), "n_faces": int(len(mesh[1]))},
+        provenance=prov)
+    return spec.validate()

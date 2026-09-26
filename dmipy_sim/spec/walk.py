@@ -223,7 +223,9 @@ class _Boundary:
         if self.kind == "mesh":
             from ..geometry.mesh import load_ply
             from ..fields.susceptibility_field import MeshBodies
-            self.bodies = MeshBodies([load_ply(w.surface.file, scale=(w.surface.scale or 1.0)) for w in walls])
+            from .build import mesh_surface_file
+            self.bodies = MeshBodies([load_ply(mesh_surface_file(w.surface), scale=(w.surface.scale or 1.0))
+                                      for w in walls])
             self.V, self.F = self.bodies.V, self.bodies.F
         elif self.kind == "sphere_union":
             from .build import sphere_union_arrays

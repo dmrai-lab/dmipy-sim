@@ -121,6 +121,9 @@ _SLOW_MC_MODULES = {
     # One 200,000-walker, 6000-step walk per rock on a 300^3 micro-CT image, against Talabi 2008
     # (needs DMIPY_SIM_IMPERIAL2007_DIR; skipped without it).
     "test_talabi_rocks",
+    # Three 372-measurement MC/DC axon walks and one Disimpy cylinder walk against published signals
+    # (needs DMIPY_SIM_MCDC_ROBUST_DIR / DMIPY_SIM_DISIMPY_DIR; skipped without them).
+    "test_cross_engine_parity",
 }
 
 
