@@ -74,14 +74,24 @@ def test_surface_relaxivity_matches_analytic_sphere():
 
 
 def test_permeability_matches_analytic_sphere():
-    # permeability faceting bias ~O(h^2) -> needs a fine mesh (subdiv 5)
+    """A permeable mesh sphere against the analytic one, the exchanged walkers free on both sides (#464).
+
+    The analytic sphere's exterior is unbounded; a mesh's default voxel box is its own bounding box, so a walker
+    that crossed the membrane bounced between the sphere and a cube one radius wide instead of diffusing away,
+    and at kappa = 2e-5 m/s (16 % exchanged by TE) the mesh read 5 % less attenuated at every b although the
+    exchanged fractions agreed to the Monte-Carlo count. The box is sized so that a walker leaving the sphere
+    cannot reach a face within TE, and the collision cell is pinned to the unboxed mesh's (the default scales
+    it with the box, gathering the whole sphere per step). Faceting bias is O(h^2): subdivision 5."""
     V, F = _ico(5)
-    wf = _pgse(6, 250, TE=15e-3)
+    TE = 15e-3
+    wf = _pgse(6, 250, TE=TE)
     kappa = 2e-5
-    s_mesh = np.asarray(simulate(1500, D, wf, Mesh(V, F, permeability=kappa), seed=SEED))
+    half = R + 2.0 * np.sqrt(6 * D * TE)
+    cell = Mesh(V, F, permeability=kappa).cell_size
+    mesh = Mesh(V, F, permeability=kappa, voxel_min=-half * np.ones(3), voxel_max=half * np.ones(3), cell_size=cell)
+    s_mesh = np.asarray(simulate(1500, D, wf, mesh, seed=SEED))
     s_ana = np.asarray(simulate(1500, D, wf, Sphere(radius=R, permeability=kappa), seed=SEED))
-    npt.assert_allclose(s_mesh, s_ana, atol=0.025,
-                        err_msg="mesh permeability vs analytic Sphere (needs fine mesh)")
+    npt.assert_allclose(s_mesh, s_ana, atol=0.025, err_msg="mesh permeability vs analytic Sphere")
 
 
 def test_periodic_tube_matches_infinite_cylinder():
