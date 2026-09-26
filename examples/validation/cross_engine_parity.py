@@ -264,44 +264,69 @@ def pack_cos_phi(pack, seq):
     return np.cos(np.asarray(pack.walker_primitives(seq).phi, np.float64)).T
 
 
-def floors(per_walker, n_theirs, *, seed=0):
-    """``(ours, theirs)`` per measurement.
+def floors(per_walker, n_theirs=None):
+    """``(ours, theirs, dof, exact)`` per measurement: the **analytic standard error of the ensemble mean**.
 
-    ``ours`` is the split-half floor: half the absolute difference of the two half-means, which is the
-    estimator's own one-sigma noise at this walker count. ``theirs`` is the standard error their run had at
-    ITS walker count, from the variance of ``cos(phi)`` measured here -- their released file is one
-    realisation and carries no spread of its own, so the variance has to come from a walk of the same
-    substrate at the same acquisition, which is exactly this one.
+    The signal of a measurement is the mean of ``cos(phi)`` over walkers, so the one-sigma noise of that mean
+    is ``sd(cos(phi)) / sqrt(N)`` -- computed from the same walkers, per measurement, with no randomness of its
+    own. ``theirs`` is the same per-walker spread at THEIR walker count, because their released file is one
+    realisation and carries no spread; ``dof`` is ``N - 1``, conservatively the dof of our sample variance
+    alone (their mean adds ~50,000 more, so a band derived at this dof is the wider one).
+
+    A **split half** was used here before and is wrong for this job: half the absolute difference of two
+    half-means is a one-degree-of-freedom draw, not an estimate of the noise, and it is shared by every
+    measurement through one permutation. Measured on the published ``mcdc-1.0-12.0`` pack over seeds 0..199,
+    the worst measurement moved between **2.09 and 3.51 sigma** (median 3.20) and the number of 3-sigma
+    exceedances between **0 and 3** (median 2), so the family-wise check at 3.206 sigma failed for **49.5 %**
+    of seeds. The analytic estimator gives **2.869 sigma and 0 of 360** for the same pack, once and for all.
+    The "2 of 372 outside their own band" that motivated the gate's thresholds was the estimator, not the walk.
+
+    ``exact`` marks the measurements with **zero** per-walker spread: a ``b = 0`` row has ``phi = 0`` for every
+    walker, so its mean is 1 exactly and its standard error is exactly 0. There is no band to be inside, so
+    such a row is compared exactly instead of in sigma and carries no degrees of freedom -- 12 of the ActiveAx
+    scheme's 372 measurements, and their ``|dS|`` is 0.0 on all three packs. Dividing by their zero (or by a
+    1e-12 floor, as this did) is what made the statistic ``nan``.
     """
+    per_walker = np.asarray(per_walker, float)
     n_m, n_w = per_walker.shape
-    idx = np.random.default_rng(seed).permutation(n_w)
-    a, b = per_walker[:, idx[:n_w // 2]].mean(1), per_walker[:, idx[n_w // 2:]].mean(1)
-    ours = np.abs(a - b) / 2.0
-    theirs = per_walker.std(axis=1, ddof=1) / np.sqrt(float(n_theirs))
-    return ours, theirs
+    sd = per_walker.std(axis=1, ddof=1)
+    ours = sd / np.sqrt(float(n_w))
+    theirs = sd / np.sqrt(float(n_theirs)) if n_theirs else np.zeros_like(sd)
+    return ours, theirs, int(n_w - 1), (sd == 0.0)
 
 
-def parity(cos_phi, reference, n_theirs=None, *, seed=0):
-    """The parity record of one fixture: our signal, theirs, the two floors and the worst measurement.
+def parity(cos_phi, reference, n_theirs=None, *, k=3.0):
+    """The parity record of one fixture: our signal, theirs, the floors, and the worst measurement in sigma.
 
     ``n_theirs`` is their walker count when their reference is itself a Monte-Carlo estimate (MC/DC) and
-    ``None`` when it is exact (MISST), in which case only our floor enters the tolerance.
+    ``None`` when it is exact (MISST), in which case only our floor enters the band.
+
+    Every number here is a property of the walkers and the reference, not of a seed. The zero-variance
+    measurements are reported separately (``n_exact``, ``max_abs_diff_exact``) because they have no band; the
+    sigma statistics are over the rest, and ``n_live`` is how many that is -- which is what the family-wise
+    threshold must be derived for.
     """
+    cos_phi = np.asarray(cos_phi, float)
     ours = cos_phi.mean(axis=1)
     ref = np.asarray(reference, float)
     if ours.shape != ref.shape:
         raise ValueError(f"{ours.shape} measurements against a reference of {ref.shape}")
-    f_ours, f_theirs = floors(cos_phi, n_theirs or 1, seed=seed)
-    if n_theirs is None:
-        f_theirs = np.zeros_like(f_ours)
-    tol = 3.0 * np.sqrt(f_ours ** 2 + f_theirs ** 2)
+    f_ours, f_theirs, dof, exact = floors(cos_phi, n_theirs)
     d = np.abs(ours - ref)
+    live = ~exact
+    se = np.sqrt(f_ours ** 2 + f_theirs ** 2)
+    sigma = np.where(live, d / np.where(live, se, 1.0), 0.0)
     i = int(np.argmax(d))
-    return dict(n_meas=int(len(ours)), max_abs_diff=float(d.max()), at_measurement=i,
+    j = int(np.flatnonzero(live)[np.argmax(sigma[live])]) if live.any() else -1
+    return dict(n_meas=int(len(ours)), n_live=int(live.sum()), n_exact=int(exact.sum()), dof=int(dof),
+                k=float(k), max_abs_diff=float(d.max()), at_measurement=i,
                 ours_at=float(ours[i]), theirs_at=float(ref[i]), rms_diff=float(np.sqrt((d ** 2).mean())),
+                max_abs_diff_exact=float(d[exact].max()) if exact.any() else 0.0,
                 floor_ours_max=float(f_ours.max()), floor_ours_med=float(np.median(f_ours)),
-                floor_theirs_max=float(f_theirs.max()), tol_max=float(tol.max()),
-                n_over_tolerance=int((d > tol).sum()), worst_in_tolerance_units=float(np.max(d / np.maximum(tol, 1e-12))))
+                floor_theirs_max=float(f_theirs.max()),
+                worst_sigma=float(sigma[live].max()) if live.any() else 0.0, worst_sigma_at=j,
+                n_over_k_sigma=int((sigma[live] > k).sum()) if live.any() else 0,
+                tol_max=float(k * se.max()))
 
 
 # --------------------------------------------------------------------------------------------- the envelope
@@ -329,7 +354,7 @@ def disimpy_envelope():
 
 
 # ------------------------------------------------------------------------------- the step, not the engine
-def step_ladder(walks, reference, *, n_theirs=None, seed=0):
+def step_ladder(walks, reference, *, n_theirs=None):
     """Is what is left between two engines the ENGINE, or the step?
 
     ``walks`` is ``[(step_m, PersistentWalk, sequence), ...]`` at decreasing sub-step length on the same
@@ -349,14 +374,15 @@ def step_ladder(walks, reference, *, n_theirs=None, seed=0):
     d = ours - ref[None, :]
     h1, h2 = steps[-2], steps[-1]
     extrap = (d[-1] * h1 - d[-2] * h2) / (h1 - h2)                 # d(h) = d0 + c h, at h = 0
-    f_ours, f_theirs = floors(cos[-1], n_theirs or 1, seed=seed)
-    if n_theirs is None:
-        f_theirs = np.zeros_like(f_ours)
-    return dict(steps_m=steps.tolist(),
+    f_ours, f_theirs, dof, exact = floors(cos[-1], n_theirs)
+    live = ~exact
+    se = np.sqrt(f_ours ** 2 + f_theirs ** 2)
+    return dict(steps_m=steps.tolist(), dof=int(dof), n_live=int(live.sum()),
                 max_abs_diff=[float(np.abs(x).max()) for x in d],
                 extrapolated_max_abs_diff=float(np.abs(extrap).max()),
                 floor_ours_max=float(f_ours.max()), floor_theirs_max=float(f_theirs.max()),
-                tol_max=float(3.0 * np.sqrt(f_ours ** 2 + f_theirs ** 2).max()),
+                tol_max=float(3.0 * se[live].max()) if live.any() else 0.0,
+                extrapolated_worst_sigma=float(np.abs(extrap[live] / se[live]).max()) if live.any() else 0.0,
                 monotone=bool(np.all(np.diff([float(np.abs(x).max()) for x in d]) < 0)))
 
 
@@ -382,7 +408,7 @@ def main():
     ap.add_argument("--n-walkers", type=int, default=20_000)
     a = ap.parse_args()
     from dmipy_sim.io import mcdc
-    print(f"| fixture | N | max|dS| | rms | our floor | their floor | tolerance | x tol |")
+    print(f"| fixture | N | max|dS| | rms | our floor | their floor | tolerance | worst sigma |")
     print(f"|---|---|---|---|---|---|---|---|")
     if a.mcdc_data:
         os.environ["DMIPY_SIM_SURFACE_DIR"] = os.path.abspath(
@@ -394,13 +420,13 @@ def main():
             p = parity(walk_cos_phi(walk, seq), ref, n_theirs)
             print(f"| MC/DC amp {amp} wL {wL} | {a.n_walkers:,} | {p['max_abs_diff']:.5f} | {p['rms_diff']:.5f} "
                   f"| {p['floor_ours_max']:.5f} | {p['floor_theirs_max']:.5f} | {p['tol_max']:.5f} "
-                  f"| {p['worst_in_tolerance_units']:.2f} |")
+                  f"| {p['worst_sigma']:.2f} |")
     if a.disimpy_data:
         walk = disimpy_walk(a.disimpy_data, a.n_walkers)
         p = parity(walk_cos_phi(walk, disimpy_sequence()), disimpy_reference(a.disimpy_data))
         print(f"| Disimpy cylinder vs MISST | {a.n_walkers:,} | {p['max_abs_diff']:.5f} | {p['rms_diff']:.5f} "
               f"| {p['floor_ours_max']:.5f} | exact | {p['tol_max']:.5f} "
-              f"| {p['worst_in_tolerance_units']:.2f} |")
+              f"| {p['worst_sigma']:.2f} |")
 
 
 if __name__ == "__main__":
