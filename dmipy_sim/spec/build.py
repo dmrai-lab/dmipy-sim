@@ -345,14 +345,28 @@ def _spec_of_label_volume(g, id, prov, surface_dir=None):
     one pool per label and one wall per pair of pools that share a face.
 
     A segmented image is not embeddable, so the surface carries the path, the container, the sha256,
-    the voxel size, the origin and the label map, exactly as a strand spec cites its track file. The
-    walking pool holds the water: a constructed geometry walked one pool, which is the only water
-    fraction its own walk demonstrates."""
+    the voxel size, the origin, the label map and the crop, exactly as a strand spec cites its track
+    file. ``g.source`` is the citation the geometry was built from, so a geometry that came from a spec
+    is written back citing the SAME image at the SAME path and digest and the same crop; only a
+    geometry built from an array in memory has an image written for it.
+
+    Four things a grid cannot hold are taken from the spec the geometry was built from
+    (``_spec_source``), so ``spec_of(geometry_from_spec(spec))`` is that spec: the pools' bulk ``D`` /
+    ``T2`` / ``T1``, the frame, ``realisation`` and ``provenance``. They are properties of the fluid,
+    the pose and the source, not of the voxels; a geometry built from an array has none of them and
+    gets the walking pool's water fraction and nothing else, which is all its own walk demonstrates.
+    """
     import os
+    import dataclasses
     src = _label_volume_source(g, surface_dir)
-    sid = id or f"label_volume/{os.path.splitext(os.path.basename(src['file']))[0]}"
+    was = getattr(g, "_spec_source", None)
+    sid = id or (was.id if was is not None
+                 else f"label_volume/{os.path.splitext(os.path.basename(src['file']))[0]}")
     names = list(g.pools.values())
-    pools = [Pool(i, n, None, water_fraction=(1.0 if i == g.pool_index else 0.0)) for i, n in enumerate(names)]
+    said = {p.name: p for p in (was.pools if was is not None else [])}
+    pools = [Pool(i, n, (said[n].D if n in said else None), water_fraction=(1.0 if i == g.pool_index else 0.0),
+                  T2=(said[n].T2 if n in said else None), T1=(said[n].T1 if n in said else None))
+             for i, n in enumerate(names)]
     surf_kw = dict(file=src["file"], format=src["format"], sha256=src.get("sha256"),
                    voxel_size=np.asarray(g.voxel_size, float).tolist(),
                    origin=np.asarray(g.origin, float).tolist(),
@@ -364,11 +378,18 @@ def _spec_of_label_volume(g, id, prov, surface_dir=None):
              for (i, j) in sorted(g.interfaces())]
     bc = ["periodic" if p else "reflect" for p in g.periodic]
     dom = Domain(np.asarray(g.box_min, float).tolist(), np.asarray(g.box_max, float).tolist(), bc)
-    return SubstrateSpec(sid, dom, pools, walls, Seeding([g.pool_index]),
+    spec = SubstrateSpec(sid, dom, pools, walls, Seeding([g.pool_index]),
                          Validity(float(g.voxel_size.min()), _tiers(walls, pools, kappa)),
-                         description=(f"a segmented {'x'.join(str(int(d)) for d in g.dims)} label volume; "
+                         description=(was.description if was is not None else
+                                      f"a segmented {'x'.join(str(int(d)) for d in g.dims)} label volume; "
                                       f"the {g.pool} pool walks between its voxel faces"),
-                         provenance=dict(prov, files=[{"path": src["file"], "sha256": surf_kw["sha256"]}]))
+                         provenance=(was.provenance if was is not None
+                                     else dict(prov, files=[{"path": src["file"], "sha256": surf_kw["sha256"]}])))
+    if was is None:
+        return spec
+    return dataclasses.replace(spec, frame=was.frame, realisation=was.realisation, request=was.request,
+                               nominal_field_T=was.nominal_field_T,
+                               validity=dataclasses.replace(spec.validity, tiers=list(was.validity.tiers)))
 
 
 def _label_volume_source(g, surface_dir):
@@ -538,10 +559,15 @@ def _geometry_from_spec(spec):
         by_id = {p.id: p.name for p in spec.pools}
         order = {p.name: p.id for p in spec.pools}
         pools = dict(sorted(pool_map.items(), key=lambda kv: order[kv[1]]))
-        return LabelVolume(labels, vox, origin=origin,
-                           periodic=[b == "periodic" for b in dom.boundary], pools=pools,
-                           pool=by_id[spec.seeding.pools[0]], surface_relaxivity_t2=rho(w),
-                           permeability=kappa(w))
+        g = LabelVolume(labels, vox, origin=origin,
+                        periodic=[b == "periodic" for b in dom.boundary], pools=pools,
+                        pool=by_id[spec.seeding.pools[0]], surface_relaxivity_t2=rho(w),
+                        permeability=kappa(w))
+        # the image the spec cites, as the spec cites it: a geometry built from a spec must be written
+        # back citing the SAME file, and not a private copy of its voxels in the surface cache
+        g.source = {"file": w.surface.file, "format": w.surface.format, "sha256": w.surface.sha256,
+                    "crop": (list(int(x) for x in w.surface.crop) if w.surface.crop is not None else None)}
+        return g
     if any(k == "sphere_union" for k in kinds) or (len(walls) > 1 and any(w.surface.instances for w in walls)
                                                     and any(k == "swept_polyline" for k in kinds)):
         if len(walls) != 1 or len(spec.seeding.pools) != 1:

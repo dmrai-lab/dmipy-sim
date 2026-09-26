@@ -7,7 +7,7 @@ import pytest
 from dmipy_sim.geometry import LabelVolume
 from dmipy_sim.io.label_volume import write_nrrd
 from dmipy_sim.spec import (SpecError, SubstrateSpec, as_geometry, geometry_from_spec, label_volume_spec,
-                            load_spec, validate)
+                            load_spec, spec_of, validate)
 from dmipy_sim.spec.substrate import SURFACE_KINDS
 
 
@@ -52,18 +52,34 @@ def test_the_producer_writes_the_image_the_pools_and_the_wall(image):
     assert spec.realisation["surface_to_volume"] == pytest.approx(2e5)
 
 
-def test_the_producer_and_the_geometry_are_a_fixed_point(image, tmp_path):
-    """spec -> geometry -> spec is the identity: what the producer wrote is what the geometry hands
-    back, so a pack of this walk embeds the substrate it was walked on."""
+def test_the_producer_and_the_geometry_are_a_fixed_point(image, tmp_path, monkeypatch):
+    """``spec_of(geometry_from_spec(spec))`` IS the spec: the RECOMPUTE, not the memoised ``.spec``.
+
+    Read back through ``g.spec`` this cannot fail, because that property hands back the spec the
+    geometry was built from. Through ``spec_of`` it can and did: a geometry from a spec had no
+    ``source``, so the recompute wrote a private copy of its voxels into the surface cache and cited
+    that -- a new path, a new sha256, no crop -- and dropped the pools' D, the realisation and the
+    provenance. The citation is the whole point of a label volume, so it is asserted here, and the
+    surface cache is pointed at an empty directory that must stay empty.
+    """
     path, lab = image
-    spec = label_volume_spec(path, rho=41e-6, D=2.07e-9, id="test/slab")
+    monkeypatch.setenv("DMIPY_SIM_SURFACE_DIR", str(tmp_path / "cache"))
+    spec = label_volume_spec(path, rho=41e-6, D=2.07e-9, T2=3.1, crop=(4, 0, 0, 36, 8, 8),
+                            id="test/slab", nominal_field_T=2.0)
     g = geometry_from_spec(spec)
     assert isinstance(g, LabelVolume)
-    assert np.array_equal(g.labels, lab) and np.allclose(g.voxel_size, 0.5e-6)
+    assert np.array_equal(g.labels, lab[4:36]) and np.allclose(g.voxel_size, 0.5e-6)
     assert g.pools == {0: "free", 1: "grain"} and g.pool == "free"
     assert g.surface_relaxivity_t2 == 41e-6 and g.permeability is None
     assert list(g.periodic) == [False] * 3
-    assert g.spec.to_dict() == spec.to_dict()
+
+    back = spec_of(g)
+    assert back.to_dict() == spec.to_dict()
+    s = back.walls[0].surface
+    assert s.file == path and s.sha256 == spec.walls[0].surface.sha256 and s.crop == [4, 0, 0, 36, 8, 8]
+    assert back.pool("free").D == 2.07e-9 and back.pool("free").T2 == 3.1
+    assert back.realisation == spec.realisation and back.provenance == spec.provenance
+    assert not (tmp_path / "cache").exists() or not list((tmp_path / "cache").iterdir())
 
     p = tmp_path / "slab.sub.json"
     spec.save(p)
@@ -100,6 +116,9 @@ def test_a_geometry_built_from_an_array_writes_its_image_and_is_walkable(tmp_pat
     g2 = geometry_from_spec(spec)
     assert np.array_equal(g2.labels, lab) and g2.surface_relaxivity_t2 == 1e-5
     assert as_geometry(g) is g
+    # and it is what a grid alone can say: no fluid D, no realisation, no crop
+    assert spec.pool("free").D is None and spec.realisation is None and spec.walls[0].surface.crop is None
+    assert spec_of(g2).to_dict() == spec.to_dict()           # a recompute of the recompute
 
 
 def test_multiple_pools_become_multiple_walls(tmp_path):
