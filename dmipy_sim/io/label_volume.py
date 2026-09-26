@@ -382,6 +382,34 @@ def read_label_volume(path, *, format=None, voxel_size=None, dataset=None):
     return reader(path, **kw)
 
 
+def payload_files(path, *, format=None):
+    """Every file the container at ``path`` reads, the header first.
+
+    A detached container is two files: ``LV60A.nhdr`` names ``LV60A.raw`` and the image is in the
+    second one. A spec's ``surface.sha256`` covers the file it cites, so a producer that wants the
+    IMAGE covered records each of these with its own digest (``provenance.files``).
+    """
+    path = os.fspath(path)
+    fmt = format_of(path) if format is None else str(format).lower()
+    out = [path]
+    if os.path.isdir(path):
+        return sorted(os.path.join(path, f) for f in os.listdir(path)
+                      if f.lower().endswith((".tif", ".tiff")))
+    if fmt in ("nrrd", "mhd"):
+        with open(path, "rb") as fh:
+            head = fh.read(8192).decode("utf-8", "replace")
+        for line in head.splitlines():
+            key, _, value = (line.partition(":=") if ":=" in line
+                             else (line.partition(":") if fmt == "nrrd" else line.partition("=")))[0:3]
+            k = key.strip().lower()
+            if k in ("data file", "datafile", "elementdatafile"):
+                src = value.strip()
+                if src and src.upper() != "LOCAL" and "%" not in src:
+                    out.append(src if os.path.isabs(src) else os.path.join(os.path.dirname(path), src))
+                break
+    return out
+
+
 def crop_labels(volume, crop):
     """The sub-volume ``crop = (i0, j0, k0, i1, j1, k1)`` (half-open, in voxels) of a
     :class:`LabelVolumeFile`, its origin moved to the crop's own lower corner.

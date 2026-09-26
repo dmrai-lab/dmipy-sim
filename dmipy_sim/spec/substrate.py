@@ -235,7 +235,7 @@ def _strip(x):
         return {k: _strip(v) for k, v in x.items()
                 if not (v is None and k in ("center", "radius", "axis", "length", "semiaxes", "rotation", "point",
                                             "normal", "centerline", "file", "format", "scale", "sha256", "instances",
-                                            "voxel_size", "origin", "labels", "crop"))}
+                                            "column", "cell_type", "voxel_size", "origin", "labels", "crop"))}
     if isinstance(x, list):
         return [_strip(v) for v in x]
     return x

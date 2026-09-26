@@ -430,6 +430,8 @@ def label_volume_spec(path, *, pools=None, voxel_size=None, origin=None, crop=No
     if not pairs:
         raise SpecError(f"{path}: no two pools of this image share a voxel face, so it has no wall")
 
+    from ..io.label_volume import payload_files
+    read_files = payload_files(path, format=fmt)
     cited = str(cite_image_as if cite_image_as is not None else path)
     surf_kw = dict(file=cited, format=fmt, sha256=_sha(path),
                    voxel_size=[float(x) for x in vox], origin=[float(x) for x in org],
@@ -466,7 +468,11 @@ def label_volume_spec(path, *, pools=None, voxel_size=None, origin=None, crop=No
                                    f"{float(np.min(vox)) * 1e6:.4g} um; the {walking!r} pool walks between its voxel faces"),
         realisation={"shape": [int(n) for n in lab.shape], "porosity": phi, "surface_to_volume": s_over_v,
                      "voxel_size_m": [float(x) for x in vox]},
-        provenance={"source": source or "segmented image", "files": [{"path": cited, "sha256": surf_kw["sha256"]}],
+        provenance={"source": source or "segmented image",
+                    # a detached container is two files and `surface.sha256` covers only the one it
+                    # cites, so every file the image was read from is recorded with its own digest
+                    "files": [{"path": (cited if i == 0 else os.path.basename(f)), "sha256": _sha(f)}
+                              for i, f in enumerate(read_files)],
                     "transformations": transformations,
                     "created": date.today().isoformat(), "software": {"name": "dmipy-sim", "version": _version()}}
     ).validate()
