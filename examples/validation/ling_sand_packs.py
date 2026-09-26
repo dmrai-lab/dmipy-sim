@@ -113,12 +113,20 @@ def measured_log_mean(sample, cpmg_dir, *, te=100e-6, sample_ms=1.0, grid=None):
 
 
 def run_pack(sample, data_dir, *, rho=None, n_walkers=200_000, T_max=3.5, sample_ms=1.0,
-             D0=D0, T2B=T2B, walker_batch=20_000, seed=0, sub_steps=None):
+             D0=D0, T2B=T2B, walker_batch=20_000, seed=0, sub_steps=None, halves=2):
     """One direct fused walk: the substrate with ``rho`` baked in, its decay, and the decay's log-mean.
 
     This is the OTHER route to the quantity a replay pack serves as a knob, which is what makes it the
     reference a pack is gated against: same image, same D0, same T2B, same inversion, ``rho`` in the
     walk instead of in the replay.
+
+    The walk is run as ``halves`` independent walks of ``n_walkers // halves`` on consecutive seeds, and
+    their decays averaged. That is the same estimator as one walk of ``n_walkers`` and costs the same,
+    and it buys the **split-half floor of the log-mean itself**: ``|lm_a - lm_b| / 2`` is the standard
+    error of the combined log-mean, which is the error bar a gate on a log-mean needs. ``1 / sqrt(N)``
+    is the floor of the SIGNAL, and over a window many T2 long the battery's worst row is a signal of
+    size 1e-12 whose absolute floor is pure shot noise -- a number that says nothing about this one.
+    ``halves=1`` gives one walk and no floor.
     """
     ref = LING[sample]
     rho = default_rho(sample) if rho is None else float(rho)
@@ -138,16 +146,22 @@ def run_pack(sample, data_dir, *, rho=None, n_walkers=200_000, T_max=3.5, sample
     from dmipy_sim.engine.physics import resolve_sub_steps
     n_sub = int(sub_steps) if sub_steps else resolve_sub_steps(g, D0, dt, surface=True)
     step = float(np.sqrt(6 * D0 * dt / n_sub))
+    n_each = int(n_walkers) // int(halves)
     t0 = time.time()
-    S = simulate_cpmg(n_walkers, D0, seq, g, T2=T2B, seed=seed, sub_steps=sub_steps,
-                      walker_batch_size=walker_batch).ravel()
+    parts = [simulate_cpmg(n_each, D0, seq, g, T2=T2B, seed=seed + i, sub_steps=sub_steps,
+                           walker_batch_size=walker_batch).ravel() for i in range(int(halves))]
     wall = time.time() - t0
+    S = np.mean(parts, axis=0)
     t = np.arange(1, n_echoes + 1) * sample_ms * 1e-3
     grid = np.logspace(-3, 1, 60)
+    lm = log_mean_T2(grid, t2_distribution(t, S, grid))
+    lms = [log_mean_T2(grid, t2_distribution(t, p, grid)) for p in parts] if len(parts) > 1 else []
+    floor = abs(lms[0] - lms[1]) / 2 / lm if len(lms) == 2 else 1.0 / np.sqrt(n_each * len(parts))
     return dict(name=sample, spec=spec, phi=phi, s_over_v=sv, rho=rho, t=t, S=S, dt=dt, step=step,
-                n_walkers=int(n_walkers), wall=wall, sub_steps=n_sub,
+                n_walkers=int(n_each * len(parts)), n_halves=int(len(parts)), wall=wall, sub_steps=n_sub,
                 T2_fd=1.0 / (rho * sv + 1.0 / T2B), rho_V_over_S_over_D=rho / sv / D0,
-                T2_lm=log_mean_T2(grid, t2_distribution(t, S, grid)), floor=1.0 / np.sqrt(n_walkers))
+                T2_lm=lm, T2_lm_halves=[float(x) for x in lms], floor=float(floor),
+                signal_floor=1.0 / np.sqrt(n_each * len(parts)))
 
 
 def main():
@@ -158,6 +172,8 @@ def main():
     p.add_argument("--samples", nargs="+", default=["6_Q100", "1_G100"], choices=sorted(LING))
     p.add_argument("--rho", type=float, default=None, help="m/s; default is their value for the mineral")
     p.add_argument("--walkers", type=int, default=200_000)
+    p.add_argument("--halves", type=int, default=2,
+                   help="independent walks to average; 2 gives the log-mean's split-half floor")
     p.add_argument("--T-max", type=float, default=3.5, help="seconds (their longest released train)")
     p.add_argument("--sample-ms", type=float, default=1.0, help="S(t) sampling interval, ms")
     p.add_argument("--sub-steps", type=int, default=None,
@@ -173,7 +189,7 @@ def main():
     for name in args.samples:
         r = run_pack(name, args.data, rho=args.rho, n_walkers=args.walkers, T_max=args.T_max,
                      sample_ms=args.sample_ms, sub_steps=args.sub_steps, D0=args.D0, T2B=args.T2B,
-                     walker_batch=args.walker_batch, seed=args.seed)
+                     walker_batch=args.walker_batch, seed=args.seed, halves=args.halves)
         if args.measured:
             r["measured"] = measured_log_mean(name, args.measured, sample_ms=args.sample_ms)
         rows.append(r)
@@ -188,7 +204,9 @@ def main():
         print(f"  rho (V/S) / D                                        {r['rho_V_over_S_over_D']:.3f}"
               f"   (<< 1 is where the fast-diffusion formula holds)")
         print(f"  T2 fast-diffusion 1/(rho S/V + 1/T2B)                {r['T2_fd'] * 1e3:.1f} ms")
-        print(f"  T2 log-mean of the inverted decay                    {r['T2_lm'] * 1e3:.1f} ms")
+        print(f"  T2 log-mean of the inverted decay                    {r['T2_lm'] * 1e3:.1f} ms"
+              + (f"   (halves {', '.join(f'{x * 1e3:.1f}' for x in r['T2_lm_halves'])} ms -> split-half "
+                 f"floor {r['floor'] * 100:.2f} %)" if r["T2_lm_halves"] else ""))
         if "measured" in r:
             m = r["measured"]
             print(f"  Ling's MEASURED train, same inversion                {m['T2_lm'] * 1e3:.1f} ms"
