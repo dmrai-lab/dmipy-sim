@@ -2,9 +2,10 @@
 
 A label volume is the native form of half the substrates a diffusion simulation is asked for --
 micro-CT rocks, segmented electron microscopy, vessel and placenta masks -- and each community
-distributes it in its own container. The five here cover them: NRRD (detached ``.nhdr`` + ``.raw``
+distributes it in its own container. The six here cover them: NRRD (detached ``.nhdr`` + ``.raw``
 or single-file ``.nrrd``), MetaImage (``.mhd`` + ``.raw``), NIfTI, a TIFF stack (a multi-page file
-or a directory of slices) and HDF5.
+or a directory of slices), HDF5 and AmiraMesh / Avizo (``.am``, the container Avizo's segmentation
+editor writes -- Ling et al. 2022's sand packs are distributed as ASCII ``.am``).
 
 Every reader returns the same :class:`LabelVolumeFile`: ``labels`` as ``uint8`` in ``(nx, ny, nz)``
 index order, ``voxel_size`` as three lengths in **metres**, ``origin`` as the position of the
@@ -33,7 +34,7 @@ UNITS_M = {"m": 1.0, "meter": 1.0, "metre": 1.0, "meters": 1.0, "metres": 1.0,
 #: Reader per file suffix.
 FORMATS = {".nhdr": "nrrd", ".nrrd": "nrrd", ".mhd": "mhd", ".mha": "mhd",
            ".nii": "nifti", ".gz": "nifti", ".tif": "tiff", ".tiff": "tiff",
-           ".h5": "hdf5", ".hdf5": "hdf5"}
+           ".h5": "hdf5", ".hdf5": "hdf5", ".am": "amira", ".amiramesh": "amira"}
 
 
 class LabelVolumeFile(NamedTuple):
@@ -366,8 +367,139 @@ def read_hdf5(path, *, dataset=None, voxel_size=None):
     return LabelVolumeFile(_as_labels(a, path), _voxel_size(vox, voxel_size, path), np.zeros(3))
 
 
+# ------------------------------------------------------------------------------------ AmiraMesh / Avizo
+#: The lattice component types AmiraMesh spells, and the numpy type each is.
+_AMIRA_TYPES = {"byte": np.uint8, "sbyte": np.int8, "ushort": np.uint16, "short": np.int16,
+                "uint": np.uint32, "int": np.int32, "float": np.float32, "double": np.float64}
+
+#: Whitespace a whitespace-separated ASCII payload may use.
+_ASCII_WS = (9, 10, 13, 32)
+
+
+def _amira_ascii_labels(payload, n, dtype, path):
+    """``n`` values parsed out of a whitespace-separated ASCII payload.
+
+    A segmentation's labels are single digits, and an Avizo ASCII lattice writes one per line, so the
+    values ARE the digit bytes of the payload: selecting them is one pass over the buffer, where
+    splitting 91 million tokens into Python strings is minutes and gigabytes. The slow general route
+    is kept for a payload whose values are not all single digits, and the fast one is taken only after
+    the buffer is checked to hold nothing but digits and whitespace.
+    """
+    buf = np.frombuffer(payload, np.uint8)
+    digit = (buf >= 48) & (buf <= 57)
+    other = np.isin(buf[~digit], np.array(_ASCII_WS, np.uint8))
+    if bool(other.all()) and int(digit.sum()) == n:
+        return (buf[digit] - 48).astype(dtype)
+    vals = np.array(payload.split(), dtype=dtype)       # multi-digit, signed or floating values
+    if vals.size != n:
+        raise LabelVolumeError(f"{path}: the header declares {n} lattice values and the ASCII payload "
+                               f"holds {vals.size}. The two do not describe the same image.")
+    return vals
+
+
+def read_amira(path, *, voxel_size=None):
+    """An AmiraMesh / Avizo lattice (``.am``): ASCII or binary, the label field of ``define Lattice``.
+
+    The voxel size is the ``BoundingBox``, which for a uniform lattice gives the coordinates of the
+    FIRST and LAST voxel centre, so a span of ``n`` voxels is ``n - 1`` voxel sizes wide and the
+    origin -- the lower corner of voxel ``(0, 0, 0)`` -- is half a voxel below the box. The unit is
+    ``Parameters { Units { Coordinates "um" } }``; a file that states a bounding box and no coordinate
+    unit states no LENGTH and is refused unless ``voxel_size=`` supplies one, as a NRRD without
+    ``space units`` is.
+
+    One lattice component is read (a segmentation has one label per voxel); a file whose ``Lattice``
+    block declares more than one, or more than one data block, is refused by name rather than read
+    half. The payload is x-fastest, the format's order.
+    """
+    path = os.fspath(path)
+    with open(path, "rb") as fh:
+        blob = fh.read()
+    if not blob.startswith(b"# AmiraMesh") and not blob.startswith(b"# Avizo"):
+        raise LabelVolumeError(f"{path}: not an AmiraMesh file (no '# AmiraMesh' / '# Avizo' magic)")
+    magic = blob[:blob.find(b"\n")].decode("ascii", "replace")
+    if "ASCII" in magic.upper():
+        encoding = "ascii"
+    elif "BINARY-LITTLE-ENDIAN" in magic.upper():
+        encoding = "<"
+    elif "BINARY" in magic.upper():
+        encoding = ">"
+    else:
+        raise LabelVolumeError(f"{path}: the AmiraMesh magic {magic!r} names neither ASCII nor BINARY")
+
+    # The header ends at the first data-section marker on its own line ("@1"); everything before it is
+    # text, and Avizo writes the micro sign as a single Latin-1 byte, which is not UTF-8.
+    m = re.search(rb"(?m)^@(\d+)[ \t]*\r?\n", blob)
+    if m is None:
+        raise LabelVolumeError(f"{path}: the file has no data section (no '@1' line)")
+    head = blob[:m.start()]
+    try:
+        head_text = head.decode("utf-8")
+    except UnicodeDecodeError:
+        head_text = head.decode("latin-1")
+    payload = blob[m.end():]
+    if re.search(rb"(?m)^@(\d+)[ \t]*\r?\n", payload):
+        raise LabelVolumeError(f"{path}: the file holds more than one data block; this reader reads a "
+                               f"single-component label lattice")
+
+    dm = re.search(r"(?m)^\s*define\s+Lattice\s+(\d+)\s+(\d+)\s+(\d+)", head_text)
+    if dm is None:
+        raise LabelVolumeError(f"{path}: the header declares no 'define Lattice nx ny nz'")
+    shape = tuple(int(g) for g in dm.groups())
+    if min(shape) < 2:
+        raise LabelVolumeError(f"{path}: a uniform AmiraMesh bounding box spans (n - 1) voxels per axis, "
+                               f"so an axis of one voxel states no voxel size; lattice is {shape}")
+
+    comps = re.findall(r"(?m)^\s*Lattice\s*\{([^}]*)\}", head_text)
+    if not comps:
+        raise LabelVolumeError(f"{path}: the header declares no 'Lattice {{ <type> <name> }}' component")
+    fields = [f for f in re.split(r",", comps[-1]) if f.strip()]
+    if len(fields) != 1:
+        raise LabelVolumeError(f"{path}: the Lattice block declares {len(fields)} components "
+                               f"({comps[-1].strip()!r}); a label volume has one")
+    tname = fields[0].split()[0].strip().lower()
+    dtype = _AMIRA_TYPES.get(tname)
+    if dtype is None:
+        raise LabelVolumeError(f"{path}: AmiraMesh type {tname!r} is not one of {sorted(_AMIRA_TYPES)}")
+
+    unit, unit_stated = 1.0, False
+    um = re.search(r'Coordinates\s+"([^"]*)"', head_text)
+    if um is not None:
+        unit, unit_stated = _unit(um.group(1), path), True
+    bm = re.search(r"(?m)^\s*BoundingBox\s+([-+0-9.eE \t]+)", head_text)
+    vox, origin = None, np.zeros(3)
+    if bm is not None:
+        box = [float(x) for x in bm.group(1).split()]
+        if len(box) != 6:
+            raise LabelVolumeError(f"{path}: 'BoundingBox' must give six numbers, got {len(box)}")
+        lo = np.array(box[0::2], np.float64)
+        hi = np.array(box[1::2], np.float64)
+        vox = (hi - lo) / (np.asarray(shape, np.float64) - 1.0)
+        origin = (lo - 0.5 * vox) * unit
+        vox = vox * unit
+    if vox is not None and not unit_stated:
+        # Without `Units { Coordinates ... }` the bounding box carries no unit, so the number is not a
+        # length; reading it as metres puts a 1.8 mm sand pack at 1.8 km.
+        if voxel_size is None:
+            raise LabelVolumeError(
+                f"{path}: the header states a BoundingBox ({[float(v) for v in vox]} per voxel) but no "
+                f"Units {{ Coordinates ... }}, so its unit is unspecified and it is not a length. "
+                f"Pass voxel_size= in metres.")
+        vox, origin = None, np.zeros(3)
+
+    n = int(np.prod(shape))
+    if encoding == "ascii":
+        a = _amira_ascii_labels(payload, n, dtype, path)
+    else:
+        itemsize = np.dtype(dtype).itemsize
+        _check_payload(len(payload), shape, itemsize, path)
+        a = np.frombuffer(payload, dtype=np.dtype(dtype).newbyteorder(encoding))
+    a = np.asarray(a).reshape(shape[::-1]).transpose(2, 1, 0)
+    return LabelVolumeFile(_as_labels(a, path), _voxel_size(vox, voxel_size, path), origin)
+
+
 # ------------------------------------------------------------------------------------ dispatch
-_READERS = {"nrrd": read_nrrd, "mhd": read_mhd, "nifti": read_nifti, "tiff": read_tiff, "hdf5": read_hdf5}
+_READERS = {"nrrd": read_nrrd, "mhd": read_mhd, "nifti": read_nifti, "tiff": read_tiff, "hdf5": read_hdf5,
+            "amira": read_amira}
 
 
 def format_of(path):
@@ -387,7 +519,7 @@ def format_of(path):
 def read_label_volume(path, *, format=None, voxel_size=None, dataset=None):
     """A segmented image in any of the formats here: ``(labels, voxel_size, origin)``.
 
-    ``format`` names the reader (``nrrd``, ``mhd``, ``nifti``, ``tiff``, ``hdf5``); by default it is
+    ``format`` names the reader (``nrrd``, ``mhd``, ``nifti``, ``tiff``, ``hdf5``, ``amira``); by default it is
     taken from the suffix. ``voxel_size`` (metres, a scalar or three numbers) supplies a spacing the
     container does not carry. ``dataset`` names the HDF5 dataset.
     """
