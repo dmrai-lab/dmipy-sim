@@ -1165,9 +1165,17 @@ class ReferenceFamily:
                      f"the pack stage on this window). The design therefore sets {n_walkers:,} walkers; the tier that "
                      f"holds its target at that count is {', '.join(holds) or 'none'}, and every tier's achieved floor "
                      f"is certified in the pack and shown on the card.")
-        waveforms = []
+        waveforms, b_bound = [], max(float(x) for x in (d.envelope.get("bvals") or (0.0,)))
         for label, seq in self.design.waveforms():
+            if label in {w["label"] for w in waveforms}:
+                raise ReferenceRefusal(f"design: the waveform {label!r} is declared twice; the envelope is a SET of "
+                                       f"waveforms and a duplicate hides one of them behind another's label")
             b = seq.b()
+            if float(max(b)) > b_bound * (1.0 + 1e-6):
+                raise ReferenceRefusal(
+                    f"design: the waveform {label!r} reaches b = {float(max(b)):.4g} s/m^2 where the envelope the "
+                    f"pack is BUILT to certifies {b_bound:.4g}; the envelope and the declared waveforms are one "
+                    f"declaration, not two")
             waveforms.append(dict(label=label, b_max=float(max(b)), n_measurements=int(len(b)),
                                   T_s=float(seq.T), family=getattr(seq, "family", None)))
         if not waveforms:
@@ -1221,6 +1229,12 @@ class ReferenceFamily:
         A family whose packs already exist declares a :class:`RecordedWalk` per substrate: the walk record is
         then written from the pack's own header and run record plus the counters the engine reported in the log
         that is cited, and nothing is walked again.
+
+        The budget is enforced twice and the two are different claims. BEFORE the walk it is the design's cap:
+        the count came from ``min(n_floor, n_budget)``, so the projection cannot exceed the budget and the check
+        here is an assertion that the record it reads is the one the design wrote -- it fires when a design
+        record has been produced another way. AFTER the walk it is a MEASUREMENT: the walk's own sampled peak,
+        which the pilot's per-walker projection can under-read, and which refuses at the boundary.
         """
         prev, prev_sha = self._prev("walk")
         des = self.records.read("design")
@@ -1238,8 +1252,9 @@ class ReferenceFamily:
                 if projected > budget:
                     raise ReferenceRefusal(
                         f"walk {name!r}: {n:,} walkers project to {projected / 1e9:.1f} GB resident in the pack stage "
-                        f"(measured {per_walker / 1e6:.2f} MB per walker) against the {budget / 1e9:.1f} GB budget; the "
-                        f"budget is a hard cap and is checked before the walk starts")
+                        f"(measured {per_walker / 1e6:.2f} MB per walker) against the {budget / 1e9:.1f} GB budget; "
+                        f"the design's own cap is min(n_floor, n_budget), so this record did not come from that "
+                        f"derivation")
                 out[name] = self._walk_now(name, n, des, projected)
         inputs = self._inputs(prev_sha, sorted(out), [v.get("pack_sha256") or v.get("walk_sha256") for _, v in sorted(out.items())])
         return self.records.write("walk", dict(substrates=out), inputs_digest=inputs, previous_sha256=prev_sha)
@@ -1255,6 +1270,12 @@ class ReferenceFamily:
         os.makedirs(out_dir, exist_ok=True)
         path = os.path.join(out_dir, f"{name.lower()}.safetensors")
         walk.save(path)
+        if peak > int(des["memory_budget_bytes"]):        # the MEASURED peak, which the projection can under-read
+            raise ReferenceRefusal(
+                f"walk {name!r}: the walk peaked at {peak / 1e9:.2f} GB resident against the "
+                f"{int(des['memory_budget_bytes']) / 1e9:.2f} GB budget, where the pilot projected "
+                f"{projected / 1e9:.2f} GB; the budget is a hard cap and the measurement, not the projection, "
+                f"is what it is held against")
         return dict(from_pack=False, walk_path=os.path.relpath(path, self.dir), walk_sha256=_sha256_file(path),
                     n_walkers=int(n), n_t=int(walk.positions.shape[1]), dt_s=float(walk.dt),
                     sub_steps=int(walk.sub_steps), illegal_crossings=int(walk.illegal_crossings or 0),

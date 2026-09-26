@@ -456,6 +456,52 @@ def test_a_spec_citing_a_digest_no_source_holds_is_refused(tmp_path, monkeypatch
         fam.stage("spec")
 
 
+# --------------------------------------------------------------- the design's envelope and the budget
+def _upto_spec(tmp_path, **kw):
+    fam = _family(tmp_path, **kw)
+    for st in ("source", "reference", "spec"):
+        fam.stage(st)
+    return fam
+
+
+def test_a_waveform_declared_twice_is_refused(tmp_path):
+    """`waveforms()` used to de-duplicate silently, which hid that a family's `delta_frac` and its
+    `shortd_deltas_frac` named the same delta twice."""
+    fam = _upto_spec(tmp_path, design=_design(waveforms=lambda: (("pgse", _seq()), ("pgse", _seq()))))
+    with pytest.raises(R.ReferenceRefusal, match="is declared twice"):
+        fam.stage("design")
+
+
+def test_a_waveform_beyond_the_envelope_the_pack_is_built_to_is_refused(tmp_path):
+    """`design.envelope` and `design.waveforms` were two 'declared envelopes' nothing tied together."""
+    hot = d.pgse([[1, 0, 0]], DELTA, BIGDELTA, bvalues=[10 * B], n_t=64, slew_rate=np.inf)
+    fam = _upto_spec(tmp_path, design=_design(waveforms=lambda: (("pgse-hot", hot),)))
+    with pytest.raises(R.ReferenceRefusal, match="the envelope the pack is BUILT to certifies"):
+        fam.stage("design")
+
+
+def test_the_walk_is_held_to_its_MEASURED_peak(tmp_path, monkeypatch):
+    """Before the walk the budget is the design's own cap, so that check can only fire on a record the
+    derivation did not write; after it, the walk's sampled peak is a measurement the projection can under-read,
+    and the budget is a hard cap on THAT."""
+    fam = _upto_spec(tmp_path)
+    fam.stage("design")
+    huge = int(fam.records.read("design")["memory_budget_bytes"]) * 4
+
+    class _Big:
+        peak = huge
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(R, "_PeakRSS", lambda *a, **k: _Big())
+    with pytest.raises(R.ReferenceRefusal, match="the measurement, not the projection"):
+        fam.stage("walk")
+
+
 # --------------------------------------------------------------- the tolerance
 def test_a_tolerance_term_that_is_a_literal_is_refused():
     with pytest.raises(R.ReferenceRefusal, match="is a literal"):

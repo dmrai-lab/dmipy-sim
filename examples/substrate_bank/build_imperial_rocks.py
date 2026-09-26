@@ -88,6 +88,11 @@ ENVELOPE = dict(bvals=[0.0, 0.5e9, 1e9], dirs=[[0, 0, 1], [1, 0, 0], [1, 0, 1]],
                 shortd_b=1e9, shortd_deltas_frac=[60e-3 / T, 40e-3 / T], rho_list=[15e-6, 41e-6])
 
 
+#: The distinct deltas the envelope declares, as a set: `delta_frac` and the `shortd_deltas_frac` list name
+#: 40 ms twice, and de-duplicating them inside `waveforms()` hid that the two fields overlap.
+DECLARED_DELTA_FRACS = tuple(sorted({ENVELOPE["delta_frac"], *ENVELOPE["shortd_deltas_frac"]}))
+
+
 def waveforms():
     """Every waveform the family DECLARES, which the pack stage checks against ``waveform_band``.
 
@@ -95,13 +100,13 @@ def waveforms():
     K = 128, delta 40 ms needs 17.2 Hz against the pack's 21.3 Hz, and 30 ms needs 22.8 and is refused.
     """
     from dmipy_sim import pgse
-    out = {}
-    for frac in [ENVELOPE["delta_frac"]] + list(ENVELOPE["shortd_deltas_frac"]):
+    out = []
+    for frac in DECLARED_DELTA_FRACS:
         delta = frac * T
         Delta = max(2 * delta, ENVELOPE["Delta_frac"] * T)
-        out[f"pgse-delta{delta * 1e3:.0f}ms"] = pgse([[1, 0, 0]], delta, Delta,
-                                                     bvalues=[max(ENVELOPE["bvals"])], n_t=400)
-    return tuple(sorted(out.items()))
+        out.append((f"pgse-delta{delta * 1e3:.0f}ms",
+                    pgse([[1, 0, 0]], delta, Delta, bvalues=[max(ENVELOPE["bvals"])], n_t=400)))
+    return tuple(out)
 
 
 # ----------------------------------------------------------------- the licence text, verbatim from the host
@@ -260,6 +265,7 @@ def family(data_dir, work_dir, *, rocks, dry, create_dataset):
                           role="its payload: one byte per voxel, 0 pore and 1 grain"))) for rock in rocks]
 
     grid = dict(T2_GRID, sample_ms=INVERT_MS, solver=SOLVER)
+    _se = {rock: direct_se(rock, work_dir, grid) for rock in rocks}      # measured, never typed
     quantities = tuple(ReferenceQuantity(
         substrate=rock, name="T2_log_mean",
         published=Published(
@@ -273,13 +279,14 @@ def family(data_dir, work_dir, *, rocks, dry, create_dataset):
             verbatim=ROCKS[rock]["verbatim"]),
         direct=Direct(
             value=ROCKS[rock]["direct_ms"], unit="ms",
-            se=_direct_se(rock), se_kind="delta_method",
+            se=_se[rock]["se"], se_kind="delta_method",
             se_derivation=(
                 "the delta method over walkers on the log-mean (talabi_micro_ct_rocks.log_mean_gradient), "
-                "scaled from the 45,000 walkers whose per-walker decays are still held -- this pack's -- to "
-                "the direct walk's 200,000 by 1/sqrt(N). The direct walk's own per-walker decays were not "
-                "retained; the relative per-echo spread is a property of the substrate and the channel, and "
-                "is measured here on the same substrate, the same rho and the same grid."),
+                f"MEASURED here at record time on this family's own {rock.lower()}.rpk -- "
+                f"{_se[rock]['se_pack']:.6f} over {_se[rock]['n_pack']:,} walkers at the same rho, channel and "
+                f"grid -- and scaled to the direct walk's {_se[rock]['n_direct']:,} by 1/sqrt(N) "
+                f"(x {_se[rock]['scale']:.6f}). The direct walk's own per-walker decays were not retained; the "
+                "relative per-echo spread is a property of the substrate and the estimator, not of the pack."),
             n_walkers=ROCKS[rock]["direct_n"], grid=grid, solver=SOLVER,
             source="examples/validation/talabi_micro_ct_rocks.py (run_rock), asserted by "
                    "tests/validation/test_talabi_rocks.py")) for rock in rocks)
@@ -382,14 +389,22 @@ def family(data_dir, work_dir, *, rocks, dry, create_dataset):
                            build=build, publication=publication)
 
 
-#: The relative delta-method standard error of the log-mean of the DIRECT walk, per rock: measured on this
-#: family's own packs (45,000 walkers, the same substrate, rho and grid) and scaled to the direct walk's
-#: 200,000 by 1/sqrt(N). MEASURED, not assumed: 0.00411 (LV60A) and 0.00425 (F42A) at 45,000 walkers.
-DIRECT_SE = {"LV60A": 0.00411 * (45_000 / 200_000) ** 0.5, "F42A": 0.00425 * (45_000 / 200_000) ** 0.5}
+def direct_se(rock, work_dir, grid):
+    """The DIRECT walk's relative delta-method standard error on the log-mean, MEASURED rather than typed.
 
-
-def _direct_se(rock):
-    return DIRECT_SE[rock]
+    It was a hand-written pair of numbers feeding the gate's own tolerance. It is now measured here, at record
+    time, on this family's own pack -- the same substrate, the same rho, the same channel and the same grid --
+    and scaled to the direct walk's walker count by 1/sqrt(N), because the direct walk's per-walker decays were
+    not retained. The relative per-echo spread is a property of the substrate and the estimator, not of the
+    pack, which is what makes the substitution legitimate; the record states it and the numbers it rests on.
+    """
+    from dmipy_sim.replay import ReplayPack
+    ref = ROCKS[rock]
+    pack = ReplayPack.load(os.path.join(work_dir, "packs", f"{rock.lower()}.rpk"))
+    _t, _S, _lm, se_pack = decay_and_projection(pack, float(ref["rho"]), grid)
+    n_pack = int(pack.n_walkers)
+    scale = (n_pack / float(ref["direct_n"])) ** 0.5
+    return dict(se=se_pack * scale, se_pack=se_pack, n_pack=n_pack, n_direct=int(ref["direct_n"]), scale=scale)
 
 
 def main(argv=None):
