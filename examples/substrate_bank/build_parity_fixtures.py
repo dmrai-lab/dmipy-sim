@@ -613,6 +613,45 @@ def stage_reference(a, X):
                                            references=out, quantities=files))
 
 
+def stage_spec(a, X):
+    """Stage 3. Each fixture's substrate spec, round-tripped, citing its source files by digest.
+
+    ``spec_of(geometry_from_spec(spec))`` must return the spec: anything the geometry cannot carry is a field
+    that a re-walk would silently get wrong. This is where that is checked rather than asserted -- the first
+    version of this family lost ``extra.water_fraction`` (1.0 for a pool MC/DC never seeded or read) and
+    ``seeding.rule`` (``explicit`` became ``uniform_by_volume``, so a re-walk would have seeded the whole 250 um
+    tube instead of the central 40 um their list covers).
+    """
+    _read_record("reference")
+    from dmipy_sim.spec import geometry_from_spec, spec_of
+    specs = {}
+    for amp, wL in X.MCDC_FIXTURES:
+        name = f"mcdc-{amp}-{wL}"
+        spec = X.mcdc_spec(a.mcdc_data, amp, wL)
+        back = spec_of(geometry_from_spec(spec), id=spec.id)
+        fields = {}
+        for f, got, want in (("seeding.rule", back.seeding.rule, spec.seeding.rule),
+                             ("seeding.positions", back.seeding.positions, spec.seeding.positions),
+                             ("pools[extra].water_fraction", back.pools[0].water_fraction, spec.pools[0].water_fraction),
+                             ("pools[intra].water_fraction", back.pools[1].water_fraction, spec.pools[1].water_fraction),
+                             ("domain.box_min", list(back.domain.box_min), list(spec.domain.box_min)),
+                             ("domain.boundary", list(back.domain.boundary), list(spec.domain.boundary))):
+            fields[f] = dict(round_trips=bool(got == want), value=want)
+        lost = sorted(k for k, v in fields.items() if not v["round_trips"])
+        if lost:
+            raise SystemExit(f"{name}: {lost} do not survive spec -> geometry -> spec, so a re-walk from this "
+                             f"spec would not be the walk that was done")
+        specs[name] = dict(spec=spec.to_dict(), round_trip=fields,
+                           seeded_positions=dict(spec.seeding.positions or {}))
+        log(f"  {name}: spec round-trips ({len(fields)} fields checked), seeds from "
+            f"{spec.seeding.positions['count']} cited positions read {spec.seeding.positions['read']}")
+    return _write_record("spec", dict(stage="spec", written=time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                                      reference_sha256=_digest(os.path.join(RECORDS, "reference.json"))["sha256"],
+                                      round_trip_rule="spec_of(geometry_from_spec(spec)) == spec on every field "
+                                                      "listed; a field that does not survive is refused, not noted",
+                                      fixtures=specs))
+
+
 def stage_design(a, X):
     """Stage 4. The envelope, the target floor, the memory budget, and the PILOT that sets the walker count.
 
@@ -621,7 +660,7 @@ def stage_design(a, X):
     is then derived from those measured numbers; both the pilot's and the derived are in the record, and so is
     the TRADE when the target floor and the memory budget cannot both hold.
     """
-    _read_record("reference")
+    _read_record("spec")
     from dmipy_sim.replay.bank import _measure_floor, _master_arrays, build_replay_pack
     amp, wL = X.MCDC_FIXTURES[0]
     n0 = int(a.pilot_n)
@@ -667,7 +706,7 @@ def stage_design(a, X):
                  f"theirs and the combined band is within {((1 + (floor0 ** 2 * n0 / n_chosen) / their_floor ** 2) ** 0.5 / 2 ** 0.5 - 1) * 100:+.0f}% "
                  f"of what matching would give, so the extra walkers are not worth their memory.")
     rec = dict(stage="design", written=time.strftime("%Y-%m-%dT%H:%M:%SZ"),
-               reference_sha256=_digest(os.path.join(RECORDS, "reference.json"))["sha256"],
+               spec_sha256=_digest(os.path.join(RECORDS, "spec.json"))["sha256"],
                envelope=dict(mcdc=X.mcdc_envelope(), disimpy=X.disimpy_envelope()),
                envelope_note="the fixture's own scheme plus two OGSE periods, which is stricter than PGSE alone",
                save_grid=dict(n_t=X.MCDC_N_T, dt_s=X.MCDC_TE / (X.MCDC_N_T - 1), window_s=X.MCDC_TE,
@@ -801,7 +840,7 @@ def stage_gate(a, X):
     4. **the records are complete**: a licence copy, a digest for every input, a resolved DOI, and -- where
        a certificate tier is below its target -- the design record's trade note.
     """
-    src, ref, des, bld = (_read_record(n) for n in ("source", "reference", "design", "build"))
+    src, ref, spc, des, bld = (_read_record(n) for n in ("source", "reference", "spec", "design", "build"))
     fails, checks = [], []
 
     def check(ok, what, detail):
@@ -817,6 +856,14 @@ def stage_gate(a, X):
         check(all(f.get("sha256") for f in s["files"]), f"source/{key}/digests",
               f"{len(s['files'])} input files, every one with a sha256")
         check(bool(s.get("commit")), f"source/{key}/commit", f"commit {s.get('commit')}")
+    for name, f in sorted(spc["fixtures"].items()):
+        lost = sorted(k for k, v in f["round_trip"].items() if not v["round_trips"])
+        check(not lost, f"{name}/spec-round-trips",
+              f"{len(f['round_trip'])} fields survive spec -> geometry -> spec"
+              + (f"; LOST {lost}" if lost else ""))
+        check(bool(f["seeded_positions"].get("sha256")), f"{name}/seeding-cites-its-positions",
+              f"rule {f['spec']['seeding']['rule']}, {f['seeded_positions'].get('count')} positions read "
+              f"{f['seeded_positions'].get('read')} from {f['seeded_positions'].get('file')}")
     for key, r in ref["references"].items():
         check(bool(r.get("doi")) and bool(r.get("crossref_checked")), f"reference/{key}/doi",
               f"{r.get('doi')} resolved and its title compared")
@@ -870,7 +917,7 @@ def stage_gate(a, X):
 
     verdict = dict(stage="gate", written=time.strftime("%Y-%m-%dT%H:%M:%SZ"),
                    inputs={n: _digest(os.path.join(RECORDS, f"{n}.json"))["sha256"]
-                           for n in ("source", "reference", "design", "build")},
+                           for n in ("source", "reference", "spec", "design", "build")},
                    passed=not fails, n_checks=len(checks), failures=fails, checks=checks,
                    held=bld.get("held") or {})
     for c in checks:
@@ -919,7 +966,7 @@ def main():
     ap.add_argument("--require-gpu", action="store_true", default=None)
     ap.add_argument("--publish-only", action="store_true",
                     help="publish the .rpk already in packs/ and write the card; walk nothing")
-    ap.add_argument("--stage", choices=["source", "reference", "design", "build", "gate"],
+    ap.add_argument("--stage", choices=["source", "reference", "spec", "design", "build", "gate"],
                     help="run one stage of the reference-pack protocol (dmrai-lab/dmipy-sim#482); each "
                          "writes records/<stage>.json and reads only the record before it")
     ap.add_argument("--sigma", type=float, default=3e-3, help="the design record's target floor")
@@ -936,7 +983,7 @@ def main():
         if a.mcdc_data:
             os.environ["DMIPY_SIM_SURFACE_DIR"] = os.path.abspath(
                 os.path.join(a.mcdc_data, "Experiments-mesh -files", "Undulated-fibres", "d_1"))
-        return dict(source=stage_source, reference=stage_reference, design=stage_design,
+        return dict(source=stage_source, reference=stage_reference, spec=stage_spec, design=stage_design,
                     build=stage_records_from_build, gate=stage_gate)[a.stage](a, X)
     if a.publish_only:
         return publish_only(a)
