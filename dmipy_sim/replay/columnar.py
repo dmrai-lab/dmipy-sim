@@ -329,7 +329,7 @@ class ColumnarPack:
             a_i, a_a, rho_D, invT2, invT1 = params
             logw = -(et2 @ invT2) - (et1 @ invT1) + rho_D * ct
             ph = phi + (a_i * fi + a_a * fa)[:, None]
-            E = jnp.exp(1j * ph) * vox[None, :]                       # the voxel's factor, as replay.signal_factor
+            E = jnp.exp(1j * ph) * vox[None, :]                       # the voxel's factor, as replay._signal_factor
             return jax.ops.segment_sum(E * (w * jnp.exp(logw))[:, None], seg2, num_segments=n_seg2)
         for pk in self.iter_views(chunk_rows=chunk_rows, K=plan["K"], modes=plan["modes"], contact=plan["contact"]):
             n = pk.n_walkers

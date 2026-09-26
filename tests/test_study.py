@@ -29,8 +29,8 @@ def high_b_pack():
 @pytest.mark.parametrize("b", [0.0, 1.0e9, 3.094e9, 1.319e10])
 def test_every_depth_of_a_replay_is_the_same_number_at_every_b(high_b_pack, b):
     """``replay``, ``walker_signals`` and ``walker_primitives(...).signals`` are ONE computation at three depths --
-    one band contraction (:func:`~dmipy_sim.replay.replay.band_phase`), one complex factor
-    (:func:`~dmipy_sim.replay.replay.signal_factor`) -- so the weighted ensemble mean of either per-walker route IS
+    one band contraction (:func:`~dmipy_sim.replay.replay._band_phase`), one complex factor
+    (:func:`~dmipy_sim.replay.replay._signal_factor`) -- so the weighted ensemble mean of either per-walker route IS
     ``replay``, to double-precision rounding and not to a tolerance, at b = 13,190 s/mm^2 as at b = 0.
 
     dmipy-sim#484 compared them per measurement at these b on a published pack and read a growing gap; the gap was
@@ -50,10 +50,16 @@ def test_every_depth_of_a_replay_is_the_same_number_at_every_b(high_b_pack, b):
 def test_the_real_part_of_the_per_walker_phases_is_not_the_signal(high_b_pack):
     """The reduction #484 measured, named: ``cos(phi).mean(0)`` is the real part of the ensemble, and the signal is
     its MODULUS. The difference is the quadrature the ensemble carries, ``sqrt(c^2 + s^2) - c``, which is exactly 0
-    at b = 0 (every phase is 0) and signed one way everywhere. It scales with the phase spread, not with the codec:
-    at b = 1e9 it is under this pack's own certified error and at b = 3094 and 13,190 s/mm^2 it is many
-    times over it -- which is why only a per-measurement comparison at high b saw it, and why no certificate
-    of the pack's data could."""
+    at b = 0 (every phase is 0) and signed one way everywhere.
+
+    It scales with the phase spread and not with the codec, which is what the ordering below asserts. To second
+    order the gap is ``s^2 / 2c``: ``c`` falls with b (0.118, 0.0068, 0.0041 here) while ``|s|`` does not, so the
+    gap climbs even where ``|s|`` is flat, and it crosses the pack's certified error between the first shell and
+    the second. Measured on this fixture as multiples of ``err_max`` = 5.84e-4: 0, **0.31**, **17.5**, **9.5** --
+    so the bound is the crossing itself and carries an order of magnitude of headroom either side, rather than a
+    multiple chosen to pass. ``s`` is one draw of a zero-mean quantity of scale ``sd(sin phi)/sqrt(N)``, so its
+    square is a one-degree-of-freedom draw and a fixed multiple would be fragile between fixtures; the seed is
+    fixed, so these three numbers are not."""
     pk = high_b_pack
     bvals = [0.0, 1.0e9, 3.094e9, 1.319e10]
     seq = _seqmod.pgse([[0.0, 0.0, 1.0]] * 4, 1e-3, 3e-3, bvalues=bvals, TE=6e-3, n_t=4 * pk.n_t + 1, slew_rate=np.inf)
@@ -63,7 +69,7 @@ def test_the_real_part_of_the_per_walker_phases_is_not_the_signal(high_b_pack):
     np.testing.assert_allclose(S, np.sqrt(c ** 2 + s ** 2), rtol=0, atol=1e-14)      # the modulus, exactly
     gap, err = S - c, float(pk.meta["fidelity"]["err_max"])
     assert gap[0] == 0.0 and (gap[1:] > 0).all()                                     # signed one way, 0 at b = 0
-    assert gap[1] < err and min(gap[2], gap[3]) > 5 * err, f"gap {gap} against a codec error of {err:.3g}"
+    assert gap[1] < err < min(gap[2], gap[3]), f"gap {gap} does not cross the codec error {err:.3g} between shells"
 
 
 def test_the_primitives_give_every_pairs_signals_as_the_replay_does(pack):

@@ -713,7 +713,7 @@ class ReplayPack:
             S = self.pose_response(waveform, tissue=tissue, scanner=scanner, compartment=compartment).compose(dist)
             return S if complex_signal else np.abs(S)
         P = self._prepare(waveform, tissue=tissue, scanner=scanner, orientation=orientation, compartment=compartment)
-        E = signal_factor(self._walker_phases(P, waveform), P["voxel"])
+        E = _signal_factor(self._walker_phases(P, waveform), P["voxel"])
         S = (P["pathway"] * P["ew"][:, None] * E).sum(0) / P["norm"]
         return S if complex_signal else np.abs(S)
 
@@ -740,7 +740,7 @@ class ReplayPack:
         if b1_scale is None and off_resonance_T is None:
             P = self._prepare(waveform, tissue=tissue, scanner=scanner, orientation=orientation, compartment=compartment)
             w = np.asarray(self.spin_weights, np.float64)
-            return w, P["pathway"] * P["ew"], signal_factor(self._walker_phases(P, waveform), P["voxel"])
+            return w, P["pathway"] * P["ew"], _signal_factor(self._walker_phases(P, waveform), P["voxel"])
         E = self.replay_bloch(waveform, b1_scale=b1_scale, off_resonance_T=off_resonance_T, tissue=tissue, scanner=scanner,
                               orientation=orientation, compartment=compartment, complex_signal=True, per_walker=True)
         w = np.asarray(self.spin_weights, np.float64)
@@ -829,15 +829,15 @@ class ReplayPack:
 
     def _walker_phases(self, P, waveform):
         """``(n_w, n_meas)`` accumulated phase of every walker under the prepared acquisition ``P``: the gradient
-        from :func:`band_phase`, and with a field the path channel contracted under the pose's field direction
+        from :func:`_band_phase`, and with a field the path channel contracted under the pose's field direction
         (the grid route, a pack without the path channel, samples the stored basis along the decoded path).
 
-        The gradient term is :func:`band_phase` and nothing else, so it is the same number
+        The gradient term is :func:`_band_phase` and nothing else, so it is the same number
         :func:`~dmipy_sim.replay.study.walker_primitives` contracts, on every route and at every ``b``
         (dmipy-sim#484)."""
         from ._replay_kernel import field_gate
         n_w, dt = P["n_w"], P["dt"]
-        phi = band_phase(P, W=P.get("W"))                                            # (n_w, n_meas)
+        phi = _band_phase(P, W=P.get("W"))                                            # (n_w, n_meas)
         if not self._field_active(P["B0"]):                                          # no field, or a field of zero
             return phi
         from ..fields.susceptibility_field import assemble_field, sample_grid
@@ -849,7 +849,7 @@ class ReplayPack:
         chi_i = float(P["chi_iso"])
         if ch.get("susceptibility_path") is not None:                                # the path route: every term a contraction
             from ..fields.hollow_cylinder import contract
-            Psi, names = path_field_channels(P, waveform)
+            Psi, names = _path_field_channels(P, waveform)
             aniso = chi_aniso if (_has_aniso(gm, names) and chi_aniso) else 0.0
             return phi + contract(Psi, b0_dir, B0=float(B0), chi_iso=chi_i, chi_aniso=aniso)[:, None]
         from .bank import grid_basis_of                                              # the grid route samples the field along the path
@@ -2254,7 +2254,7 @@ def _compile_effective(Geff, dt_pack, K, n_t, gyromagnetic_ratio=GAMMA):
     return (gyromagnetic_ratio * float(dt_pack) * W).reshape(W.shape[0], (K + 2) * W.shape[2]).T
 
 
-def band_phase(P, W=None):
+def _band_phase(P, W=None):
     """``(n_w, n_meas)`` gradient phase of every walker under the prepared acquisition ``P``: each window's stored
     coefficients against the waveform's projection on that window's own save grid, summed (RPK.md 4.3).
 
@@ -2277,7 +2277,7 @@ def band_phase(P, W=None):
     return phi
 
 
-def path_field_channels(P, waveform):
+def _path_field_channels(P, waveform):
     """``(Psi, names)``: the C3 path channel's gated field integrals per walker under the prepared acquisition,
     summed over the windows -- the ONE read of that channel, which
     :func:`~dmipy_sim.fields.hollow_cylinder.field_terms` turns into the isotropic and anisotropic terms for
@@ -2297,7 +2297,7 @@ def _has_aniso(grid_meta, names):
     return bool((grid_meta or {}).get("has_aniso")) and names is not None and "aniso_G_xx" in names
 
 
-def signal_factor(phi, voxel):
+def _signal_factor(phi, voxel):
     """``E`` of a replay from the walkers' phases: ``exp(i phi)`` times the voxel's factor per measurement
     (:meth:`~dmipy_sim.acquisition.scanner_sequence.ScannerSequence.voxel_factor`, 1 for a refocused encoding and
     the spoiler for an unbalanced one, dmipy-sim#375). Every per-walker route forms ``E`` here, so the weighted

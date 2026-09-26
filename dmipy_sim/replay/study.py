@@ -187,22 +187,37 @@ class Primitives:
             raise ValueError("a field was asked for but this pack carries no path channel (C3)")
         return float(B0) * float(tissue.chi_iso), float(B0) * float(tissue.chi_aniso or 0.0)
 
+    def reduction_terms(self, tissue=None, scanner=None):
+        """Every term that turns these primitives into a signal, resolved once for a pair: ``invT2`` / ``invT1`` the
+        per-pool rates, ``rho_over_D`` the contact rate, ``a_iso`` / ``a_aniso`` the field scalars, ``amplitude`` the
+        readout's pathway weight and ``voxel`` the per-measurement voxel factor.
+
+        :meth:`signals` evaluates these on the host and
+        :meth:`~dmipy_sim.replay.columnar.ColumnarPack.image_study` the same ones on the device, so a term belongs
+        to the reduction once and reaches both. That device kernel had grown its own copy and left ``amplitude``
+        out, which made a stimulated-echo study exactly ``1 / eta`` times the per-voxel ``walker_signals`` -- 2x
+        for a 90/90/90 schedule (dmipy-sim#484)."""
+        invT2, invT1, rho_D = self.rates(tissue)
+        a_i, a_a = self.field_scalars(tissue, scanner)
+        return dict(invT2=invT2, invT1=invT1, rho_over_D=rho_D, a_iso=a_i, a_aniso=a_a,
+                    amplitude=float(self.pathway), voxel=self.voxel)
+
     def signals(self, tissue=None, scanner=None):
         """``(w, ew, E)`` as :meth:`ReplayPack.walker_signals` gives them for this acquisition under the pair --
-        the same numbers, since ``phi`` came from :func:`~dmipy_sim.replay.replay.band_phase` and ``E`` from
-        :func:`~dmipy_sim.replay.replay.signal_factor`, which that route reads too."""
-        from .replay import signal_factor
-        invT2, invT1, rho_D = self.rates(tissue); a_i, a_a = self.field_scalars(tissue, scanner)
+        the same numbers, since ``phi`` came from :func:`~dmipy_sim.replay.replay._band_phase`, ``E`` from
+        :func:`~dmipy_sim.replay.replay._signal_factor` and the rest from :meth:`reduction_terms`, which that route
+        and the columnar image read too."""
+        from .replay import _signal_factor
+        t = self.reduction_terms(tissue, scanner)
         logw = np.zeros(len(self.w))
         if self.exposure_t2 is not None:
-            logw = logw - self.exposure_t2 @ invT2 - self.exposure_t1 @ invT1
-        if rho_D:
-            logw = logw + rho_D * self.contact
+            logw = logw - self.exposure_t2 @ t["invT2"] - self.exposure_t1 @ t["invT1"]
+        if t["rho_over_D"]:
+            logw = logw + t["rho_over_D"] * self.contact
         phi = self.phi
-        if a_i or a_a:
-            phi = phi + (a_i * self.field_iso + a_a * self.field_aniso)[:, None]
-        vox = np.ones(np.shape(self.phi)[1]) if self.voxel is None else self.voxel
-        return self.w, self.pathway * self.w * np.exp(logw), signal_factor(phi, vox)
+        if t["a_iso"] or t["a_aniso"]:
+            phi = phi + (t["a_iso"] * self.field_iso + t["a_aniso"] * self.field_aniso)[:, None]
+        return self.w, t["amplitude"] * self.w * np.exp(logw), _signal_factor(phi, t["voxel"])
 
     def signal(self, tissue=None, scanner=None, *, complex_signal=False):
         """The ensemble signal of this acquisition under the pair, ``(n_meas,)``: what
@@ -222,7 +237,7 @@ def walker_primitives(pack, acquisition):
     contracted once under the pose's field direction, the exposures and the contact read once -- each a sum over
     the windows the walk is stored in (RPK.md 4.3)."""
     from .compression import relaxation_logweight_runs
-    from .replay import band_phase, path_field_channels, surface_logweight, _has_aniso
+    from .replay import _band_phase, _path_field_channels, surface_logweight, _has_aniso
     acq = acquisition if isinstance(acquisition, Acquisition) else Acquisition(acquisition)
     P = pack._prepare(acq.waveform, tissue=None, scanner=None, orientation=acq.orientation, compartment=None)
     n_w, dt, ch = P["n_w"], P["dt"], P["ch"]
@@ -237,7 +252,7 @@ def walker_primitives(pack, acquisition):
         unit = np.where(np.eye(n_ids) > 0, 1.0, np.inf); zero = [np.inf] * n_ids
     from .compression import has_c2
     pm = ch.get("susceptibility_path")
-    phi = band_phase(P)                                        # the one band contraction, windows summed
+    phi = _band_phase(P)                                        # the one band contraction, windows summed
     exposure_t2 = exposure_t1 = contact = None
     for (seg, t0, n_s), (chi_s, act_s) in zip(P["windows"], P["window_gates"]):
         if col is not None:
@@ -251,7 +266,7 @@ def walker_primitives(pack, acquisition):
     field_iso = field_aniso = None
     if pm is not None:
         from ..fields.hollow_cylinder import field_terms
-        Psi, names = path_field_channels(P, acq.waveform)       # the one read of C3, windows summed
+        Psi, names = _path_field_channels(P, acq.waveform)       # the one read of C3, windows summed
         field_iso, aniso = field_terms(Psi, P["b0_dir"])
         field_aniso = aniso if _has_aniso(ch.get("susceptibility_grid"), names) else np.zeros(n_w)
     from ..acquisition.epg import pathway_weight
