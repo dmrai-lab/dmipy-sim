@@ -146,17 +146,23 @@ def test_the_columnar_image_of_a_study_is_one_pass_with_a_floor_per_volume(tmp_p
     merged = merge_packs(packs, id="t/merged"); col = ReplayPack.open(str(tmp_path / "layout"))
     seq1 = d.set_b(d.pgse([[1, 0, 0], [0, 0, 1]], 0.2e-3, 0.5e-3, gradient_strengths=0.1, n_t=merged.n_t, slew_rate=np.inf), [1e9, 1e9])
     seq2 = d.set_b(d.pgse([[0, 1, 0]], 0.2e-3, 0.4e-3, gradient_strengths=0.1, n_t=merged.n_t, slew_rate=np.inf), [5e8])
+    # a stimulated echo among the acquisitions: its readout's pathway amplitude is 0.5, which the device
+    # reduction must apply exactly as walker_signals does (#484 review item 1: it did not, and every voxel of a
+    # PGSTE volume came out 1/eta = 2.000x too high)
+    seq3 = d.pgste([[1, 0, 0]], 0.2e-3, 0.4e-3, bvalues=[5e8], n_t=merged.n_t, slew_rate=np.inf, ste_flip_angles=(90.0, 90.0, 90.0))
+    from dmipy_sim.acquisition.epg import pathway_weight
+    assert pathway_weight(seq3) == pytest.approx(0.5, abs=1e-12) and pathway_weight(seq1) == 1.0
     t = Tissue(T2={"intra": 0.03, "extra": 0.08, "myelin": 0.01}, rho=1e-5)
-    study = Study(Protocol([seq1, seq2]), tissues=[None, t], scanners=[None])
+    study = Study(Protocol([seq1, seq2, seq3]), tissues=[None, t], scanners=[None])
     S, floor, plan = col.image(study, tol=1e-9, chunk_rows=5)
-    assert S.shape == (2,) + tuple(grid.shape) + (3,) and floor.shape == (2,) + tuple(grid.shape) and plan["settings"] == 2
+    assert S.shape == (2,) + tuple(grid.shape) + (4,) and floor.shape == (2,) + tuple(grid.shape) and plan["settings"] == 2
     ijk, _ = grid.bin(merged.r0); v = np.ravel_multi_index(ijk.T, grid.shape)
     for k in range(2):
         tk, sk = study.resolved(k)
-        for s, sl in zip((seq1, seq2), study.protocol.slices):
+        for s, sl in zip((seq1, seq2, seq3), study.protocol.slices):
             w, ew, E = merged.walker_signals(s, tissue=tk, scanner=sk)
             keys, inv = np.unique(v, return_inverse=True); num = np.zeros((len(keys), E.shape[1]), complex); den = np.zeros(len(keys))
             np.add.at(num, inv, ew[:, None] * E); np.add.at(den, inv, w)
-            np.testing.assert_allclose(S[k].reshape(-1, 3)[keys][:, sl], np.abs(num / den[:, None]), rtol=1e-9, atol=1e-12)
+            np.testing.assert_allclose(S[k].reshape(-1, 4)[keys][:, sl], np.abs(num / den[:, None]), rtol=1e-9, atol=1e-12)
         f = floor[k].reshape(-1)[np.unique(v)]
         assert np.isfinite(f).all() and (f >= 0).all() and (f < 1).all()
