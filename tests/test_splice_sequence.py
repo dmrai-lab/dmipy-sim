@@ -256,9 +256,12 @@ def test_what_b_value_each_echo_of_a_split_train_actually_delivers():
     This matters for a low-field experiment (dmipy-sim#285), where the whole point is an ADC, and an ADC
     computed against the prepared b is wrong by whatever this measures."""
     D, n, prepared = 2.0e-9, 5, 0.945e9
+    # K = 16 over 400 ms (20 Hz): the band the train needs on this pack (12 bands; at K = 8 the replay was refused
+    # for dropping a third of the free pack's phase, #277, and the delivered b it read was 17 % low within the
+    # tolerance below)
     mk = lambda diff: build_replay_pack(
         d.simulate_trajectories(16_000, diff, d.FreeDiffusion(), 0.40, 2.5e-4, seed=0, require_gpu=False),
-        id="test/b", license="x", citation="x", K=8)
+        id="test/b", license="x", citation="x", K=16)
     static, free = mk(1e-14), mk(D)
 
     for pk in (static, free):                                            # a b read off an uncertified pack is the codec's

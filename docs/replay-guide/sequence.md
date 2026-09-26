@@ -63,6 +63,22 @@ ramps.
 
 ```python
 print(pack.temporal_bandwidth_hz)                             # the highest frequency the bands resolve
+hz, bands, err = pack.waveform_band(seq)                      # the band this sequence needs on this pack
+print(bands <= pack.K, err <= pack.meta["fidelity"]["floor_max"])
+```
+
+A replay of a sequence beyond the pack's band is refused, naming both frequencies: the bands the pack does not
+store would carry phase the walkers never see, and the signal would come back smooth and wrong. The judgement is
+walk-free: the free path's band variances at the walk's diffusivity, the tail every restricted walk shares at
+short times, give the phase the dropped bands would carry, and a sequence is within the band when that phase
+moves the signal by no more than the pack's own Monte-Carlo floor.
+
+```python
+fast = sequences.ogse([[1, 0, 0]], 1500.0, 2e-3, shape="cosine", Delta=3e-3, bvalues=[1e9], TE=10e-3, slew_rate=np.inf)
+try:
+    pack.replay(fast)                                         # a 1.5 kHz oscillation on a 400 Hz pack
+except ValueError as e:
+    print("refused:", str(e)[:70])
 ```
 
 Poses do not belong to the sequence. A sequence is played in the lab; the substrate's pose, [orientation](orientation.md),

@@ -1077,6 +1077,7 @@ class ReplayPack:
         if not isinstance(waveform, ScannerSequence):
             raise TypeError(f"a replay takes a ScannerSequence (a bare gradient array says nothing about its pulses); "
                             f"got {type(waveform).__name__}")
+        self._check_band(waveform)
         G = np.asarray(waveform.G, np.float64)
         G_eff = np.asarray(waveform.G_eff, np.float64)
         dt_wf = float(waveform.dt)
@@ -1291,6 +1292,65 @@ class ReplayPack:
         """The highest frequency the position bands resolve, ``K / (2 T)`` (#199): the pack's temporal band stated
         as a frequency, which is what a scanner envelope is checked against and what a prefix keeps."""
         return float(self.K) / (2.0 * (self.n_t - 1) * self.dt)
+
+    def waveform_band(self, waveform, *, tol=None):
+        """The temporal band ``waveform`` needs on this pack, as ``(hz, bands, err)``: the fewest sine bands whose
+        dropped phase moves the signal by no more than ``tol`` on every measurement, stated as the frequency
+        ``bands / (2 T)`` beside the pack's :attr:`temporal_bandwidth_hz` (#277).
+
+        The gradient phase of a walker is the waveform's projection on the bridge basis contracted with the
+        walker's bands (:func:`~dmipy_sim.replay.compression.bridge_projection`); the bands beyond the pack's
+        ``K`` are not stored, so the phase they would carry is lost silently. For a free path the bridge bands
+        are independent with the Dirichlet Laplacian's variances, ``D dt / (2 sin^2(pi k / 2 N))``, the tail every
+        restricted walk shares at short times, so the dropped phase variance per measurement is
+        ``(gamma dt)^2 sum_{k > K} sum_d W_{m,k,d}^2 var_k`` at the walk's diffusivity, and a dropped independent
+        phase under-attenuates the magnitude by half of it. ``tol`` defaults to the pack's certified Monte-Carlo
+        floor, the unit of every other error the certificate states; a pack whose certificate states no floor
+        (walkers that never moved) is held to the largest floor its ``n_walkers`` could have, ``1 / sqrt(n)``.
+        ``bands`` is at most the grid's own ``n_t - 2``; a waveform beyond that returns ``inf``.
+        """
+        from .compression import bridge_projection
+        from ._replay_kernel import effective_gradient
+        waveform = waveform.waveform if hasattr(waveform, "waveform") else waveform
+        n_t, dt = int(self.n_t), float(self.dt)
+        T = (n_t - 1) * dt
+        D = self.diffusivity
+        if D is None:
+            raise ValueError("the pack records no diffusivity, so the band a waveform needs cannot be judged")
+        if tol is None:
+            tol = float(self.meta.get("fidelity", {}).get("floor_max") or 0.0) or 1.0 / np.sqrt(float(self.n_walkers))
+        K_big = n_t - 2
+        Geff = effective_gradient(np.asarray(waveform.G_eff, np.float64), float(waveform.dt), n_t, dt)
+        W = bridge_projection(Geff, n_t, K_big)[:, 2:, :]                          # (n_meas, K_big, 3)
+        k = np.arange(1, K_big + 1)
+        var = float(D) * dt / (2.0 * np.sin(np.pi * k / (2.0 * (n_t - 1))) ** 2)   # the free bridge's band variances
+        per_band = (GAMMA * dt) ** 2 * (W ** 2).sum(axis=2) * var[None, :]           # (n_meas, K_big) phase variance
+        tail = np.cumsum(per_band[:, ::-1], axis=1)[:, ::-1]                        # dropped variance beyond band k-1
+        err = 0.5 * np.concatenate([tail, np.zeros((tail.shape[0], 1))], axis=1).max(axis=0)   # err[j]: keeping j bands
+        ok = np.flatnonzero(err <= float(tol))
+        if len(ok) == 0:
+            return np.inf, np.inf, float(err[-1])
+        bands = int(ok[0])
+        return bands / (2.0 * T), bands, float(err[min(self.K, K_big)])
+
+    def _check_band(self, waveform):
+        """Refuse a waveform whose gradient needs more temporal band than this pack stores (#277): the replay
+        would otherwise return a smooth, plausible, wrong signal. A pack that records no diffusivity (a synthetic
+        master) cannot be judged and is not refused."""
+        if self.diffusivity is None:
+            return
+        hz, bands, err = self.waveform_band(waveform)
+        if bands <= self.K:
+            return
+        n_t, dt = int(self.n_t), float(self.dt)
+        T = (n_t - 1) * dt
+        need = (f"more than {(n_t - 2) / (2.0 * T):.4g} Hz, the pack grid's own limit" if not np.isfinite(hz)
+                else f"{hz:.4g} Hz ({bands} bands over {T * 1e3:.4g} ms)")
+        raise ValueError(f"the waveform's gradient reaches beyond this pack's temporal band: it needs {need} and the "
+                         f"pack resolves {self.temporal_bandwidth_hz:.4g} Hz (K = {self.K} bands over {T * 1e3:.4g} ms), "
+                         f"which would drop {err:.2e} of the signal into phase the pack does not carry. Build a pack at "
+                         f"this band or above (build_replay_pack(temporal_bandwidth_hz=...)), or replay a waveform "
+                         f"within this one")
 
     def prefix(self, TE, *, K=None, out_path=None, tol=2.0, id=None, provenance=None):
         """This walk re-encoded to the shorter echo time ``TE`` (s), at the same bands per second (#199).

@@ -80,7 +80,7 @@ def test_membership_is_derived_from_r0_and_independent_of_K(pack_paths):
 
 
 def test_a_voxel_without_walkers_is_absent_or_is_the_outside_substrate(pack_paths):
-    pk = read_rpk(pack_paths[2])
+    pk = read_rpk(pack_paths[6])
     big = Grid.covering(pk.r0, voxel_size_m=(2.5e-6, 2.5e-6, float(np.ptp(pk.r0[:, 2])) + 1e-6), margin_voxels=1)
     bare = Phantom.partition(PackSubstrate(pk, m0=0.7), big)
     assert bare.n_voxels < big.n_voxels                                              # the margin is not in the phantom
@@ -143,7 +143,7 @@ def test_regrid_is_an_exact_rebin(pack_paths):
 
 
 def test_the_scanner_decides_the_voxels_when_the_partition_declares_no_grid(pack_paths):
-    pk = read_rpk(pack_paths[2])
+    pk = read_rpk(pack_paths[6])
     free = Phantom.partition(PackSubstrate(pk, m0=1.0), outside=Inert())
     seq = _acq(pk, [[1, 0, 0]], [1e9])
     with pytest.raises(ValueError, match="Prescription"):
@@ -214,7 +214,7 @@ def test_transmit_on_a_partition_is_the_per_walker_scale(pack_paths):
 
 def test_off_resonance_and_proton_density_on_a_partition(pack_paths):
     from dmipy_sim.constants import GAMMA
-    pk = read_rpk(pack_paths[2])
+    pk = read_rpk(pack_paths[6])
     grid = _grid(pk)
     ph = Phantom.partition(PackSubstrate(pk, m0=1.0), grid)
     seq = _acq(pk, [[1, 0, 0]], [1e9])
