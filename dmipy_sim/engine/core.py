@@ -1204,14 +1204,20 @@ def simulate_trajectories(
                     return (r_new, key, dlog_accum + dlog_w_unit, comp_sum, side, bad, comp), None
 
             elif has_reflect_with_log_weight:
-                reflect_with_log_weight = geometry.reflect_with_log_weight
+                # `interact`, not `reflect_with_log_weight`: for an impermeable wall the two are the
+                # same function at the same arguments (`Geometry.interact`), but the WallHit also
+                # carries `illegal`, so a geometry that REFUSES a step -- a voxel wall's reject-escape,
+                # where the walker is held still -- is counted here instead of being invisible.
+                interact = geometry.interact
 
                 def inner_step_relax(carry, _):
                     r, key, dlog_accum, comp_sum, side, bad, comp = carry
                     key, subkey = jax.random.split(key)
                     unit_noise = isotropic_unit_step(subkey)
                     step = unit_noise * step_l_sim
-                    r_new, dlog_w_unit = reflect_with_log_weight(r, step, jnp.float32(1.0))
+                    hit = interact(r, step, rho_over_D=jnp.float32(1.0))
+                    r_new, dlog_w_unit = hit.r, hit.dlog_w
+                    bad = bad + hit.illegal.astype(jnp.int32)
                     comp = geometry.classify_position_carry(r_new, comp)
                     comp_sum = comp_sum + _pool2(comp)
                     return (r_new, key, dlog_accum + dlog_w_unit, comp_sum, side, bad, comp), None
@@ -1445,19 +1451,19 @@ def simulate_trajectories(
                     else:
                         raise
 
-        # ── Illegal-crossing report ─────────────────────────────────────────────
-        # A step that leaves the walker on the far side of a membrane WITHOUT a granted crossing
-        # is illegal by definition. The sentinel in `permeate` already ejected it back, so this is
-        # a diagnostic rather than a loss -- but a nonzero count is the engine silently relabelling
-        # walkers, and the number belongs in the open where it can be seen.
+        # ── Refused-step report ─────────────────────────────────────────────────
+        # A step that leaves the walker in another pool WITHOUT a granted crossing is illegal by
+        # definition, and a geometry that detects one holds the walker still instead. So this is a
+        # diagnostic rather than a loss -- but a nonzero count is the engine refusing part of the
+        # walk, and the number belongs in the open where it can be seen.
         illegal = int(_illegal_crossings[0])
         if illegal:
             import warnings
             warnings.warn(
-                f"{illegal} walker-steps ended on the wrong side of a membrane "
-                f"without a granted crossing (permeability={permeability!r}); each was rejected "
-                f"and the walker returned to its own compartment. "
-                f"See PersistentWalk.illegal_crossings.", RuntimeWarning, stacklevel=2)
+                f"{illegal} walker-steps were refused because they ended in another pool without a "
+                f"granted crossing (permeability={permeability!r}); each walker was held at its own "
+                f"position for that step. See PersistentWalk.illegal_crossings.",
+                RuntimeWarning, stacklevel=2)
 
         if _compress:
             # the walk in the pack's own coefficient form: `pos_modes` holds [r(0), r(T) - r(0), the K sine bands]

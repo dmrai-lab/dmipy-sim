@@ -465,6 +465,31 @@ def test_an_impermeable_volume_refuses_a_crossing_request():
         g.interact(r, step, side=jnp.int32(1))
 
 
+def test_a_refused_step_is_counted_by_the_engine():
+    """A reject-escape holds the walker still for that step, and the engine says so.
+
+    The refusal is reported as `WallHit.illegal`, which the trajectory producer accumulates into
+    `PersistentWalk.illegal_crossings` and warns about; a refusal the engine cannot see is the walk
+    quietly standing still. Measured on the voxelised R = 5 um sphere at 50,000 walkers x 41 saves:
+    2 refused steps of 2,050,000 at two voxels per step (and a RuntimeWarning), 0 at three voxels and
+    0 at the step the engine's own rules pick -- so this is a net over the coarse end, not a
+    correction the walk leans on.
+    """
+    import warnings
+    from dmipy_sim import simulate_trajectories
+    R, h = 5e-6, 1e-6
+    lab, org = voxelised(lambda x, y, z: x * x + y * y + z * z < R * R, 1.4 * R, h)
+    g = LabelVolume(lab, h, origin=org, surface_relaxivity_t2=1e-5)
+    dt = (2.0 * h) ** 2 / (6 * D)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        walk = simulate_trajectories(50_000, D, g, T_max=41 * dt, dt_save=dt, seed=0,
+                                     sub_steps=1, require_gpu=False)
+        refused = [w for w in caught if "were refused" in str(w.message)]
+    assert walk.illegal_crossings == 2 and len(refused) == 1
+    assert "held at its own position" in str(refused[0].message)
+
+
 def test_a_label_volume_walk_packs_and_replays_C0_C1_C2(tmp_path, monkeypatch):
     """`build_replay_pack` needs nothing new for a label volume: the positions, the compartment column
     and the boundary local time are the channels every other substrate records, so one walk of a

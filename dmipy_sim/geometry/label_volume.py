@@ -240,13 +240,13 @@ class LabelVolume(Geometry):
         """``r`` moved strictly inside voxel ``i``, by at most the nudge.
 
         The traversal decides which voxel the walker is in by integer steps; ``floor((r - origin) /
-        voxel_size)`` decides it again, in float32, whenever the walk asks what pool a position is.
-        Within one ulp of a face the two disagree -- ``(r - origin)`` rounds onto the plane -- and the
-        walker's next step starts in the wrong voxel and walks out of its pool without ever meeting a
-        face (measured: 9 of 200,000 walkers left a voxelised sphere over 200 steps). Ending every step
-        a nudge clear of every face is what makes the two agree; the nudge is at least eight float32
-        ulps at the box's extent (:func:`~dmipy_sim.geometry._boundary.representable_nudge`), so the
-        rounding cannot reach a face, and it is 0.1 pm against a micrometre voxel.
+        voxel_size)`` decides it again, in float32, every time the walk asks what pool a position is.
+        Within one ulp of a face the two disagree, because ``(r - origin)`` rounds onto the plane, and
+        a step that starts from such a position starts in the wrong voxel and leaves its pool without
+        meeting a face. A position a nudge clear of every face of its own voxel is one the two agree
+        on: the nudge is at least eight float32 ulps at the box's extent
+        (:func:`~dmipy_sim.geometry._boundary.representable_nudge`), so no rounding in the index can
+        reach a face, and it is 100 pm against a micrometre voxel.
         """
         lo = self.ORG + i.astype(jnp.float32) * self.VOX
         n = jnp.float32(self._nudge)
@@ -399,14 +399,19 @@ class LabelVolume(Geometry):
         clamped = self._into_voxel(p_f, i_f)
         p_out = jnp.where(self.PER, r + (clamped - r_w), clamped)
         # Reject-escape: a step that ends in a pool other than the one it started in, without a
-        # granted crossing, never happened -- the one guarantee that does not rest on float32
-        # arithmetic staying on the right side of a plane.
+        # granted crossing, never happened. It is a net, not a guarantee: it reads the pool at the
+        # END of the step, and the failure the nudge prevents corrupts the pool read at the START of
+        # the NEXT one, where this test is blind. With `_into_voxel` disabled and this guard on, 5 of
+        # 200,000 walkers still ended in a grain voxel, up to 5.3 voxels out. The nudge is the fix;
+        # this catches what no argument about float32 has been made for.
         escaped = (self._pool_at_index(i_f) != self._pool_at_index(i0)) & ~crossed_f
         # The budget is unreachable for a step of a diffusion walk; a step that hits it has part of
         # its path untested, so it does not happen at all either.
         bad = (~done_f) | escaped
+        # `illegal` is BOTH refusals, not the budget alone: a refused step is the engine holding a
+        # walker still, which `PersistentWalk.illegal_crossings` and its warning exist to report.
         return (jnp.where(bad, r, p_out), jnp.where(bad, jnp.float32(0.0), dlog_f),
-                crossed_f & ~bad, ~done_f)
+                crossed_f & ~bad, bad)
 
     def reflect(self, r, step):
         """Impermeable wall interaction -- the ``kappa = 0`` case of :meth:`_wall`."""
