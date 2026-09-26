@@ -130,6 +130,10 @@ class Seeding:
     pools: list
     rule: str = "uniform_by_volume"
     weights: str = "water_fraction"
+    #: Where the start positions come from when ``rule`` is ``"explicit"``: ``{file, format, scale, sha256,
+    #: count, read}`` -- cited the way a ``swept_polyline`` wall cites its track file, because a spec that says
+    #: ``explicit`` and carries no positions cannot be re-walked as it was walked.
+    positions: Optional[dict] = None
 
 
 @dataclass(frozen=True)
@@ -410,6 +414,15 @@ def validate(d):
         raise SpecError(f"seeding.pools {sp!r} must be non-empty pool ids (0..{n_pools - 1})")
     if _req(seed, "rule", "seeding") not in SEEDING_RULES:
         raise SpecError(f"seeding.rule must be one of {SEEDING_RULES}")
+    if seed["rule"] == "explicit":
+        pos = seed.get("positions")
+        if not isinstance(pos, dict) or not pos.get("file") or not pos.get("sha256"):
+            raise SpecError("seeding.rule 'explicit' needs seeding.positions with at least a `file` and its "
+                            "`sha256`: a spec that says the walkers started somewhere particular and does not "
+                            "say where cannot be re-walked as it was walked")
+    elif seed.get("positions") is not None:
+        raise SpecError(f"seeding.positions is given but seeding.rule is {seed['rule']!r}; positions belong to "
+                        f"the 'explicit' rule only")
     if _req(seed, "weights", "seeding") not in WEIGHT_RULES:
         raise SpecError(f"seeding.weights must be one of {WEIGHT_RULES}")
     for i in sp:

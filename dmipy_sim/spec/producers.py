@@ -664,8 +664,12 @@ def _version():
     return package_version()
 
 
+_MCDC_MM = 1e-3      #: MC/DC writes its initial-walker positions in millimetres
+
+
 def mcdc_axon_spec(ply, *, scale=_UM, D=None, voxel=None, pad=1.0e-6, boundary="reflect",
-                   ini_walkers=None, rho2=0.0, id=None, source=None, description=None, cite_ply_as=None):
+                   ini_walkers=None, rho2=0.0, id=None, source=None, description=None, cite_ply_as=None,
+                   cite_ini_as=None):
     """The spec of ONE closed MC/DC axon surface: a bare lumen, no sheath.
 
     The undulating axons of Rafael-Patino et al. (2020) are single closed tubes with nothing around them, so
@@ -726,6 +730,14 @@ def mcdc_axon_spec(ply, *, scale=_UM, D=None, voxel=None, pad=1.0e-6, boundary="
     cite = cite_ply_as or os.path.basename(ply)
     wall = Wall("axolemma", Surface("mesh", file=cite, format=ply.rsplit(".", 1)[-1].lower(), scale=float(scale),
                                     sha256=_sha(ply)), 1, 0, Directional(), Sided(float(rho2), float(rho2)))
+    seeding_positions = None
+    if ini_walkers:
+        seeding_positions = dict(file=(cite_ini_as or os.path.basename(ini_walkers)), format="xyz",
+                                 scale=_MCDC_MM, sha256=_sha(ini_walkers),
+                                 count=int(sum(1 for line in open(ini_walkers) if line.strip())),
+                                 read="cyclic",
+                                 note="MC/DC's initial-walker list in millimetres, read cyclically (walker i "
+                                      "starts at line i mod n; DynamicsSimulation::initWalkerPosition)")
     rule = "explicit" if ini_walkers else "uniform_by_volume"
     transformations = [f"inside the surface = intra (1), outside = extra (0)",
                        "extra declared free water with water_fraction 0: MC/DC seeded and read intra particles only",
@@ -744,7 +756,8 @@ def mcdc_axon_spec(ply, *, scale=_UM, D=None, voxel=None, pad=1.0e-6, boundary="
                                "lumen (the list spans the central part of the tube only)")
     spec = SubstrateSpec(
         id or f"mcdc/{os.path.splitext(os.path.basename(ply))[0]}",
-        Domain(lo.tolist(), hi.tolist(), [boundary] * 3), pools, [wall], Seeding([1], rule, "water_fraction"),
+        Domain(lo.tolist(), hi.tolist(), [boundary] * 3), pools, [wall],
+        Seeding([1], rule, "water_fraction", positions=seeding_positions),
         Validity(smallest, ["gradient", "relaxation", "surface"], mesh_edge_feature_ratio=edge_med / smallest),
         description=description or f"one MC/DC undulating axon: {os.path.basename(ply)}, a closed lumen in free space",
         realisation={"enclosed_volume_m3": _volume(*mesh), "surface_area_m2": _area(*mesh),

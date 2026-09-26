@@ -212,15 +212,12 @@ def merge_duplicate_vertices(V, F, rel_tol=1e-3, crack_rel_tol=0.5):
     crack: two boundary edges on vertices a few nanometres apart). Faces that lose a distinct vertex to a merge
     are dropped.
 
-    **The two passes are ordered, and the order is the whole point.** The crack pass is far looser than the
-    duplicate pass -- half a median edge against a thousandth of one -- so it may only ever see the boundary
-    that SURVIVES the duplicate pass. Run against the raw boundary it treats a merely duplicated seam as a
-    pair of crack lips, and union-find then chains a whole rim of a tube into one vertex, because on a
-    polygonal ring every neighbour is within half an edge of the next. Measured on Disimpy's
-    ``cylinder_mesh_closed.pkl`` (296 distinct vertices written as 352, a 49-gon tube of radius 5 um): the
-    ordered passes merge 56 duplicates and leave a closed surface whose area is 0.999 of the ideal cylinder's,
-    while the unordered one collapsed three rings to a point, shrank the surface, and made ray-parity seeding
-    place walkers 7.06 um from a 5 um axis.
+    **The two passes are ordered, and the order is load-bearing.** The crack pass is far looser than the
+    duplicate pass -- half a median edge against a thousandth of one -- so it sees only the boundary that
+    SURVIVES the duplicate pass. On a fine ring every neighbour is within half an edge of the next, so a crack
+    pass given the raw boundary would read a merely duplicated seam as a pair of lips and union-find would
+    chain the whole ring into one vertex. Both tolerances are relative to the median edge, so the result does
+    not depend on the unit the mesh is written in. Tests: ``tests/geometry/test_mesh_repair_passes.py``.
     """
     from scipy.spatial import cKDTree
     V = np.asarray(V, np.float64); F = np.asarray(F, np.int64)
