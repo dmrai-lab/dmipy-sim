@@ -73,9 +73,9 @@ def _lumen_points(n, rng, radius=RADIUS, sides=SIDES):
     return np.concatenate([xy, z[:, None]], 1).astype(np.float32)
 
 
-def _mesh(V, F):
-    return Mesh(V, F, periodic=False, voxel_min=np.array([-RADIUS, -RADIUS, Z_RINGS[0]]),
-                voxel_max=np.array([RADIUS, RADIUS, Z_RINGS[-1]]), feature_radius=RADIUS)
+def _mesh(V, F, pad=0.0):
+    return Mesh(V, F, periodic=False, voxel_min=np.array([-RADIUS - pad, -RADIUS - pad, Z_RINGS[0] - pad]),
+                voxel_max=np.array([RADIUS + pad, RADIUS + pad, Z_RINGS[-1] + pad]), feature_radius=RADIUS)
 
 
 def _with_normals_of(mesh, F):
@@ -94,9 +94,10 @@ def test_the_fixtures_winding_is_found_and_the_faces_are_reoriented():
     assert (n_reversed, winding_inconsistency(V, F)) == (294, 0)
     assert winding_inconsistency(V, written) == 686
 
-    fixed, n_flipped = orient_faces(V, written)
+    fixed, report = orient_faces(V, written)
     assert winding_inconsistency(V, fixed) == 0
-    assert n_flipped == n_reversed
+    assert (report["reoriented"], report["inconsistent_edges"], report["components"],
+            report["open_components"]) == (n_reversed, 686, 1, 0)
     assert sorted(map(sorted, fixed.tolist())) == sorted(map(sorted, written.tolist()))   # the same triangles
     t = V[fixed]
     volume = float(np.einsum("ij,ij->i", t[:, 0], np.cross(t[:, 1], t[:, 2])).sum() / 6.0)
@@ -140,3 +141,26 @@ def test_the_lumen_reads_as_interior_and_no_step_is_refused_once_the_faces_agree
 
     reported = np.asarray(jax.jit(jax.vmap(lambda q, s: raw.interact(q, s).illegal))(jnp.asarray(p), step))
     assert (reported == refused_raw).all(), "a refused step is not the one PersistentWalk.illegal_crossings counts"
+
+
+def test_one_inward_cell_of_a_bundle_is_turned_though_the_bundle_looks_consistent():
+    """The case a whole-surface test cannot see, and the reason the repair is not gated on one.
+
+    A bundle spec concatenates every wall into ONE `Mesh`, so a substrate of two cells whose second is written
+    inward has no inconsistent edge anywhere (each cell agrees with itself) and a positive volume overall (the
+    first cell is larger). Per component the second encloses a negative volume and is turned.
+    """
+    V1, F1 = _prism()
+    V2, F2 = _prism(radius=0.5 * RADIUS)
+    V2 = V2 + np.array([12 * UM, 0.0, 0.0])
+    V = np.concatenate([V1, V2])
+    F = np.concatenate([F1, F2[:, [0, 2, 1]] + len(V1)])            # the second cell written inward
+    assert winding_inconsistency(V, F) == 0 and enclosed_volume(V, F) > 0
+
+    fixed, report = orient_faces(V, F)
+    assert (report["components"], report["open_components"], report["reoriented"]) == (2, 0, len(F2))
+    assert enclosed_volume(V, fixed) == pytest.approx(
+        enclosed_volume(V1, F1) - enclosed_volume(V2, F2[:, [0, 2, 1]]), rel=1e-12)
+    with pytest.warns(UserWarning, match="mesh winding"):
+        mesh = _mesh(V, F, pad=8 * UM)
+    assert mesh.n_faces_reoriented == len(F2)

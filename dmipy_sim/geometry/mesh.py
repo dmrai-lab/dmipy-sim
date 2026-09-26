@@ -261,20 +261,30 @@ def surface_topology(V, F):
     return dict(boundary_edges=int((counts == 1).sum()), nonmanifold_edges=int((counts > 2).sum()))
 
 
-def _half_edge_pairs(F):
-    """``(f0, f1, opposite)`` for every manifold edge: the two faces on it and whether they traverse it in
-    OPPOSITE directions, which is the statement that their windings agree."""
+def _half_edges(F):
+    """The shared-edge structure of a surface, from one sort of its half-edges.
+
+    ``(f0, f1, opposite, pinched)``: the two faces on every manifold edge, whether they traverse it in
+    OPPOSITE directions -- which is the statement that their windings agree -- and, per face, whether it holds
+    an edge that is not on exactly two faces. A face holding one is on a boundary or a pinch, so the component
+    it belongs to does not enclose a volume of its own.
+    """
     F = np.asarray(F, np.int64)
+    n_f = len(F)
     he = np.concatenate([F[:, [0, 1]], F[:, [1, 2]], F[:, [2, 0]]])
     key = np.sort(he, axis=1)
     order = np.lexsort((key[:, 1], key[:, 0]))
     ks = key[order]
     start = np.ones(len(ks), bool)
     start[1:] = (ks[1:] != ks[:-1]).any(axis=1)
-    counts = np.bincount(np.cumsum(start) - 1)
-    first = np.flatnonzero(start)[counts == 2]
-    i0, i1 = order[first], order[first + 1]
-    return i0 % len(F), i1 % len(F), ~(he[i0] == he[i1]).all(axis=1)
+    gid = np.cumsum(start) - 1
+    counts = np.bincount(gid)
+    first = np.flatnonzero(start)
+    pair = counts == 2
+    i0, i1 = order[first[pair]], order[first[pair] + 1]
+    pinched = np.zeros(n_f, bool)
+    pinched[order[(~pair)[gid]] % n_f] = True
+    return i0 % n_f, i1 % n_f, ~(he[i0] == he[i1]).all(axis=1), pinched
 
 
 def winding_inconsistency(V, F):
@@ -286,7 +296,7 @@ def winding_inconsistency(V, F):
     """
     if len(F) == 0:
         return 0
-    return int((~_half_edge_pairs(F)[2]).sum())
+    return int((~_half_edges(F)[2]).sum())
 
 
 def enclosed_volume(V, F):
@@ -299,19 +309,68 @@ def enclosed_volume(V, F):
 
 
 def orient_faces(V, F):
-    """``(F, n_reoriented)``: the same triangles wound consistently within each connected component, and
-    outward wherever the component encloses a volume.
+    """``(F, report)``: the same triangles wound consistently within each connected component, and outward
+    wherever the component encloses a volume.
 
-    The winding is propagated across shared edges from one face per component, then the component is
-    reversed as a whole if it encloses a negative volume (a component with a boundary edge encloses none,
-    so it keeps the sense the majority of its faces were written with).
+    Run on every surface, because the question is per COMPONENT and no property of the whole answers it: a
+    bundle spec concatenates every wall into one ``Mesh`` (``spec.walk``), where one inward cell among outward
+    ones has no inconsistent edge anywhere and a positive volume overall. On a surface already consistent and
+    outward the faces come back unchanged, bit for bit.
+
+    The winding is propagated across shared edges from one face per component -- only when some edge disagrees,
+    since that is the only thing propagation can fix -- and each component that encloses a volume is then
+    turned outward by the sign of ITS OWN volume. A component that encloses nothing (it holds a boundary or a
+    pinched edge) has no such sign, so it keeps the sense the majority of its faces were written with.
+
+    ``report``: ``components``, ``open_components`` (the ones enclosing nothing), ``inconsistent_edges``
+    (before, and what propagation could not resolve), ``reoriented``, and the enclosed ``volume`` before and
+    after -- the last read again afterwards, since on an open surface the repair cannot fix the sense and must
+    not be reported as if it had.
     """
     V = np.asarray(V, np.float64)
     F = np.asarray(F, np.int64).copy()
     n_f = len(F)
+    report = dict(components=0, open_components=0, inconsistent_edges=0, inconsistent_edges_after=0,
+                  reoriented=0, volume=0.0, volume_after=0.0)
     if n_f == 0:
-        return F, 0
-    f0, f1, opposite = _half_edge_pairs(F)
+        return F, report
+    f0, f1, opposite, pinched = _half_edges(F)
+    report["inconsistent_edges"] = int((~opposite).sum())
+    report["volume"] = enclosed_volume(V, F)
+    comp, n_comp = _components(f0, f1, n_f)
+    report["components"] = int(n_comp)
+    flip = (_winding_parity(f0, f1, opposite, n_f) if report["inconsistent_edges"]
+            else np.zeros(n_f, bool))
+    F[flip] = F[flip][:, [0, 2, 1]]
+    t = V[F]
+    dv = np.einsum("ij,ij->i", t[:, 0], np.cross(t[:, 1], t[:, 2]))
+    encloses = np.bincount(comp, weights=pinched, minlength=n_comp) == 0
+    volume = np.bincount(comp, weights=dv, minlength=n_comp)
+    majority = np.bincount(comp, weights=flip, minlength=n_comp) * 2 > np.bincount(comp, minlength=n_comp)
+    back = np.where(encloses, volume < 0, majority)[comp]
+    F[back] = F[back][:, [0, 2, 1]]
+    report.update(open_components=int((~encloses).sum()), reoriented=int((flip ^ back).sum()),
+                  inconsistent_edges_after=int((~_half_edges(F)[2]).sum()) if report["inconsistent_edges"] else 0,
+                  volume_after=enclosed_volume(V, F))
+    return F, report
+
+
+def _components(f0, f1, n_f):
+    """``(label, count)`` of the connected components of the faces that share an edge."""
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+    g = coo_matrix((np.ones(len(f0), np.int8), (f0, f1)), shape=(n_f, n_f))
+    n_comp, label = connected_components(g, directed=False)
+    return label.astype(np.int64), int(n_comp)
+
+
+def _winding_parity(f0, f1, opposite, n_f):
+    """Which faces must be reversed to agree with the first face of their component.
+
+    Breadth-first over the faces sharing an edge. An edge both faces traverse the same way is frustrated where
+    no assignment satisfies it (a pinched surface can be); the traversal then leaves that one edge disagreeing
+    rather than turning a patch over, which is why the count after is reported.
+    """
     src = np.concatenate([f0, f1])
     dst = np.concatenate([f1, f0])
     agree = np.concatenate([opposite, opposite])
@@ -320,52 +379,20 @@ def orient_faces(V, F):
     ptr = np.searchsorted(src, np.arange(n_f + 1))
     flip = np.zeros(n_f, bool)
     seen = np.zeros(n_f, bool)
-    comp = np.zeros(n_f, np.int64)
-    n_comp = 0
     for s in range(n_f):
         if seen[s]:
             continue
         seen[s] = True
         queue = deque([s])
-        while queue:                                    # breadth-first over the faces sharing an edge
+        while queue:
             f = queue.popleft()
-            comp[f] = n_comp
             for k in range(ptr[f], ptr[f + 1]):
                 g = int(dst[k])
                 if not seen[g]:
                     seen[g] = True
                     flip[g] = flip[f] ^ (not agree[k])
                     queue.append(g)
-        n_comp += 1
-    F[flip] = F[flip][:, [0, 2, 1]]
-    t = V[F]
-    dv = np.einsum("ij,ij->i", t[:, 0], np.cross(t[:, 1], t[:, 2]))
-    volume = np.bincount(comp, weights=dv, minlength=n_comp)
-    majority = np.bincount(comp, weights=flip, minlength=n_comp) * 2 > np.bincount(comp, minlength=n_comp)
-    reverse = np.where(_component_encloses(F, comp, n_comp), volume < 0, majority)
-    back = reverse[comp]
-    F[back] = F[back][:, [0, 2, 1]]
-    return F, int((flip ^ back).sum())
-
-
-def _component_encloses(F, comp, n_comp):
-    """Which components hold every edge of their own faces on exactly two of them, i.e. enclose a volume.
-
-    A pinch (an edge on three or more faces) cuts the adjacency graph, so a component of it can be an open
-    patch with no boundary EDGE of its own and no volume: on the Winther axon06-inner surface (7,652
-    non-manifold edges) a signed volume per patch is origin-dependent noise, and deciding a patch's sense by
-    it turned 0.5 % of a consistently wound surface inside out.
-    """
-    e = np.sort(np.concatenate([F[:, [0, 1]], F[:, [1, 2]], F[:, [2, 0]]]), axis=1)
-    c = np.tile(np.asarray(comp), 3)
-    order = np.lexsort((e[:, 1], e[:, 0], c))
-    cs, es = c[order], e[order]
-    start = np.ones(len(order), bool)
-    start[1:] = (cs[1:] != cs[:-1]) | (es[1:] != es[:-1]).any(axis=1)
-    counts = np.bincount(np.cumsum(start) - 1)
-    encloses = np.ones(n_comp, bool)
-    encloses[cs[start][counts != 2]] = False
-    return encloses
+    return flip
 
 
 class _MeshArrays(NamedTuple):
@@ -551,18 +578,16 @@ class Mesh(Geometry):
         # `cylinder_mesh_closed.pkl`, which writes 294 of its 588 triangles the other way round: the
         # classifier called 50.5% of the lumen exterior, `reject_escape` then discarded 15.6% of 775 nm
         # steps outright, and the PGSE signal sat 2.0e-2 below MISST (dmrai-lab/dmipy-sim#479).
-        self.winding_inconsistent_edges = winding_inconsistency(V, F)
-        inward = (not self.winding_inconsistent_edges and enclosed_volume(V, F) < 0
-                  and surface_topology(V, F)["boundary_edges"] == 0)
-        self.n_faces_reoriented = 0
-        if self.winding_inconsistent_edges or inward:
-            F, self.n_faces_reoriented = orient_faces(V, F)
+        F, self.winding = orient_faces(V, F)
+        self.winding_inconsistent_edges = self.winding["inconsistent_edges"]
+        self.n_faces_reoriented = self.winding["reoriented"]
         if self.n_faces_reoriented:
             warnings.warn(
-                f"mesh winding: {self.winding_inconsistent_edges} manifold edge(s) were traversed the same "
-                f"way by both their faces, and {self.n_faces_reoriented} face(s) were reoriented. A surface "
-                f"whose normals disagree, or point inward, cannot say which side is inside: unrepaired, its "
-                f"classifier, its escape net and its interpolated normals read the wrong sign.", stacklevel=2)
+                f"mesh winding: {self.n_faces_reoriented} face(s) of {len(F)} were reoriented "
+                f"({self.winding_inconsistent_edges} manifold edge(s) were traversed the same way by both "
+                f"their faces). A surface whose normals disagree, or point inward, cannot say which side is "
+                f"inside: unrepaired, its classifier, its escape net and its interpolated normals read the "
+                f"wrong sign.", stacklevel=2)
         self.vertices = V
         self.pool = POOL_NAMES[_seed_pool(pool)]           # the pool init_positions seeds
         self.faces = F
@@ -1289,6 +1314,9 @@ class Mesh(Geometry):
             "n_ghost_faces": int(self.n_ghost),
             "winding_inconsistent_edges": int(self.winding_inconsistent_edges),
             "faces_reoriented": int(self.n_faces_reoriented),
+            "surface_components": int(self.winding["components"]),
+            "open_components": int(self.winding["open_components"]),
+            "enclosed_volume": float(self.winding["volume_after"]),
             "feature_radius": self.radius,
             "edge_median": self.edge_median,
             "edge_p90": self.edge_p90,
