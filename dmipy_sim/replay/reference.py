@@ -512,28 +512,42 @@ class Records:
                                        f"({str(declared)[:12]} -> {now[:12]}); delete records/{later}.json onwards "
                                        f"and run the stages again")
 
-    def write(self, stage, payload, *, inputs_digest, previous_sha256):
-        """Write one record, or return the one already there when it is BYTE-IDENTICAL to what this run measured.
+    def reuse(self, stage, inputs_digest, previous_sha256):
+        """The record this stage already wrote for these inputs, or ``None`` when it must measure.
 
-        The comparison is over the canonical body, so a record whose numbers have been edited is not the record
-        the stage measured and is refused, naming the keys that moved.
+        A stage calls this BEFORE it measures anything: that is what "a stage asked to run twice on unchanged
+        inputs returns the record it already wrote" means, and a stage whose measurement is not a deterministic
+        function of its inputs -- the design pilot's sampled memory is not -- would otherwise be unable to
+        return it at all.
+
+        Every record seals itself: ``body_sha256`` is the digest of its own body without that field, so an
+        edited record fails its own seal and is refused here rather than handed to the next stage as a
+        measurement. A record written for other inputs is refused too, naming them.
         """
-        body = _canonical(dict(payload, stage=stage, inputs_sha256=inputs_digest,
-                              previous_sha256=previous_sha256))
-        if self.exists(stage):
-            with open(self.path(stage), "rb") as fh:
-                held = fh.read()
-            if held == body:
-                return json.loads(held)                       # unchanged inputs: the record it already wrote
-            old = json.loads(held)
-            fresh = json.loads(body)
-            moved = sorted(k for k in set(old) | set(fresh) if old.get(k) != fresh.get(k))
+        if not self.exists(stage):
+            return None
+        held = self.read(stage)
+        sealed = held.get("body_sha256")
+        if sealed != _sha256_bytes(_canonical({k: v for k, v in held.items() if k != "body_sha256"})):
             raise ReferenceRefusal(
-                f"{stage}: {self.path(stage)} is not what this run measured -- {', '.join(moved)} "
-                f"differ{'s' if len(moved) == 1 else ''} (inputs {str(old.get('inputs_sha256'))[:12]} -> "
-                f"{inputs_digest[:12]}); a record is written once by the stage that measured it, and a record "
-                f"that has been edited is not a measurement -- delete it and the records after it deliberately "
-                f"to re-measure")
+                f"{stage}: {self.path(stage)} does not match its own body_sha256, so it has been edited since "
+                f"the stage wrote it; an edited record is not a measurement -- delete it and the records after "
+                f"it deliberately to re-measure")
+        if (held.get("inputs_sha256"), held.get("previous_sha256")) != (inputs_digest, previous_sha256):
+            raise ReferenceRefusal(
+                f"{stage}: {self.path(stage)} was written for other inputs "
+                f"({str(held.get('inputs_sha256'))[:12]} -> {inputs_digest[:12]}); a record is written once by "
+                f"the stage that measured it -- delete it and the records after it deliberately to re-measure")
+        return held
+
+    def write(self, stage, payload, *, inputs_digest, previous_sha256):
+        """Write one record, sealed with the digest of its own body. A record already there is reused through
+        :meth:`reuse`, which every stage calls before it measures."""
+        held = self.reuse(stage, inputs_digest, previous_sha256)
+        if held is not None:
+            return held
+        sealed = dict(payload, stage=stage, inputs_sha256=inputs_digest, previous_sha256=previous_sha256)
+        body = _canonical(dict(sealed, body_sha256=_sha256_bytes(_canonical(sealed))))
         os.makedirs(self.dir, exist_ok=True)
         with open(self.path(stage), "wb") as fh:
             fh.write(body)
@@ -890,7 +904,12 @@ class ReferenceFamily:
         return self.records.read(STAGES[i - 1]), self.records.digest(STAGES[i - 1])
 
     def stage(self, name):
-        """Run one stage. Refuses a name that is not a stage, and a stage whose predecessor has not run."""
+        """Run one stage. Refuses a name that is not a stage, and a stage whose predecessor has not run.
+
+        A stage whose record is already there for these inputs returns it without measuring again; a stage
+        cannot know its inputs digest before it has resolved them, so each stage asks :meth:`Records.reuse` at
+        the point where it has and before it measures.
+        """
         if name not in STAGES:
             raise ReferenceRefusal(f"{name!r} is not a stage of the reference-pack protocol; the stages are "
                                    f"{', '.join(STAGES)}")
@@ -1097,6 +1116,11 @@ class ReferenceFamily:
         prev, prev_sha = self._prev("design")
         spc, ref = self.records.read("spec"), self.records.read("reference")
         d = self.design
+        waveform_labels = [label for label, _ in self.design.waveforms()]
+        inputs = self._inputs(prev_sha, dict(asdict(d), waveforms=None, envelope=d.envelope), waveform_labels)
+        held = self.records.reuse("design", inputs, prev_sha)
+        if held is not None:                                  # unchanged inputs: the pilot is not walked again
+            return held
         if self.build.walk is None:
             raise ReferenceRefusal("design: the pilot walks, so build.walk is required even for a family whose packs "
                                    "already exist; the pilot is what makes the walker count measured")
@@ -1214,7 +1238,6 @@ class ReferenceFamily:
                                      "factor, capped by the pilot's measured resident bytes per walker against the "
                                      "memory budget; never an estimate"),
                    trade=trade)
-        inputs = self._inputs(prev_sha, dict(asdict(d), waveforms=None, envelope=d.envelope), waveforms)
         return self.records.write("design", rec, inputs_digest=inputs, previous_sha256=prev_sha)
 
     # ---------------- 5. walk
@@ -1234,6 +1257,10 @@ class ReferenceFamily:
         prev, prev_sha = self._prev("walk")
         des = self.records.read("design")
         spc = self.records.read("spec")
+        inputs = self._inputs(prev_sha, sorted(spc["substrates"]), sorted(self.build.recorded))
+        held = self.records.reuse("walk", inputs, prev_sha)
+        if held is not None:                                  # unchanged inputs: nothing is walked again
+            return held
         budget = int(des["memory_budget_bytes"])
         per_walker = float(des["pilot"]["rss_bytes_per_walker"])
         out = {}
@@ -1251,7 +1278,6 @@ class ReferenceFamily:
                         f"the design's own cap is min(n_floor, n_budget), so this record did not come from that "
                         f"derivation")
                 out[name] = self._walk_now(name, n, des, projected)
-        inputs = self._inputs(prev_sha, sorted(out), [v.get("pack_sha256") or v.get("walk_sha256") for _, v in sorted(out.items())])
         return self.records.write("walk", dict(substrates=out), inputs_digest=inputs, previous_sha256=prev_sha)
 
     def _walk_now(self, name, n, des, projected):
@@ -1288,6 +1314,10 @@ class ReferenceFamily:
         """
         prev, prev_sha = self._prev("pack")
         des, ref, wlk = (self.records.read(s) for s in ("design", "reference", "walk"))
+        inputs = self._inputs(prev_sha, sorted(wlk["substrates"]))
+        held = self.records.reuse("pack", inputs, prev_sha)
+        if held is not None:                                  # unchanged inputs: nothing is re-measured
+            return held
         from .replay import ReplayPack
         out = {}
         for name in sorted(wlk["substrates"]):
@@ -1298,7 +1328,6 @@ class ReferenceFamily:
             else:
                 local, pack = self._build_pack(name, w, des)
             out[name] = self._certify(name, pack, local, des, ref)
-        inputs = self._inputs(prev_sha, {k: v["pack"]["sha256"] for k, v in out.items()})
         return self.records.write("pack", dict(substrates=out), inputs_digest=inputs, previous_sha256=prev_sha)
 
     def _build_pack(self, name, w, des):
@@ -1394,6 +1423,10 @@ class ReferenceFamily:
         prev, prev_sha = self._prev("card")
         rec = self.read_all("pack")
         gate = self.records.read("gate")
+        inputs = self._inputs(prev_sha, self.publication.repo, self.publication.snippet_substrate)
+        held = self.records.reuse("card", inputs, prev_sha)
+        if held is not None:                                  # unchanged inputs: the snippet is not run again
+            return held
         from ..spec import SubstrateSpec, preview as spec_preview
         prev_dir = os.path.join(self.dir, "previews")
         previews = {}
@@ -1422,7 +1455,6 @@ class ReferenceFamily:
                                 substitution="the card shows the snippet reading the pack at its hub URI and it was "
                                              "executed against the local file of the same sha256, so the only "
                                              "difference between the two is the download"))
-        inputs = self._inputs(prev_sha, out["card"]["sha256"], out["snippet"]["executed_sha256"])
         return self.records.write("card", out, inputs_digest=inputs, previous_sha256=prev_sha)
 
     def _hub_path(self, name, row):

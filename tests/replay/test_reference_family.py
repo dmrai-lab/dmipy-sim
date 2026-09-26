@@ -205,17 +205,34 @@ def test_every_stage_writes_its_record(ran):
     assert rec["design"]["derived"]["n_walkers"] > 0
 
 
-def test_a_stage_on_unchanged_inputs_returns_the_record_it_wrote(ran):
+@pytest.mark.parametrize("stage", ["source", "reference", "spec", "design", "walk", "pack", "gate", "card"])
+def test_a_stage_on_unchanged_inputs_returns_the_record_it_wrote(ran, stage, monkeypatch):
+    """Without a measurement, too: the design stage's pilot samples memory, so its record is not a
+    deterministic function of its inputs and a re-run that measured again could never return it. Each stage
+    asks for its record BEFORE it measures."""
     fam, rec = ran
-    before = (fam.records.digest("source"), os.path.getmtime(fam.records.path("source")))
-    again = fam.stage("source")
-    assert again == rec["source"]
-    assert (fam.records.digest("source"), os.path.getmtime(fam.records.path("source"))) == before
+    before = (fam.records.digest(stage), os.path.getmtime(fam.records.path(stage)))
+    if stage in ("design", "walk", "pack", "card"):
+        def refuse(*a, **k):
+            raise AssertionError(f"the {stage} stage measured again on unchanged inputs")
+        monkeypatch.setattr(R, "_PeakRSS", refuse)
+        monkeypatch.setattr(R, "_run_snippet", refuse)
+        monkeypatch.setattr(R, "_walk_from_pack", refuse)
+    again = fam.stage(stage)
+    assert again == rec[stage]
+    assert (fam.records.digest(stage), os.path.getmtime(fam.records.path(stage))) == before
+
+
+def test_every_record_seals_itself(ran):
+    fam, rec = ran
+    for stage in R.STAGES:
+        body = {k: v for k, v in rec[stage].items() if k != "body_sha256"}
+        assert rec[stage]["body_sha256"] == R._sha256_bytes(R._canonical(body)), stage
 
 
 def test_an_edited_record_is_not_a_measurement(ran):
-    """The write-once check compares the BODY. It compared only the digest fields, so editing a number in
-    `pack.json` and deleting `gate.json` re-ran the pack stage and got the edited number back unmeasured."""
+    """Every record seals itself with the digest of its own body, so an edited one is refused rather than
+    handed to the next stage as a measurement."""
     fam, rec = ran
     held = open(fam.records.path("pack")).read()
     gate = open(fam.records.path("gate")).read()
@@ -225,7 +242,7 @@ def test_an_edited_record_is_not_a_measurement(ran):
         with open(fam.records.path("pack"), "w") as fh:
             json.dump(forged, fh, indent=1, sort_keys=True)
         os.remove(fam.records.path("gate"))
-        with pytest.raises(R.ReferenceRefusal, match="is not what this run measured"):
+        with pytest.raises(R.ReferenceRefusal, match="does not match its own body_sha256"):
             fam.stage("pack")
     finally:
         for path, body in ((fam.records.path("pack"), held), (fam.records.path("gate"), gate)):
@@ -236,7 +253,7 @@ def test_an_edited_record_is_not_a_measurement(ran):
 def test_a_stage_whose_inputs_changed_is_refused(ran, tmp_path):
     fam, _ = ran
     other = _family(fam.dir, sources=_sources(tmp_path, host_record="synthetic v2"))
-    with pytest.raises(R.ReferenceRefusal, match="is not what this run measured"):
+    with pytest.raises(R.ReferenceRefusal, match="was written for other inputs"):
         other.stage("source")
 
 
