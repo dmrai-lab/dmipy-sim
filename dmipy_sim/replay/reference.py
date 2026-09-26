@@ -245,6 +245,11 @@ class Design:
 
     ``waveforms`` is a callable returning ``((label, ScannerSequence), ...)`` -- every waveform the family
     DECLARES, which the pack stage checks against ``waveform_band`` and the gate then reads.
+
+    ``false_failure_rate`` is the probability, DECLARED here and recorded before the gate runs, that the gate
+    fails a correct family; :func:`pass_band` turns it and the number of comparisons into the multiplier the
+    gate applies to its standard uncertainty. Without it the criterion is one standard error, which fails a
+    correct pack a third of the time per comparison.
     """
     window_s: float
     dt_save_s: float
@@ -257,6 +262,7 @@ class Design:
     pilot_n: int
     safety: float
     tolerance: Tolerance
+    false_failure_rate: float = 0.01
     systematics: tuple = ()
 
 
@@ -527,6 +533,33 @@ def tolerance_of(tol, context):
     return out, float(sum(v * v for v in out.values()) ** 0.5)
 
 
+def pass_band(n_comparisons, dof, *, false_failure_rate):
+    """The multiplier ``k`` a gate of ``n_comparisons`` comparisons applies to its standard uncertainty so that
+    the whole gate fails a CORRECT family with probability ``false_failure_rate``.
+
+    A criterion of one standard error is not a criterion: a correct pack sits outside its own 1-sigma band a
+    third of the time, and over several comparisons that is most runs. The band is the two-sided Student-t
+    quantile at ``false_failure_rate / (2 n_comparisons)`` on the estimator's own degrees of freedom -- the
+    Bonferroni form, so the rate is over the whole gate and not per comparison. It is derived from the
+    comparison COUNT and the estimator, never from the data, and the design record carries it before the gate
+    runs: that is what makes it different from a coverage factor typed in after a failure.
+    """
+    from scipy.stats import t as student
+    m, nu, alpha = int(n_comparisons), int(dof), float(false_failure_rate)
+    if m < 1 or nu < 1:
+        raise ReferenceRefusal(f"pass band: {m} comparisons on {nu} degrees of freedom; both must be positive")
+    if not (0.0 < alpha < 1.0):
+        raise ReferenceRefusal(f"pass band: a false-failure rate of {alpha!r} is not a probability in (0, 1)")
+    k = float(student.isf(0.5 * alpha / m, nu))
+    one_sigma = 1.0 - (1.0 - 2.0 * float(student.sf(1.0, nu))) ** m      # what a one-sigma criterion would cost
+    return dict(n_comparisons=m, dof=nu, false_failure_rate=alpha, k=k, one_sigma_false_failure_rate=one_sigma,
+                distribution=f"Student-t on {nu} degrees of freedom",
+                rule=(f"the gate makes {m} comparisons against a standard uncertainty on {nu} degrees of "
+                      f"freedom; a band of {k:.4f} standard uncertainties per comparison fails a correct "
+                      f"family with probability {alpha:g} over the whole gate (two-sided, Bonferroni). A "
+                      f"one-sigma criterion would fail one about {one_sigma:.0%} of the time."))
+
+
 # --------------------------------------------------------------- the gate
 def _gate_checks(rec):
     """Every check the gate makes, as ``[{check, passed, detail}]``, from the records in ``rec`` alone.
@@ -610,13 +643,18 @@ def _gate_checks(rec):
                   f"measurement is on {q['direct']['grid']} with {q['direct']['solver']!r}")
             ctx = dict(reference=ref, design=des, spec=spc, walk=wlk, pack=sub,
                        quantity=dict(q, replayed=got["value"], replay_se=got["se"]))
-            terms, tol = tolerance_of(des["tolerance"], ctx)
+            terms, u = tolerance_of(des["tolerance"], ctx)
+            k = des["pass_band"]["k"]
+            tol = k * u
             rel = abs(got["value"] - q["direct"]["value"]) / abs(q["direct"]["value"])
             check(rel <= tol, f"{name}/reproduces-{qname}",
                   f"replayed {got['value']:.6g} against the recorded direct {q['direct']['value']:.6g}: "
-                  f"{rel:.3%} of it, against a tolerance of {tol:.3%} from "
+                  f"{rel:.3%} of it, {rel / u:.3g} standard uncertainties, against the design record's band of "
+                  f"{k:.4g} ({tol:.3%}) at a declared false-failure rate of "
+                  f"{des['pass_band']['false_failure_rate']:g} over {des['pass_band']['n_comparisons']} "
+                  f"comparisons; the uncertainty is "
                   + ", ".join(f"{p}={v:.3g}" for p, v in sorted(terms.items())),
-                  relative=rel, tolerance=tol, terms=terms)
+                  relative=rel, tolerance=tol, sigma=rel / u, standard_uncertainty=u, k=k, terms=terms)
     return checks
 
 
@@ -939,7 +977,7 @@ class ReferenceFamily:
         the trade and which tier holds.
         """
         prev, prev_sha = self._prev("design")
-        spc = self.records.read("spec")
+        spc, ref = self.records.read("spec"), self.records.read("reference")
         d = self.design
         if self.build.walk is None:
             raise ReferenceRefusal("design: the pilot walks, so build.walk is required even for a family whose packs "
@@ -1020,7 +1058,14 @@ class ReferenceFamily:
                                        f"term of the gate's budget is measured and carries the numbers it was "
                                        f"measured from")
             systematics[s.name] = asdict(s)
-        rec = dict(window_s=float(d.window_s), dt_save_s=float(d.dt_save_s), n_t=n_t,
+        # the number of comparisons the gate will make is a property of the reference record, so the band is
+        # known before any of them is made: one `reproduces-` and one `published-` per recorded quantity
+        n_cmp = 2 * max(1, len(ref.get("quantities") or ()))
+        band = dict(pass_band(n_cmp, max(n_walkers - 1, 1), false_failure_rate=float(d.false_failure_rate)),
+                    counted="one reproduces- and one published- comparison per quantity of the reference record",
+                    dof_is="the walker count the design sets, minus one: the smallest count any term's standard "
+                           "error is measured over")
+        rec = dict(window_s=float(d.window_s), dt_save_s=float(d.dt_save_s), n_t=n_t, pass_band=band,
                    save_grid_why=d.save_grid_why, K=int(d.K), envelope=d.envelope, waveforms=waveforms,
                    tiers=tiers, memory_budget_bytes=int(d.memory_budget_bytes), tolerance=tol,
                    systematics=systematics,

@@ -47,6 +47,8 @@ K_BANDS = 128       #: bands per 100 ms storage window, set by the declared grad
 BUDGET_BYTES = 60_000_000_000
 PILOT_N = 8000
 SEED = 0
+FALSE_FAILURE_RATE = 0.01   #: the probability this gate fails a CORRECT family, DECLARED before it runs; the
+                            #: band per comparison follows from it and the comparison count (`reference.pass_band`)
 INVERT_MS = 1.0     #: the sampling of the decay the log-mean is inverted on -- part of the measurement
 T2_GRID = dict(kind="log", n=60, from_s=1e-3, to_s=10.0)
 SOLVER = "non-negative least squares with a second-difference penalty, lam = 0.1 (t2_distribution)"
@@ -343,6 +345,7 @@ def family(data_dir, work_dir, *, rocks, dry, create_dataset):
         tiers=(Tier(name="contact", floor_key="floor_surface", err_key="err_surface", target_floor=SIGMA),
                Tier(name="positions", floor_key="floor_max", err_key="err_max", target_floor=SIGMA)),
         memory_budget_bytes=BUDGET_BYTES, pilot_n=PILOT_N, safety=1.4,
+        false_failure_rate=FALSE_FAILURE_RATE,
         tolerance=Tolerance(terms=("quantity.direct.se", "quantity.replay_se",
                                    "quantity.published.uncertainty",
                                    "design.systematics.save_grid_step.value")),

@@ -451,6 +451,47 @@ def test_terms_are_combined_in_quadrature_and_nothing_else():
         R.tolerance_of(dict(terms=["a.x"], combine="sum"), ctx)
 
 
+# --------------------------------------------------------------- the pass band
+def test_a_one_sigma_criterion_is_not_a_criterion():
+    """MEASURED: over four comparisons a one-standard-error rule fails a CORRECT family 78 % of the time. The
+    band is derived from the comparison count and a DECLARED false-failure rate, before the gate runs."""
+    band = R.pass_band(4, 42631, false_failure_rate=0.01)
+    assert band["k"] == pytest.approx(3.0235, abs=1e-3)
+    assert band["one_sigma_false_failure_rate"] > 0.75
+    assert R.pass_band(1, 42631, false_failure_rate=0.01)["k"] < band["k"]     # fewer comparisons, tighter band
+    assert R.pass_band(4, 42631, false_failure_rate=0.05)["k"] < band["k"]     # a looser rate, tighter band
+
+
+def test_the_pass_band_is_the_one_multiplicity_quantile_in_the_repo():
+    """`cross_engine_parity.multiplicity_thresholds` reads the same quantile, so the two cannot drift."""
+    from examples.validation.cross_engine_parity import multiplicity_thresholds
+    for m, nu in ((360, 99999), (100, 99999)):
+        assert multiplicity_thresholds(m, nu)["k_family_wise"] == R.pass_band(m, nu, false_failure_rate=0.5)["k"]
+
+
+@pytest.mark.parametrize("args,kw,match", [
+    ((0, 10), dict(false_failure_rate=0.01), "must be positive"),
+    ((4, 0), dict(false_failure_rate=0.01), "must be positive"),
+    ((4, 10), dict(false_failure_rate=0.0), "not a probability"),
+    ((4, 10), dict(false_failure_rate=1.0), "not a probability"),
+])
+def test_the_pass_band_refuses_what_is_not_a_band(args, kw, match):
+    with pytest.raises(R.ReferenceRefusal, match=match):
+        R.pass_band(*args, **kw)
+
+
+def test_the_gate_reads_its_band_from_the_design_record(ran):
+    fam, rec = ran
+    band = rec["design"]["pass_band"]
+    assert band["n_comparisons"] == 2 * len(rec["reference"]["quantities"])
+    assert band["dof"] == rec["design"]["derived"]["n_walkers"] - 1
+    assert band["false_failure_rate"] == 0.01
+    c = next(c for c in rec["gate"]["checks"] if c["check"] == "sphere/reproduces-signal_at_b")
+    assert c["k"] == band["k"]
+    assert c["tolerance"] == pytest.approx(band["k"] * c["standard_uncertainty"])
+    assert c["sigma"] == pytest.approx(c["relative"] / c["standard_uncertainty"])
+
+
 def test_the_gate_contains_no_typed_tolerance():
     """Every threshold the gate applies comes from a record. A float literal in its body would be one that
     does not, which is how a pack 2.2x off its reference passed (#482)."""
