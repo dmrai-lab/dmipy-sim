@@ -120,7 +120,8 @@ class Primitives:
     ``pathway`` the amplitude of the coherence pathway the acquisition's readout is
     (:func:`~dmipy_sim.acquisition.epg.pathway_weight`; 1 for a refocused echo, a stimulated echo's
     ``0.5 sin a1 sin a2 sin a3`` for a store-and-recall schedule), and ``voxel`` the voxel's factor per
-    measurement (:meth:`~dmipy_sim.acquisition.scanner_sequence.ScannerSequence.voxel_factor`). A tissue and a
+    measurement (:meth:`~dmipy_sim.acquisition.scanner_sequence.ScannerSequence.voxel_factor`; required, since a
+    default of 1 is wrong for an unbalanced encoding rather than merely absent). A tissue and a
     scanner turn these into the per-walker weights and phases of :meth:`signals`, whose ensemble mean is
     :meth:`signal`."""
     w: np.ndarray
@@ -131,9 +132,17 @@ class Primitives:
     exposure_t1: Optional[np.ndarray]
     contact: Optional[np.ndarray]
     D_walk: Optional[float]
+    voxel: np.ndarray                                          # required: there is no sane default (see __post_init__)
     pathway: float = 1.0
-    voxel: Optional[np.ndarray] = None
     by_pool: object = field(repr=False, default=None)          # the pack's resolver of a per-pool value
+
+    def __post_init__(self):
+        if self.voxel is None:
+            raise ValueError(
+                "Primitives.voxel is required: it is the acquisition's voxel factor per measurement "
+                "(ScannerSequence.voxel_factor, 1 for a refocused encoding and the spoiler for an unbalanced one). "
+                "A default of 1 is not safe, because for an unbalanced encoding it silently serves the un-crushed "
+                "substrate signal instead of the voxel's")
 
     @property
     def n_pools(self):
