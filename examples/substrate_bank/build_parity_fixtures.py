@@ -525,7 +525,10 @@ REFERENCES = {
                       "reproduces this MISST reference to the Monte-Carlo floor: 1.97e-3 and 1.31e-3 "
                       "respectively, 7.27 and 5.66 sigma, 31 and 26 of 100 measurements outside their own "
                       "3-sigma band. So the residual is not the mesh and not the faceting (a 49-gon's second "
-                      "moment is 0.27 % low, worth 4e-6 here). It is invisible below ~30,000 walkers and the "
+                      "moment is 0.27 % low, and the measured faceting term -- mesh against the ANALYTIC "
+                      "cylinder at the same N, seed and waveform, MISST not involved -- is 8.00e-4 and sits "
+                      "INSIDE its own band at 1.617 sigma, so the two geometries agree with each other and "
+                      "both disagree with MISST). It is invisible below ~30,000 walkers and the "
                       "repo's own cylinder-vs-MISST test carries atol=0.02, forty times the floor at this "
                       "count, so nothing has probed it before. Held until #488 says whether the 1.3e-3 is "
                       "MISST's own truncation -- the reference's uncertainty -- or ours.")),
