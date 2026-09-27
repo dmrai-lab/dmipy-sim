@@ -425,8 +425,19 @@ def family(mcdc_data, disimpy_data, work_dir, *, names, dry, create_dataset):
                      "(1.97e-3 and 1.31e-3, 7.27 and 5.66 sigma). The measured faceting term -- mesh against "
                      "the analytic cylinder at the same N, seed and waveform, MISST not involved -- is 8.00e-4 "
                      "and sits inside its own band, so the two geometries agree with each other and both "
-                     "disagree with MISST. #488 is whether that is MISST's own truncation or ours; until it "
-                     "says, the gate fails this pack and the publish withholds it."),
+                     "disagree with MISST. #488 is whether that is MISST's own truncation or ours.\n\n"
+                     "**This gate does not fail that pack, and cannot.** The evidence for the hold is a VECTOR: "
+                     "the worst of 100 measurements at 1.97e-3, with 31 of them outside their own 3-sigma band. "
+                     "A `ReferenceQuantity` is a scalar, so this family compares one DECLARED measurement -- the "
+                     "last of the protocol, its highest b -- and there the pack agrees with MISST to 1.8e-5. The "
+                     "hold therefore stands on #488 and on this family's earlier records/pre-protocol/gate.json, "
+                     "not on the verdict below; see dmipy-sim#493 for what the protocol needs to carry it."),
+            reproduces=("The `reproduces-` comparison is DEGENERATE for this family and its 1e-9 sigma should be "
+                        "read as such. Our direct number is measured on the pack's own decoded positions, "
+                        "because the walk that produced the pack was not retained, so `reproduces-` and "
+                        "`served-equals-decoded` are two readings of one channel and differ only by the "
+                        "reduction. The comparison that carries information here is `published-`, against the "
+                        "other engine's released array."),
             direct=("These packs' walks were not retained: a 100,000-walker walk of 2,677 saves is 8 GB per "
                     "fixture. The direct numbers are therefore the ones the walk that produced each pack "
                     "recorded, in this family's own records/build.json, measured by the estimator "

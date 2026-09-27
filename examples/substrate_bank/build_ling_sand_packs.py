@@ -323,6 +323,41 @@ def measured_se(sample, work_dir, grid):
     return cache[sample]["value"]
 
 
+def t2b_systematic(work_dir):
+    """The relative spread the comparison inherits from ``T2B`` being OURS, MEASURED rather than asserted.
+
+    The paper states no bulk T2, so the log-mean carries whatever that parameter's range does. What the range is
+    worth is not the range itself: the family's own reproduction replays each pack at T2B = 2.4 and 3.1 s (the
+    stated range) and the LOG-MEAN moves by 3.94 % of itself on the quartz pack and 1.27 % on the garnet one,
+    where half the parameter's own range over the 3.0 s used is 11.67 %. Writing 11.67 % here -- which this
+    declaration did -- put a term three times the measurement into the gate's budget and made it the dominant
+    one: a 17.7 % disagreement with Ling's own number then sat INSIDE a 35.3 % band and the card's first
+    paragraph said nothing about it. The term is the largest MEASURED half-spread over the packs that carry a
+    quantity, and it carries the numbers it was measured from.
+    """
+    rep = reproduction(work_dir)["samples"]
+    per = {}
+    for s in PURE:
+        o = rep[s]["reference"]["ours"]
+        r = sorted((float(k), float(v)) for k, v in o["over_T2B_range"].items())
+        per[s] = dict(at_T2B_s=float(o["at_T2B_s"]), T2lm_ms=float(o["T2lm_ms"]),
+                      low=r[0], high=r[-1],
+                      half_spread=abs(r[-1][1] - r[0][1]) / 2.0 / float(o["T2lm_ms"]))
+    worst = max(per, key=lambda s: per[s]["half_spread"])
+    return dict(
+        name="bulk_T2_is_ours", value=float(per[worst]["half_spread"]),
+        measured_on=f"{worst}, the largest of the packs that carry a quantity",
+        evidence=("the paper states no bulk T2 for the brine. The family's own reproduction replays each pack at "
+                  "the ends of the stated range and the LOG-MEAN moves by: "
+                  + "; ".join(f"{s} {per[s]['low'][1]:.3f} ms at T2B {per[s]['low'][0]:g} s and "
+                              f"{per[s]['high'][1]:.3f} at {per[s]['high'][0]:g}, against "
+                              f"{per[s]['T2lm_ms']:.3f} at {per[s]['at_T2B_s']:g} -- a half-spread of "
+                              f"{per[s]['half_spread']:.5f}" for s in sorted(per))
+                  + f". The term is the largest, {per[worst]['half_spread']:.5f}. Half the PARAMETER's own "
+                    f"range over the 3.0 s used is {abs(3.1 - 2.4) / 2.0 / T2B:.5f}, three times that, and "
+                    f"using it would be widening a threshold by a number nothing measured"))
+
+
 def family(data_dir, work_dir, *, samples, dry, create_dataset):
     rep = reproduction(work_dir)
     walk_rec = pre(work_dir, "walk")["packs"]
@@ -444,13 +479,7 @@ def family(data_dir, work_dir, *, samples, dry, create_dataset):
         tolerance=Tolerance(terms=("quantity.direct.se", "quantity.replay_se",
                                    "quantity.published.uncertainty",
                                    "design.systematics.bulk_T2_is_ours.value")),
-        systematics=(Systematic(
-            name="bulk_T2_is_ours", value=float(abs(3.1 - 2.4) / 2.0 / T2B),
-            measured_on="the reproduction's own T2B sweep",
-            evidence="the paper states no bulk T2. The reproduction reports the log-mean over T2B in "
-                     "[2.4, 3.1] s, and half that range over the 3.0 s used is the relative spread the "
-                     "comparison inherits from a parameter that is ours and not theirs. It is a systematic of "
-                     "the comparison, not Monte-Carlo noise more walkers would remove."),))
+        systematics=(Systematic(**t2b_systematic(work_dir)),))
 
     build = Build(
         specs={s: (lambda ss=s: spec_of(ss, data_dir, work_dir)) for s in samples},
