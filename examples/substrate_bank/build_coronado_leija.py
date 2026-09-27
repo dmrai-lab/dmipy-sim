@@ -123,9 +123,18 @@ SAVE_GRID_WHY = (
     "high-resolution 15 nm tier is not refused by the sub-step rule (21,334 sub-steps per save against the "
     "100,000 cap, where a 625 us grid needs 533,334)")
 
+#: The relaxivities the CONTACT tier's certificate is probed at. They are a probe of the channel and not a
+#: physical claim: this family fits no surface relaxivity and no permeability -- it stores the boundary local
+#: time so that both are replay knobs, which is the only way a white-matter pack can answer the axolemma
+#: exchange question at all -- and the ladder is the bank's own default, which brackets the membrane
+#: permeabilities the exchange literature reports (1e-6 to 1e-4 m/s) at the scale the channel has to be
+#: accurate at. A ``rho_list`` of ``[0.0]`` would make the tier's floor and codec error identically zero and
+#: its ``meets_target`` vacuously true, which is a certificate that certifies nothing.
+RHO_PROBE = (1e-5, 3e-5, 1e-4)
+
 ENVELOPE = dict(bvals=list(BVALS), dirs=[[0, 0, 1], [1, 0, 0], [1, 0, 1]],
                 delta_frac=DELTA / TE, Delta_frac=BIG_DELTA / TE, ogse_periods=[1, 2, 3],
-                shortd_b=max(BVALS), shortd_deltas_frac=[DELTA / TE], rho_list=[0.0])
+                shortd_b=max(BVALS), shortd_deltas_frac=[DELTA / TE], rho_list=list(RHO_PROBE))
 
 
 # ----------------------------------------------------------------- the regions of interest, as released
@@ -655,13 +664,23 @@ def family(data_dir, work_dir, *, substrates=None, dry=True, create_dataset=Fals
                 "3.1e8 voxels against 3-7e9 and is the cheaper first walk; it is also the one the sub-step "
                 "rule refuses hardest.")))
 
+    # the pilot is named, and it is the CHEAPEST region: the pilot walks the real window, and on a substrate
+    # of 3.3-7.4 G voxels an unnamed pilot is whichever region sorts first, which here is the largest of the
+    # nineteen. The protocol scales the floor it measures, so the choice costs the design nothing but time
+    pilot = min(names, key=lambda n: int(np.prod([rois[n]["crop"][i + 3] - rois[n]["crop"][i]
+                                                 for i in range(3)])))
     design = Design(
         window_s=TE, dt_save_s=DT_SAVE, save_grid_why=SAVE_GRID_WHY, K=K_BANDS, envelope=ENVELOPE,
         waveforms=waveforms,
+        # BOTH tiers, deliberately, and this is what makes #478 load-bearing rather than an optimisation: the
+        # contact tier is the stored boundary local time, and declaring it puts the surface-local-time rule in
+        # force (1,921 sub-steps per 25 us save against the reflection rule's 121). A positions-only pack of
+        # this substrate is walkable today at a sixteenth of the cost -- and freezes rho and kappa into the
+        # walk, which for a myelinated axon is the one thing a pack must not do
         tiers=(Tier(name="positions", floor_key="floor_max", err_key="err_max", target_floor=SIGMA),
                Tier(name="contact", floor_key="floor_surface", err_key="err_surface", target_floor=SIGMA)),
         memory_budget_bytes=BUDGET_BYTES, pilot_n=PILOT_N, safety=1.4,
-        false_failure_rate=FALSE_FAILURE_RATE, pilot_substrate=names[0],
+        false_failure_rate=FALSE_FAILURE_RATE, pilot_substrate=pilot,
         tolerance=Tolerance(terms=("quantity.direct.se", "quantity.replay_se",
                                    "quantity.published.uncertainty")))
 
@@ -670,7 +689,7 @@ def family(data_dir, work_dir, *, substrates=None, dry=True, create_dataset=Fals
         pack_id={s: f"coronado-leija-2024/{s}" for s in names},
         reproduce=reproduce, served_vs_channel=served_vs_channel, served_tier="positions", walk=walk)
     publication = Publication(repo=REPO, licence=LICENCE, citation=CITATION, snippet=snippet,
-                              snippet_substrate=names[0], pack_path=lambda name: f"packs/{name}.rpk",
+                              snippet_substrate=pilot, pack_path=lambda name: f"packs/{name}.rpk",
                               create_dataset=create_dataset, dry=dry)
     return ReferenceFamily("coronado-leija-2024", work_dir, sources=sources, reference=reference,
                            design=design, build=build, publication=publication, resolver=resolver)

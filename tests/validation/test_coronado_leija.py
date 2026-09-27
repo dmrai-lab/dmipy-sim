@@ -34,7 +34,7 @@ def _limits():
     rows = np.zeros((19, len(B.SAMPLES)), int)
     for col, sample in enumerate(B.SAMPLES):
         animal = sample.split("_")[1]
-        nx, ny, nz = 40 + col, 60 + col, 20 + col
+        nx, ny, nz = 60 - col, 80 - col, 40 - col     # decreasing, so the cheapest region is not the first
         rows[:, col] = [int(animal), int(sample.endswith("ipsi")), 1000 + col, 10 + col, nx, ny, nz,
                         1, nx, 1, ny // 2, 1, nz,                      # cc: the lower half in y
                         1, nx, ny // 2 + 1, ny, 1, nz]                 # cg: the upper half in y
@@ -272,3 +272,22 @@ def test_the_only_parameter_of_ours_that_touches_the_geometry_would_cost_the_A(t
     moved = dict(rec, geometry_parameters_ours=["ROI limits"], same_released_geometry=False)
     assert grade_of(moved) == "B"
     assert "ROI limits" in grade_reason(moved)
+
+
+def test_the_pilot_is_named_and_is_the_cheapest_region(tmp_path):
+    """An unnamed pilot walks whichever region sorts first, which here is one of the largest of the nineteen."""
+    fam, rois = _family(tmp_path)
+    voxels = {n: int(np.prod([r["crop"][i + 3] - r["crop"][i] for i in range(3)])) for n, r in rois.items()}
+    assert fam.design.pilot_substrate == min(voxels, key=voxels.get)
+    assert fam.design.pilot_substrate != sorted(rois)[0]
+
+
+def test_the_contact_tier_is_probed_at_a_relaxivity_that_can_fail_it():
+    """A ``rho_list`` of zeros makes the contact tier's floor and codec error identically zero.
+
+    ``_measure_floor`` scales the stored local time by ``rho / D``, so at ``rho = 0`` both the raw and the
+    decoded signal are 1 for every walker, the split-half floor is 0, and ``meets_target`` is vacuously true --
+    a certificate that certifies nothing, which is the first entry on docs/reference-family.md's list.
+    """
+    assert B.ENVELOPE["rho_list"] == list(B.RHO_PROBE)
+    assert all(r > 0.0 for r in B.RHO_PROBE)
