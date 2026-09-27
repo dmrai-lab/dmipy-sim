@@ -8,6 +8,7 @@ that exist, a box with positive extent, tiers consistent with the content.
 """
 from __future__ import annotations
 
+import dataclasses
 import json
 from dataclasses import dataclass, field, asdict, fields, is_dataclass
 from pathlib import Path
@@ -22,6 +23,8 @@ DIRECTORS = ("none", "radial", "file")
 SEEDING_RULES = ("uniform_by_volume", "explicit")
 WEIGHT_RULES = ("water_fraction", "thin")
 TIERS = ("gradient", "relaxation", "surface", "field", "exchange")
+#: The numbers a :class:`Pool` carries, which :meth:`SubstrateSpec.replace` takes per pool.
+POOL_VALUES = ("D", "T1", "T2", "water_fraction", "susceptibility")
 
 
 class SpecError(ValueError):
@@ -178,6 +181,47 @@ class SubstrateSpec:
     def field_source_pools(self):
         """The pools that generate a susceptibility field."""
         return [p for p in self.pools if p.susceptibility is not None]
+
+    # ---- changing values ----
+    def replace(self, **changes):
+        """This spec with some values changed, re-validated.
+
+        A value a pool carries (:data:`POOL_VALUES`) is given as a ``{pool name: value}`` mapping and merges
+        pool by pool onto the pools held, so ``spec.replace(D={"intra": 0.6e-9})`` sets one pool's diffusivity
+        and keeps every other pool, and every other field, as it stands; a pool name the spec does not have,
+        one value where a mapping belongs, and a key that is no field of a spec are refused, naming it. Any
+        other field of the spec is replaced as given. Each replaced value is recorded in
+        ``provenance.transformations`` with the value it replaced, so a walk of this spec -- and a pack built
+        from that walk -- says what was set and from what.
+        """
+        names = [p.name for p in self.pools]
+        per_pool = {k: changes.pop(k) for k in POOL_VALUES if k in changes}
+        not_fields = sorted(set(changes) - {f.name for f in fields(self)})
+        if not_fields:
+            raise SpecError(f"replace: {not_fields} is no field of a substrate spec; the per-pool values are "
+                            f"{list(POOL_VALUES)} and the spec's own fields are {[f.name for f in fields(self)]}")
+        for k, given in per_pool.items():
+            if not isinstance(given, dict):
+                raise TypeError(f"{k} is a value each pool carries: replace takes {{pool name: {k}}} over the pools "
+                                f"it changes (this spec's are {names}), not the one value {given!r}")
+            unknown = [n for n in given if n not in names]
+            if unknown:
+                raise SpecError(f"replace: {k} names the pool(s) {unknown}, which this spec does not have; its pools "
+                                f"are {names}")
+            if k == "susceptibility":
+                per_pool[k] = {n: (_build(Susceptibility, dict(su)) if isinstance(su, dict) else su)
+                               for n, su in given.items()}
+        pools, notes = [], []
+        for p in self.pools:
+            vals = {k: given[p.name] for k, given in per_pool.items() if p.name in given}
+            notes += [f"pool {p.name!r} {k} replaced: {getattr(p, k)!r} -> {val!r} (SubstrateSpec.replace)"
+                      for k, val in vals.items()]
+            pools.append(dataclasses.replace(p, **vals) if vals else p)
+        prov = changes.pop("provenance", self.provenance)
+        if notes:
+            prov = dict(prov or {})
+            prov["transformations"] = list(prov.get("transformations") or []) + notes
+        return dataclasses.replace(self, pools=pools, provenance=prov, **changes).validate()
 
     # ---- JSON ----
     def to_dict(self):
