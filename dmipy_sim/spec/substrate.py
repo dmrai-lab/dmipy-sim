@@ -138,6 +138,15 @@ class Seeding:
 
 @dataclass(frozen=True)
 class Validity:
+    """What the substrate can represent, and which tiers a pack of it may claim.
+
+    ``smallest_feature`` is the smallest feature the SUBSTRATE expresses -- a radius, a shell, or for a
+    ``label_volume`` the voxel. It is not the step the walk was resolved at and must not be read as one:
+    a consumer that needs the step reads ``realisation.step_scale`` where the producer records it (for a
+    label volume that is the narrowest passage the seeded water occupies, which on a grid that resolves
+    its pores is ten times the voxel and more -- see
+    :func:`dmipy_sim.geometry.label_volume.measure_passage_width`), or the pack's own ``sub_steps``.
+    """
     smallest_feature: float
     tiers: list
     min_gap: Optional[float] = None

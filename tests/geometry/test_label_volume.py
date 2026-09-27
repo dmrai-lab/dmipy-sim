@@ -492,7 +492,7 @@ def test_length_scales_are_the_seeded_pool_s_narrowest_passage_and_nothing_else(
     g, d = slab()
     ls = g.length_scales
     assert ls == LengthScales(min_feature=pytest.approx(d))     # the 20-voxel pore, not the 0.5 um voxel
-    assert g.passage_width.voxel == 0.5e-6 and g.passage_width.floor_share == 0.0
+    assert g.passage_width.voxel == 0.5e-6 and g.passage_width.floor_water_share == 0.0
     assert g.surface_to_volume() == pytest.approx(2 / d)    # measured, and not a step rule
     dt = (0.5e-6) ** 2 / (6 * D)                            # one voxel per step
     assert resolve_sub_steps(g, D, dt, surface=True) == 1

@@ -498,13 +498,22 @@ def label_volume_spec(path, *, pools=None, voxel_size=None, origin=None, crop=No
         f"measured S/V of the {walking!r} pool {s_over_v:.6g} 1/m at porosity {phi:.6g}",
         ("the crop's own outer faces are not a wall: they are the domain's " +
          ", ".join(f"{'periodic' if p else 'reflect'} {ax}" for ax, p in zip("xyz", per))),
-        (f"the step rules divide the narrowest passage the {walking!r} water occupies, measured on the "
-         f"seeded pool: {passage.width * 1e6:.4g} um at a {passage.budget:g} water budget "
-         + (f"({passage.floor_share:.3g} of that water is in a ONE-voxel passage, so the budget holds "
-            f"the voxel floor)" if passage.width <= passage.voxel else
-            f"({passage.floor_share:.3g} of that water is in a one-voxel passage, under the budget; "
-            f"voxel {passage.voxel * 1e6:.4g} um)")
-         + f"; its median passage is {passage.median * 1e6:.4g} um and its mean V/S {1e6 / s_over_v:.4g} um"),
+        (f"the step rules of a reflecting wall divide the narrowest passage the {walking!r} water "
+         f"occupies, measured on the seeded pool: {passage.width * 1e6:.4g} um at a {passage.budget:g} "
+         f"budget of its walled water AND of its wall area"
+         + (" -- this pool meets no other pool along any axis, so nothing bounds its passages and the "
+            "rules keep the voxel floor" if not passage.walled else
+            (f" (the budget holds it at the voxel floor: {passage.floor_water_share:.3g} of that walled "
+             f"water and {passage.floor_area_share:.3g} of its wall faces are in a ONE-voxel passage)"
+             if passage.width <= passage.voxel else
+             f" (it steps over {passage.water_share:.3g} of that walled water and "
+             f"{passage.area_share:.3g} of its wall faces, both under the budget; the voxel is "
+             f"{passage.voxel * 1e6:.4g} um and {passage.floor_water_share:.3g} of the water is in a "
+             f"one-voxel passage)"))
+         + (f"; its median passage is {passage.median * 1e6:.4g} um and its mean V/S "
+            f"{1e6 / s_over_v:.4g} um" if passage.walled else "")
+         + ". A permeable wall would divide the voxel instead (one Powles decision per step); this "
+           "producer declares none"),
     ]
     if crop is not None:
         transformations.append(f"crop {list(int(x) for x in crop)} of the released image, half-open, in voxels")
@@ -517,7 +526,9 @@ def label_volume_spec(path, *, pools=None, voxel_size=None, origin=None, crop=No
         description=description or (f"a segmented {'x'.join(str(int(n)) for n in lab.shape)} image at "
                                    f"{float(np.min(vox)) * 1e6:.4g} um; the {walking!r} pool walks between its voxel faces"),
         realisation={"shape": [int(n) for n in lab.shape], "porosity": phi, "surface_to_volume": s_over_v,
-                     "voxel_size_m": [float(x) for x in vox], "step_scale": passage.record()},
+                     "voxel_size_m": [float(x) for x in vox],
+                     # this producer emits no permeable wall, so the reflecting rule is the one recorded
+                     "step_scale": passage.record(permeable=False)},
         provenance={"source": source or "segmented image",
                     # a detached container is two files and `surface.sha256` covers only the one it
                     # cites, so every file the image was read from is recorded with its own digest
