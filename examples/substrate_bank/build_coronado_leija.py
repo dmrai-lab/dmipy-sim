@@ -657,6 +657,13 @@ def family(data_dir, work_dir, *, substrates=None, dry=True, create_dataset=Fals
                 "fraction of corpus callosum axons in the perpendicular direction\" -- so the cingulum "
                 "regions' eventual signal comparison is against a mixed voxel. That is theirs, it is stated, "
                 "and it is a reason to read the corpus-callosum regions first."),
+            three_files=(
+                "f is read from THREE released files -- the myelin mask, the myelinated-axon instance labels "
+                "and the cell-nucleus labels -- and Published.data_sha256 is one digest, so it carries the "
+                "axon file's, the one the intra-axonal numerator comes from. All three are digested in the "
+                "source record and all three are in this family's own f-measurements.json beside the value "
+                "they produced, so the reading can be checked against the bytes; it is the single-digest field "
+                "that is narrower than the measurement, not the record."),
             resolution=(
                 "Two tiers are released per sample and both are declared: the 50 nm low-resolution volumes "
                 "these regions are cropped from, and 15 x 15 x 50 nm high-resolution volumes of the corpus "
