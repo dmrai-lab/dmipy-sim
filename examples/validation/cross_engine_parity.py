@@ -400,13 +400,16 @@ def multiplicity_thresholds(n_live, dof, *, k_per=3.0, expected_family_wise=0.5,
     """
     from math import ceil, sqrt
     from scipy.stats import t as student
+    from dmipy_sim.replay.reference import pass_band
     m, nu = int(n_live), int(dof)
     if m < 1 or nu < 1:
         raise ValueError(f"n_live {m} and dof {nu} must both be positive")
     p_per = 2.0 * float(student.sf(k_per, nu))                        # two-sided, on the estimator's own dof
     mean = m * p_per
     max_exc = int(ceil(mean + poisson_sigma * sqrt(mean)))
-    k_fw = float(student.isf(0.5 * float(expected_family_wise) / m, nu))
+    # the family-wise band is the same Bonferroni quantile the reference protocol's gate uses
+    # (dmipy_sim.replay.reference.pass_band), so the two derivations cannot drift apart
+    k_fw = pass_band(m, nu, false_failure_rate=float(expected_family_wise))["k"]
     return dict(n_live=m, dof=nu, estimator="analytic standard error of the ensemble mean, sd/sqrt(N)",
                 distribution=f"Student-t on {nu} dof", k_per_measurement=float(k_per),
                 p_per_measurement=p_per, expected_exceedances=mean, poisson_sigma=float(poisson_sigma),

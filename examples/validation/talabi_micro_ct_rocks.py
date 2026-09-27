@@ -126,6 +126,38 @@ def log_mean_T2(T2_grid, a):
     return float(np.exp((a * np.log(T2_grid)).sum() / w)) if w > 0 else float("nan")
 
 
+def log_mean_gradient(t, S, T2_grid, lam=0.1):
+    """``(T2lm, dT2lm/dS)``: the log-mean and its gradient with respect to the decay it was inverted from.
+
+    This is what an ANALYTIC error bar on the log-mean needs. The estimator is a non-negative Tikhonov solve,
+    so on its own active set it is LINEAR in the decay: with ``A`` the set of grid points the solve keeps,
+    ``a_A = (K_A' K_A + c^2 W_A' W_A)^-1 K_A' S`` for the same ``c`` :func:`t2_distribution` uses, and
+
+        ``d T2lm / d a_i = T2lm (log T2_i - log T2lm) / sum(a)``.
+
+    The delta method then gives the standard error of the log-mean from the per-walker decays without any
+    resampling: ``SE = std_k(g . s^k) / sqrt(N)``, where ``s^k`` is walker ``k``'s own decay on this ``t``.
+    A fold spread or a split half estimates the same quantity by resampling ONE realisation, so it is
+    seed-dependent and cannot be a gate threshold.
+
+    Verified against a finite difference of the estimator itself in ``tests/replay/test_reference_family.py``.
+    """
+    t, S, T2_grid = np.asarray(t, float), np.asarray(S, float), np.asarray(T2_grid, float)
+    a = t2_distribution(t, S, T2_grid, lam=lam)
+    lm = log_mean_T2(T2_grid, a)
+    n = len(T2_grid)
+    K = np.exp(-t[:, None] / T2_grid[None, :])
+    W = np.zeros((n, n))
+    for i in range(1, n - 1):
+        W[i, i - 1:i + 2] = (1.0, -2.0, 1.0)
+    c = lam * np.linalg.norm(K) / max(np.linalg.norm(W), 1e-30)
+    A = a > 0
+    KA, WA = K[:, A], c * W[:, A]
+    M = np.linalg.solve(KA.T @ KA + WA.T @ WA, KA.T)            # d a_A / d S, the active set's linear map
+    dlm_da = lm * (np.log(T2_grid[A]) - np.log(lm)) / a.sum()
+    return lm, M.T @ dlm_da
+
+
 def run_rock(name, data_dir, *, n_walkers, T_max, sample_ms, sub_echo, walker_batch, seed=0,
              sub_steps=None):
     ref = TALABI[name]

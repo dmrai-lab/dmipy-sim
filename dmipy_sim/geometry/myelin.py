@@ -384,10 +384,6 @@ class MyelinatedCylinder(Geometry):
         return jnp.where(in_intra, jnp.int32(1),
                jnp.where(in_myelin, jnp.int32(2), jnp.int32(0)))
 
-    def pool_of(self, compartment_id):
-        """The fused kernel carries pool ids (0 extra, 1 intra, 2 myelin) directly."""
-        return jnp.asarray(compartment_id, jnp.int32)
-
     def volume(self, compartment: str, L: float = 1.0) -> float:
         """Volume of a compartment per unit length L (m³).
 

@@ -185,6 +185,18 @@ class Geometry(ABC):
         """
         return self.classify_position(r)
 
+    def pool_of(self, compartment):
+        """The POOL id of a compartment id this geometry's classifier returns, elementwise.
+
+        A geometry whose classifier returns the OBJECT a walker is in (``classify_returns_object_id``) has
+        ``1..N`` mean one pool -- the lumen -- so the map is ``id > 0 -> 1``; every other classifier already
+        returns pool ids and the map is the identity. `PackedMyelinatedCylinders` overrides it, since its
+        encoded id carries the sheath as well. A caller at the API boundary calls this and never branches on
+        the flag itself.
+        """
+        c = jnp.asarray(compartment, jnp.int32)
+        return jnp.where(c > 0, jnp.int32(1), jnp.int32(0)) if self.classify_returns_object_id else c
+
     def classify_positions_exact(self, pts, chunk=100_000):
         """Exact labels for a batch of host-side points; the default vmaps `classify_position` in chunks of
         ``chunk`` points (a classifier gathers per point, and a 512k-walker start classified at once was 2.8 GB

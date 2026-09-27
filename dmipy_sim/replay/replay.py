@@ -2043,6 +2043,16 @@ class ReplayPack:
         """The C2 channel's exact cumulative total per walker, or None if the pack has no C2."""
         return self.arrays.get("blt_endpoint")
 
+    def contact(self):
+        """The C2 channel as a per-save series, ``(n_walkers, n_t)``: the wall contact each step accrued.
+
+        The windows of a segmented walk share a save and the first save of an accumulated channel ends no step
+        (#225), so joining them is a rule and not a concatenation; this is the one place it is applied for a
+        consumer. The cumulative boundary local time is ``cumsum`` along the saves, which is what a surface
+        relaxivity weights: ``S(t) = <exp((rho/D) L(t))>``. ``None`` when the pack carries no C2 channel.
+        """
+        return self._decoded_channels()["ell"]
+
     @property
     def K(self):
         """Retained sine bands -- NOT the stored coefficient count, which is ``K + 2``.
