@@ -418,36 +418,44 @@ def family(mcdc_data, disimpy_data, work_dir, *, names, dry, create_dataset):
                      "Hall and Alexander's exact eigenfunction solution."),
         licence_note="the packs are the source's licence: LGPL-2.1 for the MC/DC fixtures, MIT for the "
                      "Disimpy one; neither source's bytes are redistributed",
-        caveats=dict(
-            disimpy=("The Disimpy fixture is HELD (dmipy-sim#488). Since #483 fixed the pickle's face winding "
-                     "the mesh walks correctly, and yet at 100,000 walkers neither the mesh NOR the analytic "
-                     "cylinder of the same radius reproduces this MISST reference to the Monte-Carlo floor "
-                     "(1.97e-3 and 1.31e-3, 7.27 and 5.66 sigma). The measured faceting term -- mesh against "
-                     "the analytic cylinder at the same N, seed and waveform, MISST not involved -- is 8.00e-4 "
-                     "and sits inside its own band, so the two geometries agree with each other and both "
-                     "disagree with MISST. #488 is whether that is MISST's own truncation or ours.\n\n"
-                     "**This gate does not fail that pack, and cannot.** The evidence for the hold is a VECTOR: "
-                     "the worst of 100 measurements at 1.97e-3, with 31 of them outside their own 3-sigma band. "
-                     "A `ReferenceQuantity` is a scalar, so this family compares one DECLARED measurement -- the "
-                     "last of the protocol, its highest b -- and there the pack agrees with MISST to 1.8e-5. The "
-                     "hold therefore stands on #488 and on this family's earlier records/pre-protocol/gate.json, "
-                     "not on the verdict below; see dmipy-sim#493 for what the protocol needs to carry it."),
-            reproduces=("The `reproduces-` comparison is DEGENERATE for this family and its 1e-9 sigma should be "
+        caveats={
+            # keyed on the PACK's own name, so the card renders it beside that pack rather than three sections
+            # away from it, and the organisation page inherits it with the rest of the reference record
+            "disimpy-cylinder": (
+                "**HELD on [dmipy-sim#488](https://github.com/dmrai-lab/dmipy-sim/issues/488), and this gate "
+                "cannot see why.** The gate below compares ONE declared measurement -- the last of the "
+                "fixture's own protocol, its highest b -- and there this pack agrees with the MISST reference "
+                "to 1.8e-5, so it passes. The evidence for the hold is a VECTOR: over the protocol's 100 "
+                "measurements the worst is 1.97e-3, 7.27 sigma, with 31 of them outside their own 3-sigma "
+                "band. A `ReferenceQuantity` is a scalar, so no scalar comparison this protocol can express "
+                "will fail this pack; "
+                "[dmipy-sim#493](https://github.com/dmrai-lab/dmipy-sim/issues/493) is the item that would let "
+                "the gate carry a vector and therefore see it.\n\n"
+                "What #488 is about: since #483 fixed the pickle's face winding the mesh walks correctly, and "
+                "yet at 100,000 walkers neither the mesh NOR the analytic cylinder of the same radius "
+                "reproduces this MISST reference to the Monte-Carlo floor (1.97e-3 and 1.31e-3, 7.27 and 5.66 "
+                "sigma). The measured faceting term -- mesh against the analytic cylinder at the same N, seed "
+                "and waveform, MISST not involved -- is 8.00e-4 and sits inside its own band, so the two "
+                "geometries agree with each other and both disagree with MISST. #488 is whether that is "
+                "MISST's own truncation or ours. Until it says, read this pack as a faithful record of a walk "
+                "whose reference is in question, and see `records/pre-protocol/gate.json` for the vector "
+                "comparison that held it."),
+            "reproduces": ("The `reproduces-` comparison is DEGENERATE for this family and its 1e-9 sigma should be "
                         "read as such. Our direct number is measured on the pack's own decoded positions, "
                         "because the walk that produced the pack was not retained, so `reproduces-` and "
                         "`served-equals-decoded` are two readings of one channel and differ only by the "
                         "reduction. The comparison that carries information here is `published-`, against the "
                         "other engine's released array."),
-            direct=("These packs' walks were not retained: a 100,000-walker walk of 2,677 saves is 8 GB per "
+            "direct": ("These packs' walks were not retained: a 100,000-walker walk of 2,677 saves is 8 GB per "
                     "fixture. The direct numbers are therefore the ones the walk that produced each pack "
                     "recorded, in this family's own records/build.json, measured by the estimator "
                     "cross_engine_parity.floors owns. Nothing is re-walked to obtain a number a record "
                     "already holds."),
-            reduction=("A pack's signal is the MODULUS of the weighted ensemble mean, and both references sum "
+            "reduction": ("A pack's signal is the MODULUS of the weighted ensemble mean, and both references sum "
                        "cosines. Comparing one convention against the other read 1.2e-5 at b = 1925 s/mm^2 "
                        "and 3.1e-3 at 13190 and filed #484 against the engine; the per-walker phases are "
                        "identical across the routes. Every comparison on this card reduces both sides the "
-                       "same way.")))
+                       "same way.")})
 
     design = Design(
         window_s=X.MCDC_TE, dt_save_s=X.MCDC_TE / (X.MCDC_N_T - 1),

@@ -1829,6 +1829,11 @@ def _render_card(name, repo, rec, gate, previews, snippet_shown, snippet_ran, hu
                          f"{'**meets**' if c['meets_target'] else '_below target_'}")
         cells += [_size(row["bytes"]), row["license"], (row["commit"] or "—")[:8]]
         L.append("| " + " | ".join(cells) + " |")
+    per_pack_caveats = sorted(k for k in (ref.get("caveats") or {}) if k in pk["substrates"])
+    if per_pack_caveats:
+        L += ["", "**Read with a caveat of its own:** "
+              + ", ".join(f"`{k}` (below, under § What is inside)" for k in per_pack_caveats)
+              + ". A caveat keyed on a pack's own name is about THAT pack, and the card puts it beside it."]
     if des.get("trade"):
         L += ["", f"**The trade the design records:** {des['trade']}"]
     L += ["", f"The save grid is {des['dt_save_s'] * 1e6:.0f} us over {des['window_s']:g} s "
@@ -1863,6 +1868,9 @@ def _render_card(name, repo, rec, gate, previews, snippet_shown, snippet_ran, hu
               + ", ".join(f"{k} {v:.4f}" for k, v in sorted(frac.items()))
               + (f" (the spec's realisation: " + ", ".join(f"{k} {v:.4g}" for k, v in sorted(real.items())
                                                            if isinstance(v, float)) + ")" if real else ""), ""]
+        mine = (ref.get("caveats") or {}).get(n)
+        if mine:                        # a caveat keyed on this pack's name belongs BESIDE this pack
+            L += [f"> **Caveat — `{n}`.** {mine}", ""]
 
     L += ["## The reproduction", ""]
     if ref.get("absent"):

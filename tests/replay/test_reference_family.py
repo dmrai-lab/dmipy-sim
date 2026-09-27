@@ -1220,3 +1220,24 @@ def test_the_round_trip_prunes_a_walls_name_without_dropping_the_wall():
     assert pruned["walls"] == [dict(surface=dict(sha256="a" * 64))]
     assert pruned["validity"] == dict(smallest_feature=1e-6)
     assert pruned["pools"] == spec["pools"] and "id" not in pruned and "description" not in pruned
+
+
+def test_a_caveat_keyed_on_a_packs_name_is_rendered_beside_that_pack(ran):
+    """A caveat about ONE pack read only in a paragraph three sections away from it is a caveat a reader misses.
+    parity-fixtures' Disimpy hold (#488) is about one pack and the gate cannot see it, so the card has to put it
+    where that pack is: keyed on the pack's own name, rendered under its section and pointed at from the table."""
+    fam, rec = ran
+    name = sorted(rec["pack"]["substrates"])[0]
+    ref = dict(rec["reference"], caveats=dict(rec["reference"].get("caveats") or {},
+                                              **{name: "HELD: this pack carries its own caveat."}))
+    card = R._render_card(fam.name, fam.publication.repo, dict(rec, reference=ref), rec["gate"],
+                          rec["card"]["previews"], "print(1)", dict(seconds=0.1, stdout="1"), "packs/x.rpk")
+    inside = card.index("## What is inside")
+    here = card.index(f"### {name}", inside)
+    nxt = card.find("### ", here + 4)
+    section = card[here:nxt if nxt > 0 else card.index("## The reproduction")]
+    assert f"**Caveat — `{name}`.**" in section and "HELD: this pack carries its own caveat." in section
+    table = card[card.index("## The packs"):inside]
+    assert "Read with a caveat of its own:" in table and f"`{name}`" in table
+    # and it is still in the family's own caveat list, so nothing is moved out of the record's own rendering
+    assert "HELD: this pack carries its own caveat." in card[card.index("**Caveats:**"):]
