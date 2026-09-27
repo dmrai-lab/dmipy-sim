@@ -201,12 +201,14 @@ def test_the_chain_stops_at_the_spec_stage_and_the_design_stage_cannot_reach_its
     assert not fam.records.exists("spec") and not fam.records.exists("design")
 
 
-def test_the_spec_producer_refuses_with_all_three_limits(tmp_path):
+def test_the_spec_producer_refuses_with_all_three_limits_and_names_its_issue(tmp_path):
+    """A refusal that names an issue NUMBER is one a reader can act on; prose about a missing producer is not."""
     fam, _ = _family(tmp_path, ["sham_25_contra_cc"])
     with pytest.raises(ReferenceRefusal) as e:
         fam.build.specs["sham_25_contra_cc"]()
     m = str(e.value)
     assert "released files" in m and "0..255" in m and "water_fraction 1.0 to exactly one pool" in m
+    assert "dmipy-sim#503" in m and "dmipy-sim#491" in m and "dmipy-sim#478" in m
 
 
 @pytest.mark.parametrize("what", ["reproduce", "served_vs_channel", "snippet"])

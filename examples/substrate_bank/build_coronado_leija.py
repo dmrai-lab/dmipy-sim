@@ -16,12 +16,13 @@ raises BY NAME rather than a note to a reader:
   rule on this substrate one 625 us save costs 48,001 sub-steps, one 25 us save 1,921, and the 15 nm
   high-resolution tier is refused outright above a 100 us save (853,334 against the 100,000 cap). ``walk()``
   states those numbers and refuses.
-* the **spec** needs a label-volume producer that composes several released files into one graded volume and
-  that can hold water in two pools. :func:`~dmipy_sim.spec.label_volume_spec` reads ONE file, maps at most
-  256 label values and gives ``water_fraction`` 1.0 to exactly one pool; this substrate is three files
-  (``*_myelin.mat``, ``*_myelinated_axons.mat``, ``*_nucleus.mat``), its axon file is ``uint16`` instance
-  labels, and its water is intra- AND extra-axonal with myelin invisible. ``spec_of()`` calls the producer,
-  lets it refuse in its own words, and re-raises naming all three limits.
+* the **spec** needs the composed label volume of dmipy-sim#503.
+  :func:`~dmipy_sim.spec.label_volume_spec` reads ONE file, maps at most 256 label values and gives
+  ``water_fraction`` 1.0 to exactly one pool; this substrate is three files (``*_myelin.mat``,
+  ``*_myelinated_axons.mat``, ``*_nucleus.mat``) composed in the authors' own order, its axon file is
+  ``uint16`` instance labels, and its water is intra- AND extra-axonal with myelin invisible.
+  ``spec_of()`` calls the producer, lets it refuse in its own words, and re-raises naming #503 and all
+  three limits.
 
 The source and reference stages are complete and run::
 
@@ -241,10 +242,11 @@ def spec_of(substrate, data_dir, rois):
     """The substrate spec of one region of interest -- which the label-volume producer cannot write.
 
     It calls :func:`~dmipy_sim.spec.label_volume_spec` on the released axon file so that the producer states
-    its own limit, and re-raises with all three: this substrate is THREE released files where the producer
-    reads one, its axon file is ``uint16`` instance labels (up to 67,244 axons per sample) where a label
-    volume is ``0..255``, and its water is the intra- AND extra-axonal pool with myelin invisible where the
-    producer gives ``water_fraction`` 1.0 to exactly one pool.
+    its own limit, and re-raises naming dmipy-sim#503 and all three: this substrate is THREE released files
+    where the producer reads one, its axon file is ``uint16`` instance labels (up to 67,244 axons per sample)
+    where a label volume is ``0..255``, and its water is the intra- AND extra-axonal pool with myelin
+    invisible where the producer gives ``water_fraction`` 1.0 to exactly one pool. The rho half of that last
+    limit is dmipy-sim#491's.
     """
     from dmipy_sim.spec import label_volume_spec
     r = rois[substrate]
@@ -262,9 +264,12 @@ def spec_of(substrate, data_dir, rois):
             f"composed before the producer sees them; (3) the water of a white-matter substrate is the "
             f"intra-axonal AND the extra-axonal pool with myelin invisible, and the producer gives "
             f"water_fraction 1.0 to exactly one pool with one rho and one kappa on every face, so it cannot "
-            f"hold a reflecting myelin sheath and a permeable axolemma at once. A producer that composes "
-            f"several released label files into one graded volume with water in more than one pool is what "
-            f"this family's spec stage needs") from e
+            f"hold a reflecting myelin sheath and a permeable axolemma at once. This family's spec stage "
+            f"needs the composed label volume of dmipy-sim#503 -- several released label files composed in "
+            f"the authors' own SetSubstrate order into one graded volume, water in the intra and extra "
+            f"pools, myelin a wall-only pool -- and the rho half of limit (3) is dmipy-sim#491's. The walk "
+            f"is a separate refusal (dmipy-sim#478): #503 without #478 is a spec nobody can afford to "
+            f"walk, and #478 without #503 is an affordable walk with no spec") from e
 
 
 def walk(spec, n, *, n_t):
