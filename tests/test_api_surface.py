@@ -181,10 +181,10 @@ def test_length_scales_match_the_geometry_definition():
     assert ls("Mesh") == LengthScales(min_feature=1e-6, lookup_cell=m.cell_size, is_mesh_feature=True)
     pk = G["PackedCurvedCylinders"]
     assert ls("PackedCurvedCylinders") == LengthScales(min_feature=2e-6, lookup_cell=pk.cell_size)
-    # a label volume: the voxel, and the walking pool's measured V/S (a 10 um slab pore -> 5 um)
-    # a label volume: the voxel, and no separate pore -- V/S is a mean, and the surface rule divides
-    # the worst case a segmentation can hold, which is one voxel
-    assert ls("LabelVolume") == LengthScales(min_feature=0.5e-6)
+    # a label volume: the narrowest passage the seeded water occupies, measured on the pool with the
+    # voxel as the floor (here the slab pore's own 20 voxels), and no separate pore -- V/S is a mean, and
+    # the voxel is a resolution (#478)
+    assert ls("LabelVolume") == LengthScales(min_feature=pytest.approx(20 * 0.5e-6))
 
 
 def test_an_object_without_length_scales_is_refused():

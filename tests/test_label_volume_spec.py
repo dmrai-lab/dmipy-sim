@@ -52,6 +52,29 @@ def test_the_producer_writes_the_image_the_pools_and_the_wall(image):
     assert spec.realisation["surface_to_volume"] == pytest.approx(2e5)
 
 
+def test_the_spec_records_which_feature_set_the_step(image):
+    """The step rules divide the narrowest passage the seeded water occupies, so the spec records the
+    measurement -- which rule chose the step and why, the number, the voxel it is floored at, what share
+    of the water AND of the wall area it stepped over, and the per-axis periodicity that changes the
+    answer -- and a pack embeds the spec, so its provenance says which feature set its step. The producer
+    measures the pool the spec seeds and the geometry measures the same mask, so the two numbers are the
+    same one (#478)."""
+    path, lab = image
+    spec = label_volume_spec(path, rho=41e-6, D=2.07e-9, id="test/slab")
+    rec = spec.realisation["step_scale"]
+    assert rec["step_width_m"] == rec["passage_width_m"] == 20 * 0.5e-6 and rec["voxel_m"] == 0.5e-6
+    assert "narrowest passage" in rec["step_rule"] and "floored at the voxel" in rec["step_rule"]
+    assert rec["budget"] == 1e-3 and rec["walled"] is True and rec["periodic"] == [False, False, False]
+    for key in ("water_share", "area_share", "floor_water_share", "floor_area_share"):
+        assert rec[key] == 0.0, key                       # one passage, 20 voxels wide: nothing narrower
+    assert "narrowest passage the seeded water occupies" in rec["measured"]
+    assert geometry_from_spec(spec).passage_width.width == rec["passage_width_m"]
+    assert any("narrowest passage" in t and "wall area" in t and "Powles" in t
+               for t in spec.provenance["transformations"])
+    # the spec is JSON, and the record must survive the round trip through it
+    assert json.loads(json.dumps(spec.to_dict()))["realisation"]["step_scale"] == rec
+
+
 def test_the_producer_and_the_geometry_are_a_fixed_point(image, tmp_path, monkeypatch):
     """``spec_of(geometry_from_spec(spec))`` IS the spec: the RECOMPUTE, not the memoised ``.spec``.
 

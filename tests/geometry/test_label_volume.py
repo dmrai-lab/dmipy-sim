@@ -479,21 +479,27 @@ def test_a_label_no_pool_names_is_refused():
         LabelVolume(np.zeros((4, 4, 4), np.uint8), 0.0)
 
 
-def test_length_scales_are_the_voxel_and_nothing_else():
-    """``min_feature`` is the voxel -- the smallest feature a segmentation can express, and so the
-    narrowest pore one can hold. ``surface_pore`` is unset, so the surface-relaxivity rule divides that
-    worst case and not ``V/S``, which is a mean (a slab's is half its width, ten times its voxel here).
-    There is no ``lookup_cell``: the traversal visits every voxel the path enters, so no step can
-    outrun a candidate gather, and the engine resolves a quarter of a voxel per step for the surface
-    tier and one voxel without it."""
+def test_length_scales_are_the_seeded_pool_s_narrowest_passage_and_nothing_else():
+    """``min_feature`` is the narrowest passage the seeded water occupies, measured on the pool with the
+    voxel as the floor -- for this fixture the pore's own width, since a slab has one passage and it is
+    20 voxels. ``surface_pore`` is unset, so the surface-relaxivity rule divides that same worst case and
+    not ``V/S``, which is a mean (a slab's is half its width). There is no ``lookup_cell``: the traversal
+    visits every voxel the path enters, so no step can outrun a candidate gather. The step rules are then
+    a quarter of that passage (surface) and one passage (reflection), so a step that resolves the voxel
+    already resolves this pore and the engine asks for one sub-step -- where gating on the VOXEL asked
+    for 16 (dmrai-lab/dmipy-sim#478)."""
     from dmipy_sim.engine.physics import resolve_sub_steps
     g, d = slab()
     ls = g.length_scales
-    assert ls == LengthScales(min_feature=pytest.approx(0.5e-6))
+    assert ls == LengthScales(min_feature=pytest.approx(d))     # the 20-voxel pore, not the 0.5 um voxel
+    assert g.passage_width.voxel == 0.5e-6 and g.passage_width.floor_water_share == 0.0
     assert g.surface_to_volume() == pytest.approx(2 / d)    # measured, and not a step rule
     dt = (0.5e-6) ** 2 / (6 * D)                            # one voxel per step
-    assert resolve_sub_steps(g, D, dt, surface=True) == 16   # (4 voxels)^2: a quarter of a voxel
+    assert resolve_sub_steps(g, D, dt, surface=True) == 1
     assert resolve_sub_steps(g, D, dt, surface=False) == 1
+    # and a step that does NOT resolve the pore is sub-stepped to a quarter of it
+    dt_coarse = d ** 2 / (6 * D)                            # one PASSAGE per step
+    assert resolve_sub_steps(g, D, dt_coarse, surface=True) == 16
 
 
 def test_the_voxelised_surface_is_the_manhattan_surface():

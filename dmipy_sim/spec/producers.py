@@ -423,6 +423,7 @@ def label_volume_spec(path, *, pools=None, voxel_size=None, origin=None, crop=No
     into a :class:`~dmipy_sim.geometry.label_volume.LabelVolume`. ``cite_image_as`` is the path a
     dataset distributes the image at, when that is not where it is being read from.
     """
+    from ..geometry.label_volume import measure_passage_width
     from ..io.label_volume import read_label_volume, crop_labels, format_of
     fmt = str(format).lower() if format is not None else format_of(path)
     vol = read_label_volume(path, format=fmt, voxel_size=voxel_size)
@@ -487,12 +488,32 @@ def label_volume_spec(path, *, pools=None, voxel_size=None, origin=None, crop=No
         n = int(np.count_nonzero(a[:-1] != a[1:])) + (int(np.count_nonzero(a[-1] != a[0])) if per[ax] else 0)
         area += n * float(np.prod(vox) / vox[ax])
     s_over_v = area / (phi * float(np.prod(lab.shape)) * float(np.prod(vox)))
+    # What the walk's step rules will divide, measured on the pool this spec seeds and recorded, so a
+    # pack's provenance says which feature set its step (geometry.label_volume.measure_passage_width;
+    # `geometry_from_spec` measures the same mask and gets the same number).
+    passage = measure_passage_width(g == wid, vox, periodic=per)
     transformations = [
         f"labels -> pools {pool_map}; the {walking!r} pool holds the water, the others water_fraction 0",
         "the wall is every voxel face between two pools (the Manhattan surface of the segmentation): "
         f"measured S/V of the {walking!r} pool {s_over_v:.6g} 1/m at porosity {phi:.6g}",
         ("the crop's own outer faces are not a wall: they are the domain's " +
          ", ".join(f"{'periodic' if p else 'reflect'} {ax}" for ax, p in zip("xyz", per))),
+        (f"the step rules of a reflecting wall divide the narrowest passage the {walking!r} water "
+         f"occupies, measured on the seeded pool: {passage.width * 1e6:.4g} um at a {passage.budget:g} "
+         f"budget of its walled water AND of its wall area"
+         + (" -- this pool meets no other pool along any axis, so nothing bounds its passages and the "
+            "rules keep the voxel floor" if not passage.walled else
+            (f" (the budget holds it at the voxel floor: {passage.floor_water_share:.3g} of that walled "
+             f"water and {passage.floor_area_share:.3g} of its wall faces are in a ONE-voxel passage)"
+             if passage.width <= passage.voxel else
+             f" (it steps over {passage.water_share:.3g} of that walled water and "
+             f"{passage.area_share:.3g} of its wall faces, both under the budget; the voxel is "
+             f"{passage.voxel * 1e6:.4g} um and {passage.floor_water_share:.3g} of the water is in a "
+             f"one-voxel passage)"))
+         + (f"; its median passage is {passage.median * 1e6:.4g} um and its mean V/S "
+            f"{1e6 / s_over_v:.4g} um" if passage.walled else "")
+         + ". A permeable wall would divide the voxel instead (one Powles decision per step); this "
+           "producer declares none"),
     ]
     if crop is not None:
         transformations.append(f"crop {list(int(x) for x in crop)} of the released image, half-open, in voxels")
@@ -505,7 +526,9 @@ def label_volume_spec(path, *, pools=None, voxel_size=None, origin=None, crop=No
         description=description or (f"a segmented {'x'.join(str(int(n)) for n in lab.shape)} image at "
                                    f"{float(np.min(vox)) * 1e6:.4g} um; the {walking!r} pool walks between its voxel faces"),
         realisation={"shape": [int(n) for n in lab.shape], "porosity": phi, "surface_to_volume": s_over_v,
-                     "voxel_size_m": [float(x) for x in vox]},
+                     "voxel_size_m": [float(x) for x in vox],
+                     # this producer emits no permeable wall, so the reflecting rule is the one recorded
+                     "step_scale": passage.record(permeable=False)},
         provenance={"source": source or "segmented image",
                     # a detached container is two files and `surface.sha256` covers only the one it
                     # cites, so every file the image was read from is recorded with its own digest
