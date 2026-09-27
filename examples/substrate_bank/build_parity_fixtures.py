@@ -75,11 +75,14 @@ def spec_of(name, mcdc_data, disimpy_data):
     import dataclasses
     X = fixtures_module()
     if is_mcdc(name):
-        return X.mcdc_spec(mcdc_data, *mcdc_params(name))
-    from dmipy_sim.spec import build
-    spec = X.disimpy_spec(disimpy_data)
+        spec = X.mcdc_spec(mcdc_data, *mcdc_params(name))
+        path = X.mcdc_paths(mcdc_data, *mcdc_params(name))["ply"]
+    else:
+        from dmipy_sim.spec import build
+        spec = X.disimpy_spec(disimpy_data)
+        path = build.resolve_surface_file(spec.walls[0].surface.file)
     w = spec.walls[0]
-    surface = dataclasses.replace(w.surface, file=build.resolve_surface_file(w.surface.file))
+    surface = dataclasses.replace(w.surface, file=path)
     return dataclasses.replace(spec, walls=[dataclasses.replace(w, surface=surface)])
 
 
