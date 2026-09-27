@@ -170,8 +170,13 @@ def test_the_rule_cannot_relax_a_pool_that_is_all_voxel_thin_channels():
     lab[::2, :, 20] = 0                                    # a comb of one-voxel lines
     g = LabelVolume(lab, h)
     assert g.passage_width.width == h and g.passage_width.floor_water_share == 1.0
-    for budget in (1e-3, 1e-2, 0.5):
+    for budget in (0.0, 1e-3, 1e-2, 0.5):        # 0 resolves everything, which is this pool's own width
         assert measure_passage_width(lab == 0, h, budget=budget).width == h
+    # and a budget of zero on a pool of MANY widths is its narrowest, not something finer than it
+    lab = np.ones((40, 40, 40), np.uint8)
+    lab[10:30, 10:30, 10:30] = 0
+    lab[35, 10:30, 20] = 0
+    assert measure_passage_width(lab == 0, h, budget=0.0).width == h
 
 
 # ──────────────────────────────────────── the pin: the two published rock families are unaffected

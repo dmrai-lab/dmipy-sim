@@ -335,7 +335,8 @@ def measure_passage_width(mask, voxel_size, *, periodic=(False, False, False), b
     The seeded pool's own passage-width distribution (:func:`passage_widths`), cut at the widest value
     whose tail below it holds strictly less than ``budget`` of the walled water AND strictly less than
     ``budget`` of the wall faces (:func:`_wall_faces`), floored at the voxel. Strictly less, so a feature
-    set holding exactly the budget is resolved and not stepped over.
+    set holding exactly the budget is resolved and not stepped over, and a ``budget`` of zero resolves
+    everything -- which is the narrowest passage the pool has, never something finer than it.
 
     This is the worst case the walk has to resolve rather than the average one -- ``V/S`` is the average,
     it is measured and reported by :meth:`LabelVolume.surface_to_volume`, and it is not a step rule -- and
@@ -362,7 +363,11 @@ def measure_passage_width(mask, voxel_size, *, periodic=(False, False, False), b
     below_w = np.concatenate([[0.0], np.cumsum(w)[:-1]])             # the share strictly NARROWER
     below_a = np.concatenate([[0.0], np.cumsum(a)[:-1]])
     ok = (below_w < float(budget)) & (below_a < float(budget))       # monotone in the width
-    i = int(np.flatnonzero(ok & (w > 0.0))[-1])                      # the widest admissible OBSERVED value
+    present = w > 0.0
+    adm = np.flatnonzero(ok & present)
+    # the widest admissible OBSERVED value; a budget of zero resolves everything, which is the narrowest
+    # passage there is and not something finer -- the rule never asks for a step below the substrate
+    i = int(adm[-1]) if adm.size else int(np.flatnonzero(present)[0])
     median = 1 + int(np.searchsorted(np.cumsum(w), 0.5))
     return PassageWidth(width=floor * (i + 1), water_share=float(below_w[i]),
                         area_share=float(below_a[i]), floor_water_share=float(w[0]),
