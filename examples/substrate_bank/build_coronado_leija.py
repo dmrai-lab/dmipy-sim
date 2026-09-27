@@ -657,6 +657,16 @@ def family(data_dir, work_dir, *, substrates=None, dry=True, create_dataset=Fals
                 "fraction of corpus callosum axons in the perpendicular direction\" -- so the cingulum "
                 "regions' eventual signal comparison is against a mixed voxel. That is theirs, it is stated, "
                 "and it is a reason to read the corpus-callosum regions first."),
+            next_quantities=(
+                "Two quantities follow f, and the source record already digests what both need. The ROI-mean "
+                "normalised signal of the released 43-direction, b = 2/3/4 ms/um^2 acquisition, per region, "
+                "against the released preprocessed volumes and ROI masks, with the ROI's across-voxel standard "
+                "error and the released sigma maps as its uncertainty -- that is the diffusion-weighted "
+                "comparison this pair exists for. And D~a = D0 / Lambda_par with the exact axial tortuosity "
+                "Lambda_par = <A_bar / A(z)> of the Fick-Jacobs equation (paper §2.5.3, Eqs. 8-9, after "
+                "Abdollahzadeh et al. 2023), which is a DIFFUSION quantity predicted from the released axons by "
+                "a published closed form and which an intra-axonal pack reproduces directly as its long-time "
+                "axial diffusivity, with no dMRI ROI and no model fit in between. Both need a walk."),
             three_files=(
                 "f is read from THREE released files -- the myelin mask, the myelinated-axon instance labels "
                 "and the cell-nucleus labels -- and Published.data_sha256 is one digest, so it carries the "
