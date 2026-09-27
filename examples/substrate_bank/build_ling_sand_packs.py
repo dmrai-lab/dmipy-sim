@@ -88,6 +88,11 @@ SAMPLES = {
 #: (dmipy-sim#491) rather than approximated with one of the two numbers.
 PURE = ("1_G100", "6_Q100")
 
+#: The relaxivity the served-vs-decoded check uses on a pack whose spec declares NONE (a mixture). That check
+#: compares two READINGS of one channel, so any rho the pack can serve makes it; Ling's quartz value is used so
+#: the number on the card is on the same scale as the pure packs'.
+PROBE_RHO = RHO["quartz"]
+
 T2_GRID = dict(kind="log", n=60, from_s=1e-3, to_s=10.0)
 SOLVER = "non-negative least squares with a second-difference penalty, lam = 0.1 (t2_distribution)"
 
@@ -95,18 +100,23 @@ SOLVER = "non-negative least squares with a second-difference penalty, lam = 0.1
 #: gradient at all, so the declared waveforms are a clinical diffusion pair and the band is small and stated --
 #: a consumer asking for more is refused by ``waveform_band`` rather than served a wrong number.
 ENVELOPE = dict(bvals=[0.0, 0.5e9, 1e9], dirs=[[0, 0, 1], [1, 0, 0], [1, 0, 1]],
-                ogse_periods=[1, 2, 3], shortd_b=1e9, delta_frac=40e-3 / 3.5,
-                shortd_deltas_frac=[60e-3 / 3.5, 40e-3 / 3.5], Delta_frac=80e-3 / 3.5,
+                ogse_periods=[1, 2, 3], shortd_b=1e9, delta_frac=60e-3 / 3.5,
+                shortd_deltas_frac=[80e-3 / 3.5, 60e-3 / 3.5], Delta_frac=160e-3 / 3.5,
                 rho_list=sorted(RHO.values()))
 
-DECLARED_DELTAS = (40e-3, 60e-3)
+#: The deltas the family declares, in seconds. The shortest is 60 ms because that is what the LONGEST-window
+#: packs' band serves: at K = 96 over 3.5 s the band is 13.71 Hz, and measured against it delta 60 ms needs
+#: 11.71-12.29 Hz where delta 40 ms needs 17.57-18.43 and is REFUSED. The 2.0 s packs' band is 24 Hz and would
+#: serve 40 ms; declaring it would mean two of the five packs advertising a waveform they cannot serve, which
+#: is what `waveform_band` and the gate exist to stop.
+DECLARED_DELTAS = (60e-3, 80e-3)
 
 
 def waveforms():
     """Every waveform the family declares, checked against ``waveform_band`` per pack by the pack stage."""
     from dmipy_sim import pgse
     return tuple((f"pgse-delta{delta * 1e3:.0f}ms",
-                  pgse([[1, 0, 0]], delta, max(2 * delta, 80e-3), bvalues=[max(ENVELOPE["bvals"])], n_t=400))
+                  pgse([[1, 0, 0]], delta, max(2 * delta, 160e-3), bvalues=[max(ENVELOPE["bvals"])], n_t=400))
                  for delta in DECLARED_DELTAS)
 
 
@@ -231,9 +241,15 @@ def served_vs_channel(pack, *, n_points=8):
 
     The consumer route for a multi-TE relaxation measurement is one gradient-free spin echo per echo time; the
     cheap route reads the same C2 channel. This is the check that they are one quantity.
+
+    A MIXTURE's spec declares no nominal relaxivity -- one contact channel cannot carry Ling's two -- and this
+    check compares two readings of that channel rather than any physics, so it uses :data:`PROBE_RHO` there and
+    the number lands on the same scale as the pure packs'.
     """
     from dmipy_sim.engine.pulse_sequence import bare_spin_echo
-    rho = float(pack.nominal.rho)
+    nominal = pack.nominal
+    rho = PROBE_RHO if nominal.rho is None else float(nominal.rho)
+    tissue = nominal if nominal.rho is not None else nominal.replace(rho=rho)
     ell = pack.contact()
     n_w = ell.shape[0]
     step = max(1, pack.n_t // (n_points + 1))
@@ -244,7 +260,7 @@ def served_vs_channel(pack, *, n_points=8):
         L = np.cumsum(np.asarray(ell[lo:lo + 4000], np.float64), axis=1)[:, ks]
         acc += np.exp(rho / D0 * L - t / T2B).sum(axis=0)
     served = [float(np.asarray(pack.replay(bare_spin_echo(float(te), dt=pack.dt),
-                                          tissue=pack.nominal)).ravel()[0]) for te in t]
+                                          tissue=tissue)).ravel()[0]) for te in t]
     return float(np.max(np.abs(np.asarray(served) - acc / n_w)))
 
 

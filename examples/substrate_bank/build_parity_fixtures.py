@@ -94,20 +94,44 @@ def sequence_of(name, mcdc_data):
     return X.disimpy_sequence()
 
 
-def envelope_of(name):
+def envelope_of(name, mcdc_data=None):
+    """The envelope the pack is built to, with its b bound taken from the fixture's OWN scheme.
+
+    ``mcdc_envelope`` states the four ActiveAx shells to four figures (1.319e10); ``read_scheme`` computes b from
+    the scheme's own columns and lands a hair above it, so the declared waveform read as outside the envelope it
+    IS. The envelope and the declared waveforms are one declaration, so the bound comes from the one sequence
+    both of them are.
+    """
     X = fixtures_module()
-    return X.mcdc_envelope() if is_mcdc(name) else X.disimpy_envelope()
+    env = X.mcdc_envelope() if is_mcdc(name) else X.disimpy_envelope()
+    if mcdc_data is not None:
+        b = float(max(sequence_of(name, mcdc_data).b()))
+        env = dict(env, bvals=sorted(set(list(env["bvals"]) + [b])))
+    return env
 
 
 def walk_of(name, mcdc_data, disimpy_data):
-    """The walk the pilot runs: the fixture's own surface, acquisition, diffusivity and seeding."""
+    """The walk the pilot runs: the fixture's own acquisition, diffusivity and seeding, on the spec it is HANDED.
+
+    The spec is the design stage's own, whose surface is cited by the resolved path the source record digested;
+    rebuilding it from the producer here would walk a spec cited by basename and resolve it somewhere else.
+    """
     X = fixtures_module()
 
     def walk(spec, n, *, n_t):
+        import dmipy_sim as d
+        from dmipy_sim.spec import geometry_from_spec
+        geom = geometry_from_spec(spec)
         if is_mcdc(name):
-            return X.mcdc_walk(mcdc_data, *mcdc_params(name), int(n), n_t=int(n_t), require_gpu=False,
-                               batch=2000)
-        return X.disimpy_walk(disimpy_data, int(n), n_t=int(n_t), require_gpu=False, batch=2000)
+            from dmipy_sim.io import mcdc
+            p = X.mcdc_paths(mcdc_data, *mcdc_params(name))
+            r0 = mcdc.seed_positions(mcdc.read_ini_walkers(p["ini"]), int(n))
+            return d.simulate_trajectories(int(n), X.MCDC_D, geom, T_max=X.MCDC_TE,
+                                           dt_save=X.MCDC_TE / (int(n_t) - 1), seed=X.SEED, tiers="all", r0=r0,
+                                           require_gpu=False, walker_batch_size=2000)
+        return d.simulate_trajectories(int(n), X.DISIMPY_D, geom, T_max=X.DISIMPY_TE,
+                                       dt_save=X.DISIMPY_TE / (int(n_t) - 1), seed=X.SEED, tiers="all",
+                                       require_gpu=False, walker_batch_size=2000)
     return walk
 
 
@@ -418,7 +442,8 @@ def family(mcdc_data, disimpy_data, work_dir, *, names, dry, create_dataset):
         window_s=X.MCDC_TE, dt_save_s=X.MCDC_TE / (X.MCDC_N_T - 1),
         save_grid_why=("MC/DC's own TE on a grid four times finer than their 5,000 steps, so every Delta, "
                        "delta and pad of their scheme falls on a sample (io.mcdc.read_scheme's lattice rule)"),
-        K=K_BANDS, envelope=envelope_of(names[0]), waveforms=lambda: _waveforms(names[0], mcdc_data),
+        K=K_BANDS, envelope=envelope_of(names[0], mcdc_data),
+        waveforms=lambda: _waveforms(names[0], mcdc_data),
         tiers=(Tier(name="positions", floor_key="floor_max", err_key="err_max", target_floor=SIGMA),
                Tier(name="contact", floor_key="floor_surface", err_key="err_surface", target_floor=SIGMA)),
         memory_budget_bytes=BUDGET_BYTES, pilot_n=PILOT_N, safety=1.4,
