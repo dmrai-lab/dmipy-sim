@@ -140,18 +140,30 @@ def image_path(sample, data_dir, work_dir):
 def spec_of(sample, data_dir, work_dir):
     """The pack's substrate spec: the released lattice cited by the name the deposit distributes it at, with
     Ling's values as the NOMINAL ones a consumer overrides."""
+    from dmipy_sim.io.label_volume import read_label_volume
     from dmipy_sim.spec import label_volume_spec
     s, rep = SAMPLES[sample], reproduction(work_dir)["samples"][sample]
     rho = rho_of(sample)
+    path = image_path(sample, data_dir, work_dir)
+    # the substrate is put AT the origin and the released header's own origin recorded instead. Avizo writes the
+    # micro-CT stage's absolute coordinates -- these sub-volumes sit near (-717, -717, -458) mm -- and a float32
+    # position at 0.717 m has an ulp of 6e-8 m, 1/65 of a 3.93 um voxel, so the nudge that puts a walker clear of
+    # the face it just met lands within a few ulps of it and `floor((r - origin) / voxel_size)` and the traversal
+    # disagree about which voxel the walker is in. `LabelVolume` refuses that by name (#487); translating the
+    # substrate is physically nothing and buys three orders of magnitude of headroom
+    vol = read_label_volume(path)
+    origin = -0.5 * np.asarray(vol.labels.shape, float) * np.asarray(vol.voxel_size, float)
     return label_volume_spec(
-        image_path(sample, data_dir, work_dir), pools=s["pools"], rho=rho, D=D0,
+        path, pools=s["pools"], rho=rho, D=D0, origin=origin,
         T2_pools={name: T2B for name in s["pools"].values()},
         cite_image_as=rep["image"]["file"], id=f"ling2022/{sample.lower()}",
         source="Ling et al. 2022 model synthetic sediment packs, figshare "
                f"{DATA_DOI} (CC BY 4.0)",
         description=(f"{sample}: {s['composition']}, the released 450^3 micro-CT sub-volume; the brine walks "
                      f"between the voxel faces of the grains. Relaxation is not in the walk -- rho and T2 are "
-                     f"replay knobs, and the nominal rho is "
+                     f"replay knobs. The substrate is centred on the origin; the released header's own is "
+                     f"{[round(float(x) * 1e3, 4) for x in vol.origin]} mm, the micro-CT stage's absolute "
+                     f"coordinates, which float32 cannot carry at a 3.93 um voxel. The nominal rho is "
                      + (f"Ling's {rho * 1e6:g} um/s for this mineral" if rho else
                         "NONE: two mineral surfaces carry two of Ling's relaxivities and one contact channel "
                         "cannot hold both, so a consumer states one")))

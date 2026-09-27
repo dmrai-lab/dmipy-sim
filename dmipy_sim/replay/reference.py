@@ -85,13 +85,26 @@ SE_KINDS = ("analytic_mean", "delta_method")
 SAMPLE_RELATIONS = ("the same object", "the same material", "a matched statistic")
 
 #: What ``spec_of(geometry_from_spec(spec))`` cannot reproduce, and therefore what the spec stage's round trip
-#: does not compare: a producer's own labelling. ``spec_of`` reconstructs a spec FROM a geometry, so it writes a
-#: default id and a provenance describing that reconstruction; the id and the citation are the producer's words
-#: about where the substrate came from, not something the engine rebuilds. Everything that says what was WALKED
-#: -- the domain, the pools, the walls, the seeding, the validity, the realisation -- is compared, which is what
-#: the rule exists for: it caught an ``extra.water_fraction`` of 1.0 for a pool the reference engine never seeded
-#: and a ``seeding.rule`` of ``uniform_by_volume`` for one that was ``explicit``.
-ROUND_TRIP_NOT_COMPARED = ("id", "provenance")
+#: does not compare, as dotted paths (``*`` matches one list index or key).
+#:
+#: ``spec_of`` reconstructs a spec FROM a geometry. Two kinds of field are therefore beyond it, and both are
+#: named here rather than left to make the rule pass or fail by accident:
+#:
+#: * the producer's own LABELLING -- ``id``, ``provenance``, ``description``, a wall's ``name``. "axolemma" and
+#:   "surface" are the same wall; a citation is the producer's words about where the substrate came from.
+#: * what the producer MEASURED off the released surface and ``spec_of`` reconstructs with a coarser rule.
+#:   ``realisation`` is the producer's measurement and comes back ``None``; ``validity.mesh_edge_feature_ratio``
+#:   is derived from a feature scale that ``mcdc_axon_spec`` measures as the tube's ``2 V / S`` where
+#:   ``spec_of`` takes ``_surface_stats``' half-thinnest-extent, which for an undulating tube is the undulation
+#:   envelope and three times too coarse (1.62 against 2.92 on the MC/DC axons). ``smallest_feature`` itself IS
+#:   compared, and agrees.
+#:
+#: Everything that says what was WALKED -- the domain, the pools, every wall's surface and physics, the seeding,
+#: the rest of the validity -- is compared, which is what the rule exists for: it caught an
+#: ``extra.water_fraction`` of 1.0 for a pool the reference engine never seeded and a ``seeding.rule`` of
+#: ``uniform_by_volume`` for one that was ``explicit``.
+ROUND_TRIP_NOT_COMPARED = ("id", "provenance", "description", "realisation",
+                           "validity.mesh_edge_feature_ratio", "walls.*.name")
 
 #: A licence text is the licence, not its title: the shortest in use (the CC BY 4.0 deed) is some 1.5 kB and
 #: an MIT licence 1.0 kB, so a record under this many characters is a name and not a text.
@@ -388,6 +401,27 @@ class Publication:
     pack_path: object = None
     create_dataset: bool = False
     dry: bool = False
+
+
+def _pruned(node, paths=ROUND_TRIP_NOT_COMPARED, prefix=()):
+    """``node`` with every path of :data:`ROUND_TRIP_NOT_COMPARED` removed, ``*`` matching one index or key.
+
+    Pruning both sides of the round trip is what lets the rule compare the walls' surfaces and physics while
+    not comparing a wall's NAME: dropping the whole of ``walls`` to avoid one label would drop the field the
+    rule exists to check.
+    """
+    def hidden(path):
+        for p in paths:
+            parts = p.split(".")
+            if len(parts) == len(path) and all(x == "*" or x == str(y) for x, y in zip(parts, path)):
+                return True
+        return False
+
+    if isinstance(node, dict):
+        return {k: _pruned(v, paths, prefix + (k,)) for k, v in node.items() if not hidden(prefix + (k,))}
+    if isinstance(node, list):
+        return [_pruned(v, paths, prefix + (str(i),)) for i, v in enumerate(node)]
+    return node
 
 
 # --------------------------------------------------------------- the grade rule
@@ -1223,9 +1257,10 @@ class ReferenceFamily:
                 raise ReferenceRefusal(f"spec {name!r}: a wall cites a file but no sha256; the source record's digest "
                                        f"is what ties the spec to the released bytes")
             back = spec_of(geometry_from_spec(spec))
-            a, b = spec.to_dict(), back.to_dict()
-            compared = sorted((set(a) | set(b)) - set(ROUND_TRIP_NOT_COMPARED))
-            differing = [k for k in compared if a.get(k) != b.get(k)]
+            a = spec.to_dict()                                 # the record carries the spec WHOLE
+            mine, theirs = _pruned(a), _pruned(back.to_dict())  # the comparison drops what spec_of cannot make
+            compared = sorted(set(mine) | set(theirs))
+            differing = [k for k in compared if mine.get(k) != theirs.get(k)]
             if differing:
                 raise ReferenceRefusal(f"spec {name!r}: spec_of(geometry_from_spec(spec)) differs in {differing}; a "
                                        f"spec the engine cannot rebuild is not the substrate that was walked")

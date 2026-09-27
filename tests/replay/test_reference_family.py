@@ -1205,6 +1205,18 @@ def test_the_round_trip_compares_the_situation_and_not_the_producers_labelling(r
         assert s["round_trips"] and s["round_trip_not_compared"] == list(R.ROUND_TRIP_NOT_COMPARED)
         for k in ("domain", "pools", "walls", "seeding"):
             assert k in s["round_trip_compared"], f"{name} does not compare {k}"
-        assert not set(R.ROUND_TRIP_NOT_COMPARED) & set(s["round_trip_compared"])
+        assert "id" not in s["round_trip_compared"] and "provenance" not in s["round_trip_compared"]
+        assert s["spec"]["walls"][0]["name"] and s["spec"]["id"]        # the RECORD keeps the spec whole
     detail = next(c["detail"] for c in rec["gate"]["checks"] if c["check"].endswith("/spec-round-trips"))
-    assert "not compared: id, provenance" in detail
+    assert "not compared: " + ", ".join(R.ROUND_TRIP_NOT_COMPARED) in detail
+
+
+def test_the_round_trip_prunes_a_walls_name_without_dropping_the_wall():
+    """Dropping the whole of `walls` to avoid comparing one label would drop the field the rule exists for."""
+    spec = dict(id="x", description="prose", walls=[dict(name="axolemma", surface=dict(sha256="a" * 64))],
+                validity=dict(smallest_feature=1e-6, mesh_edge_feature_ratio=1.62),
+                pools=[dict(name="intra", water_fraction=1.0)])
+    pruned = R._pruned(spec)
+    assert pruned["walls"] == [dict(surface=dict(sha256="a" * 64))]
+    assert pruned["validity"] == dict(smallest_feature=1e-6)
+    assert pruned["pools"] == spec["pools"] and "id" not in pruned and "description" not in pruned
