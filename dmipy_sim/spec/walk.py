@@ -37,6 +37,10 @@ def walk_spec(spec, n_walkers=None, T_max=None, dt_save=None, *, scanner="connec
     beyond, the cutoff being the grid's (no doubling; the grid records what it summed to). A one-off per substrate
     (``StrandFieldBasis.build_far_grid``), the lever that makes a dense substrate's field affordable in the walk.
 
+    ``diffusivity`` is the reference D of a SINGLE-surface spec's walk, used when the seeded pool declares none.
+    A multi-surface spec walks each pool at that pool's own D and this argument is refused for one: it reached the
+    save-grid rule and nothing else, so it read as honoured and was not (dmipy-sim#496).
+
     ``field_gather_every`` is how many save intervals the walk reuses a walker's list of strands in reach (gathered
     with the margin the walker can travel in between; 4 by default): with a far grid the reach is the switch's
     15 um and the gather is the field's main cost, so 16 halves the field's share of the walk.
@@ -136,9 +140,11 @@ def walk_spec(spec, n_walkers=None, T_max=None, dt_save=None, *, scanner="connec
             raise SpecError(
                 f"walk_spec: diffusivity={diffusivity!r} was given for a multi-surface spec, which walks each pool "
                 f"at its own D ("
-                + ", ".join(f"{p.name}={p.D!r}" for p in spec.pools) + "). Set the D of the pools in the spec -- "
-                f"the producer's argument, or SubstrateSpec.replace -- rather than beside it; a number here would "
-                f"reach the save-grid rule and nothing else.")
+                + ", ".join(f"{p.name}={p.D!r}" for p in spec.pools) + "). The D has to come from the spec's pools, "
+                f"and there is no path that sets them from outside a producer yet -- the producer that emits this "
+                f"spec has to take it (dmrai-lab/dmipy-sim#496). A number here would reach the save-grid rule and "
+                f"nothing else, which is how the published Winther G6 packs were asked for the study's 0.6e-9 and "
+                f"walked at the spec's 1.7e-9 with only the walk's run record saying so.")
         return _walk_bundle(spec, int(n_walkers), float(T_max), float(dt_save), seed, n_probe, field, field_res,
                             require_gpu, walker_batch_size, field_budget=field_budget, field_cutoff_m=field_cutoff_m, field_cutoff_tol=field_cutoff_tol, seeding=seeding,
                             field_cutoff_max_m=field_cutoff_max_m, adaptive_steps=adaptive_steps, field_sample_every=int(field_sample_every), field_far=field_far, field_gather_every=int(field_gather_every), context=context, spool=bool(spool))

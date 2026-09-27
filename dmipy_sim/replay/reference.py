@@ -72,6 +72,12 @@ GRADES = ("A", "B", "analytic", "none")
 #: Whose a free parameter is. A parameter without one of these is not a recorded parameter.
 WHOSE = ("theirs", "literature", "ours")
 
+#: The counters of a walk a :class:`RecordedWalk` may declare ABSENT, by name. ``not_recorded`` is a tuple drawn
+#: from these and never a sentence: prose that happened to contain ``peak_rss_bytes`` because it said "for 118 of
+#: the 600, peak_rss_bytes" turned the refusal off for all 600 packs of canonical-pores rather than the 118 it
+#: described, which is what a substring test buys.
+RECORDED_WALK_COUNTERS = ("sub_steps", "illegal_crossings", "peak_rss_bytes")
+
 #: What the publication states about the quantity: a number in a document, released DATA (a signal, a set of
 #: per-object signals, a volume), a figure, a closed form, or nothing. ``data`` is graded like a number, since a
 #: released array IS the measurement and needs no printed line -- which is what parity-fixtures,
@@ -130,7 +136,8 @@ FORBIDDEN_TOLERANCE_KEYS = ("coverage", "coverage_factor", "k", "fold_spread", "
 #: written. A snippet a reader will not wait for is not a snippet.
 SNIPPET_CEILING_S = 60.0
 
-__all__ = ["ReferenceFamily", "ReferenceRefusal", "Records", "STAGES", "GRADES", "LICENCE_NONE_STATED", "grade_of", "crossref",
+__all__ = ["ReferenceFamily", "ReferenceRefusal", "Records", "STAGES", "GRADES", "LICENCE_NONE_STATED",
+           "RECORDED_WALK_COUNTERS", "grade_of", "crossref",
            "code_commit", "tolerance_of", "gate_verdict", "pass_band", "grade_reason", "Source", "SourceFile", "Reference",
            "ReferenceQuantity", "Published", "Direct", "FreeParameter", "Design", "Tier", "Systematic",
            "Tolerance", "Build", "RecordedWalk", "Publication", "organisation_index", "organisation_card", "organisation_example",
@@ -351,12 +358,17 @@ class RecordedWalk:
     measurement at all (118 of canonical-pores' 600). The budget is then not checked against a measurement for
     that pack and the gate SAYS so per pack, rather than the family being refused over a number about a walk
     that has already happened.
+
+    ``not_recorded`` is a tuple of :data:`RECORDED_WALK_COUNTERS` names, PER PACK, and a string is refused. It
+    was matched as a substring of prose, so one sentence set on every pack of a family -- "sub_steps,
+    illegal_crossings and, for 118 of the 600, peak_rss_bytes" -- declared every counter absent on all 600
+    instead of naming the 118 that lacked a peak, and the refusal it was meant to arm never fired.
     """
     pack_path: str
     sub_steps: Optional[int] = None
     illegal_crossings: Optional[int] = None
     evidence: str = ""
-    not_recorded: str = ""
+    not_recorded: tuple = ()
 
 
 @dataclass(frozen=True)
@@ -392,6 +404,14 @@ class Publication:
 
     ``snippet(uri)`` returns the source of the "Use me" snippet reading the pack at ``uri``; the card renders
     it at the hub URI and EXECUTES it at the local path of the same bytes, recording both.
+
+    ``hold`` is ``{substrate: why}`` -- a DECLARED reservation about a pack the gate passed, written into that
+    pack's manifest row beside the verdict and onto the card. It is not a verdict and cannot become one: the
+    ``gate`` field stays what the gate gave, and a hold on a pack the gate FAILED is refused, since that pack is
+    withheld and needs no reservation. It exists because a consumer reads the row: the Disimpy fixture is
+    published with a reservation on dmipy-sim#488, whose evidence is a vector the scalar gate cannot see, and a
+    row reading ``gate: pass`` with nothing else said that the card's caveat was invisible to anyone reading
+    the manifest.
     """
     repo: str
     licence: str
@@ -401,6 +421,7 @@ class Publication:
     pack_path: object = None
     create_dataset: bool = False
     dry: bool = False
+    hold: dict = field(default_factory=dict)
 
 
 def _pruned(node, paths=ROUND_TRIP_NOT_COMPARED, prefix=()):
@@ -804,7 +825,12 @@ def _gate_checks(rec):
                      (" and it does NOT: the pilot's scaling was falsified by the pack's own certificate"
                       if says else f", and states the trade: {str(des.get('trade'))[:160]}")))
 
-        wk = wlk["substrates"].get(name) or {}
+        wk = wlk["substrates"].get(name)
+        if wk is None:
+            raise ReferenceRefusal(
+                f"gate: {name!r} is in the pack record and in no walk record, so the gate has no walk to hold it "
+                f"to -- neither its counters nor its resident peak nor its budget. The two records describe one "
+                f"set of substrates; delete records/pack.json onwards and run the walk stage for it")
         peak, budget = wk.get("peak_rss_bytes"), wk.get("budget_bytes")
         check(peak is None or (budget and peak <= budget), f"{name}/walk-within-budget",
               (f"the walk and its pack stage peaked at {_size(peak)} against the design's {_size(budget)} "
@@ -966,8 +992,14 @@ def _walk_from_pack(name, recorded, budget, design_n):
     if not recorded.evidence:
         raise ReferenceRefusal(f"walk {name!r}: a walk record names the log the engine's counters were reported "
                                f"in, or the record that reports none of them; this one names nothing")
+    declared = recorded.not_recorded or ()
+    if isinstance(declared, str) or not set(declared) <= set(RECORDED_WALK_COUNTERS):
+        raise ReferenceRefusal(
+            f"walk {name!r}: not_recorded is {declared!r}; it is a tuple of counter NAMES drawn from "
+            f"{RECORDED_WALK_COUNTERS}, per pack. A sentence is not a field list -- one that read 'for 118 of the "
+            f"600, peak_rss_bytes' was matched as a substring and declared that counter absent on all 600")
     absent = [n for n in ("sub_steps", "illegal_crossings") if getattr(recorded, n) is None]
-    unexplained = [n for n in absent if n not in (recorded.not_recorded or "")]
+    unexplained = [n for n in absent if n not in declared]
     if unexplained:
         raise ReferenceRefusal(f"walk {name!r}: {', '.join(unexplained)} is None and not_recorded does not name "
                                f"it ({recorded.not_recorded!r}); a counter the producing run did not report is "
@@ -980,7 +1012,7 @@ def _walk_from_pack(name, recorded, budget, design_n):
         raise ReferenceRefusal(f"walk {name!r}: {os.path.basename(recorded.pack_path)} carries no walk_params, so it "
                                f"does not describe its own walk and nothing can be recorded from it")
     if not (run.get("peak_rss_bytes") or (meta.get("provenance") or {}).get("certified", {}).get("peak_rss_gb")) \
-            and "peak_rss_bytes" not in (recorded.not_recorded or ""):
+            and "peak_rss_bytes" not in declared:
         raise ReferenceRefusal(
             f"walk {name!r}: {os.path.basename(recorded.pack_path)} carries no recorded resident peak for its walk, "
             f"so the memory budget cannot be checked against a measurement for it; name peak_rss_bytes in "
@@ -1006,7 +1038,7 @@ def _walk_from_pack(name, recorded, budget, design_n):
                 sub_steps=None if recorded.sub_steps is None else int(recorded.sub_steps),
                 illegal_crossings=(None if recorded.illegal_crossings is None
                                    else int(recorded.illegal_crossings)),
-                counters_not_recorded=(recorded.not_recorded or None), counters_evidence=recorded.evidence,
+                counters_not_recorded=list(declared) or None, counters_evidence=recorded.evidence,
                 seconds=round(float(run.get("wall_s") or 0.0), 1), peak_rss_bytes=peak,
                 budget_checked=peak is not None, budget_bytes=int(budget), status=run.get("status"),
                 code_commit=(run.get("code") or {}).get("commit"))
@@ -1433,7 +1465,10 @@ class ReferenceFamily:
         prev, prev_sha = self._prev("walk")
         des = self.records.read("design")
         spc = self.records.read("spec")
-        inputs = self._inputs(prev_sha, sorted(spc["substrates"]), sorted(self.build.recorded))
+        # the RecordedWalk contents, not just the names: they are WHAT the record says, so a change to one has
+        # to invalidate the record rather than be returned unchanged by `reuse`
+        inputs = self._inputs(prev_sha, sorted(spc["substrates"]),
+                              {k: asdict(v) for k, v in sorted(self.build.recorded.items())})
         held = self.records.reuse("walk", inputs, prev_sha)
         if held is not None:                                  # unchanged inputs: nothing is walked again
             return held
@@ -1599,7 +1634,9 @@ class ReferenceFamily:
         prev, prev_sha = self._prev("card")
         rec = self.read_all("pack")
         gate = self.records.read("gate")
-        inputs = self._inputs(prev_sha, self.publication.repo, self.publication.snippet_substrate)
+        # the hold is rendered onto the card, so a change to it must re-render rather than be reused
+        inputs = self._inputs(prev_sha, self.publication.repo, self.publication.snippet_substrate,
+                              dict(sorted((self.publication.hold or {}).items())))
         held = self.records.reuse("card", inputs, prev_sha)
         if held is not None:                                  # unchanged inputs: the snippet is not run again
             return held
@@ -1620,11 +1657,13 @@ class ReferenceFamily:
         local = row.get("path_local") or row["path"]
         local = local if os.path.isabs(local) else os.path.join(self.dir, local)
         ran = _run_snippet(self.publication.snippet(local), self.dir)
-        card = _render_card(self.name, self.publication.repo, rec, gate, previews, shown, ran, hub_path)
+        card = _render_card(self.name, self.publication.repo, rec, gate, previews, shown, ran, hub_path,
+                            hold=dict(self.publication.hold or {}))
         path = os.path.join(self.dir, "README.md")
         with open(path, "w") as fh:
             fh.write(card)
         out = dict(card=dict(_digest(path), chars=len(card)), previews=previews, grade=gate["grade"],
+                   hold=dict(self.publication.hold or {}),
                    snippet=dict(shown_sha256=_sha256_bytes(shown.encode()), executed_on=os.path.basename(local),
                                 executed_sha256=_sha256_bytes(self.publication.snippet(local).encode()),
                                 seconds=ran["seconds"], stdout=ran["stdout"], ceiling_s=SNIPPET_CEILING_S,
@@ -1693,13 +1732,25 @@ class ReferenceFamily:
         # advertised beside the others with nothing to say it had failed (its bytes are the maintainer's to
         # delete, not this stage's). Every row this family owns gets its verdict, including one uploaded by an
         # earlier run.
+        held = dict(self.publication.hold or {})
+        unknown = sorted(set(held) - set(rec["pack"]["substrates"]))
+        if unknown:
+            raise ReferenceRefusal(f"publish: a hold is declared on {unknown}, which this family has no pack of")
+        failed_and_held = sorted(n for n in held if not per.get(n, {}).get("passed"))
+        if failed_and_held:
+            raise ReferenceRefusal(
+                f"publish: {failed_and_held} are declared HELD and the gate FAILED them, so they are withheld "
+                f"already; a hold is a reservation about a pack that ships, not a second way to withhold one")
         verdicts = {}
         manifest = None if dry else _load_manifest(hub)
         for name, sub in sorted(rec["pack"]["substrates"].items()):
             v = per.get(name, {})
-            verdicts[self._hub_path(name, sub["pack"])] = dict(
-                gate="pass" if v.get("passed") else "fail", withheld=not v.get("passed"),
-                gate_failures=sorted(v.get("failures") or []), gate_record="records/gate.json")
+            row = dict(gate="pass" if v.get("passed") else "fail", withheld=not v.get("passed"),
+                       gate_failures=sorted(v.get("failures") or []), gate_record="records/gate.json")
+            if name in held:                       # a DECLARED reservation, beside the verdict and never over it
+                row["hold"] = held[name]
+                row["held"] = True
+            verdicts[self._hub_path(name, sub["pack"])] = row
         if manifest is not None:
             for row in manifest.get("packs") or []:
                 if row.get("path") in verdicts:
@@ -1718,7 +1769,7 @@ class ReferenceFamily:
                        parent=hub.head())
         org = _organisation_after_publish(self.publication.repo, skip=(dry or not _is_the_real_hub(hub)))
         out = dict(repo=self.publication.repo, code_commit=commit, dataset_created=created, dry=bool(dry),
-                   uploaded=uploaded, kept=kept, withheld=withheld, manifest_verdicts=verdicts,
+                   uploaded=uploaded, kept=kept, withheld=withheld, holds=held, manifest_verdicts=verdicts,
                    files=sorted(adds), organisation=org,
                    actor=dict(user=os.environ.get("USER"), host=os.uname().nodename,
                               at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())))
@@ -1774,7 +1825,7 @@ def _disagreements(gate):
     return out
 
 
-def _render_card(name, repo, rec, gate, previews, snippet_shown, snippet_ran, hub_path):
+def _render_card(name, repo, rec, gate, previews, snippet_shown, snippet_ran, hub_path, hold=None):
     """The card: the manifest table, what is inside, the reproduction with its grade, the gate's verdict, and
     the snippet with the output it produced when this card was built."""
     from .publish import _fmt, _size                       # the card's number and byte formats live once
@@ -1829,6 +1880,11 @@ def _render_card(name, repo, rec, gate, previews, snippet_shown, snippet_ran, hu
                          f"{'**meets**' if c['meets_target'] else '_below target_'}")
         cells += [_size(row["bytes"]), row["license"], (row["commit"] or "—")[:8]]
         L.append("| " + " | ".join(cells) + " |")
+    hold = dict(hold or {})
+    if hold:
+        L += ["", "**Published with a hold.** "
+              + " ".join(f"`{k}` ships and its manifest row says so, with a reservation recorded beside the "
+                         f"verdict: {v}" for k, v in sorted(hold.items()))]
     per_pack_caveats = sorted(k for k in (ref.get("caveats") or {}) if k in pk["substrates"])
     if per_pack_caveats:
         L += ["", "**Read with a caveat of its own:** "

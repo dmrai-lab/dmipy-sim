@@ -44,6 +44,14 @@ FALSE_FAILURE_RATE = 0.01
 #: The fixture names, the pack ids, and which released file each one's number is READ from. A released array IS
 #: the measurement, so ``published_kind`` is ``data`` and each quantity records that file's URL and sha256.
 FIXTURES = ("mcdc-0.2-32.0", "mcdc-1.0-12.0", "mcdc-2.6-4.0", "disimpy-cylinder")
+#: The reservation the Disimpy pack ships WITH, written into its manifest row beside the verdict. It is not a
+#: verdict: the gate passes the pack, and the row says so. The numbers here are the ones dmipy-sim#488 states.
+HOLD_488 = ("dmipy-sim#488: this pack's MISST comparison is open. The gate compares the ONE measurement this "
+            "family declares -- the last of the fixture's protocol, its highest b -- and there the pack agrees "
+            "with the MISST reference to 1.8e-5, so it passes. #488's evidence is a VECTOR over the protocol's "
+            "100 measurements, which no scalar quantity this protocol can express will see (dmipy-sim#493). Read "
+            "the pack as a faithful record of a walk whose reference is in question.")
+
 MCDC_URL = "https://github.com/jonhrafe/Robust-Monte-Carlo-Simulations"
 DISIMPY_URL = "https://github.com/kerkelae/disimpy"
 
@@ -422,24 +430,18 @@ def family(mcdc_data, disimpy_data, work_dir, *, names, dry, create_dataset):
             # keyed on the PACK's own name, so the card renders it beside that pack rather than three sections
             # away from it, and the organisation page inherits it with the rest of the reference record
             "disimpy-cylinder": (
-                "**HELD on [dmipy-sim#488](https://github.com/dmrai-lab/dmipy-sim/issues/488), and this gate "
-                "cannot see why.** The gate below compares ONE declared measurement -- the last of the "
-                "fixture's own protocol, its highest b -- and there this pack agrees with the MISST reference "
-                "to 1.8e-5, so it passes. The evidence for the hold is a VECTOR: over the protocol's 100 "
-                "measurements the worst is 1.97e-3, 7.27 sigma, with 31 of them outside their own 3-sigma "
-                "band. A `ReferenceQuantity` is a scalar, so no scalar comparison this protocol can express "
-                "will fail this pack; "
+                "**Published with a hold on "
+                "[dmipy-sim#488](https://github.com/dmrai-lab/dmipy-sim/issues/488).** The bytes are public and "
+                "this pack's manifest row carries the reservation beside its verdict; the verdict itself is what "
+                "the gate gave, a pass.\n\n"
+                "The gate compares ONE declared measurement -- the last of the fixture's own protocol, its "
+                "highest b -- and there this pack agrees with the MISST reference to 1.8e-5. #488's evidence is "
+                "a VECTOR over the protocol's 100 measurements, and a `ReferenceQuantity` is a scalar, so no "
+                "scalar comparison this protocol can express will fail this pack; "
                 "[dmipy-sim#493](https://github.com/dmrai-lab/dmipy-sim/issues/493) is the item that would let "
-                "the gate carry a vector and therefore see it.\n\n"
-                "What #488 is about: since #483 fixed the pickle's face winding the mesh walks correctly, and "
-                "yet at 100,000 walkers neither the mesh NOR the analytic cylinder of the same radius "
-                "reproduces this MISST reference to the Monte-Carlo floor (1.97e-3 and 1.31e-3, 7.27 and 5.66 "
-                "sigma). The measured faceting term -- mesh against the analytic cylinder at the same N, seed "
-                "and waveform, MISST not involved -- is 8.00e-4 and sits inside its own band, so the two "
-                "geometries agree with each other and both disagree with MISST. #488 is whether that is "
-                "MISST's own truncation or ours. Until it says, read this pack as a faithful record of a walk "
-                "whose reference is in question, and see `records/pre-protocol/gate.json` for the vector "
-                "comparison that held it."),
+                "the gate carry a vector and therefore see it. What #488 weighs -- whether the residual is "
+                "MISST's own truncation or ours -- and the numbers it weighs it with are stated there, not "
+                "here: this card states only what its own records hold."),
             "reproduces": ("The `reproduces-` comparison is DEGENERATE for this family and its 1e-9 sigma should be "
                         "read as such. Our direct number is measured on the pack's own decoded positions, "
                         "because the walk that produced the pack was not retained, so `reproduces-` and "
@@ -499,6 +501,7 @@ def family(mcdc_data, disimpy_data, work_dir, *, names, dry, create_dataset):
     publication = Publication(repo=REPO, licence="LGPL-2.1", citation=X.MCDC_CITATION, snippet=snippet,
                               snippet_substrate=names[0],
                               pack_path=lambda name: f"packs/{name}.rpk",
+                              hold=({"disimpy-cylinder": HOLD_488} if "disimpy-cylinder" in names else {}),
                               create_dataset=create_dataset, dry=dry)
     return ReferenceFamily("parity-fixtures", work_dir, sources=sources, reference=reference, design=design,
                            build=build, publication=publication)

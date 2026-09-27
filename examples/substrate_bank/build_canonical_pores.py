@@ -105,6 +105,43 @@ def manifest_rows(repo=REPO):
     return rows
 
 
+#: What no canonical-pores walk reported, and what 118 of the 600 did not report either. `build.py` logged the
+#: walker count, the floor, the codec error, the seconds and the bytes per pack (`status.jsonl`) and never the
+#: engine's step counters; the pack header carries no `sub_steps` field and the walk's own run record has no such
+#: event. 482 of the 600 DID record their peak resident bytes -- the largest is 56.4 GB, which is what the 60 GB
+#: budget is set by -- and 118 (105 planes, 9 cylinders, 4 spheres) recorded none, which is per pack and not per
+#: family: a `not_recorded` that says so in one sentence for all 600 is read as a substring and arms nothing.
+COUNTERS_NOT_RECORDED = ("sub_steps", "illegal_crossings")
+COUNTERS_EVIDENCE = (
+    "canonical-pores/build.py logged the walker count, the floor, the codec error, the seconds and the bytes per "
+    "pack (canonical-pores/status.jsonl) and never the engine's step counters; the pack header carries no "
+    "sub_steps field and the walk's own run record (provenance.run.walk.record) has no such event either")
+
+
+def recorded_peak(pack_path):
+    """Whether the walk that produced this pack recorded a resident peak, read from the pack's OWN header."""
+    from dmipy_sim.replay.publish import header_of
+    pr = header_of(pack_path).get("provenance") or {}
+    run = (pr.get("run") or {}).get("walk") or {}
+    return bool(run.get("peak_rss_bytes") or (pr.get("certified") or {}).get("peak_rss_gb"))
+
+
+def recorded_walk(row):
+    """The ``RecordedWalk`` arguments for one pack: the counters it did not report, named PER PACK.
+
+    Whether the peak was recorded is read from that pack's own header, so the 118 that lack one declare it and
+    the 482 that have one do not -- and the budget refusal stays armed for every pack of the second kind.
+    """
+    path = local_pack(row)
+    absent = COUNTERS_NOT_RECORDED + (() if recorded_peak(path) else ("peak_rss_bytes",))
+    return dict(pack_path=path, not_recorded=absent,
+                evidence=COUNTERS_EVIDENCE + ("; this pack's walk recorded no resident peak either, so the "
+                                              "budget is not checked against a measurement for it"
+                                              if "peak_rss_bytes" in absent else
+                                              "; this pack's walk DID record its resident peak, which is what "
+                                              "holds it to the design's budget"))
+
+
 def local_pack(row, repo=REPO):
     """The row's pack as a local file: the published bytes, fetched into the HF cache and checked against the
     manifest's own digest. Nothing is re-walked or re-encoded -- this IS the published pack."""
@@ -450,17 +487,7 @@ def family(work_dir, *, dry, create_dataset, rows=None):
         specs={name: (lambda r=r: spec_of(r["shape"], r["d_um"])) for name, r in rows.items()},
         pack_id={name: r["id"] for name, r in rows.items()},
         reproduce=reproduce, served_vs_channel=served_vs_channel, served_tier="positions", walk=walk,
-        recorded={name: RecordedWalk(
-            pack_path=local_pack(r),
-            not_recorded="sub_steps, illegal_crossings and, for 118 of the 600, peak_rss_bytes",
-            evidence=("canonical-pores/build.py logged the walker count, the floor, the codec error, the "
-                      "seconds and the bytes per pack (canonical-pores/status.jsonl) and never the engine's "
-                      "step counters; the pack header carries no sub_steps field and the walk's own run record "
-                      "(provenance.run.walk.record) has no such event either. 482 of the 600 walks DID record "
-                      "their peak resident bytes -- the largest is 56.4 GB, which is what the 60 GB budget is "
-                      "set by -- and 118 (105 planes, 9 cylinders, 4 spheres) recorded none, so for those the "
-                      "budget is not checked against a measurement and the gate says so per pack."))
-                  for name, r in rows.items()})
+        recorded={name: RecordedWalk(**recorded_walk(r)) for name, r in rows.items()})
 
     publication = Publication(repo=REPO, licence=LICENCE, citation=CITATION, snippet=snippet,
                               snippet_substrate=substrate_name("sphere", 10.0),

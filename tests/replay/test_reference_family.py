@@ -1130,16 +1130,16 @@ def test_a_counter_the_producing_run_did_not_report_is_recorded_as_absent_by_nam
     mp.setattr(P, "header_of", lambda path: real)
     try:
         got = R._walk_from_pack("sphere", R.RecordedWalk(
-            pack_path=pack, not_recorded="sub_steps and illegal_crossings",
+            pack_path=pack, not_recorded=("sub_steps", "illegal_crossings"),
             evidence="the walk's run record carries neither counter"), budget, n)
     finally:
         mp.undo()
     assert got["sub_steps"] is None and got["illegal_crossings"] is None
-    assert got["counters_not_recorded"] == "sub_steps and illegal_crossings"
+    assert got["counters_not_recorded"] == ["sub_steps", "illegal_crossings"]
 
     with pytest.raises(R.ReferenceRefusal, match="illegal_crossings is None and not_recorded does not name it"):
         R._walk_from_pack("sphere", R.RecordedWalk(pack_path=pack, sub_steps=3,
-                                                  evidence="the log", not_recorded="sub_steps"), budget, n)
+                                                  evidence="the log", not_recorded=("sub_steps",)), budget, n)
     with pytest.raises(R.ReferenceRefusal, match="names nothing"):
         R._walk_from_pack("sphere", R.RecordedWalk(pack_path=pack, sub_steps=3, illegal_crossings=0), budget, n)
 
@@ -1241,3 +1241,92 @@ def test_a_caveat_keyed_on_a_packs_name_is_rendered_beside_that_pack(ran):
     assert "Read with a caveat of its own:" in table and f"`{name}`" in table
     # and it is still in the family's own caveat list, so nothing is moved out of the record's own rendering
     assert "HELD: this pack carries its own caveat." in card[card.index("**Caveats:**"):]
+
+
+def test_not_recorded_is_a_tuple_of_counter_names_and_not_a_sentence(ran):
+    """It was matched as a SUBSTRING. One sentence set on every pack of canonical-pores -- "sub_steps,
+    illegal_crossings and, for 118 of the 600, peak_rss_bytes" -- therefore declared the peak absent on all 600
+    rather than on the 118 that lacked one, and the refusal it was meant to arm never fired for any of them."""
+    fam, _ = ran
+    pack = os.path.join(fam.dir, "packs", "sphere.rpk")
+    for bad in ("sub_steps, illegal_crossings and, for 118 of the 600, peak_rss_bytes",
+                ("sub_steps", "peak_rss"), ("steps",)):
+        with pytest.raises(R.ReferenceRefusal, match="a tuple of counter NAMES"):
+            R._walk_from_pack("sphere", R.RecordedWalk(pack_path=pack, not_recorded=bad,
+                                                      evidence="the run record"), 1 << 40, 300)
+
+
+def test_the_within_budget_check_fires_on_a_peak_over_the_budget_and_states_an_absent_one(ran):
+    """Both branches. Neither was asserted: deleting the check, restoring the old refusal, or raising in the
+    `peak is None` branch all left the suite green."""
+    fam, rec = ran
+    def checks_with(walk_sub):
+        r = dict(rec, walk=dict(rec["walk"], substrates=walk_sub))
+        return {c["check"]: c for c in R._gate_checks(r)}
+
+    name = sorted(rec["pack"]["substrates"])[0]
+    base = dict(rec["walk"]["substrates"][name])
+
+    over = checks_with(dict(rec["walk"]["substrates"],
+                            **{name: dict(base, peak_rss_bytes=10 ** 12, budget_bytes=10 ** 9)}))
+    c = over[f"{name}/walk-within-budget"]
+    assert not c["passed"] and "against the design's" in c["detail"]
+
+    under = checks_with(dict(rec["walk"]["substrates"],
+                             **{name: dict(base, peak_rss_bytes=10 ** 6, budget_bytes=10 ** 9)}))
+    assert under[f"{name}/walk-within-budget"]["passed"]
+
+    absent = checks_with(dict(rec["walk"]["substrates"],
+                              **{name: dict(base, peak_rss_bytes=None, budget_bytes=10 ** 9,
+                                            counters_not_recorded=["peak_rss_bytes"])}))
+    c = absent[f"{name}/walk-within-budget"]
+    assert c["passed"] and "recorded no resident peak" in c["detail"] and "peak_rss_bytes" in c["detail"]
+
+    # and a packed substrate with NO walk record at all is a refusal, not a TypeError out of the byte formatter
+    with pytest.raises(R.ReferenceRefusal, match="in the pack record and in no walk record"):
+        checks_with({k: v for k, v in rec["walk"]["substrates"].items() if k != name})
+
+
+def test_a_declared_hold_reaches_the_manifest_row_without_becoming_a_verdict(ran, tmp_path):
+    """A consumer reads the row. The Disimpy fixture ships with a reservation on #488, whose evidence is a vector
+    the scalar gate cannot see, and a row reading `gate: pass` with nothing beside it hid the card's caveat from
+    anyone reading the manifest."""
+    import dataclasses
+    fam, rec = ran
+    name = sorted(rec["pack"]["substrates"])[0]
+    passed = [n for n, v in rec["gate"]["per_substrate"].items() if v["passed"]]
+    held = {passed[0]: "a reservation on dmipy-sim#488"}
+
+    (tmp_path / "h").mkdir()
+    pub = dataclasses.replace(fam.publication, hold=held)
+    got = R.ReferenceFamily(fam.name, str(tmp_path / "h"), sources=fam.sources, reference=fam.reference,
+                            design=fam.design, build=fam.build, publication=pub, resolver=_resolver)
+    for st in R.STAGES:
+        out = got.stage(st)
+    rows = out["manifest_verdicts"]
+    mine = rows[got._hub_path(passed[0], rec["pack"]["substrates"][passed[0]]["pack"])]
+    assert mine["gate"] == "pass" and mine["withheld"] is False          # the verdict is untouched
+    assert mine["hold"] == held[passed[0]] and mine["held"] is True      # the reservation is beside it
+    assert out["holds"] == held
+    card = open(os.path.join(got.dir, "README.md")).read()
+    assert "**Published with a hold.**" in card and "dmipy-sim#488" in card
+
+    # a hold on a pack the gate FAILED is refused: it is withheld already
+    failed = [n for n, v in rec["gate"]["per_substrate"].items() if not v["passed"]]
+    if failed:
+        (tmp_path / "f").mkdir()
+        bad = R.ReferenceFamily(fam.name, str(tmp_path / "f"), sources=fam.sources, reference=fam.reference,
+                                design=fam.design, build=fam.build, resolver=_resolver,
+                                publication=dataclasses.replace(fam.publication, hold={failed[0]: "why"}))
+        for st in R.STAGES[:-1]:
+            bad.stage(st)
+        with pytest.raises(R.ReferenceRefusal, match="withheld already"):
+            bad.stage("publish")
+    (tmp_path / "u").mkdir()
+    worse = R.ReferenceFamily(fam.name, str(tmp_path / "u"), sources=fam.sources, reference=fam.reference,
+                              design=fam.design, build=fam.build, resolver=_resolver,
+                              publication=dataclasses.replace(fam.publication, hold={"no-such-pack": "why"}))
+    for st in R.STAGES[:-1]:
+        worse.stage(st)
+    with pytest.raises(R.ReferenceRefusal, match="has no pack of"):
+        worse.stage("publish")
