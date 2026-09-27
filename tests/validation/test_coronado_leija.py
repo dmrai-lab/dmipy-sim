@@ -19,7 +19,8 @@ import pytest
 
 from dmipy_sim.replay.reference import ReferenceRefusal, grade_of, grade_reason
 
-B = pytest.importorskip("examples.substrate_bank.build_coronado_leija")
+from examples.substrate_bank import build_coronado_leija as B    # imported, not skipped: a family that cannot
+#                                                                 be imported is a failure, not an absence
 
 LICENCE = "SYNTHETIC CC BY 4.0 LEGALCODE\n\n" + ("This stands in for the text fetched from the host. " * 20)
 NYU_LICENCE = "SYNTHETIC NYU NON-COMMERCIAL RESEARCH LICENCE\n\n" + ("Non-commercial research only. " * 20)
