@@ -66,10 +66,21 @@ def mcdc_params(name):
 
 # ----------------------------------------------------------------- the spec producer and the walk
 def spec_of(name, mcdc_data, disimpy_data):
+    """The fixture's substrate spec, citing its surface by a path the source record digested.
+
+    ``cross_engine_parity.disimpy_spec`` cites the repaired surface by BASENAME, which is what a dataset
+    distributes it as; the source stage digests a file, so this family cites the resolved path of the same
+    bytes -- and the round trip then rebuilds the same walls, which a basename cannot.
+    """
+    import dataclasses
     X = fixtures_module()
     if is_mcdc(name):
         return X.mcdc_spec(mcdc_data, *mcdc_params(name))
-    return X.disimpy_spec(disimpy_data)
+    from dmipy_sim.spec import build
+    spec = X.disimpy_spec(disimpy_data)
+    w = spec.walls[0]
+    surface = dataclasses.replace(w.surface, file=build.resolve_surface_file(w.surface.file))
+    return dataclasses.replace(spec, walls=[dataclasses.replace(w, surface=surface)])
 
 
 def sequence_of(name, mcdc_data):
@@ -286,7 +297,15 @@ def family(mcdc_data, disimpy_data, work_dir, *, names, dry, create_dataset):
                        d, "misst_cylinder_signal_smalldelta_30ms_bigdelta_40ms_radius_5um.txt"),
                        cite_as="misst_cylinder_signal_smalldelta_30ms_bigdelta_40ms_radius_5um.txt",
                        role="the MISST reference signal distributed with it, the number this fixture "
-                            "reproduces"))))
+                            "reproduces"),
+                   SourceFile(path=_derived_surface(disimpy_data),
+                              cite_as=os.path.basename(_derived_surface(disimpy_data)),
+                              role="the closed surface DERIVED from cylinder_mesh_closed.pkl by "
+                                   "cross_engine_parity.disimpy_mesh -- as stored the pickle reads as open "
+                                   "with 112 boundary edges and closes with 0 once its duplicate vertices are "
+                                   "merged (352 -> 296) -- written into the surface cache under its content "
+                                   "hash. It is the file the spec cites, so it is the file whose digest the "
+                                   "source record has to hold"))))
 
     direct = {n: direct_at(n, grids[n], work_dir, mcdc_data) for n in names}
     quantities = []
@@ -307,8 +326,12 @@ def family(mcdc_data, disimpy_data, work_dir, *, names, dry, create_dataset):
                                 "What the file does limit is its own resolution -- it is distributed to seven "
                                 "decimal places -- and that quantisation is a term of the design's tolerance "
                                 "rather than an uncertainty of the reference"),
-                printed_in=("Rafael-Patino et al. 2020, the released Experiments-raw-signals archive"
-                            if is_mcdc(n) else "Disimpy's own tests/ fixtures (Kerkelae et al. 2020)"),
+                printed_in=(
+                    "Robust Monte-Carlo Simulations in Diffusion-MRI: Effect of the Substrate Complexity and "
+                    "Parameter Choice on the Reproducibility of Results (Rafael-Patino et al. 2020), whose "
+                    "released Experiments-raw-signals archive the array is read from" if is_mcdc(n) else
+                    "Disimpy: A massively parallel Monte Carlo simulator for generating diffusion-weighted MRI "
+                    "data in Python (Kerkelae et al. 2020), whose tests/ fixtures the array is read from"),
                 document=("10.3389/fninf.2020.00008" if is_mcdc(n) else "10.21105/joss.02527"),
                 locator=("the last measurement of ActiveAxG140_PM.scheme in "
                          f"{os.path.basename(X.mcdc_paths(mcdc_data, *mcdc_params(n))['dwi'])}, an unnormalised "
@@ -438,6 +461,14 @@ def _waveforms(name, mcdc_data):
     """The fixture's own protocol, as the one waveform the family declares: it is what these packs exist for,
     and ``waveform_band`` is checked against it rather than against a battery nobody will play."""
     return ((f"{name}-own-protocol", sequence_of(name, mcdc_data)),)
+
+
+def _derived_surface(disimpy_data):
+    """The path of the repaired Disimpy surface the spec cites: writing the spec writes the file."""
+    X = fixtures_module()
+    from dmipy_sim.spec import build
+    spec = X.disimpy_spec(disimpy_data)
+    return build.resolve_surface_file(spec.walls[0].surface.file)
 
 
 def _sha(path):

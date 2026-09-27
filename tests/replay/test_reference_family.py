@@ -1194,3 +1194,17 @@ def test_the_reference_stage_can_be_re_run_because_the_resolution_TIME_is_not_an
     first = fam.stage("reference")
     again = fam.stage("reference")                 # a second resolution, a second timestamp, the same record
     assert again == first and again["crossref"]["resolved"] == first["crossref"]["resolved"]
+
+
+def test_the_round_trip_compares_the_situation_and_not_the_producers_labelling(ran):
+    """`spec_of` reconstructs a spec FROM a geometry, so it writes a default id and a provenance describing that
+    reconstruction: a producer-built spec can never round-trip those two. It CAN round-trip everything that says
+    what was walked, which is what the rule is for -- it caught a pool's water fraction and a seeding rule."""
+    fam, rec = ran
+    for name, s in rec["spec"]["substrates"].items():
+        assert s["round_trips"] and s["round_trip_not_compared"] == list(R.ROUND_TRIP_NOT_COMPARED)
+        for k in ("domain", "pools", "walls", "seeding"):
+            assert k in s["round_trip_compared"], f"{name} does not compare {k}"
+        assert not set(R.ROUND_TRIP_NOT_COMPARED) & set(s["round_trip_compared"])
+    detail = next(c["detail"] for c in rec["gate"]["checks"] if c["check"].endswith("/spec-round-trips"))
+    assert "not compared: id, provenance" in detail

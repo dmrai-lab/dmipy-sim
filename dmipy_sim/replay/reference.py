@@ -84,6 +84,15 @@ SE_KINDS = ("analytic_mean", "delta_method")
 #: What the reference's sample is to ours.
 SAMPLE_RELATIONS = ("the same object", "the same material", "a matched statistic")
 
+#: What ``spec_of(geometry_from_spec(spec))`` cannot reproduce, and therefore what the spec stage's round trip
+#: does not compare: a producer's own labelling. ``spec_of`` reconstructs a spec FROM a geometry, so it writes a
+#: default id and a provenance describing that reconstruction; the id and the citation are the producer's words
+#: about where the substrate came from, not something the engine rebuilds. Everything that says what was WALKED
+#: -- the domain, the pools, the walls, the seeding, the validity, the realisation -- is compared, which is what
+#: the rule exists for: it caught an ``extra.water_fraction`` of 1.0 for a pool the reference engine never seeded
+#: and a ``seeding.rule`` of ``uniform_by_volume`` for one that was ``explicit``.
+ROUND_TRIP_NOT_COMPARED = ("id", "provenance")
+
 #: A licence text is the licence, not its title: the shortest in use (the CC BY 4.0 deed) is some 1.5 kB and
 #: an MIT licence 1.0 kB, so a record under this many characters is a name and not a text.
 MIN_LICENCE_TEXT_CHARS = 400
@@ -789,8 +798,12 @@ def _gate_checks(rec):
               (f"the spec cites {len(cited)} source digests, all of them in the source record" if cited
                else "this substrate is analytic: it has no released file to cite")
               if cited <= known else f"the spec cites digests no source record holds: {sorted(cited - known)}")
-        check(spc["substrates"][name]["round_trips"], f"{name}/spec-round-trips",
-              "spec_of(geometry_from_spec(spec)) == spec")
+        rt = spc["substrates"][name]
+        check(rt["round_trips"], f"{name}/spec-round-trips",
+              f"spec_of(geometry_from_spec(spec)) == spec in {', '.join(rt.get('round_trip_compared') or ['every field'])}"
+              + (f"; not compared: {', '.join(rt['round_trip_not_compared'])} -- the producer's own labelling, "
+                 f"which spec_of reconstructs from the geometry and cannot reproduce"
+                 if rt.get("round_trip_not_compared") else ""))
 
         for qname, got in sorted(sub["reproduced"].items()):
             q = next((x for x in ref["quantities"] if x["substrate"] == name and x["name"] == qname), None)
@@ -946,10 +959,12 @@ def _walk_from_pack(name, recorded, budget, design_n):
         raise ReferenceRefusal(f"walk {name!r}: the recorded walk and pack peaked at {peak / 1e9:.1f} GB against the "
                                f"design's {budget / 1e9:.1f} GB budget; the budget is a hard cap")
     n = int(wp["n_walkers"])
+    from .publish import _size
     note = None if n == int(design_n) else (
         f"the pack was walked at {n:,} walkers where this design's pilot sets {int(design_n):,}; the walk is not "
-        f"repeated, and what holds it to the budget is its own RECORDED peak of {peak / 1e9:.1f} GB rather than the "
-        f"pilot's projection")
+        f"repeated, and what holds it to the budget is "
+        + (f"its own RECORDED peak of {_size(peak)} rather than the pilot's projection" if peak is not None else
+           "nothing measured: the producing run recorded no resident peak for it, which the walk record says"))
     return dict(from_pack=True, design_n_walkers=int(design_n), design_note=note,
                 pack_path=os.path.abspath(recorded.pack_path),
                 pack_sha256=_sha256_file(recorded.pack_path), n_walkers=int(wp["n_walkers"]),
@@ -1209,12 +1224,14 @@ class ReferenceFamily:
                                        f"is what ties the spec to the released bytes")
             back = spec_of(geometry_from_spec(spec))
             a, b = spec.to_dict(), back.to_dict()
-            differing = sorted(k for k in set(a) | set(b) if a.get(k) != b.get(k))
+            compared = sorted((set(a) | set(b)) - set(ROUND_TRIP_NOT_COMPARED))
+            differing = [k for k in compared if a.get(k) != b.get(k)]
             if differing:
                 raise ReferenceRefusal(f"spec {name!r}: spec_of(geometry_from_spec(spec)) differs in {differing}; a "
                                        f"spec the engine cannot rebuild is not the substrate that was walked")
             out[name] = dict(spec=a, spec_sha256=_sha256_bytes(_canonical(a)), cites_sha256=cited,
                              cites=[known[c] for c in cited], round_trips=True,
+                             round_trip_compared=compared, round_trip_not_compared=list(ROUND_TRIP_NOT_COMPARED),
                              cites_files=bool(any(w.surface.file for w in spec.walls)),
                              realisation=spec.realisation, pack_id=self.build.pack_id[name])
         inputs = self._inputs(prev_sha, sorted(out), [v["spec_sha256"] for v in out.values()])
