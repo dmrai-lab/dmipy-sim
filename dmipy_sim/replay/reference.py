@@ -324,6 +324,11 @@ class RecordedWalk:
     ``sub_steps`` or ``illegal_crossings`` anywhere, and the packs' headers carry neither. The alternatives were
     to refuse the family or to let an agent type a plausible number into a measurement; recording the absence by
     name is neither, and the card prints "not recorded" where the number would be.
+
+    ``peak_rss_bytes`` may be named in ``not_recorded`` too, for a pack whose walk left no resident-bytes
+    measurement at all (118 of canonical-pores' 600). The budget is then not checked against a measurement for
+    that pack and the gate SAYS so per pack, rather than the family being refused over a number about a walk
+    that has already happened.
     """
     pack_path: str
     sub_steps: Optional[int] = None
@@ -698,6 +703,7 @@ def _gate_checks(rec):
     or the band the pack stores. The gate never walks, replays or inverts anything -- every quantity it
     compares was measured and written by the stage that measured it.
     """
+    from .publish import _size                            # the byte format lives once, and carries no threshold
     src, ref, spc, des, wlk, pk = (rec[s] for s in ("source", "reference", "spec", "design", "walk", "pack"))
     checks = []
 
@@ -754,6 +760,15 @@ def _gate_checks(rec):
                   + (" and it does" if t["meets_target"] else
                      (" and it does NOT: the pilot's scaling was falsified by the pack's own certificate"
                       if says else f", and states the trade: {str(des.get('trade'))[:160]}")))
+
+        wk = wlk["substrates"].get(name) or {}
+        peak, budget = wk.get("peak_rss_bytes"), wk.get("budget_bytes")
+        check(peak is None or (budget and peak <= budget), f"{name}/walk-within-budget",
+              (f"the walk and its pack stage peaked at {_size(peak)} against the design's {_size(budget)} "
+               f"budget" if peak is not None else
+               f"the producing run recorded no resident peak for this walk, so the {_size(budget)} budget is "
+               f"not checked against a measurement for this pack: "
+               + str(wk.get("counters_not_recorded"))[:200]))
 
         declared = {w["label"] for w in des["waveforms"]}
         served = {w["label"] for w in sub["waveforms"]}
@@ -914,12 +929,20 @@ def _walk_from_pack(name, recorded, budget, design_n):
     meta = header_of(recorded.pack_path)
     wp = meta.get("walk_params") or {}
     run = ((meta.get("provenance") or {}).get("run") or {}).get("walk") or {}
-    if not wp.get("n_walkers") or not run.get("peak_rss_bytes"):
-        raise ReferenceRefusal(f"walk {name!r}: {os.path.basename(recorded.pack_path)} carries no walk_params or no "
-                               f"run record, so its walk cannot be recorded from it")
+    if not wp.get("n_walkers"):
+        raise ReferenceRefusal(f"walk {name!r}: {os.path.basename(recorded.pack_path)} carries no walk_params, so it "
+                               f"does not describe its own walk and nothing can be recorded from it")
+    if not (run.get("peak_rss_bytes") or (meta.get("provenance") or {}).get("certified", {}).get("peak_rss_gb")) \
+            and "peak_rss_bytes" not in (recorded.not_recorded or ""):
+        raise ReferenceRefusal(
+            f"walk {name!r}: {os.path.basename(recorded.pack_path)} carries no recorded resident peak for its walk, "
+            f"so the memory budget cannot be checked against a measurement for it; name peak_rss_bytes in "
+            f"not_recorded to record that, or supply a pack whose walk reported one")
     cert = ((meta.get("provenance") or {}).get("certified") or {})
-    peak = int(max(int(run["peak_rss_bytes"]), int(float(cert.get("peak_rss_gb") or 0.0) * 1e9)))
-    if peak > budget:
+    peak = int(max(int(run.get("peak_rss_bytes") or 0), int(float(cert.get("peak_rss_gb") or 0.0) * 1e9)))
+    if not peak:
+        peak = None
+    elif peak > budget:
         raise ReferenceRefusal(f"walk {name!r}: the recorded walk and pack peaked at {peak / 1e9:.1f} GB against the "
                                f"design's {budget / 1e9:.1f} GB budget; the budget is a hard cap")
     n = int(wp["n_walkers"])
@@ -936,7 +959,7 @@ def _walk_from_pack(name, recorded, budget, design_n):
                                    else int(recorded.illegal_crossings)),
                 counters_not_recorded=(recorded.not_recorded or None), counters_evidence=recorded.evidence,
                 seconds=round(float(run.get("wall_s") or 0.0), 1), peak_rss_bytes=peak,
-                budget_bytes=int(budget), status=run.get("status"),
+                budget_checked=peak is not None, budget_bytes=int(budget), status=run.get("status"),
                 code_commit=(run.get("code") or {}).get("commit"))
 
 
@@ -1093,7 +1116,7 @@ class ReferenceFamily:
                 raise ReferenceRefusal(f"reference: the parameter {p.name!r} states no locator or no method")
             params.append(asdict(p))
         known = {name for name in self.build.specs}
-        quantities = []
+        quantities, resolved_documents = [], {}
         for q in r.quantities:
             if q.substrate not in known:
                 raise ReferenceRefusal(f"reference: the quantity {q.name!r} is about {q.substrate!r}, which is not "
@@ -1120,6 +1143,7 @@ class ReferenceFamily:
                         f"cites {pub.document!r}, which resolves to {doc.get('title')!r}; the identifier and the "
                         f"document do not describe one thing")
                 documents[pub.document] = doc
+                resolved_documents[pub.document] = doc
             elif r.published_kind in ("number", "figure"):
                 raise ReferenceRefusal(
                     f"reference: {q.substrate}/{q.name} names {pub.printed_in!r} as the document that prints the "
@@ -1154,7 +1178,13 @@ class ReferenceFamily:
                    sample=r.sample, sample_relation=r.sample_relation, quantities=quantities, parameters=params,
                    description=r.description, source_note=r.source_note, licence_note=r.licence_note,
                    caveats=dict(r.caveats))
-        inputs = self._inputs(prev_sha, asdict(r), cr)
+        # the resolution TIME is an output of this stage, not an input to it: including it made the inputs
+        # digest change on every run, so the real resolver could never return the record it had written and the
+        # stage refused itself. The test resolver returns a fixed timestamp, which is why the tests did not see it
+        inputs = self._inputs(prev_sha, asdict(r),
+                              {k: v for k, v in sorted(cr.items()) if k != "resolved"},
+                              {i: {k: v for k, v in sorted(d.items()) if k != "resolved"}
+                               for i, d in sorted(resolved_documents.items())} or None)
         return self.records.write("reference", rec, inputs_digest=inputs, previous_sha256=prev_sha)
 
     # ---------------- 3. spec
@@ -1759,7 +1789,8 @@ def _render_card(name, repo, rec, gate, previews, snippet_shown, snippet_ran, hu
         L.append(f"| `{n}` | {w['n_walkers']:,} walkers"
                  + (" (recorded, not re-walked)" if w["from_pack"] else "")
                  + f" | {counter(w, 'sub_steps')} | {counter(w, 'illegal_crossings')} | {w['seconds']:.0f} s | "
-                 f"{_size(w['peak_rss_bytes'])} | {_size(w['budget_bytes'])} |")
+                 + ("_not recorded_" if w.get("peak_rss_bytes") is None else _size(w["peak_rss_bytes"]))
+                 + f" | {_size(w['budget_bytes'])} |")
     notes = [w.get("design_note") for w in wlk["substrates"].values() if w.get("design_note")]
     notes += [w["counters_not_recorded"] for w in wlk["substrates"].values() if w.get("counters_not_recorded")]
     if notes:

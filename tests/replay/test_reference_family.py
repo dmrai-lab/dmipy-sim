@@ -594,7 +594,7 @@ def test_a_recorded_walk_without_the_engines_counters_is_refused(tmp_path):
                              build=dataclasses.replace(fam.build, recorded={
                                  "sphere": R.RecordedWalk(pack_path=real, sub_steps=1, illegal_crossings=0,
                                                           evidence="a log")}))
-    with pytest.raises(R.ReferenceRefusal, match="carries no walk_params or no run record"):
+    with pytest.raises(R.ReferenceRefusal, match="carries no recorded resident peak for its walk"):
         fam2.stage("walk")
 
 
@@ -1176,3 +1176,21 @@ def test_a_reference_record_the_protocol_did_not_write_is_refused_not_graded():
         R.organisation_card(rows)
     # a family with no reference at all still records `none` and still renders
     assert R.grade_of(dict(absent="this family reproduces no published quantity")) == "none"
+
+
+def test_the_reference_stage_can_be_re_run_because_the_resolution_TIME_is_not_an_input(tmp_path):
+    """The stage resolves the DOI, and the moment it did so is an OUTPUT of the stage. Including it in the
+    inputs digest made the digest change on every run, so with the real Crossref resolver the stage refused the
+    record it had itself written one minute earlier. The test resolver returns a fixed timestamp, which is
+    exactly why the tests did not see it."""
+    import itertools
+    clock = itertools.count()
+
+    def resolver(doi, **kw):
+        return dict(_resolver(doi, **kw), resolved=f"2026-01-01T00:00:{next(clock):02d}Z")
+
+    fam = _family(tmp_path, resolver=resolver)
+    fam.stage("source")
+    first = fam.stage("reference")
+    again = fam.stage("reference")                 # a second resolution, a second timestamp, the same record
+    assert again == first and again["crossref"]["resolved"] == first["crossref"]["resolved"]
