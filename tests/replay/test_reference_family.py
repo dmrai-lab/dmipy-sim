@@ -585,7 +585,7 @@ def test_a_recorded_walk_without_the_engines_counters_is_refused(tmp_path):
                                                          evidence="")}))
     for st in ("source", "reference", "spec", "design"):
         fam.stage(st)
-    with pytest.raises(R.ReferenceRefusal, match="the engine's own counters"):
+    with pytest.raises(R.ReferenceRefusal, match="names the log the engine's counters were reported in"):
         fam.stage("walk")
     # with the counters declared, a pack too short-lived to have left a run record is refused on that
     import dataclasses
@@ -1059,3 +1059,120 @@ def test_the_log_mean_gradient_is_the_estimators_own_derivative():
         fd = (log_mean_T2(grid, t2_distribution(t, S + eps * v, grid))
               - log_mean_T2(grid, t2_distribution(t, S - eps * v, grid))) / (2 * eps)
         assert g @ v == pytest.approx(fd, rel=1e-5)
+
+
+# --------------------------------------------------------------- what the four-family conversion needed (#493)
+def test_a_host_that_states_no_licence_is_recorded_verbatim_and_never_redistributed(tmp_path):
+    """resources.drcmr.dk serves the Winther G6 morphology and states no licence at all. The protocol has to be
+    able to record that -- #459's own survey does -- and to refuse republishing those bytes."""
+    words = ("Copyright (c) 2022. All Rights Reserved. -- looked for on the landing page, the MAPdata directory "
+             "and the companion repository; none of the three states a licence.")
+    p = tmp_path / "grain.raw"
+    p.write_bytes(b"\x00\x01" * 64)
+    files = (R.SourceFile(path=str(p), cite_as="grain.raw", role="the synthetic input"),)
+
+    def src(**kw):
+        base = dict(key="unstated", url="https://example.invalid/record", host_record="fetched 2026-09-27",
+                    licence_id=R.LICENCE_NONE_STATED, licence_url="https://example.invalid/page",
+                    licence_text=words, files=files)
+        base.update(kw)
+        return [R.Source(**base)]
+
+    rec = _family(tmp_path, sources=src()).stage("source")
+    s = rec["sources"]["unstated"]
+    assert s["licence_stated"] is False and s["redistributes_bytes"] is False
+    assert s["licence_copy"]["chars"] == len(words) and s["licence_copy"]["sha256"]
+
+    for sub, kw, msg in (("b", dict(redistributes_bytes=True), "never republished"),
+                         ("c", dict(licence_text="none"), "no licence is recorded by its own words"),
+                         ("d", dict(licence_id="CC-BY-4.0"), "a licence TITLE is not a licence text")):
+        (tmp_path / sub).mkdir()
+        with pytest.raises(R.ReferenceRefusal, match=msg):
+            _family(tmp_path / sub, sources=src(**kw)).stage("source")
+
+
+def test_the_gate_states_an_unstated_licence_and_passes_it_when_nothing_is_redistributed():
+    src = {"unstated": dict(licence_id=R.LICENCE_NONE_STATED, licence_url="https://example.invalid/page",
+                            licence_stated=False, redistributes_bytes=False,
+                            licence_copy=dict(sha256="a" * 64, chars=120), host_record="fetched",
+                            files=[dict(cite_as="x", sha256="b" * 64, bytes=8)])}
+    checks = {c["check"]: c for c in R._gate_checks(dict(
+        source=dict(sources=src), reference=dict(absent="none"), spec=dict(substrates={}),
+        design=dict(derived=dict(tiers_that_hold=[], n_walkers=1), waveforms=[], tolerance={}, pass_band={}),
+        walk=dict(substrates={}), pack=dict(substrates={})))}
+    c = checks["source/unstated/licence"]
+    assert c["passed"] and "states NO licence" in c["detail"]
+
+    src["unstated"]["redistributes_bytes"] = True                 # the same source, republished, must fail
+    checks = {c["check"]: c for c in R._gate_checks(dict(
+        source=dict(sources=src), reference=dict(absent="none"), spec=dict(substrates={}),
+        design=dict(derived=dict(tiers_that_hold=[], n_walkers=1), waveforms=[], tolerance={}, pass_band={}),
+        walk=dict(substrates={}), pack=dict(substrates={})))}
+    assert not checks["source/unstated/licence"]["passed"]
+
+
+def test_a_counter_the_producing_run_did_not_report_is_recorded_as_absent_by_name(ran):
+    """Neither canonical-pores nor the Winther G6 rebuild reported sub_steps or illegal_crossings anywhere, and
+    their packs' headers carry neither. The absence is recorded by name; a number is never filled in by hand."""
+    fam, _ = ran
+    pack = os.path.join(fam.dir, "packs", "sphere.rpk")
+    assert os.path.exists(pack)
+    budget, n = 200_000_000_000, 300
+
+    # the synthetic pack is too short-lived to leave a run record, which the header rule refuses on its own, so
+    # the counters' own rule is read against a header that has one
+    import dmipy_sim.replay.publish as P
+    real = P.header_of(pack)
+    real["provenance"] = dict(real.get("provenance") or {},
+                              run=dict(walk=dict(peak_rss_bytes=1 << 20, wall_s=1.0, status="ok",
+                                                 code=dict(commit="0" * 40))))
+    mp = pytest.MonkeyPatch()
+    mp.setattr(P, "header_of", lambda path: real)
+    try:
+        got = R._walk_from_pack("sphere", R.RecordedWalk(
+            pack_path=pack, not_recorded="sub_steps and illegal_crossings",
+            evidence="the walk's run record carries neither counter"), budget, n)
+    finally:
+        mp.undo()
+    assert got["sub_steps"] is None and got["illegal_crossings"] is None
+    assert got["counters_not_recorded"] == "sub_steps and illegal_crossings"
+
+    with pytest.raises(R.ReferenceRefusal, match="illegal_crossings is None and not_recorded does not name it"):
+        R._walk_from_pack("sphere", R.RecordedWalk(pack_path=pack, sub_steps=3,
+                                                  evidence="the log", not_recorded="sub_steps"), budget, n)
+    with pytest.raises(R.ReferenceRefusal, match="names nothing"):
+        R._walk_from_pack("sphere", R.RecordedWalk(pack_path=pack, sub_steps=3, illegal_crossings=0), budget, n)
+
+
+def test_the_pilot_substrate_is_declared_and_refused_when_it_is_not_one_of_them(tmp_path):
+    """`sorted(substrates)[0]` is an arbitrary pilot the moment a family has 600 of them: canonical-pores' first
+    is the 0.1 um cylinder, whose R/6 sub-step rule costs more than every pack it sizes."""
+    fam = _family(tmp_path, design=_design(pilot_substrate="sphere-off"))
+    for s in ("source", "reference", "spec"):
+        fam.stage(s)
+    rec = fam.stage("design")
+    assert rec["pilot"]["substrate"] == "sphere-off" and rec["pilot"]["substrate_is"] == "declared"
+
+    (tmp_path / "x").mkdir()
+    fam2 = _family(tmp_path / "x", design=_design(pilot_substrate="no-such-pore"))
+    for s in ("source", "reference", "spec"):
+        fam2.stage(s)
+    with pytest.raises(R.ReferenceRefusal, match="not one of this family's 2 substrates"):
+        fam2.stage("design")
+
+
+def test_a_reference_record_the_protocol_did_not_write_is_refused_not_graded():
+    """ling-sand-packs publishes a pre-protocol records/reference.json that carries `grade` as a FIELD. Reading
+    a grade off it raised KeyError from inside the organisation page's renderer, after a publish had succeeded."""
+    pre = dict(family="ling-sand-packs", grade="A", quantity="T2 log-mean",
+               sample_relation="the SAME physical object", free_parameters={})
+    with pytest.raises(R.ReferenceRefusal, match="states a grade of 'A' as a FIELD"):
+        R.grade_of(pre)
+    with pytest.raises(R.ReferenceRefusal, match="did not write it"):
+        R.grade_reason(pre)
+    rows = [dict(name="ling-sand-packs", repo="SubstrateCommons/ling-sand-packs", packs=5, bytes=1,
+                 reference=pre, packs_rows=[])]
+    with pytest.raises(R.ReferenceRefusal, match="organisation: ling-sand-packs"):
+        R.organisation_card(rows)
+    # a family with no reference at all still records `none` and still renders
+    assert R.grade_of(dict(absent="this family reproduces no published quantity")) == "none"

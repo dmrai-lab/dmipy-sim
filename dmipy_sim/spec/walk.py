@@ -129,6 +129,16 @@ def walk_spec(spec, n_walkers=None, T_max=None, dt_save=None, *, scanner="connec
                                       require_gpu=require_gpu, walker_batch_size=walker_batch_size, tiers=tiers)
             return PersistentWalk(w.positions, w.dt, w.sub_steps, w.dt_sim, w.boundary_local_time, w.compartment,
                                   w.bound_frac, w.illegal_crossings, w.seed, w.diffusivity, geometry=g, spec=spec, run=w.run)
+        if diffusivity is not None:
+            # a bundle walks pool by pool at each pool's OWN D, so there is nothing for one number to mean here.
+            # It used to be accepted and dropped: the published Winther G6 packs were asked for the study's
+            # 0.6e-9 and walked at the spec's 1.7e-9, and only the walk's run record said so.
+            raise SpecError(
+                f"walk_spec: diffusivity={diffusivity!r} was given for a multi-surface spec, which walks each pool "
+                f"at its own D ("
+                + ", ".join(f"{p.name}={p.D!r}" for p in spec.pools) + "). Set the D of the pools in the spec -- "
+                f"the producer's argument, or SubstrateSpec.replace -- rather than beside it; a number here would "
+                f"reach the save-grid rule and nothing else.")
         return _walk_bundle(spec, int(n_walkers), float(T_max), float(dt_save), seed, n_probe, field, field_res,
                             require_gpu, walker_batch_size, field_budget=field_budget, field_cutoff_m=field_cutoff_m, field_cutoff_tol=field_cutoff_tol, seeding=seeding,
                             field_cutoff_max_m=field_cutoff_max_m, adaptive_steps=adaptive_steps, field_sample_every=int(field_sample_every), field_far=field_far, field_gather_every=int(field_gather_every), context=context, spool=bool(spool))

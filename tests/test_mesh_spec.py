@@ -108,3 +108,12 @@ def test_walk_spec_walks_an_analytic_spec_too():
     assert w.spec == g.spec and type(w.geometry) is d.Cylinder
     with pytest.raises(SpecError, match="no D"):
         walk_spec(g.spec, 32, 4e-4, 2e-4, seed=1, require_gpu=False)
+
+
+def test_walk_spec_refuses_a_diffusivity_a_bundle_walk_cannot_honour(tmp_path):
+    """A multi-surface spec walks each pool at its OWN D, so `diffusivity=` reached the save-grid rule and was
+    dropped: the published Winther G6 packs were asked for the study's 0.6e-9 and walked at the spec's 1.7e-9,
+    and only the walk's run record said so."""
+    spec = _bundle_spec(tmp_path)
+    with pytest.raises(SpecError, match="walks each pool at its own D"):
+        walk_spec(spec, 8, 4e-4, 2e-4, diffusivity=0.6e-9, seed=0, require_gpu=False, field=False)
