@@ -297,32 +297,51 @@ def pack_powder(pack, scheme, b, *, tol=1e6):
     return value, se, int((np.asarray(ew) > 0).sum())
 
 
-def walk_susceptibility_ratio(walk, *, angles_deg=THEIR_ANGLES_DEG, B0=7.0, chi_iso=1.06e-6, chi_aniso=0.0):
-    """``{angle: S_susc / S_0}`` at b = 0 under a spin echo, from the walk's own field samples.
+def walk_field_along(walk, b0_dir, *, B0, chi_iso, chi_aniso=0.0, chunk=2000):
+    """``(n_w, n_t)`` field in tesla along every walker's path of ``walk``, in walker chunks.
 
-    Their Fig. 1b quantity, measured on the direct walk: the field the WALK sampled (the mean of the basis
-    channels over each save interval, so the sub-step motion inside a save is integrated rather than aliased)
-    contracted at each orientation, gated by the sequence's own sign, and reduced as ``mean(cos phi)``. At
-    b = 0 with no relaxation the denominator is exactly one, so the ratio is the numerator.
+    The walk's OWN samples when it took them (the mean of the field basis over each save interval, so the
+    sub-step motion inside a save is integrated rather than aliased), else the basis evaluated at the saved
+    positions -- which is the rule the pack's own path channel is encoded and certified by
+    (``replay.bank._raw_field``), so the direct number and the replayed one differ by the codec and not by which
+    field either of them read.
+    """
+    from dmipy_sim.fields.hollow_cylinder import contract
+    if walk.field_samples is not None:
+        return contract(np.asarray(walk.field_samples, np.float64), b0_dir, B0=float(B0), chi_iso=float(chi_iso),
+                        chi_aniso=float(chi_aniso))
+    if walk.field_basis is None:
+        raise ValueError("this walk carries neither field samples nor a field basis, so it has no field tier")
+    pos = walk.positions
+    n_w, n_t = pos.shape[0], pos.shape[1]
+    out = np.empty((n_w, n_t), np.float64)
+    for lo in range(0, n_w, chunk):
+        p = np.asarray(pos[lo:lo + chunk], np.float64)
+        out[lo:lo + p.shape[0]] = walk.field_basis.field(p.reshape(-1, 3), b0_dir, B0=float(B0),
+                                                        chi_iso=float(chi_iso),
+                                                        chi_aniso=float(chi_aniso)).reshape(-1, n_t)
+    return out
+
+
+def walk_susceptibility_ratio(walk, *, angles_deg=THEIR_ANGLES_DEG, B0=7.0, chi_iso=1.06e-6, chi_aniso=0.0):
+    """``{angle: S_susc / S_0}`` at b = 0 under a spin echo, from the walk's own field.
+
+    Their Fig. 1b quantity, measured on the direct walk: the field along each intra walker's path contracted at
+    each orientation, gated by the sequence's own sign, and reduced as ``mean(cos phi)``. At b = 0 with no
+    relaxation the denominator is exactly one, so the ratio is the numerator.
     """
     from dmipy_sim import pgse
     from dmipy_sim.constants import GAMMA
-    from dmipy_sim.fields.hollow_cylinder import contract
     from dmipy_sim.replay._replay_kernel import field_gate
-    if walk.field_samples is None:
-        raise ValueError("this walk carries no field samples, so it cannot serve the susceptibility ratio")
-    psi = np.asarray(walk.field_samples, np.float64)
-    n_t = psi.shape[1]
-    dt = float(walk.dt) * int(walk.field_sample_every)
-    seq = pgse([[0.0, 0.0, 1.0]], 5e-3, 20e-3, bvalues=[0.0], TE=float((walk.positions.shape[1] - 1) * walk.dt),
-               n_t=n_t, slew_rate=np.inf)
+    n_t, dt = walk.positions.shape[1], float(walk.dt)
+    seq = pgse([[0.0, 0.0, 1.0]], 5e-3, 20e-3, bvalues=[0.0], TE=float((n_t - 1) * dt), n_t=n_t, slew_rate=np.inf)
     gate = field_gate(seq, n_t, dt)
     m, w = walk_intra(walk)
     out = {}
     for theta in angles_deg:
         t = np.radians(float(theta))
         d = [float(np.sin(t)), 0.0, float(np.cos(t))]
-        dB = contract(psi[m], d, B0=float(B0), chi_iso=float(chi_iso), chi_aniso=float(chi_aniso))
+        dB = walk_field_along(walk, d, B0=B0, chi_iso=chi_iso, chi_aniso=chi_aniso)[m]
         phi = GAMMA * dt * (dB * gate[None, :]).sum(1)
         out[int(theta)] = float((w * np.cos(phi)).sum() / w.sum())
     return out
