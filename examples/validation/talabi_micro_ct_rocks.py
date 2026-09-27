@@ -176,7 +176,8 @@ def run_rock(name, data_dir, *, n_walkers, T_max, sample_ms, sub_echo, walker_ba
     seq = cpmg(n_echoes, sample_ms * 1e-3, n_t_per_echo=int(sub_echo))
     dt = seq.dt
     # The WALK's step, which is what the physics is resolved at: the engine divides the sequence's dt
-    # into `resolve_sub_steps` fine steps (here the surface-relaxivity rule's quarter of a voxel), so
+    # into `resolve_sub_steps` fine steps (here the surface-relaxivity rule's quarter of the narrowest
+    # passage the pore water occupies, which on these rocks is the voxel), so
     # sqrt(6 D dt) is the save interval's displacement and not the step. `sub_steps` overrides the
     # rule, which is how the rule itself is measured.
     from dmipy_sim.engine.physics import resolve_sub_steps
