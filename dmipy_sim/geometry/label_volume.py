@@ -18,6 +18,11 @@ random walk on a segmented image computes, and it is why a reference measurement
 voxels is a like-for-like comparison. A consumer who wants the smooth-surface rate needs a smoothed
 surface, which is a different substrate.
 
+The step rules divide the **narrowest passage the seeded water occupies**, measured on the seeded
+pool itself (:func:`measure_passage_width`) with the voxel as the floor, and not the voxel: a
+segmentation's voxel is its resolution, so a rule gated on it asks 48,000 sub-steps of a 20 nm
+electron-microscopy volume for a pore the grid resolves fifty times over (#478).
+
 Coordinates are metres. Voxel ``(i, j, k)`` spans ``origin + (i, j, k) * voxel_size`` to
 ``origin + (i + 1, j + 1, k + 1) * voxel_size``. An axis is ``periodic`` (the grid repeats, the
 returned position stays continuous so the gradient phase is right) or not, and a non-periodic axis's
@@ -29,6 +34,9 @@ is :func:`dmipy_sim.spec.label_volume_spec`.
 """
 from __future__ import annotations
 
+import logging
+from typing import NamedTuple
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -36,36 +44,44 @@ import numpy as np
 from ._boundary import WallHit, representable_nudge, transmit_probability
 from .base import Geometry, LengthScales, permeability_of
 
-#: The reflection rule of this family: ``step_l <= min(voxel_size) / SPECULAR_STEP_FRACTION``, one
-#: voxel per step. Reflection off an axis-aligned face is exact at any step and the traversal misses no
-#: face, so this bounds nothing about the collision -- it bounds the *one Powles decision per step*
-#: rule and how finely a one-voxel pore is sampled. Measured on the voxelised R = 5 um sphere
-#: (h = 1 um, 20,000 walkers x 200 steps): 0 escapes and a boundary local time of 1.0026 / 1.0016 /
-#: 0.9997 of ``D S/V`` at 0.5 / 1 / 2 voxels per step, flat within the Monte-Carlo floor, so one voxel
-#: keeps a factor two of margin on the coarsest step that was measured to be right.
+log = logging.getLogger(__name__)
+
+#: The reflection rule of this family: ``step_l <= passage_width / SPECULAR_STEP_FRACTION``, one
+#: PASSAGE per step -- the narrowest passage the seeded water occupies
+#: (:func:`measure_passage_width`), which on the Imperial sand packs the rule was measured on IS one
+#: voxel. Reflection off an axis-aligned face is exact at any step and the traversal misses no face,
+#: so this bounds nothing about the collision -- it bounds the *one Powles decision per step* rule,
+#: and the faces a walker can meet along an axis are spaced by exactly that passage, so this is the
+#: length it has to be expressed in. Measured on the voxelised R = 5 um sphere (h = 1 um, 20,000
+#: walkers x 200 steps): 0 escapes and a boundary local time of 1.0026 / 1.0016 / 0.9997 of
+#: ``D S/V`` at 0.5 / 1 / 2 voxels per step, flat within the Monte-Carlo floor.
 SPECULAR_STEP_FRACTION = 1.0
 
-#: The surface tier's rule, ``step_l <= min(voxel_size) / SURFACE_STEP_FRACTION``: a quarter of a VOXEL,
-#: which is the smallest pore a segmentation can express, and not a fraction of ``V/S``.
+#: The surface tier's rule, ``step_l <= passage_width / SURFACE_STEP_FRACTION``: a quarter of the
+#: narrowest PASSAGE the seeded water occupies (:func:`measure_passage_width`), floored at the voxel.
 #:
-#: The estimator itself needs nothing finer than the voxel. A voxel face is exactly flat, so the
+#: The estimator itself needs nothing finer than the passage. A voxel face is exactly flat, so the
 #: overshoot has no curvature bias: on a voxelised 10 um slab at 200,000 walkers, ``-E[dlog_w] / T`` at
 #: ``rho / D = 1`` is 1.0015 / 1.0020 / 1.0039 / 0.9980 of ``D S/V`` at 2 / 1 / 0.5 / 0.25 voxels per
 #: step (floor 2.9e-3), and ``Box1D`` of the same width gives 1.0005 / 1.0011 / 0.9986 / 0.9954.
 #:
-#: What needs the finer step is a REAL substrate, whose pores are not all the size of its mean. ``V/S``
-#: is that mean: on the Imperial LV60A sand pack it is 1.67 voxels while the narrowest pores are one
-#: voxel, so gating on ``(V/S) / 2`` licensed a 0.84-voxel step. Measured there, at 200,000 walkers on
-#: one sampling grid with the sub-step count pinned so that only the WALK's step changes, the T2 decay
-#: is still changing at that step: its single-exponential fit (which does not go through a Laplace
-#: inversion, so it reads the decay and not the estimator) is 563.2 / 562.2 / 560.6 / 560.3 ms at
-#: 0.836 / 0.591 / 0.418 / 0.241 voxels -- moving by 0.18 %, then 0.28 %, then 0.05 %. It has stopped
-#: by a quarter of a voxel and not before.
+#: What needs the finer step is a REAL substrate, whose passages are not all the size of its mean.
+#: ``V/S`` is that mean: on the Imperial LV60A sand pack it is 1.67 voxels while its narrowest passages
+#: are one voxel, so gating on ``(V/S) / 2`` licensed a 0.84-voxel step. Measured there, at 200,000
+#: walkers on one sampling grid with the sub-step count pinned so that only the WALK's step changes, the
+#: T2 decay is still changing at that step: its single-exponential fit (which does not go through a
+#: Laplace inversion, so it reads the decay and not the estimator) is 563.2 / 562.2 / 560.6 / 560.3 ms
+#: at 0.836 / 0.591 / 0.418 / 0.241 voxels -- moving by 0.18 %, then 0.28 %, then 0.05 %. It has stopped
+#: by a quarter of a voxel and not before. Past that limit nothing moves: at the grid the reproduction
+#: uses, the log-mean T2 is 487.6 / 487.0 / 486.1 ms and the fit 558.8 / 557.0 / 556.7 ms at
+#: 0.249 / 0.176 / 0.125 voxels, 0.31 % and 0.38 % over a four-fold refinement, inside the walkers'
+#: own 0.22 % floor.
 #:
-#: Past that limit nothing moves: at the grid the reproduction uses, the log-mean T2 is
-#: 487.6 / 487.0 / 486.1 ms and the fit 558.8 / 557.0 / 556.7 ms at 0.249 / 0.176 / 0.125 voxels, 0.31 %
-#: and 0.38 % over a four-fold refinement, inside the walkers' own 0.22 % floor. The worst case a
-#: segmentation can hold is one voxel, so that is what the rule divides.
+#: That calibration is on a substrate whose narrowest passages ARE one voxel (measured: 1.8 % of
+#: LV60A's pore water sits in a one-voxel passage), so the 4 divides a passage, not a resolution. The
+#: two readings differ by two orders of magnitude the moment a segmentation resolves its pores -- a
+#: 20 nm electron-microscopy volume of a 1 um neurite asks 48,000 sub-steps per 0.1 ms save of the
+#: voxel and 480 of the passage -- and it is the passage that was measured (#478).
 SURFACE_STEP_FRACTION = 4.0
 
 #: The largest share of a voxel the representable nudge may be. The nudge is ``1e-4`` of the voxel by
@@ -78,6 +94,170 @@ SURFACE_STEP_FRACTION = 4.0
 #: 6 for the same volume translated to the origin -- a factor of 123. So a nudge above this fraction is
 #: a substrate that cannot be walked where it sits, and it is refused with the translation that fixes it.
 NUDGE_FRACTION_MAX = 1e-2
+
+#: The share of the seeded pool's water the step rules may leave unresolved: the quantile of the
+#: passage-width distribution they divide (:func:`measure_passage_width`).
+#:
+#: It is a bias budget, and the bound is one line: an unresolved passage can move a weighted ensemble
+#: mean by at most the water that is in it, because every walker's weight is at most one. 1e-3 is
+#: below the Monte-Carlo floor of the walker counts these packs are built at (2.2e-3 at 200,000
+#: walkers, dmrai-lab/dmipy-sim#470), so a passage the rule steps over cannot be read in the pack that
+#: steps over it.
+#:
+#: It is also bounded from above by the substrate the constants were CALIBRATED on and the packs
+#: already published from it and from Ling's, all of which must keep the voxel floor: the share of pore
+#: water sitting in a ONE-VOXEL passage is 1.80 % on Talabi's LV60A
+#: (central 300^3, 10.002 um), 1.59 % on Berea, 1.38 % on F42A, and 0.27 % / 0.24 % on Ling's pure
+#: quartz / garnet packs (450^3, 3.935 um). Every one is above this budget -- the narrowest is 2.4x it
+#: -- so all five read the floor and the packs already published from them are walked at the step they
+#: were walked at.
+STEP_WATER_BUDGET = 1e-3
+
+
+class PassageWidth(NamedTuple):
+    """What a label volume's step rules divide, and the measurement it came from.
+
+    Attributes
+    ----------
+    width : float
+        The passage width the step rules divide (m): the ``budget`` quantile of the seeded pool's
+        passage widths, never below ``voxel``.
+    voxel : float
+        The floor (m), ``min(voxel_size)``: the narrowest passage a segmentation can express.
+    budget : float
+        The share of the seeded pool's walled water allowed to sit in something narrower than
+        ``width`` (:data:`STEP_WATER_BUDGET`).
+    floor_share : float
+        The share of it that sits in a ONE-VOXEL passage (one at most ``max(voxel_size)`` wide, so that
+        a single voxel along the coarsest axis of an anisotropic grid still counts as one) -- how much
+        margin the budget has on this substrate, and why the answer is (or is not) the floor.
+    median : float
+        The median passage width (m): what a rule built on a mean would have divided.
+    walled : bool
+        Whether the seeded pool meets another pool along any axis at all. A pool that meets none is
+        confined only by the crop's own faces, which are not a wall of the substrate, so it keeps the
+        voxel floor and says so here.
+    walled_fraction : float
+        The share of the seeded pool with a wall along at least one axis; the measurement is over
+        those voxels alone, so unwalled water cannot hide a narrow passage in the quantile.
+    n_voxels : int
+        The seeded pool's voxels the measurement was made on.
+    """
+    width: float
+    voxel: float
+    budget: float
+    floor_share: float
+    median: float
+    walled: bool
+    walled_fraction: float
+    n_voxels: int
+
+    def record(self):
+        """The measurement as a JSON-able dict, for a spec's ``realisation`` -- so a pack's provenance
+        says which feature set its step and how it was measured."""
+        return {"passage_width_m": float(self.width), "voxel_m": float(self.voxel),
+                "water_budget": float(self.budget),
+                "floor_share": (None if not np.isfinite(self.floor_share) else float(self.floor_share)),
+                "median_passage_width_m": (None if not np.isfinite(self.median) else float(self.median)),
+                "walled": bool(self.walled), "walled_fraction": float(self.walled_fraction),
+                "n_voxels": int(self.n_voxels),
+                "measured": "the narrowest passage the seeded water occupies: per voxel the shortest "
+                            "run of the seeded pool through it along an index axis, at the water_budget "
+                            "quantile over the pool, floored at the voxel "
+                            "(geometry.label_volume.measure_passage_width)"}
+
+
+def _axis_runs(mask, axis, periodic):
+    """Per voxel, the length in voxels of the maximal run of ``mask`` along ``axis`` through it.
+
+    A run that spans the axis comes back as the axis length: on a periodic axis it is a walk that never
+    meets a wall, and on a reflecting one it is bounded by the crop's own faces, which are not a wall of
+    the substrate -- :func:`passage_widths` reads both as no wall along that axis.
+    """
+    m = np.moveaxis(np.asarray(mask, bool), axis, -1)
+    n = m.shape[-1]
+    if periodic:
+        m = np.concatenate([m, m, m], axis=-1)      # a run may wrap; three copies hold any run of length n
+    span = m.shape[-1]
+    idx = np.arange(span, dtype=np.int32)
+    lo = np.maximum.accumulate(np.where(m, np.int32(-1), idx), axis=-1)      # the last non-pool voxel before
+    hi = np.minimum.accumulate(np.where(m, np.int32(span), idx)[..., ::-1], axis=-1)[..., ::-1]
+    run = hi - lo - 1
+    if periodic:
+        run = np.minimum(run[..., n:2 * n], n)
+    return np.moveaxis(run, -1, axis)
+
+
+def passage_widths(mask, voxel_size, *, periodic=(False, False, False)):
+    """``(nx, ny, nz)`` float32 of the passage width at every voxel of ``mask``: the shortest run of the
+    pool through it along an index axis, times that axis's voxel extent; ``inf`` where no axis has a wall.
+
+    The wall of a label volume is made of axis-aligned faces, so the faces a walker can meet along an
+    axis are spaced by exactly that run -- which is why the passage is measured along the axes and not
+    as a distance to the nearest wall. A distance transform measures the largest ball that FITS at a
+    voxel, and on a segmented curved wall that is a voxel or two for a fixed share of the water however
+    fine the grid is (measured: 5.1 % of a voxelised sphere's water at ``h/R`` = 0.1 and 2.2 % at 0.05
+    sits in a one-voxel-thin corner of its own staircase, against 14.7 % of LV60A's pore) -- so its low
+    quantile reads every segmentation as one voxel thin and never adapts. A staircase corner is on a
+    long axis run, and the boundary local time on that same voxelised sphere is flat within the
+    Monte-Carlo floor from 0.5 to 2 voxels per step, so it is measured NOT to need the finer step.
+
+    An oblique passage is read along the axes too, so a sheet at 45 deg to the grid reads up to
+    ``sqrt(3)`` times its perpendicular thickness. That is the quantity the walk sees: its faces are the
+    axis-aligned ones the run measures.
+    """
+    vox = np.broadcast_to(np.asarray(voxel_size, np.float64).ravel(), (3,))
+    return _passage_voxels(mask, vox, periodic) * np.float32(np.min(vox))
+
+
+def _passage_voxels(mask, vox, periodic):
+    """:func:`passage_widths` in units of the SMALLEST voxel extent, float32.
+
+    The scale is carried separately so that the quantile the rule divides is a whole number of voxels
+    on an isotropic grid, and its product with the voxel is exact in float64 rather than a float32
+    product of the two.
+    """
+    m = np.asarray(mask, bool)
+    if m.ndim != 3:
+        raise ValueError(f"a passage width is measured on a 3-D mask, got shape {m.shape}")
+    per = np.broadcast_to(np.asarray(periodic, bool).ravel(), (3,))
+    scale = np.asarray(vox, np.float64) / float(np.min(vox))
+    w = np.full(m.shape, np.inf, np.float32)
+    for ax in range(3):
+        run = _axis_runs(m, ax, bool(per[ax]))
+        wide = run.astype(np.float32) * np.float32(scale[ax])
+        np.minimum(w, np.where(run >= m.shape[ax], np.float32(np.inf), wide), out=w)
+    return w
+
+
+def measure_passage_width(mask, voxel_size, *, periodic=(False, False, False), budget=STEP_WATER_BUDGET):
+    """The narrowest passage the water in ``mask`` occupies, as a :class:`PassageWidth`.
+
+    The seeded pool's own passage-width distribution (:func:`passage_widths`) at the ``budget``
+    quantile, floored at the voxel: the narrowest passage such that at most ``budget`` of the pool's
+    walled water is in something narrower. This is the worst case the walk has to resolve rather than
+    the average one -- ``V/S`` is the average, it is measured and reported by
+    :meth:`LabelVolume.surface_to_volume`, and it is not a step rule -- and it is measured per
+    substrate, so a grid that resolves its pores is walked at its pores and a segmentation whose
+    passages are one voxel wide is walked at the voxel.
+    """
+    m = np.asarray(mask, bool)
+    vox = np.broadcast_to(np.asarray(voxel_size, np.float64).ravel(), (3,))
+    floor = float(np.min(vox))
+    n = int(m.sum())
+    if n == 0:
+        raise ValueError("a passage width is measured on the water: this mask holds no voxel of the "
+                         "seeded pool")
+    w = _passage_voxels(m, vox, periodic)[m]            # in voxels: whole numbers on an isotropic grid
+    walled = np.isfinite(w)
+    if not walled.any():
+        return PassageWidth(floor, floor, float(budget), float("nan"), float("inf"), False, 0.0, n)
+    v = np.sort(w[walled])
+    i = min(int(float(budget) * len(v)), len(v) - 1)
+    one_voxel = float(np.max(vox)) / floor * (1.0 + 1e-9)     # a single voxel along ANY axis
+    return PassageWidth(width=floor * max(1.0, float(v[i])), voxel=floor, budget=float(budget),
+                        floor_share=float(np.mean(v <= one_voxel)), median=floor * float(np.median(v)),
+                        walled=True, walled_fraction=float(np.mean(walled)), n_voxels=n)
 
 
 class LabelVolume(Geometry):
@@ -171,6 +351,7 @@ class LabelVolume(Geometry):
                 f"is nothing, and origin=-0.5 * shape * voxel_size centres it."
             )
 
+        self._passage = None                                        # measured on first use (`passage_width`)
         self._porosity = float(np.mean(self._pool_grid == self.pool_index))
         if self._porosity <= 0.0:
             raise ValueError(f"pool {self.pool!r} occupies no voxel of this volume")
@@ -246,16 +427,42 @@ class LabelVolume(Geometry):
         return self.surface_area() / self.volume()
 
     @property
-    def length_scales(self):
-        """The voxel, and no separate pore.
+    def passage_width(self):
+        """The narrowest passage the walking pool's water occupies, as a :class:`PassageWidth`.
 
-        ``min_feature`` is the voxel: the smallest feature a segmentation can express, and therefore
-        the narrowest pore one can hold. ``surface_pore`` is left unset so the surface-relaxivity rule
-        divides that same worst case rather than ``V/S``, which is a MEAN and on a real rock is larger
-        than the pores that set the bias (see :data:`SURFACE_STEP_FRACTION`). ``V/S`` is measured and
+        Measured once on the pool this geometry seeds -- which for a geometry built from a spec is the
+        pool the spec seeds -- and kept, because the step rules ask for it once per driver and the
+        measurement is four passes over the grid (1.2 s for a 300^3 rock, 7 s for a 450^3 sand pack).
+        """
+        if self._passage is None:
+            self._passage = measure_passage_width(self._pool_grid == self.pool_index, self.voxel_size,
+                                                  periodic=self.periodic)
+            pw = self._passage
+            if pw.walled:
+                log.info("LabelVolume: pool %r walks passages of %.4g um at the %g water budget (%.3g of "
+                         "its walled water is in a one-voxel passage; voxel %.4g um, median passage "
+                         "%.4g um, mean V/S %.4g um)", self.pool, pw.width * 1e6, pw.budget,
+                         pw.floor_share, pw.voxel * 1e6, pw.median * 1e6, self._v_over_s * 1e6)
+            else:
+                log.info("LabelVolume: pool %r meets no other pool along any axis, so nothing bounds its "
+                         "passages and the step rules keep the voxel floor, %.4g um", self.pool,
+                         pw.width * 1e6)
+        return self._passage
+
+    @property
+    def length_scales(self):
+        """The narrowest passage the seeded water occupies, and no separate pore.
+
+        ``min_feature`` is :attr:`passage_width`, floored at the voxel: the worst case the walk has to
+        resolve ON THIS SUBSTRATE, which is what the reflection and surface constants of this family
+        were measured against (both were calibrated on a sand pack whose narrowest passages ARE one
+        voxel; see :data:`SURFACE_STEP_FRACTION`). The voxel alone is a RESOLUTION, and gating on it
+        asked 48,000 sub-steps of a 20 nm electron-microscopy volume (#478). ``surface_pore`` is left
+        unset so the surface-relaxivity rule divides that same worst case rather than ``V/S``, which is
+        a MEAN and on a real rock is larger than the passages that set the bias. ``V/S`` is measured and
         reported by :meth:`surface_to_volume`; it is a property of the substrate, not a step rule.
         """
-        return LengthScales(min_feature=float(self.voxel_size.min()))
+        return LengthScales(min_feature=float(self.passage_width.width))
 
     # ------------------------------------------------------------------ labelling
     def _wrap(self, r):

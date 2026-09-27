@@ -423,6 +423,7 @@ def label_volume_spec(path, *, pools=None, voxel_size=None, origin=None, crop=No
     into a :class:`~dmipy_sim.geometry.label_volume.LabelVolume`. ``cite_image_as`` is the path a
     dataset distributes the image at, when that is not where it is being read from.
     """
+    from ..geometry.label_volume import measure_passage_width
     from ..io.label_volume import read_label_volume, crop_labels, format_of
     fmt = str(format).lower() if format is not None else format_of(path)
     vol = read_label_volume(path, format=fmt, voxel_size=voxel_size)
@@ -487,12 +488,23 @@ def label_volume_spec(path, *, pools=None, voxel_size=None, origin=None, crop=No
         n = int(np.count_nonzero(a[:-1] != a[1:])) + (int(np.count_nonzero(a[-1] != a[0])) if per[ax] else 0)
         area += n * float(np.prod(vox) / vox[ax])
     s_over_v = area / (phi * float(np.prod(lab.shape)) * float(np.prod(vox)))
+    # What the walk's step rules will divide, measured on the pool this spec seeds and recorded, so a
+    # pack's provenance says which feature set its step (geometry.label_volume.measure_passage_width;
+    # `geometry_from_spec` measures the same mask and gets the same number).
+    passage = measure_passage_width(g == wid, vox, periodic=per)
     transformations = [
         f"labels -> pools {pool_map}; the {walking!r} pool holds the water, the others water_fraction 0",
         "the wall is every voxel face between two pools (the Manhattan surface of the segmentation): "
         f"measured S/V of the {walking!r} pool {s_over_v:.6g} 1/m at porosity {phi:.6g}",
         ("the crop's own outer faces are not a wall: they are the domain's " +
          ", ".join(f"{'periodic' if p else 'reflect'} {ax}" for ax, p in zip("xyz", per))),
+        (f"the step rules divide the narrowest passage the {walking!r} water occupies, measured on the "
+         f"seeded pool: {passage.width * 1e6:.4g} um at a {passage.budget:g} water budget "
+         + (f"({passage.floor_share:.3g} of that water is in a ONE-voxel passage, so the budget holds "
+            f"the voxel floor)" if passage.width <= passage.voxel else
+            f"({passage.floor_share:.3g} of that water is in a one-voxel passage, under the budget; "
+            f"voxel {passage.voxel * 1e6:.4g} um)")
+         + f"; its median passage is {passage.median * 1e6:.4g} um and its mean V/S {1e6 / s_over_v:.4g} um"),
     ]
     if crop is not None:
         transformations.append(f"crop {list(int(x) for x in crop)} of the released image, half-open, in voxels")
@@ -505,7 +517,7 @@ def label_volume_spec(path, *, pools=None, voxel_size=None, origin=None, crop=No
         description=description or (f"a segmented {'x'.join(str(int(n)) for n in lab.shape)} image at "
                                    f"{float(np.min(vox)) * 1e6:.4g} um; the {walking!r} pool walks between its voxel faces"),
         realisation={"shape": [int(n) for n in lab.shape], "porosity": phi, "surface_to_volume": s_over_v,
-                     "voxel_size_m": [float(x) for x in vox]},
+                     "voxel_size_m": [float(x) for x in vox], "step_scale": passage.record()},
         provenance={"source": source or "segmented image",
                     # a detached container is two files and `surface.sha256` covers only the one it
                     # cites, so every file the image was read from is recorded with its own digest
