@@ -585,7 +585,7 @@ def test_a_recorded_walk_without_the_engines_counters_is_refused(tmp_path):
                                                          evidence="")}))
     for st in ("source", "reference", "spec", "design"):
         fam.stage(st)
-    with pytest.raises(R.ReferenceRefusal, match="the engine's own counters"):
+    with pytest.raises(R.ReferenceRefusal, match="names the log the engine's counters were reported in"):
         fam.stage("walk")
     # with the counters declared, a pack too short-lived to have left a run record is refused on that
     import dataclasses
@@ -594,7 +594,7 @@ def test_a_recorded_walk_without_the_engines_counters_is_refused(tmp_path):
                              build=dataclasses.replace(fam.build, recorded={
                                  "sphere": R.RecordedWalk(pack_path=real, sub_steps=1, illegal_crossings=0,
                                                           evidence="a log")}))
-    with pytest.raises(R.ReferenceRefusal, match="carries no walk_params or no run record"):
+    with pytest.raises(R.ReferenceRefusal, match="carries no recorded resident peak for its walk"):
         fam2.stage("walk")
 
 
@@ -1059,3 +1059,274 @@ def test_the_log_mean_gradient_is_the_estimators_own_derivative():
         fd = (log_mean_T2(grid, t2_distribution(t, S + eps * v, grid))
               - log_mean_T2(grid, t2_distribution(t, S - eps * v, grid))) / (2 * eps)
         assert g @ v == pytest.approx(fd, rel=1e-5)
+
+
+# --------------------------------------------------------------- what the four-family conversion needed (#493)
+def test_a_host_that_states_no_licence_is_recorded_verbatim_and_never_redistributed(tmp_path):
+    """resources.drcmr.dk serves the Winther G6 morphology and states no licence at all. The protocol has to be
+    able to record that -- #459's own survey does -- and to refuse republishing those bytes."""
+    words = ("Copyright (c) 2022. All Rights Reserved. -- looked for on the landing page, the MAPdata directory "
+             "and the companion repository; none of the three states a licence.")
+    p = tmp_path / "grain.raw"
+    p.write_bytes(b"\x00\x01" * 64)
+    files = (R.SourceFile(path=str(p), cite_as="grain.raw", role="the synthetic input"),)
+
+    def src(**kw):
+        base = dict(key="unstated", url="https://example.invalid/record", host_record="fetched 2026-09-27",
+                    licence_id=R.LICENCE_NONE_STATED, licence_url="https://example.invalid/page",
+                    licence_text=words, files=files)
+        base.update(kw)
+        return [R.Source(**base)]
+
+    rec = _family(tmp_path, sources=src()).stage("source")
+    s = rec["sources"]["unstated"]
+    assert s["licence_stated"] is False and s["redistributes_bytes"] is False
+    assert s["licence_copy"]["chars"] == len(words) and s["licence_copy"]["sha256"]
+
+    for sub, kw, msg in (("b", dict(redistributes_bytes=True), "never republished"),
+                         ("c", dict(licence_text="none"), "no licence is recorded by its own words"),
+                         ("d", dict(licence_id="CC-BY-4.0"), "a licence TITLE is not a licence text")):
+        (tmp_path / sub).mkdir()
+        with pytest.raises(R.ReferenceRefusal, match=msg):
+            _family(tmp_path / sub, sources=src(**kw)).stage("source")
+
+
+def test_the_gate_states_an_unstated_licence_and_passes_it_when_nothing_is_redistributed():
+    src = {"unstated": dict(licence_id=R.LICENCE_NONE_STATED, licence_url="https://example.invalid/page",
+                            licence_stated=False, redistributes_bytes=False,
+                            licence_copy=dict(sha256="a" * 64, chars=120), host_record="fetched",
+                            files=[dict(cite_as="x", sha256="b" * 64, bytes=8)])}
+    checks = {c["check"]: c for c in R._gate_checks(dict(
+        source=dict(sources=src), reference=dict(absent="none"), spec=dict(substrates={}),
+        design=dict(derived=dict(tiers_that_hold=[], n_walkers=1), waveforms=[], tolerance={}, pass_band={}),
+        walk=dict(substrates={}), pack=dict(substrates={})))}
+    c = checks["source/unstated/licence"]
+    assert c["passed"] and "states NO licence" in c["detail"]
+
+    src["unstated"]["redistributes_bytes"] = True                 # the same source, republished, must fail
+    checks = {c["check"]: c for c in R._gate_checks(dict(
+        source=dict(sources=src), reference=dict(absent="none"), spec=dict(substrates={}),
+        design=dict(derived=dict(tiers_that_hold=[], n_walkers=1), waveforms=[], tolerance={}, pass_band={}),
+        walk=dict(substrates={}), pack=dict(substrates={})))}
+    assert not checks["source/unstated/licence"]["passed"]
+
+
+def test_a_counter_the_producing_run_did_not_report_is_recorded_as_absent_by_name(ran):
+    """Neither canonical-pores nor the Winther G6 rebuild reported sub_steps or illegal_crossings anywhere, and
+    their packs' headers carry neither. The absence is recorded by name; a number is never filled in by hand."""
+    fam, _ = ran
+    pack = os.path.join(fam.dir, "packs", "sphere.rpk")
+    assert os.path.exists(pack)
+    budget, n = 200_000_000_000, 300
+
+    # the synthetic pack is too short-lived to leave a run record, which the header rule refuses on its own, so
+    # the counters' own rule is read against a header that has one
+    import dmipy_sim.replay.publish as P
+    real = P.header_of(pack)
+    real["provenance"] = dict(real.get("provenance") or {},
+                              run=dict(walk=dict(peak_rss_bytes=1 << 20, wall_s=1.0, status="ok",
+                                                 code=dict(commit="0" * 40))))
+    mp = pytest.MonkeyPatch()
+    mp.setattr(P, "header_of", lambda path: real)
+    try:
+        got = R._walk_from_pack("sphere", R.RecordedWalk(
+            pack_path=pack, not_recorded=("sub_steps", "illegal_crossings"),
+            evidence="the walk's run record carries neither counter"), budget, n)
+    finally:
+        mp.undo()
+    assert got["sub_steps"] is None and got["illegal_crossings"] is None
+    assert got["counters_not_recorded"] == ["sub_steps", "illegal_crossings"]
+
+    with pytest.raises(R.ReferenceRefusal, match="illegal_crossings is None and not_recorded does not name it"):
+        R._walk_from_pack("sphere", R.RecordedWalk(pack_path=pack, sub_steps=3,
+                                                  evidence="the log", not_recorded=("sub_steps",)), budget, n)
+    with pytest.raises(R.ReferenceRefusal, match="names nothing"):
+        R._walk_from_pack("sphere", R.RecordedWalk(pack_path=pack, sub_steps=3, illegal_crossings=0), budget, n)
+
+
+def test_the_pilot_substrate_is_declared_and_refused_when_it_is_not_one_of_them(tmp_path):
+    """`sorted(substrates)[0]` is an arbitrary pilot the moment a family has 600 of them: canonical-pores' first
+    is the 0.1 um cylinder, whose R/6 sub-step rule costs more than every pack it sizes."""
+    fam = _family(tmp_path, design=_design(pilot_substrate="sphere-off"))
+    for s in ("source", "reference", "spec"):
+        fam.stage(s)
+    rec = fam.stage("design")
+    assert rec["pilot"]["substrate"] == "sphere-off" and rec["pilot"]["substrate_is"] == "declared"
+
+    (tmp_path / "x").mkdir()
+    fam2 = _family(tmp_path / "x", design=_design(pilot_substrate="no-such-pore"))
+    for s in ("source", "reference", "spec"):
+        fam2.stage(s)
+    with pytest.raises(R.ReferenceRefusal, match="not one of this family's 2 substrates"):
+        fam2.stage("design")
+
+
+def test_a_reference_record_the_protocol_did_not_write_is_refused_not_graded():
+    """ling-sand-packs publishes a pre-protocol records/reference.json that carries `grade` as a FIELD. Reading
+    a grade off it raised KeyError from inside the organisation page's renderer, after a publish had succeeded."""
+    pre = dict(family="ling-sand-packs", grade="A", quantity="T2 log-mean",
+               sample_relation="the SAME physical object", free_parameters={})
+    with pytest.raises(R.ReferenceRefusal, match="states a grade of 'A' as a FIELD"):
+        R.grade_of(pre)
+    with pytest.raises(R.ReferenceRefusal, match="did not write it"):
+        R.grade_reason(pre)
+    rows = [dict(name="ling-sand-packs", repo="SubstrateCommons/ling-sand-packs", packs=5, bytes=1,
+                 reference=pre, packs_rows=[])]
+    with pytest.raises(R.ReferenceRefusal, match="organisation: ling-sand-packs"):
+        R.organisation_card(rows)
+    # a family with no reference at all still records `none` and still renders
+    assert R.grade_of(dict(absent="this family reproduces no published quantity")) == "none"
+
+
+def test_the_reference_stage_can_be_re_run_because_the_resolution_TIME_is_not_an_input(tmp_path):
+    """The stage resolves the DOI, and the moment it did so is an OUTPUT of the stage. Including it in the
+    inputs digest made the digest change on every run, so with the real Crossref resolver the stage refused the
+    record it had itself written one minute earlier. The test resolver returns a fixed timestamp, which is
+    exactly why the tests did not see it."""
+    import itertools
+    clock = itertools.count()
+
+    def resolver(doi, **kw):
+        return dict(_resolver(doi, **kw), resolved=f"2026-01-01T00:00:{next(clock):02d}Z")
+
+    fam = _family(tmp_path, resolver=resolver)
+    fam.stage("source")
+    first = fam.stage("reference")
+    again = fam.stage("reference")                 # a second resolution, a second timestamp, the same record
+    assert again == first and again["crossref"]["resolved"] == first["crossref"]["resolved"]
+
+
+def test_the_round_trip_compares_the_situation_and_not_the_producers_labelling(ran):
+    """`spec_of` reconstructs a spec FROM a geometry, so it writes a default id and a provenance describing that
+    reconstruction: a producer-built spec can never round-trip those two. It CAN round-trip everything that says
+    what was walked, which is what the rule is for -- it caught a pool's water fraction and a seeding rule."""
+    fam, rec = ran
+    for name, s in rec["spec"]["substrates"].items():
+        assert s["round_trips"] and s["round_trip_not_compared"] == list(R.ROUND_TRIP_NOT_COMPARED)
+        for k in ("domain", "pools", "walls", "seeding"):
+            assert k in s["round_trip_compared"], f"{name} does not compare {k}"
+        assert "id" not in s["round_trip_compared"] and "provenance" not in s["round_trip_compared"]
+        assert s["spec"]["walls"][0]["name"] and s["spec"]["id"]        # the RECORD keeps the spec whole
+    detail = next(c["detail"] for c in rec["gate"]["checks"] if c["check"].endswith("/spec-round-trips"))
+    assert "not compared: " + ", ".join(R.ROUND_TRIP_NOT_COMPARED) in detail
+
+
+def test_the_round_trip_prunes_a_walls_name_without_dropping_the_wall():
+    """Dropping the whole of `walls` to avoid comparing one label would drop the field the rule exists for."""
+    spec = dict(id="x", description="prose", walls=[dict(name="axolemma", surface=dict(sha256="a" * 64))],
+                validity=dict(smallest_feature=1e-6, mesh_edge_feature_ratio=1.62),
+                pools=[dict(name="intra", water_fraction=1.0)])
+    pruned = R._pruned(spec)
+    assert pruned["walls"] == [dict(surface=dict(sha256="a" * 64))]
+    assert pruned["validity"] == dict(smallest_feature=1e-6)
+    assert pruned["pools"] == spec["pools"] and "id" not in pruned and "description" not in pruned
+
+
+def test_a_caveat_keyed_on_a_packs_name_is_rendered_beside_that_pack(ran):
+    """A caveat about ONE pack read only in a paragraph three sections away from it is a caveat a reader misses.
+    parity-fixtures' Disimpy hold (#488) is about one pack and the gate cannot see it, so the card has to put it
+    where that pack is: keyed on the pack's own name, rendered under its section and pointed at from the table."""
+    fam, rec = ran
+    name = sorted(rec["pack"]["substrates"])[0]
+    ref = dict(rec["reference"], caveats=dict(rec["reference"].get("caveats") or {},
+                                              **{name: "HELD: this pack carries its own caveat."}))
+    card = R._render_card(fam.name, fam.publication.repo, dict(rec, reference=ref), rec["gate"],
+                          rec["card"]["previews"], "print(1)", dict(seconds=0.1, stdout="1"), "packs/x.rpk")
+    inside = card.index("## What is inside")
+    here = card.index(f"### {name}", inside)
+    nxt = card.find("### ", here + 4)
+    section = card[here:nxt if nxt > 0 else card.index("## The reproduction")]
+    assert f"**Caveat — `{name}`.**" in section and "HELD: this pack carries its own caveat." in section
+    table = card[card.index("## The packs"):inside]
+    assert "Read with a caveat of its own:" in table and f"`{name}`" in table
+    # and it is still in the family's own caveat list, so nothing is moved out of the record's own rendering
+    assert "HELD: this pack carries its own caveat." in card[card.index("**Caveats:**"):]
+
+
+def test_not_recorded_is_a_tuple_of_counter_names_and_not_a_sentence(ran):
+    """It was matched as a SUBSTRING. One sentence set on every pack of canonical-pores -- "sub_steps,
+    illegal_crossings and, for 118 of the 600, peak_rss_bytes" -- therefore declared the peak absent on all 600
+    rather than on the 118 that lacked one, and the refusal it was meant to arm never fired for any of them."""
+    fam, _ = ran
+    pack = os.path.join(fam.dir, "packs", "sphere.rpk")
+    for bad in ("sub_steps, illegal_crossings and, for 118 of the 600, peak_rss_bytes",
+                ("sub_steps", "peak_rss"), ("steps",)):
+        with pytest.raises(R.ReferenceRefusal, match="a tuple of counter NAMES"):
+            R._walk_from_pack("sphere", R.RecordedWalk(pack_path=pack, not_recorded=bad,
+                                                      evidence="the run record"), 1 << 40, 300)
+
+
+def test_the_within_budget_check_fires_on_a_peak_over_the_budget_and_states_an_absent_one(ran):
+    """Both branches. Neither was asserted: deleting the check, restoring the old refusal, or raising in the
+    `peak is None` branch all left the suite green."""
+    fam, rec = ran
+    def checks_with(walk_sub):
+        r = dict(rec, walk=dict(rec["walk"], substrates=walk_sub))
+        return {c["check"]: c for c in R._gate_checks(r)}
+
+    name = sorted(rec["pack"]["substrates"])[0]
+    base = dict(rec["walk"]["substrates"][name])
+
+    over = checks_with(dict(rec["walk"]["substrates"],
+                            **{name: dict(base, peak_rss_bytes=10 ** 12, budget_bytes=10 ** 9)}))
+    c = over[f"{name}/walk-within-budget"]
+    assert not c["passed"] and "against the design's" in c["detail"]
+
+    under = checks_with(dict(rec["walk"]["substrates"],
+                             **{name: dict(base, peak_rss_bytes=10 ** 6, budget_bytes=10 ** 9)}))
+    assert under[f"{name}/walk-within-budget"]["passed"]
+
+    absent = checks_with(dict(rec["walk"]["substrates"],
+                              **{name: dict(base, peak_rss_bytes=None, budget_bytes=10 ** 9,
+                                            counters_not_recorded=["peak_rss_bytes"])}))
+    c = absent[f"{name}/walk-within-budget"]
+    assert c["passed"] and "recorded no resident peak" in c["detail"] and "peak_rss_bytes" in c["detail"]
+
+    # and a packed substrate with NO walk record at all is a refusal, not a TypeError out of the byte formatter
+    with pytest.raises(R.ReferenceRefusal, match="in the pack record and in no walk record"):
+        checks_with({k: v for k, v in rec["walk"]["substrates"].items() if k != name})
+
+
+def test_a_declared_hold_reaches_the_manifest_row_without_becoming_a_verdict(ran, tmp_path):
+    """A consumer reads the row. The Disimpy fixture ships with a reservation on #488, whose evidence is a vector
+    the scalar gate cannot see, and a row reading `gate: pass` with nothing beside it hid the card's caveat from
+    anyone reading the manifest."""
+    import dataclasses
+    fam, rec = ran
+    name = sorted(rec["pack"]["substrates"])[0]
+    passed = [n for n, v in rec["gate"]["per_substrate"].items() if v["passed"]]
+    held = {passed[0]: "a reservation on dmipy-sim#488"}
+
+    (tmp_path / "h").mkdir()
+    pub = dataclasses.replace(fam.publication, hold=held)
+    got = R.ReferenceFamily(fam.name, str(tmp_path / "h"), sources=fam.sources, reference=fam.reference,
+                            design=fam.design, build=fam.build, publication=pub, resolver=_resolver)
+    for st in R.STAGES:
+        out = got.stage(st)
+    rows = out["manifest_verdicts"]
+    mine = rows[got._hub_path(passed[0], rec["pack"]["substrates"][passed[0]]["pack"])]
+    assert mine["gate"] == "pass" and mine["withheld"] is False          # the verdict is untouched
+    assert mine["hold"] == held[passed[0]] and mine["held"] is True      # the reservation is beside it
+    assert out["holds"] == held
+    card = open(os.path.join(got.dir, "README.md")).read()
+    assert "**Published with a hold.**" in card and "dmipy-sim#488" in card
+
+    # a hold on a pack the gate FAILED is refused: it is withheld already
+    failed = [n for n, v in rec["gate"]["per_substrate"].items() if not v["passed"]]
+    if failed:
+        (tmp_path / "f").mkdir()
+        bad = R.ReferenceFamily(fam.name, str(tmp_path / "f"), sources=fam.sources, reference=fam.reference,
+                                design=fam.design, build=fam.build, resolver=_resolver,
+                                publication=dataclasses.replace(fam.publication, hold={failed[0]: "why"}))
+        for st in R.STAGES[:-1]:
+            bad.stage(st)
+        with pytest.raises(R.ReferenceRefusal, match="withheld already"):
+            bad.stage("publish")
+    (tmp_path / "u").mkdir()
+    worse = R.ReferenceFamily(fam.name, str(tmp_path / "u"), sources=fam.sources, reference=fam.reference,
+                              design=fam.design, build=fam.build, resolver=_resolver,
+                              publication=dataclasses.replace(fam.publication, hold={"no-such-pack": "why"}))
+    for st in R.STAGES[:-1]:
+        worse.stage(st)
+    with pytest.raises(R.ReferenceRefusal, match="has no pack of"):
+        worse.stage("publish")

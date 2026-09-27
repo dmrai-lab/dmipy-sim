@@ -72,6 +72,12 @@ GRADES = ("A", "B", "analytic", "none")
 #: Whose a free parameter is. A parameter without one of these is not a recorded parameter.
 WHOSE = ("theirs", "literature", "ours")
 
+#: The counters of a walk a :class:`RecordedWalk` may declare ABSENT, by name. ``not_recorded`` is a tuple drawn
+#: from these and never a sentence: prose that happened to contain ``peak_rss_bytes`` because it said "for 118 of
+#: the 600, peak_rss_bytes" turned the refusal off for all 600 packs of canonical-pores rather than the 118 it
+#: described, which is what a substring test buys.
+RECORDED_WALK_COUNTERS = ("sub_steps", "illegal_crossings", "peak_rss_bytes")
+
 #: What the publication states about the quantity: a number in a document, released DATA (a signal, a set of
 #: per-object signals, a volume), a figure, a closed form, or nothing. ``data`` is graded like a number, since a
 #: released array IS the measurement and needs no printed line -- which is what parity-fixtures,
@@ -84,9 +90,44 @@ SE_KINDS = ("analytic_mean", "delta_method")
 #: What the reference's sample is to ours.
 SAMPLE_RELATIONS = ("the same object", "the same material", "a matched statistic")
 
+#: What ``spec_of(geometry_from_spec(spec))`` cannot reproduce, and therefore what the spec stage's round trip
+#: does not compare, as dotted paths (``*`` matches one list index or key).
+#:
+#: ``spec_of`` reconstructs a spec FROM a geometry. Two kinds of field are therefore beyond it, and both are
+#: named here rather than left to make the rule pass or fail by accident:
+#:
+#: * the producer's own LABELLING -- ``id``, ``provenance``, ``description``, a wall's ``name``. "axolemma" and
+#:   "surface" are the same wall; a citation is the producer's words about where the substrate came from.
+#: * what the producer MEASURED off the released surface and ``spec_of`` reconstructs with a coarser rule.
+#:   ``realisation`` is the producer's measurement and comes back ``None``; ``validity.mesh_edge_feature_ratio``
+#:   is derived from a feature scale that ``mcdc_axon_spec`` measures as the tube's ``2 V / S`` where
+#:   ``spec_of`` takes ``_surface_stats``' half-thinnest-extent, which for an undulating tube is the undulation
+#:   envelope and three times too coarse (1.62 against 2.92 on the MC/DC axons). ``smallest_feature`` itself IS
+#:   compared, and agrees.
+#:
+#: Everything that says what was WALKED -- the domain, the pools, every wall's surface and physics, the seeding,
+#: the rest of the validity -- is compared, which is what the rule exists for: it caught an
+#: ``extra.water_fraction`` of 1.0 for a pool the reference engine never seeded and a ``seeding.rule`` of
+#: ``uniform_by_volume`` for one that was ``explicit``.
+ROUND_TRIP_NOT_COMPARED = ("id", "provenance", "description", "realisation",
+                           "validity.mesh_edge_feature_ratio", "walls.*.name")
+
 #: A licence text is the licence, not its title: the shortest in use (the CC BY 4.0 deed) is some 1.5 kB and
 #: an MIT licence 1.0 kB, so a record under this many characters is a name and not a text.
 MIN_LICENCE_TEXT_CHARS = 400
+
+#: The ``licence_id`` of a host that states NO licence. dmipy-sim#459's own survey records such hosts verbatim
+#: ("unstated"), and the protocol has to be able to record one too: the Winther G6 morphology is served by
+#: resources.drcmr.dk, whose pages carry a copyright line and no licence at all, and a rule that only a licence
+#: TEXT may be recorded leaves an agent two choices, both wrong -- not record the family, or write down a licence
+#: nobody granted (the packs on the hub today assert CC-BY-4.0 for that morphology). Such a source is READ and
+#: CITED; not one of its bytes may be redistributed, which :class:`Source` declares and the source stage refuses.
+LICENCE_NONE_STATED = "none stated"
+
+#: How short the host's own words about rights may be when they are all there is. resources.drcmr.dk states
+#: "Copyright (c) 2022. All Rights Reserved" and nothing else; the record carries that, plus where it was looked
+#: for, so an auditor checks the absence the same way they would check a licence.
+MIN_LICENCE_ABSENT_CHARS = 40
 
 #: Names a tolerance term may not end in: each is a way of widening a threshold without measuring anything.
 FORBIDDEN_TOLERANCE_KEYS = ("coverage", "coverage_factor", "k", "fold_spread", "folds", "split_half", "safety")
@@ -95,7 +136,8 @@ FORBIDDEN_TOLERANCE_KEYS = ("coverage", "coverage_factor", "k", "fold_spread", "
 #: written. A snippet a reader will not wait for is not a snippet.
 SNIPPET_CEILING_S = 60.0
 
-__all__ = ["ReferenceFamily", "ReferenceRefusal", "Records", "STAGES", "GRADES", "grade_of", "crossref",
+__all__ = ["ReferenceFamily", "ReferenceRefusal", "Records", "STAGES", "GRADES", "LICENCE_NONE_STATED",
+           "RECORDED_WALK_COUNTERS", "grade_of", "crossref",
            "code_commit", "tolerance_of", "gate_verdict", "pass_band", "grade_reason", "Source", "SourceFile", "Reference",
            "ReferenceQuantity", "Published", "Direct", "FreeParameter", "Design", "Tier", "Systematic",
            "Tolerance", "Build", "RecordedWalk", "Publication", "organisation_index", "organisation_card", "organisation_example",
@@ -118,7 +160,16 @@ class SourceFile:
 @dataclass(frozen=True)
 class Source:
     """One host record and its files. ``licence_text`` is the host's licence VERBATIM, not its title, and
-    ``host_record`` the commit or version of the record the files came from."""
+    ``host_record`` the commit or version of the record the files came from.
+
+    ``licence_id`` is :data:`LICENCE_NONE_STATED` for a host that states no licence at all. ``licence_text`` is
+    then the host's own words about rights (its copyright line, and where each page was looked at), which is
+    what an auditor checks the absence against, and ``redistributes_bytes`` must be false: a source whose
+    licence nobody granted may be read and cited, never republished.
+
+    ``redistributes_bytes`` says whether this family puts the source's OWN bytes on the hub. A family that
+    publishes only packs of its own walk does not.
+    """
     key: str
     url: str
     host_record: str
@@ -126,6 +177,7 @@ class Source:
     licence_url: str
     licence_text: str
     files: tuple
+    redistributes_bytes: bool = False
 
 
 @dataclass(frozen=True)
@@ -268,6 +320,11 @@ class Design:
     fails a correct family; :func:`pass_band` turns it and the number of comparisons into the multiplier the
     gate applies to its standard uncertainty. Without it the criterion is one standard error, which fails a
     correct pack a third of the time per comparison.
+
+    ``pilot_substrate`` NAMES the substrate the pilot walks. Unnamed it is the first in sorted order, which is
+    an arbitrary choice the moment a family has more than a handful: canonical-pores' first is the 0.1 um
+    cylinder, whose sub-step rule is 1/R^2 and whose pilot would cost more than every pack it sizes. The name is
+    refused when it is not one of this family's substrates, and the design record carries it either way.
     """
     window_s: float
     dt_save_s: float
@@ -282,16 +339,36 @@ class Design:
     tolerance: Tolerance
     false_failure_rate: float = 0.01
     systematics: tuple = ()
+    pilot_substrate: Optional[str] = None
 
 
 @dataclass(frozen=True)
 class RecordedWalk:
     """A walk that already happened, as its own record: the counters the engine reported, with the log they
-    were reported in. The walk stage writes a record FROM this instead of walking again."""
+    were reported in. The walk stage writes a record FROM this instead of walking again.
+
+    A counter the producing run did not report is ``None``, and ``not_recorded`` then NAMES it and says why it
+    is absent -- measured on this conversion: the canonical-pores build logged the floor and the bytes, and the
+    Winther G6 rebuild set the ``dmipy_sim`` logger to ``WARNING``, so neither family's published walks reported
+    ``sub_steps`` or ``illegal_crossings`` anywhere, and the packs' headers carry neither. The alternatives were
+    to refuse the family or to let an agent type a plausible number into a measurement; recording the absence by
+    name is neither, and the card prints "not recorded" where the number would be.
+
+    ``peak_rss_bytes`` may be named in ``not_recorded`` too, for a pack whose walk left no resident-bytes
+    measurement at all (118 of canonical-pores' 600). The budget is then not checked against a measurement for
+    that pack and the gate SAYS so per pack, rather than the family being refused over a number about a walk
+    that has already happened.
+
+    ``not_recorded`` is a tuple of :data:`RECORDED_WALK_COUNTERS` names, PER PACK, and a string is refused. It
+    was matched as a substring of prose, so one sentence set on every pack of a family -- "sub_steps,
+    illegal_crossings and, for 118 of the 600, peak_rss_bytes" -- declared every counter absent on all 600
+    instead of naming the 118 that lacked a peak, and the refusal it was meant to arm never fired.
+    """
     pack_path: str
-    sub_steps: int
-    illegal_crossings: int
-    evidence: str
+    sub_steps: Optional[int] = None
+    illegal_crossings: Optional[int] = None
+    evidence: str = ""
+    not_recorded: tuple = ()
 
 
 @dataclass(frozen=True)
@@ -327,6 +404,14 @@ class Publication:
 
     ``snippet(uri)`` returns the source of the "Use me" snippet reading the pack at ``uri``; the card renders
     it at the hub URI and EXECUTES it at the local path of the same bytes, recording both.
+
+    ``hold`` is ``{substrate: why}`` -- a DECLARED reservation about a pack the gate passed, written into that
+    pack's manifest row beside the verdict and onto the card. It is not a verdict and cannot become one: the
+    ``gate`` field stays what the gate gave, and a hold on a pack the gate FAILED is refused, since that pack is
+    withheld and needs no reservation. It exists because a consumer reads the row: the Disimpy fixture is
+    published with a reservation on dmipy-sim#488, whose evidence is a vector the scalar gate cannot see, and a
+    row reading ``gate: pass`` with nothing else said that the card's caveat was invisible to anyone reading
+    the manifest.
     """
     repo: str
     licence: str
@@ -336,20 +421,63 @@ class Publication:
     pack_path: object = None
     create_dataset: bool = False
     dry: bool = False
+    hold: dict = field(default_factory=dict)
+
+
+def _pruned(node, paths=ROUND_TRIP_NOT_COMPARED, prefix=()):
+    """``node`` with every path of :data:`ROUND_TRIP_NOT_COMPARED` removed, ``*`` matching one index or key.
+
+    Pruning both sides of the round trip is what lets the rule compare the walls' surfaces and physics while
+    not comparing a wall's NAME: dropping the whole of ``walls`` to avoid one label would drop the field the
+    rule exists to check.
+    """
+    def hidden(path):
+        for p in paths:
+            parts = p.split(".")
+            if len(parts) == len(path) and all(x == "*" or x == str(y) for x, y in zip(parts, path)):
+                return True
+        return False
+
+    if isinstance(node, dict):
+        return {k: _pruned(v, paths, prefix + (k,)) for k, v in node.items() if not hidden(prefix + (k,))}
+    if isinstance(node, list):
+        return [_pruned(v, paths, prefix + (str(i),)) for i, v in enumerate(node)]
+    return node
 
 
 # --------------------------------------------------------------- the grade rule
+def _protocol_reference(reference_record, *, where="grade"):
+    """``reference_record`` if the reference stage of this protocol wrote it, else a refusal naming what is
+    missing.
+
+    A pre-protocol family publishes a ``records/reference.json`` of its own shape -- ling-sand-packs' carries
+    ``grade`` as a FIELD and no ``published_kind`` -- and reading a grade off it raised ``KeyError`` from inside
+    the organisation page's renderer, after this family's own publish had already succeeded. A record the
+    protocol did not write is refused by name; it is not graded, and it is not guessed at.
+    """
+    missing = [k for k in ("published_kind", "same_released_geometry") if k not in reference_record]
+    if missing:
+        raise ReferenceRefusal(
+            f"{where}: this records/reference.json states {missing} nowhere, so the reference stage of the "
+            f"reference-pack protocol (dmipy-sim#482) did not write it"
+            + (f" (it states a grade of {reference_record['grade']!r} as a FIELD, which no protocol record does: "
+               f"grade_of assigns it)" if "grade" in reference_record else "")
+            + "; convert the family through the protocol rather than grading a record of another shape")
+    return reference_record
+
+
 def grade_of(reference_record):
     """The grade of dmipy-sim#459, from the reference record and nothing else.
 
     ``A`` a published NUMBER, or released DATA, on the same released geometry; ``B`` a published figure, or a
     number or data on something that is not the released geometry; ``analytic`` a closed form; ``none`` no
     reference at all. A grade is not a field a record states: it follows from what the publication gives and
-    from whether the geometry is the released one, both of which the reference record carries.
+    from whether the geometry is the released one, both of which the reference record carries. A record the
+    protocol did not write is refused rather than graded (:func:`_protocol_reference`).
     """
     if not reference_record or reference_record.get("absent"):
         return "none"
-    kind = reference_record["published_kind"]
+    kind = _protocol_reference(reference_record)["published_kind"]
     if kind == "analytic":
         return "analytic"
     if kind == "none":
@@ -363,7 +491,7 @@ def grade_reason(reference_record):
     """Why :func:`grade_of` gave that grade, as one sentence the card prints."""
     if not reference_record or reference_record.get("absent"):
         return "no published reference."
-    kind, ours = reference_record["published_kind"], reference_record.get("geometry_parameters_ours") or []
+    kind, ours = _protocol_reference(reference_record)["published_kind"], reference_record.get("geometry_parameters_ours") or []
     what = {"number": "a published number", "data": "the released data itself",
             "figure": "a published figure", "analytic": "a closed form",
             "none": "no published reference"}[kind]
@@ -639,6 +767,7 @@ def _gate_checks(rec):
     or the band the pack stores. The gate never walks, replays or inverts anything -- every quantity it
     compares was measured and written by the stage that measured it.
     """
+    from .publish import _size                            # the byte format lives once, and carries no threshold
     src, ref, spc, des, wlk, pk = (rec[s] for s in ("source", "reference", "spec", "design", "walk", "pack"))
     checks = []
 
@@ -648,10 +777,16 @@ def _gate_checks(rec):
     # ---- the sources: a licence text and a digest per file
     for key, s in sorted(src["sources"].items()):
         text = s.get("licence_copy", {}) or {}
-        check(bool(text.get("sha256")) and int(text.get("chars") or 0) >= MIN_LICENCE_TEXT_CHARS,
+        stated = s.get("licence_stated", True)
+        floor = MIN_LICENCE_TEXT_CHARS if stated else MIN_LICENCE_ABSENT_CHARS
+        check(bool(text.get("sha256")) and int(text.get("chars") or 0) >= floor
+              and (stated or not s.get("redistributes_bytes")),
               f"source/{key}/licence",
-              f"{s.get('licence_id')} copied verbatim from {s.get('licence_url')}: "
-              f"{text.get('chars')} characters, sha256 {str(text.get('sha256'))[:12]}")
+              (f"{s.get('licence_id')} copied verbatim from {s.get('licence_url')}: "
+               if stated else
+               f"the host at {s.get('licence_url')} states NO licence; its own words about rights are recorded "
+               f"verbatim and no byte of it is redistributed: ")
+              + f"{text.get('chars')} characters, sha256 {str(text.get('sha256'))[:12]}")
         missing = [f["cite_as"] for f in s["files"] if not f.get("sha256") or not f.get("bytes")]
         check(not missing, f"source/{key}/digests",
               f"{len(s['files'])} files digested" if not missing else f"no digest for {missing}")
@@ -690,6 +825,20 @@ def _gate_checks(rec):
                      (" and it does NOT: the pilot's scaling was falsified by the pack's own certificate"
                       if says else f", and states the trade: {str(des.get('trade'))[:160]}")))
 
+        wk = wlk["substrates"].get(name)
+        if wk is None:
+            raise ReferenceRefusal(
+                f"gate: {name!r} is in the pack record and in no walk record, so the gate has no walk to hold it "
+                f"to -- neither its counters nor its resident peak nor its budget. The two records describe one "
+                f"set of substrates; delete records/pack.json onwards and run the walk stage for it")
+        peak, budget = wk.get("peak_rss_bytes"), wk.get("budget_bytes")
+        check(peak is None or (budget and peak <= budget), f"{name}/walk-within-budget",
+              (f"the walk and its pack stage peaked at {_size(peak)} against the design's {_size(budget)} "
+               f"budget" if peak is not None else
+               f"the producing run recorded no resident peak for this walk, so the {_size(budget)} budget is "
+               f"not checked against a measurement for this pack: "
+               + str(wk.get("counters_not_recorded"))[:200]))
+
         declared = {w["label"] for w in des["waveforms"]}
         served = {w["label"] for w in sub["waveforms"]}
         check(declared == served, f"{name}/envelope-is-the-declared-one",
@@ -709,8 +858,12 @@ def _gate_checks(rec):
               (f"the spec cites {len(cited)} source digests, all of them in the source record" if cited
                else "this substrate is analytic: it has no released file to cite")
               if cited <= known else f"the spec cites digests no source record holds: {sorted(cited - known)}")
-        check(spc["substrates"][name]["round_trips"], f"{name}/spec-round-trips",
-              "spec_of(geometry_from_spec(spec)) == spec")
+        rt = spc["substrates"][name]
+        check(rt["round_trips"], f"{name}/spec-round-trips",
+              f"spec_of(geometry_from_spec(spec)) == spec in {', '.join(rt.get('round_trip_compared') or ['every field'])}"
+              + (f"; not compared: {', '.join(rt['round_trip_not_compared'])} -- the producer's own labelling, "
+                 f"which spec_of reconstructs from the geometry and cannot reproduce"
+                 if rt.get("round_trip_not_compared") else ""))
 
         for qname, got in sorted(sub["reproduced"].items()):
             q = next((x for x in ref["quantities"] if x["substrate"] == name and x["name"] == qname), None)
@@ -836,33 +989,58 @@ def _walk_from_pack(name, recorded, budget, design_n):
     if not os.path.exists(recorded.pack_path):
         raise ReferenceRefusal(f"walk {name!r}: {recorded.pack_path} is not there; a recorded walk is read from the "
                                f"pack it produced")
-    if recorded.sub_steps is None or recorded.illegal_crossings is None or not recorded.evidence:
-        raise ReferenceRefusal(f"walk {name!r}: a walk record carries the engine's own counters (sub_steps, "
-                               f"illegal_crossings) and the log they were reported in; this one states "
-                               f"{recorded.sub_steps!r}, {recorded.illegal_crossings!r}, {recorded.evidence!r}")
+    if not recorded.evidence:
+        raise ReferenceRefusal(f"walk {name!r}: a walk record names the log the engine's counters were reported "
+                               f"in, or the record that reports none of them; this one names nothing")
+    declared = recorded.not_recorded or ()
+    if isinstance(declared, str) or not set(declared) <= set(RECORDED_WALK_COUNTERS):
+        raise ReferenceRefusal(
+            f"walk {name!r}: not_recorded is {declared!r}; it is a tuple of counter NAMES drawn from "
+            f"{RECORDED_WALK_COUNTERS}, per pack. A sentence is not a field list -- one that read 'for 118 of the "
+            f"600, peak_rss_bytes' was matched as a substring and declared that counter absent on all 600")
+    absent = [n for n in ("sub_steps", "illegal_crossings") if getattr(recorded, n) is None]
+    unexplained = [n for n in absent if n not in declared]
+    if unexplained:
+        raise ReferenceRefusal(f"walk {name!r}: {', '.join(unexplained)} is None and not_recorded does not name "
+                               f"it ({recorded.not_recorded!r}); a counter the producing run did not report is "
+                               f"recorded as absent BY NAME, never left to be read as a measurement, and never "
+                               f"filled in by hand")
     meta = header_of(recorded.pack_path)
     wp = meta.get("walk_params") or {}
     run = ((meta.get("provenance") or {}).get("run") or {}).get("walk") or {}
-    if not wp.get("n_walkers") or not run.get("peak_rss_bytes"):
-        raise ReferenceRefusal(f"walk {name!r}: {os.path.basename(recorded.pack_path)} carries no walk_params or no "
-                               f"run record, so its walk cannot be recorded from it")
+    if not wp.get("n_walkers"):
+        raise ReferenceRefusal(f"walk {name!r}: {os.path.basename(recorded.pack_path)} carries no walk_params, so it "
+                               f"does not describe its own walk and nothing can be recorded from it")
+    if not (run.get("peak_rss_bytes") or (meta.get("provenance") or {}).get("certified", {}).get("peak_rss_gb")) \
+            and "peak_rss_bytes" not in declared:
+        raise ReferenceRefusal(
+            f"walk {name!r}: {os.path.basename(recorded.pack_path)} carries no recorded resident peak for its walk, "
+            f"so the memory budget cannot be checked against a measurement for it; name peak_rss_bytes in "
+            f"not_recorded to record that, or supply a pack whose walk reported one")
     cert = ((meta.get("provenance") or {}).get("certified") or {})
-    peak = int(max(int(run["peak_rss_bytes"]), int(float(cert.get("peak_rss_gb") or 0.0) * 1e9)))
-    if peak > budget:
+    peak = int(max(int(run.get("peak_rss_bytes") or 0), int(float(cert.get("peak_rss_gb") or 0.0) * 1e9)))
+    if not peak:
+        peak = None
+    elif peak > budget:
         raise ReferenceRefusal(f"walk {name!r}: the recorded walk and pack peaked at {peak / 1e9:.1f} GB against the "
                                f"design's {budget / 1e9:.1f} GB budget; the budget is a hard cap")
     n = int(wp["n_walkers"])
+    from .publish import _size
     note = None if n == int(design_n) else (
         f"the pack was walked at {n:,} walkers where this design's pilot sets {int(design_n):,}; the walk is not "
-        f"repeated, and what holds it to the budget is its own RECORDED peak of {peak / 1e9:.1f} GB rather than the "
-        f"pilot's projection")
+        f"repeated, and what holds it to the budget is "
+        + (f"its own RECORDED peak of {_size(peak)} rather than the pilot's projection" if peak is not None else
+           "nothing measured: the producing run recorded no resident peak for it, which the walk record says"))
     return dict(from_pack=True, design_n_walkers=int(design_n), design_note=note,
                 pack_path=os.path.abspath(recorded.pack_path),
                 pack_sha256=_sha256_file(recorded.pack_path), n_walkers=int(wp["n_walkers"]),
-                n_t=int(wp["n_t"]), dt_s=float(wp["dt_traj"]), sub_steps=int(recorded.sub_steps),
-                illegal_crossings=int(recorded.illegal_crossings), counters_evidence=recorded.evidence,
+                n_t=int(wp["n_t"]), dt_s=float(wp["dt_traj"]),
+                sub_steps=None if recorded.sub_steps is None else int(recorded.sub_steps),
+                illegal_crossings=(None if recorded.illegal_crossings is None
+                                   else int(recorded.illegal_crossings)),
+                counters_not_recorded=list(declared) or None, counters_evidence=recorded.evidence,
                 seconds=round(float(run.get("wall_s") or 0.0), 1), peak_rss_bytes=peak,
-                budget_bytes=int(budget), status=run.get("status"),
+                budget_checked=peak is not None, budget_bytes=int(budget), status=run.get("status"),
                 code_commit=(run.get("code") or {}).get("commit"))
 
 
@@ -938,11 +1116,23 @@ class ReferenceFamily:
         """
         out = {}
         for s in self.sources:
-            if not s.licence_text or len(s.licence_text.strip()) < MIN_LICENCE_TEXT_CHARS:
+            stated = s.licence_id != LICENCE_NONE_STATED
+            floor = MIN_LICENCE_TEXT_CHARS if stated else MIN_LICENCE_ABSENT_CHARS
+            if not s.licence_text or len(s.licence_text.strip()) < floor:
                 raise ReferenceRefusal(
                     f"source {s.key!r}: licence_text is {len(s.licence_text.strip())} characters "
-                    f"({s.licence_text.strip()[:60]!r}); a licence TITLE is not a licence text -- copy the text at "
-                    f"{s.licence_url} verbatim (at least {MIN_LICENCE_TEXT_CHARS} characters)")
+                    f"({s.licence_text.strip()[:60]!r}); "
+                    + (f"a licence TITLE is not a licence text -- copy the text at {s.licence_url} verbatim (at "
+                       f"least {MIN_LICENCE_TEXT_CHARS} characters)" if stated else
+                       f"a host that states no licence is recorded by its own words about rights and by where "
+                       f"they were looked for (at least {MIN_LICENCE_ABSENT_CHARS} characters), so the absence "
+                       f"can be checked the way a licence would be"))
+            if not stated and s.redistributes_bytes:
+                raise ReferenceRefusal(
+                    f"source {s.key!r}: its host states no licence, and this family declares that it "
+                    f"redistributes the source's own bytes; a source whose licence nobody granted is read and "
+                    f"cited, never republished (dmipy-sim#459: an unstated source needs the authors' written "
+                    f"permission first)")
             if not s.host_record:
                 raise ReferenceRefusal(f"source {s.key!r}: no host_record; a source record names the commit or the "
                                        f"version of the host record its files came from")
@@ -961,6 +1151,8 @@ class ReferenceFamily:
                 files.append(dict(_digest(f.path), cite_as=f.cite_as, role=f.role, read_from=os.path.abspath(f.path)))
             out[s.key] = dict(url=s.url, host_record=s.host_record, licence_id=s.licence_id,
                               licence_url=s.licence_url, files=files,
+                              licence_stated=bool(s.licence_id != LICENCE_NONE_STATED),
+                              redistributes_bytes=bool(s.redistributes_bytes),
                               licence_copy=dict(_digest(lic), chars=len(s.licence_text),
                                                 first_line=s.licence_text.strip().splitlines()[0][:120]))
         inputs = self._inputs([asdict(s) for s in self.sources])
@@ -1005,7 +1197,7 @@ class ReferenceFamily:
                 raise ReferenceRefusal(f"reference: the parameter {p.name!r} states no locator or no method")
             params.append(asdict(p))
         known = {name for name in self.build.specs}
-        quantities = []
+        quantities, resolved_documents = [], {}
         for q in r.quantities:
             if q.substrate not in known:
                 raise ReferenceRefusal(f"reference: the quantity {q.name!r} is about {q.substrate!r}, which is not "
@@ -1032,6 +1224,7 @@ class ReferenceFamily:
                         f"cites {pub.document!r}, which resolves to {doc.get('title')!r}; the identifier and the "
                         f"document do not describe one thing")
                 documents[pub.document] = doc
+                resolved_documents[pub.document] = doc
             elif r.published_kind in ("number", "figure"):
                 raise ReferenceRefusal(
                     f"reference: {q.substrate}/{q.name} names {pub.printed_in!r} as the document that prints the "
@@ -1066,7 +1259,13 @@ class ReferenceFamily:
                    sample=r.sample, sample_relation=r.sample_relation, quantities=quantities, parameters=params,
                    description=r.description, source_note=r.source_note, licence_note=r.licence_note,
                    caveats=dict(r.caveats))
-        inputs = self._inputs(prev_sha, asdict(r), cr)
+        # the resolution TIME is an output of this stage, not an input to it: including it made the inputs
+        # digest change on every run, so the real resolver could never return the record it had written and the
+        # stage refused itself. The test resolver returns a fixed timestamp, which is why the tests did not see it
+        inputs = self._inputs(prev_sha, asdict(r),
+                              {k: v for k, v in sorted(cr.items()) if k != "resolved"},
+                              {i: {k: v for k, v in sorted(d.items()) if k != "resolved"}
+                               for i, d in sorted(resolved_documents.items())} or None)
         return self.records.write("reference", rec, inputs_digest=inputs, previous_sha256=prev_sha)
 
     # ---------------- 3. spec
@@ -1090,13 +1289,16 @@ class ReferenceFamily:
                 raise ReferenceRefusal(f"spec {name!r}: a wall cites a file but no sha256; the source record's digest "
                                        f"is what ties the spec to the released bytes")
             back = spec_of(geometry_from_spec(spec))
-            a, b = spec.to_dict(), back.to_dict()
-            differing = sorted(k for k in set(a) | set(b) if a.get(k) != b.get(k))
+            a = spec.to_dict()                                 # the record carries the spec WHOLE
+            mine, theirs = _pruned(a), _pruned(back.to_dict())  # the comparison drops what spec_of cannot make
+            compared = sorted(set(mine) | set(theirs))
+            differing = [k for k in compared if mine.get(k) != theirs.get(k)]
             if differing:
                 raise ReferenceRefusal(f"spec {name!r}: spec_of(geometry_from_spec(spec)) differs in {differing}; a "
                                        f"spec the engine cannot rebuild is not the substrate that was walked")
             out[name] = dict(spec=a, spec_sha256=_sha256_bytes(_canonical(a)), cites_sha256=cited,
                              cites=[known[c] for c in cited], round_trips=True,
+                             round_trip_compared=compared, round_trip_not_compared=list(ROUND_TRIP_NOT_COMPARED),
                              cites_files=bool(any(w.surface.file for w in spec.walls)),
                              realisation=spec.realisation, pack_id=self.build.pack_id[name])
         inputs = self._inputs(prev_sha, sorted(out), [v["spec_sha256"] for v in out.values()])
@@ -1125,7 +1327,11 @@ class ReferenceFamily:
             raise ReferenceRefusal("design: the pilot walks, so build.walk is required even for a family whose packs "
                                    "already exist; the pilot is what makes the walker count measured")
         n_t = int(round(d.window_s / d.dt_save_s)) + 1
-        name = sorted(spc["substrates"])[0]
+        if d.pilot_substrate is not None and d.pilot_substrate not in spc["substrates"]:
+            raise ReferenceRefusal(f"design: the pilot is declared on {d.pilot_substrate!r}, which is not one of "
+                                   f"this family's {len(spc['substrates'])} substrates; the pilot walks a "
+                                   f"substrate of the family")
+        name = d.pilot_substrate or sorted(spc["substrates"])[0]
         spec = self.build.specs[name]()
         rss0 = _rss_bytes()
         t0 = time.time()
@@ -1220,6 +1426,8 @@ class ReferenceFamily:
                    tiers=tiers, memory_budget_bytes=int(d.memory_budget_bytes), tolerance=tol,
                    systematics=systematics,
                    pilot=dict(n_walkers=int(d.pilot_n), on_real_window=True, n_t=n_t, substrate=name,
+                              substrate_is=("declared" if d.pilot_substrate else
+                                            "the first of this family's substrates in sorted order, undeclared"),
                               walk_seconds=round(walk_s, 1), pack_seconds=round(pack_s, 1),
                               sub_steps=int(walk.sub_steps), illegal_crossings=int(walk.illegal_crossings or 0),
                               envelope_floor=floor0, tier_floor=tier_floor, pack_bytes=int(pack_bytes),
@@ -1257,7 +1465,10 @@ class ReferenceFamily:
         prev, prev_sha = self._prev("walk")
         des = self.records.read("design")
         spc = self.records.read("spec")
-        inputs = self._inputs(prev_sha, sorted(spc["substrates"]), sorted(self.build.recorded))
+        # the RecordedWalk contents, not just the names: they are WHAT the record says, so a change to one has
+        # to invalidate the record rather than be returned unchanged by `reuse`
+        inputs = self._inputs(prev_sha, sorted(spc["substrates"]),
+                              {k: asdict(v) for k, v in sorted(self.build.recorded.items())})
         held = self.records.reuse("walk", inputs, prev_sha)
         if held is not None:                                  # unchanged inputs: nothing is walked again
             return held
@@ -1423,7 +1634,9 @@ class ReferenceFamily:
         prev, prev_sha = self._prev("card")
         rec = self.read_all("pack")
         gate = self.records.read("gate")
-        inputs = self._inputs(prev_sha, self.publication.repo, self.publication.snippet_substrate)
+        # the hold is rendered onto the card, so a change to it must re-render rather than be reused
+        inputs = self._inputs(prev_sha, self.publication.repo, self.publication.snippet_substrate,
+                              dict(sorted((self.publication.hold or {}).items())))
         held = self.records.reuse("card", inputs, prev_sha)
         if held is not None:                                  # unchanged inputs: the snippet is not run again
             return held
@@ -1444,11 +1657,13 @@ class ReferenceFamily:
         local = row.get("path_local") or row["path"]
         local = local if os.path.isabs(local) else os.path.join(self.dir, local)
         ran = _run_snippet(self.publication.snippet(local), self.dir)
-        card = _render_card(self.name, self.publication.repo, rec, gate, previews, shown, ran, hub_path)
+        card = _render_card(self.name, self.publication.repo, rec, gate, previews, shown, ran, hub_path,
+                            hold=dict(self.publication.hold or {}))
         path = os.path.join(self.dir, "README.md")
         with open(path, "w") as fh:
             fh.write(card)
         out = dict(card=dict(_digest(path), chars=len(card)), previews=previews, grade=gate["grade"],
+                   hold=dict(self.publication.hold or {}),
                    snippet=dict(shown_sha256=_sha256_bytes(shown.encode()), executed_on=os.path.basename(local),
                                 executed_sha256=_sha256_bytes(self.publication.snippet(local).encode()),
                                 seconds=ran["seconds"], stdout=ran["stdout"], ceiling_s=SNIPPET_CEILING_S,
@@ -1517,13 +1732,25 @@ class ReferenceFamily:
         # advertised beside the others with nothing to say it had failed (its bytes are the maintainer's to
         # delete, not this stage's). Every row this family owns gets its verdict, including one uploaded by an
         # earlier run.
+        held = dict(self.publication.hold or {})
+        unknown = sorted(set(held) - set(rec["pack"]["substrates"]))
+        if unknown:
+            raise ReferenceRefusal(f"publish: a hold is declared on {unknown}, which this family has no pack of")
+        failed_and_held = sorted(n for n in held if not per.get(n, {}).get("passed"))
+        if failed_and_held:
+            raise ReferenceRefusal(
+                f"publish: {failed_and_held} are declared HELD and the gate FAILED them, so they are withheld "
+                f"already; a hold is a reservation about a pack that ships, not a second way to withhold one")
         verdicts = {}
         manifest = None if dry else _load_manifest(hub)
         for name, sub in sorted(rec["pack"]["substrates"].items()):
             v = per.get(name, {})
-            verdicts[self._hub_path(name, sub["pack"])] = dict(
-                gate="pass" if v.get("passed") else "fail", withheld=not v.get("passed"),
-                gate_failures=sorted(v.get("failures") or []), gate_record="records/gate.json")
+            row = dict(gate="pass" if v.get("passed") else "fail", withheld=not v.get("passed"),
+                       gate_failures=sorted(v.get("failures") or []), gate_record="records/gate.json")
+            if name in held:                       # a DECLARED reservation, beside the verdict and never over it
+                row["hold"] = held[name]
+                row["held"] = True
+            verdicts[self._hub_path(name, sub["pack"])] = row
         if manifest is not None:
             for row in manifest.get("packs") or []:
                 if row.get("path") in verdicts:
@@ -1542,7 +1769,7 @@ class ReferenceFamily:
                        parent=hub.head())
         org = _organisation_after_publish(self.publication.repo, skip=(dry or not _is_the_real_hub(hub)))
         out = dict(repo=self.publication.repo, code_commit=commit, dataset_created=created, dry=bool(dry),
-                   uploaded=uploaded, kept=kept, withheld=withheld, manifest_verdicts=verdicts,
+                   uploaded=uploaded, kept=kept, withheld=withheld, holds=held, manifest_verdicts=verdicts,
                    files=sorted(adds), organisation=org,
                    actor=dict(user=os.environ.get("USER"), host=os.uname().nodename,
                               at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())))
@@ -1598,7 +1825,7 @@ def _disagreements(gate):
     return out
 
 
-def _render_card(name, repo, rec, gate, previews, snippet_shown, snippet_ran, hub_path):
+def _render_card(name, repo, rec, gate, previews, snippet_shown, snippet_ran, hub_path, hold=None):
     """The card: the manifest table, what is inside, the reproduction with its grade, the gate's verdict, and
     the snippet with the output it produced when this card was built."""
     from .publish import _fmt, _size                       # the card's number and byte formats live once
@@ -1653,18 +1880,32 @@ def _render_card(name, repo, rec, gate, previews, snippet_shown, snippet_ran, hu
                          f"{'**meets**' if c['meets_target'] else '_below target_'}")
         cells += [_size(row["bytes"]), row["license"], (row["commit"] or "—")[:8]]
         L.append("| " + " | ".join(cells) + " |")
+    hold = dict(hold or {})
+    if hold:
+        L += ["", "**Published with a hold.** "
+              + " ".join(f"`{k}` ships and its manifest row says so, with a reservation recorded beside the "
+                         f"verdict: {v}" for k, v in sorted(hold.items()))]
+    per_pack_caveats = sorted(k for k in (ref.get("caveats") or {}) if k in pk["substrates"])
+    if per_pack_caveats:
+        L += ["", "**Read with a caveat of its own:** "
+              + ", ".join(f"`{k}` (below, under § What is inside)" for k in per_pack_caveats)
+              + ". A caveat keyed on a pack's own name is about THAT pack, and the card puts it beside it."]
     if des.get("trade"):
         L += ["", f"**The trade the design records:** {des['trade']}"]
     L += ["", f"The save grid is {des['dt_save_s'] * 1e6:.0f} us over {des['window_s']:g} s "
               f"({des['n_t']:,} saves): {des['save_grid_why']}", "",
           "| pack | walk | sub-steps | refused steps | wall time | peak resident | budget |",
           "|---|---|---|---|---|---|---|"]
+    def counter(w, key):
+        return "_not recorded_" if w.get(key) is None else f"{w[key]}"
     for n, w in sorted(wlk["substrates"].items()):
         L.append(f"| `{n}` | {w['n_walkers']:,} walkers"
                  + (" (recorded, not re-walked)" if w["from_pack"] else "")
-                 + f" | {w['sub_steps']} | {w['illegal_crossings']} | {w['seconds']:.0f} s | "
-                 f"{_size(w['peak_rss_bytes'])} | {_size(w['budget_bytes'])} |")
+                 + f" | {counter(w, 'sub_steps')} | {counter(w, 'illegal_crossings')} | {w['seconds']:.0f} s | "
+                 + ("_not recorded_" if w.get("peak_rss_bytes") is None else _size(w["peak_rss_bytes"]))
+                 + f" | {_size(w['budget_bytes'])} |")
     notes = [w.get("design_note") for w in wlk["substrates"].values() if w.get("design_note")]
+    notes += [w["counters_not_recorded"] for w in wlk["substrates"].values() if w.get("counters_not_recorded")]
     if notes:
         L += ["", *[f"* {t}" for t in sorted(set(notes))]]
     L += [""]
@@ -1683,6 +1924,9 @@ def _render_card(name, repo, rec, gate, previews, snippet_shown, snippet_ran, hu
               + ", ".join(f"{k} {v:.4f}" for k, v in sorted(frac.items()))
               + (f" (the spec's realisation: " + ", ".join(f"{k} {v:.4g}" for k, v in sorted(real.items())
                                                            if isinstance(v, float)) + ")" if real else ""), ""]
+        mine = (ref.get("caveats") or {}).get(n)
+        if mine:                        # a caveat keyed on this pack's name belongs BESIDE this pack
+            L += [f"> **Caveat — `{n}`.** {mine}", ""]
 
     L += ["## The reproduction", ""]
     if ref.get("absent"):
@@ -1820,6 +2064,9 @@ def organisation_card(rows, *, example=None):
     what it reproduces, and those are the reference record's words. A family that has not run the protocol has
     no such words, and inventing them in this renderer is how a page came to grade a figure as `A`.
     """
+    for r in rows:
+        if r["reference"] and not r["reference"].get("absent"):
+            _protocol_reference(r["reference"], where=f"organisation: {r['name']}")
     missing = sorted(r["name"] for r in rows if not r["reference"])
     if missing:
         raise ReferenceRefusal(
