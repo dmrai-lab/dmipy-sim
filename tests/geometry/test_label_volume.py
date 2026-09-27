@@ -13,8 +13,8 @@ import pytest
 
 from dmipy_sim.geometry import LabelVolume
 from dmipy_sim.geometry.base import Box1D, LengthScales
-from dmipy_sim.io.label_volume import (LabelVolumeError, crop_labels, read_label_volume, read_mhd,
-                                       read_nrrd, write_nrrd)
+from dmipy_sim.io.label_volume import (LabelVolumeError, crop_labels, read_amira, read_label_volume,
+                                       read_mhd, read_nrrd, write_nrrd)
 
 D = 2e-9
 
@@ -284,6 +284,170 @@ def test_hdf5_reads_element_size_um_slowest_axis_first(tmp_path):
     assert v2.labels.shape == (2, 2, 2)
     with pytest.raises(LabelVolumeError, match="names an HDF5 dataset"):
         read_label_volume(tmp_path / "v.h5", format="nrrd", dataset="labels")
+
+
+# ──────────────────────────────────────────────────────────────────────────── AmiraMesh / Avizo
+AMIRA_HEAD = ("# {magic}\n\ndefine Lattice 4 3 2\n\nParameters {{\n    Units {{\n"
+              '        Coordinates "\u00b5m"\n    }}\n    Content "4x3x2 byte, uniform coordinates",\n'
+              "    BoundingBox 0 30 0 20 0 10,\n    CoordType \"uniform\"\n}}\n\n"
+              "Lattice {{ byte Labels }} @1\n\n@1\n")
+
+
+def amira_file(path, labels, *, magic="Avizo 3D ASCII 3.0", head=None, body=None):
+    """An ``.am`` file of ``labels``, written the way Avizo writes one: the header in Latin-1 (the micro
+    sign is one byte, which is not UTF-8) and the payload x-fastest."""
+    head = (AMIRA_HEAD.format(magic=magic) if head is None else head).encode("latin-1")
+    flat = np.ascontiguousarray(np.asarray(labels).transpose(2, 1, 0)).ravel()
+    if body is None:
+        body = ("".join(f"{v} \n" for v in flat).encode() if "ASCII" in magic.upper() else flat.tobytes())
+    path.write_bytes(head + body)
+    return path
+
+
+def test_amira_ascii_and_binary_are_the_same_image_and_the_box_is_voxel_centres(tmp_path):
+    """The Ling et al. 2022 sand packs are ASCII ``.am``. A uniform AmiraMesh ``BoundingBox`` gives the
+    first and last voxel CENTRE, so 4 voxels over ``0..30 um`` is a 10 um voxel (not 7.5) and the lower
+    corner of voxel (0, 0, 0) is at -5 um. The binary flavour of the same header is the same image."""
+    lab = (np.arange(4 * 3 * 2, dtype=np.uint8).reshape(4, 3, 2) % 3)
+    v = read_label_volume(amira_file(tmp_path / "a.am", lab))
+    assert np.array_equal(v.labels, lab)
+    assert np.allclose(v.voxel_size, 10e-6) and np.allclose(v.origin, -5e-6)
+    w = read_amira(amira_file(tmp_path / "b.am", lab, magic="AmiraMesh BINARY-LITTLE-ENDIAN 2.1"))
+    assert np.array_equal(w.labels, v.labels) and np.allclose(w.voxel_size, v.voxel_size)
+
+
+def test_the_amira_fast_path_counts_tokens_not_digits(tmp_path):
+    """A payload of two-digit labels whose DIGITS number ``n`` must not be read as ``n`` single digits.
+
+    Guarded on the digit count, 24 values of ``10 11 12 ...`` under a header declaring 48 pass the guard
+    (48 digits) and the reader silently returns a different image. Guarded on the token count it does
+    not, and the general route refuses with both counts. Reachable for any segmentation with a label
+    above 9, which every accepted component type allows.
+    """
+    lab = np.zeros((4, 4, 3), np.uint8)                       # 48 values declared
+    body = b" ".join(f"{10 + i % 90}".encode() for i in range(24))     # 24 tokens, 48 digits
+    with pytest.raises(LabelVolumeError, match="48 lattice values and the ASCII payload holds 24"):
+        read_amira(amira_file(tmp_path / "twodigit.am", lab, body=body,
+                              head=AMIRA_HEAD.format(magic="Avizo 3D ASCII 3.0")
+                              .replace("define Lattice 4 3 2", "define Lattice 4 4 3")))
+    # and the honest 48 two-digit values read as themselves
+    vals = np.arange(10, 58, dtype=np.uint8).reshape(4, 4, 3)
+    ok = b" ".join(str(int(v)).encode() for v in np.ascontiguousarray(vals.transpose(2, 1, 0)).ravel())
+    got = read_amira(amira_file(tmp_path / "ok.am", vals, body=ok,
+                                head=AMIRA_HEAD.format(magic="Avizo 3D ASCII 3.0")
+                                .replace("define Lattice 4 3 2", "define Lattice 4 4 3")))
+    assert np.array_equal(got.labels, vals)
+
+
+def test_amira_single_digit_fast_path_and_the_general_one_agree(tmp_path):
+    """A segmentation's labels are single digits, and the reader takes them straight off the buffer's
+    digit bytes -- 91 million tokens is minutes through ``str.split``. The general route reads the same
+    values, so a label above 9 and a payload on one line are read identically."""
+    lab = (np.arange(4 * 3 * 2, dtype=np.uint8).reshape(4, 3, 2) * 7)      # 0..161, multi-digit
+    flat = np.ascontiguousarray(lab.transpose(2, 1, 0)).ravel()
+    one_line = b" ".join(str(int(x)).encode() for x in flat)
+    assert np.array_equal(read_amira(amira_file(tmp_path / "m.am", lab, body=one_line)).labels, lab)
+    small = lab % 10
+    assert np.array_equal(read_amira(amira_file(tmp_path / "s.am", small)).labels, small)
+
+
+def test_a_lattice_with_no_coord_type_is_uniform(tmp_path):
+    """AmiraMesh's default for a lattice with a bounding box is a uniform grid, so a header that states
+    no ``CoordType`` reads as one; only a DIFFERENT one is refused (see the refusal table)."""
+    lab = (np.arange(4 * 3 * 2, dtype=np.uint8).reshape(4, 3, 2) % 2)
+    head = AMIRA_HEAD.format(magic="Avizo 3D ASCII 3.0").replace('    CoordType "uniform"\n', "")
+    v = read_amira(amira_file(tmp_path / "nocoordtype.am", lab, head=head))
+    assert np.array_equal(v.labels, lab) and np.allclose(v.voxel_size, 10e-6)
+
+
+def test_amira_without_a_coordinate_unit_is_not_a_length(tmp_path):
+    """A ``BoundingBox`` with no ``Units {{ Coordinates ... }}`` carries no unit, so reading it as metres
+    would put a 1.77 mm sand pack at 1.77 km. Refused, and ``voxel_size=`` then supplies the length."""
+    lab = np.zeros((4, 3, 2), np.uint8)
+    head = AMIRA_HEAD.format(magic="Avizo 3D ASCII 3.0").replace(
+        '    Units {\n        Coordinates "\u00b5m"\n    }\n', "")
+    p = amira_file(tmp_path / "nounit.am", lab, head=head)
+    with pytest.raises(LabelVolumeError, match="not a length"):
+        read_amira(p)
+    assert np.allclose(read_amira(p, voxel_size=10e-6).voxel_size, 10e-6)
+
+
+@pytest.mark.parametrize("break_it, message", [
+    (lambda h: h.replace("# Avizo 3D ASCII 3.0", "# Something Else 1.0"), "no '# AmiraMesh'"),
+    (lambda h: h.replace("define Lattice 4 3 2", "define Lattice 4 3"), "no 'define Lattice"),
+    (lambda h: h.replace("byte Labels", "byte Labels, byte Second"), "declares 2 components"),
+    (lambda h: h.replace("byte Labels", "complex Labels"), "is not one of"),
+    (lambda h: h.replace("BoundingBox 0 30 0 20 0 10", "BoundingBox 0 30 0 20"), "six numbers"),
+    (lambda h: h.replace("define Lattice 4 3 2", "define Lattice 4 3 1"), "states no voxel size"),
+    (lambda h: h.replace('CoordType "uniform"', 'CoordType "rectilinear"'), "only 'uniform' is read"),
+    (lambda h: h.replace('CoordType "uniform"', 'CoordType "stacked"'), "only 'uniform' is read"),
+])
+def test_an_amira_refusal_names_what_is_wrong(tmp_path, break_it, message):
+    """Each refusal names the field, because an image read half is an image walked wrong."""
+    lab = np.zeros((4, 3, 2), np.uint8)
+    p = amira_file(tmp_path / "x.am", lab, head=break_it(AMIRA_HEAD.format(magic="Avizo 3D ASCII 3.0")))
+    with pytest.raises(LabelVolumeError, match=message):
+        read_amira(p)
+
+
+def test_an_amira_payload_that_does_not_match_its_header_is_refused(tmp_path):
+    """ASCII or binary, a payload of the wrong length is a different image and is refused with both
+    counts rather than reshaped into whatever fits."""
+    lab = np.zeros((4, 3, 2), np.uint8)
+    short = amira_file(tmp_path / "short.am", lab, body=b"0 1 0 1 0\n")
+    with pytest.raises(LabelVolumeError, match="do not describe the same image"):
+        read_amira(short)
+    b = amira_file(tmp_path / "shortb.am", lab, magic="AmiraMesh BINARY-LITTLE-ENDIAN 2.1", body=b"\x00" * 5)
+    with pytest.raises(LabelVolumeError, match="do not describe the same image"):
+        read_amira(b)
+
+
+def test_an_amira_file_with_two_data_blocks_is_refused(tmp_path):
+    """Avizo writes one ``@n`` block per field. This reader reads a single-component label lattice, so a
+    file with a second block is refused by name instead of silently reading the first."""
+    lab = (np.arange(4 * 3 * 2, dtype=np.uint8).reshape(4, 3, 2) % 2)
+    flat = np.ascontiguousarray(lab.transpose(2, 1, 0)).ravel()
+    body = "".join(f"{v} \n" for v in flat).encode() + b"\n@2\n" + b"1 \n" * flat.size
+    with pytest.raises(LabelVolumeError, match="more than one data block"):
+        read_amira(amira_file(tmp_path / "two.am", lab, body=body))
+
+
+def test_a_label_volume_walks_an_amira_image_as_it_walks_a_nrrd_one(tmp_path):
+    """The container is not the substrate: the same labels through ``.am`` and through ``.nrrd`` give the
+    same geometry, the same voxel size and the same confinement."""
+    lab, origin = voxelised(lambda x, y, z: x ** 2 + y ** 2 + z ** 2 < 8e-6 ** 2, 12e-6, 1e-6)
+    write_nrrd(tmp_path / "s.nrrd", lab, np.full(3, 1e-6), origin)
+    n = read_label_volume(tmp_path / "s.nrrd")
+    box = np.concatenate([origin + 0.5e-6, origin + 0.5e-6 + (np.asarray(lab.shape) - 1) * 1e-6])
+    head = ("# Avizo 3D ASCII 3.0\n\ndefine Lattice %d %d %d\n\nParameters {\n    Units {\n"
+            '        Coordinates "um"\n    }\n    BoundingBox %s,\n    CoordType "uniform"\n}\n\n'
+            "Lattice { byte Labels } @1\n\n@1\n"
+            % (*lab.shape, " ".join(f"{v * 1e6:.10g}" for v in box[[0, 3, 1, 4, 2, 5]])))
+    a = read_amira(amira_file(tmp_path / "s.am", lab, head=head))
+    assert np.array_equal(a.labels, n.labels)
+    assert np.allclose(a.voxel_size, n.voxel_size) and np.allclose(a.origin, n.origin)
+    ga, gn = (LabelVolume(v.labels, v.voxel_size, origin=v.origin, pools={0: "free", 1: "grain"})
+              for v in (a, n))
+    r = ga.init_positions(256, jax.random.PRNGKey(0))
+    assert np.array_equal(np.asarray(ga.classify_position(r)), np.asarray(gn.classify_position(r)))
+
+
+def test_a_volume_at_a_scanners_absolute_coordinates_is_refused_with_the_fix(tmp_path):
+    """The Ling 2022 sand packs are distributed at the micro-CT stage's absolute coordinates, near
+    -717 mm at a 3.93 um voxel. A float32 there has an ulp of 6e-8 m, 1/65 of a voxel, so the nudge that
+    keeps a walker off a face rises to 0.12 of a voxel and "just inside this voxel" stops being a
+    float32 position: MEASURED on 6_Q100, 739 walker-steps of 8,000 walkers x 500 saves were refused for
+    ending in another pool without a granted crossing, against 6 for the same volume translated to the
+    origin. The refusal names the ulp, the fraction and the translation; the translated volume walks."""
+    lab = np.zeros((8, 8, 8), np.uint8)
+    lab[3:5, 3:5, 3:5] = 1
+    h = np.full(3, 3.93e-6)
+    with pytest.raises(ValueError, match="cannot be walked where it sits"):
+        LabelVolume(lab, h, origin=np.full(3, -0.717), pools={0: "free", 1: "grain"})
+    g = LabelVolume(lab, h, origin=-0.5 * np.asarray(lab.shape) * h, pools={0: "free", 1: "grain"})
+    assert g._nudge / h.min() <= 1e-2
+    r = g.init_positions(64, jax.random.PRNGKey(0))
+    assert np.all(np.asarray(g.classify_position(r)) == 0)
 
 
 def test_a_crop_moves_the_origin_and_an_impossible_one_is_refused():
