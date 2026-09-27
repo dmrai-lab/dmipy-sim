@@ -37,9 +37,10 @@ def walk_spec(spec, n_walkers=None, T_max=None, dt_save=None, *, scanner="connec
     beyond, the cutoff being the grid's (no doubling; the grid records what it summed to). A one-off per substrate
     (``StrandFieldBasis.build_far_grid``), the lever that makes a dense substrate's field affordable in the walk.
 
-    ``diffusivity`` is the reference D of a SINGLE-surface spec's walk, used when the seeded pool declares none.
-    A multi-surface spec walks each pool at that pool's own D and this argument is refused for one: it reached the
-    save-grid rule and nothing else, so it read as honoured and was not (dmipy-sim#496).
+    ``diffusivity`` is the SINGLE-surface path's reference D: that walk has one diffusivity, the intra pool's when
+    the spec declares one, else the seeded pool's, and this argument when the pool declares none or in place of it.
+    A multi-surface spec carries a D per pool and walks each pool at its own, so the argument is refused there --
+    the D belongs in the pools (:meth:`~dmipy_sim.spec.SubstrateSpec.replace`, or the producer's own argument).
 
     ``field_gather_every`` is how many save intervals the walk reuses a walker's list of strands in reach (gathered
     with the margin the walker can travel in between; 4 by default): with a far grid the reach is the switch's
@@ -113,6 +114,16 @@ def walk_spec(spec, n_walkers=None, T_max=None, dt_save=None, *, scanner="connec
                          else int(sum(seeding.count_for(p.name).sum() for p in spec.pools if p.id in spec.seeding.pools)))
         elif n_walkers is None:
             raise TypeError("walk_spec needs n_walkers, or a seeding= that sets the count per voxel")
+        if diffusivity is not None and _needs_bundle_walk(spec):
+            # one number has nothing to mean for a walk that steps each pool at that pool's own D
+            stepped = [spec.pool(i).name for i in spec.seeding.pools if spec.pool(i).D]     # a D = 0 pool is frozen
+            stepped = stepped or [spec.pool(i).name for i in spec.seeding.pools]
+            raise SpecError(
+                f"walk_spec: diffusivity={diffusivity!r} was given for a multi-surface spec, which walks each pool "
+                f"at its own D (" + ", ".join(f"{p.name}={p.D!r}" for p in spec.pools) + "). Set the D of the pools "
+                f"in the spec -- the producer's own argument, or SubstrateSpec.replace, e.g. "
+                f"spec.replace(D={{{', '.join(f'{n!r}: {diffusivity!r}' for n in stepped)}}}) -- rather than beside "
+                f"it; a number here reaches the save-grid rule and nothing else.")
         if dt_save is None:
             Ds = [p.D for p in spec.pools if p.D] + ([float(diffusivity)] if diffusivity else [])
             dt_save = save_interval(T_max, n_walkers, scanner, D=(max(Ds) if Ds else 2e-9), floor_fraction=floor_fraction,
@@ -133,18 +144,6 @@ def walk_spec(spec, n_walkers=None, T_max=None, dt_save=None, *, scanner="connec
                                       require_gpu=require_gpu, walker_batch_size=walker_batch_size, tiers=tiers)
             return PersistentWalk(w.positions, w.dt, w.sub_steps, w.dt_sim, w.boundary_local_time, w.compartment,
                                   w.bound_frac, w.illegal_crossings, w.seed, w.diffusivity, geometry=g, spec=spec, run=w.run)
-        if diffusivity is not None:
-            # a bundle walks pool by pool at each pool's OWN D, so there is nothing for one number to mean here.
-            # It used to be accepted and dropped: the published Winther G6 packs were asked for the study's
-            # 0.6e-9 and walked at the spec's 1.7e-9, and only the walk's run record said so.
-            raise SpecError(
-                f"walk_spec: diffusivity={diffusivity!r} was given for a multi-surface spec, which walks each pool "
-                f"at its own D ("
-                + ", ".join(f"{p.name}={p.D!r}" for p in spec.pools) + "). The D has to come from the spec's pools, "
-                f"and there is no path that sets them from outside a producer yet -- the producer that emits this "
-                f"spec has to take it (dmrai-lab/dmipy-sim#496). A number here would reach the save-grid rule and "
-                f"nothing else, which is how the published Winther G6 packs were asked for the study's 0.6e-9 and "
-                f"walked at the spec's 1.7e-9 with only the walk's run record saying so.")
         return _walk_bundle(spec, int(n_walkers), float(T_max), float(dt_save), seed, n_probe, field, field_res,
                             require_gpu, walker_batch_size, field_budget=field_budget, field_cutoff_m=field_cutoff_m, field_cutoff_tol=field_cutoff_tol, seeding=seeding,
                             field_cutoff_max_m=field_cutoff_max_m, adaptive_steps=adaptive_steps, field_sample_every=int(field_sample_every), field_far=field_far, field_gather_every=int(field_gather_every), context=context, spool=bool(spool))

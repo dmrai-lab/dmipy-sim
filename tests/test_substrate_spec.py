@@ -6,7 +6,8 @@ import pathlib
 
 import pytest
 
-from dmipy_sim.spec import SubstrateSpec, SpecError, validate, load_spec, SCHEMA_PATH, Pool, Wall, Surface
+from dmipy_sim.spec import (SubstrateSpec, SpecError, validate, load_spec, SCHEMA_PATH, Pool, Wall, Surface,
+                            Susceptibility)
 
 FIX = pathlib.Path(__file__).parent / "fixtures" / "substrates"
 EXAMPLES = sorted(FIX.glob("*.sub.json"))
@@ -91,3 +92,56 @@ def test_nominal_field_is_optional_and_positive():
     assert dataclasses.replace(spec, nominal_field_T=3.0).validate().to_dict()["nominal_field_T"] == 3.0
     with pytest.raises(SpecError, match="nominal_field_T"):
         dataclasses.replace(spec, nominal_field_T=-1.0).validate()
+
+
+def test_replace_merges_the_pool_values_and_keeps_everything_else():
+    """`SubstrateSpec.replace` is the supported way to set a pool's own numbers: a mapping by pool name,
+    merged pool by pool, the rest of the spec as it stands."""
+    import dataclasses
+    spec = load_spec(FIX / "packed_myelinated_cylinders.sub.json")
+    out = spec.replace(D={"intra": 0.6e-9})
+    assert out.pool("intra").D == 0.6e-9
+    assert [(p.name, p.D) for p in out.pools if p.name != "intra"] == \
+           [(p.name, p.D) for p in spec.pools if p.name != "intra"]                  # the other pools are untouched
+    assert (out.pool("intra").T2, out.pool("intra").water_fraction, out.pool("intra").susceptibility) == \
+           (spec.pool("intra").T2, spec.pool("intra").water_fraction, spec.pool("intra").susceptibility)
+    assert dataclasses.replace(out, pools=spec.pools, provenance=spec.provenance) == spec   # only pools and the record
+    every = spec.replace(T2={"myelin": 0.011}, T1={"myelin": 0.45}, water_fraction={"myelin": 0.5},
+                         susceptibility={"myelin": Susceptibility(-0.5e-6, 0.0, "radial")})
+    assert (every.pool("myelin").T2, every.pool("myelin").T1, every.pool("myelin").water_fraction) == (0.011, 0.45, 0.5)
+    assert every.pool("myelin").susceptibility.chi_iso == -0.5e-6 and every.pool("intra") == spec.pool("intra")
+    assert spec.pool("intra").D != 0.6e-9 and spec.pool("myelin").T2 != 0.011        # the spec replaced is unchanged
+
+
+def test_replace_refuses_an_unknown_pool_a_bare_number_and_an_invalid_result():
+    spec = load_spec(FIX / "packed_myelinated_cylinders.sub.json")
+    with pytest.raises(SpecError, match=r"names the pool\(s\) \['glia'\]"):
+        spec.replace(D={"glia": 0.6e-9})
+    with pytest.raises(TypeError, match="pool name"):
+        spec.replace(D=0.6e-9)
+    with pytest.raises(SpecError, match=r"\['diffusivity'\] is no field"):
+        spec.replace(diffusivity={"intra": 0.6e-9})
+    with pytest.raises(SpecError, match="water_fraction"):
+        spec.replace(water_fraction={"intra": 1.5})              # the result is validated, not just assembled
+    with pytest.raises(SpecError, match=r"pool 'intra'\.D: expected a number >= 0"):
+        spec.replace(D={"intra": -1.0})
+
+
+def test_a_replaced_spec_says_what_was_replaced_and_round_trips():
+    spec = load_spec(FIX / "packed_myelinated_cylinders.sub.json")
+    was = spec.pool("intra").D
+    out = spec.replace(D={"intra": 0.6e-9})
+    prov = out.provenance["transformations"]
+    assert prov[:len(spec.provenance["transformations"])] == spec.provenance["transformations"]
+    assert prov[len(spec.provenance["transformations"]):] == \
+           [f"pool 'intra' D replaced: {was!r} -> {0.6e-9!r} (SubstrateSpec.replace)"]
+    again = SubstrateSpec.from_json(out.to_json())
+    assert again == out and again.pool("intra").D == 0.6e-9 and again.provenance["transformations"] == prov
+    bare = SubstrateSpec.from_dict(SubstrateSpec(
+        id="t/sphere", domain={"box_min": [-1e-5] * 3, "box_max": [1e-5] * 3, "boundary": ["open"] * 3},
+        pools=[Pool(0, "extra", 0.0, water_fraction=0.0), Pool(1, "intra", 2e-9, T2=0.05)],
+        walls=[Wall("membrane", Surface("sphere", center=[0, 0, 0], radius=3e-6), inside_pool=1, outside_pool=None)],
+        seeding={"pools": [1]}, validity={"smallest_feature": 3e-6, "tiers": ["gradient", "surface"]}).to_dict()).validate()
+    assert bare.provenance is None
+    assert bare.replace(D={"intra": 0.6e-9}).provenance["transformations"] == \
+           [f"pool 'intra' D replaced: {2e-9!r} -> {0.6e-9!r} (SubstrateSpec.replace)"]
