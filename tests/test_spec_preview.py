@@ -83,11 +83,22 @@ def test_pool_of_is_the_base_class_map_and_needs_no_probe():
     assert list(np.asarray(myel.pool_of(np.array([0, 1, 2])))) == [0, 1, 2]
 
 
-def test_a_spec_with_no_wall_has_no_cross_section():
+def test_a_spec_with_no_wall_and_no_reflecting_face_has_no_cross_section():
     from dataclasses import replace
-    spec = replace(d.Sphere(radius=5e-6).spec, walls=[])
-    with pytest.raises(SpecError, match="no wall, so it has no cross-section"):
+    sphere = d.Sphere(radius=5e-6).spec
+    spec = replace(sphere, walls=[], domain=replace(sphere.domain, boundary=["open", "open", "open"]))
+    with pytest.raises(SpecError, match="no wall and no reflecting face, so it has no cross-section"):
         S.preview(spec)
+
+
+def test_a_slab_with_no_wall_is_the_one_pool_its_reflecting_faces_confine():
+    # the 1-D slab has no wall: its domain reflects in x, and Box1D classifies every point as the seeded pool
+    spec = d.Box1D(length=10e-6).spec
+    assert spec.walls == [] and spec.domain.boundary[0] == "reflect" and spec.seeding.pools == [1]
+    rec = S.preview(spec)
+    assert rec["kinds"] == ["reflecting_domain"] and rec["pools"] == ["extra", "intra"]
+    for plane in rec["planes"]:
+        assert plane["pool_area_fraction"] == {"extra": 0.0, "intra": 1.0}
 
 
 def test_a_png_is_written_and_the_record_names_it(tmp_path):

@@ -9,7 +9,11 @@ uses, so a preview cannot show a substrate the walk does not have:
   the one implementation of "inside these closed surfaces" that seeding and walking share -- a mesh cut, packed
   spheres in section, a strand bundle in section;
 * an analytic wall (a cylinder, a sphere, an ellipsoid, a plane, one or many) goes through
-  ``geometry_from_spec(spec).classify_position``, the one compartment map of an analytic substrate.
+  ``geometry_from_spec(spec).classify_position``, the one compartment map of an analytic substrate;
+* a spec with no wall at all is confined by its domain's reflecting faces alone -- the 1-D slab,
+  :class:`~dmipy_sim.geometry.base.Box1D` -- and goes through that same classifier, which puts every point in the
+  one seeded pool. A spec with neither a wall nor a reflecting face is free diffusion, has no cross-section, and
+  is refused.
 
 The returned record is what the card embeds beside the picture: which plane is where, the extent in metres, the
 scale bar, and the area fraction of each pool in the section -- a number a reader can compare with the spec's
@@ -71,7 +75,7 @@ def _section_from_labels(wall):
 def _inside_fn(spec):
     """``(pool id) -> (points -> bool)``, from whichever one membership implementation this spec's walls have."""
     kinds = {w.surface.kind for w in spec.walls}
-    if kinds <= {"mesh", "sphere_union", "swept_polyline"}:
+    if spec.walls and kinds <= {"mesh", "sphere_union", "swept_polyline"}:
         from .walk import _PoolTests
         tests = _PoolTests(spec)
         return {p.id: tests.member(p.id) for p in spec.pools}
@@ -118,11 +122,12 @@ def preview(spec, path=None, *, dpi=110, title=None):
 
     Returns the record the card embeds: the file, the surface kinds it dispatched on, the pixel size, the scale
     bar, and per plane its normal axis, where it cuts, its extent in metres and the area fraction of every pool.
-    A spec with no wall has nothing to show and is refused.
+    A spec with no wall is the slab its domain's reflecting faces confine, and its ``kinds`` names that face,
+    ``reflecting_domain``; a spec with no wall and no reflecting face has nothing to show and is refused.
     """
-    if not spec.walls:
-        raise SpecError("preview: this spec has no wall, so it has no cross-section to show")
-    kinds = sorted({w.surface.kind for w in spec.walls})
+    if not spec.walls and "reflect" not in spec.domain.boundary:
+        raise SpecError("preview: this spec has no wall and no reflecting face, so it has no cross-section to show")
+    kinds = sorted({w.surface.kind for w in spec.walls}) or ["reflecting_domain"]
     if kinds == ["label_volume"]:
         sections, names, pixel = _section_from_labels(spec.walls[0])
     else:
