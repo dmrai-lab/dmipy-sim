@@ -322,3 +322,23 @@ def test_a_table_part_with_no_row_span_is_read_whole(tmp_path):
     col = {"dtype": "float32", "shape": [4, 3], "per_row": False,
            "parts": [{"file": "tables.safetensors", "rows": None, "data_offset": 8 + n + off0, "nbytes": off1 - off0}]}
     assert np.array_equal(_read_whole(col, str(tmp_path)), arr)
+
+
+def test_ranges_of_one_file_are_coalesced_into_its_span_when_dense(tmp_path):
+    """Dense ranges of one file become one read of their span (sliced back per range); sparse ranges stay separate."""
+    import numpy as np
+    from dmipy_sim.replay.columnar import Source
+    data = np.arange(1 << 20, dtype=np.uint8).tobytes()
+    (tmp_path / "f.bin").write_bytes(data)
+    src = Source(str(tmp_path)); seen = []
+    real = src.read
+    src.read = lambda rel, start, length: (seen.append((start, length)), real(rel, start, length))[1]
+    dense = [("f.bin", 1000 * i, 500) for i in range(100)]               # 50 % of a 50 kB span
+    out = src.read_many(dense)
+    assert out == [data[st:st + ln] for _, st, ln in dense]
+    assert seen == [(0, 99 * 1000 + 500)]
+    seen.clear()
+    sparse = [("f.bin", 100_000 * i, 500) for i in range(4)]             # 0.2 % of the span
+    out = src.read_many(sparse)
+    assert out == [data[st:st + ln] for _, st, ln in sparse]
+    assert sorted(seen) == [(100_000 * i, 500) for i in range(4)]

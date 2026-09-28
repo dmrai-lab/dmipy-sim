@@ -83,14 +83,38 @@ class Source:
             time.sleep(min(60, 2 * 2 ** attempt))
         raise IOError(f"range read of {rel} [{start}, +{length}) failed after 6 attempts: {err}")
 
+    COALESCE = 0.25
+
     def read_many(self, jobs):
         """``[(rel, start, length), ...]`` fetched concurrently, in order -- local disks parallelise reads too,
-        so a directory source uses the same thread pool as a remote one."""
+        so a directory source uses the same thread pool as a remote one. The ranges asked of one file are
+        coalesced into one read of their whole span when they fill at least ``COALESCE`` of it: the bytes in
+        between are read once and discarded, and a slab of a block-tiled layout costs one read per tier file
+        instead of one per (voxel, pool) row range."""
         from concurrent.futures import ThreadPoolExecutor
-        if len(jobs) == 1:
-            return [self.read(*jobs[0])]
-        with ThreadPoolExecutor(max_workers=self.workers) as ex:
-            return list(ex.map(lambda j: self.read(*j), jobs))
+        by_file = {}
+        for i, (rel, start, length) in enumerate(jobs):
+            by_file.setdefault(rel, []).append((i, start, length))
+        reads, slices = [], [None] * len(jobs)                    # slices[i] = (read index, offset within it)
+        for rel, js in by_file.items():
+            lo = min(st for _, st, _ in js); hi = max(st + ln for _, st, ln in js); asked = sum(ln for _, _, ln in js)
+            if len(js) > 1 and asked >= self.COALESCE * (hi - lo):
+                k = len(reads); reads.append((rel, lo, hi - lo))
+                for i, st, ln in js:
+                    slices[i] = (k, st - lo)
+            else:
+                for i, st, ln in js:
+                    slices[i] = (len(reads), 0); reads.append((rel, st, ln))
+        if len(reads) == 1:
+            raws = [self.read(*reads[0])]
+        else:
+            with ThreadPoolExecutor(max_workers=self.workers) as ex:
+                raws = list(ex.map(lambda j: self.read(*j), reads))
+        out = []
+        for (rel, st, ln), (k, off) in zip(jobs, slices):
+            raw = raws[k]
+            out.append(raw if off == 0 and len(raw) == ln else raw[off:off + ln])
+        return out
 
     def text(self, rel):
         if not self.remote:
