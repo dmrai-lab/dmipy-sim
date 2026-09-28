@@ -84,10 +84,11 @@ class Source:
         raise IOError(f"range read of {rel} [{start}, +{length}) failed after 6 attempts: {err}")
 
     def read_many(self, jobs):
-        """``[(rel, start, length), ...]`` fetched concurrently, in order."""
+        """``[(rel, start, length), ...]`` fetched concurrently, in order -- local disks parallelise reads too,
+        so a directory source uses the same thread pool as a remote one."""
         from concurrent.futures import ThreadPoolExecutor
-        if not self.remote or len(jobs) == 1:
-            return [self.read(*j) for j in jobs]
+        if len(jobs) == 1:
+            return [self.read(*jobs[0])]
         with ThreadPoolExecutor(max_workers=self.workers) as ex:
             return list(ex.map(lambda j: self.read(*j), jobs))
 
