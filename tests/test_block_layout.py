@@ -307,3 +307,18 @@ def test_refuses_a_row_count_mismatch(tmp_path_factory):
     out = str(tmp_path_factory.mktemp("bad_rows_out"))
     with pytest.raises(ValueError, match="rows"):
         write_blocks(src, out, workers=1)
+
+
+def test_a_table_part_with_no_row_span_is_read_whole(tmp_path):
+    """The full DiSCo manifest writes a table's single part with ``rows: None``; the gather spans the table."""
+    import numpy as np, json
+    from safetensors.numpy import save_file
+    from dmipy_sim.fill.blocks import _read_whole
+    arr = np.arange(12, dtype=np.float32).reshape(4, 3)
+    save_file({"voxel_certificate": arr}, str(tmp_path / "tables.safetensors"))
+    n = int.from_bytes(open(tmp_path / "tables.safetensors", "rb").read(8), "little")
+    hdr = json.loads(open(tmp_path / "tables.safetensors", "rb").read()[8:8 + n])
+    off0, off1 = hdr["voxel_certificate"]["data_offsets"]
+    col = {"dtype": "float32", "shape": [4, 3], "per_row": False,
+           "parts": [{"file": "tables.safetensors", "rows": None, "data_offset": 8 + n + off0, "nbytes": off1 - off0}]}
+    assert np.array_equal(_read_whole(col, str(tmp_path)), arr)

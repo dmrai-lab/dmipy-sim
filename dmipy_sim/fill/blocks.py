@@ -75,7 +75,7 @@ def _read_range(col, source_dir, s, e):
     rowbytes = int(np.prod(shape[1:], dtype=np.int64)) * dt.itemsize
     chunks = []
     for p in parts:
-        ps, pe = p["rows"]
+        ps, pe = (0, shape[0]) if p.get("rows") is None else p["rows"]     # a table's one part spans it whole
         lo, hi = max(s, ps), min(e, pe)
         if lo < hi:
             mm = _memmap(os.path.join(source_dir, p["file"]))
