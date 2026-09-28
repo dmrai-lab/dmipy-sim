@@ -338,7 +338,7 @@ def test_ranges_of_one_file_are_coalesced_into_its_span_when_dense(tmp_path):
     assert out == [data[st:st + ln] for _, st, ln in dense]
     assert seen == [(0, 99 * 1000 + 500)]
     seen.clear()
-    sparse = [("f.bin", 100_000 * i, 500) for i in range(4)]             # 0.2 % of the span
+    sparse = [("f.bin", 100_000 * i, 500) for i in range(4)]             # 0.7 % of the span, under a local disk's 5 %
     out = src.read_many(sparse)
     assert out == [data[st:st + ln] for _, st, ln in sparse]
     assert sorted(seen) == [(100_000 * i, 500) for i in range(4)]

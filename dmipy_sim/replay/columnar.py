@@ -38,6 +38,7 @@ class Source:
         self.uri = uri; self.bytes_read = 0; self.requests = 0; self.workers = workers
         self._tl = threading.local(); self._resolved = {}; self._lock = threading.Lock()
         self.remote = uri.startswith("hf://")
+        self.coalesce = 0.25 if self.remote else 0.05   # the fill of a file's span below which its ranges stay separate reads
         if self.remote:
             from huggingface_hub import hf_hub_url, get_token
             owner, name, prefix = uri[5:].split("/", 2)                       # hf://owner/name/prefix
@@ -83,14 +84,13 @@ class Source:
             time.sleep(min(60, 2 * 2 ** attempt))
         raise IOError(f"range read of {rel} [{start}, +{length}) failed after 6 attempts: {err}")
 
-    COALESCE = 0.25
-
     def read_many(self, jobs):
         """``[(rel, start, length), ...]`` fetched concurrently, in order -- local disks parallelise reads too,
         so a directory source uses the same thread pool as a remote one. The ranges asked of one file are
-        coalesced into one read of their whole span when they fill at least ``COALESCE`` of it: the bytes in
-        between are read once and discarded, and a slab of a block-tiled layout costs one read per tier file
-        instead of one per (voxel, pool) row range."""
+        coalesced into one read of their whole span when they fill at least ``coalesce`` of it (a quarter over HTTP,
+        where a request costs ~100 ms; a twentieth on a local disk, where a read costs microseconds and bytes
+        are cheap): the bytes in between are read once and discarded, and a slab of a block-tiled layout costs
+        one read per tier file instead of one per (voxel, pool) row range."""
         from concurrent.futures import ThreadPoolExecutor
         by_file = {}
         for i, (rel, start, length) in enumerate(jobs):
@@ -98,7 +98,7 @@ class Source:
         reads, slices = [], [None] * len(jobs)                    # slices[i] = (read index, offset within it)
         for rel, js in by_file.items():
             lo = min(st for _, st, _ in js); hi = max(st + ln for _, st, ln in js); asked = sum(ln for _, _, ln in js)
-            if len(js) > 1 and asked >= self.COALESCE * (hi - lo):
+            if len(js) > 1 and asked >= self.coalesce * (hi - lo):
                 k = len(reads); reads.append((rel, lo, hi - lo))
                 for i, st, ln in js:
                     slices[i] = (k, st - lo)
