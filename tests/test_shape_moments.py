@@ -142,7 +142,7 @@ def test_the_torch_backend_is_the_jax_image(layout):
     torch.use_deterministic_algorithms(True)
     S_t, f_t = sm.image("a", b, dirs, backend="torch", device="cpu")
     np.testing.assert_array_equal(np.isnan(S_j), np.isnan(S_t))
-    err = np.nanmax(np.abs(S_j - S_t)); assert err < 2e-6, err            # measured  on the fixture (CPU)
+    err = np.nanmax(np.abs(S_j - S_t)); assert err < 2e-6, err            # measured 7.6e-8 on the fixture (CPU)
     assert np.nanmax(np.abs(f_j - f_t)) < 2e-6
     S_t2, _ = sm.image("a", b, dirs, backend="torch", device="cpu")
     np.testing.assert_array_equal(np.nan_to_num(S_t), np.nan_to_num(S_t2))
