@@ -371,20 +371,48 @@ def _sums_jax(m, w, tiles, g_p, u_p, n_seg, chunk):
     return np.asarray(acc)
 
 
+def _tile_sums_torch(mc, wc, g, u):
+    """One chunk's tile sums on torch, ``(chunk, M_pad)`` complex128: the phase as three products (a float32 matmul
+    on CUDA is TF32 unless ``allow_tf32`` is off, so no matmul), ``w exp(i ph)`` in complex64, the reduce over the
+    tile's rows."""
+    import torch
+    ph = g[None, None, :] * (mc[:, :, 0:1] * u[None, None, :, 0] + mc[:, :, 1:2] * u[None, None, :, 1] + mc[:, :, 2:3] * u[None, None, :, 2])
+    return torch.polar(wc[:, :, None].expand_as(ph), ph).sum(1).to(torch.complex128)
+
+
+_TORCH_KERNEL = {}
+
+
+def _torch_kernel():
+    """The chunk function fused by ``torch.compile`` when the compiler is available (measured on the L40S, DiSCo's
+    layout, 184 measurements: eager 3.3 s per image, compiled 1.44 s, JAX 0.97 s; the first compiled call 3.6 s),
+    the eager function otherwise."""
+    if "fn" not in _TORCH_KERNEL:
+        import torch
+        try:
+            _TORCH_KERNEL["fn"] = torch.compile(_tile_sums_torch, dynamic=False)
+        except Exception:                                     # no compiler on this platform: eager
+            _TORCH_KERNEL["fn"] = _tile_sums_torch
+    return _TORCH_KERNEL["fn"]
+
+
 def _sums_torch(m, w, tiles, g_p, u_p, n_seg, chunk):
-    """The same sums on torch: the phase as three products (a float32 matmul on CUDA is TF32 unless
-    ``allow_tf32`` is off, so no matmul), ``exp`` in complex64, the tile reduce, ``index_add_`` into a complex128
-    accumulator (deterministic under ``torch.use_deterministic_algorithms(True)``)."""
+    """The same sums on torch: the tile sums of every chunk (:func:`_tile_sums_torch`, compiled when possible)
+    ``index_add_``-ed into a complex128 accumulator (deterministic under
+    ``torch.use_deterministic_algorithms(True)``)."""
     import torch
     dev = m.device
     g = torch.as_tensor(g_p, device=dev); u = torch.as_tensor(u_p, device=dev)
     acc = torch.zeros((n_seg, g_p.shape[0]), dtype=torch.complex128, device=dev)
+    fn = _torch_kernel()
     with torch.no_grad():
         for i in range(0, m.shape[0], chunk):
-            mc = m[i:i + chunk]
-            ph = g[None, None, :] * (mc[:, :, 0:1] * u[None, None, :, 0] + mc[:, :, 1:2] * u[None, None, :, 1] + mc[:, :, 2:3] * u[None, None, :, 2])
-            E = torch.polar(w[i:i + chunk, :, None].expand_as(ph), ph)                 # w exp(i ph), complex64
-            acc.index_add_(0, tiles[i:i + chunk], E.sum(1).to(torch.complex128))
+            try:
+                ts = fn(m[i:i + chunk], w[i:i + chunk], g, u)
+            except Exception:                                  # the compiled path failed at run time: eager, once for all
+                _TORCH_KERNEL["fn"] = fn = _tile_sums_torch
+                ts = fn(m[i:i + chunk], w[i:i + chunk], g, u)
+            acc.index_add_(0, tiles[i:i + chunk], ts)
     return acc.cpu().numpy()
 
 
