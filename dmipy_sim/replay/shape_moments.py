@@ -23,7 +23,11 @@ ramps do not scale with its amplitude (built with ``slew_rate=np.inf``): a finit
 function of ``g`` and the moment would not be one vector. The image of an acquisition on the layout is
 ``|sum_w w exp(i g u . m_w)| / sum_w w`` per voxel with its split-half floor, formed on the device from
 device-resident rows: float32 phases with the three products written out (a float32 matmul on CUDA is TF32),
-the exponential in complex64, the tile sums and every sum after them in complex128.
+the exponential in complex64, the tile sums and every sum after them in complex128. Two backends run that
+arithmetic, ``"jax"`` (the reference) and ``"torch"`` (dmipy-sim#510: Hugging Face's shared GPU pool runs PyTorch
+only, and drops the device between calls, so the torch path can rebuild its tensors from the memory-mapped tiles
+on every call); the tiling, the manifest, the amplitudes, the weights and the NaN / floor bookkeeping are the one
+class's, the backend chooses only where ``exp``, the tile reduce and the scatter run.
 """
 from __future__ import annotations
 
@@ -283,29 +287,53 @@ class ShapeMoments:
         return np.bincount(tiles, w, minlength=2 * self.n_vox).reshape(self.n_vox, 2)
 
     def release(self, keep=()):
-        """Drop the device copies of every shape's tiles but ``keep``'s (the shared tiles stay)."""
-        for name in [n for n in self._device if n not in ("w", "tiles") and n not in keep]:
+        """Drop the device copies of every shape's tiles but ``keep``'s (the shared tiles stay), on every backend."""
+        for name in [n for n in self._device if n[1] not in ("w", "tiles") and n[1] not in keep]:
             del self._device[name]
 
-    def _resident(self, shape):
-        """The tiles on the device, padded to whole chunks: ``(m, w, tiles)`` for ``shape`` (shared tiles once)."""
-        import jax.numpy as jnp
+    def _padded(self, name):
+        """The column ``name`` (a shape, ``"w"`` or ``"tiles"``) on the host, padded to whole chunks of ``TILES``
+        (padding rows weigh nothing and scatter into the dump segment)."""
         T = self.TILES; n_pad = -(-self.n_tiles // T) * T
-        if "w" not in self._device:
-            w = np.zeros((n_pad, self.tile), np.float32); w[:self.n_tiles] = self._column("w")
-            tiles = np.full(n_pad, 2 * self.n_vox, np.int32); tiles[:self.n_tiles] = self._column("tiles")
-            self._device["w"], self._device["tiles"] = jnp.asarray(w), jnp.asarray(tiles)
-        if shape not in self._device:
-            m = np.zeros((n_pad, self.tile, 3), np.float32); m[:self.n_tiles] = self.moments(shape)
-            self._device[shape] = jnp.asarray(m)
-        return self._device[shape], self._device["w"], self._device["tiles"]
+        if name == "w":
+            a = np.zeros((n_pad, self.tile), np.float32); a[:self.n_tiles] = self._column("w")
+        elif name == "tiles":
+            a = np.full(n_pad, 2 * self.n_vox, np.int32); a[:self.n_tiles] = self._column("tiles")
+        else:
+            a = np.zeros((n_pad, self.tile, 3), np.float32); a[:self.n_tiles] = self.moments(name)
+        return a
 
-    def image(self, shape, bvalues, directions):
+    def _resident(self, shape, backend, device, resident):
+        """``(m, w, tiles)`` for ``shape`` on the backend's device, kept across calls when ``resident`` (the shared
+        tiles once per backend), else built afresh from the memory-mapped tiles."""
+        if backend == "jax":
+            import jax.numpy as jnp
+            put = jnp.asarray
+        else:
+            import torch
+            put = lambda a: torch.as_tensor(a if a.dtype != np.int32 else a.astype(np.int64), device=device)
+        out = []
+        for name in (shape, "w", "tiles"):
+            key = (backend, name, str(device))
+            if key not in self._device:
+                arr = put(self._padded(name))
+                if not resident:
+                    out.append(arr); continue
+                self._device[key] = arr
+            out.append(self._device[key])
+        return tuple(out)
+
+    def image(self, shape, bvalues, directions, *, backend="jax", device=None, resident=True):
         """``(S, floor)`` of the grid under ``shape`` at ``bvalues`` (s/m^2) along ``directions`` (unit vectors):
         ``S`` is ``grid.shape + (n_meas,)``, the weighted ensemble magnitude per voxel (NaN where the layout has no
         rows), ``floor`` ``grid.shape`` its split-half floor ``max_m |S_a - S_b| / 2``. A b = 0 row's direction
-        is immaterial."""
-        import jax.numpy as jnp
+        is immaterial. ``backend`` runs the arithmetic on JAX (its default device) or torch (``device``, the current
+        CUDA device when None and one exists, else the CPU); ``resident=False`` uploads the tiles for this call only
+        (a shared pool that drops the device between calls). Run-to-run identity of the scatter needs
+        ``XLA_FLAGS=--xla_gpu_deterministic_ops=true`` on JAX and ``torch.use_deterministic_algorithms(True)`` on
+        torch; the caller sets them."""
+        if backend not in ("jax", "torch"):
+            raise ValueError(f"backend is 'jax' or 'torch', got {backend!r}")
         g = self.amplitude(shape, bvalues)
         u = np.asarray(directions, np.float64)
         if u.shape != (len(g), 3):
@@ -317,13 +345,13 @@ class ShapeMoments:
         M = len(g); M_pad = -(-M // self.MEAS) * self.MEAS
         g_p = np.zeros(M_pad, np.float32); g_p[:M] = g
         u_p = np.zeros((M_pad, 3), np.float32); u_p[:M] = u
-        m, w, tiles = self._resident(shape)
         n_seg = 2 * self.n_vox + 1
-        acc = jnp.zeros((n_seg, M_pad), jnp.complex128); kernel = _compiled(n_seg)
-        g_d, u_d = jnp.asarray(g_p), jnp.asarray(u_p)
-        for i in range(0, m.shape[0], self.TILES):
-            acc = kernel(m[i:i + self.TILES], w[i:i + self.TILES], tiles[i:i + self.TILES], g_d, u_d, acc)
-        num = np.asarray(acc)[:2 * self.n_vox, :M].reshape(self.n_vox, 2, M)
+        if backend == "torch" and device is None:
+            import torch
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+        m, w, tiles = self._resident(shape, backend, device, resident)
+        acc = (_sums_jax if backend == "jax" else _sums_torch)(m, w, tiles, g_p, u_p, n_seg, self.TILES)
+        num = acc[:2 * self.n_vox, :M].reshape(self.n_vox, 2, M)
         den = self.weights
         S = np.full((self.n_vox, M), np.nan); floor = np.full(self.n_vox, np.nan)
         any_ = den.sum(1) > 0; both = (den > 0).all(1)
@@ -331,6 +359,61 @@ class ShapeMoments:
         Sa = np.abs(num[both, 0] / den[both, 0][:, None]); Sb = np.abs(num[both, 1] / den[both, 1][:, None])
         floor[both] = 0.5 * np.abs(Sa - Sb).max(1)
         return S.reshape(tuple(self.grid.shape) + (M,)), floor.reshape(self.grid.shape)
+
+
+def _sums_jax(m, w, tiles, g_p, u_p, n_seg, chunk):
+    """The per-segment sums ``(n_seg, M_pad)`` complex128 on JAX: the compiled chunk kernel over the tiles."""
+    import jax.numpy as jnp
+    acc = jnp.zeros((n_seg, g_p.shape[0]), jnp.complex128); kernel = _compiled(n_seg)
+    g_d, u_d = jnp.asarray(g_p), jnp.asarray(u_p)
+    for i in range(0, m.shape[0], chunk):
+        acc = kernel(m[i:i + chunk], w[i:i + chunk], tiles[i:i + chunk], g_d, u_d, acc)
+    return np.asarray(acc)
+
+
+def _tile_sums_torch(mc, wc, g, u):
+    """One chunk's tile sums on torch, ``(chunk, M_pad)`` complex128: the phase as three products (a float32 matmul
+    on CUDA is TF32 unless ``allow_tf32`` is off, so no matmul), ``w exp(i ph)`` in complex64, the reduce over the
+    tile's rows."""
+    import torch
+    ph = g[None, None, :] * (mc[:, :, 0:1] * u[None, None, :, 0] + mc[:, :, 1:2] * u[None, None, :, 1] + mc[:, :, 2:3] * u[None, None, :, 2])
+    return torch.polar(wc[:, :, None].expand_as(ph), ph).sum(1).to(torch.complex128)
+
+
+_TORCH_KERNEL = {}
+
+
+def _torch_kernel():
+    """The chunk function fused by ``torch.compile`` when the compiler is available (measured on the L40S, DiSCo's
+    layout, 184 measurements: eager 3.3 s per image, compiled 1.44 s, JAX 0.97 s; the first compiled call 3.6 s),
+    the eager function otherwise."""
+    if "fn" not in _TORCH_KERNEL:
+        import torch
+        try:
+            _TORCH_KERNEL["fn"] = torch.compile(_tile_sums_torch, dynamic=False)
+        except Exception:                                     # no compiler on this platform: eager
+            _TORCH_KERNEL["fn"] = _tile_sums_torch
+    return _TORCH_KERNEL["fn"]
+
+
+def _sums_torch(m, w, tiles, g_p, u_p, n_seg, chunk):
+    """The same sums on torch: the tile sums of every chunk (:func:`_tile_sums_torch`, compiled when possible)
+    ``index_add_``-ed into a complex128 accumulator (deterministic under
+    ``torch.use_deterministic_algorithms(True)``)."""
+    import torch
+    dev = m.device
+    g = torch.as_tensor(g_p, device=dev); u = torch.as_tensor(u_p, device=dev)
+    acc = torch.zeros((n_seg, g_p.shape[0]), dtype=torch.complex128, device=dev)
+    fn = _torch_kernel()
+    with torch.no_grad():
+        for i in range(0, m.shape[0], chunk):
+            try:
+                ts = fn(m[i:i + chunk], w[i:i + chunk], g, u)
+            except Exception:                                  # the compiled path failed at run time: eager, once for all
+                _TORCH_KERNEL["fn"] = fn = _tile_sums_torch
+                ts = fn(m[i:i + chunk], w[i:i + chunk], g, u)
+            acc.index_add_(0, tiles[i:i + chunk], ts)
+    return acc.cpu().numpy()
 
 
 _KERNELS = {}

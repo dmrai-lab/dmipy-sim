@@ -124,6 +124,30 @@ def test_the_bands_are_judged_at_the_shapes_own_amplitude_and_the_device_rows_ca
     assert lo["shapes"]["lo"]["amplitude_built"] == pytest.approx(0.005) and lo["K"] <= col.K
     sm = ShapeMoments(str(tmp / "sm_moments"))
     sm.image("a", [1e9], [[0, 0, 1]]); sm.image("c", [1e9], [[0, 0, 1]])
-    assert set(sm._device) == {"w", "tiles", "a", "c"}
+    assert {k[1] for k in sm._device} == {"w", "tiles", "a", "c"}
     sm.release(keep=["c"])
-    assert set(sm._device) == {"w", "tiles", "c"}
+    assert {k[1] for k in sm._device} == {"w", "tiles", "c"}
+
+
+def test_the_torch_backend_is_the_jax_image(layout):
+    """dmipy-sim#510: the same acquisitions on both backends agree to float32 arithmetic, NaN and floor alike; two
+    torch calls are identical; a non-resident call leaves nothing on the device; the backend name is checked."""
+    torch = pytest.importorskip("torch")
+    col, grid, n_t, tmp = layout
+    sm = ShapeMoments(str(tmp / "sm_moments"))
+    rng = np.random.default_rng(5)
+    u = rng.normal(size=(5, 3)); u /= np.linalg.norm(u, axis=1)[:, None]
+    dirs = np.concatenate([u, u, [[0, 0, 1]]]); b = np.r_[np.full(5, 5e8), np.full(5, 2.5e9), 0.0]
+    S_j, f_j = sm.image("a", b, dirs)
+    torch.use_deterministic_algorithms(True)
+    S_t, f_t = sm.image("a", b, dirs, backend="torch", device="cpu")
+    np.testing.assert_array_equal(np.isnan(S_j), np.isnan(S_t))
+    err = np.nanmax(np.abs(S_j - S_t)); assert err < 2e-6, err            # measured 7.6e-8 on the fixture (CPU)
+    assert np.nanmax(np.abs(f_j - f_t)) < 2e-6
+    S_t2, _ = sm.image("a", b, dirs, backend="torch", device="cpu")
+    np.testing.assert_array_equal(np.nan_to_num(S_t), np.nan_to_num(S_t2))
+    before = set(sm._device)
+    S_t3, _ = sm.image("c", b[:3], dirs[:3], backend="torch", device="cpu", resident=False)
+    assert set(sm._device) == before and np.isfinite(S_t3).any()
+    with pytest.raises(ValueError, match="backend"):
+        sm.image("a", b, dirs, backend="numpy")
