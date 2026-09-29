@@ -107,3 +107,18 @@ def test_directions_must_match_and_be_unit(layout):
         sm.image("a", [1e9], [[0, 0, 2]])
     with pytest.raises(KeyError):
         sm.moments("b")
+
+
+def test_the_bands_are_judged_at_the_shapes_own_amplitude_and_the_device_rows_can_be_released(layout):
+    """A shape built at a tenth of the amplitude needs no more bands than one built at the full amplitude (the
+    truncation error scales with the amplitude squared, and the manifest records the amplitude judged at); after
+    ``release`` the device holds the shared rows only."""
+    col, grid, n_t, tmp = layout
+    out = str(tmp / "sm_amp")
+    lo = write_shape_moments(col, {"lo": _shape(n_t, g=0.005)}, out, tol=1e-9, chunk_rows=7)
+    assert lo["shapes"]["lo"]["amplitude_built"] == pytest.approx(0.005) and lo["K"] <= col.K
+    sm = ShapeMoments(str(tmp / "sm_moments"))
+    sm.image("a", [1e9], [[0, 0, 1]]); sm.image("c", [1e9], [[0, 0, 1]])
+    assert set(sm._device) == {"w", "seg", "a", "c"}
+    sm.release(keep=["c"])
+    assert set(sm._device) == {"w", "seg", "c"}

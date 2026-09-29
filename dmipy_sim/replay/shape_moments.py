@@ -87,7 +87,9 @@ def write_shape_moments(source, shapes, out_dir, *, tol=0.25, chunk_rows=2_000_0
     :class:`~dmipy_sim.replay.columnar.ColumnarPack`, a directory or ``hf://owner/name/prefix``) for ``shapes``,
     a ``{name: sequence}`` of one-row single-direction sequences, written to ``out_dir`` in one pass over the rows
     at the fewest band groups whose truncation error stays under ``tol`` times the pack's median floor on every
-    axis of every shape. ``progress(rows, bytes, seconds)`` is called after every row group. Returns the manifest."""
+    axis of every shape **at the amplitude the shape is built at** (the error grows with the amplitude squared:
+    build a shape at the largest amplitude it will be replayed at). ``progress(rows, bytes, seconds)`` is called
+    after every row group. Returns the manifest."""
     from .columnar import ColumnarPack
     from .replay import _band_phase
     from ..acquisition.waveforms import calc_b
@@ -96,7 +98,7 @@ def write_shape_moments(source, shapes, out_dir, *, tol=0.25, chunk_rows=2_000_0
         raise ValueError("no shapes: give at least one {name: sequence}")
     prof = {name: _profile(seq) for name, seq in shapes.items()}
     contractions = _contractions(shapes, prof)
-    plans = [col.bands_for(a, tol=tol) for a, _ in contractions]
+    plans = [col.bands_for(_axis_sequence(shapes[name], prof[name][0] * prof[name][2]), tol=tol) for name in shapes]
     K = max(k for k, _ in plans); band_error = max(e for _, e in plans)
     b_unit = {name: float(calc_b(_axis_sequence(shapes[name], prof[name][0]))[0]) for name in shapes}
     os.makedirs(out_dir, exist_ok=True)
@@ -135,7 +137,7 @@ def write_shape_moments(source, shapes, out_dir, *, tol=0.25, chunk_rows=2_000_0
                     grid=col.meta["fidelity"]["per_voxel"]["grid"], pack=col.meta.get("id")),
         n_voxels=int(n_vox), columns=dict(w="w.npy", seg="seg.npy", **{name: f"m_{name}.npy" for name in shapes}),
         shapes={name: dict(profile=prof[name][0].tolist(), dt=float(shapes[name].dt), n_t=int(len(prof[name][0])),
-                           b_unit=b_unit[name], family=getattr(shapes[name], "family", None),
+                           b_unit=b_unit[name], amplitude_built=prof[name][2], family=getattr(shapes[name], "family", None),
                            build_spec=_jsonable(shapes[name].build_spec),
                            encoding={k: _jsonable(getattr(shapes[name].encoding, k, None))
                                      for k in ("delta", "Delta", "TE") if shapes[name].encoding is not None})
@@ -239,6 +241,11 @@ class ShapeMoments:
         """The per-voxel weight sums ``(n_vox, 2)`` (the two split halves), the denominator of every image."""
         w = np.asarray(self._column("w"), np.float64); seg = np.asarray(self._column("seg"))
         return np.bincount(seg, w, minlength=2 * self.n_vox).reshape(self.n_vox, 2)
+
+    def release(self, keep=()):
+        """Drop the device copies of every shape's rows but ``keep``'s (the shared rows stay)."""
+        for name in [n for n in self._device if n not in ("w", "seg") and n not in keep]:
+            del self._device[name]
 
     def _resident(self, shape):
         """The rows on the device, padded to whole chunks: ``(m, w, seg)`` for ``shape`` (shared rows once)."""
