@@ -38,6 +38,10 @@ bank = [
 # After installing, the venv's activate script must export LD_LIBRARY_PATH
 # so the dynamic linker can resolve transitive CUDA library dependencies
 # (e.g. libcusparse.so.12 → libnvJitLink.so.12). See README for details.
+# The torch backend of the shape-moment image (dmipy-sim#510): PyTorch only, for Hugging Face's shared GPU pool.
+torch = [
+    "torch>=2.2",
+]
 cuda12 = [
     "jax[cuda12]>=0.6.2",
 ]

@@ -42,6 +42,8 @@ jobs:
           # checked against (RPH.md Sec. 4.1). Without it those tests skip and the claim
           # goes unverified, so CI installs it even though [dev] deliberately does not.
           pip install -e ".[dev,interop]"
+          # the torch backend of the shape-moment image is checked against the JAX one (dmipy-sim#510): the CPU wheel
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
 
       # The suite is COMPILE-bound, not compute-bound: every jax.jit in the package is built
       # inside a function body over a fresh closure, so jit's in-memory cache can never hit
