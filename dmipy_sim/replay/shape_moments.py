@@ -6,19 +6,24 @@ A single-direction waveform is ``G(t) = g s(t) u``: ``s`` its shape (``max |s| =
 and ``u`` its unit direction. The band contraction of a replay (:func:`~dmipy_sim.replay.replay._band_phase`) is
 linear in the waveform, so the gradient phase of walker ``w`` is ``g (u . m_w)`` with the **shape moment**
 ``m_w = gamma int s(t) r_w(t) dt`` (rad per T/m): the pack's bands contracted against the shape's projection on
-the three axes, once per shape, through the same ``_prepare`` / ``_band_phase`` route every replay takes. The
-layout holds, per shape, ``m`` as ``(n_rows, 3)`` float32; once, the walkers' weights and the voxel of every row
-with its split half; and ``manifest.json`` naming the source layout (its manifest's sha256), the bands read and
-their truncation error, and every shape's profile with the b-value it encodes at unit amplitude, so that an
-amplitude follows from a b-value as ``g = sqrt(b / b_unit)``.
+the three axes, once per shape, through the same ``_prepare`` / ``_band_phase`` route every replay takes.
+
+The layout is **tiled**: rows are stored in tiles of ``TILE`` rows, every tile the rows of one segment (a voxel and
+a split half), the last tile of a segment padded with zero weight, so that a voxel's sum is a fused reduction over
+whole tiles and the sum over tiles a scatter with as many collisions as a segment has tiles. A scatter over rows
+serialises on a voxel's thousands of contiguous rows (measured on the L40S: 6.4 s per 2^19 rows against 1 ms for
+the tiled reduction). Per shape ``m_<name>.npy`` holds ``(n_tiles, TILE, 3)`` float32; once, ``w.npy``
+``(n_tiles, TILE)`` (the walkers' weights, 0 on padding), ``tiles.npy`` ``(n_tiles,)`` (``2 voxel + half``), and
+``manifest.json`` naming the source layout (its manifest's sha256), the bands read and their truncation error,
+and every shape's profile with the b-value it encodes at unit amplitude, so that an amplitude follows from a
+b-value as ``g = sqrt(b / b_unit)``.
 
 A shape is a one-row single-direction :class:`~dmipy_sim.acquisition.scanner_sequence.ScannerSequence` whose
 ramps do not scale with its amplitude (built with ``slew_rate=np.inf``): a finite slew makes the shape a
 function of ``g`` and the moment would not be one vector. The image of an acquisition on the layout is
-``|sum_w w exp(i g u . m_w)| / sum_w w`` per voxel with its split-half floor, formed on the device in single
-precision from device-resident rows: the phase's three products are written out (a float32 matmul on CUDA is
-TF32), the exponential and the per-voxel sums are complex64, the voxel totals are combined in double precision
-on the host.
+``|sum_w w exp(i g u . m_w)| / sum_w w`` per voxel with its split-half floor, formed on the device from
+device-resident rows: float32 phases with the three products written out (a float32 matmul on CUDA is TF32),
+the exponential in complex64, the tile sums and every sum after them in complex128.
 """
 from __future__ import annotations
 
@@ -30,7 +35,8 @@ import time
 import numpy as np
 
 MANIFEST = "manifest.json"
-FORMAT = "shape_moments/1"
+FORMAT = "shape_moments/2"
+TILE = 128                                                            # rows per tile
 _AXES = np.eye(3)
 
 
@@ -82,6 +88,28 @@ def _contractions(shapes, prof):
     return out
 
 
+def _plan(col, chunk_rows):
+    """The tiling, from the index alone: per row group of the pass, its voxel runs ``(voxel, start, n, tile0,
+    tile1)`` -- the run's rows within the group, and the first tile of each half -- and every tile's segment."""
+    groups, tiles, t = [], [], 0
+    for rows in col.row_groups(chunk_rows):
+        runs, off = [], 0
+        for r in rows:
+            v = int(np.ravel_multi_index(tuple(r["ijk"]), col.grid.shape)); n = r["end"] - r["start"]
+            if runs and runs[-1][0] == v:
+                runs[-1][2] += n
+            else:
+                runs.append([v, off, n])
+            off += n
+        planned = []
+        for v, start, n in runs:
+            n0, n1 = (n + 1) // 2, n // 2
+            k0, k1 = -(-n0 // TILE), -(-n1 // TILE)
+            planned.append((v, start, n, t, t + k0)); tiles += [2 * v] * k0 + [2 * v + 1] * k1; t += k0 + k1
+        groups.append(planned)
+    return groups, np.asarray(tiles, np.int32)
+
+
 def write_shape_moments(source, shapes, out_dir, *, tol=0.25, chunk_rows=2_000_000, workers=8, progress=None):
     """The shape-moment layout of the columnar pack at ``source`` (a
     :class:`~dmipy_sim.replay.columnar.ColumnarPack`, a directory or ``hf://owner/name/prefix``) for ``shapes``,
@@ -101,41 +129,52 @@ def write_shape_moments(source, shapes, out_dir, *, tol=0.25, chunk_rows=2_000_0
     plans = [col.bands_for(_axis_sequence(shapes[name], prof[name][0] * prof[name][2]), tol=tol) for name in shapes]
     K = max(k for k, _ in plans); band_error = max(e for _, e in plans)
     b_unit = {name: float(calc_b(_axis_sequence(shapes[name], prof[name][0]))[0]) for name in shapes}
+    groups, tiles = _plan(col, chunk_rows)
+    n_tiles = len(tiles); n_rows = col.n_rows; n_vox = int(np.prod(col.grid.shape))
     os.makedirs(out_dir, exist_ok=True)
-    n_rows = col.n_rows; n_vox = int(np.prod(col.grid.shape))
-    m = {name: np.lib.format.open_memmap(os.path.join(out_dir, f"m_{name}.npy"), mode="w+", dtype=np.float32, shape=(n_rows, 3))
+    m = {name: np.lib.format.open_memmap(os.path.join(out_dir, f"m_{name}.npy"), mode="w+", dtype=np.float32, shape=(n_tiles, TILE, 3))
          for name in shapes}
-    w = np.lib.format.open_memmap(os.path.join(out_dir, "w.npy"), mode="w+", dtype=np.float32, shape=(n_rows,))
-    seg = np.lib.format.open_memmap(os.path.join(out_dir, "seg.npy"), mode="w+", dtype=np.int32, shape=(n_rows,))
+    w = np.lib.format.open_memmap(os.path.join(out_dir, "w.npy"), mode="w+", dtype=np.float32, shape=(n_tiles, TILE))
+    np.save(os.path.join(out_dir, "tiles.npy"), tiles)
     col.src.bytes_read = col.src.requests = 0; t0 = time.time(); row = 0
-    for pk in col.iter_views(chunk_rows=chunk_rows, K=K):
+    for pk, runs in zip(col.iter_views(chunk_rows=chunk_rows, K=K), groups):
         n = pk.n_walkers
         ijk, _ = col.grid.bin(pk.r0); v = np.ravel_multi_index(ijk.T, col.grid.shape)
-        starts = np.flatnonzero(np.r_[True, v[1:] != v[:-1]])
-        run = np.repeat(starts, np.diff(np.r_[starts, n]))
-        seg[row:row + n] = 2 * v + (np.arange(n) - run) % 2
+        expect = np.concatenate([np.full(n_, v_, v.dtype) for v_, _, n_, _, _ in runs])
+        if len(expect) != n or not np.array_equal(v, expect):
+            raise RuntimeError("the rows' start voxels disagree with the index's (voxel, pool) ranges")
+        phi = {}
         for a, names in contractions:
             P = pk._prepare(a, tissue=None, scanner=None, orientation=None, compartment=None)
             if np.any(P["voxel"] != 1.0) or P["pathway"] != 1.0:
-                raise ValueError(f"shapes {[n for n, _ in names]} leave an amplitude per measurement (an unbalanced "
+                raise ValueError(f"shapes {[n_ for n_, _ in names]} leave an amplitude per measurement (an unbalanced "
                                  "encoding or a stimulated echo); a moment carries a phase only")
-            phi = _band_phase(P)                                    # (n, 3 per shape): the one band contraction
+            ph = _band_phase(P)                                     # (n, 3 per shape): the one band contraction
             for name, first in names:
-                m[name][row:row + n] = phi[:, first:first + 3]
-            w[row:row + n] = P["w"]
+                phi[name] = ph[:, first:first + 3]
+            w_rows = P["w"]
+        for v_, start, n_, t0_, t1_ in runs:
+            for half, t_ in enumerate((t0_, t1_)):
+                k = (n_ + 1 - half) // 2
+                if k == 0:
+                    continue
+                sl = slice(start + half, start + n_, 2); flat = slice(t_ * TILE, t_ * TILE + k)
+                for name in shapes:
+                    m[name].reshape(-1, 3)[flat] = phi[name][sl]
+                w.reshape(-1)[flat] = w_rows[sl]
         row += n
         if progress:
             progress(row, col.src.bytes_read, time.time() - t0)
     if row != n_rows:
         raise RuntimeError(f"the pass read {row} rows of {n_rows}")
-    for a in list(m.values()) + [w, seg]:
+    for a in list(m.values()) + [w]:
         a.flush()
     manifest = dict(
-        format=FORMAT, n_rows=int(n_rows), K=int(K), band_error=float(band_error), tol=float(tol),
+        format=FORMAT, n_rows=int(n_rows), n_tiles=int(n_tiles), tile=TILE, K=int(K), band_error=float(band_error), tol=float(tol),
         source=dict(uri=col.uri, manifest_sha256=hashlib.sha256(col.src.text(MANIFEST).encode()).hexdigest(),
                     K=int(col.K), n_rows=int(col.n_rows), floor=float(col.floor),
                     grid=col.meta["fidelity"]["per_voxel"]["grid"], pack=col.meta.get("id")),
-        n_voxels=int(n_vox), columns=dict(w="w.npy", seg="seg.npy", **{name: f"m_{name}.npy" for name in shapes}),
+        n_voxels=int(n_vox), columns=dict(w="w.npy", tiles="tiles.npy", **{name: f"m_{name}.npy" for name in shapes}),
         shapes={name: dict(profile=prof[name][0].tolist(), dt=float(shapes[name].dt), n_t=int(len(prof[name][0])),
                            b_unit=b_unit[name], amplitude_built=prof[name][2], family=getattr(shapes[name], "family", None),
                            build_spec=_jsonable(shapes[name].build_spec),
@@ -183,11 +222,11 @@ def _jsonable(x):
 
 
 class ShapeMoments:
-    """The shape-moment layout at ``path``, rows memory-mapped from disk: ``manifest``, ``grid``, ``shapes`` (the
+    """The shape-moment layout at ``path``, tiles memory-mapped from disk: ``manifest``, ``grid``, ``shapes`` (the
     names), and :meth:`image` -- a whole grid under any amplitudes and directions of one shape, on the device.
     Open a Hub layout with :meth:`open`."""
 
-    ROWS = 1 << 19                                                      # rows per device chunk
+    TILES = 4096                                                        # tiles per device chunk (2^19 rows)
     MEAS = 64                                                           # measurements padded to a multiple
 
     def __init__(self, path):
@@ -196,16 +235,17 @@ class ShapeMoments:
         with open(os.path.join(path, MANIFEST)) as f:
             self.manifest = json.load(f)
         if self.manifest.get("format") != FORMAT:
-            raise ValueError(f"{path} is not a shape-moment layout ({self.manifest.get('format')!r})")
+            raise ValueError(f"{path} is not a {FORMAT} layout ({self.manifest.get('format')!r})")
         self.grid = Grid.from_meta(self.manifest["source"]["grid"])
-        self.n_rows = int(self.manifest["n_rows"]); self.n_vox = int(np.prod(self.grid.shape))
-        self.shapes = [n for n in self.manifest["columns"] if n not in ("w", "seg")]
+        self.n_rows = int(self.manifest["n_rows"]); self.n_tiles = int(self.manifest["n_tiles"]); self.tile = int(self.manifest["tile"])
+        self.n_vox = int(np.prod(self.grid.shape))
+        self.shapes = [n for n in self.manifest["columns"] if n not in ("w", "tiles")]
         self._m = {}; self._device = {}
 
     @staticmethod
     def open(uri, *, shapes=None, revision=None, workers=8):
         """The layout at ``uri``: a directory, or ``hf://owner/name/prefix`` fetched into the Hub cache (the
-        manifest, the shared rows and the moments of ``shapes``, every shape when None) at ``revision``."""
+        manifest, the shared tiles and the moments of ``shapes``, every shape when None) at ``revision``."""
         if not uri.startswith("hf://"):
             return ShapeMoments(uri)
         from huggingface_hub import snapshot_download, hf_hub_download
@@ -213,7 +253,7 @@ class ShapeMoments:
         mf = hf_hub_download(repo, f"{prefix}/{MANIFEST}", repo_type="dataset", revision=revision)
         with open(mf) as f:
             cols = json.load(f)["columns"]
-        want = [cols["w"], cols["seg"], MANIFEST] + [cols[s] for s in (shapes if shapes is not None else cols) if s not in ("w", "seg")]
+        want = [cols["w"], cols["tiles"], MANIFEST] + [cols[s] for s in (shapes if shapes is not None else cols) if s not in ("w", "tiles")]
         local = snapshot_download(repo, repo_type="dataset", revision=revision, max_workers=workers,
                                   allow_patterns=[f"{prefix}/{f}" for f in want])
         return ShapeMoments(os.path.join(local, prefix))
@@ -224,7 +264,7 @@ class ShapeMoments:
         return self._m[name]
 
     def moments(self, shape):
-        """``(n_rows, 3)`` float32, memory-mapped: the moment of every row under ``shape``."""
+        """``(n_tiles, tile, 3)`` float32, memory-mapped: the moment of every row under ``shape`` (0 on padding)."""
         if shape not in self.shapes:
             raise KeyError(f"no shape {shape!r} in this layout; it holds {self.shapes}")
         return self._column(shape)
@@ -239,33 +279,32 @@ class ShapeMoments:
     @property
     def weights(self):
         """The per-voxel weight sums ``(n_vox, 2)`` (the two split halves), the denominator of every image."""
-        w = np.asarray(self._column("w"), np.float64); seg = np.asarray(self._column("seg"))
-        return np.bincount(seg, w, minlength=2 * self.n_vox).reshape(self.n_vox, 2)
+        w = np.asarray(self._column("w"), np.float64).sum(1); tiles = np.asarray(self._column("tiles"))
+        return np.bincount(tiles, w, minlength=2 * self.n_vox).reshape(self.n_vox, 2)
 
     def release(self, keep=()):
-        """Drop the device copies of every shape's rows but ``keep``'s (the shared rows stay)."""
-        for name in [n for n in self._device if n not in ("w", "seg") and n not in keep]:
+        """Drop the device copies of every shape's tiles but ``keep``'s (the shared tiles stay)."""
+        for name in [n for n in self._device if n not in ("w", "tiles") and n not in keep]:
             del self._device[name]
 
     def _resident(self, shape):
-        """The rows on the device, padded to whole chunks: ``(m, w, seg)`` for ``shape`` (shared rows once)."""
+        """The tiles on the device, padded to whole chunks: ``(m, w, tiles)`` for ``shape`` (shared tiles once)."""
         import jax.numpy as jnp
-        C = self.ROWS; n_pad = -(-self.n_rows // C) * C
+        T = self.TILES; n_pad = -(-self.n_tiles // T) * T
         if "w" not in self._device:
-            w = np.zeros(n_pad, np.float32); w[:self.n_rows] = self._column("w")
-            seg = np.full(n_pad, 2 * self.n_vox, np.int32); seg[:self.n_rows] = self._column("seg")
-            self._device["w"], self._device["seg"] = jnp.asarray(w), jnp.asarray(seg)
+            w = np.zeros((n_pad, self.tile), np.float32); w[:self.n_tiles] = self._column("w")
+            tiles = np.full(n_pad, 2 * self.n_vox, np.int32); tiles[:self.n_tiles] = self._column("tiles")
+            self._device["w"], self._device["tiles"] = jnp.asarray(w), jnp.asarray(tiles)
         if shape not in self._device:
-            m = np.zeros((n_pad, 3), np.float32); m[:self.n_rows] = self.moments(shape)
+            m = np.zeros((n_pad, self.tile, 3), np.float32); m[:self.n_tiles] = self.moments(shape)
             self._device[shape] = jnp.asarray(m)
-        return self._device[shape], self._device["w"], self._device["seg"]
+        return self._device[shape], self._device["w"], self._device["tiles"]
 
     def image(self, shape, bvalues, directions):
         """``(S, floor)`` of the grid under ``shape`` at ``bvalues`` (s/m^2) along ``directions`` (unit vectors):
         ``S`` is ``grid.shape + (n_meas,)``, the weighted ensemble magnitude per voxel (NaN where the layout has no
         rows), ``floor`` ``grid.shape`` its split-half floor ``max_m |S_a - S_b| / 2``. A b = 0 row's direction
         is immaterial."""
-        import jax
         import jax.numpy as jnp
         g = self.amplitude(shape, bvalues)
         u = np.asarray(directions, np.float64)
@@ -278,13 +317,13 @@ class ShapeMoments:
         M = len(g); M_pad = -(-M // self.MEAS) * self.MEAS
         g_p = np.zeros(M_pad, np.float32); g_p[:M] = g
         u_p = np.zeros((M_pad, 3), np.float32); u_p[:M] = u
-        m, w, seg = self._resident(shape)
+        m, w, tiles = self._resident(shape)
         n_seg = 2 * self.n_vox + 1
-        acc = jnp.zeros((n_seg, M_pad), jnp.complex64); kernel = _compiled(n_seg)
+        acc = jnp.zeros((n_seg, M_pad), jnp.complex128); kernel = _compiled(n_seg)
         g_d, u_d = jnp.asarray(g_p), jnp.asarray(u_p)
-        for i in range(0, m.shape[0], self.ROWS):
-            acc = kernel(m[i:i + self.ROWS], w[i:i + self.ROWS], seg[i:i + self.ROWS], g_d, u_d, acc)
-        num = np.asarray(acc, np.complex128)[:2 * self.n_vox, :M].reshape(self.n_vox, 2, M)
+        for i in range(0, m.shape[0], self.TILES):
+            acc = kernel(m[i:i + self.TILES], w[i:i + self.TILES], tiles[i:i + self.TILES], g_d, u_d, acc)
+        num = np.asarray(acc)[:2 * self.n_vox, :M].reshape(self.n_vox, 2, M)
         den = self.weights
         S = np.full((self.n_vox, M), np.nan); floor = np.full(self.n_vox, np.nan)
         any_ = den.sum(1) > 0; both = (den > 0).all(1)
@@ -298,16 +337,17 @@ _KERNELS = {}
 
 
 def _compiled(n_seg):
-    """The chunk kernel for ``n_seg`` segments: ``exp(i g (u . m)) w`` summed into each row's segment, added to the
-    accumulator. The three products are written out: a float32 matmul on CUDA is TF32 and moves a 30 rad phase by
-    0.03."""
+    """The chunk kernel for ``n_seg`` segments: ``exp(i g (u . m)) w`` summed over each tile's rows (a fused
+    reduction), the tile sums scattered into their segments. The three products are written out: a float32 matmul
+    on CUDA is TF32 and moves a 30 rad phase by 0.03. The tile sums and the accumulator are complex128; the cast
+    costs nothing measurable and the sums are then exact to the float32 phases."""
     import jax
     import jax.numpy as jnp
     if n_seg not in _KERNELS:
         @jax.jit
-        def kernel(m, w, seg, g, u, acc):
-            ph = g[None, :] * (m[:, 0:1] * u[None, :, 0] + m[:, 1:2] * u[None, :, 1] + m[:, 2:3] * u[None, :, 2])
-            E = jnp.exp(1j * ph) * w[:, None]
-            return acc + jax.ops.segment_sum(E, seg, num_segments=n_seg)
+        def kernel(m, w, tiles, g, u, acc):
+            ph = g[None, None, :] * (m[:, :, 0:1] * u[None, None, :, 0] + m[:, :, 1:2] * u[None, None, :, 1] + m[:, :, 2:3] * u[None, None, :, 2])
+            E = (jnp.exp(1j * ph) * w[:, :, None]).astype(jnp.complex128)
+            return acc + jax.ops.segment_sum(E.sum(1), tiles, num_segments=n_seg)
         _KERNELS[n_seg] = kernel
     return _KERNELS[n_seg]
