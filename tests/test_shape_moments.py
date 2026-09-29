@@ -151,3 +151,20 @@ def test_the_torch_backend_is_the_jax_image(layout):
     assert set(sm._device) == before and np.isfinite(S_t3).any()
     with pytest.raises(ValueError, match="backend"):
         sm.image("a", b, dirs, backend="numpy")
+
+
+def test_preload_keeps_the_padded_host_arrays_and_changes_no_number(layout):
+    """After ``preload`` the device copies are built from the host cache; the image is the same and a non-resident
+    call still leaves nothing on the device."""
+    torch = pytest.importorskip("torch")
+    col, grid, n_t, tmp = layout
+    sm = ShapeMoments(str(tmp / "sm_moments"))
+    b = np.array([1e9, 0.0]); dirs = np.array([[0.0, 0.0, 1.0], [0.0, 0.0, 1.0]])
+    before, _ = sm.image("a", b, dirs, backend="torch", device="cpu", resident=False)
+    sm.preload(["a"])
+    assert set(sm._host) == {"w", "tiles", "a"} and sm._host["a"].shape == (-(-sm.n_tiles // sm.TILES) * sm.TILES, sm.tile, 3)
+    after, _ = sm.image("a", b, dirs, backend="torch", device="cpu", resident=False)
+    np.testing.assert_array_equal(np.nan_to_num(before), np.nan_to_num(after))
+    assert not any(k[1] == "a" for k in sm._device)
+    sm.preload()
+    assert set(sm._host) == {"w", "tiles", "a", "c"}
