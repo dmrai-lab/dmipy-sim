@@ -160,3 +160,22 @@ def test_estimate_sigma_gaussian():
     sigma_std, sigma_mad = estimate_sigma(b0)
     np.testing.assert_allclose(sigma_std, sigma_true, rtol=0.05)
     np.testing.assert_allclose(sigma_mad, sigma_true, rtol=0.05)
+
+
+def test_the_numpy_generator_gives_the_same_distribution_and_its_own_stream():
+    """Rice(nu, sigma) from numpy's generator: the second moment E[r^2] = nu^2 + 2 sigma^2 within its standard
+    error over 200,000 draws (the same check as the JAX stream's), repeatable by seed, a different realisation from
+    JAX's, and an unknown generator refused."""
+    from dmipy_sim.acquisition.noise import add_rician_noise
+    nu, sigma, n = 0.3, 0.05, 200_000
+    signal = np.full(n, nu, np.float32)
+    a = add_rician_noise(signal, sigma, seed=3, rng="numpy")
+    b = add_rician_noise(signal, sigma, seed=3, rng="numpy")
+    j = add_rician_noise(signal, sigma, seed=3)
+    np.testing.assert_array_equal(a, b)
+    assert a.dtype == np.float32 and a.shape == (n,) and not np.array_equal(a, j)
+    m2 = float(np.mean(a.astype(np.float64) ** 2)); expected = nu ** 2 + 2 * sigma ** 2
+    se = float(np.std(a.astype(np.float64) ** 2) / np.sqrt(n))
+    assert abs(m2 - expected) < 4 * se, (m2, expected, se)
+    with pytest.raises(ValueError, match="rng"):
+        add_rician_noise(signal, sigma, rng="torch")

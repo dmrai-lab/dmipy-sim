@@ -29,7 +29,7 @@ import jax
 import jax.numpy as jnp
 
 
-def add_rician_noise(signal, sigma, seed=0):
+def add_rician_noise(signal, sigma, seed=0, *, rng="jax"):
     """Add Rician-distributed magnitude noise to noiseless signals.
 
     Generates two independent Gaussian noise channels and takes the
@@ -37,17 +37,21 @@ def add_rician_noise(signal, sigma, seed=0):
 
     Parameters
     ----------
-    signal : array_like, shape (n_measurements,)
+    signal : array_like, any shape
         Noiseless normalised signal from simulate(), values in [0, 1].
     sigma : float
         Noise standard deviation in the same normalised units.
         sigma = 1 / SNR₀  where SNR₀ is the SNR at b = 0.
     seed : int
-        JAX PRNG seed. Same seed → identical noise realisation.
+        The generator's seed. Same seed and ``rng`` → identical noise realisation.
+    rng : 'jax' | 'numpy'
+        Which generator draws the two channels: JAX's (``PRNGKey(seed)`` split in two) or numpy's
+        ``default_rng(seed)`` -- for a process that must not touch JAX (a forked GPU worker on a
+        PyTorch-only host, dmipy-sim#510). The two streams differ; the distribution is the same.
 
     Returns
     -------
-    noisy : np.ndarray, shape (n_measurements,), float32
+    noisy : np.ndarray, the signal's shape, float32
         Rician-noisy magnitude signal.
 
     Notes
@@ -58,11 +62,19 @@ def add_rician_noise(signal, sigma, seed=0):
     if sigma <= 0:
         raise ValueError(f"sigma must be positive, got {sigma}")
     signal = np.asarray(signal, dtype=np.float32)
-    key = jax.random.PRNGKey(seed)
-    k1, k2 = jax.random.split(key)
-    n_real = sigma * jax.random.normal(k1, shape=signal.shape, dtype=jnp.float32)
-    n_imag = sigma * jax.random.normal(k2, shape=signal.shape, dtype=jnp.float32)
-    noisy = jnp.sqrt((signal + n_real) ** 2 + n_imag ** 2)
+    if rng == "jax":
+        key = jax.random.PRNGKey(seed)
+        k1, k2 = jax.random.split(key)
+        n_real = sigma * jax.random.normal(k1, shape=signal.shape, dtype=jnp.float32)
+        n_imag = sigma * jax.random.normal(k2, shape=signal.shape, dtype=jnp.float32)
+        noisy = jnp.sqrt((signal + n_real) ** 2 + n_imag ** 2)
+    elif rng == "numpy":
+        g = np.random.default_rng(seed)
+        n_real = (sigma * g.standard_normal(signal.shape)).astype(np.float32)
+        n_imag = (sigma * g.standard_normal(signal.shape)).astype(np.float32)
+        noisy = np.sqrt((signal + n_real) ** 2 + n_imag ** 2)
+    else:
+        raise ValueError(f"rng is 'jax' or 'numpy', got {rng!r}")
     return np.array(noisy, dtype=np.float32)
 
 
