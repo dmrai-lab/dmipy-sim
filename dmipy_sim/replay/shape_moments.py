@@ -244,7 +244,7 @@ class ShapeMoments:
         self.n_rows = int(self.manifest["n_rows"]); self.n_tiles = int(self.manifest["n_tiles"]); self.tile = int(self.manifest["tile"])
         self.n_vox = int(np.prod(self.grid.shape))
         self.shapes = [n for n in self.manifest["columns"] if n not in ("w", "tiles")]
-        self._m = {}; self._device = {}
+        self._m = {}; self._device = {}; self._host = {}
 
     @staticmethod
     def open(uri, *, shapes=None, revision=None, workers=8):
@@ -291,9 +291,20 @@ class ShapeMoments:
         for name in [n for n in self._device if n[1] not in ("w", "tiles") and n[1] not in keep]:
             del self._device[name]
 
+    def preload(self, shapes=None):
+        """The padded host arrays of ``shapes`` (every shape when None) and the shared tiles kept in this process's
+        memory (about 1.9 GB per shape for DiSCo), so that a device copy built later -- in a forked worker of a
+        shared pool, which inherits them for free -- costs a host-to-device transfer and not a read of the layout
+        (measured on Hugging Face's ZeroGPU: the mounted bucket reads at 80 MB/s, the transfer at 8 GB/s)."""
+        for name in ["w", "tiles"] + list(self.shapes if shapes is None else shapes):
+            if name not in self._host:
+                self._host[name] = self._padded(name)
+
     def _padded(self, name):
         """The column ``name`` (a shape, ``"w"`` or ``"tiles"``) on the host, padded to whole chunks of ``TILES``
-        (padding rows weigh nothing and scatter into the dump segment)."""
+        (padding rows weigh nothing and scatter into the dump segment); the preloaded copy when there is one."""
+        if name in self._host:
+            return self._host[name]
         T = self.TILES; n_pad = -(-self.n_tiles // T) * T
         if name == "w":
             a = np.zeros((n_pad, self.tile), np.float32); a[:self.n_tiles] = self._column("w")
