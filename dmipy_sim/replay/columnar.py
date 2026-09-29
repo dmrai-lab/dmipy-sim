@@ -264,21 +264,35 @@ class ColumnarPack:
             meta["compression"]["channels"].pop("boundary_local_time", None)
         return ReplayPack(arrays, meta)
 
-    def iter_views(self, chunk_rows=2_000_000, **kw):
-        """The pack in row groups of about ``chunk_rows`` on (voxel, pool) boundaries, each a view (``**kw`` as
-        :meth:`view`), the next group's bytes fetched while the current one is contracted; a failed fetch reaches
-        the consumer."""
-        import queue
-        groups, cur = [], []
+    def row_groups(self, chunk_rows=2_000_000):
+        """The index rows in groups of about ``chunk_rows`` rows, cut on (voxel, pool) boundaries: the groups
+        :meth:`iter_views` reads, each a list of the index's ``{ijk, pool, start, end}`` rows in row order."""
+        groups, cur, n = [], [], 0
         for r in self.index["rows"]:
-            if cur and cur[-1][1] == r["start"]:
-                cur[-1] = (cur[-1][0], r["end"])
-            else:
-                cur.append((r["start"], r["end"]))
-            if sum(e - s for s, e in cur) >= chunk_rows:
-                groups.append(cur); cur = []
+            cur.append(r); n += r["end"] - r["start"]
+            if n >= chunk_rows:
+                groups.append(cur); cur, n = [], 0
         if cur:
             groups.append(cur)
+        return groups
+
+    @staticmethod
+    def group_ranges(rows):
+        """The contiguous row ranges ``(start, end)`` of a group of index rows, adjacent ranges merged."""
+        rs = []
+        for r in rows:
+            if rs and rs[-1][1] == r["start"]:
+                rs[-1] = (rs[-1][0], r["end"])
+            else:
+                rs.append((r["start"], r["end"]))
+        return rs
+
+    def iter_views(self, chunk_rows=2_000_000, **kw):
+        """The pack in row groups of about ``chunk_rows`` on (voxel, pool) boundaries (:meth:`row_groups`), each a
+        view (``**kw`` as :meth:`view`), the next group's bytes fetched while the current one is contracted; a
+        failed fetch reaches the consumer."""
+        import queue
+        groups = [self.group_ranges(g) for g in self.row_groups(chunk_rows)]
         q = queue.Queue(maxsize=1)
 
         def fetch():

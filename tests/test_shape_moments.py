@@ -1,4 +1,4 @@
-"""The shape-moment layout (dmipy-sim#505): a columnar pack contracted once against a waveform's shape replays
+"""The shape-moment layout (dmipy-sim#505): a columnar pack contracted once against a waveform's shape, in tiles, replays
 every amplitude and direction of that shape as the columnar image does, with the same split-half floor; a shape
 is one direction with amplitude-invariant ramps, and a b-value maps to an amplitude through the recorded unit b."""
 from __future__ import annotations
@@ -48,7 +48,12 @@ def test_the_moments_replay_every_amplitude_and_direction_of_the_shape(layout):
                                    tol=1e-9, chunk_rows=7)                  # two shapes on one grid: one contraction
     assert manifest["n_rows"] == col.n_rows and manifest["K"] == col.K and manifest["source"]["n_rows"] == col.n_rows
     sm = ShapeMoments(out)
-    assert sm.shapes == ["a", "c"] and sm.moments("a").shape == (col.n_rows, 3) and sm.moments("a").dtype == np.float32
+    assert sm.shapes == ["a", "c"] and sm.moments("a").shape == (sm.n_tiles, sm.tile, 3) and sm.moments("a").dtype == np.float32
+    assert sm.n_rows == col.n_rows and sm.n_tiles * sm.tile >= col.n_rows
+    # the tiles hold every row once: the per-voxel weight sums are the columns' own, and a padding row weighs nothing
+    full = col.view(); ijk, _ = grid.bin(full.r0); v = np.ravel_multi_index(ijk.T, grid.shape)
+    np.testing.assert_allclose(sm.weights.sum(1), np.bincount(v, full.spin_weights, minlength=sm.n_vox), rtol=1e-6)
+    assert (np.asarray(sm._column("w")) > 0).sum() == col.n_rows
     rng = np.random.default_rng(3)
     u = rng.normal(size=(6, 3)); u /= np.linalg.norm(u, axis=1)[:, None]
     dirs = np.concatenate([u, u, u, [[0, 0, 1]]]); b = np.r_[np.full(6, 2e8), np.full(6, 1e9), np.full(6, 3e9), 0.0]
@@ -119,6 +124,6 @@ def test_the_bands_are_judged_at_the_shapes_own_amplitude_and_the_device_rows_ca
     assert lo["shapes"]["lo"]["amplitude_built"] == pytest.approx(0.005) and lo["K"] <= col.K
     sm = ShapeMoments(str(tmp / "sm_moments"))
     sm.image("a", [1e9], [[0, 0, 1]]); sm.image("c", [1e9], [[0, 0, 1]])
-    assert set(sm._device) == {"w", "seg", "a", "c"}
+    assert set(sm._device) == {"w", "tiles", "a", "c"}
     sm.release(keep=["c"])
-    assert set(sm._device) == {"w", "seg", "c"}
+    assert set(sm._device) == {"w", "tiles", "c"}
