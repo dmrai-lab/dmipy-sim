@@ -354,3 +354,21 @@ def test_a_direction_the_host_has_not_contracted_is_contracted_on_the_device(lay
     np.testing.assert_array_equal(S_again, S_dev)
     S_once, _ = ShapeMoments(out).image("se", b, dirs, tissue=t, scanner=3.0, b0_direction=u, backend="torch", device="cpu", resident=False)
     np.testing.assert_allclose(S_once, S_dev, atol=1e-7, equal_nan=True)
+
+
+def test_the_preloaded_field_terms_are_the_ones_the_image_uses(layout_field):
+    """preload() names the field terms with the same direction key image() looks them up by, so a preloaded layout
+    contracts nothing at the default direction (the pool's parent preloads, its worker inherits)."""
+    col, merged, grid, n_t, tmp = layout_field
+    sm = ShapeMoments(str(tmp / "sf_device"))
+    sm.preload(["se"])
+    g, _ = sm._tier_group("se")
+    sm._set_b0_direction((0.0, 0.0, 1.0))
+    assert all(name in sm._host for name in sm._tier_columns("se")), sorted(sm._host)
+    calls = []
+    original = sm._field_terms
+    sm._field_terms = lambda *a, **k: calls.append(a) or original(*a, **k)
+    from dmipy_sim.spec.tissue import Tissue
+    t = Tissue(T2={"intra": 0.03, "extra": 0.08, "myelin": 0.01}, T1={"intra": 0.9, "extra": 1.4, "myelin": 0.3}, rho=1e-5, chi_iso=-1e-7, chi_aniso=-1.5e-8)
+    sm.image("se", np.array([1e9]), np.array([[0, 0, 1.0]]), tissue=t, scanner=3.0)
+    assert calls == [], "the default direction's terms were contracted again"

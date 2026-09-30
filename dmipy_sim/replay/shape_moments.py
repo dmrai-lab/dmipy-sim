@@ -381,14 +381,19 @@ class ShapeMoments:
     def _is_tier_column(self, name):
         return name == "pool" or name.startswith(("contact_", "field_iso_", "field_aniso_", "field_"))
 
-    _b0_key = "0,0,1"
-
-    def _set_b0_direction(self, b0_direction):
-        """The field direction (a unit vector in the substrate frame) the tier columns are contracted for."""
+    @staticmethod
+    def _direction_key(b0_direction):
+        """The one spelling of a field direction in the tier columns' names (``field_iso_<g>@<key>``)."""
         b0 = np.asarray(b0_direction, np.float64)
         if b0.shape != (3,) or abs(np.linalg.norm(b0) - 1.0) > 1e-6:
             raise ValueError("b0_direction is a unit vector")
-        self._b0_key = ",".join(f"{x:.6f}" for x in b0)
+        return ",".join(f"{x:.6f}" for x in b0)
+
+    _b0_key = _direction_key((0.0, 0.0, 1.0))      # the frame's z, the pose the tiers were gated under
+
+    def _set_b0_direction(self, b0_direction):
+        """The field direction (a unit vector in the substrate frame) the tier columns are contracted for."""
+        self._b0_key = self._direction_key(b0_direction)
 
     def tier_maps(self, shape, tissue=None, scanner=None, *, backend="jax", device=None, resident=True, b0_direction=(0.0, 0.0, 1.0)):
         """Per-voxel means over the walkers, at the walk's weights, of what each tier multiplies into :meth:`image`
