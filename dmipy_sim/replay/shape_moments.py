@@ -372,8 +372,8 @@ class ShapeMoments:
 
     def _tier_columns(self, shape):
         """The device-side tier columns of ``shape``'s group: the pool once, the group's contact, and its field
-        terms for the current field direction (``field_iso_<g>@<dir>``, ``field_aniso_<g>@<dir>``, contracted on the
-        host from the stored channels)."""
+        terms for the current field direction (``field_iso_<g>@<dir>``, ``field_aniso_<g>@<dir>``, contracted from
+        the stored channels: on the host when preloaded there, else on the device by the torch backend)."""
         g, grp = self._tier_group(shape)
         d = self._b0_key
         return ("pool", f"contact_{g}", f"field_iso_{g}@{d}", f"field_aniso_{g}@{d}")
@@ -449,24 +449,32 @@ class ShapeMoments:
 
     FIELD_CHUNK_TILES = 65_536                       # tiles per contraction chunk: 65,536 x 128 x 13 doubles = 0.9 GB of temporaries
 
-    def _field_terms(self, g, b0_direction):
+    def _field_terms(self, g, b0_direction, device=None):
         """``(iso, aniso)`` per row of group ``g`` for ``b0_direction`` (a unit vector in the substrate frame), from
         the stored channels through the one contraction, zeros when the group carries no field. The memory-mapped
-        channel column is contracted in chunks of ``FIELD_CHUNK_TILES`` tiles, so the host holds one chunk's
-        float64 temporaries and the two float32 results, never a copy of the whole column."""
+        channel column is contracted in chunks of ``FIELD_CHUNK_TILES`` tiles: on the host into two float32 arrays
+        (one chunk's float64 temporaries at a time, never a copy of the whole column), or, given a torch ``device``,
+        chunk by chunk uploaded and contracted there into two device tensors (the column crosses once, at the
+        transfer's rate; nothing of it stays on the host)."""
         from ..fields.hollow_cylinder import field_terms
         grp = self.tiers["groups"][g]
         T = self.TILES; n_pad = -(-self.n_tiles // T) * T
-        iso = np.zeros((n_pad, self.tile), np.float32); aniso = np.zeros((n_pad, self.tile), np.float32)
+        if device is None:
+            iso = np.zeros((n_pad, self.tile), np.float32); aniso = np.zeros((n_pad, self.tile), np.float32)
+            up = np.asarray
+        else:
+            import torch
+            iso = torch.zeros((n_pad, self.tile), dtype=torch.float32, device=device); aniso = torch.zeros((n_pad, self.tile), dtype=torch.float32, device=device)
+            up = lambda a: torch.as_tensor(np.asarray(a), device=device)
         if grp.get("field"):
             chans = self._column(f"field_{g}")
             b0 = np.asarray(b0_direction, np.float64)
             for s in range(0, self.n_tiles, self.FIELD_CHUNK_TILES):
                 e = min(s + self.FIELD_CHUNK_TILES, self.n_tiles)
-                a, b = field_terms(np.asarray(chans[s:e]), b0)
-                iso[s:e] = a
+                a, b = field_terms(up(chans[s:e]), b0)
+                iso[s:e] = a if device is None else a.to(torch.float32)
                 if grp.get("has_aniso") and b is not None:
-                    aniso[s:e] = b
+                    aniso[s:e] = b if device is None else b.to(torch.float32)
         return iso, aniso
 
     def terms(self, shape, tissue=None, scanner=None):
@@ -562,18 +570,26 @@ class ShapeMoments:
 
     def _resident(self, shape, backend, device, resident, names=("w", "tiles")):
         """``(m, *names)`` for ``shape`` on the backend's device, kept across calls when ``resident`` (the shared
-        tiles once per backend), else built afresh from the memory-mapped tiles."""
+        tiles once per backend), else built afresh from the memory-mapped tiles. Field terms for a direction the
+        host has not contracted are contracted on the device (torch), the channel column streamed there once."""
         if backend == "jax":
             import jax.numpy as jnp
             put = jnp.asarray
         else:
             import torch
             put = lambda a: torch.as_tensor(a if a.dtype != np.int32 else a.astype(np.int64), device=device)
-        out = []
+        out = []; made = {}
         for name in (shape,) + tuple(names):
             key = (backend, name, str(device))
             if key not in self._device:
-                arr = put(self._padded(name))
+                if backend == "torch" and name.startswith(("field_iso_", "field_aniso_")) and name not in self._host:
+                    if name not in made:                     # a direction the host has not contracted: contract on the device
+                        g, d = name.split("_", 2)[2].split("@")
+                        iso, aniso = self._field_terms(g, [float(x) for x in d.split(",")], device=device)
+                        made.update({f"field_iso_{g}@{d}": iso, f"field_aniso_{g}@{d}": aniso})
+                    arr = made[name]
+                else:
+                    arr = put(self._padded(name))
                 if not resident:
                     out.append(arr); continue
                 self._device[key] = arr
@@ -593,7 +609,8 @@ class ShapeMoments:
         :class:`~dmipy_sim.acquisition.scanners.ScannerLimits` or tesla) turn the stored tiers into the weights and
         the field phase of :meth:`terms`; both None is the bare image. ``b0_direction`` is the field's direction in
         the substrate frame (a unit vector; the default is the frame's z, the pose the tiers were gated under), the
-        channels contracted for it on the host when a scanner is given."""
+        channels contracted for it when a scanner is given: on the host when preloaded there, else on the device by the
+        torch backend)."""
         if backend not in ("jax", "torch"):
             raise ValueError(f"backend is 'jax' or 'torch', got {backend!r}")
         tm = self.terms(shape, tissue, scanner)
