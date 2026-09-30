@@ -285,3 +285,44 @@ def test_the_files_a_layout_needs_include_its_tier_columns(layout_field):
     assert m["columns"][shapes[0]] in some and m["tiers"]["pool_column"] in some
     assert len(shapes) == 1 or m["columns"][shapes[1]] not in some
     assert set(os.listdir(out)) >= set(files)                      # the written layout has every file the opener lists
+
+
+def test_the_tier_maps_are_the_walkers_voxel_means(layout_field):
+    """``tier_maps``: the per-voxel walk-weighted means of the pool membership, the contact term, the contact tier's
+    factor and the field phase equal the same means taken on the host from the columns, on both backends; without a
+    tissue there is no contact factor, without a scanner no phase; the direction changes the phase's spread."""
+    from dmipy_sim.spec.tissue import Tissue
+    col, merged, grid, n_t, tmp = layout_field
+    se = d.pgse([[0, 0, 1]], 0.2e-3, 0.5e-3, gradient_strengths=0.05, n_t=n_t, slew_rate=np.inf)
+    out = str(tmp / "sf_maps")
+    write_shape_moments(col, {"se": se}, out, tol=1e-9, chunk_rows=7, tiers=True)
+    sm = ShapeMoments(out)
+    t = Tissue(T2={"intra": 0.03, "extra": 0.08, "myelin": 0.01}, T1={"intra": 0.9, "extra": 1.4, "myelin": 0.3}, rho=1e-5, chi_iso=-1e-7, chi_aniso=-1.5e-8)
+    g, grp = sm._tier_group("se")
+    tiles = np.asarray(sm._column("tiles")); w = np.asarray(sm._column("w"), np.float64)
+    pool = np.asarray(sm._column("pool")); c = np.asarray(sm._column(f"contact_{g}"), np.float64)
+
+    def host_mean(x):
+        num = np.bincount(tiles, (w * x[:len(tiles)]).sum(1), minlength=2 * sm.n_vox).reshape(-1, 2).sum(1)
+        den = np.bincount(tiles, w.sum(1), minlength=2 * sm.n_vox).reshape(-1, 2).sum(1)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            return np.where(den > 0, num / den, np.nan).reshape(grid.shape)
+
+    u = np.array([0.6, 0.0, 0.8])
+    _, rho_D, a_iso, a_aniso, _ = sm.terms("se", t, 3.0)
+    iso, aniso = sm._field_terms(g, u); phase = a_iso * iso + a_aniso * aniso
+    ref = dict(intra=host_mean(pool == 1), extra=host_mean(pool == 0), contact=host_mean(c), contact_weight=host_mean(np.exp(rho_D * c)),
+               phase=host_mean(phase), phase_std=np.sqrt(np.maximum(host_mean(phase * phase) - host_mean(phase) ** 2, 0.0)))
+    for backend, device in (("jax", None), ("torch", "cpu")):
+        if backend == "torch":
+            pytest.importorskip("torch")
+        maps = sm.tier_maps("se", t, 3.0, backend=backend, device=device, b0_direction=u)
+        for name in ("intra", "extra"):
+            np.testing.assert_allclose(maps["pool"][name], ref[name], atol=1e-6, equal_nan=True)
+        for name in ("contact", "contact_weight", "phase", "phase_std"):
+            np.testing.assert_allclose(maps[name], ref[name], atol=1e-6, equal_nan=True), (backend, name)
+        bare = sm.tier_maps("se", backend=backend, device=device)
+        assert bare["contact_weight"] is None and bare["phase"] is None and bare["phase_std"] is None
+        np.testing.assert_allclose(bare["contact"], ref["contact"], atol=1e-6, equal_nan=True)
+        along_z = sm.tier_maps("se", t, 3.0, backend=backend, device=device)
+        assert np.nanmax(np.abs(along_z["phase_std"] - maps["phase_std"])) > 0
