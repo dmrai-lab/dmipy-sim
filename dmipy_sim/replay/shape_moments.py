@@ -18,6 +18,22 @@ the tiled reduction). Per shape ``m_<name>.npy`` holds ``(n_tiles, TILE, 3)`` fl
 and every shape's profile with the b-value it encodes at unit amplitude, so that an amplitude follows from a
 b-value as ``g = sqrt(b / b_unit)``.
 
+With ``tiers=True`` the layout also holds each walker's **primitives** as :func:`~dmipy_sim.replay.study.walker_primitives`
+gives them, gated by the shape's coherence pathway: once, the walker's pool (``pool.npy``, uint8: a walker that never
+crosses has one exposure, its pool's); per **sequence group** (the shapes that share a grid, an RF schedule and a
+readout -- every PGSE class at one echo time is one group, a stimulated-echo class another, since its magnetisation
+is longitudinal during the mixing time and its field integral, its transverse exposure and its T1 exposure differ),
+the gated boundary local time (``contact_<g>.npy``) and the gated path-field channel integrals
+(``field_<g>.npy``, the 7 or 13 channels :func:`~dmipy_sim.fields.hollow_cylinder.field_terms` contracts under a
+field direction), with the group's transverse and longitudinal exposure times and its pathway amplitude, the embedded
+substrate spec and the walk's diffusivity in the manifest. :meth:`ShapeMoments.image` then takes ``tissue=``,
+``scanner=`` and ``b0_direction=`` (the field's direction in the substrate frame: the magnitude and the direction of
+B0 are both knobs) and applies exactly :meth:`~dmipy_sim.replay.study.Primitives.reduction_terms`: the per-row
+weight ``amp exp(-tau_2 / T2_pool - tau_1 / T1_pool + (rho / D) contact)`` and the phase ``B0 (chi_iso A + chi_aniso
+B)`` with ``A, B`` contracted from the channels for that direction on the host per call (dmipy-sim#514); a tier asked
+for that the layout does not carry is refused by name, a tier left at None is inactive and the image is the bare one. A shape's pathway amplitude (a stimulated echo's ``0.5 sin a1 sin a2 sin a3``) scales
+its image in every case.
+
 A shape is a one-row single-direction :class:`~dmipy_sim.acquisition.scanner_sequence.ScannerSequence` whose
 ramps do not scale with its amplitude (built with ``slew_rate=np.inf``): a finite slew makes the shape a
 function of ``g`` and the moment would not be one vector. The image of an acquisition on the layout is
@@ -114,16 +130,18 @@ def _plan(col, chunk_rows):
     return groups, np.asarray(tiles, np.int32)
 
 
-def write_shape_moments(source, shapes, out_dir, *, tol=0.25, chunk_rows=2_000_000, workers=8, progress=None):
+def write_shape_moments(source, shapes, out_dir, *, tol=0.25, chunk_rows=2_000_000, workers=8, progress=None, tiers=False):
     """The shape-moment layout of the columnar pack at ``source`` (a
     :class:`~dmipy_sim.replay.columnar.ColumnarPack`, a directory or ``hf://owner/name/prefix``) for ``shapes``,
     a ``{name: sequence}`` of one-row single-direction sequences, written to ``out_dir`` in one pass over the rows
     at the fewest band groups whose truncation error stays under ``tol`` times the pack's median floor on every
     axis of every shape **at the amplitude the shape is built at** (the error grows with the amplitude squared:
     build a shape at the largest amplitude it will be replayed at). ``progress(rows, bytes, seconds)`` is called
-    after every row group. Returns the manifest."""
+    after every row group. With ``tiers`` the walkers' primitives at the shapes' common echo time are stored too (the
+    field modes and the contact tier read in the same pass). Returns the manifest."""
     from .columnar import ColumnarPack
     from .replay import _band_phase
+    from .study import Acquisition
     from ..acquisition.waveforms import calc_b
     col = source if isinstance(source, ColumnarPack) else ColumnarPack(source, workers=workers)
     if not shapes:
@@ -140,8 +158,23 @@ def write_shape_moments(source, shapes, out_dir, *, tol=0.25, chunk_rows=2_000_0
          for name in shapes}
     w = np.lib.format.open_memmap(os.path.join(out_dir, "w.npy"), mode="w+", dtype=np.float32, shape=(n_tiles, TILE))
     np.save(os.path.join(out_dir, "tiles.npy"), tiles)
+    view_kw = dict(K=K)
+    tier_cols = {}; tier_groups = {}
+    from ..acquisition.epg import pathway_weight
+    pathway = {name: float(pathway_weight(seq)) for name, seq in shapes.items()}
+    if tiers:
+        modes = col.path_groups[-1] if col.path_groups else 0
+        view_kw = dict(K=K, modes=modes, contact=True)
+        tier_cols["pool"] = np.lib.format.open_memmap(os.path.join(out_dir, "pool.npy"), mode="w+", dtype=np.uint8, shape=(n_tiles, TILE))
+        for gi, (a, names) in enumerate(contractions):
+            g = f"g{gi}"
+            tier_cols[f"contact_{g}"] = np.lib.format.open_memmap(os.path.join(out_dir, f"contact_{g}.npy"), mode="w+", dtype=np.float32, shape=(n_tiles, TILE))
+            tier_groups[g] = dict(shapes=[n_ for n_, _ in names], acquisition=Acquisition(shapes[names[0][0]]), tau_t2=None, tau_t1=None,
+                                  pathway=pathway[names[0][0]], contact=False, field=False, field_channels=None, has_aniso=False,
+                                  columns={"contact": f"contact_{g}.npy"})
+        tier_meta = dict(modes=int(modes), pools=None, D_walk=None, substrate=col.meta.get("substrate"), relaxation=False, exposure="pool")
     col.src.bytes_read = col.src.requests = 0; t0 = time.time(); row = 0
-    for pk, runs in zip(col.iter_views(chunk_rows=chunk_rows, K=K), groups):
+    for pk, runs in zip(col.iter_views(chunk_rows=chunk_rows, **view_kw), groups):
         n = pk.n_walkers
         ijk, _ = col.grid.bin(pk.r0); v = np.ravel_multi_index(ijk.T, col.grid.shape)
         expect = np.concatenate([np.full(n_, v_, v.dtype) for v_, _, n_, _, _ in runs])
@@ -150,13 +183,48 @@ def write_shape_moments(source, shapes, out_dir, *, tol=0.25, chunk_rows=2_000_0
         phi = {}
         for a, names in contractions:
             P = pk._prepare(a, tissue=None, scanner=None, orientation=None, compartment=None)
-            if np.any(P["voxel"] != 1.0) or P["pathway"] != 1.0:
+            if np.any(P["voxel"] != 1.0):
                 raise ValueError(f"shapes {[n_ for n_, _ in names]} leave an amplitude per measurement (an unbalanced "
-                                 "encoding or a stimulated echo); a moment carries a phase only")
+                                 "encoding); a moment carries a phase only")
             ph = _band_phase(P)                                     # (n, 3 per shape): the one band contraction
             for name, first in names:
                 phi[name] = ph[:, first:first + 3]
             w_rows = P["w"]
+        tier_rows = {}
+        if tiers:
+            for gi, (a, names) in enumerate(contractions):
+                g = f"g{gi}"; grp = tier_groups[g]
+                prim = pk.walker_primitives(grp["acquisition"])         # the tiers at this group's gate, the study image's route
+                if prim.exposure_t2 is not None:
+                    e2 = np.asarray(prim.exposure_t2); e1 = np.asarray(prim.exposure_t1)
+                    if not np.allclose(e2.max(1), e2.sum(1)):
+                        raise ValueError("a walker was in more than one pool before the echo; this layout stores one pool "
+                                         "per walker and needs a walk that does not cross")
+                    pool = np.argmax(e2, axis=1).astype(np.uint8)
+                    t2 = e2.max(1); t1 = e1.max(1)
+                    for tau, key in ((t2, "tau_t2"), (t1, "tau_t1")):
+                        if tau.size and not np.allclose(tau, tau[0], atol=1e-9):
+                            raise ValueError(f"the {key} exposure differs between walkers of one gate; a non-crossing walk has one")
+                        grp[key] = float(tau[0]) if tau.size else 0.0
+                    tier_meta.update(relaxation=True, pools=int(e2.shape[1]))
+                    tier_rows["pool"] = pool
+                else:
+                    tier_rows.setdefault("pool", np.zeros(n, np.uint8))
+                tier_rows[f"contact_{g}"] = np.zeros(n, np.float32) if prim.contact is None else np.asarray(prim.contact, np.float32)
+                grp["contact"] = grp["contact"] or prim.contact is not None
+                if prim.field_iso is not None:                          # the channels themselves, so the field direction stays a knob
+                    from .replay import _path_field_channels, _has_aniso
+                    acq = grp["acquisition"]
+                    Pg = pk._prepare(acq.waveform, tissue=None, scanner=None, orientation=acq.orientation, compartment=None)
+                    Psi, ch_names = _path_field_channels(Pg, acq.waveform)
+                    Psi = np.asarray(Psi, np.float32)
+                    if f"field_{g}" not in tier_cols:
+                        tier_cols[f"field_{g}"] = np.lib.format.open_memmap(os.path.join(out_dir, f"field_{g}.npy"), mode="w+", dtype=np.float32, shape=(n_tiles, TILE, Psi.shape[1]))
+                        grp["columns"]["field"] = f"field_{g}.npy"; grp["field"] = True
+                        grp["field_channels"] = list(ch_names); grp["has_aniso"] = bool(_has_aniso(pk.meta["compression"]["channels"].get("susceptibility_grid"), ch_names))
+                    tier_rows[f"field_{g}"] = Psi
+                if prim.D_walk is not None:
+                    tier_meta["D_walk"] = float(prim.D_walk)
         for v_, start, n_, t0_, t1_ in runs:
             for half, t_ in enumerate((t0_, t1_)):
                 k = (n_ + 1 - half) // 2
@@ -166,21 +234,29 @@ def write_shape_moments(source, shapes, out_dir, *, tol=0.25, chunk_rows=2_000_0
                 for name in shapes:
                     m[name].reshape(-1, 3)[flat] = phi[name][sl]
                 w.reshape(-1)[flat] = w_rows[sl]
+                if tiers:
+                    for name, arr in tier_cols.items():
+                        if arr.ndim == 3:
+                            arr.reshape(-1, arr.shape[-1])[flat] = tier_rows[name][sl]
+                        else:
+                            arr.reshape(-1)[flat] = tier_rows[name][sl]
         row += n
         if progress:
             progress(row, col.src.bytes_read, time.time() - t0)
     if row != n_rows:
         raise RuntimeError(f"the pass read {row} rows of {n_rows}")
-    for a in list(m.values()) + [w]:
+    for a in list(m.values()) + [w] + list(tier_cols.values()):
         a.flush()
     manifest = dict(
         format=FORMAT, n_rows=int(n_rows), n_tiles=int(n_tiles), tile=TILE, K=int(K), band_error=float(band_error), tol=float(tol),
+        tiers=(dict(tier_meta, pool_column="pool.npy",
+                    groups={g: {k: v for k, v in grp.items() if k != "acquisition"} for g, grp in tier_groups.items()}) if tiers else None),
         source=dict(uri=col.uri, manifest_sha256=hashlib.sha256(col.src.text(MANIFEST).encode()).hexdigest(),
                     K=int(col.K), n_rows=int(col.n_rows), floor=float(col.floor),
                     grid=col.meta["fidelity"]["per_voxel"]["grid"], pack=col.meta.get("id")),
         n_voxels=int(n_vox), columns=dict(w="w.npy", tiles="tiles.npy", **{name: f"m_{name}.npy" for name in shapes}),
         shapes={name: dict(profile=prof[name][0].tolist(), dt=float(shapes[name].dt), n_t=int(len(prof[name][0])),
-                           b_unit=b_unit[name], amplitude_built=prof[name][2], family=getattr(shapes[name], "family", None),
+                           b_unit=b_unit[name], amplitude_built=prof[name][2], pathway=pathway[name], family=getattr(shapes[name], "family", None),
                            build_spec=_jsonable(shapes[name].build_spec),
                            encoding={k: _jsonable(getattr(shapes[name].encoding, k, None))
                                      for k in ("delta", "Delta", "TE") if shapes[name].encoding is not None})
@@ -244,6 +320,7 @@ class ShapeMoments:
         self.n_rows = int(self.manifest["n_rows"]); self.n_tiles = int(self.manifest["n_tiles"]); self.tile = int(self.manifest["tile"])
         self.n_vox = int(np.prod(self.grid.shape))
         self.shapes = [n for n in self.manifest["columns"] if n not in ("w", "tiles")]
+        self.tiers = self.manifest.get("tiers")
         self._m = {}; self._device = {}; self._host = {}
 
     @staticmethod
@@ -264,8 +341,83 @@ class ShapeMoments:
 
     def _column(self, name):
         if name not in self._m:
-            self._m[name] = np.load(os.path.join(self.path, self.manifest["columns"][name]), mmap_mode="r")
+            cols = dict(self.manifest["columns"])
+            if self.tiers:
+                cols["pool"] = self.tiers["pool_column"]
+                for g, grp in self.tiers["groups"].items():
+                    cols.update({f"{c}_{g}": f for c, f in grp["columns"].items()})
+            self._m[name] = np.load(os.path.join(self.path, cols[name]), mmap_mode="r")
         return self._m[name]
+
+    def _tier_group(self, shape):
+        """The sequence group of ``shape`` (its gate): ``(g, group)``."""
+        for g, grp in self.tiers["groups"].items():
+            if shape in grp["shapes"]:
+                return g, grp
+        raise KeyError(f"no tiers for shape {shape!r}")
+
+    def _tier_columns(self, shape):
+        """The device-side tier columns of ``shape``'s group: the pool once, the group's contact, and its field
+        terms for the current field direction (``field_iso_<g>@<dir>``, ``field_aniso_<g>@<dir>``, contracted on the
+        host from the stored channels)."""
+        g, grp = self._tier_group(shape)
+        d = self._b0_key
+        return ("pool", f"contact_{g}", f"field_iso_{g}@{d}", f"field_aniso_{g}@{d}")
+
+    def _is_tier_column(self, name):
+        return name == "pool" or name.startswith(("contact_", "field_iso_", "field_aniso_", "field_"))
+
+    _b0_key = "0,0,1"
+
+    def _field_terms(self, g, b0_direction):
+        """``(iso, aniso)`` per row of group ``g`` for ``b0_direction`` (a unit vector in the substrate frame), from
+        the stored channels through the one contraction, zeros when the group carries no field."""
+        from ..fields.hollow_cylinder import field_terms
+        grp = self.tiers["groups"][g]
+        T = self.TILES; n_pad = -(-self.n_tiles // T) * T
+        iso = np.zeros((n_pad, self.tile), np.float32); aniso = np.zeros((n_pad, self.tile), np.float32)
+        if grp.get("field"):
+            chans = self._column(f"field_{g}")
+            a, b = field_terms(np.asarray(chans, np.float32), np.asarray(b0_direction, np.float64))
+            iso[:self.n_tiles] = a
+            if grp.get("has_aniso") and b is not None:
+                aniso[:self.n_tiles] = b
+        return iso, aniso
+
+    def terms(self, shape, tissue=None, scanner=None):
+        """The reduction terms of a (tissue, scanner) pair on ``shape``'s gate -- exactly
+        :meth:`~dmipy_sim.replay.study.Primitives.reduction_terms` on a descriptor of what the layout carries:
+        ``None`` for the bare image (no tissue, no scanner), else ``(logw_pool (n_pools,), rho_over_D, a_iso, a_aniso,
+        amplitude)`` with ``logw_pool = -tau_2 / T2 - tau_1 / T1`` per pool at the group's exposure times. A tier the
+        pair needs that the layout lacks is refused by name."""
+        if tissue is None and scanner is None:
+            return None
+        if not self.tiers:
+            raise ValueError("this layout holds the bare diffusion phase only (written without tiers=True); a tissue "
+                             "or a scanner needs the tiers")
+        from .study import Primitives
+        from ..spec.substrate import SubstrateSpec
+        from ..spec.tissue import _by_pool_id
+        t = self.tiers; g, grp = self._tier_group(shape)
+        spec = SubstrateSpec.from_dict(t["substrate"]) if t.get("substrate") else None
+
+        def by_pool(values, what):
+            if values is None:
+                return None
+            if spec is None:
+                raise ValueError(f"{what} was given by pool but the layout embeds no substrate spec")
+            if not isinstance(values, dict):
+                raise ValueError(f"{what} is {{pool name: seconds}} over every pool of the spec {[p.name for p in spec.pools]}")
+            return [float(v) for v in _by_pool_id(spec, values, what)]
+        n_pools = int(t["pools"]) if t.get("relaxation") else None
+        desc = Primitives(w=np.ones(1), phi=np.zeros((1, 1)),
+                          field_iso=np.zeros(1) if grp.get("field") else None, field_aniso=np.zeros(1) if grp.get("field") else None,
+                          exposure_t2=np.zeros((1, n_pools)) if n_pools else None, exposure_t1=np.zeros((1, n_pools)) if n_pools else None,
+                          contact=np.zeros(1) if grp.get("contact") else None, D_walk=t.get("D_walk"), voxel=np.ones(1),
+                          pathway=float(grp["pathway"]), by_pool=by_pool)
+        rt = desc.reduction_terms(tissue, scanner)
+        logw = -(float(grp["tau_t2"] or 0.0) * np.asarray(rt["invT2"], np.float64) + float(grp["tau_t1"] or 0.0) * np.asarray(rt["invT1"], np.float64))
+        return (logw, float(rt["rho_over_D"]), float(rt["a_iso"]), float(rt["a_aniso"]), float(rt["amplitude"]))
 
     def moments(self, shape):
         """``(n_tiles, tile, 3)`` float32, memory-mapped: the moment of every row under ``shape`` (0 on padding)."""
@@ -288,7 +440,7 @@ class ShapeMoments:
 
     def release(self, keep=()):
         """Drop the device copies of every shape's tiles but ``keep``'s (the shared tiles stay), on every backend."""
-        for name in [n for n in self._device if n[1] not in ("w", "tiles") and n[1] not in keep]:
+        for name in [n for n in self._device if n[1] not in ("w", "tiles") and not self._is_tier_column(n[1]) and n[1] not in keep]:
             del self._device[name]
 
     def preload(self, shapes=None):
@@ -296,7 +448,11 @@ class ShapeMoments:
         memory (about 1.9 GB per shape for DiSCo), so that a device copy built later -- in a forked worker of a
         shared pool, which inherits them for free -- costs a host-to-device transfer and not a read of the layout
         (measured on Hugging Face's ZeroGPU: the mounted bucket reads at 80 MB/s, the transfer at 8 GB/s)."""
-        for name in ["w", "tiles"] + list(self.shapes if shapes is None else shapes):
+        names = ["w", "tiles"] + list(self.shapes if shapes is None else shapes)
+        if self.tiers:
+            for sh in (self.shapes if shapes is None else shapes):
+                names += list(self._tier_columns(sh))
+        for name in dict.fromkeys(names):
             if name not in self._host:
                 self._host[name] = self._padded(name)
 
@@ -306,16 +462,21 @@ class ShapeMoments:
         if name in self._host:
             return self._host[name]
         T = self.TILES; n_pad = -(-self.n_tiles // T) * T
-        if name == "w":
-            a = np.zeros((n_pad, self.tile), np.float32); a[:self.n_tiles] = self._column("w")
+        if name.startswith(("field_iso_", "field_aniso_")):
+            g, d = name.split("_", 2)[2].split("@")
+            iso, aniso = self._field_terms(g, [float(x) for x in d.split(",")])
+            self._host[f"field_iso_{g}@{d}"], self._host[f"field_aniso_{g}@{d}"] = iso, aniso
+            return self._host[name]
+        if name == "w" or self._is_tier_column(name):
+            a = np.zeros((n_pad, self.tile), np.uint8 if name == "pool" else np.float32); a[:self.n_tiles] = self._column(name)
         elif name == "tiles":
             a = np.full(n_pad, 2 * self.n_vox, np.int32); a[:self.n_tiles] = self._column("tiles")
         else:
             a = np.zeros((n_pad, self.tile, 3), np.float32); a[:self.n_tiles] = self.moments(name)
         return a
 
-    def _resident(self, shape, backend, device, resident):
-        """``(m, w, tiles)`` for ``shape`` on the backend's device, kept across calls when ``resident`` (the shared
+    def _resident(self, shape, backend, device, resident, names=("w", "tiles")):
+        """``(m, *names)`` for ``shape`` on the backend's device, kept across calls when ``resident`` (the shared
         tiles once per backend), else built afresh from the memory-mapped tiles."""
         if backend == "jax":
             import jax.numpy as jnp
@@ -324,7 +485,7 @@ class ShapeMoments:
             import torch
             put = lambda a: torch.as_tensor(a if a.dtype != np.int32 else a.astype(np.int64), device=device)
         out = []
-        for name in (shape, "w", "tiles"):
+        for name in (shape,) + tuple(names):
             key = (backend, name, str(device))
             if key not in self._device:
                 arr = put(self._padded(name))
@@ -334,7 +495,8 @@ class ShapeMoments:
             out.append(self._device[key])
         return tuple(out)
 
-    def image(self, shape, bvalues, directions, *, backend="jax", device=None, resident=True):
+    def image(self, shape, bvalues, directions, *, backend="jax", device=None, resident=True, tissue=None, scanner=None,
+              b0_direction=(0.0, 0.0, 1.0)):
         """``(S, floor)`` of the grid under ``shape`` at ``bvalues`` (s/m^2) along ``directions`` (unit vectors):
         ``S`` is ``grid.shape + (n_meas,)``, the weighted ensemble magnitude per voxel (NaN where the layout has no
         rows), ``floor`` ``grid.shape`` its split-half floor ``max_m |S_a - S_b| / 2``. A b = 0 row's direction
@@ -342,9 +504,18 @@ class ShapeMoments:
         CUDA device when None and one exists, else the CPU); ``resident=False`` uploads the tiles for this call only
         (a shared pool that drops the device between calls). Run-to-run identity of the scatter needs
         ``XLA_FLAGS=--xla_gpu_deterministic_ops=true`` on JAX and ``torch.use_deterministic_algorithms(True)`` on
-        torch; the caller sets them."""
+        torch; the caller sets them. ``tissue`` and ``scanner`` (a :class:`~dmipy_sim.spec.tissue.Tissue`, a
+        :class:`~dmipy_sim.acquisition.scanners.ScannerLimits` or tesla) turn the stored tiers into the weights and
+        the field phase of :meth:`terms`; both None is the bare image. ``b0_direction`` is the field's direction in
+        the substrate frame (a unit vector; the default is the frame's z, the pose the tiers were gated under), the
+        channels contracted for it on the host when a scanner is given."""
         if backend not in ("jax", "torch"):
             raise ValueError(f"backend is 'jax' or 'torch', got {backend!r}")
+        tm = self.terms(shape, tissue, scanner)
+        b0 = np.asarray(b0_direction, np.float64)
+        if b0.shape != (3,) or abs(np.linalg.norm(b0) - 1.0) > 1e-6:
+            raise ValueError("b0_direction is a unit vector")
+        self._b0_key = ",".join(f"{x:.6f}" for x in b0)
         g = self.amplitude(shape, bvalues)
         u = np.asarray(directions, np.float64)
         if u.shape != (len(g), 3):
@@ -360,14 +531,23 @@ class ShapeMoments:
         if backend == "torch" and device is None:
             import torch
             device = "cuda" if torch.cuda.is_available() else "cpu"
-        m, w, tiles = self._resident(shape, backend, device, resident)
-        acc = (_sums_jax if backend == "jax" else _sums_torch)(m, w, tiles, g_p, u_p, n_seg, self.TILES)
+        if tm is None:
+            m, w, tiles = self._resident(shape, backend, device, resident)
+            acc = (_sums_jax if backend == "jax" else _sums_torch)(m, w, tiles, g_p, u_p, n_seg, self.TILES)
+        else:
+            logw_pool, rho_D, a_iso, a_aniso, amp = tm
+            m, w, tiles, pool, contact, fiso, faniso = self._resident(shape, backend, device, resident, names=("w", "tiles") + self._tier_columns(shape))
+            logw_pool = np.asarray(logw_pool, np.float32)
+            acc = (_sums_jax_tiers if backend == "jax" else _sums_torch_tiers)(
+                m, w, tiles, pool, contact, fiso, faniso, g_p, u_p, logw_pool, np.float32(rho_D), np.float32(a_iso),
+                np.float32(a_aniso), np.float32(amp), n_seg, self.TILES)
         num = acc[:2 * self.n_vox, :M].reshape(self.n_vox, 2, M)
         den = self.weights
         S = np.full((self.n_vox, M), np.nan); floor = np.full(self.n_vox, np.nan)
         any_ = den.sum(1) > 0; both = (den > 0).all(1)
-        S[any_] = np.abs(num[any_].sum(1) / den[any_].sum(1)[:, None])
-        Sa = np.abs(num[both, 0] / den[both, 0][:, None]); Sb = np.abs(num[both, 1] / den[both, 1][:, None])
+        pw = float(self.manifest["shapes"][shape].get("pathway", 1.0)) if tm is None else 1.0   # the tiered path applied it as amp
+        S[any_] = pw * np.abs(num[any_].sum(1) / den[any_].sum(1)[:, None])
+        Sa = pw * np.abs(num[both, 0] / den[both, 0][:, None]); Sb = pw * np.abs(num[both, 1] / den[both, 1][:, None])
         floor[both] = 0.5 * np.abs(Sa - Sb).max(1)
         return S.reshape(tuple(self.grid.shape) + (M,)), floor.reshape(self.grid.shape)
 
@@ -427,7 +607,64 @@ def _sums_torch(m, w, tiles, g_p, u_p, n_seg, chunk):
     return acc.cpu().numpy()
 
 
+def _sums_jax_tiers(m, w, tiles, pool, contact, fiso, faniso, g_p, u_p, logw_pool, rho_D, a_iso, a_aniso, amp, n_seg, chunk):
+    """:func:`_sums_jax` with the tiers: each row's weight ``w amp exp(logw_pool[pool] + rho_D contact)`` and its
+    phase offset ``a_iso field_iso + a_aniso field_aniso`` (:meth:`Primitives.signals` on the device)."""
+    import jax.numpy as jnp
+    acc = jnp.zeros((n_seg, g_p.shape[0]), jnp.complex128); kernel = _compiled_tiers(n_seg)
+    g_d, u_d = jnp.asarray(g_p), jnp.asarray(u_p); lw = jnp.asarray(logw_pool)
+    sc = tuple(jnp.float32(x) for x in (rho_D, a_iso, a_aniso, amp))
+    for i in range(0, m.shape[0], chunk):
+        sl = slice(i, i + chunk)
+        acc = kernel(m[sl], w[sl], tiles[sl], pool[sl], contact[sl], fiso[sl], faniso[sl], g_d, u_d, lw, *sc, acc)
+    return np.asarray(acc)
+
+
+def _sums_torch_tiers(m, w, tiles, pool, contact, fiso, faniso, g_p, u_p, logw_pool, rho_D, a_iso, a_aniso, amp, n_seg, chunk):
+    """:func:`_sums_torch` with the tiers (eager: the weight and the phase offset per row, then the chunk kernel)."""
+    import torch
+    dev = m.device
+    g = torch.as_tensor(g_p, device=dev); u = torch.as_tensor(u_p, device=dev); lw = torch.as_tensor(logw_pool, device=dev)
+    acc = torch.zeros((n_seg, g_p.shape[0]), dtype=torch.complex128, device=dev)
+    fn = _torch_kernel()
+    with torch.no_grad():
+        for i in range(0, m.shape[0], chunk):
+            sl = slice(i, i + chunk)
+            wf = w[sl] * float(amp) * torch.exp(lw[pool[sl].long()] + float(rho_D) * contact[sl])
+            off = float(a_iso) * fiso[sl] + float(a_aniso) * faniso[sl]
+            try:
+                ts = _tile_sums_torch_offset(m[sl], wf, off, g, u)
+            except Exception:
+                ts = _tile_sums_torch_offset(m[sl], wf, off, g, u)
+            acc.index_add_(0, tiles[sl], ts)
+    return acc.cpu().numpy()
+
+
+def _tile_sums_torch_offset(mc, wc, off, g, u):
+    """:func:`_tile_sums_torch` with a per-row phase offset ``off (chunk, tile)``."""
+    import torch
+    ph = g[None, None, :] * (mc[:, :, 0:1] * u[None, None, :, 0] + mc[:, :, 1:2] * u[None, None, :, 1] + mc[:, :, 2:3] * u[None, None, :, 2]) + off[:, :, None]
+    return torch.polar(wc[:, :, None].expand_as(ph), ph).sum(1).to(torch.complex128)
+
+
 _KERNELS = {}
+
+
+def _compiled_tiers(n_seg):
+    """The chunk kernel with the tiers: the per-row weight and phase offset folded into the fused reduction."""
+    import jax
+    import jax.numpy as jnp
+    key = ("tiers", n_seg)
+    if key not in _KERNELS:
+        @jax.jit
+        def kernel(m, w, tiles, pool, contact, fiso, faniso, g, u, logw_pool, rho_D, a_iso, a_aniso, amp, acc):
+            ph = g[None, None, :] * (m[:, :, 0:1] * u[None, None, :, 0] + m[:, :, 1:2] * u[None, None, :, 1] + m[:, :, 2:3] * u[None, None, :, 2])
+            ph = ph + (a_iso * fiso + a_aniso * faniso)[:, :, None]
+            wf = w * amp * jnp.exp(logw_pool[pool.astype(jnp.int32)] + rho_D * contact)
+            E = (jnp.exp(1j * ph) * wf[:, :, None]).astype(jnp.complex128)
+            return acc + jax.ops.segment_sum(E.sum(1), tiles, num_segments=n_seg)
+        _KERNELS[key] = kernel
+    return _KERNELS[key]
 
 
 def _compiled(n_seg):
