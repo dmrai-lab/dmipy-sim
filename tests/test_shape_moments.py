@@ -326,3 +326,31 @@ def test_the_tier_maps_are_the_walkers_voxel_means(layout_field):
         np.testing.assert_allclose(bare["contact"], ref["contact"], atol=1e-6, equal_nan=True)
         along_z = sm.tier_maps("se", t, 3.0, backend=backend, device=device)
         assert np.nanmax(np.abs(along_z["phase_std"] - maps["phase_std"])) > 0
+
+
+def test_a_direction_the_host_has_not_contracted_is_contracted_on_the_device(layout_field):
+    """The torch backend contracts the field channels for a new direction on its device: the per-row terms equal the
+    host's contraction, the tiered image at that direction equals the host-fed image, the pair is cached once when
+    resident and made once per call otherwise, and the host holds no copy of the terms."""
+    torch = pytest.importorskip("torch")
+    from dmipy_sim.spec.tissue import Tissue
+    col, merged, grid, n_t, tmp = layout_field
+    se = d.pgse([[0, 0, 1]], 0.2e-3, 0.5e-3, gradient_strengths=0.05, n_t=n_t, slew_rate=np.inf)
+    out = str(tmp / "sf_device")
+    write_shape_moments(col, {"se": se}, out, tol=1e-9, chunk_rows=7, tiers=True)
+    t = Tissue(T2={"intra": 0.03, "extra": 0.08, "myelin": 0.01}, T1={"intra": 0.9, "extra": 1.4, "myelin": 0.3}, rho=1e-5, chi_iso=-1e-7, chi_aniso=-1.5e-8)
+    u = np.array([0.6, 0.0, 0.8]); b = np.array([1e9, 3e9, 0.0]); dirs = np.array([[1.0, 0, 0], [0, 1.0, 0], [0, 0, 1.0]])
+    host = ShapeMoments(out); g, _ = host._tier_group("se")
+    iso_h, aniso_h = host._field_terms(g, u)
+    dev = ShapeMoments(out)
+    iso_d, aniso_d = dev._field_terms(g, u, device="cpu")
+    np.testing.assert_allclose(iso_d.numpy(), iso_h, atol=1e-6); np.testing.assert_allclose(aniso_d.numpy(), aniso_h, atol=1e-6)
+    S_host, _ = host.image("se", b, dirs, tissue=t, scanner=3.0, b0_direction=u)                       # jax, the host terms
+    S_dev, _ = dev.image("se", b, dirs, tissue=t, scanner=3.0, b0_direction=u, backend="torch", device="cpu")
+    assert not any(k.startswith("field_") for k in dev._host), "the device route keeps no host copy of the terms"
+    assert sum(k[1].startswith("field_iso_") for k in dev._device) == 1
+    np.testing.assert_allclose(S_dev, S_host, atol=5e-6, equal_nan=True)
+    S_again, _ = dev.image("se", b, dirs, tissue=t, scanner=3.0, b0_direction=u, backend="torch", device="cpu")
+    np.testing.assert_array_equal(S_again, S_dev)
+    S_once, _ = ShapeMoments(out).image("se", b, dirs, tissue=t, scanner=3.0, b0_direction=u, backend="torch", device="cpu", resident=False)
+    np.testing.assert_allclose(S_once, S_dev, atol=1e-7, equal_nan=True)

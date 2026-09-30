@@ -124,9 +124,14 @@ def field_terms(channels, b0_dir, axis=-1):
     """The two susceptibility terms of the channels along ``axis`` (``iso_local, iso_P (6), aniso_G (6)`` in that
     order, 7 or 13 of them) for a field direction: ``(iso, aniso)`` with ``iso = iso_local - Q . iso_P`` and
     ``aniso = Q . aniso_G`` (``None`` when the channels carry no anisotropic basis). ``dB = B0 (chi_iso iso +
-    chi_aniso aniso)``: the one contraction of every route, grid, path and pack."""
-    c = np.moveaxis(np.asarray(channels, float), axis, -1)
+    chi_aniso aniso)``: the one contraction of every route, grid, path and pack. A torch tensor is contracted on
+    its own device in float64 (a float32 matmul on CUDA is TF32) and stays there; anything else on the host."""
     q = q_of_H(b0_dir)
+    if type(channels).__module__.split(".")[0] == "torch":
+        import torch
+        c = torch.movedim(channels, axis, -1).to(torch.float64); qt = torch.as_tensor(q, device=c.device)
+        return c[..., 0] - c[..., 1:7] @ qt, (c[..., 7:13] @ qt if c.shape[-1] >= 13 else None)
+    c = np.moveaxis(np.asarray(channels, float), axis, -1)
     iso = c[..., 0] - c[..., 1:7] @ q
     aniso = c[..., 7:13] @ q if c.shape[-1] >= 13 else None
     return iso, aniso
