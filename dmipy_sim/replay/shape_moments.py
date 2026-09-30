@@ -383,6 +383,70 @@ class ShapeMoments:
 
     _b0_key = "0,0,1"
 
+    def _set_b0_direction(self, b0_direction):
+        """The field direction (a unit vector in the substrate frame) the tier columns are contracted for."""
+        b0 = np.asarray(b0_direction, np.float64)
+        if b0.shape != (3,) or abs(np.linalg.norm(b0) - 1.0) > 1e-6:
+            raise ValueError("b0_direction is a unit vector")
+        self._b0_key = ",".join(f"{x:.6f}" for x in b0)
+
+    def tier_maps(self, shape, tissue=None, scanner=None, *, backend="jax", device=None, resident=True, b0_direction=(0.0, 0.0, 1.0)):
+        """Per-voxel means over the walkers, at the walk's weights, of what each tier multiplies into :meth:`image`
+        on ``shape``'s gate, each on the grid (NaN where the layout has no rows): ``pool`` (the weight fraction per
+        pool, ``{name: grid}``), ``contact`` (the stored term of the gated boundary local time, the exponent's ``-l``;
+        None without the contact tier), ``contact_weight`` (``exp(rho_over_D contact)`` at the pair's rho, the
+        contact tier's factor; None without a tissue), ``phase`` and ``phase_std`` (the mean and the spread of the
+        sheath field's phase offset ``a_iso iso + a_aniso aniso`` at the pair's field and ``b0_direction``, radians;
+        None without a scanner). The same device columns as the tiered image (kept across calls when ``resident``),
+        one pass over the tiles; ``backend`` and ``device`` as in :meth:`image`."""
+        if backend not in ("jax", "torch"):
+            raise ValueError(f"backend is 'jax' or 'torch', got {backend!r}")
+        if not self.tiers:
+            raise ValueError("this layout holds the bare diffusion phase only (written without tiers=True)")
+        tm = self.terms(shape, tissue, scanner)
+        self._set_b0_direction(b0_direction)
+        g, grp = self._tier_group(shape)
+        pools = [(q["name"], int(q["id"])) for q in self.tiers["substrate"]["pools"]]
+        if backend == "torch" and device is None:
+            import torch
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+        _, w, tiles, pool, contact, fiso, faniso = self._resident(shape, backend, device, resident, names=("w", "tiles") + self._tier_columns(shape))
+        rho_D, a_iso, a_aniso = (0.0, 0.0, 0.0) if tm is None else (float(tm[1]), float(tm[2]), float(tm[3]))
+        names = [("pool", name, pid) for name, pid in pools]
+        if grp.get("contact"):
+            names.append(("contact",))
+            if tm is not None:
+                names.append(("contact_weight",))
+        if grp.get("field") and tm is not None:
+            names += [("phase",), ("phase_sq",)]
+
+        def rows(sl, xp):
+            out = []
+            for q in names:
+                if q[0] == "pool":
+                    out.append((pool[sl] == q[2]).to(w.dtype) if backend == "torch" else (pool[sl] == q[2]).astype(w.dtype))
+                elif q[0] == "contact":
+                    out.append(contact[sl])
+                elif q[0] == "contact_weight":
+                    out.append(xp.exp(rho_D * contact[sl]))
+                else:
+                    ph = a_iso * fiso[sl] + a_aniso * faniso[sl]
+                    out.append(ph if q[0] == "phase" else ph * ph)
+            return out
+
+        n_seg = 2 * self.n_vox + 1
+        acc = (_voxel_sums_torch if backend == "torch" else _voxel_sums_jax)(rows, len(names), w, tiles, n_seg, self.TILES)
+        num = acc[:, :2 * self.n_vox].reshape(len(names), self.n_vox, 2).sum(2)
+        den = self.weights.sum(1)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            means = np.where(den > 0, num / den, np.nan).reshape((len(names),) + tuple(self.grid.shape))
+        by = {q[0] if q[0] != "pool" else ("pool", q[1]): m for q, m in zip(names, means)}
+        maps = dict(pool={name: by[("pool", name)] for name, _ in pools}, contact=by.get("contact"), contact_weight=by.get("contact_weight"),
+                    phase=by.get("phase"), phase_std=None)
+        if "phase" in by:
+            maps["phase_std"] = np.sqrt(np.maximum(by["phase_sq"] - by["phase"] ** 2, 0.0))
+        return maps
+
     FIELD_CHUNK_TILES = 65_536                       # tiles per contraction chunk: 65,536 x 128 x 13 doubles = 0.9 GB of temporaries
 
     def _field_terms(self, g, b0_direction):
@@ -533,10 +597,7 @@ class ShapeMoments:
         if backend not in ("jax", "torch"):
             raise ValueError(f"backend is 'jax' or 'torch', got {backend!r}")
         tm = self.terms(shape, tissue, scanner)
-        b0 = np.asarray(b0_direction, np.float64)
-        if b0.shape != (3,) or abs(np.linalg.norm(b0) - 1.0) > 1e-6:
-            raise ValueError("b0_direction is a unit vector")
-        self._b0_key = ",".join(f"{x:.6f}" for x in b0)
+        self._set_b0_direction(b0_direction)
         g = self.amplitude(shape, bvalues)
         u = np.asarray(directions, np.float64)
         if u.shape != (len(g), 3):
@@ -626,6 +687,32 @@ def _sums_torch(m, w, tiles, g_p, u_p, n_seg, chunk):
                 ts = fn(m[i:i + chunk], w[i:i + chunk], g, u)
             acc.index_add_(0, tiles[i:i + chunk], ts)
     return acc.cpu().numpy()
+
+
+def _voxel_sums_torch(rows, n_q, w, tiles, n_seg, chunk):
+    """The weighted per-segment sums ``(n_q, n_seg)`` float64 on torch of the ``n_q`` per-row quantities ``rows(sl,
+    torch)`` gives for a chunk of tiles: each times the walk's weight, summed over the tile's rows, ``index_add_``-ed
+    into the segments."""
+    import torch
+    acc = torch.zeros((n_q, n_seg), dtype=torch.float64, device=w.device)
+    with torch.no_grad():
+        for i in range(0, w.shape[0], chunk):
+            sl = slice(i, i + chunk)
+            ts = torch.stack([(q * w[sl]).sum(1) for q in rows(sl, torch)]).to(torch.float64)
+            acc.index_add_(1, tiles[sl], ts)
+    return acc.cpu().numpy()
+
+
+def _voxel_sums_jax(rows, n_q, w, tiles, n_seg, chunk):
+    """:func:`_voxel_sums_torch` on JAX (``segment_sum`` into the segments)."""
+    import jax
+    import jax.numpy as jnp
+    acc = jnp.zeros((n_seg, n_q), jnp.float64)
+    for i in range(0, w.shape[0], chunk):
+        sl = slice(i, i + chunk)
+        ts = jnp.stack([(q * w[sl]).sum(1) for q in rows(sl, jnp)], axis=1).astype(jnp.float64)
+        acc = acc + jax.ops.segment_sum(ts, tiles[sl], num_segments=n_seg)
+    return np.asarray(acc).T
 
 
 def _sums_jax_tiers(m, w, tiles, pool, contact, fiso, faniso, g_p, u_p, logw_pool, rho_D, a_iso, a_aniso, amp, n_seg, chunk):
