@@ -264,3 +264,24 @@ def test_the_field_direction_is_a_knob(layout_field):
     assert np.nanmax(np.abs(Sx - Sz)) > 1e-6                            # the direction changes the field phase
     with pytest.raises(ValueError, match="unit"):
         sm.image("se", b, dirs, tissue=t, scanner=3.0, b0_direction=(0, 0, 2))
+
+
+def test_the_files_a_layout_needs_include_its_tier_columns(layout_field):
+    """ShapeMoments.files, what the Hub opener downloads: the manifest, w, tiles, every moment column, and with tiers
+    the pool column and every group's contact and field columns; restricted to some shapes it keeps the tiers."""
+    col, merged, grid, n_t, tmp = layout_field
+    se = d.pgse([[0, 0, 1]], 0.2e-3, 0.5e-3, gradient_strengths=0.05, n_t=n_t, slew_rate=np.inf)
+    ste = d.pgste([[0, 0, 1]], 0.2e-3, 0.4e-3, gradient_strengths=0.05, n_t=n_t, slew_rate=np.inf, ste_flip_angles=(90.0, 90.0, 90.0))
+    out = tmp / "sf_files"
+    m = write_shape_moments(col, {"se": se, "ste": ste}, str(out), tol=1e-9, chunk_rows=7, tiers=True)
+    files = ShapeMoments.files(m)
+    assert "manifest.json" in files and m["columns"]["w"] in files and m["columns"]["tiles"] in files
+    assert m["tiers"]["pool_column"] in files
+    for grp in m["tiers"]["groups"].values():
+        assert all(f in files for f in grp["columns"].values())
+    shapes = [s for s in m["columns"] if s not in ("w", "tiles")]
+    assert all(m["columns"][s] in files for s in shapes)
+    some = ShapeMoments.files(m, shapes[:1])
+    assert m["columns"][shapes[0]] in some and m["tiers"]["pool_column"] in some
+    assert len(shapes) == 1 or m["columns"][shapes[1]] not in some
+    assert set(os.listdir(out)) >= set(files)                      # the written layout has every file the opener lists

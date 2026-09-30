@@ -333,20 +333,34 @@ class ShapeMoments:
         owner, name, prefix = uri[5:].split("/", 2); repo = f"{owner}/{name}"
         mf = hf_hub_download(repo, f"{prefix}/{MANIFEST}", repo_type="dataset", revision=revision)
         with open(mf) as f:
-            cols = json.load(f)["columns"]
-        want = [cols["w"], cols["tiles"], MANIFEST] + [cols[s] for s in (shapes if shapes is not None else cols) if s not in ("w", "tiles")]
+            manifest = json.load(f)
         local = snapshot_download(repo, repo_type="dataset", revision=revision, max_workers=workers,
-                                  allow_patterns=[f"{prefix}/{f}" for f in want])
+                                  allow_patterns=[f"{prefix}/{f}" for f in ShapeMoments.files(manifest, shapes)])
         return ShapeMoments(os.path.join(local, prefix))
+
+    @staticmethod
+    def columns(manifest):
+        """Every column of a layout by name -> file: ``w``, ``tiles``, one per shape, and with tiers ``pool`` and
+        ``contact_<g>`` / ``field_<g>`` per sequence group."""
+        cols = dict(manifest["columns"])
+        tiers = manifest.get("tiers")
+        if tiers:
+            cols["pool"] = tiers["pool_column"]
+            for g, grp in tiers["groups"].items():
+                cols.update({f"{c}_{g}": f for c, f in grp["columns"].items()})
+        return cols
+
+    @staticmethod
+    def files(manifest, shapes=None):
+        """The files a layout needs for ``shapes`` (every shape when None): the manifest, the shared columns, the
+        tier columns and the moments of those shapes."""
+        cols = ShapeMoments.columns(manifest)
+        keep = set(manifest["columns"]) - {"w", "tiles"} if shapes is None else set(shapes)
+        return [MANIFEST] + [f for name, f in cols.items() if name in ("w", "tiles") or name not in manifest["columns"] or name in keep]
 
     def _column(self, name):
         if name not in self._m:
-            cols = dict(self.manifest["columns"])
-            if self.tiers:
-                cols["pool"] = self.tiers["pool_column"]
-                for g, grp in self.tiers["groups"].items():
-                    cols.update({f"{c}_{g}": f for c, f in grp["columns"].items()})
-            self._m[name] = np.load(os.path.join(self.path, cols[name]), mmap_mode="r")
+            self._m[name] = np.load(os.path.join(self.path, self.columns(self.manifest)[name]), mmap_mode="r")
         return self._m[name]
 
     def _tier_group(self, shape):
