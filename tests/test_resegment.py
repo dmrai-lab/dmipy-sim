@@ -10,6 +10,7 @@ import pytest
 import dmipy_sim as d
 from dmipy_sim import build_replay_pack, sequences
 from dmipy_sim.replay import ReplayPack, read_rpk
+from dmipy_sim.replay.replay import _duration
 from dmipy_sim.spec.tissue import Tissue
 from tests.test_bank import _lean_env, _susc_master
 
@@ -262,3 +263,34 @@ def test_the_envelope_edge_is_where_band_ripple_outgrows_the_floor():
     assert 0 < edge < 1e5 and err <= 2.0 * floor
     gain = lambda rd: 2 / n_w * np.expm1(rd * 5e-4)
     assert gain(edge) <= floor * 1.0001                             # the gain at the edge is within its floor
+
+
+def test_the_band_is_judged_over_the_saves_an_acquisition_spans(packs):
+    """``waveform_band`` on a pack in windows reads the windows an acquisition reaches, not the whole walk: a
+    one-window PGSE is judged exactly as on the first window alone (the same projection, the same bands and the
+    same dropped phase), a two-window PGSE as on the first two, and the bands allowed grow with the windows
+    (``K`` per window) while the frequency they resolve does not."""
+    parent, seg, _ = packs
+    wf = _waveforms()
+    assert seg._span(_duration(wf["pgse_1"])) == (int(seg.segments["n_t"]), 1)
+    assert seg._span(_duration(wf["pgse_2"])) == (2 * (int(seg.segments["n_t"]) - 1) + 1, 2)
+    assert seg._span(_duration(wf["train_4"])) == (int(seg.n_t), 4)
+    assert parent._span(_duration(wf["pgse_1"])) == (int(parent.n_t), 1)
+    one, two = seg.truncate(1), seg.truncate(2)
+    for name, pk in (("pgse_1", one), ("pgse_2", two)):
+        hz_s, k_s, err_s = seg.waveform_band(wf[name])
+        hz_p, k_p, err_p = pk.waveform_band(wf[name])
+        assert (hz_s, k_s) == (hz_p, k_p) and err_s == pytest.approx(err_p, rel=1e-12), name
+    assert seg.waveform_band(wf["pgse_1"])[0] == pytest.approx(seg.waveform_band(wf["pgse_2"])[0], rel=0.5)
+    assert np.isfinite(seg.replay(wf["pgse_2"])).all()                             # within K per window over two windows
+
+
+def test_resegment_states_that_the_contact_channel_is_inherited(packs):
+    """``provenance.resegmented.contact``: the parent's contact band and walk duration, marked inherited, beside
+    the pack's own ``replay_envelope`` that bounds where the windowed contact holds (#528)."""
+    parent, seg, _ = packs
+    c = seg.meta["provenance"]["resegmented"]["contact"]
+    assert c["inherited"] is True
+    assert c["parent_K"] == parent.meta["compression"]["channels"]["boundary_local_time"]["K"] == 8
+    assert c["parent_T"] == pytest.approx(T)
+    assert "rho_over_D_max" in c["note"] and seg.meta["replay_envelope"]["tissue"]["rho_over_D_max"] > 0
