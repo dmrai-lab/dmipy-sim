@@ -245,3 +245,25 @@ def test_shards_of_a_segmented_walk_merge(packs, tmp_path):
     seq = _seq()
     Sa, Sb = two.replay(seq, tissue=TIS, scanner=3.0, complex_signal=True), b.replay(seq, tissue=TIS, scanner=3.0, complex_signal=True)
     npt.assert_allclose(merged.replay(seq, tissue=TIS, scanner=3.0, complex_signal=True), (Sa + Sb) / 2.0, atol=1e-6)
+
+
+def test_a_shard_inherits_a_windowed_certificate_window_by_window(packs):
+    """A shard of other walkers built in the same windows as a certifying pack stored in windows inherits, window
+    by window, the certifying window's error (``inherited_from`` names it), so the whole's bound is the sum over the
+    windows once, equal to the certifying pack's own bound, not that bound summed again over the windows; a
+    certifying pack with another number of windows is refused by name."""
+    m, one, two = packs
+    m2 = dict(m); rng = np.random.default_rng(7)
+    m2["traj"] = np.asarray(m["traj"]) + rng.normal(0, 1e-7, np.asarray(m["traj"]).shape); m2["seed"] = 11
+    env = dict(_lean_env(), B0_list=[3.0], theta_deg=[0])
+    kw = dict(license="CC-BY-4.0", citation="test", envelope=env, blt_dtype=np.float32, susc_path_bits=16, K=19, blt_temporal_K=19, susc_path_K=21, segment_T=0.01)
+    b = build_replay_pack(m2, id="t/b-inherited", fidelity="inherited", fidelity_from=two, **kw)
+    cert = two.meta["fidelity"]; got = b.meta["fidelity"]
+    assert len(got["segments"]) == len(cert["segments"]) == 2
+    for mine, theirs in zip(got["segments"], cert["segments"]):
+        assert mine["certified"] == "inherited" and mine["inherited_from"]["err_max"] == pytest.approx(theirs["err_max"])
+        assert mine["err_max"] == pytest.approx(theirs["err_max"])
+    assert got["err_max"] == pytest.approx(sum(s["err_max"] for s in cert["segments"]))   # the bound over the windows, once
+    four = build_replay_pack(m, id="t/four", **{**kw, "K": 9, "blt_temporal_K": 9, "susc_path_K": 11, "segment_T": 0.005})
+    with pytest.raises(ValueError, match="window"):
+        build_replay_pack(m2, id="t/b-wrong", fidelity="inherited", fidelity_from=four, **kw)
