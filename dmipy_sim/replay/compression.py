@@ -566,9 +566,9 @@ def _saves_basis(n_t, start, stop, K):
 
 def decode_saves(C, n_t, start, stop, *, device="auto", chunk_bytes=1 << 30):
     """Saves ``start .. stop - 1`` ``(n_w, stop - start, 3)`` float32 of a bridge-coded walk of ``n_t`` saves from its
-    coefficients ``C`` ``(n_w, K+2, 3)``: a prefix (``start = 0``) or a window of the walk. On the device the bands
-    are evaluated at those saves alone, per walker chunk; on the host the whole decode (one inverse transform per
-    walker chunk, cheaper than the product at the saves) is cut there, at most ``chunk_bytes`` of it at once."""
+    coefficients ``C`` ``(n_w, K+2, 3)``: a prefix (``start = 0``) or a window of the walk, the sine bands evaluated
+    at those saves alone as one product per walker chunk -- on the device, or by the host's BLAS (on a 13,017-save
+    walk, whose interior length has a large prime factor, 20 times faster than the whole inverse transform cut)."""
     C = np.asarray(C, np.float64)
     n_w, K = C.shape[0], C.shape[1] - 2
     start, stop, n_t = int(start), int(stop), int(n_t)
@@ -576,9 +576,12 @@ def decode_saves(C, n_t, start, stop, *, device="auto", chunk_bytes=1 << 30):
         raise ValueError(f"saves {start} .. {stop - 1} are not within a walk of {n_t}")
     out = np.empty((n_w, stop - start, 3), np.float32)
     if resolve_device(device) == "numpy":
-        step = max(1, int(chunk_bytes // (8 * 3 * n_t)))
+        S, tau = _saves_basis(n_t, start, stop, K)
+        step = max(1, int(chunk_bytes // (8 * 3 * (stop - start + K + 2))))
         for lo in range(0, n_w, step):
-            out[lo:lo + step] = _bridge_positions(C[lo:lo + step], n_t)[:, start:stop, :]
+            c = C[lo:lo + step]
+            u = np.matmul(np.transpose(c[:, 2:, :], (0, 2, 1)), S)                    # (c, 3, stop - start)
+            out[lo:lo + step] = c[:, None, 0, :] + c[:, None, 1, :] * tau[None, :, None] + np.transpose(u, (0, 2, 1))
         return out
     import jax.numpy as jnp
     kernel = _saves_decode_kernel(n_t, start, stop, int(K))
