@@ -1886,6 +1886,24 @@ def join_segments(packs, *, fidelity, walks, walkers_shuffled):
     return arrays, meta
 
 
+def _window_certificate(fidelity_from, i, n_segments):
+    """The certifying pack's certificate for window ``i`` of a segmented build: a certifying pack stored in windows
+    certifies window by window (its ``fidelity.segments[i]``, each a measured one-window certificate), so a window
+    inherits the error of the window it mirrors and the whole's bound is the sum over the windows once, as the
+    certifying pack's own is; a one-window certifying pack certifies every window with its whole. ``None`` stays
+    ``None`` (a measured build). A certifying pack with another number of windows is refused by name."""
+    if fidelity_from is None:
+        return None
+    cert = fidelity_from.meta if hasattr(fidelity_from, "meta") else dict(fidelity_from)
+    segs = (cert.get("fidelity") or {}).get("segments")
+    if not segs:
+        return cert
+    if len(segs) != int(n_segments):
+        raise ValueError(f"the certifying pack holds {len(segs)} window(s), this build {n_segments}: a window inherits the certificate "
+                         "of the window it mirrors")
+    return dict(cert, fidelity=dict(segs[int(i)]))
+
+
 def _build_segmented(m, n_segments, n_seg, run, walk, out_path, *, id, K, temporal_bandwidth_hz, blt_temporal_K, susc_path_K,
                      fidelity, fidelity_from, envelope, sigma_star=None, **kw):
     """:func:`build_replay_pack` for a walk of ``n_segments`` windows of ``n_seg`` saves: every window built as a
@@ -1903,9 +1921,10 @@ def _build_segmented(m, n_segments, n_seg, run, walk, out_path, *, id, K, tempor
     for i in range(n_segments):
         run.phase(f"segment {i + 1} of {n_segments}")
         w = _window_master(m, i * steps, (i + 1) * steps)
+        cert_i = _window_certificate(fidelity_from, i, n_segments)
         if i == 0:
             pk = build_replay_pack(w, id=f"{id}", K=K, blt_temporal_K=blt_temporal_K, susc_path_K=susc_path_K, fidelity=fidelity,
-                                   fidelity_from=fidelity_from, envelope=envelope, segment_T=T_seg, _occupancy_runs=crosses, sigma_star=sigma_star, **kw)
+                                   fidelity_from=cert_i, envelope=envelope, segment_T=T_seg, _occupancy_runs=crosses, sigma_star=sigma_star, **kw)
             K = int(pk.K)
             pm0 = (pk.meta["compression"].get("channels") or {}).get("susceptibility_path")
             if pm0 is not None:
@@ -1918,7 +1937,7 @@ def _build_segmented(m, n_segments, n_seg, run, walk, out_path, *, id, K, tempor
                 blt_temporal_K = int(c2["K"])
         else:
             pk = build_replay_pack(w, id=f"{id}", K=K, blt_temporal_K=blt_temporal_K, susc_path_K=susc_path_K, fidelity=fidelity,
-                                   fidelity_from=fidelity_from, envelope=envelope, segment_T=T_seg, _occupancy_runs=crosses, sigma_star=sigma_star,
+                                   fidelity_from=cert_i, envelope=envelope, segment_T=T_seg, _occupancy_runs=crosses, sigma_star=sigma_star,
                                    voxel_grid=None, **{k_: v_ for k_, v_ in kw.items() if k_ != "voxel_grid"})
         packs.append(pk)
     # the whole: the positions battery measured over the full walk (the walk is in hand), the tier terms bounded
