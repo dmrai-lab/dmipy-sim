@@ -162,18 +162,22 @@ def test_a_pack_built_from_a_lazy_walk_is_the_pack_of_the_array(tmp_path):
         np.asarray(lazy)
 
 
-def test_the_prefix_decoder_on_the_device_is_the_numpy_one_to_float32_rounding():
+def test_the_saves_decoder_on_the_device_is_the_numpy_one_to_float32_rounding():
     from dmipy_sim.replay.compression import encode, _bridge_positions, read_position_coeffs
-    from dmipy_sim.replay.compression import decode_prefix
+    from dmipy_sim.replay.compression import decode_saves
     rng = np.random.default_rng(3)
     traj = np.cumsum(rng.normal(size=(400, 300, 3)).astype(np.float32) * np.float32(1e-7), axis=1)
     arrays, meta, _ = encode(traj, "bridge_dst", 24, device="numpy")
     C = read_position_coeffs(arrays, dtype=np.float64)
     for n_cut in (2, 150, 299, 300):
         ref = _bridge_positions(C, 300)[:, :n_cut, :]
-        cpu = decode_prefix(C, 300, n_cut, device="numpy")
-        dev = decode_prefix(C, 300, n_cut, device="jax", chunk_bytes=1 << 16)
+        cpu = decode_saves(C, 300, 0, n_cut, device="numpy")
+        dev = decode_saves(C, 300, 0, n_cut, device="jax", chunk_bytes=1 << 16)
         assert np.abs(cpu - ref).max() <= 1e-9 and np.abs(dev - ref).max() <= 2e-6 * np.abs(ref).max(), n_cut
+    for start, stop in ((1, 2), (99, 200), (150, 300), (299, 300)):                # a window of the walk
+        ref = _bridge_positions(C, 300)[:, start:stop, :]
+        dev = decode_saves(C, 300, start, stop, device="jax", chunk_bytes=1 << 16)
+        assert np.abs(dev - ref).max() <= 2e-6 * np.abs(ref).max(), (start, stop)
 
 
 def test_the_channels_decoded_at_the_prefix_are_the_whole_ones_cut():
