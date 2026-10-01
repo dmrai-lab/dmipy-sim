@@ -110,3 +110,18 @@ def test_the_bessel_tails_on_the_device_are_the_numpy_ones_to_float32_rounding()
     dev = bessel_tails(kappa, w, 20, device="jax", chunk_bytes=1 << 16)
     assert dev.shape == ref.shape == (21, 3)
     assert np.abs(dev - ref).max() <= 1e-5 * np.abs(ref).max()
+
+
+def test_the_numpy_route_is_the_direct_formula():
+    """``F[w] = sum_q w_q Y(u_q) exp(i (a_w + u_q^T A_w u_q))`` written out with the full quadratic form and a
+    complex exponential, against the buffered route (the six-term quadratic, cosine and sine into held buffers),
+    at several chunks: equal to rounding."""
+    a, A = _field(n_w=1500)
+    Lp = 8
+    dirs, wq = so3.sphere_quadrature(Lp + 2, 2 * Lp + 2)
+    Yw = so3.real_sh(Lp, dirs, full=True) * wq[:, None]
+    q = np.einsum("qa,wab,qb->wq", dirs, A, dirs)
+    direct = np.exp(1j * (a[:, None] + q)) @ Yw
+    got = field_factor(a, A, dirs, Yw, device="numpy", chunk_bytes=1 << 17)
+    assert got.shape == direct.shape
+    assert np.abs(got - direct).max() <= 1e-12 * np.abs(direct).max()
