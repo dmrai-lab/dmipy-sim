@@ -23,6 +23,8 @@ from dmipy_sim.replay.replay import ReplayPack, read_rpk
 from dmipy_sim.replay import publish as pub
 from tests.test_bank import _slab_master, _lean_env
 
+pytest.importorskip("huggingface_hub")        # the window reads monkeypatch its cache constant; absent, these tests are skipped
+
 N_T, DT, N_W = 61, 5e-4, 300          # 30 ms of walk, three windows of 10 ms each
 REPO, PATH = "owner/windows", "packs/windows-fixture.rpk"
 URI = pub.uri_of(REPO, PATH)
