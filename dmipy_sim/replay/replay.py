@@ -235,10 +235,23 @@ class ReplayPack:
         self.source = source
 
     @classmethod
-    def load(cls, path):
+    def load(cls, path, *, windows=None, **kw):
         """Read a ``.rpk`` file: a local path, or ``hf://owner/name/path/to/file.rpk`` fetched from the hub into the
-        local cache and checked against the dataset's ``manifest.json`` (:func:`~dmipy_sim.replay.publish.fetch`)."""
-        from .publish import fetch, is_hub_uri
+        local cache and checked against the dataset's ``manifest.json`` (:func:`~dmipy_sim.replay.publish.fetch`).
+
+        ``windows`` reads only the pack's leading windows (RPK.md 4.3: a prefix ``range(k)`` of window indices)
+        from the hub, by HTTP byte range, through :func:`~dmipy_sim.replay.publish.fetch_windows` -- only ``hf://``
+        URIs take it, since a local file is already whole and cheap to read entire. The pack this returns carries
+        :attr:`windows_present`; :meth:`_windows` serves only what it holds, and a replay that reaches further is
+        refused by name. Extra keywords (``url=``, ``revision=``) are :func:`~dmipy_sim.replay.publish.fetch_windows`'s."""
+        from .publish import fetch, fetch_windows, is_hub_uri
+        if windows is not None:
+            if not is_hub_uri(path):
+                raise ValueError(f"windows= reads a pack's leading windows from the hub by byte range; "
+                                 f"{path!r} is not an hf:// URI")
+            return read_rpk(fetch_windows(path, windows, **kw))
+        if kw:
+            raise TypeError(f"load() takes {sorted(kw)} only together with windows=")
         return read_rpk(fetch(path) if is_hub_uri(path) else path)
 
     def save(self, path):
@@ -271,6 +284,15 @@ class ReplayPack:
     @property
     def n_segments(self):
         return int(self.segments["n"])
+
+    @property
+    def windows_present(self):
+        """How many of this walk's leading windows (``0..k-1``) this pack's arrays actually hold -- ``None`` for
+        a whole pack, an ``int`` ``k`` for one built by :meth:`load`'s ``windows=range(k)`` (RPK.md 4.3). The
+        walk's own window count, :attr:`n_segments`, stays the parent's regardless: it says how long the walk
+        IS, not how much of it this pack was fetched to hold."""
+        k = self.meta.get("windows_present")
+        return None if k is None else int(k)
 
     def _segment_arrays(self, i):
         """The tensors of window ``i`` under the channel names: segment 0's are the unprefixed ones; a later
@@ -310,13 +332,33 @@ class ReplayPack:
         return ReplayPack(self._segment_arrays(i), meta, source=self.source)
 
     def _windows(self):
-        """``[(pack, t0, n_t), ...]``: every window of the walk as a pack, the time its first save sits at on the
-        walk's clock, and its saves; ``[(self, 0.0, n_t)]`` for a single-window pack."""
+        """``[(pack, t0, n_t), ...]``: the windows of the walk this pack actually holds, each as a pack, the time
+        its first save sits at on the walk's clock, and its saves; ``[(self, 0.0, n_t)]`` for a single-window
+        pack. Bounded by :attr:`windows_present` for a pack loaded with ``windows=`` -- a caller that needs a
+        window beyond it is refused by name before it is asked for here (:meth:`_compile`)."""
         n = self.n_segments
         if n == 1:
             return [(self, 0.0, int(self.n_t))]
         n_seg, dt = int(self.segments["n_t"]), float(self.dt)
-        return [(self.segment(i), i * (n_seg - 1) * dt, n_seg) for i in range(n)]
+        present = self.windows_present
+        upto = n if present is None else min(int(present), n)
+        return [(self.segment(i), i * (n_seg - 1) * dt, n_seg) for i in range(upto)]
+
+    def _assert_windows_reach(self, T_acq):
+        """Refuse, by name, an acquisition of duration ``T_acq`` (s, from the walk's start) that needs a window
+        this pack was not loaded with (:attr:`windows_present`)."""
+        present = self.windows_present
+        n = self.n_segments
+        if present is None or n <= present:
+            return
+        n_seg, dt = int(self.segments["n_t"]), float(self.dt)
+        reach = 0
+        for i in range(n):
+            t0 = i * (n_seg - 1) * dt
+            if t0 < T_acq * (1.0 - 1e-12):
+                reach = i
+        if reach >= present:
+            raise ValueError(f"this acquisition reaches window {reach}; load windows=range({reach + 1})")
 
     def truncate(self, n_keep, *, id=None, out_path=None):
         """The first ``n_keep`` segments as a pack: a prefix of whole windows is the range of their tensors and
@@ -1091,6 +1133,7 @@ class ReplayPack:
         # only the windows the acquisition reaches are read: a window whose first save sits at or beyond the readout
         # contributes nothing, and is not touched -- a short acquisition on a long pack reads its first windows alone
         T_acq = (G.shape[1] - 1) * dt_wf
+        self._assert_windows_reach(T_acq)
         windows = [w for w in self._windows() if w[1] < T_acq * (1.0 - 1e-12)] or self._windows()[:1]
         dt_chi = dt_wf if on_wf else dt
         chi_wf = np.asarray(waveform.chi_perp if waveform.chi_perp is not None else np.ones(G.shape[1]), np.float64).reshape(-1)

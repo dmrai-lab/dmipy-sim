@@ -76,8 +76,9 @@ class PackSubstrate(_Declared):
 
     kind = "pack"
 
-    def __init__(self, pack, *, m0, name=None, tissue=None):
+    def __init__(self, pack, *, m0, name=None, tissue=None, windows=None):
         from ..replay.replay import ReplayPack
+        from ..replay.publish import is_hub_uri, window_prefix
         from ..spec.tissue import Tissue
         if isinstance(pack, (str, Path)):
             self.uri, self._pack = str(pack), None
@@ -85,6 +86,11 @@ class PackSubstrate(_Declared):
             self.uri, self._pack = None, pack
         else:
             raise TypeError(f"pack is a .rpk path or a ReplayPack; got {type(pack).__name__}")
+        if windows is not None:
+            if not is_hub_uri(self.uri):
+                raise ValueError(f"windows= resolves a hf:// URI's leading windows (ReplayPack.load); got {pack!r}")
+            windows = window_prefix(windows)                          # validated to a prefix range(k), kept as the int k
+        self._windows = windows
         if name is None:
             name = self._pack.meta.get("id") if self._pack is not None else Path(self.uri).stem
         super().__init__(name, m0)
@@ -112,12 +118,15 @@ class PackSubstrate(_Declared):
 
     @property
     def pack(self):
-        """The pack: loaded from ``uri`` on first use, and a missing file is reported by its path."""
+        """The pack: loaded from ``uri`` on first use, and a missing file is reported by its path. ``windows=``
+        given at construction loads only that prefix of the walk's windows, by hub byte range
+        (:meth:`~dmipy_sim.replay.replay.ReplayPack.load`)."""
         if self._pack is None:
             from ..replay.replay import ReplayPack, read_rpk
             from ..replay.publish import is_hub_uri
             if is_hub_uri(self.uri):                                       # a published pack, fetched and checked by its URI
-                self._pack = ReplayPack.load(self.uri)
+                self._pack = (ReplayPack.load(self.uri, windows=range(self._windows))
+                             if self._windows is not None else ReplayPack.load(self.uri))
             else:
                 if not Path(self.uri).exists():
                     raise FileNotFoundError(f"substrate {self.name!r} cites the pack {self.uri!r}, which does not exist here; "
@@ -127,6 +136,8 @@ class PackSubstrate(_Declared):
 
     def to_meta(self):
         m = self._base_meta()
+        if self._windows is not None:
+            m["windows"] = int(self._windows)
         t = self.tissue
         if t is not None:
             spec = self.pack.substrate if (t.T2 is not None or t.T1 is not None) else None
@@ -143,7 +154,9 @@ class PackSubstrate(_Declared):
         from ..spec.tissue import Tissue
         entry = meta.get("tissue")
         per_pool = bool(entry) and any(entry.get(k) is not None for k in ("T2", "T1"))
-        out = cls(pack, m0=meta["m0"], name=meta["id"], tissue=None if per_pool else Tissue.from_meta(entry))
+        windows = meta.get("windows")
+        out = cls(pack, m0=meta["m0"], name=meta["id"], tissue=None if per_pool else Tissue.from_meta(entry),
+                  windows=None if windows is None else range(int(windows)))
         if per_pool:
             out._tissue_meta = dict(entry)
             if out._pack is not None:
