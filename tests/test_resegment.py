@@ -27,6 +27,7 @@ def _master(n_t=N_T):
     for k in ("traj", "comp", "dlog_b"):
         m[k] = np.asarray(m[k])[:, :n_t]
     m["T_max"] = (n_t - 1) * DT
+    m["dlog_b"] = -m["dlog_b"]                       # a contact lowers the weight: the pack's sign convention
     comp = np.zeros((m["traj"].shape[0], n_t), np.int8); comp[:1000, 120:] = 1
     m["comp"] = comp
     m["substrate"] = d.PackedCylinders([1e-6], [[0.0, 0.0]], 10e-6).spec.to_dict()   # names for the two pools the walk labels
@@ -222,3 +223,42 @@ def test_a_pose_expansion_costs_the_saves_it_spans(tmp_path):
     t_seg, rs = best(seg)
     assert np.abs(rp.coeffs - rs.coeffs).max() <= seg.fidelity["floor_max"]
     assert t_seg < t_parent, (t_seg, t_parent)
+
+
+def test_the_contact_envelope_is_stated_and_held(packs):
+    """The pack states the largest rho / D its contact tier serves (RPK.md 8.7); a relaxivity inside replays as the
+    parent within the floor, one beyond is refused by name on every route."""
+    parent, seg, _ = packs
+    top = seg.rho_over_D_max
+    assert top is not None and top > 0 and seg.meta["replay_envelope"]["tissue"]["rho_over_D_max"] == top
+    r = seg.meta["provenance"]["surface_envelope_restated"]
+    assert r["rho_over_D_max"] == top == min(r["per_window"]) and r["reference"] == "t/parent"
+    for f in seg.fidelity["segments"]:
+        assert f["surface_rho_over_D_max"] == top and f["err_surface"] <= 2.0 * f["floor_surface"]
+    D = seg.diffusivity
+    seq = _waveforms()["pgse_2"]
+    inside = Tissue(rho=0.9 * top * D)
+    a = parent.replay(seq, complex_signal=True, tissue=inside)
+    assert np.abs(a - seg.replay(seq, complex_signal=True, tissue=inside)).max() <= seg.fidelity["floor_max"]
+    beyond = Tissue(rho=1.5 * top * D)
+    for route in (lambda: seg.replay(seq, tissue=beyond), lambda: seg.walker_primitives(seq).signals(beyond),
+                  lambda: seg.pose_response(seq, tissue=beyond, keep=(8, 0))):
+        with pytest.raises(ValueError, match="contact envelope"):
+            route()
+
+
+def test_the_envelope_edge_is_where_band_ripple_outgrows_the_floor():
+    """A contact channel whose cumulative sum rises for a few walkers (band ripple: a contact only lowers the weight)
+    is served up to the rho / D where that gain reaches the floor, and no further; a monotone one to the top."""
+    from dmipy_sim.replay.bank import surface_envelope
+    rng = np.random.default_rng(4)
+    n_w, n_t = 20000, 200
+    ell = -rng.exponential(1e-6, size=(n_w, n_t)) * (rng.uniform(size=(n_w, n_t)) < 0.3)
+    w = np.ones(n_w)
+    clean, _, _ = surface_envelope(ell, w, rho_over_D_hi=1e5)
+    assert clean == pytest.approx(1e5)
+    rippled = ell.copy(); rippled[:2, 100] = 5e-4                    # two walkers in 20,000 rise by 5e-4
+    edge, err, floor = surface_envelope(rippled, w, rho_over_D_hi=1e5)
+    assert 0 < edge < 1e5 and err <= 2.0 * floor
+    gain = lambda rd: 2 / n_w * np.expm1(rd * 5e-4)
+    assert gain(edge) <= floor * 1.0001                             # the gain at the edge is within its floor
