@@ -348,17 +348,11 @@ class ReplayPack:
         """Refuse, by name, an acquisition of duration ``T_acq`` (s, from the walk's start) that needs a window
         this pack was not loaded with (:attr:`windows_present`)."""
         present = self.windows_present
-        n = self.n_segments
-        if present is None or n <= present:
+        if present is None or self.n_segments <= present:
             return
-        n_seg, dt = int(self.segments["n_t"]), float(self.dt)
-        reach = 0
-        for i in range(n):
-            t0 = i * (n_seg - 1) * dt
-            if t0 < T_acq * (1.0 - 1e-12):
-                reach = i
-        if reach >= present:
-            raise ValueError(f"this acquisition reaches window {reach}; load windows=range({reach + 1})")
+        reach = self._span(T_acq)[1]
+        if reach > present:
+            raise ValueError(f"this acquisition reaches window {reach - 1}; load windows=range({reach})")
 
     def truncate(self, n_keep, *, id=None, out_path=None):
         """The first ``n_keep`` segments as a pack: a prefix of whole windows is the range of their tensors and
@@ -558,8 +552,8 @@ class ReplayPack:
             raise ValueError("this pack's field tier samples its stored grid at the decoded positions, which holds only while "
                              "the positions are lossless; re-encoded windows are not, so it is not resegmented")
         containers = dict(position_container=_container_of(self.meta["compression"].get("container")))
-        if ch.get("boundary_local_time") is not None:
-            c2 = ch["boundary_local_time"]
+        c2 = ch.get("boundary_local_time")                            # the parent's contact channel, or None
+        if c2 is not None:
             containers.update(blt_container=_container_of(c2.get("container")),
                               blt_dtype=(np.float16 if c2.get("dtype") in (None, "bands") else np.dtype(c2["dtype"])))
         col = next((c for c in (ch.get("compartment") or {}).get("columns", []) if c["name"] == "comp"), None)
@@ -630,6 +624,13 @@ class ReplayPack:
             T_seg=float(steps * dt), n_seg=int(n), saves_per_window=int(steps + 1), saves_dropped=int(dropped),
             parent_K=int(self.K), K=int(K), K_tried=tried + [int(K)], blt_K=blt_K,
             path_K=(None if pm is None else path_K), path_bits=(None if pm is None else path_bits),
+            contact=(None if c2 is None else dict(
+                inherited=True, parent_K=int(c2["K"]), parent_T=float((n_t - 1) * dt),
+                note="the parent's contact channel is band-limited over its whole walk; a window's cumulative local "
+                     "time is the parent's decoded one cut there, so the parent's truncation (a windowed increment can "
+                     "exceed zero, which the true one never does) is inherited, not re-measured: the pack's "
+                     "replay_envelope.tissue.rho_over_D_max states up to which rho / D the windowed contact lies within "
+                     "the floor (#528). A build from the walk (bank._build_segmented) encodes each window's own.")),
             note="every window the parent's channels decoded on its saves and re-encoded; its certificate is the re-encode "
                  "error against the parent's decoded saves, on top of the parent's own certificate"))
         if id is not None:
@@ -1408,9 +1409,9 @@ class ReplayPack:
         # from where it sits on the walk's clock; a single window is the walk itself
         # only the windows the acquisition reaches are read: a window whose first save sits at or beyond the readout
         # contributes nothing, and is not touched -- a short acquisition on a long pack reads its first windows alone
-        T_acq = (G.shape[1] - 1) * dt_wf
+        T_acq = _duration(waveform)
         self._assert_windows_reach(T_acq)
-        windows = [w for w in self._windows() if w[1] < T_acq * (1.0 - 1e-12)] or self._windows()[:1]
+        windows = self._windows()[:self._span(T_acq)[1]]
         dt_chi = dt_wf if on_wf else dt
         chi_wf = np.asarray(waveform.chi_perp if waveform.chi_perp is not None else np.ones(G.shape[1]), np.float64).reshape(-1)
         window_gates = [(bin_gate(chi_wf, dt_chi, n_s, dt, t0=t0)[0], bin_gate(np.ones(chi_wf.shape[0]), dt_chi, n_s, dt, t0=t0)[0])
@@ -1609,12 +1610,16 @@ class ReplayPack:
         phase under-attenuates the magnitude by half of it. ``tol`` defaults to the pack's certified Monte-Carlo
         floor, the unit of every other error the certificate states; a pack whose certificate states no floor
         (walkers that never moved) is held to the largest floor its ``n_walkers`` could have, ``1 / sqrt(n)``.
-        ``bands`` is at most the grid's own ``n_t - 2``; a waveform beyond that returns ``inf``.
+        The band is judged over the saves the waveform spans (:meth:`_span`): the windows its duration reaches
+        on a pack stored in windows (RPK.md 4.3), the whole grid on a one-window pack, so a short acquisition on a
+        long walk costs the projection of its own duration, not the walk's. ``bands`` is at most the span's own
+        ``n - 2``; a waveform beyond that returns ``inf``.
         """
         from .compression import bridge_projection
         from ._replay_kernel import effective_gradient
         waveform = waveform.waveform if hasattr(waveform, "waveform") else waveform
-        n_t, dt = int(self.n_t), float(self.dt)
+        dt = float(self.dt)
+        n_t, windows = self._span(_duration(waveform))
         T = (n_t - 1) * dt
         D = self.diffusivity
         if D is None:
@@ -1633,27 +1638,34 @@ class ReplayPack:
         if len(ok) == 0:
             return np.inf, np.inf, float(err[-1])
         bands = int(ok[0])
-        return bands / (2.0 * T), bands, float(err[min(self._bands_over_walk, K_big)])
+        return bands / (2.0 * T), bands, float(err[min(self.K * windows, K_big)])
 
-    @property
-    def _bands_over_walk(self):
-        """The sine bands over the whole walk that resolve what the windows' ``K`` resolve: ``K`` per window times
-        the windows (``2 T`` x :attr:`temporal_bandwidth_hz`)."""
-        return int(round(self.K * (int(self.n_t) - 1) / (int(self.segments["n_t"]) - 1)))
+    def _span(self, T_acq):
+        """``(n, windows)``: the saves of this walk an acquisition of duration ``T_acq`` (s, from the walk's start)
+        spans and the windows they make -- on a pack stored in windows (RPK.md 4.3) the whole windows whose start
+        lies before ``T_acq`` (sharing their boundary saves), whether loaded or not; on a one-window pack the grid,
+        ``(n_t, 1)``. An acquisition longer than the walk spans the walk."""
+        n_t, dt = int(self.n_t), float(self.dt)
+        if self.n_segments == 1:
+            return n_t, 1
+        steps = int(self.segments["n_t"]) - 1
+        windows = sum(1 for i in range(int(self.n_segments)) if i * steps * dt < float(T_acq) * (1.0 - 1e-12)) or 1
+        return windows * steps + 1, windows
 
     def _check_band(self, waveform):
-        """Refuse a waveform whose gradient needs more temporal band than this pack stores (#277): the replay
-        would otherwise return a smooth, plausible, wrong signal. A pack that records no diffusivity (a synthetic
-        master) cannot be judged and is not refused."""
+        """Refuse a waveform whose gradient needs more temporal band than this pack stores over the saves it spans
+        (#277; :meth:`waveform_band`): the replay would otherwise return a smooth, plausible, wrong signal. A pack
+        that records no diffusivity (a synthetic master) cannot be judged and is not refused."""
         if self.diffusivity is None:
             return
         hz, bands, err = self.waveform_band(waveform)
-        if bands <= self._bands_over_walk:
+        n_t, windows = self._span(_duration(waveform))
+        if bands <= self.K * windows:
             return
-        n_t, dt = int(self.n_t), float(self.dt)
+        dt = float(self.dt)
         T = (n_t - 1) * dt
-        need = (f"more than {(n_t - 2) / (2.0 * T):.4g} Hz, the pack grid's own limit" if not np.isfinite(hz)
-                else f"{hz:.4g} Hz ({bands} bands over {T * 1e3:.4g} ms)")
+        need = (f"more than {(n_t - 2) / (2.0 * T):.4g} Hz, the limit of the pack's grid over the {T * 1e3:.4g} ms it spans"
+                if not np.isfinite(hz) else f"{hz:.4g} Hz ({bands} bands over the {T * 1e3:.4g} ms it spans)")
         raise ValueError(f"the waveform's gradient reaches beyond this pack's temporal band: it needs {need} and the "
                          f"pack resolves {self.temporal_bandwidth_hz:.4g} Hz (K = {self.K} bands over {float(self.segments['T']) * 1e3:.4g} ms), "
                          f"which would drop {err:.2e} of the signal into phase the pack does not carry. Build a pack at "
@@ -2411,6 +2423,12 @@ def _as_distribution(orientation):
     if isinstance(orientation, FOD):
         return Distribution.axis_density(orientation)
     return None
+
+
+def _duration(waveform):
+    """An acquisition's duration in seconds from the walk's start: its last gradient sample's time."""
+    waveform = waveform.waveform if hasattr(waveform, "waveform") else waveform
+    return (int(np.asarray(waveform.G_eff).shape[1]) - 1) * float(waveform.dt)
 
 
 def _echo_saves(waveform, dt_pack):
