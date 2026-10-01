@@ -278,6 +278,162 @@ def surface_topology(V, F):
     return dict(boundary_edges=int((counts == 1).sum()), nonmanifold_edges=int((counts > 2).sum()))
 
 
+def _boundary_edges(F):
+    """Vertex-index pairs of the edges held by exactly one face."""
+    F = np.asarray(F, np.int64)
+    e = np.sort(F[:, [0, 1, 1, 2, 2, 0]].reshape(-1, 2), axis=1)
+    u, cnt = np.unique(e, axis=0, return_counts=True)
+    return u[cnt == 1]
+
+
+def prism_open_axis(V, F, periodic, vmin, vmax, tol_frac=1e-5):
+    """Which periodic axis, if any, carries this surface's ENTIRE boundary on its two box faces.
+
+    That is the one condition under which an open rim is not a defect: the surface is an extrusion along
+    a periodic axis, truncated at the box and continued through the periodic images, so both endpoints of
+    EVERY boundary edge sit on ``vmin[axis]`` or ``vmax[axis]`` (within a tight fraction of the box
+    extent -- these are construction coordinates, not a noisy measurement). ``None`` means either the
+    surface has no boundary at all (already closed, a different route) or its boundary is not confined to
+    a single periodic axis's two faces -- open for some reason periodicity alone cannot explain, let alone
+    close.
+    """
+    bnd = _boundary_edges(F)
+    if len(bnd) == 0:
+        return None
+    V = np.asarray(V, float)
+    vmin = np.asarray(vmin, float); vmax = np.asarray(vmax, float)
+    for a in range(3):
+        if not periodic[a]:
+            continue
+        tol = tol_frac * max(vmax[a] - vmin[a], 1e-300)
+        va, vb = V[bnd[:, 0], a], V[bnd[:, 1], a]
+        at_min = (np.abs(va - vmin[a]) < tol) & (np.abs(vb - vmin[a]) < tol)
+        at_max = (np.abs(va - vmax[a]) < tol) & (np.abs(vb - vmax[a]) < tol)
+        if np.all(at_min | at_max):
+            return a
+    return None
+
+
+def _polygon_area_centroid(loop):
+    """``(signed_area, (cx, cy))`` of a simple polygon loop, by the standard shoelace formulas.
+
+    Not the mean of the loop's own vertices: a plane section through a triangle diagonal contributes an
+    extra vertex that sits exactly ON a true polygon edge (it has to -- the cut is straight, the edge is
+    straight, and they share two points), so it changes neither the true shape nor these two quantities,
+    but it DOES move a plain vertex average, by an amount that depends on exactly where along the edge the
+    cut happened to land. Area and area-weighted centroid are the two things about a polygon that a
+    collinear point cannot perturb, which is what makes them the right invariant for comparing cuts.
+    """
+    x, y = loop[:, 0], loop[:, 1]
+    xn, yn = np.roll(x, -1), np.roll(y, -1)
+    cross = x * yn - xn * y
+    a = 0.5 * float(np.sum(cross))
+    if abs(a) < 1e-300:
+        return a, (float(x.mean()), float(y.mean()))
+    cx = float(np.sum((x + xn) * cross) / (6.0 * a))
+    cy = float(np.sum((y + yn) * cross) / (6.0 * a))
+    return a, (cx, cy)
+
+
+def prism_cross_section_loops(V, F, axis, vmin, vmax, n_check=3, rel_tol=5e-3):
+    """The 2-D loop(s) transverse to ``axis``, verified constant along it.
+
+    A surface extruded along ``axis`` has the same cross-section everywhere -- that IS what "prismatic"
+    means -- so sampling it at a few interior cuts and requiring them to agree (same number of loops, same
+    area and area-weighted centroid, each to ``rel_tol`` of the loop's own size -- see
+    :func:`_polygon_area_centroid` for why those two and not a simpler vertex average) is both the
+    geometric content this seeding route needs and the check that keeps it from firing on a surface that
+    is merely open along ``axis`` without actually being an extrusion (a taper, a branch, a partial wall,
+    a cone). Returns ``None`` on disagreement -- :func:`Mesh.init_positions` then refuses rather than
+    guessing. Loops are matched between cuts by ``abs`` area (the cut direction can flip a loop's winding
+    sign relative to the fixed cutting-plane normal depending which side of centre it falls on, without
+    that meaning anything about the surface), sorted ascending, so two tubes of very close but genuinely
+    different radius are still paired correctly rather than by a coincidence of sign.
+
+    Cuts :func:`trimesh.Trimesh.section`, not a hand-rolled slicer: the surface/plane intersection is
+    exactly the primitive trimesh exists to get right. Rescaled to unit edge length first -- trimesh's
+    path welding (stitching the two intersection points a diagonal-split quad contributes into one loop)
+    uses an ABSOLUTE tolerance, so at this library's native (metre) scale it silently fails to weld and
+    ``section`` comes back with no closed loop at all. Same trap as ``mesh_contains``, same fix.
+    """
+    import trimesh
+    V = np.asarray(V, float); F = np.asarray(F, np.int64)
+    vmin = np.asarray(vmin, float); vmax = np.asarray(vmax, float)
+    edge = np.linalg.norm(V[F[:, 0]] - V[F[:, 1]], axis=1)
+    s = 1.0 / max(float(np.median(edge)), 1e-300)
+    m = trimesh.Trimesh(vertices=V * s, faces=F, process=False)
+    transverse = [a for a in range(3) if a != axis]
+    cuts = vmin[axis] + (vmax[axis] - vmin[axis]) * np.linspace(0.2, 0.8, n_check)
+    ref_loops, ref_sig = None, None
+    for z in cuts:
+        origin = np.zeros(3); origin[axis] = z * s
+        normal = np.zeros(3); normal[axis] = 1.0
+        sec = m.section(plane_origin=origin, plane_normal=normal)
+        if sec is None or len(sec.entities) == 0:
+            return None
+        loops = [np.asarray(poly, float)[:, transverse] / s for poly in sec.discrete]
+        sig = sorted(((abs(a), c) for a, c in (_polygon_area_centroid(lp) for lp in loops)),
+                     key=lambda t: t[0])
+        if ref_sig is None:
+            ref_loops, ref_sig = loops, sig
+            continue
+        if len(sig) != len(ref_sig):
+            return None
+        for (a0, c0), (a1, c1) in zip(ref_sig, sig):
+            scale = max(a0 ** 0.5, 1e-300)
+            if abs(a0 - a1) > rel_tol * a0 or np.hypot(c0[0] - c1[0], c0[1] - c1[1]) > rel_tol * scale:
+                return None
+    return ref_loops
+
+
+def prism_periodic_contains(loops, axis, periodic, vmin, vmax, pts):
+    """Exact membership inside a periodic extrusion: inside an ODD number of ``loops``.
+
+    The axis coordinate of ``pts`` never enters the test -- an extrusion's containment does not depend on
+    it, which is the whole point of reducing to this route. Odd/even over the loops (rather than "inside
+    any") is what makes an annular cross-section (an outer wall and an inner hole, both boundary loops of
+    one surface) come out right: inside the outer loop XOR inside the inner one, so the hole cancels.
+
+    Odd/even and "inside any" AGREE for loops that do not overlap in the transverse plane -- a point is
+    then in at most one, so XOR and OR are the same test -- which is every substrate this library
+    generates (tubes with physical walls cannot interpenetrate; :func:`pack_cylinders` enforces clearance
+    for exactly this reason). Two SEPARATE tubes placed close enough to overlap is not a shape this
+    function tries to get right; it is a caller error the same way a self-intersecting mesh would be.
+
+    Each loop's periodic images are handled by the minimum image FROM THE LOOP'S OWN CENTROID -- the same
+    device :func:`PackedCylinders` uses (``pack_cylinders``/``min_image``), generalised from a circle to
+    whatever polygon the mesh actually holds, so a tube that pokes past a transverse periodic face is seen
+    from its wrapped side too.
+
+    Point-in-polygon is :mod:`shapely` (``trimesh``'s own 2-D backend, declared by this package's ``mesh``
+    extra), not a hand-rolled ray cast -- only the periodic wrap and the odd/even nesting rule are new.
+    """
+    try:
+        from shapely import Polygon, contains_xy
+    except ModuleNotFoundError as exc:            # shapely is a trimesh[easy] extra, not a hard dependency
+        raise ModuleNotFoundError(
+            f"prism_periodic_contains needs shapely ({exc.name} is missing). A bare 'pip install trimesh' "
+            f"imports fine and only fails here. Install 'dmipy-sim[mesh]' (or 'trimesh[easy]')."
+        ) from exc
+    pts = np.asarray(pts, float)
+    transverse = [a for a in range(3) if a != axis]
+    q = pts[:, transverse]
+    L = np.asarray(vmax, float) - np.asarray(vmin, float)
+    per = [bool(periodic[a]) for a in transverse]
+    inside = np.zeros(len(pts), bool)
+    for loop in loops:
+        poly = Polygon(loop)
+        c = loop.mean(0)
+        dq = q - c
+        for i in range(2):
+            Lt = L[transverse[i]]
+            if per[i] and Lt > 0:
+                dq[:, i] -= Lt * np.round(dq[:, i] / Lt)
+        wrapped = c + dq
+        inside ^= contains_xy(poly, wrapped[:, 0], wrapped[:, 1])
+    return inside
+
+
 def _half_edges(F):
     """The shared-edge structure of a surface, from one sort of its half-edges.
 
@@ -1241,11 +1397,25 @@ class Mesh(Geometry):
     def init_positions(self, n_walkers, key, pool=None):
         """Seed walkers in ``pool`` (default: the geometry's ``pool``) by exact rejection sampling.
 
-        On a closed surface every candidate is decided by :func:`mesh_contains`, ray-crossing parity, a global
-        test: ``mesh_inside`` proposes, only the proposals are ray cast, and nothing genuinely inside is discarded
-        before the exact stage sees it. An open surface (a periodic tube, whose rims are open because the geometry
-        continues through them) has no parity, so it is seeded by the cell-gather classifier, nearest-centroid
-        sidedness, which is inexact near a wall (#400).
+        Three routes, chosen by what the surface's own boundary says about it:
+
+        * **Closed** (no boundary edge): every candidate is decided by :func:`mesh_contains`, ray-crossing
+          parity, a global test -- ``mesh_inside`` proposes, only the proposals are ray cast, and nothing
+          genuinely inside is discarded before the exact stage sees it.
+        * **Open only because periodic** (:func:`prism_open_axis` finds a periodic axis carrying the whole
+          boundary, and :func:`prism_cross_section_loops` confirms the cross-section transverse to it is
+          constant): the surface is an extrusion through the wrap -- a tube family, the periodic/fibre-axis
+          case this constructor's own ``orientation`` parameter already names -- so the open axis
+          contributes nothing to containment and it reduces to exact 2-D point-in-polygon in the transverse
+          plane, periodic images handled per loop (:func:`prism_periodic_contains`). This is the general
+          route for a periodically-open mesh: it does not assume a regular polygon, a single tube, or which
+          axis is open, only that the surface is genuinely an extrusion and that extrusion's axis is the one
+          periodicity closes.
+        * **Open for any other reason**: refused, by name, with the boundary-edge count (#400). Ray parity
+          through a rim that periodicity does not close is undefined, and guessing from the nearest triangle
+          centroid (the cell-gather classifier, this method's behaviour before #400) silently misplaces
+          walkers near the wall -- measured 6.3% on a coarse open, non-periodic cylinder -- which is a
+          defect this library refuses to ship rather than a convenience worth keeping.
         """
         from ..fields.susceptibility_field import mesh_contains
         intra = _seed_pool(self.pool if pool is None else pool) == 1
@@ -1261,31 +1431,25 @@ class Mesh(Geometry):
                 need = n_walkers - sum(len(a) for a in out)
             return jnp.asarray(np.concatenate(out)[:n_walkers], jnp.float32)
 
-        warnings.warn(
-            "seeding an OPEN surface: ray parity is undefined through its rims, so this falls back to "
-            "the cell-gather classifier, which decides sidedness from the nearest triangle centroid and "
-            "misplaces walkers near a wall (measured 6.3% on a coarse closed cylinder). Cap the surface "
-            "to get exact seeding.", stacklevel=2)
-        want = 1 if intra else 0
-        classify, populated = _classify_batch, _populated_batch
-        n_resolved = 0
-        while need > 0:
-            pts = rng.uniform(self.vmin, self.vmax, (max(need * 4, 1024), 3)).astype(np.float32)
-            jpts = jnp.asarray(pts)
-            lab = np.array(classify(self._A, jpts))     # copy: a jax-backed view is read-only
-            undecided = ~np.asarray(populated(self._A, jpts))
-            if undecided.any():
-                # an empty gather is not a verdict, it is a default -- resolve those exactly, exactly
-                # as this path did before (#39); an open surface that reaches here kept working because
-                # it never produced an undecided point, and that is preserved rather than reasoned about
-                inside = mesh_contains(V, F, pts[undecided].astype(float))
-                lab[undecided] = np.where(inside, 1, 0)
-                n_resolved += int(undecided.sum())
-            out.append(pts[lab == want])
-            need = n_walkers - sum(len(a) for a in out)
-        if n_resolved:
-            self._n_gather_undecided = n_resolved
-        return jnp.asarray(np.concatenate(out)[:n_walkers], jnp.float32)
+        prism = self._prism_route()
+        if prism is not None:
+            axis, loops = prism
+            while need > 0:
+                pts = rng.uniform(self.vmin, self.vmax, (max(need * 4, 1024), 3)).astype(np.float32)
+                inside = prism_periodic_contains(loops, axis, self.periodic, self.vmin, self.vmax,
+                                                 pts.astype(float))
+                out.append(pts[inside if intra else ~inside])
+                need = n_walkers - sum(len(a) for a in out)
+            return jnp.asarray(np.concatenate(out)[:n_walkers], jnp.float32)
+
+        n_open = surface_topology(V, F)["boundary_edges"]
+        raise ValueError(
+            f"init_positions cannot seed this OPEN surface: {n_open} boundary edge(s), and no periodic "
+            f"axis closes them by identification -- either no periodic axis carries the whole boundary "
+            f"(prism_open_axis), or the surface is not a constant cross-section extrusion along the axis "
+            f"that does (prism_cross_section_loops). Ray parity through a genuinely open rim is undefined "
+            f"(see mesh_contains), and this library will not guess at it. Seed this surface from its own "
+            f"geometry instead (pass r0= explicitly to simulate()), or close the surface.")
 
     def _surface_is_closed(self):
         """Does every edge have two faces? Cached -- it is a property of the mesh, not of a call."""
@@ -1299,6 +1463,22 @@ class Mesh(Geometry):
             except Exception:
                 self._closed = False
         return self._closed
+
+    def _prism_route(self):
+        """``(axis, loops)`` once, cached -- a property of the mesh, not of a call -- if this surface is
+        open only because it is a periodic extrusion (see :meth:`init_positions`); ``None`` otherwise,
+        including when trimesh cannot be imported to check (the surface then falls through to the explicit
+        refusal, which names the condition rather than raising an unrelated import error).
+        """
+        if getattr(self, "_prism", "unset") == "unset":
+            try:
+                axis = prism_open_axis(self.vertices, self.faces, self.periodic, self.vmin, self.vmax)
+                loops = (prism_cross_section_loops(self.vertices, self.faces, axis, self.vmin, self.vmax)
+                         if axis is not None else None)
+            except Exception:
+                axis, loops = None, None
+            self._prism = (axis, loops) if loops is not None else None
+        return self._prism
 
     def classify_position_carry(self, r, comp_prev):
         """Compartment label, keeping ``comp_prev`` wherever the gather cannot decide.
