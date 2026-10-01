@@ -135,6 +135,7 @@ class Primitives:
     voxel: np.ndarray                                          # required: there is no sane default (see __post_init__)
     pathway: float = 1.0
     by_pool: object = field(repr=False, default=None)          # the pack's resolver of a per-pool value
+    rho_over_D_max: Optional[float] = None                     # the contact tier's envelope (RPK.md 8.7), None unbounded          # the pack's resolver of a per-pool value
 
     def __post_init__(self):
         if self.voxel is None:
@@ -182,6 +183,9 @@ class Primitives:
             if D is None:
                 raise ValueError("rho needs the walk's diffusivity: the pack did not record it, pass D=")
             rho_D = float(t.rho) / float(D)
+            if self.rho_over_D_max is not None and rho_D > float(self.rho_over_D_max) * (1.0 + 1e-12):
+                raise ValueError(f"rho / D = {rho_D:.4g} 1/m is beyond this pack's contact envelope, rho / D <= "
+                                 f"{float(self.rho_over_D_max):.4g} 1/m (replay_envelope.tissue.rho_over_D_max)")
         return invT2, invT1, rho_D
 
     def field_scalars(self, tissue, scanner):
@@ -280,7 +284,7 @@ def walker_primitives(pack, acquisition):
         field_aniso = aniso if _has_aniso(ch.get("susceptibility_grid"), names) else np.zeros(n_w)
     from ..acquisition.epg import pathway_weight
     return Primitives(w=P["w"], phi=phi, field_iso=field_iso, field_aniso=field_aniso, exposure_t2=exposure_t2, exposure_t1=exposure_t1,
-                      contact=contact, D_walk=pack.diffusivity, pathway=pathway_weight(acq.waveform),
+                      contact=contact, D_walk=pack.diffusivity, pathway=pathway_weight(acq.waveform), rho_over_D_max=pack.rho_over_D_max,
                       voxel=P["voxel"], by_pool=pack._by_pool)
 
 

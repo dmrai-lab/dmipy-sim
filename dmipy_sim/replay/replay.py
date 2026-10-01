@@ -638,8 +638,92 @@ class ReplayPack:
             meta["id"] = stamp
         meta["license"], meta["citation"] = self.license, self.citation
         out = ReplayPack(arrays, meta, source=None)
+        if out.has_surface:
+            out.restate_surface_envelope(reference=self, tol=tol)
         out.save(out_path)
         return out
+
+    @property
+    def rho_over_D_max(self):
+        """The largest ``rho / D`` the contact tier serves (``replay_envelope.tissue.rho_over_D_max``, RPK.md 8.7), or
+        ``None`` when the pack states no bound."""
+        return ((self.meta.get("replay_envelope") or {}).get("tissue") or {}).get("rho_over_D_max")
+
+    def _check_rho(self, rho_over_D):
+        """Refuse a relaxivity beyond the contact tier's envelope (:attr:`rho_over_D_max`), naming both."""
+        top = self.rho_over_D_max
+        if top is not None and float(rho_over_D) > float(top) * (1.0 + 1e-12):
+            D = self.diffusivity
+            at = "" if D is None else f" (rho = {float(top) * float(D):.3g} m/s at the walk's D = {float(D):.3g} m^2/s)"
+            raise ValueError(f"rho / D = {float(rho_over_D):.4g} 1/m is beyond this pack's contact envelope, rho / D <= "
+                             f"{float(top):.4g} 1/m{at}: past it the stored contact band no longer gives a physical "
+                             "attenuation within its certificate (replay_envelope.tissue.rho_over_D_max)")
+
+    def restate_surface_envelope(self, *, reference=None, tol=2.0, out_path=None):
+        """State the contact tier at the envelope it serves (RPK.md 8.7): per window the largest ``rho / D`` at which
+        the decoded contact gives a physical attenuation within ``tol`` floors
+        (:func:`~dmipy_sim.replay.bank.surface_envelope`), the pack's ``replay_envelope.tissue.rho_over_D_max`` the
+        smallest over the windows, and every window's surface rows (``err_surface``, ``floor_surface``) restated up
+        to that edge rather than at the battery's largest ``rho``, its maxima re-read and the whole's certificate
+        rebuilt from them. ``reference`` is the one-window pack the windows were encoded from, whose decoded contact
+        is then the error's reference; without it the error is the unphysical gain alone. Only metadata changes;
+        ``out_path`` writes the pack with its tensors as they are. ``provenance.surface_envelope_restated`` records
+        the edges, the battery's top and the reference."""
+        import copy
+        from .bank import surface_envelope, restate_maxima, combine_segment_fidelity
+        from .compression import decode_boundary_bridge, default_envelope
+        if not self.has_surface:
+            raise ValueError("this pack carries no contact channel (C2): there is no surface envelope to state")
+        D = self.diffusivity
+        if D is None:
+            raise ValueError("the pack records no diffusivity, so rho / D cannot be stated")
+        if reference is not None and reference.n_segments != 1:
+            raise ValueError("the reference is the one-window pack the windows were encoded from")
+        rho_list = default_envelope().get("rho_list") or [1e-5, 3e-5, 1e-4]
+        hi = max(rho_list) / float(D)
+        w = np.asarray(self.spin_weights, np.float64)
+        n_seg = int(self.segments["n_t"])
+        reads = []                                                   # (decoded contact, reference sums) per window
+        for i, (win, _, n_s) in enumerate(self._windows()):
+            cm = dict((win.meta["compression"].get("channels") or {})["boundary_local_time"])
+            cm.setdefault("n_t", n_s)
+            cm.setdefault("K", _cx_bands_K(win.arrays, cm))
+            ref = None
+            if reference is not None:
+                k0 = i * (n_seg - 1)
+                ref = np.asarray(reference._decoded_channels(start=k0 + 1, stop=k0 + n_s)["ell"], np.float64).sum(axis=1)
+            reads.append((decode_boundary_bridge(win.arrays, cm), ref))
+        rows = [surface_envelope(ell, w, rho_over_D_hi=hi, reference=ref, tol=tol) for ell, ref in reads]
+        edge = float(min(r[0] for r in rows))
+        restated = [surface_envelope(ell, w, rho_over_D_hi=edge, reference=ref, tol=np.inf)[1:] if edge > 0 else (0.0, 0.0)
+                    for ell, ref in reads]
+        del reads
+        fid = copy.deepcopy(self.meta.get("fidelity") or {})
+        segs = fid.get("segments")
+        if segs:
+            for f_i, (e, f) in zip(segs, restated):
+                f_i.update(err_surface=e, floor_surface=f, surface_rho_over_D_max=edge)
+                restate_maxima(f_i)
+            if fid.get("certified") == "bounded":
+                fid = combine_segment_fidelity(segs)
+            else:
+                fid.update(err_surface=float(sum(e for e, _ in restated)), floor_surface=float(max(f for _, f in restated)), segments=segs)
+                restate_maxima(fid)
+        else:
+            fid.update(err_surface=restated[0][0], floor_surface=restated[0][1])
+            restate_maxima(fid)
+        fid["surface_rho_over_D_max"] = edge
+        self.meta["fidelity"] = fid
+        env = self.meta.setdefault("replay_envelope", {})
+        env.setdefault("tissue", {})["rho_over_D_max"] = edge
+        self.meta.setdefault("provenance", {})["surface_envelope_restated"] = dict(
+            rho_over_D_max=edge, rho_max_m_per_s=edge * float(D), D=float(D), per_window=[r[0] for r in rows],
+            battery_rho_over_D_max=hi, tol=float(tol), grid_points=len(np.geomspace(1.0, hi, 256)),
+            reference=(None if reference is None else reference.meta.get("id")))
+        self._digest = None
+        if out_path is not None:
+            self.save(out_path)
+        return edge
 
     # ---- tiers carried ----
     @property
@@ -1169,6 +1253,7 @@ class ReplayPack:
                 raise ValueError("rho needs the walk's diffusivity: the pack did not record it, pass D=")
             if not self.has_surface:
                 raise ValueError("surface relaxivity was requested but this pack carries no C2 channel")
+            self._check_rho(float(P["rho"]) / float(D_walk))
             surface = dict(surface_relaxivity=float(P["rho"]), D=float(D_walk))
         n_w = P["n_w"]
         off = None
@@ -1354,6 +1439,7 @@ class ReplayPack:
             D_walk = self.diffusivity if D is None else D
             if D_walk is None:
                 raise ValueError("rho needs the walk's diffusivity: the pack did not record it, pass D=")
+            self._check_rho(float(rho) / float(D_walk))
             for (seg, _, _), (chi_s, _) in zip(windows, window_gates):
                 logw = logw + surface_logweight(seg.arrays, float(rho) / float(D_walk),
                                                 ch.get("boundary_local_time"), chi_s)      # raises without C2

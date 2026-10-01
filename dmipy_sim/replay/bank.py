@@ -249,6 +249,65 @@ def _surface_fidelity(m, arrays, chan_meta, env):
     return dict(err=float(err), floor=float(floor))
 
 
+#: rho / D values a window's contact envelope is read on: log-spaced from 1 m^-1 to the battery's largest
+SURFACE_ENVELOPE_POINTS = 256
+
+
+def surface_envelope(ell, w, *, rho_over_D_hi, reference=None, tol=2.0, n_grid=SURFACE_ENVELOPE_POINTS):
+    """The contact tier's envelope on one window: the largest ``rho / D`` up to which the window's decoded contact
+    ``ell`` ``(n_w, n_t)`` serves a physical signal within its certificate. ``(edge, err, floor)``.
+
+    On a log grid from 1 m^-1 to ``rho_over_D_hi``, at every point: the floor is the standard deviation of the
+    split-half difference of the ungated attenuation ``<w exp(rho/D s)>``, ``2 sd_w / sqrt(n_eff)`` (``s`` the
+    window's summed contact; the reference's when one is given) -- the spread of the certificate's split-half
+    floor rather than one draw of it, so that the edge does not move with the luck of one split; the error is the
+    larger of the attenuation's distance from the reference's (``reference``, the same window's per-walker summed
+    contact from the walk the channel was encoded from) and the unphysical gain ``<w (exp(rho/D r) - 1)>``, with
+    ``r`` each walker's largest rise of the cumulative contact over any stretch of the window -- a contact only
+    ever lowers the weight, so a rise is band ripple, and it is what a gate over that stretch would turn into a
+    weight above one. The edge is the largest grid point below which every point is finite, has its error within
+    ``tol`` floors and its gain within one floor; ``err`` and ``floor`` are the largest of each up to it. 0 when
+    even the first point fails."""
+    ell = np.asarray(ell, np.float64)
+    w = np.asarray(w, np.float64)
+    n_w = ell.shape[0]
+    B = np.cumsum(ell[:, 1:], axis=1)                              # the window's first save ends no step of it
+    B = np.concatenate([np.zeros((n_w, 1)), B], axis=1)
+    s = B[:, -1]
+    rise = np.max(B - np.minimum.accumulate(B, axis=1), axis=1)
+    s_ref = s if reference is None else np.asarray(reference, np.float64)
+    p = w / w.sum()
+    n_eff = 1.0 / float(np.sum(p ** 2))
+    edge = err = floor = 0.0
+    with np.errstate(over="ignore", invalid="ignore"):
+        for rd in np.geomspace(1.0, float(rho_over_D_hi), int(n_grid)):
+            a_ref = np.exp(rd * s_ref)
+            m_ref = float(p @ a_ref)
+            fl = 2.0 * float(np.sqrt(p @ (a_ref - m_ref) ** 2)) / np.sqrt(n_eff)
+            gain = float(p @ np.expm1(rd * rise))
+            e = max(abs(m_ref - float(p @ np.exp(rd * s))), gain)
+            if not (np.isfinite(fl) and np.isfinite(e)) or e > tol * fl or gain > fl:
+                break
+            edge, err, floor = float(rd), max(err, e), max(floor, fl)
+    return edge, float(err), float(floor)
+
+
+def restate_maxima(fid):
+    """A certificate's ``err_max`` / ``floor_max`` re-read from its terms -- every ``err_*`` / ``floor_*`` row and the
+    positions' per-family rows -- and ``within_2x_floor`` from them."""
+    errs = [v for k, v in fid.items() if k.startswith("err_") and k != "err_max" and isinstance(v, (int, float))]
+    floors = [v for k, v in fid.items() if k.startswith("floor_") and k != "floor_max" and isinstance(v, (int, float))]
+    for f in (fid.get("per_family") or {}).values():
+        errs.append(f["err_max"]); floors.append(f["floor_max"])
+    if errs:
+        fid["err_max"] = float(max(errs))
+    if floors:
+        fid["floor_max"] = float(max(floors))
+    if "err_max" in fid and "floor_max" in fid:
+        fid["within_2x_floor"] = bool(fid["err_max"] <= 2.0 * fid["floor_max"])
+    return fid
+
+
 def voxel_fidelity(traj, dt, decoded_pos, grid, comp, env, *, w=None, logw=None, chunk=20_000):
     """The pack's fidelity PER VOXEL AND POOL, for a walk meant to be partitioned: every walker is binned by where
     it started (``grid.bin``, the partition's own rule) and by its pool; per (voxel, pool) the ensemble signal
