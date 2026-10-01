@@ -424,7 +424,7 @@ def _raw_field(m, field, traj, b0_dir, *, B0, chi_iso, chi_aniso, idx=None):
     from ..fields.hollow_cylinder import contract
     samples = m.get("susc_field_samples")
     if samples is not None:
-        sm = np.asarray(samples, np.float64) if idx is None else np.asarray(samples, np.float64)[idx]
+        sm = np.asarray(samples if idx is None else samples[idx], np.float64)
         return contract(sm, b0_dir, B0=B0, chi_iso=chi_iso, chi_aniso=chi_aniso)
     return _field_along(field, traj, b0_dir, B0=B0, chi_iso=chi_iso, chi_aniso=chi_aniso)
 
@@ -502,11 +502,10 @@ def _susc_path_bloch_fidelity(m, arrays, pm, gm, env, n_sub=8000):
     field = _field_of(m)
     if field is None or "susc_path_dct" not in arrays:
         return None
-    traj = np.asarray(m["traj"], np.float64)
-    n_w, n_t = traj.shape[0], traj.shape[1]
+    n_w, n_t = m["traj"].shape[0], m["traj"].shape[1]            # the walk is read for the subsample alone
     dt = float(m["dt_traj"]); TE = (n_t - 1) * dt
     k = int(min(n_sub, n_w))
-    pos = traj[:k]
+    pos = np.asarray(m["traj"][:k], np.float64)
     w = (np.asarray(m["w"], np.float64)[:k] if m.get("w") is not None else np.ones(k))
     b_dec, _ = susc_path_decode(arrays, pm, n_w=k)
     chi_i = float(m.get("susc_chi_iso") or 1.06e-6)
@@ -585,7 +584,7 @@ def derive_susc_path_K(m, field, env, *, K_max, ladder=SUSC_PATH_LADDER, contain
     pair read.
     """
     from scipy.fft import idct
-    traj = np.asarray(m["traj"], np.float64); n_w = traj.shape[0]
+    traj = m["traj"]; n_w = traj.shape[0]          # read whole only to sample a field the walk did not sample itself
     every = int(m.get("susc_field_every", 1) or 1)
     n_t = len(range(0, traj.shape[1], every)); dt = float(m["dt_traj"]) * every
     # the band bounds the refocusing depth the tier serves, K / 2 pulses; a train the envelope declares is the depth
@@ -597,11 +596,10 @@ def derive_susc_path_K(m, field, env, *, K_max, ladder=SUSC_PATH_LADDER, contain
     rungs = [k for k in rungs if k >= min_K] or [n_t]
     top = rungs[-1]
     if m.get("susc_field_samples") is not None:
-        from ..fields.hollow_cylinder import CHANNEL_NAMES
-        arrays_top, meta_top = susc_path_encode_series(np.asarray(m["susc_field_samples"]), CHANNEL_NAMES, K=top, bits=None,
+        arrays_top, meta_top = susc_path_encode_series(np.asarray(m["susc_field_samples"]), list(field.channel_names), K=top, bits=None,
                                                        layout="wtc", dt=dt, dtype=np.float32)
     else:
-        arrays_top, meta_top = susc_path_encode(field, traj, K=top, bits=None, dtype=np.float32)
+        arrays_top, meta_top = susc_path_encode(field, np.asarray(traj, np.float64), K=top, bits=None, dtype=np.float32)
     coeffs = np.asarray(arrays_top["susc_path_dct"], np.float32)               # (n_w, n_ch, top)
     has_aniso = coeffs.shape[1] >= 12
     w = np.asarray(m["w"], np.float64) if m.get("w") is not None else np.ones(n_w)
@@ -661,7 +659,7 @@ def _susc_path_fidelity(m, arrays, pm, gm, env):
     field = _field_of(m)
     if field is None or "susc_path_dct" not in arrays:
         return None
-    traj = np.asarray(m["traj"], np.float64); n_w = traj.shape[0]
+    traj = m["traj"]; n_w = traj.shape[0]          # read whole only to sample a field the walk did not sample itself
     every = int(m.get("susc_field_every", 1) or 1)
     n_t = len(range(0, traj.shape[1], every))                    # the channel's own grid
     dt = float(m["dt_traj"]) * every
@@ -862,24 +860,25 @@ def susc_path_coeffs(arrays, meta):
     return C, names
 
 
-def susc_path_decode(arrays, meta, *, n_w=None, n_cut=None):
+def susc_path_decode(arrays, meta, *, n_w=None, n_cut=None, start=0):
     """Reconstruct b_c(t) per walker from the stored coefficients; re-inserts iso_P_zz if implied.
 
     Returns ``(field, names)`` with field ``(n_w, n_ch_full, n_t)`` in the canonical channel order
-    (iso_local, iso_P_xx..yz, [aniso_G_xx..yz]) so the Q(H) contraction indexes it directly. ``n_cut`` asks for
-    the first ``n_cut`` saves only: one product against the inverse DCT-II basis evaluated there, which a prefix
-    reads instead of the whole series (dmrai-lab/dmipy-sim#449 item 3).
+    (iso_local, iso_P_xx..yz, [aniso_G_xx..yz]) so the Q(H) contraction indexes it directly. ``start`` / ``n_cut``
+    ask for the samples ``start .. n_cut - 1`` only (a prefix, or a window of the walk): one product against the
+    inverse DCT-II basis evaluated there, instead of the whole series (dmrai-lab/dmipy-sim#449 item 3).
     """
     from scipy.fft import idct
     C, names = susc_path_coeffs(arrays, meta)
     if n_w is not None:
         C = C[:int(n_w)]
     n_t = int(meta["n_t"])
-    if n_cut is not None and int(n_cut) < n_t:
-        n_cut = int(n_cut); K = C.shape[2]
-        k = np.arange(K)[:, None]; n = np.arange(n_cut)[None, :]
-        D = np.sqrt(2.0 / n_t) * np.cos(np.pi * k * (2 * n + 1) / (2.0 * n_t)); D[0] = np.sqrt(1.0 / n_t)   # (K, n_cut)
-        return np.einsum("wck,kn->wcn", C, D), names
+    stop = n_t if n_cut is None else min(int(n_cut), n_t)
+    if int(start) > 0 or stop < n_t:
+        K = C.shape[2]
+        k = np.arange(K)[:, None]; n = np.arange(int(start), stop)[None, :]
+        D = np.sqrt(2.0 / n_t) * np.cos(np.pi * k * (2 * n + 1) / (2.0 * n_t)); D[0] = np.sqrt(1.0 / n_t)   # (K, saves)
+        return C @ D, names
     b = idct(C, type=2, norm="ortho", axis=2, n=n_t) if C.shape[2] == n_t else \
         idct(np.pad(C, ((0, 0), (0, 0), (0, n_t - C.shape[2]))), type=2, norm="ortho", axis=2)
     return b, names
@@ -1587,11 +1586,11 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto"
             # a strand substrate's per-segment field: no grid to store, the path channel is the tier
             if not susc_path_K:
                 raise ValueError("a StrandFieldBasis has no grid to store: the field tier (C3) needs susc_path_K")
-            chan_meta["susceptibility_grid"] = dict(has_aniso=True, arrays_in_pack=False, replay_route="path", source=_field.meta)
+            chan_meta["susceptibility_grid"] = dict(has_aniso=("aniso_G_xx" in _field.channel_names), arrays_in_pack=False,
+                                                    replay_route="path", source=_field.meta)
             channels["susceptibility"] = True
             if m.get("susc_field_samples") is not None:                  # sampled by the walk: the interval means
-                from ..fields.hollow_cylinder import CHANNEL_NAMES
-                _a, _pm = susc_path_encode_series(np.asarray(m["susc_field_samples"]), CHANNEL_NAMES, K=int(susc_path_K),
+                _a, _pm = susc_path_encode_series(np.asarray(m["susc_field_samples"]), list(_field.channel_names), K=int(susc_path_K),
                                                   bits=susc_path_bits, layout="wtc", device=device,    # no copy of the samples
                                                   dt=float(m["dt_traj"]) * int(m.get("susc_field_every", 1)),
                                                   max_refocus_pulses=env.get("max_refocus_pulses"))
@@ -1792,6 +1791,42 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto"
         return pack
 
 
+def join_segments(packs, *, fidelity, walks, walkers_shuffled):
+    """The packs of the consecutive windows of one walk -- each one window of the same saves, codec and band, as
+    :func:`build_replay_pack` writes one -- as ONE pack's ``(arrays, meta)`` (RPK.md 4.3): window 0's tensors under the
+    channel names and window ``i``'s under ``s{i}/``, the tensors the walk shares (``_SHARED_KEYS``, the field grids)
+    once, refused when two windows disagree in one; the channel numbers a codec measures the worst over the windows;
+    the segment table ``{n, n_t, T, walks}``; ``fidelity`` the whole's certificate and the precision tiers read from
+    it. The metadata is window 0's otherwise."""
+    arrays = dict(packs[0].arrays)
+    for i, pk in enumerate(packs[1:], start=1):
+        for k, v in pk.arrays.items():
+            if _is_shared_key(k):
+                if not np.array_equal(np.asarray(v), np.asarray(arrays[k])):
+                    raise ValueError(f"segment {i} disagrees with segment 0 in the shared tensor {k!r}")
+                continue
+            arrays[f"s{i}/{k}"] = v
+    meta = json.loads(json.dumps(packs[0].meta))
+    n_seg = int(packs[0].n_t); steps = n_seg - 1
+    n_segments = len(packs)
+    cm = meta["compression"]
+    chans = cm.get("channels") or {}
+    for c, mm in chans.items():                                   # the measured numbers: the worst over the windows
+        if isinstance(mm, dict):
+            for k in _MEASURED_CHANNEL_KEYS:
+                vals = [((pk.meta["compression"].get("channels") or {}).get(c) or {}).get(k) for pk in packs]
+                if all(v is not None for v in vals):
+                    mm[k] = float(max(vals)) if not isinstance(vals[0], dict) else vals[0]
+    n_walkers = int(packs[0].n_walkers)
+    if cm.get("walker_preserving"):
+        cm["precision_tiers"] = _precision_tiers(arrays, n_walkers, float(fidelity.get("floor_max") or 0.0), bool(walkers_shuffled))
+    dt = float(packs[0].dt)
+    meta["walk_params"].update(n_t=int(n_segments * steps + 1), T_max=float(n_segments * steps * dt),
+                               segments=dict(n=int(n_segments), n_t=int(n_seg), T=float(steps * dt), walks=list(walks)))
+    meta["fidelity"] = fidelity
+    return arrays, meta
+
+
 def _build_segmented(m, n_segments, n_seg, run, walk, out_path, *, id, K, temporal_bandwidth_hz, blt_temporal_K, susc_path_K,
                      fidelity, fidelity_from, envelope, sigma_star=None, **kw):
     """:func:`build_replay_pack` for a walk of ``n_segments`` windows of ``n_seg`` saves: every window built as a
@@ -1827,14 +1862,6 @@ def _build_segmented(m, n_segments, n_seg, run, walk, out_path, *, id, K, tempor
                                    fidelity_from=fidelity_from, envelope=envelope, segment_T=T_seg, _occupancy_runs=crosses, sigma_star=sigma_star,
                                    voxel_grid=None, **{k_: v_ for k_, v_ in kw.items() if k_ != "voxel_grid"})
         packs.append(pk)
-    arrays = dict(packs[0].arrays)
-    for i, pk in enumerate(packs[1:], start=1):
-        for k, v in pk.arrays.items():
-            if _is_shared_key(k):
-                if not np.array_equal(np.asarray(v), np.asarray(arrays[k])):
-                    raise ValueError(f"segment {i} disagrees with segment 0 in the shared tensor {k!r}")
-                continue
-            arrays[f"s{i}/{k}"] = v
     # the whole: the positions battery measured over the full walk (the walk is in hand), the tier terms bounded
     fid = combine_segment_fidelity([pk.meta["fidelity"] for pk in packs])
     if fidelity == "measured":
@@ -1851,22 +1878,8 @@ def _build_segmented(m, n_segments, n_seg, run, walk, out_path, *, id, K, tempor
         fid["within_2x_floor"] = bool(fid["err_max"] <= 2.0 * fid["floor_max"])
     if sigma_star is not None:                                 # the floor-target policy's verdict on the whole
         fid.update(target_floor=float(sigma_star), meets_target=bool(fid["err_max"] <= sigma_star and fid["floor_max"] <= sigma_star))
-    meta = json.loads(json.dumps(packs[0].meta))
-    n_t = n_segments * steps + 1
-    cm = meta["compression"]
-    chans = cm.get("channels") or {}
-    for c, mm in chans.items():                                   # the measured numbers: the worst over the windows
-        if isinstance(mm, dict):
-            for k in _MEASURED_CHANNEL_KEYS:
-                vals = [((pk.meta["compression"].get("channels") or {}).get(c) or {}).get(k) for pk in packs]
-                if all(v is not None for v in vals):
-                    mm[k] = float(max(vals))
-    if cm.get("walker_preserving"):
-        cm["precision_tiers"] = _precision_tiers(arrays, int(m["n_walkers"]), float(fid.get("floor_max") or 0.0), bool(m.get("walkers_shuffled")))
-    meta["walk_params"].update(n_t=int(n_t), T_max=float(m["T_max"]),
-                               segments=dict(n=int(n_segments), n_t=int(n_seg), T=float(T_seg),
-                                             walks=[dict(first=0, last=int(n_segments) - 1, seed=seed_value(m["seed"]))]))
-    meta["fidelity"] = fid
+    arrays, meta = join_segments(packs, fidelity=fid, walks=[dict(first=0, last=int(n_segments) - 1, seed=seed_value(m["seed"]))],
+                                 walkers_shuffled=bool(m.get("walkers_shuffled")))
     meta["provenance"] = dict(meta.get("provenance") or {}, run=_run_provenance(run, walk))
     run.phase("write")
     pack = ReplayPack(arrays, meta, source=out_path)

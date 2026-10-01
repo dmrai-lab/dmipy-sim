@@ -535,38 +535,54 @@ def _device_bridge(n_t, K):
 
 
 @functools.lru_cache(maxsize=8)
-def _prefix_decode_kernel(n_t, n_cut, K):
-    """``C (c, K+2, 3) -> positions (c, n_cut, 3)`` float32: the first ``n_cut`` saves of a bridge-coded walk of
-    ``n_t`` saves, the sine bands evaluated only where they are read."""
+def _saves_decode_kernel(n_t, start, stop, K):
+    """``C (c, K+2, 3) -> positions (c, stop - start, 3)`` float32: saves ``start .. stop - 1`` of a bridge-coded walk
+    of ``n_t`` saves, the sine bands evaluated only where they are read."""
     import jax
     import jax.numpy as jnp
     hi = jax.lax.Precision.HIGHEST
-    inner = min(n_cut, n_t - 1) - 1                                             # interior saves 1 .. n_cut-1 (the last save is a band end)
-    S_part = jnp.asarray(_dst_matrix(n_t - 2, K)[:max(inner, 0)].T, jnp.float32)  # (K, inner)
-    tau = jnp.asarray(np.arange(n_cut) / (n_t - 1.0), jnp.float32)
+    S_part, tau = _saves_basis(n_t, start, stop, K)
+    S_part = jnp.asarray(S_part, jnp.float32); tau = jnp.asarray(tau, jnp.float32)
 
     @jax.jit
     def kernel(C):
         a, v, B = C[:, 0, :], C[:, 1, :], C[:, 2:, :]
-        u = jnp.einsum("wkd,kn->wnd", B, S_part, precision=hi)                  # (c, inner, 3)
-        pad = jnp.zeros((C.shape[0], 1, 3), jnp.float32)
-        u = jnp.concatenate([pad, u] + ([pad] if n_cut == n_t else []), axis=1)[:, :n_cut, :]
+        u = jnp.einsum("wkd,kn->wnd", B, S_part, precision=hi)                  # (c, stop - start, 3)
         return a[:, None, :] + v[:, None, :] * tau[None, :, None] + u
 
     return kernel
 
 
-def decode_prefix(C, n_t, n_cut, *, device="auto", chunk_bytes=1 << 30):
-    """The first ``n_cut`` saves ``(n_w, n_cut, 3)`` float32 of a bridge-coded walk of ``n_t`` saves from its coefficients
-    ``C`` ``(n_w, K+2, 3)``: on the device per walker chunk; numpy's whole decode cut to ``n_cut`` when there is none."""
+def _saves_basis(n_t, start, stop, K):
+    """The bridge's sine bands and chord at saves ``start .. stop - 1`` of a walk of ``n_t`` saves: ``(S (K, n), tau
+    (n,))``, the bands zero at both ends of the walk (where the residual is pinned)."""
+    s = np.arange(int(start), int(stop))
+    inner = (s >= 1) & (s <= n_t - 2)
+    S = np.zeros((int(K), s.size))
+    if K and inner.any():
+        S[:, inner] = _dst_matrix(n_t - 2, K)[s[inner] - 1].T
+    return S, s / (n_t - 1.0)
+
+
+def decode_saves(C, n_t, start, stop, *, device="auto", chunk_bytes=1 << 30):
+    """Saves ``start .. stop - 1`` ``(n_w, stop - start, 3)`` float32 of a bridge-coded walk of ``n_t`` saves from its
+    coefficients ``C`` ``(n_w, K+2, 3)``: a prefix (``start = 0``) or a window of the walk. On the device the bands
+    are evaluated at those saves alone, per walker chunk; on the host the whole decode (one inverse transform per
+    walker chunk, cheaper than the product at the saves) is cut there, at most ``chunk_bytes`` of it at once."""
     C = np.asarray(C, np.float64)
     n_w, K = C.shape[0], C.shape[1] - 2
+    start, stop, n_t = int(start), int(stop), int(n_t)
+    if not 0 <= start < stop <= n_t:
+        raise ValueError(f"saves {start} .. {stop - 1} are not within a walk of {n_t}")
+    out = np.empty((n_w, stop - start, 3), np.float32)
     if resolve_device(device) == "numpy":
-        return _bridge_positions(C, int(n_t))[:, :int(n_cut), :].astype(np.float32)
+        step = max(1, int(chunk_bytes // (8 * 3 * n_t)))
+        for lo in range(0, n_w, step):
+            out[lo:lo + step] = _bridge_positions(C[lo:lo + step], n_t)[:, start:stop, :]
+        return out
     import jax.numpy as jnp
-    kernel = _prefix_decode_kernel(int(n_t), int(n_cut), int(K))
-    out = np.empty((n_w, int(n_cut), 3), np.float32)
-    step = max(1, int(chunk_bytes // (4 * 3 * (int(n_cut) + K + 2))))
+    kernel = _saves_decode_kernel(n_t, start, stop, int(K))
+    step = max(1, int(chunk_bytes // (4 * 3 * (stop - start + K + 2))))
     for lo in range(0, n_w, step):
         sl = slice(lo, min(lo + step, n_w))
         out[sl] = np.asarray(kernel(jnp.asarray(C[sl], jnp.float32)), np.float32)
@@ -618,23 +634,24 @@ def bridge_bands(arrays, meta, key="blt", scale_key="blt_band_scale", dtype=np.f
     return dequantise_bands(arrays, meta["container"], key, scale_key, dtype)
 
 
-def decode_boundary_bridge(arrays, meta, walkers=None, n_cut=None):
+def decode_boundary_bridge(arrays, meta, walkers=None, n_cut=None, start=0):
     """Reconstruct per-save ell(t) = diff(B) from the two endpoints + the pinned sine bands, of every walker
-    or of the slice ``walkers``; the first ``n_cut`` saves only when asked, the bands evaluated there as one
-    product (the same numbers as the whole decode cut, to rounding)."""
+    or of the slice ``walkers``; saves ``start .. n_cut - 1`` only when asked (a prefix, or a window of the walk:
+    ``ell`` at ``start`` is ``B(start) - B(start - 1)``), the bands evaluated there as one product (the same numbers
+    as the whole decode cut, to rounding)."""
     nt = int(meta["n_t"])
     sl = slice(None) if walkers is None else walkers
     C = bridge_bands(arrays, meta)[sl]
     a = np.asarray(arrays["blt_start"], np.float64)[sl]
     endpoint = np.asarray(arrays["blt_endpoint"], np.float64)[sl]
-    if n_cut is not None and int(n_cut) < nt:
-        n_cut = int(n_cut); inner = min(n_cut, nt - 1) - 1
-        Sk = _dst_matrix(nt - 2, C.shape[1])[:inner].T                                  # (K, n_cut-1): DST-I at the read saves
-        u = np.zeros((C.shape[0], n_cut), np.float64)
-        u[:, 1:inner + 1] = C @ Sk
-        tau = (np.arange(n_cut) / (nt - 1.0))[None, :]
-        B = u + (a[:, None] + (endpoint - a)[:, None] * tau)
-        return np.diff(B, axis=1, prepend=B[:, :1] * 0.0).astype(np.float32)
+    stop = nt if n_cut is None else min(int(n_cut), nt)
+    start = int(start)
+    if start > 0 or stop < nt:
+        lo = max(start - 1, 0)                                                            # the save before the first read
+        S, tau = _saves_basis(nt, lo, stop, C.shape[1])
+        B = C @ S + (a[:, None] + (endpoint - a)[:, None] * tau[None, :])
+        ell = np.diff(B, axis=1, prepend=B[:, :1] * 0.0) if start == 0 else np.diff(B, axis=1)
+        return ell.astype(np.float32)
     tau = np.linspace(0.0, 1.0, nt)[None, :]
     u = np.zeros((C.shape[0], nt), np.float64)
     u[:, 1:-1] = _idst(C, axis=1, type=1, norm="ortho", n=nt - 2)

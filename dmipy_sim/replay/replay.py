@@ -359,45 +359,49 @@ class ReplayPack:
         from .continuation import extend_pack
         return extend_pack(self, T_add, seed=seed, out_path=out_path, require_gpu=require_gpu, field=field, envelope=envelope, device=device)
 
-    def _decoded_channels(self, n_cut=None):
-        """The per-save channels of the walk decoded window by window and joined on the shared saves:
-        ``comp`` / ``bound`` tracks ``(n_w, n_t)``, the contact increments ``ell`` ``(n_w, n_t)`` and the path
-        series ``(series (n_w, n_ch, n_tf), names)`` -- each ``None`` when the pack lacks the channel. ``n_cut``
-        asks for the first ``n_cut`` saves only: the windows past them are not read, and the bridge and path
-        channels are evaluated at those saves alone."""
+    def _decoded_channels(self, start=0, stop=None):
+        """The per-save channels of the walk at saves ``start .. stop - 1`` (the whole walk by default), decoded window
+        by window and joined on the shared saves: ``comp`` / ``bound`` tracks ``(n_w, n_t)``, the contact increments
+        ``ell`` ``(n_w, n_t)`` and the path series ``(series (n_w, n_ch, n_tf), names)`` -- each ``None`` when the pack
+        lacks the channel. The windows outside the saves are not read, and the bridge and path channels are
+        evaluated at those saves alone; the path series holds the field samples its own grid places there."""
         from .bank import susc_path_decode
         from .compression import decode_occupancy, decode_boundary_bridge, decode_boundary_local_time
         ch = dict(self.meta.get("compression", {}).get("channels", {}) or {})
         out = dict(comp=None, bound=None, ell=None, path=None)
         comps, bounds, ells, series = [], [], [], []
         names = None
-        done = 0                                                       # saves of the walk delivered so far
+        start = int(start); stop = int(self.n_t) if stop is None else int(stop)
         for j, (w, _, n_seg) in enumerate(self._windows()):
-            if n_cut is not None and done >= int(n_cut):
+            off = j * (n_seg - 1)                                      # the window's first save on the walk
+            if off >= stop:
                 break
-            cut = 0 if j == 0 else 1                                   # the shared save is the previous window's
-            want = None if n_cut is None else min(n_seg, int(n_cut) - done + cut)   # saves of this window to read
+            lo = max(start - off, 0 if j == 0 else 1)                  # the shared save is the previous window's
+            hi = min(stop - off, n_seg)
+            if lo >= hi:
+                continue
             if "compartment" in ch:
                 occ = decode_occupancy(w.arrays, ch["compartment"])
                 comp = np.asarray(occ["comp"])
-                comps.append(comp[:, cut:want] if comp.ndim == 2 else comp)
+                comps.append(comp[:, lo:hi] if comp.ndim == 2 else comp)
                 if "bound" in occ:
-                    b = np.asarray(occ["bound"]); bounds.append(b[:, cut:want] if b.ndim == 2 else b)
+                    b = np.asarray(occ["bound"]); bounds.append(b[:, lo:hi] if b.ndim == 2 else b)
             if "boundary_local_time" in ch:
                 bm = dict(ch["boundary_local_time"]); bm.setdefault("n_t", n_seg)
                 if w.has_surface:
                     bm.setdefault("K", _cx_bands_K(w.arrays, bm))
-                    ell = decode_boundary_bridge(w.arrays, bm, n_cut=want)
+                    ell = decode_boundary_bridge(w.arrays, bm, start=lo, n_cut=hi)
                 else:
-                    ell = decode_boundary_local_time(w.arrays, bm)
-                ells.append(np.asarray(ell)[:, cut:want])
+                    ell = np.asarray(decode_boundary_local_time(w.arrays, bm))[:, lo:hi]
+                ells.append(np.asarray(ell))
             if "susceptibility_path" in ch:
                 pm = ch["susceptibility_path"]
                 n_tf, dt_f = _path_grid(pm, n_seg, float(self.dt))
-                want_f = None if want is None else len(range(0, want, max(1, int(round(dt_f / float(self.dt))))))
-                ser, names = susc_path_decode(w.arrays, pm, n_w=self.n_walkers, n_cut=want_f)
-                series.append(ser[:, :, cut:want_f])
-            done += n_seg - cut
+                every = max(1, int(round(dt_f / float(self.dt))))
+                f_lo, f_hi = -(-lo // every), -(-hi // every)          # the field samples at saves lo .. hi - 1
+                if f_lo < f_hi:
+                    ser, names = susc_path_decode(w.arrays, pm, n_w=self.n_walkers, start=f_lo, n_cut=f_hi)
+                    series.append(ser)
         if comps:
             out["comp"] = np.concatenate(comps, axis=1) if comps[0].ndim == 2 else comps[0]
         if bounds:
@@ -406,6 +410,193 @@ class ReplayPack:
             out["ell"] = np.concatenate(ells, axis=1)
         if series:
             out["path"] = (np.concatenate(series, axis=2), names)
+        return out
+
+    def _window_walk(self, start, stop):
+        """Saves ``start .. stop - 1`` of this walk as the bank's master dict a fresh walk of that stretch would have
+        recorded, and the path channel's decoded series there (``(series (n_w, n_ch, n_tf), names)`` or ``None``):
+        the positions a :class:`~dmipy_sim.replay.compression.LazyWalk` decoded per walker range from the
+        coefficients of the windows the stretch spans, never held whole (#449 item 3); the occupancy and the
+        contact at those saves (the contact of the first save 0 when the stretch starts past the walk's first: it
+        ends no step of the stretch); the weights, spec, frame, diffusivity and seed."""
+        from .bank import seed_value
+        from .compression import LazyWalk, decode_saves, read_position_coeffs
+        start, stop = int(start), int(stop)
+        dt = float(self.dt)
+        decoded = self._decoded_channels(start=start, stop=stop)
+        wp = dict(self.meta.get("walk_params", {}) or {})
+        spans = []                                                     # (coefficients, saves of the window, first save read, end)
+        for j, (w, _, n_seg) in enumerate(self._windows()):
+            off = j * (n_seg - 1)
+            if off >= stop:
+                break
+            lo = max(start - off, 0 if j == 0 else 1)
+            hi = min(stop - off, n_seg)
+            if lo < hi:
+                spans.append((read_position_coeffs(w.arrays, dtype=np.float64), n_seg, lo, hi))
+        n_w = spans[0][0].shape[0]
+
+        def _positions(a, b):
+            return np.concatenate([decode_saves(C[a:b], n_seg, lo, hi) for C, n_seg, lo, hi in spans], axis=1)
+
+        m = dict(traj=LazyWalk(_positions, (n_w, stop - start, 3)), dt_traj=dt, T_max=(stop - start - 1) * dt,
+                 walkers_shuffled=bool(self.meta.get("compression", {}).get("precision_tiers", {}).get("walkers_shuffled", False)),
+                 seed=seed_value(wp.get("seed", 0)), substrate_frame=self.substrate_frame)
+        if "spin_weights" in self.arrays:
+            m["w"] = np.asarray(self.arrays["spin_weights"], np.float64)
+        if self.meta.get("substrate") is not None:
+            m["substrate"] = self.meta["substrate"]
+        if wp.get("diffusivity") is not None:
+            m["D_intra"] = float(wp["diffusivity"])
+        if decoded["comp"] is not None:
+            m["comp"] = decoded["comp"]
+            if decoded["bound"] is not None:
+                m["bfrac"] = decoded["bound"]
+        if decoded["ell"] is not None:
+            ell = np.array(decoded["ell"], copy=True)
+            if start > 0:
+                ell[:, 0] = 0.0
+            m["dlog_b"] = ell
+        return m, decoded["path"]
+
+    def resegment(self, T_seg, *, out_path, id=None, max_dropped_fraction=1e-3, envelope=None, tol=2.0):
+        """This one-window walk stored in windows of ``T_seg`` seconds (RPK.md 4.3), so that a consumer holds only
+        the windows its acquisitions reach (#525).
+
+        The windows are a whole number of saves and share their boundary saves: ``n_seg - 1`` is the largest save
+        count at most ``round(T_seg / dt)`` whose windows cover the walk up to a trailing remainder of at most
+        ``max_dropped_fraction`` of its saves; the remainder is dropped (``saves_dropped``), and a walk that would
+        leave more is refused. Every window is the parent's channels decoded on its saves and re-encoded by
+        :func:`~dmipy_sim.replay.bank.build_replay_pack` as one window of its own (:meth:`_window_walk`): the positions
+        per walker range from the parent's coefficients at the parent's bands per second, ``K_seg = round(K T_seg /
+        T)``, doubled until window 0's certificate passes as :meth:`prefix` does; the occupancy runs cut at the
+        boundary save; the contact as the window's own cumulative local time at the band window 0's surface
+        certificate chooses; the path channel at the band and container
+        :func:`~dmipy_sim.replay.bank.derive_susc_path_K` derives on window 0 from the decoded series. Window 0's
+        bands are every window's. Each window's certificate (``fidelity.segments[i]``) is measured against the
+        parent's decoded saves on it -- the re-encode error -- and the whole's is the bound over them
+        (:func:`~dmipy_sim.replay.bank.combine_segment_fidelity`, ``certified = "bounded"``); a window outside
+        ``tol`` times its floor is refused. ``provenance.resegmented`` records the parent (id, sha256 of its file,
+        certificate), ``T_seg``, ``n_seg``, the bands and ``saves_dropped``.
+
+        ``envelope`` is the battery every window is certified over: by default
+        :func:`~dmipy_sim.replay.compression.default_envelope` with the parent's field strengths (``B0_list``) and
+        the refocusing depth its path channel serves (``max_refocus_pulses``)."""
+        import copy
+        import hashlib
+        from .bank import build_replay_pack, combine_segment_fidelity, join_segments
+        from .compression import default_envelope
+        from ..fields.strand_field import StrandFieldRecord
+        if self.n_segments != 1:
+            raise ValueError(f"this pack already stores its walk in {self.n_segments} windows of "
+                             f"{float(self.segments['T']) * 1e3:.3f} ms; resegment reads a one-window walk")
+        dt, n_t = float(self.dt), int(self.n_t)
+        T = (n_t - 1) * dt
+        steps = None
+        for s_ in range(int(round(float(T_seg) / dt)), 1, -1):
+            if (n_t - 1) // s_ >= 2 and (n_t - 1) % s_ <= float(max_dropped_fraction) * n_t:
+                steps = s_
+                break
+        if steps is None:
+            raise ValueError(f"a {T * 1e3:.3f} ms walk of {n_t} saves (dt {dt * 1e6:.2f} us) has no division into windows of at "
+                             f"most {float(T_seg) * 1e3:.3f} ms that drops at most {max_dropped_fraction:g} of its saves; "
+                             "give a T_seg that divides it, or a larger max_dropped_fraction")
+        n = (n_t - 1) // steps
+        dropped = (n_t - 1) - n * steps
+        ch = dict(self.meta.get("compression", {}).get("channels", {}) or {})
+        pm = ch.get("susceptibility_path")
+        env = dict(envelope) if envelope is not None else default_envelope()
+        if envelope is None:
+            B0s = ((self.meta.get("replay_envelope") or {}).get("acquisition") or {}).get("B0_list")
+            if B0s:
+                env["B0_list"] = list(B0s)
+            if pm is not None and pm.get("max_refocus_pulses"):
+                env["max_refocus_pulses"] = int(pm["max_refocus_pulses"])
+        if (ch.get("susceptibility_grid") or {}).get("arrays_in_pack"):
+            raise ValueError("this pack's field tier samples its stored grid at the decoded positions, which holds only while "
+                             "the positions are lossless; re-encoded windows are not, so it is not resegmented")
+        containers = dict(position_container=_container_of(self.meta["compression"].get("container")))
+        if ch.get("boundary_local_time") is not None:
+            c2 = ch["boundary_local_time"]
+            containers.update(blt_container=_container_of(c2.get("container")),
+                              blt_dtype=(np.float16 if c2.get("dtype") in (None, "bands") else np.dtype(c2["dtype"])))
+        col = next((c for c in (ch.get("compartment") or {}).get("columns", []) if c["name"] == "comp"), None)
+        crosses = col is not None and col["kind"] != "static"
+        K = max(2, int(round(self.K * steps / (n_t - 1))))
+        K_cap = min(int(self.K), steps - 1)                           # the bridge's interior: n_seg - 2 bands
+        blt_K, path_K, path_bits = None, ("auto" if pm is not None else None), (int(pm.get("bits") or 16) if pm is not None else 8)
+        spec = self.substrate
+        chi_iso = None
+        if spec is not None:
+            from ..spec.tissue import Tissue
+            chi_iso = Tissue.from_spec(spec).chi_iso
+        stamp = id or f"{self.meta.get('id')}/seg{steps * dt * 1e3:.0f}ms"
+        packs, tried = [], []
+        for i in range(n):
+            m, path = self._window_walk(i * steps, (i + 1) * steps + 1)
+            if path is not None:
+                series, names = path
+                m["susc_field_samples"] = np.ascontiguousarray(np.transpose(series, (0, 2, 1)), np.float32)   # (n_w, n_t, n_ch)
+                del series, path
+                m["susc_field_sampler"] = StrandFieldRecord(dict(ch.get("susceptibility_grid") or {}, channels=list(names)))
+                m["susc_chi_iso"] = chi_iso
+            while True:
+                pk = build_replay_pack(m, id=stamp, license=self.license, citation=self.citation, K=K, blt_temporal_K=blt_K,
+                                       susc_path_K=path_K, susc_path_bits=path_bits, envelope=env, tol=tol,
+                                       segment_T=steps * dt, _occupancy_runs=crosses, **containers)
+                fid = pk.meta["fidelity"]
+                if i > 0 or fid["err_max"] <= tol * fid["floor_max"] or K >= K_cap:
+                    break
+                tried.append(K)
+                K = min(2 * K, K_cap)
+            if fid["err_max"] > tol * fid["floor_max"]:
+                raise ValueError(f"window {i} of {n} re-encoded at K = {K} does not reproduce the parent's decoded saves within "
+                                 f"{tol:g} x its Monte-Carlo floor (error {fid['err_max']:.3g}, floor {fid['floor_max']:.3g})")
+            if i == 0:
+                c2 = (pk.meta["compression"].get("channels") or {}).get("boundary_local_time")
+                if c2 is not None:
+                    if c2.get("mode") != "bridge_dst":
+                        raise ValueError(f"window 0's contact channel chose {c2.get('mode')!r}; a pack in windows keeps the bridge form")
+                    blt_K = int(c2["K"])
+                pw = (pk.meta["compression"].get("channels") or {}).get("susceptibility_path")
+                if pw is not None:
+                    path_K, path_bits = int(pw["K"]), int(pw["bits"])
+            (pk.meta["compression"].get("channels") or {}).pop("susceptibility_grid", None)
+            packs.append(pk)
+            del m
+        fid = combine_segment_fidelity([pk.meta["fidelity"] for pk in packs])
+        wp = self.meta.get("walk_params", {}) or {}
+        arrays, meta = join_segments(packs, fidelity=fid, walks=[dict(first=0, last=n - 1, seed=wp.get("seed"))],
+                                     walkers_shuffled=bool(self.meta.get("compression", {}).get("precision_tiers", {}).get("walkers_shuffled", False)))
+        if "susceptibility_grid" in ch:
+            meta["compression"]["channels"]["susceptibility_grid"] = copy.deepcopy(ch["susceptibility_grid"])
+        if pm is not None:
+            meta["compression"]["channels"]["susceptibility_path"]["sampling"] = "the parent's path channel decoded on the window"
+        src = self.source
+        if src is not None and not str(src).startswith("hf://"):
+            h = hashlib.sha256()
+            with open(src, "rb") as f:
+                for blk in iter(lambda: f.read(1 << 24), b""):
+                    h.update(blk)
+            parent_sha = h.hexdigest()
+        else:
+            parent_sha = None
+        pf = self.meta.get("fidelity") or {}
+        meta["provenance"] = dict(copy.deepcopy(self.meta.get("provenance") or {}), resegmented=dict(
+            parent_id=self.meta.get("id"), parent_sha256=parent_sha, parent_digest=(self.digest if parent_sha is None else None),
+            parent_fidelity=dict(err_max=pf.get("err_max"), floor_max=pf.get("floor_max"), certified=pf.get("certified")),
+            T_seg=float(steps * dt), n_seg=int(n), saves_per_window=int(steps + 1), saves_dropped=int(dropped),
+            parent_K=int(self.K), K=int(K), K_tried=tried + [int(K)], blt_K=blt_K,
+            path_K=(None if pm is None else path_K), path_bits=(None if pm is None else path_bits),
+            note="every window the parent's channels decoded on its saves and re-encoded; its certificate is the re-encode "
+                 "error against the parent's decoded saves, on top of the parent's own certificate"))
+        if id is not None:
+            meta["id"] = id
+        else:
+            meta["id"] = stamp
+        meta["license"], meta["citation"] = self.license, self.citation
+        out = ReplayPack(arrays, meta, source=None)
+        out.save(out_path)
         return out
 
     # ---- tiers carried ----
@@ -1270,9 +1461,10 @@ class ReplayPack:
 
     @property
     def temporal_bandwidth_hz(self):
-        """The highest frequency the position bands resolve, ``K / (2 T)`` (#199): the pack's temporal band stated
-        as a frequency, which is what a scanner envelope is checked against and what a prefix keeps."""
-        return float(self.K) / (2.0 * (self.n_t - 1) * self.dt)
+        """The highest frequency the position bands resolve, ``K / (2 T)`` with ``T`` a window's duration (#199; a
+        one-window pack's walk): the pack's temporal band stated as a frequency, which is what a scanner envelope is
+        checked against and what a prefix and a resegmented pack keep."""
+        return float(self.K) / (2.0 * float(self.segments["T"]))
 
     def waveform_band(self, waveform, *, tol=None):
         """The temporal band ``waveform`` needs on this pack, as ``(hz, bands, err)``: the fewest sine bands whose
@@ -1312,7 +1504,13 @@ class ReplayPack:
         if len(ok) == 0:
             return np.inf, np.inf, float(err[-1])
         bands = int(ok[0])
-        return bands / (2.0 * T), bands, float(err[min(self.K, K_big)])
+        return bands / (2.0 * T), bands, float(err[min(self._bands_over_walk, K_big)])
+
+    @property
+    def _bands_over_walk(self):
+        """The sine bands over the whole walk that resolve what the windows' ``K`` resolve: ``K`` per window times
+        the windows (``2 T`` x :attr:`temporal_bandwidth_hz`)."""
+        return int(round(self.K * (int(self.n_t) - 1) / (int(self.segments["n_t"]) - 1)))
 
     def _check_band(self, waveform):
         """Refuse a waveform whose gradient needs more temporal band than this pack stores (#277): the replay
@@ -1321,14 +1519,14 @@ class ReplayPack:
         if self.diffusivity is None:
             return
         hz, bands, err = self.waveform_band(waveform)
-        if bands <= self.K:
+        if bands <= self._bands_over_walk:
             return
         n_t, dt = int(self.n_t), float(self.dt)
         T = (n_t - 1) * dt
         need = (f"more than {(n_t - 2) / (2.0 * T):.4g} Hz, the pack grid's own limit" if not np.isfinite(hz)
                 else f"{hz:.4g} Hz ({bands} bands over {T * 1e3:.4g} ms)")
         raise ValueError(f"the waveform's gradient reaches beyond this pack's temporal band: it needs {need} and the "
-                         f"pack resolves {self.temporal_bandwidth_hz:.4g} Hz (K = {self.K} bands over {T * 1e3:.4g} ms), "
+                         f"pack resolves {self.temporal_bandwidth_hz:.4g} Hz (K = {self.K} bands over {float(self.segments['T']) * 1e3:.4g} ms), "
                          f"which would drop {err:.2e} of the signal into phase the pack does not carry. Build a pack at "
                          f"this band or above (build_replay_pack(temporal_bandwidth_hz=...)), or replay a waveform "
                          f"within this one")
@@ -1366,62 +1564,26 @@ class ReplayPack:
     def _prefix_within(self, TE, *, K=None, out_path=None, tol=2.0, id=None, provenance=None):
         """:meth:`prefix` by re-encoding: every channel decoded over the windows the prefix spans, cut and
         re-encoded as one window through :func:`~dmipy_sim.replay.bank.build_replay_pack`."""
-        from .bank import build_replay_pack, seed_value, susc_path_encode_series, susc_path_series_fidelity
+        from .bank import build_replay_pack, susc_path_encode_series, susc_path_series_fidelity
         dt, n_t = float(self.dt), int(self.n_t)
         T = (n_t - 1) * dt
         n_cut = int(round(float(TE) / dt)) + 1
         T_cut = (n_cut - 1) * dt
         K_new = int(K) if K is not None else max(2, int(np.ceil(self.K * T_cut / T)))
         ch = dict(self.meta.get("compression", {}).get("channels", {}) or {})
-        decoded = self._decoded_channels(n_cut=n_cut)                 # the channels at the prefix's saves only
-        wp = dict(self.meta.get("walk_params", {}) or {})
         # the prefix's positions are never held whole: the builder, its encoder and its certificate read them per
         # walker range, decoded from the parent's coefficients where they are read, window by window (#449 item 3)
-        from .compression import LazyWalk, decode_prefix, read_position_coeffs
-        spans = []                                                     # (coefficients, saves of the window, first save kept, saves kept)
-        done = 0
-        for j, (w, _, n_seg) in enumerate(self._windows()):
-            if done >= n_cut:
-                break
-            cut = 0 if j == 0 else 1
-            want = min(n_seg, n_cut - done + cut)
-            spans.append((read_position_coeffs(w.arrays, dtype=np.float64), n_seg, cut, want))
-            done += want - cut
-        n_w = spans[0][0].shape[0]
-
-        def _positions(lo, hi):
-            return np.concatenate([decode_prefix(C[lo:hi], n_seg, want)[:, cut:, :] for C, n_seg, cut, want in spans], axis=1)
-
-        lazy = LazyWalk(_positions, (n_w, n_cut, 3))
-        m = dict(traj=lazy, dt_traj=dt, T_max=T_cut,
-                 walkers_shuffled=bool(self.meta.get("compression", {}).get("precision_tiers", {}).get("walkers_shuffled", False)),
-                 seed=seed_value(wp.get("seed", 0)))
-        if "spin_weights" in self.arrays:
-            m["w"] = np.asarray(self.arrays["spin_weights"], np.float64)
-        if self.meta.get("substrate") is not None:
-            m["substrate"] = self.meta["substrate"]
-        if wp.get("diffusivity") is not None:
-            m["D_intra"] = float(wp["diffusivity"])
-        m["substrate_frame"] = self.substrate_frame
-        if "compartment" in ch:
-            comp = np.asarray(decoded["comp"])
-            m["comp"] = comp[:, :n_cut] if comp.ndim == 2 else comp
-            if decoded["bound"] is not None:
-                b = np.asarray(decoded["bound"]); m["bfrac"] = b[:, :n_cut] if b.ndim == 2 else b
+        m, path = self._window_walk(0, n_cut)
         blt_K = None
-        if "boundary_local_time" in ch:
+        if "boundary_local_time" in ch and self.has_surface:
             bm = dict(ch["boundary_local_time"])
-            if self.has_surface:
-                bm.setdefault("K", _cx_bands_K(self.segment(0).arrays, bm))
-                blt_K = max(2, int(np.ceil(bm["K"] * T_cut / T)))
-            m["dlog_b"] = np.asarray(decoded["ell"])[:, :n_cut]
+            bm.setdefault("K", _cx_bands_K(self.segment(0).arrays, bm))
+            blt_K = max(2, int(np.ceil(bm["K"] * T_cut / T)))
         path_series = None
-        if "susceptibility_path" in ch:
-            series, names = decoded["path"]
+        if path is not None:
+            series, names = path
             _n_tf, _dt_f = _path_grid(ch["susceptibility_path"], int(self.segments["n_t"]), dt)
-            _every = max(1, int(round(_dt_f / dt)))
-            n_cut_f = len(range(0, n_cut, _every))                                    # the channel's own prefix
-            path_series = (series[:, :, :n_cut_f], names,
+            path_series = (series, names,
                            max(2, int(np.ceil(int(ch["susceptibility_path"]["K"]) * T_cut / T))),
                            ch["susceptibility_path"].get("bits", 8))
         tried = []
@@ -2243,6 +2405,14 @@ def _group_waveforms(s, rtol=1e-5):
         group[same] = len(first)
         first.append(i)
     return group, np.asarray(first, np.int64)
+
+
+def _container_of(ranges):
+    """The builder's band-container knob (``((upto, bits), ...)``, or ``None`` for the float container) from the
+    ranges a pack's metadata records (``[{"bands": [k0, k1], "bits": b}, ...]``)."""
+    if not ranges:
+        return None
+    return tuple((None if i == len(ranges) - 1 else int(r["bands"][1]), int(r["bits"])) for i, r in enumerate(ranges))
 
 
 def _path_grid(pm, n_t, dt):
