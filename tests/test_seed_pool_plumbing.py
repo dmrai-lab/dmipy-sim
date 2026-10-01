@@ -122,7 +122,7 @@ def test_simulate_cpmg_starts_where_r0_says(sphere, seeds):
     DELTA ~ TE. At 19 T/m both arms decayed into the noise (0.024 and -0.004); TE=1 ms at 12 T/m keeps
     the signal near 0.5 where the start distribution is still visible.
     """
-    wf = cpmg(2, 1e-3, gradient_strengths=12.0, gradient_directions=[[1.0, 0.0, 0.0]], n_t_per_echo=150)
+    wf = cpmg(2, 1e-3, gradient_strengths=12.0, gradient_directions=[[1.0, 0.0, 0.0]], n_t_per_echo=150, slew_rate=np.inf)
 
     def run(r0):
         s = np.asarray(simulate_cpmg(N, D, wf, sphere, seed=3, r0=r0, require_gpu=False))
