@@ -172,6 +172,22 @@ def test_preload_keeps_the_padded_host_arrays_and_changes_no_number(layout):
     assert set(sm._host) == {"w", "tiles", "a", "c"}
 
 
+def test_the_weights_are_read_once_per_layout(layout):
+    """The per-voxel weight sums are the layout's, not the image's: every image after the first reads neither the
+    weight nor the tile column again for them (on DiSCo a float64 copy of 153 M rows per call)."""
+    col, grid, n_t, tmp = layout
+    sm = ShapeMoments(str(tmp / "sm_moments"))
+    reads = []
+    column = sm._column
+    sm._column = lambda name: (reads.append(name), column(name))[1]
+    b = np.array([1e9, 0.0]); dirs = np.array([[0.0, 0.0, 1.0], [0.0, 0.0, 1.0]])
+    first, _ = sm.image("a", b, dirs, resident=True)          # the device copy is kept: only the weights could read again
+    n_first = len(reads)
+    second, _ = sm.image("a", b, dirs, resident=True)
+    assert "w" in reads[:n_first] and reads[n_first:] == [], reads
+    np.testing.assert_array_equal(np.nan_to_num(first), np.nan_to_num(second))
+
+
 @pytest.fixture(scope="module")
 def layout_field(spec_grid):
     """Two blocks of the three-strand spec walked WITH the sheath's field (C3) and the contact and occupancy tiers,
