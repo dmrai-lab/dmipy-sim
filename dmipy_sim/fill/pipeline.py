@@ -163,6 +163,8 @@ def pack_job(job):
         pk = merge_packs(packs, id=f"{man['id']}/{job['variant']}/{job['name']}", out_path=out, overlap="recertify", device=job["device"])
         for f_ in packs:
             os.remove(f_)
+            if os.path.exists(f_ + ".run.json"):            # each round's own run sidecar (#541): the round
+                os.remove(f_ + ".run.json")                  # itself is gone, nothing should still name it
     t_pack = time.time() - t0
     g_, floors, cnts = voxel_fidelity_volumes(pk)
     cert = {n: dict(voxels=int((cnts[n] > 0).sum()), walkers=int(cnts[n].sum()),
@@ -209,6 +211,8 @@ def upload_block(hub, o, job):
         for ext in (".rpk", ".json", ".certificate.json"):
             if os.path.isfile(out[:-4] + ext):
                 os.remove(out[:-4] + ext)
+        if os.path.isfile(out + ".run.json"):                   # the pack's own build-run sidecar (#541)
+            os.remove(out + ".run.json")
         for rd in job["rounds"]:
             shutil.rmtree(rd["run_dir"], ignore_errors=True)
     os.remove(job["file"])

@@ -148,8 +148,7 @@ def append_segments(pack, walk, *, seed, out_path=None, envelope=None, device="a
         meta["compression"]["precision_tiers"] = _precision_tiers(arrays, int(pack.n_walkers), float(meta["fidelity"].get("floor_max") or 0.0),
                                                                   bool(meta["compression"].get("precision_tiers", {}).get("walkers_shuffled", False)))
     prov = meta.setdefault("provenance", {})
-    prov["continuations"] = list(prov.get("continuations") or []) + [dict(first=S0, last=S0 + S1 - 1, seed=int(seed),
-                                                                           run=(new.meta.get("provenance") or {}).get("run"))]
+    prov["continuations"] = list(prov.get("continuations") or []) + [dict(first=S0, last=S0 + S1 - 1, seed=int(seed))]
     out = ReplayPack(arrays, meta, source=out_path)
     if out_path is not None:
         write_rpk(out_path, {k: v for k, v in arrays.items() if v is not None}, meta)

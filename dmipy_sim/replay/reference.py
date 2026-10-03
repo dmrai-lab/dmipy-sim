@@ -969,7 +969,11 @@ class _PeakRSS:
 
 
 def _pack_commit(meta):
-    """The dmipy-sim commit the pack's own run record names."""
+    """The dmipy-sim commit the pack names: ``provenance.code.commit`` (every pack built after dmipy-sim#541),
+    else its run record's (a pack built before #541, read as it is)."""
+    c = ((meta.get("provenance") or {}).get("code") or {}).get("commit")
+    if c:
+        return c
     run = (meta.get("provenance") or {}).get("run") or {}
     for node in (run, run.get("pack") or {}, run.get("walk") or {}):
         c = (node.get("code") or {}).get("commit")
