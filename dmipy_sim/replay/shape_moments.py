@@ -47,6 +47,7 @@ class's, the backend chooses only where ``exp``, the tile reduce and the scatter
 """
 from __future__ import annotations
 
+import functools
 import hashlib
 from dataclasses import dataclass
 import json
@@ -656,9 +657,9 @@ class ShapeMoments:
             raise ValueError("a b-value is not negative")
         return np.sqrt(b / float(self.manifest["shapes"][shape]["b_unit"]))
 
-    @property
+    @functools.cached_property
     def weights(self):
-        """The per-voxel weight sums ``(n_vox, 2)`` (the two split halves), the denominator of every image."""
+        """The per-voxel weight sums ``(n_vox, 2)`` (the two split halves), the denominator of every image (read once)."""
         w = np.asarray(self._column("w"), np.float64).sum(1); tiles = np.asarray(self._column("tiles"))
         return np.bincount(tiles, w, minlength=2 * self.n_vox).reshape(self.n_vox, 2)
 
@@ -757,7 +758,7 @@ class ShapeMoments:
         G = np.zeros((1, int(rec["n_t"]), 3)); G[0, :, 2] = float(rec["amplitude_built"]) * np.asarray(rec["profile"], np.float64)
         return ScannerSequence(G=G, dt=float(rec["dt"]), rf=RFSchedule.from_dicts(rec["rf"]))
 
-    @property
+    @functools.cached_property
     def live_voxels(self):
         """The flat indices of the voxels the layout has rows in, in order: the voxels a delivery is computed at."""
         return np.flatnonzero(self.weights.sum(1) > 0)
