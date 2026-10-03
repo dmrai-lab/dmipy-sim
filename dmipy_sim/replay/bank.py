@@ -34,7 +34,7 @@ from ..acquisition.rf import RFEvent
 from .replay import ReplayPack, read_rpk, write_rpk
 
 __all__ = ["build_replay_pack", "build_to_floor", "frame_from_axis", "frame_from_bundles", "frame_of_spec", "check_frame_against_walk",
-           "read_rpk", "write_rpk", "RPK_SCHEMA_VERSION"]
+           "check_frame_against_geometry", "read_rpk", "write_rpk", "RPK_SCHEMA_VERSION"]
 
 RPK_SCHEMA_VERSION = "0.4"
 
@@ -126,7 +126,7 @@ def frame_of_spec(spec):
 
 
 def check_frame_against_walk(traj, F, *, w=None, bundle_axes=None, tol_deg=5.0, anisotropy=1.1):
-    """Refuse a declared substrate frame the walk contradicts (RPK.md 4.2, dmipy-sim#194): the principal axis
+    """Refuse a HAND-DECLARED substrate frame the walk contradicts (RPK.md 4.2, dmipy-sim#194): the principal axis
     of the walkers' end-to-end displacements must lie within ``tol_deg`` of the span of the declared bundle
     axes (``bundle_axes``, default the frame's ``z``). A walk whose displacement covariance has no dominant
     axis declares nothing and passes: dominant means an eigenvalue ratio above ``anisotropy`` AND above the
@@ -179,6 +179,53 @@ def check_frame_against_walk(traj, F, *, w=None, bundle_axes=None, tol_deg=5.0, 
                          f"describe this substrate (RPK.md 4.2). Declare it from the substrate's own structure -- "
                          f"substrate_frame=frame_from_axis(axis) or the spec's frame -- not from a guess")
     return worst
+
+
+def check_frame_against_geometry(sub, F, *, tol_deg=5.0):
+    """Refuse a STRUCTURAL substrate frame (``frame.source == "structural"``, dmipy-sim#538) that disagrees with
+    the shape it was derived from: the principal axis of the length-weighted tangent dyadic of every
+    ``swept_polyline`` wall's centerline(s) in the spec ``sub`` must lie within ``tol_deg`` of the frame's ``z``.
+    This reads only the spec's wall geometry, never a walk's trajectory, so it is cheap and needs no walk at all
+    -- the right test for a frame :func:`dmipy_sim.spec.build.spec_of` derived from the substrate's own structure,
+    where :func:`check_frame_against_walk` is the wrong one: a curved tube's walkers' principal displacement axis
+    depends on the walk duration and the finite tube length, and need not agree with the structural axis at any
+    tolerance. Returns the angle (degrees), or 0.0 when ``sub`` declares no ``swept_polyline`` wall to check
+    against."""
+    centerlines = []
+    for w in sub.get("walls") or []:
+        surf = (w.get("surface") or {}) if isinstance(w, dict) else {}
+        if surf.get("kind") != "swept_polyline":
+            continue
+        if surf.get("centerline") is not None:
+            centerlines.append(np.asarray(surf["centerline"], np.float64))
+        for cl in (surf.get("instances") or {}).get("centerlines") or []:
+            centerlines.append(np.asarray(cl, np.float64))
+    D = np.zeros((3, 3))
+    for cl in centerlines:
+        if cl.ndim != 2 or cl.shape[0] < 2:
+            continue
+        t = np.diff(cl, axis=0)
+        length = np.linalg.norm(t, axis=1)
+        ok = length > 0
+        if not ok.any():
+            continue
+        u = t[ok] / length[ok, None]
+        D += (u * length[ok, None]).T @ u                             # sum_i length_i * outer(u_i, u_i)
+    tr = float(np.trace(D))
+    if tr <= 0:
+        return 0.0                                                    # no swept_polyline wall: nothing to check
+    lam, V = np.linalg.eigh(D / tr)
+    axis = V[:, -1]
+    z = np.asarray(F, np.float64).reshape(3, 3)[:, 2]
+    z = z / np.linalg.norm(z)
+    angle = float(np.degrees(np.arccos(np.clip(abs(float(axis @ z)), 0.0, 1.0))))
+    if angle > float(tol_deg):
+        raise ValueError(f"the substrate's own length-weighted tangent axis {np.round(axis, 3).tolist()} is "
+                         f"{angle:.1f} deg from the declared structural frame (axis {np.round(z, 3).tolist()}): "
+                         f"this frame was derived from the substrate's own shape by spec_of, and now disagrees "
+                         f"with it -- it was edited by hand after. Rebuild it from the geometry (spec_of), do "
+                         f"not hand-edit frame.axis on a structural frame")
+    return angle
 
 
 def frame_from_bundles(axes, *, primary=0, weights=None, tol=1e-3):
@@ -1630,11 +1677,17 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto"
                       susc_path_bits=susc_path_bits, voxel_grid=voxel_grid, position_container=position_container,
                       blt_container=blt_container, verbose=verbose, fidelity=fidelity, fidelity_from=fidelity_from, device=device)
             return _build_segmented(m, n_segments, n_seg, run, walk, out_path, **kw)
-        if m.get("substrate_frame") is not None:              # a declared frame the walk contradicts is refused (#194)
+        if m.get("substrate_frame") is not None:
             sub = m.get("substrate") or {}
-            bundles = (sub.get("realisation") or {}).get("bundles") if isinstance(sub, dict) else None
-            check_frame_against_walk(m["traj"], m["substrate_frame"], w=m.get("w"),
-                                     bundle_axes=(None if not bundles else [b["axis"] for b in bundles]))
+            if (sub.get("frame") or {}).get("source") == "structural":
+                # a frame spec_of derived from the substrate's own shape: checked against that shape, cheap and
+                # walk-free, before anything about the walk itself is touched (#538)
+                check_frame_against_geometry(sub, m["substrate_frame"])
+            else:
+                # a hand-declared frame the walk contradicts is refused (RPK.md 4.2, #194)
+                bundles = (sub.get("realisation") or {}).get("bundles") if isinstance(sub, dict) else None
+                check_frame_against_walk(m["traj"], m["substrate_frame"], w=m.get("w"),
+                                         bundle_axes=(None if not bundles else [b["axis"] for b in bundles]))
         env = envelope or _cx.default_envelope()
         if fidelity not in ("measured", "inherited"):
             raise ValueError("fidelity is 'measured' (the battery on this walk) or 'inherited' (a block of a fill citing its certifying pack)")

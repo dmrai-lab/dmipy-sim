@@ -76,13 +76,16 @@ def spec_of(geometry, *, id=None, provenance=None, surface_dir=None):
     """The spec of an analytic geometry, its ``frame`` the geometry's own axis in the frame it is walked in
     (RPK.md 4.2): ``z`` for the cylinder kinds, which are walked in their own frame (their ``orientation`` is the
     pose :func:`~dmipy_sim.simulate` applies to the acquisition, not a property of the substrate, and is recorded
-    in the provenance), the chord of a curved one; an object with no axis keeps the default ``z``."""
+    in the provenance), the chord of a curved one; an object with no axis keeps the default ``z``. A frame
+    :func:`_axis_of` derived is marked ``frame.source = "structural"`` (dmipy-sim#538): the bank checks it
+    against the geometry it came from, not a walk's own principal displacement axis, which in a curved tube
+    depends on the walk duration and need not agree with the structural axis at all."""
     spec = _spec_without_frame(geometry, id=id, provenance=provenance, surface_dir=surface_dir)
     axis = _axis_of(geometry)
     if axis is None:
         return spec
     import dataclasses
-    return dataclasses.replace(spec, frame=Frame(np.asarray(axis, float).tolist()))
+    return dataclasses.replace(spec, frame=Frame(np.asarray(axis, float).tolist(), source="structural"))
 
 
 def _axis_of(g):

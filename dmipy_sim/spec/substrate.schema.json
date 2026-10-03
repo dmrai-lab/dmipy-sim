@@ -89,6 +89,13 @@
        "type": "null"
       }
      ]
+    },
+    "source": {
+     "description": "'structural' when spec_of derived axis from the substrate's own shape, so build_replay_pack checks it against that shape (cheap, walk-free); null/absent for a frame declared by hand, checked against the walk's own principal displacement axis (dmipy-sim#194, #538).",
+     "enum": [
+      "structural",
+      null
+     ]
     }
    }
   },

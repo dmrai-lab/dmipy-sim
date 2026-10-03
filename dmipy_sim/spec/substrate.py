@@ -20,6 +20,7 @@ BOUNDARIES = ("periodic", "reflect", "open")
 SURFACE_KINDS = ("sphere", "cylinder", "ellipsoid", "plane", "swept_polyline", "sphere_union", "mesh",
                  "label_volume")
 DIRECTORS = ("none", "radial", "file")
+FRAME_SOURCES = ("structural",)
 SEEDING_RULES = ("uniform_by_volume", "explicit")
 WEIGHT_RULES = ("water_fraction", "thin")
 TIERS = ("gradient", "relaxation", "surface", "field", "exchange")
@@ -126,6 +127,11 @@ class Domain:
 class Frame:
     axis: list = field(default_factory=lambda: [0.0, 0.0, 1.0])
     in_plane: Optional[list] = None
+    #: ``"structural"`` when :func:`dmipy_sim.spec.build.spec_of` derived ``axis`` from the substrate's own
+    #: shape (a cylinder/curved-tube centerline, a strand/sphere-chain chord); absent/``None`` for a frame
+    #: declared by hand. The bank checks the two differently (dmipy-sim#538): a structural frame against the
+    #: shape it came from, a hand-declared one against the walk's own principal displacement axis (#194).
+    source: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -374,6 +380,9 @@ def validate(d):
         cross = [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
         if sum(c * c for c in cross) ** 0.5 < 1e-6 * sum(v * v for v in a) ** 0.5 * sum(v * v for v in b) ** 0.5:
             raise SpecError("frame.in_plane is parallel to frame.axis: it must span the plane with it")
+    src = d["frame"].get("source")
+    if src is not None and src not in FRAME_SOURCES:
+        raise SpecError(f"frame.source must be one of {FRAME_SOURCES} or null, got {src!r}")
     pools = d["pools"]
     if not pools:
         raise SpecError("pools: at least the free pool (id 0) is required")
