@@ -31,7 +31,10 @@ def test_substrate_pack_realises_the_diameter_law_by_outer_radius():
     assert (2 * outer).min() >= sub.d_min - 1e-12                              # the floor is on the fibre
     assert np.pi * np.sum(outer ** 2) / g._L_float ** 2 == pytest.approx(sub.f_axon, rel=1e-6)
     assert list(g.compartments) == ["extra", "intra", "myelin"]
-    assert g.compartments["myelin"].T2 == sub.T2_myelin and float(np.asarray(g._D_extra_jax)[0]) == pytest.approx(sub.D_extra, rel=1e-6)
+    # T2 is a replay knob (SUBSTRATE.md 4.6, dmrai-lab/dmipy-sim#540): it lives on the spec the geometry
+    # was built from, not on the walked geometry's own `.compartments` -- `g.compartments` carries only
+    # what the pack reads off the walk itself (the pool names, here, and the water fractions).
+    assert g.spec.pool("myelin").T2 == sub.T2_myelin and float(np.asarray(g._D_extra_jax)[0]) == pytest.approx(sub.D_extra, rel=1e-6)
     assert float(np.asarray(g._rho_inner_jax)[0]) == pytest.approx(sub.rho2)
     assert float(np.asarray(g._kappa_inner_jax)[0]) == pytest.approx(sub.kappa)
 
