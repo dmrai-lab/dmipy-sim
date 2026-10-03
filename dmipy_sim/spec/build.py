@@ -240,8 +240,10 @@ def _spec_without_frame(geometry, *, id=None, provenance=None, surface_dir=None)
     if isinstance(g, CurvedMyelinatedCylinder):
         cl = np.asarray(g.centerline, float)
         pools = [Pool(0, "extra", None), Pool(1, "intra", None), Pool(2, "myelin", None, susceptibility=Susceptibility(None, None, "radial"))]
-        inner = Wall("axolemma", Surface("swept_polyline", centerline=cl.tolist(), radius=g.r_in), 1, 2)
-        outer = Wall("sheath", Surface("swept_polyline", centerline=cl.tolist(), radius=g.r_out), 2, 0)
+        inner = Wall("axolemma", Surface("swept_polyline", centerline=cl.tolist(), radius=g.r_in), 1, 2,
+                    Directional(), Sided(_rho(g), _rho(g)))
+        outer = Wall("sheath", Surface("swept_polyline", centerline=cl.tolist(), radius=g.r_out), 2, 0,
+                    Directional(), Sided(_rho(g), _rho(g)))
         lo = (cl.min(0) - MARGIN * g.r_out).tolist(); hi = (cl.max(0) + MARGIN * g.r_out).tolist()
         seeded = POOL_IDS[g.pool]
         return SubstrateSpec(sid, Domain(lo, hi, ["open"] * 3), pools, [inner, outer], Seeding([seeded]),
@@ -251,7 +253,8 @@ def _spec_without_frame(geometry, *, id=None, provenance=None, surface_dir=None)
     if isinstance(g, CurvedCylinder):
         cl = np.asarray(g.centerline, float)
         pools = [extra0, Pool(1, "intra", None, water_fraction=1.0)]
-        wall = Wall("cylinder", Surface("swept_polyline", centerline=cl.tolist(), radius=g.radius), 1, None)
+        wall = Wall("cylinder", Surface("swept_polyline", centerline=cl.tolist(), radius=g.radius), 1, None,
+                   Directional(), Sided(_rho(g), _rho(g)))
         lo = (cl.min(0) - MARGIN * g.radius).tolist(); hi = (cl.max(0) + MARGIN * g.radius).tolist()
         return SubstrateSpec(sid, Domain(lo, hi, ["open"] * 3), pools, [wall], Seeding([1]),
                              Validity(g.radius, _tiers([wall], pools)), description="curved cylinder; the lumen", provenance=prov)
@@ -260,7 +263,8 @@ def _spec_without_frame(geometry, *, id=None, provenance=None, surface_dir=None)
         radii = np.asarray(g.radii, float).tolist()
         pools = [Pool(0, "extra", None, water_fraction=(0.0 if g.interior else 1.0)),
                  Pool(1, "intra", None, water_fraction=(1.0 if g.interior else 0.0))]
-        wall = Wall("cylinders", Surface("swept_polyline", instances={"centerlines": cls_, "radii": radii}), 1, 0)
+        wall = Wall("cylinders", Surface("swept_polyline", instances={"centerlines": cls_, "radii": radii}), 1, 0,
+                   Directional(), Sided(_rho(g), _rho(g)))
         if g.box is not None:
             lo, hi = g.box[0].tolist(), g.box[1].tolist(); bc = ["reflect" if g.box_reflect else "open"] * 3
         else:
@@ -558,9 +562,47 @@ def _geometry_from_spec(spec):
         r = w.surface_relaxivity.inside or w.surface_relaxivity.outside
         return r or None
 
-    def kappa(w):
-        k = w.permeability.in_to_out
-        return k if k > 0 else None
+    def kappa(w, family):
+        """``w``'s crossing permeability as the ONE kappa ``family``'s constructor takes (``None`` when
+        impermeable); refuses when ``out_to_in`` differs from ``in_to_out``, since only a Mesh wall walks
+        both crossing directions."""
+        k_out, k_in = w.permeability.in_to_out, w.permeability.out_to_in
+        if k_out != k_in:
+            raise SpecError(f"wall {w.name!r} has asymmetric permeability (in_to_out={k_out}, out_to_in={k_in}) "
+                            f"but {family} takes one kappa for both directions; geometry_from_spec would have "
+                            f"walked both directions at kappa={k_out}")
+        return k_out if k_out > 0 else None
+
+    def ksym(w, family):
+        """``w.permeability.in_to_out`` as a plain float (0.0 = impermeable), for a constructor that takes a
+        required float rather than ``None``; the same asymmetry refusal as :func:`kappa`."""
+        k_out, k_in = w.permeability.in_to_out, w.permeability.out_to_in
+        if k_out != k_in:
+            raise SpecError(f"wall {w.name!r} has asymmetric permeability (in_to_out={k_out}, out_to_in={k_in}) "
+                            f"but {family} takes one kappa for both directions; geometry_from_spec would have "
+                            f"walked both directions at kappa={k_out}")
+        return k_out
+
+    def refuse_pose(s, family, *, length=False, rotation=False):
+        """Refuse the ``Surface`` fields naming a placement or extent that ``family``'s constructor does not
+        read: a non-origin ``center`` (no isolated analytic object takes an offset -- it is always centred on
+        the origin), a finite ``length`` (only PermeableSlab1D, or a packed cell's domain, gives a cylinder
+        kind an extent) and a ``rotation`` (only the ellipsoid's own ``semiaxes`` carry a frame)."""
+        if s.center is not None and any(abs(float(x)) > 0 for x in s.center):
+            raise SpecError(f"surface.center={s.center} is set but {family} has no offset; geometry_from_spec "
+                            f"would have walked it centred at the origin, not {s.center}")
+        if length and s.length is not None:
+            raise SpecError(f"surface.length={s.length} is set but {family} walks an infinite cylinder along "
+                            f"its axis; geometry_from_spec has no finite-cylinder constructor")
+        if rotation and s.rotation is not None:
+            raise SpecError(f"surface.rotation={s.rotation} is set but {family} does not rotate its surface; "
+                            f"only its axis is read")
+
+    for w in walls:
+        if w.mt_reactivity.inside > 0 or w.mt_reactivity.outside > 0:
+            raise SpecError(f"wall {w.name!r} has mt_reactivity (inside={w.mt_reactivity.inside}, "
+                            f"outside={w.mt_reactivity.outside}) but geometry_from_spec does not walk MT: the "
+                            f"spec carries no dwell time and walk_spec never passes MT to a driver")
 
     if not walls:
         if dom.boundary == ["open"] * 3:
@@ -583,7 +625,7 @@ def _geometry_from_spec(spec):
         g = LabelVolume(labels, vox, origin=origin,
                         periodic=[b == "periodic" for b in dom.boundary], pools=pools,
                         pool=by_id[spec.seeding.pools[0]], surface_relaxivity_t2=rho(w),
-                        permeability=kappa(w))
+                        permeability=kappa(w, "LabelVolume"))
         # the image the spec cites, as the spec cites it: a geometry built from a spec must be written
         # back citing the SAME file, and not a private copy of its voxels in the surface cache
         g.source = {"file": w.surface.file, "format": w.surface.format, "sha256": w.surface.sha256,
@@ -599,6 +641,9 @@ def _geometry_from_spec(spec):
         pool = "intra" if seeded == w.inside_pool else "extra"
         box = (dom.box_min, dom.box_max) if "reflect" in dom.boundary else None
         if s.kind == "sphere_union":
+            if w.permeability.in_to_out > 0 or w.permeability.out_to_in > 0:
+                raise SpecError(f"wall {w.name!r} has permeability but SphereUnion is a single reflecting "
+                                f"surface; geometry_from_spec has no permeable sphere-union constructor")
             centers, radii = sphere_union_arrays(s)
             return SphereUnion(centers, radii, pool=pool, feature_radius=spec.validity.smallest_feature,
                                surface_relaxivity_t2=rho(w), box=box)
@@ -629,12 +674,24 @@ def _geometry_from_spec(spec):
     if len(walls) == 1:
         w = walls[0]; s = w.surface
         if s.kind == "plane":
-            return PermeableSlab1D(dom.box_max[0] - dom.box_min[0], w.permeability.in_to_out, surface_relaxivity_t2=rho(w))
+            L = dom.box_max[0] - dom.box_min[0]
+            expect_point = [dom.box_min[0] + L / 2.0, 0.0, 0.0]
+            tol = 1e-6 * max(L, 1e-30)
+            if (s.point is not None and not np.allclose(s.point, expect_point, atol=tol)) or \
+               (s.normal is not None and not np.allclose(np.abs(s.normal), [1.0, 0.0, 0.0], atol=1e-9)):
+                raise SpecError(f"surface.point={s.point} / normal={s.normal} is not the x-mid-slab "
+                                f"(point {expect_point}, normal +-[1, 0, 0]) that PermeableSlab1D builds; "
+                                f"geometry_from_spec has no other plane constructor")
+            return PermeableSlab1D(L, ksym(w, "PermeableSlab1D"), surface_relaxivity_t2=rho(w))
         if s.instances:
             if s.kind == "swept_polyline":
+                if w.permeability.in_to_out > 0 or w.permeability.out_to_in > 0:
+                    raise SpecError(f"wall {w.name!r} has permeability but PackedCurvedCylinders has no "
+                                    f"permeable wall; geometry_from_spec reflects off every tube's outer wall")
                 cls_, radii = polyline_arrays(s)
                 return PackedCurvedCylinders(cls_, radii, interior=(spec.seeding.pools[0] == w.inside_pool),
-                                         box=((dom.box_min, dom.box_max) if "reflect" in dom.boundary else None))
+                                         box=((dom.box_min, dom.box_max) if "reflect" in dom.boundary else None),
+                                         surface_relaxivity_t2=rho(w))
             centers = np.asarray(s.instances["centers"], float)
             L = float(dom.box_max[0] - dom.box_min[0])
             pool = {(0, 1): None, (0,): "extra", (1,): "intra"}.get(tuple(sorted(spec.seeding.pools)))
@@ -642,48 +699,83 @@ def _geometry_from_spec(spec):
                 raise SpecError(f"a packed cell seeds pools [0, 1], [0] or [1]; the spec seeds {spec.seeding.pools}")
             if s.kind == "cylinder":
                 return PackedCylinders(s.instances["radii"], centers[:, :2], L, orientation=tuple(s.axis or (0, 0, 1)),
-                                       surface_relaxivity_t2=rho(w), permeability=kappa(w), pool=pool)
+                                       surface_relaxivity_t2=rho(w), permeability=kappa(w, "PackedCylinders"), pool=pool)
             if s.kind == "sphere":
-                return PackedSpheres(s.instances["radii"], centers, L, surface_relaxivity_t2=rho(w), permeability=kappa(w), pool=pool)
+                return PackedSpheres(s.instances["radii"], centers, L, surface_relaxivity_t2=rho(w),
+                                     permeability=kappa(w, "PackedSpheres"), pool=pool)
         if s.kind == "sphere":
-            return Sphere(s.radius, surface_relaxivity_t2=rho(w), permeability=kappa(w))
+            refuse_pose(s, "Sphere")
+            return Sphere(s.radius, surface_relaxivity_t2=rho(w), permeability=kappa(w, "Sphere"))
         if s.kind == "cylinder":
-            return Cylinder(s.radius, tuple(s.axis or (0, 0, 1)), surface_relaxivity_t2=rho(w), permeability=kappa(w))
+            refuse_pose(s, "Cylinder", length=True)
+            return Cylinder(s.radius, tuple(s.axis or (0, 0, 1)), surface_relaxivity_t2=rho(w),
+                            permeability=kappa(w, "Cylinder"))
         if s.kind == "ellipsoid":
-            return Ellipsoid(s.semiaxes, surface_relaxivity_t2=rho(w), permeability=kappa(w))
+            refuse_pose(s, "Ellipsoid", rotation=True)
+            return Ellipsoid(s.semiaxes, surface_relaxivity_t2=rho(w), permeability=kappa(w, "Ellipsoid"))
         if s.kind == "swept_polyline":
-            return CurvedCylinder(np.asarray(s.centerline), s.radius)
+            if w.permeability.in_to_out > 0 or w.permeability.out_to_in > 0:
+                raise SpecError(f"wall {w.name!r} has permeability but CurvedCylinder has no permeable wall; "
+                                f"geometry_from_spec reflects at the tube wall only")
+            return CurvedCylinder(np.asarray(s.centerline), s.radius, surface_relaxivity_t2=rho(w))
     if len(walls) == 2:
         a, b = walls
-        if {a.name, b.name} == {"membrane", "outer"}:
-            inner = spec.wall("membrane"); outer = spec.wall("outer")
-            kind = inner.surface.kind
-            return PermeableShell(inner.surface.radius, outer.surface.radius, inner.permeability.in_to_out, kind=kind,
-                                  orientation=tuple(inner.surface.axis or (0, 0, 1)), surface_relaxivity_t2=rho(inner))
-        if {a.name, b.name} == {"axolemma", "sheath"}:
-            inner = spec.wall("axolemma"); outer = spec.wall("sheath")
-            pools = {p.name: p for p in spec.pools}
-            comps = Compartments({n: CPool(T2=pools[n].T2, T1=pools[n].T1, water_fraction=pools[n].water_fraction)
-                                  for n in ("extra", "intra", "myelin")
-                                  if pools[n].T2 is not None or pools[n].T1 is not None})
-            if inner.surface.kind == "swept_polyline":
-                seeded = {1: "intra", 2: "myelin", 0: "extra"}[spec.seeding.pools[0]]
-                return CurvedMyelinatedCylinder(np.asarray(inner.surface.centerline), inner.surface.radius, outer.surface.radius, pool=seeded)
-            D = {n: (pools[n].D if pools[n].D is not None else 0.0) for n in pools}
-            if inner.surface.instances:
-                centers = np.asarray(inner.surface.instances["centers"], float)[:, :2]
-                ri = np.asarray(inner.surface.instances["radii"], float); ro = np.asarray(outer.surface.instances["radii"], float)
-                L = float(dom.box_max[0] - dom.box_min[0])
-                return PackedMyelinatedCylinders(ri, ri / ro, centers, L, N_max=int(2 ** np.ceil(np.log2(max(len(ri), 2)))),
-                                                 orientation=tuple(inner.surface.axis or (0, 0, 1)),
-                                                 D_intra=D["intra"], D_myelin=D["myelin"], D_extra=D["extra"],
-                                                 kappa_inner=inner.permeability.in_to_out, kappa_outer=outer.permeability.in_to_out,
-                                                 rho_inner=inner.surface_relaxivity.inside, rho_outer=outer.surface_relaxivity.inside,
-                                                 compartments=(comps if len(comps) else None))
-            wf = (pools["intra"].water_fraction, pools["myelin"].water_fraction, pools["extra"].water_fraction)
-            return MyelinatedCylinder(inner.surface.radius, outer.surface.radius, tuple(inner.surface.axis or (0, 0, 1)),
-                                      D["intra"], D["extra"], D_myelin=D["myelin"],
-                                      kappa_inner=kappa(inner), kappa_outer=kappa(outer),
-                                      water_fractions=(None if len(comps) else wf),     # the pools carry them
-                                      compartments=(comps if len(comps) else None))
+        chain = None
+        for x, y in ((a, b), (b, a)):
+            if x.outside_pool is not None and x.outside_pool == y.inside_pool:
+                chain = (x, y); break
+        if chain is not None:
+            inner, outer = chain
+            n_pools = len(spec.pools)
+            if n_pools == 2 and outer.outside_pool is None:
+                # a PermeableShell: inner.inside_pool is confined at r < r_inner; inner.outside_pool
+                # (== outer.inside_pool) is the shell between the two radii; outer.outside_pool is void.
+                kind = inner.surface.kind
+                refuse_pose(inner.surface, f"PermeableShell ({kind})", length=True)
+                refuse_pose(outer.surface, f"PermeableShell ({kind})", length=True)
+                return PermeableShell(inner.surface.radius, outer.surface.radius, ksym(inner, "PermeableShell"),
+                                      kind=kind, orientation=tuple(inner.surface.axis or (0, 0, 1)),
+                                      surface_relaxivity_t2=rho(inner))
+            if n_pools == 3 and outer.outside_pool is not None:
+                # a myelinated cylinder: the structural roles are read off the wall chain, not the pool
+                # NAMES -- inner.inside_pool is intra, the shared pool is myelin, outer.outside_pool is extra.
+                intra_id, myelin_id, extra_id = inner.inside_pool, inner.outside_pool, outer.outside_pool
+                by_id = {p.id: p for p in spec.pools}
+                intra_p, myelin_p, extra_p = by_id[intra_id], by_id[myelin_id], by_id[extra_id]
+                if inner.surface.kind == "swept_polyline":
+                    if (inner.permeability.in_to_out > 0 or inner.permeability.out_to_in > 0
+                            or outer.permeability.in_to_out > 0 or outer.permeability.out_to_in > 0):
+                        raise SpecError(f"walls {inner.name!r}/{outer.name!r} carry permeability but "
+                                        f"CurvedMyelinatedCylinder has no permeable shell wall; "
+                                        f"geometry_from_spec reflects at both r_in and r_out")
+                    seeded_role = {intra_id: "intra", myelin_id: "myelin", extra_id: "extra"}[spec.seeding.pools[0]]
+                    return CurvedMyelinatedCylinder(np.asarray(inner.surface.centerline), inner.surface.radius,
+                                                    outer.surface.radius, pool=seeded_role,
+                                                    surface_relaxivity_t2=rho(inner))
+                D = {"intra": intra_p.D or 0.0, "myelin": myelin_p.D or 0.0, "extra": extra_p.D or 0.0}
+                if inner.surface.instances:
+                    centers = np.asarray(inner.surface.instances["centers"], float)[:, :2]
+                    ri = np.asarray(inner.surface.instances["radii"], float)
+                    ro = np.asarray(outer.surface.instances["radii"], float)
+                    L = float(dom.box_max[0] - dom.box_min[0])
+                    return PackedMyelinatedCylinders(ri, ri / ro, centers, L,
+                                                     N_max=int(2 ** np.ceil(np.log2(max(len(ri), 2)))),
+                                                     orientation=tuple(inner.surface.axis or (0, 0, 1)),
+                                                     D_intra=D["intra"], D_myelin=D["myelin"], D_extra=D["extra"],
+                                                     kappa_inner=ksym(inner, "PackedMyelinatedCylinders axolemma"),
+                                                     kappa_outer=ksym(outer, "PackedMyelinatedCylinders sheath"),
+                                                     rho_inner=inner.surface_relaxivity.inside,
+                                                     rho_outer=outer.surface_relaxivity.inside)
+                refuse_pose(inner.surface, "MyelinatedCylinder", length=True)
+                refuse_pose(outer.surface, "MyelinatedCylinder", length=True)
+                # water fractions and D are the walk-shaping values pools carry; T2/T1 are replay knobs
+                # (SUBSTRATE.md 4.6) that never shape the walk and never decide whether a spec is accepted
+                # (dmrai-lab/dmipy-sim#540) -- they are not passed to the geometry at all.
+                wf = (intra_p.water_fraction, myelin_p.water_fraction, extra_p.water_fraction)
+                return MyelinatedCylinder(inner.surface.radius, outer.surface.radius,
+                                          tuple(inner.surface.axis or (0, 0, 1)),
+                                          D["intra"], D["extra"], D_myelin=D["myelin"],
+                                          kappa_inner=kappa(inner, "MyelinatedCylinder axolemma"),
+                                          kappa_outer=kappa(outer, "MyelinatedCylinder sheath"),
+                                          water_fractions=wf)
     raise SpecError(f"no geometry matches walls {kinds}")
