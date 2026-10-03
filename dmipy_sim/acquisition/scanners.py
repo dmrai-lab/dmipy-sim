@@ -42,17 +42,13 @@ import numpy as np
 
 from ..constants import GAMMA, GAMMA_BAR
 from . import maxwell, scanner_constants as scc, solid_harmonics
+from .prescription import _AXIS_LETTER
 
 
 __all__ = ["ScannerLimits", "SCANNERS", "FIELD_DT_CAP", "scanner_limits", "save_interval"]
 
 
 
-#: the patient-frame direction each letter names, in RAS -- the same language ``Grid.axes`` speaks, so a
-#: scanner's axes and a grid's axes are comparable without a second convention to keep true.
-_AXIS_LETTER = {"R": (1.0, 0.0, 0.0), "L": (-1.0, 0.0, 0.0),
-                "A": (0.0, 1.0, 0.0), "P": (0.0, -1.0, 0.0),
-                "S": (0.0, 0.0, 1.0), "I": (0.0, 0.0, -1.0)}
 
 
 def _axis(letter, what, name):
