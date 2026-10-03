@@ -332,12 +332,14 @@ class ScannerSequence:
 
     @property
     def _imposed_sample(self):
-        """One sample's worth of the imposed gradient, ``(n_meas,)`` in T s/m: the moment this grid cannot
-        resolve. A 180 between two samples leaves a magnet's constant gradient one sample out of balance in
-        the effective integral, which is the grid's rounding and not a winding."""
+        """One sample's worth of the imposed gradient per change of the :attr:`effective_gate`, ``(n_meas,)`` in
+        T s/m: the moment this grid cannot resolve. A pulse between two samples -- a 180, or a stimulated echo's
+        store and recall -- leaves a magnet's constant gradient one sample out of balance in the effective integral
+        at each change it makes to the gate, which is the grid's rounding and not a winding."""
         if self.imposed_gradient is None:
             return np.zeros(self.n_meas)
-        return float(self.dt) * np.max(np.abs(np.asarray(self.imposed_gradient, dtype=np.float64)), axis=(1, 2))
+        edges = max(1, int(np.count_nonzero(np.diff(self.effective_gate))))
+        return edges * float(self.dt) * np.max(np.abs(np.asarray(self.imposed_gradient, dtype=np.float64)), axis=(1, 2))
 
     @property
     def net_moment(self):
