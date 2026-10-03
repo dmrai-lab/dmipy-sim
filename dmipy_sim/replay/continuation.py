@@ -42,12 +42,13 @@ def continue_walk(pack, T_add, *, seed, require_gpu=None, adaptive_steps=False, 
     walks pool by pool, and the walk is returned in the pack's walker order either way, so that walker ``w`` of the
     continuation is walker ``w`` of the pack.
 
-    A spec that declares a susceptibility source is walked with ``adaptive_steps=True`` regardless of what is
-    given: the field tier is sampled in the walk, since a continuation keeps no raw walk of its own to defer to
-    (:func:`~dmipy_sim.spec.walk.fill_field` needs one kept on purpose)."""
+    A spec that declares a susceptibility source has its field sampled in the walk, since a continuation keeps no
+    raw walk of its own to defer to (:func:`~dmipy_sim.spec.walk.fill_field` needs one kept on purpose): a gridded
+    source by every walk, a strand source with ``adaptive_steps=True`` regardless of what is given
+    (:func:`~dmipy_sim.spec.walk.field_source_kind`)."""
     from ..engine.core import simulate_trajectories
     from ..spec.build import geometry_from_spec
-    from ..spec.walk import walk_spec, _needs_bundle_walk
+    from ..spec.walk import walk_spec, _needs_bundle_walk, field_source_kind, _single_geometry_field_grid
     from ..spec.seeding import DrawnSeeds
     from ..phantom.grid import Grid
     spec = pack.substrate
@@ -66,8 +67,9 @@ def continue_walk(pack, T_add, *, seed, require_gpu=None, adaptive_steps=False, 
         D = pack.diffusivity
         if D is None:
             raise ValueError("the pack records no diffusivity to continue the walk at")
+        fb = _single_geometry_field_grid(spec, g, None, None) if field_source_kind(spec) == "grid" else None
         w = simulate_trajectories(n_w, float(D), g, T_max=float(T_add), dt_save=dt, seed=int(seed), r0=r_end.astype(np.float32),
-                                  require_gpu=require_gpu, walker_batch_size=walker_batch_size, tiers=tiers)
+                                  require_gpu=require_gpu, walker_batch_size=walker_batch_size, tiers=tiers, field_basis=fb)
         walk = dataclasses.replace(w, geometry=g, spec=spec) if w.spec is None else w
         return walk
     if pool is None:
@@ -81,7 +83,7 @@ def continue_walk(pack, T_add, *, seed, require_gpu=None, adaptive_steps=False, 
     grid = Grid(shape=(1, 1, 1), voxel_size_m=tuple(box[1] - box[0]), origin_m=tuple(box[0]))
     seeds = DrawnSeeds(positions={names[pid]: r_end[pool == pid] for pid in ids},
                        weights={names[pid]: weights[pool == pid] for pid in ids}, grid=grid, seed=int(seed))
-    if spec.field_source_pools and not adaptive_steps:
+    if field_source_kind(spec) == "strands":
         adaptive_steps = True
     w = walk_spec(spec, T_max=float(T_add), dt_save=dt, seed=int(seed), seeding=seeds, require_gpu=require_gpu,
                   walker_batch_size=walker_batch_size, adaptive_steps=adaptive_steps, tiers=tiers)
