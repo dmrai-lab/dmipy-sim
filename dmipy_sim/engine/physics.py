@@ -564,6 +564,33 @@ def make_myelin_substep(geometry, dt: float, rho_weights=None):
     return sub
 
 
+def make_myelin_traj_step_fn(geometry, dt: float):
+    """Trajectory step for the isolated :class:`MyelinatedCylinder`: the open-domain sibling of
+    :func:`make_packed_myelin_traj_step_fn`, stepped by the same substep
+    (:func:`make_myelin_substep`).
+
+    Carry ``(r, r_unwrapped, key, dlog_accum, comp_id)`` -- the same shape the packed trajectory
+    step carries, so :func:`~dmipy_sim.engine.core.simulate_trajectories` records both through one
+    recording branch. There is no periodic cell to unwrap: ``r`` already is the continuous
+    position, so ``r_unwrapped`` repeats it rather than tracking a minimum-image wrap.
+    ``dlog_accum`` accumulates the unit boundary local time (``rho/D = 1``), as the packed step
+    does. No magnetization transfer: binding is wired to the packed myelin walk only
+    (:func:`make_packed_myelin_traj_step_fn`).
+    """
+    sub = make_myelin_substep(geometry, dt)
+
+    def step_fn(carry, _):
+        r, r_uw, key, dlog_accum, comp_id = carry
+        key, k_step, k_perm = jax.random.split(key, 3)
+        u = jax.random.uniform(k_perm, dtype=jnp.float32)
+        r_new, comp_new, chan, _ = sub(r, k_step, u, comp_id)
+        dlog_boundary = jnp.sum(chan)
+        return (r_new, r_new, key, dlog_accum + dlog_boundary, comp_new), None
+
+    step_fn.max_bounces = sub.max_bounces
+    return step_fn
+
+
 def make_myelin_step_fn(geometry, dt: float, T1: float = None, sub_steps: int = None):
     """Fused forward step for :class:`MyelinatedCylinder`.
 
