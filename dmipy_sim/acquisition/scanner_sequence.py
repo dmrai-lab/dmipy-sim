@@ -58,13 +58,56 @@ from .prescription import Prescription
 from .rf import RFSchedule
 from .timing import SequenceTiming
 
-__all__ = ["Encoding", "ScannerSequence", "Protocol", "Prescription", "ECHO_TOL"]
+__all__ = ["Encoding", "ScannerSequence", "Protocol", "Prescription", "ECHO_TOL", "concomitant_terms"]
 
 #: samples: the rounding freedom of placing a pulse at a lobe midpoint
 ECHO_TOL = 2
 
 #: relative net gradient moment |q(TE)| / max|q| above which an echo is not refocused
 REFOCUS_ATOL = 1e-3
+
+
+def concomitant_terms(G, position_m, B0_T, b0_axis=(0.0, 0.0, 1.0)):
+    """``(gc, Bc)``: the gradient coils' concomitant (Maxwell) field at ``position_m`` while they play ``G``, exactly
+    -- the extra encoding gradient ``gc`` (T/m, ``(..., 3)``) and the field's value ``Bc`` (T, ``(...)``).
+
+    ``G`` is the coils' own gradient (``(..., 3)``, T/m) and ``position_m`` a displacement from isocentre
+    (``(..., 3)``, m), broadcast against each other and both in one frame, in which the static field ``B0_T`` points
+    along ``b0_axis``. For B0 along that frame's third axis and the symmetric transverse sharing the ideal linear coil
+    makes ``B_n = G . r`` along the field and ``B_x = Gx z - Gz x / 2``, ``B_y = Gy z - Gz y / 2`` across it; a spin
+    precesses at ``|B| = sqrt((B0 + B_n)^2 + B_x^2 + B_y^2)``, so ``Bc = |B| - B0 - B_n`` and
+    ``gc = grad |B| - grad B_n = [(B0 + B_n) G + B_x grad B_x + B_y grad B_y] / |B| - G``. Any other ``b0_axis`` is
+    evaluated in the magnet's frame and turned back. A pointwise function of ``G``: whatever time course ``G`` has,
+    ``gc`` follows it sample by sample (:meth:`ScannerSequence.with_concomitant` is this along a waveform)."""
+    n = np.asarray(b0_axis, dtype=np.float64).ravel()
+    if n.shape != (3,) or not np.isfinite(n).all() or np.linalg.norm(n) == 0.0:
+        raise ValueError(f"b0_axis is the field's direction in this frame, a non-zero 3-vector; got {b0_axis!r}")
+    n = n / np.linalg.norm(n)
+    B0 = float(B0_T)
+    if B0 <= 0.0:
+        raise ValueError(f"B0_T must be positive; got {B0}")
+    G = np.asarray(G, dtype=np.float64)
+    r = np.asarray(position_m, dtype=np.float64)
+    Rm = None
+    if abs(n[2]) < 1.0 - 1e-12:                          # work in the magnet's frame and come back
+        e1 = np.cross(n, (1.0, 0.0, 0.0) if abs(n[0]) < 0.9 else (0.0, 1.0, 0.0))
+        e1 /= np.linalg.norm(e1)
+        Rm = np.stack([e1, np.cross(n, e1), n])          # rows: the magnet's axes in this frame
+        G, r = G @ Rm.T, r @ Rm.T
+    Gx, Gy, Gz = G[..., 0], G[..., 1], G[..., 2]
+    x, y, z = r[..., 0], r[..., 1], r[..., 2]
+    Bn = Gx * x + Gy * y + Gz * z
+    Bx = Gx * z - 0.5 * Gz * x
+    By = Gy * z - 0.5 * Gz * y
+    mag = np.sqrt((B0 + Bn) ** 2 + Bx ** 2 + By ** 2)
+    # grad|B| - grad B_n, with grad B_n = G, grad B_x = (-Gz/2, 0, Gx), grad B_y = (0, -Gz/2, Gy)
+    w = (B0 + Bn) / mag - 1.0                                              # the coefficient of grad B_n
+    gc = np.stack([w * Gx - 0.5 * Gz * Bx / mag,
+                   w * Gy - 0.5 * Gz * By / mag,
+                   w * Gz + (Gx * Bx + Gy * By) / mag], axis=-1)
+    if Rm is not None:
+        gc = gc @ Rm
+    return gc, mag - B0 - Bn
 
 
 @dataclass(frozen=True)
@@ -626,58 +669,22 @@ class ScannerSequence:
         gets its SIGN wrong in 31 per cent of (voxel, direction) pairs. The default is the convention the
         formula assumes; a caller that knows better says so.
         """
-        n = np.asarray(b0_axis, dtype=np.float64).ravel()
-        if n.shape != (3,) or not np.isfinite(n).all() or np.linalg.norm(n) == 0.0:
-            raise ValueError(f"b0_axis is the field's direction in this frame, a non-zero 3-vector; got {b0_axis!r}")
-        n = n / np.linalg.norm(n)
-        if abs(n[2]) < 1.0 - 1e-12:                      # work in the magnet's frame and come back
-            e1 = np.cross(n, (1.0, 0.0, 0.0) if abs(n[0]) < 0.9 else (0.0, 1.0, 0.0))
-            e1 /= np.linalg.norm(e1)
-            Rm = np.stack([e1, np.cross(n, e1), n])      # rows: the magnet's axes in this frame
-            # EVERY gradient-valued field turns, not just G. Rotating G alone leaves imposed_gradient in
-            # the old frame, so designed_gradient -- which is G minus it, and is what the Maxwell term
-            # reads -- comes out of a mixed frame whenever a background has been applied.
-            imposed = (None if self.imposed_gradient is None
-                       else np.asarray(self.imposed_gradient, dtype=np.float64) @ Rm.T)
-            played = replace(self, G=np.asarray(self.G, dtype=np.float64) @ Rm.T,
-                             imposed_gradient=None if imposed is None else imposed.astype(np.float32))
-            turned = played.with_concomitant(np.asarray(position_m, dtype=np.float64) @ Rm.T, B0_T)
-            # EVERY gradient-valued field turns back, the imposed one included: the Maxwell increment was booked
-            # as imposed in the magnet frame and must stay booked, or designed_gradient reads it as encoding
-            return replace(self, G=(np.asarray(turned.G, dtype=np.float64) @ Rm).astype(np.float32),
-                           imposed_gradient=(np.asarray(turned.imposed_gradient, dtype=np.float64) @ Rm).astype(np.float32),
-                           concomitant=turned.concomitant)
-
         r = np.asarray(position_m, dtype=np.float64).reshape(-1, 3)
         if r.shape[0] not in (1, self.n_meas):
             raise ValueError(f"position_m is one point or one per measurement ({self.n_meas}); got {r.shape}")
         B0 = float(B0_T)
-        if B0 <= 0.0:
-            raise ValueError(f"B0_T must be positive; got {B0}")
         if self.concomitant is not None:
             raise ValueError("this acquisition already carries a concomitant term; apply it once, at the "
                              "position the measurement is made")
         G = np.asarray(self.designed_gradient, dtype=np.float64)          # the coils' own, not the magnet's
-        Gx, Gy, Gz = G[..., 0], G[..., 1], G[..., 2]
-        x, y, z = (r[:, i][:, None] for i in range(3))
-        # the ideal linear coil's field at r, exactly: along B0 and the two transverse components
-        Bn = Gx * x + Gy * y + Gz * z
-        Bx = Gx * z - 0.5 * Gz * x
-        By = Gy * z - 0.5 * Gz * y
-        mag = np.sqrt((B0 + Bn) ** 2 + Bx ** 2 + By ** 2)
-        # grad|B| - grad B_n, with grad B_n = G, grad B_x = (-Gz/2, 0, Gx), grad B_y = (0, -Gz/2, Gy)
-        w = (B0 + Bn) / mag - 1.0                                          # the coefficient of grad B_n
-        gc = np.stack([w * Gx - 0.5 * Gz * Bx / mag,
-                       w * Gy - 0.5 * Gz * By / mag,
-                       w * Gz + (Gx * Bx + Gy * By) / mag], axis=-1)
+        gc, Bc = concomitant_terms(G, r[:, None, :], B0, b0_axis)
         gc = np.broadcast_to(gc.astype(np.float32), self.G.shape)
         imposed = gc if self.imposed_gradient is None else self.imposed_gradient + gc
         # the term's VALUE at the position, B_c = |B| - B0 - B_n, is the order-0 part: one phase per measurement
         # and readout, gamma int s(t) B_c(t) dt through the effective gate, the same for every spin of the voxel.
         # It is quadratic in G(t), so a spin echo with identical lobes cancels it and a gradient echo keeps it
         # (dmipy-sim#394); the phantom multiplies each voxel's signal by it
-        from ..constants import GAMMA
-        Bc = np.broadcast_to(mag - B0 - Bn, (self.n_meas, self.n_t))
+        Bc = np.broadcast_to(Bc, (self.n_meas, self.n_t))
         cum = np.cumsum(self.effective_gate[None, :] * Bc, axis=1) * (GAMMA * float(self.dt))
         reads = tuple(int(i) for i in self.readout) if self.readout else (self.n_t - 1,)
         phase = tuple(tuple(float(cum[m, i]) for i in reads) for m in range(self.n_meas))

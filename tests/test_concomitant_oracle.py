@@ -267,3 +267,26 @@ def test_a_replayed_walk_sees_the_field_the_coils_actually_make(pack, frame):
     # second order in the walker's own excursion is nothing, so the residual above is all at the voxel
     S_g = lambda G: np.abs(np.mean(np.exp(1j * GAMMA * np.einsum("wtd,mtd->wm", u, G * sign[None, :, None] * dt)), axis=0))
     assert np.abs(S(phi_true) - S_g(g_true)).max() < 1e-5
+
+
+@pytest.mark.parametrize("frame", list(FRAMES))
+def test_the_one_maxwell_formula_is_the_gradient_of_its_own_field_and_what_the_sequence_books(frame):
+    """``concomitant_terms`` is the Maxwell term in one place: its extra gradient is the spatial gradient of its own
+    field value (``gc = grad B_c``, differenced numerically at an oblique position in the frame's field direction),
+    and ``with_concomitant`` books exactly that gradient into the imposed part along a constant command."""
+    from dmipy_sim.acquisition.scanner_sequence import concomitant_terms
+    R = FRAMES[frame]
+    n = R @ np.array([0.0, 0.0, 1.0])
+    G_vec = R @ np.array([0.018, -0.007, 0.012])
+    r = R @ np.array([0.05, 0.03, -0.04])
+    B0 = 0.064
+    gc, Bc = concomitant_terms(G_vec, r, B0, tuple(n))
+    h = 1e-5
+    fd = np.array([(concomitant_terms(G_vec, r + h * e, B0, tuple(n))[1] - concomitant_terms(G_vec, r - h * e, B0, tuple(n))[1])
+                   / (2.0 * h) for e in np.eye(3)])
+    assert np.linalg.norm(gc) > 1e-6 and abs(Bc) > 0
+    np.testing.assert_allclose(gc, fd, rtol=1e-6, atol=1e-12)
+    seq = sequences.pgse([[1.0, 0.0, 0.0]], 0.01, 0.03, gradient_strengths=[1.0], n_t=201)
+    G = np.zeros_like(np.asarray(seq.G, np.float64)); G[:, :, :] = G_vec
+    played = seq.with_gradient(G).with_concomitant(r, B0, b0_axis=tuple(n))
+    np.testing.assert_allclose(np.asarray(played.imposed_gradient, np.float64)[0, 0], gc, rtol=1e-6, atol=1e-9)
