@@ -57,7 +57,7 @@ def test_spec_round_trip_rebuilds_the_same_geometry(name):
     g2 = geometry_from_spec(again)
     assert type(g2) is type(g)
     assert g2.spec == spec                                  # the spec is a fixed point
-    if name in ("packed_curved", "multishell", "curved", "myelinated"):
+    if name in ("packed_curved", "multishell", "curved"):
         return                                             # no producer walk for these (fused kernels only)
     w1 = d.simulate_trajectories(48, D, g, 4e-4, 2e-4, seed=1, require_gpu=False)
     w2 = d.simulate_trajectories(48, D, g2, 4e-4, 2e-4, seed=1, require_gpu=False)

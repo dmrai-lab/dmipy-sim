@@ -18,7 +18,8 @@ import logging
 log = logging.getLogger(__name__)
 
 from .physics import (make_step_fn, make_myelin_step_fn, make_packed_myelin_step_fn,
-                      make_packed_myelin_traj_step_fn, seed_walkers, isotropic_unit_step)
+                      make_myelin_traj_step_fn, make_packed_myelin_traj_step_fn,
+                      seed_walkers, isotropic_unit_step)
 from ..persistent_walk import PersistentWalk
 from ..run import Run, current
 from ..acquisition.scanner_sequence import Protocol
@@ -1121,19 +1122,27 @@ def simulate_trajectories(
 
         # ── Relaxation-data path (position + boundary log-weight with rho/D=1) ────
         is_packed_myelin_geom = geometry._is_packed_myelinated
+        is_myelin_geom = geometry._is_myelinated
+        # Both concentric-cylinder geometries (one axon in an open domain, or a periodic pack)
+        # share the one trajectory step below -- make_myelin_traj_step_fn / make_packed_myelin_
+        # traj_step_fn, both built on physics.make_myelin_substep -- which carries the compartment
+        # id the generic position-only walk cannot express.
+        uses_myelin_traj = is_packed_myelin_geom or is_myelin_geom
 
-        if record and is_packed_myelin_geom:
-            # PackedMyelinatedCylinders: use the stripped trajectory step fn (geometry
-            # + permeability only, rho/D=1 at all walls).  comp_id is the encoded id
+        if record and uses_myelin_traj:
+            # (Packed or isolated) myelinated cylinder: use the stripped trajectory step fn
+            # (geometry + permeability only, rho/D=1 at all walls).  comp_id is the encoded id
             # (0=extra, 1..N_max=intra, >N_max=myelin); compress to 0/1/2 at save.
             # The walk steps the in-cell position and records the continuous (unwrapped) one,
-            # as every other periodic substrate's trajectory does.
-            # Magnetization transfer (kappa_MT > 0): the step fn binds free water at the
+            # as every other periodic substrate's trajectory does (the isolated cylinder has no
+            # cell to unwrap: the two are the same position).
+            # Magnetization transfer (kappa_MT > 0, PackedMyelinatedCylinders only): the step fn binds free water at the
             # myelin walls and records the per-save bound occupancy.  kappa_MT == 0 keeps
             # the pre-MT walk bit-for-bit (RNG stream + positions unchanged).
-            _mt_on_pm = kappa_MT > 0.0
-            step_fn_traj_pm = make_packed_myelin_traj_step_fn(
-                geometry, dt_sim, kappa_MT=kappa_MT, dwell_time=dwell_time)
+            _mt_on_pm = kappa_MT > 0.0 and is_packed_myelin_geom
+            step_fn_traj_pm = (make_packed_myelin_traj_step_fn(
+                                  geometry, dt_sim, kappa_MT=kappa_MT, dwell_time=dwell_time)
+                              if is_packed_myelin_geom else make_myelin_traj_step_fn(geometry, dt_sim))
 
             def _compress_comp_pm(comp_id):
                 return geometry.pool_of(comp_id).astype(jnp.int8)
@@ -1187,7 +1196,7 @@ def simulate_trajectories(
                 geometry, ("traj_packed_myelin", n_t, sub_steps, float(dt_sim), kappa_MT, dwell_time),
                 lambda: jax.jit(jax.vmap(simulate_one_walker_pm, in_axes=(0, 0, 0, 0))))
 
-        if record and not is_packed_myelin_geom:
+        if record and not uses_myelin_traj:
             if has_permeability:
                 kappa_over_D_relax = jnp.float32(float(permeability) / diffusivity)
                 permeate_relax = geometry.permeate
@@ -1309,7 +1318,7 @@ def simulate_trajectories(
         _, r0_all, walker_keys_all = seed_walkers(geometry, n_walkers, seed, r0)   # r0_all (n_walkers, 3)
 
         comp0_all = (jnp.asarray(geometry._init_compartments)
-                     if (record and is_packed_myelin_geom) else None)
+                     if (record and uses_myelin_traj) else None)
 
         # ── MT bound-pool equilibration (packed myelin, kappa_MT > 0) ──
         # An all-free start under-fills the macromolecular pool and biases the transfer;
@@ -1359,9 +1368,9 @@ def simulate_trajectories(
         _cx = {"K": int(compress) if _compress else 0, "n_t": None}
         all_blt_endpoints = _Rows(n_walkers) if (_compress and record) else None
         all_blt_starts = _Rows(n_walkers) if (_compress and record) else None
-        if _compress and is_packed_myelin_geom:
-            raise NotImplementedError("compress= is not wired for packed-myelin walks (the MT bound channel has no "
-                                      "bridge form); walk them uncompressed and pack with build_replay_pack.")
+        if _compress and uses_myelin_traj:
+            raise NotImplementedError("compress= is not wired for myelinated-cylinder walks (the MT bound channel has "
+                                      "no bridge form); walk them uncompressed and pack with build_replay_pack.")
         from ..replay.compression import bridge_coefficients_device, boundary_coefficients_device
 
         def _compress_pos(pos_dev):
@@ -1376,14 +1385,14 @@ def simulate_trajectories(
 
             current_r0 = r0_all[start:end]
             current_keys = walker_keys_all[start:end]
-            if record and is_packed_myelin_geom:
+            if record and uses_myelin_traj:
                 current_comp0 = comp0_all[start:end]
                 current_brem0 = brem0_all[start:end]
 
             success = False
             while not success:
                 try:
-                    if record and is_packed_myelin_geom:
+                    if record and uses_myelin_traj:
                         pos_f32, dlog_f32, comp_f32, bfrac_f32 = simulate_batch_pm(
                             current_r0, current_keys, current_comp0, current_brem0)
                         all_batches.append(np.array(pos_f32).astype(_sdt))
@@ -1438,7 +1447,7 @@ def simulate_trajectories(
                         sub_bound_list = [] if _mt_on else None
                         for ss in range(0, batch_size, new_sub_batch):
                             se = min(ss + new_sub_batch, batch_size)
-                            if record and is_packed_myelin_geom:
+                            if record and uses_myelin_traj:
                                 sp, sd, sc, sbf = simulate_batch_pm(
                                     current_r0[ss:se], current_keys[ss:se],
                                     current_comp0[ss:se], current_brem0[ss:se])

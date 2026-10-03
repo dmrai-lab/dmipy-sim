@@ -216,10 +216,6 @@ class MyelinatedCylinder(Geometry):
     # Marker: this geometry provides its own step function (not make_step_fn)
     _is_myelinated = True
 
-    def trajectory_walk_gap(self):
-        return ("its three compartments need the fused kernel physics.make_myelin_step_fn, "
-                "which carries the compartment id. Use simulate(...) instead")
-
     @property
     def length_scales(self):
         return LengthScales(min_feature=self.inner_radius)
