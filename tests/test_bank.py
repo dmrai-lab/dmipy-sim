@@ -6,6 +6,9 @@ MC floor, carries the requested tiers, round-trips through .rpk, is consumable b
 replay-signal forward (the fit/design path), and the floor-target policy converges. See the
 end-to-end walk->pack->replay validation in test_replay_parity for the physics parity.
 """
+import json
+import os
+
 import numpy as np
 from dmipy_sim.fields.susceptibility_field import FieldGrid
 import numpy.testing as npt
@@ -478,3 +481,58 @@ def test_build_to_floor_stops_at_the_cap_and_says_the_target_is_not_met(monkeypa
                         license="CC0-1.0", citation="test")
     assert asked[-1] == 50_000 and asked.count(50_000) == 1, asked   # walked the cap once, then stopped
     assert pk.fidelity.get("target_floor") == 5e-3
+
+
+def test_build_replay_pack_is_byte_reproducible(tmp_path):
+    """Two packs built from the same master and seed, in the same process, are byte-identical files: the run
+    record (ids, timestamps, wall time, pid, host, the record's absolute path) lives beside the pack, never
+    inside it, and the certificate's floats are rounded before they are written, so nothing a run or a
+    reduction's order varies between the two builds reaches the bytes (dmipy-sim#541). The sidecar beside each
+    pack names that pack's own sha256."""
+    import hashlib
+
+    def sha(p):
+        h = hashlib.sha256()
+        with open(p, "rb") as f:
+            h.update(f.read())
+        return h.hexdigest()
+
+    out1, out2 = tmp_path / "a.rpk", tmp_path / "b.rpk"
+    for out in (out1, out2):
+        build_replay_pack(_slab_master(seed=0), id="test/repro", method="bridge_dst", envelope=_lean_env(),
+                          K=64, license="CC-BY-4.0", citation="test", out_path=str(out))
+    assert sha(out1) == sha(out2)
+
+    for out in (out1, out2):
+        sidecar_path = str(out) + ".run.json"
+        assert os.path.exists(sidecar_path)
+        sidecar = json.load(open(sidecar_path))
+        assert sidecar["pack_sha256"] == sha(out)
+        assert sidecar["pack"]["producer"] == "build_replay_pack"
+        assert "run" not in read_rpk(out).meta.get("provenance", {})     # the run record is not in the file
+
+
+def test_certificate_rounding_absorbs_a_last_ulp_difference():
+    """The two readings dmipy-sim#541 measured for one ``fidelity.per_family.OGSE3.err_max`` on two hosts (same
+    tensors, same package versions, a last-ulp float64 reduction difference) round to the same 6-significant-
+    digit value, so the written bytes agree."""
+    a = bank._round_certificate(dict(err_max=0.0018340476685469705))
+    b = bank._round_certificate(dict(err_max=0.00183404766854697))
+    assert a == b
+
+
+def test_a_pack_with_the_old_in_file_run_record_still_loads(tmp_path):
+    """A pack built before dmipy-sim#541 carries its run record inside ``provenance.run``: that is just data the
+    file carries, read as it is, never translated or stripped on load."""
+    out = tmp_path / "old.rpk"
+    build_replay_pack(_slab_master(), id="test/old", method="bridge_dst", envelope=_lean_env(),
+                      K=64, license="CC-BY-4.0", citation="test", out_path=str(out))
+    pk = read_rpk(out)
+    meta = dict(pk.meta)
+    meta["provenance"] = dict(meta.get("provenance") or {},
+                              run=dict(pack=dict(id="20250101T000000-build_replay_pack-1", host="old-host",
+                                                 code=dict(version="0.0.0", commit="0" * 40), record="/old/path")))
+    bank.write_rpk(out, pk.arrays, meta)
+    reloaded = read_rpk(out)
+    assert reloaded.meta["provenance"]["run"]["pack"]["id"] == "20250101T000000-build_replay_pack-1"
+    assert reloaded.fidelity["err_max"] == pk.fidelity["err_max"]        # the rest of the pack is untouched

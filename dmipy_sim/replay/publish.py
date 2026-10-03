@@ -74,7 +74,12 @@ def _check_contract(meta):
 
 
 def _commit_of(meta):
-    """The code commit recorded by the producer: ``provenance.run.code.commit`` or the pack step's."""
+    """The code commit recorded by the producer: ``provenance.code.commit`` (every pack built after dmipy-sim#541,
+    content-derived, so it stays in the file), else ``provenance.run.code.commit`` or the pack step's (a pack
+    built before #541, read as it is -- its run record, including its code, was in the file)."""
+    c = ((meta.get("provenance") or {}).get("code") or {}).get("commit")
+    if c:
+        return c
     run = (meta.get("provenance") or {}).get("run") or {}
     for node in (run, run.get("pack") or {}, run.get("walk") or {}):
         c = (node.get("code") or {}).get("commit")

@@ -86,15 +86,23 @@ with R.Run("victim", run_dir={str(d)!r}) as r:
 
 
 def test_a_pack_records_the_runs_that_made_it(tmp_path, monkeypatch):
+    """The run that produced the walk and the run that built the pack are recorded beside the pack, in its
+    ``.run.json`` sidecar, not inside it (dmipy-sim#541): the file itself carries only content-derived
+    provenance, so two builds of the same content are byte-identical."""
     from dmipy_sim import Cylinder, simulate_trajectories
     from dmipy_sim.replay.bank import build_replay_pack
     monkeypatch.setenv("DMIPY_SIM_RUN_DIR", str(tmp_path / "runs"))
     w = simulate_trajectories(200, 2e-9, Cylinder(radius=3e-6, orientation=(0, 0, 1)), T_max=2e-3, dt_save=1e-4, seed=0, require_gpu=False)
     assert w.run is not None and w.run.status == "ok" and w.run.summary["producer"] == "simulate_trajectories"
-    pk = build_replay_pack(w, id="t/run", license="x", citation="x", K=8, device="numpy", out_path=str(tmp_path / "r.rpk"))
-    prov = pk.meta["provenance"]["run"]
+    out = tmp_path / "r.rpk"
+    pk = build_replay_pack(w, id="t/run", license="x", citation="x", K=8, device="numpy", out_path=str(out))
+    assert "run" not in pk.meta["provenance"]                       # not in the file ...
+    assert pk.meta["provenance"]["code"]["version"]                 # ... only its content-derived provenance is
+    prov = json.load(open(str(out) + ".run.json"))                  # ... the run record is in the sidecar beside it
     assert prov["walk"]["producer"] == "simulate_trajectories" and prov["walk"]["status"] == "ok" and prov["walk"]["wall_s"] > 0
     assert prov["pack"]["id"].endswith(f"-build_replay_pack-{os.getpid()}") and prov["pack"]["host"]
+    import hashlib
+    assert prov["pack_sha256"] == hashlib.sha256(open(out, "rb").read()).hexdigest()
     json.dumps(pk.meta)                                                                # JSON-ready
 
 

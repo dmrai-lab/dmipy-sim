@@ -27,7 +27,7 @@ log = logging.getLogger(__name__)
 import numpy as np
 
 from ..persistent_walk import PersistentWalk
-from ..run import Run
+from ..run import Run, _code
 
 from . import compression as _cx
 from ..acquisition.rf import RFEvent
@@ -1353,12 +1353,63 @@ def combine_segment_fidelity(fids):
     return out
 
 
-def _run_provenance(run, walk):
-    """What a pack records about the runs that made it (RPK provenance): the pack's own run (its id, host, code and
-    record, so its cost is findable) and the summary of the walk's, when the walk carries one."""
+def _round_sig(x, sig):
+    """``x`` rounded to ``sig`` significant decimal digits; 0, nan and inf pass through unchanged."""
+    if x == 0 or not np.isfinite(x):
+        return x
+    return float(f"{x:.{sig - 1}e}")
+
+
+def _round_floats(x, sig):
+    """``x`` with every float leaf rounded to ``sig`` significant digits, recursing through dicts, lists and
+    tuples; bools and ints (and everything else) pass through unchanged."""
+    if isinstance(x, bool):
+        return x
+    if isinstance(x, float):
+        return _round_sig(x, sig)
+    if isinstance(x, dict):
+        return {k: _round_floats(v, sig) for k, v in x.items()}
+    if isinstance(x, (list, tuple)):
+        return type(x)(_round_floats(v, sig) for v in x)
+    return x
+
+
+def _round_certificate(fid, sig=6):
+    """The certificate's statistics (``fidelity.*``: every ``err_*``/``floor_*``, ``per_family``, ``per_voxel``,
+    the per-segment list) rounded to ``sig`` significant digits before they are written.
+
+    6 digits is far below any floor's MEANING -- a split-half Monte-Carlo floor is itself an estimate, not an
+    exact quantity -- and far above the 17th digit a float64 reduction (a sum over many walkers or windows)
+    differs in when the same build runs on a different core count, BLAS build or thread schedule (dmipy-sim#541:
+    the same ``fidelity.per_family.OGSE3.err_max`` read ``0.0018340476685469705`` on one host and
+    ``0.00183404766854697`` on another). Rounded, the two write the same bytes.
+    """
+    return _round_floats(fid, sig)
+
+
+def _write_run_sidecar(out_path, run, walk):
+    """The run that built the pack, beside it (``<out_path>.run.json``) rather than inside it: the run's id,
+    timestamps, wall time, pid, host and its absolute record path (:class:`~dmipy_sim.run.Run`) are not a
+    function of what was built, so a pack's bytes stay a function of its content only when they live here.
+
+    Beside the pack, not inside the run's own record directory: a :class:`~dmipy_sim.run.Run` persists a
+    directory of its own only once it outlives the sampler interval or is given ``run_dir=`` explicitly, so most
+    of a bank's packs -- the small or fast ones, this module's own tests among them -- would have no such
+    directory to hold a sidecar. A file written next to the pack it describes exists exactly when the pack does.
+
+    Names the pack's own sha256 (:func:`dmipy_sim.fill.hub.sha256_of`, what a consumer pins --
+    :func:`dmipy_sim.replay.publish.manifest_row`), so the sidecar for a pack found by its hash is the one its
+    bytes point to. Returns the sidecar's path."""
+    from ..fill.hub import sha256_of
     w = getattr(walk, "run", None)
-    return dict(pack=dict(id=run.id, host=run.summary["host"], code=run.summary["code"], record=run.dir),
-                walk=(None if w is None else (w.summary if hasattr(w, "summary") else w)))   # a loaded walk carries the summary
+    sha = sha256_of(out_path)
+    sidecar = dict(pack_sha256=sha, pack=run.summary,
+                   walk=(None if w is None else (w.summary if hasattr(w, "summary") else w)))
+    path = out_path + ".run.json"
+    with open(path, "w") as f:
+        json.dump(sidecar, f, indent=1, default=str)
+    run.artifact(path, sha256=sha)
+    return path
 
 
 def _precision_tiers(arrays, n_walkers, floor_max, walkers_shuffled):
@@ -1900,6 +1951,7 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto"
                                                         bool(m.get("walkers_shuffled")))
         if chan_meta:
             comp_meta["channels"] = chan_meta      # per-channel codec params (Q, scale, ...)
+        fid = _round_certificate(fid)
         meta = dict(
             rpk_schema_version=RPK_SCHEMA_VERSION, id=id,
             compression=comp_meta,
@@ -1916,7 +1968,7 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto"
                                  field=channels["susceptibility"],
                                  magnetization_transfer=channels["mt"],
                                  diffusivity_fixed=True, acquisition=_envelope_summary(env)),
-            fidelity=fid, provenance=dict(provenance or {}, run=_run_provenance(run, walk)), license=license, citation=citation)
+            fidelity=fid, provenance=dict(provenance or {}, code=_code()), license=license, citation=citation)
         if m.get("substrate") is not None:
             meta["substrate"] = m["substrate"]           # the spec the walk was driven by (#130)
         run.phase("write")
@@ -1924,6 +1976,7 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto"
         if out_path is not None:
             write_rpk(out_path, {k: v for k, v in arrays.items() if v is not None}, meta)
             run.artifact(out_path)
+            _write_run_sidecar(out_path, run, walk)
         if verbose:
             log.info(f"[pack] {id} method={method} K={K} err={fid['err_max']:.4f} "
                   f"floor={fid['floor_max']:.4f} within2x={fid['within_2x_floor']}")
@@ -2037,14 +2090,16 @@ def _build_segmented(m, n_segments, n_seg, run, walk, out_path, *, id, K, tempor
         fid["within_2x_floor"] = bool(fid["err_max"] <= 2.0 * fid["floor_max"])
     if sigma_star is not None:                                 # the floor-target policy's verdict on the whole
         fid.update(target_floor=float(sigma_star), meets_target=bool(fid["err_max"] <= sigma_star and fid["floor_max"] <= sigma_star))
+    fid = _round_certificate(fid)
     arrays, meta = join_segments(packs, fidelity=fid, walks=[dict(first=0, last=int(n_segments) - 1, seed=seed_value(m["seed"]))],
                                  walkers_shuffled=bool(m.get("walkers_shuffled")))
-    meta["provenance"] = dict(meta.get("provenance") or {}, run=_run_provenance(run, walk))
+    # meta["provenance"]["code"] is already window 0's (every window is itself a build_replay_pack call, #541)
     run.phase("write")
     pack = ReplayPack(arrays, meta, source=out_path)
     if out_path is not None:
         write_rpk(out_path, {k: v for k, v in arrays.items() if v is not None}, meta)
         run.artifact(out_path)
+        _write_run_sidecar(out_path, run, walk)
     return pack
 
 
