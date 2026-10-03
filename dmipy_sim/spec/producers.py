@@ -764,3 +764,101 @@ def mcdc_axon_spec(ply, *, scale=_UM, D=None, voxel=None, pad=1.0e-6, boundary="
                      "tube_radius_m": 2.0 * _volume(*mesh) / _area(*mesh), "n_vertices": int(len(mesh[0])), "n_faces": int(len(mesh[1]))},
         provenance=prov)
     return spec.validate()
+
+
+#: Feasibility cap on the target fraction a random-sequential-addition request may ask for, per packed
+#: shape, checked BEFORE anything is placed (SUBSTRATE.md §5). Monodisperse RSA jams near 0.547 for 2-D
+#: disks and 0.384 for 3-D spheres (Feder 1980, Cooper 1988); exactly as :data:`Substrate.RSA_LIMIT` lifts
+#: the 2-D number to 0.60 for the polydisperse Gamma fibre law because placement has been seen to succeed
+#: there routinely, the cylinder cap here is the same 0.60 (:func:`packed_request` places cylinders the
+#: same way, by radius, largest first). The sphere cap is lifted by the same margin, to 0.40, and confirmed
+#: empirically: 30 monodisperse 1 um spheres place at 0.40 and fail at 0.42 (seed 1, 1e5 attempts). A
+#: fraction under the cap may still fail placement -- refused then with the attempt count, never silently
+#: returned as a smaller substrate.
+RSA_LIMIT = {"cylinder": 0.60, "sphere": 0.40}
+
+#: What :func:`packed_request` packs, per ``kind``: the placement routine (largest radius first, periodic
+#: images) and the walkable :class:`~dmipy_sim.geometry.Geometry`. Cylinders differ from spheres only here
+#: and in the fraction's dimension (area vs volume), which ``pack_fn``'s own ``target_vf`` already is.
+_PACKERS = None
+
+
+def _packers():
+    global _PACKERS
+    if _PACKERS is None:
+        from ..geometry.packing import pack_cylinders, pack_spheres
+        from ..geometry.packed import PackedCylinders, PackedSpheres
+        _PACKERS = {"cylinder": (pack_cylinders, PackedCylinders), "sphere": (pack_spheres, PackedSpheres)}
+    return _PACKERS
+
+
+def _radii_from_law(radius_law, n, seed):
+    """``n`` radii (m) drawn from ``radius_law`` with ``seed``, floored at ``r_min``.
+
+    The same vocabulary as the myelinated ``diameter_law`` (SUBSTRATE.md §3.7) but for a radius: only the
+    ``"gamma"`` family is implemented, ``{family: "gamma", shape, scale, r_min}``, ``rng.gamma(shape, scale, n)``.
+    """
+    family = radius_law.get("family")
+    if family != "gamma":
+        raise ValueError(f"radius_law family {family!r} is not supported; only 'gamma' is, as "
+                         f"{{'family': 'gamma', 'shape': ..., 'scale': ..., 'r_min': ...}}")
+    shape, scale = float(radius_law["shape"]), float(radius_law["scale"])
+    r_min = float(radius_law.get("r_min", 0.0))
+    rng = np.random.default_rng(int(seed))
+    return np.maximum(rng.gamma(shape, scale, int(n)), r_min)
+
+
+def packed_request(kind, n_objects, radius_law, target_fraction, *, seed=0, min_gap=None, max_attempts=100_000,
+                   orientation=(0.0, 0.0, 1.0), surface_relaxivity_t2=None, permeability=None, pool=None, id=None):
+    """Realise a periodic RSA packing of ``kind`` (``"sphere"`` or ``"cylinder"``) objects and return its
+    :class:`~dmipy_sim.spec.SubstrateSpec`, the one producer for both (SUBSTRATE.md §5, §7).
+
+    What was asked -- ``n_objects`` radii from ``radius_law`` (the same ``{family, shape, scale, r_min}``
+    vocabulary as the myelinated ``diameter_law``), the periodic cell sized for ``target_fraction``, objects
+    packed by radius (largest first, random sequential addition, periodic images), an optional ``min_gap`` --
+    is recorded in ``spec.request``; what came out (objects placed, fraction, cell side, minimum gap, smallest
+    feature) in ``spec.realisation``. A fraction above :data:`RSA_LIMIT` for this ``kind`` is refused by name
+    before anything is placed; a packing that fails, or that violates ``min_gap``, is refused naming the value,
+    never returned as a smaller substrate. ``orientation`` (the pack axis's pose) applies to cylinders only.
+
+    A hand-built :class:`~dmipy_sim.geometry.PackedSpheres` / :class:`~dmipy_sim.geometry.PackedCylinders` (radii
+    drawn by the caller, not through this producer) still has a spec -- ``geometry.spec`` -- it simply carries no
+    ``request``: nothing recorded what the radii were asked to be.
+    """
+    from .build import spec_of
+    packers = _packers()
+    if kind not in packers:
+        raise ValueError(f"kind must be 'sphere' or 'cylinder', got {kind!r}")
+    pack_fn, Geom = packers[kind]
+    limit = RSA_LIMIT[kind]
+    f = float(target_fraction)
+    if not 0.0 < f <= limit:
+        raise ValueError(f"packing_fraction {f:.3f} is above the random-sequential-addition saturation for "
+                         f"packed {kind}s (RSA_LIMIT = {limit}); a denser packing needs a different placement method")
+    radii = _radii_from_law(radius_law, n_objects, seed)
+    try:
+        centers, L, achieved = pack_fn(radii, target_vf=f, seed=seed, max_attempts=max_attempts)
+    except RuntimeError as e:
+        raise ValueError(f"could not place {n_objects} {kind}s at packing fraction {f:.3f} in {max_attempts} "
+                         f"attempts each ({e}); lower the fraction or the count") from e
+    geom_kw = dict(surface_relaxivity_t2=surface_relaxivity_t2, permeability=permeability, pool=pool)
+    if kind == "cylinder":
+        geom_kw["orientation"] = orientation
+    geom = Geom(radii, centers, L, **geom_kw)
+    spec = spec_of(geom, id=id or f"substrate/packed-{kind}-{int(n_objects)}-{int(seed)}")
+    realised_gap = float(spec.validity.min_gap)
+    if min_gap is not None and realised_gap < float(min_gap):
+        raise ValueError(f"the packing's narrowest gap is {realised_gap:.3e} m, below the requested min_gap "
+                         f"{float(min_gap):.3e} m; lower the fraction or the count, or change the seed")
+    request = dict(generator={"name": "dmipy_sim.spec.producers.packed_request", "version": _version()},
+                   seed=int(seed), n_objects=int(n_objects), packing_fraction=f,
+                   radius_law={"family": radius_law["family"], "shape": float(radius_law["shape"]),
+                               "scale": float(radius_law["scale"]), "r_min": float(radius_law.get("r_min", 0.0))},
+                   min_gap=(None if min_gap is None else float(min_gap)))
+    realisation = dict(n_objects=int(len(radii)), packing_fraction=float(achieved), cell_side=float(L),
+                       min_gap=realised_gap, smallest_feature=float(spec.validity.smallest_feature))
+    prov = dict(spec.provenance or {}, source="generated",
+               transformations=[f"radii drawn from the {radius_law['family']} law and floored at r_min",
+                                 "periodic cell sized for the requested packing fraction",
+                                 f"{kind}s packed by radius (random sequential addition, largest first)"])
+    return dataclasses.replace(spec, request=request, realisation=realisation, provenance=prov).validate()
