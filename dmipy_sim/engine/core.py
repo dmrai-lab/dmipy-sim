@@ -1129,6 +1129,18 @@ def simulate_trajectories(
         # id the generic position-only walk cannot express.
         uses_myelin_traj = is_packed_myelin_geom or is_myelin_geom
 
+        # kappa_MT binds free water into a bound pool that only PackedMyelinatedCylinders'
+        # trajectory step (make_packed_myelin_traj_step_fn) carries; every other geometry's step
+        # -- the isolated MyelinatedCylinder's make_myelin_traj_step_fn included -- has no such
+        # state, so a kappa_MT > 0 given to it would silently do nothing (the #536 failure mode).
+        # Refused here, where the step function is chosen, before any device work.
+        if kappa_MT > 0.0 and not is_packed_myelin_geom:
+            raise NotImplementedError(
+                f"simulate_trajectories: kappa_MT > 0 (magnetization transfer) is carried only by "
+                f"PackedMyelinatedCylinders' trajectory step (make_packed_myelin_traj_step_fn); "
+                f"{type(geometry).__name__} has no bound pool to bind into. Pass kappa_MT=0.0 "
+                f"(the default), or walk a PackedMyelinatedCylinders.")
+
         if record and uses_myelin_traj:
             # (Packed or isolated) myelinated cylinder: use the stripped trajectory step fn
             # (geometry + permeability only, rho/D=1 at all walls).  comp_id is the encoded id
@@ -1136,10 +1148,11 @@ def simulate_trajectories(
             # The walk steps the in-cell position and records the continuous (unwrapped) one,
             # as every other periodic substrate's trajectory does (the isolated cylinder has no
             # cell to unwrap: the two are the same position).
-            # Magnetization transfer (kappa_MT > 0, PackedMyelinatedCylinders only): the step fn binds free water at the
-            # myelin walls and records the per-save bound occupancy.  kappa_MT == 0 keeps
-            # the pre-MT walk bit-for-bit (RNG stream + positions unchanged).
-            _mt_on_pm = kappa_MT > 0.0 and is_packed_myelin_geom
+            # Magnetization transfer (kappa_MT > 0, PackedMyelinatedCylinders only -- refused above
+            # for every other geometry): the step fn binds free water at the myelin walls and
+            # records the per-save bound occupancy.  kappa_MT == 0 keeps the pre-MT walk
+            # bit-for-bit (RNG stream + positions unchanged).
+            _mt_on_pm = kappa_MT > 0.0
             step_fn_traj_pm = (make_packed_myelin_traj_step_fn(
                                   geometry, dt_sim, kappa_MT=kappa_MT, dwell_time=dwell_time)
                               if is_packed_myelin_geom else make_myelin_traj_step_fn(geometry, dt_sim))

@@ -10,8 +10,10 @@ import dataclasses
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
 
 import dmipy_sim as d
+import dmipy_sim.engine.core as core
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_sim.spec import walk_spec
 from dmipy_sim.spec.tissue import Tissue
@@ -89,6 +91,29 @@ def test_a_replay_pack_of_the_walk_agrees_with_the_fused_signal():
 
     assert abs(s_fused - s_replay) < max(0.02, 1.0 / np.sqrt(N)), \
         f"fused {s_fused:.4f} vs replay {s_replay:.4f}"
+
+
+def test_kappa_mt_is_refused_for_the_isolated_cylinder_before_any_device_work(monkeypatch):
+    """kappa_MT binds free water into a bound pool that only PackedMyelinatedCylinders'
+    trajectory step carries; the isolated cylinder's step has none, so this must be refused
+    by name rather than silently walked without it (#536)."""
+    def _boom(*a, **k):
+        raise AssertionError("seed_walkers was called: a walk was attempted")
+    monkeypatch.setattr(core, "seed_walkers", _boom)
+    with pytest.raises(NotImplementedError, match=r"MyelinatedCylinder.*PackedMyelinatedCylinders"):
+        d.simulate_trajectories(8, D, _g(), T_max=1e-3, dt_save=1e-3, require_gpu=False,
+                                kappa_MT=1e-3, dwell_time=1e-3)
+
+
+def test_kappa_mt_still_walks_on_the_packed_class():
+    """The refusal above is geometry-specific: PackedMyelinatedCylinders still walks with
+    kappa_MT > 0 and records the bound-fraction channel."""
+    L = float(np.sqrt(np.pi * 3 * (1e-6 / 0.7) ** 2 / 0.5))
+    _, _, c = d.pack_myelinated_cylinders([1e-6] * 3, 0.7, None, cell_size=L, seed=0)
+    pm = d.PackedMyelinatedCylinders([1e-6] * 3, 0.7, c, L, N_max=4, D_intra=D, D_extra=D)
+    w = d.simulate_trajectories(300, D, pm, T_max=8e-3, dt_save=2e-4, seed=1, require_gpu=False,
+                                kappa_MT=5e-5, dwell_time=1e-3, equilibrate_binding="off")
+    assert w.has_binding
 
 
 def test_walk_spec_builds_a_three_pool_pack():
