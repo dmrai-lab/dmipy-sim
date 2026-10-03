@@ -71,6 +71,8 @@ def _master_arrays(src) -> dict:
                 susc_field_every=int(m.get("susc_field_every", 1) or 1) if isinstance(m, dict) else 1,
                 susc_grid_origin=(np.asarray(m["susc_grid_origin"]) if "susc_grid_origin" in m else None),
                 susc_grid_raster=m.get("susc_grid_raster"),
+                susc_grid_periodic=(tuple(bool(p) for p in m["susc_grid_periodic"]) if m.get("susc_grid_periodic") is not None
+                                    else None),
                 susc_chi_iso=scal("susc_chi_iso"), delta_chi_a=scal("delta_chi_a"),
                 cell_size=scal("cell_size"), R=g("R"), D_intra=scal("D_intra"),
                 substrate_frame=g("substrate_frame"),
@@ -462,7 +464,7 @@ def _field_of(m):
     fb = m.get("susc_field_basis")
     if fb is not None:
         from ..fields.susceptibility_field import FieldGrid
-        return FieldGrid(fb, np.asarray(m["susc_grid_origin"], float))
+        return FieldGrid(fb, np.asarray(m["susc_grid_origin"], float), periodic=grid_periodic_of(m))
     return m.get("susc_field_sampler")
 
 
@@ -497,7 +499,7 @@ def _susc_grid_fidelity(m, arrays, gm, decoded_pos, dt, env):
     fb = m.get("susc_field_basis")
     if fb is None or "susc_grid_iso_local" not in arrays:
         return None
-    origin = np.asarray(gm["origin"], float); vs = np.asarray(gm["voxel_size"], float)
+    origin = np.asarray(gm["origin"], float); vs = np.asarray(gm["voxel_size"], float); per = grid_periodic_of(gm)
     raw_traj = np.asarray(m["traj"], np.float64); n_w, n_t = raw_traj.shape[0], raw_traj.shape[1]
     w = np.asarray(m["w"], np.float64) if m.get("w") is not None else np.ones(n_w)
     braw = {"iso_local": np.asarray(fb["iso_local"], np.float64), "iso_P": np.asarray(fb["iso_P"], np.float64),
@@ -521,8 +523,8 @@ def _susc_grid_fidelity(m, arrays, gm, decoded_pos, dt, env):
     for B0 in (env.get("B0_list") or [3.0, 7.0]):
         for th in (env.get("theta_deg") or [0, 90]):
             t = np.deg2rad(float(th)); d = [np.sin(t), 0.0, np.cos(t)]
-            s_raw = sample_grid(assemble_field(braw, d, B0=B0, chi_iso=chi_i, chi_aniso=ca), raw_traj, origin, vs)
-            s_dec = sample_grid(assemble_field(bsto, d, B0=B0, chi_iso=chi_i, chi_aniso=ca), decoded_pos, origin, vs)
+            s_raw = sample_grid(assemble_field(braw, d, B0=B0, chi_iso=chi_i, chi_aniso=ca), raw_traj, origin, vs, periodic=per)
+            s_dec = sample_grid(assemble_field(bsto, d, B0=B0, chi_iso=chi_i, chi_aniso=ca), decoded_pos, origin, vs, periodic=per)
             for gate in (se, gre):
                 cr = np.cos(GAMMA * dt * (s_raw * gate[None, :]).sum(1))
                 cd = np.cos(GAMMA * dt * (s_dec * gate[None, :]).sum(1))
@@ -961,6 +963,14 @@ def held_voxels(cert):
     seeded on a block's face and binned into the neighbour's voxel."""
     c = np.asarray(cert, np.float64)
     return (c[:, :, 0].sum(1) > 0) & np.isfinite(c[:, :, 1]).any(1)
+
+
+def grid_periodic_of(grid_meta):
+    """Per axis whether a field grid is one period of its field, from a pack's ``susceptibility_grid`` meta
+    (``periodic``) or a master (``susc_grid_periodic``): the ``periodic=`` that
+    :func:`~dmipy_sim.fields.susceptibility_field.sample_grid` reads it with. A grid that declares none is clamped."""
+    per = grid_meta.get("periodic", grid_meta.get("susc_grid_periodic"))
+    return (False, False, False) if per is None else tuple(bool(p) for p in per)
 
 
 def grid_basis_of(arrays, grid_meta):
@@ -1463,7 +1473,7 @@ def _walk_master(walk, *, weights=None, field=None, diffusivity=None, substrate_
         from ..fields.strand_field import StrandFieldBasis, StrandFieldRecord
         if isinstance(field, FieldGrid):
             extra.update(susc_field_basis=field.basis, susc_grid_origin=np.asarray(field.origin, float),
-                         susc_grid_raster=getattr(field, "certificate", None))
+                         susc_grid_raster=getattr(field, "certificate", None), susc_grid_periodic=tuple(field.periodic))
         elif isinstance(field, (StrandFieldBasis, StrandFieldRecord)):
             if isinstance(field, StrandFieldRecord) and walk.field_samples is None:
                 raise ValueError("the walk carries the record of its field basis but no field samples: rebuild the basis from "
@@ -1681,7 +1691,7 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto"
                 origin=np.asarray(m["susc_grid_origin"], float).tolist(),
                 voxel_size=np.asarray(fb["voxel_size"], float).tolist(),
                 shape=[int(s) for s in fb["shape"]], has_aniso=(fb.get("aniso_G") is not None),
-                arrays_in_pack=bool(_grid_in_pack),
+                periodic=list(grid_periodic_of(m)), arrays_in_pack=bool(_grid_in_pack),
                 replay_route=("grid+path" if (_grid_in_pack and susc_path_K)
                               else ("path" if susc_path_K else "grid")),
                 raster=m.get("susc_grid_raster"))
