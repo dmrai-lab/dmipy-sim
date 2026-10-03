@@ -111,7 +111,7 @@ def fill_per_voxel(pred, grid, want, *, trials_max, census_draws=200, rounds_max
     rng = np.random.default_rng(seed)
     want = np.asarray(want, np.int64).reshape(-1)
     n_vox = grid.n_voxels; shape = np.asarray(grid.shape)
-    corner = np.asarray(grid.corner_m, float); vs = np.asarray(grid.voxel_size_m, float)
+    corner = np.asarray(grid.corner_m, float); step = np.asarray(grid.step_m, float)
     have = np.zeros(n_vox, np.int64); trials = np.zeros(n_vox, np.int64); acc = np.zeros(n_vox, np.int64)
     kept_p, kept_v = [], []; n_drawn = 0
     log = logging.getLogger("dmipy_sim")
@@ -129,7 +129,7 @@ def fill_per_voxel(pred, grid, want, *, trials_max, census_draws=200, rounds_max
             n_try = np.maximum((n_try * (int(batch) / n_try.sum())).astype(np.int64), 1)
         v_all = np.repeat(vids, n_try); n_drawn += len(v_all)
         ijk = np.stack(np.unravel_index(v_all, tuple(shape)), axis=1)
-        P = corner + (ijk + rng.uniform(0.0, 1.0, (len(v_all), 3))) * vs
+        P = corner + (ijk + rng.uniform(0.0, 1.0, (len(v_all), 3))) * step
         ok = np.asarray(pred(P), bool)
         trials += np.bincount(v_all, minlength=n_vox); acc += np.bincount(v_all[ok], minlength=n_vox)
         Pk, vk = P[ok], v_all[ok]
@@ -149,18 +149,21 @@ def _clip_segments_to_voxels(A, B, r, grid):
     """Every (segment, voxel) pair whose tube can meet the voxel, with the centerline's parameter interval inside
     the voxel grown by the radius: ``(seg, vox, t0, t1)``. A segment's bounding box grown by ``r`` gives the voxel
     range; Liang-Barsky against each of those voxels grown by ``r`` gives the interval."""
-    corner = np.asarray(grid.corner_m, float); vs = np.asarray(grid.voxel_size_m, float); sh = np.asarray(grid.shape)
+    corner = np.asarray(grid.corner_m, float); step = np.asarray(grid.step_m, float); sh = np.asarray(grid.shape)
     lo = np.minimum(A, B) - r[:, None]; hi = np.maximum(A, B) + r[:, None]
-    ilo = np.clip(np.floor((lo - corner) / vs).astype(np.int64), 0, sh - 1)
-    ihi = np.clip(np.floor((hi - corner) / vs).astype(np.int64), 0, sh - 1)
+    i_lo = np.floor((lo - corner) / step).astype(np.int64); i_hi = np.floor((hi - corner) / step).astype(np.int64)
+    ilo = np.clip(np.minimum(i_lo, i_hi), 0, sh - 1)
+    ihi = np.clip(np.maximum(i_lo, i_hi), 0, sh - 1)
     span = ihi - ilo + 1; n_pairs = np.prod(span, axis=1)
-    keep = np.all(hi >= corner, axis=1) & np.all(lo <= corner + sh * vs, axis=1)
+    face_lo = np.minimum(corner, corner + sh * step); face_hi = np.maximum(corner, corner + sh * step)
+    keep = np.all(hi >= face_lo, axis=1) & np.all(lo <= face_hi, axis=1)
     seg = np.repeat(np.arange(len(A)), np.where(keep, n_pairs, 0))
     # the voxel offsets within each segment's range, enumerated
     off = np.concatenate([np.stack(np.meshgrid(*[np.arange(s) for s in span[k]], indexing="ij"), -1).reshape(-1, 3)
                           for k in np.flatnonzero(keep)]) if keep.any() else np.zeros((0, 3), np.int64)
     ijk = ilo[seg] + off
-    vlo = corner + ijk * vs - r[seg][:, None]; vhi = corner + (ijk + 1) * vs + r[seg][:, None]
+    near = corner + ijk * step; far = corner + (ijk + 1) * step
+    vlo = np.minimum(near, far) - r[seg][:, None]; vhi = np.maximum(near, far) + r[seg][:, None]
     D = B[seg] - A[seg]; A_ = A[seg]
     t0 = np.zeros(len(seg)); t1 = np.ones(len(seg))
     for ax in range(3):
@@ -207,7 +210,6 @@ def fill_swept_by_voxel(A, B, r, grid, want, *, seed=0, census_draws=200, rounds
     have = np.zeros(grid.n_voxels, np.int64); drawn = np.zeros(grid.n_voxels, np.int64); acc = np.zeros(grid.n_voxels, np.int64)
     kept_p, kept_v = [], []
     V_vox = float(np.prod(grid.voxel_size_m))
-    corner = np.asarray(grid.corner_m, float); vs = np.asarray(grid.voxel_size_m, float)
     active = (want > 0) & (W_vox > 0)
     for _ in range(int(rounds_max)):
         short = active & ((have < want) | (drawn < int(census_draws)))
@@ -230,8 +232,7 @@ def fill_swept_by_voxel(A, B, r, grid, want, *, seed=0, census_draws=200, rounds
         e1 = np.cross(T, ref); e1 /= np.linalg.norm(e1, axis=1, keepdims=True); e2 = np.cross(T, e1)
         rad = np.maximum(r[k] - margin, 0.0) * np.sqrt(rng.uniform(0.0, 1.0, len(k))); th = rng.uniform(0.0, 2 * np.pi, len(k))
         P = C + rad[:, None] * (np.cos(th)[:, None] * e1 + np.sin(th)[:, None] * e2)
-        ijk = np.floor((P - corner) / vs).astype(np.int64)
-        inside = np.all((ijk >= 0) & (ijk < np.asarray(grid.shape)), axis=1)
+        ijk, inside = grid.bin(P)
         v_hit = np.where(inside, np.ravel_multi_index(tuple(np.clip(ijk, 0, np.asarray(grid.shape) - 1).T), grid.shape), -1)
         ok = v_hit == v_all
         drawn += np.bincount(v_all, minlength=grid.n_voxels); acc += np.bincount(v_all[ok], minlength=grid.n_voxels)
