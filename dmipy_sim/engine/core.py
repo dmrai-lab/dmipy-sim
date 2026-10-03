@@ -1127,6 +1127,8 @@ def simulate_trajectories(
             # PackedMyelinatedCylinders: use the stripped trajectory step fn (geometry
             # + permeability only, rho/D=1 at all walls).  comp_id is the encoded id
             # (0=extra, 1..N_max=intra, >N_max=myelin); compress to 0/1/2 at save.
+            # The walk steps the in-cell position and records the continuous (unwrapped) one,
+            # as every other periodic substrate's trajectory does.
             # Magnetization transfer (kappa_MT > 0): the step fn binds free water at the
             # myelin walls and records the per-save bound occupancy.  kappa_MT == 0 keeps
             # the pre-MT walk bit-for-bit (RNG stream + positions unchanged).
@@ -1141,19 +1143,19 @@ def simulate_trajectories(
                 return step_fn_traj_pm(carry, None)
 
             if not _mt_on_pm:
-                # ── pre-MT path (4-element carry) — UNCHANGED, kept bit-for-bit ──
+                # ── without MT (5-element carry) ──
                 def outer_step_pm(carry, _):
-                    r, key, comp_id = carry
+                    r, r_uw, key, comp_id = carry
                     # dlog_accum resets each save so the emitted value is the per-save delta.
-                    inner_init = (r, key, jnp.float32(0.0), comp_id)
-                    (r_final, key_final, dlog_accum, comp_final), _ = jax.lax.scan(
+                    inner_init = (r, r_uw, key, jnp.float32(0.0), comp_id)
+                    (r_final, r_uw_final, key_final, dlog_accum, comp_final), _ = jax.lax.scan(
                         _inner_pm, inner_init, None, length=sub_steps)
-                    return (r_final, key_final, comp_final), \
-                           (r_final, dlog_accum, _compress_comp_pm(comp_final))
+                    return (r_final, r_uw_final, key_final, comp_final), \
+                           (r_uw_final, dlog_accum, _compress_comp_pm(comp_final))
 
                 def simulate_one_walker_pm(r0_w, key_w, comp0_w, brem0_w):  # brem0 unused
-                    (_, _, _), (positions, dlog_boundary, comp_types) = jax.lax.scan(
-                        outer_step_pm, (r0_w, key_w, comp0_w), None, length=n_t - 1)
+                    (_, _, _, _), (positions, dlog_boundary, comp_types) = jax.lax.scan(
+                        outer_step_pm, (r0_w, r0_w, key_w, comp0_w), None, length=n_t - 1)
                     # save 0 is the start: the initial position, no contact yet, the initial pool
                     positions = jnp.concatenate([r0_w[None, :], positions], axis=0)
                     dlog_boundary = jnp.concatenate([jnp.zeros((1,), dlog_boundary.dtype), dlog_boundary])
@@ -1161,19 +1163,19 @@ def simulate_trajectories(
                     z = jnp.zeros_like(dlog_boundary)                       # placeholder bound_frac
                     return positions, dlog_boundary, comp_types, z
             else:
-                # ── MT path (6-element carry): bound_rem persists across saves ──
+                # ── MT path: bound_rem persists across saves ──
                 def outer_step_pm(carry, _):
-                    r, key, comp_id, bound_rem = carry
-                    inner_init = (r, key, jnp.float32(0.0), comp_id, bound_rem, jnp.float32(0.0))
-                    (r_final, key_final, dlog_accum, comp_final, bound_rem_f, bound_acc), _ = \
+                    r, r_uw, key, comp_id, bound_rem = carry
+                    inner_init = (r, r_uw, key, jnp.float32(0.0), comp_id, bound_rem, jnp.float32(0.0))
+                    (r_final, r_uw_final, key_final, dlog_accum, comp_final, bound_rem_f, bound_acc), _ = \
                         jax.lax.scan(_inner_pm, inner_init, None, length=sub_steps)
                     bound_frac = bound_acc / jnp.float32(sub_steps)
-                    return (r_final, key_final, comp_final, bound_rem_f), \
-                           (r_final, dlog_accum, _compress_comp_pm(comp_final), bound_frac)
+                    return (r_final, r_uw_final, key_final, comp_final, bound_rem_f), \
+                           (r_uw_final, dlog_accum, _compress_comp_pm(comp_final), bound_frac)
 
                 def simulate_one_walker_pm(r0_w, key_w, comp0_w, brem0_w):
-                    (_, _, _, _), (positions, dlog_boundary, comp_types, bound_frac) = \
-                        jax.lax.scan(outer_step_pm, (r0_w, key_w, comp0_w, brem0_w),
+                    (_, _, _, _, _), (positions, dlog_boundary, comp_types, bound_frac) = \
+                        jax.lax.scan(outer_step_pm, (r0_w, r0_w, key_w, comp0_w, brem0_w),
                                      None, length=n_t - 1)
                     # save 0 is the start: the initial position, no contact yet, the initial pool and bound state
                     positions = jnp.concatenate([r0_w[None, :], positions], axis=0)
@@ -1325,8 +1327,8 @@ def simulate_trajectories(
                 _n_chunk = max(4, int(round(float(dwell_time) / float(dt_sim))))
 
                 def _burn_walker(r_w, key_w, comp_w, brem_w):
-                    (r_f, key_f, _da, comp_f, brem_f, bacc), _ = jax.lax.scan(
-                        _inner_pm, (r_w, key_w, jnp.float32(0.0), comp_w, brem_w,
+                    (r_f, _r_uw, key_f, _da, comp_f, brem_f, bacc), _ = jax.lax.scan(
+                        _inner_pm, (r_w, r_w, key_w, jnp.float32(0.0), comp_w, brem_w,
                                     jnp.float32(0.0)), None, length=_n_chunk)
                     return r_f, key_f, comp_f, brem_f, bacc / jnp.float32(_n_chunk)
                 _burn = jax.jit(jax.vmap(_burn_walker, in_axes=(0, 0, 0, 0)))

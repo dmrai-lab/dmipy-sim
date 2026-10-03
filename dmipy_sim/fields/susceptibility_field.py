@@ -102,11 +102,15 @@ class FieldGrid(NamedTuple):
     replay; ``origin`` is the world position of voxel (0, 0, 0). No susceptibility value lives here:
     the grid is the substrate's shape, the field is a replay knob. ``certificate`` is the raster's record when
     a spec built it (:func:`dmipy_sim.spec.field_grid_of_spec`): the node spacing, the nodes across the thinnest
-    shell, and the shell fraction the raster holds against a Monte-Carlo membership estimate.
+    shell, and the shell fraction the raster holds against a Monte-Carlo membership estimate. ``periodic`` is per
+    axis whether the grid is one period of the field (a packed substrate's cell): a periodic axis is sampled
+    wrapped, so a continuous position outside the grid reads the field of its image in the cell; any other axis is
+    clamped at the edge.
     """
     basis: dict
     origin: np.ndarray
     certificate: Optional[dict] = None
+    periodic: tuple = (False, False, False)
 
     @property
     def channel_names(self):
@@ -123,7 +127,7 @@ class FieldGrid(NamedTuple):
         grids = [np.asarray(self.basis["iso_local"], np.float64)] + [np.asarray(self.basis["iso_P"][c], np.float64) for c in range(6)]
         if self.basis.get("aniso_G") is not None:
             grids += [np.asarray(self.basis["aniso_G"][c], np.float64) for c in range(6)]
-        return np.stack([sample_grid(g, P, org, vs, periodic=False) for g in grids], axis=1)
+        return np.stack([sample_grid(g, P, org, vs, periodic=self.periodic) for g in grids], axis=1)
 
     def field(self, points, b0_dir, *, B0, chi_iso=0.0, chi_aniso=0.0):
         """``dB`` (Tesla) at ``points`` for one configuration."""
@@ -144,9 +148,9 @@ def field_grid_of(geometry, *, res=None, include_aniso=True, box=None, margin=No
     same C3 channel as a mesh pack and is replayed by the same code.
 
     The grid is the geometry's periodic cell for a packed substrate (the FFT solve is periodic, so
-    the images are exact), or ``box = (lo, hi)`` (2-vectors, metres) for a single cylinder, default
-    ``margin`` (default ``4 * outer_radius``) beyond the sheath; the field is invariant along the
-    axis, so ``n_z`` voxels carry it (periodic in z). The basis is in the geometry frame (axis = z):
+    the images are exact, and the grid is sampled periodically), or ``box = (lo, hi)`` (2-vectors, metres)
+    for a single cylinder, default ``margin`` (default ``4 * outer_radius``) beyond the sheath; the field is
+    invariant along the axis, so ``n_z`` voxels carry it (periodic in z). The basis is in the geometry frame (axis = z):
     give ``b0_dir`` at replay in that frame. ``include_aniso`` (default True) adds the six anisotropic
     grids so ``chi_aniso`` can be applied at replay; False halves the work for an isotropic-only pack.
     """
@@ -203,7 +207,7 @@ def field_grid_of(geometry, *, res=None, include_aniso=True, box=None, margin=No
                         kspace_lowpass=(None if periodic else kspace_lowpass))
     basis["shell_fraction"] = float(mask.mean())
     origin = np.array([lo[0], lo[1], -0.5 * int(n_z) * vs[2]])
-    return FieldGrid(basis, origin)
+    return FieldGrid(basis, origin, periodic=(periodic,) * 3)
 
 def _unit(v, axis=-1, eps=1e-30):
     v = np.asarray(v, float)

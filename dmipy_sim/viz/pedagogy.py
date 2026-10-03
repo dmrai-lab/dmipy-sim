@@ -55,9 +55,9 @@ def _walk_record(geometry, diffusivity, n_t, dt, n_walkers, seed):
         def one(r0_w, key_w, c0):
             def emit(carry, _):
                 nc, _ = step_fn(carry, None)
-                return nc, (nc[0], nc[3])          # (position, compartment_id)
+                return nc, (nc[1], nc[4])          # (continuous position, compartment_id)
             _, (pos, cid) = jax.lax.scan(
-                emit, (r0_w, key_w, jnp.float32(0.0), c0), None, length=n_t)
+                emit, (r0_w, r0_w, key_w, jnp.float32(0.0), c0), None, length=n_t)
             return pos, cid
 
         pos, cid = jax.vmap(one)(r0, jax.random.split(wk, n_walkers), comp0)
@@ -369,8 +369,8 @@ def _magnitude_walk(geometry, waveform, rho, T2_per_comp, n_walkers, seed, want_
     def one(r, k, c):
         def emit(carry, _):
             nc, _ = step_fn(carry, None)
-            return nc, ((nc[0], nc[3], nc[2]) if want_pos else (nc[3], nc[2]))
-        _, out = jax.lax.scan(emit, (r, k, jnp.float32(0.0), c), None, length=n_t)
+            return nc, ((nc[0], nc[4], nc[3]) if want_pos else (nc[4], nc[3]))   # in-cell position: drawn in the cell
+        _, out = jax.lax.scan(emit, (r, r, k, jnp.float32(0.0), c), None, length=n_t)
         return out
 
     out = jax.vmap(one)(r0, jax.random.split(wk, n_walkers), comp0)
@@ -527,8 +527,8 @@ def magnitude_movie(geometry, waveform, save, *, rho, T2_per_comp, n_walkers=400
     def one(r, k, c):
         def emit(carry, _):
             nc, _ = step_fn(carry, None)
-            return nc, (nc[3], nc[2])              # (compartment_id, cumulative dlog)
-        _, (cid, dlog) = jax.lax.scan(emit, (r, k, jnp.float32(0.0), c), None, length=n_t)
+            return nc, (nc[4], nc[3])              # (compartment_id, cumulative dlog)
+        _, (cid, dlog) = jax.lax.scan(emit, (r, r, k, jnp.float32(0.0), c), None, length=n_t)
         return cid, dlog
 
     cid, dlog = jax.vmap(one)(r0, jax.random.split(wk, n_walkers), comp0)
@@ -629,8 +629,8 @@ def magnitude_spatial_movie(geometry, waveform, save, *, rho, T2_per_comp, n_wal
     def one(r, k, c):
         def emit(carry, _):
             nc, _ = step_fn(carry, None)
-            return nc, (nc[0], nc[3], nc[2])       # (position, compartment_id, cumulative dlog)
-        _, (pos, cid, dlog) = jax.lax.scan(emit, (r, k, jnp.float32(0.0), c), None, length=n_t)
+            return nc, (nc[0], nc[4], nc[3])       # (in-cell position, compartment_id, cumulative dlog)
+        _, (pos, cid, dlog) = jax.lax.scan(emit, (r, r, k, jnp.float32(0.0), c), None, length=n_t)
         return pos, cid, dlog
 
     pos, cid, dlog = jax.vmap(one)(r0, jax.random.split(wk, n_walkers), comp0)

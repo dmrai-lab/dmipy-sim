@@ -609,13 +609,28 @@ def make_myelin_step_fn(geometry, dt: float, T1: float = None, sub_steps: int = 
     return step_fn
 
 
+def _unwrapped_step(r_unwrapped, r_incell, r_incell_new, L):
+    """The continuous position after one sub-step of a walker in a periodic ``(x, y)`` cell of side ``L``.
+
+    ``r_incell -> r_incell_new`` is the step as the cell holds it, wrapped into ``[-L/2, L/2)`` in-plane; its
+    in-plane displacement is the minimum image (a sub-step is far shorter than ``L/2``), and the axial coordinate,
+    which the cell never wraps, is the in-cell one. Elementwise arithmetic, no matmul, so the position is exact in
+    float32 on any device.
+    """
+    dxy = r_incell_new[:2] - r_incell[:2]
+    dxy = dxy - L * jnp.round(dxy / L)
+    return jnp.array([r_unwrapped[0] + dxy[0], r_unwrapped[1] + dxy[1], r_incell_new[2]], dtype=jnp.float32)
+
+
 def make_packed_myelin_traj_step_fn(geometry, dt: float,
                                     kappa_MT: float = 0.0, dwell_time: float = 0.0,
                                     mt_side_intra: float = 1.0, mt_side_extra: float = 1.0):
     """Trajectory step for PackedMyelinatedCylinders: geometry + permeability, no relaxation.
 
-    Carry ``(r, key, dlog_accum, comp_id)`` -- or ``(r, key, dlog_accum, comp_id, bound_rem,
-    bound_acc)`` when ``kappa_MT > 0``; ``step_fn(carry, None) -> (carry, None)``. ``dlog_accum``
+    Carry ``(r_incell, r_unwrapped, key, dlog_accum, comp_id)`` -- or ``(r_incell, r_unwrapped, key,
+    dlog_accum, comp_id, bound_rem, bound_acc)`` when ``kappa_MT > 0``; ``step_fn(carry, None) -> (carry,
+    None)``. ``r_incell`` is the position in the cell ``[-L/2, L/2)`` that the wall kernel reads;
+    ``r_unwrapped`` is the continuous position (:func:`_unwrapped_step`), the one a trajectory records. ``dlog_accum``
     accumulates the unit boundary local time (``-2 d_perp`` per reflection, i.e. ``rho/D = 1``) so
     a replay can apply any surface relaxivity. ``comp_id`` is the encoded compartment (0 extra,
     ``1..N_max`` lumen of axon k, ``N_max+1..2N_max`` its sheath).
@@ -634,18 +649,21 @@ def make_packed_myelin_traj_step_fn(geometry, dt: float,
     sub = make_myelin_substep(geometry, dt)
     D_intra, D_extra = geometry._D_intra_jax, geometry._D_extra_jax
 
+    L = jnp.float32(geometry._cell_size)
+
     def step_fn(carry, _):
         if mt_on:
-            r, key, dlog_accum, comp_id, bound_rem, bound_acc = carry
+            r, r_uw, key, dlog_accum, comp_id, bound_rem, bound_acc = carry
             key, k_step, k_perm, stick_key, dwell_key = jax.random.split(key, 5)
         else:
-            r, key, dlog_accum, comp_id = carry
+            r, r_uw, key, dlog_accum, comp_id = carry
             key, k_step, k_perm = jax.random.split(key, 3)
         u = jax.random.uniform(k_perm, dtype=jnp.float32)
         r_new, comp_new, chan, _ = sub(r, k_step, u, comp_id)
+        r_uw_new = _unwrapped_step(r_uw, r, r_new, L)
         dlog_boundary = jnp.sum(chan)
         if not mt_on:
-            return (r_new, key, dlog_accum + dlog_boundary, comp_new), None
+            return (r_new, r_uw_new, key, dlog_accum + dlog_boundary, comp_new), None
 
         pool, k = _pool_and_axon(geometry, comp_id)
         is_intra, is_extra = pool == 1, pool == 0
@@ -659,12 +677,13 @@ def make_packed_myelin_traj_step_fn(geometry, dt: float,
         u_dwell = jax.random.uniform(dwell_key, dtype=jnp.float32)
         dwell_draw = -jnp.log(jnp.maximum(u_dwell, jnp.float32(1e-20))) * dwell_steps_mean
         r_out = jnp.where(is_bound, r, r_new)
+        r_uw_out = jnp.where(is_bound, r_uw, r_uw_new)
         comp_out = jnp.where(is_bound, comp_id, comp_new)
         dlog_contrib = jnp.where(is_bound | newly, jnp.float32(0.0), dlog_boundary)
         bound_rem_out = jnp.where(is_bound, bound_rem - jnp.float32(1.0),
                                   jnp.where(newly, dwell_draw, jnp.float32(0.0)))
         bound_acc_out = bound_acc + jnp.where(is_bound, jnp.float32(1.0), jnp.float32(0.0))
-        return (r_out, key, dlog_accum + dlog_contrib, comp_out, bound_rem_out, bound_acc_out), None
+        return (r_out, r_uw_out, key, dlog_accum + dlog_contrib, comp_out, bound_rem_out, bound_acc_out), None
 
     step_fn.max_bounces = sub.max_bounces
     return step_fn
@@ -712,10 +731,7 @@ def make_packed_myelin_step_fn(geometry, dt: float, T1: float = None):
             key, k_step, k_perm = jax.random.split(key, 3)
             u = jax.random.uniform(k_perm, dtype=jnp.float32)
             r_ic_new, cid_new, _, dlog_rho = sub(r_ic, k_step, u, cid)
-            # continuous displacement: remove the periodic wrap jump in the (x, y) cell plane
-            dr = r_ic_new - r_ic
-            dxy = dr[:2] - L * jnp.round(dr[:2] / L)
-            r_uw_new = r_uw + jnp.array([dxy[0], dxy[1], dr[2]], dtype=jnp.float32)
+            r_uw_new = _unwrapped_step(r_uw, r_ic, r_ic_new, L)
             phi_new = phi + gamma_dt_sub * (g_t @ r_uw_new)
 
             dlog = jnp.float32(0.0)

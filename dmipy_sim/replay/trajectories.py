@@ -88,12 +88,13 @@ def pathway_sign_se(n_t, dt, TE, te_frac=0.5):
 def unwrap_periodic(traj, cell_size, periodic_axes=(0, 1)):
     """Reconstruct CONTINUOUS positions from periodic-wrapped trajectory positions.
 
-    Packed periodic substrates (PackedCylinders/Spheres/MyelinatedCylinders) store
-    walker positions folded into the cell ``[-L/2, L/2)`` along the periodic axes.
-    The gradient phase ``gamma * integral G.r dt`` must use the CONTINUOUS lab-frame
-    position, else every periodic boundary crossing injects a spurious ``~q*L``
-    phase into the (refocused) encoding -- artificially attenuating the
-    diffusion-weighted signal, worse in smaller cells.
+    The walks of this engine's periodic substrates record continuous positions already;
+    this is for a trajectory folded into the cell ``[-L/2, L/2)`` along the periodic
+    axes (another simulator's output, or a walk saved in-cell). The gradient phase
+    ``gamma * integral G.r dt`` must use the CONTINUOUS lab-frame position, else every
+    periodic boundary crossing injects a spurious ``~q*L`` phase into the (refocused)
+    encoding -- artificially attenuating the diffusion-weighted signal, worse in
+    smaller cells.
 
     This undoes the wrapping along ``periodic_axes`` by detecting per-save jumps
     larger than ``L/2`` (a wrap) and re-integrating the minimal-image displacement

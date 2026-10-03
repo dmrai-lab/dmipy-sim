@@ -1170,11 +1170,11 @@ class ReplayPack:
             Psi, names = _path_field_channels(P, waveform)
             aniso = chi_aniso if (_has_aniso(gm, names) and chi_aniso) else 0.0
             return phi + contract(Psi, b0_dir, B0=float(B0), chi_iso=chi_i, chi_aniso=aniso)[:, None]
-        from .bank import grid_basis_of                                              # the grid route samples the field along the path
+        from .bank import grid_basis_of, grid_periodic_of                            # the grid route samples the field along the path
         phi_x = np.zeros(n_w)
         for seg, t0, n_s in P["windows"]:
             dB = sample_grid(assemble_field(grid_basis_of(seg.arrays, gm), b0_dir, B0=float(B0), chi_iso=chi_i, chi_aniso=chi_aniso),
-                             seg.positions(), np.asarray(gm["origin"], float), gm["voxel_size"], periodic=False)
+                             seg.positions(), np.asarray(gm["origin"], float), gm["voxel_size"], periodic=grid_periodic_of(gm))
             phi_x = phi_x + GAMMA * dt * (dB * field_gate(waveform, n_s, dt, t0=t0)[None, :]).sum(1)
         return phi + phi_x[:, None]
 
@@ -1346,10 +1346,10 @@ class ReplayPack:
             b, _ = susc_path_decode(self.arrays, pm, n_w=P["n_w"])
             return susc_path_field(b, P["b0_dir"], B0=float(P["B0"]), chi_iso=float(P["chi_iso"]),
                                    chi_aniso=P["chi_aniso"], has_aniso=bool(gm.get("has_aniso")))
-        from .bank import grid_basis_of
+        from .bank import grid_basis_of, grid_periodic_of
         return sample_grid(assemble_field(grid_basis_of(self.arrays, gm), P["b0_dir"], B0=float(P["B0"]), chi_iso=float(P["chi_iso"]),
                                           chi_aniso=P["chi_aniso"]),
-                           pos, np.asarray(gm["origin"], float), gm["voxel_size"], periodic=False)
+                           pos, np.asarray(gm["origin"], float), gm["voxel_size"], periodic=grid_periodic_of(gm))
 
     def _prepare(self, waveform, *, tissue, scanner, orientation, compartment, relaxation=True, surface=True,
                  pathway=True):
