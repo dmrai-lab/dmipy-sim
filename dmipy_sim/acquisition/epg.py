@@ -34,7 +34,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-__all__ = ["Pulse", "Winding", "Schedule", "Pathway", "enumerate_pathways", "splice_schedule",
+__all__ = ["Pulse", "Winding", "Schedule", "Pathway", "enumerate_pathways", "splice_schedule", "transmit_amplitude",
            "cpmg_schedule", "ste_schedule", "ste_amplitude", "pathway_weight"]
 
 
@@ -321,3 +321,25 @@ def pathway_weight(sequence):
             "route ignores, dmipy-sim#305. Use a perfect 180, or a single refocused echo.")
     sch = Schedule((Pulse(alpha), Winding(+1, 1.0), Pulse(imperfect[0], 90.0), Winding(+1, 1.0, readout=True)))
     return float(abs(sum(p.eta for p in enumerate_pathways(sch, threshold=1e-12))))
+
+
+def transmit_amplitude(sequence, kappa):
+    """The amplitude of ``sequence``'s readout pathway when every pulse plays at ``kappa`` times its flip
+    (:func:`pathway_weight` of the schedule with each flip scaled), one per entry of ``kappa`` (``(n,)``).
+
+    A transmit scale acts on the pulses and on nothing else, so for a crushed single echo -- the one pathway a
+    diffusion preparation's own lobes isolate -- it is a factor on the voxel's signal and no new replay:
+    ``sin(kappa alpha) sin^2(kappa beta / 2)`` for a spin echo, ``0.5 sin(kappa a1) sin(kappa a2) sin(kappa a3)``
+    for a stimulated echo. A pulse given as an envelope with no flip is refused: its nutation at another scale is
+    the Bloch equation's, not a product."""
+    from dataclasses import replace
+    from .rf import RFSchedule
+    rf = getattr(sequence, "rf", None) or ()
+    if any(e.flip_deg is None for e in rf):
+        raise ValueError("a pulse given by its envelope alone has no flip to scale; its amplitude at another transmit "
+                         "scale is a Bloch propagation, not a pathway product")
+    k = np.atleast_1d(np.asarray(kappa, dtype=np.float64))
+    uniq, inv = np.unique(k, return_inverse=True)
+    amp = np.array([pathway_weight(replace(sequence, rf=RFSchedule(replace(e, flip_deg=float(e.flip_deg) * float(u)) for e in rf)))
+                    for u in uniq])
+    return amp[np.asarray(inv).reshape(-1)]

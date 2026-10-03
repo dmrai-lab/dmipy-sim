@@ -15,10 +15,12 @@ term".
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import numpy as np
 
 __all__ = ["b0_offset_map", "b1_scale_map", "background_gradient_map", "gradient_tensor_map",
-           "delivered_gradient", "delivered_weights", "encoding_classes"]
+           "delivered_gradient", "delivered_weights", "delivered_moments", "encoding_classes"]
 
 
 def _model(scanner):
@@ -380,3 +382,68 @@ def delivered_weights(scanner, grid, sequence, *, K, n_t, dt_pack, voxels=None, 
             out[k] = out[k] + project(extra)
 
     return out
+
+
+@dataclass(frozen=True)
+class MomentDelivery:
+    """What a machine plays at each voxel for an acquisition of one two-valued shape (:func:`delivered_moments`):
+    ``q`` ``(n_voxels, n_meas, 3)`` T/m, the delivered encoding vector a walker's shape moment is dotted with;
+    ``g0`` ``(n_voxels, 3)`` T/m, the magnet's own gradient its background moment is dotted with (None: no field
+    shape catalogued or the term off); ``kappa`` ``(n_voxels,)``, the transmit scale every flip is multiplied by (None:
+    no transmit profile catalogued or the term off). In the grid's frame."""
+    q: np.ndarray
+    g0: np.ndarray = None
+    kappa: np.ndarray = None
+
+
+def delivered_moments(scanner, grid, profile, amplitudes, directions, *, voxels=None, to_scanner=None,
+                      nonlinearity=True, background=True, concomitant=True, transmit=True):
+    """The gradient each voxel of ``grid`` receives for an acquisition that plays one shape ``profile`` (``(n_t,)``,
+    peak 1) at ``amplitudes`` (T/m) along unit ``directions`` (``(n_meas, 3)``, the grid's frame), in the terms a
+    walker's two moments take (:class:`MomentDelivery`): the same physics as :func:`delivered_gradient`, reduced.
+
+    Measurement ``i`` commands ``G_i(t) = a_i s(t) u_i``. The coils deliver ``L G_i`` (linear in ``G``: the shape is
+    kept, the vector becomes ``a_i L u_i``); the magnet adds its constant ``g0`` (its own shape, the coherence sign
+    alone: a second moment); and the Maxwell term adds ``gc(L G_i(t))``, a POINTWISE function of the coils' gradient
+    (:func:`~dmipy_sim.acquisition.scanner_sequence.concomitant_terms`) that vanishes with it. When the shape is
+    two-valued, ``s(t)`` in ``{0, 1}`` -- square pulses of one polarity, as every square-pulse spin echo and
+    stimulated echo plays them -- ``gc(L G_i(t)) = s(t) gc(a_i L u_i)`` exactly, so the Maxwell gradient is one more
+    vector on the shape: ``q_i = a_i L u_i + gc(a_i L u_i)``. A shape with ramps or a second level is refused for
+    the Maxwell term (its time course is then ``s^2``-like and not the shape's), with the bridge route
+    (:func:`delivered_weights`) named. None of this is an approximation: the phase is linear in the waveform and
+    each piece is the waveform the reference route builds, so the two are held equal by test.
+
+    ``voxels`` ``(n, 3)`` indices (every voxel when None); the term switches as in :func:`delivered_gradient`, with
+    ``transmit`` reading the machine's transmit profile (:func:`b1_scale_map`). Each catalogued law refuses a voxel
+    beyond its anchor."""
+    scanner = _model(scanner)
+    idx = grid.every_voxel if voxels is None else np.asarray(voxels)
+    pos = grid.positions_m(idx)
+    R, _into = _bore(grid, to_scanner)
+    d = np.asarray(pos, np.float64).reshape(-1, 3) - np.asarray(grid.isocenter_m, np.float64)
+    s = np.asarray(profile, np.float64).reshape(-1)
+    a = np.asarray(amplitudes, np.float64).reshape(-1)
+    u = np.asarray(directions, np.float64).reshape(-1, 3)
+    if u.shape[0] != a.shape[0]:
+        raise ValueError(f"one direction per amplitude: {u.shape[0]} directions, {a.shape[0]} amplitudes")
+    G = a[:, None] * u                                                       # (n_meas, 3): the commanded plateau
+    Lf = gradient_tensor_map(scanner, grid, to_scanner=R) if nonlinearity else None
+    if Lf is None:
+        q = np.broadcast_to(G[None], (len(d),) + G.shape).copy()
+    else:
+        q = np.einsum("vij,mj->vmi", Lf(pos), G)
+    B0 = scanner.field_T
+    if concomitant and B0:
+        if not np.all(np.isclose(s, 0.0, atol=1e-6) | np.isclose(s, 1.0, atol=1e-6)):
+            raise ValueError("the Maxwell gradient follows the coils' gradient sample by sample, and this shape is not "
+                             "two-valued (ramps, or lobes of two levels), so its time course is not the shape's: it is "
+                             "not one vector on the shape's moment. Replay this acquisition on the bridge route "
+                             "(delivered_weights), or play the shape with square pulses of one polarity")
+        from ..acquisition.scanner_sequence import concomitant_terms
+        gc, _Bc = concomitant_terms(q, d[:, None, :], float(B0), _b0_axis(scanner, R))
+        q = q + gc
+    gmap = background_gradient_map(scanner, grid, to_scanner=R) if background else None
+    g0 = None if gmap is None else np.atleast_2d(gmap(pos)).astype(np.float64)
+    bmap = b1_scale_map(scanner, grid, to_scanner=R) if transmit else None
+    kappa = None if bmap is None else np.atleast_1d(np.asarray(bmap(pos), np.float64))
+    return MomentDelivery(q=q, g0=g0, kappa=kappa)
