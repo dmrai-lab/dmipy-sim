@@ -48,6 +48,7 @@ class's, the backend chooses only where ``exp``, the tile reduce and the scatter
 from __future__ import annotations
 
 import hashlib
+from dataclasses import dataclass
 import json
 import os
 import time
@@ -58,6 +59,9 @@ MANIFEST = "manifest.json"
 FORMAT = "shape_moments/2"
 TILE = 128                                                            # rows per tile
 _AXES = np.eye(3)
+#: T/m: the largest background gradient a layout's background moments are certified for by default -- several times
+#: the strongest catalogued magnet's own gradient over its anchored volume (the Swoop's 1.4 mT/m at 8 cm)
+BACKGROUND_AMPLITUDE = 5e-3
 
 
 def _profile(seq):
@@ -130,7 +134,127 @@ def _plan(col, chunk_rows):
     return groups, np.asarray(tiles, np.int32)
 
 
-def write_shape_moments(source, shapes, out_dir, *, tol=0.25, chunk_rows=2_000_000, workers=8, progress=None, tiers=False):
+def _background_sequence(seq, amplitude=1.0):
+    """The magnet's own gradient at ``amplitude`` along x, y and z as a three-row sequence on ``seq``'s grid, RF
+    schedule and readout: a constant gradient through the pulses and the dead times
+    (:meth:`~dmipy_sim.acquisition.scanner_sequence.ScannerSequence.with_background_gradient` on a silent waveform),
+    so that its phases are a walker's **background moment** ``gamma int eps(t) r(t) dt`` -- what a constant ``g0``
+    adds to the phase as ``g0 . n``, through the coherence sign alone."""
+    from ..acquisition.waveforms import tile_waveform
+    silent = tile_waveform(seq, 3).with_gradient(np.zeros((3, int(np.shape(seq.G)[1]), 3)))
+    return silent.with_background_gradient(float(amplitude) * _AXES)
+
+
+def _background_plan(col, shapes, contractions, K, amplitude):
+    """The background section of a manifest: per sequence group ``g<i>`` (:func:`_contractions`) its shapes and its
+    column, and the truncation error of the background moments for a magnet gradient of ``amplitude`` T/m at the
+    fewest bands that carry it (:meth:`~dmipy_sim.replay.columnar.ColumnarPack.bands_for` at the default tolerance, an
+    upper bound at the layout's own), refused when the layout's bands are fewer."""
+    groups, err = {}, 0.0
+    for gi, (_a, names) in enumerate(contractions):
+        need, e = col.bands_for(_background_sequence(shapes[names[0][0]], amplitude), tol=0.25)
+        if need > K:
+            raise ValueError(f"a background of {amplitude:g} T/m on the shapes {[n for n, _ in names]} needs {need} bands and the "
+                             f"layout reads {K}: lower background_amplitude or write the layout at more bands")
+        groups[f"g{gi}"] = dict(shapes=[n for n, _ in names], column=f"bg_g{gi}.npy")
+        err = max(err, float(e))
+    return dict(amplitude=float(amplitude), band_error=err, groups=groups)
+
+
+def _background_rows(pk, shapes, contractions):
+    """``{bg_g<i>: (n, 3)}``: every row's background moment per sequence group, the band contraction of
+    :func:`_background_sequence` on this view."""
+    from .replay import _band_phase
+    out = {}
+    for gi, (_a, names) in enumerate(contractions):
+        P = pk._prepare(_background_sequence(shapes[names[0][0]]), tissue=None, scanner=None, orientation=None, compartment=None)
+        if np.any(P["voxel"] != 1.0):
+            raise ValueError(f"the background on the shapes {[n for n, _ in names]} leaves a net moment at the readout: "
+                             "this group's coherence sign does not refocus a constant gradient")
+        out[f"bg_g{gi}"] = _band_phase(P)
+    return out
+
+
+def _place(runs, cols, rows):
+    """Every run's rows into its tiles, column by column: a voxel's even rows into its first half's tiles, its odd
+    rows into its second's (the split-half floor's halves)."""
+    for v_, start, n_, t0_, t1_ in runs:
+        for half, t_ in enumerate((t0_, t1_)):
+            k = (n_ + 1 - half) // 2
+            if k == 0:
+                continue
+            sl = slice(start + half, start + n_, 2); flat = slice(t_ * TILE, t_ * TILE + k)
+            for name, arr in cols.items():
+                if arr.ndim == 3:
+                    arr.reshape(-1, arr.shape[-1])[flat] = rows[name][sl]
+                else:
+                    arr.reshape(-1)[flat] = rows[name][sl]
+
+
+def stamp_background(path, source, shapes, *, background_amplitude=BACKGROUND_AMPLITUDE, workers=8, progress=None):
+    """Add the background moments (:func:`write_shape_moments` with ``background=True``) to the layout at ``path``
+    in one pass over its source, every other column untouched: ``shapes`` must be the layout's own (same names,
+    profiles and grids; refused otherwise), the source the one its manifest names by sha256, and the tiling the one
+    its rows were placed by. Records each shape's RF schedule in the manifest beside the background section.
+    Returns the manifest."""
+    from .columnar import ColumnarPack
+    with open(os.path.join(path, MANIFEST)) as f:
+        manifest = json.load(f)
+    if manifest.get("format") != FORMAT:
+        raise ValueError(f"{path} is not a {FORMAT} layout")
+    if set(shapes) != set(manifest["shapes"]):
+        raise ValueError(f"the layout holds the shapes {sorted(manifest['shapes'])}; give exactly those, got {sorted(shapes)}")
+    prof = {name: _profile(seq) for name, seq in shapes.items()}
+    for name, seq in shapes.items():
+        rec = manifest["shapes"][name]
+        if (float(seq.dt) != float(rec["dt"]) or len(prof[name][0]) != int(rec["n_t"])
+                or not np.allclose(prof[name][0], np.asarray(rec["profile"]), atol=1e-6)):
+            raise ValueError(f"the shape {name!r} given is not the one the layout was written with")
+        from ..acquisition.epg import pathway_weight
+        if abs(float(pathway_weight(seq)) - float(rec.get("pathway", 1.0))) > 1e-12:
+            raise ValueError(f"the shape {name!r} given plays another pathway than the one the layout was written with")
+    col = source if isinstance(source, ColumnarPack) else ColumnarPack(source, workers=workers)
+    sha = hashlib.sha256(col.src.text(MANIFEST).encode()).hexdigest()
+    if sha != manifest["source"]["manifest_sha256"] or int(col.n_rows) != int(manifest["n_rows"]):
+        raise ValueError("the source is not the columnar pack this layout was contracted from (its manifest's sha256 differs)")
+    order = sorted(shapes, key=list(manifest["shapes"]).index)
+    shapes = {name: shapes[name] for name in order}
+    contractions = _contractions(shapes, prof)
+    chunk_rows = int(manifest["pass_"]["chunk_rows"])
+    groups, tiles = _plan(col, chunk_rows)
+    if not np.array_equal(tiles, np.load(os.path.join(path, "tiles.npy"))):
+        raise ValueError("the source's tiling is not the layout's: the rows would land in other tiles")
+    K = int(manifest["K"]); n_tiles = int(manifest["n_tiles"])
+    bg_meta = _background_plan(col, shapes, contractions, K, background_amplitude)
+    cols = {f"bg_{g}": np.lib.format.open_memmap(os.path.join(path, grp["column"]), mode="w+", dtype=np.float32, shape=(n_tiles, TILE, 3))
+            for g, grp in bg_meta["groups"].items()}
+    col.src.bytes_read = col.src.requests = 0; t0 = time.time(); row = 0
+    for pk, runs in zip(col.iter_views(chunk_rows=chunk_rows, K=K), groups):
+        ijk, _ = col.grid.bin(pk.r0); v = np.ravel_multi_index(ijk.T, col.grid.shape)
+        expect = np.concatenate([np.full(n_, v_, v.dtype) for v_, _, n_, _, _ in runs])
+        if len(expect) != pk.n_walkers or not np.array_equal(v, expect):
+            raise RuntimeError("the rows' start voxels disagree with the index's (voxel, pool) ranges")
+        _place(runs, cols, _background_rows(pk, shapes, contractions))
+        row += pk.n_walkers
+        if progress:
+            progress(row, col.src.bytes_read, time.time() - t0)
+    if row != int(manifest["n_rows"]):
+        raise RuntimeError(f"the pass read {row} rows of {manifest['n_rows']}")
+    for a in cols.values():
+        a.flush()
+    manifest["background"] = bg_meta
+    for name, seq in shapes.items():
+        manifest["shapes"][name]["rf"] = seq.rf.to_dicts()
+    manifest.setdefault("stamps", []).append(dict(what="background", code=_code(), seconds=time.time() - t0,
+                                                  bytes_read=int(col.src.bytes_read),
+                                                  created=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())))
+    with open(os.path.join(path, MANIFEST), "w") as f:
+        json.dump(manifest, f, indent=1)
+    return manifest
+
+
+def write_shape_moments(source, shapes, out_dir, *, tol=0.25, chunk_rows=2_000_000, workers=8, progress=None, tiers=False,
+                        background=False, background_amplitude=BACKGROUND_AMPLITUDE):
     """The shape-moment layout of the columnar pack at ``source`` (a
     :class:`~dmipy_sim.replay.columnar.ColumnarPack`, a directory or ``hf://owner/name/prefix``) for ``shapes``,
     a ``{name: sequence}`` of one-row single-direction sequences, written to ``out_dir`` in one pass over the rows
@@ -138,7 +262,10 @@ def write_shape_moments(source, shapes, out_dir, *, tol=0.25, chunk_rows=2_000_0
     axis of every shape **at the amplitude the shape is built at** (the error grows with the amplitude squared:
     build a shape at the largest amplitude it will be replayed at). ``progress(rows, bytes, seconds)`` is called
     after every row group. With ``tiers`` the walkers' primitives at the shapes' common echo time are stored too (the
-    field modes and the contact tier read in the same pass). Returns the manifest."""
+    field modes and the contact tier read in the same pass). With ``background`` each sequence group's **background
+    moment** is stored too (:func:`_background_sequence`: the walker's moment against the group's coherence sign
+    alone, what a magnet's own constant gradient encodes), certified to ``background_amplitude`` (T/m). Every shape's
+    RF schedule is recorded, so :meth:`ShapeMoments.sequence` rebuilds it. Returns the manifest."""
     from .columnar import ColumnarPack
     from .replay import _band_phase
     from .study import Acquisition
@@ -173,6 +300,11 @@ def write_shape_moments(source, shapes, out_dir, *, tol=0.25, chunk_rows=2_000_0
                                   pathway=pathway[names[0][0]], contact=False, field=False, field_channels=None, has_aniso=False,
                                   columns={"contact": f"contact_{g}.npy"})
         tier_meta = dict(modes=int(modes), pools=None, D_walk=None, substrate=col.meta.get("substrate"), relaxation=False, exposure="pool")
+    bg_cols, bg_meta = {}, None
+    if background:
+        bg_meta = _background_plan(col, shapes, contractions, K, background_amplitude)
+        bg_cols = {f"bg_{g}": np.lib.format.open_memmap(os.path.join(out_dir, grp["column"]), mode="w+", dtype=np.float32, shape=(n_tiles, TILE, 3))
+                   for g, grp in bg_meta["groups"].items()}
     col.src.bytes_read = col.src.requests = 0; t0 = time.time(); row = 0
     for pk, runs in zip(col.iter_views(chunk_rows=chunk_rows, **view_kw), groups):
         n = pk.n_walkers
@@ -225,27 +357,16 @@ def write_shape_moments(source, shapes, out_dir, *, tol=0.25, chunk_rows=2_000_0
                     tier_rows[f"field_{g}"] = Psi
                 if prim.D_walk is not None:
                     tier_meta["D_walk"] = float(prim.D_walk)
-        for v_, start, n_, t0_, t1_ in runs:
-            for half, t_ in enumerate((t0_, t1_)):
-                k = (n_ + 1 - half) // 2
-                if k == 0:
-                    continue
-                sl = slice(start + half, start + n_, 2); flat = slice(t_ * TILE, t_ * TILE + k)
-                for name in shapes:
-                    m[name].reshape(-1, 3)[flat] = phi[name][sl]
-                w.reshape(-1)[flat] = w_rows[sl]
-                if tiers:
-                    for name, arr in tier_cols.items():
-                        if arr.ndim == 3:
-                            arr.reshape(-1, arr.shape[-1])[flat] = tier_rows[name][sl]
-                        else:
-                            arr.reshape(-1)[flat] = tier_rows[name][sl]
+        rows = {**{f"m_{name}": phi[name] for name in shapes}, "w": w_rows, **tier_rows}
+        if background:
+            rows.update(_background_rows(pk, shapes, contractions))
+        _place(runs, {**{f"m_{name}": m[name] for name in shapes}, "w": w, **tier_cols, **bg_cols}, rows)
         row += n
         if progress:
             progress(row, col.src.bytes_read, time.time() - t0)
     if row != n_rows:
         raise RuntimeError(f"the pass read {row} rows of {n_rows}")
-    for a in list(m.values()) + [w] + list(tier_cols.values()):
+    for a in list(m.values()) + [w] + list(tier_cols.values()) + list(bg_cols.values()):
         a.flush()
     manifest = dict(
         format=FORMAT, n_rows=int(n_rows), n_tiles=int(n_tiles), tile=TILE, K=int(K), band_error=float(band_error), tol=float(tol),
@@ -254,8 +375,10 @@ def write_shape_moments(source, shapes, out_dir, *, tol=0.25, chunk_rows=2_000_0
         source=dict(uri=col.uri, manifest_sha256=hashlib.sha256(col.src.text(MANIFEST).encode()).hexdigest(),
                     K=int(col.K), n_rows=int(col.n_rows), floor=float(col.floor),
                     grid=col.meta["fidelity"]["per_voxel"]["grid"], pack=col.meta.get("id")),
+        background=bg_meta,
         n_voxels=int(n_vox), columns=dict(w="w.npy", tiles="tiles.npy", **{name: f"m_{name}.npy" for name in shapes}),
         shapes={name: dict(profile=prof[name][0].tolist(), dt=float(shapes[name].dt), n_t=int(len(prof[name][0])),
+                           rf=shapes[name].rf.to_dicts(),
                            b_unit=b_unit[name], amplitude_built=prof[name][2], pathway=pathway[name], family=getattr(shapes[name], "family", None),
                            build_spec=_jsonable(shapes[name].build_spec),
                            encoding={k: _jsonable(getattr(shapes[name].encoding, k, None))
@@ -321,6 +444,7 @@ class ShapeMoments:
         self.n_vox = int(np.prod(self.grid.shape))
         self.shapes = [n for n in self.manifest["columns"] if n not in ("w", "tiles")]
         self.tiers = self.manifest.get("tiers")
+        self.background = self.manifest.get("background")
         self._m = {}; self._device = {}; self._host = {}
 
     @staticmethod
@@ -340,14 +464,16 @@ class ShapeMoments:
 
     @staticmethod
     def columns(manifest):
-        """Every column of a layout by name -> file: ``w``, ``tiles``, one per shape, and with tiers ``pool`` and
-        ``contact_<g>`` / ``field_<g>`` per sequence group."""
+        """Every column of a layout by name -> file: ``w``, ``tiles``, one per shape, with tiers ``pool`` and
+        ``contact_<g>`` / ``field_<g>`` per sequence group, and with the background ``bg_<g>`` per sequence group."""
         cols = dict(manifest["columns"])
         tiers = manifest.get("tiers")
         if tiers:
             cols["pool"] = tiers["pool_column"]
             for g, grp in tiers["groups"].items():
                 cols.update({f"{c}_{g}": f for c, f in grp["columns"].items()})
+        for g, grp in ((manifest.get("background") or {}).get("groups") or {}).items():
+            cols[f"bg_{g}"] = grp["column"]
         return cols
 
     @staticmethod
@@ -379,7 +505,7 @@ class ShapeMoments:
         return ("pool", f"contact_{g}", f"field_iso_{g}@{d}", f"field_aniso_{g}@{d}")
 
     def _is_tier_column(self, name):
-        return name == "pool" or name.startswith(("contact_", "field_iso_", "field_aniso_", "field_"))
+        return name == "pool" or name.startswith(("contact_", "field_iso_", "field_aniso_", "field_", "bg_"))
 
     @staticmethod
     def _direction_key(b0_direction):
@@ -541,15 +667,18 @@ class ShapeMoments:
         for name in [n for n in self._device if n[1] not in ("w", "tiles") and not self._is_tier_column(n[1]) and n[1] not in keep]:
             del self._device[name]
 
-    def preload(self, shapes=None):
+    def preload(self, shapes=None, background=True):
         """The padded host arrays of ``shapes`` (every shape when None) and the shared tiles kept in this process's
         memory (about 1.9 GB per shape for DiSCo), so that a device copy built later -- in a forked worker of a
         shared pool, which inherits them for free -- costs a host-to-device transfer and not a read of the layout
-        (measured on Hugging Face's ZeroGPU: the mounted bucket reads at 80 MB/s, the transfer at 8 GB/s)."""
+        (measured on Hugging Face's ZeroGPU: the mounted bucket reads at 80 MB/s, the transfer at 8 GB/s); with
+        ``background`` the background column of each shape's group too, where the layout carries one."""
         names = ["w", "tiles"] + list(self.shapes if shapes is None else shapes)
         if self.tiers:
             for sh in (self.shapes if shapes is None else shapes):
                 names += list(self._tier_columns(sh))
+        if background and self.background:
+            names += [f"bg_{self.background_group(sh)}" for sh in (self.shapes if shapes is None else shapes)]
         for name in dict.fromkeys(names):
             if name not in self._host:
                 self._host[name] = self._padded(name)
@@ -565,7 +694,13 @@ class ShapeMoments:
             iso, aniso = self._field_terms(g, [float(x) for x in d.split(",")])
             self._host[f"field_iso_{g}@{d}"], self._host[f"field_aniso_{g}@{d}"] = iso, aniso
             return self._host[name]
-        if name == "w" or self._is_tier_column(name):
+        if name.startswith("bg_"):
+            a = np.zeros((n_pad, self.tile, 3), np.float32); a[:self.n_tiles] = self._column(name)
+        elif name == "slot":                                     # each tile's index into a delivery's live voxels
+            live = self.live_voxels
+            compact = np.full(self.n_vox + 1, len(live), np.int32); compact[live] = np.arange(len(live), dtype=np.int32)
+            a = np.full(n_pad, len(live), np.int32); a[:self.n_tiles] = compact[np.asarray(self._column("tiles")) // 2]
+        elif name == "w" or self._is_tier_column(name):
             a = np.zeros((n_pad, self.tile), np.uint8 if name == "pool" else np.float32); a[:self.n_tiles] = self._column(name)
         elif name == "tiles":
             a = np.full(n_pad, 2 * self.n_vox, np.int32); a[:self.n_tiles] = self._column("tiles")
@@ -601,8 +736,64 @@ class ShapeMoments:
             out.append(self._device[key])
         return tuple(out)
 
+    def background_group(self, shape):
+        """The sequence group whose background column ``shape`` reads (``g<i>``), refused for a layout without one."""
+        if not self.background:
+            raise ValueError("this layout holds no background moments: a magnet's own gradient needs them "
+                             "(write_shape_moments(..., background=True), or stamp_background on this layout)")
+        for g, grp in self.background["groups"].items():
+            if shape in grp["shapes"]:
+                return g
+        raise KeyError(f"no background group holds the shape {shape!r}")
+
+    def sequence(self, shape):
+        """``shape`` as the one-row sequence it was written from, rebuilt from the manifest (its profile along z at
+        the amplitude it was built at, its grid and its RF schedule): what its pathway amplitude is read from."""
+        from ..acquisition.rf import RFSchedule
+        from ..acquisition.scanner_sequence import ScannerSequence
+        rec = self.manifest["shapes"][shape]
+        if "rf" not in rec:
+            raise ValueError(f"the layout records no RF schedule for {shape!r} (written before it did): stamp_background records it")
+        G = np.zeros((1, int(rec["n_t"]), 3)); G[0, :, 2] = float(rec["amplitude_built"]) * np.asarray(rec["profile"], np.float64)
+        return ScannerSequence(G=G, dt=float(rec["dt"]), rf=RFSchedule.from_dicts(rec["rf"]))
+
+    @property
+    def live_voxels(self):
+        """The flat indices of the voxels the layout has rows in, in order: the voxels a delivery is computed at."""
+        return np.flatnonzero(self.weights.sum(1) > 0)
+
+    def delivery(self, shape, bvalues, directions, scanner, grid=None, *, to_scanner=None, nonlinearity=True,
+                 background=True, concomitant=True, transmit=True):
+        """What ``scanner`` (a :class:`~dmipy_sim.acquisition.scanners.ScannerLimits`) plays at every voxel with rows
+        when the layout's grid sits in its bore as ``grid`` says (the layout's own grid, whose isocenter is the grid
+        centre, when None; :meth:`~dmipy_sim.phantom.Grid.centred_at` moves it), for ``shape`` at ``bvalues`` along
+        ``directions``: :func:`~dmipy_sim.phantom.bore.delivered_moments` at :attr:`live_voxels`, for :meth:`image`'s
+        ``delivered``. The term switches are those of :func:`~dmipy_sim.phantom.bore.delivered_gradient` and
+        ``transmit``."""
+        from ..phantom.bore import delivered_moments
+        grid = self.grid if grid is None else grid
+        if tuple(grid.shape) != tuple(self.grid.shape):
+            raise ValueError(f"the grid placed in the bore is the layout's own ({tuple(self.grid.shape)}), got {tuple(grid.shape)}")
+        g = self.amplitude(shape, bvalues)
+        u = self._directions(g, directions)
+        live = self.live_voxels
+        ijk = np.stack(np.unravel_index(live, tuple(self.grid.shape)), axis=1)
+        d = delivered_moments(scanner, grid, self.manifest["shapes"][shape]["profile"], g, u, voxels=ijk, to_scanner=to_scanner,
+                              nonlinearity=nonlinearity, background=background, concomitant=concomitant, transmit=transmit)
+        return Delivered(shape=shape, voxels=live, amplitudes=g, directions=u, q=d.q, g0=d.g0, kappa=d.kappa)
+
+    def _directions(self, g, directions):
+        """The unit directions of an image's measurements, zeroed on b = 0 rows; refused when not unit or misshapen."""
+        u = np.asarray(directions, np.float64)
+        if u.shape != (len(g), 3):
+            raise ValueError(f"directions must be ({len(g)}, 3) to match {len(g)} b-values, got {u.shape}")
+        norm = np.linalg.norm(u, axis=1); nz = g > 0
+        if np.any(np.abs(norm[nz] - 1.0) > 1e-6):
+            raise ValueError("directions are unit vectors")
+        return np.where(nz[:, None], u, 0.0)
+
     def image(self, shape, bvalues, directions, *, backend="jax", device=None, resident=True, tissue=None, scanner=None,
-              b0_direction=(0.0, 0.0, 1.0)):
+              b0_direction=(0.0, 0.0, 1.0), delivered=None):
         """``(S, floor)`` of the grid under ``shape`` at ``bvalues`` (s/m^2) along ``directions`` (unit vectors):
         ``S`` is ``grid.shape + (n_meas,)``, the weighted ensemble magnitude per voxel (NaN where the layout has no
         rows), ``floor`` ``grid.shape`` its split-half floor ``max_m |S_a - S_b| / 2``. A b = 0 row's direction
@@ -615,45 +806,104 @@ class ShapeMoments:
         the field phase of :meth:`terms`; both None is the bare image. ``b0_direction`` is the field's direction in
         the substrate frame (a unit vector; the default is the frame's z, the pose the tiers were gated under), the
         channels contracted for it when a scanner is given: on the host when preloaded there, else on the device by the
-        torch backend)."""
+        torch backend).
+
+        ``delivered`` (:meth:`delivery`, for this shape and these measurements) is what a machine plays at each voxel
+        in place of the commanded gradient: each row's phase is ``q_v . m + g0_v . n`` with ``q_v`` the voxel's
+        delivered encoding vector, ``m`` the row's shape moment and ``n`` its background moment (the shape's sequence
+        group's background column), and each voxel's signal is multiplied by its pathway amplitude at its transmit
+        scale over the nominal one (:func:`~dmipy_sim.acquisition.epg.transmit_amplitude`)."""
         if backend not in ("jax", "torch"):
             raise ValueError(f"backend is 'jax' or 'torch', got {backend!r}")
         tm = self.terms(shape, tissue, scanner)
         self._set_b0_direction(b0_direction)
         g = self.amplitude(shape, bvalues)
-        u = np.asarray(directions, np.float64)
-        if u.shape != (len(g), 3):
-            raise ValueError(f"directions must be ({len(g)}, 3) to match {len(g)} b-values, got {u.shape}")
-        norm = np.linalg.norm(u, axis=1); nz = g > 0
-        if np.any(np.abs(norm[nz] - 1.0) > 1e-6):
-            raise ValueError("directions are unit vectors")
-        u = np.where(nz[:, None], u, 0.0)
+        u = self._directions(g, directions)
         M = len(g); M_pad = -(-M // self.MEAS) * self.MEAS
-        g_p = np.zeros(M_pad, np.float32); g_p[:M] = g
-        u_p = np.zeros((M_pad, 3), np.float32); u_p[:M] = u
         n_seg = 2 * self.n_vox + 1
         if backend == "torch" and device is None:
             import torch
             device = "cuda" if torch.cuda.is_available() else "cpu"
-        if tm is None:
-            m, w, tiles = self._resident(shape, backend, device, resident)
-            acc = (_sums_jax if backend == "jax" else _sums_torch)(m, w, tiles, g_p, u_p, n_seg, self.TILES)
+        tier_names = self._tier_columns(shape) if tm is not None else ()
+        factor = None
+        if delivered is not None:
+            live = self._check_delivered(delivered, shape, g, u)
+            names = ("w", "tiles", "slot") + tuple(tier_names)
+            bg = delivered.g0 is not None
+            if bg:
+                names += (f"bg_{self.background_group(shape)}",)
+            cols = self._resident(shape, backend, device, resident, names=names)
+            m, w, tiles, slot = cols[:4]
+            rest = cols[4:]
+            tier_cols = rest[:len(tier_names)]
+            nb = rest[len(tier_names)] if bg else None
+            Q = np.zeros((len(live) + 1, M_pad, 3), np.float32); Q[:len(live), :M] = delivered.q
+            G0 = np.zeros((len(live) + 1, 3), np.float32)
+            if bg:
+                G0[:len(live)] = delivered.g0
+            tier = None if tm is None else (tier_cols, np.asarray(tm[0], np.float32), float(tm[1]), float(tm[2]), float(tm[3]), float(tm[4]))
+            acc = (_sums_delivered_jax if backend == "jax" else _sums_delivered_torch)(m, w, tiles, slot, Q, nb, G0, tier, n_seg, self.TILES, device)
+            if delivered.kappa is not None:
+                from ..acquisition.epg import transmit_amplitude
+                seq = self.sequence(shape)
+                factor = np.ones(self.n_vox)
+                factor[live] = transmit_amplitude(seq, delivered.kappa) / transmit_amplitude(seq, [1.0])[0]
         else:
-            logw_pool, rho_D, a_iso, a_aniso, amp = tm
-            m, w, tiles, pool, contact, fiso, faniso = self._resident(shape, backend, device, resident, names=("w", "tiles") + self._tier_columns(shape))
-            logw_pool = np.asarray(logw_pool, np.float32)
-            acc = (_sums_jax_tiers if backend == "jax" else _sums_torch_tiers)(
-                m, w, tiles, pool, contact, fiso, faniso, g_p, u_p, logw_pool, np.float32(rho_D), np.float32(a_iso),
-                np.float32(a_aniso), np.float32(amp), n_seg, self.TILES)
+            g_p = np.zeros(M_pad, np.float32); g_p[:M] = g
+            u_p = np.zeros((M_pad, 3), np.float32); u_p[:M] = u
+            if tm is None:
+                m, w, tiles = self._resident(shape, backend, device, resident)
+                acc = (_sums_jax if backend == "jax" else _sums_torch)(m, w, tiles, g_p, u_p, n_seg, self.TILES)
+            else:
+                logw_pool, rho_D, a_iso, a_aniso, amp = tm
+                m, w, tiles, pool, contact, fiso, faniso = self._resident(shape, backend, device, resident, names=("w", "tiles") + tier_names)
+                logw_pool = np.asarray(logw_pool, np.float32)
+                acc = (_sums_jax_tiers if backend == "jax" else _sums_torch_tiers)(
+                    m, w, tiles, pool, contact, fiso, faniso, g_p, u_p, logw_pool, np.float32(rho_D), np.float32(a_iso),
+                    np.float32(a_aniso), np.float32(amp), n_seg, self.TILES)
         num = acc[:2 * self.n_vox, :M].reshape(self.n_vox, 2, M)
         den = self.weights
         S = np.full((self.n_vox, M), np.nan); floor = np.full(self.n_vox, np.nan)
         any_ = den.sum(1) > 0; both = (den > 0).all(1)
         pw = float(self.manifest["shapes"][shape].get("pathway", 1.0)) if tm is None else 1.0   # the tiered path applied it as amp
-        S[any_] = pw * np.abs(num[any_].sum(1) / den[any_].sum(1)[:, None])
-        Sa = pw * np.abs(num[both, 0] / den[both, 0][:, None]); Sb = pw * np.abs(num[both, 1] / den[both, 1][:, None])
+        pv = pw if factor is None else pw * factor
+        S[any_] = (pv if np.ndim(pv) == 0 else pv[any_, None]) * np.abs(num[any_].sum(1) / den[any_].sum(1)[:, None])
+        pb = pv if np.ndim(pv) == 0 else pv[both, None]
+        Sa = pb * np.abs(num[both, 0] / den[both, 0][:, None]); Sb = pb * np.abs(num[both, 1] / den[both, 1][:, None])
         floor[both] = 0.5 * np.abs(Sa - Sb).max(1)
         return S.reshape(tuple(self.grid.shape) + (M,)), floor.reshape(self.grid.shape)
+
+    def _check_delivered(self, delivered, shape, g, u):
+        """The live voxels, once ``delivered`` is checked to be this layout's, this shape's and these measurements'."""
+        live = self.live_voxels
+        if delivered.shape != shape:
+            raise ValueError(f"the delivery was computed for the shape {delivered.shape!r}, not {shape!r}")
+        if not np.array_equal(np.asarray(delivered.voxels), live):
+            raise ValueError("the delivery was computed for other voxels than the layout's")
+        if delivered.q.shape != (len(live), len(g), 3) or not np.allclose(delivered.amplitudes, g, rtol=1e-9, atol=0.0) \
+                or not np.allclose(delivered.directions, u, atol=1e-9):
+            raise ValueError("the delivery was computed for other b-values or directions than the image's")
+        if delivered.g0 is not None:
+            amax = float(self.background["amplitude"]) if self.background else 0.0
+            if float(np.abs(delivered.g0).max(initial=0.0)) > amax * (1 + 1e-9):
+                raise ValueError(f"the magnet's gradient reaches {np.linalg.norm(delivered.g0, axis=1).max():.3g} T/m and the "
+                                 f"layout's background moments are certified to {amax:g} T/m")
+        return live
+
+
+@dataclass(frozen=True)
+class Delivered:
+    """:meth:`ShapeMoments.delivery`: what a machine plays at each of a layout's voxels with rows (``voxels``, flat
+    indices) for ``shape`` at ``amplitudes`` along ``directions``: the delivered encoding vectors ``q`` ``(n_voxels,
+    n_meas, 3)``, the magnet's own gradient ``g0`` ``(n_voxels, 3)`` (None without one) and the transmit scale
+    ``kappa`` ``(n_voxels,)`` (None without one) (:class:`~dmipy_sim.phantom.bore.MomentDelivery`)."""
+    shape: str
+    voxels: np.ndarray
+    amplitudes: np.ndarray
+    directions: np.ndarray
+    q: np.ndarray
+    g0: np.ndarray = None
+    kappa: np.ndarray = None
 
 
 def _sums_jax(m, w, tiles, g_p, u_p, n_seg, chunk):
@@ -812,3 +1062,80 @@ def _compiled(n_seg):
             return acc + jax.ops.segment_sum(E.sum(1), tiles, num_segments=n_seg)
         _KERNELS[n_seg] = kernel
     return _KERNELS[n_seg]
+
+
+def _sums_delivered_jax(m, w, tiles, slot, Q, nb, G0, tier, n_seg, chunk, device=None):
+    """The per-segment sums ``(n_seg, M_pad)`` complex128 on JAX for a delivered acquisition: each tile's voxel's row of
+    ``Q`` (``slot``) dotted with the rows' shape moments, the background moments ``nb`` dotted with the voxel's ``G0``
+    and, with ``tier``, the tiers' weights and field phase, as :func:`_compiled_delivered` fuses them."""
+    import jax.numpy as jnp
+    acc = jnp.zeros((n_seg, Q.shape[1]), jnp.complex128)
+    kernel = _compiled_delivered(n_seg, tier is not None, nb is not None)
+    Q_d, G0_d = jnp.asarray(Q), jnp.asarray(G0)
+    z = jnp.zeros(1, jnp.float32)
+    if tier is not None:
+        (pool, contact, fiso, faniso), lw, rho_D, a_iso, a_aniso, amp = tier
+        lw = jnp.asarray(lw); sc = tuple(jnp.float32(x) for x in (rho_D, a_iso, a_aniso, amp))
+    for i in range(0, m.shape[0], chunk):
+        sl = slice(i, i + chunk)
+        bg = nb[sl] if nb is not None else z
+        tc = (pool[sl], contact[sl], fiso[sl], faniso[sl], lw) + sc if tier is not None else (z, z, z, z, z, z, z, z, z)
+        acc = kernel(m[sl], w[sl], tiles[sl], slot[sl], Q_d, bg, G0_d, *tc, acc)
+    return np.asarray(acc)
+
+
+def _compiled_delivered(n_seg, tiers, background):
+    """The chunk kernel of a delivered acquisition: the voxel's delivered vector gathered per tile, the phase written
+    out as three products (no matmul: TF32 on CUDA), the background and the tiers folded in when present."""
+    import jax
+    import jax.numpy as jnp
+    key = ("delivered", n_seg, bool(tiers), bool(background))
+    if key not in _KERNELS:
+        @jax.jit
+        def kernel(m, w, tiles, slot, Q, nb, G0, pool, contact, fiso, faniso, logw_pool, rho_D, a_iso, a_aniso, amp, acc):
+            q = Q[slot]                                                             # (chunk, M, 3)
+            ph = m[:, :, 0:1] * q[:, None, :, 0] + m[:, :, 1:2] * q[:, None, :, 1] + m[:, :, 2:3] * q[:, None, :, 2]
+            if background:
+                g0 = G0[slot]                                                       # (chunk, 3)
+                ph = ph + (nb[:, :, 0] * g0[:, None, 0] + nb[:, :, 1] * g0[:, None, 1] + nb[:, :, 2] * g0[:, None, 2])[:, :, None]
+            if tiers:
+                ph = ph + (a_iso * fiso + a_aniso * faniso)[:, :, None]
+                wf = w * amp * jnp.exp(logw_pool[pool.astype(jnp.int32)] + rho_D * contact)
+            else:
+                wf = w
+            E = (jnp.exp(1j * ph) * wf[:, :, None]).astype(jnp.complex128)
+            return acc + jax.ops.segment_sum(E.sum(1), tiles, num_segments=n_seg)
+        _KERNELS[key] = kernel
+    return _KERNELS[key]
+
+
+def _sums_delivered_torch(m, w, tiles, slot, Q, nb, G0, tier, n_seg, chunk, device=None):
+    """:func:`_sums_delivered_jax` on torch (eager): per chunk the gathered delivered vectors, the phase with its
+    offsets, ``w exp(i ph)`` in complex64 summed over each tile's rows, ``index_add_``-ed into the segments."""
+    import torch
+    dev = m.device
+    Q_d = torch.as_tensor(Q, device=dev); G0_d = torch.as_tensor(G0, device=dev)
+    acc = torch.zeros((n_seg, Q.shape[1]), dtype=torch.complex128, device=dev)
+    if tier is not None:
+        (pool, contact, fiso, faniso), lw, rho_D, a_iso, a_aniso, amp = tier
+        lw = torch.as_tensor(lw, device=dev)
+    with torch.no_grad():
+        for i in range(0, m.shape[0], chunk):
+            sl = slice(i, i + chunk)
+            mc = m[sl]; sc = slot[sl].long(); q = Q_d[sc]
+            ph = mc[:, :, 0:1] * q[:, None, :, 0] + mc[:, :, 1:2] * q[:, None, :, 1] + mc[:, :, 2:3] * q[:, None, :, 2]
+            off = None
+            if nb is not None:
+                g0 = G0_d[sc]; bc = nb[sl]
+                off = bc[:, :, 0] * g0[:, None, 0] + bc[:, :, 1] * g0[:, None, 1] + bc[:, :, 2] * g0[:, None, 2]
+            if tier is not None:
+                f = float(a_iso) * fiso[sl] + float(a_aniso) * faniso[sl]
+                off = f if off is None else off + f
+                wf = w[sl] * float(amp) * torch.exp(lw[pool[sl].long()] + float(rho_D) * contact[sl])
+            else:
+                wf = w[sl]
+            if off is not None:
+                ph = ph + off[:, :, None]
+            ts = torch.polar(wf[:, :, None].expand_as(ph), ph).sum(1).to(torch.complex128)
+            acc.index_add_(0, tiles[sl], ts)
+    return acc.cpu().numpy()
