@@ -15,7 +15,7 @@ import pytest
 import dmipy_sim as d
 from dmipy_sim.fields.susceptibility_field import (FIELD_BYTES_PER_NODE, FIELD_NODES_ACROSS, assemble_field,
                                                    field_grid_of, field_node_budget, field_resolution)
-from dmipy_sim.spec import SpecError, field_grid_of_spec, fill_field, walk_spec, winther_spec
+from dmipy_sim.spec import SpecError, field_grid_of_spec, walk_spec, winther_spec
 from dmipy_sim.spec.producers import shell_thickness
 
 trimesh = pytest.importorskip("trimesh")
@@ -100,7 +100,8 @@ def test_walk_spec_derives_the_grid_and_refuses_one_it_cannot_afford(tmp_path):
     fg = field_grid_of_spec(spec)                                                             # the same raster, standalone
     np.testing.assert_array_equal(fg.basis["iso_local"], w.field_basis.basis["iso_local"])
     from dmipy_sim.replay.bank import build_replay_pack
-    pk = build_replay_pack(fill_field(w, w.field_basis), id="t/raster", license="x", citation="x", K=3, susc_path_K=4)
+    assert w.field_samples is not None                                                      # sampled in the walk
+    pk = build_replay_pack(w, id="t/raster", license="x", citation="x", K=3, susc_path_K=4)
     assert pk.meta["compression"]["channels"]["susceptibility_grid"]["raster"]["res_m"] == cert["res_m"]
     with pytest.raises(SpecError, match="thinnest shell of 0.1"):
         walk_spec(spec, 24, 4e-4, 2e-4, seed=0, n_probe=5_000, require_gpu=False, field_budget=100)

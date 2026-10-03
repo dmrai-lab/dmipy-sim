@@ -775,7 +775,7 @@ class ReplayPack:
         if self.field_is_zero:
             return False
         raise ValueError("a scanner field was given but the pack carries no field tier (C3) and its substrate declares a "
-                         "susceptibility, or no spec at all; sample the field in the walk (adaptive_steps=True), or "
+                         "susceptibility, or no spec at all; sample the field in the walk (walk_spec), or "
                          "fill_field(walk, a FieldGrid or StrandFieldBasis) and rebuild the pack")
 
     @property

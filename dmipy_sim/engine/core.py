@@ -833,6 +833,72 @@ def _record_channels(tiers):
     raise ValueError(f"tiers must be 'all' (record every channel the geometry supports) or () "
                      f"(positions only), got {tiers!r}")
 
+class _GridRead:
+    """The field basis channels at a walker's position, read from a :class:`FieldGrid` passed to the walk as device
+    arrays ``(grids, origin, voxel_size)`` (:meth:`FieldGrid.device_arrays`): ``read(r) -> (n_ch,)``."""
+
+    def __init__(self, arrays, periodic):
+        self.arrays, self.periodic, self.n_ch = arrays, periodic, int(arrays[0].shape[0])
+
+    def __call__(self, r):
+        from ..fields.susceptibility_field import grid_channels_at
+        return grid_channels_at(*self.arrays, self.periodic, r)
+
+
+def _interval_scan(inner, init, length, read):
+    """``inner`` stepped ``length`` times from ``init``: ``(carry, mean)``, where ``mean`` is the mean of ``read``
+    at the position (``carry[0]``) after every step of the interval, or None without a ``read``."""
+    if read is None:
+        out, _ = jax.lax.scan(inner, init, None, length=length)
+        return out, None
+
+    def body(c, _):
+        c_in, acc = c
+        c_out, _ = inner(c_in, None)
+        return (c_out, acc + read(c_out[0])), None
+    (out, acc), _ = jax.lax.scan(body, (init, jnp.zeros(read.n_ch, jnp.float32)), None, length=length)
+    return out, acc / jnp.float32(length)
+
+
+def _save_scan(interval, carry, n_saves, read, every):
+    """The ``n_saves`` save intervals of one walker: ``interval(carry, read) -> (carry, ys, mean)`` walks one
+    (``mean`` the interval mean of ``read``, :func:`_interval_scan`). Returns ``(carry, ys, field)``: ``ys`` stacked
+    per save, and ``field`` the interval means of the saves ``every``, ``2 every``, ... (the field's own save grid;
+    only those intervals read the field, chosen per save by a condition no walker differs in, so a vmapped walk
+    runs the one branch and the walk itself is the same program whatever ``every`` is), None without a ``read``."""
+    def plain(c, _):
+        c, ys, _m = interval(c, None)
+        return c, ys
+    if read is None:
+        carry, ys = jax.lax.scan(plain, carry, None, length=n_saves)
+        return carry, ys, None
+
+    def save(c, t):
+        c, buf = c
+
+        def reading(cb):
+            c, buf = cb
+            c, ys, m = interval(c, read)
+            return (c, buf.at[t // every - 1].set(m)), ys
+
+        def not_reading(cb):
+            c, buf = cb
+            c, ys, _m = interval(c, None)
+            return (c, buf), ys
+        return jax.lax.cond(t % every == 0, reading, not_reading, (c, buf))
+    buf = jnp.zeros((n_saves // every, read.n_ch), jnp.float32)
+    (carry, field), ys = jax.lax.scan(save, (carry, buf), jnp.arange(1, n_saves + 1, dtype=jnp.int32))
+    return carry, ys, field
+
+
+def _field_series(read, r0, field):
+    """A walker's field samples: the channels at its start (sample 0), then the interval means; an empty row
+    without a ``read``, so the batch functions keep one output signature."""
+    if read is None:
+        return jnp.zeros((0,), jnp.float32)
+    return jnp.concatenate([read(r0)[None], field])
+
+
 class _Rows:
     """The rows of one walk channel, written into a single preallocated array as the walker batches arrive.
 
@@ -874,6 +940,8 @@ def simulate_trajectories(
     equilibrate_binding="auto",
     compress: int = None,
     enforce_compartment: bool = False,
+    field_basis=None,
+    field_sample_every: int = 1,
 ) -> PersistentWalk:
     """Walk the spins ONCE and save positions at every saved time step — the
     producer for the replay path (:mod:`dmipy_sim.replay.trajectories`).
@@ -934,6 +1002,17 @@ def simulate_trajectories(
     equilibrate_binding : {'auto', 'burnin', 'off'}
         How the bound pool reaches thermal-equilibrium occupancy before t=0 (MT only);
         see :func:`dmipy_sim.engine.mt.resolve_equilibrate_mode`.
+    field_basis : FieldGrid, optional
+        A gridded susceptibility field basis (:class:`~dmipy_sim.fields.susceptibility_field.FieldGrid`: a mesh,
+        a myelinated cylinder, a packed cell) the walk samples itself: at every sub-step the grid's channels are
+        read at the walker's position (the one the step kernel holds; a periodic grid wraps, :attr:`FieldGrid.periodic`)
+        and averaged over the save interval -- ``PersistentWalk.field_samples``, sample 0 the start position's,
+        what the pack's path channel encodes. A strand basis is sampled by
+        :func:`~dmipy_sim.engine.adaptive.simulate_trajectories_adaptive`.
+    field_sample_every : int
+        The field's own save grid: the samples are the interval means of every that-many-th save interval only
+        (the saves ``every``, ``2 every``, ...), ``ceil(n_t / every)`` of them at ``every * dt``; the positions
+        keep every save.
 
     Returns
     -------
@@ -943,8 +1022,9 @@ def simulate_trajectories(
         ``sub_steps``, ``dt_sim``; with the default ``tiers="all"`` also ``boundary_local_time``
         (n_walkers, n_t), the per-step boundary log-weight at rho/D = 1 (``-2 * sum d_perp`` over
         the step's wall hits, non-positive), and ``compartment`` (n_walkers, n_t); with
-        ``kappa_MT > 0`` also ``bound_frac``. ``illegal_crossings`` counts the rejected wrong-side
-        steps. With ``compress=K`` a compressed master dict is returned instead (see
+        ``kappa_MT > 0`` also ``bound_frac``; with ``field_basis`` also ``field_basis``, ``field_samples``
+        ``(n_walkers, ceil(n_t / field_sample_every), 7 | 13)`` and ``field_sample_every``. ``illegal_crossings``
+        counts the rejected wrong-side steps. With ``compress=K`` a compressed master dict is returned instead (see
         :func:`trajectories.replay`).
     """
     with Run("simulate_trajectories", params=dict(n_walkers=n_walkers, diffusivity=diffusivity, geometry=type(geometry).__name__, T_max=T_max, dt_save=dt_save)) as run:
@@ -999,6 +1079,30 @@ def simulate_trajectories(
         permeability = geometry.permeability
         has_permeability = permeability is not None
         has_reflect_with_log_weight = hasattr(geometry, 'reflect_with_log_weight')
+
+        # ── In-walk field sampling: a gridded basis read at every sub-step, passed to the walk as arguments ──
+        _sampling = field_basis is not None
+        _f_every = int(field_sample_every)
+        if _sampling:
+            from ..fields.susceptibility_field import FieldGrid
+            if not isinstance(field_basis, FieldGrid):
+                raise TypeError(f"field_basis must be a FieldGrid (a gridded field read at the sub-step), got "
+                                f"{type(field_basis).__name__}; a strand basis is sampled by simulate_trajectories_adaptive")
+            if compress is not None:
+                raise NotImplementedError("compress= returns the walk as position coefficients; the in-walk field samples "
+                                          "have no coefficient form there. Walk uncompressed and pack with build_replay_pack.")
+            if _f_every < 1:
+                raise ValueError(f"field_sample_every must be a positive integer, got {field_sample_every!r}")
+            _f_arrays = field_basis.device_arrays()
+            _f_periodic = tuple(bool(p) for p in field_basis.periodic)
+            _f_key = ("field", tuple(_f_arrays[0].shape), _f_periodic, _f_every)
+        else:
+            if _f_every != 1:
+                raise ValueError("field_sample_every is the save grid of a field sampled in the walk: it goes with field_basis=")
+            _f_arrays, _f_periodic, _f_key = (), None, None
+
+        def _reader(arrays):
+            return _GridRead(arrays, _f_periodic) if _sampling else None
 
         # ── Standard path (position-only) ─────────────────────────────────────────
         _carries_side = False   # set below only where the geometry accepts a carried side
@@ -1083,17 +1187,18 @@ def simulate_trajectories(
                 bad = carry[3] + jnp.where(keep, 0, 1)
                 return (jnp.where(keep, r_new, r_old),) + carry[1:3] + (bad,), out
 
-        def outer_step(carry, _):
-            carry_final, _ = jax.lax.scan(inner_step, carry, None, length=sub_steps)
-            r_final = carry_final[0]
-            return carry_final, r_final
+        def interval(carry, read):
+            carry_final, mean = _interval_scan(inner_step, carry, sub_steps, read)
+            return carry_final, carry_final[0], mean
 
-        def simulate_one_walker(r0_w, key_w, side_w):
+        def simulate_one_walker(r0_w, key_w, side_w, f_arrays):
             # save 0 is the start (t = 0); saves 1..n_t-1 follow n_t-1 blocks of sub-steps
-            (_, _, side_f, bad_f), positions = jax.lax.scan(
-                outer_step, (r0_w, key_w, side_w, jnp.int32(0)), None, length=n_t - 1)
+            read = _reader(f_arrays)
+            (_, _, side_f, bad_f), positions, field = _save_scan(
+                interval, (r0_w, key_w, side_w, jnp.int32(0)), n_t - 1, read, _f_every)
             positions = jnp.concatenate([r0_w[None, :], positions], axis=0)
-            return positions, side_f, bad_f  # (n_t, 3), carried side, illegal-crossing count
+            # (n_t, 3), carried side, illegal-crossing count, field samples
+            return positions, side_f, bad_f, _field_series(read, r0_w, field)
 
         # ── Storage dtype for the returned channels ─────────────────────────────
         # f32 by DEFAULT. The walk is f32, the pack is f32 (compression.pack_position_arrays)
@@ -1165,49 +1270,53 @@ def simulate_trajectories(
 
             if not _mt_on_pm:
                 # ── without MT (5-element carry) ──
-                def outer_step_pm(carry, _):
+                def interval_pm(carry, read):
                     r, r_uw, key, comp_id = carry
                     # dlog_accum resets each save so the emitted value is the per-save delta.
                     inner_init = (r, r_uw, key, jnp.float32(0.0), comp_id)
-                    (r_final, r_uw_final, key_final, dlog_accum, comp_final), _ = jax.lax.scan(
-                        _inner_pm, inner_init, None, length=sub_steps)
+                    (r_final, r_uw_final, key_final, dlog_accum, comp_final), mean = _interval_scan(
+                        _inner_pm, inner_init, sub_steps, read)
                     return (r_final, r_uw_final, key_final, comp_final), \
-                           (r_uw_final, dlog_accum, _compress_comp_pm(comp_final))
+                           (r_uw_final, dlog_accum, _compress_comp_pm(comp_final)), mean
 
-                def simulate_one_walker_pm(r0_w, key_w, comp0_w, brem0_w):  # brem0 unused
-                    (_, _, _, _), (positions, dlog_boundary, comp_types) = jax.lax.scan(
-                        outer_step_pm, (r0_w, r0_w, key_w, comp0_w), None, length=n_t - 1)
+                def simulate_one_walker_pm(r0_w, key_w, comp0_w, brem0_w, f_arrays):  # brem0 unused
+                    read = _reader(f_arrays)
+                    _, (positions, dlog_boundary, comp_types), field = _save_scan(
+                        interval_pm, (r0_w, r0_w, key_w, comp0_w), n_t - 1, read, _f_every)
                     # save 0 is the start: the initial position, no contact yet, the initial pool
                     positions = jnp.concatenate([r0_w[None, :], positions], axis=0)
                     dlog_boundary = jnp.concatenate([jnp.zeros((1,), dlog_boundary.dtype), dlog_boundary])
                     comp_types = jnp.concatenate([_compress_comp_pm(comp0_w)[None], comp_types])
                     z = jnp.zeros_like(dlog_boundary)                       # placeholder bound_frac
-                    return positions, dlog_boundary, comp_types, z
+                    return positions, dlog_boundary, comp_types, z, _field_series(read, r0_w, field)
             else:
                 # ── MT path: bound_rem persists across saves ──
-                def outer_step_pm(carry, _):
+                def interval_pm(carry, read):
                     r, r_uw, key, comp_id, bound_rem = carry
                     inner_init = (r, r_uw, key, jnp.float32(0.0), comp_id, bound_rem, jnp.float32(0.0))
-                    (r_final, r_uw_final, key_final, dlog_accum, comp_final, bound_rem_f, bound_acc), _ = \
-                        jax.lax.scan(_inner_pm, inner_init, None, length=sub_steps)
+                    (r_final, r_uw_final, key_final, dlog_accum, comp_final, bound_rem_f, bound_acc), mean = \
+                        _interval_scan(_inner_pm, inner_init, sub_steps, read)
                     bound_frac = bound_acc / jnp.float32(sub_steps)
                     return (r_final, r_uw_final, key_final, comp_final, bound_rem_f), \
-                           (r_uw_final, dlog_accum, _compress_comp_pm(comp_final), bound_frac)
+                           (r_uw_final, dlog_accum, _compress_comp_pm(comp_final), bound_frac), mean
 
-                def simulate_one_walker_pm(r0_w, key_w, comp0_w, brem0_w):
-                    (_, _, _, _, _), (positions, dlog_boundary, comp_types, bound_frac) = \
-                        jax.lax.scan(outer_step_pm, (r0_w, r0_w, key_w, comp0_w, brem0_w),
-                                     None, length=n_t - 1)
+                def simulate_one_walker_pm(r0_w, key_w, comp0_w, brem0_w, f_arrays):
+                    read = _reader(f_arrays)
+                    _, (positions, dlog_boundary, comp_types, bound_frac), field = _save_scan(
+                        interval_pm, (r0_w, r0_w, key_w, comp0_w, brem0_w), n_t - 1, read, _f_every)
                     # save 0 is the start: the initial position, no contact yet, the initial pool and bound state
                     positions = jnp.concatenate([r0_w[None, :], positions], axis=0)
                     dlog_boundary = jnp.concatenate([jnp.zeros((1,), dlog_boundary.dtype), dlog_boundary])
                     comp_types = jnp.concatenate([_compress_comp_pm(comp0_w)[None], comp_types])
                     bound_frac = jnp.concatenate([(brem0_w > 0).astype(bound_frac.dtype)[None], bound_frac])
-                    return positions, dlog_boundary, comp_types, bound_frac
+                    return positions, dlog_boundary, comp_types, bound_frac, _field_series(read, r0_w, field)
 
-            simulate_batch_pm = cached_batch(
-                geometry, ("traj_packed_myelin", n_t, sub_steps, float(dt_sim), kappa_MT, dwell_time),
-                lambda: jax.jit(jax.vmap(simulate_one_walker_pm, in_axes=(0, 0, 0, 0))))
+            _simulate_batch_pm_raw = cached_batch(
+                geometry, ("traj_packed_myelin", n_t, sub_steps, float(dt_sim), kappa_MT, dwell_time, _f_key),
+                lambda: jax.jit(jax.vmap(simulate_one_walker_pm, in_axes=(0, 0, 0, 0, None))))
+
+            def simulate_batch_pm(r0_b, keys_b, comp0_b, brem0_b):
+                return _simulate_batch_pm_raw(r0_b, keys_b, comp0_b, brem0_b, _f_arrays)
 
         if record and not uses_myelin_traj:
             if has_permeability:
@@ -1275,37 +1384,38 @@ def simulate_trajectories(
                     comp_sum = comp_sum + _pool2(comp)
                     return (r_new, key, dlog_accum, comp_sum, side, bad, comp), None
 
-            def outer_step_relax(carry, _):
+            def interval_relax(carry, read):
                 r, key, side, bad, comp = carry
                 inner_init = (r, key, jnp.float32(0.0), jnp.float32(0.0), side, bad, comp)
-                (r_final, key_final, dlog_accum, comp_sum, side_f, bad_f, comp_f), _ = jax.lax.scan(
-                    inner_step_relax, inner_init, None, length=sub_steps)
+                (r_final, key_final, dlog_accum, comp_sum, side_f, bad_f, comp_f), mean = _interval_scan(
+                    inner_step_relax, inner_init, sub_steps, read)
                 # Fractional occupancy of pool 1 (the enclosed pool) over the saved interval.
                 comp_occ = comp_sum / jnp.float32(sub_steps)
-                return (r_final, key_final, side_f, bad_f, comp_f), (r_final, dlog_accum, comp_occ)
+                return (r_final, key_final, side_f, bad_f, comp_f), (r_final, dlog_accum, comp_occ), mean
 
-            def simulate_one_walker_relax(r0_w, key_w, side_w, comp0_w):
-                (_, _, _side_f, bad_f, _comp_f), (positions, dlog_boundary, comp_ids) = jax.lax.scan(
-                    outer_step_relax, (r0_w, key_w, side_w, jnp.int32(0), comp0_w), None, length=n_t - 1)
+            def simulate_one_walker_relax(r0_w, key_w, side_w, comp0_w, f_arrays):
+                read = _reader(f_arrays)
+                (_, _, _side_f, bad_f, _comp_f), (positions, dlog_boundary, comp_ids), field = _save_scan(
+                    interval_relax, (r0_w, key_w, side_w, jnp.int32(0), comp0_w), n_t - 1, read, _f_every)
                 # save 0 is the start: the initial position, no contact yet, the initial occupancy
                 positions = jnp.concatenate([r0_w[None, :], positions], axis=0)
                 dlog_boundary = jnp.concatenate([jnp.zeros((1,), dlog_boundary.dtype), dlog_boundary])
                 comp_ids = jnp.concatenate([jnp.asarray(_pool2(comp0_w), comp_ids.dtype)[None], comp_ids])   # the same collapse as the kernel's
-                return positions, dlog_boundary, comp_ids, bad_f
+                return positions, dlog_boundary, comp_ids, bad_f, _field_series(read, r0_w, field)
 
             _simulate_batch_relax_raw = cached_batch(
-                geometry, ("traj_relax", n_t, sub_steps, float(dt_sim), diffusivity),
-                lambda: jax.jit(jax.vmap(simulate_one_walker_relax, in_axes=(0, 0, 0, 0))))
+                geometry, ("traj_relax", n_t, sub_steps, float(dt_sim), diffusivity, _f_key),
+                lambda: jax.jit(jax.vmap(simulate_one_walker_relax, in_axes=(0, 0, 0, 0, None))))
 
             def simulate_batch_relax(r0_b, keys_b):
                 comp0_b = jnp.asarray(geometry.classify_positions_exact(r0_b), jnp.int32)
-                pos, dlog, comp, bad_f = _simulate_batch_relax_raw(r0_b, keys_b, _side0(r0_b), comp0_b)
+                pos, dlog, comp, bad_f, fs = _simulate_batch_relax_raw(r0_b, keys_b, _side0(r0_b), comp0_b, _f_arrays)
                 _illegal_crossings[0] += int(jnp.sum(bad_f))
-                return pos, dlog, comp
+                return pos, dlog, comp, fs
 
         _simulate_batch_raw = cached_batch(
-            geometry, ("traj", n_t, sub_steps, float(dt_sim), diffusivity),
-            lambda: jax.jit(jax.vmap(simulate_one_walker, in_axes=(0, 0, 0))))
+            geometry, ("traj", n_t, sub_steps, float(dt_sim), diffusivity, _f_key),
+            lambda: jax.jit(jax.vmap(simulate_one_walker, in_axes=(0, 0, 0, None))))
 
         # Seed each walker's carried compartment ONCE, from its t=0 position, and let only a
         # granted crossing change it thereafter (MC/DC's `initial_location`). The wrapper keeps
@@ -1324,9 +1434,9 @@ def simulate_trajectories(
                 return jnp.zeros((r_b.shape[0],), dtype=jnp.int8)
 
         def simulate_batch(r0_b, keys_b):
-            positions, _side_f, bad_f = _simulate_batch_raw(r0_b, keys_b, _side0(r0_b))
+            positions, _side_f, bad_f, fs = _simulate_batch_raw(r0_b, keys_b, _side0(r0_b), _f_arrays)
             _illegal_crossings[0] += int(jnp.sum(bad_f))
-            return positions
+            return positions, fs
 
         _, r0_all, walker_keys_all = seed_walkers(geometry, n_walkers, seed, r0)   # r0_all (n_walkers, 3)
 
@@ -1373,6 +1483,7 @@ def simulate_trajectories(
         all_dlog_batches = _Rows(n_walkers) if record else None
         all_comp_batches = _Rows(n_walkers) if record else None
         all_bound_batches = _Rows(n_walkers) if _mt_on else None
+        all_field_batches = _Rows(n_walkers) if _sampling else None
 
         # compress=K: each batch leaves the device as the pack's own C0/C2 coefficients (two exact endpoints and K
         # sine bands of the bridge per axis; the cumulative local time in the same form), so the host holds a
@@ -1406,7 +1517,7 @@ def simulate_trajectories(
             while not success:
                 try:
                     if record and uses_myelin_traj:
-                        pos_f32, dlog_f32, comp_f32, bfrac_f32 = simulate_batch_pm(
+                        pos_f32, dlog_f32, comp_f32, bfrac_f32, fs_f32 = simulate_batch_pm(
                             current_r0, current_keys, current_comp0, current_brem0)
                         all_batches.append(np.array(pos_f32).astype(_sdt))
                         all_dlog_batches.append(np.array(dlog_f32).astype(_sdt))
@@ -1414,7 +1525,7 @@ def simulate_trajectories(
                         if _mt_on:
                             all_bound_batches.append(np.array(bfrac_f32).astype(_sdt))
                     elif record:
-                        pos_f32, dlog_f32, comp_f32 = simulate_batch_relax(current_r0, current_keys)
+                        pos_f32, dlog_f32, comp_f32, fs_f32 = simulate_batch_relax(current_r0, current_keys)
                         if _compress:
                             all_batches.append(_compress_pos(pos_f32))
                             # the cumulative local time in the pack's C2 form, formed on the device
@@ -1432,11 +1543,13 @@ def simulate_trajectories(
                         all_comp_batches.append(np.array(comp_f32).astype(_sdt) if has_permeability
                                                 else np.rint(np.array(comp_f32)).astype(np.int8))
                     else:
+                        positions_f32, fs_f32 = simulate_batch(current_r0, current_keys)
                         if _compress:
-                            all_batches.append(_compress_pos(simulate_batch(current_r0, current_keys)))
+                            all_batches.append(_compress_pos(positions_f32))
                         else:
-                            positions_f32 = np.array(simulate_batch(current_r0, current_keys))
-                            all_batches.append(positions_f32.astype(_sdt))
+                            all_batches.append(np.array(positions_f32).astype(_sdt))
+                    if _sampling:
+                        all_field_batches.append(np.asarray(fs_f32, np.float32))
                     success = True
                 except Exception as e:
                     err_str = str(e)
@@ -1458,10 +1571,11 @@ def simulate_trajectories(
                         sub_dlog_list = [] if record else None
                         sub_comp_list = [] if record else None
                         sub_bound_list = [] if _mt_on else None
+                        sub_field_list = [] if _sampling else None
                         for ss in range(0, batch_size, new_sub_batch):
                             se = min(ss + new_sub_batch, batch_size)
                             if record and uses_myelin_traj:
-                                sp, sd, sc, sbf = simulate_batch_pm(
+                                sp, sd, sc, sbf, sfs = simulate_batch_pm(
                                     current_r0[ss:se], current_keys[ss:se],
                                     current_comp0[ss:se], current_brem0[ss:se])
                                 sub_pos_list.append(np.array(sp).astype(_sdt))
@@ -1470,22 +1584,25 @@ def simulate_trajectories(
                                 if _mt_on:
                                     sub_bound_list.append(np.array(sbf).astype(_sdt))
                             elif record:
-                                sp, sd, sc = simulate_batch_relax(
+                                sp, sd, sc, sfs = simulate_batch_relax(
                                     current_r0[ss:se], current_keys[ss:se])
                                 sub_pos_list.append(np.array(sp).astype(_sdt))
                                 sub_dlog_list.append(np.array(sd).astype(_sdt))
                                 sub_comp_list.append(np.array(sc).astype(_sdt) if has_permeability
                                                      else np.rint(np.array(sc)).astype(np.int8))
                             else:
-                                sp = np.array(simulate_batch(
-                                    current_r0[ss:se], current_keys[ss:se]))
-                                sub_pos_list.append(sp.astype(_sdt))
+                                sp, sfs = simulate_batch(current_r0[ss:se], current_keys[ss:se])
+                                sub_pos_list.append(np.array(sp).astype(_sdt))
+                            if _sampling:
+                                sub_field_list.append(np.asarray(sfs, np.float32))
                         all_batches.append(np.concatenate(sub_pos_list, axis=0))
                         if record:
                             all_dlog_batches.append(np.concatenate(sub_dlog_list, axis=0))
                             all_comp_batches.append(np.concatenate(sub_comp_list, axis=0))
                             if _mt_on:
                                 all_bound_batches.append(np.concatenate(sub_bound_list, axis=0))
+                        if _sampling:
+                            all_field_batches.append(np.concatenate(sub_field_list, axis=0))
                         success = True
                     else:
                         raise
@@ -1535,5 +1652,9 @@ def simulate_trajectories(
                               compartment=all_comp_batches.array(),
                               bound_frac=(all_bound_batches.array() if _mt_on else None),
                               illegal_crossings=illegal, seed=int(seed), diffusivity=D_walk, geometry=geometry)
+        if _sampling:
+            import dataclasses
+            walk = dataclasses.replace(walk, field_basis=field_basis, field_samples=all_field_batches.array(),
+                                       field_sample_every=_f_every)
         object.__setattr__(walk, "run", run)
         return walk

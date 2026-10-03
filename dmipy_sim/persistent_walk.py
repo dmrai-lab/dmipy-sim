@@ -52,10 +52,12 @@ class PersistentWalk:
         geometry); the pack embeds it and reads the pools from it.
     weights : (n_walkers,) or None
         Per-walker spin weights when the seeding rule leaves them non-uniform.
-    field_samples : (n_walkers, n_t, 13) or None
+    field_samples : (n_walkers, n_t, 7 | 13) or None
         The field basis channels along every walker's path, sampled BY THE WALK: the mean over each save interval
         of the channels of ``field_basis`` at the walker's positions through the interval (sample 0 the start
-        position's), the domain mean subtracted -- the pack's path channel encodes these directly.
+        position's) -- a strand basis's at the end of every round of the adaptive walk, its domain mean
+        subtracted; a grid's at every sub-step, against the grid's own zero (its k = 0 term) -- the pack's path
+        channel encodes these directly.
     field_sample_every : int
         The field's own save grid: the samples are at every that-many-th save of the walk (1: every save), so
         ``field_samples`` has ``ceil(n_t / field_sample_every)`` samples at ``field_sample_every * dt``.

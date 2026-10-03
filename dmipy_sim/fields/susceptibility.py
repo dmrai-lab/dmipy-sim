@@ -220,21 +220,14 @@ class GridSusceptibility:
                    periodic=bool(periodic))
 
     def delta_bz_fn(self):
-        """JAX callable ``delta_bz(r) -> ΔBz`` (T): trilinear sample of the grid."""
-        from jax.scipy.ndimage import map_coordinates
-
-        grid = jnp.asarray(self.dB, jnp.float32)
+        """JAX callable ``delta_bz(r) -> ΔBz`` (T): trilinear sample of the grid (:func:`grid_channels_at`)."""
+        from .susceptibility_field import grid_channels_at
+        grid = jnp.asarray(self.dB, jnp.float32)[None]
         org = jnp.asarray(np.asarray(self.origin, float).ravel(), jnp.float32)
         vs = jnp.asarray(_as_voxel_size(self.voxel_size, 3), jnp.float32)
-        shape = jnp.asarray(self.dB.shape, jnp.float32)
-        wrap = bool(self.periodic)
-        mode = "wrap" if wrap else "nearest"
+        periodic = (bool(self.periodic),) * 3
 
         def delta_bz(r):
-            idx = (r - org) / vs - 0.5                           # fractional voxel coords
-            if wrap:
-                idx = jnp.mod(idx, shape)
-            return map_coordinates(grid, [idx[0], idx[1], idx[2]], order=1, mode=mode)
+            return grid_channels_at(grid, org, vs, periodic, r)[0]
 
         return delta_bz
-

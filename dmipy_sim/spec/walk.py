@@ -46,9 +46,9 @@ def walk_spec(spec, n_walkers=None, T_max=None, dt_save=None, *, scanner="connec
     with the margin the walker can travel in between; 4 by default): with a far grid the reach is the switch's
     15 um and the gather is the field's main cost, so 16 halves the field's share of the walk.
 
-        ``field_sample_every`` reads the strand field along the walk at every that-many-th save only (the adaptive
-    producer samples it in the walk): the path channel keeps a few modes over the walk and lives on its own grid,
-    recorded on the walk and in the pack; the positions keep the save grid the envelope asks for.
+    ``field_sample_every`` reads the field along the walk at every that-many-th save interval only: the path
+    channel keeps a few modes over the walk and lives on its own grid, recorded on the walk and in the pack; the
+    positions keep the save grid the envelope asks for.
 
     ``adaptive_steps`` walks every pool whose geometry offers ``wall_scales`` (the curved tubes) with the adaptive
     producer (:func:`dmipy_sim.engine.adaptive.simulate_trajectories_adaptive`): free steps away from every
@@ -78,11 +78,16 @@ def walk_spec(spec, n_walkers=None, T_max=None, dt_save=None, *, scanner="connec
     host's, :func:`~dmipy_sim.fields.susceptibility_field.field_node_budget`: half the memory ceiling at the
     build's measured bytes per node); a basis beyond the budget is refused, never coarsened.
 
-    The basis is SAMPLED along the walk at the sub-step only with ``adaptive_steps=True`` (the only producer that
-    reads a field in its own stepping, at ``field_sample_every`` / ``field_gather_every``); otherwise the walk
-    carries the basis uncertified against any particular walker and no ``field_samples``, and
-    :func:`~dmipy_sim.replay.bank.build_replay_pack` refuses to pack a spec with a field source until the samples
-    exist. ``defer_field=True`` records that obligation on the walk (``PersistentWalk.field_deferred``) instead
+    The basis is SAMPLED along the walk at the sub-step (``PersistentWalk.field_samples``: the mean over every save
+    interval of the channels at the walker's sub-step positions, :func:`field_source_kind`): a gridded source (a
+    myelinated cylinder or packed cell, rasterised by :func:`~dmipy_sim.fields.susceptibility_field.field_grid_of`,
+    periodic for a cell; a mesh or sphere-union sheath by :func:`field_grid_of_spec`) by every walk, the grid read
+    inside the step (:func:`~dmipy_sim.engine.core.simulate_trajectories` with ``field_basis=``); a strand source
+    with ``adaptive_steps=True`` (:func:`~dmipy_sim.engine.adaptive.simulate_trajectories_adaptive`, at
+    ``field_gather_every``). A strand source walked without adaptive steps carries the basis and no
+    ``field_samples``, and :func:`~dmipy_sim.replay.bank.build_replay_pack` refuses to pack it until the samples
+    exist. A frozen pool (``D = 0``) holds its seat: its samples are the channels there, at every save.
+    ``defer_field=True`` records that obligation on the walk (``PersistentWalk.field_deferred``) instead
     of building the basis now, for a producer that means to fill it later from a basis of its own
     (:func:`fill_field`, e.g. the CACTUS route: one :class:`~dmipy_sim.fields.susceptibility_field.FieldGrid`
     per substrate, sampled on every block's kept walk). Deferring is refused for a spec with no field source
@@ -104,8 +109,11 @@ def walk_spec(spec, n_walkers=None, T_max=None, dt_save=None, *, scanner="connec
         spec.validate()
         if T_max is None:
             raise TypeError("walk_spec needs T_max (seconds)")
-        if int(field_sample_every) != 1 and not adaptive_steps:
-            raise ValueError("field_sample_every reads the field in the walk, which the adaptive producer does: pass adaptive_steps=True")
+        kind = field_source_kind(spec)
+        in_walk = not defer_field and (kind == "grid" or (kind == "strands" and adaptive_steps))
+        if int(field_sample_every) != 1 and not in_walk:
+            raise ValueError("field_sample_every is the save grid of a field sampled in the walk: a gridded source is, a "
+                             "strand source with adaptive_steps=True")
         if defer_field:
             if not spec.field_source_pools:
                 raise SpecError(f"defer_field=True was given for spec {spec.id!r}, which declares no susceptibility "
@@ -116,7 +124,7 @@ def walk_spec(spec, n_walkers=None, T_max=None, dt_save=None, *, scanner="connec
             if run_dir is None:
                 raise TypeError("defer_field=True needs the raw walk kept for fill_field to read later: give run_dir= "
                                 "(walk_spec persists the walk's record there), or sample the field in the walk "
-                                "(adaptive_steps=True) instead of deferring it")
+                                "instead of deferring it")
         if context is not None:
             if not isinstance(context, WalkContext):
                 raise TypeError(f"context must be a WalkContext, got {type(context).__name__}")
@@ -165,16 +173,43 @@ def walk_spec(spec, n_walkers=None, T_max=None, dt_save=None, *, scanner="connec
                 D = pool.D
             if D is None:
                 raise SpecError("the spec's seeded pool has no D and no diffusivity= was given")
+            fb = None
+            if kind == "grid" and not defer_field:
+                fb = _single_geometry_field_grid(spec, g, field_res, field_budget)
             w = simulate_trajectories(int(n_walkers), float(D), g, T_max=T_max, dt_save=dt_save, seed=seed,
-                                      require_gpu=require_gpu, walker_batch_size=walker_batch_size, tiers=tiers)
-            # the single-geometry engine samples no field in the walk (simulate_trajectories takes no basis): a
-            # source-declaring spec here needs fill_field(walk, field_grid_of(walk.geometry)) before a pack
+                                      require_gpu=require_gpu, walker_batch_size=walker_batch_size, tiers=tiers,
+                                      field_basis=fb, field_sample_every=(int(field_sample_every) if fb is not None else 1))
             return PersistentWalk(w.positions, w.dt, w.sub_steps, w.dt_sim, w.boundary_local_time, w.compartment,
                                   w.bound_frac, w.illegal_crossings, w.seed, w.diffusivity, geometry=g, spec=spec, run=w.run,
-                                  field_deferred=bool(defer_field))
+                                  field_basis=w.field_basis, field_samples=w.field_samples,
+                                  field_sample_every=w.field_sample_every, field_deferred=bool(defer_field))
         return _walk_bundle(spec, int(n_walkers), float(T_max), float(dt_save), seed, n_probe, field_res,
                             require_gpu, walker_batch_size, field_budget=field_budget, field_cutoff_m=field_cutoff_m, field_cutoff_tol=field_cutoff_tol, seeding=seeding,
                             field_cutoff_max_m=field_cutoff_max_m, adaptive_steps=adaptive_steps, field_sample_every=int(field_sample_every), field_far=field_far, field_gather_every=int(field_gather_every), context=context, spool=bool(spool), defer_field=bool(defer_field))
+
+
+def field_source_kind(spec):
+    """How ``spec``'s susceptibility source is represented for a walk: ``"strands"`` when the source pool lies between
+    two swept-polyline walls (the per-segment closed form, :class:`~dmipy_sim.fields.strand_field.StrandFieldBasis`),
+    ``"grid"`` for any other source (a rasterised :class:`~dmipy_sim.fields.susceptibility_field.FieldGrid`), None
+    when the spec declares no source."""
+    if not spec.field_source_pools:
+        return None
+    src = spec.field_source_pools[0].id
+    outer = [w for w in spec.walls if w.inside_pool == src]; inner = [w for w in spec.walls if w.outside_pool == src]
+    strands = bool(outer) and bool(inner) and all(w.surface.kind == "swept_polyline" for w in outer + inner)
+    return "strands" if strands else "grid"
+
+
+def _single_geometry_field_grid(spec, g, field_res, field_budget):
+    """The :class:`~dmipy_sim.fields.susceptibility_field.FieldGrid` a single-geometry walk of ``spec`` samples: the
+    analytic raster of a myelinated cylinder or packed cell (:func:`~dmipy_sim.fields.susceptibility_field.field_grid_of`;
+    the cell's grid periodic), else the spec's own raster (:func:`field_grid_of_spec`)."""
+    from ..geometry.myelin import MyelinatedCylinder, PackedMyelinatedCylinders
+    from ..fields.susceptibility_field import field_grid_of
+    if isinstance(g, (MyelinatedCylinder, PackedMyelinatedCylinders)):
+        return field_grid_of(g, res=field_res)
+    return field_grid_of_spec(spec, field_res=field_res, field_budget=field_budget)
 
 
 def fill_field(walk, basis):
@@ -633,18 +668,24 @@ def _walk_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field_res, requ
     seeded = tuple(pid for pid in seeded if len(seeds_of[pid]))  # a seeding may hold none of a pool: a round of a pass
     if not seeded:
         raise SpecError("the seeding holds no seed of any pool; nothing to walk")
-    # a strand field is certified on the start positions and, with adaptive steps, sampled by the walk itself;
+    # the field basis is built before the walk and sampled by it: a strand field certified on the start positions
+    # (sampled with adaptive steps), a gridded one rasterised from the membership tests (sampled at every sub-step);
     # defer_field skips this -- the obligation is recorded on the walk, a basis given later fills it
-    sf = None
-    if not defer_field and spec.field_source_pools:
+    kind = None if defer_field else field_source_kind(spec)
+    sf = fg = None
+    if kind == "strands":
         src0 = spec.field_source_pools[0].id
-        ob = boundary(inside_w[src0]) if inside_w[src0] else None; ib = boundary(outside_w[src0]) if outside_w[src0] else None
-        if ob is not None and ib is not None and ob.kind == "swept_polyline" and ib.kind == "swept_polyline":
-            starts = np.concatenate([np.asarray(seeds_of[pid], np.float32) for pid in seeded])
-            if ctx.far is not None:                                      # the split: the grid's cutoff, no doubling
-                sf = ctx.field_basis()
-            else:
-                sf = _strand_field(ob, ib, lo, hi, starts[:, None, :], field_cutoff_m, field_cutoff_tol, seed, cutoff_max=field_cutoff_max_m)
+        ob, ib = boundary(inside_w[src0]), boundary(outside_w[src0])
+        starts = np.concatenate([np.asarray(seeds_of[pid], np.float32) for pid in seeded])
+        if ctx.far is not None:                                          # the split: the grid's cutoff, no doubling
+            sf = ctx.field_basis()
+        else:
+            sf = _strand_field(ob, ib, lo, hi, starts[:, None, :], field_cutoff_m, field_cutoff_tol, seed, cutoff_max=field_cutoff_max_m)
+    elif kind == "grid":
+        if adaptive_steps:
+            raise SpecError("adaptive_steps samples a strand field in the walk; this spec's field source is gridded, which "
+                            "the fixed-step walk samples at every sub-step (adaptive_steps=False)")
+        fg = field_grid_of_spec(spec, field_res=field_res, field_budget=field_budget, context=ctx)
     field_samples = []
     for pid in seeded:
         pool = pools[pid]
@@ -676,7 +717,10 @@ def _walk_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field_res, requ
                 field_samples.append((pid, w.field_samples))
         else:
             w = simulate_trajectories(n, float(pool.D), g, T_max=T_max, dt_save=dt_save, seed=seed + 13 * pid, r0=r0,
-                                      require_gpu=require_gpu, walker_batch_size=batch)
+                                      require_gpu=require_gpu, walker_batch_size=batch, field_basis=fg,
+                                      field_sample_every=(int(field_sample_every) if fg is not None else 1))
+            if w.field_samples is not None:
+                field_samples.append((pid, w.field_samples))
         n_t, walked = w.n_t, w
         parts.append((pid, np.asarray(w.positions, np.float32),
                       None if w.boundary_local_time is None else np.asarray(w.boundary_local_time, np.float32)))
@@ -685,15 +729,19 @@ def _walk_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field_res, requ
     traj, dlog, ids, wts, fs = [], [], [], [], []
     surface = all(dl is not None for pid, pos, dl in parts if pos.ndim == 3)      # every walked pool records contact
     sampled = {pid: arr for pid, arr in field_samples}
+    n_tf = len(range(0, n_t, int(field_sample_every)))                     # the field's own save grid
     for pid, pos, dl in parts:
         if sampled:
             if pid in sampled:
                 fs.append(sampled[pid])
             else:                                                            # a frozen shell: its start's channels, constant
                 p0 = jnp.asarray(np.asarray(pos if pos.ndim == 2 else pos[:, 0], np.float32))
-                seg, keep, _ = sf.within_device()(p0)
-                c0 = np.asarray(sf.channels_at_device()(p0, seg, keep)) - sf.mean[None, :]
-                fs.append(np.repeat(c0[:, None, :].astype(np.float32), n_t, axis=1))
+                if sf is not None:
+                    seg, keep, _ = sf.within_device()(p0)
+                    c0 = np.asarray(sf.channels_at_device()(p0, seg, keep)) - sf.mean[None, :]
+                else:
+                    c0 = np.asarray(fg.channels_at_device()(p0))
+                fs.append(np.repeat(c0[:, None, :].astype(np.float32), n_tf, axis=1))
         if pos.ndim == 2:                                                        # a frozen shell: no path, no contact
             pos = np.repeat(pos[:, None, :], n_t, axis=1); dl = np.zeros((len(pos), n_t), np.float32)
         elif dl is None:
@@ -707,22 +755,11 @@ def _walk_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field_res, requ
     if not surface:
         dlog = None                                                              # the geometry records no surface time
     comp = np.repeat(ids[:, None], n_t, axis=1)
-    fg = None
-    if not defer_field and spec.field_source_pools:
-        src = spec.field_source_pools[0].id
-        outer_b = boundary(inside_w[src]) if inside_w[src] else None
-        inner_b = boundary(outside_w[src]) if outside_w[src] else None
-        strands = (outer_b is not None and outer_b.kind == "swept_polyline" and inner_b is not None
-                   and inner_b.kind == "swept_polyline")
-        if strands:
-            fg = sf                                                          # built and certified on the start positions
-        else:
-            fg = field_grid_of_spec(spec, field_res=field_res, field_budget=field_budget, context=ctx)
     by_name = {p.name: p for p in spec.pools}
     D_ref = by_name["intra"].D if ("intra" in by_name and by_name["intra"].D) else float(walked.diffusivity)
     walk = PersistentWalk(traj, float(walked.dt), int(walked.sub_steps), float(walked.dt_sim), boundary_local_time=dlog,
                           compartment=comp, seed=int(seed), diffusivity=D_ref, spec=spec,
-                          weights=(None if np.allclose(wts, 1.0) else wts), field_basis=fg,
+                          weights=(None if np.allclose(wts, 1.0) else wts), field_basis=(sf if sf is not None else fg),
                           stepping=(dict(rule="adaptive", pools=dict(stepping)) if stepping else None),
                           field_samples=samples, field_sample_every=(int(field_sample_every) if samples is not None else 1),
                           field_deferred=bool(defer_field and spec.field_source_pools))

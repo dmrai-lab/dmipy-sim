@@ -148,10 +148,12 @@ def _sample_susc(m):
     """``m``'s field basis sampled along its own trajectory -- what ``fill_field`` does for a
     :class:`~dmipy_sim.persistent_walk.PersistentWalk`; this dict has none to fill, so the samples are made
     directly, after any tweak a test makes to the basis. ``build_replay_pack``'s path channel is read from
-    these samples, never from a fresh sample of the trajectory at build time (dmipy-sim#539)."""
+    these samples, never from a fresh sample of the trajectory at build time (dmipy-sim#539). They are the grid at
+    the saved positions, and say so (``susc_field_fill``), as ``fill_field``'s do."""
     fb, origin, traj = m["susc_field_basis"], m["susc_grid_origin"], m["traj"]
     samples = FieldGrid(fb, origin).channels(traj.reshape(-1, 3)).reshape(traj.shape[0], traj.shape[1], -1)
-    return dict(m, susc_field_samples=samples.astype(np.float32), susc_field_every=1)
+    return dict(m, susc_field_samples=samples.astype(np.float32), susc_field_every=1,
+                susc_field_fill=dict(read="save_resolution"))
 
 
 def test_susc_path_channel_drops_zz_via_trace_identity_and_certifies_at_its_capability():

@@ -1580,7 +1580,7 @@ def _walk_master(walk, *, weights=None, diffusivity=None, substrate_frame=None):
     The field tier is the walk's, not a build-time choice: ``walk.field_basis`` (built by
     :func:`~dmipy_sim.spec.walk.walk_spec` whenever the spec declares a susceptibility source) travels
     whenever it is set, and the channel it becomes needs ``walk.field_samples`` -- sampled in the walk
-    (``adaptive_steps=True``) or read afterwards (:func:`~dmipy_sim.spec.walk.fill_field`). A spec that
+    (a gridded source by every walk, a strand source with ``adaptive_steps=True``) or read afterwards (:func:`~dmipy_sim.spec.walk.fill_field`). A spec that
     declares a source but whose walk carries neither is refused here BY NAME: the ambiguity ("was the field
     meant to be in this pack or not") is exactly the defect this refuses, rather than silently guessing
     (the grid :func:`~dmipy_sim.fields.susceptibility_field.field_grid_of` would derive from the geometry's
@@ -1666,7 +1666,7 @@ def _container(spec):
 def build_replay_pack(walk, *, id, license, citation, weights=None,
                       method=_cx.POSITION_METHOD, envelope=None, tol=2.0, K=None, temporal_bandwidth_hz=None,
                       err_target=None, sigma_star=None, provenance=None,
-                      blt_temporal_K=None, blt_dtype=np.float16, susc_path_K=None, susc_path_bits=8, voxel_grid=None,
+                      blt_temporal_K=None, blt_dtype=np.float16, susc_path_K="auto", susc_path_bits=8, voxel_grid=None,
                       position_container=None, blt_container=None,
                       diffusivity=None, substrate_frame=None, out_path=None, verbose=False,
                       fidelity="measured", fidelity_from=None, device="auto", segment_T=SEGMENT_T, _occupancy_runs=False,
@@ -1697,18 +1697,21 @@ def build_replay_pack(walk, *, id, license, citation, weights=None,
     (C2) when the walk has the boundary local time; **magnetization transfer** (C4) when it has the
     bound fraction; **field** (C3) when the walk carries a field basis (``walk.field_basis``, built by
     :func:`~dmipy_sim.spec.walk.walk_spec` whenever its spec declares a susceptibility source, or attached
-    directly) WITH field samples (``walk.field_samples``, sampled in the walk at the sub-step with
-    ``adaptive_steps=True``, or read afterwards by :func:`~dmipy_sim.spec.walk.fill_field`): a
+    directly) WITH field samples (``walk.field_samples``, sampled in the walk at the sub-step -- a grid by every
+    walk, a strand basis with ``adaptive_steps=True`` -- or read afterwards by :func:`~dmipy_sim.spec.walk.fill_field`): a
     :class:`~dmipy_sim.fields.susceptibility_field.FieldGrid` basis stores its grid (a mesh or myelinated
     substrate), a :class:`~dmipy_sim.fields.strand_field.StrandFieldBasis` the per-segment closed form of a
     strand substrate (path channel only: it has no grid); B0, its direction and the susceptibilities are
     replay knobs, never stored. A walk whose spec declares a source but carries neither field samples nor a
     recorded deferral is refused BY NAME (:func:`_walk_master`): sample the field in the walk, or
     ``walk_spec(..., defer_field=True)`` and ``fill_field`` it before packing. A spec without a source builds
-    a pack without the tier. ``susc_path_K`` is the field tier's own band: a number, ``"auto"`` --
+    a pack without the tier. ``susc_path_K`` is the field tier's own band: ``"auto"`` (the default) --
     the band and the container (``susc_path_bits``) derived on this walk as the cheapest pair whose codec
-    error on the certificate's battery is within its floor (:func:`derive_susc_path_K`; the grid route, exact,
-    when the positions are lossless) -- or ``None`` for the grid alone. ``weights`` are per-walker proton-density weights (default: the pools' water fractions
+    error on the certificate's battery is within its floor (:func:`derive_susc_path_K`), certified against the
+    walk's own samples; the grid route instead (the grid read at the decoded positions) when the positions are
+    lossless and the samples are the grid read at the saved positions (:func:`~dmipy_sim.spec.walk.fill_field`),
+    since that route then reproduces them exactly at no channel's cost -- a number, or ``None`` for the grid
+    alone. ``weights`` are per-walker proton-density weights (default: the pools' water fractions
     by compartment, else uniform).
 
     The position ensemble is compressed by ``method`` (default ``bridge_dst``: endpoints plus a
@@ -1832,8 +1835,9 @@ def build_replay_pack(walk, *, id, license, citation, weights=None,
                 raise ValueError(f"susc_path_K is a band, 'auto' (derived on the walk) or None; got {susc_path_K!r}")
             if _field is None:
                 susc_path_K = None
-            elif m.get("susc_field_basis") is not None and _cx.is_lossless_at(method, int(K), int(X.shape[1])):
-                susc_path_K = None                             # lossless positions: the grid route is exact and costs no channel
+            elif (m.get("susc_field_basis") is not None and _cx.is_lossless_at(method, int(K), int(X.shape[1]))
+                  and (m.get("susc_field_samples") is None or m.get("susc_field_fill"))):
+                susc_path_K = None                             # the grid at lossless positions IS the samples: exact, no channel
             else:
                 run.phase("field band")
                 susc_path_K, susc_path_bits, _band_record = derive_susc_path_K(m, _field, env, K_max=int(K))
@@ -1843,7 +1847,7 @@ def build_replay_pack(walk, *, id, license, citation, weights=None,
                 raise ValueError("a StrandFieldBasis has no grid to store: the field tier (C3) needs susc_path_K")
             if m.get("susc_field_samples") is None:
                 raise ValueError("this walk carries a field basis but no field samples: sample the field in the "
-                                 "walk (adaptive_steps=True), or fill_field(walk, basis) before building the pack")
+                                 "walk (walk_spec), or fill_field(walk, basis) before building the pack")
             chan_meta["susceptibility_grid"] = dict(has_aniso=("aniso_G_xx" in _field.channel_names), arrays_in_pack=False,
                                                     replay_route="path", source=_field.meta)
             channels["susceptibility"] = True
@@ -1862,15 +1866,16 @@ def build_replay_pack(walk, *, id, license, citation, weights=None,
         if m.get("susc_field_basis") is not None:
             fb = m["susc_field_basis"]
             # The GRID route samples the field at codec-DECODED positions, so it is only sound when the
-            # position codec is lossless. The PATH route samples the FULL-RESOLUTION trajectory at build
-            # time, which is precisely what frees the positions to be lossy -- so the two cannot both be
-            # advertised: shipping grid arrays next to lossy positions would offer a replay route whose
-            # accuracy silently depends on a property the pack no longer has. Path wins when present;
-            # the grid is then published as a separate per-substrate companion artefact, not per walker.
+            # position codec is lossless. The PATH route stores the walk's own samples (the sub-step interval
+            # means taken in the walk, or fill_field's read at the saved positions), which is precisely what
+            # frees the positions to be lossy -- so the two cannot both be advertised: shipping grid arrays
+            # next to lossy positions would offer a replay route whose accuracy silently depends on a property
+            # the pack no longer has. Path wins when present; the grid rides beside it only where it
+            # reproduces the samples exactly, at lossless positions and samples read at those positions.
             # A full-rank walker-preserving codec is an exact rewrite; the rank is n_t for
             # n_t-2 for bridge_dst, which stores two endpoints outside the bands.
             _pos_lossless = _cx.is_lossless_at(method, int(K), int(X.shape[1]))
-            _grid_in_pack = (not susc_path_K) or _pos_lossless
+            _grid_in_pack = (not susc_path_K) or (_pos_lossless and m.get("susc_field_fill") is not None)
             if _grid_in_pack:
                 arrays["susc_grid_iso_local"] = np.asarray(fb["iso_local"], np.float16)
                 arrays["susc_grid_iso_P"] = np.asarray(fb["iso_P"], np.float16)
@@ -1893,7 +1898,7 @@ def build_replay_pack(walk, *, id, license, citation, weights=None,
             if susc_path_K:
                 if m.get("susc_field_samples") is None:
                     raise ValueError("this walk carries a field basis but no field samples: sample the field in "
-                                     "the walk (adaptive_steps=True), or fill_field(walk, basis) before building the pack")
+                                     "the walk (walk_spec), or fill_field(walk, basis) before building the pack")
                 _a, _pm = susc_path_encode_series(np.asarray(m["susc_field_samples"]), list(_field.channel_names), K=int(susc_path_K),
                                                   bits=susc_path_bits, layout="wtc", device=device,
                                                   dt=float(m["dt_traj"]) * int(m.get("susc_field_every", 1)),
@@ -1987,7 +1992,7 @@ def build_replay_pack(walk, *, id, license, citation, weights=None,
         if cert is not None:                                   # the certifying pack's per-tier terms, its codec on this walk
             fid.update({k: v for k, v in cert["fidelity"].items()
                         if k.startswith(("err_", "floor_", "susc_")) and k not in ("err_max", "floor_max")})
-        if channels["susceptibility"] and m.get("susc_field_basis") is not None and cert is None:
+        if channels["susceptibility"] and "susc_grid_iso_local" in arrays and cert is None:
             _dpos = _cx.decode(pos_arrays, pos_meta)
             run.phase("certificate grid")
             _gf = _susc_grid_fidelity(m, arrays, chan_meta["susceptibility_grid"], _dpos, dt, env)
