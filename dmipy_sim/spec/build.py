@@ -742,6 +742,11 @@ def _geometry_from_spec(spec):
                 intra_id, myelin_id, extra_id = inner.inside_pool, inner.outside_pool, outer.outside_pool
                 by_id = {p.id: p for p in spec.pools}
                 intra_p, myelin_p, extra_p = by_id[intra_id], by_id[myelin_id], by_id[extra_id]
+                # the pack reads pool NAMES and water_fraction off `.compartments` -- built always, straight
+                # from the spec's three pools; T2/T1 are replay knobs (SUBSTRATE.md 4.6, #540) and never go in.
+                comps = Compartments(extra=CPool(water_fraction=extra_p.water_fraction),
+                                     intra=CPool(water_fraction=intra_p.water_fraction),
+                                     myelin=CPool(water_fraction=myelin_p.water_fraction))
                 if inner.surface.kind == "swept_polyline":
                     if (inner.permeability.in_to_out > 0 or inner.permeability.out_to_in > 0
                             or outer.permeability.in_to_out > 0 or outer.permeability.out_to_in > 0):
@@ -765,17 +770,14 @@ def _geometry_from_spec(spec):
                                                      kappa_inner=ksym(inner, "PackedMyelinatedCylinders axolemma"),
                                                      kappa_outer=ksym(outer, "PackedMyelinatedCylinders sheath"),
                                                      rho_inner=inner.surface_relaxivity.inside,
-                                                     rho_outer=outer.surface_relaxivity.inside)
+                                                     rho_outer=outer.surface_relaxivity.inside,
+                                                     compartments=comps)
                 refuse_pose(inner.surface, "MyelinatedCylinder", length=True)
                 refuse_pose(outer.surface, "MyelinatedCylinder", length=True)
-                # water fractions and D are the walk-shaping values pools carry; T2/T1 are replay knobs
-                # (SUBSTRATE.md 4.6) that never shape the walk and never decide whether a spec is accepted
-                # (dmrai-lab/dmipy-sim#540) -- they are not passed to the geometry at all.
-                wf = (intra_p.water_fraction, myelin_p.water_fraction, extra_p.water_fraction)
                 return MyelinatedCylinder(inner.surface.radius, outer.surface.radius,
                                           tuple(inner.surface.axis or (0, 0, 1)),
                                           D["intra"], D["extra"], D_myelin=D["myelin"],
                                           kappa_inner=kappa(inner, "MyelinatedCylinder axolemma"),
                                           kappa_outer=kappa(outer, "MyelinatedCylinder sheath"),
-                                          water_fractions=wf)
+                                          compartments=comps)
     raise SpecError(f"no geometry matches walls {kinds}")
