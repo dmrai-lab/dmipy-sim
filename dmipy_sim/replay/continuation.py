@@ -35,12 +35,16 @@ def end_state(pack):
     return r_end, pool
 
 
-def continue_walk(pack, T_add, *, seed, require_gpu=None, field=True, adaptive_steps=False, walker_batch_size=50_000):
+def continue_walk(pack, T_add, *, seed, require_gpu=None, adaptive_steps=False, walker_batch_size=50_000):
     """The walk of ``pack`` continued for ``T_add`` seconds on its own substrate: every walker resumed from the last
     segment's endpoint in the pool it is in, a fresh ``seed``, the pack's save grid and the channels it carries.
     ``T_add`` is a whole number of the pack's segments. A single-geometry spec walks as one; a multi-surface spec
     walks pool by pool, and the walk is returned in the pack's walker order either way, so that walker ``w`` of the
-    continuation is walker ``w`` of the pack."""
+    continuation is walker ``w`` of the pack.
+
+    A spec that declares a susceptibility source is walked with ``adaptive_steps=True`` regardless of what is
+    given: the field tier is sampled in the walk, since a continuation keeps no raw walk of its own to defer to
+    (:func:`~dmipy_sim.spec.walk.fill_field` needs one kept on purpose)."""
     from ..engine.core import simulate_trajectories
     from ..spec.build import geometry_from_spec
     from ..spec.walk import walk_spec, _needs_bundle_walk
@@ -77,7 +81,9 @@ def continue_walk(pack, T_add, *, seed, require_gpu=None, field=True, adaptive_s
     grid = Grid(shape=(1, 1, 1), voxel_size_m=tuple(box[1] - box[0]), origin_m=tuple(box[0]))
     seeds = DrawnSeeds(positions={names[pid]: r_end[pool == pid] for pid in ids},
                        weights={names[pid]: weights[pool == pid] for pid in ids}, grid=grid, seed=int(seed))
-    w = walk_spec(spec, T_max=float(T_add), dt_save=dt, seed=int(seed), seeding=seeds, field=field, require_gpu=require_gpu,
+    if spec.field_source_pools and not adaptive_steps:
+        adaptive_steps = True
+    w = walk_spec(spec, T_max=float(T_add), dt_save=dt, seed=int(seed), seeding=seeds, require_gpu=require_gpu,
                   walker_batch_size=walker_batch_size, adaptive_steps=adaptive_steps, tiers=tiers)
     inv = np.empty_like(order); inv[order] = np.arange(order.size)                     # back to the pack's order
     fields = {k: (None if getattr(w, k) is None else np.asarray(getattr(w, k))[inv]) for k in w._FILE_ARRAYS}
@@ -116,7 +122,7 @@ def append_segments(pack, walk, *, seed, out_path=None, envelope=None, device="a
               _occupancy_runs=("comp_rle_counts" in pack.arrays), _window_of_plan=True)
     if c2.get("dtype") == "bands":
         kw["blt_container"] = _container_of(c2["container"])
-    new = build_replay_pack(walk, id=f"{pack.id}", field=(True if pm else False), **kw)
+    new = build_replay_pack(walk, id=f"{pack.id}", **kw)
     if sorted(k for k in new.segment(0).arrays) != sorted(k for k in pack.segment(0).arrays):
         raise ValueError(f"the continuation stores {sorted(new.segment(0).arrays)} where the pack stores {sorted(pack.segment(0).arrays)}; "
                          "a continuation carries the channels of the pack and no others")
@@ -155,7 +161,7 @@ def append_segments(pack, walk, *, seed, out_path=None, envelope=None, device="a
     return out
 
 
-def extend_pack(pack, T_add, *, seed, out_path=None, require_gpu=None, field=True, envelope=None, device="auto"):
+def extend_pack(pack, T_add, *, seed, out_path=None, require_gpu=None, envelope=None, device="auto"):
     """:func:`continue_walk` then :func:`append_segments`: the pack lengthened by ``T_add`` seconds of new segments."""
-    walk = continue_walk(pack, T_add, seed=seed, require_gpu=require_gpu, field=field)
+    walk = continue_walk(pack, T_add, seed=seed, require_gpu=require_gpu)
     return append_segments(pack, walk, seed=seed, out_path=out_path, envelope=envelope, device=device)

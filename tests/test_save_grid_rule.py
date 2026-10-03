@@ -10,6 +10,7 @@ from dmipy_sim.replay._replay_kernel import effective_gradient, effective_gradie
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_sim.substrate import Substrate
 from dmipy_sim.spec import walk_spec
+from tests.conftest import spec_without_source
 
 D0 = 2e-9
 ENV = dict(bvals=[0.0, 1e9], dirs=[[0, 0, 1]], ogse_periods=[2], shortd_b=1e9, shortd_deltas_frac=[0.05], B0_list=[],
@@ -73,13 +74,17 @@ def test_the_save_interval_rule_scales_as_derived():
 
 def test_walk_spec_derives_the_save_grid():
     spec = Substrate.canonical(field_T=3.0).request(n_fibres=3, seed=1)
-    w = walk_spec(spec, 60, 2e-3, seed=0, require_gpu=False, field=False)
+    spec_nf = spec_without_source(spec)             # the scanner-dependence below, not the field cap
+    w = walk_spec(spec_nf, 60, 2e-3, seed=0, require_gpu=False)
     D = max(p.D for p in spec.pools if p.D)
     assert w.dt == pytest.approx(save_interval(2e-3, 60, "connectom", D=D, field=False))
-    w2 = walk_spec(spec, 60, 2e-3, seed=0, require_gpu=False, scanner="prisma", field=False)
+    w2 = walk_spec(spec_nf, 60, 2e-3, seed=0, require_gpu=False, scanner="prisma")
     assert w2.dt > w.dt
-    w3 = walk_spec(spec, 60, 2e-3, dt_save=2.5e-4, seed=0, require_gpu=False, field=False)     # an explicit grid still wins
+    w3 = walk_spec(spec_nf, 60, 2e-3, dt_save=2.5e-4, seed=0, require_gpu=False)     # an explicit grid still wins
     assert w3.dt == pytest.approx(2.5e-4)
+    # the spec declares a source: the save grid is capped at FIELD_DT_CAP regardless of scanner (#143)
+    w_field = walk_spec(spec, 60, 2e-3, seed=0, require_gpu=False)
+    assert w_field.dt == pytest.approx(save_interval(2e-3, 60, "connectom", D=D, field=True))
 
 
 def test_mode_space_equals_position_space_for_an_off_grid_waveform():

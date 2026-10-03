@@ -7,6 +7,7 @@ import pytest
 from dmipy_sim.io.strands import write_tck
 from dmipy_sim.phantom import Grid
 from dmipy_sim.spec import DrawnSeeds, StratifiedByVoxel, disco_spec, draw_seeds, walk_spec
+from tests.conftest import spec_without_source
 
 
 def test_a_walk_from_drawn_seeds_is_the_walk_from_the_seeding(spec_grid):
@@ -16,7 +17,7 @@ def test_a_walk_from_drawn_seeds_is_the_walk_from_the_seeding(spec_grid):
     drawn = draw_seeds(spec, seeding, 11)
     assert isinstance(drawn, DrawnSeeds) and set(drawn.positions) == {"extra", "intra"} and drawn.seed == 11 and drawn.drawn_from is seeding
     assert drawn.n_walkers == sum(len(P) for P in drawn.positions.values()) > 0
-    kw = dict(T_max=8e-4, dt_save=2e-4, seed=11, require_gpu=False, field=False)
+    kw = dict(T_max=8e-4, dt_save=2e-4, seed=11, require_gpu=False)
     a = walk_spec(spec, seeding=seeding, **kw); b = walk_spec(spec, seeding=drawn, **kw)
     np.testing.assert_array_equal(a.positions, b.positions)
     np.testing.assert_array_equal(a.compartment, b.compartment)
@@ -41,7 +42,7 @@ def test_a_walk_context_is_kept_across_walks(spec_grid):
     spec, grid, _ = spec_grid
     want = np.zeros(grid.shape, np.int64); want[0] = 5
     seeding = StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want})
-    kw = dict(T_max=8e-4, dt_save=2e-4, require_gpu=False, field=False)
+    kw = dict(T_max=8e-4, dt_save=2e-4, require_gpu=False)
     ctx = WalkContext(spec)
     assert ctx.key == WalkContext.key_of(spec, None) and ctx.field_basis() is None
     a = walk_spec(spec, seeding=seeding, seed=3, **kw); b = walk_spec(spec, seeding=seeding, seed=3, context=ctx, **kw)
@@ -63,9 +64,10 @@ def test_a_pool_the_seeding_wants_nowhere_is_not_walked(spec_grid, tmp_path):
     from dmipy_sim.replay.bank import build_replay_pack, merge_packs, voxel_fidelity_volumes
     from dmipy_sim.spec import SpecError
     spec, grid, _ = spec_grid
+    spec = spec_without_source(spec)      # pack mechanics, not the field tier
     want = np.zeros(grid.shape, np.int64); want[0] = 6
     none = np.zeros(grid.shape, np.int64)
-    kw = dict(T_max=8e-4, dt_save=2e-4, require_gpu=False, field=False)
+    kw = dict(T_max=8e-4, dt_save=2e-4, require_gpu=False)
     drawn = draw_seeds(spec, StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": none}), 5)
     assert len(drawn.positions["intra"]) == 0 and drawn.n_walkers == len(drawn.positions["extra"]) > 0
     w = walk_spec(spec, seeding=drawn, seed=5, **kw)

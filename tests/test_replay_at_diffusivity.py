@@ -189,15 +189,17 @@ def sheathed(tmp_path_factory):
     """A sheathed axon with its field basis, walked at (D, T, dt) and at (2D, T/2, dt/2) from one seed: three
     pools, walls with contact, and the susceptibility path channel -- every tier a pack can carry."""
     from dmipy_sim.fields.susceptibility_field import field_grid_of
+    from dmipy_sim.spec.walk import fill_field
     tmp = tmp_path_factory.mktemp("sheath")
     g = d.PackedMyelinatedCylinders([1.0e-6], 0.7, [[0.0, 0.0]], 30e-6, N_max=2, D_intra=D0, D_extra=D0)
     g2 = d.PackedMyelinatedCylinders([1.0e-6], 0.7, [[0.0, 0.0]], 30e-6, N_max=2, D_intra=2 * D0, D_extra=2 * D0)
     out = []
     for geom, D, T_, dt, name in ((g, D0, 6e-3, 3e-4, "d"), (g2, 2 * D0, 3e-3, 1.5e-4, "2d")):
         walk = d.simulate_trajectories(1500, D, geom, T_, dt, seed=0, require_gpu=False)
+        walk = fill_field(walk, field_grid_of(geom, res=0.2e-6))
         path = tmp / f"{name}.rpk"
         build_replay_pack(walk, id=f"test/{name}", license="x", citation="x", K=8,
-                          field=field_grid_of(geom, res=0.2e-6), susc_path_K=16, out_path=str(path))
+                          susc_path_K=16, out_path=str(path))
         out.append(read_rpk(str(path)))
     return out
 

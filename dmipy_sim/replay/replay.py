@@ -389,11 +389,11 @@ class ReplayPack:
         from .continuation import end_state
         return end_state(self)
 
-    def extend(self, T_add, *, seed, out_path=None, require_gpu=None, field=True, envelope=None, device="auto"):
+    def extend(self, T_add, *, seed, out_path=None, require_gpu=None, envelope=None, device="auto"):
         """This pack lengthened by ``T_add`` seconds of new segments: the walk continued from its end on its own
         substrate with a fresh seed and appended (:func:`~dmipy_sim.replay.continuation.extend_pack`)."""
         from .continuation import extend_pack
-        return extend_pack(self, T_add, seed=seed, out_path=out_path, require_gpu=require_gpu, field=field, envelope=envelope, device=device)
+        return extend_pack(self, T_add, seed=seed, out_path=out_path, require_gpu=require_gpu, envelope=envelope, device=device)
 
     def _decoded_channels(self, start=0, stop=None):
         """The per-save channels of the walk at saves ``start .. stop - 1`` (the whole walk by default), decoded window
@@ -775,7 +775,8 @@ class ReplayPack:
         if self.field_is_zero:
             return False
         raise ValueError("a scanner field was given but the pack carries no field tier (C3) and its substrate declares a "
-                         "susceptibility, or no spec at all; build it with field=FieldGrid(...)")
+                         "susceptibility, or no spec at all; sample the field in the walk (adaptive_steps=True), or "
+                         "fill_field(walk, a FieldGrid or StrandFieldBasis) and rebuild the pack")
 
     @property
     def diffusivity(self):
@@ -1734,8 +1735,10 @@ class ReplayPack:
                                   TE_s=T_cut, K=K_new, K_tried=tried + [K_new],
                                   note="re-encoded from the parent's decoded prefix; the band starts at the parent's bands "
                                        "per second and doubles until the certificate passes")
+            # m (a windowed master dict, not a PersistentWalk) carries no susc_field_basis key, so this build has no
+            # field tier; the path series is added back below, re-encoded from the parent's decoded prefix
             pk = build_replay_pack(m, id=id or f"{self.meta.get('id')}/prefix-{T_cut * 1e3:.0f}ms", license=self.license,
-                                   citation=self.citation, K=K_new, tol=tol, field=False, blt_temporal_K=blt_K, provenance=prov,
+                                   citation=self.citation, K=K_new, tol=tol, blt_temporal_K=blt_K, provenance=prov,
                                    segment_T=T_cut, _window_of_plan=True)    # a prefix is one window of its own duration
             fid = pk.meta.get("fidelity", {})
             if K is not None or fid.get("within_2x_floor", True) or K_new >= int(self.K):

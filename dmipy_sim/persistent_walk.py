@@ -66,6 +66,16 @@ class PersistentWalk:
         The substrate's susceptibility field basis when the producer computed it: a grid (a mesh, a
         rasterised substrate) or the per-segment closed form of a strand substrate; both answer
         ``channels(points)``.
+    field_deferred : bool
+        The spec's field tier was deferred at walk time (``walk_spec(..., defer_field=True)``): the walk
+        carries no ``field_basis`` and no ``field_samples`` on purpose, and a pack of it is refused until
+        :func:`~dmipy_sim.spec.walk.fill_field` fills it.
+    field_fill : dict or None
+        The record :func:`~dmipy_sim.spec.walk.fill_field` leaves when ``field_samples`` were read from a
+        basis given AFTER the walk, at the walk's own saved positions (a quadrature at save resolution,
+        not the sub-step interval mean an in-walk sampling takes): the basis's own certificate, carried
+        into the pack's susceptibility channel. ``None`` when ``field_samples`` were sampled in the walk,
+        or are absent.
     run : dmipy_sim.run.Run or None
         The record of the run that produced the walk (``run.summary`` once it has ended; a pack records it in
         its provenance).
@@ -87,6 +97,8 @@ class PersistentWalk:
     stepping: Optional[dict] = field(default=None, compare=False, repr=False)
     field_samples: Optional[np.ndarray] = field(default=None, compare=False, repr=False)
     field_sample_every: int = 1
+    field_deferred: bool = False
+    field_fill: Optional[dict] = field(default=None, compare=False, repr=False)
     run: object = field(default=None, compare=False, repr=False)
 
     def __post_init__(self):
@@ -146,6 +158,7 @@ class PersistentWalk:
                       seed=self.seed, diffusivity=self.diffusivity, field_sample_every=int(self.field_sample_every), stepping=self.stepping,
                       spec=(None if self.spec is None else self.spec.to_dict()),
                       field=(None if self.field_basis is None else getattr(self.field_basis, "meta", None)),
+                      field_deferred=bool(self.field_deferred), field_fill=self.field_fill,
                       run=(None if run is None else (run.summary if hasattr(run, "summary") else run)),
                       geometry=(None if self.geometry is None else type(self.geometry).__name__))
         save_file(arrays, str(path), metadata={"walk": json.dumps(header, default=float)})
@@ -173,7 +186,8 @@ class PersistentWalk:
                    bound_frac=arrays.get("bound_frac"), illegal_crossings=int(h.get("illegal_crossings", 0)), seed=h.get("seed"),
                    diffusivity=h.get("diffusivity"), spec=spec, weights=arrays.get("weights"), field_basis=basis,
                    stepping=h.get("stepping"), field_samples=arrays.get("field_samples"),
-                   field_sample_every=int(h.get("field_sample_every", 1)), run=h.get("run"))
+                   field_sample_every=int(h.get("field_sample_every", 1)), field_deferred=bool(h.get("field_deferred", False)),
+                   field_fill=h.get("field_fill"), run=h.get("run"))
 
     def _bank_dict(self, **extra):
         """The bank's internal master dict (``traj``, ``dt_traj``, ``T_max``, ``comp``, ``dlog_b``,

@@ -13,7 +13,7 @@ from dmipy_sim.replay import bank
 from dmipy_sim.replay.bank import SEGMENT_T, combine_segment_fidelity, segment_plan
 from dmipy_sim.replay.study import walker_primitives
 from dmipy_sim.spec.tissue import Tissue
-from tests.test_bank import _lean_env, _susc_master
+from tests.test_bank import _lean_env, _susc_master, _sample_susc
 
 N_T, DT, N_W = 41, 5e-4, 600                 # 20 ms of walk; two windows of 10 ms
 TIS = Tissue(T2={"extra": 0.05, "intra": 0.02}, T1={"extra": 1.0, "intra": 0.5}, rho=2e-5, chi_iso=1e-7)
@@ -27,7 +27,7 @@ def _master():
     comp = np.zeros((N_W, N_T), np.int8); comp[:200, 25:] = 1          # a third of the walkers cross in window 1
     m["comp"] = comp
     m["substrate"] = d.PackedCylinders([1e-6], [[0.0, 0.0]], 10e-6).spec.to_dict()   # names for the two pools the walk labels
-    return m
+    return _sample_susc(m)         # sampled after the slice to N_T, so the samples match the sliced trajectory
 
 
 @pytest.fixture(scope="module")

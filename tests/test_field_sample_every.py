@@ -26,7 +26,7 @@ def spec(tmp_path_factory):
 
 
 def _walk(spec, every):
-    return walk_spec(spec, 60, 8e-4, 5e-5, seed=3, n_probe=20_000, require_gpu=False, field=True, adaptive_steps=True,
+    return walk_spec(spec, 60, 8e-4, 5e-5, seed=3, n_probe=20_000, require_gpu=False, adaptive_steps=True,
                      field_cutoff_max_m=25e-6, field_sample_every=every)
 
 
@@ -74,7 +74,7 @@ def test_the_pack_records_the_grid_and_the_replay_gates_on_it(spec, tmp_path):
 
 def test_the_grid_knob_needs_the_adaptive_producer(spec):
     with pytest.raises(ValueError, match="adaptive"):
-        walk_spec(spec, 30, 8e-4, 5e-5, seed=3, n_probe=20_000, require_gpu=False, field=True, field_sample_every=4)
+        walk_spec(spec, 30, 8e-4, 5e-5, seed=3, n_probe=20_000, require_gpu=False, field_sample_every=4)
 
 
 def test_shards_with_the_path_channel_merge(spec, tmp_path):
@@ -82,7 +82,7 @@ def test_shards_with_the_path_channel_merge(spec, tmp_path):
     and the decoder applies each walker's own, so the merged coefficients are the shards' and the field replay is
     the weight-averaged replay of the shards."""
     from dmipy_sim.replay.bank import merge_packs, susc_path_coeffs
-    pks = [build_replay_pack(_walk(spec, 4) if s_ == 3 else walk_spec(spec, 60, 8e-4, 5e-5, seed=s_, n_probe=20_000, require_gpu=False, field=True,
+    pks = [build_replay_pack(_walk(spec, 4) if s_ == 3 else walk_spec(spec, 60, 8e-4, 5e-5, seed=s_, n_probe=20_000, require_gpu=False,
                                                                      adaptive_steps=True, field_cutoff_max_m=25e-6, field_sample_every=4),
                              id=f"t/shard-{s_}", license="x", citation="x", K=8, susc_path_K=4, device="numpy", out_path=str(tmp_path / f"s{s_}.rpk"))
            for s_ in (3, 4)]

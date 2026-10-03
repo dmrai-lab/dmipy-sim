@@ -144,10 +144,20 @@ def _susc_master(**kw):
     return m
 
 
+def _sample_susc(m):
+    """``m``'s field basis sampled along its own trajectory -- what ``fill_field`` does for a
+    :class:`~dmipy_sim.persistent_walk.PersistentWalk`; this dict has none to fill, so the samples are made
+    directly, after any tweak a test makes to the basis. ``build_replay_pack``'s path channel is read from
+    these samples, never from a fresh sample of the trajectory at build time (dmipy-sim#539)."""
+    fb, origin, traj = m["susc_field_basis"], m["susc_grid_origin"], m["traj"]
+    samples = FieldGrid(fb, origin).channels(traj.reshape(-1, 3)).reshape(traj.shape[0], traj.shape[1], -1)
+    return dict(m, susc_field_samples=samples.astype(np.float32), susc_field_every=1)
+
+
 def test_susc_path_channel_drops_zz_via_trace_identity_and_certifies_at_its_capability():
     K = 32
     env = dict(_lean_env(), B0_list=[7.0], theta_deg=[0, 90])
-    pk = build_replay_pack(_susc_master(), id="test/slab-susc", method="bridge_dst",
+    pk = build_replay_pack(_sample_susc(_susc_master()), id="test/slab-susc", method="bridge_dst",
                           envelope=env, K=64, susc_path_K=K,
                           license="CC-BY-4.0", citation="test")
     pm = pk.meta["compression"]["channels"]["susceptibility_path"]
@@ -171,6 +181,7 @@ def test_susc_path_keeps_zz_when_trace_identity_is_broken():
     detect that and store all six iso_P rather than reconstruct a wrong zz."""
     m = _susc_master()
     m["susc_field_basis"]["iso_P"] = m["susc_field_basis"]["iso_P"] * 1.05      # break the trace
+    m = _sample_susc(m)
     pk = build_replay_pack(m, id="test/slab-susc-broken", method="bridge_dst",
                            envelope=dict(_lean_env(), B0_list=[7.0], theta_deg=[0]),
                            K=64, susc_path_K=16, license="CC-BY-4.0", citation="test")
@@ -199,7 +210,7 @@ def test_susc_path_lossless_at_K_equals_nt():
 def test_path_pack_with_lossy_positions_omits_the_grid_arrays_and_replays_via_path():
     """The grid route samples DECODED positions, so it is unsound once the position codec is lossy.
     A path pack with lossy positions must therefore not ship grid arrays offering that route."""
-    pk = build_replay_pack(_susc_master(), id="test/slab-path-only", method="bridge_dst",
+    pk = build_replay_pack(_sample_susc(_susc_master()), id="test/slab-path-only", method="bridge_dst",
                            envelope=dict(_lean_env(), B0_list=[7.0], theta_deg=[0]),
                            K=64, susc_path_K=32, license="CC-BY-4.0", citation="test")
     gm = pk.meta["compression"]["channels"]["susceptibility_grid"]
@@ -216,7 +227,7 @@ def test_path_pack_with_lossy_positions_omits_the_grid_arrays_and_replays_via_pa
 
 
 def test_lossless_positions_may_carry_both_routes():
-    pk = build_replay_pack(_susc_master(), id="test/slab-both", method="bridge_dst",
+    pk = build_replay_pack(_sample_susc(_susc_master()), id="test/slab-both", method="bridge_dst",
                            envelope=dict(_lean_env(), B0_list=[7.0], theta_deg=[0]),
                            K=N_T, susc_path_K=32, license="CC-BY-4.0", citation="test")
     gm = pk.meta["compression"]["channels"]["susceptibility_grid"]
@@ -277,6 +288,7 @@ def test_a_field_replay_can_restrict_to_one_compartment():
     m["comp"] = m["comp"].copy()
     m["comp"][n_w // 2:, :] = 1                       # two pools: ids 0 and 1
     m["comp0"] = m["comp"][:, 0].astype(np.int64)
+    m = _sample_susc(m)
 
     env = dict(_lean_env(), B0_list=[7.0], theta_deg=[0, 90])
     pk = build_replay_pack(m, id="test/slab-susc-comp", method="bridge_dst", envelope=env,
@@ -388,7 +400,7 @@ def test_builder_takes_a_persistent_walk_and_assembles_the_tiers_it_carries():
     # the refusals
     with pytest.raises(ValueError, match="weights has"):
         build_replay_pack(walk, id="x", weights=np.ones(7), K=8, envelope=_lean_env(), license="x", citation="x")
-    with pytest.raises(TypeError, match="FieldGrid"):
+    with pytest.raises(TypeError, match="field"):                 # build_replay_pack takes no field= at all now (#539)
         build_replay_pack(walk, id="x", field={"iso_local": 1}, K=8, envelope=_lean_env(), license="x", citation="x")
     with pytest.raises(TypeError, match="go with a PersistentWalk"):
         build_replay_pack(_slab_master(), id="x", weights=np.ones(3), K=8, envelope=_lean_env(), license="x", citation="x")
@@ -403,7 +415,7 @@ def test_the_field_tiers_band_is_derived_on_the_walk():
     with its reading, since it is the same battery."""
     from dmipy_sim.replay.bank import SUSC_PATH_LADDER
     env = dict(_lean_env(), B0_list=[7.0], theta_deg=[0, 90])
-    pk = build_replay_pack(_susc_master(), id="test/slab-susc-auto", method="bridge_dst",
+    pk = build_replay_pack(_sample_susc(_susc_master()), id="test/slab-susc-auto", method="bridge_dst",
                            envelope=env, K=64, susc_path_K="auto", license="CC-BY-4.0", citation="test")
     pm = pk.meta["compression"]["channels"]["susceptibility_path"]
     band = pm["band"]
@@ -430,7 +442,7 @@ def test_a_declared_train_depth_puts_a_floor_under_the_ladder():
     """A pack built for a train of n pulses must serve n: the tier serves K / 2, so the envelope's
     ``max_refocus_pulses`` keeps every rung at or above twice it, whatever the floor would have allowed."""
     env = dict(_lean_env(), B0_list=[7.0], theta_deg=[0], max_refocus_pulses=20)
-    pk = build_replay_pack(_susc_master(), id="test/slab-susc-depth", method="bridge_dst",
+    pk = build_replay_pack(_sample_susc(_susc_master()), id="test/slab-susc-depth", method="bridge_dst",
                            envelope=env, K=64, susc_path_K="auto", license="CC-BY-4.0", citation="test")
     pm = pk.meta["compression"]["channels"]["susceptibility_path"]
     assert pm["band"]["min_K"] == 40 and pm["K"] >= 40 and pm["max_refocus_pulses"] == 20      # the declared depth, not K / 2

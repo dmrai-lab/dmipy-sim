@@ -117,14 +117,14 @@ def test_the_bundle_diffusivity_refusal_names_routes_that_exist(tmp_path, monkey
     spec = _bundle_spec(tmp_path)
     monkeypatch.setattr(scanners, "save_interval", lambda *a, **k: pytest.fail("the refused number reached the save grid"))
     with pytest.raises(SpecError) as e:
-        walk_spec(spec, 8, 4e-4, diffusivity=0.6e-9, seed=0, require_gpu=False, field=False)   # dt_save derived
+        walk_spec(spec, 8, 4e-4, diffusivity=0.6e-9, seed=0, require_gpu=False)   # dt_save derived
     msg = str(e.value)
     assert "the producer's own argument" in msg and "SubstrateSpec.replace" in msg
     assert "spec.replace(D={'extra': 6e-10, 'intra': 6e-10})" in msg      # the frozen myelin pool is not in it
     assert callable(getattr(SubstrateSpec, "replace"))                    # the route named is the route that exists
     out = spec.replace(D={"extra": 0.6e-9, "intra": 0.6e-9})
     assert (out.pool("extra").D, out.pool("intra").D, out.pool("myelin").D) == (0.6e-9, 0.6e-9, 0.0)
-    walk = walk_spec(out, 24, 4e-4, 2e-4, seed=0, n_probe=2_000, require_gpu=False, field=False)
+    walk = walk_spec(out, 24, 4e-4, 2e-4, seed=0, n_probe=2_000, require_gpu=False, field_res=0.4e-6)
     assert walk.spec.pool("intra").D == 0.6e-9
 
 
@@ -134,4 +134,4 @@ def test_walk_spec_refuses_a_diffusivity_a_bundle_walk_cannot_honour(tmp_path):
     and only the walk's run record said so."""
     spec = _bundle_spec(tmp_path)
     with pytest.raises(SpecError, match="walks each pool at its own D"):
-        walk_spec(spec, 8, 4e-4, 2e-4, diffusivity=0.6e-9, seed=0, require_gpu=False, field=False)
+        walk_spec(spec, 8, 4e-4, 2e-4, diffusivity=0.6e-9, seed=0, require_gpu=False)

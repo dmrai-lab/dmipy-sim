@@ -15,11 +15,12 @@ from dmipy_sim.replay.replay import ReplayPack
 from dmipy_sim.fill.consolidate import consolidate, append, band_groups_of
 from dmipy_sim.spec import disco_spec, walk_spec, StratifiedByVoxel
 from dmipy_sim.spec.tissue import Tissue
+from tests.conftest import spec_without_source
 
 
 def _shard(spec, grid, tmp, name, block, per, seed):
     want = np.zeros(grid.shape, np.int64); want[block] = per
-    w = walk_spec(spec, T_max=8e-4, dt_save=2e-4, seed=seed, require_gpu=False, field=False,
+    w = walk_spec(spec, T_max=8e-4, dt_save=2e-4, seed=seed, require_gpu=False,
                   seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want}))
     os.makedirs(str(tmp / "shards"), exist_ok=True)
     return build_replay_pack(w, id=f"t/{name}", license="x", citation="x", K=3, voxel_grid=grid, out_path=str(tmp / "shards" / f"{name}.rpk"))
@@ -28,6 +29,7 @@ def _shard(spec, grid, tmp, name, block, per, seed):
 @pytest.fixture(scope="module")
 def layout(spec_grid):
     spec, grid, tmp = spec_grid
+    spec = spec_without_source(spec)      # consolidation mechanics, not the field tier
     a = _shard(spec, grid, tmp, "block-0000.p1", 0, 12, 7); b = _shard(spec, grid, tmp, "block-0001.p1", 1, 12, 8)
     out = str(tmp / "layout")
     manifest, index = consolidate(str(tmp / "shards"), out, blocks=[0, 1], id="t/columns")
@@ -99,6 +101,7 @@ def test_a_later_pass_appends_with_the_union_weights(spec_grid):
     alike, the mean of the passes' fractions over the union's count), its index holds both row ranges, and the
     certificate counts the union."""
     spec, grid, tmp = spec_grid
+    spec = spec_without_source(spec)      # consolidation mechanics, not the field tier
     tmp = tmp / "passes"; os.makedirs(str(tmp), exist_ok=True)
     p1 = _shard(spec, grid, tmp, "block-0000.p1", 0, 4, 100); p2 = _shard(spec, grid, tmp, "block-0000.p2", 0, 12, 200)
     out = str(tmp / "layout")

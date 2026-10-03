@@ -332,14 +332,16 @@ def test_a_pathway_gated_waveform_carries_its_sign_as_its_coherence():
 def field_pack(tmp_path_factory):
     """A sheathed axon alone in a wide cell with its field basis: the pack a static field needs (C3 path)."""
     from dmipy_sim.fields.susceptibility_field import field_grid_of
+    from dmipy_sim.spec.walk import fill_field
     D0 = 2.0e-9
     g = d.PackedMyelinatedCylinders([1.0e-6], 0.7, [[0.0, 0.0]], 30e-6, N_max=2, D_intra=D0, D_extra=D0)
     walk = d.simulate_trajectories(2000, D0, g, 6e-3, 3e-4, seed=0, require_gpu=False)
+    walk = fill_field(walk, field_grid_of(g, res=0.2e-6))
     out = tmp_path_factory.mktemp("pk") / "sheathed.rpk"
     build_replay_pack(walk, id="test/sheathed", license="x", citation="x", K=8, out_path=str(out),
                       envelope=dict(bvals=[0.0, 1e8], dirs=[[0, 0, 1], [1, 0, 0]], delta_frac=0.2, Delta_frac=0.5,
                                     ogse_periods=[1], shortd_b=1e8, shortd_deltas_frac=[0.2]),
-                      field=field_grid_of(g, res=0.2e-6), susc_path_K=16)
+                      susc_path_K=16)
     return str(out)
 
 

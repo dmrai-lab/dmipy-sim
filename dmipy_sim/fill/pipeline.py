@@ -120,7 +120,7 @@ def walk_round(o, rc, row, name, r, k, P, seeds):
     log.info("%s round %d/%d: voxels %s, plan %d walkers, scale %.4f -> %s", name, r + 1, k, row["voxels"], seeds["tot"], seeds["scale"], seeds["n_plan"])
     run_dir, out = round_paths(o.workdir, name, r, k)
     t0 = time.time()
-    w = walk_spec(spec, T_max=W["T_max_s"], dt_save=rc.dt_save(), seeding=seeds["drawn"], seed=seeds["seed"], field=bool(spec.field_source_pools),
+    w = walk_spec(spec, T_max=W["T_max_s"], dt_save=rc.dt_save(), seeding=seeds["drawn"], seed=seeds["seed"],
                   require_gpu=o.require_gpu, walker_batch_size=o.batch or W["walker_batch_size"], adaptive_steps=W["adaptive_steps"], scanner=W["scanner"],
                   floor_fraction=W["floor_fraction"], field_sample_every=int(W.get("field_sample_every", 1)),
                   context=rc.context(), field_gather_every=int(W.get("field_gather_every", 4)), run_dir=run_dir, spool=True)
