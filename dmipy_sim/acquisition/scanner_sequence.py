@@ -243,9 +243,13 @@ class ScannerSequence:
     # ── derived from G and rf ──────────────────────────────────────────────────────────────────────
     @property
     def G_eff(self):
-        """The EFFECTIVE gradient the phase integral walks: ``G * rf.sign(t)`` (RPK.md 6.6). Derived, never
-        stored. ``(n_meas, n_t, 3)`` float32."""
+        """The EFFECTIVE gradient the phase integral walks: ``G * rf.sign(t) * chi_perp(t)`` (RPK.md 6.6) -- the
+        coherence sign, and nothing while the magnetisation is stored along z, which accrues no phase whatever is
+        played (a magnet's own gradient through a stimulated echo's mixing time). Derived, never stored.
+        ``(n_meas, n_t, 3)`` float32."""
         s = self.rf.sign(np.arange(self.n_t) * self.dt)
+        if self._chi is not None:
+            s = s * np.asarray(self._chi, np.float32)
         return self.G * s[None, :, None]
 
     @property

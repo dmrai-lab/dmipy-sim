@@ -163,3 +163,19 @@ def test_the_cross_term_is_signed_and_the_self_term_is_not():
     assert err.min() < 0 < err.max()                              # signed, so it flips with direction
     unweighted = sequences.pgse([[1, 0, 0]], 5e-3, 20e-3, gradient_strengths=[0.0], TE=0.084, n_t=1200)
     assert float(unweighted.with_background_gradient(g).b()[0]) > 0     # unsigned, so it survives at b = 0
+
+
+def test_a_stimulated_echo_accrues_no_background_phase_while_its_magnetisation_is_stored():
+    """Through a stimulated echo's mixing time the magnetisation is along z, so a magnet's constant gradient adds
+    no phase there: the effective gradient is the coherence sign times the transverse gate, zero on every stored
+    sample, and the background's net moment at the readout is the grid's rounding at the store and the recall --
+    not ``g0`` times the mixing time."""
+    g0 = 1e-3
+    ste = sequences.pgste([[0, 0, 1]], 7.6e-3, 38.3e-3, gradient_strengths=0.1, n_t=1000, slew_rate=np.inf,
+                          ste_flip_angles=(90.0, 90.0, 90.0))
+    played = ste.with_gradient(np.zeros_like(np.asarray(ste.G))).with_background_gradient([0.0, 0.0, g0])
+    stored = ~np.asarray(ste.chi_perp, bool)
+    G_eff = np.asarray(played.G_eff)[0, :, 2]
+    assert stored.sum() > 600 and np.all(G_eff[stored] == 0.0)
+    q = np.cumsum(np.asarray(played.G_eff, np.float64) * played.dt, axis=1)[0, played.echo_idx - 1, 2]
+    assert abs(q) <= 2 * played.dt * g0 * (1 + 1e-6)              # one sample at the store, one at the recall
