@@ -202,7 +202,7 @@ Every piece is an object with named, unit-bearing arguments, and the phantom is 
 | `FreeWater(*, m0, tissue=Tissue(D=, T2=, T1=))` | the one closed form: a pack cannot stand in for free water (its Monte-Carlo floor does not decay with b) |
 | `Inert()` | fills a voxel and emits nothing, so it has no `m0`; not air |
 | `Peaks(directions, weights=)`, `ODF(coeffs, *, basis)`, `Watson(*, mu, kappa)`, `Frames(rotations)`, `Fan(rotations, *, kappa)` / `Fan.from_axis(*, axis, fan_towards, kappa_fan, kappa_perp)` | a pose per voxel, from a direction to a whole rotation; `ODF` names its **source** basis (`"mrtrix3"`, `"mrtrix-legacy"`, `"dmipy-fit"`, ...), keeps a CSD's integral on `.integral` |
-| `Grid(*, shape, voxel_size_m, origin_m=, isocenter_m=, axes=)`, `Grid.from_affine(nifti_affine, shape)` | the voxels in the scanner |
+| `Grid(*, shape, voxel_size_m, origin_m=, isocenter_m=, axes=)`, `Grid.from_affine(nifti_affine, shape)`, `Grid.from_oblique_affine(nifti_affine, shape)` | the voxels in the scanner, each where the image's affine puts it (`axes` signs every index: `"LAS"` runs i along -x) |
 
 `fractions=` also takes an integer label volume with `labels={value: substrate}`; `remainder=` takes `1 - sum`
 where the fractions leave a gap. `m0` is required on every signal-bearing substrate, because a proton density
