@@ -219,10 +219,21 @@ def _measure_floor(m, env):
     return float(_cx.measure_fidelity(traj, float(m["dt_traj"]), traj, env)["floor_max"])
 
 
-def _surface_fidelity(m, arrays, chan_meta, env):
+def _surface_fidelity(m, arrays, chan_meta, env, *, segment_T=None):
     """Certify the surface tier (C2): the surface-relaxivity attenuation reconstructed from the
     STORED boundary channel vs the RAW per-step boundary local time, over a rho battery, against
-    the split-half MC floor of the raw surface signal. Returns ``dict(err, floor)`` or None."""
+    the split-half MC floor of the raw surface signal. Returns ``dict(err, floor)`` or None.
+
+    The whole-duration ``err``/``floor`` above is blind to the BAND: the bridge
+    (:func:`compression.encode_boundary_bridge`) stores the summed contact exactly in its two
+    endpoints at every K, so a band too coarse to resolve a later cut still reproduces the whole
+    walk's total. When ``segment_T`` is given and this walk is longer than one window of that
+    duration, ``err_window``/``floor_window`` add the same battery and split-half floor on the summed
+    contact of EACH window of ``segment_T`` of the STORED channel
+    (:func:`compression.decode_boundary_bridge`'s ``n_cut``/``start``, dropping the window's own
+    first save as :func:`_window_master` does) against the window's own raw saves -- the worst window
+    kept (dmipy-sim#528). Only the bridge codec carries a band to probe this way; the exact
+    sparse/dense fallback never adds the window term."""
     raw = m.get("dlog_b")
     has_stored = _cx.has_c2(arrays) or any(k in arrays for k in ("blt_dense_q", "blt_counts"))
     if raw is None or not has_stored:
@@ -241,14 +252,39 @@ def _surface_fidelity(m, arrays, chan_meta, env):
         s_dec[lo:hi] = _cx.surface_logweight_series(decode(arrays, chan_meta, slice(lo, hi)), 1.0)
     perm = np.random.RandomState(0).permutation(n_w); A, B = perm[:n_w // 2], perm[n_w // 2:]
     fac = lambda sl, idx: float(np.sum(w[idx] * np.exp(sl[idx])) / np.sum(w[idx]))
+    rho_list = env.get("rho_list") or [1e-5, 3e-5, 1e-4]
     err = floor = 0.0
-    for rho in (env.get("rho_list") or [1e-5, 3e-5, 1e-4]):
+    for rho in rho_list:
         rd = float(rho) / D
         sl_raw = rd * s_raw
         sl_dec = rd * s_dec
         err = max(err, abs(fac(sl_raw, slice(None)) - fac(sl_dec, slice(None))))
         floor = max(floor, abs(fac(sl_raw, A) - fac(sl_raw, B)))
-    return dict(err=float(err), floor=float(floor))
+    out = dict(err=float(err), floor=float(floor))
+    dt = m.get("dt_traj")
+    if segment_T and dt and _cx.has_c2(arrays):
+        dt = float(dt); T_walk = (n_t - 1) * dt
+        if T_walk > float(segment_T) * (1.0 + 1e-9):
+            steps = max(1, int(round(float(segment_T) / dt)))
+            n_windows = (n_t - 1) // steps
+            if n_windows >= 1:
+                err_w = floor_w = 0.0
+                for i in range(n_windows):
+                    lo, hi = i * steps, i * steps + steps + 1
+                    dec_win = decode(arrays, chan_meta, n_cut=hi, start=lo)
+                    raw_win = raw[:, lo:hi]
+                    dec_in = dec_win[:, 1:]; raw_in = raw_win[:, 1:]        # the window's own first save ends no step of it
+                    s_raw_w = raw_in.sum(axis=1).astype(np.float64)
+                    s_dec_w = dec_in.sum(axis=1).astype(np.float64)
+                    for rho in rho_list:
+                        rd = float(rho) / D
+                        e = abs(fac(rd * s_raw_w, slice(None)) - fac(rd * s_dec_w, slice(None)))
+                        f = abs(fac(rd * s_raw_w, A) - fac(rd * s_raw_w, B))
+                        if f > 0 and e / f > (err_w / floor_w if floor_w else -1.0):
+                            err_w, floor_w = e, f
+                out["err_window"] = float(err_w)
+                out["floor_window"] = float(floor_w)
+    return out
 
 
 #: rho / D values a window's contact envelope is read on: log-spaced from 1 m^-1 to the battery's largest
@@ -1361,7 +1397,7 @@ def _precision_tiers(arrays, n_walkers, floor_max, walkers_shuffled):
                       "WALKER ORDER NOT DECLARED SHUFFLED -- a prefix may be a biased sub-ensemble"))
 
 
-def _select_boundary_codec(m, dlog, env, tol, dtype, verbose=False, container=None):
+def _select_boundary_codec(m, dlog, env, tol, dtype, verbose=False, container=None, *, min_K=None, segment_T=None):
     """Choose the C2 (boundary-local-time) codec by COST subject to the surface-fidelity gate.
 
     The historical default was sparse CSR, which is exact but costs ~one entry per wall contact, so it
@@ -1369,17 +1405,29 @@ def _select_boundary_codec(m, dlog, env, tol, dtype, verbose=False, container=No
     The detrended-cumulative DCT is flat in n_t and, at K=32 in f16, lands thousands of times below the
     surface split-half floor -- but it was opt-in, so the *default* pack got the expensive channel.
     Cost each candidate, keep the cheapest that passes, and fall back to exact sparse if none do.
-    """
+
+    ``min_K`` raises the ladder's smallest rung (16 bands per storage-rule window when this build is a
+    walk built as one window but longer than the storage rule's window, RPK.md 4.3 -- the measured
+    table is in the PR, not here) instead of the plain ladder's 8; it still doubles from there, same as
+    always, until the certificate passes. ``segment_T`` adds :func:`_surface_fidelity`'s window term
+    (``err_window``/``floor_window``): a candidate passes only when both the whole-duration term and
+    the window term are within ``tol`` of their floors (dmipy-sim#528)."""
+    base = 8 if not min_K else int(min_K)
     cands = []
-    for K in (8, 16, 32, 64):
+    for K in (base, base * 2, base * 4, base * 8):
         a, mm = _cx.encode_boundary_bridge(dlog, K=int(K), dtype=dtype, container=container)
-        cf = _surface_fidelity(m, a, mm, env)
+        cf = _surface_fidelity(m, a, mm, env, segment_T=segment_T)
         nb = sum(int(np.asarray(v).nbytes) for v in a.values()) / max(len(dlog), 1)
         cands.append((nb, K, a, mm, cf))
-        if cf is not None and cf["err"] <= tol * cf["floor"]:
+        ok = cf is not None and cf["err"] <= tol * cf["floor"]
+        if ok and "err_window" in cf:
+            ok = cf["err_window"] <= tol * cf["floor_window"]
+        if ok:
             if verbose:
                 log.info(f"[bank] C2 codec: boundary_dct K={K} {np.dtype(dtype).name} "
-                      f"({nb:.0f} B/walker, err={cf['err']:.2e} vs floor {cf['floor']:.2e})")
+                      f"({nb:.0f} B/walker, err={cf['err']:.2e} vs floor {cf['floor']:.2e}"
+                      + ("" if "err_window" not in cf else
+                         f", window err={cf['err_window']:.2e} vs floor {cf['floor_window']:.2e}") + ")")
             return a, mm
     a, mm = _cx.encode_boundary_local_time(dlog)
     if verbose:
@@ -1510,7 +1558,8 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto"
                       blt_temporal_K=None, blt_dtype=np.float16, susc_path_K=None, susc_path_bits=8, voxel_grid=None,
                       position_container=None, blt_container=None,
                       diffusivity=None, substrate_frame=None, out_path=None, verbose=False,
-                      fidelity="measured", fidelity_from=None, device="auto", segment_T=SEGMENT_T, _occupancy_runs=False):
+                      fidelity="measured", fidelity_from=None, device="auto", segment_T=SEGMENT_T, _occupancy_runs=False,
+                      _window_of_plan=False):
     """Compress a persistent walk and assemble a self-certifying replay pack.
 
     The walk is stored in SEGMENTS of ``segment_T`` seconds (RPK.md 4.3; the storage rule's 100 ms): a walk within
@@ -1558,6 +1607,15 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto"
     with a summary in ``fidelity["per_voxel"]`` (:func:`voxel_fidelity`; :func:`voxel_fidelity_volumes` reads
     it back, :func:`dmipy_sim.spec.seeding.plan_seeding` turns a pilot's into the next walk's counts).
 
+    A contact (C2) channel chosen automatically (``blt_temporal_K`` not given) is banded by
+    :func:`_select_boundary_codec`: for a walk built as ONE window but longer than the storage rule's
+    window (``segment_T``, RPK.md 4.3), the ladder's floor is 16 bands per storage-rule window, so that a
+    later cut of this pack into windows (:meth:`~dmipy_sim.replay.replay.ReplayPack.resegment`) keeps the
+    stored contact within the window's own floor rather than only the whole walk's (dmipy-sim#528) -- a
+    window built directly as one segment of an already-decided plan (``_build_segmented``, ``resegment``,
+    ``prefix``, a continuation) keeps its own endpoints and the plain ladder, since it IS the window, not
+    something that will be cut again.
+
     Returns a :class:`dmipy_sim.replay.replay.ReplayPack`; writes it to ``out_path`` if given.
     """
     with Run("build_replay_pack", params=dict(id=id, K=K, fidelity=fidelity, device=device, out_path=out_path)) as run:
@@ -1596,6 +1654,13 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto"
             raise ValueError("fidelity_from= goes with fidelity='inherited'")
         X = m["traj"] if _cx.is_lazy(m["traj"]) else np.asarray(m["traj"])   # as stored, or lazily: read per walker chunk
         dt = float(m["dt_traj"])
+        # a window built directly (one segment of a plan _build_segmented/resegment/prefix/a continuation already
+        # decided) carries its own endpoints and needs none of this; only a walk built as ONE window that is itself
+        # longer than the storage rule's window risks a later cut it cannot see (#528)
+        _c2_window_T = None if _window_of_plan else SEGMENT_T
+        _c2_min_K = None
+        if _c2_window_T is not None and (X.shape[1] - 1) * dt > float(_c2_window_T) * (1.0 + 1e-9):
+            _c2_min_K = 16 * int(np.ceil((X.shape[1] - 1) * dt / float(_c2_window_T)))
         if K is None and temporal_bandwidth_hz is not None:
             # the band as a frequency (#199): K bands over T resolve up to K / (2T)
             K = max(2, int(np.ceil(2.0 * float(temporal_bandwidth_hz) * (X.shape[1] - 1) * dt)))
@@ -1741,18 +1806,23 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto"
                                                  dtype=blt_dtype, container=_container(blt_container), device=device)
             else:
                 _a, _mm = _select_boundary_codec(m, np.asarray(m["dlog_b"]), env, tol,
-                                                 blt_dtype, verbose, container=_container(blt_container))
+                                                 blt_dtype, verbose, container=_container(blt_container),
+                                                 min_K=_c2_min_K, segment_T=_c2_window_T)
             arrays.update(_a); chan_meta["boundary_local_time"] = _mm; channels["rho"] = True
 
         # Surface tier (C2) fidelity: certify the boundary channel reproduces the surface-relaxivity
         # signal from its stored coeffs, vs the raw boundary local time.
         if channels["rho"] and chan_meta.get("boundary_local_time") is not None and cert is None:
             run.phase("certificate surface")
-            _cf = _surface_fidelity(m, arrays, chan_meta["boundary_local_time"], env)
+            _cf = _surface_fidelity(m, arrays, chan_meta["boundary_local_time"], env, segment_T=_c2_window_T)
             if _cf is not None:
                 fid = dict(fid, err_surface=_cf["err"], floor_surface=_cf["floor"],
                            err_max=max(float(fid.get("err_max", 0.0)), _cf["err"]),
                            floor_max=max(float(fid.get("floor_max", 0.0)), _cf["floor"]))
+                if "err_window" in _cf:
+                    fid.update(err_surface_window=_cf["err_window"], floor_surface_window=_cf["floor_window"],
+                               err_max=max(float(fid["err_max"]), _cf["err_window"]),
+                               floor_max=max(float(fid["floor_max"]), _cf["floor_window"]))
                 fid["within_2x_floor"] = bool(fid["err_max"] <= 2.0 * fid["floor_max"])
                 if sigma_star is not None:
                     fid["meets_target"] = bool(fid["err_max"] <= sigma_star and fid["floor_max"] <= sigma_star)
@@ -1934,7 +2004,8 @@ def _build_segmented(m, n_segments, n_seg, run, walk, out_path, *, id, K, tempor
         cert_i = _window_certificate(fidelity_from, i, n_segments)
         if i == 0:
             pk = build_replay_pack(w, id=f"{id}", K=K, blt_temporal_K=blt_temporal_K, susc_path_K=susc_path_K, fidelity=fidelity,
-                                   fidelity_from=cert_i, envelope=envelope, segment_T=T_seg, _occupancy_runs=crosses, sigma_star=sigma_star, **kw)
+                                   fidelity_from=cert_i, envelope=envelope, segment_T=T_seg, _occupancy_runs=crosses, sigma_star=sigma_star,
+                                   _window_of_plan=True, **kw)
             K = int(pk.K)
             pm0 = (pk.meta["compression"].get("channels") or {}).get("susceptibility_path")
             if pm0 is not None:
@@ -1948,7 +2019,7 @@ def _build_segmented(m, n_segments, n_seg, run, walk, out_path, *, id, K, tempor
         else:
             pk = build_replay_pack(w, id=f"{id}", K=K, blt_temporal_K=blt_temporal_K, susc_path_K=susc_path_K, fidelity=fidelity,
                                    fidelity_from=cert_i, envelope=envelope, segment_T=T_seg, _occupancy_runs=crosses, sigma_star=sigma_star,
-                                   voxel_grid=None, **{k_: v_ for k_, v_ in kw.items() if k_ != "voxel_grid"})
+                                   _window_of_plan=True, voxel_grid=None, **{k_: v_ for k_, v_ in kw.items() if k_ != "voxel_grid"})
         packs.append(pk)
     # the whole: the positions battery measured over the full walk (the walk is in hand), the tier terms bounded
     fid = combine_segment_fidelity([pk.meta["fidelity"] for pk in packs])

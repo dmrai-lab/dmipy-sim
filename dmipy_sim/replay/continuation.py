@@ -113,7 +113,7 @@ def append_segments(pack, walk, *, seed, out_path=None, envelope=None, device="a
               position_container=(None if cm.get("container") is None else _container_of(cm["container"])),
               blt_temporal_K=(int(c2["K"]) if c2 else None), blt_dtype=(np.float16 if c2.get("dtype", "float16") == "float16" else np.float32),
               susc_path_K=(int(pm["K"]) if pm else None), susc_path_bits=(pm.get("bits", 8) if pm else 8),
-              _occupancy_runs=("comp_rle_counts" in pack.arrays))
+              _occupancy_runs=("comp_rle_counts" in pack.arrays), _window_of_plan=True)
     if c2.get("dtype") == "bands":
         kw["blt_container"] = _container_of(c2["container"])
     new = build_replay_pack(walk, id=f"{pack.id}", field=(True if pm else False), **kw)
