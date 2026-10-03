@@ -120,8 +120,8 @@ def test_the_cell_wraps_a_step_across_its_edge_and_its_corner():
     keys = jax.random.split(jax.random.PRNGKey(SEED), n)
     comp = jnp.zeros(n, jnp.int32)                                # extra-axonal
     zero = jnp.zeros(n, jnp.float32)
-    ra = np.asarray(jax.vmap(step)((A, keys, zero, comp))[0])
-    rb = np.asarray(jax.vmap(step)((B, keys, zero, comp))[0])    # the same keys: the same displacement
+    ra = np.asarray(jax.vmap(step)((A, A, keys, zero, comp))[0])
+    rb = np.asarray(jax.vmap(step)((B, B, keys, zero, comp))[0])    # the same keys: the same displacement
     for r in (ra, rb):
         assert (r[:, :2] >= -half).all() and (r[:, :2] < half).all(), "a wrapped position is outside the cell"
     crossed = (np.sign(ra[:, 0]) != np.sign(np.asarray(A)[:, 0])) | (np.sign(rb[:, 0]) != np.sign(np.asarray(B)[:, 0]))

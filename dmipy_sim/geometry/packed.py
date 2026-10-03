@@ -207,8 +207,8 @@ class PackedCylinders(Geometry):
     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     A minimum-image convention is applied when computing ray-circle
     intersections, so cylinders near the box edge correctly interact with
-    walkers near the opposite edge.  The final position is wrapped into
-    [-L/2, L/2)² after every timestep.
+    walkers near the opposite edge.  The position itself is continuous: the walk
+    records the unwrapped path, and only the wall queries fold it into the cell.
     """
     replay_parity = True
 
