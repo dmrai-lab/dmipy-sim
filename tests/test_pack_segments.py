@@ -9,7 +9,8 @@ import pytest
 
 import dmipy_sim as d
 from dmipy_sim import build_replay_pack
-from dmipy_sim.replay.bank import combine_segment_fidelity, segment_plan
+from dmipy_sim.replay import bank
+from dmipy_sim.replay.bank import SEGMENT_T, combine_segment_fidelity, segment_plan
 from dmipy_sim.replay.study import walker_primitives
 from dmipy_sim.spec.tissue import Tissue
 from tests.test_bank import _lean_env, _susc_master
@@ -267,3 +268,77 @@ def test_a_shard_inherits_a_windowed_certificate_window_by_window(packs):
     four = build_replay_pack(m, id="t/four", **{**kw, "K": 9, "blt_temporal_K": 9, "susc_path_K": 11, "segment_T": 0.005})
     with pytest.raises(ValueError, match="window"):
         build_replay_pack(m2, id="t/b-wrong", fidelity="inherited", fidelity_from=four, **kw)
+
+
+# ------------------------------------------------------------------ the C2 band floor for a one-window pack (#528)
+# A reflecting-slab walk long enough to be several storage-rule windows (SEGMENT_T = 100 ms): 400 steps of 2.5 ms
+# is 1 s, ten windows. Scaled from tests.test_bank._slab_master's construction (that one is fixed at ~100 ms).
+C2_N_T, C2_DT, C2_D0, C2_L = 401, 2.5e-3, 2e-9, 6e-6
+
+
+def _c2_slab_master(n_w=300, n_t=C2_N_T, dt=C2_DT, seed=0):
+    """A reflecting-slab (0<=x<=L) + free y,z walk at an arbitrary length -- the boundary-contact channel
+    :func:`tests.test_bank._slab_master` builds, parametrised in n_t/dt so it can span several storage-rule
+    windows."""
+    rng = np.random.default_rng(seed)
+    step = np.sqrt(2 * C2_D0 * dt)
+    x = rng.uniform(0, C2_L, n_w)
+    traj = np.zeros((n_w, n_t, 3)); dlog = np.zeros((n_w, n_t))
+    for t in range(n_t):
+        x = x + rng.normal(0, step, n_w)
+        hit_lo = x < 0; hit_hi = x > C2_L
+        x = np.where(hit_lo, -x, np.where(hit_hi, 2 * C2_L - x, x))
+        traj[:, t, 0] = x
+        dlog[:, t] = (hit_lo | hit_hi) * step
+    traj[:, :, 1:] = np.cumsum(rng.normal(0, step, (n_w, n_t, 2)), axis=1)
+    return dict(traj=traj, dt_traj=dt, T_max=(n_t - 1) * dt,
+                comp=np.zeros((n_w, n_t), np.int8), comp0=np.zeros(n_w, np.int64),
+                w=np.ones(n_w), dlog_b=-dlog, D_intra=C2_D0, n_walkers=n_w, seed=seed)
+
+
+def test_a_one_window_pack_longer_than_the_storage_rule_gets_the_band_floor():
+    """A walk built as ONE window (segment_T pinned at its own length) but longer than the storage rule's window
+    (SEGMENT_T) gets a C2 band of at least 16 bands per storage-rule window (#528): its certificate carries the
+    window term (err_surface_window/floor_surface_window), and both the whole and the window pass within
+    tol x their floor."""
+    m = _c2_slab_master()
+    env = _lean_env()
+    T_walk = (C2_N_T - 1) * C2_DT
+    pk = build_replay_pack(m, id="t/c2-one", method="bridge_dst", envelope=env, K=64,
+                           license="CC-BY-4.0", citation="test", segment_T=T_walk)
+    assert pk.n_segments == 1
+    c2 = pk.meta["compression"]["channels"]["boundary_local_time"]
+    n_windows = int(round(T_walk / SEGMENT_T))
+    assert n_windows == 10 and c2["K"] >= 16 * n_windows
+    f = pk.fidelity
+    assert "err_surface_window" in f and "floor_surface_window" in f
+    assert f["err_surface"] <= 2.0 * f["floor_surface"] + 1e-12
+    assert f["err_surface_window"] <= 2.0 * f["floor_surface_window"]
+    assert f["within_2x_floor"]
+
+
+def test_a_walk_built_in_its_storage_rule_windows_is_unchanged():
+    """The SAME walk built directly in its storage-rule windows (segment_T left at the default) keeps the plain
+    ladder (K=8) and no window term: a window built directly (_build_segmented) already has its own endpoints,
+    so none of this applies to it."""
+    m = _c2_slab_master()
+    env = _lean_env()
+    pk = build_replay_pack(m, id="t/c2-seg", method="bridge_dst", envelope=env, K=64,
+                           license="CC-BY-4.0", citation="test")               # default segment_T: 10 x 100 ms
+    assert pk.n_segments == 10
+    c2 = pk.meta["compression"]["channels"]["boundary_local_time"]
+    assert c2["K"] == 8
+    assert "err_surface_window" not in pk.fidelity
+
+
+def test_a_walk_shorter_than_the_storage_rule_window_keeps_the_plain_ladder():
+    """A one-window walk within the storage rule's window (SEGMENT_T) is never cut into windows narrower than
+    itself, so it needs none of this: the plain ladder (8, 16, 32, 64), exactly as before #528."""
+    m = _c2_slab_master(n_t=21, dt=C2_DT)                                      # 50 ms, under SEGMENT_T's 100 ms
+    env = _lean_env()
+    pk = build_replay_pack(m, id="t/c2-short", method="bridge_dst", envelope=env, K=16,
+                           license="CC-BY-4.0", citation="test")
+    assert pk.n_segments == 1
+    c2 = pk.meta["compression"]["channels"]["boundary_local_time"]
+    assert c2["K"] in (8, 16, 32, 64)
+    assert "err_surface_window" not in pk.fidelity

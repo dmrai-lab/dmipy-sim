@@ -579,7 +579,7 @@ class ReplayPack:
             while True:
                 pk = build_replay_pack(m, id=stamp, license=self.license, citation=self.citation, K=K, blt_temporal_K=blt_K,
                                        susc_path_K=path_K, susc_path_bits=path_bits, envelope=env, tol=tol,
-                                       segment_T=steps * dt, _occupancy_runs=crosses, **containers)
+                                       segment_T=steps * dt, _occupancy_runs=crosses, _window_of_plan=True, **containers)
                 fid = pk.meta["fidelity"]
                 if i > 0 or fid["err_max"] <= tol * fid["floor_max"] or K >= K_cap:
                     break
@@ -1736,7 +1736,7 @@ class ReplayPack:
                                        "per second and doubles until the certificate passes")
             pk = build_replay_pack(m, id=id or f"{self.meta.get('id')}/prefix-{T_cut * 1e3:.0f}ms", license=self.license,
                                    citation=self.citation, K=K_new, tol=tol, field=False, blt_temporal_K=blt_K, provenance=prov,
-                                   segment_T=T_cut)                          # a prefix is one window of its own duration
+                                   segment_T=T_cut, _window_of_plan=True)    # a prefix is one window of its own duration
             fid = pk.meta.get("fidelity", {})
             if K is not None or fid.get("within_2x_floor", True) or K_new >= int(self.K):
                 break

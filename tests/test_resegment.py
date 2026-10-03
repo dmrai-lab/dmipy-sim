@@ -10,9 +10,11 @@ import pytest
 import dmipy_sim as d
 from dmipy_sim import build_replay_pack, sequences
 from dmipy_sim.replay import ReplayPack, read_rpk
+from dmipy_sim.replay import bank
 from dmipy_sim.replay.replay import _duration
 from dmipy_sim.spec.tissue import Tissue
 from tests.test_bank import _lean_env, _susc_master
+from tests.test_pack_segments import C2_DT, C2_N_T, _c2_slab_master
 
 N_T, DT = 197, 5e-4                      # 98 ms of walk: four windows of 49 steps (24.5 ms)
 T = (N_T - 1) * DT
@@ -294,3 +296,45 @@ def test_resegment_states_that_the_contact_channel_is_inherited(packs):
     assert c["parent_K"] == parent.meta["compression"]["channels"]["boundary_local_time"]["K"] == 8
     assert c["parent_T"] == pytest.approx(T)
     assert "rho_over_D_max" in c["note"] and seg.meta["replay_envelope"]["tissue"]["rho_over_D_max"] > 0
+
+
+def _worst_window_surface_ratio(parent_pack, raw_dlog_b, w, D, env, tmp_path, steps, stamp):
+    """Resegment ``parent_pack`` into windows of ``steps`` saves and return the worst window's
+    ``err_surface / floor_surface`` against the window's own TRUE raw contact (``raw_dlog_b``, the ground truth
+    only a test has): what #528 found resegment's own certificate (measured against the PARENT's decoded window,
+    not the raw walk) cannot see."""
+    p = tmp_path / f"{stamp}.rpk"
+    parent_pack.save(p)
+    seg = read_rpk(p).resegment(bank.SEGMENT_T, out_path=tmp_path / f"{stamp}-seg.rpk", id=f"t/{stamp}-reseg")
+    worst = 0.0
+    for i in range(seg.n_segments):
+        lo = i * steps
+        raw_win = np.array(raw_dlog_b[:, lo:lo + steps + 1], copy=True)
+        if i:
+            raw_win[:, 0] = 0.0                                 # the window's own first save ends no step of it
+        s = seg.segment(i)
+        cf = bank._surface_fidelity(dict(dlog_b=raw_win, w=w, D_intra=D), s.arrays,
+                                    s.meta["compression"]["channels"]["boundary_local_time"], env)
+        worst = max(worst, cf["err"] / cf["floor"] if cf["floor"] else float("inf"))
+    return worst
+
+
+def test_resegment_of_a_band_floored_one_window_pack_passes_the_windows_own_certificate(tmp_path):
+    """#528's proper fix, checked end to end: a one-window pack built AT the new band floor (16 bands per
+    storage-rule window) resegments into windows that reproduce the TRUE raw window's contact within tol x its
+    split-half floor -- the thing #528 found failing for a pack built below the floor (here, one pinned at the
+    plain ladder's K=8, as the historical one-window packs were), measured the same way against the same raw
+    walk the directly-segmented build (#528's `_build_segmented` route) is measured against."""
+    m = _c2_slab_master()
+    env = _lean_env()
+    T_walk = (C2_N_T - 1) * C2_DT
+    steps = int(round(bank.SEGMENT_T / C2_DT))
+    kw = dict(method="bridge_dst", envelope=env, K=64, license="CC-BY-4.0", citation="test", segment_T=T_walk)
+    good = build_replay_pack(m, id="t/c2-good", **kw)                             # the new floor: K >= 16/window
+    bad = build_replay_pack(m, id="t/c2-bad", blt_temporal_K=8, **kw)             # pinned at the historical K=8
+    assert good.meta["compression"]["channels"]["boundary_local_time"]["K"] >= 16 * 10
+    assert bad.meta["compression"]["channels"]["boundary_local_time"]["K"] == 8
+    good_ratio = _worst_window_surface_ratio(good, m["dlog_b"], m["w"], m["D_intra"], env, tmp_path, steps, "good")
+    bad_ratio = _worst_window_surface_ratio(bad, m["dlog_b"], m["w"], m["D_intra"], env, tmp_path, steps, "bad")
+    assert good_ratio <= 2.0, good_ratio
+    assert bad_ratio > 2.0, bad_ratio
