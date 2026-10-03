@@ -977,18 +977,17 @@ def simulate_trajectories(
               + (f", step_l/R={float(step_l_sim)/float(R_geom):.4f}" if R_geom else ""))
 
         # ── Reject geometries whose boundaries this path cannot represent ────────
-        # A multi-compartment geometry is stepped by a fused kernel that CARRIES the compartment
-        # id; the generic position-only walk below has no such state and would fall through to a
-        # `reflect` that cannot express the boundaries. Both used to do so silently -- a
-        # MyelinatedCylinder came back confined to R_inner (myelin and extra water absent) and a
-        # PackedMyelinatedCylinders came back at 1.02x free diffusion through 1 um axons. The
-        # replay-support check already knew this (see _replay_unsupported_reason); it just was
-        # not enforced on the entry point the pack builders actually call.
-        if geometry._is_myelinated:
+        # A multi-compartment geometry may be stepped by a fused kernel that CARRIES the
+        # compartment id; a geometry with no such state and no usable `reflect` would fall
+        # through to one that cannot express its boundaries -- both used to do so silently, e.g.
+        # a MyelinatedCylinder came back confined to R_inner (myelin and extra water absent) and a
+        # PackedMyelinatedCylinders came back at 1.02x free diffusion through 1 um axons. The one
+        # source of truth is the geometry's own `trajectory_walk_gap` (never a class-name list),
+        # which `spec.walk.walk_spec` also checks before this function is even called.
+        _traj_gap = geometry.trajectory_walk_gap()
+        if _traj_gap is not None:
             raise NotImplementedError(
-                "simulate_trajectories cannot walk a MyelinatedCylinder: its three compartments "
-                "need the fused kernel physics.make_myelin_step_fn, which carries the "
-                "compartment id. Use simulate(...) instead.")
+                f"simulate_trajectories cannot walk a {type(geometry).__name__}: {_traj_gap}")
         if geometry._is_packed_myelinated and not record:
             raise NotImplementedError(
                 "simulate_trajectories on PackedMyelinatedCylinders requires the recorded channels "

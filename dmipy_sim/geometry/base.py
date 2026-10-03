@@ -125,6 +125,18 @@ class Geometry(ABC):
     #: `LengthScales`).
     radius_is_mesh_feature = False
 
+    def trajectory_walk_gap(self):
+        """``None`` if `engine.core.simulate_trajectories` can produce a persistent walk of this
+        geometry, else the reason it refuses (naming what the walk would need).
+
+        Every entry point that calls `simulate_trajectories` -- directly, or through
+        `spec.walk.walk_spec` -- checks this before any device work, so a spec whose geometry has
+        no persistent walk is refused by name instead of discovered by a probe walk. The default
+        (``None``) covers every geometry stepped by `reflect`/`interact`; a geometry with no such
+        single-surface walk overrides this.
+        """
+        return None
+
     # ---- wall / bulk properties (instance attributes; None = not set) ----
 
     #: Membrane permeability kappa (m/s), or None for a reflecting wall.

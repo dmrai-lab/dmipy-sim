@@ -153,6 +153,10 @@ def walk_spec(spec, n_walkers=None, T_max=None, dt_save=None, *, scanner="connec
                                                 "(n_t=%d)", dt_save, scanner, T_max, n_walkers, int(round(T_max / dt_save)) + 1)
         if not _needs_bundle_walk(spec):
             g = geometry_from_spec(spec)
+            gap = g.trajectory_walk_gap()
+            if gap is not None:
+                raise SpecError(f"walk_spec cannot walk spec {getattr(spec, 'id', None)!r}: its "
+                                f"geometry ({type(g).__name__}) has no persistent walk -- {gap}")
             D = diffusivity
             if D is None:                                   # the walk's reference diffusivity: the intra pool's when
                 names = {p.name: p for p in spec.pools}     # there is one (multi-pool kernels carry per-pool D), else
