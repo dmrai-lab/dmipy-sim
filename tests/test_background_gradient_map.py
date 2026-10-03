@@ -179,3 +179,23 @@ def test_a_stimulated_echo_accrues_no_background_phase_while_its_magnetisation_i
     assert stored.sum() > 600 and np.all(G_eff[stored] == 0.0)
     q = np.cumsum(np.asarray(played.G_eff, np.float64) * played.dt, axis=1)[0, played.echo_idx - 1, 2]
     assert abs(q) <= 2 * played.dt * g0 * (1 + 1e-6)              # one sample at the store, one at the recall
+
+
+def test_a_stimulated_echo_in_a_magnets_gradient_is_balanced_to_one_sample_per_change_of_the_gate():
+    """A pulse between two samples leaves a constant gradient up to one sample out of balance at each change it makes
+    to the effective gate (coherence sign times transverse gate). A stimulated echo's gate changes at the store and
+    at the recall, so its background is left more than one sample out of balance -- the grid's rounding, which the
+    allowance covers: the acquisition is balanced, not a winding that needs a voxel."""
+    g0 = 1e-3
+    ste = sequences.pgste([[0, 0, 1]], 7.6e-3, 38.3e-3, gradient_strengths=0.1, n_t=1000, slew_rate=np.inf,
+                          ste_flip_angles=(90.0, 90.0, 90.0))
+    played = ste.with_background_gradient([0.0, 0.0, g0])
+    changes = int(np.count_nonzero(np.diff(ste.effective_gate)))
+    assert changes >= 2
+    assert float(played._imposed_sample[0]) == pytest.approx(changes * played.dt * g0, rel=1e-6)
+    silent = played.with_gradient(np.asarray(played.G) - np.asarray(ste.G))            # the background alone
+    q = np.cumsum(np.asarray(silent.G_eff, np.float64) * silent.dt, axis=1)[0, silent.echo_idx - 1, 2]
+    assert abs(q) > 1.5 * played.dt * g0                    # beyond one sample: a single-sample allowance refuses it
+    assert not played.unbalanced
+    se = sequences.pgse([[0, 0, 1]], 7.6e-3, 38.3e-3, gradient_strengths=0.1, n_t=1000, slew_rate=np.inf)
+    assert float(se.with_background_gradient([0.0, 0.0, g0])._imposed_sample[0]) == pytest.approx(se.dt * g0, rel=1e-6)
