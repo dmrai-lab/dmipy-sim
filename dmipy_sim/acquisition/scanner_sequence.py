@@ -5,7 +5,8 @@ and the samples it reads -- and nothing about tissue, walkers or packs. Everythi
 three containers is one field or one derivation here:
 
 * ``G`` -- the PHYSICAL gradient ``(n_meas, n_t, 3)`` in T/m on ``dt``; a spin echo's lobes share a sign.
-  :attr:`G_eff` is the effective gradient the phase integral walks, ``G * rf.sign(t)`` (RPK.md 6.6), derived.
+  :attr:`G_eff` is the effective gradient the phase integral walks, ``G`` through :attr:`effective_gate` (the
+  coherence sign times the transverse gate, RPK.md 6.6), derived.
 * ``gate`` -- a pathway-gated waveform's coherence sign per sample (+1 transverse, -1 conjugated, 0 stored), set
   by :mod:`dmipy_sim.replay.pathways` in place of an RF schedule: the static field is folded with it and the
   relaxation follows it (T2 while transverse, T1 while stored).
@@ -242,11 +243,22 @@ class ScannerSequence:
 
     # ── derived from G and rf ──────────────────────────────────────────────────────────────────────
     @property
-    def G_eff(self):
-        """The EFFECTIVE gradient the phase integral walks: ``G * rf.sign(t)`` (RPK.md 6.6). Derived, never
-        stored. ``(n_meas, n_t, 3)`` float32."""
+    def effective_gate(self):
+        """The gate every phase of the acquisition accrues through, ``(n_t,)`` float32: the coherence sign
+        ``rf.sign(t)`` (RPK.md 6.6) times the transverse gate :attr:`chi_perp`. It is zero while the magnetisation is
+        stored along z, where nothing played or imposed adds phase (a magnet's own gradient, or a gradient's
+        Maxwell field, through a stimulated echo's mixing time). :attr:`G_eff` and the Maxwell field's order-0
+        phase (:meth:`with_concomitant`) both accrue through it."""
         s = self.rf.sign(np.arange(self.n_t) * self.dt)
-        return self.G * s[None, :, None]
+        if self._chi is not None:
+            s = s * np.asarray(self._chi, np.float32)
+        return s
+
+    @property
+    def G_eff(self):
+        """The EFFECTIVE gradient the phase integral walks: ``G`` through :attr:`effective_gate`. Derived, never
+        stored. ``(n_meas, n_t, 3)`` float32."""
+        return self.G * self.effective_gate[None, :, None]
 
     @property
     def chi_perp(self):
@@ -659,13 +671,12 @@ class ScannerSequence:
         gc = np.broadcast_to(gc.astype(np.float32), self.G.shape)
         imposed = gc if self.imposed_gradient is None else self.imposed_gradient + gc
         # the term's VALUE at the position, B_c = |B| - B0 - B_n, is the order-0 part: one phase per measurement
-        # and readout, gamma int s(t) B_c(t) dt through the coherence sign, the same for every spin of the voxel.
+        # and readout, gamma int s(t) B_c(t) dt through the effective gate, the same for every spin of the voxel.
         # It is quadratic in G(t), so a spin echo with identical lobes cancels it and a gradient echo keeps it
         # (dmipy-sim#394); the phantom multiplies each voxel's signal by it
         from ..constants import GAMMA
         Bc = np.broadcast_to(mag - B0 - Bn, (self.n_meas, self.n_t))
-        sgn = self.rf.sign(np.arange(self.n_t) * float(self.dt)) if self.rf else np.ones(self.n_t)
-        cum = np.cumsum(sgn[None, :] * Bc, axis=1) * (GAMMA * float(self.dt))
+        cum = np.cumsum(self.effective_gate[None, :] * Bc, axis=1) * (GAMMA * float(self.dt))
         reads = tuple(int(i) for i in self.readout) if self.readout else (self.n_t - 1,)
         phase = tuple(tuple(float(cum[m, i]) for i in reads) for m in range(self.n_meas))
         return replace(self, G=(self.G + gc), imposed_gradient=np.ascontiguousarray(imposed),
