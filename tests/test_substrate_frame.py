@@ -118,6 +118,55 @@ def test_a_declared_frame_the_walk_contradicts_is_refused_at_build():
     assert check_frame_against_walk(iso, np.eye(3)) == 0.0
 
 
+def test_a_user_declared_frame_10deg_off_is_still_refused_after_the_walk():
+    """A hand-declared frame carries no ``frame.source`` (#538): it is checked by name, against the walk's own
+    principal displacement axis, exactly as #194 requires -- 10 deg off a straight cylinder's axis is refused."""
+    from dmipy_sim.replay.bank import frame_from_axis
+    g = d.Cylinder(radius=1e-6, orientation=(0, 0, 1))
+    assert g.spec.frame.source is None
+    walk = d.simulate_trajectories(300, 2e-9, g, 6e-3, 5e-4, seed=2, require_gpu=False)
+    theta = np.radians(10.0)
+    tilted = frame_from_axis([np.sin(theta), 0.0, np.cos(theta)])
+    with pytest.raises(ValueError, match="the walk's principal displacement axis"):
+        build_replay_pack(walk, id="t/tilted10", license="x", citation="x", K=4, substrate_frame=tilted)
+
+
+# ---------------------------------------------------------------------------- the structural frame of a curved tube (#538)
+def test_a_curved_tubes_structural_frame_builds_despite_the_walks_own_drifting_axis():
+    """dmipy-sim#538: a CurvedCylinder's frame is derived by spec_of from its centerline, not declared by hand,
+    so it is marked ``frame.source = "structural"`` and build_replay_pack checks it against that shape (the
+    structural check, 0 deg here), never against the walk's own principal displacement axis -- which drifts
+    away from the structural axis as the walk gets longer in a curved tube (a geometric fact, not a bug) and
+    on this short, small walk is already more than the walk-check's 5 deg tolerance, proving the walk-check was
+    not the one applied."""
+    from dmipy_sim.replay.bank import check_frame_against_walk
+    t = np.linspace(0.0, 1.0, 40)
+    line = np.column_stack([5e-6 * np.sin(2 * np.pi * t), np.zeros_like(t), 40e-6 * t - 20e-6])
+    g = d.CurvedCylinder(line, 2e-6)
+    assert g.spec.frame.source == "structural" and np.allclose(g.spec.frame.axis, [0, 0, 1], atol=1e-6)
+    walk = d.simulate_trajectories(300, 2e-9, g, 5e-3, 5e-4, seed=2, require_gpu=False)
+    walk_angle = check_frame_against_walk(np.asarray(walk.positions), np.eye(3))
+    assert walk_angle > 5.0                            # the walk-based check would have refused this walk
+    pk = build_replay_pack(walk, id="t/curved-structural", license="x", citation="x", K=4)
+    assert np.allclose(pk.frame_axis, [0, 0, 1], atol=1e-5)
+
+
+def test_a_hand_edited_structural_frame_is_refused_before_the_walk():
+    """A structural frame disagreeing with the shape it was derived from is refused by the STRUCTURAL check
+    (dmipy-sim#538): it reads only the spec's swept_polyline centerline, never the trajectory, so a walk far
+    too short/small for the walk-based check to say anything (5 walkers, one step) is still refused."""
+    import dataclasses
+    from dmipy_sim.spec import Frame
+    t = np.linspace(0.0, 1.0, 40)
+    line = np.column_stack([5e-6 * np.sin(2 * np.pi * t), np.zeros_like(t), 40e-6 * t - 20e-6])
+    g = d.CurvedCylinder(line, 2e-6)
+    bad_spec = dataclasses.replace(g.spec, frame=Frame([1.0, 0.0, 0.0], source="structural"))
+    walk = d.simulate_trajectories(5, 2e-9, g, 1e-4, 1e-4, seed=0, require_gpu=False)
+    walk = dataclasses.replace(walk, spec=bad_spec)
+    with pytest.raises(ValueError, match="length-weighted tangent axis"):
+        build_replay_pack(walk, id="t/bad-structural", license="x", citation="x", K=4)
+
+
 @pytest.mark.skipif(not __import__("os").path.isdir("/home/rutger/dmrai-ws/CACTUS/prod/cactus_bundle_00000"),
                     reason="the CACTUS production run is not on this machine")
 def test_the_cactus_run_declares_its_bundle_along_x():
