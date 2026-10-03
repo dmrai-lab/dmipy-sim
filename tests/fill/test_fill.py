@@ -132,7 +132,7 @@ def test_the_rounds_of_a_block_merge_to_the_shard_walked_by_hand(certified):
     for r in range(3):
         seeding, seed, n_plan, tot, scale = round_seeding(rc, row, r, 3, P, None)
         w = walk_spec(rc.spec(), T_max=W["T_max_s"], dt_save=rc.dt_save(), seeding=draw_seeds(rc.spec(), seeding, seed, context=rc.context()), seed=seed,
-                      field=False, require_gpu=False, walker_batch_size=W["walker_batch_size"], adaptive_steps=True, scanner=W["scanner"],
+                      require_gpu=False, walker_batch_size=W["walker_batch_size"], adaptive_steps=True, scanner=W["scanner"],
                       floor_fraction=W["floor_fraction"], context=rc.context())
         packs.append(build_replay_pack(w, id=f"hand/{r}", license="x", citation="x", K=3, position_container="bands", blt_container="bands",
                                        voxel_grid=rc.grid(), out_path=os.path.join(work, f"hand{r}.rpk"), device="numpy", fidelity="inherited", fidelity_from=cert))

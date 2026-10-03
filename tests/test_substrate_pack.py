@@ -1,13 +1,18 @@
 """A calibrated substrate realises itself in one call, the walk keeps its geometry, and the pack
 builder reads pools and field basis from it: nothing the objects already know is retyped."""
+import dataclasses
+
 import numpy as np
 from dmipy_sim import ScannerSequence
 import pytest
 
 import dmipy_sim as d
 from dmipy_sim.compartments import Compartments, Pool
+from dmipy_sim.fields.susceptibility_field import field_grid_of
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_sim.spec import Tissue
+from dmipy_sim.spec.walk import fill_field
+from tests.conftest import spec_without_source
 from dmipy_sim.substrate import Substrate
 from tests.replay_frames import field_along
 
@@ -36,7 +41,7 @@ def test_the_walk_keeps_its_geometry_and_the_builder_needs_nothing_else():
     g = sub.pack(n_axons=4, seed=0)
     walk = d.simulate_trajectories(120, sub.D_intra, g, 2e-3, 5e-4, seed=0, require_gpu=False)
     assert walk.geometry is g and walk.diffusivity == sub.D_intra
-    pk = build_replay_pack(walk, id="t/sub", license="x", citation="x", K=8, envelope=ENV)
+    pk = build_replay_pack(fill_field(walk, field_grid_of(g)), id="t/sub", license="x", citation="x", K=8, envelope=ENV)
     assert pk.has_relaxation and pk.has_surface and pk.has_field
     assert "per_comp" not in pk.meta and pk.substrate.pools == g.spec.pools     # the spec, never the values
     gm = pk.meta["compression"]["channels"]["susceptibility_grid"]
@@ -56,8 +61,9 @@ def test_the_walk_keeps_its_geometry_and_the_builder_needs_nothing_else():
     assert e_nom[0] < 1.0 and pk.replay(G0)[0] == pytest.approx(1.0)  # bare diffusion at b = 0
     e_7T = pk.replay(G_lab, orientation=R, tissue=pk.nominal, scanner=7.0)            # the scanner changed, the field turned
     assert e_7T[0] < e_nom[0]                                                      # a stronger field dephases more
-    # field=False leaves the tier out
-    pk2 = build_replay_pack(walk, id="t/own", license="x", citation="x", K=8, envelope=ENV, field=False)
+    # a walk whose spec has no field source: its pack leaves the tier out
+    walk_nf = dataclasses.replace(walk, spec=spec_without_source(walk.spec))
+    pk2 = build_replay_pack(walk_nf, id="t/own", license="x", citation="x", K=8, envelope=ENV)
     assert pk2.has_relaxation and not pk2.has_field
     # a bare cylinder: occupancy and local time are recorded (T2 / rho come at replay), no field source
     plain = d.simulate_trajectories(60, 2e-9, d.Cylinder(2e-6, (0, 0, 1)), 2e-3, 5e-4, seed=0, require_gpu=False)

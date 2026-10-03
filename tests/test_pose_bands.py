@@ -32,7 +32,7 @@ ENV = dict(bvals=[0.0, 1e9], dirs=[[0, 0, 1]], delta_frac=0.2, Delta_frac=0.5, o
 def pack():
     """Six walkers standing still at chosen positions: a walk with no diffusion and no statistics."""
     walk = PersistentWalk(positions=np.repeat(POS[:, None, :], N_T, axis=1), dt=DT, sub_steps=1, dt_sim=DT)
-    pk = build_replay_pack(walk, id="test/plane-wave", license="x", citation="x", K=8, envelope=ENV, field=False)
+    pk = build_replay_pack(walk, id="test/plane-wave", license="x", citation="x", K=8, envelope=ENV)
     assert pk.fidelity["err_max"] < 1e-8                        # a straight line is compressed exactly
     return pk
 

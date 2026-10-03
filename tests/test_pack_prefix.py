@@ -75,10 +75,10 @@ def test_a_short_acquisition_relaxes_to_its_own_echo_on_a_longer_walk(parent):
 def test_a_prefix_of_a_field_pack_re_encodes_the_path_channel_and_certifies_it(tmp_path):
     """The path-field channel has no grid in the pack to re-sample from: the prefix re-encodes the parent's decoded
     series and certifies the result on the producer's battery (GRE, SE, the CPMG train it advertises)."""
-    from tests.test_bank import _susc_master, _lean_env
+    from tests.test_bank import _susc_master, _sample_susc, _lean_env
     from dmipy_sim.replay.bank import susc_path_decode
     env = dict(_lean_env(), B0_list=[7.0], theta_deg=[0, 90])
-    parent = build_replay_pack(_susc_master(), id="test/slab-susc", method="bridge_dst", envelope=env, K=64,
+    parent = build_replay_pack(_sample_susc(_susc_master()), id="test/slab-susc", method="bridge_dst", envelope=env, K=64,
                                susc_path_K=32, license="CC-BY-4.0", citation="test")
     T = (parent.n_t - 1) * parent.dt
     half = parent.prefix(T / 2)
@@ -98,11 +98,11 @@ def test_a_prefix_of_a_field_pack_re_encodes_the_path_channel_and_certifies_it(t
 def test_a_short_acquisition_dephases_in_the_field_to_its_own_echo(tmp_path):
     """The field route ends at the echo too: a spin echo or gradient echo shorter than the walk integrates the
     off-resonance under ITS gate, zero beyond its echo, so the parent and its prefix agree to the certificate."""
-    from tests.test_bank import _susc_master, _lean_env
+    from tests.test_bank import _susc_master, _sample_susc, _lean_env
     from dmipy_sim.replay.bank import susc_path_decode, susc_path_field
     from dmipy_sim.constants import GAMMA
     env = dict(_lean_env(), B0_list=[7.0], theta_deg=[0, 90])
-    parent = build_replay_pack(_susc_master(), id="test/slab-susc", method="bridge_dst", envelope=env, K=64,
+    parent = build_replay_pack(_sample_susc(_susc_master()), id="test/slab-susc", method="bridge_dst", envelope=env, K=64,
                                susc_path_K=32, license="CC-BY-4.0", citation="test")
     T = (parent.n_t - 1) * parent.dt
     half = parent.prefix(T / 2)

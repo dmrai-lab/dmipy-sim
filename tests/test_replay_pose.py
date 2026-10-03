@@ -8,6 +8,7 @@ import pytest
 import dmipy_sim as d
 from dmipy_sim import Encoding, ScannerSequence
 from dmipy_sim.fields.susceptibility_field import field_grid_of
+from dmipy_sim.spec.walk import fill_field
 from dmipy_sim.replay import so3
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_sim.replay.fod import FOD
@@ -23,8 +24,9 @@ def hollow():
     substrate, where the azimuthal coefficients must come out at the Monte-Carlo floor."""
     g = d.PackedMyelinatedCylinders([1.0e-6], 0.7, [[0.0, 0.0]], 30e-6, N_max=2, D_intra=D0, D_extra=D0)
     walk = d.simulate_trajectories(3000, D0, g, 6e-3, 3e-4, seed=0, require_gpu=False)
+    walk = fill_field(walk, field_grid_of(g, res=0.2e-6))
     pk = build_replay_pack(walk, id="test/hollow", license="x", citation="x", K=8, envelope=ENV,
-                           field=field_grid_of(g, res=0.2e-6), susc_path_K=16)
+                           susc_path_K=16)
     assert pk.has_field and "susceptibility_path" in pk.meta["compression"]["channels"]
     return pk, _pgse(pk, [[1, 0, 0], [1, 0, 0], [0, 0, 1]], [0.0, 1e8, 1e8])
 
@@ -36,7 +38,7 @@ def ellipsoid():
     g = d.Ellipsoid(semiaxes=(1.0e-6, 3.5e-6, 8.0e-6))
     walk = d.simulate_trajectories(4000, D0, g, 6e-3, 3e-4, seed=0, require_gpu=False)
     pk = build_replay_pack(walk, id="test/ellipsoid", license="x", citation="x", K=8,
-                           envelope=dict(ENV, bvals=[0.0, 6e8], shortd_b=6e8), field=False)
+                           envelope=dict(ENV, bvals=[0.0, 6e8], shortd_b=6e8))
     # a closed pore bounds the displacement, so a high b here is a sharp *angular* response at a modest phase
     # amplitude -- which is what makes this the substrate that shows azimuthal structure
     return pk, _pgse(pk, [[1, 0, 0], [0, 1, 0]], [6e8, 6e8])

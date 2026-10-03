@@ -21,7 +21,7 @@ def spec(tmp_path_factory):
 
 
 def _walk(spec, run_dir=None, spool=False):
-    return walk_spec(spec, 60, 8e-4, 5e-5, seed=3, n_probe=20_000, require_gpu=False, field=True, adaptive_steps=True,
+    return walk_spec(spec, 60, 8e-4, 5e-5, seed=3, n_probe=20_000, require_gpu=False, adaptive_steps=True,
                      field_cutoff_max_m=25e-6, field_sample_every=4, walker_batch_size=20, run_dir=run_dir, spool=spool)
 
 
@@ -66,5 +66,5 @@ def test_a_spooled_walk_resumes_from_its_batches(spec, tmp_path):
     w2 = _walk(spec, run_dir=d, spool=True)                            # everything read back
     np.testing.assert_array_equal(w2.positions, w0.positions)
     with pytest.raises(ValueError, match="another run"):
-        walk_spec(spec, 61, 8e-4, 5e-5, seed=3, n_probe=20_000, require_gpu=False, field=True, adaptive_steps=True,
+        walk_spec(spec, 61, 8e-4, 5e-5, seed=3, n_probe=20_000, require_gpu=False, adaptive_steps=True,
                   field_cutoff_max_m=25e-6, field_sample_every=4, walker_batch_size=20, run_dir=d, spool=True)

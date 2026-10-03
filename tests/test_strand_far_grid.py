@@ -57,7 +57,7 @@ def test_the_far_grid_round_trips_and_the_walk_reads_it(tmp_path):
     far = plain.build_far_grid(0.5e-6, 10e-6, blend_m=3e-6)
     far.save(str(tmp_path / "far.npy")); back = FarGrid.load(str(tmp_path / "far.npy"))
     np.testing.assert_array_equal(back.values, far.values); assert back.meta == far.meta
-    kw = dict(T_max=6e-4, dt_save=5e-5, seed=5, n_probe=20_000, require_gpu=False, field=True, adaptive_steps=True,
+    kw = dict(T_max=6e-4, dt_save=5e-5, seed=5, n_probe=20_000, require_gpu=False, adaptive_steps=True,
               field_cutoff_m=25e-6, field_cutoff_max_m=25e-6)
     w0 = walk_spec(spec, 40, **kw)
     w1 = walk_spec(spec, 40, field_far=str(tmp_path / "far.npy"), **kw)

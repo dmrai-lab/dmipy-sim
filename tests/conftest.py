@@ -207,6 +207,15 @@ def pack():
     return build_replay_pack(walk, id="test/full", K=8, license="x", citation="x")
 
 
+def spec_without_source(spec, pool="myelin"):
+    """``spec`` with ``pool``'s susceptibility (and the ``"field"`` tier it earns) removed: the tests that pass
+    a field-declaring fixture spec to a mechanic (pack merge, consolidation, seeding, ...) they do not mean to
+    exercise the field tier of."""
+    import dataclasses
+    return spec.replace(susceptibility={pool: None},
+                        validity=dataclasses.replace(spec.validity, tiers=[t for t in spec.validity.tiers if t != "field"]))
+
+
 def _three_strands(tmp):
     """The three-strand DiSCo-format fixture (a sheath on each) written under ``tmp``: its spec."""
     from dmipy_sim.io.strands import write_tck
@@ -220,11 +229,13 @@ def _three_strands(tmp):
 
 @pytest.fixture(scope="module")
 def field_pack(tmp_path_factory):
-    """A strand pack with the path channel (C3), from the three-strand fixture with a sheath."""
-    from dmipy_sim.spec import walk_spec
+    """A strand pack with the path channel (C3), from the three-strand fixture with a sheath; the field read at
+    save resolution (fill_field), since this walk takes no adaptive step."""
+    from dmipy_sim.spec import walk_spec, fill_field
     from dmipy_sim.replay.bank import build_replay_pack
     spec = _three_strands(tmp_path_factory.mktemp("field"))
     w = walk_spec(spec, 90, 8e-4, 2e-4, seed=0, n_probe=20_000, field_res=0.5e-6, require_gpu=False)
+    w = fill_field(w, w.field_basis)
     return build_replay_pack(w, id="test/field", license="x", citation="x", K=4, susc_path_K=4)
 
 

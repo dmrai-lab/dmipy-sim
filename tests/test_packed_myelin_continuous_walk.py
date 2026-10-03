@@ -9,9 +9,11 @@ import dmipy_sim as d
 from dmipy_sim import ScannerSequence
 from dmipy_sim.fields.susceptibility_field import FieldGrid, field_grid_of
 from dmipy_sim.persistent_walk import PersistentWalk
+from dmipy_sim.spec.walk import fill_field
 from dmipy_sim.replay.bank import build_replay_pack, grid_periodic_of
 from dmipy_sim.replay.trajectories import replay, unwrap_periodic
 from dmipy_sim.spec.tissue import Tissue
+from tests.conftest import spec_without_source
 from tests.replay_frames import field_along
 
 D0 = 2e-9
@@ -43,7 +45,11 @@ def pm():
 
 @pytest.fixture(scope="module")
 def walk(pm):
-    return d.simulate_trajectories(300, D0, pm, 8e-3, 2e-4, seed=0, require_gpu=False)
+    import dataclasses
+    w = d.simulate_trajectories(300, D0, pm, 8e-3, 2e-4, seed=0, require_gpu=False)
+    # this fixture is about the continuous path, not the susceptibility tier: the geometry's spec declares one
+    # (dmipy-sim#539 -- a walk without field_basis/field_samples of a source-declaring spec is refused a pack)
+    return dataclasses.replace(w, spec=spec_without_source(w.spec))
 
 
 def _assert_continuous(pos):
@@ -80,7 +86,7 @@ def test_a_pack_replays_the_in_plane_gradient_of_the_continuous_path(walk):
     """A lossless pack of the walk replays an in-plane PGSE as the direct replay of the continuous trajectory does;
     the folded trajectory replays something else (the jumps act as displacements)."""
     n_t = walk.positions.shape[1]
-    pk = build_replay_pack(walk, id="test/pm-continuous", field=False, K=n_t - 2, envelope=ENV, license="x",
+    pk = build_replay_pack(walk, id="test/pm-continuous", K=n_t - 2, envelope=ENV, license="x",
                            citation="x")
     G = np.zeros((1, n_t, 3)); G[0, 2:12, 0] = 0.4; G[0, 22:32, 0] = -0.4
     S_pack = pk.replay(ScannerSequence(G=G, dt=walk.dt))[0]
@@ -107,7 +113,7 @@ def test_the_field_grid_of_a_packed_cell_is_read_periodically(pm, walk):
     folded = PersistentWalk(_fold(walk.positions), walk.dt, walk.sub_steps, walk.dt_sim,
                             boundary_local_time=walk.boundary_local_time, compartment=walk.compartment,
                             seed=walk.seed, diffusivity=walk.diffusivity, geometry=pm)
-    packs = [build_replay_pack(w, id="test/pm-field", field=fg, K=n_t - 2, envelope=ENV, license="x", citation="x")
+    packs = [build_replay_pack(fill_field(w, fg), id="test/pm-field", K=n_t - 2, envelope=ENV, license="x", citation="x")
              for w in (walk, folded)]
     gm = packs[0].meta["compression"]["channels"]["susceptibility_grid"]
     assert gm["periodic"] == [True, True, True] and grid_periodic_of(gm) == (True, True, True)

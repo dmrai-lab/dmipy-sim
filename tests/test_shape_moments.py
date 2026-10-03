@@ -14,18 +14,20 @@ from dmipy_sim.replay.columnar import ColumnarPack
 from dmipy_sim.replay.shape_moments import ShapeMoments, write_shape_moments, _profile
 from dmipy_sim.replay.study import Acquisition, Protocol, Study
 from dmipy_sim.fill.consolidate import consolidate
-from dmipy_sim.spec import walk_spec, StratifiedByVoxel
+from dmipy_sim.spec import walk_spec, fill_field, StratifiedByVoxel
+from tests.conftest import spec_without_source
 
 
 @pytest.fixture(scope="module")
 def layout(spec_grid):
     """Two blocks of the three-strand spec consolidated into columns, and their n_t."""
     spec, grid, tmp = spec_grid
+    spec = spec_without_source(spec)      # consolidation mechanics, not the field tier
     os.makedirs(str(tmp / "sm_shards"), exist_ok=True)
     n_t = None
     for b in (0, 1):
         want = np.zeros(grid.shape, np.int64); want[b] = 12
-        w = walk_spec(spec, T_max=8e-4, dt_save=2e-4, seed=11 + b, require_gpu=False, field=False,
+        w = walk_spec(spec, T_max=8e-4, dt_save=2e-4, seed=11 + b, require_gpu=False,
                       seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want}))
         pk = build_replay_pack(w, id=f"t/sm{b}", license="x", citation="x", K=3, voxel_grid=grid,
                                out_path=str(tmp / "sm_shards" / f"block-000{b}.p1.rpk"))
@@ -182,6 +184,7 @@ def layout_field(spec_grid):
         want = np.zeros(grid.shape, np.int64); want[b] = 12
         w = walk_spec(spec, T_max=8e-4, dt_save=2e-4, seed=21 + b, require_gpu=False, field_res=0.5e-6,
                       seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want}))
+        w = fill_field(w, w.field_basis)                     # read at save resolution: no adaptive stepping here
         packs.append(build_replay_pack(w, id=f"t/sf{b}", license="x", citation="x", K=3, susc_path_K=4, voxel_grid=grid,
                                        out_path=str(tmp / "sf_shards" / f"block-000{b}.p1.rpk")))
     consolidate(str(tmp / "sf_shards"), str(tmp / "sf_layout"), blocks=[0, 1], id="t/sf-columns")

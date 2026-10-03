@@ -13,7 +13,7 @@ from dmipy_sim.replay import ReplayPack, read_rpk
 from dmipy_sim.replay import bank
 from dmipy_sim.replay.replay import _duration
 from dmipy_sim.spec.tissue import Tissue
-from tests.test_bank import _lean_env, _susc_master
+from tests.test_bank import _lean_env, _susc_master, _sample_susc
 from tests.test_pack_segments import C2_DT, C2_N_T, _c2_slab_master
 
 N_T, DT = 197, 5e-4                      # 98 ms of walk: four windows of 49 steps (24.5 ms)
@@ -34,7 +34,7 @@ def _master(n_t=N_T):
     comp = np.zeros((m["traj"].shape[0], n_t), np.int8); comp[:1000, 120:] = 1
     m["comp"] = comp
     m["substrate"] = d.PackedCylinders([1e-6], [[0.0, 0.0]], 10e-6).spec.to_dict()   # names for the two pools the walk labels
-    return m
+    return _sample_susc(m)         # sampled after the slice to n_t, so the samples match the sliced trajectory
 
 
 def _parent(n_t=N_T):

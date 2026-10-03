@@ -69,6 +69,7 @@ def _master_arrays(src) -> dict:
                 susc_field_sampler=(m.get("susc_field_sampler") if isinstance(m, dict) else None),
                 susc_field_samples=(m.get("susc_field_samples") if isinstance(m, dict) else None),
                 susc_field_every=int(m.get("susc_field_every", 1) or 1) if isinstance(m, dict) else 1,
+                susc_field_fill=(m.get("susc_field_fill") if isinstance(m, dict) else None),
                 susc_grid_origin=(np.asarray(m["susc_grid_origin"]) if "susc_grid_origin" in m else None),
                 susc_grid_raster=m.get("susc_grid_raster"),
                 susc_grid_periodic=(tuple(bool(p) for p in m["susc_grid_periodic"]) if m.get("susc_grid_periodic") is not None
@@ -1572,14 +1573,23 @@ def preflight_master(m, *, susc_path_K=None, sigma_star=None, K=None):
 
 
 
-def _walk_master(walk, *, weights=None, field=None, diffusivity=None, substrate_frame=None):
+def _walk_master(walk, *, weights=None, diffusivity=None, substrate_frame=None):
     """The bank's master dict from a PersistentWalk plus the substrate metadata; a bank dict / .npz passes
-    through."""
+    through unchanged (it carries any field tier as its own keys already).
+
+    The field tier is the walk's, not a build-time choice: ``walk.field_basis`` (built by
+    :func:`~dmipy_sim.spec.walk.walk_spec` whenever the spec declares a susceptibility source) travels
+    whenever it is set, and the channel it becomes needs ``walk.field_samples`` -- sampled in the walk
+    (``adaptive_steps=True``) or read afterwards (:func:`~dmipy_sim.spec.walk.fill_field`). A spec that
+    declares a source but whose walk carries neither is refused here BY NAME: the ambiguity ("was the field
+    meant to be in this pack or not") is exactly the defect this refuses, rather than silently guessing
+    (the grid :func:`~dmipy_sim.fields.susceptibility_field.field_grid_of` would derive from the geometry's
+    type, dmipy-sim#539)."""
     from ..persistent_walk import PersistentWalk
-    from ..fields.susceptibility_field import FieldGrid, field_grid_of
+    from ..fields.susceptibility_field import FieldGrid
     if not isinstance(walk, PersistentWalk):
-        if any(v is not None for v in (weights, diffusivity, substrate_frame)) or field not in ("auto", None, False):
-            raise TypeError("weights=, field=, diffusivity= and substrate_frame= go with a PersistentWalk; a master "
+        if any(v is not None for v in (weights, diffusivity, substrate_frame)):
+            raise TypeError("weights=, diffusivity= and substrate_frame= go with a PersistentWalk; a master "
                             "dict carries them as its own keys")
         return walk
     geometry = walk.geometry
@@ -1595,14 +1605,15 @@ def _walk_master(walk, *, weights=None, field=None, diffusivity=None, substrate_
                                "spec gives water to, give the pool its water in the spec, or pass weights= explicitly")
         if any(f != 1.0 for f in wf):                     # the seeding rule's weights, from the spec
             weights = np.asarray(wf, float)[pool0]
-    if field == "auto":
-        field = None
-        if walk.field_basis is not None:
-            field = walk.field_basis
-        elif geometry is not None and type(geometry).__name__ in ("MyelinatedCylinder", "PackedMyelinatedCylinders"):
-            field = field_grid_of(geometry)                          # geometry only; chi is a replay knob
-    elif field is False:
-        field = None
+    field = walk.field_basis
+    if spec is not None and spec.field_source_pools and walk.field_samples is None and (walk.field_deferred or field is None):
+        if walk.field_deferred:
+            raise ValueError(f"this walk's spec {spec.id!r} declares a susceptibility source and recorded a "
+                             "deferred field tier, but the walk carries no field samples yet; fill it first "
+                             "with fill_field(walk, basis)")
+        raise ValueError(f"this walk's spec {spec.id!r} declares a susceptibility source but the walk carries "
+                         "no field samples and recorded no deferral; sample the field in the walk, or defer it "
+                         "and fill it with fill_field")
     if weights is None and walk.weights is not None:
         weights = walk.weights
     extra = {}
@@ -1623,14 +1634,16 @@ def _walk_master(walk, *, weights=None, field=None, diffusivity=None, substrate_
         elif isinstance(field, (StrandFieldBasis, StrandFieldRecord)):
             if isinstance(field, StrandFieldRecord) and walk.field_samples is None:
                 raise ValueError("the walk carries the record of its field basis but no field samples: rebuild the basis from "
-                                 "the spec (walk_spec) to sample the field, or pass field=")
+                                 "the spec (walk_spec) to sample the field, or fill_field(walk, basis)")
             extra["susc_field_sampler"] = field
-            if walk.field_samples is not None:                       # the walk sampled the field along its own path
-                extra["susc_field_samples"] = np.asarray(walk.field_samples, np.float32)
-                extra["susc_field_every"] = int(getattr(walk, "field_sample_every", 1) or 1)
         else:
-            raise TypeError("field must be a fields.susceptibility_field.FieldGrid (basis, origin) or a "
+            raise TypeError("a walk's field_basis must be a fields.susceptibility_field.FieldGrid (basis, origin) or a "
                             f"fields.strand_field.StrandFieldBasis, got {type(field).__name__}")
+        if walk.field_samples is not None:                       # sampled in the walk, or read back by fill_field
+            extra["susc_field_samples"] = np.asarray(walk.field_samples, np.float32)
+            extra["susc_field_every"] = int(getattr(walk, "field_sample_every", 1) or 1)
+            if walk.field_fill is not None:
+                extra["susc_field_fill"] = walk.field_fill
     if diffusivity is not None:
         extra["D_intra"] = float(diffusivity)
     if substrate_frame is not None:
@@ -1650,7 +1663,7 @@ def _container(spec):
     return tuple((None if u is None else int(u), int(b)) for u, b in spec)
 
 
-def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto",
+def build_replay_pack(walk, *, id, license, citation, weights=None,
                       method=_cx.POSITION_METHOD, envelope=None, tol=2.0, K=None, temporal_bandwidth_hz=None,
                       err_target=None, sigma_star=None, provenance=None,
                       blt_temporal_K=None, blt_dtype=np.float16, susc_path_K=None, susc_path_bits=8, voxel_grid=None,
@@ -1682,13 +1695,17 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto"
     (``walk.geometry`` / ``walk.spec``): **gradient** (C0, always); **bulk relaxation** (C1) when the walk
     has a compartment channel (the pools' T2 / T1 are replay knobs; the pack carries none); **surface relaxivity**
     (C2) when the walk has the boundary local time; **magnetization transfer** (C4) when it has the
-    bound fraction; **field** (C3) when a static field basis exists for the substrate --
-    ``field="auto"`` derives it from a myelinated geometry (:func:`fields.susceptibility_field.field_grid_of`),
-    a :class:`~dmipy_sim.fields.susceptibility_field.FieldGrid` supplies one (a mesh substrate), a
-    :class:`~dmipy_sim.fields.strand_field.StrandFieldBasis` the per-segment closed form of a strand substrate
-    (path channel only: it has no grid),
-    ``field=False`` leaves the tier out; the basis is geometry only, and B0, its direction and the
-    susceptibilities are replay knobs. ``susc_path_K`` is the field tier's own band: a number, ``"auto"`` --
+    bound fraction; **field** (C3) when the walk carries a field basis (``walk.field_basis``, built by
+    :func:`~dmipy_sim.spec.walk.walk_spec` whenever its spec declares a susceptibility source, or attached
+    directly) WITH field samples (``walk.field_samples``, sampled in the walk at the sub-step with
+    ``adaptive_steps=True``, or read afterwards by :func:`~dmipy_sim.spec.walk.fill_field`): a
+    :class:`~dmipy_sim.fields.susceptibility_field.FieldGrid` basis stores its grid (a mesh or myelinated
+    substrate), a :class:`~dmipy_sim.fields.strand_field.StrandFieldBasis` the per-segment closed form of a
+    strand substrate (path channel only: it has no grid); B0, its direction and the susceptibilities are
+    replay knobs, never stored. A walk whose spec declares a source but carries neither field samples nor a
+    recorded deferral is refused BY NAME (:func:`_walk_master`): sample the field in the walk, or
+    ``walk_spec(..., defer_field=True)`` and ``fill_field`` it before packing. A spec without a source builds
+    a pack without the tier. ``susc_path_K`` is the field tier's own band: a number, ``"auto"`` --
     the band and the container (``susc_path_bits``) derived on this walk as the cheapest pair whose codec
     error on the certificate's battery is within its floor (:func:`derive_susc_path_K`; the grid route, exact,
     when the positions are lossless) -- or ``None`` for the grid alone. ``weights`` are per-walker proton-density weights (default: the pools' water fractions
@@ -1717,7 +1734,7 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto"
     Returns a :class:`dmipy_sim.replay.replay.ReplayPack`; writes it to ``out_path`` if given.
     """
     with Run("build_replay_pack", params=dict(id=id, K=K, fidelity=fidelity, device=device, out_path=out_path)) as run:
-        src = _walk_master(walk, weights=weights, field=field, diffusivity=diffusivity, substrate_frame=substrate_frame)
+        src = _walk_master(walk, weights=weights, diffusivity=diffusivity, substrate_frame=substrate_frame)
         _cx.require_position_method(method)
         m = _master_arrays(src)
         n_segments, n_seg = segment_plan(m["traj"].shape[1], m["dt_traj"], segment_T)
@@ -1824,18 +1841,21 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto"
             # a strand substrate's per-segment field: no grid to store, the path channel is the tier
             if not susc_path_K:
                 raise ValueError("a StrandFieldBasis has no grid to store: the field tier (C3) needs susc_path_K")
+            if m.get("susc_field_samples") is None:
+                raise ValueError("this walk carries a field basis but no field samples: sample the field in the "
+                                 "walk (adaptive_steps=True), or fill_field(walk, basis) before building the pack")
             chan_meta["susceptibility_grid"] = dict(has_aniso=("aniso_G_xx" in _field.channel_names), arrays_in_pack=False,
                                                     replay_route="path", source=_field.meta)
             channels["susceptibility"] = True
-            if m.get("susc_field_samples") is not None:                  # sampled by the walk: the interval means
-                _a, _pm = susc_path_encode_series(np.asarray(m["susc_field_samples"]), list(_field.channel_names), K=int(susc_path_K),
-                                                  bits=susc_path_bits, layout="wtc", device=device,    # no copy of the samples
-                                                  dt=float(m["dt_traj"]) * int(m.get("susc_field_every", 1)),
-                                                  max_refocus_pulses=env.get("max_refocus_pulses"))
-                _pm["sampling"] = "interval_mean_in_walk"
-            else:
-                _a, _pm = susc_path_encode(_field, np.asarray(m["traj"], np.float64), K=int(susc_path_K), bits=susc_path_bits,
-                                           max_refocus_pulses=env.get("max_refocus_pulses"))
+            # the samples are the walk's interval means (sampled in the walk) or fill_field's save-resolution
+            # read -- either way the pack's path channel is their DCT, not a fresh sample of the trajectory
+            _a, _pm = susc_path_encode_series(np.asarray(m["susc_field_samples"]), list(_field.channel_names), K=int(susc_path_K),
+                                              bits=susc_path_bits, layout="wtc", device=device,    # no copy of the samples
+                                              dt=float(m["dt_traj"]) * int(m.get("susc_field_every", 1)),
+                                              max_refocus_pulses=env.get("max_refocus_pulses"))
+            _pm["sampling"] = "read_at_save_resolution" if m.get("susc_field_fill") else "interval_mean_in_walk"
+            if m.get("susc_field_fill"):
+                _pm["field_fill"] = m["susc_field_fill"]
             if _band_record is not None:
                 _pm["band"] = _band_record
             arrays.update(_a); chan_meta["susceptibility_path"] = _pm
@@ -1871,8 +1891,16 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, field="auto"
             # losslessly was that grid-sampling needed exact r(t). See susc_path_encode for why K is a
             # gate-bandwidth capability rather than a fidelity knob.
             if susc_path_K:
-                _a, _pm = susc_path_encode(_field, np.asarray(m["traj"], np.float64),
-                                           K=int(susc_path_K), bits=susc_path_bits, max_refocus_pulses=env.get("max_refocus_pulses"))
+                if m.get("susc_field_samples") is None:
+                    raise ValueError("this walk carries a field basis but no field samples: sample the field in "
+                                     "the walk (adaptive_steps=True), or fill_field(walk, basis) before building the pack")
+                _a, _pm = susc_path_encode_series(np.asarray(m["susc_field_samples"]), list(_field.channel_names), K=int(susc_path_K),
+                                                  bits=susc_path_bits, layout="wtc", device=device,
+                                                  dt=float(m["dt_traj"]) * int(m.get("susc_field_every", 1)),
+                                                  max_refocus_pulses=env.get("max_refocus_pulses"))
+                _pm["sampling"] = "read_at_save_resolution" if m.get("susc_field_fill") else "interval_mean_in_walk"
+                if m.get("susc_field_fill"):
+                    _pm["field_fill"] = m["susc_field_fill"]
                 if _band_record is not None:
                     _pm["band"] = _band_record
                 arrays.update(_a); chan_meta["susceptibility_path"] = _pm

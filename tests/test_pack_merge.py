@@ -15,15 +15,17 @@ from dmipy_sim.phantom import Grid
 from dmipy_sim.replay.bank import build_replay_pack, merge_packs, voxel_fidelity_volumes
 from dmipy_sim.spec import disco_spec, walk_spec, StratifiedByVoxel
 from dmipy_sim.spec.tissue import Tissue
+from tests.conftest import spec_without_source
 
 
 @pytest.fixture(scope="module")
 def shards(spec_grid):
     spec, grid, tmp = spec_grid
+    spec = spec_without_source(spec)      # pack-merge mechanics, not the field tier
     packs = []
     for b in (0, 1):
         want = np.zeros(grid.shape, np.int64); want[b] = 12                    # the block: one x-slab of the grid
-        w = walk_spec(spec, T_max=8e-4, dt_save=2e-4, seed=7 + b, require_gpu=False, field=False,
+        w = walk_spec(spec, T_max=8e-4, dt_save=2e-4, seed=7 + b, require_gpu=False,
                       seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want}))
         packs.append(build_replay_pack(w, id=f"t/shard-{b}", license="x", citation="x", K=3, voxel_grid=grid,
                                        out_path=str(tmp / f"shard-{b}.rpk")))
@@ -68,10 +70,11 @@ def test_passes_of_one_block_merge_with_the_union_weights(spec_grid):
     count (each pass alone summed to that fraction with its own count), the certificate counts the union, and
     the replay is the union's weighted signal, not the two passes weighed alike."""
     spec, grid, tmp = spec_grid
+    spec = spec_without_source(spec)      # pack-merge mechanics, not the field tier
     packs, walks = [], []
     for p_, per in ((1, 4), (2, 12)):
         want = np.zeros(grid.shape, np.int64); want[0] = per
-        w = walk_spec(spec, T_max=8e-4, dt_save=2e-4, seed=100 * p_, require_gpu=False, field=False,
+        w = walk_spec(spec, T_max=8e-4, dt_save=2e-4, seed=100 * p_, require_gpu=False,
                       seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want}))
         walks.append(w)
         packs.append(build_replay_pack(w, id=f"t/pass-{p_}", license="x", citation="x", K=3, voxel_grid=grid, out_path=str(tmp / f"pass-{p_}.rpk")))

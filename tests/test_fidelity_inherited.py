@@ -24,12 +24,12 @@ def walks(tmp_path_factory):
     cls_ = [np.array([[x, 0, -12e-6], [x, 0.5e-6, 0], [x, 0, 12e-6]]) + 10e-6 for x in (-5e-6, 0, 5e-6)]
     tck, dia = str(tmp / "t.tck"), str(tmp / "d.txt")
     write_tck(tck, cls_, coordinate_unit_m=25e-6); np.savetxt(dia, np.array([2 * r for r in (1.5e-6, 1.0e-6, 2.0e-6)]) / 1e-3)
-    spec = disco_spec(tck, dia, side_m=20e-6)
+    spec = disco_spec(tck, dia, side_m=20e-6, field=False)
     grid = Grid(shape=(2, 2, 2), voxel_size_m=(10e-6,) * 3, origin_m=(5e-6,) * 3)
     out = []
     for b in (0, 1):
         want = np.zeros(grid.shape, np.int64); want[b] = 12
-        out.append(walk_spec(spec, T_max=8e-4, dt_save=2e-4, seed=7 + b, require_gpu=False, field=False,
+        out.append(walk_spec(spec, T_max=8e-4, dt_save=2e-4, seed=7 + b, require_gpu=False,
                              seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want})))
     return grid, out
 
@@ -125,7 +125,7 @@ def test_rounds_of_one_block_merge_and_recertify(walks, tmp_path):
     want = np.zeros(grid.shape, np.int64); want[1] = 12
     rounds = []
     for r in (0, 1):
-        w = walk_spec(spec, T_max=8e-4, dt_save=2e-4, seed=100 + r, require_gpu=False, field=False,
+        w = walk_spec(spec, T_max=8e-4, dt_save=2e-4, seed=100 + r, require_gpu=False,
                       seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want}))
         rounds.append(build_replay_pack(w, id=f"fill/block-1/round-{r}", license="x", citation="x", voxel_grid=grid, device="numpy",
                                         fidelity="inherited", fidelity_from=cert, out_path=str(tmp_path / f"r{r}.rpk")))
