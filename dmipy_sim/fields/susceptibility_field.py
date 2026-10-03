@@ -119,15 +119,68 @@ class FieldGrid(NamedTuple):
         from .hollow_cylinder import CHANNEL_NAMES
         return CHANNEL_NAMES if self.basis.get("aniso_G") is not None else CHANNEL_NAMES[:7]
 
+    def grids(self, dtype=np.float64):
+        """The basis grids stacked in :attr:`channel_names` order, ``(7 | 13, nx, ny, nz)``."""
+        g = [np.asarray(self.basis["iso_local"], dtype)] + [np.asarray(self.basis["iso_P"][c], dtype) for c in range(6)]
+        if self.basis.get("aniso_G") is not None:
+            g += [np.asarray(self.basis["aniso_G"][c], dtype) for c in range(6)]
+        return np.stack(g)
+
     def channels(self, points):
         """``(n, 7 | 13)`` basis channels at ``points`` ``(n, 3)`` (metres), trilinear on the grid: the same
         protocol as :meth:`dmipy_sim.fields.strand_field.StrandFieldBasis.channels`."""
         P = np.asarray(points, float).reshape(-1, 3)
         vs = np.asarray(self.basis["voxel_size"], float); org = np.asarray(self.origin, float)
-        grids = [np.asarray(self.basis["iso_local"], np.float64)] + [np.asarray(self.basis["iso_P"][c], np.float64) for c in range(6)]
-        if self.basis.get("aniso_G") is not None:
-            grids += [np.asarray(self.basis["aniso_G"][c], np.float64) for c in range(6)]
-        return np.stack([sample_grid(g, P, org, vs, periodic=self.periodic) for g in grids], axis=1)
+        return np.stack([sample_grid(g, P, org, vs, periodic=self.periodic) for g in self.grids()], axis=1)
+
+    def device_arrays(self):
+        """``(grids, origin, voxel_size)`` as float32 device arrays: what :func:`grid_channels_at` reads, passed to
+        a jitted walk as arguments (so one compiled walk serves every grid of a shape)."""
+        import jax.numpy as jnp
+        return (jnp.asarray(self.grids(np.float32)), jnp.asarray(np.asarray(self.origin, float).ravel(), jnp.float32),
+                jnp.asarray(_as_voxel_size(self.basis["voxel_size"], 3), jnp.float32))
+
+    def channels_at_device(self):
+        """The jitted ``(n, 3) -> (n, 7 | 13)`` read of :func:`grid_channels_at` on the device, float32: the read a
+        walk takes at every sub-step (:func:`dmipy_sim.engine.core.simulate_trajectories` with ``field_basis=``)."""
+        import jax
+        arrays, periodic = self.device_arrays(), tuple(bool(p) for p in self.periodic)
+        f = jax.jit(jax.vmap(lambda r, a: grid_channels_at(*a, periodic, r), in_axes=(0, None)))
+        return lambda points: f(points, arrays)
+
+
+def grid_channels_at(grids, origin, voxel_size, periodic, r):
+    """The channels ``(C,)`` of ``grids`` ``(C, nx, ny, nz)`` at one position ``r`` ``(3,)`` (metres), trilinear
+    between voxel centres (voxel ``i`` centred at ``origin + (i + 1/2) voxel_size``): an axis ``periodic`` names
+    (a static tuple of three) wraps, any other clamps at its edge -- :func:`sample_grid`'s rule at ``order=1``, on
+    the device. Elementwise arithmetic and gathers only: a position is never contracted by a matmul, which a GPU
+    may run at TF32."""
+    import jax.numpy as jnp
+    shape = grids.shape[1:]
+    idx = (r - origin) / voxel_size - 0.5
+    lo, hi, fr = [], [], []
+    for a in range(3):
+        n = shape[a]
+        x = jnp.mod(idx[a], n) if periodic[a] else idx[a]
+        i0 = jnp.floor(x)
+        fr.append(x - i0)
+        i0 = i0.astype(jnp.int32)
+        if periodic[a]:
+            lo.append(jnp.mod(i0, n)); hi.append(jnp.mod(i0 + 1, n))
+        else:
+            lo.append(jnp.clip(i0, 0, n - 1)); hi.append(jnp.clip(i0 + 1, 0, n - 1))
+    out = jnp.zeros(grids.shape[0], grids.dtype)
+    for cx in (0, 1):
+        wx = fr[0] if cx else 1.0 - fr[0]
+        ix = hi[0] if cx else lo[0]
+        for cy in (0, 1):
+            wy = fr[1] if cy else 1.0 - fr[1]
+            iy = hi[1] if cy else lo[1]
+            for cz in (0, 1):
+                wz = fr[2] if cz else 1.0 - fr[2]
+                iz = hi[2] if cz else lo[2]
+                out = out + (wx * wy * wz) * grids[:, ix, iy, iz]
+    return out
 
     def field(self, points, b0_dir, *, B0, chi_iso=0.0, chi_aniso=0.0):
         """``dB`` (Tesla) at ``points`` for one configuration."""
