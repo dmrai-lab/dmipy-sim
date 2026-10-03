@@ -47,6 +47,7 @@ class's, the backend chooses only where ``exp``, the tile reduce and the scatter
 """
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import os
@@ -530,9 +531,9 @@ class ShapeMoments:
             raise ValueError("a b-value is not negative")
         return np.sqrt(b / float(self.manifest["shapes"][shape]["b_unit"]))
 
-    @property
+    @functools.cached_property
     def weights(self):
-        """The per-voxel weight sums ``(n_vox, 2)`` (the two split halves), the denominator of every image."""
+        """The per-voxel weight sums ``(n_vox, 2)`` (the two split halves), the denominator of every image (read once)."""
         w = np.asarray(self._column("w"), np.float64).sum(1); tiles = np.asarray(self._column("tiles"))
         return np.bincount(tiles, w, minlength=2 * self.n_vox).reshape(self.n_vox, 2)
 
