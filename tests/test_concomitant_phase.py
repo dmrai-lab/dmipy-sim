@@ -73,7 +73,7 @@ def test_the_phantom_turns_each_voxel_by_its_own_concomitant_phase(free_phantom)
 
 
 def test_a_stimulated_echo_accrues_no_maxwell_phase_while_its_magnetisation_is_stored():
-    """Through the mixing time the magnetisation is along z, so the Maxwell field of a gradient played there (a
+    """Through the mixing time the magnetisation is along B0, so the Maxwell field of a gradient played there (a
     spoiler) adds no phase: the order-0 phase accrues through the effective gate, the coherence sign times the
     transverse gate, and is the same with and without the lobe."""
     ste = sequences.pgste([[1, 0, 0]], 7.6e-3, 38.3e-3, gradient_strengths=0.02, n_t=1000, slew_rate=np.inf,

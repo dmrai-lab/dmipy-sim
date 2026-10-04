@@ -46,7 +46,7 @@ def _q_from_waveform(wf):
 def _shade_storage(ax, wf, t_plot):
     """Shade the longitudinal-storage (mixing-time T_M) interval where the
     transverse-coherence mask ``chi_perp`` is 0: the magnetisation is stored
-    along z, so only T1 acts (no T2 loss, no surface relaxivity). Labels the
+    along B0, so only T1 acts (no T2 loss, no surface relaxivity). Labels the
     widest such interval with T_M. No-op for all-transverse waveforms."""
     chi = getattr(wf, 'chi_perp', None)
     if chi is None:

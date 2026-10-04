@@ -1,6 +1,6 @@
 """The field tier accrues through the acquisition's one effective gate (dmipy-sim#571).
 
-A stimulated echo stores its magnetisation along z for the mixing time, where a static field adds no phase. The
+A stimulated echo stores its magnetisation along B0 for the mixing time, where a static field adds no phase. The
 susceptibility tier reads :func:`~dmipy_sim.replay._replay_kernel.field_gate`, which is
 ``ScannerSequence.effective_gate`` (the coherence sign times the transverse gate) on the pack grid -- the gate
 ``G_eff`` and the Maxwell order-0 phase accrue through. The oracle here is the gate written out from the pulses

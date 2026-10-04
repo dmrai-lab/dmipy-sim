@@ -579,7 +579,7 @@ class RFSchedule(tuple):
     def _roles(self):
         """The coherence state machine of the schedule, grid-free: ``(roles, TM, stores, echo_times)`` with
         ``roles`` the ``(event, role)`` of every pulse that changes the coherence, in time order (``'excite'`` /
-        ``'recall'`` make the magnetisation transverse, ``'store'`` puts it along z, ``'refocus'`` inverts it)."""
+        ``'recall'`` make the magnetisation transverse, ``'store'`` puts it along B0, ``'refocus'`` inverts it)."""
         transverse = False
         t_ref = None
         stored_from = None
@@ -616,7 +616,7 @@ class RFSchedule(tuple):
 
     def transverse_gate(self, n_t, dt):
         """The transverse gate of the schedule's PHASE on an ``n_t``-sample grid of ``dt``: 1 while the
-        magnetisation is transverse, 0 while it is stored along z, every pulse acting at its centre ``t_s`` (the
+        magnetisation is transverse, 0 while it is stored along B0, every pulse acting at its centre ``t_s`` (the
         sample nearest it). Binary for finite pulses too: a field is on through a pulse, and to first order a
         symmetric pulse turns an off-resonance's phase as an instantaneous one at its centre does (which is why a
         finite schedule's echo times are counted from the pulse centres). The transverse FRACTION across a
@@ -662,8 +662,8 @@ class RFSchedule(tuple):
 
         Returns ``(chi_perp, TM, stimulated_echo, echo_times)``: the transverse-coherence mask, the total
         longitudinal-storage time (``None`` when there is none), whether the readout is a stimulated echo (a
-        store / recall pair), and the echo times of the refocusing pulses. Magnetisation starts along z; a 90
-        excites it, a 90 while transverse stores it along z, the next 90 recalls it; a 180 while transverse
+        store / recall pair), and the echo times of the refocusing pulses. Magnetisation starts along B0; a 90
+        excites it, a 90 while transverse stores it along B0, the next 90 recalls it; a 180 while transverse
         refocuses, forming an echo at ``2 t_180 - t_ref`` where ``t_ref`` is the previous echo or excitation.
         A labelled pulse plays the role its label says whatever its flip (a stimulated echo's store may be 60
         degrees); an unlabelled one is inferred from its flip, and other flips are not tracked. Each transition

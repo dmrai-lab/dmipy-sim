@@ -166,7 +166,7 @@ def test_the_cross_term_is_signed_and_the_self_term_is_not():
 
 
 def test_a_stimulated_echo_accrues_no_background_phase_while_its_magnetisation_is_stored():
-    """Through a stimulated echo's mixing time the magnetisation is along z, so a magnet's constant gradient adds
+    """Through a stimulated echo's mixing time the magnetisation is along B0, so a magnet's constant gradient adds
     no phase there: the effective gradient is the coherence sign times the transverse gate, zero on every stored
     sample, and the background's net moment at the readout is the grid's rounding at the store and the recall --
     not ``g0`` times the mixing time."""

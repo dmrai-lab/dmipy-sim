@@ -93,7 +93,7 @@ class EPGState:
     def off_resonance(self, dt, dw):
         """Advance EVERY transverse state by ``dw * dt`` radians, and the stored ones by nothing.
 
-        Off-resonance is gated like the gradient in one respect only -- magnetisation parked along z
+        Off-resonance is gated like the gradient in one respect only -- magnetisation parked along B0
         accumulates none of it -- and NOT in the other. The dephasing index does not enter. This array holds
         the F+ coefficients over the whole integer range, and they are all ordinary transverse
         magnetisation, so a uniform offset advances them all by the same angle whatever their winding.
