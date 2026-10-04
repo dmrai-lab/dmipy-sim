@@ -89,3 +89,17 @@ def test_spec_round_trip():
     np.testing.assert_array_equal(w1.positions, w2.positions)
     with pytest.raises(ValueError, match="pool"):
         SphereUnion(np.zeros((1, 3)), [1e-6], pool="myelin")
+
+
+def test_the_classifier_id_is_int32_under_x64():
+    """The compartment id is int32 whatever ``jax_enable_x64`` says, as every classifier's: the walk's scan carries
+    it as int32, and a weak-typed int would turn int64 under x64 and break the carry. x64 is restored after."""
+    was = bool(jax.config.read("jax_enable_x64"))
+    jax.config.update("jax_enable_x64", True)
+    try:
+        u = SphereUnion(*_chain(R=2e-6, half_len=4e-6), pool="intra")
+        assert u.classify_position(jax.numpy.zeros(3)).dtype == jax.numpy.int32
+        w = d.simulate_trajectories(30, D0, u, 4e-4, 2e-4, seed=0, require_gpu=False)
+        assert np.asarray(w.positions).shape[:2] == (30, 3) and w.illegal_crossings == 0
+    finally:
+        jax.config.update("jax_enable_x64", was)

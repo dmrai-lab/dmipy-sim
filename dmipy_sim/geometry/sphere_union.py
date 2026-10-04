@@ -357,8 +357,8 @@ class SphereUnion(Geometry):
         return out
 
     def classify_position(self, r):
-        """1 inside the union, 0 outside (pure JAX, per walker)."""
-        return jnp.where(_inside(self.levels, r), 1, 0)
+        """1 inside the union, 0 outside (pure JAX, per walker), int32 as every classifier's id."""
+        return jnp.where(_inside(self.levels, r), jnp.int32(1), jnp.int32(0))
 
     def volume(self, n_probe=200_000, seed=0, bounds=None):
         """Monte-Carlo union volume (m^3). A sphere union has no closed form."""
