@@ -469,7 +469,13 @@ class ScannerSequence:
         for e in self.rf:
             if e.duration_s > 0.0:
                 t0, t1 = e.window
-                inside = (t >= t0 - 1e-9 * self.dt) & (t <= t1 + 1e-9 * self.dt)
+                # A sample's step is [t, t + dt) (the engine's rule), so a step is IN the pulse's dead window
+                # only when the whole step is -- the same containment rule the budget windows use below. A
+                # step merely touching an edge (a block placed to start the instant a window ends) sits
+                # entirely on the far side of it and is not a violation; checking the instant `t` alone
+                # flagged that touch as "on during the pulse" whenever a builder's grid put the touch exactly
+                # on a sample (dmipy-sim#584).
+                inside = (t >= t0 - 1e-9 * self.dt) & (t + self.dt <= t1 + 1e-9 * self.dt)
                 if np.any(np.abs(played[:, inside, :]) > floor):
                     raise ValueError(f"the gradient is on during the {e.flip_deg:g} pulse at {e.t_s*1e3:.3f} ms "
                                      f"(window {t0*1e3:.3f}-{t1*1e3:.3f} ms): a finite pulse needs zero gradient, "

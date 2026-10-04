@@ -96,6 +96,26 @@ def test_pgste_is_a_stimulated_echo_with_its_lobes_physical_and_same_sign():
     assert w.stimulated_echo and w.TM == pytest.approx(30e-3, abs=2 * w.dt) and w.family == "pgste"
 
 
+def test_pgste_with_a_sequence_timing_builds_and_fits_the_second_lobe_outside_the_recall_window():
+    """dmipy-sim#584: the recall pulse's window and the second lobe's start are tangent by construction (the
+    layout places the lobe the instant the window ends, with no slack to spare) -- a build whose grid happens
+    to land that touch exactly on a sample (any grid commensurate with the millisecond-scale pulse/TM/TE
+    values here, the common case for a hand-picked ``n_t``) must not read the touch as overlap."""
+    tm = SequenceTiming(t_excite=3e-3, t_refocus=5e-3, t_readout_pre_echo=10e-3)
+    seq = S.pgste([[1, 0, 0]], 7.6e-3, 38.3e-3, bvalues=[1e9], TE=76.5e-3, n_t=7651, slew_rate=np.inf, timing=tm)
+    assert seq.T == pytest.approx(76.5e-3)
+    assert set(np.unique(seq.effective_gate).tolist()) <= {-1.0, 0.0, 1.0}            # #579: still binary
+    t0, t1 = seq.rf[2].window                                                          # the recall's dead window
+    t = np.arange(seq.n_t) * seq.dt
+    strictly_inside = (t > t0 + 1e-9 * seq.dt) & (t + seq.dt < t1 - 1e-9 * seq.dt)
+    assert not np.any(np.abs(np.asarray(seq.G)[:, strictly_inside]) > 0.0)             # no gradient while it holds
+    touch = np.flatnonzero(np.isclose(t, t1))                                         # the second lobe starts
+    assert touch.size == 1 and np.any(np.asarray(seq.G)[:, touch[0]] != 0.0)          # exactly on the window's edge
+    # a TE too short for these pulses is refused naming the minimum, not left to overlap silently
+    with pytest.raises(ValueError, match=r"TE = 50.000 ms is below the 76.500 ms"):
+        S.pgste([[1, 0, 0]], 7.6e-3, 38.3e-3, bvalues=[1e9], TE=50e-3, n_t=1000, slew_rate=np.inf, timing=tm)
+
+
 def test_from_pgste_waveform_reads_a_played_stimulated_echo_and_refuses_an_unmatched_one():
     ref = S.pgste(D2[:1], 4e-3, 30e-3, bvalues=B[:1], n_t=400)
     st, rc = (int(round(e.t_s / ref.dt)) for e in ref.rf[1:])
