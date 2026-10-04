@@ -524,7 +524,8 @@ class RFSchedule(tuple):
 
     Build it once and hold it -- ``ScannerSequence.rf`` is one -- and read
     what it derives: :meth:`coherence` (the transverse mask, mixing time, stimulated-echo state and echo
-    times an ideal schedule implies), :meth:`sign` (the spin-echo gate ``s(t)`` of RPK.md 6.6, the un-fold
+    times an ideal schedule implies), :meth:`transverse_gate` and :meth:`gate_integral` (the gate a phase
+    accrues through, and its integral), :meth:`sign` (the spin-echo gate ``s(t)`` of RPK.md 6.6, the un-fold
     between the effective and the physical gradient), :attr:`refocus_time`, :attr:`mixing_time`,
     Nothing else re-derives these from a list of events. Anything that is not an
     ``RFEvent`` is refused; :meth:`to_dicts` / :meth:`from_dicts` are its serialised record.
@@ -565,9 +566,8 @@ class RFSchedule(tuple):
         scanner plays, the EFFECTIVE one the phase integral walks). ``s`` is +-1 and its own inverse.
 
         A refocusing pulse inverts the accumulated phase, so ``s`` flips after it; a stimulated echo does the same
-        across its storage/recall pair, so ``s`` flips at RECALL. It is a sign, not the quadrature weight
-        :func:`dmipy_sim.replay._replay_kernel.se_gate` builds for integrating against a path: that one half-weights
-        the grid endpoints, right under an integral and wrong for a waveform.
+        across its storage/recall pair, so ``s`` flips at RECALL. It is a sign per sample, not a quadrature
+        weight: :func:`dmipy_sim.replay._replay_kernel.gate_weights` reads a gate onto a path's saves.
         """
         t = np.asarray(t_grid, dtype=np.float64)
         s = np.ones_like(t, dtype=np.float32)
@@ -576,43 +576,19 @@ class RFSchedule(tuple):
                 s[t >= e.t_s - 1e-12] *= -1.0                    # a sample AT the pulse (to rounding) is after it
         return s
 
-    def coherence(self, n_t, dt):
-        """Coherence bookkeeping of the schedule on an ``n_t``-sample grid of ``dt``.
-
-        Returns ``(chi_perp, TM, stimulated_echo, echo_times)``: the transverse-coherence mask, the total
-        longitudinal-storage time (``None`` when there is none), whether the readout is a stimulated echo (a
-        store / recall pair), and the echo times of the refocusing pulses. Magnetisation starts along z; a 90
-        excites it, a 90 while transverse stores it along z, the next 90 recalls it; a 180 while transverse
-        refocuses, forming an echo at ``2 t_180 - t_ref`` where ``t_ref`` is the previous echo or excitation.
-        A labelled pulse plays the role its label says whatever its flip (a stimulated echo's store may be 60
-        degrees); an unlabelled one is inferred from its flip, and other flips are not tracked. Each transition
-        happens at the pulse's instant ``t_s``.
-
-        For a hard pulse the mask is binary. Over a FINITE pulse's window it is the transverse fraction of the
-        pathway, averaged over the ensemble's azimuth: an excitation or a recall tips z into the plane as
-        ``sin^2(theta)``, a store tips the plane onto z as ``cos^2(theta)``, with ``theta`` running 0 to pi/2
-        across the pulse; a 180 keeps the component along B1 transverse and swings the perpendicular one through
-        z, ``1/2 + cos^2(theta)/2`` with ``theta`` 0 to pi -- a quarter of the pulse spent longitudinal in all,
-        the ensemble mean of :func:`dmipy_sim.replay.trajectories.finite_180_longitudinal_dwell`. The mask is
-        then float; a schedule of hard pulses keeps the binary one.
-        """
-        n_t = int(n_t); dt = float(dt)
-        if len(self) == 0:                                  # no pulses declared: the gradient is read as it stands
-            return np.ones(n_t, dtype=bool), None, False, []
-        chi = np.zeros(n_t, dtype=bool)
+    def _roles(self):
+        """The coherence state machine of the schedule, grid-free: ``(roles, TM, stores, echo_times)`` with
+        ``roles`` the ``(event, role)`` of every pulse that changes the coherence, in time order (``'excite'`` /
+        ``'recall'`` make the magnetisation transverse, ``'store'`` puts it along z, ``'refocus'`` inverts it)."""
         transverse = False
         t_ref = None
         stored_from = None
         TM = 0.0
         stores = 0
         echoes = []
-        i_prev = 0
-        roles = []                                          # (event, role) for the finite-pulse profiles
+        roles = []
         for e in self:
             t = e.t_s
-            i = int(np.clip(int(round(t / dt)), 0, n_t))
-            chi[i_prev:i] = transverse
-            i_prev = i
             role = role_of(e)
             if role is None:                                    # unlabelled: infer from the flip and the state
                 flip = int(round(e.flip_deg))
@@ -636,7 +612,75 @@ class RFSchedule(tuple):
                 echoes.append(2.0 * t - t_ref)
                 t_ref = echoes[-1]
                 roles.append((e, "refocus"))
+        return roles, TM, stores, echoes
+
+    def transverse_gate(self, n_t, dt):
+        """The transverse gate of the schedule's PHASE on an ``n_t``-sample grid of ``dt``: 1 while the
+        magnetisation is transverse, 0 while it is stored along z, every pulse acting at its centre ``t_s`` (the
+        sample nearest it). Binary for finite pulses too: a field is on through a pulse, and to first order a
+        symmetric pulse turns an off-resonance's phase as an instantaneous one at its centre does (which is why a
+        finite schedule's echo times are counted from the pulse centres). The transverse FRACTION across a
+        finite pulse, which :meth:`coherence` profiles, says which relaxation acts there and is not the weight of
+        a phase: on a grid that starts at the excitation's centre it leaves a spin echo's static field
+        unrefocused by the half-excitation the grid truncates. Empty is a gradient echo, transverse throughout."""
+        n_t = int(n_t); dt = float(dt)
+        if len(self) == 0:                                  # no pulses declared: the gradient is read as it stands
+            return np.ones(n_t, dtype=bool)
+        chi = np.zeros(n_t, dtype=bool)
+        transverse, i_prev = False, 0
+        for e, role in self._roles()[0]:
+            i = int(np.clip(int(round(e.t_s / dt)), 0, n_t))
+            chi[i_prev:i] = transverse
+            transverse, i_prev = role != "store", i
         chi[i_prev:] = transverse
+        return chi
+
+    def gate_integral(self, T):
+        """``int_0^T s(t) chi(t) dt`` (s), EXACT in the pulse instants: the effective gate of
+        :meth:`transverse_gate` times :meth:`sign` integrated with every pulse at its ``t_s`` rather than at a
+        sample -- the phase per unit angular frequency a uniform off-resonance accrues to ``T``. Zero for a spin
+        echo read at ``2 t_180`` and for a stimulated echo with equal transverse periods (its mixing time
+        stored), ``T`` for a gradient echo."""
+        T = float(T)
+        if len(self) == 0:
+            return T
+        switches = [(e.t_s, role != "store") for e, role in self._roles()[0]]
+        edges = sorted({0.0, T} | {min(max(float(e.t_s), 0.0), T) for e in self})
+        total = 0.0
+        for a, b in zip(edges[:-1], edges[1:]):
+            mid = 0.5 * (a + b)
+            on = False
+            for t_s, state in switches:
+                if t_s <= mid:
+                    on = state
+            if on:
+                total += float(self.sign(np.array([mid]))[0]) * (b - a)
+        return total
+
+    def coherence(self, n_t, dt):
+        """Coherence bookkeeping of the schedule on an ``n_t``-sample grid of ``dt``.
+
+        Returns ``(chi_perp, TM, stimulated_echo, echo_times)``: the transverse-coherence mask, the total
+        longitudinal-storage time (``None`` when there is none), whether the readout is a stimulated echo (a
+        store / recall pair), and the echo times of the refocusing pulses. Magnetisation starts along z; a 90
+        excites it, a 90 while transverse stores it along z, the next 90 recalls it; a 180 while transverse
+        refocuses, forming an echo at ``2 t_180 - t_ref`` where ``t_ref`` is the previous echo or excitation.
+        A labelled pulse plays the role its label says whatever its flip (a stimulated echo's store may be 60
+        degrees); an unlabelled one is inferred from its flip, and other flips are not tracked. Each transition
+        happens at the pulse's instant ``t_s``.
+
+        For a hard pulse the mask is binary. Over a FINITE pulse's window it is the transverse fraction of the
+        pathway, averaged over the ensemble's azimuth: an excitation or a recall tips z into the plane as
+        ``sin^2(theta)``, a store tips the plane onto z as ``cos^2(theta)``, with ``theta`` running 0 to pi/2
+        across the pulse; a 180 keeps the component along B1 transverse and swings the perpendicular one through
+        z, ``1/2 + cos^2(theta)/2`` with ``theta`` 0 to pi -- a quarter of the pulse spent longitudinal in all,
+        the ensemble mean of :func:`dmipy_sim.replay.trajectories.finite_180_longitudinal_dwell`. The mask is
+        then float; a schedule of hard pulses keeps the binary one. It weighs relaxation; a phase accrues through
+        :meth:`transverse_gate`.
+        """
+        n_t = int(n_t); dt = float(dt)
+        chi = self.transverse_gate(n_t, dt)
+        roles, TM, stores, echoes = self._roles()
         finite = [(e, role) for e, role in roles if e.duration_s > 0.0]
         if finite:
             chi = chi.astype(np.float64)

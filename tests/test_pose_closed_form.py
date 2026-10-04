@@ -157,3 +157,186 @@ def test_the_field_is_composed_in_closed_form_and_agrees_with_every_other_route(
         full = pk.pose_response(seq_x, method="closed", pose=R_x, **kw)
         np.testing.assert_allclose(full.at(R), pk.replay(seq_x, orientation=R_x @ R, complex_signal=True, **kw), atol=2e-6)
     assert np.isfinite(pp.coeffs).all()
+
+
+def test_a_machines_nearly_single_direction_waveform_takes_the_closed_form_within_its_bound(pack):
+    """A trapezoid played by a machine's coils at 8 cm: the Maxwell gradient goes as the square of the ramps where the
+    encoding goes as the ramps, so the delivered waveform is one direction only up to a residual. The closed form
+    takes its principal direction and adds the residual's largest phase over every pose (the nuclear norm of its
+    walker contraction) to the misfit; the expansion then equals the direct posed replay of the played waveform at
+    every rotation to that bound. A residual beyond the bound takes the quadrature."""
+    base = sequences.pgse([[1, 0, 0], [0.0, 0.6, 0.8]], 2e-3, 5e-3, gradient_strengths=[0.3, 0.3], TE=10e-3, slew_rate=200.0)
+    played = base.with_concomitant(np.array([0.03, 0.05, 0.06]), 3.0)
+    G = np.asarray(played.G_eff, np.float64)
+    assert all(np.linalg.svd(G[i], compute_uv=False)[1] > 1e-6 * np.linalg.svd(G[i], compute_uv=False)[0] for i in range(2))
+    pr = pack.pose_response(played, method="closed")
+    assert pr.route == "closed" and 0 < pr.misfit.max() < 0.1 / np.sqrt(pack.n_walkers)
+    for R in so3.haar_rotations(12, 5):
+        err = np.abs(pr.at(R) - pack.replay(played, orientation=R, complex_signal=True))
+        assert np.all(err <= pr.misfit + 1e-8), (err, pr.misfit)
+    strong = base.with_concomitant(np.array([0.03, 0.05, 0.06]), 0.02)       # a 20 mT magnet: the residual is large
+    assert pack.pose_response(strong).route != "closed"
+
+
+def test_the_residual_bound_is_the_ensembles(pack):
+    """The misfit bounds the ensemble's signal, and |sum_w w (e^{i(phi + d)} - e^{i phi})| <= sum_w |w| |d_w|: the
+    walkers' residual bounds weighted as the signal weighs them, not the worst walker's. At 0.5 T the worst walker's
+    bound (7.0e-3) is beyond a tenth of this pack's floor (4.5e-3) and the ensemble's (2.6e-3) within it: the
+    closed form takes it, and still equals the direct posed replay at every rotation to that bound."""
+    base = sequences.pgse([[1, 0, 0], [0.0, 0.6, 0.8]], 2e-3, 5e-3, gradient_strengths=[0.3, 0.3], TE=10e-3, slew_rate=200.0)
+    played = base.with_concomitant(np.array([0.03, 0.05, 0.06]), 0.5)
+    pr = pack.pose_response(played)
+    assert pr.route == "closed" and 1e-3 < pr.misfit.max() < 0.1 / np.sqrt(pack.n_walkers)
+    for R in so3.haar_rotations(12, 5):
+        err = np.abs(pr.at(R) - pack.replay(played, orientation=R, complex_signal=True))
+        assert np.all(err <= pr.misfit + 1e-8), (err, pr.misfit)
+def _g0(strength):
+    u = np.array([0.3, -0.5, 0.81])
+    return strength * u / np.linalg.norm(u)
+
+
+@pytest.mark.parametrize("kind", ["spin echo", "stimulated echo"])
+def test_a_magnets_own_gradient_is_a_second_plane_wave_in_closed_form(pack, kind):
+    """A magnet's own gradient g0 is on through every pulse and dead time, so every measurement plays two directions
+    with two time courses: the encoding and g0 through the effective gate. Its phase g0 . R n_w (n_w the walker's
+    background moment) is a second Rayleigh factor coupled to the gradient's, as the field factor is; the expansion
+    equals the direct posed replay of the delivered waveform at every rotation, to its misfit (#565). The background
+    here is 50 mT/m, far beyond any magnet's, so the factor's band is several orders and the coupling is exercised."""
+    dirs = [[1, 0, 0], [0, 0, 1], [0.6, 0.8, 0.0], [0.0, 0.6, 0.8]]
+    if kind == "spin echo":
+        base = sequences.pgse(dirs, 2e-3, 5e-3, gradient_strengths=[0.3] * 4, TE=10e-3)
+    else:
+        base = sequences.pgste(dirs, 1.5e-3, 3e-3, gradient_strengths=[0.3] * 4, TE=10e-3)
+    played = base.with_background_gradient(_g0(0.05))
+    pr = pack.pose_response(played, method="closed")
+    assert pr.route == "closed" and pr.n_samples == 0 and pr.background_lmax >= 4
+    assert pr.misfit.max() < 1e-7
+    moved = 0.0
+    for R in so3.haar_rotations(12, 5):
+        direct = pack.replay(played, orientation=R, complex_signal=True)
+        assert np.all(np.abs(pr.at(R) - direct) <= pr.misfit + 2e-8), (np.abs(pr.at(R) - direct), pr.misfit)
+        moved = max(moved, np.abs(direct - pack.replay(base, orientation=R, complex_signal=True)).max())
+    assert moved > 1e-2                                                      # and the background is not a perturbation here
+
+
+def test_no_background_is_the_expansion_without_one_to_the_bit(pack, seq):
+    """A zero background is no background: the same numbers to the bit, alone or batched with an acquisition that
+    carries one (a batch that mixes the two kinds expands each kind in its own pass)."""
+    plain = pack.pose_response(seq, method="closed")
+    zero = pack.pose_response(seq.with_background_gradient((0.0, 0.0, 0.0)), method="closed")
+    np.testing.assert_array_equal(zero.coeffs, plain.coeffs)
+    np.testing.assert_array_equal(zero.misfit, plain.misfit)
+    both = pack.pose_responses([seq, seq.with_background_gradient(_g0(0.01))], method="closed")
+    np.testing.assert_array_equal(both[0].coeffs, plain.coeffs)
+    assert not hasattr(both[0], "background_lmax") and both[1].background_lmax >= 1
+
+
+def test_the_background_turns_with_the_specimen(pack, seq):
+    """The magnet's gradient is in the acquisition's frame and turns with it (#585): with the specimen at a pose in
+    the bore, the expansion is the direct replay at that pose composed with every rotation."""
+    played = seq.with_background_gradient(_g0(0.02))
+    R_s = so3.rotation_of((0.2, -0.4, 0.89), roll=0.7)
+    pr = pack.pose_response(played, method="closed", pose=R_s)
+    for R in so3.haar_rotations(6, 8):
+        direct = pack.replay(played, orientation=R_s @ R, complex_signal=True)
+        assert np.all(np.abs(pr.at(R) - direct) <= pr.misfit + 2e-8)
+
+
+def test_the_background_and_the_field_compose_in_closed_form(field_pack):
+    """Field on: the field factor and the background factor are coupled walker by walker into one factor, then
+    with the gradient -- three Wigner blocks, two couplings. Exact against the direct posed replay with the field
+    to the field route's own precision (2e-6, as without a background)."""
+    pk = field_pack
+    seq = sequences.pgse([[1, 0, 0], [0, 0, 1], [0.6, 0.8, 0.0]], 6e-3, 15e-3, bvalues=[1.5e9] * 3, TE=30e-3)
+    kw = dict(scanner=7.0, tissue=Tissue(chi_iso=-1e-7, chi_aniso=-1e-7))
+    played, R_y = field_along(seq.with_background_gradient(_g0(0.005)), (0.0, 1.0, 0.0))
+    pc = pk.pose_response(played, method="closed", pose=R_y, **kw)
+    assert pc.route == "closed" and pc.field_lmax >= 2 and pc.background_lmax >= 2
+    for R in so3.haar_rotations(12, 2):
+        np.testing.assert_allclose(pc.at(R), pk.replay(played, orientation=R_y @ R, complex_signal=True, **kw), atol=2e-6)
+
+
+@pytest.fixture(scope="module")
+def long_pack(tmp_path_factory):
+    g = d.PackedCylinders([3e-6], [[0.0, 0.0]], 10e-6)
+    walk = d.simulate_trajectories(1000, 2e-9, g, 60e-3, 5e-4, seed=3, require_gpu=False)
+    p = tmp_path_factory.mktemp("pk") / "swoop.rpk"
+    build_replay_pack(walk, id="t/swoop", license="x", citation="x", K=24, out_path=str(p))
+    return read_rpk(str(p))
+
+
+@pytest.mark.parametrize("kind", ["spin echo", "stimulated echo"])
+def test_the_swoop_as_delivered_at_a_head_position_takes_the_closed_form(long_pack, kind):
+    """The Hyperfine Swoop as it plays a voxel 8 cm off isocentre: the nonlinearity, the magnet's own gradient
+    (1 mT/m there), and the Maxwell term at 64 mT through the slew-limited ramps -- every catalogued term, composed
+    by bore.encoding_classes as the brain page composes a class. The encoding left once g0 is taken out is one
+    direction up to the Maxwell residual (#561), g0 is the second plane wave, and the expansion equals the direct
+    posed replay of the delivered waveform at every rotation within its misfit."""
+    from dmipy_sim.acquisition.scanners import ScannerLimits
+    from dmipy_sim.phantom.bore import encoding_classes
+    from dmipy_sim.phantom.grid import Grid
+    sw = ScannerLimits.of("swoop")
+    dirs = [[1, 0, 0], [0, 0, 1], [0.6, 0.8, 0.0], [0.0, 0.6, 0.8]]
+    if kind == "spin echo":
+        seq = sequences.pgse(dirs, 12e-3, 26e-3, gradient_strengths=[0.0, 0.02, 0.02, 0.02], TE=56e-3,
+                             slew_rate=float(sw.slew_max))
+    else:
+        seq = sequences.pgste(dirs, 10e-3, 16e-3, gradient_strengths=[0.0, 0.02, 0.02, 0.02], TE=50e-3,
+                              slew_rate=float(sw.slew_max))
+    grid = Grid(shape=(1, 1, 1), voxel_size_m=(2e-3,) * 3, origin_m=(0.08, 0.0, 0.0), isocenter_m=(0.0, 0.0, 0.0))
+    _cls, played = encoding_classes(sw, grid, seq, np.array([[0, 0, 0]]), tolerance=None)
+    p = played[0]
+    assert np.linalg.norm(p.background_gradient) > 0.9e-3 and p.concomitant is not None
+    pr = long_pack.pose_response(p, method="closed")
+    assert pr.route == "closed" and pr.background_lmax >= 1
+    assert pr.misfit.max() < 0.1 / np.sqrt(long_pack.n_walkers)
+    for R in so3.haar_rotations(12, 11):
+        err = np.abs(pr.at(R) - long_pack.replay(p, orientation=R, complex_signal=True))
+        assert np.all(err <= pr.misfit + 2e-8), (err, pr.misfit)
+
+
+def test_an_odf_composition_forms_only_the_pairs_its_band_couples(pack, field_pack):
+    """keep=(L, 0) with a background: on the host only the products of azimuthal orders |N| = |n| are formed
+    (pose_device.paired_bodies), and the result is the n = 0 column of the full expansion, field off and on."""
+    played = sequences.pgse([[1, 0, 0], [0, 0, 1], [0.6, 0.8, 0.0]], 2e-3, 5e-3, gradient_strengths=[0.3] * 3,
+                            TE=10e-3).with_background_gradient(_g0(0.05))
+    full = pack.pose_response(played, method="closed")
+    odf = pack.pose_response(played, method="closed", keep=(8, 0))
+    np.testing.assert_allclose(odf.coeffs, full.retained(8, 0), atol=1e-12)
+    seq = sequences.pgse([[1, 0, 0], [0.6, 0.8, 0.0]], 6e-3, 15e-3, bvalues=[1.5e9] * 2, TE=30e-3)
+    kw = dict(scanner=7.0, tissue=Tissue(chi_iso=-1e-7, chi_aniso=-1e-7))
+    played, R_y = field_along(seq.with_background_gradient(_g0(0.005)), (0.0, 1.0, 0.0))
+    full = field_pack.pose_response(played, method="closed", pose=R_y, **kw)
+    odf = field_pack.pose_response(played, method="closed", pose=R_y, keep=(8, 0), **kw)
+    np.testing.assert_allclose(odf.coeffs, full.retained(8, 0), atol=1e-12)
+
+
+def test_a_shell_of_delivered_amplitudes_is_one_body_in_powers_of_its_amplitude(pack, monkeypatch):
+    """A machine plays every row of a shell at its own amplitude (the nonlinearity), so its rows are as many groups
+    -- but one shape. Their bodies are one polynomial in the amplitude (the Bessel series), the walkers contracted
+    once per power: the same numbers as contracting every row on its own (to the float32 rounding of the rows'
+    waveforms about their one shape), and the direct posed replay to the misfit."""
+    import dmipy_sim.replay.replay as rr
+    rng = np.random.default_rng(7)
+    dirs = rng.normal(size=(24, 3)); dirs /= np.linalg.norm(dirs, axis=1, keepdims=True)
+    tilt = np.eye(3) + 0.05 * rng.normal(size=(24, 3, 3))                      # every row its own delivered amplitude
+    played = (sequences.pgse(dirs, 2e-3, 5e-3, gradient_strengths=[0.3] * 24, TE=10e-3)
+              .with_gradient_nonlinearity(tilt).with_background_gradient(_g0(0.02)))
+    import dmipy_sim.replay.pose_device as pd
+
+    def per_row(*a, **k):
+        raise AssertionError("a row of the shell was contracted on its own")
+
+    for keep in (None, (6, 0)):
+        with monkeypatch.context() as mp:
+            mp.setattr(pd, "field_bodies", per_row); mp.setattr(pd, "paired_bodies", per_row)
+            series = pack.pose_response(played, method="closed", keep=keep)
+        assert series.n_bodies == 24
+        with monkeypatch.context() as mp:
+            mp.setattr(rr, "SHELL_SERIES_MAX_PHASE", 0.0)                       # every row contracted on its own
+            each = pack.pose_response(played, method="closed", keep=keep)
+        # equal to the float32 rounding of each row's delivered waveform about the shell's one shape
+        np.testing.assert_allclose(series.coeffs, each.coeffs, atol=2e-9)
+    full = pack.pose_response(played, method="closed")
+    for R in so3.haar_rotations(4, 13):
+        assert np.all(np.abs(full.at(R) - pack.replay(played, orientation=R, complex_signal=True)) <= full.misfit + 2e-8)

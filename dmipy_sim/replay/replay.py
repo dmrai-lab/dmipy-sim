@@ -25,8 +25,12 @@ waveform varies (design) — in the latter it is differentiable in ``G``, so it 
 waveform/B1 optimization. A JAX twin (:func:`replay_signal_jax`) supplies the autodiff/GPU path.
 
 Surface relaxivity is exact, via the stored boundary local time (the C2 channel, bridge form): a
-per-walker reweight by ``exp((rho/D) * sum_t chi(t) ell_i(t))``, optionally coherence-gated by an
-occupancy schedule ``chi`` (:func:`surface_logweight`).
+per-walker reweight by ``exp((rho_2/D) * sum_t chi(t) ell_i(t))``, optionally coherence-gated by an
+occupancy schedule ``chi`` (:func:`surface_logweight`). A tissue's ``rho_1`` adds the longitudinal
+term on the same channel, gated by the complement ``chi_parallel = active - chi`` (on while the
+magnetisation is stored along B0, e.g. a stimulated echo's mixing time): the full contact weight is
+``exp((rho_2/D) * <chi, ell> + (rho_1/D) * <chi_parallel, ell>)``, two calls of the same bridge
+contraction summed -- no new channel, no new walk (dmipy-sim#574).
 """
 import json
 from dataclasses import dataclass
@@ -42,6 +46,21 @@ from ..acquisition.scanner_sequence import Protocol, ScannerSequence
 __all__ = ["ReplayPack", "PoseResponse", "read_rpk", "write_rpk", "analytic_pose_response",
            "compile_scheme", "replay_signal", "replay_coefficients", "replay_signal_jax", "replay_batch_jax",
            "surface_logweight"]
+
+RHO_2_OVER_D_MAX_SCHEMA_FLOOR = (0, 5)
+#: the RPK schema version at which the contact envelope's stored bound became
+#: ``replay_envelope.tissue.rho_2_over_D_max`` (dmipy-sim#581); a pack below this floor states it under the
+#: retired key ``rho_over_D_max`` (:attr:`ReplayPack.rho_2_over_D_max`).
+
+
+def _rpk_schema_lt(version, floor):
+    """Whether a pack's dotted ``rpk_schema_version`` (``"0.4"``, ``"0.5"``) is below ``floor`` (a tuple of
+    ints); ``None`` -- no version recorded -- is never below anything, so an undated pack is refused rather
+    than migrated by a guess."""
+    if version is None:
+        return False
+    core = str(version).split("-", 1)[0]
+    return tuple(int(x) for x in core.split(".")) < tuple(floor)
 
 
 # ------------------------------- .rpk container I/O -------------------------------
@@ -629,7 +648,7 @@ class ReplayPack:
                 note="the parent's contact channel is band-limited over its whole walk; a window's cumulative local "
                      "time is the parent's decoded one cut there, so the parent's truncation (a windowed increment can "
                      "exceed zero, which the true one never does) is inherited, not re-measured: the pack's "
-                     "replay_envelope.tissue.rho_over_D_max states up to which rho / D the windowed contact lies within "
+                     "replay_envelope.tissue.rho_2_over_D_max states up to which rho_2 / D the windowed contact lies within "
                      "the floor (#528). A build from the walk (bank._build_segmented) encodes each window's own.")),
             note="every window the parent's channels decoded on its saves and re-encoded; its certificate is the re-encode "
                  "error against the parent's decoded saves, on top of the parent's own certificate"))
@@ -645,27 +664,43 @@ class ReplayPack:
         return out
 
     @property
-    def rho_over_D_max(self):
-        """The largest ``rho / D`` the contact tier serves (``replay_envelope.tissue.rho_over_D_max``, RPK.md 8.7), or
-        ``None`` when the pack states no bound."""
-        return ((self.meta.get("replay_envelope") or {}).get("tissue") or {}).get("rho_over_D_max")
+    def rho_2_over_D_max(self):
+        """The largest ``rho_2 / D`` the contact tier serves (``replay_envelope.tissue.rho_2_over_D_max``, RPK.md 8.7), or
+        ``None`` when the pack states no bound. A pack whose OWN ``rpk_schema_version`` is below
+        :data:`RHO_2_OVER_D_MAX_SCHEMA_FLOOR` (dmipy-sim#581) may state the same bound under the retired key
+        ``rho_over_D_max``; migrated here, a one-time read, nothing rewritten unless the pack is re-saved. A
+        pack at or above the floor that still carries the retired key is refused rather than guessed at --
+        that key means something is already wrong with how it was written."""
+        tissue = (self.meta.get("replay_envelope") or {}).get("tissue") or {}
+        new, old = tissue.get("rho_2_over_D_max"), tissue.get("rho_over_D_max")
+        if old is None:
+            return new
+        version = self.meta.get("rpk_schema_version")
+        if not _rpk_schema_lt(version, RHO_2_OVER_D_MAX_SCHEMA_FLOOR):
+            raise ValueError(
+                f"this pack states its contact envelope under the retired key 'rho_over_D_max' (dmipy-sim#581 "
+                f"renamed it to 'rho_2_over_D_max' at RPK schema "
+                f"{'.'.join(map(str, RHO_2_OVER_D_MAX_SCHEMA_FLOOR))}); this pack's "
+                f"rpk_schema_version is {version!r}, which is not below that floor, so the retired key is refused "
+                f"rather than migrated")
+        return new if new is not None else old
 
-    def _check_rho(self, rho_over_D):
-        """Refuse a relaxivity beyond the contact tier's envelope (:attr:`rho_over_D_max`), naming both."""
-        top = self.rho_over_D_max
-        if top is not None and float(rho_over_D) > float(top) * (1.0 + 1e-12):
+    def _check_rho_2(self, rho_2_over_D):
+        """Refuse a relaxivity beyond the contact tier's envelope (:attr:`rho_2_over_D_max`), naming both."""
+        top = self.rho_2_over_D_max
+        if top is not None and float(rho_2_over_D) > float(top) * (1.0 + 1e-12):
             D = self.diffusivity
-            at = "" if D is None else f" (rho = {float(top) * float(D):.3g} m/s at the walk's D = {float(D):.3g} m^2/s)"
-            raise ValueError(f"rho / D = {float(rho_over_D):.4g} 1/m is beyond this pack's contact envelope, rho / D <= "
+            at = "" if D is None else f" (rho_2 = {float(top) * float(D):.3g} m/s at the walk's D = {float(D):.3g} m^2/s)"
+            raise ValueError(f"rho_2 / D = {float(rho_2_over_D):.4g} 1/m is beyond this pack's contact envelope, rho_2 / D <= "
                              f"{float(top):.4g} 1/m{at}: past it the stored contact band no longer gives a physical "
-                             "attenuation within its certificate (replay_envelope.tissue.rho_over_D_max)")
+                             "attenuation within its certificate (replay_envelope.tissue.rho_2_over_D_max)")
 
     def restate_surface_envelope(self, *, reference=None, tol=2.0, out_path=None):
-        """State the contact tier at the envelope it serves (RPK.md 8.7): per window the largest ``rho / D`` at which
+        """State the contact tier at the envelope it serves (RPK.md 8.7): per window the largest ``rho_2 / D`` at which
         the decoded contact gives a physical attenuation within ``tol`` floors
-        (:func:`~dmipy_sim.replay.bank.surface_envelope`), the pack's ``replay_envelope.tissue.rho_over_D_max`` the
+        (:func:`~dmipy_sim.replay.bank.surface_envelope`), the pack's ``replay_envelope.tissue.rho_2_over_D_max`` the
         smallest over the windows, and every window's surface rows (``err_surface``, ``floor_surface``) restated up
-        to that edge rather than at the battery's largest ``rho``, its maxima re-read and the whole's certificate
+        to that edge rather than at the battery's largest ``rho_2``, its maxima re-read and the whole's certificate
         rebuilt from them. ``reference`` is the one-window pack the windows were encoded from, whose decoded contact
         is then the error's reference; without it the error is the unphysical gain alone. Only metadata changes;
         ``out_path`` writes the pack with its tensors as they are. ``provenance.surface_envelope_restated`` records
@@ -677,11 +712,11 @@ class ReplayPack:
             raise ValueError("this pack carries no contact channel (C2): there is no surface envelope to state")
         D = self.diffusivity
         if D is None:
-            raise ValueError("the pack records no diffusivity, so rho / D cannot be stated")
+            raise ValueError("the pack records no diffusivity, so rho_2 / D cannot be stated")
         if reference is not None and reference.n_segments != 1:
             raise ValueError("the reference is the one-window pack the windows were encoded from")
-        rho_list = default_envelope().get("rho_list") or [1e-5, 3e-5, 1e-4]
-        hi = max(rho_list) / float(D)
+        rho_2_list = default_envelope().get("rho_2_list") or [1e-5, 3e-5, 1e-4]
+        hi = max(rho_2_list) / float(D)
         w = np.asarray(self.spin_weights, np.float64)
         n_seg = int(self.segments["n_t"])
         reads = []                                                   # (decoded contact, reference sums) per window
@@ -694,16 +729,16 @@ class ReplayPack:
                 k0 = i * (n_seg - 1)
                 ref = np.asarray(reference._decoded_channels(start=k0 + 1, stop=k0 + n_s)["ell"], np.float64).sum(axis=1)
             reads.append((decode_boundary_bridge(win.arrays, cm), ref))
-        rows = [surface_envelope(ell, w, rho_over_D_hi=hi, reference=ref, tol=tol) for ell, ref in reads]
+        rows = [surface_envelope(ell, w, rho_2_over_D_hi=hi, reference=ref, tol=tol) for ell, ref in reads]
         edge = float(min(r[0] for r in rows))
-        restated = [surface_envelope(ell, w, rho_over_D_hi=edge, reference=ref, tol=np.inf)[1:] if edge > 0 else (0.0, 0.0)
+        restated = [surface_envelope(ell, w, rho_2_over_D_hi=edge, reference=ref, tol=np.inf)[1:] if edge > 0 else (0.0, 0.0)
                     for ell, ref in reads]
         del reads
         fid = copy.deepcopy(self.meta.get("fidelity") or {})
         segs = fid.get("segments")
         if segs:
             for f_i, (e, f) in zip(segs, restated):
-                f_i.update(err_surface=e, floor_surface=f, surface_rho_over_D_max=edge)
+                f_i.update(err_surface=e, floor_surface=f, surface_rho_2_over_D_max=edge)
                 restate_maxima(f_i)
             if fid.get("certified") == "bounded":
                 fid = combine_segment_fidelity(segs)
@@ -713,13 +748,13 @@ class ReplayPack:
         else:
             fid.update(err_surface=restated[0][0], floor_surface=restated[0][1])
             restate_maxima(fid)
-        fid["surface_rho_over_D_max"] = edge
+        fid["surface_rho_2_over_D_max"] = edge
         self.meta["fidelity"] = fid
         env = self.meta.setdefault("replay_envelope", {})
-        env.setdefault("tissue", {})["rho_over_D_max"] = edge
+        env.setdefault("tissue", {})["rho_2_over_D_max"] = edge
         self.meta.setdefault("provenance", {})["surface_envelope_restated"] = dict(
-            rho_over_D_max=edge, rho_max_m_per_s=edge * float(D), D=float(D), per_window=[r[0] for r in rows],
-            battery_rho_over_D_max=hi, tol=float(tol), grid_points=len(np.geomspace(1.0, hi, 256)),
+            rho_2_over_D_max=edge, rho_2_max_m_per_s=edge * float(D), D=float(D), per_window=[r[0] for r in rows],
+            battery_rho_2_over_D_max=hi, tol=float(tol), grid_points=len(np.geomspace(1.0, hi, 256)),
             reference=(None if reference is None else reference.meta.get("id")))
         self._digest = None
         if out_path is not None:
@@ -992,7 +1027,8 @@ class ReplayPack:
         Three things describe a replay setting, each stated once:
 
         * ``tissue`` -- **what the material is**: a :class:`~dmipy_sim.spec.Tissue` (pool T2 / T1, the walls'
-          rho, the bulk D, the field source's chi) or ``None``, the bare diffusion signal. T2 / T1 are
+          transverse ``rho_2`` and longitudinal ``rho_1``, the bulk D, the field source's chi) or ``None``, the
+          bare diffusion signal. T2 / T1 are
           ``{pool name: seconds}`` over every pool of the embedded spec, ``inf`` for no decay. ``pack.nominal``
           is the embedded spec's values, so a paper's replay is ``replay(seq, tissue=pack.nominal,
           scanner=pack.nominal_field_T)``; ``pack.nominal.replace(T2={"intra": 0.08})`` changes one pool.
@@ -1011,8 +1047,9 @@ class ReplayPack:
 
         The tiers follow from those: **gradient** (C0) always, in mode space from the position coefficients;
         **bulk relaxation** (C1) with a T2 / T1 in the tissue, under the waveform's coherence gate, on the
-        occupancy channel; **surface relaxivity** (C2) with a rho, scaled by the walk's D (the tissue's, else the
-        pack's recorded one), on the boundary local time; **field** (C3) with a chi in the tissue and a field on
+        occupancy channel; **surface relaxivity** (C2) with a rho_2 and/or a rho_1, scaled by the walk's D (the
+        tissue's, else the pack's recorded one), on the boundary local time -- rho_2 gated by the coherence
+        (transverse) and rho_1 by its complement (stored along B0, e.g. a stimulated echo's mixing time); **field** (C3) with a chi in the tissue and a field on
         the scanner, on the path channel (or the stored basis sampled along the decoded path), the 180 the
         waveform's own. A tier whose inputs are given but which the pack does not carry raises rather than
         returning a plausible number.
@@ -1248,15 +1285,25 @@ class ReplayPack:
                                      f"declares {len(out)} pools: the pack is inconsistent")
                 return out
             relax = dict(T2_per_comp=per_pool(T2v, "T2"), T1_per_comp=per_pool(T1v, "T1"))
+        if P["rho_1"] is not None and float(P["rho_1"]) != 0.0:
+            # the vector-Bloch route propagates the actual M = (Mx, My, Mz) through the real pulses, so Mxy and
+            # Mz are already separate at every step; this route's `surface_relaxivity` (below) attenuates Mxy
+            # only, the same transverse-only mechanism the forward engine uses (engine/bloch.py). Extending it to
+            # a longitudinal wall term means a parallel attenuation on the Mz deviation, a distinct forward-style
+            # mechanism from the C2 scalar/closed-form routes this knob otherwise reaches -- refused rather than
+            # silently dropped (dmipy-sim#574).
+            raise ValueError("replay_bloch does not apply rho_1 (longitudinal surface relaxivity): it propagates "
+                             "the magnetisation vector through the real pulses and attenuates Mxy only, like the "
+                             "forward engine; use replay() for the C2 scalar route, which applies rho_1")
         surface = None
-        if P["rho"] is not None and float(P["rho"]) != 0.0:
+        if P["rho_2"] is not None and float(P["rho_2"]) != 0.0:
             D_walk = self.diffusivity if P["D"] is None else P["D"]
             if D_walk is None:
-                raise ValueError("rho needs the walk's diffusivity: the pack did not record it, pass D=")
+                raise ValueError("rho_2 needs the walk's diffusivity: the pack did not record it, pass D=")
             if not self.has_surface:
                 raise ValueError("surface relaxivity was requested but this pack carries no C2 channel")
-            self._check_rho(float(P["rho"]) / float(D_walk))
-            surface = dict(surface_relaxivity=float(P["rho"]), D=float(D_walk))
+            self._check_rho_2(float(P["rho_2"]) / float(D_walk))
+            surface = dict(surface_relaxivity=float(P["rho_2"]), D=float(D_walk))
         n_w = P["n_w"]
         off = None
         if off_resonance_T is not None and np.any(np.asarray(off_resonance_T, np.float64) != 0.0):
@@ -1398,7 +1445,7 @@ class ReplayPack:
             raise TypeError(f"tissue is a Tissue (pack.nominal, Tissue(...)) or None for the bare diffusion signal; "
                             f"got {type(tissue).__name__}")
         t = tissue if tissue is not None else Tissue()
-        T2, T1, rho, D, chi_iso, chi_aniso = t.T2, t.T1, t.rho, t.D, t.chi_iso, t.chi_aniso
+        T2, T1, rho_2, rho_1, D, chi_iso, chi_aniso = t.T2, t.T1, t.rho_2, t.rho_1, t.D, t.chi_iso, t.chi_aniso
         field = scanner_field(scanner)
         B0, b0_dir = field.B0, field.axis                            # the MACHINE's field; the pose turns it
         if orientation is not None:
@@ -1437,14 +1484,26 @@ class ReplayPack:
                                  f"declares {min(len(T2v), len(T1v))} pools: the pack is inconsistent")
             for (seg, _, _), (chi_s, act_s) in zip(windows, window_gates):
                 logw = logw + relaxation_logweight_runs(seg.arrays, col, T2v, T1v, dt, chi_s, act_s)   # on the runs, never a track
-        if rho is not None and float(rho) != 0.0 and surface:
+        if rho_2 is not None and float(rho_2) != 0.0 and surface:
             D_walk = self.diffusivity if D is None else D
             if D_walk is None:
-                raise ValueError("rho needs the walk's diffusivity: the pack did not record it, pass D=")
-            self._check_rho(float(rho) / float(D_walk))
+                raise ValueError("rho_2 needs the walk's diffusivity: the pack did not record it, pass D=")
+            self._check_rho_2(float(rho_2) / float(D_walk))
             for (seg, _, _), (chi_s, _) in zip(windows, window_gates):
-                logw = logw + surface_logweight(seg.arrays, float(rho) / float(D_walk),
+                logw = logw + surface_logweight(seg.arrays, float(rho_2) / float(D_walk),
                                                 ch.get("boundary_local_time"), chi_s)      # raises without C2
+        if rho_1 is not None and float(rho_1) != 0.0 and surface:
+            # the SAME bridge contraction (surface_logweight), gated by the complement chi_parallel = active - chi:
+            # the contact channel is one series, and the C2 gate rho_2 * chi + rho_1 * chi_parallel is linear in it, so
+            # the longitudinal term is a second call summed in rather than a second channel (dmipy-sim#574).
+            D_walk = self.diffusivity if D is None else D
+            if D_walk is None:
+                raise ValueError("rho_1 needs the walk's diffusivity: the pack did not record it, pass D=")
+            self._check_rho_2(float(rho_1) / float(D_walk))
+            for (seg, _, _), (chi_s, act_s) in zip(windows, window_gates):
+                chi_parallel_s = np.clip(act_s - chi_s, 0.0, None)
+                logw = logw + surface_logweight(seg.arrays, float(rho_1) / float(D_walk),
+                                                ch.get("boundary_local_time"), chi_parallel_s)    # raises without C2
         ew = w * np.exp(logw)
         norm = w.sum()
         ew, norm = self._select(compartment, ew, norm, w, ch, n_w)
@@ -1455,8 +1514,8 @@ class ReplayPack:
         voxel = np.asarray(waveform.voxel_factor(), np.float64)
         return dict(G=G, Geff=Geff, dt=dt, n_t=n_t, dt_wf=dt_wf, ch=ch, n_w=n_w, w=w, ew=ew, norm=norm, B0=B0,
                     pathway=(pathway_weight(waveform) if pathway else 1.0), voxel=voxel,
-                    b0_dir=b0_dir, chi_iso=chi_iso, chi_aniso=chi_aniso, T2=T2, T1=T1, rho=rho, D=D, chi=chi, active=active,
-                    G_eff_wf=G_eff, windows=windows, window_gates=window_gates)
+                    b0_dir=b0_dir, chi_iso=chi_iso, chi_aniso=chi_aniso, T2=T2, T1=T1, rho_2=rho_2, rho_1=rho_1, D=D,
+                    chi=chi, active=active, G_eff_wf=G_eff, windows=windows, window_gates=window_gates)
 
     def _n_pool_ids(self, col):
         """How many pool ids the ``comp`` column addresses, read over every window."""
@@ -1477,6 +1536,10 @@ class ReplayPack:
         nothing is chosen. ``keep = (lmax, nmax)`` restricts what is computed to what the composition retains: an
         ODF or peaks composition keeps ``n = 0``, a frame keeps everything; ``None`` in either slot means the
         response's own band.
+
+        **A magnet's own gradient** (``ScannerSequence.with_background_gradient``) is a second plane wave in each
+        walker's background moment, coupled to the first as the field factor is; the encoding beside it is what
+        must be one direction (dmrai-lab/dmipy-sim#565).
 
         **The quadrature, by name.** An encoding whose moment matrix is not rank one -- a b-tensor or multi-axis
         waveform -- has no plane-wave expansion, and takes the sampled route: the response evaluated on an SO(3)
@@ -1565,10 +1628,10 @@ class ReplayPack:
         h.update(np.ascontiguousarray(P["Geff"], np.float64).tobytes())      # the acquisition on the pack's grid
         h.update(np.ascontiguousarray(P["ew"], np.float64).tobytes())        # the weights with every tissue knob applied
         h.update(np.ascontiguousarray(self.substrate_frame).tobytes())
-        rf = waveform.rf.refocus_time if waveform.rf else None
-        gate = None if getattr(waveform, "gate", None) is None else np.asarray(waveform.gate, np.float32).tobytes()
+        gate = waveform.effective_gate if waveform.gate is None else waveform.gate   # what the field accrues through
+        h.update(np.ascontiguousarray(gate, np.float32).tobytes())
         h.update(repr((float(P["norm"]), P["B0"], tuple(np.round(np.asarray(P["b0_dir"], float), 12)), P["chi_iso"],
-                       P["chi_aniso"], rf, gate, method, None if keep is None else tuple(keep),
+                       P["chi_aniso"], method, None if keep is None else tuple(keep),
                        tuple(np.round(np.asarray(P["voxel"], float), 12)))).encode())
         return root / (h.hexdigest() + ".npz")
 
@@ -1837,7 +1900,7 @@ class ReplayPack:
         raise ValueError("orientation is a (3, 3) rotation, a (3,) axis direction, or a distribution of poses "
                          "(dmipy_sim.replay.so3.Distribution, or an FOD read as an axis density)")
 
-    def _pose_coeffs_closed_many(self, Ps, waveforms, keep=None, tol=1e-8, l_cap=64):
+    def _pose_coeffs_closed_many(self, Ps, waveforms, keep=None, tol=1e-8, l_cap=64, direction_tol=None):
         """The pose expansion in closed form (#197) for a batch of acquisitions on this pack -- the encoding classes
         of a machine pass, or one class per voxel -- in ONE pass over the walkers: every acquisition's waveform
         groups lie along one group axis, so the moments, the Bessel values, the moment harmonics and the products
@@ -1870,13 +1933,37 @@ class ReplayPack:
         contracted with the real coupling tables (:func:`so3.coupling`) on the lab index (``Y_lm(g^)`` with
         ``Y_l'n'(b^)``) and on the body index (``j_l Y_ln(m^)`` with ``a_l'm'``); no ``g x B0`` frame exists.
         Returns None when a measurement is not single-direction (a b-tensor encoding): that takes the quadrature.
-        
+
+        **Nearly one direction.** A measurement whose waveform is one direction up to a residual -- a machine's
+        Maxwell gradient through the ramps of a trapezoid, which goes as the square of the ramp where the encoding
+        goes as the ramp -- is expanded on its principal direction when the residual's phase, contracted on every
+        walker exactly as the moments are and bounded over every pose, moves the ensemble's signal by at most
+        ``direction_tol`` (default a tenth of the ensemble's floor ``1 / sqrt(n_w)``): since ``|exp(i a) - exp(i b)|
+        <= |a - b|``, the walkers' bounds weighted as the signal weighs them bound it, and that is added to the
+        measurement's misfit. Beyond it the acquisition takes the quadrature.
+
+        **A magnet's own gradient.** An acquisition played in a magnet with its own gradient ``g0`` (through
+        every pulse and dead time) plays two directions with two time courses; ``g0`` through the effective gate
+        is taken out of the encoding before the direction is judged, and enters as a second plane-wave factor in
+        the walkers' background moments (:meth:`_closed_with_background`, dmrai-lab/dmipy-sim#565).
         """
         from . import so3
         from .compression import read_position_coeffs
         from ._replay_kernel import effective_gradient
         from .pose_device import bessel_tails, host_bodies, spherical_jn_all as _jn_all
         n_acq = len(Ps)
+        backgrounds = [_background_of(wf) for wf in waveforms]
+        with_bg = [c for c in range(n_acq) if backgrounds[c] is not None]
+        if with_bg and len(with_bg) < n_acq:
+            # a batch that mixes the two kinds takes two passes, so an acquisition without a magnet's gradient is the
+            # same numbers whichever batch it is expanded in
+            out = [None] * n_acq
+            for sub in ([c for c in range(n_acq) if backgrounds[c] is None], with_bg):
+                got = self._pose_coeffs_closed_many([Ps[c] for c in sub], [waveforms[c] for c in sub], keep=keep, tol=tol,
+                                                    l_cap=l_cap, direction_tol=direction_tol)
+                for c, r in zip(sub, got):
+                    out[c] = r
+            return out
         P0 = Ps[0]
         dt, n_t, ew, norm = P0["dt"], P0["n_t"], P0["pathway"] * P0["ew"], P0["norm"]
         n_w = ew.shape[0]
@@ -1886,29 +1973,54 @@ class ReplayPack:
         _ph("moments", n_acq=int(n_acq), n_w=int(n_w))
         # every acquisition's directions and grouped profiles; an acquisition with a multi-axis measurement is left out
         per = []
-        for P, wf in zip(Ps, waveforms):
-            G = np.asarray(P["Geff"], np.float64); n_meas = G.shape[0]
-            g_hat = np.zeros((n_meas, 3)); s_wave = np.zeros((n_meas, n_t)); single = True
+        gates = []                                                                 # the distinct gates a background accrues through
+        for P, wf, bg in zip(Ps, waveforms, backgrounds):
+            if bg is None:
+                G_wf, G = P["G_eff_wf"], np.asarray(P["Geff"], np.float64)
+            else:
+                # the magnet's own gradient leaves the encoding: g0 through the effective gate is the second plane wave
+                g0, gate = bg
+                G_wf = P["G_eff_wf"] - g0[:, None, :] * gate[None, :, None]
+                G = effective_gradient(G_wf, P["dt_wf"], n_t, dt)
+                key = (gate.tobytes(), float(P["dt_wf"]))
+                gate_id = next((j for j, gk in enumerate(gates) if gk[0] == key), None)
+                if gate_id is None:
+                    gate_id = len(gates); gates.append((key, gate, float(P["dt_wf"])))
+            n_meas = G.shape[0]
+            g_hat = np.zeros((n_meas, 3)); s_wave = np.zeros((n_meas, n_t)); residual = []
             for i in range(n_meas):
                 Gi = G[i]
-                if not np.any(Gi):
+                if not np.any(Gi) or (bg is not None and np.abs(Gi).max() <= 1e-6 * np.linalg.norm(g0[i])):
                     g_hat[i] = (0.0, 0.0, 1.0)                                     # a b = 0 row: no phase at any pose
+                    s_wave[i] = 0.0                                                # (beside the background, to its rounding)
                     continue
                 _u, sv, vt = np.linalg.svd(Gi, full_matrices=False)
                 if sv[1] > 1e-6 * sv[0]:                                    # G is stored float32; a direction is one to that
-                    single = False; break                                          # rank > 1: not a single direction
+                    residual.append(i)                                             # rank > 1: its residual is bounded below
                 g, sw = vt[0], Gi @ vt[0]
                 lead = int(np.flatnonzero(np.abs(sw) > 1e-6 * np.abs(sw).max())[0])
                 if sw[lead] < 0:                       # one spelling of (direction, waveform): the first lobe positive
                     g, sw = -g, -sw
                 g_hat[i] = g; s_wave[i] = sw
-            if not single:
-                per.append(None); continue
             # the body of a coefficient depends on the waveform's shape and amplitude only, never on its direction:
             # measurements that play the same s_i(t) -- a shell -- share one body, and their directions enter as
             # harmonics afterwards. Group by the played waveform, exactly, and contract once per group.
-            group, first = _group_waveforms(s_wave, rtol=1e-5)                   # float32 G: 1e-5 is the same waveform
-            per.append(dict(P=P, G=G, g_hat=g_hat, group=group, first=first, n_meas=n_meas))
+            if bg is None:
+                group, first = _group_waveforms(s_wave, rtol=1e-5)               # float32 G: 1e-5 is the same waveform
+                extra = {}
+            else:
+                # a body is also its background's magnitude (the background's Bessel factor is per walker): |g0| is
+                # one more column of what is grouped, in the same unit as the waveform
+                beta = np.linalg.norm(g0, axis=1)
+                group, first = _group_waveforms(np.concatenate([s_wave, beta[:, None]], axis=1), rtol=1e-5)
+                extra = dict(g0=g0, beta=beta, gate_id=gate_id, s_first=s_wave[first])
+            per.append(dict(P=P, G=G, G_wf=G_wf, g_hat=g_hat, group=group, first=first, n_meas=n_meas,
+                            residual=np.asarray(residual, int), bound=np.zeros(n_meas), **extra))
+        limit = (0.1 / np.sqrt(n_w)) if direction_tol is None else float(direction_tol)
+        self._residual_bounds(per, P0, dt, n_w, ew, norm)
+        for c, q in enumerate(per):
+            if q is not None and q["residual"].size and float(q["bound"].max()) > limit:
+                per[c] = None                                                      # not one direction to the bound: quadrature
         live = [c for c in range(n_acq) if per[c] is not None]
         if not live:
             return [None] * n_acq
@@ -1916,18 +2028,23 @@ class ReplayPack:
         for c in live:
             g_off[c] = n_grp; n_grp += len(per[c]["first"])
         e = np.eye(3)
-        m = np.zeros((n_w, n_grp, 3))
+        n_gates = len(gates)
+        m = np.zeros((n_w, n_grp + n_gates, 3))
         for seg, t0, n_s in P0["windows"]:                                     # the windows' moments sum (RPK.md 4.3)
             C = read_position_coeffs(seg.arrays, dtype=np.float64).reshape(n_w, -1)
-            s_all = np.zeros((n_grp, n_s))
+            s_all = np.zeros((n_grp + n_gates, n_s))
             for c in live:
                 q = per[c]
-                G_s = effective_gradient(q["P"]["G_eff_wf"], q["P"]["dt_wf"], n_s, dt, t0=t0) if self.n_segments > 1 else q["G"]
+                G_s = effective_gradient(q["G_wf"], q["P"]["dt_wf"], n_s, dt, t0=t0) if self.n_segments > 1 else q["G"]
                 s_all[g_off[c]:g_off[c] + len(q["first"])] = np.einsum("mtc,mc->mt", G_s[q["first"]], q["g_hat"][q["first"]])
+            for j, (_key, gate, dt_g) in enumerate(gates):                     # a background's moment: its gate's, per walker
+                s_all[n_grp + j] = effective_gradient(gate[None, :, None], dt_g, n_s, dt, t0=t0 if self.n_segments > 1 else None)[0, :, 0]
             for b_ in range(3):                                                # m_w[b] = gamma sum_t s(t) r_w(t)_b dt
                 W = _compile_effective(s_all[:, :, None] * e[b_][None, None, :], dt, self.K, n_s)
                 m[:, :, b_] += C @ W
         m = m @ self.substrate_frame                                           # stored -> canonical: F^T m, per walker
+        n_bg = m[:, n_grp:, :]                                                 # (n_w, n_gates, 3): the background moments
+        m = m[:, :n_grp, :]
         kappa = np.linalg.norm(m, axis=2)                                      # (n_w, n_grp), radians
         safe = np.where(kappa > 0, kappa, 1.0)
         m_hat = m / safe[:, :, None]
@@ -1954,6 +2071,13 @@ class ReplayPack:
         else:
             _ph("field")
             F_sh, L_f = self._field_harmonics(field, tol=tol, l_cap=l_cap)      # (n_w, (L_f+1)^2) complex
+        if n_gates:
+            tail_all = np.zeros(n_grp)
+            for l in range(L + 1, min(L + 4, T_ab.shape[0])):
+                tail_all += (2 * l + 1) * T_ab[l]
+            return self._closed_with_background(
+                per, live, g_off, n_grp, kappa, m_hat, w, n_bg, L, k_max, tail_all, F_sh, L_f,
+                None if field is None else P0["b0_dir"], keep, tol, l_cap, n_acq, _ph, run, limit)
         L_tot = L + L_f
         want_l, want_n = (None, None) if keep is None else (keep[0], keep[1])
         keep_l = L_tot if want_l is None else min(int(want_l), L_tot)
@@ -2087,13 +2211,360 @@ class ReplayPack:
                             block = (4 * np.pi * (1j ** l) / np.sqrt(2 * Lc + 1)) * lab[:, :, None] * body[:, None, :]
                             o = offs[Lc]
                             coeffs[:, o:o + (2 * Lc + 1) * (2 * kk + 1)] += block.reshape(n_meas, -1)
-            resp = PoseResponse(coeffs, keep_l, keep_n, misfit=tail_all[group], floor=1.0 / np.sqrt(n_w),
+            resp = PoseResponse(coeffs, keep_l, keep_n, misfit=tail_all[group] + q["bound"], floor=1.0 / np.sqrt(n_w),
                                 phase_amplitude=float(kappa[:, g_sl].max()) if kappa.size else 0.0, n_samples=0)
             resp.n_bodies = len(q["first"])                                        # the distinct waveforms contracted
             resp.field_lmax = L_f
             resp.route = "closed"
             out[c] = resp
         return out
+
+    def _closed_with_background(self, per, live, g_off, n_grp, kappa, m_hat, w, n_bg, L, k_max, tail_all, F_sh, L_f,
+                                b0_dir, keep, tol, l_cap, n_acq, _ph, run, limit):
+        """The closed form of :meth:`_pose_coeffs_closed_many` for acquisitions played in a magnet with its own
+        gradient (dmrai-lab/dmipy-sim#565): the background as a second plane-wave factor.
+
+        **The phase.** A magnet that is not uniform adds a constant ``g0`` to the physical gradient through every
+        pulse and dead time (:func:`_background_of`), and it accrues through the effective gate ``e(t)``
+        (:attr:`~dmipy_sim.acquisition.scanner_sequence.ScannerSequence.effective_gate`) like everything else. So
+        measurement ``i`` plays two directions with two time courses, ``G_i(t) = q_i s_i(t) + g0_i e(t)``, and
+        walker ``w``'s phase at pose ``R`` is
+
+            phi_iw(R) = q_i . R m_iw + g0_i . R n_w,      n_w = gamma int e(t) r_w(t) dt,
+
+        ``m`` the encoding's moment and ``n_w`` the walker's BACKGROUND moment (the column the shape-moment layout
+        stores per sequence group), both contracted through the windows from the stored bands.
+
+        **The second factor.** ``exp(i g0 . R n) = sum_l 4 pi i^l j_l(|g0| |n|) sum_k Y_lk(n^) Y_lk(R^T g0^)`` is
+        a function of the rotated background direction exactly as the field factor is of the rotated field
+        direction: its body side is ``4 pi i^l j_l(|g0| |n_w|) Y_l(n^_w)`` per walker, its lab side ``Y_l(g0^_i)``.
+        It is coupled to the gradient's Rayleigh expansion with the real Clebsch-Gordan tables (:func:`so3.coupling`)
+        on the body index and on the lab index, as the field factor is. With the field on too, the field and
+        background factors are first coupled walker by walker into one factor of order ``Lambda`` (body side
+        ``sum a_l'k' c_l''k'' conj K``, lab side ``sum Y_l'(b^) Y_l''(g0^) K``), which is then coupled with the
+        gradient: the product of three Wigner blocks, two couplings.
+
+        **What makes it exact.** The encoding left once ``g0 e(t)`` is taken out is one direction per measurement
+        (or one within #561's residual bound, which is then added to the misfit); ``g0`` is constant over the
+        acquisition; and it accrues through the acquisition's own effective gate. A body depends on ``|g0|``
+        (through ``j_l``) and on the gate (through ``n_w``), never on ``g0``'s direction, so the bodies are per
+        (waveform, ``|g0|``) group and the factor per (``|g0|``, gate) -- one per encoding class of a machine --
+        while each measurement's ``g0^`` enters on the lab side alone.
+
+        **The band and the bound.** The background's band ``L_b`` is the first order whose weighted Bessel tail
+        ``(2l+1) sum_w |w_w| |j_l(|g0| |n_w|)|`` is below ``tol`` for every factor. ``|g0| |n_w|`` is a few
+        tenths of a radian at the Swoop's 1.4 mT/m, so ``L_b`` is a handful of orders. Walker by walker
+        ``|e^{ia} e^{ib} - T_a T_b| <= r_b + r_a (1 + r_b)`` for truncations ``T`` with remainders ``r``, so the
+        misfit is the gradient's tail plus the background's times ``1 +`` the gradient's largest per-walker
+        remainder, plus the residual bound. An acquisition whose encoding is not one direction to that bound has
+        already been sent to the quadrature."""
+        from . import so3
+        from .compression import resolve_device
+        from .pose_device import bessel_tails, field_bodies, paired_bodies
+        n_w = w.shape[0]
+        # one background factor per (|g0|, gate): a bucket
+        beta_g = np.zeros(n_grp); gate_g = np.zeros(n_grp, np.int64)
+        for c in live:
+            q = per[c]; sl = slice(g_off[c], g_off[c] + len(q["first"]))
+            beta_g[sl] = q["beta"][q["first"]]; gate_g[sl] = q["gate_id"]
+        keys, bucket = np.unique(np.stack([beta_g, gate_g.astype(np.float64)], axis=1), axis=0, return_inverse=True)
+        bucket = np.asarray(bucket).reshape(-1)
+        k_gate = keys[:, 1].astype(np.int64)
+        r_n = np.linalg.norm(n_bg, axis=2)                                    # (n_w, n_gates)
+        n_hat = n_bg / np.where(r_n > 0, r_n, 1.0)[:, :, None]
+        n_hat[r_n == 0] = (0.0, 0.0, 1.0)
+        x = keys[:, 0][None, :] * r_n[:, k_gate]                              # (n_w, n_buckets): |g0| |n_w|, radians
+        x_max = float(x.max()) if x.size else 0.0
+        _ph("background", n_buckets=int(len(keys)), phase_amplitude=x_max)
+        L_b = 0
+        T_bg = bessel_tails(x, w, min(l_cap, int(np.ceil(x_max)) + 12))
+        while L_b < l_cap:
+            if L_b + 1 >= T_bg.shape[0]:
+                T_bg = bessel_tails(x, w, min(l_cap, T_bg.shape[0] + 12))
+            if (2 * (L_b + 1) + 1) * T_bg[L_b + 1].max() < tol:
+                break
+            L_b += 1
+        tail_bg = np.zeros(len(keys))
+        for l in range(L_b + 1, min(L_b + 4, T_bg.shape[0])):
+            tail_bg += (2 * l + 1) * T_bg[l]
+        J_top = so3.spherical_jn_all(L + 3, np.array([k_max]))[:, 0]         # the gradient's largest per-walker remainder
+        r_a = float(sum((2 * l + 1) * abs(J_top[l]) for l in range(L + 1, L + 4)))
+        # the factor's channels: (order Lambda, its body columns, how its lab side is formed)
+        Yb = None
+        if F_sh is None:
+            channels = [(l2, so3.sh_block(l2, True), ("b", l2)) for l2 in range(L_b + 1)]
+            n_cols = (L_b + 1) ** 2
+        else:
+            b_lab = np.asarray(b0_dir, np.float64); b_lab = b_lab / np.linalg.norm(b_lab)
+            Yb = so3.real_sh(L_f, b_lab[None, :], full=True)[0]
+            channels, n_cols, K_fb = [], 0, {}
+            for lp in range(L_f + 1):
+                for l2 in range(L_b + 1):
+                    K_fb[(lp, l2)] = so3.coupling(lp, l2)
+                    for Lam in range(abs(lp - l2), lp + l2 + 1):
+                        channels.append((Lam, slice(n_cols, n_cols + 2 * Lam + 1), ("fb", lp, l2)))
+                        n_cols += 2 * Lam + 1
+        Lam_max = L_f + L_b
+        Y_n = [so3.real_sh(L_b, n_hat[:, j, :], full=True) for j in range(n_hat.shape[1])]
+
+        def factor(k):
+            """The per-walker factor of bucket ``k``, ``(n_w, n_cols)`` complex."""
+            J = so3.spherical_jn_all(L_b, x[:, k])                            # (L_b+1, n_w)
+            Fb = np.empty((n_w, (L_b + 1) ** 2), np.complex128)
+            for l2 in range(L_b + 1):
+                b2 = so3.sh_block(l2, True)
+                Fb[:, b2] = (4 * np.pi * (1j ** l2)) * J[l2][:, None] * Y_n[k_gate[k]][:, b2]
+            if F_sh is None:
+                return Fb
+            F = np.empty((n_w, n_cols), np.complex128)
+            for (lp, l2), Kp in K_fb.items():
+                prod = (F_sh[:, so3.sh_block(lp, True)][:, :, None] * Fb[:, so3.sh_block(l2, True)][:, None, :]).reshape(n_w, -1)
+                for Lam, cols, kind in channels:
+                    if kind[1:] == (lp, l2):
+                        F[:, cols] = prod @ Kp[Lam].conj()
+            return F
+
+        L_tot = L + Lam_max
+        want_l, want_n = (None, None) if keep is None else (keep[0], keep[1])
+        keep_l = L_tot if want_l is None else min(int(want_l), L_tot)
+        keep_n = L_tot if want_n is None else min(int(want_n), L_tot)
+        n_feat = so3.n_so3_coeffs(keep_l, keep_n)
+        _ph("harmonics", L=int(L), L_f=int(L_f), L_b=int(L_b), keep_l=int(keep_l), keep_n=int(keep_n), n_feat=int(n_feat))
+        l_used = [l for l in range(L + 1) if l <= keep_l + Lam_max]
+        offs, off = {}, 0
+        for Lc in range(keep_l + 1):
+            offs[Lc] = off; off += (2 * Lc + 1) * (2 * (so3._n_cols(Lc, keep_n) // 2) + 1)
+        tables = {}                                                           # (l, Lambda) -> (Ls, K_lab3, K_body, slices)
+        for l in l_used:
+            for Lam in range(Lam_max + 1):
+                Ls = [Lc for Lc in range(abs(l - Lam), min(l + Lam, keep_l) + 1)]
+                if not Ls:
+                    continue
+                K = so3.coupling(l, Lam)
+                K_lab = np.concatenate([K[Lc] for Lc in Ls], axis=1)                        # ((2l+1)(2Lam+1), sum 2Lc+1)
+                K_body = np.concatenate([K[Lc].conj()[:, Lc - so3._n_cols(Lc, keep_n) // 2:Lc + so3._n_cols(Lc, keep_n) // 2 + 1]
+                                         for Lc in Ls], axis=1)                               # ((2l+1)(2Lam+1), sum 2kk+1)
+                lab_sl, body_sl, o1, o2 = {}, {}, 0, 0
+                for Lc in Ls:
+                    kk = so3._n_cols(Lc, keep_n) // 2
+                    lab_sl[Lc] = slice(o1, o1 + 2 * Lc + 1); o1 += 2 * Lc + 1
+                    body_sl[Lc] = slice(o2, o2 + 2 * kk + 1); o2 += 2 * kk + 1
+                tables[(l, Lam)] = (Ls, K_lab.reshape(2 * l + 1, 2 * Lam + 1, -1), K_body, lab_sl, body_sl)
+        n_bessel = max(l_used) + 24 + int(np.ceil(k_max))                     # the Miller recurrence's start order
+        step = max(1, int(2.5e8 / (8 * n_w * (L + 1) ** 2)))                   # groups per ~256 MB of host harmonics
+        # on the host, only the products the retained azimuthal band couples (pose_device.paired_bodies); the device
+        # forms every product in one fused pass
+        col_n = np.zeros(n_cols, np.int64)
+        for Lam, cols, _kind in channels:
+            col_n[cols] = np.abs(np.arange(-Lam, Lam + 1))
+        host = resolve_device("auto") == "numpy"
+        paired = host and keep_n < Lam_max
+        l_off = dict(zip(l_used, np.cumsum([0] + [2 * l + 1 for l in l_used[:-1]])))   # each order's rows in a body
+        perm = np.argsort(col_n, kind="stable") if paired else np.arange(n_cols)   # the factor's columns by |N|
+        at = np.empty_like(perm); at[perm] = np.arange(n_cols)                      # a column's place after the sort
+        if paired:
+            step = max(1, int(5e8 / (8 * n_w * sum(2 * l + 1 for l in l_used))))    # groups per ~0.5 GB of bodies
+        out = [None] * n_acq
+        done = 0
+        shell_dev = np.zeros(n_grp)                                           # a shell row's departure from its shape
+        for c in live:
+            q = per[c]; n_meas = q["n_meas"]; group = q["group"] + g_off[c]
+            g_sl = slice(g_off[c], g_off[c] + len(q["first"]))
+            Yg = so3.real_sh(L, q["g_hat"], full=True)                        # (n_meas, (L+1)^2): the gradient's lab side
+            g0 = q["g0"]
+            beta = np.linalg.norm(g0, axis=1)
+            u_dirs, inv = np.unique(np.where(beta[:, None] > 0, g0 / np.where(beta > 0, beta, 1.0)[:, None], (0.0, 0.0, 1.0)),
+                                    axis=0, return_inverse=True)
+            inv = np.asarray(inv).reshape(-1)
+            Y_u = so3.real_sh(L_b, u_dirs, full=True)                         # (n_u, (L_b+1)^2): the background's lab side
+            lam = []                                                          # per channel: (n_u, 2 Lambda + 1)
+            for Lam, cols, kind in channels:
+                if kind[0] == "b":
+                    lam.append(Y_u[:, so3.sh_block(kind[1], True)])
+                else:
+                    _, lp, l2 = kind
+                    pair = (Yb[so3.sh_block(lp, True)][None, :, None] * Y_u[:, None, so3.sh_block(l2, True)]).reshape(len(u_dirs), -1)
+                    lam.append(pair @ K_fb[(lp, l2)][Lam])
+            coeffs = np.zeros((n_meas, n_feat), np.complex128)
+            M_lab = {}                                                        # (l, channel) -> (n_u, 2l+1, sum 2Lc+1)
+            for k in np.unique(bucket[g_sl]):
+                F = factor(int(k))[:, perm]
+                F_re, F_im = np.ascontiguousarray(F.real), np.ascontiguousarray(F.imag)
+                grp = np.flatnonzero(bucket[g_sl] == k) + g_off[c]              # this acquisition's groups of the bucket
+                for idx, B3, dev in self._background_bodies(grp, q["s_first"][grp - g_off[c]], kappa, m_hat, w, F_re, F_im,
+                                                       L, l_used, l_off, col_n[perm], keep_n, paired, host, step, n_bessel,
+                                                       limit):
+                    nc = len(idx)
+                    shell_dev[idx] = dev
+                    if run is not None:
+                        run.progress(done, n_grp, unit="groups")
+                    done += nc
+                    where = np.full(n_grp, -1, np.int64); where[idx] = np.arange(nc)
+                    sel = np.flatnonzero(where[group] >= 0)                    # the measurements whose bodies these are
+                    pos = where[group[sel]]
+                    for l in l_used:
+                        bl = so3.sh_block(l, True)
+                        B_l = B3[:, l_off[l]:l_off[l] + 2 * l + 1, :]
+                        Yg_l = Yg[sel][:, bl]                                              # (n_sel, 2l+1)
+                        for ci, (Lam, cols, kind) in enumerate(channels):
+                            if (l, Lam) not in tables:
+                                continue
+                            Ls, K_lab3, K_body, lab_sl, body_sl = tables[(l, Lam)]
+                            body_all = B_l[:, :, at[cols]].reshape(nc, -1) @ K_body        # (nc, sum 2kk+1)
+                            if (l, ci) not in M_lab:                                       # the lab side's coupling, per direction of g0
+                                M_lab[(l, ci)] = np.einsum("uM,iMs->uis", lam[ci], K_lab3)
+                            M_lam = M_lab[(l, ci)]
+                            lab_all = (Yg_l @ M_lam[0]) if len(u_dirs) == 1 else np.einsum("ni,nis->ns", Yg_l, M_lam[inv[sel]])
+                            body_all = body_all[pos]
+                            for Lc in Ls:
+                                kk = so3._n_cols(Lc, keep_n) // 2
+                                block = (4 * np.pi * (1j ** l) / np.sqrt(2 * Lc + 1)) * lab_all[:, lab_sl[Lc]][:, :, None] \
+                                    * body_all[:, body_sl[Lc]][:, None, :]
+                                o = offs[Lc]
+                                coeffs[sel, o:o + (2 * Lc + 1) * (2 * kk + 1)] += block.reshape(len(sel), -1)
+            misfit = tail_all[group] + q["bound"] + tail_bg[bucket[group]] * (1.0 + r_a) + shell_dev[group]
+            resp = PoseResponse(coeffs, keep_l, keep_n, misfit=misfit, floor=1.0 / np.sqrt(n_w),
+                                phase_amplitude=float(kappa[:, g_sl].max()) if kappa.size else 0.0, n_samples=0)
+            resp.n_bodies = len(q["first"])
+            resp.field_lmax = L_f
+            resp.background_lmax = L_b
+            resp.route = "closed"
+            out[c] = resp
+        return out
+
+    def _background_bodies(self, grp, s_first, kappa, m_hat, w, F_re, F_im, L, l_used, l_off, col_n, keep_n, paired, host,
+                           step, n_bessel, limit):
+        """The bodies of the groups ``grp`` (one acquisition's, one background factor) against the factor ``F``, in
+        chunks: yields ``(idx, B, dev)`` with ``B[g, (l, n), j] = sum_w w_w j_l(kappa_wg) Y_ln(m^_wg) F_wj``
+        ``(nc, R, n_f)``, the orders ``l_used`` at the offsets ``l_off``, and ``dev`` ``(nc,)`` what that costs the
+        misfit (below).
+
+        **A shell is one body in powers of its amplitude.** A machine's class plays every row at its own delivered
+        amplitude, so a shell's rows are as many groups; but they play one SHAPE, ``s_g(t) = a_g u(t)``, so their
+        moments are ``a_g mu_w`` with one ``mu_w`` per walker, and ``j_l(a r) = sum_k c_lk (a r)^{l+2k}`` with
+        ``c_lk = (-1)^k / (2^k k! (2l+2k+1)!!)`` makes every row's body a polynomial in its amplitude:
+
+            B_g = sum_k (a_g / A)^{l+2k} M_k,     M_k = c_lk sum_w w_w (A |mu_w|)^{l+2k} Y_ln(mu^_w) F_w,
+
+        ``A`` the shell's largest amplitude. The walkers are contracted once per power instead of once per row. A
+        row's waveform is its shape times its amplitude only nearly -- a machine's Maxwell term along the encoding
+        goes as the square of the amplitude, and its float32 rounding -- so its own moment ``m_gw`` differs from
+        ``(a_g / A) m_refw`` by ``dm_gw``; its phase at any pose by at most ``|dm_gw|``, and ``dev_g = sum_w |w_w|
+        |dm_gw|`` is added to its misfit. Rows are one shape when their waveforms over their amplitudes agree to
+        ``SHELL_RTOL``, and a shell takes the series only when every row's ``dev_g`` is within ``limit`` (the closed
+        form's ``direction_tol``: a tenth of the floor by default), as a nearly single-direction waveform does. The
+        series is cut where its next term is below ``SHELL_SERIES_TOL`` at the shell's largest phase, and is taken on
+        the host when that phase is at most ``SHELL_SERIES_MAX_PHASE`` (its terms then cancel to within a few digits
+        of float64) and the shell has more rows than powers; otherwise each group is contracted on its own."""
+        from . import so3
+        from .pose_device import field_bodies, paired_bodies, paired_products
+        n_w = w.shape[0]
+        R = sum(2 * l + 1 for l in l_used)
+        amp = np.abs(s_first).max(axis=1) if s_first.size else np.zeros(0)
+        shells = []                                                             # (group positions, use the series)
+        live = np.flatnonzero(amp > 0)
+        if host and live.size:
+            shape = s_first[live] / amp[live][:, None]
+            sh_group, sh_first = _group_waveforms(shape, rtol=SHELL_RTOL)
+            for h in range(len(sh_first)):
+                shells.append(live[sh_group == h])
+        rest = np.setdiff1d(np.arange(len(grp)), np.concatenate(shells) if shells else np.zeros(0, np.int64))
+        series, single = [], [rest]
+        for members in shells:
+            g_ref = members[np.argmax(amp[members])]
+            x = kappa[:, grp[g_ref]]
+            x_max = float(x.max())
+            K = 0
+            c = {l: [1.0 / float(np.prod(np.arange(2 * l + 1, 0, -2, dtype=np.float64)))] for l in l_used}
+            while max(abs(c[l][K]) * x_max ** (l + 2 * K) for l in l_used) > SHELL_SERIES_TOL:
+                for l in l_used:
+                    c[l].append(-c[l][K] / (2.0 * (K + 1) * (2 * l + 2 * K + 3)))
+                K += 1
+            dev = np.zeros(len(members))
+            if x_max <= SHELL_SERIES_MAX_PHASE and len(members) > K + 1:
+                t = amp[members] / amp[g_ref]
+                for lo in range(0, len(members), 64):                         # each row's departure from the shell's shape
+                    gg = grp[members[lo:lo + 64]]
+                    dm = kappa[:, gg, None] * m_hat[:, gg, :] - (t[lo:lo + 64][None, :, None] * x[:, None, None]) \
+                        * m_hat[:, grp[g_ref], None, :]
+                    dev[lo:lo + 64] = np.abs(w) @ np.linalg.norm(dm, axis=2)
+            if x_max <= SHELL_SERIES_MAX_PHASE and len(members) > K + 1 and float(dev.max()) <= limit:
+                series.append((members, g_ref, x, K, c, dev))
+            else:
+                single.append(members)
+        row_n = np.concatenate([np.abs(np.arange(-l, l + 1)) for l in l_used])
+        for members, g_ref, x, K, c, dev in series:
+            Y = so3.real_sh(L, m_hat[:, grp[g_ref], :], full=True)             # (n_w, (L+1)^2): the shell's moment directions
+            M = np.empty((K + 1, R, F_re.shape[1]), np.complex128)
+            for k in range(K + 1):
+                X = np.empty((n_w, R))
+                for l in l_used:
+                    X[:, l_off[l]:l_off[l] + 2 * l + 1] = (w * c[l][k] * x ** (l + 2 * k))[:, None] * Y[:, so3.sh_block(l, True)]
+                M[k] = paired_products(X, row_n, F_re, F_im, col_n, keep_n) if paired else (X.T @ F_re) + 1j * (X.T @ F_im)
+            t = amp[members] / amp[g_ref]                                      # (n_m,): each row's amplitude in the shell's
+            l_row = np.concatenate([np.full(2 * l + 1, l) for l in l_used])
+            chunk = max(1, int(2.5e8 / (16 * R * F_re.shape[1])))
+            for lo in range(0, len(members), chunk):
+                mm = members[lo:lo + chunk]
+                powers = t[lo:lo + chunk][:, None, None] ** (l_row[None, None, :] + 2 * np.arange(K + 1)[None, :, None])
+                yield grp[mm], np.einsum("gkr,krj->grj", powers, M), dev[lo:lo + chunk]
+        for members in single:
+            for lo in range(0, len(members), step):
+                idx = grp[members[lo:lo + step]]; nc = len(idx)
+                if not nc:
+                    continue
+                if paired:
+                    B_c = paired_bodies(kappa[:, idx], m_hat[:, idx, :], w, F_re, F_im, L, l_used, col_n, keep_n)
+                else:
+                    B_c = field_bodies(kappa[:, idx], m_hat[:, idx, :], w, F_re, F_im, L, l_used, n_bessel=n_bessel)
+                B3 = np.empty((nc, R, F_re.shape[1]), np.complex128)
+                row = 0
+                for l in l_used:
+                    B3[:, l_off[l]:l_off[l] + 2 * l + 1] = B_c[row:row + nc * (2 * l + 1)].reshape(nc, 2 * l + 1, -1)
+                    row += nc * (2 * l + 1)
+                yield idx, B3, np.zeros(nc)
+
+    def _residual_bounds(self, per, P0, dt, n_w, ew, norm):
+        """Into each acquisition's ``bound``: for every measurement whose waveform has a component off its principal
+        direction, a bound on how far that component can move the ensemble's signal at ANY pose. The residuals
+        of an acquisition's measurements are written on their common time courses (an SVD over the measurements and
+        axes, to its numerical rank: a machine's Maxwell residual is one ramp-shaped course per shell),
+        ``res_i(t) = sum_k u_k(t) c_ik``; a walker's phase at pose ``R`` is then ``sum_k (R^T c_ik) . mu_kw`` with
+        ``mu_kw = sum_t u_k(t) r_w(t)`` contracted through the windows as the moments are, and is bounded over the
+        rotations by ``sum_k |c_ik| |mu_kw|`` (:meth:`_pose_coeffs_closed_many`). Windows add. The bound is the
+        ENSEMBLE's, which is what the misfit bounds: ``|sum_w w_w (e^{i(phi_w + d_w)} - e^{i phi_w})| <= sum_w |w_w|
+        |d_w|``, the walkers' bounds weighted as the signal weighs them."""
+        from .compression import read_position_coeffs
+        from ._replay_kernel import effective_gradient
+        from .._blas import lapack_threads
+        todo = [c for c, q in enumerate(per) if q is not None and q["residual"].size]
+        if not todo:
+            return
+        e = np.eye(3)
+        live = np.asarray(ew) != 0
+        w_live = np.abs(np.asarray(ew, np.float64)[live]) / float(norm)
+        per_walker = {c: 0.0 for c in todo}                                    # (n_live, n_r) per acquisition, windows summed
+        for seg, t0, n_s in P0["windows"]:
+            C = read_position_coeffs(seg.arrays, dtype=np.float64).reshape(n_w, -1)[live]
+            for c in todo:
+                q = per[c]; rows = q["residual"]
+                G_s = effective_gradient(q["G_wf"], q["P"]["dt_wf"], n_s, dt, t0=t0) if self.n_segments > 1 else q["G"]
+                G_s = np.asarray(G_s, np.float64)[rows]
+                g = q["g_hat"][rows]
+                res = G_s - np.einsum("mtc,mc->mt", G_s, g)[:, :, None] * g[:, None, :]          # (n_r, n_s, 3)
+                X = res.transpose(0, 2, 1).reshape(-1, n_s)                                       # (n_r * 3, n_s)
+                with lapack_threads():                                                            # #564: this shape hangs a known build
+                    U, S, Vt = np.linalg.svd(X, full_matrices=False)
+                k = int(np.sum(S > 1e-12 * S[0])) if S.size and S[0] > 0 else 0
+                if k == 0:
+                    continue
+                coef = (U[:, :k] * S[:k]).reshape(len(rows), 3, k)                                # c_ik per axis
+                mu = np.stack([np.stack([C @ _compile_effective(Vt[j][None, :, None] * e[b_][None, None, :], dt, self.K, n_s)[:, 0]
+                                         for b_ in range(3)], axis=1) for j in range(k)], axis=1)  # (n_live, k, 3)
+                per_walker[c] = per_walker[c] + np.linalg.norm(mu, axis=2) @ np.linalg.norm(coef, axis=1).T
+        for c in todo:
+            if np.ndim(per_walker[c]):
+                per[c]["bound"][per[c]["residual"]] += w_live @ per_walker[c]
 
     def _field_quadratic(self, P, waveform):
         """The susceptibility phase of every walker as ``a_w + u^T A_w u`` in the field direction ``u`` expressed in
@@ -2355,7 +2826,7 @@ class ReplayPack:
         The windows of a segmented walk share a save and the first save of an accumulated channel ends no step
         (#225), so joining them is a rule and not a concatenation; this is the one place it is applied for a
         consumer. The cumulative boundary local time is ``cumsum`` along the saves, which is what a surface
-        relaxivity weights: ``S(t) = <exp((rho/D) L(t))>``. ``None`` when the pack carries no C2 channel.
+        relaxivity weights: ``S(t) = <exp((rho_2/D) L(t))>``. ``None`` when the pack carries no C2 channel.
         """
         return self._decoded_channels()["ell"]
 
@@ -2540,6 +3011,44 @@ def compile_scheme(G, dt, K, gyromagnetic_ratio=GAMMA, *, n_t=None, method=None,
     return _compile_effective(effective_gradient(G, dt, int(n_t), dt_pack), dt_pack, K, int(n_t), gyromagnetic_ratio)
 
 
+SHELL_RTOL = 1e-3
+"""Rows are one shape when their waveforms over their amplitudes agree to this fraction of the largest
+(:meth:`ReplayPack._background_bodies`); how far each departs is then bounded and added to its misfit."""
+
+SHELL_SERIES_TOL = 1e-14
+"""Where a shell's amplitude series (:meth:`ReplayPack._background_bodies`) is cut: the largest next term
+``|c_lk| x^{l+2k}`` at the shell's largest phase ``x``, far below the closed form's own band tolerance."""
+
+SHELL_SERIES_MAX_PHASE = 10.0
+"""The largest phase (radians) a shell's amplitude series is summed at: its terms grow to about ``e^x / 2 x``
+before they cancel, about a thousand at 10, so the sum keeps some thirteen of float64's sixteen digits."""
+
+
+def _background_of(waveform):
+    """The magnet's own gradient in an acquisition, as the pose expansion separates it: ``(g0 (n_meas, 3), gate
+    (n_t,))`` float64 on the waveform's grid, or ``None`` when the acquisition carries none (no
+    :meth:`~dmipy_sim.acquisition.scanner_sequence.ScannerSequence.with_background_gradient`, or a zero one).
+
+    ``g0`` is what the physical gradient is wherever the coils play nothing: the magnet's gradient together with
+    the concomitant field that gradient carries on its own, which is constant in time as the magnet's is (a
+    machine's Maxwell term is quadratic in the whole gradient, so its ``g0``-only part rides with ``g0``). A
+    measurement whose coils are on at every sample keeps the recorded ``background_gradient``, and the constant
+    Maxwell part is then left to the encoding's residual. ``gate`` is the acquisition's effective gate, through
+    which ``g0`` accrues: the effective gradient is the encoding plus ``g0 gate``."""
+    if waveform.background_gradient is None:
+        return None
+    g0 = np.broadcast_to(np.asarray(waveform.background_gradient, np.float64).reshape(-1, 3), (waveform.n_meas, 3)).copy()
+    G = np.asarray(waveform.G, np.float64)
+    played = np.asarray(waveform.played_gradient, np.float64)
+    off = np.all(played == 0.0, axis=2)                                    # (n_meas, n_t): the coils play nothing
+    for i in range(waveform.n_meas):
+        if off[i].any():
+            g0[i] = G[i, off[i]].mean(axis=0)
+    if not np.any(g0):
+        return None
+    return g0, np.asarray(waveform.effective_gate, np.float64)
+
+
 def _group_waveforms(s, rtol=1e-5):
     """Group rows of ``s (n, n_t)`` that are the same waveform to ``rtol`` of the largest amplitude: ``(group (n,),
     first (n_grp,))``. A tolerance, not a rounding, so two rows a rounding boundary apart stay together."""
@@ -2629,8 +3138,8 @@ def _signal_factor(phi, voxel):
     return np.exp(1j * np.asarray(phi)) * np.asarray(voxel, np.float64)[None, :]
 
 
-def surface_logweight(arrays, rho_over_D, chan_meta=None, chi_hat=None):
-    """Per-walker surface log-weight ``(rho/D) * sum_t chi(t) ell_i(t)`` from the C2 channel.
+def surface_logweight(arrays, rho_2_over_D, chan_meta=None, chi_hat=None):
+    """Per-walker surface log-weight ``(rho_2/D) * sum_t chi(t) ell_i(t)`` from the C2 channel.
 
     C2 is stored in the bridge form (``blt_bridge_dst`` + the two exact endpoints), so the
     UNGATED total contact is ``blt_endpoint`` read directly -- it is the exact cumulative
@@ -2649,18 +3158,18 @@ def surface_logweight(arrays, rho_over_D, chan_meta=None, chi_hat=None):
             "'blt_dct_coeffs', which is retired -- re-encode it. Returning the signal without "
             "the requested attenuation would be a plausible wrong number.")
     if chi_hat is None:
-        return float(rho_over_D) * np.asarray(arrays["blt_endpoint"], np.float64)
+        return float(rho_2_over_D) * np.asarray(arrays["blt_endpoint"], np.float64)
     meta = dict(chan_meta or {})
     meta.setdefault("n_t", int(np.asarray(chi_hat).shape[0]))
     meta.setdefault("K", _cx_bands_K(arrays, meta))
-    return surface_logweight_bridge(arrays, meta, rho_over_D, chi_hat)          # the bridge contracted, never decoded
+    return surface_logweight_bridge(arrays, meta, rho_2_over_D, chi_hat)          # the bridge contracted, never decoded
 
 
-def replay_signal(pack, W, *, rho_over_D=0.0, chi_hat=None, complex_signal=False):
+def replay_signal(pack, W, *, rho_2_over_D=0.0, chi_hat=None, complex_signal=False):
     """Replay a compiled scheme ``W`` (from :func:`compile_scheme`) against ``pack`` (a :class:`ReplayPack`
     or a plain arrays dict). Returns ``E`` per measurement (magnitude unless ``complex_signal``).
 
-    ``rho_over_D`` > 0 activates the exact surface-relaxivity replay via the pack's boundary local time
+    ``rho_2_over_D`` > 0 activates the exact surface-relaxivity replay via the pack's boundary local time
     (a per-walker signal loss decaying the whole signal, including ``b=0``); ``chi_hat`` coherence-gates it.
     """
     a = pack.arrays if isinstance(pack, ReplayPack) else pack
@@ -2672,13 +3181,13 @@ def replay_signal(pack, W, *, rho_over_D=0.0, chi_hat=None, complex_signal=False
     N_w = C.shape[0]
     w0 = np.asarray(a.get("spin_weights", np.ones(N_w)), np.float64)
     surface_logw = None
-    if rho_over_D:
+    if rho_2_over_D:
         # asked for, so it must happen: a missing C2 channel raises inside surface_logweight
         # rather than being skipped. The previous form looked up a key the bridge rename
-        # retired, so `rho_over_D` was silently ignored and callers got an unattenuated signal.
+        # retired, so `rho_2_over_D` was silently ignored and callers got an unattenuated signal.
         cm = ((pack.meta.get("compression", {}).get("channels", {}) or {}).get("boundary_local_time")
               if isinstance(pack, ReplayPack) else None)
-        surface_logw = surface_logweight(a, rho_over_D, cm, chi_hat)
+        surface_logw = surface_logweight(a, rho_2_over_D, cm, chi_hat)
     return replay_coefficients(C, w0, W, surface_logw=surface_logw, complex_signal=complex_signal)
 
 

@@ -163,9 +163,9 @@ def test_an_axis_density_composes_like_averaging_explicit_poses(hollow):
     S = pk.replay(seq, orientation=fod, complex_signal=True, **KW)
     dirs, w = so3.sphere_quadrature(10, 20)
     rolls = np.arange(6) * (2 * np.pi / 6)
-    rho = fod.evaluate(dirs)
+    rho_2 = fod.evaluate(dirs)
     brute = np.zeros(len(seq.encoding.bvalues), np.complex128)
-    for n, wn, fn in zip(dirs, w, rho):
+    for n, wn, fn in zip(dirs, w, rho_2):
         for r in rolls:
             brute += (wn * fn / len(rolls)) * pk.replay(seq, orientation=so3.rotation_of(n, roll=r),
                                                         complex_signal=True, **KW)

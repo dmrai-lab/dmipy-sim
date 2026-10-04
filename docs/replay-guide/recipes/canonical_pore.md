@@ -46,7 +46,7 @@ print(float(pack.replay(long_)[0]) > np.exp(-1e9 * D0))                         
 ## Surface relaxivity decays every measurement, the b = 0 included
 
 ```python
-S_rho = pack.replay(seq, tissue=Tissue(rho=1e-5))
+S_rho = pack.replay(seq, tissue=Tissue(rho_2=1e-5))
 print(np.all(S_rho < S), np.round(S_rho / S, 3))                                  # one factor across b: the contact term
 ```
 

@@ -159,7 +159,7 @@ class ColumnarPack:
     def plan(self, seq, *, tissue=None, scanner=None, tol=0.25, voxels=None):
         """What a replay of ``seq`` reads: bands, field modes, tiers, rows and bytes -- before any byte moves."""
         K, eK = self.bands_for(seq, tol); M, eM = self.modes_for(seq, scanner, tissue, tol)
-        contact = tissue is not None and tissue.rho is not None
+        contact = tissue is not None and (tissue.rho_2 is not None or tissue.rho_1 is not None)
         relax = tissue is not None and (tissue.T2 is not None or tissue.T1 is not None)
         ranges = self.rows_of(voxels); rows = sum(e - s for s, e in ranges)
         names = self._names(K, M, contact, relax)
@@ -338,12 +338,12 @@ class ColumnarPack:
         num = np.zeros((len(pairs), 2, n_vox, n_meas), complex); den = np.zeros((2, n_vox)); rows = 0
         ROWS, SEGS = 1 << 16, 256
 
-        @functools.partial(jax.jit, static_argnums=(9,))
-        def pair_sums(phi, fi, fa, et2, et1, ct, w, seg2, terms, n_seg2):
+        @functools.partial(jax.jit, static_argnums=(10,))
+        def pair_sums(phi, fi, fa, et2, et1, ct, ct1, w, seg2, terms, n_seg2):
             """``Primitives.signals`` on the device: `(ew[:, None] * E)` summed over each voxel's rows, with every
             term taken from :meth:`~dmipy_sim.replay.study.Primitives.reduction_terms` and none re-derived here."""
-            a_i, a_a, rho_D, invT2, invT1, amp, vox = terms
-            logw = -(et2 @ invT2) - (et1 @ invT1) + rho_D * ct
+            a_i, a_a, rho_D, rho1_D, invT2, invT1, amp, vox = terms
+            logw = -(et2 @ invT2) - (et1 @ invT1) + rho_D * ct + rho1_D * ct1
             ph = phi + (a_i * fi + a_a * fa)[:, None]
             E = jnp.exp(1j * ph) * vox[None, :]                       # replay._signal_factor
             return jax.ops.segment_sum(E * (amp * w * jnp.exp(logw))[:, None], seg2, num_segments=n_seg2)
@@ -360,13 +360,14 @@ class ColumnarPack:
                 pad = lambda x, shape: (np.zeros((n_pad,) + shape) if x is None else np.concatenate([np.asarray(x, np.float64), np.zeros((n_pad - n,) + shape)]))
                 n_pools = prim.n_pools or 1
                 phi = pad(prim.phi, (prim.phi.shape[1],)); fi = pad(prim.field_iso, ()); fa = pad(prim.field_aniso, ())
-                et2 = pad(prim.exposure_t2, (n_pools,)); et1 = pad(prim.exposure_t1, (n_pools,)); ct = pad(prim.contact, ()); w = pad(prim.w, ())
-                dev = [jnp.asarray(x) for x in (phi, fi, fa, et2, et1, ct, w)] + [jnp.asarray(seg2)]
+                et2 = pad(prim.exposure_t2, (n_pools,)); et1 = pad(prim.exposure_t1, (n_pools,))
+                ct = pad(prim.contact, ()); ct1 = pad(prim.contact_t1, ()); w = pad(prim.w, ())
+                dev = [jnp.asarray(x) for x in (phi, fi, fa, et2, et1, ct, ct1, w)] + [jnp.asarray(seg2)]
                 for k, (t_, s_) in enumerate(pairs):
                     rt = prim.reduction_terms(t_, s_)                        # every per-pair term, resolved once
-                    terms = (jnp.float64(rt["a_iso"]), jnp.float64(rt["a_aniso"]), jnp.float64(rt["rho_over_D"]),
-                             jnp.asarray(rt["invT2"]), jnp.asarray(rt["invT1"]), jnp.float64(rt["amplitude"]),
-                             jnp.asarray(rt["voxel"], jnp.float64))
+                    terms = (jnp.float64(rt["a_iso"]), jnp.float64(rt["a_aniso"]), jnp.float64(rt["rho_2_over_D"]),
+                             jnp.float64(rt["rho1_over_D"]), jnp.asarray(rt["invT2"]), jnp.asarray(rt["invT1"]),
+                             jnp.float64(rt["amplitude"]), jnp.asarray(rt["voxel"], jnp.float64))
                     sums = np.asarray(pair_sums(*dev, terms, 2 * s_pad))[:2 * n_seg].reshape(n_seg, 2, -1)
                     np.add.at(num[k, 0, :, sl], v[starts], sums[:, 0]); np.add.at(num[k, 1, :, sl], v[starts], sums[:, 1])
             wh = np.zeros((2, n)); wh[half, np.arange(n)] = w_all

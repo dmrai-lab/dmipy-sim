@@ -15,7 +15,7 @@ from dmipy_sim.spec.tissue import Tissue
 walk = d.simulate_trajectories(300, 2e-9, d.Cylinder(2e-6, (0, 0, 1)), 0.01, 5e-4, seed=0, require_gpu=False)
 pack = build_replay_pack(walk, id="guide/cylinder", K=8, license="CC-BY-4.0", citation="the guide")
 seq = sequences.pgse([[1, 0, 0], [0, 0, 1]], 0.001, 0.003, bvalues=[1e9, 1e9], TE=0.006, slew_rate=np.inf)
-wm = Tissue(T2={"extra": 0.05, "intra": 0.05}, rho=1e-6)        # T2 for every pool of the pack's spec
+wm = Tissue(T2={"extra": 0.05, "intra": 0.05}, rho_2=1e-6)        # T2 for every pool of the pack's spec
 ```
 
 ## `replay`: the signal
@@ -70,7 +70,7 @@ prim = pack.walker_primitives(seq)
 print(prim.phi.shape, prim.exposure_t2.shape, prim.contact.shape, prim.field_iso)   # no field source: no field scalars
 w2, ew2, E2 = prim.signals(wm, None)
 print(np.allclose(ew2, ew) and np.allclose(E2, E))                  # the same as walker_signals, the bands untouched
-w3, ew3, E3 = prim.signals(wm.replace(T2={"intra": 0.08}, rho=2e-6), None)   # another tissue: no contraction repeated
+w3, ew3, E3 = prim.signals(wm.replace(T2={"intra": 0.08}, rho_2=2e-6), None)   # another tissue: no contraction repeated
 print(np.allclose(prim.signal(wm, None), S))                        # the ensemble mean of them: replay
 ```
 

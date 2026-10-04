@@ -94,7 +94,10 @@ class Study:
 
     @property
     def needs_contact(self):
-        return any(t is not None and t.rho is not None and float(t.rho) != 0.0 for t, _ in (self.resolved(k) for k in range(len(self))))
+        def wants(t):
+            return t is not None and ((t.rho_2 is not None and float(t.rho_2) != 0.0)
+                                       or (t.rho_1 is not None and float(t.rho_1) != 0.0))
+        return any(wants(t) for t, _ in (self.resolved(k) for k in range(len(self))))
 
     @property
     def needs_relaxation(self):
@@ -115,8 +118,9 @@ class Primitives:
     """What one acquisition leaves of every walker before any tissue or scanner is applied: ``w`` the weights,
     ``phi`` the gradient phase ``(n, m)``, ``field_iso`` / ``field_aniso`` the gated path integrals under the field
     direction ``(n,)`` (None without the path channel), ``exposure_t2`` / ``exposure_t1`` the transverse and
-    longitudinal time per pool ``(n, n_pools)`` (None without the compartment channel), ``contact`` the gated
-    boundary local time ``(n,)`` (None without the contact channel), ``D_walk`` the walk's diffusivity, and
+    longitudinal time per pool ``(n, n_pools)`` (None without the compartment channel), ``contact`` / ``contact_t1``
+    the boundary local time gated by the coherence and by its complement (on while stored along B0, e.g. a
+    stimulated echo's mixing time) ``(n,)`` (None without the contact channel), ``D_walk`` the walk's diffusivity, and
     ``pathway`` the amplitude of the coherence pathway the acquisition's readout is
     (:func:`~dmipy_sim.acquisition.epg.pathway_weight`; 1 for a refocused echo, a stimulated echo's
     ``0.5 sin a1 sin a2 sin a3`` for a store-and-recall schedule), and ``voxel`` the voxel's factor per
@@ -135,7 +139,8 @@ class Primitives:
     voxel: np.ndarray                                          # required: there is no sane default (see __post_init__)
     pathway: float = 1.0
     by_pool: object = field(repr=False, default=None)          # the pack's resolver of a per-pool value
-    rho_over_D_max: Optional[float] = None                     # the contact tier's envelope (RPK.md 8.7), None unbounded          # the pack's resolver of a per-pool value
+    rho_2_over_D_max: Optional[float] = None                     # the contact tier's envelope (RPK.md 8.7), None unbounded          # the pack's resolver of a per-pool value
+    contact_t1: Optional[np.ndarray] = None                    # the SAME channel, gated by chi_parallel = active - chi (dmipy-sim#574)
 
     def __post_init__(self):
         if self.voxel is None:
@@ -150,12 +155,12 @@ class Primitives:
         return None if self.exposure_t2 is None else int(self.exposure_t2.shape[1])
 
     def rates(self, tissue):
-        """``(invT2, invT1, rho_over_D)`` of a tissue on this pack's pools: per-pool rates (0 where the tissue
-        declares no time, or ``inf``) and the contact rate (0 without a relaxivity). A per-pool value is judged
-        complete on the pack's spec, not on the pools this chunk of walkers labels."""
+        """``(invT2, invT1, rho_2_over_D, rho1_over_D)`` of a tissue on this pack's pools: per-pool rates (0 where the
+        tissue declares no time, or ``inf``) and the two contact rates (0 without a relaxivity). A per-pool value
+        is judged complete on the pack's spec, not on the pools this chunk of walkers labels."""
         t = tissue
         n = self.n_pools or 1
-        invT2 = np.zeros(n); invT1 = np.zeros(n); rho_D = 0.0
+        invT2 = np.zeros(n); invT1 = np.zeros(n); rho_2_D = 0.0; rho1_D = 0.0
         if t is not None and (t.T2 is not None or t.T1 is not None):
             if self.exposure_t2 is None:
                 raise ValueError("T2 / T1 were given but the pack carries no compartment channel (C1)")
@@ -176,17 +181,29 @@ class Primitives:
                 f"tissue at D = {float(t.D):.3g} reads the pack on another grid (dmipy-sim#289): every term "
                 f"changes, not the surface divisor alone. Contract the view instead -- "
                 f"pack.at_diffusivity(D).study(...) or .walker_primitives(...)")
-        if t is not None and t.rho is not None and float(t.rho) != 0.0:
+        if t is not None and t.rho_2 is not None and float(t.rho_2) != 0.0:
             if self.contact is None:
                 raise ValueError("surface relaxivity was requested but this pack carries no C2 channel")
             D = self.D_walk if t.D is None else t.D
             if D is None:
-                raise ValueError("rho needs the walk's diffusivity: the pack did not record it, pass D=")
-            rho_D = float(t.rho) / float(D)
-            if self.rho_over_D_max is not None and rho_D > float(self.rho_over_D_max) * (1.0 + 1e-12):
-                raise ValueError(f"rho / D = {rho_D:.4g} 1/m is beyond this pack's contact envelope, rho / D <= "
-                                 f"{float(self.rho_over_D_max):.4g} 1/m (replay_envelope.tissue.rho_over_D_max)")
-        return invT2, invT1, rho_D
+                raise ValueError("rho_2 needs the walk's diffusivity: the pack did not record it, pass D=")
+            rho_2_D = float(t.rho_2) / float(D)
+            if self.rho_2_over_D_max is not None and rho_2_D > float(self.rho_2_over_D_max) * (1.0 + 1e-12):
+                raise ValueError(f"rho_2 / D = {rho_2_D:.4g} 1/m is beyond this pack's contact envelope, rho_2 / D <= "
+                                 f"{float(self.rho_2_over_D_max):.4g} 1/m (replay_envelope.tissue.rho_2_over_D_max)")
+        if t is not None and t.rho_1 is not None and float(t.rho_1) != 0.0:
+            # the SAME contact channel, gated by the complement (the longitudinal term; dmipy-sim#574)
+            if self.contact_t1 is None:
+                raise ValueError("a longitudinal surface relaxivity (rho_1) was requested but this pack/layout "
+                                 "carries no C2 channel gated by the stored period")
+            D = self.D_walk if t.D is None else t.D
+            if D is None:
+                raise ValueError("rho_1 needs the walk's diffusivity: the pack did not record it, pass D=")
+            rho1_D = float(t.rho_1) / float(D)
+            if self.rho_2_over_D_max is not None and rho1_D > float(self.rho_2_over_D_max) * (1.0 + 1e-12):
+                raise ValueError(f"rho_1 / D = {rho1_D:.4g} 1/m is beyond this pack's contact envelope, rho_2 / D <= "
+                                 f"{float(self.rho_2_over_D_max):.4g} 1/m (replay_envelope.tissue.rho_2_over_D_max)")
+        return invT2, invT1, rho_2_D, rho1_D
 
     def field_scalars(self, tissue, scanner):
         """``(B0 chi_iso, B0 chi_aniso)`` for a pair, ``(0, 0)`` without a field."""
@@ -202,17 +219,17 @@ class Primitives:
 
     def reduction_terms(self, tissue=None, scanner=None):
         """Every term that turns these primitives into a signal, resolved once for a pair: ``invT2`` / ``invT1`` the
-        per-pool rates, ``rho_over_D`` the contact rate, ``a_iso`` / ``a_aniso`` the field scalars, ``amplitude`` the
-        readout's pathway weight and ``voxel`` the per-measurement voxel factor.
+        per-pool rates, ``rho_2_over_D`` / ``rho1_over_D`` the two contact rates, ``a_iso`` / ``a_aniso`` the field
+        scalars, ``amplitude`` the readout's pathway weight and ``voxel`` the per-measurement voxel factor.
 
         :meth:`signals` evaluates these on the host and
         :meth:`~dmipy_sim.replay.columnar.ColumnarPack.image_study` the same ones on the device, so a term belongs
         to the reduction once and reaches both. That device kernel had grown its own copy and left ``amplitude``
         out, which made a stimulated-echo study exactly ``1 / eta`` times the per-voxel ``walker_signals`` -- 2x
         for a 90/90/90 schedule (dmipy-sim#484)."""
-        invT2, invT1, rho_D = self.rates(tissue)
+        invT2, invT1, rho_2_D, rho1_D = self.rates(tissue)
         a_i, a_a = self.field_scalars(tissue, scanner)
-        return dict(invT2=invT2, invT1=invT1, rho_over_D=rho_D, a_iso=a_i, a_aniso=a_a,
+        return dict(invT2=invT2, invT1=invT1, rho_2_over_D=rho_2_D, rho1_over_D=rho1_D, a_iso=a_i, a_aniso=a_a,
                     amplitude=float(self.pathway), voxel=self.voxel)
 
     def signals(self, tissue=None, scanner=None):
@@ -225,8 +242,10 @@ class Primitives:
         logw = np.zeros(len(self.w))
         if self.exposure_t2 is not None:
             logw = logw - self.exposure_t2 @ t["invT2"] - self.exposure_t1 @ t["invT1"]
-        if t["rho_over_D"]:
-            logw = logw + t["rho_over_D"] * self.contact
+        if t["rho_2_over_D"]:
+            logw = logw + t["rho_2_over_D"] * self.contact
+        if t["rho1_over_D"]:
+            logw = logw + t["rho1_over_D"] * self.contact_t1
         phi = self.phi
         if t["a_iso"] or t["a_aniso"]:
             phi = phi + (t["a_iso"] * self.field_iso + t["a_aniso"] * self.field_aniso)[:, None]
@@ -266,7 +285,7 @@ def walker_primitives(pack, acquisition):
     from .compression import has_c2
     pm = ch.get("susceptibility_path")
     phi = _band_phase(P)                                        # the one band contraction, windows summed
-    exposure_t2 = exposure_t1 = contact = None
+    exposure_t2 = exposure_t1 = contact = contact_t1 = None
     for (seg, t0, n_s), (chi_s, act_s) in zip(P["windows"], P["window_gates"]):
         if col is not None:
             e2 = np.stack([-relaxation_logweight_runs(seg.arrays, col, unit[p].tolist(), zero, dt, chi_s, act_s) for p in range(n_ids)], axis=1)
@@ -276,6 +295,11 @@ def walker_primitives(pack, acquisition):
         if has_c2(seg.arrays):
             c_s = np.asarray(surface_logweight(seg.arrays, 1.0, ch.get("boundary_local_time"), chi_s), np.float64)
             contact = c_s if contact is None else contact + c_s
+            # the SAME channel, gated by the complement (on while stored along B0): the longitudinal contact
+            # rho_1 reads at reduction time, built once here exactly as `contact` is (dmipy-sim#574)
+            chi_parallel_s = np.clip(act_s - chi_s, 0.0, None)
+            c1_s = np.asarray(surface_logweight(seg.arrays, 1.0, ch.get("boundary_local_time"), chi_parallel_s), np.float64)
+            contact_t1 = c1_s if contact_t1 is None else contact_t1 + c1_s
     field_iso = field_aniso = None
     if pm is not None:
         from ..fields.hollow_cylinder import field_terms
@@ -284,8 +308,8 @@ def walker_primitives(pack, acquisition):
         field_aniso = aniso if _has_aniso(ch.get("susceptibility_grid"), names) else np.zeros(n_w)
     from ..acquisition.epg import pathway_weight
     return Primitives(w=P["w"], phi=phi, field_iso=field_iso, field_aniso=field_aniso, exposure_t2=exposure_t2, exposure_t1=exposure_t1,
-                      contact=contact, D_walk=pack.diffusivity, pathway=pathway_weight(acq.waveform), rho_over_D_max=pack.rho_over_D_max,
-                      voxel=P["voxel"], by_pool=pack._by_pool)
+                      contact=contact, contact_t1=contact_t1, D_walk=pack.diffusivity, pathway=pathway_weight(acq.waveform),
+                      rho_2_over_D_max=pack.rho_2_over_D_max, voxel=P["voxel"], by_pool=pack._by_pool)
 
 
 def study_signals(pack, study):

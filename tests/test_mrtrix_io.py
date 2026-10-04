@@ -73,7 +73,7 @@ def test_an_oblique_affine_gives_the_image_grid_and_the_rotation():
     grid, R = Grid.from_oblique_affine(A, (96, 96, 60))
     assert grid.shape == (96, 96, 60) and grid.axes == "RAS"
     np.testing.assert_allclose(grid.voxel_size_m, [2.5e-3] * 3, rtol=1e-3)
-    np.testing.assert_allclose(grid.origin_m, np.array([-120.84, -99.16, -33.46]) * 1e-3)
+    np.testing.assert_allclose(R @ np.asarray(grid.origin_m), np.array([-120.84, -99.16, -33.46]) * 1e-3)
     np.testing.assert_allclose(R @ R.T, np.eye(3), atol=1e-6); assert np.linalg.det(R) > 0
     np.testing.assert_allclose(R @ np.diag(grid.voxel_size_m) * 1e3, A[:3, :3], rtol=1e-3)
     A[0, 1] += 0.4                                                      # a shear

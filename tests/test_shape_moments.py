@@ -172,6 +172,22 @@ def test_preload_keeps_the_padded_host_arrays_and_changes_no_number(layout):
     assert set(sm._host) == {"w", "tiles", "a", "c"}
 
 
+def test_the_weights_are_read_once_per_layout(layout):
+    """The per-voxel weight sums are the layout's, not the image's: every image after the first reads neither the
+    weight nor the tile column again for them (on DiSCo a float64 copy of 153 M rows per call)."""
+    col, grid, n_t, tmp = layout
+    sm = ShapeMoments(str(tmp / "sm_moments"))
+    reads = []
+    column = sm._column
+    sm._column = lambda name: (reads.append(name), column(name))[1]
+    b = np.array([1e9, 0.0]); dirs = np.array([[0.0, 0.0, 1.0], [0.0, 0.0, 1.0]])
+    first, _ = sm.image("a", b, dirs, resident=True)          # the device copy is kept: only the weights could read again
+    n_first = len(reads)
+    second, _ = sm.image("a", b, dirs, resident=True)
+    assert "w" in reads[:n_first] and reads[n_first:] == [], reads
+    np.testing.assert_array_equal(np.nan_to_num(first), np.nan_to_num(second))
+
+
 @pytest.fixture(scope="module")
 def layout_field(spec_grid):
     """Two blocks of the three-strand spec walked WITH the sheath's field (C3) and the contact and occupancy tiers,
@@ -200,7 +216,7 @@ def _per_voxel(pack, grid, w, ew, E):
 
 def test_the_tiers_are_the_studys_terms_on_every_pathway(layout_field):
     """dmipy-sim#514: a spin-echo shape and a stimulated-echo shape in one layout with tiers; the image under a tissue
-    (T2 and T1 per pool, rho, chi) at 3 T equals the merged pack's ``walker_signals`` per voxel to float32 arithmetic
+    (T2 and T1 per pool, rho_2, chi) at 3 T equals the merged pack's ``walker_signals`` per voxel to float32 arithmetic
     -- the stimulated echo's storage time carries T1 and its pathway amplitude, its gate the field and the contact;
     the bare image is the pathway-scaled bare replay; a field asked of the bare layout is refused by name."""
     from dmipy_sim.spec.tissue import Tissue
@@ -214,7 +230,7 @@ def test_the_tiers_are_the_studys_terms_on_every_pathway(layout_field):
     g_ste = next(g for g in tiers["groups"].values() if "ste" in g["shapes"])
     assert g_ste["pathway"] == pytest.approx(0.5, abs=1e-12) and g_ste["tau_t1"] > 0
     sm = ShapeMoments(out)
-    t = Tissue(T2={"intra": 0.03, "extra": 0.08, "myelin": 0.01}, T1={"intra": 0.9, "extra": 1.4, "myelin": 0.3}, rho=1e-5, chi_iso=-1e-7, chi_aniso=-1.5e-8)
+    t = Tissue(T2={"intra": 0.03, "extra": 0.08, "myelin": 0.01}, T1={"intra": 0.9, "extra": 1.4, "myelin": 0.3}, rho_2=1e-5, chi_iso=-1e-7, chi_aniso=-1.5e-8)
     rng = np.random.default_rng(9); u = rng.normal(size=(4, 3)); u /= np.linalg.norm(u, axis=1)[:, None]
     for name, base, delta, Delta in (("se", se, 0.2e-3, 0.5e-3), ("ste", ste, 0.2e-3, 0.4e-3)):
         b = np.array([1e9, 1e9, 3e9, 0.0]); dirs = np.concatenate([u[:3], [[0, 0, 1]]])
@@ -249,7 +265,7 @@ def test_the_field_direction_is_a_knob(layout_field):
     from dmipy_sim.fields.hollow_cylinder import field_terms
     col, merged, grid, n_t, tmp = layout_field
     sm = ShapeMoments(str(tmp / "sf_moments"))
-    t = Tissue(T2={"intra": 0.03, "extra": 0.08, "myelin": 0.01}, rho=1e-5, chi_iso=-1e-7, chi_aniso=-1.5e-8)
+    t = Tissue(T2={"intra": 0.03, "extra": 0.08, "myelin": 0.01}, rho_2=1e-5, chi_iso=-1e-7, chi_aniso=-1.5e-8)
     b = np.array([1e9, 2e9]); dirs = np.array([[0.6, 0.0, 0.8], [0.0, 1.0, 0.0]])
     seq = d.pgse(dirs.tolist(), 0.2e-3, 0.5e-3, bvalues=b, n_t=n_t, slew_rate=np.inf)
     Sx, _ = sm.image("se", b, dirs, tissue=t, scanner=3.0, b0_direction=(1.0, 0.0, 0.0))
@@ -300,7 +316,7 @@ def test_the_tier_maps_are_the_walkers_voxel_means(layout_field):
     out = str(tmp / "sf_maps")
     write_shape_moments(col, {"se": se}, out, tol=1e-9, chunk_rows=7, tiers=True)
     sm = ShapeMoments(out)
-    t = Tissue(T2={"intra": 0.03, "extra": 0.08, "myelin": 0.01}, T1={"intra": 0.9, "extra": 1.4, "myelin": 0.3}, rho=1e-5, chi_iso=-1e-7, chi_aniso=-1.5e-8)
+    t = Tissue(T2={"intra": 0.03, "extra": 0.08, "myelin": 0.01}, T1={"intra": 0.9, "extra": 1.4, "myelin": 0.3}, rho_2=1e-5, chi_iso=-1e-7, chi_aniso=-1.5e-8)
     g, grp = sm._tier_group("se")
     tiles = np.asarray(sm._column("tiles")); w = np.asarray(sm._column("w"), np.float64)
     pool = np.asarray(sm._column("pool")); c = np.asarray(sm._column(f"contact_{g}"), np.float64)
@@ -341,7 +357,7 @@ def test_a_direction_the_host_has_not_contracted_is_contracted_on_the_device(lay
     se = d.pgse([[0, 0, 1]], 0.2e-3, 0.5e-3, gradient_strengths=0.05, n_t=n_t, slew_rate=np.inf)
     out = str(tmp / "sf_device")
     write_shape_moments(col, {"se": se}, out, tol=1e-9, chunk_rows=7, tiers=True)
-    t = Tissue(T2={"intra": 0.03, "extra": 0.08, "myelin": 0.01}, T1={"intra": 0.9, "extra": 1.4, "myelin": 0.3}, rho=1e-5, chi_iso=-1e-7, chi_aniso=-1.5e-8)
+    t = Tissue(T2={"intra": 0.03, "extra": 0.08, "myelin": 0.01}, T1={"intra": 0.9, "extra": 1.4, "myelin": 0.3}, rho_2=1e-5, chi_iso=-1e-7, chi_aniso=-1.5e-8)
     u = np.array([0.6, 0.0, 0.8]); b = np.array([1e9, 3e9, 0.0]); dirs = np.array([[1.0, 0, 0], [0, 1.0, 0], [0, 0, 1.0]])
     host = ShapeMoments(out); g, _ = host._tier_group("se")
     iso_h, aniso_h = host._field_terms(g, u)
@@ -372,6 +388,6 @@ def test_the_preloaded_field_terms_are_the_ones_the_image_uses(layout_field):
     original = sm._field_terms
     sm._field_terms = lambda *a, **k: calls.append(a) or original(*a, **k)
     from dmipy_sim.spec.tissue import Tissue
-    t = Tissue(T2={"intra": 0.03, "extra": 0.08, "myelin": 0.01}, T1={"intra": 0.9, "extra": 1.4, "myelin": 0.3}, rho=1e-5, chi_iso=-1e-7, chi_aniso=-1.5e-8)
+    t = Tissue(T2={"intra": 0.03, "extra": 0.08, "myelin": 0.01}, T1={"intra": 0.9, "extra": 1.4, "myelin": 0.3}, rho_2=1e-5, chi_iso=-1e-7, chi_aniso=-1.5e-8)
     sm.image("se", np.array([1e9]), np.array([[0, 0, 1.0]]), tissue=t, scanner=3.0)
     assert calls == [], "the default direction's terms were contracted again"

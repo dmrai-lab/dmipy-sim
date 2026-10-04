@@ -29,7 +29,7 @@ field direction), with the group's transverse and longitudinal exposure times an
 substrate spec and the walk's diffusivity in the manifest. :meth:`ShapeMoments.image` then takes ``tissue=``,
 ``scanner=`` and ``b0_direction=`` (the field's direction in the substrate frame: the magnitude and the direction of
 B0 are both knobs) and applies exactly :meth:`~dmipy_sim.replay.study.Primitives.reduction_terms`: the per-row
-weight ``amp exp(-tau_2 / T2_pool - tau_1 / T1_pool + (rho / D) contact)`` and the phase ``B0 (chi_iso A + chi_aniso
+weight ``amp exp(-tau_2 / T2_pool - tau_1 / T1_pool + (rho_2 / D) contact)`` and the phase ``B0 (chi_iso A + chi_aniso
 B)`` with ``A, B`` contracted from the channels for that direction on the host per call (dmipy-sim#514); a tier asked
 for that the layout does not carry is refused by name, a tier left at None is inactive and the image is the bare one. A shape's pathway amplitude (a stimulated echo's ``0.5 sin a1 sin a2 sin a3``) scales
 its image in every case.
@@ -526,7 +526,7 @@ class ShapeMoments:
         """Per-voxel means over the walkers, at the walk's weights, of what each tier multiplies into :meth:`image`
         on ``shape``'s gate, each on the grid (NaN where the layout has no rows): ``pool`` (the weight fraction per
         pool, ``{name: grid}``), ``contact`` (the stored term of the gated boundary local time, the exponent's ``-l``;
-        None without the contact tier), ``contact_weight`` (``exp(rho_over_D contact)`` at the pair's rho, the
+        None without the contact tier), ``contact_weight`` (``exp(rho_2_over_D contact)`` at the pair's rho_2, the
         contact tier's factor; None without a tissue), ``phase`` and ``phase_std`` (the mean and the spread of the
         sheath field's phase offset ``a_iso iso + a_aniso aniso`` at the pair's field and ``b0_direction``, radians;
         None without a scanner). The same device columns as the tiered image (kept across calls when ``resident``),
@@ -612,7 +612,7 @@ class ShapeMoments:
     def terms(self, shape, tissue=None, scanner=None):
         """The reduction terms of a (tissue, scanner) pair on ``shape``'s gate -- exactly
         :meth:`~dmipy_sim.replay.study.Primitives.reduction_terms` on a descriptor of what the layout carries:
-        ``None`` for the bare image (no tissue, no scanner), else ``(logw_pool (n_pools,), rho_over_D, a_iso, a_aniso,
+        ``None`` for the bare image (no tissue, no scanner), else ``(logw_pool (n_pools,), rho_2_over_D, a_iso, a_aniso,
         amplitude)`` with ``logw_pool = -tau_2 / T2 - tau_1 / T1`` per pool at the group's exposure times. A tier the
         pair needs that the layout lacks is refused by name."""
         if tissue is None and scanner is None:
@@ -642,7 +642,7 @@ class ShapeMoments:
                           pathway=float(grp["pathway"]), by_pool=by_pool)
         rt = desc.reduction_terms(tissue, scanner)
         logw = -(float(grp["tau_t2"] or 0.0) * np.asarray(rt["invT2"], np.float64) + float(grp["tau_t1"] or 0.0) * np.asarray(rt["invT1"], np.float64))
-        return (logw, float(rt["rho_over_D"]), float(rt["a_iso"]), float(rt["a_aniso"]), float(rt["amplitude"]))
+        return (logw, float(rt["rho_2_over_D"]), float(rt["a_iso"]), float(rt["a_aniso"]), float(rt["amplitude"]))
 
     def moments(self, shape):
         """``(n_tiles, tile, 3)`` float32, memory-mapped: the moment of every row under ``shape`` (0 on padding)."""
@@ -657,9 +657,9 @@ class ShapeMoments:
             raise ValueError("a b-value is not negative")
         return np.sqrt(b / float(self.manifest["shapes"][shape]["b_unit"]))
 
-    @property
+    @functools.cached_property
     def weights(self):
-        """The per-voxel weight sums ``(n_vox, 2)`` (the two split halves), the denominator of every image."""
+        """The per-voxel weight sums ``(n_vox, 2)`` (the two split halves), the denominator of every image (read once)."""
         w = np.asarray(self._column("w"), np.float64).sum(1); tiles = np.asarray(self._column("tiles"))
         return np.bincount(tiles, w, minlength=2 * self.n_vox).reshape(self.n_vox, 2)
 

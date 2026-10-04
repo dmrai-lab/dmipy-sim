@@ -44,9 +44,13 @@ def test_a_multi_axis_member_of_a_batch_takes_the_quadrature_alone(pack):
     import dataclasses
     tensor = sequences.pgse([[1, 0, 0]], 2e-3, 5e-3, gradient_strengths=[0.3], TE=10e-3)
     G = np.asarray(tensor.G).copy()
-    G[:, :, 1] = 0.5 * G[:, ::-1, 0]                                              # a second axis, balanced, with another shape: rank 2
+    on = np.flatnonzero(G[0, :, 0] != 0)
+    first = on[on < on.min() + (on.max() - on.min()) // 2]                      # the first lobe's samples
+    half = len(first) // 2
+    G[:, first[:half], 1], G[:, first[half:2 * half], 1] = 0.15, -0.15          # a bipolar pair on a second axis: balanced, another shape
     tensor = dataclasses.replace(tensor, G=G)
-    assert np.linalg.matrix_rank(np.asarray(tensor.G)[0]) == 2
+    sv = np.linalg.svd(np.asarray(tensor.G_eff, np.float64)[0], compute_uv=False)
+    assert sv[1] > 0.1 * sv[0]                                                  # two directions, not one up to a residual
     batch = pack.pose_responses([a, tensor, b], keep=(6, 0))
     assert batch[0].route == "closed" and batch[2].route == "closed"
     assert batch[1].route == "quadrature"
