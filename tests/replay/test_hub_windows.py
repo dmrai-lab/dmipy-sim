@@ -21,7 +21,8 @@ import pytest
 import dmipy_sim as d
 from dmipy_sim.replay.replay import ReplayPack, read_rpk
 from dmipy_sim.replay import publish as pub
-from tests.test_bank import _slab_master, _lean_env
+from dmipy_sim.spec.substrate import Domain, Pool, Seeding, SubstrateSpec, Validity
+from tests.test_bank import _slab_master, _lean_env, D0, L
 
 pytest.importorskip("huggingface_hub")        # the window reads monkeypatch its cache constant; absent, these tests are skipped
 
@@ -30,11 +31,25 @@ REPO, PATH = "owner/windows", "packs/windows-fixture.rpk"
 URI = pub.uri_of(REPO, PATH)
 
 
+def _fixture_spec():
+    """The fixture's substrate: a reflecting slab (0 <= x <= L, free in y and z), the one pool it walks
+    (no walker ever leaves it -- :func:`_fixture_master`'s ``comp`` is all zero, so there is nothing to
+    exchange with and no second pool to declare), no magnetic pool, no field tier. The domain's own
+    reflecting face carries a surface relaxivity, which is what gives the boundary-local-time channel the
+    fixture stores (C2) a tier to belong to."""
+    return SubstrateSpec("test/windows-fixture",
+                         Domain([0.0, -1e-3, -1e-3], [L, 1e-3, 1e-3], ["reflect", "open", "open"],
+                                surface_relaxivity=1e-5),
+                         [Pool(0, "extra", D0)], [], Seeding([0]),
+                         Validity(L, ["gradient", "surface"])).validate().to_dict()
+
+
 def _fixture_master():
     m = _slab_master(n_w=N_W, seed=0)
     for k in ("traj", "comp", "dlog_b"):
         m[k] = np.asarray(m[k])[:, :N_T]
     m["T_max"] = (N_T - 1) * DT
+    m["substrate"] = _fixture_spec()
     return m
 
 
@@ -198,15 +213,32 @@ def test_pack_substrate_passes_windows_through_to_the_load(monkeypatch):
 
 
 # ------------------------------- the real Hub (slow, skipped without a login) -------------------------------
-FIXTURE_REPO = "SubstrateCommons/parity-fixtures"
-FIXTURE_PATH = "test-fixtures/windows-fixture.rpk"       # outside packs/: ours, not one of the curated reference packs
+FIXTURE_REPO = "SubstrateCommons/test-fixtures"
+#: Its own dataset, not ``parity-fixtures`` (a curated reference dataset of licensed cross-engine parity
+#: packs with provenance records): this file is a test artefact dmipy-sim's own suite uploads to itself, so
+#: it gets a repository where that is the whole premise, with its own short README (:data:`FIXTURE_README`).
+#: At the dataset's root, not under a ``test-fixtures/`` path -- the dataset name already says what it holds.
+FIXTURE_PATH = "windows-fixture.rpk"
+
+FIXTURE_README = """---
+license: cc-by-4.0
+pretty_name: dmipy-sim test fixtures
+---
+# dmipy-sim test fixtures
+
+Small artefacts dmipy-sim's own test suite uploads to itself to exercise the Hub read/write paths -- not a
+curated reference dataset. A file here is rebuilt and overwritten by the test that owns it whenever that
+test's fixture changes; nothing here is a citeable measurement. See `SubstrateCommons/parity-fixtures` for
+the licensed, cross-engine parity packs this is not.
+"""
 
 
 @pytest.mark.slow
 def test_a_windowed_read_from_the_real_hub():
-    """Uploads the tiny fixture pack to the public dataset once -- idempotent, skipped when a file of the same
-    sha256 is already there -- and reads its first window back by HTTP byte range, through the public entry
-    point, with no ``url=``/``revision=`` override: the real Hub resolver end to end."""
+    """Creates the fixture dataset if it does not exist yet, uploads the tiny fixture pack once -- idempotent,
+    skipped when a file of the same sha256 is already there -- and reads its first window back by HTTP byte
+    range, through the public entry point, with no ``url=``/``revision=`` override: the real Hub resolver
+    end to end."""
     try:
         from huggingface_hub import HfApi
         api = HfApi()
@@ -214,6 +246,10 @@ def test_a_windowed_read_from_the_real_hub():
     except Exception as e:
         pytest.skip(f"no hub login / no network: {e}")
     from dmipy_sim.fill.hub import sha256_of
+    api.create_repo(FIXTURE_REPO, repo_type="dataset", exist_ok=True, private=False)
+    if not api.file_exists(FIXTURE_REPO, "README.md", repo_type="dataset"):
+        api.upload_file(path_or_fileobj=FIXTURE_README.encode(), path_in_repo="README.md", repo_id=FIXTURE_REPO,
+                        repo_type="dataset", commit_message="describe the dataset")
     pack = _fixture_pack()
     with tempfile.TemporaryDirectory(prefix="dmipy-windows-fixture-") as tmp:
         local = os.path.join(tmp, "windows-fixture.rpk")
