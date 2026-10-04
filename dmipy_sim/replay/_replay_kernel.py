@@ -160,7 +160,7 @@ def gate_weights(chi, dt_wf, n_t, dt_pack, t0=None):
 def field_gate(waveform, n_t, dt_pack, t0=None):
     """The per-save weights that integrate a field SAMPLED at the saves over an acquisition: the acquisition's
     :attr:`~dmipy_sim.acquisition.scanner_sequence.ScannerSequence.effective_gate` (the coherence sign, RPK.md 6.6,
-    times the transverse gate: zero while a stimulated echo's magnetisation is stored along z) read on its grid onto
+    times the transverse gate: zero while a stimulated echo's magnetisation is stored along B0) read on its grid onto
     the pack grid by :func:`gate_weights`, and zero beyond its echo -- so an acquisition shorter than the walk ends
     at its echo, and the field accrues through the one gate ``G_eff`` was folded with. A pathway-gated waveform
     (:mod:`dmipy_sim.replay.pathways`) carries its pathway's signed gate, its ``G`` already folded with it.
