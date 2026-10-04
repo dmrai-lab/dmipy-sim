@@ -157,3 +157,36 @@ def test_the_field_is_composed_in_closed_form_and_agrees_with_every_other_route(
         full = pk.pose_response(seq_x, method="closed", pose=R_x, **kw)
         np.testing.assert_allclose(full.at(R), pk.replay(seq_x, orientation=R_x @ R, complex_signal=True, **kw), atol=2e-6)
     assert np.isfinite(pp.coeffs).all()
+
+
+def test_a_machines_nearly_single_direction_waveform_takes_the_closed_form_within_its_bound(pack):
+    """A trapezoid played by a machine's coils at 8 cm: the Maxwell gradient goes as the square of the ramps where the
+    encoding goes as the ramps, so the delivered waveform is one direction only up to a residual. The closed form
+    takes its principal direction and adds the residual's largest phase over every pose (the nuclear norm of its
+    walker contraction) to the misfit; the expansion then equals the direct posed replay of the played waveform at
+    every rotation to that bound. A residual beyond the bound takes the quadrature."""
+    base = sequences.pgse([[1, 0, 0], [0.0, 0.6, 0.8]], 2e-3, 5e-3, gradient_strengths=[0.3, 0.3], TE=10e-3, slew_rate=200.0)
+    played = base.with_concomitant(np.array([0.03, 0.05, 0.06]), 3.0)
+    G = np.asarray(played.G_eff, np.float64)
+    assert all(np.linalg.svd(G[i], compute_uv=False)[1] > 1e-6 * np.linalg.svd(G[i], compute_uv=False)[0] for i in range(2))
+    pr = pack.pose_response(played, method="closed")
+    assert pr.route == "closed" and 0 < pr.misfit.max() < 0.1 / np.sqrt(pack.n_walkers)
+    for R in so3.haar_rotations(12, 5):
+        err = np.abs(pr.at(R) - pack.replay(played, orientation=R, complex_signal=True))
+        assert np.all(err <= pr.misfit + 1e-8), (err, pr.misfit)
+    strong = base.with_concomitant(np.array([0.03, 0.05, 0.06]), 0.02)       # a 20 mT magnet: the residual is large
+    assert pack.pose_response(strong).route != "closed"
+
+
+def test_the_residual_bound_is_the_ensembles(pack):
+    """The misfit bounds the ensemble's signal, and |sum_w w (e^{i(phi + d)} - e^{i phi})| <= sum_w |w| |d_w|: the
+    walkers' residual bounds weighted as the signal weighs them, not the worst walker's. At 0.5 T the worst walker's
+    bound (7.0e-3) is beyond a tenth of this pack's floor (4.5e-3) and the ensemble's (2.6e-3) within it: the
+    closed form takes it, and still equals the direct posed replay at every rotation to that bound."""
+    base = sequences.pgse([[1, 0, 0], [0.0, 0.6, 0.8]], 2e-3, 5e-3, gradient_strengths=[0.3, 0.3], TE=10e-3, slew_rate=200.0)
+    played = base.with_concomitant(np.array([0.03, 0.05, 0.06]), 0.5)
+    pr = pack.pose_response(played)
+    assert pr.route == "closed" and 1e-3 < pr.misfit.max() < 0.1 / np.sqrt(pack.n_walkers)
+    for R in so3.haar_rotations(12, 5):
+        err = np.abs(pr.at(R) - pack.replay(played, orientation=R, complex_signal=True))
+        assert np.all(err <= pr.misfit + 1e-8), (err, pr.misfit)

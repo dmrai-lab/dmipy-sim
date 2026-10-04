@@ -1896,7 +1896,7 @@ class ReplayPack:
         raise ValueError("orientation is a (3, 3) rotation, a (3,) axis direction, or a distribution of poses "
                          "(dmipy_sim.replay.so3.Distribution, or an FOD read as an axis density)")
 
-    def _pose_coeffs_closed_many(self, Ps, waveforms, keep=None, tol=1e-8, l_cap=64):
+    def _pose_coeffs_closed_many(self, Ps, waveforms, keep=None, tol=1e-8, l_cap=64, direction_tol=None):
         """The pose expansion in closed form (#197) for a batch of acquisitions on this pack -- the encoding classes
         of a machine pass, or one class per voxel -- in ONE pass over the walkers: every acquisition's waveform
         groups lie along one group axis, so the moments, the Bessel values, the moment harmonics and the products
@@ -1929,7 +1929,14 @@ class ReplayPack:
         contracted with the real coupling tables (:func:`so3.coupling`) on the lab index (``Y_lm(g^)`` with
         ``Y_l'n'(b^)``) and on the body index (``j_l Y_ln(m^)`` with ``a_l'm'``); no ``g x B0`` frame exists.
         Returns None when a measurement is not single-direction (a b-tensor encoding): that takes the quadrature.
-        
+
+        **Nearly one direction.** A measurement whose waveform is one direction up to a residual -- a machine's
+        Maxwell gradient through the ramps of a trapezoid, which goes as the square of the ramp where the encoding
+        goes as the ramp -- is expanded on its principal direction when the residual's phase, contracted on every
+        walker exactly as the moments are and bounded over every pose, moves the ensemble's signal by at most
+        ``direction_tol`` (default a tenth of the ensemble's floor ``1 / sqrt(n_w)``): since ``|exp(i a) - exp(i b)|
+        <= |a - b|``, the walkers' bounds weighted as the signal weighs them bound it, and that is added to the
+        measurement's misfit. Beyond it the acquisition takes the quadrature.
         """
         from . import so3
         from .compression import read_position_coeffs
@@ -1947,7 +1954,7 @@ class ReplayPack:
         per = []
         for P, wf in zip(Ps, waveforms):
             G = np.asarray(P["Geff"], np.float64); n_meas = G.shape[0]
-            g_hat = np.zeros((n_meas, 3)); s_wave = np.zeros((n_meas, n_t)); single = True
+            g_hat = np.zeros((n_meas, 3)); s_wave = np.zeros((n_meas, n_t)); residual = []
             for i in range(n_meas):
                 Gi = G[i]
                 if not np.any(Gi):
@@ -1955,19 +1962,23 @@ class ReplayPack:
                     continue
                 _u, sv, vt = np.linalg.svd(Gi, full_matrices=False)
                 if sv[1] > 1e-6 * sv[0]:                                    # G is stored float32; a direction is one to that
-                    single = False; break                                          # rank > 1: not a single direction
+                    residual.append(i)                                             # rank > 1: its residual is bounded below
                 g, sw = vt[0], Gi @ vt[0]
                 lead = int(np.flatnonzero(np.abs(sw) > 1e-6 * np.abs(sw).max())[0])
                 if sw[lead] < 0:                       # one spelling of (direction, waveform): the first lobe positive
                     g, sw = -g, -sw
                 g_hat[i] = g; s_wave[i] = sw
-            if not single:
-                per.append(None); continue
             # the body of a coefficient depends on the waveform's shape and amplitude only, never on its direction:
             # measurements that play the same s_i(t) -- a shell -- share one body, and their directions enter as
             # harmonics afterwards. Group by the played waveform, exactly, and contract once per group.
             group, first = _group_waveforms(s_wave, rtol=1e-5)                   # float32 G: 1e-5 is the same waveform
-            per.append(dict(P=P, G=G, g_hat=g_hat, group=group, first=first, n_meas=n_meas))
+            per.append(dict(P=P, G=G, g_hat=g_hat, group=group, first=first, n_meas=n_meas,
+                            residual=np.asarray(residual, int), bound=np.zeros(n_meas)))
+        limit = (0.1 / np.sqrt(n_w)) if direction_tol is None else float(direction_tol)
+        self._residual_bounds(per, P0, dt, n_w, ew, norm)
+        for c, q in enumerate(per):
+            if q is not None and q["residual"].size and float(q["bound"].max()) > limit:
+                per[c] = None                                                      # not one direction to the bound: quadrature
         live = [c for c in range(n_acq) if per[c] is not None]
         if not live:
             return [None] * n_acq
@@ -2146,13 +2157,55 @@ class ReplayPack:
                             block = (4 * np.pi * (1j ** l) / np.sqrt(2 * Lc + 1)) * lab[:, :, None] * body[:, None, :]
                             o = offs[Lc]
                             coeffs[:, o:o + (2 * Lc + 1) * (2 * kk + 1)] += block.reshape(n_meas, -1)
-            resp = PoseResponse(coeffs, keep_l, keep_n, misfit=tail_all[group], floor=1.0 / np.sqrt(n_w),
+            resp = PoseResponse(coeffs, keep_l, keep_n, misfit=tail_all[group] + q["bound"], floor=1.0 / np.sqrt(n_w),
                                 phase_amplitude=float(kappa[:, g_sl].max()) if kappa.size else 0.0, n_samples=0)
             resp.n_bodies = len(q["first"])                                        # the distinct waveforms contracted
             resp.field_lmax = L_f
             resp.route = "closed"
             out[c] = resp
         return out
+
+    def _residual_bounds(self, per, P0, dt, n_w, ew, norm):
+        """Into each acquisition's ``bound``: for every measurement whose waveform has a component off its principal
+        direction, a bound on how far that component can move the ensemble's signal at ANY pose. The residuals
+        of an acquisition's measurements are written on their common time courses (an SVD over the measurements and
+        axes, to its numerical rank: a machine's Maxwell residual is one ramp-shaped course per shell),
+        ``res_i(t) = sum_k u_k(t) c_ik``; a walker's phase at pose ``R`` is then ``sum_k (R^T c_ik) . mu_kw`` with
+        ``mu_kw = sum_t u_k(t) r_w(t)`` contracted through the windows as the moments are, and is bounded over the
+        rotations by ``sum_k |c_ik| |mu_kw|`` (:meth:`_pose_coeffs_closed_many`). Windows add. The bound is the
+        ENSEMBLE's, which is what the misfit bounds: ``|sum_w w_w (e^{i(phi_w + d_w)} - e^{i phi_w})| <= sum_w |w_w|
+        |d_w|``, the walkers' bounds weighted as the signal weighs them."""
+        from .compression import read_position_coeffs
+        from ._replay_kernel import effective_gradient
+        from .._blas import lapack_threads
+        todo = [c for c, q in enumerate(per) if q is not None and q["residual"].size]
+        if not todo:
+            return
+        e = np.eye(3)
+        live = np.asarray(ew) != 0
+        w_live = np.abs(np.asarray(ew, np.float64)[live]) / float(norm)
+        per_walker = {c: 0.0 for c in todo}                                    # (n_live, n_r) per acquisition, windows summed
+        for seg, t0, n_s in P0["windows"]:
+            C = read_position_coeffs(seg.arrays, dtype=np.float64).reshape(n_w, -1)[live]
+            for c in todo:
+                q = per[c]; rows = q["residual"]
+                G_s = effective_gradient(q["P"]["G_eff_wf"], q["P"]["dt_wf"], n_s, dt, t0=t0) if self.n_segments > 1 else q["G"]
+                G_s = np.asarray(G_s, np.float64)[rows]
+                g = q["g_hat"][rows]
+                res = G_s - np.einsum("mtc,mc->mt", G_s, g)[:, :, None] * g[:, None, :]          # (n_r, n_s, 3)
+                X = res.transpose(0, 2, 1).reshape(-1, n_s)                                       # (n_r * 3, n_s)
+                with lapack_threads():                                                            # #564: this shape hangs a known build
+                    U, S, Vt = np.linalg.svd(X, full_matrices=False)
+                k = int(np.sum(S > 1e-12 * S[0])) if S.size and S[0] > 0 else 0
+                if k == 0:
+                    continue
+                coef = (U[:, :k] * S[:k]).reshape(len(rows), 3, k)                                # c_ik per axis
+                mu = np.stack([np.stack([C @ _compile_effective(Vt[j][None, :, None] * e[b_][None, None, :], dt, self.K, n_s)[:, 0]
+                                         for b_ in range(3)], axis=1) for j in range(k)], axis=1)  # (n_live, k, 3)
+                per_walker[c] = per_walker[c] + np.linalg.norm(mu, axis=2) @ np.linalg.norm(coef, axis=1).T
+        for c in todo:
+            if np.ndim(per_walker[c]):
+                per[c]["bound"][per[c]["residual"]] += w_live @ per_walker[c]
 
     def _field_quadratic(self, P, waveform):
         """The susceptibility phase of every walker as ``a_w + u^T A_w u`` in the field direction ``u`` expressed in
