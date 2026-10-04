@@ -342,60 +342,64 @@ class ColumnarPack:
         import functools
         import jax
         import jax.numpy as jnp
+        was_x64 = bool(jax.config.read("jax_enable_x64"))
         jax.config.update("jax_enable_x64", True)
-        pairs = [study.resolved(k) for k in range(len(study))]
-        plans = [self.plan(a.waveform, tissue=t_, scanner=s_, tol=tol) for a in study.protocol for t_, s_ in pairs]
-        plan = dict(plans[0], K=max(p["K"] for p in plans), modes=max(p["modes"] for p in plans), contact=any(p["contact"] for p in plans),
-                    relaxation=any(p["relaxation"] for p in plans), settings=len(pairs), study=study.to_meta())
-        self.src.bytes_read = self.src.requests = 0; t0 = time.time()
-        n_meas = study.protocol.n_meas; n_vox = int(np.prod(self.grid.shape))
-        num = np.zeros((len(pairs), 2, n_vox, n_meas), complex); den = np.zeros((2, n_vox)); rows = 0
-        ROWS, SEGS = 1 << 16, 256
+        try:
+            pairs = [study.resolved(k) for k in range(len(study))]
+            plans = [self.plan(a.waveform, tissue=t_, scanner=s_, tol=tol) for a in study.protocol for t_, s_ in pairs]
+            plan = dict(plans[0], K=max(p["K"] for p in plans), modes=max(p["modes"] for p in plans), contact=any(p["contact"] for p in plans),
+                        relaxation=any(p["relaxation"] for p in plans), settings=len(pairs), study=study.to_meta())
+            self.src.bytes_read = self.src.requests = 0; t0 = time.time()
+            n_meas = study.protocol.n_meas; n_vox = int(np.prod(self.grid.shape))
+            num = np.zeros((len(pairs), 2, n_vox, n_meas), complex); den = np.zeros((2, n_vox)); rows = 0
+            ROWS, SEGS = 1 << 16, 256
 
-        @functools.partial(jax.jit, static_argnums=(10,))
-        def pair_sums(phi, fi, fa, et2, et1, ct, ct1, w, seg2, terms, n_seg2):
-            """``Primitives.signals`` on the device: `(ew[:, None] * E)` summed over each voxel's rows, with every
-            term taken from :meth:`~dmipy_sim.replay.study.Primitives.reduction_terms` and none re-derived here."""
-            a_i, a_a, rho_D, rho1_D, invT2, invT1, amp, vox = terms
-            logw = -(et2 @ invT2) - (et1 @ invT1) + rho_D * ct + rho1_D * ct1
-            ph = phi + (a_i * fi + a_a * fa)[:, None]
-            E = jnp.exp(1j * ph) * vox[None, :]                       # replay._signal_factor
-            return jax.ops.segment_sum(E * (amp * w * jnp.exp(logw))[:, None], seg2, num_segments=n_seg2)
-        for pk in self.iter_views(chunk_rows=chunk_rows, K=plan["K"], modes=plan["modes"], contact=plan["contact"]):
-            n = pk.n_walkers
-            ijk, _ = self.grid.bin(pk.r0); v = np.ravel_multi_index(ijk.T, self.grid.shape)
-            starts = np.flatnonzero(np.r_[True, v[1:] != v[:-1]]); n_seg = len(starts)
-            seg = np.repeat(np.arange(n_seg), np.diff(np.r_[starts, n])); half = (np.arange(n) - starts[seg]) % 2
-            n_pad = -(-n // ROWS) * ROWS; s_pad = -(-(n_seg + 1) // SEGS) * SEGS
-            seg2 = np.full(n_pad, 2 * n_seg, np.int32); seg2[:n] = 2 * seg + half
-            w_all = None
-            for a, sl in zip(study.protocol, study.protocol.slices):
-                prim = pk.walker_primitives(a); w_all = prim.w
-                pad = lambda x, shape: (np.zeros((n_pad,) + shape) if x is None else np.concatenate([np.asarray(x, np.float64), np.zeros((n_pad - n,) + shape)]))
-                n_pools = prim.n_pools or 1
-                phi = pad(prim.phi, (prim.phi.shape[1],)); fi = pad(prim.field_iso, ()); fa = pad(prim.field_aniso, ())
-                et2 = pad(prim.exposure_t2, (n_pools,)); et1 = pad(prim.exposure_t1, (n_pools,))
-                ct = pad(prim.contact, ()); ct1 = pad(prim.contact_t1, ()); w = pad(prim.w, ())
-                dev = [jnp.asarray(x) for x in (phi, fi, fa, et2, et1, ct, ct1, w)] + [jnp.asarray(seg2)]
-                for k, (t_, s_) in enumerate(pairs):
-                    rt = prim.reduction_terms(t_, s_)                        # every per-pair term, resolved once
-                    terms = (jnp.float64(rt["a_iso"]), jnp.float64(rt["a_aniso"]), jnp.float64(rt["rho2_over_D"]),
-                             jnp.float64(rt["rho1_over_D"]), jnp.asarray(rt["invT2"]), jnp.asarray(rt["invT1"]),
-                             jnp.float64(rt["amplitude"]), jnp.asarray(rt["voxel"], jnp.float64))
-                    sums = np.asarray(pair_sums(*dev, terms, 2 * s_pad))[:2 * n_seg].reshape(n_seg, 2, -1)
-                    np.add.at(num[k, 0, :, sl], v[starts], sums[:, 0]); np.add.at(num[k, 1, :, sl], v[starts], sums[:, 1])
-            wh = np.zeros((2, n)); wh[half, np.arange(n)] = w_all
-            np.add.at(den[0], v[starts], np.add.reduceat(wh[0], starts)); np.add.at(den[1], v[starts], np.add.reduceat(wh[1], starts))
-            rows += n
-            if progress:
-                progress(rows, self.src.bytes_read, time.time() - t0)
-        S = np.full((len(pairs), n_vox, n_meas), np.nan); floor = np.full((len(pairs), n_vox), np.nan)
-        both = (den > 0).all(0); any_ = den.sum(0) > 0
-        tot = num.sum(1); S[:, any_] = np.abs(tot[:, any_] / den.sum(0)[any_][None, :, None])
-        Sa = np.abs(num[:, 0][:, both] / den[0][both][None, :, None]); Sb = np.abs(num[:, 1][:, both] / den[1][both][None, :, None])
-        floor[:, both] = 0.5 * np.abs(Sa - Sb).max(-1)
-        plan.update(bytes_read=self.src.bytes_read, requests=self.src.requests, seconds=time.time() - t0, rows=rows)
-        return S.reshape((len(pairs),) + tuple(self.grid.shape) + (n_meas,)), floor.reshape((len(pairs),) + tuple(self.grid.shape)), plan
+            @functools.partial(jax.jit, static_argnums=(10,))
+            def pair_sums(phi, fi, fa, et2, et1, ct, ct1, w, seg2, terms, n_seg2):
+                """``Primitives.signals`` on the device: `(ew[:, None] * E)` summed over each voxel's rows, with every
+                term taken from :meth:`~dmipy_sim.replay.study.Primitives.reduction_terms` and none re-derived here."""
+                a_i, a_a, rho_D, rho1_D, invT2, invT1, amp, vox = terms
+                logw = -(et2 @ invT2) - (et1 @ invT1) + rho_D * ct + rho1_D * ct1
+                ph = phi + (a_i * fi + a_a * fa)[:, None]
+                E = jnp.exp(1j * ph) * vox[None, :]                       # replay._signal_factor
+                return jax.ops.segment_sum(E * (amp * w * jnp.exp(logw))[:, None], seg2, num_segments=n_seg2)
+            for pk in self.iter_views(chunk_rows=chunk_rows, K=plan["K"], modes=plan["modes"], contact=plan["contact"]):
+                n = pk.n_walkers
+                ijk, _ = self.grid.bin(pk.r0); v = np.ravel_multi_index(ijk.T, self.grid.shape)
+                starts = np.flatnonzero(np.r_[True, v[1:] != v[:-1]]); n_seg = len(starts)
+                seg = np.repeat(np.arange(n_seg), np.diff(np.r_[starts, n])); half = (np.arange(n) - starts[seg]) % 2
+                n_pad = -(-n // ROWS) * ROWS; s_pad = -(-(n_seg + 1) // SEGS) * SEGS
+                seg2 = np.full(n_pad, 2 * n_seg, np.int32); seg2[:n] = 2 * seg + half
+                w_all = None
+                for a, sl in zip(study.protocol, study.protocol.slices):
+                    prim = pk.walker_primitives(a); w_all = prim.w
+                    pad = lambda x, shape: (np.zeros((n_pad,) + shape) if x is None else np.concatenate([np.asarray(x, np.float64), np.zeros((n_pad - n,) + shape)]))
+                    n_pools = prim.n_pools or 1
+                    phi = pad(prim.phi, (prim.phi.shape[1],)); fi = pad(prim.field_iso, ()); fa = pad(prim.field_aniso, ())
+                    et2 = pad(prim.exposure_t2, (n_pools,)); et1 = pad(prim.exposure_t1, (n_pools,))
+                    ct = pad(prim.contact, ()); ct1 = pad(prim.contact_t1, ()); w = pad(prim.w, ())
+                    dev = [jnp.asarray(x) for x in (phi, fi, fa, et2, et1, ct, ct1, w)] + [jnp.asarray(seg2)]
+                    for k, (t_, s_) in enumerate(pairs):
+                        rt = prim.reduction_terms(t_, s_)                        # every per-pair term, resolved once
+                        terms = (jnp.float64(rt["a_iso"]), jnp.float64(rt["a_aniso"]), jnp.float64(rt["rho2_over_D"]),
+                                 jnp.float64(rt["rho1_over_D"]), jnp.asarray(rt["invT2"]), jnp.asarray(rt["invT1"]),
+                                 jnp.float64(rt["amplitude"]), jnp.asarray(rt["voxel"], jnp.float64))
+                        sums = np.asarray(pair_sums(*dev, terms, 2 * s_pad))[:2 * n_seg].reshape(n_seg, 2, -1)
+                        np.add.at(num[k, 0, :, sl], v[starts], sums[:, 0]); np.add.at(num[k, 1, :, sl], v[starts], sums[:, 1])
+                wh = np.zeros((2, n)); wh[half, np.arange(n)] = w_all
+                np.add.at(den[0], v[starts], np.add.reduceat(wh[0], starts)); np.add.at(den[1], v[starts], np.add.reduceat(wh[1], starts))
+                rows += n
+                if progress:
+                    progress(rows, self.src.bytes_read, time.time() - t0)
+            S = np.full((len(pairs), n_vox, n_meas), np.nan); floor = np.full((len(pairs), n_vox), np.nan)
+            both = (den > 0).all(0); any_ = den.sum(0) > 0
+            tot = num.sum(1); S[:, any_] = np.abs(tot[:, any_] / den.sum(0)[any_][None, :, None])
+            Sa = np.abs(num[:, 0][:, both] / den[0][both][None, :, None]); Sb = np.abs(num[:, 1][:, both] / den[1][both][None, :, None])
+            floor[:, both] = 0.5 * np.abs(Sa - Sb).max(-1)
+            plan.update(bytes_read=self.src.bytes_read, requests=self.src.requests, seconds=time.time() - t0, rows=rows)
+            return S.reshape((len(pairs),) + tuple(self.grid.shape) + (n_meas,)), floor.reshape((len(pairs),) + tuple(self.grid.shape)), plan
+        finally:
+            jax.config.update("jax_enable_x64", was_x64)
 
     def _image_settings(self, seq, *, tissue=None, scanner=None, settings=None, tol=0.25, chunk_rows=2_000_000, progress=None):
         """``(S, floor, plan)``: the signal of every voxel of the grid under ``seq`` (one sequence or a list, their
@@ -407,46 +411,50 @@ class ColumnarPack:
         leading axis. ``progress(rows, bytes, seconds)`` is called after every row group."""
         import jax
         import jax.numpy as jnp
+        was_x64 = bool(jax.config.read("jax_enable_x64"))
         jax.config.update("jax_enable_x64", True)
-        seqs = list(seq) if isinstance(seq, (list, tuple)) else [seq]
-        multi = settings is not None; settings = list(settings) if multi else [(tissue, scanner)]
-        t0 = time.time(); plans = [self.plan(s, tissue=t_, scanner=B_, tol=tol) for s in seqs for t_, B_ in settings]
-        plan = max(plans, key=lambda p: (p["K"], p["modes"]))
-        plan = dict(plan, K=max(p["K"] for p in plans), modes=max(p["modes"] for p in plans), contact=any(p["contact"] for p in plans), settings=len(settings))
-        self.src.bytes_read = self.src.requests = 0
-        n_meas = sum(int(np.asarray(s.G_eff).shape[0]) for s in seqs); n_vox = int(np.prod(self.grid.shape))
-        num = np.zeros((len(settings), n_vox, n_meas), complex); den = np.zeros(n_vox); rows = 0
-        ROWS, SEGS = 1 << 16, 256                                            # padded to multiples: a few compiled shapes
+        try:
+            seqs = list(seq) if isinstance(seq, (list, tuple)) else [seq]
+            multi = settings is not None; settings = list(settings) if multi else [(tissue, scanner)]
+            t0 = time.time(); plans = [self.plan(s, tissue=t_, scanner=B_, tol=tol) for s in seqs for t_, B_ in settings]
+            plan = max(plans, key=lambda p: (p["K"], p["modes"]))
+            plan = dict(plan, K=max(p["K"] for p in plans), modes=max(p["modes"] for p in plans), contact=any(p["contact"] for p in plans), settings=len(settings))
+            self.src.bytes_read = self.src.requests = 0
+            n_meas = sum(int(np.asarray(s.G_eff).shape[0]) for s in seqs); n_vox = int(np.prod(self.grid.shape))
+            num = np.zeros((len(settings), n_vox, n_meas), complex); den = np.zeros(n_vox); rows = 0
+            ROWS, SEGS = 1 << 16, 256                                            # padded to multiples: a few compiled shapes
 
-        @functools.partial(jax.jit, static_argnums=3)
-        def voxel_sums(phi, ew, seg, n_seg):
-            return jax.ops.segment_sum(jnp.exp(1j * phi) * ew[:, None], seg, num_segments=n_seg)
-        for pk in self.iter_views(chunk_rows=chunk_rows, K=plan["K"], modes=plan["modes"], contact=plan["contact"]):
-            n = pk.n_walkers
-            ijk, _ = self.grid.bin(pk.r0); v = np.ravel_multi_index(ijk.T, self.grid.shape)
-            starts = np.flatnonzero(np.r_[True, v[1:] != v[:-1]]); n_seg = len(starts)   # runs of one voxel
-            seg = np.repeat(np.arange(n_seg), np.diff(np.r_[starts, n]))
-            n_pad = -(-n // ROWS) * ROWS; s_pad = -(-(n_seg + 1) // SEGS) * SEGS  # one spare segment takes the padding rows
-            seg_p = np.full(n_pad, n_seg, np.int32); seg_p[:n] = seg; w = None
-            for si, (t_, B_) in enumerate(settings):
-                sums = []
-                for s in seqs:                                                # each sequence's own relaxation and contact weights
-                    w, ew, p = pk.walker_phases(s, tissue=t_, scanner=B_)
-                    phi = np.zeros((n_pad, p.shape[1])); phi[:n] = p; ew_p = np.zeros(n_pad); ew_p[:n] = ew
-                    sums.append(np.asarray(voxel_sums(jnp.asarray(phi), jnp.asarray(ew_p), jnp.asarray(seg_p), s_pad))[:n_seg])
-                np.add.at(num[si], v[starts], np.concatenate(sums, axis=1))
-            np.add.at(den, v[starts], np.add.reduceat(np.asarray(w), starts))   # a voxel may sit in two row groups
-            rows += n
-            if progress:
-                progress(rows, self.src.bytes_read, time.time() - t0)
-        S = np.full((len(settings), n_vox, n_meas), np.nan); m = den > 0; S[:, m] = np.abs(num[:, m] / den[m][None, :, None])
-        floor = np.full(n_vox, np.nan); cert = self.columns_over(["voxel_ijk", "voxel_certificate"], [(0, 0)])
-        vi = np.ravel_multi_index(np.asarray(cert["voxel_ijk"]).T, self.grid.shape)
-        fl = np.asarray(cert["voxel_certificate"])[:, :, 1]; known = np.isfinite(fl).any(axis=1)
-        floor[vi[known]] = np.nanmax(fl[known], axis=1)
-        plan.update(bytes_read=self.src.bytes_read, requests=self.src.requests, seconds=time.time() - t0, rows=rows)
-        S = S.reshape((len(settings),) + tuple(self.grid.shape) + (n_meas,))
-        return (S if multi else S[0]), floor.reshape(self.grid.shape), plan
+            @functools.partial(jax.jit, static_argnums=3)
+            def voxel_sums(phi, ew, seg, n_seg):
+                return jax.ops.segment_sum(jnp.exp(1j * phi) * ew[:, None], seg, num_segments=n_seg)
+            for pk in self.iter_views(chunk_rows=chunk_rows, K=plan["K"], modes=plan["modes"], contact=plan["contact"]):
+                n = pk.n_walkers
+                ijk, _ = self.grid.bin(pk.r0); v = np.ravel_multi_index(ijk.T, self.grid.shape)
+                starts = np.flatnonzero(np.r_[True, v[1:] != v[:-1]]); n_seg = len(starts)   # runs of one voxel
+                seg = np.repeat(np.arange(n_seg), np.diff(np.r_[starts, n]))
+                n_pad = -(-n // ROWS) * ROWS; s_pad = -(-(n_seg + 1) // SEGS) * SEGS  # one spare segment takes the padding rows
+                seg_p = np.full(n_pad, n_seg, np.int32); seg_p[:n] = seg; w = None
+                for si, (t_, B_) in enumerate(settings):
+                    sums = []
+                    for s in seqs:                                                # each sequence's own relaxation and contact weights
+                        w, ew, p = pk.walker_phases(s, tissue=t_, scanner=B_)
+                        phi = np.zeros((n_pad, p.shape[1])); phi[:n] = p; ew_p = np.zeros(n_pad); ew_p[:n] = ew
+                        sums.append(np.asarray(voxel_sums(jnp.asarray(phi), jnp.asarray(ew_p), jnp.asarray(seg_p), s_pad))[:n_seg])
+                    np.add.at(num[si], v[starts], np.concatenate(sums, axis=1))
+                np.add.at(den, v[starts], np.add.reduceat(np.asarray(w), starts))   # a voxel may sit in two row groups
+                rows += n
+                if progress:
+                    progress(rows, self.src.bytes_read, time.time() - t0)
+            S = np.full((len(settings), n_vox, n_meas), np.nan); m = den > 0; S[:, m] = np.abs(num[:, m] / den[m][None, :, None])
+            floor = np.full(n_vox, np.nan); cert = self.columns_over(["voxel_ijk", "voxel_certificate"], [(0, 0)])
+            vi = np.ravel_multi_index(np.asarray(cert["voxel_ijk"]).T, self.grid.shape)
+            fl = np.asarray(cert["voxel_certificate"])[:, :, 1]; known = np.isfinite(fl).any(axis=1)
+            floor[vi[known]] = np.nanmax(fl[known], axis=1)
+            plan.update(bytes_read=self.src.bytes_read, requests=self.src.requests, seconds=time.time() - t0, rows=rows)
+            S = S.reshape((len(settings),) + tuple(self.grid.shape) + (n_meas,))
+            return (S if multi else S[0]), floor.reshape(self.grid.shape), plan
+        finally:
+            jax.config.update("jax_enable_x64", was_x64)
 
 
 def open_columnar(uri, workers=8):

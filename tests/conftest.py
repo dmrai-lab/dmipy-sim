@@ -47,6 +47,39 @@ if _cache != "0":
     jax.config.update("jax_persistent_cache_min_compile_time_secs", 0.5)
     jax.config.update("jax_persistent_cache_min_entry_size_bytes", 0)
 
+# ── jax_enable_x64 is process-global ────────────────────────────────────────────────────────
+# JAX has no per-call double precision: the only way to get float64 out of it is the process-wide
+# `jax_enable_x64` flag, so a test that wants it must flip it for itself and no other test may be
+# able to tell afterward. `x64` is the one place that happens: it saves the flag, turns it on,
+# and restores whatever it was -- even if the test raises. `x64_is_off_between_tests` is autouse
+# and checks the restore happened, so a test that flips the flag without going through `x64`
+# fails at its own boundary instead of corrupting an unrelated test run later in the same process
+# (dmipy-sim#591: `test_replay_kernel.py` left it on and broke a caterpillar test two files later,
+# only when collection order put them in that sequence).
+@pytest.fixture
+def x64():
+    """``jax_enable_x64`` for the one test that asks for it; the flag is restored on teardown."""
+    import jax
+    was = bool(jax.config.read("jax_enable_x64"))
+    jax.config.update("jax_enable_x64", True)
+    try:
+        yield
+    finally:
+        jax.config.update("jax_enable_x64", was)
+
+
+@pytest.fixture(autouse=True)
+def _x64_is_off_between_tests():
+    import jax
+    assert not jax.config.read("jax_enable_x64"), (
+        "jax_enable_x64 was already on when this test started -- a previous test leaked it; "
+        "use the `x64` fixture, which restores the flag on teardown")
+    yield
+    assert not jax.config.read("jax_enable_x64"), (
+        "this test turned jax_enable_x64 on and did not restore it; use the `x64` fixture instead "
+        "of calling jax.config.update(\"jax_enable_x64\", True) directly")
+
+
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
 
 # Standard simulation parameters matching disimpy validation suite
