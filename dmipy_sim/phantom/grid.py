@@ -236,6 +236,17 @@ class Grid:
     def extent_m(self):
         return tuple(n * d for n, d in zip(self.shape, self.voxel_size_m))
 
+    def centred_at(self, offset_m):
+        """The same voxels placed in the bore with the grid's centre at ``offset_m`` from isocenter (metres, in the
+        scanner's frame): only :attr:`isocenter_m` moves, so every field a machine imposes is read where the sample
+        now sits (``offset_m`` turned into the grid's frame through :attr:`to_scanner` when the grid is oblique)."""
+        off = np.asarray(offset_m, np.float64).reshape(3)
+        if self.to_scanner is not None:
+            off = np.asarray(self.to_scanner, np.float64).T @ off
+        centre = np.asarray(self.centre_m, np.float64)
+        return Grid(shape=self.shape, voxel_size_m=self.voxel_size_m, origin_m=self.origin_m,
+                    isocenter_m=tuple(centre - off), axes=self.axes, attach=self.attach, to_scanner=self.to_scanner)
+
     def with_voxel_size(self, voxel_size_m):
         """The same field of view (the same outer corner, at least the same extent) on other voxels: an exact
         rebin of anything binned on this grid whenever the new size divides the old."""

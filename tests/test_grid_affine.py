@@ -134,3 +134,26 @@ def test_seeds_land_in_their_own_voxel_and_a_rebin_keeps_the_field_of_view_on_a_
     fine = g.with_voxel_size((0.5e-3, 1e-3, 0.75e-3))
     assert fine.corner_m == pytest.approx(g.corner_m) and fine.axes == g.axes
     np.testing.assert_array_equal(fine.bin(g.positions_m(g.every_voxel))[1], True)
+
+
+@pytest.mark.parametrize("kind", ["las", "oblique_left"])
+def test_centred_at_puts_the_grid_centre_at_the_offset_from_isocentre_in_the_scanner_frame(kind):
+    """``Grid.centred_at(offset)`` moves only the isocentre: afterwards the grid's centre (midway between the first
+    and last voxel centres, whichever way each axis runs) sits ``offset`` from it in the SCANNER's frame, and every
+    voxel's bore displacement is its NIfTI position less the NIfTI centre plus ``offset``."""
+    shape = (11, 8, 6)
+    if kind == "las":
+        A = np.diag([-2.0, 2.0, 2.5, 1.0]); A[:3, 3] = (90.0, -126.0, -72.0)
+        g = Grid.from_affine(A, shape)
+    else:
+        R = _random_rotation(np.random.default_rng(7))
+        A = np.eye(4); A[:3, :3] = R @ np.diag([2.0, 1.5, -2.5]); A[:3, 3] = (-90.0, -126.0, 72.0)
+        g, _ = Grid.from_oblique_affine(A, shape)
+    offset = np.array([0.05, -0.03, 0.04])
+    placed = g.centred_at(offset)
+    _, into = _bore(placed, None)
+    np.testing.assert_allclose(into(np.asarray(placed.centre_m))[0], offset, atol=1e-12)
+    ijk = _corners(shape)
+    truth = _truth_m(A, ijk)
+    centre_truth = 0.5 * (_truth_m(A, np.zeros((1, 3), int))[0] + _truth_m(A, (np.array(shape) - 1)[None])[0])
+    np.testing.assert_allclose(into(placed.positions_m(ijk)), truth - centre_truth + offset, atol=1e-12)
