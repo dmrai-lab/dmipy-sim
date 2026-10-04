@@ -26,7 +26,11 @@ waveform/B1 optimization. A JAX twin (:func:`replay_signal_jax`) supplies the au
 
 Surface relaxivity is exact, via the stored boundary local time (the C2 channel, bridge form): a
 per-walker reweight by ``exp((rho/D) * sum_t chi(t) ell_i(t))``, optionally coherence-gated by an
-occupancy schedule ``chi`` (:func:`surface_logweight`).
+occupancy schedule ``chi`` (:func:`surface_logweight`). A tissue's ``rho_1`` adds the longitudinal
+term on the same channel, gated by the complement ``chi_parallel = active - chi`` (on while the
+magnetisation is stored along B0, e.g. a stimulated echo's mixing time): the full contact weight is
+``exp((rho/D) * <chi, ell> + (rho_1/D) * <chi_parallel, ell>)``, two calls of the same bridge
+contraction summed -- no new channel, no new walk (dmipy-sim#574).
 """
 import json
 from dataclasses import dataclass
@@ -992,7 +996,8 @@ class ReplayPack:
         Three things describe a replay setting, each stated once:
 
         * ``tissue`` -- **what the material is**: a :class:`~dmipy_sim.spec.Tissue` (pool T2 / T1, the walls'
-          rho, the bulk D, the field source's chi) or ``None``, the bare diffusion signal. T2 / T1 are
+          transverse ``rho`` and longitudinal ``rho_1``, the bulk D, the field source's chi) or ``None``, the
+          bare diffusion signal. T2 / T1 are
           ``{pool name: seconds}`` over every pool of the embedded spec, ``inf`` for no decay. ``pack.nominal``
           is the embedded spec's values, so a paper's replay is ``replay(seq, tissue=pack.nominal,
           scanner=pack.nominal_field_T)``; ``pack.nominal.replace(T2={"intra": 0.08})`` changes one pool.
@@ -1011,8 +1016,9 @@ class ReplayPack:
 
         The tiers follow from those: **gradient** (C0) always, in mode space from the position coefficients;
         **bulk relaxation** (C1) with a T2 / T1 in the tissue, under the waveform's coherence gate, on the
-        occupancy channel; **surface relaxivity** (C2) with a rho, scaled by the walk's D (the tissue's, else the
-        pack's recorded one), on the boundary local time; **field** (C3) with a chi in the tissue and a field on
+        occupancy channel; **surface relaxivity** (C2) with a rho and/or a rho_1, scaled by the walk's D (the
+        tissue's, else the pack's recorded one), on the boundary local time -- rho gated by the coherence
+        (transverse) and rho_1 by its complement (stored along B0, e.g. a stimulated echo's mixing time); **field** (C3) with a chi in the tissue and a field on
         the scanner, on the path channel (or the stored basis sampled along the decoded path), the 180 the
         waveform's own. A tier whose inputs are given but which the pack does not carry raises rather than
         returning a plausible number.
@@ -1248,6 +1254,16 @@ class ReplayPack:
                                      f"declares {len(out)} pools: the pack is inconsistent")
                 return out
             relax = dict(T2_per_comp=per_pool(T2v, "T2"), T1_per_comp=per_pool(T1v, "T1"))
+        if P["rho_1"] is not None and float(P["rho_1"]) != 0.0:
+            # the vector-Bloch route propagates the actual M = (Mx, My, Mz) through the real pulses, so Mxy and
+            # Mz are already separate at every step; this route's `surface_relaxivity` (below) attenuates Mxy
+            # only, the same transverse-only mechanism the forward engine uses (engine/bloch.py). Extending it to
+            # a longitudinal wall term means a parallel attenuation on the Mz deviation, a distinct forward-style
+            # mechanism from the C2 scalar/closed-form routes this knob otherwise reaches -- refused rather than
+            # silently dropped (dmipy-sim#574).
+            raise ValueError("replay_bloch does not apply rho_1 (longitudinal surface relaxivity): it propagates "
+                             "the magnetisation vector through the real pulses and attenuates Mxy only, like the "
+                             "forward engine; use replay() for the C2 scalar route, which applies rho_1")
         surface = None
         if P["rho"] is not None and float(P["rho"]) != 0.0:
             D_walk = self.diffusivity if P["D"] is None else P["D"]
@@ -1398,7 +1414,7 @@ class ReplayPack:
             raise TypeError(f"tissue is a Tissue (pack.nominal, Tissue(...)) or None for the bare diffusion signal; "
                             f"got {type(tissue).__name__}")
         t = tissue if tissue is not None else Tissue()
-        T2, T1, rho, D, chi_iso, chi_aniso = t.T2, t.T1, t.rho, t.D, t.chi_iso, t.chi_aniso
+        T2, T1, rho, rho_1, D, chi_iso, chi_aniso = t.T2, t.T1, t.rho, t.rho_1, t.D, t.chi_iso, t.chi_aniso
         field = scanner_field(scanner)
         B0, b0_dir = field.B0, field.axis                            # the MACHINE's field; the pose turns it
         if orientation is not None:
@@ -1445,6 +1461,18 @@ class ReplayPack:
             for (seg, _, _), (chi_s, _) in zip(windows, window_gates):
                 logw = logw + surface_logweight(seg.arrays, float(rho) / float(D_walk),
                                                 ch.get("boundary_local_time"), chi_s)      # raises without C2
+        if rho_1 is not None and float(rho_1) != 0.0 and surface:
+            # the SAME bridge contraction (surface_logweight), gated by the complement chi_parallel = active - chi:
+            # the contact channel is one series, and the C2 gate rho * chi + rho_1 * chi_parallel is linear in it, so
+            # the longitudinal term is a second call summed in rather than a second channel (dmipy-sim#574).
+            D_walk = self.diffusivity if D is None else D
+            if D_walk is None:
+                raise ValueError("rho_1 needs the walk's diffusivity: the pack did not record it, pass D=")
+            self._check_rho(float(rho_1) / float(D_walk))
+            for (seg, _, _), (chi_s, act_s) in zip(windows, window_gates):
+                chi_parallel_s = np.clip(act_s - chi_s, 0.0, None)
+                logw = logw + surface_logweight(seg.arrays, float(rho_1) / float(D_walk),
+                                                ch.get("boundary_local_time"), chi_parallel_s)    # raises without C2
         ew = w * np.exp(logw)
         norm = w.sum()
         ew, norm = self._select(compartment, ew, norm, w, ch, n_w)
@@ -1455,8 +1483,8 @@ class ReplayPack:
         voxel = np.asarray(waveform.voxel_factor(), np.float64)
         return dict(G=G, Geff=Geff, dt=dt, n_t=n_t, dt_wf=dt_wf, ch=ch, n_w=n_w, w=w, ew=ew, norm=norm, B0=B0,
                     pathway=(pathway_weight(waveform) if pathway else 1.0), voxel=voxel,
-                    b0_dir=b0_dir, chi_iso=chi_iso, chi_aniso=chi_aniso, T2=T2, T1=T1, rho=rho, D=D, chi=chi, active=active,
-                    G_eff_wf=G_eff, windows=windows, window_gates=window_gates)
+                    b0_dir=b0_dir, chi_iso=chi_iso, chi_aniso=chi_aniso, T2=T2, T1=T1, rho=rho, rho_1=rho_1, D=D,
+                    chi=chi, active=active, G_eff_wf=G_eff, windows=windows, window_gates=window_gates)
 
     def _n_pool_ids(self, col):
         """How many pool ids the ``comp`` column addresses, read over every window."""
