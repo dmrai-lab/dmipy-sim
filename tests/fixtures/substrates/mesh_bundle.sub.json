@@ -3,7 +3,6 @@
   "id": "examples/cactus-bundle-2",
   "description": "A meshed two-fibre bundle: each fibre an inner (axonal) and an outer (myelin) closed surface in a periodic box. Every decision the CACTUS loader used to make is a field here.",
   "domain": {"box_min": [0.0, 0.0, 0.0], "box_max": [1.0e-5, 1.0e-5, 1.0e-5], "boundary": ["periodic", "periodic", "periodic"]},
-  "susceptibility_field": "present",
   "frame": {"axis": [0.0, 0.0, 1.0], "in_plane": null},
   "pools": [
     {"id": 0, "name": "extra",  "D": 1.7e-9, "T2": 0.055, "T1": 1.0,  "water_fraction": 1.0, "susceptibility": null},

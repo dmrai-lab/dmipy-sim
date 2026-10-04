@@ -110,11 +110,13 @@ class ColumnarPack:
         self.grid = _grid_of(self.meta)
         self.floor = float(self.meta["fidelity"]["per_voxel"]["floor_median"])
         self.K = int(self.meta["compression"]["K"])
+        self.susceptibility_field
 
     @property
     def susceptibility_field(self):
-        """The layout's declared susceptibility field, ``"present"`` or ``"absent"``
-        (:func:`~dmipy_sim.replay.replay.declared_susceptibility_field`); a layout that declares none is refused."""
+        """The layout's susceptibility field, ``"present"`` or ``"absent"``, from its embedded spec's pools with its
+        stored field modes as the field channel (:func:`~dmipy_sim.replay.replay.declared_susceptibility_field`);
+        a layout without an embedded spec, or one that breaks the equivalence, is refused when it is opened."""
         from .replay import declared_susceptibility_field
         return declared_susceptibility_field(self.meta, has_field=bool(self.path_groups))
 
@@ -270,6 +272,8 @@ class ColumnarPack:
             meta["compression"]["channels"]["susceptibility_path"]["K"] = int(M_read)
         else:
             meta["compression"]["channels"].pop("susceptibility_path", None); meta["compression"]["channels"].pop("susceptibility_grid", None)
+            if self.path_groups:
+                meta["view"] = dict(field="unread")                    # the layout holds C3; this view reads none of it
         if not contact:
             meta["compression"]["channels"].pop("boundary_local_time", None)
         return ReplayPack(arrays, meta)

@@ -136,7 +136,7 @@ def _spec_without_frame(geometry, *, id=None, provenance=None, surface_dir=None)
         half = 1e-4
         return SubstrateSpec(sid, Domain(*_box(half), ["open"] * 3), [Pool(0, "extra", None, water_fraction=1.0)], [],
                              Seeding([0]), Validity(half, ["gradient"]), description="unbounded free diffusion",
-                             provenance=prov, susceptibility_field="absent")
+                             provenance=prov)
     if isinstance(g, PermeableSlab1D):
         L = g.length
         pools = [Pool(0, "extra", None, water_fraction=1.0), Pool(1, "intra", None, water_fraction=1.0)]
@@ -144,14 +144,14 @@ def _spec_without_frame(geometry, *, id=None, provenance=None, surface_dir=None)
                     Directional(_kappa(g), _kappa(g)), Sided(_rho2(g), _rho2(g)))
         dom = Domain([0.0, -MARGIN * L, -MARGIN * L], [L, MARGIN * L, MARGIN * L], ["reflect", "open", "open"], _rho2(g))
         return SubstrateSpec(sid, dom, pools, [wall], Seeding([1]), Validity(L / 2, _tiers([wall], pools)),
-                             description="closed 1-D two-compartment slab; A = x < L/2 is pool 1", provenance=prov, susceptibility_field="absent")
+                             description="closed 1-D two-compartment slab; A = x < L/2 is pool 1", provenance=prov)
     if isinstance(g, Box1D):
         L = g.length
         pools = [extra0, Pool(1, "intra", None, water_fraction=1.0)]
         dom = Domain([0.0, -MARGIN * L, -MARGIN * L], [L, MARGIN * L, MARGIN * L], ["reflect", "open", "open"], _rho2(g))
         return SubstrateSpec(sid, dom, pools, [], Seeding([1]),
                              Validity(L, ["gradient"] + (["surface"] if _rho2(g) > 0 else [])),
-                             description="reflecting slab 0 <= x <= L, y and z free", provenance=prov, susceptibility_field="absent")
+                             description="reflecting slab 0 <= x <= L, y and z free", provenance=prov)
     if isinstance(g, PermeableShell):
         ri, ro = g.r_inner, g.r_outer
         pools = [Pool(0, "extra", None, water_fraction=1.0), Pool(1, "intra", None, water_fraction=1.0)]
@@ -163,7 +163,7 @@ def _spec_without_frame(geometry, *, id=None, provenance=None, surface_dir=None)
                      Sided(_rho2(g), 0.0))
         dom = Domain(*_box(MARGIN * ro), ["open"] * 3)
         return SubstrateSpec(sid, dom, pools, [inner, outer], Seeding([1]), Validity(ri, _tiers([inner, outer], pools)),
-                             description=f"closed radial two-compartment {kind} shell", provenance=prov, susceptibility_field="absent")
+                             description=f"closed radial two-compartment {kind} shell", provenance=prov)
     if isinstance(g, (Sphere, Cylinder, Ellipsoid)):
         kappa = _kappa(g)
         pools = [Pool(0, "extra", None, water_fraction=0.0), Pool(1, "intra", None, water_fraction=1.0)]
@@ -177,7 +177,7 @@ def _spec_without_frame(geometry, *, id=None, provenance=None, surface_dir=None)
         Rmax = float(np.max(g.semiaxes)) if isinstance(g, Ellipsoid) else R
         return SubstrateSpec(sid, Domain(*_box(MARGIN * Rmax), ["open"] * 3), pools, [wall], Seeding([1]),
                              Validity(R, _tiers([wall], pools)),
-                             description=f"isolated {type(g).__name__.lower()}; the outside is void unless permeable", provenance=prov, susceptibility_field="absent")
+                             description=f"isolated {type(g).__name__.lower()}; the outside is void unless permeable", provenance=prov)
     if isinstance(g, (PackedCylinders, PackedSpheres)):
         kappa = _kappa(g)
         L = float(g._L_float)
@@ -198,7 +198,7 @@ def _spec_without_frame(geometry, *, id=None, provenance=None, surface_dir=None)
                                                                      np.asarray(g._radii_np, float), L))),
                              description=f"periodic cell of {len(centers)} {kind}s; "
                                          + {None: "both pools", "extra": "the extra-cellular pool", "intra": "the lumens"}[g.pool]
-                                         + " seeded", provenance=prov, susceptibility_field="absent")
+                                         + " seeded", provenance=prov)
     if isinstance(g, MyelinatedCylinder):
         ax = [0.0, 0.0, 1.0]
         pools = _pools_from_compartments(g, ["extra", "intra", "myelin"],
@@ -211,7 +211,7 @@ def _spec_without_frame(geometry, *, id=None, provenance=None, surface_dir=None)
                              Seeding(_seeded(pools)), Validity(min(g.inner_radius, g.outer_radius - g.inner_radius),
                                                           _tiers([inner, outer], pools),
                                                           thinnest_shell=g.outer_radius - g.inner_radius),
-                             description="isolated myelinated cylinder: lumen, sheath, extra", provenance=prov, susceptibility_field="present")
+                             description="isolated myelinated cylinder: lumen, sheath, extra", provenance=prov)
     if isinstance(g, PackedMyelinatedCylinders):
         N = g.N_actual
         ax = [0.0, 0.0, 1.0]
@@ -239,7 +239,7 @@ def _spec_without_frame(geometry, *, id=None, provenance=None, surface_dir=None)
                                       thinnest_shell=float((outer - inner).min())),
                              realisation={"n_objects": int(N), "packing_fraction": float(np.pi * np.sum(outer ** 2) / L ** 2),
                                           "cell_side": L, "g_ratio": float(np.mean(inner / outer))},
-                             description=f"periodic cell of {N} myelinated cylinders", provenance=prov, susceptibility_field="present")
+                             description=f"periodic cell of {N} myelinated cylinders", provenance=prov)
     if isinstance(g, CurvedMyelinatedCylinder):
         cl = np.asarray(g.centerline, float)
         pools = [Pool(0, "extra", None), Pool(1, "intra", None), Pool(2, "myelin", None, susceptibility=Susceptibility(None, None, "radial"))]
@@ -252,7 +252,7 @@ def _spec_without_frame(geometry, *, id=None, provenance=None, surface_dir=None)
         return SubstrateSpec(sid, Domain(lo, hi, ["open"] * 3), pools, [inner, outer], Seeding([seeded]),
                              Validity(min(g.r_in, g.r_out - g.r_in), _tiers([inner, outer], pools),
                                       thinnest_shell=g.r_out - g.r_in),
-                             description="myelinated curved axon: concentric shells swept along a polyline", provenance=prov, susceptibility_field="present")
+                             description="myelinated curved axon: concentric shells swept along a polyline", provenance=prov)
     if isinstance(g, CurvedCylinder):
         cl = np.asarray(g.centerline, float)
         pools = [extra0, Pool(1, "intra", None, water_fraction=1.0)]
@@ -260,7 +260,7 @@ def _spec_without_frame(geometry, *, id=None, provenance=None, surface_dir=None)
                    Directional(), Sided(_rho2(g), _rho2(g)))
         lo = (cl.min(0) - MARGIN * g.radius).tolist(); hi = (cl.max(0) + MARGIN * g.radius).tolist()
         return SubstrateSpec(sid, Domain(lo, hi, ["open"] * 3), pools, [wall], Seeding([1]),
-                             Validity(g.radius, _tiers([wall], pools)), description="curved cylinder; the lumen", provenance=prov, susceptibility_field="absent")
+                             Validity(g.radius, _tiers([wall], pools)), description="curved cylinder; the lumen", provenance=prov)
     if isinstance(g, PackedCurvedCylinders):
         cls_ = [np.asarray(c, float).tolist() for c in g.centerlines]
         radii = np.asarray(g.radii, float).tolist()
@@ -276,7 +276,7 @@ def _spec_without_frame(geometry, *, id=None, provenance=None, surface_dir=None)
             lo = (allp.min(0) - MARGIN * rmax).tolist(); hi = (allp.max(0) + MARGIN * rmax).tolist(); bc = ["open"] * 3
         return SubstrateSpec(sid, Domain(lo, hi, bc), pools, [wall], Seeding([1 if g.interior else 0]),
                              Validity(min(radii), _tiers([wall], pools)),
-                             description=f"extra-cellular walk around {len(radii)} curved tubes", provenance=prov, susceptibility_field="absent")
+                             description=f"extra-cellular walk around {len(radii)} curved tubes", provenance=prov)
     from ..geometry.mesh import Mesh
     if isinstance(g, Mesh):
         return _spec_of_mesh(g, sid, prov, surface_dir)
@@ -339,7 +339,7 @@ def _spec_of_mesh(g, sid, prov, surface_dir):
     return SubstrateSpec(sid, dom, pools, [wall], seeding,
                          Validity(float(g.radius), _tiers([wall], pools), mesh_edge_feature_ratio=float(g.edge_median / g.radius)),
                          description="one closed (or periodic) triangle surface: inside is intra, outside extra",
-                         provenance=dict(prov, files=[{"path": src["file"], "sha256": surf.sha256}], scale=surf.scale), susceptibility_field="absent")
+                         provenance=dict(prov, files=[{"path": src["file"], "sha256": surf.sha256}], scale=surf.scale))
 
 
 def _spec_of_sphere_union(g, sid, prov):
@@ -355,7 +355,7 @@ def _spec_of_sphere_union(g, sid, prov):
         dom = Domain(lo, hi, ["open"] * 3)
     return SubstrateSpec(sid, dom, pools, [wall], Seeding([1 if g.pool == "intra" else 0]),
                          Validity(float(g.radius), _tiers([wall], pools)),
-                         description=f"union of {len(g.radii)} spheres; the {g.pool} pool", provenance=prov, susceptibility_field="absent")
+                         description=f"union of {len(g.radii)} spheres; the {g.pool} pool", provenance=prov)
 
 
 def _spec_of_label_volume(g, id, prov, surface_dir=None):
@@ -402,7 +402,7 @@ def _spec_of_label_volume(g, id, prov, surface_dir=None):
                                       f"a segmented {'x'.join(str(int(d)) for d in g.dims)} label volume; "
                                       f"the {g.pool} pool walks between its voxel faces"),
                          provenance=(was.provenance if was is not None
-                                     else dict(prov, files=[{"path": src["file"], "sha256": surf_kw["sha256"]}])), susceptibility_field="absent")
+                                     else dict(prov, files=[{"path": src["file"], "sha256": surf_kw["sha256"]}])))
     if was is None:
         return spec
     return dataclasses.replace(spec, frame=was.frame, realisation=was.realisation, request=was.request,

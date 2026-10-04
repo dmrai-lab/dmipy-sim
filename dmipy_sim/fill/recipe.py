@@ -23,6 +23,7 @@ import os
 import time
 
 import numpy as np
+from ..spec.substrate import susceptibility_field_of
 
 FULL = {"pass": None, "scale": 1.0}   # the whole block in one shard: a plan without passes, and every certifying walk
 log = logging.getLogger("dmipy_sim.fill")
@@ -70,7 +71,7 @@ class Recipe:
         if self._context is None:
             from ..spec import WalkContext
             spec = self.spec(); t0 = time.time()
-            self._context = WalkContext(spec, field_far=(self.far_grid if spec.field_source_pools else None))
+            self._context = WalkContext(spec, field_far=(self.far_grid if susceptibility_field_of(spec) == "present" else None))
             log.info("walk context built in %.0f s: key %s", time.time() - t0, self._context.key)
         return self._context
 
@@ -103,6 +104,6 @@ class Recipe:
     def dt_save(self):
         from ..acquisition.scanners import save_interval
         spec = self.spec(); W = self.man["walk"]; dt = float(W["dt_save_s"])
-        if spec.field_source_pools:
+        if susceptibility_field_of(spec) == "present":
             dt = min(dt, save_interval(W["T_max_s"], 8, W["scanner"], D=max(float(p.D) for p in spec.pools if p.D), field=True))
         return dt

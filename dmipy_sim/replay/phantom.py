@@ -648,10 +648,14 @@ class ReplayPhantom:
 
     def _form(self, i, sub, forms):
         """The closed form of substrate ``i``: the live object when the caller holds one (``forms``, an in-memory
-        phantom's own declarations), else the one its ``model`` names, read back from the file's record."""
-        if forms and i in forms:
-            return forms[i]
-        return substrate_from_meta(sub)
+        phantom's own declarations), else the one its ``model`` names, read back from the file's record. A closed
+        form has no field by its kind (:data:`~dmipy_sim.phantom.substrates.FIELD_BY_KIND`), so a form whose tissue
+        carries a non-zero chi is refused (:func:`~dmipy_sim.replay.replay.field_term`)."""
+        from ..phantom.substrates import FIELD_BY_KIND
+        from .replay import field_term
+        form = forms[i] if (forms and i in forms) else substrate_from_meta(sub)
+        field_term(FIELD_BY_KIND[sub["kind"]], getattr(form, "tissue", None), None)
+        return form
 
     def _check_relaxation(self, waveform, loaded, forms):
         """Refuse a phantom whose substrates would relax inconsistently under a readout (dmipy-sim#238).

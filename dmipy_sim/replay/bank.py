@@ -32,6 +32,7 @@ from ..run import Run, _code
 from . import compression as _cx
 from ..acquisition.rf import RFEvent
 from .replay import ReplayPack, read_rpk, write_rpk
+from ..spec.substrate import susceptibility_field_of
 
 __all__ = ["build_replay_pack", "build_to_floor", "frame_from_axis", "frame_from_bundles", "frame_of_spec", "check_frame_against_walk",
            "check_frame_against_geometry", "read_rpk", "write_rpk", "RPK_SCHEMA_VERSION"]
@@ -79,34 +80,12 @@ def _master_arrays(src) -> dict:
                 substrate_frame=g("substrate_frame"),
                 walkers_shuffled=bool(m.get("walkers_shuffled", False)),
                 substrate=(m.get("substrate") if isinstance(m, dict) else None),
-                susceptibility_field=(None if m.get("susceptibility_field") is None else str(np.asarray(m["susceptibility_field"]))),
                 n_walkers=int(traj.shape[0]), seed=seed_value(m.get("seed", 0)))
 
 
-def _declared_field(m, given):
-    """The susceptibility field (``"present"`` / ``"absent"``) a pack of the master ``m`` declares: its embedded
-    substrate spec's, the master's own, and ``given`` (``build_replay_pack(susceptibility_field=)``) -- one of them
-    at least, and all that are stated the same. A master that embeds no spec states it through ``given``. A
-    master that carries a field basis is refused under ``"absent"``."""
-    from ..spec.substrate import SubstrateSpec, SUSCEPTIBILITY_FIELD
-    spec = m.get("substrate")
-    stated = dict(given=given, master=m.get("susceptibility_field"),
-                  spec=(None if spec is None else SubstrateSpec.from_dict(spec).susceptibility_field))
-    values = {v for v in stated.values() if v is not None}
-    if not values:
-        raise ValueError("the walk embeds no substrate spec, so nothing declares its susceptibility field: pass "
-                         "susceptibility_field=\"present\" (it carries the field channel) or \"absent\" (nothing in the "
-                         "substrate is magnetic)")
-    if len(values) > 1:
-        raise ValueError(f"the susceptibility field is declared differently: "
-                         + ", ".join(f"{k} {v!r}" for k, v in stated.items() if v is not None))
-    v = values.pop()
-    if v not in SUSCEPTIBILITY_FIELD:
-        raise ValueError(f"susceptibility_field is one of {SUSCEPTIBILITY_FIELD}; got {v!r}")
-    if v == "absent" and (m.get("susc_field_basis") is not None or m.get("susc_field_sampler") is not None):
-        raise ValueError("the walk carries a field basis and declares its susceptibility field absent: a substrate with "
-                         "nothing magnetic has no field to sample")
-    return v
+def _stores_field(m):
+    """Whether the master ``m`` carries the field basis its pack's field channel (C3) is built from."""
+    return m.get("susc_field_basis") is not None or m.get("susc_field_sampler") is not None
 
 
 def seed_value(seed):
@@ -1218,6 +1197,8 @@ def merge_packs(packs, *, id, out_path=None, overlap="refuse", envelope=None, de
         if overlap not in ("refuse", "recertify"):
             raise ValueError("overlap is 'refuse' (disjoint voxel blocks) or 'recertify' (shards may share voxels; the floors are re-read)")
         pks = [pk if isinstance(pk, ReplayPack) else read_rpk(pk) for pk in packs]
+        for pk in pks:
+            pk.susceptibility_field                                      # every shard holds the equivalence
         if len(pks) < 2:
             raise ValueError("merge_packs takes at least two shards")
         def same(key, get):
@@ -1232,7 +1213,6 @@ def merge_packs(packs, *, id, out_path=None, overlap="refuse", envelope=None, de
         wp = same("walk_params", lambda pk: _walk_identity(pk.meta["walk_params"]))
         same("substrate", lambda pk: _spec_identity(pk.meta.get("substrate")))
         same("replay_envelope", lambda pk: pk.meta.get("replay_envelope"))
-        same("susceptibility_field", lambda pk: pk.susceptibility_field)
         pv0 = same("per-voxel grid", lambda pk: ((pk.meta.get("fidelity") or {}).get("per_voxel") or {}).get("grid"))
         same("array names", lambda pk: sorted(pk.arrays))
         n = [int(pk.meta["walk_params"]["n_walkers"]) for pk in pks]
@@ -1357,10 +1337,12 @@ def merge_packs(packs, *, id, out_path=None, overlap="refuse", envelope=None, de
                     walk_params=dict(pks[0].meta["walk_params"], n_walkers=n_all, seed=seeds,
                                      segments=dict(seg0, walks=[dict(w, seed=seeds) for w in seg0.get("walks", [])])),
                     provenance=dict(pks[0].meta.get("provenance") or {}, shards=[dict(id=pk.meta.get("id"), n_walkers=int(m)) for pk, m in zip(pks, n)]))
+        out = ReplayPack(arrays, meta)
+        out.susceptibility_field                                         # the merged pack holds the equivalence
         if out_path is not None:
             write_rpk(out_path, arrays, meta)
             run.artifact(out_path)
-        return ReplayPack(arrays, meta)
+        return out
 
 
 SEGMENT_T = 0.1          #: the storage rule's window (s): a pack stores its walk in windows of this duration (RPK.md 4.3)
@@ -1649,7 +1631,8 @@ def _walk_master(walk, *, weights=None, diffusivity=None, substrate_frame=None):
         if any(f != 1.0 for f in wf):                     # the seeding rule's weights, from the spec
             weights = np.asarray(wf, float)[pool0]
     field = walk.field_basis
-    if spec is not None and spec.field_source_pools and walk.field_samples is None and (walk.field_deferred or field is None):
+    if (spec is not None and susceptibility_field_of(spec) == "present" and walk.field_samples is None
+            and (walk.field_deferred or field is None)):
         if walk.field_deferred:
             raise ValueError(f"this walk's spec {spec.id!r} declares a susceptibility source and recorded a "
                              "deferred field tier, but the walk carries no field samples yet; fill it first "
@@ -1713,7 +1696,7 @@ def build_replay_pack(walk, *, id, license, citation, weights=None,
                       position_container=None, blt_container=None,
                       diffusivity=None, substrate_frame=None, out_path=None, verbose=False,
                       fidelity="measured", fidelity_from=None, device="auto", segment_T=SEGMENT_T, _occupancy_runs=False,
-                      susceptibility_field=None, _window_of_plan=False):
+                      _window_of_plan=False):
     """Compress a persistent walk and assemble a self-certifying replay pack.
 
     The walk is stored in SEGMENTS of ``segment_T`` seconds (RPK.md 4.3; the storage rule's 100 ms): a walk within
@@ -1748,9 +1731,11 @@ def build_replay_pack(walk, *, id, license, citation, weights=None,
     replay knobs, never stored. A walk whose spec declares a source but carries neither field samples nor a
     recorded deferral is refused BY NAME (:func:`_walk_master`): sample the field in the walk, or
     ``walk_spec(..., defer_field=True)`` and ``fill_field`` it before packing. A spec without a source builds
-    a pack without the tier. Every pack declares its ``susceptibility_field`` (dmipy-sim#593): the embedded spec's
-    declaration, or ``susceptibility_field=`` for a walk that embeds no spec; ``"present"`` is refused without the
-    field channel and ``"absent"`` with one. ``susc_path_K`` is the field tier's own band: ``"auto"`` (the default) --
+    a pack without the tier. Every pack embeds the substrate spec its walk was driven by, and a walk without one is
+    refused; the spec's pools declare the field, and the pack holds the equivalence
+    (:func:`~dmipy_sim.spec.substrate.susceptibility_field_of`: some pool magnetic <=> ``"field"`` in its tiers
+    <=> the pack stores C3), checked on the walk before anything is encoded and on the channels built.
+    ``susc_path_K`` is the field tier's own band: ``"auto"`` (the default) --
     the band and the container (``susc_path_bits``) derived on this walk as the cheapest pair whose codec
     error on the certificate's battery is within its floor (:func:`derive_susc_path_K`), certified against the
     walk's own samples; the grid route instead (the grid read at the decoded positions) when the positions are
@@ -1785,12 +1770,9 @@ def build_replay_pack(walk, *, id, license, citation, weights=None,
         src = _walk_master(walk, weights=weights, diffusivity=diffusivity, substrate_frame=substrate_frame)
         _cx.require_position_method(method)
         m = _master_arrays(src)
-        m["susceptibility_field"] = _declared_field(m, susceptibility_field)
-        if (m["susceptibility_field"] == "present" and not _window_of_plan
-                and m.get("susc_field_basis") is None and m.get("susc_field_sampler") is None):
-            raise ValueError("the substrate's susceptibility field is present and the walk carries no field basis, so the "
-                             "pack would lack its field channel (C3): sample the field in the walk (walk_spec), or "
-                             "fill_field(walk, basis) before packing")
+        # a window of an already-planned pack may carry its field channel beside the walk (the parent's grid)
+        susceptibility_field_of(m.get("substrate"), name=id,
+                                stores_field=(None if _window_of_plan and not _stores_field(m) else _stores_field(m)))
         n_segments, n_seg = segment_plan(m["traj"].shape[1], m["dt_traj"], segment_T)
         if n_segments > 1:
             kw = dict(id=id, license=license, citation=citation, method=method, envelope=envelope, tol=tol, K=K,
@@ -2106,13 +2088,9 @@ def build_replay_pack(walk, *, id, license, citation, weights=None,
                                  magnetization_transfer=channels["mt"],
                                  diffusivity_fixed=True, acquisition=_envelope_summary(env)),
             fidelity=fid, provenance=dict(provenance or {}, code=_code()), license=license, citation=citation)
-        if m.get("substrate") is not None:
-            meta["substrate"] = m["substrate"]           # the spec the walk was driven by (#130)
-        meta["susceptibility_field"] = m["susceptibility_field"]
-        if (m["susceptibility_field"] == "present") != bool(channels["susceptibility"]) and not (
-                _window_of_plan and not channels["susceptibility"]):
-            raise ValueError(f"the pack declares its susceptibility field {m['susceptibility_field']!r} and "
-                             f"{'stores' if channels['susceptibility'] else 'built no'} field channel (C3)")
+        meta["substrate"] = m["substrate"]               # the spec the walk was driven by (#130)
+        stored = bool(channels["susceptibility"])
+        susceptibility_field_of(meta["substrate"], name=id, stores_field=(None if _window_of_plan and not stored else stored))
         run.phase("write")
         pack = ReplayPack(arrays, meta, source=out_path)
         if out_path is not None:

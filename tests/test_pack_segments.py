@@ -3,6 +3,8 @@ contractions: a walk stored in two windows replays as the same walk stored in on
 route, to the containers' rounding; a window is a pack of its own; a prefix of whole windows is a range of the
 file; a partial prefix re-encodes the decoded windows; the builder refuses a walk that is not a whole number of
 windows."""
+import dataclasses
+
 import numpy as np
 import numpy.testing as npt
 import pytest
@@ -14,7 +16,7 @@ from dmipy_sim.replay.bank import SEGMENT_T, combine_segment_fidelity, segment_p
 from dmipy_sim.replay.study import walker_primitives
 from dmipy_sim.spec.substrate import Susceptibility
 from dmipy_sim.spec.tissue import Tissue
-from tests.test_bank import _lean_env, _susc_master, _sample_susc
+from tests.test_bank import _lean_env, _slab_spec, _susc_master, _sample_susc
 
 N_T, DT, N_W = 41, 5e-4, 600                 # 20 ms of walk; two windows of 10 ms
 TIS = Tissue(T2={"extra": 0.05, "intra": 0.02}, T1={"extra": 1.0, "intra": 0.5}, rho2=2e-5, chi_iso=1e-7)
@@ -28,8 +30,10 @@ def _master():
     m["T_max"] = (N_T - 1) * DT
     comp = np.zeros((N_W, N_T), np.int8); comp[:200, 25:] = 1          # a third of the walkers cross in window 1
     m["comp"] = comp
-    m["substrate"] = d.PackedCylinders([1e-6], [[0.0, 0.0]], 10e-6).spec.replace(       # names for the two pools the walk labels,
-        susceptibility={"intra": Susceptibility(None, None, "none")}, susceptibility_field="present").to_dict()   # one the slab field's source
+    spec = d.PackedCylinders([1e-6], [[0.0, 0.0]], 10e-6).spec      # names for the two pools the walk labels,
+    m["substrate"] = spec.replace(                                       # one the slab field's source
+        susceptibility={"intra": Susceptibility(None, None, "none")},
+        validity=dataclasses.replace(spec.validity, tiers=list(spec.validity.tiers) + ["field"])).to_dict()
     return _sample_susc(m)         # sampled after the slice to N_T, so the samples match the sliced trajectory
 
 
@@ -296,7 +300,8 @@ def _c2_slab_master(n_w=300, n_t=C2_N_T, dt=C2_DT, seed=0):
     traj[:, :, 1:] = np.cumsum(rng.normal(0, step, (n_w, n_t, 2)), axis=1)
     return dict(traj=traj, dt_traj=dt, T_max=(n_t - 1) * dt,
                 comp=np.zeros((n_w, n_t), np.int8), comp0=np.zeros(n_w, np.int64),
-                w=np.ones(n_w), dlog_b=-dlog, D_intra=C2_D0, n_walkers=n_w, seed=seed, susceptibility_field="absent")
+                w=np.ones(n_w), dlog_b=-dlog, D_intra=C2_D0, n_walkers=n_w, seed=seed,
+                substrate=_slab_spec(length=C2_L, D=C2_D0))
 
 
 def test_a_one_window_pack_longer_than_the_storage_rule_gets_the_band_floor():

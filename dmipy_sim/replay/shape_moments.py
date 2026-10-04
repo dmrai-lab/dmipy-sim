@@ -14,8 +14,7 @@ whole tiles and the sum over tiles a scatter with as many collisions as a segmen
 serialises on a voxel's thousands of contiguous rows (measured on the L40S: 6.4 s per 2^19 rows against 1 ms for
 the tiled reduction). Per shape ``m_<name>.npy`` holds ``(n_tiles, TILE, 3)`` float32; once, ``w.npy``
 ``(n_tiles, TILE)`` (the walkers' weights, 0 on padding), ``tiles.npy`` ``(n_tiles,)`` (``2 voxel + half``), and
-``manifest.json`` naming the source layout (its manifest's sha256) and its declared ``susceptibility_field`` (the
-reader refuses a layout without one), the bands read and their truncation error,
+``manifest.json`` naming the source layout (its manifest's sha256), the bands read and their truncation error,
 and every shape's profile with the b-value it encodes at unit amplitude, so that an amplitude follows from a
 b-value as ``g = sqrt(b / b_unit)``.
 
@@ -27,7 +26,9 @@ is longitudinal during the mixing time and its field integral, its transverse ex
 the gated boundary local time (``contact_<g>.npy``) and the gated path-field channel integrals
 (``field_<g>.npy``, the 7 or 13 channels :func:`~dmipy_sim.fields.hollow_cylinder.field_terms` contracts under a
 field direction), with the group's transverse and longitudinal exposure times and its pathway amplitude, the embedded
-substrate spec and the walk's diffusivity in the manifest. :meth:`ShapeMoments.image` then takes ``tissue=``,
+substrate spec and the walk's diffusivity in the manifest. A tier layout holds the field equivalence
+(:func:`~dmipy_sim.spec.substrate.susceptibility_field_of`): its spec has a magnetic pool exactly when its groups store
+the field columns, checked when it is written and when it is opened. :meth:`ShapeMoments.image` then takes ``tissue=``,
 ``scanner=`` and ``b0_direction=`` (the field's direction in the substrate frame: the magnitude and the direction of
 B0 are both knobs) and applies exactly :meth:`~dmipy_sim.replay.study.Primitives.reduction_terms`: the per-row
 weight ``amp exp(-tau_2 / T2_pool - tau_1 / T1_pool + (rho2 / D) contact)`` and the phase ``B0 (chi_iso A + chi_aniso
@@ -371,9 +372,10 @@ def write_shape_moments(source, shapes, out_dir, *, tol=0.25, chunk_rows=2_000_0
         raise RuntimeError(f"the pass read {row} rows of {n_rows}")
     for a in list(m.values()) + [w] + list(tier_cols.values()) + list(bg_cols.values()):
         a.flush()
+    if tiers:
+        _field_of_tiers(col.meta.get("id"), tier_meta, tier_groups)
     manifest = dict(
         format=FORMAT, n_rows=int(n_rows), n_tiles=int(n_tiles), tile=TILE, K=int(K), band_error=float(band_error), tol=float(tol),
-        susceptibility_field=col.susceptibility_field,
         tiers=(dict(tier_meta, pool_column="pool.npy",
                     groups={g: {k: v for k, v in grp.items() if k != "acquisition"} for g, grp in tier_groups.items()}) if tiers else None),
         source=dict(uri=col.uri, manifest_sha256=hashlib.sha256(col.src.text(MANIFEST).encode()).hexdigest(),
@@ -394,6 +396,14 @@ def write_shape_moments(source, shapes, out_dir, *, tol=0.25, chunk_rows=2_000_0
     with open(os.path.join(out_dir, MANIFEST), "w") as f:
         json.dump(manifest, f, indent=1)
     return manifest
+
+
+def _field_of_tiers(pack_id, tiers, groups):
+    """The susceptibility field of a tier layout: its embedded spec's, with the groups' field columns as the stored
+    field channel (:func:`~dmipy_sim.replay.replay.declared_susceptibility_field`)."""
+    from .replay import declared_susceptibility_field
+    return declared_susceptibility_field(dict(id=pack_id, substrate=tiers.get("substrate")),
+                                         has_field=any(grp.get("field") for grp in groups.values()))
 
 
 def _code():
@@ -449,11 +459,9 @@ class ShapeMoments:
         self.shapes = [n for n in self.manifest["columns"] if n not in ("w", "tiles")]
         self.tiers = self.manifest.get("tiers")
         self.background = self.manifest.get("background")
-        from .replay import declared_susceptibility_field
-        self.susceptibility_field = declared_susceptibility_field(
-            dict(id=self.manifest["source"].get("pack"), susceptibility_field=self.manifest.get("susceptibility_field"),
-                 substrate=(self.tiers or {}).get("substrate")),
-            has_field=any(grp.get("field") for grp in (self.tiers or {}).get("groups", {}).values()))
+        # a tier layout's field from its spec's pools (None for the bare phase, which takes no tissue or scanner)
+        self.susceptibility_field = (None if not self.tiers else
+                                     _field_of_tiers(self.manifest["source"].get("pack"), self.tiers, self.tiers.get("groups", {})))
         self._m = {}; self._device = {}; self._host = {}
 
     @staticmethod

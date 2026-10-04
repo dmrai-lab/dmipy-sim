@@ -2,9 +2,10 @@
 
 The scanner is the machine. In a replay today it contributes one number, the static field `B0`, and the field
 enters the contraction in exactly one place: the phase every walker accumulates from the field source's
-susceptibility, `B0 (chi_iso A + chi_aniso B)` with `A` and `B` the walker's gated path integrals. Every pack
-declares that field `present` or `absent` (`pack.susceptibility_field`), and the declaration, the tissue's chi and the
-scanner's `B0` meet by one rule:
+susceptibility, `B0 (chi_iso A + chi_aniso B)` with `A` and `B` the walker's gated path integrals. A pack's field
+is `present` when a pool of its substrate is magnetic and `absent` when none is (`pack.susceptibility_field`, read
+from the embedded spec's pools; see the [pack](pack.md) page), and that field, the tissue's chi and the scanner's
+`B0` meet by one rule:
 
 | pack's field | tissue chi | scanner | replay |
 |---|---|---|---|
@@ -32,7 +33,7 @@ print(pack.nominal_field_T)                                     # the field the 
 ```
 
 A scanner is given as a field in tesla or as a catalogue entry; both resolve to `B0`. The cylinder pack of this
-guide has no field source, so it declares its field absent: the field is zero everywhere, a scanner leaves the
+guide has no magnetic pool, so its field is absent: the field is zero everywhere, a scanner leaves the
 signal exactly as it is, and a susceptibility in the tissue is refused rather than ignored:
 
 ```python

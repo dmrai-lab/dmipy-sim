@@ -10,6 +10,8 @@ import pytest
 
 from dmipy_sim import sequences
 from dmipy_sim.replay.bank import build_replay_pack
+from dmipy_sim.geometry import FreeDiffusion
+from dmipy_sim.spec import spec_of
 from tests.test_bank import _lean_env
 
 N_W, N_T, DT, D0 = 40, 201, 1e-4, 2e-9                       # a 20 ms grid
@@ -21,7 +23,8 @@ def _static_pack(K, seed=0):
     r = rng.uniform(-2e-6, 2e-6, (N_W, 1, 3)).astype(np.float64)
     traj = np.repeat(r, N_T, axis=1)
     m = dict(traj=traj, dt_traj=DT, T_max=(N_T - 1) * DT, comp=np.zeros((N_W, N_T), np.int8), comp0=np.zeros(N_W, np.int64),
-             w=np.ones(N_W), dlog_b=np.zeros((N_W, N_T)), D_intra=D0, n_walkers=N_W, seed=seed, susceptibility_field="absent")
+             w=np.ones(N_W), dlog_b=np.zeros((N_W, N_T)), D_intra=D0, n_walkers=N_W, seed=seed,
+             substrate=spec_of(FreeDiffusion()).to_dict())
     return build_replay_pack(m, id=f"t/static-K{K}", method="bridge_dst", envelope=_lean_env(), K=K, license="x", citation="x")
 
 

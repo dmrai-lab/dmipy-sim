@@ -17,7 +17,7 @@ import numpy as np
 from ..run import Run, current
 import jax.numpy as jnp
 
-from .substrate import SubstrateSpec, SpecError
+from .substrate import SubstrateSpec, SpecError, susceptibility_field_of
 from .build import geometry_from_spec
 
 
@@ -61,10 +61,11 @@ def walk_spec(spec, n_walkers=None, T_max=None, dt_save=None, *, scanner="connec
     needs, its per-voxel floor set by the certificate rather than by Poisson chance. ``n_walkers`` is then
     what the grid and the counts give, and is not passed.
 
-    The spec decides whether there is a susceptibility field to walk: ``spec.field_source_pools`` is the pool
-    (if any) that declares one, and every walk of such a spec carries its basis, certified before the walk
-    starts. A strand substrate (sheathed swept polylines) takes the per-segment closed form
-    (:class:`~dmipy_sim.fields.strand_field.StrandFieldBasis`): every segment within ``field_cutoff_m`` of a
+    The spec decides whether there is a susceptibility field to walk, through its pools alone
+    (:func:`~dmipy_sim.spec.substrate.susceptibility_field_of`: some pool magnetic), whatever its surface kinds;
+    every walk of such a spec carries its basis, certified before the walk starts, and a magnetic pool whose
+    surfaces no field route computes is refused before anything is walked (:func:`field_source_kind`). A strand
+    substrate (sheathed swept polylines) takes the per-segment closed form (:class:`~dmipy_sim.fields.strand_field.StrandFieldBasis`): every segment within ``field_cutoff_m`` of a
     point contributes its exact finite-segment field (a strand's own term, within its gate, is its nearest
     segment's cylinder), and the cutoff doubles until the channels at a sample of the walk's start positions
     change by less than ``field_cutoff_tol`` (relative rms) when it doubles again, up to
@@ -109,13 +110,14 @@ def walk_spec(spec, n_walkers=None, T_max=None, dt_save=None, *, scanner="connec
         spec.validate()
         if T_max is None:
             raise TypeError("walk_spec needs T_max (seconds)")
-        kind = field_source_kind(spec)
-        in_walk = not defer_field and (kind == "grid" or (kind == "strands" and adaptive_steps))
+        has_field = susceptibility_field_of(spec) == "present"      # the one decision: some pool is magnetic
+        kind = None if defer_field else field_source_kind(spec)
+        in_walk = kind == "grid" or (kind == "strands" and adaptive_steps)
         if int(field_sample_every) != 1 and not in_walk:
             raise ValueError("field_sample_every is the save grid of a field sampled in the walk: a gridded source is, a "
                              "strand source with adaptive_steps=True")
         if defer_field:
-            if not spec.field_source_pools:
+            if not has_field:
                 raise SpecError(f"defer_field=True was given for spec {spec.id!r}, which declares no susceptibility "
                                 "source (no pool sets a susceptibility): there is no field tier to defer")
             if adaptive_steps:
@@ -156,7 +158,7 @@ def walk_spec(spec, n_walkers=None, T_max=None, dt_save=None, *, scanner="connec
         if dt_save is None:
             Ds = [p.D for p in spec.pools if p.D] + ([float(diffusivity)] if diffusivity else [])
             dt_save = save_interval(T_max, n_walkers, scanner, D=(max(Ds) if Ds else 2e-9), floor_fraction=floor_fraction,
-                                    field=bool(spec.field_source_pools))
+                                    field=has_field)
             logging.getLogger("dmipy_sim").info("walk_spec: dt_save=%.3g s derived for %s over T_max=%.3g s with %d walkers "
                                                 "(n_t=%d)", dt_save, scanner, T_max, n_walkers, int(round(T_max / dt_save)) + 1)
         if not _needs_bundle_walk(spec):
@@ -174,7 +176,7 @@ def walk_spec(spec, n_walkers=None, T_max=None, dt_save=None, *, scanner="connec
             if D is None:
                 raise SpecError("the spec's seeded pool has no D and no diffusivity= was given")
             fb = None
-            if kind == "grid" and not defer_field:
+            if kind == "grid":
                 fb = _single_geometry_field_grid(spec, g, field_res, field_budget)
             w = simulate_trajectories(int(n_walkers), float(D), g, T_max=T_max, dt_save=dt_save, seed=seed,
                                       require_gpu=require_gpu, walker_batch_size=walker_batch_size, tiers=tiers,
@@ -188,17 +190,42 @@ def walk_spec(spec, n_walkers=None, T_max=None, dt_save=None, *, scanner="connec
                             field_cutoff_max_m=field_cutoff_max_m, adaptive_steps=adaptive_steps, field_sample_every=int(field_sample_every), field_far=field_far, field_gather_every=int(field_gather_every), context=context, spool=bool(spool), defer_field=bool(defer_field))
 
 
+#: The surface kinds a field raster is made from (:func:`field_grid_of_spec`): their membership tests are exact.
+RASTERISED_KINDS = ("mesh", "sphere_union", "swept_polyline")
+
+
 def field_source_kind(spec):
-    """How ``spec``'s susceptibility source is represented for a walk: ``"strands"`` when the source pool lies between
-    two swept-polyline walls (the per-segment closed form, :class:`~dmipy_sim.fields.strand_field.StrandFieldBasis`),
-    ``"grid"`` for any other source (a rasterised :class:`~dmipy_sim.fields.susceptibility_field.FieldGrid`), None
-    when the spec declares no source."""
-    if not spec.field_source_pools:
+    """How ``spec``'s susceptibility field is computed for a walk: ``None`` when the substrate has none (no pool is
+    magnetic, :func:`~dmipy_sim.spec.substrate.susceptibility_field_of`); ``"strands"`` when the magnetic pool lies
+    between two swept-polyline walls (the per-segment closed form,
+    :class:`~dmipy_sim.fields.strand_field.StrandFieldBasis`); ``"grid"`` when it is a shell between two cylinder
+    walls (the analytic raster, :func:`~dmipy_sim.fields.susceptibility_field.field_grid_of`) or is bounded by
+    surfaces of :data:`RASTERISED_KINDS` (the spec's own raster, :func:`field_grid_of_spec`). Any other magnetic
+    pool is refused, naming its surfaces: a field the walk cannot compute is never left out of the pack. So is a
+    second magnetic pool, since a walk computes the field of one."""
+    if susceptibility_field_of(spec) == "absent":
         return None
-    src = spec.field_source_pools[0].id
-    outer = [w for w in spec.walls if w.inside_pool == src]; inner = [w for w in spec.walls if w.outside_pool == src]
-    strands = bool(outer) and bool(inner) and all(w.surface.kind == "swept_polyline" for w in outer + inner)
-    return "strands" if strands else "grid"
+    src = spec.field_source_pools
+    if len(src) > 1:
+        raise SpecError(f"spec {spec.id!r}: the pools {[p.name for p in src]} are all magnetic, and a walk computes the "
+                        "field of one magnetic pool")
+    pid = src[0].id
+    outer = [w for w in spec.walls if w.inside_pool == pid]; inner = [w for w in spec.walls if w.outside_pool == pid]
+    k_out, k_in = {w.surface.kind for w in outer}, {w.surface.kind for w in inner}
+    if outer and inner and k_out == k_in == {"swept_polyline"}:
+        return "strands"
+    if outer and inner and k_out == k_in == {"cylinder"}:
+        return "grid"
+    if outer and (k_out | k_in) <= set(RASTERISED_KINDS) and len(k_out) == 1 and len(k_in) <= 1:
+        return "grid"
+    raise SpecError(
+        f"spec {spec.id!r}: pool {src[0].name!r} is magnetic (a susceptibility block) and is "
+        + (f"inside {sorted(k_out)} walls" if outer else "inside no wall")
+        + (f" and outside {sorted(k_in)} walls" if inner else "")
+        + ": no field route computes the field of that geometry -- a walk computes it for a shell between two "
+          "swept polylines or two cylinders, or for a pool bounded by "
+        + "/".join(RASTERISED_KINDS) + " surfaces. Remove the susceptibility block (the substrate then has no field) "
+          "or describe the magnetic pool with surfaces a field route computes")
 
 
 def _single_geometry_field_grid(spec, g, field_res, field_budget):
@@ -259,8 +286,14 @@ def field_grid_of_spec(spec, *, field_res=None, field_budget=None, context=None,
     volume has lost its field). ``context`` is a :class:`WalkContext` of the spec whose tests are reused."""
     from ..fields.susceptibility_field import (FieldGrid, FIELD_NODES_ACROSS, field_node_budget, field_resolution,
                                                mesh_field_basis, predicate_field_basis)
-    if not spec.field_source_pools:
-        raise SpecError(f"spec {spec.id!r} has no field-source pool (a pool with a susceptibility); there is no field to rasterise")
+    if field_source_kind(spec) is None:
+        raise SpecError(f"spec {spec.id!r} has no magnetic pool (no pool carries a susceptibility block); there is no "
+                        "field to rasterise")
+    bounding = {w.surface.kind for w in spec.walls if spec.field_source_pools[0].id in (w.inside_pool, w.outside_pool)}
+    if not bounding <= set(RASTERISED_KINDS):
+        raise SpecError(f"spec {spec.id!r}: the magnetic pool is bounded by {sorted(bounding)} surfaces, and the spec's "
+                        f"own raster is made from {list(RASTERISED_KINDS)} surfaces (a shell between two cylinders is "
+                        "rasterised from its geometry, fields.susceptibility_field.field_grid_of)")
     g = context.tests if context is not None else _PoolTests(spec)
     src = spec.field_source_pools[0].id
     outer_b = g.boundary(g.inside_w[src]) if g.inside_w[src] else None
@@ -523,16 +556,15 @@ class WalkContext:
     def field_basis(self):
         """The strand-field basis of the spec's field source with the far grid (the particle-mesh split), built once;
         ``None`` when the context has no far grid or the source is not a pair of swept-polyline walls."""
-        if self._basis is None and self.far is not None and self.spec.field_source_pools:
+        if self._basis is None and self.far is not None and field_source_kind(self.spec) == "strands":
             from ..fields.strand_field import StrandFieldBasis
             g = self.tests; src0 = self.spec.field_source_pools[0].id
-            ob = g.boundary(g.inside_w[src0]) if g.inside_w[src0] else None; ib = g.boundary(g.outside_w[src0]) if g.outside_w[src0] else None
-            if ob is not None and ib is not None and ob.kind == "swept_polyline" and ib.kind == "swept_polyline":
-                if len(ob.centerlines) != len(ib.centerlines):
-                    raise SpecError("the sheath's inner and outer walls list different numbers of strands")
-                self._basis = StrandFieldBasis(ob.centerlines, ib.radii, ob.radii, cutoff_m=self.far.cutoff_m, domain=(g.lo, g.hi),
-                                               certificate=dict(cutoff_m=float(self.far.cutoff_m), far_grid=self.far.meta,
-                                                                note="the cutoff the far grid summed to; not doubled here")).with_far(self.far)
+            ob, ib = g.boundary(g.inside_w[src0]), g.boundary(g.outside_w[src0])
+            if len(ob.centerlines) != len(ib.centerlines):
+                raise SpecError("the sheath's inner and outer walls list different numbers of strands")
+            self._basis = StrandFieldBasis(ob.centerlines, ib.radii, ob.radii, cutoff_m=self.far.cutoff_m, domain=(g.lo, g.hi),
+                                           certificate=dict(cutoff_m=float(self.far.cutoff_m), far_grid=self.far.meta,
+                                                            note="the cutoff the far grid summed to; not doubled here")).with_far(self.far)
         return self._basis
 
 
@@ -671,7 +703,7 @@ def _walk_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field_res, requ
     # the field basis is built before the walk and sampled by it: a strand field certified on the start positions
     # (sampled with adaptive steps), a gridded one rasterised from the membership tests (sampled at every sub-step);
     # defer_field skips this -- the obligation is recorded on the walk, a basis given later fills it
-    kind = None if defer_field else field_source_kind(spec)
+    kind = None if defer_field else field_source_kind(spec)                # None when no pool is magnetic
     sf = fg = None
     if kind == "strands":
         src0 = spec.field_source_pools[0].id
@@ -762,6 +794,6 @@ def _walk_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field_res, requ
                           weights=(None if np.allclose(wts, 1.0) else wts), field_basis=(sf if sf is not None else fg),
                           stepping=(dict(rule="adaptive", pools=dict(stepping)) if stepping else None),
                           field_samples=samples, field_sample_every=(int(field_sample_every) if samples is not None else 1),
-                          field_deferred=bool(defer_field and spec.field_source_pools))
+                          field_deferred=bool(defer_field))
     object.__setattr__(walk, "run", current())
     return walk

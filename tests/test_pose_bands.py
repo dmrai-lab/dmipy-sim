@@ -16,10 +16,12 @@ from dmipy_sim import Encoding, ScannerSequence
 import pytest
 
 from dmipy_sim.constants import GAMMA
+from dmipy_sim.geometry import FreeDiffusion
 from dmipy_sim.persistent_walk import PersistentWalk
 from dmipy_sim.replay import so3
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_sim.replay.fod import FOD
+from dmipy_sim.spec import spec_of
 
 N_T, DT = 65, 2.0e-4
 POS = np.array([[1.0, 0, 0], [0, 1.0, 0], [0.6, 0.6, 0.5],
@@ -31,9 +33,9 @@ ENV = dict(bvals=[0.0, 1e9], dirs=[[0, 0, 1]], delta_frac=0.2, Delta_frac=0.5, o
 @pytest.fixture(scope="module")
 def pack():
     """Six walkers standing still at chosen positions: a walk with no diffusion and no statistics."""
-    walk = PersistentWalk(positions=np.repeat(POS[:, None, :], N_T, axis=1), dt=DT, sub_steps=1, dt_sim=DT)
-    pk = build_replay_pack(walk, id="test/plane-wave", license="x", citation="x", K=8, envelope=ENV,
-                           susceptibility_field="absent")              # walkers in no substrate: nothing magnetic
+    walk = PersistentWalk(positions=np.repeat(POS[:, None, :], N_T, axis=1), dt=DT, sub_steps=1, dt_sim=DT,
+                          spec=spec_of(FreeDiffusion()))               # walkers in no substrate: nothing magnetic
+    pk = build_replay_pack(walk, id="test/plane-wave", license="x", citation="x", K=8, envelope=ENV)
     assert pk.fidelity["err_max"] < 1e-8                        # a straight line is compressed exactly
     return pk
 

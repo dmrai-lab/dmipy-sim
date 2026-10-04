@@ -54,10 +54,13 @@ print(round(pack.meta["fidelity"]["floor_max"], 2))                # the certifi
 - `susc_path_*`, when the substrate has a field source: the field's channels along the path, for the sheath's
   susceptibility at a scanner's field.
 
-Every pack declares its susceptibility field, `pack.susceptibility_field`: `"present"` when its substrate has a field
-source and the pack carries the `susc_path_*` channel, `"absent"` when nothing in the substrate is magnetic and the
-field is identically zero. The declaration is the embedded spec's own (`spec.susceptibility_field`), and a pack or a
-spec without one is refused. What a tissue's chi and a scanner may then do is the [scanner](scanner.md) page's rule.
+A pack's susceptibility field, `pack.susceptibility_field`, is its substrate's pools' own: `"present"` when a pool
+carries a `susceptibility` block (it is magnetic), `"absent"` when none does and the field is identically zero. Three
+things say the same and must agree -- a magnetic pool, the `"field"` tier in the spec's `validity.tiers`, and the
+field channel (`susc_path_*` or the field grid) stored in the pack -- and a pack, layout or spec in which they
+disagree is refused by name when it is written and when it is read
+(`dmipy_sim.spec.susceptibility_field_of`), as is a pack that embeds no spec. What a tissue's chi and a scanner may
+then do is the [scanner](scanner.md) page's rule.
 - `voxel_ijk`, `voxel_certificate`, when the pack was built on a voxel grid: a floor per voxel and pool.
 
 ## The nominal tissue

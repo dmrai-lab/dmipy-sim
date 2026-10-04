@@ -12,7 +12,12 @@ from typing import Protocol, runtime_checkable
 
 import numpy as np
 
-__all__ = ["AnalyticSubstrate", "PackSubstrate", "FreeWater", "Inert", "substrate_from_meta"]
+__all__ = ["AnalyticSubstrate", "PackSubstrate", "FreeWater", "Inert", "substrate_from_meta", "FIELD_BY_KIND"]
+
+#: The susceptibility field a substrate has by its kind: a closed form and an inert volume hold nothing magnetic, so
+#: theirs is ``"absent"`` and a non-zero tissue chi on one is refused by
+#: :func:`~dmipy_sim.replay.replay.field_term`. A pack's field is its own, from its embedded spec's pools.
+FIELD_BY_KIND = {"analytic": "absent", "inert": "absent"}
 
 
 
@@ -185,9 +190,6 @@ class FreeWater(_Declared):
     kind = "analytic"
     model = "free_water"
     oriented = False
-    #: Free water has no field source: its susceptibility field is absent, so a tissue chi is refused
-    #: (:func:`~dmipy_sim.replay.replay.field_term`) and any B0 has no effect.
-    susceptibility_field = "absent"
 
     def __init__(self, *, m0, tissue, name="csf/free-water"):
         from ..spec.tissue import Tissue
@@ -197,7 +199,7 @@ class FreeWater(_Declared):
         if tissue.D is None or float(tissue.D) <= 0:
             raise ValueError(f"free water needs a positive diffusion coefficient: Tissue(D=...) in m^2/s, got {tissue.D!r}")
         from ..replay.replay import field_term
-        field_term(self.susceptibility_field, tissue, None)            # free water is not magnetic: a chi is refused
+        field_term(FIELD_BY_KIND[self.kind], tissue, None)            # free water is not magnetic: a chi is refused
         for k in ("T2", "T1"):
             v = getattr(tissue, k)
             if v is not None and (np.ndim(v) or isinstance(v, dict)):
@@ -265,6 +267,11 @@ def substrate_from_meta(meta, *, pack=None):
     """The declaration object of one ``substrates[i]`` entry of a ``.rph``; ``pack`` supplies a pack substrate's
     pack (an in-memory pack, a path, or None to leave the recorded ``uri`` to resolve on first use)."""
     kind = meta.get("kind")
+    if kind in FIELD_BY_KIND and meta.get("tissue") is not None:      # a closed kind's tissue: nothing magnetic in it
+        from ..replay.replay import field_term
+        from ..spec.tissue import Tissue
+        t = meta["tissue"]
+        field_term(FIELD_BY_KIND[kind], Tissue(**{k: t[k] for k in ("chi_iso", "chi_aniso") if t.get(k) is not None}), None)
     if kind == "pack":
         return PackSubstrate.from_meta(meta, pack=pack if pack is not None else meta.get("uri"))
     if kind == "analytic":

@@ -485,6 +485,8 @@ class Consolidator:
             self.up.put(f, rel)
         index = {"grid": self.ident0["grid"], "n_rows": int(self.n_rows), "band_groups": list(self.band_groups), "path_groups": list(self.path_groups),
                  "rows": [{"ijk": [int(x) for x in np.unravel_index(v, self.grid.shape)], "pool": p, "start": s, "end": e} for v, p, s, e in self.index]}
+        from ..replay.replay import declared_susceptibility_field
+        declared_susceptibility_field(meta, has_field=bool(self.path_groups))   # the layout holds the equivalence
         manifest = {"meta": meta, "columns": columns}
         json.dump(index, open(os.path.join(self.out, "index.json"), "w"))
         json.dump(manifest, open(os.path.join(self.out, "manifest.json"), "w"))
