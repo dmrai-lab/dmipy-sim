@@ -190,3 +190,107 @@ def test_the_residual_bound_is_the_ensembles(pack):
     for R in so3.haar_rotations(12, 5):
         err = np.abs(pr.at(R) - pack.replay(played, orientation=R, complex_signal=True))
         assert np.all(err <= pr.misfit + 1e-8), (err, pr.misfit)
+def _g0(strength):
+    u = np.array([0.3, -0.5, 0.81])
+    return strength * u / np.linalg.norm(u)
+
+
+@pytest.mark.parametrize("kind", ["spin echo", "stimulated echo"])
+def test_a_magnets_own_gradient_is_a_second_plane_wave_in_closed_form(pack, kind):
+    """A magnet's own gradient g0 is on through every pulse and dead time, so every measurement plays two directions
+    with two time courses: the encoding and g0 through the effective gate. Its phase g0 . R n_w (n_w the walker's
+    background moment) is a second Rayleigh factor coupled to the gradient's, as the field factor is; the expansion
+    equals the direct posed replay of the delivered waveform at every rotation, to its misfit (#565). The background
+    here is 50 mT/m, far beyond any magnet's, so the factor's band is several orders and the coupling is exercised."""
+    dirs = [[1, 0, 0], [0, 0, 1], [0.6, 0.8, 0.0], [0.0, 0.6, 0.8]]
+    if kind == "spin echo":
+        base = sequences.pgse(dirs, 2e-3, 5e-3, gradient_strengths=[0.3] * 4, TE=10e-3)
+    else:
+        base = sequences.pgste(dirs, 1.5e-3, 3e-3, gradient_strengths=[0.3] * 4, TE=10e-3)
+    played = base.with_background_gradient(_g0(0.05))
+    pr = pack.pose_response(played, method="closed")
+    assert pr.route == "closed" and pr.n_samples == 0 and pr.background_lmax >= 4
+    assert pr.misfit.max() < 1e-7
+    moved = 0.0
+    for R in so3.haar_rotations(12, 5):
+        direct = pack.replay(played, orientation=R, complex_signal=True)
+        assert np.all(np.abs(pr.at(R) - direct) <= pr.misfit + 2e-8), (np.abs(pr.at(R) - direct), pr.misfit)
+        moved = max(moved, np.abs(direct - pack.replay(base, orientation=R, complex_signal=True)).max())
+    assert moved > 1e-2                                                      # and the background is not a perturbation here
+
+
+def test_no_background_is_the_expansion_without_one_to_the_bit(pack, seq):
+    """A zero background is no background: the same numbers to the bit, alone or batched with an acquisition that
+    carries one (a batch that mixes the two kinds expands each kind in its own pass)."""
+    plain = pack.pose_response(seq, method="closed")
+    zero = pack.pose_response(seq.with_background_gradient((0.0, 0.0, 0.0)), method="closed")
+    np.testing.assert_array_equal(zero.coeffs, plain.coeffs)
+    np.testing.assert_array_equal(zero.misfit, plain.misfit)
+    both = pack.pose_responses([seq, seq.with_background_gradient(_g0(0.01))], method="closed")
+    np.testing.assert_array_equal(both[0].coeffs, plain.coeffs)
+    assert not hasattr(both[0], "background_lmax") and both[1].background_lmax >= 1
+
+
+def test_the_background_turns_with_the_specimen(pack, seq):
+    """The magnet's gradient is in the acquisition's frame and turns with it (#585): with the specimen at a pose in
+    the bore, the expansion is the direct replay at that pose composed with every rotation."""
+    played = seq.with_background_gradient(_g0(0.02))
+    R_s = so3.rotation_of((0.2, -0.4, 0.89), roll=0.7)
+    pr = pack.pose_response(played, method="closed", pose=R_s)
+    for R in so3.haar_rotations(6, 8):
+        direct = pack.replay(played, orientation=R_s @ R, complex_signal=True)
+        assert np.all(np.abs(pr.at(R) - direct) <= pr.misfit + 2e-8)
+
+
+def test_the_background_and_the_field_compose_in_closed_form(field_pack):
+    """Field on: the field factor and the background factor are coupled walker by walker into one factor, then
+    with the gradient -- three Wigner blocks, two couplings. Exact against the direct posed replay with the field
+    to the field route's own precision (2e-6, as without a background)."""
+    pk = field_pack
+    seq = sequences.pgse([[1, 0, 0], [0, 0, 1], [0.6, 0.8, 0.0]], 6e-3, 15e-3, bvalues=[1.5e9] * 3, TE=30e-3)
+    kw = dict(scanner=7.0, tissue=Tissue(chi_iso=-1e-7, chi_aniso=-1e-7))
+    played, R_y = field_along(seq.with_background_gradient(_g0(0.005)), (0.0, 1.0, 0.0))
+    pc = pk.pose_response(played, method="closed", pose=R_y, **kw)
+    assert pc.route == "closed" and pc.field_lmax >= 2 and pc.background_lmax >= 2
+    for R in so3.haar_rotations(12, 2):
+        np.testing.assert_allclose(pc.at(R), pk.replay(played, orientation=R_y @ R, complex_signal=True, **kw), atol=2e-6)
+
+
+@pytest.fixture(scope="module")
+def long_pack(tmp_path_factory):
+    g = d.PackedCylinders([3e-6], [[0.0, 0.0]], 10e-6)
+    walk = d.simulate_trajectories(1000, 2e-9, g, 60e-3, 5e-4, seed=3, require_gpu=False)
+    p = tmp_path_factory.mktemp("pk") / "swoop.rpk"
+    build_replay_pack(walk, id="t/swoop", license="x", citation="x", K=24, out_path=str(p))
+    return read_rpk(str(p))
+
+
+@pytest.mark.parametrize("kind", ["spin echo", "stimulated echo"])
+def test_the_swoop_as_delivered_at_a_head_position_takes_the_closed_form(long_pack, kind):
+    """The Hyperfine Swoop as it plays a voxel 8 cm off isocentre: the nonlinearity, the magnet's own gradient
+    (1 mT/m there), and the Maxwell term at 64 mT through the slew-limited ramps -- every catalogued term, composed
+    by bore.encoding_classes as the brain page composes a class. The encoding left once g0 is taken out is one
+    direction up to the Maxwell residual (#561), g0 is the second plane wave, and the expansion equals the direct
+    posed replay of the delivered waveform at every rotation within its misfit."""
+    from dmipy_sim.acquisition.scanners import ScannerLimits
+    from dmipy_sim.phantom.bore import encoding_classes
+    from dmipy_sim.phantom.grid import Grid
+    sw = ScannerLimits.of("swoop")
+    dirs = [[1, 0, 0], [0, 0, 1], [0.6, 0.8, 0.0], [0.0, 0.6, 0.8]]
+    if kind == "spin echo":
+        seq = sequences.pgse(dirs, 12e-3, 26e-3, gradient_strengths=[0.0, 0.02, 0.02, 0.02], TE=56e-3,
+                             slew_rate=float(sw.slew_max))
+    else:
+        seq = sequences.pgste(dirs, 10e-3, 16e-3, gradient_strengths=[0.0, 0.02, 0.02, 0.02], TE=50e-3,
+                              slew_rate=float(sw.slew_max))
+    grid = Grid(shape=(1, 1, 1), voxel_size_m=(2e-3,) * 3, origin_m=(0.08, 0.0, 0.0), isocenter_m=(0.0, 0.0, 0.0))
+    _cls, played = encoding_classes(sw, grid, seq, np.array([[0, 0, 0]]), tolerance=None)
+    p = played[0]
+    assert np.linalg.norm(p.background_gradient) > 0.9e-3 and p.concomitant is not None
+    pr = long_pack.pose_response(p, method="closed")
+    assert pr.route == "closed" and pr.background_lmax >= 1
+    assert pr.misfit.max() < 0.1 / np.sqrt(long_pack.n_walkers)
+    for R in so3.haar_rotations(12, 11):
+        err = np.abs(pr.at(R) - long_pack.replay(p, orientation=R, complex_signal=True))
+        assert np.all(err <= pr.misfit + 2e-8), (err, pr.misfit)
+

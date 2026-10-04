@@ -1537,6 +1537,10 @@ class ReplayPack:
         ODF or peaks composition keeps ``n = 0``, a frame keeps everything; ``None`` in either slot means the
         response's own band.
 
+        **A magnet's own gradient** (``ScannerSequence.with_background_gradient``) is a second plane wave in each
+        walker's background moment, coupled to the first as the field factor is; the encoding beside it is what
+        must be one direction (dmrai-lab/dmipy-sim#565).
+
         **The quadrature, by name.** An encoding whose moment matrix is not rank one -- a b-tensor or multi-axis
         waveform -- has no plane-wave expansion, and takes the sampled route: the response evaluated on an SO(3)
         quadrature sized to its phase amplitude, projected, and certified off the grid (``misfit``, a worst case).
@@ -1937,12 +1941,29 @@ class ReplayPack:
         ``direction_tol`` (default a tenth of the ensemble's floor ``1 / sqrt(n_w)``): since ``|exp(i a) - exp(i b)|
         <= |a - b|``, the walkers' bounds weighted as the signal weighs them bound it, and that is added to the
         measurement's misfit. Beyond it the acquisition takes the quadrature.
+
+        **A magnet's own gradient.** An acquisition played in a magnet with its own gradient ``g0`` (through
+        every pulse and dead time) plays two directions with two time courses; ``g0`` through the effective gate
+        is taken out of the encoding before the direction is judged, and enters as a second plane-wave factor in
+        the walkers' background moments (:meth:`_closed_with_background`, dmrai-lab/dmipy-sim#565).
         """
         from . import so3
         from .compression import read_position_coeffs
         from ._replay_kernel import effective_gradient
         from .pose_device import bessel_tails, host_bodies, spherical_jn_all as _jn_all
         n_acq = len(Ps)
+        backgrounds = [_background_of(wf) for wf in waveforms]
+        with_bg = [c for c in range(n_acq) if backgrounds[c] is not None]
+        if with_bg and len(with_bg) < n_acq:
+            # a batch that mixes the two kinds takes two passes, so an acquisition without a magnet's gradient is the
+            # same numbers whichever batch it is expanded in
+            out = [None] * n_acq
+            for sub in ([c for c in range(n_acq) if backgrounds[c] is None], with_bg):
+                got = self._pose_coeffs_closed_many([Ps[c] for c in sub], [waveforms[c] for c in sub], keep=keep, tol=tol,
+                                                    l_cap=l_cap, direction_tol=direction_tol)
+                for c, r in zip(sub, got):
+                    out[c] = r
+            return out
         P0 = Ps[0]
         dt, n_t, ew, norm = P0["dt"], P0["n_t"], P0["pathway"] * P0["ew"], P0["norm"]
         n_w = ew.shape[0]
@@ -1952,13 +1973,26 @@ class ReplayPack:
         _ph("moments", n_acq=int(n_acq), n_w=int(n_w))
         # every acquisition's directions and grouped profiles; an acquisition with a multi-axis measurement is left out
         per = []
-        for P, wf in zip(Ps, waveforms):
-            G = np.asarray(P["Geff"], np.float64); n_meas = G.shape[0]
+        gates = []                                                                 # the distinct gates a background accrues through
+        for P, wf, bg in zip(Ps, waveforms, backgrounds):
+            if bg is None:
+                G_wf, G = P["G_eff_wf"], np.asarray(P["Geff"], np.float64)
+            else:
+                # the magnet's own gradient leaves the encoding: g0 through the effective gate is the second plane wave
+                g0, gate = bg
+                G_wf = P["G_eff_wf"] - g0[:, None, :] * gate[None, :, None]
+                G = effective_gradient(G_wf, P["dt_wf"], n_t, dt)
+                key = (gate.tobytes(), float(P["dt_wf"]))
+                gate_id = next((j for j, gk in enumerate(gates) if gk[0] == key), None)
+                if gate_id is None:
+                    gate_id = len(gates); gates.append((key, gate, float(P["dt_wf"])))
+            n_meas = G.shape[0]
             g_hat = np.zeros((n_meas, 3)); s_wave = np.zeros((n_meas, n_t)); residual = []
             for i in range(n_meas):
                 Gi = G[i]
-                if not np.any(Gi):
+                if not np.any(Gi) or (bg is not None and np.abs(Gi).max() <= 1e-6 * np.linalg.norm(g0[i])):
                     g_hat[i] = (0.0, 0.0, 1.0)                                     # a b = 0 row: no phase at any pose
+                    s_wave[i] = 0.0                                                # (beside the background, to its rounding)
                     continue
                 _u, sv, vt = np.linalg.svd(Gi, full_matrices=False)
                 if sv[1] > 1e-6 * sv[0]:                                    # G is stored float32; a direction is one to that
@@ -1971,9 +2005,17 @@ class ReplayPack:
             # the body of a coefficient depends on the waveform's shape and amplitude only, never on its direction:
             # measurements that play the same s_i(t) -- a shell -- share one body, and their directions enter as
             # harmonics afterwards. Group by the played waveform, exactly, and contract once per group.
-            group, first = _group_waveforms(s_wave, rtol=1e-5)                   # float32 G: 1e-5 is the same waveform
-            per.append(dict(P=P, G=G, g_hat=g_hat, group=group, first=first, n_meas=n_meas,
-                            residual=np.asarray(residual, int), bound=np.zeros(n_meas)))
+            if bg is None:
+                group, first = _group_waveforms(s_wave, rtol=1e-5)               # float32 G: 1e-5 is the same waveform
+                extra = {}
+            else:
+                # a body is also its background's magnitude (the background's Bessel factor is per walker): |g0| is
+                # one more column of what is grouped, in the same unit as the waveform
+                beta = np.linalg.norm(g0, axis=1)
+                group, first = _group_waveforms(np.concatenate([s_wave, beta[:, None]], axis=1), rtol=1e-5)
+                extra = dict(g0=g0, beta=beta, gate_id=gate_id)
+            per.append(dict(P=P, G=G, G_wf=G_wf, g_hat=g_hat, group=group, first=first, n_meas=n_meas,
+                            residual=np.asarray(residual, int), bound=np.zeros(n_meas), **extra))
         limit = (0.1 / np.sqrt(n_w)) if direction_tol is None else float(direction_tol)
         self._residual_bounds(per, P0, dt, n_w, ew, norm)
         for c, q in enumerate(per):
@@ -1986,18 +2028,23 @@ class ReplayPack:
         for c in live:
             g_off[c] = n_grp; n_grp += len(per[c]["first"])
         e = np.eye(3)
-        m = np.zeros((n_w, n_grp, 3))
+        n_gates = len(gates)
+        m = np.zeros((n_w, n_grp + n_gates, 3))
         for seg, t0, n_s in P0["windows"]:                                     # the windows' moments sum (RPK.md 4.3)
             C = read_position_coeffs(seg.arrays, dtype=np.float64).reshape(n_w, -1)
-            s_all = np.zeros((n_grp, n_s))
+            s_all = np.zeros((n_grp + n_gates, n_s))
             for c in live:
                 q = per[c]
-                G_s = effective_gradient(q["P"]["G_eff_wf"], q["P"]["dt_wf"], n_s, dt, t0=t0) if self.n_segments > 1 else q["G"]
+                G_s = effective_gradient(q["G_wf"], q["P"]["dt_wf"], n_s, dt, t0=t0) if self.n_segments > 1 else q["G"]
                 s_all[g_off[c]:g_off[c] + len(q["first"])] = np.einsum("mtc,mc->mt", G_s[q["first"]], q["g_hat"][q["first"]])
+            for j, (_key, gate, dt_g) in enumerate(gates):                     # a background's moment: its gate's, per walker
+                s_all[n_grp + j] = effective_gradient(gate[None, :, None], dt_g, n_s, dt, t0=t0 if self.n_segments > 1 else None)[0, :, 0]
             for b_ in range(3):                                                # m_w[b] = gamma sum_t s(t) r_w(t)_b dt
                 W = _compile_effective(s_all[:, :, None] * e[b_][None, None, :], dt, self.K, n_s)
                 m[:, :, b_] += C @ W
         m = m @ self.substrate_frame                                           # stored -> canonical: F^T m, per walker
+        n_bg = m[:, n_grp:, :]                                                 # (n_w, n_gates, 3): the background moments
+        m = m[:, :n_grp, :]
         kappa = np.linalg.norm(m, axis=2)                                      # (n_w, n_grp), radians
         safe = np.where(kappa > 0, kappa, 1.0)
         m_hat = m / safe[:, :, None]
@@ -2024,6 +2071,13 @@ class ReplayPack:
         else:
             _ph("field")
             F_sh, L_f = self._field_harmonics(field, tol=tol, l_cap=l_cap)      # (n_w, (L_f+1)^2) complex
+        if n_gates:
+            tail_all = np.zeros(n_grp)
+            for l in range(L + 1, min(L + 4, T_ab.shape[0])):
+                tail_all += (2 * l + 1) * T_ab[l]
+            return self._closed_with_background(
+                per, live, g_off, n_grp, kappa, m_hat, w, n_bg, L, k_max, tail_all, F_sh, L_f,
+                None if field is None else P0["b0_dir"], keep, tol, l_cap, n_acq, _ph, run)
         L_tot = L + L_f
         want_l, want_n = (None, None) if keep is None else (keep[0], keep[1])
         keep_l = L_tot if want_l is None else min(int(want_l), L_tot)
@@ -2165,6 +2219,205 @@ class ReplayPack:
             out[c] = resp
         return out
 
+    def _closed_with_background(self, per, live, g_off, n_grp, kappa, m_hat, w, n_bg, L, k_max, tail_all, F_sh, L_f,
+                                b0_dir, keep, tol, l_cap, n_acq, _ph, run):
+        """The closed form of :meth:`_pose_coeffs_closed_many` for acquisitions played in a magnet with its own
+        gradient (dmrai-lab/dmipy-sim#565): the background as a second plane-wave factor.
+
+        **The phase.** A magnet that is not uniform adds a constant ``g0`` to the physical gradient through every
+        pulse and dead time (:func:`_background_of`), and it accrues through the effective gate ``e(t)``
+        (:attr:`~dmipy_sim.acquisition.scanner_sequence.ScannerSequence.effective_gate`) like everything else. So
+        measurement ``i`` plays two directions with two time courses, ``G_i(t) = q_i s_i(t) + g0_i e(t)``, and
+        walker ``w``'s phase at pose ``R`` is
+
+            phi_iw(R) = q_i . R m_iw + g0_i . R n_w,      n_w = gamma int e(t) r_w(t) dt,
+
+        ``m`` the encoding's moment and ``n_w`` the walker's BACKGROUND moment (the column the shape-moment layout
+        stores per sequence group), both contracted through the windows from the stored bands.
+
+        **The second factor.** ``exp(i g0 . R n) = sum_l 4 pi i^l j_l(|g0| |n|) sum_k Y_lk(n^) Y_lk(R^T g0^)`` is
+        a function of the rotated background direction exactly as the field factor is of the rotated field
+        direction: its body side is ``4 pi i^l j_l(|g0| |n_w|) Y_l(n^_w)`` per walker, its lab side ``Y_l(g0^_i)``.
+        It is coupled to the gradient's Rayleigh expansion with the real Clebsch-Gordan tables (:func:`so3.coupling`)
+        on the body index and on the lab index, as the field factor is. With the field on too, the field and
+        background factors are first coupled walker by walker into one factor of order ``Lambda`` (body side
+        ``sum a_l'k' c_l''k'' conj K``, lab side ``sum Y_l'(b^) Y_l''(g0^) K``), which is then coupled with the
+        gradient: the product of three Wigner blocks, two couplings.
+
+        **What makes it exact.** The encoding left once ``g0 e(t)`` is taken out is one direction per measurement
+        (or one within #561's residual bound, which is then added to the misfit); ``g0`` is constant over the
+        acquisition; and it accrues through the acquisition's own effective gate. A body depends on ``|g0|``
+        (through ``j_l``) and on the gate (through ``n_w``), never on ``g0``'s direction, so the bodies are per
+        (waveform, ``|g0|``) group and the factor per (``|g0|``, gate) -- one per encoding class of a machine --
+        while each measurement's ``g0^`` enters on the lab side alone.
+
+        **The band and the bound.** The background's band ``L_b`` is the first order whose weighted Bessel tail
+        ``(2l+1) sum_w |w_w| |j_l(|g0| |n_w|)|`` is below ``tol`` for every factor. ``|g0| |n_w|`` is a few
+        tenths of a radian at the Swoop's 1.4 mT/m, so ``L_b`` is a handful of orders. Walker by walker
+        ``|e^{ia} e^{ib} - T_a T_b| <= r_b + r_a (1 + r_b)`` for truncations ``T`` with remainders ``r``, so the
+        misfit is the gradient's tail plus the background's times ``1 +`` the gradient's largest per-walker
+        remainder, plus the residual bound. An acquisition whose encoding is not one direction to that bound has
+        already been sent to the quadrature."""
+        from . import so3
+        from .pose_device import bessel_tails, field_bodies
+        n_w = w.shape[0]
+        # one background factor per (|g0|, gate): a bucket
+        beta_g = np.zeros(n_grp); gate_g = np.zeros(n_grp, np.int64)
+        for c in live:
+            q = per[c]; sl = slice(g_off[c], g_off[c] + len(q["first"]))
+            beta_g[sl] = q["beta"][q["first"]]; gate_g[sl] = q["gate_id"]
+        keys, bucket = np.unique(np.stack([beta_g, gate_g.astype(np.float64)], axis=1), axis=0, return_inverse=True)
+        bucket = np.asarray(bucket).reshape(-1)
+        k_gate = keys[:, 1].astype(np.int64)
+        r_n = np.linalg.norm(n_bg, axis=2)                                    # (n_w, n_gates)
+        n_hat = n_bg / np.where(r_n > 0, r_n, 1.0)[:, :, None]
+        n_hat[r_n == 0] = (0.0, 0.0, 1.0)
+        x = keys[:, 0][None, :] * r_n[:, k_gate]                              # (n_w, n_buckets): |g0| |n_w|, radians
+        x_max = float(x.max()) if x.size else 0.0
+        _ph("background", n_buckets=int(len(keys)), phase_amplitude=x_max)
+        L_b = 0
+        T_bg = bessel_tails(x, w, min(l_cap, int(np.ceil(x_max)) + 12))
+        while L_b < l_cap:
+            if L_b + 1 >= T_bg.shape[0]:
+                T_bg = bessel_tails(x, w, min(l_cap, T_bg.shape[0] + 12))
+            if (2 * (L_b + 1) + 1) * T_bg[L_b + 1].max() < tol:
+                break
+            L_b += 1
+        tail_bg = np.zeros(len(keys))
+        for l in range(L_b + 1, min(L_b + 4, T_bg.shape[0])):
+            tail_bg += (2 * l + 1) * T_bg[l]
+        J_top = so3.spherical_jn_all(L + 3, np.array([k_max]))[:, 0]         # the gradient's largest per-walker remainder
+        r_a = float(sum((2 * l + 1) * abs(J_top[l]) for l in range(L + 1, L + 4)))
+        # the factor's channels: (order Lambda, its body columns, how its lab side is formed)
+        Yb = None
+        if F_sh is None:
+            channels = [(l2, so3.sh_block(l2, True), ("b", l2)) for l2 in range(L_b + 1)]
+            n_cols = (L_b + 1) ** 2
+        else:
+            b_lab = np.asarray(b0_dir, np.float64); b_lab = b_lab / np.linalg.norm(b_lab)
+            Yb = so3.real_sh(L_f, b_lab[None, :], full=True)[0]
+            channels, n_cols, K_fb = [], 0, {}
+            for lp in range(L_f + 1):
+                for l2 in range(L_b + 1):
+                    K_fb[(lp, l2)] = so3.coupling(lp, l2)
+                    for Lam in range(abs(lp - l2), lp + l2 + 1):
+                        channels.append((Lam, slice(n_cols, n_cols + 2 * Lam + 1), ("fb", lp, l2)))
+                        n_cols += 2 * Lam + 1
+        Lam_max = L_f + L_b
+        Y_n = [so3.real_sh(L_b, n_hat[:, j, :], full=True) for j in range(n_hat.shape[1])]
+
+        def factor(k):
+            """The per-walker factor of bucket ``k``, ``(n_w, n_cols)`` complex."""
+            J = so3.spherical_jn_all(L_b, x[:, k])                            # (L_b+1, n_w)
+            Fb = np.empty((n_w, (L_b + 1) ** 2), np.complex128)
+            for l2 in range(L_b + 1):
+                b2 = so3.sh_block(l2, True)
+                Fb[:, b2] = (4 * np.pi * (1j ** l2)) * J[l2][:, None] * Y_n[k_gate[k]][:, b2]
+            if F_sh is None:
+                return Fb
+            F = np.empty((n_w, n_cols), np.complex128)
+            for (lp, l2), Kp in K_fb.items():
+                prod = (F_sh[:, so3.sh_block(lp, True)][:, :, None] * Fb[:, so3.sh_block(l2, True)][:, None, :]).reshape(n_w, -1)
+                for Lam, cols, kind in channels:
+                    if kind[1:] == (lp, l2):
+                        F[:, cols] = prod @ Kp[Lam].conj()
+            return F
+
+        L_tot = L + Lam_max
+        want_l, want_n = (None, None) if keep is None else (keep[0], keep[1])
+        keep_l = L_tot if want_l is None else min(int(want_l), L_tot)
+        keep_n = L_tot if want_n is None else min(int(want_n), L_tot)
+        n_feat = so3.n_so3_coeffs(keep_l, keep_n)
+        _ph("harmonics", L=int(L), L_f=int(L_f), L_b=int(L_b), keep_l=int(keep_l), keep_n=int(keep_n), n_feat=int(n_feat))
+        l_used = [l for l in range(L + 1) if l <= keep_l + Lam_max]
+        offs, off = {}, 0
+        for Lc in range(keep_l + 1):
+            offs[Lc] = off; off += (2 * Lc + 1) * (2 * (so3._n_cols(Lc, keep_n) // 2) + 1)
+        tables = {}                                                           # (l, Lambda) -> (Ls, K_lab3, K_body, slices)
+        for l in l_used:
+            for Lam in range(Lam_max + 1):
+                Ls = [Lc for Lc in range(abs(l - Lam), min(l + Lam, keep_l) + 1)]
+                if not Ls:
+                    continue
+                K = so3.coupling(l, Lam)
+                K_lab = np.concatenate([K[Lc] for Lc in Ls], axis=1)                        # ((2l+1)(2Lam+1), sum 2Lc+1)
+                K_body = np.concatenate([K[Lc].conj()[:, Lc - so3._n_cols(Lc, keep_n) // 2:Lc + so3._n_cols(Lc, keep_n) // 2 + 1]
+                                         for Lc in Ls], axis=1)                               # ((2l+1)(2Lam+1), sum 2kk+1)
+                lab_sl, body_sl, o1, o2 = {}, {}, 0, 0
+                for Lc in Ls:
+                    kk = so3._n_cols(Lc, keep_n) // 2
+                    lab_sl[Lc] = slice(o1, o1 + 2 * Lc + 1); o1 += 2 * Lc + 1
+                    body_sl[Lc] = slice(o2, o2 + 2 * kk + 1); o2 += 2 * kk + 1
+                tables[(l, Lam)] = (Ls, K_lab.reshape(2 * l + 1, 2 * Lam + 1, -1), K_body, lab_sl, body_sl)
+        n_bessel = max(l_used) + 24 + int(np.ceil(k_max))                     # the Miller recurrence's start order
+        step = max(1, int(2.5e8 / (8 * n_w * (L + 1) ** 2)))                   # groups per ~256 MB of host harmonics
+        out = [None] * n_acq
+        done = 0
+        for c in live:
+            q = per[c]; n_meas = q["n_meas"]; group = q["group"] + g_off[c]
+            g_sl = slice(g_off[c], g_off[c] + len(q["first"]))
+            Yg = so3.real_sh(L, q["g_hat"], full=True)                        # (n_meas, (L+1)^2): the gradient's lab side
+            g0 = q["g0"]
+            beta = np.linalg.norm(g0, axis=1)
+            u_dirs, inv = np.unique(np.where(beta[:, None] > 0, g0 / np.where(beta > 0, beta, 1.0)[:, None], (0.0, 0.0, 1.0)),
+                                    axis=0, return_inverse=True)
+            inv = np.asarray(inv).reshape(-1)
+            Y_u = so3.real_sh(L_b, u_dirs, full=True)                         # (n_u, (L_b+1)^2): the background's lab side
+            lam = []                                                          # per channel: (n_u, 2 Lambda + 1)
+            for Lam, cols, kind in channels:
+                if kind[0] == "b":
+                    lam.append(Y_u[:, so3.sh_block(kind[1], True)])
+                else:
+                    _, lp, l2 = kind
+                    pair = (Yb[so3.sh_block(lp, True)][None, :, None] * Y_u[:, None, so3.sh_block(l2, True)]).reshape(len(u_dirs), -1)
+                    lam.append(pair @ K_fb[(lp, l2)][Lam])
+            coeffs = np.zeros((n_meas, n_feat), np.complex128)
+            M_lab = {}                                                        # (l, channel) -> (n_u, 2l+1, sum 2Lc+1)
+            for k in np.unique(bucket[g_sl]):
+                F = factor(int(k))
+                F_re, F_im = np.ascontiguousarray(F.real), np.ascontiguousarray(F.imag)
+                grp = np.flatnonzero(bucket[g_sl] == k) + g_off[c]              # this acquisition's groups of the bucket
+                for lo in range(0, len(grp), step):
+                    idx = grp[lo:lo + step]; nc = len(idx)
+                    if run is not None:
+                        run.progress(done, n_grp, unit="groups")
+                    done += nc
+                    B_c = field_bodies(kappa[:, idx], m_hat[:, idx, :], w, F_re, F_im, L, l_used, n_bessel=n_bessel)
+                    where = np.full(n_grp, -1, np.int64); where[idx] = np.arange(nc)
+                    sel = np.flatnonzero(where[group] >= 0)                    # the measurements whose bodies these are
+                    pos = where[group[sel]]
+                    row = 0
+                    for l in l_used:
+                        bl = so3.sh_block(l, True)
+                        B_l = B_c[row:row + nc * (2 * l + 1)].reshape(nc, 2 * l + 1, n_cols)
+                        row += nc * (2 * l + 1)
+                        Yg_l = Yg[sel][:, bl]                                              # (n_sel, 2l+1)
+                        for ci, (Lam, cols, kind) in enumerate(channels):
+                            if (l, Lam) not in tables:
+                                continue
+                            Ls, K_lab3, K_body, lab_sl, body_sl = tables[(l, Lam)]
+                            body_all = B_l[:, :, cols].reshape(nc, -1) @ K_body            # (nc, sum 2kk+1)
+                            if (l, ci) not in M_lab:                                       # the lab side's coupling, per direction of g0
+                                M_lab[(l, ci)] = np.einsum("uM,iMs->uis", lam[ci], K_lab3)
+                            M_lam = M_lab[(l, ci)]
+                            lab_all = (Yg_l @ M_lam[0]) if len(u_dirs) == 1 else np.einsum("ni,nis->ns", Yg_l, M_lam[inv[sel]])
+                            body_all = body_all[pos]
+                            for Lc in Ls:
+                                kk = so3._n_cols(Lc, keep_n) // 2
+                                block = (4 * np.pi * (1j ** l) / np.sqrt(2 * Lc + 1)) * lab_all[:, lab_sl[Lc]][:, :, None] \
+                                    * body_all[:, body_sl[Lc]][:, None, :]
+                                o = offs[Lc]
+                                coeffs[sel, o:o + (2 * Lc + 1) * (2 * kk + 1)] += block.reshape(len(sel), -1)
+            misfit = tail_all[group] + q["bound"] + tail_bg[bucket[group]] * (1.0 + r_a)
+            resp = PoseResponse(coeffs, keep_l, keep_n, misfit=misfit, floor=1.0 / np.sqrt(n_w),
+                                phase_amplitude=float(kappa[:, g_sl].max()) if kappa.size else 0.0, n_samples=0)
+            resp.n_bodies = len(q["first"])
+            resp.field_lmax = L_f
+            resp.background_lmax = L_b
+            resp.route = "closed"
+            out[c] = resp
+        return out
+
     def _residual_bounds(self, per, P0, dt, n_w, ew, norm):
         """Into each acquisition's ``bound``: for every measurement whose waveform has a component off its principal
         direction, a bound on how far that component can move the ensemble's signal at ANY pose. The residuals
@@ -2189,7 +2442,7 @@ class ReplayPack:
             C = read_position_coeffs(seg.arrays, dtype=np.float64).reshape(n_w, -1)[live]
             for c in todo:
                 q = per[c]; rows = q["residual"]
-                G_s = effective_gradient(q["P"]["G_eff_wf"], q["P"]["dt_wf"], n_s, dt, t0=t0) if self.n_segments > 1 else q["G"]
+                G_s = effective_gradient(q["G_wf"], q["P"]["dt_wf"], n_s, dt, t0=t0) if self.n_segments > 1 else q["G"]
                 G_s = np.asarray(G_s, np.float64)[rows]
                 g = q["g_hat"][rows]
                 res = G_s - np.einsum("mtc,mc->mt", G_s, g)[:, :, None] * g[:, None, :]          # (n_r, n_s, 3)
@@ -2650,6 +2903,31 @@ def compile_scheme(G, dt, K, gyromagnetic_ratio=GAMMA, *, n_t=None, method=None,
     elif n_t is None:
         raise ValueError("a waveform on its own grid needs the pack's n_t")
     return _compile_effective(effective_gradient(G, dt, int(n_t), dt_pack), dt_pack, K, int(n_t), gyromagnetic_ratio)
+
+
+def _background_of(waveform):
+    """The magnet's own gradient in an acquisition, as the pose expansion separates it: ``(g0 (n_meas, 3), gate
+    (n_t,))`` float64 on the waveform's grid, or ``None`` when the acquisition carries none (no
+    :meth:`~dmipy_sim.acquisition.scanner_sequence.ScannerSequence.with_background_gradient`, or a zero one).
+
+    ``g0`` is what the physical gradient is wherever the coils play nothing: the magnet's gradient together with
+    the concomitant field that gradient carries on its own, which is constant in time as the magnet's is (a
+    machine's Maxwell term is quadratic in the whole gradient, so its ``g0``-only part rides with ``g0``). A
+    measurement whose coils are on at every sample keeps the recorded ``background_gradient``, and the constant
+    Maxwell part is then left to the encoding's residual. ``gate`` is the acquisition's effective gate, through
+    which ``g0`` accrues: the effective gradient is the encoding plus ``g0 gate``."""
+    if waveform.background_gradient is None:
+        return None
+    g0 = np.broadcast_to(np.asarray(waveform.background_gradient, np.float64).reshape(-1, 3), (waveform.n_meas, 3)).copy()
+    G = np.asarray(waveform.G, np.float64)
+    played = np.asarray(waveform.played_gradient, np.float64)
+    off = np.all(played == 0.0, axis=2)                                    # (n_meas, n_t): the coils play nothing
+    for i in range(waveform.n_meas):
+        if off[i].any():
+            g0[i] = G[i, off[i]].mean(axis=0)
+    if not np.any(g0):
+        return None
+    return g0, np.asarray(waveform.effective_gate, np.float64)
 
 
 def _group_waveforms(s, rtol=1e-5):
