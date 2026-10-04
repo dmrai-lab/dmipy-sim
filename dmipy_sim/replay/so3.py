@@ -133,8 +133,9 @@ def sphere_quadrature(n_theta, n_phi):
 # ------------------------------------------------------------------ layout
 def spherical_jn_all(L, x, extra=24):
     """``j_0(x) .. j_L(x)`` for every entry of ``x``, ``(L+1,) + x.shape``, by the downward (Miller) recurrence
-    started ``extra`` orders above ``L`` and normalised to ``j_0 = sin x / x``: stable for every order and
-    argument, exact to 1e-12 against scipy, and one pass instead of one call per order."""
+    started ``extra`` orders above ``L`` and normalised to ``j_0 = sin x / x``, or to ``j_1`` where ``|j_1| > |j_0|``
+    (near a zero of ``j_0``): stable for every order and argument, exact to 1e-12 against scipy, and one pass
+    instead of one call per order."""
     x = np.asarray(x, np.float64)
     L = int(L)
     N = L + int(extra) + int(np.ceil(np.abs(x).max())) if x.size else L + int(extra)
@@ -152,8 +153,14 @@ def spherical_jn_all(L, x, extra=24):
             hi = np.where(m, hi * 1e-200, hi); lo = np.where(m, lo * 1e-200, lo)
             if l <= L:
                 out[l:] = np.where(m[None, ...], out[l:] * 1e-200, out[l:])
+    # normalised on j_0 = sin x / x, or on j_1 = sin x / x^2 - cos x / x where j_0 is the smaller: at a zero of j_0
+    # the ratio j_0 / out_0 is a rounding over a rounding (#604)
     j0 = np.where(small, 1.0, np.sin(xs) / xs)
-    scale = j0 / np.where(out[0] == 0, 1.0, out[0])
+    j1 = np.sin(xs) / (xs * xs) - np.cos(xs) / xs
+    r1 = out[1] if L >= 1 else hi                                  # the recurrence's j_1, at the final scale
+    use1 = (np.abs(j1) > np.abs(j0)) & ~small
+    num = np.where(use1, j1, j0); den = np.where(use1, r1, out[0])
+    scale = num / np.where(den == 0, 1.0, den)
     out = out * scale[None, ...]
     if small.any():
         out[1:, small] = 0.0; out[0, small] = 1.0
