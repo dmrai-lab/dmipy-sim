@@ -17,7 +17,6 @@ from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_sim.replay.phantom import _check_tissue_entry
 from dmipy_sim.spec.substrate import SubstrateSpec
 from dmipy_sim.spec.tissue import Tissue
-from tests.test_bank import _lean_env, _slab_master
 
 INF = float("inf")
 
@@ -28,13 +27,6 @@ def extra_only():
     g = d.PackedCylinders([1e-6], [[0.0, 0.0]], 10e-6, pool="extra")
     walk = d.simulate_trajectories(120, 2e-9, g, 3e-3, 5e-4, seed=0, require_gpu=False)
     return build_replay_pack(walk, id="t/extra-only", license="x", citation="x", K=6)
-
-
-@pytest.fixture(scope="module")
-def specless():
-    """A pack built from a bare master dict: channels, no embedded spec, so no pool names."""
-    return build_replay_pack(_slab_master(n_w=200), id="t/specless", method="bridge_dst", envelope=_lean_env(), K=16,
-                             license="x", citation="x")
 
 
 def _b0(pack, TE=2e-3):
@@ -80,16 +72,6 @@ def test_a_scalar_or_a_list_on_a_pack_is_refused(pack):
         Tissue(T2=[0.05, 0.05])
     with pytest.raises(TypeError, match="list by pool id"):
         Tissue(T1=np.array([1.0, 1.2]))
-
-
-def test_per_pool_values_on_a_specless_pack_are_refused(specless):
-    assert specless.substrate is None and specless.nominal is None and specless.has_relaxation
-    seq = _b0(specless)
-    assert 0.0 < float(specless.replay(seq)[0]) <= 1.0                          # the gradient alone replays
-    with pytest.raises(ValueError, match="no substrate spec"):
-        specless.replay(seq, tissue=Tissue(T2={"extra": 0.05}))
-    with pytest.raises(ValueError, match="no substrate spec"):
-        PackSubstrate(specless, m0=1.0, tissue=Tissue(T2={"extra": 0.05}))
 
 
 def test_the_file_form_is_a_list_by_pool_id_strict_both_ways(pack):

@@ -12,8 +12,7 @@
   "pools",
   "walls",
   "seeding",
-  "validity",
-  "susceptibility_field"
+  "validity"
  ],
  "additionalProperties": false,
  "properties": {
@@ -35,13 +34,6 @@
    ],
    "exclusiveMinimum": 0,
    "description": "The B0 (T) the pools' nominal T2 / T1 were calibrated at; the default field strength of a nominal replay."
-  },
-  "susceptibility_field": {
-   "enum": [
-    "present",
-    "absent"
-   ],
-   "description": "Whether the substrate has a susceptibility field: \"present\" when a pool is a field source, \"absent\" when nothing in it is magnetic and the field is identically zero. Present exactly when some pool carries a susceptibility."
   },
   "domain": {
    "type": "object",
@@ -156,6 +148,7 @@
       "maximum": 1
      },
      "susceptibility": {
+      "description": "The pool's susceptibility block: an object makes the pool magnetic (a field source; its chi may be null, a replay knob), null makes it not. The substrate has a susceptibility field exactly when some pool is magnetic, and then 'field' is in validity.tiers and every pack of it stores the field channel (C3); each disagreement is refused.",
       "oneOf": [
        {
         "type": "null"

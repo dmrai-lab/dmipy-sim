@@ -58,7 +58,9 @@ def write_rpk(path, arrays, metadata):
 
 
 def read_rpk(path):
-    """Read a replay pack into a :class:`ReplayPack` (arrays + metadata)."""
+    """Read a replay pack into a :class:`ReplayPack` (arrays + metadata). A pack that embeds no substrate spec, or
+    whose spec's pools, tiers and stored field channel disagree (:func:`declared_susceptibility_field`), is
+    refused."""
     from safetensors import safe_open
     arrays = {}
     with safe_open(str(path), framework="numpy") as f:
@@ -66,7 +68,9 @@ def read_rpk(path):
         meta = json.loads(hdr.get("rpk") or hdr.get("json") or "{}")
         for k in f.keys():
             arrays[k] = f.get_tensor(k)
-    return ReplayPack(arrays, meta, source=str(path))
+    pack = ReplayPack(arrays, meta, source=str(path))
+    pack.susceptibility_field
+    return pack
 
 
 class PoseResponse:
@@ -212,28 +216,12 @@ def scanner_field(scanner):
 
 
 def declared_susceptibility_field(meta, *, has_field):
-    """The ``susceptibility_field`` a pack's (or a layout's) metadata ``meta`` declares, ``"present"`` or
-    ``"absent"``, with ``has_field`` whether it stores the field channel (C3). Refused: no declaration (every pack
-    states one), another value, ``"absent"`` beside a stored channel, and a declaration the embedded substrate spec
-    contradicts."""
-    from ..spec.substrate import SUSCEPTIBILITY_FIELD
-    name = meta.get("id")
-    v = meta.get("susceptibility_field")
-    if v is None:
-        raise ValueError(
-            f"pack {name!r} declares no susceptibility_field: every pack states its field channel \"present\" or "
-            "\"absent\" (nothing in the substrate is magnetic). Stamp the declaration into its metadata "
-            "(ReplayPack.stamp_susceptibility_field) or rebuild it with build_replay_pack")
-    if v not in SUSCEPTIBILITY_FIELD:
-        raise ValueError(f"pack {name!r} declares susceptibility_field {v!r}; it is one of {SUSCEPTIBILITY_FIELD}")
-    if v == "absent" and has_field:
-        raise ValueError(f"pack {name!r} declares its susceptibility field absent and stores a field channel (C3): "
-                         "the pack contradicts itself")
-    spec = meta.get("substrate")
-    if spec is not None and spec.get("susceptibility_field") != v:
-        raise ValueError(f"pack {name!r} declares susceptibility_field {v!r} and its embedded spec "
-                         f"{spec.get('susceptibility_field')!r}: the pack and its substrate disagree")
-    return v
+    """The susceptibility field (``"present"`` / ``"absent"``) a pack's (or a layout's) metadata ``meta`` declares
+    through its embedded substrate spec's pools, with ``has_field`` whether it stores the field channel (C3):
+    :func:`~dmipy_sim.spec.substrate.susceptibility_field_of`, which refuses a pack without an embedded spec and
+    every disagreement between magnetic pools, the ``"field"`` tier and the stored channel."""
+    from ..spec.substrate import susceptibility_field_of
+    return susceptibility_field_of(meta.get("substrate"), stores_field=has_field, name=meta.get("id"))
 
 
 @dataclass(frozen=True)
@@ -253,12 +241,13 @@ class FieldTerm:
 
 
 def field_term(declared, tissue, scanner):
-    """The susceptibility term a pack's declared field, a tissue and a scanner give together (dmipy-sim#593): the
-    one place a tissue's ``chi_iso`` / ``chi_aniso`` meets a pack's ``susceptibility_field`` and a scanner's
-    ``B0``. Every replay route resolves its field here -- :meth:`ReplayPack._prepare` for the routes that read a
-    tissue with the walk, :meth:`~dmipy_sim.replay.study.Primitives.reduction_terms` for those that apply it to
-    contracted primitives (the study, the columnar image, the shape-moment layout) -- so the rule holds on all of
-    them:
+    """The susceptibility term a substrate's field, a tissue and a scanner give together: the one place a tissue's
+    ``chi_iso`` / ``chi_aniso`` meets a substrate's susceptibility field ``declared`` (``"present"`` / ``"absent"``:
+    a pack's from its spec's pools, :func:`declared_susceptibility_field`; an analytic or inert phantom substrate's
+    ``"absent"`` by kind, :data:`~dmipy_sim.phantom.substrates.FIELD_BY_KIND`) and a scanner's ``B0``. Every replay
+    route resolves its field here -- :meth:`ReplayPack._prepare` for the routes that read a tissue with the walk,
+    :meth:`~dmipy_sim.replay.study.Primitives.reduction_terms` for those that apply it to contracted primitives (the
+    study, the columnar image, the shape-moment layout) -- so the rule holds on all of them:
 
     * ``"absent"``: nothing in the substrate is magnetic and its field is identically zero. A non-zero tissue
       ``chi_iso`` or ``chi_aniso`` is refused by name; any ``B0``, of any strength along any axis, is accepted
@@ -269,15 +258,15 @@ def field_term(declared, tissue, scanner):
     Returns a :class:`FieldTerm`, inactive (``B0`` None) whenever the term is zero."""
     from ..spec.substrate import SUSCEPTIBILITY_FIELD
     if declared not in SUSCEPTIBILITY_FIELD:
-        raise ValueError(f"a pack's susceptibility_field is one of {SUSCEPTIBILITY_FIELD}; got {declared!r}")
+        raise ValueError(f"a substrate's susceptibility field is one of {SUSCEPTIBILITY_FIELD}; got {declared!r}")
     f = scanner_field(scanner)
     chi = {k: getattr(tissue, k, None) for k in ("chi_iso", "chi_aniso")}
     given = {k: float(v) for k, v in chi.items() if v is not None and float(v) != 0.0}
     if declared == "absent":
         if given:
             raise ValueError(
-                f"the tissue gives {', '.join(f'{k} = {v:.4g}' for k, v in given.items())}, and this pack declares its "
-                "susceptibility field absent: nothing in its substrate is magnetic, so there is no source for a "
+                f"the tissue gives {', '.join(f'{k} = {v:.4g}' for k, v in given.items())}, and this substrate "
+                "declares its susceptibility field absent: nothing in it is magnetic, so there is no source for a "
                 "susceptibility to act on. Replay it with a tissue without chi_iso / chi_aniso (a B0 is accepted and "
                 "has no effect)")
         return FieldTerm(axis=f.axis)
@@ -848,39 +837,15 @@ class ReplayPack:
 
     @property
     def susceptibility_field(self):
-        """The pack's declared susceptibility field (dmipy-sim#593): ``"present"`` -- its substrate has a field source
-        and the pack carries the field channel (C3) -- or ``"absent"`` -- nothing in its substrate is magnetic and the
-        field is identically zero. Read through :func:`declared_susceptibility_field`, which refuses a pack that
-        declares none; it is the first thing every replay route reads. A pack read by reference
-        (:meth:`~dmipy_sim.replay.columnar.ColumnarPack.view`) may leave a present channel's rows unread; a replay
-        that needs them then refuses by name."""
-        return declared_susceptibility_field(self.meta, has_field=self.has_field)
-
-    def stamp_susceptibility_field(self, value, *, out_path=None):
-        """Declare this pack's susceptibility field in its metadata -- ``value`` ``"present"`` or ``"absent"`` -- with
-        its tensors untouched, and the embedded spec's own declaration with it: a metadata stamp, never a re-encode.
-        ``"present"`` needs the field channel stored and a field-source pool in the spec, ``"absent"`` neither, and
-        each is refused otherwise. ``out_path`` writes the stamped pack. ``provenance.susceptibility_field_stamped``
-        records the value."""
-        import copy
-        from ..spec.substrate import SubstrateSpec, SUSCEPTIBILITY_FIELD
-        if value not in SUSCEPTIBILITY_FIELD:
-            raise ValueError(f"susceptibility_field is one of {SUSCEPTIBILITY_FIELD}; got {value!r}")
-        if (value == "present") != self.has_field:
-            raise ValueError(f"pack {self.meta.get('id')!r} {'stores' if self.has_field else 'stores no'} field channel "
-                             f"(C3), so its susceptibility field is not {value!r}")
-        meta = copy.deepcopy(self.meta)
-        if meta.get("substrate") is not None:
-            d = dict(meta["substrate"], susceptibility_field=value)
-            meta["substrate"] = SubstrateSpec.from_dict(d).validate().to_dict()     # the spec's pools must agree
-        meta["susceptibility_field"] = value
-        meta.setdefault("provenance", {})["susceptibility_field_stamped"] = value
-        self.meta = meta
-        self._digest = None
-        self.susceptibility_field
-        if out_path is not None:
-            self.save(out_path)
-        return self
+        """The pack's susceptibility field: ``"present"`` -- some pool of its embedded spec is magnetic, the spec
+        lists the ``"field"`` tier and the pack carries the field channel (C3) -- or ``"absent"`` -- nothing in its
+        substrate is magnetic and the field is identically zero. Read through :func:`declared_susceptibility_field`,
+        which refuses a pack without an embedded spec and every disagreement; it is the first thing every replay
+        route reads. A view of a layout (:meth:`~dmipy_sim.replay.columnar.ColumnarPack.view`) that leaves the
+        layout's field rows unread holds the channel all the same (``meta["view"]["field"] == "unread"``); a
+        replay that needs the rows then refuses by name."""
+        unread = (self.meta.get("view") or {}).get("field") == "unread"
+        return declared_susceptibility_field(self.meta, has_field=self.has_field or unread)
 
     @property
     def diffusivity(self):

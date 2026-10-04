@@ -18,6 +18,7 @@ import numpy as np
 from dmipy_sim import simulate_trajectories
 from dmipy_sim.replay import bank
 from dmipy_sim.geometry import Cylinder, Sphere
+from dmipy_sim.spec import spec_of
 from dmipy_sim.replay import compression as cx
 
 
@@ -48,6 +49,7 @@ def walk_restricted_master(shape, diameter, D0, *, T_max=200e-3, n_t=2000, n_wal
                 comp=np.zeros((nw, nt), np.int8), comp0=np.zeros(nw, np.int64),
                 w=np.ones(nw), T2_per_comp=np.array([float(T2)]), T1_per_comp=np.array([float(T1)]),
                 dlog_b=np.asarray(dlog_b, np.float64), D_intra=float(D0),
+                substrate=spec_of(geom).to_dict(),            # the pore's spec: no pool is magnetic
                 n_walkers=int(nw), seed=int(seed))
 
 
@@ -87,7 +89,6 @@ def build_pack(shape, diameter, D0, *, out_dir=None, sigma_star=5e-3, K=128,
         os.makedirs(os.path.dirname(out_path), exist_ok=True)
     pack = bank.build_replay_pack(
         m, id=pid, method=method, envelope=envelope, K=int(K), sigma_star=sigma_star, license=license, citation=citation, out_path=out_path,
-        susceptibility_field="absent",                  # an impermeable pore: nothing in it is magnetic
         provenance=dict(shape=shape, diameter_m=float(diameter), diffusivity=float(D0),
                         geometry="single impermeable restricted pore", real_or_synthetic="synthetic"),
         verbose=verbose)

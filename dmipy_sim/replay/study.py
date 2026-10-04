@@ -128,7 +128,7 @@ class Primitives:
     ``0.5 sin a1 sin a2 sin a3`` for a store-and-recall schedule), and ``voxel`` the voxel's factor per
     measurement (:meth:`~dmipy_sim.acquisition.scanner_sequence.ScannerSequence.voxel_factor`; required, since a
     default of 1 is wrong for an unbalanced encoding rather than merely absent), and ``susceptibility_field`` the
-    pack's declared field (``"present"`` or ``"absent"``, required: it decides what a tissue's chi may do, through
+    pack's susceptibility field (``"present"`` or ``"absent"``, from its spec's pools; required: it decides what a tissue's chi may do, through
     :func:`~dmipy_sim.replay.replay.field_term`). A tissue and a
     scanner turn these into the per-walker weights and phases of :meth:`signals`, whose ensemble mean is
     :meth:`signal`."""
@@ -141,7 +141,7 @@ class Primitives:
     contact: Optional[np.ndarray]
     D_walk: Optional[float]
     voxel: np.ndarray                                          # required: there is no sane default (see __post_init__)
-    susceptibility_field: str                                  # the pack's declaration: "present" or "absent"
+    susceptibility_field: str                                  # the pack's field: "present" or "absent"
     pathway: float = 1.0
     by_pool: object = field(repr=False, default=None)          # the pack's resolver of a per-pool value
     rho2_over_D_max: Optional[float] = None                     # the contact tier's envelope (RPK.md 8.7), None unbounded          # the pack's resolver of a per-pool value

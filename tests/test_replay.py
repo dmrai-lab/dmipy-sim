@@ -10,6 +10,8 @@ from scipy.fft import dct, idct
 from dmipy_sim.replay.replay import (read_rpk, write_rpk, compile_scheme, replay_signal,
                               replay_signal_jax, ReplayPack)
 from dmipy_sim.constants import GAMMA
+from dmipy_sim.geometry import FreeDiffusion
+from dmipy_sim.spec import spec_of
 
 N_W, N_T, K = 400, 200, 48
 DT = 5e-4
@@ -25,7 +27,8 @@ def _synth_pack(seed=0):
     arrays, cmeta, _ = encode_bridge_dst(traj, K)              # (N_W, K+2, 3) per axis
     arrays["spin_weights"] = np.ones(N_W, np.float32)
     meta = {"n_t": N_T, "dt": DT, "walk_params": {"n_t": N_T, "dt_traj": DT},
-            "compression": {"method": cmeta["method"], "K": K}}
+            "compression": {"method": cmeta["method"], "K": K},
+            "substrate": spec_of(FreeDiffusion()).to_dict()}                # free walkers: nothing magnetic
     return arrays, meta, traj
 
 

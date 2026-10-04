@@ -94,7 +94,7 @@ def test_the_closed_form_composes_the_direct_replay_on_a_real_pack(seq):
     path = "/home/rutger/dmrai-ws/packs/cactus_demo_xframe.rpk"
     if not os.path.exists(path):
         pytest.skip("the CACTUS demo pack is not on this machine")
-    pk = read_rpk(path).stamp_susceptibility_field("present")      # the demo pack on disk carries no declaration
+    pk = read_rpk(path)
     seq30 = sequences.pgse([[1, 0, 0], [0, 0, 1], [0.6, 0.8, 0.0], [0.0, 0.6, 0.8]], 8e-3, 16e-3, bvalues=[3e9] * 4, TE=30e-3)
     # no tissue, no scanner: this pack's spec declares a nominal field, and a field response still takes the quadrature
     pr = pk.pose_response(seq30, keep=(8, 0))
@@ -132,7 +132,7 @@ def field_pack():
     path = "/home/rutger/dmrai-ws/packs/cactus_demo_xframe.rpk"
     if not os.path.exists(path):
         pytest.skip("the CACTUS demo pack (field tier, path route) is not on this machine")
-    return read_rpk(path).stamp_susceptibility_field("present")      # the demo pack on disk carries no declaration
+    return read_rpk(path)
 
 
 def test_the_field_is_composed_in_closed_form_and_agrees_with_every_other_route(field_pack):

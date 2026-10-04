@@ -19,9 +19,19 @@ from dmipy_sim import (build_replay_pack, build_to_floor, read_rpk,
 from dmipy_sim.replay import bank
 from dmipy_sim.constants import GAMMA
 from dmipy_sim.spec.tissue import Tissue
+from dmipy_sim.spec.substrate import Domain, Pool, Seeding, SubstrateSpec, Susceptibility, Validity
 from tests.replay_frames import field_along
 
 N_W, N_T, DT, D0, L = 3000, 200, 5e-4, 2e-9, 6e-6
+
+
+def _slab_spec(magnetic=False, length=L, D=D0):
+    """The slab walk's substrate: a reflecting slab 0 <= x <= ``length``, free in y and z, its walkers in pool 0 (a
+    test relabels some into pool 1); pool 0 magnetic, with the field tier, for a walk that carries a field basis."""
+    chi = Susceptibility(None, None, "none") if magnetic else None
+    return SubstrateSpec("test/slab", Domain([0.0, -1e-3, -1e-3], [length, 1e-3, 1e-3], ["reflect", "open", "open"]),
+                         [Pool(0, "extra", D, susceptibility=chi), Pool(1, "intra", D)], [], Seeding([0]),
+                         Validity(length, ["gradient", "relaxation"] + (["field"] if magnetic else []))).validate().to_dict()
 
 
 def _slab_master(n_w=N_W, seed=0):
@@ -41,7 +51,7 @@ def _slab_master(n_w=N_W, seed=0):
     return dict(traj=traj, dt_traj=DT, T_max=(N_T - 1) * DT,
                 comp=np.zeros((n_w, N_T), np.int8), comp0=np.zeros(n_w, np.int64),
                 w=np.ones(n_w), dlog_b=dlog, D_intra=D0, n_walkers=n_w, seed=seed,
-                susceptibility_field="absent")             # a slab: nothing in it is magnetic
+                substrate=_slab_spec())                     # a slab: nothing in it is magnetic
 
 
 def _lean_env():
@@ -142,7 +152,7 @@ def _susc_master(**kw):
     m = _slab_master(**kw)
     fb, origin = _field_basis_for_slab()
     m.update(susc_field_basis=fb, susc_grid_origin=origin, susc_chi_iso=1.06e-6, delta_chi_a=0.0,
-             susceptibility_field="present")
+             substrate=_slab_spec(magnetic=True))
     return m
 
 

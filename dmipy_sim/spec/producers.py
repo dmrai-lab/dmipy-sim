@@ -308,7 +308,7 @@ def cactus_spec(run_dir, *, scale=_UM, side_um=None, field_T=3.0, rho2=None, on_
                     "files": [{"path": p, "sha256": _sha(p)} for p in files],
                     "transformations": transformations + ["inside inner = intra (1), inner..outer = myelin (2), outside outer = extra (0)",
                                                           "nominal pool values from the catalogued white matter"],
-                    "created": date.today().isoformat(), "software": {"name": "dmipy-sim", "version": _version()}}, susceptibility_field="present")
+                    "created": date.today().isoformat(), "software": {"name": "dmipy-sim", "version": _version()}})
     return spec.validate()
 
 
@@ -338,7 +338,7 @@ def winther_spec(inner_ply, outer_ply, *, scale=_UM, pad=1.0e-6, field_T=3.0, rh
                     "transformations": [f"box = outer surface padded by {pad} m", "extra pool declared free water (water_fraction 0, not seeded)",
                                         "nominal pool values from the catalogued white matter",
                                         "myelin chi_iso = +1.06e-6, isotropic: the convention the Winther meshes were published with"] + notes,
-                    "created": date.today().isoformat(), "software": {"name": "dmipy-sim", "version": _version()}}, susceptibility_field="present")
+                    "created": date.today().isoformat(), "software": {"name": "dmipy-sim", "version": _version()}})
     return spec.validate()
 
 
@@ -395,7 +395,7 @@ def caterpillar_spec(path, *, scale=_UM, box=None, glia=True, field_T=3.0, rho2=
                      "n_spheres": int(len(ct)), "reported": {k: v for k, v in t["params"].items() if "icvf" in k.lower()}},
         provenance={"source": "CATERPillar", "scale": float(scale), "files": [{"path": str(path), "sha256": sha}],
                     "transformations": transformations,
-                    "created": date.today().isoformat(), "software": {"name": "dmipy-sim", "version": _version()}}, susceptibility_field="present")
+                    "created": date.today().isoformat(), "software": {"name": "dmipy-sim", "version": _version()}})
     return spec.validate()
 
 
@@ -512,7 +512,7 @@ def label_volume_spec(path, *, pools=None, voxel_size=None, origin=None, crop=No
                     "files": [{"path": (cited if i == 0 else os.path.basename(f)), "sha256": _sha(f)}
                               for i, f in enumerate(read_files)],
                     "transformations": transformations,
-                    "created": date.today().isoformat(), "software": {"name": "dmipy-sim", "version": _version()}}, susceptibility_field="absent"
+                    "created": date.today().isoformat(), "software": {"name": "dmipy-sim", "version": _version()}}
     ).validate()
 
 
@@ -655,7 +655,7 @@ def _strands_spec(centerlines, R, lo, hi, *, boundary, g_ratio, field_T, rho2, i
                      "radius_max": float(R.max()), "bundles": bundles},
         provenance={"source": source, "scale": scale, "files": [{"path": str(f), "sha256": _sha(f)} for f in files],
                     "transformations": transformations,
-                    "created": date.today().isoformat(), "software": {"name": "dmipy-sim", "version": _version()}}, susceptibility_field=("present" if g_ratio is not None and sheath_field else "absent"))
+                    "created": date.today().isoformat(), "software": {"name": "dmipy-sim", "version": _version()}})
     return spec.validate()
 
 
@@ -762,7 +762,7 @@ def mcdc_axon_spec(ply, *, scale=_UM, D=None, voxel=None, pad=1.0e-6, boundary="
         description=description or f"one MC/DC undulating axon: {os.path.basename(ply)}, a closed lumen in free space",
         realisation={"enclosed_volume_m3": _volume(*mesh), "surface_area_m2": _area(*mesh),
                      "tube_radius_m": 2.0 * _volume(*mesh) / _area(*mesh), "n_vertices": int(len(mesh[0])), "n_faces": int(len(mesh[1]))},
-        provenance=prov, susceptibility_field="absent")
+        provenance=prov)
     return spec.validate()
 
 

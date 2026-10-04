@@ -139,9 +139,9 @@ def test_r0_is_the_stored_start_read_without_decoding(tmp_path):
 
 
 def test_a_substrate_with_no_field_source_replays_at_any_B0_as_a_zero_field(packs):
-    """A spec whose pools declare no susceptibility declares its field absent, and so does its pack: B0 = 3 T is the
-    gradient-only replay through the direct and the pose routes, and a tissue chi is refused (#593); the
-    declaration is the pack's own, so a pack without an embedded spec keeps it."""
+    """A spec with no magnetic pool has no field, and neither has its pack: B0 = 3 T is the gradient-only replay
+    through the direct and the pose routes, and a tissue chi is refused (#593); the field is read from the embedded
+    spec's pools, so a pack without one is refused (#597)."""
     full, plain = packs
     assert full.susceptibility_field == "absent" and not full.has_field
     wf = _wf(full.n_t, full.dt)
@@ -151,8 +151,8 @@ def test_a_substrate_with_no_field_source_replays_at_any_B0_as_a_zero_field(pack
         full.replay(wf, scanner=3.0, tissue=Tissue(chi_iso=1e-7))
     import copy
     bare = ReplayPack(dict(full.arrays), {k: v for k, v in copy.deepcopy(full.meta).items() if k != "substrate"})
-    assert bare.susceptibility_field == "absent"
-    np.testing.assert_array_equal(bare.replay(wf, scanner=3.0), full.replay(wf))
+    with pytest.raises(ValueError, match="embeds no substrate spec"):
+        bare.replay(wf, scanner=3.0)
 
 
 def test_relaxation_and_contact_end_at_the_readout(packs):

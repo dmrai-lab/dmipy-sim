@@ -3,7 +3,6 @@
   "id": "examples/packed-myelinated-3",
   "description": "Three myelinated cylinders in a periodic square cell, open along the fibre axis: extra / intra / myelin pools, an axolemma with kappa, both sheath walls with rho2, myelin the field-source pool. What Substrate.canonical().pack(n_axons=3) means.",
   "domain": {"box_min": [-2.0e-6, -2.0e-6, -1.0e-6], "box_max": [2.0e-6, 2.0e-6, 1.0e-6], "boundary": ["periodic", "periodic", "open"]},
-  "susceptibility_field": "present",
   "frame": {"axis": [0.0, 0.0, 1.0], "in_plane": [1.0, 0.0, 0.0]},
   "pools": [
     {"id": 0, "name": "extra",  "D": 1.7e-9, "T2": 0.055, "T1": 1.0,  "water_fraction": 1.0, "susceptibility": null},
