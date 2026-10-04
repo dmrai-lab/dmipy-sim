@@ -111,7 +111,7 @@ Layered packages (#88): `geometry/` (substrates), `engine/` (`core`, `physics`, 
 `gpu`, `_gpu_config`), `replay/` (`trajectories`, `compression`, `replay`, `bank`, `phantom`, `so3`, `fod`,
 `_replay_kernel`), `acquisition/` (`waveforms`, `rf`, `noise`), `fields/`
 (`susceptibility`, `susceptibility_field`), `viz/` (`viz`, `pedagogy`), plus `sequences/`, `substrate/`, `io/`, `math/` and the
-level-0 modules `constants`, `compartments`, `persistent_walk`. `dmipy_sim.replay` and `dmipy_sim.viz` are packages that
+level-0 modules `constants`, `compartments`, `persistent_walk`, `_blas` (`lapack_threads()`: the thread cap a LAPACK call takes on the OpenBLAS build whose multithreaded drivers hang, #564, detected at runtime with threadpoolctl and inert on every other build). `dmipy_sim.replay` and `dmipy_sim.viz` are packages that
 re-export their same-named module. There are NO flat-path shims: import the packaged path or the public names from `dmipy_sim`.
 
 | File | Role |

@@ -2505,6 +2505,7 @@ class ReplayPack:
         |d_w|``, the walkers' bounds weighted as the signal weighs them."""
         from .compression import read_position_coeffs
         from ._replay_kernel import effective_gradient
+        from .._blas import lapack_threads
         todo = [c for c, q in enumerate(per) if q is not None and q["residual"].size]
         if not todo:
             return
@@ -2521,7 +2522,8 @@ class ReplayPack:
                 g = q["g_hat"][rows]
                 res = G_s - np.einsum("mtc,mc->mt", G_s, g)[:, :, None] * g[:, None, :]          # (n_r, n_s, 3)
                 X = res.transpose(0, 2, 1).reshape(-1, n_s)                                       # (n_r * 3, n_s)
-                U, S, Vt = np.linalg.svd(X, full_matrices=False)
+                with lapack_threads():                                                            # #564: this shape hangs a known build
+                    U, S, Vt = np.linalg.svd(X, full_matrices=False)
                 k = int(np.sum(S > 1e-12 * S[0])) if S.size and S[0] > 0 else 0
                 if k == 0:
                     continue
