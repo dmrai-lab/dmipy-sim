@@ -230,7 +230,23 @@ def rotate_waveform(waveform, R=None, *, theta=None):
     enc = waveform.encoding
     if enc is not None:                            # the declared directions turn with the gradient
         enc = replace(enc, gradient_directions=np.asarray(enc.gradient_directions) @ R.T)
-    return replace(waveform, G=G_rot.astype(np.float32), encoding=enc)
+    # what a machine delivered is in the gradient's frame too, and turns with it: the magnet's own gradient, the
+    # part of G no builder designed (rotated exactly as G is, so the coils' gradient G - imposed stays what it was),
+    # where the Maxwell term was read, and the coils' nonlinearity tensor (R L R^T)
+    turned = {}
+    if waveform.imposed_gradient is not None:
+        imp = np.asarray(waveform.imposed_gradient, dtype=np.float64)
+        turned["imposed_gradient"] = np.einsum('mtj,ij->mti', imp, R).astype(np.float32)
+    if waveform.background_gradient is not None:
+        bg = np.asarray(waveform.background_gradient, dtype=np.float64).reshape(-1, 3) @ R.T
+        turned["background_gradient"] = tuple(tuple(float(v) for v in row) for row in bg)
+    if waveform.concomitant is not None:
+        pos = np.asarray(waveform.concomitant["position_m"], dtype=np.float64).reshape(-1, 3) @ R.T
+        turned["concomitant"] = dict(waveform.concomitant, position_m=tuple(tuple(float(v) for v in p) for p in pos))
+    if waveform.gradient_nonlinearity is not None:
+        Ls = np.asarray(waveform.gradient_nonlinearity, dtype=np.float64).reshape(-1, 3, 3)
+        turned["gradient_nonlinearity"] = tuple(tuple(float(v) for v in (R @ L @ R.T).ravel()) for L in Ls)
+    return replace(waveform, G=G_rot.astype(np.float32), encoding=enc, **turned)
 
 
 def tile_waveform(waveform, n_copies):
