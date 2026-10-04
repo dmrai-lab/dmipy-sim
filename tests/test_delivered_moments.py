@@ -25,7 +25,7 @@ from dmipy_sim.spec.tissue import Tissue
 
 DELTA, BIG_DELTA = 0.2e-3, 0.5e-3
 TISSUE = Tissue(T2={"intra": 0.03, "extra": 0.08, "myelin": 0.01}, T1={"intra": 0.9, "extra": 1.4, "myelin": 0.3},
-                rho=1e-5, chi_iso=-1e-7, chi_aniso=-1.5e-8)
+                rho_2=1e-5, chi_iso=-1e-7, chi_aniso=-1.5e-8)
 # the phantom's centre 7.1 cm from isocentre, off every axis: inside the Swoop's 8 cm anchor, every term non-zero
 OFFSET = np.array([0.05, 0.03, 0.04])
 
@@ -197,6 +197,7 @@ def test_a_magnets_gradient_through_a_stimulated_echo_accrues_nothing_while_stor
     ste = d.pgste([[0, 0, 1]], 7.6e-3, 38.3e-3, gradient_strengths=0.1, n_t=1000, slew_rate=np.inf, ste_flip_angles=(90.0, 90.0, 90.0))
     bg = _background_sequence(ste)
     G = np.asarray(bg.G_eff)[0, :, 0]
-    stored = ~np.asarray(ste.chi_perp, bool)
-    assert stored.sum() > 600 and np.all(G[stored] == 0.0) and not bg.unbalanced
+    np.testing.assert_array_equal(G, np.asarray(ste.effective_gate))          # the background's time course IS the gate
+    stored = np.asarray(ste.effective_gate) == 0.0
+    assert stored.sum() > 600 and not bg.unbalanced
     assert set(np.unique(G[~stored])) == {-1.0, 1.0}

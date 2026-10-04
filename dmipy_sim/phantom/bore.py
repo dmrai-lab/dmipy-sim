@@ -403,7 +403,7 @@ def delivered_moments(scanner, grid, profile, amplitudes, directions, *, voxels=
     walker's two moments take (:class:`MomentDelivery`): the same physics as :func:`delivered_gradient`, reduced.
 
     Measurement ``i`` commands ``G_i(t) = a_i s(t) u_i``. The coils deliver ``L G_i`` (linear in ``G``: the shape is
-    kept, the vector becomes ``a_i L u_i``); the magnet adds its constant ``g0`` (its own shape, the coherence sign
+    kept, the vector becomes ``a_i L u_i``); the magnet adds its constant ``g0`` (its own shape, the effective gate
     alone: a second moment); and the Maxwell term adds ``gc(L G_i(t))``, a POINTWISE function of the coils' gradient
     (:func:`~dmipy_sim.acquisition.scanner_sequence.concomitant_terms`) that vanishes with it. When the shape is
     two-valued, ``s(t)`` in ``{0, 1}`` -- square pulses of one polarity, as every square-pulse spin echo and

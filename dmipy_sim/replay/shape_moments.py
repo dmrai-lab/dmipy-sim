@@ -139,8 +139,9 @@ def _background_sequence(seq, amplitude=1.0):
     """The magnet's own gradient at ``amplitude`` along x, y and z as a three-row sequence on ``seq``'s grid, RF
     schedule and readout: a constant gradient through the pulses and the dead times
     (:meth:`~dmipy_sim.acquisition.scanner_sequence.ScannerSequence.with_background_gradient` on a silent waveform),
-    so that its phases are a walker's **background moment** ``gamma int eps(t) r(t) dt`` -- what a constant ``g0``
-    adds to the phase as ``g0 . n``, through the coherence sign alone."""
+    so that its phases are a walker's **background moment** ``gamma int e(t) r(t) dt`` with ``e`` the sequence's
+    :attr:`~dmipy_sim.acquisition.scanner_sequence.ScannerSequence.effective_gate` (the coherence sign, zero while
+    stored) -- what a constant ``g0`` adds to the phase as ``g0 . n``."""
     from ..acquisition.waveforms import tile_waveform
     silent = tile_waveform(seq, 3).with_gradient(np.zeros((3, int(np.shape(seq.G)[1]), 3)))
     return silent.with_background_gradient(float(amplitude) * _AXES)
@@ -171,7 +172,7 @@ def _background_rows(pk, shapes, contractions):
         P = pk._prepare(_background_sequence(shapes[names[0][0]]), tissue=None, scanner=None, orientation=None, compartment=None)
         if np.any(P["voxel"] != 1.0):
             raise ValueError(f"the background on the shapes {[n for n, _ in names]} leaves a net moment at the readout: "
-                             "this group's coherence sign does not refocus a constant gradient")
+                             "this group's effective gate does not refocus a constant gradient")
         out[f"bg_g{gi}"] = _band_phase(P)
     return out
 
@@ -264,7 +265,7 @@ def write_shape_moments(source, shapes, out_dir, *, tol=0.25, chunk_rows=2_000_0
     build a shape at the largest amplitude it will be replayed at). ``progress(rows, bytes, seconds)`` is called
     after every row group. With ``tiers`` the walkers' primitives at the shapes' common echo time are stored too (the
     field modes and the contact tier read in the same pass). With ``background`` each sequence group's **background
-    moment** is stored too (:func:`_background_sequence`: the walker's moment against the group's coherence sign
+    moment** is stored too (:func:`_background_sequence`: the walker's moment against the group's effective gate
     alone, what a magnet's own constant gradient encodes), certified to ``background_amplitude`` (T/m). Every shape's
     RF schedule is recorded, so :meth:`ShapeMoments.sequence` rebuilds it. Returns the manifest."""
     from .columnar import ColumnarPack

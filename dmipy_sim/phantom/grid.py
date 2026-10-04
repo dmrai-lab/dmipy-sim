@@ -243,7 +243,7 @@ class Grid:
         off = np.asarray(offset_m, np.float64).reshape(3)
         if self.to_scanner is not None:
             off = np.asarray(self.to_scanner, np.float64).T @ off
-        centre = np.asarray(self.origin_m) + 0.5 * (np.asarray(self.shape) - 1) * np.asarray(self.voxel_size_m)
+        centre = np.asarray(self.centre_m, np.float64)
         return Grid(shape=self.shape, voxel_size_m=self.voxel_size_m, origin_m=self.origin_m,
                     isocenter_m=tuple(centre - off), axes=self.axes, attach=self.attach, to_scanner=self.to_scanner)
 
