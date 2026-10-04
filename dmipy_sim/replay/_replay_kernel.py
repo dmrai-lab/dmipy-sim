@@ -1,4 +1,4 @@
-"""The replay primitives: one gradient phase, one resampler, one spin-echo gate.
+"""The replay primitives: one gradient phase, one resampler, one field gate.
 
 Every route that turns a stored walk into a signal -- the raw numpy replay, its JAX twin, the
 compressed mode-space replay, the pre-pulse azimuth, the two vector-Bloch replays, the bank's
@@ -10,8 +10,8 @@ susceptibility replay and the SH responder -- integrates the same quantity,
 * :func:`gradient_phase` is the total phase per (measurement, walker); :func:`phase_increments`
   the per-step increments one measurement contributes, for a propagator that applies them in
   order.
-* :func:`se_gate` is the transverse-phase sign of a spin echo: ``+1`` before the 180 at
-  ``refocus_time``, ``-1`` after, balanced to sum to zero so a static field refocuses exactly.
+* :func:`field_gate` is the acquisition's effective gate as per-save weights against a field sampled at the
+  saves: the one gate a static field, a uniform off-resonance and ``G_eff`` all accrue through.
 
 Each has a JAX twin (``*_jax``) where a consumer differentiates through it.
 """
@@ -269,24 +269,3 @@ def phase_increments_jax(G_m, traj, dt):
     :func:`gradient_phase_jax`)."""
     return (float(GAMMA) * float(dt)) * jnp.einsum('td,wtd->tw', jnp.asarray(G_m), jnp.asarray(traj),
                                                    precision=_FULL)
-
-
-def se_gate(n_t, dt, refocus_time):
-    """The transverse-phase gate of a spin echo as per-save weights: the sign function ``s(t) = +1`` before the
-    180 at ``refocus_time`` (s) and ``-1`` after, integrated exactly against the piecewise-linear path through
-    the saves (the same reading as :func:`effective_gradient`), so a 180 at ANY instant is exact and a 180 at
-    ``T/2`` refocuses a static field to the bit (``sum s = 0``). ``None`` is a gradient echo (``s == +1``).
-    Multiply per-save values by ``dt`` and these weights to integrate them over the echo."""
-    n_t = int(n_t); dt = float(dt)
-    T = (n_t - 1) * dt
-    if refocus_time is None:
-        lp = np.full(n_t - 1, dt)                                   # +1 everywhere
-    else:
-        tr = float(np.clip(refocus_time, 0.0, T))
-        lp = np.clip(tr - np.arange(n_t - 1) * dt, 0.0, dt)         # the +1 part of each interval
-    A0 = lp - (dt - lp)
-    A1 = lp ** 2 / 2.0 - (dt ** 2 - lp ** 2) / 2.0
-    W = np.zeros(n_t)
-    W[:-1] += A0 - A1 / dt
-    W[1:] += A1 / dt
-    return W / dt
