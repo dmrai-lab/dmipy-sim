@@ -139,3 +139,62 @@ def test_the_bessel_values_hold_at_the_zeros_of_j0():
         ref = np.stack([spherical_jn(l, x) for l in range(L + 1)])
         assert np.abs(host(L, x) - ref).max() <= 1e-11, L
         assert np.abs(spherical_jn_all(L, x, device="jax") - ref).max() <= 2e-6, L
+
+
+# ---- the torch kernels (dmrai-lab/dmipy-sim#603) against the same oracles, on torch's CPU ----------------------------
+
+def test_the_torch_harmonics_and_bessel_values_are_the_numpy_ones():
+    """float64 to rounding, float32 to its rounding; the Bessel values also at a zero of j_0, where the torch
+    recurrence normalises on j_1 (against scipy, the oracle there)."""
+    import pytest
+    torch = pytest.importorskip("torch")
+    from scipy.special import spherical_jn
+    from dmipy_sim.replay.pose_device import real_sh_torch, spherical_jn_torch
+    rng = np.random.default_rng(4)
+    d = rng.normal(size=(3000, 3)); d /= np.linalg.norm(d, axis=1, keepdims=True)
+    for L in (0, 1, 3, 15, 28):
+        ref = so3.real_sh(L, d, full=True)
+        assert np.abs(real_sh_torch(L, torch.as_tensor(d)).numpy() - ref).max() <= 1e-13
+        f32 = real_sh_torch(L, torch.as_tensor(d, dtype=torch.float32)).double().numpy()
+        assert np.abs(f32 - ref).max() <= 3e-5 * np.abs(ref).max()
+    x = np.concatenate([rng.uniform(0.0, 30.0, 2100), [0.0, 1e-9, 1e-5, np.pi, 2 * np.pi, 3 * np.pi]])
+    for L in (0, 2, 12, 30):
+        ref = np.stack([spherical_jn(l, x) for l in range(L + 1)])
+        N = L + 24 + 30
+        assert np.abs(spherical_jn_torch(L, torch.as_tensor(x), N).numpy() - ref).max() <= 1e-11
+        assert np.abs(spherical_jn_torch(L, torch.as_tensor(x, dtype=torch.float32), N).double().numpy() - ref).max() <= 2e-6
+
+
+def test_the_torch_bodies_tails_and_field_factor_are_the_numpy_ones_to_float32_rounding():
+    import pytest
+    pytest.importorskip("torch")
+    from dmipy_sim.replay.pose_device import bessel_tails, field_bodies
+    rng = np.random.default_rng(6)
+    n_w, nc, L, n_f = 3000, 3, 9, 25
+    kappa = rng.uniform(0.0, 9.0, size=(n_w, nc))
+    m = rng.normal(size=(n_w, nc, 3)); m_hat = m / np.linalg.norm(m, axis=2, keepdims=True)
+    w = rng.uniform(0.5, 1.5, n_w) / n_w
+    F = rng.normal(size=(n_w, n_f)) + 1j * rng.normal(size=(n_w, n_f))
+    l_used = (0, 2, 3, 4, 5, 6, 7, 8, 9)
+    ref = field_bodies(kappa, m_hat, w, F.real, F.imag, L, l_used, n_bessel=L + 24 + 9, device="numpy")
+    dev = field_bodies(kappa, m_hat, w, F.real, F.imag, L, l_used, n_bessel=L + 24 + 9, device="torch:cpu", chunk_bytes=1 << 20)
+    assert dev.shape == ref.shape
+    assert np.abs(dev - ref).max() <= 1e-5 * np.abs(ref).max(), np.abs(dev - ref).max() / np.abs(ref).max()
+    ref = bessel_tails(kappa, w, 20, device="numpy")
+    dev = bessel_tails(kappa, w, 20, device="torch:cpu", chunk_bytes=1 << 16)
+    assert dev.shape == ref.shape and np.abs(dev - ref).max() <= 1e-5 * np.abs(ref).max()
+    a, A = _field()
+    Lp = 12
+    dirs, wq = so3.sphere_quadrature(Lp + 2, 2 * Lp + 2)
+    Yw = so3.real_sh(Lp, dirs, full=True) * wq[:, None]
+    ref = field_factor(a, A, dirs, Yw, device="numpy")
+    dev = field_factor(a, A, dirs, Yw, device="torch:cpu", chunk_bytes=1 << 20)
+    assert np.abs(dev - ref).max() <= 1e-5 * np.abs(ref).max()
+
+
+def test_a_torch_device_word_names_the_route():
+    import pytest
+    torch = pytest.importorskip("torch")
+    from dmipy_sim.replay.pose_device import route
+    assert route("torch:cpu") == ("torch", torch.device("cpu"))
+    assert route("torch")[0] == "torch" and route("numpy") == ("numpy", None)

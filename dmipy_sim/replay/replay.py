@@ -1559,7 +1559,7 @@ class ReplayPack:
         return int(max(int(np.max(w.arrays[key])) for w, _, _ in self._windows())) + 1
 
     def pose_response(self, waveform, *, tissue=None, scanner=None, pose=None, compartment=None,
-                      method="auto", keep=None, cache=None):
+                      method="auto", keep=None, cache=None, backend="jax", device=None):
         """The pack's response over every pose of its substrate, for one acquisition: a :class:`PoseResponse` whose
         coefficients a voxel's orientation distribution contracts against (RPH.md 6).
 
@@ -1590,21 +1590,29 @@ class ReplayPack:
         expansion is written there under a key of the pack's digest, the acquisition on the pack's grid, the
         resolved knobs, the frame, the method and the band, and read back instead of recomputed the next time
         the same pack meets the same acquisition. Off unless asked for.
+
+        ``backend`` -- where the closed form's walker work runs: ``"jax"`` (JAX's device when it is a GPU, else
+        numpy on the host) or ``"torch"`` on ``device`` (a torch device; CUDA when torch sees one, else its CPU),
+        for a host that has PyTorch and no JAX device (dmrai-lab/dmipy-sim#603). Both compute the same expansion,
+        its band and its misfit, to float32 rounding; the quadrature route is the same on both.
         """
         return self.pose_responses([waveform], tissue=tissue, scanner=scanner, pose=pose, compartment=compartment,
-                                   method=method, keep=keep, cache=cache)[0]
+                                   method=method, keep=keep, cache=cache, backend=backend, device=device)[0]
 
     def pose_responses(self, waveforms, *, tissue=None, scanner=None, pose=None, compartment=None,
-                       method="auto", keep=None, cache=None):
+                       method="auto", keep=None, cache=None, backend="jax", device=None):
         """:meth:`pose_response` for a batch of acquisitions on this pack -- the encoding classes of a machine pass,
         or one per voxel -- as one pass over the walkers per field factor: the closed form takes the single-direction
         acquisitions of the batch that share a gate together (:meth:`_pose_coeffs_closed_many`), the others take the
-        quadrature one by one. The knobs, the pose and the cache are as for :meth:`pose_response`; returns one
-        :class:`PoseResponse` per acquisition, in order (dmrai-lab/dmipy-sim#449)."""
+        quadrature one by one. The knobs, the pose, the cache and the backend are as for :meth:`pose_response`;
+        returns one :class:`PoseResponse` per acquisition, in order (dmrai-lab/dmipy-sim#449)."""
+        if backend not in ("jax", "torch"):
+            raise ValueError(f"backend is 'jax' or 'torch', got {backend!r}")
+        kernels = "auto" if backend == "jax" else ("torch" if device is None else f"torch:{device}")
         view = self._at_tissue(tissue)
         if view is not self:
             return view.pose_responses(waveforms, tissue=tissue, scanner=scanner, pose=pose, compartment=compartment,
-                                       method=method, keep=keep, cache=cache)
+                                       method=method, keep=keep, cache=cache, backend=backend, device=device)
         waveforms = list(waveforms)
         R_s = _pose_matrix(pose)
         if R_s is not None:                                       # the acquisition in the specimen frame: what the
@@ -1627,7 +1635,8 @@ class ReplayPack:
                 Ps.append(P); paths.append(path)
             todo = [c for c in range(len(waveforms)) if out[c] is None]
             if todo and method != "quadrature":
-                closed = self._pose_coeffs_closed_many([Ps[c] for c in todo], [waveforms[c] for c in todo], keep=keep)
+                closed = self._pose_coeffs_closed_many([Ps[c] for c in todo], [waveforms[c] for c in todo], keep=keep,
+                                                       device=kernels)
                 for c, resp in zip(todo, closed):
                     if resp is None and method == "closed":
                         raise ValueError("the closed-form pose expansion needs a single-direction encoding on every measurement: "
@@ -1938,7 +1947,7 @@ class ReplayPack:
         raise ValueError("orientation is a (3, 3) rotation, a (3,) axis direction, or a distribution of poses "
                          "(dmipy_sim.replay.so3.Distribution, or an FOD read as an axis density)")
 
-    def _pose_coeffs_closed_many(self, Ps, waveforms, keep=None, tol=1e-8, l_cap=64, direction_tol=None):
+    def _pose_coeffs_closed_many(self, Ps, waveforms, keep=None, tol=1e-8, l_cap=64, direction_tol=None, device="auto"):
         """The pose expansion in closed form (#197) for a batch of acquisitions on this pack -- the encoding classes
         of a machine pass, or one class per voxel -- in ONE pass over the walkers: every acquisition's waveform
         groups lie along one group axis, so the moments, the Bessel values, the moment harmonics and the products
@@ -1986,11 +1995,17 @@ class ReplayPack:
         every pulse and dead time) plays two directions with two time courses; ``g0`` through the effective gate
         is taken out of the encoding before the direction is judged, and enters as a second plane-wave factor in
         the walkers' background moments (:meth:`_closed_with_background`, dmrai-lab/dmipy-sim#565).
+
+        **Where it runs.** ``device`` is the kernels' word (:func:`pose_device.route`): ``"auto"`` the JAX device
+        when it is a GPU, else numpy; ``"torch"`` / ``"torch:<device>"`` torch (dmrai-lab/dmipy-sim#603), which keeps
+        the walkers' moments, their directions and the bodies on its device, takes every route the host takes (the
+        shell series where the host takes it, so the misfit is the host's), and returns only what the lab side reads.
         """
         from . import so3
         from .compression import read_position_coeffs
         from ._replay_kernel import effective_gradient
-        from .pose_device import bessel_tails, host_bodies, spherical_jn_all as _jn_all
+        from .pose_device import bessel_tails, host_bodies, route, spherical_jn_all as _jn_all
+        kind, t_dev = route(device)
         n_acq = len(Ps)
         backgrounds = [_background_of(wf) for wf in waveforms]
         # one pass per (kind, field factor): a batch that mixes acquisitions with and without a magnet's gradient, or
@@ -2000,10 +2015,10 @@ class ReplayPack:
         passes = list(dict.fromkeys(kinds))
         if len(passes) > 1:
             out = [None] * n_acq
-            for kind in passes:
-                sub = [c for c in range(n_acq) if kinds[c] == kind]
+            for one in passes:
+                sub = [c for c in range(n_acq) if kinds[c] == one]
                 got = self._pose_coeffs_closed_many([Ps[c] for c in sub], [waveforms[c] for c in sub], keep=keep, tol=tol,
-                                                    l_cap=l_cap, direction_tol=direction_tol)
+                                                    l_cap=l_cap, direction_tol=direction_tol, device=device)
                 for c, r in zip(sub, got):
                     out[c] = r
             return out
@@ -2060,7 +2075,7 @@ class ReplayPack:
             per.append(dict(P=P, G=G, G_wf=G_wf, g_hat=g_hat, group=group, first=first, n_meas=n_meas,
                             residual=np.asarray(residual, int), bound=np.zeros(n_meas), **extra))
         limit = (0.1 / np.sqrt(n_w)) if direction_tol is None else float(direction_tol)
-        self._residual_bounds(per, P0, dt, n_w, ew, norm)
+        self._residual_bounds(per, P0, dt, n_w, ew, norm, device=device)
         for c, q in enumerate(per):
             if q is not None and q["residual"].size and float(q["bound"].max()) > limit:
                 per[c] = None                                                      # not one direction to the bound: quadrature
@@ -2072,9 +2087,15 @@ class ReplayPack:
             g_off[c] = n_grp; n_grp += len(per[c]["first"])
         e = np.eye(3)
         n_gates = len(gates)
-        m = np.zeros((n_w, n_grp + n_gates, 3))
+        if kind == "torch":
+            import torch
+            m = torch.zeros((n_w, n_grp + n_gates, 3), dtype=torch.float64, device=t_dev)
+        else:
+            m = np.zeros((n_w, n_grp + n_gates, 3))
         for seg, t0, n_s in P0["windows"]:                                     # the windows' moments sum (RPK.md 4.3)
             C = read_position_coeffs(seg.arrays, dtype=np.float64).reshape(n_w, -1)
+            if kind == "torch":
+                C = torch.as_tensor(C, device=t_dev)
             s_all = np.zeros((n_grp + n_gates, n_s))
             for c in live:
                 q = per[c]
@@ -2082,28 +2103,43 @@ class ReplayPack:
                 s_all[g_off[c]:g_off[c] + len(q["first"])] = np.einsum("mtc,mc->mt", G_s[q["first"]], q["g_hat"][q["first"]])
             for j, (_key, gate, dt_g) in enumerate(gates):                     # a background's moment: its gate's, per walker
                 s_all[n_grp + j] = effective_gradient(gate[None, :, None], dt_g, n_s, dt, t0=t0 if self.n_segments > 1 else None)[0, :, 0]
-            for b_ in range(3):                                                # m_w[b] = gamma sum_t s(t) r_w(t)_b dt
+            if kind == "torch":
+                # the profiles projected once, as one axis; axis b of the moments reads its own coefficients against it
+                W1 = torch.as_tensor(_compile_effective(s_all[:, :, None], dt, self.K, n_s), device=t_dev)
+                for b_ in range(3):
+                    m[:, :, b_] += C[:, b_::3] @ W1
+            for b_ in range(3 if kind != "torch" else 0):                      # m_w[b] = gamma sum_t s(t) r_w(t)_b dt
                 W = _compile_effective(s_all[:, :, None] * e[b_][None, None, :], dt, self.K, n_s)
                 m[:, :, b_] += C @ W
-        m = m @ self.substrate_frame                                           # stored -> canonical: F^T m, per walker
-        n_bg = m[:, n_grp:, :]                                                 # (n_w, n_gates, 3): the background moments
-        m = m[:, :n_grp, :]
-        kappa = np.linalg.norm(m, axis=2)                                      # (n_w, n_grp), radians
-        safe = np.where(kappa > 0, kappa, 1.0)
-        m_hat = m / safe[:, :, None]
-        m_hat[kappa == 0] = (0.0, 0.0, 1.0)
+        if kind == "torch":
+            del C
+            m = m @ torch.as_tensor(self.substrate_frame, device=t_dev)       # stored -> canonical: F^T m, per walker
+            n_bg = m[:, n_grp:, :].cpu().numpy()                               # (n_w, n_gates, 3): the background moments
+            m = m[:, :n_grp, :]
+            kappa = torch.linalg.vector_norm(m, dim=2)                         # (n_w, n_grp), radians
+            m_hat = m / torch.where(kappa > 0, kappa, torch.ones_like(kappa))[:, :, None]
+            m_hat[kappa == 0] = torch.tensor([0.0, 0.0, 1.0], dtype=m.dtype, device=t_dev)
+            del m
+        else:
+            m = m @ self.substrate_frame                                       # stored -> canonical: F^T m, per walker
+            n_bg = m[:, n_grp:, :]                                             # (n_w, n_gates, 3): the background moments
+            m = m[:, :n_grp, :]
+            kappa = np.linalg.norm(m, axis=2)                                  # (n_w, n_grp), radians
+            safe = np.where(kappa > 0, kappa, 1.0)
+            m_hat = m / safe[:, :, None]
+            m_hat[kappa == 0] = (0.0, 0.0, 1.0)
         w = np.asarray(ew, np.float64) / float(norm)
         # the band: orders until the weighted Bessel tail is below tol for the worst group, every order from one
         # downward recurrence
-        k_max = float(kappa.max()) if kappa.size else 0.0
+        k_max = float(kappa.max()) if n_w * n_grp else 0.0
         _ph("bessel", n_grp=int(n_grp), phase_amplitude=k_max)
         L = int(np.ceil(k_max)) + 2
         # the weighted Bessel magnitudes per order and group, from the device it can use: the values themselves
         # stay where the bodies are formed (pose_device.field_bodies); only these sums come back
-        T_ab = bessel_tails(kappa, w, min(l_cap, L + 12))                       # (L_hi+1, n_grp)
+        T_ab = bessel_tails(kappa, w, min(l_cap, L + 12), device=device)        # (L_hi+1, n_grp)
         while L < l_cap:
             if L + 1 >= T_ab.shape[0]:
-                T_ab = bessel_tails(kappa, w, min(l_cap, T_ab.shape[0] + 12))
+                T_ab = bessel_tails(kappa, w, min(l_cap, T_ab.shape[0] + 12), device=device)
             tail = (2 * (L + 1) + 1) * T_ab[L + 1].max()
             if tail < tol:
                 break
@@ -2113,22 +2149,37 @@ class ReplayPack:
             L_f, F_sh = 0, None
         else:
             _ph("field")
-            F_sh, L_f = self._field_harmonics(field, tol=tol, l_cap=l_cap)      # (n_w, (L_f+1)^2) complex
+            F_sh, L_f = self._field_harmonics(field, tol=tol, l_cap=l_cap, device=device)   # (n_w, (L_f+1)^2) complex
         if n_gates:
             tail_all = np.zeros(n_grp)
             for l in range(L + 1, min(L + 4, T_ab.shape[0])):
                 tail_all += (2 * l + 1) * T_ab[l]
             return self._closed_with_background(
                 per, live, g_off, n_grp, kappa, m_hat, w, n_bg, L, k_max, tail_all, F_sh, L_f,
-                None if field is None else P0["b0_dir"], keep, tol, l_cap, n_acq, _ph, run, limit)
+                None if field is None else P0["b0_dir"], keep, tol, l_cap, n_acq, _ph, run, limit, device)
         L_tot = L + L_f
         want_l, want_n = (None, None) if keep is None else (keep[0], keep[1])
         keep_l = L_tot if want_l is None else min(int(want_l), L_tot)
         keep_n = L_tot if want_n is None else min(int(want_n), L_tot)
         n_feat = so3.n_so3_coeffs(keep_l, keep_n)
         _ph("harmonics", L=int(L), L_f=int(L_f), keep_l=int(keep_l), keep_n=int(keep_n), n_feat=int(n_feat))
-        cos_z = m_hat[:, :, 2]
-        if field is None:
+        if field is None and kind == "torch":
+            # every order's bodies from the device's (nc, R, 1) products against a unit factor; n within keep_n
+            from .pose_device import field_bodies_torch
+            one = torch.ones((n_w, 1), dtype=torch.float32, device=t_dev); nil = torch.zeros_like(one)
+            bodies = [np.empty((n_grp, 2 * (so3._n_cols(l, keep_n) // 2) + 1)) for l in range(keep_l + 1)]
+            off_l = np.cumsum([0] + [2 * l + 1 for l in range(keep_l + 1)])
+            for lo in range(0, n_grp, TORCH_GROUPS):
+                sl = slice(lo, min(lo + TORCH_GROUPS, n_grp))
+                if run is not None:
+                    run.progress(lo, n_grp, unit="groups")
+                B = field_bodies_torch(kappa[:, sl], m_hat[:, sl, :], w, one, nil, keep_l, range(keep_l + 1),
+                                       n_bessel=keep_l + 24 + int(np.ceil(k_max)), device=t_dev).real[:, :, 0].cpu().numpy()
+                for l in range(keep_l + 1):
+                    k = so3._n_cols(l, keep_n) // 2
+                    bodies[l][sl] = B[:, off_l[l] + l - k:off_l[l] + l + k + 1]
+        elif field is None:
+            cos_z = m_hat[:, :, 2]
             J_all = _jn_all(L, kappa)                                          # (L+1, n_w, n_grp): the bodies read them here
             J = [J_all[l] for l in range(L + 1)]
             # ---- gradient only: one body per order and group, outer product with the direction harmonics
@@ -2167,10 +2218,19 @@ class ReplayPack:
             # the bodies of every gradient order against every field order in ONE product over the walkers per chunk
             # of groups: B[g, (l, n), (l', m')] = sum_w w j_l(kappa) Y_ln(m^) a_l'm'(w)
             B_full = np.empty((n_grp, n_rows, F_sh.shape[1]), np.complex128)
-            from .pose_device import field_bodies
+            from .pose_device import field_bodies, field_bodies_torch
             n_bessel = max(l_used) + 24 + int(np.ceil(k_max))                   # the Miller recurrence's start order
             step = max(1, int(2.5e8 / (8 * n_w * n_cols)))                       # groups per ~256 MB of host harmonics (the numpy route)
-            for lo in range(0, n_grp, step):
+            if kind == "torch":                                                 # the device's own layout is B_full's
+                F_re, F_im = (torch.as_tensor(F_re, dtype=torch.float32, device=t_dev),
+                              torch.as_tensor(F_im, dtype=torch.float32, device=t_dev))
+                for lo in range(0, n_grp, TORCH_GROUPS):
+                    sl = slice(lo, min(lo + TORCH_GROUPS, n_grp))
+                    if run is not None:
+                        run.progress(lo, n_grp, unit="groups")
+                    B_full[sl] = field_bodies_torch(kappa[:, sl], m_hat[:, sl, :], w, F_re, F_im, L, l_used,
+                                                    n_bessel=n_bessel, device=t_dev).cpu().numpy()
+            for lo in range(0, n_grp if kind != "torch" else 0, step):
                 sl = slice(lo, min(lo + step, n_grp)); nc = sl.stop - sl.start
                 if run is not None:
                     run.progress(lo, n_grp, unit="groups")
@@ -2255,7 +2315,7 @@ class ReplayPack:
                             o = offs[Lc]
                             coeffs[:, o:o + (2 * Lc + 1) * (2 * kk + 1)] += block.reshape(n_meas, -1)
             resp = PoseResponse(coeffs, keep_l, keep_n, misfit=tail_all[group] + q["bound"], floor=1.0 / np.sqrt(n_w),
-                                phase_amplitude=float(kappa[:, g_sl].max()) if kappa.size else 0.0, n_samples=0)
+                                phase_amplitude=float(kappa[:, g_sl].max()) if n_w * n_grp else 0.0, n_samples=0)
             resp.n_bodies = len(q["first"])                                        # the distinct waveforms contracted
             resp.field_lmax = L_f
             resp.route = "closed"
@@ -2263,7 +2323,7 @@ class ReplayPack:
         return out
 
     def _closed_with_background(self, per, live, g_off, n_grp, kappa, m_hat, w, n_bg, L, k_max, tail_all, F_sh, L_f,
-                                b0_dir, keep, tol, l_cap, n_acq, _ph, run, limit):
+                                b0_dir, keep, tol, l_cap, n_acq, _ph, run, limit, device="auto"):
         """The closed form of :meth:`_pose_coeffs_closed_many` for acquisitions played in a magnet with its own
         gradient (dmrai-lab/dmipy-sim#565): the background as a second plane-wave factor.
 
@@ -2300,10 +2360,21 @@ class ReplayPack:
         ``|e^{ia} e^{ib} - T_a T_b| <= r_b + r_a (1 + r_b)`` for truncations ``T`` with remainders ``r``, so the
         misfit is the gradient's tail plus the background's times ``1 +`` the gradient's largest per-walker
         remainder, plus the residual bound. An acquisition whose encoding is not one direction to that bound has
-        already been sent to the quadrature."""
+        already been sent to the quadrature.
+
+        ``device`` as in :meth:`_pose_coeffs_closed_many`: on torch the factor, the bodies and their coupling on the
+        body index stay on its device, and the lab side reads the coupled bodies (``(groups, a few)`` per order and
+        channel) in one transfer per background factor."""
         from . import so3
-        from .compression import resolve_device
-        from .pose_device import bessel_tails, field_bodies, paired_bodies
+        from .pose_device import bessel_tails, route
+        kind, t_dev = route(device)
+        if kind == "torch":
+            import torch
+            put = lambda a: torch.as_tensor(a, device=t_dev)
+            new = lambda shape: torch.empty(shape, dtype=torch.complex128, device=t_dev)
+        else:
+            put = lambda a: a
+            new = lambda shape: np.empty(shape, np.complex128)
         n_w = w.shape[0]
         # one background factor per (|g0|, gate): a bucket
         beta_g = np.zeros(n_grp); gate_g = np.zeros(n_grp, np.int64)
@@ -2320,10 +2391,10 @@ class ReplayPack:
         x_max = float(x.max()) if x.size else 0.0
         _ph("background", n_buckets=int(len(keys)), phase_amplitude=x_max)
         L_b = 0
-        T_bg = bessel_tails(x, w, min(l_cap, int(np.ceil(x_max)) + 12))
+        T_bg = bessel_tails(x, w, min(l_cap, int(np.ceil(x_max)) + 12), device=device)
         while L_b < l_cap:
             if L_b + 1 >= T_bg.shape[0]:
-                T_bg = bessel_tails(x, w, min(l_cap, T_bg.shape[0] + 12))
+                T_bg = bessel_tails(x, w, min(l_cap, T_bg.shape[0] + 12), device=device)
             if (2 * (L_b + 1) + 1) * T_bg[L_b + 1].max() < tol:
                 break
             L_b += 1
@@ -2348,23 +2419,25 @@ class ReplayPack:
                         channels.append((Lam, slice(n_cols, n_cols + 2 * Lam + 1), ("fb", lp, l2)))
                         n_cols += 2 * Lam + 1
         Lam_max = L_f + L_b
-        Y_n = [so3.real_sh(L_b, n_hat[:, j, :], full=True) for j in range(n_hat.shape[1])]
+        Y_n = [put(so3.real_sh(L_b, n_hat[:, j, :], full=True)) for j in range(n_hat.shape[1])]
+        F_sh_k = None if F_sh is None else put(F_sh)
+        K_fb_k = {} if F_sh is None else {pair: {Lam: put(K.conj()) for Lam, K in Kp.items()} for pair, Kp in K_fb.items()}
 
         def factor(k):
-            """The per-walker factor of bucket ``k``, ``(n_w, n_cols)`` complex."""
-            J = so3.spherical_jn_all(L_b, x[:, k])                            # (L_b+1, n_w)
-            Fb = np.empty((n_w, (L_b + 1) ** 2), np.complex128)
+            """The per-walker factor of bucket ``k``, ``(n_w, n_cols)`` complex, where the route keeps its walkers."""
+            J = put(so3.spherical_jn_all(L_b, x[:, k]))                       # (L_b+1, n_w)
+            Fb = new((n_w, (L_b + 1) ** 2))
             for l2 in range(L_b + 1):
                 b2 = so3.sh_block(l2, True)
                 Fb[:, b2] = (4 * np.pi * (1j ** l2)) * J[l2][:, None] * Y_n[k_gate[k]][:, b2]
             if F_sh is None:
                 return Fb
-            F = np.empty((n_w, n_cols), np.complex128)
-            for (lp, l2), Kp in K_fb.items():
-                prod = (F_sh[:, so3.sh_block(lp, True)][:, :, None] * Fb[:, so3.sh_block(l2, True)][:, None, :]).reshape(n_w, -1)
-                for Lam, cols, kind in channels:
-                    if kind[1:] == (lp, l2):
-                        F[:, cols] = prod @ Kp[Lam].conj()
+            F = new((n_w, n_cols))
+            for (lp, l2), Kc in K_fb_k.items():
+                prod = (F_sh_k[:, so3.sh_block(lp, True)][:, :, None] * Fb[:, so3.sh_block(l2, True)][:, None, :]).reshape(n_w, -1)
+                for Lam, cols, ch in channels:
+                    if ch[1:] == (lp, l2):
+                        F[:, cols] = prod @ Kc[Lam]
             return F
 
         L_tot = L + Lam_max
@@ -2400,8 +2473,9 @@ class ReplayPack:
         col_n = np.zeros(n_cols, np.int64)
         for Lam, cols, _kind in channels:
             col_n[cols] = np.abs(np.arange(-Lam, Lam + 1))
-        host = resolve_device("auto") == "numpy"
+        host = kind == "numpy"
         paired = host and keep_n < Lam_max
+        K_body_k = {}                                                         # the body-side tables on the torch device
         l_off = dict(zip(l_used, np.cumsum([0] + [2 * l + 1 for l in l_used[:-1]])))   # each order's rows in a body
         perm = np.argsort(col_n, kind="stable") if paired else np.arange(n_cols)   # the factor's columns by |N|
         at = np.empty_like(perm); at[perm] = np.arange(n_cols)                      # a column's place after the sort
@@ -2421,39 +2495,42 @@ class ReplayPack:
             inv = np.asarray(inv).reshape(-1)
             Y_u = so3.real_sh(L_b, u_dirs, full=True)                         # (n_u, (L_b+1)^2): the background's lab side
             lam = []                                                          # per channel: (n_u, 2 Lambda + 1)
-            for Lam, cols, kind in channels:
-                if kind[0] == "b":
-                    lam.append(Y_u[:, so3.sh_block(kind[1], True)])
+            for Lam, cols, ch in channels:
+                if ch[0] == "b":
+                    lam.append(Y_u[:, so3.sh_block(ch[1], True)])
                 else:
-                    _, lp, l2 = kind
+                    _, lp, l2 = ch
                     pair = (Yb[so3.sh_block(lp, True)][None, :, None] * Y_u[:, None, so3.sh_block(l2, True)]).reshape(len(u_dirs), -1)
                     lam.append(pair @ K_fb[(lp, l2)][Lam])
             coeffs = np.zeros((n_meas, n_feat), np.complex128)
             M_lab = {}                                                        # (l, channel) -> (n_u, 2l+1, sum 2Lc+1)
             for k in np.unique(bucket[g_sl]):
-                F = factor(int(k))[:, perm]
-                F_re, F_im = np.ascontiguousarray(F.real), np.ascontiguousarray(F.imag)
+                if kind == "torch":
+                    F = factor(int(k))                                       # the torch route forms every pair: no sort
+                    F_re, F_im = F.real.contiguous(), F.imag.contiguous()
+                else:
+                    F = factor(int(k))[:, perm]
+                    F_re, F_im = np.ascontiguousarray(F.real), np.ascontiguousarray(F.imag)
+                del F
                 grp = np.flatnonzero(bucket[g_sl] == k) + g_off[c]              # this acquisition's groups of the bucket
-                for idx, B3, dev in self._background_bodies(grp, q["s_first"][grp - g_off[c]], kappa, m_hat, w, F_re, F_im,
-                                                       L, l_used, l_off, col_n[perm], keep_n, paired, host, step, n_bessel,
-                                                       limit):
+                def assemble(idx, B3, coupled):
+                    """Add the bodies of the groups ``idx`` to their measurements' coefficients: from ``B3`` (the
+                    host's bodies, coupled here on the body index) or from ``coupled`` (the torch route's, coupled
+                    on its device), on the lab side per order and channel."""
                     nc = len(idx)
-                    shell_dev[idx] = dev
-                    if run is not None:
-                        run.progress(done, n_grp, unit="groups")
-                    done += nc
                     where = np.full(n_grp, -1, np.int64); where[idx] = np.arange(nc)
                     sel = np.flatnonzero(where[group] >= 0)                    # the measurements whose bodies these are
                     pos = where[group[sel]]
                     for l in l_used:
                         bl = so3.sh_block(l, True)
-                        B_l = B3[:, l_off[l]:l_off[l] + 2 * l + 1, :]
+                        B_l = None if coupled is not None else B3[:, l_off[l]:l_off[l] + 2 * l + 1, :]
                         Yg_l = Yg[sel][:, bl]                                              # (n_sel, 2l+1)
-                        for ci, (Lam, cols, kind) in enumerate(channels):
+                        for ci, (Lam, cols, _ch) in enumerate(channels):
                             if (l, Lam) not in tables:
                                 continue
                             Ls, K_lab3, K_body, lab_sl, body_sl = tables[(l, Lam)]
-                            body_all = B_l[:, :, at[cols]].reshape(nc, -1) @ K_body        # (nc, sum 2kk+1)
+                            body_all = (coupled[(l, ci)] if coupled is not None
+                                        else B_l[:, :, at[cols]].reshape(nc, -1) @ K_body)  # (nc, sum 2kk+1)
                             if (l, ci) not in M_lab:                                       # the lab side's coupling, per direction of g0
                                 M_lab[(l, ci)] = np.einsum("uM,iMs->uis", lam[ci], K_lab3)
                             M_lam = M_lab[(l, ci)]
@@ -2465,9 +2542,45 @@ class ReplayPack:
                                     * body_all[:, body_sl[Lc]][:, None, :]
                                 o = offs[Lc]
                                 coeffs[sel, o:o + (2 * Lc + 1) * (2 * kk + 1)] += block.reshape(len(sel), -1)
+
+                got_idx, got = [], []                                         # the torch route's bodies, kept on its device
+                for idx, B3, dev in self._background_bodies(grp, q["s_first"][grp - g_off[c]], kappa, m_hat, w, F_re, F_im,
+                                                       L, l_used, l_off, col_n[perm], keep_n, paired, host or kind == "torch",
+                                                       step, n_bessel, limit, device=device):
+                    nc = len(idx)
+                    shell_dev[idx] = dev
+                    if run is not None:
+                        run.progress(done, n_grp, unit="groups")
+                    done += nc
+                    if kind != "torch":
+                        assemble(idx, B3, None)
+                        continue
+                    got_idx.append(idx); got.append(B3)
+                if got:
+                    # the bucket's bodies side by side on the device, every (order, channel)'s body side coupled there
+                    # and read back in one transfer; the lab side then runs once for the bucket's groups
+                    idx = np.concatenate(got_idx); B3 = torch.cat(got) if len(got) > 1 else got[0]
+                    del got
+                    nc = len(idx)
+                    keys_ = [(l, ci) for l in l_used for ci, (Lam, _c, _k) in enumerate(channels) if (l, Lam) in tables]
+                    outs = []
+                    for l in l_used:
+                        B_l = B3[:, l_off[l]:l_off[l] + 2 * l + 1]
+                        for ci, (Lam, cols, _k) in enumerate(channels):
+                            if (l, Lam) not in tables:
+                                continue
+                            if (l, Lam) not in K_body_k:
+                                K_body_k[(l, Lam)] = put(tables[(l, Lam)][2])
+                            outs.append((B_l[:, :, cols].reshape(nc, -1) @ K_body_k[(l, Lam)]).reshape(-1))
+                    flat = torch.cat(outs).cpu().numpy() if outs else np.zeros(0, np.complex128)
+                    coupled, o = {}, 0
+                    for key_, t_ in zip(keys_, outs):
+                        coupled[key_] = flat[o:o + t_.numel()].reshape(nc, -1); o += t_.numel()
+                    del outs, B3
+                    assemble(idx, None, coupled)
             misfit = tail_all[group] + q["bound"] + tail_bg[bucket[group]] * (1.0 + r_a) + shell_dev[group]
             resp = PoseResponse(coeffs, keep_l, keep_n, misfit=misfit, floor=1.0 / np.sqrt(n_w),
-                                phase_amplitude=float(kappa[:, g_sl].max()) if kappa.size else 0.0, n_samples=0)
+                                phase_amplitude=float(kappa[:, g_sl].max()) if n_w * n_grp else 0.0, n_samples=0)
             resp.n_bodies = len(q["first"])
             resp.field_lmax = L_f
             resp.background_lmax = L_b
@@ -2476,7 +2589,7 @@ class ReplayPack:
         return out
 
     def _background_bodies(self, grp, s_first, kappa, m_hat, w, F_re, F_im, L, l_used, l_off, col_n, keep_n, paired, host,
-                           step, n_bessel, limit):
+                           step, n_bessel, limit, device="auto"):
         """The bodies of the groups ``grp`` (one acquisition's, one background factor) against the factor ``F``, in
         chunks: yields ``(idx, B, dev)`` with ``B[g, (l, n), j] = sum_w w_w j_l(kappa_wg) Y_ln(m^_wg) F_wj``
         ``(nc, R, n_f)``, the orders ``l_used`` at the offsets ``l_off``, and ``dev`` ``(nc,)`` what that costs the
@@ -2497,10 +2610,14 @@ class ReplayPack:
         ``SHELL_RTOL``, and a shell takes the series only when every row's ``dev_g`` is within ``limit`` (the closed
         form's ``direction_tol``: a tenth of the floor by default), as a nearly single-direction waveform does. The
         series is cut where its next term is below ``SHELL_SERIES_TOL`` at the shell's largest phase, and is taken on
-        the host when that phase is at most ``SHELL_SERIES_MAX_PHASE`` (its terms then cancel to within a few digits
+        the host (and on torch, in float64 on its device: :meth:`_background_bodies_torch`) when that phase is at most ``SHELL_SERIES_MAX_PHASE`` (its terms then cancel to within a few digits
         of float64) and the shell has more rows than powers; otherwise each group is contracted on its own."""
         from . import so3
-        from .pose_device import field_bodies, paired_bodies, paired_products
+        from .pose_device import field_bodies, paired_bodies, paired_products, route
+        kind, t_dev = route(device)
+        if kind == "torch":
+            import torch
+            w_abs = torch.as_tensor(np.abs(w), device=t_dev)
         n_w = w.shape[0]
         R = sum(2 * l + 1 for l in l_used)
         amp = np.abs(s_first).max(axis=1) if s_first.size else np.zeros(0)
@@ -2528,6 +2645,11 @@ class ReplayPack:
                 t = amp[members] / amp[g_ref]
                 for lo in range(0, len(members), 64):                         # each row's departure from the shell's shape
                     gg = grp[members[lo:lo + 64]]
+                    if kind == "torch":
+                        tt = torch.as_tensor(t[lo:lo + 64], device=t_dev)
+                        dm = kappa[:, gg, None] * m_hat[:, gg, :] - (tt[None, :, None] * x[:, None, None]) * m_hat[:, grp[g_ref], None, :]
+                        dev[lo:lo + 64] = (w_abs @ torch.linalg.vector_norm(dm, dim=2)).cpu().numpy()
+                        continue
                     dm = kappa[:, gg, None] * m_hat[:, gg, :] - (t[lo:lo + 64][None, :, None] * x[:, None, None]) \
                         * m_hat[:, grp[g_ref], None, :]
                     dev[lo:lo + 64] = np.abs(w) @ np.linalg.norm(dm, axis=2)
@@ -2536,6 +2658,10 @@ class ReplayPack:
             else:
                 single.append(members)
         row_n = np.concatenate([np.abs(np.arange(-l, l + 1)) for l in l_used])
+        if kind == "torch":
+            yield from self._background_bodies_torch(grp, series, single, amp, kappa, m_hat, w, F_re, F_im, L, l_used, l_off,
+                                                     n_bessel, step, t_dev)
+            return
         for members, g_ref, x, K, c, dev in series:
             Y = so3.real_sh(L, m_hat[:, grp[g_ref], :], full=True)             # (n_w, (L+1)^2): the shell's moment directions
             M = np.empty((K + 1, R, F_re.shape[1]), np.complex128)
@@ -2567,7 +2693,45 @@ class ReplayPack:
                     row += nc * (2 * l + 1)
                 yield idx, B3, np.zeros(nc)
 
-    def _residual_bounds(self, per, P0, dt, n_w, ew, norm):
+    def _background_bodies_torch(self, grp, series, single, amp, kappa, m_hat, w, F_re, F_im, L, l_used, l_off, n_bessel,
+                                 step, t_dev):
+        """:meth:`_background_bodies`' contractions on the torch device ``t_dev``, for the shells and the single groups
+        the host's choice made: a shell's powers ``M_k`` in float64 (its terms cancel, as on the host), a single
+        group's bodies through :func:`pose_device.field_bodies_torch` in float32. Yields ``(idx, B, dev)`` with ``B``
+        on the device, ``(nc, R, n_f)`` complex128 in the host's layout, and ``dev`` on the host."""
+        import torch
+        from .pose_device import field_bodies_torch, real_sh_torch
+        n_w = w.shape[0]
+        R = sum(2 * l + 1 for l in l_used)
+        w_d = torch.as_tensor(w, device=t_dev)
+        n_f = F_re.shape[1]
+        l_row = np.concatenate([np.full(2 * l + 1, l) for l in l_used])
+        sh_cols = torch.as_tensor(np.concatenate([np.arange(l * l, l * l + 2 * l + 1) for l in l_used]), device=t_dev)
+        l_row_d = torch.as_tensor(l_row, device=t_dev, dtype=torch.float64)
+        for members, g_ref, x, K, c, dev in series:
+            Y = real_sh_torch(L, m_hat[:, grp[g_ref], :])[:, sh_cols]            # (n_w, R) float64
+            c_k = torch.as_tensor(np.array([np.concatenate([np.full(2 * l + 1, c[l][k]) for l in l_used]) for k in range(K + 1)]),
+                                  device=t_dev)                                 # (K+1, R): c_lk per row
+            M = torch.empty((K + 1, R, n_f), dtype=torch.complex128, device=t_dev)
+            for k in range(K + 1):
+                X = (w_d[:, None] * c_k[k][None, :] * x[:, None] ** (l_row_d[None, :] + 2 * k)) * Y          # (n_w, R)
+                M[k] = torch.complex(X.T @ F_re, X.T @ F_im)
+            t = torch.as_tensor(amp[members] / amp[g_ref], device=t_dev)
+            chunk = TORCH_GROUPS
+            for lo in range(0, len(members), chunk):
+                mm = members[lo:lo + chunk]
+                powers = t[lo:lo + chunk][:, None, None] ** (l_row_d[None, None, :] + 2 * torch.arange(K + 1, device=t_dev,
+                                                                                                         dtype=torch.float64)[None, :, None])
+                yield grp[mm], torch.einsum("gkr,krj->grj", powers.to(torch.complex128), M), dev[lo:lo + chunk]
+        F32 = (F_re.to(torch.float32), F_im.to(torch.float32))
+        for members in single:
+            for lo in range(0, len(members), TORCH_GROUPS):
+                idx = grp[members[lo:lo + TORCH_GROUPS]]
+                if len(idx):
+                    yield idx, field_bodies_torch(kappa[:, idx], m_hat[:, idx, :], w, *F32, L, l_used, n_bessel=n_bessel,
+                                                  device=t_dev), np.zeros(len(idx))
+
+    def _residual_bounds(self, per, P0, dt, n_w, ew, norm, device="auto"):
         """Into each acquisition's ``bound``: for every measurement whose waveform has a component off its principal
         direction, a bound on how far that component can move the ensemble's signal at ANY pose. The residuals
         of an acquisition's measurements are written on their common time courses (an SVD over the measurements and
@@ -2576,19 +2740,26 @@ class ReplayPack:
         ``mu_kw = sum_t u_k(t) r_w(t)`` contracted through the windows as the moments are, and is bounded over the
         rotations by ``sum_k |c_ik| |mu_kw|`` (:meth:`_pose_coeffs_closed_many`). Windows add. The bound is the
         ENSEMBLE's, which is what the misfit bounds: ``|sum_w w_w (e^{i(phi_w + d_w)} - e^{i phi_w})| <= sum_w |w_w|
-        |d_w|``, the walkers' bounds weighted as the signal weighs them."""
+        |d_w|``, the walkers' bounds weighted as the signal weighs them. ``device`` as in
+        :meth:`_pose_coeffs_closed_many`: on torch the walkers' contractions run on its device (the SVD of the
+        residuals, a few thousand by the window's saves, on the host)."""
         from .compression import read_position_coeffs
         from ._replay_kernel import effective_gradient
         from .._blas import lapack_threads
+        from .pose_device import route
         todo = [c for c, q in enumerate(per) if q is not None and q["residual"].size]
         if not todo:
             return
+        kind, t_dev = route(device)
         e = np.eye(3)
         live = np.asarray(ew) != 0
         w_live = np.abs(np.asarray(ew, np.float64)[live]) / float(norm)
         per_walker = {c: 0.0 for c in todo}                                    # (n_live, n_r) per acquisition, windows summed
         for seg, t0, n_s in P0["windows"]:
             C = read_position_coeffs(seg.arrays, dtype=np.float64).reshape(n_w, -1)[live]
+            if kind == "torch":
+                import torch
+                C = torch.as_tensor(C, device=t_dev)
             for c in todo:
                 q = per[c]; rows = q["residual"]
                 G_s = effective_gradient(q["G_wf"], q["P"]["dt_wf"], n_s, dt, t0=t0) if self.n_segments > 1 else q["G"]
@@ -2602,11 +2773,20 @@ class ReplayPack:
                 if k == 0:
                     continue
                 coef = (U[:, :k] * S[:k]).reshape(len(rows), 3, k)                                # c_ik per axis
+                if kind == "torch":
+                    # every course in one projection, each axis reading its own rows of the coefficients
+                    Wk = torch.as_tensor(_compile_effective(Vt[:k, :, None], dt, self.K, n_s), device=t_dev)   # (K+2, k)
+                    mu = torch.stack([C[:, b_::3] @ Wk for b_ in range(3)], dim=2)                 # (n_live, k, 3)
+                    nrm = torch.linalg.vector_norm(mu, dim=2) @ torch.as_tensor(np.linalg.norm(coef, axis=1).T, device=t_dev)
+                    per_walker[c] = per_walker[c] + nrm                                       # (n_live, n_r) on the device
+                    continue
                 mu = np.stack([np.stack([C @ _compile_effective(Vt[j][None, :, None] * e[b_][None, None, :], dt, self.K, n_s)[:, 0]
                                          for b_ in range(3)], axis=1) for j in range(k)], axis=1)  # (n_live, k, 3)
                 per_walker[c] = per_walker[c] + np.linalg.norm(mu, axis=2) @ np.linalg.norm(coef, axis=1).T
         for c in todo:
-            if np.ndim(per_walker[c]):
+            if kind == "torch" and not isinstance(per_walker[c], float):
+                per[c]["bound"][per[c]["residual"]] += (torch.as_tensor(w_live, device=t_dev) @ per_walker[c]).cpu().numpy()
+            elif np.ndim(per_walker[c]):
                 per[c]["bound"][per[c]["residual"]] += w_live @ per_walker[c]
 
     def _field_quadratic(self, P, waveform):
@@ -2632,7 +2812,7 @@ class ReplayPack:
         A = np.einsum("ab,wbc,cd->wad", F.T, A, F)
         return a, A
 
-    def _field_harmonics(self, field, tol=1e-8, l_cap=64):
+    def _field_harmonics(self, field, tol=1e-8, l_cap=64, device="auto"):
         """The harmonics of ``exp(i (a_w + u^T A_w u))`` over the sphere per walker, ``(n_w, (L'+1)^2)``, by a product
         quadrature exact to the band ``L'`` chosen from the phase amplitude: orders are added until the energy in
         the last one is below ``tol`` of the total (``4 pi`` per walker, the phase having unit modulus). A phase
@@ -2642,11 +2822,11 @@ class ReplayPack:
         # the factor depends on the gate and the field, not on the gradient: the encoding classes of a machine pass
         # and the passes of one acquisition share it, keyed by its inputs' bytes (dmrai-lab/dmipy-sim#449)
         key = (hashlib.sha1(np.ascontiguousarray(a, np.float64).tobytes()).hexdigest(),
-               hashlib.sha1(np.ascontiguousarray(A, np.float64).tobytes()).hexdigest(), float(tol), int(l_cap))
+               hashlib.sha1(np.ascontiguousarray(A, np.float64).tobytes()).hexdigest(), float(tol), int(l_cap), str(device))
         cache = self.__dict__.setdefault("_field_factor_cache", {})
         if key in cache:
             return cache[key]
-        out = self._field_harmonics_of(a, A, tol=tol, l_cap=l_cap)
+        out = self._field_harmonics_of(a, A, tol=tol, l_cap=l_cap, device=device)
         if len(cache) >= 2:
             cache.pop(next(iter(cache)))
         cache[key] = out
@@ -3048,6 +3228,11 @@ def compile_scheme(G, dt, K, gyromagnetic_ratio=GAMMA, *, n_t=None, method=None,
         raise ValueError("a waveform on its own grid needs the pack's n_t")
     return _compile_effective(effective_gradient(G, dt, int(n_t), dt_pack), dt_pack, K, int(n_t), gyromagnetic_ratio)
 
+
+TORCH_GROUPS = 128
+"""Groups the torch route of the closed form contracts per pass over the walkers (dmrai-lab/dmipy-sim#603): each pass's
+bodies (``(groups, R, n_f)`` complex128, a gigabyte at the brain's orders) stay on the device until the lab side
+reads their couplings, and the host's lab-side loop runs once per pass."""
 
 SHELL_RTOL = 1e-3
 """Rows are one shape when their waveforms over their amplitudes agree to this fraction of the largest
