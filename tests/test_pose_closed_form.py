@@ -294,3 +294,49 @@ def test_the_swoop_as_delivered_at_a_head_position_takes_the_closed_form(long_pa
         err = np.abs(pr.at(R) - long_pack.replay(p, orientation=R, complex_signal=True))
         assert np.all(err <= pr.misfit + 2e-8), (err, pr.misfit)
 
+
+def test_an_odf_composition_forms_only_the_pairs_its_band_couples(pack, field_pack):
+    """keep=(L, 0) with a background: on the host only the products of azimuthal orders |N| = |n| are formed
+    (pose_device.paired_bodies), and the result is the n = 0 column of the full expansion, field off and on."""
+    played = sequences.pgse([[1, 0, 0], [0, 0, 1], [0.6, 0.8, 0.0]], 2e-3, 5e-3, gradient_strengths=[0.3] * 3,
+                            TE=10e-3).with_background_gradient(_g0(0.05))
+    full = pack.pose_response(played, method="closed")
+    odf = pack.pose_response(played, method="closed", keep=(8, 0))
+    np.testing.assert_allclose(odf.coeffs, full.retained(8, 0), atol=1e-12)
+    seq = sequences.pgse([[1, 0, 0], [0.6, 0.8, 0.0]], 6e-3, 15e-3, bvalues=[1.5e9] * 2, TE=30e-3)
+    kw = dict(scanner=7.0, tissue=Tissue(chi_iso=-1e-7, chi_aniso=-1e-7))
+    played, R_y = field_along(seq.with_background_gradient(_g0(0.005)), (0.0, 1.0, 0.0))
+    full = field_pack.pose_response(played, method="closed", pose=R_y, **kw)
+    odf = field_pack.pose_response(played, method="closed", pose=R_y, keep=(8, 0), **kw)
+    np.testing.assert_allclose(odf.coeffs, full.retained(8, 0), atol=1e-12)
+
+
+def test_a_shell_of_delivered_amplitudes_is_one_body_in_powers_of_its_amplitude(pack, monkeypatch):
+    """A machine plays every row of a shell at its own amplitude (the nonlinearity), so its rows are as many groups
+    -- but one shape. Their bodies are one polynomial in the amplitude (the Bessel series), the walkers contracted
+    once per power: the same numbers as contracting every row on its own (to the float32 rounding of the rows'
+    waveforms about their one shape), and the direct posed replay to the misfit."""
+    import dmipy_sim.replay.replay as rr
+    rng = np.random.default_rng(7)
+    dirs = rng.normal(size=(24, 3)); dirs /= np.linalg.norm(dirs, axis=1, keepdims=True)
+    tilt = np.eye(3) + 0.05 * rng.normal(size=(24, 3, 3))                      # every row its own delivered amplitude
+    played = (sequences.pgse(dirs, 2e-3, 5e-3, gradient_strengths=[0.3] * 24, TE=10e-3)
+              .with_gradient_nonlinearity(tilt).with_background_gradient(_g0(0.02)))
+    import dmipy_sim.replay.pose_device as pd
+
+    def per_row(*a, **k):
+        raise AssertionError("a row of the shell was contracted on its own")
+
+    for keep in (None, (6, 0)):
+        with monkeypatch.context() as mp:
+            mp.setattr(pd, "field_bodies", per_row); mp.setattr(pd, "paired_bodies", per_row)
+            series = pack.pose_response(played, method="closed", keep=keep)
+        assert series.n_bodies == 24
+        with monkeypatch.context() as mp:
+            mp.setattr(rr, "SHELL_SERIES_MAX_PHASE", 0.0)                       # every row contracted on its own
+            each = pack.pose_response(played, method="closed", keep=keep)
+        # equal to the float32 rounding of each row's delivered waveform about the shell's one shape
+        np.testing.assert_allclose(series.coeffs, each.coeffs, atol=2e-9)
+    full = pack.pose_response(played, method="closed")
+    for R in so3.haar_rotations(4, 13):
+        assert np.all(np.abs(full.at(R) - pack.replay(played, orientation=R, complex_signal=True)) <= full.misfit + 2e-8)
