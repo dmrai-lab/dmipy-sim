@@ -43,15 +43,15 @@ pytestmark = [pytest.mark.slow,
 #: ``records/`` carries and its gate reads.
 #:
 #: A mixture has two mineral surfaces and two of their relaxivities, and this geometry accumulates ONE
-#: boundary local time over both walls, so no single-rho walk of a mixture is their simulation and none
+#: boundary local time over both walls, so no single-rho_2 walk of a mixture is their simulation and none
 #: is asserted here (dmrai-lab/dmipy-sim#491).
 OURS = {
     "6_Q100": dict(window=3.5, porosity=0.38896, s_over_v=76606, T2_fd=0.77465,
                    T2_lm=0.85304, T2_lm_measured=0.72708, ratio_to_theirs=1.1733,
-                   rho_V_over_S_over_D=0.071),
+                   rho_2_V_over_S_over_D=0.071),
     "1_G100": dict(window=2.0, porosity=0.39893, s_over_v=71960, T2_fd=0.13475,
                    T2_lm=0.22118, T2_lm_measured=0.17845, ratio_to_theirs=1.2394,
-                   rho_V_over_S_over_D=0.596),
+                   rho_2_V_over_S_over_D=0.596),
 }
 
 
@@ -99,8 +99,8 @@ def test_the_T2_decay_is_what_we_recorded_against_the_CPMG_of_the_same_pack(samp
     size of the question. So the assertion is on OUR number and on THEIR number, each to its own
     precision, and on the ratio we measured; a change that moves either has to move this line and say why.
 
-    What the walk must get right and a formula cannot: ``rho (V/S) / D`` is 0.071 for the quartz pack and
-    0.596 for the garnet one, so ``1 / (rho S/V + 1/T2B)`` is within 10 % for the first and 39 % low for
+    What the walk must get right and a formula cannot: ``rho_2 (V/S) / D`` is 0.071 for the quartz pack and
+    0.596 for the garnet one, so ``1 / (rho_2 S/V + 1/T2B)`` is within 10 % for the first and 39 % low for
     the second. The log-mean sits ABOVE the single rate on both, by far more on the garnet pack.
     """
     ling = script()
@@ -112,7 +112,7 @@ def test_the_T2_decay_is_what_we_recorded_against_the_CPMG_of_the_same_pack(samp
     assert m["T2_lm"] == pytest.approx(ref["T2_lm_measured"], rel=1e-3)      # their data, not our walk
     assert r["T2_lm"] / m["T2_lm"] == pytest.approx(ref["ratio_to_theirs"], rel=0.03)
     assert r["T2_fd"] == pytest.approx(ref["T2_fd"], rel=1e-3)
-    assert r["rho_V_over_S_over_D"] == pytest.approx(ref["rho_V_over_S_over_D"], rel=1e-2)
+    assert r["rho_2_V_over_S_over_D"] == pytest.approx(ref["rho_2_V_over_S_over_D"], rel=1e-2)
     assert r["T2_lm"] > r["T2_fd"]                        # multi-exponential, so above the single rate
     assert np.all(np.diff(r["S"]) <= 1e-6)                # a relaxation decay is monotone
     assert r["floor"] < 0.02                              # the log-mean's own standard error

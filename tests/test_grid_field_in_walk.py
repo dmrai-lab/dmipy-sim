@@ -101,7 +101,7 @@ def test_a_strand_basis_is_not_read_as_a_grid():
 
 
 ENV = dict(bvals=[0.0, 1e9], dirs=[[1, 0, 0]], ogse_periods=[2], shortd_b=1e9, shortd_deltas_frac=[0.05],
-           B0_list=[3.0, 7.0], theta_deg=[0, 90], delta_frac=0.2, Delta_frac=0.5, rho_list=[1e-5])
+           B0_list=[3.0, 7.0], theta_deg=[0, 90], delta_frac=0.2, Delta_frac=0.5, rho_2_list=[1e-5])
 
 
 @pytest.mark.parametrize("family", ["packed", "single"])

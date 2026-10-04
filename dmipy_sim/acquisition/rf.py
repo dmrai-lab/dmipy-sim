@@ -524,8 +524,8 @@ class RFSchedule(tuple):
 
     Build it once and hold it -- ``ScannerSequence.rf`` is one -- and read
     what it derives: :meth:`coherence` (the transverse mask, mixing time, stimulated-echo state and echo
-    times an ideal schedule implies), :meth:`transverse_gate` (the gate a phase
-    accrues through), :meth:`sign` (the spin-echo gate ``s(t)`` of RPK.md 6.6, the un-fold
+    times an ideal schedule implies), :meth:`transverse_gate` and :meth:`gate_integral` (the gate a phase
+    accrues through, and its integral), :meth:`sign` (the spin-echo gate ``s(t)`` of RPK.md 6.6, the un-fold
     between the effective and the physical gradient), :attr:`refocus_time`, :attr:`mixing_time`,
     Nothing else re-derives these from a list of events. Anything that is not an
     ``RFEvent`` is refused; :meth:`to_dicts` / :meth:`from_dicts` are its serialised record.
@@ -566,9 +566,8 @@ class RFSchedule(tuple):
         scanner plays, the EFFECTIVE one the phase integral walks). ``s`` is +-1 and its own inverse.
 
         A refocusing pulse inverts the accumulated phase, so ``s`` flips after it; a stimulated echo does the same
-        across its storage/recall pair, so ``s`` flips at RECALL. It is a sign, not the quadrature weight
-        :func:`dmipy_sim.replay._replay_kernel.se_gate` builds for integrating against a path: that one half-weights
-        the grid endpoints, right under an integral and wrong for a waveform.
+        across its storage/recall pair, so ``s`` flips at RECALL. It is a sign per sample, not a quadrature
+        weight: :func:`dmipy_sim.replay._replay_kernel.gate_weights` reads a gate onto a path's saves.
         """
         t = np.asarray(t_grid, dtype=np.float64)
         s = np.ones_like(t, dtype=np.float32)
@@ -635,6 +634,28 @@ class RFSchedule(tuple):
             transverse, i_prev = role != "store", i
         chi[i_prev:] = transverse
         return chi
+
+    def gate_integral(self, T):
+        """``int_0^T s(t) chi(t) dt`` (s), EXACT in the pulse instants: the effective gate of
+        :meth:`transverse_gate` times :meth:`sign` integrated with every pulse at its ``t_s`` rather than at a
+        sample -- the phase per unit angular frequency a uniform off-resonance accrues to ``T``. Zero for a spin
+        echo read at ``2 t_180`` and for a stimulated echo with equal transverse periods (its mixing time
+        stored), ``T`` for a gradient echo."""
+        T = float(T)
+        if len(self) == 0:
+            return T
+        switches = [(e.t_s, role != "store") for e, role in self._roles()[0]]
+        edges = sorted({0.0, T} | {min(max(float(e.t_s), 0.0), T) for e in self})
+        total = 0.0
+        for a, b in zip(edges[:-1], edges[1:]):
+            mid = 0.5 * (a + b)
+            on = False
+            for t_s, state in switches:
+                if t_s <= mid:
+                    on = state
+            if on:
+                total += float(self.sign(np.array([mid]))[0]) * (b - a)
+        return total
 
     def coherence(self, n_t, dt):
         """Coherence bookkeeping of the schedule on an ``n_t``-sample grid of ``dt``.

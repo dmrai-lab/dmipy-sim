@@ -232,7 +232,7 @@ def chain_frame(centers, r_in, cell_id):
     return frame_from_axis(axis), axis
 
 
-def cactus_spec(run_dir, *, scale=_UM, side_um=None, field_T=3.0, rho2=None, on_open_surface="drop", id=None):
+def cactus_spec(run_dir, *, scale=_UM, side_um=None, field_T=3.0, rho_2=None, on_open_surface="drop", id=None):
     """The spec of a CACTUS run directory (``optimized_final.txt`` + ``meshes/simulations/strand_*_erode_*.ply``).
 
     The periodic cell comes from the header (or ``side_um``); every strand with both surfaces is two
@@ -287,9 +287,9 @@ def cactus_spec(run_dir, *, scale=_UM, side_um=None, field_T=3.0, rho2=None, on_
         else:
             transformations.append(f"{len(open_files)} non-watertight surface(s) kept (on_open_surface='warn')")
     thinnest = min(shell_thickness(by_path[v[0]], by_path[v[1]]) for v in pairs.values())   # over the strands kept
-    rho = float(rho2 if rho2 is not None else canonical_white_matter(field_T=field_T)["rho2"])
+    rho_2 = float(rho_2 if rho_2 is not None else canonical_white_matter(field_T=field_T)["rho2"])
     pools = wm_pools(field_T)
-    walls = _walls(pairs, scale, rho, rho)
+    walls = _walls(pairs, scale, rho_2, rho_2)
     lo, hi = [0.0, 0.0, 0.0], [L, L, L]
     vmin = np.min([m[0].min(0) for m in meshes], axis=0)
     if vmin.min() < -1e-9:                                       # centred cell
@@ -312,7 +312,7 @@ def cactus_spec(run_dir, *, scale=_UM, side_um=None, field_T=3.0, rho2=None, on_
     return spec.validate()
 
 
-def winther_spec(inner_ply, outer_ply, *, scale=_UM, pad=1.0e-6, field_T=3.0, rho2=None, id=None):
+def winther_spec(inner_ply, outer_ply, *, scale=_UM, pad=1.0e-6, field_T=3.0, rho_2=None, id=None):
     """The spec of one Winther axon: inner + outer surface in an open box padded by ``pad``; the
     surroundings are free water, so only intra and myelin are seeded."""
     from ..substrate.biophysical_constants import canonical_white_matter
@@ -322,10 +322,10 @@ def winther_spec(inner_ply, outer_ply, *, scale=_UM, pad=1.0e-6, field_T=3.0, rh
         raise SpecError(f"an isolated axon needs closed surfaces; open: {open_files}")
     Vo = meshes[1][0]
     lo = (Vo.min(0) - pad).tolist(); hi = (Vo.max(0) + pad).tolist()
-    rho = float(rho2 if rho2 is not None else canonical_white_matter(field_T=field_T)["rho2"])
+    rho_2 = float(rho_2 if rho_2 is not None else canonical_white_matter(field_T=field_T)["rho2"])
     pools = wm_pools(field_T, myelin_chi_iso=1.06e-6, myelin_chi_aniso=0.0)       # the dataset's own convention
     pools[0] = Pool(0, "extra", pools[0].D, water_fraction=0.0, T2=pools[0].T2, T1=pools[0].T1)     # free water, not substrate
-    walls = _walls({0: (inner_ply, outer_ply)}, scale, rho, rho)
+    walls = _walls({0: (inner_ply, outer_ply)}, scale, rho_2, rho_2)
     spec = SubstrateSpec(
         id or f"winther/{os.path.splitext(os.path.basename(inner_ply))[0]}",
         Domain(lo, hi, ["open", "open", "open"]), pools, walls, Seeding([1, 2], "uniform_by_volume", "thin"),
@@ -342,7 +342,7 @@ def winther_spec(inner_ply, outer_ply, *, scale=_UM, pad=1.0e-6, field_T=3.0, rh
     return spec.validate()
 
 
-def caterpillar_spec(path, *, scale=_UM, box=None, glia=True, field_T=3.0, rho2=None, id=None):
+def caterpillar_spec(path, *, scale=_UM, box=None, glia=True, field_T=3.0, rho_2=None, id=None):
     """The spec of a CATERPillar substrate table (``.csv`` / ``.swc``): every axon is two ``sphere_union`` walls
     (its inner radii: intra | myelin; its outer radii: myelin | extra), the glial cells one wall around a
     fourth pool (``glia``), all referencing the table by column and cell type; the voxel is the growth
@@ -357,15 +357,15 @@ def caterpillar_spec(path, *, scale=_UM, box=None, glia=True, field_T=3.0, rho2=
     ax, gl = ct == "axon", ct == "glial_cell"
     if not ax.any():
         raise SpecError(f"{path}: no axon rows")
-    rho = float(rho2 if rho2 is not None else canonical_white_matter(field_T=field_T)["rho2"])
+    rho_2 = float(rho_2 if rho_2 is not None else canonical_white_matter(field_T=field_T)["rho2"])
     pools = wm_pools(field_T)
     sha = _sha(path)
 
     def surf(column, cell_type):
         return Surface("sphere_union", file=str(path), format="caterpillar", scale=float(scale), sha256=sha,
                        column=column, cell_type=cell_type)
-    walls = [Wall("axolemma", surf("inner_radius", "axon"), 1, 2, Directional(), Sided(rho, 0.0)),
-             Wall("sheath", surf("outer_radius", "axon"), 2, 0, Directional(), Sided(0.0, rho))]
+    walls = [Wall("axolemma", surf("inner_radius", "axon"), 1, 2, Directional(), Sided(rho_2, 0.0)),
+             Wall("sheath", surf("outer_radius", "axon"), 2, 0, Directional(), Sided(0.0, rho_2))]
     transformations = [f"voxel: {t['box_source']}; faces reflect (a CATERPillar voxel is finite and not periodic)",
                        "inside inner radii = intra (1), inner..outer = myelin (2), outside = extra (0)",
                        f"{int((t['r_out'][ax] <= t['r_in'][ax] + 1e-15).sum())} unmyelinated axon sphere(s): sheath coincides with axolemma",
@@ -379,7 +379,7 @@ def caterpillar_spec(path, *, scale=_UM, box=None, glia=True, field_T=3.0, rho2=
     if gl.any():
         pi = pools[1]
         pools.append(Pool(3, "glia", pi.D, water_fraction=1.0, T2=pi.T2, T1=pi.T1))
-        walls.append(Wall("glia", surf("outer_radius", "glial_cell"), 3, 0, Directional(), Sided(rho, rho)))
+        walls.append(Wall("glia", surf("outer_radius", "glial_cell"), 3, 0, Directional(), Sided(rho_2, rho_2)))
         transformations.append("glial cells: a fourth pool 'glia' (3) inside their spheres, with the intra pool's D / T2 / T1")
         smallest = min(smallest, float(t["r_out"][gl].min()))
     lo, hi = (np.asarray(box[0], float), np.asarray(box[1], float)) if box is not None else (t["box_min"], t["box_max"])
@@ -400,7 +400,7 @@ def caterpillar_spec(path, *, scale=_UM, box=None, glia=True, field_T=3.0, rho2=
 
 
 def label_volume_spec(path, *, pools=None, voxel_size=None, origin=None, crop=None, periodic=False,
-                      D=None, rho=0.0, T2=None, T2_pools=None, nominal_field_T=None, walk=None,
+                      D=None, rho_2=0.0, T2=None, T2_pools=None, nominal_field_T=None, walk=None,
                       frame=None, format=None, cite_image_as=None, id=None, description=None, source=None):
     """The spec of a **segmented image**: one pool per label, one wall per pair of pools that share a
     voxel face, the image cited as a file.
@@ -408,7 +408,7 @@ def label_volume_spec(path, *, pools=None, voxel_size=None, origin=None, crop=No
     ``pools`` maps each label value to a pool name, in pool-id order, and defaults to the micro-CT
     convention ``{0: "free", 1: "grain"}`` (void 0, solid 1). ``walk`` names the pool the walkers
     occupy (the first by default), the only pool that holds water: a solid is a pool with
-    ``water_fraction`` 0. ``rho`` is the transverse surface relaxivity (m/s) of every wall, per side;
+    ``water_fraction`` 0. ``rho_2`` is the transverse surface relaxivity (m/s) of every wall, per side;
     ``D`` and ``T2`` are the walking pool's bulk values, ``T2_pools`` a T2 per pool name where they
     differ. ``crop`` is the ``(i0, j0, k0, i1, j1, k1)`` sub-volume that IS the substrate; ``periodic``
     says which axes repeat (a rock crop does not: its faces reflect). ``voxel_size`` (metres) supplies
@@ -475,9 +475,9 @@ def label_volume_spec(path, *, pools=None, voxel_size=None, origin=None, crop=No
                    voxel_size=[float(x) for x in vox], origin=[float(x) for x in org],
                    labels={str(int(v)): n for v, n in pool_map.items()},
                    crop=([int(x) for x in crop] if crop is not None else None))
-    rho = float(rho)
+    rho_2 = float(rho_2)
     walls = [Wall(f"{names[j]}|{names[i]}", Surface("label_volume", **surf_kw), j, i,
-                  Directional(), Sided(rho, rho)) for i, j in sorted(pairs)]
+                  Directional(), Sided(rho_2, rho_2)) for i, j in sorted(pairs)]
     dom = Domain(org.tolist(), (org + np.asarray(lab.shape) * vox).tolist(),
                  ["periodic" if p else "reflect" for p in per])
     phi = float(np.mean(g == wid))
@@ -516,7 +516,7 @@ def label_volume_spec(path, *, pools=None, voxel_size=None, origin=None, crop=No
     ).validate()
 
 
-def strands_spec(path, *, scale=_UM, g_ratio=None, boundary="reflect", field_T=3.0, rho2=None, id=None,
+def strands_spec(path, *, scale=_UM, g_ratio=None, boundary="reflect", field_T=3.0, rho_2=None, id=None,
                  radius_tol=1e-3, source="EPFL strand list"):
     """The spec of an EPFL strand list (CACTUS ``.init`` / ``optimized_final.txt``): every strand a sphere-swept
     polyline with its one radius, as per-instance arrays of one wall (or two with ``g_ratio``: axolemma at
@@ -534,7 +534,7 @@ def strands_spec(path, *, scale=_UM, g_ratio=None, boundary="reflect", field_T=3
         R.append(float(r.mean()))
     half = t["side"] / 2
     return _strands_spec(t["centerlines"], np.asarray(R), [-half] * 3, [half] * 3, boundary=boundary, g_ratio=g_ratio,
-                         field_T=field_T, rho2=rho2, id=id or f"strands/{os.path.splitext(os.path.basename(path))[0]}",
+                         field_T=field_T, rho_2=rho_2, id=id or f"strands/{os.path.splitext(os.path.basename(path))[0]}",
                          source=source, files=[path], scale=float(scale),
                          transformations=[f"voxel [-side/2, side/2]^3 from the file header, faces {boundary}"],
                          cell_side=float(t["side"]))
@@ -551,7 +551,7 @@ diameter" (section 2.1); the released diameters are the inner ones (section 1)."
 
 
 def disco_spec(tracks, diameters, *, coordinate_unit_m=25e-6, diameter_unit_m=1e-3, side_m=1e-3, field=True,
-               field_T=3.0, rho2=None, id=None, cite_tracks_as=None):
+               field_T=3.0, rho_2=None, id=None, cite_tracks_as=None):
     """The spec of the DiSCo phantom (Rafael-Patino, Girard et al., Data in Brief 38 (2021) 107429,
     doi:10.1016/j.dib.2021.107429; dataset doi:10.17632/fgf86jdfg6.3, CC BY 4.0): its strands from the released MRtrix
     track file, in units of the ground-truth voxel (``coordinate_unit_m``, 25 um for the 40^3 grid over 1 mm^3), and
@@ -595,12 +595,12 @@ def disco_spec(tracks, diameters, *, coordinate_unit_m=25e-6, diameter_unit_m=1e
     cite = dict(file=str(cite_tracks_as or tracks), format="tck", scale=float(coordinate_unit_m), sha256=_sha(tracks))
     return _strands_spec([cls_[k] for k in keep], R_out, [0.0] * 3, [float(side_m)] * 3, boundary="reflect", g_ratio=DISCO_G_RATIO,
                          R_inner=R_in, D=DISCO_D, sheath_water=False, sheath_field=bool(field), centerline_file=cite,
-                         field_T=field_T, rho2=rho2, id=id or "disco/rafael-patino-2021", source="DiSCo (Rafael-Patino et al. 2021)",
+                         field_T=field_T, rho_2=rho_2, id=id or "disco/rafael-patino-2021", source="DiSCo (Rafael-Patino et al. 2021)",
                          files=[tracks, diameters], scale=float(coordinate_unit_m), transformations=transformations,
                          cell_side=float(side_m))
 
 
-def _strands_spec(centerlines, R, lo, hi, *, boundary, g_ratio, field_T, rho2, id, source, files, scale, transformations,
+def _strands_spec(centerlines, R, lo, hi, *, boundary, g_ratio, field_T, rho_2, id, source, files, scale, transformations,
                   cell_side, R_inner=None, D=None, sheath_water=True, sheath_field=True, centerline_file=None):
     """The strand spec proper: sphere-swept polylines (metres) with one OUTER radius each, in a box. With ``g_ratio``
     a sheath: the axolemma at ``R_inner`` (given) or ``g_ratio`` x the outer radius, and the pool between the two
@@ -613,7 +613,7 @@ def _strands_spec(centerlines, R, lo, hi, *, boundary, g_ratio, field_T, rho2, i
     if boundary not in ("reflect", "open"):
         raise SpecError("boundary must be 'reflect' or 'open'; a strand list is not periodic")
     R = np.asarray(R, float)
-    rho = float(rho2 if rho2 is not None else canonical_white_matter(field_T=field_T)["rho2"])
+    rho_2 = float(rho_2 if rho_2 is not None else canonical_white_matter(field_T=field_T)["rho2"])
     cls_ = [np.asarray(c, float).tolist() for c in centerlines]
     surf = ((lambda R_: Surface("swept_polyline", instances={"radii": R_.tolist()}, **centerline_file)) if centerline_file
             else (lambda R_: Surface("swept_polyline", instances={"centerlines": cls_, "radii": R_.tolist()})))
@@ -623,15 +623,15 @@ def _strands_spec(centerlines, R, lo, hi, *, boundary, g_ratio, field_T, rho2, i
         pools = [dataclasses.replace(p, D=float(D)) if p.id in (0, 1) else p for p in pools]
     if g_ratio is None:
         pools = pools[:2]
-        walls = [Wall("cylinders", surf(R), 1, 0, Directional(), Sided(rho, rho))]
+        walls = [Wall("cylinders", surf(R), 1, 0, Directional(), Sided(rho_2, rho_2))]
         transformations.append("inside a strand = intra (1), outside all = extra (0); no myelin")
         smallest = float(R.min()); thinnest = None
     else:
         R_in = np.asarray(R_inner, float) if R_inner is not None else g_ratio * R
         if R_in.shape != R.shape or (R_in >= R).any():
             raise SpecError("every inner radius must be smaller than its outer radius")
-        walls = [Wall("axolemma", surf(R_in), 1, 2, Directional(), Sided(rho, 0.0)),
-                 Wall("sheath", surf(R), 2, 0, Directional(), Sided(0.0, rho))]
+        walls = [Wall("axolemma", surf(R_in), 1, 2, Directional(), Sided(rho_2, 0.0)),
+                 Wall("sheath", surf(R), 2, 0, Directional(), Sided(0.0, rho_2))]
         if R_inner is None:
             transformations.append(f"the outer (sheath) radius listed; axolemma at g-ratio {g_ratio}")
         if not sheath_water or not sheath_field:
@@ -668,7 +668,7 @@ _MCDC_MM = 1e-3      #: MC/DC writes its initial-walker positions in millimetres
 
 
 def mcdc_axon_spec(ply, *, scale=_UM, D=None, voxel=None, pad=1.0e-6, boundary="reflect",
-                   ini_walkers=None, rho2=0.0, id=None, source=None, description=None, cite_ply_as=None,
+                   ini_walkers=None, rho_2=0.0, id=None, source=None, description=None, cite_ply_as=None,
                    cite_ini_as=None):
     """The spec of ONE closed MC/DC axon surface: a bare lumen, no sheath.
 
@@ -678,7 +678,7 @@ def mcdc_axon_spec(ply, *, scale=_UM, D=None, voxel=None, pad=1.0e-6, boundary="
     myelin pool: the mesh is an axolemma and a pool with no wall of its own is not a situation.
 
     ``D`` is the configuration's own diffusivity (``read_conf(...)["diffusivity"]``), applied to both pools, and
-    ``rho2`` defaults to 0 because MC/DC's walls are purely reflecting: relaxation is a replay knob, never in
+    ``rho_2`` defaults to 0 because MC/DC's walls are purely reflecting: relaxation is a replay knob, never in
     the walk.
 
     ``voxel`` is MC/DC's ``<voxels>`` block in metres (``read_conf(...)["voxel_min"], ["voxel_max"]``) and is
@@ -729,7 +729,7 @@ def mcdc_axon_spec(ply, *, scale=_UM, D=None, voxel=None, pad=1.0e-6, boundary="
              Pool(1, "intra", D, water_fraction=1.0, T2=0.08, T1=1.0)]
     cite = cite_ply_as or os.path.basename(ply)
     wall = Wall("axolemma", Surface("mesh", file=cite, format=ply.rsplit(".", 1)[-1].lower(), scale=float(scale),
-                                    sha256=_sha(ply)), 1, 0, Directional(), Sided(float(rho2), float(rho2)))
+                                    sha256=_sha(ply)), 1, 0, Directional(), Sided(float(rho_2), float(rho_2)))
     seeding_positions = None
     if ini_walkers:
         seeding_positions = dict(file=(cite_ini_as or os.path.basename(ini_walkers)), format="xyz",
@@ -741,7 +741,7 @@ def mcdc_axon_spec(ply, *, scale=_UM, D=None, voxel=None, pad=1.0e-6, boundary="
     rule = "explicit" if ini_walkers else "uniform_by_volume"
     transformations = [f"inside the surface = intra (1), outside = extra (0)",
                        "extra declared free water with water_fraction 0: MC/DC seeded and read intra particles only",
-                       f"walls purely reflecting (rho = {rho2} m/s): MC/DC's are, and relaxation is a replay knob",
+                       f"walls purely reflecting (rho_2 = {rho_2} m/s): MC/DC's are, and relaxation is a replay knob",
                        f"domain faces {boundary}"] + notes
     if voxel_note:
         transformations.append(voxel_note)

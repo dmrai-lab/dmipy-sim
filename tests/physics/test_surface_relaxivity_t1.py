@@ -1,10 +1,10 @@
 """Physics tests: the longitudinal surface relaxivity ``rho_1`` (dmipy-sim#574).
 
 The replay equation's contact channel is general in the two surface relaxivities, like C1 is in
-T2 and T1: the C2 gate is ``rho * chi_perp + rho_1 * chi_parallel`` against the SAME stored
+T2 and T1: the C2 gate is ``rho_2 * chi_perp + rho_1 * chi_parallel`` against the SAME stored
 boundary local time, with ``chi_parallel = active - chi_perp`` the complement of the coherence gate
 (on while the magnetisation is stored along B0, e.g. a stimulated echo's mixing time). No new
-walk, no new channel -- a second contraction of the one C2 series already read for ``rho``.
+walk, no new channel -- a second contraction of the one C2 series already read for ``rho_2``.
 
 Reference for the stimulated-echo check: the exact Brownstein-Tarr series for a sphere of radius
 ``R``, diffusivity ``D``, Robin surface relaxivity ``rho_1`` on a UNIFORM initial magnetisation (the
@@ -34,7 +34,7 @@ DT_SAVE = 1e-4     # s
 SEED = 11
 
 ENV = dict(bvals=[0.0], dirs=[[1, 0, 0]], ogse_periods=[2], shortd_b=1e9,
-           shortd_deltas_frac=[0.05], delta_frac=0.2, Delta_frac=0.5, rho_list=[1e-5])
+           shortd_deltas_frac=[0.05], delta_frac=0.2, Delta_frac=0.5, rho_2_list=[1e-5])
 
 
 @pytest.fixture(scope="module")
@@ -61,13 +61,13 @@ def _lowest_roots(b, n_modes):
     return np.array(roots)
 
 
-def sphere_robin_decay(t, D, R, rho, n_modes=60):
+def sphere_robin_decay(t, D, R, rho_2, n_modes=60):
     """``M(t) / M(0)`` of a uniformly-magnetised sphere under a Robin (partially-relaxing) boundary:
     the exact Brownstein-Tarr radial series (see module docstring for the derivation)."""
     t = np.atleast_1d(np.asarray(t, float))
-    if rho == 0.0:
+    if rho_2 == 0.0:
         return np.ones_like(t)
-    b = rho * R / D
+    b = rho_2 * R / D
     x = _lowest_roots(b, n_modes)
     k = x / R
     I = (np.sin(x) - x * np.cos(x)) / k ** 2              # integral_0^R r sin(k r) dr
@@ -99,12 +99,12 @@ def test_rho_1_zero_is_bit_identical_to_absent(sphere_pack):
         gradient_echo=seq.gre(4e-3, n_t=pk.n_t, slew_rate=np.inf),
     )
     for name, wf in waveforms.items():
-        baseline = pk.replay(wf, tissue=Tissue(rho=4e-6))
-        zero = pk.replay(wf, tissue=Tissue(rho=4e-6, rho_1=0.0))
-        absent = pk.replay(wf, tissue=Tissue(rho=4e-6, rho_1=None))
+        baseline = pk.replay(wf, tissue=Tissue(rho_2=4e-6))
+        zero = pk.replay(wf, tissue=Tissue(rho_2=4e-6, rho_1=0.0))
+        absent = pk.replay(wf, tissue=Tissue(rho_2=4e-6, rho_1=None))
         np.testing.assert_array_equal(baseline, zero, err_msg=f"{name}: rho_1=0.0 is not bit-identical")
         np.testing.assert_array_equal(baseline, absent, err_msg=f"{name}: rho_1=None is not bit-identical")
-    # and with no rho at all
+    # and with no rho_2 at all
     wf = waveforms["stimulated_echo"]
     np.testing.assert_array_equal(pk.replay(wf), pk.replay(wf, tissue=Tissue(rho_1=0.0)))
 
@@ -114,12 +114,12 @@ def test_rho_1_zero_is_bit_identical_in_the_study_and_pose_routes(sphere_pack):
     primitives (`Primitives.contact_t1`) and the pose closed form."""
     pk = sphere_pack
     wf = seq.pgste([[1, 0, 0]], 1e-3, 0.02, bvalues=[3e8], n_t=pk.n_t, slew_rate=np.inf)
-    w1, ew1, E1 = pk.walker_signals(wf, tissue=Tissue(rho=4e-6))
-    w2, ew2, E2 = pk.walker_signals(wf, tissue=Tissue(rho=4e-6, rho_1=0.0))
+    w1, ew1, E1 = pk.walker_signals(wf, tissue=Tissue(rho_2=4e-6))
+    w2, ew2, E2 = pk.walker_signals(wf, tissue=Tissue(rho_2=4e-6, rho_1=0.0))
     np.testing.assert_array_equal(ew1, ew2)
     np.testing.assert_array_equal(E1, E2)
-    pr1 = pk.pose_response(wf, tissue=Tissue(rho=4e-6))
-    pr2 = pk.pose_response(wf, tissue=Tissue(rho=4e-6, rho_1=0.0))
+    pr1 = pk.pose_response(wf, tissue=Tissue(rho_2=4e-6))
+    pr2 = pk.pose_response(wf, tissue=Tissue(rho_2=4e-6, rho_1=0.0))
     np.testing.assert_array_equal(np.asarray(pr1.coeffs), np.asarray(pr2.coeffs))
 
 
@@ -129,9 +129,9 @@ def test_spin_echo_is_independent_of_rho_1(sphere_pack):
     everywhere): rho_1 has nothing to gate and the signal is unchanged, at any rho_1."""
     pk = sphere_pack
     wf = seq.pgse([[1, 0, 0]], 2e-3, 6e-3, bvalues=[5e8], n_t=pk.n_t, slew_rate=np.inf)
-    baseline = pk.replay(wf, tissue=Tissue(rho=3e-6))
+    baseline = pk.replay(wf, tissue=Tissue(rho_2=3e-6))
     for rho1 in (1e-6, 1e-4, 1e-2):
-        np.testing.assert_array_equal(baseline, pk.replay(wf, tissue=Tissue(rho=3e-6, rho_1=rho1)),
+        np.testing.assert_array_equal(baseline, pk.replay(wf, tissue=Tissue(rho_2=3e-6, rho_1=rho1)),
                                       err_msg=f"a spin echo changed with rho_1={rho1:g}")
 
 
@@ -146,8 +146,8 @@ def test_stimulated_echo_matches_the_sphere_robin_series(sphere_pack):
     floor = 1.0 / np.sqrt(N_WALKERS)
     for TM in (0.005, 0.01, 0.02, 0.04):
         wf = seq.pgste([[1, 0, 0]], DT_SAVE, TM, bvalues=[0.0], n_t=pk.n_t, slew_rate=np.inf)
-        S0 = float(pk.replay(wf, tissue=Tissue(rho=0.0))[0])
-        S1 = float(pk.replay(wf, tissue=Tissue(rho=0.0, rho_1=rho1))[0])
+        S0 = float(pk.replay(wf, tissue=Tissue(rho_2=0.0))[0])
+        S1 = float(pk.replay(wf, tissue=Tissue(rho_2=0.0, rho_1=rho1))[0])
         ratio = S1 / S0
         ref = float(sphere_robin_decay([TM], D0, R, rho1)[0])
         tol = max(5 * floor, 0.06 * ref)
@@ -155,7 +155,7 @@ def test_stimulated_echo_matches_the_sphere_robin_series(sphere_pack):
     # monotone in TM: longer storage, more wall contact, less signal
     TMs = np.array([0.005, 0.02, 0.05])
     ratios = [float(pk.replay(seq.pgste([[1, 0, 0]], DT_SAVE, TM, bvalues=[0.0], n_t=pk.n_t, slew_rate=np.inf),
-                              tissue=Tissue(rho=0.0, rho_1=rho1))[0])
+                              tissue=Tissue(rho_2=0.0, rho_1=rho1))[0])
              for TM in TMs]
     assert ratios[0] > ratios[1] > ratios[2]
 
@@ -168,7 +168,7 @@ def test_replay_and_the_pose_closed_form_agree(sphere_pack):
     from dmipy_sim.replay.so3 import Distribution
     pk = sphere_pack
     wf = seq.pgste([[1, 0, 0]], 1e-3, 0.02, bvalues=[3e8], n_t=pk.n_t, slew_rate=np.inf)
-    tissue = Tissue(rho=2e-6, rho_1=8e-6)
+    tissue = Tissue(rho_2=2e-6, rho_1=8e-6)
     S_replay = np.asarray(pk.replay(wf, tissue=tissue))
     pr = pk.pose_response(wf, tissue=tissue)
     S_pose = np.abs(np.asarray(pr.compose(Distribution.pose(np.eye(3)))))
@@ -207,7 +207,7 @@ def test_the_columnar_device_route_applies_rho_1(tmp_path):
     merged = merge_packs(packs, id="t/merged")
     col = ReplayPack.open(str(tmp_path / "layout"))
     seq1 = d.pgste([[1, 0, 0]], 0.2e-3, 0.4e-3, bvalues=[0.0], n_t=merged.n_t, slew_rate=np.inf)
-    tissue = Tissue(T2={"intra": 0.03, "extra": 0.08, "myelin": 0.01}, rho=1e-5, rho_1=8e-6)
+    tissue = Tissue(T2={"intra": 0.03, "extra": 0.08, "myelin": 0.01}, rho_2=1e-5, rho_1=8e-6)
     study = Study(Protocol([seq1]), tissues=[None, tissue], scanners=[None])
     assert study.needs_contact
     S, floor, plan = col.image(study, tol=1e-9, chunk_rows=5)

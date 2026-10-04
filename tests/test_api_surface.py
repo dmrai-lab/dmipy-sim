@@ -541,7 +541,7 @@ def test_replay_knobs_are_tissue_orientation_and_scanner():
     from dmipy_sim.phantom.phantom import Phantom
     from dmipy_sim.phantom.partition import PartitionPhantom
     from dmipy_sim.phantom.substrates import PackSubstrate, FreeWater
-    flat = {"T2", "T1", "rho", "D", "B0", "b0_dir", "chi_iso", "chi_aniso", "T2_s", "T1_s", "rho_m_s", "D_m2_s", "B0_T"}
+    flat = {"T2", "T1", "rho_2", "rho_1", "D", "B0", "b0_dir", "chi_iso", "chi_aniso", "T2_s", "T1_s", "rho_m_s", "D_m2_s", "B0_T"}
     entry_points = [ReplayPack.replay, ReplayPack.walker_signals, ReplayPack.walker_phases, ReplayPack.replay_bloch, ReplayPack.pose_response,
                     ReplayPhantom.replay, ReplayPhantom.replay_bloch, Phantom.replay, PartitionPhantom.replay,
                     PackSubstrate.__init__, FreeWater.__init__]

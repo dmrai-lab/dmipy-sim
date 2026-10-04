@@ -1,4 +1,4 @@
-"""The replay primitives: one gradient phase, one resampler, one spin-echo gate.
+"""The replay primitives: one gradient phase, one resampler, one field gate.
 
 Every route that turns a stored walk into a signal -- the raw numpy replay, its JAX twin, the
 compressed mode-space replay, the pre-pulse azimuth, the two vector-Bloch replays, the bank's
@@ -10,8 +10,8 @@ susceptibility replay and the SH responder -- integrates the same quantity,
 * :func:`gradient_phase` is the total phase per (measurement, walker); :func:`phase_increments`
   the per-step increments one measurement contributes, for a propagator that applies them in
   order.
-* :func:`se_gate` is the transverse-phase sign of a spin echo: ``+1`` before the 180 at
-  ``refocus_time``, ``-1`` after, balanced to sum to zero so a static field refocuses exactly.
+* :func:`field_gate` is the acquisition's effective gate as per-save weights against a field sampled at the
+  saves: the one gate a static field, a uniform off-resonance and ``G_eff`` all accrue through.
 
 Each has a JAX twin (``*_jax``) where a consumer differentiates through it.
 """
@@ -158,15 +158,16 @@ def gate_weights(chi, dt_wf, n_t, dt_pack, t0=None):
 
 
 def field_gate(waveform, n_t, dt_pack, t0=None):
-    """The per-save weights that integrate a field SAMPLED at the saves over an acquisition: the sequence's own
-    sign ``s(t)`` (its refocusing pulses, RPK.md 6.6) read on its grid onto the pack grid by :func:`gate_weights`,
-    and zero beyond its echo -- so an acquisition shorter than the walk ends at its echo, and the gate is the one
-    ``G_eff`` was folded with. ``(n_t,)``; multiply per-save values by ``dt_pack`` and these weights. ``t0`` reads
-    the window of the walk starting there."""
-    if getattr(waveform, "gate", None) is not None:                     # a pathway's own sign (replay.pathways)
-        return gate_weights(np.asarray(waveform.gate, np.float64), float(waveform.dt), n_t, dt_pack, t0=t0)[0]
-    t = np.arange(int(waveform.n_t)) * float(waveform.dt)
-    return gate_weights(waveform.rf.sign(t), float(waveform.dt), n_t, dt_pack, t0=t0)[0]
+    """The per-save weights that integrate a field SAMPLED at the saves over an acquisition: the acquisition's
+    :attr:`~dmipy_sim.acquisition.scanner_sequence.ScannerSequence.effective_gate` (the coherence sign, RPK.md 6.6,
+    times the transverse gate: zero while a stimulated echo's magnetisation is stored along B0) read on its grid onto
+    the pack grid by :func:`gate_weights`, and zero beyond its echo -- so an acquisition shorter than the walk ends
+    at its echo, and the field accrues through the one gate ``G_eff`` was folded with. A pathway-gated waveform
+    (:mod:`dmipy_sim.replay.pathways`) carries its pathway's signed gate, its ``G`` already folded with it.
+    ``(n_t,)``; multiply per-save values by ``dt_pack`` and these weights. ``t0`` reads the window of the walk
+    starting there."""
+    gate = waveform.effective_gate if waveform.gate is None else waveform.gate
+    return gate_weights(np.asarray(gate, np.float64), float(waveform.dt), n_t, dt_pack, t0=t0)[0]
 
 
 def effective_gradient(G, dt_wf, n_t, dt_pack, t0=None):
@@ -268,24 +269,3 @@ def phase_increments_jax(G_m, traj, dt):
     :func:`gradient_phase_jax`)."""
     return (float(GAMMA) * float(dt)) * jnp.einsum('td,wtd->tw', jnp.asarray(G_m), jnp.asarray(traj),
                                                    precision=_FULL)
-
-
-def se_gate(n_t, dt, refocus_time):
-    """The transverse-phase gate of a spin echo as per-save weights: the sign function ``s(t) = +1`` before the
-    180 at ``refocus_time`` (s) and ``-1`` after, integrated exactly against the piecewise-linear path through
-    the saves (the same reading as :func:`effective_gradient`), so a 180 at ANY instant is exact and a 180 at
-    ``T/2`` refocuses a static field to the bit (``sum s = 0``). ``None`` is a gradient echo (``s == +1``).
-    Multiply per-save values by ``dt`` and these weights to integrate them over the echo."""
-    n_t = int(n_t); dt = float(dt)
-    T = (n_t - 1) * dt
-    if refocus_time is None:
-        lp = np.full(n_t - 1, dt)                                   # +1 everywhere
-    else:
-        tr = float(np.clip(refocus_time, 0.0, T))
-        lp = np.clip(tr - np.arange(n_t - 1) * dt, 0.0, dt)         # the +1 part of each interval
-    A0 = lp - (dt - lp)
-    A1 = lp ** 2 / 2.0 - (dt ** 2 - lp ** 2) / 2.0
-    W = np.zeros(n_t)
-    W[:-1] += A0 - A1 / dt
-    W[1:] += A1 / dt
-    return W / dt

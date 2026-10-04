@@ -78,16 +78,16 @@ def test_the_T2_decay_reproduces_his_simulated_mean_T2(rock):
 
     The log-mean T2 lands within 8 % of his simulated value on every rock (LV60A -4.8 %, F42A +0.3 %,
     Berea -7.5 %) and 1.7 % / 1.6 % of his *measured* T2lm on the two sand packs he measured. It is
-    NOT the fast-diffusion value ``1 / (rho S/V + 1/T2B)`` -- 360 / 466 / 467 ms -- and must not be:
-    ``rho (V/S) / D`` is 0.33 for LV60A, so a rock's pore-size distribution decays multi-exponentially
+    NOT the fast-diffusion value ``1 / (rho_2 S/V + 1/T2B)`` -- 360 / 466 / 467 ms -- and must not be:
+    ``rho_2 (V/S) / D`` is 0.33 for LV60A, so a rock's pore-size distribution decays multi-exponentially
     and its log-mean weights the small pores far less than one rate does. That is why this rung needs
     a Laplace inversion comparable to the one his Table 7-2 was read from -- the same penalty family,
     not the same estimator (see ``t2_distribution``) -- and not a single-exponential fit.
 
     The residual is dominated by two things this reproduction cannot remove: the crop offset (see the
     porosity test), and the difference between his discrete surface rule and this one -- he kills a
-    walker at an attempted move into a grain voxel with probability ``2 rho s / (3 D)`` = 0.026 at his
-    2 um step, this one weights the walker by ``exp(-2 (rho/D) d_perp)`` per specular reflection, whose
+    walker at an attempted move into a grain voxel with probability ``2 rho_2 s / (3 D)`` = 0.026 at his
+    2 um step, this one weights the walker by ``exp(-2 (rho_2/D) d_perp)`` per specular reflection, whose
     accumulated local time is ``D (S/V) T`` exactly (tests/geometry/test_label_volume.py). The two
     agree in the continuum limit; at his step they need not agree to better than a few per cent.
 
