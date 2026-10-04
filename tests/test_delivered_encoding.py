@@ -338,3 +338,31 @@ def test_the_signal_level_bias_is_the_b_level_prediction(setup, pack):
 
     np.testing.assert_allclose(measured, predicted, atol=2e-3)
     assert np.abs(predicted).max() > 5e-3, "this fixture barely exercises the nonlinearity"
+
+
+def test_a_turned_acquisition_turns_what_the_machine_delivered():
+    """rotate_waveform turns the acquisition into another frame (the specimen's pose, in pose_responses and the
+    phantom's pose pass): what a machine delivered is in that frame too and turns with G -- the magnet's own
+    gradient, the imposed gradient (so the coils' gradient G - imposed is the turned coils' gradient, and a
+    finite pulse still sees none), where the Maxwell term was read, and the nonlinearity tensor (R L R^T)."""
+    from dmipy_sim.acquisition.timing import SequenceTiming
+    from dmipy_sim.acquisition.waveforms import rotate_waveform
+    from dmipy_sim.phantom.bore import encoding_classes
+    sw = ScannerLimits.of("swoop")
+    seq = sequences.pgse([[1, 0, 0], [0, 0, 1]], 12e-3, 26e-3, gradient_strengths=[0.02, 0.02], TE=60e-3,
+                         slew_rate=float(sw.slew_max),
+                         timing=SequenceTiming(t_excite=2e-3, t_refocus=4e-3, t_readout_pre_echo=3e-3))
+    grid = Grid(shape=(1, 1, 1), voxel_size_m=(2e-3,) * 3, origin_m=(0.08, 0.0, 0.0), isocenter_m=(0.0, 0.0, 0.0))
+    played = encoding_classes(sw, grid, seq, np.array([[0, 0, 0]]), tolerance=None)[1][0]
+    c, s = np.cos(0.7), np.sin(0.7)
+    R = np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]]) @ np.array([[1.0, 0.0, 0.0], [0.0, c, -s], [0.0, s, c]])
+    turned = rotate_waveform(played, R)
+    np.testing.assert_allclose(np.asarray(turned.background_gradient)[0], np.asarray(played.background_gradient)[0] @ R.T,
+                               atol=1e-15)
+    np.testing.assert_allclose(np.asarray(turned.concomitant["position_m"])[0],
+                               np.asarray(played.concomitant["position_m"])[0] @ R.T, atol=1e-15)
+    L = np.asarray(played.gradient_nonlinearity, float).reshape(-1, 3, 3)[0]
+    np.testing.assert_allclose(np.asarray(turned.gradient_nonlinearity, float).reshape(-1, 3, 3)[0], R @ L @ R.T, atol=1e-12)
+    coils = np.asarray(rotate_waveform(played.with_gradient(played.played_gradient), R).G, float)
+    np.testing.assert_allclose(np.asarray(turned.played_gradient, float), coils, atol=1e-7 * np.abs(coils).max())
+    turned.validate()                                                       # the coils are still off through every pulse
