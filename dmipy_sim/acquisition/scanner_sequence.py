@@ -216,6 +216,7 @@ class ScannerSequence:
             _set("background_gradient", tuple(tuple(float(v) for v in row) for row in bg))
         n_t = G.shape[1]
         chi, TM, ste, echo_times = self.rf.coherence(n_t, self.dt)
+        transverse = self.rf.transverse_gate(n_t, self.dt)
         idx = tuple(int(i) for i in np.clip(np.rint(np.asarray(echo_times) / self.dt).astype(int), 0, n_t - 1)) if echo_times else ()
         if self.readout is None:                       # the grid ends at the readout; a train reads every echo
             ro = idx if len(idx) >= 2 else (n_t - 1,)
@@ -249,9 +250,10 @@ class ScannerSequence:
             if len(self.rf):
                 raise ValueError("a pathway-gated waveform carries its pathway's sign in place of an RF schedule; give one or the other")
             _set("gate", gate)
-            chi = np.abs(gate)
+            chi = transverse = np.abs(gate)
             TM = float(np.sum(gate[:-1] == 0.0)) * self.dt or None            # the stored time: each sample held to the next
         _set("_chi", None if np.all(chi == 1) else chi)
+        _set("_transverse", None if np.all(transverse == 1) else transverse)
         _set("_TM", TM); _set("_ste", bool(ste)); _set("_echoes", tuple(echo_times))
         if self.encoding is not None and self.encoding.number_of_measurements != G.shape[0]:
             raise ValueError(f"encoding has {self.encoding.number_of_measurements} measurements, G has {G.shape[0]}")
@@ -288,13 +290,16 @@ class ScannerSequence:
     @property
     def effective_gate(self):
         """The gate every phase of the acquisition accrues through, ``(n_t,)`` float32: the coherence sign
-        ``rf.sign(t)`` (RPK.md 6.6) times the transverse gate :attr:`chi_perp`. It is zero while the magnetisation is
-        stored along z, where nothing played or imposed adds phase (a magnet's own gradient, or a gradient's
-        Maxwell field, through a stimulated echo's mixing time). :attr:`G_eff` and the Maxwell field's order-0
-        phase (:meth:`with_concomitant`) both accrue through it."""
+        ``rf.sign(t)`` (RPK.md 6.6) times the schedule's transverse gate
+        (:meth:`~dmipy_sim.acquisition.rf.RFSchedule.transverse_gate`: 1 transverse, 0 stored, every pulse acting
+        at its centre). It is zero while the magnetisation is stored along z, where nothing played or imposed adds
+        phase (a magnet's own gradient, or a gradient's Maxwell field, through a stimulated echo's mixing time).
+        :attr:`G_eff` and the Maxwell field's order-0 phase (:meth:`with_concomitant`) both accrue through it.
+        Binary across a finite pulse too, where :attr:`chi_perp` is the transverse fraction relaxation reads: a
+        field is on through a pulse, and to first order a symmetric pulse acts on its phase at its centre."""
         s = self.rf.sign(np.arange(self.n_t) * self.dt)
-        if self._chi is not None:
-            s = s * np.asarray(self._chi, np.float32)
+        if self._transverse is not None:
+            s = s * np.asarray(self._transverse, np.float32)
         return s
 
     @property
