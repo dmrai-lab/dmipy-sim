@@ -25,11 +25,11 @@ waveform varies (design) — in the latter it is differentiable in ``G``, so it 
 waveform/B1 optimization. A JAX twin (:func:`replay_signal_jax`) supplies the autodiff/GPU path.
 
 Surface relaxivity is exact, via the stored boundary local time (the C2 channel, bridge form): a
-per-walker reweight by ``exp((rho/D) * sum_t chi(t) ell_i(t))``, optionally coherence-gated by an
+per-walker reweight by ``exp((rho_2/D) * sum_t chi(t) ell_i(t))``, optionally coherence-gated by an
 occupancy schedule ``chi`` (:func:`surface_logweight`). A tissue's ``rho_1`` adds the longitudinal
 term on the same channel, gated by the complement ``chi_parallel = active - chi`` (on while the
 magnetisation is stored along B0, e.g. a stimulated echo's mixing time): the full contact weight is
-``exp((rho/D) * <chi, ell> + (rho_1/D) * <chi_parallel, ell>)``, two calls of the same bridge
+``exp((rho_2/D) * <chi, ell> + (rho_1/D) * <chi_parallel, ell>)``, two calls of the same bridge
 contraction summed -- no new channel, no new walk (dmipy-sim#574).
 """
 import json
@@ -46,6 +46,21 @@ from ..acquisition.scanner_sequence import Protocol, ScannerSequence
 __all__ = ["ReplayPack", "PoseResponse", "read_rpk", "write_rpk", "analytic_pose_response",
            "compile_scheme", "replay_signal", "replay_coefficients", "replay_signal_jax", "replay_batch_jax",
            "surface_logweight"]
+
+RHO_2_OVER_D_MAX_SCHEMA_FLOOR = (0, 5)
+#: the RPK schema version at which the contact envelope's stored bound became
+#: ``replay_envelope.tissue.rho_2_over_D_max`` (dmipy-sim#581); a pack below this floor states it under the
+#: retired key ``rho_over_D_max`` (:attr:`ReplayPack.rho_2_over_D_max`).
+
+
+def _rpk_schema_lt(version, floor):
+    """Whether a pack's dotted ``rpk_schema_version`` (``"0.4"``, ``"0.5"``) is below ``floor`` (a tuple of
+    ints); ``None`` -- no version recorded -- is never below anything, so an undated pack is refused rather
+    than migrated by a guess."""
+    if version is None:
+        return False
+    core = str(version).split("-", 1)[0]
+    return tuple(int(x) for x in core.split(".")) < tuple(floor)
 
 
 # ------------------------------- .rpk container I/O -------------------------------
@@ -633,7 +648,7 @@ class ReplayPack:
                 note="the parent's contact channel is band-limited over its whole walk; a window's cumulative local "
                      "time is the parent's decoded one cut there, so the parent's truncation (a windowed increment can "
                      "exceed zero, which the true one never does) is inherited, not re-measured: the pack's "
-                     "replay_envelope.tissue.rho_over_D_max states up to which rho / D the windowed contact lies within "
+                     "replay_envelope.tissue.rho_2_over_D_max states up to which rho_2 / D the windowed contact lies within "
                      "the floor (#528). A build from the walk (bank._build_segmented) encodes each window's own.")),
             note="every window the parent's channels decoded on its saves and re-encoded; its certificate is the re-encode "
                  "error against the parent's decoded saves, on top of the parent's own certificate"))
@@ -649,27 +664,43 @@ class ReplayPack:
         return out
 
     @property
-    def rho_over_D_max(self):
-        """The largest ``rho / D`` the contact tier serves (``replay_envelope.tissue.rho_over_D_max``, RPK.md 8.7), or
-        ``None`` when the pack states no bound."""
-        return ((self.meta.get("replay_envelope") or {}).get("tissue") or {}).get("rho_over_D_max")
+    def rho_2_over_D_max(self):
+        """The largest ``rho_2 / D`` the contact tier serves (``replay_envelope.tissue.rho_2_over_D_max``, RPK.md 8.7), or
+        ``None`` when the pack states no bound. A pack whose OWN ``rpk_schema_version`` is below
+        :data:`RHO_2_OVER_D_MAX_SCHEMA_FLOOR` (dmipy-sim#581) may state the same bound under the retired key
+        ``rho_over_D_max``; migrated here, a one-time read, nothing rewritten unless the pack is re-saved. A
+        pack at or above the floor that still carries the retired key is refused rather than guessed at --
+        that key means something is already wrong with how it was written."""
+        tissue = (self.meta.get("replay_envelope") or {}).get("tissue") or {}
+        new, old = tissue.get("rho_2_over_D_max"), tissue.get("rho_over_D_max")
+        if old is None:
+            return new
+        version = self.meta.get("rpk_schema_version")
+        if not _rpk_schema_lt(version, RHO_2_OVER_D_MAX_SCHEMA_FLOOR):
+            raise ValueError(
+                f"this pack states its contact envelope under the retired key 'rho_over_D_max' (dmipy-sim#581 "
+                f"renamed it to 'rho_2_over_D_max' at RPK schema "
+                f"{'.'.join(map(str, RHO_2_OVER_D_MAX_SCHEMA_FLOOR))}); this pack's "
+                f"rpk_schema_version is {version!r}, which is not below that floor, so the retired key is refused "
+                f"rather than migrated")
+        return new if new is not None else old
 
-    def _check_rho(self, rho_over_D):
-        """Refuse a relaxivity beyond the contact tier's envelope (:attr:`rho_over_D_max`), naming both."""
-        top = self.rho_over_D_max
-        if top is not None and float(rho_over_D) > float(top) * (1.0 + 1e-12):
+    def _check_rho_2(self, rho_2_over_D):
+        """Refuse a relaxivity beyond the contact tier's envelope (:attr:`rho_2_over_D_max`), naming both."""
+        top = self.rho_2_over_D_max
+        if top is not None and float(rho_2_over_D) > float(top) * (1.0 + 1e-12):
             D = self.diffusivity
-            at = "" if D is None else f" (rho = {float(top) * float(D):.3g} m/s at the walk's D = {float(D):.3g} m^2/s)"
-            raise ValueError(f"rho / D = {float(rho_over_D):.4g} 1/m is beyond this pack's contact envelope, rho / D <= "
+            at = "" if D is None else f" (rho_2 = {float(top) * float(D):.3g} m/s at the walk's D = {float(D):.3g} m^2/s)"
+            raise ValueError(f"rho_2 / D = {float(rho_2_over_D):.4g} 1/m is beyond this pack's contact envelope, rho_2 / D <= "
                              f"{float(top):.4g} 1/m{at}: past it the stored contact band no longer gives a physical "
-                             "attenuation within its certificate (replay_envelope.tissue.rho_over_D_max)")
+                             "attenuation within its certificate (replay_envelope.tissue.rho_2_over_D_max)")
 
     def restate_surface_envelope(self, *, reference=None, tol=2.0, out_path=None):
-        """State the contact tier at the envelope it serves (RPK.md 8.7): per window the largest ``rho / D`` at which
+        """State the contact tier at the envelope it serves (RPK.md 8.7): per window the largest ``rho_2 / D`` at which
         the decoded contact gives a physical attenuation within ``tol`` floors
-        (:func:`~dmipy_sim.replay.bank.surface_envelope`), the pack's ``replay_envelope.tissue.rho_over_D_max`` the
+        (:func:`~dmipy_sim.replay.bank.surface_envelope`), the pack's ``replay_envelope.tissue.rho_2_over_D_max`` the
         smallest over the windows, and every window's surface rows (``err_surface``, ``floor_surface``) restated up
-        to that edge rather than at the battery's largest ``rho``, its maxima re-read and the whole's certificate
+        to that edge rather than at the battery's largest ``rho_2``, its maxima re-read and the whole's certificate
         rebuilt from them. ``reference`` is the one-window pack the windows were encoded from, whose decoded contact
         is then the error's reference; without it the error is the unphysical gain alone. Only metadata changes;
         ``out_path`` writes the pack with its tensors as they are. ``provenance.surface_envelope_restated`` records
@@ -681,11 +712,11 @@ class ReplayPack:
             raise ValueError("this pack carries no contact channel (C2): there is no surface envelope to state")
         D = self.diffusivity
         if D is None:
-            raise ValueError("the pack records no diffusivity, so rho / D cannot be stated")
+            raise ValueError("the pack records no diffusivity, so rho_2 / D cannot be stated")
         if reference is not None and reference.n_segments != 1:
             raise ValueError("the reference is the one-window pack the windows were encoded from")
-        rho_list = default_envelope().get("rho_list") or [1e-5, 3e-5, 1e-4]
-        hi = max(rho_list) / float(D)
+        rho_2_list = default_envelope().get("rho_2_list") or [1e-5, 3e-5, 1e-4]
+        hi = max(rho_2_list) / float(D)
         w = np.asarray(self.spin_weights, np.float64)
         n_seg = int(self.segments["n_t"])
         reads = []                                                   # (decoded contact, reference sums) per window
@@ -698,16 +729,16 @@ class ReplayPack:
                 k0 = i * (n_seg - 1)
                 ref = np.asarray(reference._decoded_channels(start=k0 + 1, stop=k0 + n_s)["ell"], np.float64).sum(axis=1)
             reads.append((decode_boundary_bridge(win.arrays, cm), ref))
-        rows = [surface_envelope(ell, w, rho_over_D_hi=hi, reference=ref, tol=tol) for ell, ref in reads]
+        rows = [surface_envelope(ell, w, rho_2_over_D_hi=hi, reference=ref, tol=tol) for ell, ref in reads]
         edge = float(min(r[0] for r in rows))
-        restated = [surface_envelope(ell, w, rho_over_D_hi=edge, reference=ref, tol=np.inf)[1:] if edge > 0 else (0.0, 0.0)
+        restated = [surface_envelope(ell, w, rho_2_over_D_hi=edge, reference=ref, tol=np.inf)[1:] if edge > 0 else (0.0, 0.0)
                     for ell, ref in reads]
         del reads
         fid = copy.deepcopy(self.meta.get("fidelity") or {})
         segs = fid.get("segments")
         if segs:
             for f_i, (e, f) in zip(segs, restated):
-                f_i.update(err_surface=e, floor_surface=f, surface_rho_over_D_max=edge)
+                f_i.update(err_surface=e, floor_surface=f, surface_rho_2_over_D_max=edge)
                 restate_maxima(f_i)
             if fid.get("certified") == "bounded":
                 fid = combine_segment_fidelity(segs)
@@ -717,13 +748,13 @@ class ReplayPack:
         else:
             fid.update(err_surface=restated[0][0], floor_surface=restated[0][1])
             restate_maxima(fid)
-        fid["surface_rho_over_D_max"] = edge
+        fid["surface_rho_2_over_D_max"] = edge
         self.meta["fidelity"] = fid
         env = self.meta.setdefault("replay_envelope", {})
-        env.setdefault("tissue", {})["rho_over_D_max"] = edge
+        env.setdefault("tissue", {})["rho_2_over_D_max"] = edge
         self.meta.setdefault("provenance", {})["surface_envelope_restated"] = dict(
-            rho_over_D_max=edge, rho_max_m_per_s=edge * float(D), D=float(D), per_window=[r[0] for r in rows],
-            battery_rho_over_D_max=hi, tol=float(tol), grid_points=len(np.geomspace(1.0, hi, 256)),
+            rho_2_over_D_max=edge, rho_2_max_m_per_s=edge * float(D), D=float(D), per_window=[r[0] for r in rows],
+            battery_rho_2_over_D_max=hi, tol=float(tol), grid_points=len(np.geomspace(1.0, hi, 256)),
             reference=(None if reference is None else reference.meta.get("id")))
         self._digest = None
         if out_path is not None:
@@ -996,7 +1027,7 @@ class ReplayPack:
         Three things describe a replay setting, each stated once:
 
         * ``tissue`` -- **what the material is**: a :class:`~dmipy_sim.spec.Tissue` (pool T2 / T1, the walls'
-          transverse ``rho`` and longitudinal ``rho_1``, the bulk D, the field source's chi) or ``None``, the
+          transverse ``rho_2`` and longitudinal ``rho_1``, the bulk D, the field source's chi) or ``None``, the
           bare diffusion signal. T2 / T1 are
           ``{pool name: seconds}`` over every pool of the embedded spec, ``inf`` for no decay. ``pack.nominal``
           is the embedded spec's values, so a paper's replay is ``replay(seq, tissue=pack.nominal,
@@ -1016,8 +1047,8 @@ class ReplayPack:
 
         The tiers follow from those: **gradient** (C0) always, in mode space from the position coefficients;
         **bulk relaxation** (C1) with a T2 / T1 in the tissue, under the waveform's coherence gate, on the
-        occupancy channel; **surface relaxivity** (C2) with a rho and/or a rho_1, scaled by the walk's D (the
-        tissue's, else the pack's recorded one), on the boundary local time -- rho gated by the coherence
+        occupancy channel; **surface relaxivity** (C2) with a rho_2 and/or a rho_1, scaled by the walk's D (the
+        tissue's, else the pack's recorded one), on the boundary local time -- rho_2 gated by the coherence
         (transverse) and rho_1 by its complement (stored along B0, e.g. a stimulated echo's mixing time); **field** (C3) with a chi in the tissue and a field on
         the scanner, on the path channel (or the stored basis sampled along the decoded path), the 180 the
         waveform's own. A tier whose inputs are given but which the pack does not carry raises rather than
@@ -1265,14 +1296,14 @@ class ReplayPack:
                              "the magnetisation vector through the real pulses and attenuates Mxy only, like the "
                              "forward engine; use replay() for the C2 scalar route, which applies rho_1")
         surface = None
-        if P["rho"] is not None and float(P["rho"]) != 0.0:
+        if P["rho_2"] is not None and float(P["rho_2"]) != 0.0:
             D_walk = self.diffusivity if P["D"] is None else P["D"]
             if D_walk is None:
-                raise ValueError("rho needs the walk's diffusivity: the pack did not record it, pass D=")
+                raise ValueError("rho_2 needs the walk's diffusivity: the pack did not record it, pass D=")
             if not self.has_surface:
                 raise ValueError("surface relaxivity was requested but this pack carries no C2 channel")
-            self._check_rho(float(P["rho"]) / float(D_walk))
-            surface = dict(surface_relaxivity=float(P["rho"]), D=float(D_walk))
+            self._check_rho_2(float(P["rho_2"]) / float(D_walk))
+            surface = dict(surface_relaxivity=float(P["rho_2"]), D=float(D_walk))
         n_w = P["n_w"]
         off = None
         if off_resonance_T is not None and np.any(np.asarray(off_resonance_T, np.float64) != 0.0):
@@ -1414,7 +1445,7 @@ class ReplayPack:
             raise TypeError(f"tissue is a Tissue (pack.nominal, Tissue(...)) or None for the bare diffusion signal; "
                             f"got {type(tissue).__name__}")
         t = tissue if tissue is not None else Tissue()
-        T2, T1, rho, rho_1, D, chi_iso, chi_aniso = t.T2, t.T1, t.rho, t.rho_1, t.D, t.chi_iso, t.chi_aniso
+        T2, T1, rho_2, rho_1, D, chi_iso, chi_aniso = t.T2, t.T1, t.rho_2, t.rho_1, t.D, t.chi_iso, t.chi_aniso
         field = scanner_field(scanner)
         B0, b0_dir = field.B0, field.axis                            # the MACHINE's field; the pose turns it
         if orientation is not None:
@@ -1453,22 +1484,22 @@ class ReplayPack:
                                  f"declares {min(len(T2v), len(T1v))} pools: the pack is inconsistent")
             for (seg, _, _), (chi_s, act_s) in zip(windows, window_gates):
                 logw = logw + relaxation_logweight_runs(seg.arrays, col, T2v, T1v, dt, chi_s, act_s)   # on the runs, never a track
-        if rho is not None and float(rho) != 0.0 and surface:
+        if rho_2 is not None and float(rho_2) != 0.0 and surface:
             D_walk = self.diffusivity if D is None else D
             if D_walk is None:
-                raise ValueError("rho needs the walk's diffusivity: the pack did not record it, pass D=")
-            self._check_rho(float(rho) / float(D_walk))
+                raise ValueError("rho_2 needs the walk's diffusivity: the pack did not record it, pass D=")
+            self._check_rho_2(float(rho_2) / float(D_walk))
             for (seg, _, _), (chi_s, _) in zip(windows, window_gates):
-                logw = logw + surface_logweight(seg.arrays, float(rho) / float(D_walk),
+                logw = logw + surface_logweight(seg.arrays, float(rho_2) / float(D_walk),
                                                 ch.get("boundary_local_time"), chi_s)      # raises without C2
         if rho_1 is not None and float(rho_1) != 0.0 and surface:
             # the SAME bridge contraction (surface_logweight), gated by the complement chi_parallel = active - chi:
-            # the contact channel is one series, and the C2 gate rho * chi + rho_1 * chi_parallel is linear in it, so
+            # the contact channel is one series, and the C2 gate rho_2 * chi + rho_1 * chi_parallel is linear in it, so
             # the longitudinal term is a second call summed in rather than a second channel (dmipy-sim#574).
             D_walk = self.diffusivity if D is None else D
             if D_walk is None:
                 raise ValueError("rho_1 needs the walk's diffusivity: the pack did not record it, pass D=")
-            self._check_rho(float(rho_1) / float(D_walk))
+            self._check_rho_2(float(rho_1) / float(D_walk))
             for (seg, _, _), (chi_s, act_s) in zip(windows, window_gates):
                 chi_parallel_s = np.clip(act_s - chi_s, 0.0, None)
                 logw = logw + surface_logweight(seg.arrays, float(rho_1) / float(D_walk),
@@ -1483,7 +1514,7 @@ class ReplayPack:
         voxel = np.asarray(waveform.voxel_factor(), np.float64)
         return dict(G=G, Geff=Geff, dt=dt, n_t=n_t, dt_wf=dt_wf, ch=ch, n_w=n_w, w=w, ew=ew, norm=norm, B0=B0,
                     pathway=(pathway_weight(waveform) if pathway else 1.0), voxel=voxel,
-                    b0_dir=b0_dir, chi_iso=chi_iso, chi_aniso=chi_aniso, T2=T2, T1=T1, rho=rho, rho_1=rho_1, D=D,
+                    b0_dir=b0_dir, chi_iso=chi_iso, chi_aniso=chi_aniso, T2=T2, T1=T1, rho_2=rho_2, rho_1=rho_1, D=D,
                     chi=chi, active=active, G_eff_wf=G_eff, windows=windows, window_gates=window_gates)
 
     def _n_pool_ids(self, col):
@@ -1597,10 +1628,10 @@ class ReplayPack:
         h.update(np.ascontiguousarray(P["Geff"], np.float64).tobytes())      # the acquisition on the pack's grid
         h.update(np.ascontiguousarray(P["ew"], np.float64).tobytes())        # the weights with every tissue knob applied
         h.update(np.ascontiguousarray(self.substrate_frame).tobytes())
-        rf = waveform.rf.refocus_time if waveform.rf else None
-        gate = None if getattr(waveform, "gate", None) is None else np.asarray(waveform.gate, np.float32).tobytes()
+        gate = waveform.effective_gate if waveform.gate is None else waveform.gate   # what the field accrues through
+        h.update(np.ascontiguousarray(gate, np.float32).tobytes())
         h.update(repr((float(P["norm"]), P["B0"], tuple(np.round(np.asarray(P["b0_dir"], float), 12)), P["chi_iso"],
-                       P["chi_aniso"], rf, gate, method, None if keep is None else tuple(keep),
+                       P["chi_aniso"], method, None if keep is None else tuple(keep),
                        tuple(np.round(np.asarray(P["voxel"], float), 12)))).encode())
         return root / (h.hexdigest() + ".npz")
 
@@ -2689,7 +2720,7 @@ class ReplayPack:
         The windows of a segmented walk share a save and the first save of an accumulated channel ends no step
         (#225), so joining them is a rule and not a concatenation; this is the one place it is applied for a
         consumer. The cumulative boundary local time is ``cumsum`` along the saves, which is what a surface
-        relaxivity weights: ``S(t) = <exp((rho/D) L(t))>``. ``None`` when the pack carries no C2 channel.
+        relaxivity weights: ``S(t) = <exp((rho_2/D) L(t))>``. ``None`` when the pack carries no C2 channel.
         """
         return self._decoded_channels()["ell"]
 
@@ -2988,8 +3019,8 @@ def _signal_factor(phi, voxel):
     return np.exp(1j * np.asarray(phi)) * np.asarray(voxel, np.float64)[None, :]
 
 
-def surface_logweight(arrays, rho_over_D, chan_meta=None, chi_hat=None):
-    """Per-walker surface log-weight ``(rho/D) * sum_t chi(t) ell_i(t)`` from the C2 channel.
+def surface_logweight(arrays, rho_2_over_D, chan_meta=None, chi_hat=None):
+    """Per-walker surface log-weight ``(rho_2/D) * sum_t chi(t) ell_i(t)`` from the C2 channel.
 
     C2 is stored in the bridge form (``blt_bridge_dst`` + the two exact endpoints), so the
     UNGATED total contact is ``blt_endpoint`` read directly -- it is the exact cumulative
@@ -3008,18 +3039,18 @@ def surface_logweight(arrays, rho_over_D, chan_meta=None, chi_hat=None):
             "'blt_dct_coeffs', which is retired -- re-encode it. Returning the signal without "
             "the requested attenuation would be a plausible wrong number.")
     if chi_hat is None:
-        return float(rho_over_D) * np.asarray(arrays["blt_endpoint"], np.float64)
+        return float(rho_2_over_D) * np.asarray(arrays["blt_endpoint"], np.float64)
     meta = dict(chan_meta or {})
     meta.setdefault("n_t", int(np.asarray(chi_hat).shape[0]))
     meta.setdefault("K", _cx_bands_K(arrays, meta))
-    return surface_logweight_bridge(arrays, meta, rho_over_D, chi_hat)          # the bridge contracted, never decoded
+    return surface_logweight_bridge(arrays, meta, rho_2_over_D, chi_hat)          # the bridge contracted, never decoded
 
 
-def replay_signal(pack, W, *, rho_over_D=0.0, chi_hat=None, complex_signal=False):
+def replay_signal(pack, W, *, rho_2_over_D=0.0, chi_hat=None, complex_signal=False):
     """Replay a compiled scheme ``W`` (from :func:`compile_scheme`) against ``pack`` (a :class:`ReplayPack`
     or a plain arrays dict). Returns ``E`` per measurement (magnitude unless ``complex_signal``).
 
-    ``rho_over_D`` > 0 activates the exact surface-relaxivity replay via the pack's boundary local time
+    ``rho_2_over_D`` > 0 activates the exact surface-relaxivity replay via the pack's boundary local time
     (a per-walker signal loss decaying the whole signal, including ``b=0``); ``chi_hat`` coherence-gates it.
     """
     a = pack.arrays if isinstance(pack, ReplayPack) else pack
@@ -3031,13 +3062,13 @@ def replay_signal(pack, W, *, rho_over_D=0.0, chi_hat=None, complex_signal=False
     N_w = C.shape[0]
     w0 = np.asarray(a.get("spin_weights", np.ones(N_w)), np.float64)
     surface_logw = None
-    if rho_over_D:
+    if rho_2_over_D:
         # asked for, so it must happen: a missing C2 channel raises inside surface_logweight
         # rather than being skipped. The previous form looked up a key the bridge rename
-        # retired, so `rho_over_D` was silently ignored and callers got an unattenuated signal.
+        # retired, so `rho_2_over_D` was silently ignored and callers got an unattenuated signal.
         cm = ((pack.meta.get("compression", {}).get("channels", {}) or {}).get("boundary_local_time")
               if isinstance(pack, ReplayPack) else None)
-        surface_logw = surface_logweight(a, rho_over_D, cm, chi_hat)
+        surface_logw = surface_logweight(a, rho_2_over_D, cm, chi_hat)
     return replay_coefficients(C, w0, W, surface_logw=surface_logw, complex_signal=complex_signal)
 
 

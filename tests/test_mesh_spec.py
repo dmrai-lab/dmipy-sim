@@ -16,7 +16,7 @@ from tests.replay_frames import field_along
 
 D = 2e-9
 ENV = dict(bvals=[0.0, 1e9], dirs=[[0, 0, 1]], ogse_periods=[2], shortd_b=1e9, shortd_deltas_frac=[0.05],
-           B0_list=[3.0], theta_deg=[90], delta_frac=0.2, Delta_frac=0.5, rho_list=[1e-5])
+           B0_list=[3.0], theta_deg=[90], delta_frac=0.2, Delta_frac=0.5, rho_2_list=[1e-5])
 
 
 def test_a_mesh_writes_its_spec_and_is_rebuilt_from_it(tmp_path, monkeypatch):

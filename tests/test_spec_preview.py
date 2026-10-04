@@ -120,7 +120,7 @@ def test_a_label_volume_is_its_own_grid(tmp_path):
     labels = ((i // 2 + j // 2 + k // 2) % 2).astype(np.uint8)
     path = tmp_path / "check.nhdr"
     write_nrrd(str(path), labels, voxel_size=h)
-    spec = label_volume_spec(str(path), pools={0: "free", 1: "grain"}, D=2e-9, rho=0.0,
+    spec = label_volume_spec(str(path), pools={0: "free", 1: "grain"}, D=2e-9, rho_2=0.0,
                              T2_pools={"free": 1.0, "grain": 1.0}, id="test/check")
     rec = S.preview(spec)
     assert rec["kinds"] == ["label_volume"] and rec["pixel_m"] == pytest.approx(h)

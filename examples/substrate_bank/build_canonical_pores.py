@@ -428,7 +428,7 @@ def family(work_dir, *, dry, create_dataset, rows=None):
                                 "uncertainty, which is why it is recorded rather than assumed converged"),
             FreeParameter(name="surface relaxivity", value=0.0, unit="m/s", whose="ours",
                           where="this family's walk", how="none in the walk: the packs store the boundary "
-                                "local time as a channel and rho is a replay knob, so the closed form's "
+                                "local time as a channel and rho_2 is a replay knob, so the closed form's "
                                 "wall-relaxivity case is a sweep over one pack rather than 600 more walks"),
             FreeParameter(name="save grid", value="the rule of dmipy-sim#143 at each pack's own walker count",
                           unit="-", whose="ours", where="acquisition.scanners.save_interval",

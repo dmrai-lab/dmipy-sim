@@ -11,7 +11,7 @@ together:
   * compartment occupancy (C1) -- named columns, piecewise-constant per walker, stored as row run
     lengths (:func:`rle_encode_rows`) or one static label per walker. The MT bound pool is one of these
     columns, not a channel of its own.
-  * boundary local time (C2, rho/D = 1) -- the cumulative local time ``B(t) = cumsum(ell)`` in the same
+  * boundary local time (C2, rho_2/D = 1) -- the cumulative local time ``B(t) = cumsum(ell)`` in the same
     bridge form as the positions (:func:`encode_boundary_bridge`): its two endpoints exact, its residual as
     sine bands. :func:`encode_boundary_local_time` is the per-step sparse/dense form, lossless to its value quantisation. The
     detrended-cosine ``dct`` form is retired.
@@ -472,7 +472,7 @@ def encode_boundary_bridge(dlog, K=16, dtype=np.float32, container=None, *, devi
     endpoints drifts by ~1.5e-2 under DCT-II regardless of S, and by <1e-16 under the sine form --
     so a pack can be cut at a segment boundary, or two segments merged, without the surface channel
     accumulating error the way a band codec does. ``blt_endpoint`` remains the exact total B(T) that
-    the ungated rho attenuation reads directly.
+    the ungated rho_2 attenuation reads directly.
 
     Stores (N_w, K) sine bands + two floats per walker; ratio ~ n_t/K, which GROWS with walk length.
     Lossless at K = n_t - 2 (the interior dimension), NOT at K = n_t.
@@ -491,7 +491,7 @@ def encode_boundary_bridge(dlog, K=16, dtype=np.float32, container=None, *, devi
         resid = B - (a[sl, None] + (endpoint[sl] - a[sl])[:, None] * tau)   # exactly 0 at BOTH ends
         C[sl] = dst_bands(resid[:, 1:-1], K, device=device)
     # ``dtype`` sets the band precision; packs pass f16 via build_replay_pack's ``blt_dtype``. The
-    # two ENDPOINTS are always f32 -- they are the exact quantities the rho attenuation and the
+    # two ENDPOINTS are always f32 -- they are the exact quantities the rho_2 attenuation and the
     # segment chaining read, where f16's ~3 significant digits would be a real error, not a rounding.
     meta = {"channel": "boundary_local_time", "mode": "bridge_dst", "n_t": int(nt), "K": int(K),
             "dtype": np.dtype(dtype).name}
@@ -985,8 +985,8 @@ def relaxation_logweight_runs(arrays, column, T2_per_comp, T1_per_comp, dt, chi=
     return -float(dt) * np.bincount(run_w, weights=per_run, minlength=counts.size)
 
 
-def surface_logweight_bridge(arrays, meta, rho_over_D, chi):
-    """The gated surface log-weight ``(rho/D) sum_t chi_t ell_t`` from the bridge form itself, without the per-save
+def surface_logweight_bridge(arrays, meta, rho_2_over_D, chi):
+    """The gated surface log-weight ``(rho_2/D) sum_t chi_t ell_t`` from the bridge form itself, without the per-save
     series: with ``ell = diff(B)`` (``ell_0 = B_0``, the start), summation by parts gives ``sum_t d_t B_t`` with
     ``d_t = chi_t - chi_{t+1}`` (``chi_{n_t} = 0``), and on the bridge ``B = a + (e - a) tau + u``, ``u = idst(C)``
     (DST-I, orthonormal, its own inverse), that is ``a sum d + (e - a) sum d tau + C . dst(d[1:-1])``: two scalars
@@ -1001,17 +1001,17 @@ def surface_logweight_bridge(arrays, meta, rho_over_D, chi):
     d = chi - np.concatenate([chi[1:], [0.0]])
     tau = np.linspace(0.0, 1.0, nt)
     dhat = dst(d[1:-1], type=1, norm="ortho")[:K]
-    return float(rho_over_D) * (a * d.sum() + (e - a) * (d * tau).sum() + C @ dhat)
+    return float(rho_2_over_D) * (a * d.sum() + (e - a) * (d * tau).sum() + C @ dhat)
 
 
-def surface_logweight_series(blt, rho_over_D, chi=None):
-    """Per-walker surface-relaxivity log-weight ``(rho/D) sum_k chi_k ell_i(t_k)`` from the
-    per-save boundary local-time SERIES ``blt`` (``(n_walkers, n_t)``, stored at ``rho/D = 1``,
+def surface_logweight_series(blt, rho_2_over_D, chi=None):
+    """Per-walker surface-relaxivity log-weight ``(rho_2/D) sum_k chi_k ell_i(t_k)`` from the
+    per-save boundary local-time SERIES ``blt`` (``(n_walkers, n_t)``, stored at ``rho_2/D = 1``,
     ``<= 0``). The pack-level entry point, which reads the C2 channel and its exact endpoint, is
     :func:`dmipy_sim.replay.replay.surface_logweight`."""
     blt = np.asarray(blt, np.float64)
     s = blt.sum(1) if chi is None else (np.asarray(chi, float)[None, :] * blt).sum(1)
-    return float(rho_over_D) * s
+    return float(rho_2_over_D) * s
 
 
 # --------------------------------------------------------- envelope & fidelity

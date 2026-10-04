@@ -39,10 +39,10 @@ print(sorted(os.listdir(f"{tmp}/layout"))[:3], index["n_rows"], "rows")
 ```python
 pack = ReplayPack.open(f"{tmp}/layout")                               # a directory here; "hf://owner/name/prefix" on the hub
 seq = d.set_b(d.pgse([[1, 0, 0], [0, 0, 1]], 0.2e-3, 0.5e-3, gradient_strengths=0.1, n_t=pack.meta["walk_params"]["n_t"], slew_rate=np.inf), [1e9, 1e9])
-plan = pack.plan(seq, tissue=Tissue(rho=1e-6))                       # bands, modes, tiers, bytes: nothing has moved yet
+plan = pack.plan(seq, tissue=Tissue(rho_2=1e-6))                       # bands, modes, tiers, bytes: nothing has moved yet
 print(plan["K"], plan["contact"], plan["bytes_per_row"], plan["bytes"])
 view = pack.view(voxels=[(0, 0, 0)], contact=True)                    # one voxel's rows: an ordinary ReplayPack
-print(view.n_walkers, np.round(view.replay(seq, tissue=Tissue(rho=1e-6)), 3))
+print(view.n_walkers, np.round(view.replay(seq, tissue=Tissue(rho_2=1e-6)), 3))
 ```
 
 `plan` decides from the manifest's variance tables how many band groups the acquisition needs to stay within a
@@ -52,7 +52,7 @@ reads those bands and the tiers asked for, for the voxels asked for. On the hub 
 ## The image loop
 
 ```python
-S, floor, plan = pack.image(seq, tissue=Tissue(rho=1e-6), chunk_rows=6)
+S, floor, plan = pack.image(seq, tissue=Tissue(rho_2=1e-6), chunk_rows=6)
 print(S.shape, floor.shape, plan["rows"])                             # (grid, n_meas): NaN where the pack has no rows
 ```
 
@@ -61,7 +61,7 @@ walker's phase, the device forms the exponential and the sum over each voxel's r
 share the pass:
 
 ```python
-S3, _, plan = pack.image(seq, settings=[(None, None), (Tissue(rho=1e-6), None), (Tissue(rho=2e-6), None)], chunk_rows=6)
+S3, _, plan = pack.image(seq, settings=[(None, None), (Tissue(rho_2=1e-6), None), (Tissue(rho_2=2e-6), None)], chunk_rows=6)
 print(S3.shape, plan["settings"])                                     # (3, grid, n_meas) from one read
 ```
 
@@ -70,7 +70,7 @@ print(S3.shape, plan["settings"])                                     # (3, grid
 ```python
 from dmipy_sim.replay.study import Protocol, Study
 axial = d.set_b(d.pgse([[0, 1, 0]], 0.2e-3, 0.4e-3, gradient_strengths=0.1, n_t=pack.meta["walk_params"]["n_t"], slew_rate=np.inf), [5e8])
-study = Study(Protocol([seq, axial]), tissues=[None, Tissue(rho=1e-6)], scanners=[None], name="guide")
+study = Study(Protocol([seq, axial]), tissues=[None, Tissue(rho_2=1e-6)], scanners=[None], name="guide")
 S, floor, plan = pack.image(study, chunk_rows=6)
 print(S.shape, floor.shape, plan["study"]["pairs"][1]["tissue"])    # (pairs, grid, 3 measurements), a floor per pair, the record
 print(np.nanmedian(floor[0]) >= 0)

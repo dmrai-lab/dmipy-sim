@@ -392,7 +392,7 @@ class PartitionPhantom(Phantom):
             if pk is None and m.get("kind") == "pack" and m.get("embedded"):
                 pre = f"substrate{i}/"
                 pk = ReplayPack({k[len(pre):]: v for k, v in arrays.items() if k.startswith(pre)}, m["pack_meta"])
-            s = substrate_from_meta(m, pack=pk)
+            s = substrate_from_meta(m, pack=pk, rph_schema_version=meta.get("rph_schema_version"))
             if isinstance(s, PackSubstrate):
                 pack_subs.append(s)
             elif m.get("declared"):
