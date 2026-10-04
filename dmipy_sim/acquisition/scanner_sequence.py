@@ -292,9 +292,10 @@ class ScannerSequence:
         """The gate every phase of the acquisition accrues through, ``(n_t,)`` float32: the coherence sign
         ``rf.sign(t)`` (RPK.md 6.6) times the schedule's transverse gate
         (:meth:`~dmipy_sim.acquisition.rf.RFSchedule.transverse_gate`: 1 transverse, 0 stored, every pulse acting
-        at its centre). It is zero while the magnetisation is stored along z, where nothing played or imposed adds
-        phase (a magnet's own gradient, or a gradient's Maxwell field, through a stimulated echo's mixing time).
-        :attr:`G_eff` and the Maxwell field's order-0 phase (:meth:`with_concomitant`) both accrue through it.
+        at its centre). It is zero while the magnetisation is stored along B0, where nothing played or imposed adds
+        phase (a magnet's own gradient, a gradient's Maxwell field or a tissue's susceptibility field, through a
+        stimulated echo's mixing time). :attr:`G_eff`, the Maxwell field's order-0 phase (:meth:`with_concomitant`)
+        and the replay's field tier (:func:`~dmipy_sim.replay._replay_kernel.field_gate`) all accrue through it.
         Binary across a finite pulse too, where :attr:`chi_perp` is the transverse fraction relaxation reads: a
         field is on through a pulse, and to first order a symmetric pulse acts on its phase at its centre."""
         s = self.rf.sign(np.arange(self.n_t) * self.dt)

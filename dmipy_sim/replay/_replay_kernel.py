@@ -158,15 +158,16 @@ def gate_weights(chi, dt_wf, n_t, dt_pack, t0=None):
 
 
 def field_gate(waveform, n_t, dt_pack, t0=None):
-    """The per-save weights that integrate a field SAMPLED at the saves over an acquisition: the sequence's own
-    sign ``s(t)`` (its refocusing pulses, RPK.md 6.6) read on its grid onto the pack grid by :func:`gate_weights`,
-    and zero beyond its echo -- so an acquisition shorter than the walk ends at its echo, and the gate is the one
-    ``G_eff`` was folded with. ``(n_t,)``; multiply per-save values by ``dt_pack`` and these weights. ``t0`` reads
-    the window of the walk starting there."""
-    if getattr(waveform, "gate", None) is not None:                     # a pathway's own sign (replay.pathways)
-        return gate_weights(np.asarray(waveform.gate, np.float64), float(waveform.dt), n_t, dt_pack, t0=t0)[0]
-    t = np.arange(int(waveform.n_t)) * float(waveform.dt)
-    return gate_weights(waveform.rf.sign(t), float(waveform.dt), n_t, dt_pack, t0=t0)[0]
+    """The per-save weights that integrate a field SAMPLED at the saves over an acquisition: the acquisition's
+    :attr:`~dmipy_sim.acquisition.scanner_sequence.ScannerSequence.effective_gate` (the coherence sign, RPK.md 6.6,
+    times the transverse gate: zero while a stimulated echo's magnetisation is stored along B0) read on its grid onto
+    the pack grid by :func:`gate_weights`, and zero beyond its echo -- so an acquisition shorter than the walk ends
+    at its echo, and the field accrues through the one gate ``G_eff`` was folded with. A pathway-gated waveform
+    (:mod:`dmipy_sim.replay.pathways`) carries its pathway's signed gate, its ``G`` already folded with it.
+    ``(n_t,)``; multiply per-save values by ``dt_pack`` and these weights. ``t0`` reads the window of the walk
+    starting there."""
+    gate = waveform.effective_gate if waveform.gate is None else waveform.gate
+    return gate_weights(np.asarray(gate, np.float64), float(waveform.dt), n_t, dt_pack, t0=t0)[0]
 
 
 def effective_gradient(G, dt_wf, n_t, dt_pack, t0=None):
