@@ -14,7 +14,7 @@ print(wm)
 | `T2`, `T1` | s, per pool | the bulk relaxation tier: a weight per walker from its transverse and longitudinal exposure in each pool | the occupancy channel (C1) |
 | `rho2` | m/s | the surface tier: a weight from the walker's gated wall contact, at the rate `rho2 / D` | the contact channel (C2) |
 | `D` | m²/s | the diffusivity `rho2` is scaled by; the walk's own when None | — |
-| `chi_iso`, `chi_aniso` | dimensionless | the field tier: a phase from the field source's susceptibility, at the scanner's field | the path channel (C3) and a [scanner](scanner.md) |
+| `chi_iso`, `chi_aniso` | dimensionless | the field tier: a phase from the field source's susceptibility, at the scanner's field | a pack whose field is present (C3) and a [scanner](scanner.md) |
 
 Every field is optional and `None` switches its tier off. Per-pool values are one `{pool name: seconds}` mapping
 over every pool of the pack's spec, `float("inf")` for a pool that does not decay; a pool left out, an unknown
@@ -67,13 +67,14 @@ print(white_matter(3.0).T2, white_matter(7.0).T2)
 
 ## What is refused
 
-A tier asked for that the pack does not carry raises, and so does a scanner paired with a tissue that has no
-susceptibility in a [study](replay.md); the alternative in each case would be a plausible wrong number.
+A tier asked for that the pack does not carry raises, and so does a susceptibility on a pack whose field is absent
+(nothing in the substrate is magnetic) or a susceptibility with no scanner on one whose field is present (the
+[scanner](scanner.md) page has the rule); the alternative in each case would be a plausible wrong number.
 
 ```python
 from dmipy_sim.replay.study import Protocol, Study
 try:
-    pack.study(Study(Protocol([seq]), tissues=[Tissue(T2={"extra": 0.05, "intra": 0.05})], scanners=[3.0]))   # a field on a tissue without chi
+    pack.study(Study(Protocol([seq]), tissues=[Tissue(chi_iso=-1e-7)], scanners=[3.0]))   # chi on a substrate with nothing magnetic
 except ValueError as e:
     print("refused:", str(e)[:60])
 try:

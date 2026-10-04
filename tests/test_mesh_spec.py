@@ -63,7 +63,7 @@ def _bundle_spec(tmp_path, n_fibres=2, L=8.0e-6):
                           "surface_relaxivity": {"inside": 1e-6 if tag == "inner" else 0.0, "outside": 0.0 if tag == "inner" else 1e-6},
                           "mt_reactivity": {"inside": 0.0, "outside": 0.0}})
     return SubstrateSpec.from_dict({
-        "substrate_spec_version": "0.1", "id": "test/bundle-2",
+        "substrate_spec_version": "0.1", "id": "test/bundle-2", "susceptibility_field": "present",
         "domain": {"box_min": [-L / 2] * 3, "box_max": [L / 2] * 3, "boundary": ["reflect", "reflect", "reflect"]},
         "frame": {"axis": [0, 0, 1]},
         "pools": [{"id": 0, "name": "extra", "D": D, "T2": 0.08, "T1": 1.0, "water_fraction": 1.0, "susceptibility": None},

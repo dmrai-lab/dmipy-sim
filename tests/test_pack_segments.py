@@ -12,11 +12,13 @@ from dmipy_sim import build_replay_pack
 from dmipy_sim.replay import bank
 from dmipy_sim.replay.bank import SEGMENT_T, combine_segment_fidelity, segment_plan
 from dmipy_sim.replay.study import walker_primitives
+from dmipy_sim.spec.substrate import Susceptibility
 from dmipy_sim.spec.tissue import Tissue
 from tests.test_bank import _lean_env, _susc_master, _sample_susc
 
 N_T, DT, N_W = 41, 5e-4, 600                 # 20 ms of walk; two windows of 10 ms
 TIS = Tissue(T2={"extra": 0.05, "intra": 0.02}, T1={"extra": 1.0, "intra": 0.5}, rho2=2e-5, chi_iso=1e-7)
+TIS0 = TIS.replace(chi_iso=None)              # the same material read without a field: no scanner, no chi (#593)
 
 
 def _master():
@@ -26,7 +28,8 @@ def _master():
     m["T_max"] = (N_T - 1) * DT
     comp = np.zeros((N_W, N_T), np.int8); comp[:200, 25:] = 1          # a third of the walkers cross in window 1
     m["comp"] = comp
-    m["substrate"] = d.PackedCylinders([1e-6], [[0.0, 0.0]], 10e-6).spec.to_dict()   # names for the two pools the walk labels
+    m["substrate"] = d.PackedCylinders([1e-6], [[0.0, 0.0]], 10e-6).spec.replace(       # names for the two pools the walk labels,
+        susceptibility={"intra": Susceptibility(None, None, "none")}, susceptibility_field="present").to_dict()   # one the slab field's source
     return _sample_susc(m)         # sampled after the slice to N_T, so the samples match the sliced trajectory
 
 
@@ -75,7 +78,7 @@ def test_a_window_is_the_pack_a_fresh_walk_of_it_would_be(packs):
     npt.assert_allclose(two.positions(), np.asarray(m["traj"]), atol=1e-11)
 
 
-@pytest.mark.parametrize("knobs", [dict(), dict(tissue=TIS), dict(tissue=TIS, scanner=3.0)])
+@pytest.mark.parametrize("knobs", [dict(), dict(tissue=TIS0), dict(tissue=TIS, scanner=3.0)])
 def test_two_windows_replay_as_one_on_every_tier(packs, knobs):
     m, one, two = packs
     seq = _seq()
@@ -126,7 +129,7 @@ def test_a_prefix_of_whole_windows_is_a_range_and_a_partial_one_re_encodes(packs
     pp = two.prefix(0.015)
     assert pp.n_segments == 1 and pp.n_t == 31 and pp.fidelity["within_2x_floor"]
     seq = d.pgse([[1, 0, 0]], 0.003, 0.009, gradient_strengths=0.3, n_t=31, slew_rate=np.inf)   # TE = 15 ms
-    npt.assert_allclose(pp.replay(seq, tissue=TIS, complex_signal=True), two.replay(seq, tissue=TIS, complex_signal=True), atol=3e-3)
+    npt.assert_allclose(pp.replay(seq, tissue=TIS0, complex_signal=True), two.replay(seq, tissue=TIS0, complex_signal=True), atol=3e-3)
 
 
 def test_the_plan_refuses_a_walk_that_is_not_whole_windows():
@@ -163,7 +166,7 @@ def _crushed_train(n_echoes=8, beta=120.0):
 
 
 @pytest.mark.parametrize("engine", ["numpy", "jax"])
-@pytest.mark.parametrize("knobs", [dict(), dict(tissue=TIS, scanner=3.0), dict(tissue=TIS, b1_scale=0.9), dict(off_resonance_T=2e-7)])
+@pytest.mark.parametrize("knobs", [dict(), dict(tissue=TIS, scanner=3.0), dict(tissue=TIS0, b1_scale=0.9), dict(off_resonance_T=2e-7)])
 def test_the_bloch_route_hands_the_state_across_windows(packs, knobs, engine):
     """The vector-Bloch propagation over two windows, the refocusing pulse exactly on the join, equals the one-window
     propagation to rounding; the state every walker leaves a window in is the state it starts the next in."""
@@ -182,8 +185,8 @@ def test_the_bloch_route_hands_the_state_across_windows(packs, knobs, engine):
 def test_a_crushed_train_spans_the_windows(packs):
     m, one, two = packs
     train = _crushed_train()
-    a = one.replay_bloch(train, tissue=TIS, complex_signal=True, jax=True)
-    b = two.replay_bloch(train, tissue=TIS, complex_signal=True, jax=True)
+    a = one.replay_bloch(train, tissue=TIS0, complex_signal=True, jax=True)
+    b = two.replay_bloch(train, tissue=TIS0, complex_signal=True, jax=True)
     assert a.shape == (1, 8)
     npt.assert_allclose(b, a, atol=1e-5)
 
@@ -193,11 +196,11 @@ def test_the_bloch_route_reads_at_the_acquisitions_readout(packs):
     the one-window pack and the first window alone agree, and with an ideal pulse the scalar route agrees too."""
     m, one, two = packs
     short = d.pgse([[1, 0, 0]], 0.002, 0.006, gradient_strengths=0.3, n_t=21, slew_rate=np.inf)   # TE = 10 ms of 20
-    a = one.replay_bloch(short, tissue=TIS, complex_signal=True)
-    b = two.replay_bloch(short, tissue=TIS, complex_signal=True)
-    c = two.segment(0).replay_bloch(short, tissue=TIS, complex_signal=True)
+    a = one.replay_bloch(short, tissue=TIS0, complex_signal=True)
+    b = two.replay_bloch(short, tissue=TIS0, complex_signal=True)
+    c = two.segment(0).replay_bloch(short, tissue=TIS0, complex_signal=True)
     npt.assert_allclose(b, a, atol=1e-8); npt.assert_allclose(c, a, atol=1e-8)
-    npt.assert_allclose(np.abs(a), one.replay(short, tissue=TIS), rtol=1e-4)
+    npt.assert_allclose(np.abs(a), one.replay(short, tissue=TIS0), rtol=1e-4)
 
 
 def test_a_walk_continues_from_its_end_and_appends_as_segments():
@@ -293,7 +296,7 @@ def _c2_slab_master(n_w=300, n_t=C2_N_T, dt=C2_DT, seed=0):
     traj[:, :, 1:] = np.cumsum(rng.normal(0, step, (n_w, n_t, 2)), axis=1)
     return dict(traj=traj, dt_traj=dt, T_max=(n_t - 1) * dt,
                 comp=np.zeros((n_w, n_t), np.int8), comp0=np.zeros(n_w, np.int64),
-                w=np.ones(n_w), dlog_b=-dlog, D_intra=C2_D0, n_walkers=n_w, seed=seed)
+                w=np.ones(n_w), dlog_b=-dlog, D_intra=C2_D0, n_walkers=n_w, seed=seed, susceptibility_field="absent")
 
 
 def test_a_one_window_pack_longer_than_the_storage_rule_gets_the_band_floor():

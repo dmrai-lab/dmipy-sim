@@ -3,6 +3,7 @@
   "id": "examples/isolated-cylinder-5um",
   "description": "One infinite impermeable cylinder of radius 5 um in an open domain; only the lumen is a pool, the outside is void. What dmipy_sim.Cylinder(5e-6, (0,0,1)) means.",
   "domain": {"box_min": [-2e-5, -2e-5, -2e-5], "box_max": [2e-5, 2e-5, 2e-5], "boundary": ["open", "open", "open"]},
+  "susceptibility_field": "absent",
   "frame": {"axis": [0.0, 0.0, 1.0], "in_plane": null},
   "pools": [
     {"id": 0, "name": "extra", "D": 0.0, "T2": null, "T1": null, "water_fraction": 0.0, "susceptibility": null},

@@ -90,7 +90,9 @@ class Study:
     @property
     def needs_field(self):
         from .replay import scanner_field
-        return any(scanner_field(s).B0 not in (None, 0.0) and t is not None and t.chi_iso is not None for t, s in (self.resolved(k) for k in range(len(self))))
+        def magnetised(t):
+            return t is not None and any(v is not None and float(v) != 0.0 for v in (t.chi_iso, t.chi_aniso))
+        return any(scanner_field(s).B0 not in (None, 0.0) and magnetised(t) for t, s in (self.resolved(k) for k in range(len(self))))
 
     @property
     def needs_contact(self):
@@ -125,7 +127,9 @@ class Primitives:
     (:func:`~dmipy_sim.acquisition.epg.pathway_weight`; 1 for a refocused echo, a stimulated echo's
     ``0.5 sin a1 sin a2 sin a3`` for a store-and-recall schedule), and ``voxel`` the voxel's factor per
     measurement (:meth:`~dmipy_sim.acquisition.scanner_sequence.ScannerSequence.voxel_factor`; required, since a
-    default of 1 is wrong for an unbalanced encoding rather than merely absent). A tissue and a
+    default of 1 is wrong for an unbalanced encoding rather than merely absent), and ``susceptibility_field`` the
+    pack's declared field (``"present"`` or ``"absent"``, required: it decides what a tissue's chi may do, through
+    :func:`~dmipy_sim.replay.replay.field_term`). A tissue and a
     scanner turn these into the per-walker weights and phases of :meth:`signals`, whose ensemble mean is
     :meth:`signal`."""
     w: np.ndarray
@@ -137,6 +141,7 @@ class Primitives:
     contact: Optional[np.ndarray]
     D_walk: Optional[float]
     voxel: np.ndarray                                          # required: there is no sane default (see __post_init__)
+    susceptibility_field: str                                  # the pack's declaration: "present" or "absent"
     pathway: float = 1.0
     by_pool: object = field(repr=False, default=None)          # the pack's resolver of a per-pool value
     rho2_over_D_max: Optional[float] = None                     # the contact tier's envelope (RPK.md 8.7), None unbounded          # the pack's resolver of a per-pool value
@@ -206,16 +211,16 @@ class Primitives:
         return invT2, invT1, rho2_D, rho1_D
 
     def field_scalars(self, tissue, scanner):
-        """``(B0 chi_iso, B0 chi_aniso)`` for a pair, ``(0, 0)`` without a field."""
-        from .replay import scanner_field
-        B0 = scanner_field(scanner).B0
-        if B0 is None or float(B0) == 0.0:
+        """``(B0 chi_iso, B0 chi_aniso)`` for a pair as :func:`~dmipy_sim.replay.replay.field_term` resolves it on the
+        pack's declared field, ``(0, 0)`` when that term is zero."""
+        from .replay import field_term
+        f = field_term(self.susceptibility_field, tissue, scanner)
+        if not f.active:
             return 0.0, 0.0
-        if tissue is None or tissue.chi_iso is None:
-            raise ValueError("a scanner field was given without a chi_iso in the tissue; give a tissue with chi_iso (and chi_aniso)")
         if self.field_iso is None:
-            raise ValueError("a field was asked for but this pack carries no path channel (C3)")
-        return float(B0) * float(tissue.chi_iso), float(B0) * float(tissue.chi_aniso or 0.0)
+            raise ValueError("this pair has a field term but these primitives carry no path channel (C3): contract "
+                             "them from a pack read with its field modes")
+        return f.B0 * f.chi_iso, f.B0 * f.chi_aniso
 
     def reduction_terms(self, tissue=None, scanner=None):
         """Every term that turns these primitives into a signal, resolved once for a pair: ``invT2`` / ``invT1`` the
@@ -309,7 +314,8 @@ def walker_primitives(pack, acquisition):
     from ..acquisition.epg import pathway_weight
     return Primitives(w=P["w"], phi=phi, field_iso=field_iso, field_aniso=field_aniso, exposure_t2=exposure_t2, exposure_t1=exposure_t1,
                       contact=contact, contact_t1=contact_t1, D_walk=pack.diffusivity, pathway=pathway_weight(acq.waveform),
-                      rho2_over_D_max=pack.rho2_over_D_max, voxel=P["voxel"], by_pool=pack._by_pool)
+                      rho2_over_D_max=pack.rho2_over_D_max, voxel=P["voxel"], by_pool=pack._by_pool,
+                      susceptibility_field=pack.susceptibility_field)
 
 
 def study_signals(pack, study):

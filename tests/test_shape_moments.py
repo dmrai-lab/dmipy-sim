@@ -276,7 +276,7 @@ def test_the_field_direction_is_a_knob(layout_field):
     iso, aniso = field_terms(Psi, [1.0, 0.0, 0.0])
     prim_x = Primitives(w=prim.w, phi=prim.phi, field_iso=iso, field_aniso=aniso if aniso is not None else np.zeros_like(iso),
                         exposure_t2=prim.exposure_t2, exposure_t1=prim.exposure_t1, contact=prim.contact, D_walk=prim.D_walk,
-                        voxel=prim.voxel, pathway=prim.pathway, by_pool=prim.by_pool)
+                        voxel=prim.voxel, pathway=prim.pathway, by_pool=prim.by_pool, susceptibility_field=prim.susceptibility_field)
     w, ew, E = prim_x.signals(t, 3.0)
     keys, ref = _per_voxel(merged, grid, w, ew, E)
     assert np.abs(Sx.reshape(-1, 2)[keys] - ref).max() < 5e-6

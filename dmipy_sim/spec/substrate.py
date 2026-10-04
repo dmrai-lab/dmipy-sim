@@ -4,7 +4,8 @@ The document is normative (replay-pack-spec/SUBSTRATE.md); ``substrate.schema.js
 module is the type schema; :func:`validate` checks the schema's constraints (without needing the
 ``jsonschema`` package) and the invariants the schema cannot express: dense pool ids with 0 the free
 pool, walls between existing pools, void outside a wall implying an impermeable wall, seeded pools
-that exist, a box with positive extent, tiers consistent with the content.
+that exist, a box with positive extent, tiers consistent with the content, the susceptibility field declared
+present exactly when a pool is a field source.
 """
 from __future__ import annotations
 
@@ -24,6 +25,9 @@ FRAME_SOURCES = ("structural",)
 SEEDING_RULES = ("uniform_by_volume", "explicit")
 WEIGHT_RULES = ("water_fraction", "thin")
 TIERS = ("gradient", "relaxation", "surface", "field", "exchange")
+#: The values of ``susceptibility_field``: the substrate's susceptibility field is present (some pool is a field
+#: source) or absent (nothing in the substrate is magnetic, so the field is identically zero).
+SUSCEPTIBILITY_FIELD = ("present", "absent")
 #: The numbers a :class:`Pool` carries, which :meth:`SubstrateSpec.replace` takes per pool.
 POOL_VALUES = ("D", "T1", "T2", "water_fraction", "susceptibility")
 
@@ -169,6 +173,9 @@ class SubstrateSpec:
     realisation: Optional[dict] = None
     provenance: Optional[dict] = None
     substrate_spec_version: str = SPEC_VERSION
+    #: ``"present"`` when a pool is a field source, ``"absent"`` when nothing in the substrate is magnetic (the
+    #: field is identically zero); required, and validated against the pools (:data:`SUSCEPTIBILITY_FIELD`).
+    susceptibility_field: str = field(kw_only=True)
 
     # ---- pools and walls by name ----
     def pool(self, name_or_id):
@@ -271,6 +278,8 @@ def _build(cls, d):
     unknown = set(d) - names
     if unknown:
         raise SpecError(f"{cls.__name__}: unknown keys {sorted(unknown)}")
+    if cls is SubstrateSpec and "susceptibility_field" not in d:
+        raise SpecError(_MISSING_FIELD_DECLARATION)
     for f in fields(cls):
         if f.name not in d:
             continue
@@ -298,6 +307,11 @@ def _strip(x):
 
 
 # ---------------------------------------------------------------------------------- validation
+_MISSING_FIELD_DECLARATION = (
+    "spec: missing required key 'susceptibility_field' -- every substrate declares its susceptibility field "
+    "\"present\" (a pool is a field source) or \"absent\" (nothing in it is magnetic, the field is identically zero)")
+
+
 def _req(d, key, where):
     if key not in d:
         raise SpecError(f"{where}: missing required key {key!r}")
@@ -359,6 +373,8 @@ def validate(d):
         d = d.to_dict()
     for k in ("substrate_spec_version", "id", "domain", "frame", "pools", "walls", "seeding", "validity"):
         _req(d, k, "spec")
+    if "susceptibility_field" not in d:
+        raise SpecError(_MISSING_FIELD_DECLARATION)
     if not str(d["substrate_spec_version"]).startswith("0."):
         raise SpecError(f"substrate_spec_version {d['substrate_spec_version']!r}: this validator reads 0.x")
     if not isinstance(d["id"], str) or not d["id"]:
@@ -496,6 +512,16 @@ def validate(d):
         raise SpecError("validity.tiers lists 'surface' but the substrate has no wall (and no relaxing reflect face)")
     if "field" in tiers and not any(p.get("susceptibility") for p in pools):
         raise SpecError("validity.tiers lists 'field' but no pool is a field source (susceptibility)")
+    decl = d["susceptibility_field"]
+    if decl not in SUSCEPTIBILITY_FIELD:
+        raise SpecError(f"susceptibility_field must be one of {SUSCEPTIBILITY_FIELD}, got {decl!r}")
+    sources = [p.get("name") for p in pools if p.get("susceptibility")]
+    if decl == "present" and not sources:
+        raise SpecError("susceptibility_field is 'present' but no pool is a field source (susceptibility): a substrate "
+                        "with nothing magnetic declares it 'absent'")
+    if decl == "absent" and sources:
+        raise SpecError(f"susceptibility_field is 'absent' but the pool(s) {sources} are field sources "
+                        "(susceptibility): a substrate with a magnetic pool declares it 'present'")
     if "relaxation" in tiers and not (n_pools > 1 or any(p.get("T2") for p in pools)):
         raise SpecError("validity.tiers lists 'relaxation' but there is one pool and no T2")
     if "exchange" in tiers and not any(w["permeability"]["in_to_out"] > 0 or w["permeability"]["out_to_in"] > 0

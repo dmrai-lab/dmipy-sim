@@ -211,6 +211,89 @@ def scanner_field(scanner):
     return ScannerField(B0=float(scanner))
 
 
+def declared_susceptibility_field(meta, *, has_field):
+    """The ``susceptibility_field`` a pack's (or a layout's) metadata ``meta`` declares, ``"present"`` or
+    ``"absent"``, with ``has_field`` whether it stores the field channel (C3). Refused: no declaration (every pack
+    states one), another value, ``"absent"`` beside a stored channel, and a declaration the embedded substrate spec
+    contradicts."""
+    from ..spec.substrate import SUSCEPTIBILITY_FIELD
+    name = meta.get("id")
+    v = meta.get("susceptibility_field")
+    if v is None:
+        raise ValueError(
+            f"pack {name!r} declares no susceptibility_field: every pack states its field channel \"present\" or "
+            "\"absent\" (nothing in the substrate is magnetic). Stamp the declaration into its metadata "
+            "(ReplayPack.stamp_susceptibility_field) or rebuild it with build_replay_pack")
+    if v not in SUSCEPTIBILITY_FIELD:
+        raise ValueError(f"pack {name!r} declares susceptibility_field {v!r}; it is one of {SUSCEPTIBILITY_FIELD}")
+    if v == "absent" and has_field:
+        raise ValueError(f"pack {name!r} declares its susceptibility field absent and stores a field channel (C3): "
+                         "the pack contradicts itself")
+    spec = meta.get("substrate")
+    if spec is not None and spec.get("susceptibility_field") != v:
+        raise ValueError(f"pack {name!r} declares susceptibility_field {v!r} and its embedded spec "
+                         f"{spec.get('susceptibility_field')!r}: the pack and its substrate disagree")
+    return v
+
+
+@dataclass(frozen=True)
+class FieldTerm:
+    """The susceptibility term of one replay, as :func:`field_term` resolves it: the static field ``B0`` (tesla) and
+    its direction ``axis`` in the machine's frame, with the tissue's ``chi_iso`` / ``chi_aniso``. ``B0`` is
+    ``None`` when the term is identically zero -- a substrate with nothing magnetic, a tissue with no
+    susceptibility, or a field of zero tesla -- and every route then reads no field channel at all."""
+    B0: object = None
+    axis: tuple = (0.0, 0.0, 1.0)
+    chi_iso: float = 0.0
+    chi_aniso: float = 0.0
+
+    @property
+    def active(self):
+        return self.B0 is not None
+
+
+def field_term(declared, tissue, scanner):
+    """The susceptibility term a pack's declared field, a tissue and a scanner give together (dmipy-sim#593): the
+    one place a tissue's ``chi_iso`` / ``chi_aniso`` meets a pack's ``susceptibility_field`` and a scanner's
+    ``B0``. Every replay route resolves its field here -- :meth:`ReplayPack._prepare` for the routes that read a
+    tissue with the walk, :meth:`~dmipy_sim.replay.study.Primitives.reduction_terms` for those that apply it to
+    contracted primitives (the study, the columnar image, the shape-moment layout) -- so the rule holds on all of
+    them:
+
+    * ``"absent"``: nothing in the substrate is magnetic and its field is identically zero. A non-zero tissue
+      ``chi_iso`` or ``chi_aniso`` is refused by name; any ``B0``, of any strength along any axis, is accepted
+      and has no effect.
+    * ``"present"``: a non-zero tissue chi needs a field to act in, so one given with ``scanner=None`` is refused.
+      A zero or absent chi at any ``B0`` is a field term of zero.
+
+    Returns a :class:`FieldTerm`, inactive (``B0`` None) whenever the term is zero."""
+    from ..spec.substrate import SUSCEPTIBILITY_FIELD
+    if declared not in SUSCEPTIBILITY_FIELD:
+        raise ValueError(f"a pack's susceptibility_field is one of {SUSCEPTIBILITY_FIELD}; got {declared!r}")
+    f = scanner_field(scanner)
+    chi = {k: getattr(tissue, k, None) for k in ("chi_iso", "chi_aniso")}
+    given = {k: float(v) for k, v in chi.items() if v is not None and float(v) != 0.0}
+    if declared == "absent":
+        if given:
+            raise ValueError(
+                f"the tissue gives {', '.join(f'{k} = {v:.4g}' for k, v in given.items())}, and this pack declares its "
+                "susceptibility field absent: nothing in its substrate is magnetic, so there is no source for a "
+                "susceptibility to act on. Replay it with a tissue without chi_iso / chi_aniso (a B0 is accepted and "
+                "has no effect)")
+        return FieldTerm(axis=f.axis)
+    if not given:
+        return FieldTerm(axis=f.axis)
+    if f.B0 is None:
+        raise ValueError(
+            f"the tissue gives {', '.join(f'{k} = {v:.4g}' for k, v in given.items())} and no scanner field "
+            "(scanner=None): a susceptibility acts only in a B0, and replaying it without one drops the substrate's "
+            "field from the signal. Give scanner= (a ScannerLimits or a field strength in tesla), or a tissue without "
+            "chi_iso / chi_aniso for the field-free signal")
+    if float(f.B0) == 0.0:
+        return FieldTerm(axis=f.axis)
+    return FieldTerm(B0=float(f.B0), axis=f.axis, chi_iso=given.get("chi_iso", 0.0), chi_aniso=given.get("chi_aniso", 0.0))
+
+
 def _pose_matrix(pose):
     """A specimen pose as a 3x3 rotation, from a matrix or an object with ``.rotation``; ``None`` stays ``None``."""
     if pose is None:
@@ -480,7 +563,8 @@ class ReplayPack:
 
         m = dict(traj=LazyWalk(_positions, (n_w, stop - start, 3)), dt_traj=dt, T_max=(stop - start - 1) * dt,
                  walkers_shuffled=bool(self.meta.get("compression", {}).get("precision_tiers", {}).get("walkers_shuffled", False)),
-                 seed=seed_value(wp.get("seed", 0)), substrate_frame=self.substrate_frame)
+                 seed=seed_value(wp.get("seed", 0)), substrate_frame=self.substrate_frame,
+                 susceptibility_field=self.susceptibility_field)
         if "spin_weights" in self.arrays:
             m["w"] = np.asarray(self.arrays["spin_weights"], np.float64)
         if self.meta.get("substrate") is not None:
@@ -763,28 +847,40 @@ class ReplayPack:
         return ch.get("susceptibility_path") is not None or "susc_grid_iso_local" in self.arrays
 
     @property
-    def field_is_zero(self):
-        """The substrate declares no field source: its embedded spec names no pool susceptibility, so its
-        off-resonance field is zero everywhere and a replay at any ``B0`` is its gradient-only replay. Such a
-        pack is C3-capable with a field of zero (a grey-matter sphere packing, a free walk); a pack without a
-        spec, or with a susceptible pool and no field channel, still refuses ``B0``."""
-        spec = self.substrate
-        if spec is None or not getattr(spec, "pools", None):
-            return False
-        return all(getattr(p, "susceptibility", None) is None for p in spec.pools)
+    def susceptibility_field(self):
+        """The pack's declared susceptibility field (dmipy-sim#593): ``"present"`` -- its substrate has a field source
+        and the pack carries the field channel (C3) -- or ``"absent"`` -- nothing in its substrate is magnetic and the
+        field is identically zero. Read through :func:`declared_susceptibility_field`, which refuses a pack that
+        declares none; it is the first thing every replay route reads. A pack read by reference
+        (:meth:`~dmipy_sim.replay.columnar.ColumnarPack.view`) may leave a present channel's rows unread; a replay
+        that needs them then refuses by name."""
+        return declared_susceptibility_field(self.meta, has_field=self.has_field)
 
-    def _field_active(self, B0):
-        """Whether a replay at ``B0`` has a field term to evaluate: a field was asked and the substrate has one.
-        Refuses a field asked of a substrate that has one but carries no channel for it."""
-        if B0 is None:
-            return False
-        if self.has_field:
-            return True
-        if self.field_is_zero:
-            return False
-        raise ValueError("a scanner field was given but the pack carries no field tier (C3) and its substrate declares a "
-                         "susceptibility, or no spec at all; sample the field in the walk (walk_spec), or "
-                         "fill_field(walk, a FieldGrid or StrandFieldBasis) and rebuild the pack")
+    def stamp_susceptibility_field(self, value, *, out_path=None):
+        """Declare this pack's susceptibility field in its metadata -- ``value`` ``"present"`` or ``"absent"`` -- with
+        its tensors untouched, and the embedded spec's own declaration with it: a metadata stamp, never a re-encode.
+        ``"present"`` needs the field channel stored and a field-source pool in the spec, ``"absent"`` neither, and
+        each is refused otherwise. ``out_path`` writes the stamped pack. ``provenance.susceptibility_field_stamped``
+        records the value."""
+        import copy
+        from ..spec.substrate import SubstrateSpec, SUSCEPTIBILITY_FIELD
+        if value not in SUSCEPTIBILITY_FIELD:
+            raise ValueError(f"susceptibility_field is one of {SUSCEPTIBILITY_FIELD}; got {value!r}")
+        if (value == "present") != self.has_field:
+            raise ValueError(f"pack {self.meta.get('id')!r} {'stores' if self.has_field else 'stores no'} field channel "
+                             f"(C3), so its susceptibility field is not {value!r}")
+        meta = copy.deepcopy(self.meta)
+        if meta.get("substrate") is not None:
+            d = dict(meta["substrate"], susceptibility_field=value)
+            meta["substrate"] = SubstrateSpec.from_dict(d).validate().to_dict()     # the spec's pools must agree
+        meta["susceptibility_field"] = value
+        meta.setdefault("provenance", {})["susceptibility_field_stamped"] = value
+        self.meta = meta
+        self._digest = None
+        self.susceptibility_field
+        if out_path is not None:
+            self.save(out_path)
+        return self
 
     @property
     def diffusivity(self):
@@ -1148,7 +1244,7 @@ class ReplayPack:
                 "before it is projected, and supplied weights replace that projection wholesale -- so the "
                 "pose would be silently discarded (measured: 48 per cent of the signal). Build the weights "
                 "for the posed gradient instead, which reproduces the pose exactly")
-        if self._field_active(P["B0"]):
+        if P["B0"] is not None:
             raise ValueError(
                 "weights= cannot be combined with an active susceptibility field yet. The field branches of "
                 "this contraction rebuild the gradient from the nominal sequence and do not read supplied "
@@ -1167,14 +1263,11 @@ class ReplayPack:
         from ._replay_kernel import field_gate
         n_w, dt = P["n_w"], P["dt"]
         phi = _band_phase(P, W=P.get("W"))                                            # (n_w, n_meas)
-        if not self._field_active(P["B0"]):                                          # no field, or a field of zero
+        if P["B0"] is None:                                                          # a field term of zero (field_term)
             return phi
         from ..fields.susceptibility_field import assemble_field, sample_grid
         ch, b0_dir, B0, chi_aniso = P["ch"], P["b0_dir"], P["B0"], P["chi_aniso"]
         gm = ch["susceptibility_grid"]
-        if P["chi_iso"] is None:
-            raise ValueError("a scanner field was given without a chi_iso in the tissue: the pack carries the substrate's field basis, "
-                             "not a susceptibility; give a tissue with chi_iso (and chi_aniso)")
         chi_i = float(P["chi_iso"])
         if ch.get("susceptibility_path") is not None:                                # the path route: every term a contraction
             from ..fields.hollow_cylinder import contract
@@ -1356,11 +1449,8 @@ class ReplayPack:
         carries: the compressed path coefficients, or the stored field basis sampled along the walk."""
         from .bank import susc_path_decode, susc_path_field
         from ..fields.susceptibility_field import assemble_field, sample_grid
-        if not self._field_active(P["B0"]):
-            return np.zeros((P["n_w"], self.n_t))                                     # a declared zero field
-        if P["chi_iso"] is None:
-            raise ValueError("a scanner field was given without a chi_iso in the tissue: the pack carries the substrate's field basis, "
-                             "not a susceptibility; give a tissue with chi_iso (and chi_aniso)")
+        if P["B0"] is None:
+            return np.zeros((P["n_w"], self.n_t))                                     # a field term of zero (field_term)
         gm = P["ch"]["susceptibility_grid"]
         pm = P["ch"].get("susceptibility_path")
         if pm is not None:
@@ -1375,9 +1465,10 @@ class ReplayPack:
     def _prepare(self, waveform, *, tissue, scanner, orientation, compartment, relaxation=True, surface=True,
                  pathway=True):
         """Everything a replay resolves before it reads positions: the waveform's exact per-save weights (rotated
-        into the substrate frame when a pose is given), the tissue's values (none for ``None``), the scanner's
-        field along the machine's own B0 axis turned by the pose, the per-walker weights with the relaxation and surface terms
-        applied, and the compartment selection.
+        into the substrate frame when a pose is given), the tissue's values (none for ``None``), the susceptibility
+        term :func:`field_term` resolves from the pack's declared field, the tissue's chi and the scanner's B0 (``B0``
+        None when that term is zero; its direction the machine's B0 axis turned by the pose), the per-walker weights
+        with the relaxation and surface terms applied, and the compartment selection.
 
 ``pathway`` asks for the amplitude of the coherence pathway the sequence's readout IS
         (:func:`~dmipy_sim.acquisition.epg.pathway_weight`): 1 for a refocused echo, and a stimulated echo's
@@ -1418,9 +1509,14 @@ class ReplayPack:
             raise TypeError(f"tissue is a Tissue (pack.nominal, Tissue(...)) or None for the bare diffusion signal; "
                             f"got {type(tissue).__name__}")
         t = tissue if tissue is not None else Tissue()
-        T2, T1, rho2, rho1, D, chi_iso, chi_aniso = t.T2, t.T1, t.rho2, t.rho1, t.D, t.chi_iso, t.chi_aniso
-        field = scanner_field(scanner)
+        T2, T1, rho2, rho1, D = t.T2, t.T1, t.rho2, t.rho1, t.D
+        field = field_term(self.susceptibility_field, tissue, scanner)   # the one rule of tissue chi x pack field x B0
+        if field.active and not self.has_field:
+            raise ValueError(f"pack {self.meta.get('id')!r} declares its susceptibility field present and this replay "
+                             "has a field term, but the pack holds no field channel (C3) here: read it with its field "
+                             "modes (ColumnarPack.view(modes=...)) or replay the pack whole")
         B0, b0_dir = field.B0, field.axis                            # the MACHINE's field; the pose turns it
+        chi_iso, chi_aniso = field.chi_iso, field.chi_aniso
         if orientation is not None:
             R = self.pose_rotation(orientation)
             G, G_eff = G @ R, G_eff @ R                                   # R^T g per sample: stored coordinates
@@ -1752,6 +1848,10 @@ class ReplayPack:
         # the prefix's positions are never held whole: the builder, its encoder and its certificate read them per
         # walker range, decoded from the parent's coefficients where they are read, window by window (#449 item 3)
         m, path = self._window_walk(0, n_cut)
+        if path is None and self.susceptibility_field == "present":
+            raise ValueError("this pack carries its field channel (C3) as the stored grid read at the decoded positions, "
+                             "which holds only while the positions are lossless; a re-encoded prefix is not, so it is "
+                             "not prefixed")
         blt_K = None
         if "boundary_local_time" in ch and self.has_surface:
             bm = dict(ch["boundary_local_time"])
@@ -1940,7 +2040,7 @@ class ReplayPack:
         P0 = Ps[0]
         dt, n_t, ew, norm = P0["dt"], P0["n_t"], P0["pathway"] * P0["ew"], P0["norm"]
         n_w = ew.shape[0]
-        field = self._field_quadratic(P0, waveforms[0]) if self._field_active(P0["B0"]) else None   # (a_w, A_w) or None
+        field = self._field_quadratic(P0, waveforms[0]) if P0["B0"] is not None else None   # (a_w, A_w) or None
         run = current()
         _ph = (lambda name, **f: run.phase(name, **f)) if run is not None else (lambda name, **f: None)
         _ph("moments", n_acq=int(n_acq), n_w=int(n_w))
@@ -2545,11 +2645,8 @@ class ReplayPack:
         route) scaled by ``B0``, ``chi_iso``, ``chi_aniso``. Raises, as the quadrature route does, when the pack
         cannot supply it."""
         B0, chi_iso, chi_aniso = P["B0"], P["chi_iso"], P["chi_aniso"]
-        self._field_active(B0)
         if P["ch"].get("susceptibility_path") is None:
             raise ValueError("the pose expansion with a field needs the pack's susc_path channel (C3 path route)")
-        if chi_iso is None:
-            raise ValueError("a scanner field was given without a chi_iso in the tissue; give chi_iso (and chi_aniso)")
         Psi, names = _path_field_channels(P, waveform)                           # the one read of C3, windows summed
         i_p = names.index("iso_P_xx")
         i_a = names.index("aniso_G_xx") if "aniso_G_xx" in names else None
@@ -2647,12 +2744,10 @@ class ReplayPack:
                 Q[:, :, a, b_] = C @ W
 
         Psi = names = i_p = i_a = None
-        if self._field_active(B0):
+        if B0 is not None:
             pm = self.meta.get("compression", {}).get("channels", {}).get("susceptibility_path")
             if pm is None:
                 raise ValueError("the pose expansion with a field needs the pack's susc_path channel (C3 path route)")
-            if chi_iso is None:
-                raise ValueError("a scanner field was given without a chi_iso in the tissue; give chi_iso (and chi_aniso)")
             from .bank import path_field_integral
             Psi, names = path_field_integral(self.arrays, pm, waveform, n_t, dt)         # (n_w, n_ch)
             i_p = names.index("iso_P_xx")

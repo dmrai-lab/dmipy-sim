@@ -150,7 +150,7 @@ def test_a_pack_built_from_a_lazy_walk_is_the_pack_of_the_array(tmp_path):
     g = d.Cylinder(radius=3e-6, orientation=(0.0, 0.0, 1.0))
     walk = d.simulate_trajectories(300, 2e-9, g, 8e-3, 2.5e-4, seed=5, require_gpu=False)
     X = np.asarray(walk.positions)
-    m = walk._bank_dict()
+    m = dict(walk._bank_dict(), susceptibility_field="absent")           # a cylinder: nothing magnetic
     a = build_replay_pack(dict(m, traj=X), id="t/array", license="x", citation="x", K=12, out_path=str(tmp_path / "a.rpk"))
     lazy = LazyWalk(lambda lo, hi: X[lo:hi], X.shape, chunk_bytes=1 << 14)
     b = build_replay_pack(dict(m, traj=lazy), id="t/lazy", license="x", citation="x", K=12, out_path=str(tmp_path / "b.rpk"))

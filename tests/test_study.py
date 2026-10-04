@@ -95,8 +95,9 @@ def test_the_field_term_is_linear_in_the_scanner_and_the_susceptibilities(field_
         for t in (Tissue(chi_iso=-1e-7, chi_aniso=-5e-8), Tissue(chi_iso=-2e-7)):
             w, ew, E = prim.signals(t, B0); w2, ew2, E2 = pk.walker_signals(seq_lab, orientation=R, scanner=B0, tissue=t)
             np.testing.assert_allclose(E, E2, rtol=0, atol=1e-10); np.testing.assert_allclose(ew, ew2, rtol=1e-12)
-    with pytest.raises(ValueError, match="chi_iso"):
-        prim.signals(None, 3.0)
+    np.testing.assert_array_equal(prim.signals(None, 3.0)[2], prim.signals(None, None)[2])   # no chi at a B0: no field
+    with pytest.raises(ValueError, match="no scanner field"):
+        prim.signals(Tissue(chi_iso=-1e-7), None)                     # a chi without a B0 is refused (#593)
 
 
 def test_a_study_is_the_per_pair_replay(pack):
@@ -117,8 +118,8 @@ def test_a_study_is_the_per_pair_replay(pack):
     assert meta["pairs"][1]["tissue"]["T2"] == T2A and meta["pairs"][2]["tissue"]["T2"] == T2B and meta["protocol"]["acquisitions"][1]["name"] == "axial"
     with pytest.raises(IndexError):
         Study(Protocol([seq1]), tissues=[None], scanners=[None], pairs=[(1, 0)])
-    with pytest.raises(ValueError, match="chi_iso"):                      # a field on a tissue without a susceptibility is refused, as replay refuses it
-        pack.study(Study(Protocol([seq1]), tissues=[catalogue], scanners=[3.0]))
+    with pytest.raises(ValueError, match="field absent"):                 # a chi on a cylinder (nothing magnetic) is refused, as replay refuses it
+        pack.study(Study(Protocol([seq1]), tissues=[lambda scanner: Tissue(chi_iso=-1e-7)], scanners=[3.0]))
 
 
 def test_the_columnar_image_of_a_study_is_one_pass_with_a_floor_per_volume(tmp_path):
