@@ -144,8 +144,8 @@ def test_the_bessel_values_hold_at_the_zeros_of_j0():
 # ---- the torch kernels (dmrai-lab/dmipy-sim#603) against the same oracles, on torch's CPU ----------------------------
 
 def test_the_torch_harmonics_and_bessel_values_are_the_numpy_ones():
-    """float64 to rounding, float32 to its rounding; the Bessel values also at a zero of j_0, where the torch
-    recurrence normalises on j_1 (against scipy, the oracle there)."""
+    """float64 to rounding, float32 to its rounding; the Bessel values also at the zeros of j_0 (x = k pi) and a
+    float32 step either side, where the recurrence normalises on j_1 (#604; against scipy, the oracle there)."""
     import pytest
     torch = pytest.importorskip("torch")
     from scipy.special import spherical_jn
@@ -157,7 +157,9 @@ def test_the_torch_harmonics_and_bessel_values_are_the_numpy_ones():
         assert np.abs(real_sh_torch(L, torch.as_tensor(d)).numpy() - ref).max() <= 1e-13
         f32 = real_sh_torch(L, torch.as_tensor(d, dtype=torch.float32)).double().numpy()
         assert np.abs(f32 - ref).max() <= 3e-5 * np.abs(ref).max()
-    x = np.concatenate([rng.uniform(0.0, 30.0, 2100), [0.0, 1e-9, 1e-5, np.pi, 2 * np.pi, 3 * np.pi]])
+    k = np.arange(1, 11) * np.pi                                     # the zeros of j_0, and a float32 step either side
+    x = np.concatenate([rng.uniform(0.0, 30.0, 2100), [0.0, 1e-9, 1e-5], k, k * (1 + 2.0 ** -23), k * (1 - 2.0 ** -23),
+                        np.float32(k).astype(np.float64)])
     for L in (0, 2, 12, 30):
         ref = np.stack([spherical_jn(l, x) for l in range(L + 1)])
         N = L + 24 + 30

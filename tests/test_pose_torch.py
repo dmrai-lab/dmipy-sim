@@ -110,3 +110,15 @@ def test_a_batch_on_torch_is_each_acquisition_on_its_own(walk_pack):
 def test_the_backend_is_named(walk_pack):
     with pytest.raises(ValueError, match="backend"):
         walk_pack.pose_response(_played(None, "spin echo", 10e-3, 0.08), backend="cupy")
+
+
+def test_a_mixed_batch_on_torch_takes_one_field_factor_per_gate(field_pack):
+    """Field on, a spin echo and a stimulated echo of different echo times in one batch (#575, #611): each member is
+    expanded against the field factor of its own gate, so the torch batch is each acquisition's own call on numpy,
+    coefficients to float32 rounding and the misfit equal."""
+    se, R = field_along(_played(None, "spin echo", 8e-4, 0.3), (0.6, 0.0, 0.8))
+    ste, _ = field_along(_played(None, "stimulated echo", 6e-4, 0.3), (0.6, 0.0, 0.8))
+    kw = dict(scanner=3.0, tissue=TISSUE, pose=R, method="closed")
+    both = field_pack.pose_responses([se, ste], backend="torch", device="cpu", **kw)
+    for one, got in zip((se, ste), both):
+        _same(field_pack.pose_response(one, **kw), got, atol=1e-5)
