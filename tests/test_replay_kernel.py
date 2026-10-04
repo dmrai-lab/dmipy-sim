@@ -5,7 +5,7 @@ Every route from a stored walk to a signal integrates `gamma dt sum_t G(t) . r(t
 walker, a constant velocity, a single sine mode -- go through each route and must return that
 phase to 1e-8 of the waveform's first moment (the pack routes to the float32 their coefficients
 are stored in). The
-spin-echo gate has one implementation shared by the bank and the SH responder, and the MT
+field gate has one implementation, the kernel's, which every field route reads, and the MT
 trajectory producer at zero binding is the plain producer to the bit.
 """
 import numpy as np
@@ -16,7 +16,7 @@ import dmipy_sim as d
 from dmipy_sim.replay import trajectories as T
 from dmipy_sim.replay import compression as cx
 from dmipy_sim.replay._replay_kernel import (effective_gradient, waveform_moments, gradient_phase, phase_increments,
-                                      se_gate)
+                                      field_gate)
 from dmipy_sim.constants import GAMMA
 from dmipy_sim.replay.replay import compile_scheme, replay_signal, replay_signal_jax
 
@@ -179,17 +179,21 @@ def test_replay_signal_jax_takes_the_host_surface_logweight():
         replay_signal_jax(cx.read_position_coeffs(arrays), arrays["spin_weights"], W, blt_dct=dlog)
 
 
-# ── one spin-echo gate ────────────────────────────────────────────────────────────────────
-def test_one_spin_echo_gate():
+# ── one field gate ────────────────────────────────────────────────────────────────────────
+def test_one_field_gate():
+    """The bank holds no gate of its own; the kernel's field gate is the acquisition's effective gate on the save grid,
+    so a spin echo refocuses a static field exactly with its 180 between two saves, and a gradient echo carries the
+    path integral's own end weights."""
     from dmipy_sim.replay import bank
-    assert not any(hasattr(bank, n) for n in ("se_gate", "_se_gate"))   # the bank holds no gate of its own; the kernel's is the one
-    s = se_gate(N_T, DT, T_TOTAL / 2)                                  # a 180 between two saves
+    assert not any(hasattr(bank, n) for n in ("se_gate", "_se_gate", "field_gate"))
+    n_wf = 4 * (N_T - 1) + 1                                           # the waveform's grid: the 180 between two saves
+    se = d.pgse([[1, 0, 0]], 2e-3, 1e-2, bvalues=[1e8], TE=T_TOTAL, n_t=n_wf, slew_rate=np.inf)
+    s = field_gate(se, N_T, DT)
     assert s.sum() == pytest.approx(0.0, abs=1e-12)                    # a static field refocuses exactly
-    assert (s[1: N_T // 4] == 1).all() and (s[-N_T // 4:-1] == -1).all()
-    g = se_gate(N_T, DT, None)
-    assert (g[1:-1] == 1).all() and g[0] == pytest.approx(0.5) and g[-1] == pytest.approx(0.5)   # the path integral's own end weights
-    for tr in (0.3 * T_TOTAL, 0.5 * T_TOTAL, 0.61 * T_TOTAL):          # exact for ANY 180 time
-        assert se_gate(N_T, DT, tr).sum() * DT == pytest.approx(2 * tr - T_TOTAL, abs=1e-12)
+    np.testing.assert_allclose(s[1: N_T // 4], 1.0, atol=1e-12); np.testing.assert_allclose(s[-N_T // 4:-1], -1.0, atol=1e-12)
+    g = field_gate(d.gre(T_TOTAL, n_t=n_wf), N_T, DT)
+    np.testing.assert_allclose(g[1:-1], 1.0, atol=1e-12)
+    assert g[0] == pytest.approx(0.5) and g[-1] == pytest.approx(0.5)
 
 
 # ── the MT producer at zero binding is the plain producer ─────────────────────────────────

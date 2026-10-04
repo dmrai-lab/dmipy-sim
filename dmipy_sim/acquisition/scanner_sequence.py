@@ -295,7 +295,8 @@ class ScannerSequence:
         at its centre). It is zero while the magnetisation is stored along B0, where nothing played or imposed adds
         phase (a magnet's own gradient, a gradient's Maxwell field or a tissue's susceptibility field, through a
         stimulated echo's mixing time). :attr:`G_eff`, the Maxwell field's order-0 phase (:meth:`with_concomitant`)
-        and the replay's field tier (:func:`~dmipy_sim.replay._replay_kernel.field_gate`) all accrue through it.
+        the replay's field tier (:func:`~dmipy_sim.replay._replay_kernel.field_gate`) and a uniform off-resonance
+        (:meth:`~dmipy_sim.acquisition.rf.RFSchedule.gate_integral`) all accrue through it.
         Binary across a finite pulse too, where :attr:`chi_perp` is the transverse fraction relaxation reads: a
         field is on through a pulse, and to first order a symmetric pulse acts on its phase at its centre."""
         s = self.rf.sign(np.arange(self.n_t) * self.dt)

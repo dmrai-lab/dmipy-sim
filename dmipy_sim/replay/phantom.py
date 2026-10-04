@@ -510,11 +510,11 @@ class ReplayPhantom:
 
     @staticmethod
     def gate_integral(waveform):
-        """``int s(t) dt`` of the acquisition's coherence gate over **its own** grid (s): what a uniform
-        off-resonance dephases through. Zero for a 180 at TE/2 (the layer refocuses), TE for a gradient echo."""
-        from ._replay_kernel import se_gate
-        n_t, dt = int(waveform.n_t), float(waveform.dt)
-        return float(dt * se_gate(n_t, dt, waveform.rf.refocus_time if waveform.rf else None).sum())
+        """``int g(t) dt`` of the acquisition's effective gate to its echo (s), exact in the pulse instants
+        (:meth:`~dmipy_sim.acquisition.rf.RFSchedule.gate_integral`): what a uniform off-resonance dephases through.
+        Zero for a 180 at TE/2 (the layer refocuses) and for a stimulated echo with equal transverse periods (its
+        mixing time stored, accruing nothing), TE for a gradient echo."""
+        return waveform.rf.gate_integral(waveform.T)
 
     def slot_coefficients(self, lmax, nmax):
         """Every slot's orientation distribution as SO(3) coefficients: ``(n_live, n_features)``, with the
