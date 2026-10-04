@@ -82,7 +82,7 @@ def test_pgste_is_a_stimulated_echo_with_its_lobes_physical_and_same_sign():
     assert [e.label for e in seq.rf] == ["Mz→Mxy", "store", "recall"] and [e.flip_deg for e in seq.rf] == [90, 90, 90]
     chi = np.asarray(seq.chi_perp)
     st, rc = (int(round(e.t_s / seq.dt)) for e in seq.rf[1:])
-    assert not chi[st:rc].any() and chi[:st].all() and chi[rc + 1:].all()      # stored along z over TM
+    assert not chi[st:rc].any() and chi[:st].all() and chi[rc + 1:].all()      # stored along B0 over TM
     assert np.all(np.asarray(seq.G)[:, st + 1:rc] == 0.0)                          # no gradient while stored
     G = np.asarray(seq.G)
     assert np.sign(G[0, :st][G[0, :st, 0] != 0, 0][0]) == np.sign(G[0, rc:][G[0, rc:, 0] != 0, 0][0])

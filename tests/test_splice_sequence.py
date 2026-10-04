@@ -89,7 +89,7 @@ def test_the_train_depends_on_its_refocusing_flip_as_the_pathways_say():
 # Two closed forms, written out here rather than taken from the enumeration, so they can judge it:
 #
 #   the refocused (SE) family at echo k        sin^2(beta/2) ^ (k+1)
-#   the fraction a pulse STORES along z        (1/2) sin(beta)
+#   the fraction a pulse STORES along B0        (1/2) sin(beta)
 #
 # The second is what a split-echo readout exists to catch, and it is IDENTICALLY ZERO at beta = 180: a
 # perfect train stores nothing and has exactly one coherence family. That statement needs no simulation,
@@ -177,7 +177,7 @@ def test_the_first_splice_echoes_have_closed_forms(beta):
 
 
 def test_at_180_degrees_the_split_degenerates_into_alternate_lines():
-    """Nothing is stored along z at 180, so one pathway survives and it lands alternately in one family and
+    """Nothing is stored along B0 at 180, so one pathway survives and it lands alternately in one family and
     the other. Each k-space would then get every second phase encode, which is why a SPLICE train is never
     run at 180 -- and is the sharpest statement there is that the two families are real and distinct."""
     e1, e2 = _families(6, 180.0)

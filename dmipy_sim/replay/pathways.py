@@ -11,7 +11,7 @@ What a train delivers at a readout is a sum over coherence pathways,
 and the two factors are independent. ``eta_p`` is the pathway's RF amplitude -- a product of the pulses'
 own transition coefficients, so a function of the flip angles and therefore of the transmit scale ALONE.
 ``E_p`` is the ensemble phase of the same walk under that pathway's own gradient gate: ``+1`` while the
-pathway is transverse, ``-1`` where a pulse has conjugated it, ``0`` while it is stored along z. That is an
+pathway is transverse, ``-1`` where a pulse has conjugated it, ``0`` while it is stored along B0. That is an
 ordinary phase sum, and the closed-form pose expansion already builds it.
 
 Three things follow, and they are why this exists.
@@ -43,7 +43,7 @@ def gate_sign(gate, edges, n_t, dt, train=()):
 
     ``gate`` is the tuple of states (``"F+"``, ``"F-"``, ``"Z"``) a pathway was in over the consecutive
     intervals ``edges`` cut the timeline into. This is the whole of what distinguishes one gate's phase from
-    another's: the SAME walk, read with a different sign pattern. Zero where the pathway is stored along z,
+    another's: the SAME walk, read with a different sign pattern. Zero where the pathway is stored along B0,
     because stored magnetisation accumulates no gradient phase -- which is exactly why a stimulated echo
     carries the diffusion weighting it does and not the weighting of the interval it slept through.
 
@@ -103,7 +103,7 @@ class TrainResponse:
         """``{gate: amplitude per readout}`` at this transmit scale and field offset.
 
         ``dw`` (rad/s) is a UNIFORM off-resonance carried through the train. It is not a phase applied at the
-        end: off-resonance is gated like the gradient, so a pathway that spent an interval along z accrues
+        end: off-resonance is gated like the gradient, so a pathway that spent an interval along B0 accrues
         none of it, and the train's own pulses then mix what is left. A drifting magnet is exactly this --
         uniform in space, so one propagation serves a whole image.
         """

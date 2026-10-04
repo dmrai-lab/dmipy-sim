@@ -856,7 +856,7 @@ class ReplayPhantom:
         gate expansions are built ONCE per substrate and are the expensive part; the transmit scale then
         enters as a re-weighting of coefficients already built, and a uniform field offset is carried THROUGH
         the train rather than applied at the end, because off-resonance is gated like the gradient -- a
-        pathway that spent an interval along z accrues none of it.
+        pathway that spent an interval along B0 accrues none of it.
 
         ``transmit`` and ``off_resonance`` are per voxel as :meth:`replay_bloch` takes them, each binned by
         its tolerance (:func:`quantise`; ``off_resonance_tolerance`` in hertz), so a smooth map costs one

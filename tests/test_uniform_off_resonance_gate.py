@@ -2,7 +2,7 @@
 
 ``ReplayPhantom.gate_integral`` is what a voxel's ``delta_B0`` dephases through (the ``replay`` layer, the analytic
 forms of ``replay_bloch``, ``Phantom.partition``): ``RFSchedule.gate_integral``, the coherence sign times the
-transverse gate integrated with every pulse at its ``t_s``. A stimulated echo's mixing time is stored along z and
+transverse gate integrated with every pulse at its ``t_s``. A stimulated echo's mixing time is stored along B0 and
 accrues nothing; every refocusing pulse of a train flips the sign.
 """
 import numpy as np

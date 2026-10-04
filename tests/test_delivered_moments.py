@@ -191,7 +191,7 @@ def test_a_layout_without_background_refuses_a_magnet_gradient_and_the_stamp_add
 
 def test_a_magnets_gradient_through_a_stimulated_echo_accrues_nothing_while_stored():
     """The effective gradient is the coherence sign times the transverse gate: through the mixing time the
-    magnetisation is along z and a magnet's constant gradient adds no phase, so the background of a stimulated echo
+    magnetisation is along B0 and a magnet's constant gradient adds no phase, so the background of a stimulated echo
     is refocused like a spin echo's (to one sample per change of the gate) and not left as a winding."""
     from dmipy_sim.replay.shape_moments import _background_sequence
     ste = d.pgste([[0, 0, 1]], 7.6e-3, 38.3e-3, gradient_strengths=0.1, n_t=1000, slew_rate=np.inf, ste_flip_angles=(90.0, 90.0, 90.0))
