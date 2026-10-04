@@ -44,7 +44,10 @@ def field_factor(a, A, dirs, Yw, *, device="auto", chunk_bytes=1 << 28):
     n_w, n_q = a.shape[0], dirs.shape[0]
     n_c = Yw.shape[1]
     out = np.empty((n_w, n_c), np.complex128)
-    if resolve_device(device) == "numpy":
+    kind, dev = route(device)
+    if kind == "torch":
+        return _field_factor_torch(a, A, dirs, Yw, dev, chunk_bytes)
+    if kind == "numpy":
         step = max(1, min(n_w, int(chunk_bytes // (16 * n_q))))
         Q6 = _field_quadratic(dirs, np)                                                 # (n_q, 6): u^T A u = A6 . Q6
         A6 = np.stack([A[:, 0, 0], A[:, 1, 1], A[:, 2, 2], A[:, 0, 1], A[:, 0, 2], A[:, 1, 2]], 1)   # (n_w, 6)
@@ -352,7 +355,13 @@ def field_bodies(kappa, m_hat, w, F_re, F_im, L, l_used, *, n_bessel, device="au
     n_w, nc = kappa.shape
     l_used = tuple(int(l) for l in l_used)
     rows = nc * sum(2 * l + 1 for l in l_used)
-    if resolve_device(device) == "numpy":
+    kind, dev = route(device)
+    if kind == "torch":
+        B = field_bodies_torch(kappa, m_hat, w, F_re, F_im, L, l_used, n_bessel=n_bessel, device=dev,
+                               chunk_bytes=chunk_bytes).cpu().numpy()                      # (nc, R, n_f)
+        offs = np.cumsum([0] + [2 * l + 1 for l in l_used])
+        return np.concatenate([B[:, offs[i]:offs[i + 1]].reshape(-1, B.shape[2]) for i in range(len(l_used))])
+    if kind == "numpy":
         bodies = host_bodies(kappa, m_hat, w, L, l_used)
         X = np.concatenate([bodies[l].reshape(n_w, -1) for l in l_used], axis=1)
         return (X.T @ F_re) + 1j * (X.T @ F_im)
@@ -391,8 +400,11 @@ def bessel_tails(kappa, w, L_hi, *, device="auto", chunk_bytes=1 << 30):
     closed form's band and tail bound read. On the device per walker chunk, summed on the host in float64; numpy's
     recurrence when there is none."""
     from . import so3
+    kind, dev = route(device)
+    if kind == "torch":
+        return _bessel_tails_torch(kappa, w, int(L_hi), dev, chunk_bytes)
     kappa = np.asarray(kappa, np.float64); w = np.asarray(w, np.float64)
-    if resolve_device(device) == "numpy":
+    if kind == "numpy":
         J = so3.spherical_jn_all(int(L_hi), kappa)
         return np.einsum("lwg,w->lg", np.abs(J), np.abs(w))
     import jax.numpy as jnp
@@ -405,3 +417,215 @@ def bessel_tails(kappa, w, L_hi, *, device="auto", chunk_bytes=1 << 30):
         sl = slice(lo, min(lo + step, n_w))
         out += np.asarray(kernel(jnp.asarray(kappa[sl], jnp.float32), jnp.asarray(w[sl], jnp.float32)), np.float64)
     return out
+
+
+# ---- torch ---------------------------------------------------------------------------------------------------------
+# The same kernels on torch (dmrai-lab/dmipy-sim#603): Hugging Face's shared GPU pool runs PyTorch only. A device word
+# "torch" (CUDA when torch sees it, else its CPU) or "torch:<device>" selects them; every float32 product runs at
+# IEEE precision (a float32 matmul on CUDA may otherwise be TF32), and every sum over walkers is accumulated in
+# float64.
+
+def route(device):
+    """The kernels' route for a device word: ``("numpy", None)``, ``("jax", None)`` or ``("torch", torch.device)``.
+    ``"auto"``, ``"numpy"`` and ``"jax"`` are :func:`~dmipy_sim.replay.compression.resolve_device`'s; ``"torch"`` is
+    torch on CUDA when it is available, else on its CPU, and ``"torch:<device>"`` names the torch device."""
+    if isinstance(device, str) and (device == "torch" or device.startswith("torch:")):
+        import torch
+        name = device[6:] or ("cuda" if torch.cuda.is_available() else "cpu")
+        return "torch", torch.device(name)
+    return resolve_device(device), None
+
+
+TORCH_CHUNK_BYTES = 1 << 32
+"""Bytes of float32 temporaries a torch kernel holds per walker chunk (the harmonics, the Bessel values and the
+stacked bodies): the chunk count, not the arithmetic, is what a torch route pays the host for -- each chunk launches
+the recurrences' few thousand small kernels -- so the chunks are as large as a shared GPU's slice allows."""
+
+
+TORCH_SUM_WALKERS = 1024
+"""Walkers a float32 product sums before its sum joins the float64 accumulator: a float32 sum's rounding grows with
+its length, and a chunk of the walkers is thousands long."""
+
+
+class ieee:
+    """A context in which torch's float32 matmuls run at IEEE float32 (``set_float32_matmul_precision("highest")``),
+    the caller's setting restored on exit."""
+
+    def __enter__(self):
+        import torch
+        self._was = torch.get_float32_matmul_precision()
+        torch.set_float32_matmul_precision("highest")
+        return self
+
+    def __exit__(self, *exc):
+        import torch
+        torch.set_float32_matmul_precision(self._was)
+        return False
+
+
+@functools.lru_cache(maxsize=16)
+def _legendre_steps(L):
+    """``(2, L+1, L+1)``: the coefficients of the step in ``l`` at every ``m``, ``P_lm = A_lm x P_(l-1)m - B_lm
+    P_(l-2)m`` -- the standard recurrence for ``m <= l - 2``, ``A = sqrt(2l + 1)``, ``B = 0`` one step off the diagonal
+    (``m = l - 1``), zero beyond."""
+    out = np.zeros((2, L + 1, L + 1))
+    for l in range(1, L + 1):
+        lo = np.arange(max(l - 1, 0), dtype=np.float64)
+        out[0, l, :l - 1] = np.sqrt((4.0 * l * l - 1.0) / (l * l - lo * lo))
+        out[1, l, :l - 1] = out[0, l, :l - 1] * np.sqrt(((l - 1.0) ** 2 - lo * lo) / (4.0 * (l - 1.0) ** 2 - 1.0))
+        out[0, l, l - 1] = np.sqrt(2.0 * l + 1.0)
+    return out
+
+
+@functools.lru_cache(maxsize=16)
+def _sh_columns(L):
+    """``(2, (L+1)^2)``: per column of the full layout, its entry ``l (L+1) + |m|`` of the flattened ``P[l, m]`` and
+    its azimuthal factor's place ``m + L``."""
+    l_of = np.concatenate([np.full(2 * l + 1, l) for l in range(L + 1)])
+    m_of = np.concatenate([np.arange(-l, l + 1) for l in range(L + 1)])
+    return np.stack([l_of * (L + 1) + np.abs(m_of), m_of + L])
+
+
+def real_sh_torch(L, dirs):
+    """:func:`so3.real_sh` (full layout) of unit directions ``dirs`` ``(n, 3)``, a torch tensor in its own dtype and
+    device: the same recurrences on the fully normalised associated Legendre functions, each order's step taken for
+    every ``m`` at once (``(n, L+1)`` per order) so the recurrence is ``L`` steps of a few kernels each, then every
+    column gathered from them and its azimuthal factor in one pass."""
+    import torch
+    L = int(L)
+    n = dirs.shape[0]
+    x = dirs[:, 2].clamp(-1.0, 1.0)
+    phi = torch.atan2(dirs[:, 1], dirs[:, 0])
+    if x.dtype == torch.float32:                                             # 1 - x^2 cancels near a pole in float32
+        s = torch.hypot(dirs[:, 0], dirs[:, 1]).clamp(0.0, 1.0)
+    else:
+        s = (1.0 - x * x).clamp(0.0, 1.0).sqrt()
+    diag = [torch.full_like(x, 1.0 / np.sqrt(4.0 * np.pi))]                  # P_mm, by the sectoral recurrence
+    for m in range(1, L + 1):
+        diag.append(-float(np.sqrt((2.0 * m + 1.0) / (2.0 * m))) * s * diag[m - 1])
+    diag = torch.stack(diag, dim=1)                                          # (n, L+1)
+    P = torch.zeros((n, L + 1, L + 1), dtype=x.dtype, device=x.device)       # P[:, l, m]
+    P[:, 0, 0] = diag[:, 0]
+    AB = torch.as_tensor(_legendre_steps(L), dtype=x.dtype, device=x.device)  # (2, L+1, L+1), one transfer
+    for l in range(1, L + 1):
+        P[:, l] = (AB[0, l][None, :] * x[:, None]) * P[:, l - 1] - (AB[1, l][None, :] * P[:, l - 2] if l >= 2 else 0.0)
+        P[:, l, l] = diag[:, l]
+    ms = torch.arange(1, L + 1, dtype=x.dtype, device=x.device)
+    trig = torch.cat([float(np.sqrt(2.0)) * torch.sin(phi[:, None] * ms.flip(0)), torch.ones_like(phi)[:, None],
+                      float(np.sqrt(2.0)) * torch.cos(phi[:, None] * ms)], dim=1)           # (n, 2L+1): m = -L..L
+    idx = torch.as_tensor(_sh_columns(L), device=x.device)                   # (2, (L+1)^2), one transfer
+    return P.reshape(n, -1)[:, idx[0]] * trig[:, idx[1]]
+
+
+def spherical_jn_torch(L, x, N):
+    """``j_0(x) .. j_L(x)`` ``(L+1,) + x.shape`` for a torch tensor ``x`` in its own dtype and device: the downward
+    (Miller) recurrence of :func:`so3.spherical_jn_all` from order ``N``, normalised to ``j_0 = sin x / x``. A value
+    about to overflow is rescaled where it stands and the rescalings are counted per entry, so every stored order
+    is brought to the final scale once at the end, with no host synchronisation inside the recurrence."""
+    import torch
+    L, N = int(L), int(N)
+    f32 = x.dtype == torch.float32
+    big, s = (1e18, 1e-18) if f32 else (1e200, 1e-200)
+    small = x.abs() < (1e-6 if f32 else 1e-12)
+    xs = torch.where(small, torch.ones_like(x), x)
+    hi, lo = torch.zeros_like(xs), torch.full_like(xs, 1e-30)
+    out = torch.empty((L + 1,) + tuple(x.shape), dtype=x.dtype, device=x.device)
+    n_at = torch.empty((L + 1,) + tuple(x.shape), dtype=torch.int32, device=x.device)
+    n = torch.zeros(x.shape, dtype=torch.int32, device=x.device)        # rescalings so far, per entry
+    for l in range(N, -1, -1):
+        cur = (2 * l + 3) / xs * lo - hi
+        hi, lo = lo, cur
+        if l <= L:
+            out[l] = cur; n_at[l] = n                                  # this order's own rescaling counts below
+        m = cur.abs() > big
+        hi = torch.where(m, hi * s, hi); lo = torch.where(m, lo * s, lo)
+        n = n + m.to(torch.int32)
+    out = out * torch.pow(torch.full_like(out, s), (n[None] - n_at).to(out.dtype))   # each order to the final scale
+    # normalised on j_0 = sin x / x, or on j_1 = sin x / x^2 - cos x / x where j_0 is the smaller: near a zero of
+    # j_0 the ratio j_0 / out_0 loses the digits a float32 recurrence has
+    j0 = torch.where(small, torch.ones_like(xs), torch.sin(xs) / xs)
+    j1 = torch.sin(xs) / (xs * xs) - torch.cos(xs) / xs
+    r1 = out[1] if L >= 1 else hi                                       # the recurrence's j_1, at the final scale
+    use1 = (j1.abs() > j0.abs()) & ~small
+    num = torch.where(use1, j1, j0); den = torch.where(use1, r1, out[0])
+    scale = num / torch.where(den == 0, torch.ones_like(den), den)
+    out = out * scale[None]
+    if L >= 1:
+        out[1:] = torch.where(small[None], torch.zeros_like(out[1:]), out[1:])
+    out[0] = torch.where(small, torch.ones_like(out[0]), out[0])
+    return out
+
+
+def as_torch(a, device, dtype=None):
+    """``a`` (an array or a tensor) as a torch tensor on ``device``, in ``dtype`` when given."""
+    import torch
+    return torch.as_tensor(a, device=device, dtype=dtype)
+
+
+def _bessel_tails_torch(kappa, w, L_hi, dev, chunk_bytes):
+    """:func:`bessel_tails` on torch: float32 values per walker chunk, the sums accumulated in float64."""
+    import torch
+    n_w, nc = kappa.shape
+    k_max = float(kappa.max()) if n_w * nc else 0.0
+    N = L_hi + 24 + int(np.ceil(abs(k_max)))
+    out = torch.zeros((L_hi + 1, nc), dtype=torch.float64, device=dev)
+    w_d = as_torch(w, dev, torch.float64).abs()
+    step = max(1, int(chunk_bytes // (4 * nc * (2 * L_hi + 8))))
+    with torch.no_grad():
+        for lo in range(0, n_w, step):
+            sl = slice(lo, min(lo + step, n_w))
+            J = spherical_jn_torch(L_hi, as_torch(kappa[sl], dev, torch.float32), N)          # (L_hi+1, c, nc)
+            out += torch.einsum("lwg,w->lg", J.abs().double(), w_d[sl])
+    return out.cpu().numpy()
+
+
+def _field_factor_torch(a, A, dirs, Yw, dev, chunk_bytes):
+    """:func:`field_factor` on torch: the phase, its cosine and sine and the two products in float32 at IEEE
+    precision, per walker chunk."""
+    import torch
+    n_w, n_q = a.shape[0], dirs.shape[0]
+    out = np.empty((n_w, Yw.shape[1]), np.complex128)
+    Q6 = as_torch(_field_quadratic(dirs, np), dev, torch.float32)                         # (n_q, 6)
+    A6 = np.stack([A[:, 0, 0], A[:, 1, 1], A[:, 2, 2], A[:, 0, 1], A[:, 0, 2], A[:, 1, 2]], 1)
+    Yd = as_torch(Yw, dev, torch.float32)
+    step = max(1, int(chunk_bytes // (12 * n_q)))
+    with torch.no_grad(), ieee():
+        for lo in range(0, n_w, step):
+            sl = slice(lo, min(lo + step, n_w))
+            ph = as_torch(A6[sl], dev, torch.float32) @ Q6.T + as_torch(a[sl], dev, torch.float32)[:, None]
+            re = torch.cos(ph) @ Yd; im = torch.sin(ph) @ Yd
+            out[sl].real = re.double().cpu().numpy(); out[sl].imag = im.double().cpu().numpy()
+    return out
+
+
+def field_bodies_torch(kappa, m_hat, w, F_re, F_im, L, l_used, *, n_bessel, device, chunk_bytes=TORCH_CHUNK_BYTES):
+    """:func:`field_bodies` on torch, kept on ``device``: ``(nc, R, n_f)`` complex128 with ``R = sum(2l+1 for l in
+    l_used)`` (the orders side by side, each order's ``2l+1`` columns): the Bessel values, the harmonics and the
+    products in float32 at IEEE precision per walker chunk, the sums over the walkers accumulated in float64.
+    ``kappa`` ``(n_w, nc)``, ``m_hat`` ``(n_w, nc, 3)``, ``w`` ``(n_w,)``, ``F_re`` / ``F_im`` ``(n_w, n_f)``: arrays or
+    tensors (on ``device`` already, they are read in place)."""
+    import torch
+    n_w, nc = kappa.shape
+    l_used = tuple(int(l) for l in l_used)
+    L = int(L); lmax = max(l_used)
+    R = sum(2 * l + 1 for l in l_used)
+    cols = torch.as_tensor(np.concatenate([np.arange(l * l, l * l + 2 * l + 1) for l in l_used]), device=device)
+    ord_ = torch.as_tensor(np.concatenate([np.full(2 * l + 1, l) for l in l_used]), device=device)
+    n_f = F_re.shape[1]
+    out = torch.zeros((nc * R, n_f), dtype=torch.float64, device=device)
+    out_i = torch.zeros((nc * R, n_f), dtype=torch.float64, device=device)
+    per_walker = 4 * (nc * ((L + 1) ** 2 + int(n_bessel) + 2 * R + 4) + 2 * n_f)
+    step = max(1, int(chunk_bytes // per_walker))
+    with torch.no_grad(), ieee():
+        for lo in range(0, n_w, step):
+            sl = slice(lo, min(lo + step, n_w)); c = sl.stop - sl.start
+            Y = real_sh_torch(L, as_torch(m_hat[sl], device, torch.float32).reshape(-1, 3)).reshape(c, nc, -1)
+            J = spherical_jn_torch(lmax, as_torch(kappa[sl], device, torch.float32), n_bessel)     # (lmax+1, c, nc)
+            X = (as_torch(w[sl], device, torch.float32)[:, None, None] * J.permute(1, 2, 0)[:, :, ord_]) * Y[:, :, cols]
+            X = X.reshape(c, nc * R)                                                             # (c, nc R): (g, (l, n))
+            Fr, Fi = as_torch(F_re[sl], device, torch.float32), as_torch(F_im[sl], device, torch.float32)
+            for b in range(0, c, TORCH_SUM_WALKERS):                                             # float32 sums of a
+                bs = slice(b, min(b + TORCH_SUM_WALKERS, c))                                     # block, float64 across
+                out += (X[bs].T @ Fr[bs]).double()
+                out_i += (X[bs].T @ Fi[bs]).double()
+    return torch.complex(out, out_i).reshape(nc, R, n_f)
