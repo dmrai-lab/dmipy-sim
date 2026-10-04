@@ -125,3 +125,17 @@ def test_the_numpy_route_is_the_direct_formula():
     got = field_factor(a, A, dirs, Yw, device="numpy", chunk_bytes=1 << 17)
     assert got.shape == direct.shape
     assert np.abs(got - direct).max() <= 1e-12 * np.abs(direct).max()
+
+
+def test_the_bessel_values_hold_at_the_zeros_of_j0():
+    """At x = k pi the recurrence is normalised on j_1, not on j_0 = 0 (#604): numpy to 1e-11 and the device to
+    float32 rounding against scipy, there and a float32 ulp away."""
+    from scipy.special import spherical_jn
+    from dmipy_sim.replay.so3 import spherical_jn_all as host
+    from dmipy_sim.replay.pose_device import spherical_jn_all
+    k = np.arange(1, 11) * np.pi
+    x = np.concatenate([k, k * (1 + 1e-9), k * (1 + 1e-7), np.random.default_rng(2).uniform(0.0, 40.0, 500)])
+    for L in (0, 1, 5, 30):
+        ref = np.stack([spherical_jn(l, x) for l in range(L + 1)])
+        assert np.abs(host(L, x) - ref).max() <= 1e-11, L
+        assert np.abs(spherical_jn_all(L, x, device="jax") - ref).max() <= 2e-6, L

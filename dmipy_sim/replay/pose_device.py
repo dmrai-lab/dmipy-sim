@@ -210,7 +210,8 @@ def real_sh(L, dirs, *, device="auto", chunk_bytes=1 << 30):
 @functools.lru_cache(maxsize=16)
 def _spherical_jn_kernel(L, N):
     """``x (n,) -> (L+1, n)`` float32: ``j_0..j_L(x)`` by the downward (Miller) recurrence from order ``N``, normalised
-    to ``j_0 = sin x / x``, as one jitted scan with the same rescaling against overflow as the host's."""
+    as the host's (to ``j_0``, or to ``j_1`` near a zero of ``j_0``), as one jitted scan with the same rescaling
+    against overflow as the host's."""
     import jax
     import jax.numpy as jnp
 
@@ -231,8 +232,11 @@ def _spherical_jn_kernel(L, N):
 
         out0 = jnp.zeros((N + 1, x.shape[0]), jnp.float32)
         (hi, lo, out), _ = jax.lax.scan(body, (hi, lo, out0), jnp.arange(N, -1, -1))
-        j0 = jnp.where(small, 1.0, jnp.sin(xs) / xs)
-        scale = j0 / jnp.where(out[0] == 0, 1.0, out[0])
+        j0 = jnp.where(small, 1.0, jnp.sin(xs) / xs)                   # j_0, or j_1 near a zero of j_0 (#604)
+        j1 = jnp.sin(xs) / (xs * xs) - jnp.cos(xs) / xs
+        use1 = (jnp.abs(j1) > jnp.abs(j0)) & ~small
+        den = jnp.where(use1, out[1], out[0])
+        scale = jnp.where(use1, j1, j0) / jnp.where(den == 0, 1.0, den)
         out = out[:L + 1] * scale[None, :]
         out = jnp.where(small[None, :], jnp.zeros_like(out).at[0].set(1.0), out)
         return out
