@@ -286,11 +286,11 @@ def test_the_pilot_is_named_and_is_the_cheapest_region(tmp_path):
 
 
 def test_the_contact_tier_is_probed_at_a_relaxivity_that_can_fail_it():
-    """A ``rho_2_list`` of zeros makes the contact tier's floor and codec error identically zero.
+    """A ``rho2_list`` of zeros makes the contact tier's floor and codec error identically zero.
 
-    ``_measure_floor`` scales the stored local time by ``rho_2 / D``, so at ``rho_2 = 0`` both the raw and the
+    ``_measure_floor`` scales the stored local time by ``rho2 / D``, so at ``rho2 = 0`` both the raw and the
     decoded signal are 1 for every walker, the split-half floor is 0, and ``meets_target`` is vacuously true --
     a certificate that certifies nothing, which is the first entry on docs/reference-family.md's list.
     """
-    assert B.ENVELOPE["rho_2_list"] == list(B.RHO_PROBE)
+    assert B.ENVELOPE["rho2_list"] == list(B.RHO_PROBE)
     assert all(r > 0.0 for r in B.RHO_PROBE)

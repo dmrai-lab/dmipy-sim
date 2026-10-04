@@ -61,7 +61,7 @@ The spec the pack embeds names the material it was declared with, and `pack.nomi
 `Tissue`; `pack.nominal_field_T` is the field the spec's susceptibilities were calibrated at.
 
 ```python
-print(pack.nominal)                                               # the spec's T2, T1 by pool name, rho_2, chi; D is the walk's
+print(pack.nominal)                                               # the spec's T2, T1 by pool name, rho2, chi; D is the walk's
 print(pack.nominal_field_T)
 ```
 

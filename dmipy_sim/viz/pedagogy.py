@@ -349,9 +349,9 @@ def spin_movie(history, save, stride=2, n_cloud=200, fps=20, dpi=110, title=None
     return save
 
 
-def _magnitude_walk(geometry, waveform, rho_2, T2_per_comp, n_walkers, seed, want_pos=False):
+def _magnitude_walk(geometry, waveform, rho2, T2_per_comp, n_walkers, seed, want_pos=False):
     """Shared walk for the magnitude renderers: walk the packed-myelin substrate and return
-    each walker's transverse weight ``|M_i|(t) = exp(-∫dt/T2[comp] - (rho_2/D)·ℓ_i(t))``, its
+    each walker's transverse weight ``|M_i|(t) = exp(-∫dt/T2[comp] - (rho2/D)·ℓ_i(t))``, its
     origin pool (0 extra, 1 intra, 2 myelin), and (optionally) its position track."""
     import jax
     import jax.numpy as jnp
@@ -384,19 +384,19 @@ def _magnitude_walk(geometry, waveform, rho_2, T2_per_comp, n_walkers, seed, wan
     D_by_lab = np.array([float(np.max(geometry._D_extra_jax)),          # by pool id
                          float(np.max(geometry._D_intra_jax)), 1.0])
     D_w = D_by_lab[lab[:, 0]][:, None]
-    weight = np.exp(logw_t2 + (rho_2 / D_w) * dlog)
+    weight = np.exp(logw_t2 + (rho2 / D_w) * dlog)
     return dict(weight=weight, origin=lab[:, 0], pos=pos, G=G, dt=dt, n_t=n_t,
                 rf_events=_rf_events_for(waveform), t_axis=np.arange(n_t) * dt)
 
 
-def magnitude_zoom_movie(geometry, waveform, save, *, rho_2, T2_per_comp, n_walkers=8000,
+def magnitude_zoom_movie(geometry, waveform, save, *, rho2, T2_per_comp, n_walkers=8000,
                          n_coarse=26, n_fine=600, stride=16, fps=20, dpi=95, title=None, seed=0):
     """Magnitude distribution at *real* relaxivity, revealed by a moving zoom.
 
     Three top panels + the player. **Left**: both pools' |M| histograms on the full 0-1 scale --
-    at physiological ``rho_2`` this is a spike hugging the bulk-T2 ceiling with a moving crop box
+    at physiological ``rho2`` this is a spike hugging the bulk-T2 ceiling with a moving crop box
     marking the tiny region below it. **Middle / right**: that crop box for intra / extra with
-    thin bins, so the small real-``rho_2`` effect -- each pool sitting a little below its dashed
+    thin bins, so the small real-``rho2`` effect -- each pool sitting a little below its dashed
     bulk-T2 ceiling, intra (higher S/V) further than extra -- is visible *without exaggeration*.
     Packed-myelin substrate only.
     """
@@ -406,7 +406,7 @@ def magnitude_zoom_movie(geometry, waveform, save, *, rho_2, T2_per_comp, n_walk
     from matplotlib.animation import FuncAnimation
     from scipy.stats import gaussian_kde
 
-    w = _magnitude_walk(geometry, waveform, rho_2, T2_per_comp, n_walkers, seed)
+    w = _magnitude_walk(geometry, waveform, rho2, T2_per_comp, n_walkers, seed)
     weight = w['weight']; origin = w['origin']; t_s = w['t_axis']; t_ms = t_s * 1e3
     T2 = np.asarray(T2_per_comp, float)
     i_idx = np.where(origin == 1)[0]; e_idx = np.where(origin == 0)[0]
@@ -490,19 +490,19 @@ def magnitude_zoom_movie(geometry, waveform, save, *, rho_2, T2_per_comp, n_walk
     return save
 
 
-def magnitude_movie(geometry, waveform, save, *, rho_2, T2_per_comp, n_walkers=4000,
+def magnitude_movie(geometry, waveform, save, *, rho2, T2_per_comp, n_walkers=4000,
                     n_bins=28, stride=3, fps=20, dpi=90, title=None,
                     panels=('intra', 'extra'), seed=0):
     """Animate the per-compartment distribution of transverse-magnetisation MAGNITUDE ``|M|``.
 
     The magnitude counterpart of :func:`spin_movie` (which shows phase). Each walker's weight is
-    ``|M_i|(t) = exp(-∫dt/T2[comp] - (rho_2/D)·ℓ_i(t))``, where ``ℓ_i`` is that walker's accumulated
+    ``|M_i|(t) = exp(-∫dt/T2[comp] - (rho2/D)·ℓ_i(t))``, where ``ℓ_i`` is that walker's accumulated
     surface local time (wall contact) recorded by the packed-myelin walk. Without relaxivity
     every walker in a compartment shares the bulk-T2 magnitude (a spike); surface relaxivity
     gives each its own wall-contact, fanning the spike into a distribution capped at the bulk-T2
-    value. Intra and extra fan differently (different ``rho_2·a/D``). Packed-myelin substrate only.
+    value. Intra and extra fan differently (different ``rho2·a/D``). Packed-myelin substrate only.
 
-    ``T2_per_comp`` is indexed by pool id (0 extra, 1 intra, 2 myelin); ``rho_2`` is the surface
+    ``T2_per_comp`` is indexed by pool id (0 extra, 1 intra, 2 myelin); ``rho2`` is the surface
     relaxivity (m/s). ``save`` is a .gif/.mp4 path.
     """
     import jax
@@ -535,14 +535,14 @@ def magnitude_movie(geometry, waveform, save, *, rho_2, T2_per_comp, n_walkers=4
     cid = np.asarray(cid); dlog = np.asarray(dlog)           # (n_w, n_t)
     lab = np.asarray(geometry.pool_of(cid)).astype(int)
 
-    # --- per-walker magnitude weight |M|(t) = exp(-T2 decay - (rho_2/D)·surface local time) ---
+    # --- per-walker magnitude weight |M|(t) = exp(-T2 decay - (rho2/D)·surface local time) ---
     T2 = np.asarray(T2_per_comp, float)
     logw_t2 = -dt * np.cumsum((1.0 / T2)[lab], axis=1)        # (n_w, n_t)
     D_by_lab = np.array([float(np.max(geometry._D_extra_jax)),          # by pool id
                          float(np.max(geometry._D_intra_jax)), 1.0])
     origin = lab[:, 0]
     D_w = D_by_lab[origin][:, None]
-    weight = np.exp(logw_t2 + (rho_2 / D_w) * dlog)             # dlog <= 0 -> weight in (0, 1]
+    weight = np.exp(logw_t2 + (rho2 / D_w) * dlog)             # dlog <= 0 -> weight in (0, 1]
 
     from ..compartments import POOL_IDS
     panel_labs = [POOL_IDS[p] for p in panels]
@@ -596,13 +596,13 @@ def magnitude_movie(geometry, waveform, save, *, rho_2, T2_per_comp, n_walkers=4
     return save
 
 
-def magnitude_spatial_movie(geometry, waveform, save, *, rho_2, T2_per_comp, n_walkers=4000,
+def magnitude_spatial_movie(geometry, waveform, save, *, rho2, T2_per_comp, n_walkers=4000,
                             n_show=3000, stride=16, fps=20, dpi=100, title=None, seed=0,
                             cmap='viridis'):
     """Spatial cross-section of the packed substrate with walkers coloured by ``|M|``.
 
     The companion to :func:`magnitude_movie`: same walk (use the same ``seed`` / substrate /
-    waveform / ``rho_2``), but instead of the |M| histogram this shows *where* the low-magnitude
+    waveform / ``rho2``), but instead of the |M| histogram this shows *where* the low-magnitude
     spins are. Walkers hugging the axolemma accumulate surface local time and go dark first,
     while spins in the interior of the extra-axonal "holes" between fibres stay bright -- the
     spatial origin of the histogram fan. Cylinder inner/outer walls are drawn; a colourbar maps
@@ -642,7 +642,7 @@ def magnitude_spatial_movie(geometry, waveform, save, *, rho_2, T2_per_comp, n_w
     D_by_lab = np.array([float(np.max(geometry._D_extra_jax)),          # by pool id
                          float(np.max(geometry._D_intra_jax)), 1.0])
     D_w = D_by_lab[lab[:, 0]][:, None]
-    weight = np.exp(logw_t2 + (rho_2 / D_w) * dlog)          # (n_w, n_t)
+    weight = np.exp(logw_t2 + (rho2 / D_w) * dlog)          # (n_w, n_t)
 
     sh = slice(0, min(n_show, n_walkers))
     xy = pos[sh, :, :2]                                     # (n_show, n_t, 2)

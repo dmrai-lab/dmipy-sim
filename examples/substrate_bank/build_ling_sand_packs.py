@@ -6,7 +6,7 @@ walked as a ``geometry.LabelVolume`` on the released 450^3 Avizo lattices and pu
 ``SubstrateCommons/ling-sand-packs``.
 
 **Nothing about relaxation is in the walk**: each pack stores the boundary local time (C2) as a channel, so the
-surface relaxivity ``rho_2`` and the bulk ``T2B`` are replay knobs and Ling's two relaxivities are a sweep over
+surface relaxivity ``rho2`` and the bulk ``T2B`` are replay knobs and Ling's two relaxivities are a sweep over
 one pack rather than a walk per number.
 
 This file is the family's DECLARATION, re-expressed through
@@ -50,7 +50,7 @@ CITATION = ("Ling N, Hussaini SR, Elsayed M, Connolly P, El-Husseiny A, Mahmoud 
 
 D0 = 2.3e-9         #: m^2/s, the brine's self-diffusion the walk uses -- theirs
 T2B = 3.0           #: s, the brine's bulk T2 -- OURS, applied at replay (the paper states none)
-TE_REF = 100e-6     #: s, the echo spacing whose train this family reproduces (their rho_2 was fitted on it)
+TE_REF = 100e-6     #: s, the echo spacing whose train this family reproduces (their rho2 was fitted on it)
 DT_SAVE = 1e-3      #: s, the save grid, which is also the grid the log-mean is inverted on
 INVERT_MS = 1.0     #: ms, the sampling of the decay the inversion runs on -- part of the measurement
 SIGMA = 5e-3        #: the floor per tier the family targets
@@ -83,13 +83,13 @@ SAMPLES = {
 }
 
 #: The packs whose reference quantity is recorded: the two PURE ones. A mixture's two mineral surfaces carry two
-#: of Ling's relaxivities and the walk accumulates one contact channel over both, so no single ``rho_2`` describes
+#: of Ling's relaxivities and the walk accumulates one contact channel over both, so no single ``rho2`` describes
 #: it; the three mixtures are built, certified, gated and published, and their reference row is BLOCKED
 #: (dmipy-sim#491) rather than approximated with one of the two numbers.
 PURE = ("1_G100", "6_Q100")
 
 #: The relaxivity the served-vs-decoded check uses on a pack whose spec declares NONE (a mixture). That check
-#: compares two READINGS of one channel, so any rho_2 the pack can serve makes it; Ling's quartz value is used so
+#: compares two READINGS of one channel, so any rho2 the pack can serve makes it; Ling's quartz value is used so
 #: the number on the card is on the same scale as the pure packs'.
 PROBE_RHO = RHO["quartz"]
 
@@ -102,7 +102,7 @@ SOLVER = "non-negative least squares with a second-difference penalty, lam = 0.1
 ENVELOPE = dict(bvals=[0.0, 0.5e9, 1e9], dirs=[[0, 0, 1], [1, 0, 0], [1, 0, 1]],
                 ogse_periods=[1, 2, 3], shortd_b=1e9, delta_frac=60e-3 / 3.5,
                 shortd_deltas_frac=[80e-3 / 3.5, 60e-3 / 3.5], Delta_frac=160e-3 / 3.5,
-                rho_2_list=sorted(RHO.values()))
+                rho2_list=sorted(RHO.values()))
 
 #: The deltas the family declares, in seconds. The shortest is 60 ms because that is what the LONGEST-window
 #: packs' band serves: at K = 96 over 3.5 s the band is 13.71 Hz, and measured against it delta 60 ms needs
@@ -153,7 +153,7 @@ def spec_of(sample, data_dir, work_dir):
     from dmipy_sim.io.label_volume import read_label_volume
     from dmipy_sim.spec import label_volume_spec
     s, rep = SAMPLES[sample], reproduction(work_dir)["samples"][sample]
-    rho_2 = rho_of(sample)
+    rho2 = rho_of(sample)
     path = image_path(sample, data_dir, work_dir)
     # the substrate is put AT the origin and the released header's own origin recorded instead. Avizo writes the
     # micro-CT stage's absolute coordinates -- these sub-volumes sit near (-717, -717, -458) mm -- and a float32
@@ -164,17 +164,17 @@ def spec_of(sample, data_dir, work_dir):
     vol = read_label_volume(path)
     origin = -0.5 * np.asarray(vol.labels.shape, float) * np.asarray(vol.voxel_size, float)
     return label_volume_spec(
-        path, pools=s["pools"], rho_2=rho_2, D=D0, origin=origin,
+        path, pools=s["pools"], rho2=rho2, D=D0, origin=origin,
         T2_pools={name: T2B for name in s["pools"].values()},
         cite_image_as=rep["image"]["file"], id=f"ling2022/{sample.lower()}",
         source="Ling et al. 2022 model synthetic sediment packs, figshare "
                f"{DATA_DOI} (CC BY 4.0)",
         description=(f"{sample}: {s['composition']}, the released 450^3 micro-CT sub-volume; the brine walks "
-                     f"between the voxel faces of the grains. Relaxation is not in the walk -- rho_2 and T2 are "
+                     f"between the voxel faces of the grains. Relaxation is not in the walk -- rho2 and T2 are "
                      f"replay knobs. The substrate is centred on the origin; the released header's own is "
                      f"{[round(float(x) * 1e3, 4) for x in vol.origin]} mm, the micro-CT stage's absolute "
-                     f"coordinates, which float32 cannot carry at a 3.93 um voxel. The nominal rho_2 is "
-                     + (f"Ling's {rho_2 * 1e6:g} um/s for this mineral" if rho_2 else
+                     f"coordinates, which float32 cannot carry at a 3.93 um voxel. The nominal rho2 is "
+                     + (f"Ling's {rho2 * 1e6:g} um/s for this mineral" if rho2 else
                         "NONE: two mineral surfaces carry two of Ling's relaxivities and one contact channel "
                         "cannot hold both, so a consumer states one")))
 
@@ -194,10 +194,10 @@ def t2_grid(grid):
     return np.logspace(np.log10(grid["from_s"]), np.log10(grid["to_s"]), int(grid["n"]))
 
 
-def decay_and_log_mean(pack, rho_2, grid, *, chunk=4000):
+def decay_and_log_mean(pack, rho2, grid, *, chunk=4000):
     """``(t, S, T2 log-mean, its relative delta-method standard error)`` from the pack's stored C2 channel.
 
-    ``S(t) = <exp((rho_2/D) L(t) - t/T2B)>`` on the recorded sampling; the standard error is the log-mean's
+    ``S(t) = <exp((rho2/D) L(t) - t/T2B)>`` on the recorded sampling; the standard error is the log-mean's
     gradient with respect to the decay it is inverted from, projected on each walker's own decay -- the same
     estimator the Imperial rocks family uses, and the reason it is analytic rather than a fold spread.
     """
@@ -211,7 +211,7 @@ def decay_and_log_mean(pack, rho_2, grid, *, chunk=4000):
 
     def per_walker(lo):
         L = np.cumsum(np.asarray(ell[lo:lo + chunk], np.float64), axis=1)[:, every::every]
-        return np.exp(float(rho_2) / D0 * L - t / T2B)
+        return np.exp(float(rho2) / D0 * L - t / T2B)
 
     acc = np.zeros(len(t))
     for lo in range(0, n_w, chunk):
@@ -227,13 +227,13 @@ def decay_and_log_mean(pack, rho_2, grid, *, chunk=4000):
 
 def reproduce(pack, quantity, grid):
     """The T2 log-mean this pack serves, on the grid the reference record states."""
-    rho_2 = float(pack.nominal.rho_2)
-    _t, _S, lm, se = decay_and_log_mean(pack, rho_2, grid)
+    rho2 = float(pack.nominal.rho2)
+    _t, _S, lm, se = decay_and_log_mean(pack, rho2, grid)
     return dict(value=lm * 1e3, se=se, se_kind="delta_method", solver=grid["solver"],
                 se_derivation="the delta method over walkers on the log-mean: its gradient with respect to the "
                               "decay it is inverted from (talabi_micro_ct_rocks.log_mean_gradient, the active "
                               "set's linear map) projected on each walker's own decay; sd / sqrt(N) / T2lm",
-                rho_m_per_s=rho_2, n_points=int(len(_t)))
+                rho_m_per_s=rho2, n_points=int(len(_t)))
 
 
 def served_vs_channel(pack, *, n_points=8):
@@ -248,8 +248,8 @@ def served_vs_channel(pack, *, n_points=8):
     """
     from dmipy_sim.engine.pulse_sequence import bare_spin_echo
     nominal = pack.nominal
-    rho_2 = PROBE_RHO if nominal.rho_2 is None else float(nominal.rho_2)
-    tissue = nominal if nominal.rho_2 is not None else nominal.replace(rho_2=rho_2)
+    rho2 = PROBE_RHO if nominal.rho2 is None else float(nominal.rho2)
+    tissue = nominal if nominal.rho2 is not None else nominal.replace(rho2=rho2)
     ell = pack.contact()
     n_w = ell.shape[0]
     step = max(1, pack.n_t // (n_points + 1))
@@ -258,7 +258,7 @@ def served_vs_channel(pack, *, n_points=8):
     acc = np.zeros(len(ks))
     for lo in range(0, n_w, 4000):
         L = np.cumsum(np.asarray(ell[lo:lo + 4000], np.float64), axis=1)[:, ks]
-        acc += np.exp(rho_2 / D0 * L - t / T2B).sum(axis=0)
+        acc += np.exp(rho2 / D0 * L - t / T2B).sum(axis=0)
     served = [float(np.asarray(pack.replay(bare_spin_echo(float(te), dt=pack.dt),
                                           tissue=tissue)).ravel()[0]) for te in t]
     return float(np.max(np.abs(np.asarray(served) - acc / n_w)))
@@ -274,7 +274,7 @@ pk = ReplayPack.load("{uri}")
 ell = pk.contact()                                        # the stored wall-contact channel, per save
 L = np.cumsum(np.asarray(ell, np.float64), axis=1)        # the boundary local time
 t = np.arange(pk.n_t) * pk.dt
-S = np.exp(pk.nominal.rho_2 / {D0!r} * L - t / {T2B!r}).mean(axis=0)   # pk.nominal.rho_2 IS Ling's for this mineral
+S = np.exp(pk.nominal.rho2 / {D0!r} * L - t / {T2B!r}).mean(axis=0)   # pk.nominal.rho2 IS Ling's for this mineral
 every = round({INVERT_MS!r}e-3 / pk.dt)
 g = np.logspace(-3, 1, 60)
 print("T2 log-mean %.1f ms" % (1e3 * log_mean_T2(g, t2_distribution(t[every::every], S[every::every], g))))
@@ -397,7 +397,7 @@ def family(data_dir, work_dir, *, samples, dry, create_dataset):
             se_derivation=(
                 "the delta method over walkers on the log-mean (talabi_micro_ct_rocks.log_mean_gradient), "
                 f"MEASURED at record time on this family's own {s.lower()}.rpk -- {se[s]['se_pack']:.6f} over "
-                f"{se[s]['n_pack']:,} walkers at the same rho_2, channel and grid -- and scaled to the direct "
+                f"{se[s]['n_pack']:,} walkers at the same rho2, channel and grid -- and scaled to the direct "
                 f"walk's {se[s]['n_direct']:,} by 1/sqrt(N) (x {se[s]['scale']:.6f}). The direct walk's own "
                 f"per-walker decays were not retained; the relative per-echo spread is a property of the "
                 f"substrate and the estimator, not of the pack"),
@@ -412,7 +412,7 @@ def family(data_dir, work_dir, *, samples, dry, create_dataset):
                 "micro-CT imaged, and both halves are in the same deposit"),
         sample_relation="the same object", quantities=quantities,
         parameters=(
-            FreeParameter(name="rho_2", value=RHO, unit="m/s", whose="theirs",
+            FreeParameter(name="rho2", value=RHO, unit="m/s", whose="theirs",
                           where="paper §3.2", how="fitted by them per mineral to their own te = 100 us trains; "
                                                  "an effective value tied to their 3.93 um voxel, because a "
                                                  "segmentation's surface is the Manhattan area at that "
@@ -428,7 +428,7 @@ def family(data_dir, work_dir, *, samples, dry, create_dataset):
                           how="non-negative least squares with a second-difference penalty on 60 points from "
                               "1 ms, applied to THEIR released train and to ours identically, so the two sides "
                               "of the comparison share the estimator even though it is not theirs"),
-            FreeParameter(name="surface rule", value="exp(-2 (rho_2/D) d_perp) per reflection", unit="-",
+            FreeParameter(name="surface rule", value="exp(-2 (rho2/D) d_perp) per reflection", unit="-",
                           whose="ours", where="the walk",
                           how="the boundary local time is stored as a channel and weighted at replay; their "
                               "walk kills a walker at an attempted move into a grain voxel. The two agree in "
@@ -443,7 +443,7 @@ def family(data_dir, work_dir, *, samples, dry, create_dataset):
                      "redistributed",
         caveats=dict(
             mixtures=("The three MIXTURES have no reference row. LabelVolume accumulates ONE boundary local "
-                      "time over every wall and Tissue.rho_2 is one scalar, so a single pack cannot carry Ling's "
+                      "time over every wall and Tissue.rho2 is one scalar, so a single pack cannot carry Ling's "
                       "12.5 um/s on quartz and 98.5 um/s on garnet at once. They are built, certified, gated "
                       "and published -- the geometry, the positions and the contact channel are all sound -- "
                       "and their spec declares NO nominal relaxivity, so a consumer must state one. Recorded "

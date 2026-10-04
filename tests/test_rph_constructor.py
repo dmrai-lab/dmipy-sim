@@ -146,7 +146,7 @@ def test_substrates_are_objects_with_a_required_proton_density(pack_path):
 def test_volumes_become_a_sparse_phantom_with_full_voxels(pack_path):
     ph, wm, csf, bg = _phantom(pack_path)
     f = ph.file
-    assert f.meta["rph_schema_version"] == "0.4.1" and ph.mode == "odf_sh" and f.lmax == 8
+    assert f.meta["rph_schema_version"] == "0.4.2" and ph.mode == "odf_sh" and f.lmax == 8
     assert f.odf_sh.shape[-1] == n_sh_coeffs(8)
     f_wm, f_csf = _annulus()
     assert ph.n_voxels == int(((f_wm + f_csf) > 0).sum())                     # sparse: only occupied voxels

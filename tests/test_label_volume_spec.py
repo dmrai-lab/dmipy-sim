@@ -36,7 +36,7 @@ def test_the_producer_writes_the_image_the_pools_and_the_wall(image):
     and label map, gives the walking pool the water and the others none, and emits one wall per pair
     of pools that share a voxel face."""
     path, lab = image
-    spec = label_volume_spec(path, rho_2=41e-6, D=2.07e-9, T2=3.1, id="test/slab")
+    spec = label_volume_spec(path, rho2=41e-6, D=2.07e-9, T2=3.1, id="test/slab")
     spec.validate()
     s = spec.walls[0].surface
     assert s.kind == "label_volume" and s.format == "nrrd" and s.file == path
@@ -64,7 +64,7 @@ def test_the_producer_and_the_geometry_are_a_fixed_point(image, tmp_path, monkey
     """
     path, lab = image
     monkeypatch.setenv("DMIPY_SIM_SURFACE_DIR", str(tmp_path / "cache"))
-    spec = label_volume_spec(path, rho_2=41e-6, D=2.07e-9, T2=3.1, crop=(4, 0, 0, 36, 8, 8),
+    spec = label_volume_spec(path, rho2=41e-6, D=2.07e-9, T2=3.1, crop=(4, 0, 0, 36, 8, 8),
                             id="test/slab", nominal_field_T=2.0)
     g = geometry_from_spec(spec)
     assert isinstance(g, LabelVolume)
@@ -129,7 +129,7 @@ def test_multiple_pools_become_multiple_walls(tmp_path):
     lab[8:] = 2
     p = tmp_path / "three.nrrd"
     write_nrrd(p, lab, 1e-6)
-    spec = label_volume_spec(p, pools={0: "free", 1: "intra", 2: "myelin"}, D=2e-9, rho_2=1e-5)
+    spec = label_volume_spec(p, pools={0: "free", 1: "intra", 2: "myelin"}, D=2e-9, rho2=1e-5)
     assert {w.name for w in spec.walls} == {"intra|free", "myelin|intra"}      # 0 and 2 never touch
     assert [(w.inside_pool, w.outside_pool) for w in spec.walls] == [(1, 0), (2, 1)]
     g = geometry_from_spec(spec)

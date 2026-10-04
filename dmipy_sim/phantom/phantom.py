@@ -192,7 +192,7 @@ class Phantom:
             pk = given.pop(m.get("id"), None)
             if pk is None and m.get("kind") == "pack" and m.get("embedded"):
                 pk = f.pack(i)
-            subs.append(substrate_from_meta(m, pack=pk, rph_schema_version=f.meta.get("rph_schema_version")))
+            subs.append(substrate_from_meta(m, pack=pk))
         if given:
             raise ValueError(f"packs= names substrates the file does not cite: {sorted(given)}; it cites "
                              f"{[m.get('id') for m in f.substrates]}")

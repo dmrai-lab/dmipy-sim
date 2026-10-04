@@ -129,13 +129,13 @@ SAVE_GRID_WHY = (
 #: time so that both are replay knobs, which is the only way a white-matter pack can answer the axolemma
 #: exchange question at all -- and the ladder is the bank's own default, which brackets the membrane
 #: permeabilities the exchange literature reports (1e-6 to 1e-4 m/s) at the scale the channel has to be
-#: accurate at. A ``rho_2_list`` of ``[0.0]`` would make the tier's floor and codec error identically zero and
+#: accurate at. A ``rho2_list`` of ``[0.0]`` would make the tier's floor and codec error identically zero and
 #: its ``meets_target`` vacuously true, which is a certificate that certifies nothing.
 RHO_PROBE = (1e-5, 3e-5, 1e-4)
 
 ENVELOPE = dict(bvals=list(BVALS), dirs=[[0, 0, 1], [1, 0, 0], [1, 0, 1]],
                 delta_frac=DELTA / TE, Delta_frac=BIG_DELTA / TE, ogse_periods=[1, 2, 3],
-                shortd_b=max(BVALS), shortd_deltas_frac=[DELTA / TE], rho_2_list=list(RHO_PROBE))
+                shortd_b=max(BVALS), shortd_deltas_frac=[DELTA / TE], rho2_list=list(RHO_PROBE))
 
 
 # ----------------------------------------------------------------- the regions of interest, as released
@@ -245,7 +245,7 @@ def spec_of(substrate, data_dir, rois):
     its own limit, and re-raises naming dmipy-sim#503 and all three: this substrate is THREE released files
     where the producer reads one, its axon file is ``uint16`` instance labels (up to 67,244 axons per sample)
     where a label volume is ``0..255``, and its water is the intra- AND extra-axonal pool with myelin
-    invisible where the producer gives ``water_fraction`` 1.0 to exactly one pool. The rho_2 half of that last
+    invisible where the producer gives ``water_fraction`` 1.0 to exactly one pool. The rho2 half of that last
     limit is dmipy-sim#491's.
     """
     from dmipy_sim.spec import label_volume_spec
@@ -263,11 +263,11 @@ def spec_of(substrate, data_dir, rois):
             f"{r['n_axons']:,} axons in this sample, where a label volume is 0..255, so the pools have to be "
             f"composed before the producer sees them; (3) the water of a white-matter substrate is the "
             f"intra-axonal AND the extra-axonal pool with myelin invisible, and the producer gives "
-            f"water_fraction 1.0 to exactly one pool with one rho_2 and one kappa on every face, so it cannot "
+            f"water_fraction 1.0 to exactly one pool with one rho2 and one kappa on every face, so it cannot "
             f"hold a reflecting myelin sheath and a permeable axolemma at once. This family's spec stage "
             f"needs the composed label volume of dmipy-sim#503 -- several released label files composed in "
             f"the authors' own SetSubstrate order into one graded volume, water in the intra and extra "
-            f"pools, myelin a wall-only pool -- and the rho_2 half of limit (3) is dmipy-sim#491's. The walk "
+            f"pools, myelin a wall-only pool -- and the rho2 half of limit (3) is dmipy-sim#491's. The walk "
             f"is a separate refusal (dmipy-sim#478): #503 without #478 is a spec nobody can afford to "
             f"walk, and #478 without #503 is an affordable walk with no spec") from e
 
@@ -697,7 +697,7 @@ def family(data_dir, work_dir, *, substrates=None, dry=True, create_dataset=Fals
         # BOTH tiers, deliberately, and this is what makes #478 load-bearing rather than an optimisation: the
         # contact tier is the stored boundary local time, and declaring it puts the surface-local-time rule in
         # force (1,921 sub-steps per 25 us save against the reflection rule's 121). A positions-only pack of
-        # this substrate is walkable today at a sixteenth of the cost -- and freezes rho_2 and kappa into the
+        # this substrate is walkable today at a sixteenth of the cost -- and freezes rho2 and kappa into the
         # walk, which for a myelinated axon is the one thing a pack must not do
         tiers=(Tier(name="positions", floor_key="floor_max", err_key="err_max", target_floor=SIGMA),
                Tier(name="contact", floor_key="floor_surface", err_key="err_surface", target_floor=SIGMA)),

@@ -14,7 +14,7 @@ Three rungs, each printed with the thesis number beside it:
    the 6-connected grain-face count divided by the PORE volume (thesis eq. 4.1), which is exactly
    :meth:`LabelVolume.surface_to_volume` of the walking pool.
 2. **the T2 decay**, from one walk per rock under a gradient-free CPMG train, against the
-   fast-diffusion rate ``rho_2 S/V + 1/T2B`` (eq. 3.13) and its own single-exponential fit.
+   fast-diffusion rate ``rho2 S/V + 1/T2B`` (eq. 3.13) and its own single-exponential fit.
 3. **the log-mean T2** of the decay's regularised inverse Laplace transform (eq. 3.16) against the
    simulated mean T2 of Table 7-2 / Table 8-5, and against his measured T2lm. The inversion here is
    the same penalty family as his, not the same estimator -- :func:`t2_distribution` says which, and
@@ -53,25 +53,25 @@ CROP = 300            # the central cube he simulated on ("maximum voxel size ..
 #: Per rock: the surface relaxivity he used (m/s), whether he FITTED it to his own CPMG or took it
 #: from the literature, his porosity and S/V of the crop, and his simulated and measured mean T2.
 TALABI = {
-    "LV60A": dict(rho_2=41e-6, rho_from="fitted to the LV60Y CPMG (thesis §7.6.2)",
+    "LV60A": dict(rho2=41e-6, rho_from="fitted to the LV60Y CPMG (thesis §7.6.2)",
                   porosity=0.377, s_over_v=57670, T2_sim=0.512, T2_exp=0.496,
                   table="Table 7-1 / Table 7-2"),
-    "LV60B": dict(rho_2=41e-6, rho_from="fitted to the LV60Y CPMG (thesis §7.6.2)",
+    "LV60B": dict(rho2=41e-6, rho_from="fitted to the LV60Y CPMG (thesis §7.6.2)",
                   porosity=0.368, s_over_v=61090, T2_sim=0.488, T2_exp=0.496, crop=338,
                   table="Table 7-1 / Table 7-2"),
-    "LV60C": dict(rho_2=41e-6, rho_from="fitted to the LV60Y CPMG (thesis §7.6.2)",
+    "LV60C": dict(rho2=41e-6, rho_from="fitted to the LV60Y CPMG (thesis §7.6.2)",
                   porosity=0.372, s_over_v=61590, T2_sim=0.471, T2_exp=0.496,
                   table="Table 7-1 / Table 7-2"),
-    "F42A": dict(rho_2=41e-6, rho_from="fitted to the F42Y CPMG (thesis §7.6.2)",
+    "F42A": dict(rho2=41e-6, rho_from="fitted to the F42Y CPMG (thesis §7.6.2)",
                  porosity=0.330, s_over_v=43770, T2_sim=0.677, T2_exp=0.668,
                  table="Table 7-1 / Table 7-2"),
-    "F42B": dict(rho_2=41e-6, rho_from="fitted to the F42Y CPMG (thesis §7.6.2)",
+    "F42B": dict(rho2=41e-6, rho_from="fitted to the F42Y CPMG (thesis §7.6.2)",
                  porosity=0.333, s_over_v=44930, T2_sim=0.654, T2_exp=0.668,
                  table="Table 7-1 / Table 7-2"),
-    "F42C": dict(rho_2=41e-6, rho_from="fitted to the F42Y CPMG (thesis §7.6.2)",
+    "F42C": dict(rho2=41e-6, rho_from="fitted to the F42Y CPMG (thesis §7.6.2)",
                  porosity=0.331, s_over_v=45760, T2_sim=0.647, T2_exp=0.668,
                  table="Table 7-1 / Table 7-2"),
-    "Berea": dict(rho_2=15e-6, rho_from="a literature value for sandstone (thesis §8.3); not fitted",
+    "Berea": dict(rho2=15e-6, rho_from="a literature value for sandstone (thesis §8.3); not fitted",
                   porosity=0.196, s_over_v=118960, T2_sim=0.584, T2_exp=None,
                   table="Table 8-4 / Table 8-5"),
 }
@@ -166,7 +166,7 @@ def run_rock(name, data_dir, *, n_walkers, T_max, sample_ms, sub_echo, walker_ba
     shape = read_label_volume(path).labels.shape
     crop = central_crop(shape, ref.get("crop", CROP))
     spec = label_volume_spec(path, pools={0: "free", 1: "grain"}, crop=crop,
-                             rho_2=ref["rho_2"], D=D0, T2=T2B,
+                             rho2=ref["rho2"], D=D0, T2=T2B,
                              id=f"imperial2007/{name.lower()}",
                              source="Imperial College 2007 micro-CT collection (Dong & Blunt 2009), CC BY 4.0")
     g = geometry_from_spec(spec)
@@ -188,7 +188,7 @@ def run_rock(name, data_dir, *, n_walkers, T_max, sample_ms, sub_echo, walker_ba
     wall = time.time() - t0
     t = np.arange(1, n_echoes + 1) * sample_ms * 1e-3
 
-    rate_fd = ref["rho_2"] * sv + 1.0 / T2B                       # thesis eq. 3.13
+    rate_fd = ref["rho2"] * sv + 1.0 / T2B                       # thesis eq. 3.13
     m = (t > 0.05) & (t < min(0.8, T_max)) & (S > 1e-3)
     rate_fit = -np.polyfit(t[m], np.log(S[m]), 1)[0]
     T2_grid = np.logspace(np.log10(1e-3), np.log10(10.0), 60)
@@ -221,7 +221,7 @@ def main():
                      walker_batch=args.walker_batch, seed=args.seed)
         rows.append(r)
         ref = r["ref"]
-        print(f"\n=== {name}  ({ref['table']};  rho_2 = {ref['rho_2'] * 1e6:.0f} um/s, {ref['rho_from']}) ===")
+        print(f"\n=== {name}  ({ref['table']};  rho2 = {ref['rho2'] * 1e6:.0f} um/s, {ref['rho_from']}) ===")
         print(f"  crop {r['spec'].walls[0].surface.crop}   voxel "
               f"{r['spec'].walls[0].surface.voxel_size[0] * 1e6:.4g} um   "
               f"walkers {r['n_walkers']:,}   dt {r['dt'] * 1e6:.1f} us x {r['sub_steps']} sub-steps   "
@@ -230,7 +230,7 @@ def main():
               f"      ({100 * (r['phi'] / ref['porosity'] - 1):+.2f} %)")
         print(f"  S/V (1/m)     ours {r['s_over_v']:.0f}       Talabi {ref['s_over_v']:.0f}"
               f"       ({100 * (r['s_over_v'] / ref['s_over_v'] - 1):+.2f} %)")
-        print(f"  T2 fast-diffusion 1/(rho_2 S/V + 1/T2B) {r['T2_fd'] * 1e3:.1f} ms")
+        print(f"  T2 fast-diffusion 1/(rho2 S/V + 1/T2B) {r['T2_fd'] * 1e3:.1f} ms")
         print(f"  T2 single-exponential fit             {r['T2_fit'] * 1e3:.1f} ms")
         print(f"  T2 log-mean of the inverted decay     {r['T2_lm'] * 1e3:.1f} ms"
               f"      Talabi simulated {ref['T2_sim'] * 1e3:.0f} ms"

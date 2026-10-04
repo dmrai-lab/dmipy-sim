@@ -1,21 +1,21 @@
-"""Physics tests: the longitudinal surface relaxivity ``rho_1`` (dmipy-sim#574).
+"""Physics tests: the longitudinal surface relaxivity ``rho1`` (dmipy-sim#574).
 
 The replay equation's contact channel is general in the two surface relaxivities, like C1 is in
-T2 and T1: the C2 gate is ``rho_2 * chi_perp + rho_1 * chi_parallel`` against the SAME stored
+T2 and T1: the C2 gate is ``rho2 * chi_perp + rho1 * chi_parallel`` against the SAME stored
 boundary local time, with ``chi_parallel = active - chi_perp`` the complement of the coherence gate
 (on while the magnetisation is stored along B0, e.g. a stimulated echo's mixing time). No new
-walk, no new channel -- a second contraction of the one C2 series already read for ``rho_2``.
+walk, no new channel -- a second contraction of the one C2 series already read for ``rho2``.
 
 Reference for the stimulated-echo check: the exact Brownstein-Tarr series for a sphere of radius
-``R``, diffusivity ``D``, Robin surface relaxivity ``rho_1`` on a UNIFORM initial magnetisation (the
-forward engine has no ``rho_1`` term to walk directly -- see ``dmipy_sim/replay/replay.py``'s
+``R``, diffusivity ``D``, Robin surface relaxivity ``rho1`` on a UNIFORM initial magnetisation (the
+forward engine has no ``rho1`` term to walk directly -- see ``dmipy_sim/replay/replay.py``'s
 refusal in ``replay_bloch`` -- so this is the analytical slow-diffusion-limit reference the issue
 allows in that case). Writing ``u = r * C`` turns the radial Robin problem into a 1-D rod on
-``[0, R]`` with ``u(0) = 0`` and ``u'(R) = (1/R - rho_1/D) u(R)``, a standard Sturm-Liouville
-problem; its eigenvalues ``x_n = k_n R`` solve ``tan(x) = x / (1 - rho_1 R / D)`` and its
+``[0, R]`` with ``u(0) = 0`` and ``u'(R) = (1/R - rho1/D) u(R)``, a standard Sturm-Liouville
+problem; its eigenvalues ``x_n = k_n R`` solve ``tan(x) = x / (1 - rho1 R / D)`` and its
 coefficients for a uniform initial condition are elementary integrals of ``sin``. The two limits
-check themselves: ``rho_1 -> 0`` gives ``tan(x) = x``, the reflecting (Neumann) sphere, decay 0;
-``rho_1 R / D -> 0`` gives the well-known fast-diffusion rate ``rho_1 (S/V) = 3 rho_1 / R``.
+check themselves: ``rho1 -> 0`` gives ``tan(x) = x``, the reflecting (Neumann) sphere, decay 0;
+``rho1 R / D -> 0`` gives the well-known fast-diffusion rate ``rho1 (S/V) = 3 rho1 / R``.
 """
 import numpy as np
 import pytest
@@ -34,7 +34,7 @@ DT_SAVE = 1e-4     # s
 SEED = 11
 
 ENV = dict(bvals=[0.0], dirs=[[1, 0, 0]], ogse_periods=[2], shortd_b=1e9,
-           shortd_deltas_frac=[0.05], delta_frac=0.2, Delta_frac=0.5, rho_2_list=[1e-5])
+           shortd_deltas_frac=[0.05], delta_frac=0.2, Delta_frac=0.5, rho2_list=[1e-5])
 
 
 @pytest.fixture(scope="module")
@@ -61,13 +61,13 @@ def _lowest_roots(b, n_modes):
     return np.array(roots)
 
 
-def sphere_robin_decay(t, D, R, rho_2, n_modes=60):
+def sphere_robin_decay(t, D, R, rho2, n_modes=60):
     """``M(t) / M(0)`` of a uniformly-magnetised sphere under a Robin (partially-relaxing) boundary:
     the exact Brownstein-Tarr radial series (see module docstring for the derivation)."""
     t = np.atleast_1d(np.asarray(t, float))
-    if rho_2 == 0.0:
+    if rho2 == 0.0:
         return np.ones_like(t)
-    b = rho_2 * R / D
+    b = rho2 * R / D
     x = _lowest_roots(b, n_modes)
     k = x / R
     I = (np.sin(x) - x * np.cos(x)) / k ** 2              # integral_0^R r sin(k r) dr
@@ -78,7 +78,7 @@ def sphere_robin_decay(t, D, R, rho_2, n_modes=60):
 
 def test_the_reference_series_is_self_consistent():
     """The two limits the series must reproduce, independent of any Monte Carlo: no relaxivity is no
-    decay, and a weak one is the textbook fast-diffusion rate rho_1 * (S/V) = 3 rho_1 / R."""
+    decay, and a weak one is the textbook fast-diffusion rate rho1 * (S/V) = 3 rho1 / R."""
     t = np.array([0.0, 0.01, 0.05])
     np.testing.assert_array_equal(sphere_robin_decay(t, D0, R, 0.0), np.ones_like(t))
     rho1 = 1e-7                                            # rho1 R / D = 4e-4: deep in the well-mixed regime
@@ -87,9 +87,9 @@ def test_the_reference_series_is_self_consistent():
     np.testing.assert_allclose(got, ref, rtol=2e-3)
 
 
-# --------------------------------------------------------------------------- acceptance: rho_1 = 0
-def test_rho_1_zero_is_bit_identical_to_absent(sphere_pack):
-    """A rho_1 of 0 or None changes nothing: no new floating-point operation runs on that path (the
+# --------------------------------------------------------------------------- acceptance: rho1 = 0
+def test_rho1_zero_is_bit_identical_to_absent(sphere_pack):
+    """A rho1 of 0 or None changes nothing: no new floating-point operation runs on that path (the
     longitudinal term is skipped, not computed-and-multiplied-by-zero), for a spin echo, a stimulated
     echo and a gradient echo alike."""
     pk = sphere_pack
@@ -99,46 +99,46 @@ def test_rho_1_zero_is_bit_identical_to_absent(sphere_pack):
         gradient_echo=seq.gre(4e-3, n_t=pk.n_t, slew_rate=np.inf),
     )
     for name, wf in waveforms.items():
-        baseline = pk.replay(wf, tissue=Tissue(rho_2=4e-6))
-        zero = pk.replay(wf, tissue=Tissue(rho_2=4e-6, rho_1=0.0))
-        absent = pk.replay(wf, tissue=Tissue(rho_2=4e-6, rho_1=None))
-        np.testing.assert_array_equal(baseline, zero, err_msg=f"{name}: rho_1=0.0 is not bit-identical")
-        np.testing.assert_array_equal(baseline, absent, err_msg=f"{name}: rho_1=None is not bit-identical")
-    # and with no rho_2 at all
+        baseline = pk.replay(wf, tissue=Tissue(rho2=4e-6))
+        zero = pk.replay(wf, tissue=Tissue(rho2=4e-6, rho1=0.0))
+        absent = pk.replay(wf, tissue=Tissue(rho2=4e-6, rho1=None))
+        np.testing.assert_array_equal(baseline, zero, err_msg=f"{name}: rho1=0.0 is not bit-identical")
+        np.testing.assert_array_equal(baseline, absent, err_msg=f"{name}: rho1=None is not bit-identical")
+    # and with no rho2 at all
     wf = waveforms["stimulated_echo"]
-    np.testing.assert_array_equal(pk.replay(wf), pk.replay(wf, tissue=Tissue(rho_1=0.0)))
+    np.testing.assert_array_equal(pk.replay(wf), pk.replay(wf, tissue=Tissue(rho1=0.0)))
 
 
-def test_rho_1_zero_is_bit_identical_in_the_study_and_pose_routes(sphere_pack):
+def test_rho1_zero_is_bit_identical_in_the_study_and_pose_routes(sphere_pack):
     """The same bit-identity through the other two depths that read the C2 channel: the study
     primitives (`Primitives.contact_t1`) and the pose closed form."""
     pk = sphere_pack
     wf = seq.pgste([[1, 0, 0]], 1e-3, 0.02, bvalues=[3e8], n_t=pk.n_t, slew_rate=np.inf)
-    w1, ew1, E1 = pk.walker_signals(wf, tissue=Tissue(rho_2=4e-6))
-    w2, ew2, E2 = pk.walker_signals(wf, tissue=Tissue(rho_2=4e-6, rho_1=0.0))
+    w1, ew1, E1 = pk.walker_signals(wf, tissue=Tissue(rho2=4e-6))
+    w2, ew2, E2 = pk.walker_signals(wf, tissue=Tissue(rho2=4e-6, rho1=0.0))
     np.testing.assert_array_equal(ew1, ew2)
     np.testing.assert_array_equal(E1, E2)
-    pr1 = pk.pose_response(wf, tissue=Tissue(rho_2=4e-6))
-    pr2 = pk.pose_response(wf, tissue=Tissue(rho_2=4e-6, rho_1=0.0))
+    pr1 = pk.pose_response(wf, tissue=Tissue(rho2=4e-6))
+    pr2 = pk.pose_response(wf, tissue=Tissue(rho2=4e-6, rho1=0.0))
     np.testing.assert_array_equal(np.asarray(pr1.coeffs), np.asarray(pr2.coeffs))
 
 
 # --------------------------------------------------------------------------- acceptance: spin echo independence
-def test_spin_echo_is_independent_of_rho_1(sphere_pack):
+def test_spin_echo_is_independent_of_rho1(sphere_pack):
     """A spin echo never stores magnetisation (chi_perp == active throughout, so chi_parallel == 0
-    everywhere): rho_1 has nothing to gate and the signal is unchanged, at any rho_1."""
+    everywhere): rho1 has nothing to gate and the signal is unchanged, at any rho1."""
     pk = sphere_pack
     wf = seq.pgse([[1, 0, 0]], 2e-3, 6e-3, bvalues=[5e8], n_t=pk.n_t, slew_rate=np.inf)
-    baseline = pk.replay(wf, tissue=Tissue(rho_2=3e-6))
+    baseline = pk.replay(wf, tissue=Tissue(rho2=3e-6))
     for rho1 in (1e-6, 1e-4, 1e-2):
-        np.testing.assert_array_equal(baseline, pk.replay(wf, tissue=Tissue(rho_2=3e-6, rho_1=rho1)),
-                                      err_msg=f"a spin echo changed with rho_1={rho1:g}")
+        np.testing.assert_array_equal(baseline, pk.replay(wf, tissue=Tissue(rho2=3e-6, rho1=rho1)),
+                                      err_msg=f"a spin echo changed with rho1={rho1:g}")
 
 
 # --------------------------------------------------------------------------- acceptance: stimulated echo vs reference
 def test_stimulated_echo_matches_the_sphere_robin_series(sphere_pack):
     """A store-wait-recall schedule with b ~ 0 (so only the storage-period wall relaxation acts): the
-    replayed signal, relative to its rho_1 = 0 value, matches the exact Robin-sphere series to the
+    replayed signal, relative to its rho1 = 0 value, matches the exact Robin-sphere series to the
     Monte Carlo floor (``1/sqrt(N)``) plus the MC's own discretisation bias -- the same scale
     (a few percent) ``tests/physics/test_surface_relaxivity.py`` already accepts for the T2 analogue."""
     pk = sphere_pack
@@ -146,8 +146,8 @@ def test_stimulated_echo_matches_the_sphere_robin_series(sphere_pack):
     floor = 1.0 / np.sqrt(N_WALKERS)
     for TM in (0.005, 0.01, 0.02, 0.04):
         wf = seq.pgste([[1, 0, 0]], DT_SAVE, TM, bvalues=[0.0], n_t=pk.n_t, slew_rate=np.inf)
-        S0 = float(pk.replay(wf, tissue=Tissue(rho_2=0.0))[0])
-        S1 = float(pk.replay(wf, tissue=Tissue(rho_2=0.0, rho_1=rho1))[0])
+        S0 = float(pk.replay(wf, tissue=Tissue(rho2=0.0))[0])
+        S1 = float(pk.replay(wf, tissue=Tissue(rho2=0.0, rho1=rho1))[0])
         ratio = S1 / S0
         ref = float(sphere_robin_decay([TM], D0, R, rho1)[0])
         tol = max(5 * floor, 0.06 * ref)
@@ -155,7 +155,7 @@ def test_stimulated_echo_matches_the_sphere_robin_series(sphere_pack):
     # monotone in TM: longer storage, more wall contact, less signal
     TMs = np.array([0.005, 0.02, 0.05])
     ratios = [float(pk.replay(seq.pgste([[1, 0, 0]], DT_SAVE, TM, bvalues=[0.0], n_t=pk.n_t, slew_rate=np.inf),
-                              tissue=Tissue(rho_2=0.0, rho_1=rho1))[0])
+                              tissue=Tissue(rho2=0.0, rho1=rho1))[0])
              for TM in TMs]
     assert ratios[0] > ratios[1] > ratios[2]
 
@@ -164,11 +164,11 @@ def test_stimulated_echo_matches_the_sphere_robin_series(sphere_pack):
 def test_replay_and_the_pose_closed_form_agree(sphere_pack):
     """The pose expansion at the identity pose composes back to the plain replay (#197): since
     :meth:`~dmipy_sim.replay.replay.ReplayPack.pose_response` reads the SAME ``_prepare`` weights
-    (``ew``), this is a structural check that rho_1 reaches the closed form too, not a new route."""
+    (``ew``), this is a structural check that rho1 reaches the closed form too, not a new route."""
     from dmipy_sim.replay.so3 import Distribution
     pk = sphere_pack
     wf = seq.pgste([[1, 0, 0]], 1e-3, 0.02, bvalues=[3e8], n_t=pk.n_t, slew_rate=np.inf)
-    tissue = Tissue(rho_2=2e-6, rho_1=8e-6)
+    tissue = Tissue(rho2=2e-6, rho1=8e-6)
     S_replay = np.asarray(pk.replay(wf, tissue=tissue))
     pr = pk.pose_response(wf, tissue=tissue)
     S_pose = np.abs(np.asarray(pr.compose(Distribution.pose(np.eye(3)))))
@@ -176,8 +176,8 @@ def test_replay_and_the_pose_closed_form_agree(sphere_pack):
 
 
 # --------------------------------------------------------------------------- acceptance: the device (columnar) route
-def test_the_columnar_device_route_applies_rho_1(tmp_path):
-    """The device reduction (`ColumnarPack.image_study`) must read `rho_1` exactly as the host study
+def test_the_columnar_device_route_applies_rho1(tmp_path):
+    """The device reduction (`ColumnarPack.image_study`) must read `rho1` exactly as the host study
     route does -- the kernel that had grown its own copy once before (#484) and silently dropped a
     term; this is the same class of bug, so it gets the same style of test."""
     import os
@@ -207,7 +207,7 @@ def test_the_columnar_device_route_applies_rho_1(tmp_path):
     merged = merge_packs(packs, id="t/merged")
     col = ReplayPack.open(str(tmp_path / "layout"))
     seq1 = d.pgste([[1, 0, 0]], 0.2e-3, 0.4e-3, bvalues=[0.0], n_t=merged.n_t, slew_rate=np.inf)
-    tissue = Tissue(T2={"intra": 0.03, "extra": 0.08, "myelin": 0.01}, rho_2=1e-5, rho_1=8e-6)
+    tissue = Tissue(T2={"intra": 0.03, "extra": 0.08, "myelin": 0.01}, rho2=1e-5, rho1=8e-6)
     study = Study(Protocol([seq1]), tissues=[None, tissue], scanners=[None])
     assert study.needs_contact
     S, floor, plan = col.image(study, tol=1e-9, chunk_rows=5)

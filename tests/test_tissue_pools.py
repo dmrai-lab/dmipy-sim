@@ -54,9 +54,9 @@ def test_a_partial_mapping_is_refused_naming_the_missing_pool(pack):
 
 
 def test_replace_merges_pool_by_pool():
-    t = Tissue(T2={"extra": 0.05, "intra": 0.03}, T1={"extra": 1.0, "intra": 1.2}, rho_2=1e-6)
+    t = Tissue(T2={"extra": 0.05, "intra": 0.03}, T1={"extra": 1.0, "intra": 1.2}, rho2=1e-6)
     u = t.replace(T2={"intra": 0.08})
-    assert u.T2 == {"extra": 0.05, "intra": 0.08} and u.T1 == t.T1 and u.rho_2 == t.rho_2
+    assert u.T2 == {"extra": 0.05, "intra": 0.08} and u.T1 == t.T1 and u.rho2 == t.rho2
     assert Tissue().replace(T2={"intra": 0.08}).T2 == {"intra": 0.08}          # nothing to merge onto: as given
     assert t.replace(T2=None).T2 is None                                        # the tier switched off
 
@@ -93,9 +93,9 @@ def test_per_pool_values_on_a_specless_pack_are_refused(specless):
 
 
 def test_the_file_form_is_a_list_by_pool_id_strict_both_ways(pack):
-    sub = PackSubstrate(pack, m0=0.7, name="wm", tissue=Tissue(T2={"intra": 0.03, "extra": INF}, T1={"extra": 1.0, "intra": 1.2}, rho_2=1e-6))
+    sub = PackSubstrate(pack, m0=0.7, name="wm", tissue=Tissue(T2={"intra": 0.03, "extra": INF}, T1={"extra": 1.0, "intra": 1.2}, rho2=1e-6))
     entry = sub.to_meta()["tissue"]
-    assert entry == {"T2": [None, 0.03], "T1": [1.0, 1.2], "rho_2": 1e-6}         # by id, null for no decay, whatever the dict's order
+    assert entry == {"T2": [None, 0.03], "T1": [1.0, 1.2], "rho2": 1e-6}         # by id, null for no decay, whatever the dict's order
     back = PackSubstrate.from_meta({**sub.to_meta(), "kind": "pack"}, pack=pack)
     assert back.tissue.T2 == {"extra": INF, "intra": 0.03} and back.tissue.T1 == {"extra": 1.0, "intra": 1.2}
     spec = pack.substrate
@@ -115,39 +115,30 @@ def test_the_file_form_is_a_list_by_pool_id_strict_both_ways(pack):
         Tissue(T2=0.05).to_meta(spec=spec)                                      # a closed form's spelling has no file form on a pack
 
 
-def test_the_retired_rho_key_is_migrated_only_below_its_schema_floor():
-    """A ``.rph`` tissue entry below RPH 0.4.1 (dmipy-sim#574) states the transverse relaxivity as the
-    retired ``rho``; ``Tissue.from_meta`` migrates it to ``rho_2`` ONLY when its caller's own
-    ``schema_version`` says the record predates the rename (dmipy-sim#581) -- threaded from the file, never
-    guessed. A record at or above the floor, or with no schema_version given at all, keeps ``rho`` an
-    unknown key and is refused."""
-    assert Tissue.from_meta({"rho": 4e-6}, schema_version="0.4.0").rho_2 == 4e-6     # below the floor: migrated
-    assert Tissue.from_meta({"rho": 4e-6, "D": 2e-9}, schema_version="0.3").rho_2 == 4e-6
-    with pytest.raises(ValueError, match="retired key 'rho'"):
-        Tissue.from_meta({"rho": 4e-6}, schema_version="0.4.1")                     # at the floor: refused
-    with pytest.raises(ValueError, match="retired key 'rho'"):
-        Tissue.from_meta({"rho": 4e-6}, schema_version="0.5.0-draft")
-    with pytest.raises(ValueError, match="retired key 'rho'"):
-        Tissue.from_meta({"rho": 4e-6})                                             # no schema_version: never guessed
-    assert Tissue.from_meta({"rho_2": 4e-6}, schema_version="0.4.1").rho_2 == 4e-6   # the current spelling needs no version
+def test_an_unknown_tissue_key_is_refused_naming_what_is_accepted():
+    """A tissue entry naming a key outside ``Tissue.KNOBS`` is refused, naming both the key and the
+    accepted ones; there is no migration or version-gated acceptance of any other spelling."""
+    for key in ("rho", "rho_2", "rho_1", "foo"):
+        with pytest.raises(ValueError, match=rf"declares \['{key}'\]"):
+            Tissue.from_meta({key: 4e-6})
+        with pytest.raises(ValueError, match=rf"declares \['{key}'\]"):
+            Tissue.from_meta({key: 4e-6, "D": 2e-9})
+    assert Tissue.from_meta({"rho2": 4e-6}).rho2 == 4e-6
+    assert Tissue.from_meta({"rho1": 4e-6}).rho1 == 4e-6
 
 
-def test_packsubstrate_from_meta_threads_the_rph_schema_version(pack):
-    """``PackSubstrate.from_meta`` / ``substrate_from_meta`` thread the file's own ``rph_schema_version`` to
-    ``Tissue.from_meta``, both for a scalar tissue entry (resolved at once) and a per-pool one (resolved
-    lazily on first ``.tissue`` read, dmipy-sim#581)."""
-    scalar = {"id": "wm", "kind": "pack", "m0": 1.0, "tissue": {"rho": 4e-6}}
-    assert PackSubstrate.from_meta(scalar, pack=pack, rph_schema_version="0.4.0").tissue.rho_2 == 4e-6
-    with pytest.raises(ValueError, match="retired key 'rho'"):
-        PackSubstrate.from_meta(scalar, pack=pack, rph_schema_version="0.4.1")
-    with pytest.raises(ValueError, match="retired key 'rho'"):
-        PackSubstrate.from_meta(scalar, pack=pack)                                  # no version: never guessed
+def test_packsubstrate_from_meta_refuses_an_unknown_tissue_key(pack):
+    """``PackSubstrate.from_meta`` / ``substrate_from_meta`` refuse an unknown tissue-entry key outright --
+    for a scalar entry (resolved at once) and a per-pool one (resolved lazily on first ``.tissue`` read)
+    alike."""
+    for key in ("rho", "rho_2", "rho_1", "foo"):
+        scalar = {"id": "wm", "kind": "pack", "m0": 1.0, "tissue": {key: 4e-6}}
+        with pytest.raises(ValueError, match=rf"declares \['{key}'\]"):
+            PackSubstrate.from_meta(scalar, pack=pack)
 
-    per_pool = {"id": "wm2", "kind": "pack", "m0": 1.0, "tissue": {"T2": [None, 0.03], "rho": 4e-6}}
-    sub = PackSubstrate.from_meta(per_pool, pack=pack, rph_schema_version="0.4.0")
-    assert sub.tissue.rho_2 == 4e-6 and sub.tissue.T2 == {"extra": INF, "intra": 0.03}
-    with pytest.raises(ValueError, match="retired key 'rho'"):
-        PackSubstrate.from_meta(per_pool, pack=pack, rph_schema_version="0.4.1")
+        per_pool = {"id": "wm2", "kind": "pack", "m0": 1.0, "tissue": {"T2": [None, 0.03], key: 4e-6}}
+        with pytest.raises(ValueError, match=rf"declares \['{key}'\]"):
+            PackSubstrate.from_meta(per_pool, pack=pack)
 
 
 def test_completeness_is_judged_on_the_spec_not_the_walkers(extra_only):

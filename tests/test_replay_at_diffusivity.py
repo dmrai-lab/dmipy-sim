@@ -90,13 +90,13 @@ def test_the_surface_term_changes_with_the_diffusivity_and_the_replay_is_still_e
     than cancelling it: per walker it is the walk at 2 D, and that walk's own pack agrees to the bit."""
     pk_d, pk_2d = pore
     seq = _seq(T / 2)
-    rho_2 = 2e-5
-    at_d = pk_d.replay(seq, tissue=Tissue(rho_2=rho_2))
-    at_2d = pk_d.replay(seq, tissue=Tissue(rho_2=rho_2, D=2 * D0))
-    own = pk_2d.replay(seq, tissue=Tissue(rho_2=rho_2))
+    rho2 = 2e-5
+    at_d = pk_d.replay(seq, tissue=Tissue(rho2=rho2))
+    at_2d = pk_d.replay(seq, tissue=Tissue(rho2=rho2, D=2 * D0))
+    own = pk_2d.replay(seq, tissue=Tissue(rho2=rho2))
     np.testing.assert_allclose(at_2d, own, rtol=1e-12)
-    w1, e1, _ = pk_d.walker_signals(seq, tissue=Tissue(rho_2=rho_2, D=2 * D0))
-    w2, e2, _ = pk_2d.walker_signals(seq, tissue=Tissue(rho_2=rho_2))
+    w1, e1, _ = pk_d.walker_signals(seq, tissue=Tissue(rho2=rho2, D=2 * D0))
+    w2, e2, _ = pk_2d.walker_signals(seq, tissue=Tissue(rho2=rho2))
     np.testing.assert_allclose(e1, e2, rtol=1e-12)                       # per walker, the same weights
     assert not np.allclose(at_2d, at_d, rtol=1e-3)                       # and the signal moved
 
