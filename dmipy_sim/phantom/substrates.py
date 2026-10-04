@@ -109,8 +109,8 @@ class PackSubstrate(_Declared):
     @property
     def tissue(self):
         """The tissue this substrate replays at; one read from a file resolves its per-pool values through the
-        pack's spec on first use. A retired relaxivity key in the deferred entry is refused by name, not
-        migrated (:meth:`~dmipy_sim.spec.Tissue.from_meta`, dmipy-sim#592)."""
+        pack's spec on first use. An unknown key in the deferred entry is refused by name
+        (:meth:`~dmipy_sim.spec.Tissue.from_meta`)."""
         if self._tissue is None and self._tissue_meta is not None:
             from ..spec.tissue import Tissue
             self._tissue = Tissue.from_meta(self._tissue_meta, spec=self.pack.substrate)
@@ -152,8 +152,7 @@ class PackSubstrate(_Declared):
 
     @classmethod
     def from_meta(cls, meta, *, pack):
-        """A retired relaxivity key in the ``tissue`` entry is refused by name, not migrated
-        (:meth:`~dmipy_sim.spec.Tissue.from_meta`, dmipy-sim#592)."""
+        """An unknown key in the ``tissue`` entry is refused by name (:meth:`~dmipy_sim.spec.Tissue.from_meta`)."""
         from ..spec.tissue import Tissue
         entry = meta.get("tissue")
         per_pool = bool(entry) and any(entry.get(k) is not None for k in ("T2", "T1"))

@@ -115,30 +115,29 @@ def test_the_file_form_is_a_list_by_pool_id_strict_both_ways(pack):
         Tissue(T2=0.05).to_meta(spec=spec)                                      # a closed form's spelling has no file form on a pack
 
 
-def test_the_retired_rho_keys_are_refused_unconditionally():
-    """A tissue entry carrying a retired relaxivity key -- bare ``rho`` (pre-#581) or the underscored
-    ``rho_2`` / ``rho_1`` (pre-#592) -- is refused by name, with no version-dependent migration at all
-    (dmipy-sim#592: "no legacy rho"). The current spelling needs no version and no escape hatch."""
-    for key in ("rho", "rho_2", "rho_1"):
-        with pytest.raises(ValueError, match=f"retired key {key!r}"):
+def test_an_unknown_tissue_key_is_refused_naming_what_is_accepted():
+    """A tissue entry naming a key outside ``Tissue.KNOBS`` is refused, naming both the key and the
+    accepted ones; there is no migration or version-gated acceptance of any other spelling."""
+    for key in ("rho", "rho_2", "rho_1", "foo"):
+        with pytest.raises(ValueError, match=rf"declares \['{key}'\]"):
             Tissue.from_meta({key: 4e-6})
-        with pytest.raises(ValueError, match=f"retired key {key!r}"):
+        with pytest.raises(ValueError, match=rf"declares \['{key}'\]"):
             Tissue.from_meta({key: 4e-6, "D": 2e-9})
     assert Tissue.from_meta({"rho2": 4e-6}).rho2 == 4e-6
     assert Tissue.from_meta({"rho1": 4e-6}).rho1 == 4e-6
 
 
-def test_packsubstrate_from_meta_refuses_the_retired_rho_keys(pack):
-    """``PackSubstrate.from_meta`` / ``substrate_from_meta`` refuse a tissue entry's retired relaxivity key
-    outright -- for a scalar entry (resolved at once) and a per-pool one (resolved lazily on first
-    ``.tissue`` read) alike -- with no ``rph_schema_version``-gated migration (dmipy-sim#592)."""
-    for key in ("rho", "rho_2", "rho_1"):
+def test_packsubstrate_from_meta_refuses_an_unknown_tissue_key(pack):
+    """``PackSubstrate.from_meta`` / ``substrate_from_meta`` refuse an unknown tissue-entry key outright --
+    for a scalar entry (resolved at once) and a per-pool one (resolved lazily on first ``.tissue`` read)
+    alike."""
+    for key in ("rho", "rho_2", "rho_1", "foo"):
         scalar = {"id": "wm", "kind": "pack", "m0": 1.0, "tissue": {key: 4e-6}}
-        with pytest.raises(ValueError, match=f"retired key {key!r}"):
+        with pytest.raises(ValueError, match=rf"declares \['{key}'\]"):
             PackSubstrate.from_meta(scalar, pack=pack)
 
         per_pool = {"id": "wm2", "kind": "pack", "m0": 1.0, "tissue": {"T2": [None, 0.03], key: 4e-6}}
-        with pytest.raises(ValueError, match=f"retired key {key!r}"):
+        with pytest.raises(ValueError, match=rf"declares \['{key}'\]"):
             PackSubstrate.from_meta(per_pool, pack=pack)
 
 

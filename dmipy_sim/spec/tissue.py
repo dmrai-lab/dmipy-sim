@@ -14,11 +14,6 @@ import numpy as np
 PER_POOL = ("T2", "T1")
 KNOBS = ("T2", "T1", "rho2", "rho1", "D", "kappa", "chi_iso", "chi_aniso")
 
-#: keys retired by earlier issues (bare ``rho`` by dmipy-sim#581, underscored ``rho2``/``rho1`` by
-#: dmipy-sim#592) -- a record carrying one is refused by name, unconditionally: no version-dependent
-#: acceptance, no migration (dmipy-sim#592: "no legacy rho").
-RETIRED_KEYS = {"rho": "rho2", "rho_2": "rho2", "rho_1": "rho1"}
-
 
 def _check_time(what, v):
     """``v`` as a relaxation time in seconds: positive, ``inf`` for no decay; ``0`` is refused since the kernels
@@ -152,20 +147,12 @@ class Tissue:
         and come back as the mapping by name; a dict, a scalar or a list of another length is refused. Without
         a spec a list is refused (it needs the pack to be read) and a mapping or a number is taken as given.
 
-        A tissue entry carrying a retired relaxivity key -- bare ``rho`` (pre-RPH-0.4.1, dmipy-sim#581) or
-        underscored ``rho_2`` / ``rho_1`` (pre-RPH-0.4.2, dmipy-sim#592) -- is refused by name, unconditionally:
-        there is no version-dependent migration, at this boundary or any other (dmipy-sim#592, "no legacy
-        rho"). Rename the key to ``rho2`` / ``rho1`` in the record itself."""
+        An entry naming a key outside :data:`KNOBS` is refused, naming both the key and what is accepted:
+        there is no migration or version-gated acceptance of any other spelling."""
         m = dict(meta or {})
-        for old, new in RETIRED_KEYS.items():
-            if old in m:
-                raise ValueError(
-                    f"a tissue entry carries the retired key {old!r}; the surface relaxivities are spelled "
-                    f"{new!r} (dmipy-sim#592, following the forward catalogue's rho1/rho2 and the package's "
-                    f"T1/T2/M0/B0 convention). There is no migration: rename the key to {new!r}")
         unknown = set(m) - set(KNOBS)
         if unknown:
-            raise ValueError(f"a tissue entry declares {sorted(unknown)}; it takes T2, T1, rho2, rho1, D, kappa, chi_iso, chi_aniso")
+            raise ValueError(f"a tissue entry declares {sorted(unknown)}; it takes {', '.join(KNOBS)}")
         for k in PER_POOL:
             v = m.get(k)
             if v is None:

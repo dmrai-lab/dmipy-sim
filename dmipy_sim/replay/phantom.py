@@ -34,11 +34,6 @@ __all__ = ["ReplayPhantom", "read_rph", "write_rph", "Grid", "SUBSTRATE_KINDS", 
 
 SUBSTRATE_KINDS = ("pack", "analytic", "inert")
 RPH_SCHEMA_VERSION = "0.4.2"
-#: 0.4.2 (dmipy-sim#592) renames a tissue entry's surface relaxivities from the underscored ``rho_2`` /
-#: ``rho_1`` (0.4.1, dmipy-sim#581; before that, bare ``rho``, dmipy-sim#574/#581) to ``rho2`` / ``rho1``, to
-#: match the forward catalogue's spelling and the package's T1/T2/M0/B0 convention. No migration: a record
-#: carrying ``rho``, ``rho_2`` or ``rho_1`` is refused by name at any schema version
-#: (:meth:`~dmipy_sim.spec.Tissue.from_meta`).
 #: (0.5.0 is reserved by the partition ``addressing`` draft, :meth:`~dmipy_sim.phantom.partition.Partition.write`.)
 
 #: The macroscopic layers a phantom may declare per voxel (RPH.md 5.1). A name outside this registry is
@@ -643,8 +638,8 @@ class ReplayPhantom:
 
     def _tissue(self, sub, pack):
         """A pack substrate's tissue from its file entry: the per-pool values, a list by pool id in the file,
-        resolved by name through the pack's embedded spec (RPH.md 3.2); ``None`` for none. A retired
-        relaxivity key in the entry is refused by name, not migrated (dmipy-sim#592)."""
+        resolved by name through the pack's embedded spec (RPH.md 3.2); ``None`` for none. An unknown key in
+        the entry is refused by name."""
         from ..spec.tissue import Tissue
         entry = sub.get("tissue")
         per_pool = bool(entry) and any(entry.get(k) is not None for k in ("T2", "T1"))

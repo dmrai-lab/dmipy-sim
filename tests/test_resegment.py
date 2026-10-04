@@ -250,20 +250,19 @@ def test_the_contact_envelope_is_stated_and_held(packs):
             route()
 
 
-def test_rho_over_D_max_is_refused_unconditionally():
-    """A pack's ``replay_envelope.tissue`` carrying a retired key for this bound -- ``rho_over_D_max``
-    (pre-#581) or the underscored ``rho_2_over_D_max`` (pre-#592) -- is refused by name at every
-    ``rpk_schema_version``, recorded or not: there is no version-gated migration (dmipy-sim#592, "no legacy
-    rho"). The current spelling needs no version and no escape hatch."""
+def test_an_unknown_replay_envelope_tissue_key_is_refused():
+    """A pack's ``replay_envelope.tissue`` knows only ``rho2_over_D_max``; any other key there is refused
+    by name at every ``rpk_schema_version``, recorded or not -- there is no version-gated acceptance of
+    another spelling."""
     def _pk(key, version=None):
         meta = {"replay_envelope": {"tissue": {key: 42.0}}}
         if version is not None:
             meta["rpk_schema_version"] = version
         return ReplayPack({"pos_x_ends": np.zeros((1, 2), np.float32)}, meta)
 
-    for key in ("rho_over_D_max", "rho_2_over_D_max"):
+    for key in ("rho_over_D_max", "rho_2_over_D_max", "foo"):
         for version in (None, "0.4", "0.5", "0.6", "0.5.0-draft"):
-            with pytest.raises(ValueError, match=f"retired key {key!r}"):
+            with pytest.raises(ValueError, match=rf"declares \['{key}'\]"):
                 _pk(key, version).rho2_over_D_max
     assert _pk("rho2_over_D_max", "0.6").rho2_over_D_max == 42.0
 

@@ -47,12 +47,6 @@ __all__ = ["ReplayPack", "PoseResponse", "read_rpk", "write_rpk", "analytic_pose
            "compile_scheme", "replay_signal", "replay_coefficients", "replay_signal_jax", "replay_batch_jax",
            "surface_logweight"]
 
-#: retired ``replay_envelope.tissue`` keys for the contact envelope's stored bound -- ``rho_over_D_max``
-#: (dmipy-sim#574/#581) and the underscored ``rho_2_over_D_max`` (0.5, dmipy-sim#581) -- each refused by
-#: name, unconditionally, in favour of ``rho2_over_D_max`` (dmipy-sim#592: no migration).
-RETIRED_ENVELOPE_KEYS = {"rho_over_D_max": "rho2_over_D_max", "rho_2_over_D_max": "rho2_over_D_max"}
-
-
 # ------------------------------- .rpk container I/O -------------------------------
 def write_rpk(path, arrays, metadata):
     """Write a replay pack: ``arrays`` (name -> ndarray) as safetensors tensors, ``metadata`` (a dict)
@@ -656,17 +650,12 @@ class ReplayPack:
     @property
     def rho2_over_D_max(self):
         """The largest ``rho2 / D`` the contact tier serves (``replay_envelope.tissue.rho2_over_D_max``, RPK.md 8.7), or
-        ``None`` when the pack states no bound. A pack whose ``replay_envelope.tissue`` carries a retired key
-        for this bound (``rho_over_D_max``, dmipy-sim#574/#581; the underscored ``rho_2_over_D_max``,
-        dmipy-sim#581) is refused by name, unconditionally -- there is no schema-version-gated migration
-        (dmipy-sim#592)."""
+        ``None`` when the pack states no bound. ``replay_envelope.tissue`` knows only this one key; any other
+        key there is refused by name, naming what is accepted."""
         tissue = (self.meta.get("replay_envelope") or {}).get("tissue") or {}
-        for old, new in RETIRED_ENVELOPE_KEYS.items():
-            if old in tissue:
-                raise ValueError(
-                    f"this pack states its contact envelope under the retired key {old!r}; it is spelled "
-                    f"{new!r} (dmipy-sim#592, following the forward catalogue's rho1/rho2). There is no "
-                    f"migration: re-encode the pack with the current key")
+        unknown = set(tissue) - {"rho2_over_D_max"}
+        if unknown:
+            raise ValueError(f"this pack's replay_envelope.tissue declares {sorted(unknown)}; it takes only rho2_over_D_max")
         return tissue.get("rho2_over_D_max")
 
     def _check_rho2(self, rho2_over_D):

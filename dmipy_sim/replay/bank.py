@@ -37,11 +37,6 @@ __all__ = ["build_replay_pack", "build_to_floor", "frame_from_axis", "frame_from
            "check_frame_against_geometry", "read_rpk", "write_rpk", "RPK_SCHEMA_VERSION"]
 
 RPK_SCHEMA_VERSION = "0.6"
-#: 0.6 (dmipy-sim#592) renames the surface relaxivities' stored envelope key from the underscored
-#: ``replay_envelope.tissue.rho_2_over_D_max`` (0.5, dmipy-sim#581; before that, ``rho_over_D_max``, 0.4 or
-#: earlier, dmipy-sim#574/#581) to ``rho2_over_D_max``, matching the forward catalogue's spelling. No
-#: migration: a pack whose ``replay_envelope.tissue`` carries ``rho_over_D_max`` or ``rho_2_over_D_max`` is
-#: refused by name at any schema version (:attr:`ReplayPack.rho2_over_D_max`).
 
 
 # --------------------------------------------------------------- master-walk normalisation
