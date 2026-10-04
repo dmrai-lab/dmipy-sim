@@ -76,6 +76,54 @@ def test_validate_refuses_gradient_through_a_finite_pulse_but_not_through_a_hard
         replace(hard, G=G3).validate()
 
 
+def _blocked(base, lo, hi, amp=0.01):
+    """``base`` with an extra block of ``amp`` at samples ``[lo, hi)`` on x, cancelled by an equal and opposite
+    block well clear of every pulse window used below, on the SAME side of the 180 (``rf.sign`` flips there, so
+    a cancel block on the far side would double the moment instead of removing it) -- so the add leaves the
+    readout refocused and only the pulse-window check is exercised."""
+    G = np.array(base.G, copy=True)
+    pulse_sample = int(round(base.rf[1].t_s / base.dt))               # the 180's sample; sign flips here
+    cancel_lo = 70 if lo < pulse_sample else 180                      # a zero stretch on the same side
+    G[0, lo:hi, 0] = amp
+    G[0, cancel_lo:cancel_lo + (hi - lo), 0] = -amp
+    return replace(base, G=G)
+
+
+def test_validate_refuses_overlap_with_a_pulse_window_not_mere_containment_or_a_touch():
+    """dmipy-sim#584 / #613 review: the pulse-window check is OVERLAP of a step with the OPEN window, not
+    containment of the whole step (which missed a step straddling an edge with gradient on, #613) and not the
+    single instant `t` (which flagged a step merely TOUCHING an edge as a violation, #584).
+
+    One pulse's window lands exactly on the sample grid (``t0, t1`` = 9, 11 ms at dt = 0.1 ms) for (a)/(d); a
+    second, otherwise identical pulse is widened by 0.05 ms so its window (``8.975, 11.025`` ms) does NOT land
+    on the grid, letting (b)/(c) put a real boundary strictly inside one sample's step."""
+    G = np.zeros((1, 200, 3), np.float32); G[0, 20:60, 0] = 0.05; G[0, 140:180, 0] = 0.05
+    hard = ScannerSequence(G=G, dt=1e-4, rf=[RFEvent(0.0, 90), RFEvent(100e-4, 180)])
+    grid = replace(hard, rf=[RFEvent(0.0, 90), RFEvent(1e-2, 180, duration_s=2e-3)])        # window (9, 11) ms
+    offgrid = replace(hard, rf=[RFEvent(0.0, 90), RFEvent(1e-2, 180, duration_s=2.05e-3)])  # window (8.975, 11.025)
+
+    # (a) a block starting exactly at t1 (sample 110, t = 11.0 ms = t1): the #584 case -- accepted.
+    seq_a = _blocked(grid, 110, 120)
+    assert seq_a.validate() is seq_a
+
+    # (d) a block wholly inside the window (samples 95..104, 9.5-10.4 ms): refused on both main and this branch.
+    with pytest.raises(ValueError, match="finite pulse needs zero gradient"):
+        _blocked(grid, 95, 105).validate()
+
+    # (b) a step straddling t1 = 11.025 ms: sample 110 covers [11.0, 11.1) ms, so t1 falls strictly inside it
+    # (t < t1 < t + dt) -- gradient during part of the pulse, a real violation. Refused here, and on main's
+    # original point check too (its start t = 11.0 ms satisfies t <= t1 + eps there).
+    with pytest.raises(ValueError, match="finite pulse needs zero gradient"):
+        _blocked(offgrid, 110, 111).validate()
+
+    # (c) a step straddling t0 = 8.975 ms: sample 89 covers [8.9, 9.0) ms, so t0 falls strictly inside it
+    # (t < t0 < t + dt) -- gradient during part of the pulse from the other side. Refused here. Main's original
+    # point check does NOT catch this one (its start t = 8.9 ms fails t >= t0 - eps, since 8.9 < 8.975) -- a
+    # second, pre-existing asymmetry in main's check, orthogonal to #584's, left alone here.
+    with pytest.raises(ValueError, match="finite pulse needs zero gradient"):
+        _blocked(offgrid, 89, 90).validate()
+
+
 def test_pgste_is_a_stimulated_echo_with_its_lobes_physical_and_same_sign():
     seq = S.pgste(D2, 4e-3, 30e-3, bvalues=B, n_t=400)
     assert seq.stimulated_echo and seq.TM == pytest.approx(30e-3, abs=2 * seq.dt)

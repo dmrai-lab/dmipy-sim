@@ -469,13 +469,16 @@ class ScannerSequence:
         for e in self.rf:
             if e.duration_s > 0.0:
                 t0, t1 = e.window
-                # A sample's step is [t, t + dt) (the engine's rule), so a step is IN the pulse's dead window
-                # only when the whole step is -- the same containment rule the budget windows use below. A
-                # step merely touching an edge (a block placed to start the instant a window ends) sits
-                # entirely on the far side of it and is not a violation; checking the instant `t` alone
-                # flagged that touch as "on during the pulse" whenever a builder's grid put the touch exactly
-                # on a sample (dmipy-sim#584).
-                inside = (t >= t0 - 1e-9 * self.dt) & (t + self.dt <= t1 + 1e-9 * self.dt)
+                # A sample's step is [t, t + dt) (the engine's rule). The violation is OVERLAP of that step
+                # with the pulse's OPEN window (t0, t1) by a positive amount -- not containment (a step that
+                # starts inside the window and runs past it is still on during part of the pulse, even though
+                # the whole step is not contained) and not the single instant `t` (which flagged a step merely
+                # TOUCHING an edge -- a block placed to start the instant a window ends, dmipy-sim#584 -- as a
+                # violation, when it sits entirely on the far side of it). `eps` makes an exact touch read as
+                # touching rather than as overlap, so both directions agree with the markers that intentionally
+                # place a block flush against a pulse's edge.
+                eps = 1e-9 * self.dt
+                inside = (t < t1 - eps) & (t + self.dt > t0 + eps)
                 if np.any(np.abs(played[:, inside, :]) > floor):
                     raise ValueError(f"the gradient is on during the {e.flip_deg:g} pulse at {e.t_s*1e3:.3f} ms "
                                      f"(window {t0*1e3:.3f}-{t1*1e3:.3f} ms): a finite pulse needs zero gradient, "
