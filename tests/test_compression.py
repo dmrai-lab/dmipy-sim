@@ -100,14 +100,14 @@ def test_boundary_dct_replays_surface_signal_below_mc_floor():
     surface survival E(TE) at EVERY echo-time truncation to below the Monte-Carlo floor
     (1/sqrt(N)) -- the property that lets replay store K+1 modes instead of the raw dlog."""
     from dmipy_sim import simulate_trajectories, Box1D
-    D, rho, N, R = 2e-9, 1e-6, 8000, 2e-6
+    D, rho_2, N, R = 2e-9, 1e-6, 8000, 2e-6
     res = simulate_trajectories(N, D, Box1D(length=R), T_max=0.6, dt_save=3e-3,
                                 seed=7, require_gpu=False)
     dlog = np.asarray(res.boundary_local_time).astype(np.float64)
     n_t = dlog.shape[1]; ts = np.arange(n_t) * 0.6 / (n_t - 1)
 
     def survival(dl):                       # E(TE) for every truncation TE
-        return np.exp((rho / D) * np.cumsum(dl, axis=1)).mean(0)
+        return np.exp((rho_2 / D) * np.cumsum(dl, axis=1)).mean(0)
 
     E_raw = survival(dlog)
     arrays, meta = cx.encode_boundary_bridge(dlog, K=8)
@@ -118,7 +118,7 @@ def test_boundary_dct_replays_surface_signal_below_mc_floor():
     # fitted T2 matches Brownstein-Tarr theory (sanity that the walk is right)
     m = (ts > 0.05) & (E_raw > 1e-3)
     T2_raw = -1.0 / np.polyfit(ts[m], np.log(E_raw[m]), 1)[0]
-    assert abs(T2_raw - R / (2 * rho)) / (R / (2 * rho)) < 0.05
+    assert abs(T2_raw - R / (2 * rho_2)) / (R / (2 * rho_2)) < 0.05
 
     # storage: K+1 floats/walker vs raw dlog
     comp = (arrays["blt_bridge_dst"].nbytes + arrays["blt_start"].nbytes

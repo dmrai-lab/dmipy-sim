@@ -18,9 +18,9 @@ from tests.test_pack_segments import C2_DT, C2_N_T, _c2_slab_master
 
 N_T, DT = 197, 5e-4                      # 98 ms of walk: four windows of 49 steps (24.5 ms)
 T = (N_T - 1) * DT
-TIS = Tissue(T2={"extra": 0.05, "intra": 0.02}, T1={"extra": 1.0, "intra": 0.5}, rho=2e-5, chi_iso=1e-7)
+TIS = Tissue(T2={"extra": 0.05, "intra": 0.02}, T1={"extra": 1.0, "intra": 0.5}, rho_2=2e-5, chi_iso=1e-7)
 KNOBS = {"bare": dict(), "relaxation": dict(tissue=Tissue(T2={"extra": 0.05, "intra": 0.02}, T1={"extra": 1.0, "intra": 0.5})),
-         "contact": dict(tissue=Tissue(rho=2e-5)), "field": dict(tissue=Tissue(chi_iso=1e-7), scanner=3.0),
+         "contact": dict(tissue=Tissue(rho_2=2e-5)), "field": dict(tissue=Tissue(chi_iso=1e-7), scanner=3.0),
          "all": dict(tissue=TIS, scanner=3.0)}
 
 
@@ -229,39 +229,61 @@ def test_a_pose_expansion_costs_the_saves_it_spans(tmp_path):
 
 
 def test_the_contact_envelope_is_stated_and_held(packs):
-    """The pack states the largest rho / D its contact tier serves (RPK.md 8.7); a relaxivity inside replays as the
+    """The pack states the largest rho_2 / D its contact tier serves (RPK.md 8.7); a relaxivity inside replays as the
     parent within the floor, one beyond is refused by name on every route."""
     parent, seg, _ = packs
-    top = seg.rho_over_D_max
-    assert top is not None and top > 0 and seg.meta["replay_envelope"]["tissue"]["rho_over_D_max"] == top
+    top = seg.rho_2_over_D_max
+    assert top is not None and top > 0 and seg.meta["replay_envelope"]["tissue"]["rho_2_over_D_max"] == top
     r = seg.meta["provenance"]["surface_envelope_restated"]
-    assert r["rho_over_D_max"] == top == min(r["per_window"]) and r["reference"] == "t/parent"
+    assert r["rho_2_over_D_max"] == top == min(r["per_window"]) and r["reference"] == "t/parent"
     for f in seg.fidelity["segments"]:
-        assert f["surface_rho_over_D_max"] == top and f["err_surface"] <= 2.0 * f["floor_surface"]
+        assert f["surface_rho_2_over_D_max"] == top and f["err_surface"] <= 2.0 * f["floor_surface"]
     D = seg.diffusivity
     seq = _waveforms()["pgse_2"]
-    inside = Tissue(rho=0.9 * top * D)
+    inside = Tissue(rho_2=0.9 * top * D)
     a = parent.replay(seq, complex_signal=True, tissue=inside)
     assert np.abs(a - seg.replay(seq, complex_signal=True, tissue=inside)).max() <= seg.fidelity["floor_max"]
-    beyond = Tissue(rho=1.5 * top * D)
+    beyond = Tissue(rho_2=1.5 * top * D)
     for route in (lambda: seg.replay(seq, tissue=beyond), lambda: seg.walker_primitives(seq).signals(beyond),
                   lambda: seg.pose_response(seq, tissue=beyond, keep=(8, 0))):
         with pytest.raises(ValueError, match="contact envelope"):
             route()
 
 
+def test_rho_over_D_max_migrates_only_below_its_schema_floor():
+    """A pack's retired ``replay_envelope.tissue.rho_over_D_max`` (RPK < 0.5, dmipy-sim#581) is read as
+    ``rho_2_over_D_max`` ONLY when the pack's OWN ``rpk_schema_version`` says it predates the rename; a
+    pack at or above 0.5 -- or with no recorded version at all -- that still carries the old key is
+    refused rather than guessed at (never accept a retired spelling at a boundary)."""
+    def _pk(version, key="rho_over_D_max"):
+        meta = {"replay_envelope": {"tissue": {key: 42.0}}}
+        if version is not None:
+            meta["rpk_schema_version"] = version
+        return ReplayPack({"pos_x_ends": np.zeros((1, 2), np.float32)}, meta)
+
+    assert _pk("0.4").rho_2_over_D_max == 42.0                              # below the floor: migrated
+    assert _pk("0.3").rho_2_over_D_max == 42.0
+    with pytest.raises(ValueError, match="retired key 'rho_over_D_max'"):
+        _pk("0.5").rho_2_over_D_max                                        # at the floor: refused
+    with pytest.raises(ValueError, match="retired key 'rho_over_D_max'"):
+        _pk("0.5.0-draft").rho_2_over_D_max
+    with pytest.raises(ValueError, match="retired key 'rho_over_D_max'"):
+        _pk(None).rho_2_over_D_max                                         # no version: never guessed
+    assert _pk("0.5", key="rho_2_over_D_max").rho_2_over_D_max == 42.0      # the current spelling needs no version
+
+
 def test_the_envelope_edge_is_where_band_ripple_outgrows_the_floor():
     """A contact channel whose cumulative sum rises for a few walkers (band ripple: a contact only lowers the weight)
-    is served up to the rho / D where that gain reaches the floor, and no further; a monotone one to the top."""
+    is served up to the rho_2 / D where that gain reaches the floor, and no further; a monotone one to the top."""
     from dmipy_sim.replay.bank import surface_envelope
     rng = np.random.default_rng(4)
     n_w, n_t = 20000, 200
     ell = -rng.exponential(1e-6, size=(n_w, n_t)) * (rng.uniform(size=(n_w, n_t)) < 0.3)
     w = np.ones(n_w)
-    clean, _, _ = surface_envelope(ell, w, rho_over_D_hi=1e5)
+    clean, _, _ = surface_envelope(ell, w, rho_2_over_D_hi=1e5)
     assert clean == pytest.approx(1e5)
     rippled = ell.copy(); rippled[:2, 100] = 5e-4                    # two walkers in 20,000 rise by 5e-4
-    edge, err, floor = surface_envelope(rippled, w, rho_over_D_hi=1e5)
+    edge, err, floor = surface_envelope(rippled, w, rho_2_over_D_hi=1e5)
     assert 0 < edge < 1e5 and err <= 2.0 * floor
     gain = lambda rd: 2 / n_w * np.expm1(rd * 5e-4)
     assert gain(edge) <= floor * 1.0001                             # the gain at the edge is within its floor
@@ -295,7 +317,7 @@ def test_resegment_states_that_the_contact_channel_is_inherited(packs):
     assert c["inherited"] is True
     assert c["parent_K"] == parent.meta["compression"]["channels"]["boundary_local_time"]["K"] == 8
     assert c["parent_T"] == pytest.approx(T)
-    assert "rho_over_D_max" in c["note"] and seg.meta["replay_envelope"]["tissue"]["rho_over_D_max"] > 0
+    assert "rho_2_over_D_max" in c["note"] and seg.meta["replay_envelope"]["tissue"]["rho_2_over_D_max"] > 0
 
 
 def _worst_window_surface_ratio(parent_pack, raw_dlog_b, w, D, env, tmp_path, steps, stamp):

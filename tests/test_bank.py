@@ -46,7 +46,7 @@ def _slab_master(n_w=N_W, seed=0):
 def _lean_env():
     return dict(bvals=[0.0, 1e9, 3e9], dirs=[[1, 0, 0], [0, 0, 1]], ogse_periods=[2],
                 shortd_b=1e9, shortd_deltas_frac=[0.05], B0_list=[], theta_deg=[0],
-                delta_frac=0.2, Delta_frac=0.5, rho_list=[1e-5, 1e-4])
+                delta_frac=0.2, Delta_frac=0.5, rho_2_list=[1e-5, 1e-4])
 
 
 @pytest.fixture(scope="module")

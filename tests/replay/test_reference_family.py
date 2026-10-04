@@ -30,7 +30,7 @@ DELTA = 8e-4
 BIGDELTA = 2.4e-3
 SEED = 0
 ENV = dict(bvals=[0.0, B], dirs=[[1, 0, 0]], ogse_periods=[2], shortd_b=B, shortd_deltas_frac=[0.05],
-           delta_frac=0.2, Delta_frac=0.5, rho_list=[])
+           delta_frac=0.2, Delta_frac=0.5, rho_2_list=[])
 LICENCE_TEXT = "SYNTHETIC LICENCE\n\n" + ("This is the verbatim text of a licence that does not exist. " * 12)
 GRID = dict(kind="none", solver="exp(-b D), the closed form of free diffusion")
 

@@ -114,7 +114,7 @@ def test_the_surface_certificate_is_the_same_in_chunks(monkeypatch):
     dlog = _blt()
     arrays, meta = cx.encode_boundary_bridge(dlog, K=16, device="numpy")
     m = dict(dlog_b=dlog, w=None, D_intra=2e-9)
-    env = {"rho_list": [1e-5, 3e-5, 1e-4]}
+    env = {"rho_2_list": [1e-5, 3e-5, 1e-4]}
     whole = bank._surface_fidelity(m, arrays, meta, env)
     monkeypatch.setattr(cx, "CHUNK_BYTES", dlog.nbytes // 9)
     chunked = bank._surface_fidelity(m, arrays, meta, env)

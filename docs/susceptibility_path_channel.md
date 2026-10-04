@@ -185,14 +185,14 @@ Prefix reads then make the *typical* pull small: `ε=1e-2` is ~1 MB, `ε=3e-3` ~
 
 Easy to forget, because an impermeable membrane has no *exchange* tier -- but the intra-axonal walkers
 strike the myelin inner wall constantly (measured contact density 12.1% of steps at n_t=1601), so the
-**surface tier is real**: rho is a replay knob, not zero by construction. It is also the channel an
+**surface tier is real**: rho_2 is a replay knob, not zero by construction. It is also the channel an
 analytic MT tier is derived from (contact statistics / S:V at the myelin surface). The first generation of
 axon packs discarded it -- `simulate_trajectories(save_relaxation_data=True)` was called and its
 `dlog_boundary_unit` output dropped -- so those packs can do neither surface relaxivity nor MT.
 
 Its cost depends entirely on the codec, and **the default picks the wrong one**:
 
-| codec | B/walker at n_t=1601 | scales with n_t? | ensemble error (rho=1e-5..1e-4) |
+| codec | B/walker at n_t=1601 | scales with n_t? | ensemble error (rho_2=1e-5..1e-4) |
 |---|---|---|---|
 | sparse CSR (**auto-selected**) | 574 | **yes** (cost ~ contact count) | exact |
 | `boundary_dct` K=32, f16 | **66** | no | 6e-6 .. 7e-6 |

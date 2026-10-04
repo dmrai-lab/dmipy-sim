@@ -170,7 +170,7 @@ def test_replay_signal_jax_takes_the_host_surface_logweight():
     arrays = {**arrays, **a2, "spin_weights": np.ones(n_w)}
     W = compile_scheme(_bipolar(), DT, 16, n_t=N_T)
     slw = surface_logweight(arrays, 5e3, cm)
-    E_np = replay_signal(arrays, W, rho_over_D=5e3)
+    E_np = replay_signal(arrays, W, rho_2_over_D=5e3)
     E_jx = np.abs(np.asarray(replay_signal_jax(cx.read_position_coeffs(arrays, dtype=np.float32),
                                                arrays["spin_weights"], W, surface_logw=slw)))
     np.testing.assert_allclose(E_jx, E_np, rtol=1e-5)
@@ -240,7 +240,7 @@ def test_the_compiled_scheme_is_generic_in_its_components_and_the_host_kernel_is
         replay_coefficients(C2, w, W3)
     cm = pk.meta["compression"]["channels"]["boundary_local_time"]
     slw = surface_logweight(pk.arrays, 5e3, cm)
-    np.testing.assert_allclose(replay_coefficients(C, w, W3, surface_logw=slw), replay_signal(pk, W3, rho_over_D=5e3), rtol=1e-13)
+    np.testing.assert_allclose(replay_coefficients(C, w, W3, surface_logw=slw), replay_signal(pk, W3, rho_2_over_D=5e3), rtol=1e-13)
     jax = pytest.importorskip("jax")
     jax.config.update("jax_enable_x64", True)
     np.testing.assert_allclose(np.asarray(replay_signal_jax(C, w, W3, surface_logw=slw)),
