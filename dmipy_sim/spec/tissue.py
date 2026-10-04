@@ -12,7 +12,7 @@ import numpy as np
 
 
 PER_POOL = ("T2", "T1")
-KNOBS = ("T2", "T1", "rho", "D", "kappa", "chi_iso", "chi_aniso")
+KNOBS = ("T2", "T1", "rho", "rho_1", "D", "kappa", "chi_iso", "chi_aniso")
 
 
 def _check_time(what, v):
@@ -53,7 +53,13 @@ class Tissue:
     * ``T2`` / ``T1`` (s): on a pack, a ``{pool name: seconds}`` mapping over EVERY pool of the pack's embedded
       spec (the replay refuses a missing pool, an unknown name, a scalar or a list); ``float("inf")`` is no decay
       in that pool, and ``0`` is refused. On a closed form (one unnamed pool) one number.
-    * ``rho`` (m/s): the walls' surface relaxivity (C2), scaled by ``D``.
+    * ``rho`` (m/s): the walls' TRANSVERSE surface relaxivity (C2), gated by the acquisition's coherence
+      (``chi_perp``: on while the magnetisation is transverse) and scaled by ``D``.
+    * ``rho_1`` (m/s): the walls' LONGITUDINAL surface relaxivity (C2), gated by the complement
+      (``chi_parallel = active - chi_perp``: on while the magnetisation is stored along B0, e.g. a stimulated
+      echo's mixing time) and scaled by ``D``. The replay equation's contact channel is then ``rho * chi_perp +
+      rho_1 * chi_parallel`` against the same boundary local time ``rho`` already reads -- no new walk, exactly
+      as ``T1`` is a second gate beside ``T2`` on the occupancy (C1).
     * ``D`` (m^2/s): the bulk diffusivity -- the walk's recorded value unless given, for a pack; a closed form's
       diffusion coefficient. Given on a pack, the pack is READ at that diffusivity
       (:meth:`~dmipy_sim.replay.ReplayPack.at_diffusivity`): the save grid divided by ``D / D_walk``, every
@@ -67,6 +73,7 @@ class Tissue:
     T2: Optional[object] = None
     T1: Optional[object] = None
     rho: Optional[float] = None
+    rho_1: Optional[float] = None
     D: Optional[float] = None
     kappa: Optional[float] = None
     chi_iso: Optional[float] = None
@@ -80,8 +87,10 @@ class Tissue:
     def from_spec(cls, spec, **overrides):
         """The spec's nominal values: pool T2 / T1 by pool name (the pools that declare one; ``None`` when none
         does, so a spec that declares a T2 in some pools gives a mapping the replay refuses by naming the rest),
-        the walls' common relaxivity, the field-source pool's susceptibility. Walls with different relaxivities
-        leave ``rho`` None: give it. Any keyword overrides."""
+        the walls' common TRANSVERSE relaxivity, the field-source pool's susceptibility. Walls with different
+        relaxivities leave ``rho`` None: give it. The spec carries no longitudinal (``rho_1``) nominal -- a
+        wall states one relaxivity, baked into the forward walk's transverse channel (#574) -- so ``rho_1`` is
+        always ``None`` here; give it explicitly as an override. Any keyword overrides."""
         pools = sorted(spec.pools, key=lambda p: p.id)
         T2 = {p.name: p.T2 for p in pools if p.T2 is not None} or None
         T1 = {p.name: p.T1 for p in pools if p.T1 is not None} or None

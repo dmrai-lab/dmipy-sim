@@ -70,3 +70,21 @@ def test_the_phantom_turns_each_voxel_by_its_own_concomitant_phase(free_phantom)
     # (a product of sincs) carries a sign of its own at some voxels; the concomitant phase is what remains
     np.testing.assert_allclose(np.sin(got[off] - expect[off]), 0.0, atol=1e-6)
     assert np.all((np.abs(S) > 0.0) & (np.abs(S) <= 1.0))
+
+
+def test_a_stimulated_echo_accrues_no_maxwell_phase_while_its_magnetisation_is_stored():
+    """Through the mixing time the magnetisation is along z, so the Maxwell field of a gradient played there (a
+    spoiler) adds no phase: the order-0 phase accrues through the effective gate, the coherence sign times the
+    transverse gate, and is the same with and without the lobe."""
+    ste = sequences.pgste([[1, 0, 0]], 7.6e-3, 38.3e-3, gradient_strengths=0.02, n_t=1000, slew_rate=np.inf,
+                          ste_flip_angles=(90.0, 90.0, 90.0))
+    stored = np.flatnonzero(~np.asarray(ste.chi_perp, bool))
+    mid = stored[len(stored) // 4: 3 * len(stored) // 4]                  # well inside the stored period
+    G = np.array(ste.G, np.float64); G[:, mid, :] = (0.03, 0.0, 0.03)       # a spoiler lobe in the mixing time
+    spoiled = ste.with_gradient(G)
+    bare = ste.with_concomitant(R_M, B0).concomitant_phase_rad
+    got = spoiled.with_concomitant(R_M, B0).concomitant_phase_rad
+    np.testing.assert_allclose(got, bare, rtol=0.0, atol=1e-9)
+    lobe = GAMMA * ste.dt * abs(float(_bernstein_first_order(G[0, mid], R_M, B0).sum()))
+    assert lobe > 1e-2                                                  # the lobe's phase, had it accrued: not an empty check
+    assert np.all(np.asarray(spoiled.G_eff)[:, stored, :] == 0.0)

@@ -5,15 +5,20 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from ..acquisition.prescription import index_directions
+
 __all__ = ["Grid"]
 
 
 @dataclass(frozen=True)
 class Grid:
-    """``shape`` voxels of ``voxel_size_m``; ``origin_m`` is the scanner coordinate of the **centre** of voxel
-    ``(0, 0, 0)`` and ``isocenter_m`` the point the scanner is focused on. ``axes`` names the scanner axes the
-    indices run along (``"RAS"``: i -> +x, j -> +y, k -> +z), and is the frame the acquisition's gradient and
-    B0 directions are given in. Both positions default to a grid centred on the isocenter at the origin.
+    """``shape`` voxels of ``voxel_size_m``; ``origin_m`` is the coordinate of the **centre** of voxel
+    ``(0, 0, 0)`` and ``isocenter_m`` the point the scanner is focused on. ``axes`` names the direction each
+    index runs along, in order along x, y and z (``"RAS"``: i -> +x, j -> +y, k -> +z; ``"LAS"``: i -> -x), so
+    voxel ``ijk`` is centred at ``origin_m + ijk * step_m`` with :attr:`step_m` the voxel size signed by
+    ``axes``. Coordinates are in the grid's frame, which is the frame the acquisition's gradient and B0
+    directions are given in: the scanner's for an axis-aligned grid, and ``to_scanner @ r`` in the scanner's
+    for an oblique one. Both positions default to a grid centred on the isocenter at the origin.
 
     ``to_scanner`` is the rotation taking this grid's axes to the scanner's, for a grid prescribed obliquely
     (:meth:`from_oblique_affine` sets it). It does not resample anything and nothing is straightened by it;
@@ -50,14 +55,20 @@ class Grid:
             raise ValueError(f"a grid is three-dimensional: got shape {shape}, voxel_size_m {voxel_size_m}")
         if min(sh) < 1 or min(vs) <= 0:
             raise ValueError(f"shape must be positive integers and voxel_size_m positive lengths: {sh}, {vs}")
-        org = tuple(-0.5 * (n - 1) * d for n, d in zip(sh, vs)) if origin_m is None else tuple(float(v) for v in origin_m)
-        iso = tuple(o + 0.5 * (n - 1) * d for o, n, d in zip(org, sh, vs)) if isocenter_m is None \
-            else tuple(float(v) for v in isocenter_m)
-        if len(org) != 3 or len(iso) != 3:
-            raise ValueError("origin_m and isocenter_m are scanner coordinates: three lengths each")
         ax = str(axes).upper()
-        if len(ax) != 3 or any(c not in "RLAPSI" for c in ax):
-            raise ValueError(f"axes names the scanner direction of each index, one of R/L, A/P, S/I each; got {axes!r}")
+        D = index_directions(ax)
+        if np.any(D != np.diag(np.diag(D))):
+            raise ValueError(f"a grid's indices run along x, y and z of its frame, so its axes are one of R/L, A/P "
+                             f"and S/I in that order; got {axes!r}. An image whose axes are permuted in the scanner "
+                             "is a grid with a to_scanner (Grid.from_oblique_affine)")
+        half = 0.5 * (np.asarray(sh) - 1) * np.asarray(vs) * np.diag(D)
+        org = tuple(float(v) for v in -half) if origin_m is None else tuple(float(v) for v in origin_m)
+        if len(org) != 3:
+            raise ValueError("origin_m is a coordinate: three lengths")
+        iso = tuple(float(v) for v in np.asarray(org) + half) if isocenter_m is None \
+            else tuple(float(v) for v in isocenter_m)
+        if len(iso) != 3:
+            raise ValueError("isocenter_m is a coordinate: three lengths")
         object.__setattr__(self, "shape", sh); object.__setattr__(self, "voxel_size_m", vs)
         object.__setattr__(self, "origin_m", org); object.__setattr__(self, "isocenter_m", iso)
         # RPH.md 7: a replayer MUST default a missing isocenter_m to the grid centre and MUST NOT default a
@@ -80,8 +91,10 @@ class Grid:
     @classmethod
     def from_affine(cls, affine, shape, *, isocenter_m=None):
         """The grid of a NIfTI image: ``affine`` maps a voxel index to the scanner coordinate of its centre, in
-        **millimetres** (the NIfTI convention). An axis-aligned affine gives the voxel size, the origin and the
-        axes; an oblique one is refused rather than resampled, because the phantom's voxels are the image's."""
+        **millimetres** (the NIfTI convention), and every voxel's :meth:`positions_m` is that coordinate in
+        metres. An axis-aligned affine gives the voxel size, the origin and the axes, each axis' sign included
+        (``diag(-2, 2, 2)`` is ``"LAS"``); an oblique one is refused rather than resampled, because the phantom's
+        voxels are the image's."""
         A = np.asarray(affine, np.float64)
         if A.shape != (4, 4):
             raise ValueError(f"an affine is 4 x 4; got {A.shape}")
@@ -116,18 +129,21 @@ class Grid:
         lo, hi = P.min(axis=0), P.max(axis=0)
         n = np.maximum(1, np.ceil((hi - lo) / vs - 1e-9).astype(int)) + 2 * int(margin_voxels)
         centre = 0.5 * (lo + hi)
-        origin = centre - 0.5 * (n - 1) * vs
+        origin = centre - 0.5 * (n - 1) * vs * np.diag(index_directions(axes))
         return cls(shape=tuple(int(v) for v in n), voxel_size_m=tuple(vs), origin_m=tuple(origin), isocenter_m=isocenter_m,
                    axes=axes, attach=attach)
     @classmethod
     def from_oblique_affine(cls, affine, shape, *, isocenter_m=None):
         """The grid of an image whose voxel axes are **rotated** in the scanner (an oblique prescription), and
-        the rotation that says so: ``(grid, R)`` with ``R`` the proper rotation taking image axes to scanner axes,
-        ``affine[:3, :3] = R @ diag(voxel_size)``. Nothing is resampled and nothing is straightened: the grid's
-        axes are the image's and the origin is the image's. The grid carries ``R`` as :attr:`to_scanner`, so a
-        field the MACHINE imposes is evaluated in the bore without the caller's help; what the caller gives in
-        scanner coordinates -- an FOD's harmonics, the gradient directions -- is the caller's to rotate by ``R.T``
-        into the grid frame before composing. A shear or a non-orthogonal block is refused."""
+        the rotation that says so: ``(grid, R)`` with ``R`` the proper rotation taking the grid's frame to the
+        scanner's, ``affine[:3, :3] = R @ diag(step)``. A left-handed image's third index runs along -z of that
+        frame (``axes = "RAI"``, a negative :attr:`step_m`), so every voxel sits where the affine puts it:
+        ``R @ positions_m(ijk) = affine @ [ijk, 1]`` (in metres), and ``R @ isocenter_m`` is ``isocenter_m`` as
+        given here, a scanner coordinate. Nothing is resampled and nothing is straightened: the grid's voxels
+        are the image's. The grid carries ``R`` as :attr:`to_scanner`, so a field the MACHINE imposes is
+        evaluated in the bore without the caller's help; what the caller gives in scanner coordinates -- an
+        FOD's harmonics, the gradient directions -- is the caller's to rotate by ``R.T`` into the grid frame
+        before composing. A shear or a non-orthogonal block is refused."""
         A = np.asarray(affine, np.float64)
         if A.shape != (4, 4):
             raise ValueError(f"an affine is 4 x 4; got {A.shape}")
@@ -139,13 +155,13 @@ class Grid:
         if not np.allclose(R.T @ R, np.eye(3), atol=1e-6):
             raise ValueError("the affine's rotation block is not orthogonal (a shear): a voxel grid cannot represent it")
         if np.linalg.det(R) < 0:
-            R = R @ np.diag([1.0, 1.0, -1.0])                       # a left-handed image: flip the last axis' label
-            axes = "RAS"[:2] + "I"
+            R = R @ np.diag([1.0, 1.0, -1.0])                       # a left-handed image: k runs along -z
+            axes = "RAI"
         else:
             axes = "RAS"
+        iso = None if isocenter_m is None else R.T @ np.asarray(isocenter_m, np.float64).reshape(3)
         grid = cls(shape=tuple(int(v) for v in shape)[:3], voxel_size_m=tuple(float(v) * 1e-3 for v in vs),
-                   origin_m=tuple(float(v) * 1e-3 for v in A[:3, 3]), isocenter_m=isocenter_m, axes=axes,
-                   to_scanner=R)
+                   origin_m=tuple(R.T @ A[:3, 3] * 1e-3), isocenter_m=iso, axes=axes, to_scanner=R)
         return grid, R
 
     @classmethod
@@ -167,9 +183,21 @@ class Grid:
     def n_voxels(self):
         return int(np.prod(self.shape))
 
+    @property
+    def step_m(self):
+        """The displacement from one voxel centre to the next along each index: :attr:`voxel_size_m` with the
+        sign of the direction :attr:`axes` names (``"LAS"``: ``(-dx, dy, dz)``)."""
+        return tuple(float(v) for v in np.asarray(self.voxel_size_m) * np.diag(index_directions(self.axes)))
+
+    @property
+    def centre_m(self):
+        """The coordinate of the centre of the grid: midway between the first and the last voxel's centres."""
+        half = 0.5 * (np.asarray(self.shape) - 1) * np.asarray(self.step_m)
+        return tuple(float(v) for v in np.asarray(self.origin_m) + half)
+
     def positions_m(self, voxel_index):
-        """Scanner coordinates of the centres of the given voxels, ``(N, 3)``."""
-        return np.asarray(self.origin_m) + np.asarray(voxel_index, np.float64) * np.asarray(self.voxel_size_m)
+        """Coordinates of the centres of the given voxels, ``(N, 3)``: ``origin_m + ijk * step_m``."""
+        return np.asarray(self.origin_m) + np.asarray(voxel_index, np.float64) * np.asarray(self.step_m)
 
     @property
     def placed_in_the_bore(self):
@@ -178,9 +206,9 @@ class Grid:
         return bool(self._origin_stated)
 
     def offset_m(self, voxel_index):
-        """Each voxel centre's displacement FROM the isocenter, ``(N, 3)``: what a field a magnet imposes is
-        a function of. A macroscopic layer that varies over the bore reads this; :meth:`radius_m` is its
-        norm, and is enough only for a law with no preferred direction, which a real magnet's is not."""
+        """Each voxel centre's displacement FROM the isocenter in the grid's frame, ``(N, 3)``: what a field a
+        magnet imposes is a function of. A macroscopic layer that varies over the bore reads this; :meth:`radius_m`
+        is its norm, and is enough only for a law with no preferred direction, which a real magnet's is not."""
         return self.positions_m(voxel_index) - np.asarray(self.isocenter_m, np.float64)
 
     def radius_m(self, voxel_index):
@@ -200,27 +228,29 @@ class Grid:
 
     @property
     def corner_m(self):
-        """The scanner coordinate of the low corner of voxel ``(0, 0, 0)``: the faces start here."""
-        return tuple(o - 0.5 * d for o, d in zip(self.origin_m, self.voxel_size_m))
+        """The outer corner of voxel ``(0, 0, 0)``, ``origin_m - step_m / 2``: the faces start here and run
+        along :attr:`step_m` (towards -x from it along an ``"L"`` axis)."""
+        return tuple(o - 0.5 * d for o, d in zip(self.origin_m, self.step_m))
 
     @property
     def extent_m(self):
         return tuple(n * d for n, d in zip(self.shape, self.voxel_size_m))
 
     def with_voxel_size(self, voxel_size_m):
-        """The same field of view (the same low corner, at least the same extent) on other voxels: an exact
+        """The same field of view (the same outer corner, at least the same extent) on other voxels: an exact
         rebin of anything binned on this grid whenever the new size divides the old."""
         vs = tuple(float(v) for v in voxel_size_m)
         n = tuple(int(np.ceil(e / d - 1e-9)) for e, d in zip(self.extent_m, vs))
-        origin = tuple(c + 0.5 * d for c, d in zip(self.corner_m, vs))
+        sign = np.diag(index_directions(self.axes))
+        origin = tuple(float(v) for v in np.asarray(self.corner_m) + 0.5 * np.asarray(vs) * sign)
         return Grid(shape=n, voxel_size_m=vs, origin_m=origin, isocenter_m=self.isocenter_m, axes=self.axes,
-                    attach=self.attach)
+                    attach=self.attach, to_scanner=self.to_scanner)
 
     def bin(self, positions_m):
         """The voxel each position falls in, ``(N, 3)`` int, and whether it is inside the grid, ``(N,)`` bool:
-        ``floor((r - corner) / voxel_size)``, the derived partition of RPH.md."""
+        ``floor((r - corner) / step)``, the derived partition of RPH.md."""
         P = np.asarray(positions_m, np.float64).reshape(-1, 3)
-        ijk = np.floor((P - np.asarray(self.corner_m)) / np.asarray(self.voxel_size_m)).astype(np.int64)
+        ijk = np.floor((P - np.asarray(self.corner_m)) / np.asarray(self.step_m)).astype(np.int64)
         inside = np.all((ijk >= 0) & (ijk < np.asarray(self.shape)), axis=1)
         return ijk, inside
 
