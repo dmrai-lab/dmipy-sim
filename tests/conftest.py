@@ -212,7 +212,8 @@ def spec_without_source(spec, pool="myelin"):
     a field-declaring fixture spec to a mechanic (pack merge, consolidation, seeding, ...) they do not mean to
     exercise the field tier of."""
     import dataclasses
-    return spec.replace(susceptibility={pool: None},
+    left = [p for p in spec.field_source_pools if p.name != pool]
+    return spec.replace(susceptibility={pool: None}, susceptibility_field=("present" if left else "absent"),
                         validity=dataclasses.replace(spec.validity, tiers=[t for t in spec.validity.tiers if t != "field"]))
 
 

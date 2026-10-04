@@ -12,6 +12,7 @@ from dmipy_sim import build_replay_pack, sequences
 from dmipy_sim.replay import ReplayPack, read_rpk
 from dmipy_sim.replay import bank
 from dmipy_sim.replay.replay import _duration
+from dmipy_sim.spec.substrate import Susceptibility
 from dmipy_sim.spec.tissue import Tissue
 from tests.test_bank import _lean_env, _susc_master, _sample_susc
 from tests.test_pack_segments import C2_DT, C2_N_T, _c2_slab_master
@@ -33,7 +34,8 @@ def _master(n_t=N_T):
     m["dlog_b"] = -m["dlog_b"]                       # a contact lowers the weight: the pack's sign convention
     comp = np.zeros((m["traj"].shape[0], n_t), np.int8); comp[:1000, 120:] = 1
     m["comp"] = comp
-    m["substrate"] = d.PackedCylinders([1e-6], [[0.0, 0.0]], 10e-6).spec.to_dict()   # names for the two pools the walk labels
+    m["substrate"] = d.PackedCylinders([1e-6], [[0.0, 0.0]], 10e-6).spec.replace(       # names for the two pools the walk labels,
+        susceptibility={"intra": Susceptibility(None, None, "none")}, susceptibility_field="present").to_dict()   # one the slab field's source
     return _sample_susc(m)         # sampled after the slice to n_t, so the samples match the sliced trajectory
 
 
@@ -196,7 +198,8 @@ def _timing_packs(tmp_path):
     rng = np.random.default_rng(2)
     n_w, n_t, dt, D = 4000, 4001, 2.5e-5, 2e-9
     traj = np.cumsum(rng.normal(0.0, np.sqrt(2 * D * dt), size=(n_w, n_t, 3)), axis=1)
-    m = dict(traj=traj, dt_traj=dt, T_max=(n_t - 1) * dt, w=np.ones(n_w), D_intra=D, n_walkers=n_w, seed=0)
+    m = dict(traj=traj, dt_traj=dt, T_max=(n_t - 1) * dt, w=np.ones(n_w), D_intra=D, n_walkers=n_w, seed=0,
+             susceptibility_field="absent")
     env = dict(_lean_env(), ogse_periods=[], shortd_deltas_frac=[])
     parent = build_replay_pack(m, id="t/long", license="x", citation="x", envelope=env, K=2000, segment_T=(n_t - 1) * dt)
     parent.save(tmp_path / "long.rpk")

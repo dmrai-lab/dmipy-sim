@@ -53,6 +53,11 @@ print(round(pack.meta["fidelity"]["floor_max"], 2))                # the certifi
 - `blt_*`: the boundary local time, for surface relaxivity.
 - `susc_path_*`, when the substrate has a field source: the field's channels along the path, for the sheath's
   susceptibility at a scanner's field.
+
+Every pack declares its susceptibility field, `pack.susceptibility_field`: `"present"` when its substrate has a field
+source and the pack carries the `susc_path_*` channel, `"absent"` when nothing in the substrate is magnetic and the
+field is identically zero. The declaration is the embedded spec's own (`spec.susceptibility_field`), and a pack or a
+spec without one is refused. What a tissue's chi and a scanner may then do is the [scanner](scanner.md) page's rule.
 - `voxel_ijk`, `voxel_certificate`, when the pack was built on a voxel grid: a floor per voxel and pool.
 
 ## The nominal tissue

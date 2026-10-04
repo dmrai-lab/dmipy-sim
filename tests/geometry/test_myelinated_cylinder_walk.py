@@ -120,6 +120,5 @@ def test_walk_spec_builds_a_three_pool_pack():
     g = _g()
     w = walk_spec(g.spec, 1500, T_max=1e-3, require_gpu=False)
     assert set(np.unique(np.asarray(w.compartment))) == {EXTRA, INTRA, MYELIN}
-    pack = build_replay_pack(dataclasses.replace(w, spec=spec_without_source(w.spec)),
-                             id="test/isolated-myelin-spec-walk", license="x", citation="x")
+    pack = build_replay_pack(w, id="test/isolated-myelin-spec-walk", license="x", citation="x")   # the sheath's field sampled in the walk
     assert len(pack.substrate.pools) == 3

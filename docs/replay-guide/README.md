@@ -45,8 +45,8 @@ where its nominal value lives, and which channel of the pack it needs.
 | `rho2` | tissue | a weight per walker from its gated wall contact, scaled by `D` | no surface relaxation | `pack.nominal` | contact (C2) |
 | `D` | tissue | the diffusivity the pack is READ at: the save grid divided by `D / D_walk`, every channel following in its own space (faster than walked only); `rho2` is scaled by it | the walk's | the walk's | — |
 | `kappa` | tissue | the wall permeability the pack is read at, which picks the same ratio: a walk serves `(a D_walk, a kappa_walk)` and no other pair | the walk's | the walk's | a permeable wall |
-| `chi_iso`, `chi_aniso` | tissue | a phase per walker, linear in the scanner's field | no field | `pack.nominal` | path (C3) |
-| field strength | scanner | the same phase, linear in `B0` | no field | `pack.nominal_field_T` | path (C3) |
+| `chi_iso`, `chi_aniso` | tissue | a phase per walker, linear in the scanner's field | no field | `pack.nominal` | a pack whose field is present (C3) and a scanner; refused on a pack whose field is absent |
+| field strength | scanner | the same phase, linear in `B0` | no field | `pack.nominal_field_T` | path (C3); on a pack whose field is absent, accepted and inert |
 | `compartment` | replay call | restricts the ensemble mean to one pool | every pool | — | C1 |
 
 Three rules follow from the table and hold everywhere:

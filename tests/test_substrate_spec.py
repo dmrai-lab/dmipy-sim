@@ -16,7 +16,8 @@ EXAMPLES = sorted(FIX.glob("*.sub.json"))
 def test_schema_file_ships_and_is_the_spec_repos():
     schema = json.loads(SCHEMA_PATH.read_text())
     assert schema["title"].startswith("Substrate specification")
-    assert set(schema["required"]) == {"substrate_spec_version", "id", "domain", "frame", "pools", "walls", "seeding", "validity"}
+    assert set(schema["required"]) == {"substrate_spec_version", "id", "domain", "frame", "pools", "walls", "seeding", "validity",
+                                       "susceptibility_field"}
 
 
 @pytest.mark.parametrize("path", EXAMPLES, ids=[p.stem for p in EXAMPLES])
@@ -79,7 +80,8 @@ def test_programmatic_construction_validates_too():
         id="t/sphere", domain={"box_min": [-1e-5] * 3, "box_max": [1e-5] * 3, "boundary": ["open"] * 3},
         pools=[Pool(0, "extra", 0.0, water_fraction=0.0), Pool(1, "intra", 2e-9, T2=0.05)],
         walls=[Wall("membrane", Surface("sphere", center=[0, 0, 0], radius=3e-6), inside_pool=1, outside_pool=None)],
-        seeding={"pools": [1]}, validity={"smallest_feature": 3e-6, "tiers": ["gradient", "surface"]})
+        seeding={"pools": [1]}, validity={"smallest_feature": 3e-6, "tiers": ["gradient", "surface"]},
+        susceptibility_field="absent")
     spec = SubstrateSpec.from_dict(spec.to_dict()).validate()
     assert spec.wall("membrane").surface.radius == 3e-6 and spec.frame.axis == [0.0, 0.0, 1.0]
 
@@ -141,7 +143,8 @@ def test_a_replaced_spec_says_what_was_replaced_and_round_trips():
         id="t/sphere", domain={"box_min": [-1e-5] * 3, "box_max": [1e-5] * 3, "boundary": ["open"] * 3},
         pools=[Pool(0, "extra", 0.0, water_fraction=0.0), Pool(1, "intra", 2e-9, T2=0.05)],
         walls=[Wall("membrane", Surface("sphere", center=[0, 0, 0], radius=3e-6), inside_pool=1, outside_pool=None)],
-        seeding={"pools": [1]}, validity={"smallest_feature": 3e-6, "tiers": ["gradient", "surface"]}).to_dict()).validate()
+        seeding={"pools": [1]}, validity={"smallest_feature": 3e-6, "tiers": ["gradient", "surface"]},
+        susceptibility_field="absent").to_dict()).validate()
     assert bare.provenance is None
     assert bare.replace(D={"intra": 0.6e-9}).provenance["transformations"] == \
            [f"pool 'intra' D replaced: {2e-9!r} -> {0.6e-9!r} (SubstrateSpec.replace)"]

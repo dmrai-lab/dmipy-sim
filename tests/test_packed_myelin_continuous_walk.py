@@ -2,6 +2,8 @@
 ``gamma * integral G . r dt`` on the lab position, and a path folded into the cell adds a jump of one cell side to
 every walker that crosses a face. The field tier of such a pack reads its periodic grid wrapped, so a walker
 outside the primary cell sees the field of its image."""
+import dataclasses
+
 import numpy as np
 import pytest
 
@@ -114,7 +116,7 @@ def test_the_field_grid_of_a_packed_cell_is_read_periodically(pm, walk):
                             boundary_local_time=walk.boundary_local_time, compartment=walk.compartment,
                             seed=walk.seed, diffusivity=walk.diffusivity, geometry=pm)
     packs = [build_replay_pack(fill_field(w, fg), id="test/pm-field", K=n_t - 2, envelope=ENV, license="x", citation="x")
-             for w in (walk, folded)]
+             for w in (dataclasses.replace(walk, spec=pm.spec), folded)]   # the field source's own spec
     gm = packs[0].meta["compression"]["channels"]["susceptibility_grid"]
     assert gm["periodic"] == [True, True, True] and grid_periodic_of(gm) == (True, True, True)
     G0 = ScannerSequence(G=np.zeros((1, n_t, 3)), dt=walk.dt)

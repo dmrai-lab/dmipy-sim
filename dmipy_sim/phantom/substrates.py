@@ -174,7 +174,8 @@ class FreeWater(_Declared):
     A pack cannot stand in for it: the signal decays exponentially in b while a Monte-Carlo floor decays only as
     ``1 / sqrt(N)``, so at b = 3000 s/mm² a few-thousand-walker free-water pack carries orders of magnitude more
     noise than signal. The closed form is exact, has no walkers and no pose. ``m0`` is required, as on a pack.
-    It is full-tier with zeros: no susceptibility source (a field of zero at any ``B0``), no wall (no surface
+    It is full-tier with zeros: no susceptibility source (its field declared absent, so a field of zero at any ``B0``
+    and a tissue chi refused), no wall (no surface
     relaxivity), no bound pool; its bulk relaxation is ``exp(-TE / T2) exp(-TM / T1)`` of the sequence's echo
     and mixing times when its ``tissue`` declares them, and none when it does not. ``tissue`` is a
     :class:`~dmipy_sim.spec.Tissue` whose ``D`` is the diffusion coefficient (required) and whose ``T2`` / ``T1``
@@ -184,6 +185,9 @@ class FreeWater(_Declared):
     kind = "analytic"
     model = "free_water"
     oriented = False
+    #: Free water has no field source: its susceptibility field is absent, so a tissue chi is refused
+    #: (:func:`~dmipy_sim.replay.replay.field_term`) and any B0 has no effect.
+    susceptibility_field = "absent"
 
     def __init__(self, *, m0, tissue, name="csf/free-water"):
         from ..spec.tissue import Tissue
@@ -192,6 +196,8 @@ class FreeWater(_Declared):
             raise TypeError(f"tissue is a Tissue with D, the diffusion coefficient; got {type(tissue).__name__}")
         if tissue.D is None or float(tissue.D) <= 0:
             raise ValueError(f"free water needs a positive diffusion coefficient: Tissue(D=...) in m^2/s, got {tissue.D!r}")
+        from ..replay.replay import field_term
+        field_term(self.susceptibility_field, tissue, None)            # free water is not magnetic: a chi is refused
         for k in ("T2", "T1"):
             v = getattr(tissue, k)
             if v is not None and (np.ndim(v) or isinstance(v, dict)):

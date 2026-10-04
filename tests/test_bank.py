@@ -40,7 +40,8 @@ def _slab_master(n_w=N_W, seed=0):
     traj[:, :, 1:] = np.cumsum(rng.normal(0, step, (n_w, N_T, 2)), axis=1)
     return dict(traj=traj, dt_traj=DT, T_max=(N_T - 1) * DT,
                 comp=np.zeros((n_w, N_T), np.int8), comp0=np.zeros(n_w, np.int64),
-                w=np.ones(n_w), dlog_b=dlog, D_intra=D0, n_walkers=n_w, seed=seed)
+                w=np.ones(n_w), dlog_b=dlog, D_intra=D0, n_walkers=n_w, seed=seed,
+                susceptibility_field="absent")             # a slab: nothing in it is magnetic
 
 
 def _lean_env():
@@ -140,7 +141,8 @@ def _field_basis_for_slab(shape=(24, 24, 24), seed=3):
 def _susc_master(**kw):
     m = _slab_master(**kw)
     fb, origin = _field_basis_for_slab()
-    m.update(susc_field_basis=fb, susc_grid_origin=origin, susc_chi_iso=1.06e-6, delta_chi_a=0.0)
+    m.update(susc_field_basis=fb, susc_grid_origin=origin, susc_chi_iso=1.06e-6, delta_chi_a=0.0,
+             susceptibility_field="present")
     return m
 
 

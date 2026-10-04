@@ -111,6 +111,13 @@ class ColumnarPack:
         self.floor = float(self.meta["fidelity"]["per_voxel"]["floor_median"])
         self.K = int(self.meta["compression"]["K"])
 
+    @property
+    def susceptibility_field(self):
+        """The layout's declared susceptibility field, ``"present"`` or ``"absent"``
+        (:func:`~dmipy_sim.replay.replay.declared_susceptibility_field`); a layout that declares none is refused."""
+        from .replay import declared_susceptibility_field
+        return declared_susceptibility_field(self.meta, has_field=bool(self.path_groups))
+
     # ---- the plan: what an acquisition needs, before any byte moves
     def bands_for(self, seq, tol=0.25):
         """``(K', error)``: the fewest stored band groups whose truncation costs less than ``tol`` x the pack's median
@@ -135,20 +142,23 @@ class ColumnarPack:
 
     def modes_for(self, seq, scanner, tissue, tol=0.25):
         """``(M, error)``: the fewest stored field modes for a replay at the scanner's field with the tissue's chi (0
-        without either): the dropped modes' phase variance ``(gamma dt_f B0 chi)^2 sum_{k>M} gate_hat_k^2 sum_ch
+        when :func:`~dmipy_sim.replay.replay.field_term` resolves the pair to no field term): the dropped modes' phase variance ``(gamma dt_f B0 chi)^2 sum_{k>M} gate_hat_k^2 sum_ch
         var_{ch,k}``, halved, against ``tol`` x the floor; the channel sum is the worst case over field directions."""
-        from .replay import GAMMA, scanner_field, _path_grid
+        from .replay import GAMMA, field_term, _path_grid
         from ._replay_kernel import field_gate
         from scipy.fft import dct
-        B0 = scanner_field(scanner).B0; chi = None if tissue is None else tissue.chi_iso
-        if B0 is None or chi is None or not self.path_groups:
+        f = field_term(self.susceptibility_field, tissue, scanner)
+        if not f.active:
             return 0, 0.0
+        if not self.path_groups:
+            raise ValueError("this pair has a field term and the layout stores no field modes (C3 path channel)")
+        B0, chi, chi_a = f.B0, f.chi_iso, f.chi_aniso
         pm = self.meta["compression"]["channels"]["susceptibility_path"]
         n_t = int(self.meta["walk_params"]["n_t"]); dt = float(self.meta["walk_params"]["dt_traj"])
         n_tf, dt_f = _path_grid(pm, n_t, dt)
         g = dct(field_gate(seq, n_tf, dt_f), type=2, norm="ortho")[:self.path_groups[-1]]
         var = np.asarray(self.meta["columnar"]["path_mode_variance"], np.float64).sum(axis=0)
-        per_mode = (GAMMA * dt_f * B0 * (abs(chi) + abs(tissue.chi_aniso or 0.0))) ** 2 * g ** 2 * var[:len(g)]
+        per_mode = (GAMMA * dt_f * B0 * (abs(chi) + abs(chi_a))) ** 2 * g ** 2 * var[:len(g)]
         tail = np.cumsum(per_mode[::-1])[::-1]
         for M in self.path_groups:
             err = 0.5 * (tail[M] if M < len(per_mode) else 0.0)

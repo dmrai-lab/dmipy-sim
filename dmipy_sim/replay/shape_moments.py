@@ -14,7 +14,8 @@ whole tiles and the sum over tiles a scatter with as many collisions as a segmen
 serialises on a voxel's thousands of contiguous rows (measured on the L40S: 6.4 s per 2^19 rows against 1 ms for
 the tiled reduction). Per shape ``m_<name>.npy`` holds ``(n_tiles, TILE, 3)`` float32; once, ``w.npy``
 ``(n_tiles, TILE)`` (the walkers' weights, 0 on padding), ``tiles.npy`` ``(n_tiles,)`` (``2 voxel + half``), and
-``manifest.json`` naming the source layout (its manifest's sha256), the bands read and their truncation error,
+``manifest.json`` naming the source layout (its manifest's sha256) and its declared ``susceptibility_field`` (the
+reader refuses a layout without one), the bands read and their truncation error,
 and every shape's profile with the b-value it encodes at unit amplitude, so that an amplitude follows from a
 b-value as ``g = sqrt(b / b_unit)``.
 
@@ -372,6 +373,7 @@ def write_shape_moments(source, shapes, out_dir, *, tol=0.25, chunk_rows=2_000_0
         a.flush()
     manifest = dict(
         format=FORMAT, n_rows=int(n_rows), n_tiles=int(n_tiles), tile=TILE, K=int(K), band_error=float(band_error), tol=float(tol),
+        susceptibility_field=col.susceptibility_field,
         tiers=(dict(tier_meta, pool_column="pool.npy",
                     groups={g: {k: v for k, v in grp.items() if k != "acquisition"} for g, grp in tier_groups.items()}) if tiers else None),
         source=dict(uri=col.uri, manifest_sha256=hashlib.sha256(col.src.text(MANIFEST).encode()).hexdigest(),
@@ -447,6 +449,11 @@ class ShapeMoments:
         self.shapes = [n for n in self.manifest["columns"] if n not in ("w", "tiles")]
         self.tiers = self.manifest.get("tiers")
         self.background = self.manifest.get("background")
+        from .replay import declared_susceptibility_field
+        self.susceptibility_field = declared_susceptibility_field(
+            dict(id=self.manifest["source"].get("pack"), susceptibility_field=self.manifest.get("susceptibility_field"),
+                 substrate=(self.tiers or {}).get("substrate")),
+            has_field=any(grp.get("field") for grp in (self.tiers or {}).get("groups", {}).values()))
         self._m = {}; self._device = {}; self._host = {}
 
     @staticmethod
@@ -640,7 +647,7 @@ class ShapeMoments:
                           field_iso=np.zeros(1) if grp.get("field") else None, field_aniso=np.zeros(1) if grp.get("field") else None,
                           exposure_t2=np.zeros((1, n_pools)) if n_pools else None, exposure_t1=np.zeros((1, n_pools)) if n_pools else None,
                           contact=np.zeros(1) if grp.get("contact") else None, D_walk=t.get("D_walk"), voxel=np.ones(1),
-                          pathway=float(grp["pathway"]), by_pool=by_pool)
+                          pathway=float(grp["pathway"]), by_pool=by_pool, susceptibility_field=self.susceptibility_field)
         rt = desc.reduction_terms(tissue, scanner)
         logw = -(float(grp["tau_t2"] or 0.0) * np.asarray(rt["invT2"], np.float64) + float(grp["tau_t1"] or 0.0) * np.asarray(rt["invT1"], np.float64))
         return (logw, float(rt["rho2_over_D"]), float(rt["a_iso"]), float(rt["a_aniso"]), float(rt["amplitude"]))

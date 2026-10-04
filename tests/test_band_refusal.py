@@ -21,7 +21,7 @@ def _static_pack(K, seed=0):
     r = rng.uniform(-2e-6, 2e-6, (N_W, 1, 3)).astype(np.float64)
     traj = np.repeat(r, N_T, axis=1)
     m = dict(traj=traj, dt_traj=DT, T_max=(N_T - 1) * DT, comp=np.zeros((N_W, N_T), np.int8), comp0=np.zeros(N_W, np.int64),
-             w=np.ones(N_W), dlog_b=np.zeros((N_W, N_T)), D_intra=D0, n_walkers=N_W, seed=seed)
+             w=np.ones(N_W), dlog_b=np.zeros((N_W, N_T)), D_intra=D0, n_walkers=N_W, seed=seed, susceptibility_field="absent")
     return build_replay_pack(m, id=f"t/static-K{K}", method="bridge_dst", envelope=_lean_env(), K=K, license="x", citation="x")
 
 

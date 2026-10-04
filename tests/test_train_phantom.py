@@ -356,13 +356,15 @@ def test_a_spin_echo_under_a_field_refocuses_on_the_train_route_as_on_the_phase_
     c = np.zeros(SH + (45,), np.float32); c[..., 0] = 1.0 / np.sqrt(4 * np.pi); c[..., 3] = 0.3
     wm = PackSubstrate(field_pack, m0=1.0, name="wm", tissue=Tissue(chi_iso=-1e-6, chi_aniso=0.0))   # a large chi: the fixture walk is 6 ms
     ph = Phantom.compose(grid, fractions={wm: np.ones(SH, np.float32)}, orientation={wm: ODF(c, basis="mrtrix3")}, remainder=Inert(name="bg"))
+    wm0 = PackSubstrate(field_pack, m0=1.0, name="wm")                                    # no chi: the field-free tissue
+    ph0 = Phantom.compose(grid, fractions={wm0: np.ones(SH, np.float32)}, orientation={wm0: ODF(c, basis="mrtrix3")}, remainder=Inert(name="bg"))
     se = sequences.pgse([[0.0, 0.0, 1.0]], 1e-3, 3e-3, bvalues=[0.0], TE=6e-3, n_t=60)
-    for B0 in (None, 7.0):                                   # in magnitude: the pathway carries the pulses' phase, the phase sum does not
-        S_sum = np.abs(ph.replay(se, scanner=B0, packs={0: pack}, complex_signal=True)[..., 0])
-        S_train = np.abs(ph.replay_train(se, scanner=B0, packs={0: pack}, complex_signal=True)[..., 0])
+    for phx, B0 in ((ph0, None), (ph, 7.0)):                 # in magnitude: the pathway carries the pulses' phase, the phase sum does not
+        S_sum = np.abs(phx.replay(se, scanner=B0, packs={0: pack}, complex_signal=True)[..., 0])
+        S_train = np.abs(phx.replay_train(se, scanner=B0, packs={0: pack}, complex_signal=True)[..., 0])
         np.testing.assert_allclose(S_train, S_sum, rtol=1e-6, atol=1e-9)
     # and the field does something at 7 T on a gradient echo, so the agreement is not trivial
     gre = sequences.gre(6e-3, n_t=60)
-    S_none = ph.replay(gre, scanner=None, packs={0: pack})[..., 0]
+    S_none = ph0.replay(gre, scanner=None, packs={0: pack})[..., 0]
     S_7 = ph.replay(gre, scanner=7.0, packs={0: pack})[..., 0]
     assert np.nanmax(np.abs(S_7 / S_none - 1.0)) > 1e-3

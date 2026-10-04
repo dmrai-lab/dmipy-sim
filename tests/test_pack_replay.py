@@ -139,20 +139,20 @@ def test_r0_is_the_stored_start_read_without_decoding(tmp_path):
 
 
 def test_a_substrate_with_no_field_source_replays_at_any_B0_as_a_zero_field(packs):
-    """A spec whose pools declare no susceptibility has a field of zero everywhere: the pack is C3-capable with a
-    zero field, so B0 = 3 T is its gradient-only replay, through the direct and the pose routes; a pack without a
-    spec (nothing declares the field zero) still refuses."""
+    """A spec whose pools declare no susceptibility declares its field absent, and so does its pack: B0 = 3 T is the
+    gradient-only replay through the direct and the pose routes, and a tissue chi is refused (#593); the
+    declaration is the pack's own, so a pack without an embedded spec keeps it."""
     full, plain = packs
-    assert full.field_is_zero and not full.has_field
+    assert full.susceptibility_field == "absent" and not full.has_field
     wf = _wf(full.n_t, full.dt)
-    np.testing.assert_array_equal(full.replay(wf, scanner=3.0, tissue=Tissue(chi_iso=1e-7)), full.replay(wf))
-    np.testing.assert_allclose(full.pose_response(wf, scanner=3.0, tissue=Tissue(chi_iso=1e-7), keep=(4, 0)).coeffs,
-                               full.pose_response(wf, keep=(4, 0)).coeffs)
+    np.testing.assert_array_equal(full.replay(wf, scanner=3.0), full.replay(wf))
+    np.testing.assert_array_equal(full.pose_response(wf, scanner=3.0, keep=(4, 0)).coeffs, full.pose_response(wf, keep=(4, 0)).coeffs)
+    with pytest.raises(ValueError, match="field absent"):
+        full.replay(wf, scanner=3.0, tissue=Tissue(chi_iso=1e-7))
     import copy
     bare = ReplayPack(dict(full.arrays), {k: v for k, v in copy.deepcopy(full.meta).items() if k != "substrate"})
-    assert not bare.field_is_zero
-    with pytest.raises(ValueError, match="no field tier"):
-        bare.replay(wf, scanner=3.0, tissue=Tissue(chi_iso=1e-7))
+    assert bare.susceptibility_field == "absent"
+    np.testing.assert_array_equal(bare.replay(wf, scanner=3.0), full.replay(wf))
 
 
 def test_relaxation_and_contact_end_at_the_readout(packs):
