@@ -25,7 +25,7 @@ from dmipy_sim.spec.tissue import Tissue
 
 DELTA, BIG_DELTA = 0.2e-3, 0.5e-3
 TISSUE = Tissue(T2={"intra": 0.03, "extra": 0.08, "myelin": 0.01}, T1={"intra": 0.9, "extra": 1.4, "myelin": 0.3},
-                rho_2=1e-5, chi_iso=-1e-7, chi_aniso=-1.5e-8)
+                rho2=1e-5, chi_iso=-1e-7, chi_aniso=-1.5e-8)
 # the phantom's centre 7.1 cm from isocentre, off every axis: inside the Swoop's 8 cm anchor, every term non-zero
 OFFSET = np.array([0.05, 0.03, 0.04])
 

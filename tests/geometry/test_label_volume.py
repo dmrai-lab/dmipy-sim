@@ -36,12 +36,12 @@ def slab(h=0.5e-6, n_pore=20, pad=10):
 
 
 def unit_local_time(g, step_l, n, n_walkers=20_000, seed=0):
-    """``(rate, floor, end positions)``: the boundary local time per unit time at ``rho_2 / D = 1``.
+    """``(rate, floor, end positions)``: the boundary local time per unit time at ``rho2 / D = 1``.
 
     For an equilibrium ensemble the exact value is ``D S / V`` of the walking pool: the expected
     overshoot per step at a flat wall is ``rho_0 l^2 / 12`` per unit area, and ``l^2 = 6 D dt``, so
     the estimator ``-dlog_w = 2 sum d_perp`` accumulates ``D (S/V) T``. That identity is what makes
-    ``rho_2 / D`` mean the same thing here as at every other wall in the package.
+    ``rho2 / D`` mean the same thing here as at every other wall in the package.
     """
     k1, k2 = jax.random.split(jax.random.PRNGKey(seed))
     r0 = g.init_positions(n_walkers, k1)
@@ -504,8 +504,8 @@ def test_the_voxelised_surface_is_the_manhattan_surface():
     Measured on R = 5 um: sphere 1.4493 / 1.4962 / 1.5069 at h/R = 0.2 / 0.1 / 0.05; cylinder 1.2658
     at both h/R = 0.1 and 0.05 (4/pi = 1.27324).
 
-    This is why a relaxation rate measured on a segmentation is ``rho_2`` times the VOXELISED S/V, and
-    why Talabi's fitted ``rho_2`` is an effective value tied to his 10 um voxel (thesis §7.6.2).
+    This is why a relaxation rate measured on a segmentation is ``rho2`` times the VOXELISED S/V, and
+    why Talabi's fitted ``rho2`` is an effective value tied to his 10 um voxel (thesis §7.6.2).
     """
     R = 5e-6
     ratios = []
@@ -568,7 +568,7 @@ def test_a_voxelised_sphere_confines_every_walker_to_its_voxel_corners(frac):
 
 @pytest.mark.parametrize("frac", [0.5, 1.0, 2.0])
 def test_the_boundary_local_time_is_D_times_the_voxelised_surface_to_volume(frac):
-    """``-E[dlog_w] / T`` at ``rho_2 / D = 1`` is ``D (S/V)`` of the walking pool, at any step length:
+    """``-E[dlog_w] / T`` at ``rho2 / D = 1`` is ``D (S/V)`` of the walking pool, at any step length:
     the overshoot estimator has no curvature bias on a flat face, so nothing has to be resolved but
     the pore. Measured on the voxelised R = 5 um sphere at 20,000 walkers x 200 steps:
     1.00260 / 1.00156 / 0.99972 of ``D S/V`` at 0.5 / 1 / 2 voxels per step, floors 4.3 / 2.3 / 1.1e-3.
@@ -586,13 +586,13 @@ def test_the_boundary_local_time_is_D_times_the_voxelised_surface_to_volume(frac
 
 def test_a_voxelised_slab_is_Box1D_and_its_surface_rate_is_brownstein_tarr():
     """The voxelised slab and ``Box1D`` of the same width accumulate the same boundary local time, to
-    the Monte-Carlo floor, so the two geometries' ``rho_2`` is one quantity. Measured at 200,000 walkers
+    the Monte-Carlo floor, so the two geometries' ``rho2`` is one quantity. Measured at 200,000 walkers
     over 2 / 1 / 0.5 / 0.25 voxels per step: LabelVolume 1.00146 / 1.00197 / 1.00391 / 0.99795 and
     Box1D 1.00049 / 1.00107 / 0.99863 / 0.99540 of ``D S/V``, floor 2.9e-3; at the 20,000 walkers this
     test runs (floor 9.0e-3) LabelVolume 1.00467 / 1.00349 and Box1D 1.00651 / 1.00974 at 0.5 / 1.
 
-    And ``D (S/V)`` IS the Brownstein-Tarr rate: at ``rho_2 = 10 um/s`` on a 10 um slab the eigenvalue
-    ``xi tan(xi d/2) = rho_2/D`` gives ``D xi^2 = 1.98344 1/s`` against ``rho_2 S/V = 2.0 1/s``, so the
+    And ``D (S/V)`` IS the Brownstein-Tarr rate: at ``rho2 = 10 um/s`` on a 10 um slab the eigenvalue
+    ``xi tan(xi d/2) = rho2/D`` gives ``D xi^2 = 1.98344 1/s`` against ``rho2 S/V = 2.0 1/s``, so the
     fast-diffusion limit is the right reference to 0.83 %.
     """
     g, d = slab()
@@ -607,10 +607,10 @@ def test_a_voxelised_slab_is_Box1D_and_its_surface_rate_is_brownstein_tarr():
         assert (a - b) / (D * sv) == pytest.approx(0.0, abs=np.sqrt(2) * tol)     # the parity itself
 
     from scipy.optimize import brentq
-    rho_2, a_half = 1e-5, d / 2
-    z = brentq(lambda z: z * np.tan(z) - rho_2 * a_half / D, 1e-12, np.pi / 2 - 1e-9)
+    rho2, a_half = 1e-5, d / 2
+    z = brentq(lambda z: z * np.tan(z) - rho2 * a_half / D, 1e-12, np.pi / 2 - 1e-9)
     assert D * (z / a_half) ** 2 == pytest.approx(1.98344, abs=1e-4)
-    assert rho_2 * sv == pytest.approx(2.0, rel=1e-9)
+    assert rho2 * sv == pytest.approx(2.0, rel=1e-9)
 
 
 def test_a_step_across_many_voxels_still_meets_every_face():
@@ -728,11 +728,11 @@ def test_a_refused_step_is_counted_by_the_engine():
 def test_a_label_volume_walk_packs_and_replays_C0_C1_C2(tmp_path, monkeypatch):
     """`build_replay_pack` needs nothing new for a label volume: the positions, the compartment column
     and the boundary local time are the channels every other substrate records, so one walk of a
-    segmented image replays at any rho_2 and T2.
+    segmented image replays at any rho2 and T2.
 
     Measured on a voxelised R = 5 um sphere at 4,000 walkers over 20 ms (PGSE delta 3 ms / Delta 12 ms
-    at b = 1e9): the bare diffusion replay is 0.70889, the same pack under ``Tissue(rho_2=1e-5)`` is
-    0.61221, and the fused walk with the same rho_2 baked in gives 0.61001 -- a difference of 0.0022
+    at b = 1e9): the bare diffusion replay is 0.70889, the same pack under ``Tissue(rho2=1e-5)`` is
+    0.61221, and the fused walk with the same rho2 baked in gives 0.61001 -- a difference of 0.0022
     against the walk's own floor of 0.0158.
     """
     from dmipy_sim import build_replay_pack, pgse, simulate, simulate_trajectories
@@ -748,7 +748,7 @@ def test_a_label_volume_walk_packs_and_replays_C0_C1_C2(tmp_path, monkeypatch):
     assert [p.name for p in pack.substrate.pools] == ["free", "grain"]
     wf = pgse([[1, 0, 0]], 0.003, 0.012, bvalues=[1e9], n_t=80)
     bare = float(np.asarray(pack.replay(wf)).ravel()[0])
-    with_rho = float(np.asarray(pack.replay(wf, tissue=Tissue(rho_2=1e-5))).ravel()[0])
+    with_rho = float(np.asarray(pack.replay(wf, tissue=Tissue(rho2=1e-5))).ravel()[0])
     fused = float(np.asarray(simulate(4000, D, wf, g, seed=0, require_gpu=False)).ravel()[0])
     assert 0.0 < with_rho < bare <= 1.0                       # relaxivity only ever costs signal
     assert with_rho == pytest.approx(fused, abs=4 / np.sqrt(4000))

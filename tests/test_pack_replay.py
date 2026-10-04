@@ -13,7 +13,7 @@ from dmipy_sim.spec.tissue import Tissue
 
 D0 = 2e-9
 ENV = dict(bvals=[0.0, 1e9, 3e9], dirs=[[1, 0, 0], [0, 0, 1]], ogse_periods=[2], shortd_b=1e9,
-           shortd_deltas_frac=[0.05], B0_list=[], theta_deg=[0], delta_frac=0.2, Delta_frac=0.5, rho_2_list=[1e-5])
+           shortd_deltas_frac=[0.05], B0_list=[], theta_deg=[0], delta_frac=0.2, Delta_frac=0.5, rho2_list=[1e-5])
 T2 = {"extra": 0.08, "intra": 0.03}; T1 = {"extra": 1.0, "intra": 1.2}    # by pool name, given at replay
 
 
@@ -68,7 +68,7 @@ def test_relaxation_applies_the_packs_per_pool_rates(packs):
         full.replay(wf, tissue=Tissue(T2=0.08))                                 # a pack has named pools
     with pytest.raises(TypeError, match="list by pool id"):
         Tissue(T2=[0.08, 0.03])                                                 # the file form is not a call form
-    for key in ("per_comp", "mt", "T2", "rho_2"):
+    for key in ("per_comp", "mt", "T2", "rho2"):
         assert key not in full.meta, "a pack carries channels, never a physical value"
     np.testing.assert_array_equal(full.replay(wf), full.replay(wf, tissue=full.nominal))   # a bare geometry declares no values
     with pytest.raises(TypeError, match="a Tissue .* or None"):
@@ -79,14 +79,14 @@ def test_surface_relaxivity_uses_the_recorded_diffusivity(packs):
     full, plain = packs
     wf = _wf(full.n_t, full.dt)
     W = _W(full, wf)
-    rho_2 = 1e-5
+    rho2 = 1e-5
     from dmipy_sim.replay._replay_kernel import bin_gate
     chi = bin_gate(np.ones(wf.n_t), wf.dt, full.n_t, full.dt)[0]     # contact after the echo is not in the acquisition
-    ref = replay_signal(full, W, rho_2_over_D=rho_2 / D0, chi_hat=chi)
-    np.testing.assert_allclose(full.replay(wf, tissue=Tissue(rho_2=rho_2)), ref, rtol=1e-12)
-    np.testing.assert_allclose(full.replay(wf, tissue=Tissue(rho_2=rho_2, D=D0)), ref, rtol=1e-12)
+    ref = replay_signal(full, W, rho2_over_D=rho2 / D0, chi_hat=chi)
+    np.testing.assert_allclose(full.replay(wf, tissue=Tissue(rho2=rho2)), ref, rtol=1e-12)
+    np.testing.assert_allclose(full.replay(wf, tissue=Tissue(rho2=rho2, D=D0)), ref, rtol=1e-12)
     with pytest.raises(ValueError, match="no C2"):
-        plain.replay(wf, tissue=Tissue(rho_2=rho_2))
+        plain.replay(wf, tissue=Tissue(rho2=rho2))
     np.testing.assert_array_equal(full.replay(wf, scanner=3.0), full.replay(wf))      # its spec declares no field source
 
 
@@ -112,7 +112,7 @@ def test_save_and_load_round_trip(packs, tmp_path):
     back = ReplayPack.load(path)
     assert back.has_relaxation and back.has_surface and not back.has_field
     wf = _wf(full.n_t, full.dt)
-    np.testing.assert_array_equal(back.replay(wf, tissue=Tissue(rho_2=1e-5, T2=T2)), full.replay(wf, tissue=Tissue(rho_2=1e-5, T2=T2)))
+    np.testing.assert_array_equal(back.replay(wf, tissue=Tissue(rho2=1e-5, T2=T2)), full.replay(wf, tissue=Tissue(rho2=1e-5, T2=T2)))
     assert back.diffusivity == pytest.approx(D0)
 
 
@@ -169,9 +169,9 @@ def test_relaxation_and_contact_end_at_the_readout(packs):
     # the contact term against the walk's own cumulative local time at save n (not n + 1)
     walk = d.simulate_trajectories(300, D0, d.Cylinder(2e-6, (0, 0, 1)), 0.01, 5e-4, seed=0, require_gpu=False)
     pk = build_replay_pack(walk, id="test/blt", K=8, blt_temporal_K=full.n_t, envelope=ENV, license="x", citation="x")
-    rho_2 = 1e-5
-    cum = np.cumsum(np.asarray(walk.boundary_local_time, np.float64), axis=1)   # per-step log-weight at rho_2 / D = 1
-    ref = np.exp(rho_2 / D0 * cum[:, n]).mean()
-    off = np.exp(rho_2 / D0 * cum[:, n + 1]).mean()
-    got = float(np.abs(pk.replay(fid, tissue=Tissue(rho_2=rho_2))[0]))
+    rho2 = 1e-5
+    cum = np.cumsum(np.asarray(walk.boundary_local_time, np.float64), axis=1)   # per-step log-weight at rho2 / D = 1
+    ref = np.exp(rho2 / D0 * cum[:, n]).mean()
+    off = np.exp(rho2 / D0 * cum[:, n + 1]).mean()
+    got = float(np.abs(pk.replay(fid, tissue=Tissue(rho2=rho2))[0]))
     assert abs(got - ref) < 0.1 * abs(off - ref), (got, ref, off)

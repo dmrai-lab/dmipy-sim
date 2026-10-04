@@ -19,7 +19,7 @@ from tests.conftest import spec_without_source
 from tests.replay_frames import field_along
 
 ENV = dict(bvals=[0.0, 1e9], dirs=[[1, 0, 0]], ogse_periods=[2], shortd_b=1e9, shortd_deltas_frac=[0.05], B0_list=[],
-           theta_deg=[0], delta_frac=0.2, Delta_frac=0.5, rho_2_list=[1e-5])
+           theta_deg=[0], delta_frac=0.2, Delta_frac=0.5, rho2_list=[1e-5])
 
 
 @pytest.fixture(scope="module")
@@ -228,7 +228,7 @@ def test_a_strand_whose_radius_varies_is_refused(tmp_path):
 
 def test_a_strand_pack_claims_what_its_walk_recorded(disco_files):
     """A strand spec declares the tiers the engine walks it for; the walk records contact (the curved tubes
-    accumulate it), the pack claims C2 and replays rho_2; a domain too large to rasterise refuses the field."""
+    accumulate it), the pack claims C2 and replays rho2; a domain too large to rasterise refuses the field."""
     from dmipy_sim.replay.bank import build_replay_pack
     spec = disco_spec(*disco_files, side_m=20e-6)
     assert spec.validity.tiers == ["gradient", "relaxation", "surface", "field"]
@@ -238,7 +238,7 @@ def test_a_strand_pack_claims_what_its_walk_recorded(disco_files):
     pk = build_replay_pack(w, id="t/strands", license="x", citation="x", K=4)
     assert pk.has_relaxation and pk.has_surface and pk.meta["replay_envelope"]["surface_relaxivity"]
     seq = d.set_b(d.pgse([[1, 0, 0]], 0.2e-3, 0.5e-3, gradient_strengths=0.1, n_t=pk.n_t, slew_rate=np.inf), [1e9])
-    w_, ew, _ = pk.walker_signals(seq, tissue=Tissue(rho_2=1e-5))
+    w_, ew, _ = pk.walker_signals(seq, tissue=Tissue(rho2=1e-5))
     assert (ew <= w_ * (1 + 1e-3)).all() and ew.sum() < w_.sum()      # contact attenuates (the K = 4 bridge series overshoots by 1e-4)
     with pytest.raises(SpecError, match="voxel budget"):                       # the raster of a domain too large is refused
         field_grid_of_spec(spec, field_budget=1e3)                             # the grid route forced as a cross-check
@@ -287,22 +287,22 @@ def test_a_straight_myelinated_curved_tube_is_the_myelinated_cylinder():
 
 def test_the_curved_tubes_record_surface_time_and_the_straight_limit_is_the_cylinder():
     """The curved tubes accumulate the wall contact (#76 item 2): a straight curved tube with a surface relaxivity
-    attenuates like the analytic cylinder with the same rho_2, walked from the same seed; a strand walk carries the
-    boundary channel, its pack claims C2, and a replay at rho_2 attenuates."""
+    attenuates like the analytic cylinder with the same rho2, walked from the same seed; a strand walk carries the
+    boundary channel, its pack claims C2, and a replay at rho2 attenuates."""
     from dmipy_sim.replay.bank import build_replay_pack
-    R, rho_2, D = 2e-6, 20e-6, 2e-9
+    R, rho2, D = 2e-6, 20e-6, 2e-9
     cl = np.array([[0.0, 0.0, -30e-6], [0.0, 0.0, 30e-6]])
     # a PGSE at 0.1 mT/m: b ~ 0.1 s/m^2, exp(-bD) = 1 - 2e-10, so the signal is the wall relaxation alone (a zero-G
     # sequence has no echo to read)
     seq = d.pgse([[1.0, 0.0, 0.0]], 0.2e-3, 3.8e-3, gradient_strengths=1e-4, n_t=200, slew_rate=np.inf)
     T = seq.echo_idx * seq.dt
-    s_cyl = float(np.asarray(d.simulate(20_000, D, seq, d.Cylinder(radius=R, orientation=(0, 0, 1), surface_relaxivity_t2=rho_2),
+    s_cyl = float(np.asarray(d.simulate(20_000, D, seq, d.Cylinder(radius=R, orientation=(0, 0, 1), surface_relaxivity_t2=rho2),
                                         seed=3, require_gpu=False))[0])
-    s_cur = float(np.asarray(d.simulate(20_000, D, seq, d.CurvedCylinder(cl, R, surface_relaxivity_t2=rho_2),
+    s_cur = float(np.asarray(d.simulate(20_000, D, seq, d.CurvedCylinder(cl, R, surface_relaxivity_t2=rho2),
                                         seed=3, require_gpu=False))[0])
-    T2 = R / (2 * rho_2)                                                                  # Brownstein-Tarr, fast regime
+    T2 = R / (2 * rho2)                                                                  # Brownstein-Tarr, fast regime
     assert abs(s_cyl - np.exp(-T / T2)) < 0.01 and abs(s_cur - s_cyl) < 0.01, (s_cur, s_cyl, np.exp(-T / T2))
-    s_pack = float(np.asarray(d.simulate(20_000, D, seq, d.PackedCurvedCylinders([cl], [R], interior=True, surface_relaxivity_t2=rho_2),
+    s_pack = float(np.asarray(d.simulate(20_000, D, seq, d.PackedCurvedCylinders([cl], [R], interior=True, surface_relaxivity_t2=rho2),
                                          seed=3, require_gpu=False))[0])
     assert abs(s_pack - s_cyl) < 0.01, (s_pack, s_cyl)
     # the strand walk records it and the pack replays it
@@ -311,7 +311,7 @@ def test_the_curved_tubes_record_surface_time_and_the_straight_limit_is_the_cyli
     pk = build_replay_pack(w, id="t/curved", license="x", citation="x", K=4, blt_temporal_K=4)
     assert pk.has_surface
     wf = d.pgse([[1.0, 0.0, 0.0]], 0.1e-3, 1.9e-3, gradient_strengths=1e-4, n_t=100, slew_rate=np.inf)
-    assert pk.replay(wf, tissue=Tissue(rho_2=rho_2, D=D))[0] < 0.99 * pk.replay(wf)[0]
+    assert pk.replay(wf, tissue=Tissue(rho2=rho2, D=D))[0] < 0.99 * pk.replay(wf)[0]
 
 
 def test_stratified_seeding_fills_every_occupied_voxel_and_keeps_the_volumes(disco_files):

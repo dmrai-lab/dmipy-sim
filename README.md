@@ -37,7 +37,7 @@ flowchart LR
     RPK["Replay Pack (.rpk)<br/>positions as bridge + K sine bands<br/>occupancy · wall contact · field basis<br/>+ the spec, no tissue value"]
     subgraph knobs["replay knobs"]
         direction TB
-        K1["tissue: T2 / T1 per pool · rho_2 · chi<br/>scanner: B0 · pose: the field's direction"]
+        K1["tissue: T2 / T1 per pool · rho2 · chi<br/>scanner: B0 · pose: the field's direction"]
         K2["acquisition: any G(t) exactly · RF schedule (vector Bloch) · b-tensors · CPMG"]
         K3["pose: one rotation · or a distribution of rotations (SO(3) composition)"]
     end
@@ -92,7 +92,7 @@ spec.save("wm.sub.json")
 walk = walk_spec(spec, 200_000, T_max=0.05, seed=0)            # the save grid is derived (scanner="connectom" by default)
 
 # 2. compress into a pack: channels (positions, occupancy, local time, field basis) and the spec -- not one
-#    T2, rho_2 or chi value lives in the pack; those are what a replay applies
+#    T2, rho2 or chi value lives in the pack; those are what a replay applies
 pack = build_replay_pack(walk, id="wm/canonical", license="CC-BY-4.0", citation="...")
 pack.save("wm.rpk")
 
@@ -101,13 +101,13 @@ pack = ReplayPack.load("wm.rpk")
 seq  = sequences.pgse([[1, 0, 0]], 0.01, 0.03, bvalues=[1e9])
 E    = pack.replay(seq)                             # the bare diffusion signal: no tissue, no field
 E1   = pack.replay(seq, tissue=pack.nominal, scanner=pack.nominal_field_T)      # the paper's replay: the spec's
-                                                    # T2 / T1 per pool, rho_2 and chi at its calibration field (3 T here)
+                                                    # T2 / T1 per pool, rho2 and chi at its calibration field (3 T here)
 E2   = pack.replay(seq, tissue=pack.nominal.replace(T2={"intra": 0.08}), scanner=7.0, orientation=(1, 0, 0))
                                                     # every value is a knob: same walk, one T2 changed, another scanner, another pose
 ```
 
 Three things describe a replay setting, each stated once. `tissue=` is **what the material is**: a `Tissue`
-(T2 / T1 as `{"intra": 0.05, ...}` over every pool of the pack's spec, `rho_2`, `D`, `chi_iso`, `chi_aniso`) or
+(T2 / T1 as `{"intra": 0.05, ...}` over every pool of the pack's spec, `rho2`, `D`, `chi_iso`, `chi_aniso`) or
 `None`, the bare diffusion signal; the spec the pack embeds carries the substrate's nominal values as
 `pack.nominal`, so a published pack reproduces its paper with no second file, and `.replace(...)` changes one
 pool and keeps the rest. `scanner=` is **what
@@ -198,7 +198,7 @@ Every piece is an object with named, unit-bearing arguments, and the phantom is 
 
 | piece | what it is |
 |---|---|
-| `PackSubstrate(pack_or_path, *, m0, tissue=)` | a solved pack; its `Tissue` (`pack.nominal`, or `Tissue(T2={...by pool name}, rho_2=, chi_iso=)`) is what it replays at, none for the bare diffusion signal |
+| `PackSubstrate(pack_or_path, *, m0, tissue=)` | a solved pack; its `Tissue` (`pack.nominal`, or `Tissue(T2={...by pool name}, rho2=, chi_iso=)`) is what it replays at, none for the bare diffusion signal |
 | `FreeWater(*, m0, tissue=Tissue(D=, T2=, T1=))` | the one closed form: a pack cannot stand in for free water (its Monte-Carlo floor does not decay with b) |
 | `Inert()` | fills a voxel and emits nothing, so it has no `m0`; not air |
 | `Peaks(directions, weights=)`, `ODF(coeffs, *, basis)`, `Watson(*, mu, kappa)`, `Frames(rotations)`, `Fan(rotations, *, kappa)` / `Fan.from_axis(*, axis, fan_towards, kappa_fan, kappa_perp)` | a pose per voxel, from a direction to a whole rotation; `ODF` names its **source** basis (`"mrtrix3"`, `"mrtrix-legacy"`, `"dmipy-fit"`, ...), keeps a CSD's integral on `.integral` |

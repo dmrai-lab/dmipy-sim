@@ -17,7 +17,7 @@ from dmipy_sim.substrate import Substrate
 from tests.replay_frames import field_along
 
 ENV = dict(bvals=[0.0, 1e9], dirs=[[1, 0, 0]], ogse_periods=[2], shortd_b=1e9, shortd_deltas_frac=[0.05],
-           B0_list=[3.0], theta_deg=[90], delta_frac=0.2, Delta_frac=0.5, rho_2_list=[1e-5])
+           B0_list=[3.0], theta_deg=[90], delta_frac=0.2, Delta_frac=0.5, rho2_list=[1e-5])
 
 
 def test_substrate_pack_realises_the_diameter_law_by_outer_radius():
@@ -54,12 +54,12 @@ def test_the_walk_keeps_its_geometry_and_the_builder_needs_nothing_else():
     e = pk.replay(G_lab, orientation=R, scanner=3.0, tissue=Tissue(chi_iso=1.06e-6, chi_aniso=-0.1e-6))
     assert 0 < e[0] < 1
     nominal = Tissue.from_spec(g.spec)                                            # the spec's nominal values
-    assert nominal.T2 == {"extra": sub.T2_extra, "intra": sub.T2_intra, "myelin": sub.T2_myelin} and nominal.rho_2 == pytest.approx(sub.rho2)
+    assert nominal.T2 == {"extra": sub.T2_extra, "intra": sub.T2_intra, "myelin": sub.T2_myelin} and nominal.rho2 == pytest.approx(sub.rho2)
     assert nominal.chi_iso == -0.1e-6 and nominal.chi_aniso == -0.1e-6           # the field is the scanner's, not tissue
     assert g.spec.nominal_field_T == sub.field_T == 3.0 == pk.nominal_field_T
     # the NOMINAL replay is the explicit one: the spec's values and its calibration field, every tier
     e_nom = pk.replay(G0, tissue=pk.nominal, scanner=pk.nominal_field_T)
-    np.testing.assert_allclose(e_nom, pk.replay(G0, tissue=Tissue(T2=nominal.T2, T1=nominal.T1, rho_2=nominal.rho_2, chi_iso=-0.1e-6, chi_aniso=-0.1e-6), scanner=3.0))
+    np.testing.assert_allclose(e_nom, pk.replay(G0, tissue=Tissue(T2=nominal.T2, T1=nominal.T1, rho2=nominal.rho2, chi_iso=-0.1e-6, chi_aniso=-0.1e-6), scanner=3.0))
     np.testing.assert_allclose(e_nom, pk.replay(G0, tissue=pk.nominal, scanner=pk.nominal_field_T))
     assert e_nom[0] < 1.0 and pk.replay(G0)[0] == pytest.approx(1.0)  # bare diffusion at b = 0
     e_7T = pk.replay(G_lab, orientation=R, tissue=pk.nominal, scanner=7.0)            # the scanner changed, the field turned
@@ -68,7 +68,7 @@ def test_the_walk_keeps_its_geometry_and_the_builder_needs_nothing_else():
     walk_nf = dataclasses.replace(walk, spec=spec_without_source(walk.spec))
     pk2 = build_replay_pack(walk_nf, id="t/own", license="x", citation="x", K=8, envelope=ENV)
     assert pk2.has_relaxation and not pk2.has_field
-    # a bare cylinder: occupancy and local time are recorded (T2 / rho_2 come at replay), no field source
+    # a bare cylinder: occupancy and local time are recorded (T2 / rho2 come at replay), no field source
     plain = d.simulate_trajectories(60, 2e-9, d.Cylinder(2e-6, (0, 0, 1)), 2e-3, 5e-4, seed=0, require_gpu=False)
     pk3 = build_replay_pack(plain, id="t/plain", license="x", citation="x", K=8, envelope=ENV)
     assert pk3.has_surface and pk3.has_relaxation and not pk3.has_field

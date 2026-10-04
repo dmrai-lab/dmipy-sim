@@ -66,7 +66,7 @@ class PackSubstrate(_Declared):
     proton density only means anything relative to the other substrates of the same phantom, so there is no
     default, the same way there is no default pack. ``tissue`` is the :class:`~dmipy_sim.spec.Tissue` this
     substrate replays at (RPH.md 3.2: pool T2 / T1 as ``{pool name: seconds}`` over every pool of the pack's
-    spec, the walls' rho_2, the bulk D, the field source's chi) -- ``pack.nominal`` for the pack's own
+    spec, the walls' rho2, the bulk D, the field source's chi) -- ``pack.nominal`` for the pack's own
     specification's values -- or ``None``, the bare diffusion signal, which a phantom refuses beside a substrate
     that does relax (:meth:`Phantom.replay`, dmipy-sim#238). The scanner's field is the replay's, not the
     substrate's. In the file the per-pool values are a list by pool id, one entry per pool of the pack's
@@ -96,7 +96,7 @@ class PackSubstrate(_Declared):
         super().__init__(name, m0)
         if tissue is not None and not isinstance(tissue, Tissue):
             raise TypeError(f"tissue is a Tissue (pack.nominal, Tissue(...)) or None; got {type(tissue).__name__}")
-        self._tissue, self._tissue_meta, self._rph_schema_version = tissue, None, None
+        self._tissue, self._tissue_meta = tissue, None
         if tissue is not None and self._pack is not None:
             self._check_pools(tissue, self._pack)                     # an in-memory pack is checked now, a path when read
 
@@ -109,13 +109,11 @@ class PackSubstrate(_Declared):
     @property
     def tissue(self):
         """The tissue this substrate replays at; one read from a file resolves its per-pool values through the
-        pack's spec on first use, at the file's own ``rph_schema_version`` (:meth:`from_meta`'s
-        ``schema_version``, recorded alongside the deferred entry -- a retired ``rho`` key is migrated only
-        when that version predates the rename, never guessed)."""
+        pack's spec on first use. A retired relaxivity key in the deferred entry is refused by name, not
+        migrated (:meth:`~dmipy_sim.spec.Tissue.from_meta`, dmipy-sim#592)."""
         if self._tissue is None and self._tissue_meta is not None:
             from ..spec.tissue import Tissue
-            self._tissue = Tissue.from_meta(self._tissue_meta, spec=self.pack.substrate,
-                                            schema_version=self._rph_schema_version)
+            self._tissue = Tissue.from_meta(self._tissue_meta, spec=self.pack.substrate)
             self._tissue_meta = None
         return self._tissue
 
@@ -153,20 +151,18 @@ class PackSubstrate(_Declared):
         return m
 
     @classmethod
-    def from_meta(cls, meta, *, pack, rph_schema_version=None):
-        """``rph_schema_version`` is the file's own top-level version, threaded by the reader so a tissue
-        entry's possibly-retired ``rho`` key is migrated (or refused) by the record's OWN schema, never
-        guessed (:meth:`~dmipy_sim.spec.Tissue.from_meta`)."""
+    def from_meta(cls, meta, *, pack):
+        """A retired relaxivity key in the ``tissue`` entry is refused by name, not migrated
+        (:meth:`~dmipy_sim.spec.Tissue.from_meta`, dmipy-sim#592)."""
         from ..spec.tissue import Tissue
         entry = meta.get("tissue")
         per_pool = bool(entry) and any(entry.get(k) is not None for k in ("T2", "T1"))
         windows = meta.get("windows")
         out = cls(pack, m0=meta["m0"], name=meta["id"],
-                  tissue=None if per_pool else Tissue.from_meta(entry, schema_version=rph_schema_version),
+                  tissue=None if per_pool else Tissue.from_meta(entry),
                   windows=None if windows is None else range(int(windows)))
         if per_pool:
             out._tissue_meta = dict(entry)
-            out._rph_schema_version = rph_schema_version
             if out._pack is not None:
                 out.tissue                                             # an in-memory pack resolves the form now
         return out
@@ -260,16 +256,12 @@ class Inert(_Declared):
 _ANALYTIC = {FreeWater.model: FreeWater}
 
 
-def substrate_from_meta(meta, *, pack=None, rph_schema_version=None):
+def substrate_from_meta(meta, *, pack=None):
     """The declaration object of one ``substrates[i]`` entry of a ``.rph``; ``pack`` supplies a pack substrate's
-    pack (an in-memory pack, a path, or None to leave the recorded ``uri`` to resolve on first use).
-    ``rph_schema_version`` is the file's own top-level version (threaded through to
-    :meth:`PackSubstrate.from_meta` / :meth:`~dmipy_sim.spec.Tissue.from_meta`, which is where a retired
-    tissue key would be migrated or refused by it)."""
+    pack (an in-memory pack, a path, or None to leave the recorded ``uri`` to resolve on first use)."""
     kind = meta.get("kind")
     if kind == "pack":
-        return PackSubstrate.from_meta(meta, pack=pack if pack is not None else meta.get("uri"),
-                                       rph_schema_version=rph_schema_version)
+        return PackSubstrate.from_meta(meta, pack=pack if pack is not None else meta.get("uri"))
     if kind == "analytic":
         model = meta.get("model")
         cls = _ANALYTIC.get(model)

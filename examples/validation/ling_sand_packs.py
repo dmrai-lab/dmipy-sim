@@ -14,7 +14,7 @@ Three rungs, each printed with their number beside it:
    these are ours and are stated as such; the S/V is the 6-connected grain-face count over the pore
    volume, which is the **Manhattan** surface of the segmentation and is what both walks relax against.
 2. **the T2 decay**, from one walk per pack under a gradient-free CPMG train, against the
-   fast-diffusion rate ``rho_2 S/V + 1/T2B``. That formula holds only for ``rho_2 (V/S) / D << 1``, which is
+   fast-diffusion rate ``rho2 S/V + 1/T2B``. That formula holds only for ``rho2 (V/S) / D << 1``, which is
    0.07 for the quartz pack and 0.60 for the garnet one -- so the garnet pack is where the walk is not
    optional, and the two numbers printed side by side show it.
 3. **the log-mean T2** of the decay's regularised inverse Laplace transform, against the log-mean of
@@ -29,7 +29,7 @@ number -- the paper prints no T2 value anywhere -- with an independent maximal-b
 diffusivity is theirs only in the sense that 2.3e-9 is the "e.g." beside their step equation; see D0.
 
 A pack of two minerals has two of their relaxivities on two walls, and this geometry accumulates one
-boundary local time over both, so ``--rho_2`` is one number and a mixture is walked at a stated single
+boundary local time over both, so ``--rho2`` is one number and a mixture is walked at a stated single
 value for the code's sake, never as a claim about their simulation.
 
 Data (not in the repository; 37 MB and 20 MB zipped, CC BY 4.0):
@@ -89,7 +89,7 @@ def image_path(sample, data_dir):
     return hits[0]
 
 
-def default_rho_2(sample):
+def default_rho2(sample):
     """Their relaxivity for a pack of one mineral; for a mixture there is no single one, so the caller
     states it."""
     minerals = {n for n in LING[sample]["pools"].values() if n != "free"}
@@ -118,12 +118,12 @@ def measured_log_mean(sample, cpmg_dir, *, te=100e-6, sample_ms=1.0, grid=None):
                 S_last_over_S0=float(S[-1] / S[0]))
 
 
-def run_pack(sample, data_dir, *, rho_2=None, n_walkers=200_000, T_max=3.5, sample_ms=1.0,
+def run_pack(sample, data_dir, *, rho2=None, n_walkers=200_000, T_max=3.5, sample_ms=1.0,
              D0=D0, T2B=T2B, walker_batch=20_000, seed=0, sub_steps=None, folds=1):
-    """One direct fused walk: the substrate with ``rho_2`` baked in, its decay, and the decay's log-mean.
+    """One direct fused walk: the substrate with ``rho2`` baked in, its decay, and the decay's log-mean.
 
     This is the OTHER route to the quantity a replay pack serves as a knob, which is what makes it the
-    reference a pack is gated against: same image, same D0, same T2B, same inversion, ``rho_2`` in the
+    reference a pack is gated against: same image, same D0, same T2B, same inversion, ``rho2`` in the
     walk instead of in the replay.
 
     ``folds`` splits the walkers into that many independent walks on consecutive seeds and averages
@@ -136,9 +136,9 @@ def run_pack(sample, data_dir, *, rho_2=None, n_walkers=200_000, T_max=3.5, samp
     the floor of the SIGNAL and is reported beside it as exactly that.
     """
     ref = LING[sample]
-    rho_2 = default_rho_2(sample) if rho_2 is None else float(rho_2)
-    if rho_2 is None:
-        raise ValueError(f"{sample} has two mineral surfaces and no single relaxivity; pass rho_2=")
+    rho2 = default_rho2(sample) if rho2 is None else float(rho2)
+    if rho2 is None:
+        raise ValueError(f"{sample} has two mineral surfaces and no single relaxivity; pass rho2=")
     path = image_path(sample, data_dir)
     # The substrate goes to the ORIGIN. These images are deposited at the micro-CT stage's absolute
     # coordinates, near (-717, -717, -458) mm, where a float32 ulp is 1/65 of the 3.93 um voxel and
@@ -147,7 +147,7 @@ def run_pack(sample, data_dir, *, rho_2=None, n_walkers=200_000, T_max=3.5, samp
     from dmipy_sim.io.label_volume import read_label_volume
     vol = read_label_volume(path)
     origin = -0.5 * np.asarray(vol.labels.shape, float) * np.asarray(vol.voxel_size, float)
-    spec = label_volume_spec(path, pools=dict(ref["pools"]), rho_2=rho_2, D=D0, T2=T2B, origin=origin,
+    spec = label_volume_spec(path, pools=dict(ref["pools"]), rho2=rho2, D=D0, T2=T2B, origin=origin,
                              id=f"ling2022/{sample.lower()}",
                              source="Ling et al. 2022 model synthetic sediment samples, figshare "
                                     "doi:10.6084/m9.figshare.17161730, CC BY 4.0")
@@ -173,9 +173,9 @@ def run_pack(sample, data_dir, *, rho_2=None, n_walkers=200_000, T_max=3.5, samp
     # Reported, never a tolerance: the spread of the folds when there are any, and the SIGNAL's shot
     # noise. The log-mean's error bar is analytic and lives with the gate.
     fold_spread = float(np.std(lms, ddof=1) / np.sqrt(len(lms)) / lm) if len(lms) > 1 else None
-    return dict(name=sample, spec=spec, phi=phi, s_over_v=sv, rho_2=rho_2, t=t, S=S, dt=dt, step=step,
+    return dict(name=sample, spec=spec, phi=phi, s_over_v=sv, rho2=rho2, t=t, S=S, dt=dt, step=step,
                 n_walkers=int(n_each * len(parts)), n_folds=int(len(parts)), wall=wall, sub_steps=n_sub,
-                T2_fd=1.0 / (rho_2 * sv + 1.0 / T2B), rho_2_V_over_S_over_D=rho_2 / sv / D0,
+                T2_fd=1.0 / (rho2 * sv + 1.0 / T2B), rho2_V_over_S_over_D=rho2 / sv / D0,
                 T2_lm=lm, T2_lm_folds=[float(x) for x in lms], fold_spread=fold_spread,
                 signal_floor=1.0 / np.sqrt(n_each * len(parts)))
 
@@ -203,23 +203,23 @@ def main():
 
     rows = []
     for name in args.samples:
-        r = run_pack(name, args.data, rho_2=args.rho_2, n_walkers=args.walkers, T_max=args.T_max,
+        r = run_pack(name, args.data, rho2=args.rho2, n_walkers=args.walkers, T_max=args.T_max,
                      sample_ms=args.sample_ms, sub_steps=args.sub_steps, D0=args.D0, T2B=args.T2B,
                      walker_batch=args.walker_batch, seed=args.seed, folds=args.folds)
         if args.measured:
             r["measured"] = measured_log_mean(name, args.measured, sample_ms=args.sample_ms)
         rows.append(r)
         surf = r["spec"].walls[0].surface
-        print(f"\n=== {name}  ({LING[name]['composition']};  rho_2 = {r['rho_2'] * 1e6:g} um/s, "
-              f"{'Ling SS3.2, fitted by them' if args.rho_2 is None else 'stated on the command line'}) ===")
+        print(f"\n=== {name}  ({LING[name]['composition']};  rho2 = {r['rho2'] * 1e6:g} um/s, "
+              f"{'Ling SS3.2, fitted by them' if args.rho2 is None else 'stated on the command line'}) ===")
         print(f"  image {os.path.basename(surf.file)}  voxel {surf.voxel_size[0] * 1e6:.5g} um  "
               f"walkers {r['n_walkers']:,}  dt {r['dt'] * 1e6:.1f} us x {r['sub_steps']} sub-steps  "
               f"step {r['step'] * 1e6:.3f} um  {r['wall']:.1f} s")
         print(f"  porosity (ours; the paper reports none per sample)   {r['phi']:.4f}")
         print(f"  S/V (1/m) (ours, the Manhattan surface)              {r['s_over_v']:.0f}")
-        print(f"  rho_2 (V/S) / D                                        {r['rho_2_V_over_S_over_D']:.3f}"
+        print(f"  rho2 (V/S) / D                                        {r['rho2_V_over_S_over_D']:.3f}"
               f"   (<< 1 is where the fast-diffusion formula holds)")
-        print(f"  T2 fast-diffusion 1/(rho_2 S/V + 1/T2B)                {r['T2_fd'] * 1e3:.1f} ms")
+        print(f"  T2 fast-diffusion 1/(rho2 S/V + 1/T2B)                {r['T2_fd'] * 1e3:.1f} ms")
         print(f"  T2 log-mean of the inverted decay                    {r['T2_lm'] * 1e3:.1f} ms"
               + (f"   ({len(r['T2_lm_folds'])} folds, spread {r['fold_spread'] * 100:.2f} %)"
                  if r["T2_lm_folds"] else f"   (signal floor {r['signal_floor'] * 100:.2f} %)"))
@@ -233,7 +233,7 @@ def main():
     for r in rows:
         theirs = f"{r['measured']['T2_lm'] * 1e3:.1f}" if "measured" in r else "-"
         print("%-10s %9.4f %11.0f %8.3f %9.1f %9.1f %9s"
-              % (r["name"], r["phi"], r["s_over_v"], r["rho_2_V_over_S_over_D"], r["T2_fd"] * 1e3,
+              % (r["name"], r["phi"], r["s_over_v"], r["rho2_V_over_S_over_D"], r["T2_fd"] * 1e3,
                  r["T2_lm"] * 1e3, theirs))
     if args.save:
         np.savez(args.save, **{f"{r['name']}_S": r["S"] for r in rows},

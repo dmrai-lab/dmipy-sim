@@ -29,7 +29,7 @@ class PersistentWalk:
     dt_sim : float
         The physics step, ``dt / sub_steps``.
     boundary_local_time : (n_walkers, n_t) or None
-        Per-step boundary log-weight at ``rho_2/D = 1`` (``-2 * sum d_perp`` over the step's wall
+        Per-step boundary log-weight at ``rho2/D = 1`` (``-2 * sum d_perp`` over the step's wall
         hits, non-positive); the surface-relaxivity channel. ``None`` when not recorded.
     compartment : (n_walkers, n_t) or None
         Compartment id per saved step (0 extra-cellular, positive enclosed pools; the ``.rpk``
@@ -43,7 +43,7 @@ class PersistentWalk:
         The producer's master seed.
     diffusivity : float or None
         The free diffusivity the walk was run with (m^2/s); what a surface-relaxivity replay divides
-        rho_2 by.
+        rho2 by.
     geometry : Geometry or None
         The substrate the walk was run on; the pack builder reads its pools and its field basis from
         it. Not part of equality and not stored in a pack.

@@ -47,16 +47,16 @@ def test_compressed_gradient_replay_matches_raw_within_the_codecs_certificate():
 
 
 def test_compressed_surface_replay_matches_raw():
-    D, rho_2, R = 2e-9, 1e-6, 2e-6
+    D, rho2, R = 2e-9, 1e-6, 2e-6
     kw = dict(T_max=0.4, dt_save=2e-3, seed=7, require_gpu=False)
     raw = simulate_trajectories(N, D, Box1D(length=R), **kw)
     mst = simulate_trajectories(N, D, Box1D(length=R), compress=8, **kw)
     traj, dt, dlog = np.asarray(raw.positions), raw.dt, np.asarray(raw.boundary_local_time)
     G0 = np.zeros((1, traj.shape[1], 3))              # b0: pure surface-relaxivity decay
-    S_raw = float(np.asarray(replay(traj, dt, G0, dt, surface_relaxivity=rho_2, D=D,
+    S_raw = float(np.asarray(replay(traj, dt, G0, dt, surface_relaxivity=rho2, D=D,
                                     dlog_boundary_unit=dlog))[0])
     S_cmp = float(np.asarray(replay(mst, mst["dt_traj"], G0, dt,
-                                    surface_relaxivity=rho_2, D=D))[0])
+                                    surface_relaxivity=rho2, D=D))[0])
     # ungated surface uses the stored endpoint B(T) -> exact (not just within the MC floor)
     assert abs(S_cmp - S_raw) < 1e-4
 

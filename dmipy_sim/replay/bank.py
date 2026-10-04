@@ -36,11 +36,12 @@ from .replay import ReplayPack, read_rpk, write_rpk
 __all__ = ["build_replay_pack", "build_to_floor", "frame_from_axis", "frame_from_bundles", "frame_of_spec", "check_frame_against_walk",
            "check_frame_against_geometry", "read_rpk", "write_rpk", "RPK_SCHEMA_VERSION"]
 
-RPK_SCHEMA_VERSION = "0.5"
-#: 0.5 (dmipy-sim#581) renames the transverse surface relaxivity's stored envelope key from
-#: ``replay_envelope.tissue.rho_over_D_max`` to ``rho_2_over_D_max``, beside the longitudinal ``rho_1`` of 0.4
-#: (dmipy-sim#574); :attr:`ReplayPack.rho_2_over_D_max` reads the retired key from a pack written at 0.4 or
-#: earlier, so nothing already published needs a re-encode.
+RPK_SCHEMA_VERSION = "0.6"
+#: 0.6 (dmipy-sim#592) renames the surface relaxivities' stored envelope key from the underscored
+#: ``replay_envelope.tissue.rho_2_over_D_max`` (0.5, dmipy-sim#581; before that, ``rho_over_D_max``, 0.4 or
+#: earlier, dmipy-sim#574/#581) to ``rho2_over_D_max``, matching the forward catalogue's spelling. No
+#: migration: a pack whose ``replay_envelope.tissue`` carries ``rho_over_D_max`` or ``rho_2_over_D_max`` is
+#: refused by name at any schema version (:attr:`ReplayPack.rho2_over_D_max`).
 
 
 # --------------------------------------------------------------- master-walk normalisation
@@ -273,7 +274,7 @@ def _measure_floor(m, env):
 
 def _surface_fidelity(m, arrays, chan_meta, env, *, segment_T=None):
     """Certify the surface tier (C2): the surface-relaxivity attenuation reconstructed from the
-    STORED boundary channel vs the RAW per-step boundary local time, over a rho_2 battery, against
+    STORED boundary channel vs the RAW per-step boundary local time, over a rho2 battery, against
     the split-half MC floor of the raw surface signal. Returns ``dict(err, floor)`` or None.
 
     The whole-duration ``err``/``floor`` above is blind to the BAND: the bridge
@@ -294,7 +295,7 @@ def _surface_fidelity(m, arrays, chan_meta, env, *, segment_T=None):
     w = np.asarray(m["w"], np.float64) if m.get("w") is not None else np.ones(n_w)
     D = float(m.get("D_intra") or 0.0) or 1.0
     decode = _cx.decode_boundary_bridge if _cx.has_c2(arrays) else _cx.decode_boundary_local_time
-    # the log-weight at rho_2/D = 1 is each walker's summed local time: raw and decoded, taken per chunk so
+    # the log-weight at rho2/D = 1 is each walker's summed local time: raw and decoded, taken per chunk so
     # that neither the raw channel in float64 nor the decoded channel is ever held whole
     s_raw = np.empty(n_w); s_dec = np.empty(n_w)
     step = max(1, int(_cx.CHUNK_BYTES // (8 * n_t)))
@@ -304,10 +305,10 @@ def _surface_fidelity(m, arrays, chan_meta, env, *, segment_T=None):
         s_dec[lo:hi] = _cx.surface_logweight_series(decode(arrays, chan_meta, slice(lo, hi)), 1.0)
     perm = np.random.RandomState(0).permutation(n_w); A, B = perm[:n_w // 2], perm[n_w // 2:]
     fac = lambda sl, idx: float(np.sum(w[idx] * np.exp(sl[idx])) / np.sum(w[idx]))
-    rho_2_list = env.get("rho_2_list") or [1e-5, 3e-5, 1e-4]
+    rho2_list = env.get("rho2_list") or [1e-5, 3e-5, 1e-4]
     err = floor = 0.0
-    for rho_2 in rho_2_list:
-        rd = float(rho_2) / D
+    for rho2 in rho2_list:
+        rd = float(rho2) / D
         sl_raw = rd * s_raw
         sl_dec = rd * s_dec
         err = max(err, abs(fac(sl_raw, slice(None)) - fac(sl_dec, slice(None))))
@@ -328,8 +329,8 @@ def _surface_fidelity(m, arrays, chan_meta, env, *, segment_T=None):
                     dec_in = dec_win[:, 1:]; raw_in = raw_win[:, 1:]        # the window's own first save ends no step of it
                     s_raw_w = raw_in.sum(axis=1).astype(np.float64)
                     s_dec_w = dec_in.sum(axis=1).astype(np.float64)
-                    for rho_2 in rho_2_list:
-                        rd = float(rho_2) / D
+                    for rho2 in rho2_list:
+                        rd = float(rho2) / D
                         e = abs(fac(rd * s_raw_w, slice(None)) - fac(rd * s_dec_w, slice(None)))
                         f = abs(fac(rd * s_raw_w, A) - fac(rd * s_raw_w, B))
                         if f > 0 and e / f > (err_w / floor_w if floor_w else -1.0):
@@ -339,20 +340,20 @@ def _surface_fidelity(m, arrays, chan_meta, env, *, segment_T=None):
     return out
 
 
-#: rho_2 / D values a window's contact envelope is read on: log-spaced from 1 m^-1 to the battery's largest
+#: rho2 / D values a window's contact envelope is read on: log-spaced from 1 m^-1 to the battery's largest
 SURFACE_ENVELOPE_POINTS = 256
 
 
-def surface_envelope(ell, w, *, rho_2_over_D_hi, reference=None, tol=2.0, n_grid=SURFACE_ENVELOPE_POINTS):
-    """The contact tier's envelope on one window: the largest ``rho_2 / D`` up to which the window's decoded contact
+def surface_envelope(ell, w, *, rho2_over_D_hi, reference=None, tol=2.0, n_grid=SURFACE_ENVELOPE_POINTS):
+    """The contact tier's envelope on one window: the largest ``rho2 / D`` up to which the window's decoded contact
     ``ell`` ``(n_w, n_t)`` serves a physical signal within its certificate. ``(edge, err, floor)``.
 
-    On a log grid from 1 m^-1 to ``rho_2_over_D_hi``, at every point: the floor is the standard deviation of the
-    split-half difference of the ungated attenuation ``<w exp(rho_2/D s)>``, ``2 sd_w / sqrt(n_eff)`` (``s`` the
+    On a log grid from 1 m^-1 to ``rho2_over_D_hi``, at every point: the floor is the standard deviation of the
+    split-half difference of the ungated attenuation ``<w exp(rho2/D s)>``, ``2 sd_w / sqrt(n_eff)`` (``s`` the
     window's summed contact; the reference's when one is given) -- the spread of the certificate's split-half
     floor rather than one draw of it, so that the edge does not move with the luck of one split; the error is the
     larger of the attenuation's distance from the reference's (``reference``, the same window's per-walker summed
-    contact from the walk the channel was encoded from) and the unphysical gain ``<w (exp(rho_2/D r) - 1)>``, with
+    contact from the walk the channel was encoded from) and the unphysical gain ``<w (exp(rho2/D r) - 1)>``, with
     ``r`` each walker's largest rise of the cumulative contact over any stretch of the window -- a contact only
     ever lowers the weight, so a rise is band ripple, and it is what a gate over that stretch would turn into a
     weight above one. The edge is the largest grid point below which every point is finite, has its error within
@@ -370,7 +371,7 @@ def surface_envelope(ell, w, *, rho_2_over_D_hi, reference=None, tol=2.0, n_grid
     n_eff = 1.0 / float(np.sum(p ** 2))
     edge = err = floor = 0.0
     with np.errstate(over="ignore", invalid="ignore"):
-        for rd in np.geomspace(1.0, float(rho_2_over_D_hi), int(n_grid)):
+        for rd in np.geomspace(1.0, float(rho2_over_D_hi), int(n_grid)):
             a_ref = np.exp(rd * s_ref)
             m_ref = float(p @ a_ref)
             fl = 2.0 * float(np.sqrt(p @ (a_ref - m_ref) ** 2)) / np.sqrt(n_eff)
@@ -1841,7 +1842,7 @@ def build_replay_pack(walk, *, id, license, citation, weights=None,
 
         arrays = dict(pos_arrays)
         chan_meta = {}                                   # per-channel codec params
-        channels = {"gradient": True, "susceptibility": False, "T1T2": False, "rho_2": False,
+        channels = {"gradient": True, "susceptibility": False, "T1T2": False, "rho2": False,
                     "mt": (m.get("bfrac") is not None)}
         # STATIC field-grid susceptibility channel: store the geometry-only field-basis grids ONCE
         # (a substrate property); replay assembles the field for any (B0,dir,chi) and samples it along
@@ -1964,11 +1965,11 @@ def build_replay_pack(walk, *, id, license, citation, weights=None,
                 _a, _mm = _select_boundary_codec(m, np.asarray(m["dlog_b"]), env, tol,
                                                  blt_dtype, verbose, container=_container(blt_container),
                                                  min_K=_c2_min_K, segment_T=_c2_window_T)
-            arrays.update(_a); chan_meta["boundary_local_time"] = _mm; channels["rho_2"] = True
+            arrays.update(_a); chan_meta["boundary_local_time"] = _mm; channels["rho2"] = True
 
         # Surface tier (C2) fidelity: certify the boundary channel reproduces the surface-relaxivity
         # signal from its stored coeffs, vs the raw boundary local time.
-        if channels["rho_2"] and chan_meta.get("boundary_local_time") is not None and cert is None:
+        if channels["rho2"] and chan_meta.get("boundary_local_time") is not None and cert is None:
             run.phase("certificate surface")
             _cf = _surface_fidelity(m, arrays, chan_meta["boundary_local_time"], env, segment_T=_c2_window_T)
             if _cf is not None:
@@ -2069,7 +2070,7 @@ def build_replay_pack(walk, *, id, license, citation, weights=None,
                                               else np.asarray(m["substrate_frame"], float).tolist())),
             replay_envelope=dict(gradient=True,
                                  bulk_relaxation=channels["T1T2"],
-                                 surface_relaxivity=channels["rho_2"],
+                                 surface_relaxivity=channels["rho2"],
                                  field=channels["susceptibility"],
                                  magnetization_transfer=channels["mt"],
                                  diffusivity_fixed=True, acquisition=_envelope_summary(env)),

@@ -12,21 +12,12 @@ import numpy as np
 
 
 PER_POOL = ("T2", "T1")
-KNOBS = ("T2", "T1", "rho_2", "rho_1", "D", "kappa", "chi_iso", "chi_aniso")
+KNOBS = ("T2", "T1", "rho2", "rho1", "D", "kappa", "chi_iso", "chi_aniso")
 
-RHO_2_SCHEMA_FLOOR = (0, 4, 1)
-#: the RPH schema version at which the transverse relaxivity's key became ``rho_2`` (dmipy-sim#581); a
-#: record below this floor still states it as the retired ``rho``.
-
-
-def _schema_lt(version, floor):
-    """Whether a dotted schema version (``"0.4.0"``, ``"0.5.0-draft"``) is below ``floor`` (a tuple of ints);
-    ``None`` -- no version given -- is never below anything, so a caller that cannot say which schema a
-    record was written at gets the refusal, not a guessed migration."""
-    if version is None:
-        return False
-    core = str(version).split("-", 1)[0]
-    return tuple(int(x) for x in core.split(".")) < tuple(floor)
+#: keys retired by earlier issues (bare ``rho`` by dmipy-sim#581, underscored ``rho2``/``rho1`` by
+#: dmipy-sim#592) -- a record carrying one is refused by name, unconditionally: no version-dependent
+#: acceptance, no migration (dmipy-sim#592: "no legacy rho").
+RETIRED_KEYS = {"rho": "rho2", "rho_2": "rho2", "rho_1": "rho1"}
 
 
 def _check_time(what, v):
@@ -67,12 +58,12 @@ class Tissue:
     * ``T2`` / ``T1`` (s): on a pack, a ``{pool name: seconds}`` mapping over EVERY pool of the pack's embedded
       spec (the replay refuses a missing pool, an unknown name, a scalar or a list); ``float("inf")`` is no decay
       in that pool, and ``0`` is refused. On a closed form (one unnamed pool) one number.
-    * ``rho_2`` (m/s): the walls' TRANSVERSE surface relaxivity (C2), gated by the acquisition's coherence
+    * ``rho2`` (m/s): the walls' TRANSVERSE surface relaxivity (C2), gated by the acquisition's coherence
       (``chi_perp``: on while the magnetisation is transverse) and scaled by ``D``.
-    * ``rho_1`` (m/s): the walls' LONGITUDINAL surface relaxivity (C2), gated by the complement
+    * ``rho1`` (m/s): the walls' LONGITUDINAL surface relaxivity (C2), gated by the complement
       (``chi_parallel = active - chi_perp``: on while the magnetisation is stored along B0, e.g. a stimulated
-      echo's mixing time) and scaled by ``D``. The replay equation's contact channel is then ``rho_2 * chi_perp +
-      rho_1 * chi_parallel`` against the same boundary local time ``rho_2`` already reads -- no new walk, exactly
+      echo's mixing time) and scaled by ``D``. The replay equation's contact channel is then ``rho2 * chi_perp +
+      rho1 * chi_parallel`` against the same boundary local time ``rho2`` already reads -- no new walk, exactly
       as ``T1`` is a second gate beside ``T2`` on the occupancy (C1).
     * ``D`` (m^2/s): the bulk diffusivity -- the walk's recorded value unless given, for a pack; a closed form's
       diffusion coefficient. Given on a pack, the pack is READ at that diffusivity
@@ -86,8 +77,8 @@ class Tissue:
     """
     T2: Optional[object] = None
     T1: Optional[object] = None
-    rho_2: Optional[float] = None
-    rho_1: Optional[float] = None
+    rho2: Optional[float] = None
+    rho1: Optional[float] = None
     D: Optional[float] = None
     kappa: Optional[float] = None
     chi_iso: Optional[float] = None
@@ -102,8 +93,8 @@ class Tissue:
         """The spec's nominal values: pool T2 / T1 by pool name (the pools that declare one; ``None`` when none
         does, so a spec that declares a T2 in some pools gives a mapping the replay refuses by naming the rest),
         the walls' common TRANSVERSE relaxivity, the field-source pool's susceptibility. Walls with different
-        relaxivities leave ``rho_2`` None: give it. The spec carries no longitudinal (``rho_1``) nominal -- a
-        wall states one relaxivity, baked into the forward walk's transverse channel (#574) -- so ``rho_1`` is
+        relaxivities leave ``rho2`` None: give it. The spec carries no longitudinal (``rho1``) nominal -- a
+        wall states one relaxivity, baked into the forward walk's transverse channel (#574) -- so ``rho1`` is
         always ``None`` here; give it explicitly as an override. Any keyword overrides."""
         pools = sorted(spec.pools, key=lambda p: p.id)
         T2 = {p.name: p.T2 for p in pools if p.T2 is not None} or None
@@ -111,7 +102,7 @@ class Tissue:
         rhos = {r for w in spec.walls for r in (w.surface_relaxivity.inside, w.surface_relaxivity.outside) if r > 0}
         rhos |= ({spec.domain.surface_relaxivity} if spec.domain.surface_relaxivity else set())
         src = spec.field_source_pools
-        kw = dict(T2=T2, T1=T1, rho_2=(rhos.pop() if len(rhos) == 1 else None),
+        kw = dict(T2=T2, T1=T1, rho2=(rhos.pop() if len(rhos) == 1 else None),
                   chi_iso=(src[0].susceptibility.chi_iso if src else None),
                   chi_aniso=((src[0].susceptibility.chi_aniso or 0.0) if src else 0.0))
         kw.update(overrides)
@@ -155,33 +146,26 @@ class Tissue:
         return out
 
     @classmethod
-    def from_meta(cls, meta, spec=None, *, schema_version=None):
+    def from_meta(cls, meta, spec=None):
         """A tissue back from :meth:`to_meta`; ``None`` for an empty or absent entry. With the pack's ``spec`` the
         per-pool values MUST be the file form, a list by pool id of the spec's length (``null`` for no decay),
         and come back as the mapping by name; a dict, a scalar or a list of another length is refused. Without
         a spec a list is refused (it needs the pack to be read) and a mapping or a number is taken as given.
 
-        A ``.rph`` written below RPH schema 0.4.0 (dmipy-sim#574) states the transverse relaxivity under the
-        retired key ``rho``; migrated to ``rho_2`` here (RPH 0.4.1, dmipy-sim#581) -- a one-time read, nothing
-        rewritten unless the file is re-saved -- but **only** when ``schema_version`` (the record's own,
-        threaded by the reader -- a ``.rph``'s top-level ``rph_schema_version``) says the record predates
-        :data:`RHO_2_SCHEMA_FLOOR`. A record at or above the floor, or whose caller gives no ``schema_version``
-        at all, keeps ``rho`` an unknown key and is refused by name: this method never guesses which spelling
-        an un-dated record meant. An entry never carries both keys."""
+        A tissue entry carrying a retired relaxivity key -- bare ``rho`` (pre-RPH-0.4.1, dmipy-sim#581) or
+        underscored ``rho_2`` / ``rho_1`` (pre-RPH-0.4.2, dmipy-sim#592) -- is refused by name, unconditionally:
+        there is no version-dependent migration, at this boundary or any other (dmipy-sim#592, "no legacy
+        rho"). Rename the key to ``rho2`` / ``rho1`` in the record itself."""
         m = dict(meta or {})
-        if "rho" in m and "rho_2" not in m:
-            if _schema_lt(schema_version, RHO_2_SCHEMA_FLOOR):
-                m["rho_2"] = m.pop("rho")
-            else:
+        for old, new in RETIRED_KEYS.items():
+            if old in m:
                 raise ValueError(
-                    f"a tissue entry carries the retired key 'rho' (dmipy-sim#574 renamed the transverse "
-                    f"relaxivity to 'rho_2' at RPH schema {'.'.join(map(str, RHO_2_SCHEMA_FLOOR))}, dmipy-sim#581); "
-                    f"this record's schema_version is {schema_version!r}, which is not below that floor, so the "
-                    f"retired key is refused rather than migrated. Pass the file's own rph_schema_version from "
-                    f"the reader to accept an older record, or rename the key to 'rho_2'")
+                    f"a tissue entry carries the retired key {old!r}; the surface relaxivities are spelled "
+                    f"{new!r} (dmipy-sim#592, following the forward catalogue's rho1/rho2 and the package's "
+                    f"T1/T2/M0/B0 convention). There is no migration: rename the key to {new!r}")
         unknown = set(m) - set(KNOBS)
         if unknown:
-            raise ValueError(f"a tissue entry declares {sorted(unknown)}; it takes T2, T1, rho_2, D, kappa, chi_iso, chi_aniso")
+            raise ValueError(f"a tissue entry declares {sorted(unknown)}; it takes T2, T1, rho2, rho1, D, kappa, chi_iso, chi_aniso")
         for k in PER_POOL:
             v = m.get(k)
             if v is None:

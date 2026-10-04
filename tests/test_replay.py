@@ -81,11 +81,11 @@ def test_jax_twin_matches_and_differentiable():
 
 
 def test_surface_knob_uses_the_real_c2_channel_and_refuses_without_one():
-    """The rho_2 knob must read the pack's ACTUAL C2 channel, not a key that no longer exists.
+    """The rho2 knob must read the pack's ACTUAL C2 channel, not a key that no longer exists.
 
     The previous version of this test fabricated a `blt_dct` array and injected it, so it kept
     passing after C2 moved to the bridge form -- while `replay_signal` looked up the retired key,
-    found nothing, and SILENTLY ignored rho_2_over_D. A caller asking for surface relaxivity got an
+    found nothing, and SILENTLY ignored rho2_over_D. A caller asking for surface relaxivity got an
     unattenuated signal and no error. So: build the channel with the real encoder, and check both
     that the knob bites and that a pack without C2 refuses rather than skipping.
     """
@@ -103,18 +103,18 @@ def test_surface_knob_uses_the_real_c2_channel_and_refuses_without_one():
     G = _pgse(0.0, 10e-3, 30e-3)[None]                        # b0
     W = compile_scheme(G, DT, K, GAMMA, n_t=N_T)
     E0 = replay_signal(pack, W)[0]
-    Er = replay_signal(pack, W, rho_2_over_D=5e3)[0]
+    Er = replay_signal(pack, W, rho2_over_D=5e3)[0]
     assert E0 == pytest.approx(1.0, abs=1e-9)
-    assert Er < 0.99 * E0, f"rho_2 knob did not bite: {Er} vs {E0}"
+    assert Er < 0.99 * E0, f"rho2 knob did not bite: {Er} vs {E0}"
 
     # the endpoint path must equal summing the decoded per-save series
     npt.assert_allclose(replay_slw(arrays, 5e3, cm),
                         surface_logweight(decode_boundary_bridge(arrays, cm), 5e3), rtol=1e-6)
 
-    # a pack with no C2 must RAISE when rho_2 is requested, not silently return the bare signal
+    # a pack with no C2 must RAISE when rho2 is requested, not silently return the bare signal
     bare = {k: v for k, v in arrays.items() if not k.startswith("blt_")}
     with pytest.raises(ValueError, match="no C2 channel"):
-        replay_signal(bare, W, rho_2_over_D=5e3)
+        replay_signal(bare, W, rho2_over_D=5e3)
 
 
 def test_blt_dct_attribute_is_retired_loudly():
