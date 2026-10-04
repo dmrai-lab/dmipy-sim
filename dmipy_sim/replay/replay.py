@@ -1597,10 +1597,10 @@ class ReplayPack:
     def pose_responses(self, waveforms, *, tissue=None, scanner=None, pose=None, compartment=None,
                        method="auto", keep=None, cache=None):
         """:meth:`pose_response` for a batch of acquisitions on this pack -- the encoding classes of a machine pass,
-        or one per voxel -- as ONE pass over the walkers: the closed form takes every single-direction acquisition
-        of the batch together (:meth:`_pose_coeffs_closed_many`), the others take the quadrature one by one. The
-        knobs, the pose and the cache are as for :meth:`pose_response`; returns one :class:`PoseResponse` per
-        acquisition, in order (dmrai-lab/dmipy-sim#449)."""
+        or one per voxel -- as one pass over the walkers per field factor: the closed form takes the single-direction
+        acquisitions of the batch that share a gate together (:meth:`_pose_coeffs_closed_many`), the others take the
+        quadrature one by one. The knobs, the pose and the cache are as for :meth:`pose_response`; returns one
+        :class:`PoseResponse` per acquisition, in order (dmrai-lab/dmipy-sim#449)."""
         view = self._at_tissue(tissue)
         if view is not self:
             return view.pose_responses(waveforms, tissue=tissue, scanner=scanner, pose=pose, compartment=compartment,
@@ -1943,9 +1943,11 @@ class ReplayPack:
         of a machine pass, or one class per voxel -- in ONE pass over the walkers: every acquisition's waveform
         groups lie along one group axis, so the moments, the Bessel values, the moment harmonics and the products
         against the field factor run once for all of them, in chunks of groups, and the lab-side assembly is per
-        acquisition. The field factor is one for the batch (the gate and the field are the acquisition's, not the
-        gradient's). Returns one :class:`PoseResponse` per acquisition, ``None`` where an acquisition is not
-        single-direction (dmrai-lab/dmipy-sim#449).
+        acquisition. The field factor is one per pass: the acquisitions of a pass share the inputs of the field factor
+        (:func:`_field_factor_inputs`: the gate the field accrues through, the field and the tissue's chi), and a
+        batch whose acquisitions do not is expanded in one pass per distinct factor. Returns one
+        :class:`PoseResponse` per acquisition, ``None`` where an acquisition is not single-direction
+        (dmrai-lab/dmipy-sim#449).
 
         waves in the rotated moment of each walker, and a plane wave's harmonics are the Rayleigh expansion.
         
@@ -1991,12 +1993,15 @@ class ReplayPack:
         from .pose_device import bessel_tails, host_bodies, spherical_jn_all as _jn_all
         n_acq = len(Ps)
         backgrounds = [_background_of(wf) for wf in waveforms]
-        with_bg = [c for c in range(n_acq) if backgrounds[c] is not None]
-        if with_bg and len(with_bg) < n_acq:
-            # a batch that mixes the two kinds takes two passes, so an acquisition without a magnet's gradient is the
-            # same numbers whichever batch it is expanded in
+        # one pass per (kind, field factor): a batch that mixes acquisitions with and without a magnet's gradient, or
+        # acquisitions whose field accrues through different gates, takes one pass per kind and factor, so every
+        # acquisition is the same numbers whichever batch it is expanded in (dmrai-lab/dmipy-sim#575)
+        kinds = [(backgrounds[c] is not None, _field_factor_inputs(Ps[c], waveforms[c])) for c in range(n_acq)]
+        passes = list(dict.fromkeys(kinds))
+        if len(passes) > 1:
             out = [None] * n_acq
-            for sub in ([c for c in range(n_acq) if backgrounds[c] is None], with_bg):
+            for kind in passes:
+                sub = [c for c in range(n_acq) if kinds[c] == kind]
                 got = self._pose_coeffs_closed_many([Ps[c] for c in sub], [waveforms[c] for c in sub], keep=keep, tol=tol,
                                                     l_cap=l_cap, direction_tol=direction_tol)
                 for c, r in zip(sub, got):
@@ -3157,6 +3162,19 @@ def _band_phase(P, W=None):
         phi_s = C.reshape(n_w, seg.n_coeffs * 3) @ W_s
         phi = phi_s if phi is None else phi + phi_s
     return phi
+
+
+def _field_factor_inputs(P, waveform):
+    """What the closed-form pose expansion's field factor (:meth:`ReplayPack._field_quadratic`) is a function of,
+    as a hashable key: ``None`` with no field, else the field's strength and direction, the tissue's chi, the gate
+    the field accrues through (:func:`~dmipy_sim.replay._replay_kernel.field_gate`'s input) on its grid, and the
+    pack grid and windows it is read onto. Two acquisitions with equal keys have one field factor."""
+    if P["B0"] is None:
+        return None
+    gate = waveform.effective_gate if waveform.gate is None else waveform.gate
+    return (float(P["B0"]), tuple(float(x) for x in np.asarray(P["b0_dir"], np.float64)), float(P["chi_iso"]),
+            float(P["chi_aniso"] or 0.0), np.ascontiguousarray(gate, np.float64).tobytes(), float(waveform.dt),
+            int(P["n_t"]), float(P["dt"]), tuple((float(t0), int(n_s)) for _seg, t0, n_s in P["windows"]))
 
 
 def _path_field_channels(P, waveform):
