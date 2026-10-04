@@ -115,6 +115,41 @@ def test_the_file_form_is_a_list_by_pool_id_strict_both_ways(pack):
         Tissue(T2=0.05).to_meta(spec=spec)                                      # a closed form's spelling has no file form on a pack
 
 
+def test_the_retired_rho_key_is_migrated_only_below_its_schema_floor():
+    """A ``.rph`` tissue entry below RPH 0.4.1 (dmipy-sim#574) states the transverse relaxivity as the
+    retired ``rho``; ``Tissue.from_meta`` migrates it to ``rho_2`` ONLY when its caller's own
+    ``schema_version`` says the record predates the rename (dmipy-sim#581) -- threaded from the file, never
+    guessed. A record at or above the floor, or with no schema_version given at all, keeps ``rho`` an
+    unknown key and is refused."""
+    assert Tissue.from_meta({"rho": 4e-6}, schema_version="0.4.0").rho_2 == 4e-6     # below the floor: migrated
+    assert Tissue.from_meta({"rho": 4e-6, "D": 2e-9}, schema_version="0.3").rho_2 == 4e-6
+    with pytest.raises(ValueError, match="retired key 'rho'"):
+        Tissue.from_meta({"rho": 4e-6}, schema_version="0.4.1")                     # at the floor: refused
+    with pytest.raises(ValueError, match="retired key 'rho'"):
+        Tissue.from_meta({"rho": 4e-6}, schema_version="0.5.0-draft")
+    with pytest.raises(ValueError, match="retired key 'rho'"):
+        Tissue.from_meta({"rho": 4e-6})                                             # no schema_version: never guessed
+    assert Tissue.from_meta({"rho_2": 4e-6}, schema_version="0.4.1").rho_2 == 4e-6   # the current spelling needs no version
+
+
+def test_packsubstrate_from_meta_threads_the_rph_schema_version(pack):
+    """``PackSubstrate.from_meta`` / ``substrate_from_meta`` thread the file's own ``rph_schema_version`` to
+    ``Tissue.from_meta``, both for a scalar tissue entry (resolved at once) and a per-pool one (resolved
+    lazily on first ``.tissue`` read, dmipy-sim#581)."""
+    scalar = {"id": "wm", "kind": "pack", "m0": 1.0, "tissue": {"rho": 4e-6}}
+    assert PackSubstrate.from_meta(scalar, pack=pack, rph_schema_version="0.4.0").tissue.rho_2 == 4e-6
+    with pytest.raises(ValueError, match="retired key 'rho'"):
+        PackSubstrate.from_meta(scalar, pack=pack, rph_schema_version="0.4.1")
+    with pytest.raises(ValueError, match="retired key 'rho'"):
+        PackSubstrate.from_meta(scalar, pack=pack)                                  # no version: never guessed
+
+    per_pool = {"id": "wm2", "kind": "pack", "m0": 1.0, "tissue": {"T2": [None, 0.03], "rho": 4e-6}}
+    sub = PackSubstrate.from_meta(per_pool, pack=pack, rph_schema_version="0.4.0")
+    assert sub.tissue.rho_2 == 4e-6 and sub.tissue.T2 == {"extra": INF, "intra": 0.03}
+    with pytest.raises(ValueError, match="retired key 'rho'"):
+        PackSubstrate.from_meta(per_pool, pack=pack, rph_schema_version="0.4.1")
+
+
 def test_completeness_is_judged_on_the_spec_not_the_walkers(extra_only):
     pk = extra_only
     assert [p.name for p in pk.substrate.pools] == ["extra", "intra"]

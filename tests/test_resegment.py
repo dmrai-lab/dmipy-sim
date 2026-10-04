@@ -250,6 +250,28 @@ def test_the_contact_envelope_is_stated_and_held(packs):
             route()
 
 
+def test_rho_over_D_max_migrates_only_below_its_schema_floor():
+    """A pack's retired ``replay_envelope.tissue.rho_over_D_max`` (RPK < 0.5, dmipy-sim#581) is read as
+    ``rho_2_over_D_max`` ONLY when the pack's OWN ``rpk_schema_version`` says it predates the rename; a
+    pack at or above 0.5 -- or with no recorded version at all -- that still carries the old key is
+    refused rather than guessed at (never accept a retired spelling at a boundary)."""
+    def _pk(version, key="rho_over_D_max"):
+        meta = {"replay_envelope": {"tissue": {key: 42.0}}}
+        if version is not None:
+            meta["rpk_schema_version"] = version
+        return ReplayPack({"pos_x_ends": np.zeros((1, 2), np.float32)}, meta)
+
+    assert _pk("0.4").rho_2_over_D_max == 42.0                              # below the floor: migrated
+    assert _pk("0.3").rho_2_over_D_max == 42.0
+    with pytest.raises(ValueError, match="retired key 'rho_over_D_max'"):
+        _pk("0.5").rho_2_over_D_max                                        # at the floor: refused
+    with pytest.raises(ValueError, match="retired key 'rho_over_D_max'"):
+        _pk("0.5.0-draft").rho_2_over_D_max
+    with pytest.raises(ValueError, match="retired key 'rho_over_D_max'"):
+        _pk(None).rho_2_over_D_max                                         # no version: never guessed
+    assert _pk("0.5", key="rho_2_over_D_max").rho_2_over_D_max == 42.0      # the current spelling needs no version
+
+
 def test_the_envelope_edge_is_where_band_ripple_outgrows_the_floor():
     """A contact channel whose cumulative sum rises for a few walkers (band ripple: a contact only lowers the weight)
     is served up to the rho_2 / D where that gain reaches the floor, and no further; a monotone one to the top."""

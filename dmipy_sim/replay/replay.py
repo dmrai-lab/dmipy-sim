@@ -47,6 +47,21 @@ __all__ = ["ReplayPack", "PoseResponse", "read_rpk", "write_rpk", "analytic_pose
            "compile_scheme", "replay_signal", "replay_coefficients", "replay_signal_jax", "replay_batch_jax",
            "surface_logweight"]
 
+RHO_2_OVER_D_MAX_SCHEMA_FLOOR = (0, 5)
+#: the RPK schema version at which the contact envelope's stored bound became
+#: ``replay_envelope.tissue.rho_2_over_D_max`` (dmipy-sim#581); a pack below this floor states it under the
+#: retired key ``rho_over_D_max`` (:attr:`ReplayPack.rho_2_over_D_max`).
+
+
+def _rpk_schema_lt(version, floor):
+    """Whether a pack's dotted ``rpk_schema_version`` (``"0.4"``, ``"0.5"``) is below ``floor`` (a tuple of
+    ints); ``None`` -- no version recorded -- is never below anything, so an undated pack is refused rather
+    than migrated by a guess."""
+    if version is None:
+        return False
+    core = str(version).split("-", 1)[0]
+    return tuple(int(x) for x in core.split(".")) < tuple(floor)
+
 
 # ------------------------------- .rpk container I/O -------------------------------
 def write_rpk(path, arrays, metadata):
@@ -651,12 +666,24 @@ class ReplayPack:
     @property
     def rho_2_over_D_max(self):
         """The largest ``rho_2 / D`` the contact tier serves (``replay_envelope.tissue.rho_2_over_D_max``, RPK.md 8.7), or
-        ``None`` when the pack states no bound. A pack written before RPK schema 0.5 (dmipy-sim#581) states the
-        same bound under the retired key ``rho_over_D_max``, read here as a one-time migration -- nothing is
-        rewritten unless the pack is re-saved."""
+        ``None`` when the pack states no bound. A pack whose OWN ``rpk_schema_version`` is below
+        :data:`RHO_2_OVER_D_MAX_SCHEMA_FLOOR` (dmipy-sim#581) may state the same bound under the retired key
+        ``rho_over_D_max``; migrated here, a one-time read, nothing rewritten unless the pack is re-saved. A
+        pack at or above the floor that still carries the retired key is refused rather than guessed at --
+        that key means something is already wrong with how it was written."""
         tissue = (self.meta.get("replay_envelope") or {}).get("tissue") or {}
-        v = tissue.get("rho_2_over_D_max")
-        return tissue.get("rho_over_D_max") if v is None else v
+        new, old = tissue.get("rho_2_over_D_max"), tissue.get("rho_over_D_max")
+        if old is None:
+            return new
+        version = self.meta.get("rpk_schema_version")
+        if not _rpk_schema_lt(version, RHO_2_OVER_D_MAX_SCHEMA_FLOOR):
+            raise ValueError(
+                f"this pack states its contact envelope under the retired key 'rho_over_D_max' (dmipy-sim#581 "
+                f"renamed it to 'rho_2_over_D_max' at RPK schema "
+                f"{'.'.join(map(str, RHO_2_OVER_D_MAX_SCHEMA_FLOOR))}); this pack's "
+                f"rpk_schema_version is {version!r}, which is not below that floor, so the retired key is refused "
+                f"rather than migrated")
+        return new if new is not None else old
 
     def _check_rho_2(self, rho_2_over_D):
         """Refuse a relaxivity beyond the contact tier's envelope (:attr:`rho_2_over_D_max`), naming both."""

@@ -14,6 +14,20 @@ import numpy as np
 PER_POOL = ("T2", "T1")
 KNOBS = ("T2", "T1", "rho_2", "rho_1", "D", "kappa", "chi_iso", "chi_aniso")
 
+RHO_2_SCHEMA_FLOOR = (0, 4, 1)
+#: the RPH schema version at which the transverse relaxivity's key became ``rho_2`` (dmipy-sim#581); a
+#: record below this floor still states it as the retired ``rho``.
+
+
+def _schema_lt(version, floor):
+    """Whether a dotted schema version (``"0.4.0"``, ``"0.5.0-draft"``) is below ``floor`` (a tuple of ints);
+    ``None`` -- no version given -- is never below anything, so a caller that cannot say which schema a
+    record was written at gets the refusal, not a guessed migration."""
+    if version is None:
+        return False
+    core = str(version).split("-", 1)[0]
+    return tuple(int(x) for x in core.split(".")) < tuple(floor)
+
 
 def _check_time(what, v):
     """``v`` as a relaxation time in seconds: positive, ``inf`` for no decay; ``0`` is refused since the kernels
@@ -141,18 +155,30 @@ class Tissue:
         return out
 
     @classmethod
-    def from_meta(cls, meta, spec=None):
+    def from_meta(cls, meta, spec=None, *, schema_version=None):
         """A tissue back from :meth:`to_meta`; ``None`` for an empty or absent entry. With the pack's ``spec`` the
         per-pool values MUST be the file form, a list by pool id of the spec's length (``null`` for no decay),
         and come back as the mapping by name; a dict, a scalar or a list of another length is refused. Without
         a spec a list is refused (it needs the pack to be read) and a mapping or a number is taken as given.
 
-        A ``.rph`` written at RPH schema 0.4.0 (dmipy-sim#574) states the transverse relaxivity under the
-        retired key ``rho``; read here as ``rho_2`` (RPH 0.4.1, dmipy-sim#581) -- a one-time migration, nothing
-        is rewritten unless the file is re-saved. An entry never carries both keys."""
+        A ``.rph`` written below RPH schema 0.4.0 (dmipy-sim#574) states the transverse relaxivity under the
+        retired key ``rho``; migrated to ``rho_2`` here (RPH 0.4.1, dmipy-sim#581) -- a one-time read, nothing
+        rewritten unless the file is re-saved -- but **only** when ``schema_version`` (the record's own,
+        threaded by the reader -- a ``.rph``'s top-level ``rph_schema_version``) says the record predates
+        :data:`RHO_2_SCHEMA_FLOOR`. A record at or above the floor, or whose caller gives no ``schema_version``
+        at all, keeps ``rho`` an unknown key and is refused by name: this method never guesses which spelling
+        an un-dated record meant. An entry never carries both keys."""
         m = dict(meta or {})
         if "rho" in m and "rho_2" not in m:
-            m["rho_2"] = m.pop("rho")
+            if _schema_lt(schema_version, RHO_2_SCHEMA_FLOOR):
+                m["rho_2"] = m.pop("rho")
+            else:
+                raise ValueError(
+                    f"a tissue entry carries the retired key 'rho' (dmipy-sim#574 renamed the transverse "
+                    f"relaxivity to 'rho_2' at RPH schema {'.'.join(map(str, RHO_2_SCHEMA_FLOOR))}, dmipy-sim#581); "
+                    f"this record's schema_version is {schema_version!r}, which is not below that floor, so the "
+                    f"retired key is refused rather than migrated. Pass the file's own rph_schema_version from "
+                    f"the reader to accept an older record, or rename the key to 'rho_2'")
         unknown = set(m) - set(KNOBS)
         if unknown:
             raise ValueError(f"a tissue entry declares {sorted(unknown)}; it takes T2, T1, rho_2, D, kappa, chi_iso, chi_aniso")

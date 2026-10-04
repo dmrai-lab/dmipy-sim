@@ -35,9 +35,10 @@ __all__ = ["ReplayPhantom", "read_rph", "write_rph", "Grid", "SUBSTRATE_KINDS", 
 SUBSTRATE_KINDS = ("pack", "analytic", "inert")
 RPH_SCHEMA_VERSION = "0.4.1"
 #: 0.4.1 (dmipy-sim#581) renames a tissue entry's transverse surface relaxivity key from ``rho`` to ``rho_2``,
-#: beside the longitudinal ``rho_1`` of 0.4.0 (dmipy-sim#574); :meth:`~dmipy_sim.spec.Tissue.from_meta` reads
-#: the retired key from a file written at 0.4.0, so nothing already published needs a re-save. (0.5.0 is
-#: reserved by the partition ``addressing`` draft, :meth:`~dmipy_sim.phantom.partition.Partition.write`.)
+#: beside the longitudinal ``rho_1`` of 0.4.0 (dmipy-sim#574); :meth:`~dmipy_sim.spec.Tissue.from_meta` migrates
+#: the retired key from a file below this floor -- it is threaded this file's own ``rph_schema_version`` by
+#: every reader here, never guessed, and a record at or above 0.4.1 that still carries ``rho`` is refused.
+#: (0.5.0 is reserved by the partition ``addressing`` draft, :meth:`~dmipy_sim.phantom.partition.Partition.write`.)
 
 #: The macroscopic layers a phantom may declare per voxel (RPH.md 5.1). A name outside this registry is
 #: refused rather than ignored: a layer silently dropped is a phantom that replays wrong while looking right.
@@ -639,22 +640,24 @@ class ReplayPhantom:
         pd = self.layer_values("m0_scale", proton_density, combine="mul")
         return m0 if pd is None else m0 * pd[:, None]
 
-    @staticmethod
-    def _tissue(sub, pack):
+    def _tissue(self, sub, pack):
         """A pack substrate's tissue from its file entry: the per-pool values, a list by pool id in the file,
-        resolved by name through the pack's embedded spec (RPH.md 3.2); ``None`` for none."""
+        resolved by name through the pack's embedded spec (RPH.md 3.2); ``None`` for none. ``schema_version=``
+        is this file's own ``rph_schema_version``, threaded to :meth:`~dmipy_sim.spec.Tissue.from_meta` so a
+        retired ``rho`` key is migrated only when the file predates the rename, never guessed."""
         from ..spec.tissue import Tissue
         entry = sub.get("tissue")
         per_pool = bool(entry) and any(entry.get(k) is not None for k in ("T2", "T1"))
-        return Tissue.from_meta(entry, spec=pack.substrate) if per_pool else Tissue.from_meta(entry)
+        version = self.meta.get("rph_schema_version")
+        return (Tissue.from_meta(entry, spec=pack.substrate, schema_version=version) if per_pool
+                else Tissue.from_meta(entry, schema_version=version))
 
-    @staticmethod
-    def _form(i, sub, forms):
+    def _form(self, i, sub, forms):
         """The closed form of substrate ``i``: the live object when the caller holds one (``forms``, an in-memory
         phantom's own declarations), else the one its ``model`` names, read back from the file's record."""
         if forms and i in forms:
             return forms[i]
-        return substrate_from_meta(sub)
+        return substrate_from_meta(sub, rph_schema_version=self.meta.get("rph_schema_version"))
 
     def _check_relaxation(self, waveform, loaded, forms):
         """Refuse a phantom whose substrates would relax inconsistently under a readout (dmipy-sim#238).
