@@ -3084,16 +3084,32 @@ def _background_of(waveform):
 
 def _group_waveforms(s, rtol=1e-5):
     """Group rows of ``s (n, n_t)`` that are the same waveform to ``rtol`` of the largest amplitude: ``(group (n,),
-    first (n_grp,))``. A tolerance, not a rounding, so two rows a rounding boundary apart stay together."""
+    first (n_grp,))``. A tolerance, not a rounding, so two rows a rounding boundary apart stay together. Greedy in
+    row order: the first ungrouped row opens a group and takes every ungrouped row within the tolerance of it.
+
+    A row within ``tol`` of row ``i`` everywhere has its projection on a fixed vector ``v`` within ``tol |v|_1`` of
+    row ``i``'s, so the rows are sorted once by such a projection and each row's exact test runs on the window of
+    the sorted order that condition leaves (#605): the same groups, at the cost of the candidates instead of every
+    row per group. ``v`` is a fixed pseudo-random vector with ``|v|_1 = 1`` -- a constant one would not separate
+    waveforms of zero mean, which a refocused encoding is -- and the window is widened by the projections' own
+    rounding."""
     s = np.asarray(s, np.float64)
     scale = float(np.abs(s).max()) or 1.0
     tol = rtol * scale
-    group = np.full(s.shape[0], -1, np.int64)
+    n, n_t = s.shape
+    v = np.random.default_rng(0).uniform(-1.0, 1.0, n_t)
+    v /= np.abs(v).sum()
+    p = s @ v
+    order = np.argsort(p, kind="stable"); p_sorted = p[order]
+    win = tol + 4.0 * n_t * np.finfo(np.float64).eps * scale               # the projection's rounding, generously
+    group = np.full(n, -1, np.int64)
     first = []
-    for i in range(s.shape[0]):
+    for i in range(n):
         if group[i] >= 0:
             continue
-        same = np.flatnonzero((group < 0) & (np.abs(s - s[i]).max(axis=1) <= tol))
+        cand = order[np.searchsorted(p_sorted, p[i] - win, side="left"):np.searchsorted(p_sorted, p[i] + win, side="right")]
+        cand = cand[group[cand] < 0]
+        same = cand[np.abs(s[cand] - s[i]).max(axis=1) <= tol]
         group[same] = len(first)
         first.append(i)
     return group, np.asarray(first, np.int64)
