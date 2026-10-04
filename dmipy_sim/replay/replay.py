@@ -1982,7 +1982,7 @@ class ReplayPack:
                 # one more column of what is grouped, in the same unit as the waveform
                 beta = np.linalg.norm(g0, axis=1)
                 group, first = _group_waveforms(np.concatenate([s_wave, beta[:, None]], axis=1), rtol=1e-5)
-                extra = dict(g0=g0, beta=beta, gate_id=gate_id)
+                extra = dict(g0=g0, beta=beta, gate_id=gate_id, s_first=s_wave[first])
             per.append(dict(P=P, G=G, G_wf=G_wf, g_hat=g_hat, group=group, first=first, n_meas=n_meas,
                             residual=np.asarray(residual, int), bound=np.zeros(n_meas), **extra))
         limit = (0.1 / np.sqrt(n_w)) if direction_tol is None else float(direction_tol)
@@ -2046,7 +2046,7 @@ class ReplayPack:
                 tail_all += (2 * l + 1) * T_ab[l]
             return self._closed_with_background(
                 per, live, g_off, n_grp, kappa, m_hat, w, n_bg, L, k_max, tail_all, F_sh, L_f,
-                None if field is None else P0["b0_dir"], keep, tol, l_cap, n_acq, _ph, run)
+                None if field is None else P0["b0_dir"], keep, tol, l_cap, n_acq, _ph, run, limit)
         L_tot = L + L_f
         want_l, want_n = (None, None) if keep is None else (keep[0], keep[1])
         keep_l = L_tot if want_l is None else min(int(want_l), L_tot)
@@ -2189,7 +2189,7 @@ class ReplayPack:
         return out
 
     def _closed_with_background(self, per, live, g_off, n_grp, kappa, m_hat, w, n_bg, L, k_max, tail_all, F_sh, L_f,
-                                b0_dir, keep, tol, l_cap, n_acq, _ph, run):
+                                b0_dir, keep, tol, l_cap, n_acq, _ph, run, limit):
         """The closed form of :meth:`_pose_coeffs_closed_many` for acquisitions played in a magnet with its own
         gradient (dmrai-lab/dmipy-sim#565): the background as a second plane-wave factor.
 
@@ -2228,7 +2228,8 @@ class ReplayPack:
         remainder, plus the residual bound. An acquisition whose encoding is not one direction to that bound has
         already been sent to the quadrature."""
         from . import so3
-        from .pose_device import bessel_tails, field_bodies
+        from .compression import resolve_device
+        from .pose_device import bessel_tails, field_bodies, paired_bodies
         n_w = w.shape[0]
         # one background factor per (|g0|, gate): a bucket
         beta_g = np.zeros(n_grp); gate_g = np.zeros(n_grp, np.int64)
@@ -2320,8 +2321,21 @@ class ReplayPack:
                 tables[(l, Lam)] = (Ls, K_lab.reshape(2 * l + 1, 2 * Lam + 1, -1), K_body, lab_sl, body_sl)
         n_bessel = max(l_used) + 24 + int(np.ceil(k_max))                     # the Miller recurrence's start order
         step = max(1, int(2.5e8 / (8 * n_w * (L + 1) ** 2)))                   # groups per ~256 MB of host harmonics
+        # on the host, only the products the retained azimuthal band couples (pose_device.paired_bodies); the device
+        # forms every product in one fused pass
+        col_n = np.zeros(n_cols, np.int64)
+        for Lam, cols, _kind in channels:
+            col_n[cols] = np.abs(np.arange(-Lam, Lam + 1))
+        host = resolve_device("auto") == "numpy"
+        paired = host and keep_n < Lam_max
+        l_off = dict(zip(l_used, np.cumsum([0] + [2 * l + 1 for l in l_used[:-1]])))   # each order's rows in a body
+        perm = np.argsort(col_n, kind="stable") if paired else np.arange(n_cols)   # the factor's columns by |N|
+        at = np.empty_like(perm); at[perm] = np.arange(n_cols)                      # a column's place after the sort
+        if paired:
+            step = max(1, int(5e8 / (8 * n_w * sum(2 * l + 1 for l in l_used))))    # groups per ~0.5 GB of bodies
         out = [None] * n_acq
         done = 0
+        shell_dev = np.zeros(n_grp)                                           # a shell row's departure from its shape
         for c in live:
             q = per[c]; n_meas = q["n_meas"]; group = q["group"] + g_off[c]
             g_sl = slice(g_off[c], g_off[c] + len(q["first"]))
@@ -2343,29 +2357,29 @@ class ReplayPack:
             coeffs = np.zeros((n_meas, n_feat), np.complex128)
             M_lab = {}                                                        # (l, channel) -> (n_u, 2l+1, sum 2Lc+1)
             for k in np.unique(bucket[g_sl]):
-                F = factor(int(k))
+                F = factor(int(k))[:, perm]
                 F_re, F_im = np.ascontiguousarray(F.real), np.ascontiguousarray(F.imag)
                 grp = np.flatnonzero(bucket[g_sl] == k) + g_off[c]              # this acquisition's groups of the bucket
-                for lo in range(0, len(grp), step):
-                    idx = grp[lo:lo + step]; nc = len(idx)
+                for idx, B3, dev in self._background_bodies(grp, q["s_first"][grp - g_off[c]], kappa, m_hat, w, F_re, F_im,
+                                                       L, l_used, l_off, col_n[perm], keep_n, paired, host, step, n_bessel,
+                                                       limit):
+                    nc = len(idx)
+                    shell_dev[idx] = dev
                     if run is not None:
                         run.progress(done, n_grp, unit="groups")
                     done += nc
-                    B_c = field_bodies(kappa[:, idx], m_hat[:, idx, :], w, F_re, F_im, L, l_used, n_bessel=n_bessel)
                     where = np.full(n_grp, -1, np.int64); where[idx] = np.arange(nc)
                     sel = np.flatnonzero(where[group] >= 0)                    # the measurements whose bodies these are
                     pos = where[group[sel]]
-                    row = 0
                     for l in l_used:
                         bl = so3.sh_block(l, True)
-                        B_l = B_c[row:row + nc * (2 * l + 1)].reshape(nc, 2 * l + 1, n_cols)
-                        row += nc * (2 * l + 1)
+                        B_l = B3[:, l_off[l]:l_off[l] + 2 * l + 1, :]
                         Yg_l = Yg[sel][:, bl]                                              # (n_sel, 2l+1)
                         for ci, (Lam, cols, kind) in enumerate(channels):
                             if (l, Lam) not in tables:
                                 continue
                             Ls, K_lab3, K_body, lab_sl, body_sl = tables[(l, Lam)]
-                            body_all = B_l[:, :, cols].reshape(nc, -1) @ K_body            # (nc, sum 2kk+1)
+                            body_all = B_l[:, :, at[cols]].reshape(nc, -1) @ K_body        # (nc, sum 2kk+1)
                             if (l, ci) not in M_lab:                                       # the lab side's coupling, per direction of g0
                                 M_lab[(l, ci)] = np.einsum("uM,iMs->uis", lam[ci], K_lab3)
                             M_lam = M_lab[(l, ci)]
@@ -2377,7 +2391,7 @@ class ReplayPack:
                                     * body_all[:, body_sl[Lc]][:, None, :]
                                 o = offs[Lc]
                                 coeffs[sel, o:o + (2 * Lc + 1) * (2 * kk + 1)] += block.reshape(len(sel), -1)
-            misfit = tail_all[group] + q["bound"] + tail_bg[bucket[group]] * (1.0 + r_a)
+            misfit = tail_all[group] + q["bound"] + tail_bg[bucket[group]] * (1.0 + r_a) + shell_dev[group]
             resp = PoseResponse(coeffs, keep_l, keep_n, misfit=misfit, floor=1.0 / np.sqrt(n_w),
                                 phase_amplitude=float(kappa[:, g_sl].max()) if kappa.size else 0.0, n_samples=0)
             resp.n_bodies = len(q["first"])
@@ -2386,6 +2400,98 @@ class ReplayPack:
             resp.route = "closed"
             out[c] = resp
         return out
+
+    def _background_bodies(self, grp, s_first, kappa, m_hat, w, F_re, F_im, L, l_used, l_off, col_n, keep_n, paired, host,
+                           step, n_bessel, limit):
+        """The bodies of the groups ``grp`` (one acquisition's, one background factor) against the factor ``F``, in
+        chunks: yields ``(idx, B, dev)`` with ``B[g, (l, n), j] = sum_w w_w j_l(kappa_wg) Y_ln(m^_wg) F_wj``
+        ``(nc, R, n_f)``, the orders ``l_used`` at the offsets ``l_off``, and ``dev`` ``(nc,)`` what that costs the
+        misfit (below).
+
+        **A shell is one body in powers of its amplitude.** A machine's class plays every row at its own delivered
+        amplitude, so a shell's rows are as many groups; but they play one SHAPE, ``s_g(t) = a_g u(t)``, so their
+        moments are ``a_g mu_w`` with one ``mu_w`` per walker, and ``j_l(a r) = sum_k c_lk (a r)^{l+2k}`` with
+        ``c_lk = (-1)^k / (2^k k! (2l+2k+1)!!)`` makes every row's body a polynomial in its amplitude:
+
+            B_g = sum_k (a_g / A)^{l+2k} M_k,     M_k = c_lk sum_w w_w (A |mu_w|)^{l+2k} Y_ln(mu^_w) F_w,
+
+        ``A`` the shell's largest amplitude. The walkers are contracted once per power instead of once per row. A
+        row's waveform is its shape times its amplitude only nearly -- a machine's Maxwell term along the encoding
+        goes as the square of the amplitude, and its float32 rounding -- so its own moment ``m_gw`` differs from
+        ``(a_g / A) m_refw`` by ``dm_gw``; its phase at any pose by at most ``|dm_gw|``, and ``dev_g = sum_w |w_w|
+        |dm_gw|`` is added to its misfit. Rows are one shape when their waveforms over their amplitudes agree to
+        ``SHELL_RTOL``, and a shell takes the series only when every row's ``dev_g`` is within ``limit`` (the closed
+        form's ``direction_tol``: a tenth of the floor by default), as a nearly single-direction waveform does. The
+        series is cut where its next term is below ``SHELL_SERIES_TOL`` at the shell's largest phase, and is taken on
+        the host when that phase is at most ``SHELL_SERIES_MAX_PHASE`` (its terms then cancel to within a few digits
+        of float64) and the shell has more rows than powers; otherwise each group is contracted on its own."""
+        from . import so3
+        from .pose_device import field_bodies, paired_bodies, paired_products
+        n_w = w.shape[0]
+        R = sum(2 * l + 1 for l in l_used)
+        amp = np.abs(s_first).max(axis=1) if s_first.size else np.zeros(0)
+        shells = []                                                             # (group positions, use the series)
+        live = np.flatnonzero(amp > 0)
+        if host and live.size:
+            shape = s_first[live] / amp[live][:, None]
+            sh_group, sh_first = _group_waveforms(shape, rtol=SHELL_RTOL)
+            for h in range(len(sh_first)):
+                shells.append(live[sh_group == h])
+        rest = np.setdiff1d(np.arange(len(grp)), np.concatenate(shells) if shells else np.zeros(0, np.int64))
+        series, single = [], [rest]
+        for members in shells:
+            g_ref = members[np.argmax(amp[members])]
+            rho = kappa[:, grp[g_ref]]
+            rho_max = float(rho.max())
+            K = 0
+            c = {l: [1.0 / float(np.prod(np.arange(2 * l + 1, 0, -2, dtype=np.float64)))] for l in l_used}
+            while max(abs(c[l][K]) * rho_max ** (l + 2 * K) for l in l_used) > SHELL_SERIES_TOL:
+                for l in l_used:
+                    c[l].append(-c[l][K] / (2.0 * (K + 1) * (2 * l + 2 * K + 3)))
+                K += 1
+            dev = np.zeros(len(members))
+            if rho_max <= SHELL_SERIES_MAX_PHASE and len(members) > K + 1:
+                t = amp[members] / amp[g_ref]
+                for lo in range(0, len(members), 64):                         # each row's departure from the shell's shape
+                    gg = grp[members[lo:lo + 64]]
+                    dm = kappa[:, gg, None] * m_hat[:, gg, :] - (t[lo:lo + 64][None, :, None] * rho[:, None, None]) \
+                        * m_hat[:, grp[g_ref], None, :]
+                    dev[lo:lo + 64] = np.abs(w) @ np.linalg.norm(dm, axis=2)
+            if rho_max <= SHELL_SERIES_MAX_PHASE and len(members) > K + 1 and float(dev.max()) <= limit:
+                series.append((members, g_ref, rho, K, c, dev))
+            else:
+                single.append(members)
+        row_n = np.concatenate([np.abs(np.arange(-l, l + 1)) for l in l_used])
+        for members, g_ref, rho, K, c, dev in series:
+            Y = so3.real_sh(L, m_hat[:, grp[g_ref], :], full=True)             # (n_w, (L+1)^2): the shell's moment directions
+            M = np.empty((K + 1, R, F_re.shape[1]), np.complex128)
+            for k in range(K + 1):
+                X = np.empty((n_w, R))
+                for l in l_used:
+                    X[:, l_off[l]:l_off[l] + 2 * l + 1] = (w * c[l][k] * rho ** (l + 2 * k))[:, None] * Y[:, so3.sh_block(l, True)]
+                M[k] = paired_products(X, row_n, F_re, F_im, col_n, keep_n) if paired else (X.T @ F_re) + 1j * (X.T @ F_im)
+            t = amp[members] / amp[g_ref]                                      # (n_m,): each row's amplitude in the shell's
+            l_row = np.concatenate([np.full(2 * l + 1, l) for l in l_used])
+            chunk = max(1, int(2.5e8 / (16 * R * F_re.shape[1])))
+            for lo in range(0, len(members), chunk):
+                mm = members[lo:lo + chunk]
+                powers = t[lo:lo + chunk][:, None, None] ** (l_row[None, None, :] + 2 * np.arange(K + 1)[None, :, None])
+                yield grp[mm], np.einsum("gkr,krj->grj", powers, M), dev[lo:lo + chunk]
+        for members in single:
+            for lo in range(0, len(members), step):
+                idx = grp[members[lo:lo + step]]; nc = len(idx)
+                if not nc:
+                    continue
+                if paired:
+                    B_c = paired_bodies(kappa[:, idx], m_hat[:, idx, :], w, F_re, F_im, L, l_used, col_n, keep_n)
+                else:
+                    B_c = field_bodies(kappa[:, idx], m_hat[:, idx, :], w, F_re, F_im, L, l_used, n_bessel=n_bessel)
+                B3 = np.empty((nc, R, F_re.shape[1]), np.complex128)
+                row = 0
+                for l in l_used:
+                    B3[:, l_off[l]:l_off[l] + 2 * l + 1] = B_c[row:row + nc * (2 * l + 1)].reshape(nc, 2 * l + 1, -1)
+                    row += nc * (2 * l + 1)
+                yield idx, B3, np.zeros(nc)
 
     def _residual_bounds(self, per, P0, dt, n_w, ew, norm):
         """Into each acquisition's ``bound``: for every measurement whose waveform has a component off its principal
@@ -2870,6 +2976,19 @@ def compile_scheme(G, dt, K, gyromagnetic_ratio=GAMMA, *, n_t=None, method=None,
     elif n_t is None:
         raise ValueError("a waveform on its own grid needs the pack's n_t")
     return _compile_effective(effective_gradient(G, dt, int(n_t), dt_pack), dt_pack, K, int(n_t), gyromagnetic_ratio)
+
+
+SHELL_RTOL = 1e-3
+"""Rows are one shape when their waveforms over their amplitudes agree to this fraction of the largest
+(:meth:`ReplayPack._background_bodies`); how far each departs is then bounded and added to its misfit."""
+
+SHELL_SERIES_TOL = 1e-14
+"""Where a shell's amplitude series (:meth:`ReplayPack._background_bodies`) is cut: the largest next term
+``|c_lk| rho^{l+2k}`` at the shell's largest phase, far below the closed form's own band tolerance."""
+
+SHELL_SERIES_MAX_PHASE = 10.0
+"""The largest phase (radians) a shell's amplitude series is summed at: its terms grow to about ``e^rho / 2 rho``
+before they cancel, about a thousand at 10, so the sum keeps some thirteen of float64's sixteen digits."""
 
 
 def _background_of(waveform):

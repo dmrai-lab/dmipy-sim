@@ -304,6 +304,40 @@ def host_bodies(kappa, m_hat, w, L, l_used, keep_n=None, J=None):
     return out
 
 
+def paired_products(X, row_n, F_re, F_im, col_n, keep_n):
+    """``X^T F`` restricted to the products a retained azimuthal band couples, ``(rows, n_f)`` complex: entry
+    ``(r, j)`` formed only where ``|row_n[r] - col_n[j]| <= keep_n`` and zero elsewhere. Two real harmonics of
+    azimuthal orders ``|n|`` and ``|N|`` multiply into orders ``|n| + |N|`` and ``||n| - |N||`` only, so a coupling
+    into ``|N_c| <= keep_n`` reads no other pair: an ODF composition (``keep_n = 0``) needs the diagonal
+    ``|N| = |n|`` alone. ``X`` is ``(n_w, rows)`` real with ``row_n`` each row's ``|n|``; ``col_n`` is each factor
+    column's ``|N|`` in ascending order (the caller sorts the factor's columns once), so every product reads
+    contiguous columns: one product per ``|n|``, against the factor columns it meets."""
+    col_n = np.asarray(col_n); row_n = np.asarray(row_n)
+    if np.any(np.diff(col_n) < 0):
+        raise ValueError("paired_products reads the factor's columns sorted by |N|")
+    order = np.argsort(row_n, kind="stable")
+    Xs = np.ascontiguousarray(X[:, order]); row_s = row_n[order]
+    out = np.zeros((X.shape[1], F_re.shape[1]), np.complex128)
+    for a in np.unique(row_s):
+        r0, r1 = np.searchsorted(row_s, [a, a + 1])
+        c0, c1 = np.searchsorted(col_n, [a - keep_n, a + keep_n + 1])
+        if c1 > c0:
+            Xa = Xs[:, r0:r1]
+            out[r0:r1, c0:c1] = (Xa.T @ F_re[:, c0:c1]) + 1j * (Xa.T @ F_im[:, c0:c1])
+    back = np.empty_like(order); back[order] = np.arange(order.size)
+    return out[back]
+
+
+def paired_bodies(kappa, m_hat, w, F_re, F_im, L, l_used, col_n, keep_n):
+    """:func:`field_bodies`' host route restricted to the products a retained azimuthal band couples
+    (:func:`paired_products`): the same ``(rows, n_f)`` layout, zero where the band couples nothing."""
+    bodies = host_bodies(kappa, m_hat, w, L, l_used)
+    n_w, nc = np.asarray(kappa).shape
+    X = np.concatenate([bodies[l].reshape(n_w, -1) for l in l_used], axis=1)          # (n_w, rows), field_bodies' order
+    row_n = np.concatenate([np.tile(np.abs(np.arange(-l, l + 1)), nc) for l in l_used])
+    return paired_products(X, row_n, F_re, F_im, col_n, keep_n)
+
+
 def field_bodies(kappa, m_hat, w, F_re, F_im, L, l_used, *, n_bessel, device="auto", chunk_bytes=1 << 30):
     """``B[(l, g, n), (l', m')] = sum_w w_w j_l(kappa_wg) Y_ln(m^_wg) F_w,l'm'`` for the groups of one chunk, ``(rows, n_f)``
     complex128, ``rows = nc * sum(2l+1 for l in l_used)``: the closed form's bodies against the field factor. On the
