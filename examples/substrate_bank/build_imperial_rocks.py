@@ -3,7 +3,7 @@
 Two segmented micro-CT images of the Imperial College 2007 collection (Dong & Blunt 2009; Figshare, CC BY 4.0)
 walked as a ``geometry.LabelVolume`` on Talabi's own crop and diffusivity, published to
 ``SubstrateCommons/imperial-rocks``. **Nothing about relaxation is in the walk**: the geometry is walked with no
-surface relaxivity and no bulk T2, the pack stores the boundary local time (C2) as a channel, and ``rho`` and
+surface relaxivity and no bulk T2, the pack stores the boundary local time (C2) as a channel, and ``rho_2`` and
 ``T2B`` are replay knobs -- which is what makes Talabi's own open question (whether Berea's relaxivity is the
 15 um/s of his §8.3 text or the 16 um/s of his Table 8-2) a sweep over one pack rather than a second walk.
 
@@ -61,14 +61,14 @@ SOLVER = "non-negative least squares with a second-difference penalty, lam = 0.1
 
 #: Per rock: the Figshare record, its licence as the host states it, and Talabi's tabulated numbers.
 ROCKS = {
-    "LV60A": dict(doi="10.6084/m9.figshare.1153795.v2", version="v2", rho=41e-6,
+    "LV60A": dict(doi="10.6084/m9.figshare.1153795.v2", version="v2", rho_2=41e-6,
                   rho_note="fitted by him to the LV60Y CPMG (thesis §7.6.2)",
                   micro_ct_ms=512.0, measured_ms=496.0, porosity=0.377, s_over_v=57670,
                   direct_ms=487.6, direct_n=200_000, direct_dt=500e-6, sub_steps=1, illegal=37,
                   counters="imperial-rocks/family2.log:4 -- 'walked N=45,000 in 312 s; sub_steps 1; refused 37'",
                   verbatim="LV60A             496        512       565      "
                            "        32.2      35.3     27.2       4.8        4.9        3.8"),
-    "F42A": dict(doi="10.6084/m9.figshare.1189259.v1", version="v1", rho=41e-6,
+    "F42A": dict(doi="10.6084/m9.figshare.1189259.v1", version="v1", rho_2=41e-6,
                  rho_note="fitted by him to the F42Y CPMG (thesis §7.6.2)",
                  micro_ct_ms=677.0, measured_ms=668.0, porosity=0.330, s_over_v=43770,
                  direct_ms=679.0, direct_n=200_000, direct_dt=500e-6, sub_steps=1, illegal=40,
@@ -85,7 +85,7 @@ ROCKS = {
 #: dephased signal whose Monte-Carlo value is noise.
 ENVELOPE = dict(bvals=[0.0, 0.5e9, 1e9], dirs=[[0, 0, 1], [1, 0, 0], [1, 0, 1]],
                 delta_frac=40e-3 / T, Delta_frac=80e-3 / T, ogse_periods=[1, 2, 3],
-                shortd_b=1e9, shortd_deltas_frac=[60e-3 / T, 40e-3 / T], rho_list=[15e-6, 41e-6])
+                shortd_b=1e9, shortd_deltas_frac=[60e-3 / T, 40e-3 / T], rho_2_list=[15e-6, 41e-6])
 
 
 #: The distinct deltas the envelope declares, as a set: `delta_frac` and the `shortd_deltas_frac` list name
@@ -143,11 +143,11 @@ def spec_of(rock, data_dir):
     path = os.path.join(data_dir, f"{rock}.nhdr")
     shape = read_label_volume(path).labels.shape
     return label_volume_spec(
-        path, pools={0: "free", 1: "grain"}, crop=central_crop(shape), rho=ref["rho"], D=D0,
+        path, pools={0: "free", 1: "grain"}, crop=central_crop(shape), rho_2=ref["rho_2"], D=D0,
         T2_pools={"free": T2B, "grain": T2B}, cite_image_as=f"{rock}.nhdr", id=f"imperial2007/{rock.lower()}",
         source="Imperial College 2007 micro-CT collection (Dong & Blunt 2009), CC BY 4.0",
         description=(f"{rock}: the central {CROP}^3 crop of the released micro-CT image; the pore fluid walks "
-                     f"between the voxel faces of the grain. Relaxation is not in the walk -- rho and T2 are "
+                     f"between the voxel faces of the grain. Relaxation is not in the walk -- rho_2 and T2 are "
                      f"replay knobs, and the nominal values are Talabi 2008's ({ref['rho_note']})."))
 
 
@@ -165,8 +165,8 @@ def t2_grid(grid):
     return np.logspace(np.log10(grid["from_s"]), np.log10(grid["to_s"]), int(grid["n"]))
 
 
-def decay_and_projection(pack, rho, grid, *, chunk=4000):
-    """``(t, S, projection)``: the decay ``S(t) = <exp((rho/D) L(t) - t/T2B)>`` on the recorded sampling, and
+def decay_and_projection(pack, rho_2, grid, *, chunk=4000):
+    """``(t, S, projection)``: the decay ``S(t) = <exp((rho_2/D) L(t) - t/T2B)>`` on the recorded sampling, and
     each walker's own decay projected on the log-mean's gradient -- what the delta method needs.
 
     ``pack.contact()`` is the pack's stored C2 channel as a per-save series; the walkers are read in chunks so
@@ -182,7 +182,7 @@ def decay_and_projection(pack, rho, grid, *, chunk=4000):
 
     def per_walker(lo):
         L = np.cumsum(np.asarray(ell[lo:lo + chunk], np.float64), axis=1)[:, every::every]
-        return np.exp(float(rho) / D0 * L - t / T2B)
+        return np.exp(float(rho_2) / D0 * L - t / T2B)
 
     acc = np.zeros(len(t))
     for lo in range(0, n_w, chunk):
@@ -199,14 +199,14 @@ def decay_and_projection(pack, rho, grid, *, chunk=4000):
 def reproduce(pack, quantity, grid):
     """The T2 log-mean this pack serves, ON the grid the reference record states, with its analytic standard
     error by the delta method over walkers (no folds, no seed, no coverage factor)."""
-    rho = float(pack.nominal.rho)
-    _t, _S, lm, se = decay_and_projection(pack, rho, grid)
+    rho_2 = float(pack.nominal.rho_2)
+    _t, _S, lm, se = decay_and_projection(pack, rho_2, grid)
     return dict(value=lm * 1e3, se=se, se_kind="delta_method", solver=grid["solver"],
                 se_derivation=("the delta method over walkers: the log-mean's gradient with respect to the "
                                "decay it is inverted from (examples.validation.talabi_micro_ct_rocks."
                                "log_mean_gradient, the active set's linear map), projected on each walker's "
                                "own decay; sd over walkers / sqrt(N) / T2lm"),
-                rho_m_per_s=rho, n_points=int(len(_t)))
+                rho_m_per_s=rho_2, n_points=int(len(_t)))
 
 
 def served_vs_channel(pack, *, n_points=8):
@@ -217,7 +217,7 @@ def served_vs_channel(pack, *, n_points=8):
     contact channel. This is the check that they are one quantity.
     """
     from dmipy_sim.engine.pulse_sequence import bare_spin_echo
-    rho = float(pack.nominal.rho)
+    rho_2 = float(pack.nominal.rho_2)
     ell = pack.contact()
     n_w = ell.shape[0]
     step = max(1, pack.n_t // (n_points + 1))
@@ -226,7 +226,7 @@ def served_vs_channel(pack, *, n_points=8):
     acc = np.zeros(len(ks))                                   # the channel's decay at those saves, chunked
     for lo in range(0, n_w, 4000):
         L = np.cumsum(np.asarray(ell[lo:lo + 4000], np.float64), axis=1)[:, ks]
-        acc += np.exp(rho / D0 * L - t / T2B).sum(axis=0)
+        acc += np.exp(rho_2 / D0 * L - t / T2B).sum(axis=0)
     S_ch = acc / n_w
     served = [float(np.asarray(pack.replay(bare_spin_echo(float(te), dt=pack.dt),
                                            tissue=pack.nominal)).ravel()[0]) for te in t]
@@ -244,7 +244,7 @@ pk = ReplayPack.load("{uri}")
 ell = pk.contact()                                        # the stored wall-contact channel, per save
 L = np.cumsum(np.asarray(ell, np.float64), axis=1)        # the boundary local time
 t = np.arange(pk.n_t) * pk.dt
-S = np.exp(pk.nominal.rho / {D0!r} * L - t / {T2B!r}).mean(axis=0)   # pk.nominal IS Talabi's rho and T2B
+S = np.exp(pk.nominal.rho_2 / {D0!r} * L - t / {T2B!r}).mean(axis=0)   # pk.nominal IS Talabi's rho_2 and T2B
 every = round({INVERT_MS!r}e-3 / pk.dt)                             # the 1 ms sampling the record states
 g = np.logspace(-3, 1, 60)
 print("T2 log-mean %.1f ms" % (1e3 * log_mean_T2(g, t2_distribution(t[every::every], S[every::every], g))))
@@ -283,7 +283,7 @@ def family(data_dir, work_dir, *, rocks, dry, create_dataset):
             se_derivation=(
                 "the delta method over walkers on the log-mean (talabi_micro_ct_rocks.log_mean_gradient), "
                 f"MEASURED here at record time on this family's own {rock.lower()}.rpk -- "
-                f"{_se[rock]['se_pack']:.6f} over {_se[rock]['n_pack']:,} walkers at the same rho, channel and "
+                f"{_se[rock]['se_pack']:.6f} over {_se[rock]['n_pack']:,} walkers at the same rho_2, channel and "
                 f"grid -- and scaled to the direct walk's {_se[rock]['n_direct']:,} by 1/sqrt(N) "
                 f"(x {_se[rock]['scale']:.6f}). The direct walk's own per-walker decays were not retained; the "
                 "relative per-echo spread is a property of the substrate and the estimator, not of the pack."),
@@ -300,7 +300,7 @@ def family(data_dir, work_dir, *, rocks, dry, create_dataset):
         sample_relation="the same object",
         quantities=quantities,
         parameters=(
-            FreeParameter(name="rho", value=41e-6, unit="m/s", whose="theirs",
+            FreeParameter(name="rho_2", value=41e-6, unit="m/s", whose="theirs",
                           where="thesis §7.6.2", how="fitted by him to his own LV60Y / F42Y CPMG; an effective "
                                                      "value tied to his ~10 um voxel, because a segmentation's "
                                                      "surface is the Manhattan area at that resolution, which is "
@@ -321,10 +321,10 @@ def family(data_dir, work_dir, *, rocks, dry, create_dataset):
                               "on 100 points from 0.1 ms; ours is non-negative with a second-difference "
                               "penalty on 60 points from 1 ms, so the log-mean is comparable to his Table 7-2 "
                               "rather than computed the same way"),
-            FreeParameter(name="surface rule", value="exp(-2 (rho/D) d_perp) per reflection", unit="-",
+            FreeParameter(name="surface rule", value="exp(-2 (rho_2/D) d_perp) per reflection", unit="-",
                           whose="ours", where="thesis §3.5 for his",
                           how="he kills a walker at an attempted move into a grain voxel with probability "
-                              "2 rho s / (3 D); this walk weights it per specular reflection. The two agree in "
+                              "2 rho_2 s / (3 D); this walk weights it per specular reflection. The two agree in "
                               "the continuum limit")),
         description=("Micro-CT sand packs and a sandstone walked on their own voxels through the label-volume "
                      "producer: the surface-relaxation reference outside the brain, replayed as a CPMG decay. "
@@ -393,7 +393,7 @@ def direct_se(rock, work_dir, grid):
     """The DIRECT walk's relative delta-method standard error on the log-mean, MEASURED rather than typed.
 
     It was a hand-written pair of numbers feeding the gate's own tolerance. It is now measured here, at record
-    time, on this family's own pack -- the same substrate, the same rho, the same channel and the same grid --
+    time, on this family's own pack -- the same substrate, the same rho_2, the same channel and the same grid --
     and scaled to the direct walk's walker count by 1/sqrt(N), because the direct walk's per-walker decays were
     not retained. The relative per-echo spread is a property of the substrate and the estimator, not of the
     pack, which is what makes the substitution legitimate; the record states it and the numbers it rests on.
@@ -412,7 +412,7 @@ def direct_se(rock, work_dir, grid):
     if cache.get(rock, {}).get("key") == key:
         return cache[rock]["value"]
     pack = ReplayPack.load(path)
-    _t, _S, _lm, se_pack = decay_and_projection(pack, float(ref["rho"]), grid)
+    _t, _S, _lm, se_pack = decay_and_projection(pack, float(ref["rho_2"]), grid)
     n_pack = int(pack.n_walkers)
     scale = (n_pack / float(ref["direct_n"])) ** 0.5
     value = dict(se=se_pack * scale, se_pack=se_pack, n_pack=n_pack, n_direct=int(ref["direct_n"]), scale=scale,

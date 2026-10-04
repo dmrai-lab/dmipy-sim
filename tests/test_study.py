@@ -78,7 +78,7 @@ def test_the_primitives_give_every_pairs_signals_as_the_replay_does(pack):
     seq = _seqmod.pgse([[1, 0, 0], [0, 1, 1]], 1e-3, 3e-3, bvalues=[1e9, 5e8], TE=6e-3, n_t=4 * pack.n_t + 1, slew_rate=np.inf)
     prim = pack.walker_primitives(seq)
     assert prim.phi.shape == (pack.n_walkers, 2) and prim.exposure_t2.shape[0] == pack.n_walkers and prim.contact.shape == (pack.n_walkers,)
-    for t in (None, Tissue(T2=T2A), Tissue(T1=T1A), Tissue(rho=1e-5, D=D0), Tissue(T2=T2A, T1=T1A, rho=1e-5, D=D0)):
+    for t in (None, Tissue(T2=T2A), Tissue(T1=T1A), Tissue(rho_2=1e-5, D=D0), Tissue(T2=T2A, T1=T1A, rho_2=1e-5, D=D0)):
         w, ew, E = prim.signals(t, None); w2, ew2, E2 = pack.walker_signals(seq, tissue=t)
         np.testing.assert_array_equal(w, w2); np.testing.assert_allclose(ew, ew2, rtol=1e-12, atol=1e-300); np.testing.assert_allclose(E, E2, rtol=0, atol=1e-12)
 
@@ -104,7 +104,7 @@ def test_a_study_is_the_per_pair_replay(pack):
     per-pair replays side by side, and its record carries the resolved values."""
     seq1 = _seqmod.pgse([[1, 0, 0], [0, 1, 1]], 1e-3, 3e-3, bvalues=[1e9, 5e8], TE=6e-3, n_t=4 * pack.n_t + 1, slew_rate=np.inf)
     seq2 = _seqmod.pgse([[0, 0, 1]], 1e-3, 2e-3, bvalues=[2e9], TE=5e-3, n_t=4 * pack.n_t + 1, slew_rate=np.inf)
-    catalogue = lambda scanner: Tissue(T2=T2A if scanner is None else T2B, rho=1e-5, D=D0)   # a tissue resolved on the scanner
+    catalogue = lambda scanner: Tissue(T2=T2A if scanner is None else T2B, rho_2=1e-5, D=D0)   # a tissue resolved on the scanner
     study = Study(Protocol([seq1, Acquisition(seq2, name="axial")]), tissues=[None, catalogue], scanners=[None, 0.0], pairs=[(0, 0), (1, 0), (1, 1)], name="t")
     assert len(study) == 3 and study.protocol.n_meas == 3 and study.needs_contact and study.needs_relaxation and not study.needs_field
     S = pack.study(study)
@@ -152,7 +152,7 @@ def test_the_columnar_image_of_a_study_is_one_pass_with_a_floor_per_volume(tmp_p
     seq3 = d.pgste([[1, 0, 0]], 0.2e-3, 0.4e-3, bvalues=[5e8], n_t=merged.n_t, slew_rate=np.inf, ste_flip_angles=(90.0, 90.0, 90.0))
     from dmipy_sim.acquisition.epg import pathway_weight
     assert pathway_weight(seq3) == pytest.approx(0.5, abs=1e-12) and pathway_weight(seq1) == 1.0
-    t = Tissue(T2={"intra": 0.03, "extra": 0.08, "myelin": 0.01}, rho=1e-5)
+    t = Tissue(T2={"intra": 0.03, "extra": 0.08, "myelin": 0.01}, rho_2=1e-5)
     study = Study(Protocol([seq1, seq2, seq3]), tissues=[None, t], scanners=[None])
     S, floor, plan = col.image(study, tol=1e-9, chunk_rows=5)
     assert S.shape == (2,) + tuple(grid.shape) + (4,) and floor.shape == (2,) + tuple(grid.shape) and plan["settings"] == 2

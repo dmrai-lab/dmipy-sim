@@ -33,7 +33,11 @@ log = logging.getLogger(__name__)
 __all__ = ["ReplayPhantom", "read_rph", "write_rph", "Grid", "SUBSTRATE_KINDS", "SCALAR_REGISTRY", "RPH_SCHEMA_VERSION"]
 
 SUBSTRATE_KINDS = ("pack", "analytic", "inert")
-RPH_SCHEMA_VERSION = "0.4.0"
+RPH_SCHEMA_VERSION = "0.4.1"
+#: 0.4.1 (dmipy-sim#581) renames a tissue entry's transverse surface relaxivity key from ``rho`` to ``rho_2``,
+#: beside the longitudinal ``rho_1`` of 0.4.0 (dmipy-sim#574); :meth:`~dmipy_sim.spec.Tissue.from_meta` reads
+#: the retired key from a file written at 0.4.0, so nothing already published needs a re-save. (0.5.0 is
+#: reserved by the partition ``addressing`` draft, :meth:`~dmipy_sim.phantom.partition.Partition.write`.)
 
 #: The macroscopic layers a phantom may declare per voxel (RPH.md 5.1). A name outside this registry is
 #: refused rather than ignored: a layer silently dropped is a phantom that replays wrong while looking right.

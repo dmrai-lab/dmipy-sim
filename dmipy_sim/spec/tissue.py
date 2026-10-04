@@ -12,7 +12,7 @@ import numpy as np
 
 
 PER_POOL = ("T2", "T1")
-KNOBS = ("T2", "T1", "rho", "rho_1", "D", "kappa", "chi_iso", "chi_aniso")
+KNOBS = ("T2", "T1", "rho_2", "rho_1", "D", "kappa", "chi_iso", "chi_aniso")
 
 
 def _check_time(what, v):
@@ -53,12 +53,12 @@ class Tissue:
     * ``T2`` / ``T1`` (s): on a pack, a ``{pool name: seconds}`` mapping over EVERY pool of the pack's embedded
       spec (the replay refuses a missing pool, an unknown name, a scalar or a list); ``float("inf")`` is no decay
       in that pool, and ``0`` is refused. On a closed form (one unnamed pool) one number.
-    * ``rho`` (m/s): the walls' TRANSVERSE surface relaxivity (C2), gated by the acquisition's coherence
+    * ``rho_2`` (m/s): the walls' TRANSVERSE surface relaxivity (C2), gated by the acquisition's coherence
       (``chi_perp``: on while the magnetisation is transverse) and scaled by ``D``.
     * ``rho_1`` (m/s): the walls' LONGITUDINAL surface relaxivity (C2), gated by the complement
       (``chi_parallel = active - chi_perp``: on while the magnetisation is stored along B0, e.g. a stimulated
-      echo's mixing time) and scaled by ``D``. The replay equation's contact channel is then ``rho * chi_perp +
-      rho_1 * chi_parallel`` against the same boundary local time ``rho`` already reads -- no new walk, exactly
+      echo's mixing time) and scaled by ``D``. The replay equation's contact channel is then ``rho_2 * chi_perp +
+      rho_1 * chi_parallel`` against the same boundary local time ``rho_2`` already reads -- no new walk, exactly
       as ``T1`` is a second gate beside ``T2`` on the occupancy (C1).
     * ``D`` (m^2/s): the bulk diffusivity -- the walk's recorded value unless given, for a pack; a closed form's
       diffusion coefficient. Given on a pack, the pack is READ at that diffusivity
@@ -72,7 +72,7 @@ class Tissue:
     """
     T2: Optional[object] = None
     T1: Optional[object] = None
-    rho: Optional[float] = None
+    rho_2: Optional[float] = None
     rho_1: Optional[float] = None
     D: Optional[float] = None
     kappa: Optional[float] = None
@@ -88,7 +88,7 @@ class Tissue:
         """The spec's nominal values: pool T2 / T1 by pool name (the pools that declare one; ``None`` when none
         does, so a spec that declares a T2 in some pools gives a mapping the replay refuses by naming the rest),
         the walls' common TRANSVERSE relaxivity, the field-source pool's susceptibility. Walls with different
-        relaxivities leave ``rho`` None: give it. The spec carries no longitudinal (``rho_1``) nominal -- a
+        relaxivities leave ``rho_2`` None: give it. The spec carries no longitudinal (``rho_1``) nominal -- a
         wall states one relaxivity, baked into the forward walk's transverse channel (#574) -- so ``rho_1`` is
         always ``None`` here; give it explicitly as an override. Any keyword overrides."""
         pools = sorted(spec.pools, key=lambda p: p.id)
@@ -97,7 +97,7 @@ class Tissue:
         rhos = {r for w in spec.walls for r in (w.surface_relaxivity.inside, w.surface_relaxivity.outside) if r > 0}
         rhos |= ({spec.domain.surface_relaxivity} if spec.domain.surface_relaxivity else set())
         src = spec.field_source_pools
-        kw = dict(T2=T2, T1=T1, rho=(rhos.pop() if len(rhos) == 1 else None),
+        kw = dict(T2=T2, T1=T1, rho_2=(rhos.pop() if len(rhos) == 1 else None),
                   chi_iso=(src[0].susceptibility.chi_iso if src else None),
                   chi_aniso=((src[0].susceptibility.chi_aniso or 0.0) if src else 0.0))
         kw.update(overrides)
@@ -145,11 +145,17 @@ class Tissue:
         """A tissue back from :meth:`to_meta`; ``None`` for an empty or absent entry. With the pack's ``spec`` the
         per-pool values MUST be the file form, a list by pool id of the spec's length (``null`` for no decay),
         and come back as the mapping by name; a dict, a scalar or a list of another length is refused. Without
-        a spec a list is refused (it needs the pack to be read) and a mapping or a number is taken as given."""
+        a spec a list is refused (it needs the pack to be read) and a mapping or a number is taken as given.
+
+        A ``.rph`` written at RPH schema 0.4.0 (dmipy-sim#574) states the transverse relaxivity under the
+        retired key ``rho``; read here as ``rho_2`` (RPH 0.4.1, dmipy-sim#581) -- a one-time migration, nothing
+        is rewritten unless the file is re-saved. An entry never carries both keys."""
         m = dict(meta or {})
+        if "rho" in m and "rho_2" not in m:
+            m["rho_2"] = m.pop("rho")
         unknown = set(m) - set(KNOBS)
         if unknown:
-            raise ValueError(f"a tissue entry declares {sorted(unknown)}; it takes T2, T1, rho, D, kappa, chi_iso, chi_aniso")
+            raise ValueError(f"a tissue entry declares {sorted(unknown)}; it takes T2, T1, rho_2, D, kappa, chi_iso, chi_aniso")
         for k in PER_POOL:
             v = m.get(k)
             if v is None:

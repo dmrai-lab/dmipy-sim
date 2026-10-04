@@ -19,7 +19,7 @@ from tests.replay_frames import field_along
 D0 = 2e-9
 L = 10e-6
 ENV = dict(bvals=[0.0, 1e9], dirs=[[1, 0, 0]], ogse_periods=[2], shortd_b=1e9, shortd_deltas_frac=[0.05],
-           B0_list=[3.0], theta_deg=[90], delta_frac=0.2, Delta_frac=0.5, rho_list=[1e-5])
+           B0_list=[3.0], theta_deg=[90], delta_frac=0.2, Delta_frac=0.5, rho_2_list=[1e-5])
 
 
 def _cell():

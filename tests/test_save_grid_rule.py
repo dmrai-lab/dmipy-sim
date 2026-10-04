@@ -14,7 +14,7 @@ from tests.conftest import spec_without_source
 
 D0 = 2e-9
 ENV = dict(bvals=[0.0, 1e9], dirs=[[0, 0, 1]], ogse_periods=[2], shortd_b=1e9, shortd_deltas_frac=[0.05], B0_list=[],
-           theta_deg=[0], delta_frac=0.2, Delta_frac=0.5, rho_list=[1e-5])
+           theta_deg=[0], delta_frac=0.2, Delta_frac=0.5, rho_2_list=[1e-5])
 
 
 def _acq(G, dt):

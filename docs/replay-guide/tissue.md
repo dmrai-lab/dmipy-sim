@@ -5,15 +5,15 @@ substrate and not a pack; the pack is the structure, the tissue is the material 
 
 ```python
 from dmipy_sim.spec.tissue import Tissue
-wm = Tissue(T2={"intra": 0.05, "extra": 0.055}, T1={"intra": 1.2, "extra": 1.0}, rho=1.16e-6, chi_iso=-1e-7, chi_aniso=-1e-7)
+wm = Tissue(T2={"intra": 0.05, "extra": 0.055}, T1={"intra": 1.2, "extra": 1.0}, rho_2=1.16e-6, chi_iso=-1e-7, chi_aniso=-1e-7)
 print(wm)
 ```
 
 | field | unit | what it switches on | needs |
 |---|---|---|---|
 | `T2`, `T1` | s, per pool | the bulk relaxation tier: a weight per walker from its transverse and longitudinal exposure in each pool | the occupancy channel (C1) |
-| `rho` | m/s | the surface tier: a weight from the walker's gated wall contact, at the rate `rho / D` | the contact channel (C2) |
-| `D` | m²/s | the diffusivity `rho` is scaled by; the walk's own when None | — |
+| `rho_2` | m/s | the surface tier: a weight from the walker's gated wall contact, at the rate `rho_2 / D` | the contact channel (C2) |
+| `D` | m²/s | the diffusivity `rho_2` is scaled by; the walk's own when None | — |
 | `chi_iso`, `chi_aniso` | dimensionless | the field tier: a phase from the field source's susceptibility, at the scanner's field | the path channel (C3) and a [scanner](scanner.md) |
 
 Every field is optional and `None` switches its tier off. Per-pool values are one `{pool name: seconds}` mapping
@@ -44,9 +44,9 @@ print(np.isclose(S_mine[0], np.exp(-0.006 / 0.05)))          # a b = 0 at TE wit
 mapping merges pool by pool, so one pool changes and the others stay:
 
 ```python
-mine = Tissue(T2={"extra": 0.05, "intra": 0.05}, rho=1e-6)
+mine = Tissue(T2={"extra": 0.05, "intra": 0.05}, rho_2=1e-6)
 warmer = mine.replace(T2={"intra": 0.08})
-print(warmer.T2, warmer.rho == mine.rho)                       # {'extra': 0.05, 'intra': 0.08} True
+print(warmer.T2, warmer.rho_2 == mine.rho_2)                       # {'extra': 0.05, 'intra': 0.08} True
 print(pack.substrate.pools[0].name, pack.nominal.T2)          # a bare cylinder's spec declares no T2: nothing to merge onto
 ```
 
@@ -61,7 +61,7 @@ from dmipy_sim.substrate.biophysical_constants import canonical_white_matter
 def white_matter(scanner):
     B = 3.0 if scanner is None else float(scanner)
     c = canonical_white_matter(field_T=B)
-    return Tissue(T2={"intra": c["T2_intra"], "extra": c["T2_extra"]}, rho=c["rho2"], chi_iso=c["chi_iso_myelin"], chi_aniso=c["delta_chi_a"])
+    return Tissue(T2={"intra": c["T2_intra"], "extra": c["T2_extra"]}, rho_2=c["rho2"], chi_iso=c["chi_iso_myelin"], chi_aniso=c["delta_chi_a"])
 print(white_matter(3.0).T2, white_matter(7.0).T2)
 ```
 

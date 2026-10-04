@@ -54,9 +54,9 @@ def test_a_partial_mapping_is_refused_naming_the_missing_pool(pack):
 
 
 def test_replace_merges_pool_by_pool():
-    t = Tissue(T2={"extra": 0.05, "intra": 0.03}, T1={"extra": 1.0, "intra": 1.2}, rho=1e-6)
+    t = Tissue(T2={"extra": 0.05, "intra": 0.03}, T1={"extra": 1.0, "intra": 1.2}, rho_2=1e-6)
     u = t.replace(T2={"intra": 0.08})
-    assert u.T2 == {"extra": 0.05, "intra": 0.08} and u.T1 == t.T1 and u.rho == t.rho
+    assert u.T2 == {"extra": 0.05, "intra": 0.08} and u.T1 == t.T1 and u.rho_2 == t.rho_2
     assert Tissue().replace(T2={"intra": 0.08}).T2 == {"intra": 0.08}          # nothing to merge onto: as given
     assert t.replace(T2=None).T2 is None                                        # the tier switched off
 
@@ -93,9 +93,9 @@ def test_per_pool_values_on_a_specless_pack_are_refused(specless):
 
 
 def test_the_file_form_is_a_list_by_pool_id_strict_both_ways(pack):
-    sub = PackSubstrate(pack, m0=0.7, name="wm", tissue=Tissue(T2={"intra": 0.03, "extra": INF}, T1={"extra": 1.0, "intra": 1.2}, rho=1e-6))
+    sub = PackSubstrate(pack, m0=0.7, name="wm", tissue=Tissue(T2={"intra": 0.03, "extra": INF}, T1={"extra": 1.0, "intra": 1.2}, rho_2=1e-6))
     entry = sub.to_meta()["tissue"]
-    assert entry == {"T2": [None, 0.03], "T1": [1.0, 1.2], "rho": 1e-6}         # by id, null for no decay, whatever the dict's order
+    assert entry == {"T2": [None, 0.03], "T1": [1.0, 1.2], "rho_2": 1e-6}         # by id, null for no decay, whatever the dict's order
     back = PackSubstrate.from_meta({**sub.to_meta(), "kind": "pack"}, pack=pack)
     assert back.tissue.T2 == {"extra": INF, "intra": 0.03} and back.tissue.T1 == {"extra": 1.0, "intra": 1.2}
     spec = pack.substrate

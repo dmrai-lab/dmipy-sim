@@ -66,7 +66,7 @@ class PackSubstrate(_Declared):
     proton density only means anything relative to the other substrates of the same phantom, so there is no
     default, the same way there is no default pack. ``tissue`` is the :class:`~dmipy_sim.spec.Tissue` this
     substrate replays at (RPH.md 3.2: pool T2 / T1 as ``{pool name: seconds}`` over every pool of the pack's
-    spec, the walls' rho, the bulk D, the field source's chi) -- ``pack.nominal`` for the pack's own
+    spec, the walls' rho_2, the bulk D, the field source's chi) -- ``pack.nominal`` for the pack's own
     specification's values -- or ``None``, the bare diffusion signal, which a phantom refuses beside a substrate
     that does relax (:meth:`Phantom.replay`, dmipy-sim#238). The scanner's field is the replay's, not the
     substrate's. In the file the per-pool values are a list by pool id, one entry per pool of the pack's

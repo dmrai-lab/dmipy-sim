@@ -159,7 +159,7 @@ class ColumnarPack:
     def plan(self, seq, *, tissue=None, scanner=None, tol=0.25, voxels=None):
         """What a replay of ``seq`` reads: bands, field modes, tiers, rows and bytes -- before any byte moves."""
         K, eK = self.bands_for(seq, tol); M, eM = self.modes_for(seq, scanner, tissue, tol)
-        contact = tissue is not None and (tissue.rho is not None or tissue.rho_1 is not None)
+        contact = tissue is not None and (tissue.rho_2 is not None or tissue.rho_1 is not None)
         relax = tissue is not None and (tissue.T2 is not None or tissue.T1 is not None)
         ranges = self.rows_of(voxels); rows = sum(e - s for s, e in ranges)
         names = self._names(K, M, contact, relax)
@@ -365,7 +365,7 @@ class ColumnarPack:
                 dev = [jnp.asarray(x) for x in (phi, fi, fa, et2, et1, ct, ct1, w)] + [jnp.asarray(seg2)]
                 for k, (t_, s_) in enumerate(pairs):
                     rt = prim.reduction_terms(t_, s_)                        # every per-pair term, resolved once
-                    terms = (jnp.float64(rt["a_iso"]), jnp.float64(rt["a_aniso"]), jnp.float64(rt["rho_over_D"]),
+                    terms = (jnp.float64(rt["a_iso"]), jnp.float64(rt["a_aniso"]), jnp.float64(rt["rho_2_over_D"]),
                              jnp.float64(rt["rho1_over_D"]), jnp.asarray(rt["invT2"]), jnp.asarray(rt["invT1"]),
                              jnp.float64(rt["amplitude"]), jnp.asarray(rt["voxel"], jnp.float64))
                     sums = np.asarray(pair_sums(*dev, terms, 2 * s_pad))[:2 * n_seg].reshape(n_seg, 2, -1)
