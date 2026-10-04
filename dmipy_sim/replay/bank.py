@@ -629,6 +629,19 @@ def _cpmg_gate(n_t, n_pulses):
     return s
 
 
+def _ste_gate(n_t):
+    """Transverse-phase gate of a stimulated echo filling the window: transverse for its first quarter, stored along
+    z (accruing nothing) for the half between the store and the recall, then transverse with the recall's sign."""
+    t = np.arange(n_t) / max(n_t - 1, 1)
+    return np.where(t < 0.25, 1.0, np.where(t < 0.75, 0.0, -1.0))
+
+
+def _battery_gates(n_t, n_pulses):
+    """The gates the field tier is certified under on an ``n_t``-sample window: a gradient echo, a spin echo, the CPMG
+    train at the tier's depth ``n_pulses``, and a stimulated echo (its mixing time stored)."""
+    return [np.ones(n_t), _cpmg_gate(n_t, 1), _cpmg_gate(n_t, n_pulses), _ste_gate(n_t)]
+
+
 def _susc_path_bloch_fidelity(m, arrays, pm, gm, env, n_sub=8000):
     """Certify the susc_path tier ON THE VECTOR-BLOCH PATH -- the primary consumer.
 
@@ -718,7 +731,7 @@ def derive_susc_path_K(m, field, env, *, K_max, ladder=SUSC_PATH_LADDER, contain
     top of ``ladder`` (the exact series, ``n_t`` bands, closes it), and the rungs are read in ascending band, the
     narrower container first, each as the pack's own certificate reads it -- the coefficients truncated to the
     rung and quantised, contracted for each field strength and direction of the envelope's battery, decoded and
-    gated by GRE, spin echo and the CPMG train the rung serves (:func:`_susc_path_fidelity`) -- against the
+    gated by GRE, spin echo, the CPMG train the rung serves and a stimulated echo (:func:`_battery_gates`) -- against the
     split-half floor of the reference. The first pair within the floor is the band and the container: the
     cheapest in bytes per walker that keeps the tier's accuracy. ``K_max``, the position channel's band, is the
     point past which the tier costs more than the walk it rides on; the ladder continues beyond it when the
@@ -768,7 +781,7 @@ def derive_susc_path_K(m, field, env, *, K_max, ladder=SUSC_PATH_LADDER, contain
             n_p = _depth(k, depth)                                                                 # the depth this rung would serve
             a_k, m_k = _quantise_susc_path(np.asarray(coeffs[:, :, :k], np.float64), dict(meta_top, K=k, max_refocus_pulses=n_p), bits)
             C, _names = susc_path_coeffs(a_k, m_k)                                                 # dequantised, zz re-inserted
-            gates = [np.ones(n_t), _cpmg_gate(n_t, 1), _cpmg_gate(n_t, max(1, n_p))]
+            gates = _battery_gates(n_t, max(1, n_p))
             for B0, th in settings:
                 t = np.deg2rad(float(th)); d = [np.sin(t), 0.0, np.cos(t)]
                 cd = susc_path_field(C, d, B0=B0, chi_iso=chi_i, chi_aniso=ca, has_aniso=has_aniso)   # (n_w, k): linear in the channels
@@ -797,9 +810,10 @@ def _susc_path_fidelity(m, arrays, pm, gm, env):
     """Certify the susc_path_dct tier AT ITS DECLARED CAPABILITY.
 
     Compares the stored (K-truncated, f16) channels against the raw full-resolution field sampled on
-    the true trajectory, under the gates the pack claims to support -- GRE, spin echo, AND the CPMG
-    train at ``max_refocus_pulses``. The CPMG gate is the binding one: truncation error grows with
-    gate bandwidth, so certifying on SE alone would pass a pack that fails the trains it advertises.
+    the true trajectory, under the gates the pack claims to support (:func:`_battery_gates`) -- GRE, spin
+    echo, the CPMG train at ``max_refocus_pulses`` and a stimulated echo. The CPMG gate is the binding one:
+    truncation error grows with gate bandwidth, so certifying on SE alone would pass a pack that fails the trains
+    it advertises.
     """
     field = _field_of(m)
     if field is None or "susc_path_dct" not in arrays:
@@ -821,7 +835,7 @@ def _susc_path_fidelity(m, arrays, pm, gm, env):
     if not gm.get("has_aniso"):
         ca = 0.0
     n_p = int(pm.get("max_refocus_pulses") or 1)
-    gates = [np.ones(n_t), _cpmg_gate(n_t, 1), _cpmg_gate(n_t, n_p)]
+    gates = _battery_gates(n_t, n_p)
     perm = np.random.RandomState(0).permutation(n_w); A, B = perm[:n_w // 2], perm[n_w // 2:]
     err = floor = 0.0
     for B0 in (env.get("B0_list") or [3.0, 7.0]):
@@ -852,15 +866,16 @@ def _gate_battery(f_raw, f_dec, gates, w, A, B, dt):
 def susc_path_series_fidelity(series_raw, arrays, pm, gm, *, w, dt, env=None, chi_iso=1.06e-6, chi_aniso=None):
     """Certify a path channel against a REFERENCE SERIES ``(n_w, n_ch, n_t)`` in the canonical channel order (what a
     re-encoding of a decoded channel is measured against, since the grid is not in the pack): the same battery
-    as the producer's -- GRE, spin echo and the CPMG train at the channel's ``max_refocus_pulses``, over the
-    envelope's ``B0_list`` and ``theta_deg`` -- against the split-half floor of the reference."""
+    as the producer's (:func:`_battery_gates`: GRE, spin echo, the CPMG train at the channel's
+    ``max_refocus_pulses`` and a stimulated echo), over the envelope's ``B0_list`` and ``theta_deg`` -- against the
+    split-half floor of the reference."""
     env = env or {}
     series_raw = np.asarray(series_raw, np.float64); n_w, n_t = series_raw.shape[0], series_raw.shape[2]
     b_dec, _ = susc_path_decode(arrays, pm, n_w=n_w)
     has_aniso = bool(gm.get("has_aniso")) and series_raw.shape[1] >= 13
     ca = (0.1 * chi_iso if has_aniso else 0.0) if chi_aniso is None else float(chi_aniso)
     n_p = int(pm.get("max_refocus_pulses") or 1)
-    gates = [np.ones(n_t), _cpmg_gate(n_t, 1), _cpmg_gate(n_t, n_p)]
+    gates = _battery_gates(n_t, n_p)
     perm = np.random.RandomState(0).permutation(n_w); A, B = perm[:n_w // 2], perm[n_w // 2:]
     w = np.ones(n_w) if w is None else np.asarray(w, np.float64)
     err = floor = 0.0
