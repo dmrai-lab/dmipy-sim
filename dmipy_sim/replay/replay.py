@@ -2472,34 +2472,34 @@ class ReplayPack:
         series, single = [], [rest]
         for members in shells:
             g_ref = members[np.argmax(amp[members])]
-            rho = kappa[:, grp[g_ref]]
-            rho_max = float(rho.max())
+            x = kappa[:, grp[g_ref]]
+            x_max = float(x.max())
             K = 0
             c = {l: [1.0 / float(np.prod(np.arange(2 * l + 1, 0, -2, dtype=np.float64)))] for l in l_used}
-            while max(abs(c[l][K]) * rho_max ** (l + 2 * K) for l in l_used) > SHELL_SERIES_TOL:
+            while max(abs(c[l][K]) * x_max ** (l + 2 * K) for l in l_used) > SHELL_SERIES_TOL:
                 for l in l_used:
                     c[l].append(-c[l][K] / (2.0 * (K + 1) * (2 * l + 2 * K + 3)))
                 K += 1
             dev = np.zeros(len(members))
-            if rho_max <= SHELL_SERIES_MAX_PHASE and len(members) > K + 1:
+            if x_max <= SHELL_SERIES_MAX_PHASE and len(members) > K + 1:
                 t = amp[members] / amp[g_ref]
                 for lo in range(0, len(members), 64):                         # each row's departure from the shell's shape
                     gg = grp[members[lo:lo + 64]]
-                    dm = kappa[:, gg, None] * m_hat[:, gg, :] - (t[lo:lo + 64][None, :, None] * rho[:, None, None]) \
+                    dm = kappa[:, gg, None] * m_hat[:, gg, :] - (t[lo:lo + 64][None, :, None] * x[:, None, None]) \
                         * m_hat[:, grp[g_ref], None, :]
                     dev[lo:lo + 64] = np.abs(w) @ np.linalg.norm(dm, axis=2)
-            if rho_max <= SHELL_SERIES_MAX_PHASE and len(members) > K + 1 and float(dev.max()) <= limit:
-                series.append((members, g_ref, rho, K, c, dev))
+            if x_max <= SHELL_SERIES_MAX_PHASE and len(members) > K + 1 and float(dev.max()) <= limit:
+                series.append((members, g_ref, x, K, c, dev))
             else:
                 single.append(members)
         row_n = np.concatenate([np.abs(np.arange(-l, l + 1)) for l in l_used])
-        for members, g_ref, rho, K, c, dev in series:
+        for members, g_ref, x, K, c, dev in series:
             Y = so3.real_sh(L, m_hat[:, grp[g_ref], :], full=True)             # (n_w, (L+1)^2): the shell's moment directions
             M = np.empty((K + 1, R, F_re.shape[1]), np.complex128)
             for k in range(K + 1):
                 X = np.empty((n_w, R))
                 for l in l_used:
-                    X[:, l_off[l]:l_off[l] + 2 * l + 1] = (w * c[l][k] * rho ** (l + 2 * k))[:, None] * Y[:, so3.sh_block(l, True)]
+                    X[:, l_off[l]:l_off[l] + 2 * l + 1] = (w * c[l][k] * x ** (l + 2 * k))[:, None] * Y[:, so3.sh_block(l, True)]
                 M[k] = paired_products(X, row_n, F_re, F_im, col_n, keep_n) if paired else (X.T @ F_re) + 1j * (X.T @ F_im)
             t = amp[members] / amp[g_ref]                                      # (n_m,): each row's amplitude in the shell's
             l_row = np.concatenate([np.full(2 * l + 1, l) for l in l_used])
@@ -3017,10 +3017,10 @@ SHELL_RTOL = 1e-3
 
 SHELL_SERIES_TOL = 1e-14
 """Where a shell's amplitude series (:meth:`ReplayPack._background_bodies`) is cut: the largest next term
-``|c_lk| rho^{l+2k}`` at the shell's largest phase, far below the closed form's own band tolerance."""
+``|c_lk| x^{l+2k}`` at the shell's largest phase ``x``, far below the closed form's own band tolerance."""
 
 SHELL_SERIES_MAX_PHASE = 10.0
-"""The largest phase (radians) a shell's amplitude series is summed at: its terms grow to about ``e^rho / 2 rho``
+"""The largest phase (radians) a shell's amplitude series is summed at: its terms grow to about ``e^x / 2 x``
 before they cancel, about a thousand at 10, so the sum keeps some thirteen of float64's sixteen digits."""
 
 
