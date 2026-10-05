@@ -11,9 +11,10 @@ magnitude ``|g0|`` and direction, and the small part of each row that is not its
 
 **The phase.** In the pack's own coefficient space a row is ``W_i`` ``(n_c, 3)`` (the bridge projection of its
 effective gradient per window, :func:`~dmipy_sim.replay.replay._compile_effective`), and walker ``w``'s phase is
-``sum_k W_i[k] . C_w[k]`` with ``C_w`` its stored coefficients. A shape is a unit vector ``u`` of that space; a row
-of the shape is written ``W_i = u v_i^T + D_i`` with ``v_i = W_i^T u`` (its least-squares vector: amplitude ``a_i =
-|v_i|``, direction ``g^_i = v_i / a_i``) and ``D_i`` its departure. With ``mu_w = sum_k u[k] C_w[k]`` (the walker's
+``sum_k W_i[k] . C_w[k]`` with ``C_w`` its stored coefficients. A shape is a unit vector ``u`` of that space (the
+first class's rows' principal profiles, one per shell); a row of the shape is written ``W_i = u v_i^T + D_i`` with
+``v_i`` its least-squares vector in the metric the departure bound weighs (below; amplitude ``a_i = |v_i|``,
+direction ``g^_i = v_i / a_i``) and ``D_i`` its departure. With ``mu_w = sum_k u[k] C_w[k]`` (the walker's
 shape moment) and ``n_w`` its background moment (the effective gate's), the phase at pose ``R`` is
 
     phi_iw(R) = a_i g^_i . R mu_w + beta g^0 . R n_w + d_iw(R),       d_iw(R) = sum_k (R^T D_i[k]) . C_w[k].
@@ -80,6 +81,12 @@ exceeds every phase, so the largest amplitude bounds the rest), ``tail_b(beta) =
 sum_w |w_w| |n_w|^l2 / (2l2+1)!!`` at the class's own ``|g0|``, and ``max_w rho_aw`` the closed form's largest
 per-walker band remainder plus the largest ``I_aw``. A row whose departure exceeds ``direction_tol`` (a tenth of the
 ensemble's floor by default, the closed form's own limit) is refused.
+
+**Where it runs.** The walker pass and the evaluation run where the closed form's do (numpy / JAX, or torch on its
+device, #608): the nodes' bodies are the closed form's float32 products summed in float64, everything after them
+(the coupling, the Chebyshev coefficients, the evaluation) is complex128, the field factor is formed once in float64
+on the host, and a node at zero amplitude (the ``b = 0`` rows, whose misfit is the background's alone, ~1e-9) is its
+``l = 0`` row ``Y_00 sum_w w_w F_w`` summed in float64.
 
 **When it is exact, what is refused.** The bodies are exact at the nodes (they are the closed form's bodies there);
 the series reproduces the closed form at every class to its truncation bounds, and the misfit carries them. Every
