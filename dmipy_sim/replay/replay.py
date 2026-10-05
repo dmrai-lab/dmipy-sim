@@ -1658,6 +1658,27 @@ class ReplayPack:
                     out[c].save(paths[c])
             return out
 
+    def pose_series(self, waveforms, *, tissue=None, scanner=None, pose=None, compartment=None, keep=None, tol=1e-8,
+                    direction_tol=None, backend="jax", device=None):
+        """The pose responses of a machine's encoding classes as one series (dmrai-lab/dmipy-sim#610): ONE pass over the
+        walkers for the whole set, then every class an evaluation. Returns a :class:`~dmipy_sim.replay.pose_series.PoseSeries`
+        whose :meth:`~dmipy_sim.replay.pose_series.PoseSeries.responses` are each class's :class:`PoseResponse`.
+
+        The classes of one timing class differ only in each row's amplitude and direction, the magnet's own gradient's
+        magnitude and direction, and each row's small departure from its commanded shape; the bodies of the closed form
+        depend on the amplitude and ``|g0|`` alone, so they are a Chebyshev series in both whose coefficients come from
+        the bodies at the series' nodes, and a class is that series at its own ``(amplitude, |g0|)`` with its exact lab
+        side. Every truncation and each row's departure is bounded and added to its misfit
+        (:mod:`~dmipy_sim.replay.pose_series` derives each bound).
+
+        ``waveforms`` -- the classes, an iterable read once (a generator keeps one composed class in memory at a time):
+        one timing class, refused by name otherwise. ``tissue``, ``scanner``, ``pose``, ``compartment``, ``keep``,
+        ``backend`` and ``device`` are :meth:`pose_responses`'; ``tol`` is each series' and band's truncation target,
+        ``direction_tol`` the largest departure a row may have from its shape (a tenth of the floor by default)."""
+        from .pose_series import pose_series
+        return pose_series(self, waveforms, tissue=tissue, scanner=scanner, pose=pose, compartment=compartment, keep=keep,
+                           tol=tol, direction_tol=direction_tol, backend=backend, device=device)
+
     def _pose_cache_path(self, cache, P, waveform, method, keep):
         """``<dir>/<key>.npz`` with the key over everything the expansion depends on."""
         import hashlib, os
@@ -2414,19 +2435,10 @@ class ReplayPack:
         r_a = float(sum((2 * l + 1) * abs(J_top[l]) for l in range(L + 1, L + 4)))
         # the factor's channels: (order Lambda, its body columns, how its lab side is formed)
         Yb = None
-        if F_sh is None:
-            channels = [(l2, so3.sh_block(l2, True), ("b", l2)) for l2 in range(L_b + 1)]
-            n_cols = (L_b + 1) ** 2
-        else:
+        channels, n_cols, K_fb = _factor_channels(None if F_sh is None else L_f, L_b)
+        if F_sh is not None:
             b_lab = np.asarray(b0_dir, np.float64); b_lab = b_lab / np.linalg.norm(b_lab)
             Yb = so3.real_sh(L_f, b_lab[None, :], full=True)[0]
-            channels, n_cols, K_fb = [], 0, {}
-            for lp in range(L_f + 1):
-                for l2 in range(L_b + 1):
-                    K_fb[(lp, l2)] = so3.coupling(lp, l2)
-                    for Lam in range(abs(lp - l2), lp + l2 + 1):
-                        channels.append((Lam, slice(n_cols, n_cols + 2 * Lam + 1), ("fb", lp, l2)))
-                        n_cols += 2 * Lam + 1
         Lam_max = L_f + L_b
         Y_n = [put(so3.real_sh(L_b, n_hat[:, j, :], full=True)) for j in range(n_hat.shape[1])]
         F_sh_k = None if F_sh is None else put(F_sh)
@@ -2434,20 +2446,8 @@ class ReplayPack:
 
         def factor(k):
             """The per-walker factor of bucket ``k``, ``(n_w, n_cols)`` complex, where the route keeps its walkers."""
-            J = put(so3.spherical_jn_all(L_b, x[:, k]))                       # (L_b+1, n_w)
-            Fb = new((n_w, (L_b + 1) ** 2))
-            for l2 in range(L_b + 1):
-                b2 = so3.sh_block(l2, True)
-                Fb[:, b2] = (4 * np.pi * (1j ** l2)) * J[l2][:, None] * Y_n[k_gate[k]][:, b2]
-            if F_sh is None:
-                return Fb
-            F = new((n_w, n_cols))
-            for (lp, l2), Kc in K_fb_k.items():
-                prod = (F_sh_k[:, so3.sh_block(lp, True)][:, :, None] * Fb[:, so3.sh_block(l2, True)][:, None, :]).reshape(n_w, -1)
-                for Lam, cols, ch in channels:
-                    if ch[1:] == (lp, l2):
-                        F[:, cols] = prod @ Kc[Lam]
-            return F
+            return _factor_of(put(so3.spherical_jn_all(L_b, x[:, k])), Y_n[k_gate[k]], F_sh_k, K_fb_k, channels, L_b,
+                              n_cols, new)
 
         L_tot = L + Lam_max
         want_l, want_n = (None, None) if keep is None else (keep[0], keep[1])
@@ -2456,25 +2456,7 @@ class ReplayPack:
         n_feat = so3.n_so3_coeffs(keep_l, keep_n)
         _ph("harmonics", L=int(L), L_f=int(L_f), L_b=int(L_b), keep_l=int(keep_l), keep_n=int(keep_n), n_feat=int(n_feat))
         l_used = [l for l in range(L + 1) if l <= keep_l + Lam_max]
-        offs, off = {}, 0
-        for Lc in range(keep_l + 1):
-            offs[Lc] = off; off += (2 * Lc + 1) * (2 * (so3._n_cols(Lc, keep_n) // 2) + 1)
-        tables = {}                                                           # (l, Lambda) -> (Ls, K_lab3, K_body, slices)
-        for l in l_used:
-            for Lam in range(Lam_max + 1):
-                Ls = [Lc for Lc in range(abs(l - Lam), min(l + Lam, keep_l) + 1)]
-                if not Ls:
-                    continue
-                K = so3.coupling(l, Lam)
-                K_lab = np.concatenate([K[Lc] for Lc in Ls], axis=1)                        # ((2l+1)(2Lam+1), sum 2Lc+1)
-                K_body = np.concatenate([K[Lc].conj()[:, Lc - so3._n_cols(Lc, keep_n) // 2:Lc + so3._n_cols(Lc, keep_n) // 2 + 1]
-                                         for Lc in Ls], axis=1)                               # ((2l+1)(2Lam+1), sum 2kk+1)
-                lab_sl, body_sl, o1, o2 = {}, {}, 0, 0
-                for Lc in Ls:
-                    kk = so3._n_cols(Lc, keep_n) // 2
-                    lab_sl[Lc] = slice(o1, o1 + 2 * Lc + 1); o1 += 2 * Lc + 1
-                    body_sl[Lc] = slice(o2, o2 + 2 * kk + 1); o2 += 2 * kk + 1
-                tables[(l, Lam)] = (Ls, K_lab.reshape(2 * l + 1, 2 * Lam + 1, -1), K_body, lab_sl, body_sl)
+        offs, tables = _coupling_tables(l_used, Lam_max, keep_l, keep_n)   # (l, Lambda) -> (Ls, K_lab3, K_body, slices)
         n_bessel = max(l_used) + 24 + int(np.ceil(k_max))                     # the Miller recurrence's start order
         step = max(1, int(2.5e8 / (8 * n_w * (L + 1) ** 2)))                   # groups per ~256 MB of host harmonics
         # on the host, only the products the retained azimuthal band couples (pose_device.paired_bodies); the device
@@ -2502,15 +2484,7 @@ class ReplayPack:
             u_dirs, inv = np.unique(np.where(beta[:, None] > 0, g0 / np.where(beta > 0, beta, 1.0)[:, None], (0.0, 0.0, 1.0)),
                                     axis=0, return_inverse=True)
             inv = np.asarray(inv).reshape(-1)
-            Y_u = so3.real_sh(L_b, u_dirs, full=True)                         # (n_u, (L_b+1)^2): the background's lab side
-            lam = []                                                          # per channel: (n_u, 2 Lambda + 1)
-            for Lam, cols, ch in channels:
-                if ch[0] == "b":
-                    lam.append(Y_u[:, so3.sh_block(ch[1], True)])
-                else:
-                    _, lp, l2 = ch
-                    pair = (Yb[so3.sh_block(lp, True)][None, :, None] * Y_u[:, None, so3.sh_block(l2, True)]).reshape(len(u_dirs), -1)
-                    lam.append(pair @ K_fb[(lp, l2)][Lam])
+            lam = _factor_lab(channels, so3.real_sh(L_b, u_dirs, full=True), Yb, K_fb)   # per channel: (n_u, 2 Lambda + 1)
             coeffs = np.zeros((n_meas, n_feat), np.complex128)
             M_lab = {}                                                        # (l, channel) -> (n_u, 2l+1, sum 2Lc+1)
             for k in np.unique(bucket[g_sl]):
@@ -3265,6 +3239,93 @@ SHELL_SERIES_MAX_PHASE = 10.0
 before they cancel, about a thousand at 10, so the sum keeps some thirteen of float64's sixteen digits."""
 
 
+def _factor_channels(L_f, L_b):
+    """The channels of the factor a gradient's plane wave is coupled to in the closed form with a magnet's own
+    gradient (:meth:`ReplayPack._closed_with_background`): ``(channels, n_cols, K_fb)``, each channel ``(Lambda,
+    its columns in the factor, its kind)``. Without a field (``L_f`` None) a channel is the background's order
+    ``l2`` itself (kind ``("b", l2)``); with one it is an order ``Lambda`` the field's order ``l'`` and the
+    background's ``l2`` couple into (kind ``("fb", l', l2)``, ``K_fb[(l', l2)]`` the real coupling tables)."""
+    from . import so3
+    if L_f is None:
+        return [(l2, so3.sh_block(l2, True), ("b", l2)) for l2 in range(L_b + 1)], (L_b + 1) ** 2, {}
+    channels, n_cols, K_fb = [], 0, {}
+    for lp in range(L_f + 1):
+        for l2 in range(L_b + 1):
+            K_fb[(lp, l2)] = so3.coupling(lp, l2)
+            for Lam in range(abs(lp - l2), lp + l2 + 1):
+                channels.append((Lam, slice(n_cols, n_cols + 2 * Lam + 1), ("fb", lp, l2)))
+                n_cols += 2 * Lam + 1
+    return channels, n_cols, K_fb
+
+
+def _factor_of(J, Y_n, F_sh, K_fb_conj, channels, L_b, n_cols, new):
+    """The per-walker factor ``(n_w, n_cols)`` complex of a magnet's own gradient (with the field's coupled in): the
+    background's columns ``4 pi i^l2 j_l2(|g0| |n_w|) Y_l2(n^_w)`` from ``J`` ``(L_b+1, n_w)`` and ``Y_n`` ``(n_w,
+    (L_b+1)^2)``, then, with a field (``F_sh`` ``(n_w, (L_f+1)^2)``, ``K_fb_conj`` the conjugated coupling tables of
+    :func:`_factor_channels`), every channel's coupling of the field's harmonics with them walker by walker. ``new``
+    allocates on the route's device."""
+    from . import so3
+    n_w = J.shape[1]
+    Fb = new((n_w, (L_b + 1) ** 2))
+    for l2 in range(L_b + 1):
+        b2 = so3.sh_block(l2, True)
+        Fb[:, b2] = (4 * np.pi * (1j ** l2)) * J[l2][:, None] * Y_n[:, b2]
+    if F_sh is None:
+        return Fb
+    F = new((n_w, n_cols))
+    for (lp, l2), Kc in K_fb_conj.items():
+        prod = (F_sh[:, so3.sh_block(lp, True)][:, :, None] * Fb[:, so3.sh_block(l2, True)][:, None, :]).reshape(n_w, -1)
+        for Lam, cols, ch in channels:
+            if ch[1:] == (lp, l2):
+                F[:, cols] = prod @ Kc[Lam]
+    return F
+
+
+def _factor_lab(channels, Y_u, Yb, K_fb):
+    """The lab side of every channel of :func:`_factor_channels`, ``[(n_u, 2 Lambda + 1)]`` in channel order: the
+    background directions' harmonics ``Y_u`` ``(n_u, (L_b+1)^2)`` alone, or coupled with the field direction's ``Yb``
+    ``((L_f+1)^2,)`` by the tables ``K_fb``."""
+    from . import so3
+    lam = []
+    for Lam, _cols, ch in channels:
+        if ch[0] == "b":
+            lam.append(Y_u[:, so3.sh_block(ch[1], True)])
+        else:
+            _, lp, l2 = ch
+            pair = (Yb[so3.sh_block(lp, True)][None, :, None] * Y_u[:, None, so3.sh_block(l2, True)]).reshape(Y_u.shape[0], -1)
+            lam.append(pair @ K_fb[(lp, l2)][Lam])
+    return lam
+
+
+def _coupling_tables(l_used, Lam_max, keep_l, keep_n):
+    """``(offs, tables)``: where each coupled order ``Lc`` starts in a :class:`PoseResponse`'s coefficients, and per
+    gradient order ``l`` and factor order ``Lambda`` the coupled orders ``Ls`` they reach within ``keep_l`` with
+    their real coupling tables on the lab index (``K_lab3`` ``(2l+1, 2Lambda+1, sum 2Lc+1)``) and on the body
+    index restricted to ``|n| <= keep_n`` (``K_body`` ``((2l+1)(2Lambda+1), sum 2kk+1)``), and each ``Lc``'s slices
+    of the two: ``tables[(l, Lambda)] = (Ls, K_lab3, K_body, lab_sl, body_sl)``."""
+    from . import so3
+    offs, off = {}, 0
+    for Lc in range(keep_l + 1):
+        offs[Lc] = off; off += (2 * Lc + 1) * (2 * (so3._n_cols(Lc, keep_n) // 2) + 1)
+    tables = {}
+    for l in l_used:
+        for Lam in range(Lam_max + 1):
+            Ls = [Lc for Lc in range(abs(l - Lam), min(l + Lam, keep_l) + 1)]
+            if not Ls:
+                continue
+            K = so3.coupling(l, Lam)
+            K_lab = np.concatenate([K[Lc] for Lc in Ls], axis=1)                        # ((2l+1)(2Lam+1), sum 2Lc+1)
+            K_body = np.concatenate([K[Lc].conj()[:, Lc - so3._n_cols(Lc, keep_n) // 2:Lc + so3._n_cols(Lc, keep_n) // 2 + 1]
+                                     for Lc in Ls], axis=1)                               # ((2l+1)(2Lam+1), sum 2kk+1)
+            lab_sl, body_sl, o1, o2 = {}, {}, 0, 0
+            for Lc in Ls:
+                kk = so3._n_cols(Lc, keep_n) // 2
+                lab_sl[Lc] = slice(o1, o1 + 2 * Lc + 1); o1 += 2 * Lc + 1
+                body_sl[Lc] = slice(o2, o2 + 2 * kk + 1); o2 += 2 * kk + 1
+            tables[(l, Lam)] = (Ls, K_lab.reshape(2 * l + 1, 2 * Lam + 1, -1), K_body, lab_sl, body_sl)
+    return offs, tables
+
+
 def _background_of(waveform):
     """The magnet's own gradient in an acquisition, as the pose expansion separates it: ``(g0 (n_meas, 3), gate
     (n_t,))`` float64 on the waveform's grid, or ``None`` when the acquisition carries none (no
@@ -3282,9 +3343,9 @@ def _background_of(waveform):
     G = np.asarray(waveform.G, np.float64)
     played = np.asarray(waveform.played_gradient, np.float64)
     off = np.all(played == 0.0, axis=2)                                    # (n_meas, n_t): the coils play nothing
-    for i in range(waveform.n_meas):
-        if off[i].any():
-            g0[i] = G[i, off[i]].mean(axis=0)
+    n_off = off.sum(axis=1)
+    some = n_off > 0
+    g0[some] = np.einsum("mt,mtc->mc", off[some].astype(np.float64), G[some]) / n_off[some, None]
     if not np.any(g0):
         return None
     return g0, np.asarray(waveform.effective_gate, np.float64)
