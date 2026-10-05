@@ -7,14 +7,15 @@ together:
   * positions (C0) -- ``bridge_dst``, the one representation (:func:`encode_bridge_dst`): per axis the
     path's two exact endpoints and the lowest ``K`` DST-I bands of the residual pinned at both. A
     deliverable gradient is band-limited, so the replay is exact for every acquisition inside the band.
-    The retired codecs (``temporal_dct``, ``lowrank``, ``gaussian``, ``marginal``) are refused by name.
+    Any other codec name is refused generically (:func:`require_position_method`).
   * compartment occupancy (C1) -- named columns, piecewise-constant per walker, stored as row run
     lengths (:func:`rle_encode_rows`) or one static label per walker. The MT bound pool is one of these
     columns, not a channel of its own.
   * boundary local time (C2, rho2/D = 1) -- the cumulative local time ``B(t) = cumsum(ell)`` in the same
     bridge form as the positions (:func:`encode_boundary_bridge`): its two endpoints exact, its residual as
-    sine bands. :func:`encode_boundary_local_time` is the per-step sparse/dense form, lossless to its value quantisation. The
-    detrended-cosine ``dct`` form is retired.
+    sine bands. :func:`encode_boundary_local_time` is the per-step sparse/dense form, lossless to its value
+    quantisation. A pack whose arrays use another representation's names (its ``blt_dct_coeffs`` where this
+    reader looks for ``blt_bridge_dst``) simply has no channel this reader finds.
 
 :func:`mode_space_signal` computes the replay signal from the coefficients without reconstructing the
 trajectory, and :func:`auto_select_modes` picks the smallest ``K`` that meets a fidelity tolerance against
@@ -40,43 +41,26 @@ from ..constants import GAMMA
 POSITION_METHOD = "bridge_dst"          # the only C0 representation; see encode_bridge_dst
 ALL_METHODS = (POSITION_METHOD,)
 
-_RETIRED = {
-    "temporal_dct": "cosine bands of the whole path",
-    "lowrank": "KL modes over the flattened path",
-    "gaussian": "a fitted coefficient distribution",
-    "marginal": "coefficient quantiles",
-}
-
-# C2 shares C0's fate: the cumulative local time moved from detrended DCT-II bands
-# (``blt_dct_coeffs``) to the bridge form (``blt_bridge_dst`` + ``blt_start``). The array NAME
-# changed deliberately -- a stale pack then fails to find its channel instead of decoding sine
-# bands as cosine ones and returning a plausible wrong attenuation.
-_RETIRED_BOUNDARY = {"dct": "detrended cosine bands of the cumulative local time"}
-
-
 def require_position_method(method):
     """Raise unless ``method`` is the one C0 representation this build reads.
 
-    There is deliberately no fallback. A retired codec stores different quantities under the
-    same tensor names -- ``bridge_dst`` puts the two endpoints where a band codec puts its two
-    lowest bands -- so decoding one as the other yields plausible numbers rather than an error.
-    Refusing is the only safe response; the pack must be re-encoded from its master.
+    There is deliberately no fallback: any other codec stores different quantities under the same
+    tensor names -- ``bridge_dst`` puts the two endpoints where a band codec puts its two lowest
+    bands -- so decoding one as the other yields plausible numbers rather than an error. Refusing
+    is the only safe response, by name, for whatever codec a pack declares; the pack must be
+    re-encoded from its master with ``build_replay_pack()``.
     """
     if method == POSITION_METHOD:
         return method
-    if method in _RETIRED:
-        raise ValueError(
-            f"position codec {method!r} ({_RETIRED[method]}) is no longer read. Positions are "
-            f"stored as {POSITION_METHOD!r}: two exact endpoints followed by sine bands of the "
-            f"pinned residual. The first two coefficients per axis are NOT bands, so decoding "
-            f"this pack with the current reader would return plausible but wrong values. "
-            f"Re-encode the pack from its master with build_replay_pack().")
     if method is None:
         raise ValueError(
             f"pack declares no position codec. It must declare "
             f"compression.method = {POSITION_METHOD!r}; refusing to assume it, since a pack "
             f"written by an older build stores different quantities under the same names.")
-    raise ValueError(f"unknown position codec {method!r}; expected {POSITION_METHOD!r}")
+    raise ValueError(
+        f"position codec {method!r} is not read by this build. Positions are stored as "
+        f"{POSITION_METHOD!r}: two exact endpoints per axis followed by sine bands of the pinned "
+        f"residual. Re-encode the pack from its master with build_replay_pack().")
 _F16, _F32 = 2, 4
 
 
@@ -290,8 +274,8 @@ def encode_bridge_dst(X, K, container=None, *, device="auto"):
     bridge has covariance ``min(m,n) - mn/N`` whose inverse is the Dirichlet Laplacian, so its
     Karhunen-Loeve eigenvectors are exactly the DST-I vectors.
 
-    Accuracy is indistinguishable from ``temporal_dct``, and that is a theorem rather than a
-    coincidence: the difference operator maps the cosine basis onto the sine basis exactly,
+    Accuracy is indistinguishable from a cosine expansion of the same path, and that is a theorem
+    rather than a coincidence: the difference operator maps the cosine basis onto the sine basis exactly,
     ``c_k(n) - c_k(n-1) = -2 sin(pi k / 2N) s_{k-1}(n)``, so a cosine expansion of the path is a
     sine expansion of its increments and the two truncate to the same subspaces.
     """

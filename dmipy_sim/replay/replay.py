@@ -3435,8 +3435,8 @@ def replay_signal(pack, W, *, rho2_over_D=0.0, chi_hat=None, complex_signal=Fals
     surface_logw = None
     if rho2_over_D:
         # asked for, so it must happen: a missing C2 channel raises inside surface_logweight
-        # rather than being skipped. The previous form looked up a key the bridge rename
-        # retired, so `rho2_over_D` was silently ignored and callers got an unattenuated signal.
+        # rather than being skipped, so a caller never gets a silently unattenuated signal
+        # when rho2_over_D was asked for and the pack carries no boundary channel.
         cm = ((pack.meta.get("compression", {}).get("channels", {}) or {}).get("boundary_local_time")
               if isinstance(pack, ReplayPack) else None)
         surface_logw = surface_logweight(a, rho2_over_D, cm, chi_hat)

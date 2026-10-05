@@ -4,6 +4,8 @@ Fast tests use synthetic arrays (exact algebraic identities). One slow test walk
 substrate and checks the boundary-DCT codec reproduces the surface-relaxivity T2 -- the
 property that lets the replay path store compressed modes instead of raw trajectories.
 """
+import re
+
 import numpy as np
 import numpy.testing as npt
 import pytest
@@ -95,8 +97,8 @@ def test_bound_fraction_roundtrip_within_quant():
 
 # --------------------------------------------------------------- real-walk physics
 @pytest.mark.slow
-def test_boundary_dct_replays_surface_signal_below_mc_floor():
-    """A real surface-relaxivity walk: the detrend boundary-DCT codec at K=8 reproduces the
+def test_boundary_bridge_replays_surface_signal_below_mc_floor():
+    """A real surface-relaxivity walk: the boundary bridge codec at K=8 reproduces the
     surface survival E(TE) at EVERY echo-time truncation to below the Monte-Carlo floor
     (1/sqrt(N)) -- the property that lets replay store K+1 modes instead of the raw dlog."""
     from dmipy_sim import simulate_trajectories, Box1D
@@ -156,13 +158,25 @@ def test_boundary_bridge_endpoints_are_exact_at_every_K_so_segments_chain():
 
 def test_boundary_bridge_rejects_a_stale_cosine_pack_loudly():
     """The array name changed with the basis, so a stale pack cannot be silently decoded as if its
-    cosine bands were sine bands (which would return a plausible but wrong attenuation)."""
+    cosine bands were sine bands (which would return a plausible but wrong attenuation): a pack
+    storing its residual under the old name has no ``blt_bridge_dst`` key for this reader to find."""
     rng = np.random.default_rng(12)
     arrays, meta = cx.encode_boundary_bridge(np.abs(rng.standard_normal((10, 64))) * 1e-6, K=8)
     stale = {"blt_dct_coeffs": arrays["blt_bridge_dst"], "blt_endpoint": arrays["blt_endpoint"]}
     with pytest.raises(KeyError):
         cx.decode_boundary_bridge(stale, meta)
-    assert cx._RETIRED_BOUNDARY["dct"]
+
+
+def test_require_position_method_refuses_any_codec_but_the_one_it_reads():
+    """No retired-codec table: an unknown codec name, whatever it is, is refused generically, naming
+    the one codec this build reads -- the refusal does not enumerate what used to be written."""
+    assert cx.require_position_method(cx.POSITION_METHOD) == cx.POSITION_METHOD
+    for method in ("not_a_codec", "unknown", "some_future_codec", "bridge_dst_v2"):
+        with pytest.raises(ValueError, match=re.escape(cx.POSITION_METHOD)):
+            cx.require_position_method(method)
+    with pytest.raises(ValueError, match="no position codec"):
+        cx.require_position_method(None)
+    assert not hasattr(cx, "_RETIRED") and not hasattr(cx, "_RETIRED_BOUNDARY")
 
 
 def test_c1_carries_the_mt_bound_pool_as_a_column_on_an_independent_axis():
