@@ -60,20 +60,25 @@ def _classes(machine, kind, T, g, R=None):
 CLOSED_UNBOUNDED = 1e-6
 """What the closed form leaves out of its misfit (dmrai-lab/dmipy-sim#617): a row's part off its principal direction
 below ``1e-6`` of it, and the differences between rows it groups as one waveform to ``1e-5``, are not bounded, and on
-a 3 T machine's Maxwell term that is up to 3.5e-7 beyond its misfit here. The series bounds both as part of a row's
-departure and is held to the direct replay by its own misfit alone; this slack is the closed form's, never the
-series'."""
+a 3 T machine's Maxwell term that is up to 3.5e-7 beyond its misfit here; on torch its float32 field factor adds ~2e-8.
+The series bounds both parts as part of a row's departure, takes its field factor in float64, and is held to the
+direct replay by its own misfit alone; this slack is the closed form's, never the series'."""
 
 
-def _within(series, closed):
+TORCH_ROUNDING = 1e-7
+"""The torch route's float32 products (its bodies, as the closed form's torch route takes them, #608): measured at
+most 5e-8 beyond the series' misfit on the brain's GM pack on the Prisma, whose misfit there is itself ~5e-8."""
+
+
+def _within(series, closed, slack=CLOSED_UNBOUNDED):
     """Each measurement's coefficients within the two misfits, the closed form read at the series' band."""
     assert series.route == "series" and closed.route == "closed"
     ref = so3.rebanded(closed.coeffs, closed.lmax, closed.nmax, series.lmax, series.nmax) \
         if (closed.lmax, closed.nmax) != (series.lmax, series.nmax) else closed.coeffs
     diff = np.linalg.norm(series.coeffs - ref, axis=1)
-    bad = diff > series.misfit + closed.misfit + CLOSED_UNBOUNDED
+    bad = diff > series.misfit + closed.misfit + slack
     assert not bad.any(), (np.flatnonzero(bad), diff[bad], series.misfit[bad], closed.misfit[bad])
-    return float(np.max(diff / (series.misfit + closed.misfit + CLOSED_UNBOUNDED)))
+    return float(np.max(diff / (series.misfit + closed.misfit + slack)))
 
 
 @pytest.mark.parametrize("kind", ["spin echo", "stimulated echo"])
@@ -156,8 +161,8 @@ def test_a_class_read_later_is_the_class_built_on(walk_pack):
 
 
 def test_what_the_series_does_not_hold_is_refused(walk_pack):
-    """An amplitude outside the series' intervals, a magnet's gradient above its largest, another timing class: each
-    refused by name, never extrapolated."""
+    """An amplitude outside the series' intervals, a magnet's gradient above its largest, another timing class, a row
+    departing from its shape beyond the direction tolerance: each refused by name, never extrapolated."""
     played = _classes("hyperfine_swoop_64mT", "spin echo", 10e-3, 0.08)
     series = walk_pack.pose_series(played[:4])
     louder = _classes("hyperfine_swoop_64mT", "spin echo", 10e-3, 0.09)[0]
@@ -165,6 +170,8 @@ def test_what_the_series_does_not_hold_is_refused(walk_pack):
         series.responses([louder])
     with pytest.raises(ValueError, match="timing class"):
         series.responses([_classes("hyperfine_swoop_64mT", "spin echo", 12e-3, 0.08)[0]])
+    with pytest.raises(ValueError, match="departs from the series' shape"):     # a row no shape holds to the tolerance
+        walk_pack.pose_series(played, direction_tol=1e-9)
     seq = _classes(None, "spin echo", 10e-3, 0.08)[0]
     g0 = np.array([3e-4, -2e-4, 5e-4])
     series = walk_pack.pose_series([seq.with_background_gradient(g0)])
@@ -197,10 +204,16 @@ BRAIN_WM = "hf://SubstrateCommons/cactus-axons/packs/single_bundle_1s_c3_seg125m
 BRAIN_GM = "hf://SubstrateCommons/grey-matter-spheres/packs/packed_spheres_leaky_250ms_c2_seg125ms.rpk"
 
 
+CLOSED_UNBOUNDED_BRAIN = 3e-5
+""":data:`CLOSED_UNBOUNDED` at the brain's phases (tens of radians): the closed form's rows grouped to 1e-5 of the
+largest amplitude share one body, which on the Prisma's GM classes is 1.05e-5 from the direct replay where its misfit
+says 1e-14 (#617). The series is held to the direct replay below by its own misfit."""
+
+
 def _brain_classes(machine, kind):
-    """The brain page's default timing (delta 25 / Delta 55 / TE 100 ms; a stimulated echo of the same delta and
-    Delta), a b = 0 row and 30 directions at b = 1000 and 3000 s/mm^2 at the machine's slew, over 24 voxels of a
-    head 1-7 cm off isocentre, each its own class."""
+    """The brain page's default timing (delta 25 / Delta 55 / TE 100 ms; a stimulated echo of the same delta storing
+    for TM = 30 ms), a b = 0 row and 30 directions at b = 1000 and 3000 s/mm^2 at the machine's slew, over 24 voxels
+    of a head up to 5.4 cm off isocentre, each its own class."""
     rng = np.random.default_rng(5)
     dirs = rng.normal(size=(30, 3)); dirs /= np.linalg.norm(dirs, axis=1, keepdims=True)
     dirs = np.vstack([[0.0, 0.0, 1.0], dirs, dirs])
@@ -209,7 +222,7 @@ def _brain_classes(machine, kind):
     if kind == "spin echo":
         seq = sequences.pgse(dirs, 0.025, 0.055, bvalues=b, TE=0.100, n_t=1000, slew_rate=slew)
     else:
-        seq = sequences.pgste(dirs, 0.012, 0.036, bvalues=b, TE=0.070, n_t=1000, slew_rate=slew, ste_flip_angles=(90.0, 90.0, 90.0))
+        seq = sequences.pgste(dirs, 0.025, 0.030, bvalues=b, n_t=1000, slew_rate=slew, ste_flip_angles=(90.0, 90.0, 90.0))
     grid = Grid(shape=(4, 3, 2), voxel_size_m=(2e-2,) * 3, origin_m=(-0.03, -0.02, -0.01), isocenter_m=(0.0, 0.0, 0.0))
     idx = np.array([[i, j, k] for i in range(4) for j in range(3) for k in range(2)])
     _cls, played = encoding_classes(ScannerLimits.of(machine), grid, seq, idx, tolerance=None)
@@ -223,8 +236,9 @@ def _brain_classes(machine, kind):
 @pytest.mark.parametrize("tissue", ["wm", "gm"])
 def test_the_brain_packs(machine, kind, tissue):
     """On the brain page's packs (WM window 0 with its field at the machine's own B0, GM), each machine's classes over
-    a head: every class within the two misfits of its closed form, torch on the GPU against the series on the same
-    backend, and the series' misfit below a tenth of the pack's floor."""
+    a head: every class within the two misfits of its closed form (torch on the GPU, both), the series' misfit below
+    a tenth of the pack's floor, and over the whole band the series against the direct posed replay within its
+    misfit."""
     torch = pytest.importorskip("torch")
     if not torch.cuda.is_available():
         pytest.skip("no CUDA device")
@@ -236,6 +250,17 @@ def test_the_brain_packs(machine, kind, tissue):
     played = _brain_classes(machine, kind)
     series = pack.pose_series(played, keep=keep, backend="torch", **kw)
     got = series.responses()
+    compared = 0
     for k in (0, len(played) // 2, len(played) - 1):
-        _within(got[k], pack.pose_responses([played[k]], keep=keep, backend="torch", **kw)[0])
+        try:                                                       # a class the closed form holds as one direction
+            ref = pack.pose_responses([played[k]], keep=keep, backend="torch", method="closed", **kw)[0]
+        except ValueError:
+            continue
+        _within(got[k], ref, slack=CLOSED_UNBOUNDED_BRAIN)
+        compared += 1
+    assert compared >= 1
     assert max(r.misfit.max() for r in got) < 0.1 * series.floor
+    full = pack.pose_series(played, backend="torch", **kw).responses(select=[len(played) - 1])[0]
+    for Q in so3.haar_rotations(3, seed=1):
+        direct = pack.replay(played[-1], orientation=Q, complex_signal=True, **kw)
+        assert np.all(np.abs(full.at(Q) - direct) <= full.misfit + TORCH_ROUNDING)

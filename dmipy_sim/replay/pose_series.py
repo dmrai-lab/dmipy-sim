@@ -405,22 +405,26 @@ def _shapes(ctx, loc):
 
 def _fit(ctx, loc):
     """The rows of a projected class on the series' shapes: each row's shape (the one that carries most of it), its
-    vector ``v = W^T u`` (amplitude and direction) and its departure ``W - u v^T`` ``(n_meas, n_c, 3)``."""
+    vector ``v`` (amplitude and direction) and its departure ``W - u v^T`` ``(n_meas, n_c, 3)``. Once the departure
+    basis and its walker sums are known (``ctx["UA"]``), ``v`` is the least-squares vector in the metric the
+    departure bound weighs, ``sum_j A_j^2 |(W - u v^T)^T V_j|^2`` -- ``v = W^T u_A / (u . u_A)`` with ``u_A = V A^2 V^T u``
+    -- so the bound a row is charged is the least its shape allows to that metric; before, the plain projection."""
     xp = ctx["xp"]
-    W, U = loc["W"], ctx["U"] if xp is np else ctx["U_d"]
+    on_np = xp is np
+    W, U = loc["W"], ctx["U"] if on_np else ctx["U_d"]
     v = xp.einsum("mcb,hc->mhb", W, U)                                        # (n_meas, n_h, 3)
-    h = (v * v).sum(-1).argmax(1) if xp is np else (v * v).sum(-1).argmax(1)
-    if xp is np:
-        vh = v[np.arange(v.shape[0]), h]
-        D = W - U[h][:, :, None] * vh[:, None, :]
+    h = (v * v).sum(-1).argmax(1)
+    ar = np.arange(v.shape[0]) if on_np else ctx["torch"].arange(v.shape[0], device=ctx["dev"])
+    if "UA" in ctx:
+        UA = ctx["UA"] if on_np else ctx["UA_d"]
+        vh = xp.einsum("mcb,mc->mb", W, UA[h])
     else:
-        ar = ctx["torch"].arange(v.shape[0], device=ctx["dev"])
         vh = v[ar, h]
-        D = W - U[h][:, :, None] * vh[:, None, :]
+    D = W - U[h][:, :, None] * vh[:, None, :]
     zero = loc["zero"]
     if zero.any():                                                            # a b = 0 row: all of it is departure
         zi = np.flatnonzero(zero)
-        zi_d = zi if xp is np else ctx["torch"].as_tensor(zi, device=ctx["dev"])
+        zi_d = zi if on_np else ctx["torch"].as_tensor(zi, device=ctx["dev"])
         vh[zi_d] = 0.0
         D[zi_d] = W[zi_d]
     return h, vh, D
@@ -472,6 +476,20 @@ def _piece_of(pieces, shape, a, beta, ctx):
     return piece
 
 
+def _couple(B3, cpl, channels, l_off, K_body):
+    """The bodies ``B3`` ``(nc, R, n_f)`` coupled on the body index, every (order, channel) side by side in the series'
+    layout ``cpl``: ``(nc, n_cpl)`` on the bodies' device."""
+    nc = B3.shape[0]
+    parts = []
+    for (l, ci), _cs in cpl.items():
+        Lam, cols, _k = channels[ci]
+        parts.append(B3[:, l_off[l]:l_off[l] + 2 * l + 1, cols].reshape(nc, -1) @ K_body[(l, Lam)])
+    if isinstance(B3, np.ndarray):
+        return np.concatenate(parts, 1)
+    import torch
+    return torch.cat(parts, 1)
+
+
 # ---- the build ----------------------------------------------------------------------------------------------------
 
 def pose_series(pack, waveforms, *, tissue=None, scanner=None, pose=None, compartment=None, keep=None, tol=1e-8,
@@ -508,8 +526,6 @@ def pose_series(pack, waveforms, *, tissue=None, scanner=None, pose=None, compar
         P0 = pack._prepare(wf0, tissue=tissue, scanner=scanner, orientation=None, compartment=compartment)
         if R_s is not None:
             P0["b0_dir"] = tuple(R_s.T @ np.array([0.0, 0.0, 1.0]))
-        if np.any(P0["voxel"] != 1.0):
-            pass                                                              # applied per class, as the closed form does
         ew, norm = P0["pathway"] * P0["ew"], P0["norm"]
         n_w = ew.shape[0]
         w = np.asarray(ew, np.float64) / float(norm)
@@ -584,8 +600,11 @@ def pose_series(pack, waveforms, *, tissue=None, scanner=None, pose=None, compar
             A = wabs @ np.linalg.norm(nu, axis=2)
         del nu
         ctx["A"] = A
+        Q = (V * A[None, :] ** 2) @ V.T                                     # the departure bound's metric
+        UQ = ctx["U"] @ Q
+        ctx["UA"] = UQ / np.where(np.abs((UQ * ctx["U"]).sum(1)) > 0, (UQ * ctx["U"]).sum(1), 1.0)[:, None]
         if kind == "torch":
-            ctx["V_d"], ctx["A_d"] = put(V), put(A)
+            ctx["V_d"], ctx["A_d"], ctx["UA_d"] = put(V), put(A), put(ctx["UA"])
         mu = mu @ F                                                           # stored -> canonical, per walker
         n_bg = n_bg @ F
         x_mu = np.linalg.norm(mu, axis=2)                                     # (n_w, n_h): |mu_w| per shape
@@ -648,7 +667,9 @@ def pose_series(pack, waveforms, *, tissue=None, scanner=None, pose=None, compar
             L_f, F_sh = 0, None
         else:
             _ph("field")
-            F_sh, L_f = pack._field_harmonics(field, tol=tol, l_cap=l_cap, device=kernels)
+            # once per series, so in float64 on the host: a float32 factor's rounding (~1e-8 of the b = 0 signal)
+            # would exceed the b = 0 rows' own misfit
+            F_sh, L_f = pack._field_harmonics(field, tol=tol, l_cap=l_cap, device="numpy")
         # ---- the background: its band and its series in |g0| on [0, beta_max]
         _ph("background", beta_max=beta_max)
         L_b, N_b, I_b, bg_moments = 0, 0, 0.0, []
@@ -709,16 +730,26 @@ def pose_series(pack, waveforms, *, tissue=None, scanner=None, pose=None, compar
             K_fb_k = {pr: {Lm: K.conj() for Lm, K in Kp.items()} for pr, Kp in K_fb.items()}
             K_body = {key: t[2] for key, t in tables.items()}
         values = np.empty((n_nodes, len(b_nodes), n_cpl), np.complex128)
+        # a node at zero amplitude (the b = 0 rows) has the plane wave 1: its body is the l = 0 row alone,
+        # Y_00 sum_w w_w F_w, summed in float64 here (a float32 sum of that many same-signed terms keeps ~1e-6)
+        live_nodes = np.flatnonzero(kap.max(axis=0) > 0) if n_w else np.arange(0)
+        zero_nodes = np.setdiff1d(np.arange(n_nodes), live_nodes)
+        w_put = put(np.asarray(w, np.float64))
         for q, bq in enumerate(b_nodes):
             Fq = _factor_of(put(so3.spherical_jn_all(L_b, bq * r_n)), Y_n, F_sh_k, K_fb_k, channels, L_b, n_cols, new)
+            if zero_nodes.size:
+                B0 = (w_put.to(Fq.dtype) @ Fq if kind == "torch" else w_put @ Fq) / np.sqrt(4.0 * np.pi)   # (n_f,)
+                B3 = new((1, R_rows, n_cols)); B3[:] = 0.0; B3[0, l_off[0]] = B0
+                vals = _couple(B3, cpl, channels, l_off, K_body)
+                values[zero_nodes, q] = (vals.cpu().numpy() if kind == "torch" else vals)[0]
             if kind == "torch":
                 F_re, F_im = Fq.real.to(torch.float32).contiguous(), Fq.imag.to(torch.float32).contiguous()
             else:
                 F_re, F_im = np.ascontiguousarray(Fq.real), np.ascontiguousarray(Fq.imag)
             del Fq
             step = TORCH_GROUPS if kind == "torch" else max(1, int(2.5e8 / (8 * n_w * (L + 1) ** 2)))
-            for lo in range(0, n_nodes, step):
-                sl = slice(lo, min(lo + step, n_nodes)); nc = sl.stop - sl.start
+            for lo in range(0, live_nodes.size, step):
+                sl = live_nodes[lo:lo + step]; nc = sl.size
                 if kind == "torch":
                     B3 = field_bodies_torch(kap[:, sl], mh[:, sl], w, F_re, F_im, L, l_used, n_bessel=n_bessel, device=t_dev)
                 else:
@@ -728,13 +759,9 @@ def pose_series(pack, waveforms, *, tissue=None, scanner=None, pose=None, compar
                     for l in l_used:
                         B3[:, l_off[l]:l_off[l] + 2 * l + 1] = B_c[row:row + nc * (2 * l + 1)].reshape(nc, 2 * l + 1, -1)
                         row += nc * (2 * l + 1)
-                parts = []
-                for (l, ci), cs in cpl.items():
-                    Lam, cols, _k = channels[ci]
-                    parts.append(B3[:, l_off[l]:l_off[l] + 2 * l + 1, cols].reshape(nc, -1) @ K_body[(l, Lam)])
-                vals = torch.cat(parts, 1).cpu().numpy() if kind == "torch" else np.concatenate(parts, 1)
-                values[sl, q] = vals
-                del B3, parts
+                vals = _couple(B3, cpl, channels, l_off, K_body)
+                values[sl, q] = vals.cpu().numpy() if kind == "torch" else vals
+                del B3, vals
         # Chebyshev coefficients of every interval, in amplitude and in |g0|
         Cb = _cheb_matrix(N_b)
         coef, o = [], 0
@@ -765,7 +792,7 @@ def pose_series(pack, waveforms, *, tissue=None, scanner=None, pose=None, compar
         series = PoseSeries(
             lmax=keep_l, nmax=keep_n, L=L, field_lmax=L_f, background_lmax=L_b, pieces=pieces, degree_b=N_b,
             beta_max=beta_max, series_b=I_b, r_a=r_a + I_max, floor=1.0 / np.sqrt(n_w), n_meas=int(first.n_meas),
-            seconds=seconds, eval_rows=16384 if kind == "torch" else 1024,
+            seconds=seconds, eval_rows=32768 if kind == "torch" else 1024,
             _ctx=ctx, _located=[], _xp=(torch if kind == "torch" else np), _torch=torch, _dev=t_dev, _put=put,
             _cdtype=cdt, _coef=coef_d, _groups=groups, _offs=offs_n,
             _n_feat=n_feat, _n_cpl=n_cpl, _channels=channels, _Yb=Yb, _K_fb=K_fb, _l_lab=max(l_used), _mu_max=mu_max,
