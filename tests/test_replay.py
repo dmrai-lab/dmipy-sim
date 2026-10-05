@@ -84,13 +84,11 @@ def test_jax_twin_matches_and_differentiable():
 
 
 def test_surface_knob_uses_the_real_c2_channel_and_refuses_without_one():
-    """The rho2 knob must read the pack's ACTUAL C2 channel, not a key that no longer exists.
-
-    The previous version of this test fabricated a `blt_dct` array and injected it, so it kept
-    passing after C2 moved to the bridge form -- while `replay_signal` looked up the retired key,
-    found nothing, and SILENTLY ignored rho2_over_D. A caller asking for surface relaxivity got an
-    unattenuated signal and no error. So: build the channel with the real encoder, and check both
-    that the knob bites and that a pack without C2 refuses rather than skipping.
+    """The rho2 knob must read the pack's ACTUAL C2 channel, built with the real encoder (not a
+    fabricated array under some other key, which would let the knob miss silently): both that the
+    knob bites on a pack that carries the channel, and that a pack without one refuses rather than
+    skipping -- a caller asking for surface relaxivity must never get an unattenuated signal back
+    with no error.
     """
     from dmipy_sim.replay.compression import (encode_boundary_bridge, decode_boundary_bridge,
                                        surface_logweight_series as surface_logweight)

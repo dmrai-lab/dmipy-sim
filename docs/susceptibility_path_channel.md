@@ -195,8 +195,8 @@ Its cost depends entirely on the codec, and **the default picks the wrong one**:
 | codec | B/walker at n_t=1601 | scales with n_t? | ensemble error (rho2=1e-5..1e-4) |
 |---|---|---|---|
 | sparse CSR (**auto-selected**) | 574 | **yes** (cost ~ contact count) | exact |
-| `boundary_dct` K=32, f16 | **66** | no | 6e-6 .. 7e-6 |
-| `boundary_dct` K=64, f16 | 130 | no | 2e-6 .. 2e-5 |
+| `boundary_bridge` K=32, f16 | **66** | no | 6e-6 .. 7e-6 |
+| `boundary_bridge` K=64, f16 | 130 | no | 2e-6 .. 2e-5 |
 
 against a split-half floor of 1.9e-2 -- 2 to 5 thousand times the truncation error. So **K=32 in f16 at
 66 B/walker** is the right setting, and it keeps the tier flat in walk length.

@@ -97,8 +97,8 @@ def test_bound_fraction_roundtrip_within_quant():
 
 # --------------------------------------------------------------- real-walk physics
 @pytest.mark.slow
-def test_boundary_dct_replays_surface_signal_below_mc_floor():
-    """A real surface-relaxivity walk: the detrend boundary-DCT codec at K=8 reproduces the
+def test_boundary_bridge_replays_surface_signal_below_mc_floor():
+    """A real surface-relaxivity walk: the boundary bridge codec at K=8 reproduces the
     surface survival E(TE) at EVERY echo-time truncation to below the Monte-Carlo floor
     (1/sqrt(N)) -- the property that lets replay store K+1 modes instead of the raw dlog."""
     from dmipy_sim import simulate_trajectories, Box1D
@@ -171,7 +171,7 @@ def test_require_position_method_refuses_any_codec_but_the_one_it_reads():
     """No retired-codec table: an unknown codec name, whatever it is, is refused generically, naming
     the one codec this build reads -- the refusal does not enumerate what used to be written."""
     assert cx.require_position_method(cx.POSITION_METHOD) == cx.POSITION_METHOD
-    for method in ("temporal_dct", "lowrank", "gaussian", "marginal", "some_future_codec"):
+    for method in ("not_a_codec", "unknown", "some_future_codec", "bridge_dst_v2"):
         with pytest.raises(ValueError, match=re.escape(cx.POSITION_METHOD)):
             cx.require_position_method(method)
     with pytest.raises(ValueError, match="no position codec"):

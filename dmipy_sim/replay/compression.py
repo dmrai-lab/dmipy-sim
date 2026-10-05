@@ -274,8 +274,8 @@ def encode_bridge_dst(X, K, container=None, *, device="auto"):
     bridge has covariance ``min(m,n) - mn/N`` whose inverse is the Dirichlet Laplacian, so its
     Karhunen-Loeve eigenvectors are exactly the DST-I vectors.
 
-    Accuracy is indistinguishable from ``temporal_dct``, and that is a theorem rather than a
-    coincidence: the difference operator maps the cosine basis onto the sine basis exactly,
+    Accuracy is indistinguishable from a cosine expansion of the same path, and that is a theorem
+    rather than a coincidence: the difference operator maps the cosine basis onto the sine basis exactly,
     ``c_k(n) - c_k(n-1) = -2 sin(pi k / 2N) s_{k-1}(n)``, so a cosine expansion of the path is a
     sine expansion of its increments and the two truncate to the same subspaces.
     """
