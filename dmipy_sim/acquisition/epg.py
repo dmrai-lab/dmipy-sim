@@ -203,7 +203,7 @@ def splice_schedule(n_echoes, beta_deg, ESP=1.0, refocus_phase_deg=90.0):
     so each family's MAGNITUDE is insensitive to it. The two are reconstructed separately and their
     magnitude images summed. That is what lets this family violate the CPMG condition and survive.
 
-    At ``beta_deg = 180`` the split degenerates: nothing is stored along z, one pathway survives, and it
+    At ``beta_deg = 180`` the split degenerates: nothing is stored along B0, one pathway survives, and it
     lands alternately in one family and the other (1, 0, 1, 0 against 0, 1, 0, 1), so each k-space would get
     only every second line. A real SPLICE train therefore runs below 180.
 

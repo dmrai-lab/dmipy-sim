@@ -2,7 +2,7 @@
 
 The forward vector-Bloch engine carries M=(Mx,My,Mz) and applies T1 (blended toward
 T1_bound by binding occupancy) every step, and the free<->bound exchange is emergent
-(walkers carry their Mz across bind/release).  So magnetization stored along z -- a
+(walkers carry their Mz across bind/release).  So magnetization stored along B0 -- a
 PGSTE mixing time, or the residual Mz of an imperfect pulse -- already experiences MT,
 with NO engine change.  Here we invert both pools (180), let them recover during a
 pure longitudinal storage delay (no RF, no gradient), and check the ensemble Mz(t)

@@ -1524,11 +1524,11 @@ def _precision_tiers(arrays, n_walkers, floor_max, walkers_shuffled):
 def _select_boundary_codec(m, dlog, env, tol, dtype, verbose=False, container=None, *, min_K=None, segment_T=None):
     """Choose the C2 (boundary-local-time) codec by COST subject to the surface-fidelity gate.
 
-    The historical default was sparse CSR, which is exact but costs ~one entry per wall contact, so it
-    scales with walk length (574 B/walker at n_t=1601 for an axon, and worse the longer you record).
-    The detrended-cumulative DCT is flat in n_t and, at K=32 in f16, lands thousands of times below the
-    surface split-half floor -- but it was opt-in, so the *default* pack got the expensive channel.
-    Cost each candidate, keep the cheapest that passes, and fall back to exact sparse if none do.
+    The bridge form (:func:`compression.encode_boundary_bridge`) is flat in ``n_t`` and, at K=32 in
+    f16, lands thousands of times below the surface split-half floor; exact sparse CSR costs ~one
+    entry per wall contact instead, so it scales with walk length (574 B/walker at n_t=1601 for an
+    axon, and worse the longer the walk). Cost each bridge candidate, keep the cheapest that passes
+    the gate, and fall back to exact sparse if none do.
 
     ``min_K`` raises the ladder's smallest rung (16 bands per storage-rule window when this build is a
     walk built as one window but longer than the storage rule's window, RPK.md 4.3 -- the measured
@@ -1548,7 +1548,7 @@ def _select_boundary_codec(m, dlog, env, tol, dtype, verbose=False, container=No
             ok = cf["err_window"] <= tol * cf["floor_window"]
         if ok:
             if verbose:
-                log.info(f"[bank] C2 codec: boundary_dct K={K} {np.dtype(dtype).name} "
+                log.info(f"[bank] C2 codec: boundary_bridge K={K} {np.dtype(dtype).name} "
                       f"({nb:.0f} B/walker, err={cf['err']:.2e} vs floor {cf['floor']:.2e}"
                       + ("" if "err_window" not in cf else
                          f", window err={cf['err_window']:.2e} vs floor {cf['floor_window']:.2e}") + ")")
@@ -1557,7 +1557,7 @@ def _select_boundary_codec(m, dlog, env, tol, dtype, verbose=False, container=No
     if verbose:
         nb = sum(int(np.asarray(v).nbytes) for v in a.values()) / max(len(dlog), 1)
         best = min(cands, key=lambda c: (c[4] or {}).get("err", np.inf))
-        log.info(f"[bank] C2 codec: no DCT K passed the surface gate (best K={best[1]} "
+        log.info(f"[bank] C2 codec: no bridge K passed the surface gate (best K={best[1]} "
               f"err={(best[4] or {}).get('err', float('nan')):.2e}); using exact sparse "
               f"({nb:.0f} B/walker)")
     return a, mm

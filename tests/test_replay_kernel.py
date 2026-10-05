@@ -214,10 +214,11 @@ def test_mt_walk_at_zero_binding_is_the_plain_walk_to_the_bit():
 
 
 # ------------------------------------------------------------ one host kernel, any component subset (#200 item 9)
-def test_the_compiled_scheme_is_generic_in_its_components_and_the_host_kernel_is_one_function():
+def test_the_compiled_scheme_is_generic_in_its_components_and_the_host_kernel_is_one_function(x64):
     """A consumer that reads two of the three stored axes compiles the waveform's matching components and gets
     exactly the rows of the full compile; ``replay_coefficients`` is what ``replay_signal`` evaluates; the
-    traced batch twin equals the looped twin."""
+    traced batch twin equals the looped twin. Needs ``jax_enable_x64`` for the device/host parity check below
+    (the ``x64`` fixture scopes it to this test and restores the flag on teardown)."""
     import dmipy_sim as d
     from dmipy_sim.replay import (compile_scheme, replay_signal, replay_coefficients, replay_signal_jax,
                                   replay_batch_jax, surface_logweight)
@@ -241,8 +242,6 @@ def test_the_compiled_scheme_is_generic_in_its_components_and_the_host_kernel_is
     cm = pk.meta["compression"]["channels"]["boundary_local_time"]
     slw = surface_logweight(pk.arrays, 5e3, cm)
     np.testing.assert_allclose(replay_coefficients(C, w, W3, surface_logw=slw), replay_signal(pk, W3, rho2_over_D=5e3), rtol=1e-13)
-    jax = pytest.importorskip("jax")
-    jax.config.update("jax_enable_x64", True)
     np.testing.assert_allclose(np.asarray(replay_signal_jax(C, w, W3, surface_logw=slw)),
                                replay_coefficients(C, w, W3, surface_logw=slw, complex_signal=True), atol=1e-10)
     Wb = np.stack([W3, 0.5 * W3, W2.repeat(1, axis=0)[:0] if False else W3 * 0.1])

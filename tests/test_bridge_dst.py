@@ -1,4 +1,6 @@
 """The bridge+DST position codec: exactness, the moment columns, and the duality with DCT."""
+import re
+
 import numpy as np
 import numpy.testing as npt
 import pytest
@@ -52,7 +54,8 @@ def test_full_rank_roundtrip_is_exact(walk):
 
 
 def test_endpoints_are_exact_at_every_truncation(walk):
-    """The property temporal_dct cannot offer: a stored walk is continuable from where it ended."""
+    """The property a plain band codec (e.g. a bare DCT truncation) cannot offer: a stored walk is
+    continuable from where it ended."""
     for K in (4, 8, 16, 32):
         a, m, _ = cx.encode_bridge_dst(walk, K)
         r = cx.decode(a, m)
@@ -142,13 +145,14 @@ def test_accuracy_matches_a_band_truncation_at_equal_budget(walk):
 
 # --- the ways this could go quietly wrong --------------------------------------------------
 
-def test_retired_codecs_are_refused_not_decoded(walk):
-    """A retired pack stores different quantities under the same tensor names."""
+def test_unknown_codecs_are_refused_not_decoded(walk):
+    """A pack declaring any codec but the one this build reads stores different quantities under the same
+    tensor names, so it is refused generically, by name -- naming the one codec it reads."""
     a, m, _ = cx.encode_bridge_dst(walk, 16)
-    for bad in ("temporal_dct", "lowrank", "gaussian", "marginal"):
-        with pytest.raises(ValueError, match="no longer read"):
+    for bad in ("not_a_codec", "unknown", "some_future_codec", "bridge_dst_v2"):
+        with pytest.raises(ValueError, match=re.escape(cx.POSITION_METHOD)):
             cx.decode(a, dict(m, method=bad))
-        with pytest.raises(ValueError, match="no longer read"):
+        with pytest.raises(ValueError, match=re.escape(cx.POSITION_METHOD)):
             cx.mode_space_phi(a, dict(m, method=bad), _deliverable(), 1e-4)
 
 

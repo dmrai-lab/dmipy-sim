@@ -218,17 +218,18 @@ def _replay_compressed(master, G, dt_wf, *, chi_perp, T2, T1, surface_relaxivity
     """Replay a COMPRESSED master (IR modes from simulate_trajectories(compress=K)).
 
     The gradient phase is computed in mode space (compression.mode_space_phi: contract the
-    stored temporal-DCT position bands against DCT(G)) — the (N, n_t, 3) trajectory is NEVER
-    reconstructed. Surface relaxivity uses the stored cumulative endpoint (ungated / full
-    walk) or the decoded per-save boundary channel (chi-gated). Per-compartment T2/T1 use
-    the raw compartment channel carried in the master. Susceptibility is unsupported (its
-    off-resonance phase is nonlinear in position — see docs/replay_compression.md)."""
+    stored bridge_dst position bands against the waveform's own per-save weights) — the
+    (N, n_t, 3) trajectory is NEVER reconstructed. Surface relaxivity uses the stored
+    cumulative endpoint (ungated / full walk) or the decoded per-save boundary channel
+    (chi-gated). Per-compartment T2/T1 use the raw compartment channel carried in the
+    master. Susceptibility is unsupported: its off-resonance phase samples a field
+    nonlinearly in position and does not commute with the basis."""
     from . import compression as _cx
     if susceptibility is not None:
         raise NotImplementedError(
             "susceptibility replay from a compressed master is unsupported: the off-resonance "
             "phase samples a field nonlinearly in position and does not commute with the basis. "
-            "Replay susceptibility from a raw walk (see docs/replay_compression.md).")
+            "Replay susceptibility from a raw walk.")
 
     K = int(master["K"]); n_t = int(master["n_t"]); dt_traj = float(master["dt_traj"])
     _cx.require_position_method(master.get("method", "bridge_dst"))
