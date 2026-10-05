@@ -2066,16 +2066,15 @@ class ReplayPack:
                 if gate_id is None:
                     gate_id = len(gates); gates.append((key, gate, float(P["dt_wf"])))
             n_meas = G.shape[0]
-            g_hat = np.zeros((n_meas, 3)); s_wave = np.zeros((n_meas, n_t)); residual = []
+            g_hat = np.zeros((n_meas, 3)); s_wave = np.zeros((n_meas, n_t)); zero = np.zeros(n_meas, bool)
             for i in range(n_meas):
                 Gi = G[i]
                 if not np.any(Gi) or (bg is not None and np.abs(Gi).max() <= 1e-6 * np.linalg.norm(g0[i])):
                     g_hat[i] = (0.0, 0.0, 1.0)                                     # a b = 0 row: no phase at any pose
                     s_wave[i] = 0.0                                                # (beside the background, to its rounding)
+                    zero[i] = True
                     continue
                 _u, sv, vt = np.linalg.svd(Gi, full_matrices=False)
-                if sv[1] > 1e-6 * sv[0]:                                    # G is stored float32; a direction is one to that
-                    residual.append(i)                                             # rank > 1: its residual is bounded below
                 g, sw = vt[0], Gi @ vt[0]
                 lead = int(np.flatnonzero(np.abs(sw) > 1e-6 * np.abs(sw).max())[0])
                 if sw[lead] < 0:                       # one spelling of (direction, waveform): the first lobe positive
@@ -2092,9 +2091,19 @@ class ReplayPack:
                 # one more column of what is grouped, in the same unit as the waveform
                 beta = np.linalg.norm(g0, axis=1)
                 group, first = _group_waveforms(np.concatenate([s_wave, beta[:, None]], axis=1), rtol=1e-5)
-                extra = dict(g0=g0, beta=beta, gate_id=gate_id, s_first=s_wave[first])
-            per.append(dict(P=P, G=G, G_wf=G_wf, g_hat=g_hat, group=group, first=first, n_meas=n_meas,
-                            residual=np.asarray(residual, int), bound=np.zeros(n_meas), **extra))
+                extra = dict(g0=g0, beta=beta, gate_id=gate_id, s_first=s_wave[first], gate=gate)
+            # what the expansion plays for each row is its group's waveform along the row's own direction (and, with a
+            # magnet's gradient, the group's |g0| along the row's own g0 direction); whatever the row plays beyond that
+            # -- its part off its principal direction, its difference from its group's waveform within the grouping's
+            # tolerance, a b = 0 row's rounding about zero -- is its residual, bounded below (#617)
+            ref = first[group]
+            played = np.where(zero[:, None], 0.0, s_wave[ref])[:, :, None] * g_hat[:, None, :]
+            off = np.any(G != played, axis=(1, 2))
+            if bg is not None:
+                off |= beta != beta[ref]
+            residual = np.flatnonzero(off)
+            per.append(dict(P=P, G=G, G_wf=G_wf, g_hat=g_hat, group=group, first=first, n_meas=n_meas, ref=ref, zero=zero,
+                            residual=residual, bound=np.zeros(n_meas), **extra))
         limit = (0.1 / np.sqrt(n_w)) if direction_tol is None else float(direction_tol)
         self._residual_bounds(per, P0, dt, n_w, ew, norm, device=device)
         for c, q in enumerate(per):
@@ -2706,8 +2715,11 @@ class ReplayPack:
                                                   device=t_dev), np.zeros(len(idx))
 
     def _residual_bounds(self, per, P0, dt, n_w, ew, norm, device="auto"):
-        """Into each acquisition's ``bound``: for every measurement whose waveform has a component off its principal
-        direction, a bound on how far that component can move the ensemble's signal at ANY pose. The residuals
+        """Into each acquisition's ``bound``: for every measurement whose waveform departs from what the expansion plays
+        for it -- its group's waveform along its own principal direction, and its group's ``|g0|`` along its own
+        background direction (#617) -- a bound on how far that residual can move the ensemble's signal at ANY pose: its
+        component off the principal direction, its difference from its group's waveform within the grouping's
+        tolerance, a ``b = 0`` row's rounding about zero, its ``|g0|``'s difference from its group's. The residuals
         of an acquisition's measurements are written on their common time courses (an SVD over the measurements and
         axes, to its numerical rank: a machine's Maxwell residual is one ramp-shaped course per shell),
         ``res_i(t) = sum_k u_k(t) c_ik``; a walker's phase at pose ``R`` is then ``sum_k (R^T c_ik) . mu_kw`` with
@@ -2735,11 +2747,17 @@ class ReplayPack:
                 import torch
                 C = torch.as_tensor(C, device=t_dev)
             for c in todo:
-                q = per[c]; rows = q["residual"]
+                q = per[c]; rows = q["residual"]; ref = q["ref"][rows]
                 G_s = effective_gradient(q["G_wf"], q["P"]["dt_wf"], n_s, dt, t0=t0) if self.n_segments > 1 else q["G"]
-                G_s = np.asarray(G_s, np.float64)[rows]
+                G_s = np.asarray(G_s, np.float64)
                 g = q["g_hat"][rows]
-                res = G_s - np.einsum("mtc,mc->mt", G_s, g)[:, :, None] * g[:, None, :]          # (n_r, n_s, 3)
+                s_ref = np.where(q["zero"][rows][:, None], 0.0, np.einsum("mtc,mc->mt", G_s[ref], q["g_hat"][ref]))
+                res = G_s[rows] - s_ref[:, :, None] * g[:, None, :]                              # (n_r, n_s, 3)
+                if "g0" in q:                                       # the group's |g0| played for the row's own
+                    e_s = effective_gradient(q["gate"][None, :, None], q["P"]["dt_wf"], n_s, dt,
+                                             t0=t0 if self.n_segments > 1 else None)[0, :, 0]
+                    d_beta = (q["beta"][rows] - q["beta"][ref]) / np.where(q["beta"][rows] > 0, q["beta"][rows], 1.0)
+                    res = res + (d_beta[:, None] * q["g0"][rows])[:, None, :] * e_s[None, :, None]
                 X = res.transpose(0, 2, 1).reshape(-1, n_s)                                       # (n_r * 3, n_s)
                 with lapack_threads():                                                            # #564: this shape hangs a known build
                     U, S, Vt = np.linalg.svd(X, full_matrices=False)
