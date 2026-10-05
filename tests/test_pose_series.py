@@ -57,12 +57,8 @@ def _classes(machine, kind, T, g, R=None):
     return played if R is None else [rotate_waveform(p, R) for p in played]
 
 
-CLOSED_UNBOUNDED = 1e-6
-"""What the closed form leaves out of its misfit (dmrai-lab/dmipy-sim#617): a row's part off its principal direction
-below ``1e-6`` of it, and the differences between rows it groups as one waveform to ``1e-5``, are not bounded, and on
-a 3 T machine's Maxwell term that is up to 3.5e-7 beyond its misfit here; on torch its float32 field factor adds ~2e-8.
-The series bounds both parts as part of a row's departure, takes its field factor in float64, and is held to the
-direct replay by its own misfit alone; this slack is the closed form's, never the series'."""
+CLOSED_ROUNDING = 1e-12
+"""The numpy closed form's misfit bounds its whole residual (#617/#619), so the comparison carries rounding only."""
 
 
 TORCH_ROUNDING = 1e-7
@@ -70,7 +66,7 @@ TORCH_ROUNDING = 1e-7
 most 5e-8 beyond the series' misfit on the brain's GM pack on the Prisma, whose misfit there is itself ~5e-8."""
 
 
-def _within(series, closed, slack=CLOSED_UNBOUNDED):
+def _within(series, closed, slack=CLOSED_ROUNDING):
     """Each measurement's coefficients within the two misfits, the closed form read at the series' band."""
     assert series.route == "series" and closed.route == "closed"
     ref = so3.rebanded(closed.coeffs, closed.lmax, closed.nmax, series.lmax, series.nmax) \
@@ -204,10 +200,9 @@ BRAIN_WM = "hf://SubstrateCommons/cactus-axons/packs/single_bundle_1s_c3_seg125m
 BRAIN_GM = "hf://SubstrateCommons/grey-matter-spheres/packs/packed_spheres_leaky_250ms_c2_seg125ms.rpk"
 
 
-CLOSED_UNBOUNDED_BRAIN = 3e-5
-""":data:`CLOSED_UNBOUNDED` at the brain's phases (tens of radians): the closed form's rows grouped to 1e-5 of the
-largest amplitude share one body, which on the Prisma's GM classes is 1.05e-5 from the direct replay where its misfit
-says 1e-14 (#617). The series is held to the direct replay below by its own misfit."""
+CLOSED_TORCH_BRAIN = 3e-6
+"""The torch closed form's float32 products at the brain's phases (dmrai-lab/dmipy-sim#620): measured up to 1.2e-6
+beyond its misfit on the GM pack on the Prisma. The series is held to the direct replay below by its own misfit."""
 
 
 def _brain_classes(machine, kind):
@@ -256,7 +251,7 @@ def test_the_brain_packs(machine, kind, tissue):
             ref = pack.pose_responses([played[k]], keep=keep, backend="torch", method="closed", **kw)[0]
         except ValueError:
             continue
-        _within(got[k], ref, slack=CLOSED_UNBOUNDED_BRAIN)
+        _within(got[k], ref, slack=CLOSED_TORCH_BRAIN)
         compared += 1
     assert compared >= 1
     assert max(r.misfit.max() for r in got) < 0.1 * series.floor
