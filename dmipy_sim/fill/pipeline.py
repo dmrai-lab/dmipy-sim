@@ -38,9 +38,13 @@ log = logging.getLogger("dmipy_sim.fill")
 @dataclass
 class Options:
     """What a worker was asked to do. ``workdir`` holds the walk files, run records, job files and packs of the
-    blocks in flight; ``host`` names this machine in claims and summaries."""
+    blocks in flight; ``host`` is this worker's opaque label in claims and summaries -- never this machine's
+    hostname (:func:`dmipy_sim.fill.__main__._worker_token`); ``gpu`` and ``cpu_arch`` are the hardware CLASS
+    this worker runs on (:func:`dmipy_sim.run._hardware`), not which machine."""
     workdir: str
     host: str
+    gpu: str = None
+    cpu_arch: str = None
     repo: str = ""
     block: int = None                 # one block (else the next open one)
     loop: bool = False                # fill blocks until none is open
@@ -172,7 +176,8 @@ def pack_job(job):
                     floor_max=float(floors[n][cnts[n] > 1].max()) if (cnts[n] > 1).any() else None) for n in floors}
     n_w = sum(rd["n_walkers"] for rd in rounds)
     pools = [sum(x) for x in zip(*[rd["pools"] + [0] * (max(len(q["pools"]) for q in rounds) - len(rd["pools"])) for rd in rounds])]
-    summary = dict(block=job["block"], variant=job["variant"], host=job["host"], devices=job["devices"], commit=man["code"]["commit"],
+    summary = dict(block=job["block"], variant=job["variant"], host=job["host"], gpu=job.get("gpu"), cpu_arch=job.get("cpu_arch"),
+                   devices=job["devices"], commit=man["code"]["commit"],
                    **{"pass": job.get("pass"), "pass_scale": job.get("pass_scale", 1.0)},
                    certified=pk.meta["fidelity"]["certified"], floor_max=float(pk.meta["fidelity"]["floor_max"]),
                    box=job["box"], seed=job["seed"], budget=job["budget"], scale=rounds[0]["scale"], walkers=int(n_w), pools=pools,
@@ -355,11 +360,13 @@ class Fill:
     def job_of(self, claimed, rounds, out):
         o, rc, row, P = self.o, self.rc, claimed["row"], claimed["P"]
         return dict(file=os.path.join(o.workdir, f"{claimed['name']}.job.json"), block=claimed["block"], name=claimed["name"], variant=rc.variant,
-                    host=o.host, devices=o.devices, certify=bool(o.certify), certificate=self.cert, manifest=rc.man, rounds=list(rounds), out=out,
+                    host=o.host, gpu=o.gpu, cpu_arch=o.cpu_arch, devices=o.devices, certify=bool(o.certify), certificate=self.cert, manifest=rc.man,
+                    rounds=list(rounds), out=out,
                     device=o.pack_device, prefix=(o.prefix if o.certify else f"{o.prefix}/{rc.variant}"), claim=claimed["claim"], budget=o.budget,
                     seed=row["seed"], box=dict(i=row["i"], j=row["j"], k=row["k"]), n_walkers=sum(rd["n_walkers"] for rd in rounds),
                     **{"pass": P.get("pass"), "pass_scale": P["scale"]},
-                    provenance=dict(fill=dict(dataset=o.repo, variant=rc.variant, block=claimed["block"], host=o.host, budget=o.budget, code=rc.man["code"],
+                    provenance=dict(fill=dict(dataset=o.repo, variant=rc.variant, block=claimed["block"], host=o.host, gpu=o.gpu, cpu_arch=o.cpu_arch,
+                                              budget=o.budget, code=rc.man["code"],
                                               **{"pass": P.get("pass"), "pass_scale": P["scale"]}, plan=rc.man["plan"]["file"], blocks=rc.man["plan"]["blocks"])),
                     claim_state=dict(block=claimed["block"], variant=rc.variant, host=o.host, name=claimed["name"], claim=claimed["claim"], round=None,
                                      **{"pass": P.get("pass")}, run_dir=None, commit=rc.commit, started=C.stamp()))

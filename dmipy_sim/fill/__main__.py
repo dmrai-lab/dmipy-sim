@@ -14,11 +14,32 @@ import argparse
 import json
 import logging
 import os
-import socket
+import secrets
 
 from .hub import Hub, FakeHub
 from .pipeline import Fill, Options, pack_job
 from .recipe import Recipe
+
+
+def _worker_token():
+    """This worker's label in claims and summaries: never this machine's hostname, which would name it in a
+    dataset a hub subscriber can read. A token generated once and cached at
+    ``~/.cache/dmipy-sim/fill-worker-id`` (``$DMIPY_SIM_FILL_WORKER_ID`` overrides, e.g. one token per
+    container on a scheduler that recreates the cache each run), so the same machine keeps the same label
+    across restarts without that label meaning anything outside this hub."""
+    env = os.environ.get("DMIPY_SIM_FILL_WORKER_ID")
+    if env:
+        return env
+    path = os.path.join(os.path.expanduser("~"), ".cache", "dmipy-sim", "fill-worker-id")
+    if os.path.isfile(path):
+        token = open(path).read().strip()
+        if token:
+            return token
+    token = "w" + secrets.token_hex(6)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        f.write(token)
+    return token
 
 
 def main(argv=None):
@@ -53,7 +74,8 @@ def main(argv=None):
     ap.add_argument("--pack-device", default="numpy", help="where the pack subprocess runs its transforms: numpy (the CPU, so the walk "
                     "keeps the GPU), jax, auto")
     ap.add_argument("--cpu", action="store_true", help="walk on the CPU (a rehearsal)")
-    ap.add_argument("--host", default=None, help="this machine's name in claims and summaries (default: the hostname)")
+    ap.add_argument("--host", default=None, help="this worker's label in claims and summaries (default: a token "
+                    "cached locally per machine -- never the hostname)")
     a = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
     logging.getLogger("jax").setLevel(logging.WARNING)
@@ -68,10 +90,13 @@ def main(argv=None):
     from ..acquisition.scanners import save_interval                    # noqa: F401
     from ..phantom import Grid                                          # noqa: F401
     devices = [str(d) for d in jax.devices()]; logging.getLogger("dmipy_sim.fill").info("devices %s", devices)
-    o = Options(workdir=a.workdir, host=a.host or socket.gethostname(), repo=a.repo or f"local:{a.local}", block=a.block, loop=a.loop,
+    from ..run import _hardware
+    hw = _hardware()
+    o = Options(workdir=a.workdir, host=a.host or _worker_token(), repo=a.repo or f"local:{a.local}", block=a.block, loop=a.loop,
                 hours=a.hours, only_pass=a.only_pass, claim_batch=a.claim_batch, budget=a.budget, max_walkers=a.max_walkers, smoke=a.smoke,
                 no_upload=a.no_upload or bool(a.local), keep=a.keep, certify=a.certify, batch=a.batch, pack_device=a.pack_device,
-                duty=a.duty, duty_file=a.duty_file, require_gpu=not a.cpu, devices=devices)
+                duty=a.duty, duty_file=a.duty_file, require_gpu=not a.cpu, devices=devices,
+                gpu=hw.get("gpu"), cpu_arch=hw.get("cpu_arch"))
     f = Fill(hub, rc, o)
     if a.drain:
         return f.drain()

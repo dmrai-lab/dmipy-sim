@@ -307,13 +307,18 @@ def _spec_of_mesh(g, sid, prov, surface_dir):
         path = os.path.join(d, f"mesh-{digest}.ply")
         if not os.path.exists(path):
             write_ply(path, V, F)
-        src = {"file": path, "scale": 1.0}
+        # cited by its content-hash basename when it lives in the surface cache (default or given): a spec is
+        # portable and resolve_surface_file finds it there again, never by this machine's absolute path (which
+        # under the default cache carries the user's home directory)
+        cite = os.path.basename(path) if d == surface_cache_dir() else path
+        src = {"file": path, "cite": cite, "scale": 1.0}
         g.source = dict(src, recenter=False)          # from now on the mesh knows its file
+    cite_file = src.get("cite", src["file"])
     if getattr(g, "n_faces_reoriented", 0):
         prov.setdefault("transformations", []).append(
             f"{g.n_faces_reoriented} face(s) reoriented so the surface's normals agree and face outward "
             f"(enclosed volume {g.winding['volume']:.4g} -> {g.winding['volume_after']:.4g} m^3)")
-    surf = Surface("mesh", file=src["file"], format=str(src["file"]).rsplit(".", 1)[-1].lower(), scale=float(src.get("scale", 1.0)),
+    surf = Surface("mesh", file=cite_file, format=str(src["file"]).rsplit(".", 1)[-1].lower(), scale=float(src.get("scale", 1.0)),
                    sha256=_sha256(src["file"]))
     comps = g.compartments
     # A `Mesh` walks ONE side of its surface (`pool=`), so in THIS walk the other side holds no water. Writing
@@ -339,7 +344,7 @@ def _spec_of_mesh(g, sid, prov, surface_dir):
     return SubstrateSpec(sid, dom, pools, [wall], seeding,
                          Validity(float(g.radius), _tiers([wall], pools), mesh_edge_feature_ratio=float(g.edge_median / g.radius)),
                          description="one closed (or periodic) triangle surface: inside is intra, outside extra",
-                         provenance=dict(prov, files=[{"path": src["file"], "sha256": surf.sha256}], scale=surf.scale))
+                         provenance=dict(prov, files=[{"path": cite_file, "sha256": surf.sha256}], scale=surf.scale))
 
 
 def _spec_of_sphere_union(g, sid, prov):
@@ -377,6 +382,7 @@ def _spec_of_label_volume(g, id, prov, surface_dir=None):
     import os
     import dataclasses
     src = _label_volume_source(g, surface_dir)
+    cite_file = src.get("cite", src["file"])
     was = getattr(g, "_spec_source", None)
     sid = id or (was.id if was is not None
                  else f"label_volume/{os.path.splitext(os.path.basename(src['file']))[0]}")
@@ -385,7 +391,7 @@ def _spec_of_label_volume(g, id, prov, surface_dir=None):
     pools = [Pool(i, n, (said[n].D if n in said else None), water_fraction=(1.0 if i == g.pool_index else 0.0),
                   T2=(said[n].T2 if n in said else None), T1=(said[n].T1 if n in said else None))
              for i, n in enumerate(names)]
-    surf_kw = dict(file=src["file"], format=src["format"], sha256=src.get("sha256"),
+    surf_kw = dict(file=cite_file, format=src["format"], sha256=src.get("sha256"),
                    voxel_size=np.asarray(g.voxel_size, float).tolist(),
                    origin=np.asarray(g.origin, float).tolist(),
                    labels={str(v): n for v, n in g.pools.items()},
@@ -402,7 +408,7 @@ def _spec_of_label_volume(g, id, prov, surface_dir=None):
                                       f"a segmented {'x'.join(str(int(d)) for d in g.dims)} label volume; "
                                       f"the {g.pool} pool walks between its voxel faces"),
                          provenance=(was.provenance if was is not None
-                                     else dict(prov, files=[{"path": src["file"], "sha256": surf_kw["sha256"]}])))
+                                     else dict(prov, files=[{"path": cite_file, "sha256": surf_kw["sha256"]}])))
     if was is None:
         return spec
     return dataclasses.replace(spec, frame=was.frame, realisation=was.realisation, request=was.request,
@@ -426,7 +432,10 @@ def _label_volume_source(g, surface_dir):
     path = os.path.join(d, f"labels-{digest}.nrrd")
     if not os.path.exists(path):
         write_nrrd(path, g.labels, g.voxel_size, g.origin)
-    g.source = {"file": path, "format": "nrrd", "sha256": _sha256(path), "crop": None}
+    # cited by its content-hash basename when it lives in the surface cache, never by this machine's
+    # absolute path (the same rule _spec_of_mesh follows)
+    cite = os.path.basename(path) if d == surface_cache_dir() else path
+    g.source = {"file": path, "cite": cite, "format": "nrrd", "sha256": _sha256(path), "crop": None}
     return g.source
 
 
@@ -673,6 +682,9 @@ def _geometry_from_spec(spec):
                           permeability=perm, compartments=(Compartments(comps) if comps else None),
                           pool={1: "intra", 0: "extra"}[spec.seeding.pools[0]],
                           box_reflect=("reflect" in dom.boundary), seeding=spec.seeding)
+        # the file the spec cites, as the spec cites it (a relative, portable citation, same as label_volume's
+        # rule above) kept beside the resolved path this process actually read the bytes from
+        m.source = dict(m.source, cite=s.file)
         return m
     if len(walls) == 1:
         w = walls[0]; s = w.surface

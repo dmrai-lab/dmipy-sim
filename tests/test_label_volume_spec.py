@@ -1,5 +1,6 @@
 """The ``label_volume`` surface kind: what the spec must say, and the fixed point with the geometry."""
 import json
+import os
 
 import numpy as np
 import pytest
@@ -8,6 +9,7 @@ from dmipy_sim.geometry import LabelVolume
 from dmipy_sim.io.label_volume import write_nrrd
 from dmipy_sim.spec import (SpecError, SubstrateSpec, as_geometry, geometry_from_spec, label_volume_spec,
                             load_spec, spec_of, validate)
+from dmipy_sim.spec.build import resolve_surface_file
 from dmipy_sim.spec.substrate import SURFACE_KINDS
 
 
@@ -111,7 +113,9 @@ def test_a_geometry_built_from_an_array_writes_its_image_and_is_walkable(tmp_pat
     g = LabelVolume(lab, 1e-6, surface_relaxivity_t2=1e-5)
     spec = g.spec
     spec.validate()
-    assert spec.walls[0].surface.file.startswith(str(tmp_path))
+    cite = spec.walls[0].surface.file
+    assert "/" not in cite and cite.startswith("labels-")   # a portable citation, never this machine's absolute path
+    assert os.path.exists(resolve_surface_file(cite)) and resolve_surface_file(cite).startswith(str(tmp_path))
     assert spec.id.startswith("label_volume/labels-")
     g2 = geometry_from_spec(spec)
     assert np.array_equal(g2.labels, lab) and g2.surface_relaxivity_t2 == 1e-5

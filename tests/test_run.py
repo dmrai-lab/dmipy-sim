@@ -14,6 +14,33 @@ import pytest
 from dmipy_sim import run as R
 
 
+def test_the_record_names_hardware_class_never_the_machine(tmp_path, monkeypatch):
+    """A run's manifest and summary say what CLASS of hardware it ran on (CPU architecture, GPU model and
+    count) and never which machine: no hostname (this host's own, the one a reader of a published pack or run
+    record must never recover), no kernel/platform string, no absolute path."""
+    import platform as _platform
+    import socket
+    monkeypatch.setenv("DMIPY_SIM_RUN_DIR", str(tmp_path / "runs"))
+    d = tmp_path / "hw"
+    with R.Run("walk", params=dict(n=1), run_dir=str(d)) as r:
+        r.progress(1, 1)
+    man = json.load(open(d / "manifest.json"))
+    summ = json.load(open(d / "summary.json"))
+    hostname = socket.gethostname()
+    for record in (man, summ):
+        blob = json.dumps(record)
+        assert "host" not in record
+        assert "platform" not in record
+        if hostname and len(hostname) > 2:                        # a short/common hostname could coincide by chance
+            assert hostname not in blob
+        assert str(tmp_path) not in blob                           # no absolute path from this machine
+        assert record["cpu_arch"] == _platform.machine()
+        assert ("gpu" in record) == ("gpu_count" in record)        # reported together or not at all
+    # the CLI's one-run report reads the same fields back, never a "host" key
+    rep = R.report(str(d))
+    assert rep.get("cpu_arch") == _platform.machine() and "host" not in rep
+
+
 def test_a_short_run_touches_no_disk_and_a_persisted_one_is_complete(tmp_path, monkeypatch):
     monkeypatch.setenv("DMIPY_SIM_RUN_DIR", str(tmp_path / "runs"))
     with R.Run("quick", params=dict(n=3)) as r:
@@ -100,7 +127,8 @@ def test_a_pack_records_the_runs_that_made_it(tmp_path, monkeypatch):
     assert pk.meta["provenance"]["code"]["version"]                 # ... only its content-derived provenance is
     prov = json.load(open(str(out) + ".run.json"))                  # ... the run record is in the sidecar beside it
     assert prov["walk"]["producer"] == "simulate_trajectories" and prov["walk"]["status"] == "ok" and prov["walk"]["wall_s"] > 0
-    assert prov["pack"]["id"].endswith(f"-build_replay_pack-{os.getpid()}") and prov["pack"]["host"]
+    assert prov["pack"]["id"].endswith(f"-build_replay_pack-{os.getpid()}") and prov["pack"]["cpu_arch"]
+    assert "host" not in prov["pack"] and "host" not in prov["walk"]             # never which machine
     import hashlib
     assert prov["pack_sha256"] == hashlib.sha256(open(out, "rb").read()).hexdigest()
     json.dumps(pk.meta)                                                                # JSON-ready

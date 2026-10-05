@@ -982,12 +982,14 @@ def _pack_commit(meta):
     return None
 
 
-def _walk_from_pack(name, recorded, budget, design_n):
+def _walk_from_pack(name, recorded, budget, design_n, family_dir):
     """The walk record of a pack that already exists: its own header and run record, plus the counters the
     engine reported in the log the declaration cites.
 
     Nothing is walked. The budget check is the RECORDED peak of that walk and its pack stage -- a measurement,
-    where a fresh walk has only the pilot's projection.
+    where a fresh walk has only the pilot's projection. ``pack_path`` is recorded relative to ``family_dir``
+    when the pack lives under it (the same spelling :meth:`ReferenceFamily._pack` reads back), else by
+    basename alone -- never the machine's absolute path.
     """
     from .publish import header_of
     if not os.path.exists(recorded.pack_path):
@@ -1035,8 +1037,11 @@ def _walk_from_pack(name, recorded, budget, design_n):
         f"repeated, and what holds it to the budget is "
         + (f"its own RECORDED peak of {_size(peak)} rather than the pilot's projection" if peak is not None else
            "nothing measured: the producing run recorded no resident peak for it, which the walk record says"))
+    abs_pack = os.path.abspath(recorded.pack_path)
+    rel_pack = os.path.relpath(abs_pack, family_dir)
+    pack_path = rel_pack if not rel_pack.startswith("..") else os.path.basename(abs_pack)
     return dict(from_pack=True, design_n_walkers=int(design_n), design_note=note,
-                pack_path=os.path.abspath(recorded.pack_path),
+                pack_path=pack_path,
                 pack_sha256=_sha256_file(recorded.pack_path), n_walkers=int(wp["n_walkers"]),
                 n_t=int(wp["n_t"]), dt_s=float(wp["dt_traj"]),
                 sub_steps=None if recorded.sub_steps is None else int(recorded.sub_steps),
@@ -1152,7 +1157,7 @@ class ReferenceFamily:
                 if not os.path.exists(f.path):
                     raise ReferenceRefusal(f"source {s.key!r}: {f.path} is not there, so it cannot be digested; a "
                                            f"source record without a digest per file is refused")
-                files.append(dict(_digest(f.path), cite_as=f.cite_as, role=f.role, read_from=os.path.abspath(f.path)))
+                files.append(dict(_digest(f.path), cite_as=f.cite_as, role=f.role))
             out[s.key] = dict(url=s.url, host_record=s.host_record, licence_id=s.licence_id,
                               licence_url=s.licence_url, files=files,
                               licence_stated=bool(s.licence_id != LICENCE_NONE_STATED),
@@ -1482,7 +1487,7 @@ class ReferenceFamily:
         for name in sorted(spc["substrates"]):
             if name in self.build.recorded:
                 r = self.build.recorded[name]
-                out[name] = _walk_from_pack(name, r, budget, int(des["derived"]["n_walkers"]))
+                out[name] = _walk_from_pack(name, r, budget, int(des["derived"]["n_walkers"]), self.dir)
             else:
                 n = int(des["derived"]["n_walkers"])
                 projected = int(des["pilot"]["rss_bytes_before"]) + int(per_walker * n)
@@ -1775,8 +1780,8 @@ class ReferenceFamily:
         out = dict(repo=self.publication.repo, code_commit=commit, dataset_created=created, dry=bool(dry),
                    uploaded=uploaded, kept=kept, withheld=withheld, holds=held, manifest_verdicts=verdicts,
                    files=sorted(adds), organisation=org,
-                   actor=dict(user=os.environ.get("USER"), host=os.uname().nodename,
-                              at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())))
+                   # when this ran, never who or on what machine
+                   at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
         inputs = self._inputs(prev_sha, [u["sha256"] for u in uploaded], sorted(adds), bool(dry))
         return self.records.write("publish", out, inputs_digest=inputs, previous_sha256=prev_sha)
 
