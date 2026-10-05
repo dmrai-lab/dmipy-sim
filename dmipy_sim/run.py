@@ -8,7 +8,8 @@ first time it outlives the sampling interval, so a half-second call in a test su
 minutes has a record that covers it from its start. A producer opened inside another joins the outer run (a
 ``join`` row; its events go to the outer's current phase): ``walk_spec`` -> the walk -> the pack is one record.
 
-The directory holds ``manifest.json`` (written first: producer, parameters, code, host, devices, the memory
+The directory holds ``manifest.json`` (written first: producer, parameters, code, hardware class (CPU
+architecture, GPU model and count -- never a hostname, platform string or path), devices, the memory
 ceiling, the command line -- a dead run is identifiable from it alone), ``events.jsonl`` (append-only, one JSON
 row per line, flushed per row, so a kill loses at most the row being written: ``phase``, ``progress`` with rate
 and ETA, ``resource`` from the sampler thread -- host RSS from ``/proc/self/statm``, host available, the cgroup's
@@ -42,7 +43,6 @@ import json
 import logging
 import os
 import platform
-import socket
 import subprocess
 import sys
 import threading
@@ -175,11 +175,25 @@ def _devices():
         out = []
         for d in jax.local_devices():
             s = d.memory_stats() if hasattr(d, "memory_stats") else None
-            out.append(dict(device=str(d), bytes_in_use=(s or {}).get("bytes_in_use"), peak_bytes_in_use=(s or {}).get("peak_bytes_in_use"),
+            out.append(dict(device=str(d), kind=getattr(d, "device_kind", None),
+                            bytes_in_use=(s or {}).get("bytes_in_use"), peak_bytes_in_use=(s or {}).get("peak_bytes_in_use"),
                             bytes_limit=(s or {}).get("bytes_limit")))
         return out
     except Exception:
         return []
+
+
+def _hardware():
+    """What a run's hardware class IS: ``cpu_arch`` (``platform.machine()``) always, ``gpu`` (each distinct JAX
+    device kind, e.g. an NVIDIA model name) and ``gpu_count`` when a device reports one that is not a CPU kind.
+    Never a hostname, a kernel/platform string or a path -- those identify the machine a run happened to execute
+    on, not the hardware class a run of the same recipe needs."""
+    kinds = [d.get("kind") for d in _devices() if d.get("kind") and d["kind"].lower() != "cpu"]
+    out = {"cpu_arch": platform.machine()}
+    if kinds:
+        out["gpu"] = kinds[0]
+        out["gpu_count"] = len(kinds)
+    return out
 
 
 def memory_ceiling():
@@ -436,19 +450,20 @@ class Run:
 
     @property
     def summary(self):
-        """The run in a few hundred bytes: what a pack records about the run that made it."""
+        """The run in a few hundred bytes: what a pack records about the run that made it -- the hardware
+        CLASS it ran on (:func:`_hardware`), never which machine."""
         now = time.time()
         return dict(id=self.id, producer=self.producer, status=self.status or "running", started=_iso(self.started),
                     wall_s=now - self.started, phases_s=self.phase_seconds(), peak_rss_bytes=self._peak_rss or None,
-                    peak_device_bytes=self._peak_dev or None, host=socket.gethostname(), record=self._dir, code=_code())
+                    peak_device_bytes=self._peak_dev or None, code=_code(), **_hardware())
 
     def _manifest(self):
         total, avail = _meminfo(); _, cg_max = _cgroup()
         return dict(id=self.id, producer=self.producer, params=self.params, started=_iso(self.started), code=_code(),
-                    host=socket.gethostname(), platform=platform.platform(), python=sys.version.split()[0], pid=os.getpid(),
+                    python=sys.version.split()[0], pid=os.getpid(),
                     argv=sys.argv, devices=[d["device"] for d in _devices()], memory_total_bytes=total,
                     memory_ceiling_bytes=(cg_max if cg_max is not None else total),
-                    xla_mem_fraction=os.environ.get("XLA_PYTHON_CLIENT_MEM_FRACTION"), sample_s=SAMPLE_S)
+                    xla_mem_fraction=os.environ.get("XLA_PYTHON_CLIENT_MEM_FRACTION"), sample_s=SAMPLE_S, **_hardware())
 
     def _persist(self):
         root = self.run_dir if self.run_dir is not None else run_root()
@@ -552,7 +567,8 @@ def report(run_dir):
     if phase is not None:
         t_end = _parse(ends[-1]["t"]) if ends else last_hb
         walls[phase] = walls.get(phase, 0.0) + t_end - phase_t0
-    return dict(id=man["id"], producer=man["producer"], host=man.get("host"), started=man["started"], status=status,
+    return dict(id=man["id"], producer=man["producer"], gpu=man.get("gpu"), cpu_arch=man.get("cpu_arch"),
+                started=man["started"], status=status,
                 heartbeat_age_s=time.time() - last_hb, last_progress=last_progress, peaks=peaks, phases_s=walls,
                 error=(ends[-1].get("error") if ends and ends[-1]["status"] == "error" else None),
                 last_event=(rows[-1] if rows else None), manifest=man)
@@ -589,7 +605,7 @@ def main(argv=None):
             print(f"{r['id']:48s} {r['status']:8s} heartbeat {r.get('heartbeat_age_s', 0):6.0f} s ago  {prog}")
         return 0
     r = report(argv[0])
-    print(f"{r['id']}  {r['producer']} on {r['host']}  started {r['started']}  status {r['status']}")
+    print(f"{r['id']}  {r['producer']} on {r.get('gpu') or r.get('cpu_arch', '?')}  started {r['started']}  status {r['status']}")
     if r["error"]:
         print(f"  error: {r['error']}")
     for ph, s in r["phases_s"].items():

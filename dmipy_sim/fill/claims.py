@@ -2,7 +2,8 @@
 
 A shard of a block is ``blocks/<variant>/block-NNNN[.pK].rpk`` (``.pK`` for pass K of a plan in passes; no tag
 for the whole block, which covers every pass). A worker takes a block by writing
-``claims/<variant>/block-NNNN[.pK].<host>.json``; a block whose shard or claim exists is taken. Claims are
+``claims/<variant>/block-NNNN[.pK].<host>.json``, ``host`` its own opaque worker label (never the machine's
+hostname, :func:`dmipy_sim.fill.__main__._worker_token`); a block whose shard or claim exists is taken. Claims are
 written several per commit (:func:`claim_next`, ``claim_batch``), served from the worker's queue and released
 when it stops. A claim carries a heartbeat (:func:`heartbeat_payload`, refreshed every :data:`HEARTBEAT_S` by the
 worker's thread); a claim not refreshed for :data:`STALE_S` is a dead worker's and is released by the next

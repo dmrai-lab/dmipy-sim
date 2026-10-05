@@ -10,6 +10,7 @@ import pytest
 import dmipy_sim as d
 from dmipy_sim.geometry import mesh_shapes
 from dmipy_sim.spec import spec_of, geometry_from_spec, walk_spec, SubstrateSpec, SpecError
+from dmipy_sim.spec.build import resolve_surface_file
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_sim.spec.tissue import Tissue
 from tests.replay_frames import field_along
@@ -26,18 +27,20 @@ def test_a_mesh_writes_its_spec_and_is_rebuilt_from_it(tmp_path, monkeypatch):
                voxel_min=[-4e-6] * 3, voxel_max=[4e-6] * 3)
     monkeypatch.setenv("DMIPY_SIM_SURFACE_DIR", str(tmp_path / "cache"))
     cached = m.spec                                   # an in-memory mesh writes its surface to the cache, named by content
-    assert cached.wall("surface").surface.file.startswith(str(tmp_path / "cache")) and m.source["file"] == cached.wall("surface").surface.file
-    assert m.spec.wall("surface").surface.file == cached.wall("surface").surface.file      # written once
+    cite = cached.wall("surface").surface.file         # a portable citation: the content-hash basename alone,
+    assert "/" not in cite and cite.startswith("mesh-")  # never this machine's absolute path
+    assert m.source["file"].startswith(str(tmp_path / "cache")) and m.source["file"].endswith(cite) and m.source["cite"] == cite
+    assert m.spec.wall("surface").surface.file == cite      # written once
     spec = spec_of(m, surface_dir=tmp_path)           # an explicit directory still wins
     spec.validate()
     w = spec.wall("surface")
-    assert w.surface.kind == "mesh" and os.path.exists(w.surface.file) and len(w.surface.sha256) == 64
+    assert w.surface.kind == "mesh" and os.path.exists(resolve_surface_file(w.surface.file)) and len(w.surface.sha256) == 64
     assert w.permeability.in_to_out == pytest.approx(2e-5, rel=1e-6) and w.permeability.out_to_in == pytest.approx(1e-5, rel=1e-6)
     assert w.surface_relaxivity.inside == pytest.approx(1e-6, rel=1e-6) and w.surface_relaxivity.outside == 0.0
     assert spec.domain.boundary == ["reflect"] * 3 and spec.seeding.pools == [1]
     assert spec.pool("intra").T2 == 0.05 and spec.validity.mesh_edge_feature_ratio > 0
     m2 = geometry_from_spec(spec)
-    assert isinstance(m2, d.Mesh) and m2.source["file"] == w.surface.file
+    assert isinstance(m2, d.Mesh) and m2.source["cite"] == w.surface.file
     spec2 = spec_of(m2)
     assert spec2 == spec                                     # a fixed point, the file included
     w1 = d.simulate_trajectories(40, D, m, 4e-4, 2e-4, seed=2, require_gpu=False)

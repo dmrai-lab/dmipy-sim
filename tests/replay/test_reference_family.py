@@ -203,6 +203,17 @@ def test_every_stage_writes_its_record(ran):
     assert rec["walk"]["substrates"]["sphere"]["n_t"] == N_T
     assert rec["design"]["pilot"]["on_real_window"]
     assert rec["design"]["derived"]["n_walkers"] > 0
+    # no record names a local file by its absolute path, this machine's hostname, or a user name
+    for f in rec["source"]["sources"].values() if isinstance(rec["source"].get("sources"), dict) else []:
+        for row in f.get("files", []):
+            assert "read_from" not in row
+    import socket
+    hostname = socket.gethostname()
+    for s in R.STAGES:
+        blob = json.dumps(rec[s])
+        assert str(fam.dir) not in blob
+        if hostname and len(hostname) > 2:
+            assert hostname not in blob
 
 
 @pytest.mark.parametrize("stage", ["source", "reference", "spec", "design", "walk", "pack", "gate", "card"])
@@ -308,6 +319,14 @@ def test_publish_records_what_it_would_upload(ran):
     assert "records/gate.json" in p["files"] and "README.md" in p["files"]
     assert "records/source.json" in p["files"] and "previews/sphere.png" in p["files"]
     assert "records/publish.json" not in p["files"]              # a record cannot publish itself
+    # when this ran, never who or on what machine: no hostname, no user name, no absolute path
+    import socket
+    assert "actor" not in p and "host" not in p and "user" not in p and p["at"]
+    blob = json.dumps(p)
+    hostname = socket.gethostname()
+    if hostname and len(hostname) > 2:
+        assert hostname not in blob
+    assert os.environ.get("USER", "\x00no-such-user\x00") not in blob
 
 
 # --------------------------------------------------------------- the order rule
@@ -1131,7 +1150,7 @@ def test_a_counter_the_producing_run_did_not_report_is_recorded_as_absent_by_nam
     try:
         got = R._walk_from_pack("sphere", R.RecordedWalk(
             pack_path=pack, not_recorded=("sub_steps", "illegal_crossings"),
-            evidence="the walk's run record carries neither counter"), budget, n)
+            evidence="the walk's run record carries neither counter"), budget, n, fam.dir)
     finally:
         mp.undo()
     assert got["sub_steps"] is None and got["illegal_crossings"] is None
@@ -1139,9 +1158,9 @@ def test_a_counter_the_producing_run_did_not_report_is_recorded_as_absent_by_nam
 
     with pytest.raises(R.ReferenceRefusal, match="illegal_crossings is None and not_recorded does not name it"):
         R._walk_from_pack("sphere", R.RecordedWalk(pack_path=pack, sub_steps=3,
-                                                  evidence="the log", not_recorded=("sub_steps",)), budget, n)
+                                                  evidence="the log", not_recorded=("sub_steps",)), budget, n, fam.dir)
     with pytest.raises(R.ReferenceRefusal, match="names nothing"):
-        R._walk_from_pack("sphere", R.RecordedWalk(pack_path=pack, sub_steps=3, illegal_crossings=0), budget, n)
+        R._walk_from_pack("sphere", R.RecordedWalk(pack_path=pack, sub_steps=3, illegal_crossings=0), budget, n, fam.dir)
 
 
 def test_the_pilot_substrate_is_declared_and_refused_when_it_is_not_one_of_them(tmp_path):
@@ -1253,7 +1272,7 @@ def test_not_recorded_is_a_tuple_of_counter_names_and_not_a_sentence(ran):
                 ("sub_steps", "peak_rss"), ("steps",)):
         with pytest.raises(R.ReferenceRefusal, match="a tuple of counter NAMES"):
             R._walk_from_pack("sphere", R.RecordedWalk(pack_path=pack, not_recorded=bad,
-                                                      evidence="the run record"), 1 << 40, 300)
+                                                      evidence="the run record"), 1 << 40, 300, fam.dir)
 
 
 def test_the_within_budget_check_fires_on_a_peak_over_the_budget_and_states_an_absent_one(ran):

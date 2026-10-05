@@ -18,6 +18,21 @@ def opts(work, **kw):
     return Options(workdir=work, host=kw.pop("host", "h1"), repo="fake", require_gpu=False, **kw)
 
 
+def test_the_default_worker_token_is_never_the_hostname(tmp_path, monkeypatch):
+    """`--host`'s default (`dmipy_sim.fill.__main__._worker_token`) is an opaque label cached locally per
+    machine, stable across restarts, and never this machine's hostname."""
+    import socket
+    from dmipy_sim.fill.__main__ import _worker_token
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("DMIPY_SIM_FILL_WORKER_ID", raising=False)
+    tok1 = _worker_token(); tok2 = _worker_token()
+    assert tok1 == tok2 and tok1 != socket.gethostname() and tok1 != socket.gethostname().split(".")[0]
+    cache = tmp_path / ".cache" / "dmipy-sim" / "fill-worker-id"
+    assert cache.is_file() and cache.read_text().strip() == tok1
+    monkeypatch.setenv("DMIPY_SIM_FILL_WORKER_ID", "explicit-label")
+    assert _worker_token() == "explicit-label"
+
+
 def test_shard_names():
     assert shard_name(12, {"pass": None}) == "block-0012" and shard_name(12, {"pass": 2}) == "block-0012.p2"
     assert parse_shard("blocks/t/block-0012.p1.rpk") == (12, 1) and parse_shard("claims/t/block-0012.host.json") == (12, None)
@@ -50,6 +65,24 @@ def test_a_filled_block_costs_its_claim_and_one_commit(certified):
     assert sm["shards"] == 4 and sm["contributors"]["h1"]["shards"] == 4 and sm["per_pass"][1]["blocks_done"] == 2
     assert sm["commits_last_hour"]["blocks"] == 4 and sm["commits_last_hour"]["claims"] == 4
     assert "h1" in render(sm) and "| h1 |" in render(sm, markdown=True)
+
+
+def test_the_shard_and_claim_name_hardware_class_never_the_machine(certified):
+    """A worker's ``host`` is its own opaque label (never this machine's hostname, which `Options.host` must
+    never default to -- `dmipy_sim.fill.__main__._worker_token`); the shard's summary and the pack's provenance
+    carry the hardware CLASS (`gpu`, `cpu_arch`) a worker declares, never a hostname or an absolute path."""
+    import socket
+    hub, work = certified
+    Fill(hub, Recipe(hub), opts(work, loop=True, claim_batch=1, gpu="L40S", cpu_arch="x86_64")).run(heartbeat_every=3600)
+    s = json.load(open(hub.get("blocks/t/block-0000.p1.json")))
+    assert s["host"] == "h1" and s["gpu"] == "L40S" and s["cpu_arch"] == "x86_64"
+    pk_meta = json.load(open(hub.get("blocks/t/block-0000.p1.run/manifest.json")))
+    blob = json.dumps(s) + json.dumps(pk_meta)
+    hostname = socket.gethostname()
+    if hostname and len(hostname) > 2:
+        assert hostname not in blob
+    assert work not in blob                          # no absolute local path
+    assert "platform" not in pk_meta and pk_meta.get("cpu_arch")
 
 
 def test_a_429_is_retried_and_a_heartbeat_is_not(certified, monkeypatch):

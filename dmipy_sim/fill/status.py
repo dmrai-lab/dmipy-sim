@@ -19,8 +19,10 @@ import time
 
 from .claims import HEARTBEAT_S, claim_age, parse_shard
 
-CONTRIBUTORS = [(r"^gaia$", "gaia GH200"), (r"L40S", "L40S"), (r"^modal", "Modal T4"), (r"^ip-10-", "Lightning T4"),
-                (r"^[0-9a-f]{12}$", "Kaggle T4")]      # host name -> contributor, for the DiSCo fill's machines
+CONTRIBUTORS = [(r"^modal", "Modal T4"), (r"^ip-10-", "Lightning T4"),
+                (r"^[0-9a-f]{12}$", "Kaggle T4")]      # a public provider's own naming of its container -> a
+                                                        # friendly label; a worker's opaque label is shown as
+                                                        # itself otherwise (never a private machine's hostname)
 WINDOW_S = 3600              # the rate is read over the last hour (three hours when the hour holds fewer than 3 shards)
 COMMITS_PER_HOUR = 128       # the hub's cap per repository
 
