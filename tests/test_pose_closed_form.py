@@ -340,3 +340,29 @@ def test_a_shell_of_delivered_amplitudes_is_one_body_in_powers_of_its_amplitude(
     full = pack.pose_response(played, method="closed")
     for R in so3.haar_rotations(4, 13):
         assert np.all(np.abs(full.at(R) - pack.replay(played, orientation=R, complex_signal=True)) <= full.misfit + 2e-8)
+
+
+@pytest.mark.parametrize("machine", [None, "siemens_magnetom_prisma_3T", "hyperfine_swoop_64mT"])
+def test_the_misfit_bounds_what_the_grouping_and_the_rounding_leave_out(pack, machine):
+    """Every row's part the expansion does not play -- off its principal direction however small, its difference from
+    the group whose body it shares, a b = 0 row's rounding about zero, its |g0|'s difference from its group's -- is in
+    its misfit (dmrai-lab/dmipy-sim#617): the direct posed replay is within it at every rotation, on a 3 T machine's
+    classes (where the misfit was 727 times short) as on the ideal scanner and the Swoop."""
+    from dmipy_sim.acquisition.scanners import ScannerLimits
+    from dmipy_sim.phantom.bore import encoding_classes
+    from dmipy_sim.phantom.grid import Grid
+    rng = np.random.default_rng(3)
+    dirs = rng.normal(size=(12, 3)); dirs /= np.linalg.norm(dirs, axis=1, keepdims=True)
+    dirs = np.vstack([[0.0, 0.0, 1.0], dirs, dirs])
+    seq = sequences.pgse(dirs, 2e-3, 5e-3, gradient_strengths=[0.0] + [0.08] * 12 + [0.048] * 12, TE=10e-3, slew_rate=400.0)
+    if machine is None:
+        played = [seq]
+    else:
+        grid = Grid(shape=(3, 1, 1), voxel_size_m=(1e-2,) * 3, origin_m=(-0.01, 0.005, -0.02), isocenter_m=(0.0, 0.0, 0.0))
+        played = encoding_classes(ScannerLimits.of(machine), grid, seq, np.array([[i, 0, 0] for i in range(3)]),
+                                  tolerance=None)[1]
+    for one in played:
+        pr = pack.pose_response(one, method="closed")
+        for R in so3.haar_rotations(6, 5):
+            err = np.abs(pr.at(R) - pack.replay(one, orientation=R, complex_signal=True))
+            assert np.all(err <= pr.misfit + 1e-12), (err - pr.misfit).max()
