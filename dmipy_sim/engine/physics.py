@@ -515,6 +515,20 @@ def _encode_compartment(geometry, pool, k):
                      jnp.where(pool == 1, k + 1, jnp.int32(geometry.N_max) + k + 1)).astype(jnp.int32)
 
 
+def _add_work(work, w, keep=None):
+    """``work + w`` elementwise for the carried ``(hits, crossings, exhausted)``; an entry that is None (hits and
+    crossings when not counting) stays None, exhaustion is always summed. ``keep`` masks the step's work out where
+    False (a bound walker's step that did not happen)."""
+    if work is None or w is None:
+        return work
+    out = []
+    for a, b in zip(work, w):
+        if a is None or b is None:
+            out.append(None); continue
+        out.append(a + (jnp.where(keep, b, jnp.int32(0)) if keep is not None else b))
+    return tuple(out)
+
+
 def make_myelin_substep(geometry, dt: float, rho_weights=None):
     """The one displacement-and-wall rule for the concentric-cylinder substrates.
 
@@ -523,9 +537,11 @@ def make_myelin_substep(geometry, dt: float, rho_weights=None):
     :func:`dmipy_sim.geometry.myelin.concentric_wall_kernel`. Each pool steps with its own
     diffusivity (the axon's, indexed by the carried compartment); the axial coordinate is free.
 
-    Returns ``sub(r, step_key, u, comp_id) -> (r_new, comp_id_new, chan, dlog_rho)`` where
-    ``chan`` holds the four unit boundary local-time channels of the wall kernel and ``dlog_rho``
-    the surface log-weight increment under ``rho_weights`` (``(N_max, 4)``; zero when None).
+    Returns ``sub(r, step_key, u, comp_id) -> (r_new, comp_id_new, chan, dlog_rho, work)`` where
+    ``chan`` holds the four unit boundary local-time channels of the wall kernel, ``dlog_rho``
+    the surface log-weight increment under ``rho_weights`` (``(N_max, 4)``; zero when None), and ``work``
+    the step's ``(hits, crossings, exhausted)`` as int32 -- the first two None unless the geometry counts
+    (``count_walls``), the exhaustion always.
     """
     dt_f32 = jnp.float32(dt)
     N_max = geometry.N_max
@@ -542,7 +558,8 @@ def make_myelin_substep(geometry, dt: float, rho_weights=None):
     wall = concentric_wall_kernel(
         geometry._centers_jax, geometry._inner_radii_jax, geometry._outer_radii_jax, L,
         D_i, D_m, D_e, geometry._kappa_inner_jax, geometry._kappa_outer_jax, rho_weights,
-        geometry._eps, geometry._nudge, step_max, geometry.min_gap)
+        geometry._eps, geometry._nudge, step_max, geometry.min_gap, count=geometry.count_walls,
+        budget=geometry.bounce_budget)
     def sub(r, step_key, u, comp_id):
         pool, k = _pool_and_axon(geometry, comp_id)
         unit = isotropic_unit_step(step_key)
@@ -552,12 +569,14 @@ def make_myelin_substep(geometry, dt: float, rho_weights=None):
         l_xy = jnp.linalg.norm(s_c[:2])
         d_hat = jnp.where(l_xy > 0, s_c[:2] / jnp.maximum(l_xy, jnp.float32(1e-30)),
                           jnp.zeros(2, jnp.float32))
-        xy_new, pool_new, k_new, chan, dlog_rho, _ = wall(r_c[:2], d_hat, l_xy, pool, k, u)
+        h = wall(r_c[:2], d_hat, l_xy, pool, k, u)
+        xy_new = h.xy
         if L is not None:
             xy_new = xy_new - L * jnp.floor(xy_new / L + jnp.float32(0.5))      # stay in the cell
-        r_c_new = jnp.stack([xy_new[0], xy_new[1], r_c[2] + s_c[2]])
-        r_new = r_c_new
-        return r_new, _encode_compartment(geometry, pool_new, k_new), chan, dlog_rho
+        r_new = jnp.stack([xy_new[0], xy_new[1], r_c[2] + s_c[2]])
+        counting = h.n_hits is not None
+        work = (h.n_hits, h.crossed.astype(jnp.int32) if counting else None, h.exhausted.astype(jnp.int32))
+        return r_new, _encode_compartment(geometry, h.pool, h.k), h.chan, h.dlog_rho, work
 
     sub.bounce_loop = wall.bounce_loop
     sub.n_cand = wall.n_cand
@@ -569,9 +588,9 @@ def make_myelin_traj_step_fn(geometry, dt: float):
     :func:`make_packed_myelin_traj_step_fn`, stepped by the same substep
     (:func:`make_myelin_substep`).
 
-    Carry ``(r, r_unwrapped, key, dlog_accum, comp_id)`` -- the same shape the packed trajectory
+    Carry ``(r, r_unwrapped, key, dlog_accum, comp_id, work)`` -- the same shape the packed trajectory
     step carries, so :func:`~dmipy_sim.engine.core.simulate_trajectories` records both through one
-    recording branch. There is no periodic cell to unwrap: ``r`` already is the continuous
+    recording branch; ``work`` is the carried ``(hits, crossings, exhausted)`` or None. There is no periodic cell to unwrap: ``r`` already is the continuous
     position, so ``r_unwrapped`` repeats it rather than tracking a minimum-image wrap.
     ``dlog_accum`` accumulates the unit boundary local time (``rho/D = 1``), as the packed step
     does. No magnetization transfer: binding is wired to the packed myelin walk only
@@ -580,12 +599,12 @@ def make_myelin_traj_step_fn(geometry, dt: float):
     sub = make_myelin_substep(geometry, dt)
 
     def step_fn(carry, _):
-        r, r_uw, key, dlog_accum, comp_id = carry
+        r, r_uw, key, dlog_accum, comp_id, work = carry
         key, k_step, k_perm = jax.random.split(key, 3)
         u = jax.random.uniform(k_perm, dtype=jnp.float32)
-        r_new, comp_new, chan, _ = sub(r, k_step, u, comp_id)
+        r_new, comp_new, chan, _, w = sub(r, k_step, u, comp_id)
         dlog_boundary = jnp.sum(chan)
-        return (r_new, r_new, key, dlog_accum + dlog_boundary, comp_new), None
+        return (r_new, r_new, key, dlog_accum + dlog_boundary, comp_new, _add_work(work, w)), None
 
     step_fn.bounce_loop = sub.bounce_loop
     return step_fn
@@ -621,7 +640,7 @@ def make_myelin_step_fn(geometry, dt: float, T1: float = None, sub_steps: int = 
             r, phi, log_w, comp, key = c
             key, k_step, k_perm = jax.random.split(key, 3)
             u = jax.random.uniform(k_perm, dtype=jnp.float32)
-            r_new, comp_new, _, _ = sub(r, k_step, u, comp)
+            r_new, comp_new, _, _, _w = sub(r, k_step, u, comp)
             dlog = jnp.float32(0.0)
             if has_t2:
                 dlog = dlog - dt_sub_f32 * inv_t2_by_pool[comp_new] * chi_t
@@ -654,9 +673,9 @@ def make_packed_myelin_traj_step_fn(geometry, dt: float,
                                     mt_side_intra: float = 1.0, mt_side_extra: float = 1.0):
     """Trajectory step for PackedMyelinatedCylinders: geometry + permeability, no relaxation.
 
-    Carry ``(r_incell, r_unwrapped, key, dlog_accum, comp_id)`` -- or ``(r_incell, r_unwrapped, key,
-    dlog_accum, comp_id, bound_rem, bound_acc)`` when ``kappa_MT > 0``; ``step_fn(carry, None) -> (carry,
-    None)``. ``r_incell`` is the position in the cell ``[-L/2, L/2)`` that the wall kernel reads;
+    Carry ``(r_incell, r_unwrapped, key, dlog_accum, comp_id, work)`` -- or ``(r_incell, r_unwrapped, key,
+    dlog_accum, comp_id, bound_rem, bound_acc, work)`` when ``kappa_MT > 0``; ``step_fn(carry, None) -> (carry,
+    None)``; ``work`` is the carried ``(hits, crossings, exhausted)`` or None (a bound walker's step adds nothing). ``r_incell`` is the position in the cell ``[-L/2, L/2)`` that the wall kernel reads;
     ``r_unwrapped`` is the continuous position (:func:`_unwrapped_step`), the one a trajectory records. ``dlog_accum``
     accumulates the unit boundary local time (``-2 d_perp`` per reflection, i.e. ``rho/D = 1``) so
     a replay can apply any surface relaxivity. ``comp_id`` is the encoded compartment (0 extra,
@@ -680,17 +699,17 @@ def make_packed_myelin_traj_step_fn(geometry, dt: float,
 
     def step_fn(carry, _):
         if mt_on:
-            r, r_uw, key, dlog_accum, comp_id, bound_rem, bound_acc = carry
+            r, r_uw, key, dlog_accum, comp_id, bound_rem, bound_acc, work = carry
             key, k_step, k_perm, stick_key, dwell_key = jax.random.split(key, 5)
         else:
-            r, r_uw, key, dlog_accum, comp_id = carry
+            r, r_uw, key, dlog_accum, comp_id, work = carry
             key, k_step, k_perm = jax.random.split(key, 3)
         u = jax.random.uniform(k_perm, dtype=jnp.float32)
-        r_new, comp_new, chan, _ = sub(r, k_step, u, comp_id)
+        r_new, comp_new, chan, _, w = sub(r, k_step, u, comp_id)
         r_uw_new = _unwrapped_step(r_uw, r, r_new, L)
         dlog_boundary = jnp.sum(chan)
         if not mt_on:
-            return (r_new, r_uw_new, key, dlog_accum + dlog_boundary, comp_new), None
+            return (r_new, r_uw_new, key, dlog_accum + dlog_boundary, comp_new, _add_work(work, w)), None
 
         pool, k = _pool_and_axon(geometry, comp_id)
         is_intra, is_extra = pool == 1, pool == 0
@@ -710,7 +729,8 @@ def make_packed_myelin_traj_step_fn(geometry, dt: float,
         bound_rem_out = jnp.where(is_bound, bound_rem - jnp.float32(1.0),
                                   jnp.where(newly, dwell_draw, jnp.float32(0.0)))
         bound_acc_out = bound_acc + jnp.where(is_bound, jnp.float32(1.0), jnp.float32(0.0))
-        return (r_out, r_uw_out, key, dlog_accum + dlog_contrib, comp_out, bound_rem_out, bound_acc_out), None
+        return (r_out, r_uw_out, key, dlog_accum + dlog_contrib, comp_out, bound_rem_out, bound_acc_out,
+                _add_work(work, w, keep=~is_bound)), None
 
     step_fn.bounce_loop = sub.bounce_loop
     return step_fn
@@ -757,7 +777,7 @@ def make_packed_myelin_step_fn(geometry, dt: float, T1: float = None):
             r_ic, r_uw, phi, log_w, cid, key = c
             key, k_step, k_perm = jax.random.split(key, 3)
             u = jax.random.uniform(k_perm, dtype=jnp.float32)
-            r_ic_new, cid_new, _, dlog_rho = sub(r_ic, k_step, u, cid)
+            r_ic_new, cid_new, _, dlog_rho, _w = sub(r_ic, k_step, u, cid)
             r_uw_new = _unwrapped_step(r_uw, r_ic, r_ic_new, L)
             phi_new = phi + gamma_dt_sub * (g_t @ r_uw_new)
 

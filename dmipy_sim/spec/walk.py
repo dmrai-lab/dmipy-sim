@@ -25,7 +25,7 @@ def walk_spec(spec, n_walkers=None, T_max=None, dt_save=None, *, scanner="connec
               seed=0, n_probe=200_000, field_res=None, field_budget=None, field_cutoff_m=25e-6,
               field_cutoff_tol=0.02, field_cutoff_max_m=50e-6, require_gpu=None, walker_batch_size=50_000, tiers="all",
               seeding=None, adaptive_steps=False, field_sample_every=1, field_far=None, field_gather_every=4, run_dir=None,
-              spool=False, context=None, defer_field=False):
+              spool=False, context=None, defer_field=False, bounce_budget=None):
     """Walk ``spec`` and return a :class:`~dmipy_sim.persistent_walk.PersistentWalk` carrying the spec.
 
     ``context`` is a :class:`WalkContext` of the spec (its pool tests, boundaries, walking geometries and the
@@ -104,7 +104,7 @@ def walk_spec(spec, n_walkers=None, T_max=None, dt_save=None, *, scanner="connec
                                       defer_field=defer_field, adaptive_steps=adaptive_steps, seed=seed), run_dir=run_dir) as run:
         import logging
         from ..engine.core import simulate_trajectories
-        from ..persistent_walk import PersistentWalk
+        from ..persistent_walk import PersistentWalk, merge_work
         from ..acquisition.scanners import save_interval
         spec = SubstrateSpec.from_dict(spec) if isinstance(spec, dict) else spec
         spec.validate()
@@ -180,14 +180,15 @@ def walk_spec(spec, n_walkers=None, T_max=None, dt_save=None, *, scanner="connec
                 fb = _single_geometry_field_grid(spec, g, field_res, field_budget)
             w = simulate_trajectories(int(n_walkers), float(D), g, T_max=T_max, dt_save=dt_save, seed=seed,
                                       require_gpu=require_gpu, walker_batch_size=walker_batch_size, tiers=tiers,
-                                      field_basis=fb, field_sample_every=(int(field_sample_every) if fb is not None else 1))
+                                      field_basis=fb, field_sample_every=(int(field_sample_every) if fb is not None else 1),
+                                      bounce_budget=bounce_budget)
             return PersistentWalk(w.positions, w.dt, w.sub_steps, w.dt_sim, w.boundary_local_time, w.compartment,
                                   w.bound_frac, w.illegal_crossings, w.seed, w.diffusivity, geometry=g, spec=spec, run=w.run,
                                   field_basis=w.field_basis, field_samples=w.field_samples,
-                                  field_sample_every=w.field_sample_every, field_deferred=bool(defer_field))
+                                  field_sample_every=w.field_sample_every, field_deferred=bool(defer_field), work=w.work)
         return _walk_bundle(spec, int(n_walkers), float(T_max), float(dt_save), seed, n_probe, field_res,
                             require_gpu, walker_batch_size, field_budget=field_budget, field_cutoff_m=field_cutoff_m, field_cutoff_tol=field_cutoff_tol, seeding=seeding,
-                            field_cutoff_max_m=field_cutoff_max_m, adaptive_steps=adaptive_steps, field_sample_every=int(field_sample_every), field_far=field_far, field_gather_every=int(field_gather_every), context=context, spool=bool(spool), defer_field=bool(defer_field))
+                            field_cutoff_max_m=field_cutoff_max_m, adaptive_steps=adaptive_steps, field_sample_every=int(field_sample_every), field_far=field_far, field_gather_every=int(field_gather_every), context=context, spool=bool(spool), defer_field=bool(defer_field), bounce_budget=bounce_budget)
 
 
 #: The surface kinds a field raster is made from (:func:`field_grid_of_spec`): their membership tests are exact.
@@ -647,14 +648,14 @@ def draw_seeds(spec, seeding, seed, *, context=None):
     return DrawnSeeds(positions=positions, weights=weights, grid=grid, seed=int(seed), drawn_from=seeding)
 
 
-def _walk_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field_res, require_gpu, batch, field_budget=None,
+def _walk_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field_res, require_gpu, batch, field_budget=None, bounce_budget=None,
                  field_cutoff_m=25e-6, field_cutoff_tol=0.02, seeding=None, field_cutoff_max_m=50e-6, adaptive_steps=False, field_sample_every=1, field_far=None, field_gather_every=4, context=None, spool=False, defer_field=False):
     """Walk a multi-surface spec pool by pool: every seeded pool is defined by the walls it is inside and the walls it
     is outside; a pool with D > 0 walks the interior of its inside-walls (intra, glia) or the exterior of its
     outside-walls (extra); a shell pool at D = 0 (myelin) is frozen where it was seeded; the field basis is
     rasterised from the same membership tests."""
     from ..engine.core import simulate_trajectories
-    from ..persistent_walk import PersistentWalk
+    from ..persistent_walk import PersistentWalk, merge_work
     log = logging.getLogger("dmipy_sim")
     ctx = context if context is not None else WalkContext(spec, field_far=field_far)
     g = ctx.tests
@@ -718,6 +719,7 @@ def _walk_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field_res, requ
             raise SpecError("adaptive_steps samples a strand field in the walk; this spec's field source is gridded, which "
                             "the fixed-step walk samples at every sub-step (adaptive_steps=False)")
         fg = field_grid_of_spec(spec, field_res=field_res, field_budget=field_budget, context=ctx)
+    works = []
     field_samples = []
     for pid in seeded:
         pool = pools[pid]
@@ -750,10 +752,12 @@ def _walk_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field_res, requ
         else:
             w = simulate_trajectories(n, float(pool.D), g, T_max=T_max, dt_save=dt_save, seed=seed + 13 * pid, r0=r0,
                                       require_gpu=require_gpu, walker_batch_size=batch, field_basis=fg,
-                                      field_sample_every=(int(field_sample_every) if fg is not None else 1))
+                                      field_sample_every=(int(field_sample_every) if fg is not None else 1),
+                                      bounce_budget=bounce_budget)
             if w.field_samples is not None:
                 field_samples.append((pid, w.field_samples))
         n_t, walked = w.n_t, w
+        works.append(w.work)
         parts.append((pid, np.asarray(w.positions, np.float32),
                       None if w.boundary_local_time is None else np.asarray(w.boundary_local_time, np.float32)))
     if walked is None:
@@ -794,6 +798,7 @@ def _walk_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field_res, requ
                           weights=(None if np.allclose(wts, 1.0) else wts), field_basis=(sf if sf is not None else fg),
                           stepping=(dict(rule="adaptive", pools=dict(stepping)) if stepping else None),
                           field_samples=samples, field_sample_every=(int(field_sample_every) if samples is not None else 1),
+                          work=merge_work(works),
                           field_deferred=bool(defer_field))
     object.__setattr__(walk, "run", current())
     return walk

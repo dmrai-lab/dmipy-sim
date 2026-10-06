@@ -27,6 +27,7 @@ transfer bound pool blends onto this same per-step update in later work.
 """
 from __future__ import annotations
 
+import logging
 import warnings
 
 import numpy as np
@@ -40,6 +41,8 @@ from ..constants import GAMMA
 from ..acquisition.rf import RFSchedule
 from .gpu import gpu_available
 from ..run import Run
+
+_log = logging.getLogger("dmipy_sim.engine.bloch")
 from .physics import resolve_sub_steps, _warn_if_step_outruns_the_lookup, seed_walkers, isotropic_unit_step
 
 __all__ = ["simulate_bloch"]
@@ -108,9 +111,19 @@ def _make_bloch_step_fn(geometry, D, dt, T2, T1, M0, off_resonance_hz, rho=0.0,
     global_carrier = jnp.float32(2.0 * np.pi * float(off_resonance_hz) * dt)
     rho_over_D = jnp.float32(rho / D)
     has_surf = rho > 0.0 and geometry.has_walls
+    counting = bool(geometry.count_walls)
+
+    def _work0():
+        zero = jnp.int32(0)
+        return (zero if counting else None, zero if counting else None, zero)
+
+    def _work_add(w, hit):
+        exh = w[2] + hit.exhausted.astype(jnp.int32)
+        if not counting:
+            return (None, None, exh)
+        n = hit.n_hits if hit.n_hits is not None else jnp.int32(0)
+        return (w[0] + n, w[1] + hit.crossed.astype(jnp.int32), exh)
     has_perm = float(geometry.permeability or 0.0) > 0.0 and geometry.supports_permeability
-    reflect = geometry.reflect
-    reflect_lw = geometry.reflect_with_log_weight if geometry.has_walls else None
 
     def _apply(r_new, phi_grad, surf, M, rf_dflip, rf_axis, rf_carrier, crush_rate, uc,
                phi_field=None):
@@ -147,27 +160,28 @@ def _make_bloch_step_fn(geometry, D, dt, T2, T1, M0, off_resonance_hz, rho=0.0,
         gamma_dt_sub = jnp.float32(GAMMA * dt / n_sub)
 
         def step_fn(carry, inputs):
-            r, M, key, uc = carry                           # r:(3,)  M:(n_meas,3)  uc:()
+            r, M, key, uc, work = carry                     # r:(3,)  M:(n_meas,3)  uc:()
             g_t, rf_dflip, rf_axis, rf_carrier, crush_rate = inputs
 
             def _sub(c, _):
-                r, phi, logw, key = c
+                r, phi, logw, key, work = c
                 key, sk_step, sk_perm = jax.random.split(key, 3)
                 unit = isotropic_unit_step(sk_step)
                 hit = interact(r, unit * step_len_sub, kappa_over_D=kappa_over_D,
                                rho_over_D=rho_over_D, key=sk_perm)
                 r_new, dlog_w = hit.r, hit.dlog_w                # dlog_w already scaled by rho/D
                 phi_new = phi + gamma_dt_sub * (g_t @ r_new)    # (n_meas,)
-                return (r_new, phi_new, logw + dlog_w, key), None
+                return (r_new, phi_new, logw + dlog_w, key, _work_add(work, hit)), None
 
-            init = (r, jnp.zeros(M.shape[0], jnp.float32), jnp.float32(0.0), key)
-            (r_new, phi_grad, logw, key), _ = jax.lax.scan(_sub, init, None, length=n_sub)
+            init = (r, jnp.zeros(M.shape[0], jnp.float32), jnp.float32(0.0), key, work)
+            (r_new, phi_grad, logw, key, work), _ = jax.lax.scan(_sub, init, None, length=n_sub)
             surf = jnp.exp(logw)                            # transverse wall attenuation (1 if rho=0)
             M_new, xy = _apply(r_new, phi_grad, surf, M, rf_dflip, rf_axis, rf_carrier,
                                crush_rate, uc)
-            return (r_new, M_new, key, uc), xy
+            return (r_new, M_new, key, uc, work), xy
 
         step_fn.n_sub = n_sub
+        step_fn.work0 = _work0
         return step_fn
 
     n_sub = resolve_sub_steps(geometry, float(D), dt, surface=has_surf, override=sub_steps)
@@ -175,32 +189,36 @@ def _make_bloch_step_fn(geometry, D, dt, T2, T1, M0, off_resonance_hz, rho=0.0,
     step_len_sub = jnp.float32(np.sqrt(6.0 * D * dt / n_sub))
     gamma_dt_sub = jnp.float32(GAMMA * dt / n_sub)
 
+    interact = geometry.interact
+    rho_unit = jnp.float32(1.0) if has_surf else jnp.float32(0.0)
+
     def step_fn(carry, inputs):
-        r, M, key, uc = carry                               # r:(3,)  M:(n_meas,3)  uc:()
+        r, M, key, uc, work = carry                         # r:(3,)  M:(n_meas,3)  uc:()
         g_t, rf_dflip, rf_axis, rf_carrier, crush_rate = inputs   # g_t:(n_meas,3)
 
         def _sub(c, _):
-            r, phi, phi_f, logw, key = c
+            r, phi, phi_f, logw, key, work = c
             key, subkey = jax.random.split(key)
             unit = isotropic_unit_step(subkey)
-            if has_surf:
-                r_new, dlog = reflect_lw(r, unit * step_len_sub, jnp.float32(1.0))
-            else:
-                r_new, dlog = reflect(r, unit * step_len_sub), jnp.float32(0.0)
+            # `interact` at rho/D = 1 (the unit local time, scaled below) or 0: the same function as the
+            # wrappers it replaces, and the WallHit carries the work
+            hit = interact(r, unit * step_len_sub, rho_over_D=rho_unit)
+            r_new, dlog = hit.r, hit.dlog_w
             phi_f_new = (phi_f + gamma_dt_sub * field_fn(r_new)
                          if field_fn is not None else phi_f)
             return (r_new, phi + gamma_dt_sub * (g_t @ r_new), phi_f_new,
-                    logw + dlog, key), None
+                    logw + dlog, key, _work_add(work, hit)), None
 
-        init = (r, jnp.zeros(M.shape[0], jnp.float32), jnp.float32(0.0), jnp.float32(0.0), key)
-        (r_new, phi_grad, phi_field, logw, key), _ = jax.lax.scan(_sub, init, None, length=n_sub)
+        init = (r, jnp.zeros(M.shape[0], jnp.float32), jnp.float32(0.0), jnp.float32(0.0), key, work)
+        (r_new, phi_grad, phi_field, logw, key, work), _ = jax.lax.scan(_sub, init, None, length=n_sub)
         # rho/D applied to the SUMMED local time, matching the single-step form exactly
         surf = jnp.exp(rho_over_D * logw) if has_surf else jnp.float32(1.0)
         M_new, xy = _apply(r_new, phi_grad, surf, M, rf_dflip, rf_axis, rf_carrier, crush_rate, uc,
                            phi_field=(phi_field if field_fn is not None else None))
-        return (r_new, M_new, key, uc), xy
+        return (r_new, M_new, key, uc, work), xy
 
     step_fn.n_sub = n_sub
+    step_fn.work0 = _work0
     return step_fn
 
 
@@ -344,18 +362,28 @@ def simulate_bloch(n_walkers, diffusivity, waveform, geometry, *,
         want_echo = echo_steps is not None
 
         def simulate_walker(r0_w, key_w, uw_w):
-            (r_f, M_f, _, _), xy_seq = jax.lax.scan(
-                step_fn, (r0_w, M_init, key_w, uw_w), scan_inputs)
-            return (M_f, xy_seq) if want_echo else M_f
+            (r_f, M_f, _, _, work_w), xy_seq = jax.lax.scan(
+                step_fn, (r0_w, M_init, key_w, uw_w, step_fn.work0()), scan_inputs)
+            return (M_f, xy_seq, work_w) if want_echo else (M_f, work_w)
 
         if want_echo:
-            M_final, xy_seq = jax.vmap(simulate_walker, in_axes=(0, 0, 0))(r0, walker_keys, uw)
+            M_final, xy_seq, work_w = jax.vmap(simulate_walker, in_axes=(0, 0, 0))(r0, walker_keys, uw)
             # xy_seq: (n_walkers, n_t, n_meas) complex -> walker-mean at the echo steps
             echoes = jnp.mean(xy_seq, axis=0)[jnp.asarray(echo_steps, dtype=int)]   # (n_echo,n_meas)
             signals = np.asarray(echoes.T)                     # (n_meas, n_echo)
         else:
-            M_final = jax.vmap(simulate_walker, in_axes=(0, 0, 0))(r0, walker_keys, uw)  # (n_w,n_meas,3)
+            M_final, work_w = jax.vmap(simulate_walker, in_axes=(0, 0, 0))(r0, walker_keys, uw)  # (n_w,n_meas,3)
             signals = np.asarray(jnp.mean(M_final[:, :, 0] + 1j * M_final[:, :, 1], axis=0))
+        # the forward engine has no walk object to carry the record: it goes to the run and the log
+        hits, cross, exh = (None if w is None else int(np.asarray(w, np.int64).sum()) for w in work_w)
+        work = dict(walker_steps=int(n_walkers) * int(n_t) * int(step_fn.n_sub), n_hits=hits, n_crossings=cross,
+                    exhausted_steps=exh, bounce_budget=(None if geometry.bounce_loop is None else int(geometry.bounce_loop.budget)))
+        run.phase("walked", work=work)
+        if exh:
+            warnings.warn(f"{exh} walker-steps exhausted the bounce budget of {work['bounce_budget']} with path left "
+                          f"untested; the budget is too small for this substrate at this step.", RuntimeWarning, stacklevel=2)
+        if hits is not None:
+            _log.info("bloch walk work: %s", work)
 
         if return_mz:
             mz = np.asarray(jnp.mean(M_final[:, :, 2], axis=0))

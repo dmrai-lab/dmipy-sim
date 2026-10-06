@@ -62,7 +62,8 @@ def _run(wall, cases, pool, u=1.0):
     dirs = steps / lens[:, None]
 
     def one(p, dh, l):
-        xy, pool_new, k, chan, dlog, crossed = wall(p, dh, l, jnp.int32(pool), jnp.int32(0), jnp.float32(u))
+        h = wall(p, dh, l, jnp.int32(pool), jnp.int32(0), jnp.float32(u))
+        xy, pool_new, k, chan, dlog, crossed = h.xy, h.pool, h.k, h.chan, h.dlog_rho, h.crossed
         return xy, pool_new, crossed
     xy, pool_new, crossed = jax.jit(jax.vmap(one))(starts, dirs, lens)
     return np.asarray(xy), np.asarray(pool_new), np.asarray(crossed), np.asarray(starts), np.asarray(lens)

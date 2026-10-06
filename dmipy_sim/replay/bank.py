@@ -1767,6 +1767,12 @@ def build_replay_pack(walk, *, id, license, citation, weights=None,
 
     Returns a :class:`dmipy_sim.replay.replay.ReplayPack`; writes it to ``out_path`` if given.
     """
+    _work = getattr(walk, "work", None)
+    if _work and _work.get("exhausted_steps"):
+        raise ValueError(
+            f"{_work['exhausted_steps']} walker-steps of this walk exhausted its bounce budget of {_work['bounce_budget']}: "
+            f"part of their paths went untested, so the walk is not the record of the physics it claims. Walk it again "
+            f"with a larger bounce_budget= (certify_bounce_budget sizes one from a pilot) and build the pack from that.")
     with Run("build_replay_pack", params=dict(id=id, K=K, fidelity=fidelity, device=device, out_path=out_path)) as run:
         src = _walk_master(walk, weights=weights, diffusivity=diffusivity, substrate_frame=substrate_frame)
         _cx.require_position_method(method)

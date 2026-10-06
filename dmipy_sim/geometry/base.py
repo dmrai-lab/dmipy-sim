@@ -117,6 +117,12 @@ class Geometry(ABC):
     #: (a slab, a shell, the curved tubes' two bounces) or no wall at all.
     bounce_loop = None
 
+    #: A per-walk override of the loop's derived budget (an int), or None for the derivation. Set by
+    #: ``simulate_trajectories(bounce_budget=)`` for the duration of that walk and restored after it; the walk's
+    #: ``work["exhausted_steps"]`` is the certificate that the budget was enough (zero: the trajectories of any
+    #: larger budget, by the loop's own rule), and a pack refuses a walk that exhausted it.
+    bounce_budget = None
+
     #: Count the wall encounters of every step (`WallHit.n_hits`, summed by a walk into ``PersistentWalk.work``).
     #: Off by default because it is a carried integer in the loop and costs (+5 % on an analytic wall, measured);
     #: the pilot walk that calibrates a substrate's cost per hit turns it on, a production walk pays nothing.

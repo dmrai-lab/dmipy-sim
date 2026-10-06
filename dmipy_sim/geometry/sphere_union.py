@@ -420,7 +420,7 @@ class SphereUnion(Geometry):
 
     @property
     def bounce_loop(self):
-        return BounceLoop(self._bounce_budget, count=self.count_walls)
+        return BounceLoop(self.bounce_budget or self._bounce_budget, count=self.count_walls)
 
     def _wall(self, r, step, kappa_over_D, rho_over_D, perm_key):
         """The one wall interaction, as a :class:`~dmipy_sim.geometry._boundary.WallHit`: the union is impermeable
