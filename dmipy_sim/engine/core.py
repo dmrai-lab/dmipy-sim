@@ -14,6 +14,8 @@ import jax
 import jax.numpy as jnp
 import contextlib
 import numpy as np
+
+from .backends import JAX, WalkRequest, resolve as resolve_backend
 import logging
 
 log = logging.getLogger(__name__)
@@ -968,6 +970,7 @@ def simulate_trajectories(
     field_basis=None,
     field_sample_every: int = 1,
     bounce_budget: int = None,
+    backend="jax",
 ) -> PersistentWalk:
     """Walk the spins ONCE and save positions at every saved time step — the
     producer for the replay path (:mod:`dmipy_sim.replay.trajectories`).
@@ -1059,8 +1062,18 @@ def simulate_trajectories(
         walker-steps whose budget ran out with path untested, zero meaning the trajectories of any larger budget
         bit for bit. :func:`certify_bounce_budget` sizes one from a pilot walk. Reported on every walk, counting
         or not; a walk with exhausted steps warns and :func:`~dmipy_sim.replay.bank.build_replay_pack` refuses it.
+    backend : str or Backend
+        Which execution of the physics walks: ``"jax"`` (the default, the kernels of this module), the name of
+        an installed backend (the ``dmipy_sim.backends`` entry point), or a backend object. An unknown name is
+        refused naming what is installed; a backend that does not implement this walk (an engine class, a
+        tier, a wall) refuses by name, and the paths only the JAX kernels implement (the myelinated substrates,
+        MT binding, in-walk field sampling, the compressed master, the compartment guard) are refused for any
+        other backend rather than fallen back from. ``work["backend"]`` and the run record say which backend
+        walked. See :mod:`dmipy_sim.engine.backends`.
     """
-    with Run("simulate_trajectories", params=dict(n_walkers=n_walkers, diffusivity=diffusivity, geometry=type(geometry).__name__, T_max=T_max, dt_save=dt_save)) as run, _bounce_budget_override(geometry, bounce_budget):
+    _backend = resolve_backend(backend)
+    _backend_name = JAX if _backend is None else str(_backend.name)
+    with Run("simulate_trajectories", params=dict(n_walkers=n_walkers, diffusivity=diffusivity, geometry=type(geometry).__name__, T_max=T_max, dt_save=dt_save, backend=_backend_name)) as run, _bounce_budget_override(geometry, bounce_budget):
         from ..spec.build import as_geometry
         geometry = as_geometry(geometry)               # a spec, a spec file or a dict is a substrate too
         # GPU guard — never silently fall back to CPU for a heavy walk (CLAUDE rule).
@@ -1566,6 +1579,29 @@ def simulate_trajectories(
             _cx["K"], _cx["n_t"] = int(K), int(pos_dev.shape[1])
             return C
 
+        if _backend is not None:
+            # another execution of the same physics (#635): the paths only the JAX kernels implement are refused,
+            # never fallen back from, and the backend may refuse the walk itself
+            jax_only = [what for what, on in (("the myelinated substrates", uses_myelin_traj), ("MT binding", kappa_MT > 0.0),
+                                              ("in-walk field sampling", _sampling), ("the compressed master", _compress),
+                                              ("the compartment guard", bool(enforce_compartment))) if on]
+            if jax_only:
+                raise ValueError(f"backend {_backend_name!r}: this walk uses {', '.join(jax_only)}, which only the "
+                                 f"jax kernels implement; it does not fall back")
+            _req = WalkRequest(geometry=geometry, n_t=int(n_t), dt_save=float(dt_actual), sub_steps=int(sub_steps),
+                               dt_sim=float(dt_sim), diffusivity=float(diffusivity), record=bool(record),
+                               kappa_over_D=(float(permeability) / float(diffusivity) if has_permeability else 0.0),
+                               count_walls=bool(_counting), bounce_budget=geometry.bounce_budget, seed=int(seed))
+            _reason = _backend.refuses(_req)
+            if _reason:
+                raise ValueError(f"backend {_backend_name!r} refuses this walk of {type(geometry).__name__}: {_reason}")
+
+            def _backend_batch(r0_b, keys_b):
+                res = _backend.walk_batch(_req, np.asarray(r0_b, np.float32), np.asarray(keys_b))
+                _illegal_crossings[0] += int(np.asarray(res.illegal, np.int64).sum())
+                _work_acc(res.work)
+                return res
+
         for batch_idx, (start, end) in enumerate(run.batches(n_walkers, walker_batch_size)):
             batch_size = end - start
 
@@ -1587,7 +1623,11 @@ def simulate_trajectories(
                         if _mt_on:
                             all_bound_batches.append(np.array(bfrac_f32).astype(_sdt))
                     elif record:
-                        pos_f32, dlog_f32, comp_f32, fs_f32 = simulate_batch_relax(current_r0, current_keys)
+                        if _backend is not None:
+                            _res = _backend_batch(current_r0, current_keys)
+                            pos_f32, dlog_f32, comp_f32, fs_f32 = _res.positions, _res.boundary_local_time, _res.compartment, None
+                        else:
+                            pos_f32, dlog_f32, comp_f32, fs_f32 = simulate_batch_relax(current_r0, current_keys)
                         if _compress:
                             all_batches.append(_compress_pos(pos_f32))
                             # the cumulative local time in the pack's C2 form, formed on the device
@@ -1605,7 +1645,10 @@ def simulate_trajectories(
                         all_comp_batches.append(np.array(comp_f32).astype(_sdt) if has_permeability
                                                 else np.rint(np.array(comp_f32)).astype(np.int8))
                     else:
-                        positions_f32, fs_f32 = simulate_batch(current_r0, current_keys)
+                        if _backend is not None:
+                            positions_f32, fs_f32 = _backend_batch(current_r0, current_keys).positions, None
+                        else:
+                            positions_f32, fs_f32 = simulate_batch(current_r0, current_keys)
                         if _compress:
                             all_batches.append(_compress_pos(positions_f32))
                         else:
@@ -1646,14 +1689,21 @@ def simulate_trajectories(
                                 if _mt_on:
                                     sub_bound_list.append(np.array(sbf).astype(_sdt))
                             elif record:
-                                sp, sd, sc, sfs = simulate_batch_relax(
-                                    current_r0[ss:se], current_keys[ss:se])
+                                if _backend is not None:
+                                    _res = _backend_batch(current_r0[ss:se], current_keys[ss:se])
+                                    sp, sd, sc, sfs = _res.positions, _res.boundary_local_time, _res.compartment, None
+                                else:
+                                    sp, sd, sc, sfs = simulate_batch_relax(
+                                        current_r0[ss:se], current_keys[ss:se])
                                 sub_pos_list.append(np.array(sp).astype(_sdt))
                                 sub_dlog_list.append(np.array(sd).astype(_sdt))
                                 sub_comp_list.append(np.array(sc).astype(_sdt) if has_permeability
                                                      else np.rint(np.array(sc)).astype(np.int8))
                             else:
-                                sp, sfs = simulate_batch(current_r0[ss:se], current_keys[ss:se])
+                                if _backend is not None:
+                                    sp, sfs = _backend_batch(current_r0[ss:se], current_keys[ss:se]).positions, None
+                                else:
+                                    sp, sfs = simulate_batch(current_r0[ss:se], current_keys[ss:se])
                                 sub_pos_list.append(np.array(sp).astype(_sdt))
                             if _sampling:
                                 sub_field_list.append(np.asarray(sfs, np.float32))
@@ -1689,6 +1739,7 @@ def simulate_trajectories(
         _loop = geometry.bounce_loop
         _counted = _counting and _work[3]
         work = dict(walker_steps=int(n_walkers) * (int(n_t) - 1) * int(sub_steps),
+                    backend=_backend_name,
                     bounce_budget=(None if _loop is None else int(_loop.budget)),
                     n_hits=(int(_work[0]) if _counted else None),
                     n_crossings=(int(_work[1]) if _counted else None),

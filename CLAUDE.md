@@ -242,6 +242,19 @@ budget for one walk, and `certify_bounce_budget(geometry, n, D, T_max, dt_save)`
 the smallest budget no walker-step exhausted, plus a margin (sphere 7 -> 5 is 20 % of the walk, mesh 10 -> 7 is
 28 %, bit-identical trajectories).
 
+**Backends** (#635, `engine/backends.py`): `simulate_trajectories(backend=)` / `walk_spec(backend=)` select another
+execution of the same physics -- `"jax"` (the default, the kernels in `core`), the name of a package exposing the
+`dmipy_sim.backends` entry point, or a backend object with `name`, `refuses(request)` and `walk_batch(request, r0,
+keys) -> WalkBatch`. The producer resolves the geometry, the sub-step, the seeds and the budget, hands a backend a
+`WalkRequest` per batch and takes back positions, the recorded channels, refusals and the work record; it reads
+nothing else from a backend (`tests/backends/` locks it). An unknown name is refused naming what is installed; the
+paths only the JAX kernels implement (the myelinated substrates, MT binding, in-walk field sampling, the compressed
+master, the compartment guard, the adaptive producer) are refused for another backend, never fallen back from.
+`work["backend"]` and the run record say which backend walked. A backend is admitted per engine class by
+`backends.parity_report` (the same starts and sub-step, counting on: hit and crossing rates within Poisson noise,
+exhaustion and refusal rates compared the same way, confinement, the PGSE signal within the combined standard errors); the public package ships
+`"jax"` alone, so for a regular user the option does nothing.
+
 `interact` is defined once on `Geometry` and is the entry point callers should use. A geometry implements
 **one method, `_wall(r, step, kappa_over_D, rho_over_D, key) -> WallHit`** (plus `side` when it `carries_side`),
 and `reflect(r, step)`, `reflect_with_log_weight(r, step, ρ/D)` and `permeate(r, step, κ/D, ρ/D, key)` are the
