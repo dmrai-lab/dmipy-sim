@@ -279,32 +279,8 @@ class PackedCylinders(Geometry):
         xy = _seed_periodic(n_walkers, key, self._L_float, self._radii_np, np.array(self._centers_jax), 2, self.pool)
         return jnp.array(np.concatenate([xy, np.zeros((n_walkers, 1), dtype=np.float32)], axis=1), dtype=jnp.float32)
 
-    def reflect(self, r, step):
-        """Impermeable wall interaction -- the kappa = 0 case of :meth:`permeate`.
-
-        NOT a separate algorithm. It used to be one, and the copies drifted: this method
-        expelled 100% of intra-cylinder walkers while `permeate(kappa=0)` confined them, and
-        the two were bit-identical on the extra side (#88). At kappa = 0 nothing may cross,
-        so a walker reflects on whichever side of the wall it starts -- one rule, one
-        implementation. XLA folds the constant and drops the dead transmit branch, so this
-        costs exactly what the hand-written version did (0.11 ms / 40k walkers, measured).
-
-        The key is unused: at kappa = 0 the transmit probability is identically zero, so the
-        draw cannot change the outcome.
-        """
-        return self.permeate(r, step, jnp.float32(0.0), jnp.float32(0.0),
-                             jax.random.PRNGKey(0))[0]
-
-    def reflect_with_log_weight(self, r, step, rho_over_D):
-        """Impermeable wall interaction that also accrues surface relaxation.
-
-        The kappa = 0 case of :meth:`permeate` with rho > 0 -- see :meth:`reflect`.
-        """
-        return self.permeate(r, step, jnp.float32(0.0), rho_over_D,
-                             jax.random.PRNGKey(0))[:2]
-
     @property
-    def _wall(self):
+    def _kernel(self):
         """The pack's wall kernel (:func:`packed_wall_kernel`) at the current ``count_walls``. Both variants are built
         in the constructor: a kernel built lazily inside a trace closes over that trace's tracers (its candidate
         index), and reused by the next program it leaked."""
@@ -312,9 +288,9 @@ class PackedCylinders(Geometry):
 
     @property
     def bounce_loop(self):
-        return self._wall.bounce_loop
+        return self._kernel.bounce_loop
 
-    def permeate(self, r, step, kappa_over_D, rho_over_D, perm_key, side=None):
+    def _wall(self, r, step, kappa_over_D, rho_over_D, perm_key, side=None):
         """Wall interaction in the pack: reflect off the cylinders the step meets, or cross one
         where its membrane grants it (a Powles trial at every encounter). Multi-bounce, so a step longer than the gap
         between two cylinders zig-zags across it instead of ending inside the neighbour.
@@ -334,7 +310,7 @@ class PackedCylinders(Geometry):
             q_all = r2[None, :] - self._centers_jax
             q_all = q_all - self._L_jax * jnp.floor(q_all / self._L_jax + jnp.float32(0.5))
             inside0 = jnp.any(jnp.sum(q_all * q_all, axis=1) < self._radii_jax ** 2)
-        h = self._wall(r2, d_hat_xy, step_l_xy, inside0, jnp.float32(kappa_over_D), jnp.float32(rho_over_D),
+        h = self._kernel(r2, d_hat_xy, step_l_xy, inside0, jnp.float32(kappa_over_D), jnp.float32(rho_over_D),
                        perm_key)
         return h._replace(r=jnp.stack([h.r[0], h.r[1], r_c[2] + step_z]))
 
@@ -491,32 +467,8 @@ class PackedSpheres(Geometry):
         return jnp.array(_seed_periodic(n_walkers, key, self._L_float, self._radii_np, self._centers_np, 3, self.pool),
                          dtype=jnp.float32)
 
-    def reflect(self, r, step):
-        """Impermeable wall interaction -- the kappa = 0 case of :meth:`permeate`.
-
-        NOT a separate algorithm. It used to be one, and the copies drifted: this method
-        expelled 100% of intra-sphere walkers while `permeate(kappa=0)` confined them, and
-        the two were bit-identical on the extra side (#88). At kappa = 0 nothing may cross,
-        so a walker reflects on whichever side of the wall it starts -- one rule, one
-        implementation. XLA folds the constant and drops the dead transmit branch, so this
-        costs exactly what the hand-written version did (0.11 ms / 40k walkers, measured).
-
-        The key is unused: at kappa = 0 the transmit probability is identically zero, so the
-        draw cannot change the outcome.
-        """
-        return self.permeate(r, step, jnp.float32(0.0), jnp.float32(0.0),
-                             jax.random.PRNGKey(0))[0]
-
-    def reflect_with_log_weight(self, r, step, rho_over_D):
-        """Impermeable wall interaction that also accrues surface relaxation.
-
-        The kappa = 0 case of :meth:`permeate` with rho > 0 -- see :meth:`reflect`.
-        """
-        return self.permeate(r, step, jnp.float32(0.0), rho_over_D,
-                             jax.random.PRNGKey(0))[:2]
-
     @property
-    def _wall(self):
+    def _kernel(self):
         """The pack's wall kernel (:func:`packed_wall_kernel`) at the current ``count_walls``. Both variants are built
         in the constructor: a kernel built lazily inside a trace closes over that trace's tracers (its candidate
         index), and reused by the next program it leaked."""
@@ -524,9 +476,9 @@ class PackedSpheres(Geometry):
 
     @property
     def bounce_loop(self):
-        return self._wall.bounce_loop
+        return self._kernel.bounce_loop
 
-    def permeate(self, r, step, kappa_over_D, rho_over_D, perm_key):
+    def _wall(self, r, step, kappa_over_D, rho_over_D, perm_key):
         """Wall interaction in the pack: reflect off the spheres the step meets, or cross one where
         its membrane grants it (a Powles trial at every encounter). Multi-bounce, so a step longer than the gap
         between two spheres zig-zags across it instead of ending inside the neighbour. The side at
@@ -538,7 +490,7 @@ class PackedSpheres(Geometry):
         q_all = r[None, :] - self._centers_jax
         q_all = q_all - self._L_jax * jnp.floor(q_all / self._L_jax + jnp.float32(0.5))
         inside0 = jnp.any(jnp.sum(q_all * q_all, axis=1) < self._radii_jax ** 2)
-        return self._wall(r, d_hat, step_l, inside0, jnp.float32(kappa_over_D), jnp.float32(rho_over_D), perm_key)
+        return self._kernel(r, d_hat, step_l, inside0, jnp.float32(kappa_over_D), jnp.float32(rho_over_D), perm_key)
 
     def classify_position(self, r: jnp.ndarray) -> jnp.ndarray:
         """Compartment ID: 0=extra-axonal, 1..N = inside sphere k (1-indexed)."""

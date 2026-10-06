@@ -117,6 +117,25 @@ def _num_or_none(x):
     return x is None or isinstance(x, float)
 
 
+def test_one_wall_per_geometry_and_the_wrappers_live_on_the_base():
+    """A geometry implements `_wall` and nothing else of the wall contract (#633): `reflect`,
+    `reflect_with_log_weight`, `permeate` and `interact` are the base class's wrappers at argument values, so no
+    geometry can drift into a reduced copy of its own physics again (#88). `has_walls` says whether `_wall` is a
+    wall or a free step, and the two myelinated substrates, stepped by their own kernels, refuse `_wall` by design."""
+    import inspect
+    for name, g in _all_geometries().items():
+        cls = type(g)
+        for wrapper in ("reflect", "reflect_with_log_weight", "permeate", "interact"):
+            owner = next(k for k in cls.__mro__ if wrapper in k.__dict__)
+            assert owner is Geometry, f"{name} defines {wrapper} itself; implement `_wall` and leave the wrapper to Geometry"
+        assert "_wall" in {k for c in cls.__mro__ for k in c.__dict__ if c is not Geometry}, f"{name} has no `_wall`"
+        assert isinstance(g.has_walls, bool)
+        assert g.has_walls == (name not in _NO_REFLECT and name != "FreeDiffusion"), name
+        sig = inspect.signature(cls._wall)
+        assert list(sig.parameters)[:6] == ["self", "r", "step", "kappa_over_D", "rho_over_D"] + [list(sig.parameters)[5]], f"{name}._wall{sig}"
+        assert g.carries_side == ("side" in sig.parameters), name
+
+
 @pytest.mark.parametrize("name", _NAMES)
 def test_geometry_declares_the_protocol(name):
     g = _all_geometries()[name]
@@ -132,7 +151,7 @@ def test_geometry_declares_the_protocol(name):
     assert ls.is_mesh_feature == (name == "Mesh")
     assert (ls.lookup_cell is not None) == (name in ("Mesh", "PackedCurvedCylinders"))
 
-    for flag in ("supports_permeability", "carries_side", "_is_myelinated", "_is_packed_myelinated",
+    for flag in ("supports_permeability", "carries_side", "has_walls", "_is_myelinated", "_is_packed_myelinated",
                  "classify_returns_object_id", "radius_is_mesh_feature"):
         assert isinstance(getattr(g, flag), bool), f"{name}.{flag}"
     for attr in ("permeability", "surface_relaxivity_t2", "surface_substep_frac", "reflection_step_fraction", "_orient_R",

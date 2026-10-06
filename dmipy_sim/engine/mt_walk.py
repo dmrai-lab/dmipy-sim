@@ -122,9 +122,9 @@ def simulate_mt_trajectories(
 
         if kappa_MT > 0.0 and dwell_time <= 0.0:
             raise ValueError("dwell_time must be > 0 when kappa_MT > 0.")
-        if not hasattr(geometry, "reflect_with_log_weight"):
+        if not geometry.has_walls:
             raise TypeError(
-                f"{type(geometry).__name__} has no reflect_with_log_weight; MT binding "
+                f"{type(geometry).__name__} has no walls; MT binding "
                 "needs the boundary-local-time channel (Sphere/Cylinder/Box1D/Ellipsoid/Mesh).")
 
         n_t = int(round(T_max / dt_save)) + 1

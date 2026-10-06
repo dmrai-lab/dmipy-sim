@@ -34,7 +34,7 @@ import jax
 import jax.numpy as jnp
 
 from ..engine.tables import jit_with_tables
-from ._boundary import keep_side_radial, ray_quadric_t, specular, off_wall, representable_nudge
+from ._boundary import WallHit, keep_side_radial, ray_quadric_t, specular, off_wall, representable_nudge
 from ._grid import bucket_by_bbox, NEIGHBOUR_OFFSETS, gather
 import numpy as np
 
@@ -259,15 +259,13 @@ class CurvedCylinder(Geometry):
         return jnp.asarray(C + off, jnp.float32)
 
     # ---- specular reflection off the swept-tube wall ----
-    def reflect(self, r, step):
-        return self._reflect_contact(r, step)[0]
-
-    def reflect_with_log_weight(self, r, step, rho_over_D):
-        """The reflection with the surface-relaxation log-weight ``-2 (rho / D) d_perp`` of the wall contact:
-        ``d_perp`` is the displacement left after the wall crossing read on the wall's normal, the perpendicular
-        distance the base slab rule uses."""
+    def _wall(self, r, step, kappa_over_D, rho_over_D, key):
+        """The specular reflection off the tube's wall with the contact log-weight ``-2 (rho / D) d_perp``: ``d_perp``
+        is the displacement left after the wall crossing read on the wall's normal, the perpendicular distance the
+        base slab rule uses. Two bounces by argument (`_reflect_interior`), not on `bounce_loop`; impermeable."""
         r_out, d_perp = self._reflect_contact(r, step)
-        return r_out, -2.0 * rho_over_D * d_perp
+        zero_b = jnp.zeros((), bool)
+        return WallHit(r_out, -2.0 * rho_over_D * d_perp, zero_b, zero_b, None, zero_b)
 
     def _reflect_contact(self, r, step):
         R = jnp.float32(self.radius)
@@ -307,14 +305,6 @@ class CurvedMyelinatedCylinder(CurvedCylinder):
         _, d = self._nearest(r)
         return jnp.where(d < jnp.float32(self.r_in), jnp.int32(1),
                          jnp.where(d < jnp.float32(self.r_out), jnp.int32(2), jnp.int32(0)))
-
-    def reflect(self, r, step):
-        return self._reflect_contact(r, step)[0]
-
-    def reflect_with_log_weight(self, r, step, rho_over_D):
-        """The band-confined reflection with the contact log-weight of the wall hit (either edge of the band)."""
-        r_out, d_perp = self._reflect_contact(r, step)
-        return r_out, -2.0 * rho_over_D * d_perp
 
     def _reflect_contact(self, r, step):
         r_in = jnp.float32(self.r_in); r_out = jnp.float32(self.r_out)
@@ -598,22 +588,19 @@ class PackedCurvedCylinders(Geometry):
         ok = self._inside_one(folded, cand, valid) == self.interior
         return jnp.where(ok, folded, r)
 
+    def _wall(self, r, step, kappa_over_D, rho_over_D, key):
+        """The reflection with the contact log-weight ``-2 (rho / D) d_perp``: the radial part of the displacement
+        left after the wall crossing, on that wall's normal, as the exact packed cylinders read it -- inside, the
+        exit from the walker's own tube; outside, the entry into a tube. Impermeable; two bounces by argument."""
+        cand, valid = self._gather(r + step)
+        r_out, d_perp = self._step_with(r, step, cand, valid)
+        zero_b = jnp.zeros((), bool)
+        return WallHit(r_out, -2.0 * rho_over_D * d_perp, zero_b, zero_b, None, zero_b)
+
     def _step_with(self, r, step, cand, valid):
         """One wall interaction and the box fold against one candidate list: ``(r_out, d_perp)``."""
         r_ref, d_perp = self._reflect_with(r, step, cand, valid)
         return self._fold(r, r_ref, cand, valid), d_perp
-
-    def reflect(self, r, step):
-        cand, valid = self._gather(r + step)
-        return self._step_with(r, step, cand, valid)[0]
-
-    def reflect_with_log_weight(self, r, step, rho_over_D):
-        """The reflection with the contact log-weight ``-2 (rho / D) d_perp``: the radial part of the displacement
-        left after the wall crossing, on that wall's normal, as the exact packed cylinders read it -- inside, the
-        exit from the walker's own tube; outside, the entry into a tube."""
-        cand, valid = self._gather(r + step)
-        r_out, d_perp = self._step_with(r, step, cand, valid)
-        return r_out, -2.0 * rho_over_D * d_perp
 
     def _reflect(self, r, step):
         """The wall interaction against every segment near the step's end (the 27-cell gather)."""

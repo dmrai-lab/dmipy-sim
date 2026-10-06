@@ -126,7 +126,7 @@ def test_landing_on_a_wall_never_changes_compartment(name, geom):
     n = int(usable.sum())
 
     kwargs = {}
-    if "side" in __import__("inspect").signature(geom.permeate).parameters:
+    if geom.carries_side:                         # the declared flag; every wrapper takes `side` since #633
         # geometries that carry the compartment need it supplied, as the engine does
         kwargs["side"] = jnp.where(jnp.asarray(lab_near) > 0, jnp.int8(-1), jnp.int8(1))
         f = jax.jit(jax.vmap(lambda p, s, k, d: geom.permeate(

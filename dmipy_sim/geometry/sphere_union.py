@@ -433,9 +433,3 @@ class SphereUnion(Geometry):
         return WallHit(folded, jnp.where(ok, -2.0 * jnp.float32(rho_over_D) * dsum, jnp.float32(0.0)), zero_b,
                        ~(ok & ok_u), n_hits, exhausted)
 
-    def reflect(self, r, step):
-        return self._wall(r, step, jnp.float32(0.0), jnp.float32(0.0), jax.random.PRNGKey(0)).r
-
-    def reflect_with_log_weight(self, r, step, rho_over_D):
-        h = self._wall(r, step, jnp.float32(0.0), rho_over_D, jax.random.PRNGKey(0))
-        return h.r, h.dlog_w

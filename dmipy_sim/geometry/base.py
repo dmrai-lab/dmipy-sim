@@ -6,7 +6,7 @@ Holds the ABC every geometry implements, the two geometries with no curved wall
 from abc import ABC, abstractmethod
 from typing import NamedTuple, Optional
 
-from ._boundary import WallHit
+from ._boundary import WallHit, no_hit
 from ..compartments import Compartments
 import jax
 import jax.numpy as jnp
@@ -102,9 +102,15 @@ class Geometry(ABC):
     #: were indistinguishable and a silent `reflect` fallback was the failure mode.
     supports_permeability = False
 
-    #: Does `permeate` accept a carried `side` (the walker's own compartment)? Only the
+    #: Does `_wall` accept a carried `side` (the walker's own compartment)? Only the
     #: geometries where a position alone cannot decide sidedness need it -- see #86.
     carries_side = False
+
+    #: Does this geometry have a wall a walker can meet? Its `_wall` then resolves every step and accrues the
+    #: boundary local time the surface tier is built from. False for free diffusion, and for the myelinated
+    #: substrates, which are stepped by their own three-compartment kernels. Used to be inferred from the presence
+    #: of a `reflect_with_log_weight` method, which every geometry now has.
+    has_walls = True
 
     #: The :class:`~dmipy_sim.geometry._boundary.BounceLoop` this geometry's wall interaction runs -- its
     #: budget and whether the trip count is fixed -- or ``None`` for a wall that resolves one event per step
@@ -233,14 +239,14 @@ class Geometry(ABC):
                  key=None, side=None):
         """One wall interaction, for every geometry: reflect, or cross if granted.
 
-        This is the single entry point the engine should use. `reflect`,
-        `reflect_with_log_weight` and `permeate` are the same function at different argument
-        values -- and measured, not even an optimisation: `reflect` and `permeate(kappa=0)`
-        both cost 0.11 ms / 40k walkers, because XLA folds the constant and drops the dead
-        transmit branch. Keeping them apart is what let them drift into four separate bugs
-        (#88): packed geometries expelled intra walkers, analytic ones absorbed exterior
-        walkers, `Mesh.reflect` silently lost box reflection, and mesh surface local time
-        disagreed with itself by 0.07%.
+        The single entry point the engine uses. `reflect`, `reflect_with_log_weight` and
+        `permeate` are the same function at different argument values -- and measured, not even
+        an optimisation: `reflect` and `permeate(kappa=0)` both cost 0.11 ms / 40k walkers,
+        because XLA folds the constant and drops the dead transmit branch. Keeping them apart
+        is what let them drift into four separate bugs (#88): packed geometries expelled intra
+        walkers, analytic ones absorbed exterior walkers, `Mesh.reflect` silently lost box
+        reflection, and mesh surface local time disagreed with itself by 0.07%. So a geometry
+        implements ONE method, `_wall`, and the three names are wrappers here (#633).
 
         Returns a :class:`WallHit`, so a caller reads ``.r`` instead of unpacking a tuple
         whose length depended on which arguments were passed.
@@ -251,47 +257,49 @@ class Geometry(ABC):
                 f"{type(self).__name__} has no membrane: it cannot be given "
                 f"kappa_over_D != 0. Build it with a permeable geometry, or pass "
                 f"kappa_over_D=0 for a purely reflecting wall.")
-
         k = key if key is not None else jax.random.PRNGKey(0)
-        if self.supports_permeability:
-            args = (r, step, kappa_over_D, rho_over_D, k)
-            if side is not None and not self.carries_side:
+        if side is not None:
+            if not self.carries_side:
                 raise NotImplementedError(
-                    f"{type(self).__name__} does not carry a compartment side; a position "
-                    f"exactly on its wall cannot be resolved. Omit `side`.")
-            # every `permeate` returns a WallHit: `crossed` is the crossing the wall GRANTED, as its loop
-            # reports it, not a label change read back from the position
-            return self.permeate(*args, side) if side is not None else self.permeate(*args)
+                    f"{type(self).__name__} carries no side: a position exactly on its wall "
+                    f"cannot be resolved from a label alone. Omit `side`.")
+            return self._wall(r, step, kappa_over_D, rho_over_D, k, side)
+        return self._wall(r, step, kappa_over_D, rho_over_D, k)
 
-        # impermeable: the geometry's own wall interaction when it has one, else its relaxation path if it is
-        # asked for, else a plain bounce
-        if hasattr(self, "_wall"):
-            return self._wall(r, step, jnp.float32(0.0), rho_over_D, k)
-        zero_b = jnp.zeros((), bool)
-        if hasattr(self, "reflect_with_log_weight"):
-            r_new, dlog_w = self.reflect_with_log_weight(r, step, rho_over_D)
-            return WallHit(r_new, dlog_w, zero_b, zero_b, None, zero_b)
-        return WallHit(self.reflect(r, step), jnp.zeros((), jnp.float32), zero_b, zero_b, None, zero_b)
-
-
-    @abstractmethod
-    def reflect(self, r: jnp.ndarray, step: jnp.ndarray) -> jnp.ndarray:
-        """Apply boundary conditions. Pure JAX — no Python control flow.
+    def _wall(self, r, step, kappa_over_D, rho_over_D, key):
+        """The one wall interaction of this geometry: ``(r, step)`` resolved against its walls at membrane
+        permeability ``kappa_over_D`` and surface relaxivity ``rho_over_D``, ``key`` the draw of the crossing
+        trials, as a :class:`WallHit`. A geometry implements this and nothing else; a geometry with a loop composes
+        it as prepare -> `bounce_loop` -> sentinel. A geometry that carries a side takes ``side`` as well.
 
         Parameters
         ----------
         r : (3,) float32, current position
         step : (3,) float32, proposed displacement
-
-        Returns
-        -------
-        (3,) float32, new position after boundary enforcement
         """
+        raise NotImplementedError(f"{type(self).__name__} has no wall interaction")
+
+    def reflect(self, r, step):
+        """Impermeable wall interaction: `_wall` at kappa = 0 and rho = 0. Returns the new position."""
+        return self._wall(r, step, jnp.float32(0.0), jnp.float32(0.0), jax.random.PRNGKey(0)).r
+
+    def reflect_with_log_weight(self, r, step, rho_over_D):
+        """Impermeable wall interaction that also accrues surface relaxation: `_wall` at kappa = 0. Returns
+        ``(r_new, dlog_w)``."""
+        h = self._wall(r, step, jnp.float32(0.0), rho_over_D, jax.random.PRNGKey(0))
+        return h.r, h.dlog_w
+
+    def permeate(self, r, step, kappa_over_D, rho_over_D, key, side=None):
+        """Wall interaction with the membrane's permeability: `_wall` itself. Returns the :class:`WallHit`."""
+        if side is not None:
+            return self._wall(r, step, kappa_over_D, rho_over_D, key, side)
+        return self._wall(r, step, kappa_over_D, rho_over_D, key)
 
 
 class FreeDiffusion(Geometry):
     """Unbounded free diffusion — walkers move without any reflection."""
     replay_parity = True
+    has_walls = False
 
     @property
     def length_scales(self):
@@ -300,8 +308,8 @@ class FreeDiffusion(Geometry):
     def init_positions(self, n_walkers, key):
         return jnp.zeros((n_walkers, 3), dtype=jnp.float32)
 
-    def reflect(self, r, step):
-        return r + step
+    def _wall(self, r, step, kappa_over_D, rho_over_D, key):
+        return no_hit(r + step, counting=self.count_walls)
 
     def classify_position(self, r: jnp.ndarray) -> jnp.ndarray:
         """Compartment ID: always 0 (single compartment)."""
@@ -355,11 +363,7 @@ class Box1D(Geometry):
         yz = jnp.zeros((n_walkers, 2), dtype=jnp.float32)
         return jnp.concatenate([x, yz], axis=1)
 
-    def reflect(self, r, step):
-        """Wall interaction without surface relaxation -- :meth:`reflect_with_log_weight` at rho = 0."""
-        return self.reflect_with_log_weight(r, step, jnp.float32(0.0))[0]
-
-    def reflect_with_log_weight(self, r, step, rho_over_D):
+    def _wall(self, r, step, kappa_over_D, rho_over_D, key):
         """Reflect off slab walls and accumulate surface-relaxation log-weight.
 
         Implements the Brownstein-Tarr weight for a flat wall perpendicular to x:
@@ -396,7 +400,8 @@ class Box1D(Geometry):
         dlog_w = jnp.where(any_cross,
                            -jnp.float32(2.0) * rho_over_D * d_perp,
                            jnp.float32(0.0))
-        return r_out, dlog_w
+        zero_b = jnp.zeros((), bool)
+        return WallHit(r_out, dlog_w, zero_b, zero_b, any_cross.astype(jnp.int32) if self.count_walls else None, zero_b)
 
 
 def acquisition_rotation(orientation):

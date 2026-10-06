@@ -159,7 +159,7 @@ def _simulate_via_replay(n_walkers, diffusivity, waveform, geometry, *, seed,
     # local-time channel.  Scalar T2/T1 are walker-independent replay knobs.
     rho = geometry.surface_relaxivity_t2
     has_surf = (rho is not None and float(rho) > 0.0
-                and hasattr(geometry, 'reflect_with_log_weight'))
+                and geometry.has_walls)
 
     # Per-compartment T2/T1 (Mesh intra/extra dicts) are pure replay knobs: they gate only
     # log_w and are applied off the saved compartment channel (comp_traj, indexed by pool id:
@@ -1078,7 +1078,7 @@ def simulate_trajectories(
 
         permeability = geometry.permeability
         has_permeability = permeability is not None
-        has_reflect_with_log_weight = hasattr(geometry, 'reflect_with_log_weight')
+        has_reflect_with_log_weight = geometry.has_walls
 
         # ── In-walk field sampling: a gridded basis read at every sub-step, passed to the walk as arguments ──
         _sampling = field_basis is not None
@@ -1139,8 +1139,7 @@ def simulate_trajectories(
             # `permeate` ejects such a walker back to its own side; this carries the label.
             # Modelled on MC/DC's deportation check, which compares the final position against the
             # walker's `initial_location` and re-runs it (dynamicsSimulation.finalPositionCheck).
-            import inspect as _inspect
-            _carries_side = "side" in _inspect.signature(permeate).parameters
+            _carries_side = geometry.carries_side
             interact = geometry.interact
 
             def inner_step(carry, _):

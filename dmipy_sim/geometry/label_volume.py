@@ -459,22 +459,3 @@ class LabelVolume(Geometry):
     def bounce_loop(self):
         return BounceLoop(self._bounce_budget, fixed=False, count=self.count_walls)
 
-    def reflect(self, r, step):
-        """Impermeable wall interaction -- the ``kappa = 0`` case of :meth:`_wall`."""
-        return self._wall(r, step, jnp.float32(0.0), jnp.float32(0.0), jax.random.PRNGKey(0))[0]
-
-    def reflect_with_log_weight(self, r, step, rho_over_D):
-        """Impermeable wall interaction that also accrues the boundary local time."""
-        h = self._wall(r, step, jnp.float32(0.0), rho_over_D, jax.random.PRNGKey(0))
-        return h.r, h.dlog_w
-
-    def permeate(self, r, step, kappa_over_D, rho_over_D, perm_key):
-        """Wall interaction with a permeable face (one Powles trial per step, at the first face met)."""
-        return self._wall(r, step, kappa_over_D, rho_over_D, perm_key)
-
-    def interact(self, r, step, *, kappa_over_D=0.0, rho_over_D=0.0, key=None, side=None):
-        """One wall interaction, as a :class:`WallHit`."""
-        if side is not None:
-            raise NotImplementedError("LabelVolume reads the pool from the grid; it carries no side. Omit `side`.")
-        k = key if key is not None else jax.random.PRNGKey(0)
-        return self._wall(r, step, kappa_over_D, rho_over_D, k)
