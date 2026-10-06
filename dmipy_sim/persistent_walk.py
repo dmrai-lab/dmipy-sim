@@ -210,3 +210,19 @@ class PersistentWalk:
                    D_intra=self.diffusivity)
         out.update(extra)
         return out
+
+
+def merge_work(works):
+    """The work record of a walk assembled from several (a bundle's pools, a fill's shards): the counts summed,
+    an entry None when any part has it None, ``bounce_budget`` the common value or, when the parts differ, the
+    largest. ``None`` when no part carries a record."""
+    works = [w for w in works if w]
+    if not works:
+        return None
+    out = {}
+    for key in ("walker_steps", "n_hits", "n_crossings", "exhausted_steps"):
+        vals = [w.get(key) for w in works]
+        out[key] = None if any(v is None for v in vals) else int(sum(vals))
+    budgets = [w.get("bounce_budget") for w in works if w.get("bounce_budget") is not None]
+    out["bounce_budget"] = None if not budgets else int(max(budgets))
+    return out

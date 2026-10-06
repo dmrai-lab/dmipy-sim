@@ -1349,7 +1349,7 @@ class Mesh(Geometry):
 
     @property
     def bounce_loop(self):
-        return BounceLoop(self._bounce_budget, count=self.count_walls)
+        return BounceLoop(self.bounce_budget or self._bounce_budget, count=self.count_walls)
 
     def _box_face_hit(self, r0, dh, rem):
         """Distance along ``dh`` to the nearest voxel face within ``rem``, and that face's inward normal.

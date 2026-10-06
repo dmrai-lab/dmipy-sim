@@ -51,7 +51,7 @@ def _radial_loop(self):
     """The loop of a wall at one radius: the reflections a grazing walker can need in one R/6 step
     (:func:`bounce_budget`), as a :class:`BounceLoop`."""
     R = self.length_scales.min_feature
-    return BounceLoop(bounce_budget(R, 1e-4 * R, float('inf'), R / 6.0), count=self.count_walls)
+    return BounceLoop(self.bounce_budget or bounce_budget(R, 1e-4 * R, float('inf'), R / 6.0), count=self.count_walls)
 
 
 class Sphere(Geometry):

@@ -235,7 +235,12 @@ on the L40S) and `simulate_trajectories` sums it into `PersistentWalk.work` (`wa
 `n_hits`, `n_crossings`, `exhausted_steps`; the counts are `None` when the walk did not count); off by default, so a
 production walk is the same program as before -- a pilot walk turns it on to calibrate a substrate's cost per hit
 (dmrai-lab/tessera#12) and to size its budget. The myelinated substrates' kernels report it too (#631); the
-adaptive producer's counts stay None until the curved tubes run the loop (#632).
+adaptive producer's counts stay None until the curved tubes run the loop (#632). **Exhaustion is reported on every
+walk** (#634): `work["exhausted_steps"]` is zero or the walk warns, and `build_replay_pack` refuses a walk that
+exhausted its budget. `simulate_trajectories(bounce_budget=)` / `walk_spec(bounce_budget=)` override the derived
+budget for one walk, and `certify_bounce_budget(geometry, n, D, T_max, dt_save)` sizes one from a pilot:
+the smallest budget no walker-step exhausted, plus a margin (sphere 7 -> 5 is 20 % of the walk, mesh 10 -> 7 is
+28 %, bit-identical trajectories).
 
 `interact` is defined once on `Geometry` and is the entry point callers should use. A geometry implements
 **one method, `_wall(r, step, kappa_over_D, rho_over_D, key) -> WallHit`** (plus `side` when it `carries_side`),

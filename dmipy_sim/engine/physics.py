@@ -516,13 +516,17 @@ def _encode_compartment(geometry, pool, k):
 
 
 def _add_work(work, w, keep=None):
-    """``work + w`` elementwise for the carried ``(hits, crossings, exhausted)``; None stays None (not counting).
-    ``keep`` masks the step's work out where False (a bound walker's step that did not happen)."""
+    """``work + w`` elementwise for the carried ``(hits, crossings, exhausted)``; an entry that is None (hits and
+    crossings when not counting) stays None, exhaustion is always summed. ``keep`` masks the step's work out where
+    False (a bound walker's step that did not happen)."""
     if work is None or w is None:
         return work
-    if keep is not None:
-        w = tuple(jnp.where(keep, x, jnp.int32(0)) for x in w)
-    return tuple(a + b for a, b in zip(work, w))
+    out = []
+    for a, b in zip(work, w):
+        if a is None or b is None:
+            out.append(None); continue
+        out.append(a + (jnp.where(keep, b, jnp.int32(0)) if keep is not None else b))
+    return tuple(out)
 
 
 def make_myelin_substep(geometry, dt: float, rho_weights=None):
@@ -536,7 +540,8 @@ def make_myelin_substep(geometry, dt: float, rho_weights=None):
     Returns ``sub(r, step_key, u, comp_id) -> (r_new, comp_id_new, chan, dlog_rho, work)`` where
     ``chan`` holds the four unit boundary local-time channels of the wall kernel, ``dlog_rho``
     the surface log-weight increment under ``rho_weights`` (``(N_max, 4)``; zero when None), and ``work``
-    the step's ``(hits, crossings, exhausted)`` as int32 when the geometry counts (``count_walls``), else None.
+    the step's ``(hits, crossings, exhausted)`` as int32 -- the first two None unless the geometry counts
+    (``count_walls``), the exhaustion always.
     """
     dt_f32 = jnp.float32(dt)
     N_max = geometry.N_max
@@ -553,7 +558,8 @@ def make_myelin_substep(geometry, dt: float, rho_weights=None):
     wall = concentric_wall_kernel(
         geometry._centers_jax, geometry._inner_radii_jax, geometry._outer_radii_jax, L,
         D_i, D_m, D_e, geometry._kappa_inner_jax, geometry._kappa_outer_jax, rho_weights,
-        geometry._eps, geometry._nudge, step_max, geometry.min_gap, count=geometry.count_walls)
+        geometry._eps, geometry._nudge, step_max, geometry.min_gap, count=geometry.count_walls,
+        budget=geometry.bounce_budget)
     def sub(r, step_key, u, comp_id):
         pool, k = _pool_and_axon(geometry, comp_id)
         unit = isotropic_unit_step(step_key)
@@ -568,7 +574,8 @@ def make_myelin_substep(geometry, dt: float, rho_weights=None):
         if L is not None:
             xy_new = xy_new - L * jnp.floor(xy_new / L + jnp.float32(0.5))      # stay in the cell
         r_new = jnp.stack([xy_new[0], xy_new[1], r_c[2] + s_c[2]])
-        work = None if h.n_hits is None else (h.n_hits, h.crossed.astype(jnp.int32), h.exhausted.astype(jnp.int32))
+        counting = h.n_hits is not None
+        work = (h.n_hits, h.crossed.astype(jnp.int32) if counting else None, h.exhausted.astype(jnp.int32))
         return r_new, _encode_compartment(geometry, h.pool, h.k), h.chan, h.dlog_rho, work
 
     sub.bounce_loop = wall.bounce_loop

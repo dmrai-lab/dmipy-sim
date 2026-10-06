@@ -114,13 +114,15 @@ def _make_bloch_step_fn(geometry, D, dt, T2, T1, M0, off_resonance_hz, rho=0.0,
     counting = bool(geometry.count_walls)
 
     def _work0():
-        return (jnp.int32(0), jnp.int32(0), jnp.int32(0)) if counting else None
+        zero = jnp.int32(0)
+        return (zero if counting else None, zero if counting else None, zero)
 
     def _work_add(w, hit):
+        exh = w[2] + hit.exhausted.astype(jnp.int32)
         if not counting:
-            return None
+            return (None, None, exh)
         n = hit.n_hits if hit.n_hits is not None else jnp.int32(0)
-        return (w[0] + n, w[1] + hit.crossed.astype(jnp.int32), w[2] + hit.exhausted.astype(jnp.int32))
+        return (w[0] + n, w[1] + hit.crossed.astype(jnp.int32), exh)
     has_perm = float(geometry.permeability or 0.0) > 0.0 and geometry.supports_permeability
 
     def _apply(r_new, phi_grad, surf, M, rf_dflip, rf_axis, rf_carrier, crush_rate, uc,
@@ -372,12 +374,15 @@ def simulate_bloch(n_walkers, diffusivity, waveform, geometry, *,
         else:
             M_final, work_w = jax.vmap(simulate_walker, in_axes=(0, 0, 0))(r0, walker_keys, uw)  # (n_w,n_meas,3)
             signals = np.asarray(jnp.mean(M_final[:, :, 0] + 1j * M_final[:, :, 1], axis=0))
-        if work_w is not None:
-            # the forward engine has no walk object to carry the record: it goes to the run and the log
-            hits, cross, exh = (int(np.asarray(w, np.int64).sum()) for w in work_w)
-            work = dict(walker_steps=int(n_walkers) * int(n_t) * int(step_fn.n_sub), n_hits=hits, n_crossings=cross,
-                        exhausted_steps=exh, bounce_budget=(None if geometry.bounce_loop is None else int(geometry.bounce_loop.budget)))
-            run.phase("walked", work=work)
+        # the forward engine has no walk object to carry the record: it goes to the run and the log
+        hits, cross, exh = (None if w is None else int(np.asarray(w, np.int64).sum()) for w in work_w)
+        work = dict(walker_steps=int(n_walkers) * int(n_t) * int(step_fn.n_sub), n_hits=hits, n_crossings=cross,
+                    exhausted_steps=exh, bounce_budget=(None if geometry.bounce_loop is None else int(geometry.bounce_loop.budget)))
+        run.phase("walked", work=work)
+        if exh:
+            warnings.warn(f"{exh} walker-steps exhausted the bounce budget of {work['bounce_budget']} with path left "
+                          f"untested; the budget is too small for this substrate at this step.", RuntimeWarning, stacklevel=2)
+        if hits is not None:
             _log.info("bloch walk work: %s", work)
 
         if return_mz:
