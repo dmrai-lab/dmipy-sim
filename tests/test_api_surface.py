@@ -262,7 +262,7 @@ def test_every_loaded_dmipy_sim_module_comes_from_this_package_tree():
     for name in _DOWNSTREAM_MODULES:
         importlib.import_module(name)
     strays = {n: getattr(m, "__file__", None) for n, m in list(sys.modules.items())
-              if n.startswith("dmipy_sim") and getattr(m, "__file__", None)
+              if (n == "dmipy_sim" or n.startswith("dmipy_sim.")) and getattr(m, "__file__", None)
               and not Path(m.__file__).resolve().is_relative_to(root)}
     assert not strays, f"modules loaded from outside {root}: {strays}"
 
