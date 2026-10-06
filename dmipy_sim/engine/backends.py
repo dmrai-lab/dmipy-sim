@@ -145,7 +145,10 @@ def parity_report(backend, cases=None, *, n_walkers=4000, T_max=2e-3, dt_save=0.
     where the standard deviation is ``overdispersion * sqrt(a + b)``: a walker near a wall hits it on consecutive
     steps, so the per-walker counts are clustered and the total's spread is wider than Poisson (measured on the
     sphere and the ellipsoid at 20k walkers: seed-to-seed swings of 0.1-0.4 % against a Poisson 0.12 %, i.e. 2-3x);
-    zero exhausted steps on both, every walker on its side (the classifier at the saves agrees with the start's pool unless a
+    the exhausted walker-steps and the refused ones (``illegal_crossings``) compared the same way, since both are
+    rates of the geometry at its budget and not of the backend (a permeable icosphere mesh of 320 facets exhausts
+    0-5 of 1.07 M walker-steps per seed on the JAX kernels themselves -- the wedge between a facet and the voxel
+    face it touches); every walker on its side (the classifier at the saves agrees with the start's pool unless a
     crossing was granted), and the perpendicular PGSE signal of the two walks within ``sigma`` of their combined
     standard errors. A case the backend refuses is recorded with its reason and not failed: refusal is the
     contract. Returns ``[{case, ok, ...}]``; the list is what a backend's tests assert on."""
@@ -168,12 +171,11 @@ def parity_report(backend, cases=None, *, n_walkers=4000, T_max=2e-3, dt_save=0.
         rec = dict(case=name, ok=True, checks={})
         # the work record
         steps = ref.work["walker_steps"]
-        for key in ("n_hits", "n_crossings"):
-            a, b = ref.work[key], w.work[key]
+        counts = {key: (ref.work[key], w.work[key]) for key in ("n_hits", "n_crossings", "exhausted_steps")}
+        counts["illegal"] = (int(np.asarray(ref.illegal_crossings).sum()), int(np.asarray(w.illegal_crossings).sum()))
+        for key, (a, b) in counts.items():
             z = abs(a - b) / (overdispersion * max(np.sqrt(a + b), 1.0))
-            rec["checks"][key] = dict(jax=a, backend=b, z=float(z), ok=bool(z <= sigma))
-        rec["checks"]["exhausted"] = dict(jax=ref.work["exhausted_steps"], backend=w.work["exhausted_steps"],
-                                          ok=(ref.work["exhausted_steps"] == 0 and w.work["exhausted_steps"] == 0))
+            rec["checks"][key] = dict(jax=int(a), backend=int(b), z=float(z), ok=bool(z <= sigma))
         # confinement: the saves' pools against the start's, where no crossing was granted
         pool0 = np.asarray(g2.classify_positions_exact(np.asarray(w.positions[:, 0])))
         poolT = np.asarray(g2.classify_positions_exact(np.asarray(w.positions[:, -1])))

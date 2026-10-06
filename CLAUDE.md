@@ -252,7 +252,7 @@ paths only the JAX kernels implement (the myelinated substrates, MT binding, in-
 master, the compartment guard, the adaptive producer) are refused for another backend, never fallen back from.
 `work["backend"]` and the run record say which backend walked. A backend is admitted per engine class by
 `backends.parity_report` (the same starts and sub-step, counting on: hit and crossing rates within Poisson noise,
-zero exhaustions, confinement, the PGSE signal within the combined standard errors); the public package ships
+exhaustion and refusal rates compared the same way, confinement, the PGSE signal within the combined standard errors); the public package ships
 `"jax"` alone, so for a regular user the option does nothing.
 
 `interact` is defined once on `Geometry` and is the entry point callers should use. A geometry implements
