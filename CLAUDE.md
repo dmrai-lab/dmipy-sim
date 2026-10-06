@@ -222,6 +222,16 @@ hit = geom.interact(r, step, kappa_over_D=0.0, rho_over_D=0.0, key=None, side=No
 hit.r  hit.dlog_w  hit.crossed  hit.illegal      # a WallHit NamedTuple (a pytree)
 ```
 
+**One loop behind every wall** (#624): `geometry/_boundary.BounceLoop` runs a geometry's single-collision rule
+`rule(r, d, remaining, state, i) -> (r, d, remaining, state, dlog, crossed, reflected)` to exhaustion -- a fixed
+`lax.scan` of `budget` iterations (a `while_loop` for the label volume's traversal, `fixed=False`), the leftover path
+flown only when the last iteration met nothing -- and returns `Bounces(r, dlog_w, crossed, n_reflections, exhausted,
+state)`. Every geometry declares `geometry.bounce_loop` (`.budget` is the one name of the bounce budget; `None` for
+a wall without a loop: the slab, the shell, the curved tubes' two bounces). `exhausted` is free and is the
+certificate that a budget is sufficient: a budget no lane exhausted gives the trajectories of any larger one.
+`BounceLoop(count=True)` carries a reflection count, which is not free (+5 % on an analytic wall, measured) and is
+off by default.
+
 `interact` is defined once on `Geometry` and is the entry point callers should use.
 `reflect(r, step)`, `reflect_with_log_weight(r, step, ρ/D)` and
 `permeate(r, step, κ/D, ρ/D, key)` still exist, but they are **the same function at
