@@ -45,7 +45,7 @@ from typing import NamedTuple
 import jax
 import jax.numpy as jnp
 from ._grid import bucket_by_bbox, NEIGHBOUR_OFFSETS, gather, wrap_periodic
-from ._boundary import specular, transmit_probability, off_wall
+from ._boundary import BounceLoop, specular, transmit_probability, off_wall
 import numpy as np
 
 from .base import Geometry, LengthScales
@@ -1092,7 +1092,7 @@ class Mesh(Geometry):
         if max_bounces is None:
             chord_floor = 2.0 * float(self._GRAZE) * float(self.radius)
             max_bounces = max(10, int(np.ceil(0.9 * float(self.cell_size) / chord_floor)) + 2)
-        self._MAX_BOUNCES = int(max_bounces)
+        self.bounce_loop = BounceLoop(int(max_bounces))
         self._OFF = jnp.asarray(NEIGHBOUR_OFFSETS)
         self._A = _MeshArrays(NRM=self._NRM, CENT=self._CENT, CELL=self._CELL,
                               dims_arr=self._dims_arr, GMIN=self._GMIN, CS=self._CS,
@@ -1260,7 +1260,11 @@ class Mesh(Geometry):
         union: every feature, once, so a fix lands in one place and no caller gets a
         quietly-reduced version of the physics.
 
-        Returns ``(r_new, dlog_w, crossed)``. At ``kappa_over_D = 0`` no crossing is ever
+        The loop is :class:`~dmipy_sim.geometry._boundary.BounceLoop` (``self.bounce_loop``); this method is
+        the mesh's rule -- the triangles of the gather, the voxel faces, the smooth normal, the adaptive nudge --
+        and the refusal of an escape. Its state is the crossing decision and the facet just bounced off.
+
+        Returns ``(r_new, dlog_w, crossed, refused)``. At ``kappa_over_D = 0`` no crossing is ever
         granted, so this is exactly a reflection -- see :meth:`reflect`.
         """
         r_w = self._wrap(r)
@@ -1271,8 +1275,8 @@ class Mesh(Geometry):
                           jnp.zeros(3, jnp.float32))
         u_rand = jax.random.uniform(perm_key, dtype=jnp.float32)
 
-        def one(carry, i):
-            r0, dh, rem, decided, dlogw, crossed, last = carry
+        def rule(r0, dh, rem, state, i):
+            decided, last = state
             ts, u, v = self._mt(r0, dh, tri, valid)
             vm = (ts > self._hit_floor(i > 0)) & (ts < rem)
             if self.rest_facet_exclusion:
@@ -1329,18 +1333,12 @@ class Mesh(Geometry):
             rem_new = jnp.where(do_reflect, rem - d - nudge, jnp.float32(0.0))
             dperp_refl = jnp.where(do_reflect & jnp.logical_not(use_box), rho_mult * d_perp,
                                    jnp.float32(0.0))
-            return (r_new, d_new, rem_new, decided | first_hit,
-                    dlogw - 2.0 * jnp.float32(rho_over_D) * dperp_refl,
-                    crossed | transmit, idx), do_reflect
+            return (r_new, d_new, rem_new, (decided | first_hit, idx),
+                    -2.0 * jnp.float32(rho_over_D) * dperp_refl, transmit, do_reflect)
 
-        init = (r_w, d_hat, step_l, jnp.zeros((), bool), jnp.float32(0.0),
-                jnp.zeros((), bool), jnp.int32(-1))
-        (rf, df, remf, _, dlogw, crossed_f, _last), refls = jax.lax.scan(
-            one, init, jnp.arange(self._MAX_BOUNCES))
-        # Flying the leftover path is only safe if the final iteration found NO hit -- that is
-        # precisely the statement that nothing lies within `rem` of here. If it DID hit, the
-        # bounce budget ran out mid-step and the leftover is untested.
-        r_out = r + (rf + df * jnp.where(refls[-1], 0.0, jnp.maximum(remf, 0.0)) - r_w)
+        b = self.bounce_loop(rule, r_w, d_hat, step_l, state_init=(jnp.zeros((), bool), jnp.int32(-1)))
+        dlogw, crossed_f = b.dlog_w, b.crossed
+        r_out = r + (b.r - r_w)
         refused = jnp.zeros((), bool)
         if self.reject_escape:
             # a GRANTED crossing is an escape from the starting compartment and must be kept;

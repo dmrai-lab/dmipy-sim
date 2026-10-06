@@ -268,41 +268,104 @@ def bounce_budget(R_min, nudge, min_gap, step_max):
     return int(_np.clip(_np.ceil(float(step_max) / passage) + 1, 2, 32))
 
 
-def bounce_loop(hit_once, r0, d_hat, step_l, max_bounces, dlog_init=None, decided_init=None):
-    """Run a single-collision rule to exhaustion: reflect, continue, repeat.
+class Bounces(NamedTuple):
+    """What one wall interaction resolved: the result of a :class:`BounceLoop`."""
+    r: jnp.ndarray              #: end position; the leftover path is flown when the last iteration met nothing
+    dlog_w: jnp.ndarray         #: the rule's channels summed over the bounces (the surface log-weight by default)
+    crossed: jnp.ndarray        #: bool -- a crossing was granted
+    n_reflections: object       #: int32 -- reflections resolved in this step; None unless the loop counts
+    exhausted: jnp.ndarray      #: bool -- the budget ran out with path left untested
+    state: object               #: the rule's state after its last iteration
 
-    A step longer than the chord of the object needs more than one reflection. Handle only
-    the first and fly the remainder and the walker exits the far side -- measured at 58x the
-    radius on a 1 um cylinder, and invisible on a 5 um one, which is why it survived until
-    an impact table swept step length against object size (#88).
 
-    ``hit_once(r, d, remaining, decided) -> (r, d, remaining, decided, dlog_w, crossed)``
-    resolves ONE collision. It receives ``decided`` so that the crossing decision is made at
-    most once per step (the single-event approximation applies to permeation, not to
-    reflection), while reflections keep going until the path is spent.
+class BounceLoop:
+    """The wall interaction of every substrate: one single-collision rule, run to exhaustion.
 
-    Returns ``(r_final, dlog_w, crossed)``. The leftover path is flown only if the last
-    iteration found no hit -- which is exactly the statement that nothing lies within
-    ``remaining`` of there, so it has already been tested. If it DID hit, the budget ran out
-    mid-step and the remainder is untested: stopping loses a sliver of path length, flying it
-    walks the walker through whatever it was about to bounce off.
+    A step longer than the chord of the object needs more than one reflection. Handle only the
+    first and fly the remainder and the walker exits the far side -- measured at 58x the radius
+    on a 1 um cylinder, and invisible on a 5 um one, which is why it survived until an impact
+    table swept step length against object size (#88). The loop that runs a rule to exhaustion
+    was then written once per substrate, and the copies disagreed on what a hit is and on how a
+    step that ends on the wrong side is treated (#624). This is the one loop; a geometry supplies
+    the rule and declares its budget, and every wall reports the same things.
 
-    ``dlog_init`` is the zero of the ``dlog_w`` accumulator: a scalar by default, or an array
-    when ``hit_once`` reports several channels per hit (one per wall, say) -- they are summed
-    elementwise across the bounces. ``decided_init`` is the initial value of the ``decided``
-    slot (``False`` by default); a rule that decides at every hit may carry an iteration counter
-    there instead, to draw one independent uniform per hit.
+    The rule, ``rule(r, d, remaining, state, i) -> (r, d, remaining, state, dlog, crossed,
+    reflected)``, resolves ONE collision of the ray ``r + t d`` within ``remaining`` of ``r``:
+    on a hit it returns the point set off the wall, the outgoing direction, the path left after
+    the hit, and ``reflected``; where the membrane grants a crossing it returns ``crossed`` and
+    flies the remainder instead. On a miss it either flies the remainder (``remaining`` becomes
+    zero) or leaves the ray as it is -- the loop flies what is left when the last iteration met
+    nothing. ``state`` is the rule's own, carried between its iterations: the crossing decision
+    (made at most once per step, because permeation is a single-event approximation while
+    reflection is not), the facet just bounced off, the voxel the traversal is in. ``i`` is the
+    iteration index, so a rule that draws one uniform per encounter indexes its draws by it.
+    ``dlog`` is one scalar channel by default, or an array when the rule reports several per hit
+    (``dlog_init`` is its zero); the channels are summed over the bounces.
+
+    ``budget`` is the loop's cap, for the worst lane (:func:`bounce_budget`): with ``fixed``
+    it is the length of a ``lax.scan`` that costs every lane the same -- a ``while`` that exits
+    when the batch is done was measured 2.6x slower on a sphere and 5x on a mesh under ``vmap``,
+    its dynamic trip count defeating XLA's fusion of the outer scan. A ``while_loop``
+    (``fixed=False``) is for a traversal whose events per step are few and whose budget is
+    large, such as the voxel faces of a label volume; its rule must spend the path itself on a
+    miss, since the loop runs while path is left.
+
+    The leftover path is flown only if the last iteration found no hit -- which is exactly the
+    statement that nothing lies within ``remaining`` of there, so it has already been tested. If
+    it DID hit, the budget ran out mid-step and the remainder is untested: stopping loses a
+    sliver of path length, flying it walks the walker through whatever it was about to bounce
+    off. That case is reported as ``exhausted``, at no cost: both terms are already in hand.
+
+    ``count`` adds the number of reflections to the result. It is a carried integer in the inner
+    loop and it is not free: measured on the L40S, +5 % on the analytic sphere (4.8e9 walker-steps,
+    3.99 s against 4.19 s), whose rule is a few dozen flops. Off by default, so a production walk
+    pays nothing; a pilot walk that calibrates the cost of a substrate turns it on.
     """
-    def body(carry, _):
-        r, d, rem, decided, dlogw, crossed = carry
-        r_n, d_n, rem_n, dec_n, dlw, cr = hit_once(r, d, rem, decided)
-        return (r_n, d_n, rem_n, dec_n, dlogw + dlw, crossed | cr), (rem_n < rem)
 
-    dlog0 = jnp.zeros((), jnp.float32) if dlog_init is None else dlog_init
-    dec0 = jnp.zeros((), bool) if decided_init is None else decided_init
-    init = (r0, d_hat, step_l, dec0, dlog0, jnp.zeros((), bool))
-    (r_f, d_f, rem_f, _dec, dlogw, crossed), hit_any = jax.lax.scan(
-        body, init, jnp.arange(max_bounces))
-    r_out = r_f + d_f * jnp.where(hit_any[-1], jnp.float32(0.0),
-                                  jnp.maximum(rem_f, jnp.float32(0.0)))
-    return r_out, dlogw, crossed
+    def __init__(self, budget, *, fixed=True, count=False):
+        self.budget = int(budget)
+        self.fixed = bool(fixed)
+        self.count = bool(count)
+        if self.budget < 1:
+            raise ValueError(f"a bounce loop needs a budget of at least one collision, got {budget!r}")
+
+    def __repr__(self):
+        return f"BounceLoop(budget={self.budget}, fixed={self.fixed}, count={self.count})"
+
+    def __call__(self, rule, r0, d_hat, step_l, *, dlog_init=None, state_init=None):
+        dlog0 = jnp.zeros((), jnp.float32) if dlog_init is None else dlog_init
+        st0 = jnp.zeros((), bool) if state_init is None else state_init
+        zero_i = jnp.zeros((), jnp.int32)
+        counting = self.count
+        # the carried count is the one thing in the loop that is not free, so it exists only when asked for
+        init = (r0, d_hat, step_l, st0, dlog0, jnp.zeros((), bool), zero_i if counting else None)
+
+        def step(carry, i):
+            r, d, rem, state, dlogw, crossed, nref = carry
+            r_n, d_n, rem_n, st_n, dlw, cr, refl = rule(r, d, rem, state, i)
+            nref_n = nref + refl.astype(jnp.int32) if counting else None
+            return (r_n, d_n, rem_n, st_n, dlogw + dlw, crossed | cr, nref_n), rem_n
+
+        if self.fixed:
+            def body(carry, i):
+                carry_n, rem_n = step(carry, i)
+                return carry_n, (rem_n < carry[2])
+
+            (r_f, d_f, rem_f, st_f, dlogw, crossed, nref), progressed = jax.lax.scan(
+                body, init, jnp.arange(self.budget))
+            last = progressed[-1]
+            r_out = r_f + d_f * jnp.where(last, jnp.float32(0.0), jnp.maximum(rem_f, jnp.float32(0.0)))
+            return Bounces(r_out, dlogw, crossed, nref, last & (rem_f > 0), st_f)
+
+        budget = jnp.int32(self.budget)
+
+        def cond(c):
+            return (c[0][2] > 0) & (c[1] < budget)
+
+        def body(c):
+            carry_n, _ = step(c[0], c[1])
+            return carry_n, c[1] + 1
+
+        (r_f, _d_f, rem_f, st_f, dlogw, crossed, nref), _n = jax.lax.while_loop(cond, body, (init, zero_i))
+        # the rule spent the path itself unless the budget stopped it, and then the leftover is untested
+        return Bounces(r_f, dlogw, crossed, nref, rem_f > 0, st_f)

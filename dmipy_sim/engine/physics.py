@@ -559,7 +559,7 @@ def make_myelin_substep(geometry, dt: float, rho_weights=None):
         r_new = r_c_new
         return r_new, _encode_compartment(geometry, pool_new, k_new), chan, dlog_rho
 
-    sub.max_bounces = wall.max_bounces
+    sub.bounce_loop = wall.bounce_loop
     sub.n_cand = wall.n_cand
     return sub
 
@@ -587,7 +587,7 @@ def make_myelin_traj_step_fn(geometry, dt: float):
         dlog_boundary = jnp.sum(chan)
         return (r_new, r_new, key, dlog_accum + dlog_boundary, comp_new), None
 
-    step_fn.max_bounces = sub.max_bounces
+    step_fn.bounce_loop = sub.bounce_loop
     return step_fn
 
 
@@ -712,7 +712,7 @@ def make_packed_myelin_traj_step_fn(geometry, dt: float,
         bound_acc_out = bound_acc + jnp.where(is_bound, jnp.float32(1.0), jnp.float32(0.0))
         return (r_out, r_uw_out, key, dlog_accum + dlog_contrib, comp_out, bound_rem_out, bound_acc_out), None
 
-    step_fn.max_bounces = sub.max_bounces
+    step_fn.bounce_loop = sub.bounce_loop
     return step_fn
 
 
@@ -776,5 +776,5 @@ def make_packed_myelin_step_fn(geometry, dt: float, T1: float = None):
         return carry_out, None
 
     step_fn.n_sub = n_sub
-    step_fn.max_bounces = sub.max_bounces
+    step_fn.bounce_loop = sub.bounce_loop
     return step_fn

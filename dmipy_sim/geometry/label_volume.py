@@ -33,7 +33,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from ._boundary import WallHit, representable_nudge, transmit_probability
+from ._boundary import BounceLoop, WallHit, representable_nudge, transmit_probability
 from .base import Geometry, LengthScales, permeability_of
 
 #: The reflection rule of this family: ``step_l <= min(voxel_size) / SPECULAR_STEP_FRACTION``, one
@@ -181,7 +181,7 @@ class LabelVolume(Geometry):
         # A step crosses at most as many grid planes as the grid has, plus one reflection each; four
         # times that is a bound no step of a diffusion walk can reach, and reaching it refuses the
         # step (`WallHit.illegal`) instead of leaving part of the path untested.
-        self._max_events = int(4 * self.dims.sum() + 16)
+        self.bounce_loop = BounceLoop(int(4 * self.dims.sum() + 16), fixed=False)
 
         self.LAB = jnp.asarray(self._pool_grid, jnp.int8)
         self.VOX = jnp.asarray(self.voxel_size, jnp.float32)
@@ -342,6 +342,10 @@ class LabelVolume(Geometry):
         """One step through the grid: traverse, reflect off every face to another pool, cross the
         first one if the membrane grants it.
 
+        The loop is :class:`~dmipy_sim.geometry._boundary.BounceLoop` with a dynamic trip count (``self.bounce_loop``,
+        ``fixed=False``: events per step are few and the budget is the whole grid); this method is the traversal's
+        rule, whose state is the voxel, the step signs, the distances to the next planes and the crossing decision.
+
         Returns ``(r_new, dlog_w, crossed, illegal)``. The traversal carries the distance already
         travelled implicitly in ``rem``, restarting from the hit point at each reflection, so the
         path length is conserved exactly. ``dlog_w`` is ``-2 (rho/D) * sum d_perp`` with
@@ -368,17 +372,8 @@ class LabelVolume(Geometry):
             t_next = jnp.where(au > 0, (wall - p) / jnp.where(au > 0, u, jnp.float32(1.0)), big)
             return i, sgn, jnp.maximum(t_next, 0.0), t_delta
 
-        r_w = self._wrap(r)
-        i0, sgn0, tn0, td0 = dda(r_w, u0)
-        init = (r_w, u0, step_l, i0, sgn0, tn0, td0,
-                jnp.float32(0.0), jnp.bool_(False), jnp.bool_(False), jnp.bool_(False), jnp.int32(0))
-
-        def cond(c):
-            _, _, _, _, _, _, _, _, done, _, _, n = c
-            return (~done) & (n < self._max_events)
-
-        def body(c):
-            p, u, rem, i, sgn, t_next, t_delta, dlog, done, decided, crossed, n = c
+        def rule(p, u, rem, state, n):
+            i, sgn, t_next, t_delta, decided = state
             ax = jnp.argmin(t_next)
             t = t_next[ax]
             arrive = t >= rem                                      # the step ends before the next plane
@@ -417,24 +412,26 @@ class LabelVolume(Geometry):
             sgn_new = jnp.where(reflect, sgn_r, sgn)
             tn_new = jnp.where(reflect, tn_r, tn_adv)
             td_new = jnp.where(reflect, td_r, t_delta)
-            dlog_new = dlog - jnp.where(reflect & real_wall, 2.0 * rho_over_D * d_perp, jnp.float32(0.0))
+            dlog_inc = -jnp.where(reflect & real_wall, 2.0 * rho_over_D * d_perp, jnp.float32(0.0))
 
             # arrival wins over everything: the plane is beyond the end of the step
             p_end = p + rem * u
             return (jnp.where(arrive, p_end, p_new),
                     jnp.where(arrive, u, u_new),
                     jnp.where(arrive, jnp.float32(0.0), jnp.maximum(rem_new, 0.0)),
-                    jnp.where(arrive, i, i_new),
-                    jnp.where(arrive, sgn, sgn_new),
-                    jnp.where(arrive, t_next, tn_new),
-                    jnp.where(arrive, t_delta, td_new),
-                    jnp.where(arrive, dlog, dlog_new),
-                    arrive | (rem_new <= 0.0),
-                    decided | jnp.where(arrive, False, (~same) & real_wall),
-                    crossed | jnp.where(arrive, False, transmit),
-                    n + 1)
+                    (jnp.where(arrive, i, i_new),
+                     jnp.where(arrive, sgn, sgn_new),
+                     jnp.where(arrive, t_next, tn_new),
+                     jnp.where(arrive, t_delta, td_new),
+                     decided | jnp.where(arrive, False, (~same) & real_wall)),
+                    jnp.where(arrive, jnp.float32(0.0), dlog_inc),
+                    jnp.where(arrive, False, transmit),
+                    reflect & ~arrive)
 
-        p_f, _, _, i_f, _, _, _, dlog_f, done_f, _, crossed_f, _ = jax.lax.while_loop(cond, body, init)
+        r_w = self._wrap(r)
+        i0, sgn0, tn0, td0 = dda(r_w, u0)
+        b = self.bounce_loop(rule, r_w, u0, step_l, state_init=(i0, sgn0, tn0, td0, jnp.bool_(False)))
+        p_f, dlog_f, crossed_f, i_f, done_f = b.r, b.dlog_w, b.crossed, b.state[0], ~b.exhausted
         # The step's end, a nudge clear of every face of the voxel the traversal left it in. On a
         # periodic axis the position is continuous and the query is wrapped, so only the DELTA is
         # added back; on the others the clamped value is returned as it is, because `r + (x - r)` is

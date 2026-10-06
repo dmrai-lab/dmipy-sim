@@ -9,7 +9,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from ._boundary import (keep_side_radial, ray_sphere_t, specular, transmit_probability, off_wall,
-                        bounce_loop, bounce_budget)
+                        BounceLoop, bounce_budget)
 from .base import permeability_of, Geometry, LengthScales, acquisition_rotation
 from .packing import periodic_min_gap
 
@@ -64,7 +64,7 @@ def packed_wall_kernel(centers, radii, L, eps, nudge, step_max, min_gap):
     """
     N, dim = int(centers.shape[0]), int(centers.shape[1])
     R_min = float(np.min(np.asarray(radii)))
-    max_bounces = packed_bounce_budget(R_min, nudge, min_gap, step_max)
+    loop = BounceLoop(packed_bounce_budget(R_min, nudge, min_gap, step_max))
     n_cand = packed_candidate_count(N, R_min, step_max, dim)
     f32 = jnp.float32
     ar = jnp.arange(n_cand)
@@ -73,7 +73,7 @@ def packed_wall_kernel(centers, radii, L, eps, nudge, step_max, min_gap):
         return q - L * jnp.floor(q / L + f32(0.5))
 
     def wall(p, d_hat, step_l, inside0, kappa_over_D, rho_over_D, key):
-        us = jax.random.uniform(key, (max_bounces,), dtype=jnp.float32)      # one draw per encounter
+        us = jax.random.uniform(key, (loop.budget,), dtype=jnp.float32)      # one draw per encounter
         q_all = _wrap(p[None, :] - centers)                                    # (N, dim)
         dist_wall = jnp.sqrt(jnp.sum(q_all * q_all, -1)) - radii
         if n_cand < N:
@@ -82,7 +82,7 @@ def packed_wall_kernel(centers, radii, L, eps, nudge, step_max, min_gap):
             idx = ar
         c_c, R_c = centers[idx], radii[idx]
 
-        def hit_once(pp, d, rem, i):
+        def rule(pp, d, rem, state, i):
             q = _wrap(pp[None, :] - c_c)                                       # (n_cand, dim)
             d2 = jnp.sum(q * q, -1)
             kc = jnp.argmin(d2 / (R_c * R_c))
@@ -112,10 +112,10 @@ def packed_wall_kernel(centers, radii, L, eps, nudge, step_max, min_gap):
             rem_new = jnp.where(reflecting, jnp.maximum(rem_a - nudge, f32(0.0)), f32(0.0))
             dlw = jnp.stack([jnp.where(reflecting, -f32(2.0) * rho_over_D * d_perp, f32(0.0)),
                              transmit.astype(f32)])
-            return p_new, d_new, rem_new, i + 1, dlw, transmit
+            return p_new, d_new, rem_new, state, dlw, transmit, reflecting
 
-        p_f, dlw, _ = bounce_loop(hit_once, p, d_hat, step_l, max_bounces,
-                                  dlog_init=jnp.zeros(2, f32), decided_init=jnp.int32(0))
+        b = loop(rule, p, d_hat, step_l, dlog_init=jnp.zeros(2, f32))
+        p_f, dlw = b.r, b.dlog_w
         dlog_w = dlw[0]
         # The side is the one at the START of the step, flipped once per granted crossing.
         crossed = (jnp.round(dlw[1]).astype(jnp.int32) % 2) == 1
@@ -125,7 +125,7 @@ def packed_wall_kernel(centers, radii, L, eps, nudge, step_max, min_gap):
         p_f, illegal = keep_side_radial(p_f, q_f[k_f], radii[k_f], want_in, nudge)
         return p_f, dlog_w, crossed, illegal
 
-    wall.max_bounces = max_bounces
+    wall.bounce_loop = loop
     wall.n_cand = n_cand
     return wall
 
@@ -300,6 +300,10 @@ class PackedCylinders(Geometry):
         """
         return self.permeate(r, step, jnp.float32(0.0), rho_over_D,
                              jax.random.PRNGKey(0))[:2]
+
+    @property
+    def bounce_loop(self):
+        return self._wall.bounce_loop
 
     def permeate(self, r, step, kappa_over_D, rho_over_D, perm_key, side=None):
         """Wall interaction in the pack: reflect off the cylinders the step meets, or cross one
@@ -506,6 +510,10 @@ class PackedSpheres(Geometry):
         """
         return self.permeate(r, step, jnp.float32(0.0), rho_over_D,
                              jax.random.PRNGKey(0))[:2]
+
+    @property
+    def bounce_loop(self):
+        return self._wall.bounce_loop
 
     def permeate(self, r, step, kappa_over_D, rho_over_D, perm_key):
         """Wall interaction in the pack: reflect off the spheres the step meets, or cross one where

@@ -49,7 +49,7 @@ def test_a_step_spanning_the_gap_between_two_objects_stays_in_the_gap(kind):
     gap = 0.05 * R
     geom, centers = _two(kind, gap)
     dim = centers.shape[1]
-    assert geom._wall.max_bounces >= 2 + int(np.ceil((R / 6) / gap)), "budget must cover R/6 across the gap"
+    assert geom.bounce_loop.budget >= 2 + int(np.ceil((R / 6) / gap)), "budget must cover R/6 across the gap"
     cases = _gap_cases(gap, dim)
     starts = np.stack([np.r_[c[1], np.zeros(3 - dim)] for c in cases]).astype(np.float32)
     steps = np.stack([np.r_[c[2], np.zeros(3 - dim)] for c in cases]).astype(np.float32)
@@ -76,7 +76,7 @@ def test_bounce_budget_and_candidate_count_follow_the_worst_case():
     assert 8 <= packed_candidate_count(100, R, R / 6, 3) <= 100
     # the geometry builds its kernel at the worst-case step the sub-step rule allows (R_min / 6)
     geom, _ = _two("cylinders", 0.02 * R)
-    assert geom._wall.max_bounces == packed_bounce_budget(R, nudge, geom.min_gap, R / 6)
+    assert geom.bounce_loop.budget == packed_bounce_budget(R, nudge, geom.min_gap, R / 6)
 
 
 def _dense_pack(seed=1):

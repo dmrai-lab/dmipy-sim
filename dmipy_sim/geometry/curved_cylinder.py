@@ -109,7 +109,10 @@ def _interior_bounce(r, step, A, AB, AB2, rr, valid, NUDGE):
 
 
 def _reflect_interior(r, step, A, AB, AB2, rr, valid, tube, NUDGE):
-    """The interior wall interaction: ``(r_out, d_perp)``. A walker is confined to ITS tube -- the one it is deepest
+    """The interior wall interaction: ``(r_out, d_perp)``. Two bounces by argument, written on displacement vectors
+    rather than the (direction, remainder) ray of :class:`~dmipy_sim.geometry._boundary.BounceLoop`, so this family
+    does not run that loop (``bounce_loop`` is ``None``); putting it on the loop is a numerical change to be validated
+    on the family's million-walker fixtures. A walker is confined to ITS tube -- the one it is deepest
     in where the step starts (``tube`` labels each candidate segment's tube) -- and that tube is the union of its
     own segments' capsules, which overlap at every joint. Two specular bounces off its wall (a grazing exit off a
     thin tube can send the remainder out again), then the guarantee: a walker still outside its tube is put
