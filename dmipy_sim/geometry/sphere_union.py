@@ -33,6 +33,8 @@ from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
+
+from ._boundary import BounceLoop
 import numpy as np
 
 from ._grid import NEIGHBOUR_OFFSETS, gather
@@ -133,13 +135,12 @@ def _normal(r, u, t, cen, rad, interior):
     return -n if interior else n
 
 
-def _walk_step(levels, r, step, interior, max_bounces, nudge, eps):
+def _walk_step(levels, r, step, interior, loop, nudge, eps):
     """One diffusion step with multi-bounce reflection; returns (r_new, sum d_perp)."""
     step_l = jnp.linalg.norm(step)
     u0 = step / jnp.maximum(step_l, 1e-30)
 
-    def one(carry, _):
-        r0, u, rem = carry
+    def rule(r0, u, rem, state, i):
         t, cen, rad = _first_boundary(levels, r0, u, rem, interior, eps)
         hit = jnp.isfinite(t)
         t_safe = jnp.where(hit, t, 0.0)
@@ -149,18 +150,14 @@ def _walk_step(levels, r, step, interior, max_bounces, nudge, eps):
         r_hit = r0 + t_safe * u + nudge * n
         # Brownstein-Tarr: the path that would have crossed the wall, projected on the normal.
         d_perp = jnp.where(hit, (rem - t_safe) * jnp.abs(jnp.dot(u, n)), 0.0)
-        return ((jnp.where(hit, r_hit, r0),
-                 jnp.where(hit, u_ref, u),
-                 jnp.where(hit, rem - t_safe - nudge, rem)),
-                (d_perp, hit))
+        # the rule leaves a missed ray as it is: the loop flies the leftover when the last iteration met nothing
+        return (jnp.where(hit, r_hit, r0), jnp.where(hit, u_ref, u), jnp.where(hit, rem - t_safe - nudge, rem),
+                state, d_perp, jnp.zeros((), bool), hit)
 
-    (rf, uf, remf), (dperp, hits) = jax.lax.scan(one, (r, u0, step_l), None, length=max_bounces)
-    # Fly the remaining path only if the last bounce found nothing -- otherwise the bounce budget
-    # ran out mid-step and the leftover is untested (the mesh engine's rule, same reasoning).
-    r_out = rf + uf * jnp.where(hits[-1], 0.0, jnp.maximum(remf, 0.0))
+    b = loop(rule, r, u0, step_l)
     # Reject-escape: a step that ends on the wrong side of the union never happened.
-    ok = _inside(levels, r_out) == interior
-    return jnp.where(ok, r_out, r), jnp.where(ok, jnp.sum(dperp), 0.0)
+    ok = _inside(levels, b.r) == interior
+    return jnp.where(ok, b.r, r), jnp.where(ok, b.dlog_w, 0.0)
 
 
 # --------------------------------------------------------------------------- geometry
@@ -198,7 +195,7 @@ class SphereUnion(Geometry):
         self.centers, self.radii = centers, radii
         self.pool = pool
         self.interior = pool == "intra"
-        self.max_bounces = int(max_bounces)
+        self.bounce_loop = BounceLoop(int(max_bounces))
         self.surface_relaxivity_t2 = float(surface_relaxivity_t2) if surface_relaxivity_t2 is not None else None
         self.box = None if box is None else (np.asarray(box[0], float), np.asarray(box[1], float))
         self.box_reflect = bool(box_reflect) and self.box is not None
@@ -421,10 +418,10 @@ class SphereUnion(Geometry):
         return jnp.where(ok, folded, r), ok
 
     def reflect(self, r, step):
-        r_new, _ = _walk_step(self.levels, r, step, self.interior, self.max_bounces, self._nudge, self._eps)
+        r_new, _ = _walk_step(self.levels, r, step, self.interior, self.bounce_loop, self._nudge, self._eps)
         return self._fold(r, r_new)[0]
 
     def reflect_with_log_weight(self, r, step, rho_over_D):
-        r_new, dsum = _walk_step(self.levels, r, step, self.interior, self.max_bounces, self._nudge, self._eps)
+        r_new, dsum = _walk_step(self.levels, r, step, self.interior, self.bounce_loop, self._nudge, self._eps)
         folded, ok = self._fold(r, r_new)
         return folded, jnp.where(ok, -2.0 * jnp.float32(rho_over_D) * dsum, jnp.float32(0.0))

@@ -8,7 +8,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from ._boundary import (keep_side_radial, specular, off_wall, ray_sphere_t, transmit_probability,
-                        bounce_loop)
+                        BounceLoop)
 
 from .base import Geometry, LengthScales, acquisition_rotation
 from ..compartments import Compartments, Pool
@@ -50,7 +50,7 @@ def concentric_wall_kernel(centers, inner, outer, L, D_intra, D_myelin, D_extra,
     thick_min = float(np.min((outer_np - inner_np)[real_np]))
     chord_floor = 2.0 * np.sqrt(2.0 * float(nudge) * R_in_min)
     passage = min(float(min_gap), thick_min, chord_floor)
-    max_bounces = int(np.clip(np.ceil(float(step_max) / passage) + 1, 2, 32))
+    loop = BounceLoop(int(np.clip(np.ceil(float(step_max) / passage) + 1, 2, 32)))
     n_cand = int(min(N, max(8, np.ceil(np.pi * (1.0 + float(step_max) / R_in_min)) + 2)))
 
     real = outer > 0
@@ -85,7 +85,7 @@ def concentric_wall_kernel(centers, inner, outer, L, D_intra, D_myelin, D_extra,
         Di_c, Dm_c, De_c = D_intra[idx], D_myelin[idx], D_extra[idx]
         w_c = rho_weights[idx]                                                 # (n_cand, 4)
 
-        def hit_once(p, d, rem, decided):
+        def rule(p, d, rem, decided, i):
             q = _wrap(p[None, :] - c_c)
             d2 = jnp.sum(q * q, -1)
             pen = jnp.where(real_c, d2 / jnp.maximum(out_c * out_c, _TINY), jnp.inf)
@@ -139,10 +139,10 @@ def concentric_wall_kernel(centers, inner, outer, L, D_intra, D_myelin, D_extra,
             code = jnp.where(transmit, jnp.where(hit_in, jnp.where(in_lum, f32(1.0), f32(2.0)),
                                                  jnp.where(pool_c == 2, f32(3.0), f32(4.0))), f32(0.0))
             dlw = jnp.concatenate([chan, dlog_rho[None], code[None]])
-            return p_new, d_new, rem_new, decided | first, dlw, transmit
+            return p_new, d_new, rem_new, decided | first, dlw, transmit, reflecting
 
-        xy_f, dlw, crossed = bounce_loop(hit_once, xy, d_hat, step_l, max_bounces,
-                                         dlog_init=jnp.zeros(6, f32))
+        b = loop(rule, xy, d_hat, step_l, dlog_init=jnp.zeros(6, f32))
+        xy_f, dlw, crossed = b.r, b.dlog_w, b.crossed
         code = jnp.round(dlw[5]).astype(jnp.int32)
         pool_new = jnp.where(crossed, jnp.asarray(_POOL_AFTER_CROSSING, jnp.int32)[code], pool)
         q_all_f = _wrap(xy_f[None, :] - centers)
@@ -151,7 +151,7 @@ def concentric_wall_kernel(centers, inner, outer, L, D_intra, D_myelin, D_extra,
         xy_f = _pin(xy_f, q_all_f[k_new], inner[k_new], outer[k_new], pool_new)
         return xy_f, pool_new, k_new, dlw[:4], dlw[4], crossed
 
-    wall.max_bounces = max_bounces
+    wall.bounce_loop = loop
     wall.n_cand = n_cand
     return wall
 

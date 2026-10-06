@@ -7,20 +7,20 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from ._boundary import (bounce_budget, bounce_loop, keep_side_radial, keep_side_planar, keep_side_quadric,
+from ._boundary import (bounce_budget, BounceLoop, keep_side_radial, keep_side_planar, keep_side_quadric,
                         ray_sphere_t, ray_quadric_t, specular,
                         transmit_probability, off_wall, step_off_wall)
 from .base import permeability_of, Geometry, LengthScales, acquisition_rotation
 
 
-def _radial_hit_once(R, EPS, NUDGE, u, kappa_over_D, rho_over_D):
+def _radial_rule(R, EPS, NUDGE, u, kappa_over_D, rho_over_D):
     """The single-collision rule of a wall at radius ``R`` about the origin, in the plane or in space: the ray
     ``r + t d`` is tested against the sphere of that radius (the circle when ``r`` and ``d`` are 2-vectors), the
     walker reflects specularly and is set ``NUDGE`` off the wall on its own side, and the FIRST hit of the step
-    may cross with the membrane's probability at the one draw ``u``. Returns the ``hit_once`` that
-    :func:`bounce_loop` runs to exhaustion.
+    may cross with the membrane's probability at the one draw ``u``. The rule a :class:`BounceLoop` runs to
+    exhaustion; its state is the crossing decision.
     """
-    def hit_once(rr, dd, remaining, decided):
+    def rule(rr, dd, remaining, decided, i):
         t_entry, t_exit, disc = ray_sphere_t(rr, dd, R)
         disc_s = jnp.maximum(disc, jnp.float32(0.0))
         inside = jnp.dot(rr, rr) < R * R
@@ -43,14 +43,15 @@ def _radial_hit_once(R, EPS, NUDGE, u, kappa_over_D, rho_over_D):
         d_new  = jnp.where(reflecting, d_refl, dd)
         rem_n  = jnp.where(reflecting, jnp.maximum(rem - NUDGE, jnp.float32(0.0)), jnp.float32(0.0))
         dlw = jnp.where(reflecting, -jnp.float32(2.0) * rho_over_D * d_perp, jnp.float32(0.0))
-        return r_new, d_new, rem_n, decided | first, dlw, transmit
-    return hit_once
+        return r_new, d_new, rem_n, decided | first, dlw, transmit, reflecting
+    return rule
 
 
-def _radial_bounce_budget(self):
-    """Reflections a grazing walker can need in one R/6 step (:func:`bounce_budget`)."""
+def _radial_loop(self):
+    """The loop of a wall at one radius: the reflections a grazing walker can need in one R/6 step
+    (:func:`bounce_budget`), as a :class:`BounceLoop`."""
     R = self.length_scales.min_feature
-    return bounce_budget(R, 1e-4 * R, float('inf'), R / 6.0)
+    return BounceLoop(bounce_budget(R, 1e-4 * R, float('inf'), R / 6.0))
 
 
 class Sphere(Geometry):
@@ -73,7 +74,7 @@ class Sphere(Geometry):
     """
     replay_parity = True
 
-    _MAX_BOUNCES = property(_radial_bounce_budget)
+    bounce_loop = property(_radial_loop)
 
     supports_permeability = True   #: has a membrane a walker can cross
 
@@ -146,9 +147,8 @@ class Sphere(Geometry):
                           jnp.zeros(3, jnp.float32))
         u = jax.random.uniform(perm_key, dtype=jnp.float32)
 
-        hit_once = _radial_hit_once(R, EPS, NUDGE, u, kappa_over_D, rho_over_D)
-
-        r_out, dlog_w, crossed = bounce_loop(hit_once, r, d_hat, step_l, self._MAX_BOUNCES)
+        b = self.bounce_loop(_radial_rule(R, EPS, NUDGE, u, kappa_over_D, rho_over_D), r, d_hat, step_l)
+        r_out, dlog_w, crossed = b.r, b.dlog_w, b.crossed
         # Final-position sentinel (#86): a step whose exit time marginally exceeds its length
         # fires no collision -- correctly, it never reaches the wall -- so the raw step is
         # kept and float32 can round the endpoint onto |r| = R, where the strict test reads
@@ -189,7 +189,7 @@ class Cylinder(Geometry):
     """
     replay_parity = True
 
-    _MAX_BOUNCES = property(_radial_bounce_budget)
+    bounce_loop = property(_radial_loop)
 
     supports_permeability = True   #: has a membrane a walker can cross
 
@@ -257,10 +257,8 @@ class Cylinder(Geometry):
                              jnp.zeros(2, jnp.float32))
         u = jax.random.uniform(perm_key, dtype=jnp.float32)
 
-        hit_once = _radial_hit_once(R, EPS, NUDGE, u, kappa_over_D, rho_over_D)
-
-        xy_final, dlog_w, crossed = bounce_loop(hit_once, r_c[:2], d_hat_xy, step_l_xy,
-                                                self._MAX_BOUNCES)
+        b = self.bounce_loop(_radial_rule(R, EPS, NUDGE, u, kappa_over_D, rho_over_D), r_c[:2], d_hat_xy, step_l_xy)
+        xy_final, dlog_w, crossed = b.r, b.dlog_w, b.crossed
         # Final-position sentinel (#86) -- see Sphere.permeate. The side is the one at the
         # START of the whole step; only a granted crossing may change it.
         inside0 = jnp.dot(r_c[:2], r_c[:2]) < R * R
@@ -317,7 +315,7 @@ class Ellipsoid(Geometry):
     """
     replay_parity = True
 
-    _MAX_BOUNCES = property(_radial_bounce_budget)
+    bounce_loop = property(_radial_loop)
 
     supports_permeability = True   #: has a membrane a walker can cross
 
@@ -395,7 +393,7 @@ class Ellipsoid(Geometry):
         def _Q(x):
             return jnp.dot(x * inv_semi_sq, x)
 
-        def hit_once(rr, dd, remaining, decided):
+        def rule(rr, dd, remaining, decided, i):
             A = jnp.dot(dd * inv_semi_sq, dd)
             B = jnp.dot(rr * inv_semi_sq, dd)
             C = _Q(rr) - jnp.float32(1.0)
@@ -421,9 +419,10 @@ class Ellipsoid(Geometry):
             rem_n  = jnp.where(reflecting, jnp.maximum(rem - NUDGE, jnp.float32(0.0)),
                                jnp.float32(0.0))
             dlw = jnp.where(reflecting, -jnp.float32(2.0) * rho_over_D * d_perp, jnp.float32(0.0))
-            return r_new, d_new, rem_n, decided | first, dlw, transmit
+            return r_new, d_new, rem_n, decided | first, dlw, transmit, reflecting
 
-        r_out, dlog_w, crossed = bounce_loop(hit_once, r, d_hat, step_l, self._MAX_BOUNCES)
+        b = self.bounce_loop(rule, r, d_hat, step_l)
+        r_out, dlog_w, crossed = b.r, b.dlog_w, b.crossed
         # The side is the one at the START of the step; only a granted crossing may change it.
         inside0 = _Q(r) < jnp.float32(1.0)
         r_out, _ = keep_side_quadric(r_out, _Q(r_out), inside0, rel_nudge, active=~crossed)

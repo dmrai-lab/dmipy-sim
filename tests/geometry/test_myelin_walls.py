@@ -121,7 +121,7 @@ def test_a_step_spanning_the_gap_between_two_axons_stays_in_the_gap():
     gap = 0.05 * R
     centers = [[0.0, 0.0], [2 * Ro + gap, 0.0]]
     wall = _kernel(centers, [R, R], [Ro, Ro], None, step_max=10 * gap, min_gap=gap)
-    assert wall.max_bounces >= 11, "the budget must cover a step of ten gap widths"
+    assert wall.bounce_loop.budget >= 11, "the budget must cover a step of ten gap widths"
     mid = np.array([Ro + gap / 2, 0.0])
     cases = []
     for f in (0.5, 1.0, 3.0, 10.0):
@@ -146,12 +146,12 @@ def test_bounce_budget_and_candidates_follow_the_worst_case():
     Ro = G * R
     w_small = _kernel([[0.0, 0.0]], [R], [Ro], None, step_max=R / 6)
     w_big = _kernel([[0.0, 0.0]], [R], [Ro], None, step_max=2 * R)
-    assert 2 <= w_small.max_bounces < w_big.max_bounces <= 32
+    assert 2 <= w_small.bounce_loop.budget < w_big.bounce_loop.budget <= 32
     chord = 2 * np.sqrt(2 * 1e-4)                       # in units of R
-    assert w_small.max_bounces == int(np.ceil((1 / 6) / min(G - 1, chord)) + 1)
+    assert w_small.bounce_loop.budget == int(np.ceil((1 / 6) / min(G - 1, chord)) + 1)
     w_gap = _kernel([[0.0, 0.0], [3 * Ro, 0.0]], [R, R], [Ro, Ro], None, step_max=R / 6,
                     min_gap=0.01 * R)
-    assert w_gap.max_bounces == int(np.ceil((1 / 6) / 0.01) + 1)
+    assert w_gap.bounce_loop.budget == int(np.ceil((1 / 6) / 0.01) + 1)
     assert w_gap.n_cand == 2 and w_small.n_cand == 1
     c, L = _pack([R] * 30, 0.7, 0.5, seed=0)
     pm = d.PackedMyelinatedCylinders([R] * 30, 0.7, c, L, N_max=64)

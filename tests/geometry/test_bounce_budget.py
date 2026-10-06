@@ -24,18 +24,18 @@ def test_analytic_caps_are_the_grazing_worst_case():
     for g in (d.Sphere(1e-6), d.Sphere(7e-6), d.Cylinder(2e-6, (0, 0, 1)), d.Ellipsoid((3e-6, 1e-6, 2e-6))):
         R = g.length_scales.min_feature
         chord = 2 * np.sqrt(2 * 1e-4 * R * R)
-        assert g._MAX_BOUNCES == int(np.ceil((R / 6) / chord) + 1) == bounce_budget(R, 1e-4 * R, np.inf, R / 6)
-    assert d.Sphere(1e-6)._MAX_BOUNCES == 7                      # scale-free at nudge = 1e-4 R
+        assert g.bounce_loop.budget == int(np.ceil((R / 6) / chord) + 1) == bounce_budget(R, 1e-4 * R, np.inf, R / 6)
+    assert d.Sphere(1e-6).bounce_loop.budget == 7                      # scale-free at nudge = 1e-4 R
     assert bounce_budget(1e-6, 1e-10, 2e-8, 1.7e-7) == int(np.ceil(1.7e-7 / 2e-8) + 1)   # a gap rules
 
 
 def test_mesh_cap_has_a_floor_and_grows_with_the_cell():
     V, F = mesh_shapes.icosphere(1e-6, subdivisions=2)
     m = d.Mesh(V, F, feature_radius=0.5e-6)
-    assert m._MAX_BOUNCES >= 10
-    assert d.Mesh(V, F, feature_radius=0.5e-6, max_bounces=4)._MAX_BOUNCES == 4
+    assert m.bounce_loop.budget >= 10
+    assert d.Mesh(V, F, feature_radius=0.5e-6, max_bounces=4).bounce_loop.budget == 4
     wide = d.Mesh(V, F, feature_radius=0.5e-6, cell_size=3e-6)
-    assert wide._MAX_BOUNCES == max(10, int(np.ceil(0.9 * wide.cell_size / (2 * 0.06 * 0.5e-6))) + 2) > 10
+    assert wide.bounce_loop.budget == max(10, int(np.ceil(0.9 * wide.cell_size / (2 * 0.06 * 0.5e-6))) + 2) > 10
 
 
 def _dispatched_steps(g, n, rng, key):
@@ -71,14 +71,15 @@ def test_no_lane_reaches_the_cap_at_the_dispatched_step(make):
     ones, under the cap and under twice the cap, to the bit."""
     import jax, jax.numpy as jnp
     g = make()
-    cap = g._MAX_BOUNCES
+    from dmipy_sim.geometry._boundary import BounceLoop
+    cap = g.bounce_loop.budget
     cls = type(g)
-    original = cls.__dict__["_MAX_BOUNCES"]          # the class property; restore it afterwards
+    original = cls.__dict__["bounce_loop"]          # the class property; restore it afterwards
     r0, step = _dispatched_steps(g, 20_000, np.random.default_rng(0), jax.random.PRNGKey(0))
     keys = jax.random.split(jax.random.PRNGKey(1), r0.shape[0])
     out = []
     for c in (cap, 2 * cap, 1):
-        cls._MAX_BOUNCES = property(lambda self, c=c: c)
+        cls.bounce_loop = property(lambda self, c=c: BounceLoop(c))
         try:
             gg = make()
             if gg.permeability is not None:
@@ -87,7 +88,7 @@ def test_no_lane_reaches_the_cap_at_the_dispatched_step(make):
             else:
                 out.append(np.asarray(jax.jit(jax.vmap(gg.reflect))(jnp.asarray(r0), jnp.asarray(step))))
         finally:
-            cls._MAX_BOUNCES = original
+            cls.bounce_loop = original
     np.testing.assert_array_equal(out[0], out[1])
     if not isinstance(g, d.Ellipsoid):
         assert (out[2][20_000:] != out[1][20_000:]).any()               # a cap of 1 does cut the grazing lanes: the test has teeth
@@ -123,27 +124,46 @@ def test_no_mesh_lane_reaches_the_cap_at_the_dispatched_step():
     g0, gs = _mesh_grazing_lane(m, V, F, rng)
     r0, step = np.concatenate([r0, g0]), np.concatenate([step, gs])
     out = [np.asarray(jax.jit(jax.vmap(d.Mesh(V, F, feature_radius=0.5e-6, max_bounces=c).reflect))(jnp.asarray(r0), jnp.asarray(step)))
-           for c in (m._MAX_BOUNCES, 2 * m._MAX_BOUNCES, 1)]
+           for c in (m.bounce_loop.budget, 2 * m.bounce_loop.budget, 1)]
     np.testing.assert_array_equal(out[0], out[1])
     assert (out[2][5_000:] != out[1][5_000:]).any()                      # a cap of 1 does cut the grazing lane
 
 
-def test_the_cap_still_bounds_a_pathological_lane():
-    """A cap of one reflection is the single-hit rule again: the leftover path is not flown."""
-    from dmipy_sim.geometry._boundary import bounce_loop
+def _two_walls(r, dh, rem, state, i):
+    """A ray between two parallel walls at x = 0 and x = 1: the rule of a slit, for the loop's own tests."""
     import jax.numpy as jnp
+    to_wall = jnp.where(dh[0] > 0, 1.0 - r[0], r[0]) / jnp.maximum(jnp.abs(dh[0]), 1e-30)
+    hit = to_wall < rem
+    r_hit = r + jnp.minimum(to_wall, rem) * dh
+    d_new = jnp.where(hit, dh * jnp.array([-1.0, 1.0, 1.0]), dh)
+    rem_new = jnp.where(hit, rem - to_wall, 0.0)
+    r_new = jnp.where(hit, r_hit, r + rem * dh)
+    return r_new, d_new, rem_new, state, jnp.float32(0.0), jnp.zeros((), bool), hit
 
-    def hit_once(r, dh, rem, decided):          # a ray between two parallel walls at x = 0 and x = 1
-        to_wall = jnp.where(dh[0] > 0, 1.0 - r[0], r[0]) / jnp.maximum(jnp.abs(dh[0]), 1e-30)
-        hit = to_wall < rem
-        r_hit = r + jnp.minimum(to_wall, rem) * dh
-        d_new = jnp.where(hit, dh * jnp.array([-1.0, 1.0, 1.0]), dh)
-        rem_new = jnp.where(hit, rem - to_wall, 0.0)
-        r_new = jnp.where(hit, r_hit, r + rem * dh)
-        return r_new, d_new, rem_new, decided, jnp.float32(0.0), jnp.zeros((), bool)
+
+def test_the_cap_still_bounds_a_pathological_lane():
+    """A cap of one reflection is the single-hit rule again: the leftover path is not flown, and the loop says so."""
+    from dmipy_sim.geometry._boundary import BounceLoop
+    import jax.numpy as jnp
     r0 = jnp.array([0.5, 0.0, 0.0], jnp.float32)
     dh = jnp.array([1.0, 0.0, 0.0], jnp.float32)
-    r_many, _, _ = bounce_loop(hit_once, r0, dh, jnp.float32(10.3), 32)   # 10 reflections, 0.2 left over
-    r_one, _, _ = bounce_loop(hit_once, r0, dh, jnp.float32(10.3), 1)
-    assert 0.0 <= float(r_many[0]) <= 1.0
-    assert float(r_one[0]) == pytest.approx(1.0)
+    many = BounceLoop(32, count=True)(_two_walls, r0, dh, jnp.float32(10.3))   # 10 reflections, 0.3 left over
+    one = BounceLoop(1, count=True)(_two_walls, r0, dh, jnp.float32(10.3))
+    assert 0.0 <= float(many.r[0]) <= 1.0 and not bool(many.exhausted) and int(many.n_reflections) == 10
+    assert float(one.r[0]) == pytest.approx(1.0) and bool(one.exhausted) and int(one.n_reflections) == 1
+    assert BounceLoop(32)(_two_walls, r0, dh, jnp.float32(10.3)).n_reflections is None   # off by default: it costs
+
+
+def test_the_while_loop_is_the_same_loop():
+    """The dynamic trip count (a label volume's traversal) resolves the same bounces as the fixed one, to the bit,
+    and reports exhaustion the same way; a rule in it must spend the path itself on a miss, which the slit does."""
+    from dmipy_sim.geometry._boundary import BounceLoop
+    import jax.numpy as jnp
+    r0 = jnp.array([0.5, 0.0, 0.0], jnp.float32)
+    dh = jnp.array([0.6, 0.8, 0.0], jnp.float32)
+    for budget, exhausted in ((32, False), (3, True)):
+        fixed = BounceLoop(budget, count=True)(_two_walls, r0, dh, jnp.float32(10.3))
+        dyn = BounceLoop(budget, fixed=False, count=True)(_two_walls, r0, dh, jnp.float32(10.3))
+        np.testing.assert_array_equal(np.asarray(fixed.r), np.asarray(dyn.r))
+        assert int(fixed.n_reflections) == int(dyn.n_reflections)
+        assert bool(fixed.exhausted) == bool(dyn.exhausted) == exhausted

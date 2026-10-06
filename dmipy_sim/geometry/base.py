@@ -106,6 +106,11 @@ class Geometry(ABC):
     #: geometries where a position alone cannot decide sidedness need it -- see #86.
     carries_side = False
 
+    #: The :class:`~dmipy_sim.geometry._boundary.BounceLoop` this geometry's wall interaction runs -- its
+    #: budget and whether the trip count is fixed -- or ``None`` for a wall that resolves one event per step
+    #: (a slab, a shell, the curved tubes' two bounces) or no wall at all.
+    bounce_loop = None
+
     #: Stepped by the dedicated three-compartment kernel `physics.make_myelin_step_fn`
     #: (`MyelinatedCylinder`) rather than by `reflect`.
     _is_myelinated = False
