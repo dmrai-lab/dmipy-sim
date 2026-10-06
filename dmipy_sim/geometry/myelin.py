@@ -3,6 +3,8 @@
 These are NOT stepped by `reflect`: their compartment is carried state, so the engine
 routes them to the fused kernels in `physics` (see each class's `reflect`, which raises).
 """
+from typing import NamedTuple
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -17,8 +19,21 @@ _TINY = 1e-30
 _POOL_AFTER_CROSSING = (0, 2, 1, 0, 2)   #: pool after crossing code 1..4 (index 0 unused)
 
 
+class ConcentricHit(NamedTuple):
+    """Outcome of one step of :func:`concentric_wall_kernel`: the concentric substrates' `WallHit`, with the pool
+    and axon the walker owns after the step and the four boundary local-time channels in place of one."""
+    xy: jnp.ndarray        #: end position in the cross-section plane
+    pool: jnp.ndarray      #: int32 pool after the step (0 extra, 1 intra, 2 myelin)
+    k: jnp.ndarray         #: int32 owning / nearest axon after the step
+    chan: jnp.ndarray      #: (4,) unit boundary local-time channels, ``-2 d_perp`` per wall and side met
+    dlog_rho: jnp.ndarray  #: surface log-weight increment under the per-axon rho weights
+    crossed: jnp.ndarray   #: bool -- a crossing was granted (one decision per step)
+    n_hits: object         #: int32 reflections plus the granted crossing; None unless the kernel counts
+    exhausted: jnp.ndarray #: bool -- the bounce budget ran out with path untested
+
+
 def concentric_wall_kernel(centers, inner, outer, L, D_intra, D_myelin, D_extra,
-                           kappa_inner, kappa_outer, rho_weights, eps, nudge, step_max, min_gap):
+                           kappa_inner, kappa_outer, rho_weights, eps, nudge, step_max, min_gap, count=False):
     """The wall interaction of a concentric-cylinder substrate, in its cross-section plane.
 
     Axon ``k`` is the pair of coaxial circles ``|q - c_k| = inner_k`` (the axon membrane) and
@@ -36,12 +51,12 @@ def concentric_wall_kernel(centers, inner, outer, L, D_intra, D_myelin, D_extra,
     walls within reach of one step are those of at most ``pi (1 + step_max / R_min)`` disjoint
     disks.
 
-    Returns ``wall(xy, d_hat, step_l, pool, k, u)`` giving ``(xy_new, pool_new, k_new, chan,
-    dlog_rho, crossed)``: the end position, the pool and owning / nearest axon after the step,
-    the four boundary local-time channels ``-2 d_perp`` (inner wall met from the lumen, inner wall
-    met from the sheath, outer wall met from the sheath, outer wall met from outside), the surface
-    log-weight increment with ``rho_weights[k] = (rho_in/D_in, rho_in/D_my, rho_out/D_my,
-    rho_out/D_ex)`` applied per hit, and whether a crossing was granted.
+    Returns ``wall(xy, d_hat, step_l, pool, k, u)`` giving a :class:`ConcentricHit`: the end position, the pool
+    and owning / nearest axon after the step, the four boundary local-time channels ``-2 d_perp`` (inner wall met
+    from the lumen, inner wall met from the sheath, outer wall met from the sheath, outer wall met from outside),
+    the surface log-weight increment with ``rho_weights[k] = (rho_in/D_in, rho_in/D_my, rho_out/D_my,
+    rho_out/D_ex)`` applied per hit, whether a crossing was granted, the encounters when ``count``, and whether
+    the budget ran out.
     """
     N = int(inner.shape[0])
     outer_np = np.asarray(outer, np.float64); inner_np = np.asarray(inner, np.float64)
@@ -50,7 +65,7 @@ def concentric_wall_kernel(centers, inner, outer, L, D_intra, D_myelin, D_extra,
     thick_min = float(np.min((outer_np - inner_np)[real_np]))
     chord_floor = 2.0 * np.sqrt(2.0 * float(nudge) * R_in_min)
     passage = min(float(min_gap), thick_min, chord_floor)
-    loop = BounceLoop(int(np.clip(np.ceil(float(step_max) / passage) + 1, 2, 32)))
+    loop = BounceLoop(int(np.clip(np.ceil(float(step_max) / passage) + 1, 2, 32)), count=count)
     n_cand = int(min(N, max(8, np.ceil(np.pi * (1.0 + float(step_max) / R_in_min)) + 2)))
 
     real = outer > 0
@@ -149,7 +164,8 @@ def concentric_wall_kernel(centers, inner, outer, L, D_intra, D_myelin, D_extra,
         dist_f = jnp.where(real, jnp.sqrt(jnp.sum(q_all_f * q_all_f, -1)) - outer, jnp.inf)
         k_new = jnp.argmin(dist_f).astype(jnp.int32)                         # owner, or nearest
         xy_f = _pin(xy_f, q_all_f[k_new], inner[k_new], outer[k_new], pool_new)
-        return xy_f, pool_new, k_new, dlw[:4], dlw[4], crossed
+        n_hits = None if b.n_reflections is None else b.n_reflections + crossed.astype(jnp.int32)
+        return ConcentricHit(xy_f, pool_new, k_new, dlw[:4], dlw[4], crossed, n_hits, b.exhausted)
 
     wall.bounce_loop = loop
     wall.n_cand = n_cand

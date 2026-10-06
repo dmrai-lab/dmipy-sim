@@ -1291,52 +1291,54 @@ def simulate_trajectories(
             if not _mt_on_pm:
                 # ── without MT (5-element carry) ──
                 def interval_pm(carry, read):
-                    r, r_uw, key, comp_id = carry
+                    r, r_uw, key, comp_id, work = carry
                     # dlog_accum resets each save so the emitted value is the per-save delta.
-                    inner_init = (r, r_uw, key, jnp.float32(0.0), comp_id)
-                    (r_final, r_uw_final, key_final, dlog_accum, comp_final), mean = _interval_scan(
+                    inner_init = (r, r_uw, key, jnp.float32(0.0), comp_id, work)
+                    (r_final, r_uw_final, key_final, dlog_accum, comp_final, work_f), mean = _interval_scan(
                         _inner_pm, inner_init, sub_steps, read)
-                    return (r_final, r_uw_final, key_final, comp_final), \
+                    return (r_final, r_uw_final, key_final, comp_final, work_f), \
                            (r_uw_final, dlog_accum, _compress_comp_pm(comp_final)), mean
 
                 def simulate_one_walker_pm(r0_w, key_w, comp0_w, brem0_w, f_arrays):  # brem0 unused
                     read = _reader(f_arrays)
-                    _, (positions, dlog_boundary, comp_types), field = _save_scan(
-                        interval_pm, (r0_w, r0_w, key_w, comp0_w), n_t - 1, read, _f_every)
+                    carry_f, (positions, dlog_boundary, comp_types), field = _save_scan(
+                        interval_pm, (r0_w, r0_w, key_w, comp0_w, _work0()), n_t - 1, read, _f_every)
                     # save 0 is the start: the initial position, no contact yet, the initial pool
                     positions = jnp.concatenate([r0_w[None, :], positions], axis=0)
                     dlog_boundary = jnp.concatenate([jnp.zeros((1,), dlog_boundary.dtype), dlog_boundary])
                     comp_types = jnp.concatenate([_compress_comp_pm(comp0_w)[None], comp_types])
                     z = jnp.zeros_like(dlog_boundary)                       # placeholder bound_frac
-                    return positions, dlog_boundary, comp_types, z, _field_series(read, r0_w, field)
+                    return positions, dlog_boundary, comp_types, z, carry_f[-1], _field_series(read, r0_w, field)
             else:
                 # ── MT path: bound_rem persists across saves ──
                 def interval_pm(carry, read):
-                    r, r_uw, key, comp_id, bound_rem = carry
-                    inner_init = (r, r_uw, key, jnp.float32(0.0), comp_id, bound_rem, jnp.float32(0.0))
-                    (r_final, r_uw_final, key_final, dlog_accum, comp_final, bound_rem_f, bound_acc), mean = \
+                    r, r_uw, key, comp_id, bound_rem, work = carry
+                    inner_init = (r, r_uw, key, jnp.float32(0.0), comp_id, bound_rem, jnp.float32(0.0), work)
+                    (r_final, r_uw_final, key_final, dlog_accum, comp_final, bound_rem_f, bound_acc, work_f), mean = \
                         _interval_scan(_inner_pm, inner_init, sub_steps, read)
                     bound_frac = bound_acc / jnp.float32(sub_steps)
-                    return (r_final, r_uw_final, key_final, comp_final, bound_rem_f), \
+                    return (r_final, r_uw_final, key_final, comp_final, bound_rem_f, work_f), \
                            (r_uw_final, dlog_accum, _compress_comp_pm(comp_final), bound_frac), mean
 
                 def simulate_one_walker_pm(r0_w, key_w, comp0_w, brem0_w, f_arrays):
                     read = _reader(f_arrays)
-                    _, (positions, dlog_boundary, comp_types, bound_frac), field = _save_scan(
-                        interval_pm, (r0_w, r0_w, key_w, comp0_w, brem0_w), n_t - 1, read, _f_every)
+                    carry_f, (positions, dlog_boundary, comp_types, bound_frac), field = _save_scan(
+                        interval_pm, (r0_w, r0_w, key_w, comp0_w, brem0_w, _work0()), n_t - 1, read, _f_every)
                     # save 0 is the start: the initial position, no contact yet, the initial pool and bound state
                     positions = jnp.concatenate([r0_w[None, :], positions], axis=0)
                     dlog_boundary = jnp.concatenate([jnp.zeros((1,), dlog_boundary.dtype), dlog_boundary])
                     comp_types = jnp.concatenate([_compress_comp_pm(comp0_w)[None], comp_types])
                     bound_frac = jnp.concatenate([(brem0_w > 0).astype(bound_frac.dtype)[None], bound_frac])
-                    return positions, dlog_boundary, comp_types, bound_frac, _field_series(read, r0_w, field)
+                    return positions, dlog_boundary, comp_types, bound_frac, carry_f[-1], _field_series(read, r0_w, field)
 
             _simulate_batch_pm_raw = cached_batch(
                 geometry, ("traj_packed_myelin", n_t, sub_steps, float(dt_sim), kappa_MT, dwell_time, _f_key),
                 lambda: jax.jit(jax.vmap(simulate_one_walker_pm, in_axes=(0, 0, 0, 0, None))))
 
             def simulate_batch_pm(r0_b, keys_b, comp0_b, brem0_b):
-                return _simulate_batch_pm_raw(r0_b, keys_b, comp0_b, brem0_b, _f_arrays)
+                pos, dlog, comp, bfrac, work_f, fs = _simulate_batch_pm_raw(r0_b, keys_b, comp0_b, brem0_b, _f_arrays)
+                _work_acc(work_f)
+                return pos, dlog, comp, bfrac, fs
 
         if record and not uses_myelin_traj:
             if has_permeability:
@@ -1480,9 +1482,9 @@ def simulate_trajectories(
                 _n_chunk = max(4, int(round(float(dwell_time) / float(dt_sim))))
 
                 def _burn_walker(r_w, key_w, comp_w, brem_w):
-                    (r_f, _r_uw, key_f, _da, comp_f, brem_f, bacc), _ = jax.lax.scan(
+                    (r_f, _r_uw, key_f, _da, comp_f, brem_f, bacc, _w), _ = jax.lax.scan(
                         _inner_pm, (r_w, r_w, key_w, jnp.float32(0.0), comp_w, brem_w,
-                                    jnp.float32(0.0)), None, length=_n_chunk)
+                                    jnp.float32(0.0), _work0()), None, length=_n_chunk)
                     return r_f, key_f, comp_f, brem_f, bacc / jnp.float32(_n_chunk)
                 _burn = jax.jit(jax.vmap(_burn_walker, in_axes=(0, 0, 0, 0)))
 
@@ -1647,7 +1649,7 @@ def simulate_trajectories(
         # (dmrai-lab/tessera#12) and for sizing the bounce budget -- a budget no lane exhausted gives the same
         # trajectories as any larger one, by the loop's own rule.
         _loop = geometry.bounce_loop
-        _counted = _counting and _work[3]           # the myelin kernels do not report their work yet
+        _counted = _counting and _work[3]
         work = dict(walker_steps=int(n_walkers) * (int(n_t) - 1) * int(sub_steps),
                     bounce_budget=(None if _loop is None else int(_loop.budget)),
                     n_hits=(int(_work[0]) if _counted else None),

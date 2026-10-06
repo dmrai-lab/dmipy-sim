@@ -234,7 +234,8 @@ sufficient: a budget no lane exhausted gives the trajectories of any larger one.
 on the L40S) and `simulate_trajectories` sums it into `PersistentWalk.work` (`walker_steps`, `bounce_budget`,
 `n_hits`, `n_crossings`, `exhausted_steps`; the counts are `None` when the walk did not count); off by default, so a
 production walk is the same program as before -- a pilot walk turns it on to calibrate a substrate's cost per hit
-(dmrai-lab/tessera#12) and to size its budget. The myelin kernels do not report their work yet.
+(dmrai-lab/tessera#12) and to size its budget. The myelinated substrates' kernels report it too (#631); the
+adaptive producer's counts stay None until the curved tubes run the loop (#632).
 
 `interact` is defined once on `Geometry` and is the entry point callers should use. A geometry implements
 **one method, `_wall(r, step, kappa_over_D, rho_over_D, key) -> WallHit`** (plus `side` when it `carries_side`),
