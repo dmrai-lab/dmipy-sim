@@ -9,7 +9,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from ._boundary import (keep_side_radial, ray_sphere_t, specular, transmit_probability, off_wall,
-                        BounceLoop, bounce_budget)
+                        BounceLoop, WallHit, bounce_budget)
 from .base import permeability_of, Geometry, LengthScales, acquisition_rotation
 from .packing import periodic_min_gap
 
@@ -34,7 +34,7 @@ def packed_candidate_count(N, R_min, step_max, dim):
     return int(min(N, max(8, n)))
 
 
-def packed_wall_kernel(centers, radii, L, eps, nudge, step_max, min_gap):
+def packed_wall_kernel(centers, radii, L, eps, nudge, step_max, min_gap, count=False):
     """The wall interaction of a periodic pack of disjoint objects, in ``centers``' space.
 
     ``centers`` is ``(N, 2)`` for parallel cylinders (the cross-section plane) or ``(N, 3)`` for
@@ -57,14 +57,15 @@ def packed_wall_kernel(centers, radii, L, eps, nudge, step_max, min_gap):
     The bounce budget and the candidate count come from the worst case a step of ``step_max``
     can meet (:func:`packed_bounce_budget`, :func:`packed_candidate_count`).
 
-    Returns ``wall(p, d_hat, step_l, inside0, kappa_over_D, rho_over_D, key)`` giving
-    ``(p_new, dlog_w, crossed, illegal)``: the end position, the surface log-weight increment
-    ``-2 (rho/D) d_perp`` summed over the reflections, whether the side changed (an odd number
-    of crossings), and whether the end sentinel had to correct the side.
+    Returns ``wall(p, d_hat, step_l, inside0, kappa_over_D, rho_over_D, key)`` giving a
+    :class:`~dmipy_sim.geometry._boundary.WallHit` in ``centers``' space: the end position, the surface
+    log-weight increment ``-2 (rho/D) d_perp`` summed over the reflections, whether the side changed (an odd
+    number of crossings), whether the end sentinel had to correct the side, the encounters when ``count``
+    (reflections and every crossing granted), and whether the budget ran out.
     """
     N, dim = int(centers.shape[0]), int(centers.shape[1])
     R_min = float(np.min(np.asarray(radii)))
-    loop = BounceLoop(packed_bounce_budget(R_min, nudge, min_gap, step_max))
+    loop = BounceLoop(packed_bounce_budget(R_min, nudge, min_gap, step_max), count=count)
     n_cand = packed_candidate_count(N, R_min, step_max, dim)
     f32 = jnp.float32
     ar = jnp.arange(n_cand)
@@ -123,7 +124,8 @@ def packed_wall_kernel(centers, radii, L, eps, nudge, step_max, min_gap):
         q_f = _wrap(p_f[None, :] - centers)
         k_f = jnp.argmin(jnp.sqrt(jnp.sum(q_f * q_f, -1)) - radii)               # nearest wall
         p_f, illegal = keep_side_radial(p_f, q_f[k_f], radii[k_f], want_in, nudge)
-        return p_f, dlog_w, crossed, illegal
+        n_hits = None if b.n_reflections is None else b.n_reflections + jnp.round(dlw[1]).astype(jnp.int32)
+        return WallHit(p_f, dlog_w, crossed, illegal, n_hits, b.exhausted)
 
     wall.bounce_loop = loop
     wall.n_cand = n_cand
@@ -258,9 +260,9 @@ class PackedCylinders(Geometry):
         self.min_gap = self._compute_min_gap(centers, radii, float(L))
         # the wall kernel, built here (outside any trace) at the worst-case step the sub-step
         # rule allows, R_min / 6
-        self._wall = packed_wall_kernel(self._centers_jax, self._radii_jax, self._L_jax,
-                                        self._eps_detect, self._nudge, step_max=min_r / 6.0,
-                                        min_gap=self.min_gap)
+        self._walls = {c: packed_wall_kernel(self._centers_jax, self._radii_jax, self._L_jax, self._eps_detect,
+                                             self._nudge, step_max=min_r / 6.0, min_gap=self.min_gap, count=c)
+                       for c in (False, True)}
 
     @property
     def length_scales(self):
@@ -302,6 +304,13 @@ class PackedCylinders(Geometry):
                              jax.random.PRNGKey(0))[:2]
 
     @property
+    def _wall(self):
+        """The pack's wall kernel (:func:`packed_wall_kernel`) at the current ``count_walls``. Both variants are built
+        in the constructor: a kernel built lazily inside a trace closes over that trace's tracers (its candidate
+        index), and reused by the next program it leaked."""
+        return self._walls[bool(self.count_walls)]
+
+    @property
     def bounce_loop(self):
         return self._wall.bounce_loop
 
@@ -311,8 +320,8 @@ class PackedCylinders(Geometry):
         between two cylinders zig-zags across it instead of ending inside the neighbour.
 
         With ``side`` (int8, ``< 0`` intra, ``>= 0`` extra) the walker's own compartment rules
-        the sentinel and the call returns ``(r_new, dlog_w, crossed, illegal)``; without it the
-        side is read at the start of the step and the call returns ``(r_new, dlog_w)``.
+        the sentinel; without it the side is read at the start of the step. Returns a
+        :class:`~dmipy_sim.geometry._boundary.WallHit`.
         """
         r_c, step_c = r, step
         r2, step_xy, step_z = r_c[:2], step_c[:2], step_c[2]
@@ -325,14 +334,9 @@ class PackedCylinders(Geometry):
             q_all = r2[None, :] - self._centers_jax
             q_all = q_all - self._L_jax * jnp.floor(q_all / self._L_jax + jnp.float32(0.5))
             inside0 = jnp.any(jnp.sum(q_all * q_all, axis=1) < self._radii_jax ** 2)
-        xy_final, dlog_w, crossed, illegal = self._wall(
-            r2, d_hat_xy, step_l_xy, inside0, jnp.float32(kappa_over_D), jnp.float32(rho_over_D),
-            perm_key)
-        r_c_new = jnp.stack([xy_final[0], xy_final[1], r_c[2] + step_z])
-        r_out = r_c_new
-        if side is None:
-            return r_out, dlog_w
-        return r_out, dlog_w, crossed, illegal
+        h = self._wall(r2, d_hat_xy, step_l_xy, inside0, jnp.float32(kappa_over_D), jnp.float32(rho_over_D),
+                       perm_key)
+        return h._replace(r=jnp.stack([h.r[0], h.r[1], r_c[2] + step_z]))
 
     def classify_position(self, r: jnp.ndarray) -> jnp.ndarray:
         """Compartment ID: 0=extra-axonal, 1..N = intra_k (inside cylinder k).
@@ -468,9 +472,9 @@ class PackedSpheres(Geometry):
         self.min_gap = self._compute_min_gap(centers, radii, float(L))
         # the wall kernel, built here (outside any trace) at the worst-case step the sub-step
         # rule allows, R_min / 6
-        self._wall = packed_wall_kernel(self._centers_jax, self._radii_jax, self._L_jax,
-                                        self._eps_detect, self._nudge, step_max=min_r / 6.0,
-                                        min_gap=self.min_gap)
+        self._walls = {c: packed_wall_kernel(self._centers_jax, self._radii_jax, self._L_jax, self._eps_detect,
+                                             self._nudge, step_max=min_r / 6.0, min_gap=self.min_gap, count=c)
+                       for c in (False, True)}
 
     @property
     def length_scales(self):
@@ -512,6 +516,13 @@ class PackedSpheres(Geometry):
                              jax.random.PRNGKey(0))[:2]
 
     @property
+    def _wall(self):
+        """The pack's wall kernel (:func:`packed_wall_kernel`) at the current ``count_walls``. Both variants are built
+        in the constructor: a kernel built lazily inside a trace closes over that trace's tracers (its candidate
+        index), and reused by the next program it leaked."""
+        return self._walls[bool(self.count_walls)]
+
+    @property
     def bounce_loop(self):
         return self._wall.bounce_loop
 
@@ -527,9 +538,7 @@ class PackedSpheres(Geometry):
         q_all = r[None, :] - self._centers_jax
         q_all = q_all - self._L_jax * jnp.floor(q_all / self._L_jax + jnp.float32(0.5))
         inside0 = jnp.any(jnp.sum(q_all * q_all, axis=1) < self._radii_jax ** 2)
-        r_out, dlog_w, _crossed, _illegal = self._wall(
-            r, d_hat, step_l, inside0, jnp.float32(kappa_over_D), jnp.float32(rho_over_D), perm_key)
-        return r_out, dlog_w
+        return self._wall(r, d_hat, step_l, inside0, jnp.float32(kappa_over_D), jnp.float32(rho_over_D), perm_key)
 
     def classify_position(self, r: jnp.ndarray) -> jnp.ndarray:
         """Compartment ID: 0=extra-axonal, 1..N = inside sphere k (1-indexed)."""

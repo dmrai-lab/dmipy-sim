@@ -239,13 +239,25 @@ class WallHit(NamedTuple):
     dlog_w: jnp.ndarray   #: surface log-weight increment (<= 0; exactly 0 when rho = 0)
     crossed: jnp.ndarray  #: bool -- a crossing was GRANTED (never true at kappa <= 0)
     illegal: jnp.ndarray  #: bool -- the compartment sentinel fired and corrected the step
+    n_hits: object        #: int32 -- wall encounters resolved in this step (reflections and granted crossings);
+                          #: None unless the geometry counts (`Geometry.count_walls`), since counting costs
+    exhausted: jnp.ndarray  #: bool -- the bounce budget ran out with path left untested
 
 
-def no_hit(r_new):
+def no_hit(r_new, counting=False):
     """A `WallHit` for a step that met no wall (free diffusion, or a missed gather)."""
     f = jnp.zeros((), jnp.float32)
     b = jnp.zeros((), bool)
-    return WallHit(r_new, f, b, b)
+    return WallHit(r_new, f, b, b, jnp.zeros((), jnp.int32) if counting else None, b)
+
+
+def wall_hit(b, r=None, illegal=None):
+    """The `WallHit` of a loop's :class:`Bounces`: ``r`` when a sentinel moved the end of the step after the loop,
+    ``illegal`` when a refusal was decided there. The hit count is the reflections plus the granted crossing, or
+    None when the loop did not count."""
+    zero_b = jnp.zeros((), bool)
+    n = None if b.n_reflections is None else b.n_reflections + b.crossed.astype(jnp.int32)
+    return WallHit(b.r if r is None else r, b.dlog_w, b.crossed, zero_b if illegal is None else illegal, n, b.exhausted)
 
 
 def bounce_budget(R_min, nudge, min_gap, step_max):

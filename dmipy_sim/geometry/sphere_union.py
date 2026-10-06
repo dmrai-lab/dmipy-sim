@@ -34,7 +34,7 @@ from typing import NamedTuple
 import jax
 import jax.numpy as jnp
 
-from ._boundary import BounceLoop
+from ._boundary import BounceLoop, WallHit
 import numpy as np
 
 from ._grid import NEIGHBOUR_OFFSETS, gather
@@ -136,7 +136,8 @@ def _normal(r, u, t, cen, rad, interior):
 
 
 def _walk_step(levels, r, step, interior, loop, nudge, eps):
-    """One diffusion step with multi-bounce reflection; returns (r_new, sum d_perp)."""
+    """One diffusion step with multi-bounce reflection: ``(r_new, sum d_perp, n_reflections, exhausted, ok)``, with
+    ``ok`` False where the step ended on the wrong side of the union and was refused (the walker held still)."""
     step_l = jnp.linalg.norm(step)
     u0 = step / jnp.maximum(step_l, 1e-30)
 
@@ -157,7 +158,7 @@ def _walk_step(levels, r, step, interior, loop, nudge, eps):
     b = loop(rule, r, u0, step_l)
     # Reject-escape: a step that ends on the wrong side of the union never happened.
     ok = _inside(levels, b.r) == interior
-    return jnp.where(ok, b.r, r), jnp.where(ok, b.dlog_w, 0.0)
+    return jnp.where(ok, b.r, r), jnp.where(ok, b.dlog_w, 0.0), b.n_reflections, b.exhausted, ok
 
 
 # --------------------------------------------------------------------------- geometry
@@ -195,7 +196,7 @@ class SphereUnion(Geometry):
         self.centers, self.radii = centers, radii
         self.pool = pool
         self.interior = pool == "intra"
-        self.bounce_loop = BounceLoop(int(max_bounces))
+        self._bounce_budget = int(max_bounces)
         self.surface_relaxivity_t2 = float(surface_relaxivity_t2) if surface_relaxivity_t2 is not None else None
         self.box = None if box is None else (np.asarray(box[0], float), np.asarray(box[1], float))
         self.box_reflect = bool(box_reflect) and self.box is not None
@@ -417,11 +418,24 @@ class SphereUnion(Geometry):
         ok = _inside(self.levels, folded) == self.interior
         return jnp.where(ok, folded, r), ok
 
+    @property
+    def bounce_loop(self):
+        return BounceLoop(self._bounce_budget, count=self.count_walls)
+
+    def _wall(self, r, step, kappa_over_D, rho_over_D, perm_key):
+        """The one wall interaction, as a :class:`~dmipy_sim.geometry._boundary.WallHit`: the union is impermeable
+        (``kappa_over_D`` is ignored, nothing is granted), a step that ends on the wrong side of it, or whose fold at a
+        voxel face would land inside a cell, is refused and the walker held still (``illegal``)."""
+        r_new, dsum, n_hits, exhausted, ok_u = _walk_step(self.levels, r, step, self.interior, self.bounce_loop,
+                                                          self._nudge, self._eps)
+        folded, ok = self._fold(r, r_new)
+        zero_b = jnp.zeros((), bool)
+        return WallHit(folded, jnp.where(ok, -2.0 * jnp.float32(rho_over_D) * dsum, jnp.float32(0.0)), zero_b,
+                       ~(ok & ok_u), n_hits, exhausted)
+
     def reflect(self, r, step):
-        r_new, _ = _walk_step(self.levels, r, step, self.interior, self.bounce_loop, self._nudge, self._eps)
-        return self._fold(r, r_new)[0]
+        return self._wall(r, step, jnp.float32(0.0), jnp.float32(0.0), jax.random.PRNGKey(0)).r
 
     def reflect_with_log_weight(self, r, step, rho_over_D):
-        r_new, dsum = _walk_step(self.levels, r, step, self.interior, self.bounce_loop, self._nudge, self._eps)
-        folded, ok = self._fold(r, r_new)
-        return folded, jnp.where(ok, -2.0 * jnp.float32(rho_over_D) * dsum, jnp.float32(0.0))
+        h = self._wall(r, step, jnp.float32(0.0), rho_over_D, jax.random.PRNGKey(0))
+        return h.r, h.dlog_w

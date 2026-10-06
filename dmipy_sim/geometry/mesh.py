@@ -45,7 +45,7 @@ from typing import NamedTuple
 import jax
 import jax.numpy as jnp
 from ._grid import bucket_by_bbox, NEIGHBOUR_OFFSETS, gather, wrap_periodic
-from ._boundary import BounceLoop, specular, transmit_probability, off_wall
+from ._boundary import BounceLoop, wall_hit, specular, transmit_probability, off_wall
 import numpy as np
 
 from .base import Geometry, LengthScales
@@ -1092,7 +1092,7 @@ class Mesh(Geometry):
         if max_bounces is None:
             chord_floor = 2.0 * float(self._GRAZE) * float(self.radius)
             max_bounces = max(10, int(np.ceil(0.9 * float(self.cell_size) / chord_floor)) + 2)
-        self.bounce_loop = BounceLoop(int(max_bounces))
+        self._bounce_budget = int(max_bounces)
         self._OFF = jnp.asarray(NEIGHBOUR_OFFSETS)
         self._A = _MeshArrays(NRM=self._NRM, CENT=self._CENT, CELL=self._CELL,
                               dims_arr=self._dims_arr, GMIN=self._GMIN, CS=self._CS,
@@ -1264,8 +1264,8 @@ class Mesh(Geometry):
         the mesh's rule -- the triangles of the gather, the voxel faces, the smooth normal, the adaptive nudge --
         and the refusal of an escape. Its state is the crossing decision and the facet just bounced off.
 
-        Returns ``(r_new, dlog_w, crossed, refused)``. At ``kappa_over_D = 0`` no crossing is ever
-        granted, so this is exactly a reflection -- see :meth:`reflect`.
+        Returns a :class:`~dmipy_sim.geometry._boundary.WallHit` whose ``illegal`` is the refusal of an escape.
+        At ``kappa_over_D = 0`` no crossing is ever granted, so this is exactly a reflection -- see :meth:`reflect`.
         """
         r_w = self._wrap(r)
         ci, valid = self._gather(r_w)
@@ -1345,7 +1345,11 @@ class Mesh(Geometry):
             # everything else that changed side did so without permission
             refused = self._escaped(r, r_out) & jnp.logical_not(crossed_f)
             r_out = jnp.where(refused, r, r_out)
-        return r_out, dlogw, crossed_f, refused
+        return wall_hit(b, r=r_out, illegal=refused)
+
+    @property
+    def bounce_loop(self):
+        return BounceLoop(self._bounce_budget, count=self.count_walls)
 
     def reflect(self, r, step):
         """Impermeable wall interaction -- the kappa = 0 case of :meth:`_wall`."""
@@ -1354,15 +1358,14 @@ class Mesh(Geometry):
 
     def reflect_with_log_weight(self, r, step, rho_over_D):
         """Impermeable wall interaction that also accrues surface relaxation."""
-        r_out, dlogw, _crossed, _refused = self._wall(r, step, jnp.float32(0.0), rho_over_D,
-                                                      jax.random.PRNGKey(0))
-        return r_out, dlogw
+        h = self._wall(r, step, jnp.float32(0.0), rho_over_D, jax.random.PRNGKey(0))
+        return h.r, h.dlog_w
 
     def permeate(self, r, step, kappa_over_D, rho_over_D, perm_key):
         """Wall interaction with a permeable membrane (Powles crossing).
 
-        ``(r, dlog_w, crossed, refused)``: a step ``reject_escape`` discarded -- the walker held where it
-        started -- is the fourth flag, so `PersistentWalk.illegal_crossings` counts it. It is the escape
+        A step ``reject_escape`` discarded -- the walker held where it started -- is the WallHit's
+        ``illegal``, so `PersistentWalk.illegal_crossings` counts it. It is the escape
         refusal alone; `LabelVolume` counts its bounce budget's exhaustion in the same field, so the two
         geometries' `illegal_crossings` are not the same quantity.
         """

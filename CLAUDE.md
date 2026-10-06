@@ -219,7 +219,7 @@ calls it; the returned step functions carry the count as `.n_sub`. Do not pick a
 
 ```python
 hit = geom.interact(r, step, kappa_over_D=0.0, rho_over_D=0.0, key=None, side=None)
-hit.r  hit.dlog_w  hit.crossed  hit.illegal      # a WallHit NamedTuple (a pytree)
+hit.r  hit.dlog_w  hit.crossed  hit.illegal  hit.n_hits  hit.exhausted   # a WallHit NamedTuple (a pytree)
 ```
 
 **One loop behind every wall** (#624): `geometry/_boundary.BounceLoop` runs a geometry's single-collision rule
@@ -227,10 +227,14 @@ hit.r  hit.dlog_w  hit.crossed  hit.illegal      # a WallHit NamedTuple (a pytre
 `lax.scan` of `budget` iterations (a `while_loop` for the label volume's traversal, `fixed=False`), the leftover path
 flown only when the last iteration met nothing -- and returns `Bounces(r, dlog_w, crossed, n_reflections, exhausted,
 state)`. Every geometry declares `geometry.bounce_loop` (`.budget` is the one name of the bounce budget; `None` for
-a wall without a loop: the slab, the shell, the curved tubes' two bounces). `exhausted` is free and is the
-certificate that a budget is sufficient: a budget no lane exhausted gives the trajectories of any larger one.
-`BounceLoop(count=True)` carries a reflection count, which is not free (+5 % on an analytic wall, measured) and is
-off by default.
+a wall without a loop: the slab, the shell, the curved tubes' two bounces) and composes its `_wall` / `permeate` as
+prepare -> loop -> sentinel, returning a `WallHit`. `exhausted` is free and is the certificate that a budget is
+sufficient: a budget no lane exhausted gives the trajectories of any larger one. **Counting is not free** (#623):
+`geometry.count_walls = True` builds the loop with a carried reflection count (+5 % on an analytic wall, measured
+on the L40S) and `simulate_trajectories` sums it into `PersistentWalk.work` (`walker_steps`, `bounce_budget`,
+`n_hits`, `n_crossings`, `exhausted_steps`; the counts are `None` when the walk did not count); off by default, so a
+production walk is the same program as before -- a pilot walk turns it on to calibrate a substrate's cost per hit
+(dmrai-lab/tessera#12) and to size its budget. The myelin kernels do not report their work yet.
 
 `interact` is defined once on `Geometry` and is the entry point callers should use.
 `reflect(r, step)`, `reflect_with_log_weight(r, step, ρ/D)` and
