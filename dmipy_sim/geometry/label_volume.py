@@ -181,7 +181,7 @@ class LabelVolume(Geometry):
         # A step crosses at most as many grid planes as the grid has, plus one reflection each; four
         # times that is a bound no step of a diffusion walk can reach, and reaching it refuses the
         # step (`WallHit.illegal`) instead of leaving part of the path untested.
-        self.bounce_loop = BounceLoop(int(4 * self.dims.sum() + 16), fixed=False)
+        self._bounce_budget = int(4 * self.dims.sum() + 16)
 
         self.LAB = jnp.asarray(self._pool_grid, jnp.int8)
         self.VOX = jnp.asarray(self.voxel_size, jnp.float32)
@@ -346,7 +346,7 @@ class LabelVolume(Geometry):
         ``fixed=False``: events per step are few and the budget is the whole grid); this method is the traversal's
         rule, whose state is the voxel, the step signs, the distances to the next planes and the crossing decision.
 
-        Returns ``(r_new, dlog_w, crossed, illegal)``. The traversal carries the distance already
+        Returns a :class:`~dmipy_sim.geometry._boundary.WallHit`. The traversal carries the distance already
         travelled implicitly in ``rem``, restarting from the hit point at each reflection, so the
         path length is conserved exactly. ``dlog_w`` is ``-2 (rho/D) * sum d_perp`` with
         ``d_perp = (rem - t) |u . n|`` the perpendicular overshoot past the face -- the same
@@ -451,8 +451,13 @@ class LabelVolume(Geometry):
         bad = (~done_f) | escaped
         # `illegal` is BOTH refusals, not the budget alone: a refused step is the engine holding a
         # walker still, which `PersistentWalk.illegal_crossings` and its warning exist to report.
-        return (jnp.where(bad, r, p_out), jnp.where(bad, jnp.float32(0.0), dlog_f),
-                crossed_f & ~bad, bad)
+        n_hits = None if b.n_reflections is None else b.n_reflections + crossed_f.astype(jnp.int32)
+        return WallHit(jnp.where(bad, r, p_out), jnp.where(bad, jnp.float32(0.0), dlog_f),
+                       crossed_f & ~bad, bad, n_hits, b.exhausted)
+
+    @property
+    def bounce_loop(self):
+        return BounceLoop(self._bounce_budget, fixed=False, count=self.count_walls)
 
     def reflect(self, r, step):
         """Impermeable wall interaction -- the ``kappa = 0`` case of :meth:`_wall`."""
@@ -460,8 +465,8 @@ class LabelVolume(Geometry):
 
     def reflect_with_log_weight(self, r, step, rho_over_D):
         """Impermeable wall interaction that also accrues the boundary local time."""
-        r_new, dlog, _, _ = self._wall(r, step, jnp.float32(0.0), rho_over_D, jax.random.PRNGKey(0))
-        return r_new, dlog
+        h = self._wall(r, step, jnp.float32(0.0), rho_over_D, jax.random.PRNGKey(0))
+        return h.r, h.dlog_w
 
     def permeate(self, r, step, kappa_over_D, rho_over_D, perm_key):
         """Wall interaction with a permeable face (one Powles trial per step, at the first face met)."""
@@ -472,4 +477,4 @@ class LabelVolume(Geometry):
         if side is not None:
             raise NotImplementedError("LabelVolume reads the pool from the grid; it carries no side. Omit `side`.")
         k = key if key is not None else jax.random.PRNGKey(0)
-        return WallHit(*self._wall(r, step, kappa_over_D, rho_over_D, k))
+        return self._wall(r, step, kappa_over_D, rho_over_D, k)

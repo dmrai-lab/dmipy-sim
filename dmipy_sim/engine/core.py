@@ -1104,6 +1104,27 @@ def simulate_trajectories(
         def _reader(arrays):
             return _GridRead(arrays, _f_periodic) if _sampling else None
 
+        # ── The walk's work: wall encounters, crossings and budget exhaustions, summed per walker in the
+        # carry and over the batches on the host, only when the geometry counts (`Geometry.count_walls`);
+        # a walk that does not count carries nothing and is the same program as before.
+        _counting = bool(geometry.count_walls)
+        _work = [0, 0, 0, False]                    # hits, crossings, exhausted steps; whether a kernel reported them
+
+        def _work0():
+            return (jnp.int32(0), jnp.int32(0), jnp.int32(0)) if _counting else None
+
+        def _work_add(w, hit):
+            if not _counting:
+                return None
+            n = hit.n_hits if hit.n_hits is not None else jnp.int32(0)
+            return (w[0] + n, w[1] + hit.crossed.astype(jnp.int32), w[2] + hit.exhausted.astype(jnp.int32))
+
+        def _work_acc(w):
+            if w is not None:
+                for i in range(3):
+                    _work[i] += int(np.asarray(w[i], np.int64).sum())
+                _work[3] = True
+
         # ── Standard path (position-only) ─────────────────────────────────────────
         _carries_side = False   # set below only where the geometry accepts a carried side
         if has_permeability:
@@ -1123,33 +1144,33 @@ def simulate_trajectories(
             interact = geometry.interact
 
             def inner_step(carry, _):
-                r, key, side, bad = carry
+                r, key, side, bad, work = carry
                 key, step_key, perm_key = jax.random.split(key, 3)
                 unit_noise = isotropic_unit_step(step_key)
                 step = unit_noise * step_l_sim
                 if _carries_side:
-                    r_new, _dlog_w, crossed, illegal = permeate(
-                        r, step, kappa_over_D, jnp.float32(0.0), perm_key, side)
+                    hit = permeate(r, step, kappa_over_D, jnp.float32(0.0), perm_key, side)
                     # a granted crossing is the ONLY thing that flips the carried side
-                    side = jnp.where(crossed, -side, side)
-                    bad = bad + illegal.astype(jnp.int32)
+                    side = jnp.where(hit.crossed, -side, side)
                 else:
                     # `interact`, not `permeate`: a geometry that reports its own refusal returns it on the
                     # WallHit, and a mesh does (#479), so a step held still is counted here rather than lost.
                     hit = interact(r, step, kappa_over_D=kappa_over_D, key=perm_key)
-                    r_new = hit.r
-                    bad = bad + hit.illegal.astype(jnp.int32)
-                return (r_new, key, side, bad), None
+                bad = bad + hit.illegal.astype(jnp.int32)
+                return (hit.r, key, side, bad, _work_add(work, hit)), None
         else:
-            reflect = geometry.reflect
+            # `interact`, not `reflect`: the same function at kappa = 0 (`Geometry.interact`), and the WallHit
+            # carries the refusal and the work that `reflect` drops
+            interact = geometry.interact
 
             def inner_step(carry, _):
-                r, key, side, bad = carry
+                r, key, side, bad, work = carry
                 key, subkey = jax.random.split(key)
                 unit_noise = isotropic_unit_step(subkey)
                 step = unit_noise * step_l_sim
-                r_new = reflect(r, step)
-                return (r_new, key, side, bad), None
+                hit = interact(r, step)
+                bad = bad + hit.illegal.astype(jnp.int32)
+                return (hit.r, key, side, bad, _work_add(work, hit)), None
 
         # ── Universal compartment sentinel ───────────────────────────────────────
         # `permeate(..., side=)` gives PackedCylinders an exact ejection, but every other
@@ -1185,7 +1206,7 @@ def simulate_trajectories(
                 r_new = carry[0]
                 keep = _cls_fn(r_new) == _cls_fn(r_old)
                 bad = carry[3] + jnp.where(keep, 0, 1)
-                return (jnp.where(keep, r_new, r_old),) + carry[1:3] + (bad,), out
+                return (jnp.where(keep, r_new, r_old),) + carry[1:3] + (bad,) + carry[4:], out
 
         def interval(carry, read):
             carry_final, mean = _interval_scan(inner_step, carry, sub_steps, read)
@@ -1194,11 +1215,11 @@ def simulate_trajectories(
         def simulate_one_walker(r0_w, key_w, side_w, f_arrays):
             # save 0 is the start (t = 0); saves 1..n_t-1 follow n_t-1 blocks of sub-steps
             read = _reader(f_arrays)
-            (_, _, side_f, bad_f), positions, field = _save_scan(
-                interval, (r0_w, key_w, side_w, jnp.int32(0)), n_t - 1, read, _f_every)
+            (_, _, side_f, bad_f, work_f), positions, field = _save_scan(
+                interval, (r0_w, key_w, side_w, jnp.int32(0), _work0()), n_t - 1, read, _f_every)
             positions = jnp.concatenate([r0_w[None, :], positions], axis=0)
-            # (n_t, 3), carried side, illegal-crossing count, field samples
-            return positions, side_f, bad_f, _field_series(read, r0_w, field)
+            # (n_t, 3), carried side, illegal-crossing count, the work, field samples
+            return positions, side_f, bad_f, work_f, _field_series(read, r0_w, field)
 
         # ── Storage dtype for the returned channels ─────────────────────────────
         # f32 by DEFAULT. The walk is f32, the pack is f32 (compression.pack_position_arrays)
@@ -1325,15 +1346,15 @@ def simulate_trajectories(
                 interact_relax = geometry.interact
 
                 def inner_step_relax(carry, _):
-                    r, key, dlog_accum, comp_sum, side, bad, comp = carry
+                    r, key, dlog_accum, comp_sum, side, bad, comp, work = carry
                     key, step_key, perm_key = jax.random.split(key, 3)
                     unit_noise = isotropic_unit_step(step_key)
                     step = unit_noise * step_l_sim
                     if _carries_side:
-                        r_new, dlog_w_unit, crossed, illegal = permeate_relax(
-                            r, step, kappa_over_D_relax, jnp.float32(1.0), perm_key, side)
-                        side = jnp.where(crossed, -side, side)
-                        bad = bad + illegal.astype(jnp.int32)
+                        hit = permeate_relax(r, step, kappa_over_D_relax, jnp.float32(1.0), perm_key, side)
+                        r_new, dlog_w_unit = hit.r, hit.dlog_w
+                        side = jnp.where(hit.crossed, -side, side)
+                        bad = bad + hit.illegal.astype(jnp.int32)
                         # Label from the CARRIED side, not from the position. This is the
                         # channel `comp_traj` is built from, so re-deriving it here would put
                         # the relabelling straight back in even with the sentinel correcting
@@ -1349,7 +1370,7 @@ def simulate_trajectories(
                     # Per-sub-step compartment id -> fractional occupancy (resolves
                     # intra-save crossings without a finer dt_save).
                     comp_sum = comp_sum + comp_id
-                    return (r_new, key, dlog_accum + dlog_w_unit, comp_sum, side, bad, comp), None
+                    return (r_new, key, dlog_accum + dlog_w_unit, comp_sum, side, bad, comp, _work_add(work, hit)), None
 
             elif has_reflect_with_log_weight:
                 # `interact`, not `reflect_with_log_weight`: for an impermeable wall the two are the
@@ -1359,7 +1380,7 @@ def simulate_trajectories(
                 interact = geometry.interact
 
                 def inner_step_relax(carry, _):
-                    r, key, dlog_accum, comp_sum, side, bad, comp = carry
+                    r, key, dlog_accum, comp_sum, side, bad, comp, work = carry
                     key, subkey = jax.random.split(key)
                     unit_noise = isotropic_unit_step(subkey)
                     step = unit_noise * step_l_sim
@@ -1368,53 +1389,54 @@ def simulate_trajectories(
                     bad = bad + hit.illegal.astype(jnp.int32)
                     comp = geometry.classify_position_carry(r_new, comp)
                     comp_sum = comp_sum + _pool2(comp)
-                    return (r_new, key, dlog_accum + dlog_w_unit, comp_sum, side, bad, comp), None
+                    return (r_new, key, dlog_accum + dlog_w_unit, comp_sum, side, bad, comp, _work_add(work, hit)), None
 
             else:
                 # FreeDiffusion: no boundaries → dlog_boundary_unit is always 0.
                 reflect_free = geometry.reflect
 
                 def inner_step_relax(carry, _):
-                    r, key, dlog_accum, comp_sum, side, bad, comp = carry
+                    r, key, dlog_accum, comp_sum, side, bad, comp, work = carry
                     key, subkey = jax.random.split(key)
                     unit_noise = isotropic_unit_step(subkey)
                     step = unit_noise * step_l_sim
                     r_new = reflect_free(r, step)
                     comp = geometry.classify_position_carry(r_new, comp)
                     comp_sum = comp_sum + _pool2(comp)
-                    return (r_new, key, dlog_accum, comp_sum, side, bad, comp), None
+                    return (r_new, key, dlog_accum, comp_sum, side, bad, comp, work), None
 
             def interval_relax(carry, read):
-                r, key, side, bad, comp = carry
-                inner_init = (r, key, jnp.float32(0.0), jnp.float32(0.0), side, bad, comp)
-                (r_final, key_final, dlog_accum, comp_sum, side_f, bad_f, comp_f), mean = _interval_scan(
+                r, key, side, bad, comp, work = carry
+                inner_init = (r, key, jnp.float32(0.0), jnp.float32(0.0), side, bad, comp, work)
+                (r_final, key_final, dlog_accum, comp_sum, side_f, bad_f, comp_f, work_f), mean = _interval_scan(
                     inner_step_relax, inner_init, sub_steps, read)
                 # Fractional occupancy of pool 1 (the enclosed pool) over the saved interval.
                 comp_occ = comp_sum / jnp.float32(sub_steps)
-                return (r_final, key_final, side_f, bad_f, comp_f), (r_final, dlog_accum, comp_occ), mean
+                return (r_final, key_final, side_f, bad_f, comp_f, work_f), (r_final, dlog_accum, comp_occ), mean
 
             def simulate_one_walker_relax(r0_w, key_w, side_w, comp0_w, f_arrays):
                 read = _reader(f_arrays)
-                (_, _, _side_f, bad_f, _comp_f), (positions, dlog_boundary, comp_ids), field = _save_scan(
-                    interval_relax, (r0_w, key_w, side_w, jnp.int32(0), comp0_w), n_t - 1, read, _f_every)
+                (_, _, _side_f, bad_f, _comp_f, work_f), (positions, dlog_boundary, comp_ids), field = _save_scan(
+                    interval_relax, (r0_w, key_w, side_w, jnp.int32(0), comp0_w, _work0()), n_t - 1, read, _f_every)
                 # save 0 is the start: the initial position, no contact yet, the initial occupancy
                 positions = jnp.concatenate([r0_w[None, :], positions], axis=0)
                 dlog_boundary = jnp.concatenate([jnp.zeros((1,), dlog_boundary.dtype), dlog_boundary])
                 comp_ids = jnp.concatenate([jnp.asarray(_pool2(comp0_w), comp_ids.dtype)[None], comp_ids])   # the same collapse as the kernel's
-                return positions, dlog_boundary, comp_ids, bad_f, _field_series(read, r0_w, field)
+                return positions, dlog_boundary, comp_ids, bad_f, work_f, _field_series(read, r0_w, field)
 
             _simulate_batch_relax_raw = cached_batch(
-                geometry, ("traj_relax", n_t, sub_steps, float(dt_sim), diffusivity, _f_key),
+                geometry, ("traj_relax", n_t, sub_steps, float(dt_sim), diffusivity, _f_key, _counting),
                 lambda: jax.jit(jax.vmap(simulate_one_walker_relax, in_axes=(0, 0, 0, 0, None))))
 
             def simulate_batch_relax(r0_b, keys_b):
                 comp0_b = jnp.asarray(geometry.classify_positions_exact(r0_b), jnp.int32)
-                pos, dlog, comp, bad_f, fs = _simulate_batch_relax_raw(r0_b, keys_b, _side0(r0_b), comp0_b, _f_arrays)
+                pos, dlog, comp, bad_f, work_f, fs = _simulate_batch_relax_raw(r0_b, keys_b, _side0(r0_b), comp0_b, _f_arrays)
                 _illegal_crossings[0] += int(jnp.sum(bad_f))
+                _work_acc(work_f)
                 return pos, dlog, comp, fs
 
         _simulate_batch_raw = cached_batch(
-            geometry, ("traj", n_t, sub_steps, float(dt_sim), diffusivity, _f_key),
+            geometry, ("traj", n_t, sub_steps, float(dt_sim), diffusivity, _f_key, _counting),
             lambda: jax.jit(jax.vmap(simulate_one_walker, in_axes=(0, 0, 0, None))))
 
         # Seed each walker's carried compartment ONCE, from its t=0 position, and let only a
@@ -1434,8 +1456,9 @@ def simulate_trajectories(
                 return jnp.zeros((r_b.shape[0],), dtype=jnp.int8)
 
         def simulate_batch(r0_b, keys_b):
-            positions, _side_f, bad_f, fs = _simulate_batch_raw(r0_b, keys_b, _side0(r0_b), _f_arrays)
+            positions, _side_f, bad_f, work_f, fs = _simulate_batch_raw(r0_b, keys_b, _side0(r0_b), _f_arrays)
             _illegal_crossings[0] += int(jnp.sum(bad_f))
+            _work_acc(work_f)
             return positions, fs
 
         _, r0_all, walker_keys_all = seed_walkers(geometry, n_walkers, seed, r0)   # r0_all (n_walkers, 3)
@@ -1621,6 +1644,23 @@ def simulate_trajectories(
                 f"position for that step. See PersistentWalk.illegal_crossings.",
                 RuntimeWarning, stacklevel=2)
 
+        # ── The work record: what the walk cost in wall encounters, for a cost model per substrate class
+        # (dmrai-lab/tessera#12) and for sizing the bounce budget -- a budget no lane exhausted gives the same
+        # trajectories as any larger one, by the loop's own rule.
+        _loop = geometry.bounce_loop
+        _counted = _counting and _work[3]           # the myelin kernels do not report their work yet
+        work = dict(walker_steps=int(n_walkers) * (int(n_t) - 1) * int(sub_steps),
+                    bounce_budget=(None if _loop is None else int(_loop.budget)),
+                    n_hits=(int(_work[0]) if _counted else None),
+                    n_crossings=(int(_work[1]) if _counted else None),
+                    exhausted_steps=(int(_work[2]) if _counted else None))
+        if _counted and _work[2]:
+            import warnings
+            warnings.warn(
+                f"{_work[2]} walker-steps exhausted the bounce budget of {work['bounce_budget']} with path left "
+                f"untested; the budget is too small for this substrate at this step. See PersistentWalk.work.",
+                RuntimeWarning, stacklevel=2)
+
         if _compress:
             # the walk in the pack's own coefficient form: `pos_modes` holds [r(0), r(T) - r(0), the K sine bands]
             # per axis, which `build_replay_pack` stores as they are and `compression.decode` expands
@@ -1640,7 +1680,7 @@ def simulate_trajectories(
         D_walk = None if diffusivity is None else float(diffusivity)
         walk = PersistentWalk(all_batches.array(), float(dt_actual), int(sub_steps),
                           float(dt_sim), illegal_crossings=illegal, seed=int(seed), diffusivity=D_walk,
-                          geometry=geometry)
+                          geometry=geometry, work=work)
         if record:
             # a geometry without a log-weight reflection accumulates no boundary local time: the channel is then
             # NOT a record of zero contact but the absence of a record, and a pack built from it must not claim the
@@ -1651,7 +1691,7 @@ def simulate_trajectories(
                               boundary_local_time=blt,
                               compartment=all_comp_batches.array(),
                               bound_frac=(all_bound_batches.array() if _mt_on else None),
-                              illegal_crossings=illegal, seed=int(seed), diffusivity=D_walk, geometry=geometry)
+                              illegal_crossings=illegal, seed=int(seed), diffusivity=D_walk, geometry=geometry, work=work)
         if _sampling:
             import dataclasses
             walk = dataclasses.replace(walk, field_basis=field_basis, field_samples=all_field_batches.array(),

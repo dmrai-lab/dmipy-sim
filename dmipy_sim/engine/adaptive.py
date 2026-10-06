@@ -320,6 +320,8 @@ interval mean as before).
         walk = PersistentWalk(positions, float(dt_actual), int(n_min), float(dt_min), boundary_local_time=dlog_all,
                               compartment=comp, illegal_crossings=0, seed=int(seed), diffusivity=D, geometry=geometry, spec=spec,
                               stepping=stepping, field_basis=field_basis, field_samples=(field_all if sampling else None),
-                              field_sample_every=(f_every if sampling else 1))
+                              field_sample_every=(f_every if sampling else 1),
+                              work=dict(walker_steps=int(n_kernel_steps), n_hits=None, n_crossings=None, exhausted_steps=None,
+                                        bounce_budget=(None if geometry.bounce_loop is None else int(geometry.bounce_loop.budget))))
         object.__setattr__(walk, "run", run)
         return walk

@@ -1477,7 +1477,8 @@ def _write_run_sidecar(out_path, run, walk):
     w = getattr(walk, "run", None)
     sha = sha256_of(out_path)
     sidecar = dict(pack_sha256=sha, pack=run.summary,
-                   walk=(None if w is None else (w.summary if hasattr(w, "summary") else w)))
+                   walk=(None if w is None else (w.summary if hasattr(w, "summary") else w)),
+                   work=getattr(walk, "work", None))
     path = out_path + ".run.json"
     with open(path, "w") as f:
         json.dump(sidecar, f, indent=1, default=str)

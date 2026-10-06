@@ -354,7 +354,8 @@ def test_impermeable_wall_grants_no_compartment_change():
     s = np.zeros((n, 3), np.float32); s[:, 0] = np.float32(R) - d   # lands on the wall
     keys = jax.random.split(jax.random.PRNGKey(0), n)
 
-    r_new, _dlog, crossed, illegal = step_fn(jnp.asarray(p), jnp.asarray(s), keys)
+    hit = step_fn(jnp.asarray(p), jnp.asarray(s), keys)
+    crossed, illegal = hit.crossed, hit.illegal
 
     assert not np.asarray(crossed).any(), "an impermeable wall granted a crossing"
     assert np.asarray(illegal).any(), "the rounding case did not reproduce"

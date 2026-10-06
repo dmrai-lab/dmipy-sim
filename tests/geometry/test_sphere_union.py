@@ -38,7 +38,9 @@ def test_walkers_seed_and_stay_on_their_side(pool):
     w = d.simulate_trajectories(300, D0, u, 3e-3, 3e-4, seed=0, require_gpu=False)
     P = np.asarray(w.positions).reshape(-1, 3)
     assert (u.inside_any(P) == (pool == "intra")).all()
-    assert w.has_surface and w.illegal_crossings == 0
+    # a step the union refuses (its end on the wrong side, the walker held still) is REPORTED since #623, as the
+    # mesh reports its own (#479); it was silent before. Measured 2 in 78,000 walker-steps on the intra pool.
+    assert w.has_surface and w.illegal_crossings <= 1e-3 * 300 * (w.positions.shape[1] - 1) * w.sub_steps
 
 
 def test_internal_seam_is_not_a_wall():

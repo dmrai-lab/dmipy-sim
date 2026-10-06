@@ -111,6 +111,11 @@ class Geometry(ABC):
     #: (a slab, a shell, the curved tubes' two bounces) or no wall at all.
     bounce_loop = None
 
+    #: Count the wall encounters of every step (`WallHit.n_hits`, summed by a walk into ``PersistentWalk.work``).
+    #: Off by default because it is a carried integer in the loop and costs (+5 % on an analytic wall, measured);
+    #: the pilot walk that calibrates a substrate's cost per hit turns it on, a production walk pays nothing.
+    count_walls = False
+
     #: Stepped by the dedicated three-compartment kernel `physics.make_myelin_step_fn`
     #: (`MyelinatedCylinder`) rather than by `reflect`.
     _is_myelinated = False
@@ -247,41 +252,26 @@ class Geometry(ABC):
                 f"kappa_over_D != 0. Build it with a permeable geometry, or pass "
                 f"kappa_over_D=0 for a purely reflecting wall.")
 
+        k = key if key is not None else jax.random.PRNGKey(0)
         if self.supports_permeability:
-            k = key if key is not None else jax.random.PRNGKey(0)
             args = (r, step, kappa_over_D, rho_over_D, k)
             if side is not None and not self.carries_side:
                 raise NotImplementedError(
                     f"{type(self).__name__} does not carry a compartment side; a position "
                     f"exactly on its wall cannot be resolved. Omit `side`.")
-            out = self.permeate(*args, side) if side is not None else self.permeate(*args)
-            if len(out) == 4:                      # geometry reports crossing itself
-                return WallHit(out[0], out[1], out[2], out[3])
-            # Otherwise DERIVE it. Reporting `crossed=False` because the geometry does not
-            # return the flag is a lie about the physics: measured on PermeableSlab1D,
-            # 256/256 walkers ended on the far side of the membrane while `crossed` said
-            # none had. A crossing IS a change of compartment, so ask the classifier --
-            # which is exact, and the only honest answer available without changing six
-            # `permeate` signatures. Costs one `classify_position` per call, on the
-            # permeable path only.
-            zero = jnp.zeros((), bool)
-            if kappa_is_zero:
-                # kappa = 0 grants no crossing, so there is nothing to derive and the two
-                # `classify_position` gathers that would derive it are not paid for. This is the
-                # path a purely reflecting walk takes through `interact` on a geometry that has a
-                # membrane it is not using -- a mesh, an analytic wall -- and it is per sub-step.
-                return WallHit(out[0], out[1], zero, zero)
-            if not hasattr(self, "classify_position"):
-                return WallHit(out[0], out[1], zero, zero)
-            crossed = self.classify_position(out[0]) != self.classify_position(r)
-            return WallHit(out[0], out[1], crossed, zero)
+            # every `permeate` returns a WallHit: `crossed` is the crossing the wall GRANTED, as its loop
+            # reports it, not a label change read back from the position
+            return self.permeate(*args, side) if side is not None else self.permeate(*args)
 
-        # impermeable: relaxation path if it exists and is asked for, else a plain bounce
+        # impermeable: the geometry's own wall interaction when it has one, else its relaxation path if it is
+        # asked for, else a plain bounce
+        if hasattr(self, "_wall"):
+            return self._wall(r, step, jnp.float32(0.0), rho_over_D, k)
         zero_b = jnp.zeros((), bool)
         if hasattr(self, "reflect_with_log_weight"):
             r_new, dlog_w = self.reflect_with_log_weight(r, step, rho_over_D)
-            return WallHit(r_new, dlog_w, zero_b, zero_b)
-        return WallHit(self.reflect(r, step), jnp.zeros((), jnp.float32), zero_b, zero_b)
+            return WallHit(r_new, dlog_w, zero_b, zero_b, None, zero_b)
+        return WallHit(self.reflect(r, step), jnp.zeros((), jnp.float32), zero_b, zero_b, None, zero_b)
 
 
     @abstractmethod

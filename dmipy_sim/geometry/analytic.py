@@ -7,7 +7,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from ._boundary import (bounce_budget, BounceLoop, keep_side_radial, keep_side_planar, keep_side_quadric,
+from ._boundary import (bounce_budget, BounceLoop, WallHit, wall_hit, keep_side_radial, keep_side_planar, keep_side_quadric,
                         ray_sphere_t, ray_quadric_t, specular,
                         transmit_probability, off_wall, step_off_wall)
 from .base import permeability_of, Geometry, LengthScales, acquisition_rotation
@@ -51,7 +51,7 @@ def _radial_loop(self):
     """The loop of a wall at one radius: the reflections a grazing walker can need in one R/6 step
     (:func:`bounce_budget`), as a :class:`BounceLoop`."""
     R = self.length_scales.min_feature
-    return BounceLoop(bounce_budget(R, 1e-4 * R, float('inf'), R / 6.0))
+    return BounceLoop(bounce_budget(R, 1e-4 * R, float('inf'), R / 6.0), count=self.count_walls)
 
 
 class Sphere(Geometry):
@@ -148,7 +148,7 @@ class Sphere(Geometry):
         u = jax.random.uniform(perm_key, dtype=jnp.float32)
 
         b = self.bounce_loop(_radial_rule(R, EPS, NUDGE, u, kappa_over_D, rho_over_D), r, d_hat, step_l)
-        r_out, dlog_w, crossed = b.r, b.dlog_w, b.crossed
+        r_out, crossed = b.r, b.crossed
         # Final-position sentinel (#86): a step whose exit time marginally exceeds its length
         # fires no collision -- correctly, it never reaches the wall -- so the raw step is
         # kept and float32 can round the endpoint onto |r| = R, where the strict test reads
@@ -156,7 +156,7 @@ class Sphere(Geometry):
         # step, not per bounce, and a granted crossing is the only thing that may change it.
         inside0 = jnp.dot(r, r) < R * R
         r_out, _ = keep_side_radial(r_out, r_out, R, inside0, NUDGE, active=~crossed)
-        return r_out, dlog_w
+        return wall_hit(b, r=r_out)
 
 
 class Cylinder(Geometry):
@@ -258,14 +258,14 @@ class Cylinder(Geometry):
         u = jax.random.uniform(perm_key, dtype=jnp.float32)
 
         b = self.bounce_loop(_radial_rule(R, EPS, NUDGE, u, kappa_over_D, rho_over_D), r_c[:2], d_hat_xy, step_l_xy)
-        xy_final, dlog_w, crossed = b.r, b.dlog_w, b.crossed
+        xy_final, crossed = b.r, b.crossed
         # Final-position sentinel (#86) -- see Sphere.permeate. The side is the one at the
         # START of the whole step; only a granted crossing may change it.
         inside0 = jnp.dot(r_c[:2], r_c[:2]) < R * R
         xy_final, _ = keep_side_radial(xy_final, xy_final, R, inside0, NUDGE,
                                        active=~crossed)
         r_c_new = jnp.stack([xy_final[0], xy_final[1], r_c[2] + step_z])
-        return r_c_new, dlog_w
+        return wall_hit(b, r=r_c_new)
 
     def classify_position(self, r: jnp.ndarray) -> jnp.ndarray:
         """Compartment id: 1 intra (|r_xy| < R), 0 extra (|r_xy| >= R), with r_xy the component
@@ -422,11 +422,11 @@ class Ellipsoid(Geometry):
             return r_new, d_new, rem_n, decided | first, dlw, transmit, reflecting
 
         b = self.bounce_loop(rule, r, d_hat, step_l)
-        r_out, dlog_w, crossed = b.r, b.dlog_w, b.crossed
+        r_out, crossed = b.r, b.crossed
         # The side is the one at the START of the step; only a granted crossing may change it.
         inside0 = _Q(r) < jnp.float32(1.0)
         r_out, _ = keep_side_quadric(r_out, _Q(r_out), inside0, rel_nudge, active=~crossed)
-        return r_out, dlog_w
+        return wall_hit(b, r=r_out)
 
     def classify_position(self, r: jnp.ndarray) -> jnp.ndarray:
         """Compartment id: 1 intra (x²/a² + y²/b² + z²/c² < 1), 0 extra."""
@@ -542,7 +542,9 @@ class PermeableSlab1D(Geometry):
         r_out = jnp.array([x1, r[1] + step[1], r[2] + step[2]])
         dlog_w = jnp.where(crossed & ~transmit,
                            -jnp.float32(2.0) * rho_over_D * d_perp, jnp.float32(0.0))
-        return r_out, dlog_w
+        zero_b = jnp.zeros((), bool)
+        # one event per step: the membrane met is the one hit, reflected or crossed
+        return WallHit(r_out, dlog_w, transmit, zero_b, crossed.astype(jnp.int32) if self.count_walls else None, zero_b)
 
 
 class PermeableShell(Geometry):
@@ -672,14 +674,17 @@ class PermeableShell(Geometry):
 
         dlog_w = jnp.where(hit_in & any_hit & (~transmit),
                            -jnp.float32(2.0) * rho_over_D * d_perp, jnp.float32(0.0))
-        return r_out, dlog_w
+        zero_b = jnp.zeros((), bool)
+        # one event per step: the wall met is the one hit, reflected or crossed
+        return WallHit(r_out, dlog_w, transmit, zero_b, any_hit.astype(jnp.int32) if self.count_walls else None, zero_b)
 
     def permeate(self, r, step, kappa_over_D, rho_over_D, perm_key):
         return self._permeate_impl(r, step, kappa_over_D, rho_over_D, perm_key)
 
     def reflect_with_log_weight(self, r, step, rho_over_D):
         """Impermeable wall interaction that also accrues surface relaxation at the membrane."""
-        return self._permeate_impl(r, step, jnp.float32(0.0), rho_over_D, jax.random.PRNGKey(0))
+        h = self._permeate_impl(r, step, jnp.float32(0.0), rho_over_D, jax.random.PRNGKey(0))
+        return h.r, h.dlog_w
 
     def reflect(self, r, step):
         return self._permeate_impl(r, step, jnp.float32(0.0), jnp.float32(0.0),
