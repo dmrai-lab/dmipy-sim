@@ -1351,26 +1351,6 @@ class Mesh(Geometry):
     def bounce_loop(self):
         return BounceLoop(self._bounce_budget, count=self.count_walls)
 
-    def reflect(self, r, step):
-        """Impermeable wall interaction -- the kappa = 0 case of :meth:`_wall`."""
-        return self._wall(r, step, jnp.float32(0.0), jnp.float32(0.0),
-                          jax.random.PRNGKey(0))[0]
-
-    def reflect_with_log_weight(self, r, step, rho_over_D):
-        """Impermeable wall interaction that also accrues surface relaxation."""
-        h = self._wall(r, step, jnp.float32(0.0), rho_over_D, jax.random.PRNGKey(0))
-        return h.r, h.dlog_w
-
-    def permeate(self, r, step, kappa_over_D, rho_over_D, perm_key):
-        """Wall interaction with a permeable membrane (Powles crossing).
-
-        A step ``reject_escape`` discarded -- the walker held where it started -- is the WallHit's
-        ``illegal``, so `PersistentWalk.illegal_crossings` counts it. It is the escape
-        refusal alone; `LabelVolume` counts its bounce budget's exhaustion in the same field, so the two
-        geometries' `illegal_crossings` are not the same quantity.
-        """
-        return self._wall(r, step, kappa_over_D, rho_over_D, perm_key)
-
     def _box_face_hit(self, r0, dh, rem):
         """Distance along ``dh`` to the nearest voxel face within ``rem``, and that face's inward normal.
 

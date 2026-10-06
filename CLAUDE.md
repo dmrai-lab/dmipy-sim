@@ -236,15 +236,16 @@ on the L40S) and `simulate_trajectories` sums it into `PersistentWalk.work` (`wa
 production walk is the same program as before -- a pilot walk turns it on to calibrate a substrate's cost per hit
 (dmrai-lab/tessera#12) and to size its budget. The myelin kernels do not report their work yet.
 
-`interact` is defined once on `Geometry` and is the entry point callers should use.
-`reflect(r, step)`, `reflect_with_log_weight(r, step, ρ/D)` and
-`permeate(r, step, κ/D, ρ/D, key)` still exist, but they are **the same function at
-different argument values** — `reflect` IS the κ=0 case — and each geometry now has a
-single implementation behind them. They were three copies once, and the copies drifted
-into four separate bugs (#88): packed geometries expelled intra-axonal walkers, analytic
-ones absorbed exterior walkers, `Mesh.reflect` silently lost box reflection and adaptive
-nudging, and mesh surface local time disagreed with itself by 0.07%. **Do not add a
-per-geometry variant** — extend the one implementation.
+`interact` is defined once on `Geometry` and is the entry point callers should use. A geometry implements
+**one method, `_wall(r, step, kappa_over_D, rho_over_D, key) -> WallHit`** (plus `side` when it `carries_side`),
+and `reflect(r, step)`, `reflect_with_log_weight(r, step, ρ/D)` and `permeate(r, step, κ/D, ρ/D, key)` are the
+base class's wrappers at argument values (#633) — `reflect` IS the κ=0 case. They were three copies per geometry
+once, and the copies drifted into four separate bugs (#88): packed geometries expelled intra-axonal walkers, analytic
+ones absorbed exterior walkers, `Mesh.reflect` silently lost box reflection and adaptive nudging, and mesh surface
+local time disagreed with itself by 0.07%; `test_api_surface` now fails on a geometry that defines a wrapper.
+`has_walls` (declared, False for `FreeDiffusion` and the two myelinated substrates stepped by their own kernels) is
+what the engine reads where it used to probe for `reflect_with_log_weight`. **Do not add a per-geometry variant**
+— extend `_wall`.
 
 Set `supports_permeability = True` on a geometry with a membrane; `interact` raises on
 κ>0 otherwise rather than silently reflecting. Set `surface_relaxivity_t2=` /

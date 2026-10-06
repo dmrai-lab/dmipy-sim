@@ -107,11 +107,10 @@ def _make_bloch_step_fn(geometry, D, dt, T2, T1, M0, off_resonance_hz, rho=0.0,
     M0f = jnp.float32(M0)
     global_carrier = jnp.float32(2.0 * np.pi * float(off_resonance_hz) * dt)
     rho_over_D = jnp.float32(rho / D)
-    has_surf = rho > 0.0 and hasattr(geometry, 'reflect_with_log_weight')
-    has_perm = (float(geometry.permeability or 0.0) > 0.0
-                and hasattr(geometry, 'permeate'))
+    has_surf = rho > 0.0 and geometry.has_walls
+    has_perm = float(geometry.permeability or 0.0) > 0.0 and geometry.supports_permeability
     reflect = geometry.reflect
-    reflect_lw = getattr(geometry, 'reflect_with_log_weight', None)
+    reflect_lw = geometry.reflect_with_log_weight if geometry.has_walls else None
 
     def _apply(r_new, phi_grad, surf, M, rf_dflip, rf_axis, rf_carrier, crush_rate, uc,
                phi_field=None):
@@ -546,8 +545,8 @@ def _simulate_bloch_mt(n_walkers, diffusivity, waveform, geometry, *,
     (if ``return_bound_frac``)."""
     if dwell_time <= 0.0:
         raise ValueError("dwell_time must be > 0 when kappa_MT > 0 (MT on).")
-    if not hasattr(geometry, 'reflect_with_log_weight'):
-        raise TypeError(f"{type(geometry).__name__} has no reflect_with_log_weight; MT "
+    if not geometry.has_walls:
+        raise TypeError(f"{type(geometry).__name__} has no walls; MT "
                         "binding needs the boundary-local-time channel "
                         "(Sphere / Cylinder / Box1D / Ellipsoid / Mesh).")
     D = float(diffusivity)

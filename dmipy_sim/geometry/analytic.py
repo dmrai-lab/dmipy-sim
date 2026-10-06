@@ -115,23 +115,7 @@ class Sphere(Geometry):
         positions = np.concatenate(accepted, axis=0)[:n_walkers]
         return jnp.array(positions, dtype=jnp.float32)
 
-    def reflect(self, r, step):
-        """Impermeable wall interaction -- the kappa = 0 case of :meth:`permeate`.
-
-        Not a separate algorithm. It was one, and the copies drifted: the hand-written
-        version CLAMPED exterior walkers to just inside the surface, absorbing rather than
-        reflecting them (#88). `permeate` is multi-bounce, so a step spanning the object is
-        handled here too. XLA folds kappa = 0 and drops the dead transmit branch.
-        """
-        return self.permeate(r, step, jnp.float32(0.0), jnp.float32(0.0),
-                             jax.random.PRNGKey(0))[0]
-
-    def reflect_with_log_weight(self, r, step, rho_over_D):
-        """Impermeable wall interaction that also accrues surface relaxation."""
-        return self.permeate(r, step, jnp.float32(0.0), rho_over_D,
-                             jax.random.PRNGKey(0))[:2]
-
-    def permeate(self, r, step, kappa_over_D, rho_over_D, perm_key):
+    def _wall(self, r, step, kappa_over_D, rho_over_D, perm_key):
         """Wall interaction on the sphere: reflect, or cross if the membrane grants it.
 
         Multi-bounce -- a step longer than the chord needs more than one reflection, and
@@ -220,23 +204,7 @@ class Cylinder(Geometry):
         # the substrate frame: the cross-section is the x-y plane, z is free
         return jnp.array(np.stack([xy[:, 0], xy[:, 1], np.zeros(n_walkers)], axis=1), dtype=jnp.float32)
 
-    def reflect(self, r, step):
-        """Impermeable wall interaction -- the kappa = 0 case of :meth:`permeate`.
-
-        Not a separate algorithm. It was one, and the copies drifted: the hand-written
-        version CLAMPED exterior walkers to just inside the surface, absorbing rather than
-        reflecting them (#88). `permeate` is multi-bounce, so a step spanning the object is
-        handled here too. XLA folds kappa = 0 and drops the dead transmit branch.
-        """
-        return self.permeate(r, step, jnp.float32(0.0), jnp.float32(0.0),
-                             jax.random.PRNGKey(0))[0]
-
-    def reflect_with_log_weight(self, r, step, rho_over_D):
-        """Impermeable wall interaction that also accrues surface relaxation."""
-        return self.permeate(r, step, jnp.float32(0.0), rho_over_D,
-                             jax.random.PRNGKey(0))[:2]
-
-    def permeate(self, r, step, kappa_over_D, rho_over_D, perm_key):
+    def _wall(self, r, step, kappa_over_D, rho_over_D, perm_key):
         """Wall interaction on the cylinder: reflect, or cross if the membrane grants it.
 
         Multi-bounce. A step longer than the chord needs more than one reflection, and
@@ -361,17 +329,7 @@ class Ellipsoid(Geometry):
         positions = pts * self.semiaxes  # scale each axis independently
         return jnp.array(positions, dtype=jnp.float32)
 
-    def reflect(self, r, step):
-        """Impermeable wall interaction -- the kappa = 0 case of :meth:`permeate`."""
-        return self.permeate(r, step, jnp.float32(0.0), jnp.float32(0.0),
-                             jax.random.PRNGKey(0))[0]
-
-    def reflect_with_log_weight(self, r, step, rho_over_D):
-        """Impermeable wall interaction that also accrues surface relaxation."""
-        return self.permeate(r, step, jnp.float32(0.0), rho_over_D,
-                             jax.random.PRNGKey(0))[:2]
-
-    def permeate(self, r, step, kappa_over_D, rho_over_D, perm_key):
+    def _wall(self, r, step, kappa_over_D, rho_over_D, perm_key):
         """Wall interaction on the ellipsoid: reflect, or cross if the membrane grants it.
 
         The surface is the quadric ``r.D.r = 1`` with ``D = diag(1/a², 1/b², 1/c²)``; the ray
@@ -508,17 +466,7 @@ class PermeableSlab1D(Geometry):
         xf = jnp.mod(x, 2.0 * L)
         return jnp.where(xf > L, 2.0 * L - xf, xf)
 
-    def reflect(self, r, step):
-        """Impermeable wall interaction -- the kappa = 0 case of :meth:`permeate`."""
-        return self.permeate(r, step, jnp.float32(0.0), jnp.float32(0.0),
-                             jax.random.PRNGKey(0))[0]
-
-    def reflect_with_log_weight(self, r, step, rho_over_D):
-        """Impermeable wall interaction that also accrues surface relaxation."""
-        return self.permeate(r, step, jnp.float32(0.0), rho_over_D,
-                             jax.random.PRNGKey(0))[:2]
-
-    def permeate(self, r, step, kappa_over_D, rho_over_D, perm_key):
+    def _wall(self, r, step, kappa_over_D, rho_over_D, perm_key):
         xm = jnp.float32(self.length / 2.0)
         x = r[0]; x_new = x + step[0]
         crossed = (x - xm) * (x_new - xm) < 0.0
@@ -611,7 +559,7 @@ class PermeableShell(Geometry):
         rad = jnp.linalg.norm(self._radial(r))
         return jnp.int32(jnp.where(rad < jnp.float32(self.r_inner), 1, 0))
 
-    def _permeate_impl(self, r, step, kappa_over_D, rho_over_D, perm_key):
+    def _wall(self, r, step, kappa_over_D, rho_over_D, perm_key):
         Rin = jnp.float32(self.r_inner); Rout = jnp.float32(self.r_outer)
         EPS = jnp.float32(1e-7 * self.r_inner); BIG = jnp.float32(1e30)
         step_l = jnp.linalg.norm(step)
@@ -678,14 +626,3 @@ class PermeableShell(Geometry):
         # one event per step: the wall met is the one hit, reflected or crossed
         return WallHit(r_out, dlog_w, transmit, zero_b, any_hit.astype(jnp.int32) if self.count_walls else None, zero_b)
 
-    def permeate(self, r, step, kappa_over_D, rho_over_D, perm_key):
-        return self._permeate_impl(r, step, kappa_over_D, rho_over_D, perm_key)
-
-    def reflect_with_log_weight(self, r, step, rho_over_D):
-        """Impermeable wall interaction that also accrues surface relaxation at the membrane."""
-        h = self._permeate_impl(r, step, jnp.float32(0.0), rho_over_D, jax.random.PRNGKey(0))
-        return h.r, h.dlog_w
-
-    def reflect(self, r, step):
-        return self._permeate_impl(r, step, jnp.float32(0.0), jnp.float32(0.0),
-                                   jax.random.PRNGKey(0))[0]

@@ -215,6 +215,7 @@ class MyelinatedCylinder(Geometry):
 
     # Marker: this geometry provides its own step function (not make_step_fn)
     _is_myelinated = True
+    has_walls = False                 #: stepped by its own kernel, never by `_wall`
 
     @property
     def length_scales(self):
@@ -356,7 +357,7 @@ class MyelinatedCylinder(Geometry):
         self._init_compartments = jnp.array(compartments, dtype=jnp.int32)
         return jnp.array(r_lab, dtype=jnp.float32)
 
-    def reflect(self, r, step):
+    def _wall(self, r, step, kappa_over_D, rho_over_D, key):
         """Not a usable boundary rule for this geometry -- raises.
 
         A three-compartment geometry cannot be stepped by a single-surface reflect: the
@@ -527,6 +528,7 @@ class PackedMyelinatedCylinders(Geometry):
     """
 
     _is_packed_myelinated = True
+    has_walls = False                 #: stepped by its own kernel, never by `_wall`
 
     @property
     def length_scales(self):
@@ -859,7 +861,7 @@ class PackedMyelinatedCylinders(Geometry):
                          jnp.where(in_sheath, jnp.int32(self.N_max) + k + jnp.int32(1),
                                    jnp.int32(0)))
 
-    def reflect(self, r, step):
+    def _wall(self, r, step, kappa_over_D, rho_over_D, key):
         """Not a usable boundary rule for this geometry -- raises.
 
         This returned `r + step`: free diffusion, no boundaries at all.  Reached through
