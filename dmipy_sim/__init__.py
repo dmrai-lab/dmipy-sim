@@ -9,7 +9,7 @@ Shares one pulse-sequence and substrate interface with ``dmipy-fit``.
 from .engine._gpu_config import apply_gpu_mem_cap as _apply_gpu_mem_cap, configure  # noqa: E402
 _apply_gpu_mem_cap()
 
-from .engine.core import simulate, simulate_mixture, simulate_cpmg, simulate_trajectories
+from .engine.core import simulate, simulate_mixture, simulate_cpmg, simulate_trajectories, certify_bounce_budget
 # NB: the scalar trajectory-replay entrypoint is `dmipy_sim.replay.trajectories.replay`, NOT a bare
 # top-level `replay` — the name `dmipy_sim.replay` is the package of the .rpk pack forward (see below).
 from .replay.trajectories import (unwrap_periodic, replay_jax,
@@ -59,7 +59,7 @@ from .replay.bank import build_replay_pack, build_to_floor, frame_from_axis, fra
 from .phantom import Phantom, PartitionPhantom, Pose, Grid, PackSubstrate, FreeWater, Inert, Peaks, ODF, Watson, Frames, Fan
 
 __all__ = [
-    "simulate", "simulate_mixture", "simulate_cpmg", "simulate_trajectories",
+    "simulate", "simulate_mixture", "simulate_cpmg", "simulate_trajectories", "certify_bounce_budget",
     # replay path: walk-once producer + scalar replay operators
     "unwrap_periodic", "replay_jax",
     # replay pack assembler (producer side of the substrate bank)

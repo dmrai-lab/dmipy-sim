@@ -33,7 +33,7 @@ class ConcentricHit(NamedTuple):
 
 
 def concentric_wall_kernel(centers, inner, outer, L, D_intra, D_myelin, D_extra,
-                           kappa_inner, kappa_outer, rho_weights, eps, nudge, step_max, min_gap, count=False):
+                           kappa_inner, kappa_outer, rho_weights, eps, nudge, step_max, min_gap, count=False, budget=None):
     """The wall interaction of a concentric-cylinder substrate, in its cross-section plane.
 
     Axon ``k`` is the pair of coaxial circles ``|q - c_k| = inner_k`` (the axon membrane) and
@@ -65,7 +65,7 @@ def concentric_wall_kernel(centers, inner, outer, L, D_intra, D_myelin, D_extra,
     thick_min = float(np.min((outer_np - inner_np)[real_np]))
     chord_floor = 2.0 * np.sqrt(2.0 * float(nudge) * R_in_min)
     passage = min(float(min_gap), thick_min, chord_floor)
-    loop = BounceLoop(int(np.clip(np.ceil(float(step_max) / passage) + 1, 2, 32)), count=count)
+    loop = BounceLoop(budget or int(np.clip(np.ceil(float(step_max) / passage) + 1, 2, 32)), count=count)
     n_cand = int(min(N, max(8, np.ceil(np.pi * (1.0 + float(step_max) / R_in_min)) + 2)))
 
     real = outer > 0

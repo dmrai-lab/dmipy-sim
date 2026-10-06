@@ -457,5 +457,5 @@ class LabelVolume(Geometry):
 
     @property
     def bounce_loop(self):
-        return BounceLoop(self._bounce_budget, fixed=False, count=self.count_walls)
+        return BounceLoop(self.bounce_budget or self._bounce_budget, fixed=False, count=self.count_walls)
 

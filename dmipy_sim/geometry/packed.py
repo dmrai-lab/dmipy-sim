@@ -34,7 +34,7 @@ def packed_candidate_count(N, R_min, step_max, dim):
     return int(min(N, max(8, n)))
 
 
-def packed_wall_kernel(centers, radii, L, eps, nudge, step_max, min_gap, count=False):
+def packed_wall_kernel(centers, radii, L, eps, nudge, step_max, min_gap, count=False, budget=None):
     """The wall interaction of a periodic pack of disjoint objects, in ``centers``' space.
 
     ``centers`` is ``(N, 2)`` for parallel cylinders (the cross-section plane) or ``(N, 3)`` for
@@ -65,7 +65,7 @@ def packed_wall_kernel(centers, radii, L, eps, nudge, step_max, min_gap, count=F
     """
     N, dim = int(centers.shape[0]), int(centers.shape[1])
     R_min = float(np.min(np.asarray(radii)))
-    loop = BounceLoop(packed_bounce_budget(R_min, nudge, min_gap, step_max), count=count)
+    loop = BounceLoop(budget or packed_bounce_budget(R_min, nudge, min_gap, step_max), count=count)
     n_cand = packed_candidate_count(N, R_min, step_max, dim)
     f32 = jnp.float32
     ar = jnp.arange(n_cand)
@@ -260,9 +260,10 @@ class PackedCylinders(Geometry):
         self.min_gap = self._compute_min_gap(centers, radii, float(L))
         # the wall kernel, built here (outside any trace) at the worst-case step the sub-step
         # rule allows, R_min / 6
-        self._walls = {c: packed_wall_kernel(self._centers_jax, self._radii_jax, self._L_jax, self._eps_detect,
-                                             self._nudge, step_max=min_r / 6.0, min_gap=self.min_gap, count=c)
-                       for c in (False, True)}
+        self._build_kernel = lambda count, budget: packed_wall_kernel(
+            self._centers_jax, self._radii_jax, self._L_jax, self._eps_detect, self._nudge, step_max=min_r / 6.0,
+            min_gap=self.min_gap, count=count, budget=budget)
+        self._walls = {(c, None): self._build_kernel(c, None) for c in (False, True)}
 
     @property
     def length_scales(self):
@@ -281,10 +282,15 @@ class PackedCylinders(Geometry):
 
     @property
     def _kernel(self):
-        """The pack's wall kernel (:func:`packed_wall_kernel`) at the current ``count_walls``. Both variants are built
-        in the constructor: a kernel built lazily inside a trace closes over that trace's tracers (its candidate
-        index), and reused by the next program it leaked."""
-        return self._walls[bool(self.count_walls)]
+        """The pack's wall kernel (:func:`packed_wall_kernel`) at the current ``count_walls`` and ``bounce_budget``.
+        Both counting variants at the derived budget are built in the constructor, an overridden budget's on first
+        use -- which the engine makes outside any trace (`_bounce_budget_override` touches `bounce_loop` when it
+        sets the override): a kernel built lazily inside a trace closes over that trace's tracers (its candidate
+        index) and leaks them into the next program."""
+        key = (bool(self.count_walls), self.bounce_budget)
+        if key not in self._walls:
+            self._walls[key] = self._build_kernel(*key)
+        return self._walls[key]
 
     @property
     def bounce_loop(self):
@@ -448,9 +454,10 @@ class PackedSpheres(Geometry):
         self.min_gap = self._compute_min_gap(centers, radii, float(L))
         # the wall kernel, built here (outside any trace) at the worst-case step the sub-step
         # rule allows, R_min / 6
-        self._walls = {c: packed_wall_kernel(self._centers_jax, self._radii_jax, self._L_jax, self._eps_detect,
-                                             self._nudge, step_max=min_r / 6.0, min_gap=self.min_gap, count=c)
-                       for c in (False, True)}
+        self._build_kernel = lambda count, budget: packed_wall_kernel(
+            self._centers_jax, self._radii_jax, self._L_jax, self._eps_detect, self._nudge, step_max=min_r / 6.0,
+            min_gap=self.min_gap, count=count, budget=budget)
+        self._walls = {(c, None): self._build_kernel(c, None) for c in (False, True)}
 
     @property
     def length_scales(self):
@@ -469,10 +476,15 @@ class PackedSpheres(Geometry):
 
     @property
     def _kernel(self):
-        """The pack's wall kernel (:func:`packed_wall_kernel`) at the current ``count_walls``. Both variants are built
-        in the constructor: a kernel built lazily inside a trace closes over that trace's tracers (its candidate
-        index), and reused by the next program it leaked."""
-        return self._walls[bool(self.count_walls)]
+        """The pack's wall kernel (:func:`packed_wall_kernel`) at the current ``count_walls`` and ``bounce_budget``.
+        Both counting variants at the derived budget are built in the constructor, an overridden budget's on first
+        use -- which the engine makes outside any trace (`_bounce_budget_override` touches `bounce_loop` when it
+        sets the override): a kernel built lazily inside a trace closes over that trace's tracers (its candidate
+        index) and leaks them into the next program."""
+        key = (bool(self.count_walls), self.bounce_budget)
+        if key not in self._walls:
+            self._walls[key] = self._build_kernel(*key)
+        return self._walls[key]
 
     @property
     def bounce_loop(self):

@@ -49,7 +49,7 @@ def test_counting_moves_no_walker_and_an_uncounted_walk_reports_none(make):
     counted = _walk(g)
     np.testing.assert_array_equal(plain.positions, counted.positions)
     np.testing.assert_array_equal(plain.boundary_local_time, counted.boundary_local_time)
-    assert plain.work["n_hits"] is None and plain.work["exhausted_steps"] is None
+    assert plain.work["n_hits"] is None and plain.work["exhausted_steps"] == 0      # exhaustion on every walk (#634)
     assert plain.work["walker_steps"] == counted.work["walker_steps"] == plain.positions.shape[0] * 4 * plain.sub_steps
     assert plain.work["bounce_budget"] == g.bounce_loop.budget
     assert counted.work["n_hits"] > 0 and counted.work["exhausted_steps"] == 0
@@ -163,3 +163,56 @@ def test_the_bloch_walk_records_its_work_on_the_run(caplog):
     np.testing.assert_array_equal(np.asarray(plain), np.asarray(counted))
     rec = [r for r in caplog.records if "bloch walk work" in r.getMessage()]
     assert rec and "'n_hits': " in rec[0].getMessage() and "'exhausted_steps': 0" in rec[0].getMessage()
+
+
+def test_a_smaller_budget_is_certified_by_its_own_exhaustion_count():
+    """`bounce_budget=` overrides the derived budget for one walk and is restored after it; a budget no step
+    exhausted gives the derived budget's trajectories bit for bit (#634)."""
+    g = d.Sphere(R)
+    derived = g.bounce_loop.budget
+    ref = _walk(g)
+    small = _walk(g, bounce_budget=derived - 2)
+    assert g.bounce_budget is None and g.bounce_loop.budget == derived            # restored
+    assert small.work["bounce_budget"] == derived - 2 and small.work["exhausted_steps"] == 0
+    np.testing.assert_array_equal(small.positions, ref.positions)
+    with pytest.warns(RuntimeWarning, match="exhausted the bounce budget"):
+        one = _walk(g, bounce_budget=1)
+    assert one.work["exhausted_steps"] > 0 and (one.positions != ref.positions).any()
+    with pytest.raises(ValueError, match="no bounce loop"):
+        _walk(d.FreeDiffusion(), bounce_budget=3)
+
+
+def test_the_override_reaches_the_packs_kernel_and_the_label_volume():
+    for g in (_packed(), _label()):
+        derived = g.bounce_loop.budget
+        w = _walk(g, bounce_budget=max(1, derived - 1))
+        assert w.work["bounce_budget"] == max(1, derived - 1)
+        assert g.bounce_loop.budget == derived
+
+
+def test_the_pack_refuses_an_exhausted_walk(tmp_path):
+    from dmipy_sim.replay.bank import build_replay_pack
+    g = d.Sphere(R)
+    with pytest.warns(RuntimeWarning):
+        w = _walk(g, bounce_budget=1)
+    with pytest.raises(ValueError, match="exhausted its bounce budget"):
+        build_replay_pack(w, id="x", license="CC0-1.0", citation="none", out_path=str(tmp_path / "x.rpk"))
+
+
+def test_certify_bounce_budget_sizes_from_a_pilot():
+    from dmipy_sim import certify_bounce_budget
+    g = d.Sphere(R)
+    rec = certify_bounce_budget(g, 256, D, 2e-3, 0.5e-3, seed=11, walker_batch_size=256)
+    assert rec["derived"] == g.bounce_loop.budget
+    assert rec["exhausted"][rec["derived"]] == 0 and rec["smallest_certified"] <= rec["derived"]
+    assert rec["recommended"] == min(rec["derived"], rec["smallest_certified"] + 1)
+    assert all(rec["exhausted"][b] == 0 for b in rec["exhausted"] if b >= rec["smallest_certified"])
+    assert g.bounce_budget is None
+
+
+def test_walk_spec_passes_the_budget_through_and_keeps_the_work():
+    from dmipy_sim.spec import walk_spec
+    g = d.Sphere(R)
+    w = walk_spec(g.spec, 128, 2e-3, 0.5e-3, seed=11, diffusivity=D, bounce_budget=g.bounce_loop.budget - 1,
+                  walker_batch_size=128)
+    assert w.work["bounce_budget"] == g.bounce_loop.budget - 1 and w.work["exhausted_steps"] == 0
