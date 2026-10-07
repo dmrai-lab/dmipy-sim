@@ -29,6 +29,15 @@ JAX = "jax"
 ENTRY_POINT_GROUP = "dmipy_sim.backends"
 
 
+class FieldSampling(NamedTuple):
+    """In-walk sampling of a strand field (the paper's C3): what a backend evaluates along each walker's path."""
+    basis: object             #: the :class:`~dmipy_sim.fields.strand_field.StrandFieldBasis` (its tables, switch, far grid, gate)
+    sample_every: int         #: the field's own save grid: a sample at every that-many-th save (sample 0 the start's)
+    reuse_intervals: int      #: the per-walker segment list is gathered every this many save intervals
+    radius_m: float           #: the list's gather radius: the basis's reach plus the margin the walkers travel in between
+    list_k: int               #: the list's width the producer sized from the start positions (a backend may widen)
+
+
 class WalkRequest(NamedTuple):
     """What the producer has resolved before the walk; what a backend walks."""
     geometry: object          #: the substrate, resolved (its constants are the physics)
@@ -43,6 +52,7 @@ class WalkRequest(NamedTuple):
     bounce_budget: Optional[int]   #: the budget the geometry's loop runs at for this walk
     seed: int                 #: the producer's master seed (the per-walker keys derive from it)
     stepping: object = None   #: an adaptive walk's :class:`~dmipy_sim.engine.adaptive.AdaptivePlan`; None for the fused walk
+    field: object = None      #: a :class:`FieldSampling` when the walk samples a strand field; None otherwise
 
 
 class WalkBatch(NamedTuple):
@@ -54,6 +64,8 @@ class WalkBatch(NamedTuple):
     work: tuple                       #: (hits | None, crossings | None, exhausted) per walker, int32 arrays
     counters: object = None           #: what else the backend counted over the batch (an adaptive walk's
                                       #: ``dict(n_free=, n_kernel_steps=)``), or None when it reports none
+    field_samples: object = None      #: (n, n_tf, 13) float32 the bare interval means of the field's channels at the
+                                      #: sampled saves (sample 0 the start's reading; no mean subtracted), or None
 
 
 class Backend:

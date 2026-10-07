@@ -33,7 +33,7 @@ import jax
 import jax.numpy as jnp
 
 from ..persistent_walk import PersistentWalk
-from .backends import JAX, WalkRequest, resolve as resolve_backend
+from .backends import JAX, WalkRequest, FieldSampling, resolve as resolve_backend
 from .tables import jit_with_tables
 from .physics import seed_walkers, isotropic_unit_step
 from ..run import Run
@@ -122,8 +122,8 @@ interval mean as before).
     walking them again -- a killed walk costs the batch in progress; ``None`` spools nothing. ``backend`` is
     resolved as :func:`~dmipy_sim.engine.core.simulate_trajectories` resolves it: another backend receives the
     :class:`AdaptivePlan` as ``WalkRequest.stepping`` and walks each batch itself (positions, the interval local
-    time, the pool-changed count as ``illegal``, its own free-step and kernel-step counters); in-walk field sampling
-    is the JAX rounds' own and refused for any other backend.
+    time, the pool-changed count as ``illegal``, its own free-step and kernel-step counters, and with ``field_basis``
+    the bare interval means of the field's channels as ``WalkBatch.field_samples``, the mean subtracted here).
     """
     with Run("simulate_trajectories_adaptive", params=dict(n_walkers=n_walkers, diffusivity=diffusivity, geometry=type(geometry).__name__, T_max=T_max, dt_save=dt_save, walker_batch_size=walker_batch_size)) as run:
         from .gpu import check_gpu
@@ -135,9 +135,6 @@ interval mean as before).
                                       "every step (the crossing decision is per contact)")
         _backend = resolve_backend(backend)
         _backend_name = JAX if _backend is None else str(_backend.name)
-        if _backend is not None and field_basis is not None:
-            raise ValueError(f"backend {_backend_name!r}: this walk uses in-walk field sampling, which only the jax rounds "
-                             f"implement; it does not fall back")
         if _backend is None:
             check_gpu(n_walkers, require_gpu, what="simulate_trajectories_adaptive")
         D = float(diffusivity)
@@ -263,7 +260,7 @@ interval mean as before).
             f_margin = 6.0 * math.sqrt(2.0 * D * dt_actual * f_reuse)     # six sigma of the excursion over the reused intervals
             f_reach = float(field_basis.gather_radius_m)                 # the closed form's reach: the far switch with a far grid
             f_radius = min(f_reach + f_margin, 2.0 * f_reach)
-            _at = field_basis.channels_at_device()
+            _at = field_basis.channels_at_device() if _backend is None else None
             f_mean = jnp.asarray(field_basis.mean, jnp.float32)
             n_tf = len(range(0, n_t, f_every))                          # the saves the field is read at
             field_all = np.empty((n_walkers, n_tf, 13), np.float32)
@@ -273,7 +270,7 @@ interval mean as before).
             n_probe = np.concatenate([np.asarray(field_basis.within_device(radius_m=f_radius, k=1)(jnp.asarray(sample[i:i + f_chunk]))[2])
                                       for i in range(0, sample.shape[0], f_chunk)])
             f_k = min(field_basis.segments_max + 1, 1 << int(math.ceil(math.log2(1.5 * max(int(n_probe.max()), 1)))))
-            _list = dict(k=f_k, f=field_basis.within_device(radius_m=f_radius, k=f_k))   # widened when a walker outgrows it
+            _list = dict(k=f_k, f=(field_basis.within_device(radius_m=f_radius, k=f_k) if _backend is None else None))   # widened when a walker outgrows it
             log.info("adaptive: field sampled in the walk: list of %d segments gathered every %d saves at %.1f um (cutoff %.0f um + "
                      "margin), up to %d in reach at the start", f_k, f_reuse, f_radius * 1e6, f_reach * 1e6, int(n_probe.max()))
 
@@ -306,7 +303,8 @@ interval mean as before).
             plan = plan._replace(candidate_k=int(k_cand))
             req = WalkRequest(geometry=geometry, n_t=int(n_t), dt_save=float(dt_actual), sub_steps=int(n_min), dt_sim=float(dt_min),
                               diffusivity=D, record=True, kappa_over_D=0.0, count_walls=bool(geometry.count_walls),
-                              bounce_budget=geometry.bounce_budget, seed=int(seed), stepping=plan)
+                              bounce_budget=geometry.bounce_budget, seed=int(seed), stepping=plan,
+                              field=(FieldSampling(field_basis, f_every, f_reuse, float(f_radius), int(f_k)) if sampling else None))
             _reason = _backend.refuses(req)
             if _reason:
                 raise ValueError(f"backend {_backend_name!r} refuses this walk of {type(geometry).__name__}: {_reason}")
@@ -332,6 +330,13 @@ interval mean as before).
                     counted = False
                 if hits_total is not None and res.work[0] is not None:
                     hits_total += int(np.asarray(res.work[0], np.int64).sum())
+                if sampling:
+                    if res.field_samples is None:
+                        raise ValueError(f"backend {_backend_name!r} accepted the field sampling and returned no field samples")
+                    fs = np.asarray(res.field_samples, np.float32)
+                    if fs.shape != (nb, n_tf, 13):
+                        raise ValueError(f"backend {_backend_name!r}: field samples of shape {fs.shape}, expected {(nb, n_tf, 13)}")
+                    field_all[s:e] = fs - np.asarray(f_mean, np.float32)
                 run.progress(e, n_walkers)
                 continue
             r = jnp.asarray(r0_all[s:e]); keys = keys_all[s:e]
