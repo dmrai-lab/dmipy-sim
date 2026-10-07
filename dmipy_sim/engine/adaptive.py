@@ -19,8 +19,14 @@ classes, the free-step threshold -- are one :class:`AdaptivePlan` (:func:`adapti
 read and a backend (``backend=``, dmrai-lab/dmipy-sim#635) receives as ``WalkRequest.stepping`` to run the same
 rule its own way. The recorded channels are the fused producer's: positions
 at every save, the boundary local time accumulated over each interval (the kernel's, at unit rho / D), the
-compartment label (the geometries this serves are impermeable, so a label is constant). Illegal crossings are
-counted the same way and the walk is refused if any occurred.
+compartment label (the geometries this serves are impermeable, so a label is constant).
+
+``illegal_crossings`` here is a coarser guard than the fused producer's: a walker's pool is compared once, at
+the walk's end, against its start, never at every sub-step -- so a walker that crosses a wall and comes back
+before the end is not seen (dmrai-lab/dmipy-sim#675). A void case with a per-save containment invariant
+(``engine.backends.void_invariant``, the ``strands_void`` parity case) is what proves a backend walks the
+starts it is actually given rather than, say, an empty candidate gather read as an unbounded one. The walk is
+refused if any walker ended in the wrong pool.
 """
 from __future__ import annotations
 
@@ -402,7 +408,9 @@ interval mean as before).
                 run.spool(f"{spool}-batch-{b:04d}", arrays, dict(batch=b, start=s, end=e, n_free=n_free - n_free_0,
                                                                   n_kernel_steps=n_kernel_steps - n_kernel_0))
         if n_illegal:
-            raise RuntimeError(f"adaptive walk: {n_illegal} walker(s) changed pool -- an illegal crossing; the walk is refused")
+            raise RuntimeError(f"adaptive walk: {n_illegal} walker(s) changed pool -- an illegal crossing; the walk is refused "
+                               "(the pool compared is the end's against the start's: a walker that crossed a wall and left "
+                               "again before the end is not counted here)")
         total_steps = n_walkers * (n_t - 1) * n_min
         if counted:
             log.info("adaptive walk: %.1f%% of walker-rounds were free steps; kernel steps %.3g of the fused producer's %.3g "

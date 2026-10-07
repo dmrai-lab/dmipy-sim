@@ -9,7 +9,10 @@ What a backend signs
 - **One physics.** The rule is dmipy-sim's; the backend executes it.
 - **Parity, not identity.** A different RNG stream and FMA policy make bit-identity impossible, and it is not stable
   across XLA compilations of one program either (#623). A backend is admitted per engine class by the public
-  validation of that class run on it and by the work record within Poisson noise: :func:`parity_report`.
+  validation of that class run on it and by the work record within Poisson noise: :func:`parity_report`. One
+  case is a hard invariant rather than a rate (``strands_void``, #675): starts in the void beyond a tube's own
+  gather reach, held to per-save containment -- a gather read as unbounded where it found nothing leaks a
+  walker through the next wall it never actually tested.
 - **Determinism per (seed, architecture).** A trajectory is a function of the key; the pack says which backend and
   architecture walked it (``work["backend"]`` and the run record).
 - **Refusal over fallback.** A backend that does not implement an engine class, a tier or a wall says so by name
@@ -121,7 +124,11 @@ def resolve(backend) -> Optional[Backend]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def parity_cases():
-    """The substrates a backend is compared on, each at its own permeability: ``{name: builder}``."""
+    """The substrates a backend is compared on, each at its own permeability: ``{name: builder}``, ``builder()``
+    a zero-arg callable returning the geometry. A case that needs starts and a walk scale of its own rather than
+    :func:`parity_report`'s defaults (``strands_void``) sets them as attributes on the geometry it returns --
+    ``parity_starts(n, seed) -> r0`` and, optionally, ``parity_overrides`` (``n_walkers``, ``T_max``, ``dt_save``,
+    ``seed``) -- which :func:`parity_report` reads instead of drawing its own."""
     import dmipy_sim as d
     R = 2e-6
 
@@ -147,6 +154,28 @@ def parity_cases():
         return d.PackedCurvedCylinders(cls, [1.0e-6, 1.5e-6, 2.0e-6], interior=interior,
                                        box=(np.full(3, -10e-6), np.full(3, 10e-6)))
 
+    def void():
+        # one tube in a 200 um box, starts in the void 2.5 cells from its wall: a gather whose 27-cell
+        # neighbourhood is empty must still bound the walk by the nearest wall it CAN reach, not by the box
+        # (dmipy-sim-cuda#36). The case carries its own starts (`parity_starts`) and walk scale
+        # (`parity_overrides`): a rate comparison at `parity_report`'s default scale would barely move the
+        # walkers, so the invariant needs its own T_max and walker count.
+        R, L = 2e-6, 200e-6
+        xt = yt = 100e-6
+        g = d.PackedCurvedCylinders([np.array([[xt, yt, 0.0], [xt, yt, L]])], [R], interior=False,
+                                    box=(np.zeros(3), np.full(3, L)))
+
+        def starts(n, seed):
+            rng = np.random.default_rng(seed)
+            r0 = np.column_stack([np.full(n, xt - R - 2.5 * g.cell_size),
+                                  rng.uniform(yt - 5e-6, yt + 5e-6, n),
+                                  rng.uniform(20e-6, 180e-6, n)])
+            return r0.astype(np.float32)
+
+        g.parity_starts = starts
+        g.parity_overrides = dict(n_walkers=4096, T_max=40e-3, dt_save=0.5e-3)
+        return g
+
     return {
         "sphere": lambda: d.Sphere(R),
         "sphere_perm": lambda: d.Sphere(R, permeability=1e-5),
@@ -163,7 +192,31 @@ def parity_cases():
         "mesh_perm": lambda: mesh(permeability=1e-5),
         "strands_intra": lambda: strands(True),
         "strands_extra": lambda: strands(False),
+        "strands_void": void,
     }
+
+
+def void_invariant(g, w, *, wall_margin_m=0.5e-6, near_wall_fraction=0.02):
+    """The void case's invariant (dmrai-lab/dmipy-sim#675): every recorded save of every walker in ``w`` lies
+    outside every tube of ``g`` -- tested by the geometry's own exact classifier
+    (:meth:`~dmipy_sim.geometry.base.Geometry.classify_positions_exact` / :meth:`~dmipy_sim.geometry.base.Geometry.pool_of`),
+    never a hand-rolled radial formula -- no walker was granted an illegal crossing, and more than
+    ``near_wall_fraction`` of the walkers come within ``wall_margin_m`` of a wall at some save (the geometry's own
+    :meth:`~dmipy_sim.geometry.curved_cylinder.PackedCurvedCylinders.wall_scales`; the premise -- enough walkers
+    reach the wall for the first two checks to mean something). Returns ``{check: {..., ok}}``; a failure here is
+    a hard violation of the backend under test, never a rate comparison."""
+    n, n_t, _ = w.positions.shape
+    flat = np.asarray(w.positions, np.float64).reshape(-1, 3)
+    pool = np.asarray(g.pool_of(g.classify_positions_exact(flat))).reshape(n, n_t)
+    n_inside = int((pool != 0).sum())
+    illegal = int(np.asarray(w.illegal_crossings).sum())
+    d_wall, _ = g.wall_scales(flat)
+    n_near = int((np.asarray(d_wall).reshape(n, n_t).min(axis=1) < wall_margin_m).sum())
+    return dict(
+        contained=dict(n_inside=n_inside, ok=n_inside == 0),
+        illegal=dict(n_illegal=illegal, ok=illegal == 0),
+        reaches_wall=dict(n_near=n_near, fraction=n_near / n, ok=n_near > near_wall_fraction * n),
+    )
 
 
 def parity_report(backend, cases=None, *, n_walkers=4000, T_max=2e-3, dt_save=0.5e-3, seed=11, sigma=4.0, overdispersion=2.5):
@@ -177,8 +230,11 @@ def parity_report(backend, cases=None, *, n_walkers=4000, T_max=2e-3, dt_save=0.
     0-5 of 1.07 M walker-steps per seed on the JAX kernels themselves -- the wedge between a facet and the voxel
     face it touches); every walker on its side (the classifier at the saves agrees with the start's pool unless a
     crossing was granted), and the perpendicular PGSE signal of the two walks within ``sigma`` of their combined
-    standard errors. A case the backend refuses is recorded with its reason and not failed: refusal is the
-    contract. Returns ``[{case, ok, ...}]``; the list is what a backend's tests assert on."""
+    standard errors. A case is a rate comparison unless it declares its own starts (``geometry.parity_starts``,
+    e.g. ``strands_void``): there the backend under test walks those starts alone (at ``geometry.parity_overrides``'
+    scale, when given) and is held to :func:`void_invariant`, a hard pass/fail with no JAX side to compare against.
+    A case the backend refuses is recorded with its reason and not failed: refusal is the contract. Returns
+    ``[{case, ok, ...}]``; the list is what a backend's tests assert on."""
     import dmipy_sim as d
     from .core import simulate_trajectories
     from ..replay.trajectories import replay
@@ -186,6 +242,21 @@ def parity_report(backend, cases=None, *, n_walkers=4000, T_max=2e-3, dt_save=0.
     out = []
     for name, build in (cases or parity_cases()).items():
         g = build(); g.count_walls = True
+        starts = getattr(g, "parity_starts", None)
+        if starts is not None:
+            overrides = getattr(g, "parity_overrides", {})
+            nw = overrides.get("n_walkers", n_walkers); Tm = overrides.get("T_max", T_max)
+            ds = overrides.get("dt_save", dt_save); sd = overrides.get("seed", seed)
+            try:
+                w = simulate_trajectories(nw, 2e-9, g, Tm, ds, seed=sd, tiers="all", walker_batch_size=nw,
+                                          r0=starts(nw, sd), backend=backend)
+            except ValueError as e:
+                if "refuses" in str(e) or "does not" in str(e):
+                    out.append(dict(case=name, ok=None, refused=str(e))); continue
+                raise
+            checks = void_invariant(g, w)
+            out.append(dict(case=name, ok=all(c["ok"] for c in checks.values()), checks=checks))
+            continue
         ref = simulate_trajectories(n_walkers, 2e-9, g, T_max, dt_save, seed=seed, tiers="all", walker_batch_size=n_walkers)
         g2 = build(); g2.count_walls = True
         try:
