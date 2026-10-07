@@ -327,8 +327,15 @@ interval mean as before).
                     log.info("  adaptive: batch %d read from the spool (%d walkers)", b, nb)
                     continue
             if _backend is not None:
-                res = _backend.walk_batch(req, np.asarray(r0_all[s:e], np.float32), np.asarray(keys_all[s:e], np.uint32))
-                positions[s:e] = np.asarray(res.positions, sdt); dlog_all[s:e] = np.asarray(res.boundary_local_time, sdt)
+                # the backend writes into the walk's own arrays when it can (walk_batch(out=)); else it is copied in
+                out = dict(positions=positions[s:e], boundary_local_time=dlog_all[s:e]) if sdt is np.float32 else None
+                if out is not None and sampling:
+                    out["field_samples"] = field_all[s:e]
+                res = _backend.walk_batch(req, np.asarray(r0_all[s:e], np.float32), np.asarray(keys_all[s:e], np.uint32), out=out)
+                if out is None or res.positions is not out["positions"]:
+                    positions[s:e] = np.asarray(res.positions, sdt)
+                if out is None or res.boundary_local_time is not out["boundary_local_time"]:
+                    dlog_all[s:e] = np.asarray(res.boundary_local_time, sdt)
                 n_illegal += int(np.asarray(res.illegal, np.int64).sum())
                 if res.counters is not None:
                     n_free += int(res.counters["n_free"]); n_kernel_steps += int(res.counters["n_kernel_steps"])
@@ -342,7 +349,9 @@ interval mean as before).
                     fs = np.asarray(res.field_samples, np.float32)
                     if fs.shape != (nb, n_tf, 13):
                         raise ValueError(f"backend {_backend_name!r}: field samples of shape {fs.shape}, expected {(nb, n_tf, 13)}")
-                    field_all[s:e] = fs - np.asarray(f_mean, np.float32)
+                    if out is None or fs is not out.get("field_samples"):
+                        field_all[s:e] = fs
+                    field_all[s:e] -= np.asarray(f_mean, np.float32)          # the domain mean, in place: no 4 GB temporary
                 run.progress(e, n_walkers)
                 continue
             r = jnp.asarray(r0_all[s:e]); keys = keys_all[s:e]

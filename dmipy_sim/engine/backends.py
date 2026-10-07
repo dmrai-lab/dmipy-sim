@@ -77,8 +77,12 @@ class Backend:
         None. The producer raises with the reason; it never falls back."""
         return None
 
-    def walk_batch(self, request: WalkRequest, r0: np.ndarray, keys: np.ndarray) -> WalkBatch:
-        """Walk the ``(n, 3)`` float32 starts ``r0`` from their ``(n, 2)`` uint32 keys."""
+    def walk_batch(self, request: WalkRequest, r0: np.ndarray, keys: np.ndarray, *, out=None) -> WalkBatch:
+        """Walk the ``(n, 3)`` float32 starts ``r0`` from their ``(n, 2)`` uint32 keys. ``out``, when given, is a
+        dict of the producer's own contiguous float32 arrays for this batch -- ``positions`` (n, n_t, 3),
+        ``boundary_local_time`` and ``compartment`` (n, n_t), ``field_samples`` (n, n_tf, 13) -- that a backend
+        may write into instead of allocating its own (the batch then holds those arrays); a backend that ignores
+        ``out`` returns its own and the producer copies, at 7.6 GB per 100k DiSCo walkers (dmipy-sim-cuda#33)."""
         raise NotImplementedError
 
 
