@@ -104,3 +104,47 @@ def test_free_ends_and_the_exact_grid_equals_the_cutoff_grid():
     exact = plain.build_far_grid(1.0e-6, 14e-6, blend_m=4e-6, dtype=np.float32, all_strands=True, chunk=512)
     assert exact.cutoff_m == pytest.approx(float(np.linalg.norm(hi - lo)))
     np.testing.assert_allclose(exact.values, far.values, atol=1e-5, rtol=0)     # 80 um spans the box: the same sum
+
+
+def test_a_shared_context_builds_the_geometry_and_the_field_basis_once(tmp_path, monkeypatch):
+    """dmipy-sim#680: a worker's `WalkContext` owns the walking geometry (keyed per `(pool, reflect)`, `_Boundary`'s
+    own `_geom` cache -- already reused across calls) AND, now, the strand-field basis with NO far grid (the
+    particle-mesh split already cached it; the plain per-segment closed form did not, rebuilding it -- cutoff
+    doubling included -- on every `walk_spec` call even with a context given). Two calls on one small strands
+    spec sharing a context build each `PackedCurvedCylinders` key and the `StrandFieldBasis` exactly once: the
+    second call's construction counts equal the first's. The walk is unaffected either way -- with the shared
+    context, repeated, or with none at all -- to the bit."""
+    from dmipy_sim.geometry.curved_cylinder import PackedCurvedCylinders
+    rng = np.random.default_rng(2)
+    cls, ri, ro = _strands(rng, n=5, side=20e-6)
+    tck, dia = str(tmp_path / "t3.tck"), str(tmp_path / "d3.txt")
+    write_tck(tck, *concat_centerlines([c + 0.0 for c in cls]), coordinate_unit_m=25e-6); np.savetxt(dia, 2 * ri / 1e-3)
+    spec = disco_spec(tck, dia, side_m=20e-6)
+    kw = dict(T_max=6e-4, dt_save=5e-5, seed=5, n_probe=2000, require_gpu=False, adaptive_steps=True,
+              field_cutoff_m=25e-6, field_cutoff_max_m=25e-6)
+
+    n_geom, n_field = [0], [0]
+    orig_geom, orig_field = PackedCurvedCylinders.__init__, StrandFieldBasis.__init__
+
+    def counted_geom(self, *a, **kw_):
+        n_geom[0] += 1; return orig_geom(self, *a, **kw_)
+
+    def counted_field(self, *a, **kw_):
+        n_field[0] += 1; return orig_field(self, *a, **kw_)
+    monkeypatch.setattr(PackedCurvedCylinders, "__init__", counted_geom)
+    monkeypatch.setattr(StrandFieldBasis, "__init__", counted_field)
+
+    from dmipy_sim.spec import WalkContext
+    ctx = WalkContext(spec)
+    w1 = walk_spec(spec, 40, context=ctx, **kw)
+    n_geom_1, n_field_1 = n_geom[0], n_field[0]
+    assert n_geom_1 > 0 and n_field_1 > 0                           # the first call pays for both
+    w2 = walk_spec(spec, 40, context=ctx, **kw)
+    assert n_geom[0] == n_geom_1 and n_field[0] == n_field_1         # the second call builds neither again
+
+    monkeypatch.undo()
+    w0 = walk_spec(spec, 40, **kw)                                  # no context at all: unaffected, same to the bit
+    np.testing.assert_array_equal(w0.positions, w1.positions)
+    np.testing.assert_array_equal(w1.positions, w2.positions)
+    np.testing.assert_array_equal(w0.field_samples, w1.field_samples)
+    np.testing.assert_array_equal(w1.field_samples, w2.field_samples)

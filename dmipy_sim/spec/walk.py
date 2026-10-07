@@ -557,18 +557,32 @@ class WalkContext:
         if far is not None and self.key[1] != self.key_of(spec, far)[1]:
             raise ValueError("the walk context carries another far grid")
 
-    def field_basis(self):
-        """The strand-field basis of the spec's field source with the far grid (the particle-mesh split), built once;
-        ``None`` when the context has no far grid or the source is not a pair of swept-polyline walls."""
-        if self._basis is None and self.far is not None and field_source_kind(self.spec) == "strands":
-            from ..fields.strand_field import StrandFieldBasis
-            g = self.tests; src0 = self.spec.field_source_pools[0].id
-            ob, ib = g.boundary(g.inside_w[src0]), g.boundary(g.outside_w[src0])
-            if len(ob.centerlines) != len(ib.centerlines):
-                raise SpecError("the sheath's inner and outer walls list different numbers of strands")
+    def field_basis(self, *, starts=None, cutoff_m=25e-6, tol=0.02, seed=0, cutoff_max=50e-6):
+        """The strand-field basis of the spec's field source, built once and cached for every later call (it is the
+        substrate's, not a block's -- the fill's whole point in keeping this context): with a far grid, directly at
+        its cutoff (the particle-mesh split, no doubling); without one, the per-segment closed form of
+        :func:`_strand_field`, whose cutoff is doubled against ``starts`` (the FIRST call's own walk start
+        positions) until it stops changing by more than ``tol``. ``None`` when the source is not a pair of
+        swept-polyline walls, OR when it is and there is no far grid and no ``starts`` yet -- a bare query before
+        any walk is answered, not refused; only a caller that actually needs the basis and gives no ``starts``
+        (:func:`_walk_bundle`, which always does) would have nothing to build it from, and there is nothing to
+        refuse here that walking itself would not also need. Every call after the first ignores ``starts`` --
+        the cached basis answers for every block."""
+        if self._basis is not None:
+            return self._basis
+        if field_source_kind(self.spec) != "strands":
+            return None
+        from ..fields.strand_field import StrandFieldBasis
+        g = self.tests; src0 = self.spec.field_source_pools[0].id
+        ob, ib = g.boundary(g.inside_w[src0]), g.boundary(g.outside_w[src0])
+        if len(ob.centerlines) != len(ib.centerlines):
+            raise SpecError("the sheath's inner and outer walls list different numbers of strands")
+        if self.far is not None:
             self._basis = StrandFieldBasis(ob.centerlines, ib.radii, ob.radii, cutoff_m=self.far.cutoff_m, domain=(g.lo, g.hi),
                                            certificate=dict(cutoff_m=float(self.far.cutoff_m), far_grid=self.far.meta,
                                                             note="the cutoff the far grid summed to; not doubled here")).with_far(self.far)
+        elif starts is not None:
+            self._basis = _strand_field(ob, ib, g.lo, g.hi, starts, cutoff_m, tol, seed, cutoff_max=cutoff_max)
         return self._basis
 
 
@@ -712,13 +726,11 @@ def _walk_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field_res, requ
     kind = None if defer_field else field_source_kind(spec)                # None when no pool is magnetic
     sf = fg = None
     if kind == "strands":
-        src0 = spec.field_source_pools[0].id
-        ob, ib = boundary(inside_w[src0]), boundary(outside_w[src0])
         starts = np.concatenate([np.asarray(seeds_of[pid], np.float32) for pid in seeded])
-        if ctx.far is not None:                                          # the split: the grid's cutoff, no doubling
-            sf = ctx.field_basis()
-        else:
-            sf = _strand_field(ob, ib, lo, hi, starts[:, None, :], field_cutoff_m, field_cutoff_tol, seed, cutoff_max=field_cutoff_max_m)
+        # the basis is the substrate's, not this block's -- ctx.field_basis caches it (built from THIS block's
+        # starts the first time, with or without a far grid; ignored on every call after)
+        sf = ctx.field_basis(starts=starts[:, None, :], cutoff_m=field_cutoff_m, tol=field_cutoff_tol, seed=seed,
+                             cutoff_max=field_cutoff_max_m)
     elif kind == "grid":
         if adaptive_steps:
             raise SpecError("adaptive_steps samples a strand field in the walk; this spec's field source is gridded, which "
