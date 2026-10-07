@@ -83,14 +83,34 @@ def test_the_jax_only_paths_are_refused_for_another_backend():
         _walk(d.Sphere(R), backend=_Still(), enforce_compartment=True)
 
 
-def test_walk_spec_passes_the_backend_through_and_refuses_it_with_adaptive_steps():
-    from dmipy_sim.spec import walk_spec
+def test_walk_spec_passes_the_backend_through_with_and_without_adaptive_steps():
+    from dmipy_sim.spec import walk_spec, SpecError
     g = d.Sphere(R)
     w = walk_spec(g.spec, 64, 2e-3, 0.5e-3, seed=11, diffusivity=D, walker_batch_size=64, backend=_Still())
     assert w.work["backend"] == "still"
-    with pytest.raises(ValueError, match="adaptive producer"):
+    # the adaptive producer takes the backend too (#651): the sphere is refused for not being a bundle, by the spec,
+    # not for the backend
+    with pytest.raises(SpecError, match="adaptive stepping is for a bundle"):
         walk_spec(g.spec, 64, 2e-3, 0.5e-3, seed=11, diffusivity=D, walker_batch_size=64, backend=_Still(),
                   adaptive_steps=True)
+
+
+def test_the_adaptive_producer_hands_a_backend_the_plan_and_signs_the_record():
+    from dmipy_sim.engine.adaptive import simulate_trajectories_adaptive, AdaptivePlan, adaptive_plan
+    g = backends.parity_cases()["strands_intra"]()
+    still = _Still()
+    w = simulate_trajectories_adaptive(64, D, g, 1e-3, 2.5e-4, seed=3, require_gpu=False, walker_batch_size=64, backend=still)
+    assert (w.positions == w.positions[:, :1]).all() and w.work["backend"] == "still" and w.stepping["backend"] == "still"
+    assert w.stepping["kernel_steps"] is None and w.work["walker_steps"] is None      # the stub counted nothing
+    req = still.requests[0]
+    assert isinstance(req, backends.WalkRequest) and isinstance(req.stepping, AdaptivePlan)
+    assert req.sub_steps == req.stepping.n_min == w.sub_steps and req.kappa_over_D == 0.0 and req.record
+    assert req.stepping == adaptive_plan(g, D, 2.5e-4)
+    assert req.stepping.n_rounds * req.stepping.steps_per_round == req.stepping.n_min
+    assert len(req.stepping.steps_c) == req.stepping.n_classes and req.stepping.steps_c[0] == req.stepping.steps_per_round
+    with pytest.raises(ValueError, match="refuses this walk of PackedCurvedCylinders: no strands"):
+        simulate_trajectories_adaptive(64, D, g, 1e-3, 2.5e-4, seed=3, require_gpu=False, walker_batch_size=64,
+                                       backend=_Still(refuse="no strands"))
 
 
 def test_the_producer_reads_nothing_from_a_backend_but_the_interface():

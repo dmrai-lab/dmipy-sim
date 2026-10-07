@@ -14,7 +14,10 @@ the nearest wall it can hit and the radius (curvature scale) of that wall.
   bounds ``R_min 2^(c/2)``): the finest class is the fused producer's own step and noise sequence.
 
 Walkers are re-bucketed every round on the host (index arrays), the kernels are jitted per class and padded
-walker count, and the positions stay on the device. The recorded channels are the fused producer's: positions
+walker count, and the positions stay on the device. The rule's numbers -- the finest step, the rounds, the
+classes, the free-step threshold -- are one :class:`AdaptivePlan` (:func:`adaptive_plan`), which the rounds here
+read and a backend (``backend=``, dmrai-lab/dmipy-sim#635) receives as ``WalkRequest.stepping`` to run the same
+rule its own way. The recorded channels are the fused producer's: positions
 at every save, the boundary local time accumulated over each interval (the kernel's, at unit rho / D), the
 compartment label (the geometries this serves are impermeable, so a label is constant). Illegal crossings are
 counted the same way and the walk is refused if any occurred.
@@ -23,17 +26,64 @@ from __future__ import annotations
 
 import logging
 import math
+from typing import NamedTuple
 
 import numpy as np
 import jax
 import jax.numpy as jnp
 
 from ..persistent_walk import PersistentWalk
+from .backends import JAX, WalkRequest, resolve as resolve_backend
 from .tables import jit_with_tables
 from .physics import seed_walkers, isotropic_unit_step
 from ..run import Run
 
 log = logging.getLogger("dmipy_sim")
+
+
+class AdaptivePlan(NamedTuple):
+    """The adaptive rule's numbers for one walk: what the rounds step by, derived once from the substrate, the
+    diffusivity and the save interval (:func:`adaptive_plan`), read by the JAX rounds and handed to a backend."""
+    steps_per_round: int      #: K, the finest class's steps per round
+    n_min: int                #: finest steps per save interval (a multiple of K)
+    n_rounds: int             #: rounds per save interval, ``n_min // K``
+    dt_min: float             #: the finest step's duration (s)
+    dt_round: float           #: a round's duration (s)
+    n_classes: int            #: radius classes
+    safety_sigma: float       #: a walker farther than this many ``sigma_round`` from every wall steps freely
+    sigma_round: float        #: the round's per-axis rms excursion, ``sqrt(2 D dt_round)`` (m)
+    far_at: float             #: ``safety_sigma * sigma_round`` (m)
+    R_min: float              #: the substrate's smallest feature (m), the finest class's radius
+    R_bounds: tuple           #: a class's lower radius bound, ``R_min 2^(c/2)`` (m)
+    steps_c: tuple            #: kernel steps per round per class, ``K >> c``
+    step_l_c: tuple           #: the step length per class (m), ``sqrt(6 D dt_round / steps_c)``
+    reach_c: tuple            #: the round's deterministic excursion per class (m): the candidate reach
+    candidate_k: int          #: the candidate list's width (the JAX rounds widen it; a backend keeps its own)
+
+
+def adaptive_plan(geometry, diffusivity, dt_save, *, steps_per_round=16, safety_sigma=6.0, n_classes=4, sub_steps=None,
+                  candidate_k_start=64):
+    """The :class:`AdaptivePlan` of a walk of ``geometry`` at ``diffusivity`` saved every ``dt_save``: the finest
+    sub-step count from the family's step rule (``sub_steps`` overrides it), rounded up to a multiple of
+    ``steps_per_round``; the classes doubling in step time from the smallest feature."""
+    from .physics import resolve_sub_steps, length_scales_of
+    D = float(diffusivity)
+    K = int(steps_per_round)
+    n_min = resolve_sub_steps(geometry, D, dt_save, surface=True, override=sub_steps)
+    n_min = K * int(math.ceil(n_min / K))                          # the finest class divides the round
+    n_rounds = n_min // K
+    dt_min = dt_save / n_min; dt_round = dt_save / n_rounds
+    R_min = float(length_scales_of(geometry).min_feature)
+    sigma_round = math.sqrt(2.0 * D * dt_round)                    # per axis
+    far_at = float(safety_sigma) * sigma_round                    # |step| > 6 sigma: 1.2e-7 of a 3-D Gaussian's mass
+    n_classes = int(max(1, min(n_classes, int(math.log2(K)) + 1)))
+    steps_c = tuple(K >> c for c in range(n_classes))              # kernel steps per round, per class
+    step_l_c = tuple(float(np.float32(math.sqrt(6.0 * D * dt_round / m))) for m in steps_c)
+    R_bounds = tuple(R_min * 2.0 ** (c / 2.0) for c in range(n_classes))   # a class's lower radius bound
+    NUDGE = 1e-4 * R_min
+    reach_c = tuple(float(m) * l + NUDGE for m, l in zip(steps_c, step_l_c))
+    return AdaptivePlan(K, int(n_min), int(n_rounds), float(dt_min), float(dt_round), n_classes, float(safety_sigma),
+                        sigma_round, far_at, R_min, R_bounds, steps_c, step_l_c, reach_c, int(candidate_k_start))
 
 
 def _pad_to(n, unit=4096):
@@ -45,7 +95,7 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, dt_s
                                    steps_per_round=16, safety_sigma=6.0, n_classes=4, sub_steps=None,
                                    walker_batch_size=100_000, require_gpu=None, storage_dtype=np.float32,
                                    candidate_cache=True, candidate_k_start=64, field_basis=None, field_reuse_intervals=4,
-                                   field_sample_every=1, spec=None, spool=None):
+                                   field_sample_every=1, spec=None, spool=None, backend=JAX):
     """A :class:`~dmipy_sim.persistent_walk.PersistentWalk` of ``geometry`` with adaptive stepping (module
     docstring). ``geometry`` must offer ``wall_scales``, ``reflect_with_log_weight`` and ``classify_positions_exact``
     and be impermeable. ``steps_per_round`` is the finest class's steps per round (the round is
@@ -69,33 +119,37 @@ interval mean as before).
     geometry writes its own, which for 12,196 cited centerlines is 100 MB of Python lists. ``spool`` names the
     walk's batches in the run's record (``"<spool>-batch-NNNN"``): every finished batch is written there at once
     (:meth:`dmipy_sim.run.Run.spool`), and a run resumed in that record reads the batches it finds instead of
-    walking them again -- a killed walk costs the batch in progress; ``None`` spools nothing.
+    walking them again -- a killed walk costs the batch in progress; ``None`` spools nothing. ``backend`` is
+    resolved as :func:`~dmipy_sim.engine.core.simulate_trajectories` resolves it: another backend receives the
+    :class:`AdaptivePlan` as ``WalkRequest.stepping`` and walks each batch itself (positions, the interval local
+    time, the pool-changed count as ``illegal``, its own free-step and kernel-step counters); in-walk field sampling
+    is the JAX rounds' own and refused for any other backend.
     """
     with Run("simulate_trajectories_adaptive", params=dict(n_walkers=n_walkers, diffusivity=diffusivity, geometry=type(geometry).__name__, T_max=T_max, dt_save=dt_save, walker_batch_size=walker_batch_size)) as run:
         from .gpu import check_gpu
-        from .physics import resolve_sub_steps, length_scales_of
         if not hasattr(geometry, "wall_scales"):
             raise TypeError(f"{type(geometry).__name__} offers no wall_scales; adaptive stepping needs the distance to the "
                             "nearest wall and its curvature scale")
         if geometry.permeability is not None:
             raise NotImplementedError("adaptive stepping is for impermeable substrates: a permeable wall needs the kernel at "
                                       "every step (the crossing decision is per contact)")
-        check_gpu(n_walkers, require_gpu, what="simulate_trajectories_adaptive")
+        _backend = resolve_backend(backend)
+        _backend_name = JAX if _backend is None else str(_backend.name)
+        if _backend is not None and field_basis is not None:
+            raise ValueError(f"backend {_backend_name!r}: this walk uses in-walk field sampling, which only the jax rounds "
+                             f"implement; it does not fall back")
+        if _backend is None:
+            check_gpu(n_walkers, require_gpu, what="simulate_trajectories_adaptive")
         D = float(diffusivity)
         n_t = int(round(T_max / dt_save)) + 1
         dt_actual = T_max / (n_t - 1)
-        K = int(steps_per_round)
-        n_min = resolve_sub_steps(geometry, D, dt_actual, surface=True, override=sub_steps)
-        n_min = K * int(math.ceil(n_min / K))                          # the finest class divides the round
-        n_rounds = n_min // K
-        dt_min = dt_actual / n_min; dt_round = dt_actual / n_rounds
-        R_min = float(length_scales_of(geometry).min_feature)
-        sigma_round = math.sqrt(2.0 * D * dt_round)                    # per axis
-        far_at = float(safety_sigma) * sigma_round                    # |step| > 6 sigma: 1.2e-7 of a 3-D Gaussian's mass
-        n_classes = int(max(1, min(n_classes, int(math.log2(K)) + 1)))
-        steps_c = [K >> c for c in range(n_classes)]                   # kernel steps per round, per class
-        step_l_c = [jnp.float32(math.sqrt(6.0 * D * dt_round / m)) for m in steps_c]
-        R_bounds = np.array([R_min * 2.0 ** (c / 2.0) for c in range(n_classes)])   # a class's lower radius bound
+        plan = adaptive_plan(geometry, D, dt_actual, steps_per_round=steps_per_round, safety_sigma=safety_sigma,
+                             n_classes=n_classes, sub_steps=sub_steps, candidate_k_start=candidate_k_start)
+        K, n_min, n_rounds, dt_min, dt_round, n_classes = plan.steps_per_round, plan.n_min, plan.n_rounds, plan.dt_min, plan.dt_round, plan.n_classes
+        R_min, sigma_round, far_at = plan.R_min, plan.sigma_round, plan.far_at
+        steps_c = list(plan.steps_c)
+        step_l_c = [jnp.float32(l) for l in plan.step_l_c]
+        R_bounds = np.array(plan.R_bounds)
         log.info("adaptive walk: %d finest steps per save (dt_min %.3g us) in %d rounds of %d, %d radius classes from "
                  "R_min %.2f um (steps per round %s), free step beyond %.2f um of a wall",
                  n_min, dt_min * 1e6, n_rounds, K, n_classes, R_min * 1e6, steps_c, far_at * 1e6)
@@ -162,8 +216,8 @@ interval mean as before).
             pad = jnp.full(_pad_to(n), n, order.dtype)
             return jnp.concatenate([order, pad]), jnp.bincount(bucket.astype(jnp.int32) + 1, length=n_classes + 1)
 
-        reach_c = [float(m) * float(l) + NUDGE for m, l in zip(steps_c, step_l_c)]
-        k_cand = int(candidate_k_start)
+        reach_c = list(plan.reach_c)
+        k_cand = int(plan.candidate_k)
 
         scales_dev = geometry._wall_scales_device()
 
@@ -246,6 +300,16 @@ interval mean as before).
         positions = np.empty((n_walkers, n_t, 3), sdt); dlog_all = np.zeros((n_walkers, n_t), sdt)
         positions[:, 0] = r0_all
         n_free = 0; n_kernel_steps = 0; n_illegal = 0
+        counted = True                                                 # a backend may report no stepping counters
+        hits_total = 0 if bool(geometry.count_walls) else None
+        if _backend is not None:
+            plan = plan._replace(candidate_k=int(k_cand))
+            req = WalkRequest(geometry=geometry, n_t=int(n_t), dt_save=float(dt_actual), sub_steps=int(n_min), dt_sim=float(dt_min),
+                              diffusivity=D, record=True, kappa_over_D=0.0, count_walls=bool(geometry.count_walls),
+                              bounce_budget=geometry.bounce_budget, seed=int(seed), stepping=plan)
+            _reason = _backend.refuses(req)
+            if _reason:
+                raise ValueError(f"backend {_backend_name!r} refuses this walk of {type(geometry).__name__}: {_reason}")
         for b, (s, e) in enumerate(run.batches(n_walkers, walker_batch_size, what="adaptive")):
             nb = e - s
             if spool is not None:
@@ -258,6 +322,18 @@ interval mean as before).
                     n_free += int(hdr["n_free"]); n_kernel_steps += int(hdr["n_kernel_steps"])
                     log.info("  adaptive: batch %d read from the spool (%d walkers)", b, nb)
                     continue
+            if _backend is not None:
+                res = _backend.walk_batch(req, np.asarray(r0_all[s:e], np.float32), np.asarray(keys_all[s:e], np.uint32))
+                positions[s:e] = np.asarray(res.positions, sdt); dlog_all[s:e] = np.asarray(res.boundary_local_time, sdt)
+                n_illegal += int(np.asarray(res.illegal, np.int64).sum())
+                if res.counters is not None:
+                    n_free += int(res.counters["n_free"]); n_kernel_steps += int(res.counters["n_kernel_steps"])
+                else:
+                    counted = False
+                if hits_total is not None and res.work[0] is not None:
+                    hits_total += int(np.asarray(res.work[0], np.int64).sum())
+                run.progress(e, n_walkers)
+                continue
             r = jnp.asarray(r0_all[s:e]); keys = keys_all[s:e]
             n_free_0, n_kernel_0 = n_free, n_kernel_steps
             if sampling:
@@ -308,20 +384,23 @@ interval mean as before).
         if n_illegal:
             raise RuntimeError(f"adaptive walk: {n_illegal} walker(s) changed pool -- an illegal crossing; the walk is refused")
         total_steps = n_walkers * (n_t - 1) * n_min
-        log.info("adaptive walk: %.1f%% of walker-rounds were free steps; kernel steps %.3g of the fused producer's %.3g "
-                 "(%.1fx fewer)", 100.0 * n_free / max(n_walkers * (n_t - 1) * n_rounds, 1), n_kernel_steps, total_steps,
-                 total_steps / max(n_kernel_steps, 1))
+        if counted:
+            log.info("adaptive walk: %.1f%% of walker-rounds were free steps; kernel steps %.3g of the fused producer's %.3g "
+                     "(%.1fx fewer)", 100.0 * n_free / max(n_walkers * (n_t - 1) * n_rounds, 1), n_kernel_steps, total_steps,
+                     total_steps / max(n_kernel_steps, 1))
         comp = np.repeat(comp_all[:, None], n_t, axis=1).astype(np.int8)
         stepping = dict(rule="adaptive", candidate_cache=cached, candidate_k=int(k_cand),
-                        free_fraction=n_free / max(n_walkers * (n_t - 1) * n_rounds, 1),
-                        kernel_steps=int(n_kernel_steps), fused_steps=int(total_steps),
-                        kernel_steps_ratio=total_steps / max(n_kernel_steps, 1), steps_per_round_by_class=steps_c,
-                        radius_class_bounds_m=R_bounds.tolist(), far_at_m=far_at, safety_sigma=float(safety_sigma))
+                        free_fraction=(n_free / max(n_walkers * (n_t - 1) * n_rounds, 1) if counted else None),
+                        kernel_steps=(int(n_kernel_steps) if counted else None), fused_steps=int(total_steps),
+                        kernel_steps_ratio=(total_steps / max(n_kernel_steps, 1) if counted else None), steps_per_round_by_class=steps_c,
+                        radius_class_bounds_m=R_bounds.tolist(), far_at_m=far_at, safety_sigma=float(safety_sigma),
+                        backend=_backend_name)
         walk = PersistentWalk(positions, float(dt_actual), int(n_min), float(dt_min), boundary_local_time=dlog_all,
                               compartment=comp, illegal_crossings=0, seed=int(seed), diffusivity=D, geometry=geometry, spec=spec,
                               stepping=stepping, field_basis=field_basis, field_samples=(field_all if sampling else None),
                               field_sample_every=(f_every if sampling else 1),
-                              work=dict(walker_steps=int(n_kernel_steps), n_hits=None, n_crossings=None, exhausted_steps=None,
+                              work=dict(walker_steps=(int(n_kernel_steps) if counted else None), n_hits=hits_total, n_crossings=None,
+                                        exhausted_steps=None, backend=_backend_name,
                                         bounce_budget=(None if geometry.bounce_loop is None else int(geometry.bounce_loop.budget))))
         object.__setattr__(walk, "run", run)
         return walk
