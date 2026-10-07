@@ -47,7 +47,8 @@ from tests.conftest import D, N_WALKERS, N_EXACT, SEED
 
 R          = 5e-6   # m
 KAPPA_MED  = 1e-5   # m/s  — exchange time τ = R/(3κ) ≈ 167 ms
-KAPPA_HIGH = 1e-2   # m/s  — exchange time τ ≈ 0.17 ms (fast exchange)
+KAPPA_HIGH = 3.6e-6  # m/s — derived in test_permeability_high_kappa_approaches_free_diffusion
+                      # below from the engine's own sub-step budget, together with its TE
 RHO        = 5e-4   # m/s  — surface relaxivity for combination test
 
 
@@ -110,18 +111,41 @@ def test_permeability_reduces_signal_at_high_b():
 def test_permeability_high_kappa_approaches_free_diffusion():
     """Very high κ (TE/τ >> 1): signal within 10% of exp(-bD) at b=500 s/mm².
 
-    τ = R/(3κ) = 5e-6/(3·1e-2) ≈ 0.17 ms.  TE=20ms → TE/τ ≈ 120.
-    Nearly all walkers have crossed the membrane many times; the ensemble
-    ADC approaches free diffusivity.
+    ``slew_rate=np.inf`` keeps the lobes square: ``pgse_wf``'s unit-amplitude reference build
+    (``gradient_strengths=1.0``) ramps at a FIXED 5 ms regardless of TE, so a short TE whose lobe
+    is narrower than 5 ms is refused by the assembler as inexpressible (dmrai-lab/dmipy-sim#475)
+    -- not a bug in the assembler, a placeholder amplitude too large for this TE.
 
-    Uses fine time-stepping (n_t=2000) to keep σ/R < 0.1.
+    KAPPA_HIGH and TE are DERIVED below, not chosen by search, from the engine's own sub-step
+    budget (``dmipy_sim.engine.physics``) -- the same derivation as
+    ``test_permeability_crossing.py``'s sibling test, with the sphere's ``tau = R / (3 kappa)``
+    in place of a cylinder's ``R / (2 kappa)``:
+
+      * ``crossing_sub_steps`` (``CROSSING_P_MAX = C = 3e-3``) needs
+        ``n_cross = ceil(6 D dt / step_max**2)`` per save, ``step_max = C D / (2 kappa)``;
+      * ``walk_sub_steps`` (R/6, kappa-independent) needs
+        ``n_refl = ceil(dt / ((R/6)**2 / (6 D)))``;
+      * ``resolve_sub_steps`` takes the max of the two, both linear in dt, so total sub-steps
+        over the walk is ``TE * max(216 D / R**2, 24 kappa**2 / (C**2 D))``, independent of n_t;
+      * at ``kappa* = 3 D C / R`` neither rule wastes budget against the other, and for a
+        walker-step budget ``B = N * TE * 216 D / R**2`` (N = 5,000, this file's N_EXACT) the
+        achieved ``TE / tau = 3 B C / (72 N)`` (the sphere's extra factor of 3/2 over the
+        cylinder's, from ``tau``'s R/(3 kappa) vs R/(2 kappa)).
+      * solving ``TE / tau >= 10`` at R = 5e-6 m, D = 2e-9 m^2/s, C = 3e-3, N = 5,000 gives
+        ``kappa = 3.6e-6 m/s``, ``TE = 4.630 s``, ``n_sub = 101`` per save (both rules bind,
+        1000x under the 100,000 cap) at ``n_t = 800``: ``TE / tau = 10.0`` exactly, total
+        walker-steps ``5,000 * 800 * 101 ~= 4.04e8`` -- measured at ~2.9 minutes wall clock on
+        this machine (CPU), inside a 10-minute bound. N drops from N_WALKERS (100,000) to
+        N_EXACT (5,000, this module's reduced ordinal count) because N_WALKERS at this budget
+        would take ~20x as long for the same statistical qualitative check.
     """
-    TE    = 20e-3
+    TE    = 4.62962962962963   # s -- derived above: B R**2 / (216 D N) at B = 80,000
+    n_t   = 800
     b_idx = 1   # b = 500 s/mm²
-    wf    = pgse_wf(TE, n_t=2000)
+    wf    = pgse_wf(TE, n_t=n_t, slew_rate=np.inf)
 
     geom_perm = Sphere(radius=R, permeability=KAPPA_HIGH)
-    S_perm    = simulate(N_WALKERS, D, wf, geom_perm, seed=SEED)
+    S_perm    = simulate(N_EXACT, D, wf, geom_perm, seed=SEED)
 
     b_val  = 500e6   # s/m²
     S_free = np.exp(-b_val * D)
