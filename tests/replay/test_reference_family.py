@@ -996,6 +996,34 @@ def test_the_manifest_carries_the_gate_verdict_per_pack(tmp_path, monkeypatch):
     assert rows["packs/synthetic-sphere-off.rpk"]["sha256"] == off["sha256"]      # the bytes are untouched
 
 
+def test_the_manifest_and_the_card_name_the_built_and_the_published_commit_distinctly(tmp_path, monkeypatch):
+    """dmipy-sim#499: the manifest row and the card state the SAME built commit -- the one the pack's own
+    provenance records, sealed in its header and never corrected after the fact -- and each separately names the
+    publishing commit, never one unlabelled ``commit`` meaning two different facts."""
+    from dmipy_sim.fill import FakeHub
+    hub = FakeHub(str(tmp_path / "hub"))
+    pubn = R.Publication(repo="owner/synthetic", licence="CC-BY-4.0", citation="a test family",
+                         snippet=_snippet, snippet_substrate="sphere", dry=False)
+    fam = _family(tmp_path, publication=pubn)
+    fam._hub = hub
+    fake_published = "9" * 40
+    monkeypatch.setattr(R, "code_commit", lambda **k: fake_published)
+    for st in ("source", "reference", "spec", "design", "walk", "pack", "gate", "card", "publish"):
+        fam.stage(st)
+    rec = fam.read_all("pack")
+    built = rec["pack"]["substrates"]["sphere"]["pack"]["built_commit"]
+    assert built and len(built) == 40 and built != fake_published       # the walk's own real commit, unpatched
+
+    man = json.load(open(os.path.join(hub.root, "manifest.json")))
+    row = next(r for r in man["packs"] if r["path"].endswith("synthetic-sphere.rpk"))
+    assert row["built_commit"] == built                     # manifest row and pack record state the same built commit
+    assert row["published_commit"] == fake_published        # the publishing commit, named as such and not "commit"
+    assert row["built_commit"] != row["published_commit"]
+
+    card = open(os.path.join(fam.dir, "README.md")).read()
+    assert f"built {built[:8]}, published {fake_published[:8]}" in card
+
+
 def _prepared(tmp_path, monkeypatch, **kw):
     """The synthetic family run as far as the gate, in its own directory."""
     pub = R.Publication(repo="owner/synthetic", licence="CC-BY-4.0", citation="a test family",

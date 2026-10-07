@@ -88,15 +88,34 @@ def test_publish_puts_the_file_the_manifest_row_and_the_card_up_in_one_commit(pa
     assert row["channels"][0] == "positions" and "boundary_local_time" in row["channels"]
     assert row["floor_max"] == pack.fidelity["floor_max"] and row["err_max"] == pack.fidelity["err_max"]
     assert row["within_2x_floor"] is True and row["license"] == "CC-BY-4.0" and row["citation"] == "a test pack"
-    assert row["substrate"] == "analytic/cylinder" and len(row["commit"]) == 40
+    assert row["substrate"] == "analytic/cylinder" and len(row["built_commit"]) == 40
+    # built_commit (the pack's own sealed provenance) and published_commit (this publish() call's own commit,
+    # read fresh -- dmipy-sim#499) are two different facts, never one unlabelled "commit"; run straight through
+    # in one worktree they name the same commit
+    assert len(row["published_commit"]) == 40 and row["published_commit"] == row["built_commit"]
     assert row["segments"]["n"] == 1                                      # every pack declares its table (RPK.md 4.3)
     assert man["substrate"]["id"] == "analytic/cylinder" and [p["name"] for p in man["substrate"]["pools"]] == ["extra", "intra"]
     readme = open(os.path.join(hub.root, "README.md")).read()
     assert readme.startswith("---\nlicense: cc-by-4.0\npretty_name: packs\n---\n")
     assert "`analytic/cylinder`" in readme and "| intra | — | 1 |" in readme
     assert "| `test/cyl` | 4 ms | 200 | 4 | positions, boundary_local_time, compartment |" in readme
-    assert f"| {row['commit'][:8]} | `packs/test-cyl.rpk` |" in readme
+    assert f"| {row['built_commit'][:8]} | `packs/test-cyl.rpk` |" in readme   # built == published: one hash shown
     assert pack.source is None                               # the temporary file it was written to is not its source
+
+
+def test_the_manifest_names_the_built_and_the_published_commit_distinctly(pack, hub, monkeypatch):
+    """The manifest row and the card state the SAME built commit, and each names the publishing commit AS SUCH
+    (dmipy-sim#499): a card and a manifest that once drifted both read ``commit`` with nothing to say which of
+    the two facts -- the commit that built the pack, or the commit publishing it -- either one was."""
+    monkeypatch.setattr(pub, "code_commit", lambda **kw: "9" * 40)       # the publish, on a DIFFERENT commit
+    uri = pub.publish(pack, REPO, hub=hub)
+    row = _manifest(hub)["packs"][0]
+    assert row["built_commit"] == pack.meta["provenance"]["code"]["commit"]   # the pack's own sealed provenance
+    assert row["built_commit"] != row["published_commit"]
+    assert row["published_commit"] == "9" * 40
+    readme = open(os.path.join(hub.root, "README.md")).read()
+    assert f"built {row['built_commit'][:8]}" in readme and f"published {row['published_commit'][:8]}" in readme
+    assert uri == f"hf://{REPO}/packs/test-cyl.rpk"
 
 
 def test_a_file_publishes_the_same_as_the_object_and_the_method_is_the_function(pack, hub, tmp_path):

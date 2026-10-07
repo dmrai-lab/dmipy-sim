@@ -550,31 +550,18 @@ def crossref(doi, *, timeout=30.0):
 
 # --------------------------------------------------------------- the code commit
 def code_commit(*, require_clean=True):
-    """The dmipy-sim commit a manifest row names, refused unless it is fetchable.
+    """The dmipy-sim commit a manifest row's ``published_commit`` names, refused unless it is fetchable.
 
-    A dirty tree is refused because the commit does not describe the code that ran, and an unpushed HEAD is
-    refused because a manifest row that names a commit nobody can fetch is not provenance.
+    The git logic lives once, in :func:`dmipy_sim.replay.publish.code_commit` (the lower-level module every
+    publish path, not only this protocol's, reads it from); this wraps it so a refusal here is a
+    :class:`ReferenceRefusal` like every other refusal of this protocol, rather than the plain ``ValueError`` a
+    standalone ``publish()`` call raises.
     """
-    from .. import __file__ as pkg
-    root = os.path.dirname(os.path.dirname(os.path.abspath(pkg)))
-
-    def git(*args):
-        r = subprocess.run(["git", "-C", root, *args], capture_output=True, text=True, timeout=60)
-        if r.returncode:
-            raise ReferenceRefusal(f"publish: git {' '.join(args)} failed in {root}: {r.stderr.strip()}")
-        return r.stdout.strip()
-
-    head = git("rev-parse", "HEAD")
-    if not require_clean:
-        return head
-    dirty = git("status", "--porcelain")
-    if dirty:
-        raise ReferenceRefusal(f"publish: the dmipy-sim tree at {root} is dirty, so {head[:8]} does not describe "
-                               f"the code that ran:\n{dirty}")
-    if not git("branch", "-r", "--contains", head):
-        raise ReferenceRefusal(f"publish: {head[:8]} is on no remote branch; a manifest row that names a commit "
-                               f"nobody can fetch is not provenance -- push the branch first")
-    return head
+    from .publish import code_commit as _code_commit
+    try:
+        return _code_commit(require_clean=require_clean)
+    except ValueError as e:
+        raise ReferenceRefusal(str(e)) from e
 
 
 # --------------------------------------------------------------- records
@@ -966,20 +953,6 @@ class _PeakRSS:
         self._thread.join(timeout=self.interval * 10)
         self.peak = max(self.peak, _rss_bytes())
         return False
-
-
-def _pack_commit(meta):
-    """The dmipy-sim commit the pack names: ``provenance.code.commit`` (every pack built after dmipy-sim#541),
-    else its run record's (a pack built before #541, read as it is)."""
-    c = ((meta.get("provenance") or {}).get("code") or {}).get("commit")
-    if c:
-        return c
-    run = (meta.get("provenance") or {}).get("run") or {}
-    for node in (run, run.get("pack") or {}, run.get("walk") or {}):
-        c = (node.get("code") or {}).get("commit")
-        if c:
-            return c
-    return None
 
 
 def _walk_from_pack(name, recorded, budget, design_n, family_dir):
@@ -1598,6 +1571,7 @@ class ReferenceFamily:
                                        f"{got['se_kind']!r}; a standard error is analytic "
                                        f"({', '.join(SE_KINDS)}), never a fold spread or a split half")
             reproduced[q["name"]] = dict(got, grid=q["direct"]["grid"], unit=q["direct"]["unit"])
+        from .publish import _built_commit_of
         cx = pack.meta.get("compression") or {}
         return dict(
             pack=dict(_digest(local), path_local=os.path.relpath(local, self.dir) if local.startswith(self.dir) else local,
@@ -1606,7 +1580,7 @@ class ReferenceFamily:
                       n_walkers=int(pack.n_walkers), band_hz=float(pack.temporal_bandwidth_hz),
                       channels=["positions", *sorted(cx.get("channels") or {})],
                       substrate_id=(pack.meta.get("substrate") or {}).get("id"),
-                      commit=_pack_commit(pack.meta)),
+                      built_commit=_built_commit_of(pack.meta)),
             certificate={k: v for k, v in fid.items() if isinstance(v, (int, float)) and not isinstance(v, bool)},
             tiers=tiers, served_vs_channel=float(self.build.served_vs_channel(pack)),
             served_vs_channel_bound=float(tiers[served_tier]["err"]), served_tier=served_tier,
@@ -1666,13 +1640,17 @@ class ReferenceFamily:
         local = row.get("path_local") or row["path"]
         local = local if os.path.isabs(local) else os.path.join(self.dir, local)
         ran = _run_snippet(self.publication.snippet(local), self.dir)
+        # the commit of the code rendering this card right now (dmipy-sim#499): an OUTPUT of this stage, like the
+        # reference stage's resolution time, never an input -- a later commit alone does not make a pack's card
+        # stale, and the publish stage below is what checks this against the commit it is actually publishing at
+        published_commit = code_commit(require_clean=False)
         card = _render_card(self.name, self.publication.repo, rec, gate, previews, shown, ran, hub_path,
-                            hold=dict(self.publication.hold or {}))
+                            hold=dict(self.publication.hold or {}), published_commit=published_commit)
         path = os.path.join(self.dir, "README.md")
         with open(path, "w") as fh:
             fh.write(card)
         out = dict(card=dict(_digest(path), chars=len(card)), previews=previews, grade=gate["grade"],
-                   hold=dict(self.publication.hold or {}),
+                   hold=dict(self.publication.hold or {}), published_commit=published_commit,
                    snippet=dict(shown_sha256=_sha256_bytes(shown.encode()), executed_on=os.path.basename(local),
                                 executed_sha256=_sha256_bytes(self.publication.snippet(local).encode()),
                                 seconds=ran["seconds"], stdout=ran["stdout"], ceiling_s=SNIPPET_CEILING_S,
@@ -1705,6 +1683,11 @@ class ReferenceFamily:
                                        f"({sha[:12]} -> {self.records.digest(s)[:12]}); run the gate again")
         create_dataset, dry = bool(self.publication.create_dataset), bool(self.publication.dry)
         commit = code_commit()
+        if card.get("published_commit") != commit:
+            raise ReferenceRefusal(
+                f"publish: the card states the publishing commit as {card.get('published_commit')!r}; this "
+                f"publish is at {commit!r} -- run the card stage again so the card and the manifest name the "
+                f"same one")
         per = gate["per_substrate"]
         passing = sorted(n for n in rec["pack"]["substrates"] if per.get(n, {}).get("passed"))
         withheld = sorted(n for n in rec["pack"]["substrates"] if not per.get(n, {}).get("passed"))
@@ -1733,7 +1716,7 @@ class ReferenceFamily:
             if dry:
                 uploaded.append(dict(substrate=name, path=path, sha256=row["sha256"], uri=None, dry=True))
                 continue
-            uri = publish_pack(local, self.publication.repo, path=path, hub=hub,
+            uri = publish_pack(local, self.publication.repo, path=path, hub=hub, published_commit=commit,
                                message=f"{self.name}: {name} ({row['n_walkers']:,} walkers, K={row['K']}, "
                                        f"{row['T_s']:g} s at {row['dt_s'] * 1e6:.0f} us)")
             uploaded.append(dict(substrate=name, path=path, sha256=row["sha256"], uri=uri))
@@ -1834,10 +1817,16 @@ def _disagreements(gate):
     return out
 
 
-def _render_card(name, repo, rec, gate, previews, snippet_shown, snippet_ran, hub_path, hold=None):
+def _render_card(name, repo, rec, gate, previews, snippet_shown, snippet_ran, hub_path, hold=None,
+                 published_commit=None):
     """The card: the manifest table, what is inside, the reproduction with its grade, the gate's verdict, and
-    the snippet with the output it produced when this card was built."""
-    from .publish import _fmt, _size                       # the card's number and byte formats live once
+    the snippet with the output it produced when this card was built.
+
+    ``published_commit`` is the commit of the code rendering this card (dmipy-sim#499); the packs table's
+    ``commit`` column names it beside each pack's own ``built_commit`` -- the commit that BUILT that pack's
+    bytes, sealed in its header -- and labels each when the two differ, rather than printing one number under a
+    heading that reads like the other."""
+    from .publish import _fmt, _size, _commit_cell          # the card's number and byte formats live once
     ref, des, spc, wlk, pk = (rec[s] for s in ("reference", "design", "spec", "walk", "pack"))
     grade = gate["grade"]
     licences = sorted({v["pack"]["license"].lower() for v in pk["substrates"].values() if v["pack"].get("license")})
@@ -1887,7 +1876,7 @@ def _render_card(name, repo, rec, gate, previews, snippet_shown, snippet_ran, hu
             c = tiers[t["name"]]
             cells.append(f"{c['floor']:.3g} / {c['err']:.2g} / {c['target_floor']:.3g} "
                          f"{'**meets**' if c['meets_target'] else '_below target_'}")
-        cells += [_size(row["bytes"]), row["license"], (row["commit"] or "—")[:8]]
+        cells += [_size(row["bytes"]), row["license"], _commit_cell(row.get("built_commit"), published_commit)]
         L.append("| " + " | ".join(cells) + " |")
     hold = dict(hold or {})
     if hold:
