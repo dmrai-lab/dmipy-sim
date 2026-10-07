@@ -109,7 +109,8 @@ def _interior_bounce(r, step, A, AB, AB2, rr, valid, NUDGE):
 
 
 def _reflect_interior(r, step, A, AB, AB2, rr, valid, tube, NUDGE):
-    """The interior wall interaction: ``(r_out, d_perp)``. Two bounces by argument, written on displacement vectors
+    """The interior wall interaction: ``(r_out, d_perp, n_bounce, wrong)`` -- the position, the contact, the bounces
+    taken (0, 1, 2) and whether the guard fired. Two bounces by argument, written on displacement vectors
     rather than the (direction, remainder) ray of :class:`~dmipy_sim.geometry._boundary.BounceLoop`, so this family
     does not run that loop (``bounce_loop`` is ``None``); putting it on the loop is a numerical change to be validated
     on the family's million-walker fixtures. A walker is confined to ITS tube -- the one it is deepest
@@ -130,8 +131,8 @@ def _reflect_interior(r, step, A, AB, AB2, rr, valid, tube, NUDGE):
     Q = A + t[:, None] * AB
     d = jnp.linalg.norm(r_out[None, :] - Q, axis=1)
     k = jnp.argmax(jnp.where(mine, rr - d, -_BIG))                            # its tube's segment it is deepest in
-    r_out, _ = keep_side_radial(r_out, r_out - Q[k], rr[k], True, NUDGE)
-    return r_out, d_perp
+    r_out, wrong = keep_side_radial(r_out, r_out - Q[k], rr[k], True, NUDGE)
+    return r_out, d_perp, b1.astype(jnp.int32) + (b1 & b2).astype(jnp.int32), wrong
 
 
 def _exterior_bounce(r, step, A, AB, AB2, rr, valid, NUDGE):
@@ -166,7 +167,8 @@ def _exterior_bounce(r, step, A, AB, AB2, rr, valid, NUDGE):
 
 
 def _reflect_exterior(r, step, A, AB, AB2, rr, valid, NUDGE):
-    """The exterior wall interaction against the candidate capsules: ``(r_out, d_perp)``. Two specular bounces (in
+    """The exterior wall interaction against the candidate capsules: ``(r_out, d_perp, n_bounce, wrong)``, as
+    :func:`_reflect_interior` reports them. Two specular bounces (in
     a gap narrower than the step the remainder enters the facing tube), then the guarantee: a walker that still
     ends inside a tube is put ``NUDGE`` outside the one it is deepest in, the tie rule every geometry shares."""
     r_new = r + step
@@ -178,8 +180,8 @@ def _reflect_exterior(r, step, A, AB, AB2, rr, valid, NUDGE):
     Q = A + t[:, None] * AB
     d = jnp.linalg.norm(r_out[None, :] - Q, axis=1)
     k = jnp.argmax(jnp.where(valid, rr - d, -_BIG))                   # the tube it is deepest in, if any
-    r_out, _ = keep_side_radial(r_out, r_out - Q[k], rr[k], False, NUDGE)
-    return r_out, d_perp
+    r_out, wrong = keep_side_radial(r_out, r_out - Q[k], rr[k], False, NUDGE)
+    return r_out, d_perp, h1.astype(jnp.int32) + (h1 & h2).astype(jnp.int32), wrong
 
 
 #: The step rule of the curved-tube family, ``step_l <= R_min / STEP_FRACTION`` (the module docstring): measured on the
@@ -262,10 +264,12 @@ class CurvedCylinder(Geometry):
     def _wall(self, r, step, kappa_over_D, rho_over_D, key):
         """The specular reflection off the tube's wall with the contact log-weight ``-2 (rho / D) d_perp``: ``d_perp``
         is the displacement left after the wall crossing read on the wall's normal, the perpendicular distance the
-        base slab rule uses. Two bounces by argument (`_reflect_interior`), not on `bounce_loop`; impermeable."""
-        r_out, d_perp = self._reflect_contact(r, step)
+        base slab rule uses. Two bounces by argument (`_reflect_interior`), not on `bounce_loop`; impermeable. The
+        bounces are the hits when the geometry counts; the guard having fired is the sentinel's correction
+        (``illegal``); there is no budget loop, so nothing is ``exhausted``."""
+        r_out, d_perp, n_bounce, wrong = self._reflect_contact(r, step)
         zero_b = jnp.zeros((), bool)
-        return WallHit(r_out, -2.0 * rho_over_D * d_perp, zero_b, zero_b, None, zero_b)
+        return WallHit(r_out, -2.0 * rho_over_D * d_perp, zero_b, wrong, n_bounce if self.count_walls else None, zero_b)
 
     def _reflect_contact(self, r, step):
         R = jnp.float32(self.radius)
@@ -325,8 +329,8 @@ class CurvedMyelinatedCylinder(CurvedCylinder):
         # used here previously left that tie unresolved -- the same defect that let walkers
         # change compartment without moving in the analytic geometries (#86). A mirror alone
         # also has no guarantee, so clamp the result into [lo, hi] explicitly.
-        dt = jnp.clip(dt, lo + NUDGE, jnp.where(jnp.isfinite(hi), hi - NUDGE, dt))
-        return Q + dt * n, d_perp
+        dt_c = jnp.clip(dt, lo + NUDGE, jnp.where(jnp.isfinite(hi), hi - NUDGE, dt))
+        return Q + dt_c * n, d_perp, (d_perp > 0).astype(jnp.int32), dt_c != dt
 
     def init_positions(self, n_walkers, key, pool=None):
         """Walkers seeded uniformly in the shell ``pool`` (default: the geometry's ``pool``) along the strand."""
@@ -591,16 +595,17 @@ class PackedCurvedCylinders(Geometry):
     def _wall(self, r, step, kappa_over_D, rho_over_D, key):
         """The reflection with the contact log-weight ``-2 (rho / D) d_perp``: the radial part of the displacement
         left after the wall crossing, on that wall's normal, as the exact packed cylinders read it -- inside, the
-        exit from the walker's own tube; outside, the entry into a tube. Impermeable; two bounces by argument."""
+        exit from the walker's own tube; outside, the entry into a tube. Impermeable; two bounces by argument, the
+        hits when the geometry counts, the guard's correction as ``illegal``, nothing ``exhausted`` (no budget loop)."""
         cand, valid = self._gather(r + step)
-        r_out, d_perp = self._step_with(r, step, cand, valid)
+        r_out, d_perp, n_bounce, wrong = self._step_with(r, step, cand, valid)
         zero_b = jnp.zeros((), bool)
-        return WallHit(r_out, -2.0 * rho_over_D * d_perp, zero_b, zero_b, None, zero_b)
+        return WallHit(r_out, -2.0 * rho_over_D * d_perp, zero_b, wrong, n_bounce if self.count_walls else None, zero_b)
 
     def _step_with(self, r, step, cand, valid):
-        """One wall interaction and the box fold against one candidate list: ``(r_out, d_perp)``."""
-        r_ref, d_perp = self._reflect_with(r, step, cand, valid)
-        return self._fold(r, r_ref, cand, valid), d_perp
+        """One wall interaction and the box fold against one candidate list: ``(r_out, d_perp, n_bounce, wrong)``."""
+        r_ref, d_perp, n_bounce, wrong = self._reflect_with(r, step, cand, valid)
+        return self._fold(r, r_ref, cand, valid), d_perp, n_bounce, wrong
 
     def _reflect(self, r, step):
         """The wall interaction against every segment near the step's end (the 27-cell gather)."""
@@ -626,8 +631,9 @@ class PackedCurvedCylinders(Geometry):
         return out_c, out_v, within.sum()
 
     def _reflect_with(self, r, step, cand, valid):
-        """The wall interaction against the given candidate segments (``cand`` indices, ``valid`` mask): the one
-        implementation behind :meth:`_reflect` and the cached-candidate round of an adaptive walk."""
+        """The wall interaction against the given candidate segments (``cand`` indices, ``valid`` mask), ``(r_out,
+        d_perp, n_bounce, wrong)``: the one implementation behind :meth:`_reflect` and the cached-candidate round of
+        an adaptive walk."""
         NUDGE = jnp.float32(self.nudge_m)
         A = self._A[cand]; AB = self._AB[cand]; AB2 = self._AB2[cand]; rr = self._rout[cand]
         if self.interior:
