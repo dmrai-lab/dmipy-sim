@@ -100,9 +100,6 @@ def walk_spec(spec, n_walkers=None, T_max=None, dt_save=None, *, scanner="connec
     ``run_dir`` resumes: the batches found there are read back, the rest walked -- a killed walk costs the batch
     in progress, not the walk.
     """
-    if backend != "jax" and adaptive_steps:
-        raise ValueError(f"backend {backend!r}: the adaptive producer is the jax kernels' own (dmipy-sim#632 before a "
-                         f"backend can walk the strands); it does not fall back")
     with Run("walk_spec", params=dict(spec=getattr(spec, "id", None), n_walkers=n_walkers, T_max=T_max, dt_save=dt_save,
                                       defer_field=defer_field, adaptive_steps=adaptive_steps, seed=seed), run_dir=run_dir) as run:
         import logging
@@ -181,6 +178,9 @@ def walk_spec(spec, n_walkers=None, T_max=None, dt_save=None, *, scanner="connec
             fb = None
             if kind == "grid":
                 fb = _single_geometry_field_grid(spec, g, field_res, field_budget)
+            if adaptive_steps:
+                raise SpecError(f"adaptive_steps=True: adaptive stepping is for a bundle of curved tubes, and this spec "
+                                f"walks one {type(g).__name__} (fused steps)")
             w = simulate_trajectories(int(n_walkers), float(D), g, T_max=T_max, dt_save=dt_save, seed=seed,
                                       require_gpu=require_gpu, walker_batch_size=walker_batch_size, tiers=tiers,
                                       field_basis=fb, field_sample_every=(int(field_sample_every) if fb is not None else 1),
@@ -748,7 +748,7 @@ def _walk_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field_res, requ
             from ..engine.adaptive import simulate_trajectories_adaptive
             w = simulate_trajectories_adaptive(n, float(pool.D), g, T_max, dt_save, seed=seed + 13 * pid, r0=r0, spec=spec,
                                                require_gpu=require_gpu, walker_batch_size=batch, field_basis=sf, field_sample_every=int(field_sample_every), field_reuse_intervals=int(field_gather_every),
-                                               spool=(pool.name if spool else None))
+                                               spool=(pool.name if spool else None), backend=backend)
             stepping.append((pool.name, w.stepping))
             if w.field_samples is not None:
                 field_samples.append((pid, w.field_samples))

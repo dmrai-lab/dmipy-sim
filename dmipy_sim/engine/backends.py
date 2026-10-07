@@ -42,6 +42,7 @@ class WalkRequest(NamedTuple):
     count_walls: bool         #: count hits and crossings (exhaustion is always reported)
     bounce_budget: Optional[int]   #: the budget the geometry's loop runs at for this walk
     seed: int                 #: the producer's master seed (the per-walker keys derive from it)
+    stepping: object = None   #: an adaptive walk's :class:`~dmipy_sim.engine.adaptive.AdaptivePlan`; None for the fused walk
 
 
 class WalkBatch(NamedTuple):
@@ -51,6 +52,8 @@ class WalkBatch(NamedTuple):
     compartment: object               #: (n, n_t) float32 fractional occupancy of pool 1 (int labels when impermeable), or None
     illegal: np.ndarray               #: (n,) int32 refused walker-steps per walker
     work: tuple                       #: (hits | None, crossings | None, exhausted) per walker, int32 arrays
+    counters: object = None           #: what else the backend counted over the batch (an adaptive walk's
+                                      #: ``dict(n_free=, n_kernel_steps=)``), or None when it reports none
 
 
 class Backend:
