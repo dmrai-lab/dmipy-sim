@@ -105,15 +105,23 @@ class Sphere(Geometry):
         return jnp.where(inside, jnp.int32(1), jnp.int32(0))
 
     def init_positions(self, n_walkers, key):
-        """Uniform sampling inside sphere via rejection (CPU numpy)."""
+        """Uniform sampling inside sphere via rejection (CPU numpy), each accepted point then
+        pulled strictly onto the inside of the wall's own nudge band (:func:`keep_side_radial`,
+        the same decision the walk's first step makes). The accept test above runs in float64;
+        a draw within half a float32 ulp of |r| = R can round onto or past the wall once cast,
+        and the first step then reads it as the far compartment for good (#627)."""
         rng = np.random.default_rng(int(jax.random.randint(key, (), 0, 2**30)))
         # Sphere fill factor ≈ π/6 ≈ 52%; batch of 4× is enough for one pass.
         accepted = []
         while sum(len(a) for a in accepted) < n_walkers:
             pts = rng.uniform(-self.radius, self.radius, (n_walkers * 4, 3))
             accepted.append(pts[np.linalg.norm(pts, axis=1) < self.radius])
-        positions = np.concatenate(accepted, axis=0)[:n_walkers]
-        return jnp.array(positions, dtype=jnp.float32)
+        positions = jnp.array(np.concatenate(accepted, axis=0)[:n_walkers], dtype=jnp.float32)
+        R = jnp.float32(self.radius)
+        nudge = jnp.float32(1e-4 * self.radius)
+        positions, _ = jax.vmap(keep_side_radial, in_axes=(0, 0, None, None, None))(
+            positions, positions, R, True, nudge)
+        return positions
 
     def _wall(self, r, step, kappa_over_D, rho_over_D, perm_key):
         """Wall interaction on the sphere: reflect, or cross if the membrane grants it.
@@ -193,16 +201,22 @@ class Cylinder(Geometry):
         return LengthScales(min_feature=self.radius)
 
     def init_positions(self, n_walkers, key):
-        """Uniform sampling in circular cross-section."""
+        """Uniform sampling in circular cross-section, each accepted point then pulled
+        strictly onto the inside of the wall's own nudge band (see Sphere.init_positions,
+        #627): the float64 accept test above can round onto |r_xy| = R once cast to float32,
+        and the first step would then read the walker as outside for good."""
         rng = np.random.default_rng(int(jax.random.randint(key, (), 0, 2**30)))
         # Circle fill factor = π/4 ≈ 78%; batch of 2× is enough for one pass.
         accepted = []
         while sum(len(a) for a in accepted) < n_walkers:
             xy = rng.uniform(-self.radius, self.radius, (n_walkers * 2, 2))
             accepted.append(xy[np.linalg.norm(xy, axis=1) < self.radius])
-        xy = np.concatenate(accepted, axis=0)[:n_walkers].astype(np.float32)
+        xy = jnp.array(np.concatenate(accepted, axis=0)[:n_walkers], dtype=jnp.float32)
+        R = jnp.float32(self.radius)
+        nudge = jnp.float32(1e-4 * self.radius)
+        xy, _ = jax.vmap(keep_side_radial, in_axes=(0, 0, None, None, None))(xy, xy, R, True, nudge)
         # the substrate frame: the cross-section is the x-y plane, z is free
-        return jnp.array(np.stack([xy[:, 0], xy[:, 1], np.zeros(n_walkers)], axis=1), dtype=jnp.float32)
+        return jnp.stack([xy[:, 0], xy[:, 1], jnp.zeros(n_walkers, jnp.float32)], axis=1)
 
     def _wall(self, r, step, kappa_over_D, rho_over_D, perm_key):
         """Wall interaction on the cylinder: reflect, or cross if the membrane grants it.
@@ -318,6 +332,11 @@ class Ellipsoid(Geometry):
         Samples uniformly from the unit ball then scales by semiaxes.  The
         linear map (u_x, u_y, u_z) → (a*u_x, b*u_y, c*u_z) has constant
         Jacobian a*b*c, so the result is uniform inside the ellipsoid.
+
+        Each accepted point is then pulled strictly onto the inside of the wall's own nudge
+        band (:func:`keep_side_quadric`, see Sphere.init_positions, #627): the float64 accept
+        test above can round onto the surface once cast to float32, and the first step would
+        then read the walker as outside for good.
         """
         rng = np.random.default_rng(int(jax.random.randint(key, (), 0, 2**30)))
         # Unit-ball fill factor ≈ π/6 ≈ 52%; batch of 4× usually suffices.
@@ -326,8 +345,13 @@ class Ellipsoid(Geometry):
             pts = rng.uniform(-1.0, 1.0, (n_walkers * 4, 3))
             accepted.append(pts[np.linalg.norm(pts, axis=1) < 1.0])
         pts = np.concatenate(accepted, axis=0)[:n_walkers]
-        positions = pts * self.semiaxes  # scale each axis independently
-        return jnp.array(positions, dtype=jnp.float32)
+        positions = jnp.array(pts * self.semiaxes, dtype=jnp.float32)  # scale each axis independently
+        inv_semi_sq = jnp.float32(1.0) / (self._semi_f32 * self._semi_f32)
+        Q = jnp.sum(positions * positions * inv_semi_sq, axis=-1)
+        rel_nudge = jnp.float32(1e-4)   # == (1e-4 * min_semi) / min_semi, the wall's own NUDGE fraction
+        positions, _ = jax.vmap(keep_side_quadric, in_axes=(0, 0, None, None))(
+            positions, Q, True, rel_nudge)
+        return positions
 
     def _wall(self, r, step, kappa_over_D, rho_over_D, perm_key):
         """Wall interaction on the ellipsoid: reflect, or cross if the membrane grants it.
