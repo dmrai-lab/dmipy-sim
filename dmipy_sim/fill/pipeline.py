@@ -149,7 +149,8 @@ def walk_round(o, rc, row, name, r, k, P, seeds):
     w = walk_spec(spec, T_max=W["T_max_s"], dt_save=rc.dt_save(), seeding=seeds["drawn"], seed=seeds["seed"],
                   require_gpu=o.require_gpu, walker_batch_size=batch_size(o, rc), adaptive_steps=W["adaptive_steps"], scanner=W["scanner"],
                   floor_fraction=W["floor_fraction"], field_sample_every=int(W.get("field_sample_every", 1)),
-                  context=rc.context(), field_gather_every=int(W.get("field_gather_every", 4)), run_dir=run_dir, spool=True,
+                  context=rc.context(), field_gather_every=int(W.get("field_gather_every", 4)), run_dir=run_dir,
+                  spool=(o.backend == "jax"),                        # the resume of a killed hour-long walk; a backend's shard is redone, not resumed
                   backend=o.backend)
     t_walk = time.time() - t0
     n_r, n_t = w.positions.shape[:2]
