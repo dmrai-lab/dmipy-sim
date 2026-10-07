@@ -74,6 +74,8 @@ def main(argv=None):
     ap.add_argument("--pack-device", default="numpy", help="where the pack subprocess runs its transforms: numpy (the CPU, so the walk "
                     "keeps the GPU), jax, auto")
     ap.add_argument("--cpu", action="store_true", help="walk on the CPU (a rehearsal)")
+    ap.add_argument("--backend", default="jax", help="the walk's backend by name (an installed dmipy_sim.backends entry point, e.g. cuda); "
+                    "the shard's record names it")
     ap.add_argument("--host", default=None, help="this worker's label in claims and summaries (default: a token "
                     "cached locally per machine -- never the hostname)")
     a = ap.parse_args(argv)
@@ -96,7 +98,7 @@ def main(argv=None):
                 hours=a.hours, only_pass=a.only_pass, claim_batch=a.claim_batch, budget=a.budget, max_walkers=a.max_walkers, smoke=a.smoke,
                 no_upload=a.no_upload or bool(a.local), keep=a.keep, certify=a.certify, batch=a.batch, pack_device=a.pack_device,
                 duty=a.duty, duty_file=a.duty_file, require_gpu=not a.cpu, devices=devices,
-                gpu=hw.get("gpu"), cpu_arch=hw.get("cpu_arch"))
+                gpu=hw.get("gpu"), cpu_arch=hw.get("cpu_arch"), backend=a.backend)
     f = Fill(hub, rc, o)
     if a.drain:
         return f.drain()
