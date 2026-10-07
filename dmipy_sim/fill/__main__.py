@@ -76,7 +76,8 @@ def main(argv=None):
                     "battery measured (the dense oracle holds ~300 bytes per walker-save on the host), the pack under "
                     "certificate/<variant>-block-NNNN.rpk and its meta as certificate/<variant>.json, which every block then inherits")
     ap.add_argument("--workdir", default=os.path.join(os.getcwd(), "fill_work"))
-    ap.add_argument("--batch", type=int, default=None, help="walker_batch_size (default: the manifest's; lower it on a small card)")
+    ap.add_argument("--batch", type=lambda v: v if v == "auto" else int(v), default=None,
+                    help="walker_batch_size (default: the manifest's; lower it on a small card), or 'auto': the backend sizes it from its device")
     ap.add_argument("--pack-device", default="numpy", help="where the pack subprocess runs its transforms: numpy (the CPU, so the walk "
                     "keeps the GPU), jax, auto")
     ap.add_argument("--cpu", action="store_true", help="walk on the CPU (a rehearsal)")

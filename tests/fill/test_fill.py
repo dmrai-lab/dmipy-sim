@@ -298,3 +298,30 @@ def test_the_backend_reaches_the_walk_and_an_unknown_one_is_refused(certified, m
     o = dataclasses.replace(opts(work, host="h2", block=0, loop=False), no_upload=True, backend="nope")
     with pytest.raises(ValueError, match="no backend 'nope' is installed"):
         Fill(hub, rc, o).run(heartbeat_every=3600)
+
+
+
+def test_batch_auto_asks_the_backend_and_refuses_one_that_sizes_nothing(certified, monkeypatch):
+    """`--batch auto` takes the backend's `suggested_batch` for the walk (n_t and the field's samples from the manifest)
+    and refuses, by name, a backend without one."""
+    import pytest
+    from dmipy_sim.engine import backends
+    from dmipy_sim.fill.pipeline import batch_size
+
+    class _Sized(backends.Backend):
+        name = "sized"
+        def __init__(self): self.asked = []
+        def suggested_batch(self, n_t, **kw): self.asked.append((n_t, kw)); return 777
+    hub, work = certified
+    rc = Recipe(hub)
+    be = _Sized()
+    monkeypatch.setattr(backends, "resolve", lambda name: be if name == "sized" else None)
+    import dmipy_sim.fill.pipeline as pl
+    monkeypatch.setattr(pl, "resolve", lambda name: be if name == "sized" else None, raising=False)
+    o = dataclasses.replace(opts(work, host="h", block=0, loop=False), batch="auto", backend="sized")
+    assert batch_size(o, rc) == 777 and be.asked[0][0] == int(round(rc.man["walk"]["T_max_s"] / rc.dt_save())) + 1
+    o = dataclasses.replace(opts(work, host="h", block=0, loop=False), batch="auto", backend="jax")
+    with pytest.raises(ValueError, match="sizes no batch"):
+        batch_size(o, rc)
+    assert batch_size(dataclasses.replace(o, batch=12), rc) == 12
+    assert batch_size(dataclasses.replace(o, batch=None), rc) == rc.man["walk"]["walker_batch_size"]
