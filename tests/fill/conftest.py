@@ -8,13 +8,13 @@ import numpy as np
 import pytest
 
 from dmipy_sim.fill import FakeHub
-from dmipy_sim.io.strands import write_tck
+from dmipy_sim.io.strands import write_tck, concat_centerlines
 
 
 def make_recipe(root, *, passes=True, field=False):
     os.makedirs(os.path.join(root, "substrate"), exist_ok=True); os.makedirs(os.path.join(root, "plan"), exist_ok=True)
     cls_ = [np.array([[x, 0, -12e-6], [x, 0.5e-6, 0], [x, 0, 12e-6]]) + 10e-6 for x in (-5e-6, 0, 5e-6)]
-    write_tck(os.path.join(root, "substrate/t.tck"), cls_, coordinate_unit_m=25e-6)
+    write_tck(os.path.join(root, "substrate/t.tck"), *concat_centerlines(cls_), coordinate_unit_m=25e-6)
     np.savetxt(os.path.join(root, "substrate/d.txt"), np.array([2 * r for r in (1.5e-6, 1.0e-6, 2.0e-6)]) / 1e-3)
     shape = (2, 2, 2)
     np.savez(os.path.join(root, "plan/counts.npz"), count_extra=np.full(shape, 6, np.int64), count_intra=np.full(shape, 6, np.int64))

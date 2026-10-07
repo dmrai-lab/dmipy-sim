@@ -87,14 +87,35 @@ def read_tck(path, *, coordinate_unit_m):
     return cls_
 
 
-def write_tck(path, centerlines, *, coordinate_unit_m):
-    """Write centerlines (metres) as an MRtrix ``.tck`` in ``coordinate_unit_m`` units (Float32LE)."""
-    body = []
-    for c in centerlines:
-        body.append(np.asarray(c, np.float64) / float(coordinate_unit_m)); body.append(np.full((1, 3), np.nan))
-    body.append(np.full((1, 3), np.inf))
-    arr = np.vstack(body).astype("<f4")
-    lines = ["mrtrix tracks", f"count: {len(centerlines)}", "datatype: Float32LE"]
+def concat_centerlines(centerlines):
+    """``(points, offsets)`` of a list of per-streamline ``(n_k, 3)`` arrays (metres): ``points`` their
+    concatenation, ``offsets`` its ``n_strands + 1`` cut points (``offsets[0] = 0``, ``offsets[-1] = len(points)``)
+    -- what :func:`write_tck` takes, built from the shape :func:`read_tck` returns."""
+    lens = [len(c) for c in centerlines]
+    points = np.concatenate([np.asarray(c, np.float64) for c in centerlines], axis=0) if centerlines else np.zeros((0, 3))
+    offsets = np.r_[0, np.cumsum(lens)]
+    return points, offsets
+
+
+def write_tck(path, points, offsets, *, coordinate_unit_m):
+    """Write ``points`` (``(N, 3)``, metres) as an MRtrix ``.tck`` in ``coordinate_unit_m`` units (Float32LE), cut
+    into streamlines at ``offsets`` (its ``n_strands + 1`` boundaries into ``points``: ``offsets[0] = 0``,
+    ``offsets[-1] = len(points)``, non-decreasing -- :func:`concat_centerlines` builds them from a list of
+    per-streamline arrays) -- the inverse of :func:`read_tck`. One contiguous pass: ``np.insert`` places a NaN row
+    at every streamline's end, ``offsets[1:]`` (the MRtrix terminator a track needs, including the last -- the
+    final one lands at ``len(points)``, i.e. appended), not a python loop per streamline; the ``Inf`` end-of-file
+    marker follows it once."""
+    pts = np.asarray(points, np.float64)
+    if pts.ndim != 2 or pts.shape[1] != 3:
+        raise ValueError(f"points is (N, 3), got {pts.shape}")
+    offs = np.asarray(offsets, dtype=np.int64)
+    if (offs.ndim != 1 or len(offs) == 0 or offs[0] != 0 or offs[-1] != len(pts)
+            or np.any(np.diff(offs) < 0)):
+        raise ValueError(f"offsets must start at 0, end at len(points) = {len(pts)}, and be non-decreasing, "
+                         f"got {offs.tolist()}")
+    body = np.insert(pts / float(coordinate_unit_m), offs[1:], np.nan, axis=0)
+    arr = np.vstack([body, np.full((1, 3), np.inf)]).astype("<f4")
+    lines = ["mrtrix tracks", f"count: {len(offs) - 1}", "datatype: Float32LE"]
     head = "\n".join(lines) + "\n"
     offset = len(head) + len("file: . ") + 8 + 1 + len("END\n")            # the offset line's own width, fixed at 8 digits
     head += f"file: . {offset:8d}\nEND\n"

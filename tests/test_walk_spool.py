@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 
 from dmipy_sim import Cylinder, simulate_trajectories
-from dmipy_sim.io.strands import write_tck
+from dmipy_sim.io.strands import write_tck, concat_centerlines
 from dmipy_sim.persistent_walk import PersistentWalk
 from dmipy_sim.spec import disco_spec, walk_spec
 from dmipy_sim.replay.bank import build_replay_pack
@@ -16,7 +16,7 @@ def spec(tmp_path_factory):
     tmp = tmp_path_factory.mktemp("spool")
     cls_ = [np.array([[x, 0, -12e-6], [x, 0.5e-6, 0], [x, 0, 12e-6]]) + 10e-6 for x in (-5e-6, 0, 5e-6)]
     tck, dia = str(tmp / "t.tck"), str(tmp / "d.txt")
-    write_tck(tck, cls_, coordinate_unit_m=25e-6); np.savetxt(dia, np.array([2 * r for r in (1.5e-6, 1.0e-6, 2.0e-6)]) / 1e-3)
+    write_tck(tck, *concat_centerlines(cls_), coordinate_unit_m=25e-6); np.savetxt(dia, np.array([2 * r for r in (1.5e-6, 1.0e-6, 2.0e-6)]) / 1e-3)
     return disco_spec(tck, dia, side_m=20e-6)
 
 

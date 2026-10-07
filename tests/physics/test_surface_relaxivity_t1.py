@@ -181,7 +181,7 @@ def test_the_columnar_device_route_applies_rho1(tmp_path):
     route does -- the kernel that had grown its own copy once before (#484) and silently dropped a
     term; this is the same class of bug, so it gets the same style of test."""
     import os
-    from dmipy_sim.io.strands import write_tck
+    from dmipy_sim.io.strands import write_tck, concat_centerlines
     from dmipy_sim.phantom import Grid
     from dmipy_sim.replay.bank import merge_packs
     from dmipy_sim.replay.replay import ReplayPack
@@ -191,7 +191,7 @@ def test_the_columnar_device_route_applies_rho1(tmp_path):
 
     cls_ = [np.array([[x, 0, -12e-6], [x, 0.5e-6, 0], [x, 0, 12e-6]]) + 10e-6 for x in (-5e-6, 0, 5e-6)]
     tck, dia = str(tmp_path / "t.tck"), str(tmp_path / "d.txt")
-    write_tck(tck, cls_, coordinate_unit_m=25e-6)
+    write_tck(tck, *concat_centerlines(cls_), coordinate_unit_m=25e-6)
     np.savetxt(dia, np.array([2 * r for r in (1.5e-6, 1.0e-6, 2.0e-6)]) / 1e-3)
     spec = disco_spec(tck, dia, side_m=20e-6, field=False)
     grid = Grid(shape=(2, 2, 2), voxel_size_m=(10e-6,) * 3, origin_m=(5e-6,) * 3)

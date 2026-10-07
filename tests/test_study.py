@@ -127,7 +127,7 @@ def test_the_columnar_image_of_a_study_is_one_pass_with_a_floor_per_volume(tmp_p
     rows: every pair's volume equals the per-voxel replay of the merged pack, and each carries its own split-half
     floor, finite where the voxel has rows."""
     import os
-    from dmipy_sim.io.strands import write_tck
+    from dmipy_sim.io.strands import write_tck, concat_centerlines
     from dmipy_sim.phantom import Grid
     from dmipy_sim.replay.bank import merge_packs
     from dmipy_sim.replay.replay import ReplayPack
@@ -135,7 +135,7 @@ def test_the_columnar_image_of_a_study_is_one_pass_with_a_floor_per_volume(tmp_p
     from dmipy_sim.spec import disco_spec, walk_spec, StratifiedByVoxel
     cls_ = [np.array([[x, 0, -12e-6], [x, 0.5e-6, 0], [x, 0, 12e-6]]) + 10e-6 for x in (-5e-6, 0, 5e-6)]
     tck, dia = str(tmp_path / "t.tck"), str(tmp_path / "d.txt")
-    write_tck(tck, cls_, coordinate_unit_m=25e-6); np.savetxt(dia, np.array([2 * r for r in (1.5e-6, 1.0e-6, 2.0e-6)]) / 1e-3)
+    write_tck(tck, *concat_centerlines(cls_), coordinate_unit_m=25e-6); np.savetxt(dia, np.array([2 * r for r in (1.5e-6, 1.0e-6, 2.0e-6)]) / 1e-3)
     spec = disco_spec(tck, dia, side_m=20e-6, field=False); grid = Grid(shape=(2, 2, 2), voxel_size_m=(10e-6,) * 3, origin_m=(5e-6,) * 3)
     os.makedirs(str(tmp_path / "shards")); packs = []
     for b in (0, 1):

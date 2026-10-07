@@ -391,3 +391,45 @@ def test_the_preloaded_field_terms_are_the_ones_the_image_uses(layout_field):
     t = Tissue(T2={"intra": 0.03, "extra": 0.08, "myelin": 0.01}, T1={"intra": 0.9, "extra": 1.4, "myelin": 0.3}, rho2=1e-5, chi_iso=-1e-7, chi_aniso=-1.5e-8)
     sm.image("se", np.array([1e9]), np.array([[0, 0, 1.0]]), tissue=t, scanner=3.0)
     assert calls == [], "the default direction's terms were contracted again"
+
+
+def test_the_field_direction_cache_is_bounded(layout_field):
+    """dmipy-sim#517: the per-direction field-term cache has a small, stated capacity
+    (``ShapeMoments.FIELD_DIRECTION_CACHE``), not a dict that grows with every new B0 direction a Space's visitors
+    ask for. More distinct directions than the bound: the host and every backend's device copies never hold more
+    than the bound's worth at once, the most recently used direction is always still cached, and asking for an
+    evicted one again rebuilds it (correctly) rather than erroring."""
+    from dmipy_sim.spec.tissue import Tissue
+    col, merged, grid, n_t, tmp = layout_field
+    se = d.pgse([[0, 0, 1]], 0.2e-3, 0.5e-3, gradient_strengths=0.05, n_t=n_t, slew_rate=np.inf)
+    out = str(tmp / "sf_direction_bound")
+    write_shape_moments(col, {"se": se}, out, tol=1e-9, chunk_rows=7, tiers=True)
+    sm = ShapeMoments(out)
+    n = sm.FIELD_DIRECTION_CACHE
+    assert n < 10                                        # a small capacity, not an unbounded dict
+    t = Tissue(T2={"intra": 0.03, "extra": 0.08, "myelin": 0.01}, T1={"intra": 0.9, "extra": 1.4, "myelin": 0.3}, rho2=1e-5, chi_iso=-1e-7, chi_aniso=-1.5e-8)
+    g, _ = sm._tier_group("se")
+    rng = np.random.default_rng(4)
+    dirs = rng.normal(size=(2 * n + 3, 3)); dirs /= np.linalg.norm(dirs, axis=1)[:, None]
+
+    def field_names(d_):
+        return {k for k in d_ if k.startswith(("field_iso_", "field_aniso_"))}
+
+    for i, u in enumerate(dirs):
+        sm.image("se", np.array([1e9]), np.array([u]), tissue=t, scanner=3.0, b0_direction=tuple(u))
+        assert len(sm._field_direction_lru) <= n
+        host_fields = field_names(sm._host)
+        dev_fields = field_names(k[1] for k in sm._device)
+        assert len(host_fields) <= 2 * n, host_fields                  # iso + aniso per (group, direction) pair
+        assert len(dev_fields) <= 2 * n, dev_fields
+        # the direction just used is always still resident (never its own eviction victim)
+        d_now = sm._direction_key(u)
+        assert f"field_iso_{g}@{d_now}" in sm._host and f"field_iso_{g}@{d_now}" in dev_fields
+        if i >= n:                                                     # an older direction, past the bound, is gone
+            d_old = sm._direction_key(dirs[i - n])
+            assert f"field_iso_{g}@{d_old}" not in sm._host
+    # asking again for a long-evicted direction rebuilds it rather than failing, and agrees with a fresh layout
+    d0 = tuple(dirs[0])
+    S_again, _ = sm.image("se", np.array([1e9]), np.array([d0]), tissue=t, scanner=3.0, b0_direction=d0)
+    S_fresh, _ = ShapeMoments(out).image("se", np.array([1e9]), np.array([d0]), tissue=t, scanner=3.0, b0_direction=d0)
+    np.testing.assert_allclose(S_again, S_fresh, atol=1e-6, equal_nan=True)
