@@ -34,7 +34,12 @@ class _Still(backends.Backend):
         blt = np.zeros((n, request.n_t), np.float32) if request.record else None
         comp = np.ones((n, request.n_t), np.float32) if request.record else None
         work = ((zero.copy(), zero.copy(), zero.copy()) if request.count_walls else (None, None, zero.copy()))
-        return backends.WalkBatch(pos, blt, comp, zero.copy(), work)
+        field = None
+        if request.field is not None:                                 # the field's channels at the start, at every sample
+            f = request.field
+            n_tf = len(range(0, request.n_t, f.sample_every))
+            field = np.repeat(np.asarray(f.basis.channels(np.asarray(r0, np.float32)), np.float32)[:, None, :], n_tf, axis=1)
+        return backends.WalkBatch(pos, blt, comp, zero.copy(), work, field_samples=field)
 
 
 def _walk(g, **kw):
@@ -111,6 +116,25 @@ def test_the_adaptive_producer_hands_a_backend_the_plan_and_signs_the_record():
     with pytest.raises(ValueError, match="refuses this walk of PackedCurvedCylinders: no strands"):
         simulate_trajectories_adaptive(64, D, g, 1e-3, 2.5e-4, seed=3, require_gpu=False, walker_batch_size=64,
                                        backend=_Still(refuse="no strands"))
+
+
+def test_the_adaptive_producer_hands_a_backend_the_field_sampling_and_subtracts_the_mean():
+    from dmipy_sim.engine.adaptive import simulate_trajectories_adaptive
+    from dmipy_sim.fields.strand_field import StrandFieldBasis
+    g = backends.parity_cases()["strands_intra"]()
+    basis = StrandFieldBasis(g.centerlines, 0.7 * g.radii, g.radii, cutoff_m=8e-6, domain=(g.box[0], g.box[1]))
+    still = _Still()
+    w = simulate_trajectories_adaptive(64, D, g, 1e-3, 2.5e-4, seed=3, require_gpu=False, walker_batch_size=64, backend=still,
+                                       field_basis=basis, field_sample_every=2, field_reuse_intervals=3)
+    req = still.requests[0]
+    f = req.field
+    assert isinstance(f, backends.FieldSampling) and f.basis is basis and f.sample_every == 2 and f.reuse_intervals == 3
+    assert f.radius_m >= basis.gather_radius_m and f.list_k >= 1
+    assert w.field_samples.shape == (64, 3, 13) and w.field_sample_every == 2 and w.field_basis is basis
+    # the stub returned the start's bare channels at every sample: the record holds them with the mean subtracted
+    expect = np.asarray(basis.channels(np.asarray(w.positions[:, 0])), np.float32) - np.asarray(basis.mean, np.float32)
+    np.testing.assert_allclose(w.field_samples[:, 0], expect, rtol=1e-5, atol=1e-7)
+    np.testing.assert_allclose(w.field_samples[:, 2], expect, rtol=1e-5, atol=1e-7)
 
 
 def test_the_producer_reads_nothing_from_a_backend_but_the_interface():
