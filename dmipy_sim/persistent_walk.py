@@ -37,8 +37,11 @@ class PersistentWalk:
     bound_frac : (n_walkers, n_t) or None
         Bound-pool occupancy per saved step of a binding (MT) walk.
     illegal_crossings : int
-        Walker-steps that ended on the far side of a membrane without a granted crossing and were
-        rejected back into their compartment. Non-zero means the engine relabelled walkers.
+        The fused producer's count of walker-steps that ended on the far side of a membrane without a granted
+        crossing and were rejected back into their compartment, tested at every sub-step. The adaptive producer
+        (:mod:`dmipy_sim.engine.adaptive`) counts coarser -- a walker's pool at the walk's end against its start,
+        once -- and does not see a walker that crossed a wall and returned before the end: a pass-through within
+        the walk is invisible to this count there. Non-zero means some walker ended in the wrong pool.
     seed : int or None
         The producer's master seed.
     diffusivity : float or None

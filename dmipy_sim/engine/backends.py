@@ -9,7 +9,10 @@ What a backend signs
 - **One physics.** The rule is dmipy-sim's; the backend executes it.
 - **Parity, not identity.** A different RNG stream and FMA policy make bit-identity impossible, and it is not stable
   across XLA compilations of one program either (#623). A backend is admitted per engine class by the public
-  validation of that class run on it and by the work record within Poisson noise: :func:`parity_report`.
+  validation of that class run on it and by the work record within Poisson noise: :func:`parity_report`. One
+  case is a hard invariant rather than a rate (``strands_void``, #675): starts in the void beyond a tube's own
+  gather reach, held to per-save containment -- a gather read as unbounded where it found nothing leaks a
+  walker through the next wall it never actually tested.
 - **Determinism per (seed, architecture).** A trajectory is a function of the key; the pack says which backend and
   architecture walked it (``work["backend"]`` and the run record).
 - **Refusal over fallback.** A backend that does not implement an engine class, a tier or a wall says so by name
@@ -53,6 +56,24 @@ class WalkRequest(NamedTuple):
     seed: int                 #: the producer's master seed (the per-walker keys derive from it)
     stepping: object = None   #: an adaptive walk's :class:`~dmipy_sim.engine.adaptive.AdaptivePlan`; None for the fused walk
     field: object = None      #: a :class:`FieldSampling` when the walk samples a strand field; None otherwise
+
+
+class ParityCase(NamedTuple):
+    """One substrate :func:`parity_cases` compares a backend on. ``case()`` builds the geometry -- the same call
+    a bare builder answered, so every existing caller of ``parity_cases()[name]()`` is unaffected. A rate case
+    is a case with nothing past ``build``; a hard-invariant case (``strands_void``) also carries ``starts``, the
+    walk's own seeding (:func:`parity_report` draws none of its own when this is set), and the walk's own scale
+    (``n_walkers``, ``T_max``, ``dt_save``, ``seed`` -- each ``None`` falls back to :func:`parity_report`'s own
+    keyword, except ``starts`` callers, which always get the case's own values)."""
+    build: object             #: zero-arg callable returning the geometry
+    starts: object = None     #: ``(n, seed) -> r0 (n, 3) float32``, or None: :func:`parity_report` draws its own
+    n_walkers: object = None  #: overrides :func:`parity_report`'s ``n_walkers`` when ``starts`` is set
+    T_max: object = None      #: overrides :func:`parity_report`'s ``T_max`` when ``starts`` is set
+    dt_save: object = None    #: overrides :func:`parity_report`'s ``dt_save`` when ``starts`` is set
+    seed: object = None       #: overrides :func:`parity_report`'s ``seed`` when ``starts`` is set
+
+    def __call__(self):
+        return self.build()
 
 
 class WalkBatch(NamedTuple):
@@ -121,7 +142,10 @@ def resolve(backend) -> Optional[Backend]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def parity_cases():
-    """The substrates a backend is compared on, each at its own permeability: ``{name: builder}``."""
+    """The substrates a backend is compared on, each at its own permeability: ``{name: ParityCase}``. Every entry
+    is a :class:`ParityCase` -- one spelling, whether the case is a plain rate comparison (``build`` alone) or
+    carries its own starts and scale (``strands_void``) -- and ``case()`` builds the geometry exactly as a bare
+    builder used to, so ``parity_cases()[name]()`` is unchanged for every existing caller."""
     import dmipy_sim as d
     R = 2e-6
 
@@ -147,23 +171,68 @@ def parity_cases():
         return d.PackedCurvedCylinders(cls, [1.0e-6, 1.5e-6, 2.0e-6], interior=interior,
                                        box=(np.full(3, -10e-6), np.full(3, 10e-6)))
 
+    VOID_R, VOID_L = 2e-6, 200e-6
+    VOID_XT = VOID_YT = 100e-6
+
+    def void_build():
+        # one tube in a 200 um box: starts (below) sit in the void 2.5 cells from its wall, where a gather whose
+        # 27-cell neighbourhood is empty must still bound the walk by the nearest wall it CAN reach, not by the
+        # box (dmipy-sim-cuda#36).
+        return d.PackedCurvedCylinders([np.array([[VOID_XT, VOID_YT, 0.0], [VOID_XT, VOID_YT, VOID_L]])], [VOID_R],
+                                       interior=False, box=(np.zeros(3), np.full(3, VOID_L)))
+
+    void_cell_size = void_build().cell_size   # the geometry's own cell-size rule, read once rather than re-derived
+
+    def void_starts(n, seed):
+        rng = np.random.default_rng(seed)
+        return np.column_stack([np.full(n, VOID_XT - VOID_R - 2.5 * void_cell_size),
+                                rng.uniform(VOID_YT - 5e-6, VOID_YT + 5e-6, n),
+                                rng.uniform(20e-6, 180e-6, n)]).astype(np.float32)
+
     return {
-        "sphere": lambda: d.Sphere(R),
-        "sphere_perm": lambda: d.Sphere(R, permeability=1e-5),
-        "cylinder": lambda: d.Cylinder(R, (0, 0, 1)),
-        "cylinder_perm": lambda: d.Cylinder(R, (0, 0, 1), permeability=1e-5),
-        "ellipsoid": lambda: d.Ellipsoid((R, 0.7 * R, 0.5 * R)),
-        "packed_cyl": lambda: packed(d.PackedCylinders),
-        "packed_cyl_perm": lambda: packed(d.PackedCylinders, permeability=2e-5),
-        "packed_sph": lambda: packed(d.PackedSpheres),
-        "packed_sph_perm": lambda: packed(d.PackedSpheres, permeability=2e-5),
-        "label_slab": lambda: label(),
-        "label_slab_perm": lambda: label(permeability=1e-5, pools={0: "free", 1: "grain"}),
-        "mesh": lambda: mesh(),
-        "mesh_perm": lambda: mesh(permeability=1e-5),
-        "strands_intra": lambda: strands(True),
-        "strands_extra": lambda: strands(False),
+        "sphere": ParityCase(lambda: d.Sphere(R)),
+        "sphere_perm": ParityCase(lambda: d.Sphere(R, permeability=1e-5)),
+        "cylinder": ParityCase(lambda: d.Cylinder(R, (0, 0, 1))),
+        "cylinder_perm": ParityCase(lambda: d.Cylinder(R, (0, 0, 1), permeability=1e-5)),
+        "ellipsoid": ParityCase(lambda: d.Ellipsoid((R, 0.7 * R, 0.5 * R))),
+        "packed_cyl": ParityCase(lambda: packed(d.PackedCylinders)),
+        "packed_cyl_perm": ParityCase(lambda: packed(d.PackedCylinders, permeability=2e-5)),
+        "packed_sph": ParityCase(lambda: packed(d.PackedSpheres)),
+        "packed_sph_perm": ParityCase(lambda: packed(d.PackedSpheres, permeability=2e-5)),
+        "label_slab": ParityCase(lambda: label()),
+        "label_slab_perm": ParityCase(lambda: label(permeability=1e-5, pools={0: "free", 1: "grain"})),
+        "mesh": ParityCase(lambda: mesh()),
+        "mesh_perm": ParityCase(lambda: mesh(permeability=1e-5)),
+        "strands_intra": ParityCase(lambda: strands(True)),
+        "strands_extra": ParityCase(lambda: strands(False)),
+        # a rate comparison at parity_report's default scale would barely move these walkers, so the case pins
+        # its own walk scale (and its own seed, #675 review: never parity_report's, which would move the case
+        # with it) rather than overriding only starts
+        "strands_void": ParityCase(void_build, starts=void_starts, n_walkers=4096, T_max=40e-3, dt_save=0.5e-3, seed=5),
     }
+
+
+def void_invariant(g, w, *, wall_margin_m=0.5e-6, near_wall_fraction=0.02):
+    """The void case's invariant (dmrai-lab/dmipy-sim#675): every recorded save of every walker in ``w`` lies
+    outside every tube of ``g`` -- tested by the geometry's own exact classifier
+    (:meth:`~dmipy_sim.geometry.base.Geometry.classify_positions_exact` / :meth:`~dmipy_sim.geometry.base.Geometry.pool_of`),
+    never a hand-rolled radial formula -- no walker was granted an illegal crossing, and more than
+    ``near_wall_fraction`` of the walkers come within ``wall_margin_m`` of a wall at some save (the geometry's own
+    :meth:`~dmipy_sim.geometry.curved_cylinder.PackedCurvedCylinders.wall_scales`; the premise -- enough walkers
+    reach the wall for the first two checks to mean something). Returns ``{check: {..., ok}}``; a failure here is
+    a hard violation of the backend under test, never a rate comparison."""
+    n, n_t, _ = w.positions.shape
+    flat = np.asarray(w.positions, np.float64).reshape(-1, 3)
+    pool = np.asarray(g.pool_of(g.classify_positions_exact(flat))).reshape(n, n_t)
+    n_inside = int((pool != 0).sum())
+    illegal = int(np.asarray(w.illegal_crossings).sum())
+    d_wall, _ = g.wall_scales(flat)
+    n_near = int((np.asarray(d_wall).reshape(n, n_t).min(axis=1) < wall_margin_m).sum())
+    return dict(
+        contained=dict(n_inside=n_inside, ok=n_inside == 0),
+        illegal=dict(n_illegal=illegal, ok=illegal == 0),
+        reaches_wall=dict(n_near=n_near, fraction=n_near / n, ok=n_near > near_wall_fraction * n),
+    )
 
 
 def parity_report(backend, cases=None, *, n_walkers=4000, T_max=2e-3, dt_save=0.5e-3, seed=11, sigma=4.0, overdispersion=2.5):
@@ -177,17 +246,36 @@ def parity_report(backend, cases=None, *, n_walkers=4000, T_max=2e-3, dt_save=0.
     0-5 of 1.07 M walker-steps per seed on the JAX kernels themselves -- the wedge between a facet and the voxel
     face it touches); every walker on its side (the classifier at the saves agrees with the start's pool unless a
     crossing was granted), and the perpendicular PGSE signal of the two walks within ``sigma`` of their combined
-    standard errors. A case the backend refuses is recorded with its reason and not failed: refusal is the
+    standard errors. A case is a rate comparison unless it declares its own starts (:attr:`ParityCase.starts`,
+    e.g. ``strands_void``): there the backend under test walks those starts alone, at the case's own scale (its
+    ``n_walkers``/``T_max``/``dt_save``/``seed``, each falling back to this function's keyword of the same name
+    when the case leaves it ``None``), and is held to :func:`void_invariant`, a hard pass/fail with no JAX side
+    to compare against. A case the backend refuses is recorded with its reason and not failed: refusal is the
     contract. Returns ``[{case, ok, ...}]``; the list is what a backend's tests assert on."""
     import dmipy_sim as d
     from .core import simulate_trajectories
     from ..replay.trajectories import replay
     from ..sequences import pgse
     out = []
-    for name, build in (cases or parity_cases()).items():
-        g = build(); g.count_walls = True
+    for name, case in (cases or parity_cases()).items():
+        g = case(); g.count_walls = True
+        if case.starts is not None:
+            nw = n_walkers if case.n_walkers is None else case.n_walkers
+            Tm = T_max if case.T_max is None else case.T_max
+            ds = dt_save if case.dt_save is None else case.dt_save
+            sd = seed if case.seed is None else case.seed
+            try:
+                w = simulate_trajectories(nw, 2e-9, g, Tm, ds, seed=sd, tiers="all", walker_batch_size=nw,
+                                          r0=case.starts(nw, sd), backend=backend)
+            except ValueError as e:
+                if "refuses" in str(e) or "does not" in str(e):
+                    out.append(dict(case=name, ok=None, refused=str(e))); continue
+                raise
+            checks = void_invariant(g, w)
+            out.append(dict(case=name, ok=all(c["ok"] for c in checks.values()), checks=checks))
+            continue
         ref = simulate_trajectories(n_walkers, 2e-9, g, T_max, dt_save, seed=seed, tiers="all", walker_batch_size=n_walkers)
-        g2 = build(); g2.count_walls = True
+        g2 = case(); g2.count_walls = True
         try:
             w = simulate_trajectories(n_walkers, 2e-9, g2, T_max, dt_save, seed=seed, tiers="all", walker_batch_size=n_walkers,
                                       r0=np.asarray(ref.positions[:, 0]), backend=backend)
