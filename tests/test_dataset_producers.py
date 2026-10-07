@@ -10,7 +10,7 @@ import pytest
 
 import dmipy_sim as d
 from dmipy_sim.io.caterpillar import read_caterpillar, write_caterpillar, points_inside_union
-from dmipy_sim.io.strands import read_strands, write_strands, read_tck, write_tck, read_diameters
+from dmipy_sim.io.strands import read_strands, write_strands, read_tck, write_tck, concat_centerlines, read_diameters
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_sim.spec import (caterpillar_spec, strands_spec, disco_spec, walk_spec, fill_field, field_grid_of_spec,
                             geometry_from_spec, load_spec, SpecError, Seeding)
@@ -127,7 +127,7 @@ def disco_files(tmp_path_factory):
     tmp = tmp_path_factory.mktemp("disco")
     cls_ = [np.array([[x, 0, -12e-6], [x, 0.5e-6, 0], [x, 0, 12e-6]]) + 10e-6 for x in (-5e-6, 0, 5e-6)]
     tck, dia = str(tmp / "DiSCo_Strands_Trajectories.tck"), str(tmp / "DiSCo_Strands_Diameters.txt")
-    write_tck(tck, cls_, coordinate_unit_m=25e-6)
+    write_tck(tck, *concat_centerlines(cls_), coordinate_unit_m=25e-6)
     np.savetxt(dia, np.array([2 * r for r in (1.5e-6, 1.0e-6, 2.0e-6)]) / 1e-3)
     return tck, dia
 
@@ -140,6 +140,36 @@ def test_the_track_file_round_trips_in_metres(disco_files):
     nib = pytest.importorskip("nibabel")
     ref = nib.streamlines.load(tck).streamlines                                   # the reference reader agrees
     assert len(ref) == 3 and np.allclose(np.asarray(ref[2]) * 25e-6, cls_[2], atol=1e-11)
+
+
+def test_write_tck_is_the_inverse_of_read_tck_from_points_and_offsets(tmp_path):
+    """dmipy-sim#517: ``write_tck(points, offsets)`` is one contiguous pass (no per-streamline list), the inverse
+    of ``read_tck`` -- three streamlines of different lengths (one of them a single point), the 25 um voxel-unit
+    scaling the reader states, a dtype no finer than float32 and the exact count/offsets ``concat_centerlines``
+    would have built from the same streamlines as a list."""
+    rng = np.random.default_rng(0)
+    cls_ = [rng.uniform(-9e-6, 9e-6, size=(5, 3)), rng.uniform(-9e-6, 9e-6, size=(1, 3)),
+            rng.uniform(-9e-6, 9e-6, size=(8, 3))]
+    points, offsets = concat_centerlines(cls_)
+    assert offsets.tolist() == [0, 5, 6, 14]
+    tck = str(tmp_path / "roundtrip.tck")
+    write_tck(tck, points, offsets, coordinate_unit_m=25e-6)
+    got = read_tck(tck, coordinate_unit_m=25e-6)
+    assert len(got) == 3
+    for c, g in zip(cls_, got):
+        np.testing.assert_allclose(g, c, atol=1e-10)
+    # a float32 points array (the dtype dmipy-tract's flat buffer carries) round-trips too, to float32 precision
+    tck32 = str(tmp_path / "roundtrip_f32.tck")
+    write_tck(tck32, points.astype(np.float32), offsets, coordinate_unit_m=25e-6)
+    got32 = read_tck(tck32, coordinate_unit_m=25e-6)
+    for c, g in zip(cls_, got32):
+        np.testing.assert_allclose(g, c, atol=1e-11, rtol=1e-6)
+    with pytest.raises(ValueError, match="start at 0"):
+        write_tck(tck, points, np.array([1, 5, 6, 14]), coordinate_unit_m=25e-6)
+    with pytest.raises(ValueError, match="non-decreasing"):
+        write_tck(tck, points, np.array([0, 6, 5, 14]), coordinate_unit_m=25e-6)
+    with pytest.raises(ValueError, match="end at len"):
+        write_tck(tck, points, np.array([0, 5, 6, 13]), coordinate_unit_m=25e-6)
 
 
 def test_strand_list_round_trips_in_metres(strand_txt):

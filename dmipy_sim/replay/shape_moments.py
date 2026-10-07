@@ -49,6 +49,7 @@ class's, the backend chooses only where ``exp``, the tile reduce and the scatter
 """
 from __future__ import annotations
 
+import collections
 import functools
 import hashlib
 from dataclasses import dataclass
@@ -445,6 +446,12 @@ class ShapeMoments:
 
     TILES = 4096                                                        # tiles per device chunk (2^19 rows)
     MEAS = 64                                                           # measurements padded to a multiple
+    #: distinct (sequence group, B0 direction) field-term pairs held at once, host and every backend's device
+    #: copies together (~1.2 GB host + 1.2 GB device per pair on DiSCo, dmipy-sim#517): a page with free B0 angles
+    #: asks for more directions than fit in memory, so this is a small LRU, not a dict that grows per direction --
+    #: a pair beyond the bound evicts the least recently used one (:meth:`_touch_field_direction`); the Space
+    #: quantises its angles to fewer than this.
+    FIELD_DIRECTION_CACHE = 4
 
     def __init__(self, path):
         from ..phantom.grid import Grid
@@ -463,6 +470,7 @@ class ShapeMoments:
         self.susceptibility_field = (None if not self.tiers else
                                      _field_of_tiers(self.manifest["source"].get("pack"), self.tiers, self.tiers.get("groups", {})))
         self._m = {}; self._device = {}; self._host = {}
+        self._field_direction_lru = collections.OrderedDict()     # (group, direction key) -> None, MRU last
 
     @staticmethod
     def open(uri, *, shapes=None, revision=None, workers=8):
@@ -595,6 +603,34 @@ class ShapeMoments:
             maps["phase_std"] = np.sqrt(np.maximum(by["phase_sq"] - by["phase"] ** 2, 0.0))
         return maps
 
+    @staticmethod
+    def _field_direction_of(name):
+        """``(g, d)`` of a field-term column name (``field_iso_<g>@<d>`` / ``field_aniso_<g>@<d>``), else ``None``
+        for a name the bounded field-direction cache does not track (every other column, which is one per shape or
+        group and not per direction)."""
+        if not name.startswith(("field_iso_", "field_aniso_")):
+            return None
+        g, d = name.split("_", 2)[2].split("@")
+        return g, d
+
+    def _touch_field_direction(self, g, d):
+        """Mark ``(g, d)``'s field terms as just used in the bounded field-direction cache (dmipy-sim#517): once
+        more than :attr:`FIELD_DIRECTION_CACHE` distinct pairs have been touched, the host and every backend's
+        device copies of the least recently used pair are dropped, so a layout asked for an unbounded number of B0
+        directions holds at most this many at once."""
+        key = (g, d)
+        if key in self._field_direction_lru:
+            self._field_direction_lru.move_to_end(key)
+        else:
+            self._field_direction_lru[key] = None
+        while len(self._field_direction_lru) > self.FIELD_DIRECTION_CACHE:
+            og, od = next(iter(self._field_direction_lru))
+            del self._field_direction_lru[(og, od)]
+            for name in (f"field_iso_{og}@{od}", f"field_aniso_{og}@{od}"):
+                self._host.pop(name, None)
+                for dk in [k for k in self._device if k[1] == name]:
+                    del self._device[dk]
+
     FIELD_CHUNK_TILES = 65_536                       # tiles per contraction chunk: 65,536 x 128 x 13 doubles = 0.9 GB of temporaries
 
     def _field_terms(self, g, b0_direction, device=None):
@@ -702,14 +738,20 @@ class ShapeMoments:
 
     def _padded(self, name):
         """The column ``name`` (a shape, ``"w"`` or ``"tiles"``) on the host, padded to whole chunks of ``TILES``
-        (padding rows weigh nothing and scatter into the dump segment); the preloaded copy when there is one."""
+        (padding rows weigh nothing and scatter into the dump segment); the preloaded copy when there is one. A
+        field-direction column (``field_iso_<g>@<d>`` / ``field_aniso_<g>@<d>``) touches the bounded field-direction
+        cache (:meth:`_touch_field_direction`) whether it is already held or built here."""
+        fd = self._field_direction_of(name)
         if name in self._host:
+            if fd is not None:
+                self._touch_field_direction(*fd)
             return self._host[name]
         T = self.TILES; n_pad = -(-self.n_tiles // T) * T
-        if name.startswith(("field_iso_", "field_aniso_")):
-            g, d = name.split("_", 2)[2].split("@")
+        if fd is not None:
+            g, d = fd
             iso, aniso = self._field_terms(g, [float(x) for x in d.split(",")])
             self._host[f"field_iso_{g}@{d}"], self._host[f"field_aniso_{g}@{d}"] = iso, aniso
+            self._touch_field_direction(g, d)
             return self._host[name]
         if name.startswith("bg_"):
             a = np.zeros((n_pad, self.tile, 3), np.float32); a[:self.n_tiles] = self._column(name)
@@ -728,7 +770,9 @@ class ShapeMoments:
     def _resident(self, shape, backend, device, resident, names=("w", "tiles")):
         """``(m, *names)`` for ``shape`` on the backend's device, kept across calls when ``resident`` (the shared
         tiles once per backend), else built afresh from the memory-mapped tiles. Field terms for a direction the
-        host has not contracted are contracted on the device (torch), the channel column streamed there once."""
+        host has not contracted are contracted on the device (torch), the channel column streamed there once. Every
+        field-direction name touches the bounded field-direction cache (:meth:`_touch_field_direction`), so a device
+        copy made here is subject to the same eviction as the host's."""
         if backend == "jax":
             import jax.numpy as jnp
             put = jnp.asarray
@@ -738,6 +782,7 @@ class ShapeMoments:
         out = []; made = {}
         for name in (shape,) + tuple(names):
             key = (backend, name, str(device))
+            fd = self._field_direction_of(name)
             if key not in self._device:
                 if backend == "torch" and name.startswith(("field_iso_", "field_aniso_")) and name not in self._host:
                     if name not in made:                     # a direction the host has not contracted: contract on the device
@@ -748,8 +793,12 @@ class ShapeMoments:
                 else:
                     arr = put(self._padded(name))
                 if not resident:
+                    if fd is not None:
+                        self._touch_field_direction(*fd)
                     out.append(arr); continue
                 self._device[key] = arr
+            if fd is not None:
+                self._touch_field_direction(*fd)
             out.append(self._device[key])
         return tuple(out)
 

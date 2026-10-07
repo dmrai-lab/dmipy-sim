@@ -253,11 +253,11 @@ def spec_without_source(spec, pool="myelin"):
 
 def _three_strands(tmp):
     """The three-strand DiSCo-format fixture (a sheath on each) written under ``tmp``: its spec."""
-    from dmipy_sim.io.strands import write_tck
+    from dmipy_sim.io.strands import write_tck, concat_centerlines
     from dmipy_sim.spec import disco_spec
     cls_ = [np.array([[x, 0, -12e-6], [x, 0.5e-6, 0], [x, 0, 12e-6]]) + 10e-6 for x in (-5e-6, 0, 5e-6)]
     tck, dia = str(tmp / "t.tck"), str(tmp / "d.txt")
-    write_tck(tck, cls_, coordinate_unit_m=25e-6)
+    write_tck(tck, *concat_centerlines(cls_), coordinate_unit_m=25e-6)
     np.savetxt(dia, np.array([2 * r for r in (1.5e-6, 1.0e-6, 2.0e-6)]) / 1e-3)
     return disco_spec(tck, dia, side_m=20e-6)
 

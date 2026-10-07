@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 
 from dmipy_sim.fields.strand_field import StrandFieldBasis, FarGrid
-from dmipy_sim.io.strands import write_tck
+from dmipy_sim.io.strands import write_tck, concat_centerlines
 from dmipy_sim.spec import disco_spec, walk_spec
 
 
@@ -51,7 +51,7 @@ def test_the_far_grid_round_trips_and_the_walk_reads_it(tmp_path):
     rng = np.random.default_rng(1)
     cls, ri, ro = _strands(rng, n=12, side=20e-6)
     tck, dia = str(tmp_path / "t.tck"), str(tmp_path / "d.txt")
-    write_tck(tck, [c + 0.0 for c in cls], coordinate_unit_m=25e-6); np.savetxt(dia, 2 * ri / 1e-3)
+    write_tck(tck, *concat_centerlines([c + 0.0 for c in cls]), coordinate_unit_m=25e-6); np.savetxt(dia, 2 * ri / 1e-3)
     spec = disco_spec(tck, dia, side_m=20e-6)
     plain = StrandFieldBasis(cls, ri, ro, cutoff_m=25e-6, domain=(np.zeros(3), np.full(3, 20e-6)))
     far = plain.build_far_grid(0.5e-6, 10e-6, blend_m=3e-6)
