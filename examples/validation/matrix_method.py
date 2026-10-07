@@ -34,6 +34,13 @@ GAMMA = 2.6751525e8
 RADIAL_NODES = 4000
 ANGULAR_NODES = 2048
 
+#: The run-product path costs one matrix exponential per run of constant amplitude (``_runs``), not per
+#: distinct amplitude -- a slew-limited PGSE has a handful of amplitudes from its ramps but just as few runs
+#: (12 at the ``pgse`` default 200 T/m/s, 32 at 50 T/m/s) and is exact at that cost. A waveform whose amplitude
+#: changes at (almost) every sample -- an OGSE cosine, ~1000 runs at n_t=1000 -- is genuinely dense and this
+#: ceiling sends it to the Strang split instead.
+_MAX_EXACT_RUNS = 64
+
 __all__ = ["MatrixPore", "GAMMA"]
 
 
@@ -64,8 +71,11 @@ def _sph_neumann_roots(l, n_roots):
 
 def _plane_modes(L, n_max):
     """The slab of thickness ``L`` with reflecting walls, gradient along its normal: ``cos(n pi x / L)`` with
-    eigenvalue ``(n pi / L)^2``, and ``B`` the position operator ``x``."""
+    eigenvalue ``(n pi / L)^2``, and ``B`` the position operator centred on the slab's midplane -- the same
+    convention ``_cyl_modes``/``_sph_modes`` get for free from their radius running outward from the pore's
+    centre, so ``B[0, 0] == 0`` and a non-refocused waveform carries no spurious global phase."""
     x = np.linspace(0.0, L, RADIAL_NODES)
+    xc = x - 0.5 * L
     U = [np.cos(n * np.pi * x / L) for n in range(n_max + 1)]
     lam = np.asarray([(n * np.pi / L) ** 2 for n in range(n_max + 1)])
     norm = [np.trapezoid(u * u, x) for u in U]
@@ -73,7 +83,7 @@ def _plane_modes(L, n_max):
     B = np.zeros((N, N))
     for i in range(N):
         for j in range(N):
-            B[i, j] = np.trapezoid(U[i] * x * U[j], x) / np.sqrt(norm[i] * norm[j])
+            B[i, j] = np.trapezoid(U[i] * xc * U[j], x) / np.sqrt(norm[i] * norm[j])
     return lam, B
 
 
@@ -169,16 +179,18 @@ class MatrixPore:
         """``S`` for the per-step gradient amplitudes ``g_axis`` (T/m along the measured axis) at step ``dt``.
 
         Exact for a piecewise-constant waveform: one matrix exponential per run of constant amplitude, a
-        zero-amplitude run being pure mode decay and therefore diagonal. A waveform with many distinct
-        amplitudes (an OGSE cosine) goes through the Strang split instead, whose ``O(dt^2)`` error the caller
-        bounds by refining ``dt``.
+        zero-amplitude run being pure mode decay and therefore diagonal -- so the cost is ``len(_runs(g))``,
+        not the number of distinct amplitudes, and a slew-limited waveform (many amplitudes, few runs) stays
+        on this path. A genuinely dense waveform (an OGSE cosine, amplitude changing almost every sample) goes
+        through the Strang split instead, whose ``O(dt^2)`` error the caller bounds by refining ``dt``.
         """
         g = np.asarray(g_axis, np.float64)
-        if len(np.unique(np.round(g, 15))) > 6:
+        runs = _runs(g)
+        if len(runs) > _MAX_EXACT_RUNS:
             return self._signal_strang(g, float(dt))
         M = np.eye(len(self.lam), dtype=complex)
         cache = {}
-        for amp, ns in _runs(g):
+        for amp, ns in runs:
             if ns <= 0:
                 continue
             tau = ns * float(dt)
