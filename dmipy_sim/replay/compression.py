@@ -295,20 +295,28 @@ def encode_bridge_dst(X, K, container=None, *, device="auto"):
     """
     X = X if is_lazy(X) else np.asarray(X)
     Nw, Nt, _ = X.shape
-    a = np.asarray(X[:, 0, :], np.float64)
-    v = np.asarray(X[:, -1, :], np.float64) - a
-    tau = np.arange(Nt) / (Nt - 1.0)
     K = int(min(K, Nt - 2))
     dev = "numpy" if resolve_device(device) == "numpy" else "jax"
-    B = np.empty((Nw, K, 3), np.float64); rows = max(1, int(CHUNK_BYTES // max(Nt * 3 * 4, 1)))
-    for i in range(0, Nw, rows):                                     # the residual per walker chunk, never the whole walk again
-        sl = slice(i, i + rows)
-        if dev == "numpy":
+    rows = max(1, int(CHUNK_BYTES // max(Nt * 3 * 4, 1)))
+    if dev == "jax":
+        # the bridge formed on the device per walker chunk (the compressed master's own route, #446): the host
+        # forms no line and no residual -- on a 100k x 3349 walk that was 7 s of the pack beside a 1.3 s transform
+        import jax.numpy as jnp
+        positions, _ = _device_bridge(Nt, K)
+        C = np.empty((Nw, K + 2, 3), np.float32)
+        for i in range(0, Nw, rows):
+            sl = slice(i, i + rows)
+            C[sl] = np.asarray(positions(jnp.asarray(np.asarray(X[sl], np.float32))))
+    else:
+        a = np.asarray(X[:, 0, :], np.float64)
+        v = np.asarray(X[:, -1, :], np.float64) - a
+        tau = np.arange(Nt) / (Nt - 1.0)
+        B = np.empty((Nw, K, 3), np.float64)
+        for i in range(0, Nw, rows):                                 # the residual per walker chunk, never the whole walk again
+            sl = slice(i, i + rows)
             u = np.asarray(X[sl], np.float64) - (a[sl, None, :] + v[sl, None, :] * tau[None, :, None])
-        else:
-            u = np.asarray(X[sl], np.float32) - np.asarray(a[sl, None, :] + v[sl, None, :] * tau[None, :, None], np.float32)
-        B[sl] = dst_bands(u[:, 1:-1, :], K, device=dev)
-    C = np.concatenate([a[:, None, :], v[:, None, :], B], axis=1)   # (Nw, K+2, 3)
+            B[sl] = dst_bands(u[:, 1:-1, :], K, device=dev)
+        C = np.concatenate([a[:, None, :], v[:, None, :], B], axis=1)   # (Nw, K+2, 3)
     meta = {"method": "bridge_dst", "K": K, "n_t": int(Nt)}
     if container is None:                                            # the float32 container, one tensor per axis
         arrays = pack_position_arrays(C, np.float32)
@@ -478,16 +486,25 @@ def encode_boundary_bridge(dlog, K=16, dtype=np.float32, container=None, *, devi
     A = np.asarray(dlog)
     nw, nt = A.shape
     K = int(min(K, nt - 2))
-    tau = np.linspace(0.0, 1.0, nt)[None, :]
     a = np.empty(nw); endpoint = np.empty(nw); C = np.empty((nw, K), np.float64)
     rows = max(1, int(CHUNK_BYTES // max(nt * 8, 1)))
-    for i in range(0, nw, rows):                               # the cumulative time per chunk (float64), its bands
-        sl = slice(i, i + rows)
-        B = np.cumsum(np.asarray(A[sl], np.float64), axis=1)   # (rows, n_t) smooth
-        a[sl] = B[:, 0]                                        # exact B(0)
-        endpoint[sl] = B[:, -1]                                # exact total local time B(T)
-        resid = B - (a[sl, None] + (endpoint[sl] - a[sl])[:, None] * tau)   # exactly 0 at BOTH ends
-        C[sl] = dst_bands(resid[:, 1:-1], K, device=device)
+    if resolve_device(device) != "numpy":
+        # the cumulative time, the chord and the bands on the device per chunk (the compressed master's route, #446)
+        import jax.numpy as jnp
+        _, local_time = _device_bridge(nt, K)
+        for i in range(0, nw, rows):
+            sl = slice(i, i + rows)
+            a_, e_, b_ = local_time(jnp.asarray(np.asarray(A[sl], np.float32)))
+            a[sl] = np.asarray(a_); endpoint[sl] = np.asarray(e_); C[sl] = np.asarray(b_)
+    else:
+        tau = np.linspace(0.0, 1.0, nt)[None, :]
+        for i in range(0, nw, rows):                           # the cumulative time per chunk (float64), its bands
+            sl = slice(i, i + rows)
+            B = np.cumsum(np.asarray(A[sl], np.float64), axis=1)   # (rows, n_t) smooth
+            a[sl] = B[:, 0]                                    # exact B(0)
+            endpoint[sl] = B[:, -1]                            # exact total local time B(T)
+            resid = B - (a[sl, None] + (endpoint[sl] - a[sl])[:, None] * tau)   # exactly 0 at BOTH ends
+            C[sl] = dst_bands(resid[:, 1:-1], K, device=device)
     # ``dtype`` sets the band precision; packs pass f16 via build_replay_pack's ``blt_dtype``. The
     # two ENDPOINTS are always f32 -- they are the exact quantities the rho2 attenuation and the
     # segment chaining read, where f16's ~3 significant digits would be a real error, not a rounding.
