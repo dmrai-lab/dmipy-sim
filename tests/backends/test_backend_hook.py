@@ -120,6 +120,38 @@ def test_the_adaptive_producer_hands_a_backend_the_plan_and_signs_the_record():
                                        backend=_Still(refuse="no strands"))
 
 
+class _FakeComp(backends.Backend):
+    """A backend whose record states an arbitrary start pool (not the geometry's own classification of ``r0``),
+    to prove the adaptive producer takes it from the batch's ``compartment`` column 0 and runs no second
+    classification of the starts through JAX."""
+    name = "fakecomp"
+
+    def __init__(self, comp0):
+        self.comp0 = np.asarray(comp0, np.float32)
+
+    def refuses(self, request):
+        return None
+
+    def walk_batch(self, request, r0, keys, *, out=None):
+        n = r0.shape[0]
+        pos = np.repeat(np.asarray(r0, np.float32)[:, None, :], request.n_t, axis=1)
+        blt = np.zeros((n, request.n_t), np.float32)
+        comp = np.repeat(self.comp0[:, None], request.n_t, axis=1)
+        zero = np.zeros((n,), np.int32)
+        return backends.WalkBatch(pos, blt, comp, zero.copy(), (None, None, zero.copy()))
+
+
+def test_the_adaptive_producer_takes_the_start_pool_from_the_batch():
+    from dmipy_sim.engine.adaptive import simulate_trajectories_adaptive
+    g = backends.parity_cases()["strands_intra"]()                     # every walker is seeded inside a tube:
+    n = 32                                                              # classify_positions_exact would give pool 1 for all
+    comp0 = np.zeros(n, np.float32); comp0[::2] = 1.0                   # a pattern no real classification of these starts gives
+    be = _FakeComp(comp0)
+    w = simulate_trajectories_adaptive(n, D, g, 1e-3, 2.5e-4, seed=3, require_gpu=False, walker_batch_size=n, backend=be)
+    np.testing.assert_array_equal(np.asarray(w.compartment[:, 0]), comp0.astype(np.int8))
+    assert w.illegal_crossings == 0
+
+
 def test_the_adaptive_producer_hands_a_backend_the_field_sampling_and_subtracts_the_mean():
     from dmipy_sim.engine.adaptive import simulate_trajectories_adaptive
     from dmipy_sim.fields.strand_field import StrandFieldBasis

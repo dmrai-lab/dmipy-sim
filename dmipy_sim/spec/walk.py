@@ -660,6 +660,7 @@ def _walk_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field_res, requ
     from ..engine.core import simulate_trajectories
     from ..persistent_walk import PersistentWalk, merge_work
     log = logging.getLogger("dmipy_sim")
+    current().phase("context", reused=(context is not None))
     ctx = context if context is not None else WalkContext(spec, field_far=field_far)
     g = ctx.tests
     pools, inside_w, outside_w, boundary, member, sampler = g.pools, g.inside_w, g.outside_w, g.boundary, g.member, g.sampler
@@ -707,6 +708,7 @@ def _walk_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field_res, requ
     # the field basis is built before the walk and sampled by it: a strand field certified on the start positions
     # (sampled with adaptive steps), a gridded one rasterised from the membership tests (sampled at every sub-step);
     # defer_field skips this -- the obligation is recorded on the walk, a basis given later fills it
+    current().phase("field basis")
     kind = None if defer_field else field_source_kind(spec)                # None when no pool is magnetic
     sf = fg = None
     if kind == "strands":
@@ -765,14 +767,28 @@ def _walk_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field_res, requ
                       None if w.boundary_local_time is None else np.asarray(w.boundary_local_time, np.float32)))
     if walked is None:
         raise SpecError("no seeded pool diffuses; nothing to walk")
-    traj, dlog, ids, wts, fs = [], [], [], [], []
+    current().phase("finalize")
     surface = all(dl is not None for pid, pos, dl in parts if pos.ndim == 3)      # every walked pool records contact
     sampled = {pid: arr for pid, arr in field_samples}
     n_tf = len(range(0, n_t, int(field_sample_every)))                     # the field's own save grid
+    sizes = [len(pos) for _, pos, _ in parts]
+    n_tot = sum(sizes)
+    order = np.random.default_rng(int(seed) + 991).permutation(n_tot)      # any prefix is a fair subsample
+    dest_of = np.argsort(order)         # order's inverse: concat-row g belongs at output row dest_of[g], exactly
+    # what `concatenate(...)[order]` would have put there -- scattered straight into the pre-sized arrays below,
+    # one write per array instead of a concatenate and a second, cache-hostile gather copy (7+ GB moved twice over
+    # DiSCo's walk, and the dominant host cost of the walk stage at scale: dmipy-sim-cuda#33)
+    traj = np.empty((n_tot, n_t, 3), np.float32)
+    dlog = np.empty((n_tot, n_t), np.float32) if surface else None
+    ids = np.empty(n_tot, np.int8)
+    wts = np.empty(n_tot, float)
+    samples = np.empty((n_tot, n_tf, 13), np.float32) if sampled else None
+    start = 0
     for pid, pos, dl in parts:
-        if sampled:
+        n = len(pos); dest = dest_of[start:start + n]; start += n
+        if samples is not None:
             if pid in sampled:
-                fs.append(sampled[pid])
+                samples[dest] = sampled[pid]
             else:                                                            # a frozen shell: its start's channels, constant
                 p0 = jnp.asarray(np.asarray(pos if pos.ndim == 2 else pos[:, 0], np.float32))
                 if sf is not None:
@@ -780,19 +796,17 @@ def _walk_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field_res, requ
                     c0 = np.asarray(sf.channels_at_device()(p0, seg, keep)) - sf.mean[None, :]
                 else:
                     c0 = np.asarray(fg.channels_at_device()(p0))
-                fs.append(np.repeat(c0[:, None, :].astype(np.float32), n_tf, axis=1))
+                samples[dest] = c0[:, None, :].astype(np.float32)             # broadcast over the field's save grid
         if pos.ndim == 2:                                                        # a frozen shell: no path, no contact
-            pos = np.repeat(pos[:, None, :], n_t, axis=1); dl = np.zeros((len(pos), n_t), np.float32)
-        elif dl is None:
-            dl = np.zeros((len(pos), n_t), np.float32)                           # a placeholder: dropped below
-        wt = np.asarray(weights_of[pid], float)
-        traj.append(pos); dlog.append(dl); ids.append(np.full(len(pos), pid, np.int8)); wts.append(wt)
-    traj = np.concatenate(traj); dlog = np.concatenate(dlog); ids = np.concatenate(ids); wts = np.concatenate(wts)
-    order = np.random.default_rng(int(seed) + 991).permutation(len(ids))   # any prefix is a fair subsample
-    traj, dlog, ids, wts = traj[order], dlog[order], ids[order], wts[order]
-    samples = np.concatenate(fs)[order] if fs else None
-    if not surface:
-        dlog = None                                                              # the geometry records no surface time
+            traj[dest] = pos[:, None, :]                                         # broadcast over every save
+            if dlog is not None:
+                dlog[dest] = 0.0
+        else:
+            traj[dest] = pos
+            if dlog is not None:
+                dlog[dest] = dl if dl is not None else 0.0
+        ids[dest] = pid
+        wts[dest] = np.asarray(weights_of[pid], float)
     comp = np.repeat(ids[:, None], n_t, axis=1)
     by_name = {p.name: p for p in spec.pools}
     D_ref = by_name["intra"].D if ("intra" in by_name and by_name["intra"].D) else float(walked.diffusivity)

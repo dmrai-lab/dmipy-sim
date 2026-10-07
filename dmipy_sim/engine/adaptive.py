@@ -242,8 +242,11 @@ interval mean as before).
         _, r0_all, keys_all = seed_walkers(geometry, n_walkers, seed, r0)      # the fused producer's own draws
         r0_all = np.asarray(r0_all, np.float32)
         # the pool (0 free, 1 enclosed), not the object: a packed classify returns the tube's id, and a walker inside two
-        # overlapping tubes is labelled by either
-        comp_all = np.minimum(np.asarray(geometry.classify_positions_exact(jnp.asarray(r0_all)), np.int32), 1)
+        # overlapping tubes is labelled by either. A backend's own batch already carries it (`compartment` column 0,
+        # the kernel's `comp0`) and its `illegal` counter is the end-vs-start comparison done on the device, so this
+        # JAX classification of every start runs for the JAX path only; the backend path fills it per batch below.
+        comp_all = (np.minimum(np.asarray(geometry.classify_positions_exact(jnp.asarray(r0_all)), np.int32), 1)
+                    if _backend is None else np.empty(n_walkers, np.int32))
 
         if cached:                                                       # size the list from the start positions (the widest reach)
             sample = r0_all[np.random.default_rng(int(seed) + 3).choice(n_walkers, size=min(n_walkers, 20_000), replace=False)]
@@ -323,6 +326,10 @@ interval mean as before).
                     positions[s:e] = arr["positions"]; dlog_all[s:e] = arr["boundary_local_time"]
                     if sampling:
                         field_all[s:e] = arr["field_samples"]
+                    if _backend is not None:          # spooling is the JAX path's own resume (fill.pipeline); a spooled
+                        # batch under a backend (never produced today) still needs its start pool -- classified for
+                        # this batch alone, not the whole walk
+                        comp_all[s:e] = np.minimum(np.asarray(geometry.classify_positions_exact(jnp.asarray(r0_all[s:e])), np.int32), 1)
                     n_free += int(hdr["n_free"]); n_kernel_steps += int(hdr["n_kernel_steps"])
                     log.info("  adaptive: batch %d read from the spool (%d walkers)", b, nb)
                     continue
@@ -336,6 +343,9 @@ interval mean as before).
                     positions[s:e] = np.asarray(res.positions, sdt)
                 if out is None or res.boundary_local_time is not out["boundary_local_time"]:
                     dlog_all[s:e] = np.asarray(res.boundary_local_time, sdt)
+                if res.compartment is None:
+                    raise ValueError(f"backend {_backend_name!r} accepted record=True and returned no compartment")
+                comp_all[s:e] = np.minimum(np.asarray(res.compartment[:, 0], np.int32), 1)   # comp0: the start pool
                 n_illegal += int(np.asarray(res.illegal, np.int64).sum())
                 if res.counters is not None:
                     n_free += int(res.counters["n_free"]); n_kernel_steps += int(res.counters["n_kernel_steps"])
