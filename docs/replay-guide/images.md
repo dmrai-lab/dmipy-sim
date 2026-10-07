@@ -12,7 +12,7 @@ does the same on the hub.
 import os, tempfile
 import numpy as np
 import dmipy_sim as d
-from dmipy_sim.io.strands import write_tck
+from dmipy_sim.io.strands import write_tck, concat_centerlines
 from dmipy_sim.phantom import Grid
 from dmipy_sim.replay import ReplayPack
 from dmipy_sim.replay.bank import build_replay_pack
@@ -22,7 +22,7 @@ from dmipy_sim.spec.tissue import Tissue
 
 tmp = tempfile.mkdtemp(); os.makedirs(f"{tmp}/shards")
 cls_ = [np.array([[x, 0, -12e-6], [x, 0.5e-6, 0], [x, 0, 12e-6]]) + 10e-6 for x in (-5e-6, 0, 5e-6)]   # three strands
-write_tck(f"{tmp}/t.tck", cls_, coordinate_unit_m=25e-6); np.savetxt(f"{tmp}/d.txt", np.array([3e-6, 2e-6, 4e-6]) / 1e-3)
+write_tck(f"{tmp}/t.tck", *concat_centerlines(cls_), coordinate_unit_m=25e-6); np.savetxt(f"{tmp}/d.txt", np.array([3e-6, 2e-6, 4e-6]) / 1e-3)
 spec = disco_spec(f"{tmp}/t.tck", f"{tmp}/d.txt", side_m=20e-6, field=False)
 grid = Grid(shape=(2, 2, 2), voxel_size_m=(10e-6,) * 3, origin_m=(5e-6,) * 3)
 for b in (0, 1):                                                       # two blocks of the grid, one shard each
