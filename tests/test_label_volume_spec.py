@@ -1,10 +1,12 @@
 """The ``label_volume`` surface kind: what the spec must say, and the fixed point with the geometry."""
 import json
 import os
+import shutil
 
 import numpy as np
 import pytest
 
+from dmipy_sim import simulate_trajectories
 from dmipy_sim.geometry import LabelVolume
 from dmipy_sim.io.label_volume import write_nrrd
 from dmipy_sim.spec import (SpecError, SubstrateSpec, as_geometry, geometry_from_spec, label_volume_spec,
@@ -123,6 +125,34 @@ def test_a_geometry_built_from_an_array_writes_its_image_and_is_walkable(tmp_pat
     # and it is what a grid alone can say: no fluid D, no realisation, no crop
     assert spec.pool("free").D is None and spec.realisation is None and spec.walls[0].surface.crop is None
     assert spec_of(g2).to_dict() == spec.to_dict()           # a recompute of the recompute
+
+
+def test_a_label_volume_spec_written_on_one_machine_resolves_on_another(tmp_path, monkeypatch):
+    """A ``LabelVolume`` built from an array and written with an EXPLICIT ``surface_dir=`` (a directory
+    that is not the resolved cache -- one machine's own temporary surface cache) is cited by an ABSOLUTE
+    path, exactly the bug #477 reported. That path is gone on another machine, but the grid it names is
+    content-hashed, so a second machine whose own cache holds a copy of the SAME bytes under its own path
+    resolves the untouched spec by the citation's basename, and the geometry it rebuilds walks."""
+    lab = np.ones((12, 6, 6), np.uint8)
+    lab[3:9] = 0
+    g = LabelVolume(lab, 1e-6, surface_relaxivity_t2=1e-5)
+    machine_a = tmp_path / "machine-a-surfaces"           # an explicit, non-cache directory: cited absolutely
+    spec = spec_of(g, surface_dir=machine_a)
+    cite = spec.walls[0].surface.file
+    assert cite == str(machine_a / os.path.basename(cite))
+    assert os.path.isabs(cite)
+
+    machine_b = tmp_path / "machine-b-cache"              # a second machine: a different cache directory,
+    os.makedirs(machine_b)                                # holding the SAME content-hashed file at ITS path
+    shutil.copy(cite, machine_b / os.path.basename(cite))
+    shutil.rmtree(machine_a)                              # "machine A"'s own directory does not exist here
+    monkeypatch.setenv("DMIPY_SIM_SURFACE_DIR", str(machine_b))
+    resolved = resolve_surface_file(cite)
+    assert resolved == str(machine_b / os.path.basename(cite))
+    g2 = geometry_from_spec(spec)                         # the SAME spec dict, unmodified, read on "machine B"
+    assert np.array_equal(g2.labels, lab)
+    w = simulate_trajectories(50, 2e-9, g2, T_max=4e-4, dt_save=2e-4, seed=1, require_gpu=False)
+    assert w.positions.shape[0] == 50
 
 
 def test_multiple_pools_become_multiple_walls(tmp_path):

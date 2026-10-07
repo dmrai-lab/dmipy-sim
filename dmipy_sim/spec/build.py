@@ -480,14 +480,24 @@ def mesh_surface_file(surface):
 
 def resolve_surface_file(path):
     """The file a surface cites, found: as given (absolute, or relative to the working directory), else under
-    :func:`surface_cache_dir`; a dataset's strand or mesh files are cited by the relative path they are
-    distributed at, and a consumer works from the dataset's directory or copies them into the cache."""
+    :func:`surface_cache_dir` at that same (relative) path -- a dataset's strand or mesh files are cited by
+    the relative path they are distributed at, and a consumer works from the dataset's directory or copies
+    them into the cache preserving it. A spec written on another machine may still cite an ABSOLUTE path (an
+    explicit ``surface_dir=`` outside the cache, or a spec predating this rule): that path is gone here, but
+    the cache names a surface it wrote by its content hash alone, so the file is looked up there a second time
+    by its BASENAME -- the one case a bare ``os.path.join`` cannot reach, since joining the cache directory
+    onto an absolute path discards the cache directory entirely."""
     import os
     if os.path.exists(path):
         return path
     alt = os.path.join(surface_cache_dir(), path)
     if os.path.exists(alt):
         return alt
+    base = os.path.basename(path)
+    if base != path:
+        alt = os.path.join(surface_cache_dir(), base)
+        if os.path.exists(alt):
+            return alt
     raise SpecError(f"the surface file {path!r} is neither at that path nor under {surface_cache_dir()}")
 
 

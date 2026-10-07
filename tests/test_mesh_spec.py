@@ -7,10 +7,13 @@ import numpy as np
 from dmipy_sim import ScannerSequence
 import pytest
 
+import dataclasses
+import shutil
+
 import dmipy_sim as d
 from dmipy_sim.geometry import mesh_shapes
 from dmipy_sim.spec import spec_of, geometry_from_spec, walk_spec, SubstrateSpec, SpecError
-from dmipy_sim.spec.build import resolve_surface_file
+from dmipy_sim.spec.build import resolve_surface_file, mesh_surface_file
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_sim.spec.tissue import Tissue
 from tests.replay_frames import field_along
@@ -47,6 +50,44 @@ def test_a_mesh_writes_its_spec_and_is_rebuilt_from_it(tmp_path, monkeypatch):
     w2 = d.simulate_trajectories(40, D, m2, 4e-4, 2e-4, seed=2, require_gpu=False)
     np.testing.assert_array_equal(w1.positions, w2.positions)
     assert w2.spec == m2.spec and w2.geometry is m2               # a walk always carries its geometry's spec
+
+
+def test_a_mesh_spec_written_on_one_machine_resolves_on_another(tmp_path, monkeypatch):
+    """A Mesh built from arrays and written with an EXPLICIT ``surface_dir=`` (a directory that is not
+    the resolved cache, e.g. one machine's own temporary surface cache) is still cited by an absolute
+    path -- the exact shape of #477's bug report. That citation is gone on another machine, but the file
+    it names is content-hashed, so a second machine whose own cache holds a copy of the SAME bytes under
+    its own path resolves the untouched spec by the citation's basename, and the geometry it rebuilds
+    walks."""
+    V, F = mesh_shapes.icosphere(2e-6, subdivisions=2)
+    m = d.Mesh(V, F, feature_radius=1e-6, voxel_min=[-4e-6] * 3, voxel_max=[4e-6] * 3)
+    machine_a = tmp_path / "machine-a-surfaces"               # an explicit, non-cache directory: cited absolutely
+    spec = spec_of(m, surface_dir=machine_a)
+    cite = spec.wall("surface").surface.file
+    assert cite == str(machine_a / os.path.basename(cite))    # not the cache's portable basename-only rule
+    assert os.path.isabs(cite)
+
+    machine_b = tmp_path / "machine-b-cache"                  # a second machine: a different cache directory,
+    os.makedirs(machine_b)                                    # holding the SAME content-hashed file at ITS path
+    shutil.copy(cite, machine_b / os.path.basename(cite))
+    shutil.rmtree(machine_a)                                  # "machine A"'s own directory does not exist here
+    monkeypatch.setenv("DMIPY_SIM_SURFACE_DIR", str(machine_b))
+    resolved = resolve_surface_file(cite)
+    assert resolved == str(machine_b / os.path.basename(cite))
+    g2 = geometry_from_spec(spec)                             # the SAME spec dict, unmodified, read on "machine B"
+    w = d.simulate_trajectories(20, D, g2, 4e-4, 2e-4, seed=3, require_gpu=False)
+    assert w.positions.shape[0] == 20
+
+
+def test_a_mesh_surface_with_the_wrong_sha256_is_refused(tmp_path):
+    """The same rule a ``label_volume`` surface goes through: a mesh file that does not match the spec's
+    own sha256 is refused rather than read as if it were."""
+    V, F = mesh_shapes.icosphere(2e-6, subdivisions=2)
+    m = d.Mesh(V, F, feature_radius=1e-6, voxel_min=[-4e-6] * 3, voxel_max=[4e-6] * 3)
+    spec = spec_of(m, surface_dir=tmp_path)
+    bad = dataclasses.replace(spec.wall("surface").surface, sha256="0" * 64)
+    with pytest.raises(SpecError, match="does not match the sha256"):
+        mesh_surface_file(bad)
 
 
 def _bundle_spec(tmp_path, n_fibres=2, L=8.0e-6):
