@@ -20,7 +20,7 @@ from dataclasses import dataclass
 import numpy as np
 
 __all__ = ["b0_offset_map", "b1_scale_map", "background_gradient_map", "gradient_tensor_map",
-           "delivered_gradient", "delivered_weights", "delivered_moments", "encoding_classes"]
+           "delivered_gradient", "delivered_weights", "delivered_moments", "encoding_classes", "EncodingClasses"]
 
 
 def _model(scanner):
@@ -250,13 +250,78 @@ def concomitant_phase_map(scanner, grid, sequence, *, voxels=None, to_scanner=No
     return out
 
 
+class EncodingClasses:
+    """The acquisitions of one :func:`encoding_classes` call, composed ONE AT A TIME.
+
+    A class is identified by its member's exact tensor / background / position values alone -- a 3x3, a
+    3-vector and a 3-vector, a few dozen bytes -- which is what this object stores, keyed by the bin a voxel
+    fell in. :meth:`__getitem__` (and iteration, which is just every index in order) builds the
+    :class:`~dmipy_sim.acquisition.scanner_sequence.ScannerSequence` :func:`delivered_gradient` would have
+    built, from those numbers, when a caller asks for it, and keeps nothing after returning it.
+
+    Composing a class is :func:`with_gradient_nonlinearity` / :func:`with_background_gradient` /
+    :func:`with_concomitant`: elementwise array ops over the base sequence's grid, measured at tens of
+    microseconds a class on a 485-measurement protocol (``tests/test_bore_encoding_classes_memory.py``) --
+    cheap next to the ~12 MB (``G`` and ``imposed_gradient``, both float32) that composing one and KEEPING it
+    costs. So nothing here caches a composed class: the class that stays in memory after it is read is
+    exactly what grew without bound over a magnet's own gradient across a head (dmipy-sim#563) -- a handful
+    of classes for a uniform scanner, tens of thousands for a permanent magnet's ``g0`` over a whole head.
+    A reader that holds the whole thing, as ``list(classes)`` or ``ReplayPack.pose_responses`` do, pays the
+    same cost it always did; one that takes a class at a time and lets it go, as
+    :meth:`~dmipy_sim.replay.replay.ReplayPack.pose_series` does, never holds a second one.
+
+    ``len()``, ``classes[c]`` (any index or slice) and iteration are the whole interface, and behave as the
+    list :func:`encoding_classes` used to return -- the SAME sequence, to the bit, since it is composed from
+    the same member's exact values either way.
+    """
+
+    __slots__ = ("_sequence", "_has_L", "_has_g0", "_has_c", "_Ls", "_g0", "_d_grid", "_members", "_B0", "_b0_axis")
+
+    def __init__(self, sequence, has_L, has_g0, has_c, Ls, g0, d_grid, members, B0, b0_axis):
+        self._sequence = sequence
+        self._has_L, self._has_g0, self._has_c = has_L, has_g0, has_c
+        self._Ls, self._g0, self._d_grid = Ls, g0, d_grid
+        self._members = members
+        self._B0, self._b0_axis = B0, b0_axis
+
+    def __len__(self):
+        return int(self._members.shape[0])
+
+    def _compose(self, c):
+        k = int(self._members[c])
+        seq = self._sequence
+        if self._has_L:
+            seq = seq.with_gradient_nonlinearity(self._Ls[k])
+        if self._has_g0:
+            seq = seq.with_background_gradient(self._g0[k])
+        if self._has_c:
+            seq = seq.with_concomitant(self._d_grid[k], self._B0, b0_axis=self._b0_axis)
+        return seq
+
+    def __getitem__(self, c):
+        n = len(self)
+        if isinstance(c, slice):
+            return [self._compose(i) for i in range(*c.indices(n))]
+        i = c + n if c < 0 else c
+        if not (0 <= i < n):
+            raise IndexError(c)
+        return self._compose(i)
+
+    def __iter__(self):
+        for c in range(len(self)):
+            yield self._compose(c)
+
+    def __repr__(self):
+        return f"EncodingClasses(n_classes={len(self)})"
+
+
 def encoding_classes(scanner, grid, sequence, voxel_index, *, tolerance=1e-3, to_scanner=None,
                      nonlinearity=True, background=True, concomitant=True):
     """The acquisition as the machine plays it at each voxel of ``voxel_index``, BINNED into the distinct
     ways the gradient is delivered: ``(class_of_voxel, played)`` with ``class_of_voxel`` ``(n,)`` an index
-    into ``played``, a list of :class:`~dmipy_sim.acquisition.scanner_sequence.ScannerSequence` composed as
-    :func:`delivered_gradient` composes them. ``None`` when the machine brings none of the three terms
-    (dmipy-sim#377).
+    into ``played``, an :class:`EncodingClasses` -- each member composed as :func:`delivered_gradient`
+    composes them, lazily, from the stored key alone (dmipy-sim#563). ``None`` when the machine brings none
+    of the three terms (dmipy-sim#377).
 
     A phantom replays each pack once per pose expansion, so a machine whose gradient depends on where the
     voxel sits would cost one expansion per voxel. The three terms are binned on their inputs instead, each
@@ -266,8 +331,12 @@ def encoding_classes(scanner, grid, sequence, voxel_index, *, tolerance=1e-3, to
     distinct bin from a member's exact values. The count is the cost, and it follows the size of the effect:
     a 3 T magnet with no catalogued shape has only the concomitant term, a few centimetres wide in position,
     so a head is a handful of classes; a permanent magnet's tensor varies by percent across a head and costs
-    hundreds at a tolerance of a thousandth. ``tolerance=None`` bins nothing: every distinct voxel its own
-    class, exact.
+    hundreds at a tolerance of a thousandth, and its own ``g0`` over a whole head at a tight tolerance is tens
+    of thousands. ``tolerance=None`` bins nothing: every distinct voxel its own class, exact.
+
+    Nothing here holds a composed class: ``played`` stores each class's bin (a 3x3, a 3-vector, a 3-vector --
+    the member's exact values) and builds the full ``ScannerSequence`` only when :class:`EncodingClasses`
+    is indexed or iterated, so this function's own memory is ``O(n_voxels)`` regardless of the class count.
     """
     from ..replay.phantom import quantise
     scanner = _model(scanner)
@@ -294,20 +363,14 @@ def encoding_classes(scanner, grid, sequence, voxel_index, *, tolerance=1e-3, to
     if has_c:
         parts.append(quantise(d_grid, None if tol is None else tol * float(B0) / G_max))
     key = np.concatenate(parts, axis=1)
-    _uniq, inverse = np.unique(key, axis=0, return_inverse=True)
+    # return_index: the first occurrence, in voxel_index's own order, of each unique row -- the same member a
+    # class's bin stood for before this was lazy (`np.flatnonzero(inverse == c)[0]`), read off np.unique's own
+    # bookkeeping instead of a second O(n_classes * n) scan over `inverse`.
+    _uniq, members, inverse = np.unique(key, axis=0, return_index=True, return_inverse=True)
     inverse = np.asarray(inverse).reshape(-1)
     b0_axis = _b0_axis(scanner, R)
-    played = []
-    for c in range(int(inverse.max()) + 1):
-        k = int(np.flatnonzero(inverse == c)[0])                  # a member's exact values stand for the bin
-        seq = sequence
-        if has_L:
-            seq = seq.with_gradient_nonlinearity(Ls[k])
-        if has_g0:
-            seq = seq.with_background_gradient(g0[k])
-        if has_c:
-            seq = seq.with_concomitant(d_grid[k], float(B0), b0_axis=b0_axis)
-        played.append(seq)
+    played = EncodingClasses(sequence, has_L, has_g0, has_c, Ls, g0, d_grid, members,
+                             None if B0 is None else float(B0), b0_axis)
     return inverse, played
 
 
