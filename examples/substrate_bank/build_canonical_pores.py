@@ -220,11 +220,11 @@ def _modulus_and_se(e):
 def analytic_signal(shape, d_um, grid, *, modes=ANALYTIC_MODES):
     """The closed form's signal at ``grid``: the eigenmode (matrix) solution of Codd & Callaghan 1999.
 
-    Evaluated by :mod:`examples.validation.matrix_method`, which is the family's own implementation of the
-    document's formalism -- the reference is the document, not our code, and the code's own error is the series
+    Evaluated by :mod:`dmipy_sim.math.matrix_method`, the package's own implementation of the document's
+    formalism -- the reference is the document, not our code, and the code's own error is the series
     truncation the reference record carries as the reference's uncertainty.
     """
-    from examples.validation.matrix_method import MatrixPore
+    from dmipy_sim.math.matrix_method import MatrixPore
     seq = sequence(grid["delta_s"], grid["Delta_s"], b=grid["b_s_per_m2"], direction=grid["direction"],
                    n_t=grid["n_t"])
     g = np.asarray(seq.G_eff, np.float64)[0]
@@ -426,7 +426,7 @@ def family(work_dir, *, dry, create_dataset, rows=None):
                           where="the sweep the dataset is", how="the family's own grid; the closed form is "
                                 "evaluated at each of them, so no interpolation enters the comparison"),
             FreeParameter(name="n_modes", value=str(ANALYTIC_MODES), unit="-", whose="ours",
-                          where="examples/validation/matrix_method.py", how="the eigenmode truncation of the "
+                          where="dmipy_sim/math/matrix_method.py", how="the eigenmode truncation of the "
                                 "reference's own series. Refining it is what measures the reference's "
                                 "uncertainty, which is why it is recorded rather than assumed converged"),
             FreeParameter(name="surface relaxivity", value=0.0, unit="m/s", whose="ours",
