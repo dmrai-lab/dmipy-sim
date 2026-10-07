@@ -563,8 +563,11 @@ class WalkContext:
         its cutoff (the particle-mesh split, no doubling); without one, the per-segment closed form of
         :func:`_strand_field`, whose cutoff is doubled against ``starts`` (the FIRST call's own walk start
         positions) until it stops changing by more than ``tol``. ``None`` when the source is not a pair of
-        swept-polyline walls; a spec with one and no far grid needs ``starts`` on the first call (refused
-        otherwise), and ignores it on every call after -- the cached basis answers for every block."""
+        swept-polyline walls, OR when it is and there is no far grid and no ``starts`` yet -- a bare query before
+        any walk is answered, not refused; only a caller that actually needs the basis and gives no ``starts``
+        (:func:`_walk_bundle`, which always does) would have nothing to build it from, and there is nothing to
+        refuse here that walking itself would not also need. Every call after the first ignores ``starts`` --
+        the cached basis answers for every block."""
         if self._basis is not None:
             return self._basis
         if field_source_kind(self.spec) != "strands":
@@ -578,10 +581,7 @@ class WalkContext:
             self._basis = StrandFieldBasis(ob.centerlines, ib.radii, ob.radii, cutoff_m=self.far.cutoff_m, domain=(g.lo, g.hi),
                                            certificate=dict(cutoff_m=float(self.far.cutoff_m), far_grid=self.far.meta,
                                                             note="the cutoff the far grid summed to; not doubled here")).with_far(self.far)
-        else:
-            if starts is None:
-                raise ValueError("the context has no far grid and no basis cached yet: give starts= (the walk's own "
-                                 "start positions) to build and certify the cutoff once")
+        elif starts is not None:
             self._basis = _strand_field(ob, ib, g.lo, g.hi, starts, cutoff_m, tol, seed, cutoff_max=cutoff_max)
         return self._basis
 
