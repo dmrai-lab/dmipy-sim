@@ -602,8 +602,14 @@ class ScannerSequence:
             raise ValueError("this acquisition already carries a background gradient; apply it to the "
                              "acquisition the builder returned, not on top of one that has it")
         add = np.broadcast_to(g.astype(np.float32).reshape(-1, 1, 3), self.G.shape)
+        # a background's imposed_gradient is constant over time and (for one magnet position) over direction, so
+        # `add` is a zero-stride BROADCAST VIEW of the few bytes of `g` -- sharing it rather than forcing it into
+        # a dense (n_meas, n_t, 3) float32 copy saves exactly the ~6 MB per class that `encoding_classes` (#563)
+        # would otherwise pay for every one of a permanent magnet's classes over a head. `imposed_gradient + add`
+        # (a prior transform already recorded one) is an ordinary addition and materialises on its own; nothing
+        # here forces contiguity where the array need not be dense.
         imposed = add if self.imposed_gradient is None else self.imposed_gradient + add
-        return replace(self, G=(self.G + add), imposed_gradient=np.ascontiguousarray(imposed),
+        return replace(self, G=(self.G + add), imposed_gradient=imposed,
                        background_gradient=tuple(tuple(float(v) for v in row) for row in g))
 
     def with_split_readout(self, cycles_per_quarter=16.0):
