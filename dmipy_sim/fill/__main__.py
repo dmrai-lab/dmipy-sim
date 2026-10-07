@@ -17,13 +17,12 @@ import sys as _sys
 if "--backend" in _sys.argv and _sys.argv[_sys.argv.index("--backend") + 1:_sys.argv.index("--backend") + 2] != ["jax"]:
     _os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
 import argparse
-import json
 import logging
 import os
 import secrets
 
 from .hub import Hub, FakeHub
-from .pipeline import Fill, Options, pack_job
+from .pipeline import Fill, Options
 from .recipe import Recipe
 
 
@@ -54,8 +53,8 @@ def main(argv=None):
     g.add_argument("--block", type=int, help="the block index in the plan's table")
     g.add_argument("--next", action="store_true", help="claim the lowest block with no shard and no claim")
     g.add_argument("--drain", action="store_true", help="upload what an earlier worker on this host left finished in --workdir "
-                   "(walk files are packed first), release this host's other claims, then stop")
-    g.add_argument("--pack", default=None, help=argparse.SUPPRESS)          # the pack stage: a job file (the worker's own subprocess)
+                   "(a pack that never ran is recovered from its --keep walk files, else its claim is just released), "
+                   "release this host's other claims, then stop")
     ap.add_argument("--repo", default=None, help="the dataset repository (owner/name)")
     ap.add_argument("--local", default=None, help="read the recipe from this directory instead of the hub (implies --no-upload)")
     ap.add_argument("--loop", action="store_true", help="with --next: fill blocks until none is open, pipelined")
@@ -71,15 +70,16 @@ def main(argv=None):
                     "walkers and merge the rounds (a walk file holds ~85 kB per walker; the pack of a round holds it in host memory)")
     ap.add_argument("--smoke", action="store_true", help="upload under smoke/ instead of blocks/ (never claims)")
     ap.add_argument("--no-upload", action="store_true")
-    ap.add_argument("--keep", action="store_true", help="keep the local shard and run records after the upload")
+    ap.add_argument("--keep", action="store_true", help="keep the local shard and run records after the upload, and write each round's "
+                    "walk file beside them (the pack itself reads the walk in memory either way)")
     ap.add_argument("--certify", action="store_true", help="a CERTIFYING walk: the block's voxels at --budget walkers, the full fidelity "
                     "battery measured (the dense oracle holds ~300 bytes per walker-save on the host), the pack under "
                     "certificate/<variant>-block-NNNN.rpk and its meta as certificate/<variant>.json, which every block then inherits")
     ap.add_argument("--workdir", default=os.path.join(os.getcwd(), "fill_work"))
     ap.add_argument("--batch", type=lambda v: v if v == "auto" else int(v), default=None,
                     help="walker_batch_size (default: the manifest's; lower it on a small card), or 'auto': the backend sizes it from its device")
-    ap.add_argument("--pack-device", default="numpy", help="where the pack subprocess runs its transforms: numpy (the CPU, so the walk "
-                    "keeps the GPU), jax, auto")
+    ap.add_argument("--pack-device", default="numpy", help="where the pack (a thread of this process) runs its transforms: numpy (the "
+                    "CPU, so the walk keeps the GPU), jax, auto")
     ap.add_argument("--cpu", action="store_true", help="walk on the CPU (a rehearsal)")
     ap.add_argument("--backend", default="jax", help="the walk's backend by name (an installed dmipy_sim.backends entry point, e.g. cuda); "
                     "the shard's record names it")
@@ -88,8 +88,6 @@ def main(argv=None):
     a = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
     logging.getLogger("jax").setLevel(logging.WARNING)
-    if a.pack:
-        return pack_job(json.load(open(a.pack)))
     if not a.repo and not a.local:
         ap.error("--repo OWNER/DATASET or --local DIR")
     hub = FakeHub(a.local) if a.local else Hub(a.repo)

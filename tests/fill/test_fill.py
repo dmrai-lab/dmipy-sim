@@ -301,6 +301,36 @@ def test_the_backend_reaches_the_walk_and_an_unknown_one_is_refused(certified, m
 
 
 
+def test_the_pack_of_one_block_overlaps_the_walk_of_the_next(certified, monkeypatch):
+    """dmipy-sim#678: the pack runs in a thread of this process, from the walk's own objects, no longer a
+    subprocess reloading a ``.walk`` file -- a fake walk and a fake pack, both padded with a sleep, record a
+    timeline over the two blocks of one pass: the second block's walk overlaps the first block's pack (the
+    device is never idle waiting on it), and the two packs themselves stay serialised (queue depth one)."""
+    import dmipy_sim.fill.pipeline as pl
+    hub, work = certified
+    rc = Recipe(hub)
+    timeline = []
+    real_walk_round, real_pack = pl.walk_round, pl.pack_in_process
+
+    def fake_walk_round(o, rc, row, name, r, k, P, seeds):
+        t0 = time.time(); w, rd = real_walk_round(o, rc, row, name, r, k, P, seeds); time.sleep(0.3)
+        timeline.append(("walk", name, t0, time.time())); return w, rd
+
+    def fake_pack(job, walks):
+        t0 = time.time(); time.sleep(0.5); summary = real_pack(job, walks)
+        timeline.append(("pack", job["name"], t0, time.time())); return summary
+
+    monkeypatch.setattr(pl, "walk_round", fake_walk_round)
+    monkeypatch.setattr(pl, "pack_in_process", fake_pack)
+    Fill(hub, rc, opts(work, loop=True, claim_batch=1, only_pass=1)).run(heartbeat_every=3600)
+    walks = {n: (t0, t1) for kind, n, t0, t1 in timeline if kind == "walk"}
+    packs = {n: (t0, t1) for kind, n, t0, t1 in timeline if kind == "pack"}
+    assert len(walks) == 2 and len(packs) == 2
+    first, second = sorted(walks, key=lambda n: walks[n][0])
+    assert walks[second][0] < packs[first][1], "the second block's walk should start before the first block's pack ends"
+    assert packs[second][0] >= packs[first][1], "packs stay serialised: at most one in flight"
+
+
 def test_batch_auto_asks_the_backend_and_refuses_one_that_sizes_nothing(certified, monkeypatch):
     """`--batch auto` takes the backend's `suggested_batch` for the walk (n_t and the field's samples from the manifest)
     and refuses, by name, a backend without one."""
