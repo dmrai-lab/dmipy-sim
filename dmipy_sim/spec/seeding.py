@@ -157,10 +157,18 @@ def _clip_segments_to_voxels(A, B, r, grid):
     span = ihi - ilo + 1; n_pairs = np.prod(span, axis=1)
     face_lo = np.minimum(corner, corner + sh * step); face_hi = np.maximum(corner, corner + sh * step)
     keep = np.all(hi >= face_lo, axis=1) & np.all(lo <= face_hi, axis=1)
-    seg = np.repeat(np.arange(len(A)), np.where(keep, n_pairs, 0))
-    # the voxel offsets within each segment's range, enumerated
-    off = np.concatenate([np.stack(np.meshgrid(*[np.arange(s) for s in span[k]], indexing="ij"), -1).reshape(-1, 3)
-                          for k in np.flatnonzero(keep)]) if keep.any() else np.zeros((0, 3), np.int64)
+    counts = np.where(keep, n_pairs, 0)
+    seg = np.repeat(np.arange(len(A)), counts)
+    # the voxel offsets within each segment's range, enumerated in the SAME order a meshgrid(indexing="ij") would
+    # give (the last axis fastest): a flat index 0..n_pairs-1 per segment, decoded by the span products.
+    starts = np.concatenate([[0], np.cumsum(counts)])[:-1]                    # each segment's run start in `seg`
+    local = np.arange(len(seg)) - starts[seg]
+    sy_sz = span[:, 1] * span[:, 2]
+    i = local // sy_sz[seg]
+    rem = local - i * sy_sz[seg]
+    j = rem // span[seg, 2]
+    k = rem - j * span[seg, 2]
+    off = np.stack([i, j, k], axis=1)
     ijk = ilo[seg] + off
     near = corner + ijk * step; far = corner + (ijk + 1) * step
     vlo = np.minimum(near, far) - r[seg][:, None]; vhi = np.maximum(near, far) + r[seg][:, None]

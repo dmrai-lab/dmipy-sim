@@ -11,7 +11,7 @@ import numpy as np
 
 import dmipy_sim as d
 from dmipy_sim.phantom import Grid
-from dmipy_sim.spec.seeding import fill_swept_by_voxel, fill_per_voxel
+from dmipy_sim.spec.seeding import fill_swept_by_voxel, fill_per_voxel, _clip_segments_to_voxels
 
 R = 1.0e-6
 
@@ -105,3 +105,58 @@ def test_every_seed_reads_as_inside_at_millimetre_coordinates():
     assert len(P) == 200_000 and (lab > 0).all(), f"{(lab == 0).sum()} of {len(P)} seeds read as outside"
     d_wall, _ = g.wall_scales(P.astype(np.float32))
     assert d_wall.min() > 0.0                                                    # strictly inside, to float32
+
+
+def _clip_segments_to_voxels_loop(A, B, r, grid):
+    """The reference `_clip_segments_to_voxels` is checked against: one segment per Python iteration, the voxel
+    offsets enumerated by `itertools.product` in (i, j, k) order (k fastest) -- the same order a
+    ``meshgrid(..., indexing="ij")`` flattens to, and so the same order the vectorised enumeration must give."""
+    import itertools
+    corner = np.asarray(grid.corner_m, float); step = np.asarray(grid.step_m, float); sh = np.asarray(grid.shape)
+    face_lo = np.minimum(corner, corner + sh * step); face_hi = np.maximum(corner, corner + sh * step)
+    seg_l, vox_l, t0_l, t1_l = [], [], [], []
+    for n in range(len(A)):
+        a, b, rn = A[n], B[n], r[n]
+        lo = np.minimum(a, b) - rn; hi = np.maximum(a, b) + rn
+        if not (np.all(hi >= face_lo) and np.all(lo <= face_hi)):
+            continue
+        i_lo = np.floor((lo - corner) / step).astype(np.int64); i_hi = np.floor((hi - corner) / step).astype(np.int64)
+        ilo = np.clip(np.minimum(i_lo, i_hi), 0, sh - 1); ihi = np.clip(np.maximum(i_lo, i_hi), 0, sh - 1)
+        d = b - a
+        for i, j, k in itertools.product(range(ilo[0], ihi[0] + 1), range(ilo[1], ihi[1] + 1),
+                                          range(ilo[2], ihi[2] + 1)):
+            ijk = np.array([i, j, k])
+            near = corner + ijk * step; far = corner + (ijk + 1) * step
+            vlo = np.minimum(near, far) - rn; vhi = np.maximum(near, far) + rn
+            t0, t1 = 0.0, 1.0
+            for ax in range(3):
+                if abs(d[ax]) < 1e-30:
+                    if a[ax] < vlo[ax] or a[ax] > vhi[ax]:
+                        t0, t1 = 1.0, 0.0
+                else:
+                    ta = (vlo[ax] - a[ax]) / d[ax]; tb = (vhi[ax] - a[ax]) / d[ax]
+                    t0 = max(t0, min(ta, tb)); t1 = min(t1, max(ta, tb))
+            if t1 > t0:
+                seg_l.append(n); vox_l.append(int(np.ravel_multi_index((i, j, k), grid.shape)))
+                t0_l.append(t0); t1_l.append(t1)
+    return (np.array(seg_l, np.int64), np.array(vox_l, np.int64),
+            np.array(t0_l, float), np.array(t1_l, float))
+
+
+def test_clip_segments_to_voxels_vectorised_matches_the_loop():
+    """`_clip_segments_to_voxels` enumerates the (segment, voxel) pairs with repeat/cumsum arithmetic instead of a
+    per-segment Python loop (dmipy-sim#679); on a small random strand set it must give the SAME pairs in the SAME
+    order with the SAME clipped intervals as the straightforward loop."""
+    rng = np.random.default_rng(42)
+    n_seg = 300
+    A = rng.uniform(-10e-6, 10e-6, (n_seg, 3))
+    B = A + rng.normal(scale=2e-6, size=(n_seg, 3))
+    r = rng.uniform(0.2e-6, 1.5e-6, n_seg)
+    grid = Grid(shape=(6, 5, 4), voxel_size_m=(3e-6,) * 3, origin_m=(-7.5e-6, -6e-6, -4.5e-6))
+    seg, vox, t0, t1 = _clip_segments_to_voxels(A, B, r, grid)
+    seg_ref, vox_ref, t0_ref, t1_ref = _clip_segments_to_voxels_loop(A, B, r, grid)
+    assert len(seg) > 200                                                       # the comparison is non-trivial
+    np.testing.assert_array_equal(seg, seg_ref)
+    np.testing.assert_array_equal(vox, vox_ref)
+    np.testing.assert_allclose(t0, t0_ref)
+    np.testing.assert_allclose(t1, t1_ref)
