@@ -233,17 +233,52 @@ def test_the_readers_of_a_played_gradient_take_a_budget():
     """A designer's output built to a budget arrives with it: the 90 / 180 (or the three 90s) are finite, the
     sequence carries the budget and validate() holds the gradient to its windows."""
     tm = SequenceTiming(t_excite=2e-3, t_refocus=4e-3, t_readout_pre_echo=3e-3)
-    ref = S.pgse(D2[:1], 4e-3, 20e-3, bvalues=B[:1], n_t=400, timing=tm)
+    # n_t = 405, not 400: at 400 this asymmetric (lead != tail) budget's zero-continuous-slack margin rounds
+    # the post-180 block a hair past the readout tail's edge -- a genuine straddle #616's fixed check now
+    # (correctly) refuses, filed separately as dmipy-sim#645 rather than dodged by weakening that check.
+    ref = S.pgse(D2[:1], 4e-3, 20e-3, bvalues=B[:1], n_t=405, timing=tm)
     back = S.from_btensor_waveform(np.asarray(ref.G), ref.dt, timing=tm)
     assert back.timing is tm and [e.duration_s for e in back.rf] == [2e-3, 4e-3]
     np.testing.assert_allclose(back.b(), ref.b(), rtol=1e-6)
-    ste_ = S.pgste(D2[:1], 4e-3, 30e-3, bvalues=B[:1], n_t=400, timing=tm)
+    ste_ = S.pgste(D2[:1], 4e-3, 30e-3, bvalues=B[:1], n_t=405, timing=tm)
     st, rc = (int(round(e.t_s / ste_.dt)) for e in ste_.rf[1:])
     back = S.from_pgste_waveform(np.asarray(ste_.G), ste_.dt, store_idx=st, recall_idx=rc, timing=tm)
     assert back.timing is tm and [e.duration_s for e in back.rf] == [2e-3] * 3 and back.stimulated_echo
     G = np.asarray(ref.G).copy(); G[0, 16:19, 0] = 0.01                                    # into the lead-in
     with pytest.raises(ValueError, match="lead-in window|during the 90 pulse"):
         S.from_btensor_waveform(G, ref.dt, timing=tm)
+
+
+def test_validate_refuses_a_step_straddling_a_budget_dead_window_not_only_containment():
+    """dmipy-sim#616: the budget's dead-window check (the lead-in / readout-tail loop, two paragraphs below the
+    pulse-window check above) used the same CONTAINMENT formula #613 fixed for pulse windows, and missed the
+    same kind of violation -- a step that starts inside a dead window and runs past it is still on during part
+    of the dead time, a real encoding violation, even though the whole step is not contained in the window.
+
+    ``t_lead = 2.05`` ms is off-grid at ``dt = 0.1`` ms (dmipy-sim#616's own repro), so sample 20 (``[2.0,
+    2.1)`` ms) straddles it exactly; sample 50 cancels the moment (both samples sit before the 180, so the
+    readout is still refocused and only the dead-window check is exercised)."""
+    tm = SequenceTiming(t_excite=2.05e-3, t_refocus=2e-3, t_readout_pre_echo=10e-3)
+    TE = tm.min_TE()
+    dt = 1e-4
+    n_t = int(round(TE / dt)) + 1                                       # readout lands exactly on the echo
+    rf = [RFEvent(0.0, 90, duration_s=2.05e-3), RFEvent(TE / 2.0, 180, duration_s=2e-3)]
+    G = np.zeros((1, n_t, 3), np.float32)
+
+    straddling = G.copy(); straddling[0, 20, 0] = 0.01; straddling[0, 50, 0] = -0.01
+    with pytest.raises(ValueError, match="lead-in window"):
+        ScannerSequence(G=straddling, dt=dt, rf=rf, timing=tm).validate()
+
+    # An on-grid budget (t_lead = 2.0 ms lands exactly on sample 20's start): a step placed flush against the
+    # window's edge merely TOUCHES it and is accepted, same as the pulse-window check's edge case (#584).
+    tm_on_grid = SequenceTiming(t_excite=2e-3, t_refocus=2e-3, t_readout_pre_echo=10e-3)
+    TE2 = tm_on_grid.min_TE()
+    n_t2 = int(round(TE2 / dt)) + 1
+    rf2 = [RFEvent(0.0, 90, duration_s=2e-3), RFEvent(TE2 / 2.0, 180, duration_s=2e-3)]
+    flush = np.zeros((1, n_t2, 3), np.float32)
+    flush[0, 20, 0] = 0.01; flush[0, 50, 0] = -0.01                      # sample 20 starts exactly at t_lead
+    seq = ScannerSequence(G=flush, dt=dt, rf=rf2, timing=tm_on_grid)
+    assert seq.validate() is seq
 
 
 def test_a_prescription_places_the_acquisition_in_the_bore_and_derives_nothing():

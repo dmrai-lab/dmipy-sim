@@ -489,8 +489,15 @@ class ScannerSequence:
                                  f"timing budget: an encoding window would vanish")
             windows = [(0.0, self.timing.t_lead, "lead-in")]
             windows += [(i * self.dt - self.timing.t_readout_pre_echo, i * self.dt, "readout") for i in self.readout]
-            for t0, t1, what in windows:                # a step wholly inside a dead time; a straddling step is rounding
-                inside = (t >= t0 - 1e-9 * self.dt) & (t + self.dt <= t1 + 1e-9 * self.dt)
+            # Same rule as the pulse-window check above: a sample's step is [t, t + dt), and the violation is
+            # OVERLAP of that step with the dead window's OPEN interval (t0, t1) -- a step that starts inside
+            # the window and runs past it is still on during part of the dead time, a real violation, even
+            # though containment of the whole step misses it (dmipy-sim#616, the straddling counterpart of
+            # #613's fix above, for this looser budget-level check). `eps` makes an exact touch (a step placed
+            # flush against the window's edge) read as touching rather than as overlap.
+            eps = 1e-9 * self.dt
+            for t0, t1, what in windows:
+                inside = (t < t1 - eps) & (t + self.dt > t0 + eps)
                 if np.any(np.abs(designed[:, inside, :]) > floor):
                     raise ValueError(f"the encoding gradient is on in the {what} window {t0*1e3:.3f}-{t1*1e3:.3f} ms "
                                      f"of the timing budget. A budget's dead windows constrain the ENCODING; a "
