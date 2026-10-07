@@ -1346,6 +1346,34 @@ def merge_packs(packs, *, id, out_path=None, overlap="refuse", envelope=None, de
 
 
 SEGMENT_T = 0.1          #: the storage rule's window (s): a pack stores its walk in windows of this duration (RPK.md 4.3)
+STORAGE_BAND_MARGIN = 1.4  #: the storage rule's margin over a class's certified band (the paper's K = 256 per 100 ms for the human classes)
+
+
+def _walk_scanner(walk):
+    """The scanner class a walk's save grid was derived for (``PersistentWalk.scanner``, set by ``walk_spec``), or None."""
+    return getattr(walk, "scanner", None) if not isinstance(walk, dict) else walk.get("scanner")
+
+
+def storage_band_hz(scanner):
+    """The band a pack built for ``scanner`` is stored at (Hz): the class's certified band -- the highest frequency any
+    waveform the class can deliver needs of a pack, the catalogue's ``band.certified_band_hz`` -- times
+    :data:`STORAGE_BAND_MARGIN`. A class the catalogue holds no certified band for is refused by name: the band is a
+    measured property of the class (the closed-form certificate of the replayable-MC paper, ``figures/fig_band_data.py``),
+    never a guess from its amplitude or slew."""
+    from ..acquisition.scanners import ScannerLimits
+    lim = ScannerLimits.of(scanner)
+    if lim.certified_band_hz is None:
+        raise ValueError(f"the catalogue holds no certified band for scanner class {lim.name!r}: a pack cannot be stored for it "
+                         f"until band.certified_band_hz is measured and cited (the replayable-MC paper's fig_band_data on the class's "
+                         f"envelope); pass K= or temporal_bandwidth_hz= to store at a stated band instead")
+    return float(STORAGE_BAND_MARGIN) * float(lim.certified_band_hz)
+
+
+def mode_count(T, scanner=None, *, temporal_bandwidth_hz=None):
+    """The band count ``K = ceil(2 f T)`` of a window of ``T`` seconds stored at ``f`` = :func:`storage_band_hz` of
+    ``scanner`` (or a stated ``temporal_bandwidth_hz``): the one derivation every producer reads (#643)."""
+    f = float(temporal_bandwidth_hz) if temporal_bandwidth_hz is not None else storage_band_hz(scanner)
+    return max(2, int(np.ceil(2.0 * f * float(T))))
 _SHARED_KEYS = ("spin_weights", "comp_static", "band_block", "voxel_ijk", "voxel_certificate")
 
 
@@ -1592,9 +1620,8 @@ def preflight_master(m, *, susc_path_K=None, sigma_star=None, K=None):
                    "cannot be assembled and the pack would be silently missing it "
                    "(field_store='grid' is what produces it)")
     if sigma_star is not None and K is None:
-        bad.append(f"sigma_star={sigma_star:g} with K unpinned: K is auto-selected against THIS "
-                   f"walk's floor, which is the wrong reference for a pack that will be merged "
-                   f"or compared to an absolute target. Pin K.")
+        bad.append(f"sigma_star={sigma_star:g} with K unpinned: a pack built to an absolute target states its band "
+                   f"(K=, temporal_bandwidth_hz= or scanner=) so that every pack of the target shares it. Pin K.")
     return bad
 
 
@@ -1691,8 +1718,8 @@ def _container(spec):
 
 
 def build_replay_pack(walk, *, id, license, citation, weights=None,
-                      method=_cx.POSITION_METHOD, envelope=None, tol=2.0, K=None, temporal_bandwidth_hz=None,
-                      err_target=None, sigma_star=None, provenance=None,
+                      method=_cx.POSITION_METHOD, envelope=None, tol=2.0, K=None, temporal_bandwidth_hz=None, scanner=None,
+                      sigma_star=None, provenance=None,
                       blt_temporal_K=None, blt_dtype=np.float16, susc_path_K="auto", susc_path_bits=8, voxel_grid=None,
                       position_container=None, blt_container=None,
                       diffusivity=None, substrate_frame=None, out_path=None, verbose=False,
@@ -1706,6 +1733,15 @@ def build_replay_pack(walk, *, id, license, citation, weights=None,
     walk; segment 0's tensors under the channel names, segment ``i`` under ``s{i}/``. ``K`` and ``susc_path_K``
     are per segment. A prefix of whole segments is then a range of the file, and a walk is continued by
     appending segments (:meth:`~dmipy_sim.replay.replay.ReplayPack.truncate`, :func:`continue_walk`).
+
+    **The band is the scanner class's** (#643): ``K = ceil(2 f T)`` per window with ``f`` =
+    :func:`storage_band_hz` of ``scanner`` -- the class's certified band (the catalogue's ``band.certified_band_hz``,
+    the replayable-MC paper's closed-form certificate: the highest frequency any waveform the class can deliver
+    needs) times :data:`STORAGE_BAND_MARGIN`. ``scanner`` defaults to the class the walk's save grid was derived for
+    (``PersistentWalk.scanner``, which :func:`~dmipy_sim.spec.walk.walk_spec` sets); a walk with no class is refused
+    by name unless ``K`` or ``temporal_bandwidth_hz`` states the band. Nothing is searched on the walk: the
+    certificate measures whether the band holds, it does not choose it. The pack records the class under
+    ``compression.scanner`` beside ``temporal_bandwidth_hz``.
 
     ``fidelity`` is what this pack certifies (RPK.md 9.4 rule 4): ``"measured"`` replays the envelope's battery
     on the raw and the decoded walk and reports the codec error against the split-half floor, per tier; a pack
@@ -1783,7 +1819,7 @@ def build_replay_pack(walk, *, id, license, citation, weights=None,
         n_segments, n_seg = segment_plan(m["traj"].shape[1], m["dt_traj"], segment_T)
         if n_segments > 1:
             kw = dict(id=id, license=license, citation=citation, method=method, envelope=envelope, tol=tol, K=K,
-                      temporal_bandwidth_hz=temporal_bandwidth_hz, err_target=err_target, sigma_star=sigma_star,
+                      temporal_bandwidth_hz=temporal_bandwidth_hz, scanner=scanner, sigma_star=sigma_star,
                       provenance=provenance, blt_temporal_K=blt_temporal_K, blt_dtype=blt_dtype, susc_path_K=susc_path_K,
                       susc_path_bits=susc_path_bits, voxel_grid=voxel_grid, position_container=position_container,
                       blt_container=blt_container, verbose=verbose, fidelity=fidelity, fidelity_from=fidelity_from, device=device)
@@ -1825,9 +1861,19 @@ def build_replay_pack(walk, *, id, license, citation, weights=None,
         _c2_min_K = None
         if _c2_window_T is not None and (X.shape[1] - 1) * dt > float(_c2_window_T) * (1.0 + 1e-9):
             _c2_min_K = 16 * int(np.ceil((X.shape[1] - 1) * dt / float(_c2_window_T)))
+        # The band (#643): a stated K, else a stated frequency (#199: K bands over T resolve up to K / (2T)), else the
+        # scanner class the pack is stored for -- the one given, else the one the walk's save grid was derived for.
+        # Nothing is searched: the band is the class's, and the certificate measures whether it holds.
+        band_class = None
+        if K is None and temporal_bandwidth_hz is None and cert is None:
+            band_class = scanner if scanner is not None else _walk_scanner(walk)
+            if band_class is None:
+                raise ValueError("build_replay_pack needs the band to store the positions at: pass scanner= (the class the pack is "
+                                 "for -- a walk from walk_spec carries the one its save grid was derived for), K= or "
+                                 "temporal_bandwidth_hz=. The band is never searched on the walk (#643)")
+            temporal_bandwidth_hz = storage_band_hz(band_class)
         if K is None and temporal_bandwidth_hz is not None:
-            # the band as a frequency (#199): K bands over T resolve up to K / (2T)
-            K = max(2, int(np.ceil(2.0 * float(temporal_bandwidth_hz) * (X.shape[1] - 1) * dt)))
+            K = mode_count((X.shape[1] - 1) * dt, temporal_bandwidth_hz=temporal_bandwidth_hz)
         if cert is not None:                              # the codec error is the certifying pack's; the floor is this walk's
             pos_arrays, pos_meta, _ = _cx.encode(X, method, K, container=_container(position_container), device=device)
             cc, cf = cert["compression"], cert["fidelity"]
@@ -1846,10 +1892,6 @@ def build_replay_pack(walk, *, id, license, citation, weights=None,
                                    for f in fl["per_family"] if f in cf.get("per_family", {})},
                        certified="inherited",
                        inherited_from=dict(id=cert["id"], err_max=float(cf["err_max"]), floor_max=float(cf["floor_max"])))
-        elif K is None:
-            K, fid = _cx.auto_select_modes(X, X, dt, method=method, env=env, tol=tol,
-                                           err_target=err_target, verbose=verbose)
-            pos_arrays, pos_meta, _ = _cx.encode(X, method, K, container=_container(position_container), device=device)
         else:
             pos_arrays, pos_meta, _ = _cx.encode(X, method, K, container=_container(position_container), device=device)
             run.phase("certificate positions")
@@ -2072,6 +2114,8 @@ def build_replay_pack(walk, *, id, license, citation, weights=None,
                          walker_preserving=True, n_t=int(n_t),
                          container=pos_meta.get("container"),               # None: the float container; else the band ranges
                          temporal_bandwidth_hz=float(int(pos_meta.get("K", K)) / (2.0 * (int(n_t) - 1) * dt)))   # K bands over T (#199)
+        if band_class is not None:
+            comp_meta["scanner"] = str(band_class)                    # the class the band was derived from (#643)
         comp_meta["precision_tiers"] = _precision_tiers(arrays, int(m["n_walkers"]),
                                                         float(fid.get("floor_max") or 0.0),
                                                         bool(m.get("walkers_shuffled")))
@@ -2164,7 +2208,7 @@ def _window_certificate(fidelity_from, i, n_segments):
     return dict(cert, fidelity=dict(segs[int(i)]))
 
 
-def _build_segmented(m, n_segments, n_seg, run, walk, out_path, *, id, K, temporal_bandwidth_hz, blt_temporal_K, susc_path_K,
+def _build_segmented(m, n_segments, n_seg, run, walk, out_path, *, id, K, temporal_bandwidth_hz, scanner, blt_temporal_K, susc_path_K,
                      fidelity, fidelity_from, envelope, sigma_star=None, **kw):
     """:func:`build_replay_pack` for a walk of ``n_segments`` windows of ``n_seg`` saves: every window built as a
     pack of its own from the walk's arrays of that window (:func:`_window_master`), with segment 0's band, contact
@@ -2175,15 +2219,20 @@ def _build_segmented(m, n_segments, n_seg, run, walk, out_path, *, id, K, tempor
     T_seg = steps * dt
     comp = m.get("comp")
     crosses = comp is not None and np.asarray(comp).ndim == 2 and bool(np.any(np.asarray(comp)[:, 1:] != np.asarray(comp)[:, :-1]))
+    if K is None and temporal_bandwidth_hz is None and fidelity_from is None:
+        band_class = scanner if scanner is not None else _walk_scanner(walk)
+        if band_class is None:
+            raise ValueError("build_replay_pack needs the band to store the positions at: pass scanner=, K= or temporal_bandwidth_hz= (#643)")
+        temporal_bandwidth_hz = storage_band_hz(band_class)
     if temporal_bandwidth_hz is not None and K is None:
-        K = max(2, int(np.ceil(2.0 * float(temporal_bandwidth_hz) * T_seg)))
+        K = mode_count(T_seg, temporal_bandwidth_hz=temporal_bandwidth_hz)
     packs = []
     for i in range(n_segments):
         run.phase(f"segment {i + 1} of {n_segments}")
         w = _window_master(m, i * steps, (i + 1) * steps)
         cert_i = _window_certificate(fidelity_from, i, n_segments)
         if i == 0:
-            pk = build_replay_pack(w, id=f"{id}", K=K, blt_temporal_K=blt_temporal_K, susc_path_K=susc_path_K, fidelity=fidelity,
+            pk = build_replay_pack(w, id=f"{id}", K=K, scanner=scanner, blt_temporal_K=blt_temporal_K, susc_path_K=susc_path_K, fidelity=fidelity,
                                    fidelity_from=cert_i, envelope=envelope, segment_T=T_seg, _occupancy_runs=crosses, sigma_star=sigma_star,
                                    _window_of_plan=True, **kw)
             K = int(pk.K)
@@ -2197,7 +2246,7 @@ def _build_segmented(m, n_segments, n_seg, run, walk, out_path, *, id, K, tempor
                                      f"{c2.get('mode')!r}; pass blt_temporal_K=")
                 blt_temporal_K = int(c2["K"])
         else:
-            pk = build_replay_pack(w, id=f"{id}", K=K, blt_temporal_K=blt_temporal_K, susc_path_K=susc_path_K, fidelity=fidelity,
+            pk = build_replay_pack(w, id=f"{id}", K=K, scanner=scanner, blt_temporal_K=blt_temporal_K, susc_path_K=susc_path_K, fidelity=fidelity,
                                    fidelity_from=cert_i, envelope=envelope, segment_T=T_seg, _occupancy_runs=crosses, sigma_star=sigma_star,
                                    _window_of_plan=True, voxel_grid=None, **{k_: v_ for k_, v_ in kw.items() if k_ != "voxel_grid"})
         packs.append(pk)
@@ -2234,9 +2283,10 @@ def build_to_floor(make_model, *, id, envelope=None, sigma_star=1e-3, pilot_n=80
                    safety=1.4, max_n=400000, walk=None, method="bridge_dst", verbose=True, **bp):
     """Adaptive floor-targeting generation policy (the bank default).
 
-    Size the walker count so the split-half Monte-Carlo floor <= ``sigma_star``, then build a pack
-    whose codec error is <= ``sigma_star`` too — converging to a defined precision instead of a
-    wasteful ultra-high N. ``make_model(n_walkers)`` MUST return a fresh master walk (dict/.npz) on
+    Size the walker count so the split-half Monte-Carlo floor <= ``sigma_star``, then build the pack at the band
+    ``bp`` states (``scanner=``, ``K=`` or ``temporal_bandwidth_hz=``; #643: the band is never searched) and record
+    whether its codec error meets ``sigma_star`` too (``fidelity.meets_target``) -- converging to a defined
+    precision instead of a wasteful ultra-high N. ``make_model(n_walkers)`` MUST return a fresh master walk (dict/.npz) on
     the SAME fixed geometry (only the walker count changes). ``walk(model)`` returns its master dict
     (default: the model already IS one). Records ``sigma_star`` + the achieved floor in the pack.
     """
@@ -2263,4 +2313,4 @@ def build_to_floor(make_model, *, id, envelope=None, sigma_star=1e-3, pilot_n=80
               f"({'<=' if f <= sigma_star else '>'} sigma*)")
     # build_replay_pack normalises the raw model itself (idempotent if already a master dict)
     return build_replay_pack(model, id=id, envelope=env, method=method,
-                             err_target=sigma_star, sigma_star=sigma_star, verbose=verbose, **bp)
+                             sigma_star=sigma_star, verbose=verbose, **bp)

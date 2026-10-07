@@ -10,7 +10,7 @@ A manifest holds (the DiSCo replay dataset is the reference):
 - ``grid``: the voxel grid a shard's certificate is on (``shape``, ``voxel_size_m``, ``origin_m``);
 - ``walk``: ``T_max_s``, ``dt_save_s``, ``scanner``, ``walker_batch_size``, ``adaptive_steps``, ``floor_fraction``,
   ``field_sample_every``, ``field_gather_every``, ``census_draws``;
-- ``pack``: ``K``, ``K_path``, ``blt_K``, ``position_container``, ``blt_container``;
+- ``pack``: ``K`` (optional: absent, the shard's band is ``walk.scanner``'s by the storage rule, #643), ``K_path``, ``blt_K``, ``position_container``, ``blt_container``;
 - ``plan``: ``file`` (an ``.npz`` of ``count_<pool>`` arrays on the grid), ``blocks`` (a JSON table of voxel
   boxes with their seeds), optional ``passes`` (each ``{pass, scale}``: a share of every block's counts, filled
   as its own shard from its own seed stream).

@@ -43,7 +43,7 @@ def packs():
     field's cosine basis at K = n) in float32 containers, so the two differ by rounding alone."""
     m = _master()
     env = dict(_lean_env(), B0_list=[3.0], theta_deg=[0])
-    kw = dict(license="CC-BY-4.0", citation="test", envelope=env, blt_dtype=np.float32, susc_path_bits=16)
+    kw = dict(license="CC-BY-4.0", citation="test", envelope=env, blt_dtype=np.float32, susc_path_bits=16, scanner="connectom")
     one = build_replay_pack(m, id="t/one", K=N_T - 2, blt_temporal_K=N_T - 2, susc_path_K=N_T, segment_T=(N_T - 1) * DT, **kw)
     two = build_replay_pack(m, id="t/two", K=19, blt_temporal_K=19, susc_path_K=21, segment_T=0.01, **kw)
     return m, one, two

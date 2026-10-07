@@ -106,6 +106,7 @@ class ScannerLimits:
     gnl_validity_radius: float = None           # m, how far the class model is anchored
     shim_max_order: float = None                # the highest solid-harmonic degree the shim set reaches
     b1_brain_range: tuple = None                # (low, high) of the transmit scale over a brain, fraction of nominal
+    certified_band_hz: float = None             # Hz, the band a replay pack for this class needs (band.certified_band_hz)
 
     @classmethod
     def of(cls, scanner, *, regime="default"):
@@ -146,6 +147,7 @@ class ScannerLimits:
                                                           "b0_temperature_coefficient"),
                    f0_recentering_interval=scc.leaf_si(entry, "thermal", "f0_recentering_interval"),
                    f0_temperature_slope=scc.leaf_si(entry, "thermal", "f0_temperature_slope"),
+                   certified_band_hz=scc.leaf_si(entry, "band", "certified_band_hz"),
                      d_scale_x_dx=scc.leaf_si(entry, "gradient_nonlinearity", "d_scale_x_dx"),
                      d_scale_y_dx=scc.leaf_si(entry, "gradient_nonlinearity", "d_scale_y_dx"),
                      d_scale_z_dx=scc.leaf_si(entry, "gradient_nonlinearity", "d_scale_z_dx"),

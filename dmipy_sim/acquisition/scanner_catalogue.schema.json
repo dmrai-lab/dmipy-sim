@@ -204,6 +204,10 @@
         "gradient_nonlinearity": {
           "$ref": "#/$defs/group",
           "description": "The gradient-nonlinearity tensor's measured coefficients."
+        },
+        "band": {
+          "$ref": "#/$defs/group",
+          "description": "The temporal band of this class: the highest frequency any waveform it can deliver needs of a replay pack (the closed-form certificate of the replayable-MC paper), what a pack built for the class is stored at."
         }
       }
     },

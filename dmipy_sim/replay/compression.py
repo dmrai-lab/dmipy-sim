@@ -18,8 +18,9 @@ together:
     reader looks for ``blt_bridge_dst``) simply has no channel this reader finds.
 
 :func:`mode_space_signal` computes the replay signal from the coefficients without reconstructing the
-trajectory, and :func:`auto_select_modes` picks the smallest ``K`` that meets a fidelity tolerance against
-the uncompressed walk. The band transforms run in numpy/scipy on the host and, on a GPU, as full-precision
+trajectory. :func:`auto_select_modes` finds the smallest ``K`` that meets a fidelity tolerance against the
+uncompressed walk -- a DIAGNOSTIC (how many bands does this envelope need), called by no producer: a pack's band
+is the scanner class's by the storage rule (:func:`dmipy_sim.replay.bank.storage_band_hz`, #643). The band transforms run in numpy/scipy on the host and, on a GPU, as full-precision
 JAX matmuls (:func:`dst_bands`).
 """
 from __future__ import annotations
@@ -32,9 +33,22 @@ import functools
 import numpy as np
 
 try:
-    from scipy.fft import dst as _dst, idst as _idst
+    from scipy.fft import dst as _scipy_dst, idst as _scipy_idst
 except ImportError as _e:  # pragma: no cover
     raise ImportError("dmipy_sim.replay.compression needs scipy (pip install scipy)") from _e
+import os as _os
+
+#: the threads pocketfft runs the sine transforms on: every walker's transform is independent, so this changes no
+#: bit; ``DMIPY_SIM_FFT_WORKERS`` overrides (a shared box), the default is half the cores up to eight (#642)
+FFT_WORKERS = int(_os.environ.get("DMIPY_SIM_FFT_WORKERS", 0) or max(1, min(8, (_os.cpu_count() or 2) // 2)))
+
+
+def _dst(x, **kw):
+    return _scipy_dst(x, workers=FFT_WORKERS, **kw)
+
+
+def _idst(x, **kw):
+    return _scipy_idst(x, workers=FFT_WORKERS, **kw)
 
 from ..constants import GAMMA
 
@@ -1047,7 +1061,10 @@ def _walker_phases(pos, dt, G):
     `effective_gradient`)."""
     from ._replay_kernel import effective_gradient
     pos = np.asarray(pos, np.float64); G = np.asarray(G, np.float64)
-    return (GAMMA * dt) * np.einsum("mtd,ntd->nm", effective_gradient(G, dt, pos.shape[1], dt), pos)
+    W = effective_gradient(G, dt, pos.shape[1], dt)                           # (n_meas, n_t, 3)
+    # one GEMM over the flattened (save, axis) index: the same contraction the einsum spelled, on BLAS's threads
+    # (the einsum ran c_einsum single-threaded: 7.8 s of a 15 s pack on 20k walkers x 873 saves, #642)
+    return (GAMMA * dt) * (pos.reshape(pos.shape[0], -1) @ W.reshape(W.shape[0], -1).T)
 
 
 class LazyWalk:

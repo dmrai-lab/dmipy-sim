@@ -743,7 +743,7 @@ def test_a_label_volume_walk_packs_and_replays_C0_C1_C2(tmp_path, monkeypatch):
     g = LabelVolume(lab, h, origin=org, surface_relaxivity_t2=1e-5)
     walk = simulate_trajectories(4000, D, g, T_max=0.02, dt_save=5e-4, seed=0, require_gpu=False)
     assert walk.boundary_local_time is not None and walk.compartment is not None
-    pack = build_replay_pack(walk, id="test/label-volume", license="CC-BY-4.0", citation="test")
+    pack = build_replay_pack(walk, id="test/label-volume", license="CC-BY-4.0", citation="test", scanner="connectom")
     assert pack.substrate.walls[0].surface.kind == "label_volume"
     assert [p.name for p in pack.substrate.pools] == ["free", "grain"]
     wf = pgse([[1, 0, 0]], 0.003, 0.012, bvalues=[1e9], n_t=80)

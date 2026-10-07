@@ -188,9 +188,9 @@ def walk_spec(spec, n_walkers=None, T_max=None, dt_save=None, *, scanner="connec
             return PersistentWalk(w.positions, w.dt, w.sub_steps, w.dt_sim, w.boundary_local_time, w.compartment,
                                   w.bound_frac, w.illegal_crossings, w.seed, w.diffusivity, geometry=g, spec=spec, run=w.run,
                                   field_basis=w.field_basis, field_samples=w.field_samples,
-                                  field_sample_every=w.field_sample_every, field_deferred=bool(defer_field), work=w.work)
+                                  field_sample_every=w.field_sample_every, field_deferred=bool(defer_field), work=w.work, scanner=str(scanner))
         return _walk_bundle(spec, int(n_walkers), float(T_max), float(dt_save), seed, n_probe, field_res,
-                            require_gpu, walker_batch_size, field_budget=field_budget, field_cutoff_m=field_cutoff_m, field_cutoff_tol=field_cutoff_tol, seeding=seeding,
+                            require_gpu, walker_batch_size, field_budget=field_budget, scanner=scanner, field_cutoff_m=field_cutoff_m, field_cutoff_tol=field_cutoff_tol, seeding=seeding,
                             field_cutoff_max_m=field_cutoff_max_m, adaptive_steps=adaptive_steps, field_sample_every=int(field_sample_every), field_far=field_far, field_gather_every=int(field_gather_every), context=context, spool=bool(spool), defer_field=bool(defer_field), bounce_budget=bounce_budget, backend=backend)
 
 
@@ -651,7 +651,7 @@ def draw_seeds(spec, seeding, seed, *, context=None):
     return DrawnSeeds(positions=positions, weights=weights, grid=grid, seed=int(seed), drawn_from=seeding)
 
 
-def _walk_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field_res, require_gpu, batch, field_budget=None, bounce_budget=None, backend="jax",
+def _walk_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field_res, require_gpu, batch, field_budget=None, scanner=None, bounce_budget=None, backend="jax",
                  field_cutoff_m=25e-6, field_cutoff_tol=0.02, seeding=None, field_cutoff_max_m=50e-6, adaptive_steps=False, field_sample_every=1, field_far=None, field_gather_every=4, context=None, spool=False, defer_field=False):
     """Walk a multi-surface spec pool by pool: every seeded pool is defined by the walls it is inside and the walls it
     is outside; a pool with D > 0 walks the interior of its inside-walls (intra, glia) or the exterior of its
@@ -801,7 +801,7 @@ def _walk_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field_res, requ
                           weights=(None if np.allclose(wts, 1.0) else wts), field_basis=(sf if sf is not None else fg),
                           stepping=(dict(rule="adaptive", pools=dict(stepping)) if stepping else None),
                           field_samples=samples, field_sample_every=(int(field_sample_every) if samples is not None else 1),
-                          work=merge_work(works),
+                          work=merge_work(works), scanner=str(scanner),
                           field_deferred=bool(defer_field))
     object.__setattr__(walk, "run", current())
     return walk
