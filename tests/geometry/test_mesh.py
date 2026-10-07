@@ -5,6 +5,7 @@ test_mesh_mc.py, which is marked slow.  These tests are quick (small N, tiny mes
 so they run on every PR.  Meshes are generated on the fly with trimesh — the big
 research PLYs are a manual stress test, never committed to the suite.
 """
+import sys
 import warnings
 
 import numpy as np
@@ -74,6 +75,22 @@ def test_seed_containment_closed():
     g = Mesh(V, F)
     pts = np.asarray(g.init_positions(500, jax.random.PRNGKey(0), pool="intra"))
     assert (np.linalg.norm(pts, axis=1) < R).mean() > 0.99
+
+
+def test_surface_is_closed_lets_a_missing_trimesh_raise(monkeypatch):
+    """A missing trimesh is an ImportError, not a topology fact (#626).
+
+    `_surface_is_closed` used to catch every exception from its own `import trimesh`, including
+    ImportError, and read that as "not closed" -- which sent a genuinely closed icosphere (0
+    boundary edges) into `init_positions`'s open-surface branch, raising the self-contradictory
+    "cannot seed this OPEN surface: 0 boundary edge(s)". With trimesh unavailable the question
+    cannot be answered at all, so it must raise as what it is.
+    """
+    V, F = _icosphere(3)
+    g = Mesh(V, F)
+    monkeypatch.setitem(sys.modules, "trimesh", None)
+    with pytest.raises(ImportError):
+        g._surface_is_closed()
 
 
 def test_permeability_none_matches_default():

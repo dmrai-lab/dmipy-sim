@@ -1433,7 +1433,12 @@ class Mesh(Geometry):
             f"geometry instead (pass r0= explicitly to simulate()), or close the surface.")
 
     def _surface_is_closed(self):
-        """Does every edge have two faces? Cached -- it is a property of the mesh, not of a call."""
+        """Does every edge have two faces? Cached -- it is a property of the mesh, not of a call.
+
+        A missing ``trimesh`` raises as the ``ImportError`` it is -- it says nothing about this
+        mesh's topology -- rather than being read as "open": that swallowed a closed icosphere into
+        the contradictory ``init_positions`` error "cannot seed this OPEN surface: 0 boundary
+        edge(s)", where the 0 itself proves closedness and the exception was the real cause."""
         if getattr(self, "_closed", None) is None:
             try:
                 import trimesh
@@ -1441,6 +1446,8 @@ class Mesh(Geometry):
                                     faces=np.asarray(self.faces, np.int64), process=False)
                 n_open = len(trimesh.grouping.group_rows(m.edges_sorted, require_count=1))
                 self._closed = bool(n_open == 0)
+            except ImportError:
+                raise
             except Exception:
                 self._closed = False
         return self._closed

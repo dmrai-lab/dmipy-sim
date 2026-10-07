@@ -52,8 +52,11 @@ dev = [
     "matplotlib>=3.5",   # physics/validation tests plot diagnostics (Agg backend)
     # trimesh[easy] rather than bare trimesh: susceptibility_field.mesh_contains uses ray parity, whose
     # engine needs rtree, and trimesh.repair.fill_holes needs networkx. Both are trimesh EXTRAS, so a bare
-    # install imports fine and then raises ModuleNotFoundError deep inside a containment call.
+    # install imports fine and then raises ModuleNotFoundError deep inside a containment call. networkx is
+    # ALSO named here directly (#626): a venv built without resolving trimesh's own bracketed sub-extras
+    # (seen in the wild on a from-scratch install) still gets it.
     "trimesh[easy]>=4.0",   # mesh tests load/generate PLY meshes (dmipy_sim.geometry.mesh)
+    "networkx>=2.8",
     # the segmented-image containers io.label_volume does not read with the standard library, so
     # their readers are TESTED rather than assumed to work (tests/geometry/test_label_volume.py)
     "nibabel>=5.0",
@@ -72,9 +75,11 @@ interop = [
 ]
 # Triangular-mesh loading (dmipy_sim.load_ply / Mesh.from_ply) and exact containment
 # (susceptibility_field.mesh_contains). The Mesh geometry itself needs only numpy/jax; trimesh is required
-# to READ mesh files, and its [easy] extras (rtree, networkx) for ray parity and hole repair.
+# to READ mesh files, and its [easy] extras (rtree, networkx) for ray parity and hole repair; networkx is
+# also named directly (#626), see `dev` above.
 mesh = [
     "trimesh[easy]>=4.0",
+    "networkx>=2.8",
 ]
 # Segmented-image containers (dmipy_sim.io.label_volume). NRRD and MetaImage are read with the
 # standard library and need nothing; NIfTI needs nibabel, a TIFF stack tifffile, HDF5 h5py. Each
