@@ -10,6 +10,12 @@
 
 Needs dmipy-sim at the manifest's commit (with a CUDA jaxlib unless ``--cpu``) and, against the hub, a login with
 write access to the repository."""
+import os as _os
+import sys as _sys
+# a walk on another backend shares the device with this process's JAX, which must then not take it all: the
+# allocator's policy is read when JAX initialises, before the arguments are parsed, so the option is read here
+if "--backend" in _sys.argv and _sys.argv[_sys.argv.index("--backend") + 1:_sys.argv.index("--backend") + 2] != ["jax"]:
+    _os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
 import argparse
 import json
 import logging
