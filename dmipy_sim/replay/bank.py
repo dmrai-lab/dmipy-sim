@@ -973,19 +973,20 @@ def susc_path_encode_series(series, names, *, K=32, bits=8, dtype=np.float16, la
         raise ValueError(f"{len(names)} channel names for {n_ch} channels")
     K = int(min(K, n_t))
     take = lambda sl: (np.transpose(series[sl], (0, 2, 1)) if layout == "wct" else series[sl])   # (rows, n_t, n_ch)
-    first = np.asarray(take(slice(0, min(chunk, n_w))), np.float64)
+    # the trace identity is judged on a sample of walkers in float64 (a whole chunk in float64 was 1.7 GB of host copy)
+    probe = np.asarray(take(slice(0, min(2000, n_w))), np.float64)
     drop_zz = False; trace_res = None
     if {"iso_local", "iso_P_xx", "iso_P_yy", "iso_P_zz"} <= set(names):
         i0, ix, iy, iz = (names.index(n) for n in ("iso_local", "iso_P_xx", "iso_P_yy", "iso_P_zz"))
-        tr = first[..., ix] + first[..., iy] + first[..., iz]
-        scale = float(np.max(np.abs(first[..., i0]))) or 1.0
-        trace_res = float(np.max(np.abs(tr - 3.0 * first[..., i0]))) / (3.0 * scale)
+        tr = probe[..., ix] + probe[..., iy] + probe[..., iz]
+        scale = float(np.max(np.abs(probe[..., i0]))) or 1.0
+        trace_res = float(np.max(np.abs(tr - 3.0 * probe[..., i0]))) / (3.0 * scale)
         drop_zz = bool(trace_res <= atol_trace)
     keep = [i for i, n in enumerate(names) if not (drop_zz and n == "iso_P_zz")]
     coeffs = np.empty((n_w, len(keep), K), np.float64)
     for i in range(0, n_w, chunk):
-        ch = first if i == 0 else take(slice(i, i + chunk))
-        b = _cx.dct_bands(np.asarray(ch)[:, :, keep], K, device=device)             # (rows, K, n_keep)
+        ch = np.asarray(take(slice(i, i + chunk)))                                  # the series' own dtype; the device casts
+        b = _cx.dct_bands(np.ascontiguousarray(ch[:, :, keep]), K, device=device)   # (rows, K, n_keep)
         coeffs[i:i + chunk] = np.transpose(b, (0, 2, 1))
     meta = dict(channel="susc_path_dct", K=K, n_t=int(n_t), n_ch=len(keep), channels=[names[i] for i in keep],
                 iso_P_zz=("implied" if drop_zz else "stored"), trace_residual=trace_res,
