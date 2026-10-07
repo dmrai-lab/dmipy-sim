@@ -58,6 +58,24 @@ class WalkRequest(NamedTuple):
     field: object = None      #: a :class:`FieldSampling` when the walk samples a strand field; None otherwise
 
 
+class ParityCase(NamedTuple):
+    """One substrate :func:`parity_cases` compares a backend on. ``case()`` builds the geometry -- the same call
+    a bare builder answered, so every existing caller of ``parity_cases()[name]()`` is unaffected. A rate case
+    is a case with nothing past ``build``; a hard-invariant case (``strands_void``) also carries ``starts``, the
+    walk's own seeding (:func:`parity_report` draws none of its own when this is set), and the walk's own scale
+    (``n_walkers``, ``T_max``, ``dt_save``, ``seed`` -- each ``None`` falls back to :func:`parity_report`'s own
+    keyword, except ``starts`` callers, which always get the case's own values)."""
+    build: object             #: zero-arg callable returning the geometry
+    starts: object = None     #: ``(n, seed) -> r0 (n, 3) float32``, or None: :func:`parity_report` draws its own
+    n_walkers: object = None  #: overrides :func:`parity_report`'s ``n_walkers`` when ``starts`` is set
+    T_max: object = None      #: overrides :func:`parity_report`'s ``T_max`` when ``starts`` is set
+    dt_save: object = None    #: overrides :func:`parity_report`'s ``dt_save`` when ``starts`` is set
+    seed: object = None       #: overrides :func:`parity_report`'s ``seed`` when ``starts`` is set
+
+    def __call__(self):
+        return self.build()
+
+
 class WalkBatch(NamedTuple):
     """What a backend returns for a batch of walkers: the JAX kernels' outputs, as arrays."""
     positions: np.ndarray             #: (n, n_t, 3) float32, save 0 the start
@@ -124,11 +142,10 @@ def resolve(backend) -> Optional[Backend]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def parity_cases():
-    """The substrates a backend is compared on, each at its own permeability: ``{name: builder}``, ``builder()``
-    a zero-arg callable returning the geometry. A case that needs starts and a walk scale of its own rather than
-    :func:`parity_report`'s defaults (``strands_void``) sets them as attributes on the geometry it returns --
-    ``parity_starts(n, seed) -> r0`` and, optionally, ``parity_overrides`` (``n_walkers``, ``T_max``, ``dt_save``,
-    ``seed``) -- which :func:`parity_report` reads instead of drawing its own."""
+    """The substrates a backend is compared on, each at its own permeability: ``{name: ParityCase}``. Every entry
+    is a :class:`ParityCase` -- one spelling, whether the case is a plain rate comparison (``build`` alone) or
+    carries its own starts and scale (``strands_void``) -- and ``case()`` builds the geometry exactly as a bare
+    builder used to, so ``parity_cases()[name]()`` is unchanged for every existing caller."""
     import dmipy_sim as d
     R = 2e-6
 
@@ -154,45 +171,44 @@ def parity_cases():
         return d.PackedCurvedCylinders(cls, [1.0e-6, 1.5e-6, 2.0e-6], interior=interior,
                                        box=(np.full(3, -10e-6), np.full(3, 10e-6)))
 
-    def void():
-        # one tube in a 200 um box, starts in the void 2.5 cells from its wall: a gather whose 27-cell
-        # neighbourhood is empty must still bound the walk by the nearest wall it CAN reach, not by the box
-        # (dmipy-sim-cuda#36). The case carries its own starts (`parity_starts`) and walk scale
-        # (`parity_overrides`): a rate comparison at `parity_report`'s default scale would barely move the
-        # walkers, so the invariant needs its own T_max and walker count.
-        R, L = 2e-6, 200e-6
-        xt = yt = 100e-6
-        g = d.PackedCurvedCylinders([np.array([[xt, yt, 0.0], [xt, yt, L]])], [R], interior=False,
-                                    box=(np.zeros(3), np.full(3, L)))
+    VOID_R, VOID_L = 2e-6, 200e-6
+    VOID_XT = VOID_YT = 100e-6
 
-        def starts(n, seed):
-            rng = np.random.default_rng(seed)
-            r0 = np.column_stack([np.full(n, xt - R - 2.5 * g.cell_size),
-                                  rng.uniform(yt - 5e-6, yt + 5e-6, n),
-                                  rng.uniform(20e-6, 180e-6, n)])
-            return r0.astype(np.float32)
+    def void_build():
+        # one tube in a 200 um box: starts (below) sit in the void 2.5 cells from its wall, where a gather whose
+        # 27-cell neighbourhood is empty must still bound the walk by the nearest wall it CAN reach, not by the
+        # box (dmipy-sim-cuda#36).
+        return d.PackedCurvedCylinders([np.array([[VOID_XT, VOID_YT, 0.0], [VOID_XT, VOID_YT, VOID_L]])], [VOID_R],
+                                       interior=False, box=(np.zeros(3), np.full(3, VOID_L)))
 
-        g.parity_starts = starts
-        g.parity_overrides = dict(n_walkers=4096, T_max=40e-3, dt_save=0.5e-3)
-        return g
+    void_cell_size = void_build().cell_size   # the geometry's own cell-size rule, read once rather than re-derived
+
+    def void_starts(n, seed):
+        rng = np.random.default_rng(seed)
+        return np.column_stack([np.full(n, VOID_XT - VOID_R - 2.5 * void_cell_size),
+                                rng.uniform(VOID_YT - 5e-6, VOID_YT + 5e-6, n),
+                                rng.uniform(20e-6, 180e-6, n)]).astype(np.float32)
 
     return {
-        "sphere": lambda: d.Sphere(R),
-        "sphere_perm": lambda: d.Sphere(R, permeability=1e-5),
-        "cylinder": lambda: d.Cylinder(R, (0, 0, 1)),
-        "cylinder_perm": lambda: d.Cylinder(R, (0, 0, 1), permeability=1e-5),
-        "ellipsoid": lambda: d.Ellipsoid((R, 0.7 * R, 0.5 * R)),
-        "packed_cyl": lambda: packed(d.PackedCylinders),
-        "packed_cyl_perm": lambda: packed(d.PackedCylinders, permeability=2e-5),
-        "packed_sph": lambda: packed(d.PackedSpheres),
-        "packed_sph_perm": lambda: packed(d.PackedSpheres, permeability=2e-5),
-        "label_slab": lambda: label(),
-        "label_slab_perm": lambda: label(permeability=1e-5, pools={0: "free", 1: "grain"}),
-        "mesh": lambda: mesh(),
-        "mesh_perm": lambda: mesh(permeability=1e-5),
-        "strands_intra": lambda: strands(True),
-        "strands_extra": lambda: strands(False),
-        "strands_void": void,
+        "sphere": ParityCase(lambda: d.Sphere(R)),
+        "sphere_perm": ParityCase(lambda: d.Sphere(R, permeability=1e-5)),
+        "cylinder": ParityCase(lambda: d.Cylinder(R, (0, 0, 1))),
+        "cylinder_perm": ParityCase(lambda: d.Cylinder(R, (0, 0, 1), permeability=1e-5)),
+        "ellipsoid": ParityCase(lambda: d.Ellipsoid((R, 0.7 * R, 0.5 * R))),
+        "packed_cyl": ParityCase(lambda: packed(d.PackedCylinders)),
+        "packed_cyl_perm": ParityCase(lambda: packed(d.PackedCylinders, permeability=2e-5)),
+        "packed_sph": ParityCase(lambda: packed(d.PackedSpheres)),
+        "packed_sph_perm": ParityCase(lambda: packed(d.PackedSpheres, permeability=2e-5)),
+        "label_slab": ParityCase(lambda: label()),
+        "label_slab_perm": ParityCase(lambda: label(permeability=1e-5, pools={0: "free", 1: "grain"})),
+        "mesh": ParityCase(lambda: mesh()),
+        "mesh_perm": ParityCase(lambda: mesh(permeability=1e-5)),
+        "strands_intra": ParityCase(lambda: strands(True)),
+        "strands_extra": ParityCase(lambda: strands(False)),
+        # a rate comparison at parity_report's default scale would barely move these walkers, so the case pins
+        # its own walk scale (and its own seed, #675 review: never parity_report's, which would move the case
+        # with it) rather than overriding only starts
+        "strands_void": ParityCase(void_build, starts=void_starts, n_walkers=4096, T_max=40e-3, dt_save=0.5e-3, seed=5),
     }
 
 
@@ -230,26 +246,27 @@ def parity_report(backend, cases=None, *, n_walkers=4000, T_max=2e-3, dt_save=0.
     0-5 of 1.07 M walker-steps per seed on the JAX kernels themselves -- the wedge between a facet and the voxel
     face it touches); every walker on its side (the classifier at the saves agrees with the start's pool unless a
     crossing was granted), and the perpendicular PGSE signal of the two walks within ``sigma`` of their combined
-    standard errors. A case is a rate comparison unless it declares its own starts (``geometry.parity_starts``,
-    e.g. ``strands_void``): there the backend under test walks those starts alone (at ``geometry.parity_overrides``'
-    scale, when given) and is held to :func:`void_invariant`, a hard pass/fail with no JAX side to compare against.
-    A case the backend refuses is recorded with its reason and not failed: refusal is the contract. Returns
-    ``[{case, ok, ...}]``; the list is what a backend's tests assert on."""
+    standard errors. A case is a rate comparison unless it declares its own starts (:attr:`ParityCase.starts`,
+    e.g. ``strands_void``): there the backend under test walks those starts alone, at the case's own scale (its
+    ``n_walkers``/``T_max``/``dt_save``/``seed``, each falling back to this function's keyword of the same name
+    when the case leaves it ``None``), and is held to :func:`void_invariant`, a hard pass/fail with no JAX side
+    to compare against. A case the backend refuses is recorded with its reason and not failed: refusal is the
+    contract. Returns ``[{case, ok, ...}]``; the list is what a backend's tests assert on."""
     import dmipy_sim as d
     from .core import simulate_trajectories
     from ..replay.trajectories import replay
     from ..sequences import pgse
     out = []
-    for name, build in (cases or parity_cases()).items():
-        g = build(); g.count_walls = True
-        starts = getattr(g, "parity_starts", None)
-        if starts is not None:
-            overrides = getattr(g, "parity_overrides", {})
-            nw = overrides.get("n_walkers", n_walkers); Tm = overrides.get("T_max", T_max)
-            ds = overrides.get("dt_save", dt_save); sd = overrides.get("seed", seed)
+    for name, case in (cases or parity_cases()).items():
+        g = case(); g.count_walls = True
+        if case.starts is not None:
+            nw = n_walkers if case.n_walkers is None else case.n_walkers
+            Tm = T_max if case.T_max is None else case.T_max
+            ds = dt_save if case.dt_save is None else case.dt_save
+            sd = seed if case.seed is None else case.seed
             try:
                 w = simulate_trajectories(nw, 2e-9, g, Tm, ds, seed=sd, tiers="all", walker_batch_size=nw,
-                                          r0=starts(nw, sd), backend=backend)
+                                          r0=case.starts(nw, sd), backend=backend)
             except ValueError as e:
                 if "refuses" in str(e) or "does not" in str(e):
                     out.append(dict(case=name, ok=None, refused=str(e))); continue
@@ -258,7 +275,7 @@ def parity_report(backend, cases=None, *, n_walkers=4000, T_max=2e-3, dt_save=0.
             out.append(dict(case=name, ok=all(c["ok"] for c in checks.values()), checks=checks))
             continue
         ref = simulate_trajectories(n_walkers, 2e-9, g, T_max, dt_save, seed=seed, tiers="all", walker_batch_size=n_walkers)
-        g2 = build(); g2.count_walls = True
+        g2 = case(); g2.count_walls = True
         try:
             w = simulate_trajectories(n_walkers, 2e-9, g2, T_max, dt_save, seed=seed, tiers="all", walker_batch_size=n_walkers,
                                       r0=np.asarray(ref.positions[:, 0]), backend=backend)

@@ -32,29 +32,31 @@ class _LeakyVoid(backends.Backend):
 
 
 def _void_case():
-    return backends.parity_cases()["strands_void"]()
+    return backends.parity_cases()["strands_void"]
 
 
-def test_the_void_case_is_a_parity_case_with_its_own_starts_and_scale():
-    g = _void_case()
+def test_the_void_case_declares_its_own_starts_and_scale():
+    case = _void_case()
+    assert isinstance(case, backends.ParityCase) and callable(case.starts)
+    g = case()
     assert isinstance(g, d.PackedCurvedCylinders) and g.interior is False and g.permeability is None
-    assert callable(g.parity_starts)
-    r0 = g.parity_starts(64, 11)
+    r0 = case.starts(64, case.seed)
     assert r0.shape == (64, 3) and r0.dtype == np.float32
     # every start is beyond the tube's own gather reach, in the void
     xt = yt = 100e-6
     assert np.allclose(r0[:, 0], xt - 2e-6 - 2.5 * g.cell_size)
     assert (np.abs(r0[:, 1] - yt) <= 5e-6).all()
-    overrides = g.parity_overrides
-    assert overrides["n_walkers"] == 4096 and overrides["T_max"] == 40e-3 and overrides["dt_save"] == 0.5e-3
+    assert case.n_walkers == 4096 and case.T_max == 40e-3 and case.dt_save == 0.5e-3 and case.seed == 5
+    # calling the case still builds the geometry alone, exactly as every other case's bare builder does
+    assert isinstance(backends.parity_cases()["sphere"](), d.Sphere)
 
 
 def test_the_jax_rounds_pass_the_void_invariant():
-    g = _void_case()
-    ov = g.parity_overrides
-    r0 = g.parity_starts(ov["n_walkers"], 11)
-    w = simulate_trajectories(ov["n_walkers"], D, g, ov["T_max"], ov["dt_save"], seed=11, tiers="all",
-                              walker_batch_size=ov["n_walkers"], r0=r0, require_gpu=False)
+    case = _void_case()
+    g = case()
+    r0 = case.starts(case.n_walkers, case.seed)
+    w = simulate_trajectories(case.n_walkers, D, g, case.T_max, case.dt_save, seed=case.seed, tiers="all",
+                              walker_batch_size=case.n_walkers, r0=r0, require_gpu=False)
     checks = backends.void_invariant(g, w)
     assert checks["contained"]["ok"] and checks["contained"]["n_inside"] == 0
     assert checks["illegal"]["ok"] and checks["illegal"]["n_illegal"] == 0
@@ -63,19 +65,19 @@ def test_the_jax_rounds_pass_the_void_invariant():
 
 
 def test_the_parity_report_admits_the_jax_backend_on_the_void_case():
-    report = backends.parity_report(None, cases={"strands_void": backends.parity_cases()["strands_void"]})
+    report = backends.parity_report(None, cases={"strands_void": _void_case()})
     assert len(report) == 1 and report[0]["case"] == "strands_void" and report[0]["ok"] is True
 
 
 def test_a_backend_that_leaks_one_walker_into_the_tube_is_refused_by_the_invariant():
-    g = _void_case()
-    ov = g.parity_overrides
-    r0 = g.parity_starts(ov["n_walkers"], 11)
-    true_w = simulate_trajectories(ov["n_walkers"], D, g, ov["T_max"], ov["dt_save"], seed=11, tiers="all",
-                                   walker_batch_size=ov["n_walkers"], r0=r0, require_gpu=False)
+    case = _void_case()
+    g = case()
+    r0 = case.starts(case.n_walkers, case.seed)
+    true_w = simulate_trajectories(case.n_walkers, D, g, case.T_max, case.dt_save, seed=case.seed, tiers="all",
+                                   walker_batch_size=case.n_walkers, r0=r0, require_gpu=False)
     leak_point = np.array([100e-6, 100e-6, 100e-6], np.float32)   # the tube's axis: deep inside it
     bad = _LeakyVoid(true_w.positions, leak_point)
-    report = backends.parity_report(bad, cases={"strands_void": _void_case})
+    report = backends.parity_report(bad, cases={"strands_void": _void_case()})
     rec = report[0]
     assert rec["ok"] is False
     assert rec["checks"]["contained"]["ok"] is False and rec["checks"]["contained"]["n_inside"] >= 1
