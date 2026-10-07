@@ -28,6 +28,8 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from ..spec.substrate import susceptibility_field_of
+
 from . import claims as C
 from .hub import sha256_of
 from .recipe import FULL
@@ -57,7 +59,7 @@ class Options:
     no_upload: bool = False
     keep: bool = False                # keep the local shard and run records after the upload
     certify: bool = False             # a certifying walk: measured fidelity, under certificate/
-    batch: int = None                 # walker_batch_size (default: the manifest's)
+    batch: object = None              # walker_batch_size (default: the manifest's); "auto": the backend sizes it from its device
     pack_device: str = "numpy"        # where the pack subprocess runs its transforms: numpy, jax, auto
     duty: float = 1.0                 # the device's duty: after a walk the worker pauses for walk_time * (1 / duty - 1)
     duty_file: str = None             # a file holding the duty, read before every walk (a shared box given back by the hour)
@@ -111,6 +113,25 @@ def draw_round(rc, row, r, k, P, budget):
     return dict(drawn=draw_seeds(rc.spec(), seeding, seed, context=rc.context()), seed=seed, n_plan=n_plan, tot=tot, scale=scale)
 
 
+def batch_size(o, rc):
+    """The walk's ``walker_batch_size``: the option, the manifest's, or with ``batch="auto"`` what the backend sizes from
+    its device for this walk (dmrai-lab/dmipy-sim-cuda#18: the fewer of what the memory holds and what stays resident;
+    the walk time is the slowest walker's chain, so a card is used by filling it). A backend without
+    ``suggested_batch`` is refused by name: the manifest's number is the choice then, never a guess."""
+    if o.batch != "auto":
+        return int(o.batch or rc.man["walk"]["walker_batch_size"])
+    from ..engine.backends import resolve
+    be = resolve(o.backend)
+    if be is None or not hasattr(be, "suggested_batch"):
+        raise ValueError(f"--batch auto: backend {o.backend!r} sizes no batch from its device; give --batch N or the manifest's")
+    W = rc.man["walk"]; dt = rc.dt_save(); n_t = int(round(W["T_max_s"] / dt)) + 1
+    field = susceptibility_field_of(rc.spec()) == "present"
+    n_tf = len(range(0, n_t, int(W.get("field_sample_every", 1)))) if field else 0
+    n = int(be.suggested_batch(n_t, record=True, field_samples=n_tf, list_k=256, tables_bytes=4 << 30))
+    log.info("batch auto: %d walkers per launch for this device (n_t %d, %d field samples)", n, n_t, n_tf)
+    return n
+
+
 def round_paths(workdir, name, r, k):
     tag = f".round{r}" if k > 1 else ""
     return os.path.join(workdir, f"{name}{tag}.run"), os.path.join(workdir, f"{name}{tag}.walk")
@@ -126,7 +147,7 @@ def walk_round(o, rc, row, name, r, k, P, seeds):
     run_dir, out = round_paths(o.workdir, name, r, k)
     t0 = time.time()
     w = walk_spec(spec, T_max=W["T_max_s"], dt_save=rc.dt_save(), seeding=seeds["drawn"], seed=seeds["seed"],
-                  require_gpu=o.require_gpu, walker_batch_size=o.batch or W["walker_batch_size"], adaptive_steps=W["adaptive_steps"], scanner=W["scanner"],
+                  require_gpu=o.require_gpu, walker_batch_size=batch_size(o, rc), adaptive_steps=W["adaptive_steps"], scanner=W["scanner"],
                   floor_fraction=W["floor_fraction"], field_sample_every=int(W.get("field_sample_every", 1)),
                   context=rc.context(), field_gather_every=int(W.get("field_gather_every", 4)), run_dir=run_dir, spool=True,
                   backend=o.backend)
