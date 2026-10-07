@@ -107,10 +107,13 @@ def test_the_manifest_names_the_built_and_the_published_commit_distinctly(pack, 
     """The manifest row and the card state the SAME built commit, and each names the publishing commit AS SUCH
     (dmipy-sim#499): a card and a manifest that once drifted both read ``commit`` with nothing to say which of
     the two facts -- the commit that built the pack, or the commit publishing it -- either one was."""
+    built = pack.meta["provenance"].get("code", {}).get("commit")
+    if not built:
+        pytest.skip("the running code is not a git checkout, so the walk's provenance carries no built commit")
     monkeypatch.setattr(pub, "code_commit", lambda **kw: "9" * 40)       # the publish, on a DIFFERENT commit
     uri = pub.publish(pack, REPO, hub=hub)
     row = _manifest(hub)["packs"][0]
-    assert row["built_commit"] == pack.meta["provenance"]["code"]["commit"]   # the pack's own sealed provenance
+    assert row["built_commit"] == built                                   # the pack's own sealed provenance
     assert row["built_commit"] != row["published_commit"]
     assert row["published_commit"] == "9" * 40
     readme = open(os.path.join(hub.root, "README.md")).read()
