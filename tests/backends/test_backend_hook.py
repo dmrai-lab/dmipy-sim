@@ -26,10 +26,12 @@ class _Still(backends.Backend):
     def refuses(self, request):
         return self._refuse
 
-    def walk_batch(self, request, r0, keys):
-        self.requests.append(request)
+    def walk_batch(self, request, r0, keys, *, out=None):
+        self.requests.append(request); self.outs = getattr(self, "outs", []) + [out]
         n = r0.shape[0]
         pos = np.repeat(np.asarray(r0, np.float32)[:, None, :], request.n_t, axis=1)
+        if out is not None:                                           # a backend may write into the producer's arrays
+            out["positions"][...] = pos; pos = out["positions"]
         zero = np.zeros((n,), np.int32)
         blt = np.zeros((n, request.n_t), np.float32) if request.record else None
         comp = np.ones((n, request.n_t), np.float32) if request.record else None
@@ -131,6 +133,8 @@ def test_the_adaptive_producer_hands_a_backend_the_field_sampling_and_subtracts_
     assert isinstance(f, backends.FieldSampling) and f.basis is basis and f.sample_every == 2 and f.reuse_intervals == 3
     assert f.radius_m >= basis.gather_radius_m and f.list_k == 256            # no JAX probe with a backend: the given width
     assert w.field_samples.shape == (64, 3, 13) and w.field_sample_every == 2 and w.field_basis is basis
+    assert still.outs[0] is not None and set(still.outs[0]) == {"positions", "boundary_local_time", "field_samples"}
+    assert still.outs[0]["positions"].shape == (64, w.positions.shape[1], 3) and still.outs[0]["field_samples"].shape == (64, 3, 13)
     # the stub returned the start's bare channels at every sample: the record holds them with the mean subtracted
     expect = np.asarray(basis.channels(np.asarray(w.positions[:, 0])), np.float32) - np.asarray(basis.mean, np.float32)
     np.testing.assert_allclose(w.field_samples[:, 0], expect, rtol=1e-5, atol=1e-7)
